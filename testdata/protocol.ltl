@@ -1,0 +1,2 @@
+# G (state != BAD) — the extracted FSM assigns ST_BAD, so this should FAIL.
+G (state != BAD)

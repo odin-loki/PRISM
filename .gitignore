@@ -1,0 +1,11 @@
+helix-out/
+helix-out-*/
+build/
+native/build/
+__pycache__/
+*.pyc
+.cmake/
+native/third_party/
+.venv/
+venv/
+*.egg-info/
