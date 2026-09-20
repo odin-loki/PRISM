@@ -20,7 +20,7 @@ import subprocess
 import tempfile
 
 from helix import laws
-from helix.contracts import ENS_ATOM, REQ_ATOM
+from helix.contracts import ENS_ATOM, REQ_ATOM, parse_comments
 from helix.models import Finding, FunctionInfo
 
 _COMMENT_CLAUSE = re.compile(
@@ -37,6 +37,18 @@ DEFAULT_LO = -256
 DEFAULT_HI = 256
 _EXTRA_ATOM = re.compile(r"^([A-Za-z_]\w*)\s*(<=|>|==)\s*(0|[1-9]\d*|-?[1-9]\d*)$")
 _IDENT = re.compile(r"[A-Za-z_]\w*")
+
+
+def _contract_spec(fn: FunctionInfo) -> dict:
+    """// requires: / // ensures: first; ACSL /*@ */ if those are absent.
+
+    POINTER with ACSL ensures is still a contracted function: the RapidCheck
+    gate must see it (NEEDS-HARNESS), not skip as if there were no spec.
+    """
+    spec = _spec_comments(fn)
+    if spec.get("ensures") or spec.get("requires"):
+        return spec
+    return parse_comments(fn)
 
 
 def _spec_comments(fn: FunctionInfo) -> dict:
@@ -84,6 +96,36 @@ def _read_fn_source(fn: FunctionInfo) -> str:
     return ""
 
 
+def contract_kind_finding(fn: FunctionInfo, stage: str) -> Finding | None:
+    """POINTER/OTHER with ensures is NEEDS-HARNESS. No ensures: skip like SCALAR.
+
+    RapidCheck would invent a buffer or pass NULL. That is the absence of a
+    harness, not ERROR and not a silent skip of a contracted function.
+    """
+    if fn.kind == "SCALAR":
+        return None
+    spec = _contract_spec(fn)
+    if not spec.get("ensures"):
+        return None
+    return Finding(
+        stage=stage,
+        file=fn.file,
+        function=fn.name,
+        line=fn.line,
+        status=laws.NEEDS_HARNESS,
+        cls="",
+        message=(
+            f"{fn.kind}: RapidCheck would invent a buffer or pass NULL; "
+            "not a sampled proof"
+        ),
+        strength=laws.STRENGTH_SOME,
+        extra={
+            "requires": spec.get("requires") or [],
+            "ensures": spec.get("ensures") or [],
+        },
+    )
+
+
 def run_rapid(functions: list[FunctionInfo], trials: int = 64) -> list[Finding]:
     """Sample SCALAR args under requires; check ensures. No ensures: skip."""
     out: list[Finding] = []
@@ -96,6 +138,9 @@ def run_rapid(functions: list[FunctionInfo], trials: int = 64) -> list[Finding]:
 
 def check_function(fn: FunctionInfo, trials: int = 64) -> Finding | None:
     """One finding, or None when the function is out of scope."""
+    kind = contract_kind_finding(fn, "rapid")
+    if kind is not None:
+        return kind
     plan = plan_trials(fn, trials)
     if plan is None:
         return None
@@ -106,7 +151,7 @@ def plan_trials(fn: FunctionInfo, trials: int, rng: random.Random | None = None)
     """Build samples. None = skip (not SCALAR, or no ensures)."""
     if fn.kind != "SCALAR":
         return None
-    spec = _spec_comments(fn)
+    spec = _contract_spec(fn)
     ensures = list(spec.get("ensures") or [])
     if not ensures:
         return None
@@ -124,6 +169,7 @@ def plan_trials(fn: FunctionInfo, trials: int, rng: random.Random | None = None)
             "samples": [],
             "error": str(ex),
             "trials": trials,
+            "bounds": _bounds(fn, requires),
         }
     return {
         "spec": spec,
@@ -132,6 +178,7 @@ def plan_trials(fn: FunctionInfo, trials: int, rng: random.Random | None = None)
         "samples": samples,
         "error": None,
         "trials": trials,
+        "bounds": _bounds(fn, requires),
     }
 
 
@@ -146,6 +193,9 @@ def run_plan(fn: FunctionInfo, plan: dict) -> dict:
         return {"ok": False, "error": err, "counterexample": "", "engine": engine}
     for env, result in zip(samples, results):
         if result is None:
+            env, nshrink = shrink_counterexample(
+                fn, env, ensures, plan.get("bounds") or {}, ub=True
+            )
             cex = ", ".join(f"{k}={v}" for k, v in env.items())
             return {
                 "ok": False,
@@ -155,9 +205,19 @@ def run_plan(fn: FunctionInfo, plan: dict) -> dict:
                 "clause": "undefined-behavior",
                 "result": None,
                 "env": env,
+                "shrinks": nshrink,
             }
         failed = _failing_ensures(ensures, env, result)
         if failed:
+            env, nshrink = shrink_counterexample(
+                fn, env, ensures, plan.get("bounds") or {}, ub=False
+            )
+            results2, engine2, err2 = _execute_many(fn, [env])
+            if not err2 and results2:
+                result = results2[0]
+                engine = engine2 or engine
+                if result is not None:
+                    failed = _failing_ensures(ensures, env, result) or failed
             cex = ", ".join(f"{k}={v}" for k, v in env.items())
             return {
                 "ok": False,
@@ -167,6 +227,7 @@ def run_plan(fn: FunctionInfo, plan: dict) -> dict:
                 "clause": failed,
                 "result": result,
                 "env": env,
+                "shrinks": nshrink,
             }
     return {
         "ok": True,
@@ -175,6 +236,25 @@ def run_plan(fn: FunctionInfo, plan: dict) -> dict:
         "engine": engine,
         "n": len(samples),
     }
+
+
+def _compiler_missing(err: str | None) -> bool:
+    """True when sampling could not run because gcc/clang is absent."""
+    text = (err or "").lower()
+    if "no gcc" in text or "gcc/clang" in text:
+        return True
+    if "not on path" in text and ("gcc" in text or "clang" in text or "compiler" in text):
+        return True
+    return False
+
+
+def _eval_status(err: str | None) -> tuple[str, dict]:
+    """Missing gcc/clang is NOTRUN, never CLEAN. Other eval errors stay ERROR."""
+    missing = _compiler_missing(err) or not (shutil.which("gcc") or shutil.which("clang"))
+    extra: dict = {}
+    if missing:
+        extra["install"] = "install gcc or clang"
+    return (laws.NOTRUN if missing else laws.ERROR, extra)
 
 
 def _finding_from_plan(fn: FunctionInfo, plan: dict, *, stage: str) -> Finding:
@@ -191,9 +271,11 @@ def _finding_from_plan(fn: FunctionInfo, plan: dict, *, stage: str) -> Finding:
         "sampled": True,
     }
     if plan.get("error") and not plan.get("samples"):
+        status, miss = _eval_status(str(plan["error"]))
+        extra.update(miss)
         return Finding(
             **base,
-            status=laws.ERROR,
+            status=status,
             cls="",
             message=plan["error"],
             strength=laws.STRENGTH_SOME,
@@ -202,15 +284,19 @@ def _finding_from_plan(fn: FunctionInfo, plan: dict, *, stage: str) -> Finding:
     info = run_plan(fn, plan)
     extra["engine"] = info.get("engine") or ""
     if info.get("error") and not info.get("counterexample"):
+        status, miss = _eval_status(str(info["error"]))
+        extra.update(miss)
         return Finding(
             **base,
-            status=laws.ERROR,
+            status=status,
             cls="",
             message=info["error"],
             strength=laws.STRENGTH_SOME,
             extra=extra,
         )
     if not info.get("ok"):
+        # extra.shrinks counts cex minimization steps; FAILED is a cex, never a proof.
+        extra["shrinks"] = int(info.get("shrinks") or 0)
         clause = info.get("clause") or " && ".join(plan["ensures"])
         return Finding(
             **base,
@@ -235,6 +321,78 @@ def _finding_from_plan(fn: FunctionInfo, plan: dict, *, stage: str) -> Finding:
         strength=laws.STRENGTH_SOME,
         extra=extra,
     )
+
+
+def _in_bounds(env: dict[str, int], bounds: dict[str, dict]) -> bool:
+    for name, v in env.items():
+        b = bounds.get(name)
+        if not b:
+            continue
+        if v < b["lo"] or v > b["hi"] or v in b["neq"]:
+            return False
+    return True
+
+
+def _shrink_candidates(v: int) -> list[int]:
+    """RapidCheck integer shrinks: toward 0, then half, then ±1."""
+    out: list[int] = []
+    if v != 0:
+        out.append(0)
+    if abs(v) > 1:
+        out.append(v // 2)
+    if v > 0:
+        out.append(v - 1)
+    elif v < 0:
+        out.append(v + 1)
+    seen: set[int] = set()
+    uniq: list[int] = []
+    for x in out:
+        if x not in seen:
+            seen.add(x)
+            uniq.append(x)
+    return uniq
+
+
+def shrink_counterexample(
+    fn: FunctionInfo,
+    env: dict[str, int],
+    ensures: list[str],
+    bounds: dict[str, dict],
+    *,
+    ub: bool = False,
+) -> tuple[dict[str, int], int]:
+    """Smallest integer env that still falsifies the property (not a proof)."""
+
+    def fails(candidate: dict[str, int]) -> bool:
+        results, _engine, err = _execute_many(fn, [candidate])
+        if err or not results:
+            return False
+        result = results[0]
+        if result is None:
+            return True
+        if ub:
+            return False
+        return _failing_ensures(ensures, candidate, result) is not None
+
+    cur = dict(env)
+    shrinks = 0
+    progress = True
+    while progress and shrinks < 64:
+        progress = False
+        for k in list(cur):
+            for c in _shrink_candidates(cur[k]):
+                trial = dict(cur)
+                trial[k] = c
+                if trial == cur or not _in_bounds(trial, bounds):
+                    continue
+                if fails(trial):
+                    cur = trial
+                    shrinks += 1
+                    progress = True
+                    break
+            if progress:
+                break
+    return cur, shrinks
 
 
 def _sample_args(

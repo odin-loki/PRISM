@@ -1,0 +1,461 @@
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ *)
+
+open! IStd
+module F = Format
+module VarMap = Textual.VarName.Map
+module IdentMap = Textual.Ident.Map
+module RegMap = Llair.Exp.Reg.Map
+
+let get_element_ptr_offset_prefix = "getelementptr_offset"
+
+type struct_map = Textual.Struct.t Textual.TypeName.Map.t
+
+type globals_map = Llair.GlobalDefn.t Textual.VarName.Map.t
+
+type proc_map = Textual.ProcDecl.t Textual.QualifiedProcName.Map.t
+
+type mangled_map = Textual.TypeName.t IString.Map.t
+
+type plain_map = Textual.TypeName.t IString.Map.t
+
+type method_class_index = Textual.TypeName.t Textual.ProcName.Hashtbl.t
+
+type class_files_map = SourceFile.Set.t Textual.TypeName.Hashtbl.t
+
+module ClassNameOffset = struct
+  type t = {class_name: Textual.TypeName.t; offset: int} [@@deriving compare, hash, equal]
+end
+
+module ClassNameOffsetMap = Stdlib.Hashtbl.Make (ClassNameOffset)
+
+type class_name_offset_map = Textual.QualifiedProcName.t ClassNameOffsetMap.t
+
+(* Map from (class_name, offset) to field_name for struct fields *)
+module FieldOffset = struct
+  type t = {class_name: Textual.TypeName.t; offset: int} [@@deriving compare, hash, equal]
+end
+
+module FieldOffsetMap = Stdlib.Hashtbl.Make (FieldOffset)
+
+type field_offset_map = Textual.FieldName.t FieldOffsetMap.t
+
+(* Maps [(class_name, byte_offset)] → [FieldName.t] for Swift class properties whose
+   Wvd field-offset descriptor was a constant in this module (i.e. the property's
+   defining module is in-tree). Used to recover field names from byte-offset GEPs
+   that the optimiser stripped, without having to walk the struct's fields with an
+   error-prone byte-size estimator. *)
+type field_byte_offset_map = Textual.FieldName.t FieldOffsetMap.t
+
+module ClassMethodIndex = struct
+  type t = (Textual.QualifiedProcName.t * int) list Textual.TypeName.Hashtbl.t
+
+  let pp fmt class_method_index =
+    let pp (class_name, index) =
+      Format.fprintf fmt "%a: %a@." Textual.TypeName.pp class_name
+        (Pp.comma_seq (Pp.pair ~fst:Textual.QualifiedProcName.pp ~snd:Int.pp))
+        index
+    in
+    Textual.TypeName.Hashtbl.to_seq class_method_index
+    |> Stdlib.List.of_seq
+    |> List.sort ~compare:[%compare: Textual.TypeName.t * _]
+    |> List.iter ~f:pp
+
+
+  let fill_class_name_offset_map class_method_index =
+    let class_name_offset_map = ClassNameOffsetMap.create 16 in
+    let process_map class_name (proc, offset) =
+      let key = ClassNameOffset.{class_name; offset} in
+      ClassNameOffsetMap.replace class_name_offset_map key proc
+    in
+    let process_class class_name procs = List.iter procs ~f:(process_map class_name) in
+    Textual.TypeName.Hashtbl.iter process_class class_method_index ;
+    class_name_offset_map
+end
+
+module ModuleState = struct
+  type t =
+    { functions: (Llair.FuncName.t * Llair.func) list
+    ; struct_map: struct_map
+    ; mangled_map: mangled_map
+    ; plain_map: plain_map
+    ; proc_decls: Textual.ProcDecl.t list
+    ; proc_map: proc_map
+    ; globals_map: globals_map
+    ; lang: Textual.Lang.t
+    ; method_class_index: method_class_index
+    ; class_files_map: class_files_map
+    ; class_name_offset_map: class_name_offset_map
+    ; field_offset_map: field_offset_map
+    ; field_byte_offset_map: field_byte_offset_map
+    ; objc_method_index: (string, Textual.QualifiedProcName.t) Hashtbl.t }
+
+  let init ~functions ~struct_map ~mangled_map ~plain_map ~proc_decls ~proc_map ~globals_map ~lang
+      ~method_class_index ~class_files_map ~class_name_offset_map ~field_offset_map
+      ~field_byte_offset_map ~objc_method_index =
+    { functions
+    ; struct_map
+    ; mangled_map
+    ; plain_map
+    ; proc_decls
+    ; proc_map
+    ; globals_map
+    ; lang
+    ; method_class_index
+    ; class_files_map
+    ; class_name_offset_map
+    ; field_offset_map
+    ; field_byte_offset_map
+    ; objc_method_index }
+end
+
+module ProcState = struct
+  type id_data = {typ: Textual.Typ.annotated option; loaded_var: bool; deref_needed: bool}
+
+  let pp_data fmt {typ; loaded_var; deref_needed} =
+    F.fprintf fmt "typ:%a, loaded_var: %b, deref_needed: %b"
+      (Pp.option Textual.Typ.pp_annotated)
+      typ loaded_var deref_needed
+
+
+  type read = Read | NotRead
+
+  type formal_data = {typ: Textual.Typ.annotated; assoc_local: Textual.VarName.t option; read: read}
+
+  type t =
+    { qualified_name: Textual.QualifiedProcName.t
+    ; sourcefile: SourceFile.t
+    ; loc: Textual.Location.t
+    ; mutable locals: Textual.Typ.annotated VarMap.t
+    ; mutable formals: formal_data VarMap.t
+    ; mutable local_map: Textual.Typ.t Textual.VarName.Hashtbl.t
+    ; mutable ids_move: id_data IdentMap.t
+    ; mutable ids_types: Textual.Typ.annotated IdentMap.t
+    ; mutable id_offset: (Textual.Ident.t * int) option
+    ; mutable get_element_ptr_offset: (Textual.VarName.t * int) option
+    ; mutable reg_map: Textual.Ident.t RegMap.t
+    ; mutable last_id: Textual.Ident.t
+    ; mutable last_tmp_var: int
+    ; mutable metadata_ids: Textual.Ident.Set.t (* Track IDs representing Swift Metadata *)
+    ; mutable metadata_address_ids: Textual.Ident.Set.t (* Stores pointers TO metadata *)
+    ; mutable objc_class_ids: Textual.Ident.Set.t (* Track IDs representing ObjC Class Objects *)
+    ; mutable objc_class_name_map: string Textual.Ident.Map.t (* Map Ident.t -> "LegacyHardware" *)
+    ; mutable selector_map: string Textual.Ident.Map.t
+    ; mutable string_map: string Textual.Ident.Map.t
+    ; mutable last_string_added: string option
+    ; mutable captures_self_weakly: bool
+          (* the proc weak-initialises a captured value ([weak self] capture) *)
+    ; mutable class_type_map: Textual.TypeName.t VarMap.t
+    ; inferred_types: Textual.Typ.t Hashtbl.M(Int).t (* Map of Reg.id -> Typ.t *)
+    ; nullability_hint_msg_sends: (int, unit) Hashtbl.t
+          (* Reg.ids of objc_msgSend [areturn]s whose downstream CFG carries a
+             structural nullability signal -- either an [as?]-cast re-bridge
+             or an [Optional<T>] passthrough getter. Translation injects
+             [Nullable] into [caller_ret_annots] for these calls so
+             SwiftObjCNullability does not report on them. *)
+    ; module_state: ModuleState.t }
+
+  let init ~qualified_name ~sourcefile ~loc ~formals ~module_state ~inferred_types
+      ~nullability_hint_msg_sends =
+    { qualified_name
+    ; sourcefile
+    ; loc
+    ; formals
+    ; locals= VarMap.empty
+    ; local_map= Textual.VarName.Hashtbl.create 16
+    ; ids_move= IdentMap.empty
+    ; ids_types= IdentMap.empty
+    ; id_offset= None
+    ; get_element_ptr_offset= None
+    ; reg_map= RegMap.empty
+    ; last_id= Textual.Ident.of_int 0
+    ; last_tmp_var= 0
+    ; metadata_ids= Textual.Ident.Set.empty
+    ; metadata_address_ids= Textual.Ident.Set.empty
+    ; objc_class_ids= Textual.Ident.Set.empty
+    ; objc_class_name_map= Textual.Ident.Map.empty
+    ; selector_map= Textual.Ident.Map.empty
+    ; string_map= Textual.Ident.Map.empty
+    ; last_string_added= None
+    ; captures_self_weakly= false
+    ; class_type_map= VarMap.empty
+    ; inferred_types
+    ; nullability_hint_msg_sends
+    ; module_state }
+
+
+  let mk_fresh_id ?reg proc_state =
+    let fresh_id ?reg () =
+      proc_state.last_id <- Textual.Ident.of_int (Textual.Ident.to_int proc_state.last_id + 1) ;
+      ( match reg with
+      | Some reg ->
+          proc_state.reg_map <- RegMap.add ~key:reg ~data:proc_state.last_id proc_state.reg_map
+      | None ->
+          () ) ;
+      proc_state.last_id
+    in
+    match reg with
+    | Some reg -> (
+      match RegMap.find reg proc_state.reg_map with Some id -> id | None -> fresh_id ~reg () )
+    | None ->
+        fresh_id ()
+
+
+  let mk_fresh_tmp_var name proc_state =
+    proc_state.last_tmp_var <- proc_state.last_tmp_var + 1 ;
+    Textual.VarName.of_string (Format.sprintf "%s_%d" name proc_state.last_tmp_var)
+
+
+  let mark_as_metadata ~proc_state id =
+    proc_state.metadata_ids <- Textual.Ident.Set.add id proc_state.metadata_ids
+
+
+  let is_metadata_id ~proc_state id = Textual.Ident.Set.mem id proc_state.metadata_ids
+
+  let mark_as_metadata_address ~proc_state id =
+    proc_state.metadata_address_ids <- Textual.Ident.Set.add id proc_state.metadata_address_ids
+
+
+  let is_metadata_address_id ~proc_state id =
+    Textual.Ident.Set.mem id proc_state.metadata_address_ids
+
+
+  (** Mark an ID as representing an ObjC Class object and optionally store its name (e.g.,
+      "LegacyHardware") *)
+  let mark_as_objc_class ~proc_state id ?name () =
+    proc_state.objc_class_ids <- Textual.Ident.Set.add id proc_state.objc_class_ids ;
+    Option.iter name ~f:(fun name ->
+        proc_state.objc_class_name_map <-
+          Textual.Ident.Map.add id name proc_state.objc_class_name_map )
+
+
+  (** Check if an ID was marked as an ObjC Class (determines + vs -) *)
+  let is_objc_class_id ~proc_state id = Textual.Ident.Set.mem id proc_state.objc_class_ids
+
+  (** Retrieve the specific class name string for an ID (determines the Enclosing class) *)
+  let get_objc_class_name ~proc_state id =
+    Textual.Ident.Map.find_opt id proc_state.objc_class_name_map
+
+
+  let add_selector state ident selector =
+    state.selector_map <- Textual.Ident.Map.add ident selector state.selector_map
+
+
+  let find_selector state ident = Textual.Ident.Map.find_opt ident state.selector_map
+
+  let add_class_type state id type_name =
+    state.class_type_map <- VarMap.add id type_name state.class_type_map
+
+
+  let get_class_type state id = VarMap.find_opt id state.class_type_map
+
+  let pp fmt ~print_types proc_state =
+    let pp_ids fmt current_ids =
+      F.fprintf fmt "%a"
+        (Pp.comma_seq (Pp.pair ~fst:Textual.Ident.pp ~snd:Textual.Typ.pp_annotated))
+        (IdentMap.bindings current_ids)
+    in
+    let pp_ids_data fmt current_ids =
+      F.fprintf fmt "%a"
+        (Pp.comma_seq (Pp.pair ~fst:Textual.Ident.pp ~snd:pp_data))
+        (IdentMap.bindings current_ids)
+    in
+    let pp_vars fmt vars =
+      F.fprintf fmt "%a"
+        (Pp.comma_seq (Pp.pair ~fst:Textual.VarName.pp ~snd:Textual.Typ.pp_annotated))
+        (VarMap.bindings vars)
+    in
+    let pp_formals fmt vars =
+      let pp_item key item =
+        let pp_read fmt read =
+          match read with Read -> F.fprintf fmt "Read" | NotRead -> F.fprintf fmt "NotRead"
+        in
+        F.fprintf fmt "%a -> %a, %a, %a@." Textual.VarName.pp key Textual.Typ.pp_annotated item.typ
+          (Pp.option Textual.VarName.pp) item.assoc_local pp_read item.read
+      in
+      VarMap.iter pp_item vars
+    in
+    let pp_name_map fmt selector_map =
+      F.fprintf fmt "%a"
+        (Pp.comma_seq (Pp.pair ~fst:Textual.Ident.pp ~snd:F.pp_print_string))
+        (Textual.Ident.Map.bindings selector_map)
+    in
+    let pp_string_map fmt string_map =
+      F.fprintf fmt "%a"
+        (Pp.comma_seq (Pp.pair ~fst:Textual.Ident.pp ~snd:F.pp_print_string))
+        (Textual.Ident.Map.bindings string_map)
+    in
+    let pp_struct_map fmt struct_map =
+      let pp_item key value =
+        F.fprintf fmt "%a -> @\n%a@\n" Textual.TypeName.pp key Textual.Struct.pp value
+      in
+      Textual.TypeName.Map.iter pp_item struct_map
+    in
+    F.fprintf fmt
+      "@[<v>@[<v>qualified_name: %a@]@;\
+       @[loc: %a@]@;\
+       @[locals: %a@]@;\
+       @[formals: %a@]@;\
+       @[ids_move: %a@]@;\
+       @[ids_metadata: %a@]@;\
+       @[ids_metadata_address: %a@]@;\
+       @[objc_class_ids: %a@]@;\
+       @[objc_class_name_map: %a@]@;\
+       @[ids_types: %a@]@;\
+       @[selector_map: %a@]@;\
+       @[string_map: %a@]@;\
+       @[id_offset: %a@]@;\
+       @[get_element_ptr_offset: %a@]@;\
+       ]@]"
+      Textual.QualifiedProcName.pp proc_state.qualified_name Textual.Location.pp proc_state.loc
+      pp_vars proc_state.locals pp_formals proc_state.formals pp_ids_data proc_state.ids_move
+      (Pp.seq ~sep:"," Textual.Ident.pp)
+      (Textual.Ident.Set.elements proc_state.metadata_ids)
+      (Pp.seq ~sep:"," Textual.Ident.pp)
+      (Textual.Ident.Set.elements proc_state.metadata_address_ids)
+      (Pp.seq ~sep:"," Textual.Ident.pp)
+      (Textual.Ident.Set.elements proc_state.objc_class_ids)
+      pp_name_map proc_state.objc_class_name_map pp_ids proc_state.ids_types pp_name_map
+      proc_state.selector_map pp_string_map proc_state.string_map
+      (Pp.option (Pp.pair ~fst:Textual.Ident.pp ~snd:Int.pp))
+      proc_state.id_offset
+      (Pp.option (Pp.pair ~fst:Textual.VarName.pp ~snd:Int.pp))
+      proc_state.get_element_ptr_offset ;
+    if print_types then F.fprintf fmt "types: %a@" pp_struct_map proc_state.module_state.struct_map
+
+
+  let update_locals ~proc_state varname typ =
+    proc_state.locals <- VarMap.add varname typ proc_state.locals
+
+
+  let update_formals ~proc_state varname (typ, assoc_local) read =
+    proc_state.formals <- VarMap.add varname {typ; assoc_local; read} proc_state.formals
+
+
+  let update_ids_move ~proc_state id typ ~loaded_var ~deref_needed =
+    proc_state.ids_move <- IdentMap.add id {typ; loaded_var; deref_needed} proc_state.ids_move
+
+
+  (* debug_name = var1,
+debug_name is originally a local and var1 is originally a formal. We are
+removing this intruction and substituting var1 for debug_name in the code.
+Result of this: var1 -> debug_name is added to the formals  such that we can
+use the substitution in the code later on. *)
+  let subst_formal_local ~proc_state ~formal ~local =
+    let formal_binding = VarMap.find_opt formal proc_state.formals in
+    match formal_binding with
+    (* If this variable has been read before, this transformation is not safe. *)
+    | Some ({read= NotRead} as item) -> (
+        let local, local_typ = local in
+        match (local_typ.Textual.Typ.typ, item.typ.Textual.Typ.typ) with
+        | Textual.Typ.Ptr (Struct _, _), Int | Textual.Typ.Int, Textual.Typ.Ptr (Struct _, _) ->
+            (* Type mismatch between the local stack slot (struct pointer) and the LLVM-level
+               formal (scalar). This happens when the Swift compiler direct-passes a small enum or
+               struct as decomposed scalar parts and the body reconstructs it on the stack. The
+               local is not the same value as the formal here — it is a stack copy of the
+               decomposed parameters — so substituting them aliases two distinct things and makes
+               the reconstruction stores look like writes into a heap object (false-positive
+               retain cycles in Pulse, e.g. on enum payload getters). Skip the substitution and
+               leave the formal and the local separate. *)
+            ()
+        | _ ->
+            proc_state.formals <-
+              VarMap.add formal
+                {typ= item.typ; assoc_local= Some local; read= Read}
+                proc_state.formals ;
+            Textual.VarName.Hashtbl.replace proc_state.local_map local item.typ.Textual.Typ.typ )
+    | _ ->
+        ()
+
+
+  let compute_locals ~proc_state =
+    let remove_locals_in_formals _ {assoc_local} locals =
+      match assoc_local with Some local -> VarMap.remove local locals | None -> locals
+    in
+    let locals = VarMap.fold remove_locals_in_formals proc_state.formals proc_state.locals in
+    VarMap.fold (fun varname typ locals -> (varname, typ) :: locals) locals []
+
+
+  let update_id_offset ~proc_state id exp =
+    match (exp, proc_state.get_element_ptr_offset) with
+    | Textual.Exp.Lvar varname, Some (var, offset) when Textual.VarName.equal var varname ->
+        proc_state.id_offset <- Some (id, offset)
+    | _ ->
+        ()
+
+
+  let update_var_offset ~proc_state varname offset =
+    if String.is_prefix ~prefix:get_element_ptr_offset_prefix (Textual.VarName.to_string varname)
+    then proc_state.get_element_ptr_offset <- Some (varname, offset)
+
+
+  let update_ids_types ~proc_state id typ =
+    proc_state.ids_types <- IdentMap.add id typ proc_state.ids_types
+
+
+  let reset_offsets ~proc_state =
+    proc_state.id_offset <- None ;
+    proc_state.get_element_ptr_offset <- None
+
+
+  (** Records a string literal and updates the "most recent" tracker *)
+  let add_string_literal proc_state id str =
+    proc_state.string_map <- Textual.Ident.Map.add id str proc_state.string_map ;
+    proc_state.last_string_added <- Some str
+
+
+  (** Retrieves the string associated with a specific register *)
+  let get_string_literal proc_state id = Textual.Ident.Map.find_opt id proc_state.string_map
+
+  (** Returns the most recently captured string literal *)
+  let get_last_string_added proc_state = proc_state.last_string_added
+
+  let global_proc_state sourcefile loc module_state global_var =
+    let global_init_name = Format.sprintf "global_init_%s" global_var in
+    let qualified_name =
+      Textual.QualifiedProcName.
+        { enclosing_class= TopLevel
+        ; name= Textual.ProcName.of_string global_init_name
+        ; metadata= None }
+    in
+    { qualified_name
+    ; sourcefile
+    ; loc
+    ; formals= VarMap.empty
+    ; locals= VarMap.empty
+    ; local_map= Textual.VarName.Hashtbl.create 16
+    ; ids_move= IdentMap.empty
+    ; ids_types= IdentMap.empty
+    ; id_offset= None
+    ; get_element_ptr_offset= None
+    ; reg_map= RegMap.empty
+    ; last_id= Textual.Ident.of_int 0
+    ; last_tmp_var= 0
+    ; metadata_ids= Textual.Ident.Set.empty
+    ; metadata_address_ids= Textual.Ident.Set.empty
+    ; objc_class_ids= Textual.Ident.Set.empty
+    ; objc_class_name_map= Textual.Ident.Map.empty
+    ; selector_map= Textual.Ident.Map.empty
+    ; string_map= Textual.Ident.Map.empty
+    ; last_string_added= None
+    ; captures_self_weakly= false
+    ; class_type_map= VarMap.empty
+    ; inferred_types= Hashtbl.create (module Int)
+    ; nullability_hint_msg_sends= Hashtbl.create (module Int)
+    ; module_state }
+
+
+  let find_method_with_offset ~proc_state struct_name offset =
+    let key = ClassNameOffset.{class_name= struct_name; offset} in
+    ClassNameOffsetMap.find_opt proc_state.module_state.class_name_offset_map key
+end
+
+let last_fake_line : int ref = ref 100
+
+let get_fresh_fake_line () =
+  last_fake_line := !last_fake_line + 1 ;
+  !last_fake_line

@@ -1,0 +1,11 @@
+CORE
+test.c
+--show-lexical-loops
+^15 is head of \{ 15, 16, 17, 18, 19, 20, 21, 22, 23, 24 \(backedge\) \}$
+^EXIT=0$
+^SIGNAL=0$
+--
+^warning: ignoring
+--
+This checks that a loop with a break edge and a continue edge nonetheless
+gets classified as a lexical loop

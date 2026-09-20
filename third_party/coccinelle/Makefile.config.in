@@ -1,0 +1,132 @@
+# This file is part of Coccinelle, licensed under the terms of the GPL v2.
+# See copyright.txt in the Coccinelle source code for more information.
+# The Coccinelle source code can be obtained at https://coccinelle.gitlabpages.inria.fr/website
+
+VERSION=@PACKAGE_VERSION@
+
+# * for each library $1, add another entry in the same manner
+MAKELIBS=@MAKE_dynlink@ @MAKE_menhirLib@ @MAKE_pyml@ @MAKE_pcre2@ \
+  @MAKE_parmap@
+LNKLIBS=@MODULES_dynlink@ @MODULES_menhirLib@ @MODULES_pcre2@ @MODULES_pyml@ \
+  @MODULES_parmap@
+OPTLNKLIBS=@MODULESOPT_dynlink@ @MODULESOPT_menhirLib@ @MODULESOPT_pyml@ \
+  @MODULESOPT_pcre2@ @MODULESOPT_parmap@
+INCLIBS=@PATH_dynlink@ @PATH_menhirLib@ @PATH_pyml@ @PATH_pcre2@ \
+  @PATH_parmap@
+FLAGSLIBS=@FLAGS_dynlink@ @FLAGS_menhirLib@ @FLAGS_pyml@ @FLAGS_pcre2@ \
+  @FLAGS_parmap@
+OPTFLAGSLIBS=@OPTFLAGS_dynlink@ @OPTFLAGS_menhirLib@ @OPTFLAGS_pyml@ \
+  @OPTFLAGS_pcre2@ @OPTFLAGS_parmap@
+# * end of library variables
+
+# system packages inc libs
+SYSINCLIBS=@PATH_unix@ @PATH_bigarray@ @PATH_num@ @PATH_str@ @PATH_dynlink@
+
+SHELL?=@SHELL@
+PKG_CONFIG=@PKG_CONFIG@
+INSTALL=@INSTALL@
+TAR=@TAR@
+PATCH=@PATCH@
+ECHO=@ECHO@
+PDFLATEX=@PDFLATEX@
+PATCHELF=@PATCHELF@
+
+# copy of the configure flags
+CONFIGURE_FLAGS=@CONFIGURE_FLAGS@
+
+# note that variables are exported and thus cannot be used in
+# definitions of other variables. Use $(EXTRA_OCAML_FLAGS) for that.
+# Todo: since these definitions are now in Makefile.config.in, the
+# defaults can be removed from each individual Makefile in the
+# subdirectories.
+export OCAMLCFLAGS?=$(EXTRA_OCAML_FLAGS)
+export OPTFLAGS?=$(EXTRA_OCAML_FLAGS)
+
+# paths
+prefix=@prefix@
+exec_prefix=@exec_prefix@
+bindir=@bindir@
+datarootdir=@datarootdir@
+includedir=@includedir@
+libdir=@libdir@
+sysconfdir=@sysconfdir@
+mandir=@mandir@
+
+# C compiler
+export CC=@CC@
+export CFLAGS=@CFLAGS@
+export CPP=@CPP@
+export CPPFLAGS=@CPPFLAGS@
+
+# portable MKDIR_P
+MKDIR_P=@MKDIR_P@
+
+# the default Make target
+# Can be overridden e.g. in Makefile.local
+TARGET_ALL=all-release
+EXTRA_OCAML_FLAGS=-unsafe -w @42
+TARGET_SPATCH=@MAKETARGET_SPATCH@
+
+PYTHON_CFLAGS=@PYTHON_CFLAGS@
+PYTHON_LIBS=@PYTHON_LIBS@
+export PYTHON_VERSION=@PYVER@
+export PYTHON_VERSION_MAJOR=@PYVER_MAJOR@
+
+PCRE_CFLAGS=@PCRE_CFLAGS@
+PCRE_LIBS=@PCRE_LIBS@
+
+export OCAMLFIND=@OCAMLFIND@
+export OCAMLC=@OCAMLC@
+export OCAMLDEP=@OCAMLDEP@
+export OCAMLDOC=@OCAMLDOC@
+export OCAMLLEX=@OCAMLLEX@
+export OCAMLYACC=@OCAMLYACC@
+export OCAMLLIB=@OCAMLLIB@
+export OCAMLMKLIB=@OCAMLMKLIB@
+export OCAMLMKTOP=@OCAMLMKTOP@
+export OCAMLOPT=@OCAMLOPT@
+export MENHIR=@MENHIR@
+export OCAMLVERSION=@OCAMLVERSION@
+
+INSTALL_PROGRAM=$(INSTALL) -m 755
+INSTALL_LIB=$(INSTALL) -m 755
+INSTALL_DATA=$(INSTALL) -m 644
+
+# Where to install the binary
+BINDIR=${bindir}
+
+# Where to install the man pages
+MANDIR=${mandir}
+
+# Where to install the lib
+LIBDIR=@LIBDIR@
+
+BASH_COMPLETION_DIR=@BASH_COMPLETION_DIR@
+METAINFO_DIR=@METAINFO_DIR@
+
+# selected libraries
+FEATURE_menhirLib=@FEATURE_menhirLib@
+FEATURE_pcre=@FEATURE_pcre2@
+
+# Features
+FEATURE_PYTHON=@FEATURE_PYTHON@
+FEATURE_OCAML=@FEATURE_OCAML@
+NO_OCAMLFIND=@SUBSTITUTED_OCAMLFIND@
+
+# Include paths
+PCREDIR=@PATH_pcre2@
+PARMAPDIR=@PATH_parmap@
+PYMLDIR=@PATH_pyml@
+MENHIRDIR=@PATH_menhirLib@
+DYNLINKDIR=@PATH_dynlink@
+BYTESDIR=@PATH_bytes@
+STDCOMPATDIR=@PATH_stdcompat@
+
+# selected ocaml modules
+PYCOCCI_FILE=@PYCOCCI_FILE@
+OCAMLCOCCI_FILE=@OCAMLCOCCI_FILE@
+REGEXP_FILE=@REGEXP_FILE@
+
+MENHIR_FLAGS=@DEFAULT_MENHIR_FLAGS@
+
+OCAMLATLEAST50=@OCAMLATLEAST50@

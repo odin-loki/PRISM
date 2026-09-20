@@ -1,0 +1,14 @@
+CORE symex-driven-lazy-loading-expected-failure
+VirtualFunctions
+--java-max-vla-length 48 --unwind 8 --java-unwind-enum-static --trace --function VirtualFunctions.check --show-goto-functions -cp target/classes
+CALL java::VirtualFunctions\$B\.f:\(\)V\(cast\(.*::a, struct java::VirtualFunctions\$B\*\)\)$
+CALL java::VirtualFunctions\$A\.f:\(\)V\(.*::a\)$
+CALL java::VirtualFunctions\$B\.f:\(\)V\(.*::b\)$
+CALL java::VirtualFunctions\$B\.f:\(\)V\(cast\(.*::c, struct java::VirtualFunctions\$B\*\)\)$
+^EXIT=0$
+^SIGNAL=0$
+--
+--
+This doesn't work under symex-driven lazy loading because it is incompatible with lazy-methods (default)
+Note the space before the checks for virtual function call on a and b, this
+verifies there is no cast.

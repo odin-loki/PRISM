@@ -1,0 +1,32 @@
+vendor start 2026-09-19T20:20:00.3413406+10:00
+CLONE https://github.com/emil-e/rapidcheck.git
+OK rapidcheck
+CLONE https://github.com/meyerphi/strix.git
+OK strix
+CLONE https://github.com/kaled-alshmrany/FuSeBMC.git
+FAIL FuSeBMC exit 128
+CLONE https://github.com/ise-uiuc/Fuzz4All.git
+FAIL Fuzz4All exit 128
+CLONE https://github.com/coccinelle/coccinelle.git
+OK coccinelle
+CLONE https://github.com/danmar/cppcheck.git
+OK cppcheck
+CLONE https://github.com/AFLplusplus/AFLplusplus.git
+OK AFLplusplus
+CLONE https://github.com/klee/klee.git
+OK klee
+CLONE https://github.com/esbmc/esbmc.git
+OK esbmc
+CLONE https://github.com/diffblue/cbmc.git
+OK cbmc
+CLONE https://github.com/Frama-C/Frama-C-snapshot.git
+OK Frama-C
+CLONE https://github.com/dafny-lang/dafny.git
+OK dafny
+CLONE https://github.com/semgrep/semgrep.git
+OK semgrep
+CLONE https://github.com/facebook/infer.git
+OK infer
+CLONE https://github.com/github/codeql.git
+OK codeql
+VENDOR DONE 2026-09-19T20:26:43.9196144+10:00

@@ -1,0 +1,14 @@
+CORE
+Test
+--function Test.main --verbosity 10 -cp target/classes
+^VERIFICATION SUCCESSFUL$
+^EXIT=0$
+^SIGNAL=0$
+^identified invokedynamic at java::Test.main:\(\)V address 0 for lambda: java::Test.lambda\$main\$0:\(I\)I
+^identified invokedynamic at java::Test.main:\(\)V address 6 for lambda: java::Test.lambda\$main\$1:\(I\)I
+--
+^ignoring invokedynamic
+--
+This exercises two cases that aren't currently supported: stub interfaces and stub superinterfaces.
+All we require at this point is that jbmc shouldn't crash when these are seen.
+With JDK 11+ bytecode, JBMC now handles these lambdas rather than ignoring them.

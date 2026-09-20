@@ -1,0 +1,5 @@
+CORE
+main.c
+--enforce-contract weak_count --loop-invariant-check
+^WARNING: every violated claim lies downstream of a loop invariant havoc
+^VERIFICATION UNKNOWN$

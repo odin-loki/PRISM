@@ -9,10 +9,21 @@ killed"). Silence is not a proof: killing mutants does not prove the original.
 from __future__ import annotations
 
 from dataclasses import replace
+import shutil
 
 from helix import laws
 from helix.models import Finding, FunctionInfo
-from helix.rapid import _finding_from_plan, plan_trials, run_plan
+from helix.rapid import contract_kind_finding, plan_trials, run_plan
+
+
+def _compiler_missing(err: str | None) -> bool:
+    """True when scoring could not run because gcc/clang is absent."""
+    text = (err or "").lower()
+    if "no gcc" in text or "gcc/clang" in text:
+        return True
+    if "not on path" in text and ("gcc" in text or "clang" in text or "compiler" in text):
+        return True
+    return False
 
 
 def run_muttest(functions: list[FunctionInfo], trials: int = 32) -> list[Finding]:
@@ -24,6 +35,9 @@ def run_muttest(functions: list[FunctionInfo], trials: int = 32) -> list[Finding
 
 
 def _muttest_function(fn: FunctionInfo, trials: int) -> list[Finding]:
+    kind = contract_kind_finding(fn, "muttest")
+    if kind is not None:
+        return [kind]
     plan = plan_trials(fn, trials)
     if plan is None:
         return []
@@ -32,10 +46,24 @@ def _muttest_function(fn: FunctionInfo, trials: int) -> list[Finding]:
         return []
     baseline = run_plan(fn, plan)
     if baseline.get("error") and not baseline.get("counterexample"):
-        rec = _finding_from_plan(fn, plan, stage="muttest")
-        rec.message = f"cannot score mutants: {baseline['error']}"
-        rec.status = laws.ERROR
-        return [rec]
+        err = str(baseline["error"])
+        missing = _compiler_missing(err) or not (
+            shutil.which("gcc") or shutil.which("clang")
+        )
+        extra: dict = {}
+        if missing:
+            extra["install"] = "install gcc or clang"
+        return [Finding(
+            stage="muttest",
+            status=laws.NOTRUN if missing else laws.ERROR,
+            file=fn.file,
+            function=fn.name,
+            line=fn.line,
+            cls="",
+            message=f"cannot score mutants: {err}",
+            strength=laws.STRENGTH_SOME,
+            extra=extra,
+        )]
     out: list[Finding] = []
     for start, end, src, dst in sites:
         mutated = fn.body[:start] + dst + fn.body[end:]
@@ -51,7 +79,26 @@ def _muttest_function(fn: FunctionInfo, trials: int) -> list[Finding]:
             "requires": plan.get("requires") or [],
             "ensures": plan.get("ensures") or [],
         }
-        killed = (not info.get("ok")) or bool(info.get("error"))
+        err = info.get("error")
+        if err and not info.get("counterexample"):
+            missing = _compiler_missing(str(err)) or not (
+                shutil.which("gcc") or shutil.which("clang")
+            )
+            if missing:
+                extra["install"] = "install gcc or clang"
+            out.append(Finding(
+                stage="muttest",
+                status=laws.NOTRUN if missing else laws.ERROR,
+                file=fn.file,
+                function=fn.name,
+                line=fn.line,
+                cls="",
+                message=f"cannot score mutant {src} -> {dst}: {err}",
+                strength=laws.STRENGTH_SOME,
+                extra=extra,
+            ))
+            continue
+        killed = not info.get("ok")
         if killed:
             out.append(Finding(
                 stage="muttest",
@@ -62,7 +109,7 @@ def _muttest_function(fn: FunctionInfo, trials: int) -> list[Finding]:
                 cls="",
                 message=(
                     f"mutant killed: {src} -> {dst} "
-                    f"({info.get('counterexample') or info.get('error') or 'tests failed on mutant'}); "
+                    f"({info.get('counterexample') or 'tests failed on mutant'}); "
                     "silence is not a proof"
                 ),
                 strength=laws.STRENGTH_SOME,

@@ -1,0 +1,971 @@
+#ifndef STL_FUNCTIONAL
+#define STL_FUNCTIONAL
+
+#include <cstddef>
+#include "utility" /* std::forward */
+#include "OM_compiler_defs.h" // OM_CONSTEXPR
+
+#if __cplusplus >= 201103L
+#  include <cassert>
+#  include <utility> // std::forward
+#  include <type_traits>
+#  include <cstdint> // for uint32_t, uint64_t
+#  include <cmath>   // for INFINITY
+#  include <string>  // for std::string
+#  include <string_view> // for std::string_view
+#endif
+
+namespace std
+{
+
+#if __cplusplus >= 201103L
+
+// [refwrap]: a CopyConstructible, CopyAssignable wrapper around a reference.
+// The rvalue overloads of ref/cref are deleted so that binding a temporary is a
+// diagnostic rather than a dangling wrapper.
+template <class T>
+class reference_wrapper
+{
+  T *ptr;
+
+public:
+  typedef T type;
+
+  reference_wrapper(T &t) noexcept : ptr(&t)
+  {
+  }
+
+  operator T &() const noexcept
+  {
+    return *ptr;
+  }
+
+  T &get() const noexcept
+  {
+    return *ptr;
+  }
+
+#if __cplusplus >= 201103L
+  /* [refwrap.invoke]: a reference_wrapper around a callable is itself
+   * callable. This forwards to the wrapped object rather than implementing
+   * the full INVOKE protocol, so pointers to members are not covered. */
+  template <class... ArgTypes>
+  auto operator()(ArgTypes &&...args) const
+    -> decltype(::std::declval<T &>()(::std::forward<ArgTypes>(args)...))
+  {
+    return (*ptr)(::std::forward<ArgTypes>(args)...);
+  }
+#endif
+};
+
+template <class T>
+reference_wrapper<T> ref(T &t) noexcept
+{
+  return reference_wrapper<T>(t);
+}
+
+template <class T>
+reference_wrapper<T> ref(reference_wrapper<T> t) noexcept
+{
+  return t;
+}
+
+template <class T>
+void ref(const T &&) = delete;
+
+template <class T>
+reference_wrapper<const T> cref(const T &t) noexcept
+{
+  return reference_wrapper<const T>(t);
+}
+
+template <class T>
+reference_wrapper<const T> cref(reference_wrapper<T> t) noexcept
+{
+  return reference_wrapper<const T>(t.get());
+}
+
+template <class T>
+void cref(const T &&) = delete;
+
+/* Type-erased call target for function<Ret(Args...)>. Templating on the
+ * signature is what lets a non-int signature work: the previous callable_base
+ * hard-coded `int invoke(int)` and `int invoke(int, int)`, so a
+ * function<double(double)> truncated its argument and its result on the way
+ * through and reported a spurious violation. */
+template <typename Ret, typename... Args>
+class callable_base
+{
+public:
+  virtual ~callable_base() = default;
+  virtual Ret invoke(Args... args) const = 0;
+};
+
+template <typename Callable, typename Ret, typename... Args>
+class callable_wrapper : public callable_base<Ret, Args...>
+{
+private:
+  Callable func;
+
+public:
+  explicit callable_wrapper(Callable &&f) : func(::std::forward<Callable>(f))
+  {
+  }
+
+  Ret invoke(Args... args) const override
+  {
+    return func(::std::forward<Args>(args)...);
+  }
+};
+
+template <typename Signature>
+class function;
+
+template <typename Ret, typename... Args>
+class function<Ret(Args...)>
+{
+private:
+  callable_base<Ret, Args...> *func = nullptr;
+
+public:
+  function() = default;
+
+  function(Ret (*f)(Args...))
+  {
+    if (f)
+    {
+      func = new callable_wrapper<Ret (*)(Args...), Ret, Args...>(move(f));
+    }
+  }
+
+  template <typename Callable>
+  function(Callable f)
+  {
+    func = new callable_wrapper<Callable, Ret, Args...>(move(f));
+  }
+
+  function(const function &other) = delete;
+  function &operator=(const function &other) = delete;
+
+  function(function &&other) noexcept
+  {
+    func = other.func;
+    other.func = nullptr;
+  }
+
+  function &operator=(function &&other) noexcept
+  {
+    if (this != &other)
+    {
+      delete func;
+      func = other.func;
+      other.func = nullptr;
+    }
+    return *this;
+  }
+
+  ~function()
+  {
+    delete func;
+  }
+
+  Ret operator()(Args... args) const
+  {
+    assert(func != nullptr);
+    return func->invoke(::std::forward<Args>(args)...);
+  }
+
+  explicit operator bool() const noexcept
+  {
+    return func != nullptr;
+  }
+};
+
+// Deterministic hash value generator using simple mathematical function
+// This ensures determinism while still providing hash-like distribution
+inline size_t __esbmc_deterministic_hash(size_t key)
+{
+  // Simple hash function that's deterministic
+  // Uses bit manipulation to create pseudo-random distribution
+  key ^= key >> 16;
+  key *= 0x85ebca6b;
+  key ^= key >> 13;
+  key *= 0xc2b2ae35;
+  key ^= key >> 16;
+  return key;
+}
+
+// Helper function to handle signed integer hashing consistently
+template <typename SignedInt>
+inline size_t __esbmc_hash_signed_int(SignedInt key)
+{
+  using Unsigned = typename ::std::make_unsigned<SignedInt>::type;
+  return __esbmc_deterministic_hash(
+    static_cast<size_t>(static_cast<Unsigned>(key)));
+}
+
+// Helper function for unsigned integer hashing
+template <typename UnsignedInt>
+inline size_t __esbmc_hash_unsigned_int(UnsignedInt key)
+{
+  size_t unsigned_key = static_cast<size_t>(key);
+  return __esbmc_deterministic_hash(unsigned_key);
+}
+
+// Primary template for std::hash
+template <typename T>
+struct hash
+{
+  // Default hash is undefined for non-specialized types
+  size_t operator()(const T &key) const = delete;
+};
+
+// Specialization for bool
+template <>
+struct hash<bool>
+{
+  size_t operator()(bool key) const
+  {
+    // Simple deterministic mapping for bool
+    return key ? 1 : 0;
+  }
+};
+
+// Specializations for character types
+template <>
+struct hash<char>
+{
+  size_t operator()(char key) const
+  {
+    // Convert char to unsigned and hash
+    size_t unsigned_key = static_cast<unsigned char>(key);
+    return __esbmc_deterministic_hash(unsigned_key);
+  }
+};
+
+template <>
+struct hash<signed char>
+{
+  size_t operator()(signed char key) const
+  {
+    return __esbmc_hash_signed_int(key);
+  }
+};
+
+template <>
+struct hash<unsigned char>
+{
+  size_t operator()(unsigned char key) const
+  {
+    return __esbmc_hash_unsigned_int(key);
+  }
+};
+
+// Specialization for wchar_t
+template <>
+struct hash<wchar_t>
+{
+  size_t operator()(wchar_t key) const
+  {
+    // Convert wchar_t to size_t and hash
+    size_t unsigned_key = static_cast<size_t>(key);
+    return __esbmc_deterministic_hash(unsigned_key);
+  }
+};
+
+// Specializations for short integer types
+template <>
+struct hash<short>
+{
+  size_t operator()(short key) const
+  {
+    return __esbmc_hash_signed_int(key);
+  }
+};
+
+template <>
+struct hash<unsigned short>
+{
+  size_t operator()(unsigned short key) const
+  {
+    return __esbmc_hash_unsigned_int(key);
+  }
+};
+
+// Specializations for int types
+template <>
+struct hash<int>
+{
+  size_t operator()(int key) const
+  {
+    return __esbmc_hash_signed_int(key);
+  }
+};
+
+template <>
+struct hash<unsigned int>
+{
+  size_t operator()(unsigned int key) const
+  {
+    return __esbmc_hash_unsigned_int(key);
+  }
+};
+
+// Specializations for long types
+template <>
+struct hash<long>
+{
+  size_t operator()(long key) const
+  {
+    return __esbmc_hash_signed_int(key);
+  }
+};
+
+template <>
+struct hash<unsigned long>
+{
+  size_t operator()(unsigned long key) const
+  {
+    return __esbmc_hash_unsigned_int(key);
+  }
+};
+
+// Specializations for long long types
+template <>
+struct hash<long long>
+{
+  size_t operator()(long long key) const
+  {
+    return __esbmc_hash_signed_int(key);
+  }
+};
+
+template <>
+struct hash<unsigned long long>
+{
+  size_t operator()(unsigned long long key) const
+  {
+    return __esbmc_hash_unsigned_int(key);
+  }
+};
+
+// Specialization for size_t (only if different from unsigned long)
+#  if !defined(__SIZEOF_SIZE_T__) || (__SIZEOF_SIZE_T__ != __SIZEOF_LONG__)
+template <>
+struct hash<size_t>
+{
+  size_t operator()(size_t key) const
+  {
+    return __esbmc_deterministic_hash(key);
+  }
+};
+#  endif
+
+// Specializations for floating point types
+template <>
+struct hash<float>
+{
+  size_t operator()(float key) const
+  {
+    // Handle special floating point values
+    if (key != key)
+    {                                                // NaN check
+      return __esbmc_deterministic_hash(0xFFFFFFFF); // Consistent NaN hash
+    }
+    if (key == 0.0f)
+    { // Handle +0.0 and -0.0 as same
+      return __esbmc_deterministic_hash(0);
+    }
+
+    // For normal values, use bit representation
+    union
+    {
+      float f;
+      uint32_t i;
+    } u;
+    u.f = key;
+    return __esbmc_deterministic_hash(static_cast<size_t>(u.i));
+  }
+};
+
+template <>
+struct hash<double>
+{
+  size_t operator()(double key) const
+  {
+    // Handle special floating point values
+    if (key != key)
+    { // NaN check
+      return __esbmc_deterministic_hash(
+        0xFFFFFFFFFFFFFFFF); // Consistent NaN hash
+    }
+    if (key == 0.0)
+    { // Handle +0.0 and -0.0 as same
+      return __esbmc_deterministic_hash(0);
+    }
+
+    // For normal values, use bit representation
+    union
+    {
+      double d;
+      uint64_t i;
+    } u;
+    u.d = key;
+    return __esbmc_deterministic_hash(static_cast<size_t>(u.i));
+  }
+};
+
+// Specialization for pointer types
+template <typename T>
+struct hash<T *>
+{
+  size_t operator()(T *key) const
+  {
+    // Convert pointer to size_t and hash
+    size_t ptr_value = reinterpret_cast<size_t>(key);
+    return __esbmc_deterministic_hash(ptr_value);
+  }
+};
+
+// Specialization for C-strings
+template <>
+struct hash<const char *>
+{
+  size_t operator()(const char *key) const
+  {
+    // Basic null check
+    assert(key != nullptr);
+
+    // For deterministic verification, use pointer address as hash
+    // This ensures same pointer gives same hash, different pointers give different hashes
+    size_t ptr_hash = reinterpret_cast<size_t>(key);
+    return __esbmc_deterministic_hash(ptr_hash);
+  }
+};
+
+// Specialization for std::string
+template <>
+struct hash<::std::string>
+{
+  size_t operator()(const ::std::string &key) const
+  {
+    // Simple deterministic string hash using polynomial rolling hash
+    size_t hash_value = 0;
+    const size_t prime = 31;
+
+    // Use c_str() to access characters in a const-compatible way
+    const char *str = key.c_str();
+    for (size_t i = 0; i < key.length(); ++i)
+    {
+      hash_value = hash_value * prime +
+                   static_cast<size_t>(static_cast<unsigned char>(str[i]));
+    }
+
+    return __esbmc_deterministic_hash(hash_value);
+  }
+};
+
+// Specialization for std::string_view. [string.view.hash] requires the hash of
+// a string view to equal the hash of the corresponding string, so this must use
+// the same scheme as hash<std::string> above.
+template <>
+struct hash<::std::string_view>
+{
+  size_t operator()(::std::string_view key) const
+  {
+    size_t hash_value = 0;
+    const size_t prime = 31;
+
+    const char *str = key.data();
+    for (size_t i = 0; i < key.size(); ++i)
+    {
+      hash_value = hash_value * prime +
+                   static_cast<size_t>(static_cast<unsigned char>(str[i]));
+    }
+
+    return __esbmc_deterministic_hash(hash_value);
+  }
+};
+
+#endif // __cplusplus >= 201103L
+
+// Legacy binary_function class template (typedef-based — valid in C++03 too)
+template <typename Arg1, typename Arg2, typename Result>
+struct binary_function
+{
+  typedef Arg1 first_argument_type;
+  typedef Arg2 second_argument_type;
+  typedef Result result_type;
+};
+
+/* [functional.syn]: from C++14 the operation functors default to void, and
+ * <void> is a transparent specialisation that compares/combines its operands
+ * at their own types. Older modes keep the concrete default this model has
+ * always used, so existing c++03/c++11 uses of e.g. `std::less<>` still work.
+ */
+#if __cplusplus >= 201402L
+#  define OM_FN_DEFAULT void
+#  define OM_FN_DEFAULT_BOOL void
+#else
+#  define OM_FN_DEFAULT int
+#  define OM_FN_DEFAULT_BOOL bool
+#endif
+
+// Arithmetic Operations
+template <typename T = OM_FN_DEFAULT>
+struct plus
+{
+  OM_CONSTEXPR T operator()(const T &a, const T &b) const
+  {
+    return a + b;
+  }
+};
+
+template <typename T = OM_FN_DEFAULT>
+struct minus
+{
+  OM_CONSTEXPR T operator()(const T &a, const T &b) const
+  {
+    return a - b;
+  }
+};
+
+template <typename T = OM_FN_DEFAULT>
+struct multiplies
+{
+  OM_CONSTEXPR T operator()(const T &a, const T &b) const
+  {
+    return a * b;
+  }
+};
+
+template <typename T = OM_FN_DEFAULT>
+struct divides
+{
+  OM_CONSTEXPR T operator()(const T &a, const T &b) const
+  {
+    return a / b;
+  }
+};
+
+template <typename T = OM_FN_DEFAULT>
+struct modulus
+{
+  OM_CONSTEXPR T operator()(const T &a, const T &b) const
+  {
+    return a % b;
+  }
+};
+
+template <typename T = OM_FN_DEFAULT>
+struct negate
+{
+  OM_CONSTEXPR T operator()(const T &a) const
+  {
+    return -a;
+  }
+};
+
+// Comparison Operations
+template <typename T = OM_FN_DEFAULT>
+struct equal_to
+{
+  OM_CONSTEXPR bool operator()(const T &a, const T &b) const
+  {
+    return a == b;
+  }
+};
+
+template <typename T = OM_FN_DEFAULT>
+struct not_equal_to
+{
+  OM_CONSTEXPR bool operator()(const T &a, const T &b) const
+  {
+    return a != b;
+  }
+};
+
+template <typename T = OM_FN_DEFAULT>
+struct greater
+{
+  OM_CONSTEXPR bool operator()(const T &a, const T &b) const
+  {
+    return a > b;
+  }
+};
+
+template <typename T = OM_FN_DEFAULT>
+struct less
+{
+  OM_CONSTEXPR bool operator()(const T &a, const T &b) const
+  {
+    return a < b;
+  }
+};
+
+template <typename T = OM_FN_DEFAULT>
+struct greater_equal
+{
+  OM_CONSTEXPR bool operator()(const T &a, const T &b) const
+  {
+    return a >= b;
+  }
+};
+
+template <typename T = OM_FN_DEFAULT>
+struct less_equal
+{
+  OM_CONSTEXPR bool operator()(const T &a, const T &b) const
+  {
+    return a <= b;
+  }
+};
+
+// Logical Operations
+template <typename T = OM_FN_DEFAULT_BOOL>
+struct logical_and
+{
+  OM_CONSTEXPR bool operator()(const T &a, const T &b) const
+  {
+    return a && b;
+  }
+};
+
+template <typename T = OM_FN_DEFAULT_BOOL>
+struct logical_or
+{
+  OM_CONSTEXPR bool operator()(const T &a, const T &b) const
+  {
+    return a || b;
+  }
+};
+
+template <typename T = OM_FN_DEFAULT_BOOL>
+struct logical_not
+{
+  OM_CONSTEXPR bool operator()(const T &a) const
+  {
+    return !a;
+  }
+};
+
+// Bitwise Operations
+template <typename T = OM_FN_DEFAULT>
+struct bit_and
+{
+  OM_CONSTEXPR T operator()(const T &a, const T &b) const
+  {
+    return a & b;
+  }
+};
+
+template <typename T = OM_FN_DEFAULT>
+struct bit_or
+{
+  OM_CONSTEXPR T operator()(const T &a, const T &b) const
+  {
+    return a | b;
+  }
+};
+
+template <typename T = OM_FN_DEFAULT>
+struct bit_xor
+{
+  OM_CONSTEXPR T operator()(const T &a, const T &b) const
+  {
+    return a ^ b;
+  }
+};
+
+template <typename T = OM_FN_DEFAULT>
+struct bit_not
+{
+  OM_CONSTEXPR T operator()(const T &a) const
+  {
+    return ~a;
+  }
+};
+
+#if __cplusplus >= 201402L
+/* Transparent specialisations [functional.syn]. is_transparent is what
+ * enables heterogeneous lookup in the associative containers. */
+
+template <>
+struct plus<void>
+{
+  typedef void is_transparent;
+  template <typename T, typename U>
+  OM_CONSTEXPR auto operator()(T &&a, U &&b) const
+    -> decltype(::std::forward<T>(a) + ::std::forward<U>(b))
+  {
+    return ::std::forward<T>(a) + ::std::forward<U>(b);
+  }
+};
+
+template <>
+struct minus<void>
+{
+  typedef void is_transparent;
+  template <typename T, typename U>
+  OM_CONSTEXPR auto operator()(T &&a, U &&b) const
+    -> decltype(::std::forward<T>(a) - ::std::forward<U>(b))
+  {
+    return ::std::forward<T>(a) - ::std::forward<U>(b);
+  }
+};
+
+template <>
+struct multiplies<void>
+{
+  typedef void is_transparent;
+  template <typename T, typename U>
+  OM_CONSTEXPR auto operator()(T &&a, U &&b) const
+    -> decltype(::std::forward<T>(a) * ::std::forward<U>(b))
+  {
+    return ::std::forward<T>(a) * ::std::forward<U>(b);
+  }
+};
+
+template <>
+struct divides<void>
+{
+  typedef void is_transparent;
+  template <typename T, typename U>
+  OM_CONSTEXPR auto operator()(T &&a, U &&b) const
+    -> decltype(::std::forward<T>(a) / ::std::forward<U>(b))
+  {
+    return ::std::forward<T>(a) / ::std::forward<U>(b);
+  }
+};
+
+template <>
+struct modulus<void>
+{
+  typedef void is_transparent;
+  template <typename T, typename U>
+  OM_CONSTEXPR auto operator()(T &&a, U &&b) const
+    -> decltype(::std::forward<T>(a) % ::std::forward<U>(b))
+  {
+    return ::std::forward<T>(a) % ::std::forward<U>(b);
+  }
+};
+
+template <>
+struct equal_to<void>
+{
+  typedef void is_transparent;
+  template <typename T, typename U>
+  OM_CONSTEXPR auto operator()(T &&a, U &&b) const
+    -> decltype(::std::forward<T>(a) == ::std::forward<U>(b))
+  {
+    return ::std::forward<T>(a) == ::std::forward<U>(b);
+  }
+};
+
+template <>
+struct not_equal_to<void>
+{
+  typedef void is_transparent;
+  template <typename T, typename U>
+  OM_CONSTEXPR auto operator()(T &&a, U &&b) const
+    -> decltype(::std::forward<T>(a) != ::std::forward<U>(b))
+  {
+    return ::std::forward<T>(a) != ::std::forward<U>(b);
+  }
+};
+
+template <>
+struct greater<void>
+{
+  typedef void is_transparent;
+  template <typename T, typename U>
+  OM_CONSTEXPR auto operator()(T &&a, U &&b) const
+    -> decltype(::std::forward<T>(a) > ::std::forward<U>(b))
+  {
+    return ::std::forward<T>(a) > ::std::forward<U>(b);
+  }
+};
+
+template <>
+struct less<void>
+{
+  typedef void is_transparent;
+  template <typename T, typename U>
+  OM_CONSTEXPR auto operator()(T &&a, U &&b) const
+    -> decltype(::std::forward<T>(a) < ::std::forward<U>(b))
+  {
+    return ::std::forward<T>(a) < ::std::forward<U>(b);
+  }
+};
+
+template <>
+struct greater_equal<void>
+{
+  typedef void is_transparent;
+  template <typename T, typename U>
+  OM_CONSTEXPR auto operator()(T &&a, U &&b) const
+    -> decltype(::std::forward<T>(a) >= ::std::forward<U>(b))
+  {
+    return ::std::forward<T>(a) >= ::std::forward<U>(b);
+  }
+};
+
+template <>
+struct less_equal<void>
+{
+  typedef void is_transparent;
+  template <typename T, typename U>
+  OM_CONSTEXPR auto operator()(T &&a, U &&b) const
+    -> decltype(::std::forward<T>(a) <= ::std::forward<U>(b))
+  {
+    return ::std::forward<T>(a) <= ::std::forward<U>(b);
+  }
+};
+
+template <>
+struct logical_and<void>
+{
+  typedef void is_transparent;
+  template <typename T, typename U>
+  OM_CONSTEXPR auto operator()(T &&a, U &&b) const
+    -> decltype(::std::forward<T>(a) && ::std::forward<U>(b))
+  {
+    return ::std::forward<T>(a) && ::std::forward<U>(b);
+  }
+};
+
+template <>
+struct logical_or<void>
+{
+  typedef void is_transparent;
+  template <typename T, typename U>
+  OM_CONSTEXPR auto operator()(T &&a, U &&b) const
+    -> decltype(::std::forward<T>(a) || ::std::forward<U>(b))
+  {
+    return ::std::forward<T>(a) || ::std::forward<U>(b);
+  }
+};
+
+template <>
+struct bit_and<void>
+{
+  typedef void is_transparent;
+  template <typename T, typename U>
+  OM_CONSTEXPR auto operator()(T &&a, U &&b) const
+    -> decltype(::std::forward<T>(a) & ::std::forward<U>(b))
+  {
+    return ::std::forward<T>(a) & ::std::forward<U>(b);
+  }
+};
+
+template <>
+struct bit_or<void>
+{
+  typedef void is_transparent;
+  template <typename T, typename U>
+  OM_CONSTEXPR auto operator()(T &&a, U &&b) const
+    -> decltype(::std::forward<T>(a) | ::std::forward<U>(b))
+  {
+    return ::std::forward<T>(a) | ::std::forward<U>(b);
+  }
+};
+
+template <>
+struct bit_xor<void>
+{
+  typedef void is_transparent;
+  template <typename T, typename U>
+  OM_CONSTEXPR auto operator()(T &&a, U &&b) const
+    -> decltype(::std::forward<T>(a) ^ ::std::forward<U>(b))
+  {
+    return ::std::forward<T>(a) ^ ::std::forward<U>(b);
+  }
+};
+
+template <>
+struct negate<void>
+{
+  typedef void is_transparent;
+  template <typename T>
+  OM_CONSTEXPR auto operator()(T &&a) const
+    -> decltype(-::std::forward<T>(a))
+  {
+    return -::std::forward<T>(a);
+  }
+};
+
+template <>
+struct logical_not<void>
+{
+  typedef void is_transparent;
+  template <typename T>
+  OM_CONSTEXPR auto operator()(T &&a) const
+    -> decltype(!::std::forward<T>(a))
+  {
+    return !::std::forward<T>(a);
+  }
+};
+
+template <>
+struct bit_not<void>
+{
+  typedef void is_transparent;
+  template <typename T>
+  OM_CONSTEXPR auto operator()(T &&a) const
+    -> decltype(~::std::forward<T>(a))
+  {
+    return ~::std::forward<T>(a);
+  }
+};
+#endif // __cplusplus >= 201402L
+
+#if __cplusplus >= 201103L
+// Simplified std::invoke model.
+// The trailing return type deduces exactly as decltype(auto) would here, but
+// keeps this declaration parseable in C++11: decltype(auto) is C++14.
+template <typename Func, typename... Args>
+auto invoke(Func &&f, Args &&...args)
+  -> decltype(::std::forward<Func>(f)(::std::forward<Args>(args)...))
+{
+  return ::std::forward<Func>(f)(::std::forward<Args>(args)...);
+}
+
+/* [func.bind.place]: _1..._N have distinct unspecified types and
+ * is_placeholder<decltype(_n)>::value == n. Distinct *types* is the load-bearing
+ * part -- boost/bind partially specialises its own is_placeholder on each of the
+ * first nine, which collapses to a redefinition if they share one. The objects
+ * are declared and not defined because nothing here consumes them: std::bind is
+ * not modelled, so a placeholder is never read. */
+namespace placeholders
+{
+template <int N>
+struct __ph
+{
+};
+
+extern __ph<1> _1;
+extern __ph<2> _2;
+extern __ph<3> _3;
+extern __ph<4> _4;
+extern __ph<5> _5;
+extern __ph<6> _6;
+extern __ph<7> _7;
+extern __ph<8> _8;
+extern __ph<9> _9;
+extern __ph<10> _10;
+} // namespace placeholders
+
+template <class T>
+struct is_placeholder : integral_constant<int, 0>
+{
+};
+
+template <int N>
+struct is_placeholder<placeholders::__ph<N> > : integral_constant<int, N>
+{
+};
+#endif
+
+} // namespace std
+
+#endif // STL_FUNCTIONAL

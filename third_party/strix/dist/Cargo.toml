@@ -1,0 +1,11 @@
+[package]
+name = "dist"
+version = "0.1.0"
+authors = ["Philipp Meyer <p.j.meyer@tum.de>"]
+edition = "2018"
+
+[dependencies]
+sha2 = "0.9.5"
+regex = "1.5.4"
+cargo_metadata = { version = "0.13.1", default-features = false }
+

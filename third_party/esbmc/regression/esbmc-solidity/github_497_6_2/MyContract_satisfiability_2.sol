@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: GPL-3.0
+pragma solidity >=0.5.26;
+
+contract MyContract {
+    uint8 x;
+    uint8 sum;
+
+    function __ESBMC_assume(bool) internal pure { }
+
+    function func_sat(uint8 y) external {
+      x = 0;
+      sum = x + y;
+
+      // C : Add additional constraints here
+      __ESBMC_assume(y < 255);
+      __ESBMC_assume(y > 220);
+
+      // P : Properties we want to check
+      assert(sum % 16 != 0);
+    }
+}

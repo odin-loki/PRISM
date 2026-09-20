@@ -1,102 +1,300 @@
 cmake_minimum_required(VERSION 3.20)
-project(helix LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 20)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
-option(HELIX_CUDA "Build CUDA mutation kernels" ON)
-option(HELIX_LLAMA "Build llama.cpp inference" ON)
-option(HELIX_QT "Build native Qt GUI" ON)
-
-# Header-only xsimd. Prefer a vendored copy (third_party/xsimd) so a MinGW
-# configure does not need network; FetchContent is the fallback.
-set(_helix_xsimd_inc "${CMAKE_SOURCE_DIR}/third_party/xsimd/include")
-if(EXISTS "${_helix_xsimd_inc}/xsimd/xsimd.hpp")
-  add_library(xsimd INTERFACE)
-  add_library(xsimd::xsimd ALIAS xsimd)
-  target_include_directories(xsimd INTERFACE "${_helix_xsimd_inc}")
-  message(STATUS "xsimd: vendored headers at ${_helix_xsimd_inc}")
-else()
-  include(FetchContent)
-  FetchContent_Declare(xsimd
-    GIT_REPOSITORY https://github.com/xtensor-stack/xsimd.git
-    GIT_TAG 13.2.0
-    GIT_SHALLOW TRUE)
-  FetchContent_MakeAvailable(xsimd)
+# Ninja otherwise emits cmake --regenerate-during-build, which re-walks the
+# source tree on /mnt/c OneDrive (mined third_party: codeql, infer, esbmc, …).
+# Generator is already known from -G before project().
+if(CMAKE_GENERATOR STREQUAL "Ninja")
+  set(CMAKE_SUPPRESS_REGENERATION ON)
 endif()
 
-add_library(helix_native SHARED
-  native/src/hash.cpp
-  native/src/havoc.cpp
-  native/src/pymod.cpp
-)
-target_include_directories(helix_native PUBLIC native/include)
-target_link_libraries(helix_native PUBLIC xsimd)
-target_compile_definitions(helix_native PRIVATE HELIX_NATIVE_EXPORTS)
+project(prism LANGUAGES C CXX)
+
+set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
 
 if(MINGW)
-  # Produce helix_native.dll (not libhelix_native.dll) and avoid a
-  # runtime dependency on Strawberry's libstdc++-6.dll.
-  set_target_properties(helix_native PROPERTIES PREFIX "" OUTPUT_NAME "helix_native")
-  target_link_options(helix_native PRIVATE -static-libgcc -static-libstdc++)
+  message(FATAL_ERROR "PRISM does not build with MinGW. Use MSVC (cl) or WSL clang++.")
 endif()
 
-if(MSVC)
-  target_compile_options(helix_native PRIVATE /O2 /arch:AVX2)
-else()
-  target_compile_options(helix_native PRIVATE -O3 -mavx2)
+option(PRISM_CUDA "Build CUDA mutation kernels" ON)
+option(PRISM_LLAMA "Build in-tree llama.cpp inference" ON)
+option(PRISM_QT "Build native Qt GUI" ON)
+option(PRISM_Z3 "Build in-tree Z3 for BMC" ON)
+option(PRISM_TESTS "Build C++ unit tests" ON)
+
+set(PRISM_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
+
+# third_party trees that are source-only (mined for adapters / testdata). Never
+# add_subdirectory, file(GLOB), or CONFIGURE_DEPENDS these: CMake --regenerate-during-build
+# otherwise walks them on /mnt/c (codeql ~60k files). Build-linked third_party only:
+# xsimd, z3, pcre2, nlohmann, doctest, llama.cpp.
+# source-only: codeql, infer, esbmc, dafny, semgrep, Frama-C, AFLplusplus, klee,
+# cbmc, coccinelle, cppcheck, strix, FuSeBMC, Fuzz4All, rapidcheck.
+# WSL: keep the Ninja tree on /tmp/prism-wsl (ext4). Linking libz3.a on /mnt/c stalls.
+if(CMAKE_BINARY_DIR MATCHES "^/mnt/[a-zA-Z]/")
+  message(WARNING "Build directory is on /mnt (OneDrive/NTFS). Configure with -B /tmp/prism-wsl and copy binaries back to build_wsl/.")
 endif()
 
-if(HELIX_CUDA)
-  include(CheckLanguage)
-  check_language(CUDA)
-  if(CMAKE_CUDA_COMPILER)
-    enable_language(CUDA)
-    add_library(helix_cuda SHARED native/cuda/mutate.cu)
-    target_include_directories(helix_cuda PUBLIC native/include)
-    target_compile_features(helix_cuda PUBLIC cxx_std_20)
-    target_link_libraries(helix_native PUBLIC helix_cuda)
-    target_compile_definitions(helix_native PRIVATE HELIX_HAS_CUDA)
-  else()
-    message(WARNING "nvcc not usable with this host compiler — CUDA kernel skipped (NOTRUN, not a silent disable)")
+# --- vendored xsimd (header-only) ---
+set(_xsimd_inc "${PRISM_ROOT}/third_party/xsimd/include")
+add_library(xsimd INTERFACE)
+add_library(xsimd::xsimd ALIAS xsimd)
+target_include_directories(xsimd INTERFACE "${_xsimd_inc}")
+
+# --- vendored nlohmann/json (header-only). Include the parent of nlohmann/, not a
+# recursive glob of third_party (that would enter the mined trees). ---
+add_library(nlohmann_json INTERFACE)
+target_include_directories(nlohmann_json INTERFACE "${PRISM_ROOT}/third_party")
+
+# Static in-tree deps. CACHE FORCE so llama.cpp's option(BUILD_SHARED_LIBS) cannot
+# flip this to ON on a fresh configure.
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+
+# --- vendored PCRE2 (FILE(GLOB) there is install-docs under pcre2/doc only) ---
+set(PCRE2_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(PCRE2_BUILD_PCRE2GREP OFF CACHE BOOL "" FORCE)
+set(PCRE2_SUPPORT_JIT ON CACHE BOOL "" FORCE)
+add_subdirectory(third_party/pcre2 EXCLUDE_FROM_ALL)
+
+# --- vendored Z3 ---
+if(PRISM_Z3 AND EXISTS "${PRISM_ROOT}/third_party/z3/CMakeLists.txt")
+  set(Z3_BUILD_LIBZ3_SHARED OFF CACHE BOOL "" FORCE)
+  set(Z3_BUILD_EXECUTABLE OFF CACHE BOOL "" FORCE)
+  set(Z3_BUILD_TEST_EXECUTABLES OFF CACHE BOOL "" FORCE)
+  set(Z3_ENABLE_EXAMPLE_TARGETS OFF CACHE BOOL "" FORCE)
+  set(Z3_BUILD_PYTHON_BINDINGS OFF CACHE BOOL "" FORCE)
+  set(Z3_BUILD_DOTNET_BINDINGS OFF CACHE BOOL "" FORCE)
+  set(Z3_BUILD_JAVA_BINDINGS OFF CACHE BOOL "" FORCE)
+  add_subdirectory(third_party/z3 EXCLUDE_FROM_ALL)
+  set(PRISM_HAS_Z3 ON)
+endif()
+
+# Explicit list: do not file(GLOB CONFIGURE_DEPENDS src/prism/*.cpp). That glob
+# made Ninja run cmake --regenerate-during-build on every source-tree change.
+set(PRISM_SRC
+  src/prism/adapters.cpp
+  src/prism/bmc.cpp
+  src/prism/capi.cpp
+  src/prism/checkers_api.cpp
+  src/prism/checkers_core.cpp
+  src/prism/checkers_cxx.cpp
+  src/prism/checkers_dispatch.cpp
+  src/prism/config.cpp
+  src/prism/cparse.cpp
+  src/prism/hash.cpp
+  src/prism/havoc.cpp
+  src/prism/inline.cpp
+  src/prism/interval.cpp
+  src/prism/journal.cpp
+  src/prism/laws.cpp
+  src/prism/models.cpp
+  src/prism/pipeline.cpp
+  src/prism/regex.cpp
+  src/prism/stages_rest.cpp
+  src/prism/taxonomy.cpp
+)
+
+add_library(prism_core STATIC ${PRISM_SRC})
+target_include_directories(prism_core PUBLIC
+  "${PRISM_ROOT}/include"
+  "${PRISM_ROOT}/third_party"
+)
+target_compile_definitions(prism_core PRIVATE PRISM_EXPORTS)
+target_link_libraries(prism_core PUBLIC xsimd nlohmann_json)
+# pcre2-8 is the 8-bit library target from the vendored tree
+if(TARGET pcre2-8-static)
+  target_link_libraries(prism_core PUBLIC pcre2-8-static)
+  target_compile_definitions(prism_core PUBLIC PCRE2_STATIC)
+elseif(TARGET pcre2-8)
+  target_link_libraries(prism_core PUBLIC pcre2-8)
+endif()
+if(PRISM_HAS_Z3)
+  if(TARGET libz3)
+    target_link_libraries(prism_core PUBLIC libz3)
+  elseif(TARGET libz3-static)
+    target_link_libraries(prism_core PUBLIC libz3-static)
   endif()
+  target_include_directories(prism_core PUBLIC
+    "${PRISM_ROOT}/third_party/z3/src/api"
+    "${PRISM_ROOT}/third_party/z3/src/api/c++")
+  target_compile_definitions(prism_core PUBLIC PRISM_HAS_Z3)
 endif()
 
-if(HELIX_LLAMA)
-  include(FetchContent)
-  FetchContent_Declare(llama
-    GIT_REPOSITORY https://github.com/ggerganov/llama.cpp.git
-    GIT_TAG b6875)
-  set(GGML_CUDA ON CACHE BOOL "" FORCE)
+# ISO C++ <thread> / std::jthread (glibc also provides C11 <threads.h>).
+# On Linux this still needs the compiler's thread flag; that is not MinGW
+# winpthreads. MinGW is rejected above.
+find_package(Threads REQUIRED)
+target_link_libraries(prism_core PUBLIC Threads::Threads)
+if(UNIX)
+  target_link_libraries(prism_core PUBLIC dl)
+endif()
+if(MSVC)
+  target_compile_options(prism_core PRIVATE /O2 /arch:AVX2 /utf-8)
+else()
+  target_compile_options(prism_core PRIVATE -O3 -mavx2)
+  set_source_files_properties(
+    src/prism/taxonomy.cpp src/prism/checkers_cxx.cpp
+    PROPERTIES COMPILE_OPTIONS "-O0")
+endif()
+if(WIN32)
+  target_link_libraries(prism_core PUBLIC winhttp)
+endif()
+
+add_executable(prism src/prism/main.cpp)
+target_link_libraries(prism PRIVATE prism_core)
+if(UNIX)
+  set_target_properties(prism PROPERTIES BUILD_RPATH "$ORIGIN" INSTALL_RPATH "$ORIGIN")
+endif()
+
+# C ABI for coverage hash / havoc
+add_library(prism_native SHARED src/prism/capi.cpp src/prism/hash.cpp src/prism/havoc.cpp)
+target_include_directories(prism_native PUBLIC "${PRISM_ROOT}/include")
+target_link_libraries(prism_native PUBLIC xsimd)
+target_compile_definitions(prism_native PRIVATE PRISM_EXPORTS)
+if(WIN32)
+  set_target_properties(prism_native PROPERTIES PREFIX "" OUTPUT_NAME "prism_native")
+endif()
+
+set(_prism_cuda_lang OFF)
+if(PRISM_CUDA)
+  include(CheckLanguage)
+  # nvcc cannot use clang++ as host. Keep CMAKE_CXX_COMPILER (clang++) for
+  # prism_core; point CMAKE_CUDA_HOST_COMPILER at gcc/g++ *before*
+  # check_language / enable_language so nvcc is allowed. Never pass
+  # -allow-unsupported-compiler (that would silently disable the check).
+  set(_prism_cuda_host "${CMAKE_CUDA_HOST_COMPILER}")
+  if(NOT _prism_cuda_host)
+    if(CMAKE_C_COMPILER_ID MATCHES "GNU")
+      set(_prism_cuda_host "${CMAKE_C_COMPILER}")
+    elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU")
+      set(_prism_cuda_host "${CMAKE_CXX_COMPILER}")
+    elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND UNIX)
+      # Prefer gcc-12: CUDA 12.0 nvcc rejects gcc 13 unless given
+      # -allow-unsupported-compiler, which would silently disable the check.
+      find_program(_PRISM_CUDA_GCC NAMES gcc-12 gcc-11 gcc-10 gcc)
+      if(_PRISM_CUDA_GCC)
+        set(_prism_cuda_host "${_PRISM_CUDA_GCC}")
+      else()
+        find_program(_PRISM_CUDA_GXX NAMES g++-12 g++-11 g++-10 g++)
+        if(_PRISM_CUDA_GXX)
+          set(_prism_cuda_host "${_PRISM_CUDA_GXX}")
+        endif()
+      endif()
+    endif()
+  endif()
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    if(_prism_cuda_host)
+      set(CMAKE_CUDA_HOST_COMPILER "${_prism_cuda_host}" CACHE FILEPATH
+          "Host compiler for nvcc (gcc, not clang++)" FORCE)
+    else()
+      message(WARNING "CUDA kernel skipped (NOTRUN, not a silent disable)")
+    endif()
+  endif()
+  if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR _prism_cuda_host)
+    check_language(CUDA)
+    if(CMAKE_CUDA_COMPILER)
+      # nvcc 12 has no C++23; do not inherit CMAKE_CXX_STANDARD 23 (clang++/prism_core).
+      set(CMAKE_CUDA_STANDARD 17)
+      set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+      enable_language(CUDA)
+      set(_prism_cuda_lang ON)
+      if(NOT CMAKE_CUDA_ARCHITECTURES)
+        # PLAN stack is an RTX 3090 (sm_86). native needs a live GPU at configure.
+        set(CMAKE_CUDA_ARCHITECTURES "86" CACHE STRING "nvcc -arch" FORCE)
+      endif()
+      add_library(prism_cuda SHARED src/cuda/mutate.cu)
+      target_include_directories(prism_cuda PUBLIC "${PRISM_ROOT}/include")
+      target_compile_features(prism_cuda PUBLIC cuda_std_17)
+      set_target_properties(prism_cuda PROPERTIES
+        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+        BUILD_RPATH "$ORIGIN"
+        INSTALL_RPATH "$ORIGIN")
+      # prism / prism_tests / prism_gui link prism_core, not prism_native.
+      # Leaving the kernel only on prism_native was a silent disable.
+      target_link_libraries(prism_core PUBLIC prism_cuda)
+      target_link_libraries(prism_native PUBLIC prism_cuda)
+      target_compile_definitions(prism_native PUBLIC PRISM_HAS_CUDA)
+      target_compile_definitions(prism_core PUBLIC PRISM_HAS_CUDA)
+      message(STATUS "CUDA mutation kernel ON (nvcc host ${CMAKE_CUDA_HOST_COMPILER})")
+    else()
+      message(WARNING "CUDA kernel skipped (NOTRUN, not a silent disable)")
+    endif()
+  endif()
+else()
+  message(WARNING "PRISM_CUDA=OFF — CUDA kernel skipped (NOTRUN, not a silent disable)")
+endif()
+
+if(PRISM_LLAMA AND EXISTS "${PRISM_ROOT}/third_party/llama.cpp/CMakeLists.txt")
   set(LLAMA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
   set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-  set(LLAMA_BUILD_SERVER ON CACHE BOOL "" FORCE)
-  # llama.cpp wants MSVC on Windows+CUDA. If the host is MinGW, skip.
-  if(MSVC)
-    FetchContent_MakeAvailable(llama)
-    target_link_libraries(helix_native PUBLIC llama)
-    target_compile_definitions(helix_native PRIVATE HELIX_HAS_LLAMA)
+  set(LLAMA_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+  set(LLAMA_BUILD_SERVER OFF CACHE BOOL "" FORCE)
+  set(LLAMA_BUILD_COMMON OFF CACHE BOOL "" FORCE)
+  set(LLAMA_CURL OFF CACHE BOOL "" FORCE)
+  # CPU-only unless PRISM_CUDA actually enabled the language; nvcc+clang host often fails.
+  # check_language(CUDA) may still set CMAKE_CUDA_COMPILER to nvcc — do not let llama use it.
+  if(_prism_cuda_lang)
+    set(GGML_CUDA ON CACHE BOOL "" FORCE)
+    message(STATUS "llama.cpp GGML_CUDA ON (host ${CMAKE_CUDA_HOST_COMPILER})")
   else()
-    message(WARNING "llama.cpp+CUDA on Windows needs MSVC. Python talks to Ollama (same GGUF) until then.")
+    set(GGML_CUDA OFF CACHE BOOL "" FORCE)
+    message(WARNING "llama.cpp GGML_CUDA OFF — CUDA language not enabled (NOTRUN, not a silent disable)")
   endif()
+  set(GGML_VULKAN OFF CACHE BOOL "" FORCE)
+  set(GGML_SYCL OFF CACHE BOOL "" FORCE)
+  set(GGML_HIP OFF CACHE BOOL "" FORCE)
+  set(GGML_METAL OFF CACHE BOOL "" FORCE)
+  # llama.cpp rewrites CMAKE_*_OUTPUT_DIRECTORY to ${CMAKE_BINARY_DIR}/bin; keep prism next to build/.
+  set(_prism_saved_runtime_outdir "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
+  set(_prism_saved_library_outdir "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}")
+  add_subdirectory(third_party/llama.cpp EXCLUDE_FROM_ALL)
+  set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${_prism_saved_runtime_outdir}")
+  set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${_prism_saved_library_outdir}")
+  if(TARGET llama)
+    target_link_libraries(prism_core PUBLIC llama)
+    target_compile_definitions(prism_core PUBLIC PRISM_HAS_LLAMA)
+  else()
+    message(WARNING "llama.cpp configured but target llama missing — hypothesize GGUF path is NOTRUN")
+  endif()
+elseif(PRISM_LLAMA)
+  message(WARNING "third_party/llama.cpp missing — hypothesize GGUF path is NOTRUN")
 endif()
 
-if(HELIX_QT)
+if(PRISM_QT)
   find_package(Qt6 COMPONENTS Widgets QUIET)
-  if(Qt6_FOUND)
-    qt_standard_project_setup()
-    qt_add_executable(helix_gui
-      native/gui/main.cpp
-      native/gui/MainWindow.cpp
+  if(Qt6Widgets_FOUND AND TARGET Qt6::Widgets)
+    add_executable(prism_gui
+      src/gui/main.cpp
+      src/gui/MainWindow.cpp
+      src/gui/MainWindow.h
     )
-    target_link_libraries(helix_gui PRIVATE Qt6::Widgets helix_native)
+    set_target_properties(prism_gui PROPERTIES AUTOMOC ON)
+    target_include_directories(prism_gui PRIVATE "${PRISM_ROOT}/include" src/gui)
+    target_link_libraries(prism_gui PRIVATE Qt6::Widgets prism_core)
+    message(STATUS "Qt6 Widgets found — building prism_gui (no display required to compile)")
+    if(_prism_cuda_lang)
+      set_target_properties(prism_gui PROPERTIES BUILD_RPATH "$ORIGIN" INSTALL_RPATH "$ORIGIN")
+    endif()
   else()
-    message(WARNING "Qt6 not found — use python -m helix --gui (PySide6) which is the same Qt 6 widgets API.")
+    message(WARNING "Qt6 Widgets not found — prism CLI still runs; GUI is NOTRUN until Qt6Widgets is present.")
   endif()
 endif()
 
-add_executable(helix_cli native/src/cli.cpp)
-target_link_libraries(helix_cli PRIVATE helix_native)
-if(MINGW)
-  target_link_options(helix_cli PRIVATE -static-libgcc -static-libstdc++)
+if(PRISM_TESTS)
+  add_executable(prism_tests tests/cpp/test_main.cpp)
+  target_include_directories(prism_tests PRIVATE
+    "${PRISM_ROOT}/include"
+    "${PRISM_ROOT}/third_party")
+  target_link_libraries(prism_tests PRIVATE prism_core)
+  if(UNIX)
+    set_target_properties(prism_tests PROPERTIES BUILD_RPATH "$ORIGIN" INSTALL_RPATH "$ORIGIN")
+  endif()
+  enable_testing()
+  add_test(NAME prism_tests COMMAND prism_tests)
 endif()

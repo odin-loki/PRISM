@@ -1,0 +1,431 @@
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ *)
+
+open! IStd
+module F = Format
+module L = Logging
+module CC = CongruenceClosureSolver
+module Rewrite = CongruenceClosureRewrite
+
+let parse_rules cc str_rules : Rewrite.Rule.t list =
+  List.map str_rules ~f:(fun prog ->
+      match Rewrite.parse_rule cc prog with
+      | Ok rule ->
+          rule
+      | Error err ->
+          L.die InternalError "%a" Rewrite.pp_parse_error err )
+
+
+let enumerate_rules =
+  [ (* has_next on enumerate delegates to the underlying iterator *)
+    "($builtins.py_has_next_iter ?S1 ($builtins.py_get_iter ?S2 (@enumerate ?L))) ==> \
+     ($builtins.py_has_next_iter ?S1 ($builtins.py_get_iter ?S2 ?L))"
+  ; (* Subscript [1] on enumerate's next element yields the next element of the underlying iterator.
+       Subscript [0] (the index) is left unrewritten — when used, it blocks false equivalence. *)
+    "($builtins.py_subscript ($builtins.py_next_iter ?S1 ($builtins.py_get_iter ?S2 (@enumerate \
+     ?L))) ($builtins.py_make_int 1)) ==> ($builtins.py_next_iter ?S1 ($builtins.py_get_iter ?S2 \
+     ?L))" ]
+
+
+let dict_rules =
+  [ (* Subscript [0] on items() next element yields the key = next element of keys() *)
+    "($builtins.py_subscript ($builtins.py_next_iter ?S1 ($builtins.py_get_iter ?S2 (@dict_items \
+     ?S3 ?D))) ($builtins.py_make_int 0)) ==> ($builtins.py_next_iter ?S1 ($builtins.py_get_iter \
+     ?S2 (@dict_keys ?S3 ?D)))"
+  ; (* Subscript [1] on items() next element yields the value = next element of values() *)
+    "($builtins.py_subscript ($builtins.py_next_iter ?S1 ($builtins.py_get_iter ?S2 (@dict_items \
+     ?S3 ?D))) ($builtins.py_make_int 1)) ==> ($builtins.py_next_iter ?S1 ($builtins.py_get_iter \
+     ?S2 (@dict_values ?S3 ?D)))"
+  ; (* has_next on items() delegates to keys() (same number of elements) *)
+    "($builtins.py_has_next_iter ?S1 ($builtins.py_get_iter ?S2 (@dict_items ?S3 ?D))) ==> \
+     ($builtins.py_has_next_iter ?S1 ($builtins.py_get_iter ?S2 (@dict_keys ?S3 ?D)))" ]
+
+
+(* has_next over items()/keys()/values() (resp. enumerate L / L) all agree because the lengths agree.
+   Canonicalising them to a single form lets the OUTER loop's has_next bridge in nested-loop bodies,
+   where it sits under matching get_iter/has_next wrappers and is never reached by the directional
+   accept rules. These are applied ONLY as rewrites for the migration check (length is direction-
+   independent); the VALUE projection stays directional via the accept rules, so a reverse migration
+   — whose value access does not match an accept rule — is still rejected. Canonicalising to a SINGLE
+   target (keys) is essential: two targets would leave keys()/values() e-nodes in one class and the
+   structural bisimulation could pick different ones per side and wrongly diverge. *)
+let b007_has_next_bridges =
+  [ "($builtins.py_has_next_iter ?S1 ($builtins.py_get_iter ?S2 (@enumerate ?L))) ==> \
+     ($builtins.py_has_next_iter ?S1 ($builtins.py_get_iter ?S2 ?L))"
+  ; "($builtins.py_has_next_iter ?S1 ($builtins.py_get_iter ?S2 (@dict_items ?S3 ?D))) ==> \
+     ($builtins.py_has_next_iter ?S1 ($builtins.py_get_iter ?S2 (@dict_keys ?S3 ?D)))"
+  ; "($builtins.py_has_next_iter ?S1 ($builtins.py_get_iter ?S2 (@dict_values ?S3 ?D))) ==> \
+     ($builtins.py_has_next_iter ?S1 ($builtins.py_get_iter ?S2 (@dict_keys ?S3 ?D)))" ]
+
+
+(* B006 (mutable default argument) rewrite rules. Parameters with a default are modelled as
+   @phi(@is_default(p), <default>, @arg(p)) (see StructuredPeg). These rules normalise the codemod's
+   "if p is None: p = <literal>" guard against that model so the migrated and original functions
+   converge. The pair (label, rule) keeps a single source of truth shared with the unit tests. *)
+let b006_named_rules : (string * string) list =
+  [ (* py_bool of an "is" comparison is redundant (the comparison already returns a bool) *)
+    ( "bool-is"
+    , "($builtins.py_bool ($builtins.py_compare_is ?X ?Y)) ==> ($builtins.py_compare_is ?X ?Y)" )
+  ; (* push an "is None" test through a @phi *)
+    ( "is-distribute"
+    , "($builtins.py_compare_is (@phi ?C ?A ?B) @None) ==> (@phi ?C ($builtins.py_compare_is ?A \
+       @None) ($builtins.py_compare_is ?B @None))" )
+  ; (* None is None *)
+    ("is-none-none", "($builtins.py_compare_is @None @None) ==> @true")
+  ; (* SEMI-CORRECT: a non-default (explicitly-passed) argument is assumed not to be None. This is
+       the "correct execution" hypothesis — unsound only when a caller passes None explicitly. *)
+    ("arg-not-none", "($builtins.py_compare_is (@arg ?X) @None) ==> @false")
+  ; (* phi(c, true, false) = c for a boolean condition c *)
+    ("bool-id", "(@phi ?C @true @false) ==> ?C")
+  ; (* collapse a redundant re-test of the same condition in the else branch *)
+    ("phi-same-cond", "(@phi ?C ?A (@phi ?C ?X ?B)) ==> (@phi ?C ?A ?B)") ]
+
+
+(* Structural simplification only: @phi and @theta invariant rules *)
+let gen_structural_rules cc ~theta_count : Rewrite.Rule.t list =
+  let theta_rules = List.init theta_count ~f:(fun i -> F.asprintf "(@theta_%d ?X ?X) ==> ?X" i) in
+  parse_rules cc ("(@phi ?C ?X ?X) ==> ?X" :: theta_rules)
+
+
+(* All rules including B007-specific bidirectional rewrites (for check_equivalence) *)
+let gen_rules cc ~theta_count : Rewrite.Rule.t list =
+  let theta_rules = List.init theta_count ~f:(fun i -> F.asprintf "(@theta_%d ?X ?X) ==> ?X" i) in
+  parse_rules cc (("(@phi ?C ?X ?X) ==> ?X" :: theta_rules) @ enumerate_rules @ dict_rules)
+
+
+(* Rules for the directional B007 migration check: structural simplification plus the has_next
+   length-bridges only. The value projection stays handled by the (directional) accept rules. *)
+let gen_b007_rules cc ~theta_count : Rewrite.Rule.t list =
+  gen_structural_rules cc ~theta_count @ parse_rules cc b007_has_next_bridges
+
+
+(* Bisimulation: coinductive equivalence check for cyclic PEG terms (@theta).
+   Uses a separate union-find (does not modify the CC) to track assumed equivalences. *)
+module BisimUF = struct
+  module AtomMap = Stdlib.Map.Make (CC.Atom)
+
+  type t = {mutable parent: CC.Atom.t AtomMap.t}
+
+  let create () = {parent= AtomMap.empty}
+
+  let rec find uf a =
+    match AtomMap.find_opt a uf.parent with
+    | None ->
+        a
+    | Some p ->
+        let root = find uf p in
+        if not (phys_equal p root) then uf.parent <- AtomMap.add a root uf.parent ;
+        root
+
+
+  let union uf a b =
+    let ra = find uf a in
+    let rb = find uf b in
+    if not (CC.Atom.equal ra rb) then uf.parent <- AtomMap.add ra rb uf.parent
+
+
+  let is_equiv uf a b = CC.Atom.equal (find uf a) (find uf b)
+end
+
+module AtomPairSet = Stdlib.Set.Make (struct
+  type t = CC.Atom.t * CC.Atom.t
+
+  let compare (a1, b1) (a2, b2) =
+    match CC.Atom.compare a1 a2 with 0 -> CC.Atom.compare b1 b2 | c -> c
+end)
+
+let bisimilar cc ~(theta_headers : CC.header list) a1 a2 =
+  let uf = BisimUF.create () in
+  let theta_head_set =
+    List.map theta_headers ~f:(fun h -> CC.representative cc (h : CC.header :> CC.Atom.t))
+    |> CC.Atom.Set.of_list
+  in
+  let is_theta_head h = CC.Atom.Set.mem (CC.representative cc h) theta_head_set in
+  let find_enode a =
+    match CC.get_enode cc a with
+    | Some _ as r ->
+        r
+    | None ->
+        List.find_map theta_headers ~f:(fun (header : CC.header) ->
+            CC.find_class_enode cc ~header a )
+  in
+  (* Memoise pairs already proven equivalent. The PEG is a DAG (shared state-threading subterms), so
+     without this the recursion re-explores shared children exponentially. Caching only positive
+     results is sound and monotone: [uf] (the coinductive hypothesis) only grows, so a pair proven
+     equivalent stays equivalent. *)
+  let proven = ref AtomPairSet.empty in
+  let rec check a1 a2 =
+    let a1 = CC.representative cc a1 in
+    let a2 = CC.representative cc a2 in
+    if CC.Atom.equal a1 a2 || BisimUF.is_equiv uf a1 a2 || AtomPairSet.mem (a1, a2) !proven then
+      true
+    else
+      let r =
+        match (find_enode a1, find_enode a2) with
+        | Some {head= h1; children= cs1}, Some {head= h2; children= cs2} ->
+            let h1 = CC.representative cc h1 in
+            let h2 = CC.representative cc h2 in
+            CC.Atom.equal h1 h2
+            && Int.equal (List.length cs1) (List.length cs2)
+            &&
+            ( (* coinductive hypothesis: assume equivalence before recursing into children,
+                 but only for @theta_N (fixpoint) nodes — these create cycles in the PEG *)
+              if is_theta_head h1 then BisimUF.union uf a1 a2 ;
+              List.for_all2_exn cs1 cs2 ~f:check )
+        | None, None ->
+            false
+        | _ ->
+            false
+      in
+      if r then proven := AtomPairSet.add (a1, a2) !proven ;
+      r
+  in
+  check a1 a2
+
+
+(* ---------- Accept rules for directional migration checking ---------- *)
+
+module AcceptRule = struct
+  type t = {old_pattern: Rewrite.Pattern.t; new_pattern: Rewrite.Pattern.t}
+
+  let parse cc (old_str, new_str) =
+    match (Rewrite.parse_pattern cc old_str, Rewrite.parse_pattern cc new_str) with
+    | Ok old_pattern, Ok new_pattern ->
+        {old_pattern; new_pattern}
+    | Error err, _ | _, Error err ->
+        L.die InternalError "%a" Rewrite.pp_parse_error err
+
+
+  (** Try to apply an accept rule to a divergence (a_old, a_new). [is_equiv] is used to check that
+      shared variables bind to equivalent atoms. *)
+  let try_apply cc ~is_equiv rule a_old a_new =
+    let old_substs = Rewrite.e_match_pattern_at cc rule.old_pattern a_old in
+    List.exists old_substs ~f:(fun old_subst ->
+        let new_substs = Rewrite.e_match_pattern_at cc rule.new_pattern a_new in
+        List.exists new_substs ~f:(fun new_subst ->
+            (* Check that all shared variables bind to equivalent atoms *)
+            let shared_vars =
+              let old_vars = Rewrite.Pattern.vars rule.old_pattern |> Rewrite.Var.Set.of_list in
+              let new_vars = Rewrite.Pattern.vars rule.new_pattern |> Rewrite.Var.Set.of_list in
+              Rewrite.Var.Set.inter old_vars new_vars
+            in
+            Rewrite.Var.Set.for_all
+              (fun var ->
+                match (Rewrite.subst_find old_subst var, Rewrite.subst_find new_subst var) with
+                | Some a1, Some a2 ->
+                    is_equiv a1 a2
+                | _ ->
+                    false )
+              shared_vars ) )
+
+
+  let try_any cc ~is_equiv rules a_old a_new =
+    List.exists rules ~f:(fun rule -> try_apply cc ~is_equiv rule a_old a_new)
+end
+
+let b007_accept_rules =
+  [ (* enumerate: has_next_iter delegates to underlying iterator *)
+    ( "($builtins.py_has_next_iter ?S1 ($builtins.py_get_iter ?S2 (@enumerate ?L)))"
+    , "($builtins.py_has_next_iter ?S1 ($builtins.py_get_iter ?S2 ?L))" )
+  ; (* enumerate: subscript[1] on next yields next of underlying iterator *)
+    ( "($builtins.py_subscript ($builtins.py_next_iter ?S1 ($builtins.py_get_iter ?S2 (@enumerate \
+       ?L))) ($builtins.py_make_int 1))"
+    , "($builtins.py_next_iter ?S1 ($builtins.py_get_iter ?S2 ?L))" )
+  ; (* dict: has_next_iter on items() delegates to keys() *)
+    ( "($builtins.py_has_next_iter ?S1 ($builtins.py_get_iter ?S2 (@dict_items ?S3 ?D)))"
+    , "($builtins.py_has_next_iter ?S1 ($builtins.py_get_iter ?S2 (@dict_keys ?S3 ?D)))" )
+  ; (* dict: subscript[0] on items() next yields next of keys() *)
+    ( "($builtins.py_subscript ($builtins.py_next_iter ?S1 ($builtins.py_get_iter ?S2 (@dict_items \
+       ?S3 ?D))) ($builtins.py_make_int 0))"
+    , "($builtins.py_next_iter ?S1 ($builtins.py_get_iter ?S2 (@dict_keys ?S3 ?D)))" )
+  ; (* dict: subscript[1] on items() next yields next of values() *)
+    ( "($builtins.py_subscript ($builtins.py_next_iter ?S1 ($builtins.py_get_iter ?S2 (@dict_items \
+       ?S3 ?D))) ($builtins.py_make_int 1))"
+    , "($builtins.py_next_iter ?S1 ($builtins.py_get_iter ?S2 (@dict_values ?S3 ?D)))" ) ]
+
+
+let check_migration cc ~theta_headers ~accept_rules a_old a_new =
+  let uf = BisimUF.create () in
+  let theta_head_set =
+    List.map theta_headers ~f:(fun h -> CC.representative cc (h : CC.header :> CC.Atom.t))
+    |> CC.Atom.Set.of_list
+  in
+  let is_theta_head h = CC.Atom.Set.mem (CC.representative cc h) theta_head_set in
+  let find_enode a =
+    match CC.get_enode cc a with
+    | Some _ as r ->
+        r
+    | None ->
+        List.find_map theta_headers ~f:(fun (header : CC.header) ->
+            CC.find_class_enode cc ~header a )
+  in
+  let rec check a1 a2 =
+    let a1 = CC.representative cc a1 in
+    let a2 = CC.representative cc a2 in
+    CC.Atom.equal a1 a2 || BisimUF.is_equiv uf a1 a2
+    ||
+    match (find_enode a1, find_enode a2) with
+    | Some {head= h1; children= cs1}, Some {head= h2; children= cs2} ->
+        let h1 = CC.representative cc h1 in
+        let h2 = CC.representative cc h2 in
+        if CC.Atom.equal h1 h2 && Int.equal (List.length cs1) (List.length cs2) then (
+          if is_theta_head h1 then BisimUF.union uf a1 a2 ;
+          List.for_all2_exn cs1 cs2 ~f:check )
+        else AcceptRule.try_any cc ~is_equiv:check accept_rules a1 a2
+    | _ ->
+        AcceptRule.try_any cc ~is_equiv:check accept_rules a1 a2
+  in
+  check a_old a_new
+
+
+let check_equivalence ?(debug = false) (proc1 : Textual.ProcDesc.t) (proc2 : Textual.ProcDesc.t) =
+  let cc = CC.init ~debug:false in
+  let theta_counter = ref 0 in
+  match
+    ( StructuredPeg.convert_proc ~theta_counter cc proc1
+    , StructuredPeg.convert_proc ~theta_counter cc proc2 )
+  with
+  | Ok (atom1, eqs1, loops1), Ok (atom2, eqs2, loops2) when Int.equal loops1 loops2 ->
+      let rules = gen_rules cc ~theta_count:loops1 in
+      let _rounds = Rewrite.Rule.full_rewrite cc rules in
+      let theta_headers =
+        List.init loops1 ~f:(fun i -> CC.mk_header cc (F.asprintf "@theta_%d" i))
+      in
+      let res = CC.is_equiv cc atom1 atom2 || bisimilar cc ~theta_headers atom1 atom2 in
+      if debug then (
+        F.printf "=== Rule stats ===@." ;
+        List.iter rules ~f:(fun rule ->
+            let count = Rewrite.Rule.fire_count rule in
+            if count > 0 then F.printf "  %a: fired %d time(s)@." Rewrite.Rule.pp rule count ) ;
+        if not res then (
+          F.printf "=== Procedure 1 equations ===@." ;
+          StructuredPeg.Equations.pp cc F.std_formatter eqs1 ;
+          F.printf "@.=== Procedure 2 equations ===@." ;
+          StructuredPeg.Equations.pp cc F.std_formatter eqs2 ;
+          F.printf "@.NOT EQUIVALENT@." ;
+          F.printf "atom1: %a@." (CC.pp_nested_term cc) atom1 ;
+          F.printf "atom2: %a@." (CC.pp_nested_term cc) atom2 ) ) ;
+      res
+  | Ok _, Ok _ ->
+      (* loops1 ≠ loops2: different loop structure *)
+      false
+  | Error msg, _ | _, Error msg ->
+      if debug then F.printf "PEG conversion failed: %s@." msg ;
+      false
+
+
+let check_b007_migration ?(debug = false) (proc_old : Textual.ProcDesc.t)
+    (proc_new : Textual.ProcDesc.t) =
+  let cc = CC.init ~debug:false in
+  let theta_counter = ref 0 in
+  match
+    ( StructuredPeg.convert_proc ~theta_counter cc proc_old
+    , StructuredPeg.convert_proc ~theta_counter cc proc_new )
+  with
+  | Ok (atom_old, eqs_old, loops_old), Ok (atom_new, eqs_new, loops_new)
+    when Int.equal loops_old loops_new ->
+      (* Structural simplification plus the has_next length-bridges (see [gen_b007_rules]). The
+         has_next bridges as rewrites handle the outer loop of a nested body, which the directional
+         accept rules cannot reach; the value projection stays directional via the accept rules. *)
+      let rules = gen_b007_rules cc ~theta_count:loops_old in
+      let _rounds = Rewrite.Rule.full_rewrite cc rules in
+      let theta_headers =
+        List.init loops_old ~f:(fun i -> CC.mk_header cc (F.asprintf "@theta_%d" i))
+      in
+      let accept_rules = List.map b007_accept_rules ~f:(AcceptRule.parse cc) in
+      let res =
+        CC.is_equiv cc atom_old atom_new
+        || check_migration cc ~theta_headers ~accept_rules atom_old atom_new
+      in
+      if debug then (
+        F.printf "=== Rule stats ===@." ;
+        List.iter rules ~f:(fun rule ->
+            let count = Rewrite.Rule.fire_count rule in
+            if count > 0 then F.printf "  %a: fired %d time(s)@." Rewrite.Rule.pp rule count ) ;
+        if not res then (
+          F.printf "=== Procedure OLD equations ===@." ;
+          StructuredPeg.Equations.pp cc F.std_formatter eqs_old ;
+          F.printf "@.=== Procedure NEW equations ===@." ;
+          StructuredPeg.Equations.pp cc F.std_formatter eqs_new ;
+          F.printf "@.MIGRATION NOT ACCEPTED@." ;
+          F.printf "atom_old: %a@." (CC.pp_nested_term cc) atom_old ;
+          F.printf "atom_new: %a@." (CC.pp_nested_term cc) atom_new ) ) ;
+      res
+  | Ok _, Ok _ ->
+      false
+  | Error msg, _ | _, Error msg ->
+      if debug then F.printf "PEG conversion failed: %s@." msg ;
+      false
+
+
+(* All rules for B006 checking: structural (@phi/@theta) simplification plus the B006 rules. *)
+let gen_b006_rules cc ~theta_count : Rewrite.Rule.t list =
+  gen_structural_rules cc ~theta_count @ parse_rules cc (List.map b006_named_rules ~f:snd)
+
+
+let check_b006_migration ?(debug = false) ~defaults_old ~defaults_new
+    (proc_old : Textual.ProcDesc.t) (proc_new : Textual.ProcDesc.t) =
+  let cc = CC.init ~debug:false in
+  let theta_counter = ref 0 in
+  match
+    ( StructuredPeg.convert_proc ~theta_counter ~defaults:defaults_old cc proc_old
+    , StructuredPeg.convert_proc ~theta_counter ~defaults:defaults_new cc proc_new )
+  with
+  | Ok (atom_old, eqs_old, loops_old), Ok (atom_new, eqs_new, loops_new)
+    when Int.equal loops_old loops_new ->
+      let rules = gen_b006_rules cc ~theta_count:loops_old in
+      let _rounds = Rewrite.Rule.full_rewrite cc rules in
+      let theta_headers =
+        List.init loops_old ~f:(fun i -> CC.mk_header cc (F.asprintf "@theta_%d" i))
+      in
+      let res = CC.is_equiv cc atom_old atom_new || bisimilar cc ~theta_headers atom_old atom_new in
+      if debug then (
+        F.printf "=== Rule stats ===@." ;
+        List.iter rules ~f:(fun rule ->
+            let count = Rewrite.Rule.fire_count rule in
+            if count > 0 then F.printf "  %a: fired %d time(s)@." Rewrite.Rule.pp rule count ) ;
+        if not res then (
+          F.printf "=== Procedure OLD equations ===@." ;
+          StructuredPeg.Equations.pp cc F.std_formatter eqs_old ;
+          F.printf "@.=== Procedure NEW equations ===@." ;
+          StructuredPeg.Equations.pp cc F.std_formatter eqs_new ;
+          F.printf "@.MIGRATION NOT ACCEPTED@." ;
+          F.printf "atom_old: %a@." (CC.pp_nested_term cc) atom_old ;
+          F.printf "atom_new: %a@." (CC.pp_nested_term cc) atom_new ) ) ;
+      res
+  | Ok _, Ok _ ->
+      false
+  | Error msg, _ | _, Error msg ->
+      if debug then F.printf "PEG conversion failed: %s@." msg ;
+      false
+
+
+let convert_and_print ?(debug = false) text =
+  let sourcefile = Textual.SourceFile.create "test.sil" in
+  match TextualParser.parse_string sourcefile text with
+  | Ok module_ ->
+      let procs =
+        List.filter_map module_.decls ~f:(fun decl ->
+            match decl with Textual.Module.Proc p -> Some p | _ -> None )
+      in
+      List.iter procs ~f:(fun (proc : Textual.ProcDesc.t) ->
+          let cc = CC.init ~debug:false in
+          match StructuredPeg.convert_proc cc proc with
+          | Ok (root, eqs, _loop_count) ->
+              let name =
+                F.asprintf "%a" Textual.QualifiedProcName.pp proc.procdecl.qualified_name
+              in
+              F.printf "=== %s ===@." name ;
+              F.printf "Equations:@." ;
+              StructuredPeg.Equations.pp cc F.std_formatter eqs ;
+              F.printf "PEG: %a@.@." (CC.pp_nested_term cc) root
+          | Error msg ->
+              F.printf "Error: %s@." msg ) ;
+      if debug then ()
+  | Error errs ->
+      List.iter errs ~f:(fun e ->
+          F.printf "Parse error: %a@." (TextualParser.pp_error sourcefile) e )

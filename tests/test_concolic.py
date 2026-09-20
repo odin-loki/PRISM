@@ -5,9 +5,18 @@ from __future__ import annotations
 import inspect
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from helix import laws
-from helix.concolic import concolic_function, run_concolic
+from helix.bmc import HAS_Z3
+from helix.concolic import (
+    _UNSAT,
+    _branch_conditions,
+    _neighbor_for_cond,
+    _z3_solve_flip,
+    concolic_function,
+    run_concolic,
+)
 from helix.cparse import extract_functions
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -2044,6 +2053,83 @@ class TestConcolicPointer(unittest.TestCase):
         f, _ = fn("add_ll")
         r = concolic_function(f, budget=16)
         self.assertNotEqual(r.status, laws.CRASH, r.message)
+
+
+class TestConcolicKleeFork(unittest.TestCase):
+    """Mined from KLEE Executor::fork: SMT model of the negated branch."""
+
+    @unittest.skipUnless(HAS_Z3, "z3-solver not installed")
+    def test_z3_negated_branch_model_is_new_seed(self):
+        f, _ = fn("klee_fork_neg")
+        cond = _branch_conditions(f)[0]
+        got = _z3_solve_flip(f, {"x": 0}, cond, want=True)
+        self.assertIsInstance(got, dict, got)
+        self.assertEqual(got["x"], 10)
+
+    @unittest.skipUnless(HAS_Z3, "z3-solver not installed")
+    def test_z3_negated_branch_finds_crash_not_proof(self):
+        f, _ = fn("klee_fork_neg")
+        r = concolic_function(f, budget=32)
+        self.assertEqual(r.status, laws.CRASH, r.message)
+        self.assertEqual(r.cls, "INT-DIV-ZERO")
+        self.assertTrue(r.counterexample)
+        self.assertEqual(r.stage, "concolic")
+        self.assertEqual(r.strength, laws.STRENGTH_FINDS)
+        self.assertFalse(laws.is_proof(r.status))
+        self.assertNotIn(
+            r.status,
+            {laws.PROVED, laws.PROVED_UNBOUNDED, laws.PROVED_ASSUMING, laws.FAILED},
+        )
+        self.assertEqual(r.extra.get("oracle"), "z3")
+        self.assertGreater(r.extra.get("z3_seeds", 0), 0)
+
+    def test_z3_missing_keeps_concrete_clean_not_proof(self):
+        f, _ = fn("klee_fork_neg")
+        with patch("helix.concolic.HAS_Z3", False):
+            r = concolic_function(f, budget=32)
+        self.assertEqual(r.status, laws.CLEAN, r.message)
+        self.assertIn("not a proof", r.message)
+        self.assertFalse(laws.is_proof(r.status))
+        self.assertNotIn(
+            r.status,
+            {laws.PROVED, laws.PROVED_UNBOUNDED, laws.PROVED_ASSUMING, laws.CRASH},
+        )
+        self.assertEqual(r.extra.get("oracle"), "concrete")
+
+    @unittest.skipUnless(HAS_Z3, "z3-solver not installed")
+    def test_unsat_branch_is_skipped_clean_not_proof(self):
+        f, _ = fn("klee_fork_unsat")
+        cond = _branch_conditions(f)[0]
+        got = _z3_solve_flip(f, {"x": 0}, cond, want=True)
+        self.assertIs(got, _UNSAT)
+        nxt, via_z3, was_unsat = _neighbor_for_cond(f, {"x": 0}, cond)
+        self.assertIsNone(nxt)
+        self.assertTrue(was_unsat)
+        self.assertFalse(via_z3)
+        r = concolic_function(f, budget=32)
+        self.assertEqual(r.status, laws.CLEAN, r.message)
+        self.assertIn("not a proof", r.message)
+        self.assertFalse(laws.is_proof(r.status))
+        self.assertNotIn(
+            r.status,
+            {laws.PROVED, laws.PROVED_UNBOUNDED, laws.PROVED_ASSUMING, laws.CRASH, laws.FAILED},
+        )
+        self.assertGreater(r.extra.get("skipped_unsat", 0), 0)
+
+    def test_unsat_without_z3_is_clean_not_a_skipped_proof(self):
+        """Missing Z3 cannot classify the then-branch as Solver::False."""
+        f, _ = fn("klee_fork_unsat")
+        with patch("helix.concolic.HAS_Z3", False):
+            r = concolic_function(f, budget=32)
+        self.assertEqual(r.status, laws.CLEAN, r.message)
+        self.assertIn("not a proof", r.message)
+        self.assertEqual(r.extra.get("skipped_unsat", 0), 0)
+        self.assertEqual(r.extra.get("oracle"), "concrete")
+        self.assertFalse(laws.is_proof(r.status))
+        self.assertNotIn(
+            r.status,
+            {laws.PROVED, laws.PROVED_UNBOUNDED, laws.PROVED_ASSUMING, laws.CRASH, laws.FAILED},
+        )
 
 
 if __name__ == "__main__":

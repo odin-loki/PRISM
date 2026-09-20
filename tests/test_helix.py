@@ -114,6 +114,8 @@ class TestLints(unittest.TestCase):
         names = {f.function for f in hits}
         self.assertIn("uaf_bad", names)
         self.assertNotIn("checked_use", names)
+        self.assertTrue(all(f.status == laws.FAILED for f in hits))
+        self.assertFalse(any(f.status == laws.PROVED for f in hits))
 
     def test_double_free(self):
         hits = [f for f in run_lints([TD / "double_free.c"], TD)
@@ -234,7 +236,9 @@ class TestLints(unittest.TestCase):
         self.assertTrue(hits)
         names = {f.function for f in hits}
         self.assertIn("missing_return_bad", names)
+        self.assertIn("missing_return_oneline_bad", names)
         self.assertNotIn("missing_return_ok", names)
+        self.assertNotIn("missing_return_oneline_ok", names)
 
     def test_fallthrough(self):
         hits = [f for f in run_lints([TD / "fallthrough.c"], TD)
@@ -1400,6 +1404,35 @@ class TestLints(unittest.TestCase):
         for stem in ("abs_ok", "wait_api"):
             other = [f for f in run_lints([TD / f"{stem}.c"], TD)
                      if f.cls == "API-PTHREAD-JOIN"]
+            self.assertFalse(other, msg=stem)
+
+    def test_api_thrd_join(self):
+        hits = [f for f in run_lints([TD / "thrd_join_api.c"], TD)
+                if f.cls == "API-THRD-JOIN"]
+        self.assertTrue(hits)
+        names = {f.function for f in hits}
+        self.assertIn("thrd_join_bad", names)
+        self.assertIn("thrd_detach_bad", names)
+        self.assertNotIn("thrd_join_ok", names)
+        self.assertEqual(hits[0].strength, laws.STRENGTH_FINDS)
+        self.assertFalse(laws.is_proof(hits[0].status))
+        for h in hits:
+            self.assertIn("thrd", h.message.lower())
+            self.assertNotIn("pthread", h.message.lower())
+        unenc = [f for f in run_lints([TD / "thrd_unenc.c"], TD)
+                 if f.cls == "API-THRD-JOIN"]
+        self.assertTrue(unenc)
+        self.assertTrue(all(f.status == laws.FAILED for f in unenc))
+        self.assertTrue(all(not laws.is_proof(f.status) for f in unenc))
+        unenc_names = {f.function for f in unenc}
+        self.assertIn("thrd_join_unenc_bad", unenc_names)
+        self.assertIn("thrd_detach_unenc_bad", unenc_names)
+        for stem in (
+            "abs_ok", "pthread_join_api", "thr_api",
+            "iso_thread_race",
+        ):
+            other = [f for f in run_lints([TD / f"{stem}.c"], TD)
+                     if f.cls == "API-THRD-JOIN"]
             self.assertFalse(other, msg=stem)
 
     def test_api_sem_wait(self):

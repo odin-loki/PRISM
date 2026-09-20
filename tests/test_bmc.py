@@ -46,6 +46,30 @@ class TestExtractEnums(unittest.TestCase):
         self.assertEqual(d["B"], 2)
 
 
+class TestMissingZ3IsNotrun(unittest.TestCase):
+    def test_bmc_function_missing_z3_is_notrun_never_raises(self):
+        from unittest.mock import patch
+        from helix.models import FunctionInfo
+
+        fn = FunctionInfo(
+            file="abs_ok.c",
+            name="abs_ok",
+            kind="SCALAR",
+            line=1,
+            signature="int abs_ok(int x)",
+            params=[("int", "x")],
+            body="return x < 0 ? -x : x;",
+        )
+        with patch("helix.bmc.HAS_Z3", False):
+            rec = bmc_function(fn, unwind=8)
+        self.assertEqual(rec.status, laws.NOTRUN)
+        self.assertNotEqual(rec.status, laws.CLEAN)
+        self.assertNotEqual(rec.status, laws.PROVED)
+        self.assertFalse(laws.is_proof(rec.status))
+        self.assertIn("z3", rec.message.lower())
+        self.assertEqual((rec.extra or {}).get("install"), "pip install z3-solver")
+
+
 @unittest.skipUnless(HAS_Z3, "z3-solver not installed")
 class TestBMC(unittest.TestCase):
     def test_overflow_failed(self):
@@ -383,6 +407,19 @@ class TestLocalPointerHarness(unittest.TestCase):
             r.status,
             {laws.PROVED, laws.PROVED_UNBOUNDED, laws.BOUNDED},
         )
+
+    def test_iso_thrd_create_is_not_a_vacuous_proof(self):
+        r, _, _ = bmc("iso_thrd_start")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("thrd", r.message.lower())
+        self.assertNotIn(
+            r.status,
+            {laws.PROVED, laws.PROVED_UNBOUNDED, laws.BOUNDED},
+        )
+        r, _, _ = bmc("thrd_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("thrd", r.message.lower())
+        self.assertNotIn("pthread", r.message.lower())
 
     def test_recursive_identity_needs_harness_not_proof(self):
         r, _, _ = bmc("rec_id")
@@ -4486,6 +4523,314 @@ class TestLocalPointerHarness(unittest.TestCase):
         self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
         self.assertNotEqual(r.status, laws.ERROR, r.message)
 
+    def test_leftover8_libc_cxx_unenc_needs_harness(self):
+        for name, needle in (
+            ("brk_unenc_bad", "brk"),
+            ("ioctl_unenc_bad", "ioctl"),
+            ("socket_unenc_bad", "socket"),
+            ("access_unenc_bad", "access"),
+            ("scandir_unenc_bad", "scandir"),
+            ("accept_unenc_bad", "accept"),
+            ("asprintf_unenc_bad", "asprintf"),
+            ("bind_unenc_bad", "bind"),
+            ("chown_unenc_bad", "chown"),
+            ("mkfifo_unenc_bad", "mkfifo"),
+            ("setuid_unenc_bad", "setuid"),
+            ("getpwuid_unenc_bad", "getpwuid"),
+            ("swait_unenc_bad", "sync_wait"),
+            ("cassert_unenc_bad", "contracts"),
+            ("daggr_unenc_bad", "reflection"),
+            ("twnested_unenc_bad", "throw_with_nested"),
+        ):
+            with self.subTest(name=name):
+                r, _, _ = bmc(name)
+                self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+                self.assertNotEqual(r.status, laws.ERROR, r.message)
+                self.assertIn(needle, r.message.lower())
+                self.assertNotIn(
+                    r.status,
+                    {laws.PROVED, laws.PROVED_UNBOUNDED, laws.BOUNDED, laws.FAILED},
+                )
+
+    def test_leftover8_libc_cxx_unenc_ok_still_proves(self):
+        for name in (
+            "brk_unenc_ok",
+            "ioctl_unenc_ok",
+            "socket_unenc_ok",
+            "access_unenc_ok",
+            "scandir_unenc_ok",
+            "accept_unenc_ok",
+            "asprintf_unenc_ok",
+            "bind_unenc_ok",
+            "chown_unenc_ok",
+            "mkfifo_unenc_ok",
+            "setuid_unenc_ok",
+            "getpwuid_unenc_ok",
+            "swait_unenc_ok",
+            "cassert_unenc_ok",
+            "daggr_unenc_ok",
+            "twnested_unenc_ok",
+        ):
+            with self.subTest(name=name):
+                r, _, _ = bmc(name)
+                self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+                self.assertNotEqual(r.status, laws.ERROR, r.message)
+                self.assertIn(r.status, {laws.PROVED, laws.PROVED_UNBOUNDED}, r.message)
+
+    def test_leftover8_libc_cxx_neighbors_and_goto_abs_regression(self):
+        r, _, _ = bmc("sbrk_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("sbrk", r.message.lower())
+        self.assertNotRegex(r.message.lower(), r"\bbrk unencoded")
+        r, _, _ = bmc("eaccess_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("eaccess", r.message.lower())
+        self.assertNotRegex(r.message.lower(), r"\baccess unencoded")
+        r, _, _ = bmc("socketpair_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("socketpair", r.message.lower())
+        self.assertNotRegex(r.message.lower(), r"\bsocket unencoded")
+        r, _, _ = bmc("mmap_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("mmap", r.message.lower())
+        self.assertNotIn("ioctl", r.message.lower())
+        r, _, _ = bmc("nested_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("nested_exception", r.message.lower())
+        self.assertNotIn("throw_with_nested", r.message.lower())
+        r, _, _ = bmc("execution_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("execution", r.message.lower())
+        self.assertNotIn("sync_wait", r.message.lower())
+        r, _, _ = bmc("with_goto")
+        self.assertEqual(r.status, laws.ERROR, r.message)
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        r, _, _ = bmc("abs_ok")
+        self.assertEqual(r.status, laws.PROVED_UNBOUNDED, r.message)
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertNotEqual(r.status, laws.ERROR, r.message)
+
+    def test_leftover9_libc_cxx_unenc_needs_harness(self):
+        for name, needle in (
+            ("spawnattr_init_unenc_bad", "posix_spawn_file_actions"),
+            ("dlvsym_unenc_bad", "dlfunc"),
+            ("kldnextmod_unenc_bad", "kldfirstmod"),
+            ("fts_read_unenc_bad", "fts_open"),
+            ("fts_children_unenc_bad", "fts_open"),
+            ("fts_close_unenc_bad", "fts_open"),
+            ("fts_set_unenc_bad", "fts_open"),
+            ("typedmem_info_unenc_bad", "posix_typed_mem"),
+            ("schedprio_min_unenc_bad", "sched_get_priority"),
+            ("shutdown_unenc_bad", "send"),
+            ("recv_unenc_bad", "send"),
+            ("sendto_unenc_bad", "send"),
+            ("recvfrom_unenc_bad", "send"),
+            ("accept4_unenc_bad", "accept"),
+            ("seteuid_unenc_bad", "setuid"),
+            ("setgid_unenc_bad", "setuid"),
+            ("vasprintf_unenc_bad", "asprintf"),
+            ("fchown_unenc_bad", "chown"),
+            ("lchown_unenc_bad", "chown"),
+            ("mknod_unenc_bad", "mkfifo"),
+            ("getpwnam_unenc_bad", "getpwuid"),
+            ("crypt_unenc_bad", "getpwuid"),
+            ("dclass_unenc_bad", "reflection"),
+            ("caret_unenc_bad", "reflection"),
+            ("stdmeta_unenc_bad", "reflection"),
+            ("cpre_unenc_bad", "contracts"),
+            ("cpost_unenc_bad", "contracts"),
+            ("rinested_unenc_bad", "throw_with_nested"),
+            ("sigfence_unenc_bad", "atomic_thread_fence"),
+            ("atqexit_unenc_bad", "quick_exit"),
+        ):
+            with self.subTest(name=name):
+                r, _, _ = bmc(name)
+                self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+                self.assertNotEqual(r.status, laws.ERROR, r.message)
+                self.assertIn(needle, r.message.lower())
+                self.assertNotIn(
+                    r.status,
+                    {laws.PROVED, laws.PROVED_UNBOUNDED, laws.BOUNDED, laws.FAILED},
+                )
+
+    def test_leftover9_libc_cxx_unenc_ok_still_proves(self):
+        for name in (
+            "spawnattr_init_unenc_ok",
+            "dlvsym_unenc_ok",
+            "kldnextmod_unenc_ok",
+            "fts_read_unenc_ok",
+            "fts_children_unenc_ok",
+            "fts_close_unenc_ok",
+            "fts_set_unenc_ok",
+            "typedmem_info_unenc_ok",
+            "schedprio_min_unenc_ok",
+            "shutdown_unenc_ok",
+            "recv_unenc_ok",
+            "sendto_unenc_ok",
+            "recvfrom_unenc_ok",
+            "accept4_unenc_ok",
+            "seteuid_unenc_ok",
+            "setgid_unenc_ok",
+            "vasprintf_unenc_ok",
+            "fchown_unenc_ok",
+            "lchown_unenc_ok",
+            "mknod_unenc_ok",
+            "getpwnam_unenc_ok",
+            "crypt_unenc_ok",
+            "dclass_unenc_ok",
+            "caret_unenc_ok",
+            "stdmeta_unenc_ok",
+            "cpre_unenc_ok",
+            "cpost_unenc_ok",
+            "rinested_unenc_ok",
+            "sigfence_unenc_ok",
+            "atqexit_unenc_ok",
+        ):
+            with self.subTest(name=name):
+                r, _, _ = bmc(name)
+                self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+                self.assertNotEqual(r.status, laws.ERROR, r.message)
+                self.assertIn(r.status, {laws.PROVED, laws.PROVED_UNBOUNDED}, r.message)
+
+    def test_leftover9_libc_cxx_neighbors_and_goto_abs_regression(self):
+        r, _, _ = bmc("sendmsg_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("sendmsg", r.message.lower())
+        self.assertNotIn("send unencoded", r.message.lower())
+        r, _, _ = bmc("mknodat_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("mknodat", r.message.lower())
+        self.assertNotIn("mkfifo", r.message.lower())
+        r, _, _ = bmc("crypt_newhash_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("crypt_newhash", r.message.lower())
+        self.assertNotIn("getpwuid", r.message.lower())
+        r, _, _ = bmc("dlopen_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("dlopen", r.message.lower())
+        self.assertNotIn("dlfunc", r.message.lower())
+        r, _, _ = bmc("spawn_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("posix_spawn", r.message.lower())
+        self.assertNotIn("posix_spawn_file_actions", r.message.lower())
+        r, _, _ = bmc("nested_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("nested_exception", r.message.lower())
+        self.assertNotIn("throw_with_nested", r.message.lower())
+        r, _, _ = bmc("with_goto")
+        self.assertEqual(r.status, laws.ERROR, r.message)
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        r, _, _ = bmc("abs_ok")
+        self.assertEqual(r.status, laws.PROVED_UNBOUNDED, r.message)
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertNotEqual(r.status, laws.ERROR, r.message)
+
+    def test_leftover10_libc_cxx_unenc_needs_harness(self):
+        for name, needle in (
+            ("kld_load_unenc_bad", "kld_load"),
+            ("ksem_close_unenc_bad", "ksem"),
+            ("ksem_wait_unenc_bad", "ksem"),
+            ("ksem_post_unenc_bad", "ksem"),
+            ("ksem_unlink_unenc_bad", "ksem"),
+            ("devname_r_unenc_bad", "devname"),
+            ("fhlinkat_unenc_bad", "fhlink"),
+            ("fhreadlink_unenc_bad", "fhlink"),
+            ("print_unenc_bad", "format"),
+            ("println_unenc_bad", "format"),
+            ("future_unenc_bad", "async"),
+            ("ulock_unenc_bad", "mutex"),
+            ("destroy_at_unenc_bad", "construct_at"),
+            ("subsat_unenc_bad", "add_sat"),
+            ("getterm_unenc_bad", "set_terminate"),
+            ("fmtn_unenc_bad", "format_to"),
+            ("bitfloor_unenc_bad", "bit_ceil"),
+            ("stopsrc_unenc_bad", "stop_token"),
+        ):
+            with self.subTest(name=name):
+                r, _, _ = bmc(name)
+                self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+                self.assertNotEqual(r.status, laws.ERROR, r.message)
+                self.assertIn(needle, r.message.lower())
+                self.assertNotIn(
+                    r.status,
+                    {laws.PROVED, laws.PROVED_UNBOUNDED, laws.BOUNDED, laws.FAILED},
+                )
+
+    def test_leftover10_libc_cxx_unenc_ok_still_proves(self):
+        for name in (
+            "kld_load_unenc_ok",
+            "ksem_close_unenc_ok",
+            "ksem_wait_unenc_ok",
+            "ksem_post_unenc_ok",
+            "ksem_unlink_unenc_ok",
+            "devname_r_unenc_ok",
+            "fhlinkat_unenc_ok",
+            "fhreadlink_unenc_ok",
+            "print_unenc_ok",
+            "println_unenc_ok",
+            "future_unenc_ok",
+            "ulock_unenc_ok",
+            "destroy_at_unenc_ok",
+            "subsat_unenc_ok",
+            "getterm_unenc_ok",
+            "fmtn_unenc_ok",
+            "bitfloor_unenc_ok",
+            "stopsrc_unenc_ok",
+        ):
+            with self.subTest(name=name):
+                r, _, _ = bmc(name)
+                self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+                self.assertNotEqual(r.status, laws.ERROR, r.message)
+                self.assertIn(r.status, {laws.PROVED, laws.PROVED_UNBOUNDED}, r.message)
+
+    def test_leftover10_libc_cxx_neighbors_and_goto_abs_regression(self):
+        r, _, _ = bmc("kldload_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("kldload", r.message.lower())
+        self.assertNotIn("kld_load", r.message.lower())
+        r, _, _ = bmc("kld_isloaded_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("kld_load", r.message.lower())
+        self.assertNotIn("kldload unencoded", r.message.lower())
+        r, _, _ = bmc("sem_open_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("sem_open", r.message.lower())
+        self.assertNotIn("ksem", r.message.lower())
+        r, _, _ = bmc("format_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("format", r.message.lower())
+        self.assertNotIn("format_to", r.message.lower())
+        r, _, _ = bmc("fmtto_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("format_to", r.message.lower())
+        r, _, _ = bmc("async_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("async", r.message.lower())
+        self.assertNotIn("mutex", r.message.lower())
+        r, _, _ = bmc("mutex_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("mutex", r.message.lower())
+        self.assertNotIn("condition_variable", r.message.lower())
+        r, _, _ = bmc("construct_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("construct_at", r.message.lower())
+        self.assertNotIn("destroy_n", r.message.lower())
+        r, _, _ = bmc("addsat_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("add_sat", r.message.lower())
+        self.assertNotIn("sub_sat", r.message.lower())
+        r, _, _ = bmc("stop_token_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("stop_token", r.message.lower())
+        self.assertNotIn("latch", r.message.lower())
+        r, _, _ = bmc("with_goto")
+        self.assertEqual(r.status, laws.ERROR, r.message)
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        r, _, _ = bmc("abs_ok")
+        self.assertEqual(r.status, laws.PROVED_UNBOUNDED, r.message)
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertNotEqual(r.status, laws.ERROR, r.message)
+
     def test_trailing_junk_stays_error_not_harness(self):
         fn = FunctionInfo(
             file="synthetic.c",
@@ -4504,6 +4849,2691 @@ class TestLocalPointerHarness(unittest.TestCase):
             {laws.PROVED, laws.PROVED_UNBOUNDED, laws.BOUNDED},
         )
 
+    def test_leftover11_libc_cxx_unenc_needs_harness(self):
+        for name, needle in (
+            ("mulsat_unenc_bad", "add_sat"),
+            ("divsat_unenc_bad", "add_sat"),
+            ("satcast_unenc_bad", "add_sat"),
+            ("lguard_unenc_bad", "mutex"),
+            ("scoped_unenc_bad", "mutex"),
+            ("hasbit_unenc_bad", "bit_ceil"),
+            ("popcnt_unenc_bad", "bit_ceil"),
+            ("stopcb_unenc_bad", "stop_token"),
+            ("promise_unenc_bad", "async"),
+            ("smutex_unenc_bad", "condition_variable"),
+            ("czone_unenc_bad", "tzdb"),
+            ("chunkby_unenc_bad", "chunk"),
+            ("adjt_unenc_bad", "adjacent"),
+            ("texscan_unenc_bad", "transform_inclusive_scan"),
+            ("rotr_unenc_bad", "rotl"),
+            ("cmpg_unenc_bad", "cmp_less"),
+            ("cntrz_unenc_bad", "countl_zero"),
+            ("uimove_unenc_bad", "uninitialized_copy"),
+            ("uifilln_unenc_bad", "uninitialized_fill"),
+            ("pinterb_unenc_bad", "is_pointer_interconvertible"),
+        ):
+            with self.subTest(name=name):
+                r, _, _ = bmc(name)
+                self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+                self.assertNotEqual(r.status, laws.ERROR, r.message)
+                self.assertIn(needle, r.message.lower())
+                self.assertNotIn(
+                    r.status,
+                    {laws.PROVED, laws.PROVED_UNBOUNDED, laws.BOUNDED, laws.FAILED},
+                )
+
+    def test_leftover11_libc_cxx_unenc_ok_still_proves(self):
+        for name in (
+            "mulsat_unenc_ok",
+            "divsat_unenc_ok",
+            "satcast_unenc_ok",
+            "lguard_unenc_ok",
+            "scoped_unenc_ok",
+            "hasbit_unenc_ok",
+            "popcnt_unenc_ok",
+            "stopcb_unenc_ok",
+            "promise_unenc_ok",
+            "smutex_unenc_ok",
+            "czone_unenc_ok",
+            "chunkby_unenc_ok",
+            "adjt_unenc_ok",
+            "texscan_unenc_ok",
+            "rotr_unenc_ok",
+            "cmpg_unenc_ok",
+            "cntrz_unenc_ok",
+            "uimove_unenc_ok",
+            "uifilln_unenc_ok",
+            "pinterb_unenc_ok",
+        ):
+            with self.subTest(name=name):
+                r, _, _ = bmc(name)
+                self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+                self.assertNotEqual(r.status, laws.ERROR, r.message)
+                self.assertIn(r.status, {laws.PROVED, laws.PROVED_UNBOUNDED}, r.message)
+
+    def test_leftover11_libc_cxx_neighbors_and_goto_abs_regression(self):
+        r, _, _ = bmc("ulock_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("mutex", r.message.lower())
+        self.assertNotIn("shared_lock", r.message.lower())
+        r, _, _ = bmc("slock_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("shared_lock", r.message.lower())
+        self.assertNotIn("scoped_lock", r.message.lower())
+        r, _, _ = bmc("mutex_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("mutex", r.message.lower())
+        self.assertNotIn("condition_variable", r.message.lower())
+        r, _, _ = bmc("addsat_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("add_sat", r.message.lower())
+        self.assertNotIn("mul_sat", r.message.lower())
+        r, _, _ = bmc("bitceil_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("bit_ceil", r.message.lower())
+        self.assertNotIn("has_single_bit", r.message.lower())
+        r, _, _ = bmc("async_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("async", r.message.lower())
+        self.assertNotIn("promise", r.message.lower())
+        r, _, _ = bmc("condvar_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("condition_variable", r.message.lower())
+        self.assertNotIn("shared_mutex", r.message.lower())
+        r, _, _ = bmc("chunk_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("chunk", r.message.lower())
+        self.assertNotIn("chunk_by", r.message.lower())
+        r, _, _ = bmc("rotl_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("rotl", r.message.lower())
+        self.assertNotIn("rotr", r.message.lower())
+        r, _, _ = bmc("stop_token_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("stop_token", r.message.lower())
+        self.assertNotIn("latch", r.message.lower())
+        r, _, _ = bmc("with_goto")
+        self.assertEqual(r.status, laws.ERROR, r.message)
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        r, _, _ = bmc("abs_ok")
+        self.assertEqual(r.status, laws.PROVED_UNBOUNDED, r.message)
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertNotEqual(r.status, laws.ERROR, r.message)
+
+    def test_leftover12_libc_unenc_needs_harness(self):
+        for name, needle in (
+            ("madvise_unenc_bad", "madvise"),
+            ("posix_madvise_unenc_bad", "madvise"),
+            ("setusercontext_unenc_bad", "login_getclass"),
+            ("strtofflags_unenc_bad", "fflagstostr"),
+            ("kinfo_getfile_unenc_bad", "kinfo_getproc"),
+            ("kinfo_getvmmap_unenc_bad", "kinfo_getproc"),
+        ):
+            with self.subTest(name=name):
+                r, _, _ = bmc(name)
+                self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+                self.assertNotEqual(r.status, laws.ERROR, r.message)
+                self.assertIn(needle, r.message.lower())
+                self.assertNotIn(
+                    r.status,
+                    {laws.PROVED, laws.PROVED_UNBOUNDED, laws.BOUNDED, laws.FAILED},
+                )
+
+    def test_leftover12_libc_unenc_ok_still_proves(self):
+        for name in (
+            "madvise_unenc_ok",
+            "posix_madvise_unenc_ok",
+            "setusercontext_unenc_ok",
+            "strtofflags_unenc_ok",
+            "kinfo_getfile_unenc_ok",
+            "kinfo_getvmmap_unenc_ok",
+        ):
+            with self.subTest(name=name):
+                r, _, _ = bmc(name)
+                self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+                self.assertNotEqual(r.status, laws.ERROR, r.message)
+                self.assertIn(r.status, {laws.PROVED, laws.PROVED_UNBOUNDED}, r.message)
+
+    def test_leftover12_neighbors_and_goto_abs_regression(self):
+        r, _, _ = bmc("madvise_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("madvise", r.message.lower())
+        self.assertNotIn("process_madvise", r.message.lower())
+        r, _, _ = bmc("process_madvise_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("process_madvise", r.message.lower())
+        r, _, _ = bmc("login_class_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("login_getclass", r.message.lower())
+        self.assertNotIn("setusercontext", r.message.lower())
+        r, _, _ = bmc("setusercontext_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("login_getclass", r.message.lower())
+        r, _, _ = bmc("fflags_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("fflagstostr", r.message.lower())
+        self.assertNotIn("strtofflags", r.message.lower())
+        r, _, _ = bmc("strtofflags_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("fflagstostr", r.message.lower())
+        r, _, _ = bmc("kinfo_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("kinfo_getproc", r.message.lower())
+        self.assertNotIn("kinfo_getfile", r.message.lower())
+        r, _, _ = bmc("kinfo_getfile_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("kinfo_getproc", r.message.lower())
+        r, _, _ = bmc("with_goto")
+        self.assertEqual(r.status, laws.ERROR, r.message)
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        r, _, _ = bmc("abs_ok")
+        self.assertEqual(r.status, laws.PROVED_UNBOUNDED, r.message)
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertNotEqual(r.status, laws.ERROR, r.message)
+
+    def test_leftover12_libc_cxx_unenc_needs_harness(self):
+        for name, needle in (
+            ("chunkv_unenc_bad", "chunk"),
+            ("adjvw_unenc_bad", "adjacent"),
+            ("uidc_unenc_bad", "uninitialized_fill"),
+            ("uidcn_unenc_bad", "uninitialized_fill"),
+            ("uicn_unenc_bad", "uninitialized_copy"),
+            ("uimn_unenc_bad", "uninitialized_copy"),
+            ("cmple_unenc_bad", "cmp_less"),
+            ("cmpge_unenc_bad", "cmp_less"),
+            ("cmpeq_unenc_bad", "cmp_less"),
+            ("cmpne_unenc_bad", "cmp_less"),
+            ("inrng_unenc_bad", "cmp_less"),
+            ("cntlo_unenc_bad", "countl_zero"),
+            ("cntro_unenc_bad", "countl_zero"),
+            ("ifs_unenc_bad", "fstream"),
+            ("ofs_unenc_bad", "fstream"),
+            ("u8view_unenc_bad", "u8string"),
+            ("mofn_unenc_bad", "move_only_function"),
+            ("uvaln_unenc_bad", "uninitialized_value_construct"),
+        ):
+            with self.subTest(name=name):
+                r, _, _ = bmc(name)
+                self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+                self.assertNotEqual(r.status, laws.ERROR, r.message)
+                self.assertIn(needle, r.message.lower())
+                self.assertNotIn(
+                    r.status,
+                    {laws.PROVED, laws.PROVED_UNBOUNDED, laws.BOUNDED, laws.FAILED},
+                )
+
+    def test_leftover12_libc_cxx_unenc_ok_still_proves(self):
+        for name in (
+            "chunkv_unenc_ok",
+            "adjvw_unenc_ok",
+            "uidc_unenc_ok",
+            "uidcn_unenc_ok",
+            "uicn_unenc_ok",
+            "uimn_unenc_ok",
+            "cmple_unenc_ok",
+            "cmpge_unenc_ok",
+            "cmpeq_unenc_ok",
+            "cmpne_unenc_ok",
+            "inrng_unenc_ok",
+            "cntlo_unenc_ok",
+            "cntro_unenc_ok",
+            "ifs_unenc_ok",
+            "ofs_unenc_ok",
+            "u8view_unenc_ok",
+            "mofn_unenc_ok",
+            "uvaln_unenc_ok",
+        ):
+            with self.subTest(name=name):
+                r, _, _ = bmc(name)
+                self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+                self.assertNotEqual(r.status, laws.ERROR, r.message)
+                self.assertIn(r.status, {laws.PROVED, laws.PROVED_UNBOUNDED}, r.message)
+
+    def test_leftover12_libc_cxx_neighbors_and_goto_abs_regression(self):
+        r, _, _ = bmc("chunk_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("chunk", r.message.lower())
+        self.assertNotIn("chunk_view", r.message.lower())
+        r, _, _ = bmc("chunkby_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("chunk", r.message.lower())
+        self.assertNotIn("chunk_view", r.message.lower())
+        r, _, _ = bmc("adjv_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("adjacent", r.message.lower())
+        self.assertNotIn("adjacent_view", r.message.lower())
+        r, _, _ = bmc("uifill_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("uninitialized_fill", r.message.lower())
+        self.assertNotIn("default_construct", r.message.lower())
+        r, _, _ = bmc("uicopy_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("uninitialized_copy", r.message.lower())
+        self.assertNotIn("uninitialized_copy_n", r.message.lower())
+        r, _, _ = bmc("cmpl_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("cmp_less", r.message.lower())
+        self.assertNotIn("cmp_less_equal", r.message.lower())
+        r, _, _ = bmc("countl_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("countl_zero", r.message.lower())
+        self.assertNotIn("countl_one", r.message.lower())
+        r, _, _ = bmc("fstream_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("fstream", r.message.lower())
+        self.assertNotIn("ifstream", r.message.lower())
+        r, _, _ = bmc("u8_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("u8string", r.message.lower())
+        self.assertNotIn("u8string_view", r.message.lower())
+        r, _, _ = bmc("uvalue_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("uninitialized_value_construct", r.message.lower())
+        self.assertNotIn("uninitialized_value_construct_n", r.message.lower())
+        r, _, _ = bmc("copyable_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("move_only_function", r.message.lower())
+        self.assertNotIn("copyable_function", r.message.lower())
+        r, _, _ = bmc("with_goto")
+        self.assertEqual(r.status, laws.ERROR, r.message)
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        r, _, _ = bmc("abs_ok")
+        self.assertEqual(r.status, laws.PROVED_UNBOUNDED, r.message)
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertNotEqual(r.status, laws.ERROR, r.message)
+
+    def test_leftover13_libc_cxx_unenc_needs_harness(self):
+        for name, needle in (
+            ("setloginclass_unenc_bad", "loginclass"),
+            ("setfsent_unenc_bad", "getfsent"),
+            ("endfsent_unenc_bad", "getfsent"),
+            ("modstat_unenc_bad", "modfind"),
+            ("modnext_unenc_bad", "modfind"),
+            ("modfnext_unenc_bad", "modfind"),
+            ("slidev_unenc_bad", "slide"),
+            ("jwithv_unenc_bad", "join_with"),
+            ("joinv_unenc_bad", "join"),
+            ("ztransv_unenc_bad", "zip_transform"),
+            ("zipv_unenc_bad", "zip"),
+            ("asrvalv_unenc_bad", "as_rvalue"),
+            ("enumvw_unenc_bad", "enumerate"),
+            ("cartv_unenc_bad", "cartesian_product"),
+            ("stridev_unenc_bad", "stride"),
+            ("repeatv_unenc_bad", "repeat"),
+            ("twhilev_unenc_bad", "take_while"),
+            ("takevw_unenc_bad", "take"),
+            ("dwhilev_unenc_bad", "drop_while"),
+            ("dropvw_unenc_bad", "drop"),
+            ("keysv_unenc_bad", "keys"),
+            ("valsv_unenc_bad", "values"),
+            ("revv_unenc_bad", "reverse"),
+            ("countvw_unenc_bad", "counted"),
+            ("filtervw_unenc_bad", "filter"),
+            ("tvw_unenc_bad", "views::transform"),
+            ("elemsv_unenc_bad", "elements"),
+            ("iotav_unenc_bad", "iota"),
+        ):
+            with self.subTest(name=name):
+                r, _, _ = bmc(name)
+                self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+                self.assertNotEqual(r.status, laws.ERROR, r.message)
+                self.assertIn(needle, r.message.lower())
+                self.assertNotIn(
+                    r.status,
+                    {laws.PROVED, laws.PROVED_UNBOUNDED, laws.BOUNDED, laws.FAILED},
+                )
+
+    def test_leftover13_libc_cxx_unenc_ok_still_proves(self):
+        for name in (
+            "setloginclass_unenc_ok",
+            "setfsent_unenc_ok",
+            "endfsent_unenc_ok",
+            "modstat_unenc_ok",
+            "modnext_unenc_ok",
+            "modfnext_unenc_ok",
+            "slidev_unenc_ok",
+            "jwithv_unenc_ok",
+            "joinv_unenc_ok",
+            "ztransv_unenc_ok",
+            "zipv_unenc_ok",
+            "asrvalv_unenc_ok",
+            "enumvw_unenc_ok",
+            "cartv_unenc_ok",
+            "stridev_unenc_ok",
+            "repeatv_unenc_ok",
+            "twhilev_unenc_ok",
+            "takevw_unenc_ok",
+            "dwhilev_unenc_ok",
+            "dropvw_unenc_ok",
+            "keysv_unenc_ok",
+            "valsv_unenc_ok",
+            "revv_unenc_ok",
+            "countvw_unenc_ok",
+            "filtervw_unenc_ok",
+            "tvw_unenc_ok",
+            "elemsv_unenc_ok",
+            "iotav_unenc_ok",
+        ):
+            with self.subTest(name=name):
+                r, _, _ = bmc(name)
+                self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+                self.assertNotEqual(r.status, laws.ERROR, r.message)
+                self.assertIn(r.status, {laws.PROVED, laws.PROVED_UNBOUNDED}, r.message)
+
+    def test_leftover13_libc_cxx_neighbors_and_goto_abs_regression(self):
+        r, _, _ = bmc("loginclass_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("loginclass", r.message.lower())
+        self.assertNotIn("setloginclass", r.message.lower())
+        r, _, _ = bmc("setloginclass_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("loginclass", r.message.lower())
+        r, _, _ = bmc("getfsent_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("getfsent", r.message.lower())
+        self.assertNotIn("setfsent", r.message.lower())
+        r, _, _ = bmc("setfsent_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("getfsent", r.message.lower())
+        r, _, _ = bmc("modfind_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("modfind", r.message.lower())
+        self.assertNotIn("modstat", r.message.lower())
+        r, _, _ = bmc("modstat_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("modfind", r.message.lower())
+        r, _, _ = bmc("slide_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("slide", r.message.lower())
+        self.assertNotIn("slide_view", r.message.lower())
+        r, _, _ = bmc("slidev_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("slide", r.message.lower())
+        r, _, _ = bmc("jwith_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("join_with", r.message.lower())
+        self.assertNotIn("join_with_view", r.message.lower())
+        r, _, _ = bmc("vjoin_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("join", r.message.lower())
+        self.assertNotIn("join_view", r.message.lower())
+        r, _, _ = bmc("takev_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("take", r.message.lower())
+        self.assertNotIn("take_view", r.message.lower())
+        r, _, _ = bmc("tvw_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("views::transform", r.message.lower())
+        r, _, _ = bmc("filterv_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("filter", r.message.lower())
+        self.assertNotIn("filter_view", r.message.lower())
+        r, _, _ = bmc("filtervw_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("filter", r.message.lower())
+        r, _, _ = bmc("with_goto")
+        self.assertEqual(r.status, laws.ERROR, r.message)
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        r, _, _ = bmc("abs_ok")
+        self.assertEqual(r.status, laws.PROVED_UNBOUNDED, r.message)
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertNotEqual(r.status, laws.ERROR, r.message)
+
+    def test_leftover14_libc_unenc_needs_harness(self):
+        for name, needle in (
+            ("thr_new_unenc_bad", "thr_kill"),
+            ("thr_kill2_unenc_bad", "thr_kill"),
+            ("thr_self_unenc_bad", "thr_kill"),
+            ("thr_exit_unenc_bad", "thr_kill"),
+            ("thr_suspend_unenc_bad", "thr_kill"),
+            ("thr_wake_unenc_bad", "thr_kill"),
+            ("kldunload_unenc_bad", "kldload"),
+            ("kldfind_unenc_bad", "kldload"),
+            ("kldsym_unenc_bad", "kldload"),
+            ("kldstat_unenc_bad", "kldload"),
+            ("extattr_get_file_unenc_bad", "extattr"),
+            ("extattr_delete_file_unenc_bad", "extattr"),
+            ("extattr_list_file_unenc_bad", "extattr"),
+            ("extattr_set_fd_unenc_bad", "extattr"),
+            ("extattr_get_fd_unenc_bad", "extattr"),
+            ("extattr_delete_fd_unenc_bad", "extattr"),
+            ("extattr_list_fd_unenc_bad", "extattr"),
+            ("extattr_set_link_unenc_bad", "extattr"),
+            ("extattr_get_link_unenc_bad", "extattr"),
+            ("extattr_delete_link_unenc_bad", "extattr"),
+            ("extattr_list_link_unenc_bad", "extattr"),
+            ("mac_get_proc_unenc_bad", "mac_set"),
+            ("mac_set_fd_unenc_bad", "mac_set"),
+            ("mac_get_fd_unenc_bad", "mac_set"),
+            ("mac_set_file_unenc_bad", "mac_set"),
+            ("mac_get_file_unenc_bad", "mac_set"),
+            ("getaudit_unenc_bad", "auditon"),
+            ("setaudit_unenc_bad", "auditon"),
+            ("auditctl_unenc_bad", "auditon"),
+            ("kvm_openfiles_unenc_bad", "kvm_open"),
+            ("kvm_getprocs_unenc_bad", "kvm_open"),
+            ("kvm_close_unenc_bad", "kvm_open"),
+            ("kvm_nlist_unenc_bad", "kvm_open"),
+            ("cap_ioctls_limit_unenc_bad", "cap_fcntls"),
+            ("pdwait4_unenc_bad", "pdgetpid"),
+            ("crypt_checkpass_unenc_bad", "crypt_newhash"),
+            ("jail_attach_unenc_bad", "jail"),
+            ("jail_get_unenc_bad", "jail"),
+            ("jail_set_unenc_bad", "jail"),
+            ("jail_remove_unenc_bad", "jail"),
+            ("getresgid_unenc_bad", "getresuid"),
+            ("timingsafe_memcmp_unenc_bad", "timingsafe"),
+            ("setprogname_unenc_bad", "getprogname"),
+            ("setproctitle_unenc_bad", "daemon"),
+            ("arc4random_buf_unenc_bad", "arc4random"),
+            ("arc4random_uniform_unenc_bad", "arc4random"),
+            ("fchflags_unenc_bad", "chflags"),
+            ("lchflags_unenc_bad", "chflags"),
+            ("ntp_adjtime_unenc_bad", "adjtime"),
+            ("sem_getvalue_unenc_bad", "sem_trywait"),
+            ("rtprio_thread_unenc_bad", "rtprio"),
+            ("cpuset_getaffinity_unenc_bad", "cpuset"),
+            ("fhopen_unenc_bad", "getfh"),
+            ("fhstat_unenc_bad", "getfh"),
+            ("fhstatfs_unenc_bad", "getfh"),
+            ("getfhat_unenc_bad", "getfh"),
+        ):
+            with self.subTest(name=name):
+                r, _, _ = bmc(name)
+                self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+                self.assertNotEqual(r.status, laws.ERROR, r.message)
+                self.assertIn(needle, r.message.lower())
+                self.assertNotIn(
+                    r.status,
+                    {laws.PROVED, laws.PROVED_UNBOUNDED, laws.BOUNDED, laws.FAILED},
+                )
+
+    def test_leftover14_libc_unenc_ok_still_proves(self):
+        for name in (
+            "thr_new_unenc_ok",
+            "thr_kill2_unenc_ok",
+            "thr_self_unenc_ok",
+            "thr_exit_unenc_ok",
+            "thr_suspend_unenc_ok",
+            "thr_wake_unenc_ok",
+            "kldunload_unenc_ok",
+            "kldfind_unenc_ok",
+            "kldsym_unenc_ok",
+            "kldstat_unenc_ok",
+            "extattr_get_file_unenc_ok",
+            "extattr_delete_file_unenc_ok",
+            "extattr_list_file_unenc_ok",
+            "extattr_set_fd_unenc_ok",
+            "extattr_get_fd_unenc_ok",
+            "extattr_delete_fd_unenc_ok",
+            "extattr_list_fd_unenc_ok",
+            "extattr_set_link_unenc_ok",
+            "extattr_get_link_unenc_ok",
+            "extattr_delete_link_unenc_ok",
+            "extattr_list_link_unenc_ok",
+            "mac_get_proc_unenc_ok",
+            "mac_set_fd_unenc_ok",
+            "mac_get_fd_unenc_ok",
+            "mac_set_file_unenc_ok",
+            "mac_get_file_unenc_ok",
+            "getaudit_unenc_ok",
+            "setaudit_unenc_ok",
+            "auditctl_unenc_ok",
+            "kvm_openfiles_unenc_ok",
+            "kvm_getprocs_unenc_ok",
+            "kvm_close_unenc_ok",
+            "kvm_nlist_unenc_ok",
+            "cap_ioctls_limit_unenc_ok",
+            "pdwait4_unenc_ok",
+            "crypt_checkpass_unenc_ok",
+            "jail_attach_unenc_ok",
+            "jail_get_unenc_ok",
+            "jail_set_unenc_ok",
+            "jail_remove_unenc_ok",
+            "getresgid_unenc_ok",
+            "timingsafe_memcmp_unenc_ok",
+            "setprogname_unenc_ok",
+            "setproctitle_unenc_ok",
+            "arc4random_buf_unenc_ok",
+            "arc4random_uniform_unenc_ok",
+            "fchflags_unenc_ok",
+            "lchflags_unenc_ok",
+            "ntp_adjtime_unenc_ok",
+            "sem_getvalue_unenc_ok",
+            "rtprio_thread_unenc_ok",
+            "cpuset_getaffinity_unenc_ok",
+            "fhopen_unenc_ok",
+            "fhstat_unenc_ok",
+            "fhstatfs_unenc_ok",
+            "getfhat_unenc_ok",
+        ):
+            with self.subTest(name=name):
+                r, _, _ = bmc(name)
+                self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+                self.assertNotEqual(r.status, laws.ERROR, r.message)
+                self.assertIn(r.status, {laws.PROVED, laws.PROVED_UNBOUNDED}, r.message)
+
+    def test_leftover14_neighbors_and_goto_abs_regression(self):
+        r, _, _ = bmc("thr_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("thr_kill", r.message.lower())
+        self.assertNotIn("thr_new", r.message.lower())
+        r, _, _ = bmc("thr_new_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("thr_kill", r.message.lower())
+        r, _, _ = bmc("kldload_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("kldload", r.message.lower())
+        self.assertNotIn("kldunload", r.message.lower())
+        r, _, _ = bmc("kldunload_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("kldload", r.message.lower())
+        r, _, _ = bmc("extattr_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("extattr", r.message.lower())
+        self.assertNotIn("extattr_get_file", r.message.lower())
+        r, _, _ = bmc("extattr_get_file_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("extattr", r.message.lower())
+        r, _, _ = bmc("mac_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("mac_set", r.message.lower())
+        self.assertNotIn("mac_get_proc", r.message.lower())
+        r, _, _ = bmc("mac_get_proc_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("mac_set", r.message.lower())
+        r, _, _ = bmc("audit_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("auditon", r.message.lower())
+        self.assertNotIn("getaudit", r.message.lower())
+        r, _, _ = bmc("getaudit_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("auditon", r.message.lower())
+        r, _, _ = bmc("kvm_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("kvm_open", r.message.lower())
+        self.assertNotIn("kvm_openfiles", r.message.lower())
+        r, _, _ = bmc("kvm_openfiles_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("kvm_open", r.message.lower())
+        r, _, _ = bmc("cap_fcntls_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("cap_fcntls", r.message.lower())
+        self.assertNotIn("cap_ioctls", r.message.lower())
+        r, _, _ = bmc("cap_ioctls_limit_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("cap_fcntls", r.message.lower())
+        r, _, _ = bmc("pdgetpid_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("pdgetpid", r.message.lower())
+        self.assertNotIn("pdwait4", r.message.lower())
+        r, _, _ = bmc("pdwait4_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("pdgetpid", r.message.lower())
+        r, _, _ = bmc("crypt_newhash_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("crypt_newhash", r.message.lower())
+        self.assertNotIn("crypt_checkpass", r.message.lower())
+        r, _, _ = bmc("crypt_checkpass_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("crypt_newhash", r.message.lower())
+        r, _, _ = bmc("jail_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("jail", r.message.lower())
+        self.assertNotIn("jail_attach", r.message.lower())
+        r, _, _ = bmc("jail_attach_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("jail", r.message.lower())
+        r, _, _ = bmc("getresuid_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("getresuid", r.message.lower())
+        self.assertNotIn("getresgid", r.message.lower())
+        r, _, _ = bmc("getresgid_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("getresuid", r.message.lower())
+        r, _, _ = bmc("timingsafe_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("timingsafe", r.message.lower())
+        self.assertNotIn("timingsafe_memcmp", r.message.lower())
+        r, _, _ = bmc("timingsafe_memcmp_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("timingsafe", r.message.lower())
+        r, _, _ = bmc("getprogname_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("getprogname", r.message.lower())
+        self.assertNotIn("setprogname", r.message.lower())
+        r, _, _ = bmc("setprogname_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("getprogname", r.message.lower())
+        r, _, _ = bmc("daemon_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("daemon", r.message.lower())
+        self.assertNotIn("setproctitle", r.message.lower())
+        r, _, _ = bmc("setproctitle_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("daemon", r.message.lower())
+        r, _, _ = bmc("arc4random_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("arc4random", r.message.lower())
+        self.assertNotIn("arc4random_buf", r.message.lower())
+        r, _, _ = bmc("arc4random_buf_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("arc4random", r.message.lower())
+        r, _, _ = bmc("chflags_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("chflags", r.message.lower())
+        self.assertNotIn("fchflags", r.message.lower())
+        r, _, _ = bmc("fchflags_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("chflags", r.message.lower())
+        r, _, _ = bmc("adjtime_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("adjtime", r.message.lower())
+        self.assertNotIn("ntp_adjtime", r.message.lower())
+        r, _, _ = bmc("ntp_adjtime_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("adjtime", r.message.lower())
+        r, _, _ = bmc("sem_trywait_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("sem_trywait", r.message.lower())
+        self.assertNotIn("sem_getvalue", r.message.lower())
+        r, _, _ = bmc("sem_getvalue_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("sem_trywait", r.message.lower())
+        r, _, _ = bmc("rtprio_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("rtprio", r.message.lower())
+        self.assertNotIn("rtprio_thread", r.message.lower())
+        r, _, _ = bmc("rtprio_thread_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("rtprio", r.message.lower())
+        r, _, _ = bmc("cpuset_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("cpuset", r.message.lower())
+        self.assertNotIn("cpuset_getaffinity", r.message.lower())
+        r, _, _ = bmc("cpuset_getaffinity_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("cpuset", r.message.lower())
+        r, _, _ = bmc("getfh_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("getfh", r.message.lower())
+        self.assertNotIn("fhopen", r.message.lower())
+        r, _, _ = bmc("fhopen_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("getfh", r.message.lower())
+        r, _, _ = bmc("thr_new_unenc_ok")
+        self.assertIn(r.status, {laws.PROVED, laws.PROVED_UNBOUNDED}, r.message)
+        self.assertNotEqual(r.status, laws.BOUNDED, r.message)
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        r, _, _ = bmc("jail_attach_unenc_ok")
+        self.assertIn(r.status, {laws.PROVED, laws.PROVED_UNBOUNDED}, r.message)
+        self.assertNotEqual(r.status, laws.BOUNDED, r.message)
+        r, _, _ = bmc("with_goto")
+        self.assertEqual(r.status, laws.ERROR, r.message)
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        r, _, _ = bmc("abs_ok")
+        self.assertEqual(r.status, laws.PROVED_UNBOUNDED, r.message)
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertNotEqual(r.status, laws.ERROR, r.message)
+        self.assertNotEqual(r.status, laws.BOUNDED, r.message)
+
+    def test_leftover15_libc_unenc_needs_harness(self):
+        for name, needle in (
+            ("cap_rights_get_unenc_bad", "cap_rights"),
+            ("pthread_attr_destroy_unenc_bad", "pthread_attr"),
+            ("pthread_attr_setstacksize_unenc_bad", "pthread_attr"),
+            ("pthread_attr_setstack_unenc_bad", "pthread_attr"),
+            ("pthread_attr_setdetachstate_unenc_bad", "pthread_attr"),
+            ("pthread_attr_getstacksize_unenc_bad", "pthread_attr"),
+            ("pthread_attr_getstack_unenc_bad", "pthread_attr"),
+            ("pthread_attr_getdetachstate_unenc_bad", "pthread_attr"),
+            ("setcontext_unenc_bad", "getcontext"),
+            ("swapcontext_unenc_bad", "getcontext"),
+            ("makecontext_unenc_bad", "getcontext"),
+            ("wait3_unenc_bad", "wait4"),
+            ("setregid_unenc_bad", "setreuid"),
+            ("setresuid_unenc_bad", "setreuid"),
+            ("setresgid_unenc_bad", "setreuid"),
+            ("raise_unenc_bad", "kill"),
+            ("alarm_unenc_bad", "kill"),
+            ("pthread_detach_unenc_bad", "pthread_join"),
+            ("sem_post_unenc_bad", "sem_wait"),
+            ("sem_init_unenc_bad", "sem"),
+            ("sem_destroy_unenc_bad", "sem"),
+            ("fdopendir_unenc_bad", "opendir"),
+            ("readdir_unenc_bad", "opendir"),
+            ("closedir_unenc_bad", "opendir"),
+        ):
+            with self.subTest(name=name):
+                r, _, _ = bmc(name)
+                self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+                self.assertNotEqual(r.status, laws.ERROR, r.message)
+                self.assertIn(needle, r.message.lower())
+                self.assertNotIn(
+                    r.status,
+                    {laws.PROVED, laws.PROVED_UNBOUNDED, laws.BOUNDED, laws.FAILED},
+                )
+
+    def test_leftover15_libc_unenc_ok_still_proves(self):
+        for name in (
+            "cap_rights_get_unenc_ok",
+            "pthread_attr_destroy_unenc_ok",
+            "pthread_attr_setstacksize_unenc_ok",
+            "pthread_attr_setstack_unenc_ok",
+            "pthread_attr_setdetachstate_unenc_ok",
+            "pthread_attr_getstacksize_unenc_ok",
+            "pthread_attr_getstack_unenc_ok",
+            "pthread_attr_getdetachstate_unenc_ok",
+            "setcontext_unenc_ok",
+            "swapcontext_unenc_ok",
+            "makecontext_unenc_ok",
+            "wait3_unenc_ok",
+            "setregid_unenc_ok",
+            "setresuid_unenc_ok",
+            "setresgid_unenc_ok",
+            "raise_unenc_ok",
+            "alarm_unenc_ok",
+            "pthread_detach_unenc_ok",
+            "sem_post_unenc_ok",
+            "sem_init_unenc_ok",
+            "sem_destroy_unenc_ok",
+            "fdopendir_unenc_ok",
+            "readdir_unenc_ok",
+            "closedir_unenc_ok",
+        ):
+            with self.subTest(name=name):
+                r, _, _ = bmc(name)
+                self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+                self.assertNotEqual(r.status, laws.ERROR, r.message)
+                self.assertIn(r.status, {laws.PROVED, laws.PROVED_UNBOUNDED}, r.message)
+
+    def test_leftover15_neighbors_and_goto_abs_regression(self):
+        r, _, _ = bmc("cap_rights_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("cap_rights", r.message.lower())
+        self.assertNotIn("cap_rights_get", r.message.lower())
+        r, _, _ = bmc("cap_rights_get_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("cap_rights", r.message.lower())
+        r, _, _ = bmc("pthread_attr_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("pthread_attr", r.message.lower())
+        self.assertNotIn("pthread_attr_destroy", r.message.lower())
+        r, _, _ = bmc("pthread_attr_destroy_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("pthread_attr", r.message.lower())
+        r, _, _ = bmc("ucontext_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("getcontext", r.message.lower())
+        self.assertNotIn("setcontext", r.message.lower())
+        r, _, _ = bmc("setcontext_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("getcontext", r.message.lower())
+        r, _, _ = bmc("wait4_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("wait4", r.message.lower())
+        self.assertNotIn("wait3", r.message.lower())
+        r, _, _ = bmc("wait3_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("wait4", r.message.lower())
+        r, _, _ = bmc("setreuid_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("setreuid", r.message.lower())
+        self.assertNotIn("setregid", r.message.lower())
+        r, _, _ = bmc("setregid_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("setreuid", r.message.lower())
+        r, _, _ = bmc("kill_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("kill", r.message.lower())
+        self.assertNotIn("raise", r.message.lower())
+        r, _, _ = bmc("raise_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("kill", r.message.lower())
+        r, _, _ = bmc("join_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("pthread_join", r.message.lower())
+        self.assertNotIn("pthread_detach", r.message.lower())
+        r, _, _ = bmc("pthread_detach_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("pthread_join", r.message.lower())
+        r, _, _ = bmc("sem_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("sem_wait", r.message.lower())
+        self.assertNotIn("sem_post", r.message.lower())
+        r, _, _ = bmc("sem_post_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("sem_wait", r.message.lower())
+        r, _, _ = bmc("opendir_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("opendir", r.message.lower())
+        self.assertNotIn("fdopendir", r.message.lower())
+        r, _, _ = bmc("fdopendir_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("opendir", r.message.lower())
+        r, _, _ = bmc("cap_rights_get_unenc_ok")
+        self.assertIn(r.status, {laws.PROVED, laws.PROVED_UNBOUNDED}, r.message)
+        self.assertNotEqual(r.status, laws.BOUNDED, r.message)
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        r, _, _ = bmc("pthread_detach_unenc_ok")
+        self.assertIn(r.status, {laws.PROVED, laws.PROVED_UNBOUNDED}, r.message)
+        self.assertNotEqual(r.status, laws.BOUNDED, r.message)
+        r, _, _ = bmc("with_goto")
+        self.assertEqual(r.status, laws.ERROR, r.message)
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        r, _, _ = bmc("abs_ok")
+        self.assertEqual(r.status, laws.PROVED_UNBOUNDED, r.message)
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertNotEqual(r.status, laws.ERROR, r.message)
+        self.assertNotEqual(r.status, laws.BOUNDED, r.message)
+
+    def test_leftover16_libc_unenc_needs_harness(self):
+        for name, needle in (
+            ("pthread_once_unenc_bad", "pthread join"),
+            ("pthread_key_delete_unenc_bad", "pthread_key_create"),
+            ("pthread_setspecific_unenc_bad", "pthread_key_create"),
+            ("pthread_getspecific_unenc_bad", "pthread_key_create"),
+            ("pthread_cond_timedwait_unenc_bad", "pthread_cond"),
+            ("pthread_cond_signal_unenc_bad", "pthread_cond"),
+            ("pthread_cond_broadcast_unenc_bad", "pthread_cond"),
+            ("pthread_cond_init_unenc_bad", "pthread_cond"),
+            ("pthread_cond_destroy_unenc_bad", "pthread_cond"),
+            ("pthread_rwlock_wrlock_unenc_bad", "pthread_rwlock"),
+            ("pthread_rwlock_unlock_unenc_bad", "pthread_rwlock"),
+            ("pthread_rwlock_init_unenc_bad", "pthread_rwlock"),
+            ("pthread_rwlock_destroy_unenc_bad", "pthread_rwlock"),
+            ("pthread_rwlock_tryrdlock_unenc_bad", "pthread_rwlock"),
+            ("pthread_rwlock_trywrlock_unenc_bad", "pthread_rwlock"),
+            ("pthread_rwlock_timedrdlock_unenc_bad", "pthread_rwlock"),
+            ("pthread_rwlock_timedwrlock_unenc_bad", "pthread_rwlock"),
+            ("pthread_spin_unlock_unenc_bad", "pthread_spin"),
+            ("pthread_spin_trylock_unenc_bad", "pthread_spin"),
+            ("pthread_spin_init_unenc_bad", "pthread_spin"),
+            ("pthread_spin_destroy_unenc_bad", "pthread_spin"),
+            ("pthread_barrier_init_unenc_bad", "pthread_barrier"),
+            ("pthread_barrier_destroy_unenc_bad", "pthread_barrier"),
+            ("dup2_unenc_bad", "dup"),
+            ("dup3_unenc_bad", "dup"),
+            ("pipe2_unenc_bad", "pipe"),
+            ("wait_unenc_bad", "wait"),
+            ("waitid_unenc_bad", "wait"),
+            ("poll_unenc_bad", "select"),
+            ("pselect_unenc_bad", "select"),
+            ("epoll_wait_unenc_bad", "select"),
+            ("epoll_ctl_unenc_bad", "select"),
+            ("recvmsg_unenc_bad", "sendmsg"),
+            ("freeaddrinfo_unenc_bad", "addrinfo"),
+            ("sysctlbyname_unenc_bad", "sysctl"),
+            ("setfsgid_unenc_bad", "setfsuid"),
+            ("setsid_unenc_bad", "setpgid"),
+            ("getsid_unenc_bad", "setpgid"),
+            ("sem_close_unenc_bad", "sem_open"),
+            ("sem_unlink_unenc_bad", "sem_open"),
+            ("getrlimit_unenc_bad", "setrlimit"),
+            ("lstat_unenc_bad", "stat"),
+            ("fstat_unenc_bad", "stat"),
+            ("usleep_unenc_bad", "sleep"),
+            ("nanosleep_unenc_bad", "sleep"),
+            ("aio_write_unenc_bad", "aio"),
+            ("aio_error_unenc_bad", "aio"),
+            ("aio_return_unenc_bad", "aio"),
+            ("aio_suspend_unenc_bad", "aio"),
+            ("io_uring_enter_unenc_bad", "io_uring"),
+            ("io_uring_register_unenc_bad", "io_uring"),
+            ("lsetxattr_unenc_bad", "setxattr"),
+            ("fsetxattr_unenc_bad", "setxattr"),
+            ("getxattr_unenc_bad", "setxattr"),
+            ("listxattr_unenc_bad", "setxattr"),
+            ("removexattr_unenc_bad", "setxattr"),
+            ("landlock_add_rule_unenc_bad", "landlock"),
+            ("landlock_restrict_self_unenc_bad", "landlock"),
+            ("mq_timedsend_unenc_bad", "mq_unlink"),
+            ("mq_timedreceive_unenc_bad", "mq_unlink"),
+            ("mq_notify_unenc_bad", "mq_unlink"),
+            ("mq_getsetattr_unenc_bad", "mq_unlink"),
+            ("globfree_unenc_bad", "glob"),
+            ("posix_spawnp_unenc_bad", "posix_spawn"),
+            ("shm_unlink_unenc_bad", "shm_open"),
+            ("gettimeofday_unenc_bad", "clock_gettime"),
+            ("ftell_unenc_bad", "fseek"),
+            ("rewind_unenc_bad", "fseek"),
+            ("fgetpos_unenc_bad", "fseek"),
+            ("fsetpos_unenc_bad", "fseek"),
+            ("setsockopt_unenc_bad", "getsockopt"),
+            ("getpeername_unenc_bad", "getsockname"),
+        ):
+            with self.subTest(name=name):
+                r, _, _ = bmc(name)
+                self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+                self.assertNotEqual(r.status, laws.ERROR, r.message)
+                self.assertIn(needle, r.message.lower())
+                self.assertNotIn(
+                    r.status,
+                    {laws.PROVED, laws.PROVED_UNBOUNDED, laws.BOUNDED, laws.FAILED},
+                )
+
+    def test_leftover16_libc_unenc_ok_still_proves(self):
+        for name in (
+            "pthread_once_unenc_ok",
+            "pthread_key_delete_unenc_ok",
+            "pthread_setspecific_unenc_ok",
+            "pthread_getspecific_unenc_ok",
+            "pthread_cond_timedwait_unenc_ok",
+            "pthread_cond_signal_unenc_ok",
+            "pthread_cond_broadcast_unenc_ok",
+            "pthread_cond_init_unenc_ok",
+            "pthread_cond_destroy_unenc_ok",
+            "pthread_rwlock_wrlock_unenc_ok",
+            "pthread_rwlock_unlock_unenc_ok",
+            "pthread_rwlock_init_unenc_ok",
+            "pthread_rwlock_destroy_unenc_ok",
+            "pthread_rwlock_tryrdlock_unenc_ok",
+            "pthread_rwlock_trywrlock_unenc_ok",
+            "pthread_rwlock_timedrdlock_unenc_ok",
+            "pthread_rwlock_timedwrlock_unenc_ok",
+            "pthread_spin_unlock_unenc_ok",
+            "pthread_spin_trylock_unenc_ok",
+            "pthread_spin_init_unenc_ok",
+            "pthread_spin_destroy_unenc_ok",
+            "pthread_barrier_init_unenc_ok",
+            "pthread_barrier_destroy_unenc_ok",
+            "dup2_unenc_ok",
+            "dup3_unenc_ok",
+            "pipe2_unenc_ok",
+            "wait_unenc_ok",
+            "waitid_unenc_ok",
+            "poll_unenc_ok",
+            "pselect_unenc_ok",
+            "epoll_wait_unenc_ok",
+            "epoll_ctl_unenc_ok",
+            "recvmsg_unenc_ok",
+            "freeaddrinfo_unenc_ok",
+            "sysctlbyname_unenc_ok",
+            "setfsgid_unenc_ok",
+            "setsid_unenc_ok",
+            "getsid_unenc_ok",
+            "sem_close_unenc_ok",
+            "sem_unlink_unenc_ok",
+            "getrlimit_unenc_ok",
+            "lstat_unenc_ok",
+            "fstat_unenc_ok",
+            "usleep_unenc_ok",
+            "nanosleep_unenc_ok",
+            "aio_write_unenc_ok",
+            "aio_error_unenc_ok",
+            "aio_return_unenc_ok",
+            "aio_suspend_unenc_ok",
+            "io_uring_enter_unenc_ok",
+            "io_uring_register_unenc_ok",
+            "lsetxattr_unenc_ok",
+            "fsetxattr_unenc_ok",
+            "getxattr_unenc_ok",
+            "listxattr_unenc_ok",
+            "removexattr_unenc_ok",
+            "landlock_add_rule_unenc_ok",
+            "landlock_restrict_self_unenc_ok",
+            "mq_timedsend_unenc_ok",
+            "mq_timedreceive_unenc_ok",
+            "mq_notify_unenc_ok",
+            "mq_getsetattr_unenc_ok",
+            "globfree_unenc_ok",
+            "posix_spawnp_unenc_ok",
+            "shm_unlink_unenc_ok",
+            "gettimeofday_unenc_ok",
+            "ftell_unenc_ok",
+            "rewind_unenc_ok",
+            "fgetpos_unenc_ok",
+            "fsetpos_unenc_ok",
+            "setsockopt_unenc_ok",
+            "getpeername_unenc_ok",
+        ):
+            with self.subTest(name=name):
+                r, _, _ = bmc(name)
+                self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+                self.assertNotEqual(r.status, laws.ERROR, r.message)
+                self.assertIn(r.status, {laws.PROVED, laws.PROVED_UNBOUNDED}, r.message)
+
+    def test_leftover16_neighbors_and_goto_abs_regression(self):
+        r, _, _ = bmc("join_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("pthread_join", r.message.lower())
+        self.assertNotIn("pthread_once", r.message.lower())
+        r, _, _ = bmc("pthread_once_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("pthread join", r.message.lower())
+        r, _, _ = bmc("pthread_key_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("pthread_key", r.message.lower())
+        self.assertNotIn("pthread_key_delete", r.message.lower())
+        r, _, _ = bmc("pthread_key_delete_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("pthread_key_create", r.message.lower())
+        r, _, _ = bmc("pthread_cond_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("pthread_cond", r.message.lower())
+        self.assertNotIn("pthread_cond_signal", r.message.lower())
+        r, _, _ = bmc("pthread_cond_signal_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("pthread_cond", r.message.lower())
+        r, _, _ = bmc("rwlock_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("pthread_rwlock", r.message.lower())
+        self.assertNotIn("pthread_rwlock_wrlock", r.message.lower())
+        r, _, _ = bmc("pthread_rwlock_wrlock_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("pthread_rwlock", r.message.lower())
+        r, _, _ = bmc("spin_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("pthread_spin", r.message.lower())
+        self.assertNotIn("pthread_spin_unlock", r.message.lower())
+        r, _, _ = bmc("pthread_spin_unlock_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("pthread_spin", r.message.lower())
+        r, _, _ = bmc("pthread_barrier_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("pthread_barrier", r.message.lower())
+        self.assertNotIn("pthread_barrier_init", r.message.lower())
+        r, _, _ = bmc("pthread_barrier_init_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("pthread_barrier", r.message.lower())
+        r, _, _ = bmc("dup_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("dup", r.message.lower())
+        self.assertNotIn("dup2", r.message.lower())
+        r, _, _ = bmc("dup2_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("dup", r.message.lower())
+        r, _, _ = bmc("pipe_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("pipe", r.message.lower())
+        self.assertNotIn("pipe2", r.message.lower())
+        r, _, _ = bmc("pipe2_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("pipe", r.message.lower())
+        r, _, _ = bmc("waitpid_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("wait", r.message.lower())
+        self.assertNotIn("waitid", r.message.lower())
+        r, _, _ = bmc("waitid_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("wait", r.message.lower())
+        r, _, _ = bmc("select_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("select", r.message.lower())
+        self.assertNotIn("poll", r.message.lower())
+        r, _, _ = bmc("poll_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("select", r.message.lower())
+        r, _, _ = bmc("sendmsg_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("sendmsg", r.message.lower())
+        self.assertNotIn("recvmsg", r.message.lower())
+        r, _, _ = bmc("recvmsg_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("sendmsg", r.message.lower())
+        r, _, _ = bmc("addrinfo_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("addrinfo", r.message.lower())
+        self.assertNotIn("freeaddrinfo", r.message.lower())
+        r, _, _ = bmc("freeaddrinfo_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("addrinfo", r.message.lower())
+        r, _, _ = bmc("sysctl_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("sysctl", r.message.lower())
+        self.assertNotIn("sysctlbyname", r.message.lower())
+        r, _, _ = bmc("sysctlbyname_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("sysctl", r.message.lower())
+        r, _, _ = bmc("setfsuid_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("setfsuid", r.message.lower())
+        self.assertNotIn("setfsgid", r.message.lower())
+        r, _, _ = bmc("setfsgid_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("setfsuid", r.message.lower())
+        r, _, _ = bmc("setpgid_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("setpgid", r.message.lower())
+        self.assertNotIn("setsid", r.message.lower())
+        r, _, _ = bmc("setsid_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("setpgid", r.message.lower())
+        r, _, _ = bmc("sem_open_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("sem_open", r.message.lower())
+        self.assertNotIn("sem_close", r.message.lower())
+        r, _, _ = bmc("sem_close_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("sem_open", r.message.lower())
+        r, _, _ = bmc("setrlimit_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("setrlimit", r.message.lower())
+        self.assertNotIn("getrlimit", r.message.lower())
+        r, _, _ = bmc("getrlimit_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("setrlimit", r.message.lower())
+        r, _, _ = bmc("stat_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("stat", r.message.lower())
+        self.assertNotIn("lstat", r.message.lower())
+        r, _, _ = bmc("lstat_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("stat", r.message.lower())
+        r, _, _ = bmc("sleep_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("sleep", r.message.lower())
+        self.assertNotIn("usleep", r.message.lower())
+        r, _, _ = bmc("usleep_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("sleep", r.message.lower())
+        r, _, _ = bmc("aio_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("aio", r.message.lower())
+        self.assertNotIn("aio_write", r.message.lower())
+        r, _, _ = bmc("aio_write_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("aio", r.message.lower())
+        r, _, _ = bmc("iouring_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("io_uring", r.message.lower())
+        self.assertNotIn("io_uring_enter", r.message.lower())
+        r, _, _ = bmc("io_uring_enter_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("io_uring", r.message.lower())
+        r, _, _ = bmc("setxattr_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("setxattr", r.message.lower())
+        self.assertNotIn("getxattr", r.message.lower())
+        r, _, _ = bmc("getxattr_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("setxattr", r.message.lower())
+        r, _, _ = bmc("landlock_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("landlock", r.message.lower())
+        self.assertNotIn("landlock_add_rule", r.message.lower())
+        r, _, _ = bmc("landlock_add_rule_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("landlock", r.message.lower())
+        r, _, _ = bmc("mq_unlink_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("mq_unlink", r.message.lower())
+        self.assertNotIn("mq_timedsend", r.message.lower())
+        r, _, _ = bmc("mq_timedsend_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("mq_unlink", r.message.lower())
+        r, _, _ = bmc("pthread_once_unenc_ok")
+        self.assertIn(r.status, {laws.PROVED, laws.PROVED_UNBOUNDED}, r.message)
+        self.assertNotEqual(r.status, laws.BOUNDED, r.message)
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        r, _, _ = bmc("getrlimit_unenc_ok")
+        self.assertIn(r.status, {laws.PROVED, laws.PROVED_UNBOUNDED}, r.message)
+        self.assertNotEqual(r.status, laws.BOUNDED, r.message)
+        r, _, _ = bmc("with_goto")
+        self.assertEqual(r.status, laws.ERROR, r.message)
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        r, _, _ = bmc("abs_ok")
+        self.assertEqual(r.status, laws.PROVED_UNBOUNDED, r.message)
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertNotEqual(r.status, laws.ERROR, r.message)
+        self.assertNotEqual(r.status, laws.BOUNDED, r.message)
+
+    def test_leftover17_libc_unenc_needs_harness(self):
+        for name, needle in (
+            ("posix_memalign_unenc_bad", "aligned_alloc"),
+            ("munlock_unenc_bad", "mlock"),
+            ("mlockall_unenc_bad", "mlock"),
+            ("munlockall_unenc_bad", "mlock"),
+            ("sched_getaffinity_unenc_bad", "sched_setaffinity"),
+            ("capget_unenc_bad", "capset"),
+            ("pidfd_send_signal_unenc_bad", "pidfd_open"),
+            ("pidfd_getfd_unenc_bad", "pidfd_open"),
+            ("setpriority_unenc_bad", "getpriority"),
+            ("setgroups_unenc_bad", "initgroups"),
+            ("setns_unenc_bad", "unshare"),
+            ("recvmmsg_unenc_bad", "sendmmsg"),
+            ("io_destroy_unenc_bad", "io_setup"),
+            ("io_cancel_unenc_bad", "io_setup"),
+            ("io_pgetevents_unenc_bad", "io_setup"),
+            ("io_getevents_unenc_bad", "io_submit"),
+            ("shmdt_unenc_bad", "shmat"),
+            ("semtimedop_unenc_bad", "semop"),
+            ("msgrcv_unenc_bad", "msgsnd"),
+            ("timer_gettime_unenc_bad", "timer_delete"),
+            ("timer_getoverrun_unenc_bad", "timer_delete"),
+        ):
+            with self.subTest(name=name):
+                r, _, _ = bmc(name)
+                self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+                self.assertNotEqual(r.status, laws.ERROR, r.message)
+                self.assertIn(needle, r.message.lower())
+                self.assertNotIn(
+                    r.status,
+                    {laws.PROVED, laws.PROVED_UNBOUNDED, laws.BOUNDED, laws.FAILED},
+                )
+
+    def test_leftover17_libc_unenc_ok_still_proves(self):
+        for name in (
+            "posix_memalign_unenc_ok",
+            "munlock_unenc_ok",
+            "mlockall_unenc_ok",
+            "munlockall_unenc_ok",
+            "sched_getaffinity_unenc_ok",
+            "capget_unenc_ok",
+            "pidfd_send_signal_unenc_ok",
+            "pidfd_getfd_unenc_ok",
+            "setpriority_unenc_ok",
+            "setgroups_unenc_ok",
+            "setns_unenc_ok",
+            "recvmmsg_unenc_ok",
+            "io_destroy_unenc_ok",
+            "io_cancel_unenc_ok",
+            "io_pgetevents_unenc_ok",
+            "io_getevents_unenc_ok",
+            "shmdt_unenc_ok",
+            "semtimedop_unenc_ok",
+            "msgrcv_unenc_ok",
+            "timer_gettime_unenc_ok",
+            "timer_getoverrun_unenc_ok",
+        ):
+            with self.subTest(name=name):
+                r, _, _ = bmc(name)
+                self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+                self.assertNotEqual(r.status, laws.ERROR, r.message)
+                self.assertIn(r.status, {laws.PROVED, laws.PROVED_UNBOUNDED}, r.message)
+
+    def test_leftover17_neighbors_and_goto_abs_regression(self):
+        r, _, _ = bmc("aligned_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("aligned_alloc", r.message.lower())
+        self.assertNotIn("posix_memalign", r.message.lower())
+        r, _, _ = bmc("posix_memalign_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("aligned_alloc", r.message.lower())
+        r, _, _ = bmc("mlock_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("mlock", r.message.lower())
+        self.assertNotIn("munlock", r.message.lower())
+        r, _, _ = bmc("munlock_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("mlock", r.message.lower())
+        r, _, _ = bmc("mlockall_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("mlock", r.message.lower())
+        r, _, _ = bmc("munlockall_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("mlock", r.message.lower())
+        r, _, _ = bmc("sched_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("sched_setaffinity", r.message.lower())
+        self.assertNotIn("sched_getaffinity", r.message.lower())
+        r, _, _ = bmc("sched_getaffinity_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("sched_setaffinity", r.message.lower())
+        r, _, _ = bmc("capset_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("capset", r.message.lower())
+        self.assertNotIn("capget", r.message.lower())
+        r, _, _ = bmc("capget_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("capset", r.message.lower())
+        r, _, _ = bmc("pidfd_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("pidfd_open", r.message.lower())
+        self.assertNotIn("pidfd_send_signal", r.message.lower())
+        r, _, _ = bmc("pidfd_send_signal_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("pidfd_open", r.message.lower())
+        r, _, _ = bmc("pidfd_getfd_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("pidfd_open", r.message.lower())
+        r, _, _ = bmc("getpriority_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("getpriority", r.message.lower())
+        self.assertNotIn("setpriority", r.message.lower())
+        r, _, _ = bmc("setpriority_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("getpriority", r.message.lower())
+        r, _, _ = bmc("initgroups_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("initgroups", r.message.lower())
+        self.assertNotIn("setgroups", r.message.lower())
+        r, _, _ = bmc("setgroups_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("initgroups", r.message.lower())
+        r, _, _ = bmc("clone_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("unshare", r.message.lower())
+        self.assertNotIn("setns", r.message.lower())
+        r, _, _ = bmc("setns_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("unshare", r.message.lower())
+        r, _, _ = bmc("sendmmsg_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("sendmmsg", r.message.lower())
+        self.assertNotIn("recvmmsg", r.message.lower())
+        r, _, _ = bmc("recvmmsg_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("sendmmsg", r.message.lower())
+        r, _, _ = bmc("io_setup_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("io_setup", r.message.lower())
+        self.assertNotIn("io_destroy", r.message.lower())
+        r, _, _ = bmc("io_destroy_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("io_setup", r.message.lower())
+        r, _, _ = bmc("io_cancel_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("io_setup", r.message.lower())
+        r, _, _ = bmc("io_pgetevents_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("io_setup", r.message.lower())
+        r, _, _ = bmc("io_submit_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("io_submit", r.message.lower())
+        self.assertNotIn("io_getevents", r.message.lower())
+        r, _, _ = bmc("io_getevents_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("io_submit", r.message.lower())
+        r, _, _ = bmc("shmat_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("shmat", r.message.lower())
+        self.assertNotIn("shmdt", r.message.lower())
+        r, _, _ = bmc("shmdt_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("shmat", r.message.lower())
+        r, _, _ = bmc("semop_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("semop", r.message.lower())
+        self.assertNotIn("semtimedop", r.message.lower())
+        r, _, _ = bmc("semtimedop_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("semop", r.message.lower())
+        r, _, _ = bmc("msgsnd_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("msgsnd", r.message.lower())
+        self.assertNotIn("msgrcv", r.message.lower())
+        r, _, _ = bmc("msgrcv_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("msgsnd", r.message.lower())
+        r, _, _ = bmc("timer_delete_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("timer_delete", r.message.lower())
+        self.assertNotIn("timer_gettime", r.message.lower())
+        r, _, _ = bmc("timer_gettime_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("timer_delete", r.message.lower())
+        r, _, _ = bmc("timer_getoverrun_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("timer_delete", r.message.lower())
+        r, _, _ = bmc("posix_memalign_unenc_ok")
+        self.assertIn(r.status, {laws.PROVED, laws.PROVED_UNBOUNDED}, r.message)
+        self.assertNotEqual(r.status, laws.BOUNDED, r.message)
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        r, _, _ = bmc("setns_unenc_ok")
+        self.assertIn(r.status, {laws.PROVED, laws.PROVED_UNBOUNDED}, r.message)
+        self.assertNotEqual(r.status, laws.BOUNDED, r.message)
+        r, _, _ = bmc("with_goto")
+        self.assertEqual(r.status, laws.ERROR, r.message)
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        r, _, _ = bmc("abs_ok")
+        self.assertEqual(r.status, laws.PROVED_UNBOUNDED, r.message)
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertNotEqual(r.status, laws.ERROR, r.message)
+        self.assertNotEqual(r.status, laws.BOUNDED, r.message)
+
+    def test_leftover18_libc_unenc_needs_harness(self):
+        for name, needle in (
+            ("mmap_unenc_bad", "mmap"),
+            ("munmap_unenc_bad", "mmap"),
+            ("mprotect_unenc_bad", "mmap"),
+            ("chmod_unenc_bad", "chmod"),
+            ("fchmod_unenc_bad", "chmod"),
+            ("mkdir_unenc_bad", "mkdir"),
+            ("rmdir_unenc_bad", "mkdir"),
+            ("rename_unenc_bad", "mkdir"),
+        ):
+            with self.subTest(name=name):
+                r, _, _ = bmc(name)
+                self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+                self.assertNotEqual(r.status, laws.ERROR, r.message)
+                self.assertIn(needle, r.message.lower())
+                self.assertNotIn(
+                    r.status,
+                    {laws.PROVED, laws.PROVED_UNBOUNDED, laws.BOUNDED, laws.FAILED},
+                )
+
+    def test_leftover18_libc_unenc_ok_still_proves(self):
+        for name in (
+            "mmap_unenc_ok",
+            "munmap_unenc_ok",
+            "mprotect_unenc_ok",
+            "chmod_unenc_ok",
+            "fchmod_unenc_ok",
+            "mkdir_unenc_ok",
+            "rmdir_unenc_ok",
+            "rename_unenc_ok",
+        ):
+            with self.subTest(name=name):
+                r, _, _ = bmc(name)
+                self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+                self.assertNotEqual(r.status, laws.ERROR, r.message)
+                self.assertIn(r.status, {laws.PROVED, laws.PROVED_UNBOUNDED}, r.message)
+
+    def test_leftover18_neighbors_and_goto_abs_regression(self):
+        r, _, _ = bmc("mmap_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("mmap", r.message.lower())
+        self.assertNotIn("munmap", r.message.lower())
+        self.assertNotIn("mprotect", r.message.lower())
+        r, _, _ = bmc("munmap_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("mmap", r.message.lower())
+        r, _, _ = bmc("mprotect_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("mmap", r.message.lower())
+        r, _, _ = bmc("chmod_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("chmod", r.message.lower())
+        self.assertNotIn("fchmod", r.message.lower())
+        r, _, _ = bmc("fchmod_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("chmod", r.message.lower())
+        r, _, _ = bmc("mkdir_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("mkdir", r.message.lower())
+        self.assertNotIn("rmdir", r.message.lower())
+        self.assertNotIn("rename", r.message.lower())
+        r, _, _ = bmc("rmdir_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("mkdir", r.message.lower())
+        r, _, _ = bmc("rename_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("mkdir", r.message.lower())
+        r, _, _ = bmc("mmap_unenc_ok")
+        self.assertIn(r.status, {laws.PROVED, laws.PROVED_UNBOUNDED}, r.message)
+        self.assertNotEqual(r.status, laws.BOUNDED, r.message)
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        r, _, _ = bmc("chmod_unenc_ok")
+        self.assertIn(r.status, {laws.PROVED, laws.PROVED_UNBOUNDED}, r.message)
+        self.assertNotEqual(r.status, laws.BOUNDED, r.message)
+        r, _, _ = bmc("mkdir_unenc_ok")
+        self.assertIn(r.status, {laws.PROVED, laws.PROVED_UNBOUNDED}, r.message)
+        self.assertNotEqual(r.status, laws.BOUNDED, r.message)
+        r, _, _ = bmc("munmap_unenc_ok")
+        self.assertIn(r.status, {laws.PROVED, laws.PROVED_UNBOUNDED}, r.message)
+        self.assertNotEqual(r.status, laws.BOUNDED, r.message)
+        r, _, _ = bmc("with_goto")
+        self.assertEqual(r.status, laws.ERROR, r.message)
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        r, _, _ = bmc("abs_ok")
+        self.assertEqual(r.status, laws.PROVED_UNBOUNDED, r.message)
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertNotEqual(r.status, laws.ERROR, r.message)
+        self.assertNotEqual(r.status, laws.BOUNDED, r.message)
+
+    def test_leftover19_libc_unenc_needs_harness(self):
+        for name, needle in (
+            ("clone_call_unenc_bad", "unshare"),
+            ("listmount_call_unenc_bad", "listmount"),
+            ("fallocate_call_unenc_bad", "fallocate"),
+            ("epoll_create1_unenc_bad", "epoll_create"),
+            ("epoll_pwait2_unenc_bad", "epoll_pwait"),
+            ("rt_tgsigqueueinfo_unenc_bad", "rt_sigqueueinfo"),
+            ("file_setattr_unenc_bad", "file_getattr"),
+            ("clock_adjtime_unenc_bad", "clock_settime"),
+            ("clock_nanosleep_unenc_bad", "clock_settime"),
+            ("quick_exit_unenc_bad", "quick_exit"),
+            ("getopt_long_only_unenc_bad", "getopt"),
+            ("getopt_long_unenc_bad", "getopt"),
+            ("gethostname_unenc_bad", "uname"),
+            ("copy_file_range_unenc_bad", "sendfile"),
+            ("preadv2_unenc_bad", "preadv"),
+            ("pwritev2_unenc_bad", "preadv"),
+            ("pwritev_unenc_bad", "preadv"),
+            ("timerfd_gettime_unenc_bad", "timerfd_settime"),
+            ("eventfd_write_unenc_bad", "eventfd_read"),
+            ("eventfd_unenc_bad", "memfd"),
+            ("timerfd_create_unenc_bad", "memfd"),
+            ("ptrace_unenc_bad", "prctl"),
+            ("tcsetattr_unenc_bad", "tcgetattr"),
+            ("cfmakeraw_unenc_bad", "tcgetattr"),
+            ("fpathconf_unenc_bad", "sysconf"),
+            ("pathconf_unenc_bad", "sysconf"),
+            ("ftw_unenc_bad", "nftw"),
+            ("wordfree_unenc_bad", "wordexp"),
+            ("getlogin_r_unenc_bad", "getlogin"),
+            ("ttyname_r_unenc_bad", "getlogin"),
+            ("ttyname_unenc_bad", "getlogin"),
+            ("inet_ntop_unenc_bad", "inet_pton"),
+            ("inet_aton_unenc_bad", "inet_pton"),
+            ("posix_fadvise64_unenc_bad", "posix_fadvise"),
+            ("vmsplice_unenc_bad", "splice"),
+            ("inotify_init1_unenc_bad", "inotify"),
+            ("inotify_add_watch_unenc_bad", "inotify"),
+            ("fdatasync_unenc_bad", "fsync"),
+            ("getentropy_unenc_bad", "getrandom"),
+            ("getdelim_unenc_bad", "getline"),
+            ("strlcat_unenc_bad", "strlcpy"),
+            ("memset_s_unenc_bad", "explicit_bzero"),
+            ("explicit_memset_unenc_bad", "explicit_bzero"),
+            ("posix_openpt_unenc_bad", "ptsname"),
+            ("ptsname_r_unenc_bad", "ptsname"),
+            ("grantpt_unenc_bad", "ptsname"),
+            ("unlockpt_unenc_bad", "ptsname"),
+            ("umount2_unenc_bad", "mount"),
+            ("umount_unenc_bad", "mount"),
+            ("open_wmemstream_unenc_bad", "fmemopen"),
+            ("open_memstream_unenc_bad", "fmemopen"),
+            ("getxattrat_unenc_bad", "setxattrat"),
+            ("listxattrat_unenc_bad", "setxattrat"),
+            ("removexattrat_unenc_bad", "setxattrat"),
+            ("sched_getattr_unenc_bad", "sched_setattr"),
+            ("sched_getscheduler_unenc_bad", "sched_setscheduler"),
+            ("sched_setparam_unenc_bad", "sched_setscheduler"),
+            ("sched_getparam_unenc_bad", "sched_setscheduler"),
+            ("fanotify_mark_unenc_bad", "fanotify"),
+            ("getgrgid_unenc_bad", "getgrnam"),
+            ("getspnam_unenc_bad", "getgrnam"),
+            ("lsm_set_self_attr_unenc_bad", "lsm_get_self_attr"),
+            ("lsm_list_modules_unenc_bad", "lsm_get_self_attr"),
+            ("sigsuspend_unenc_bad", "sigprocmask"),
+            ("sigwaitinfo_unenc_bad", "sigwait"),
+            ("sigtimedwait_unenc_bad", "sigwait"),
+            ("sigpending_unenc_bad", "sigwait"),
+            ("open_by_handle_at_unenc_bad", "name_to_handle"),
+            ("prlimit64_unenc_bad", "prlimit"),
+            ("migrate_pages_unenc_bad", "move_pages"),
+            ("fsmount_unenc_bad", "fsopen"),
+            ("open_tree_unenc_bad", "fsopen"),
+            ("move_mount_unenc_bad", "fsopen"),
+            ("fspick_unenc_bad", "fsopen"),
+            ("fsconfig_unenc_bad", "fsopen"),
+            ("ioprio_get_unenc_bad", "ioprio"),
+            ("futex_wake_unenc_bad", "futex_wait"),
+            ("futex_requeue_unenc_bad", "futex_wait"),
+            ("swapoff_unenc_bad", "swapon"),
+            ("iopl_unenc_bad", "ioperm"),
+            ("finit_module_unenc_bad", "init_module"),
+            ("delete_module_unenc_bad", "init_module"),
+            ("kexec_file_load_unenc_bad", "kexec"),
+            ("pkey_mprotect_unenc_bad", "pkey_free"),
+            ("mremap_unenc_bad", "msync"),
+            ("getitimer_unenc_bad", "setitimer"),
+            ("getdents64_unenc_bad", "getdents"),
+            ("futimens_unenc_bad", "utimensat"),
+            ("utimes_unenc_bad", "utimensat"),
+            ("set_mempolicy_unenc_bad", "mbind"),
+            ("get_mempolicy_unenc_bad", "mbind"),
+        ):
+            with self.subTest(name=name):
+                r, _, _ = bmc(name)
+                self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+                self.assertNotEqual(r.status, laws.ERROR, r.message)
+                self.assertIn(needle, r.message.lower())
+                self.assertNotIn(
+                    r.status,
+                    {laws.PROVED, laws.PROVED_UNBOUNDED, laws.BOUNDED, laws.FAILED},
+                )
+
+    def test_leftover19_libc_unenc_ok_still_proves(self):
+        for name in (
+            "clone_call_unenc_ok",
+            "listmount_call_unenc_ok",
+            "fallocate_call_unenc_ok",
+            "epoll_create1_unenc_ok",
+            "epoll_pwait2_unenc_ok",
+            "rt_tgsigqueueinfo_unenc_ok",
+            "file_setattr_unenc_ok",
+            "clock_adjtime_unenc_ok",
+            "clock_nanosleep_unenc_ok",
+            "quick_exit_unenc_ok",
+            "getopt_long_only_unenc_ok",
+            "getopt_long_unenc_ok",
+            "gethostname_unenc_ok",
+            "copy_file_range_unenc_ok",
+            "preadv2_unenc_ok",
+            "pwritev2_unenc_ok",
+            "pwritev_unenc_ok",
+            "timerfd_gettime_unenc_ok",
+            "eventfd_write_unenc_ok",
+            "eventfd_unenc_ok",
+            "timerfd_create_unenc_ok",
+            "ptrace_unenc_ok",
+            "tcsetattr_unenc_ok",
+            "cfmakeraw_unenc_ok",
+            "fpathconf_unenc_ok",
+            "pathconf_unenc_ok",
+            "ftw_unenc_ok",
+            "wordfree_unenc_ok",
+            "getlogin_r_unenc_ok",
+            "ttyname_r_unenc_ok",
+            "ttyname_unenc_ok",
+            "inet_ntop_unenc_ok",
+            "inet_aton_unenc_ok",
+            "posix_fadvise64_unenc_ok",
+            "vmsplice_unenc_ok",
+            "inotify_init1_unenc_ok",
+            "inotify_add_watch_unenc_ok",
+            "fdatasync_unenc_ok",
+            "getentropy_unenc_ok",
+            "getdelim_unenc_ok",
+            "strlcat_unenc_ok",
+            "memset_s_unenc_ok",
+            "explicit_memset_unenc_ok",
+            "posix_openpt_unenc_ok",
+            "ptsname_r_unenc_ok",
+            "grantpt_unenc_ok",
+            "unlockpt_unenc_ok",
+            "umount2_unenc_ok",
+            "umount_unenc_ok",
+            "open_wmemstream_unenc_ok",
+            "open_memstream_unenc_ok",
+            "getxattrat_unenc_ok",
+            "listxattrat_unenc_ok",
+            "removexattrat_unenc_ok",
+            "sched_getattr_unenc_ok",
+            "sched_getscheduler_unenc_ok",
+            "sched_setparam_unenc_ok",
+            "sched_getparam_unenc_ok",
+            "fanotify_mark_unenc_ok",
+            "getgrgid_unenc_ok",
+            "getspnam_unenc_ok",
+            "lsm_set_self_attr_unenc_ok",
+            "lsm_list_modules_unenc_ok",
+            "sigsuspend_unenc_ok",
+            "sigwaitinfo_unenc_ok",
+            "sigtimedwait_unenc_ok",
+            "sigpending_unenc_ok",
+            "open_by_handle_at_unenc_ok",
+            "prlimit64_unenc_ok",
+            "migrate_pages_unenc_ok",
+            "fsmount_unenc_ok",
+            "open_tree_unenc_ok",
+            "move_mount_unenc_ok",
+            "fspick_unenc_ok",
+            "fsconfig_unenc_ok",
+            "ioprio_get_unenc_ok",
+            "futex_wake_unenc_ok",
+            "futex_requeue_unenc_ok",
+            "swapoff_unenc_ok",
+            "iopl_unenc_ok",
+            "finit_module_unenc_ok",
+            "delete_module_unenc_ok",
+            "kexec_file_load_unenc_ok",
+            "pkey_mprotect_unenc_ok",
+            "mremap_unenc_ok",
+            "getitimer_unenc_ok",
+            "getdents64_unenc_ok",
+            "futimens_unenc_ok",
+            "utimes_unenc_ok",
+            "set_mempolicy_unenc_ok",
+            "get_mempolicy_unenc_ok",
+        ):
+            with self.subTest(name=name):
+                r, _, _ = bmc(name)
+                self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+                self.assertNotEqual(r.status, laws.ERROR, r.message)
+                self.assertIn(r.status, {laws.PROVED, laws.PROVED_UNBOUNDED}, r.message)
+
+    def test_leftover19_neighbors_and_goto_abs_regression(self):
+        r, _, _ = bmc("clone_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("unshare", r.message.lower())
+        self.assertNotIn("setns", r.message.lower())
+        r, _, _ = bmc("clone_call_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("unshare", r.message.lower())
+        self.assertNotIn("setns", r.message.lower())
+        r, _, _ = bmc("setns_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("unshare", r.message.lower())
+        r, _, _ = bmc("listmount_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("statmount", r.message.lower())
+        r, _, _ = bmc("listmount_call_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("listmount", r.message.lower())
+        r, _, _ = bmc("fallocate_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("fallocate", r.message.lower())
+        r, _, _ = bmc("fallocate_call_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("fallocate", r.message.lower())
+        r, _, _ = bmc("memfd_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("memfd", r.message.lower())
+        self.assertNotIn("eventfd", r.message.lower())
+        r, _, _ = bmc("eventfd_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("memfd", r.message.lower())
+        r, _, _ = bmc("timerfd_create_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("memfd", r.message.lower())
+        r, _, _ = bmc("getopt_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("getopt", r.message.lower())
+        self.assertNotIn("getopt_long", r.message.lower())
+        r, _, _ = bmc("getopt_long_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("getopt", r.message.lower())
+        r, _, _ = bmc("uname_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("uname", r.message.lower())
+        self.assertNotIn("gethostname", r.message.lower())
+        r, _, _ = bmc("gethostname_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("uname", r.message.lower())
+        r, _, _ = bmc("sendfile_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("sendfile", r.message.lower())
+        self.assertNotIn("copy_file_range", r.message.lower())
+        r, _, _ = bmc("copy_file_range_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("sendfile", r.message.lower())
+        r, _, _ = bmc("fsopen_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("fsopen", r.message.lower())
+        self.assertNotIn("fsmount", r.message.lower())
+        r, _, _ = bmc("fsmount_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("fsopen", r.message.lower())
+        r, _, _ = bmc("clone_call_unenc_ok")
+        self.assertIn(r.status, {laws.PROVED, laws.PROVED_UNBOUNDED}, r.message)
+        self.assertNotEqual(r.status, laws.BOUNDED, r.message)
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        r, _, _ = bmc("eventfd_unenc_ok")
+        self.assertIn(r.status, {laws.PROVED, laws.PROVED_UNBOUNDED}, r.message)
+        self.assertNotEqual(r.status, laws.BOUNDED, r.message)
+        r, _, _ = bmc("getopt_long_unenc_ok")
+        self.assertIn(r.status, {laws.PROVED, laws.PROVED_UNBOUNDED}, r.message)
+        self.assertNotEqual(r.status, laws.BOUNDED, r.message)
+        r, _, _ = bmc("with_goto")
+        self.assertEqual(r.status, laws.ERROR, r.message)
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        r, _, _ = bmc("abs_ok")
+        self.assertEqual(r.status, laws.PROVED_UNBOUNDED, r.message)
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertNotEqual(r.status, laws.ERROR, r.message)
+        self.assertNotEqual(r.status, laws.BOUNDED, r.message)
+
+
+    def test_leftover20_throw_with_nested_unenc_needs_harness(self):
+        r, _, _ = bmc("twnested_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertNotEqual(r.status, laws.ERROR, r.message)
+        self.assertIn("throw_with_nested", r.message.lower())
+        self.assertNotIn(
+            r.status,
+            {laws.PROVED, laws.PROVED_UNBOUNDED, laws.BOUNDED, laws.FAILED},
+        )
+
+    def test_leftover20_throw_with_nested_unenc_ok_still_proves(self):
+        r, _, _ = bmc("twnested_unenc_ok")
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertNotEqual(r.status, laws.ERROR, r.message)
+        self.assertIn(r.status, {laws.PROVED, laws.PROVED_UNBOUNDED}, r.message)
+
+    def test_leftover20_neighbors_and_goto_abs_regression(self):
+        r, _, _ = bmc("rinested_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("throw_with_nested", r.message.lower())
+        r, _, _ = bmc("twnested_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("throw_with_nested", r.message.lower())
+        r, _, _ = bmc("with_goto")
+        self.assertEqual(r.status, laws.ERROR, r.message)
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        r, _, _ = bmc("abs_ok")
+        self.assertEqual(r.status, laws.PROVED_UNBOUNDED, r.message)
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertNotEqual(r.status, laws.ERROR, r.message)
+
+    def test_leftover21_libc_cxx_unenc_needs_harness(self):
+        for name, needle in (
+            ("decimal32_unenc_bad", "decimal"),
+            ("decimal128_unenc_bad", "decimal"),
+            ("float32_unenc_bad", "ieee"),
+            ("float64_unenc_bad", "ieee"),
+            ("fp16_unenc_bad", "ieee"),
+            ("bitint_unenc_bad", "128"),
+            ("int128t_unenc_bad", "128"),
+            ("slaarray_unenc_bad", "start_lifetime_as"),
+            ("inoutptr_unenc_bad", "out_ptr"),
+            ("sref_unenc_bad", "reference_wrapper"),
+            ("scref_unenc_bad", "reference_wrapper"),
+            ("csem_unenc_bad", "latch"),
+            ("poly_unenc_bad", "indirect"),
+            ("wview_unenc_bad", "wstring"),
+            ("isps_unenc_bad", "spanstream"),
+            ("osps_unenc_bad", "spanstream"),
+            ("rcuobj_unenc_bad", "rcu"),
+        ):
+            with self.subTest(name=name):
+                r, _, _ = bmc(name)
+                self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+                self.assertNotEqual(r.status, laws.ERROR, r.message)
+                self.assertIn(needle, r.message.lower())
+                self.assertNotIn(
+                    r.status,
+                    {laws.PROVED, laws.PROVED_UNBOUNDED, laws.BOUNDED, laws.FAILED},
+                )
+
+    def test_leftover21_libc_cxx_unenc_ok_still_proves(self):
+        for name in (
+            "decimal32_unenc_ok",
+            "decimal128_unenc_ok",
+            "float32_unenc_ok",
+            "float64_unenc_ok",
+            "fp16_unenc_ok",
+            "bitint_unenc_ok",
+            "int128t_unenc_ok",
+            "slaarray_unenc_ok",
+            "inoutptr_unenc_ok",
+            "sref_unenc_ok",
+            "scref_unenc_ok",
+            "csem_unenc_ok",
+            "poly_unenc_ok",
+            "wview_unenc_ok",
+            "isps_unenc_ok",
+            "osps_unenc_ok",
+            "rcuobj_unenc_ok",
+        ):
+            with self.subTest(name=name):
+                r, _, _ = bmc(name)
+                self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+                self.assertNotEqual(r.status, laws.ERROR, r.message)
+                self.assertIn(r.status, {laws.PROVED, laws.PROVED_UNBOUNDED}, r.message)
+
+    def test_leftover21_neighbors_and_goto_abs_regression(self):
+        r, _, _ = bmc("decimal_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("decimal", r.message.lower())
+        self.assertNotIn("decimal32", r.message.lower())
+        r, _, _ = bmc("decimal32_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("decimal", r.message.lower())
+        r, _, _ = bmc("float16_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("ieee", r.message.lower())
+        self.assertNotIn("float32", r.message.lower())
+        r, _, _ = bmc("float32_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("ieee", r.message.lower())
+        r, _, _ = bmc("int128_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("128", r.message.lower())
+        self.assertNotIn("bitint", r.message.lower())
+        r, _, _ = bmc("bitint_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("128", r.message.lower())
+        r, _, _ = bmc("lifetime_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("start_lifetime_as", r.message.lower())
+        self.assertNotIn("start_lifetime_as_array", r.message.lower())
+        r, _, _ = bmc("slaarray_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("start_lifetime_as", r.message.lower())
+        r, _, _ = bmc("out_ptr_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("out_ptr", r.message.lower())
+        self.assertNotIn("inout_ptr", r.message.lower())
+        r, _, _ = bmc("inoutptr_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("out_ptr", r.message.lower())
+        r, _, _ = bmc("refwrap_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("reference_wrapper", r.message.lower())
+        r, _, _ = bmc("sref_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("reference_wrapper", r.message.lower())
+        r, _, _ = bmc("latch_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("latch", r.message.lower())
+        self.assertNotIn("counting_semaphore", r.message.lower())
+        r, _, _ = bmc("csem_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("latch", r.message.lower())
+        r, _, _ = bmc("indirect_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("indirect", r.message.lower())
+        r, _, _ = bmc("poly_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("indirect", r.message.lower())
+        r, _, _ = bmc("wstring_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("wstring", r.message.lower())
+        self.assertNotIn("wstring_view", r.message.lower())
+        r, _, _ = bmc("wview_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("wstring", r.message.lower())
+        r, _, _ = bmc("spanstream_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("spanstream", r.message.lower())
+        self.assertNotIn("ispanstream", r.message.lower())
+        r, _, _ = bmc("isps_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("spanstream", r.message.lower())
+        r, _, _ = bmc("rcu_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("rcu", r.message.lower())
+        self.assertNotIn("rcu_obj", r.message.lower())
+        r, _, _ = bmc("rcuobj_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("rcu", r.message.lower())
+        r, _, _ = bmc("decimal32_unenc_ok")
+        self.assertIn(r.status, {laws.PROVED, laws.PROVED_UNBOUNDED}, r.message)
+        self.assertNotEqual(r.status, laws.BOUNDED, r.message)
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        r, _, _ = bmc("csem_unenc_ok")
+        self.assertIn(r.status, {laws.PROVED, laws.PROVED_UNBOUNDED}, r.message)
+        self.assertNotEqual(r.status, laws.BOUNDED, r.message)
+        r, _, _ = bmc("poly_unenc_ok")
+        self.assertIn(r.status, {laws.PROVED, laws.PROVED_UNBOUNDED}, r.message)
+        self.assertNotEqual(r.status, laws.BOUNDED, r.message)
+        r, _, _ = bmc("with_goto")
+        self.assertEqual(r.status, laws.ERROR, r.message)
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        r, _, _ = bmc("abs_ok")
+        self.assertEqual(r.status, laws.PROVED_UNBOUNDED, r.message)
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertNotEqual(r.status, laws.ERROR, r.message)
+
+
+    def test_leftover22_basic_stream_unenc_needs_harness(self):
+        for name, needle in (
+            ("bosync_unenc_bad", "osyncstream"),
+            ("bsyncbuf_unenc_bad", "syncbuf"),
+            ("bspan_unenc_bad", "spanstream"),
+            ("bispan_unenc_bad", "spanstream"),
+            ("bospan_unenc_bad", "spanstream"),
+        ):
+            with self.subTest(name=name):
+                r, _, _ = bmc(name)
+                self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+                self.assertNotEqual(r.status, laws.ERROR, r.message)
+                self.assertIn(needle, r.message.lower())
+                self.assertNotIn(
+                    r.status,
+                    {laws.PROVED, laws.PROVED_UNBOUNDED, laws.BOUNDED, laws.FAILED},
+                )
+
+    def test_leftover22_basic_stream_unenc_ok_still_proves(self):
+        for name in (
+            "bosync_unenc_ok",
+            "bsyncbuf_unenc_ok",
+            "bspan_unenc_ok",
+            "bispan_unenc_ok",
+            "bospan_unenc_ok",
+        ):
+            with self.subTest(name=name):
+                r, _, _ = bmc(name)
+                self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+                self.assertNotEqual(r.status, laws.ERROR, r.message)
+                self.assertIn(r.status, {laws.PROVED, laws.PROVED_UNBOUNDED}, r.message)
+
+    def test_leftover22_neighbors_and_goto_abs_regression(self):
+        r, _, _ = bmc("isps_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("spanstream", r.message.lower())
+        r, _, _ = bmc("bispan_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("spanstream", r.message.lower())
+        r, _, _ = bmc("with_goto")
+        self.assertEqual(r.status, laws.ERROR, r.message)
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        r, _, _ = bmc("abs_ok")
+        self.assertEqual(r.status, laws.PROVED_UNBOUNDED, r.message)
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertNotEqual(r.status, laws.ERROR, r.message)
+
+    def test_leftover23_libc_cxx_unenc_needs_harness(self):
+        for name, needle in (
+            ("tounqual_unenc_bad", "typeof_unqual"),
+            ("dlsym_unenc_bad", "dlopen"),
+            ("dlclose_unenc_bad", "dlopen"),
+            ("clzll_unenc_bad", "clz"),
+            ("ctz_unenc_bad", "clz"),
+            ("ctzll_unenc_bad", "clz"),
+            ("astore_unenc_bad", "atomic"),
+            ("syncadd_unenc_bad", "atomic"),
+            ("synccas_unenc_bad", "atomic"),
+            ("wcscat_unenc_bad", "wcscpy"),
+            ("wcsncpy_unenc_bad", "wcscpy"),
+            ("wcsncat_unenc_bad", "wcscpy"),
+            ("fork_unenc_bad", "fork"),
+            ("vfork_unenc_bad", "fork"),
+            ("execl_unenc_bad", "fork"),
+            ("execlp_unenc_bad", "fork"),
+            ("execle_unenc_bad", "fork"),
+            ("execv_unenc_bad", "fork"),
+            ("execve_unenc_bad", "fork"),
+            ("execvp_unenc_bad", "fork"),
+            ("execvpe_unenc_bad", "fork"),
+            ("symlink_unenc_bad", "symlink"),
+            ("readlink_unenc_bad", "symlink"),
+            ("sstream_unenc_bad", "stringstream"),
+            ("osstream_unenc_bad", "stringstream"),
+            ("isstream_unenc_bad", "stringstream"),
+            ("bsstream_unenc_bad", "stringstream"),
+            ("bosstream_unenc_bad", "stringstream"),
+            ("bisstream_unenc_bad", "stringstream"),
+        ):
+            with self.subTest(name=name):
+                r, _, _ = bmc(name)
+                self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+                self.assertNotEqual(r.status, laws.ERROR, r.message)
+                self.assertIn(needle, r.message.lower())
+                self.assertNotIn(
+                    r.status,
+                    {laws.PROVED, laws.PROVED_UNBOUNDED, laws.BOUNDED, laws.FAILED},
+                )
+
+    def test_leftover23_libc_cxx_unenc_ok_still_proves(self):
+        for name in (
+            "tounqual_unenc_ok",
+            "dlsym_unenc_ok",
+            "dlclose_unenc_ok",
+            "clzll_unenc_ok",
+            "ctz_unenc_ok",
+            "ctzll_unenc_ok",
+            "astore_unenc_ok",
+            "syncadd_unenc_ok",
+            "synccas_unenc_ok",
+            "wcscat_unenc_ok",
+            "wcsncpy_unenc_ok",
+            "wcsncat_unenc_ok",
+            "fork_unenc_ok",
+            "vfork_unenc_ok",
+            "execl_unenc_ok",
+            "execlp_unenc_ok",
+            "execle_unenc_ok",
+            "execv_unenc_ok",
+            "execve_unenc_ok",
+            "execvp_unenc_ok",
+            "execvpe_unenc_ok",
+            "symlink_unenc_ok",
+            "readlink_unenc_ok",
+            "sstream_unenc_ok",
+            "osstream_unenc_ok",
+            "isstream_unenc_ok",
+            "bsstream_unenc_ok",
+            "bosstream_unenc_ok",
+            "bisstream_unenc_ok",
+        ):
+            with self.subTest(name=name):
+                r, _, _ = bmc(name)
+                self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+                self.assertNotEqual(r.status, laws.ERROR, r.message)
+                self.assertIn(r.status, {laws.PROVED, laws.PROVED_UNBOUNDED}, r.message)
+
+    def test_leftover23_neighbors_and_goto_abs_regression(self):
+        r, _, _ = bmc("typeof_unqual_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("typeof_unqual", r.message.lower())
+        self.assertNotIn("__typeof_unqual__", r.message.lower())
+        r, _, _ = bmc("tounqual_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("typeof_unqual", r.message.lower())
+        r, _, _ = bmc("dlopen_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("dlopen", r.message.lower())
+        self.assertNotIn("dlsym", r.message.lower())
+        r, _, _ = bmc("dlsym_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("dlopen", r.message.lower())
+        r, _, _ = bmc("clz_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("clz", r.message.lower())
+        self.assertNotIn("ctz", r.message.lower())
+        r, _, _ = bmc("ctz_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("clz", r.message.lower())
+        r, _, _ = bmc("atomic_builtin_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("atomic", r.message.lower())
+        self.assertNotIn("atomic_store", r.message.lower())
+        r, _, _ = bmc("astore_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("atomic", r.message.lower())
+        r, _, _ = bmc("wcs_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("wcscpy", r.message.lower())
+        self.assertNotIn("wcscat", r.message.lower())
+        r, _, _ = bmc("wcscat_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("wcscpy", r.message.lower())
+        r, _, _ = bmc("fork_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("fork", r.message.lower())
+        self.assertNotIn("vfork", r.message.lower())
+        r, _, _ = bmc("vfork_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("fork", r.message.lower())
+        r, _, _ = bmc("symlink_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("symlink", r.message.lower())
+        self.assertNotIn("readlink", r.message.lower())
+        r, _, _ = bmc("readlink_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("symlink", r.message.lower())
+        r, _, _ = bmc("sstream_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("stringstream", r.message.lower())
+        self.assertNotIn("ostringstream", r.message.lower())
+        r, _, _ = bmc("osstream_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("stringstream", r.message.lower())
+        r, _, _ = bmc("tounqual_unenc_ok")
+        self.assertIn(r.status, {laws.PROVED, laws.PROVED_UNBOUNDED}, r.message)
+        self.assertNotEqual(r.status, laws.BOUNDED, r.message)
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        r, _, _ = bmc("fork_unenc_ok")
+        self.assertIn(r.status, {laws.PROVED, laws.PROVED_UNBOUNDED}, r.message)
+        self.assertNotEqual(r.status, laws.BOUNDED, r.message)
+        r, _, _ = bmc("sstream_unenc_ok")
+        self.assertIn(r.status, {laws.PROVED, laws.PROVED_UNBOUNDED}, r.message)
+        self.assertNotEqual(r.status, laws.BOUNDED, r.message)
+        r, _, _ = bmc("with_goto")
+        self.assertEqual(r.status, laws.ERROR, r.message)
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        r, _, _ = bmc("abs_ok")
+        self.assertEqual(r.status, laws.PROVED_UNBOUNDED, r.message)
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertNotEqual(r.status, laws.ERROR, r.message)
+        self.assertNotEqual(r.status, laws.BOUNDED, r.message)
+
+    def test_leftover24_syntax_layout_container_unenc_needs_harness(self):
+        for name, needle in (
+            ("tlocal_unenc_bad", "thread-local"),
+            ("complex_unenc_bad", "complex"),
+            ("typeof_unenc_bad", "typeof"),
+            ("alignof_unenc_bad", "alignof"),
+            ("sthread_unenc_bad", "std::thread"),
+            ("counted_unenc_bad", "counted_iterator"),
+            ("vector_unenc_bad", "std::vector"),
+            ("optional_unenc_bad", "optional"),
+            ("variant_unenc_bad", "variant"),
+            ("span_unenc_bad", "std::span"),
+            ("ilist_unenc_bad", "initializer_list"),
+            ("coro_unenc_bad", "coroutine"),
+            ("packed_unenc_bad", "packed"),
+            ("asm_unenc_bad", "asm"),
+            ("generic_unenc_bad", "_generic"),
+            ("offsetof_unenc_bad", "offsetof"),
+            ("volatile_unenc_bad", "volatile"),
+        ):
+            with self.subTest(name=name):
+                r, _, _ = bmc(name)
+                self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+                self.assertNotEqual(r.status, laws.ERROR, r.message)
+                self.assertIn(needle, r.message.lower())
+                self.assertNotIn(
+                    r.status,
+                    {laws.PROVED, laws.PROVED_UNBOUNDED, laws.BOUNDED, laws.FAILED},
+                )
+
+    def test_leftover24_syntax_layout_container_unenc_ok_still_proves(self):
+        for name in (
+            "tlocal_unenc_ok",
+            "complex_unenc_ok",
+            "typeof_unenc_ok",
+            "alignof_unenc_ok",
+            "sthread_unenc_ok",
+            "counted_unenc_ok",
+            "vector_unenc_ok",
+            "optional_unenc_ok",
+            "variant_unenc_ok",
+            "span_unenc_ok",
+            "ilist_unenc_ok",
+            "coro_unenc_ok",
+            "packed_unenc_ok",
+            "asm_unenc_ok",
+            "generic_unenc_ok",
+            "offsetof_unenc_ok",
+            "volatile_unenc_ok",
+        ):
+            with self.subTest(name=name):
+                r, _, _ = bmc(name)
+                self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+                self.assertNotEqual(r.status, laws.ERROR, r.message)
+                self.assertIn(r.status, {laws.PROVED, laws.PROVED_UNBOUNDED}, r.message)
+
+    def test_leftover24_neighbors_and_goto_abs_regression(self):
+        r, _, _ = bmc("tls_local_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("thread-local", r.message.lower())
+        r, _, _ = bmc("tlocal_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("thread-local", r.message.lower())
+        r, _, _ = bmc("typeof_unqual_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("typeof_unqual", r.message.lower())
+        r, _, _ = bmc("typeof_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("typeof", r.message.lower())
+        self.assertNotIn("typeof_unqual", r.message.lower())
+        r, _, _ = bmc("jthread_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("jthread", r.message.lower())
+        r, _, _ = bmc("sthread_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("std::thread", r.message.lower())
+        self.assertNotIn("jthread", r.message.lower())
+        r, _, _ = bmc("bspan_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("spanstream", r.message.lower())
+        r, _, _ = bmc("span_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("std::span", r.message.lower())
+        self.assertNotIn("spanstream", r.message.lower())
+        r, _, _ = bmc("tlocal_unenc_ok")
+        self.assertIn(r.status, {laws.PROVED, laws.PROVED_UNBOUNDED}, r.message)
+        self.assertNotEqual(r.status, laws.BOUNDED, r.message)
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        r, _, _ = bmc("vector_unenc_ok")
+        self.assertIn(r.status, {laws.PROVED, laws.PROVED_UNBOUNDED}, r.message)
+        self.assertNotEqual(r.status, laws.BOUNDED, r.message)
+        r, _, _ = bmc("with_goto")
+        self.assertEqual(r.status, laws.ERROR, r.message)
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        r, _, _ = bmc("abs_ok")
+        self.assertEqual(r.status, laws.PROVED_UNBOUNDED, r.message)
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertNotEqual(r.status, laws.ERROR, r.message)
+        self.assertNotEqual(r.status, laws.BOUNDED, r.message)
+
+    def test_leftover25_syntax_cxx_unenc_needs_harness(self):
+        for name, needle in (
+            ("rangefor_unenc_bad", "range-for"),
+            ("lambda_unenc_bad", "lambda"),
+            ("ccast_unenc_bad", "const_cast"),
+            ("dcast_unenc_bad", "dynamic_cast"),
+            ("tid_unenc_bad", "typeid"),
+            ("rcast_unenc_bad", "reinterpret_cast"),
+            ("sbind_unenc_bad", "std::bind"),
+            ("inplace_unenc_bad", "inplace_vector"),
+            ("catchall_unenc_bad", "catch-all"),
+            ("thrownew_unenc_bad", "throw-new"),
+            ("sfrom_unenc_bad", "shared_from_this"),
+            ("ppack_unenc_bad", "pragma pack"),
+            ("widech_unenc_bad", "wide character"),
+            ("widestr_unenc_bad", "wide character"),
+            ("trycatch_unenc_bad", "try/catch"),
+            ("newdel_unenc_bad", "new/delete"),
+            ("cgoto_unenc_bad", "computed goto"),
+            ("laddr_unenc_bad", "label-address"),
+            ("vaarg_unenc_bad", "va_arg"),
+            ("dinit_unenc_bad", "designated init"),
+        ):
+            with self.subTest(name=name):
+                r, _, _ = bmc(name)
+                self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+                self.assertNotEqual(r.status, laws.ERROR, r.message)
+                self.assertIn(needle, r.message.lower())
+                self.assertNotIn(
+                    r.status,
+                    {laws.PROVED, laws.PROVED_UNBOUNDED, laws.BOUNDED, laws.FAILED},
+                )
+
+    def test_leftover25_syntax_cxx_unenc_ok_still_proves(self):
+        for name in (
+            "rangefor_unenc_ok",
+            "lambda_unenc_ok",
+            "ccast_unenc_ok",
+            "dcast_unenc_ok",
+            "tid_unenc_ok",
+            "rcast_unenc_ok",
+            "sbind_unenc_ok",
+            "inplace_unenc_ok",
+            "catchall_unenc_ok",
+            "thrownew_unenc_ok",
+            "sfrom_unenc_ok",
+            "ppack_unenc_ok",
+            "widech_unenc_ok",
+            "widestr_unenc_ok",
+            "trycatch_unenc_ok",
+            "newdel_unenc_ok",
+            "cgoto_unenc_ok",
+            "laddr_unenc_ok",
+            "vaarg_unenc_ok",
+            "dinit_unenc_ok",
+        ):
+            with self.subTest(name=name):
+                r, _, _ = bmc(name)
+                self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+                self.assertNotEqual(r.status, laws.ERROR, r.message)
+                self.assertIn(r.status, {laws.PROVED, laws.PROVED_UNBOUNDED}, r.message)
+
+    def test_leftover25_neighbors_and_goto_abs_regression(self):
+        r, _, _ = bmc("bind_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertNotIn("std::bind", r.message.lower())
+        r, _, _ = bmc("sbind_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("std::bind", r.message.lower())
+        r, _, _ = bmc("packed_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("packed", r.message.lower())
+        self.assertNotIn("pragma pack", r.message.lower())
+        r, _, _ = bmc("ppack_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("pragma pack", r.message.lower())
+        r, _, _ = bmc("catchall_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("catch-all", r.message.lower())
+        r, _, _ = bmc("trycatch_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("try/catch", r.message.lower())
+        self.assertNotIn("catch-all", r.message.lower())
+        r, _, _ = bmc("thrownew_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("throw-new", r.message.lower())
+        r, _, _ = bmc("cgoto_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("computed goto", r.message.lower())
+        self.assertNotIn("label-address", r.message.lower())
+        r, _, _ = bmc("laddr_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("label-address", r.message.lower())
+        r, _, _ = bmc("vector_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("std::vector", r.message.lower())
+        self.assertNotIn("inplace_vector", r.message.lower())
+        r, _, _ = bmc("inplace_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("inplace_vector", r.message.lower())
+        r, _, _ = bmc("ppack_unenc_ok")
+        self.assertIn(r.status, {laws.PROVED, laws.PROVED_UNBOUNDED}, r.message)
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        r, _, _ = bmc("lambda_unenc_ok")
+        self.assertIn(r.status, {laws.PROVED, laws.PROVED_UNBOUNDED}, r.message)
+        r, _, _ = bmc("with_goto")
+        self.assertEqual(r.status, laws.ERROR, r.message)
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        r, _, _ = bmc("abs_ok")
+        self.assertEqual(r.status, laws.PROVED_UNBOUNDED, r.message)
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertNotEqual(r.status, laws.ERROR, r.message)
+        self.assertNotEqual(r.status, laws.BOUNDED, r.message)
+
+    def test_leftover26_layout_libc_unenc_needs_harness(self):
+        for name, needle in (
+            ("nfn_unenc_bad", "nested function"),
+            ("uaddr_unenc_bad", "address-of"),
+            ("clocal_unenc_bad", "const local"),
+            ("regstor_unenc_bad", "register/auto"),
+            ("autostor_unenc_bad", "register/auto"),
+            ("slocal_unenc_bad", "struct/union local"),
+            ("staticloc_unenc_bad", "static/extern"),
+            ("externloc_unenc_bad", "static/extern"),
+            ("stmtexpr_unenc_bad", "statement expression"),
+            ("autotype_unenc_bad", "__auto_type"),
+            ("aenum_unenc_bad", "anonymous enum"),
+            ("alignas_unenc_bad", "_alignas"),
+            ("compound_unenc_bad", "compound literal"),
+            ("rviews_unenc_bad", "ranges views"),
+            ("unlink_unenc_bad", "unlink"),
+            ("strinit_unenc_bad", "array string-init"),
+            ("pmtx_unenc_bad", "mutex object"),
+            ("cmtx_unenc_bad", "mutex object"),
+            ("utypedef_unenc_bad", "unknown typedef"),
+            ("memcpy_unenc_bad", "libc buffer"),
+            ("memmove_unenc_bad", "libc buffer"),
+            ("mkstemp_unenc_bad", "libc buffer"),
+            ("chroot_unenc_bad", "libc buffer"),
+            ("popen_unenc_bad", "libc buffer"),
+            ("umask_unenc_bad", "libc buffer"),
+        ):
+            with self.subTest(name=name):
+                r, _, _ = bmc(name)
+                self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+                self.assertNotEqual(r.status, laws.ERROR, r.message)
+                self.assertIn(needle, r.message.lower())
+                self.assertNotIn(
+                    r.status,
+                    {laws.PROVED, laws.PROVED_UNBOUNDED, laws.BOUNDED, laws.FAILED},
+                )
+
+    def test_leftover26_layout_libc_unenc_ok_still_proves(self):
+        for name in (
+            "nfn_unenc_ok",
+            "uaddr_unenc_ok",
+            "clocal_unenc_ok",
+            "regstor_unenc_ok",
+            "autostor_unenc_ok",
+            "slocal_unenc_ok",
+            "staticloc_unenc_ok",
+            "externloc_unenc_ok",
+            "stmtexpr_unenc_ok",
+            "autotype_unenc_ok",
+            "aenum_unenc_ok",
+            "alignas_unenc_ok",
+            "compound_unenc_ok",
+            "rviews_unenc_ok",
+            "unlink_unenc_ok",
+            "strinit_unenc_ok",
+            "pmtx_unenc_ok",
+            "cmtx_unenc_ok",
+            "utypedef_unenc_ok",
+            "memcpy_unenc_ok",
+            "memmove_unenc_ok",
+            "mkstemp_unenc_ok",
+            "chroot_unenc_ok",
+            "popen_unenc_ok",
+            "umask_unenc_ok",
+        ):
+            with self.subTest(name=name):
+                r, _, _ = bmc(name)
+                self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+                self.assertNotEqual(r.status, laws.ERROR, r.message)
+                self.assertIn(r.status, {laws.PROVED, laws.PROVED_UNBOUNDED}, r.message)
+
+    def test_leftover26_neighbors_and_goto_abs_regression(self):
+        r, _, _ = bmc("unlinkat_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("unlinkat", r.message.lower())
+        r, _, _ = bmc("unlink_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("unlink", r.message.lower())
+        self.assertNotIn("unlinkat", r.message.lower())
+        r, _, _ = bmc("regstor_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("register/auto", r.message.lower())
+        self.assertNotIn("__auto_type", r.message.lower())
+        r, _, _ = bmc("autotype_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("__auto_type", r.message.lower())
+        r, _, _ = bmc("pmtx_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("mutex object", r.message.lower())
+        r, _, _ = bmc("memcpy_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("libc buffer", r.message.lower())
+        r, _, _ = bmc("clocal_unenc_ok")
+        self.assertIn(r.status, {laws.PROVED, laws.PROVED_UNBOUNDED}, r.message)
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        r, _, _ = bmc("with_goto")
+        self.assertEqual(r.status, laws.ERROR, r.message)
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        r, _, _ = bmc("abs_ok")
+        self.assertEqual(r.status, laws.PROVED_UNBOUNDED, r.message)
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertNotEqual(r.status, laws.ERROR, r.message)
+        self.assertNotEqual(r.status, laws.BOUNDED, r.message)
+
+    def test_leftover27_sibling_unenc_needs_harness(self):
+        for name, needle in (
+            ("anycast_lt_unenc_bad", "std::any"),
+            ("anycast_id_unenc_bad", "std::any"),
+            ("stdfs_unenc_bad", "std::filesystem"),
+            ("filesystem_ns_unenc_bad", "std::filesystem"),
+            ("regex_match_unenc_bad", "std::regex"),
+            ("regex_var_unenc_bad", "std::regex"),
+            ("indirect_lt_unenc_bad", "indirect"),
+            ("polymorphic_lt_unenc_bad", "indirect"),
+            ("int_const_unenc_bad", "const local"),
+            ("for_const_unenc_bad", "const local"),
+            ("std_bit_cast_unenc_bad", "bit_cast"),
+            ("function_lt_unenc_bad", "std::function"),
+            ("std_mdspan_unenc_bad", "std::mdspan"),
+            ("atomic_ref_lt_unenc_bad", "std::atomic_ref"),
+            ("generator_lt_unenc_bad", "std::generator"),
+            ("from_chars_bare_unenc_bad", "from_chars"),
+            ("flat_map_lt_unenc_bad", "flat_map"),
+            ("flat_set_lt_unenc_bad", "flat_set"),
+            ("flat_mset_lt_unenc_bad", "flat_multiset"),
+            ("flat_mmap_lt_unenc_bad", "flat_multimap"),
+            ("chrono_ns_unenc_bad", "chrono"),
+            ("ranges_views_std_unenc_bad", "ranges views"),
+            ("hive_lt_unenc_bad", "hive"),
+            ("bitset_lt_unenc_bad", "bitset"),
+            ("linalg_ns_unenc_bad", "linalg"),
+        ):
+            with self.subTest(name=name):
+                r, _, _ = bmc(name)
+                self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+                self.assertNotEqual(r.status, laws.ERROR, r.message)
+                self.assertIn(needle, r.message.lower())
+                self.assertNotIn(
+                    r.status,
+                    {laws.PROVED, laws.PROVED_UNBOUNDED, laws.BOUNDED, laws.FAILED},
+                )
+
+    def test_leftover27_sibling_unenc_ok_still_proves(self):
+        for name in (
+            "anycast_lt_unenc_ok",
+            "anycast_id_unenc_ok",
+            "stdfs_unenc_ok",
+            "filesystem_ns_unenc_ok",
+            "regex_match_unenc_ok",
+            "regex_var_unenc_ok",
+            "indirect_lt_unenc_ok",
+            "polymorphic_lt_unenc_ok",
+            "int_const_unenc_ok",
+            "for_const_unenc_ok",
+            "std_bit_cast_unenc_ok",
+            "function_lt_unenc_ok",
+            "std_mdspan_unenc_ok",
+            "atomic_ref_lt_unenc_ok",
+            "generator_lt_unenc_ok",
+            "from_chars_bare_unenc_ok",
+            "flat_map_lt_unenc_ok",
+            "flat_set_lt_unenc_ok",
+            "flat_mset_lt_unenc_ok",
+            "flat_mmap_lt_unenc_ok",
+            "chrono_ns_unenc_ok",
+            "ranges_views_std_unenc_ok",
+            "hive_lt_unenc_ok",
+            "bitset_lt_unenc_ok",
+            "linalg_ns_unenc_ok",
+        ):
+            with self.subTest(name=name):
+                r, _, _ = bmc(name)
+                self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+                self.assertNotEqual(r.status, laws.ERROR, r.message)
+                self.assertIn(r.status, {laws.PROVED, laws.PROVED_UNBOUNDED}, r.message)
+
+    def test_leftover28_extra_sibling_unenc_needs_harness(self):
+        for name, needle in (
+            ("pmr_ns_unenc_bad", "pmr"),
+            ("rcu_obj_lt_unenc_bad", "rcu"),
+            ("rcu_sync_only_unenc_bad", "rcu"),
+            ("reflect_caret_unenc_bad", "reflection"),
+            ("jthread_bare_unenc_bad", "jthread"),
+            ("packaged_lt_unenc_bad", "packaged_task"),
+            ("lock_guard_lt_unenc_bad", "mutex"),
+            ("cv_bare_unenc_bad", "condition_variable"),
+            ("future_lt_unenc_bad", "async"),
+            ("latch_ctor_unenc_bad", "latch"),
+        ):
+            with self.subTest(name=name):
+                r, _, _ = bmc(name)
+                self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+                self.assertNotEqual(r.status, laws.ERROR, r.message)
+                self.assertIn(needle, r.message.lower())
+                self.assertNotIn(
+                    r.status,
+                    {laws.PROVED, laws.PROVED_UNBOUNDED, laws.BOUNDED, laws.FAILED},
+                )
+
+    def test_leftover28_extra_sibling_unenc_ok_still_proves(self):
+        for name in (
+            "pmr_ns_unenc_ok",
+            "rcu_obj_lt_unenc_ok",
+            "rcu_sync_only_unenc_ok",
+            "reflect_caret_unenc_ok",
+            "jthread_bare_unenc_ok",
+            "packaged_lt_unenc_ok",
+            "lock_guard_lt_unenc_ok",
+            "cv_bare_unenc_ok",
+            "future_lt_unenc_ok",
+            "latch_ctor_unenc_ok",
+        ):
+            with self.subTest(name=name):
+                r, _, _ = bmc(name)
+                self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+                self.assertNotEqual(r.status, laws.ERROR, r.message)
+                self.assertIn(r.status, {laws.PROVED, laws.PROVED_UNBOUNDED}, r.message)
+
+    def test_leftover27_comment_strip_still_proves(self):
+        for name in (
+            "nullptr_comment_ok",
+            "ppack_comment_ok",
+            "import_comment_ok",
+        ):
+            with self.subTest(name=name):
+                r, _, _ = bmc(name)
+                self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+                self.assertNotEqual(r.status, laws.ERROR, r.message)
+                self.assertIn(r.status, {laws.PROVED, laws.PROVED_UNBOUNDED}, r.message)
+                low = r.message.lower()
+                self.assertNotIn("nullptr", low)
+                self.assertNotIn("pragma pack", low)
+                self.assertNotIn("module import", low)
+
+    def test_leftover27_neighbors_and_goto_abs_regression(self):
+        r, _, _ = bmc("cv_bare_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("condition_variable", r.message.lower())
+        self.assertNotIn("condition_variable_any", r.message.lower())
+        r, _, _ = bmc("cvany_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("condition_variable_any", r.message.lower())
+        r, _, _ = bmc("jthread_bare_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("jthread", r.message.lower())
+        self.assertNotIn("thread-lifetime", r.message.lower())
+        r, _, _ = bmc("int_const_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("const local", r.message.lower())
+        r, _, _ = bmc("clocal_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("const local", r.message.lower())
+        r, _, _ = bmc("std_bit_cast_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("bit_cast", r.message.lower())
+        r, _, _ = bmc("nullptr_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("nullptr", r.message.lower())
+        r, _, _ = bmc("ppack_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("pragma pack", r.message.lower())
+        r, _, _ = bmc("import_unenc_bad")
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("module import", r.message.lower())
+        r, _, _ = bmc("nullptr_comment_ok")
+        self.assertIn(r.status, {laws.PROVED, laws.PROVED_UNBOUNDED}, r.message)
+        r, _, _ = bmc("with_goto")
+        self.assertEqual(r.status, laws.ERROR, r.message)
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        r, _, _ = bmc("abs_ok")
+        self.assertEqual(r.status, laws.PROVED_UNBOUNDED, r.message)
+        self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertNotEqual(r.status, laws.ERROR, r.message)
+        self.assertNotEqual(r.status, laws.BOUNDED, r.message)
+
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -1,0 +1,5 @@
+THOROUGH
+main.cpp
+--incremental-bmc --timeout 900
+^VERIFICATION FAILED$
+main.cpp line 18 column 3 function main

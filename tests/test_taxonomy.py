@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 
 from helix import laws
+from helix.confidence import score
+from helix.config import Config
 from helix.models import Finding, RunReport, StageResult
-from helix.taxonomy import coverage_from_report
+from helix.pipeline import run_pipeline
+from helix.taxonomy import CLASSES, coverage_from_report
 
 
 def _rep(*findings: Finding, stage="bmc", status="ok") -> RunReport:
@@ -36,6 +41,46 @@ class TestCoverageFromReport(unittest.TestCase):
         rows = {r["id"]: r for r in coverage_from_report(_rep(f, stage="llm"))}
         self.assertEqual(rows["INTENT"]["verdict"], "PARTIAL")
         self.assertNotEqual(rows["INTENT"]["verdict"], "COVERED")
+
+    def test_failed_reads_strength_is_not_covered(self):
+        """READS cannot COVER, even on FAILED. C++ must not rewrite READS→FINDS."""
+        f = Finding(
+            stage="ltl", status=laws.FAILED, file="fsm.c", function="step",
+            line=1, cls="LTL-SAFETY", message="monitor miss",
+            strength=laws.STRENGTH_READS,
+        )
+        rows = {r["id"]: r for r in coverage_from_report(_rep(f, stage="ltl"))}
+        self.assertEqual(rows["LTL-SAFETY"]["best"], laws.STRENGTH_READS)
+        self.assertEqual(rows["LTL-SAFETY"]["verdict"], "PARTIAL")
+        self.assertNotEqual(rows["LTL-SAFETY"]["verdict"], "COVERED")
+
+    def test_wp_empty_cls_still_covers_func_contract(self):
+        f = Finding(
+            stage="wp", status=laws.PROVED_ASSUMING, file="a.c", function="inc",
+            line=1, cls="", message="WP holds; never PROVED",
+            strength=laws.STRENGTH_PROVES,
+        )
+        rows = {r["id"]: r for r in coverage_from_report(_rep(f, stage="wp"))}
+        self.assertEqual(rows["FUNC-CONTRACT"]["verdict"], "COVERED")
+        self.assertNotEqual(rows["INT-SIGNED-OVF"]["verdict"], "COVERED")
+
+    def test_cpp_taxonomy_does_not_promote_reads_to_finds(self):
+        root = Path(__file__).resolve().parents[1]
+        cpp = (root / "src" / "prism" / "taxonomy.cpp").read_text(encoding="utf-8")
+        gen = (root / "tools" / "gen_prism.py").read_text(encoding="utf-8")
+        self.assertNotIn("if (st == READS) st = FINDS", cpp)
+        self.assertNotIn("if (st == READS) st = FINDS", gen)
+        self.assertIn('cls.empty() && (s.name == "wp" || s.name == "contracts")', cpp)
+
+    def test_wp_assuming_covers_contract(self):
+        f = Finding(
+            stage="wp", status=laws.PROVED_ASSUMING, file="a.c", function="inc",
+            line=1, cls="FUNC-CONTRACT", message="WP holds; never PROVED",
+            strength=laws.STRENGTH_PROVES,
+        )
+        rows = {r["id"]: r for r in coverage_from_report(_rep(f, stage="wp"))}
+        self.assertEqual(rows["FUNC-CONTRACT"]["verdict"], "COVERED")
+        self.assertNotEqual(rows["FUNC-CONTRACT"]["verdict"], "GAP")
 
     def test_lints_intent_finds_is_covered(self):
         f = Finding(
@@ -187,7 +232,7 @@ class TestCoverageFromReport(unittest.TestCase):
                     "API-DUP", "API-FCNTL", "API-WAIT",
                     "API-SELECT", "API-SEND", "API-SHUTDOWN",
                     "API-KILL", "API-GETADDRINFO",
-                    "API-PTHREAD-JOIN", "API-SEM-WAIT", "API-OPENAT",
+                    "API-PTHREAD-JOIN", "API-THRD-JOIN", "API-SEM-WAIT", "API-OPENAT",
                     "API-FLOCK", "API-CHOWN", "API-SYMLINK",
                     "API-OPENDIR", "API-SETRLIMIT", "API-GETSOCKOPT",
                     "API-STAT", "API-MKDIR", "API-GETPWUID",
@@ -300,6 +345,80 @@ class TestCoverageFromReport(unittest.TestCase):
         )
         rows = {r["id"]: r for r in coverage_from_report(_rep(f, stage="ltl"))}
         self.assertNotEqual(rows["LTL-SAFETY"]["verdict"], "COVERED")
+
+    def test_llm_only_hypothesis_report_is_not_covered(self):
+        f = Finding(
+            stage="llm", status=laws.HYPOTHESIS, file="a.c", function="add",
+            line=1, cls="FUNC-CONTRACT", message="maybe ensures",
+            strength=laws.STRENGTH_READS,
+        )
+        rows = coverage_from_report(_rep(f, stage="llm"))
+        by_id = {r["id"]: r for r in rows}
+        self.assertIn(by_id["FUNC-CONTRACT"]["verdict"], {"GAP", "PARTIAL"})
+        self.assertNotEqual(by_id["FUNC-CONTRACT"]["verdict"], "COVERED")
+        self.assertIn(by_id["INTENT"]["verdict"], {"GAP", "PARTIAL"})
+        covered = [r["id"] for r in rows if r["verdict"] == "COVERED"]
+        self.assertEqual(covered, [])
+
+    def test_wp_proved_assuming_covers_func_contract(self):
+        fc = next(c for c in CLASSES if c["id"] == "FUNC-CONTRACT")
+        self.assertEqual(fc["seen"].get("wp"), laws.STRENGTH_PROVES)
+        f = Finding(
+            stage="wp", status=laws.PROVED_ASSUMING, file="a.c", function="abs",
+            line=1, cls="FUNC-CONTRACT",
+            message="WP of ensures holds assuming requires; never PROVED",
+            strength=laws.STRENGTH_PROVES,
+        )
+        rows = {r["id"]: r for r in coverage_from_report(_rep(f, stage="wp"))}
+        self.assertEqual(rows["FUNC-CONTRACT"]["verdict"], "COVERED")
+        self.assertEqual(rows["FUNC-CONTRACT"]["best"], laws.STRENGTH_PROVES)
+        for cid in ("INT-SIGNED-OVF", "INT-DIV-ZERO", "INT-SHIFT-UB",
+                    "MEM-OOB-READ", "MEM-OOB-WRITE"):
+            self.assertNotEqual(rows[cid]["verdict"], "COVERED")
+
+    def test_empty_functions_confidence_is_zero(self):
+        vis, ans, res, conf = score(RunReport(root="x"))
+        self.assertEqual((vis, ans, res, conf), (0.0, 0.0, 0.0, 0.0))
+
+    def test_unify_clean_coverage_is_not_a_proof(self):
+        helix = (Path(__file__).resolve().parents[1] / "helix" / "pipeline.py").read_text(
+            encoding="utf-8"
+        )
+        start = helix.find("def unify()")
+        self.assertGreater(start, 0)
+        block = helix[start:helix.find("self._stage(", start)]
+        self.assertIn("not a proof", block)
+        with tempfile.TemporaryDirectory(prefix="helix_unify_") as td:
+            out = Path(td)
+            report = run_pipeline(Config(
+                root=out, out=out / "out", llm=False, stages=["unify"], skip=[],
+            ))
+        rec = next(s for s in report.stages if s.name == "unify")
+        self.assertTrue(rec.findings)
+        f = rec.findings[0]
+        self.assertIn("not a proof", f.message)
+        self.assertEqual(f.status, laws.CLEAN)
+        self.assertFalse(laws.is_proof(f.status))
+        self.assertEqual((f.extra or {}).get("not_a_proof"), "true")
+        cpp = (Path(__file__).resolve().parents[1] / "src" / "prism" / "pipeline.cpp").read_text(
+            encoding="utf-8"
+        )
+        unify = cpp.split('stage("unify"', 1)[1]
+        unify = unify.split("apply_confidence", 1)[0]
+        self.assertIn("not a proof", unify)
+        self.assertIn('f.extra["not_a_proof"] = "true"', unify)
+
+    def test_unify_clean_spoofed_cls_is_not_covered(self):
+        f = Finding(
+            stage="unify", status=laws.CLEAN, file="", function=None,
+            line=None, cls="INT-SIGNED-OVF",
+            message="taxonomy 1/1 COVERED, 0 GAP (not a proof)",
+            strength=laws.STRENGTH_FINDS,
+            extra={"not_a_proof": "true"},
+        )
+        rows = {r["id"]: r for r in coverage_from_report(_rep(f, stage="unify"))}
+        self.assertNotEqual(rows["INT-SIGNED-OVF"]["verdict"], "COVERED")
+        self.assertFalse(laws.is_proof(f.status))
 
 
 if __name__ == "__main__":

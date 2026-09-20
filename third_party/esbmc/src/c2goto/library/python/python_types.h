@@ -1,0 +1,77 @@
+#ifndef PYTHON_TYPES_H
+#define PYTHON_TYPES_H
+
+#include <stddef.h>
+
+// Bounded string length used by Python frontend/runtime helpers.
+// Keeps symbolic loops finite while still respecting '\0' within the bound.
+#ifndef ESBMC_PY_STRNLEN_BOUND
+#  define ESBMC_PY_STRNLEN_BOUND 256
+#endif
+
+/**
+ * @brief Type object representation for Python-like types.
+ */
+typedef struct __ESBMC_PyType
+{
+  const char *tp_name; /* Type name: "module.typename" */
+  size_t tp_basicsize; /* Size of instance in bytes */
+  // TODO: Extra features (vtables, constructors, members)
+} PyType;
+
+/**
+ * @brief Minimal representation of a Python-like object.
+ *
+ * In CPython, PyObject includes only a pointer to its type object. Most
+ * user-defined types embed this as their header, allowing any instance to
+ * be safely cast to PyObject* for type inspection.
+ *
+ * This simplified version keeps both the type information and the data pointer
+ * explicit. The long-term goal is to embed only a type pointer, enabling more
+ * lightweight polymorphic casts.
+ */
+typedef struct __ESBMC_PyObj
+{
+  const void *value; /**< Pointer to object data */
+  size_t float_idx;  // cppcheck-suppress unusedStructMember
+  size_t type_id;    // cppcheck-suppress unusedStructMember
+  size_t size;       // cppcheck-suppress unusedStructMember
+} PyObject;
+
+/**
+ * @brief Minimal representation of a Python-like list object.
+ *
+ * Example usage in C:
+ * @code
+ * PyListObject list = {...};
+ * for (size_t i = 0; i < list.size; ++i) {
+ *   PyObject *item = &list.items[i];
+ *   // Access fields like item->type_id or item->value here
+ * }
+ * @endcode
+ */
+typedef struct __ESBMC_PyListObj
+{
+  PyType *type;    /**< &PyListType */
+  PyObject *items; /**< Array of PyObject items (SMT infinite array concept) */
+  size_t size;     /**< Number of elements currently in use */
+} PyListObject;
+
+/**
+ * @brief Minimal representation of a Python slice object.
+ *
+ * Mirrors CPython's slice(start, stop, step). Any of the three may be omitted
+ * by the user (e.g. slice(5) or a[i:]), in which case the corresponding
+ * has_* flag is zero and the integer field is unspecified.
+ */
+typedef struct __ESBMC_PySliceObj
+{
+  long long start; // cppcheck-suppress unusedStructMember
+  long long stop;  // cppcheck-suppress unusedStructMember
+  long long step;  // cppcheck-suppress unusedStructMember
+  int has_start;   // cppcheck-suppress unusedStructMember
+  int has_stop;    // cppcheck-suppress unusedStructMember
+  int has_step;    // cppcheck-suppress unusedStructMember
+} PySliceObject;
+
+#endif /* PYTHON_TYPES_H */

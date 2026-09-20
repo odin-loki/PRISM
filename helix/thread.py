@@ -14,8 +14,10 @@ from helix import laws
 from helix.cparse import strip_comments_keep_lines
 from helix.models import Finding, FunctionInfo
 
-_THREAD_API = re.compile(r"\b(?:pthread_create|std::thread|CreateThread)\b")
-_MUTEX = re.compile(r"\b(?:mtx_lock|pthread_mutex)\b")
+_THREAD_API = re.compile(
+    r"\b(?:pthread_create|std::jthread|std::thread|CreateThread|thrd_create)\b"
+)
+_MUTEX = re.compile(r"\b(?:mtx_lock|mtx_timedlock|pthread_mutex)\b")
 _GLOBAL_DECL = re.compile(
     r"^(?:\s*(?:static|extern|const|volatile|unsigned|signed|short|long)\s+)*"
     r"(?:(?:struct|enum|union)\s+\w+\s+)?"

@@ -187,6 +187,45 @@ class TestInterval(unittest.TestCase):
         rec = interval_function(fn("asm_vol"))
         self.assertIsNone(rec)
 
+    def test_mod_param_failed(self):
+        rec = interval_function(fn("mod_param"))
+        self.assertIsNotNone(rec)
+        self.assertEqual(rec.status, laws.FAILED)
+        self.assertEqual(rec.cls, "INT-DIV-ZERO")
+        self.assertNotEqual(rec.status, laws.PROVED)
+
+    def test_intmin_div_failed(self):
+        rec = interval_function(fn("intmin_div"))
+        self.assertIsNotNone(rec)
+        self.assertEqual(rec.status, laws.FAILED)
+        self.assertEqual(rec.cls, "INT-SIGNED-OVF")
+        self.assertNotEqual(rec.status, laws.PROVED)
+
+    def test_shift_wide_failed(self):
+        rec = interval_function(fn("shift_wide"))
+        self.assertIsNotNone(rec)
+        self.assertEqual(rec.status, laws.FAILED)
+        self.assertEqual(rec.cls, "INT-SHIFT-UB")
+        self.assertNotEqual(rec.status, laws.PROVED)
+
+    def test_unsigned_local_wrap_is_silent_not_proved(self):
+        rec = interval_function(fn("wrap_u_local"))
+        self.assertIsNone(rec)
+
+    def test_unsigned_branch_wrap_is_silent_not_proved(self):
+        rec = interval_function(fn("wrap_u_branch"))
+        self.assertIsNone(rec)
+
+    def test_interval_ops_never_proved_or_clean(self):
+        recs = run_interval([
+            fn("mod_param"), fn("intmin_div"), fn("shift_wide"),
+            fn("wrap_u_local"), fn("wrap_u_branch"),
+        ])
+        self.assertTrue(any(r.cls == "INT-DIV-ZERO" for r in recs))
+        self.assertTrue(any(r.cls == "INT-SIGNED-OVF" for r in recs))
+        self.assertTrue(any(r.cls == "INT-SHIFT-UB" for r in recs))
+        self.assertFalse(any(r.status in {laws.PROVED, laws.BOUNDED, laws.CLEAN} for r in recs))
+
 
 if __name__ == "__main__":
     unittest.main()

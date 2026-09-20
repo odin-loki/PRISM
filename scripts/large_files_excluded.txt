@@ -1,0 +1,17 @@
+75554854	third_party/semgrep/languages/julia/tree-sitter/semgrep-julia/lib/parser.c
+59211071	third_party/semgrep/languages/ruby/tree-sitter/semgrep-ruby/lib/parser.c
+51662338	third_party/semgrep/languages/csharp/tree-sitter/semgrep-c-sharp/lib/parser.c
+50208276	third_party/semgrep/languages/scala/tree-sitter/semgrep-scala/lib/parser.c
+40955319	third_party/semgrep/languages/ocaml/tree-sitter/semgrep-ocaml/lib/parser.c
+37160604	third_party/semgrep/languages/kotlin/tree-sitter/semgrep-kotlin/lib/parser.c
+23947250	third_party/infer/infer/lib/java/android/android-23.jar
+21158351	third_party/semgrep/languages/cpp/tree-sitter/semgrep-cpp/lib/parser.c
+18284032	third_party/infer/dependencies/java/sun-tools/tools.jar
+18024569	third_party/semgrep/tests/snapshots/semgrep-core/4013b5032e79/stdout
+17513340	third_party/infer/infer/tests/codetoanalyze/python/semdiff-benchs/fastapi.tgz
+15087646	third_party/infer/infer/tests/codetoanalyze/python/semdiff-benchs/rich.tgz
+14664552	third_party/klee/utils/data/Queries/pcresymperf-4.kquery
+13949392	third_party/FuSeBMC/obj/MyVisitor.o
+13883324	third_party/semgrep/languages/swift/tree-sitter/semgrep-swift/lib/parser.c
+11279293	third_party/semgrep/languages/hack/tree-sitter/semgrep-hack/lib/parser.c
+10874545	third_party/llama.cpp/models/ggml-vocab-command-r.gguf

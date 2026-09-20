@@ -38,7 +38,8 @@ class TestAflFlag(unittest.TestCase):
                 extra={"new_cov": 0, "iters": 1, "corpus": 1},
             )
 
-        env = {k: v for k, v in os.environ.items() if k != "HELIX_AFL"}
+        env = {k: v for k, v in os.environ.items()
+               if k not in {"HELIX_AFL", "HELIX_LIBFUZZER"}}
         with patch.dict(os.environ, env, clear=True):
             with patch("helix.fuse.afl_available", return_value="/fake/afl-fuzz.exe"):
                 with patch("helix.fuse.fuzz_function", side_effect=fake_fuzz):
@@ -71,6 +72,28 @@ class TestAflFlag(unittest.TestCase):
         mock_afl.assert_called_once()
         self.assertEqual(recs[0].extra.get("engine"), "afl")
         self.assertNotIn("afl_available", recs[0].extra)
+
+    def test_helix_afl_missing_binary_is_notrun_not_engine_afl(self):
+        f, p = fn("saturate")
+        clean = Finding(
+            stage="fuzz", status=laws.CLEAN, file=f.file, function=f.name,
+            line=f.line, cls="", message="no crash (not a proof)",
+            strength=laws.STRENGTH_FINDS,
+            extra={"new_cov": 0, "iters": 1, "corpus": 1},
+        )
+        env = {k: v for k, v in os.environ.items() if k != "HELIX_LIBFUZZER"}
+        env["HELIX_AFL"] = "1"
+        with patch.dict(os.environ, env, clear=True):
+            with patch("helix.fuse.afl_available", return_value=None):
+                with patch("helix.fuse.fuzz_function", return_value=clean):
+                    with patch("helix.fuse.run_afl_fuzz") as mock_afl:
+                        recs = run_fuse([f], [], p.parent, budget=0.2, iters=4, engine=None)
+        mock_afl.assert_not_called()
+        self.assertEqual(recs[0].status, laws.CLEAN)
+        self.assertEqual(recs[0].extra.get("afl"), "NOTRUN")
+        self.assertNotEqual(recs[0].extra.get("engine"), "afl")
+        self.assertIn("not a proof", recs[0].message)
+        self.assertFalse(laws.is_proof(recs[0].status))
 
 
 if __name__ == "__main__":

@@ -1,0 +1,12 @@
+parmap.1.0-rc7.1
+*.a
+*.o
+./*.ml*
+*.so
+_*
+*.cm*
+*.annot
+*.clib
+*build
+ocamlc.where
+.prepare

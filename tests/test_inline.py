@@ -108,6 +108,54 @@ class TestInlineStatic(unittest.TestCase):
         self.assertNotIn("inner(", mid.body)
         self.assertRegex(mid.body.replace(" ", ""), r"x\+1|_i0\+1|_ret")
 
+    def test_assignment_form(self):
+        fns = [
+            FunctionInfo(
+                file="a.c", name="bump", kind="SCALAR", line=1,
+                signature="static int bump(int x)", params=[("int", "x")],
+                body="return x + 1;", static=True,
+            ),
+            FunctionInfo(
+                file="a.c", name="caller", kind="SCALAR", line=2,
+                signature="int caller(int x)", params=[("int", "x")],
+                body="int y; y = bump(x); return y;", static=False,
+            ),
+        ]
+        caller = next(f for f in inline_static(fns) if f.name == "caller")
+        self.assertNotIn("bump(", caller.body)
+
+    def test_decl_init_form(self):
+        fns = [
+            FunctionInfo(
+                file="a.c", name="bump", kind="SCALAR", line=1,
+                signature="static int bump(int x)", params=[("int", "x")],
+                body="return x + 1;", static=True,
+            ),
+            FunctionInfo(
+                file="a.c", name="caller", kind="SCALAR", line=2,
+                signature="int caller(int x)", params=[("int", "x")],
+                body="int y = bump(x); return y;", static=False,
+            ),
+        ]
+        caller = next(f for f in inline_static(fns) if f.name == "caller")
+        self.assertNotIn("bump(", caller.body)
+
+    def test_void_helper_form(self):
+        fns = [
+            FunctionInfo(
+                file="a.c", name="bump", kind="VOID", line=1,
+                signature="static void bump(int x)", params=[("int", "x")],
+                return_type="void", body="(void)x;", static=True,
+            ),
+            FunctionInfo(
+                file="a.c", name="caller", kind="SCALAR", line=2,
+                signature="int caller(int x)", params=[("int", "x")],
+                body="bump(x); return x;", static=False,
+            ),
+        ]
+        caller = next(f for f in inline_static(fns) if f.name == "caller")
+        self.assertNotIn("bump(", caller.body)
+
 
 @unittest.skipUnless(HAS_Z3, "z3-solver not installed")
 class TestInlineBeforeBMC(unittest.TestCase):

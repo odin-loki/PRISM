@@ -1,4 +1,4 @@
-# Helix — unified hybrid code-testing pipeline
+# PRISM — unified hybrid code-testing pipeline
 
 A single tool that runs **deterministic instruments first**, then **bounded
 proofs**, then **fuzzing**, then **LLM-guided generation and repair**. The
@@ -64,6 +64,7 @@ loaders — the *finding* vocabulary does not care which loader answered.
 3b interval      path-sensitive integer ranges (FAILED is not a proof)
 4  adapters      cppcheck / clang / esbmc / dafny / cbmc / semgrep / infer / frama-c if on PATH
 5  contracts     Dafny-style + ACSL specs (PROVED-ASSUMING under requires)
+5b wp            in-tree Frama-C WP after contracts (`helix/wp.py`); closed is PROVED-ASSUMING — see docs/MINED.md
 6  bmc           k-induction + incremental BMC via Z3 (ESBMC method);
                  C subset includes do-while, continue, sizeof, ternary,
                  comma; unsigned params use unsigned compares and wrap;

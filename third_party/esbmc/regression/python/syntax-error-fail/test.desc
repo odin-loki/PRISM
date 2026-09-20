@@ -1,0 +1,5 @@
+CORE
+main.py
+
+^  Missing return statement detected in function 'absolute'$
+^VERIFICATION FAILED$

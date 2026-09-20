@@ -1,5 +1,11 @@
 """In-process KLEE-style concolic engine over the Helix SCALAR subset.
 
+Mined from third_party/klee/lib/Core/Executor.cpp `Executor::fork`
+(Br → fork on the branch predicate; unsat side is dropped) and the
+seedMap / BFSSearcher notes: concrete seeds run first, then a model of
+the *negated* branch is queued as a new seed. Not a wrapper of the klee
+binary.
+
 Concrete seeds always run (even without Z3). A CLEAN result is not a proof.
 POINTER functions are skipped — never invent buffers.
 """
@@ -17,6 +23,7 @@ from helix.bmc import (
     INT_MIN,
     WIDTH,
     Parser as BmcParser,
+    ParseFail,
     _Enc,
     _as_bool,
     _has_self_call,
@@ -24,6 +31,8 @@ from helix.bmc import (
     _has_unencoded_float,
     _has_unencoded_throw,
     _has_unencoded_setjmp,
+    _type_is_unsigned,
+    _type_width,
     harness_for_parsefail,
     unencoded_syntax_reason,
     extract_enums,
@@ -40,6 +49,9 @@ from helix.models import Finding, FunctionInfo
 _IF = re.compile(r"\bif\s*\(([^)]+)\)")
 
 _EXTREMES = (0, 1, -1, INT_MAX, INT_MIN)
+
+# Sentinel: KLEE fork evaluated the negated predicate as Solver::False.
+_UNSAT = object()
 
 
 def run_concolic(functions: list[FunctionInfo], budget: int = 32) -> list[Finding]:
@@ -112,10 +124,13 @@ def concolic_function(fn: FunctionInfo, budget: int = 32) -> Finding:
     seen: set[tuple[tuple[str, int], ...]] = set()
     tried = 0
     generated = 0
+    z3_seeds = 0
+    skipped_unsat = 0
     max_new = max(0, int(budget))
+    z3_keys: set[tuple[tuple[str, int], ...]] = set()
 
     while queue:
-        args = queue.pop(0)
+        args = queue.pop(0)  # FIFO: BFSSearcher, not DFS stack
         key = _args_key(args)
         if key in seen:
             continue
@@ -147,27 +162,42 @@ def concolic_function(fn: FunctionInfo, budget: int = 32) -> Finding:
                 extra={"args": args, "tried": tried},
             )
         if rec.ub:
-            return _crash_finding(base, args, rec.ub, tried=tried, generated=generated)
+            return _crash_finding(
+                base, args, rec.ub,
+                tried=tried, generated=generated,
+                oracle=_oracle_tag(key in z3_keys, z3_seeds),
+                z3_seeds=z3_seeds, skipped_unsat=skipped_unsat,
+            )
 
         if generated >= max_new:
             continue
         for cond in _branch_conditions(fn):
             if generated >= max_new:
                 break
-            nxt = _neighbor_for_cond(fn, args, cond)
+            nxt, via_z3, was_unsat = _neighbor_for_cond(fn, args, cond)
+            if was_unsat:
+                skipped_unsat += 1
+                continue
             if nxt is None:
                 continue
             nkey = _args_key(nxt)
             if nkey in seen:
                 continue
             generated += 1
+            if via_z3:
+                z3_seeds += 1
+                z3_keys.add(nkey)
             queue.append(nxt)
 
     return Finding(
         **base,
         status=laws.CLEAN,
         message=f"no UB in {tried} concolic inputs (not a proof)",
-        extra={"tried": tried, "generated": generated, "oracle": "concrete"},
+        extra=_run_extra(
+            tried=tried, generated=generated,
+            oracle=_oracle_tag(False, z3_seeds),
+            z3_seeds=z3_seeds, skipped_unsat=skipped_unsat,
+        ),
     )
 
 
@@ -216,6 +246,33 @@ def _branch_conditions(fn: FunctionInfo) -> list[str]:
     return seen
 
 
+def _oracle_tag(this_from_z3: bool, z3_seeds: int) -> str:
+    if this_from_z3 or z3_seeds > 0:
+        return "z3"
+    return "concrete"
+
+
+def _run_extra(
+    *,
+    tried: int,
+    generated: int,
+    oracle: str,
+    z3_seeds: int,
+    skipped_unsat: int,
+    args: dict[str, int] | None = None,
+) -> dict[str, Any]:
+    extra: dict[str, Any] = {
+        "tried": tried,
+        "generated": generated,
+        "oracle": oracle,
+        "z3_seeds": z3_seeds,
+        "skipped_unsat": skipped_unsat,
+    }
+    if args is not None:
+        extra["args"] = args
+    return extra
+
+
 def _crash_finding(
     base: dict[str, Any],
     args: dict[str, int],
@@ -223,6 +280,9 @@ def _crash_finding(
     *,
     tried: int,
     generated: int,
+    oracle: str = "concrete",
+    z3_seeds: int = 0,
+    skipped_unsat: int = 0,
 ) -> Finding:
     argstr = ", ".join(f"{k}={v}" for k, v in args.items())
     rec = dict(base)
@@ -232,7 +292,10 @@ def _crash_finding(
         status=laws.CRASH,
         message=f"{cls} on {argstr}",
         counterexample=argstr,
-        extra={"args": args, "tried": tried, "generated": generated, "oracle": "concrete"},
+        extra=_run_extra(
+            tried=tried, generated=generated, oracle=oracle,
+            z3_seeds=z3_seeds, skipped_unsat=skipped_unsat, args=args,
+        ),
     )
 
 
@@ -240,16 +303,25 @@ def _neighbor_for_cond(
     fn: FunctionInfo,
     args: dict[str, int],
     cond: str,
-) -> dict[str, int] | None:
+) -> tuple[dict[str, int] | None, bool, bool]:
+    """Flip `cond` relative to this seed.
+
+    Returns (next_args, via_z3, was_unsat). KLEE Executor::fork drops an
+    unsat side; we do the same and do not invent a heuristic neighbor.
+    """
     cur = _eval_cond(fn, args, cond)
     if cur is None:
-        return None
+        return None, False, False
     want = not cur
     if HAS_Z3:
         solved = _z3_solve_flip(fn, args, cond, want=want)
-        if solved is not None:
-            return solved
-    return _heuristic_flip(fn, args, cond, want=want)
+        if solved is _UNSAT:
+            return None, False, True
+        if isinstance(solved, dict):
+            return solved, True, False
+        # Encode/timeout unknown: keep the concrete-only neighbor path.
+    nxt = _heuristic_flip(fn, args, cond, want=want)
+    return nxt, False, False
 
 
 def _eval_cond(fn: FunctionInfo, args: dict[str, int], cond: str) -> bool | None:
@@ -282,35 +354,55 @@ def _z3_solve_flip(
     cond: str,
     *,
     want: bool,
-) -> dict[str, int] | None:
+) -> dict[str, int] | object | None:
+    """Solve the flipped branch predicate (KLEE `Executor::fork` + getInitialValues).
+
+    Returns a model for integer params, `_UNSAT` when the query is unsat
+    (skip that branch), or None when Z3 is missing / the query is unknown.
+    """
     if not HAS_Z3:
         return None
     try:
         import z3
 
         enc = _Enc(0)
-        names = [name for _, name in fn.params if name]
-        for name in names:
+        names: list[str] = []
+        for typ, name in fn.params:
+            if not name:
+                continue
+            names.append(name)
+            if _type_is_unsigned(typ):
+                enc.unsigned.add(name)
+            enc.bits[name] = _type_width(typ)
             enc.get(name)
+        enc.retag_unsigned()
         parser = BmcParser("", fn.params, 0, enums=_enums_for(fn))
         cond_z3 = _as_bool(parser._expr(enc, cond))
         s = z3.Solver()
         s.set("timeout", 2000)
+        # Negated relative to the concrete seed: want is `not cur`.
         s.add(cond_z3 if want else z3.Not(cond_z3))
-        # Prefer a input different from the seed when possible.
+        # Prefer an input different from the seed when possible.
         diff: list[Any] = []
         for name in names:
             bv = enc.vars.get(name)
             if bv is None:
                 continue
             cur = i32(args.get(name, 0))
-            diff.append(bv != z3.BitVecVal(cur & 0xFFFFFFFF, WIDTH))
+            w = enc.bits.get(name, WIDTH)
+            diff.append(bv != z3.BitVecVal(cur & ((1 << w) - 1), w))
         if diff:
             s.push()
             s.add(z3.Or(*diff))
-            if s.check() != z3.sat:
+            verdict = s.check()
+            if verdict != z3.sat:
                 s.pop()
-        if s.check() != z3.sat:
+                verdict = s.check()
+        else:
+            verdict = s.check()
+        if verdict == z3.unsat:
+            return _UNSAT
+        if verdict != z3.sat:
             return None
         model = s.model()
         out: dict[str, int] = {}
@@ -322,6 +414,8 @@ def _z3_solve_flip(
             val = model.eval(bv, model_completion=True)
             out[name] = i32(val.as_long())
         return out
+    except ParseFail:
+        return None
     except Exception:
         return None
 

@@ -1,0 +1,5 @@
+CORE
+MyContract_overflow_nested.solast
+--sol MyContract_overflow_nested.sol --k-induction
+.*line 16 function func_overflow$
+^VERIFICATION FAILED$

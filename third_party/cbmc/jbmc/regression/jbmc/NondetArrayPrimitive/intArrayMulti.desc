@@ -1,0 +1,12 @@
+CORE
+NondetArrayPrimitive
+--function NondetArrayPrimitive.intArrayMulti --max-nondet-array-length 51 --unwind 4 -cp target/classes
+^VERIFICATION FAILED$
+^EXIT=10$
+^SIGNAL=0$
+line 58 assertion.*: FAILURE
+--
+^warning: ignoring
+--
+Check inner most array of multi-dimensional array is reachable independently of
+--unwind value.

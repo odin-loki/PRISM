@@ -2259,6 +2259,8 @@ def _has_unencoded_cstr(fn: FunctionInfo) -> bool:
 
 _UNENCODED_LIBC_EFFECT = {
     "system", "exit", "_exit", "abort", "pthread_create",
+    "thrd_create", "thrd_join", "thrd_detach", "thrd_exit",
+    "thrd_sleep", "thrd_yield", "thrd_current", "thrd_equal",
     "printf", "fprintf",
     "umask", "srand", "srandom", "signal", "mktemp",
     "fork", "vfork",
@@ -2566,6 +2568,8 @@ _UNENCODED_LIBC_EFFECT = {
     "_umtx_op",
     "thr_new", "thr_kill2", "thr_kill", "thr_self", "thr_exit",
     "thr_suspend", "thr_wake",
+    "thrd_create", "thrd_join", "thrd_detach", "thrd_exit",
+    "thrd_sleep", "thrd_yield", "thrd_current", "thrd_equal",
     "modfind", "modstat", "modnext", "modfnext",
     "lpathconf",
     "getloginclass", "setloginclass",
@@ -2709,6 +2713,9 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
     vector model; ordinary `int` is not. `strcpy` stays out.
     `pthread_join`/`pthread_detach`/`pthread_once` are unconstrained
     thread join (pthread_create is already a libc-effect gate).
+    ISO C11 `thrd_create`/`thrd_join`/`thrd_detach`/`thrd_exit`/
+    `thrd_sleep`/`thrd_yield`/`thrd_current`/`thrd_equal` are a missing
+    C11 threads model (not POSIX `pthread_*`, not FreeBSD `thr_*`).
     `sem_wait`/`sem_post`/`sem_init`/`sem_destroy` are a missing
     semaphore model. `openat`/`flock` are unconstrained fd ops.
     `posix_memalign`/`aligned_alloc` are a missing aligned-alloc model.
@@ -4384,6 +4391,14 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
     if re.search(r"\b(?:pthread_join|pthread_detach)\s*\(", body):
         return (
             f"pthread_join unencoded: unconstrained pthread_join is not a "
+            f"proof ({engine})"
+        )
+    if re.search(
+        r"\bthrd_(?:create|join|detach|exit|sleep|yield|current|equal)\s*\(",
+        body,
+    ):
+        return (
+            f"ISO C11 thrd unencoded: unconstrained thrd_* is not a "
             f"proof ({engine})"
         )
     if re.search(r"\b(?:sem_wait|sem_post)\s*\(", body):
@@ -9302,8 +9317,12 @@ def bmc_function(
     base = dict(stage="bmc", file=fn.file, function=fn.name, line=fn.line,
                 cls="", strength=laws.STRENGTH_PROVES, extra={})
     if not HAS_Z3:
-        return Finding(**base, status=laws.NOTRUN,
-                       message="z3 not installed", extra={**base["extra"], "install": "pip install z3-solver"})
+        base["extra"] = {"install": "pip install z3-solver"}
+        return Finding(
+            **base,
+            status=laws.NOTRUN,
+            message="z3 not installed",
+        )
     if fn.kind == "POINTER":
         base["strength"] = laws.STRENGTH_SOME
         return Finding(**base, status=laws.NEEDS_HARNESS,

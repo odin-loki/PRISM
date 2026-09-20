@@ -1,0 +1,1104 @@
+#include <boost/program_options/value_semantic.hpp>
+#include <esbmc/esbmc_parseoptions.h>
+#include <fstream>
+#include <limits>
+#include <solvers/solver_config.h>
+#include <util/config/cmdline.h>
+
+const struct group_opt_templ all_cmd_options[] = {
+  {"Main Usage",
+   {{"input-file",
+     boost::program_options::value<std::vector<std::string>>()->value_name(
+       "file.c ..."),
+     "Source file names"}}},
+  {"Options",
+   {{"help,?", NULL, "Show help"},
+    {"function",
+     boost::program_options::value<std::string>()->value_name("name"),
+     "Set main function name"},
+    {"class",
+     boost::program_options::value<std::string>()->value_name("cname"),
+     "Set the class/namespace name where the function is inside"},
+    {"claim",
+     boost::program_options::value<std::vector<int>>()->value_name("nr"),
+     "Only check specific claims"},
+    {"instruction",
+     boost::program_options::value<int>()->value_name("nr"),
+     "Limit the number of instructions executed during symbolic execution"},
+    {"git-hash", NULL, "Show ESBMC version with git hash and exit"},
+    {"version", NULL, "Show current ESBMC version and exit"},
+    {"verbosity",
+     boost::program_options::value<std::vector<std::string>>(),
+     "Verbosity of log output, can be given multiple times. Parameter is "
+     "either a decimal N or 'module:N' to set the log-level of debug messages "
+     "of the module to N; without module, it sets the global log-level"}}},
+  {"Printing options",
+   {{"symbol-table-only", NULL, "Only show symbol table"},
+    {"symbol-table-too", NULL, "Show symbol table and verify"},
+    {"parse-tree-only", NULL, "Only show parse tree"},
+    {"parse-tree-too", NULL, "Show parse tree and verify"},
+    {"goto-functions-only", NULL, "Only show goto program"},
+    {"goto-functions-too", NULL, "Show goto program and verify"},
+    {"dump-goto-cfg",
+     NULL,
+     "Create a file for each function with the associated CFG in DOT format"},
+    {"show-call-sites",
+     NULL,
+     "Show each function call site with its arguments"},
+    {"program-only", NULL, "Only show program expression"},
+    {"program-too", NULL, "Show program expression and verify"},
+    {"ssa-symbol-table", NULL, "Show symbol table along with SSA"},
+    {"ssa-guards", NULL, "Print guard expressions in SSA output"},
+    {"ssa-sliced", NULL, "Print the sliced SSAs"},
+    {"ssa-no-location", NULL, "Omit location info from SSA output"},
+    {"smt-formula-only",
+     NULL,
+     "Only show SMT formula (not supported by all solvers)"},
+    {"smt-formula-too",
+     NULL,
+     "Show SMT formula (not supported by all solvers), and verify"},
+    {"smt-model",
+     NULL,
+     "Show SMT model (not supported by all solvers), if the formula is SAT"},
+    {"color",
+     boost::program_options::value<std::string>()
+       ->default_value("auto")
+       ->value_name("auto|always|never"),
+     "Show colored output"},
+    {"log-message",
+     NULL,
+     "Print LOG message including file, line, and timestamp"},
+    {"keep-alive-interval",
+     boost::program_options::value<int>()->value_name("interval"),
+     "Set interval (in seconds) for keep alive messages (default: 60)"},
+    {"enable-keep-alive",
+     NULL,
+     "Enable keep alive messages during long solving processes"}}},
+  {"Trace",
+   {{"quiet",
+     NULL,
+     "Do not print unwinding information during symbolic execution"},
+    {"compact-trace",
+     NULL,
+     "Enable --no-slice and hide internal symbols from the trace"},
+    {"symex-trace", NULL, "Print instructions during symbolic execution"},
+    {"ssa-trace", NULL, "Print SSA during SMT encoding"},
+    {"ssa-smt-trace", NULL, "Print generated SMT during SMT encoding"},
+    {"ssa-features-dump",
+     NULL,
+     "Print features in the SSA (just before conversion)"},
+    {"symex-ssa-trace", NULL, "Print generated SSA during symbolic execution"},
+    {"show-goto-value-sets",
+     NULL,
+     "Show value-set analysis for the goto functions"},
+    {"show-symex-value-sets",
+     NULL,
+     "Show value-set analysis during symbolic execution"},
+    {"show-stacktrace",
+     NULL,
+     "Show the stack trace of function call in the counterexample"},
+    {"simplify-trace",
+     NULL,
+     "Simplify the trace and exclude the assignments whose variables are not "
+     "from user-input files"}}},
+  {"Frontend",
+   {{"include,I",
+     boost::program_options::value<std::vector<std::string>>()->value_name(
+       "path"),
+     "Set include path"},
+    {"include-file",
+     boost::program_options::value<std::vector<std::string>>()->value_name(
+       "file"),
+     "Include files via frontend's -include option before anything else"},
+    {"nostdinc", NULL, "Do not include from standard system paths"},
+    {"idirafter",
+     boost::program_options::value<std::vector<std::string>>()->value_name(
+       "path"),
+     "Append system include path to search after system headers"},
+    {"define,D",
+     boost::program_options::value<std::vector<std::string>>()->value_name(
+       "macro"),
+     "Define preprocessor macro"},
+    {"warning,W",
+     boost::program_options::value<std::vector<std::string>>(),
+     "Enable specific frontend warnings, disable with \"no-\" prefix, or pass "
+     "options directly to the C/C++ frontends with the form "
+     "-Wc,OPT1,OPT2,..."},
+    {"std",
+     boost::program_options::value<std::string>()->value_name("version"),
+     "Set C/C++ standard version"},
+    {"sysroot",
+     boost::program_options::value<std::string>()->value_name("<path>"),
+     "Set the sysroot for the frontend"},
+    {"no-abstracted-cpp-includes",
+     NULL,
+     "Do not include abstract C++ operational models"},
+    {"mix-cpp-host-headers",
+     NULL,
+     "Keep the C++ host system headers visible alongside ESBMC's "
+     "operational models, instead of suppressing them with -nostdinc++; "
+     "a #include not covered by the bundled OMs falls through to the "
+     "host headers. May cause ambiguous-name errors for names both "
+     "define (e.g. char_traits, istream)"},
+    {"force,f",
+     boost::program_options::value<std::vector<std::string>>(),
+     "Pass -f flags to the C/C++ frontend"},
+    {"preprocess", NULL, "Stop after preprocessing"},
+    {"no-inlining", NULL, "Disable inlining function calls"},
+    {"full-inlining", NULL, "Perform full inlining of function calls"},
+    {"all-claims", NULL, "Keep all claims"},
+    {"keep-verified-claims",
+     NULL,
+     "Do not skip verified claims in multi-property verification"},
+    {"show-loops", NULL, "Show the loops in the program"},
+    {"show-claims", NULL, "Only show claims"},
+    {"show-vcc", NULL, "Show the verification conditions"},
+    {"no-library", NULL, "Disable built-in abstract C library"},
+    {"no-string-literal", NULL, "Ignore string literals (replace with NULL)"},
+    {"binary", NULL, "Read goto program instead of source code"},
+    {"cprover", NULL, "Deprecated no-op (kept for backward compatibility)"},
+    {"no-cprover-additions",
+     NULL,
+     "Do not auto-link ESBMC additions when reading a CBMC goto-binary"},
+    {"dont-care-about-missing-extensions",
+     NULL,
+     "Don't crash on unsupported extensions"},
+    {"old-frontend",
+     NULL,
+     "Parse source files using the old frontend (deprecated)"},
+    {"funsigned-char", NULL, "Make \"char\" unsigned by default"},
+    {"fms-extensions", NULL, "Enable microsoft C extensions"},
+    {"argv-max-args",
+     boost::program_options::value<int>()->default_value(2)->value_name("nr"),
+     "Maximum number of argv entries backed with nondet strings (default 2). "
+     "Higher values widen coverage at the cost of a larger SMT formula."},
+    {"argv-max-strlen",
+     boost::program_options::value<int>()->default_value(256)->value_name("nr"),
+     "Maximum length (in bytes, including the null terminator) of each backed "
+     "argv string (default 256)."},
+    {"gcc-nested-functions",
+     NULL,
+     "Enable GCC nested functions extension (source-level lambda lifting)"},
+    {"sv-comp",
+     NULL,
+     "Enable SV-COMP mode: suppress GCC-acceptable frontend diagnostics "
+     "(int/pointer conversions), treat __builtin_unreachable as a no-op, emit "
+     "physical line numbers for witnesses, and avoid malloc/free in the "
+     "fopen/fclose models. Set automatically by the SV-COMP wrapper."},
+    /* Read by clang_c_language.cpp, which is built unconditionally, so these
+     * must not sit in a frontend-gated group (#7345). */
+    {"clang-c-irep2-adjust",
+     NULL,
+     "Run the IREP2-native C adjuster alongside the legacy adjust pass "
+     "(Phase 6 migration; experimental, default off)"},
+    {"clang-c-irep2-adjust-only",
+     NULL,
+     "Use the IREP2-native C adjuster instead of the legacy adjust pass "
+     "(Phase 6 hop-off; experimental, default off)"},
+    {"clang-c-irep2-adjust-writeback-all",
+     NULL,
+     "Diagnostic: make the IREP2-native C adjuster refresh every symbol's "
+     "legacy value, not only the ones it changed. Without it a body the pass "
+     "did not touch still prints its converter tree under "
+     "--symbol-table-only, which is not what the pass produced"},
+    {"clang-cpp-irep2-migrate-census",
+     NULL,
+     "Diagnostic: migrate every adjusted C++ symbol through IREP2 and report "
+     "the count, to find what the C++ frontend emits that IREP2 cannot "
+     "represent (Phase 7; read-only, default off)"},
+    {"clang-cpp-irep2-adjust-only",
+     NULL,
+     "Use the IREP2-native C++ adjuster instead of the legacy adjust pass, in "
+     "the C++ and Solidity frontends (both run it; Phase 7 hop-off; "
+     "experimental, default off)"}}},
+#ifdef ENABLE_PYTHON_FRONTEND
+  {"Python frontend",
+   {
+     {"python",
+      boost::program_options::value<std::string>()->value_name("path"),
+      "Python interpreter binary to use (searched in $PATH; default: python)"},
+     {"override-return-annotation",
+      NULL,
+      "Override return annotation with inferred type"},
+     {"strict-types",
+      NULL,
+      "Enforce strict type checking for function arguments during "
+      "verification"},
+     {"python-no-fold",
+      NULL,
+      "Disable NumPy constant folding in the Python frontend"},
+     {"python-typecheck",
+      NULL,
+      "Type-check the input with mypy --strict and print the report."},
+     {"nondet-str-length",
+      boost::program_options::value<int>()->default_value(16)->value_name("nr"),
+      "Set maximum length for non-deterministic strings (default is 16)"},
+     {"python-list-compare-depth",
+      boost::program_options::value<int>()->default_value(4)->value_name("nr"),
+      "Set maximum nesting depth for Python list comparison (default is 4)"},
+     {"python-irep2-adjust",
+      NULL,
+      "Run the IREP2-native Python adjuster alongside the legacy adjust pass "
+      "(V.4 migration; experimental, default off)"},
+     {"python-irep2-adjust-only",
+      NULL,
+      "Use the IREP2-native Python adjuster instead of the legacy clang_cpp "
+      "adjust pass (V.4 migration hop-off; experimental, default off)"},
+   }},
+#endif
+#ifdef ENABLE_LD_FRONTEND
+  {"LD frontend",
+   {{"ld-props",
+     boost::program_options::value<std::string>()->value_name("file"),
+     "YAML safety-property specification for IEC 61131-3 Ladder Diagram "
+     "(.ld) programs"},
+    {"ld-fault-injection",
+     NULL,
+     "Plant known semantic errors in the Ladder Diagram (negate contact "
+     "polarities, degrade Set/Reset coils to plain output coils) to validate "
+     "that the property checks detect them"},
+    {"ld-sound-mode",
+     NULL,
+     "Translate user function-block ST bodies in sound Boolean/integer mode: "
+     "unsupported constructs (function calls, member access) make the FB body "
+     "fall back to a no-op instead of being over-approximated as "
+     "nondeterministic (no over-approximation, zero false positives)"},
+    {"ld-scan-watchdog",
+     NULL,
+     "Instrument WHILE loops in user function-block bodies with a "
+     "scan-watchdog "
+     "assertion that fails once a loop exceeds --ld-scan-budget iterations, "
+     "modelling a PLC scan overrun (changes the verified model)"},
+    {"ld-scan-budget",
+     boost::program_options::value<int>()->value_name("N"),
+     "Tolerated iterations before the --ld-scan-watchdog assertion fails "
+     "(default 8); keep <= the BMC --unwind so the assertion is reachable"}}},
+#endif
+#ifdef ENABLE_SOLIDITY_FRONTEND
+  {"Solidity frontend",
+   {{"sol",
+     boost::program_options::value<std::string>()->value_name("path"),
+     "Solidity source file (.sol) — also accepted as a positional argument"},
+    {"solc-bin",
+     boost::program_options::value<std::string>()->value_name("path"),
+     "path to solc binary (default: $SOLC or solc in $PATH)"},
+    {"contract",
+     boost::program_options::value<std::string>()->value_name("cname"),
+     "Set contract name"},
+    {"focus-function",
+     boost::program_options::value<std::string>()->value_name("name"),
+     "Restrict the contract harness to verify only the named public/external "
+     "function. The constructor and state initialization still run (unlike "
+     "--function), but the nondet dispatch loop calls only this function. "
+     "Requires --contract when the source declares more than one contract."},
+    {"no-visibility",
+     NULL,
+     "Force to verify every function, even if it's an unreachable "
+     "internal/private function"},
+    {"unbound", NULL, "Model external function calls as arbitrary behavior"},
+    {"bound",
+     NULL,
+     "Model inter-contract function calls within a bounded system (default)"},
+    {"reentry-check",
+     NULL,
+     "Detect reentrancy behavior during contract execution"},
+    {"negating-property",
+     boost::program_options::value<std::string>()->value_name("fname"),
+     "Convert the assert(cond) to assert(!cond)"}}},
+#endif
+  {"Architecture",
+   {
+     {"no-arch", NULL, "Don't set up an architecture"},
+     {"little-endian", NULL, "Allow little-endian word-byte conversions"},
+     {"big-endian", NULL, "Allow big-endian word-byte conversions"},
+     {"16", NULL, "Set width of machine word (default is 64)"},
+     {"32", NULL, "Set width of machine word (default is 64)"},
+     {"64", NULL, "Set width of machine word (default is 64)"},
+     {"cheri",
+      boost::program_options::value<std::string>()->value_name("mode"),
+      "Enable CHERI-C in 'hybrid' or 'purecap' mode (default is off)"},
+     {"cheri-uncompressed",
+      NULL,
+      "Use full CHERI capabilities instead of the compressed format"},
+#ifdef _WIN32
+     {"i386-macos", NULL, "Set MACOS/I386 architecture"},
+     {"ppc-macos", NULL, "Set PPC/I386 architecture"},
+     {"i386-linux", NULL, "Set Linux/I386 architecture"},
+     {"i386-win32", NULL, "Set Windows/I386 architecture (default)"},
+#elif __APPLE__
+     {"i386-macos", NULL, "Set MACOS/I386 architecture (default)"},
+     {"ppc-macos", NULL, "Set PPC/I386 architecture"},
+     {"i386-linux", NULL, "Set Linux/I386 architecture"},
+     {"i386-win32", NULL, "Set Windows/I386 architecture"},
+#else
+     {"i386-macos", NULL, "Set MACOS/I386 architecture"},
+     {"ppc-macos", NULL, "Set PPC/I386 architecture"},
+     {"i386-linux", NULL, "Set Linux/I386 architecture (default)"},
+     {"i386-win32", NULL, "Set Windows/I386 architecture"},
+#endif
+   }},
+  {"Floating-point",
+   {
+     {"round-to-nearest",
+      NULL,
+      "Round floating-point results towards the nearest even value (default)"},
+     {"round-to-even", NULL, "Alias for --round-to-nearest"},
+     {"round-to-plus-inf",
+      NULL,
+      "Round floating-point results towards plus infinity"},
+     {"round-to-minus-inf",
+      NULL,
+      "Round floating-point results towards minus infinity"},
+     {"round-to-zero", NULL, "Round floating-point results towards zero"},
+     {"fp-taylor-terms",
+      boost::program_options::value<int>()->value_name("n"),
+      "Terms the exp/log/pow operational models expand their Taylor series to, "
+      "between 2 and 12 (default 8). More terms are more accurate and more "
+      "expensive to solve"},
+   }},
+  {"Witness",
+   {{"witness-output",
+     boost::program_options::value<std::string>()->value_name("path"),
+     "Generate the verification result witness in both Yaml and GraphML "
+     "format"},
+    {"sarif-output",
+     boost::program_options::value<std::string>()->value_name("{ path | - }"),
+     "Generate a SARIF 2.1.0 report of the violation; use '-' for stdout. "
+     "Each result is annotated with the matching CWE ids (CWE 4.20)."},
+    {"witness-output-graphml",
+     boost::program_options::value<std::string>()->value_name("{ path | - }"),
+     "Generate the verification result witness in GraphML format; use '-' for "
+     "output to stdout"},
+    {"witness-output-yaml",
+     boost::program_options::value<std::string>()->value_name("{ path | - }"),
+     "Generate the verification result witness in Yaml format; use '-' for "
+     "output to stdout"},
+    {"witness-producer",
+     boost::program_options::value<std::string>(),
+     "Override the producer name in witness files"},
+    {"witness-programfile",
+     boost::program_options::value<std::string>(),
+     "Override the program file name in witness files"},
+    {"validate-correctness-witness",
+     NULL,
+     "Validate the YAML correctness witness (2.0)"},
+    {"validate-violation-witness",
+     NULL,
+     "Validate the YAML violation witness (2.0)"},
+    {"witness",
+     boost::program_options::value<std::string>()->value_name("<path>"),
+     "Set the witness path"},
+    {"all-witnesses",
+     NULL,
+     "After a property fails, enumerate further input vectors that also "
+     "violate it (until UNSAT or --max-witnesses is reached). "
+     "Implies --multi-property."},
+    {"max-witnesses",
+     boost::program_options::value<int>()->default_value(16)->value_name("n"),
+     "Cap the number of witnesses reported per property "
+     "(default: 16; 0 = unlimited). Only meaningful with --all-witnesses."},
+    {"full-traces",
+     NULL,
+     "Print every trace state in the multi-witness report instead of the "
+     "states closest to the failure. Only meaningful with --all-witnesses."},
+    {"ascii-report",
+     NULL,
+     "Draw the multi-witness report with ASCII instead of box-drawing "
+     "characters. Detected automatically from the locale; this forces it."}}},
+  {"Output",
+   {{"output-goto",
+     boost::program_options::value<std::string>(),
+     "Export generated goto program"},
+    {"proof-cache",
+     boost::program_options::value<std::string>()->value_name("<dir>"),
+     "Reuse claims already proved unsatisfiable in an earlier run, keyed on "
+     "the claim's sliced SSA cone, this ESBMC build, every option in effect "
+     "and the data model. Requires --multi-property. Only proofs are stored. "
+     "Inactive under --ltl, --smt-during-symex, coverage modes and past the "
+     "first thread interleaving. "
+     "See https://esbmc.github.io/docs/proof-cache/"},
+    {"proof-cache-verify",
+     NULL,
+     "Consult --proof-cache but solve every claim anyway, reporting an error "
+     "when a stored proof disagrees with the solver"},
+    {"claim-fingerprint-dump",
+     boost::program_options::value<std::string>()->value_name("<file>"),
+     "Append one line per solved claim (digest of its sliced cone under each "
+     "SSA-name normalisation, cone size, verdict, location) to this file; "
+     "'-' writes to stdout prefixed with CLAIM-FP"},
+    {"cex-output",
+     boost::program_options::value<std::string>(),
+     "Save the counterexample into a file or, "
+     "in multi-property mode, multiple files with name prefix "
+     "'<phase>-k<K>-<N>-', where <phase> is the verification phase "
+     "(base/fwd/indstep/bmc), <K> the unwind bound, and <N> a decimal "
+     "increasing from zero. The phase and k tags keep counterexamples from "
+     "different k-induction steps from overwriting each other"},
+    {"file-output",
+     boost::program_options::value<std::string>(),
+     "Redirect all output to a file (no stdout/stderr)"},
+    {"goto2c", NULL, "Translate the GOTO program to C"},
+    {"generate-testcase",
+     NULL,
+     "If a solution is found, generates a testcase in XML"},
+    {"generate-pytest-testcase",
+     NULL,
+     "If a solution is found, generates a pytest testcase for Python programs"},
+    {"pytest-output-dir",
+     boost::program_options::value<std::string>()->value_name("<dir>"),
+     "Directory for --generate-pytest-testcase output (default: esbmc-pytest)"},
+    {"pytest-values-only",
+     NULL,
+     "Record the counterexample as a `witness` list instead of a runnable "
+     "test: importing the program would re-run it under CPython, where the "
+     "nondet intrinsics do not exist"},
+    {"generate-ctest-testcase",
+     NULL,
+     "If a solution is found, generates CTest testcases for C programs"},
+    {"ctest-output-dir",
+     boost::program_options::value<std::string>()->value_name("<dir>"),
+     "Directory for --generate-ctest-testcase output (default: esbmc-ctest)"},
+    {"generate-html-report",
+     NULL,
+     "If a violation is found, generates a HTML report"},
+    {"generate-json-report",
+     NULL,
+     "If a violation is found, generates a JSON report"},
+    {"result-only", NULL, "Do not print the counter-example"}}},
+  {"Function Contracts",
+   {{"enforce-contract",
+     boost::program_options::value<std::vector<std::string>>()->value_name(
+       "fun"),
+     "Wrap function to check its contract (use \"*\" for all functions)"},
+    {"replace-call-with-contract",
+     boost::program_options::value<std::vector<std::string>>()->value_name(
+       "fun"),
+     "Replace function calls with contract semantics (use \"*\" for all "
+     "functions)"},
+    {"enforce-all-contracts",
+     nullptr,
+     "Enforce contracts for all functions marked with __ESBMC_contract"},
+    {"replace-all-contracts",
+     nullptr,
+     "Replace calls to all functions marked with __ESBMC_contract"}}},
+  {"BMC",
+   {{"unwind",
+     boost::program_options::value<int>()->value_name("nr"),
+     "Unwind nr times"},
+    {"unwindset",
+     boost::program_options::value<std::string>()->value_name("L:nr,..."),
+     "Unwind loop L with nr times (use --show-loops to get the loops info)"},
+    {"unwindsetname",
+     boost::program_options::value<std::string>()->value_name(
+       "name:idx:nr,..."),
+     "Unwind loop idx (0-indexed) in function name with nr times.\n"
+     "\tSyntax: func, N@ns@func, S@Class@method, file.c@func,\n"
+     "\t        N@ns@S@Class@method, file.c@N@ns@S@Class@method\n"
+     "\tAlso accepts Clang USR format (e.g., c:@F@func# or c:file.c@F@func#)\n"
+     "\tExample: --unwindsetname compute:0:10,N@math@sum:1:5\n"
+     "\tUse --show-loops to see available functions and loop indices"},
+    {"no-unwinding-assertions", NULL, "Do not generate unwinding assertions"},
+    {"no-remove-unreachable",
+     NULL,
+     "Disable the removal of unreachable code in GOTO programs"},
+    {"no-remove-no-op",
+     NULL,
+     "Disable the removal of NO-OP instructions in GOTO programs"},
+    {"partial-loops", NULL, "Permit paths with partial loops"},
+    {"closed-world-fnptr",
+     NULL,
+     "Treat a function-pointer call with no compatible target as unreachable "
+     "rather than assuming an external definition may supply one"},
+    {"no-slice", NULL, "Do not remove unused equations"},
+    {"multi-fail-fast",
+     boost::program_options::value<int>()->value_name("n"),
+     "Stop after first n VCC violations in multi-property mode"},
+    {"no-slice-name",
+     boost::program_options::value<std::vector<std::string>>()->value_name(
+       "name"),
+     "Disable slicing for all symbols generated with the given name"},
+    {"no-slice-id",
+     boost::program_options::value<std::vector<std::string>>()->value_name(
+       "id"),
+     "Disable slicing for the symbol with the given id"},
+    {"goto-unwind", NULL, "Unroll bounded loops at goto level"},
+    {"unlimited-goto-unwind",
+     NULL,
+     "Do not unroll bounded loops at goto level (need to enable "
+     "--goto-unwind)"},
+    {"slice-assumes", NULL, "Remove unused assume statements"},
+    {"skip-bmc", NULL, "Do not perform bounded model checking"},
+    {"no-cache-asserts",
+     NULL,
+     "Do not cache asserts that were already proven correct"}}},
+  {"Incremental BMC",
+   {{"incremental-bmc", NULL, "Incremental loop unwinding verification"},
+    {"falsification", NULL, "Incremental loop unwinding for bug searching"},
+    {"termination",
+     NULL,
+     "Incremental loop unwinding assertion verification"}}},
+  {"k-induction",
+   {{"base-case", NULL, "Check the base case"},
+    {"forward-condition", NULL, "Check the forward condition"},
+    {"inductive-step", NULL, "Check the inductive step"},
+    {"k-induction", NULL, "Prove by k-induction"},
+    {"goto-contractor",
+     NULL,
+     "Enable contractor-based interval refinements on goto level on asserts"},
+    {"goto-contractor-condition",
+     NULL,
+     "Enable contractor-based interval refinements on goto level on "
+     "conditions"},
+    {"k-induction-parallel",
+     NULL,
+     "Prove by k-induction, running each step on a separate process"},
+    {"k-step",
+     boost::program_options::value<int>()->default_value(1)->value_name("nr"),
+     "Set k increment (default is 1)"},
+    {"max-k-step",
+     boost::program_options::value<int>()->default_value(50)->value_name("nr"),
+     "Set max number of iteration (default is 50)"},
+    {"base-k-step",
+     boost::program_options::value<int>()->default_value(1)->value_name("nr"),
+     "Start the base case from n step (n >= 1, default is 1); n = 0 is "
+     "rejected because it sets --unwind 0 (unlimited)"},
+    {"show-cex",
+     NULL,
+     "Print the counter-example produced by the inductive step"},
+    {"cex-only", NULL, "Do not print the state trace"},
+    {"bidirectional",
+     NULL,
+     "Search the inductive step counterexample for assignments"},
+    {"unlimited-k-steps",
+     NULL,
+     "Remove the upper bound on the number of k-induction steps"},
+    {"max-inductive-step",
+     boost::program_options::value<int>()->default_value(-1)->value_name("nr"),
+     "Set max k value for the inductive step"},
+    {"loop-invariant",
+     NULL,
+     "Verify using loop invariant + k-induction (combined mode). Still unwinds "
+     "the loop; use when the property follows from the invariant alone"},
+    {"loop-invariant-check",
+     NULL,
+     "Verify using loop invariant havoc abstraction (standalone mode). Cuts "
+     "the loop, so cost is independent of the bound; the only mode that "
+     "reasons about the loop exit condition. Implies --check-vacuity"},
+    {"synthesise-loop-invariants",
+     NULL,
+     "Synthesise invariants for affine counter/accumulator loops and discharge "
+     "them with the loop-invariant havoc schema; implies "
+     "--loop-invariant-check, --check-vacuity, and --multi-property unless a "
+     "k-induction phase is selected. --check-vacuity applies to the whole run, "
+     "so a program with no loop at all can still report UNKNOWN where it "
+     "reported SUCCESSFUL; --no-vacuity-check turns it back off"},
+    {"loop-frame-rule",
+     NULL,
+     "Enable frame rule for loop invariant checking "
+     "(snapshot-havoc-assume pattern, requires --loop-invariant-check)"},
+    {"check-vacuity",
+     NULL,
+     "After UNSAT discharge, re-solve path assumptions alone; if also UNSAT, "
+     "report VERIFICATION UNKNOWN (vacuous discharge) instead of SUCCESSFUL. "
+     "Applies to every claim in the run, not only the ones a loop invariant "
+     "reaches. Default on under --loop-invariant-check and "
+     "--synthesise-loop-invariants; opt-in elsewhere."},
+    {"no-vacuity-check",
+     NULL,
+     "Disable the vacuity probe (overrides default-on behavior)."}}},
+  {"Concurrency and Scheduling",
+   {{"schedule", NULL, "Use schedule recording approach"},
+    {"context-bound",
+     boost::program_options::value<int>()->default_value(-1)->value_name("nr"),
+     "Limit number of context switches for each thread"},
+    {"incremental-context-bound",
+     NULL,
+     "Re-explore with the context bound raised by one each round, stopping at "
+     "the first violation or once a round has covered every interleaving"},
+    {"max-context-bound",
+     boost::program_options::value<int>()->default_value(20)->value_name("nr"),
+     "Highest context bound tried by --incremental-context-bound"},
+    {"falsify-context-bound",
+     boost::program_options::value<int>()->default_value(0)->value_name("nr"),
+     "Before the chosen strategy runs, look for a violation with the context "
+     "bound raised from 1 to nr; such a violation is genuine, no proof is "
+     "claimed, and the strategy still runs when none is found (0 = off)"},
+    {"state-hashing", NULL, "Enable state-hashing, prunes duplicate states"},
+    {"no-goto-merge",
+     NULL,
+     "Do not merge gotos when restoring paths after a context-switch"},
+    {"no-por", NULL, "Do not do partial order reduction"},
+    {"sleep-sets",
+     NULL,
+     "Prune schedules with sleep sets; only fires where the search is "
+     "exhaustive, so pair it with --no-por and no context bound. Ignored under "
+     "--schedule, --direct-interleavings, --interactive-ileaves and "
+     "--data-races-check-only (experimental, off by default)"},
+    {"cswitch-skip-readonly-globals",
+     NULL,
+     "Skip context switches on globals that are never written anywhere "
+     "in the program (off by default)"},
+    {"all-runs",
+     NULL,
+     "Check all interleavings, even if a bug was already found"}}},
+  {"Solver",
+   {{"list-solvers", NULL, "List available solvers and exit"},
+    {"boolector", NULL, "Use Boolector"},
+    {"z3", NULL, "Use Z3"},
+    {"z3-debug", NULL, "Extracts Z3 dump and SMT2 formula"},
+    {"z3-debug-dump-file",
+     boost::program_options::value<std::string>()->value_name("z3.log"),
+     "Name for Z3 dump file"},
+    {"z3-debug-smt-file",
+     boost::program_options::value<std::string>()->value_name("log.smt2"),
+     "Name for Z3 smt2 file"},
+    {"mathsat", NULL, "Use MathSAT"},
+    {"cvc", NULL, "Alias for --cvc4; this may change in the future to --cvc5"},
+    {"cvc4", NULL, "Use CVC4"},
+    {"cvc5", NULL, "Use CVC5"},
+    {"yices", NULL, "Use Yices"},
+    {"bitwuzla", NULL, "Use Bitwuzla (default)"},
+    {"bitwuzllob",
+     NULL,
+     "Use Bitwuzllob (Bitwuzla on the massively parallel Mallob platform) by "
+     "running an external mallob binary in one-shot mono mode"},
+    {"bitwuzllob-prog",
+     boost::program_options::value<std::string>()->value_name("<cmd>"),
+     "Command running Mallob in mono mode; every %f is replaced by the "
+     "SMT-LIB2 formula file (default: \"mallob -mono=%f -mono-app=SMT\")"},
+    {"bitwuzllob-model-prog",
+     boost::program_options::value<std::string>()->value_name("<cmd>"),
+     "Local interactive SMT-LIB2 solver used to build the counterexample "
+     "when Bitwuzllob reports satisfiable (e.g. \"z3 -in\")"},
+    {"neurosym",
+     NULL,
+     "Use NeuroSym (neural-guided GAN + Z3 fallback, QF_BV) by running an "
+     "external NeuroSym Python program in one-shot batch mode"},
+    {"neurosym-prog",
+     boost::program_options::value<std::string>()->value_name("<cmd>"),
+     "Command running NeuroSym on an SMT-LIB2 file; every %f is replaced by "
+     "the formula file, appended when absent (default: \"python main.py "
+     "%f\")"},
+    {"neurosym-model-prog",
+     boost::program_options::value<std::string>()->value_name("<cmd>"),
+     "Local interactive SMT-LIB2 solver used to build the counterexample "
+     "when NeuroSym reports satisfiable (e.g. \"z3 -in\")"},
+    {"bv", NULL, "Use solver with bit-vector arithmetic"},
+    {"ir",
+     NULL,
+     "Use solver with integer/real arithmetic. Integer/real have an unbounded "
+     "range, overapproximating normal integers/reals while significantly "
+     "boosting performance"},
+    {"ir-ieee",
+     NULL,
+     "Use integer/real arithmetic with real-arithmetic enclosure constraints "
+     "for floating-point operations"},
+    {"parallel-solving",
+     NULL,
+     "Solve each VCC in parallel (this activates --multi-property)"},
+    {"no-symmetry-breaking",
+     NULL,
+     "Disable recognising running max/min folds (e.g. over an uninitialised "
+     "array) and asserting the redundant bounds they imply before solving "
+     "(enabled by default to avoid case-split blowup in the backend solver "
+     "on symmetric formulas)"},
+    {"smtlib", NULL, "Use SMT lib format"},
+    {"default-solver",
+     boost::program_options::value<std::string>()->value_name("<solver>"),
+     "Override default solver used if no concrete one is specified"},
+    {"non-supported-models-as-zero",
+     NULL,
+     "If ESBMC can't extract a type/expression from the solver, then the value "
+     "will be set to zero"},
+    {"smtlib-solver-prog",
+
+     boost::program_options::value<std::string>(),
+     "Path to the SMT-LIB solver executable"},
+    {"output",
+     boost::program_options::value<std::string>()->value_name("<filename>"),
+     "Output VCCs in SMT lib format to given file (or stdout if it is '-')"},
+    {"floatbv",
+     NULL,
+     "Encode floating-point using the SMT floating-point theory (default)"},
+    {"fixedbv", NULL, "Encode floating-point as fixed bit-vectors"},
+    {"fp2bv",
+     NULL,
+     "Encode floating-point as bit-vectors (default for solvers that don't "
+     "support the SMT floating-point theory)"},
+    {"tuple-node-flattener", NULL, "Encode tuples using our tuple to node API"},
+    {"tuple-sym-flattener",
+     NULL,
+     "Encode tuples using our tuple to symbol API"},
+    {"array-flattener", NULL, "Encode arrays using our array API"},
+    {"no-return-value-opt",
+     NULL,
+     "Disable return value optimization to compute the stack size"}}},
+
+  {"Incremental SMT",
+   {{"smt-during-symex", NULL, "Enable incremental SMT solving"},
+    {"smt-thread-guard",
+     NULL,
+     "Check the thread guard during thread exploration"},
+    {"smt-symex-guard",
+     NULL,
+     "Check conditional goto statements during symbolic execution"},
+    {"check-guard-subsumption",
+     NULL,
+     "Emit a claim for every path-guard subsumption decision"},
+    {"smt-symex-assert",
+     NULL,
+     "Check assertion statements during symbolic execution"},
+    {"smt-symex-assume",
+     NULL,
+     "Check assume statements during symbolic execution"}}},
+  {"Property checking",
+   {{"multi-property",
+     NULL,
+     "Verify satisfiability of all claims of the current bound"},
+    {"multi-property-interleavings",
+     boost::program_options::value<int>()->value_name("n"),
+     "In multi-property mode, keep exploring thread interleavings after a "
+     "violation until n consecutive ones reach a verdict on no new property "
+     "(default 100, must be positive)"},
+    {"no-standard-checks", NULL, "Disable default checks"},
+    {"no-assertions", NULL, "Ignore assertions"},
+    {"no-library-assertions",
+     NULL,
+     "Ignore assertions stated by ESBMC's operational models (e.g. \"Sem is "
+     "not initialized\"), keeping the ones in the program under verification. "
+     "Warning: hides genuine API misuse the models report. Leaves the checks "
+     "ESBMC generates inside model code (see --no-standard-checks), renumbers "
+     "--claim, and is unsupported for Python"},
+    {"no-bounds-check", NULL, "Do not do array bounds check"},
+    {"no-div-by-zero-check", NULL, "Do not do division by zero check"},
+    {"no-pointer-check", NULL, "Do not do pointer check"},
+    {"no-align-check", NULL, "Do not check pointer alignment"},
+    {"no-fp-conversion-check",
+     NULL,
+     "Do not check that a floating-point to integer conversion is in range "
+     "(C11 6.3.1.4p1); the rest of --overflow-check is unaffected"},
+    {"no-unlimited-scanf-check",
+     NULL,
+     "Do not do overflow check for scanf/fscanf with unlimited character "
+     "width"},
+    {"no-vla-size-check",
+     NULL,
+     "Do not check whether the size of VLAs overflows the available address "
+     "space"},
+    {"no-abnormal-memory-leak",
+     NULL,
+     "Affects --memory-leak-check; if both are enabled, the check for memory "
+     "leaks is only performed for normal termination, that is, not for "
+     "abort()"},
+    {"no-reachable-memory-leak",
+     NULL,
+     "Exclude still reachable objects from --memory-leak-check"},
+    {"printf-check", NULL, "Enable pointer validation for printf arguments"},
+    {"nan-check", NULL, "Check floating-point for NaN"},
+    {"is-instance-check",
+     NULL,
+     "Enable runtime isinstance assertions for annotated code"},
+    {"memory-leak-check", NULL, "Enable memory leak check"},
+    {"overflow-check", NULL, "Enable arithmetic over- and underflow check"},
+    {"restrict-check",
+     NULL,
+     "Check C restrict-qualified pointer parameters do not alias"},
+    {"restrict-assume",
+     NULL,
+     "Assume the entry function's C restrict-qualified pointer parameters do "
+     "not alias"},
+    {"unsigned-overflow-check",
+     NULL,
+     "Enable arithmetic over- and underflow check for unsigned integers"},
+    {"ub-shift-check",
+     NULL,
+     "Enable undefined behavior check on shift operations"},
+    {"clz-zero-check",
+     NULL,
+     "Enable undefined behavior check on __builtin_clz of a zero argument"},
+    {"struct-fields-check",
+     NULL,
+     "Enable over-sized read checks for struct fields"},
+    {"deadlock-check",
+     NULL,
+     "Enable global and local deadlock check with mutex"},
+    {"data-races-check", NULL, "Enable data races check"},
+    {"data-races-check-only",
+     NULL,
+     "Enable data races check and only focus on race checks to reduce "
+     "thread interleaving"},
+    {"lock-order-check", NULL, "Enable for lock acquisition ordering check"},
+    {"atomicity-check", NULL, "Enable atomicity check at visible assignments"},
+    {"uninitialised-vars-check",
+     NULL,
+     "Enable check for reads of uninitialised local variables (CWE-457)"},
+    {"unchecked-return-value-check",
+     NULL,
+     "Enable check for unchecked return values of fallible calls (CWE-252)"},
+    {"dead-store-check",
+     NULL,
+     "Emit advisory notes for dead stores / assignments never read (CWE-563)"},
+    {"excessive-alloc-check",
+     // Optional bound: bare flag uses the implicit 1 MiB (1048576-byte)
+     // default; --excessive-alloc-check=K sets the byte bound to K. `int`
+     // (not a wider type) because cmdlinet only stringifies int / string /
+     // vector<int> values; the 2 GiB ceiling is far past any meaningful
+     // "excessive" threshold.
+     boost::program_options::value<int>()->implicit_value(1048576)->value_name(
+       "bytes"),
+     "Enable check for allocations (malloc/calloc/realloc/new[]) whose size "
+     "can exceed K bytes; attach the bound with '=' as "
+     "--excessive-alloc-check=K "
+     "(a space-separated value is treated as an input file), default 1 MiB "
+     "(CWE-789)"},
+    {"volatile-check", NULL, "Enable check for volatile variable"},
+    {"stack-limit",
+     boost::program_options::value<int>()->default_value(-1)->value_name(
+       "bits"),
+     "Check if stack limit is respected"},
+    {"total-stack-limit",
+     boost::program_options::value<int>()->default_value(-1)->value_name(
+       "bits"),
+     "Bound the combined size of all live stack frames, excluding ESBMC's "
+     "own operational models. Accounted per symbolic path at declaration "
+     "points; over-approximates for spawned threads"},
+    {"error-label",
+     boost::program_options::value<std::string>()->value_name("label"),
+     "Check if label is unreachable"},
+    {"force-malloc-success", NULL, "Do not check for malloc/new failure"},
+    {"force-realloc-success", NULL, "Do not check for realloc failure"},
+    {"malloc-zero-is-null", NULL, "Also explore malloc(0) returning NULL"},
+    {"max-symbolic-realloc-copy",
+     boost::program_options::value<int>()->default_value(128)->value_name("nr"),
+     "Set maximum number of elements to copy symbolically in realloc (default "
+     "is 128)"},
+    {"max-quantifier-summary-nodes",
+     boost::program_options::value<int>()->value_name("nr"),
+     "Set maximum expression size when summarizing a function called inside "
+     "__ESBMC_forall/__ESBMC_exists (default is 20000)"},
+    {"enable-unreachability-intrinsic",
+     NULL,
+     "Enable unreach-call style checking: activates __ESBMC_unreachable() and "
+     "treats reach_error()/__VERIFIER_error() as error sentinels"},
+    {"dead-code-check",
+     NULL,
+     "Detect provably-unreachable conditional branch directions (if/loop "
+     "guards) and report them as advisory CWE-561 findings (note level in "
+     "SARIF). Default off; does not flip the verdict to FAILED. Scope is "
+     "branch "
+     "directions only: statements after an unconditional return/abort and "
+     "unreferenced functions are not analysed. Findings are bounded by the "
+     "unwinding depth (use --unwind for programs with loops). The SUCCESSFUL "
+     "verdict of a dead-code run is not a safety verdict: the coverage "
+     "instrumentation neutralises pre-existing assertions, including the "
+     "default bounds and division-by-zero checks, so run this alongside a "
+     "normal verification run rather than instead of one"},
+    {"conv-assert-to-assume",
+     NULL,
+     "Convert assertions for bounds and pointer checks into assumptions"},
+    {"unknown-method-args-check",
+     NULL,
+     "Check pointer type arguments passed to the unknown function call"}}},
+  {"Interval Analysis",
+   {{"interval-analysis",
+     NULL,
+     "Enable interval analysis for integer and float variables and add "
+     "assumes to the "
+     "program"},
+    {"interval-analysis-dump",
+     NULL,
+     "Dump resulting intervals for the analysis"},
+    {"interval-analysis-csv-dump",
+     boost::program_options::value<std::string>(),
+     "Dump resulting intervals for the analysis in a csv file"},
+    {"interval-analysis-wrapped",
+     NULL,
+     "Enable analysis using wrapped intervals (disables Integers)"},
+    {"interval-analysis-arithmetic",
+     NULL,
+     "Enable interval arithmetic for integer variables (Integers and "
+     "Wrapped)"},
+    {"interval-analysis-bitwise",
+     NULL,
+     "Enable interval bitwise for integer variables (Integers and Wrapped)"},
+    {"interval-analysis-modular",
+     NULL,
+     "Enable modular arithmetic for integer variables (Integers and Wrapped)"},
+    {"interval-analysis-simplify",
+     NULL,
+     "Enable assertion simplification during interval analysis (all)"},
+    {"interval-analysis-no-contract",
+     NULL,
+     "Disable use of contractors in abstract states (Integers, Reals)"},
+    {"interval-analysis-assume-asserts",
+     NULL,
+     "Propagate assertions as invariants during interval analysis (Integers, "
+     "Reals)"},
+    {"interval-analysis-eval-assumptions",
+     NULL,
+     "Evaluate assumptions and guards as boolean operators to accelerate "
+     "convergence (Integers, Reals)"},
+    {"interval-analysis-ibex-contractor",
+     NULL,
+     "Enable use of ibex contractors"},
+    {"interval-analysis-extrapolate",
+     NULL,
+     "Enable extrapolation in abstract states (all)"},
+    {"interval-analysis-extrapolate-limit",
+     boost::program_options::value<int>()->default_value(1)->value_name("nr"),
+     "Set limit for reaching a fixpoint (default is 1)"},
+    {"interval-analysis-extrapolate-under-approximate",
+     NULL,
+     "Assume integers will not overflow (Integers)"},
+    {"interval-analysis-narrowing",
+     NULL,
+     "Enable narrowing in abstract states (Integers and Reals)"},
+    {"no-interval-symex-guard",
+     NULL,
+     "Disable interval-based guard pruning during symbolic execution (enabled "
+     "by default)"},
+    {"interval-symex-assert",
+     NULL,
+     "Use interval-based assertion pruning during symbolic execution to "
+     "skip assertions that are provably true under the tracked intervals"}}},
+  {"Coverage options",
+   {
+     {"assertion-coverage", NULL, "Show the coverage of assertion statements"},
+     {"assertion-coverage-claims",
+      NULL,
+      "Enable assertion-coverage and show all claims, "
+      "both reached and unreached"},
+     {"condition-coverage",
+      NULL,
+      "This activates --multi-property, "
+      "deactivates --keep-verified-claims, and "
+      "shows the coverage of condition statements"},
+     {"condition-coverage-claims",
+      NULL,
+      "Enable condition-coverage and shows the instrumented claims"},
+     {"condition-coverage-rm",
+      NULL,
+      "Use '--condition-coverage' while disable "
+      "'--no-remove-unreachable'"},
+     {"condition-coverage-claims-rm",
+      NULL,
+      "Use '--condition-coverage-claims' while disable "
+      "'--no-remove-unreachable'"},
+     {"no-cov-asserts", NULL, "Do not count the guard in the assertions"},
+     {"cov-assume-asserts",
+      NULL,
+      "Convert assertions to assumptions in coverage mode "
+      "to preserve path constraints"},
+     {"branch-coverage", NULL, "Show the coverage of branches"},
+     {"branch-coverage-claims",
+      NULL,
+      "Enable branch-coverage and shows all reached claims"},
+     {"branch-function-coverage",
+      NULL,
+      "Show the coverage of branches and function entry"},
+     {"branch-function-coverage-claims",
+      NULL,
+      "Enable branch-coverage-ext and shows all reached claims"},
+     {"k-path-coverage",
+      // INT_MIN is the implicit_value sentinel for "no =N supplied".
+      // -1 / 0 are explicit user inputs and rejected at parse time;
+      // INT_MIN is unambiguous since no user would ever type it.
+      boost::program_options::value<int>()
+        ->implicit_value(std::numeric_limits<int>::min())
+        ->value_name("N"),
+      "Show the coverage of k-path witnesses (PathCrawler-style; "
+      "Williams et al., EDCC 2005). N is the prefix depth (1..30); if "
+      "omitted, tied to --unwind, falling back to 4 when --unwind is unset"},
+     {"k-path-coverage-claims",
+      NULL,
+      "Enable --k-path-coverage with default N (use --k-path-coverage=N "
+      "directly to override) and show all reached claims"},
+     {"k-path-witness-depth",
+      boost::program_options::value<int>()->default_value(8)->value_name("D"),
+      "Cap on post-simplification witness expression depth in --k-path-"
+      "coverage; deeper witnesses are dropped (default 8)"},
+     {"k-path-max-goals",
+      boost::program_options::value<int>()->default_value(10000)->value_name(
+        "M"),
+      "Per-function goal cap for --k-path-coverage; on overflow the "
+      "instrumentation aborts rather than truncating (default 10000)"},
+     {"assign-param-nondet",
+      NULL,
+      "Explicitly assign every function parameters to NONDET in function "
+      "mode"},
+     {"cov-report-json",
+      NULL,
+      "Output coverage report as JSON file (cov-report.json)"},
+   }},
+  {"Miscellaneous options",
+   {{"memlimit",
+     boost::program_options::value<std::string>()->value_name("limit"),
+     "Configure memory limit, of form \"100m\" or \"2g\"; without suffix the "
+     "default unit is 'm'"},
+    {"memstats", NULL, "Print memory usage statistics"},
+    {"timeout",
+     boost::program_options::value<std::string>()->value_name("t"),
+     "Configure time limit, integer followed by {s,m,h}"},
+    {"enable-core-dump", NULL, "Do not disable core dump output"},
+    {"no-simplify", NULL, "Do not simplify any expression"},
+    {"no-propagation",
+     NULL,
+     "Disable constant propagation (unsupported with concurrency: the pthread "
+     "model requires constant thread ids)"},
+    {"gcse",
+     NULL,
+     "Adds intermediate variables to precompute common sub-expressions between "
+     "assignments"},
+    {"add-symex-value-sets",
+     NULL,
+     "Enable value-set analysis for pointers and add assumes to the "
+     "program"},
+    {"segfault-handler",
+     NULL,
+     "Print a backtrace and memory map on a fatal signal"}}},
+  {"DEBUG options",
+   {
+     {"double-assign-check",
+      NULL,
+      "Check for duplicate SSA symbol assignments"},
+     {"no-pointer-relation-check",
+      NULL,
+      "Do not check whether pointers in order relations refer to the same "
+      "object (unsound)"},
+     {"abort-on-recursion", NULL, "Abort if the program contains recursion"},
+     {"ltl", NULL, "Enable Linear Temporal Logic property checking"},
+     {"break-at",
+      boost::program_options::value<std::string>(),
+      "Trigger a breakpoint at the given GOTO instruction number"},
+     {"direct-interleavings",
+      NULL,
+      "Use directed thread interleavings via intrinsics"},
+     {"show-ileave-points",
+      NULL,
+      "Show instructions that access global variables and exit"},
+     {"print-stack-traces",
+      NULL,
+      "Print all thread stack traces at each interleaving point"},
+     {"interactive-ileaves",
+      NULL,
+      "Interactively choose thread scheduling at interleaving points"},
+   }},
+  {"IREP2 migration (esbmc/esbmc#4715)",
+   {{"irep2-bodies",
+     NULL,
+     "Deprecated no-op (accepted for backward compatibility). goto_convert "
+     "always lowers function bodies through the IREP2 round-trip "
+     "(migrate legacy codet → code_*2t → codet) since V.4.4; the legacy "
+     "bypass and the --no-irep2-bodies escape hatch have been removed."},
+    {"no-irep2-native-body",
+     NULL,
+     "Convert function bodies through the whole-body legacy round-trip "
+     "instead of the IREP2-native goto_convert (esbmc/esbmc#4715). The native "
+     "path consumes code_*2t directly and inherits the statement location "
+     "onto value operands at consumption; a body containing an unsupported "
+     "construct falls back to the round-trip either way, so this is a "
+     "diagnostic escape hatch, not a semantic switch."}}},
+  {"end", {{"", NULL, "End of options"}}},
+  {"Hidden Options",
+   {{"depth", boost::program_options::value<int>(), "Instruction"},
+    {"explain,h", NULL, ""}}}};

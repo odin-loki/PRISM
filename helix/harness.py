@@ -74,13 +74,31 @@ def materialize(fn: FunctionInfo) -> FunctionInfo | None:
 
 
 def run_harness_bmc(functions: list[FunctionInfo], unwind: int) -> list[Finding]:
-    """BMC POINTER functions that materialize. Proofs become PROVED-ASSUMING."""
+    """BMC POINTER functions that materialize. Proofs become PROVED-ASSUMING.
+
+    SCALAR/VOID are skipped (empty contribution). POINTER without an honest
+    ``// requires:`` is NEEDS-HARNESS: not ERROR, not a NULL crash finding.
+    """
     out: list[Finding] = []
     for fn in functions:
         if fn.kind != "POINTER":
             continue
         harnessed = materialize(fn)
         if harnessed is None:
+            out.append(Finding(
+                stage="harness",
+                status=laws.NEEDS_HARNESS,
+                file=fn.file,
+                function=fn.name,
+                line=fn.line,
+                cls="",
+                message=(
+                    "POINTER: no honest requires; unguarded BMC would invent "
+                    "a buffer or dress a NULL crash as a finding"
+                ),
+                strength=laws.STRENGTH_SOME,
+                extra={"harness": False, "assumed": False},
+            ))
             continue
         spec = parse_comments(fn)
         reqs = [r.strip() for r in (spec.get("requires") or []) if r.strip()]

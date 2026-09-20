@@ -1,0 +1,5 @@
+CORE
+main.py
+--unwind 1
+^ERROR: Unknown keyword argument: z in function foo$
+

@@ -1,0 +1,32 @@
+/**
+ * This module provides a hand-modifiable wrapper around the generated class `AssocTypeArg`.
+ *
+ * INTERNAL: Do not use.
+ */
+
+private import codeql.rust.elements.internal.generated.AssocTypeArg
+
+/**
+ * INTERNAL: This module contains the customizable definition of `AssocTypeArg` and should not
+ * be referenced directly.
+ */
+module Impl {
+  // the following QLdoc is generated: if you need to edit it, do it in the schema file
+  /**
+   * An associated type argument in a path.
+   *
+   * For example:
+   * ```rust
+   * fn process_cloneable<T>(iter: T)
+   * where
+   *     T: Iterator<Item: Clone>
+   * //              ^^^^^^^^^^^
+   * {
+   *     // ...
+   * }
+   * ```
+   */
+  class AssocTypeArg extends Generated::AssocTypeArg {
+    override string toStringImpl() { result = this.getAPrimaryQlClass() }
+  }
+}

@@ -1,0 +1,21 @@
+[kernel] Parsing tests/value/recursion.i (no preprocessing)
+[eva] Analyzing an incomplete application starting at main
+[eva] Computing initial state
+[eva] Initial state computed
+[eva:initial-state] Values of globals at initialization
+  G ∈ [--..--]
+  x ∈ [--..--]
+  c ∈ [--..--]
+  s ∈ [--..--]
+  pg ∈ {{ NULL ; &S_pg[0] }}
+  S_pg[0..1] ∈ [--..--]
+[eva] computing for function ff <- main.
+  Called from tests/value/recursion.i:67.
+[eva] tests/value/recursion.i:8: User Error: 
+  detected recursive call (ff <- ff :: tests/value/recursion.i:67 <- main)
+  Use -eva-ignore-recursive-calls to ignore (beware this will make the analysis
+  unsound)
+[eva] User Error: Degeneration occurred:
+  results are not correct for lines of code that can be reached from the degeneration point.
+[eva] User Error: Deferred error message was emitted during execution. See above messages for more information.
+[kernel] Plug-in eva aborted: invalid user input.

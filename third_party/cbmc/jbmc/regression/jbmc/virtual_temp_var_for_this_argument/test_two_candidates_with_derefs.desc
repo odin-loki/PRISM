@@ -1,0 +1,14 @@
+CORE
+Main
+--show-goto-functions --function Main.twoCandidatesWithDerefs -cp target/classes
+^EXIT=0$
+^SIGNAL=0$
+DECL .*::this_argument : struct java::A\*$
+ASSIGN .*::this_argument := \*.*::aContainer\.a_field$
+CALL java::A\.f:\(\)V\(.*this_argument.*\)$
+CALL java::B\.f:\(\)V\(.*this_argument.*\)$
+--
+--
+The temporary variable `this_argument` should be created, because it
+is only created when there is a dispatch table and the `this` argument has a
+dereference in it, both of which are case here.

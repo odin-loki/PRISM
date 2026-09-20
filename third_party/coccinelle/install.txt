@@ -1,0 +1,224 @@
+ ** Note **
+
+- Parallel building is possible when you do not build the bytecode
+  and native version of spatch simultaneously.
+
+ ** Dependencies **
+
+You must first install OCaml. Versions 4.11.0 - 5.3.0 are supported.
+See http://caml.inria.fr/download.en.html
+
+If your OCaml compiler has been configurated with --enable-flambda,
+compiling the SmPL parser may take a very long time (34 minutes has been
+reported).  This does not cause any problem for running the compiled code.
+Flambda is known to be enabled with the version of OCaml distributed with
+Fedora.  More information about flambda is available at
+https://ocaml.org/manual/5.1/flambda.html
+
+On Debian/Ubuntu, install the following packages:
+ - automake
+ - make
+ - gcc (or any other C compiler)
+ - pkg-config (optional, but strongly recommended)
+ - ocaml-native-compilers (or alternatively ocaml)
+ - ocaml-findlib
+ - texlive-fonts-extra (for the documentation)
+ - hevea (for the documentation)
+ - menhir and libmenhir-ocaml-dev (optional, bundled)
+ - libpython3-dev (or libpython2.7-dev) (optional, for Python scripting)
+ - libparmap-ocaml-dev (optional, bundled)
+    If you do not install libparmap-ocaml-dev, then you will automatically use
+    the bundle instead. However, if you used opam to switch to a different
+    version of OCaml, you must uninstall libparmap-ocaml-dev / libparmap-ocaml.
+ - libpcre2-ocaml-dev (optional, for PCRE support, bundled)
+    If you do not install libpcre2-ocaml-dev, then you will automatically use
+    the bundle instead. However, in order for the bundle to work, you also
+    need:
+  - libpcre2-dev (optional, not bundled)
+     Additionally, if you used opam to switch to a different version of OCaml
+     and want PCRE support, then make sure you have libpcre2-ocaml-dev /
+     libpcre2-ocaml uninstalled and libpcre2-dev installed, otherwise Coccinelle
+     will not compile.
+
+On Fedora, install the following packages:
+ - automake
+ - pkgconfig (optional, but strongly recommended)
+ - chrpath
+ - ocaml
+ - ocaml-findlib
+ - ocaml-findlib-devel
+ - ocaml-ocamldoc
+ - ocaml-menhir (optional, bundled)
+ - ocaml-pcre2-devel (optional, bundled)
+    Note: if you used opam to switch to a different version of OCaml,
+    installing ocaml-pcre2-devel will make compilation impossible. Additionally,
+    PCRE support and OCaml scripting will be impossible.
+If you want Python scripting: Coccinelle is not compatible with Python 3.13,
+which is the default on Fedora as of 2024-12-19. Consider switching to Python
+3.12, for example.
+
+On Arch Linux, install the following packages:
+$ pacman -Syu pkg-config ocaml ocaml-findlib autoconf automake pcre2 make
+as well as the C compiler of your choice.
+Note: if you used opam to switch to a different version of OCaml, OCaml
+scripting will be impossible.
+
+On Gentoo, install the following packages to get all features (with no need for
+bundles):
+  dev-build/autoconf
+  dev-build/automake
+  dev-build/libtool
+  dev-lang/ocaml
+  dev-lang/python
+  dev-libs/libpcre2
+  dev-ml/camlp4
+  dev-ml/findlib
+  dev-ml/menhir
+  dev-ml/parmap
+  dev-ml/pcre2-ocaml
+  dev-ml/stdcompat
+You may also need:
+  dev-ml/sexplib
+  sys-devel/gnuconfig
+  virtual/pkgconfig
+And for documentation:
+  dev-tex/hevea
+  dev-texlive/texlive-fontsextra
+  dev-texlive/texlive-latexextra
+  virtual/latex-base
+See also: https://packages.gentoo.org/packages/dev-util/coccinelle/dependencies
+
+As Fedora and Arch usually upgrade packages to the latest available version,
+and because Coccinelle is not always compatible with the latest version of
+OCaml, you may have no choice but to use opam to switch to an earlier version.
+
+You can try to use the package manager of your distribution to install
+the build dependencies. This is not guaranteed to work, as the
+dependencies may change, but chances are it will help you. Some
+examples:
+
+$ apt-get build-dep coccinelle
+$ dnf builddep coccinelle
+$ yum builddep coccinelle
+
+** Compilation **
+
+Simply run:
+ ./autogen
+ ./configure
+ make
+ sudo make install
+
+Using Flatpak will side-step any dependency issues mentioned above.
+If you prefer using Flatpak, you can build it and install it using:
+
+$ sudo flatpak-builder --force-clean --install \
+  --install-deps-from=flathub --ccache --repo=_flatpak-repo/ \
+  _flatpak-build/ extra/flatpak/io.github.coccinelle.coccinelle.yaml
+
+It will install the `spatch` program as `io.github.coccinelle.coccinelle`.
+Use it with:
+
+$ flatpak run io.github.coccinelle.coccinelle --help
+
+Configuration flags of interest (for the ./configure step):
+--prefix                default: /usr/local
+--disable-opt           build the bytecode version
+--with-python=PATH      choose a specific python executable
+--without-python        no python scripting
+--disable-ocaml         no ocaml scripting
+--disable-pcre-syntax   no pcre regexp syntax
+                        version of spatch
+See ./configure --help for more options
+
+
+
+By default, 'make' will
+build in release configuration (no debugging symbols, etc.). It
+defaults to the optimized version, unless --disable-opt is given
+to configure. You could use 'make opt-only' to compile the
+optimized version only. Similarly, you can use 'make byte-only' for
+the unoptimized version. 'make install' installs whichever version
+was compiled.
+You can also use 'make world' to compile the bytecode
+and the optimized code version.
+
+Make targets of interest:
+opt-only, opt           compiles just the optimized version
+byt-only, byte          compiles just the bytecode version
+world                   compiles both + frontends + docs
+all-release             compiles the optimized version + frontends + docs
+all-dev                 compiles the bytecode version + frontends
+all                     default target: alias for either byte or opt
+all.opt                 compiles the optimized version + frontends
+check                   run tests (note: not all tests are expected to succeed)
+
+Note: The test target is intended for developers.
+
+In order to use the OCaml scripting feature in SmPL, an extra file,
+coccilib.cmi, is produced and installed in /usr/local/lib/coccinelle/ocaml
+(or /usr/share/cocci/ocaml), which is needed for the compilation of OCaml
+scripts.
+
+By default, Coccinelle Makefile is silent and does not print fully the
+commands that are executed. Compilation can be turned verbose with
+
+    $ make VERBOSE=yes
+
+ ** Bash integration **
+
+ To have completion under Bash, you can execute the following command:
+
+    $ make install-bash
+
+ It will install the shell script 'scripts/spatch.bash_completion'
+ by default in the directory pointed by
+   pkg-config --variable=completionsdir bash-completion
+ if available, or $datarootdir/bash-completion/completions otherwise.
+ The directory can be overridden by passing --with-bash-completion=$DIR
+ to ./configure.
+ The option --without-bash-completion disables the script installation.
+
+ You can manually copy that file elsewhere if you have a different
+ bash_completion directory.
+
+
+ ** Runtime dependencies **
+
+ - Basic shell commands:
+   - ls, cat, cp, mv, rm, grep, mkdir, find
+ - Developer tool: diff
+
+
+ ** Optional runtime dependencies **
+
+ - To quickly apply the semantic patches
+   - glimpse indexer
+
+ - To use OCaml scripting feature in SmPL
+   - ocaml-native-compilers or ocaml-nox
+   - ocaml-findlib
+
+ - To generate a PDF of the control flow graph with '--graphical-trace'
+   - pdftk and graphviz (with PDF support)
+
+If runtime tools are not in $PATH, paths to some
+of them can be specified with 'configure' or via
+commandline parameters to spatch.
+
+
+ ** Dependencies for additional tools **
+
+    git, pushd, popd, sed, diffstat, cpp
+
+ ** Uninstall **
+
+    To uninstall Coccinelle, you should use the following command
+    $ make uninstall
+
+    To also remove the bash completion script, run
+    $ make uninstall-bash
+
+ ** Enable ocaml debugging **
+
+    $ echo "EXTRA_OCAML_FLAGS+=-g" >>Makefile.local

@@ -1,0 +1,7 @@
+CORE
+test.c
+--ensure-one-backedge-per-target --show-natural-loops
+^14 is head of \{ 14, 15, 16, 17, 18, 19, 20 \(backedge\) \}
+^24 is head of \{ 24, 25, 26, 27, 28, 29, 30 \(backedge\) \}
+^EXIT=0$
+^SIGNAL=0$

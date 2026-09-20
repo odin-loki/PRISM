@@ -22,6 +22,22 @@ def afl_available() -> str | None:
     return None
 
 
+def _compile_afl_harness(harness: Path, out_exe: Path) -> tuple[bool, str]:
+    """Compile the AFL stdin harness.
+
+    Sanitizer fallback (C++ ``compile_afl_harness`` must match these comments):
+      1. -fsanitize=address,undefined  -fno-sanitize-recover=address,undefined
+      2. -fsanitize=undefined          -fno-sanitize-recover=undefined
+      3. -fsanitize=address            -fno-sanitize-recover=address
+      4. bare (no sanitizer)
+
+    Prefer ASan+UBSan together; fall back to one sanitizer, then bare.
+    TSan cannot combine with ASan. Missing sanitizer runtime is not a fake
+    CLEAN. Missing gcc/clang is mapped by the caller to NOTRUN, never ERROR.
+    """
+    return _compile(harness, out_exe)
+
+
 def run_afl_fuzz(
     fn: FunctionInfo,
     src: Path,
@@ -31,8 +47,10 @@ def run_afl_fuzz(
 ) -> Finding | None:
     """Bounded AFL run on a scalar stdin harness.
 
-    Returns a CRASH or CLEAN Finding with extra["engine"]="afl", or None if
-    AFL is unavailable or the function is not SCALAR.
+    Returns a CRASH or CLEAN Finding with extra["engine"]="afl" only after
+    AFL actually compiled and ran, or None if AFL is unavailable or the
+    function is not SCALAR. Missing gcc/clang is NOTRUN (the AFL half did
+    not run), never a fake CLEAN or a proof, and never extra["engine"]="afl".
     """
     afl = afl_available()
     if not afl or fn.kind != "SCALAR":
@@ -42,16 +60,16 @@ def run_afl_fuzz(
         stage="fuse", file=fn.file, function=fn.name, line=fn.line,
         cls="", strength=laws.STRENGTH_FINDS,
     )
-    extra: dict = {"engine": "afl"}
 
     cc = shutil.which("gcc") or shutil.which("clang")
     if not cc:
         return Finding(
-            **base, status=laws.ERROR,
+            **base, status=laws.NOTRUN,
             message="AFL: no C compiler on PATH",
-            extra=extra,
+            extra={"install": "install gcc or clang"},
         )
 
+    extra: dict = {"engine": "afl"}
     cleanup = work is None
     work = work or Path(tempfile.mkdtemp(prefix="helix_afl_"))
     work.mkdir(parents=True, exist_ok=True)
@@ -64,8 +82,14 @@ def run_afl_fuzz(
         hpath = work / f"harness_{fn.name}.c"
         hpath.write_text(harness_source(fn, src.name), encoding="utf-8")
         exe = work / f"harness_{fn.name}.exe"
-        ok, err = _compile(hpath, exe)
+        ok, err = _compile_afl_harness(hpath, exe)
         if not ok:
+            if "no c compiler" in (err or "").lower():
+                return Finding(
+                    **base, status=laws.NOTRUN,
+                    message="AFL: no C compiler on PATH",
+                    extra={"install": "install gcc or clang"},
+                )
             return Finding(
                 **base, status=laws.ERROR,
                 message=f"AFL: compile failed: {err[:200]}",
@@ -108,9 +132,10 @@ def run_afl_fuzz(
             crashes = [p for p in cdir.iterdir() if p.is_file() and p.name != "README.txt"]
             if crashes:
                 data = crashes[0].read_bytes()
+                rec = dict(base)
+                rec["cls"] = "AFL-CRASH"
                 return Finding(
-                    **base, status=laws.CRASH,
-                    cls="AFL-CRASH",
+                    **rec, status=laws.CRASH,
                     message=f"AFL crash on {data[:16].hex()}",
                     counterexample=data.hex(),
                     extra={**extra, "afl_crashes": len(crashes)},

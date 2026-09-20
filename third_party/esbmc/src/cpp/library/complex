@@ -1,0 +1,278 @@
+#ifndef __STL_COMPLEX
+#define __STL_COMPLEX
+
+#include "cmath"
+
+// Model of <complex>. The previous version of this header was a skeleton that
+// could not be used at all: every member sat in the default-private section of
+// `class complex`, none of the members or operators had a definition, and the
+// comparison operators were declared to return complex<T> rather than bool.
+//
+// Not modelled: the transcendental functions (exp/log/pow/sqrt/sin/cos/...),
+// polar/arg, and the stream inserters. Those are left out rather than declared
+// without a definition -- a declaration-only member converts to a nondet call,
+// which would silently produce wrong values instead of a diagnostic.
+//
+// abs(complex) is also absent, but for a different reason: overloading the name
+// `abs` for a class type makes ESBMC abort with an internal assertion
+// (irep2_expr.h `if2t`: type->type_id == trueval->type->type_id). The identical
+// body under any other name converts fine, so the trigger is the name, not the
+// arithmetic. See regression/esbmc-cpp/cpp/std_abs_class_overload for the
+// reduced case; use sqrt(norm(z)) meanwhile.
+
+namespace std
+{
+template <class T>
+class complex
+{
+  T __re;
+  T __im;
+
+public:
+  typedef T value_type;
+
+  complex(const T &re = T(), const T &im = T()) : __re(re), __im(im)
+  {
+  }
+
+  complex(const complex &o) : __re(o.__re), __im(o.__im)
+  {
+  }
+
+  template <class X>
+  complex(const complex<X> &o) : __re(o.real()), __im(o.imag())
+  {
+  }
+
+  T real() const
+  {
+    return __re;
+  }
+
+  T imag() const
+  {
+    return __im;
+  }
+
+  void real(T v)
+  {
+    __re = v;
+  }
+
+  void imag(T v)
+  {
+    __im = v;
+  }
+
+  complex &operator=(const complex &o)
+  {
+    __re = o.__re;
+    __im = o.__im;
+    return *this;
+  }
+
+  complex &operator=(const T &v)
+  {
+    __re = v;
+    __im = T();
+    return *this;
+  }
+
+  complex &operator+=(const T &v)
+  {
+    __re += v;
+    return *this;
+  }
+
+  complex &operator-=(const T &v)
+  {
+    __re -= v;
+    return *this;
+  }
+
+  complex &operator*=(const T &v)
+  {
+    __re *= v;
+    __im *= v;
+    return *this;
+  }
+
+  complex &operator/=(const T &v)
+  {
+    __re /= v;
+    __im /= v;
+    return *this;
+  }
+
+  complex &operator+=(const complex &o)
+  {
+    __re += o.__re;
+    __im += o.__im;
+    return *this;
+  }
+
+  complex &operator-=(const complex &o)
+  {
+    __re -= o.__re;
+    __im -= o.__im;
+    return *this;
+  }
+
+  complex &operator*=(const complex &o)
+  {
+    T r = __re * o.__re - __im * o.__im;
+    T i = __re * o.__im + __im * o.__re;
+    __re = r;
+    __im = i;
+    return *this;
+  }
+
+  complex &operator/=(const complex &o)
+  {
+    T d = o.__re * o.__re + o.__im * o.__im;
+    T r = (__re * o.__re + __im * o.__im) / d;
+    T i = (__im * o.__re - __re * o.__im) / d;
+    __re = r;
+    __im = i;
+    return *this;
+  }
+};
+
+template <class T>
+complex<T> operator+(const complex<T> &a, const complex<T> &b)
+{
+  return complex<T>(a.real() + b.real(), a.imag() + b.imag());
+}
+template <class T>
+complex<T> operator+(const complex<T> &a, const T &v)
+{
+  return complex<T>(a.real() + v, a.imag());
+}
+template <class T>
+complex<T> operator+(const T &v, const complex<T> &a)
+{
+  return complex<T>(v + a.real(), a.imag());
+}
+
+template <class T>
+complex<T> operator-(const complex<T> &a, const complex<T> &b)
+{
+  return complex<T>(a.real() - b.real(), a.imag() - b.imag());
+}
+template <class T>
+complex<T> operator-(const complex<T> &a, const T &v)
+{
+  return complex<T>(a.real() - v, a.imag());
+}
+template <class T>
+complex<T> operator-(const T &v, const complex<T> &a)
+{
+  return complex<T>(v - a.real(), -a.imag());
+}
+
+template <class T>
+complex<T> operator*(const complex<T> &a, const complex<T> &b)
+{
+  return complex<T>(
+    a.real() * b.real() - a.imag() * b.imag(),
+    a.real() * b.imag() + a.imag() * b.real());
+}
+template <class T>
+complex<T> operator*(const complex<T> &a, const T &v)
+{
+  return complex<T>(a.real() * v, a.imag() * v);
+}
+template <class T>
+complex<T> operator*(const T &v, const complex<T> &a)
+{
+  return complex<T>(v * a.real(), v * a.imag());
+}
+
+template <class T>
+complex<T> operator/(const complex<T> &a, const complex<T> &b)
+{
+  T d = b.real() * b.real() + b.imag() * b.imag();
+  return complex<T>(
+    (a.real() * b.real() + a.imag() * b.imag()) / d,
+    (a.imag() * b.real() - a.real() * b.imag()) / d);
+}
+template <class T>
+complex<T> operator/(const complex<T> &a, const T &v)
+{
+  return complex<T>(a.real() / v, a.imag() / v);
+}
+template <class T>
+complex<T> operator/(const T &v, const complex<T> &a)
+{
+  return complex<T>(v, T()) / a;
+}
+
+template <class T>
+complex<T> operator+(const complex<T> &a)
+{
+  return a;
+}
+template <class T>
+complex<T> operator-(const complex<T> &a)
+{
+  return complex<T>(-a.real(), -a.imag());
+}
+
+// [complex.ops]: the comparisons yield bool. The previous declarations returned
+// complex<T>, which no conforming program could use.
+template <class T>
+bool operator==(const complex<T> &a, const complex<T> &b)
+{
+  return a.real() == b.real() && a.imag() == b.imag();
+}
+template <class T>
+bool operator==(const complex<T> &a, const T &v)
+{
+  return a.real() == v && a.imag() == T();
+}
+template <class T>
+bool operator==(const T &v, const complex<T> &a)
+{
+  return v == a.real() && a.imag() == T();
+}
+
+template <class T>
+bool operator!=(const complex<T> &a, const complex<T> &b)
+{
+  return !(a == b);
+}
+template <class T>
+bool operator!=(const complex<T> &a, const T &v)
+{
+  return !(a == v);
+}
+template <class T>
+bool operator!=(const T &v, const complex<T> &a)
+{
+  return !(v == a);
+}
+
+template <class T>
+T real(const complex<T> &a)
+{
+  return a.real();
+}
+template <class T>
+T imag(const complex<T> &a)
+{
+  return a.imag();
+}
+template <class T>
+T norm(const complex<T> &a)
+{
+  return a.real() * a.real() + a.imag() * a.imag();
+}
+template <class T>
+complex<T> conj(const complex<T> &a)
+{
+  return complex<T>(a.real(), -a.imag());
+}
+
+} // namespace std
+
+#endif

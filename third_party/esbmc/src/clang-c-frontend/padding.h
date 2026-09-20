@@ -1,0 +1,13 @@
+/// \file
+/// ANSI-C Language Type Checking
+
+#ifndef CPROVER_ANSI_C_PADDING_H
+#define CPROVER_ANSI_C_PADDING_H
+
+#include <util/irep/std_types.h>
+#include <util/symtab/namespace.h>
+#include <util/arith/mp_arith.h>
+
+void add_padding(typet &type, const namespacet &ns);
+
+#endif // CPROVER_ANSI_C_PADDING_H

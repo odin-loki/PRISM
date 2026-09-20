@@ -1,0 +1,21 @@
+CORE
+DestructorStackTests
+--show-goto-functions --function DestructorStackTests.mainTest --unwind 10 -cp target/classes
+activate-multi-line-match
+DEAD [^\n]*::strings\s+[^\n]*\s+DEAD [^\n]*::minor1\s+[^\n]*\s+DEAD [^\n]*::anonlocal[^\n]*\s+[^\n]*\s+[0-9]+: END_FUNCTION
+^EXIT=0$
+^SIGNAL=0$
+--
+--
+Checks for:
+
+           // Labels: pc187
+       12: DEAD strings
+           // 250 file DestructorStackTests.java line 42 function java::DestructorStackTests.mainTest:(Z)V bytecode-index 90
+           DEAD minor1
+           // 251 file DestructorStackTests.java line 42 function java::DestructorStackTests.mainTest:(Z)V bytecode-index 90
+           DEAD anonlocal::4a
+           // 252 no location
+       13: END_FUNCTION
+
+Tests to make sure variables haven't escaped from any blocks.

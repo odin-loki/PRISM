@@ -152,11 +152,13 @@ class _Engine:
             r = R(r.lo, r.hi, True)
         self.st[name] = r
 
-    def get(self, name: str) -> R:
-        return self.st.get(name, TOP)
 
-    def set(self, name: str, r: R) -> None:
-        self.st[name] = r
+def _fork(e: _Engine) -> _Engine:
+    n = _Engine([])
+    n.st = _copy(e.st)
+    n.unsigned = set(e.unsigned)
+    n.live = e.live
+    return n
 
 
 def interval_function(fn: FunctionInfo) -> Finding | None:
@@ -324,11 +326,9 @@ def _if(e: _Engine, text: str, bound: int) -> str:
     stripped = after.lstrip()
     if _starts_kw(stripped, "else"):
         else_src, after = _take_block(stripped[4:])
-    then_e = _Engine([])
-    then_e.st = _copy(e.st)
+    then_e = _fork(e)
     _refine(then_e, cond, True)
-    else_e = _Engine([])
-    else_e.st = _copy(e.st)
+    else_e = _fork(e)
     _refine(else_e, cond, False)
     then_dead = else_dead = False
     try:
@@ -345,9 +345,11 @@ def _if(e: _Engine, text: str, bound: int) -> str:
         return after
     if then_dead:
         e.st = else_e.st
+        e.unsigned = set(else_e.unsigned)
         return after
     if else_dead:
         e.st = then_e.st
+        e.unsigned = set(then_e.unsigned)
         return after
     e.st = _join_state(then_e.st, else_e.st)
     return after
@@ -364,17 +366,16 @@ def _do(e: _Engine, text: str, bound: int) -> str:
     after = after.lstrip()
     if after.startswith(";"):
         after = after[1:]
-    body_e = _Engine([])
-    body_e.st = _copy(e.st)
+    body_e = _fork(e)
     try:
         _stmts(body_e, body, bound)
     except _Return:
         e.st = body_e.st
+        e.unsigned = set(body_e.unsigned)
         return after
     e.st = _join_state(e.st, body_e.st)
     for _ in range(max(1, bound) - 1):
-        body_e = _Engine([])
-        body_e.st = _copy(e.st)
+        body_e = _fork(e)
         _refine(body_e, cond, True)
         try:
             _stmts(body_e, body, bound)
@@ -390,8 +391,7 @@ def _while(e: _Engine, text: str, bound: int) -> str:
     cond, after = _paren(rest)
     body, after = _take_block(after)
     for _ in range(max(1, bound)):
-        body_e = _Engine([])
-        body_e.st = _copy(e.st)
+        body_e = _fork(e)
         _refine(body_e, cond, True)
         try:
             _stmts(body_e, body, bound)
@@ -420,8 +420,7 @@ def _for(e: _Engine, text: str, bound: int) -> str:
         else:
             _assign(e, init)
     for _ in range(max(1, bound)):
-        body_e = _Engine([])
-        body_e.st = _copy(e.st)
+        body_e = _fork(e)
         if cond:
             _refine(body_e, cond, True)
         try:

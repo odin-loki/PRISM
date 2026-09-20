@@ -81,8 +81,11 @@ def _diff_pair(a: FunctionInfo, b: FunctionInfo, root: Path) -> Finding:
     )
     if a.kind != "SCALAR" or b.kind != "SCALAR":
         return Finding(
-            **base, status=laws.ERROR, cls="",
-            message=f"differential testing needs two SCALAR functions, got {a.kind}/{b.kind}",
+            **base, status=laws.NEEDS_HARNESS, cls="",
+            message=(
+                f"differential testing needs two SCALAR functions, got {a.kind}/{b.kind}; "
+                "POINTER/OTHER would invent a buffer or object"
+            ),
         )
     if [(t, n) for t, n in a.params] != [(t, n) for t, n in b.params]:
         return Finding(
@@ -91,9 +94,9 @@ def _diff_pair(a: FunctionInfo, b: FunctionInfo, root: Path) -> Finding:
         )
 
     src = _emit_program(a, b)
-    cc = shutil.which("gcc") or shutil.which("clang") or shutil.which("cl")
+    cc = shutil.which("gcc") or shutil.which("clang")
     if not cc:
-        return Finding(**base, status=laws.NOTRUN, cls="", message="no C compiler on PATH",
+        return Finding(**base, status=laws.NOTRUN, cls="", message="no gcc/clang on PATH",
                        extra={"install": "install gcc or clang"})
 
     nbytes = param_nbytes(a.params)
@@ -105,6 +108,7 @@ def _diff_pair(a: FunctionInfo, b: FunctionInfo, root: Path) -> Finding:
         ok, err = _compile(cc, harness, exe)
         if not ok:
             return Finding(**base, status=laws.ERROR, cls="", message=f"diff compile: {err[:400]}")
+        timed_out = False
         for data in _inputs(nbytes):
             st, detail = _run(exe, data)
             if st == "disagree":
@@ -122,6 +126,14 @@ def _diff_pair(a: FunctionInfo, b: FunctionInfo, root: Path) -> Finding:
                     evidence=detail[:800],
                     counterexample=data.hex(),
                 )
+            if st == "timeout":
+                timed_out = True
+        if timed_out:
+            return Finding(
+                **base, status=laws.TIMEOUT, cls="",
+                message="diff harness timed out (not agreement, not a proof)",
+                extra={"a": a.file, "b": b.file},
+            )
     return Finding(
         **base, status=laws.CLEAN, cls="",
         message="no disagreement on sampled inputs (not a proof)",

@@ -1,0 +1,67 @@
+[kernel] Parsing tests/value/recursion2.i (no preprocessing)
+[eva] Analyzing a complete application starting at main
+[eva] Computing initial state
+[eva] Initial state computed
+[eva:initial-state] Values of globals at initialization
+  x ∈ {0}
+  y ∈ {0}
+[eva] computing for function h2 <- main.
+  Called from tests/value/recursion2.i:21.
+[eva] computing for function h1 <- h2 <- main.
+  Called from tests/value/recursion2.i:17.
+[eva] Recording results for h1
+[eva] Done for function h1
+[eva] Recording results for h2
+[eva] Done for function h2
+[eva] computing for function h1 <- main.
+  Called from tests/value/recursion2.i:22.
+[eva] computing for function h2 <- h1 <- main.
+  Called from tests/value/recursion2.i:12.
+[eva] Recording results for h2
+[eva] Done for function h2
+[eva] Recording results for h1
+[eva] Done for function h1
+[eva] Recording results for main
+[eva] done for function main
+[eva] ====== VALUES COMPUTED ======
+[eva:final-states] Values at end of function h1:
+  r ∈ {0}
+  q ∈ {0}
+[eva:final-states] Values at end of function h2:
+  r ∈ {0}
+  q ∈ {0}
+[eva:final-states] Values at end of function main:
+  
+[inout] Out (internal) for function h1:
+    r; q
+[inout] Inputs for function h1:
+    x; y; i; j
+[inout] InOut (internal) for function h1:
+  Operational inputs:
+    x; y; i
+  Operational inputs on termination:
+    x; y; i
+  Sure outputs:
+    r
+[inout] Out (internal) for function h2:
+    r; q
+[inout] Inputs for function h2:
+    x; y; i; j
+[inout] InOut (internal) for function h2:
+  Operational inputs:
+    x; y; j
+  Operational inputs on termination:
+    x; y; j
+  Sure outputs:
+    q
+[inout] Out (internal) for function main:
+    \nothing
+[inout] Inputs for function main:
+    x; y
+[inout] InOut (internal) for function main:
+  Operational inputs:
+    x; y
+  Operational inputs on termination:
+    x; y
+  Sure outputs:
+    \nothing

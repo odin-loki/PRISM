@@ -1,0 +1,36 @@
+opam-version: "2.0"
+authors: "Julia Lawall et. al."
+maintainer: "Thierry.Martinez@inria.fr"
+bug-reports: "cocci@inria.fr"
+homepage: "https://coccinelle.gitlabpages.inria.fr/website"
+dev-repo: "git://github.com/coccinelle/coccinelle"
+license: "GPL"
+build: [
+  ["./autogen"]
+  ["./configure" "--enable-release" "--enable-ocaml" "--prefix" prefix]
+  [make "clean"]
+  [make "all.opt"]
+]
+install: [
+  [make "install"]
+]
+depends: [
+  "ocaml"
+  "menhir"
+  "ocamlfind"
+  "pcre2"
+  "stdcompat"
+  "pyml" { >= "20171117" }
+  "conf-pkg-config"
+  "conf-python-3"
+  "conf-python-3-dev"
+  "conf-aclocal"
+  "conf-autoconf"
+  "parmap"
+  "num"
+]
+synopsis: "Coccinelle is a C source code matching and transformation engine"
+description: """
+Coccinelle provides the language SmPL (Semantic Patch Language) for specifying
+desired matches and transformations in C code."""
+flags: light-uninstall

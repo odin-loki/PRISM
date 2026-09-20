@@ -1,0 +1,4 @@
+CORE
+main.cpp
+BasePlusCommissionEmployee.cpp CommissionEmployee.cpp Employee.cpp HourlyEmployee.cpp SalariedEmployee.cpp --unwind 10 --no-unwinding-assertions --timeout 900
+^VERIFICATION SUCCESSFUL$

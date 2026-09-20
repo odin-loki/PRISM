@@ -1,0 +1,8 @@
+ocaml-version = 5.4.1
+version = 0.29.0
+profile = ocamlformat
+break-before-in = fit-or-vertical
+break-sequences = true
+let-binding-spacing = sparse
+margin = 100
+parse-docstrings = true

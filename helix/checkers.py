@@ -195,6 +195,7 @@ def _findings_for_file(path: Path, rel: str) -> list[Finding]:
         _api_kill(lines, rel, funcs, out)
         _api_getaddrinfo(lines, rel, funcs, out)
         _api_pthread_join(lines, rel, funcs, out)
+        _api_thrd_join(lines, rel, funcs, out)
         _api_sem_wait(lines, rel, funcs, out)
         _api_openat(lines, rel, funcs, out)
         _api_flock(lines, rel, funcs, out)
@@ -1813,12 +1814,34 @@ def _nowait_alloc(lines, rel, funcs, out) -> None:
             ))
 
 
+def _unwrap_wrapping_braces(stmt: str) -> str:
+    """Strip a one-line `{ ... }` wrapper so the tail is the inner statements."""
+    s = stmt.strip()
+    if len(s) >= 2 and s.startswith("{") and s.endswith("}"):
+        inner = s[1:-1].strip()
+        if inner:
+            return inner
+    return s
+
+
+def _missing_return_last_chunk(stmt: str) -> str:
+    """Last `;`-separated chunk (`g = 1; return 0;` → `return 0`)."""
+    last = ""
+    for part in stmt.split(";"):
+        chunk = part.strip()
+        if chunk:
+            last = chunk
+    return last
+
+
 def _last_body_stmt(body_lines: list[str]) -> str | None:
     for ln in reversed(body_lines):
         s = ln.strip()
         if not s or s in ("{", "}"):
             continue
-        return ln
+        s = _unwrap_wrapping_braces(s)
+        last = _missing_return_last_chunk(s)
+        return last if last else s
     return None
 
 
@@ -1870,12 +1893,13 @@ def _is_value_returning(ret: str) -> bool:
 
 
 def _missing_return_tail_ok(stmt: str) -> bool:
-    s = stmt.strip()
-    if _MISSING_RETURN_OK.match(s):
+    s = _unwrap_wrapping_braces(stmt)
+    last = _missing_return_last_chunk(s) or s
+    if _MISSING_RETURN_OK.match(last):
         return True
-    if _TERMINATING_TAIL.match(s):
+    if _TERMINATING_TAIL.match(last) or _TERMINATING_TAIL.match(s):
         return True
-    return bool(_TERMINATING_FN.search(s))
+    return bool(_TERMINATING_FN.search(last) or _TERMINATING_FN.search(s))
 
 
 def _missing_return(lines, rel, funcs, out) -> None:
@@ -3956,6 +3980,9 @@ _GETADDRINFO_ASSIGN = re.compile(
 _PTHREAD_JOIN_DISCARDED = re.compile(
     r"^\s*(?:pthread_join|pthread_detach)\s*\([^;]*\)\s*;\s*$"
 )
+_THRD_JOIN_DISCARDED = re.compile(
+    r"^\s*(?:thrd_join|thrd_detach)\s*\([^;]*\)\s*;\s*$"
+)
 _SEM_WAIT_DISCARDED = re.compile(
     r"^\s*(?:sem_wait|sem_post)\s*\([^;]*\)\s*;\s*$"
 )
@@ -5705,6 +5732,28 @@ def _api_pthread_join(lines, rel, funcs, out) -> None:
             out.append(Finding(
                 stage="lints", status=laws.FAILED, file=rel,
                 function=fn.name, line=line, cls="API-PTHREAD-JOIN",
+                message=f"{fname}() return is discarded",
+                strength=laws.STRENGTH_FINDS,
+                evidence=lines[line - 1].strip()
+                if 0 < line <= len(lines) else ln.strip(),
+            ))
+
+
+def _api_thrd_join(lines, rel, funcs, out) -> None:
+    """ISO C11 thrd_join()/thrd_detach() return discarded (CWE-252)."""
+    for fn in funcs:
+        start = fn.span[0]
+        for i, ln in enumerate(fn.body.splitlines()):
+            if not _THRD_JOIN_DISCARDED.match(ln):
+                continue
+            fname = (
+                "thrd_join" if _find_call_args(ln, "thrd_join")
+                else "thrd_detach"
+            )
+            line = start + i
+            out.append(Finding(
+                stage="lints", status=laws.FAILED, file=rel,
+                function=fn.name, line=line, cls="API-THRD-JOIN",
                 message=f"{fname}() return is discarded",
                 strength=laws.STRENGTH_FINDS,
                 evidence=lines[line - 1].strip()
@@ -21471,12 +21520,24 @@ def _mem_sizeof_ptr(lines, rel, funcs, out) -> None:
                     break
 
 
-def run_lints(paths: list[Path], root: Path) -> list[Finding]:
-    out: list[Finding] = []
-    for p in paths:
+def run_lints(paths: list[Path], root: Path, jobs: int = 0) -> list[Finding]:
+    def _one(p: Path) -> list[Finding]:
         try:
             rel = str(p.relative_to(root)) if root.is_dir() else p.name
         except ValueError:
             rel = str(p)
-        out.extend(_findings_for_file(p, rel))
+        return _findings_for_file(p, rel)
+
+    n = jobs if jobs and jobs > 1 else 1
+    if n == 1 or len(paths) <= 1:
+        out: list[Finding] = []
+        for p in paths:
+            out.extend(_one(p))
+        return out
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=n) as pool:
+        chunks = list(pool.map(_one, paths))
+    out = []
+    for chunk in chunks:
+        out.extend(chunk)
     return out

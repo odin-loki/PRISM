@@ -1,0 +1,18 @@
+# frama-c -wp [...]
+[kernel] Parsing tests/wp_tip/tac_split_quantifiers.i (no preprocessing)
+[wp] Running WP plugin...
+[wp] Loading driver 'share/wp.driver'
+[wp] Warning: Missing RTE guards
+[wp] 5 goals scheduled
+[wp] [Tactical] Goal typed_split_ensures_Goal_Exist_Or : Unsuccess
+[wp] [Tactical] Goal typed_split_ensures_Goal_Exist_And : Unsuccess
+[wp] [Tactical] Goal typed_split_ensures_Goal_Exist_And_bis : Unsuccess
+[wp] [Tactical] Goal typed_split_ensures_Hyp_Forall_And : Unsuccess
+[wp] [Tactical] Goal typed_split_ensures_Hyp_Forall_Or_bis : Unsuccess
+[wp] Proved goals:    0 / 5
+[wp] Report in:  'tests/wp_tip/oracle_qualif/tac_split_quantifiers.0.report.json'
+[wp] Report out: 'tests/wp_tip/result_qualif/tac_split_quantifiers.0.report.json'
+-------------------------------------------------------------
+Functions           WP     Alt-Ergo        Total   Success
+split               -      -                 5       0.0%
+-------------------------------------------------------------

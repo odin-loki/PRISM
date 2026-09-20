@@ -1,0 +1,3 @@
+# Recurrence: Helix checks the safety approximation G(F_8 LIVE_IDLE).
+# Success is BOUNDED, never PROVED of unbounded GF.
+GF (state == LIVE_IDLE)

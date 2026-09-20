@@ -1,0 +1,5 @@
+CORE
+main.py
+--unwind 1
+^ERROR: .*Multiple values for argument 'y'$
+

@@ -1,0 +1,8 @@
+CORE paths-lifo-expected-failure broken-z3-smt-backend broken-cprover-smt-backend no-new-smt
+main.c
+--dimacs --outfile /xyz/out.dimacs
+^EXIT=1$
+^SIGNAL=0$
+failed to open file
+--
+^warning: ignoring

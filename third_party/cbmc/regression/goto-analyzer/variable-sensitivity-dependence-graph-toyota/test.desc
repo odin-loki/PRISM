@@ -1,0 +1,26 @@
+CORE
+main.c
+--no-standard-checks file1.c file2.c --dependence-graph-vs --vsd-structs every-field --vsd-arrays every-element --show
+^EXIT=0$
+^SIGNAL=0$
+^Data dependencies: 16 \[st.a\]$
+^Data dependencies: 16 \[st.b\]$
+^Data dependencies: 16 \[st.a\], 29 \[st.a\]$
+^Data dependencies: 16 \[st.b\], 32 \[st.b\]$
+^Data dependencies: 16 \[st.a, st.b\], 29 \[st.a\], 32 \[st.b\]$
+^Data dependencies: 10 \[ar\[(\([^)]*\))?0\]\]$
+^Data dependencies: 10 \[ar\[(\([^)]*\))?1\]\]$
+^Data dependencies: 10 \[ar\[(\([^)]*\))?0\]\], 38 \[ar\[(\([^)]*\))?0\]\]$
+^Data dependencies: 10 \[ar\[(\([^)]*\))?1\]\], 41 \[ar\[(\([^)]*\))?1\]\]$
+^Data dependencies: 10 \[ar\[(\([^)]*\))?0\], ar\[(\([^)]*\))?1\]\], 38 \[ar\[(\([^)]*\))?0\]\], 41 \[ar\[(\([^)]*\))?1\]\]$
+^Data dependencies: 47 \[arr\[(\([^)]*\))?1\]\]$
+^Data dependencies: 46 \[arr\[(\([^)]*\))?0\]\]$
+^Data dependencies: 48 \[arr\[(\([^)]*\))?2\]\], 50 \[arr\[(\([^)]*\))?2\]\]$
+^Data dependencies: 16 \[st.a\], 29 \[st.a\], 66 \[st.a\]$
+^Data dependencies: 16 \[st.b\], 32 \[st.b\], 69 \[st.b\]$
+^Data dependencies: 16 \[st.a, st.b\], 29 \[st.a\], 32 \[st.b\], 66 \[st.a\], 69 \[st.b\]$
+^Data dependencies: 10 \[ar\[(\([^)]*\))?0\]\], 19 \[ar\[(\([^)]*\))?0\]\], 38 \[ar\[(\([^)]*\))?0\]\]$
+^Data dependencies: 10 \[ar\[(\([^)]*\))?1\]\], 22 \[ar\[(\([^)]*\))?1\]\], 41 \[ar\[(\([^)]*\))?1\]\]$
+^Data dependencies: 10 \[ar\[(\([^)]*\))?0\], ar\[(\([^)]*\))?1\]\], 19 \[ar\[(\([^)]*\))?0\]\], 22 \[ar\[(\([^)]*\))?1\]\], 38 \[ar\[(\([^)]*\))?0\]\], 41 \[ar\[(\([^)]*\))?1\]\]$
+--
+^warning: ignoring

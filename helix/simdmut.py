@@ -1,9 +1,17 @@
 """xsimd-shaped mutation and coverage hashing.
 
-The C++ engine (native/) uses xsimd + CUDA. This Python module is the
-same algorithm so a machine without MSVC still fuzzes: 8-wide byte
-havoc, xxhash-ish mixing. When helix_native.pyd is importable it is
-used instead.
+The C++ engine (native/ and WSL build_wsl/) uses xsimd + optional CUDA.
+This Python module is the same algorithm so a machine without a loadable
+native library still fuzzes: 8-wide byte havoc, xxhash-ish mixing.
+
+Load order (never a proof):
+1. Prefer helix_native if importable.
+2. Else ctypes-load helix_native / prism_native from HELIX_NATIVE_DLL,
+   build_wsl/, native/build, and the native/ tree. C ABI is helix_havoc
+   (native/src/pymod.cpp) or prism_havoc (src/prism/capi.cpp).
+3. Missing library is a Python fallback, never CLEAN/PROVED.
+CUDA (build_wsl/libprism_cuda.so) is not required at import; GPU
+failure is a CPU fallback.
 """
 
 from __future__ import annotations
@@ -19,56 +27,135 @@ except Exception:
     HAS_NATIVE = False
     _native_havoc = _native_hash = None
 
+# helix_* first (legacy native/), then prism_* (WSL libprism_native.so).
+_CPU_LIB_NAMES = (
+    "helix_native.dll",
+    "libhelix_native.dll",
+    "libhelix_native.so",
+    "helix_native.so",
+    "libhelix_native.dylib",
+    "prism_native.dll",
+    "libprism_native.dll",
+    "libprism_native.so",
+    "prism_native.so",
+    "libprism_native.dylib",
+)
 
-def _try_load_dll():
-    """Load helix_native.dll via ctypes. Failures fall back to Python."""
-    import ctypes
+# Optional. Preload only; GPU failure must not block CPU or Python.
+_CUDA_LIB_NAMES = (
+    "libprism_cuda.so",
+    "prism_cuda.dll",
+    "libprism_cuda.dll",
+    "prism_cuda.so",
+    "libhelix_cuda.so",
+    "helix_cuda.dll",
+)
 
-    root = Path(__file__).resolve().parents[1]
-    names = (
-        "helix_native.dll",
-        "libhelix_native.dll",
-        "libhelix_native.so",
-        "helix_native.so",
-        "libhelix_native.dylib",
-    )
-    dirs = [
+# C ABI prefixes: native/src/pymod.cpp then src/prism/capi.cpp (prism_havoc).
+_CAPI_PREFIXES = ("helix", "prism")
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def _native_search_dirs() -> list[Path]:
+    root = _repo_root()
+    return [
+        root / "build_wsl",
         root / "native" / "build",
         root / "native" / "build" / "Release",
         root / "native" / "build" / "Debug",
+        root / "native",
         Path(__file__).resolve().parent,
         Path.cwd(),
     ]
+
+
+def _native_lib_candidates() -> list[Path]:
+    """Ordered ctypes paths: HELIX_NATIVE_DLL, then search dirs × CPU names."""
     env = os.environ.get("HELIX_NATIVE_DLL")
     candidates = [Path(env)] if env else []
-    for d in dirs:
-        candidates.extend(d / n for n in names)
+    for d in _native_search_dirs():
+        candidates.extend(d / n for n in _CPU_LIB_NAMES)
+    return candidates
 
-    for path in candidates:
+
+def _cuda_lib_candidates() -> list[Path]:
+    """Optional GPU libs (build_wsl/libprism_cuda.so, native/). Not required."""
+    return [d / n for d in _native_search_dirs() for n in _CUDA_LIB_NAMES]
+
+
+def _cdll(path: Path):
+    import ctypes
+
+    kwargs = {}
+    rtld = getattr(ctypes, "RTLD_GLOBAL", None)
+    if rtld is not None and os.name != "nt":
+        kwargs["mode"] = rtld
+    return ctypes.CDLL(str(path), **kwargs)
+
+
+def _bind_native_symbols(lib):
+    """Bind helix_* or prism_* C ABI. Missing symbols → (None, None)."""
+    import ctypes
+
+    for prefix in _CAPI_PREFIXES:
+        try:
+            hash_sym = getattr(lib, f"{prefix}_coverage_hash")
+            havoc_sym = getattr(lib, f"{prefix}_havoc")
+        except (AttributeError, OSError):
+            continue
+        hash_sym.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+        hash_sym.restype = ctypes.c_ulonglong
+        havoc_sym.argtypes = [
+            ctypes.c_void_p, ctypes.c_size_t, ctypes.c_ulonglong,
+        ]
+        havoc_sym.restype = None
+
+        def _hash(data: bytes, _fn=hash_sym) -> int:
+            n = len(data)
+            buf = ctypes.create_string_buffer(data, n) if n else ctypes.create_string_buffer(1)
+            return int(_fn(buf if n else None, n))
+
+        def _havoc(data: bytes, _fn=havoc_sym) -> bytes:
+            raw = data or b"\x00"
+            buf = ctypes.create_string_buffer(raw, len(raw))
+            seed = int.from_bytes(os.urandom(8), "little")
+            _fn(buf, len(raw), seed)
+            return buf.raw[: len(raw)]
+
+        return _hash, _havoc
+    return None, None
+
+
+def _try_preload_cuda() -> bool:
+    """Load libprism_cuda.so if present. Failure is CPU fallback, not CLEAN."""
+    for path in _cuda_lib_candidates():
         try:
             if not path.is_file():
                 continue
-            lib = ctypes.CDLL(str(path))
-            lib.helix_coverage_hash.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
-            lib.helix_coverage_hash.restype = ctypes.c_ulonglong
-            lib.helix_havoc.argtypes = [
-                ctypes.c_void_p, ctypes.c_size_t, ctypes.c_ulonglong,
-            ]
-            lib.helix_havoc.restype = None
+            _cdll(path)
+            return True
+        except Exception:
+            continue
+    return False
 
-            def _hash(data: bytes, _lib=lib) -> int:
-                n = len(data)
-                buf = ctypes.create_string_buffer(data, n) if n else ctypes.create_string_buffer(1)
-                return int(_lib.helix_coverage_hash(buf if n else None, n))
 
-            def _havoc(data: bytes, _lib=lib) -> bytes:
-                raw = data or b"\x00"
-                buf = ctypes.create_string_buffer(raw, len(raw))
-                seed = int.from_bytes(os.urandom(8), "little")
-                _lib.helix_havoc(buf, len(raw), seed)
-                return buf.raw[: len(raw)]
-
-            return _hash, _havoc
+def _try_load_dll():
+    """ctypes-load prism_native / helix_native. Failures fall back to Python."""
+    try:
+        _try_preload_cuda()
+    except Exception:
+        pass
+    for path in _native_lib_candidates():
+        try:
+            if not path.is_file():
+                continue
+            lib = _cdll(path)
+            bound = _bind_native_symbols(lib)
+            if bound[0] is not None and bound[1] is not None:
+                return bound
         except Exception:
             continue
     return None, None
@@ -112,6 +199,33 @@ def coverage_hash(data: bytes) -> int:
     return _py_hash(data)
 
 
+# AFL++ include/config.h INTERESTING_8 / INTERESTING_16 / INTERESTING_32.
+# Signed values stored little-endian; byte overlay uses the low 8 bits of
+# INTERESTING_8. CLEAN from havoc is never a proof.
+INTERESTING_8 = (-128, -1, 0, 1, 16, 32, 64, 100, 127)
+INTERESTING_16 = (-32768, -129, 128, 255, 256, 512, 1000, 1024, 4096, 32767)
+INTERESTING_32 = (
+    -2147483648,
+    -100663046,
+    -32769,
+    32768,
+    65535,
+    65536,
+    100663045,
+    2139095040,
+    2147483647,
+)
+
+
+def _overlay_le(buf: bytearray, i: int, value: int, width: int) -> None:
+    n = len(buf)
+    raw = value & ((1 << (8 * width)) - 1)
+    for k in range(width):
+        if i + k >= n:
+            break
+        buf[i + k] = (raw >> (8 * k)) & 0xFF
+
+
 def havoc(data: bytes) -> bytes:
     if HAS_NATIVE:
         return bytes(_native_havoc(data))
@@ -119,7 +233,7 @@ def havoc(data: bytes) -> bytes:
     n = len(b)
     ops = os.urandom(1)[0] % 8 + 1
     for _ in range(ops):
-        kind = os.urandom(1)[0] % 6
+        kind = os.urandom(1)[0] % 8
         i = os.urandom(1)[0] % n
         if kind == 0:
             b[i] ^= os.urandom(1)[0]
@@ -130,10 +244,14 @@ def havoc(data: bytes) -> bytes:
         elif kind == 3:
             b[i] = 0x00
         elif kind == 4:
-            # interesting ints
-            interesting = [0, 1, 0x7F, 0x80, 0xFF, 0x7FFFFFFF]
-            v = interesting[os.urandom(1)[0] % len(interesting)]
-            b[i] = v & 0xFF
+            v = INTERESTING_8[os.urandom(1)[0] % len(INTERESTING_8)]
+            _overlay_le(b, i, v, 1)
+        elif kind == 5:
+            v = INTERESTING_16[os.urandom(1)[0] % len(INTERESTING_16)]
+            _overlay_le(b, i, v, 2)
+        elif kind == 6:
+            v = INTERESTING_32[os.urandom(1)[0] % len(INTERESTING_32)]
+            _overlay_le(b, i, v, 4)
         else:
             j = os.urandom(1)[0] % n
             b[i], b[j] = b[j], b[i]

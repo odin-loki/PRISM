@@ -1,11 +1,12 @@
 """Optional external tools. Missing binary = NOTRUN, never a clean result.
 
 KLEE, AFL++, Frama-C, Infer, CodeQL, clang-tidy, CBMC, Strix, semgrep:
-if the binary is not on PATH we record NOTRUN plus an install URL. If it
-is present we run a safe --help when there is nothing to analyse, or a
-cheap real check when C/C++ sources (or tool-specific inputs) exist.
-We never treat absence as CLEAN and never map a successful empty run to
-CLEAN or PROVED.
+search (1) Config.tools / --tool, (2) a built executable under
+third_party/<vendor>/ if present, (3) PATH. Missing is NOTRUN with an
+install hint at the vendored tree in third_party/SOURCES.md. If present
+we run a safe --help when there is nothing to analyse, or a cheap real
+check when C/C++ sources exist. Absence is never CLEAN. A successful
+help/version probe is never CLEAN or PROVED.
 """
 
 from __future__ import annotations
@@ -19,24 +20,24 @@ import sys
 import tempfile
 
 from helix import laws
-from helix.config import Config
-from helix.models import Finding
+from helix.config import Config, adapter_install, resolve_adapter
+from helix.models import Finding, FunctionInfo
 
-# (stage, PATH names, install URL)
-OPTIONAL_TOOLS: tuple[tuple[str, tuple[str, ...], str], ...] = (
-    ("klee", ("klee",), "https://klee.github.io/"),
-    ("afl-fuzz", ("afl-fuzz", "afl-fuzz.exe"), "https://github.com/AFLplusplus/AFLplusplus"),
-    ("frama-c", ("frama-c", "frama-c.exe"), "https://frama-c.com/"),
-    ("infer", ("infer",), "https://fbinfer.com/"),
-    ("codeql", ("codeql", "codeql.exe"), "https://github.com/github/codeql-cli-binaries"),
-    ("clang-tidy", ("clang-tidy", "clang-tidy.exe"), "https://clang.llvm.org/extra/clang-tidy/"),
-    ("cbmc", ("cbmc", "cbmc.exe"), "https://github.com/diffblue/cbmc"),
-    ("strix", ("strix", "strix.exe"), "https://github.com/meyerphi/strix"),
-    ("semgrep", ("semgrep", "semgrep.exe"), "https://semgrep.dev/"),
-    ("spatch", ("spatch", "spatch.exe"), "https://coccinelle.gitlabpages.inria.fr/website/"),
+# (stage, PATH names). Install hint is adapter_install(stage) → SOURCES.md.
+OPTIONAL_TOOLS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("klee", ("klee",)),
+    ("afl-fuzz", ("afl-fuzz", "afl-fuzz.exe")),
+    ("frama-c", ("frama-c", "frama-c.exe")),
+    ("infer", ("infer",)),
+    ("codeql", ("codeql", "codeql.exe")),
+    ("clang-tidy", ("clang-tidy", "clang-tidy.exe")),
+    ("cbmc", ("cbmc", "cbmc.exe")),
+    ("strix", ("strix", "strix.exe")),
+    ("semgrep", ("semgrep", "semgrep.exe")),
+    ("spatch", ("spatch", "spatch.exe")),
 )
 
-_LIBFUZZER_INSTALL = "https://llvm.org/docs/LibFuzzer.html"
+_LIBFUZZER_INSTALL = "clang -fsanitize=fuzzer is not vendored (see third_party/SOURCES.md)"
 
 _C_EXTS = {".c", ".cc", ".cpp", ".cxx", ".h", ".hpp"}
 
@@ -48,26 +49,57 @@ _SPATCH_HIT_RE = re.compile(r"^(.+):(\d+):\s*(.*)$")
 def _not_run(stage: str, binary: str, how: str) -> Finding:
     return Finding(
         stage=stage, status=laws.NOTRUN, file="", function=None, line=None,
-        cls="", message=f"{binary} not on PATH",
+        cls="", message=f"{binary} not found (config, vendored tree, PATH)",
         strength=laws.STRENGTH_FINDS, extra={"install": how},
     )
 
 
-def _run(cmd: list[str], timeout: float) -> subprocess.CompletedProcess:
+def _run(cmd: list[str], timeout: float, cwd: Path | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(
         cmd, capture_output=True, text=True, encoding="utf-8",
-        errors="replace", timeout=timeout,
+        errors="replace", timeout=timeout, cwd=cwd,
     )
 
 
+def _is_fake_adapter(text: str) -> bool:
+    """Catch2/doctest (or unknown --timeout/--unwind) is not CBMC/ESBMC/cppcheck/dafny."""
+    low = (text or "").lower()
+    return (
+        "doctest version" in low
+        or "catch2 v" in low
+        or "unknown option" in low
+    )
+
+
+def _probe_looks_missing(text: str, rc: int) -> bool:
+    """Shell 'not found' / 126 / 127 is a missing tool, not a help page.
+
+    A doctest/Catch2 binary that answers --help is not CBMC/ESBMC/spatch.
+    """
+    low = (text or "").lower()
+    if _is_fake_adapter(text) or "unknown option: --timeout" in low:
+        return True
+    if rc in {0, 1}:
+        return False
+    if rc in {126, 127}:
+        return True
+    return "command not found" in low or "no such file" in low or ": not found" in low
+
+
 def _probe(exe: str) -> subprocess.CompletedProcess | None:
-    """Safe presence check: --help / -h / --version. Never a code verdict."""
+    """Safe presence check: --help / -h / --version. Never a code verdict.
+
+    A path that exists but cannot start (shell 'not found', exec format) is
+    missing — the caller maps that to NOTRUN, never ERROR/CLEAN/PROVED.
+    """
     for args in (("--help",), ("-h",), ("--version",), ("-version",)):
         try:
             r = _run([exe, *args], timeout=12)
         except (subprocess.TimeoutExpired, OSError):
             continue
         text = (r.stdout or "") + (r.stderr or "")
+        if _probe_looks_missing(text, r.returncode):
+            continue
         if text.strip() or r.returncode in {0, 1}:
             return r
     return None
@@ -87,7 +119,8 @@ def _run_clang_tidy(exe: str, paths: list[Path], cfg: Config) -> list[Finding]:
         )]
     out: list[Finding] = []
     for p in files:
-        cmd = [exe, str(p), "--", "-std=c11"]
+        std = "-std=c++11" if p.suffix.lower() in {".cc", ".cpp", ".cxx"} else "-std=c11"
+        cmd = [exe, str(p), "--", std]
         try:
             r = _run(cmd, timeout=min(60.0, cfg.timeout + 15))
         except subprocess.TimeoutExpired:
@@ -98,6 +131,15 @@ def _run_clang_tidy(exe: str, paths: list[Path], cfg: Config) -> list[Finding]:
             ))
             continue
         text = (r.stdout or "") + (r.stderr or "")
+        if _is_fake_adapter(text) or _probe_looks_missing(text, r.returncode):
+            out.append(Finding(
+                stage="clang-tidy", status=laws.NOTRUN, file=str(p), function=None,
+                line=None, cls="",
+                message="clang-tidy at PATH is not clang-tidy (not a proof)",
+                strength=laws.STRENGTH_FINDS,
+                extra={"exe": exe, "install": adapter_install("clang-tidy")},
+            ))
+            continue
         hits = 0
         for ln in text.splitlines():
             if ": warning:" in ln or ": error:" in ln:
@@ -113,6 +155,12 @@ def _run_clang_tidy(exe: str, paths: list[Path], cfg: Config) -> list[Finding]:
                 line=None, cls="", message=text[-400:] or f"clang-tidy exit {r.returncode}",
                 strength=laws.STRENGTH_FINDS,
             ))
+    if not out:
+        return [Finding(
+            stage="clang-tidy", status=laws.UNKNOWN, file="", function=None, line=None,
+            cls="", message=f"clang-tidy present at {exe}; no diagnostics (not a proof)",
+            strength=laws.STRENGTH_FINDS, extra={"exe": exe},
+        )]
     return out
 
 
@@ -140,9 +188,19 @@ def _run_cbmc(exe: str, paths: list[Path], cfg: Config) -> list[Finding]:
                 strength=laws.STRENGTH_PROVES,
             ))
             continue
+        except OSError as exc:
+            out.append(Finding(
+                stage="cbmc", status=laws.NOTRUN, file=str(p), function=None,
+                line=None, cls="", message=f"cbmc unusable: {exc}",
+                strength=laws.STRENGTH_PROVES,
+                extra={"exe": exe, "install": adapter_install("cbmc")},
+            ))
+            continue
         text = (r.stdout or "") + (r.stderr or "")
         upper = text.upper()
-        if "VERIFICATION SUCCESSFUL" in upper:
+        if _is_fake_adapter(text) or _probe_looks_missing(text, r.returncode):
+            st, msg = laws.NOTRUN, "cbmc at PATH is not CBMC (not a proof)"
+        elif "VERIFICATION SUCCESSFUL" in upper:
             st, msg = laws.BOUNDED, "CBMC: BOUNDED (unwind limited; not a proof)"
         elif "VERIFICATION FAILED" in upper:
             st, msg = laws.FAILED, "CBMC verification failed"
@@ -150,11 +208,14 @@ def _run_cbmc(exe: str, paths: list[Path], cfg: Config) -> list[Finding]:
             st, msg = laws.UNKNOWN, "CBMC unknown"
         else:
             st, msg = laws.ERROR, (text[-400:] or "no verdict line (not a proof)")
-        out.append(Finding(
+        f = Finding(
             stage="cbmc", status=st, file=str(p), function=None, line=None,
             cls="", message=msg, strength=laws.STRENGTH_PROVES,
             evidence=text[-1500:],
-        ))
+        )
+        if st == laws.NOTRUN:
+            f.extra = {"exe": exe, "install": adapter_install("cbmc")}
+        out.append(f)
     return out
 
 
@@ -207,7 +268,7 @@ def _libfuzzer_probe(cfg: Config) -> Finding:  # noqa: ARG001 — cfg kept for A
                     )
     except (subprocess.TimeoutExpired, OSError) as exc:
         return Finding(
-            stage="libfuzzer", status=laws.ERROR, file="", function=None, line=None,
+            stage="libfuzzer", status=laws.NOTRUN, file="", function=None, line=None,
             cls="", message=f"libFuzzer probe failed: {exc}",
             strength=laws.STRENGTH_FINDS,
             extra={"install": _LIBFUZZER_INSTALL, "exe": clang},
@@ -218,6 +279,216 @@ def _libfuzzer_probe(cfg: Config) -> Finding:  # noqa: ARG001 — cfg kept for A
         strength=laws.STRENGTH_FINDS,
         extra={"exe": clang},
     )
+
+
+def _libfuzzer_flag_rejected(text: str) -> bool:
+    low = (text or "").lower()
+    return "unsupported" in low or "unknown" in low or "unrecognized" in low
+
+
+def _libfuzzer_harness_source(fn: FunctionInfo, src_rel: str) -> str:
+    from helix.fuzz import C_TYPE_SIZE, param_nbytes
+
+    nbytes = param_nbytes(fn.params)
+    dlines: list[str] = []
+    reads: list[str] = []
+    args: list[str] = []
+    off = 0
+    for typ, name in fn.params:
+        key = " ".join(typ.split()) or "int"
+        dlines.append(f"    {key} {name};")
+        sz = C_TYPE_SIZE.get(" ".join(typ.replace("*", " ").split()), 4)
+        reads.append(f"    memcpy(&{name}, Data + {off}, {sz});")
+        args.append(name)
+        off += sz
+    rel = src_rel.replace("\\", "/")
+    return (
+        "#include <stdint.h>\n"
+        "#include <stddef.h>\n"
+        "#include <string.h>\n"
+        f'#include "{rel}"\n'
+        "\n"
+        "int LLVMFuzzerTestOneInput(const uint8_t *Data, size_t Size) {\n"
+        f"    if (Size < {nbytes}) return 0;\n"
+        + "\n".join(dlines) + "\n"
+        + "\n".join(reads) + "\n"
+        f"    (void){fn.name}({', '.join(args)});\n"
+        "    return 0;\n"
+        "}\n"
+    )
+
+
+def _compile_libfuzzer(clang: str, src: Path, exe: Path) -> tuple[str, str]:
+    """Compile a libFuzzer harness. Returns ('ok'|'notrun'|'error', detail).
+
+    Prefer fuzzer+ASan+UBSan together; fall back to one sanitizer, then
+    fuzzer alone. Missing ``-fsanitize=fuzzer`` is NOTRUN, never ERROR/CLEAN.
+    """
+    san_tries = [
+        ["-fsanitize=fuzzer,address,undefined",
+         "-fno-sanitize-recover=address,undefined"],
+        ["-fsanitize=fuzzer,undefined", "-fno-sanitize-recover=undefined"],
+        ["-fsanitize=fuzzer,address", "-fno-sanitize-recover=address"],
+        ["-fsanitize=fuzzer"],
+    ]
+    last_text = ""
+    rejected = False
+    for san in san_tries:
+        r = _run([clang, *san, "-O0", "-g", "-std=c11", str(src), "-o", str(exe)], timeout=30)
+        text = (r.stderr or "") + (r.stdout or "")
+        last_text = text
+        if r.returncode == 0:
+            return "ok", ""
+        if _libfuzzer_flag_rejected(text):
+            rejected = True
+    if rejected:
+        return "notrun", last_text
+    return "error", last_text
+
+
+def _run_libfuzzer(
+    fn: FunctionInfo,
+    src: Path,
+    *,
+    timeout: float = 2.0,
+    work: Path | None = None,
+) -> Finding:
+    """Bounded libFuzzer campaign on a SCALAR harness.
+
+    Missing clang or ``-fsanitize=fuzzer`` is NOTRUN, never CLEAN and never
+    extra["engine"]="libfuzzer". POINTER is NEEDS-HARNESS, never ERROR.
+    A campaign that finds nothing is CLEAN, which is not a proof.
+    """
+    from helix.bmc import unencoded_syntax_reason
+    from helix.cparse import body_needs_pointer_harness
+
+    base = dict(
+        stage="libfuzzer", file=fn.file, function=fn.name, line=fn.line,
+        cls="", strength=laws.STRENGTH_FINDS,
+    )
+    if fn.kind == "POINTER":
+        return Finding(
+            **base, status=laws.NEEDS_HARNESS,
+            message="POINTER: libFuzzer harness would invent a buffer or pass NULL",
+        )
+    if fn.kind == "OTHER":
+        return Finding(
+            **base, status=laws.NEEDS_HARNESS,
+            message="OTHER signature, not harnessed",
+        )
+    syn = unencoded_syntax_reason(fn, "libFuzzer")
+    if syn:
+        return Finding(**base, status=laws.NEEDS_HARNESS, message=syn)
+    if body_needs_pointer_harness(fn.body or ""):
+        return Finding(
+            **base, status=laws.NEEDS_HARNESS,
+            message="local pointer or heap object: libFuzzer harness would invent a buffer",
+        )
+
+    clang = shutil.which("clang")
+    if not clang:
+        return Finding(
+            **base, status=laws.NOTRUN,
+            message="clang not on PATH",
+            extra={"install": _LIBFUZZER_INSTALL},
+        )
+
+    cleanup = work is None
+    work = work or Path(tempfile.mkdtemp(prefix="helix_libfuzzer_run_"))
+    work.mkdir(parents=True, exist_ok=True)
+    try:
+        src_copy = work / Path(src).name
+        if not src_copy.exists():
+            src_copy.write_text(
+                Path(src).read_text(encoding="utf-8", errors="replace"),
+                encoding="utf-8",
+            )
+        hpath = work / f"lfuzzer_{fn.name}.c"
+        hpath.write_text(_libfuzzer_harness_source(fn, src_copy.name), encoding="utf-8")
+        exe = work / f"lfuzzer_{fn.name}.exe"
+        try:
+            st, err = _compile_libfuzzer(clang, hpath, exe)
+        except subprocess.TimeoutExpired:
+            return Finding(
+                **base, status=laws.TIMEOUT,
+                message="libFuzzer compile timeout",
+                extra={"install": _LIBFUZZER_INSTALL, "exe": clang},
+            )
+        except OSError as exc:
+            return Finding(
+                **base, status=laws.NOTRUN,
+                message=f"libFuzzer compile unusable: {exc}",
+                extra={"install": _LIBFUZZER_INSTALL, "exe": clang},
+            )
+        if st == "notrun":
+            return Finding(
+                **base, status=laws.NOTRUN,
+                message="clang has no libFuzzer (-fsanitize=fuzzer)",
+                extra={"install": _LIBFUZZER_INSTALL, "exe": clang},
+            )
+        if st != "ok":
+            return Finding(
+                **base, status=laws.ERROR,
+                message=f"libFuzzer compile failed: {(err or '')[:200]}",
+                extra={"exe": clang},
+            )
+
+        extra = {"engine": "libfuzzer", "exe": clang}
+        corpus = work / "corpus"
+        corpus.mkdir(exist_ok=True)
+        from helix.fuzz import param_nbytes
+        (corpus / "seed").write_bytes(b"\x00" * param_nbytes(fn.params))
+        try:
+            r = _run(
+                [str(exe), str(corpus), f"-max_total_time={max(1, int(timeout))}",
+                 "-timeout=1"],
+                timeout=timeout + 10,
+                cwd=work,
+            )
+        except subprocess.TimeoutExpired:
+            r = None
+        except OSError as exc:
+            return Finding(
+                **base, status=laws.NOTRUN,
+                message=f"libFuzzer run unusable: {exc}",
+                extra={"install": _LIBFUZZER_INSTALL, "exe": clang},
+            )
+
+        crashes = [
+            p for p in work.iterdir()
+            if p.is_file() and p.name.startswith("crash-")
+        ]
+        if not crashes:
+            crashes = list(work.glob("**/crash-*"))
+        if crashes:
+            data = crashes[0].read_bytes()
+            rec = dict(base)
+            rec["cls"] = "LIBFUZZER-CRASH"
+            return Finding(
+                **rec, status=laws.CRASH,
+                message=f"libFuzzer crash on {data[:16].hex()}",
+                counterexample=data.hex(),
+                extra={**extra, "libfuzzer_crashes": len(crashes)},
+            )
+        text = ""
+        if r is not None:
+            text = ((r.stderr or "") + (r.stdout or "")).lower()
+            if "addresssanitizer" in text or "undefinedbehaviorsanitizer" in text:
+                rec = dict(base)
+                rec["cls"] = "LIBFUZZER-CRASH"
+                return Finding(
+                    **rec, status=laws.CRASH,
+                    message="libFuzzer sanitizer crash",
+                    extra=extra,
+                )
+        return Finding(
+            **base, status=laws.CLEAN,
+            message=f"no libFuzzer crash in {timeout:.0f}s (not a proof)",
+            extra=extra,
+        )
+    finally:
+        if cleanup:
+            shutil.rmtree(work, ignore_errors=True)
 
 
 def _help_ok_finding(stage: str, exe: str, r: subprocess.CompletedProcess) -> Finding:
@@ -297,12 +568,22 @@ def _run_spatch(exe: str, paths: list[Path], cfg: Config) -> list[Finding]:
                 continue
             except OSError as exc:
                 out.append(Finding(
-                    stage="spatch", status=laws.ERROR, file=str(p), function=None,
-                    line=None, cls=cls, message=f"spatch failed: {exc}",
-                    strength=laws.STRENGTH_FINDS, extra={"exe": exe, "rule": rule.name},
+                    stage="spatch", status=laws.NOTRUN, file=str(p), function=None,
+                    line=None, cls=cls, message=f"spatch unusable: {exc}",
+                    strength=laws.STRENGTH_FINDS,
+                    extra={"exe": exe, "rule": rule.name, "install": adapter_install("spatch")},
                 ))
                 continue
             text = (r.stdout or "") + (r.stderr or "")
+            if _is_fake_adapter(text) or _probe_looks_missing(text, r.returncode):
+                out.append(Finding(
+                    stage="spatch", status=laws.NOTRUN, file=str(p), function=None,
+                    line=None, cls=cls,
+                    message="spatch at PATH is not Coccinelle (not a proof)",
+                    strength=laws.STRENGTH_FINDS,
+                    extra={"exe": exe, "rule": rule.name, "install": adapter_install("spatch")},
+                ))
+                continue
             hits = _parse_spatch_hits(text)
             if hits:
                 any_hit = True
@@ -313,7 +594,22 @@ def _run_spatch(exe: str, paths: list[Path], cfg: Config) -> list[Finding]:
                         strength=laws.STRENGTH_FINDS,
                         extra={"exe": exe, "rule": rule.name},
                     ))
-            elif r.returncode != 0:
+                continue
+            low = text.lower()
+            # Match-only rules often exit non-zero with "No rules apply".
+            # That is silence, not a defect and not a broken spatch.
+            if "no rules apply" in low:
+                continue
+            if r.returncode != 0:
+                if _probe_looks_missing(text, r.returncode):
+                    out.append(Finding(
+                        stage="spatch", status=laws.NOTRUN, file=str(p), function=None,
+                        line=None, cls=cls,
+                        message="spatch at PATH is not Coccinelle (not a proof)",
+                        strength=laws.STRENGTH_FINDS,
+                        extra={"exe": exe, "rule": rule.name, "install": adapter_install("spatch")},
+                    ))
+                    continue
                 out.append(Finding(
                     stage="spatch", status=laws.ERROR, file=str(p), function=None,
                     line=None, cls=cls,
@@ -323,13 +619,28 @@ def _run_spatch(exe: str, paths: list[Path], cfg: Config) -> list[Finding]:
                 ))
     if any_hit:
         return out
-    if out and all(f.status in {laws.TIMEOUT, laws.ERROR} for f in out):
+    if out and all(f.status in {laws.TIMEOUT, laws.ERROR, laws.NOTRUN} for f in out):
         return out
     return [Finding(
         stage="spatch", status=laws.UNKNOWN, file="", function=None, line=None,
         cls="", message="spatch ran; no matches (not a proof)",
         strength=laws.STRENGTH_FINDS, extra={"exe": exe},
     )]
+
+
+def _extract_json_object(text: str) -> str:
+    """First '{' .. last '}' — same slice C++ extract_json_object uses.
+
+    Helix law: parse combined stdout+stderr, not stdout alone. Empty text
+    is '{}' so a silent success is UNKNOWN, not a dropped parse.
+    """
+    blob = text or ""
+    if not blob.strip():
+        return "{}"
+    first, last = blob.find("{"), blob.rfind("}")
+    if first >= 0 and last > first:
+        return blob[first : last + 1]
+    return blob
 
 
 def _run_semgrep(exe: str, paths: list[Path], cfg: Config) -> list[Finding]:
@@ -343,12 +654,16 @@ def _run_semgrep(exe: str, paths: list[Path], cfg: Config) -> list[Finding]:
 
     timeout_s = max(1, int(cfg.timeout))
 
-    def _parse(stdout: str) -> list[Finding] | None:
+    def _parse(blob: str) -> list[Finding] | None:
         try:
-            data = json.loads(stdout or "{}")
+            data = json.loads(_extract_json_object(blob))
         except json.JSONDecodeError:
             return None
+        if not isinstance(data, dict):
+            return None
         results = data.get("results") or []
+        if not isinstance(results, list):
+            results = []
         if not results:
             return [Finding(
                 stage="semgrep", status=laws.UNKNOWN, file="", function=None, line=None,
@@ -357,16 +672,26 @@ def _run_semgrep(exe: str, paths: list[Path], cfg: Config) -> list[Finding]:
             )]
         out: list[Finding] = []
         for item in results:
+            if not isinstance(item, dict):
+                continue
             check_id = str(item.get("check_id") or "semgrep")
             path = str(item.get("path") or "")
             line = (item.get("start") or {}).get("line")
             extra = item.get("extra") or {}
+            if not isinstance(extra, dict):
+                extra = {}
             msg = str(extra.get("message") or check_id)
             out.append(Finding(
                 stage="semgrep", status=laws.FAILED, file=path, function=None,
                 line=line, cls=check_id, message=msg[:400],
                 strength=laws.STRENGTH_FINDS, extra={"exe": exe},
             ))
+        if not out:
+            return [Finding(
+                stage="semgrep", status=laws.UNKNOWN, file="", function=None, line=None,
+                cls="", message="semgrep ran; no matches (not a proof)",
+                strength=laws.STRENGTH_FINDS, extra={"exe": exe},
+            )]
         return out
 
     configs = ("p/c", "auto")
@@ -384,7 +709,14 @@ def _run_semgrep(exe: str, paths: list[Path], cfg: Config) -> list[Finding]:
             )]
         text = (r.stdout or "") + (r.stderr or "")
         last_text = text
-        parsed = _parse(r.stdout or "")
+        if _is_fake_adapter(text) or _probe_looks_missing(text, r.returncode):
+            return [Finding(
+                stage="semgrep", status=laws.NOTRUN, file="", function=None, line=None,
+                cls="", message="semgrep at PATH is not semgrep (not a proof)",
+                strength=laws.STRENGTH_FINDS,
+                extra={"exe": exe, "install": adapter_install("semgrep")},
+            )]
+        parsed = _parse(text)
         if parsed is not None:
             if r.returncode == 0 or any(f.status == laws.FAILED for f in parsed):
                 return parsed
@@ -399,6 +731,13 @@ def _run_semgrep(exe: str, paths: list[Path], cfg: Config) -> list[Finding]:
             continue
         if parsed is not None:
             return parsed
+        if ruleset_missing:
+            return [Finding(
+                stage="semgrep", status=laws.NOTRUN, file="", function=None, line=None,
+                cls="", message=(text[-400:] or "semgrep ruleset unavailable (not a code verdict)"),
+                strength=laws.STRENGTH_FINDS,
+                extra={"exe": exe, "install": adapter_install("semgrep")},
+            )]
         return [Finding(
             stage="semgrep", status=laws.ERROR, file="", function=None, line=None,
             cls="", message=(text[-400:] or "semgrep failed (not a proof)"),
@@ -422,9 +761,10 @@ def _run_infer(exe: str, paths: list[Path], cfg: Config) -> list[Finding]:
     compiler = shutil.which("gcc") or shutil.which("clang")
     if not compiler:
         return [Finding(
-            stage="infer", status=laws.ERROR, file="", function=None, line=None,
+            stage="infer", status=laws.NOTRUN, file="", function=None, line=None,
             cls="", message="infer present but gcc/clang not on PATH",
-            strength=laws.STRENGTH_FINDS, extra={"exe": exe},
+            strength=laws.STRENGTH_FINDS,
+            extra={"exe": exe, "install": "install gcc or clang"},
         )]
     out: list[Finding] = []
     for p in c_files:
@@ -443,12 +783,22 @@ def _run_infer(exe: str, paths: list[Path], cfg: Config) -> list[Finding]:
             continue
         except OSError as exc:
             out.append(Finding(
-                stage="infer", status=laws.ERROR, file=str(p), function=None,
-                line=None, cls="", message=f"infer failed: {exc}",
+                stage="infer", status=laws.NOTRUN, file=str(p), function=None,
+                line=None, cls="", message=f"infer unusable: {exc}",
                 strength=laws.STRENGTH_FINDS,
+                extra={"exe": exe, "install": adapter_install("infer")},
             ))
             continue
         text = (r.stdout or "") + (r.stderr or "")
+        if _probe_looks_missing(text, r.returncode):
+            out.append(Finding(
+                stage="infer", status=laws.NOTRUN, file=str(p), function=None,
+                line=None, cls="",
+                message="infer at PATH is not Infer (not a proof)",
+                strength=laws.STRENGTH_FINDS,
+                extra={"exe": exe, "install": adapter_install("infer")},
+            ))
+            continue
         file_failed = False
         for ln in text.splitlines():
             if re.search(r"\berror:\s", ln, re.IGNORECASE):
@@ -467,11 +817,20 @@ def _run_infer(exe: str, paths: list[Path], cfg: Config) -> list[Finding]:
                 strength=laws.STRENGTH_FINDS, extra={"exe": exe},
             ))
         elif r.returncode != 0:
-            out.append(Finding(
-                stage="infer", status=laws.ERROR, file=str(p), function=None,
-                line=None, cls="", message=text[-400:] or f"infer exit {r.returncode}",
-                strength=laws.STRENGTH_FINDS, extra={"exe": exe},
-            ))
+            if _probe_looks_missing(text, r.returncode):
+                out.append(Finding(
+                    stage="infer", status=laws.NOTRUN, file=str(p), function=None,
+                    line=None, cls="",
+                    message="infer at PATH is not Infer (not a proof)",
+                    strength=laws.STRENGTH_FINDS,
+                    extra={"exe": exe, "install": adapter_install("infer")},
+                ))
+            else:
+                out.append(Finding(
+                    stage="infer", status=laws.ERROR, file=str(p), function=None,
+                    line=None, cls="", message=text[-400:] or f"infer exit {r.returncode}",
+                    strength=laws.STRENGTH_FINDS, extra={"exe": exe},
+                ))
         else:
             out.append(Finding(
                 stage="infer", status=laws.UNKNOWN, file=str(p), function=None,
@@ -502,12 +861,30 @@ def _run_frama_c(exe: str, paths: list[Path], cfg: Config) -> list[Finding]:
             ))
             continue
         text = (r.stdout or "") + (r.stderr or "")
-        if not text.strip() and r.returncode not in {0, 1}:
+        if _probe_looks_missing(text, r.returncode):
             out.append(Finding(
-                stage="frama-c", status=laws.ERROR, file=str(p), function=None,
-                line=None, cls="", message=f"frama-c exit {r.returncode} (parse failure)",
-                strength=laws.STRENGTH_FINDS, extra={"exe": exe},
+                stage="frama-c", status=laws.NOTRUN, file=str(p), function=None,
+                line=None, cls="",
+                message="frama-c at PATH is not Frama-C (not a proof)",
+                strength=laws.STRENGTH_FINDS,
+                extra={"exe": exe, "install": adapter_install("frama-c")},
             ))
+            continue
+        if not text.strip() and r.returncode not in {0, 1}:
+            if _probe_looks_missing(text, r.returncode):
+                out.append(Finding(
+                    stage="frama-c", status=laws.NOTRUN, file=str(p), function=None,
+                    line=None, cls="",
+                    message="frama-c at PATH is not Frama-C (not a proof)",
+                    strength=laws.STRENGTH_FINDS,
+                    extra={"exe": exe, "install": adapter_install("frama-c")},
+                ))
+            else:
+                out.append(Finding(
+                    stage="frama-c", status=laws.ERROR, file=str(p), function=None,
+                    line=None, cls="", message=f"frama-c exit {r.returncode} (parse failure)",
+                    strength=laws.STRENGTH_FINDS, extra={"exe": exe},
+                ))
             continue
         file_failed = False
         for ln in text.splitlines():
@@ -519,7 +896,7 @@ def _run_frama_c(exe: str, paths: list[Path], cfg: Config) -> list[Finding]:
                     line=None, cls="FUNC-CONTRACT", message=ln.strip()[:400],
                     strength=laws.STRENGTH_FINDS, extra={"exe": exe},
                 ))
-            elif "alarm" in lower and "0 alarm" not in lower:
+            elif "alarm" in lower and not re.search(r"\b0\s+alarm", ln, re.IGNORECASE):
                 file_failed = True
                 cls = "UNINIT-READ" if "uninit" in lower else "FUNC-CONTRACT"
                 out.append(Finding(
@@ -536,11 +913,20 @@ def _run_frama_c(exe: str, paths: list[Path], cfg: Config) -> list[Finding]:
                 strength=laws.STRENGTH_FINDS, extra={"exe": exe},
             ))
         elif r.returncode != 0:
-            out.append(Finding(
-                stage="frama-c", status=laws.ERROR, file=str(p), function=None,
-                line=None, cls="", message=text[-400:] or f"frama-c exit {r.returncode}",
-                strength=laws.STRENGTH_FINDS, extra={"exe": exe},
-            ))
+            if _probe_looks_missing(text, r.returncode):
+                out.append(Finding(
+                    stage="frama-c", status=laws.NOTRUN, file=str(p), function=None,
+                    line=None, cls="",
+                    message="frama-c at PATH is not Frama-C (not a proof)",
+                    strength=laws.STRENGTH_FINDS,
+                    extra={"exe": exe, "install": adapter_install("frama-c")},
+                ))
+            else:
+                out.append(Finding(
+                    stage="frama-c", status=laws.ERROR, file=str(p), function=None,
+                    line=None, cls="", message=text[-400:] or f"frama-c exit {r.returncode}",
+                    strength=laws.STRENGTH_FINDS, extra={"exe": exe},
+                ))
         else:
             out.append(Finding(
                 stage="frama-c", status=laws.UNKNOWN, file=str(p), function=None,
@@ -583,6 +969,7 @@ def _run_klee(exe: str, paths: list[Path], cfg: Config) -> list[Finding]:
                     kr = _run(
                         [exe, "--max-time=5", "--max-forks=16", str(bc)],
                         timeout=min(20.0, cfg.timeout + 10),
+                        cwd=td_path,
                     )
                 except subprocess.TimeoutExpired:
                     out.append(Finding(
@@ -592,8 +979,18 @@ def _run_klee(exe: str, paths: list[Path], cfg: Config) -> list[Finding]:
                     ))
                     continue
                 text = (kr.stdout or "") + (kr.stderr or "")
-                crashes = list(td_path.glob("*.err")) + list(td_path.glob("*.ktest"))
-                if "KLEE: ERROR" in text or any("error" in c.name.lower() for c in crashes):
+                if _is_fake_adapter(text) or _probe_looks_missing(text, kr.returncode):
+                    out.append(Finding(
+                        stage="klee", status=laws.NOTRUN, file=str(p), function=None,
+                        line=None, cls="",
+                        message="klee at PATH is not KLEE (not a proof)",
+                        strength=laws.STRENGTH_FINDS,
+                        extra={"exe": exe, "install": adapter_install("klee")},
+                    ))
+                    continue
+                # rglob *.err includes testNNNNNN.ptr.err (the name has no "error").
+                dump_hit = any(td_path.rglob("*.err"))
+                if "KLEE: ERROR" in text or dump_hit:
                     out.append(Finding(
                         stage="klee", status=laws.FAILED, file=str(p), function=None,
                         line=None, cls="klee", message=text[-400:] or "klee error path",
@@ -609,9 +1006,10 @@ def _run_klee(exe: str, paths: list[Path], cfg: Config) -> list[Finding]:
                     ))
         except OSError as exc:
             out.append(Finding(
-                stage="klee", status=laws.ERROR, file=str(p), function=None,
-                line=None, cls="", message=f"klee failed: {exc}",
-                strength=laws.STRENGTH_FINDS, extra={"exe": exe},
+                stage="klee", status=laws.NOTRUN, file=str(p), function=None,
+                line=None, cls="", message=f"klee unusable: {exc}",
+                strength=laws.STRENGTH_FINDS,
+                extra={"exe": exe, "install": adapter_install("klee")},
             ))
     if not out and not bitcode_ok:
         return [Finding(
@@ -651,6 +1049,15 @@ def _run_strix(exe: str, paths: list[Path], cfg: Config,
             ))
             continue
         text = (r.stdout or "") + (r.stderr or "")
+        if _is_fake_adapter(text) or _probe_looks_missing(text, r.returncode):
+            out.append(Finding(
+                stage="strix", status=laws.NOTRUN, file=str(spec), function=None,
+                line=None, cls="",
+                message="strix at PATH is not Strix (not a proof)",
+                strength=laws.STRENGTH_FINDS,
+                extra={"exe": exe, "install": adapter_install("strix")},
+            ))
+            continue
         lower = text.lower()
         if any(tok in lower for tok in ("counterexample", "violation", "falsified")):
             out.append(Finding(
@@ -699,11 +1106,20 @@ def _run_codeql(exe: str, paths: list[Path], cfg: Config) -> list[Finding]:
         )]
     except OSError as exc:
         return [Finding(
-            stage="codeql", status=laws.ERROR, file=str(db), function=None,
-            line=None, cls="", message=f"codeql analyze failed: {exc}",
-            strength=laws.STRENGTH_FINDS, extra={"exe": exe},
+            stage="codeql", status=laws.NOTRUN, file=str(db), function=None,
+            line=None, cls="", message=f"codeql unusable: {exc}",
+            strength=laws.STRENGTH_FINDS,
+            extra={"exe": exe, "install": adapter_install("codeql")},
         )]
     text = (r.stdout or "") + (r.stderr or "")
+    if _is_fake_adapter(text) or _probe_looks_missing(text, r.returncode):
+        return [Finding(
+            stage="codeql", status=laws.NOTRUN, file=str(db), function=None,
+            line=None, cls="",
+            message="codeql at PATH is not CodeQL (not a proof)",
+            strength=laws.STRENGTH_FINDS,
+            extra={"exe": exe, "install": adapter_install("codeql")},
+        )]
     if r.returncode != 0:
         return [Finding(
             stage="codeql", status=laws.ERROR, file=str(db), function=None,
@@ -775,39 +1191,42 @@ def _dispatch_optional(stage: str, exe: str, paths: list[Path], cfg: Config,
 
 
 def run_optional_tools(paths: list[Path], cfg: Config) -> list[Finding]:
-    """Probe optional PATH tools plus a libFuzzer clang probe.
+    """Probe optional adapters plus a libFuzzer clang probe.
 
-    Missing → NOTRUN + install URL. Present → --help or a real check.
-    Never maps a missing binary to CLEAN.
+    Search order: config/explicit, vendored third_party/<name>/ binary if
+    already built, then PATH. Missing → NOTRUN + vendored install hint.
+    Present → --help or a real check. Never maps a missing binary to CLEAN.
+    Successful --help is never CLEAN or PROVED. A --help/-h/--version probe
+    that raises or does not answer is NOTRUN, never CLEAN, PROVED, or ERROR.
     """
     out: list[Finding] = []
-    for stage, names, install in OPTIONAL_TOOLS:
-        exe = None
-        for n in names:
-            exe = shutil.which(n)
-            if exe:
-                break
+    for stage, names in OPTIONAL_TOOLS:
+        install = adapter_install(stage)
+        exe = resolve_adapter(cfg, stage, names)
         if not exe:
             out.append(_not_run(stage, names[0], install))
             continue
         try:
             probed = _probe(exe)
         except Exception as exc:  # noqa: BLE001 — adapter must not crash the pipeline
-            out.append(Finding(
-                stage=stage, status=laws.ERROR, file="", function=None, line=None,
-                cls="", message=f"{stage} probe failed: {exc}",
-                strength=laws.STRENGTH_FINDS, extra={"install": install, "exe": exe},
-            ))
+            f = _not_run(stage, names[0], install)
+            f.message = f"{stage} probe failed: {exc}"
+            f.extra["exe"] = exe
+            out.append(f)
             continue
         if probed is None:
-            out.append(Finding(
-                stage=stage, status=laws.ERROR, file="", function=None, line=None,
-                cls="", message=f"{stage} at {exe} did not answer --help/-h/--version",
-                strength=laws.STRENGTH_FINDS, extra={"install": install, "exe": exe},
-            ))
+            f = _not_run(stage, names[0], install)
+            f.message = f"{stage} at {exe} did not answer --help/-h/--version"
+            f.extra["exe"] = exe
+            out.append(f)
             continue
         try:
             out.extend(_dispatch_optional(stage, exe, paths, cfg, probed))
+        except OSError as exc:
+            f = _not_run(stage, names[0], install)
+            f.message = f"{stage} unusable: {exc}"
+            f.extra["exe"] = exe
+            out.append(f)
         except Exception as exc:  # noqa: BLE001 — parse/run must not escape
             out.append(Finding(
                 stage=stage, status=laws.ERROR, file="", function=None, line=None,

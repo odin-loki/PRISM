@@ -1,0 +1,4 @@
+THOROUGH
+main.c
+--memory-leak-check --force-malloc-success --unwind 1
+^VERIFICATION SUCCESSFUL$

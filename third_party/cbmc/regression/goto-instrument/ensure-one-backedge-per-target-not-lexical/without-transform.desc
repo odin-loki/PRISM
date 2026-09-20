@@ -1,0 +1,7 @@
+CORE
+main.c
+--show-lexical-loops
+^29 is head of \{ 29, 30, 34, 35, 36, 37 \(backedge\) \}$
+Note not all loops were in lexical loop form
+^EXIT=0$
+^SIGNAL=0$

@@ -1,6 +1,7 @@
 """ASan/UBSan/TSan compile+run probes. Missing compiler or sanitizer = NOTRUN.
 
 Never reports CLEAN from a probe alone. A CLEAN run is not a proof of absence.
+A MinGW-only compiler with no libubsan is NOTRUN, never a fake sanitized CLEAN.
 """
 
 from __future__ import annotations
@@ -17,10 +18,61 @@ from helix.cparse import extract_functions
 from helix.models import Finding
 
 _PROBE_SRC = "int main(void){return 0;}\n"
+# Signed overflow must fire under a real UBSan; MinGW without libubsan will not.
+_UB_FIRE_SRC = (
+    "int main(void){\n"
+    "    volatile int a = 2147483647;\n"
+    "    volatile int b = 1;\n"
+    "    volatile int c = a + b;\n"
+    "    (void)c;\n"
+    "    return 0;\n"
+    "}\n"
+)
+# Heap OOB must fire under a real ASan; flag-accept is not enough.
+_AS_FIRE_SRC = (
+    "#include <stdlib.h>\n"
+    "int main(void){\n"
+    "    char *p = (char*)malloc(1);\n"
+    "    if (!p) return 1;\n"
+    "    p[8] = 1;\n"
+    "    free(p);\n"
+    "    return 0;\n"
+    "}\n"
+)
 _PROBE_TIMEOUT = 15.0
 _UB_FLAGS = ("-fsanitize=undefined", "-fno-sanitize-recover=undefined", "-O0")
 _TS_FLAGS = ("-fsanitize=thread", "-O0")
+_AS_FLAGS = ("-fsanitize=address", "-fno-sanitize-recover=address", "-O0")
 _INSTALL = "install gcc or clang with sanitizer support (https://clang.llvm.org/docs/UndefinedBehaviorSanitizer.html)"
+_UB_LIBS = (
+    "libubsan.so",
+    "libubsan.so.1",
+    "libubsan.a",
+    "libubsan.dll",
+    "libubsan.dll.a",
+    "libclang_rt.ubsan_standalone.a",
+    "libclang_rt.ubsan_standalone-x86_64.a",
+    "clang_rt.ubsan_standalone-x86_64.lib",
+)
+_TS_LIBS = (
+    "libtsan.so",
+    "libtsan.so.1",
+    "libtsan.a",
+    "libtsan.dll",
+    "libtsan.dll.a",
+    "libclang_rt.tsan.a",
+    "libclang_rt.tsan-x86_64.a",
+)
+_AS_LIBS = (
+    "libasan.so",
+    "libasan.so.1",
+    "libasan.a",
+    "libasan.dll",
+    "libasan.dll.a",
+    "libclang_rt.asan.a",
+    "libclang_rt.asan-x86_64.a",
+    "clang_rt.asan-x86_64.lib",
+)
 
 
 def _find_cc() -> str | None:
@@ -42,15 +94,102 @@ def _run(cmd: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _dumpmachine(cc: str) -> str:
+    try:
+        r = _run([cc, "-dumpmachine"], _PROBE_TIMEOUT)
+        return ((r.stdout or "") + (r.stderr or "")).strip().lower()
+    except (subprocess.TimeoutExpired, OSError):
+        return ""
+
+
+def _is_mingw(cc: str) -> bool:
+    """True for MinGW / mingw-w64 triples and paths. Never treat as UBSan."""
+    if "mingw" in cc.lower().replace("\\", "/"):
+        return True
+    return "mingw" in _dumpmachine(cc)
+
+
+def _sanitizer_lib_names(flags: tuple[str, ...]) -> tuple[str, ...]:
+    joined = " ".join(flags)
+    if "thread" in joined:
+        return _TS_LIBS
+    if "address" in joined:
+        return _AS_LIBS
+    return _UB_LIBS
+
+
+def _has_sanitizer_lib(cc: str, flags: tuple[str, ...]) -> bool:
+    """True when -print-file-name resolves a real sanitizer runtime, not an echo."""
+    for name in _sanitizer_lib_names(flags):
+        try:
+            r = _run([cc, f"-print-file-name={name}"], _PROBE_TIMEOUT)
+        except (subprocess.TimeoutExpired, OSError):
+            continue
+        printed = (r.stdout or "").strip()
+        if not printed:
+            continue
+        # gcc/clang echo the search name unchanged when the file is missing.
+        if printed.replace("\\", "/") == name:
+            continue
+        if Path(printed).is_file():
+            return True
+    return False
+
+
+def _compile_ok(cc: str, src: Path, exe: Path, flags: tuple[str, ...]) -> bool:
+    r = _run([cc, *flags, str(src), "-o", str(exe)], _PROBE_TIMEOUT)
+    return r.returncode == 0 and exe.is_file()
+
+
+def _ubsan_actually_fires(cc: str, td: Path, flags: tuple[str, ...]) -> bool:
+    """A real UBSan must trap planted signed overflow. Flag-accept is not enough."""
+    src = td / "ub_fire.c"
+    src.write_text(_UB_FIRE_SRC, encoding="utf-8")
+    exe = td / f"ub_fire{_exe_suffix()}"
+    if not _compile_ok(cc, src, exe, flags):
+        return False
+    try:
+        run = _run([str(exe)], _PROBE_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return False
+    return _sanitizer_hit(run.stderr or "", run.stdout or "", run.returncode)
+
+
+def _asan_actually_fires(cc: str, td: Path, flags: tuple[str, ...]) -> bool:
+    """A real ASan must trap planted heap OOB. Flag-accept is not enough."""
+    src = td / "as_fire.c"
+    src.write_text(_AS_FIRE_SRC, encoding="utf-8")
+    exe = td / f"as_fire{_exe_suffix()}"
+    if not _compile_ok(cc, src, exe, flags):
+        return False
+    try:
+        run = _run([str(exe)], _PROBE_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return False
+    return _sanitizer_hit(run.stderr or "", run.stdout or "", run.returncode)
+
+
 def _probe_sanitizer(cc: str, flags: tuple[str, ...]) -> bool:
-    """Return True when cc accepts the sanitizer flags for a trivial program."""
+    """True only when cc actually instruments with these flags.
+
+    MinGW without libubsan/libtsan/libasan is False even if -fsanitize=* is accepted
+    and a binary is produced. A trivial compile is not a sanitizer.
+    """
+    if _is_mingw(cc) and not _has_sanitizer_lib(cc, flags):
+        return False
     try:
         with tempfile.TemporaryDirectory(prefix="helix_san_probe_") as td:
-            src = Path(td) / "probe.c"
+            tdp = Path(td)
+            src = tdp / "probe.c"
             src.write_text(_PROBE_SRC, encoding="utf-8")
-            exe = Path(td) / f"probe{_exe_suffix()}"
-            r = _run([cc, *flags, str(src), "-o", str(exe)], _PROBE_TIMEOUT)
-            return r.returncode == 0 and exe.is_file()
+            exe = tdp / f"probe{_exe_suffix()}"
+            if not _compile_ok(cc, src, exe, flags):
+                return False
+            if "-fsanitize=undefined" in flags:
+                return _ubsan_actually_fires(cc, tdp, flags)
+            if "-fsanitize=address" in flags:
+                return _asan_actually_fires(cc, tdp, flags)
+            return True
     except (subprocess.TimeoutExpired, OSError):
         return False
 
@@ -72,10 +211,19 @@ def _wrapper_main(call: str | None) -> str:
     return "int main(void){ return 0; }\n"
 
 
+def _sanitizer_runtime_unusable(text: str) -> bool:
+    """WSL/ASLR TSan mapping abort is the instrument dying, not a race in the plant."""
+    return "unexpected memory mapping" in (text or "").lower()
+
+
 def _sanitizer_hit(stderr: str, stdout: str, returncode: int) -> bool:
     text = (stderr or "") + (stdout or "")
+    if _sanitizer_runtime_unusable(text):
+        return False
     low = text.lower()
     if "undefinedbehaviorsanitizer" in low or "threadsanitizer" in low:
+        return True
+    if "addresssanitizer" in low or "heap-buffer-overflow" in low:
         return True
     if "runtime error:" in low:
         return True
@@ -110,6 +258,12 @@ def _compile_and_run(
             except subprocess.TimeoutExpired:
                 return laws.TIMEOUT, "sanitizer run timeout", ""
             text = (run.stderr or "") + (run.stdout or "")
+            if _sanitizer_runtime_unusable(text):
+                return (
+                    laws.NOTRUN,
+                    "sanitizer runtime unusable (unexpected memory mapping); not a defect finding",
+                    text,
+                )
             if _sanitizer_hit(run.stderr or "", run.stdout or "", run.returncode):
                 return laws.FAILED, text[-800:] or "sanitizer abort", text
             if run.returncode != 0:
@@ -122,7 +276,7 @@ def _compile_and_run(
     except subprocess.TimeoutExpired:
         return laws.TIMEOUT, "sanitizer compile/run timeout", ""
     except OSError as exc:
-        return laws.ERROR, str(exc), ""
+        return laws.NOTRUN, str(exc), ""
 
 
 def _notrun(message: str, sanitizer: str, install: str = _INSTALL) -> Finding:
@@ -183,12 +337,17 @@ def _run_sanitizer_on_paths(
 
 
 def run_sanitize(paths: list[Path], cfg: Config) -> list[Finding]:
-    """Probe UBSan and TSan; compile+run each .c when the sanitizer is supported."""
+    """Probe ASan, UBSan, and TSan; compile+run each .c when the sanitizer is supported."""
     cc = _find_cc()
     if not cc:
         return [_notrun("gcc/clang not on PATH", "ubsan")]
 
     out: list[Finding] = []
+
+    if not _probe_sanitizer(cc, _AS_FLAGS):
+        out.append(_notrun("compiler has no ASan", "asan"))
+    else:
+        out.extend(_run_sanitizer_on_paths(cc, paths, _AS_FLAGS, "asan", cfg))
 
     if not _probe_sanitizer(cc, _UB_FLAGS):
         out.append(_notrun("compiler has no UBSan", "ubsan"))

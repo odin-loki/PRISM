@@ -1,0 +1,5 @@
+CORE
+main.py
+--no-standard-checks --unwind 9 --smt-during-symex --smt-symex-guard --bitwuzla
+^VERIFICATION FAILED$
+^  uncaught exception: IndexError$

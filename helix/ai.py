@@ -17,6 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import json
 import os
+import re
 import shutil
 import sys
 import urllib.error
@@ -170,10 +171,58 @@ SYSTEM_FUZZ4ALL = (
     "argument encodings as lowercase hex. No prose."
 )
 
+# Fuzz4All Target.AP_SYSTEM_MESSAGE / AP_INSTRUCTION (target.py).
+AP_SYSTEM_MESSAGE = "You are an auto-prompting tool"
+AP_INSTRUCTION = (
+    "Please summarize the above documentation in a concise manner to describe the usage and "
+    "functionality of the target "
+)
+
+SYSTEM_FUZZ4ALL_MUTATE = (
+    "The previous generation was interesting. Mutate it into a new valid encoding. "
+    "Given the function and a hex seed, reply JSON: "
+    '{"mutants":["hex", "..."]}. No prose.'
+)
+
+# Fuzz4All Target.c_prompt (target.py): combine two previous generations.
+SYSTEM_FUZZ4ALL_COMBINE = (
+    "Combine the two previous interesting encodings into one valid encoding. "
+    "Reply JSON: "
+    '{"mutants":["hex", "..."]}. No prose.'
+)
+
 SYSTEM_CHATFUZZ = (
     "Coverage has stalled. Given the function and a hex seed, reply JSON: "
     '{"mutants":["hex", "..."]} semantically valid argument encodings. No prose.'
 )
+
+LLM_UNAVAILABLE_MSG = "llama.cpp/Ollama not reachable"
+LLM_SKIP_FUSE_MSG = "llama.cpp/Ollama not reachable; stall mutants / autoprompt skipped"
+LLM_INSTALL = "ollama serve  (qwen3.5:9b) or build native/llama.cpp"
+
+
+def llm_complete_unavailable(err: str | None) -> bool:
+    """HTTP / connection failure is a missing backend, never a code ERROR."""
+    text = (err or "").lower()
+    if not text:
+        return False
+    keys = (
+        "http error",
+        "http ",
+        "urlopen",
+        "urlerror",
+        "connection refused",
+        "connection reset",
+        "connection aborted",
+        "not reachable",
+        "not loaded",
+        "failed to connect",
+        "name or service not known",
+        "winerror",
+        "errno 111",
+        "errno 104",
+    )
+    return any(k in text for k in keys)
 
 SYSTEM_DAFNY = (
     "Propose Dafny-style contracts for a C function. JSON: "
@@ -210,3 +259,114 @@ def extract_json(text: str) -> Any | None:
             except json.JSONDecodeError:
                 return None
     return None
+
+
+def parse_hex_seeds(data: Any, key: str = "seeds") -> list[bytes]:
+    """Parse lowercase/0x hex blobs from an LLM JSON object. Invalid entries drop."""
+    out: list[bytes] = []
+    if not isinstance(data, dict):
+        return out
+    for h in data.get(key) or []:
+        try:
+            raw = bytes.fromhex(str(h).strip().replace("0x", "").replace("0X", ""))
+        except ValueError:
+            continue
+        if raw:
+            out.append(raw)
+    return out
+
+
+def score_prompt_seeds(seeds: list[bytes], nbytes: int) -> int:
+    """Fuzz4All Target.validate_prompt: count unique valid encodings.
+
+    Fuzz4All scores a candidate prompt by generating a batch and counting
+    unique SAFE+filtered outputs. Helix's analog is unique padded stdin
+    encodings of `nbytes` — empty/invalid blobs do not score.
+    """
+    n = nbytes if nbytes > 0 else 1
+    uniq: set[bytes] = set()
+    for s in seeds:
+        if not s:
+            continue
+        uniq.add(s[:n].ljust(n, b"\x00"))
+    return len(uniq)
+
+
+def pick_best_prompt(
+    candidates: list[tuple[str, list[bytes]]], nbytes: int
+) -> tuple[str, list[bytes], int]:
+    """Keep the candidate with the highest validate_prompt score (ties: first)."""
+    best_p, best_s, best_sc = "", [], -1
+    for prompt, seeds in candidates:
+        sc = score_prompt_seeds(seeds, nbytes)
+        if sc > best_sc:
+            best_p, best_s, best_sc = prompt, list(seeds), sc
+    if best_sc < 0:
+        return "", [], 0
+    return best_p, best_s, best_sc
+
+
+def fuzz4all_update_strategy(new_hex: str, prev_hex: str | None, strategy: int) -> str:
+    """Fuzz4All Target.update_strategy: generate / mutate / semantic / combine."""
+    if strategy == 0:
+        return f"seed={new_hex}\ngenerate a new encoding"
+    if strategy == 1:
+        return f"seed={new_hex}\nmutate the previous generation"
+    if strategy == 2:
+        return f"seed={new_hex}\nsemantically equivalent encoding"
+    if prev_hex:
+        return f"prev={prev_hex}\nseed={new_hex}\ncombine the two previous encodings"
+    return f"seed={new_hex}\nmutate the previous generation"
+
+
+_CONTRACT_COMMENT = re.compile(r"\b(requires|ensures|invariant|decreases|diff)\s*:", re.I)
+
+
+def documentation_from_comments(source: str) -> str:
+    """Pull documentation comments (Fuzz4All path_documentation ingredient)."""
+    parts: list[str] = []
+    text = source or ""
+    i, n = 0, len(text)
+    while i < n:
+        if text.startswith("/*", i):
+            if text.startswith("/*@", i):
+                end = text.find("*/", i + 2)
+                i = n if end < 0 else end + 2
+                continue
+            end = text.find("*/", i + 2)
+            if end < 0:
+                break
+            inner = text[i + 2 : end]
+            i = end + 2
+            blob = " ".join(ln.strip().lstrip("*").strip() for ln in inner.splitlines())
+            blob = " ".join(blob.split())
+            if blob and not _CONTRACT_COMMENT.search(blob):
+                parts.append(blob)
+            continue
+        if text.startswith("//", i):
+            eol = text.find("\n", i)
+            line = text[i + 2 : (n if eol < 0 else eol)].strip()
+            i = n if eol < 0 else eol + 1
+            if line and not _CONTRACT_COMMENT.search(line):
+                parts.append(line)
+            continue
+        i += 1
+    return "\n".join(parts[:8])
+
+
+def create_prompt_from_source(*, name: str, body: str, source: str) -> dict[str, str]:
+    """Fuzz4All Target._create_prompt_from_config ingredients from a TU.
+
+    documentation + example + handwritten prompt. Status of any distilled
+    prompt is HYPOTHESIS/READS — never CLEAN, never a COVERED class.
+    """
+    docstring = documentation_from_comments(source)
+    hw = docstring.split("\n", 1)[0] if docstring else ""
+    return {
+        "docstring": docstring,
+        "example_code": (body or "")[:800],
+        "separator": "// generate input",
+        "begin": name or "",
+        "hw_prompt": hw,
+        "target_api": name or "",
+    }

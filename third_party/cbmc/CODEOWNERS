@@ -1,0 +1,61 @@
+# Code owners are expected to complete reviews with feedback to the PR author or
+# approval within two weeks.
+#
+# These owners will be the default owners for everything in the repo.
+*       @kroening @tautschnig @peterschrammel
+
+# Documentation can be reviewed by people with broad project responsibility
+
+/doc/ @jimgrundy @TGWDB @kroening @tautschnig @peterschrammel
+
+# These files should rarely change
+
+/src/ansi-c/ @remi-delmas-3000 @kroening @tautschnig @peterschrammel
+/src/json-symtab-language/ @martin-cs @kroening @tautschnig @peterschrammel
+/src/solvers/flattening @martin-cs @kroening @tautschnig @peterschrammel
+/src/solvers/floatbv @martin-cs @kroening @tautschnig @peterschrammel
+/src/solvers/prop @martin-cs @kroening @tautschnig @peterschrammel
+/src/solvers/sat @martin-cs @kroening @tautschnig @peterschrammel
+/src/symtab2gb/ @martin-cs @kroening @tautschnig @peterschrammel
+
+# These files change frequently and changes are high-risk
+
+/src/solvers/refinement @martin-cs @peterschrammel @kroening @tautschnig
+/src/solvers/strings @martin-cs @peterschrammel @kroening @tautschnig
+/jbmc/src/java_bytecode/ @TGWDB @peterschrammel @kroening @tautschnig
+/src/analyses/ @martin-cs @peterschrammel @kroening @tautschnig
+/src/pointer-analysis/ @martin-cs @peterschrammel @kroening @tautschnig
+/src/libcprover-cpp @TGWDB @peterschrammel @kroening @tautschnig
+/src/libcprover-rust @TGWDB @peterschrammel @kroening @tautschnig
+
+# These files change frequently and changes are medium-risk
+
+/src/goto-analyzer/ @martin-cs @peterschrammel @kroening @tautschnig
+/src/goto-bmc/ @TGWDB @peterschrammel @kroening @tautschnig
+/src/goto-harness/ @martin-cs @peterschrammel @kroening @tautschnig
+/src/goto-instrument/ @martin-cs @peterschrammel @tautschnig @kroening
+/src/goto-instrument/contracts/ @feliperodri @remi-delmas-3000 @kroening @tautschnig @peterschrammel
+/src/goto-inspect/ @diffblue/diffblue-opensource @kroening @tautschnig @peterschrammel
+/src/goto-synthesizer/ @feliperodri @remi-delmas-3000 @kroening @tautschnig @peterschrammel
+/jbmc/src/jbmc/ @TGWDB @kroening @tautschnig @peterschrammel
+/jbmc/src/janalyzer/ @TGWDB @kroening @tautschnig @peterschrammel
+/src/solvers/smt2 @martin-cs @TGWDB @kroening @tautschnig @peterschrammel
+/src/solvers/smt2_incremental @thomasspriggs @TGWDB @kroening @tautschnig @peterschrammel
+/src/solvers/Makefile @TGWDB @kroening @tautschnig @peterschrammel
+
+# These files change frequently and changes are low-risk
+
+/src/util/irep_ids.def
+
+/unit/
+/regression/
+/jbmc/unit/
+/jbmc/regression/
+
+# CI pipeline and automation are the responsibility of the Open Source maintenance team at Diffblue.
+/cmake/        @diffblue/diffblue-opensource @kroening @tautschnig @peterschrammel
+CMakeLists.txt @diffblue/diffblue-opensource @kroening @tautschnig @peterschrammel
+/.github/ @diffblue/diffblue-opensource @kroening @tautschnig @peterschrammel
+CHANGELOG      @diffblue/diffblue-opensource @kroening @tautschnig @peterschrammel
+src/config.inc @diffblue/diffblue-opensource @kroening @tautschnig @peterschrammel
+/scripts/ @diffblue/diffblue-opensource @kroening @tautschnig @peterschrammel

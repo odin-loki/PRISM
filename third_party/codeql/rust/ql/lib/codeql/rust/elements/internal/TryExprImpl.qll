@@ -1,0 +1,27 @@
+/**
+ * This module provides a hand-modifiable wrapper around the generated class `TryExpr`.
+ *
+ * INTERNAL: Do not use.
+ */
+
+private import codeql.rust.elements.internal.generated.TryExpr
+
+/**
+ * INTERNAL: This module contains the customizable definition of `TryExpr` and should not
+ * be referenced directly.
+ */
+module Impl {
+  // the following QLdoc is generated: if you need to edit it, do it in the schema file
+  /**
+   * A try expression using the `?` operator.
+   *
+   * For example:
+   * ```rust
+   * let x = foo()?;
+   * //           ^
+   * ```
+   */
+  class TryExpr extends Generated::TryExpr {
+    override string toStringImpl() { result = this.getAPrimaryQlClass() }
+  }
+}

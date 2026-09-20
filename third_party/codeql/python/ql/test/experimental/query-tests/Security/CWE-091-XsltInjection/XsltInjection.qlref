@@ -1,0 +1,2 @@
+query: experimental/Security/CWE-091/XsltInjection.ql
+postprocess: utils/test/InlineExpectationsTestQuery.ql

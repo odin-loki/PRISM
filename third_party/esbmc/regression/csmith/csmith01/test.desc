@@ -1,0 +1,4 @@
+THOROUGH
+main.c
+--no-standard-checks --partial-loops --no-align-check --tuple-node-flattener --all-claims --bv --unwind 1
+^VERIFICATION SUCCESSFUL$

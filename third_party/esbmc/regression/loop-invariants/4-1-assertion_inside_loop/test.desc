@@ -1,0 +1,5 @@
+CORE
+main.c
+--loop-invariant-check --multi-property
+^WARNING: every violated claim lies downstream of a loop invariant havoc
+^VERIFICATION UNKNOWN$

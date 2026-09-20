@@ -9,11 +9,12 @@ import time
 from helix import confidence, laws
 from helix.adapters import run_compiler, run_cppcheck, run_dafny, run_esbmc
 from helix.adapters_extra import run_optional_tools
-from helix.agent import dafny_specs, hypothesize, interpreter_loop, rlef_repair
+from helix.agent import dafny_specs, execute_cex, hypothesize, rlef_repair
 from helix.ai import LlamaEngine
 from helix.checkers import run_lints
 from helix.config import Config
 from helix.contracts import prove_contracts
+from helix.wp import run_wp
 from helix.cparse import TU_EXTS, extract_functions, iter_sources
 from helix.diff import run_diff
 from helix.fuse import run_fuse
@@ -49,6 +50,7 @@ STAGE_ORDER = [
     "esbmc",
     "dafny",
     "contracts",
+    "wp",
     "bmc",
     "harness",
     "concolic",
@@ -62,6 +64,22 @@ STAGE_ORDER = [
     "repair",
     "unify",
 ]
+
+
+# LLM silence/hypothesis statuses. Anything else (PROVED/FAILED/CLEAN/…) is a lie.
+_LLM_KEEP_STATUS = frozenset({
+    laws.NOTRUN, laws.ERROR, laws.TIMEOUT, laws.HYPOTHESIS, laws.READS,
+})
+
+
+def llm_forced_reads(findings: list[Finding]) -> list[Finding]:
+    """The llm stage is READS. A lying backend cannot COVER or prove."""
+    for f in findings:
+        f.stage = "llm"
+        f.strength = laws.STRENGTH_READS
+        if f.status not in _LLM_KEEP_STATUS:
+            f.status = laws.HYPOTHESIS
+    return findings
 
 
 class Pipeline:
@@ -88,7 +106,11 @@ class Pipeline:
                 detail="excluded by --stage/--skip",
             ))
         prev = self._resume.get(name)
-        if prev is not None and prev.status in {"ok", "NOTRUN"}:
+        if (
+            prev is not None
+            and prev.status in {"ok", "NOTRUN"}
+            and not (name == "classify" and not self.report.functions)
+        ):
             return self._emit(prev)
         t0 = time.time()
         try:
@@ -119,14 +141,28 @@ class Pipeline:
         cfg = self.cfg
         root = cfg.root
         cfg.out.mkdir(parents=True, exist_ok=True)
-        if not cfg.resume:
-            journal.reset(cfg.out)
         if cfg.resume:
+            # stages.jsonl is the live log. report.json is only a fallback when
+            # the log file is absent — a failed/partial jsonl must not revive
+            # ok/NOTRUN rows from a previous complete report.json.
+            jsonl_present = journal.stages_present(cfg.out)
+            self._resume = journal.completed_ok(cfg.out) if jsonl_present else {}
+            fns = journal.read_functions(cfg.out)
             old = RunReport.load(cfg.out / "report.json")
-            if old is not None:
-                self._resume = {s.name: s for s in old.stages}
-                self.report.functions = list(old.functions)
-                self.report.notes.append(f"resumed from {cfg.out / 'report.json'}")
+            if old is not None and not jsonl_present:
+                self._resume = {
+                    s.name: s for s in old.stages
+                    if s.status in {"ok", "NOTRUN"}
+                }
+                if not fns:
+                    fns = list(old.functions)
+            if fns:
+                self.report.functions = list(fns)
+            if self._resume:
+                src = "stages.jsonl" if jsonl_present else "report.json"
+                self.report.notes.append(f"resumed from {cfg.out / src}")
+        else:
+            journal.reset(cfg.out)
         sources = iter_sources(root)
         functions: list[FunctionInfo] = list(self.report.functions)
 
@@ -174,12 +210,14 @@ class Pipeline:
                         strength=laws.STRENGTH_FINDS, extra={"static": fn.static},
                     ))
             self.report.functions = functions
+            journal.write_functions(cfg.out, functions)
             return out
 
         self._stage("classify", classify)
 
         def lints() -> list[Finding]:
-            return run_lints(sources, root if root.is_dir() else root.parent)
+            return run_lints(sources, root if root.is_dir() else root.parent,
+                             jobs=cfg.jobs)
 
         self._stage("lints", lints)
         self._stage("taint", lambda: run_taint(functions))
@@ -204,6 +242,7 @@ class Pipeline:
             return out
 
         self._stage("contracts", contracts)
+        self._stage("wp", lambda: run_wp(functions, cfg.unwind))
 
         def bmc() -> list[Finding]:
             return run_bmc(inline_static(functions), cfg.unwind)
@@ -239,73 +278,19 @@ class Pipeline:
                 return [Finding(stage="llm", status=laws.NOTRUN, file="", function=None,
                                 line=None, cls="", message="--no-llm",
                                 strength=laws.STRENGTH_READS)]
-            return hypothesize(self._engine(), functions, budget=4)
+            return llm_forced_reads(hypothesize(self._engine(), functions, budget=4))
 
         self._stage("llm", llm)
 
         def execute() -> list[Finding]:
-            from helix.concrete import execute as cexec
             fails = [
                 f for s in self.report.stages for f in s.findings
                 if f.status in {laws.FAILED, laws.CRASH} and f.function
                 and "=" in (f.counterexample or "")
             ]
             fails.sort(key=lambda f: (0 if f.status == laws.CRASH else 1, f.stage))
-            out: list[Finding] = []
-            for f0 in fails[:16]:
-                fn = next(
-                    (x for x in functions
-                     if x.name == f0.function and (x.file == f0.file or Path(x.file).name == Path(f0.file).name)),
-                    None,
-                )
-                if not fn or fn.kind == "POINTER":
-                    continue
-                args: dict[str, int] = {}
-                blob = f0.counterexample or ""
-                for part in blob.replace(";", ",").split(","):
-                    if "=" not in part:
-                        continue
-                    k, v = part.split("=", 1)
-                    k = k.strip().split()[-1]
-                    try:
-                        args[k] = int(str(v).strip().split()[0], 0)
-                    except ValueError:
-                        continue
-                if not args:
-                    continue
-                rec = cexec(fn, args)
-                if rec.ub:
-                    out.append(Finding(
-                        stage="execute", status=laws.CRASH, file=fn.file,
-                        function=fn.name, line=fn.line, cls=rec.ub,
-                        message=f"cex replay trapped {rec.ub}",
-                        strength=laws.STRENGTH_FINDS,
-                        counterexample=blob[:200],
-                        extra={"oracle": "concrete-replay"},
-                    ))
-                else:
-                    out.append(Finding(
-                        stage="execute", status=laws.CLEAN, file=fn.file,
-                        function=fn.name, line=fn.line, cls="",
-                        message="cex did not trap in concrete replay (not a proof)",
-                        strength=laws.STRENGTH_FINDS,
-                        extra={"oracle": "concrete-replay"},
-                    ))
-            if cfg.llm and fails:
-                f0 = fails[0]
-                prompt = (
-                    f"Write a C main() that demonstrates this finding is real or not.\n"
-                    f"{f0.file}:{f0.line} {f0.function} {f0.cls}: {f0.message}\n"
-                    f"counterexample: {f0.counterexample}"
-                )
-                out.extend(interpreter_loop(self._engine(), prompt, rounds=2))
-            if not out:
-                return [Finding(
-                    stage="execute", status=laws.NOTRUN, file="", function=None,
-                    line=None, cls="", message="no FAILED/CRASH cex to replay",
-                    strength=laws.STRENGTH_READS,
-                )]
-            return out
+            eng = self._engine() if cfg.llm and fails else None
+            return execute_cex(fails, functions, llm=cfg.llm, engine=eng)
 
         self._stage("execute", execute)
 
@@ -343,9 +328,9 @@ class Pipeline:
             return [Finding(
                 stage="unify", status=laws.CLEAN, file="", function=None, line=None,
                 cls="",
-                message=f"taxonomy {covered}/{len(rows)} COVERED, {len(gaps)} GAP",
+                message=f"taxonomy {covered}/{len(rows)} COVERED, {len(gaps)} GAP (not a proof)",
                 strength=laws.STRENGTH_FINDS,
-                extra={"gaps": [g["id"] for g in gaps]},
+                extra={"gaps": [g["id"] for g in gaps], "not_a_proof": "true"},
             )]
 
         self._stage("unify", unify)
@@ -380,10 +365,12 @@ def _write_md(report: RunReport, path: Path) -> None:
         for f in s.findings:
             if f.status in {laws.NOTRUN, laws.CLEAN} and s.name in {"inventory", "classify", "unify"}:
                 continue
-            if f.status in {laws.PROVED, laws.PROVED_UNBOUNDED, laws.PROVED_ASSUMING, laws.BOUNDED, laws.FAILED, laws.CRASH, laws.HYPOTHESIS, laws.NOTRUN, laws.ERROR, laws.NEEDS_HARNESS, laws.CLEAN}:
-                loc = f"{f.file}:{f.line}" if f.line else (f.file or "")
-                cex = f"  cex `{f.counterexample}`" if f.counterexample else ""
-                lines.append(f"- `{f.status}` **{s.name}** {loc} `{f.function or ''}` {f.cls} — {f.message}{cex}")
+            # Same rows as helix.gui.finding_rows: UNKNOWN/TIMEOUT stay visible.
+            # A whitelist that dropped them made a present-but-silent adapter
+            # look like an empty ok stage in report.md.
+            loc = f"{f.file}:{f.line}" if f.line else (f.file or "")
+            cex = f"  cex `{f.counterexample}`" if f.counterexample else ""
+            lines.append(f"- `{f.status}` **{s.name}** {loc} `{f.function or ''}` {f.cls} — {f.message}{cex}")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 

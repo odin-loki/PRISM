@@ -1,0 +1,325 @@
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ *)
+
+open! IStd
+module L = Logging
+
+type stats =
+  { mutable files_total: int
+  ; mutable files_captured: int
+  ; mutable procs_total: int
+  ; mutable procs_captured: int
+  ; mutable funcs_undefined: int }
+
+let stats =
+  {files_total= 0; files_captured= 0; procs_total= 0; procs_captured= 0; funcs_undefined= 0}
+
+
+module Error = struct
+  type errors =
+    {verification: TextualVerification.error list; transformation: Textual.transform_error list}
+
+  type t = errors Textual.SourceFile.Map.t
+
+  let log level =
+    let level = if Config.keep_going then L.InternalError else level in
+    match (level : L.error) with
+    | InternalError ->
+        L.internal_error
+    | ExternalError ->
+        L.external_error
+    | UserError ->
+        L.user_error
+
+
+  let format_error (t : t) =
+    Textual.SourceFile.Map.iter
+      (fun source_file {verification; transformation} ->
+        List.iter verification
+          ~f:
+            (log L.InternalError "%a@\n" (TextualVerification.pp_error_with_sourcefile source_file)) ;
+        List.iter transformation
+          ~f:(log L.InternalError "%a@\n" (Textual.pp_transform_error source_file)) )
+      t
+
+
+  let empty_error = {verification= []; transformation= []}
+
+  let no_errors : t = Textual.SourceFile.Map.empty
+
+  let add_errors t ~f sourcefile =
+    Textual.SourceFile.Map.update sourcefile
+      (fun errors_opt ->
+        let error = match errors_opt with Some errors -> errors | None -> empty_error in
+        Some (f error) )
+      t
+
+
+  let add_verification_errors (t : t) sourcefile list =
+    add_errors t ~f:(fun error -> {error with verification= list @ error.verification}) sourcefile
+
+
+  let add_transformation_errors (t : t) sourcefile list =
+    add_errors t
+      ~f:(fun error -> {error with transformation= list @ error.transformation})
+      sourcefile
+end
+
+let textual_version = ref 0
+
+let dump_textual_file source_file module_ =
+  let suffix = if Config.frontend_tests then "test.sil" else "sil" in
+  let filename =
+    match !textual_version with
+    | 0 ->
+        Format.asprintf "%s.%s" source_file suffix
+    | _ ->
+        Format.asprintf "%s.v%d.%s" source_file !textual_version suffix
+  in
+  TextualSil.dump_module ~filename ~show_location:true module_ ;
+  incr textual_version
+
+
+let should_dump_textual () = Config.debug_mode || Config.dump_textual || Config.frontend_tests
+
+let language_of_source_file source_file =
+  if String.is_suffix source_file ~suffix:".c" then Textual.Lang.C
+  else if String.is_suffix source_file ~suffix:".swift" then Textual.Lang.Swift
+  else L.die UserError "Currently the llvm frontend is only enabled for C and Swift programs@."
+
+
+let count_procs (module_ : Textual.Module.t) =
+  List.count module_.decls ~f:(function Textual.Module.Proc _ -> true | _ -> false)
+
+
+let count_undefined_funcs (llair_program : Llair.program) =
+  Llair.FuncName.Map.fold llair_program.functions 0 ~f:(fun ~key:_ ~data:(func : Llair.func) acc ->
+      if Llair.Func.is_undefined func then acc + 1 else acc )
+
+
+(* Translate and capture the compiler-generated Textual module containing all
+   synthetic thunks (Swift partial-apply / autoclosure body / async continuation /
+   overlay initializer / ObjC bridging / witness-table accessor) emitted for a
+   single bitcode. Called once per capture batch so each such procedure is
+   translated under a single canonical sourcefile per bitcode (in production: one
+   per target) instead of being re-translated once per user .swift / .c file. *)
+let capture_compiler_generated ~bitcode_id ~lang module_state =
+  match Llair2Textual.translate_compiler_generated ~bitcode_id ~module_state with
+  | None ->
+      ()
+  | Some textual -> (
+      stats.files_total <- stats.files_total + 1 ;
+      let open IResult.Let_syntax in
+      let textual_source_file =
+        Textual.SourceFile.create (SourceFile.to_string (SourceFile.compiler_generated ~bitcode_id))
+      in
+      let result =
+        let error_state = Error.no_errors in
+        if should_dump_textual () then (
+          (* Dump alongside the per-source [.sil] files so frontend tests can diff
+             the compiler-generated procs too. Filename derived from [bitcode_id] +
+             a [.compiler-generated] suffix so it can't collide with any
+             per-source dump. Reset [textual_version] so the dump lands at
+             [.sil] / [.test.sil] rather than carrying a [.vN.] suffix inherited
+             from the last source-file's debug dumps. *)
+          textual_version := 0 ;
+          dump_textual_file (bitcode_id ^ ".compiler-generated") textual ) ;
+        let* verified_textual, error_state =
+          let f = Error.add_verification_errors error_state textual_source_file in
+          match TextualVerification.verify_keep_going textual with
+          | Ok (textual, errors) ->
+              Ok (textual, f errors)
+          | Error errors ->
+              Error (f errors)
+        in
+        let* (transformed_textual, decls), error_state =
+          let f = Error.add_transformation_errors error_state textual_source_file in
+          match TextualTransform.run lang verified_textual with
+          | Ok result ->
+              Ok (result, error_state)
+          | Error errors ->
+              Error (f errors)
+        in
+        let* (cfg, tenv), error_state =
+          let f = Error.add_transformation_errors error_state textual_source_file in
+          match TextualSil.module_to_sil lang transformed_textual decls with
+          | Ok (cfg, tenv) ->
+              Ok ((cfg, tenv), error_state)
+          | Error errors ->
+              Error (f errors)
+        in
+        if Textual.Lang.is_swift lang then Cfg.iter_sorted cfg ~f:CallReturnNullChecked.process ;
+        let sil = {TextualParser.TextualFile.sourcefile= textual_source_file; cfg; tenv} in
+        let use_global_tenv = if Textual.Lang.is_swift lang then true else false in
+        TextualParser.TextualFile.capture ~textual_module:transformed_textual ~use_global_tenv sil ;
+        ( if use_global_tenv then
+            let global_tenv =
+              Tenv.Global.load ()
+              |> Option.value_or_thunk ~default:(fun () ->
+                  let tenv = Tenv.create () in
+                  Tenv.Global.set (Some tenv) ;
+                  tenv )
+            in
+            Tenv.merge ~src:tenv ~dst:global_tenv ) ;
+        stats.files_captured <- stats.files_captured + 1 ;
+        Ok error_state
+      in
+      match result with
+      | Ok warnings ->
+          Error.format_error warnings
+      | Error err ->
+          Error.format_error err )
+
+
+let capture_llair source_file module_state =
+  stats.files_total <- stats.files_total + 1 ;
+  let open IResult.Let_syntax in
+  let lang = language_of_source_file source_file in
+  let result =
+    let error_state = Error.no_errors in
+    let textual = Llair2Textual.translate ~source_file ~module_state in
+    stats.procs_total <- count_procs textual ;
+    if should_dump_textual () then dump_textual_file source_file textual ;
+    let textual_source_file = Textual.SourceFile.create source_file in
+    let* verified_textual, error_state =
+      let f = Error.add_verification_errors error_state textual_source_file in
+      match TextualVerification.verify_keep_going textual with
+      | Ok (textual, errors) ->
+          Ok (textual, f errors)
+      | Error errors ->
+          Error (f errors)
+    in
+    if Config.debug_mode then dump_textual_file source_file textual ;
+    let* (transformed_textual, decls), error_state =
+      let f = Error.add_transformation_errors error_state textual_source_file in
+      match TextualTransform.run lang verified_textual with
+      | Ok result ->
+          Ok (result, error_state)
+      | Error errors ->
+          Error (f errors)
+    in
+    let* (cfg, tenv), error_state =
+      let f = Error.add_transformation_errors error_state textual_source_file in
+      match TextualSil.module_to_sil lang transformed_textual decls with
+      | Ok (cfg, tenv) ->
+          Ok ((cfg, tenv), error_state)
+      | Error errors ->
+          Error (f errors)
+    in
+    if Config.debug_mode then dump_textual_file source_file textual ;
+    if Textual.Lang.is_swift lang then Cfg.iter_sorted cfg ~f:CallReturnNullChecked.process ;
+    let sil = {TextualParser.TextualFile.sourcefile= textual_source_file; cfg; tenv} in
+    let use_global_tenv = if Textual.Lang.is_swift lang then true else false in
+    TextualParser.TextualFile.capture ~textual_module:transformed_textual ~use_global_tenv sil ;
+    ( if use_global_tenv then
+        let global_tenv =
+          Tenv.Global.load ()
+          |> Option.value_or_thunk ~default:(fun () ->
+              let tenv = Tenv.create () in
+              Tenv.Global.set (Some tenv) ;
+              tenv )
+        in
+        Tenv.merge ~src:tenv ~dst:global_tenv ) ;
+    stats.files_captured <- stats.files_captured + 1 ;
+    Ok error_state
+  in
+  match result with
+  | Ok warnings ->
+      Error.format_error warnings
+  | Error err ->
+      Error.format_error err
+
+
+let dump_llair_text llair_program source_file =
+  let output_file = source_file ^ ".llair.text" in
+  Utils.with_file_out output_file ~f:(fun oc ->
+      let fmt = Format.formatter_of_out_channel oc in
+      Llair.Program.pp fmt llair_program ;
+      Format.pp_print_flush fmt () )
+
+
+let dump_llair llair_program source_file =
+  let output_file = source_file ^ ".llair" in
+  Utils.with_file_out output_file ~f:(fun outc -> Marshal.to_channel outc llair_program [])
+
+
+let log_stats () =
+  let count_defined_procs =
+    let query_str = "SELECT count(*) FROM procedures WHERE cfg IS NOT NULL" in
+    let db = Database.get_database CaptureDatabase in
+    let stmt = Sqlite3.prepare db query_str in
+    let log = "Counting defined procs" in
+    fun () ->
+      SqliteUtils.result_option db ~log stmt ~finalize:true ~read_row:(fun stmt ->
+          match Sqlite3.column stmt 0 with
+          | Sqlite3.Data.INT i ->
+              Int64.to_int i |> Option.value_exn
+          | _ ->
+              L.die InternalError "Expected integer result from query %s" query_str )
+  in
+  stats.procs_captured <- count_defined_procs () |> Option.value_exn ;
+  let {Llair2Textual.unsupported_exps; unsupported_op2s} =
+    Llair2Textual.read_and_reset_frontend_stats ()
+  in
+  let funcs_unimplemented = LlvmSledgeFrontend.read_and_reset_unimplemented_funcs_count () in
+  let unimplemented_features = LlvmSledgeFrontend.read_and_reset_unimplemented_features_seen () in
+  let count_entries =
+    [ LogEntry.mk_count ~label:"capture.files_total" ~value:stats.files_total
+    ; LogEntry.mk_count ~label:"capture.files_captured" ~value:stats.files_captured
+    ; LogEntry.mk_count ~label:"capture.procs_total" ~value:stats.procs_total
+    ; LogEntry.mk_count ~label:"capture.procs_captured" ~value:stats.procs_captured
+    ; LogEntry.mk_count ~label:"capture.llvm.funcs_undefined" ~value:stats.funcs_undefined
+    ; LogEntry.mk_count ~label:"capture.llvm.funcs_unimplemented" ~value:funcs_unimplemented
+    ; LogEntry.mk_count ~label:"capture.llvm.unsupported_exps" ~value:unsupported_exps
+    ; LogEntry.mk_count ~label:"capture.llvm.unsupported_op2s" ~value:unsupported_op2s ]
+  in
+  let feature_entries =
+    List.map unimplemented_features ~f:(fun feature ->
+        LogEntry.mk_string ~label:"capture.llvm.unimplemented_feature" ~message:feature )
+  in
+  StatsLogging.log_many (count_entries @ feature_entries) ;
+  stats.files_captured <- 0 ;
+  stats.procs_captured <- 0 ;
+  stats.files_total <- 0 ;
+  stats.procs_total <- 0 ;
+  stats.funcs_undefined <- 0
+
+
+(* Identifier for the bitcode being captured: stable per-capture-invocation, used as
+   the prefix on the compiler-generated sourcefile sentinel and on the dumped
+   [<id>.compiler-generated.sil] filename. We don't have the bitcode file path
+   (piped in production), so derive from the first source — in tests each .swift
+   compiles to its own bitcode and the source name is the natural id; in
+   production each target compiles to one bitcode and the first source is at
+   least a stable per-target string. *)
+let bitcode_id_of_sources sources = List.hd_exn sources
+
+let capture ~sources llvm_bitcode_in =
+  let lang = language_of_source_file (List.hd_exn sources) in
+  let llvm_program = In_channel.input_all llvm_bitcode_in in
+  let llair_program = LlvmSledgeFrontend.translate llvm_program in
+  stats.funcs_undefined <- stats.funcs_undefined + count_undefined_funcs llair_program ;
+  let module_state = Llair2Textual.init_module_state llair_program lang in
+  List.iter sources ~f:(fun source_file ->
+      textual_version := 0 ;
+      if Config.dump_llair then dump_llair llair_program source_file ;
+      if Config.dump_llair_text then dump_llair_text llair_program source_file ;
+      capture_llair source_file module_state ) ;
+  capture_compiler_generated ~bitcode_id:(bitcode_id_of_sources sources) ~lang module_state ;
+  log_stats ()
+
+
+(** shadows above definition to provide a different interface to module users *)
+let capture_llair ~source_file ~llair_file =
+  Utils.with_file_in llair_file ~f:(fun llair_in ->
+      let llair_program : Llair.program = Marshal.from_channel llair_in in
+      stats.funcs_undefined <- stats.funcs_undefined + count_undefined_funcs llair_program ;
+      let lang = language_of_source_file source_file in
+      let module_state = Llair2Textual.init_module_state llair_program lang in
+      capture_llair source_file module_state ;
+      capture_compiler_generated ~bitcode_id:source_file ~lang module_state ) ;
+  log_stats ()

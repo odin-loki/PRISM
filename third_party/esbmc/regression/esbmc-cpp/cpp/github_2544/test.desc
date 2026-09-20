@@ -1,0 +1,4 @@
+CORE
+main.cpp
+--compact-trace
+^  this->x = \{ \.x=2 \}$

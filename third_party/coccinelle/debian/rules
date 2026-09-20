@@ -1,0 +1,69 @@
+#!/usr/bin/make -f
+
+# Uncomment this to turn on verbose mode.
+#export DH_VERBOSE=1
+
+include /usr/share/ocaml/ocamlvars.mk
+
+COCCI_FLAGS = BYTECODE_STATIC="" MANDIR=/usr/share/man
+
+VIM_ADIR = $(CURDIR)/debian/coccinelle/usr/share/vim/addons
+VIM_RDIR = $(CURDIR)/debian/coccinelle/usr/share/vim/registry
+
+COMMON_CONFIG = --prefix=/usr
+
+CONFIG_FLAGS = $(COMMON_CONFIG)
+
+ifeq ($(OCAML_NATDYNLINK),yes)
+MAKE_TGT = all.opt
+else
+MAKE_TGT = all
+endif
+
+build clean binary binary-arch binary-indep install:
+	dh --with ocaml $@
+
+
+override_dh_auto_configure:
+	./configure $(CONFIG_FLAGS)
+
+override_dh_auto_build:
+	$(MAKE) $(COCCI_FLAGS) depend
+	$(MAKE) $(COCCI_FLAGS) $(MAKE_TGT)
+	# make all.opt does not build documentation
+	mkdir texmf-var
+	mkdir texmf-config
+	TEXMFVAR="$(CURDIR)/texmf-var" TEXMFCONFIG="$(CURDIR)/texmf-config" $(MAKE) $(COCCI_FLAGS) docs
+
+override_dh_auto_test:
+	# Nothing
+
+override_dh_auto_install:
+	$(MAKE) DESTDIR=$(CURDIR)/debian/coccinelle $(COCCI_FLAGS) install
+	$(MAKE) DESTDIR=$(CURDIR)/debian/coccinelle                install-bash
+	# install the wrapper script, i don't like upstreams one
+	rm $(CURDIR)/debian/coccinelle/usr/bin/spatch*
+	install $(CURDIR)/debian/spatch $(CURDIR)/debian/coccinelle/usr/bin/
+	# move binary into /usr/lib/coccinelle
+	mv $(CURDIR)/debian/coccinelle/usr/share/coccinelle/spatch* \
+		$(CURDIR)/debian/coccinelle/usr/lib/coccinelle/spatch
+
+	# Vim files
+	install -d $(VIM_ADIR)/ftdetect $(VIM_ADIR)/syntax
+	cp $(CURDIR)/editors/vim/ftdetect/cocci.vim $(VIM_ADIR)/ftdetect/
+	cp $(CURDIR)/editors/vim/syntax/cocci.vim $(VIM_ADIR)/syntax/
+	install -d $(VIM_RDIR)
+	cp $(CURDIR)/debian/coccinelle.yaml $(VIM_RDIR)/
+
+	# Emacs files
+	cp $(CURDIR)/editors/emacs/cocci.el $(CURDIR)/debian/coccinelle/usr/share/emacs/site-lisp/
+
+override_dh_auto_clean:
+	$(MAKE) CLEANSUBDIRS=\$$\(MAKESUBDIRS\) distclean
+	rm -rf texmf-var texmf-config
+
+override_dh_compress:
+	dh_compress -X.pdf -X.cocci -X.c
+
+.PHONY: build clean binary-indep binary-arch binary install
+.PHONY: override_dh_auto_configure override_dh_auto_build override_dh_auto_test override_dh_auto_install

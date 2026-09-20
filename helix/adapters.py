@@ -3,32 +3,52 @@
 from __future__ import annotations
 
 from pathlib import Path
-import json
 import re
 import shutil
 import subprocess
-import sys
 
 from helix import laws
-from helix.config import Config
+from helix.adapters_extra import _is_fake_adapter
+from helix.config import Config, adapter_install, resolve_adapter
 from helix.models import Finding
+from helix.pbsd import C_EXTS, run_pbsd_lints
 
 
 def _not_run(stage: str, binary: str, how: str) -> Finding:
     return Finding(
         stage=stage, status=laws.NOTRUN, file="", function=None, line=None,
-        cls="", message=f"{binary} not on PATH",
+        cls="", message=f"{binary} not found (config, vendored tree, PATH)",
         strength=laws.STRENGTH_FINDS, extra={"install": how},
     )
 
 
+def _tool_unusable(text: str, rc: int) -> bool:
+    """Doctest/Catch2 / shell 126/127 / not-found is a missing tool, not a verdict."""
+    if _is_fake_adapter(text):
+        return True
+    if rc in {126, 127}:
+        return True
+    low = (text or "").lower()
+    return (
+        "command not found" in low
+        or "no such file" in low
+        or ": not found" in low
+        or "is not recognized as" in low
+        or "cannot execute" in low
+    )
+
+
 def run_cppcheck(paths: list[Path], cfg: Config) -> list[Finding]:
-    exe = shutil.which("cppcheck")
+    exe = resolve_adapter(cfg, "cppcheck", ("cppcheck", "cppcheck.exe"))
     if not exe:
-        return [_not_run("cppcheck", "cppcheck", "apt install cppcheck / choco install cppcheck")]
+        return [_not_run("cppcheck", "cppcheck", adapter_install("cppcheck"))]
     files = [str(p) for p in paths if p.suffix.lower() in {".c", ".cc", ".cpp", ".cxx", ".h", ".hpp"}]
     if not files:
-        return []
+        return [Finding(
+            stage="cppcheck", status=laws.UNKNOWN, file="", function=None, line=None,
+            cls="", message="cppcheck present; no C/C++ files in scope",
+            strength=laws.STRENGTH_FINDS, extra={"exe": exe},
+        )]
     cmd = [exe, "--enable=warning,style,performance,portability",
            "--xml", "--xml-version=2", *files]
     try:
@@ -37,6 +57,13 @@ def run_cppcheck(paths: list[Path], cfg: Config) -> list[Finding]:
         return [Finding(stage="cppcheck", status=laws.TIMEOUT, file="", function=None,
                         line=None, cls="", message="cppcheck timeout",
                         strength=laws.STRENGTH_FINDS)]
+    except OSError as exc:
+        return [Finding(
+            stage="cppcheck", status=laws.NOTRUN, file="", function=None, line=None,
+            cls="", message=f"cppcheck unusable: {exc}",
+            strength=laws.STRENGTH_FINDS,
+            extra={"exe": exe, "install": adapter_install("cppcheck")},
+        )]
     # cppcheck writes XML to stderr
     xml = p.stderr or p.stdout
     out: list[Finding] = []
@@ -55,18 +82,41 @@ def run_cppcheck(paths: list[Path], cfg: Config) -> list[Finding]:
             message=msg.replace("&apos;", "'").replace("&lt;", "<").replace("&gt;", ">"),
             strength=laws.STRENGTH_FINDS,
         ))
+    if not out:
+        if _tool_unusable(xml, p.returncode):
+            return [Finding(
+                stage="cppcheck", status=laws.NOTRUN, file="", function=None, line=None,
+                cls="", message="cppcheck at PATH is not cppcheck (not a proof)",
+                strength=laws.STRENGTH_FINDS,
+                extra={"exe": exe, "install": adapter_install("cppcheck")},
+            )]
+        if p.returncode not in {0, 1}:
+            text = (xml or "")[-400:] or f"cppcheck exit {p.returncode}"
+            return [Finding(
+                stage="cppcheck", status=laws.ERROR, file="", function=None, line=None,
+                cls="", message=text, strength=laws.STRENGTH_FINDS, extra={"exe": exe},
+            )]
+        return [Finding(
+            stage="cppcheck", status=laws.UNKNOWN, file="", function=None, line=None,
+            cls="", message=f"cppcheck present at {exe}; no diagnostics (not a proof)",
+            strength=laws.STRENGTH_FINDS, extra={"exe": exe},
+        )]
     return out
 
 
 def run_esbmc(paths: list[Path], cfg: Config) -> list[Finding]:
-    exe = shutil.which("esbmc")
+    exe = resolve_adapter(cfg, "esbmc", ("esbmc", "esbmc.exe"))
     if not exe:
-        return [_not_run("esbmc", "esbmc",
-                         "release binary from https://github.com/esbmc/esbmc")]
+        return [_not_run("esbmc", "esbmc", adapter_install("esbmc"))]
+    files = [p for p in paths if p.suffix.lower() == ".c"]
+    if not files:
+        return [Finding(
+            stage="esbmc", status=laws.UNKNOWN, file="", function=None, line=None,
+            cls="", message=f"esbmc present at {exe}; no .c files in scope",
+            strength=laws.STRENGTH_PROVES, extra={"exe": exe},
+        )]
     out = []
-    for p in paths:
-        if p.suffix.lower() != ".c":
-            continue
+    for p in files:
         cmd = [exe, str(p), "--unwind", str(cfg.unwind),
                "--overflow-check", "--memory-leak-check",
                "--timeout", str(int(cfg.timeout))]
@@ -81,9 +131,19 @@ def run_esbmc(paths: list[Path], cfg: Config) -> list[Finding]:
                                function=None, line=None, cls="", message="timeout",
                                strength=laws.STRENGTH_PROVES))
             continue
+        except OSError as exc:
+            out.append(Finding(
+                stage="esbmc", status=laws.NOTRUN, file=str(p), function=None,
+                line=None, cls="", message=f"esbmc unusable: {exc}",
+                strength=laws.STRENGTH_PROVES,
+                extra={"exe": exe, "install": adapter_install("esbmc")},
+            ))
+            continue
         text = (r.stdout or "") + (r.stderr or "")
         upper = text.upper()
-        if "VERIFICATION SUCCESSFUL" in upper:
+        if _tool_unusable(text, r.returncode):
+            st, msg = laws.NOTRUN, "esbmc at PATH is not ESBMC (not a proof)"
+        elif "VERIFICATION SUCCESSFUL" in upper:
             st = laws.PROVED if "INDUCTION" not in upper else laws.PROVED_UNBOUNDED
             if "--k-induction" not in cmd:
                 st = laws.BOUNDED if "UNWINDING ASSERTION" in upper else laws.PROVED
@@ -94,26 +154,55 @@ def run_esbmc(paths: list[Path], cfg: Config) -> list[Finding]:
             st, msg = laws.UNKNOWN, "ESBMC unknown"
         else:
             st, msg = laws.ERROR, text[-400:] or "no verdict line (not a proof)"
+        extra = {"exe": exe} if st == laws.NOTRUN else {}
+        if st == laws.NOTRUN:
+            extra["install"] = adapter_install("esbmc")
         out.append(Finding(stage="esbmc", status=st, file=str(p), function=None,
                            line=None, cls="", message=msg,
-                           strength=laws.STRENGTH_PROVES, evidence=text[-1500:]))
+                           strength=laws.STRENGTH_PROVES, evidence=text[-1500:],
+                           extra=extra))
     return out
 
 
 def run_dafny(paths: list[Path], cfg: Config) -> list[Finding]:
-    exe = shutil.which("dafny")
+    exe = resolve_adapter(cfg, "dafny", ("dafny", "dafny.exe"))
     if not exe:
-        return [_not_run("dafny", "dafny", "https://github.com/dafny-lang/dafny")]
+        return [_not_run("dafny", "dafny", adapter_install("dafny"))]
     out = []
     for p in paths:
         if p.suffix.lower() not in {".dfy"}:
             continue
-        r = subprocess.run([exe, "verify", str(p)], capture_output=True, text=True, timeout=60)
-        text = r.stdout + r.stderr
-        st = laws.PROVED if r.returncode == 0 else laws.FAILED
+        try:
+            r = subprocess.run(
+                [exe, "verify", str(p)], capture_output=True, text=True, timeout=60,
+                encoding="utf-8", errors="replace",
+            )
+        except subprocess.TimeoutExpired:
+            out.append(Finding(
+                stage="dafny", status=laws.TIMEOUT, file=str(p), function=None,
+                line=None, cls="FUNC-CONTRACT", message="dafny timeout",
+                strength=laws.STRENGTH_PROVES,
+            ))
+            continue
+        except OSError as exc:
+            out.append(Finding(
+                stage="dafny", status=laws.NOTRUN, file=str(p), function=None,
+                line=None, cls="FUNC-CONTRACT", message=f"dafny unusable: {exc}",
+                strength=laws.STRENGTH_PROVES,
+                extra={"exe": exe, "install": adapter_install("dafny")},
+            ))
+            continue
+        text = (r.stdout or "") + (r.stderr or "")
+        if _tool_unusable(text, r.returncode):
+            st, msg = laws.NOTRUN, "dafny at PATH is not Dafny (not a proof)"
+            extra = {"exe": exe, "install": adapter_install("dafny")}
+        else:
+            st = laws.PROVED if r.returncode == 0 else laws.FAILED
+            msg = text[-400:]
+            extra = {}
         out.append(Finding(stage="dafny", status=st, file=str(p), function=None,
-                           line=None, cls="FUNC-CONTRACT", message=text[-400:],
-                           strength=laws.STRENGTH_PROVES))
+                           line=None, cls="FUNC-CONTRACT", message=msg,
+                           strength=laws.STRENGTH_PROVES, extra=extra))
     if not out:
         out.append(Finding(stage="dafny", status=laws.NOTRUN, file="", function=None,
                            line=None, cls="", message="no .dfy files in scope",
@@ -122,53 +211,107 @@ def run_dafny(paths: list[Path], cfg: Config) -> list[Finding]:
 
 
 def run_pbsd(cfg: Config, scope: Path) -> list[Finding]:
-    """Drive ParanoidBSD tools/verify when the tree is present."""
-    root = cfg.pbsd_root
-    sweep = root / "tools" / "verify" / "sweep_all.py"
-    if not sweep.exists():
-        return [_not_run("pbsd", "sweep_all.py",
-                         f"set HELIX_PBSD to the ParanoidBSD tree (looked at {root})")]
-    # Do not silently run a twelve-hour sweep. Inventory + lints that do
-    # not need clang/cbmc: call the portable drivers if they exist.
-    out: list[Finding] = []
-    out.append(Finding(
-        stage="pbsd", status=laws.CLEAN, file=str(root), function=None, line=None,
-        cls="", message=f"ParanoidBSD tree at {root}; use --pbsd-sweep to run sweep_all.py",
-        strength=laws.STRENGTH_FINDS,
-        extra={"sweep": str(sweep), "note": "full sweep is opt-in"},
-    ))
-    return out
+    """Drive ParanoidBSD portable checkers. Tree present is never CLEAN-as-proof."""
+    if scope.is_dir():
+        paths = [p for p in scope.rglob("*") if p.suffix.lower() in C_EXTS and p.is_file()]
+    else:
+        paths = [scope]
+    return run_pbsd_lints(paths, cfg)
 
 
 _WARN_RE = re.compile(r"^(.+):(\d+):(\d+):\s+(warning|error):\s+(.*)$", re.MULTILINE)
+_C_UNITS = {".c", ".cc", ".cpp", ".cxx"}
+
+
+def _host_compilers() -> list[str]:
+    """gcc and clang when both exist. Same resolved path is not a second compiler."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for name in ("gcc", "clang"):
+        hit = shutil.which(name)
+        if not hit:
+            continue
+        try:
+            key = str(Path(hit).resolve()).casefold()
+        except OSError:
+            key = hit.replace("\\", "/").casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(hit)
+    return out
+
+
+def _compiler_cmd(cc: str, path: Path) -> list[str]:
+    # Enable checks. Never -w / -Wno-* / a flag that silences diagnostics.
+    std = "-std=c++11" if path.suffix.lower() in {".cc", ".cpp", ".cxx"} else "-std=c11"
+    return [
+        cc, std, "-Wall", "-Wextra", "-Wconversion",
+        "-Wsign-compare", "-Wshift-overflow", "-fsyntax-only", str(path),
+    ]
 
 
 def run_compiler(paths: list[Path], cfg: Config) -> list[Finding]:
-    cc = shutil.which("gcc") or shutil.which("clang")
-    if not cc:
+    compilers = _host_compilers()
+    if not compilers:
         return [_not_run("warnings", "gcc", "install gcc or clang")]
+    units = [p for p in paths if p.suffix.lower() in _C_UNITS]
+    if not units:
+        return [Finding(
+            stage="warnings", status=laws.UNKNOWN, file="", function=None, line=None,
+            cls="", message="gcc/clang present; no .c/.cc/.cpp/.cxx files in scope",
+            strength=laws.STRENGTH_SOME,
+        )]
     out: list[Finding] = []
-    for p in paths:
-        if p.suffix.lower() not in {".c", ".cc", ".cpp"}:
-            continue
-        cmd = [
-            cc, "-std=c11", "-Wall", "-Wextra", "-Wconversion",
-            "-Wsign-compare", "-Wshift-overflow", "-fsyntax-only", str(p),
-        ]
-        try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        except subprocess.TimeoutExpired:
-            out.append(Finding(
-                stage="warnings", status=laws.TIMEOUT, file=str(p), function=None,
-                line=None, cls="", message="compiler syntax-check timeout",
-                strength=laws.STRENGTH_SOME,
-            ))
-            continue
-        text = (r.stderr or "") + (r.stdout or "")
-        for m in _WARN_RE.finditer(text):
-            out.append(Finding(
-                stage="warnings", status=laws.FAILED, file=m.group(1), function=None,
-                line=int(m.group(2)), cls="compiler-" + m.group(4),
-                message=m.group(5), strength=laws.STRENGTH_SOME,
-            ))
+    seen: set[tuple] = set()
+
+    def _add(f: Finding) -> None:
+        key = (f.file, f.line, f.cls, f.status, f.message)
+        if key in seen:
+            return
+        seen.add(key)
+        out.append(f)
+
+    for cc in compilers:
+        for p in units:
+            cmd = _compiler_cmd(cc, p)
+            for flag in cmd:
+                if flag == "-w" or flag.startswith("-Wno-"):
+                    raise ValueError(f"refusing to disable a check: {flag}")
+            try:
+                r = subprocess.run(
+                    cmd, capture_output=True, text=True, timeout=30,
+                    encoding="utf-8", errors="replace",
+                )
+            except subprocess.TimeoutExpired:
+                _add(Finding(
+                    stage="warnings", status=laws.TIMEOUT, file=str(p), function=None,
+                    line=None, cls="", message="compiler syntax-check timeout",
+                    strength=laws.STRENGTH_SOME,
+                ))
+                continue
+            except OSError as exc:
+                _add(Finding(
+                    stage="warnings", status=laws.NOTRUN, file=str(p), function=None,
+                    line=None, cls="", message=f"{cc} unusable: {exc}",
+                    strength=laws.STRENGTH_SOME,
+                    extra={"install": "install gcc or clang"},
+                ))
+                continue
+            text = (r.stderr or "") + (r.stdout or "")
+            hits = 0
+            for m in _WARN_RE.finditer(text):
+                hits += 1
+                _add(Finding(
+                    stage="warnings", status=laws.FAILED, file=m.group(1), function=None,
+                    line=int(m.group(2)), cls="compiler-" + m.group(4),
+                    message=m.group(5), strength=laws.STRENGTH_SOME,
+                ))
+            if hits == 0 and r.returncode != 0:
+                _add(Finding(
+                    stage="warnings", status=laws.FAILED, file=str(p), function=None,
+                    line=None, cls="compiler-error",
+                    message=(text.strip()[-400:] or f"{cc} exit {r.returncode}"),
+                    strength=laws.STRENGTH_SOME,
+                ))
     return out

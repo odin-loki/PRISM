@@ -1,0 +1,65 @@
+let version = "@COCCI_VERSION@"
+
+let rec realpath path =
+  if path = "/" || path = "." then
+    path
+  else
+    begin
+      let dirname = Filename.dirname path in
+      let new_dirname = realpath dirname in
+      let new_path =
+        if dirname == new_dirname then path
+        else Filename.concat new_dirname (Filename.basename path) in
+      let rec follow new_path =
+        match
+          try Some (Unix.readlink new_path) with Unix.Unix_error _ -> None
+        with
+        | None -> new_path
+        | Some target ->
+            let new_path =
+              if Filename.is_relative target then
+                Filename.concat (Filename.dirname new_path) target
+              else
+                target in
+            follow new_path in
+      follow new_path
+    end
+
+let path =
+  (* COCCINELLE_HOME is the directory where standard.iso is looked for. *)
+  try (Sys.getenv "COCCINELLE_HOME")
+  with Not_found->
+    (* If COCCINELLE_HOME is not defined, we consider the directory $bindir
+       where the current executable is. *)
+    let exec_realpath = realpath Sys.executable_name in
+    let bin_dir = Filename.dirname exec_realpath in
+    if Sys.file_exists (Filename.concat bin_dir "standard.iso") then
+       (* If $bindir/standard.iso exists,
+          we use COCCINELLE_HOME=$bindir (this is a usual case during
+          development, where we run spatch.opt from the working directory
+          of the repository). *)
+      bin_dir
+    else
+      (* Otherwise, we suppose that coccinelle has been installed (make
+         install), and that standard.iso is installed in $libdir, where
+         $libdir is $exec_prefix/lib.
+         The default value for $bindir is $exec_prefix/bin.
+         Therefore, we should take for $exec_prefix the parent directory
+         of $bindir.*)
+      let libdir =
+        Str.global_replace (Str.regexp "[$]{exec_prefix}")
+          (Filename.dirname bin_dir) "@libdir@"
+      in
+      Filename.concat libdir "coccinelle"
+
+
+let std_iso = ref (Filename.concat path "standard.iso")
+let std_h   = ref (Filename.concat path "standard.h")
+
+let dynlink_is_native = @DYNLINK_IS_NATIVE@
+let get_temp_dir_name = @GET_TEMP_DIR_NAME_EXPR@
+
+let configure_flags = "@CONFIGURE_FLAGS@"
+let ocaml_version = "@OCAMLVERSION@"
+
+let python_interpreter = ref "@PYTHON@"

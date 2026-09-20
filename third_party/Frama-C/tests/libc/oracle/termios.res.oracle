@@ -1,0 +1,29 @@
+[kernel] Parsing tests/libc/termios.c (with preprocessing)
+[eva] Analyzing a complete application starting at main
+[eva] Computing initial state
+[eva] Initial state computed
+[eva:initial-state] Values of globals at initialization
+  
+[eva] computing for function __va_open_void <- main.
+  Called from tests/libc/termios.c:10.
+[eva] using specification for function __va_open_void
+[eva] tests/libc/termios.c:10: 
+  function __va_open_void: precondition 'valid_filename' got status valid.
+[eva] tests/libc/termios.c:10: 
+  function __va_open_void: precondition 'flag_not_CREAT' got status valid.
+[eva] Done for function __va_open_void
+[eva] computing for function tcgetattr <- main.
+  Called from tests/libc/termios.c:11.
+[eva] using specification for function tcgetattr
+[eva] tests/libc/termios.c:11: 
+  function tcgetattr: precondition 'valid_termios_p' got status valid.
+[eva] Done for function tcgetattr
+[eva] Recording results for main
+[eva] done for function main
+[eva] ====== VALUES COMPUTED ======
+[eva:final-states] Values at end of function main:
+  Frama_C_entropy_source ∈ [--..--]
+  fd ∈ [--..--]
+  tio ∈ [--..--] or UNINITIALIZED
+  res ∈ {-1; 0}
+  __retres ∈ {1; 8}

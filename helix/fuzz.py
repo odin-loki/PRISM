@@ -16,6 +16,7 @@ import tempfile
 import time
 
 from helix import laws
+from helix.ai import LLM_INSTALL, LLM_UNAVAILABLE_MSG
 from helix.bmc import unencoded_syntax_reason
 from helix.concrete import decode_args, execute, interesting_seeds
 from helix.cparse import body_needs_pointer_harness
@@ -84,15 +85,25 @@ def _compile(harness: Path, out_exe: Path) -> tuple[bool, str]:
     if not cc:
         return False, "no C compiler on PATH"
     cmd = [cc, "-O0", "-g", "-std=c11", str(harness), "-o", str(out_exe)]
-    san = []
+    # Prefer ASan+UBSan together; fall back to one sanitizer, then bare.
+    # TSan cannot combine with ASan. Missing sanitizer runtime is not a fake CLEAN.
+    san_tries: list[list[str]] = []
     if "gcc" in Path(cc).name.lower() or "clang" in Path(cc).name.lower():
-        san = ["-fsanitize=undefined", "-fno-sanitize-recover=undefined"]
+        san_tries = [
+            ["-fsanitize=address,undefined", "-fno-sanitize-recover=address,undefined"],
+            ["-fsanitize=undefined", "-fno-sanitize-recover=undefined"],
+            ["-fsanitize=address", "-fno-sanitize-recover=address"],
+        ]
     try:
-        p = subprocess.run([*cmd[:1], *san, *cmd[1:]], capture_output=True, text=True, timeout=30)
+        p = None
+        for san in san_tries:
+            p = subprocess.run([*cmd[:1], *san, *cmd[1:]], capture_output=True, text=True, timeout=30)
+            if p.returncode == 0:
+                break
+        if p is None or p.returncode != 0:
+            p = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
     except subprocess.TimeoutExpired:
         return False, "compile timeout"
-    if p.returncode != 0 and san:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
     if p.returncode != 0:
         return False, (p.stderr or p.stdout)[-1500:]
     return True, ""
@@ -109,9 +120,16 @@ def _run(exe: Path, data: bytes, timeout: float = 1.0) -> tuple[str, str]:
         return "crash", f"signal {-p.returncode}"
     if p.returncode == 0:
         return "ok", (p.stderr or b"").decode("utf-8", "replace")[-200:]
-    # gcc ubsan often exits 1
+    # gcc ubsan often exits 1; ASan reports ERROR: AddressSanitizer
     err = (p.stderr or b"").decode("utf-8", "replace")
-    if "runtime error" in err or "ERROR: UndefinedBehaviorSanitizer" in err:
+    low = err.lower()
+    if (
+        "runtime error" in low
+        or "undefinedbehaviorsanitizer" in low
+        or "addresssanitizer" in low
+        or "heap-buffer-overflow" in low
+        or "heap-use-after-free" in low
+    ):
         return "crash", err[-800:]
     if p.returncode != 0:
         # could be the program returning non-zero; not a crash
@@ -299,24 +317,67 @@ def run_fuzz(
     budget: float,
     iters: int,
     seeds_by_fn: dict[str, list[bytes]] | None = None,
+    engine=None,
 ) -> list[Finding]:
     seeds_by_fn = seeds_by_fn or {}
     out = []
+    llm_up = False
+    if engine is not None:
+        av = getattr(engine, "available", None)
+        if av is None:
+            llm_up = True
+        else:
+            llm_up = bool(av() if callable(av) else av)
     for fn in functions:
         src = root / fn.file if not Path(fn.file).is_absolute() else Path(fn.file)
         if not src.exists() and root.is_file():
             src = root
         try:
-            out.append(fuzz_function(
+            rec = fuzz_function(
                 fn, src, budget=budget, iters=iters,
                 seeds=seeds_by_fn.get(fn.name),
-            ))
+            )
         except Exception as ex:
-            out.append(Finding(
+            rec = Finding(
                 stage="fuzz", status=laws.ERROR, file=fn.file, function=fn.name,
                 line=fn.line, cls="", message=str(ex), strength=laws.STRENGTH_FINDS,
-            ))
+            )
+        if llm_up and rec.status == laws.CLEAN:
+            rec = _fuzz4all_mutate_on_interesting(engine, fn, rec)
+        out.append(rec)
+    if engine is not None and not llm_up and functions:
+        fn0 = functions[0]
+        out.append(Finding(
+            stage="fuzz", status=laws.NOTRUN, file=fn0.file, function=fn0.name,
+            line=fn0.line, cls="", message=LLM_UNAVAILABLE_MSG,
+            strength=laws.STRENGTH_READS,
+            extra={"autoprompt": "NOTRUN", "install": LLM_INSTALL},
+        ))
     return out
+
+
+def _fuzz4all_mutate_on_interesting(engine, fn: FunctionInfo, rec: Finding) -> Finding:
+    """Fuzz4All m_prompt/c_prompt on an interesting seed. LLM stays HYPOTHESIS/READS."""
+    extra = dict(rec.extra or {})
+    try:
+        from helix.agent import fuzz4all_combine, fuzz4all_mutate_interesting
+        n = param_nbytes(fn.params)
+        parent = interesting_seeds(fn)
+        seed = (parent[0] if parent else b"\x00" * n)[:n].ljust(n, b"\x00")
+        extra["fuzz4all_mutate"] = True
+        mutants = fuzz4all_mutate_interesting(engine, fn, seed.hex()) or []
+        if len(parent) >= 2:
+            extra["fuzz4all_combine"] = True
+            mutants.extend(
+                fuzz4all_combine(
+                    engine, fn, seed.hex(), parent[1][:n].ljust(n, b"\x00").hex(),
+                ) or []
+            )
+        extra["fuzz4all_mutants"] = [m.hex() for m in mutants[:8]]
+    except Exception as ex:
+        extra["fuzz4all_mutate_error"] = str(ex)[:200]
+    rec.extra = extra
+    return rec
 
 
 def bytes_from_cex(cex: str, nbytes: int) -> bytes | None:

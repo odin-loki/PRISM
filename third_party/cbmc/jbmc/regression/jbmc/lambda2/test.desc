@@ -1,0 +1,10 @@
+CORE symex-driven-lazy-loading-expected-failure
+org.symphonyoss.symphony.clients.model.SymStream
+--show-goto-functions --verbosity 10 -cp `../../../../scripts/format_classpath.sh . target/classes`
+lambda function reference toSymUser in class 'org\.symphonyoss\.symphony\.clients\.model\.SymStream'
+^EXIT=0$
+^SIGNAL=0$
+--
+--
+Symex-driven-lazy-loading wants an entry point to start from, but here we do just want to convert the
+whole program to GOTO for testing purposes

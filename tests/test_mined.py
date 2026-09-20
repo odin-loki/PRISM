@@ -232,6 +232,16 @@ class TestLTL(unittest.TestCase):
             recs = run_ltl([self.fn], [spec])
         self.assertEqual(recs[0].status, laws.NOTRUN)
 
+    def test_unbounded_f_implication_not_proved(self):
+        f = check_safety(
+            "G (state == ST_IDLE -> F (state == ST_IDLE))",
+            self.fsm,
+        )
+        self.assertIsNotNone(f)
+        self.assertEqual(f.status, laws.BOUNDED)
+        self.assertNotEqual(f.status, laws.PROVED)
+        self.assertEqual(f.extra.get("approx_kind"), "F")
+
 
 class TestFuse(unittest.TestCase):
     @unittest.skipUnless(HAS_Z3, "z3-solver not installed")

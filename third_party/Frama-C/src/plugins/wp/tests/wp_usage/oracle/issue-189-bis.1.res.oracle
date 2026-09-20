@@ -1,0 +1,184 @@
+# frama-c -wp [...]
+[kernel] Parsing tests/wp_usage/issue-189-bis.i (no preprocessing)
+[wp] Running WP plugin...
+[wp] Loading driver 'share/wp.driver'
+[wp] Warning: Missing RTE guards
+
+Goal Post-condition 'memcpy,ok' in 'memcpy_context_vars':
+Let a = global(G_src_45).
+Let a_1 = global(G_dst_46).
+Let a_2 = havoc(Mint_undef_0, Mint_0, shift_uint8(a_1, 0), len_0).
+Assume {
+  Type: is_sint32(len_0) /\ is_sint32(len_1).
+  (* Goal *)
+  When: (0 <= i) /\ ((2 + i) <= len_0).
+  (* Heap *)
+  Have: linked(Malloc_0).
+  (* Pre-condition *)
+  Have: ((0 < len_0) -> (len_0 <= 1)).
+  (* Invariant 'ok,cpy' *)
+  Have: forall i_1 : Z. ((0 <= i_1) -> (((len_1 + i_1) < len_0) ->
+      (a_2[shift_uint8(a_1, i_1)] = Mint_0[shift_uint8(a, i_1)]))).
+  (* Invariant 'ok,dst' *)
+  Have: shift_uint8(a_1, len_0) = shift_uint8(dst2_0, len_1).
+  (* Invariant 'ok,src' *)
+  Have: shift_uint8(a, len_0) = shift_uint8(src2_0, len_1).
+  (* Invariant 'ok,len' *)
+  Have: len_1 <= len_0.
+  (* Else *)
+  Have: len_1 <= 0.
+}
+Prove: a_2[shift_uint8(a_1, i)] = Mint_0[shift_uint8(a, i)].
+
+------------------------------------------------------------
+
+Goal Post-condition 'unmodified,ok' in 'memcpy_context_vars':
+Prove: true.
+
+------------------------------------------------------------
+
+Goal Preservation of Invariant 'ok,cpy' (file tests/wp_usage/issue-189-bis.i, line 55):
+Let a = global(G_src_45).
+Let a_1 = global(G_dst_46).
+Let a_2 = havoc(Mint_undef_0, Mint_0, shift_uint8(a_1, 0), len_0).
+Let a_3 = a_2[dst2_0 <- a_2[src2_0]].
+Assume {
+  Type: is_sint32(len_0) /\ is_sint32(len_1) /\ is_sint32(len_1 - 1).
+  (* Goal *)
+  When: (0 <= i) /\ ((i + len_1) <= len_0).
+  (* Heap *)
+  Have: linked(Malloc_0).
+  (* Pre-condition *)
+  Have: ((0 < len_0) -> (len_0 <= 1)).
+  (* Invariant 'ok,cpy' *)
+  Have: forall i_1 : Z. ((0 <= i_1) -> (((len_1 + i_1) < len_0) ->
+      (a_2[shift_uint8(a_1, i_1)] = Mint_0[shift_uint8(a, i_1)]))).
+  (* Invariant 'ok,dst' *)
+  Have: shift_uint8(a_1, len_0) = shift_uint8(dst2_0, len_1).
+  (* Invariant 'ok,src' *)
+  Have: shift_uint8(a, len_0) = shift_uint8(src2_0, len_1).
+  (* Invariant 'ok,len' *)
+  Have: len_1 <= len_0.
+  (* Then *)
+  Have: 0 < len_1.
+}
+Prove: a_3[shift_uint8(a, i)] = a_3[shift_uint8(a_1, i)].
+
+------------------------------------------------------------
+
+Goal Establishment of Invariant 'ok,cpy' (file tests/wp_usage/issue-189-bis.i, line 55):
+Prove: true.
+
+------------------------------------------------------------
+
+Goal Preservation of Invariant 'ok,dst' (file tests/wp_usage/issue-189-bis.i, line 53):
+Prove: true.
+
+------------------------------------------------------------
+
+Goal Establishment of Invariant 'ok,dst' (file tests/wp_usage/issue-189-bis.i, line 53):
+Prove: true.
+
+------------------------------------------------------------
+
+Goal Preservation of Invariant 'ok,len' (file tests/wp_usage/issue-189-bis.i, line 51):
+Let a = global(G_src_45).
+Let a_1 = global(G_dst_46).
+Assume {
+  Type: is_sint32(len_1) /\ is_sint32(len_0) /\ is_sint32(len_0 - 1).
+  (* Heap *)
+  Have: linked(Malloc_0).
+  (* Pre-condition *)
+  Have: ((0 < len_1) -> (len_1 <= 1)).
+  (* Invariant 'ok,cpy' *)
+  Have: forall i : Z. ((0 <= i) -> (((len_0 + i) < len_1) ->
+      (havoc(Mint_undef_0, Mint_0, shift_uint8(a_1, 0), len_1)
+         [shift_uint8(a_1, i)] = Mint_0[shift_uint8(a, i)]))).
+  (* Invariant 'ok,dst' *)
+  Have: shift_uint8(a_1, len_1) = shift_uint8(dst2_0, len_0).
+  (* Invariant 'ok,src' *)
+  Have: shift_uint8(a, len_1) = shift_uint8(src2_0, len_0).
+  (* Invariant 'ok,len' *)
+  Have: len_0 <= len_1.
+  (* Then *)
+  Have: 0 < len_0.
+}
+Prove: len_0 <= (1 + len_1).
+
+------------------------------------------------------------
+
+Goal Establishment of Invariant 'ok,len' (file tests/wp_usage/issue-189-bis.i, line 51):
+Prove: true.
+
+------------------------------------------------------------
+
+Goal Preservation of Invariant 'ok,src' (file tests/wp_usage/issue-189-bis.i, line 52):
+Prove: true.
+
+------------------------------------------------------------
+
+Goal Establishment of Invariant 'ok,src' (file tests/wp_usage/issue-189-bis.i, line 52):
+Prove: true.
+
+------------------------------------------------------------
+
+Goal Loop assigns (file tests/wp_usage/issue-189-bis.i, line 54) (1/4):
+Prove: true.
+
+------------------------------------------------------------
+
+Goal Loop assigns (file tests/wp_usage/issue-189-bis.i, line 54) (2/4):
+Effect at line 60
+Prove: true.
+
+------------------------------------------------------------
+
+Goal Loop assigns (file tests/wp_usage/issue-189-bis.i, line 54) (3/4):
+Effect at line 60
+Prove: true.
+
+------------------------------------------------------------
+
+Goal Loop assigns (file tests/wp_usage/issue-189-bis.i, line 54) (4/4):
+Effect at line 60
+Let a = global(G_src_45).
+Let a_1 = global(G_dst_46).
+Let a_2 = shift_uint8(a_1, 0).
+Assume {
+  Type: is_sint32(len_0) /\ is_sint32(len_1).
+  (* Goal *)
+  When: !invalid(Malloc_0, tmp_0, 1).
+  (* Heap *)
+  Have: linked(Malloc_0).
+  (* Pre-condition *)
+  Have: ((0 < len_0) -> (len_0 <= 1)).
+  (* Invariant 'ok,cpy' *)
+  Have: forall i : Z. ((0 <= i) -> (((len_1 + i) < len_0) ->
+      (havoc(Mint_undef_0, Mint_0, a_2, len_0)[shift_uint8(a_1, i)] =
+       Mint_0[shift_uint8(a, i)]))).
+  (* Invariant 'ok,dst' *)
+  Have: shift_uint8(a_1, len_0) = shift_uint8(tmp_0, len_1).
+  (* Invariant 'ok,src' *)
+  Have: shift_uint8(a, len_0) = shift_uint8(src2_0, len_1).
+  (* Invariant 'ok,len' *)
+  Have: len_1 <= len_0.
+  (* Then *)
+  Have: 0 < len_1.
+}
+Prove: included(tmp_0, 1, a_2, len_0).
+
+------------------------------------------------------------
+
+Goal Assigns (file tests/wp_usage/issue-189-bis.i, line 44) in 'memcpy_context_vars':
+Effect at line 59
+Prove: true.
+
+------------------------------------------------------------
+[wp] Warning: Memory model hypotheses for function 'memcpy_context_vars':
+  /*@
+     behavior typed:
+     requires \separated(src,dst);
+     requires \valid(src);
+     requires \valid(dst);
+     */
+  void memcpy_context_vars(unsigned char *src, unsigned char *dst, int len);

@@ -1,0 +1,11 @@
+CORE
+main.c
+--no-standard-checks --variable-sensitivity --vsd-values intervals --vsd-structs every-field --vsd-pointers constants --show
+^EXIT=0$
+^SIGNAL=0$
+main::1::vecMinusTenAndTen \(\) -> \{.x=\[FFFFFFF6, FFFFFFF6\] \@ \[23\], .y=\[A, A\] \@ \[23\]\} @ \[23\]
+main::1::1::vecZero \(\) -> \{.x=\[0, 0\] \@ \[28\], .y=\[0, 0\] \@ \[28\]\} \@ \[28\]
+main::1::2::vecOne \(\) -> \{.x=\[1, 1\] \@ \[33\], .y=\[1, 1\] \@ \[33\]\} \@ \[33\]
+main::1::vecZeroOrOne \(\) -> \{.x=\[0, 1\] \@ \[37\], .y=\[0, 1\] \@ \[37\]\} \@ \[37\]
+main::1::vecThirteenAndFourtyTwo \(\) -> \{.x=\[D, D\] \@ \[41\], .y=\[2A, 2A\] \@ \[41\]\} \@ \[41\]
+--

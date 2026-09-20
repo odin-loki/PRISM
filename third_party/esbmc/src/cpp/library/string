@@ -1,0 +1,3489 @@
+#ifndef STL_STRING
+#define STL_STRING
+
+#include "definitions.h"
+#include "iosfwd" // declares basic_string with its default arguments
+#include "OM_compiler_defs.h" // OM_NOEXCEPT
+#include "char_traits.h"
+#include "iterator_tags.h"
+#include "string_view"
+#include "cstring"
+#include "cstdio"
+#include "cassert"
+// Explicit, not via the C++11-guarded <string_view> below (github #3267).
+#include "cstdint"
+#include "iostream"
+#include "cstdlib"
+#include "memory"
+#if __cplusplus >= 201103L
+#  include "string_view" // string_view itself is C++11-only syntax
+#endif
+
+#define STRING_CAPACITY 128
+
+extern "C" void itoa(int value, char *str, int base);
+
+namespace std
+{
+template <class CharT, class Traits, class Alloc>
+class basic_string
+{
+public:
+  typedef CharT value_type;
+  typedef Traits traits_type;
+  typedef Alloc allocator_type;
+  typedef size_t size_type;
+  typedef std::ptrdiff_t difference_type;
+
+  static const size_t npos = static_cast<size_t>(-1);
+  char str[STRING_CAPACITY];
+  int _size;
+
+  class const_iterator;
+  class iterator
+  {
+  public:
+    /* [iterator.traits] reads these five from the iterator itself, so without
+     * them iterator_traits<basic_string<char>::iterator>::difference_type does
+     * not resolve and a generic algorithm over a string iterator fails. The
+     * data member below was named `pointer` and had to move aside for the
+     * typedef the traits require. */
+    typedef ::std::random_access_iterator_tag iterator_category;
+    typedef CharT value_type;
+    typedef ::std::ptrdiff_t difference_type;
+    typedef CharT *pointer;
+    typedef CharT &reference;
+
+    char *ptr;
+    char *it_str;
+    int pos;
+
+    iterator(const iterator &i)
+    {
+      ptr = i.ptr;
+      pos = i.pos;
+      it_str = i.it_str;
+    }
+
+    iterator()
+    {
+      ptr = NULL;
+      pos = 0;
+      it_str = NULL;
+    }
+
+    iterator(char *p_pointer)
+    {
+      ptr = p_pointer;
+      pos = 0;
+      it_str = p_pointer;
+    }
+
+    iterator &operator=(const const_iterator &right)
+    {
+      this->ptr = right.ptr;
+      this->pos = right.pos;
+      return *this;
+    }
+
+    iterator &operator=(const iterator &right)
+    {
+      this->ptr = right.ptr;
+      this->pos = right.pos;
+      this->it_str = right.it_str;
+      return *this;
+    }
+
+    char *operator->()
+    {
+      return ptr;
+    }
+
+    char &operator*()
+    {
+      return *ptr;
+    }
+
+    CC_DIAGNOSTIC_PUSH()
+    DO_PRAGMA(GCC diagnostic ignored "-Wreturn-stack-address")
+
+    iterator operator-(int n) const
+    {
+      iterator buffer;
+      buffer.ptr = ptr - sizeof(char) * n;
+      buffer.pos = pos - n;
+      buffer.it_str = it_str;
+      __ESBMC_assert(buffer.pos >= 0, "underflow");
+      return buffer;
+    }
+
+    iterator operator+(int n) const
+    {
+      iterator buffer;
+      buffer.ptr = ptr + sizeof(char) * n;
+      buffer.pos = pos + n;
+      buffer.it_str = it_str;
+      return buffer;
+    }
+
+    //operator increases ptr address, but returns old value.
+    //It's like "++c"
+    iterator &operator++()
+    {
+      ptr = ptr + sizeof(char);
+      pos++;
+      return *this;
+    }
+
+    //operator increases ptr address and returns new value
+    //It's like "c++"
+    iterator operator++(int _b)
+    {
+      iterator buffer = *this;
+      ptr = ptr + sizeof(char);
+      pos++;
+      return buffer;
+    }
+    //operator decreases ptr address, but returns old value.
+    //It's like "--c"
+    iterator &operator--()
+    {
+      ptr = ptr - sizeof(char);
+      pos--;
+      return *this;
+    }
+
+    CC_DIAGNOSTIC_POP()
+
+    //operator decreases ptr address and returns new value
+    //It's like "c--"
+    iterator operator--(int _b)
+    {
+      iterator buffer = *this;
+      ptr = ptr - sizeof(char);
+      pos--;
+      return buffer;
+    }
+
+    //operator returns true if both members point to the same address
+    //returns false if not happen
+
+    bool operator==(const iterator &right) const
+    {
+      return (ptr == right.ptr && pos == right.pos);
+    }
+
+    bool operator==(const const_iterator &right) const
+    {
+      return (ptr == right.ptr && pos == right.pos);
+    }
+
+    bool operator!=(const iterator &right) const
+    {
+      return !(pos == right.pos);
+    }
+
+    bool operator!=(const const_iterator &right) const
+    {
+      return !(pos == right.pos);
+    }
+
+    bool operator<(const iterator &right) const
+    {
+      return (pos < right.pos);
+    }
+
+    bool operator<(const const_iterator &right) const
+    {
+      return (pos < right.pos);
+    }
+
+    //operator returns true if ptr address of right is lower than this
+
+    bool operator>(const iterator &right) const
+    {
+      return (pos > right.pos);
+    }
+
+    bool operator>(const const_iterator &right) const
+    {
+      return (pos > right.pos);
+    }
+
+    //operator returns true if ptr address of right is higher or equal than this
+
+    bool operator<=(const iterator &right) const
+    {
+      return !(pos > right.pos);
+    }
+
+    bool operator<=(const const_iterator &right) const
+    {
+      return !(pos > right.pos);
+    }
+
+    //operator returns true if ptr address of right is lower or equal than this
+
+    bool operator>=(const iterator &right) const
+    {
+      return !(pos < right.pos);
+    }
+
+    bool operator>=(const const_iterator &right) const
+    {
+      return !(pos < right.pos);
+    }
+
+    CC_DIAGNOSTIC_PUSH()
+    DO_PRAGMA(GCC diagnostic ignored "-Wreturn-stack-address")
+
+    //operator adds n positions on ptr address, and returns its address value
+
+    iterator &operator+=(int n)
+    {
+      ptr = ptr + sizeof(char) * n;
+      pos += n;
+      return *this;
+    }
+
+    //operator subtracts n positions on ptr address, and returns its address value
+
+    iterator operator-=(int n)
+    {
+      ptr = ptr - sizeof(char) * n;
+      pos -= n;
+      return *this;
+    }
+
+    CC_DIAGNOSTIC_POP()
+  };
+
+  class const_iterator
+  {
+  public:
+    typedef ::std::random_access_iterator_tag iterator_category;
+    typedef CharT value_type;
+    typedef ::std::ptrdiff_t difference_type;
+    typedef const CharT *pointer;
+    typedef const CharT &reference;
+
+    char *ptr;
+    int pos;
+
+    const_iterator(const iterator &i)
+    {
+      ptr = i.ptr;
+      pos = i.pos;
+    }
+
+    const_iterator(const const_iterator &i)
+    {
+      ptr = i.ptr;
+      pos = i.pos;
+    }
+
+    const_iterator()
+    {
+      ptr = NULL;
+    }
+
+    //This creates an iterator that points to the value pointed to by p_pointer.
+    const_iterator(char *p_pointer)
+    {
+      ptr = p_pointer;
+    }
+
+    char *operator->()
+    { //operator returns memo address ptr
+      return ptr;
+    }
+
+    char &operator*()
+    {
+      return *ptr;
+    }
+
+    CC_DIAGNOSTIC_PUSH()
+    DO_PRAGMA(GCC diagnostic ignored "-Wreturn-stack-address")
+
+    //operator subtracts n positions on ptr address of this
+    const_iterator operator-(int n) const
+    {
+      const_iterator buffer;
+      buffer.ptr = ptr - sizeof(char) * n;
+      buffer.pos = pos - n;
+      return buffer;
+    }
+
+    const_iterator operator+(int n) const
+    {
+      const_iterator buffer;
+      buffer.ptr = ptr + sizeof(char) * n;
+      buffer.pos = pos + n;
+      return buffer;
+    }
+
+    CC_DIAGNOSTIC_POP()
+
+    const_iterator &operator++()
+    {
+      ptr = ptr + sizeof(char);
+      pos++;
+      return *this;
+    }
+    const_iterator operator++(int)
+    {
+      const_iterator buffer = *this;
+      ptr = ptr + sizeof(char);
+      pos++;
+      return buffer;
+    }
+
+    //operator returns true if both members point to the same address
+    //returns false if not happen
+
+    bool operator==(const iterator &right) const
+    {
+      return (ptr == right.ptr);
+    }
+
+    bool operator==(const const_iterator &right) const
+    {
+      return (ptr == right.ptr);
+    }
+
+    //just the complement of "=="
+
+    bool operator!=(const const_iterator &right) const
+    {
+      return !(ptr == right.ptr);
+    }
+
+    bool operator!=(const iterator &right) const
+    {
+      return !(ptr == right.ptr);
+    }
+
+    bool operator!=(iterator right)
+    {
+      return !(ptr == right.ptr);
+    }
+
+    //operator returns true if ptr address of right is higher than this
+
+    bool operator<(const iterator &right) const
+    {
+      return (ptr < right.ptr);
+    }
+
+    bool operator<(const const_iterator &right) const
+    {
+      return (ptr < right.ptr);
+    }
+
+    //operator returns true if ptr address of right is lower than this
+
+    bool operator>(const iterator &right) const
+    {
+      return (ptr > right.ptr);
+    }
+
+    bool operator>(const const_iterator &right) const
+    {
+      return (ptr > right.ptr);
+    }
+
+    //operator returns true if ptr address of right is higher or equal than this
+
+    bool operator<=(const iterator &right) const
+    {
+      return !(ptr > right.ptr);
+    }
+
+    bool operator<=(const const_iterator &right) const
+    {
+      return !(ptr > right.ptr);
+    }
+
+    //operator returns true if ptr address of right is lower or equal than this
+
+    bool operator>=(const iterator &right) const
+    {
+      return !(ptr < right.ptr);
+    }
+
+    bool operator>=(const const_iterator &right) const
+    {
+      return !(ptr < right.ptr);
+    }
+    const_iterator(iterator &i)
+    {
+      ptr = i.ptr;
+      pos = i.pos;
+    }
+
+    //operator adds n positions on ptr address, and returns its address value
+  };
+
+  basic_string();
+  basic_string(const CharT *);
+  basic_string(const CharT *s, size_t n);
+#if __cplusplus >= 201103L
+  /* [string.cons]: the string_view constructor is explicit. Delegates to the
+   * (pointer, count) form above, so the bound comes from sv.size() and the
+   * copy stays within STRING_CAPACITY. */
+  explicit basic_string(basic_string_view<CharT, Traits> sv)
+    : basic_string(sv.data(), sv.size())
+  {
+  }
+#endif
+  basic_string(
+    const basic_string<CharT, Traits, Alloc> &str,
+    size_t pos,
+    size_t n);
+  basic_string(basic_string<CharT, Traits, Alloc> &s, size_t n);
+  basic_string(size_t n, char c);
+  explicit basic_string(int len);
+
+  /* [string.cons]: the iterator-pair constructor. Templated so it serves raw
+   * pointers as well as the nested iterator types — the previous
+   * const_iterator-only declaration was never defined, so a raw `char *` pair
+   * (as boost's type_index uses) found no viable overload. The non-template
+   * (const CharT *, size_t) overload still wins for a pointer/length call.
+   *
+   * Constrained away from integral types, as libstdc++ constrains it with
+   * _RequireInputIter: without this, `basic_string(10, 42)` deduces InputIt=int
+   * and beats the (char, size_t) fill constructor on an exact match. */
+  template <class InputIt>
+  basic_string(
+    InputIt first,
+    InputIt last,
+    typename enable_if<!is_integral<InputIt>::value>::type * = 0)
+  {
+  __ESBMC_HIDE:
+    _size = 0;
+    for (; first != last; ++first)
+    {
+      __ESBMC_assert(_size + 1 < STRING_CAPACITY, "basic_string overflow");
+      str[_size++] = *first;
+    }
+    str[_size] = '\0';
+  }
+
+  char *c_str() const;
+  bool operator>(basic_string<CharT, Traits, Alloc> &a);
+  bool operator<(basic_string<CharT, Traits, Alloc> &a);
+  // The const char* relational overloads are non-member free templates (like
+  // operator==/!=), not members: a member operator>(const char*) would be
+  // ambiguous with the free operator>(basic_string&, const char*) for s > "lit".
+  bool operator>=(basic_string<CharT, Traits, Alloc> &a);
+  bool operator>=(const char *lhs) const;
+  bool operator<=(basic_string<CharT, Traits, Alloc> &a);
+  bool operator<=(const char *lhs) const;
+  basic_string<CharT, Traits, Alloc> &
+  operator=(basic_string<CharT, Traits, Alloc> &str);
+  basic_string<CharT, Traits, Alloc> &operator=(const char *s);
+  basic_string<CharT, Traits, Alloc> &operator=(char c);
+  basic_string<CharT, Traits, Alloc> &
+  operator=(const basic_string<CharT, Traits, Alloc> &str);
+  basic_string<CharT, Traits, Alloc> &
+  operator+=(const basic_string<CharT, Traits, Alloc> &s);
+  basic_string<CharT, Traits, Alloc> &operator+=(const char *s);
+  basic_string<CharT, Traits, Alloc> &operator+=(char s);
+  //TODO: operator+
+
+  char &operator[](size_t pos);
+  const char &operator[](size_t pos) const;
+  void push_back(char c);
+  void reserve(size_t n = 0);
+  char &at(size_t pos);
+  const char &at(size_t pos) const;
+  char &front();
+  const char &front() const;
+  char &back();
+  const char &back() const;
+  bool empty() const;
+  void clear();
+  size_t length() const;
+  int compare(const basic_string<CharT, Traits, Alloc> &s) const;
+  int compare(const char *s) const;
+  int compare(
+    int pos1,
+    size_t n1,
+    const basic_string<CharT, Traits, Alloc> &s) const;
+  int compare(int pos1, size_t n1, const char *s) const;
+  int compare(
+    size_t pos1,
+    size_t n1,
+    const basic_string<CharT, Traits, Alloc> &s,
+    size_t pos2,
+    size_t n2) const;
+  size_t find_first_of(
+    const basic_string<CharT, Traits, Alloc> &s,
+    size_t pos = 0) const;
+  size_t find_first_of(const char *s, size_t pos = 0) const;
+  size_t find_first_of(char c, size_t pos = 0) const;
+  size_t find(basic_string<CharT, Traits, Alloc> &s, size_t pos = 0) const;
+  size_t find(const char *s, size_t pos = 0) const;
+  size_t find(const char *s, size_t pos, size_t n) const;
+  size_t find(char c, size_t pos = 0) const;
+
+#if __cplusplus >= 202002L
+  bool starts_with(const basic_string<CharT, Traits, Alloc> &x) const
+  {
+    if (x._size > this->_size)
+      return false;
+    for (int i = 0; i < x._size; i++)
+      if (this->str[i] != x.str[i])
+        return false;
+    return true;
+  }
+  bool starts_with(CharT c) const
+  {
+    return this->_size > 0 && this->str[0] == c;
+  }
+  bool starts_with(const CharT *s) const
+  {
+    for (int i = 0; s[i] != '\0'; i++)
+      if (i >= this->_size || this->str[i] != s[i])
+        return false;
+    return true;
+  }
+
+  bool ends_with(const basic_string<CharT, Traits, Alloc> &x) const
+  {
+    if (x._size > this->_size)
+      return false;
+    int off = this->_size - x._size;
+    for (int i = 0; i < x._size; i++)
+      if (this->str[off + i] != x.str[i])
+        return false;
+    return true;
+  }
+  bool ends_with(CharT c) const
+  {
+    return this->_size > 0 && this->str[this->_size - 1] == c;
+  }
+  bool ends_with(const CharT *s) const
+  {
+    int n = 0;
+    while (s[n] != '\0')
+      n++;
+    if (n > this->_size)
+      return false;
+    int off = this->_size - n;
+    for (int i = 0; i < n; i++)
+      if (this->str[off + i] != s[i])
+        return false;
+    return true;
+  }
+#endif
+
+  basic_string<CharT, Traits, Alloc> &
+  assign(basic_string<CharT, Traits, Alloc> &s);
+  basic_string<CharT, Traits, Alloc> &assign(const char *s, size_t n);
+  basic_string<CharT, Traits, Alloc> &
+  assign(basic_string<CharT, Traits, Alloc> &s, size_t pos, size_t n);
+  basic_string<CharT, Traits, Alloc> &assign(const char *s);
+  basic_string<CharT, Traits, Alloc> &assign(size_t n, char c);
+  basic_string<CharT, Traits, Alloc> &assign(iterator one, iterator two)
+  {
+  __ESBMC_HIDE:
+    char *s = one.it_str;
+    int pos = one.pos;
+    int n = two.pos, i, k;
+    __ESBMC_assert(s != NULL, "The parameter must be different than NULL");
+    /* [one, two) -- two is not itself copied. */
+    this->_size = n - pos;
+    for (k = 0, i = pos; i < n; i++, k++)
+      this->str[k] = s[i];
+    this->str[k] = '\0';
+    return *this;
+  }
+  basic_string<CharT, Traits, Alloc> &
+  append(basic_string<CharT, Traits, Alloc> &s);
+  basic_string<CharT, Traits, Alloc> &append(const char *s, size_t n);
+  basic_string<CharT, Traits, Alloc> &
+  append(basic_string<CharT, Traits, Alloc> &s, size_t pos, size_t n);
+  basic_string<CharT, Traits, Alloc> &append(const char *s);
+  basic_string<CharT, Traits, Alloc> &append(size_t n, char c);
+  basic_string<CharT, Traits, Alloc> &append(iterator one, iterator two)
+  {
+  __ESBMC_HIDE:
+    char *s = one.it_str;
+    int sLen = strlen(s);
+    int pos = one.pos;
+    int n = two.pos;
+    __ESBMC_assert(pos >= 0, "basic_string overflow");
+    __ESBMC_assert(pos <= sLen, "basic_string overflow");
+    __ESBMC_assert(n <= sLen, "basic_string overflow");
+    __ESBMC_assert(s != NULL, "The parameter must be different than NULL");
+    if ((pos > sLen) || (pos > n))
+    {
+      // TODO: when we support try-catch, replace the assert with the throw statement below
+      //throw out_of_range();
+      __ESBMC_assert(0, "basic_string append failed, out_of_range");
+    }
+
+    int totalLength = this->size();
+    /* [one, two) -- two is not itself appended. */
+    totalLength += (n - pos);
+    int i, j, k;
+    basic_string<CharT, Traits, Alloc> result;
+    for (i = 0; i < this->_size; i++)
+    {
+      result.str[i] = this->str[i];
+    }
+    for (j = i, k = pos; j < totalLength; j++, k++)
+    {
+      result.str[j] = s[k];
+    }
+    result.str[j] = '\0';
+    this->_size = totalLength;
+    {
+      int _q = 0;
+      while (result.str[_q] != '\0' && _q < STRING_CAPACITY - 1)
+      {
+        this->str[_q] = result.str[_q];
+        ++_q;
+      }
+      this->str[_q] = '\0';
+    }
+    return *this;
+  }
+  void swap(basic_string<CharT, Traits, Alloc> &s);
+  void resize(size_t n, char c);
+  void resize(size_t n);
+  size_t capacity() const;
+  size_t max_size() const;
+  size_t size() const;
+  size_t rfind(basic_string<CharT, Traits, Alloc> &s, size_t pos = npos) const;
+  size_t rfind(const char *s, size_t pos = npos) const;
+  size_t rfind(char *s) const;
+  size_t rfind(char c, size_t pos = npos) const;
+  size_t rfind(const char *s, size_t pos, size_t n) const;
+  size_t find_last_of(
+    const basic_string<CharT, Traits, Alloc> &s,
+    size_t pos = npos) const;
+  size_t find_last_of(const char *s, size_t pos = npos) const;
+  size_t find_last_of(char *s) const;
+  size_t find_last_of(char c, size_t pos = npos) const;
+  size_t find_first_not_of(
+    const basic_string<CharT, Traits, Alloc> &s,
+    size_t pos = 0) const;
+  size_t find_first_not_of(const char *s, size_t pos = 0) const;
+  size_t find_first_not_of(char c, size_t pos = 0) const;
+  size_t find_last_not_of(
+    const basic_string<CharT, Traits, Alloc> &s,
+    size_t pos = npos) const;
+  size_t find_last_not_of(const char *s, size_t pos = npos) const;
+  size_t find_last_not_of(char c, size_t pos = npos) const;
+  basic_string<CharT, Traits, Alloc> &erase(size_t pos = 0, size_t n = npos);
+  basic_string<CharT, Traits, Alloc> &erase(size_t pos, size_t n, char *tmp);
+  basic_string<CharT, Traits, Alloc> &erase(iterator it)
+  {
+    __ESBMC_assert(it.pos >= 0, "The parameter must be greater than zero");
+    int pos = it.pos;
+    int n = 1;
+    int i, k, len = this->length();
+    __ESBMC_assert(pos < len, "overflow");
+    int lenOne = pos + 1;
+    char one[STRING_CAPACITY];
+    for (i = 0; i < pos; i++)
+    {
+      one[i] = this->str[i];
+    }
+    int lenTwo = (len - (pos + n)) + 1;
+    char two[STRING_CAPACITY];
+    for (k = 0, i = pos + n; i < len; i++, k++)
+    {
+      two[k] = this->str[i];
+    }
+    int totalLen = len - n;
+    this->_size = totalLen;
+    for (i = 0; i < lenOne - 1; i++)
+    {
+      this->str[i] = one[i];
+    }
+    for (k = 0; k < lenTwo - 1; k++, i++)
+    {
+      this->str[i] = two[k];
+    }
+    this->str[i] = '\0';
+    return *this;
+  }
+
+  basic_string<CharT, Traits, Alloc> &erase(iterator begin, iterator end)
+  {
+    __ESBMC_assert(
+      begin.pos >= 0, "The first parameter must be greater than zero");
+    __ESBMC_assert(
+      end.pos >= 0, "The second parameter must be greater than zero");
+    int pos = begin.pos;
+    int i, k, len = this->length();
+    __ESBMC_assert(
+      end.pos <= len, "The second parameter must be less than zero");
+    /* [begin, end) -- end is not itself erased. */
+    int n = end.pos - begin.pos;
+    __ESBMC_assert(pos < len, "overflow");
+    int lenOne = pos + 1;
+    char one[STRING_CAPACITY];
+    for (i = 0; i < pos; i++)
+    {
+      one[i] = this->str[i];
+    }
+    int lenTwo = (len - (pos + n)) + 1;
+    char two[STRING_CAPACITY];
+    for (k = 0, i = pos + n; i < len; i++, k++)
+    {
+      two[k] = this->str[i];
+    }
+    int totalLen = len - n;
+    this->_size = totalLen;
+    for (i = 0; i < lenOne - 1; i++)
+    {
+      this->str[i] = one[i];
+    }
+    for (k = 0; k < lenTwo - 1; k++, i++)
+    {
+      this->str[i] = two[k];
+    }
+    this->str[i] = '\0';
+    return *this;
+  }
+
+  basic_string<CharT, Traits, Alloc> &
+  replace(size_t pos1, size_t n1, const basic_string<CharT, Traits, Alloc> &s);
+  basic_string<CharT, Traits, Alloc> &replace(
+    size_t pos1,
+    size_t n1,
+    basic_string<CharT, Traits, Alloc> &s,
+    size_t pos2,
+    size_t n2);
+  basic_string<CharT, Traits, Alloc> &
+  replace(size_t pos1, size_t n1, char *s, size_t pos2, size_t n2);
+  basic_string<CharT, Traits, Alloc> &
+  replace(size_t pos1, size_t n1, const char *s, size_t n2);
+  basic_string<CharT, Traits, Alloc> &
+  replace(size_t pos1, size_t n1, const char *s);
+  basic_string<CharT, Traits, Alloc> &
+  replace(size_t pos1, size_t n1, size_t n2, char c);
+
+  //new add
+  basic_string<CharT, Traits, Alloc> &replace(
+    basic_string<CharT, Traits, Alloc>::iterator i1,
+    basic_string<CharT, Traits, Alloc>::iterator i2,
+    basic_string<CharT, Traits, Alloc> &str);
+  basic_string<CharT, Traits, Alloc> &replace(
+    basic_string<CharT, Traits, Alloc>::iterator i1,
+    basic_string<CharT, Traits, Alloc>::iterator i2,
+    char *s,
+    size_t n2);
+  basic_string<CharT, Traits, Alloc> &replace(
+    basic_string<CharT, Traits, Alloc>::iterator i1,
+    basic_string<CharT, Traits, Alloc>::iterator i2,
+    char *s);
+  basic_string<CharT, Traits, Alloc> &replace(
+    basic_string<CharT, Traits, Alloc>::iterator i1,
+    basic_string<CharT, Traits, Alloc>::iterator i2,
+    size_t n2,
+    char c);
+  basic_string<CharT, Traits, Alloc> &replace(
+    basic_string<CharT, Traits, Alloc>::iterator i1,
+    basic_string<CharT, Traits, Alloc>::iterator i2,
+    basic_string<CharT, Traits, Alloc>::iterator i3,
+    basic_string<CharT, Traits, Alloc>::iterator i4);
+
+  basic_string<CharT, Traits, Alloc> &
+  insert(size_t pos1, basic_string<CharT, Traits, Alloc> &s);
+  basic_string<CharT, Traits, Alloc> &insert(
+    size_t pos1,
+    basic_string<CharT, Traits, Alloc> &s,
+    size_t pos2,
+    size_t n);
+  basic_string<CharT, Traits, Alloc> &
+  insert(size_t pos1, const char *s, size_t n);
+  basic_string<CharT, Traits, Alloc> &insert(size_t pos1, const char *s);
+  basic_string<CharT, Traits, Alloc> &insert(size_t pos1, size_t n, char c);
+  basic_string<CharT, Traits, Alloc> &
+  insert(iterator it_one, iterator it_two, iterator it_three)
+  {
+  __ESBMC_HIDE:
+    int pos1 = it_one.pos;
+    char *s = it_two.ptr;
+    int n = it_three.pos;
+    int len = this->length(), i, k;
+    int lim = n;
+    int sLen = strlen(s);
+    __ESBMC_assert((pos1 >= 0) && (pos1 < len), "basic_string overflow");
+    __ESBMC_assert(n > 0, "basic_string overflow");
+    __ESBMC_assert(s != NULL, "The parameter must be different than NULL");
+    __ESBMC_assert(lim < sLen, "basic_string overflow");
+    int lenOne = pos1 + 1;
+    char one[STRING_CAPACITY];
+    for (i = 0; i < pos1; i++)
+    {
+      one[i] = this->str[i];
+    }
+    int lenTwo = (len - pos1) + 1;
+    char two[STRING_CAPACITY];
+    for (k = 0, i = pos1; i < len; i++, k++)
+    {
+      two[k] = this->str[i];
+    }
+    int totalLen = n + len;
+    this->_size = totalLen;
+
+    for (i = 0; i < lenOne - 1; i++)
+    {
+      this->str[i] = one[i];
+    }
+    for (k = 0; k < lim; k++, i++)
+    {
+      this->str[i] = s[k];
+    }
+    for (k = 0; k < lenTwo - 1; k++, i++)
+    {
+      this->str[i] = two[k];
+    }
+    this->str[i] = '\0';
+    return *this;
+  }
+  iterator insert(iterator p, char c)
+  {
+    __ESBMC_assert(p.pos >= 0, "The first parameter must be greater than zero");
+    int pos1 = p.pos;
+    int n = 1;
+    char s[STRING_CAPACITY];
+    for (int i = 0; i < n; i++)
+    {
+      s[i] = c;
+    }
+    int len = this->length(), i, k;
+    int sLen = n;
+    __ESBMC_assert(pos1 < len, "overflow");
+    int lenOne = pos1 + 1;
+    char one[STRING_CAPACITY];
+    for (i = 0; i < pos1; i++)
+    {
+      one[i] = this->str[i];
+    }
+    int lenTwo = (len - pos1) + 1;
+    char two[STRING_CAPACITY];
+    for (k = 0, i = pos1; i < len; i++, k++)
+    {
+      two[k] = this->str[i];
+    }
+    int totalLen = len + n;
+    this->_size = totalLen;
+
+    for (i = 0; i < lenOne - 1; i++)
+    {
+      this->str[i] = one[i];
+    }
+    for (k = 0; k < sLen; k++, i++)
+    {
+      this->str[i] = s[k];
+    }
+    for (k = 0; k < lenTwo - 1; k++, i++)
+    {
+      this->str[i] = two[k];
+    }
+    this->str[i] = '\0';
+    basic_string<CharT, Traits, Alloc>::iterator it(this->str);
+    it.pos = p.pos;
+    return it;
+  }
+
+  basic_string &insert(iterator p, size_t n, char c)
+  {
+    __ESBMC_assert(p.pos >= 0, "The first parameter must be greater than zero");
+    __ESBMC_assert(n >= 0, "The second parameter must be greater than zero");
+    int pos1 = p.pos;
+    char s[STRING_CAPACITY];
+    for (int i = 0; i < n; i++)
+    {
+      s[i] = c;
+    }
+    int len = this->length(), i, k;
+    int sLen = n;
+    /* Inserting at end() is legal, so pos1 may equal len. The general path
+     * below copies [0, pos1), then the new characters, then [pos1, len) --
+     * which appends when that tail is empty. The special case that stood here
+     * appended whenever pos1 was len - 1, compensating for end() reporting the
+     * last character rather than one past it; with end() corrected it would
+     * wrongly append an insert aimed before the final character. */
+    __ESBMC_assert(pos1 <= len, "overflow");
+    int lenOne = pos1 + 1;
+    char one[STRING_CAPACITY];
+    for (i = 0; i < pos1; i++)
+    {
+      one[i] = this->str[i];
+    }
+    int lenTwo = (len - pos1) + 1;
+    char two[STRING_CAPACITY];
+    for (k = 0, i = pos1; i < len; i++, k++)
+    {
+      two[k] = this->str[i];
+    }
+    int totalLen = len + n;
+    this->_size = totalLen;
+
+    for (i = 0; i < lenOne - 1; i++)
+    {
+      this->str[i] = one[i];
+    }
+    for (k = 0; k < sLen; k++, i++)
+    {
+      this->str[i] = s[k];
+    }
+    for (k = 0; k < lenTwo - 1; k++, i++)
+    {
+      this->str[i] = two[k];
+    }
+    this->str[i] = '\0';
+    return *this;
+  }
+
+  basic_string<CharT, Traits, Alloc> &insert(const_iterator p, size_t n, char c)
+  {
+    __ESBMC_assert(p.pos >= 0, "The first parameter must be greater than zero");
+    __ESBMC_assert(n >= 0, "The second parameter must be greater than zero");
+    int pos1 = p.pos;
+    char s[STRING_CAPACITY];
+    for (int i = 0; i < n; i++)
+    {
+      s[i] = c;
+    }
+    int len = this->length(), i, k;
+    int sLen = n;
+    /* Inserting at end() is legal, so pos1 may equal len. The general path
+     * below copies [0, pos1), then the new characters, then [pos1, len) --
+     * which appends when that tail is empty. The special case that stood here
+     * appended whenever pos1 was len - 1, compensating for end() reporting the
+     * last character rather than one past it; with end() corrected it would
+     * wrongly append an insert aimed before the final character. */
+    __ESBMC_assert(pos1 <= len, "overflow");
+    int lenOne = pos1 + 1;
+    char one[STRING_CAPACITY];
+    for (i = 0; i < pos1; i++)
+    {
+      one[i] = this->str[i];
+    }
+    int lenTwo = (len - pos1) + 1;
+    char two[STRING_CAPACITY];
+    for (k = 0, i = pos1; i < len; i++, k++)
+    {
+      two[k] = this->str[i];
+    }
+    int totalLen = len + n;
+    this->_size = totalLen;
+
+    for (i = 0; i < lenOne - 1; i++)
+    {
+      this->str[i] = one[i];
+    }
+    for (k = 0; k < sLen; k++, i++)
+    {
+      this->str[i] = s[k];
+    }
+    for (k = 0; k < lenTwo - 1; k++, i++)
+    {
+      this->str[i] = two[k];
+    }
+    this->str[i] = '\0';
+    return *this;
+  }
+  template <class InputIterator>
+  void insert(iterator p, InputIterator first, InputIterator last);
+  size_t copy(char *s, size_t n, size_t pos = 0) const;
+  const char *data() const;
+#if __cplusplus >= 201703L
+  char *data();
+#endif
+
+  /* [string.substr]: pos == size() is in range and yields the empty string;
+   * the count is min(n, size() - pos), so n is clamped rather than required
+   * to fit -- npos, the default, means "to the end". */
+  basic_string<CharT, Traits, Alloc>
+  substr(size_t pos = 0, size_t n = npos) const
+  {
+  __ESBMC_HIDE:
+    size_t len = this->length();
+    __ESBMC_assert(pos <= len, "basic_string::substr position out of range");
+    size_t rlen = n < (len - pos) ? n : (len - pos);
+    size_t k;
+    char one[STRING_CAPACITY];
+    for (k = 0; k < rlen; k++)
+    {
+      one[k] = this->str[pos + k];
+    }
+    one[k] = '\0';
+    basic_string<CharT, Traits, Alloc> tmp(one);
+    return tmp;
+  }
+
+  basic_string<CharT, Traits, Alloc>::iterator begin() const
+  {
+    return basic_string<CharT, Traits, Alloc>::iterator(
+      const_cast<char *>(this->str));
+  }
+
+  basic_string<CharT, Traits, Alloc>::iterator end() const
+  {
+    /* One past the last character, so [begin(), end()) covers every element
+     * and begin() == end() on an empty string. Stopping at length() - 1 left
+     * the last character unvisited, and on an empty string gave pos == -1,
+     * which begin() never reaches. */
+    size_t len = this->length();
+    basic_string<CharT, Traits, Alloc>::iterator end(
+      const_cast<char *>(this->str));
+    end.ptr = const_cast<char *>(this->str) + len;
+    end.pos = len;
+    return end;
+  }
+  template <class T>
+  basic_string<CharT, Traits, Alloc> &assign(T first, T last)
+  {
+    __ESBMC_assert(
+      first != NULL, "The first parameter must be different than NULL");
+    __ESBMC_assert(
+      last != NULL, "The second parameter must be different than NULL");
+    __ESBMC_assert(first >= 0, "The first parameter must be greater than zero");
+    __ESBMC_assert(last >= 0, "The second parameter must be greater than zero");
+    int i;
+    this->_size = first;
+    for (i = 0; i < first; i++)
+    {
+      this->str[i] = last;
+    }
+    this->str[i] = '\0';
+    return *this;
+  }
+
+  template <class InputIterator>
+  basic_string<CharT, Traits, Alloc> &
+  append(InputIterator first, InputIterator last)
+  {
+    __ESBMC_assert(first >= 0, "The first parameter must be greater than zero");
+    __ESBMC_assert(last >= 0, "The second parameter must be greater than zero");
+    int rhsLen = first;
+    char c = last;
+    int totalLen = this->_size + rhsLen;
+    basic_string<CharT, Traits, Alloc> temp(totalLen);
+    int i, j;
+    for (i = 0; i < this->_size; i++)
+      temp.str[i] = this->str[i];
+    for (j = i; j < totalLen; j++)
+      temp.str[j] = c;
+    temp.str[totalLen] = '\0';
+    *this = temp;
+    return *this;
+  }
+
+#if __cplusplus >= 201103L
+  /* [string.accessors]: `constexpr operator basic_string_view<charT, traits>()
+   * const noexcept`. The model's string_view is char-only, so this is
+   * well-formed exactly for basic_string<char>; instantiating it for wstring
+   * is ill-formed, as the conversion is in the real library too. */
+  operator string_view() const OM_NOEXCEPT
+  {
+    return string_view(c_str(), size());
+  }
+#endif
+
+private:
+};
+
+typedef basic_string<char> string;
+// Declaration-level model: the underlying storage is char-based, which is
+// enough to parse interfaces taking std::wstring (github #6063); wide-string
+// operations are not modelled.
+typedef basic_string<wchar_t> wstring;
+} // namespace std
+
+/* basic_string is complete from here on, so the exception hierarchy -- whose
+ * what_arg constructors take a const std::string & -- can be defined now. It
+ * must be in scope before the out-of-line member definitions below, because
+ * basic_string::at throws std::out_of_range ([string.access]). */
+#include "__stdexcept_base"
+
+namespace std
+{
+/* strcpy scans to a NUL, which over a symbolic buffer never converges: copying
+ * one std::string into another did not terminate. The trip count here is the
+ * fixed buffer size, which a string can never exceed. */
+static void __esbmc_string_copy(char *dst, const char *src, size_t n)
+{
+__ESBMC_HIDE:
+  for (size_t i = 0; i < STRING_CAPACITY; i++)
+  {
+    if (i >= n)
+      break;
+    dst[i] = src[i];
+  }
+  dst[n] = '\0';
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+basic_string<CharT, Traits, Alloc>::basic_string()
+{
+  str[0] =
+    '\0'; // Assign the null terminator to represent an empty basic_string
+  _size = 0;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+basic_string<CharT, Traits, Alloc>::basic_string(const CharT *s)
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(s != NULL, "basic_string<CharT, Traits, Alloc> invalid");
+  /* strlen and strcpy both scan to a NUL. That folds for a plain literal, but
+   * not once the source is a conditional -- `std::string(x ? x : "")`, which is
+   * how <filesystem>'s path is built -- and the constructor then never
+   * converged. Measuring the length while copying, bounded by the fixed buffer,
+   * removes both scans. */
+  size_t n = 0;
+  for (size_t k = 0; k < STRING_CAPACITY; k++)
+  {
+    if (s[k] == '\0')
+      break;
+    str[k] = s[k];
+    n++;
+  }
+  str[n] = '\0';
+  _size = n;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+basic_string<CharT, Traits, Alloc>::basic_string(const CharT *s, size_t n)
+{
+__ESBMC_HIDE:
+  // [string.cons]: constructs from the range [s, s + n); n is unrelated to
+  // strlen(s) and the range may contain embedded null characters. Check for
+  // null before any dereference, then copy exactly n characters.
+  __ESBMC_assert(s != NULL, "invalid basic_string");
+  __ESBMC_assert(n < STRING_CAPACITY, "String capacity exceeded");
+
+  _size = n;
+  for (size_t i = 0; i < n; i++)
+    str[i] = s[i];
+  str[n] = '\0';
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+basic_string<CharT, Traits, Alloc>::basic_string(
+  basic_string<CharT, Traits, Alloc> &s,
+  size_t n)
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(n < s.length(), "basic_string overflow");
+  __ESBMC_assert(s.str != NULL, "invalid basic_string");
+  int i, j;
+
+  // Avoid allocating a negative amount.
+  int sz = s._size - n + 1;
+  if (sz < 0)
+    sz = 0;
+  this->_size = s._size - n;
+  for (i = n, j = 0; s.str[i] != '\0'; i++, j++)
+    this->str[j] = s.str[i];
+  str[j] = '\0';
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+basic_string<CharT, Traits, Alloc>::basic_string(int len)
+{
+  __ESBMC_assert(len >= 0, "the parameter must be greater or equal than zero");
+  _size = len;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+basic_string<CharT, Traits, Alloc>::basic_string(size_t n, char c)
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(n < STRING_CAPACITY, "String capacity exceeded");
+
+  for (size_t i = 0; i < n; i++)
+    str[i] = c;
+  str[n] = '\0';
+  _size = n;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+char *basic_string<CharT, Traits, Alloc>::c_str() const
+{
+__ESBMC_HIDE:
+  return const_cast<char *>(str);
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+inline ostream &
+operator<<(ostream &o, const basic_string<CharT, Traits, Alloc> &s)
+{
+  if (!o._discard())
+    o._put_field(s.c_str(), s.size());
+  return o;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+inline ostream &
+operator<<(ostream &o, typename basic_string<CharT, Traits, Alloc>::iterator &)
+{
+  return o;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+inline istream &operator>>(istream &is, basic_string<CharT, Traits, Alloc>)
+{
+  return is;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+bool basic_string<CharT, Traits, Alloc>::operator>(
+  basic_string<CharT, Traits, Alloc> &a)
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(a.str != NULL, "The parameter must be different than NULL");
+  int i;
+  for (i = 0; this->str[i] != '\0' && this->str[i] == a.str[i]; i++)
+    ;
+  return (unsigned char)this->str[i] > (unsigned char)a.str[i];
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+bool operator>(
+  const basic_string<CharT, Traits, Alloc> &lhs,
+  const basic_string<CharT, Traits, Alloc> &rhs)
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(
+    lhs.str != NULL, "The first parameter must be different than NULL");
+  __ESBMC_assert(
+    rhs.str != NULL, "The second parameter must be different than NULL");
+  int i;
+  for (i = 0; lhs.str[i] != '\0' && lhs.str[i] == rhs.str[i]; i++)
+    ;
+  return (unsigned char)lhs.str[i] > (unsigned char)rhs.str[i];
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+bool operator<(
+  const basic_string<CharT, Traits, Alloc> &lhs,
+  const basic_string<CharT, Traits, Alloc> &rhs)
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(
+    lhs.str != NULL, "The first parameter must be different than NULL");
+  __ESBMC_assert(
+    rhs.str != NULL, "The second parameter must be different than NULL");
+  int i;
+  for (i = 0; lhs.str[i] != '\0' && lhs.str[i] == rhs.str[i]; i++)
+    ;
+  return (unsigned char)lhs.str[i] < (unsigned char)rhs.str[i];
+}
+
+// [string.cmp]: all six comparisons are non-member and take const&. The <= and
+// >= members below cover only non-const operands -- a non-template member wins
+// the tie against these templates -- so without these two, comparing a pair of
+// const strings does not compile.
+template <typename CharT, typename Traits, typename Alloc>
+bool operator<=(
+  const basic_string<CharT, Traits, Alloc> &lhs,
+  const basic_string<CharT, Traits, Alloc> &rhs)
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(
+    lhs.str != NULL, "The first parameter must be different than NULL");
+  __ESBMC_assert(
+    rhs.str != NULL, "The second parameter must be different than NULL");
+  return strcmp(lhs.str, rhs.str) <= 0;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+bool operator>=(
+  const basic_string<CharT, Traits, Alloc> &lhs,
+  const basic_string<CharT, Traits, Alloc> &rhs)
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(
+    lhs.str != NULL, "The first parameter must be different than NULL");
+  __ESBMC_assert(
+    rhs.str != NULL, "The second parameter must be different than NULL");
+  return strcmp(lhs.str, rhs.str) >= 0;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+bool operator>(const char *lhs, basic_string<CharT, Traits, Alloc> &rhs)
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(
+    lhs != NULL, "The first parameter must be different than NULL");
+  __ESBMC_assert(
+    rhs.str != NULL, "The second parameter must be different than NULL");
+  int i;
+  for (i = 0; lhs[i] != '\0' && lhs[i] == rhs.str[i]; i++)
+    ;
+  return (unsigned char)lhs[i] > (unsigned char)rhs.str[i];
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+bool operator>(basic_string<CharT, Traits, Alloc> &lhs, const char *rhs)
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(
+    lhs.str != NULL, "The first parameter must be different than NULL");
+  __ESBMC_assert(
+    rhs != NULL, "The second parameter must be different than NULL");
+  int i;
+  for (i = 0; lhs.str[i] != '\0' && lhs.str[i] == rhs[i]; i++)
+    ;
+  return (unsigned char)lhs.str[i] > (unsigned char)rhs[i];
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+bool basic_string<CharT, Traits, Alloc>::operator<(
+  basic_string<CharT, Traits, Alloc> &a)
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(a.str != NULL, "The parameter must be different than NULL");
+  int i;
+  for (i = 0; this->str[i] != '\0' && this->str[i] == a.str[i]; i++)
+    ;
+  return (unsigned char)this->str[i] < (unsigned char)a.str[i];
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+bool operator<(const char *lhs, basic_string<CharT, Traits, Alloc> &rhs)
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(
+    lhs != NULL, "The first parameter must be different than NULL");
+  __ESBMC_assert(
+    rhs.str != NULL, "The second parameter must be different than NULL");
+  int i;
+  for (i = 0; lhs[i] != '\0' && lhs[i] == rhs.str[i]; i++)
+    ;
+  return (unsigned char)lhs[i] < (unsigned char)rhs.str[i];
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+bool operator<(basic_string<CharT, Traits, Alloc> &lhs, const char *rhs)
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(
+    lhs.str != NULL, "The first parameter must be different than NULL");
+  __ESBMC_assert(
+    rhs != NULL, "The second parameter must be different than NULL");
+  int i;
+  for (i = 0; lhs.str[i] != '\0' && lhs.str[i] == rhs[i]; i++)
+    ;
+  return (unsigned char)lhs.str[i] < (unsigned char)rhs[i];
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+bool basic_string<CharT, Traits, Alloc>::operator>=(
+  basic_string<CharT, Traits, Alloc> &a)
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(a.str != NULL, "The parameter must be different than NULL");
+  int tmp = strcmp(this->str, a.str);
+  if (tmp > 0 || tmp == 0)
+  {
+    return true;
+  }
+  else
+  {
+    return false;
+  }
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+bool basic_string<CharT, Traits, Alloc>::operator>=(const char *lhs) const
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(lhs != NULL, "The parameter must be different than NULL");
+  int tmp = strcmp(this->str, lhs);
+  if (tmp > 0 || tmp == 0)
+  {
+    return true;
+  }
+  else
+  {
+    return false;
+  }
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+bool basic_string<CharT, Traits, Alloc>::operator<=(
+  basic_string<CharT, Traits, Alloc> &a)
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(a.str != NULL, "The parameter must be different than NULL");
+  int tmp = strcmp(this->str, a.str);
+  if (tmp < 0 || tmp == 0)
+  {
+    return true;
+  }
+  else
+  {
+    return false;
+  }
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+bool basic_string<CharT, Traits, Alloc>::operator<=(const char *lhs) const
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(lhs != NULL, "The parameter must be different than NULL");
+  int tmp = strcmp(this->str, lhs);
+  if (tmp < 0 || tmp == 0)
+  {
+    return true;
+  }
+  else
+  {
+    return false;
+  }
+}
+
+// Free const char*-on-the-left overloads, so "lit" >= s / "lit" <= s resolve
+// (the member operators only cover s >= "lit" / s <= "lit").
+template <typename CharT, typename Traits, typename Alloc>
+bool operator>=(const char *lhs, const basic_string<CharT, Traits, Alloc> &rhs)
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(
+    lhs != NULL, "The first parameter must be different than NULL");
+  __ESBMC_assert(
+    rhs.str != NULL, "The second parameter must be different than NULL");
+  return strcmp(lhs, rhs.str) >= 0;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+bool operator<=(const char *lhs, const basic_string<CharT, Traits, Alloc> &rhs)
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(
+    lhs != NULL, "The first parameter must be different than NULL");
+  __ESBMC_assert(
+    rhs.str != NULL, "The second parameter must be different than NULL");
+  return strcmp(lhs, rhs.str) <= 0;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+void basic_string<CharT, Traits, Alloc>::clear()
+{
+  this->_size = 0;
+  this->str[0] = '\0';
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+size_t basic_string<CharT, Traits, Alloc>::length() const
+{
+  return this->_size;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+char &basic_string<CharT, Traits, Alloc>::operator[](size_t pos)
+{
+  __ESBMC_assert(
+    (pos >= 0) && (pos < this->_size), "Error! Invalid access memory area");
+  if (pos > this->_size)
+    return this->str[this->_size - 1];
+  else
+    return this->str[pos];
+}
+
+// Stricter than [string.access] p1, which makes s[s.size()] return the null
+// character: basic_string(int) sets _size without initialising str[], so
+// str[_size] is not reliably '\0' and returning it would yield an
+// unconstrained byte. Do not widen this bound to pos <= _size; to model the
+// standard, return a static '\0' for pos == _size instead.
+template <typename CharT, typename Traits, typename Alloc>
+const char &basic_string<CharT, Traits, Alloc>::operator[](size_t pos) const
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(pos < this->_size, "Error! Invalid access memory area");
+  return this->str[pos];
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+void basic_string<CharT, Traits, Alloc>::push_back(char c)
+{
+__ESBMC_HIDE:
+  *this += c;
+}
+
+// The model's buffer is a fixed-size array, so a request that fits is already
+// satisfied; a larger one cannot be modelled and is reported rather than
+// silently ignored.
+template <typename CharT, typename Traits, typename Alloc>
+void basic_string<CharT, Traits, Alloc>::reserve(size_t n)
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(n < STRING_CAPACITY, "String capacity exceeded");
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+char &basic_string<CharT, Traits, Alloc>::at(size_t pos)
+{
+  // [string.access]: at throws std::out_of_range when pos >= size(). The throw
+  // must stay lexically in each body -- ESBMC's exception lowering only marks a
+  // function as throwing when the throw is directly in it, so routing it
+  // through a helper, or delegating between the two overloads, would silently
+  // drop the landing pad at the call site. Message-less, as in vector::at:
+  // constructing a std::string what_arg would drag a malloc/strlen into every
+  // at() call, and a catch of out_of_range or of exception still matches.
+  if (pos >= this->length())
+    throw std::out_of_range();
+
+  return this->str[pos];
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+const char &basic_string<CharT, Traits, Alloc>::at(size_t pos) const
+{
+  if (pos >= this->length())
+    throw std::out_of_range();
+
+  return this->str[pos];
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+char &basic_string<CharT, Traits, Alloc>::front()
+{
+  __ESBMC_assert(
+    this->length() > 0, "basic_string::front() failed: basic_string is empty");
+
+  return this->str[0];
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+const char &basic_string<CharT, Traits, Alloc>::front() const
+{
+  __ESBMC_assert(
+    this->length() > 0, "basic_string::front() failed: basic_string is empty");
+
+  return this->str[0];
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+char &basic_string<CharT, Traits, Alloc>::back()
+{
+  __ESBMC_assert(
+    this->length() > 0, "basic_string::back() failed: basic_string is empty");
+
+  return this->str[this->length() - 1];
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+const char &basic_string<CharT, Traits, Alloc>::back() const
+{
+  __ESBMC_assert(
+    this->length() > 0, "basic_string::back() failed: basic_string is empty");
+
+  return this->str[this->length() - 1];
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+bool basic_string<CharT, Traits, Alloc>::empty() const
+{
+  if (this->_size == 0)
+    return true;
+  return false;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+basic_string<CharT, Traits, Alloc> &
+basic_string<CharT, Traits, Alloc>::operator=(
+  const basic_string<CharT, Traits, Alloc> &str)
+{
+__ESBMC_HIDE:
+  this->_size = str.length();
+  __esbmc_string_copy(this->str, str.str, this->_size);
+  return *this;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+basic_string<CharT, Traits, Alloc> &
+basic_string<CharT, Traits, Alloc>::operator=(
+  basic_string<CharT, Traits, Alloc> &str)
+{
+__ESBMC_HIDE:
+  if (this == &str)
+    return *this;
+  this->_size = str.length();
+  __esbmc_string_copy(this->str, str.str, this->_size);
+  return *this;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+basic_string<CharT, Traits, Alloc> &
+basic_string<CharT, Traits, Alloc>::operator=(const char *s)
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(s != NULL, "The parameter must be different than NULL");
+  this->_size = strlen(s);
+  strcpy(this->str, s); // Copy the contents of s to str
+  return *this; // Return a reference to the modified basic_string object
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+basic_string<CharT, Traits, Alloc> &
+basic_string<CharT, Traits, Alloc>::operator=(char s)
+{
+__ESBMC_HIDE:
+  this->_size = 1;
+  this->str[0] = s;
+  this->str[1] = '\0';
+  return *this;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+basic_string<CharT, Traits, Alloc> &
+basic_string<CharT, Traits, Alloc>::operator+=(
+  const basic_string<CharT, Traits, Alloc> &s)
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(s.str != NULL, "The parameter must be different than NULL");
+  int rhsLen = s._size;
+  int lhsLen = this->_size;
+  int totalLen = lhsLen + rhsLen;
+  char temp[totalLen + 1];
+  int i, j, k;
+  for (i = 0; i < lhsLen; i++)
+    temp[i] = this->str[i];
+  temp[i] = '\0';
+  for (j = i, k = 0; j < totalLen; j++, k++)
+    temp[j] = s.str[k];
+  temp[j] = '\0';
+  this->_size = totalLen;
+  strcpy(this->str, temp);
+  return *this;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+basic_string<CharT, Traits, Alloc> &
+basic_string<CharT, Traits, Alloc>::operator+=(const char *s)
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(s != NULL, "The parameter must be different than NULL");
+  int rhsLen = strlen(s);
+  int lhsLen = this->_size;
+  int totalLen = lhsLen + rhsLen;
+  char temp[totalLen + 1];
+  int i, j, k;
+  for (i = 0; i < lhsLen; i++)
+    temp[i] = this->str[i];
+  temp[i] = '\0';
+  for (j = i, k = 0; j < totalLen; j++, k++)
+    temp[j] = s[k];
+  temp[j] = '\0';
+  this->_size = totalLen;
+  strcpy(this->str, temp);
+  return *this;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+basic_string<CharT, Traits, Alloc> &
+basic_string<CharT, Traits, Alloc>::operator+=(char s)
+{
+__ESBMC_HIDE:
+  // Guards the strcpy below, which writes _size + 2 bytes into str[].
+  __ESBMC_assert(this->_size + 1 < STRING_CAPACITY, "String capacity exceeded");
+  int totalLen = this->_size + 1;
+  char temp[totalLen + 1];
+  int i = 0;
+  if (this->_size != 0)
+  {
+    for (i = 0; i < this->_size; i++)
+    {
+      temp[i] = this->str[i];
+    }
+  }
+  temp[i] = s;
+  i++;
+  temp[i] = '\0';
+  this->_size = totalLen;
+  strcpy(this->str, temp);
+  return *this;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+void basic_string<CharT, Traits, Alloc>::swap(
+  basic_string<CharT, Traits, Alloc> &s)
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(s.str != NULL, "The parameter must be different than NULL");
+  char tmp[STRING_CAPACITY];
+  {
+    int _q = 0;
+    while (this->str[_q] != '\0' && _q < STRING_CAPACITY - 1)
+    {
+      tmp[_q] = this->str[_q];
+      ++_q;
+    }
+    tmp[_q] = '\0';
+  }
+  {
+    int _q = 0;
+    while (s.str[_q] != '\0' && _q < STRING_CAPACITY - 1)
+    {
+      this->str[_q] = s.str[_q];
+      ++_q;
+    }
+    this->str[_q] = '\0';
+  }
+  {
+    int _q = 0;
+    while (tmp[_q] != '\0' && _q < STRING_CAPACITY - 1)
+    {
+      s.str[_q] = tmp[_q];
+      ++_q;
+    }
+    s.str[_q] = '\0';
+  }
+  int _tsz = this->_size;
+  this->_size = s._size;
+  s._size = _tsz;
+}
+
+// The storage is a fixed buffer, so the capacity is constant; returning _size
+// instead would break [string.capacity]'s capacity() >= res_arg guarantee
+// after reserve(). One byte is kept for the terminator.
+template <typename CharT, typename Traits, typename Alloc>
+size_t basic_string<CharT, Traits, Alloc>::capacity() const
+{
+  return STRING_CAPACITY - 1;
+}
+
+// [string.require] keeps size() <= max_size() invariant across every
+// operation, so an unconstrained value here is not a sound over-approximation.
+template <typename CharT, typename Traits, typename Alloc>
+size_t basic_string<CharT, Traits, Alloc>::max_size() const
+{
+  return STRING_CAPACITY - 1;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+size_t basic_string<CharT, Traits, Alloc>::size() const
+{
+  return this->_size;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+void basic_string<CharT, Traits, Alloc>::resize(size_t n)
+{
+__ESBMC_HIDE:
+  this->resize(n, CharT());
+}
+
+// [string.accessors]: c_str() is terminated at size(), so a shrink moves the
+// terminator down to n instead of leaving it at the old size.
+template <typename CharT, typename Traits, typename Alloc>
+void basic_string<CharT, Traits, Alloc>::resize(size_t n, char c)
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(n < STRING_CAPACITY, "String capacity exceeded");
+  // Iterate from 0 rather than from _size: a size_t index starting at the
+  // symbolic old size wraps past the i < n test, so the loop never converges
+  // unless the caller bounds it with --unwind or --incremental-bmc.
+  size_t old_size = this->_size;
+  for (size_t i = 0; i < n; i++)
+    if (i >= old_size)
+      this->str[i] = c;
+  this->_size = n;
+  this->str[n] = '\0';
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+basic_string<CharT, Traits, Alloc> &basic_string<CharT, Traits, Alloc>::assign(
+  basic_string<CharT, Traits, Alloc> &s)
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(s.str != NULL, "The parameter must be different than NULL");
+  *this = s;
+  return *this;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+basic_string<CharT, Traits, Alloc> &basic_string<CharT, Traits, Alloc>::assign(
+  basic_string<CharT, Traits, Alloc> &s,
+  size_t pos,
+  size_t n)
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(
+    (pos >= 0) && (pos < s.length()) && ((pos + n) < s.length()) && (n > 0),
+    "basic_string overflow");
+  __ESBMC_assert(s.str != NULL, "The parameter must be different than NULL");
+  this->_size = (n);
+  strncpy(this->str, s.str + pos, n);
+  this->str[n] = '\0';
+  return *this;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+basic_string<CharT, Traits, Alloc> &
+basic_string<CharT, Traits, Alloc>::assign(const char *s, size_t n)
+{
+__ESBMC_HIDE:
+  __ESBMC_assert((n < strlen(s)) && (n >= 0), "basic_string overflow");
+  __ESBMC_assert(s != NULL, "The parameter must be different than NULL");
+  this->_size = (n);
+  strncpy(this->str, s, n);
+  this->str[n] = '\0';
+  return *this;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+basic_string<CharT, Traits, Alloc> &
+basic_string<CharT, Traits, Alloc>::assign(const char *s)
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(s != NULL, "The parameter must be different than NULL");
+  *this = s;
+  return *this;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+basic_string<CharT, Traits, Alloc> &
+basic_string<CharT, Traits, Alloc>::assign(size_t n, char c)
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(n > 0, "basic_string overflow");
+  int i;
+  this->_size = n;
+  for (i = 0; i < n; i++)
+  {
+    this->str[i] = c;
+  }
+  this->str[i] = '\0';
+  return *this;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+size_t
+basic_string<CharT, Traits, Alloc>::copy(char *s, size_t n, size_t pos) const
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(pos >= 0, "basic_string overflow");
+  __ESBMC_assert(pos < this->length(), "basic_string overflow");
+  __ESBMC_assert(n <= this->length(), "basic_string overflow");
+  __ESBMC_assert(n > 0, "basic_string overflow");
+  __ESBMC_assert(s != NULL, "The parameter must be different than NULL");
+  size_t aux = n + pos;
+  if (pos > this->size())
+  {
+    // TODO: when we support try-catch, replace the assert with the throw statement below
+    //throw out_of_range();
+    __ESBMC_assert(0, "basic_string append failed, out_of_range");
+  }
+  if (s == NULL)
+  {
+    s = new char[n];
+  }
+  strncpy(s, this->c_str() + pos, aux);
+  return n;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+const char *basic_string<CharT, Traits, Alloc>::data() const
+{
+  return this->str;
+}
+
+#if __cplusplus >= 201703L
+template <typename CharT, typename Traits, typename Alloc>
+char *basic_string<CharT, Traits, Alloc>::data()
+{
+  return this->str;
+}
+#endif
+
+template <typename CharT, typename Traits, typename Alloc>
+basic_string<CharT, Traits, Alloc> &basic_string<CharT, Traits, Alloc>::append(
+  basic_string<CharT, Traits, Alloc> &s)
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(s.str != NULL, "The parameter must be different than NULL");
+  *this += s;
+  return *this;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+basic_string<CharT, Traits, Alloc> &
+basic_string<CharT, Traits, Alloc>::append(const char *s, size_t n)
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(n >= 0, "basic_string overflow");
+  __ESBMC_assert(s != NULL, "The parameter must be different than NULL");
+  if (n > 1)
+    if (n > strlen(s))
+    {
+      // TODO: when we support try-catch, replace the assert with the throw statement below
+      //throw out_of_range();
+      __ESBMC_assert(0, "basic_string append failed, out_of_range");
+    }
+
+  int rhsLen = n;
+  int totalLen = this->_size + rhsLen;
+  basic_string<CharT, Traits, Alloc> temp(totalLen);
+  int i, j, k;
+  for (i = 0; i < this->_size; i++)
+    temp.str[i] = this->str[i];
+  for (j = i, k = 0; j < totalLen; j++, k++)
+    temp.str[j] = s[k];
+  temp.str[totalLen] = '\0';
+  *this = temp;
+  return *this;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+basic_string<CharT, Traits, Alloc> &basic_string<CharT, Traits, Alloc>::append(
+  basic_string<CharT, Traits, Alloc> &s,
+  size_t pos,
+  size_t n)
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(pos >= 0, "basic_string overflow");
+  __ESBMC_assert(pos < s.length(), "basic_string overflow");
+  __ESBMC_assert(n <= s.length(), "basic_string overflow");
+  __ESBMC_assert(n > 0, "basic_string overflow");
+  __ESBMC_assert(s.str != NULL, "The parameter must be different than NULL");
+  if ((pos > s._size) || (n > (s._size - pos)))
+  {
+    // TODO: when we support try-catch, replace the assert with the throw statement below
+    //throw out_of_range();
+    __ESBMC_assert(0, "basic_string append failed, out_of_range");
+  }
+
+  int rhsLen = n;
+  int totalLen = this->_size + rhsLen;
+  basic_string<CharT, Traits, Alloc> temp(totalLen);
+  int i, j, k;
+  for (i = 0; i < this->_size; i++)
+    temp.str[i] = this->str[i];
+  for (j = i, k = pos; j < totalLen; j++, k++)
+    temp.str[j] = s.str[k];
+  temp.str[totalLen] = '\0';
+  *this = temp;
+  return *this;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+basic_string<CharT, Traits, Alloc> &
+basic_string<CharT, Traits, Alloc>::append(const char *s)
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(s != NULL, "The parameter must be different than NULL");
+  int rhsLen = strlen(s);
+  int totalLen = this->_size + rhsLen;
+  basic_string<CharT, Traits, Alloc> temp(totalLen);
+  int i, j, k;
+  for (i = 0; i < this->_size; i++)
+    temp.str[i] = this->str[i];
+  for (j = i, k = 0; j < totalLen; j++, k++)
+    temp.str[j] = s[k];
+  temp.str[totalLen] = '\0';
+  *this = temp;
+  return *this;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+basic_string<CharT, Traits, Alloc> &
+basic_string<CharT, Traits, Alloc>::append(size_t n, char c)
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(n > 0, "basic_string overflow");
+  int rhsLen = n;
+  int totalLen = this->_size + rhsLen;
+  char temp[STRING_CAPACITY];
+  int i, j, k;
+
+  for (i = 0; i < this->_size; i++)
+    temp[i] = this->str[i];
+
+  for (k = 0; i < totalLen; i++, k++)
+    temp[i] = c;
+  temp[i] = '\0';
+
+  basic_string<CharT, Traits, Alloc> tmp(temp);
+  *this = tmp;
+  return *this;
+}
+
+/* [string.find]: the lowest xpos with pos <= xpos and xpos + nlen <= hlen at
+ * which the needle matches. An empty needle therefore matches at pos whenever
+ * pos <= hlen, and a pos past the end simply finds nothing -- neither is an
+ * error, which is why no assertion guards them. */
+static size_t __esbmc_string_find(
+  const char *hay,
+  size_t hlen,
+  const char *needle,
+  size_t nlen,
+  size_t pos)
+{
+__ESBMC_HIDE:
+  if (pos > hlen || nlen > hlen - pos)
+    return (size_t)-1;
+  /* Both trip counts are the fixed buffer size, and both counters start at a
+   * concrete 0: a bound taken from hlen/nlen is symbolic, and a counter that
+   * starts at the symbolic pos can wrap, so neither loop would converge. */
+  for (size_t k = 0; k < STRING_CAPACITY; k++)
+  {
+    size_t xpos = pos + k;
+    if (xpos + nlen > hlen)
+      break;
+    size_t i = 0;
+    for (size_t j = 0; j < STRING_CAPACITY; j++)
+    {
+      if (i >= nlen || hay[xpos + i] != needle[i])
+        break;
+      i++;
+    }
+    if (i == nlen)
+      return xpos;
+  }
+  return (size_t)-1;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+size_t basic_string<CharT, Traits, Alloc>::find(char c, size_t pos) const
+{
+__ESBMC_HIDE:
+  return __esbmc_string_find(this->str, this->length(), &c, 1, pos);
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+size_t basic_string<CharT, Traits, Alloc>::find(
+  basic_string<CharT, Traits, Alloc> &s,
+  size_t pos) const
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(s.str != NULL, "The parameter must be different than NULL");
+  return __esbmc_string_find(
+    this->str, this->length(), s.str, s.length(), pos);
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+size_t
+basic_string<CharT, Traits, Alloc>::find(const char *s, size_t pos, size_t n)
+  const
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(s != NULL, "The parameter must be different than NULL");
+  return __esbmc_string_find(this->str, this->length(), s, n, pos);
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+size_t basic_string<CharT, Traits, Alloc>::find(const char *s, size_t pos) const
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(s != NULL, "The parameter must be different than NULL");
+  return __esbmc_string_find(this->str, this->length(), s, strlen(s), pos);
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+basic_string<CharT, Traits, Alloc> &basic_string<CharT, Traits, Alloc>::insert(
+  size_t pos1,
+  basic_string<CharT, Traits, Alloc> &s)
+{
+__ESBMC_HIDE:
+  int len = this->length(), i, k;
+  __ESBMC_assert((pos1 >= 0) && (pos1 < len), "basic_string overflow");
+  __ESBMC_assert(s.str != NULL, "The parameter must be different than NULL");
+  int lenOne = pos1 + 1;
+  char one[STRING_CAPACITY];
+  for (i = 0; i < pos1; i++)
+  {
+    one[i] = this->str[i];
+  }
+  int lenTwo = (len - pos1) + 1;
+  char two[STRING_CAPACITY];
+  for (k = 0, i = pos1; i < len; i++, k++)
+  {
+    two[k] = this->str[i];
+  }
+  int totalLen = s.length() + len;
+  this->_size = totalLen;
+
+  for (i = 0; i < lenOne - 1; i++)
+  {
+    this->str[i] = one[i];
+  }
+  for (k = 0; k < s.length(); k++, i++)
+  {
+    this->str[i] = s.str[k];
+  }
+  for (k = 0; k < lenTwo - 1; k++, i++)
+  {
+    this->str[i] = two[k];
+  }
+  this->str[i] = '\0';
+  return *this;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+basic_string<CharT, Traits, Alloc> &basic_string<CharT, Traits, Alloc>::insert(
+  size_t pos1,
+  basic_string<CharT, Traits, Alloc> &s,
+  size_t pos2,
+  size_t n)
+{
+__ESBMC_HIDE:
+  int len = this->length(), i, k;
+  int sLen = s.length();
+  __ESBMC_assert((pos1 >= 0) && (pos1 < len), "basic_string overflow");
+  __ESBMC_assert(
+    (pos2 >= 0) && (pos2 < s.length()) && ((pos2 + n) < sLen) && (n > 0),
+    "basic_string overflow");
+  __ESBMC_assert(s.str != NULL, "The parameter must be different than NULL");
+  int lim = n + pos2;
+  int lenOne = pos1 + 1;
+  char one[STRING_CAPACITY];
+  for (i = 0; i < pos1; i++)
+  {
+    one[i] = this->str[i];
+  }
+  int lenTwo = (len - pos1) + 1;
+  char two[STRING_CAPACITY];
+  for (k = 0, i = pos1; i < len; i++, k++)
+  {
+    two[k] = this->str[i];
+  }
+  int totalLen = n + len;
+  this->_size = totalLen;
+
+  for (i = 0; i < lenOne - 1; i++)
+  {
+    this->str[i] = one[i];
+  }
+  for (k = pos2; k < lim; k++, i++)
+  {
+    this->str[i] = s.str[k];
+  }
+  for (k = 0; k < lenTwo - 1; k++, i++)
+  {
+    this->str[i] = two[k];
+  }
+  this->str[i] = '\0';
+  return *this;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+basic_string<CharT, Traits, Alloc> &
+basic_string<CharT, Traits, Alloc>::insert(size_t pos1, const char *s, size_t n)
+{
+__ESBMC_HIDE:
+  int len = this->length(), i, k;
+  int lim = n;
+  int sLen = strlen(s);
+  __ESBMC_assert((pos1 >= 0) && (pos1 < len), "basic_string overflow");
+  __ESBMC_assert(n > 0, "basic_string overflow");
+  __ESBMC_assert(s != NULL, "The parameter must be different than NULL");
+  __ESBMC_assert(lim < sLen, "basic_string overflow");
+  int lenOne = pos1 + 1;
+  char one[STRING_CAPACITY];
+  for (i = 0; i < pos1; i++)
+  {
+    one[i] = this->str[i];
+  }
+  int lenTwo = (len - pos1) + 1;
+  char two[STRING_CAPACITY];
+  for (k = 0, i = pos1; i < len; i++, k++)
+  {
+    two[k] = this->str[i];
+  }
+  int totalLen = n + len;
+  this->_size = totalLen;
+
+  for (i = 0; i < lenOne - 1; i++)
+  {
+    this->str[i] = one[i];
+  }
+  for (k = 0; k < lim; k++, i++)
+  {
+    this->str[i] = s[k];
+  }
+  for (k = 0; k < lenTwo - 1; k++, i++)
+  {
+    this->str[i] = two[k];
+  }
+  this->str[i] = '\0';
+  return *this;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+basic_string<CharT, Traits, Alloc> &
+basic_string<CharT, Traits, Alloc>::insert(size_t pos1, const char *s)
+{
+__ESBMC_HIDE:
+  int len = this->length(), i, k;
+  __ESBMC_assert(pos1 >= 0, "basic_string overflow");
+  __ESBMC_assert(s != NULL, "The parameter must be different than NULL");
+  int sLen = strlen(s);
+  int lenOne = pos1 + 1;
+  char one[STRING_CAPACITY];
+  for (i = 0; i < pos1; i++)
+  {
+    one[i] = this->str[i];
+  }
+  int lenTwo = (len - pos1) + 1;
+  char two[STRING_CAPACITY];
+  for (k = 0, i = pos1; i < len; i++, k++)
+  {
+    two[k] = this->str[i];
+  }
+  int totalLen = len + strlen(s);
+  this->_size = totalLen;
+
+  for (i = 0; i < lenOne - 1; i++)
+  {
+    this->str[i] = one[i];
+  }
+  for (k = 0; k < sLen; k++, i++)
+  {
+    this->str[i] = s[k];
+  }
+  for (k = 0; k < lenTwo - 1; k++, i++)
+  {
+    this->str[i] = two[k];
+  }
+  this->str[i] = '\0';
+  return *this;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+basic_string<CharT, Traits, Alloc> &
+basic_string<CharT, Traits, Alloc>::insert(size_t pos1, size_t n, char c)
+{
+__ESBMC_HIDE:
+  int len = this->length(), i, k;
+  int sLen = n;
+  __ESBMC_assert(
+    (pos1 >= 0) && (pos1 < len) && ((pos1 + n) < len) && (n > 0),
+    "basic_string overflow");
+  char s[STRING_CAPACITY];
+  for (i = 0; i < n; i++)
+  {
+    s[i] = c;
+  }
+  int lenOne = pos1 + 1;
+  char one[STRING_CAPACITY];
+  for (i = 0; i < pos1; i++)
+  {
+    one[i] = this->str[i];
+  }
+  int lenTwo = (len - pos1) + 1;
+  char two[STRING_CAPACITY];
+  for (k = 0, i = pos1; i < len; i++, k++)
+  {
+    two[k] = this->str[i];
+  }
+  int totalLen = len + n;
+  this->_size = totalLen;
+
+  for (i = 0; i < lenOne - 1; i++)
+  {
+    this->str[i] = one[i];
+  }
+  for (k = 0; k < sLen; k++, i++)
+  {
+    this->str[i] = s[k];
+  }
+  for (k = 0; k < lenTwo - 1; k++, i++)
+  {
+    this->str[i] = two[k];
+  }
+  this->str[i] = '\0';
+  return *this;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+basic_string<CharT, Traits, Alloc> &
+basic_string<CharT, Traits, Alloc>::erase(size_t pos, size_t n)
+{
+__ESBMC_HIDE:
+  /* [string.erase]: out_of_range only if pos > size(); the count removed is
+   * min(n, size() - pos), so npos -- the default -- erases to the end. */
+  size_t len = this->length();
+  __ESBMC_assert(pos <= len, "basic_string::erase position out of range");
+  size_t xlen = n < (len - pos) ? n : (len - pos);
+  size_t i;
+  for (i = pos; i + xlen < len; i++)
+  {
+    this->str[i] = this->str[i + xlen];
+  }
+  this->str[i] = '\0';
+  this->_size = len - xlen;
+  return *this;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+basic_string<CharT, Traits, Alloc> &basic_string<CharT, Traits, Alloc>::replace(
+  size_t pos1,
+  size_t n1,
+  const basic_string<CharT, Traits, Alloc> &s)
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(
+    (pos1 < this->length()) && ((pos1 + n1) <= this->length()), "overflow");
+  __ESBMC_assert(s.str != NULL, "The parameter must be different than NULL");
+  this->erase(pos1, n1);
+  this->insert(pos1, s.str);
+  return *this;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+basic_string<CharT, Traits, Alloc> &basic_string<CharT, Traits, Alloc>::replace(
+  size_t pos1,
+  size_t n1,
+  basic_string<CharT, Traits, Alloc> &s,
+  size_t pos2,
+  size_t n2)
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(
+    (pos1 < this->length()) && ((pos1 + n1) <= this->length()), "overflow");
+  __ESBMC_assert(
+    (pos2 < s.length()) && ((pos2 + n2) <= s.length()) && (n2 > 0), "overflow");
+  __ESBMC_assert(s.str != NULL, "The parameter must be different than NULL");
+  this->erase(pos1, n1);
+  int i, k;
+  char tmp[STRING_CAPACITY];
+  for (k = 0, i = pos2; i < (n2 + pos2); i++, k++)
+    tmp[k] = s.str[i];
+  tmp[k] = '\0';
+  this->insert(pos1, tmp);
+  return *this;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+basic_string<CharT, Traits, Alloc> &basic_string<CharT, Traits, Alloc>::replace(
+  size_t pos1,
+  size_t n1,
+  const char *s,
+  size_t n2)
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(
+    (pos1 < this->length()) && ((pos1 + n1) <= this->length()), "overflow");
+  __ESBMC_assert(n2 > 0, "overflow");
+  __ESBMC_assert(s != NULL, "The parameter must be different than NULL");
+  this->erase(pos1, n1);
+  int i, k;
+  char tmp[STRING_CAPACITY];
+  for (k = 0, i = 0; i < n2; i++, k++)
+    tmp[k] = s[i];
+  tmp[k] = '\0';
+  this->insert(pos1, tmp);
+  return *this;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+basic_string<CharT, Traits, Alloc> &basic_string<CharT, Traits, Alloc>::replace(
+  size_t pos1,
+  size_t n1,
+  const char *s)
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(
+    (pos1 < this->length()) && ((pos1 + n1) <= this->length()), "overflow");
+  __ESBMC_assert(s != NULL, "The parameter must be different than NULL");
+  this->erase(pos1, n1);
+  int i, k, n2;
+  n2 = strlen(s);
+  char tmp[STRING_CAPACITY];
+  for (k = 0, i = 0; i < n2; i++, k++)
+    tmp[k] = s[i];
+  tmp[k] = '\0';
+  this->insert(pos1, tmp);
+  return *this;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+basic_string<CharT, Traits, Alloc> &basic_string<CharT, Traits, Alloc>::replace(
+  size_t pos1,
+  size_t n1,
+  size_t n2,
+  char c)
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(
+    (pos1 < this->length()) && ((pos1 + n1) <= this->length()), "overflow");
+  __ESBMC_assert(n2 > 0, "overflow");
+  this->erase(pos1, n1);
+  int k;
+  char tmp[STRING_CAPACITY];
+  for (k = 0; k < n2; k++)
+    tmp[k] = c;
+  tmp[k] = '\0';
+  this->insert(pos1, tmp);
+  return *this;
+}
+//new add
+
+template <typename CharT, typename Traits, typename Alloc>
+basic_string<CharT, Traits, Alloc> &basic_string<CharT, Traits, Alloc>::replace(
+  basic_string<CharT, Traits, Alloc>::iterator i1,
+  basic_string<CharT, Traits, Alloc>::iterator i2,
+  basic_string<CharT, Traits, Alloc> &str)
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(str.str != NULL, "The parameter must be different than NULL");
+  /* [i1, i2). The +1 that stood here compensated for end() reporting the last
+   * character rather than one past it; the char* overloads below never had
+   * it, so the two disagreed by one whenever end() was involved. */
+  int tmp_one = i1.pos;
+  int tmp_two = i2.pos;
+  int tmp = tmp_two - tmp_one;
+  this->erase(tmp_one, tmp);
+  this->insert(tmp_one, str.str);
+  return *this;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+basic_string<CharT, Traits, Alloc> &basic_string<CharT, Traits, Alloc>::replace(
+  basic_string<CharT, Traits, Alloc>::iterator i1,
+  basic_string<CharT, Traits, Alloc>::iterator i2,
+  char *s,
+  size_t n2)
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(s != NULL, "The parameter must be different than NULL");
+  int tmp_one = i1.pos;
+  int tmp_two = i2.pos;
+  int tmpx = tmp_two - tmp_one;
+  this->replace(tmp_one, tmpx, s, n2);
+  return *this;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+basic_string<CharT, Traits, Alloc> &basic_string<CharT, Traits, Alloc>::replace(
+  basic_string<CharT, Traits, Alloc>::iterator i1,
+  basic_string<CharT, Traits, Alloc>::iterator i2,
+  char *s)
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(s != NULL, "The parameter must be different than NULL");
+  int tmp_one = i1.pos;
+  int tmp_two = i2.pos;
+  int tmpx = tmp_two - tmp_one;
+  this->erase(tmp_one, tmpx);
+  this->insert(tmp_one, s);
+  return *this;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+basic_string<CharT, Traits, Alloc> &basic_string<CharT, Traits, Alloc>::replace(
+  basic_string<CharT, Traits, Alloc>::iterator i1,
+  basic_string<CharT, Traits, Alloc>::iterator i2,
+  size_t n2,
+  char c)
+{
+__ESBMC_HIDE:
+  /* [i1, i2) -- i2 is not itself replaced. */
+  int tmp_one = i1.pos;
+  int tmp_two = i2.pos;
+  int tmpk = tmp_two - tmp_one;
+  this->erase(tmp_one, tmpk);
+  int k;
+  char tmp[STRING_CAPACITY];
+  for (k = 0; k < n2; k++)
+    tmp[k] = c;
+  tmp[k] = '\0';
+  this->insert(tmp_one, tmp);
+  return *this;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+basic_string<CharT, Traits, Alloc> &basic_string<CharT, Traits, Alloc>::replace(
+  basic_string<CharT, Traits, Alloc>::iterator i1,
+  basic_string<CharT, Traits, Alloc>::iterator i2,
+  basic_string<CharT, Traits, Alloc>::iterator i3,
+  basic_string<CharT, Traits, Alloc>::iterator i4)
+{
+  return *this;
+}
+
+/* [string.compare] defers to [string.view.compare]: compare the common prefix
+ * first and only fall back to the lengths when it matches. [char.traits.
+ * specializations.char] defines lt as the built-in < on unsigned char. */
+static int
+__esbmc_string_compare(const char *s1, size_t n1, const char *s2, size_t n2)
+{
+__ESBMC_HIDE:
+  size_t rlen = n1 < n2 ? n1 : n2;
+  /* The trip count is spelled as the fixed buffer size rather than rlen, which
+   * is symbolic: ESBMC unwinds syntactically, so a loop bounded only by a
+   * symbolic length never converges and every comparison had to be run with an
+   * explicit --unwind. A string cannot be longer than its buffer, so the two
+   * bounds agree. */
+  for (size_t i = 0; i < STRING_CAPACITY; i++)
+  {
+    if (i >= rlen)
+      break;
+    unsigned char c1 = (unsigned char)s1[i];
+    unsigned char c2 = (unsigned char)s2[i];
+    if (c1 != c2)
+      return c1 < c2 ? -1 : 1;
+  }
+  if (n1 < n2)
+    return -1;
+  if (n1 > n2)
+    return 1;
+  return 0;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+int basic_string<CharT, Traits, Alloc>::compare(const char *s) const
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(s != NULL, "The parameter must be different than NULL");
+  return __esbmc_string_compare(this->str, this->length(), s, strlen(s));
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+int basic_string<CharT, Traits, Alloc>::compare(
+  const basic_string<CharT, Traits, Alloc> &s) const
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(s.str != NULL, "The parameter must be different than NULL");
+  return __esbmc_string_compare(
+    this->str, this->length(), s.str, s.length());
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+int basic_string<CharT, Traits, Alloc>::compare(
+  int pos1,
+  size_t n1,
+  const char *s) const
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(
+    (pos1 < this->length()) && ((pos1 + n1) <= this->length()), "overflow");
+  __ESBMC_assert(s != NULL, "The parameter must be different than NULL");
+  return __esbmc_string_compare(this->str + pos1, n1, s, strlen(s));
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+int basic_string<CharT, Traits, Alloc>::compare(
+  int pos1,
+  size_t n1,
+  const basic_string<CharT, Traits, Alloc> &s) const
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(
+    (pos1 < this->length()) && ((pos1 + n1) <= this->length()), "overflow");
+  __ESBMC_assert(s.str != NULL, "The parameter must be different than NULL");
+  return __esbmc_string_compare(this->str + pos1, n1, s.str, s.length());
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+int basic_string<CharT, Traits, Alloc>::compare(
+  size_t pos1,
+  size_t n1,
+  const basic_string<CharT, Traits, Alloc> &s,
+  size_t pos2,
+  size_t n2) const
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(
+    (pos1 < this->length()) && ((pos1 + n1) <= this->length()), "overflow");
+  __ESBMC_assert(
+    (pos2 < s.length()) && ((pos2 + n2) <= s.length()) && (n2 > 0), "overflow");
+  __ESBMC_assert(s.str != NULL, "The parameter must be different than NULL");
+  return __esbmc_string_compare(this->str + pos1, n1, s.str + pos2, n2);
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+size_t basic_string<CharT, Traits, Alloc>::find_first_of(
+  const char *s,
+  size_t pos) const
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(s != NULL, "The parameter must be different than NULL");
+  size_t len = this->length();
+  size_t slen = strlen(s);
+  if (pos >= len || slen == 0)
+    return npos;
+  /* Concrete trip counts from 0: len/slen are symbolic and a counter
+   * starting at the symbolic pos can wrap, so neither loop converged. */
+  for (size_t k = 0; k < STRING_CAPACITY; k++)
+  {
+    size_t i = pos + k;
+    if (i >= len)
+      break;
+    for (size_t j = 0; j < STRING_CAPACITY; j++)
+    {
+      if (j >= slen)
+        break;
+      if (this->str[i] == s[j])
+        return i;
+    }
+  }
+  return npos;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+size_t basic_string<CharT, Traits, Alloc>::find_first_of(
+  const basic_string<CharT, Traits, Alloc> &s,
+  size_t pos) const
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(s.str != NULL, "The parameter must be different than NULL");
+  size_t len = this->length();
+  size_t slen = s.length();
+  if (pos >= len || slen == 0)
+    return npos;
+  /* Concrete trip counts from 0: len/slen are symbolic and a counter
+   * starting at the symbolic pos can wrap, so neither loop converged. */
+  for (size_t k = 0; k < STRING_CAPACITY; k++)
+  {
+    size_t i = pos + k;
+    if (i >= len)
+      break;
+    for (size_t j = 0; j < STRING_CAPACITY; j++)
+    {
+      if (j >= slen)
+        break;
+      if (this->str[i] == s.str[j])
+        return i;
+    }
+  }
+  return npos;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+size_t
+basic_string<CharT, Traits, Alloc>::find_first_of(char c, size_t pos) const
+{
+__ESBMC_HIDE:
+  size_t len = this->length();
+  if (pos >= len)
+    return npos;
+  /* Concrete trip count from 0: len is symbolic and a counter starting
+   * at the symbolic pos can wrap. */
+  for (size_t k = 0; k < STRING_CAPACITY; k++)
+  {
+    size_t i = pos + k;
+    if (i >= len)
+      break;
+    if (this->str[i] == c)
+      return i;
+  }
+  return npos;
+}
+
+/* [string.find.last.not.of]: the highest position at or before pos holding a
+ * character that is not in s. The trip counts are the fixed buffer size for the
+ * reason the neighbouring searches record: a bound taken from the length is
+ * symbolic, and a reverse counter from a symbolic start wraps below zero. */
+template <typename CharT, typename Traits, typename Alloc>
+size_t basic_string<CharT, Traits, Alloc>::find_last_not_of(
+  const basic_string<CharT, Traits, Alloc> &s,
+  size_t pos) const
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(s.str != NULL, "The parameter must be different than NULL");
+  size_t len = this->length();
+  size_t slen = s.length();
+  if (len == 0)
+    return npos;
+  size_t start = (pos >= len) ? len - 1 : pos;
+  for (size_t k = 0; k < STRING_CAPACITY; k++)
+  {
+    if (k > start)
+      break;
+    size_t i = start - k;
+    bool found = false;
+    for (size_t j = 0; j < STRING_CAPACITY; j++)
+    {
+      if (j >= slen)
+        break;
+      if (this->str[i] == s.str[j])
+      {
+        found = true;
+        break;
+      }
+    }
+    if (!found)
+      return i;
+  }
+  return npos;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+size_t basic_string<CharT, Traits, Alloc>::find_last_not_of(
+  const char *s,
+  size_t pos) const
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(s != NULL, "The parameter must be different than NULL");
+  size_t len = this->length();
+  size_t slen = strlen(s);
+  if (len == 0)
+    return npos;
+  size_t start = (pos >= len) ? len - 1 : pos;
+  for (size_t k = 0; k < STRING_CAPACITY; k++)
+  {
+    if (k > start)
+      break;
+    size_t i = start - k;
+    bool found = false;
+    for (size_t j = 0; j < STRING_CAPACITY; j++)
+    {
+      if (j >= slen)
+        break;
+      if (this->str[i] == s[j])
+      {
+        found = true;
+        break;
+      }
+    }
+    if (!found)
+      return i;
+  }
+  return npos;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+size_t
+basic_string<CharT, Traits, Alloc>::find_last_not_of(char c, size_t pos) const
+{
+__ESBMC_HIDE:
+  size_t len = this->length();
+  if (len == 0)
+    return npos;
+  size_t start = (pos >= len) ? len - 1 : pos;
+  for (size_t k = 0; k < STRING_CAPACITY; k++)
+  {
+    if (k > start)
+      break;
+    size_t i = start - k;
+    if (this->str[i] != c)
+      return i;
+  }
+  return npos;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+size_t basic_string<CharT, Traits, Alloc>::find_first_not_of(
+  const basic_string<CharT, Traits, Alloc> &s,
+  size_t pos) const
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(s.str != NULL, "The parameter must be different than NULL");
+  size_t len = this->length();
+  size_t slen = s.length();
+  if (pos >= len)
+    return npos;
+  /* Concrete trip counts from 0: len/slen are symbolic and a counter
+   * starting at the symbolic pos can wrap, so neither loop converged. */
+  for (size_t k = 0; k < STRING_CAPACITY; k++)
+  {
+    size_t i = pos + k;
+    if (i >= len)
+      break;
+    bool found = false;
+    for (size_t j = 0; j < STRING_CAPACITY; j++)
+    {
+      if (j >= slen)
+        break;
+      if (this->str[i] == s.str[j])
+      {
+        found = true;
+        break;
+      }
+    }
+    if (!found)
+      return i;
+  }
+  return npos;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+size_t basic_string<CharT, Traits, Alloc>::find_first_not_of(
+  const char *s,
+  size_t pos) const
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(s != NULL, "The parameter must be different than NULL");
+  size_t len = this->length();
+  size_t slen = strlen(s);
+  if (pos >= len)
+    return npos;
+  /* Concrete trip counts from 0: len/slen are symbolic and a counter
+   * starting at the symbolic pos can wrap, so neither loop converged. */
+  for (size_t k = 0; k < STRING_CAPACITY; k++)
+  {
+    size_t i = pos + k;
+    if (i >= len)
+      break;
+    bool found = false;
+    for (size_t j = 0; j < STRING_CAPACITY; j++)
+    {
+      if (j >= slen)
+        break;
+      if (this->str[i] == s[j])
+      {
+        found = true;
+        break;
+      }
+    }
+    if (!found)
+      return i;
+  }
+  return npos;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+size_t
+basic_string<CharT, Traits, Alloc>::find_first_not_of(char c, size_t pos) const
+{
+__ESBMC_HIDE:
+  size_t len = this->length();
+  if (pos >= len)
+    return npos;
+  /* Concrete trip count from 0: len is symbolic and a counter starting
+   * at the symbolic pos can wrap. */
+  for (size_t k = 0; k < STRING_CAPACITY; k++)
+  {
+    size_t i = pos + k;
+    if (i >= len)
+      break;
+    if (this->str[i] != c)
+      return i;
+  }
+  return npos;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+size_t basic_string<CharT, Traits, Alloc>::find_last_of(
+  const basic_string<CharT, Traits, Alloc> &s,
+  size_t pos) const
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(s.str != NULL, "The parameter must be different than NULL");
+  size_t len = this->length();
+  size_t slen = s.length();
+  if (len == 0 || slen == 0)
+    return npos;
+  size_t start = (pos >= len) ? len - 1 : pos;
+  /* Concrete trip counts: start and slen are symbolic, and a reverse
+   * counter from start can wrap below zero as a size_t. */
+  for (size_t k = 0; k < STRING_CAPACITY; k++)
+  {
+    if (k > start)
+      break;
+    size_t i = start - k;
+    for (size_t j = 0; j < STRING_CAPACITY; j++)
+    {
+      if (j >= slen)
+        break;
+      if (this->str[i] == s.str[j])
+        return i;
+    }
+  }
+  return npos;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+size_t basic_string<CharT, Traits, Alloc>::find_last_of(
+  const char *s,
+  size_t pos) const
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(s != NULL, "The parameter must be different than NULL");
+  size_t len = this->length();
+  size_t slen = strlen(s);
+  if (len == 0 || slen == 0)
+    return npos;
+  size_t start = (pos >= len) ? len - 1 : pos;
+  /* Concrete trip counts: start and slen are symbolic, and a reverse
+   * counter from start can wrap below zero as a size_t. */
+  for (size_t k = 0; k < STRING_CAPACITY; k++)
+  {
+    if (k > start)
+      break;
+    size_t i = start - k;
+    for (size_t j = 0; j < STRING_CAPACITY; j++)
+    {
+      if (j >= slen)
+        break;
+      if (this->str[i] == s[j])
+        return i;
+    }
+  }
+  return npos;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+size_t basic_string<CharT, Traits, Alloc>::find_last_of(char *s) const
+{
+  return find_last_of(static_cast<const char *>(s), npos);
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+size_t
+basic_string<CharT, Traits, Alloc>::find_last_of(char c, size_t pos) const
+{
+__ESBMC_HIDE:
+  size_t len = this->length();
+  if (len == 0)
+    return npos;
+  size_t start = (pos >= len) ? len - 1 : pos;
+  /* Concrete trip count; see the note on find_last_of above. */
+  for (size_t k = 0; k < STRING_CAPACITY; k++)
+  {
+    if (k > start)
+      break;
+    size_t i = start - k;
+    if (this->str[i] == c)
+      return i;
+  }
+  return npos;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+size_t basic_string<CharT, Traits, Alloc>::rfind(char c, size_t pos) const
+{
+__ESBMC_HIDE:
+  /* [string.rfind]: the highest position at or before pos holding c. The
+   * previous loop started at str[len] -- the terminator, one past the last
+   * character -- stopped before index 0, and ignored pos entirely, so
+   * rfind('a') on "abc" reported npos. */
+  size_t len = this->length();
+  if (len == 0)
+    return npos;
+  size_t start = (pos >= len) ? len - 1 : pos;
+  for (size_t k = 0; k < STRING_CAPACITY; k++)
+  {
+    if (k > start)
+      break;
+    size_t i = start - k;
+    if (this->str[i] == c)
+      return i;
+  }
+  return npos;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+size_t basic_string<CharT, Traits, Alloc>::rfind(
+  basic_string<CharT, Traits, Alloc> &s,
+  size_t pos) const
+{
+__ESBMC_HIDE:
+  // Early returns for edge cases
+  if (s._size == 0)
+    return (pos < this->_size) ? pos : this->_size;
+  if (s._size > this->_size)
+    return npos;
+
+  __ESBMC_assert(s.str != NULL, "The parameter must be different than NULL");
+
+  size_t len = this->_size;
+  size_t slen = s._size;
+
+  // Calculate the rightmost valid starting position
+  size_t max_start;
+  if (pos >= len)
+    max_start = len - slen;
+  else if (pos + 1 >= slen)
+    max_start = pos - slen + 1;
+  else
+    return npos;
+
+  // Search backward from rightmost valid position
+  for (size_t start = max_start + 1; start > 0; start--)
+  {
+    size_t i = start - 1;
+    bool match = true;
+
+    // Simple forward comparison at position i
+    for (size_t j = 0; j < slen; j++)
+    {
+      if (this->str[i + j] != s.str[j])
+      {
+        match = false;
+        break;
+      }
+    }
+
+    if (match)
+      return i;
+  }
+
+  return npos;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+size_t
+basic_string<CharT, Traits, Alloc>::rfind(const char *s, size_t pos, size_t n)
+  const
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(s != NULL, "The parameter must be different than NULL");
+  size_t len = this->length();
+  if (n == 0)
+    return (pos < len) ? pos : len;
+  if (n > len)
+    return npos;
+  size_t max_start = len - n;
+  size_t start = (pos > max_start) ? max_start : pos;
+  for (size_t i = start + 1; i-- > 0;)
+  {
+    bool match = true;
+    for (size_t j = 0; j < n; j++)
+      if (this->str[i + j] != s[j])
+      {
+        match = false;
+        break;
+      }
+    if (match)
+      return i;
+  }
+  return npos;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+size_t
+basic_string<CharT, Traits, Alloc>::rfind(const char *s, size_t pos) const
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(s != NULL, "The parameter must be different than NULL");
+  return rfind(s, pos, strlen(s));
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+size_t basic_string<CharT, Traits, Alloc>::rfind(char *s) const
+{
+__ESBMC_HIDE:
+  int pos = 0;
+  //__ESBMC_assert((pos < this->length()) && (pos >= 0),
+  //"overflow");
+  __ESBMC_assert(s != NULL, "The parameter must be different than NULL");
+  size_t i, j, k;
+  int num = 0;
+  int lim = pos;
+
+  int len = this->length();
+  char s1[STRING_CAPACITY];
+  strcpy(s1, this->str);
+
+  int slen = strlen(s);
+  char s2[STRING_CAPACITY];
+  strcpy(s2, s);
+
+  for (i = len - 1; i >= lim; i--)
+  {
+    for (k = i, j = slen - 1; j >= 0; j--)
+    {
+      if (s1[k] != s2[j])
+      {
+        break;
+      }
+      else
+      {
+        num++;
+        if (num == slen)
+        {
+          return k;
+        }
+        k--;
+      }
+    }
+  }
+  return -1;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+basic_string<CharT, Traits, Alloc> operator+(
+  basic_string<CharT, Traits, Alloc> lhs,
+  basic_string<CharT, Traits, Alloc> rhs)
+{
+  /* Concrete trip counts: both lengths are symbolic, so the original
+   * loops never converged and `a + b` did not terminate. */
+  size_t llen = lhs.size();
+  size_t rlen = rhs.size();
+  basic_string<CharT, Traits, Alloc> result;
+  size_t n = 0;
+  for (size_t k = 0; k < STRING_CAPACITY; k++)
+  {
+    if (k >= llen)
+      break;
+    result.str[n++] = lhs.str[k];
+  }
+  for (size_t k = 0; k < STRING_CAPACITY; k++)
+  {
+    if (k >= rlen)
+      break;
+    result.str[n++] = rhs.str[k];
+  }
+  result.str[n] = '\0';
+  result._size = n;
+  return result;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+basic_string<CharT, Traits, Alloc>
+operator+(basic_string<CharT, Traits, Alloc> lhs, const CharT *rhs)
+{
+  /* Concrete trip counts: both lengths are symbolic, so the original
+   * loops never converged and `a + b` did not terminate. */
+  size_t llen = lhs.size();
+  size_t rlen = strlen(rhs);
+  basic_string<CharT, Traits, Alloc> result;
+  size_t n = 0;
+  for (size_t k = 0; k < STRING_CAPACITY; k++)
+  {
+    if (k >= llen)
+      break;
+    result.str[n++] = lhs.str[k];
+  }
+  for (size_t k = 0; k < STRING_CAPACITY; k++)
+  {
+    if (k >= rlen)
+      break;
+    result.str[n++] = rhs[k];
+  }
+  result.str[n] = '\0';
+  result._size = n;
+  return result;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+basic_string<CharT, Traits, Alloc>
+operator+(basic_string<CharT, Traits, Alloc> lhs, char rhc)
+{
+  int totalLength = lhs.size();
+  totalLength += 1;
+  int i;
+  basic_string<CharT, Traits, Alloc> result;
+  /* Concrete trip count; lhs.size() is symbolic. */
+  size_t n = 0;
+  for (size_t k = 0; k < STRING_CAPACITY; k++)
+  {
+    if (k >= lhs.size())
+      break;
+    result.str[n++] = lhs.str[k];
+  }
+  result.str[n] = rhc;
+  result.str[n + 1] = '\0';
+  result._size = n + 1;
+  return result;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+basic_string<CharT, Traits, Alloc>
+operator+(const CharT *lhs, basic_string<CharT, Traits, Alloc> rhs)
+{
+  int lhsLen = strlen(lhs);
+  int totalLength = lhsLen;
+  totalLength += rhs.size();
+  int i, j, k;
+  basic_string<CharT, Traits, Alloc> result;
+  for (i = 0; i < lhsLen; i++)
+  {
+    result.str[i] = lhs[i];
+  }
+  for (j = i, k = 0; j < totalLength; j++, k++)
+  {
+    result.str[j] = rhs.str[k];
+  }
+  result.str[j] = '\0';
+  result._size = totalLength;
+  return result;
+}
+
+/*
+ * The following operator overloading is really obfuscating on standard types (char*, char).
+ * Clang would generate parse error for such thing. For the time being, let's just
+ * comment them to avoid the parse error so that we can progress further.
+ * The purpose of such overloading may become clear when we run benchmarks.
+ * Remove them if they are not affecting the pass rate in our benchmarks
+ */
+#if 0
+basic_string operator+(char * lhs, char rhc) {
+	int lhsLen = strlen(lhs);
+	int totalLength = lhsLen;
+	totalLength += 1;
+	int i;
+	basic_string result;
+	for(i = 0; i < lhsLen; i++){
+		result.str[i] = lhs[i];
+	}
+	result.str[i] = rhc;
+	result.str[i+1] = '\0';
+	result._size = totalLength;
+	return result;
+}
+#endif
+template <typename CharT, typename Traits, typename Alloc>
+basic_string<CharT, Traits, Alloc>
+operator+(char lhc, basic_string<CharT, Traits, Alloc> rhs)
+{
+  int totalLength = 1;
+  totalLength += rhs.size();
+  int i, j, k;
+  basic_string<CharT, Traits, Alloc> result;
+  result.str[0] = lhc;
+  for (j = 1, k = 0; j < totalLength; j++, k++)
+  {
+    result.str[j] = rhs.str[k];
+  }
+  result.str[j] = '\0';
+  result._size = totalLength;
+  return result;
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+bool operator==(
+  const basic_string<CharT, Traits, Alloc> &a,
+  const basic_string<CharT, Traits, Alloc> &b)
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(
+    a.str != NULL, "The first parameter must be different than NULL");
+  __ESBMC_assert(
+    b.str != NULL, "The second parameter must be different than NULL");
+  if (a._size != b._size)
+    return false;
+  int aux;
+  aux = strcmp(b.c_str(), a.c_str());
+  if (aux == 0)
+  {
+    return true;
+  }
+  else
+  {
+    return false;
+  }
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+bool operator==(const char *lhs, const basic_string<CharT, Traits, Alloc> &rhs)
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(
+    lhs != NULL, "The first parameter must be different than NULL");
+  __ESBMC_assert(
+    rhs.str != NULL, "The second parameter must be different than NULL");
+  if (strlen(lhs) != rhs._size)
+    return false;
+  int aux;
+  aux = strcmp((char *)lhs, rhs.c_str());
+  if (aux == 0)
+  {
+    return true;
+  }
+  else
+  {
+    return false;
+  }
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+bool operator==(const basic_string<CharT, Traits, Alloc> &lhs, const char *rhs)
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(
+    lhs.str != NULL, "The first parameter must be different than NULL");
+  __ESBMC_assert(
+    rhs != NULL, "The second parameter must be different than NULL");
+  if (lhs._size != strlen(rhs))
+    return false;
+  int aux;
+  aux = strcmp(lhs.c_str(), (char *)rhs);
+  if (aux == 0)
+  {
+    return true;
+  }
+  else
+  {
+    return false;
+  }
+}
+template <typename CharT, typename Traits, typename Alloc>
+bool operator!=(
+  const basic_string<CharT, Traits, Alloc> &a,
+  const basic_string<CharT, Traits, Alloc> &b)
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(a.str != NULL, "The parameter must be different than NULL");
+  __ESBMC_assert(b.str != NULL, "The parameter must be different than NULL");
+  if (a._size != b._size)
+    return true;
+  int aux;
+  aux = strcmp(a.c_str(), b.c_str());
+  if (aux == 0)
+  {
+    return false;
+  }
+  else
+  {
+    return true;
+  }
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+bool operator!=(const CharT *lhs, const basic_string<CharT, Traits, Alloc> &rhs)
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(
+    lhs != NULL, "The first parameter must be different than NULL");
+  __ESBMC_assert(
+    rhs.str != NULL, "The second parameter must be different than NULL");
+  if (strlen(lhs) != rhs._size)
+    return true;
+  int aux;
+  aux = strcmp((char *)lhs, rhs.c_str());
+  if (aux == 0)
+  {
+    return false;
+  }
+  else
+  {
+    return true;
+  }
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+bool operator!=(const basic_string<CharT, Traits, Alloc> &lhs, const CharT *rhs)
+{
+__ESBMC_HIDE:
+  __ESBMC_assert(
+    lhs.str != NULL, "The first parameter must be different than NULL");
+  __ESBMC_assert(
+    rhs != NULL, "The second parameter must be different than NULL");
+  if (lhs._size != strlen(rhs))
+    return true;
+  int aux;
+  aux = strcmp(lhs.c_str(), (char *)rhs);
+  if (aux == 0)
+  {
+    return false;
+  }
+  else
+  {
+    return true;
+  }
+}
+
+template <typename CharT, typename Traits, typename Alloc>
+istream &
+getline(istream &is, basic_string<CharT, Traits, Alloc> &str, char delim);
+template <typename CharT, typename Traits, typename Alloc>
+istream &getline(istream &is, basic_string<CharT, Traits, Alloc> &str);
+
+std::string to_string(int value)
+{
+  char buffer[50];
+  itoa(value, buffer, 10);
+  return string(buffer);
+}
+
+std::string to_string(long value)
+{
+  char buffer[50];
+  itoa(value, buffer, 10);
+  return string(buffer);
+}
+
+std::string to_string(long long value)
+{
+  char buffer[50];
+  itoa(value, buffer, 10);
+  return string(buffer);
+}
+
+std::string to_string(unsigned value)
+{
+  char buffer[50];
+  itoa(value, buffer, 10);
+  return string(buffer);
+}
+
+std::string to_string(unsigned long value)
+{
+  char buffer[50];
+  itoa(value, buffer, 10);
+  return string(buffer);
+}
+
+std::string to_string(unsigned long long value)
+{
+  char buffer[50];
+  itoa(value, buffer, 10);
+  return string(buffer);
+}
+
+std::string to_string(float value)
+{
+  char buffer[50];
+  itoa(value, buffer, 10);
+  return string(buffer);
+}
+
+std::string to_string(double value)
+{
+  char buffer[50];
+  itoa(value, buffer, 10);
+  return string(buffer);
+}
+
+std::string to_string(long double value)
+{
+  char buffer[50];
+  itoa(value, buffer, 10);
+  return string(buffer);
+}
+
+/* [string.conversions]. Only stoi and stof were modelled, and both ignored
+ * `pos`, which must receive the index of the first unconverted character.
+ *
+ * The standard has these throw invalid_argument when no conversion happens;
+ * OM code cannot throw a catchable exception (#6338), so the model asserts.
+ * Out-of-range values are not diagnosed: the underlying strto* saturate, and
+ * adding the check would raise new claims on programs that verify today. */
+#define OM_STOI(fn, type, cfn)                                                 \
+  inline type fn(const std::string &str, size_t *pos = 0, int base = 10)       \
+  {                                                                            \
+    const char *c_str = str.c_str();                                           \
+    char *endptr;                                                              \
+    type result = static_cast<type>(cfn(c_str, &endptr, base));                \
+    __ESBMC_assert(endptr != c_str, "No digits in input string");              \
+    if (pos != 0)                                                              \
+      *pos = static_cast<size_t>(endptr - c_str);                              \
+    return result;                                                             \
+  }
+
+#define OM_STOF(fn, type, cfn)                                                 \
+  inline type fn(const std::string &str, size_t *pos = 0)                      \
+  {                                                                            \
+    const char *c_str = str.c_str();                                           \
+    char *endptr;                                                              \
+    type result = cfn(c_str, &endptr);                                         \
+    __ESBMC_assert(endptr != c_str, "No digits in input string");              \
+    if (pos != 0)                                                              \
+      *pos = static_cast<size_t>(endptr - c_str);                              \
+    return result;                                                             \
+  }
+
+OM_STOI(stoi, int, std::strtol)
+OM_STOI(stol, long, std::strtol)
+OM_STOI(stoul, unsigned long, std::strtoul)
+OM_STOI(stoll, long long, std::strtoll)
+OM_STOI(stoull, unsigned long long, std::strtoull)
+
+OM_STOF(stof, float, std::strtof)
+OM_STOF(stod, double, std::strtod)
+OM_STOF(stold, long double, std::strtold)
+
+#undef OM_STOI
+#undef OM_STOF
+
+} // namespace std
+#endif

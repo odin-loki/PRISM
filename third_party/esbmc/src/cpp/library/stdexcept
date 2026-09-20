@@ -1,0 +1,8 @@
+#ifndef STL_STDEXCEPT
+#define STL_STDEXCEPT
+
+/* The class definitions live in __stdexcept_base, which <string> also includes
+ * to break the <string>/<stdexcept> cycle. See its header comment. */
+#include "__stdexcept_base"
+
+#endif

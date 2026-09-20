@@ -1,0 +1,48 @@
+/// \file pattern_check.h
+/// \brief Pattern-based vulnerability detection for Solidity contracts.
+///
+/// Declares pattern_checker, which performs static pattern matching on the
+/// solc JSON AST to detect known vulnerability patterns (e.g., authorization
+/// via tx.origin, reentrancy patterns) without requiring full symbolic
+/// execution. Complements ESBMC's reasoning-based verification pipeline.
+
+#ifndef SOLIDITY_FRONTEND_PATTERN_CHECK_H_
+#define SOLIDITY_FRONTEND_PATTERN_CHECK_H_
+
+#include <memory>
+#include <iomanip>
+#include <util/symtab/context.h>
+#include <util/symtab/namespace.h>
+#include <util/irep/std_types.h>
+#include <fmt/core.h>
+#include <nlohmann/json.hpp>
+#include <solidity-frontend/solidity_grammar.h>
+
+class pattern_checker
+{
+  // There are two types of vulnerabilities:
+  //  - pattern-based vulnerability (e.g. Authorization via TxOrigin)
+  //  - reasoning-based vulnerability (e.g. array out-of-bound access)
+  // This class implements the detection of pattern-based vulnerability.
+  // The reasoning-based vulnerability is handled by ESBMC verification pipeline.
+public:
+  pattern_checker(
+    const nlohmann::json &_ast_nodes,
+    const std::string &_target_func);
+  virtual ~pattern_checker() = default;
+
+  void do_pattern_check();
+  void start_pattern_based_check(const nlohmann::json &func);
+
+  // Authorization through Tx origin
+  void check_authorization_through_tx_origin(const nlohmann::json &func);
+  void check_require_call(const nlohmann::json &expr);
+  void check_require_argument(const nlohmann::json &call_args);
+  void check_tx_origin(const nlohmann::json &left_expr);
+
+protected:
+  const nlohmann::json &ast_nodes;
+  const std::string target_func; // function to be verified
+};
+
+#endif /* SOLIDITY_FRONTEND_PATTERN_CHECK_H_ */

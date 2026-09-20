@@ -1,0 +1,297 @@
+#ifndef STL_FSTREAM
+#define STL_FSTREAM
+
+#include "iosfwd"
+#include "streambuf"
+#include "string"
+#include "istream"
+#include "ostream"
+#include "definitions.h"
+#include "ios"
+
+namespace std
+{
+
+class filebuf : public streambuf
+{
+public:
+  filebuf()
+  {
+    _fileopen = false;
+    _filesize = nondet_uint();
+  }
+  virtual ~filebuf()
+  {
+  }
+
+  bool is_open()
+  {
+    return _fileopen;
+  }
+  filebuf *open(const char *s, ios_base::openmode mode)
+  {
+    __ESBMC_assert(_fileopen == false, "File is open");
+    if (_fileopen == false)
+    {
+      _fileopen = true;
+      return this;
+    }
+    else
+    {
+      this->close();
+      return NULL;
+    }
+  }
+
+  void close()
+  {
+    _fileopen = false;
+  }
+
+private:
+  bool _fileopen = false;
+  unsigned int _filesize = nondet_uint(); // as in ostream (#7540)
+  ios::streampos _filepos = 0;
+};
+
+/* ostream first: a virtual call through a non-first base that itself derives
+ * virtually dereferences a bad vtable pointer (github #7025), and every
+ * formatted insertion dispatches through ostream. iostream already orders the
+ * bases this way. */
+class fstream : public ostream, public istream
+{
+public:
+  fstream();
+  explicit fstream(const char *filename, openmode mode = in | out);
+#if __cplusplus >= 201103L
+  // [fstream.cons]: the std::string overloads are C++11; they also use
+  // delegating constructors, which do not parse under --std c++03.
+  explicit fstream(const string &filename, openmode mode = in | out)
+    : fstream(filename.c_str(), mode)
+  {
+  }
+#endif
+  filebuf *rdbuf() const;
+  bool is_open();
+  void open(
+    const char *filename,
+    ios_base::openmode mode = ios_base::in | ios_base::out);
+#if __cplusplus >= 201103L
+  void open(
+    const string &filename,
+    ios_base::openmode mode = ios_base::in | ios_base::out)
+  {
+    open(filename.c_str(), mode);
+  }
+#endif
+  void close();
+
+  //private:
+  bool _fileopen = false;
+  filebuf *_m_filebuf;
+};
+
+class ofstream : public ostream
+{
+public:
+  ofstream();
+  explicit ofstream(
+    const char *filename,
+    ios_base::openmode mode = ios_base::out);
+#if __cplusplus >= 201103L
+  explicit ofstream(
+    const string &filename,
+    ios_base::openmode mode = ios_base::out)
+    : ofstream(filename.c_str(), mode)
+  {
+  }
+#endif
+  filebuf *rdbuf() const;
+  bool is_open();
+  void open(const char *filename, ios_base::openmode mode = ios_base::out);
+#if __cplusplus >= 201103L
+  void open(const string &filename, ios_base::openmode mode = ios_base::out)
+  {
+    open(filename.c_str(), mode);
+  }
+#endif
+  void close();
+
+  //private:
+  bool _fileopen = false;
+  filebuf *_m_filebuf;
+};
+
+class ifstream : public istream
+{
+public:
+  ifstream();
+  explicit ifstream(
+    const char *filename,
+    ios_base::openmode mode = ios_base::in);
+#if __cplusplus >= 201103L
+  explicit ifstream(
+    const string &filename,
+    ios_base::openmode mode = ios_base::in)
+    : ifstream(filename.c_str(), mode)
+  {
+  }
+#endif
+  filebuf *rdbuf() const;
+  bool is_open();
+  void open(const char *filename, ios_base::openmode mode = ios_base::in);
+#if __cplusplus >= 201103L
+  void open(const string &filename, ios_base::openmode mode = ios_base::in)
+  {
+    open(filename.c_str(), mode);
+  }
+#endif
+  void close();
+
+  inline bool operator&&(bool other);
+
+  //private:
+  bool _fileopen = false;
+  filebuf *_m_filebuf;
+};
+
+#if __cplusplus >= 201103L
+/* The basic_* file-stream alias templates are declared in <iosfwd> (#7531). */
+#endif
+
+//=====================fstream===================
+fstream::fstream()
+{
+  istream();
+  ostream();
+  _fileopen = false;
+  _m_filebuf = NULL;
+  ostream::_filesize = 0;
+  ostream::_filepos = 0;
+}
+fstream::fstream(
+  const char *filename,
+  ios_base::openmode mode)
+{
+  istream();
+  ostream();
+  _fileopen = false;
+  _m_filebuf = NULL;
+  ostream::_filepos = 0;
+  this->open(filename, mode);
+}
+filebuf *fstream::rdbuf() const
+{
+  return _m_filebuf;
+}
+bool fstream::is_open()
+{
+  return _fileopen;
+}
+void fstream::open(
+  const char *filename,
+  ios_base::openmode mode)
+{
+  __ESBMC_assert(_fileopen == false, "File is open");
+  istream::_filesize = nondet_uint();
+  if (_fileopen == true)
+    setstate(ios_base::failbit);
+  else
+    _fileopen = true;
+}
+void fstream::close()
+{
+  _fileopen = false;
+  ostream::_filesize = 0;
+  ostream::_filepos = 0;
+}
+//=======================================================
+//===================ofstream============================
+ofstream::ofstream()
+{
+  ostream();
+  _fileopen = false;
+  _m_filebuf = NULL; //new filebuf;
+  ostream::_filesize = 0;
+  ostream::_filepos = 0;
+}
+ofstream::ofstream(
+  const char *filename,
+  ios_base::openmode mode)
+{
+  ostream();
+  _fileopen = false;
+  _m_filebuf = NULL; //new filebuf;
+  ostream::_filepos = 0;
+  this->open(filename, mode);
+}
+filebuf *ofstream::rdbuf() const
+{
+  return _m_filebuf;
+}
+bool ofstream::is_open()
+{
+  return _fileopen;
+}
+void ofstream::open(const char *filename, ios_base::openmode mode)
+{
+  __ESBMC_assert(_fileopen == false, "File is open");
+  ostream::_filesize = nondet_uint();
+  if (_fileopen == true)
+    setstate(ios_base::failbit);
+  else
+    _fileopen = true;
+}
+void ofstream::close()
+{
+  _fileopen = false;
+  ostream::_filesize = 0;
+  ostream::_filepos = 0;
+}
+//======================================================
+
+//===================ifstream============================
+ifstream::ifstream()
+{
+  istream();
+  _fileopen = false;
+  _m_filebuf = NULL; //new filebuf;
+  _filesize = 0;
+  _filepos = 0;
+}
+ifstream::ifstream(const char *filename, ios_base::openmode mode)
+{
+  istream();
+  _fileopen = false;
+  _m_filebuf = NULL; //new filebuf;
+  _filepos = 0;
+  this->open(filename, mode);
+}
+filebuf *ifstream::rdbuf() const
+{
+  return _m_filebuf;
+}
+bool ifstream::is_open()
+{
+  return _fileopen;
+}
+void ifstream::open(
+  const char *filename,
+  ios_base::openmode mode)
+{
+  __ESBMC_assert(_fileopen == false, "File is open");
+  if (_fileopen == true)
+    setstate(ios_base::failbit);
+  else
+    _fileopen = true;
+}
+void ifstream::close()
+{
+  _fileopen = false;
+  _filesize = 0;
+  _filepos = 0;
+}
+//======================================================
+} // namespace std
+
+#endif

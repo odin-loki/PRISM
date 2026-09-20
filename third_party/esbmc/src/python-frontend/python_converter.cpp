@@ -1,0 +1,1187 @@
+#include <set>
+#include <python-frontend/string/char_utils.h>
+#include <python-frontend/math/complex_handler.h>
+#include <python-frontend/converter/converter_internal.h>
+#include <python-frontend/math/convert_float_literal.h>
+#include <python-frontend/function_call/builder.h>
+#include <python-frontend/consteval/python_consteval.h>
+#include <python-frontend/function_call/expr.h>
+#include <python-frontend/json_utils.h>
+#include <python-frontend/module/module_locator.h>
+#include <python-frontend/param_annotations.h>
+#include <python-frontend/python_annotation/python_annotation.h>
+#include <python-frontend/class/python_class_builder.h>
+#include <python-frontend/python_converter.h>
+#include <python-frontend/python-dict/python_dict_handler.h>
+#include <python-frontend/exception/python_exception_handler.h>
+#include <python-frontend/lambda/python_lambda.h>
+#include <python-frontend/python-list/python_list.h>
+#include <python-frontend/type/python_typechecking.h>
+#include <python-frontend/string/string_builder.h>
+#include <python-frontend/symbol_id.h>
+#include <python-frontend/tuple/tuple_handler.h>
+#include <python-frontend/dynamic_type/dynamic_type_handler.h>
+#include <python-frontend/type/type_utils.h>
+#include <util/arith/arith_tools.h>
+#include <util/expr/base_type.h>
+#include <util/lang/c_typecast.h>
+#include <util/lang/c_types.h>
+#include <util/base/encoding.h>
+#include <util/expr/expr_util.h>
+#include <util/irep/irep.h>
+#include <util/message/message.h>
+#include <util/lang/python_types.h>
+#include <util/irep/std_code.h>
+#include <util/expr/string_constant.h>
+#include <util/expr/symbolic_types.h>
+#include <util/expr/type_byte_size.h>
+
+#include <algorithm>
+#include <cctype>
+#include <cmath>
+#include <cstring>
+#include <fstream>
+#include <iomanip>
+#include <limits>
+#include <regex>
+#include <stdexcept>
+#include <sstream>
+#include <unordered_map>
+#include <unordered_set>
+
+#include <boost/filesystem.hpp>
+
+using namespace json_utils;
+namespace fs = boost::filesystem;
+
+std::string
+python_converter::get_op(const std::string &op, const typet &type) const
+{
+  return python_frontend::map_operator(op, type);
+}
+
+python_converter::python_converter(
+  contextt &_context,
+  const nlohmann::json *ast,
+  const global_scope &gs,
+  const std::vector<nlohmann::json> *extra_asts)
+  : symbol_table_(_context),
+    ast_json(ast),
+    entry_ast_(ast),
+    extra_asts_(extra_asts),
+    global_scope_(gs),
+    type_handler_(*this),
+    string_builder_(new string_builder(*this, &string_handler_)),
+    sym_generator_("python_converter::"),
+    ns(_context),
+    current_func_name_(""),
+    current_class_name_(""),
+    current_block(nullptr),
+    current_lhs(nullptr),
+    string_handler_(*this, symbol_table_, type_handler_, string_builder_),
+    math_handler_(*this, symbol_table_, type_handler_),
+    complex_handler_(*this, symbol_table_, type_handler_),
+    dynamic_type_handler_(*this, type_handler_),
+    tuple_handler_(new tuple_handler(*this, type_handler_)),
+    dict_handler_(new python_dict_handler(*this, symbol_table_, type_handler_)),
+    typechecker_(new python_typechecking(*this)),
+    lambda_handler_(new python_lambda(*this, _context, type_handler_)),
+    exception_handler_(new python_exception_handler(*this, type_handler_))
+{
+}
+
+python_converter::~python_converter()
+{
+  delete string_builder_;
+  delete tuple_handler_;
+  delete dict_handler_;
+  delete typechecker_;
+  delete lambda_handler_;
+  delete exception_handler_;
+}
+
+python_typechecking &python_converter::get_typechecker()
+{
+  return *typechecker_;
+}
+
+const python_typechecking &python_converter::get_typechecker() const
+{
+  return *typechecker_;
+}
+
+string_builder &python_converter::get_string_builder()
+{
+  if (!string_builder_)
+  {
+    string_builder_ = new string_builder(*this, &string_handler_);
+    string_handler_.set_string_builder(string_builder_);
+  }
+  return *string_builder_;
+}
+
+static void add_global_static_variable(
+  contextt &ctx,
+  const typet t,
+  const std::string &name)
+{
+  std::string id = "c:@" + name;
+  symbolt symbol;
+  symbol.mode = "C";
+  symbol.set_type(migrate_type(t));
+  symbol.name = name;
+  symbol.id = id;
+
+  symbol.lvalue = true;
+  symbol.static_lifetime = true;
+  symbol.is_extern = false;
+  symbol.file_local = false;
+  {
+    exprt v = gen_zero(t, true);
+    v.zero_initializer(true);
+    symbol.set_value(migrate_expr(v));
+  }
+
+  [[maybe_unused]] symbolt *added_symbol = ctx.move_symbol_to_context(symbol);
+  assert(added_symbol);
+}
+
+void python_converter::load_c_intrisics(code_blockt &)
+{
+  // Add symbols required by the C models
+  // __ESBMC_rounding_mode is pulled in indirectly via fesetround in cprover_library.cpp
+
+  auto type1 = array_typet(bool_type(), exprt("infinity"));
+  add_global_static_variable(symbol_table_, type1, "__ESBMC_alloc");
+  add_global_static_variable(symbol_table_, type1, "__ESBMC_is_dynamic");
+
+  auto type2 = array_typet(size_type(), exprt("infinity"));
+  add_global_static_variable(symbol_table_, type2, "__ESBMC_alloc_size");
+}
+
+///  Creates ``__name__`` and ``__file__``; ``__doc__`` / ``__package__``
+///  remain unsupported.
+void python_converter::create_builtin_symbols()
+{
+  const std::string module_name =
+    current_python_file.substr(0, current_python_file.find_last_of("."));
+
+  locationt location;
+  location.set_file(current_python_file.c_str());
+  location.set_line(1);
+
+  auto add_string_builtin =
+    [&](const std::string &builtin_name, const std::string &value) {
+      symbol_id sid(current_python_file, "", "");
+      sid.set_object(builtin_name);
+
+      typet string_type =
+        type_handler_.build_array(char_type(), value.size() + 1);
+
+      symbolt sym = create_symbol(
+        module_name, builtin_name, sid.to_string(), location, string_type);
+
+      sym.lvalue = true;
+      sym.static_lifetime = true;
+      sym.is_extern = false;
+      sym.file_local = false;
+
+      exprt value_expr = gen_zero(string_type);
+      const typet &char_type_ref = string_type.subtype();
+      for (size_t i = 0; i < value.size(); ++i)
+      {
+        uint8_t ch = value[i];
+        value_expr.operands().at(i) = constant_exprt(
+          integer2binary(BigInt(ch), bv_width(char_type_ref)),
+          integer2string(BigInt(ch)),
+          char_type_ref);
+      }
+      value_expr.operands().at(value.size()) = constant_exprt(
+        integer2binary(BigInt(0), bv_width(char_type_ref)),
+        integer2string(BigInt(0)),
+        char_type_ref);
+      sym.set_value(migrate_expr(value_expr));
+
+      symbol_table_.add(sym);
+    };
+
+  // Determine the value of __name__: "__main__" for the main module, else the
+  // module's basename without extension.
+  std::string name_value;
+  if (current_python_file == main_python_file)
+    name_value = "__main__";
+  else
+  {
+    size_t last_slash = current_python_file.find_last_of("/\\");
+    size_t last_dot = current_python_file.find_last_of(".");
+    if (
+      last_slash != std::string::npos && last_dot != std::string::npos &&
+      last_dot > last_slash)
+    {
+      name_value =
+        current_python_file.substr(last_slash + 1, last_dot - last_slash - 1);
+    }
+    else if (last_dot != std::string::npos)
+      name_value = current_python_file.substr(0, last_dot);
+    else
+      name_value = current_python_file;
+  }
+
+  add_string_builtin("__name__", name_value);
+
+  // __file__ mirrors CPython: the (absolute) path of the source file. We use
+  // the canonical path the frontend already tracks via current_python_file.
+  add_string_builtin("__file__", current_python_file);
+}
+
+// Module name for an Import/ImportFrom AST node. For a relative import with no
+// module name (`from . import X` / `from .. import X`), ImportFrom.module is
+// null; return "" so the import is treated as unresolved rather than crashing on
+// a null-to-std::string conversion (nlohmann type_error, #6281). A relative
+// import that names a module (`from ..pkg import X`) carries the plain name and
+// is handled as before.
+static std::string import_module_name(const nlohmann::json &node)
+{
+  if (node["_type"] == "ImportFrom")
+  {
+    const nlohmann::json &m = node["module"];
+    return m.is_null() ? std::string() : m.get<std::string>();
+  }
+  return node["names"][0]["name"].get<std::string>();
+}
+
+// `import numpy as np` binds the alias, not the module name, so a lookup of
+// `np` misses and the attribute access aborts as an undefined variable
+// (#6296). Register the alias against the same file. Only the first name is
+// considered, matching import_module_name: an `import a as x, b as y` node
+// resolves to `a`, so binding `y` to it would be wrong. ImportFrom's names are
+// imported members rather than module aliases, and are excluded.
+void python_converter::register_import_alias(
+  const nlohmann::json &import_node,
+  const std::string &module_file)
+{
+  if (import_node["_type"] != "Import" || !import_node.contains("names"))
+    return;
+
+  const nlohmann::json &names = import_node["names"];
+  if (!names.is_array() || names.empty())
+    return;
+
+  const nlohmann::json &first = names[0];
+  if (!first.contains("asname") || first["asname"].is_null())
+    return;
+
+  imported_modules.emplace(first["asname"].get<std::string>(), module_file);
+}
+
+bool python_converter::import_module_into_block(
+  const nlohmann::json &import_node,
+  module_locator &locator,
+  code_blockt &block)
+{
+  const std::string module_name = import_module_name(import_node);
+
+  auto already = imported_modules.find(module_name);
+  if (already != imported_modules.end())
+  {
+    // Already converted, but this import node may bind an alias the earlier
+    // one did not -- a model importing `math` for its own use leaves a later
+    // `import math as m` with no binding for `m` (#6296).
+    register_import_alias(import_node, already->second);
+    return true;
+  }
+
+  // pre_collect_module_asts populates the pool before any import runs.
+  // A miss here means the same module_locator could not open the file.
+  auto pooled = module_ast_pool_.find(module_name);
+  if (pooled == module_ast_pool_.end())
+    return false;
+  nlohmann::json &nested_module_json = pooled->second;
+
+  current_python_file = nested_module_json["filename"].get<std::string>();
+  imported_modules.emplace(module_name, current_python_file);
+  register_import_alias(import_node, current_python_file);
+
+  // Process nested imports first.
+  process_module_imports(nested_module_json, locator, block);
+
+  // Then process this module's definitions.
+  create_builtin_symbols();
+  python_annotation<nlohmann::json> imported_annotator(
+    nested_module_json, const_cast<global_scope &>(global_scope_));
+  // Expose every other reachable module's AST as an extra subscript
+  // inference source so that multi-axis subscript usages on instances of
+  // this module's classes (e.g. `t[i:j, k:l]` where `Tile` is defined
+  // here) are visible no matter which module they appear in. The
+  // entry-point AST closes the 2-file form (GitHub #4545); intermediate
+  // modules close the 3+-file transitive form (GitHub #4554).
+  imported_annotator.add_extra_subscript_inference_source(*ast_json);
+  for (auto &entry : module_ast_pool_)
+    if (&entry.second != &nested_module_json)
+      imported_annotator.add_extra_subscript_inference_source(entry.second);
+  imported_annotator.add_type_annotation();
+
+  exprt imported_code = with_ast(&nested_module_json, [&]() {
+    // Pre-register this module's annotated globals before converting its body
+    // so that its methods can reference module globals declared textually
+    // after the class that uses them (Python LEGB forward reference). The main
+    // module already gets this treatment in convert(); imported modules need
+    // it here, otherwise a `from mod import *` whose method reads a global
+    // defined later in mod fails name resolution (GitHub #4970).
+    preregister_global_variables(nested_module_json["body"]);
+    return get_block(nested_module_json["body"]);
+  });
+
+  convert_expression_to_code(imported_code);
+
+  // Add imported module code.
+  block.copy_to_operands(imported_code);
+  return true;
+}
+
+void python_converter::process_module_imports(
+  const nlohmann::json &module_ast,
+  module_locator &locator,
+  code_blockt &block)
+{
+  // Process imports in this module first (depth-first)
+  for (const auto &elem : module_ast["body"])
+  {
+    if (elem["_type"] == "ImportFrom" || elem["_type"] == "Import")
+    {
+      std::string saved_file = current_python_file;
+      import_module_into_block(elem, locator, block);
+      current_python_file = saved_file;
+    }
+  }
+}
+
+void python_converter::pre_collect_module_asts(
+  const nlohmann::json &module_ast,
+  module_locator &locator)
+{
+  auto try_collect = [&](const nlohmann::json &node) {
+    if (node["_type"] != "ImportFrom" && node["_type"] != "Import")
+      return;
+    if (
+      node.value("module_not_found", false) ||
+      node.value("module_unmodelled", false))
+      return;
+    const std::string module_name = import_module_name(node);
+    if (module_ast_pool_.count(module_name))
+      return;
+    std::ifstream f = locator.open_module_file(module_name);
+    if (!f.is_open())
+      return;
+    nlohmann::json parsed;
+    try
+    {
+      f >> parsed;
+    }
+    catch (const nlohmann::json::exception &)
+    {
+      // Treat a malformed AST as an unresolvable import; the subsequent
+      // import_module_into_block lookup will return false the same way.
+      return;
+    }
+    auto [it, _] = module_ast_pool_.emplace(module_name, std::move(parsed));
+    pre_collect_module_asts(it->second, locator);
+  };
+
+  if (!module_ast.contains("body") || !module_ast["body"].is_array())
+    return;
+
+  for (const auto &elem : module_ast["body"])
+  {
+    try_collect(elem);
+    if (
+      elem["_type"] == "FunctionDef" && elem.contains("body") &&
+      elem["body"].is_array())
+      for (const auto &stmt : elem["body"])
+        try_collect(stmt);
+  }
+}
+
+void python_converter::convert_module_imports(code_blockt &all_imports_block)
+{
+  // Convert imported modules
+  module_locator locator((*ast_json)["ast_output_dir"].get<std::string>());
+
+  // Pre-walk the import graph so each annotator can see subscript usages
+  // from any other module (GitHub #4554).
+  pre_collect_module_asts(*ast_json, locator);
+
+  // Retype each imported module's list parameters from their call sites,
+  // before import_module_into_block annotates and converts them. The entry
+  // module was retyped in python_languaget::parse(); it is read here only to
+  // find the calls that reach into the imported modules (GitHub #5936).
+  std::vector<python_param_annotations::module_ast> modules{
+    {ast_json, nullptr, ""}};
+  for (auto &entry : module_ast_pool_)
+    modules.push_back({&entry.second, &entry.second, entry.first});
+  python_param_annotations::propagate_tuple_list_params(modules);
+
+  auto convert_import = [&](const nlohmann::json &node) {
+    const std::string module_name = import_module_name(node);
+
+    if (node.value("module_not_found", false))
+    {
+      log_warning("skipping unresolvable import: {}", module_name);
+      return;
+    }
+
+    // No AST was emitted for this module; its names fail at their use sites
+    // instead, as an unresolvable import's do (#7674).
+    if (node.value("module_unmodelled", false))
+      return;
+
+    is_importing_module = true;
+    if (import_module_into_block(node, locator, all_imports_block))
+      return;
+
+    // Relative import with no module name (`from . import X`): there is no
+    // module file to open. Treat it as unresolved and continue (#6281).
+    if (module_name.empty())
+    {
+      log_warning("skipping relative import with no module name");
+      return;
+    }
+
+    throw std::runtime_error(
+      "Cannot open the AST of module '" + module_name + "' imported at line " +
+      std::to_string(node.value("lineno", 0)) + "; expected " +
+      locator.module_path(module_name));
+  };
+
+  for (const auto &elem : (*ast_json)["body"])
+    if (elem["_type"] == "ImportFrom" || elem["_type"] == "Import")
+      convert_import(elem);
+
+  // Do the same for imports that appear directly inside functions.
+  for (const auto &elem : (*ast_json)["body"])
+  {
+    if (
+      elem["_type"] != "FunctionDef" || !elem.contains("body") ||
+      !elem["body"].is_array())
+      continue;
+
+    for (const auto &stmt : elem["body"])
+      if (stmt["_type"] == "ImportFrom" || stmt["_type"] == "Import")
+        convert_import(stmt);
+  }
+
+  is_importing_module = false;
+  current_python_file = main_python_file;
+}
+
+void python_converter::convert_extra_translation_unit(
+  const nlohmann::json &extra_ast,
+  code_blockt &init_code,
+  code_blockt &combined_user_code)
+{
+  current_python_file = extra_ast["filename"].get<std::string>();
+  create_builtin_symbols();
+
+  // convert_module_imports() returns void, so it can't go through with_ast()
+  // (whose decltype(auto) result can't bind void); swap ast_json by hand
+  // instead. It also resets current_python_file to main_python_file on
+  // exit, so that must be undone afterwards too.
+  code_blockt extra_imports_block;
+  const nlohmann::json *saved_ast_json = ast_json;
+  ast_json = &extra_ast;
+  convert_module_imports(extra_imports_block);
+  ast_json = saved_ast_json;
+  current_python_file = extra_ast["filename"].get<std::string>();
+  if (!extra_imports_block.operands().empty())
+    init_code.copy_to_operands(extra_imports_block);
+
+  exprt extra_block = with_ast(&extra_ast, [&]() {
+    preregister_global_variables(extra_ast["body"]);
+    return get_block(extra_ast["body"]);
+  });
+  codet extra_code = convert_expression_to_code(extra_block);
+  combined_user_code.copy_to_operands(extra_code);
+}
+
+/// The function \p name defined directly in \p body, or an empty node.
+static nlohmann::json
+module_function(const nlohmann::json &body, const std::string &name)
+{
+  for (const auto &element : body)
+    if (element["_type"] == "FunctionDef" && element["name"] == name)
+      return element;
+  return nlohmann::json();
+}
+
+/// The classes in \p body defining a method \p name, restricted to \p only when
+/// that is non-empty. \p node receives the last match found.
+static std::vector<std::string> classes_defining(
+  const nlohmann::json &body,
+  const std::string &only,
+  const std::string &name,
+  nlohmann::json &node)
+{
+  std::vector<std::string> owners;
+  for (const auto &element : body)
+  {
+    if (element["_type"] != "ClassDef")
+      continue;
+    if (!only.empty() && element["name"] != only)
+      continue;
+
+    nlohmann::json method = module_function(element["body"], name);
+    if (method.empty())
+      continue;
+
+    node = method;
+    owners.push_back(element["name"].get<std::string>());
+  }
+  return owners;
+}
+
+/// The receiver name \p node declares as a parameter, or an empty string. The
+/// frontend binds `self` and `cls` to the enclosing class wherever they appear,
+/// so a static method spelling a parameter that way has no class to bind to.
+static std::string receiver_named_parameter(const nlohmann::json &node)
+{
+  if (!node.contains("args") || !node["args"].contains("args"))
+    return "";
+
+  for (const auto &arg : node["args"]["args"])
+    if (arg["arg"] == "self" || arg["arg"] == "cls")
+      return arg["arg"].get<std::string>();
+  return "";
+}
+
+/// Whether \p node carries the builtin @staticmethod decorator. A dotted
+/// spelling names some other object, so only a bare Name counts.
+static bool is_staticmethod(const nlohmann::json &node)
+{
+  if (!node.contains("decorator_list"))
+    return false;
+
+  for (const auto &decorator : node["decorator_list"])
+    if (decorator["_type"] == "Name" && decorator["id"] == "staticmethod")
+      return true;
+  return false;
+}
+
+void python_converter::find_entry_function(
+  const std::string &target,
+  nlohmann::json &node,
+  std::string &owning_class) const
+{
+  const std::string::size_type dot = target.rfind('.');
+  const bool qualified = dot != std::string::npos;
+  const std::string class_part = qualified ? target.substr(0, dot) : "";
+  const std::string func_part = qualified ? target.substr(dot + 1) : target;
+  const nlohmann::json &body = (*ast_json)["body"];
+
+  // A module-level function of that name wins, as it did when only the module
+  // body was searched.
+  if (!qualified)
+  {
+    node = module_function(body, func_part);
+    if (!node.empty())
+    {
+      owning_class.clear();
+      return;
+    }
+  }
+
+  std::vector<std::string> owners =
+    classes_defining(body, class_part, func_part, node);
+
+  if (owners.empty())
+    throw std::runtime_error("Function " + target + " not found");
+
+  // A bare name several classes define says nothing about which was meant, and
+  // guessing would harness a different function than the one asked for.
+  if (owners.size() > 1)
+    throw std::runtime_error(
+      "--function: '" + target + "' is defined by " +
+      std::to_string(owners.size()) + " classes; qualify it as Class.method");
+
+  // The entry harness gives every parameter an arbitrary value, and every
+  // method but a static one takes a receiver -- an instance or the class
+  // itself -- that the scalar scope cannot invent. Harnessing over an object
+  // no constructor built would verify against a nondet pointer rather than an
+  // instance, so refuse instead (#6938 P4.5). The decorator decides this, not
+  // the receiver's name, which Python does not fix.
+  if (!is_staticmethod(node))
+    throw std::runtime_error(
+      "--function: '" + target +
+      "' is not a @staticmethod, and its receiver is a class instance the "
+      "entry harness cannot build; verify it through its callers, or make "
+      "it a @staticmethod");
+
+  const std::string receiver = receiver_named_parameter(node);
+  if (!receiver.empty())
+    throw std::runtime_error(
+      "--function: '" + target +
+      "' is a @staticmethod taking a parameter "
+      "named '" +
+      receiver +
+      "', which the frontend binds to the enclosing "
+      "class; rename it to harness this function");
+
+  owning_class = owners.front();
+}
+
+/// The blob supplies the model definitions; this supplies their visibility.
+/// find_symbol resolves a model name by retrying under each namespace here, so
+/// without it `max(...)` is undefined even though the symbol was merged. The C
+/// frontend gets the same effect from declarations in its headers.
+void python_converter::collect_model_namespaces()
+{
+  const std::string prefix = "py:/esbmc-vfs/python/models/";
+  std::set<std::string> seen;
+  symbol_table_.foreach_operand([&](const symbolt &sym) {
+    const std::string id = sym.id.as_string();
+    if (id.compare(0, prefix.size(), prefix) != 0)
+      return;
+    const std::size_t at = id.find('@', prefix.size());
+    const std::string ns =
+      id.substr(3, (at == std::string::npos ? id.size() : at) - 3);
+    if (seen.insert(ns).second)
+      model_namespaces_.push_back(ns);
+  });
+}
+
+/// Convert the operational models this run needs into \p models_block.
+/// The always-loaded ones come from the precompiled blob when there is one;
+/// the folder models (os, numpy) are always converted here, because a user
+/// module of that name must be able to shadow them.
+void python_converter::build_models_block(
+  code_blockt &models_block,
+  bool models_precompiled)
+{
+  if (config.options.get_bool_option("no-library"))
+    return;
+
+  // Load operational models
+  const std::string &ast_output_dir =
+    (*ast_json)["ast_output_dir"].get<std::string>();
+
+  static const std::list<std::string> precompilable_models = {
+    "builtins",
+    "range",
+    "int",
+    "float",
+    "consensus",
+    "random",
+    "exceptions",
+    "datetime",
+    "nondet"};
+  std::list<std::string> model_files;
+  if (!models_precompiled)
+    model_files = precompilable_models;
+  std::list<std::string> model_folders = {"os", "numpy"};
+
+  for (const auto &folder : model_folders)
+  {
+    append_models_from_directory(model_files, ast_output_dir + "/" + folder);
+  }
+
+  is_loading_models = true;
+
+  for (const auto &file : model_files)
+  {
+    std::stringstream model_path;
+    model_path << ast_output_dir << "/" << file << ".json";
+
+    std::ifstream model_file(model_path.str());
+    nlohmann::json model_json;
+    if (!model_file.is_open())
+    {
+      log_error(
+        "Python frontend: missing operational-model AST '{}'. "
+        "This usually means parser.py exited before generating it; "
+        "check the parser output above for the underlying error.",
+        model_path.str());
+      exit(1);
+    }
+    try
+    {
+      model_file >> model_json;
+    }
+    catch (const nlohmann::json::exception &e)
+    {
+      log_error(
+        "Python frontend: failed to parse operational-model AST "
+        "'{}': {}.",
+        model_path.str(),
+        e.what());
+      exit(1);
+    }
+    model_file.close();
+
+    bool imported = false;
+    size_t pos = file.rfind("/");
+    if (pos != std::string::npos)
+    {
+      std::string filename = file.substr(pos + 1);
+      if (imported_modules.find(filename) != imported_modules.end())
+      {
+        current_python_file = imported_modules[filename];
+        imported = true;
+      }
+    }
+    // A model's symbols must not depend on the user's filename: they are
+    // identical on every run, which is what lets them be precompiled.
+    if (!imported)
+      current_python_file = "/esbmc-vfs/python/models/" + file + ".py";
+    model_namespaces_.push_back(current_python_file);
+
+    exprt model_code =
+      with_ast(&model_json, [&]() { return get_block((*ast_json)["body"]); });
+
+    convert_expression_to_code(model_code);
+
+    // Accumulate model code
+    models_block.copy_to_operands(model_code);
+    current_python_file = main_python_file;
+  }
+  is_loading_models = false;
+}
+
+void python_converter::convert()
+{
+  main_python_file = (*ast_json)["filename"].get<std::string>();
+  current_python_file = main_python_file;
+
+  const bool building_library =
+    config.options.get_bool_option("building-python-library");
+
+  if (!building_library)
+    create_builtin_symbols();
+
+  // Block to accumulate model library code
+  code_blockt models_block;
+
+  const bool models_precompiled =
+    !building_library &&
+    symbol_table_.find_symbol("python_models_init") != nullptr;
+
+  if (models_precompiled)
+    collect_model_namespaces();
+
+  build_models_block(models_block, models_precompiled);
+
+  // Create a block to hold intrinsic assignments and load C intrinsics
+  code_blockt intrinsic_block;
+  load_c_intrisics(intrinsic_block);
+
+  // Pre-register module-level variable symbols so class methods can reference
+  // globals declared later in the file (Python LEGB rule).
+  preregister_global_variables((*ast_json)["body"]);
+
+  // Variables to hold user code and initialization code
+  codet user_code;
+  code_blockt init_code;
+
+  // Handle --function option
+  const std::string function = config.options.get_option("function");
+  if (!function.empty())
+  {
+    // --function only ever searches the entry file's AST for the named
+    // function (below); silently ignoring any extra positional command-line
+    // files here would reproduce the exact silent-drop unsoundness github
+    // #6211 reports, just gated behind --function instead of file order. Fail
+    // loudly instead of guessing which file the caller meant.
+    if (extra_asts_ && !extra_asts_->empty())
+      throw std::runtime_error(
+        "--function does not support multiple positional Python files; "
+        "pass a single file, or drop --function to verify the whole "
+        "program (github #6211)");
+
+    /* If the user passes --function, we add only a call to the
+     * respective function in __ESBMC_main instead of entire Python program
+     */
+
+    nlohmann::json function_node;
+    std::string owning_class;
+    find_entry_function(function, function_node, owning_class);
+    current_class_name_ = owning_class;
+
+    code_blockt block;
+
+    // Add intrinsic assignments first
+    block.copy_to_operands(intrinsic_block);
+
+    // Convert module-level and function-local imports so imported
+    // functions/classes are bound in the symbol table (github #5937):
+    // without this, any call through an imported module falls through to
+    // the generic "unsupported function" stub.
+    code_blockt imports_block;
+    convert_module_imports(imports_block);
+    block.copy_to_operands(imports_block);
+
+    // Convert classes referenced by the function
+    for (const auto &clazz : global_scope_.classes())
+    {
+      const auto &class_node = find_class((*ast_json)["body"], clazz);
+      get_class_definition(class_node, block);
+      current_class_name_.clear();
+    }
+
+    // Convert only the global variables referenced by the function
+    for (const auto &global_var : global_scope_.variables())
+    {
+      const auto &var_node = find_var_decl(global_var, "", *ast_json);
+      get_var_assign(var_node, block);
+    }
+
+    // Convert function arguments types
+    for (const auto &arg : function_node["args"]["args"])
+    {
+      // Check if annotation exists and is not null before accessing "id"
+      if (
+        arg.contains("annotation") && !arg["annotation"].is_null() &&
+        arg["annotation"].contains("id"))
+      {
+        auto node = find_class((*ast_json)["body"], arg["annotation"]["id"]);
+        if (!node.empty())
+          get_class_definition(node, block);
+      }
+    }
+
+    // Convert a single function
+    get_function_definition(function_node);
+
+    // Get function symbol. Take the name from the node rather than the option,
+    // which carries the class for a `Class.method` target.
+    symbol_id sid = create_symbol_id();
+    sid.set_function(function_node["name"].get<std::string>());
+    symbolt *symbol = symbol_table_.find_symbol(sid.to_string());
+
+    if (!symbol)
+      throw std::runtime_error("Symbol " + sid.to_string() + " not found");
+
+    // Create function call
+    code_function_callt call;
+    call.location() = symbol->location;
+    call.function() = symbol_expr(*symbol);
+
+    const code_typet::argumentst &arguments =
+      to_code_type(symbol->get_type()).arguments();
+
+    // Function args are nondet values, except a bytes/list param: it decays
+    // to pointer-to-element, so a bare nondet pointer isn't backed by any
+    // object. Back it with a nondet-length static array instead, mirroring
+    // argv[i] in clang_c_main.cpp.
+    size_t harness_arg_index = 0;
+    for (const code_typet::argumentt &arg : arguments)
+    {
+      const typet &arg_type = arg.type();
+      const bool is_scalar_pointee =
+        arg_type.is_pointer() &&
+        (arg_type.subtype().is_signedbv() ||
+         arg_type.subtype().is_unsignedbv() || arg_type.subtype().is_bool() ||
+         arg_type.subtype().is_floatbv());
+
+      if (is_scalar_pointee)
+      {
+        const std::string idx = std::to_string(harness_arg_index);
+
+        symbolt len_sym;
+        len_sym.id = "__ESBMC_harness_arg_len_" + idx;
+        len_sym.name = len_sym.id;
+        len_sym.set_type(migrate_type(size_type()));
+        len_sym.static_lifetime = true;
+        len_sym.lvalue = true;
+        symbolt *len_ptr = symbol_table_.move_symbol_to_context(len_sym);
+        exprt len = symbol_expr(*len_ptr);
+
+        exprt le_max("<=", bool_type());
+        le_max.copy_to_operands(len, from_integer(4, size_type()));
+        block.copy_to_operands(code_assumet(le_max));
+
+        symbolt arr_sym;
+        arr_sym.id = "__ESBMC_harness_arg_data_" + idx;
+        arr_sym.name = arr_sym.id;
+        arr_sym.set_type(migrate_type(array_typet(arg_type.subtype(), len)));
+        arr_sym.static_lifetime = true;
+        arr_sym.lvalue = true;
+        symbolt *arr_ptr = symbol_table_.move_symbol_to_context(arr_sym);
+
+        // DYNAMIC_SIZE is a byte count, not an element count -- argv's
+        // 1-byte char elements hid this; ours are wider.
+        type2tc elem_type2 = migrate_type(arg_type.subtype());
+        exprt elem_bytes =
+          from_integer(type_byte_size(elem_type2), size_type());
+        exprt len_bytes("*", size_type());
+        len_bytes.copy_to_operands(len, elem_bytes);
+
+        exprt dynamic_size("dynamic_size", size_type());
+        dynamic_size.copy_to_operands(gen_address_of(symbol_expr(*arr_ptr)));
+        block.copy_to_operands(code_assignt(dynamic_size, len_bytes));
+
+        // &arr[0], not &arr: address-of the whole array breaks
+        // __ESBMC_get_object_size's resolution back to this object.
+        index_exprt first_elem(
+          symbol_expr(*arr_ptr), gen_zero(index_type()), arg_type.subtype());
+        call.arguments().push_back(gen_address_of(first_elem));
+      }
+      else
+      {
+        exprt arg_value = exprt("sideeffect", arg_type);
+        arg_value.statement("nondet");
+        call.arguments().push_back(arg_value);
+      }
+      ++harness_arg_index;
+    }
+
+    convert_expression_to_code(call);
+    convert_expression_to_code(block);
+
+    // Prepare user code: class definitions + function call
+    code_blockt user_code_body;
+    user_code_body.copy_to_operands(block);
+    user_code_body.copy_to_operands(call);
+    user_code.swap(user_code_body);
+
+    // Add models to init code
+    if (!models_block.operands().empty())
+      init_code.copy_to_operands(models_block);
+  }
+  else
+  {
+    // Accumulate all imports
+    code_blockt all_imports_block;
+    convert_module_imports(all_imports_block);
+
+    // Convert main statements
+    exprt main_block = get_block((*ast_json)["body"]);
+    user_code = convert_expression_to_code(main_block);
+
+    // Prepare initialization code: models + intrinsics + imports
+    if (!models_block.operands().empty())
+      init_code.copy_to_operands(models_block);
+    init_code.copy_to_operands(intrinsic_block);
+    if (!all_imports_block.operands().empty())
+      init_code.copy_to_operands(all_imports_block);
+
+    // GitHub #6211: merge any additional positional Python files passed on
+    // the command line as extra translation units of the same program,
+    // mirroring how the C frontend merges multiple .c files' declarations
+    // (clang_c_languaget::parse -> mergeASTs). Without this, only the entry
+    // file's statements reach python_user_main and every other file's code
+    // (including any assertions) silently drops out of verification.
+    if (extra_asts_ && !extra_asts_->empty())
+    {
+      code_blockt combined_user_code;
+      combined_user_code.copy_to_operands(user_code);
+      for (const auto &extra_ast : *extra_asts_)
+        convert_extra_translation_unit(
+          extra_ast, init_code, combined_user_code);
+      current_python_file = main_python_file;
+      user_code = combined_user_code;
+    }
+  }
+
+  /*
+   * Create three-function architecture for coverage support (similar to Solidity Frontend):
+   *
+   * 1. python_init
+   *    - Contains models, intrinsics, and imports initialization
+   *    - Marked with __ESBMC_HIDE label to exclude from coverage statistics
+   *    - Only created if there is initialization code
+   *
+   * 2. python_user_main
+   *    - Contains only user code from the main module
+   *    - This is what gets analyzed for branch/decision/assertion coverage
+   *
+   * 3. __ESBMC_main
+   *    - Entry point for ESBMC verification
+   *    - Initializes static lifetime variables
+   *    - Calls python_init() if it exists
+   *    - Calls python_user_main()
+   *
+   * This architecture ensures that coverage analysis only counts user code,
+   * not initialization/library code, making Python behave consistently with C.
+   */
+  if (!init_code.operands().empty())
+  {
+    code_typet init_type;
+    init_type.return_type() = empty_typet();
+
+    // The blob's initialisation and a program's own must coexist:
+    // __ESBMC_main calls python_models_init then python_init.
+    const char *const init_name =
+      building_library ? "python_models_init" : "python_init";
+    symbolt init_symbol;
+    init_symbol.id = init_name;
+    init_symbol.name = init_name;
+    init_symbol.set_type(migrate_type(init_type));
+    init_symbol.lvalue = true;
+    init_symbol.is_extern = false;
+    init_symbol.file_local = false;
+    init_symbol.location = get_location_from_decl(*ast_json);
+
+    // Add __ESBMC_HIDE label to hide from coverage
+    code_labelt esbmc_hide;
+    esbmc_hide.set_label("__ESBMC_HIDE");
+    esbmc_hide.code() = code_skipt();
+
+    code_blockt init_body;
+    init_body.copy_to_operands(esbmc_hide);
+    init_body.copy_to_operands(init_code);
+    {
+      exprt v = init_symbol.get_value();
+      v.swap(init_body);
+      init_symbol.set_value(migrate_expr(v));
+    }
+
+    if (symbol_table_.move(init_symbol))
+    {
+      throw std::runtime_error("The python_init function is already defined");
+    }
+  }
+
+  if (building_library)
+    return;
+
+  // Create python_user_main function containing only user code
+  code_typet user_main_type;
+  user_main_type.return_type() = empty_typet();
+
+  symbolt user_main_symbol;
+  user_main_symbol.id = "python_user_main";
+  user_main_symbol.name = "python_user_main";
+  user_main_symbol.set_type(migrate_type(user_main_type));
+  user_main_symbol.lvalue = true;
+  user_main_symbol.is_extern = false;
+  user_main_symbol.file_local = false;
+  user_main_symbol.location = get_location_from_decl(*ast_json);
+  user_main_symbol.set_value(user_code);
+
+  if (symbol_table_.move(user_main_symbol))
+  {
+    throw std::runtime_error(
+      "The python_user_main function is already defined");
+  }
+
+  // Create __ESBMC_main that initializes and calls user code
+  code_typet main_type;
+  main_type.return_type() = empty_typet();
+
+  symbolt main_symbol;
+  main_symbol.id = "__ESBMC_main";
+  main_symbol.name = "__ESBMC_main";
+  main_symbol.set_type(migrate_type(main_type));
+  main_symbol.lvalue = true;
+  main_symbol.is_extern = false;
+  main_symbol.file_local = false;
+  main_symbol.location = get_location_from_decl(*ast_json);
+
+  code_blockt main_body;
+
+  // 1. Initialize static lifetime variables
+  symbol_table_.foreach_operand_in_order([&main_body](const symbolt &s) {
+    if (s.static_lifetime && !s.get_value().is_nil() && !s.get_type().is_code())
+    {
+      code_assignt assign(symbol_expr(s), s.get_value());
+      assign.location() = s.location;
+      main_body.copy_to_operands(assign);
+    }
+  });
+
+  // 2. Call python_init for initialization
+  // The precompiled models, when add_cpython_library merged them.
+  if (
+    const symbolt *models_sym = symbol_table_.find_symbol("python_models_init"))
+  {
+    code_function_callt models_call;
+    models_call.function() = symbol_expr(*models_sym);
+    main_body.copy_to_operands(models_call);
+  }
+
+  if (!init_code.operands().empty())
+  {
+    const symbolt *init_sym = symbol_table_.find_symbol("python_init");
+    if (init_sym)
+    {
+      code_function_callt init_call;
+      init_call.function() = symbol_expr(*init_sym);
+      main_body.copy_to_operands(init_call);
+    }
+  }
+
+  // 3. Bracket the user-code call with the pthread main-thread hooks
+  // (parallel to the C frontend in clang_c_main.cpp). Without these
+  // __ESBMC_num_threads_running stays at zero on the main thread,
+  // which fires the deadlock detector inside pthread_join_switch /
+  // __pyt_join as soon as any spawned thread is joined.
+  //
+  // The hook bodies are linked in from pthread_lib.c via the
+  // python_c_models whitelist (cprover_library.cpp), but the Python
+  // symbol table does not learn about them until they are referenced;
+  // register the symbols here so the GOTO converter can resolve the
+  // call targets. Unconditional registration is safe: the hooks have
+  // empty side effects on sequential programs (they only bump
+  // __ESBMC_num_threads_running), and matches the C frontend, which
+  // also brackets every program regardless of whether it spawns
+  // threads.
+  code_typet hook_type;
+  hook_type.return_type() = empty_typet();
+  locationt hook_location = get_location_from_decl(*ast_json);
+  auto make_hook_call = [&](const std::string &name) {
+    ensure_void_void_intrinsic(name, hook_location);
+    code_function_callt call;
+    call.function() = symbol_exprt("c:@F@" + name, hook_type);
+    call.location() = hook_location;
+    return call;
+  };
+
+  // __ESBMC_yield is dereferenced unconditionally by goto_convert's
+  // do_atomic_begin (builtin_functions.cpp). The __pyt_init_tid /
+  // __pyt_terminate / __pyt_join bodies that the cprover_library pulls
+  // in all contain __ESBMC_atomic_begin() calls, so goto_convert will
+  // need the yield symbol regardless of whether user code spawns a
+  // thread. Register it once here, mirroring the lazy registration
+  // function_call_builder does for atomic_begin in user code.
+  ensure_void_void_intrinsic("__ESBMC_yield", hook_location);
+
+  // The threading.Lock deadlock-aware acquire (models/threading_deadlock.py,
+  // loaded when ``--deadlock-check`` is set) calls this intrinsic on the
+  // blocked branch. Register unconditionally: under the assume-only Lock
+  // variant the symbol is unreferenced and contributes no GOTO code.
+  ensure_void_void_intrinsic("__ESBMC_pylock_block_and_check", hook_location);
+
+  main_body.copy_to_operands(make_hook_call("__ESBMC_pthread_start_main_hook"));
+
+  // 4. Call python_user_main
+  const symbolt *user_main_sym = symbol_table_.find_symbol("python_user_main");
+  if (!user_main_sym)
+  {
+    throw std::runtime_error("python_user_main symbol not found after move");
+  }
+
+  code_function_callt user_main_call;
+  user_main_call.function() = symbol_expr(*user_main_sym);
+  main_body.copy_to_operands(user_main_call);
+
+  main_body.copy_to_operands(make_hook_call("__ESBMC_pthread_end_main_hook"));
+
+  // goto_convert takes END_FUNCTION's location from here, and the synthesized
+  // uncaught-exception properties are anchored on it; leaving it nil reports
+  // them with no file at all, which places nothing (issue #7433). This names
+  // the file but no line: a Module carries no line of its own, and its body is
+  // no substitute — the frontend rewrites statements (a `for` becomes a
+  // `While`) and the rewrites carry null or stale line fields, so the last
+  // top-level statement does not mark where the module ends.
+  main_body.end_location(get_location_from_decl(*ast_json));
+
+  {
+    exprt v = main_symbol.get_value();
+    v.swap(main_body);
+    main_symbol.set_value(std::move(v));
+  }
+
+  if (symbol_table_.move(main_symbol))
+  {
+    throw std::runtime_error(
+      "The main function is already defined in another module");
+  }
+}

@@ -1,0 +1,71 @@
+
+#pragma once
+
+#include <cstddef>
+#include <exception>
+#include "OM_compiler_defs.h" // OM_NOEXCEPT
+
+/* These are not in the 'std' namespace */
+
+/* placement-new */
+void *operator new(size_t count, void *ptr)
+{
+  return ptr;
+}
+
+/* placement-new */
+void *operator new[](size_t count, void *ptr)
+{
+  return ptr;
+}
+
+namespace std
+{
+class bad_alloc : public exception
+{
+public:
+  virtual const char *what() const throw()
+  {
+    return "std::bad_alloc";
+  }
+};
+
+typedef void (*new_handler)();
+static new_handler current_handler = 0;
+
+// TODO: add handler to new model
+inline new_handler set_new_handler(new_handler handler) /* noexcept */
+{
+  new_handler old = current_handler;
+  current_handler = handler;
+  return old;
+}
+
+#if __cplusplus >= 201703L
+enum class align_val_t : size_t
+{
+  align_1 = 1,
+  align_2 = 2,
+  align_4 = 4,
+  align_8 = 8,
+  align_16 = 16,
+  align_32 = 32,
+  align_64 = 64,
+  align_128 = 128,
+};
+#endif
+
+} // namespace std
+
+namespace std
+{
+// Tag type for non-throwing allocation ([new.syn]); the model's operator
+// new does not throw, so the tag only needs to exist and be passable.
+struct nothrow_t
+{
+};
+const nothrow_t nothrow = {};
+} // namespace std
+
+void *operator new(size_t count, const std::nothrow_t &) OM_NOEXCEPT;
+void *operator new[](size_t count, const std::nothrow_t &) OM_NOEXCEPT;

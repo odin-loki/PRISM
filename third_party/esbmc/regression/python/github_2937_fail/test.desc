@@ -1,0 +1,4 @@
+THOROUGH
+main.py
+--no-unwinding-assertions --unwind 16
+^VERIFICATION FAILED$

@@ -1,0 +1,12 @@
+README for cocci-syntax
+=======================
+
+Syntax highlighting for Coccinelle's cocci files for vim.
+
+Releases are available from https://github.com/ahf/cocci-syntax
+
+Feel free to submit patches :)
+
+Alexander Færøy <ahf@0x90.dk>
+
+ .. vim: set spell spelllang=en tw=80 : ..

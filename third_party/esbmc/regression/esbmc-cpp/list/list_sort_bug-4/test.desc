@@ -1,0 +1,4 @@
+THOROUGH
+main.cpp
+--unwind 2 --timeout 900 --no-bounds-check --no-pointer-check --no-div-by-zero-check
+^VERIFICATION FAILED$

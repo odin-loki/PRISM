@@ -1,0 +1,27 @@
+(* Auto-generated JSON schema for specialized call graph export. *)
+
+type location = {
+  file: string;
+  line: int;
+  col: int;
+}
+
+type callee = {
+  call_location: location;
+  callee: int (* index in [edges] *)
+}
+
+type node = {
+  name: string;
+  context: int (* index in [contexts] *)
+}
+
+type edge = {
+  caller: node;
+  callees: callee list
+}
+  
+type call_graph = {
+  edges: edge list;
+  contexts: string list
+}

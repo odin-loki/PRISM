@@ -1,0 +1,6 @@
+description = "Stdcompat: compatibility module for OCaml standard library"
+version = "@VERSION@"
+archive(byte) = "stdcompat.cma"
+archive(native) = "stdcompat.cmxa"
+plugin(byte) = "stdcompat.cma"
+plugin(native) = "@SHARED_LIBS@"

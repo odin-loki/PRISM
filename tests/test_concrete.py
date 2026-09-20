@@ -537,5 +537,20 @@ class TestFuseEngine(unittest.TestCase):
         self.assertFalse(laws.is_proof(recs[0].status))
 
 
+class TestCppFuzzBinarySource(unittest.TestCase):
+    """C++ fuzz_function must match Helix _binary_fuzz after concrete."""
+
+    def test_binary_fuzz_after_concrete_before_clean(self):
+        src = (ROOT / "src" / "prism" / "stages_rest.cpp").read_text(encoding="utf-8")
+        start = src.find("Finding fuzz_function(")
+        self.assertGreaterEqual(start, 0)
+        body = src[start : start + 16000]
+        self.assertIn("compile_afl_harness", body)
+        self.assertIn("oracle\"] = \"binary\"", body)
+        self.assertIn("binary\"] = \"compile-failed\"", body)
+        self.assertIn("which({\"gcc\", \"clang\"})", body)
+        self.assertNotIn("(void)src;", body)
+
+
 if __name__ == "__main__":
     unittest.main()

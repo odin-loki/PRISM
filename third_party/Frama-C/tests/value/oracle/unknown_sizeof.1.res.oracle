@@ -1,0 +1,12 @@
+[kernel] Parsing tests/value/unknown_sizeof.i (no preprocessing)
+[eva] Analyzing a complete application starting at main2
+[eva] Computing initial state
+[eva] tests/value/unknown_sizeof.i:8: Warning: 
+  during initialization of variable 's', size of type 'struct s' cannot be
+  computed (abstract type 'struct s')
+[eva] Initial state computed
+[eva:initial-state] Values of globals at initialization
+  s.[bits 0 to ..] ∈ {0} or UNINITIALIZED
+[eva] tests/value/unknown_sizeof.i:24: User Error: 
+  Function argument *((struct s *)((char *)(& s) + 1)) has unknown size. Aborting
+[kernel] Plug-in eva aborted: invalid user input.

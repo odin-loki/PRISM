@@ -1,0 +1,61 @@
+[kernel] Parsing tests/libc/socket_h.c (with preprocessing)
+[eva] Analyzing a complete application starting at main
+[eva] Computing initial state
+[eva] Initial state computed
+[eva:initial-state] Values of globals at initialization
+  
+[eva] computing for function socket <- main.
+  Called from tests/libc/socket_h.c:7.
+[eva] using specification for function socket
+[eva] Done for function socket
+[eva] computing for function exit <- main.
+  Called from tests/libc/socket_h.c:8.
+[eva] using specification for function exit
+[eva] Done for function exit
+[eva] computing for function inet_addr <- main.
+  Called from tests/libc/socket_h.c:11.
+[eva] using specification for function inet_addr
+[eva] tests/libc/socket_h.c:11: 
+  function inet_addr: precondition 'valid_arg' got status valid.
+[eva] Done for function inet_addr
+[eva] computing for function htons <- main.
+  Called from tests/libc/socket_h.c:12.
+[eva] using specification for function htons
+[eva] Done for function htons
+[eva] computing for function connect <- main.
+  Called from tests/libc/socket_h.c:13.
+[eva] using specification for function connect
+[eva] tests/libc/socket_h.c:13: 
+  function connect: precondition 'valid_sockfd' got status valid.
+[eva] tests/libc/socket_h.c:13: 
+  function connect: precondition 'valid_read_addr' got status valid.
+[eva] Done for function connect
+[eva] computing for function exit <- main.
+  Called from tests/libc/socket_h.c:14.
+[eva] Done for function exit
+[eva] computing for function getsockopt <- main.
+  Called from tests/libc/socket_h.c:18.
+[eva] using specification for function getsockopt
+[eva] tests/libc/socket_h.c:18: 
+  function getsockopt: precondition 'valid_sockfd' got status valid.
+[eva] tests/libc/socket_h.c:18: 
+  function getsockopt: precondition 'valid_optlen' got status valid.
+[eva] tests/libc/socket_h.c:18: 
+  function getsockopt, behavior so_error: precondition 'valid_optlen' got status valid.
+[eva] tests/libc/socket_h.c:18: 
+  function getsockopt, behavior so_error: precondition 'optlen_value' got status valid.
+[eva] tests/libc/socket_h.c:18: 
+  function getsockopt, behavior so_error: precondition 'valid_optval' got status valid.
+[eva] Done for function getsockopt
+[eva] Recording results for main
+[eva] done for function main
+[eva] ====== VALUES COMPUTED ======
+[eva:final-states] Values at end of function main:
+  __fc_sockfds[0..1023] ∈ [--..--]
+  __fc_socket_counter ∈ [--..--]
+  sockfd ∈ [0..1023]
+  addr.sin_family ∈ {2}
+      {.sin_port; .sin_addr} ∈ [--..--]
+  rc ∈ {-1; 0}
+  optval ∈ [--..--] or UNINITIALIZED
+  optlen ∈ {4}

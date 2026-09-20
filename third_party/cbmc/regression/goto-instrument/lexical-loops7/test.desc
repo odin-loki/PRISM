@@ -1,0 +1,12 @@
+CORE
+test.c
+--show-lexical-loops
+^Note not all loops were in lexical loop form$
+^16 is head of \{ 16, 17, 18, 19 \(backedge\) \}
+^EXIT=0$
+^SIGNAL=0$
+--
+^warning: ignoring
+--
+This checks that a loop with multiple back-edges results in a
+warning that not all back-edges are in simple lexical loop form

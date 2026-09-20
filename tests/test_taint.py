@@ -38,6 +38,21 @@ class TestTaint(unittest.TestCase):
         self.assertFalse(any(f.status == laws.CLEAN for f in hits))
         self.assertFalse(any(f.status == laws.PROVED for f in hits))
 
+    def test_fread_system_fires(self):
+        path = TD / "taint_fread.c"
+        fns = extract_functions(path, path.name)
+        hits = [f for f in run_taint(fns) if f.function == "run_fread"]
+        self.assertTrue(hits)
+        self.assertEqual(hits[0].status, laws.FAILED)
+        self.assertEqual(hits[0].cls, "TAINT-SINK")
+
+    def test_strcat_getenv_fires(self):
+        path = TD / "taint_fread.c"
+        fns = extract_functions(path, path.name)
+        hits = [f for f in run_taint(fns) if f.function == "run_strcat"]
+        self.assertTrue(hits)
+        self.assertIn("strcat", hits[0].message)
+
 
 if __name__ == "__main__":
     unittest.main()

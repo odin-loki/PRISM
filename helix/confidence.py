@@ -1,14 +1,21 @@
-"""visibility × answer × resolution. A scope with no data scores 0."""
+"""visibility × answer × resolution. A scope with no data scores 0, not n/a."""
 
 from __future__ import annotations
 
 from helix import laws
-from helix.models import Finding, FunctionInfo, RunReport, StageResult
+from helix.models import Finding, RunReport
+
+_EMPTY_NOTE = "confidence 0: no functions parsed (no data, not clean)"
+
+
+def _fn_key(file: str, function: str | None) -> str:
+    return f"{file}::{function or ''}"
 
 
 def score(report: RunReport) -> tuple[float, float, float, float]:
     n_fun = len(report.functions)
     if n_fun == 0:
+        # Empty scope: product is 0, never None / n/a / skipped.
         return 0.0, 0.0, 0.0, 0.0
 
     bmc = next((s for s in report.stages if s.name == "bmc"), None)
@@ -21,12 +28,11 @@ def score(report: RunReport) -> tuple[float, float, float, float]:
     if bmc:
         by_fn: dict[str, list[Finding]] = {}
         for f in bmc.findings:
-            key = f"{f.file}::{f.function}"
-            by_fn.setdefault(key, []).append(f)
+            by_fn.setdefault(_fn_key(f.file, f.function), []).append(f)
         scalar = [fn for fn in report.functions if fn.kind in {"SCALAR", "VOID"}]
         attempted = 0
         for fn in scalar or report.functions:
-            recs = by_fn.get(f"{fn.file}::{fn.name}", [])
+            recs = by_fn.get(_fn_key(fn.file, fn.name), [])
             if recs and recs[0].status == laws.NEEDS_HARNESS:
                 # Same as POINTER: absence of a precondition, not a missing answer.
                 continue
@@ -41,7 +47,8 @@ def score(report: RunReport) -> tuple[float, float, float, float]:
                 elif st == laws.FAILED:
                     # A counterexample is the instrument's answer. A
                     # failure with no cex still needs a person.
-                    if recs[0].counterexample or recs[0].extra.get("oracle") or recs[0].extra.get("read"):
+                    extra = recs[0].extra or {}
+                    if recs[0].counterexample or extra.get("oracle") or extra.get("read"):
                         resolved += 1
                 elif st == laws.BOUNDED:
                     resolved += 1
@@ -59,5 +66,6 @@ def apply(report: RunReport) -> RunReport:
     report.resolution = round(r, 4)
     report.confidence = round(c, 4)
     if not report.functions:
-        report.notes.append("confidence 0: no functions parsed (no data, not clean)")
+        if _EMPTY_NOTE not in report.notes:
+            report.notes.append(_EMPTY_NOTE)
     return report

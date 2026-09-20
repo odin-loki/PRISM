@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -23,11 +24,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--stage", default="", help="comma-separated stage names")
     p.add_argument("--skip", default="", help="comma-separated stage names")
     p.add_argument("--unwind", type=int, default=8)
+    p.add_argument("--jobs", "-j", type=int, default=0,
+                   help="ISO-style worker count for lints (0 = cpu/2)")
     p.add_argument("--fuzz-budget", type=float, default=4.0)
     p.add_argument("--fuzz-iters", type=int, default=512)
     p.add_argument("--repair-rounds", type=int, default=2)
     p.add_argument("--resume", action="store_true",
-                   help="reuse ok/NOTRUN stages from --out/report.json")
+                   help="reuse ok/NOTRUN stages from --out/stages.jsonl (report.json fallback)")
+    p.add_argument("--tool", action="append", default=[], metavar="NAME=PATH",
+                   help="explicit adapter binary (searched before vendored/PATH)")
     p.add_argument("--list-stages", action="store_true")
     args = p.parse_args(argv)
 
@@ -36,20 +41,38 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.gui:
-        from helix.gui import launch
+        try:
+            from helix.gui import launch
+        except ImportError as ex:
+            print("NOTRUN gui: PySide6 not installed — not a clean window")
+            print(f"  install: pip install PySide6  ({ex})")
+            print("  or build prism_gui when Qt6 Widgets is present")
+            return 0
         return launch(args)
+
+    tools: dict[str, str] = {}
+    for item in args.tool:
+        if "=" not in item:
+            p.error("--tool expects NAME=PATH")
+        k, v = item.split("=", 1)
+        k, v = k.strip(), v.strip()
+        if not k or not v:
+            p.error("--tool expects NAME=PATH")
+        tools[k] = v
 
     cfg = Config(
         root=Path(args.path).resolve(),
         out=Path(args.out).resolve(),
         llm=not args.no_llm,
         unwind=args.unwind,
+        jobs=args.jobs if args.jobs > 0 else max(1, (os.cpu_count() or 4) // 2),
         fuzz_budget=args.fuzz_budget,
         fuzz_iters=args.fuzz_iters,
         repair_rounds=args.repair_rounds,
         stages=[s.strip() for s in args.stage.split(",") if s.strip()] or None,
         skip=[s.strip() for s in args.skip.split(",") if s.strip()],
         resume=args.resume,
+        tools=tools,
     )
     report = run_pipeline(cfg)
     print(f"confidence {report.confidence}  "

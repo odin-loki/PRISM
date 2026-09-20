@@ -1,0 +1,20 @@
+#! /bin/sh -e
+# This file is part of Coccinelle, licensed under the terms of the GPL v2.
+# See copyright.txt in the Coccinelle source code for more information.
+# The Coccinelle source code can be obtained at https://coccinelle.gitlabpages.inria.fr/website
+
+exec_prefix="@prefix@"
+LIBDIR="@libdir@"/coccinelle/spgen
+
+if [ -f "$LIBDIR"/spgen ]
+then
+    TARGET=spgen
+elif [ -f "$LIBDIR"/spgen.opt ]
+then
+    TARGET=spgen.opt
+else
+    echo Unable to find spgen executable. >/dev/fd/2
+    exit 1
+fi
+
+exec "$LIBDIR/$TARGET" "$@"

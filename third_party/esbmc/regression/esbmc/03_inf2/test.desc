@@ -1,0 +1,5 @@
+CORE
+main.c
+--memory-leak-check
+^VERIFICATION FAILED$
+^.*forgotten memory.*$

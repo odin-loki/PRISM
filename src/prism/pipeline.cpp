@@ -1,0 +1,374 @@
+#include "prism/pipeline.hpp"
+
+#include "prism/cparse.hpp"
+#include "prism/journal.hpp"
+#include "prism/laws.hpp"
+#include "prism/stages.hpp"
+#include "prism/taxonomy.hpp"
+
+#include <nlohmann/json.hpp>
+
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <fstream>
+#include <iomanip>
+#include <map>
+#include <set>
+#include <sstream>
+
+namespace prism {
+namespace {
+
+double now_secs() {
+    using clock = std::chrono::system_clock;
+    return std::chrono::duration<double>(clock::now().time_since_epoch()).count();
+}
+
+std::string rel_of(const std::filesystem::path& p, const std::filesystem::path& root) {
+    std::error_code ec;
+    if (std::filesystem::is_directory(root)) {
+        auto r = std::filesystem::relative(p, root, ec);
+        if (!ec) return r.generic_string();
+    }
+    return p.filename().string();
+}
+
+}  // namespace
+
+void apply_confidence(RunReport& report) {
+    auto n_fun = report.functions.size();
+    if (n_fun == 0) {
+        report.visibility = report.answer = report.resolution = report.confidence = 0;
+        static const char* kEmpty = "confidence 0: no functions parsed (no data, not clean)";
+        if (std::find(report.notes.begin(), report.notes.end(), kEmpty) == report.notes.end())
+            report.notes.push_back(kEmpty);
+        return;
+    }
+    const StageResult* bmc = nullptr;
+    for (auto& s : report.stages)
+        if (s.name == "bmc") bmc = &s;
+    double visibility = 1.0;
+    int answered = 0, resolved = 0, attempted = 0;
+    if (bmc) {
+        std::map<std::string, std::vector<const Finding*>> by_fn;
+        for (auto& f : bmc->findings) {
+            by_fn[(f.file + "::" + (f.function ? *f.function : ""))].push_back(&f);
+        }
+        std::vector<const FunctionInfo*> scalar;
+        for (auto& fn : report.functions)
+            if (fn.kind == "SCALAR" || fn.kind == "VOID") scalar.push_back(&fn);
+        auto& consider = scalar.empty() ? report.functions : [&]() -> const std::vector<FunctionInfo>& {
+            return report.functions;
+        }();
+        for (auto& fn : consider) {
+            if (fn.kind != "SCALAR" && fn.kind != "VOID" && !scalar.empty()) continue;
+            auto key = fn.file + "::" + fn.name;
+            auto it = by_fn.find(key);
+            if (it != by_fn.end() && !it->second.empty() &&
+                it->second[0]->status == laws::NEEDS_HARNESS)
+                continue;
+            ++attempted;
+            if (it == by_fn.end() || it->second.empty()) continue;
+            auto st = it->second[0]->status;
+            if (laws::is_answered(st)) {
+                ++answered;
+                if (st == laws::PROVED || st == laws::PROVED_UNBOUNDED || st == laws::PROVED_ASSUMING)
+                    ++resolved;
+                else if (st == laws::FAILED) {
+                    auto* f0 = it->second[0];
+                    if (!f0->counterexample.empty() || f0->extra.contains("oracle") || f0->extra.contains("read"))
+                        ++resolved;
+                } else if (st == laws::BOUNDED)
+                    ++resolved;
+            }
+        }
+    }
+    double ans = attempted ? static_cast<double>(answered) / attempted : 0.0;
+    double res = answered ? static_cast<double>(resolved) / answered : 0.0;
+    report.visibility = std::round(visibility * 10000.0) / 10000.0;
+    report.answer = std::round(ans * 10000.0) / 10000.0;
+    report.resolution = std::round(res * 10000.0) / 10000.0;
+    report.confidence = std::round(visibility * ans * res * 10000.0) / 10000.0;
+}
+
+std::vector<Finding> llm_forced_reads(std::vector<Finding> findings) {
+    static const std::set<std::string> keep{
+        std::string(laws::NOTRUN), std::string(laws::ERROR), std::string(laws::TIMEOUT),
+        std::string(laws::HYPOTHESIS), std::string(laws::READS)};
+    for (auto& f : findings) {
+        f.stage = "llm";
+        f.strength = std::string(laws::STRENGTH_READS);
+        if (!keep.contains(f.status)) f.status = std::string(laws::HYPOTHESIS);
+    }
+    return findings;
+}
+
+void write_report_md(const RunReport& report, const std::filesystem::path& path) {
+    std::ostringstream o;
+    o << "# PRISM report\n\n";
+    o << "root: `" << report.root << "`\n\n";
+    o << "| visibility | answer | resolution | **confidence** |\n";
+    o << "|---|---|---|---|\n";
+    o << "| " << report.visibility << " | " << report.answer << " | " << report.resolution
+      << " | **" << report.confidence << "** |\n\n";
+    o << "Confidence is a product. 0 means no data, not clean.\n\n";
+    o << "## Stages\n\n| stage | status | records | seconds | note |\n|---|---|---:|---:|---|\n";
+    for (auto& s : report.stages) {
+        auto note = s.detail.empty() ? s.install : s.detail;
+        o << "| " << s.name << " | " << s.status << " | " << s.records << " | "
+          << std::fixed << std::setprecision(2) << s.elapsed << " | " << note << " |\n";
+    }
+    o << "\n## Findings\n\n";
+    for (auto& s : report.stages) {
+        for (auto& f : s.findings) {
+            // UNKNOWN/TIMEOUT stay in report.md (Helix pipeline.py). Only the
+            // inventory/classify/unify noise lines are dropped.
+            if ((f.status == laws::NOTRUN || f.status == laws::CLEAN) &&
+                (s.name == "inventory" || s.name == "classify" || s.name == "unify"))
+                continue;
+            std::string loc = f.line ? f.file + ":" + std::to_string(*f.line) : f.file;
+            o << "- `" << f.status << "` **" << s.name << "** " << loc << " `"
+              << (f.function ? *f.function : "") << "` " << f.cls << " — " << f.message;
+            if (!f.counterexample.empty()) o << "  cex `" << f.counterexample << "`";
+            o << "\n";
+        }
+    }
+    std::filesystem::create_directories(path.parent_path());
+    std::ofstream(path, std::ios::binary) << o.str();
+}
+
+RunReport run_pipeline(const Config& cfg) {
+    RunReport report;
+    report.root = cfg.root.string();
+    report.started = now_secs();
+    std::filesystem::create_directories(cfg.out);
+    if (!cfg.resume) journal_reset(cfg.out);
+    std::map<std::string, StageResult> resume;
+    if (cfg.resume) {
+        // stages.jsonl is the live log. report.json is only a fallback when
+        // the log file is absent — a failed/partial jsonl must not revive
+        // ok/NOTRUN rows from a previous complete report.json.
+        const bool jsonl_present = journal_stages_present(cfg.out);
+        if (jsonl_present) resume = journal_completed_ok(cfg.out);
+        auto fns = journal_read_functions(cfg.out);
+        if (auto old = RunReport::load(cfg.out / "report.json")) {
+            // Helix pipeline.py: report.json stages AND functions are fallbacks
+            // only when stages.jsonl is absent. A present jsonl with no
+            // functions.json must not revive stale report.json functions.
+            if (!jsonl_present) {
+                for (auto& s : old->stages)
+                    if (s.status == "ok" || s.status == "NOTRUN") resume[s.name] = s;
+                if (fns.empty()) fns = old->functions;
+            }
+        }
+        if (!fns.empty()) report.functions = fns;
+        if (!resume.empty()) {
+            auto src = jsonl_present ? (cfg.out / "stages.jsonl") : (cfg.out / "report.json");
+            report.notes.push_back("resumed from " + src.string());
+        }
+    }
+    auto sources = iter_sources(cfg.root);
+    std::vector<FunctionInfo> functions = report.functions;
+
+    auto emit = [&](StageResult rec) -> StageResult {
+        report.stages.push_back(rec);
+        journal_append_stage(cfg.out, rec);
+        return rec;
+    };
+
+    auto stage = [&](const char* name, auto fn) -> StageResult {
+        if (!cfg.want(name)) {
+            return emit(StageResult{name, "skipped", "excluded by --stage/--skip"});
+        }
+        if (auto it = resume.find(name); it != resume.end() &&
+            (it->second.status == "ok" || it->second.status == "NOTRUN") &&
+            !(std::string(name) == "classify" && functions.empty())) {
+            return emit(it->second);
+        }
+        double t0 = now_secs();
+        std::vector<Finding> findings;
+        try {
+            findings = fn();
+        } catch (const std::exception& ex) {
+            return emit(StageResult{name, "failed", ex.what(), t0, now_secs() - t0});
+        }
+        std::string status = "ok", install, detail;
+        if (!findings.empty()) {
+            bool all_nr = true;
+            for (auto& f : findings)
+                if (f.status != laws::NOTRUN) all_nr = false;
+            if (all_nr) {
+                status = "NOTRUN";
+                std::vector<std::string> inst, det;
+                for (auto& f : findings) {
+                    if (auto it = f.extra.find("install"); it != f.extra.end() && !it->second.empty())
+                        inst.push_back(it->second);
+                    det.push_back(f.stage + ": " + f.message);
+                    if (det.size() >= 12) break;
+                }
+                for (auto& i : inst) {
+                    if (install.find(i) == std::string::npos) {
+                        if (!install.empty()) install += "; ";
+                        install += i;
+                    }
+                }
+                for (auto& d : det) {
+                    if (!detail.empty()) detail += "; ";
+                    detail += d;
+                }
+            }
+        }
+        return emit(StageResult{name, status, detail, t0, now_secs() - t0, findings,
+                                static_cast<int>(findings.size()), install});
+    };
+
+    stage("inventory", [&] {
+        std::vector<Finding> out;
+        for (auto& p : sources) {
+            auto rel = rel_of(p, cfg.root);
+            auto fns = extract_functions(p, rel);
+            if (fns.empty()) {
+                if (is_tu_ext(p.extension().string())) {
+                    out.push_back(Finding{"inventory", std::string(laws::ERROR), rel, std::nullopt,
+                                          std::nullopt, "EMPTY-TU",
+                                          "no functions parsed (not a clean unit)",
+                                          std::string(laws::STRENGTH_FINDS)});
+                }
+                continue;
+            }
+            out.push_back(Finding{"inventory", std::string(laws::CLEAN), rel, std::nullopt,
+                                  std::nullopt, "", "translation unit",
+                                  std::string(laws::STRENGTH_FINDS)});
+        }
+        return out;
+    });
+
+    stage("classify", [&] {
+        functions.clear();
+        std::vector<Finding> out;
+        for (auto& p : sources) {
+            auto rel = rel_of(p, cfg.root);
+            auto fns = extract_functions(p, rel);
+            functions.insert(functions.end(), fns.begin(), fns.end());
+            for (auto& fn : fns) {
+                Finding f;
+                f.stage = "classify";
+                f.status = fn.kind;
+                f.file = rel;
+                f.function = fn.name;
+                f.line = fn.line;
+                f.cls = fn.kind;
+                f.message = fn.signature;
+                f.strength = std::string(laws::STRENGTH_FINDS);
+                f.extra["static"] = fn.is_static ? "true" : "false";
+                out.push_back(std::move(f));
+            }
+        }
+        report.functions = functions;
+        journal_write_functions(cfg.out, functions);
+        return out;
+    });
+
+    auto src_root = std::filesystem::is_directory(cfg.root) ? cfg.root : cfg.root.parent_path();
+    stage("lints", [&] { return run_lints(sources, src_root, cfg.jobs); });
+    stage("taint", [&] { return run_taint(functions); });
+    stage("thread", [&] { return run_thread(functions); });
+    stage("interval", [&] { return run_interval(functions); });
+    stage("warnings", [&] { return run_compiler(sources, cfg); });
+    stage("cppcheck", [&] { return run_cppcheck(sources, cfg); });
+    stage("pbsd", [&] { return run_pbsd_lints(sources, cfg); });
+    stage("sanitize", [&] { return run_sanitize(sources, cfg); });
+    stage("optional", [&] { return run_optional_tools(sources, cfg); });
+    stage("esbmc", [&] { return run_esbmc(sources, cfg); });
+    stage("dafny", [&] { return run_dafny(sources, cfg); });
+    stage("contracts", [&] { return prove_contracts(functions, cfg.unwind); });
+    stage("wp", [&] { return run_wp(functions, cfg.unwind); });
+    auto bmc_rec = stage("bmc", [&] { return run_bmc(inline_static(functions), cfg.unwind); });
+    stage("harness", [&] { return run_harness_bmc(functions, cfg.unwind); });
+    stage("concolic", [&] { return run_concolic(functions, 32); });
+    stage("fuzz", [&] {
+        return run_fuse(functions, bmc_rec.findings, src_root, cfg.fuzz_budget, cfg.fuzz_iters, cfg.llm);
+    });
+    stage("diff", [&] { return run_diff(functions, src_root); });
+    stage("rapid", [&] { return run_rapid(functions, 64); });
+    stage("muttest", [&] { return run_muttest(functions, 32); });
+    stage("ltl", [&] {
+        std::vector<std::filesystem::path> specs;
+        if (std::filesystem::exists(src_root)) {
+            for (auto& p : std::filesystem::recursive_directory_iterator(src_root)) {
+                if (p.path().extension() == ".ltl") specs.push_back(p.path());
+            }
+        }
+        std::sort(specs.begin(), specs.end());
+        return run_ltl(functions, specs);
+    });
+    stage("llm", [&] {
+        if (!cfg.llm) {
+            return std::vector<Finding>{{"llm", std::string(laws::NOTRUN), "", std::nullopt,
+                                         std::nullopt, "", "--no-llm", std::string(laws::STRENGTH_READS)}};
+        }
+        return llm_forced_reads(hypothesize(functions, 4, cfg));
+    });
+    stage("execute", [&] {
+        std::vector<Finding> fails;
+        for (auto& s : report.stages)
+            for (auto& f : s.findings)
+                if ((f.status == laws::FAILED || f.status == laws::CRASH) && f.function &&
+                    (f.counterexample.find('=') != std::string::npos))
+                    fails.push_back(f);
+        return execute_cex(fails, functions, cfg);
+    });
+    stage("repair", [&] {
+        if (!cfg.llm) {
+            return std::vector<Finding>{{"repair", std::string(laws::NOTRUN), "", std::nullopt,
+                                         std::nullopt, "", "--no-llm", std::string(laws::STRENGTH_READS)}};
+        }
+        for (auto& s : report.stages)
+            for (auto& f : s.findings)
+                if ((f.status == laws::FAILED || f.status == laws::CRASH) && !f.file.empty())
+                    return rlef_repair(f, cfg);
+        return std::vector<Finding>{{"repair", std::string(laws::NOTRUN), "", std::nullopt,
+                                     std::nullopt, "", "nothing to repair",
+                                     std::string(laws::STRENGTH_READS)}};
+    });
+    stage("unify", [&] {
+        auto rows = coverage_from_report(report);
+        nlohmann::json j = nlohmann::json::array();
+        int covered = 0, gaps = 0;
+        std::vector<std::string> gap_ids;
+        for (auto& r : rows) {
+            nlohmann::json seen = nlohmann::json::object();
+            for (auto& [k, v] : r.seen) seen[k] = v;
+            j.push_back({{"id", r.id}, {"name", r.name}, {"cwe", r.cwe}, {"seen", seen},
+                         {"best", r.best}, {"verdict", r.verdict}});
+            if (r.verdict == "COVERED") ++covered;
+            if (r.verdict == "GAP") {
+                ++gaps;
+                gap_ids.push_back(r.id);
+            }
+        }
+        std::ofstream(cfg.out / "taxonomy.json") << j.dump(2);
+        Finding f;
+        f.stage = "unify";
+        f.status = std::string(laws::CLEAN);
+        f.message = "taxonomy " + std::to_string(covered) + "/" + std::to_string(rows.size()) +
+                    " COVERED, " + std::to_string(gaps) + " GAP (not a proof)";
+        f.strength = std::string(laws::STRENGTH_FINDS);
+        std::string g;
+        for (auto& id : gap_ids) {
+            if (!g.empty()) g += ",";
+            g += id;
+        }
+        f.extra["gaps"] = g;
+        f.extra["not_a_proof"] = "true";
+        return std::vector<Finding>{f};
+    });
+
+    apply_confidence(report);
+    report.save(cfg.out / "report.json");
+    write_report_md(report, cfg.out / "report.md");
+    return report;
+}
+
+}  // namespace prism

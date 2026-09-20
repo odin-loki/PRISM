@@ -13,3 +13,10 @@ int desig_init_ok(int n) {
     a[0] = n;
     return a[0];
 }
+
+int desig_assign_ok(int n) {
+    int dst[2];
+    int i = 0;
+    { dst[i] = n; }
+    return dst[0];
+}

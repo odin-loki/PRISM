@@ -1,0 +1,21 @@
+CORE
+DestructorStackTests
+--show-goto-functions --function DestructorStackTests.mainTest --unwind 10 -cp target/classes
+activate-multi-line-match
+DEAD [^\n]*::throwaway\s+[^\n]*\s+DEAD [^\n]*::new_tmp\d+\s+[^\n]*\s+DEAD [^\n]*return_tmp\d+\s+[^\n]*\s+DEAD [^\n]*::val\s+[^\n]*\s+GOTO \d+
+^EXIT=0$
+^SIGNAL=0$
+--
+--
+Checks for:
+
+        // 242 file DestructorStackTests.java line 39 function java::DestructorStackTests.mainTest:(Z)V bytecode-index 89
+        DEAD throwaway
+        // 243 file DestructorStackTests.java line 39 function java::DestructorStackTests.mainTest:(Z)V bytecode-index 89
+        DEAD new_tmp17
+        // 244 file DestructorStackTests.java line 39 function java::DestructorStackTests.mainTest:(Z)V bytecode-index 89
+        DEAD val
+        // 245 file DestructorStackTests.java line 39 function java::DestructorStackTests.mainTest:(Z)V bytecode-index 89
+        GOTO 3
+
+Tests to make sure a continue kills its variables before going back to the start of the loop.

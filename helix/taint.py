@@ -11,10 +11,12 @@ import re
 from helix import laws
 from helix.models import Finding, FunctionInfo
 
-_SOURCES = frozenset({"getenv", "fgets", "gets", "scanf", "recv", "read"})
+_SOURCES = frozenset({
+    "getenv", "fgets", "gets", "scanf", "recv", "read", "fread", "recvfrom",
+})
 _SINKS = frozenset({
     "system", "popen", "execl", "execv", "strcpy", "sprintf", "memcpy",
-    "printf", "fprintf",
+    "printf", "fprintf", "strcat", "strncat",
 })
 
 _ASSIGN = re.compile(
@@ -52,7 +54,7 @@ def _sink_arg_indices(name: str) -> tuple[int, ...]:
         return (0,)
     if name in {"sprintf", "fprintf"}:
         return (1,)
-    if name in {"strcpy", "memcpy"}:
+    if name in {"strcpy", "memcpy", "strcat", "strncat"}:
         return (0, 1)
     return (0,)
 
@@ -79,6 +81,10 @@ def _mark_source_taint(stmt: str, tainted: set[str]) -> None:
                 tainted.add(args[1].strip().lstrip("&").split("[", 1)[0])
             elif src == "recv" and len(args) >= 2:
                 tainted.add(args[1].strip().lstrip("&").split("[", 1)[0])
+            elif src == "recvfrom" and len(args) >= 2:
+                tainted.add(args[1].strip().lstrip("&").split("[", 1)[0])
+            elif src == "fread":
+                tainted.add(args[0].strip().lstrip("&").split("[", 1)[0])
             elif src in {"fgets", "gets"}:
                 tainted.add(args[0].strip().lstrip("&").split("[", 1)[0])
             elif src == "scanf":
@@ -102,7 +108,7 @@ def _check_sinks(
     tainted: set[str],
 ) -> Finding | None:
     for m in re.finditer(
-        r"\b(?P<name>system|popen|execl|execv|strcpy|sprintf|memcpy)\s*\((?P<args>[^)]*)\)",
+        r"\b(?P<name>system|popen|execl|execv|strcpy|sprintf|memcpy|strcat|strncat)\s*\((?P<args>[^)]*)\)",
         stmt,
     ):
         name = m.group("name")

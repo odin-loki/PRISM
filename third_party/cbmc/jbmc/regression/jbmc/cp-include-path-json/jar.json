@@ -1,0 +1,12 @@
+{
+  "jar":
+  [
+    "target/A.jar",
+    "target/B.jar"
+  ],
+  "classFiles":
+  [
+    "jarfile3$A.class",
+    "jarfile3.class"
+  ]
+}

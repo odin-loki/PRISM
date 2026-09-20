@@ -1,0 +1,9 @@
+CORE
+test.c
+--show-lexical-loops _ --no-standard-checks
+15 is head of \{ 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25 \(backedge\) \}
+18 is head of \{ 18, 19, 20, 21 \(backedge\) \}
+^EXIT=0$
+^SIGNAL=0$
+--
+^warning: ignoring

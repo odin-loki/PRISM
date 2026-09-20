@@ -1,0 +1,8 @@
+CORE
+
+'mypackage.Package.<init>' -cp target/classes
+^EXIT=0$
+^SIGNAL=0$
+^Found Java main class: mypackage.Package$
+--
+--

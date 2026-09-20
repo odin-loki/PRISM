@@ -1,0 +1,27 @@
+/**
+ * This module provides a hand-modifiable wrapper around the generated class `StructFieldList`.
+ *
+ * INTERNAL: Do not use.
+ */
+
+private import codeql.rust.elements.internal.generated.StructFieldList
+
+/**
+ * INTERNAL: This module contains the customizable definition of `StructFieldList` and should not
+ * be referenced directly.
+ */
+module Impl {
+  // the following QLdoc is generated: if you need to edit it, do it in the schema file
+  /**
+   * A list of fields in a struct declaration.
+   *
+   * For example:
+   * ```rust
+   * struct S { x: i32, y: i32 }
+   * //         ^^^^^^^^^^^^^^^
+   * ```
+   */
+  class StructFieldList extends Generated::StructFieldList {
+    override string toStringImpl() { result = this.getAPrimaryQlClass() }
+  }
+}

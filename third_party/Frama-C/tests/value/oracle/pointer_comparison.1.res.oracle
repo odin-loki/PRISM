@@ -1,0 +1,259 @@
+[kernel] Parsing tests/value/pointer_comparison.c (with preprocessing)
+[eva] Analyzing a complete application starting at main
+[eva] Computing initial state
+[eva] Initial state computed
+[eva:initial-state] Values of globals at initialization
+  x ∈ {0}
+  y ∈ {0}
+  p ∈ {0}
+[eva] tests/value/pointer_comparison.c:8: Frama_C_show_each_1t: {{ &x + {4} }}
+[eva:pointer-comparison] tests/value/pointer_comparison.c:10: 
+  invalid pointer comparison: invalid pointer(s)
+[eva:pointer-comparison] tests/value/pointer_comparison.c:10: 
+  evaluating condition to {0; 1} instead of {0} because of UPCPA
+[eva] tests/value/pointer_comparison.c:10: Frama_C_show_each_2: {{ &x + {8} }}
+[eva:pointer-comparison] tests/value/pointer_comparison.c:10: 
+  evaluating condition to {0; 1} instead of {1} because of UPCPA
+[eva] tests/value/pointer_comparison.c:11: Frama_C_show_each_2e: {{ &x + {8} }}
+[eva:pointer-comparison] tests/value/pointer_comparison.c:12: 
+  invalid pointer comparison: invalid pointer(s)
+[eva:pointer-comparison] tests/value/pointer_comparison.c:12: 
+  evaluating condition to {0; 1} instead of {0} because of UPCPA
+[eva] tests/value/pointer_comparison.c:12: Frama_C_show_each_3: {{ &x + {12} }}
+[eva:pointer-comparison] tests/value/pointer_comparison.c:12: 
+  evaluating condition to {0; 1} instead of {1} because of UPCPA
+[eva] tests/value/pointer_comparison.c:13: Frama_C_show_each_3e: {{ &x + {12} }}
+[eva:pointer-comparison] tests/value/pointer_comparison.c:14: 
+  invalid pointer comparison: invalid pointer(s)
+[eva:pointer-comparison] tests/value/pointer_comparison.c:14: 
+  evaluating condition to {0; 1} instead of {0} because of UPCPA
+[eva] tests/value/pointer_comparison.c:14: Frama_C_show_each_4: {{ &x + {16} }}
+[eva:pointer-comparison] tests/value/pointer_comparison.c:14: 
+  evaluating condition to {0; 1} instead of {1} because of UPCPA
+[eva] tests/value/pointer_comparison.c:15: Frama_C_show_each_4e: {{ &x + {16} }}
+[eva:pointer-comparison] tests/value/pointer_comparison.c:16: 
+  invalid pointer comparison: invalid pointer(s)
+[eva] tests/value/pointer_comparison.c:16: Frama_C_show_each_5: {{ &x + {16} }}
+[eva] tests/value/pointer_comparison.c:17: Frama_C_show_each_5e: {{ &x + {16} }}
+[eva:pointer-comparison] tests/value/pointer_comparison.c:18: 
+  invalid pointer comparison: invalid pointer(s)
+[eva:pointer-comparison] tests/value/pointer_comparison.c:18: 
+  evaluating condition to {0; 1} instead of {0} because of UPCPA
+[eva] tests/value/pointer_comparison.c:18: Frama_C_show_each_6: {{ &x + {20} }}
+[eva] tests/value/pointer_comparison.c:18: starting to merge loop iterations
+[eva] tests/value/pointer_comparison.c:18: 
+  Frama_C_show_each_6: {{ &x + {20; 24} }}
+[eva] tests/value/pointer_comparison.c:18: 
+  Frama_C_show_each_6: {{ &x + {20; 24; 28} }}
+[eva] tests/value/pointer_comparison.c:18: 
+  Frama_C_show_each_6: {{ &x + [20..--],0%4 }}
+[eva:pointer-comparison] tests/value/pointer_comparison.c:18: 
+  evaluating condition to {0; 1} instead of {1} because of UPCPA
+[eva] Recording results for main
+[eva] done for function main
+[eva] ====== VALUES COMPUTED ======
+[eva:final-states] Values at end of function main:
+  p ∈ {{ &x + [20..--],0%4 }}
+  __retres ∈ {0}
+[from] Computing for function main
+[from] Done for function main
+[from] ====== DEPENDENCIES COMPUTED ======
+  These dependencies hold at termination for the executions that terminate:
+[from] Function main:
+  p FROM \nothing
+  \result FROM \nothing
+[from] ====== END OF DEPENDENCIES ======
+[inout] Out (internal) for function main:
+    p; tmp; tmp_0; tmp_1; tmp_2; tmp_3; __retres
+[inout] Inputs for function main:
+    p
+[report] Computing properties status...
+--------------------------------------------------------------------------------
+--- No status to report
+--------------------------------------------------------------------------------
+[eva] Analyzing a complete application starting at main
+[eva] Computing initial state
+[eva] Initial state computed
+[eva:initial-state] Values of globals at initialization
+  x ∈ {0}
+  y ∈ {0}
+  p ∈ {0}
+[eva] tests/value/pointer_comparison.c:8: Frama_C_show_each_1t: {{ &x + {4} }}
+[eva:alarm] tests/value/pointer_comparison.c:10: Warning: 
+  pointer comparison.
+  assert \pointer_comparable((void *)tmp_0, (void *)(&y));
+  (tmp_0 from p++)
+[eva] tests/value/pointer_comparison.c:10: Frama_C_show_each_2: {{ &x + {8} }}
+[eva] tests/value/pointer_comparison.c:11: Frama_C_show_each_2e: {{ &x + {8} }}
+[eva:alarm] tests/value/pointer_comparison.c:12: Warning: 
+  pointer comparison.
+  assert \pointer_comparable((void *)tmp_1, (void *)(&y));
+  (tmp_1 from p++)
+[eva] tests/value/pointer_comparison.c:12: Frama_C_show_each_3: {{ &x + {12} }}
+[eva] tests/value/pointer_comparison.c:13: Frama_C_show_each_3e: {{ &x + {12} }}
+[eva:alarm] tests/value/pointer_comparison.c:14: Warning: 
+  pointer comparison.
+  assert \pointer_comparable((void *)tmp_2, (void *)(&y));
+  (tmp_2 from p++)
+[eva] tests/value/pointer_comparison.c:14: Frama_C_show_each_4: {{ &x + {16} }}
+[eva] tests/value/pointer_comparison.c:15: Frama_C_show_each_4e: {{ &x + {16} }}
+[eva] tests/value/pointer_comparison.c:16: Frama_C_show_each_5: {{ &x + {16} }}
+[eva] tests/value/pointer_comparison.c:17: Frama_C_show_each_5e: {{ &x + {16} }}
+[eva:alarm] tests/value/pointer_comparison.c:18: Warning: 
+  pointer comparison.
+  assert \pointer_comparable((void *)tmp_3, (void *)(&y));
+  (tmp_3 from p++)
+[eva] tests/value/pointer_comparison.c:18: Frama_C_show_each_6: {{ &x + {20} }}
+[eva] tests/value/pointer_comparison.c:18: 
+  Frama_C_show_each_6: {{ &x + {20; 24} }}
+[eva] tests/value/pointer_comparison.c:18: 
+  Frama_C_show_each_6: {{ &x + {20; 24; 28} }}
+[eva] tests/value/pointer_comparison.c:18: 
+  Frama_C_show_each_6: {{ &x + [20..--],0%4 }}
+[eva] Recording results for main
+[eva] done for function main
+[eva] ====== VALUES COMPUTED ======
+[eva:final-states] Values at end of function main:
+  p ∈ {{ &x + [20..--],0%4 }}
+  __retres ∈ {0}
+[from] Computing for function main
+[from] Done for function main
+[from] ====== DEPENDENCIES COMPUTED ======
+  These dependencies hold at termination for the executions that terminate:
+[from] Function main:
+  p FROM \nothing
+  \result FROM \nothing
+[from] ====== END OF DEPENDENCIES ======
+[inout] Out (internal) for function main:
+    p; tmp; tmp_0; tmp_1; tmp_2; tmp_3; __retres
+[inout] Inputs for function main:
+    p
+[report] Computing properties status...
+
+--------------------------------------------------------------------------------
+--- Properties of Function 'main'
+--------------------------------------------------------------------------------
+
+[    -    ] Assertion 'Eva,ptr_comparison' (file tests/value/pointer_comparison.c, line 10)
+            assert
+            Eva: ptr_comparison:
+              \pointer_comparable((void *)tmp_0, (void *)(&y));
+            tried with Eva.
+[    -    ] Assertion 'Eva,ptr_comparison' (file tests/value/pointer_comparison.c, line 12)
+            assert
+            Eva: ptr_comparison:
+              \pointer_comparable((void *)tmp_1, (void *)(&y));
+            tried with Eva.
+[    -    ] Assertion 'Eva,ptr_comparison' (file tests/value/pointer_comparison.c, line 14)
+            assert
+            Eva: ptr_comparison:
+              \pointer_comparable((void *)tmp_2, (void *)(&y));
+            tried with Eva.
+[    -    ] Assertion 'Eva,ptr_comparison' (file tests/value/pointer_comparison.c, line 18)
+            assert
+            Eva: ptr_comparison:
+              \pointer_comparable((void *)tmp_3, (void *)(&y));
+            tried with Eva.
+
+--------------------------------------------------------------------------------
+--- Status Report Summary
+--------------------------------------------------------------------------------
+     4 To be validated
+     4 Total
+--------------------------------------------------------------------------------
+[eva] Analyzing a complete application starting at main
+[eva] Computing initial state
+[eva] Initial state computed
+[eva:initial-state] Values of globals at initialization
+  x ∈ {0}
+  y ∈ {0}
+  p ∈ {0}
+[eva] tests/value/pointer_comparison.c:8: Frama_C_show_each_1t: {{ &x + {4} }}
+[eva:alarm] tests/value/pointer_comparison.c:10: Warning: 
+  pointer comparison.
+  assert \pointer_comparable((void *)tmp_0, (void *)(&y));
+  (tmp_0 from p++)
+[eva] tests/value/pointer_comparison.c:10: Frama_C_show_each_2: {{ &x + {8} }}
+[eva] tests/value/pointer_comparison.c:11: Frama_C_show_each_2e: {{ &x + {8} }}
+[eva:alarm] tests/value/pointer_comparison.c:12: Warning: 
+  pointer comparison.
+  assert \pointer_comparable((void *)tmp_1, (void *)(&y));
+  (tmp_1 from p++)
+[eva] tests/value/pointer_comparison.c:12: Frama_C_show_each_3: {{ &x + {12} }}
+[eva] tests/value/pointer_comparison.c:13: Frama_C_show_each_3e: {{ &x + {12} }}
+[eva:alarm] tests/value/pointer_comparison.c:14: Warning: 
+  pointer comparison.
+  assert \pointer_comparable((void *)tmp_2, (void *)(&y));
+  (tmp_2 from p++)
+[eva] tests/value/pointer_comparison.c:14: Frama_C_show_each_4: {{ &x + {16} }}
+[eva] tests/value/pointer_comparison.c:15: Frama_C_show_each_4e: {{ &x + {16} }}
+[eva:alarm] tests/value/pointer_comparison.c:16: Warning: 
+  pointer comparison. assert \pointer_comparable((void *)p, (void *)(&y));
+[eva] tests/value/pointer_comparison.c:16: Frama_C_show_each_5: {{ &x + {16} }}
+[eva] tests/value/pointer_comparison.c:17: Frama_C_show_each_5e: {{ &x + {16} }}
+[eva:alarm] tests/value/pointer_comparison.c:18: Warning: 
+  pointer comparison.
+  assert \pointer_comparable((void *)tmp_3, (void *)(&y));
+  (tmp_3 from p++)
+[eva] tests/value/pointer_comparison.c:18: Frama_C_show_each_6: {{ &x + {20} }}
+[eva] tests/value/pointer_comparison.c:18: 
+  Frama_C_show_each_6: {{ &x + {20; 24} }}
+[eva] tests/value/pointer_comparison.c:18: 
+  Frama_C_show_each_6: {{ &x + {20; 24; 28} }}
+[eva] tests/value/pointer_comparison.c:18: 
+  Frama_C_show_each_6: {{ &x + [20..--],0%4 }}
+[eva] Recording results for main
+[eva] done for function main
+[eva] ====== VALUES COMPUTED ======
+[eva:final-states] Values at end of function main:
+  p ∈ {{ &x + [20..--],0%4 }}
+  __retres ∈ {0}
+[from] Computing for function main
+[from] Done for function main
+[from] ====== DEPENDENCIES COMPUTED ======
+  These dependencies hold at termination for the executions that terminate:
+[from] Function main:
+  p FROM \nothing
+  \result FROM \nothing
+[from] ====== END OF DEPENDENCIES ======
+[inout] Out (internal) for function main:
+    p; tmp; tmp_0; tmp_1; tmp_2; tmp_3; __retres
+[inout] Inputs for function main:
+    p
+[report] Computing properties status...
+
+--------------------------------------------------------------------------------
+--- Properties of Function 'main'
+--------------------------------------------------------------------------------
+
+[    -    ] Assertion 'Eva,ptr_comparison' (file tests/value/pointer_comparison.c, line 10)
+            assert
+            Eva: ptr_comparison:
+              \pointer_comparable((void *)tmp_0, (void *)(&y));
+            tried with Eva.
+[    -    ] Assertion 'Eva,ptr_comparison' (file tests/value/pointer_comparison.c, line 12)
+            assert
+            Eva: ptr_comparison:
+              \pointer_comparable((void *)tmp_1, (void *)(&y));
+            tried with Eva.
+[    -    ] Assertion 'Eva,ptr_comparison' (file tests/value/pointer_comparison.c, line 14)
+            assert
+            Eva: ptr_comparison:
+              \pointer_comparable((void *)tmp_2, (void *)(&y));
+            tried with Eva.
+[    -    ] Assertion 'Eva,ptr_comparison' (file tests/value/pointer_comparison.c, line 16)
+            assert
+            Eva: ptr_comparison: \pointer_comparable((void *)p, (void *)(&y));
+            tried with Eva.
+[    -    ] Assertion 'Eva,ptr_comparison' (file tests/value/pointer_comparison.c, line 18)
+            assert
+            Eva: ptr_comparison:
+              \pointer_comparable((void *)tmp_3, (void *)(&y));
+            tried with Eva.
+
+--------------------------------------------------------------------------------
+--- Status Report Summary
+--------------------------------------------------------------------------------
+     5 To be validated
+     5 Total
+--------------------------------------------------------------------------------

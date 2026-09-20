@@ -1,0 +1,161 @@
+[kernel] Parsing tests/libc/stdlib_c.c (with preprocessing)
+[eva] Analyzing a complete application starting at main
+[eva] Computing initial state
+[eva] Initial state computed
+[eva:initial-state] Values of globals at initialization
+  
+[eva] computing for function calloc <- main.
+  Called from tests/libc/stdlib_c.c:14.
+[eva] share/libc/stdlib.c:72: Call to builtin Frama_C_malloc_by_stack
+[eva] share/libc/stdlib.c:72: allocating variable __malloc_calloc_l72
+[eva] computing for function memset <- calloc <- main.
+  Called from share/libc/stdlib.c:73.
+[eva] using specification for function memset
+[eva] share/libc/stdlib.c:73: 
+  function memset: precondition 'valid_s' got status valid.
+[eva] share/libc/string.h:118: 
+  cannot evaluate ACSL term, unsupported ACSL construct: logic function memset
+[eva] Done for function memset
+[eva] Recording results for calloc
+[eva] Done for function calloc
+[eva] tests/libc/stdlib_c.c:16: assertion got status valid.
+[eva] computing for function Frama_C_size_t_interval <- main.
+  Called from tests/libc/stdlib_c.c:20.
+[eva] using specification for function Frama_C_size_t_interval
+[eva] tests/libc/stdlib_c.c:20: 
+  function Frama_C_size_t_interval: precondition 'order' got status valid.
+[eva] Done for function Frama_C_size_t_interval
+[eva] computing for function calloc <- main.
+  Called from tests/libc/stdlib_c.c:21.
+[eva] share/libc/stdlib.c:72: Call to builtin Frama_C_malloc_by_stack
+[eva] share/libc/stdlib.c:72: allocating variable __malloc_calloc_l72_0
+[eva] computing for function memset <- calloc <- main.
+  Called from share/libc/stdlib.c:73.
+[eva:alarm] share/libc/stdlib.c:73: Warning: 
+  function memset: precondition 'valid_s' got status unknown.
+[eva] Done for function memset
+[eva] Recording results for calloc
+[eva] Done for function calloc
+[eva:alarm] tests/libc/stdlib_c.c:23: Warning: assertion got status unknown.
+[eva] computing for function calloc <- main.
+  Called from tests/libc/stdlib_c.c:27.
+[eva] Recording results for calloc
+[eva] Done for function calloc
+[eva] tests/libc/stdlib_c.c:28: assertion got status valid.
+[eva] computing for function calloc <- main.
+  Called from tests/libc/stdlib_c.c:32.
+[eva] share/libc/stdlib.c:72: Call to builtin Frama_C_malloc_by_stack
+[eva] share/libc/stdlib.c:72: allocating variable __malloc_calloc_l72_1
+[eva] computing for function memset <- calloc <- main.
+  Called from share/libc/stdlib.c:73.
+[eva] Done for function memset
+[eva] Recording results for calloc
+[eva] Done for function calloc
+[eva] tests/libc/stdlib_c.c:31: starting to merge loop iterations
+[eva] computing for function calloc <- main.
+  Called from tests/libc/stdlib_c.c:32.
+[eva] share/libc/stdlib.c:72: Call to builtin Frama_C_malloc_by_stack
+[eva] computing for function memset <- calloc <- main.
+  Called from share/libc/stdlib.c:73.
+[eva] Done for function memset
+[eva] Recording results for calloc
+[eva] Done for function calloc
+[eva:alarm] tests/libc/stdlib_c.c:33: Warning: 
+  out of bounds write. assert \valid(s + (unsigned int)(i - 1));
+[eva] computing for function calloc <- main.
+  Called from tests/libc/stdlib_c.c:32.
+[eva] share/libc/stdlib.c:72: Call to builtin Frama_C_malloc_by_stack
+[eva] computing for function memset <- calloc <- main.
+  Called from share/libc/stdlib.c:73.
+[eva] Done for function memset
+[eva] Recording results for calloc
+[eva] Done for function calloc
+[eva] computing for function calloc <- main.
+  Called from tests/libc/stdlib_c.c:32.
+[eva] share/libc/stdlib.c:72: Call to builtin Frama_C_malloc_by_stack
+[eva] computing for function memset <- calloc <- main.
+  Called from share/libc/stdlib.c:73.
+[eva] Done for function memset
+[eva] Recording results for calloc
+[eva] Done for function calloc
+[eva] computing for function calloc <- main.
+  Called from tests/libc/stdlib_c.c:32.
+[eva] share/libc/stdlib.c:72: Call to builtin Frama_C_malloc_by_stack
+[eva] computing for function memset <- calloc <- main.
+  Called from share/libc/stdlib.c:73.
+[eva] Done for function memset
+[eva] Recording results for calloc
+[eva] Done for function calloc
+[eva] computing for function calloc <- main.
+  Called from tests/libc/stdlib_c.c:32.
+[eva] share/libc/stdlib.c:72: Call to builtin Frama_C_malloc_by_stack
+[eva] computing for function memset <- calloc <- main.
+  Called from share/libc/stdlib.c:73.
+[eva] Done for function memset
+[eva] Recording results for calloc
+[eva] Done for function calloc
+[eva] computing for function posix_memalign <- main.
+  Called from tests/libc/stdlib_c.c:37.
+[eva] share/libc/stdlib.c:196: 
+  assertion 'alignment_is_a_suitable_power_of_two' got status valid.
+[eva] share/libc/stdlib.c:199: Call to builtin Frama_C_malloc_by_stack
+[eva] share/libc/stdlib.c:199: allocating variable __malloc_posix_memalign_l199
+[eva] Recording results for posix_memalign
+[eva] Done for function posix_memalign
+[eva] computing for function free <- main.
+  Called from tests/libc/stdlib_c.c:38.
+[eva] using specification for function free
+[eva] tests/libc/stdlib_c.c:38: Warning: ignoring unsupported \allocates clause
+[eva] tests/libc/stdlib_c.c:38: 
+  function free: precondition 'freeable' got status valid.
+[eva] Done for function free
+[eva] computing for function posix_memalign <- main.
+  Called from tests/libc/stdlib_c.c:39.
+[eva] share/libc/stdlib.c:199: Call to builtin Frama_C_malloc_by_stack
+[eva] share/libc/stdlib.c:199: 
+  allocating variable __malloc_posix_memalign_l199_0
+[eva] Recording results for posix_memalign
+[eva] Done for function posix_memalign
+[eva] computing for function free <- main.
+  Called from tests/libc/stdlib_c.c:40.
+[eva] tests/libc/stdlib_c.c:40: Warning: ignoring unsupported \allocates clause
+[eva] tests/libc/stdlib_c.c:40: 
+  function free: precondition 'freeable' got status valid.
+[eva] Done for function free
+[eva] Recording results for main
+[eva] done for function main
+[eva] ====== VALUES COMPUTED ======
+[eva:final-states] Values at end of function calloc:
+  __fc_heap_status ∈ [--..--]
+  l ∈ [0..4294967292],0%4
+  p ∈
+   {{ NULL ; &__malloc_calloc_l72[0] ; &__malloc_calloc_l72_0[0] ;
+      &__malloc_w_calloc_l72_1[0] }}
+  __retres ∈
+          {{ NULL ; (void *)&__malloc_calloc_l72 ;
+             (void *)&__malloc_calloc_l72_0 ;
+             (void *)&__malloc_w_calloc_l72_1 }}
+  __malloc_calloc_l72[0..3] ∈ [--..--] or UNINITIALIZED
+  __malloc_calloc_l72_0[0..4294967291] ∈ [--..--] or UNINITIALIZED
+  __malloc_w_calloc_l72_1[0..4294967291] ∈ [--..--] or UNINITIALIZED
+[eva:final-states] Values at end of function posix_memalign:
+  __fc_heap_status ∈ [--..--]
+  p_al0 ∈ {{ NULL ; &__malloc_posix_memalign_l199[0] }}
+  p_al1 ∈ {{ NULL ; &__malloc_posix_memalign_l199_0[0] }} or UNINITIALIZED
+  __retres ∈ {0; 12}
+[eva:final-states] Values at end of function main:
+  __fc_heap_status ∈ [--..--]
+  Frama_C_entropy_source ∈ [--..--]
+  p ∈ {{ NULL ; (int *)&__malloc_calloc_l72 }}
+  nmemb ∈ [1..4294967295]
+  q ∈ {{ NULL ; (int *)&__malloc_calloc_l72_0 }}
+  r ∈ {0}
+  s ∈ {{ NULL ; (int *)&__malloc_w_calloc_l72_1 }} or UNINITIALIZED
+  p_al0 ∈ {{ NULL ; &__malloc_posix_memalign_l199[0] }}
+  p_al1 ∈ {{ NULL ; &__malloc_posix_memalign_l199_0[0] }}
+  p_memal_res ∈ {0; 12}
+  p_memal_res2 ∈ {0; 12}
+  __retres ∈ {0}
+  __malloc_calloc_l72[0..3] ∈ [--..--] or UNINITIALIZED
+  __malloc_calloc_l72_0[0..4294967291] ∈ [--..--] or UNINITIALIZED
+  __malloc_w_calloc_l72_1[0..4294967291] ∈ [--..--] or UNINITIALIZED

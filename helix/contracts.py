@@ -12,6 +12,7 @@ import re
 
 from helix import laws
 from helix.bmc import bmc_function
+from helix.cparse import body_needs_pointer_harness
 from helix.models import Finding, FunctionInfo
 
 # Subset the instrumenter advertises. Other C predicates are still forwarded
@@ -22,9 +23,10 @@ REQ_ATOM = re.compile(
 ENS_ATOM = re.compile(
     r"^result\s*(==|>=)\s*(.+)$"
 )
-_DEC_EXPR = re.compile(
-    r"^[A-Za-z_]\w*([+-][A-Za-z_]\w*)*$"
-)
+# Simple identifier only. Compound measures (n - i, n - 1, *, tuples)
+# are ERROR, never PROVED-ASSUMING: Helix does not decide their
+# well-foundedness the way Dafny's VC generator does.
+_DEC_IDENT = re.compile(r"^[A-Za-z_]\w*$")
 _INV_ATOM = re.compile(
     r"^([A-Za-z_]\w*)\s*(<=|>=|<|>|==|!=)\s*([A-Za-z_]\w*|0|[1-9]\d*)$"
 )
@@ -142,7 +144,9 @@ def parse_comments(fn: FunctionInfo) -> dict:
         if not m:
             continue
         kind = m.group(1).lower()
-        val = m.group(2).strip().rstrip("*/").strip()
+        val = m.group(2).strip()
+        if val.endswith("*/"):
+            val = val[:-2].strip()
         if kind == "diff":
             spec["diff"] = val.split()[0] if val else None
         else:
@@ -188,7 +192,9 @@ def bmc_function_with_assume(
                     "invariant_unencoded": True,
                 },
             )
-    if decreases and _has_loop(core):
+    if decreases:
+        # Honesty: a non-identifier measure is ERROR even when there is no
+        # loop to instrument. Never silently drop it into PROVED-ASSUMING.
         if not _encode_decreases(decreases):
             return Finding(
                 **base, status=laws.ERROR,
@@ -198,18 +204,19 @@ def bmc_function_with_assume(
                     "decreases": decreases, "decreases_unencoded": True,
                 },
             )
-        core, ok = _instrument_decreases(core, decreases)
-        dec_extra["decreases"] = decreases
-        dec_extra["decreases_encoded"] = ok
-        if not ok:
-            return Finding(
-                **base, status=laws.ERROR,
-                message=f"decreases ({decreases}) not instrumented",
-                extra={
-                    **dec_extra, "requires": requires, "ensures": ensures,
-                    "decreases_unencoded": True,
-                },
-            )
+        if _has_loop(core):
+            core, ok = _instrument_decreases(core, decreases)
+            dec_extra["decreases"] = decreases
+            dec_extra["decreases_encoded"] = ok
+            if not ok:
+                return Finding(
+                    **base, status=laws.ERROR,
+                    message=f"decreases ({decreases}) not instrumented",
+                    extra={
+                        **dec_extra, "requires": requires, "ensures": ensures,
+                        "decreases_unencoded": True,
+                    },
+                )
 
     cloned = replace(fn, body=_instrument(core, requires, ensures))
     r = bmc_function(cloned, unwind)
@@ -251,6 +258,31 @@ def prove_contracts(functions: list[FunctionInfo], unwind: int) -> list[Finding]
         ensures = " && ".join(ens) if ens else None
         decreases = decs[0] if decs else None
         invariant = " && ".join(invs) if invs else None
+        ptr_body = body_needs_pointer_harness(fn.body or "")
+        if fn.kind == "POINTER" or ptr_body or fn.kind != "SCALAR":
+            why = "POINTER" if fn.kind == "POINTER" or ptr_body else fn.kind
+            msg = (
+                "POINTER: contract BMC would invent a buffer; not a proof"
+                if why == "POINTER"
+                else f"{fn.kind}: contract scalar subset only; not a proof"
+            )
+            out.append(Finding(
+                stage="contracts",
+                file=fn.file,
+                function=fn.name,
+                line=fn.line,
+                status=laws.NEEDS_HARNESS,
+                cls="FUNC-CONTRACT",
+                message=msg,
+                strength=laws.STRENGTH_PROVES,
+                extra={
+                    "requires": requires,
+                    "ensures": ensures,
+                    "decreases": decreases,
+                    "invariant": invariant,
+                },
+            ))
+            continue
         rec = bmc_function_with_assume(
             fn, unwind, requires, ensures, decreases=decreases, invariant=invariant,
         )
@@ -304,7 +336,7 @@ def _has_loop(body: str) -> bool:
 
 def _encode_decreases(expr: str) -> bool:
     compact = re.sub(r"\s+", "", expr.strip())
-    return bool(compact and _DEC_EXPR.fullmatch(compact))
+    return bool(compact and _DEC_IDENT.fullmatch(compact))
 
 
 def _encode_invariant(expr: str) -> bool:

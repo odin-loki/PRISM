@@ -1,0 +1,12 @@
+CORE
+main.c
+--variable-sensitivity --vsd-values constants --show
+^EXIT=0$
+^SIGNAL=0$
+main::1::b1 \(\) -> TRUE @ \[17\]
+main::1::b2 \(\) -> FALSE @ \[18\]
+main::1::b3 \(\) -> TOP @ \[20\]
+main::1::i \(\) -> 10 @ \[22\]
+main::1::j \(\) -> 20 @ \[24\]
+main::1::k \(\) -> TOP @ \[26\]
+--

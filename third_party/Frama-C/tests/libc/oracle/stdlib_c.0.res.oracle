@@ -1,0 +1,128 @@
+[kernel] Parsing tests/libc/stdlib_c.c (with preprocessing)
+[eva] Analyzing a complete application starting at main
+[eva] Computing initial state
+[eva] Initial state computed
+[eva:initial-state] Values of globals at initialization
+  
+[eva] tests/libc/stdlib_c.c:14: 
+  Call to builtin Frama_C_calloc_by_stack for function calloc
+[eva] tests/libc/stdlib_c.c:14: allocating variable __calloc_main_l14
+[eva] tests/libc/stdlib_c.c:16: assertion got status valid.
+[eva] computing for function Frama_C_size_t_interval <- main.
+  Called from tests/libc/stdlib_c.c:20.
+[eva] using specification for function Frama_C_size_t_interval
+[eva] tests/libc/stdlib_c.c:20: 
+  function Frama_C_size_t_interval: precondition 'order' got status valid.
+[eva] Done for function Frama_C_size_t_interval
+[eva] computing for function Frama_C_size_t_interval <- main.
+  Called from tests/libc/stdlib_c.c:20.
+[eva] Done for function Frama_C_size_t_interval
+[eva] tests/libc/stdlib_c.c:21: 
+  Call to builtin Frama_C_calloc_by_stack for function calloc
+[eva] tests/libc/stdlib_c.c:21: Warning: 
+  calloc out of bounds: assert(nmemb * size <= SIZE_MAX)
+[eva] tests/libc/stdlib_c.c:21: allocating variable __calloc_main_l21
+[eva] tests/libc/stdlib_c.c:21: 
+  Call to builtin Frama_C_calloc_by_stack for function calloc
+[eva] tests/libc/stdlib_c.c:23: assertion got status valid.
+[eva] tests/libc/stdlib_c.c:27: 
+  Call to builtin Frama_C_calloc_by_stack for function calloc
+[eva] tests/libc/stdlib_c.c:27: Warning: 
+  calloc out of bounds: assert(nmemb * size <= SIZE_MAX)
+[eva] tests/libc/stdlib_c.c:27: 
+  Call to builtin Frama_C_calloc_by_stack for function calloc
+[eva] tests/libc/stdlib_c.c:27: 
+  Call to builtin Frama_C_calloc_by_stack for function calloc
+[eva] tests/libc/stdlib_c.c:27: 
+  Call to builtin Frama_C_calloc_by_stack for function calloc
+[eva] tests/libc/stdlib_c.c:28: assertion got status valid.
+[eva] tests/libc/stdlib_c.c:32: 
+  Call to builtin Frama_C_calloc_by_stack for function calloc
+[eva] tests/libc/stdlib_c.c:32: allocating variable __calloc_main_l32
+[eva] tests/libc/stdlib_c.c:32: 
+  Call to builtin Frama_C_calloc_by_stack for function calloc
+[eva] tests/libc/stdlib_c.c:32: 
+  Call to builtin Frama_C_calloc_by_stack for function calloc
+[eva] tests/libc/stdlib_c.c:32: 
+  Call to builtin Frama_C_calloc_by_stack for function calloc
+[eva] tests/libc/stdlib_c.c:32: 
+  Call to builtin Frama_C_calloc_by_stack for function calloc
+[eva:malloc] tests/libc/stdlib_c.c:32: 
+  resizing variable `__calloc_w_main_l32' (0..31) to fit 0..63
+[eva:alarm] tests/libc/stdlib_c.c:33: Warning: 
+  out of bounds write. assert \valid(s + (unsigned int)(i - 1));
+[eva] tests/libc/stdlib_c.c:31: starting to merge loop iterations
+[eva] tests/libc/stdlib_c.c:32: 
+  Call to builtin Frama_C_calloc_by_stack for function calloc
+[eva:malloc] tests/libc/stdlib_c.c:32: 
+  resizing variable `__calloc_w_main_l32' (0..31/63) to fit 0..63/95
+[eva] tests/libc/stdlib_c.c:32: 
+  Call to builtin Frama_C_calloc_by_stack for function calloc
+[eva:malloc] tests/libc/stdlib_c.c:32: 
+  resizing variable `__calloc_w_main_l32' (0..31/95) to fit 0..63/127
+[eva] tests/libc/stdlib_c.c:32: 
+  Call to builtin Frama_C_calloc_by_stack for function calloc
+[eva] tests/libc/stdlib_c.c:32: Warning: 
+  calloc out of bounds: assert(nmemb * size <= SIZE_MAX)
+[eva:malloc] tests/libc/stdlib_c.c:32: 
+  resizing variable `__calloc_w_main_l32' (0..31/127) to fit 0..63/34359738367
+[eva] tests/libc/stdlib_c.c:32: 
+  Call to builtin Frama_C_calloc_by_stack for function calloc
+[eva:malloc] tests/libc/stdlib_c.c:32: 
+  resizing variable `__calloc_w_main_l32'
+  (0..31/34359738367) to fit 0..63/34359738367
+[eva] tests/libc/stdlib_c.c:32: 
+  Call to builtin Frama_C_calloc_by_stack for function calloc
+[eva:malloc] tests/libc/stdlib_c.c:32: 
+  resizing variable `__calloc_w_main_l32'
+  (0..31/34359738367) to fit 0..63/34359738367
+[eva] computing for function posix_memalign <- main.
+  Called from tests/libc/stdlib_c.c:37.
+[eva] share/libc/stdlib.c:196: 
+  assertion 'alignment_is_a_suitable_power_of_two' got status valid.
+[eva] share/libc/stdlib.c:199: Call to builtin Frama_C_malloc_by_stack
+[eva] share/libc/stdlib.c:199: allocating variable __malloc_posix_memalign_l199
+[eva] Recording results for posix_memalign
+[eva] Done for function posix_memalign
+[eva] computing for function free <- main.
+  Called from tests/libc/stdlib_c.c:38.
+[eva] using specification for function free
+[eva] tests/libc/stdlib_c.c:38: Warning: ignoring unsupported \allocates clause
+[eva] tests/libc/stdlib_c.c:38: 
+  function free: precondition 'freeable' got status valid.
+[eva] Done for function free
+[eva] computing for function posix_memalign <- main.
+  Called from tests/libc/stdlib_c.c:39.
+[eva] share/libc/stdlib.c:199: Call to builtin Frama_C_malloc_by_stack
+[eva] share/libc/stdlib.c:199: 
+  allocating variable __malloc_posix_memalign_l199_0
+[eva] Recording results for posix_memalign
+[eva] Done for function posix_memalign
+[eva] computing for function free <- main.
+  Called from tests/libc/stdlib_c.c:40.
+[eva] tests/libc/stdlib_c.c:40: Warning: ignoring unsupported \allocates clause
+[eva] tests/libc/stdlib_c.c:40: 
+  function free: precondition 'freeable' got status valid.
+[eva] Done for function free
+[eva] Recording results for main
+[eva] done for function main
+[eva] ====== VALUES COMPUTED ======
+[eva:final-states] Values at end of function posix_memalign:
+  __fc_heap_status ∈ [--..--]
+  p_al0 ∈ {{ NULL ; &__malloc_posix_memalign_l199[0] }}
+  p_al1 ∈ {{ NULL ; &__malloc_posix_memalign_l199_0[0] }} or UNINITIALIZED
+  __retres ∈ {0; 12}
+[eva:final-states] Values at end of function main:
+  __fc_heap_status ∈ [--..--]
+  Frama_C_entropy_source ∈ [--..--]
+  p ∈ {{ NULL ; &__calloc_main_l14 }}
+  nmemb ∈ [1..4294967295]
+  q ∈ {{ NULL ; &__calloc_main_l21[0] }}
+  r ∈ {0}
+  s ∈ {{ NULL ; &__calloc_w_main_l32[0] }}
+  p_al0 ∈ {{ NULL ; &__malloc_posix_memalign_l199[0] }}
+  p_al1 ∈ {{ NULL ; &__malloc_posix_memalign_l199_0[0] }}
+  p_memal_res ∈ {0; 12}
+  p_memal_res2 ∈ {0; 12}
+  __retres ∈ {0}
+  __calloc_w_main_l32[0..1073741823] ∈ {0; 42}

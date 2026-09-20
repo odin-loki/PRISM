@@ -1,0 +1,5 @@
+# Comment-only LTL spec. parse_ltl_file skips # and // lines.
+# G (state != BAD)
+// G (state != BAD)
+# GF (state == LIVE_IDLE)
+// G (state == ST_IDLE -> X (state == ST_WORK))

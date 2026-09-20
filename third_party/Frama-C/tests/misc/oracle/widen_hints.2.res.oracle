@@ -1,0 +1,85 @@
+[kernel] Parsing tests/misc/widen_hints.c (with preprocessing)
+[eva:widen-hints] computing global widen hints
+[eva:widen-hints] tests/misc/widen_hints.c:71: 
+  adding hint from annotation: a, {87} (for all statements)
+[eva:widen-hints] tests/misc/widen_hints.c:87: 
+  adding hint from annotation: ss, {87} (for all statements)
+[eva] Analyzing a complete application starting at main
+[eva] Computing initial state
+[eva] Initial state computed
+[eva:initial-state] Values of globals at initialization
+  x ∈ {9}
+  not_const ∈ {42}
+[eva:widen-hints] tests/misc/widen_hints.c:72: 
+  computing dynamic hints for statement 16
+[eva] tests/misc/widen_hints.c:73: starting to merge loop iterations
+[eva] tests/misc/widen_hints.c:72: starting to merge loop iterations
+[eva:widen-hints] tests/misc/widen_hints.c:88: 
+  computing dynamic hints for statement 30
+[eva] tests/misc/widen_hints.c:89: starting to merge loop iterations
+[eva] tests/misc/widen_hints.c:88: starting to merge loop iterations
+[eva:widen-hints] tests/misc/widen_hints.c:97: 
+  computing dynamic hints for statement 48
+[eva:widen-hints] tests/misc/widen_hints.c:97: 
+  adding new base due to dynamic widen hint: ip, {87}
+[eva] tests/misc/widen_hints.c:98: starting to merge loop iterations
+[eva] tests/misc/widen_hints.c:97: starting to merge loop iterations
+[eva:widen-hints] tests/misc/widen_hints.c:107: 
+  computing dynamic hints for statement 67
+[eva:widen-hints] tests/misc/widen_hints.c:107: 
+  adding new base due to dynamic widen hint: ip2, {87}
+[eva] tests/misc/widen_hints.c:108: starting to merge loop iterations
+[eva] tests/misc/widen_hints.c:107: starting to merge loop iterations
+[eva:widen-hints] tests/misc/widen_hints.c:118: 
+  computing dynamic hints for statement 91
+[eva:widen-hints] tests/misc/widen_hints.c:118: 
+  adding new base due to dynamic widen hint: iarray, {87}
+[eva] tests/misc/widen_hints.c:118: starting to merge loop iterations
+[eva] tests/misc/widen_hints.c:116: starting to merge loop iterations
+[eva] computing for function using_dynamic_global <- main.
+  Called from tests/misc/widen_hints.c:124.
+[eva:widen-hints] tests/misc/widen_hints.c:58: 
+  computing dynamic hints for statement 2
+[eva:widen-hints] tests/misc/widen_hints.c:58: 
+  adding new base due to dynamic widen hint: outer_i, {87}
+[eva] Recording results for using_dynamic_global
+[eva] Done for function using_dynamic_global
+[eva] computing for function using_dynamic_global <- main.
+  Called from tests/misc/widen_hints.c:124.
+[eva] Recording results for using_dynamic_global
+[eva] Done for function using_dynamic_global
+[eva] tests/misc/widen_hints.c:123: starting to merge loop iterations
+[eva] computing for function using_dynamic_global <- main.
+  Called from tests/misc/widen_hints.c:124.
+[eva] tests/misc/widen_hints.c:58: starting to merge loop iterations
+[eva] Recording results for using_dynamic_global
+[eva] Done for function using_dynamic_global
+[eva] computing for function using_dynamic_global <- main.
+  Called from tests/misc/widen_hints.c:124.
+[eva] Recording results for using_dynamic_global
+[eva] Done for function using_dynamic_global
+[eva] computing for function using_dynamic_global <- main.
+  Called from tests/misc/widen_hints.c:124.
+[eva] Recording results for using_dynamic_global
+[eva] Done for function using_dynamic_global
+[eva] Recording results for main
+[eva] done for function main
+[eva] ====== VALUES COMPUTED ======
+[eva:final-states] Values at end of function using_dynamic_global:
+  b ∈ [0..2147483647]
+[eva:final-states] Values at end of function main:
+  m ∈ {10}
+  n ∈ {43}
+  ss.i ∈ {87}
+    .d ∈ UNINITIALIZED
+  ip ∈ {87}
+  p ∈ {{ &ip }}
+  ip2 ∈ {87}
+  p2 ∈ {{ &ip2 }}
+  pp ∈ {{ &p2 }}
+  iarray[0] ∈ {0}
+        [1].i ∈ {87}
+  piarray[0] ∈ {{ &iarray[0] }}
+         [1] ∈ {{ &iarray[1] }}
+  outer_i ∈ {87}
+  __retres ∈ {0}

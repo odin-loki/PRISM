@@ -1,0 +1,97 @@
+[kernel] Parsing tests/misc/widen_hints.c (with preprocessing)
+[eva:widen-hints] computing global widen hints
+[eva:widen-hints] tests/misc/widen_hints.c:79: 
+  adding global hint from annotation: for all variables, {88} (for all statements)
+[eva:widen-hints] tests/misc/widen_hints.c:71: 
+  adding hint from annotation: a, {87} (for all statements)
+[eva:widen-hints] tests/misc/widen_hints.c:87: 
+  adding hint from annotation: ss, {87} (for all statements)
+[eva] Analyzing a complete application starting at main
+[eva] Computing initial state
+[eva] Initial state computed
+[eva:initial-state] Values of globals at initialization
+  x ∈ {9}
+  not_const ∈ {42}
+[eva:widen-hints] tests/misc/widen_hints.c:72: 
+  computing dynamic hints for statement 36
+[eva] tests/misc/widen_hints.c:72: starting to merge loop iterations
+[eva] tests/misc/widen_hints.c:73: starting to merge loop iterations
+[eva:widen-hints] tests/misc/widen_hints.c:80: 
+  computing dynamic hints for statement 50
+[eva] computing for function f <- main.
+  Called from tests/misc/widen_hints.c:80.
+[eva] tests/misc/widen_hints.c:41: starting to merge loop iterations
+[eva] tests/misc/widen_hints.c:42: starting to merge loop iterations
+[eva] Recording results for f
+[eva] Done for function f
+[eva:widen-hints] tests/misc/widen_hints.c:88: 
+  computing dynamic hints for statement 52
+[eva] tests/misc/widen_hints.c:88: starting to merge loop iterations
+[eva] tests/misc/widen_hints.c:89: starting to merge loop iterations
+[eva:widen-hints] tests/misc/widen_hints.c:97: 
+  computing dynamic hints for statement 70
+[eva:widen-hints] tests/misc/widen_hints.c:97: 
+  adding new base due to dynamic widen hint: ip, {87}
+[eva] tests/misc/widen_hints.c:97: starting to merge loop iterations
+[eva] tests/misc/widen_hints.c:98: starting to merge loop iterations
+[eva:widen-hints] tests/misc/widen_hints.c:107: 
+  computing dynamic hints for statement 89
+[eva:widen-hints] tests/misc/widen_hints.c:107: 
+  adding new base due to dynamic widen hint: ip2, {87}
+[eva] tests/misc/widen_hints.c:107: starting to merge loop iterations
+[eva] tests/misc/widen_hints.c:108: starting to merge loop iterations
+[eva:widen-hints] tests/misc/widen_hints.c:118: 
+  computing dynamic hints for statement 113
+[eva:widen-hints] tests/misc/widen_hints.c:118: 
+  adding new base due to dynamic widen hint: iarray, {87}
+[eva] tests/misc/widen_hints.c:116: starting to merge loop iterations
+[eva] tests/misc/widen_hints.c:118: starting to merge loop iterations
+[eva] computing for function using_dynamic_global <- main.
+  Called from tests/misc/widen_hints.c:124.
+[eva:widen-hints] tests/misc/widen_hints.c:58: 
+  computing dynamic hints for statement 22
+[eva:widen-hints] tests/misc/widen_hints.c:58: 
+  adding new base due to dynamic widen hint: outer_i, {87}
+[eva] Recording results for using_dynamic_global
+[eva] Done for function using_dynamic_global
+[eva] tests/misc/widen_hints.c:123: starting to merge loop iterations
+[eva] computing for function using_dynamic_global <- main.
+  Called from tests/misc/widen_hints.c:124.
+[eva] tests/misc/widen_hints.c:58: starting to merge loop iterations
+[eva] Recording results for using_dynamic_global
+[eva] Done for function using_dynamic_global
+[eva] computing for function using_dynamic_global <- main.
+  Called from tests/misc/widen_hints.c:124.
+[eva] Recording results for using_dynamic_global
+[eva] Done for function using_dynamic_global
+[eva] computing for function using_dynamic_global <- main.
+  Called from tests/misc/widen_hints.c:124.
+[eva] Recording results for using_dynamic_global
+[eva] Done for function using_dynamic_global
+[eva] Recording results for main
+[eva] done for function main
+[eva] ====== VALUES COMPUTED ======
+[eva:final-states] Values at end of function f:
+  m ∈ {10}
+  n ∈ {43}
+  t[0..85] ∈ {1} or UNINITIALIZED
+   [86..99] ∈ UNINITIALIZED
+  __retres ∈ {0}
+[eva:final-states] Values at end of function using_dynamic_global:
+  b ∈ [0..88]
+[eva:final-states] Values at end of function main:
+  m ∈ {10}
+  n ∈ {43}
+  ss.i ∈ {87}
+    .d ∈ UNINITIALIZED
+  ip ∈ {87}
+  p ∈ {{ &ip }}
+  ip2 ∈ {87}
+  p2 ∈ {{ &ip2 }}
+  pp ∈ {{ &p2 }}
+  iarray[0] ∈ {0}
+        [1].i ∈ {87}
+  piarray[0] ∈ {{ &iarray[0] }}
+         [1] ∈ {{ &iarray[1] }}
+  outer_i ∈ {87}
+  __retres ∈ {0}

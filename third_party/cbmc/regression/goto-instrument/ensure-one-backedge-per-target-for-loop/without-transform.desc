@@ -1,0 +1,6 @@
+CORE
+test.c
+--show-natural-loops
+^14 is head of \{ 14, 15, 16, 17, 18, 19, 20, 21 \(backedge\) \}$
+^EXIT=0$
+^SIGNAL=0$

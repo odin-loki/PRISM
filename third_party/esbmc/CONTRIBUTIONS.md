@@ -1,0 +1,88 @@
+# Contributions
+
+## Contributing to the Codebase
+
+Here are some steps to contributing to the code base:
+
+1. Compile and execute esbmc. [Building](https://github.com/esbmc/esbmc/blob/master/BUILDING.md)
+2. Fork the repository
+3. Clone the repository: git clone git@github.com:YOURNAME/esbmc.git
+4. Create a branch from the master branch (default branch)
+5. Make your changes
+6. Check the formatting with clang-format (use Clang 11)
+7. Push your changes to your branch
+8. Create a Pull Request targeting the master branch
+
+Here is an example of preparing a pull request (PR)
+
+
+A) Ensure you are in the `master` branch and your fork is updated.
+
+```sh
+git checkout master
+git fetch upstream
+git pull --rebase upstream master
+git push origin HEAD:master
+```
+
+Note that if you have not yet set up the `upstream`, you need to type the following command:
+
+```sh
+git remote add upstream https://github.com/esbmc/esbmc
+```
+
+B) Create a local branch (e.g., `model-pthread-create`) from the `master` branch:
+
+```sh
+git checkout -b model-pthread-equal --track master
+```
+
+C) Add your changes via commits to the local branch:
+
+```sh
+git add path-to-file/file.cpp
+git commit -sm "added operational model for pthread_equal"
+```
+
+Note that you can check your changes via `git status`.
+Note also that every PR should contain at least two test cases
+to check your implementation: one successful and one failed test case.
+
+D) Push your changes in the local branch to the ESBMC repository:
+
+```sh
+git push origin model-pthread-equal
+```
+
+New contributors can check issues marked with `good first issue` by clicking [here](https://github.com/esbmc/esbmc/contribute).
+
+## Documentation
+
+The official [ESBMC](https://esbmc.github.io) website is built using GitHub 
+Actions from the Hugo project in the website folder. Documentation articles in 
+the MD format can be accessed in `/website/content/docs`.
+
+## Automatically Generated Documentation
+
+ESBMC's C++ classes and methods are documented with doxygen comments in the 
+headers. The generated API reference is published at 
+[esbmc.github.io/docs/api](https://esbmc.github.io/docs/api). See the 
+[API Reference](https://esbmc.github.io/docs/development/api-reference) 
+development guide for how to build it locally.
+
+## Contributing to the Docs
+
+Any documentation should go into the `/website/content/docs` folder.
+Additionally, please apply the following organization rules:
+
+1. Usage related files should be in the root directory of the 
+`/website/content/docs` folder.
+2. Development related docs should go in `/website/content/docs/development`.
+3. Language specific docs should go in `/website/content/docs/topic`, for 
+example, Python specific docs are in `/website/content/docs/python`.
+4. Theory heavy documents should go in `/website/content/docs/theory`.
+
+Please follow the
+[MD Formatting Specs](https://www.markdownguide.org/basic-syntax/) in order to
+keep the submitted documentation readable. You can use an automatic formatter to
+format your work for convenience if you want.

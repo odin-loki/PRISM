@@ -67,8 +67,11 @@ Helix BMC:
 9. Cannot parse / POINTER without harness → `ERROR` / `NEEDS-HARNESS`.
 10. No Z3 → `NOTRUN`.
 
-When `esbmc` is on PATH the adapter runs it too. Disagreement is the
-point. The two verdicts are never merged.
+When `resolve_adapter` finds `esbmc` (`--tool`, an already-built exe
+under `third_party/esbmc/`, or PATH) the adapter runs it too.
+Disagreement is the point. The two verdicts are never merged. A
+missing binary is `NOTRUN`. Vendored *source* is not a proof; Helix
+never compiles ESBMC during resolve.
 
 ## FuSeBMC — BMC seeds a fuzzer, coverage feeds BMC
 
@@ -128,19 +131,63 @@ Qwen proposes these as HYPOTHESIS. Helix then:
 4. A proof of `ensures` under `requires` is `PROVED-ASSUMING`, never
    `PROVED`. The assumption is in the record.
 
+## Frama-C WP — weakest precondition, requires is a harness
+
+Mined from Frama-C WP (`calculus.ml` get_weakest_precondition, VC.ml,
+QED, `wp_error.ml` unsupported). This is Helix's in-tree engine
+(`helix/wp.py`). Do not wrap the `frama-c` binary here: that adapter
+is EVA, and a missing binary is `NOTRUN`.
+
+A closed check is `PROVED-ASSUMING`, never `PROVED` / `PROVED-UNBOUNDED`:
+`requires` is an explicit harness.
+
+1. Only functions with `ensures` (Dafny-shaped comment or ACSL) are
+   goals. No `ensures` → skip, not a silent proof.
+2. POINTER, a body that needs a pointer harness, or non-SCALAR is
+   `NEEDS-HARNESS`. WP will not invent a buffer. The Frama-C WP binary
+   is not a proof of those either.
+3. Encode each `requires` / `ensures` atom as a C scalar. `\result`
+   becomes `result`. ACSL `==>` becomes `!(lhs) || (rhs)`.
+4. Unencodable ACSL is `ERROR` (`wp_unencoded`), never a closed proof:
+   `\valid` / `\valid_read` / `\forall` / `\exists` / `\old` / `\at` /
+   `\separated` / `\initialized` / …, `<==>`, `^^`, calls, `->`, `[]`,
+   unary `*` / `&`. Frama-C aborts the calculus on unsupported
+   constructs; so do we.
+5. Substitute each `return expr` into `ensures` (at most 8 returns).
+   The VC is `(requires) ==> (ensures[result := expr])`.
+6. QED: if every VC is a tautology (`1` / `true`, or `==` / `>=` / `<=`
+   with identical sides), discharge without BMC as `PROVED-ASSUMING`.
+7. Otherwise BMC under `requires` as assume. `PROVED` and
+   `PROVED-UNBOUNDED` from that BMC are rewritten to `PROVED-ASSUMING`.
+   The assumption stays in the record.
+
+`wp` runs after `contracts` and before `bmc` (`STAGE_ORDER`).
+
 ## Strix — LTL safety for protocol-shaped code
 
 Full Strix solves parity games and emits a Mealy machine. Helix takes
-the safety fragment that is decidable without that machinery:
+the safety fragment that is decidable without that machinery. This is
+a monitor on an extracted FSM, not Strix.
 
-1. Extract a finite state machine from `switch (state)` / enum modes.
-2. Parse LTL safety: `G p`, `G (p → X q)`, `G (req → F ack)` bounded.
-3. Build a deterministic monitor automaton.
-4. BMC the product, or model-check the extracted FSM.
-5. Synthesis (emit a missing transition table) is HYPOTHESIS until the
-   product proves.
-
-When `strix` is on PATH, LTL that is not safety is handed over.
+1. Extract a finite state machine from `switch (state)` /
+   `p->state` / `obj.state` only. Other switches are ignored.
+   Fall-through arms share destinations; unmatched enumerators stay.
+2. Safety fragment we actually decide (may be `PROVED` on that FSM):
+   `G p`, `G (p → X q)`, `G (req → F_k ack)`, `G (F_k p)` with an
+   explicit bound k.
+3. Known liveness → safety strengthenings with `F_BOUND = 8`:
+   `GF p` / `G F p` → `G (F_8 p)`, `FG p` → `F_8 (G p)`, top-level
+   `p U q` → `p U_8 q`, unbounded `G (req → F ack)` →
+   `G (req → F_8 ack)`. Success is `BOUNDED`, never `PROVED` of the
+   unbounded original. Nested `U` / `G (p U q)` stay `NOTRUN`.
+4. No `.ltl` spec is `NOTRUN` (not a skip-with-ok). In-fragment but
+   no `switch(state)` FSM, or predicates we cannot evaluate, is
+   `NOTRUN`. Outside the fragment is `NOTRUN`.
+5. Synthesis (missing `G (p → X q)` edges) is `HYPOTHESIS`, never a
+   proof.
+6. A `strix` binary on PATH or under `third_party/strix` is recorded.
+   Helix does not treat strix realizability as `PROVED`. Missing
+   Strix is `NOTRUN`.
 
 ## RLEF — reinforcement from execution feedback
 
@@ -248,23 +295,95 @@ portable copies of the shapes that do not need FreeBSD headers:
 
 Plus the vocabulary, the taxonomy (583 COVERED on testdata), and the confidence product.
 
+## ASan / UBSan / TSan — the runtime that actually traps
+
+1. Probe gcc/clang. Missing compiler is `NOTRUN`.
+2. UBSan must fire planted signed overflow; flag-accept is not a
+   sanitizer. MinGW without libubsan / libtsan is `NOTRUN`, never a
+   fake sanitized `CLEAN`.
+3. Compile+run each `.c` with a zero-arg wrapper. Sanitizer abort is
+   `FAILED`. Exit 0 is `CLEAN` — not a proof of absence.
+4. TSan (or UBSan) text `unexpected memory mapping` is the runtime
+   dying under WSL/ASLR, not a race in the plant. That is `NOTRUN`,
+   never `FAILED`.
+
+## Mutation testing — kill the mutant, not the original
+
+Same requires/ensures samples as RapidCheck (`plan_trials`). Clone
+the body, flip one operator, re-run.
+
+1. Sites: `+` → `-`, `<` → `>`, `==` → `!=`. Skip `++`, `+=`, `<<`,
+   `<=`.
+2. Tests catch the mutant → `CLEAN` ("mutant killed"). Killing
+   mutants does not prove the original.
+3. Mutant still passes every trial → `FAILED` ("mutant survived").
+4. Missing gcc/clang is `NOTRUN`. Scoring error is `ERROR`.
+
+## Optional adapters — present is not a proof
+
+Search order (`helix/config.py:resolve_adapter`):
+
+1. `Config.tools` / `--tool NAME=PATH` (stage name or binary name).
+2. An *already-built* executable under `third_party/<vendor>/` (known
+   output dirs, then a shallow glob). Never compile. Source trees
+   are not proofs.
+3. PATH.
+
+Missing is `NOTRUN` with an install hint (`third_party/SOURCES.md`).
+ESBMC / CBMC / KLEE binaries, if found, are adapters — their
+silence is not in-tree BMC and not a vendored proof.
+
+When present:
+
+- Frama-C EVA (`-eva`): `0 alarm` is `UNKNOWN`, never CLEAN/PROVED.
+  Warnings / non-zero alarms are `FAILED`.
+- CodeQL: no `codeql-db` next to the sources is `UNKNOWN`. Analyze
+  with no SARIF results is `UNKNOWN`.
+- clang-tidy: no diagnostics is `UNKNOWN`. Hits are `FAILED`.
+  clang-tidy is not vendored.
+- CBMC `VERIFICATION SUCCESSFUL` is `BOUNDED` (unwind limited),
+  never `PROVED`.
+- KLEE binary: no error path is `UNKNOWN`. In-process concolic is
+  `helix/concolic.py`. Missing klee is `NOTRUN`.
+- Successful `--help` / version probe is `UNKNOWN`, never CLEAN or
+  PROVED.
+
+## Pipeline order
+
+`helix/pipeline.py:STAGE_ORDER` and `include/prism/pipeline.hpp`
+`STAGE_ORDER` must match:
+
+inventory, classify, lints, taint, thread, interval, warnings,
+cppcheck, pbsd, sanitize, optional, esbmc, dafny, contracts, wp,
+bmc, harness, concolic, fuzz, diff, rapid, muttest, ltl, llm,
+execute, repair, unify
+
+`wp` is after `contracts` and before `bmc`. `--jobs`/`-j` (`0` =
+cpu/2) is the lint worker count on `Config.jobs`; `jobs>1` uses a
+ThreadPoolExecutor per file, else serial. It is not a proof flag.
+`--resume` skips `ok`/`NOTRUN` from `stages.jsonl` (classify snapshot
+in `functions.json`); `report.json` is fallback. Classify is not
+skipped into an empty function list. Remaining ISO C11 `thrd_sleep`/`thrd_yield`/`thrd_current`/`thrd_equal`/`thrd_exit` plants are `NEEDS-HARNESS`; Helix `--help` documents `--resume`.
+
 ## Also in the pipeline
 
 | Instrument | Role |
 |---|---|
 | cppcheck | value-flow; uninit struct members |
 | gcc/clang -Wall | cheap, noisy, union of both compilers |
-| ASan/UBSan/TSan | probe then compile; MinGW here is NOTRUN (no libubsan) |
+| ASan/UBSan/TSan | probe then compile; MinGW without libubsan/libtsan is NOTRUN; TSan unexpected memory mapping is NOTRUN not FAILED; CLEAN is not a proof |
 | AFL++/libFuzzer | PATH/clang -fsanitize=fuzzer probe; NOTRUN if absent |
-| KLEE | in-process concolic in helix/concolic.py; binary adapter still NOTRUN |
+| KLEE | in-process concolic in helix/concolic.py; missing binary is NOTRUN; adapter with no error path is UNKNOWN, never a proof |
 | Semgrep | PATH adapter; real scan when present; UNKNOWN if empty |
 | Coccinelle | `spatch` + `helix/cocci/`; missing is NOTRUN |
-| Infer/CodeQL | adapters; in-process taint; UNKNOWN without a DB |
-| Frama-C | EVA adapter + ACSL in contracts.py |
+| Infer/CodeQL | adapters; in-process taint; CodeQL with no `codeql-db` is UNKNOWN; missing binary is NOTRUN |
+| Frama-C | EVA adapter: 0 alarms UNKNOWN; in-tree WP (`helix/wp.py`); ACSL in contracts.py. Missing `frama-c` binary is NOTRUN |
+| clang-tidy | adapter; no diagnostics UNKNOWN; missing is NOTRUN (not vendored) |
+| CBMC | adapter; SUCCESSFUL is BOUNDED; missing is NOTRUN |
 | Interval | path-sensitive integer ranges; FAILED ≠ proof |
 | RapidCheck | `ensures` → property test |
 | Differential | two functions, same bytes, disagree |
-| Mutation testing | operator mutants vs the same properties |
+| Mutation testing | operator mutants vs the same properties; killed = CLEAN not a proof; survived = FAILED |
 
 ## Implemented in code
 
@@ -275,14 +394,18 @@ File:function pointers for the methods above. Call these from `helix/pipeline.py
 - `helix/bmc.py:run_bmc` — `run_bmc(functions, unwind) -> list[Finding]`
 - `helix/fuse.py:run_fuse` — FuSeBMC closed loop: `run_fuse(functions, bmc_findings, root, budget, iters) -> list[Finding]`
 - `helix/fuse.py:seeds_from_bmc` — BMC cex bytes as fuzzer seeds
-- `helix/fuse.py:bmc_toward_goal` — uncovered `if` as a new BMC goal
+- `helix/fuse.py:numbered_goals` — FuSeBMC `GOAL_N` (`GOAL_1`, `GOAL_2`, …) per function; counter starts at 0 and increments once per instrumented branch
+- `helix/fuse.py:bmc_toward_goal` — uncovered `GOAL_N` as a BMC assumption (`if (!(cond)) return 0`)
 - `helix/fuzz.py:run_fuzz` — greybox; CLEAN is not a proof
 - `helix/fuzz.py:fuzz_function` — compile + run harness
 - `helix/contracts.py:parse_comments` — `// requires:` plus Frama-C `/*@` / `//@` ACSL; `\result` → `result`
 - `helix/contracts.py:prove_contracts` — `prove_contracts(functions, unwind) -> list[Finding]`; proof rewritten to `PROVED-ASSUMING`
+- `helix/wp.py:run_wp` — Frama-C WP-shaped return substitution; closed is `PROVED-ASSUMING` never `PROVED`/`PROVED-UNBOUNDED`; POINTER/non-SCALAR is `NEEDS-HARNESS`; unencodable ACSL is `ERROR`; QED tautology skips BMC; the `frama-c` binary stays an EVA adapter (`NOTRUN` if missing)
+- `helix/wp.py:encode_predicate` — ACSL / `requires` atom → C scalar or None; None is ERROR, never PROVED-ASSUMING
+- `helix/pipeline.py:STAGE_ORDER` — must match `include/prism/pipeline.hpp`; `wp` after `contracts` before `bmc`; `Pipeline` calls `run_wp(functions, cfg.unwind)`
 - `helix/contracts.py:bmc_function_with_assume` — `if (!(requires)) return 0;` + `assert(ensures);` then `helix.bmc.bmc_function`
-- `helix/ltl.py:run_ltl` — `run_ltl(functions, spec_paths) -> list[Finding]`; safety fragment `G p`, `G (p -> X q)`, `G (req -> F_k ack)` with `k=8`
-- `helix/ltl.py:check_safety` — decide the fragment; otherwise NOTRUN (missing Strix)
+- `helix/ltl.py:run_ltl` — `run_ltl(functions, spec_paths) -> list[Finding]`; safety fragment `G p`, `G (p -> X q)`, `G (req -> F_k ack)`, `G (F_k p)` may `PROVED`; GF/FG/U and unbounded F approximations are `BOUNDED` never `PROVED` (`F_BOUND=8`); no spec / non-safety / missing Strix is `NOTRUN`; strix output is never `PROVED`
+- `helix/ltl.py:check_safety` — decide the fragment; liveness approximations rewrite success to `BOUNDED`
 - `helix/ltl.py:extract_fsm` — `switch(state)` plus transitions
 - `helix/diff.py:run_diff` — `run_diff(functions, root) -> list[Finding]`; pair `*_a`/`*_b` or `// diff: othername`; disagree = `FAILED`
 - `helix/agent.py:fuzz4all_seeds` — Fuzz4All autoprompt seeds
@@ -292,6 +415,11 @@ File:function pointers for the methods above. Call these from `helix/pipeline.py
 - `helix/agent.py:sandbox_run` — gcc/clang compile+run in tempdir; missing compiler is honest
 - `helix/agent.py:interpreter_loop` — OpenCodeInterpreter generate/run/refine
 - `helix/interval.py:run_interval` — path-sensitive integer ranges; FAILED is FINDS, silence is not PROVED
+- `helix/rapid.py:_shrink_candidates` / `shrink_counterexample` — RapidCheck integer shrinks toward 0, then half, then ±1; `extra.shrinks` counts steps; still a cex, not a proof
+- `helix/sanitize.py:run_sanitize` — UBSan/TSan probe+run; `unexpected memory mapping` is `NOTRUN` not `FAILED`; MinGW without lib is `NOTRUN`; `CLEAN` is not a proof
+- `helix/muttest.py:run_muttest` — killed mutant is `CLEAN` not a proof; survived is `FAILED`; missing compiler is `NOTRUN`
+- `helix/__main__.py` `--jobs`/`-j` — worker count for lints (`0` = cpu/2); stored on `Config.jobs`; not a pipeline-wide parallel flag
+- `helix/checkers.py:run_lints` — `run_lints(paths, root, jobs=)`; `jobs>1` ThreadPoolExecutor per file, else serial
 - `helix/checkers.py:_mem_lifetime` — `MEM-UAF` / `MEM-DOUBLE-FREE`
 - `helix/checkers.py:_fmt_string` — `FMT-STRING` (printf-family format not a literal)
 - `helix/checkers.py:_intent_mismatch` — comment/code increment mismatch is INTENT FINDS
@@ -339,7 +467,15 @@ File:function pointers for the methods above. Call these from `helix/pipeline.py
 - `helix/concolic.py:concolic_function` — VLA/float/recursion/C++ view/alloca/setjmp/va_list are NEEDS-HARNESS; goto stays ERROR
 - `helix/bmc.py:_has_self_call` — recursive unconstrained call is NEEDS-HARNESS, never PROVED
 - `helix/bmc.py:k_induction` — havoced step k=1 then k=2; SAT stays BOUNDED
+- `helix/config.py:resolve_adapter` — search (1) `Config.tools` / `--tool`, (2) already-built exe under `third_party/<vendor>/` (never compile), (3) PATH; missing is `NOTRUN`; vendored source is not a proof
 - `helix/adapters_extra.py:run_optional_tools` — present tools run cheap analysis; empty success is UNKNOWN, never CLEAN/PROVED
+- `helix/adapters_extra.py:_run_frama_c` — EVA; `0 alarm` is UNKNOWN
+- `helix/adapters_extra.py:_run_codeql` — no `codeql-db` is UNKNOWN
+- `helix/adapters_extra.py:_run_clang_tidy` — no diagnostics is UNKNOWN
+- `helix/adapters_extra.py:_run_cbmc` — `VERIFICATION SUCCESSFUL` is BOUNDED, never PROVED
+- `helix/adapters_extra.py:_run_klee` — no error path is UNKNOWN; missing binary is NOTRUN (in-process concolic is `helix/concolic.py`)
 - `helix/adapters_extra.py:_run_spatch` — Coccinelle; missing `spatch` is NOTRUN
+- `helix/cocci/` — shipped rules `memcpy_self`, `realloc_self`, `shift_bit31`, `getenv_null`, `strcpy_self`, `sprintf_unbounded`, `strcat_self`, `strncpy_self`; `_cocci_rules` loads these first, then `*.cocci` under source roots
 - `helix/ltl.py:synthesize_missing` — Strix-shaped missing `G (p -> X q)` edges are HYPOTHESIS
 - `helix/contracts.py:_instrument_invariant` — Dafny `invariant:` around loops; PROVED-ASSUMING
+- `helix/adapters.py:run_compiler` — gcc+clang -Wall union; missing NOTRUN; no C files UNKNOWN not silence; unmatched compiler exit FAILED; empty-scope confidence is 0 not n/a (`helix/confidence.py`)

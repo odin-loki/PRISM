@@ -1,0 +1,149 @@
+.TH GOTO-SYNTHESIZER "1" "December 2022" "goto-synthesizer-5.59.0" "User Commands"
+.SH NAME
+goto\-synthesizer \- Synthesize and apply loop contracts of goto binaries.
+.SH SYNOPSIS
+.TP
+.B goto\-synthesizer [\-?] [\-h] [\-\-help]
+show help
+.TP
+.B goto\-synthesizer \-\-version
+show version and exit
+.TP
+.B goto\-synthesizer [options] \fIin\fR [\fIout\fR]
+perform synthesis and loop-contracts transformation
+.SH DESCRIPTION
+\fBgoto-synthesis\fR reads a GOTO binary, performs loop-contracts synthesis and
+program transformation for the synthesized contracts, and then writes the
+resulting program as GOTO binary on disk.
+.SH OPTIONS
+.TP
+\fB\-loop\-contracts\-no\-unwind\fR
+do not unwind transformed loops after applying the synthesized loop contracts
+.TP
+\fB\-\-dump\-loop\-contracts
+dump the synthesized loop contracts as JSON
+.TP
+\fB\-\-json-\output\fR \fIfile\fR
+specify the output destination of the loop-contracts JSON
+.SS "Accepts all of cbmc's options plus the following backend options:"
+.TP
+\fB\-\-object\-bits\fR n
+number of bits used for object addresses
+.TP
+\fB\-\-sat\-solver\fR solver
+use specified SAT solver
+.TP
+\fB\-\-external\-sat\-solver\fR cmd
+command to invoke SAT solver process
+.TP
+\fB\-\-no\-sat\-preprocessor\fR
+disable the SAT solver's simplifier
+.TP
+\fB\-\-dimacs\fR
+generate CNF in DIMACS format
+.TP
+\fB\-\-beautify\fR
+beautify the counterexample
+(greedy heuristic)
+.TP
+\fB\-\-smt1\fR
+use default SMT1 solver (obsolete)
+.TP
+\fB\-\-smt2\fR
+use default SMT2 solver (Z3)
+.TP
+\fB\-\-bitwuzla\fR
+use Bitwuzla
+.TP
+\fB\-\-boolector\fR
+use Boolector
+.TP
+\fB\-\-cprover\-smt2\fR
+use CPROVER SMT2 solver
+.TP
+\fB\-\-cvc5\fR
+use CVC5
+.TP
+\fB\-\-mathsat\fR
+use MathSAT
+.TP
+\fB\-\-yices\fR
+use Yices
+.TP
+\fB\-\-z3\fR
+use Z3
+.TP
+\fB\-\-fpa\fR
+use theory of floating\-point arithmetic
+.TP
+\fB\-\-external\-smt2\-solver\fR \fIcmd\fR
+Use \fIcmd\fR to invoke the SMT2 solver. Combine with one of the solver choices
+for solver-specific constraints.
+.TP
+\fB\-\-refine\fR
+use refinement procedure (experimental)
+.TP
+\fB\-\-refine\-arrays\fR
+use refinement for arrays only
+.TP
+\fB\-\-refine\-arithmetic\fR
+refinement of arithmetic expressions only
+.TP
+\fB\-\-max\-node\-refinement\fR
+maximum refinement iterations for
+arithmetic expressions
+.TP
+\fB\-\-incremental\-smt2\-solver\fR \fIcmd\fR
+Use the incremental SMT backend where \fIcmd\fR is the command to invoke the SMT
+solver of choice.
+.br
+Example invocations:
+.br
+  --incremental-smt2-solver 'z3 -smt2 -in' (use the Z3 solver).
+.br
+  --incremental-smt2-solver 'cvc5 --lang=smtlib2.6 --incremental' (use the CVC5 solver).
+.sp
+Note that:
+.br
+The solver name must be in the "PATH" or be an executable with full path.
+.br
+The SMT solver should accept incremental SMTlib v2.6 formatted input from the stdin.
+.br
+The SMT solver should support the QF_AUFBV logic.
+.TP
+\fB\-\-outfile\fR filename
+output formula to given file
+.TP
+\fB\-\-dump\-smt\-formula\fR filename
+output smt incremental formula to the given file
+.TP
+\fB\-\-write\-solver\-stats\-to\fR json\-file
+collect the solver query complexity
+.TP
+\fB\-\-arrays\-uf\-never\fR
+never turn arrays into uninterpreted functions
+.TP
+\fB\-\-arrays\-uf\-always\fR
+always turn arrays into uninterpreted functions
+.SS "User-interface options:"
+.TP
+\fB\-\-xml\-ui\fR
+use XML\-formatted output
+.TP
+\fB\-\-json\-ui\fR
+use JSON\-formatted output
+.TP
+\fB\-\-verbosity\fR \fIn\fR
+verbosity level
+.SH ENVIRONMENT
+All tools honor the TMPDIR environment variable when generating temporary
+files and directories.
+.SH BUGS
+If you encounter a problem please create an issue at
+.B https://github.com/diffblue/cbmc/issues
+.SH SEE ALSO
+.BR cbmc (1),
+.BR goto-cc (1)
+.BR goto-instrument (1)
+.SH COPYRIGHT
+2022, Qinheping Hu

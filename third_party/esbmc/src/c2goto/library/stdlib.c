@@ -1,0 +1,555 @@
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include <limits.h>
+#include <errno.h>
+#include <stdint.h> /* uintptr_t */
+#include <math.h>
+#include <stdbool.h>
+
+#include <assert.h>
+
+#undef errno
+extern _Thread_local int errno;
+
+#undef exit
+#undef abort
+#undef calloc
+#undef getenv
+#undef atoi
+#undef atol
+#undef atoll
+
+typedef struct atexit_key
+{
+  void (*atexit_func)();
+} __ESBMC_atexit_key;
+
+// Infinite array for atexit functions
+__attribute__((annotate(
+  "__ESBMC_inf_size"))) static __ESBMC_atexit_key __ESBMC_stdlib_atexit_key[1];
+static size_t __ESBMC_atexit_count = 0;
+// Track if any were registered
+static size_t __ESBMC_atexit_registered = 0;
+
+void __ESBMC_atexit_handler()
+{
+__ESBMC_HIDE:;
+  while (__ESBMC_atexit_count > 0)
+  {
+    __ESBMC_atexit_count--;
+    __ESBMC_stdlib_atexit_key[__ESBMC_atexit_count].atexit_func();
+  }
+}
+
+int atexit(void (*func)(void))
+{
+__ESBMC_HIDE:;
+  __ESBMC_stdlib_atexit_key[__ESBMC_atexit_count].atexit_func = func;
+  __ESBMC_atexit_count++;
+  // Track that handlers were registered
+  __ESBMC_atexit_registered++;
+  return 0;
+}
+
+#pragma clang diagnostic push
+#pragma GCC diagnostic ignored "-Winvalid-noreturn"
+void exit(int status)
+{
+__ESBMC_HIDE:;
+  __ESBMC_atexit_handler();
+  // Only check if handlers were registered
+  if (__ESBMC_atexit_registered > 0)
+    __ESBMC_memory_leak_checks();
+  __ESBMC_assume(0);
+}
+
+_Bool __ESBMC_no_abnormal_memory_leak(void);
+
+void abort(void)
+{
+__ESBMC_HIDE:;
+  if (!__ESBMC_no_abnormal_memory_leak())
+    __ESBMC_memory_leak_checks();
+  __ESBMC_assume(0);
+}
+
+void _Exit(int status)
+{
+__ESBMC_HIDE:;
+  __ESBMC_memory_leak_checks();
+  __ESBMC_assume(0);
+}
+#pragma clang diagnostic pop
+
+void *calloc(size_t nmemb, size_t size)
+{
+__ESBMC_HIDE:;
+  // A zero element count or zero element size is a zero-byte request.
+  // Defer to malloc(0) so the result honours --force-malloc-success and
+  // --malloc-zero-is-null, exactly like a direct malloc(0).  Returning
+  // NULL unconditionally here ignored those options and made calloc(n, 0)
+  // inconsistent with malloc(0), producing false alarms when a zero-sized
+  // allocation (e.g. of an empty struct) feeds a NULL-check error path.
+  // Keeping the guard also protects the SIZE_MAX / size division below.
+  if (!nmemb || !size)
+    return malloc(0);
+
+  // Detect size_t multiplication overflow (e.g. nmemb=2^30, size=4 on
+  // 32-bit wraps total_size to 0).  Real implementations (glibc, musl)
+  // detect this and return NULL; without --pointer-check ESBMC would
+  // then model the caller's NULL dereference as nondet, yielding a
+  // false alarm on the unreach-call property.  We constrain the model
+  // to valid-size paths: when nmemb*size would overflow the caller would
+  // crash (NULL deref / UB) before any reachability property fires.
+  __ESBMC_assume(nmemb <= SIZE_MAX / size);
+
+  size_t total_size = nmemb * size;
+  void *res = malloc(total_size);
+  if (res)
+    memset(res, 0, total_size);
+  return res;
+}
+
+/* C99 7.20.6.2: div, ldiv and lldiv were declared in stdlib.h but never
+ * defined, so both members of the returned struct were unconstrained. C's
+ * integer division already truncates toward zero, which is exactly the
+ * rounding the standard specifies, so quot*denom + rem == numer holds. */
+#define DIV_DEF(name, result_type, type)                                       \
+  result_type name(type numerator, type denominator)                           \
+  {                                                                            \
+  __ESBMC_HIDE:;                                                               \
+    result_type result;                                                        \
+    result.quot = numerator / denominator;                                     \
+    result.rem = numerator % denominator;                                      \
+    return result;                                                             \
+  }
+
+DIV_DEF(div, div_t, int)
+DIV_DEF(ldiv, ldiv_t, long int)
+DIV_DEF(lldiv, lldiv_t, long long int)
+
+#undef DIV_DEF
+
+#define STRTOL_DEF(name, type, TYPE)                                           \
+  type name(const char *str, char **endptr, int base)                          \
+  {                                                                            \
+  __ESBMC_HIDE:;                                                               \
+    type result = 0;                                                           \
+    int sign = 1;                                                              \
+                                                                               \
+    /* Handle whitespace */                                                    \
+    while (isspace(*str))                                                      \
+      str++;                                                                   \
+                                                                               \
+    /* Handle sign */                                                          \
+    if (*str == '-')                                                           \
+    {                                                                          \
+      sign = -1;                                                               \
+      str++;                                                                   \
+    }                                                                          \
+    else if (*str == '+')                                                      \
+      str++;                                                                   \
+                                                                               \
+    /* Handle base */                                                          \
+    if (base == 0)                                                             \
+    {                                                                          \
+      if (*str == '0')                                                         \
+      {                                                                        \
+        base = 8;                                                              \
+        if (tolower(str[1]) == 'x')                                            \
+        {                                                                      \
+          base = 16;                                                           \
+          str += 2;                                                            \
+        }                                                                      \
+        else                                                                   \
+          str++;                                                               \
+      }                                                                        \
+      else                                                                     \
+        base = 10;                                                             \
+    }                                                                          \
+    else if (base == 16 && *str == '0' && tolower(str[1]) == 'x')              \
+      str += 2;                                                                \
+                                                                               \
+    /* Convert digits */                                                       \
+    while (isdigit(*str) || (base == 16 && isxdigit(*str)))                    \
+    {                                                                          \
+      int digit = isdigit(*str) ? *str - '0' : tolower(*str) - 'a' + 10;       \
+      if (result > (TYPE##_MAX - digit) / base)                                \
+        return sign == -1 ? TYPE##_MIN : TYPE##_MAX;                           \
+      result = result * base + digit;                                          \
+      str++;                                                                   \
+    }                                                                          \
+                                                                               \
+    /* Set end pointer */                                                      \
+    if (endptr != NULL)                                                        \
+      *endptr = (char *)str;                                                   \
+                                                                               \
+    return sign * result;                                                      \
+  }
+
+STRTOL_DEF(strtol, long int, LONG)
+STRTOL_DEF(strtoll, long long int, LLONG)
+
+#undef STRTOL_DEF
+
+/* Same shape as STRTOL_DEF, but C99 7.22.1.4p5 has the unsigned conversions
+ * negate a leading '-' in the return type rather than clamping, and there is
+ * no TYPE_MIN to saturate towards. */
+#define STRTOUL_DEF(name, type, TYPE)                                          \
+  type name(const char *str, char **endptr, int base)                          \
+  {                                                                            \
+  __ESBMC_HIDE:;                                                               \
+    type result = 0;                                                           \
+    int negate = 0;                                                            \
+                                                                               \
+    while (isspace(*str))                                                      \
+      str++;                                                                   \
+                                                                               \
+    if (*str == '-')                                                           \
+    {                                                                          \
+      negate = 1;                                                              \
+      str++;                                                                   \
+    }                                                                          \
+    else if (*str == '+')                                                      \
+      str++;                                                                   \
+                                                                               \
+    if (base == 0)                                                             \
+    {                                                                          \
+      if (*str == '0')                                                         \
+      {                                                                        \
+        base = 8;                                                              \
+        if (tolower(str[1]) == 'x')                                            \
+        {                                                                      \
+          base = 16;                                                           \
+          str += 2;                                                            \
+        }                                                                      \
+        else                                                                   \
+          str++;                                                               \
+      }                                                                        \
+      else                                                                     \
+        base = 10;                                                             \
+    }                                                                          \
+    else if (base == 16 && *str == '0' && tolower(str[1]) == 'x')              \
+      str += 2;                                                                \
+                                                                               \
+    while (isdigit(*str) || (base == 16 && isxdigit(*str)))                    \
+    {                                                                          \
+      int digit = isdigit(*str) ? *str - '0' : tolower(*str) - 'a' + 10;       \
+      if (result > (TYPE##_MAX - digit) / base)                                \
+        return TYPE##_MAX;                                                     \
+      result = result * base + digit;                                          \
+      str++;                                                                   \
+    }                                                                          \
+                                                                               \
+    if (endptr != NULL)                                                        \
+      *endptr = (char *)str;                                                   \
+                                                                               \
+    return negate ? (type)0 - result : result;                                 \
+  }
+
+STRTOUL_DEF(strtoul, unsigned long int, ULONG)
+STRTOUL_DEF(strtoull, unsigned long long int, ULLONG)
+
+#undef STRTOUL_DEF
+
+/* strtod and strtold were declared in stdlib.h but never defined, so they
+ * returned an unconstrained value (and an unconstrained endptr). Share the
+ * strtof body rather than duplicating it three times. The digit-by-digit
+ * accumulation is approximate for values that are not exactly representable,
+ * which is the accuracy strtof already had. */
+#define STRTOF_DEF(name, type, one_tenth)                                      \
+  type name(const char *str, char **endptr)                                    \
+  {                                                                            \
+  __ESBMC_HIDE:;                                                               \
+    type result = 0;                                                           \
+    int sign = 1;                                                              \
+    type decimal_factor = one_tenth;                                           \
+                                                                               \
+    while (isspace(*str))                                                      \
+      str++;                                                                   \
+                                                                               \
+    if (*str == '-')                                                           \
+    {                                                                          \
+      sign = -1;                                                               \
+      str++;                                                                   \
+    }                                                                          \
+    else if (*str == '+')                                                      \
+      str++;                                                                   \
+                                                                               \
+    while (isdigit(*str))                                                      \
+    {                                                                          \
+      result = result * 10 + (*str - '0');                                     \
+      str++;                                                                   \
+    }                                                                          \
+                                                                               \
+    if (*str == '.')                                                           \
+    {                                                                          \
+      str++;                                                                   \
+      while (isdigit(*str))                                                    \
+      {                                                                        \
+        result += (*str - '0') * decimal_factor;                               \
+        decimal_factor /= 10;                                                  \
+        str++;                                                                 \
+      }                                                                        \
+    }                                                                          \
+                                                                               \
+    if (*str == 'e' || *str == 'E')                                            \
+    {                                                                          \
+      str++;                                                                   \
+      int exp_sign = 1;                                                        \
+      if (*str == '-')                                                         \
+      {                                                                        \
+        exp_sign = -1;                                                         \
+        str++;                                                                 \
+      }                                                                        \
+      else if (*str == '+')                                                    \
+        str++;                                                                 \
+                                                                               \
+      int exponent = 0;                                                        \
+      while (isdigit(*str))                                                    \
+      {                                                                        \
+        exponent = exponent * 10 + (*str - '0');                               \
+        str++;                                                                 \
+      }                                                                        \
+                                                                               \
+      result *= pow(10, exp_sign * exponent);                                  \
+    }                                                                          \
+                                                                               \
+    result *= sign;                                                            \
+                                                                               \
+    if (endptr != NULL)                                                        \
+      *endptr = (char *)str;                                                   \
+                                                                               \
+    return result;                                                             \
+  }
+
+STRTOF_DEF(strtof, float, 0.1f)
+STRTOF_DEF(strtod, double, 0.1)
+STRTOF_DEF(strtold, long double, 0.1L)
+
+#undef STRTOF_DEF
+
+/* one plus the numeric value, rest is zero */
+static const unsigned char get_atoi_map(unsigned char pos)
+{
+__ESBMC_HIDE:;
+  const unsigned char ATOI_MAP[256] = {
+    ['0'] = 1,
+    ['1'] = 2,
+    ['2'] = 3,
+    ['3'] = 4,
+    ['4'] = 5,
+    ['5'] = 6,
+    ['6'] = 7,
+    ['7'] = 8,
+    ['8'] = 9,
+    ['9'] = 10,
+  };
+  return ATOI_MAP[pos];
+}
+
+#define ATOI_DEF(name, type, TYPE)                                             \
+  type name(const char *s)                                                     \
+  {                                                                            \
+  __ESBMC_HIDE:;                                                               \
+    while (isspace(*s))                                                        \
+      s++;                                                                     \
+    int neg = 0;                                                               \
+    if (*s == '-')                                                             \
+    {                                                                          \
+      neg = 1;                                                                 \
+      s++;                                                                     \
+    }                                                                          \
+    else if (*s == '+')                                                        \
+      s++;                                                                     \
+    unsigned type r = 0;                                                       \
+    for (unsigned char c; (c = get_atoi_map((unsigned char)*s)); s++)          \
+    {                                                                          \
+      c--;                                                                     \
+      if (r > (TYPE##_MAX - c) / 10)                                           \
+        return neg ? TYPE##_MIN : TYPE##_MAX;                                  \
+      r *= 10;                                                                 \
+      r += c;                                                                  \
+    }                                                                          \
+    return neg ? -r : r;                                                       \
+  }
+
+ATOI_DEF(atoi, int, INT)
+ATOI_DEF(atol, long, LONG)
+ATOI_DEF(atoll, long long, LLONG)
+
+#undef ATOI_DEF
+
+char *getenv(const char *name)
+{
+__ESBMC_HIDE:;
+
+  __ESBMC_assert(name != NULL, "getenv called with NULL pointer");
+
+  // Return NULL when called with an empty string parameter
+  if (*name == '\0')
+    return NULL;
+
+  // Return NULL when the environment variable name
+  // contains an equals sign (=), per POSIX specification
+  if (strchr(name, '=') != NULL)
+    return NULL;
+
+  // Non-deterministically model whether the variable exists
+  _Bool found = nondet_bool();
+  if (!found)
+    return NULL;
+
+  char *buffer;
+  size_t buf_size;
+
+  __ESBMC_assume(buf_size >= 1);
+  buffer = (char *)__ESBMC_alloca(buf_size);
+  buffer[buf_size - 1] = 0;
+  return buffer;
+}
+
+void *ldv_malloc(size_t size)
+{
+__ESBMC_HIDE:;
+  return malloc(size);
+}
+
+void *ldv_zalloc(size_t size)
+{
+__ESBMC_HIDE:;
+  return malloc(size);
+}
+
+size_t strlcat(char *dst, const char *src, size_t siz)
+{
+__ESBMC_HIDE:;
+  char *d = dst;
+  const char *s = src;
+  size_t n = siz;
+  size_t dlen;
+
+  /* Find the end of dst and adjust bytes left but don't go past end */
+  while (n-- != 0 && *d != '\0')
+    d++;
+  dlen = d - dst;
+  n = siz - dlen;
+
+  if (n == 0)
+    return (dlen + strlen(s));
+  while (*s != '\0')
+  {
+    if (n != 1)
+    {
+      *d++ = *s;
+      n--;
+    }
+    s++;
+  }
+  *d = '\0';
+
+  return (dlen + (s - src)); /* count does not include NUL */
+}
+
+int posix_memalign(void **memptr, size_t align, size_t size)
+{
+__ESBMC_HIDE:;
+  if (
+    !align || (align & (align - 1)) || /* alignment must be a power of 2 */
+    (size & (align - 1)) /* size must be a multiple of alignment */
+  )
+    return EINVAL;
+  int save = errno;
+  void *r = malloc(size);
+  errno = save;
+  __ESBMC_assume(!((uintptr_t)r & (align - 1)));
+  if (size && !r)
+    return ENOMEM;
+  *memptr = r;
+  return 0;
+}
+
+void *aligned_alloc(size_t align, size_t size)
+{
+__ESBMC_HIDE:;
+  void *r = NULL;
+  errno = posix_memalign(&r, align, size);
+  return r;
+}
+
+int rand(void)
+{
+__ESBMC_HIDE:;
+  return nondet_uint() % ((unsigned)RAND_MAX + 1);
+}
+
+long random(void)
+{
+__ESBMC_HIDE:;
+  return nondet_ulong() % ((unsigned)INT32_MAX + 1);
+}
+
+#if 0
+void srand (unsigned int s)
+{
+	seed = s;
+}
+#endif
+
+void rev(char *p)
+{
+__ESBMC_HIDE:;
+  char *q = &p[strlen(p) - 1];
+  char *r = p;
+  for (; q > r; q--, r++)
+  {
+    char s = *q;
+    *q = *r;
+    *r = s;
+  }
+}
+
+char *itoa(int value, char *str, int base)
+{
+__ESBMC_HIDE:;
+  int count = 0;
+  bool flag = true;
+  if (value < 0 && base == 10)
+  {
+    flag = false;
+    value = -value;
+  }
+
+  if (value == 0)
+    str[count++] = '0';
+
+  while (value != 0)
+  {
+    int dig = value % base;
+    if (dig < 10)
+      str[count++] = '0' + dig;
+    else
+      str[count++] = 'a' + (dig - 10);
+
+    value /= base;
+  }
+
+  if (!flag)
+    str[count++] = '-';
+
+  str[count] = '\0';
+
+  rev(str);
+
+  return str;
+}
+
+void _exit(int status)
+{
+__ESBMC_HIDE:;
+  // Immediate process termination - end execution path
+  __ESBMC_assume(0);
+  while (1)
+    ; // Ensure function never returns to satisfy noreturn attribute
+}

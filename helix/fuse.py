@@ -12,12 +12,18 @@ import re
 
 from helix import laws
 from helix.afl import afl_available, run_afl_fuzz
+from helix.ai import LLM_INSTALL, LLM_SKIP_FUSE_MSG, create_prompt_from_source
 from helix.bmc import HAS_Z3, bmc_function, unencoded_syntax_reason
+from helix.config import adapter_install
 from helix.cparse import body_needs_pointer_harness
 from helix.fuzz import bytes_from_cex, fuzz_function, param_nbytes
 from helix.models import Finding, FunctionInfo
 
 _IF = re.compile(r"\bif\s*\(([^)]+)\)")
+_WHILE = re.compile(r"\bwhile\s*\(([^)]+)\)")
+_FOR = re.compile(r"\bfor\s*\(([^)]*)\)")
+_SWITCH = re.compile(r"\bswitch\s*\(([^)]+)\)")
+_CASE = re.compile(r"\bcase\s+([^:]+):")
 
 
 def seeds_from_bmc(fn: FunctionInfo, bmc_findings: list[Finding]) -> list[bytes]:
@@ -35,14 +41,100 @@ def seeds_from_bmc(fn: FunctionInfo, bmc_findings: list[Finding]) -> list[bytes]
     return out
 
 
+def _norm_cond(s: str) -> str:
+    return " ".join((s or "").split())
+
+
+def _add_goal(seen: list[str], cond: str) -> None:
+    cond = _norm_cond(cond)
+    if cond and cond not in seen:
+        seen.append(cond)
+
+
 def branch_goals(fn: FunctionInfo) -> list[str]:
-    """Coverage goals: the boolean of each `if` (FuSeBMC-style labels)."""
+    """Coverage goals mined from FuSeBMC MyVisitor::check / checkStmt.
+
+    Then-branch `if (cond)` (existing), implicit else `!(cond)` (`MUST_INSERT_ELSE`
+    / `--add-else`), loop body + loop-exit (`PARENT_IS_LOOP` /
+    `--add-label-after-loop`), and each `case` of a switch.
+    """
+    body = fn.body or ""
     seen: list[str] = []
-    for m in _IF.finditer(fn.body):
-        cond = " ".join(m.group(1).split())
-        if cond and cond not in seen:
-            seen.append(cond)
+    for m in _IF.finditer(body):
+        cond = _norm_cond(m.group(1))
+        if not cond:
+            continue
+        _add_goal(seen, cond)
+        _add_goal(seen, f"!({cond})")
+    for m in _WHILE.finditer(body):
+        cond = _norm_cond(m.group(1))
+        if not cond:
+            continue
+        _add_goal(seen, cond)
+        _add_goal(seen, f"!({cond})")
+    for m in _FOR.finditer(body):
+        parts = m.group(1).split(";")
+        if len(parts) < 2:
+            continue
+        cond = _norm_cond(parts[1])
+        if not cond:
+            continue
+        _add_goal(seen, cond)
+        _add_goal(seen, f"!({cond})")
+    for sm in _SWITCH.finditer(body):
+        expr = _norm_cond(sm.group(1))
+        if not expr:
+            continue
+        rest = body[sm.end():]
+        nxt = _SWITCH.search(rest)
+        if nxt:
+            rest = rest[: nxt.start()]
+        for cm in _CASE.finditer(rest):
+            lab = _norm_cond(cm.group(1))
+            if lab:
+                _add_goal(seen, f"({expr}) == ({lab})")
     return seen
+
+
+def numbered_goals(fn: FunctionInfo) -> list[tuple[str, str]]:
+    """FuSeBMC GoalCounter::GetNewGoalForFunc: GOAL_1, GOAL_2, ... per function.
+
+    Counter starts at 0 and increments once per instrumented branch, matching
+    ``GOAL_`` + to_string(++counter) in GoalCounter.cpp.
+    """
+    out: list[tuple[str, str]] = []
+    counter = 0
+    for cond in branch_goals(fn):
+        counter += 1
+        out.append((f"GOAL_{counter}", cond))
+    return out
+
+
+def _goals_hit_by_seeds(
+    fn: FunctionInfo, labeled: list[tuple[str, str]], seeds: list[bytes],
+) -> list[str]:
+    """Which GOAL_* labels a fuzzer seed actually took (condition true)."""
+    from helix.concrete import decode_args
+    from helix.concolic import _eval_cond
+
+    hit: list[str] = []
+    seen: set[str] = set()
+    for s in seeds or []:
+        try:
+            args = decode_args(fn, s)
+        except Exception:
+            continue
+        for lab, cond in labeled:
+            if lab in seen:
+                continue
+            try:
+                v = _eval_cond(fn, args, cond)
+            except Exception:
+                continue
+            if v is True:
+                seen.add(lab)
+                hit.append(lab)
+    return hit
 
 
 def bmc_toward_goal(fn: FunctionInfo, cond: str, unwind: int = 8) -> Finding:
@@ -79,7 +171,70 @@ def run_fuse(
             budget=slice_budget, iters=slice_iters, rounds=rounds,
             engine=engine,
         ))
+    if engine is not None and not _engine_up(engine) and functions:
+        fn0 = functions[0]
+        ingredients = create_prompt_from_source(
+            name=fn0.name, body=fn0.body or "",
+            source=_read_source(fn0, root),
+        )
+        out.append(Finding(
+            stage="fuse", status=laws.NOTRUN, file=fn0.file, function=fn0.name,
+            line=fn0.line, cls="", message=LLM_SKIP_FUSE_MSG,
+            strength=laws.STRENGTH_READS,
+            extra={
+                "install": LLM_INSTALL, "autoprompt": "NOTRUN", "chatfuzz": "NOTRUN",
+                "docstring": ingredients.get("docstring") or "",
+            },
+        ))
+    elif engine is not None and _engine_up(engine) and functions:
+        for fn in functions:
+            ingredients = create_prompt_from_source(
+                name=fn.name, body=fn.body or "", source=_read_source(fn, root),
+            )
+            distilled = ingredients.get("docstring") or ""
+            try:
+                from helix.agent import fuzz4all_autoprompt_text
+                distilled = fuzz4all_autoprompt_text(engine, fn) or distilled
+            except Exception:
+                pass
+            out.append(Finding(
+                stage="fuse", status=laws.HYPOTHESIS, file=fn.file, function=fn.name,
+                line=fn.line, cls="",
+                message="Fuzz4All distilled prompt (hypothesis, not a proof)",
+                strength=laws.STRENGTH_READS,
+                extra={
+                    "autoprompt": distilled[:800],
+                    "docstring": (ingredients.get("docstring") or "")[:400],
+                    "target_api": ingredients.get("target_api") or fn.name,
+                },
+            ))
     return out
+
+
+def _read_source(fn: FunctionInfo, root: Path) -> str:
+    candidates = [
+        Path(fn.file) if fn.file else Path(),
+        root / fn.file if fn.file else Path(),
+        root / Path(fn.file).name if fn.file else Path(),
+    ]
+    if root.is_file():
+        candidates.append(root)
+    for p in candidates:
+        if p.is_file():
+            try:
+                return p.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                return ""
+    return f"{fn.signature}\n{{{fn.body}\n}}"
+
+
+def _engine_up(engine) -> bool:
+    if engine is None:
+        return False
+    av = getattr(engine, "available", None)
+    if av is None:
+        return True
+    return bool(av() if callable(av) else av)
 
 
 def _fuse_one(
@@ -112,8 +267,12 @@ def _fuse_one(
             message="local pointer or heap object: FuSeBMC harness would invent a buffer",
         )
 
-    use_afl = os.environ.get("HELIX_AFL") == "1" and afl_available() is not None
+    opted_afl = (
+        os.environ.get("PRISM_AFL") == "1" or os.environ.get("HELIX_AFL") == "1"
+    )
+    opted_libfuzzer = os.environ.get("HELIX_LIBFUZZER") == "1"
     afl_on_path = afl_available() is not None
+    use_afl = opted_afl and afl_on_path
 
     src = root / fn.file if not Path(fn.file).is_absolute() else Path(fn.file)
     if not src.exists() and root.is_file():
@@ -123,23 +282,39 @@ def _fuse_one(
 
     seeds = seeds_from_bmc(fn, bmc_findings)
     from_bmc = len(seeds)
-    goals = branch_goals(fn)
+    labeled = numbered_goals(fn)
     covered_goals: set[str] = set()
     last: Finding | None = None
     extra: dict = {
         "from_bmc": from_bmc,
         "rounds": 0,
-        "goals": goals,
+        "goals": [lab for lab, _ in labeled],
+        "goal_ids": [lab for lab, _ in labeled],
+        "goal_map": {lab: cond for lab, cond in labeled},
         "new_bmc_seeds": 0,
+        "new_goals": [],
         "noseed": from_bmc == 0,
     }
     chatfuzz_done = False
+    mutate_done = False
+    combine_done = False
+    prev_interesting: bytes | None = None
     afl_tried = False
+    libfuzzer_tried = False
+    llm_up = _engine_up(engine)
 
-    if afl_on_path and not use_afl:
+    if opted_afl and not afl_on_path:
+        extra["afl"] = "NOTRUN"
+        extra["install"] = adapter_install("afl-fuzz")
+    elif afl_on_path and not use_afl:
         extra["afl_available"] = True
 
-    if engine is not None:
+    if engine is not None and not llm_up:
+        extra["autoprompt"] = "NOTRUN"
+        extra["chatfuzz"] = "NOTRUN"
+        extra["install"] = LLM_INSTALL
+
+    if llm_up:
         try:
             from helix.agent import fuzz4all_seeds
 
@@ -151,6 +326,7 @@ def _fuse_one(
                     seeds.append(b)
                     added += 1
             extra["fuzz4all"] = added
+            extra["autoprompt"] = "ok"
         except Exception as ex:
             extra["fuzz4all_error"] = str(ex)[:200]
 
@@ -175,16 +351,57 @@ def _fuse_one(
             afl_tried = True
             afl_last = run_afl_fuzz(fn, src, timeout=2.0)
             if afl_last is not None:
-                extra["engine"] = "afl"
-                if afl_last.status == laws.CRASH:
+                if afl_last.status == laws.NOTRUN:
+                    # AFL half could not run (missing gcc/clang/afl-fuzz).
+                    # Greybox CLEAN is not a proof and must not claim engine=afl.
+                    extra["afl"] = "NOTRUN"
+                    extra.pop("engine", None)
+                    inst = (afl_last.extra or {}).get("install")
+                    if inst:
+                        extra["install"] = inst
+                elif afl_last.status == laws.CRASH:
+                    extra["engine"] = "afl"
                     afl_last.extra = {**(afl_last.extra or {}), **extra}
                     return afl_last
-                if afl_last.status == laws.ERROR:
+                elif afl_last.status == laws.ERROR:
+                    extra["engine"] = "afl"
                     afl_last.extra = {**(afl_last.extra or {}), **extra}
                     return afl_last
+                else:
+                    extra["engine"] = "afl"
+
+        if opted_libfuzzer and fn.kind == "SCALAR" and not libfuzzer_tried:
+            libfuzzer_tried = True
+            from helix.adapters_extra import _LIBFUZZER_INSTALL, _run_libfuzzer
+            lf_last = _run_libfuzzer(fn, src, timeout=2.0)
+            if lf_last.status == laws.NOTRUN:
+                extra["libfuzzer"] = "NOTRUN"
+                if extra.get("engine") == "libfuzzer":
+                    extra.pop("engine", None)
+                inst = (lf_last.extra or {}).get("install")
+                extra["install"] = inst or _LIBFUZZER_INSTALL
+            elif lf_last.status == laws.NEEDS_HARNESS:
+                lf_last.extra = {**(lf_last.extra or {}), **extra}
+                return lf_last
+            elif lf_last.status == laws.CRASH:
+                extra["engine"] = "libfuzzer"
+                lf_last.extra = {**(lf_last.extra or {}), **extra}
+                return lf_last
+            elif lf_last.status == laws.ERROR:
+                extra["engine"] = "libfuzzer"
+                lf_last.extra = {**(lf_last.extra or {}), **extra}
+                return lf_last
+            else:
+                extra["engine"] = "libfuzzer"
+                extra["libfuzzer"] = "ok"
 
         new_cov = int((last.extra or {}).get("new_cov") or 0)
-        if engine is not None and not chatfuzz_done and new_cov == 0:
+        fuzz_hit = _goals_hit_by_seeds(fn, labeled, seeds)
+        newly = [g for g in fuzz_hit if g not in covered_goals]
+        if newly:
+            extra["new_goals"] = list(dict.fromkeys(list(extra.get("new_goals") or []) + newly))
+            covered_goals.update(newly)
+        if llm_up and not chatfuzz_done and new_cov == 0:
             # stall: no new coverage — ChatFuzz mutants for this one function
             chatfuzz_done = True
             try:
@@ -198,16 +415,44 @@ def _fuse_one(
                         seeds.append(b)
             except Exception as ex:
                 extra["chatfuzz_error"] = str(ex)[:200]
+        if llm_up and new_cov > 0:
+            # Fuzz4All Target.update: m_prompt mutate + c_prompt combine.
+            try:
+                from helix.agent import fuzz4all_combine, fuzz4all_mutate_interesting
+                n = param_nbytes(fn.params)
+                parent = seeds[-1] if seeds else b"\x00" * n
+                if not mutate_done:
+                    mutate_done = True
+                    extra["fuzz4all_mutate"] = True
+                    for m in fuzz4all_mutate_interesting(engine, fn, parent.hex()) or []:
+                        b = (m or b"")[:n].ljust(n, b"\x00")
+                        if b and b not in seeds:
+                            seeds.append(b)
+                prev = prev_interesting
+                if prev is None and len(seeds) >= 2:
+                    prev = seeds[-2]
+                if prev and not combine_done:
+                    combine_done = True
+                    extra["fuzz4all_combine"] = True
+                    for m in fuzz4all_combine(engine, fn, parent.hex(), prev.hex()) or []:
+                        b = (m or b"")[:n].ljust(n, b"\x00")
+                        if b and b not in seeds:
+                            seeds.append(b)
+                prev_interesting = parent
+            except Exception as ex:
+                extra["fuzz4all_mutate_error"] = str(ex)[:200]
 
         if not HAS_Z3:
             continue
-        for cond in goals:
-            if cond in covered_goals:
+        for lab, cond in labeled:
+            if lab in covered_goals:
                 continue
+            # FuSeBMC esbmc-wrapper: --error-label GOAL_N as a BMC assumption.
             g = bmc_toward_goal(fn, cond, unwind=8)
             extra["rounds"] = r + 1
             if g.status == laws.FAILED and g.counterexample:
-                covered_goals.add(cond)
+                covered_goals.add(lab)
+                extra.setdefault("bmc_goals", []).append(lab)
                 n = param_nbytes(fn.params)
                 b = bytes_from_cex(g.counterexample, n)
                 if b and b not in seeds:
@@ -215,11 +460,15 @@ def _fuse_one(
                     extra["new_bmc_seeds"] += 1
             elif g.status in {laws.PROVED, laws.PROVED_UNBOUNDED, laws.BOUNDED}:
                 # BMC closed that branch for the encoded UB; not a fuse proof.
-                covered_goals.add(cond)
+                covered_goals.add(lab)
 
     extra["covered_goals"] = sorted(covered_goals)
     extra["seeds"] = len(seeds)
-    if use_afl and afl_tried:
+    if extra.get("afl") == "NOTRUN" and extra.get("engine") == "afl":
+        extra.pop("engine", None)
+    if extra.get("libfuzzer") == "NOTRUN" and extra.get("engine") == "libfuzzer":
+        extra.pop("engine", None)
+    if use_afl and afl_tried and extra.get("afl") != "NOTRUN":
         extra["engine"] = "afl"
     msg = f"no crash in FuSeBMC loop ({extra['rounds']} rounds; not a proof)"
     return Finding(

@@ -1,0 +1,9 @@
+CORE
+Test
+-cp target/classes
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+--
+Test2 is found because . is default classpath.

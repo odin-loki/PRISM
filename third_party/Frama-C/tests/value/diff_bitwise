@@ -1,0 +1,53 @@
+diff tests/value/oracle/addition.res.oracle tests/value/oracle_bitwise/addition.res.oracle
+90,92c90
+< [eva] tests/value/addition.i:52: 
+<   Assigning imprecise value to p10.
+<   The imprecision originates from Arithmetic {tests/value/addition.i:52}
+---
+> [eva] tests/value/addition.i:52: Assigning imprecise value to p10.
+128a127
+>   {{ garbled mix of &{p1} (origin: Misaligned {tests/value/addition.i:52}) }}
+130a130
+>   {{ garbled mix of &{p2} (origin: Misaligned {tests/value/addition.i:56}) }}
+166,168c166
+<   p10 ∈
+<      {{ garbled mix of &{p1}
+<       (origin: Arithmetic {tests/value/addition.i:52}) }}
+---
+>   p10 ∈ {{ garbled mix of &{p1} }}
+358a357
+>   {{ garbled mix of &{p1} (origin: Misaligned {tests/value/addition.i:52}) }}
+397,399c396
+<   p10 ∈
+<      {{ garbled mix of &{p1}
+<       (origin: Arithmetic {tests/value/addition.i:52}) }}
+---
+>   p10 ∈ {{ garbled mix of &{p1} }}
+diff tests/value/oracle/bitwise.res.oracle tests/value/oracle_bitwise/bitwise.res.oracle
+79c79,82
+< [eva] tests/value/bitwise.i:144: Frama_C_show_each_dead: {0}
+---
+> [eva] tests/value/bitwise.i:142: 
+>   The evaluation of the expression x & 2
+>   led to bottom without alarms:
+>   at this point the product of states has no possible concretization.
+diff tests/value/oracle/bitwise_pointer.res.oracle tests/value/oracle_bitwise/bitwise_pointer.res.oracle
+32,34c32
+< [eva] tests/value/bitwise_pointer.i:18: 
+<   Assigning imprecise value to p.
+<   The imprecision originates from Arithmetic {tests/value/bitwise_pointer.i:18}
+---
+> [eva] tests/value/bitwise_pointer.i:18: Assigning imprecise value to p.
+37,39c35
+< [eva] tests/value/bitwise_pointer.i:22: 
+<   Assigning imprecise value to p1.
+<   The imprecision originates from Arithmetic {tests/value/bitwise_pointer.i:22}
+---
+> [eva] tests/value/bitwise_pointer.i:22: Assigning imprecise value to p1.
+diff tests/value/oracle/logic_ptr_cast.res.oracle tests/value/oracle_bitwise/logic_ptr_cast.res.oracle
+8,10c8
+< [eva] tests/value/logic_ptr_cast.i:8: 
+<   Assigning imprecise value to p.
+<   The imprecision originates from Arithmetic {tests/value/logic_ptr_cast.i:8}
+---
+> [eva] tests/value/logic_ptr_cast.i:8: Assigning imprecise value to p.

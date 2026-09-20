@@ -214,6 +214,8 @@ CLASSES: list[dict] = [
          seen={"lints": FINDS}),
     dict(id="API-PTHREAD-JOIN", name="pthread_join()/pthread_detach() return discarded", cwe=[252],
          seen={"lints": FINDS}),
+    dict(id="API-THRD-JOIN", name="ISO C11 thrd_join()/thrd_detach() return discarded", cwe=[252],
+         seen={"lints": FINDS}),
     dict(id="API-SEM-WAIT", name="sem_wait()/sem_post() return discarded", cwe=[252],
          seen={"lints": FINDS}),
     dict(id="API-OPENAT", name="openat() result used without a <0 test", cwe=[252],
@@ -1199,7 +1201,8 @@ CLASSES: list[dict] = [
     dict(id="LTL-SAFETY", name="LTL safety violation", cwe=[],
          seen={"ltl": PROVES, "strix": PROVES}),
     dict(id="FUNC-CONTRACT", name="ensures clause fails", cwe=[],
-         seen={"bmc": PROVES, "dafny": PROVES, "rapid": FINDS, "muttest": SOME, "llm": READS}),
+         seen={"bmc": PROVES, "dafny": PROVES, "wp": PROVES, "contracts": PROVES,
+               "rapid": FINDS, "muttest": SOME, "llm": READS}),
     dict(id="INTENT", name="comment/code contract mismatch", cwe=[],
          seen={"lints": FINDS, "llm": READS}),
     dict(id="INFOLEAK-PAD", name="struct padding copied without zero-init", cwe=[200],
@@ -1255,18 +1258,26 @@ _RANK = {PROVES: 3, FINDS: 2, SOME: 1, READS: 1}
 def coverage_from_report(report) -> list[dict]:
     """COVERED only if a finding of that class actually reached PROVES or FINDS.
 
-    The LLM is READS and never COVERED. A skipped/NOTRUN stage does not
-    invent coverage. BMC PROVED-* without a class still discharges the
-    encoded UB properties for functions it closed.
+    The LLM is READS and never COVERED. HYPOTHESIS/READS never promote COVERED.
+    A skipped/NOTRUN stage does not invent coverage. BMC PROVED-* without a
+    class still discharges the encoded UB properties for functions it closed.
+    WP/contracts PROVED-ASSUMING is PROVES for FUNC-CONTRACT only — never
+    folded into BMC PROVED / encoded UB.
     """
     from helix import laws
 
     hits: dict[str, str] = {}
     bmc_closed = False
     ran_ok = {s.name for s in report.stages if s.status == "ok"}
+    contract_stages = {"wp", "contracts"}
 
     def note(cls: str, strength: str) -> None:
         if not cls or strength not in _RANK:
+            return
+        if strength == READS:
+            prev = hits.get(cls)
+            if prev is None:
+                hits[cls] = READS
             return
         prev = hits.get(cls)
         if prev is None or _RANK[strength] > _RANK[prev]:
@@ -1274,28 +1285,29 @@ def coverage_from_report(report) -> list[dict]:
 
     for s in report.stages:
         for f in s.findings:
+            if s.name == "llm" or f.status in {laws.HYPOTHESIS, laws.READS}:
+                note(f.cls or "INTENT", READS)
+                continue
             if f.status == laws.ERROR and f.cls and (f.strength or "") == FINDS:
                 note(f.cls, FINDS)
                 continue
             if f.status in {laws.NOTRUN, laws.CLEAN, laws.ERROR, laws.NEEDS_HARNESS,
                             laws.TIMEOUT, laws.UNKNOWN, laws.NOSEED}:
-                if f.status == laws.HYPOTHESIS or f.status == laws.READS:
-                    note(f.cls, READS)
-                continue
-            if f.status in {laws.HYPOTHESIS, laws.READS}:
-                note(f.cls or "INTENT", READS)
                 continue
             if f.status in {laws.PROVED, laws.PROVED_UNBOUNDED, laws.PROVED_ASSUMING}:
+                # WP/contracts stay PROVED-ASSUMING; only BMC folds encoded UB.
                 if s.name == "bmc":
                     bmc_closed = True
-                note(f.cls, PROVES if f.strength == PROVES else (f.strength or PROVES))
+                cls = f.cls or ("FUNC-CONTRACT" if s.name in contract_stages else "")
+                st = f.strength if f.strength in _RANK else PROVES
+                if not f.strength:
+                    st = PROVES
+                note(cls, st)
                 continue
             if f.status in {laws.FAILED, laws.CRASH, laws.BOUNDED}:
                 st = f.strength if f.strength in _RANK else FINDS
                 if f.status == laws.BOUNDED:
                     st = SOME
-                if st == READS:
-                    st = FINDS
                 note(f.cls, st)
 
     if bmc_closed:

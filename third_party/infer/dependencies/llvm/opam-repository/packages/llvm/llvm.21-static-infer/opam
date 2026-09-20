@@ -1,0 +1,93 @@
+opam-version: "2.0"
+maintainer: "Alan <ahulambda@gmail.com>"
+authors: [
+  "whitequark <whitequark@whitequark.org>"
+  "The LLVM team"
+]
+license: "MIT"
+bug-reports: "http://llvm.org/bugs/"
+dev-repo: "git+http://llvm.org/git/llvm.git"
+doc: "http://llvm.org"
+homepage: "http://llvm.org"
+build: [
+  ["bash" "-ex" "install.sh" "build"
+   "--llvm-config" "%{conf-llvm-static:config}%"
+   "--libdir" lib
+   "--cmake" "%{conf-cmake:cmd}%"
+   "--make" make
+   "--link-mode" "static"
+   "--use-homebrew" {os-distribution = "homebrew"}
+  ]
+]
+install: [
+  ["bash" "-ex" "install.sh" "install"
+   "--llvm-config" "%{conf-llvm-static:config}%"
+   "--libdir" lib
+   "--cmake" "%{conf-cmake:cmd}%"
+   "--make" make
+   "--link-mode" "static"
+   "--use-homebrew" {os-distribution = "homebrew"}
+  ]
+]
+depends: [
+  "ocaml" {>= "4.00.0"}
+  "ctypes" {>= "0.4"}
+  "ctypes-foreign"
+  "ocamlfind" {build}
+  "conf-llvm-static" {build & = "21"}
+  "conf-cmake" {build}
+]
+patches: [
+  "0_AddOCaml.cmake.patch"
+  "1_add-debug-info.patch"
+  "2_add-LLVMGetAtomicRMWBinOp.patch"
+  "3_fix-null-global_initializer.patch"
+  "4_LLVMGetGEPSourceElementType.patch"
+  "5_getAllocatedType.patch"
+  "6_LLVMExtractDISubprogramType.patch"
+  "7_LLVMExtractDbgDeclareNames.patch"
+]
+synopsis: "The OCaml bindings distributed with LLVM"
+description: "Note: LLVM should be installed first."
+url {
+  src:
+    "https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.6/llvm-project-21.1.6.src.tar.xz"
+  checksum: [
+    "sha256=ae67086eb04bed7ca11ab880349b5f1ab6f50e1b88cda376eaf8a845b935762b"
+  ]
+}
+extra-source "0_AddOCaml.cmake.patch" {
+  src:
+    "https://raw.githubusercontent.com/ocaml/opam-source-archives/main/patches/llvm/AddOCaml.cmake.patch.18"
+  checksum:
+    "sha256=a532adaa6938818fbd7f5a49d4de21c0a2d240ecb91636a76b2f745b4b8cb58f"
+}
+extra-source "1_add-debug-info.patch" {
+  src: "dependencies/llvm/patches/1_add-debug-info.patch"
+  checksum: [ "sha256=562e09a08afc3b4b639ae1b1721ba20d2fe7d2410af11b350602f385b6e1deba" ]
+}
+extra-source "2_add-LLVMGetAtomicRMWBinOp.patch" {
+  src: "dependencies/llvm/patches/2_add-LLVMGetAtomicRMWBinOp.patch"
+  checksum: [ "sha256=3022e4efccae3b40f67c786e841ab9b0dd918b45b64ff85a7a82e1ad6fe1a321" ]
+}
+extra-source "3_fix-null-global_initializer.patch" {
+  src: "dependencies/llvm/patches/3_fix-null-global_initializer.patch"
+  checksum: [ "sha256=e2d0faca83e2542454606c544478a2847f27c6dbd9ccf9aa352059e7b1407481" ]
+}
+extra-source "4_LLVMGetGEPSourceElementType.patch" {
+  src: "dependencies/llvm/patches/4_LLVMGetGEPSourceElementType.patch"
+  checksum: [ "sha256=632d24a7bea8076c959f171055d161c7b589b1d961cb5cffda5ebe32602cd85c" ]
+}
+extra-source "5_getAllocatedType.patch" {
+  src: "dependencies/llvm/patches/5_getAllocatedType.patch"
+  checksum: [ "sha256=a94060caf325bb83592d7563584326300c8afe2b7f1e3b3d6b0a93aa28739fa5"]
+}
+extra-source "6_LLVMExtractDISubprogramType.patch" {
+  src: "dependencies/llvm/patches/6_LLVMExtractDISubprogramType.patch"
+  checksum: [ "sha256=090e1b70a75c32b378162e82f4e8028a32f5e49cbc004a7dffc27a8d33f8a129"]
+}
+extra-source "7_LLVMExtractDbgDeclareNames.patch" {
+  src: "dependencies/llvm/patches/7_LLVMExtractDbgDeclareNames.patch"
+  checksum: [ "sha256=8617d730825241ae4f90cf2fdaf6dc0b8c1471bc3ed29a6bfbd7aa1cad041619"]
+}
+extra-files: ["install.sh" "sha256=9d4a83c6b661ca4a80289d8a5bc0cddd6dd5d7e25ca9d61a8c358d801e2b8cdf"]
