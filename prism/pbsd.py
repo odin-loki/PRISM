@@ -319,9 +319,10 @@ def _run_sibling_guard(
             ))
             continue
         for h in hits:
-            unguarded = getattr(h, "unguarded", None)
-            if isinstance(unguarded, (tuple, list)) and unguarded:
-                unguarded = unguarded[0]
+            raw = getattr(h, "unguarded", None)
+            if isinstance(raw, (tuple, list)):
+                raw = raw[0] if raw else None
+            unguarded = str(raw) if raw is not None else None
             out.append(Finding(
                 stage="pbsd", status=laws.FAILED, file=rel,
                 function=unguarded,

@@ -486,10 +486,9 @@ def _ensure_qt() -> None:
             notrun = [s.name for s in report.stages if s.status == "NOTRUN"]
             self.log.append(f"done. {confidence_label(report)}. NOTRUN={notrun or 'none'}")
 
-    module = sys.modules[__name__]
-    module.Worker = Worker
-    module.MainWindow = MainWindow
-    module.QApplication = QApplication
+    # Publish the lazily-built Qt classes as module attributes (read back by
+    # the module-level __getattr__ below).
+    globals().update(Worker=Worker, MainWindow=MainWindow, QApplication=QApplication)
     _qt_ready = True
 
 

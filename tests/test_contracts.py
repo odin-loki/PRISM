@@ -74,7 +74,7 @@ class TestDecreasesHonesty(unittest.TestCase):
 
     def test_identifier_decreases_is_not_unencoded(self):
         f, _ = fn("countdown")
-        spec = parse_comments(f)
+        parse_comments(f)
         recs = prove_contracts([f], 8)
         self.assertEqual(len(recs), 1)
         self.assertFalse(recs[0].extra.get("decreases_unencoded"))

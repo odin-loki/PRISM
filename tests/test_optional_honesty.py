@@ -108,7 +108,6 @@ class TestOptionalSearchAndVendor(unittest.TestCase):
 
     def test_config_beats_vendor_beats_path(self):
         with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
             explicit = Path(td) / ("klee.exe" if sys.platform == "win32" else "klee")
             explicit.write_bytes(b"x")
             pathbin = Path(td) / ("path-klee.exe" if sys.platform == "win32" else "path-klee")

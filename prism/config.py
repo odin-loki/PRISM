@@ -195,9 +195,9 @@ def resolve_adapter(cfg: Config, stage: str, names: tuple[str, ...] | list[str])
     if hit:
         return hit
     for n in names_t:
-        p = shutil.which(n)
-        if p:
-            return p
+        found = shutil.which(n)
+        if found:
+            return found
     return None
 
 

@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from typing import Any
 
 from prism import laws
 from prism.config import Config, adapter_install, resolve_adapter
@@ -362,7 +363,7 @@ def _run_libfuzzer(
     from prism.bmc import unencoded_syntax_reason
     from prism.cparse import body_needs_pointer_harness
 
-    base = dict(
+    base: dict[str, Any] = dict(
         stage="libfuzzer", file=fn.file, function=fn.name, line=fn.line,
         cls="", strength=laws.STRENGTH_FINDS,
     )
@@ -767,11 +768,16 @@ def _run_infer(exe: str, paths: list[Path], cfg: Config) -> list[Finding]:
             extra={"exe": exe, "install": "install gcc or clang"},
         )]
     out: list[Finding] = []
+    # Each file gets its own scratch directory for infer-out/ and the object
+    # file: `infer run -- cc -c` would otherwise write both into whatever
+    # directory PRISM was launched from (often the user's tree).
     for p in c_files:
         try:
             with tempfile.TemporaryDirectory(prefix="prism_infer_") as td:
+                scratch = Path(td)
                 r = _run(
-                    [exe, "run", "--", compiler, "-c", str(p.resolve())],
+                    [exe, "run", "--results-dir", str(scratch / "infer-out"), "--",
+                     compiler, "-c", str(p.resolve()), "-o", str(scratch / "unit.o")],
                     timeout=cfg.timeout + 15,
                 )
         except subprocess.TimeoutExpired:

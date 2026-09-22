@@ -41,8 +41,8 @@ class Finding:
     def __post_init__(self) -> None:
         if self.function is not None and not isinstance(self.function, str):
             v = self.function
-            if isinstance(v, (tuple, list)) and v:
-                v = v[0]
+            if isinstance(v, (tuple, list)):
+                v = v[0] if v else None
             self.function = str(v) if v is not None else None
         if self.cls is not None and not isinstance(self.cls, str):
             self.cls = str(self.cls)

@@ -347,20 +347,20 @@ class Pipeline:
 
 def _write_md(report: RunReport, path: Path) -> None:
     lines = [
-        f"# PRISM report",
-        f"",
+        "# PRISM report",
+        "",
         f"root: `{report.root}`",
-        f"",
-        f"| visibility | answer | resolution | **confidence** |",
-        f"|---|---|---|---|",
+        "",
+        "| visibility | answer | resolution | **confidence** |",
+        "|---|---|---|---|",
         f"| {report.visibility} | {report.answer} | {report.resolution} | **{report.confidence}** |",
-        f"",
-        f"Confidence is a product. 0 means no data, not clean.",
-        f"",
-        f"## Stages",
-        f"",
-        f"| stage | status | records | seconds | note |",
-        f"|---|---|---:|---:|---|",
+        "",
+        "Confidence is a product. 0 means no data, not clean.",
+        "",
+        "## Stages",
+        "",
+        "| stage | status | records | seconds | note |",
+        "|---|---|---:|---:|---|",
     ]
     for s in report.stages:
         note = s.detail or s.install
