@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 import re
+from typing import Any
 
 from prism import laws
 from prism.bmc import bmc_function
@@ -163,7 +164,7 @@ def bmc_function_with_assume(
     invariant: str | None = None,
 ) -> Finding:
     """Instrument requires as an early return (assume) and ensures as assert."""
-    base = dict(
+    base: dict[str, Any] = dict(
         stage="contracts", file=fn.file, function=fn.name, line=fn.line,
         cls="FUNC-CONTRACT", strength=laws.STRENGTH_PROVES,
     )

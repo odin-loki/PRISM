@@ -1172,7 +1172,9 @@ class _Continue(Exception):
 
 
 def _split_semi(s: str) -> list[str]:
-    parts, depth, cur = [], 0, []
+    parts: list[str] = []
+    cur: list[str] = []
+    depth = 0
     for ch in s:
         if ch == "(":
             depth += 1
@@ -1189,7 +1191,9 @@ def _split_semi(s: str) -> list[str]:
 
 def _split_comma(s: str) -> list[str]:
     """Split on commas at paren/bracket depth 0."""
-    parts, pdepth, bdepth, cur = [], 0, 0, []
+    parts: list[str] = []
+    cur: list[str] = []
+    pdepth = bdepth = 0
     for ch in s:
         if ch == "(":
             pdepth += 1
@@ -2620,7 +2624,7 @@ def _has_unencoded_libc_effect(fn: FunctionInfo) -> bool:
 
 
 def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
-    """NEEDS-HARNESS message for syntax the encoder does not model.
+    r"""NEEDS-HARNESS message for syntax the encoder does not model.
 
     Missing model, not a parse ERROR and not a proof. `goto` is not
     this case. `offsetof` is in `_CALL_KW` so it is not a libc-effect
@@ -9314,7 +9318,7 @@ def bmc_function(
     allow_local_pointers: bool = False,
     incremental: bool = True,
 ) -> Finding:
-    base = dict(stage="bmc", file=fn.file, function=fn.name, line=fn.line,
+    base: dict[str, Any] = dict(stage="bmc", file=fn.file, function=fn.name, line=fn.line,
                 cls="", strength=laws.STRENGTH_PROVES, extra={})
     if not HAS_Z3:
         base["extra"] = {"install": "pip install z3-solver"}
