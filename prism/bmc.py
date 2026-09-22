@@ -53,6 +53,7 @@ proof. Nested loops stay unencoded BOUNDED.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import functools
 from pathlib import Path
 from typing import Any
 import re
@@ -60,6 +61,24 @@ import re
 from prism import laws
 from prism.cparse import body_needs_pointer_harness
 from prism.models import Finding, FunctionInfo
+
+
+# The encoder gates on ~1000 distinct literal patterns: more than the `re`
+# module's own 512-entry cache, which then thrashes and recompiles every
+# pattern on every function. Same semantics as re.search / re.match, with a
+# cache large enough to hold them all.
+@functools.lru_cache(maxsize=4096)
+def _rx(pattern: str, flags: int = 0) -> re.Pattern[str]:
+    return re.compile(pattern, flags)
+
+
+def _re_search(pattern: str, string: str, flags: int = 0) -> re.Match[str] | None:
+    return _rx(pattern, flags).search(string)
+
+
+def _re_match(pattern: str, string: str, flags: int = 0) -> re.Match[str] | None:
+    return _rx(pattern, flags).match(string)
+
 
 try:
     import z3
@@ -126,7 +145,7 @@ def _type_is_unsigned(typ: str) -> bool:
 
 def _type_width(typ: str) -> int:
     t = re.sub(r"\s+", " ", (typ or "").lower())
-    if "long long" in t or re.search(r"\b[iu]nt64_t\b", t):
+    if "long long" in t or _re_search(r"\b[iu]nt64_t\b", t):
         return 64
     return WIDTH
 
@@ -423,226 +442,226 @@ class Parser:
                 self._stmts(e, inner)
                 text = rest
                 continue
-            if re.match(r"if\s+constexpr\b", text):
+            if _re_match(r"if\s+constexpr\b", text):
                 raise ParseFail("if constexpr unencoded")
-            if re.match(r"constexpr\b", text):
+            if _re_match(r"constexpr\b", text):
                 raise ParseFail("constexpr unencoded")
             if "<=>" in text:
                 raise ParseFail("spaceship unencoded")
-            if re.search(r"__attribute__\s*\(\s*\(\s*cleanup", text):
+            if _re_search(r"__attribute__\s*\(\s*\(\s*cleanup", text):
                 raise ParseFail("cleanup unencoded")
-            if re.search(r"\bstd\s*::\s*expected\b|\bexpected\s*<", text):
+            if _re_search(r"\bstd\s*::\s*expected\b|\bexpected\s*<", text):
                 raise ParseFail("expected unencoded")
-            if re.search(r"\bformat_to(?:_n)?\s*\(", text):
+            if _re_search(r"\bformat_to(?:_n)?\s*\(", text):
                 raise ParseFail("format_to unencoded")
-            if re.search(r"\bstd\s*::\s*(?:format|print|println)\b", text):
+            if _re_search(r"\bstd\s*::\s*(?:format|print|println)\b", text):
                 raise ParseFail("format unencoded")
-            if re.search(r"\bstd\s*::\s*jthread\b", text):
+            if _re_search(r"\bstd\s*::\s*jthread\b", text):
                 raise ParseFail("jthread unencoded")
-            if re.search(
+            if _re_search(
                 r"\bstd\s*::\s*(?:async|future|promise)\b"
                 r"|(?:future|promise)\s*<",
                 text,
             ):
                 raise ParseFail("async unencoded")
-            if re.search(r"\bstd\s*::\s*function\b|function\s*<", text):
+            if _re_search(r"\bstd\s*::\s*function\b|function\s*<", text):
                 raise ParseFail("function unencoded")
-            if re.search(r"\bstd\s*::\s*mdspan\b|mdspan\s*<", text):
+            if _re_search(r"\bstd\s*::\s*mdspan\b|mdspan\s*<", text):
                 raise ParseFail("mdspan unencoded")
-            if re.search(
+            if _re_search(
                 r"\bstd\s*::\s*(?:mutex|lock_guard|unique_lock|scoped_lock)\b"
                 r"|(?:lock_guard|unique_lock|scoped_lock)\s*<",
                 text,
             ):
                 raise ParseFail("std mutex unencoded")
-            if re.search(r"\bcondition_variable_any\b", text):
+            if _re_search(r"\bcondition_variable_any\b", text):
                 raise ParseFail("condition_variable_any unencoded")
-            if re.search(r"\bshared_timed_mutex\b", text):
+            if _re_search(r"\bshared_timed_mutex\b", text):
                 raise ParseFail("shared_timed_mutex unencoded")
-            if re.search(r"\brecursive_timed_mutex\b", text):
+            if _re_search(r"\brecursive_timed_mutex\b", text):
                 raise ParseFail("recursive_timed_mutex unencoded")
-            if re.search(r"\berror_category\b", text):
+            if _re_search(r"\berror_category\b", text):
                 raise ParseFail("error_category unencoded")
-            if re.search(r"\bnested_exception\b", text):
+            if _re_search(r"\bnested_exception\b", text):
                 raise ParseFail("nested_exception unencoded")
-            if re.search(r"\bwstring_convert\b", text):
+            if _re_search(r"\bwstring_convert\b", text):
                 raise ParseFail("wstring_convert unencoded")
-            if re.search(r"\bsystem_error\b", text):
+            if _re_search(r"\bsystem_error\b", text):
                 raise ParseFail("system_error unencoded")
-            if re.search(r"\b(?:current_zone|tzdb)\b", text):
+            if _re_search(r"\b(?:current_zone|tzdb)\b", text):
                 raise ParseFail("tzdb unencoded")
-            if re.search(r"\bis_scoped_enum\b", text):
+            if _re_search(r"\bis_scoped_enum\b", text):
                 raise ParseFail("is_scoped_enum unencoded")
-            if re.search(r"\b(?:views\s*::\s*)?enumerate(?:_view)?\b", text):
+            if _re_search(r"\b(?:views\s*::\s*)?enumerate(?:_view)?\b", text):
                 raise ParseFail("enumerate unencoded")
-            if re.search(r"\bcartesian_product(?:_view)?\b", text):
+            if _re_search(r"\bcartesian_product(?:_view)?\b", text):
                 raise ParseFail("cartesian_product unencoded")
-            if re.search(
+            if _re_search(
                 r"\b(?:views\s*::\s*chunk(?:_by)?|chunk(?:_by|_view))\b",
                 text,
             ):
                 raise ParseFail("chunk unencoded")
-            if re.search(r"\b(?:views\s*::\s*slide|slide_view)\b", text):
+            if _re_search(r"\b(?:views\s*::\s*slide|slide_view)\b", text):
                 raise ParseFail("slide unencoded")
-            if re.search(
+            if _re_search(
                 r"\b(?:views\s*::\s*adjacent(?:_transform)?|"
                 r"adjacent(?:_transform|_view))\b",
                 text,
             ):
                 raise ParseFail("adjacent unencoded")
-            if re.search(r"\bjoin_with(?:_view)?\b", text):
+            if _re_search(r"\bjoin_with(?:_view)?\b", text):
                 raise ParseFail("join_with unencoded")
-            if re.search(r"views\s*::\s*join|\bjoin_view\b", text):
+            if _re_search(r"views\s*::\s*join|\bjoin_view\b", text):
                 raise ParseFail("views::join unencoded")
-            if re.search(r"\bzip_transform(?:_view)?\b", text):
+            if _re_search(r"\bzip_transform(?:_view)?\b", text):
                 raise ParseFail("zip_transform unencoded")
-            if re.search(r"views\s*::\s*zip|\bzip_view\b", text):
+            if _re_search(r"views\s*::\s*zip|\bzip_view\b", text):
                 raise ParseFail("views::zip unencoded")
-            if re.search(r"\bas_rvalue(?:_view)?\b", text):
+            if _re_search(r"\bas_rvalue(?:_view)?\b", text):
                 raise ParseFail("as_rvalue unencoded")
-            if re.search(r"\bfrom_range\b", text):
+            if _re_search(r"\bfrom_range\b", text):
                 raise ParseFail("from_range unencoded")
-            if re.search(r"\b(?:views\s*::\s*)?stride(?:_view)?\b", text):
+            if _re_search(r"\b(?:views\s*::\s*)?stride(?:_view)?\b", text):
                 raise ParseFail("stride unencoded")
-            if re.search(r"\b(?:views\s*::\s*repeat|repeat_view)\b", text):
+            if _re_search(r"\b(?:views\s*::\s*repeat|repeat_view)\b", text):
                 raise ParseFail("repeat unencoded")
-            if re.search(r"\b(?:views\s*::\s*take\b|\btake_view\b)", text):
+            if _re_search(r"\b(?:views\s*::\s*take\b|\btake_view\b)", text):
                 raise ParseFail("take unencoded")
-            if re.search(r"\b(?:views\s*::\s*drop\b|\bdrop_view\b)", text):
+            if _re_search(r"\b(?:views\s*::\s*drop\b|\bdrop_view\b)", text):
                 raise ParseFail("drop unencoded")
-            if re.search(r"\b(?:views\s*::\s*filter\b|\bfilter_view\b)", text):
+            if _re_search(r"\b(?:views\s*::\s*filter\b|\bfilter_view\b)", text):
                 raise ParseFail("filter unencoded")
-            if re.search(
+            if _re_search(
                 r"\b(?:views\s*::\s*transform\b|\btransform_view\b)",
                 text,
             ):
                 raise ParseFail("transform_view unencoded")
-            if re.search(
+            if _re_search(
                 r"\b(?:views\s*::\s*elements\b|\belements_view\b)",
                 text,
             ):
                 raise ParseFail("elements unencoded")
-            if re.search(r"\b(?:views\s*::\s*iota\b|\biota_view\b)", text):
+            if _re_search(r"\b(?:views\s*::\s*iota\b|\biota_view\b)", text):
                 raise ParseFail("iota unencoded")
-            if re.search(r"\breference_wrapper\b", text):
+            if _re_search(r"\breference_wrapper\b", text):
                 raise ParseFail("reference_wrapper unencoded")
-            if re.search(r"\bstd\s*::\s*endian\b", text):
+            if _re_search(r"\bstd\s*::\s*endian\b", text):
                 raise ParseFail("std::endian unencoded")
-            if re.search(r"\bstd\s*::\s*apply\s*\(", text):
+            if _re_search(r"\bstd\s*::\s*apply\s*\(", text):
                 raise ParseFail("std::apply unencoded")
-            if re.search(
+            if _re_search(
                 r"\b(?:bit_ceil|bit_floor|has_single_bit|"
                 r"std\s*::\s*popcount)\s*\(",
                 text,
             ):
                 raise ParseFail("bit_ceil unencoded")
-            if re.search(r"\bstd\s*::\s*bit_width\s*\(", text):
+            if _re_search(r"\bstd\s*::\s*bit_width\s*\(", text):
                 raise ParseFail("bit_width unencoded")
-            if re.search(r"\bstd\s*::\s*gcd\s*\(", text):
+            if _re_search(r"\bstd\s*::\s*gcd\s*\(", text):
                 raise ParseFail("gcd unencoded")
-            if re.search(r"\bstd\s*::\s*lcm\s*\(", text):
+            if _re_search(r"\bstd\s*::\s*lcm\s*\(", text):
                 raise ParseFail("lcm unencoded")
-            if re.search(r"\bstd\s*::\s*clamp\s*\(", text):
+            if _re_search(r"\bstd\s*::\s*clamp\s*\(", text):
                 raise ParseFail("clamp unencoded")
-            if re.search(r"\bstd\s*::\s*exchange\s*\(", text):
+            if _re_search(r"\bstd\s*::\s*exchange\s*\(", text):
                 raise ParseFail("exchange unencoded")
-            if re.search(r"\bstd\s*::\s*to_address\s*\(", text):
+            if _re_search(r"\bstd\s*::\s*to_address\s*\(", text):
                 raise ParseFail("to_address unencoded")
-            if re.search(r"\bstd\s*::\s*addressof\s*\(", text):
+            if _re_search(r"\bstd\s*::\s*addressof\s*\(", text):
                 raise ParseFail("addressof unencoded")
-            if re.search(r"\bassume_aligned\s*\(", text):
+            if _re_search(r"\bassume_aligned\s*\(", text):
                 raise ParseFail("assume_aligned unencoded")
-            if re.search(r"\bas_const\s*\(", text):
+            if _re_search(r"\bas_const\s*\(", text):
                 raise ParseFail("as_const unencoded")
-            if re.search(r"\btransform_(?:inclusive|exclusive)_scan\s*\(", text):
+            if _re_search(r"\btransform_(?:inclusive|exclusive)_scan\s*\(", text):
                 raise ParseFail("transform_inclusive_scan unencoded")
-            if re.search(r"\bexclusive_scan\s*\(", text):
+            if _re_search(r"\bexclusive_scan\s*\(", text):
                 raise ParseFail("exclusive_scan unencoded")
-            if re.search(r"\binclusive_scan\s*\(", text):
+            if _re_search(r"\binclusive_scan\s*\(", text):
                 raise ParseFail("inclusive_scan unencoded")
-            if re.search(r"\btransform_reduce\s*\(", text):
+            if _re_search(r"\btransform_reduce\s*\(", text):
                 raise ParseFail("transform_reduce unencoded")
-            if re.search(r"\bstd\s*::\s*reduce\s*\(", text):
+            if _re_search(r"\bstd\s*::\s*reduce\s*\(", text):
                 raise ParseFail("std::reduce unencoded")
-            if re.search(
+            if _re_search(
                 r"\buninitialized_(?:fill(?:_n)?|default_construct(?:_n)?)\s*\(",
                 text,
             ):
                 raise ParseFail("uninitialized_fill unencoded")
-            if re.search(r"\buninitialized_value_construct(?:_n)?\s*\(", text):
+            if _re_search(r"\buninitialized_value_construct(?:_n)?\s*\(", text):
                 raise ParseFail("uninitialized_value_construct unencoded")
-            if re.search(r"\buninitialized_(?:copy|move)(?:_n)?\s*\(", text):
+            if _re_search(r"\buninitialized_(?:copy|move)(?:_n)?\s*\(", text):
                 raise ParseFail("uninitialized_copy unencoded")
-            if re.search(r"\b(?:construct_at|destroy_at)\s*\(", text):
+            if _re_search(r"\b(?:construct_at|destroy_at)\s*\(", text):
                 raise ParseFail("construct_at unencoded")
-            if re.search(r"\bdestroy_n\s*\(", text):
+            if _re_search(r"\bdestroy_n\s*\(", text):
                 raise ParseFail("destroy_n unencoded")
-            if re.search(
+            if _re_search(
                 r"\b(?:add_sat|sub_sat|mul_sat|div_sat|saturate_cast)\s*\(",
                 text,
             ):
                 raise ParseFail("add_sat unencoded")
-            if re.search(r"\btype_identity\b", text):
+            if _re_search(r"\btype_identity\b", text):
                 raise ParseFail("type_identity unencoded")
-            if re.search(r"\bnontype\b", text):
+            if _re_search(r"\bnontype\b", text):
                 raise ParseFail("nontype unencoded")
-            if re.search(r"\bis_layout_compatible\b", text):
+            if _re_search(r"\bis_layout_compatible\b", text):
                 raise ParseFail("is_layout_compatible unencoded")
-            if re.search(r"\bis_pointer_interconvertible_(?:with_class|base_of)\b", text):
+            if _re_search(r"\bis_pointer_interconvertible_(?:with_class|base_of)\b", text):
                 raise ParseFail("is_pointer_interconvertible unencoded")
-            if re.search(r"\bbasic_const_iterator\b", text):
+            if _re_search(r"\bbasic_const_iterator\b", text):
                 raise ParseFail("basic_const_iterator unencoded")
-            if re.search(r"\bis_corresponding_member\b", text):
+            if _re_search(r"\bis_corresponding_member\b", text):
                 raise ParseFail("is_corresponding_member unencoded")
-            if re.search(r"\branges\s*::\s*to\s*[<(]", text):
+            if _re_search(r"\branges\s*::\s*to\s*[<(]", text):
                 raise ParseFail("ranges::to unencoded")
-            if re.search(r"\bforward_like\b", text):
+            if _re_search(r"\bforward_like\b", text):
                 raise ParseFail("forward_like unencoded")
-            if re.search(r"\bmake_exception_ptr\s*\(", text):
+            if _re_search(r"\bmake_exception_ptr\s*\(", text):
                 raise ParseFail("make_exception_ptr unencoded")
-            if re.search(r"\b(?:set|get)_terminate\s*\(", text):
+            if _re_search(r"\b(?:set|get)_terminate\s*\(", text):
                 raise ParseFail("set_terminate unencoded")
-            if re.search(r"\bis_constant_evaluated\s*\(", text):
+            if _re_search(r"\bis_constant_evaluated\s*\(", text):
                 raise ParseFail("is_constant_evaluated unencoded")
-            if re.search(r"\bstd\s*::\s*lerp\s*\(", text):
+            if _re_search(r"\bstd\s*::\s*lerp\s*\(", text):
                 raise ParseFail("lerp unencoded")
-            if re.search(r"\bstd\s*::\s*midpoint\s*\(", text):
+            if _re_search(r"\bstd\s*::\s*midpoint\s*\(", text):
                 raise ParseFail("midpoint unencoded")
-            if re.search(
+            if _re_search(
                 r"\bstd\s*::\s*(?:cmp_(?:less|greater|less_equal|"
                 r"greater_equal|equal_to|not_equal_to)|in_range)\s*\(",
                 text,
             ):
                 raise ParseFail("cmp_less unencoded")
-            if re.search(r"\bstd\s*::\s*count[lr]_(?:zero|one)\s*\(", text):
+            if _re_search(r"\bstd\s*::\s*count[lr]_(?:zero|one)\s*\(", text):
                 raise ParseFail("countl_zero unencoded")
-            if re.search(r"\bstd\s*::\s*unreachable\s*\(", text):
+            if _re_search(r"\bstd\s*::\s*unreachable\s*\(", text):
                 raise ParseFail("std::unreachable unencoded")
-            if re.search(r"\buncaught_exceptions\s*\(", text):
+            if _re_search(r"\buncaught_exceptions\s*\(", text):
                 raise ParseFail("uncaught_exceptions unencoded")
-            if re.search(
+            if _re_search(
                 r"\bstd\s*::\s*(?:condition_variable|shared_mutex)\b"
                 r"|\b(?:condition_variable|shared_mutex)\b",
                 text,
             ):
                 raise ParseFail("condition_variable unencoded")
-            if re.search(r"\bstd\s*::\s*atomic_ref\b|atomic_ref\s*<", text):
+            if _re_search(r"\bstd\s*::\s*atomic_ref\b|atomic_ref\s*<", text):
                 raise ParseFail("atomic_ref unencoded")
-            if re.search(r"\bstd\s*::\s*generator\b|generator\s*<", text):
+            if _re_search(r"\bstd\s*::\s*generator\b|generator\s*<", text):
                 raise ParseFail("generator unencoded")
-            if re.search(r"\[\[\s*assume\s*\(", text):
+            if _re_search(r"\[\[\s*assume\s*\(", text):
                 raise ParseFail("assume unencoded")
-            if re.search(r"\bstd\s*::\s*bind\s*\(", text):
+            if _re_search(r"\bstd\s*::\s*bind\s*\(", text):
                 raise ParseFail("std bind unencoded")
-            if re.search(
+            if _re_search(
                 r"__attribute__\s*\(\s*\(\s*(?:__)?vector_size"
                 r"|\b__vector_size\b",
                 text,
             ):
                 raise ParseFail("vector_size unencoded")
-            if re.match(r"requires\s*\(", text) or re.match(r"concept\s+", text):
+            if _re_match(r"requires\s*\(", text) or _re_match(r"concept\s+", text):
                 raise ParseFail("concepts unencoded")
-            if re.search(r"\(\s*\.\.\.\s*[+\-|&^]|[+\-|&^]\s*\.\.\.\s*\)", text):
+            if _re_search(r"\(\s*\.\.\.\s*[+\-|&^]|[+\-|&^]\s*\.\.\.\s*\)", text):
                 raise ParseFail("fold unencoded")
             if _starts_kw(text, "if"):
                 text = self._if(e, text)
@@ -709,7 +728,7 @@ class Parser:
     def _decl(self, e: _Enc, stmt: str) -> None:
         stmt = stmt.rstrip(";").strip()
         # int *p = buf;  (harness pointer alias of a local array)
-        mptr = re.match(
+        mptr = _re_match(
             _DECL_TYPE + r"\s*\*+\s*([A-Za-z_]\w*)(?:\s*=\s*(.*))?$",
             stmt,
         )
@@ -723,13 +742,13 @@ class Parser:
                 return
             raise ParseFail(f"pointer decl must alias an array: {stmt[:80]}")
         # int a[n];  VLA is a missing bound, not a closed proof.
-        marr = re.match(
+        marr = _re_match(
             _DECL_TYPE + r"\s+([A-Za-z_]\w*)\s*\[([^\]]+)\](?:\s*=\s*(.*))?$",
             stmt,
         )
         if marr:
             name, dim, init = marr.group(1), marr.group(2).strip(), marr.group(3)
-            if init and re.search(
+            if init and _re_search(
                 r"\{\s*(?:\[[^\]]+\]|\.[A-Za-z_]\w*)\s*=",
                 init,
             ):
@@ -741,12 +760,12 @@ class Parser:
             e.arrays[name] = (arr, n)
             return
         # int x = 0;  unsigned n;  int x;
-        m = re.match(
+        m = _re_match(
             _DECL_TYPE + r"\s+([A-Za-z_]\w*)(?:\s*=\s*(.*))?$",
             stmt,
         )
         if not m:
-            if re.search(r":\s*[A-Za-z_]", stmt):
+            if _re_search(r":\s*[A-Za-z_]", stmt):
                 raise ParseFail("range-for unencoded")
             raise ParseFail(f"unparsed decl: {stmt[:80]}")
         name, init = m.group(1), m.group(2)
@@ -775,16 +794,16 @@ class Parser:
                     self._assign_or_expr(e, piece)
             return
         # *p = e  (single-element store through a pointer alias)
-        m = re.match(r"\*\s*([A-Za-z_]\w*)\s*=\s*(.+)$", stmt)
+        m = _re_match(r"\*\s*([A-Za-z_]\w*)\s*=\s*(.+)$", stmt)
         if m:
             self._astore(e, m.group(1), "0", m.group(2))
             return
         # a[i] = e
-        m = re.match(r"([A-Za-z_]\w*)\s*\[(.+)\]\s*=\s*(.+)$", stmt)
+        m = _re_match(r"([A-Za-z_]\w*)\s*\[(.+)\]\s*=\s*(.+)$", stmt)
         if m:
             self._astore(e, m.group(1), m.group(2), m.group(3))
             return
-        m = re.match(r"([A-Za-z_]\w*)\s*([+\-*/%|&^]?=)\s*(.+)$", stmt)
+        m = _re_match(r"([A-Za-z_]\w*)\s*([+\-*/%|&^]?=)\s*(.+)$", stmt)
         if m:
             name, op, rhs = m.group(1), m.group(2), m.group(3)
             val = self._expr(e, rhs)
@@ -809,7 +828,7 @@ class Parser:
         e.arrays[name] = (z3.Store(arr, i, v), n)
 
     def _assert(self, e: _Enc, text: str) -> str:
-        m = re.match(r"assert\s*\((.*)\)\s*;", text, re.S)
+        m = _re_match(r"assert\s*\((.*)\)\s*;", text, re.S)
         if not m:
             # assert(x); may span
             inner, rest = _paren_stmt(text[text.find("("):])
@@ -1076,7 +1095,7 @@ class Parser:
                     flush()
                 rest = text[4:].lstrip()
                 src, text = _upto_colon(rest)
-                if re.search(r"\.\.\.", src):
+                if _re_search(r"\.\.\.", src):
                     raise ParseFail("case-range unencoded")
                 labels.append(self._expr(e, src))
                 continue
@@ -1933,7 +1952,7 @@ def _sizeof_tokens(inner: list[str], e: _Enc) -> int:
 
 
 def _loop_kw(src: str) -> bool:
-    return bool(re.search(r"\b(do|while|for)\b", src or ""))
+    return bool(_re_search(r"\b(do|while|for)\b", src or ""))
 
 
 def _extract_simple_loops(text: str) -> list[tuple[str, str, str]] | None:
@@ -2207,17 +2226,17 @@ def _bmc_once(
 def _has_unencoded_cxx(fn: FunctionInfo) -> bool:
     """string_view / span / std:: are not in the bitvector encoder."""
     blob = f"{fn.return_type or ''} {fn.body or ''}"
-    return bool(re.search(r"\bstd::|\bstring_view\b|\bspan\b", blob))
+    return bool(_re_search(r"\bstd::|\bstring_view\b|\bspan\b", blob))
 
 
 def _has_unencoded_float(fn: FunctionInfo) -> bool:
     """IEEE float is not in the bitvector encoder. Missing model, not ERROR."""
-    if re.search(r"\bfloat\b|\bdouble\b", fn.return_type or "", re.I):
+    if _re_search(r"\bfloat\b|\bdouble\b", fn.return_type or "", re.I):
         return True
     for typ, _ in fn.params:
-        if re.search(r"\bfloat\b|\bdouble\b", typ or "", re.I):
+        if _re_search(r"\bfloat\b|\bdouble\b", typ or "", re.I):
             return True
-    return bool(re.search(
+    return bool(_re_search(
         r"\d+\.\d+[fFlL]?|\b(?:float|double)\b",
         fn.body or "",
     ))
@@ -3246,27 +3265,27 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
     `strcpy`/`strcat`/`sprintf` stay out.
     """
     body = fn.body or ""
-    if re.search(r"\bgoto\s+\*", body):
+    if _re_search(r"\bgoto\s+\*", body):
         return (
             f"computed goto unencoded: {engine} is not a computed-goto model"
         )
-    if re.search(r"(?:^|[;{(]|=\s*)\&\&[A-Za-z_]\w*", body, re.M):
+    if _re_search(r"(?:^|[;{(]|=\s*)\&\&[A-Za-z_]\w*", body, re.M):
         return (
             f"label-address unencoded: {engine} is not a label-address model"
         )
-    if re.search(r"\b(?:_Thread_local|thread_local)\b", body):
+    if _re_search(r"\b(?:_Thread_local|thread_local)\b", body):
         return (
             f"thread-local unencoded: {engine} is not a TLS model"
         )
-    if re.search(r"\b(?:_Complex|_Imaginary)\b", body):
+    if _re_search(r"\b(?:_Complex|_Imaginary)\b", body):
         return (
             f"complex unencoded: {engine} is not a complex arithmetic model"
         )
-    if re.search(r"\b(?:typeof_unqual|__typeof_unqual__)\s*\(", body):
+    if _re_search(r"\b(?:typeof_unqual|__typeof_unqual__)\s*\(", body):
         return f"typeof_unqual unencoded: {engine} is not a typeof model"
-    if re.search(r"\b(?:typeof|__typeof__)\s*\(", body):
+    if _re_search(r"\b(?:typeof|__typeof__)\s*\(", body):
         return f"typeof unencoded: {engine} is not a typeof model"
-    if re.search(
+    if _re_search(
         r"(?m)(?:^|[;{])\s*(?:void|int|unsigned(?:\s+int)?|long(?:\s+int)?|"
         r"short|char|float|double|_Bool|bool)\s+[A-Za-z_]\w*\s*\([^)]*\)\s*\{",
         body,
@@ -3275,43 +3294,43 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
             f"nested function unencoded: {engine} is not a "
             "nested-function model"
         )
-    if re.search(r"\b(?:_Alignof|alignof)\s*\(", body):
+    if _re_search(r"\b(?:_Alignof|alignof)\s*\(", body):
         return f"alignof unencoded: {engine} is not an alignment model"
-    if re.search(r"\bva_arg\s*\(", body):
+    if _re_search(r"\bva_arg\s*\(", body):
         return f"va_arg unencoded: {engine} is not a variadic model"
-    if re.search(r"\{\s*(?:\[[^\]]+\]|\.[A-Za-z_]\w*)\s*=", body):
+    if _re_search(r"\{\s*(?:\[[^\]]+\]|\.[A-Za-z_]\w*)\s*=", body):
         return (
             f"designated init unencoded: {engine} is not a "
             "designated-init model"
         )
-    if re.search(r"\bfor\s*\([^)]*:[^)]*\)", body):
+    if _re_search(r"\bfor\s*\([^)]*:[^)]*\)", body):
         return (
             f"C++ range-for unencoded: {engine} is not a range-for model"
         )
-    if re.search(r"\[\s*[^\]]*\]\s*(?:\([^)]*\))?\s*\{", body):
+    if _re_search(r"\[\s*[^\]]*\]\s*(?:\([^)]*\))?\s*\{", body):
         return f"C++ lambda unencoded: {engine} is not a lambda model"
-    if re.search(r"\bconst_cast\s*<", body):
+    if _re_search(r"\bconst_cast\s*<", body):
         return (
             f"C++ const_cast unencoded: {engine} is not a cv-qualifier model"
         )
-    if re.search(r"\bdynamic_cast\s*<", body):
+    if _re_search(r"\bdynamic_cast\s*<", body):
         return (
             f"C++ dynamic_cast unencoded: {engine} is not an RTTI model"
         )
-    if re.search(r"\btype_identity\b", body):
+    if _re_search(r"\btype_identity\b", body):
         return (
             f"C++ type_identity unencoded: {engine} is not a "
             "type_identity model"
         )
-    if re.search(r"\btypeid\s*\(", body):
+    if _re_search(r"\btypeid\s*\(", body):
         return f"C++ typeid unencoded: {engine} is not an RTTI model"
-    if re.search(r"\breinterpret_cast\s*<", body):
+    if _re_search(r"\breinterpret_cast\s*<", body):
         return (
             f"C++ reinterpret_cast unencoded: {engine} is not a type-pun model"
         )
-    if re.search(r"\bstd::bit_cast\b|bit_cast\s*<", body):
+    if _re_search(r"\bstd::bit_cast\b|bit_cast\s*<", body):
         return f"bit_cast unencoded: {engine} is not a type-pun model"
-    if re.search(
+    if _re_search(
         r"(?m)\bstd\s*::\s*jthread\b"
         r"|(?:^|[;{])\s*jthread\s+[A-Za-z_]\w*\s*\(",
         body,
@@ -3319,7 +3338,7 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
         return (
             f"C++ std::jthread unencoded: {engine} is not a jthread model"
         )
-    if re.search(
+    if _re_search(
         r"(?m)\bstd\s*::\s*thread\b"
         r"|(?:^|[;{])\s*thread\s+[A-Za-z_]\w*\s*\(",
         body,
@@ -3328,7 +3347,7 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
             f"C++ std::thread unencoded: {engine} is not a "
             "thread-lifetime model"
         )
-    if re.search(
+    if _re_search(
         r"\bstd\s*::\s*(?:async|future|promise)\b"
         r"|(?:future|promise)\s*<",
         body,
@@ -3336,26 +3355,26 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
         return (
             f"C++ std::async unencoded: {engine} is not a future model"
         )
-    if re.search(r"\b(?:std\s*::\s*)?packaged_task\b|\bpackaged_task\s*<", body):
+    if _re_search(r"\b(?:std\s*::\s*)?packaged_task\b|\bpackaged_task\s*<", body):
         return (
             f"C++ packaged_task unencoded: {engine} is not a "
             "packaged_task model"
         )
-    if re.search(r"\b(?:std\s*::\s*)?counted_iterator\b", body):
+    if _re_search(r"\b(?:std\s*::\s*)?counted_iterator\b", body):
         return (
             f"C++ counted_iterator unencoded: {engine} is not a "
             "counted_iterator model"
         )
-    if re.search(r"\b(?:std\s*::\s*)?weak_ptr\s*<", body):
+    if _re_search(r"\b(?:std\s*::\s*)?weak_ptr\s*<", body):
         return (
             f"C++ weak_ptr unencoded: {engine} is not a weak_ptr model"
         )
-    if re.search(r"\b(?:std\s*::\s*)?nested_exception\b", body):
+    if _re_search(r"\b(?:std\s*::\s*)?nested_exception\b", body):
         return (
             f"C++ nested_exception unencoded: {engine} is not a "
             "nested_exception model"
         )
-    if re.search(
+    if _re_search(
         r"\b(?:throw_with_nested|rethrow_if_nested)\s*\(",
         body,
     ):
@@ -3363,50 +3382,50 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
             f"throw_with_nested unencoded: unconstrained "
             f"throw_with_nested is not a proof ({engine})"
         )
-    if re.search(r"\buncaught_exceptions\s*\(", body):
+    if _re_search(r"\buncaught_exceptions\s*\(", body):
         return (
             f"C++ uncaught_exceptions unencoded: {engine} is not an "
             "uncaught_exceptions model"
         )
-    if re.search(r"\bcurrent_exception\s*\(", body):
+    if _re_search(r"\bcurrent_exception\s*\(", body):
         return (
             f"C++ current_exception unencoded: {engine} is not a "
             "current_exception model"
         )
-    if re.search(r"\bmake_exception_ptr\s*\(", body):
+    if _re_search(r"\bmake_exception_ptr\s*\(", body):
         return (
             f"C++ make_exception_ptr unencoded: {engine} is not a "
             "make_exception_ptr model"
         )
-    if re.search(r"\b(?:std\s*::\s*)?exception_ptr\b", body):
+    if _re_search(r"\b(?:std\s*::\s*)?exception_ptr\b", body):
         return (
             f"C++ exception_ptr unencoded: {engine} is not an "
             "exception_ptr model"
         )
-    if re.search(r"\b(?:std\s*::\s*)?coroutine_handle\b", body):
+    if _re_search(r"\b(?:std\s*::\s*)?coroutine_handle\b", body):
         return (
             f"C++ coroutine_handle unencoded: {engine} is not a "
             "coroutine_handle model"
         )
-    if re.search(r"\b(?:std\s*::\s*)?valarray\s*<", body):
+    if _re_search(r"\b(?:std\s*::\s*)?valarray\s*<", body):
         return (
             f"C++ valarray unencoded: {engine} is not a valarray model"
         )
-    if re.search(r"\b(?:std\s*::\s*)?to_underlying\s*\(", body):
+    if _re_search(r"\b(?:std\s*::\s*)?to_underlying\s*\(", body):
         return (
             f"C++ to_underlying unencoded: {engine} is not a "
             "to_underlying model"
         )
-    if re.search(r"\b(?:std\s*::\s*)?unexpected\s*<", body):
+    if _re_search(r"\b(?:std\s*::\s*)?unexpected\s*<", body):
         return (
             f"C++ unexpected unencoded: {engine} is not an unexpected model"
         )
-    if re.search(r"\b(?:std\s*::\s*)?function_ref\s*<", body):
+    if _re_search(r"\b(?:std\s*::\s*)?function_ref\s*<", body):
         return (
             f"C++ function_ref unencoded: {engine} is not a "
             "function_ref model"
         )
-    if re.search(
+    if _re_search(
         r"\bstd\s*::\s*(?:move_only_function|copyable_function)\b"
         r"|\b(?:move_only_function|copyable_function)\s*<",
         body,
@@ -3415,21 +3434,21 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
             f"C++ move_only_function unencoded: {engine} is not a "
             "move_only_function model"
         )
-    if re.search(r"\breference_wrapper\b|\bstd\s*::\s*(?:cref|ref)\s*\(", body):
+    if _re_search(r"\breference_wrapper\b|\bstd\s*::\s*(?:cref|ref)\s*\(", body):
         return (
             f"C++ reference_wrapper unencoded: {engine} is not a "
             "reference_wrapper model"
         )
-    if re.search(r"\bstd\s*::\s*function\b|function\s*<", body):
+    if _re_search(r"\bstd\s*::\s*function\b|function\s*<", body):
         return (
             f"C++ std::function unencoded: {engine} is not a "
             "type-erased callable model"
         )
-    if re.search(r"\bstd\s*::\s*mdspan\b|mdspan\s*<", body):
+    if _re_search(r"\bstd\s*::\s*mdspan\b|mdspan\s*<", body):
         return (
             f"C++ std::mdspan unencoded: {engine} is not an mdspan model"
         )
-    if re.search(
+    if _re_search(
         r"\bstd\s*::\s*(?:mutex|lock_guard|unique_lock|scoped_lock)\b"
         r"|(?:lock_guard|unique_lock|scoped_lock)\s*<",
         body,
@@ -3437,22 +3456,22 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
         return (
             f"C++ std::mutex unencoded: {engine} is not a C++ mutex model"
         )
-    if re.search(r"\bnotify_all_at_thread_exit\s*\(", body):
+    if _re_search(r"\bnotify_all_at_thread_exit\s*\(", body):
         return (
             f"C++ notify_all_at_thread_exit unencoded: {engine} is not a "
             "notify_all_at_thread_exit model"
         )
-    if re.search(r"\bcondition_variable_any\b", body):
+    if _re_search(r"\bcondition_variable_any\b", body):
         return (
             f"C++ condition_variable_any unencoded: {engine} is not a "
             "condition_variable_any model"
         )
-    if re.search(r"\bshared_timed_mutex\b", body):
+    if _re_search(r"\bshared_timed_mutex\b", body):
         return (
             f"C++ shared_timed_mutex unencoded: {engine} is not a "
             "shared_timed_mutex model"
         )
-    if re.search(
+    if _re_search(
         r"\bstd\s*::\s*(?:condition_variable|shared_mutex)\b"
         r"|\b(?:condition_variable|shared_mutex)\b",
         body,
@@ -3461,28 +3480,28 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
             f"C++ std::condition_variable unencoded: {engine} is not a "
             "condvar/shared-mutex model"
         )
-    if re.search(r"\bstd\s*::\s*atomic_ref\b|atomic_ref\s*<", body):
+    if _re_search(r"\bstd\s*::\s*atomic_ref\b|atomic_ref\s*<", body):
         return (
             f"C++ std::atomic_ref unencoded: {engine} is not an "
             "atomic_ref model"
         )
-    if re.search(r"\bstd\s*::\s*generator\b|generator\s*<", body):
+    if _re_search(r"\bstd\s*::\s*generator\b|generator\s*<", body):
         return (
             f"C++ std::generator unencoded: {engine} is not a generator model"
         )
-    if re.search(r"\[\[\s*assume\s*\(", body):
+    if _re_search(r"\[\[\s*assume\s*\(", body):
         return (
             f"C++ assume unencoded: {engine} is not an assume-attribute model"
         )
-    if re.search(r"\bstd\s*::\s*bind\s*\(", body):
+    if _re_search(r"\bstd\s*::\s*bind\s*\(", body):
         return (
             f"C++ std::bind unencoded: {engine} is not a bind model"
         )
-    if re.search(r"\bstd\s*::\s*any\b|\bany_cast\s*<|\bany_cast\b", body):
+    if _re_search(r"\bstd\s*::\s*any\b|\bany_cast\s*<|\bany_cast\b", body):
         return (
             f"C++ std::any unencoded: {engine} is not an any model"
         )
-    if re.search(
+    if _re_search(
         r"\bstd\s*::\s*filesystem\b|\bstd\s*::\s*fs\s*::|\bfilesystem\s*::",
         body,
     ):
@@ -3490,7 +3509,7 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
             f"C++ std::filesystem unencoded: {engine} is not a "
             "filesystem model"
         )
-    if re.search(
+    if _re_search(
         r"\bstd\s*::\s*regex\b|\bstd\s*::\s*regex_"
         r"|\bregex\s+[A-Za-z_]\w*\s*[\({]",
         body,
@@ -3498,7 +3517,7 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
         return (
             f"C++ std::regex unencoded: {engine} is not a regex model"
         )
-    if re.search(
+    if _re_search(
         r"\bstd\s*::\s*(?:latch|barrier|counting_semaphore)\b"
         r"|\blatch\s+[A-Za-z_]\w*\s*\("
         r"|\bbarrier\s*<",
@@ -3508,107 +3527,107 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
             f"C++ std::latch/barrier unencoded: {engine} is not a "
             "sync primitive model"
         )
-    if re.search(r"\bstd\s*::\s*from_chars\b|\bfrom_chars\s*\(", body):
+    if _re_search(r"\bstd\s*::\s*from_chars\b|\bfrom_chars\s*\(", body):
         return (
             f"C++ from_chars unencoded: {engine} is not a charconv model"
         )
-    if re.search(r"\b(?:std\s*::\s*)?to_chars\s*\(", body):
+    if _re_search(r"\b(?:std\s*::\s*)?to_chars\s*\(", body):
         return (
             f"C++ to_chars unencoded: {engine} is not a charconv model"
         )
-    if re.search(r"\b(?:std\s*::\s*)?hazard_pointer\b", body):
+    if _re_search(r"\b(?:std\s*::\s*)?hazard_pointer\b", body):
         return (
             f"C++ hazard_pointer unencoded: {engine} is not a "
             "hazard_pointer model"
         )
-    if re.search(r"\b(?:std\s*::\s*)?text_encoding\b", body):
+    if _re_search(r"\b(?:std\s*::\s*)?text_encoding\b", body):
         return (
             f"C++ text_encoding unencoded: {engine} is not a "
             "text_encoding model"
         )
-    if re.search(
+    if _re_search(
         r"\b(?:std\s*::\s*(?:experimental\s*::\s*)?)?simd\s*<",
         body,
     ):
         return (
             f"C++ simd unencoded: {engine} is not a simd model"
         )
-    if re.search(r"\bstd\s*::\s*visit\b", body):
+    if _re_search(r"\bstd\s*::\s*visit\b", body):
         return (
             f"C++ std::visit unencoded: {engine} is not a visitor model"
         )
-    if re.search(r"\b(?:std\s*::\s*)?source_location\b", body):
+    if _re_search(r"\b(?:std\s*::\s*)?source_location\b", body):
         return (
             f"C++ source_location unencoded: {engine} is not a "
             "source_location model"
         )
-    if re.search(r"\b(?:std\s*::\s*)?stacktrace\b", body):
+    if _re_search(r"\b(?:std\s*::\s*)?stacktrace\b", body):
         return (
             f"C++ stacktrace unencoded: {engine} is not a stacktrace model"
         )
-    if re.search(r"\bstd\s*::\s*stop_(?:token|source|callback)\b", body):
+    if _re_search(r"\bstd\s*::\s*stop_(?:token|source|callback)\b", body):
         return (
             f"C++ stop_token unencoded: {engine} is not a stop_token model"
         )
-    if re.search(r"\bstd\s*::\s*flat_map\b|\bflat_map\s*<", body):
+    if _re_search(r"\bstd\s*::\s*flat_map\b|\bflat_map\s*<", body):
         return (
             f"C++ flat_map unencoded: {engine} is not a flat_map model"
         )
-    if re.search(r"\bstd\s*::\s*flat_set\b|\bflat_set\s*<", body):
+    if _re_search(r"\bstd\s*::\s*flat_set\b|\bflat_set\s*<", body):
         return (
             f"C++ flat_set unencoded: {engine} is not a flat_set model"
         )
-    if re.search(r"\bstd\s*::\s*flat_multiset\b|\bflat_multiset\s*<", body):
+    if _re_search(r"\bstd\s*::\s*flat_multiset\b|\bflat_multiset\s*<", body):
         return (
             f"C++ flat_multiset unencoded: {engine} is not a "
             "flat_multiset model"
         )
-    if re.search(r"\bstd\s*::\s*flat_multimap\b|\bflat_multimap\s*<", body):
+    if _re_search(r"\bstd\s*::\s*flat_multimap\b|\bflat_multimap\s*<", body):
         return (
             f"C++ flat_multimap unencoded: {engine} is not a "
             "flat_multimap model"
         )
-    if re.search(r"\bzoned_time\b", body):
+    if _re_search(r"\bzoned_time\b", body):
         return (
             f"C++ zoned_time unencoded: {engine} is not a zoned_time model"
         )
-    if re.search(r"\b(?:current_zone|tzdb)\b", body):
+    if _re_search(r"\b(?:current_zone|tzdb)\b", body):
         return (
             f"C++ tzdb unencoded: {engine} is not a tzdb model"
         )
-    if re.search(r"\bstd\s*::\s*chrono\b|\bchrono\s*::", body):
+    if _re_search(r"\bstd\s*::\s*chrono\b|\bchrono\s*::", body):
         return (
             f"C++ chrono unencoded: {engine} is not a chrono model"
         )
-    if re.search(r"\bzip_transform(?:_view)?\b", body):
+    if _re_search(r"\bzip_transform(?:_view)?\b", body):
         return (
             f"C++ zip_transform unencoded: {engine} is not a "
             "zip_transform model"
         )
-    if re.search(r"views\s*::\s*zip|\bzip_view\b", body):
+    if _re_search(r"views\s*::\s*zip|\bzip_view\b", body):
         return (
             f"C++ views::zip unencoded: {engine} is not a views::zip model"
         )
-    if re.search(r"\bas_rvalue(?:_view)?\b", body):
+    if _re_search(r"\bas_rvalue(?:_view)?\b", body):
         return (
             f"C++ as_rvalue unencoded: {engine} is not an as_rvalue model"
         )
-    if re.search(r"\bis_scoped_enum\b", body):
+    if _re_search(r"\bis_scoped_enum\b", body):
         return (
             f"C++ is_scoped_enum unencoded: {engine} is not an "
             "is_scoped_enum model"
         )
-    if re.search(r"\b(?:views\s*::\s*)?enumerate(?:_view)?\b", body):
+    if _re_search(r"\b(?:views\s*::\s*)?enumerate(?:_view)?\b", body):
         return (
             f"C++ views::enumerate unencoded: {engine} is not a "
             "views::enumerate model"
         )
-    if re.search(r"\bcartesian_product(?:_view)?\b", body):
+    if _re_search(r"\bcartesian_product(?:_view)?\b", body):
         return (
             f"C++ cartesian_product unencoded: {engine} is not a "
             "cartesian_product model"
         )
-    if re.search(
+    if _re_search(
         r"\b(?:views\s*::\s*chunk(?:_by)?|chunk(?:_by|_view))\b",
         body,
     ):
@@ -3616,12 +3635,12 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
             f"C++ views::chunk unencoded: {engine} is not a "
             "views::chunk model"
         )
-    if re.search(r"\b(?:views\s*::\s*slide|slide_view)\b", body):
+    if _re_search(r"\b(?:views\s*::\s*slide|slide_view)\b", body):
         return (
             f"C++ views::slide unencoded: {engine} is not a "
             "views::slide model"
         )
-    if re.search(
+    if _re_search(
         r"\b(?:views\s*::\s*adjacent(?:_transform)?|"
         r"adjacent(?:_transform|_view))\b",
         body,
@@ -3630,89 +3649,89 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
             f"C++ views::adjacent unencoded: {engine} is not a "
             "views::adjacent model"
         )
-    if re.search(r"\bjoin_with(?:_view)?\b", body):
+    if _re_search(r"\bjoin_with(?:_view)?\b", body):
         return (
             f"C++ join_with unencoded: {engine} is not a join_with model"
         )
-    if re.search(r"views\s*::\s*join|\bjoin_view\b", body):
+    if _re_search(r"views\s*::\s*join|\bjoin_view\b", body):
         return (
             f"C++ views::join unencoded: {engine} is not a views::join model"
         )
-    if re.search(r"\b(?:views\s*::\s*)?stride(?:_view)?\b", body):
+    if _re_search(r"\b(?:views\s*::\s*)?stride(?:_view)?\b", body):
         return (
             f"C++ views::stride unencoded: {engine} is not a "
             "views::stride model"
         )
-    if re.search(r"\b(?:views\s*::\s*repeat|repeat_view)\b", body):
+    if _re_search(r"\b(?:views\s*::\s*repeat|repeat_view)\b", body):
         return (
             f"C++ views::repeat unencoded: {engine} is not a "
             "views::repeat model"
         )
-    if re.search(r"\btake_while(?:_view)?\b", body):
+    if _re_search(r"\btake_while(?:_view)?\b", body):
         return (
             f"C++ views::take_while unencoded: {engine} is not a "
             "take_while model"
         )
-    if re.search(r"\b(?:views\s*::\s*take\b|\btake_view\b)", body):
+    if _re_search(r"\b(?:views\s*::\s*take\b|\btake_view\b)", body):
         return (
             f"C++ views::take unencoded: {engine} is not a "
             "views::take model"
         )
-    if re.search(r"\bdrop_while(?:_view)?\b", body):
+    if _re_search(r"\bdrop_while(?:_view)?\b", body):
         return (
             f"C++ views::drop_while unencoded: {engine} is not a "
             "drop_while model"
         )
-    if re.search(r"\b(?:views\s*::\s*drop\b|\bdrop_view\b)", body):
+    if _re_search(r"\b(?:views\s*::\s*drop\b|\bdrop_view\b)", body):
         return (
             f"C++ views::drop unencoded: {engine} is not a "
             "views::drop model"
         )
-    if re.search(r"\b(?:views\s*::\s*keys\b|\bkeys_view\b)", body):
+    if _re_search(r"\b(?:views\s*::\s*keys\b|\bkeys_view\b)", body):
         return (
             f"C++ views::keys unencoded: {engine} is not a "
             "keys model"
         )
-    if re.search(r"\b(?:views\s*::\s*values\b|\bvalues_view\b)", body):
+    if _re_search(r"\b(?:views\s*::\s*values\b|\bvalues_view\b)", body):
         return (
             f"C++ views::values unencoded: {engine} is not a "
             "values model"
         )
-    if re.search(r"\b(?:views\s*::\s*reverse\b|\breverse_view\b)", body):
+    if _re_search(r"\b(?:views\s*::\s*reverse\b|\breverse_view\b)", body):
         return (
             f"C++ views::reverse unencoded: {engine} is not a "
             "reverse_view model"
         )
-    if re.search(r"\b(?:views\s*::\s*counted\b|\bcounted_view\b)", body):
+    if _re_search(r"\b(?:views\s*::\s*counted\b|\bcounted_view\b)", body):
         return (
             f"C++ views::counted unencoded: {engine} is not a "
             "counted_view model"
         )
-    if re.search(r"\b(?:views\s*::\s*filter\b|\bfilter_view\b)", body):
+    if _re_search(r"\b(?:views\s*::\s*filter\b|\bfilter_view\b)", body):
         return (
             f"C++ views::filter unencoded: {engine} is not a "
             "views::filter model"
         )
-    if re.search(r"\b(?:views\s*::\s*transform\b|\btransform_view\b)", body):
+    if _re_search(r"\b(?:views\s*::\s*transform\b|\btransform_view\b)", body):
         return (
             f"C++ views::transform unencoded: {engine} is not a "
             "transform_view model"
         )
-    if re.search(r"\b(?:views\s*::\s*elements\b|\belements_view\b)", body):
+    if _re_search(r"\b(?:views\s*::\s*elements\b|\belements_view\b)", body):
         return (
             f"C++ views::elements unencoded: {engine} is not an "
             "elements model"
         )
-    if re.search(r"\b(?:views\s*::\s*iota\b|\biota_view\b)", body):
+    if _re_search(r"\b(?:views\s*::\s*iota\b|\biota_view\b)", body):
         return (
             f"C++ views::iota unencoded: {engine} is not an "
             "iota model"
         )
-    if re.search(r"\bfrom_range\b", body):
+    if _re_search(r"\bfrom_range\b", body):
         return (
             f"C++ from_range unencoded: {engine} is not a from_range model"
         )
-    if re.search(
+    if _re_search(
         r"\bstd\s*::\s*ranges\s*::\s*views\b|\bstd\s*::\s*views\s*::",
         body,
     ):
@@ -3720,19 +3739,19 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
             f"C++ ranges views unencoded: {engine} is not a "
             "ranges-views model"
         )
-    if re.search(r"\bstd\s*::\s*hive\b|\bhive\s*<", body):
+    if _re_search(r"\bstd\s*::\s*hive\b|\bhive\s*<", body):
         return (
             f"C++ hive unencoded: {engine} is not a hive model"
         )
-    if re.search(r"\bstd\s*::\s*(?:execution\s*::\s*)?task\s*<", body):
+    if _re_search(r"\bstd\s*::\s*(?:execution\s*::\s*)?task\s*<", body):
         return (
             f"C++ std::task unencoded: {engine} is not a task model"
         )
-    if re.search(r"\bstd\s*::\s*execution\s*::", body):
+    if _re_search(r"\bstd\s*::\s*execution\s*::", body):
         return (
             f"C++ execution unencoded: {engine} is not an execution model"
         )
-    if re.search(
+    if _re_search(
         r"\bstd\s*::\s*indirect\b|\bindirect\s*<"
         r"|\bstd\s*::\s*polymorphic\b|\bpolymorphic\s*<",
         body,
@@ -3741,11 +3760,11 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
             f"C++ indirect unencoded: {engine} is not an "
             "indirect/polymorphic model"
         )
-    if re.search(r"\bstd\s*::\s*bitset\s*<|\bbitset\s*<", body):
+    if _re_search(r"\bstd\s*::\s*bitset\s*<|\bbitset\s*<", body):
         return (
             f"C++ bitset unencoded: {engine} is not a bitset model"
         )
-    if re.search(
+    if _re_search(
         r"\b(?:std\s*::\s*)?(?:basic_)?(?:string|ostring|istring)stream\b",
         body,
     ):
@@ -3753,16 +3772,16 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
             f"C++ stringstream unencoded: {engine} is not a "
             "stringstream model"
         )
-    if re.search(r"\b(?:std\s*::\s*)?(?:basic_)?osyncstream\b", body):
+    if _re_search(r"\b(?:std\s*::\s*)?(?:basic_)?osyncstream\b", body):
         return (
             f"C++ osyncstream unencoded: {engine} is not an "
             "osyncstream model"
         )
-    if re.search(r"\b(?:std\s*::\s*)?(?:basic_)?syncbuf\b", body):
+    if _re_search(r"\b(?:std\s*::\s*)?(?:basic_)?syncbuf\b", body):
         return (
             f"C++ syncbuf unencoded: {engine} is not a syncbuf model"
         )
-    if re.search(
+    if _re_search(
         r"\b(?:std\s*::\s*)?(?:basic_)?(?:i|o)?spanstream\b",
         body,
     ):
@@ -3770,33 +3789,33 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
             f"C++ spanstream unencoded: {engine} is not a "
             "spanstream model"
         )
-    if re.search(
+    if _re_search(
         r"\b(?:std\s*::\s*)?(?:inout_ptr|out_ptr)\s*(?:<|\()",
         body,
     ):
         return (
             f"C++ out_ptr unencoded: {engine} is not an out_ptr model"
         )
-    if re.search(
+    if _re_search(
         r"\bstd\s*::\s*rcu\b|\brcu_synchronize\s*\(|\brcu_obj\s*<",
         body,
     ):
         return (
             f"C++ rcu unencoded: {engine} is not an rcu model"
         )
-    if re.search(r"\bstd\s*::\s*linalg\b|\blinalg\s*::", body):
+    if _re_search(r"\bstd\s*::\s*linalg\b|\blinalg\s*::", body):
         return (
             f"C++ linalg unencoded: {engine} is not a linalg model"
         )
-    if re.search(r"\bsync_wait\s*\(", body):
+    if _re_search(r"\bsync_wait\s*\(", body):
         return (
             f"C++ sync_wait unencoded: {engine} is not an execution model"
         )
-    if re.search(r"\bcontract_assert\s*\(|\[\[\s*(?:pre|post)\s*:", body):
+    if _re_search(r"\bcontract_assert\s*\(|\[\[\s*(?:pre|post)\s*:", body):
         return (
             f"C++ contracts unencoded: {engine} is not a contracts model"
         )
-    if re.search(
+    if _re_search(
         r"\bstd\s*::\s*meta\b|\^\^"
         r"|\bdefine_aggregate\s*\(|\bdefine_class\s*\(",
         body,
@@ -3804,69 +3823,69 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
         return (
             f"C++ reflection unencoded: {engine} is not a reflection model"
         )
-    if re.search(r"\b(?:std\s*::\s*)?initializer_list\s*<", body):
+    if _re_search(r"\b(?:std\s*::\s*)?initializer_list\s*<", body):
         return (
             f"C++ initializer_list unencoded: {engine} is not a "
             "temporary-lifetime model"
         )
-    if re.search(r"\b(?:std\s*::\s*)?optional\s*<", body):
+    if _re_search(r"\b(?:std\s*::\s*)?optional\s*<", body):
         return (
             f"C++ std::optional unencoded: {engine} is not an optional model"
         )
-    if re.search(r"\bstd\s*::\s*expected\b|\bexpected\s*<", body):
+    if _re_search(r"\bstd\s*::\s*expected\b|\bexpected\s*<", body):
         return (
             f"C++ std::expected unencoded: {engine} is not an expected model"
         )
-    if re.search(r"\bformat_to(?:_n)?\s*\(", body):
+    if _re_search(r"\bformat_to(?:_n)?\s*\(", body):
         return (
             f"C++ format_to unencoded: {engine} is not a format_to model"
         )
-    if re.search(r"\bstd\s*::\s*(?:format|print|println)\b", body):
+    if _re_search(r"\bstd\s*::\s*(?:format|print|println)\b", body):
         return (
             f"C++ std::format unencoded: {engine} is not a format model"
         )
-    if re.search(r"<=>", body):
+    if _re_search(r"<=>", body):
         return (
             f"C++ spaceship unencoded: {engine} is not a "
             "three-way comparison model"
         )
-    if re.search(r"\b(?:std\s*::\s*)?variant\s*<", body):
+    if _re_search(r"\b(?:std\s*::\s*)?variant\s*<", body):
         return (
             f"C++ std::variant unencoded: {engine} is not a variant model"
         )
-    if re.search(r"\b(?:std\s*::\s*)?span\s*<", body):
+    if _re_search(r"\b(?:std\s*::\s*)?span\s*<", body):
         return (
             f"C++ std::span unencoded: {engine} is not a span-lifetime model"
         )
-    if re.search(r"\bstd\s*::\s*inplace_vector\b|\binplace_vector\s*<", body):
+    if _re_search(r"\bstd\s*::\s*inplace_vector\b|\binplace_vector\s*<", body):
         return (
             f"C++ inplace_vector unencoded: {engine} is not an "
             "inplace_vector model"
         )
-    if re.search(r"\b(?:std\s*::\s*)?vector\s*<", body):
+    if _re_search(r"\b(?:std\s*::\s*)?vector\s*<", body):
         return (
             f"C++ std::vector unencoded: {engine} is not a container model"
         )
-    if re.search(r"\bcatch\s*\(\s*\.\.\.\s*\)", body):
+    if _re_search(r"\bcatch\s*\(\s*\.\.\.\s*\)", body):
         return (
             f"C++ catch-all unencoded: {engine} is not an exception model"
         )
-    if re.search(r"\bthrow\s+new\b", body):
+    if _re_search(r"\bthrow\s+new\b", body):
         return (
             f"C++ throw-new unencoded: {engine} is not an exception model"
         )
-    if re.search(r"\bstd\s*::\s*launder\b|\blaunder\s*\(", body):
+    if _re_search(r"\bstd\s*::\s*launder\b|\blaunder\s*\(", body):
         return (
             f"C++ launder unencoded: {engine} is not a lifetime model"
         )
-    if re.search(
+    if _re_search(
         r"\b(?:std\s*::\s*)?start_lifetime_as(?:_array)?\b",
         body,
     ):
         return (
             f"C++ start_lifetime_as unencoded: {engine} is not a lifetime model"
         )
-    if re.search(
+    if _re_search(
         r"\b(?:enable_shared_from_this|shared_from_this)\b",
         body,
     ):
@@ -3874,48 +3893,48 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
             f"C++ shared_from_this unencoded: {engine} is not a "
             "shared-lifetime model"
         )
-    if re.search(r"\bif\s+constexpr\b", body):
+    if _re_search(r"\bif\s+constexpr\b", body):
         return (
             f"if constexpr unencoded: {engine} is not a compile-time-if model"
         )
-    if re.search(r"\bconstexpr\b", body):
+    if _re_search(r"\bconstexpr\b", body):
         return (
             f"constexpr unencoded: {engine} is not a constexpr model"
         )
     blob = f"{fn.signature or ''}\n{body}"
-    if re.search(r"\brequires\s*\(", blob) or re.search(r"\bconcept\s+", blob):
+    if _re_search(r"\brequires\s*\(", blob) or _re_search(r"\bconcept\s+", blob):
         return (
             f"C++ concepts unencoded: {engine} is not a concepts model"
         )
-    if re.search(r"\bcase\s+[^:'\"]+?\s*\.\.\.\s*[^:'\"]+?:", body):
+    if _re_search(r"\bcase\s+[^:'\"]+?\s*\.\.\.\s*[^:'\"]+?:", body):
         return (
             f"case-range unencoded: {engine} is not a case-range model"
         )
-    if re.search(r"\(\s*\.\.\.\s*[+\-|&^]|[+\-|&^]\s*\.\.\.\s*\)", body):
+    if _re_search(r"\(\s*\.\.\.\s*[+\-|&^]|[+\-|&^]\s*\.\.\.\s*\)", body):
         return (
             f"C++ fold unencoded: {engine} is not a fold-expression model"
         )
-    if re.search(r"\b(?:__int128(?:_t)?|_BitInt)\b", body):
+    if _re_search(r"\b(?:__int128(?:_t)?|_BitInt)\b", body):
         return f"128-bit unencoded: {engine} is not a 128-bit model"
-    if re.search(r"\b(?:_Decimal32|_Decimal64|_Decimal128)\b", body):
+    if _re_search(r"\b(?:_Decimal32|_Decimal64|_Decimal128)\b", body):
         return (
             f"decimal float unencoded: {engine} is not a decimal-float model"
         )
-    if re.search(r"\b(?:_Float16|_Float32|_Float64|__fp16)\b", body):
+    if _re_search(r"\b(?:_Float16|_Float32|_Float64|__fp16)\b", body):
         return (
             f"extra-IEEE float unencoded: {engine} is not an extra-IEEE model"
         )
     code = re.sub(r"/\*.*?\*/", " ", body, flags=re.S)
     code = re.sub(r"//.*?$", " ", code, flags=re.M)
-    if re.search(r"\bnullptr\b", code):
+    if _re_search(r"\bnullptr\b", code):
         return (
             f"C23 nullptr unencoded: {engine} is not a nullptr model"
         )
-    if re.search(r"\bco_(?:await|yield|return)\b", body):
+    if _re_search(r"\bco_(?:await|yield|return)\b", body):
         return (
             f"C++ coroutine unencoded: {engine} is not a coroutine model"
         )
-    if re.search(
+    if _re_search(
         r"__attribute__\s*\(\s*\(\s*packed\s*\)\s*\)|\b__packed\b",
         body,
     ):
@@ -3937,138 +3956,138 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
             pack_src = body
     pack_code = re.sub(r"/\*.*?\*/", " ", pack_src, flags=re.S)
     pack_code = re.sub(r"//.*?$", " ", pack_code, flags=re.M)
-    if re.search(r"\bpragma\s+pack\b", pack_code):
+    if _re_search(r"\bpragma\s+pack\b", pack_code):
         return (
             f"pragma pack unencoded: {engine} is not a packed-layout model"
         )
     import_code = re.sub(r"/\*.*?\*/", " ", body, flags=re.S)
     import_code = re.sub(r"//.*?$", " ", import_code, flags=re.M)
-    if re.search(r"\bimport\s+[A-Za-z_]", import_code) or re.search(
+    if _re_search(r"\bimport\s+[A-Za-z_]", import_code) or _re_search(
         r"\bexport\s+module\b",
         import_code,
     ):
         return (
             f"C++ module import unencoded: {engine} is not a modules model"
         )
-    if re.search(r"\#\s*embed\b", body):
+    if _re_search(r"\#\s*embed\b", body):
         return (
             f"C++ embed unencoded: {engine} is not an embed model"
         )
-    if re.search(
+    if _re_search(
         r"\bstd\s*::\s*rcu\b|\brcu_synchronize\s*\(|\brcu_obj\s*<",
         body,
     ):
         return (
             f"C++ rcu unencoded: {engine} is not an rcu model"
         )
-    if re.search(r"\bstd\s*::\s*linalg\b|\blinalg\s*::", body):
+    if _re_search(r"\bstd\s*::\s*linalg\b|\blinalg\s*::", body):
         return (
             f"C++ linalg unencoded: {engine} is not a linalg model"
         )
-    if re.search(r"\bstd\s*::\s*meta\b|\^\^", body):
+    if _re_search(r"\bstd\s*::\s*meta\b|\^\^", body):
         return (
             f"C++ reflection unencoded: {engine} is not a reflection model"
         )
-    if re.search(r"__attribute__\s*\(\s*\(\s*cleanup", body):
+    if _re_search(r"__attribute__\s*\(\s*\(\s*cleanup", body):
         return (
             f"cleanup attribute unencoded: {engine} is not a cleanup model"
         )
-    if re.search(
+    if _re_search(
         r"__attribute__\s*\(\s*\(\s*(?:__)?vector_size|\b__vector_size\b",
         body,
     ):
         return (
             f"vector_size unencoded: {engine} is not a SIMD vector model"
         )
-    if re.search(r"\bL'(?:\\.|[^\\'])'", body):
+    if _re_search(r"\bL'(?:\\.|[^\\'])'", body):
         return (
             f"wide character unencoded: {engine} is not a wide-char model"
         )
-    if re.search(r'\bL"(?:\\.|[^\\"])*"', body):
+    if _re_search(r'\bL"(?:\\.|[^\\"])*"', body):
         return (
             f"wide character unencoded: {engine} is not a wide-char model"
         )
-    if re.search(r"\bexecveat\s*\(", body):
+    if _re_search(r"\bexecveat\s*\(", body):
         return (
             f"execveat unencoded: unconstrained execveat is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bpthread_atfork\s*\(", body):
+    if _re_search(r"\bpthread_atfork\s*\(", body):
         return (
             f"pthread_atfork unencoded: unconstrained pthread_atfork "
             f"is not a proof ({engine})"
         )
-    if re.search(r"\bpledge\s*\(", body):
+    if _re_search(r"\bpledge\s*\(", body):
         return (
             f"pledge unencoded: unconstrained pledge is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bmac_(?:set|get)_(?:proc|fd|file)\s*\(", body):
+    if _re_search(r"\bmac_(?:set|get)_(?:proc|fd|file)\s*\(", body):
         return (
             f"mac_set_proc unencoded: unconstrained mac_set_proc is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bcap_getmode\s*\(", body):
+    if _re_search(r"\bcap_getmode\s*\(", body):
         return (
             f"cap_getmode unencoded: unconstrained cap_getmode is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bcap_getrights\s*\(", body):
+    if _re_search(r"\bcap_getrights\s*\(", body):
         return (
             f"cap_getrights unencoded: unconstrained cap_getrights is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bcap_enter\s*\(", body):
+    if _re_search(r"\bcap_enter\s*\(", body):
         return (
             f"cap_enter unencoded: unconstrained cap_enter is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bcap_sandboxed\s*\(", body):
+    if _re_search(r"\bcap_sandboxed\s*\(", body):
         return (
             f"cap_sandboxed unencoded: unconstrained cap_sandboxed is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bcap_rights_(?:limit|get)\s*\(", body):
+    if _re_search(r"\bcap_rights_(?:limit|get)\s*\(", body):
         return (
             f"cap_rights unencoded: unconstrained cap_rights_limit "
             f"is not a proof ({engine})"
         )
-    if re.search(r"\bcap_(?:fcntls|ioctls)_limit\s*\(", body):
+    if _re_search(r"\bcap_(?:fcntls|ioctls)_limit\s*\(", body):
         return (
             f"cap_fcntls unencoded: unconstrained cap_fcntls_limit "
             f"is not a proof ({engine})"
         )
-    if re.search(r"\bunveil\s*\(", body):
+    if _re_search(r"\bunveil\s*\(", body):
         return (
             f"unveil unencoded: unconstrained unveil is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bsysctl(?:byname)?\s*\(", body):
+    if _re_search(r"\bsysctl(?:byname)?\s*\(", body):
         return (
             f"sysctl unencoded: unconstrained sysctl is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bkqueue\s*\(", body):
+    if _re_search(r"\bkqueue\s*\(", body):
         return (
             f"kqueue unencoded: unconstrained kqueue is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bkevent\s*\(", body):
+    if _re_search(r"\bkevent\s*\(", body):
         return (
             f"kevent unencoded: unconstrained kevent is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bpause\s*\(", body):
+    if _re_search(r"\bpause\s*\(", body):
         return (
             f"pause unencoded: unconstrained pause is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:get|set|swap|make)context\s*\(", body):
+    if _re_search(r"\b(?:get|set|swap|make)context\s*\(", body):
         return (
             f"getcontext unencoded: unconstrained getcontext is not a "
             f"proof ({engine})"
         )
-    if re.search(
+    if _re_search(
         r"\bpthread_attr_(?:init|destroy|setstacksize|setstack|"
         r"setdetachstate|getstacksize|getstack|getdetachstate)\s*\(",
         body,
@@ -4077,7 +4096,7 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
             f"pthread_attr unencoded: unconstrained pthread_attr_init "
             f"is not a proof ({engine})"
         )
-    if re.search(
+    if _re_search(
         r"\b(?:fork|vfork|execlp|execle|execl|"
         r"execvpe|execvp|execve|execv)\s*\(",
         body,
@@ -4086,88 +4105,88 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
             f"process spawn unencoded: unconstrained fork/exec is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bpdfork\s*\(", body):
+    if _re_search(r"\bpdfork\s*\(", body):
         return (
             f"pdfork unencoded: unconstrained pdfork is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\brfork\s*\(", body):
+    if _re_search(r"\brfork\s*\(", body):
         return (
             f"rfork unencoded: unconstrained rfork is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bminherit\s*\(", body):
+    if _re_search(r"\bminherit\s*\(", body):
         return (
             f"minherit unencoded: unconstrained minherit is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bnfssvc\s*\(", body):
+    if _re_search(r"\bnfssvc\s*\(", body):
         return (
             f"nfssvc unencoded: unconstrained nfssvc is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bsysarch\s*\(", body):
+    if _re_search(r"\bsysarch\s*\(", body):
         return (
             f"sysarch unencoded: unconstrained sysarch is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bgetbootfile\s*\(", body):
+    if _re_search(r"\bgetbootfile\s*\(", body):
         return (
             f"getbootfile unencoded: unconstrained getbootfile is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bdevname(?:_r)?\s*\(", body):
+    if _re_search(r"\bdevname(?:_r)?\s*\(", body):
         return (
             f"devname unencoded: unconstrained devname is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bsbrk\s*\(", body):
+    if _re_search(r"\bsbrk\s*\(", body):
         return (
             f"sbrk unencoded: unconstrained sbrk is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bbrk\s*\(", body):
+    if _re_search(r"\bbrk\s*\(", body):
         return (
             f"brk unencoded: unconstrained brk is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:mmap|munmap|mprotect)\s*\(", body):
+    if _re_search(r"\b(?:mmap|munmap|mprotect)\s*\(", body):
         return f"mmap unencoded: {engine} is not a VM model"
-    if re.search(r"\bioctl\s*\(", body):
+    if _re_search(r"\bioctl\s*\(", body):
         return (
             f"ioctl unencoded: unconstrained ioctl is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bmod(?:find|stat|next|fnext)\s*\(", body):
+    if _re_search(r"\bmod(?:find|stat|next|fnext)\s*\(", body):
         return (
             f"modfind unencoded: unconstrained modfind is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bkld(?:firstmod|nextmod)\s*\(", body):
+    if _re_search(r"\bkld(?:firstmod|nextmod)\s*\(", body):
         return (
             f"kldfirstmod unencoded: unconstrained kldfirstmod is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bkld_(?:isloaded|load)\s*\(", body):
+    if _re_search(r"\bkld_(?:isloaded|load)\s*\(", body):
         return (
             f"kld_load unencoded: unconstrained kld_load is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bkld(?:load|unload|find|sym|stat)\s*\(", body):
+    if _re_search(r"\bkld(?:load|unload|find|sym|stat)\s*\(", body):
         return (
             f"kldload unencoded: unconstrained kldload is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:dlfunc|dlvsym)\s*\(", body):
+    if _re_search(r"\b(?:dlfunc|dlvsym)\s*\(", body):
         return (
             f"dlfunc unencoded: unconstrained dlfunc is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:dlopen|dlsym|dlclose)\s*\(", body):
+    if _re_search(r"\b(?:dlopen|dlsym|dlclose)\s*\(", body):
         return (
             f"dlopen unencoded: {engine} is not a dynamic-loader model"
         )
-    if re.search(
+    if _re_search(
         r"\b(?:__builtin_clzll|__builtin_ctzll|"
         r"__builtin_clz|__builtin_ctz)\s*\(",
         body,
@@ -4176,42 +4195,42 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
             f"clz unencoded: unconstrained __builtin_clz is UB on 0 "
             f"and is not a proof ({engine})"
         )
-    if re.search(r"\b__builtin_choose_expr\s*\(", body):
+    if _re_search(r"\b__builtin_choose_expr\s*\(", body):
         return (
             f"choose_expr unencoded: {engine} is not a "
             "__builtin_choose_expr model"
         )
-    if re.search(r"\bstd\s*::\s*unreachable\s*\(", body):
+    if _re_search(r"\bstd\s*::\s*unreachable\s*\(", body):
         return (
             f"C++ std::unreachable unencoded: {engine} is not an "
             "unreachable model"
         )
-    if re.search(r"\b(?:accept4|accept)\s*\(", body):
+    if _re_search(r"\b(?:accept4|accept)\s*\(", body):
         return (
             f"accept unencoded: unconstrained accept is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bfchmodat2\s*\(", body):
+    if _re_search(r"\bfchmodat2\s*\(", body):
         return (
             f"fchmodat2 unencoded: unconstrained fchmodat2 is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bfchmodat\s*\(", body):
+    if _re_search(r"\bfchmodat\s*\(", body):
         return (
             f"fchmodat unencoded: unconstrained fchmodat is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:fchmod|chmod)\s*\(", body):
+    if _re_search(r"\b(?:fchmod|chmod)\s*\(", body):
         return (
             f"chmod unencoded: unconstrained chmod is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:f|l)?chflags\s*\(", body):
+    if _re_search(r"\b(?:f|l)?chflags\s*\(", body):
         return (
             f"chflags unencoded: unconstrained chflags is not a "
             f"proof ({engine})"
         )
-    if re.search(
+    if _re_search(
         r"\b(?:setreuid|setregid|setresuid|setresgid)\s*\(",
         body,
     ):
@@ -4219,111 +4238,111 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
             f"setreuid unencoded: unconstrained setreuid is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bgetres(?:uid|gid)\s*\(", body):
+    if _re_search(r"\bgetres(?:uid|gid)\s*\(", body):
         return (
             f"getresuid unencoded: unconstrained getresuid is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:setfsuid|setfsgid)\s*\(", body):
+    if _re_search(r"\b(?:setfsuid|setfsgid)\s*\(", body):
         return (
             f"setfsuid unencoded: unconstrained setfsuid is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:setpgid|setsid|getsid)\s*\(", body):
+    if _re_search(r"\b(?:setpgid|setsid|getsid)\s*\(", body):
         return (
             f"setpgid unencoded: unconstrained setpgid is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:setuid|seteuid|setgid)\s*\(", body):
+    if _re_search(r"\b(?:setuid|seteuid|setgid)\s*\(", body):
         return (
             f"setuid unencoded: unconstrained setuid is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bsocket\s*\(", body):
+    if _re_search(r"\bsocket\s*\(", body):
         return (
             f"socket unencoded: unconstrained socket is not a "
             f"proof ({engine})"
         )
-    if re.search(r"(?<![:\w])bind\s*\(", body):
+    if _re_search(r"(?<![:\w])bind\s*\(", body):
         return (
             f"bind unencoded: unconstrained bind is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\blisten\s*\(", body):
+    if _re_search(r"\blisten\s*\(", body):
         return (
             f"listen unencoded: unconstrained listen is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bconnect\s*\(", body):
+    if _re_search(r"\bconnect\s*\(", body):
         return (
             f"connect unencoded: unconstrained connect is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bpipe2?\s*\(", body):
+    if _re_search(r"\bpipe2?\s*\(", body):
         return f"pipe unencoded: {engine} is not a pipe model"
-    if re.search(r"\bdup[23]?\s*\(", body):
+    if _re_search(r"\bdup[23]?\s*\(", body):
         return f"dup unencoded: {engine} is not an fd model"
-    if re.search(r"\bfcntl\s*\(", body):
+    if _re_search(r"\bfcntl\s*\(", body):
         return (
             f"fcntl unencoded: unconstrained fcntl is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bpd(?:getpid|wait4)\s*\(", body):
+    if _re_search(r"\bpd(?:getpid|wait4)\s*\(", body):
         return (
             f"pdgetpid unencoded: unconstrained pdgetpid is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:wait4|wait3)\s*\(", body):
+    if _re_search(r"\b(?:wait4|wait3)\s*\(", body):
         return (
             f"wait4 unencoded: unconstrained wait4 is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bwait6\s*\(", body):
+    if _re_search(r"\bwait6\s*\(", body):
         return (
             f"wait6 unencoded: unconstrained wait6 is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bwait(?:pid|id)?\s*\(", body):
+    if _re_search(r"\bwait(?:pid|id)?\s*\(", body):
         return (
             f"wait unencoded: unconstrained wait is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bunlinkat\s*\(", body):
+    if _re_search(r"\bunlinkat\s*\(", body):
         return (
             f"unlinkat unencoded: unconstrained unlinkat is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bunlink\s*\(", body):
+    if _re_search(r"\bunlink\s*\(", body):
         return (
             f"unlink unencoded: unconstrained unlink is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bmknodat\s*\(", body):
+    if _re_search(r"\bmknodat\s*\(", body):
         return (
             f"mknodat unencoded: unconstrained mknodat is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:mkfifo|mknod)\s*\(", body):
+    if _re_search(r"\b(?:mkfifo|mknod)\s*\(", body):
         return (
             f"mkfifo unencoded: unconstrained mkfifo is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bepoll_create(?:1)?\s*\(", body):
+    if _re_search(r"\bepoll_create(?:1)?\s*\(", body):
         return (
             f"epoll_create unencoded: unconstrained epoll_create is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bepoll_pwait(?:2)?\s*\(", body):
+    if _re_search(r"\bepoll_pwait(?:2)?\s*\(", body):
         return (
             f"epoll_pwait unencoded: unconstrained epoll_pwait is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bppoll\s*\(", body):
+    if _re_search(r"\bppoll\s*\(", body):
         return (
             f"ppoll unencoded: unconstrained ppoll is not a "
             f"proof ({engine})"
         )
-    if re.search(
+    if _re_search(
         r"\b(?:pselect|select|epoll_wait|epoll_ctl|poll)\s*\(",
         body,
     ):
@@ -4331,12 +4350,12 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
             f"select unencoded: unconstrained I/O multiplex is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:sendmsg|recvmsg)\s*\(", body):
+    if _re_search(r"\b(?:sendmsg|recvmsg)\s*\(", body):
         return (
             f"sendmsg unencoded: unconstrained sendmsg is not a "
             f"proof ({engine})"
         )
-    if re.search(
+    if _re_search(
         r"\b(?:sendto|recvfrom|send|recv|shutdown)\s*\(",
         body,
     ):
@@ -4344,47 +4363,47 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
             f"send unencoded: unconstrained socket I/O is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\brt_(?:tgsigqueueinfo|sigqueueinfo)\s*\(", body):
+    if _re_search(r"\brt_(?:tgsigqueueinfo|sigqueueinfo)\s*\(", body):
         return (
             f"rt_sigqueueinfo unencoded: unconstrained rt_sigqueueinfo "
             f"is not a proof ({engine})"
         )
-    if re.search(r"\bsigqueue\s*\(", body):
+    if _re_search(r"\bsigqueue\s*\(", body):
         return (
             f"sigqueue unencoded: unconstrained sigqueue is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bkill_dependency\s*\(", body):
+    if _re_search(r"\bkill_dependency\s*\(", body):
         return (
             f"C++ kill_dependency unencoded: {engine} is not a "
             "kill_dependency model"
         )
-    if re.search(r"\bthr_(?:new|kill2|kill|self|exit|suspend|wake)\s*\(", body):
+    if _re_search(r"\bthr_(?:new|kill2|kill|self|exit|suspend|wake)\s*\(", body):
         return (
             f"thr_kill unencoded: unconstrained thr_kill is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bpthread_kill\s*\(", body):
+    if _re_search(r"\bpthread_kill\s*\(", body):
         return (
             f"pthread_kill unencoded: unconstrained pthread_kill is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:kill|raise|alarm)\s*\(", body):
+    if _re_search(r"\b(?:kill|raise|alarm)\s*\(", body):
         return (
             f"kill unencoded: unconstrained signal delivery is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:getaddrinfo|freeaddrinfo)\s*\(", body):
+    if _re_search(r"\b(?:getaddrinfo|freeaddrinfo)\s*\(", body):
         return (
             f"addrinfo unencoded: unconstrained DNS is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bpthread_cancel\s*\(", body):
+    if _re_search(r"\bpthread_cancel\s*\(", body):
         return (
             f"pthread_cancel unencoded: unconstrained pthread_cancel "
             f"is not a proof ({engine})"
         )
-    if re.search(
+    if _re_search(
         r"\bpthread_(?:key_create|key_delete|setspecific|getspecific)\s*\(",
         body,
     ):
@@ -4392,12 +4411,12 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
             f"pthread_key_create unencoded: unconstrained "
             f"pthread_key_create is not a proof ({engine})"
         )
-    if re.search(r"\b(?:pthread_join|pthread_detach)\s*\(", body):
+    if _re_search(r"\b(?:pthread_join|pthread_detach)\s*\(", body):
         return (
             f"pthread_join unencoded: unconstrained pthread_join is not a "
             f"proof ({engine})"
         )
-    if re.search(
+    if _re_search(
         r"\bthrd_(?:create|join|detach|exit|sleep|yield|current|equal)\s*\(",
         body,
     ):
@@ -4405,69 +4424,69 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
             f"ISO C11 thrd unencoded: unconstrained thrd_* is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:sem_wait|sem_post)\s*\(", body):
+    if _re_search(r"\b(?:sem_wait|sem_post)\s*\(", body):
         return (
             f"sem unencoded: unconstrained sem_wait is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bopenat\s*\(", body):
+    if _re_search(r"\bopenat\s*\(", body):
         return (
             f"openat unencoded: unconstrained openat is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bflock\s*\(", body):
+    if _re_search(r"\bflock\s*\(", body):
         return (
             f"flock unencoded: unconstrained flock is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:fchown|lchown|chown)\s*\(", body):
+    if _re_search(r"\b(?:fchown|lchown|chown)\s*\(", body):
         return (
             f"chown unencoded: unconstrained chown is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bsymlinkat\s*\(", body):
+    if _re_search(r"\bsymlinkat\s*\(", body):
         return (
             f"symlinkat unencoded: unconstrained symlinkat is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\breadlinkat\s*\(", body):
+    if _re_search(r"\breadlinkat\s*\(", body):
         return (
             f"readlinkat unencoded: unconstrained readlinkat is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:symlink|readlink)\s*\(", body):
+    if _re_search(r"\b(?:symlink|readlink)\s*\(", body):
         return (
             f"symlink unencoded: unconstrained symlink is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:pthread_join|pthread_detach|pthread_once)\s*\(", body):
+    if _re_search(r"\b(?:pthread_join|pthread_detach|pthread_once)\s*\(", body):
         return (
             f"pthread join unencoded: unconstrained thread join is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:sem_wait|sem_post|sem_init|sem_destroy)\s*\(", body):
+    if _re_search(r"\b(?:sem_wait|sem_post|sem_init|sem_destroy)\s*\(", body):
         return f"sem unencoded: {engine} is not a semaphore model"
-    if re.search(r"\bksem_(?:open|close|unlink|wait|post)\s*\(", body):
+    if _re_search(r"\bksem_(?:open|close|unlink|wait|post)\s*\(", body):
         return (
             f"ksem_open unencoded: unconstrained ksem_open is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bsem_(?:open|close|unlink)\s*\(", body):
+    if _re_search(r"\bsem_(?:open|close|unlink)\s*\(", body):
         return (
             f"sem_open unencoded: unconstrained sem_open is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bsem_timedwait\s*\(", body):
+    if _re_search(r"\bsem_timedwait\s*\(", body):
         return (
             f"sem_timedwait unencoded: unconstrained sem_timedwait is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bsem_(?:trywait|getvalue)\s*\(", body):
+    if _re_search(r"\bsem_(?:trywait|getvalue)\s*\(", body):
         return (
             f"sem_trywait unencoded: unconstrained sem_trywait is not a "
             f"proof ({engine})"
         )
-    if re.search(
+    if _re_search(
         r"\bpthread_spin_(?:try)?(?:lock|unlock|init|destroy)\s*\(",
         body,
     ):
@@ -4475,7 +4494,7 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
             f"pthread_spin unencoded: unconstrained pthread_spin_lock "
             f"is not a proof ({engine})"
         )
-    if re.search(
+    if _re_search(
         r"\bpthread_rwlock_(?:try|timed)?(?:rdlock|wrlock|unlock|init|destroy)\s*\(",
         body,
     ):
@@ -4483,7 +4502,7 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
             f"pthread_rwlock unencoded: unconstrained pthread_rwlock "
             f"is not a proof ({engine})"
         )
-    if re.search(
+    if _re_search(
         r"\bpthread_cond_(?:timedwait|wait|signal|broadcast|init|destroy)\s*\(",
         body,
     ):
@@ -4491,31 +4510,31 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
             f"pthread_cond unencoded: unconstrained pthread_cond_wait "
             f"is not a proof ({engine})"
         )
-    if re.search(r"\bpthread_barrier_(?:wait|init|destroy)\s*\(", body):
+    if _re_search(r"\bpthread_barrier_(?:wait|init|destroy)\s*\(", body):
         return (
             f"pthread_barrier unencoded: unconstrained pthread_barrier_wait "
             f"is not a proof ({engine})"
         )
-    if re.search(r"\bopenat\s*\(", body):
+    if _re_search(r"\bopenat\s*\(", body):
         return (
             f"openat unencoded: unconstrained openat is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bflock\s*\(", body):
+    if _re_search(r"\bflock\s*\(", body):
         return (
             f"flock unencoded: unconstrained flock is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:posix_memalign|aligned_alloc)\s*\(", body):
+    if _re_search(r"\b(?:posix_memalign|aligned_alloc)\s*\(", body):
         return (
             f"aligned_alloc unencoded: {engine} is not an aligned-alloc model"
         )
-    if re.search(r"\bvalloc\s*\(", body):
+    if _re_search(r"\bvalloc\s*\(", body):
         return (
             f"valloc unencoded: unconstrained valloc is not a "
             f"proof ({engine})"
         )
-    if re.search(
+    if _re_search(
         r"\b(?:__atomic_load|__atomic_store|"
         r"__sync_fetch_and_add|__sync_bool_compare_and_swap)\s*\(",
         body,
@@ -4524,116 +4543,116 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
             f"atomic builtin unencoded: {engine} is not an "
             "atomic-builtin model"
         )
-    if re.search(r"\b(?:fchown|lchown|chown)\s*\(", body):
+    if _re_search(r"\b(?:fchown|lchown|chown)\s*\(", body):
         return (
             f"chown unencoded: unconstrained chown is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:symlink|readlink)\s*\(", body):
+    if _re_search(r"\b(?:symlink|readlink)\s*\(", body):
         return (
             f"symlink unencoded: unconstrained symlink/readlink is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bfts_(?:open|read|children|close|set)\s*\(", body):
+    if _re_search(r"\bfts_(?:open|read|children|close|set)\s*\(", body):
         return (
             f"fts_open unencoded: unconstrained fts_open is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:fdopendir|opendir|readdir|closedir)\s*\(", body):
+    if _re_search(r"\b(?:fdopendir|opendir|readdir|closedir)\s*\(", body):
         return (
             f"opendir unencoded: {engine} is not a DIR* model"
         )
-    if re.search(r"\b(?:setrlimit|getrlimit)\s*\(", body):
+    if _re_search(r"\b(?:setrlimit|getrlimit)\s*\(", body):
         return (
             f"setrlimit unencoded: unconstrained setrlimit is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:getsockname|getpeername)\s*\(", body):
+    if _re_search(r"\b(?:getsockname|getpeername)\s*\(", body):
         return (
             f"getsockname unencoded: unconstrained getsockname is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bgetpeereid\s*\(", body):
+    if _re_search(r"\bgetpeereid\s*\(", body):
         return (
             f"getpeereid unencoded: unconstrained getpeereid is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:getsockopt|setsockopt)\s*\(", body):
+    if _re_search(r"\b(?:getsockopt|setsockopt)\s*\(", body):
         return (
             f"getsockopt unencoded: unconstrained socket opts is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:listmount|statmount)\s*\(", body):
+    if _re_search(r"\b(?:listmount|statmount)\s*\(", body):
         return (
             f"listmount unencoded: unconstrained listmount/statmount "
             f"is not a proof ({engine})"
         )
-    if re.search(r"\bustat\s*\(", body):
+    if _re_search(r"\bustat\s*\(", body):
         return (
             f"ustat unencoded: unconstrained ustat is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bfile_(?:get|set)attr\s*\(", body):
+    if _re_search(r"\bfile_(?:get|set)attr\s*\(", body):
         return (
             f"file_getattr unencoded: unconstrained file_getattr "
             f"is not a proof ({engine})"
         )
-    if re.search(r"\bfh(?:linkat|link|readlink)\s*\(", body):
+    if _re_search(r"\bfh(?:linkat|link|readlink)\s*\(", body):
         return (
             f"fhlink unencoded: unconstrained fhlink is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:getfh|fhopen|fhstatfs|fhstat|getfhat)\s*\(", body):
+    if _re_search(r"\b(?:getfh|fhopen|fhstatfs|fhstat|getfhat)\s*\(", body):
         return (
             f"getfh unencoded: unconstrained getfh is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bfstatat\s*\(", body):
+    if _re_search(r"\bfstatat\s*\(", body):
         return (
             f"fstatat unencoded: unconstrained fstatat is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:lstat|fstat|stat)\s*\(", body):
+    if _re_search(r"\b(?:lstat|fstat|stat)\s*\(", body):
         return (
             f"stat unencoded: unconstrained stat is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\brenameat2\s*\(", body):
+    if _re_search(r"\brenameat2\s*\(", body):
         return (
             f"renameat2 unencoded: unconstrained renameat2 is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\brenameat\s*\(", body):
+    if _re_search(r"\brenameat\s*\(", body):
         return (
             f"renameat unencoded: unconstrained renameat is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bmkdirat\s*\(", body):
+    if _re_search(r"\bmkdirat\s*\(", body):
         return (
             f"mkdirat unencoded: unconstrained mkdirat is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:mkdir|rmdir|rename)\s*\(", body):
+    if _re_search(r"\b(?:mkdir|rmdir|rename)\s*\(", body):
         return (
             f"mkdir unencoded: unconstrained mkdir is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bcrypt_(?:newhash|checkpass)\s*\(", body):
+    if _re_search(r"\bcrypt_(?:newhash|checkpass)\s*\(", body):
         return (
             f"crypt_newhash unencoded: unconstrained crypt_newhash is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bkenv\s*\(", body):
+    if _re_search(r"\bkenv\s*\(", body):
         return (
             f"kenv unencoded: unconstrained kenv is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:getpwuid|getpwnam|crypt)\s*\(", body):
+    if _re_search(r"\b(?:getpwuid|getpwnam|crypt)\s*\(", body):
         return (
             f"getpwuid unencoded: unconstrained getpwuid is not a "
             f"proof ({engine})"
         )
-    if re.search(
+    if _re_search(
         r"\b(?:clock_settime|clock_adjtime|clock_nanosleep)\s*\(",
         body,
     ):
@@ -4641,37 +4660,37 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
             f"clock_settime unencoded: unconstrained clock_settime "
             f"is not a proof ({engine})"
         )
-    if re.search(r"\bsettimeofday\s*\(", body):
+    if _re_search(r"\bsettimeofday\s*\(", body):
         return (
             f"settimeofday unencoded: unconstrained settimeofday is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bpthread_getcpuclockid\s*\(", body):
+    if _re_search(r"\bpthread_getcpuclockid\s*\(", body):
         return (
             f"pthread_getcpuclockid unencoded: unconstrained "
             f"pthread_getcpuclockid is not a proof ({engine})"
         )
-    if re.search(r"\bclock_getcpuclockid\s*\(", body):
+    if _re_search(r"\bclock_getcpuclockid\s*\(", body):
         return (
             f"clock_getcpuclockid unencoded: unconstrained "
             f"clock_getcpuclockid is not a proof ({engine})"
         )
-    if re.search(r"\b(?:clock_gettime|gettimeofday)\s*\(", body):
+    if _re_search(r"\b(?:clock_gettime|gettimeofday)\s*\(", body):
         return (
             f"clock_gettime unencoded: unconstrained clock_gettime is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bposix_typed_mem_(?:open|get_info)\s*\(", body):
+    if _re_search(r"\bposix_typed_mem_(?:open|get_info)\s*\(", body):
         return (
             f"posix_typed_mem_open unencoded: unconstrained "
             f"posix_typed_mem_open is not a proof ({engine})"
         )
-    if re.search(r"\b(?:shm_open|shm_unlink)\s*\(", body):
+    if _re_search(r"\b(?:shm_open|shm_unlink)\s*\(", body):
         return (
             f"shm unencoded: unconstrained shm_open is not a "
             f"proof ({engine})"
         )
-    if re.search(
+    if _re_search(
         r"\bposix_spawn(?:_file_actions|attr)_init\s*\(",
         body,
     ):
@@ -4679,87 +4698,87 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
             f"posix_spawn_file_actions_init unencoded: unconstrained "
             f"posix_spawn_file_actions_init is not a proof ({engine})"
         )
-    if re.search(r"\b(?:posix_spawnp|posix_spawn)\s*\(", body):
+    if _re_search(r"\b(?:posix_spawnp|posix_spawn)\s*\(", body):
         return (
             f"posix_spawn unencoded: unconstrained posix_spawn is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:globfree|glob)\s*\(", body):
+    if _re_search(r"\b(?:globfree|glob)\s*\(", body):
         return (
             f"glob unencoded: unconstrained glob is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:fseek|ftell|rewind|fgetpos|fsetpos)\s*\(", body):
+    if _re_search(r"\b(?:fseek|ftell|rewind|fgetpos|fsetpos)\s*\(", body):
         return (
             f"fseek unencoded: unconstrained fseek is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:nanosleep|usleep|sleep)\s*\(", body):
+    if _re_search(r"\b(?:nanosleep|usleep|sleep)\s*\(", body):
         return (
             f"sleep unencoded: unconstrained sleep is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bfaccessat2\s*\(", body):
+    if _re_search(r"\bfaccessat2\s*\(", body):
         return (
             f"faccessat2 unencoded: unconstrained faccessat2 is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bfaccessat\s*\(", body):
+    if _re_search(r"\bfaccessat\s*\(", body):
         return (
             f"faccessat unencoded: unconstrained faccessat is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bvhangup\s*\(", body):
+    if _re_search(r"\bvhangup\s*\(", body):
         return (
             f"vhangup unencoded: unconstrained vhangup is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:at_)?quick_exit\s*\(", body):
+    if _re_search(r"\b(?:at_)?quick_exit\s*\(", body):
         return (
             f"quick_exit unencoded: unconstrained quick_exit is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\beaccess\s*\(", body):
+    if _re_search(r"\beaccess\s*\(", body):
         return (
             f"eaccess unencoded: unconstrained eaccess is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\baccess\s*\(", body):
+    if _re_search(r"\baccess\s*\(", body):
         return (
             f"access unencoded: unconstrained access is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:getopt_long_only|getopt_long|getopt)\s*\(", body):
+    if _re_search(r"\b(?:getopt_long_only|getopt_long|getopt)\s*\(", body):
         return (
             f"getopt unencoded: unconstrained getopt is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bgetosreldate\s*\(", body):
+    if _re_search(r"\bgetosreldate\s*\(", body):
         return (
             f"getosreldate unencoded: unconstrained getosreldate is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bgetdomainname\s*\(", body):
+    if _re_search(r"\bgetdomainname\s*\(", body):
         return (
             f"getdomainname unencoded: unconstrained getdomainname "
             f"is not a proof ({engine})"
         )
-    if re.search(r"\b(?:uname|gethostname)\s*\(", body):
+    if _re_search(r"\b(?:uname|gethostname)\s*\(", body):
         return (
             f"uname unencoded: unconstrained uname is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:sendfile|copy_file_range)\s*\(", body):
+    if _re_search(r"\b(?:sendfile|copy_file_range)\s*\(", body):
         return (
             f"sendfile unencoded: unconstrained sendfile is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:preadv2|pwritev2|preadv|pwritev)\s*\(", body):
+    if _re_search(r"\b(?:preadv2|pwritev2|preadv|pwritev)\s*\(", body):
         return (
             f"preadv unencoded: unconstrained preadv is not a "
             f"proof ({engine})"
         )
-    if re.search(
+    if _re_search(
         r"\b(?:timerfd_settime|timerfd_gettime)\s*\(",
         body,
     ):
@@ -4767,12 +4786,12 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
             f"timerfd_settime unencoded: unconstrained "
             f"timerfd_settime is not a proof ({engine})"
         )
-    if re.search(r"\beventfd_(?:read|write)\s*\(", body):
+    if _re_search(r"\beventfd_(?:read|write)\s*\(", body):
         return (
             f"eventfd_read unencoded: unconstrained eventfd_read is not a "
             f"proof ({engine})"
         )
-    if re.search(
+    if _re_search(
         r"\b(?:memfd_create|eventfd|timerfd_create)\s*\(",
         body,
     ):
@@ -4780,82 +4799,82 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
             f"memfd unencoded: unconstrained memfd_create is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\barch_prctl\s*\(", body):
+    if _re_search(r"\barch_prctl\s*\(", body):
         return (
             f"arch_prctl unencoded: unconstrained arch_prctl is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bprocctl\s*\(", body):
+    if _re_search(r"\bprocctl\s*\(", body):
         return (
             f"procctl unencoded: unconstrained procctl is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:prctl|ptrace)\s*\(", body):
+    if _re_search(r"\b(?:prctl|ptrace)\s*\(", body):
         return (
             f"prctl unencoded: unconstrained prctl is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bktrace\s*\(", body):
+    if _re_search(r"\bktrace\s*\(", body):
         return (
             f"ktrace unencoded: unconstrained ktrace is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:tcgetattr|tcsetattr|cfmakeraw)\s*\(", body):
+    if _re_search(r"\b(?:tcgetattr|tcsetattr|cfmakeraw)\s*\(", body):
         return (
             f"tcgetattr unencoded: unconstrained tcgetattr is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bgetpagesizes\s*\(", body):
+    if _re_search(r"\bgetpagesizes\s*\(", body):
         return (
             f"getpagesizes unencoded: unconstrained getpagesizes is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bgetpagesize(?!s)\s*\(", body):
+    if _re_search(r"\bgetpagesize(?!s)\s*\(", body):
         return (
             f"getpagesize unencoded: unconstrained getpagesize is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\blpathconf\s*\(", body):
+    if _re_search(r"\blpathconf\s*\(", body):
         return (
             f"lpathconf unencoded: unconstrained lpathconf is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:sysconf|fpathconf|pathconf)\s*\(", body):
+    if _re_search(r"\b(?:sysconf|fpathconf|pathconf)\s*\(", body):
         return (
             f"sysconf unencoded: unconstrained sysconf is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bgetrusage\s*\(", body):
+    if _re_search(r"\bgetrusage\s*\(", body):
         return (
             f"getrusage unencoded: unconstrained getrusage is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:nftw|ftw)\s*\(", body):
+    if _re_search(r"\b(?:nftw|ftw)\s*\(", body):
         return (
             f"nftw unencoded: unconstrained nftw is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:wordexp|wordfree)\s*\(", body):
+    if _re_search(r"\b(?:wordexp|wordfree)\s*\(", body):
         return (
             f"wordexp unencoded: unconstrained wordexp is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:get|set)loginclass\s*\(", body):
+    if _re_search(r"\b(?:get|set)loginclass\s*\(", body):
         return (
             f"loginclass unencoded: unconstrained getloginclass is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:login_getclass|setusercontext)\s*\(", body):
+    if _re_search(r"\b(?:login_getclass|setusercontext)\s*\(", body):
         return (
             f"login_getclass unencoded: unconstrained login_getclass is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bsetlogin\s*\(", body):
+    if _re_search(r"\bsetlogin\s*\(", body):
         return (
             f"setlogin unencoded: unconstrained setlogin is not a "
             f"proof ({engine})"
         )
-    if re.search(
+    if _re_search(
         r"\b(?:getlogin_r|getlogin|ttyname_r|ttyname)\s*\(",
         body,
     ):
@@ -4863,52 +4882,52 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
             f"getlogin unencoded: unconstrained getlogin is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:inet_pton|inet_ntop|inet_aton)\s*\(", body):
+    if _re_search(r"\b(?:inet_pton|inet_ntop|inet_aton)\s*\(", body):
         return (
             f"inet_pton unencoded: unconstrained inet_pton is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bmseal\s*\(", body):
+    if _re_search(r"\bmseal\s*\(", body):
         return (
             f"mseal unencoded: unconstrained mseal is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bmlock2\s*\(", body):
+    if _re_search(r"\bmlock2\s*\(", body):
         return (
             f"mlock2 unencoded: unconstrained mlock2 is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:munlockall|mlockall|munlock|mlock)\s*\(", body):
+    if _re_search(r"\b(?:munlockall|mlockall|munlock|mlock)\s*\(", body):
         return (
             f"mlock unencoded: unconstrained mlock is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bposix_fadvise(?:64)?\s*\(", body):
+    if _re_search(r"\bposix_fadvise(?:64)?\s*\(", body):
         return (
             f"posix_fadvise unencoded: unconstrained posix_fadvise is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\breadahead\s*\(", body):
+    if _re_search(r"\breadahead\s*\(", body):
         return (
             f"readahead unencoded: unconstrained readahead is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:posix_madvise|madvise)\s*\(", body):
+    if _re_search(r"\b(?:posix_madvise|madvise)\s*\(", body):
         return (
             f"madvise unencoded: unconstrained madvise is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:vmsplice|splice)\s*\(", body):
+    if _re_search(r"\b(?:vmsplice|splice)\s*\(", body):
         return (
             f"splice unencoded: unconstrained splice is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\binotify_rm_watch\s*\(", body):
+    if _re_search(r"\binotify_rm_watch\s*\(", body):
         return (
             f"inotify_rm_watch unencoded: unconstrained inotify_rm_watch "
             f"is not a proof ({engine})"
         )
-    if re.search(
+    if _re_search(
         r"\b(?:inotify_init1|inotify_init|inotify_add_watch)\s*\(",
         body,
     ):
@@ -4916,42 +4935,42 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
             f"inotify unencoded: unconstrained inotify is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:fdatasync|fsync)\s*\(", body):
+    if _re_search(r"\b(?:fdatasync|fsync)\s*\(", body):
         return (
             f"fsync unencoded: unconstrained fsync is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:getrandom|getentropy)\s*\(", body):
+    if _re_search(r"\b(?:getrandom|getentropy)\s*\(", body):
         return (
             f"getrandom unencoded: unconstrained getrandom is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\barc4random(?:_buf|_uniform)?\s*\(", body):
+    if _re_search(r"\barc4random(?:_buf|_uniform)?\s*\(", body):
         return (
             f"arc4random unencoded: unconstrained arc4random is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bissetugid\s*\(", body):
+    if _re_search(r"\bissetugid\s*\(", body):
         return (
             f"issetugid unencoded: unconstrained issetugid is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:getdelim|getline)\s*\(", body):
+    if _re_search(r"\b(?:getdelim|getline)\s*\(", body):
         return (
             f"getline unencoded: unconstrained getline is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:vasprintf|asprintf)\s*\(", body):
+    if _re_search(r"\b(?:vasprintf|asprintf)\s*\(", body):
         return (
             f"asprintf unencoded: unconstrained asprintf is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:strlcpy|strlcat)\s*\(", body):
+    if _re_search(r"\b(?:strlcpy|strlcat)\s*\(", body):
         return (
             f"strlcpy unencoded: unconstrained strlcpy is not a "
             f"proof ({engine})"
         )
-    if re.search(
+    if _re_search(
         r"\b(?:explicit_bzero|memset_s|explicit_memset)\s*\(",
         body,
     ):
@@ -4959,17 +4978,17 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
             f"explicit_bzero unencoded: unconstrained explicit_bzero "
             f"is not a proof ({engine})"
         )
-    if re.search(r"\btimingsafe_(?:bcmp|memcmp)\s*\(", body):
+    if _re_search(r"\btimingsafe_(?:bcmp|memcmp)\s*\(", body):
         return (
             f"timingsafe_bcmp unencoded: unconstrained timingsafe_bcmp "
             f"is not a proof ({engine})"
         )
-    if re.search(r"\bisatty\s*\(", body):
+    if _re_search(r"\bisatty\s*\(", body):
         return (
             f"isatty unencoded: unconstrained isatty is not a "
             f"proof ({engine})"
         )
-    if re.search(
+    if _re_search(
         r"\b(?:posix_openpt|ptsname_r|ptsname|grantpt|unlockpt)\s*\(",
         body,
     ):
@@ -4977,22 +4996,22 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
             f"ptsname unencoded: unconstrained ptsname is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bnmount\s*\(", body):
+    if _re_search(r"\bnmount\s*\(", body):
         return (
             f"nmount unencoded: unconstrained nmount is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bunmount\b", body):
+    if _re_search(r"\bunmount\b", body):
         return (
             f"unmount unencoded: unconstrained unmount is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:umount2|umount|mount)\s*\(", body):
+    if _re_search(r"\b(?:umount2|umount|mount)\s*\(", body):
         return (
             f"mount unencoded: unconstrained mount is not a "
             f"proof ({engine})"
         )
-    if re.search(
+    if _re_search(
         r"\b(?:open_wmemstream|open_memstream|fmemopen)\s*\(",
         body,
     ):
@@ -5000,17 +5019,17 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
             f"fmemopen unencoded: unconstrained fmemopen is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bscandir\s*\(", body):
+    if _re_search(r"\bscandir\s*\(", body):
         return (
             f"scandir unencoded: unconstrained scandir is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bextattr_(?:set|get|delete|list)_(?:file|fd|link)\s*\(", body):
+    if _re_search(r"\bextattr_(?:set|get|delete|list)_(?:file|fd|link)\s*\(", body):
         return (
             f"extattr unencoded: unconstrained extattr_set_file is not a "
             f"proof ({engine})"
         )
-    if re.search(
+    if _re_search(
         r"\b(?:set|get|list|remove)xattrat\s*\(",
         body,
     ):
@@ -5018,7 +5037,7 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
             f"setxattrat unencoded: unconstrained setxattrat is not a "
             f"proof ({engine})"
         )
-    if re.search(
+    if _re_search(
         r"\b(?:lsetxattr|fsetxattr|setxattr|listxattr|"
         r"removexattr|getxattr)\s*\(",
         body,
@@ -5027,37 +5046,37 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
             f"setxattr unencoded: unconstrained setxattr is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:sched_setattr|sched_getattr)\s*\(", body):
+    if _re_search(r"\b(?:sched_setattr|sched_getattr)\s*\(", body):
         return (
             f"sched_setattr unencoded: unconstrained sched_setattr is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bsched_yield\s*\(", body):
+    if _re_search(r"\bsched_yield\s*\(", body):
         return (
             f"sched_yield unencoded: unconstrained sched_yield is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bpthread_yield\s*\(", body):
+    if _re_search(r"\bpthread_yield\s*\(", body):
         return (
             f"pthread_yield unencoded: unconstrained pthread_yield is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bcpuset_(?:set|get)affinity\s*\(", body):
+    if _re_search(r"\bcpuset_(?:set|get)affinity\s*\(", body):
         return (
             f"cpuset unencoded: unconstrained cpuset_setaffinity is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bsched_get_priority_(?:max|min)\s*\(", body):
+    if _re_search(r"\bsched_get_priority_(?:max|min)\s*\(", body):
         return (
             f"sched_get_priority_max unencoded: unconstrained "
             f"sched_get_priority_max is not a proof ({engine})"
         )
-    if re.search(r"\b(?:sched_setaffinity|sched_getaffinity)\s*\(", body):
+    if _re_search(r"\b(?:sched_setaffinity|sched_getaffinity)\s*\(", body):
         return (
             f"sched unencoded: unconstrained sched_setaffinity is not a "
             f"proof ({engine})"
         )
-    if re.search(
+    if _re_search(
         r"\b(?:sched_setscheduler|sched_getscheduler|"
         r"sched_setparam|sched_getparam)\s*\(",
         body,
@@ -5066,12 +5085,12 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
             f"sched_setscheduler unencoded: unconstrained "
             f"sched_setscheduler is not a proof ({engine})"
         )
-    if re.search(r"\blio_listio\s*\(", body):
+    if _re_search(r"\blio_listio\s*\(", body):
         return (
             f"lio_listio unencoded: unconstrained lio_listio is not a "
             f"proof ({engine})"
         )
-    if re.search(
+    if _re_search(
         r"\b(?:aio_suspend|aio_return|aio_error|aio_write|aio_read)\s*\(",
         body,
     ):
@@ -5079,7 +5098,7 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
             f"aio unencoded: unconstrained aio_read is not a "
             f"proof ({engine})"
         )
-    if re.search(
+    if _re_search(
         r"\b(?:io_uring_register|io_uring_setup|io_uring_enter)\s*\(",
         body,
     ):
@@ -5087,17 +5106,17 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
             f"io_uring unencoded: unconstrained io_uring_setup is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:capset|capget)\s*\(", body):
+    if _re_search(r"\b(?:capset|capget)\s*\(", body):
         return (
             f"capset unencoded: unconstrained capset is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bstatx\s*\(", body):
+    if _re_search(r"\bstatx\s*\(", body):
         return (
             f"statx unencoded: unconstrained statx is not a "
             f"proof ({engine})"
         )
-    if re.search(
+    if _re_search(
         r"\b(?:pidfd_send_signal|pidfd_getfd|pidfd_open)\s*\(",
         body,
     ):
@@ -5105,37 +5124,37 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
             f"pidfd unencoded: unconstrained pidfd_open is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:fanotify_init|fanotify_mark)\s*\(", body):
+    if _re_search(r"\b(?:fanotify_init|fanotify_mark)\s*\(", body):
         return (
             f"fanotify unencoded: unconstrained fanotify_init is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bseccomp\s*\(", body):
+    if _re_search(r"\bseccomp\s*\(", body):
         return (
             f"seccomp unencoded: unconstrained seccomp is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:getgrnam|getgrgid|getspnam)\s*\(", body):
+    if _re_search(r"\b(?:getgrnam|getgrgid|getspnam)\s*\(", body):
         return (
             f"getgrnam unencoded: unconstrained getgrnam is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:posix_fallocate|fallocate)\s*\(", body):
+    if _re_search(r"\b(?:posix_fallocate|fallocate)\s*\(", body):
         return (
             f"fallocate unencoded: unconstrained posix_fallocate is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bclose_range\s*\(", body):
+    if _re_search(r"\bclose_range\s*\(", body):
         return (
             f"close_range unencoded: unconstrained close_range is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bclosefrom\s*\(", body):
+    if _re_search(r"\bclosefrom\s*\(", body):
         return (
             f"closefrom unencoded: unconstrained closefrom is not a "
             f"proof ({engine})"
         )
-    if re.search(
+    if _re_search(
         r"\blsm_(?:get_self_attr|set_self_attr|list_modules)\s*\(",
         body,
     ):
@@ -5143,7 +5162,7 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
             f"lsm_get_self_attr unencoded: unconstrained "
             f"lsm_get_self_attr is not a proof ({engine})"
         )
-    if re.search(
+    if _re_search(
         r"\b(?:landlock_create_ruleset|landlock_add_rule|"
         r"landlock_restrict_self)\s*\(",
         body,
@@ -5152,197 +5171,197 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
             f"landlock unencoded: unconstrained landlock_create_ruleset "
             f"is not a proof ({engine})"
         )
-    if re.search(r"\brtprio(?:_thread)?\s*\(", body):
+    if _re_search(r"\brtprio(?:_thread)?\s*\(", body):
         return (
             f"rtprio unencoded: unconstrained rtprio is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:getpriority|setpriority)\s*\(", body):
+    if _re_search(r"\b(?:getpriority|setpriority)\s*\(", body):
         return (
             f"getpriority unencoded: unconstrained getpriority is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bsignalfd\s*\(", body):
+    if _re_search(r"\bsignalfd\s*\(", body):
         return (
             f"signalfd unencoded: unconstrained signalfd is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bsigaction\s*\(", body):
+    if _re_search(r"\bsigaction\s*\(", body):
         return (
             f"sigaction unencoded: unconstrained sigaction is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bpthread_sigmask\s*\(", body):
+    if _re_search(r"\bpthread_sigmask\s*\(", body):
         return (
             f"pthread_sigmask unencoded: unconstrained pthread_sigmask "
             f"is not a proof ({engine})"
         )
-    if re.search(r"\bsig(?:procmask|suspend)\s*\(", body):
+    if _re_search(r"\bsig(?:procmask|suspend)\s*\(", body):
         return (
             f"sigprocmask unencoded: unconstrained sigprocmask is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bsig(?:waitinfo|timedwait|pending|wait)\s*\(", body):
+    if _re_search(r"\bsig(?:waitinfo|timedwait|pending|wait)\s*\(", body):
         return (
             f"sigwait unencoded: unconstrained sigwait is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bsigaltstack\s*\(", body):
+    if _re_search(r"\bsigaltstack\s*\(", body):
         return (
             f"sigaltstack unencoded: unconstrained sigaltstack is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bbpf\s*\(", body):
+    if _re_search(r"\bbpf\s*\(", body):
         return (
             f"bpf unencoded: unconstrained bpf is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\buserfaultfd\s*\(", body):
+    if _re_search(r"\buserfaultfd\s*\(", body):
         return (
             f"userfaultfd unencoded: unconstrained userfaultfd is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bgetpass\s*\(", body):
+    if _re_search(r"\bgetpass\s*\(", body):
         return (
             f"getpass unencoded: unconstrained getpass is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bgetgrouplist\s*\(", body):
+    if _re_search(r"\bgetgrouplist\s*\(", body):
         return (
             f"getgrouplist unencoded: unconstrained getgrouplist is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bgetgroups\s*\(", body):
+    if _re_search(r"\bgetgroups\s*\(", body):
         return (
             f"getgroups unencoded: unconstrained getgroups is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:initgroups|setgroups)\s*\(", body):
+    if _re_search(r"\b(?:initgroups|setgroups)\s*\(", body):
         return (
             f"initgroups unencoded: unconstrained initgroups is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:unshare|setns|clone)\s*\(", body):
+    if _re_search(r"\b(?:unshare|setns|clone)\s*\(", body):
         return (
             f"unshare unencoded: unconstrained unshare/clone is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bopenat2\s*\(", body):
+    if _re_search(r"\bopenat2\s*\(", body):
         return (
             f"openat2 unencoded: unconstrained openat2 is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:sendmmsg|recvmmsg)\s*\(", body):
+    if _re_search(r"\b(?:sendmmsg|recvmmsg)\s*\(", body):
         return (
             f"sendmmsg unencoded: unconstrained sendmmsg is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:name_to_handle_at|open_by_handle_at)\s*\(", body):
+    if _re_search(r"\b(?:name_to_handle_at|open_by_handle_at)\s*\(", body):
         return (
             f"name_to_handle unencoded: unconstrained name_to_handle_at "
             f"is not a proof ({engine})"
         )
-    if re.search(r"\bprocess_madvise\s*\(", body):
+    if _re_search(r"\bprocess_madvise\s*\(", body):
         return (
             f"process_madvise unencoded: unconstrained process_madvise "
             f"is not a proof ({engine})"
         )
-    if re.search(r"\bpersonality\s*\(", body):
+    if _re_search(r"\bpersonality\s*\(", body):
         return (
             f"personality unencoded: unconstrained personality is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bquotactl\s*\(", body):
+    if _re_search(r"\bquotactl\s*\(", body):
         return (
             f"quotactl unencoded: unconstrained quotactl is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bpivot_root\s*\(", body):
+    if _re_search(r"\bpivot_root\s*\(", body):
         return (
             f"pivot_root unencoded: unconstrained pivot_root is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bmembarrier\s*\(", body):
+    if _re_search(r"\bmembarrier\s*\(", body):
         return (
             f"membarrier unencoded: unconstrained membarrier is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bpkey_alloc\s*\(", body):
+    if _re_search(r"\bpkey_alloc\s*\(", body):
         return (
             f"pkey_alloc unencoded: unconstrained pkey_alloc is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bstatfs\s*\(", body):
+    if _re_search(r"\bstatfs\s*\(", body):
         return (
             f"statfs unencoded: unconstrained statfs is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bgetmntinfo\s*\(", body):
+    if _re_search(r"\bgetmntinfo\s*\(", body):
         return (
             f"getmntinfo unencoded: unconstrained getmntinfo is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bgetvfsbyname\s*\(", body):
+    if _re_search(r"\bgetvfsbyname\s*\(", body):
         return (
             f"getvfsbyname unencoded: unconstrained getvfsbyname is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:get|set|end)fsent\s*\(", body):
+    if _re_search(r"\b(?:get|set|end)fsent\s*\(", body):
         return (
             f"getfsent unencoded: unconstrained getfsent is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bgetfsstat\s*\(", body):
+    if _re_search(r"\bgetfsstat\s*\(", body):
         return (
             f"getfsstat unencoded: unconstrained getfsstat is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bsyncfs\s*\(", body):
+    if _re_search(r"\bsyncfs\s*\(", body):
         return (
             f"syncfs unencoded: unconstrained syncfs is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:prlimit64|prlimit)\s*\(", body):
+    if _re_search(r"\b(?:prlimit64|prlimit)\s*\(", body):
         return (
             f"prlimit unencoded: unconstrained prlimit is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:migrate_pages|move_pages)\s*\(", body):
+    if _re_search(r"\b(?:migrate_pages|move_pages)\s*\(", body):
         return (
             f"move_pages unencoded: unconstrained move_pages is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bprocess_vm_readv\s*\(", body):
+    if _re_search(r"\bprocess_vm_readv\s*\(", body):
         return (
             f"process_vm_readv unencoded: unconstrained "
             f"process_vm_readv is not a proof ({engine})"
         )
-    if re.search(r"\bperf_event_open\s*\(", body):
+    if _re_search(r"\bperf_event_open\s*\(", body):
         return (
             f"perf_event_open unencoded: unconstrained "
             f"perf_event_open is not a proof ({engine})"
         )
-    if re.search(r"\bclone3\s*\(", body):
+    if _re_search(r"\bclone3\s*\(", body):
         return (
             f"clone3 unencoded: unconstrained clone3 is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bkcmp\s*\(", body):
+    if _re_search(r"\bkcmp\s*\(", body):
         return (
             f"kcmp unencoded: unconstrained kcmp is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bkeyctl\s*\(", body):
+    if _re_search(r"\bkeyctl\s*\(", body):
         return (
             f"keyctl unencoded: unconstrained keyctl is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bopen_tree_attr\s*\(", body):
+    if _re_search(r"\bopen_tree_attr\s*\(", body):
         return (
             f"open_tree_attr unencoded: unconstrained open_tree_attr "
             f"is not a proof ({engine})"
         )
-    if re.search(
+    if _re_search(
         r"\b(?:fsopen|fsmount|open_tree|move_mount|fspick|fsconfig)\s*\(",
         body,
     ):
@@ -5350,207 +5369,207 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
             f"fsopen unencoded: unconstrained fsopen is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bprocess_mrelease\s*\(", body):
+    if _re_search(r"\bprocess_mrelease\s*\(", body):
         return (
             f"process_mrelease unencoded: unconstrained "
             f"process_mrelease is not a proof ({engine})"
         )
-    if re.search(r"\bmemfd_secret\s*\(", body):
+    if _re_search(r"\bmemfd_secret\s*\(", body):
         return (
             f"memfd_secret unencoded: unconstrained memfd_secret "
             f"is not a proof ({engine})"
         )
-    if re.search(r"\b(?:ioprio_set|ioprio_get)\s*\(", body):
+    if _re_search(r"\b(?:ioprio_set|ioprio_get)\s*\(", body):
         return (
             f"ioprio unencoded: unconstrained ioprio is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bmq_open\s*\(", body):
+    if _re_search(r"\bmq_open\s*\(", body):
         return (
             f"mq_open unencoded: unconstrained mq_open is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bshmget\s*\(", body):
+    if _re_search(r"\bshmget\s*\(", body):
         return (
             f"shmget unencoded: unconstrained shmget is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b_umtx_op\s*\(", body):
+    if _re_search(r"\b_umtx_op\s*\(", body):
         return (
             f"_umtx_op unencoded: unconstrained _umtx_op is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bfutex_waitv\s*\(", body):
+    if _re_search(r"\bfutex_waitv\s*\(", body):
         return (
             f"futex_waitv unencoded: unconstrained futex_waitv is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bfutex_(?:wake|wait|requeue)\s*\(", body):
+    if _re_search(r"\bfutex_(?:wake|wait|requeue)\s*\(", body):
         return (
             f"futex_wait unencoded: unconstrained futex_wait is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bfutex\s*\(", body):
+    if _re_search(r"\bfutex\s*\(", body):
         return (
             f"futex unencoded: unconstrained futex is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\badjtimex\s*\(", body):
+    if _re_search(r"\badjtimex\s*\(", body):
         return (
             f"adjtimex unencoded: unconstrained adjtimex is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:ntp_)?adjtime\s*\(", body):
+    if _re_search(r"\b(?:ntp_)?adjtime\s*\(", body):
         return (
             f"adjtime unencoded: unconstrained adjtime is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bntp_gettime\s*\(", body):
+    if _re_search(r"\bntp_gettime\s*\(", body):
         return (
             f"ntp_gettime unencoded: unconstrained ntp_gettime is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\brevoke\s*\(", body):
+    if _re_search(r"\brevoke\s*\(", body):
         return (
             f"revoke unencoded: unconstrained revoke is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bjail(?:_attach|_get|_set|_remove)?\s*\(", body):
+    if _re_search(r"\bjail(?:_attach|_get|_set|_remove)?\s*\(", body):
         return (
             f"jail unencoded: unconstrained jail is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:fflagstostr|strtofflags)\s*\(", body):
+    if _re_search(r"\b(?:fflagstostr|strtofflags)\s*\(", body):
         return (
             f"fflagstostr unencoded: unconstrained fflagstostr is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bstrmode\s*\(", body):
+    if _re_search(r"\bstrmode\s*\(", body):
         return (
             f"strmode unencoded: unconstrained strmode is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bstrtonum\s*\(", body):
+    if _re_search(r"\bstrtonum\s*\(", body):
         return (
             f"strtonum unencoded: unconstrained strtonum is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\breallocarray\s*\(", body):
+    if _re_search(r"\breallocarray\s*\(", body):
         return (
             f"reallocarray unencoded: unconstrained reallocarray is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\breallocf\s*\(", body):
+    if _re_search(r"\breallocf\s*\(", body):
         return (
             f"reallocf unencoded: unconstrained reallocf is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:get|set)progname\s*\(", body):
+    if _re_search(r"\b(?:get|set)progname\s*\(", body):
         return (
             f"getprogname unencoded: unconstrained getprogname is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:setproctitle|daemon)\s*\(", body):
+    if _re_search(r"\b(?:setproctitle|daemon)\s*\(", body):
         return (
             f"daemon unencoded: unconstrained daemon is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:auditon|getaudit|setaudit|auditctl)\s*\(", body):
+    if _re_search(r"\b(?:auditon|getaudit|setaudit|auditctl)\s*\(", body):
         return (
             f"auditon unencoded: unconstrained auditon is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bkinfo_get(?:proc|file|vmmap)\s*\(", body):
+    if _re_search(r"\bkinfo_get(?:proc|file|vmmap)\s*\(", body):
         return (
             f"kinfo_getproc unencoded: unconstrained kinfo_getproc is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bkvm_(?:open|openfiles|getprocs|close|nlist)\s*\(", body):
+    if _re_search(r"\bkvm_(?:open|openfiles|getprocs|close|nlist)\s*\(", body):
         return (
             f"kvm_open unencoded: unconstrained kvm_open is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\buuidgen\s*\(", body):
+    if _re_search(r"\buuidgen\s*\(", body):
         return (
             f"uuidgen unencoded: unconstrained uuidgen is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bsetfib\s*\(", body):
+    if _re_search(r"\bsetfib\s*\(", body):
         return (
             f"setfib unencoded: unconstrained setfib is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bsethostname\s*\(", body):
+    if _re_search(r"\bsethostname\s*\(", body):
         return (
             f"sethostname unencoded: unconstrained sethostname is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\breboot\s*\(", body):
+    if _re_search(r"\breboot\s*\(", body):
         return (
             f"reboot unencoded: unconstrained reboot is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:swapon|swapoff)\s*\(", body):
+    if _re_search(r"\b(?:swapon|swapoff)\s*\(", body):
         return (
             f"swapon unencoded: unconstrained swapon is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bacct\s*\(", body):
+    if _re_search(r"\bacct\s*\(", body):
         return (
             f"acct unencoded: unconstrained acct is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:ioperm|iopl)\s*\(", body):
+    if _re_search(r"\b(?:ioperm|iopl)\s*\(", body):
         return (
             f"ioperm unencoded: unconstrained ioperm is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bmincore\s*\(", body):
+    if _re_search(r"\bmincore\s*\(", body):
         return (
             f"mincore unencoded: unconstrained mincore is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\brseq\s*\(", body):
+    if _re_search(r"\brseq\s*\(", body):
         return (
             f"rseq unencoded: unconstrained rseq is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\btimer_create\s*\(", body):
+    if _re_search(r"\btimer_create\s*\(", body):
         return (
             f"timer_create unencoded: unconstrained timer_create "
             f"is not a proof ({engine})"
         )
-    if re.search(r"\bsemget\s*\(", body):
+    if _re_search(r"\bsemget\s*\(", body):
         return (
             f"semget unencoded: unconstrained semget is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bmsgget\s*\(", body):
+    if _re_search(r"\bmsgget\s*\(", body):
         return (
             f"msgget unencoded: unconstrained msgget is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bsyslog\s*\(", body):
+    if _re_search(r"\bsyslog\s*\(", body):
         return (
             f"syslog unencoded: unconstrained syslog is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bklogctl\s*\(", body):
+    if _re_search(r"\bklogctl\s*\(", body):
         return (
             f"klogctl unencoded: unconstrained klogctl is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bmount_setattr\s*\(", body):
+    if _re_search(r"\bmount_setattr\s*\(", body):
         return (
             f"mount_setattr unencoded: unconstrained "
             f"mount_setattr is not a proof ({engine})"
         )
-    if re.search(r"\bgetcpu\s*\(", body):
+    if _re_search(r"\bgetcpu\s*\(", body):
         return (
             f"getcpu unencoded: unconstrained getcpu is not a "
             f"proof ({engine})"
         )
-    if re.search(
+    if _re_search(
         r"\b(?:init_module|finit_module|delete_module)\s*\(",
         body,
     ):
@@ -5558,62 +5577,62 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
             f"init_module unencoded: unconstrained init_module "
             f"is not a proof ({engine})"
         )
-    if re.search(r"\b(?:kexec_load|kexec_file_load)\s*\(", body):
+    if _re_search(r"\b(?:kexec_load|kexec_file_load)\s*\(", body):
         return (
             f"kexec unencoded: unconstrained kexec_load is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bquotactl_fd\s*\(", body):
+    if _re_search(r"\bquotactl_fd\s*\(", body):
         return (
             f"quotactl_fd unencoded: unconstrained quotactl_fd "
             f"is not a proof ({engine})"
         )
-    if re.search(r"\b(?:pkey_free|pkey_mprotect)\s*\(", body):
+    if _re_search(r"\b(?:pkey_free|pkey_mprotect)\s*\(", body):
         return (
             f"pkey_free unencoded: unconstrained pkey_free is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\btgkill\s*\(", body):
+    if _re_search(r"\btgkill\s*\(", body):
         return (
             f"tgkill unencoded: unconstrained tgkill is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\badd_key\s*\(", body):
+    if _re_search(r"\badd_key\s*\(", body):
         return (
             f"add_key unencoded: unconstrained add_key is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bsemctl\s*\(", body):
+    if _re_search(r"\bsemctl\s*\(", body):
         return (
             f"semctl unencoded: unconstrained semctl is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bmsgctl\s*\(", body):
+    if _re_search(r"\bmsgctl\s*\(", body):
         return (
             f"msgctl unencoded: unconstrained msgctl is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bshmctl\s*\(", body):
+    if _re_search(r"\bshmctl\s*\(", body):
         return (
             f"shmctl unencoded: unconstrained shmctl is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\btimer_settime\s*\(", body):
+    if _re_search(r"\btimer_settime\s*\(", body):
         return (
             f"timer_settime unencoded: unconstrained timer_settime "
             f"is not a proof ({engine})"
         )
-    if re.search(r"\bsetdomainname\s*\(", body):
+    if _re_search(r"\bsetdomainname\s*\(", body):
         return (
             f"setdomainname unencoded: unconstrained setdomainname "
             f"is not a proof ({engine})"
         )
-    if re.search(r"\b(?:io_submit|io_getevents)\s*\(", body):
+    if _re_search(r"\b(?:io_submit|io_getevents)\s*\(", body):
         return (
             f"io_submit unencoded: unconstrained io_submit is not a "
             f"proof ({engine})"
         )
-    if re.search(
+    if _re_search(
         r"\b(?:io_setup|io_destroy|io_cancel|io_pgetevents)\s*\(",
         body,
     ):
@@ -5621,17 +5640,17 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
             f"io_setup unencoded: unconstrained io_setup is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\brequest_key\s*\(", body):
+    if _re_search(r"\brequest_key\s*\(", body):
         return (
             f"request_key unencoded: unconstrained request_key is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\btkill\s*\(", body):
+    if _re_search(r"\btkill\s*\(", body):
         return (
             f"tkill unencoded: unconstrained tkill is not a "
             f"proof ({engine})"
         )
-    if re.search(
+    if _re_search(
         r"\b(?:timer_delete|timer_gettime|timer_getoverrun)\s*\(",
         body,
     ):
@@ -5639,7 +5658,7 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
             f"timer_delete unencoded: unconstrained timer_delete "
             f"is not a proof ({engine})"
         )
-    if re.search(
+    if _re_search(
         r"\b(?:mq_unlink|mq_timedsend|mq_timedreceive|mq_notify|"
         r"mq_getsetattr)\s*\(",
         body,
@@ -5648,87 +5667,87 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
             f"mq_unlink unencoded: unconstrained mq_unlink is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:shmat|shmdt)\s*\(", body):
+    if _re_search(r"\b(?:shmat|shmdt)\s*\(", body):
         return (
             f"shmat unencoded: unconstrained shmat is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:semop|semtimedop)\s*\(", body):
+    if _re_search(r"\b(?:semop|semtimedop)\s*\(", body):
         return (
             f"semop unencoded: unconstrained semop is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:msgsnd|msgrcv)\s*\(", body):
+    if _re_search(r"\b(?:msgsnd|msgrcv)\s*\(", body):
         return (
             f"msgsnd unencoded: unconstrained msgsnd is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bsync_file_range\s*\(", body):
+    if _re_search(r"\bsync_file_range\s*\(", body):
         return (
             f"sync_file_range unencoded: unconstrained "
             f"sync_file_range is not a proof ({engine})"
         )
-    if re.search(r"\bremap_file_pages\s*\(", body):
+    if _re_search(r"\bremap_file_pages\s*\(", body):
         return (
             f"remap_file_pages unencoded: unconstrained "
             f"remap_file_pages is not a proof ({engine})"
         )
-    if re.search(r"\b(?:msync|mremap)\s*\(", body):
+    if _re_search(r"\b(?:msync|mremap)\s*\(", body):
         return (
             f"msync unencoded: unconstrained msync is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bsocketpair\s*\(", body):
+    if _re_search(r"\bsocketpair\s*\(", body):
         return (
             f"socketpair unencoded: unconstrained socketpair is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bsysinfo\s*\(", body):
+    if _re_search(r"\bsysinfo\s*\(", body):
         return (
             f"sysinfo unencoded: unconstrained sysinfo is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bgettid\s*\(", body):
+    if _re_search(r"\bgettid\s*\(", body):
         return (
             f"gettid unencoded: unconstrained gettid is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:setitimer|getitimer)\s*\(", body):
+    if _re_search(r"\b(?:setitimer|getitimer)\s*\(", body):
         return (
             f"setitimer unencoded: unconstrained setitimer is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bnice\s*\(", body):
+    if _re_search(r"\bnice\s*\(", body):
         return (
             f"nice unencoded: unconstrained nice is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bgetdirentries\s*\(", body):
+    if _re_search(r"\bgetdirentries\s*\(", body):
         return (
             f"getdirentries unencoded: unconstrained getdirentries is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bgetdents(?:64)?\s*\(", body):
+    if _re_search(r"\bgetdents(?:64)?\s*\(", body):
         return (
             f"getdents unencoded: unconstrained getdents is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:utimensat|futimens|utimes)\s*\(", body):
+    if _re_search(r"\b(?:utimensat|futimens|utimes)\s*\(", body):
         return (
             f"utimensat unencoded: unconstrained utimensat is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\blinkat\s*\(", body):
+    if _re_search(r"\blinkat\s*\(", body):
         return (
             f"linkat unencoded: unconstrained linkat is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bset_mempolicy_home_node\s*\(", body):
+    if _re_search(r"\bset_mempolicy_home_node\s*\(", body):
         return (
             f"set_mempolicy_home_node unencoded: unconstrained "
             f"set_mempolicy_home_node is not a proof ({engine})"
         )
-    if re.search(
+    if _re_search(
         r"\b(?:mbind|set_mempolicy|get_mempolicy)\s*\(",
         body,
     ):
@@ -5736,278 +5755,278 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
             f"mbind unencoded: unconstrained mbind is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bcachestat\s*\(", body):
+    if _re_search(r"\bcachestat\s*\(", body):
         return (
             f"cachestat unencoded: unconstrained cachestat is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bmap_shadow_stack\s*\(", body):
+    if _re_search(r"\bmap_shadow_stack\s*\(", body):
         return (
             f"map_shadow_stack unencoded: unconstrained "
             f"map_shadow_stack is not a proof ({engine})"
         )
-    if re.search(r"\bstd\s*::\s*pmr\b|\bpmr\s*::", body):
+    if _re_search(r"\bstd\s*::\s*pmr\b|\bpmr\s*::", body):
         return (
             f"C++ pmr unencoded: {engine} is not a pmr model"
         )
-    if re.search(r"\b(?:std\s*::\s*)?u8string(?:_view)?\b", body):
+    if _re_search(r"\b(?:std\s*::\s*)?u8string(?:_view)?\b", body):
         return (
             f"C++ u8string unencoded: {engine} is not a u8string model"
         )
-    if re.search(r"\b(?:std\s*::\s*)?unordered_multimap\s*<", body):
+    if _re_search(r"\b(?:std\s*::\s*)?unordered_multimap\s*<", body):
         return (
             f"C++ unordered_multimap unencoded: {engine} is not an "
             "unordered_multimap model"
         )
-    if re.search(r"\b(?:std\s*::\s*)?unordered_multiset\s*<", body):
+    if _re_search(r"\b(?:std\s*::\s*)?unordered_multiset\s*<", body):
         return (
             f"C++ unordered_multiset unencoded: {engine} is not an "
             "unordered_multiset model"
         )
-    if re.search(r"\b(?:std\s*::\s*)?shared_lock\b", body):
+    if _re_search(r"\b(?:std\s*::\s*)?shared_lock\b", body):
         return (
             f"C++ shared_lock unencoded: {engine} is not a "
             "shared_lock model"
         )
-    if re.search(r"\batomic_(?:thread|signal)_fence\s*\(", body):
+    if _re_search(r"\batomic_(?:thread|signal)_fence\s*\(", body):
         return (
             f"C++ atomic_thread_fence unencoded: {engine} is not an "
             "atomic_thread_fence model"
         )
-    if re.search(r"\b(?:std\s*::\s*)?atomic_flag\b", body):
+    if _re_search(r"\b(?:std\s*::\s*)?atomic_flag\b", body):
         return (
             f"C++ atomic_flag unencoded: {engine} is not an "
             "atomic_flag model"
         )
-    if re.search(r"\brecursive_timed_mutex\b", body):
+    if _re_search(r"\brecursive_timed_mutex\b", body):
         return (
             f"C++ recursive_timed_mutex unencoded: {engine} is not a "
             "recursive_timed_mutex model"
         )
-    if re.search(r"\brecursive_mutex\b", body):
+    if _re_search(r"\brecursive_mutex\b", body):
         return (
             f"C++ recursive_mutex unencoded: {engine} is not a "
             "recursive_mutex model"
         )
-    if re.search(r"\btimed_mutex\b", body):
+    if _re_search(r"\btimed_mutex\b", body):
         return (
             f"C++ timed_mutex unencoded: {engine} is not a "
             "timed_mutex model"
         )
-    if re.search(r"\b(?:ifstream|ofstream|fstream)\b", body):
+    if _re_search(r"\b(?:ifstream|ofstream|fstream)\b", body):
         return (
             f"C++ fstream unencoded: {engine} is not an fstream model"
         )
-    if re.search(r"\bthis_thread\b", body):
+    if _re_search(r"\bthis_thread\b", body):
         return (
             f"C++ this_thread unencoded: {engine} is not a "
             "this_thread model"
         )
-    if re.search(r"\bcall_once\s*\(", body):
+    if _re_search(r"\bcall_once\s*\(", body):
         return (
             f"C++ call_once unencoded: {engine} is not a call_once model"
         )
-    if re.search(r"\b(?:std\s*::\s*)?tuple\s*<", body):
+    if _re_search(r"\b(?:std\s*::\s*)?tuple\s*<", body):
         return (
             f"C++ tuple unencoded: {engine} is not a tuple model"
         )
-    if re.search(r"\b(?:std\s*::\s*)?deque\s*<", body):
+    if _re_search(r"\b(?:std\s*::\s*)?deque\s*<", body):
         return (
             f"C++ deque unencoded: {engine} is not a deque model"
         )
-    if re.search(r"\b(?:std\s*::\s*)?forward_list\s*<", body):
+    if _re_search(r"\b(?:std\s*::\s*)?forward_list\s*<", body):
         return (
             f"C++ forward_list unencoded: {engine} is not a "
             "forward_list model"
         )
-    if re.search(r"\bstd\s*::\s*list\s*<", body):
+    if _re_search(r"\bstd\s*::\s*list\s*<", body):
         return (
             f"C++ std::list unencoded: {engine} is not a list model"
         )
-    if re.search(r"\b(?:std\s*::\s*)?unordered_map\s*<", body):
+    if _re_search(r"\b(?:std\s*::\s*)?unordered_map\s*<", body):
         return (
             f"C++ unordered_map unencoded: {engine} is not an "
             "unordered_map model"
         )
-    if re.search(r"\bstd\s*::\s*map\s*<", body):
+    if _re_search(r"\bstd\s*::\s*map\s*<", body):
         return (
             f"C++ std::map unencoded: {engine} is not a map model"
         )
-    if re.search(r"\bunordered_set\s*<", body):
+    if _re_search(r"\bunordered_set\s*<", body):
         return (
             f"C++ unordered_set unencoded: {engine} is not an "
             "unordered_set model"
         )
-    if re.search(r"\bstd\s*::\s*set\s*<", body):
+    if _re_search(r"\bstd\s*::\s*set\s*<", body):
         return (
             f"C++ std::set unencoded: {engine} is not a set model"
         )
-    if re.search(r"\bpriority_queue\s*<", body):
+    if _re_search(r"\bpriority_queue\s*<", body):
         return (
             f"C++ priority_queue unencoded: {engine} is not a "
             "priority_queue model"
         )
-    if re.search(r"\bstd\s*::\s*queue\s*<", body):
+    if _re_search(r"\bstd\s*::\s*queue\s*<", body):
         return (
             f"C++ std::queue unencoded: {engine} is not a queue model"
         )
-    if re.search(r"\bstd\s*::\s*stack\s*<", body):
+    if _re_search(r"\bstd\s*::\s*stack\s*<", body):
         return (
             f"C++ std::stack unencoded: {engine} is not a stack model"
         )
-    if re.search(r"\bto_array\s*[<(]", body):
+    if _re_search(r"\bto_array\s*[<(]", body):
         return (
             f"C++ to_array unencoded: {engine} is not a to_array model"
         )
-    if re.search(r"\bfrom_range\b", body):
+    if _re_search(r"\bfrom_range\b", body):
         return (
             f"C++ from_range unencoded: {engine} is not a from_range model"
         )
-    if re.search(r"\branges\s*::\s*to\s*[<(]", body):
+    if _re_search(r"\branges\s*::\s*to\s*[<(]", body):
         return (
             f"C++ ranges::to unencoded: {engine} is not a ranges::to model"
         )
-    if re.search(r"\bstd\s*::\s*array\s*<", body):
+    if _re_search(r"\bstd\s*::\s*array\s*<", body):
         return (
             f"C++ std::array unencoded: {engine} is not an array model"
         )
-    if re.search(r"\b(?:std\s*::\s*)?wstring_convert\b", body):
+    if _re_search(r"\b(?:std\s*::\s*)?wstring_convert\b", body):
         return (
             f"C++ wstring_convert unencoded: {engine} is not a "
             "wstring_convert model"
         )
-    if re.search(r"\b(?:std\s*::\s*)?wstring(?:_view)?\b", body):
+    if _re_search(r"\b(?:std\s*::\s*)?wstring(?:_view)?\b", body):
         return (
             f"C++ wstring unencoded: {engine} is not a wstring model"
         )
-    if re.search(r"\b(?:std\s*::\s*)?multimap\s*<", body):
+    if _re_search(r"\b(?:std\s*::\s*)?multimap\s*<", body):
         return (
             f"C++ multimap unencoded: {engine} is not a multimap model"
         )
-    if re.search(r"\b(?:std\s*::\s*)?multiset\s*<", body):
+    if _re_search(r"\b(?:std\s*::\s*)?multiset\s*<", body):
         return (
             f"C++ multiset unencoded: {engine} is not a multiset model"
         )
-    if re.search(r"\bbinary_semaphore\b", body):
+    if _re_search(r"\bbinary_semaphore\b", body):
         return (
             f"C++ binary_semaphore unencoded: {engine} is not a "
             "binary_semaphore model"
         )
-    if re.search(r"\berror_category\b", body):
+    if _re_search(r"\berror_category\b", body):
         return (
             f"C++ error_category unencoded: {engine} is not an "
             "error_category model"
         )
-    if re.search(r"\bsystem_error\b", body):
+    if _re_search(r"\bsystem_error\b", body):
         return (
             f"C++ system_error unencoded: {engine} is not a "
             "system_error model"
         )
-    if re.search(r"\b(?:std\s*::\s*)?error_code\b", body):
+    if _re_search(r"\b(?:std\s*::\s*)?error_code\b", body):
         return (
             f"C++ error_code unencoded: {engine} is not an "
             "error_code model"
         )
-    if re.search(r"\bstd\s*::\s*apply\s*\(", body):
+    if _re_search(r"\bstd\s*::\s*apply\s*\(", body):
         return (
             f"C++ std::apply unencoded: {engine} is not an apply model"
         )
-    if re.search(r"\bstd\s*::\s*invoke\s*\(", body):
+    if _re_search(r"\bstd\s*::\s*invoke\s*\(", body):
         return (
             f"C++ std::invoke unencoded: {engine} is not an invoke model"
         )
-    if re.search(r"\bstd\s*::\s*endian\b", body):
+    if _re_search(r"\bstd\s*::\s*endian\b", body):
         return (
             f"C++ std::endian unencoded: {engine} is not an endian model"
         )
-    if re.search(r"\bstd\s*::\s*rot[lr]\s*\(", body):
+    if _re_search(r"\bstd\s*::\s*rot[lr]\s*\(", body):
         return (
             f"C++ std::rotl unencoded: {engine} is not a rotl model"
         )
-    if re.search(
+    if _re_search(
         r"\b(?:bit_ceil|bit_floor|has_single_bit|std\s*::\s*popcount)\s*\(",
         body,
     ):
         return (
             f"C++ bit_ceil unencoded: {engine} is not a bit_ceil model"
         )
-    if re.search(r"\bstd\s*::\s*bit_width\s*\(", body):
+    if _re_search(r"\bstd\s*::\s*bit_width\s*\(", body):
         return (
             f"C++ std::bit_width unencoded: {engine} is not a bit_width model"
         )
-    if re.search(r"\bstd\s*::\s*gcd\s*\(", body):
+    if _re_search(r"\bstd\s*::\s*gcd\s*\(", body):
         return (
             f"C++ std::gcd unencoded: {engine} is not a gcd model"
         )
-    if re.search(r"\bstd\s*::\s*lcm\s*\(", body):
+    if _re_search(r"\bstd\s*::\s*lcm\s*\(", body):
         return (
             f"C++ std::lcm unencoded: {engine} is not a lcm model"
         )
-    if re.search(r"\bstd\s*::\s*clamp\s*\(", body):
+    if _re_search(r"\bstd\s*::\s*clamp\s*\(", body):
         return (
             f"C++ std::clamp unencoded: {engine} is not a clamp model"
         )
-    if re.search(r"\bstd\s*::\s*exchange\s*\(", body):
+    if _re_search(r"\bstd\s*::\s*exchange\s*\(", body):
         return (
             f"C++ std::exchange unencoded: {engine} is not an exchange model"
         )
-    if re.search(r"\bstd\s*::\s*to_address\s*\(", body):
+    if _re_search(r"\bstd\s*::\s*to_address\s*\(", body):
         return (
             f"C++ std::to_address unencoded: {engine} is not a "
             "to_address model"
         )
-    if re.search(r"\b(?:construct_at|destroy_at)\s*\(", body):
+    if _re_search(r"\b(?:construct_at|destroy_at)\s*\(", body):
         return (
             f"C++ construct_at unencoded: {engine} is not a "
             "construct_at model"
         )
-    if re.search(r"\bdestroy_n\s*\(", body):
+    if _re_search(r"\bdestroy_n\s*\(", body):
         return (
             f"C++ destroy_n unencoded: {engine} is not a destroy_n model"
         )
-    if re.search(r"\bstd\s*::\s*addressof\s*\(", body):
+    if _re_search(r"\bstd\s*::\s*addressof\s*\(", body):
         return (
             f"C++ std::addressof unencoded: {engine} is not an "
             "addressof model"
         )
-    if re.search(r"\bassume_aligned\s*\(", body):
+    if _re_search(r"\bassume_aligned\s*\(", body):
         return (
             f"C++ assume_aligned unencoded: {engine} is not an "
             "assume_aligned model"
         )
-    if re.search(r"\bas_rvalue(?:_view)?\b", body):
+    if _re_search(r"\bas_rvalue(?:_view)?\b", body):
         return (
             f"C++ as_rvalue unencoded: {engine} is not an as_rvalue model"
         )
-    if re.search(r"\bas_const\s*\(", body):
+    if _re_search(r"\bas_const\s*\(", body):
         return (
             f"C++ as_const unencoded: {engine} is not an as_const model"
         )
-    if re.search(r"\btransform_(?:inclusive|exclusive)_scan\s*\(", body):
+    if _re_search(r"\btransform_(?:inclusive|exclusive)_scan\s*\(", body):
         return (
             f"C++ transform_inclusive_scan unencoded: {engine} is not a "
             "transform_inclusive_scan model"
         )
-    if re.search(r"\bexclusive_scan\s*\(", body):
+    if _re_search(r"\bexclusive_scan\s*\(", body):
         return (
             f"C++ exclusive_scan unencoded: {engine} is not an "
             "exclusive_scan model"
         )
-    if re.search(r"\binclusive_scan\s*\(", body):
+    if _re_search(r"\binclusive_scan\s*\(", body):
         return (
             f"C++ inclusive_scan unencoded: {engine} is not an "
             "inclusive_scan model"
         )
-    if re.search(r"\btransform_reduce\s*\(", body):
+    if _re_search(r"\btransform_reduce\s*\(", body):
         return (
             f"C++ transform_reduce unencoded: {engine} is not a "
             "transform_reduce model"
         )
-    if re.search(r"\bstd\s*::\s*reduce\s*\(", body):
+    if _re_search(r"\bstd\s*::\s*reduce\s*\(", body):
         return (
             f"C++ std::reduce unencoded: {engine} is not a reduce model"
         )
-    if re.search(
+    if _re_search(
         r"\buninitialized_(?:fill(?:_n)?|default_construct(?:_n)?)\s*\(",
         body,
     ):
@@ -6015,71 +6034,71 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
             f"C++ uninitialized_fill unencoded: {engine} is not an "
             "uninitialized_fill model"
         )
-    if re.search(r"\buninitialized_value_construct(?:_n)?\s*\(", body):
+    if _re_search(r"\buninitialized_value_construct(?:_n)?\s*\(", body):
         return (
             f"C++ uninitialized_value_construct unencoded: {engine} is not an "
             "uninitialized_value_construct model"
         )
-    if re.search(r"\buninitialized_(?:copy|move)(?:_n)?\s*\(", body):
+    if _re_search(r"\buninitialized_(?:copy|move)(?:_n)?\s*\(", body):
         return (
             f"C++ uninitialized_copy unencoded: {engine} is not an "
             "uninitialized_copy model"
         )
-    if re.search(
+    if _re_search(
         r"\b(?:add_sat|sub_sat|mul_sat|div_sat|saturate_cast)\s*\(",
         body,
     ):
         return (
             f"C++ add_sat unencoded: {engine} is not an add_sat model"
         )
-    if re.search(r"\bnontype\b", body):
+    if _re_search(r"\bnontype\b", body):
         return (
             f"C++ nontype unencoded: {engine} is not a nontype model"
         )
-    if re.search(r"\bis_layout_compatible\b", body):
+    if _re_search(r"\bis_layout_compatible\b", body):
         return (
             f"C++ is_layout_compatible unencoded: {engine} is not an "
             "is_layout_compatible model"
         )
-    if re.search(r"\bis_pointer_interconvertible_(?:with_class|base_of)\b", body):
+    if _re_search(r"\bis_pointer_interconvertible_(?:with_class|base_of)\b", body):
         return (
             f"C++ is_pointer_interconvertible unencoded: {engine} is not an "
             "is_pointer_interconvertible model"
         )
-    if re.search(r"\bbasic_const_iterator\b", body):
+    if _re_search(r"\bbasic_const_iterator\b", body):
         return (
             f"C++ basic_const_iterator unencoded: {engine} is not a "
             "basic_const_iterator model"
         )
-    if re.search(r"\bis_corresponding_member\b", body):
+    if _re_search(r"\bis_corresponding_member\b", body):
         return (
             f"C++ is_corresponding_member unencoded: {engine} is not an "
             "is_corresponding_member model"
         )
-    if re.search(r"\bforward_like\b", body):
+    if _re_search(r"\bforward_like\b", body):
         return (
             f"C++ forward_like unencoded: {engine} is not a "
             "forward_like model"
         )
-    if re.search(r"\b(?:set|get)_terminate\s*\(", body):
+    if _re_search(r"\b(?:set|get)_terminate\s*\(", body):
         return (
             f"C++ set_terminate unencoded: {engine} is not a "
             "set_terminate model"
         )
-    if re.search(r"\bis_constant_evaluated\s*\(", body):
+    if _re_search(r"\bis_constant_evaluated\s*\(", body):
         return (
             f"C++ is_constant_evaluated unencoded: {engine} is not an "
             "is_constant_evaluated model"
         )
-    if re.search(r"\bstd\s*::\s*lerp\s*\(", body):
+    if _re_search(r"\bstd\s*::\s*lerp\s*\(", body):
         return (
             f"C++ std::lerp unencoded: {engine} is not a lerp model"
         )
-    if re.search(r"\bstd\s*::\s*midpoint\s*\(", body):
+    if _re_search(r"\bstd\s*::\s*midpoint\s*\(", body):
         return (
             f"C++ std::midpoint unencoded: {engine} is not a midpoint model"
         )
-    if re.search(
+    if _re_search(
         r"\bstd\s*::\s*(?:cmp_(?:less|greater|less_equal|"
         r"greater_equal|equal_to|not_equal_to)|in_range)\s*\(",
         body,
@@ -6087,21 +6106,21 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
         return (
             f"C++ std::cmp_less unencoded: {engine} is not a cmp_less model"
         )
-    if re.search(r"\bstd\s*::\s*count[lr]_(?:zero|one)\s*\(", body):
+    if _re_search(r"\bstd\s*::\s*count[lr]_(?:zero|one)\s*\(", body):
         return (
             f"C++ std::countl_zero unencoded: {engine} is not a "
             "countl_zero model"
         )
-    if re.search(r"\b(?:std\s*::\s*)?byteswap\s*\(", body):
+    if _re_search(r"\b(?:std\s*::\s*)?byteswap\s*\(", body):
         return (
             f"C++ byteswap unencoded: {engine} is not a byteswap model"
         )
-    if re.search(r"\b(?:wcscpy|wcscat|wcsncpy|wcsncat)\s*\(", body):
+    if _re_search(r"\b(?:wcscpy|wcscat|wcsncpy|wcsncat)\s*\(", body):
         return (
             f"wide-string copy unencoded: unconstrained wcscpy is not a "
             f"proof of the buffer ({engine})"
         )
-    if re.search(
+    if _re_search(
         r"\b(?:memcpy|memmove|mkstemp|mkstemps|mkdtemp|"
         r"tmpnam|tempnam|tmpnam_r|chroot|jail_attach|jail_remove|jail_get|jail_set|jail|popen|pclose|"
         r"umask|srand|srandom|mktemp|signal|"
@@ -6228,35 +6247,35 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
             f"libc buffer/tempfile unencoded: unconstrained call is not a "
             f"proof of the buffer ({engine})"
         )
-    if re.search(r"(?:,|\()\s*&", body):
+    if _re_search(r"(?:,|\()\s*&", body):
         return (
             f"address-of unencoded: {engine} is not a pointer-value model"
         )
-    if re.search(
+    if _re_search(
         r"\b(?:char|unsigned\s+char)\s+[A-Za-z_]\w*\s*\[\s*\]\s*=",
         body,
     ):
         return (
             f"array string-init unencoded: {engine} is not a string-array model"
         )
-    if re.search(r"\b(?:asm|__asm__|__asm)\b", body):
+    if _re_search(r"\b(?:asm|__asm__|__asm)\b", body):
         return f"inline asm unencoded: {engine} is not an assembly model"
-    if re.search(r"\b_Generic\b", body):
+    if _re_search(r"\b_Generic\b", body):
         return f"_Generic unencoded: {engine} is not a type-generic model"
-    if re.search(r"\(\s*\{", body):
+    if _re_search(r"\(\s*\{", body):
         return f"GNU statement expression unencoded: {engine} is not a GNU-C model"
-    if re.search(r"\b(?:try|catch)\b", body):
+    if _re_search(r"\b(?:try|catch)\b", body):
         return f"C++ try/catch unencoded: {engine} is not an exception model"
-    if re.search(r"\boffsetof\b", body):
+    if _re_search(r"\boffsetof\b", body):
         return f"offsetof unencoded: {engine} is not a struct-layout model"
-    if re.search(r"\b(?:new|delete)\b", body):
+    if _re_search(r"\b(?:new|delete)\b", body):
         return f"C++ new/delete unencoded: {engine} is not a heap-lifetime model"
-    if re.search(r"\brestrict\b", body):
+    if _re_search(r"\brestrict\b", body):
         return (
             f"restrict unencoded: {engine} is not a restrict-qualifier model"
         )
     # Decl qualifier only — not `__asm__ volatile` and not the word in a string.
-    if re.search(
+    if _re_search(
         r"(?m)(?:^|[;{(])\s*(?:(?:static|extern|auto|register|const)\s+)*"
         r"(?:_Atomic|volatile)\b"
         r"|\b_Atomic\s*\("
@@ -6265,12 +6284,12 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
         body,
     ):
         return f"volatile/_Atomic unencoded: {engine} is not a memory-model"
-    if re.search(r"\b(?:pthread_mutex_t|mtx_t)\b", body):
+    if _re_search(r"\b(?:pthread_mutex_t|mtx_t)\b", body):
         return f"mutex object unencoded: {engine} is not a lock model"
     # Local `const T x` — missing const model. Parameter `const int` is
     # stripped in cparse and is not this case. Casts `(const int)` start
     # with `(` so they are not this match. `for (const int i = 0;` is.
-    if re.search(
+    if _re_search(
         r"(?m)(?:^|[;{])\s*(?:(?:static|extern|auto|register)\s+)*const\s+"
         r"|\b(?:int|unsigned|signed|long|short|char|uint\w*|int\w*|"
         r"_Bool|bool|void|float|double|size_t)\s+const\s+[A-Za-z_]"
@@ -6279,18 +6298,18 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
     ):
         return f"const local unencoded: {engine} is not a const model"
     # `register int x` / `auto int x` / C++ `auto x = 1` — missing model.
-    if re.search(r"(?m)(?:^|[;{(])\s*(?:register|auto)\b", body):
+    if _re_search(r"(?m)(?:^|[;{(])\s*(?:register|auto)\b", body):
         return (
             f"register/auto unencoded: {engine} is not a storage-class "
             "or auto-type model"
         )
-    if re.search(r"\b__auto_type\b", body):
+    if _re_search(r"\b__auto_type\b", body):
         return (
             f"__auto_type unencoded: {engine} is not a storage-class "
             "or auto-type model"
         )
     # Function-local `static int x` / `extern int x` — missing duration.
-    if re.search(
+    if _re_search(
         r"(?m)(?:^|[;{])\s*(?:static|extern)\s+" + _DECL_TYPE + r"\s+[A-Za-z_]\w*",
         body,
     ):
@@ -6299,13 +6318,13 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
             "storage-duration model"
         )
     # Anonymous `enum { RED = 1 } e;` — missing layout, not a proof.
-    if re.search(r"enum\s*\{[^}]+\}\s+[A-Za-z_]\w*", body):
+    if _re_search(r"enum\s*\{[^}]+\}\s+[A-Za-z_]\w*", body):
         return (
             f"anonymous enum local unencoded: {engine} is not a layout model"
         )
-    if re.search(r"(?m)(?:^|[;{])\s*(?:_Alignas|alignas)\s*\(", body):
+    if _re_search(r"(?m)(?:^|[;{])\s*(?:_Alignas|alignas)\s*\(", body):
         return f"_Alignas unencoded: {engine} is not an alignment model"
-    if re.search(
+    if _re_search(
         r"(?m)(?:^|[;{])\s*(?:(?:static|extern|auto|register|const)\s+)*"
         + _DECL_TYPE + r"\s+[A-Za-z_]\w*\s*=\s*\([^)]*\)\s*\{",
         body,
@@ -6317,7 +6336,7 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
     # Local `struct S s;` / `enum E e;` / anonymous `struct { int x; } s;`
     # — missing layout, not trailing ERROR. One `(?m)` only: a second
     # inline flag in the middle of the pattern is a Python re error.
-    if re.search(
+    if _re_search(
         r"(?m)(?:^|[;{])\s*(?:(?:static|extern|auto|register|const)\s+)*"
         r"(?:struct|union)(?:\s+[A-Za-z_]\w*)?\s*\{"
         r"|(?:^|[;{])\s*(?:(?:static|extern|auto|register|const)\s+)*"
@@ -6357,33 +6376,33 @@ def unencoded_layout_prefix(text: str) -> str | None:
     Generic trailing / no-semicolon / case-outside-switch stay ERROR.
     """
     s = (text or "").lstrip()
-    if re.match(r"(?:struct|union)\s*(?:[A-Za-z_]\w*\s*)?\{", s):
+    if _re_match(r"(?:struct|union)\s*(?:[A-Za-z_]\w*\s*)?\{", s):
         return "struct unencoded"
-    if re.match(r"enum\s*\{", s):
+    if _re_match(r"enum\s*\{", s):
         return "anon enum unencoded"
-    if re.match(r"(?:static|extern)\b", s):
+    if _re_match(r"(?:static|extern)\b", s):
         return "storage-duration unencoded"
-    if re.match(r"(?:_Alignas|alignas)\s*\(", s):
+    if _re_match(r"(?:_Alignas|alignas)\s*\(", s):
         return "alignas unencoded"
-    if re.match(r"__auto_type\b", s):
+    if _re_match(r"__auto_type\b", s):
         return "storage-class unencoded"
-    if re.match(r"(?:_Thread_local|thread_local)\b", s):
+    if _re_match(r"(?:_Thread_local|thread_local)\b", s):
         return "thread-local unencoded"
-    if re.match(r"(?:_Complex|_Imaginary)\b", s):
+    if _re_match(r"(?:_Complex|_Imaginary)\b", s):
         return "complex unencoded"
-    if re.match(r"(?:_Decimal32|_Decimal64|_Decimal128)\b", s):
+    if _re_match(r"(?:_Decimal32|_Decimal64|_Decimal128)\b", s):
         return "decimal-float unencoded"
-    if re.match(r"(?:_Float16|_Float32|_Float64|__fp16)\b", s):
+    if _re_match(r"(?:_Float16|_Float32|_Float64|__fp16)\b", s):
         return "extra-IEEE unencoded"
-    if re.match(r"(?:typeof_unqual|__typeof_unqual__)\s*\(", s):
+    if _re_match(r"(?:typeof_unqual|__typeof_unqual__)\s*\(", s):
         return "typeof_unqual unencoded"
-    if re.match(r"(?:typeof|__typeof__)\s*\(", s):
+    if _re_match(r"(?:typeof|__typeof__)\s*\(", s):
         return "typeof unencoded"
-    if re.match(r"constexpr\b", s):
+    if _re_match(r"constexpr\b", s):
         return "constexpr unencoded"
-    if re.match(r"\[\[\s*assume\s*\(", s):
+    if _re_match(r"\[\[\s*assume\s*\(", s):
         return "assume unencoded"
-    if re.match(
+    if _re_match(
         r"(?:int|unsigned(?:\s+int)?|long|short|char|uint32_t|int32_t|size_t)"
         r"\s+\w+\s*=\s*\([^)]*\)\s*\{",
         s,
@@ -6400,19 +6419,19 @@ def unencoded_layout_stmt(stmt: str) -> str | None:
     s = (stmt or "").strip()
     if not s:
         return None
-    if re.search(r"\b(?:__int128(?:_t)?|_BitInt)\b", s):
+    if _re_search(r"\b(?:__int128(?:_t)?|_BitInt)\b", s):
         return "128-bit unencoded"
-    if re.search(r"\b(?:_Decimal32|_Decimal64|_Decimal128)\b", s):
+    if _re_search(r"\b(?:_Decimal32|_Decimal64|_Decimal128)\b", s):
         return "decimal-float unencoded"
-    if re.search(r"\b(?:_Float16|_Float32|_Float64|__fp16)\b", s):
+    if _re_search(r"\b(?:_Float16|_Float32|_Float64|__fp16)\b", s):
         return "extra-IEEE unencoded"
     if _starts_kw(s, "constexpr"):
         return "constexpr unencoded"
-    if re.search(r"\[\[\s*assume\s*\(", s):
+    if _re_search(r"\[\[\s*assume\s*\(", s):
         return "assume unencoded"
-    if re.search(r"__attribute__\s*\(\s*\(\s*cleanup", s):
+    if _re_search(r"__attribute__\s*\(\s*\(\s*cleanup", s):
         return "cleanup unencoded"
-    if re.search(
+    if _re_search(
         r"__attribute__\s*\(\s*\(\s*(?:__)?vector_size|\b__vector_size\b",
         s,
     ):
@@ -6421,39 +6440,39 @@ def unencoded_layout_stmt(stmt: str) -> str | None:
         return "const unencoded"
     if _starts_kw(s, "register") or _starts_kw(s, "auto"):
         return "storage-class unencoded"
-    if re.match(r"__auto_type\b", s):
+    if _re_match(r"__auto_type\b", s):
         return "storage-class unencoded"
     if _starts_kw(s, "static") or _starts_kw(s, "extern"):
         return "storage-duration unencoded"
-    if re.match(r"(?:_Thread_local|thread_local)\b", s):
+    if _re_match(r"(?:_Thread_local|thread_local)\b", s):
         return "thread-local unencoded"
-    if re.match(r"(?:_Complex|_Imaginary)\b", s):
+    if _re_match(r"(?:_Complex|_Imaginary)\b", s):
         return "complex unencoded"
-    if re.match(r"(?:typeof_unqual|__typeof_unqual__)\s*\(", s):
+    if _re_match(r"(?:typeof_unqual|__typeof_unqual__)\s*\(", s):
         return "typeof_unqual unencoded"
-    if re.match(r"(?:typeof|__typeof__)\s*\(", s):
+    if _re_match(r"(?:typeof|__typeof__)\s*\(", s):
         return "typeof unencoded"
     if _is_nested_function(s):
         return "nested function unencoded"
-    if re.match(r"(?:_Alignas|alignas)\s*\(", s):
+    if _re_match(r"(?:_Alignas|alignas)\s*\(", s):
         return "alignas unencoded"
-    if re.search(r"=\s*\([^)]*\)\s*\{", s):
+    if _re_search(r"=\s*\([^)]*\)\s*\{", s):
         return "compound-lit unencoded"
     if _starts_kw(s, "struct") or _starts_kw(s, "union"):
-        if re.match(r"(?:struct|union)\s*\{", s):
+        if _re_match(r"(?:struct|union)\s*\{", s):
             return "struct unencoded"
-        if re.match(r"(?:struct|union)\s+[A-Za-z_]\w*\s*\{", s):
+        if _re_match(r"(?:struct|union)\s+[A-Za-z_]\w*\s*\{", s):
             return "struct unencoded"
-        if re.match(r"(?:struct|union)\s+[A-Za-z_]\w*\s+[A-Za-z_]\w*", s):
+        if _re_match(r"(?:struct|union)\s+[A-Za-z_]\w*\s+[A-Za-z_]\w*", s):
             return "struct unencoded"
         return None
     if _starts_kw(s, "enum"):
-        if re.match(r"enum\s*\{", s):
+        if _re_match(r"enum\s*\{", s):
             return "anon enum unencoded"
-        if re.match(r"enum\s+[A-Za-z_]\w*\s+[A-Za-z_]\w*", s):
+        if _re_match(r"enum\s+[A-Za-z_]\w*\s+[A-Za-z_]\w*", s):
             return "struct unencoded"
         return None
-    m = re.match(
+    m = _re_match(
         r"([A-Za-z_]\w*)\s+[A-Za-z_]\w*\s*(?:[=;\[]|$)",
         s,
     )
@@ -6632,87 +6651,87 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
         return (
             f"C++ throw-new unencoded: {engine} is not an exception model"
         )
-    if re.search(r"\bexecveat\b", low):
+    if _re_search(r"\bexecveat\b", low):
         return (
             f"execveat unencoded: unconstrained execveat is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bpthread_atfork\b", low):
+    if _re_search(r"\bpthread_atfork\b", low):
         return (
             f"pthread_atfork unencoded: unconstrained pthread_atfork "
             f"is not a proof ({engine})"
         )
-    if re.search(r"\bpledge\b", low):
+    if _re_search(r"\bpledge\b", low):
         return (
             f"pledge unencoded: unconstrained pledge is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bmac_(?:set|get)_(?:proc|fd|file)\b", low):
+    if _re_search(r"\bmac_(?:set|get)_(?:proc|fd|file)\b", low):
         return (
             f"mac_set_proc unencoded: unconstrained mac_set_proc is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bcap_getmode\b", low):
+    if _re_search(r"\bcap_getmode\b", low):
         return (
             f"cap_getmode unencoded: unconstrained cap_getmode is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bcap_getrights\b", low):
+    if _re_search(r"\bcap_getrights\b", low):
         return (
             f"cap_getrights unencoded: unconstrained cap_getrights is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bcap_enter\b", low):
+    if _re_search(r"\bcap_enter\b", low):
         return (
             f"cap_enter unencoded: unconstrained cap_enter is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bcap_sandboxed\b", low):
+    if _re_search(r"\bcap_sandboxed\b", low):
         return (
             f"cap_sandboxed unencoded: unconstrained cap_sandboxed is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bcap_rights_(?:limit|get)\b", low):
+    if _re_search(r"\bcap_rights_(?:limit|get)\b", low):
         return (
             f"cap_rights unencoded: unconstrained cap_rights_limit "
             f"is not a proof ({engine})"
         )
-    if re.search(r"\bcap_(?:fcntls|ioctls)_limit\b", low):
+    if _re_search(r"\bcap_(?:fcntls|ioctls)_limit\b", low):
         return (
             f"cap_fcntls unencoded: unconstrained cap_fcntls_limit "
             f"is not a proof ({engine})"
         )
-    if re.search(r"\bunveil\b", low):
+    if _re_search(r"\bunveil\b", low):
         return (
             f"unveil unencoded: unconstrained unveil is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bsysctl(?:byname)?\b", low):
+    if _re_search(r"\bsysctl(?:byname)?\b", low):
         return (
             f"sysctl unencoded: unconstrained sysctl is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bkqueue\b", low):
+    if _re_search(r"\bkqueue\b", low):
         return (
             f"kqueue unencoded: unconstrained kqueue is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bkevent\b", low):
+    if _re_search(r"\bkevent\b", low):
         return (
             f"kevent unencoded: unconstrained kevent is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bpause\b", low):
+    if _re_search(r"\bpause\b", low):
         return (
             f"pause unencoded: unconstrained pause is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:get|set|swap|make)context\b", low):
+    if _re_search(r"\b(?:get|set|swap|make)context\b", low):
         return (
             f"getcontext unencoded: unconstrained getcontext is not a "
             f"proof ({engine})"
         )
-    if re.search(
+    if _re_search(
         r"\bpthread_attr_(?:init|destroy|setstacksize|setstack|"
         r"setdetachstate|getstacksize|getstack|getdetachstate)\b",
         low,
@@ -6726,47 +6745,47 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"process spawn unencoded: unconstrained fork/exec is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bpdfork\b", low):
+    if _re_search(r"\bpdfork\b", low):
         return (
             f"pdfork unencoded: unconstrained pdfork is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\brfork\b", low):
+    if _re_search(r"\brfork\b", low):
         return (
             f"rfork unencoded: unconstrained rfork is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bminherit\b", low):
+    if _re_search(r"\bminherit\b", low):
         return (
             f"minherit unencoded: unconstrained minherit is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bnfssvc\b", low):
+    if _re_search(r"\bnfssvc\b", low):
         return (
             f"nfssvc unencoded: unconstrained nfssvc is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bsysarch\b", low):
+    if _re_search(r"\bsysarch\b", low):
         return (
             f"sysarch unencoded: unconstrained sysarch is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bgetbootfile\b", low):
+    if _re_search(r"\bgetbootfile\b", low):
         return (
             f"getbootfile unencoded: unconstrained getbootfile is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bdevname(?:_r)?\b", low):
+    if _re_search(r"\bdevname(?:_r)?\b", low):
         return (
             f"devname unencoded: unconstrained devname is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bsbrk\b", low):
+    if _re_search(r"\bsbrk\b", low):
         return (
             f"sbrk unencoded: unconstrained sbrk is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bbrk\s*\(", low) or re.search(r"\bbrk\b", low):
+    if _re_search(r"\bbrk\s*\(", low) or _re_search(r"\bbrk\b", low):
         return (
             f"brk unencoded: unconstrained brk is not a "
             f"proof ({engine})"
@@ -6778,29 +6797,29 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"wide-string copy unencoded: unconstrained wcscpy is not a "
             f"proof of the buffer ({engine})"
         )
-    if re.search(r"\b(?:dlfunc|dlvsym)\b", low) or "dlfunc unencoded" in low:
+    if _re_search(r"\b(?:dlfunc|dlvsym)\b", low) or "dlfunc unencoded" in low:
         return (
             f"dlfunc unencoded: unconstrained dlfunc is not a "
             f"proof ({engine})"
         )
     if "dlopen unencoded" in low or "dlsym unencoded" in low or "dlclose unencoded" in low:
         return f"dlopen unencoded: {engine} is not a dynamic-loader model"
-    if re.search(r"\bmod(?:find|stat|next|fnext)\b", low):
+    if _re_search(r"\bmod(?:find|stat|next|fnext)\b", low):
         return (
             f"modfind unencoded: unconstrained modfind is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bkld(?:firstmod|nextmod)\b", low):
+    if _re_search(r"\bkld(?:firstmod|nextmod)\b", low):
         return (
             f"kldfirstmod unencoded: unconstrained kldfirstmod is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bkld_(?:isloaded|load)\b", low):
+    if _re_search(r"\bkld_(?:isloaded|load)\b", low):
         return (
             f"kld_load unencoded: unconstrained kld_load is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bkld(?:load|unload|find|sym|stat)\b", low):
+    if _re_search(r"\bkld(?:load|unload|find|sym|stat)\b", low):
         return (
             f"kldload unencoded: unconstrained kldload is not a "
             f"proof ({engine})"
@@ -6844,17 +6863,17 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"choose_expr unencoded: {engine} is not a "
             "__builtin_choose_expr model"
         )
-    if re.search(r"\b__builtin_unreachable\b", low):
+    if _re_search(r"\b__builtin_unreachable\b", low):
         return (
             f"__builtin_unreachable unencoded: unconstrained "
             f"__builtin_unreachable is not a proof ({engine})"
         )
-    if re.search(r"\b__builtin_trap\b", low):
+    if _re_search(r"\b__builtin_trap\b", low):
         return (
             f"__builtin_trap unencoded: unconstrained "
             f"__builtin_trap is not a proof ({engine})"
         )
-    if re.search(r"\bstd\s*::\s*unreachable\b", low):
+    if _re_search(r"\bstd\s*::\s*unreachable\b", low):
         return (
             f"C++ std::unreachable unencoded: {engine} is not an "
             "unreachable model"
@@ -6882,22 +6901,22 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"fcntl unencoded: unconstrained fcntl is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bpd(?:getpid|wait4)\b", low):
+    if _re_search(r"\bpd(?:getpid|wait4)\b", low):
         return (
             f"pdgetpid unencoded: unconstrained pdgetpid is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:wait4|wait3)\b", low):
+    if _re_search(r"\b(?:wait4|wait3)\b", low):
         return (
             f"wait4 unencoded: unconstrained wait4 is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bwait6\b", low):
+    if _re_search(r"\bwait6\b", low):
         return (
             f"wait6 unencoded: unconstrained wait6 is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bsem_trywait\b", low) or re.search(r"\bsem_getvalue\b", low):
+    if _re_search(r"\bsem_trywait\b", low) or _re_search(r"\bsem_getvalue\b", low):
         return (
             f"sem_trywait unencoded: unconstrained sem_trywait is not a "
             f"proof ({engine})"
@@ -6907,17 +6926,17 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"wait unencoded: unconstrained wait is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bunlinkat\b", low):
+    if _re_search(r"\bunlinkat\b", low):
         return (
             f"unlinkat unencoded: unconstrained unlinkat is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bunlink\b", low):
+    if _re_search(r"\bunlink\b", low):
         return (
             f"unlink unencoded: unconstrained unlink is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bmknodat\b", low):
+    if _re_search(r"\bmknodat\b", low):
         return (
             f"mknodat unencoded: unconstrained mknodat is not a "
             f"proof ({engine})"
@@ -6968,7 +6987,7 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"C++ move_only_function unencoded: {engine} is not a "
             "move_only_function model"
         )
-    if re.search(r"\breference_wrapper\b", low) or re.search(
+    if _re_search(r"\breference_wrapper\b", low) or _re_search(
         r"\bstd\s*::\s*(?:cref|ref)\s*\(", low
     ):
         return (
@@ -6992,17 +7011,17 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
         return (
             f"vector_size unencoded: {engine} is not a SIMD vector model"
         )
-    if re.search(r"\bppoll\b", low):
+    if _re_search(r"\bppoll\b", low):
         return (
             f"ppoll unencoded: unconstrained ppoll is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bepoll_pwait(?:2)?\b", low):
+    if _re_search(r"\bepoll_pwait(?:2)?\b", low):
         return (
             f"epoll_pwait unencoded: unconstrained epoll_pwait is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bepoll_create(?:1)?\b", low):
+    if _re_search(r"\bepoll_create(?:1)?\b", low):
         return (
             f"epoll_create unencoded: unconstrained epoll_create is not a "
             f"proof ({engine})"
@@ -7022,22 +7041,22 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"C++ kill_dependency unencoded: {engine} is not a "
             "kill_dependency model"
         )
-    if re.search(r"\brt_(?:tgsigqueueinfo|sigqueueinfo)\b", low):
+    if _re_search(r"\brt_(?:tgsigqueueinfo|sigqueueinfo)\b", low):
         return (
             f"rt_sigqueueinfo unencoded: unconstrained rt_sigqueueinfo "
             f"is not a proof ({engine})"
         )
-    if re.search(r"\bsigqueue\b", low):
+    if _re_search(r"\bsigqueue\b", low):
         return (
             f"sigqueue unencoded: unconstrained sigqueue is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bthr_(?:new|kill2|kill|self|exit|suspend|wake)\b", low):
+    if _re_search(r"\bthr_(?:new|kill2|kill|self|exit|suspend|wake)\b", low):
         return (
             f"thr_kill unencoded: unconstrained thr_kill is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bpthread_kill\b", low):
+    if _re_search(r"\bpthread_kill\b", low):
         return (
             f"pthread_kill unencoded: unconstrained pthread_kill is not a "
             f"proof ({engine})"
@@ -7052,12 +7071,12 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"addrinfo unencoded: unconstrained DNS is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bpthread_cancel\b", low):
+    if _re_search(r"\bpthread_cancel\b", low):
         return (
             f"pthread_cancel unencoded: unconstrained pthread_cancel "
             f"is not a proof ({engine})"
         )
-    if re.search(
+    if _re_search(
         r"\bpthread_(?:key_create|key_delete|setspecific|getspecific)\b",
         low,
     ) or "pthread_key_create unencoded" in low:
@@ -7065,14 +7084,14 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"pthread_key_create unencoded: unconstrained "
             f"pthread_key_create is not a proof ({engine})"
         )
-    if "pthread join unencoded" in low or re.search(
+    if "pthread join unencoded" in low or _re_search(
         r"\b(?:pthread_join|pthread_detach)\b", low
     ):
         return (
             f"pthread join unencoded: unconstrained thread join is not a "
             f"proof ({engine})"
         )
-    if re.search(
+    if _re_search(
         r"\bpthread_spin_(?:try)?(?:lock|unlock|init|destroy)\b",
         low,
     ) or "pthread_spin unencoded" in low:
@@ -7080,7 +7099,7 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"pthread_spin unencoded: unconstrained pthread_spin_lock "
             f"is not a proof ({engine})"
         )
-    if re.search(
+    if _re_search(
         r"\bpthread_rwlock_(?:try|timed)?(?:rdlock|wrlock|unlock|init|destroy)\b",
         low,
     ) or "pthread_rwlock unencoded" in low:
@@ -7088,7 +7107,7 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"pthread_rwlock unencoded: unconstrained pthread_rwlock "
             f"is not a proof ({engine})"
         )
-    if re.search(
+    if _re_search(
         r"\bpthread_cond_(?:timedwait|wait|signal|broadcast|init|destroy)\b",
         low,
     ) or "pthread_cond unencoded" in low:
@@ -7098,17 +7117,17 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
         )
     if "sem unencoded" in low:
         return f"sem unencoded: {engine} is not a semaphore model"
-    if re.search(r"\bksem_", low):
+    if _re_search(r"\bksem_", low):
         return (
             f"ksem_open unencoded: unconstrained ksem_open is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bsem_(?:open|close|unlink)\b", low):
+    if _re_search(r"\bsem_(?:open|close|unlink)\b", low):
         return (
             f"sem_open unencoded: unconstrained sem_open is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bsem_timedwait\b", low):
+    if _re_search(r"\bsem_timedwait\b", low):
         return (
             f"sem_timedwait unencoded: unconstrained sem_timedwait is not a "
             f"proof ({engine})"
@@ -7127,12 +7146,12 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
         return (
             f"aligned_alloc unencoded: {engine} is not an aligned-alloc model"
         )
-    if re.search(r"\bvalloc\b", low):
+    if _re_search(r"\bvalloc\b", low):
         return (
             f"valloc unencoded: unconstrained valloc is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bnotify_all_at_thread_exit\b", low):
+    if _re_search(r"\bnotify_all_at_thread_exit\b", low):
         return (
             f"C++ notify_all_at_thread_exit unencoded: {engine} is not a "
             "notify_all_at_thread_exit model"
@@ -7161,7 +7180,7 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
         return (
             f"C++ std::generator unencoded: {engine} is not a generator model"
         )
-    if re.search(r"\bassume_aligned\b", low) or "assume_aligned unencoded" in low:
+    if _re_search(r"\bassume_aligned\b", low) or "assume_aligned unencoded" in low:
         return (
             f"C++ assume_aligned unencoded: {engine} is not an "
             "assume_aligned model"
@@ -7184,24 +7203,24 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"chown unencoded: unconstrained chown is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bsymlinkat\b", low):
+    if _re_search(r"\bsymlinkat\b", low):
         return (
             f"symlinkat unencoded: unconstrained symlinkat is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\breadlinkat\b", low):
+    if _re_search(r"\breadlinkat\b", low):
         return (
             f"readlinkat unencoded: unconstrained readlinkat is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:symlink|readlink)\b", low) or (
+    if _re_search(r"\b(?:symlink|readlink)\b", low) or (
         "symlink unencoded" in low or "readlink unencoded" in low
     ):
         return (
             f"symlink unencoded: unconstrained symlink/readlink is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bfts_(?:open|read|children|close|set)\b", low):
+    if _re_search(r"\bfts_(?:open|read|children|close|set)\b", low):
         return (
             f"fts_open unencoded: unconstrained fts_open is not a "
             f"proof ({engine})"
@@ -7213,12 +7232,12 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"setrlimit unencoded: unconstrained setrlimit is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:getsockname|getpeername)\b", low):
+    if _re_search(r"\b(?:getsockname|getpeername)\b", low):
         return (
             f"getsockname unencoded: unconstrained getsockname is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bgetpeereid\b", low):
+    if _re_search(r"\bgetpeereid\b", low):
         return (
             f"getpeereid unencoded: unconstrained getpeereid is not a "
             f"proof ({engine})"
@@ -7228,7 +7247,7 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"getsockopt unencoded: unconstrained socket opts is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:listmount|statmount)\b", low):
+    if _re_search(r"\b(?:listmount|statmount)\b", low):
         return (
             f"listmount unencoded: unconstrained listmount/statmount "
             f"is not a proof ({engine})"
@@ -7238,50 +7257,50 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"ustat unencoded: unconstrained ustat is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bfile_(?:get|set)attr\b", low):
+    if _re_search(r"\bfile_(?:get|set)attr\b", low):
         return (
             f"file_getattr unencoded: unconstrained file_getattr "
             f"is not a proof ({engine})"
         )
-    if re.search(r"\bfh(?:linkat|link|readlink)\b", low) or re.search(
+    if _re_search(r"\bfh(?:linkat|link|readlink)\b", low) or _re_search(
         r"\bfhlink", low
     ):
         return (
             f"fhlink unencoded: unconstrained fhlink is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:getfh|fhopen|fhstatfs|fhstat|getfhat)\b", low):
+    if _re_search(r"\b(?:getfh|fhopen|fhstatfs|fhstat|getfhat)\b", low):
         return (
             f"getfh unencoded: unconstrained getfh is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bfstatat\b", low):
+    if _re_search(r"\bfstatat\b", low):
         return (
             f"fstatat unencoded: unconstrained fstatat is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bgetmntinfo\b", low):
+    if _re_search(r"\bgetmntinfo\b", low):
         return (
             f"getmntinfo unencoded: unconstrained getmntinfo is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bgetvfsbyname\b", low):
+    if _re_search(r"\bgetvfsbyname\b", low):
         return (
             f"getvfsbyname unencoded: unconstrained getvfsbyname is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:get|set|end)fsent\b", low):
+    if _re_search(r"\b(?:get|set|end)fsent\b", low):
         return (
             f"getfsent unencoded: unconstrained getfsent is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bgetfsstat\b", low):
+    if _re_search(r"\bgetfsstat\b", low):
         return (
             f"getfsstat unencoded: unconstrained getfsstat is not a "
             f"proof ({engine})"
         )
     if (
-        re.search(r"\b(?:lstat|fstat|stat)\b", low)
+        _re_search(r"\b(?:lstat|fstat|stat)\b", low)
         or "stat unencoded" in low
         or "lstat unencoded" in low
         or "fstat unencoded" in low
@@ -7290,23 +7309,23 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"stat unencoded: unconstrained stat is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\brenameat2\b", low):
+    if _re_search(r"\brenameat2\b", low):
         return (
             f"renameat2 unencoded: unconstrained renameat2 is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\brenameat\b", low):
+    if _re_search(r"\brenameat\b", low):
         return (
             f"renameat unencoded: unconstrained renameat is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bmkdirat\b", low):
+    if _re_search(r"\bmkdirat\b", low):
         return (
             f"mkdirat unencoded: unconstrained mkdirat is not a "
             f"proof ({engine})"
         )
     if (
-        re.search(r"\b(?:mkdir|rmdir|rename)\b", low)
+        _re_search(r"\b(?:mkdir|rmdir|rename)\b", low)
         or "mkdir unencoded" in low
         or "rmdir unencoded" in low
         or "rename unencoded" in low
@@ -7315,12 +7334,12 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"mkdir unencoded: unconstrained mkdir is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bcrypt_(?:newhash|checkpass)\b", low):
+    if _re_search(r"\bcrypt_(?:newhash|checkpass)\b", low):
         return (
             f"crypt_newhash unencoded: unconstrained crypt_newhash is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bkenv\b", low):
+    if _re_search(r"\bkenv\b", low):
         return (
             f"kenv unencoded: unconstrained kenv is not a "
             f"proof ({engine})"
@@ -7343,7 +7362,7 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
         )
     if "std::regex" in low or "regex unencoded" in low:
         return f"C++ std::regex unencoded: {engine} is not a regex model"
-    if re.search(r"\bpthread_barrier_(?:wait|init|destroy)\b", low) or (
+    if _re_search(r"\bpthread_barrier_(?:wait|init|destroy)\b", low) or (
         "pthread_barrier unencoded" in low
     ):
         return (
@@ -7387,12 +7406,12 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"settimeofday unencoded: unconstrained settimeofday is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bpthread_getcpuclockid\b", low):
+    if _re_search(r"\bpthread_getcpuclockid\b", low):
         return (
             f"pthread_getcpuclockid unencoded: unconstrained "
             f"pthread_getcpuclockid is not a proof ({engine})"
         )
-    if re.search(r"\bclock_getcpuclockid\b", low):
+    if _re_search(r"\bclock_getcpuclockid\b", low):
         return (
             f"clock_getcpuclockid unencoded: unconstrained "
             f"clock_getcpuclockid is not a proof ({engine})"
@@ -7402,7 +7421,7 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"clock_gettime unencoded: unconstrained clock_gettime is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bposix_typed_mem_(?:open|get_info)\b", low):
+    if _re_search(r"\bposix_typed_mem_(?:open|get_info)\b", low):
         return (
             f"posix_typed_mem_open unencoded: unconstrained "
             f"posix_typed_mem_open is not a proof ({engine})"
@@ -7417,7 +7436,7 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"shm unencoded: unconstrained shm_open is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bposix_spawn(?:_file_actions|attr)_init\b", low):
+    if _re_search(r"\bposix_spawn(?:_file_actions|attr)_init\b", low):
         return (
             f"posix_spawn_file_actions_init unencoded: unconstrained "
             f"posix_spawn_file_actions_init is not a proof ({engine})"
@@ -7447,27 +7466,27 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"sleep unencoded: unconstrained sleep is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bfchmodat2\b", low):
+    if _re_search(r"\bfchmodat2\b", low):
         return (
             f"fchmodat2 unencoded: unconstrained fchmodat2 is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bfchmodat\b", low):
+    if _re_search(r"\bfchmodat\b", low):
         return (
             f"fchmodat unencoded: unconstrained fchmodat is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:f|l)?chflags\b", low):
+    if _re_search(r"\b(?:f|l)?chflags\b", low):
         return (
             f"chflags unencoded: unconstrained chflags is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bfaccessat2\b", low):
+    if _re_search(r"\bfaccessat2\b", low):
         return (
             f"faccessat2 unencoded: unconstrained faccessat2 is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bfaccessat\b", low):
+    if _re_search(r"\bfaccessat\b", low):
         return (
             f"faccessat unencoded: unconstrained faccessat is not a "
             f"proof ({engine})"
@@ -7477,12 +7496,12 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"vhangup unencoded: unconstrained vhangup is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:at_)?quick_exit\b", low):
+    if _re_search(r"\b(?:at_)?quick_exit\b", low):
         return (
             f"quick_exit unencoded: unconstrained quick_exit is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\beaccess\b", low):
+    if _re_search(r"\beaccess\b", low):
         return (
             f"eaccess unencoded: unconstrained eaccess is not a "
             f"proof ({engine})"
@@ -7527,7 +7546,7 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
         return (
             f"C++ zoned_time unencoded: {engine} is not a zoned_time model"
         )
-    if "current_zone" in low or re.search(r"\btzdb\b", low):
+    if "current_zone" in low or _re_search(r"\btzdb\b", low):
         return (
             f"C++ tzdb unencoded: {engine} is not a tzdb model"
         )
@@ -7535,7 +7554,7 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
         return (
             f"C++ chrono unencoded: {engine} is not a chrono model"
         )
-    if re.search(r"\bzip_transform(?:_view)?\b", low) or (
+    if _re_search(r"\bzip_transform(?:_view)?\b", low) or (
         "zip_transform unencoded" in low
     ):
         return (
@@ -7546,26 +7565,26 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
         return (
             f"C++ views::zip unencoded: {engine} is not a views::zip model"
         )
-    if re.search(r"\bis_scoped_enum\b", low) or "is_scoped_enum unencoded" in low:
+    if _re_search(r"\bis_scoped_enum\b", low) or "is_scoped_enum unencoded" in low:
         return (
             f"C++ is_scoped_enum unencoded: {engine} is not an "
             "is_scoped_enum model"
         )
-    if re.search(r"\b(?:views\s*::\s*)?enumerate(?:_view)?\b", low) or (
+    if _re_search(r"\b(?:views\s*::\s*)?enumerate(?:_view)?\b", low) or (
         "enumerate unencoded" in low
     ):
         return (
             f"C++ views::enumerate unencoded: {engine} is not a "
             "views::enumerate model"
         )
-    if re.search(r"\bcartesian_product(?:_view)?\b", low) or (
+    if _re_search(r"\bcartesian_product(?:_view)?\b", low) or (
         "cartesian_product unencoded" in low
     ):
         return (
             f"C++ cartesian_product unencoded: {engine} is not a "
             "cartesian_product model"
         )
-    if re.search(
+    if _re_search(
         r"\b(?:views\s*::\s*chunk(?:_by)?|chunk(?:_by|_view))\b",
         low,
     ) or "chunk unencoded" in low:
@@ -7573,14 +7592,14 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"C++ views::chunk unencoded: {engine} is not a "
             "views::chunk model"
         )
-    if re.search(r"\b(?:views\s*::\s*slide|slide_view)\b", low) or (
+    if _re_search(r"\b(?:views\s*::\s*slide|slide_view)\b", low) or (
         "slide unencoded" in low
     ):
         return (
             f"C++ views::slide unencoded: {engine} is not a "
             "views::slide model"
         )
-    if re.search(
+    if _re_search(
         r"\b(?:views\s*::\s*adjacent(?:_transform)?|"
         r"adjacent(?:_transform|_view))\b",
         low,
@@ -7589,7 +7608,7 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"C++ views::adjacent unencoded: {engine} is not a "
             "views::adjacent model"
         )
-    if re.search(r"\bjoin_with(?:_view)?\b", low) or "join_with unencoded" in low:
+    if _re_search(r"\bjoin_with(?:_view)?\b", low) or "join_with unencoded" in low:
         return (
             f"C++ join_with unencoded: {engine} is not a join_with model"
         )
@@ -7597,84 +7616,84 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
         return (
             f"C++ views::join unencoded: {engine} is not a views::join model"
         )
-    if re.search(r"\b(?:views\s*::\s*)?stride(?:_view)?\b", low) or (
+    if _re_search(r"\b(?:views\s*::\s*)?stride(?:_view)?\b", low) or (
         "stride unencoded" in low
     ):
         return (
             f"C++ views::stride unencoded: {engine} is not a "
             "views::stride model"
         )
-    if re.search(r"\b(?:views\s*::\s*repeat|repeat_view)\b", low) or (
+    if _re_search(r"\b(?:views\s*::\s*repeat|repeat_view)\b", low) or (
         "repeat unencoded" in low
     ):
         return (
             f"C++ views::repeat unencoded: {engine} is not a "
             "views::repeat model"
         )
-    if re.search(r"\btake_while(?:_view)?\b", low) or (
+    if _re_search(r"\btake_while(?:_view)?\b", low) or (
         "take_while unencoded" in low
     ):
         return (
             f"C++ views::take_while unencoded: {engine} is not a "
             "take_while model"
         )
-    if re.search(r"\b(?:views\s*::\s*take\b|\btake_view\b)", low) or (
+    if _re_search(r"\b(?:views\s*::\s*take\b|\btake_view\b)", low) or (
         "take unencoded" in low
     ):
         return (
             f"C++ views::take unencoded: {engine} is not a "
             "views::take model"
         )
-    if re.search(r"\bdrop_while(?:_view)?\b", low) or (
+    if _re_search(r"\bdrop_while(?:_view)?\b", low) or (
         "drop_while unencoded" in low
     ):
         return (
             f"C++ views::drop_while unencoded: {engine} is not a "
             "drop_while model"
         )
-    if re.search(r"\b(?:views\s*::\s*drop\b|\bdrop_view\b)", low) or (
+    if _re_search(r"\b(?:views\s*::\s*drop\b|\bdrop_view\b)", low) or (
         "drop unencoded" in low
     ):
         return (
             f"C++ views::drop unencoded: {engine} is not a "
             "views::drop model"
         )
-    if re.search(r"\b(?:views\s*::\s*keys\b|\bkeys_view\b)", low) or (
+    if _re_search(r"\b(?:views\s*::\s*keys\b|\bkeys_view\b)", low) or (
         "keys unencoded" in low
     ):
         return (
             f"C++ views::keys unencoded: {engine} is not a "
             "keys model"
         )
-    if re.search(r"\b(?:views\s*::\s*values\b|\bvalues_view\b)", low) or (
+    if _re_search(r"\b(?:views\s*::\s*values\b|\bvalues_view\b)", low) or (
         "values unencoded" in low
     ):
         return (
             f"C++ views::values unencoded: {engine} is not a "
             "values model"
         )
-    if re.search(r"\b(?:views\s*::\s*reverse\b|\breverse_view\b)", low) or (
+    if _re_search(r"\b(?:views\s*::\s*reverse\b|\breverse_view\b)", low) or (
         "reverse_view unencoded" in low or "views::reverse unencoded" in low
     ):
         return (
             f"C++ views::reverse unencoded: {engine} is not a "
             "reverse_view model"
         )
-    if re.search(r"\b(?:views\s*::\s*counted\b|\bcounted_view\b)", low) or (
+    if _re_search(r"\b(?:views\s*::\s*counted\b|\bcounted_view\b)", low) or (
         "counted_view unencoded" in low or "views::counted unencoded" in low
     ):
         return (
             f"C++ views::counted unencoded: {engine} is not a "
             "counted_view model"
         )
-    if re.search(r"\b(?:views\s*::\s*filter\b|\bfilter_view\b)", low) or (
+    if _re_search(r"\b(?:views\s*::\s*filter\b|\bfilter_view\b)", low) or (
         "filter unencoded" in low
     ):
         return (
             f"C++ views::filter unencoded: {engine} is not a "
             "views::filter model"
         )
-    if re.search(r"\b(?:views\s*::\s*transform\b|\btransform_view\b)", low) or (
+    if _re_search(r"\b(?:views\s*::\s*transform\b|\btransform_view\b)", low) or (
         "transform_view unencoded" in low
         or "views::transform unencoded" in low
     ):
@@ -7682,14 +7701,14 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"C++ views::transform unencoded: {engine} is not a "
             "transform_view model"
         )
-    if re.search(r"\b(?:views\s*::\s*elements\b|\belements_view\b)", low) or (
+    if _re_search(r"\b(?:views\s*::\s*elements\b|\belements_view\b)", low) or (
         "elements unencoded" in low
     ):
         return (
             f"C++ views::elements unencoded: {engine} is not an "
             "elements model"
         )
-    if re.search(r"\b(?:views\s*::\s*iota\b|\biota_view\b)", low) or (
+    if _re_search(r"\b(?:views\s*::\s*iota\b|\biota_view\b)", low) or (
         "iota unencoded" in low
     ):
         return (
@@ -7711,12 +7730,12 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"getopt unencoded: unconstrained getopt is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bgetosreldate\b", low):
+    if _re_search(r"\bgetosreldate\b", low):
         return (
             f"getosreldate unencoded: unconstrained getosreldate is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bgetdomainname\b", low):
+    if _re_search(r"\bgetdomainname\b", low):
         return (
             f"getdomainname unencoded: unconstrained getdomainname "
             f"is not a proof ({engine})"
@@ -7731,7 +7750,7 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"sethostname unencoded: unconstrained sethostname is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:preadv2|pwritev2|preadv|pwritev)\b", low):
+    if _re_search(r"\b(?:preadv2|pwritev2|preadv|pwritev)\b", low):
         return (
             f"preadv unencoded: unconstrained preadv is not a "
             f"proof ({engine})"
@@ -7746,12 +7765,12 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"memfd_secret unencoded: unconstrained memfd_secret "
             f"is not a proof ({engine})"
         )
-    if re.search(r"\b(?:timerfd_settime|timerfd_gettime)\b", low):
+    if _re_search(r"\b(?:timerfd_settime|timerfd_gettime)\b", low):
         return (
             f"timerfd_settime unencoded: unconstrained "
             f"timerfd_settime is not a proof ({engine})"
         )
-    if re.search(r"\beventfd_(?:read|write)\b", low):
+    if _re_search(r"\beventfd_(?:read|write)\b", low):
         return (
             f"eventfd_read unencoded: unconstrained eventfd_read is not a "
             f"proof ({engine})"
@@ -7770,12 +7789,12 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"arch_prctl unencoded: unconstrained arch_prctl is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bprocctl\b", low):
+    if _re_search(r"\bprocctl\b", low):
         return (
             f"procctl unencoded: unconstrained procctl is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bktrace\b", low):
+    if _re_search(r"\bktrace\b", low):
         return (
             f"ktrace unencoded: unconstrained ktrace is not a "
             f"proof ({engine})"
@@ -7798,22 +7817,22 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
         return (
             f"C++ module import unencoded: {engine} is not a modules model"
         )
-    if re.search(r"\bgetpagesizes\b", low):
+    if _re_search(r"\bgetpagesizes\b", low):
         return (
             f"getpagesizes unencoded: unconstrained getpagesizes is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bgetpagesize(?!s)\b", low):
+    if _re_search(r"\bgetpagesize(?!s)\b", low):
         return (
             f"getpagesize unencoded: unconstrained getpagesize is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\blpathconf\b", low):
+    if _re_search(r"\blpathconf\b", low):
         return (
             f"lpathconf unencoded: unconstrained lpathconf is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:sysconf|fpathconf|pathconf)\b", low):
+    if _re_search(r"\b(?:sysconf|fpathconf|pathconf)\b", low):
         return (
             f"sysconf unencoded: unconstrained sysconf is not a "
             f"proof ({engine})"
@@ -7833,22 +7852,22 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"wordexp unencoded: unconstrained wordexp is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:get|set)loginclass\b", low):
+    if _re_search(r"\b(?:get|set)loginclass\b", low):
         return (
             f"loginclass unencoded: unconstrained getloginclass is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:login_getclass|setusercontext)\b", low):
+    if _re_search(r"\b(?:login_getclass|setusercontext)\b", low):
         return (
             f"login_getclass unencoded: unconstrained login_getclass is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bsetlogin\b", low):
+    if _re_search(r"\bsetlogin\b", low):
         return (
             f"setlogin unencoded: unconstrained setlogin is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bgetlogin(?:_r)?\b", low) or re.search(r"\bttyname(?:_r)?\b", low):
+    if _re_search(r"\bgetlogin(?:_r)?\b", low) or _re_search(r"\bttyname(?:_r)?\b", low):
         return (
             f"getlogin unencoded: unconstrained getlogin is not a "
             f"proof ({engine})"
@@ -7858,12 +7877,12 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"inet_pton unencoded: unconstrained inet_pton is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bmseal\b", low):
+    if _re_search(r"\bmseal\b", low):
         return (
             f"mseal unencoded: unconstrained mseal is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bmlock2\b", low):
+    if _re_search(r"\bmlock2\b", low):
         return (
             f"mlock2 unencoded: unconstrained mlock2 is not a "
             f"proof ({engine})"
@@ -7878,12 +7897,12 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"mlock unencoded: unconstrained mlock is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bposix_fadvise(?:64)?\b", low):
+    if _re_search(r"\bposix_fadvise(?:64)?\b", low):
         return (
             f"posix_fadvise unencoded: unconstrained posix_fadvise is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\breadahead\b", low):
+    if _re_search(r"\breadahead\b", low):
         return (
             f"readahead unencoded: unconstrained readahead is not a "
             f"proof ({engine})"
@@ -7900,7 +7919,7 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"splice unencoded: unconstrained splice is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\binotify_rm_watch\b", low):
+    if _re_search(r"\binotify_rm_watch\b", low):
         return (
             f"inotify_rm_watch unencoded: unconstrained inotify_rm_watch "
             f"is not a proof ({engine})"
@@ -7922,12 +7941,12 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"getrandom unencoded: unconstrained getrandom is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\barc4random(?:_buf|_uniform)?\b", low):
+    if _re_search(r"\barc4random(?:_buf|_uniform)?\b", low):
         return (
             f"arc4random unencoded: unconstrained arc4random is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bissetugid\b", low):
+    if _re_search(r"\bissetugid\b", low):
         return (
             f"issetugid unencoded: unconstrained issetugid is not a "
             f"proof ({engine})"
@@ -7956,7 +7975,7 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"explicit_bzero unencoded: unconstrained explicit_bzero "
             f"is not a proof ({engine})"
         )
-    if re.search(r"\btimingsafe_(?:bcmp|memcmp)\b", low):
+    if _re_search(r"\btimingsafe_(?:bcmp|memcmp)\b", low):
         return (
             f"timingsafe_bcmp unencoded: unconstrained timingsafe_bcmp "
             f"is not a proof ({engine})"
@@ -7976,17 +7995,17 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"ptsname unencoded: unconstrained ptsname is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bnmount\b", low):
+    if _re_search(r"\bnmount\b", low):
         return (
             f"nmount unencoded: unconstrained nmount is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bunmount\b", low):
+    if _re_search(r"\bunmount\b", low):
         return (
             f"unmount unencoded: unconstrained unmount is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:umount2|umount|mount)\b", low):
+    if _re_search(r"\b(?:umount2|umount|mount)\b", low):
         return (
             f"mount unencoded: unconstrained mount is not a "
             f"proof ({engine})"
@@ -8005,45 +8024,45 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"scandir unencoded: unconstrained scandir is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bextattr_(?:set|get|delete|list)_(?:file|fd|link)\b", low):
+    if _re_search(r"\bextattr_(?:set|get|delete|list)_(?:file|fd|link)\b", low):
         return (
             f"extattr unencoded: unconstrained extattr_set_file is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:set|get|list|remove)xattrat\b", low):
+    if _re_search(r"\b(?:set|get|list|remove)xattrat\b", low):
         return (
             f"setxattrat unencoded: unconstrained setxattrat is not a "
             f"proof ({engine})"
         )
     if (
-        re.search(r"\b(?:lsetxattr|fsetxattr|setxattr)\b", low)
-        or re.search(r"\b(?:listxattr|removexattr|getxattr)\b", low)
+        _re_search(r"\b(?:lsetxattr|fsetxattr|setxattr)\b", low)
+        or _re_search(r"\b(?:listxattr|removexattr|getxattr)\b", low)
     ):
         return (
             f"setxattr unencoded: unconstrained setxattr is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:sched_setattr|sched_getattr)\b", low):
+    if _re_search(r"\b(?:sched_setattr|sched_getattr)\b", low):
         return (
             f"sched_setattr unencoded: unconstrained sched_setattr is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bsched_yield\b", low):
+    if _re_search(r"\bsched_yield\b", low):
         return (
             f"sched_yield unencoded: unconstrained sched_yield is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bpthread_yield\b", low):
+    if _re_search(r"\bpthread_yield\b", low):
         return (
             f"pthread_yield unencoded: unconstrained pthread_yield is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bcpuset_(?:set|get)affinity\b", low):
+    if _re_search(r"\bcpuset_(?:set|get)affinity\b", low):
         return (
             f"cpuset unencoded: unconstrained cpuset_setaffinity is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bsched_get_priority_(?:max|min)\b", low):
+    if _re_search(r"\bsched_get_priority_(?:max|min)\b", low):
         return (
             f"sched_get_priority_max unencoded: unconstrained "
             f"sched_get_priority_max is not a proof ({engine})"
@@ -8063,7 +8082,7 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"sched_setscheduler unencoded: unconstrained "
             f"sched_setscheduler is not a proof ({engine})"
         )
-    if re.search(r"\blio_listio\b", low):
+    if _re_search(r"\blio_listio\b", low):
         return (
             f"lio_listio unencoded: unconstrained lio_listio is not a "
             f"proof ({engine})"
@@ -8125,12 +8144,12 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"close_range unencoded: unconstrained close_range is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bclosefrom\b", low):
+    if _re_search(r"\bclosefrom\b", low):
         return (
             f"closefrom unencoded: unconstrained closefrom is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\blsm_(?:get_self_attr|set_self_attr|list_modules)\b", low):
+    if _re_search(r"\blsm_(?:get_self_attr|set_self_attr|list_modules)\b", low):
         return (
             f"lsm_get_self_attr unencoded: unconstrained "
             f"lsm_get_self_attr is not a proof ({engine})"
@@ -8140,7 +8159,7 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"landlock unencoded: unconstrained landlock_create_ruleset "
             f"is not a proof ({engine})"
         )
-    if re.search(r"\brtprio(?:_thread)?\b", low):
+    if _re_search(r"\brtprio(?:_thread)?\b", low):
         return (
             f"rtprio unencoded: unconstrained rtprio is not a "
             f"proof ({engine})"
@@ -8155,27 +8174,27 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"signalfd unencoded: unconstrained signalfd is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bsigaction\b", low):
+    if _re_search(r"\bsigaction\b", low):
         return (
             f"sigaction unencoded: unconstrained sigaction is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bpthread_sigmask\b", low):
+    if _re_search(r"\bpthread_sigmask\b", low):
         return (
             f"pthread_sigmask unencoded: unconstrained pthread_sigmask "
             f"is not a proof ({engine})"
         )
-    if re.search(r"\bsig(?:procmask|suspend)\b", low):
+    if _re_search(r"\bsig(?:procmask|suspend)\b", low):
         return (
             f"sigprocmask unencoded: unconstrained sigprocmask is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bsig(?:waitinfo|timedwait|pending|wait)\b", low):
+    if _re_search(r"\bsig(?:waitinfo|timedwait|pending|wait)\b", low):
         return (
             f"sigwait unencoded: unconstrained sigwait is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bsigaltstack\b", low):
+    if _re_search(r"\bsigaltstack\b", low):
         return (
             f"sigaltstack unencoded: unconstrained sigaltstack is not a "
             f"proof ({engine})"
@@ -8195,12 +8214,12 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"getpass unencoded: unconstrained getpass is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bgetgrouplist\b", low):
+    if _re_search(r"\bgetgrouplist\b", low):
         return (
             f"getgrouplist unencoded: unconstrained getgrouplist is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bgetgroups\b", low):
+    if _re_search(r"\bgetgroups\b", low):
         return (
             f"getgroups unencoded: unconstrained getgroups is not a "
             f"proof ({engine})"
@@ -8225,7 +8244,7 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"openat2 unencoded: unconstrained openat2 is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:sendmsg|recvmsg)\b", low):
+    if _re_search(r"\b(?:sendmsg|recvmsg)\b", low):
         return (
             f"sendmsg unencoded: unconstrained sendmsg is not a "
             f"proof ({engine})"
@@ -8285,7 +8304,7 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"prlimit unencoded: unconstrained prlimit is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:migrate_pages|move_pages)\b", low):
+    if _re_search(r"\b(?:migrate_pages|move_pages)\b", low):
         return (
             f"move_pages unencoded: unconstrained move_pages is not a "
             f"proof ({engine})"
@@ -8315,7 +8334,7 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"keyctl unencoded: unconstrained keyctl is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bopen_tree_attr\b", low):
+    if _re_search(r"\bopen_tree_attr\b", low):
         return (
             f"open_tree_attr unencoded: unconstrained open_tree_attr "
             f"is not a proof ({engine})"
@@ -8323,7 +8342,7 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
     if (
         "fsopen" in low
         or "fsmount" in low
-        or re.search(r"\bopen_tree\b", low)
+        or _re_search(r"\bopen_tree\b", low)
         or "move_mount" in low
         or "fspick" in low
         or "fsconfig" in low
@@ -8347,22 +8366,22 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"mq_open unencoded: unconstrained mq_open is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b_umtx_op\b", low):
+    if _re_search(r"\b_umtx_op\b", low):
         return (
             f"_umtx_op unencoded: unconstrained _umtx_op is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bfutex_waitv\b", low):
+    if _re_search(r"\bfutex_waitv\b", low):
         return (
             f"futex_waitv unencoded: unconstrained futex_waitv is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bfutex_(?:wake|wait|requeue)\b", low):
+    if _re_search(r"\bfutex_(?:wake|wait|requeue)\b", low):
         return (
             f"futex_wait unencoded: unconstrained futex_wait is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bfutex\b", low):
+    if _re_search(r"\bfutex\b", low):
         return (
             f"futex unencoded: unconstrained futex is not a "
             f"proof ({engine})"
@@ -8372,82 +8391,82 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"adjtimex unencoded: unconstrained adjtimex is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:ntp_)?adjtime\b", low):
+    if _re_search(r"\b(?:ntp_)?adjtime\b", low):
         return (
             f"adjtime unencoded: unconstrained adjtime is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bntp_gettime\b", low):
+    if _re_search(r"\bntp_gettime\b", low):
         return (
             f"ntp_gettime unencoded: unconstrained ntp_gettime is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\brevoke\b", low):
+    if _re_search(r"\brevoke\b", low):
         return (
             f"revoke unencoded: unconstrained revoke is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bjail(?:_attach|_get|_set|_remove)?\b", low):
+    if _re_search(r"\bjail(?:_attach|_get|_set|_remove)?\b", low):
         return (
             f"jail unencoded: unconstrained jail is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:fflagstostr|strtofflags)\b", low):
+    if _re_search(r"\b(?:fflagstostr|strtofflags)\b", low):
         return (
             f"fflagstostr unencoded: unconstrained fflagstostr is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bstrmode\b", low):
+    if _re_search(r"\bstrmode\b", low):
         return (
             f"strmode unencoded: unconstrained strmode is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bstrtonum\b", low):
+    if _re_search(r"\bstrtonum\b", low):
         return (
             f"strtonum unencoded: unconstrained strtonum is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\breallocarray\b", low):
+    if _re_search(r"\breallocarray\b", low):
         return (
             f"reallocarray unencoded: unconstrained reallocarray is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\breallocf\b", low):
+    if _re_search(r"\breallocf\b", low):
         return (
             f"reallocf unencoded: unconstrained reallocf is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:get|set)progname\b", low):
+    if _re_search(r"\b(?:get|set)progname\b", low):
         return (
             f"getprogname unencoded: unconstrained getprogname is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:setproctitle|daemon)\b", low):
+    if _re_search(r"\b(?:setproctitle|daemon)\b", low):
         return (
             f"daemon unencoded: unconstrained daemon is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:auditon|getaudit|setaudit|auditctl)\b", low):
+    if _re_search(r"\b(?:auditon|getaudit|setaudit|auditctl)\b", low):
         return (
             f"auditon unencoded: unconstrained auditon is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bkinfo_get(?:proc|file|vmmap)\b", low):
+    if _re_search(r"\bkinfo_get(?:proc|file|vmmap)\b", low):
         return (
             f"kinfo_getproc unencoded: unconstrained kinfo_getproc is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bkvm_(?:open|openfiles|getprocs|close|nlist)\b", low):
+    if _re_search(r"\bkvm_(?:open|openfiles|getprocs|close|nlist)\b", low):
         return (
             f"kvm_open unencoded: unconstrained kvm_open is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\buuidgen\b", low):
+    if _re_search(r"\buuidgen\b", low):
         return (
             f"uuidgen unencoded: unconstrained uuidgen is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bsetfib\b", low):
+    if _re_search(r"\bsetfib\b", low):
         return (
             f"setfib unencoded: unconstrained setfib is not a "
             f"proof ({engine})"
@@ -8467,7 +8486,7 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"acct unencoded: unconstrained acct is not a "
             f"proof ({engine})"
         )
-    if "ioperm" in low or re.search(r"\biopl\b", low):
+    if "ioperm" in low or _re_search(r"\biopl\b", low):
         return (
             f"ioperm unencoded: unconstrained ioperm is not a "
             f"proof ({engine})"
@@ -8477,7 +8496,7 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"mincore unencoded: unconstrained mincore is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\brseq\b", low):
+    if _re_search(r"\brseq\b", low):
         return (
             f"rseq unencoded: unconstrained rseq is not a "
             f"proof ({engine})"
@@ -8497,7 +8516,7 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"msgget unencoded: unconstrained msgget is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bsyslog\b", low):
+    if _re_search(r"\bsyslog\b", low):
         return (
             f"syslog unencoded: unconstrained syslog is not a "
             f"proof ({engine})"
@@ -8512,7 +8531,7 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"mount_setattr unencoded: unconstrained "
             f"mount_setattr is not a proof ({engine})"
         )
-    if re.search(r"\bgetcpu\b", low):
+    if _re_search(r"\bgetcpu\b", low):
         return (
             f"getcpu unencoded: unconstrained getcpu is not a "
             f"proof ({engine})"
@@ -8577,7 +8596,7 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"io_submit unencoded: unconstrained io_submit is not a "
             f"proof ({engine})"
         )
-    if re.search(
+    if _re_search(
         r"\b(?:io_setup|io_destroy|io_cancel|io_pgetevents)\b",
         low,
     ):
@@ -8590,7 +8609,7 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"request_key unencoded: unconstrained request_key is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\btkill\b", low):
+    if _re_search(r"\btkill\b", low):
         return (
             f"tkill unencoded: unconstrained tkill is not a "
             f"proof ({engine})"
@@ -8615,17 +8634,17 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"mq_unlink unencoded: unconstrained mq_unlink is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:shmat|shmdt)\b", low):
+    if _re_search(r"\b(?:shmat|shmdt)\b", low):
         return (
             f"shmat unencoded: unconstrained shmat is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:semop|semtimedop)\b", low):
+    if _re_search(r"\b(?:semop|semtimedop)\b", low):
         return (
             f"semop unencoded: unconstrained semop is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:msgsnd|msgrcv)\b", low):
+    if _re_search(r"\b(?:msgsnd|msgrcv)\b", low):
         return (
             f"msgsnd unencoded: unconstrained msgsnd is not a "
             f"proof ({engine})"
@@ -8635,27 +8654,27 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"sync_file_range unencoded: unconstrained "
             f"sync_file_range is not a proof ({engine})"
         )
-    if re.search(r"\bremap_file_pages\b", low):
+    if _re_search(r"\bremap_file_pages\b", low):
         return (
             f"remap_file_pages unencoded: unconstrained "
             f"remap_file_pages is not a proof ({engine})"
         )
-    if re.search(r"\b(?:msync|mremap)\b", low):
+    if _re_search(r"\b(?:msync|mremap)\b", low):
         return (
             f"msync unencoded: unconstrained msync is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bsocketpair\b", low):
+    if _re_search(r"\bsocketpair\b", low):
         return (
             f"socketpair unencoded: unconstrained socketpair is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bsysinfo\b", low):
+    if _re_search(r"\bsysinfo\b", low):
         return (
             f"sysinfo unencoded: unconstrained sysinfo is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bgettid\b", low):
+    if _re_search(r"\bgettid\b", low):
         return (
             f"gettid unencoded: unconstrained gettid is not a "
             f"proof ({engine})"
@@ -8665,17 +8684,17 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"setitimer unencoded: unconstrained setitimer is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bnice\b", low):
+    if _re_search(r"\bnice\b", low):
         return (
             f"nice unencoded: unconstrained nice is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bgetdirentries\b", low):
+    if _re_search(r"\bgetdirentries\b", low):
         return (
             f"getdirentries unencoded: unconstrained getdirentries is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bgetdents(?:64)?\b", low):
+    if _re_search(r"\bgetdents(?:64)?\b", low):
         return (
             f"getdents unencoded: unconstrained getdents is not a "
             f"proof ({engine})"
@@ -8685,51 +8704,51 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"utimensat unencoded: unconstrained utimensat is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\blinkat\b", low):
+    if _re_search(r"\blinkat\b", low):
         return (
             f"linkat unencoded: unconstrained linkat is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bset_mempolicy_home_node\b", low):
+    if _re_search(r"\bset_mempolicy_home_node\b", low):
         return (
             f"set_mempolicy_home_node unencoded: unconstrained "
             f"set_mempolicy_home_node is not a proof ({engine})"
         )
     if (
         "mbind" in low
-        or re.search(r"\bset_mempolicy\b", low)
-        or re.search(r"\bget_mempolicy\b", low)
+        or _re_search(r"\bset_mempolicy\b", low)
+        or _re_search(r"\bget_mempolicy\b", low)
     ):
         return (
             f"mbind unencoded: unconstrained mbind is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:setreuid|setregid|setresuid|setresgid)\b", low):
+    if _re_search(r"\b(?:setreuid|setregid|setresuid|setresgid)\b", low):
         return (
             f"setreuid unencoded: unconstrained setreuid is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bgetres(?:uid|gid)\b", low):
+    if _re_search(r"\bgetres(?:uid|gid)\b", low):
         return (
             f"getresuid unencoded: unconstrained getresuid is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:setfsuid|setfsgid)\b", low):
+    if _re_search(r"\b(?:setfsuid|setfsgid)\b", low):
         return (
             f"setfsuid unencoded: unconstrained setfsuid is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\b(?:setpgid|setsid|getsid)\b", low):
+    if _re_search(r"\b(?:setpgid|setsid|getsid)\b", low):
         return (
             f"setpgid unencoded: unconstrained setpgid is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bcachestat\b", low):
+    if _re_search(r"\bcachestat\b", low):
         return (
             f"cachestat unencoded: unconstrained cachestat is not a "
             f"proof ({engine})"
         )
-    if re.search(r"\bmap_shadow_stack\b", low):
+    if _re_search(r"\bmap_shadow_stack\b", low):
         return (
             f"map_shadow_stack unencoded: unconstrained "
             f"map_shadow_stack is not a proof ({engine})"
@@ -8757,7 +8776,7 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"C++ shared_lock unencoded: {engine} is not a "
             "shared_lock model"
         )
-    if re.search(r"\batomic_(?:thread|signal)_fence\b", low):
+    if _re_search(r"\batomic_(?:thread|signal)_fence\b", low):
         return (
             f"C++ atomic_thread_fence unencoded: {engine} is not an "
             "atomic_thread_fence model"
@@ -8777,12 +8796,12 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"C++ recursive_mutex unencoded: {engine} is not a "
             "recursive_mutex model"
         )
-    if re.search(r"\btimed_mutex\b", low):
+    if _re_search(r"\btimed_mutex\b", low):
         return (
             f"C++ timed_mutex unencoded: {engine} is not a "
             "timed_mutex model"
         )
-    if re.search(r"\b(?:ifstream|ofstream|fstream)\b", low):
+    if _re_search(r"\b(?:ifstream|ofstream|fstream)\b", low):
         return (
             f"C++ fstream unencoded: {engine} is not an fstream model"
         )
@@ -8791,7 +8810,7 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"C++ this_thread unencoded: {engine} is not a "
             "this_thread model"
         )
-    if re.search(r"\bcall_once\b", low):
+    if _re_search(r"\bcall_once\b", low):
         return (
             f"C++ call_once unencoded: {engine} is not a call_once model"
         )
@@ -8865,11 +8884,11 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
         return (
             f"C++ to_array unencoded: {engine} is not a to_array model"
         )
-    if re.search(r"\bfrom_range\b", low) or "from_range unencoded" in low:
+    if _re_search(r"\bfrom_range\b", low) or "from_range unencoded" in low:
         return (
             f"C++ from_range unencoded: {engine} is not a from_range model"
         )
-    if re.search(r"\branges\s*::\s*to\b", low) or "ranges::to unencoded" in low:
+    if _re_search(r"\branges\s*::\s*to\b", low) or "ranges::to unencoded" in low:
         return (
             f"C++ ranges::to unencoded: {engine} is not a ranges::to model"
         )
@@ -8925,11 +8944,11 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
         return (
             f"C++ std::invoke unencoded: {engine} is not an invoke model"
         )
-    if re.search(r"\bstd\s*::\s*endian\b", low) or "endian unencoded" in low:
+    if _re_search(r"\bstd\s*::\s*endian\b", low) or "endian unencoded" in low:
         return (
             f"C++ std::endian unencoded: {engine} is not an endian model"
         )
-    if re.search(r"\bstd\s*::\s*rot[lr]\b", low) or "rotl unencoded" in low:
+    if _re_search(r"\bstd\s*::\s*rot[lr]\b", low) or "rotl unencoded" in low:
         return (
             f"C++ std::rotl unencoded: {engine} is not a rotl model"
         )
@@ -8942,59 +8961,59 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
         return (
             f"C++ bit_ceil unencoded: {engine} is not a bit_ceil model"
         )
-    if re.search(r"\bstd\s*::\s*bit_width\b", low) or "bit_width unencoded" in low:
+    if _re_search(r"\bstd\s*::\s*bit_width\b", low) or "bit_width unencoded" in low:
         return (
             f"C++ std::bit_width unencoded: {engine} is not a bit_width model"
         )
-    if re.search(r"\bstd\s*::\s*gcd\b", low) or "gcd unencoded" in low:
+    if _re_search(r"\bstd\s*::\s*gcd\b", low) or "gcd unencoded" in low:
         return (
             f"C++ std::gcd unencoded: {engine} is not a gcd model"
         )
-    if re.search(r"\bstd\s*::\s*lcm\b", low) or "lcm unencoded" in low:
+    if _re_search(r"\bstd\s*::\s*lcm\b", low) or "lcm unencoded" in low:
         return (
             f"C++ std::lcm unencoded: {engine} is not a lcm model"
         )
-    if re.search(r"\bstd\s*::\s*clamp\b", low) or "clamp unencoded" in low:
+    if _re_search(r"\bstd\s*::\s*clamp\b", low) or "clamp unencoded" in low:
         return (
             f"C++ std::clamp unencoded: {engine} is not a clamp model"
         )
-    if re.search(r"\bstd\s*::\s*exchange\b", low) or "exchange unencoded" in low:
+    if _re_search(r"\bstd\s*::\s*exchange\b", low) or "exchange unencoded" in low:
         return (
             f"C++ std::exchange unencoded: {engine} is not an exchange model"
         )
-    if re.search(r"\bstd\s*::\s*to_address\b", low) or "to_address unencoded" in low:
+    if _re_search(r"\bstd\s*::\s*to_address\b", low) or "to_address unencoded" in low:
         return (
             f"C++ std::to_address unencoded: {engine} is not a "
             "to_address model"
         )
-    if re.search(r"\b(?:construct_at|destroy_at)\b", low) or (
+    if _re_search(r"\b(?:construct_at|destroy_at)\b", low) or (
         "construct_at unencoded" in low
     ):
         return (
             f"C++ construct_at unencoded: {engine} is not a "
             "construct_at model"
         )
-    if re.search(r"\bdestroy_n\b", low) or "destroy_n unencoded" in low:
+    if _re_search(r"\bdestroy_n\b", low) or "destroy_n unencoded" in low:
         return (
             f"C++ destroy_n unencoded: {engine} is not a destroy_n model"
         )
-    if re.search(r"\b(?:std\s*::\s*)?addressof\b", low) or (
+    if _re_search(r"\b(?:std\s*::\s*)?addressof\b", low) or (
         "addressof unencoded" in low
     ):
         return (
             f"C++ std::addressof unencoded: {engine} is not an "
             "addressof model"
         )
-    if re.search(r"\bas_rvalue(?:_view)?\b", low) or "as_rvalue unencoded" in low:
+    if _re_search(r"\bas_rvalue(?:_view)?\b", low) or "as_rvalue unencoded" in low:
         return (
             f"C++ as_rvalue unencoded: {engine} is not an as_rvalue model"
         )
-    if re.search(r"\bas_const\b", low) or "as_const unencoded" in low:
+    if _re_search(r"\bas_const\b", low) or "as_const unencoded" in low:
         return (
             f"C++ as_const unencoded: {engine} is not an as_const model"
         )
     if (
-        re.search(r"\btransform_(?:inclusive|exclusive)_scan\b", low)
+        _re_search(r"\btransform_(?:inclusive|exclusive)_scan\b", low)
         or "transform_inclusive_scan unencoded" in low
         or "transform_exclusive_scan unencoded" in low
     ):
@@ -9002,26 +9021,26 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"C++ transform_inclusive_scan unencoded: {engine} is not a "
             "transform_inclusive_scan model"
         )
-    if re.search(r"\bexclusive_scan\b", low) or "exclusive_scan unencoded" in low:
+    if _re_search(r"\bexclusive_scan\b", low) or "exclusive_scan unencoded" in low:
         return (
             f"C++ exclusive_scan unencoded: {engine} is not an "
             "exclusive_scan model"
         )
-    if re.search(r"\binclusive_scan\b", low) or "inclusive_scan unencoded" in low:
+    if _re_search(r"\binclusive_scan\b", low) or "inclusive_scan unencoded" in low:
         return (
             f"C++ inclusive_scan unencoded: {engine} is not an "
             "inclusive_scan model"
         )
-    if re.search(r"\btransform_reduce\b", low) or "transform_reduce unencoded" in low:
+    if _re_search(r"\btransform_reduce\b", low) or "transform_reduce unencoded" in low:
         return (
             f"C++ transform_reduce unencoded: {engine} is not a "
             "transform_reduce model"
         )
-    if re.search(r"\bstd\s*::\s*reduce\b", low) or "std::reduce unencoded" in low:
+    if _re_search(r"\bstd\s*::\s*reduce\b", low) or "std::reduce unencoded" in low:
         return (
             f"C++ std::reduce unencoded: {engine} is not a reduce model"
         )
-    if re.search(
+    if _re_search(
         r"\buninitialized_(?:fill(?:_n)?|default_construct(?:_n)?)\b",
         low,
     ) or "uninitialized_fill unencoded" in low:
@@ -9029,14 +9048,14 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"C++ uninitialized_fill unencoded: {engine} is not an "
             "uninitialized_fill model"
         )
-    if re.search(r"\buninitialized_value_construct(?:_n)?\b", low) or (
+    if _re_search(r"\buninitialized_value_construct(?:_n)?\b", low) or (
         "uninitialized_value_construct unencoded" in low
     ):
         return (
             f"C++ uninitialized_value_construct unencoded: {engine} is not an "
             "uninitialized_value_construct model"
         )
-    if re.search(r"\buninitialized_(?:copy|move)(?:_n)?\b", low) or (
+    if _re_search(r"\buninitialized_(?:copy|move)(?:_n)?\b", low) or (
         "uninitialized_copy unencoded" in low
     ):
         return (
@@ -9044,72 +9063,72 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             "uninitialized_copy model"
         )
     if (
-        re.search(r"\b(?:add_sat|sub_sat|mul_sat|div_sat|saturate_cast)\b", low)
+        _re_search(r"\b(?:add_sat|sub_sat|mul_sat|div_sat|saturate_cast)\b", low)
         or "add_sat unencoded" in low
     ):
         return (
             f"C++ add_sat unencoded: {engine} is not an add_sat model"
         )
-    if re.search(r"\bnontype\b", low) or "nontype unencoded" in low:
+    if _re_search(r"\bnontype\b", low) or "nontype unencoded" in low:
         return (
             f"C++ nontype unencoded: {engine} is not a nontype model"
         )
-    if re.search(r"\bis_layout_compatible\b", low) or (
+    if _re_search(r"\bis_layout_compatible\b", low) or (
         "is_layout_compatible unencoded" in low
     ):
         return (
             f"C++ is_layout_compatible unencoded: {engine} is not an "
             "is_layout_compatible model"
         )
-    if re.search(r"\bis_pointer_interconvertible_(?:with_class|base_of)\b", low) or (
+    if _re_search(r"\bis_pointer_interconvertible_(?:with_class|base_of)\b", low) or (
         "is_pointer_interconvertible unencoded" in low
     ):
         return (
             f"C++ is_pointer_interconvertible unencoded: {engine} is not an "
             "is_pointer_interconvertible model"
         )
-    if re.search(r"\bbasic_const_iterator\b", low) or (
+    if _re_search(r"\bbasic_const_iterator\b", low) or (
         "basic_const_iterator unencoded" in low
     ):
         return (
             f"C++ basic_const_iterator unencoded: {engine} is not a "
             "basic_const_iterator model"
         )
-    if re.search(r"\bis_corresponding_member\b", low) or (
+    if _re_search(r"\bis_corresponding_member\b", low) or (
         "is_corresponding_member unencoded" in low
     ):
         return (
             f"C++ is_corresponding_member unencoded: {engine} is not an "
             "is_corresponding_member model"
         )
-    if re.search(r"\bforward_like\b", low) or "forward_like unencoded" in low:
+    if _re_search(r"\bforward_like\b", low) or "forward_like unencoded" in low:
         return (
             f"C++ forward_like unencoded: {engine} is not a "
             "forward_like model"
         )
-    if re.search(r"\b(?:set|get)_terminate\b", low) or (
+    if _re_search(r"\b(?:set|get)_terminate\b", low) or (
         "set_terminate unencoded" in low
     ):
         return (
             f"C++ set_terminate unencoded: {engine} is not a "
             "set_terminate model"
         )
-    if re.search(r"\bis_constant_evaluated\b", low) or (
+    if _re_search(r"\bis_constant_evaluated\b", low) or (
         "is_constant_evaluated unencoded" in low
     ):
         return (
             f"C++ is_constant_evaluated unencoded: {engine} is not an "
             "is_constant_evaluated model"
         )
-    if re.search(r"\bstd\s*::\s*lerp\b", low) or "lerp unencoded" in low:
+    if _re_search(r"\bstd\s*::\s*lerp\b", low) or "lerp unencoded" in low:
         return (
             f"C++ std::lerp unencoded: {engine} is not a lerp model"
         )
-    if re.search(r"\bstd\s*::\s*midpoint\b", low) or "midpoint unencoded" in low:
+    if _re_search(r"\bstd\s*::\s*midpoint\b", low) or "midpoint unencoded" in low:
         return (
             f"C++ std::midpoint unencoded: {engine} is not a midpoint model"
         )
-    if re.search(
+    if _re_search(
         r"\bstd\s*::\s*(?:cmp_(?:less|greater|less_equal|"
         r"greater_equal|equal_to|not_equal_to)|in_range)\b",
         low,
@@ -9117,7 +9136,7 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
         return (
             f"C++ std::cmp_less unencoded: {engine} is not a cmp_less model"
         )
-    if re.search(r"\bstd\s*::\s*count[lr]_(?:zero|one)\b", low) or (
+    if _re_search(r"\bstd\s*::\s*count[lr]_(?:zero|one)\b", low) or (
         "countl_zero unencoded" in low
     ):
         return (
@@ -9164,7 +9183,7 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
         return (
             f"C++ syncbuf unencoded: {engine} is not a syncbuf model"
         )
-    if re.search(r"\b(?:views\s*::\s*counted\b|\bcounted_view\b)", low) or (
+    if _re_search(r"\b(?:views\s*::\s*counted\b|\bcounted_view\b)", low) or (
         "counted_view unencoded" in low or "views::counted unencoded" in low
     ):
         return (
@@ -9200,7 +9219,7 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
             f"C++ current_exception unencoded: {engine} is not a "
             "current_exception model"
         )
-    if re.search(r"\bmake_exception_ptr\b", low) or (
+    if _re_search(r"\bmake_exception_ptr\b", low) or (
         "make_exception_ptr unencoded" in low
     ):
         return (
@@ -9295,7 +9314,7 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
 
 def _has_unencoded_throw(fn: FunctionInfo) -> bool:
     """C++ throw is not in the bitvector encoder. Missing model, not ERROR."""
-    return bool(re.search(r"\bthrow\b", fn.body or ""))
+    return bool(_re_search(r"\bthrow\b", fn.body or ""))
 
 
 def _has_unencoded_setjmp(fn: FunctionInfo) -> bool:
@@ -9304,7 +9323,7 @@ def _has_unencoded_setjmp(fn: FunctionInfo) -> bool:
     Missing nonlocal-control / variadic model, not a parse ERROR and
     not a proof. `goto` stays ERROR and is not this case.
     """
-    return bool(re.search(
+    return bool(_re_search(
         r"\b(?:setjmp|longjmp|va_list|va_start)\b",
         fn.body or "",
     ))
