@@ -6,7 +6,11 @@ from pathlib import Path
 import re
 
 from prism import laws
-from prism.cparse import _match_brace, extract_functions, strip_comments_keep_lines
+from prism.cparse import (
+    _match_brace,
+    extract_functions_from_text,
+    strip_comments_keep_lines,
+)
 from prism.models import Finding
 
 SHIFT31 = re.compile(
@@ -99,7 +103,7 @@ def _findings_for_file(path: Path, rel: str) -> list[Finding]:
             evidence=lines[line - 1].strip() if 0 < line <= len(lines) else "",
         ))
 
-    funcs = extract_functions(path, rel)
+    funcs = extract_functions_from_text(text, rel or str(path), stripped)
     fn_at = []
     for f in funcs:
         fn_at.append((f.span[0], f.span[1], f.name))
@@ -788,8 +792,23 @@ def _split_call_args(inner: str) -> list[str]:
     return args
 
 
+_CALL_OPEN_RE: dict[str, re.Pattern[str]] = {}
+_PLAIN_IDENT = re.compile(r"\w+")
+
+
+def _call_open_re(fn: str) -> re.Pattern[str]:
+    pat = _CALL_OPEN_RE.get(fn)
+    if pat is None:
+        pat = re.compile(rf"\b{fn}\s*\(")
+        _CALL_OPEN_RE[fn] = pat
+    return pat
+
+
 def _find_call_args(line: str, fn: str) -> list[str] | None:
-    m = re.search(rf"\b{fn}\s*\(", line)
+    # A plain identifier must occur literally; skip the regex when absent.
+    if fn not in line and _PLAIN_IDENT.fullmatch(fn):
+        return None
+    m = _call_open_re(fn).search(line)
     if not m:
         return None
     start = m.end()
@@ -1469,21 +1488,16 @@ def _cxx_new_delete(lines, rel, funcs, out) -> None:
 _UNARY_BITOP_PREV = set("=(,?:;{[|&!~^+-*/%<>")
 
 
+# Same left-to-right scan as a character loop: == != <= >= win, << and >>
+# are stepped over whole, then a lone < or > is a comparison.
+_CMP_TOKEN = re.compile(r"==|!=|<=|>=|<<|>>|[<>]")
+
+
 def _has_comparison(s: str) -> bool:
     """True for == != <= >= < > that are not << or >>."""
-    i = 0
-    n = len(s)
-    while i < n:
-        if s.startswith("==", i) or s.startswith("!=", i):
+    for m in _CMP_TOKEN.finditer(s):
+        if m.group() not in ("<<", ">>"):
             return True
-        if s.startswith("<=", i) or s.startswith(">=", i):
-            return True
-        if s.startswith("<<", i) or s.startswith(">>", i):
-            i += 2
-            continue
-        if s[i] in "<>":
-            return True
-        i += 1
     return False
 
 
@@ -1516,9 +1530,14 @@ def _bool_as_bit(lines, rel, funcs, out) -> None:
     `flags & MASK` is not this. `a == 1 & b == 2` is. Unary `&` is not.
     """
     for fn in funcs:
+        # No & or | in the body: no binary bit-op on any line.
+        if "&" not in fn.body and "|" not in fn.body:
+            continue
         start = fn.span[0]
         seen: set[int] = set()
         for i, ln in enumerate(fn.body.splitlines()):
+            if "&" not in ln and "|" not in ln:
+                continue
             if not _has_comparison(ln):
                 continue
             if not _binary_bitop_indices(ln):
@@ -1762,6 +1781,9 @@ def _unchecked_alloc(lines, rel, funcs, out) -> None:
         chunk = lines[start - 1 : end]
         seen: set[tuple[str, int]] = set()
         for i, ln in enumerate(chunk):
+            # UNCHECKED_ALLOC names malloc/calloc/realloc.
+            if "alloc" not in ln:
+                continue
             m = UNCHECKED_ALLOC.search(ln)
             if not m:
                 continue
@@ -1793,6 +1815,9 @@ def _nowait_alloc(lines, rel, funcs, out) -> None:
         chunk = lines[start - 1 : end]
         seen: set[tuple[str, int]] = set()
         for i, ln in enumerate(chunk):
+            # NOWAIT_ALLOC needs M_NOWAIT on the line.
+            if "M_NOWAIT" not in ln:
+                continue
             m = NOWAIT_ALLOC.search(ln)
             if not m:
                 continue
@@ -12766,6 +12791,9 @@ def _pointer_param_names(fn) -> list[str]:
 
 
 def _param_null_tested(name: str, body: str) -> bool:
+    # Every test below names `name` literally.
+    if name not in body:
+        return False
     v = re.escape(name)
     tests = (
         rf"\bif\s*\(\s*{v}\s*==\s*(?:NULL|nullptr|0)\b",
@@ -12780,6 +12808,9 @@ def _param_null_tested(name: str, body: str) -> bool:
 def _mem_leak(lines, rel, funcs, out) -> None:
     """Local malloc/calloc/realloc freed on some returns but not others."""
     for fn in funcs:
+        # UNCHECKED_ALLOC names malloc/calloc/realloc; no alloc, no finding.
+        if "alloc" not in fn.body:
+            continue
         body_lines = fn.body.splitlines()
         allocs: dict[str, list[int]] = {}
         frees: dict[str, list[int]] = {}
@@ -14358,8 +14389,14 @@ def _cxx_this_capture(stripped, lines, rel, funcs, out) -> None:
     """
     reported: set[str] = set()
     for fn in funcs:
-        params = {name for typ, name in fn.params if name}
         body = fn.body or ""
+        # A hit needs `return [..]` or a stored `auto f = [..]`; without
+        # either both loops below find nothing.
+        if "[" not in body or (
+            not _CXX_RETURN_LAMBDA.search(body) and not _CXX_AUTO_LAMBDA.search(body)
+        ):
+            continue
+        params = {name for typ, name in fn.params if name}
         members = _fn_class_members(fn, stripped)
         locals_ok: set[str] = set(params)
         for ln in body.splitlines():
