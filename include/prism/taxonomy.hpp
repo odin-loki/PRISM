@@ -24,7 +24,7 @@ struct TaxonomyRow : TaxonomyClass {
 
 PRISM_API const std::vector<TaxonomyClass>& taxonomy_classes();
 PRISM_API std::vector<TaxonomyRow> coverage_from_report(const RunReport& report);
-// Helix refuse_llm_cover: LLM cannot COVER. READS or only-LLM hits demote COVERED to PARTIAL.
+// Python engine refuse_llm_cover: LLM cannot COVER. READS or only-LLM hits demote COVERED to PARTIAL.
 PRISM_API std::string refuse_llm_cover(const RunReport& report, const std::string& cid,
                                        std::string verdict, const std::string& best);
 

@@ -1,4 +1,4 @@
-"""One-shot generators: taxonomy + BMC unencoded gates from Helix Python."""
+"""One-shot generators: taxonomy + BMC unencoded gates from the Python engine Python."""
 from __future__ import annotations
 
 import ast
@@ -10,7 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from helix.taxonomy import CLASSES, _BMC_UB  # noqa: E402
+from prism.taxonomy import CLASSES, _BMC_UB  # noqa: E402
 
 
 def cpp_escape(s: str) -> str:
@@ -189,7 +189,7 @@ def _cpp_re_lit(raw: str) -> str:
 
 def gen_unenc() -> tuple[str, int]:
     """Lift sequential re.search gates from unencoded_syntax_reason."""
-    src = (ROOT / "helix" / "bmc.py").read_text(encoding="utf-8")
+    src = (ROOT / "prism" / "bmc.py").read_text(encoding="utf-8")
     tree = ast.parse(src)
     env: dict[str, str] = {}
     start_words: list[str] | None = None
@@ -252,7 +252,7 @@ def gen_unenc() -> tuple[str, int]:
         "    const std::string& body = fn.body;",
         "    if (body.empty()) return std::nullopt;",
         "    std::string blob = fn.signature + \"\\n\" + body;",
-        f"    // generated {n_search} gates from helix/bmc.py",
+        f"    // generated {n_search} gates from prism/bmc.py",
         f'    if (prism::re_search("{cpp_escape(DESIGNATED_INIT_RE)}", body)) {{',
         '        return std::format("designated init unencoded: {} is not a designated-init model", engine);',
         "    }",

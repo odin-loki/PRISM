@@ -14,9 +14,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from helix import laws
-from helix.adapters import run_compiler
-from helix.agent import (
+from prism import laws
+from prism.adapters import run_compiler
+from prism.agent import (
     CC_INSTALL,
     CC_MISSING_MSG,
     execute_cex,
@@ -27,9 +27,9 @@ from helix.agent import (
     sandbox_run,
     sandbox_verdict,
 )
-from helix.ai import LLM_INSTALL, LLM_UNAVAILABLE_MSG
-from helix.config import Config
-from helix.models import Finding, FunctionInfo
+from prism.ai import LLM_INSTALL, LLM_UNAVAILABLE_MSG
+from prism.config import Config
+from prism.models import Finding, FunctionInfo
 
 ROOT = Path(__file__).resolve().parents[1]
 TD = ROOT / "testdata"
@@ -50,7 +50,7 @@ def _engine(available: bool = True, text: str = "", error=None):
 
 class TestSandboxRun(unittest.TestCase):
     def test_missing_compiler(self):
-        with mock.patch("helix.agent.shutil.which", return_value=None):
+        with mock.patch("prism.agent.shutil.which", return_value=None):
             result = sandbox_run("int main(void){return 0;}")
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"], "no compiler")
@@ -84,14 +84,14 @@ class TestSandboxRun(unittest.TestCase):
         src = (
             '#include <stdio.h>\n'
             "int main(void) {\n"
-            '    puts("helix-ok");\n'
+            '    puts("prism-ok");\n'
             "    return 0;\n"
             "}\n"
         )
         result = sandbox_run(src, timeout=5.0)
         self.assertTrue(result["ok"], msg=result)
         self.assertEqual(result["code"], 0)
-        self.assertIn("helix-ok", result["stdout"])
+        self.assertIn("prism-ok", result["stdout"])
         self.assertEqual(result["error"], None)
         self.assertEqual(sandbox_verdict(result), laws.CLEAN)
         self.assertNotEqual(sandbox_verdict(result), laws.PROVED)
@@ -128,7 +128,7 @@ class TestSandboxRun(unittest.TestCase):
 
 class TestRunCompiler(unittest.TestCase):
     def test_missing_compiler_is_notrun(self):
-        with mock.patch("helix.adapters.shutil.which", return_value=None):
+        with mock.patch("prism.adapters.shutil.which", return_value=None):
             out = run_compiler([TD / "shift_ub.c"], Config())
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0].status, laws.NOTRUN)
@@ -152,7 +152,7 @@ class TestRunCompiler(unittest.TestCase):
 class TestInterpreterLoopCompilerGate(unittest.TestCase):
     def test_no_compiler_is_notrun(self):
         engine = _engine(text="int main(void){ return 0; }")
-        with mock.patch("helix.agent.find_cc", return_value=None):
+        with mock.patch("prism.agent.find_cc", return_value=None):
             out = interpreter_loop(engine, "write a test harness", rounds=2)
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0].status, laws.NOTRUN)
@@ -163,7 +163,7 @@ class TestInterpreterLoopCompilerGate(unittest.TestCase):
 
     def test_no_llm_is_notrun_with_install(self):
         engine = _engine(available=False)
-        with mock.patch("helix.agent.find_cc", return_value="/usr/bin/gcc"):
+        with mock.patch("prism.agent.find_cc", return_value="/usr/bin/gcc"):
             out = interpreter_loop(engine, "write a test harness", rounds=2)
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0].status, laws.NOTRUN)
@@ -174,8 +174,8 @@ class TestInterpreterLoopCompilerGate(unittest.TestCase):
 
     def test_silence_is_hypothesis_not_proved(self):
         engine = _engine(text="   ")
-        with mock.patch("helix.agent.find_cc", return_value="/usr/bin/gcc"), \
-             mock.patch("helix.agent.sandbox_run") as sandbox:
+        with mock.patch("prism.agent.find_cc", return_value="/usr/bin/gcc"), \
+             mock.patch("prism.agent.sandbox_run") as sandbox:
             out = interpreter_loop(engine, "test property", rounds=2)
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0].status, laws.HYPOTHESIS)
@@ -187,8 +187,8 @@ class TestInterpreterLoopCompilerGate(unittest.TestCase):
     def test_successful_round_returns_clean(self):
         engine = _engine(text="int main(void){ return 0; }")
         ok = {"ok": True, "error": None, "stdout": "", "stderr": "", "code": 0}
-        with mock.patch("helix.agent.find_cc", return_value="/usr/bin/gcc"), \
-             mock.patch("helix.agent.sandbox_run", return_value=ok):
+        with mock.patch("prism.agent.find_cc", return_value="/usr/bin/gcc"), \
+             mock.patch("prism.agent.sandbox_run", return_value=ok):
             out = interpreter_loop(engine, "test property", rounds=3)
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0].status, laws.CLEAN)
@@ -199,8 +199,8 @@ class TestInterpreterLoopCompilerGate(unittest.TestCase):
     def test_exhausted_rounds_is_failed_not_notrun(self):
         engine = _engine(text="int main(void){ return 1; }")
         bad = {"ok": False, "error": "exit", "stdout": "", "stderr": "", "code": 1}
-        with mock.patch("helix.agent.find_cc", return_value="/usr/bin/gcc"), \
-             mock.patch("helix.agent.sandbox_run", return_value=bad):
+        with mock.patch("prism.agent.find_cc", return_value="/usr/bin/gcc"), \
+             mock.patch("prism.agent.sandbox_run", return_value=bad):
             out = interpreter_loop(engine, "test property", rounds=2)
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0].status, laws.FAILED)
@@ -212,8 +212,8 @@ class TestInterpreterLoopCompilerGate(unittest.TestCase):
             "ok": False, "error": "crash", "stdout": "",
             "stderr": "Aborted", "code": -6,
         }
-        with mock.patch("helix.agent.find_cc", return_value="/usr/bin/gcc"), \
-             mock.patch("helix.agent.sandbox_run", return_value=crash):
+        with mock.patch("prism.agent.find_cc", return_value="/usr/bin/gcc"), \
+             mock.patch("prism.agent.sandbox_run", return_value=crash):
             out = interpreter_loop(engine, "demonstrate abort", rounds=3)
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0].status, laws.CRASH)
@@ -226,7 +226,7 @@ class TestInterpreterLoopCompilerGate(unittest.TestCase):
 class TestRlefRepairHonesty(unittest.TestCase):
     def test_no_llm_is_notrun_with_install(self):
         engine = _engine(available=False)
-        with mock.patch("helix.agent.find_cc", return_value="/usr/bin/gcc"):
+        with mock.patch("prism.agent.find_cc", return_value="/usr/bin/gcc"):
             out = rlef_repair(engine, "int x;", "FAILED", rounds=2)
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0].status, laws.NOTRUN)
@@ -238,7 +238,7 @@ class TestRlefRepairHonesty(unittest.TestCase):
 
     def test_no_compiler_is_notrun(self):
         engine = _engine(text="int main(void){ return 0; }")
-        with mock.patch("helix.agent.find_cc", return_value=None):
+        with mock.patch("prism.agent.find_cc", return_value=None):
             out = rlef_repair(engine, "int x;", "FAILED", rounds=2)
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0].status, laws.NOTRUN)
@@ -249,8 +249,8 @@ class TestRlefRepairHonesty(unittest.TestCase):
 
     def test_silence_is_hypothesis_not_proved(self):
         engine = _engine(text="")
-        with mock.patch("helix.agent.find_cc", return_value="/usr/bin/gcc"), \
-             mock.patch("helix.agent.sandbox_run") as sandbox:
+        with mock.patch("prism.agent.find_cc", return_value="/usr/bin/gcc"), \
+             mock.patch("prism.agent.sandbox_run") as sandbox:
             out = rlef_repair(engine, "int x;", "FAILED", rounds=2)
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0].status, laws.HYPOTHESIS)
@@ -261,8 +261,8 @@ class TestRlefRepairHonesty(unittest.TestCase):
 
     def test_http_error_before_any_patch_is_notrun(self):
         engine = _engine(error="HTTP Error 502: Bad Gateway", text="")
-        with mock.patch("helix.agent.find_cc", return_value="/usr/bin/gcc"), \
-             mock.patch("helix.agent.sandbox_run") as sandbox:
+        with mock.patch("prism.agent.find_cc", return_value="/usr/bin/gcc"), \
+             mock.patch("prism.agent.sandbox_run") as sandbox:
             out = rlef_repair(engine, "int x;", "FAILED", rounds=2)
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0].status, laws.NOTRUN)
@@ -276,8 +276,8 @@ class TestRlefRepairHonesty(unittest.TestCase):
     def test_best_score_is_clean_not_proved(self):
         engine = _engine(text="int main(void){ return 0; }")
         ok = {"ok": True, "error": None, "stdout": "", "stderr": "", "code": 0}
-        with mock.patch("helix.agent.find_cc", return_value="/usr/bin/gcc"), \
-             mock.patch("helix.agent.sandbox_run", return_value=ok):
+        with mock.patch("prism.agent.find_cc", return_value="/usr/bin/gcc"), \
+             mock.patch("prism.agent.sandbox_run", return_value=ok):
             out = rlef_repair(
                 engine, "int broken;", "FAILED", rounds=2, bmc_oracle=lambda _src: None,
             )
@@ -294,8 +294,8 @@ class TestRlefRepairHonesty(unittest.TestCase):
             "ok": False, "error": "crash", "stdout": "",
             "stderr": "Aborted", "code": -6,
         }
-        with mock.patch("helix.agent.find_cc", return_value="/usr/bin/gcc"), \
-             mock.patch("helix.agent.sandbox_run", return_value=crash):
+        with mock.patch("prism.agent.find_cc", return_value="/usr/bin/gcc"), \
+             mock.patch("prism.agent.sandbox_run", return_value=crash):
             out = rlef_repair(
                 engine, "int broken;", "CRASH", rounds=2, bmc_oracle=lambda _src: None,
             )
@@ -308,8 +308,8 @@ class TestRlefRepairHonesty(unittest.TestCase):
     def test_bmc_failed_is_negative_not_clean(self):
         engine = _engine(text="int main(void){ return 0; }")
         ok = {"ok": True, "error": None, "stdout": "", "stderr": "", "code": 0}
-        with mock.patch("helix.agent.find_cc", return_value="/usr/bin/gcc"), \
-             mock.patch("helix.agent.sandbox_run", return_value=ok):
+        with mock.patch("prism.agent.find_cc", return_value="/usr/bin/gcc"), \
+             mock.patch("prism.agent.sandbox_run", return_value=ok):
             out = rlef_repair(
                 engine, "int broken;", "FAILED", rounds=2,
                 bmc_oracle=lambda _src: laws.FAILED,
@@ -327,8 +327,8 @@ class TestRlefRepairHonesty(unittest.TestCase):
     def test_bmc_proved_is_terminal_success(self):
         engine = _engine(text="int abs_ok(int x){ return x < 0 ? -x : x; }")
         ok = {"ok": True, "error": None, "stdout": "", "stderr": "", "code": 0}
-        with mock.patch("helix.agent.find_cc", return_value="/usr/bin/gcc"), \
-             mock.patch("helix.agent.sandbox_run", return_value=ok):
+        with mock.patch("prism.agent.find_cc", return_value="/usr/bin/gcc"), \
+             mock.patch("prism.agent.sandbox_run", return_value=ok):
             out = rlef_repair(
                 engine, "int broken;", "FAILED", rounds=2,
                 bmc_oracle=lambda _src: laws.PROVED,
@@ -342,8 +342,8 @@ class TestRlefRepairHonesty(unittest.TestCase):
     def test_bmc_bounded_is_not_proved(self):
         engine = _engine(text="int main(void){ return 0; }")
         ok = {"ok": True, "error": None, "stdout": "", "stderr": "", "code": 0}
-        with mock.patch("helix.agent.find_cc", return_value="/usr/bin/gcc"), \
-             mock.patch("helix.agent.sandbox_run", return_value=ok):
+        with mock.patch("prism.agent.find_cc", return_value="/usr/bin/gcc"), \
+             mock.patch("prism.agent.sandbox_run", return_value=ok):
             out = rlef_repair(
                 engine, "int broken;", "FAILED", rounds=2,
                 bmc_oracle=lambda _src: laws.BOUNDED,
@@ -456,7 +456,7 @@ class TestExecuteCexHonesty(unittest.TestCase):
 
 class TestFindCc(unittest.TestCase):
     def test_find_cc_delegates_to_which(self):
-        with mock.patch("helix.agent.shutil.which", side_effect=lambda n: "/bin/gcc" if n == "gcc" else None):
+        with mock.patch("prism.agent.shutil.which", side_effect=lambda n: "/bin/gcc" if n == "gcc" else None):
             self.assertEqual(find_cc(), "/bin/gcc")
 
 

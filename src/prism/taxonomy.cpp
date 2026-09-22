@@ -627,7 +627,7 @@ std::vector<TaxonomyRow> coverage_from_report(const RunReport& report) {
     for (auto& s : report.stages) if (s.status == "ok") ran_ok.insert(s.name);
     auto note = [&](const std::string& cls, const std::string& strength) {
         if (cls.empty() || !rank.contains(strength)) return;
-        // Helix coverage_from_report.note: READS never overwrites an existing hit.
+        // Python engine coverage_from_report.note: READS never overwrites an existing hit.
         if (strength == READS) {
             if (!hits.contains(cls)) hits[cls] = READS;
             return;
@@ -657,7 +657,7 @@ std::vector<TaxonomyRow> coverage_from_report(const RunReport& report) {
             if (f.status == laws::FAILED || f.status == laws::CRASH || f.status == laws::BOUNDED) {
                 auto st = rank.contains(f.strength) ? f.strength : FINDS;
                 if (f.status == laws::BOUNDED) st = SOME;
-                // READS stays PARTIAL — never promote to FINDS/COVERED (Helix taxonomy.py).
+                // READS stays PARTIAL — never promote to FINDS/COVERED (the Python engine taxonomy.py).
                 note(f.cls, st);
             }
         }

@@ -7,9 +7,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from helix import laws
-from helix.bmc import HAS_Z3
-from helix.concolic import (
+from prism import laws
+from prism.bmc import HAS_Z3
+from prism.concolic import (
     _UNSAT,
     _branch_conditions,
     _neighbor_for_cond,
@@ -17,7 +17,7 @@ from helix.concolic import (
     concolic_function,
     run_concolic,
 )
-from helix.cparse import extract_functions
+from prism.cparse import extract_functions
 
 ROOT = Path(__file__).resolve().parents[1]
 TD = ROOT / "testdata"
@@ -2085,7 +2085,7 @@ class TestConcolicKleeFork(unittest.TestCase):
 
     def test_z3_missing_keeps_concrete_clean_not_proof(self):
         f, _ = fn("klee_fork_neg")
-        with patch("helix.concolic.HAS_Z3", False):
+        with patch("prism.concolic.HAS_Z3", False):
             r = concolic_function(f, budget=32)
         self.assertEqual(r.status, laws.CLEAN, r.message)
         self.assertIn("not a proof", r.message)
@@ -2119,7 +2119,7 @@ class TestConcolicKleeFork(unittest.TestCase):
     def test_unsat_without_z3_is_clean_not_a_skipped_proof(self):
         """Missing Z3 cannot classify the then-branch as Solver::False."""
         f, _ = fn("klee_fork_unsat")
-        with patch("helix.concolic.HAS_Z3", False):
+        with patch("prism.concolic.HAS_Z3", False):
             r = concolic_function(f, budget=32)
         self.assertEqual(r.status, laws.CLEAN, r.message)
         self.assertIn("not a proof", r.message)

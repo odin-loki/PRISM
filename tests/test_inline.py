@@ -5,11 +5,11 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from helix import laws
-from helix.bmc import HAS_Z3, bmc_function, run_bmc
-from helix.cparse import extract_functions
-from helix.inline import inline_static
-from helix.models import FunctionInfo
+from prism import laws
+from prism.bmc import HAS_Z3, bmc_function, run_bmc
+from prism.cparse import extract_functions
+from prism.inline import inline_static
+from prism.models import FunctionInfo
 
 ROOT = Path(__file__).resolve().parents[1]
 TD = ROOT / "testdata"

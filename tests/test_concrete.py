@@ -6,13 +6,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from helix import laws
-from helix.bmc import INT_MAX, INT_MIN
-from helix.concrete import decode_args, execute, interesting_seeds, pack_args
-from helix.cparse import extract_functions
-from helix.fuse import run_fuse
-from helix.fuzz import fuzz_function
-from helix.models import Finding, FunctionInfo
+from prism import laws
+from prism.bmc import INT_MAX, INT_MIN
+from prism.concrete import decode_args, execute, interesting_seeds, pack_args
+from prism.cparse import extract_functions
+from prism.fuse import run_fuse
+from prism.fuzz import fuzz_function
+from prism.models import Finding, FunctionInfo
 
 ROOT = Path(__file__).resolve().parents[1]
 TD = ROOT / "testdata"
@@ -501,8 +501,8 @@ class TestFuseEngine(unittest.TestCase):
             passed_seeds.append(seeds)
             return clean
 
-        with patch("helix.agent.fuzz4all_seeds", side_effect=fake_fuzz4all):
-            with patch("helix.fuse.fuzz_function", side_effect=fake_fuzz):
+        with patch("prism.agent.fuzz4all_seeds", side_effect=fake_fuzz4all):
+            with patch("prism.fuse.fuzz_function", side_effect=fake_fuzz):
                 recs = run_fuse([f], [], p.parent, budget=0.2, iters=4, engine=Eng())
         self.assertTrue(passed_seeds)
         self.assertIsNotNone(passed_seeds[0])
@@ -528,8 +528,8 @@ class TestFuseEngine(unittest.TestCase):
             strength=laws.STRENGTH_FINDS,
             extra={"new_cov": 0, "iters": 1, "corpus": 1},
         )
-        with patch("helix.fuse.fuzz_function", return_value=clean):
-            with patch("helix.agent.chatfuzz_mutants", side_effect=fake_mutants):
+        with patch("prism.fuse.fuzz_function", return_value=clean):
+            with patch("prism.agent.chatfuzz_mutants", side_effect=fake_mutants):
                 recs = run_fuse([f], [], p.parent, budget=0.2, iters=4, engine=Eng())
         self.assertEqual(len(called), 1, called)
         self.assertEqual(called[0][0], "saturate")
@@ -538,7 +538,7 @@ class TestFuseEngine(unittest.TestCase):
 
 
 class TestCppFuzzBinarySource(unittest.TestCase):
-    """C++ fuzz_function must match Helix _binary_fuzz after concrete."""
+    """C++ fuzz_function must match the Python engine _binary_fuzz after concrete."""
 
     def test_binary_fuzz_after_concrete_before_clean(self):
         src = (ROOT / "src" / "prism" / "stages_rest.cpp").read_text(encoding="utf-8")

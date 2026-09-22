@@ -10,10 +10,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from helix import laws
-from helix.cparse import extract_functions
-from helix.muttest import iter_mutations, run_muttest
-from helix.rapid import check_function, run_rapid
+from prism import laws
+from prism.cparse import extract_functions
+from prism.muttest import iter_mutations, run_muttest
+from prism.rapid import check_function, run_rapid
 
 ROOT = Path(__file__).resolve().parents[1]
 TD = ROOT / "testdata"
@@ -125,7 +125,7 @@ class TestRapid(unittest.TestCase):
             "counterexample": "",
             "engine": "",
         }
-        with mock.patch("helix.rapid.run_plan", return_value=missing):
+        with mock.patch("prism.rapid.run_plan", return_value=missing):
             rec = check_function(f, trials=4)
         self.assertIsNotNone(rec)
         self.assertEqual(rec.status, laws.NOTRUN)
@@ -189,7 +189,7 @@ class TestMuttest(unittest.TestCase):
             "counterexample": "",
             "engine": "",
         }
-        with mock.patch("helix.muttest.run_plan", return_value=missing):
+        with mock.patch("prism.muttest.run_plan", return_value=missing):
             recs = run_muttest([f], trials=4)
         self.assertTrue(recs)
         r = recs[0]
@@ -215,7 +215,7 @@ class TestMuttest(unittest.TestCase):
                 return dead
             return ok
 
-        with mock.patch("helix.muttest.run_plan", side_effect=fake_plan):
+        with mock.patch("prism.muttest.run_plan", side_effect=fake_plan):
             recs = run_muttest([f], trials=4)
         plus = [r for r in recs if (r.extra or {}).get("from") == "+"]
         self.assertTrue(plus, recs)
@@ -236,8 +236,8 @@ class TestMuttest(unittest.TestCase):
             "counterexample": "",
             "engine": "",
         }
-        with mock.patch("helix.muttest.run_plan", return_value=missing), mock.patch(
-            "helix.muttest.shutil.which", return_value=None
+        with mock.patch("prism.muttest.run_plan", return_value=missing), mock.patch(
+            "prism.muttest.shutil.which", return_value=None
         ):
             recs = run_muttest([f], trials=4)
         self.assertTrue(recs)
@@ -259,7 +259,7 @@ class TestMuttest(unittest.TestCase):
                 return bad
             return ok
 
-        with mock.patch("helix.muttest.run_plan", side_effect=fake_plan):
+        with mock.patch("prism.muttest.run_plan", side_effect=fake_plan):
             recs = run_muttest([f], trials=4)
         plus = [r for r in recs if (r.extra or {}).get("from") == "+"]
         self.assertTrue(plus, recs)

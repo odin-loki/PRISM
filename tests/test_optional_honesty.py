@@ -13,7 +13,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from helix.config import (
+from prism.config import (
     VENDOR_DIR,
     adapter_install,
     find_vendored_exe,
@@ -77,8 +77,8 @@ class TestOptionalSearchAndVendor(unittest.TestCase):
                 naked.write_text("// vendored source\n", encoding="utf-8")
                 if sys.platform != "win32":
                     naked.chmod(0o755)
-            with mock.patch("helix.config.repo_root", return_value=root), \
-                 mock.patch("helix.config.shutil.which", return_value=None):
+            with mock.patch("prism.config.repo_root", return_value=root), \
+                 mock.patch("prism.config.shutil.which", return_value=None):
                 for stage in _LISTED:
                     names = _NAMES[stage]
                     self.assertIsNone(
@@ -101,8 +101,8 @@ class TestOptionalSearchAndVendor(unittest.TestCase):
             exe.write_bytes(b"MZ" if sys.platform == "win32" else b"\x7fELF")
             if sys.platform != "win32":
                 exe.chmod(0o755)
-            with mock.patch("helix.config.repo_root", return_value=root), \
-                 mock.patch("helix.config.shutil.which", return_value=None):
+            with mock.patch("prism.config.repo_root", return_value=root), \
+                 mock.patch("prism.config.shutil.which", return_value=None):
                 self.assertIsNone(find_vendored_exe("clang-tidy", _NAMES["clang-tidy"]))
                 self.assertIsNone(resolve_adapter(Config(), "clang-tidy", _NAMES["clang-tidy"]))
 
@@ -119,24 +119,24 @@ class TestOptionalSearchAndVendor(unittest.TestCase):
                 for p in (explicit, pathbin, vendor):
                     p.chmod(0o755)
             cfg = Config(tools={"klee": str(explicit)})
-            with mock.patch("helix.config.find_vendored_exe", return_value=str(vendor)), \
-                 mock.patch("helix.config.shutil.which", return_value=str(pathbin)):
+            with mock.patch("prism.config.find_vendored_exe", return_value=str(vendor)), \
+                 mock.patch("prism.config.shutil.which", return_value=str(pathbin)):
                 hit = resolve_adapter(cfg, "klee", ("klee",))
             self.assertEqual(Path(hit).resolve(), explicit.resolve())
 
             cfg2 = Config()
-            with mock.patch("helix.config.find_vendored_exe", return_value=str(vendor)), \
-                 mock.patch("helix.config.shutil.which", return_value=str(pathbin)):
+            with mock.patch("prism.config.find_vendored_exe", return_value=str(vendor)), \
+                 mock.patch("prism.config.shutil.which", return_value=str(pathbin)):
                 hit = resolve_adapter(cfg2, "klee", ("klee",))
             self.assertEqual(Path(hit).resolve(), vendor.resolve())
 
-            with mock.patch("helix.config.find_vendored_exe", return_value=None), \
-                 mock.patch("helix.config.shutil.which", return_value=str(pathbin)):
+            with mock.patch("prism.config.find_vendored_exe", return_value=None), \
+                 mock.patch("prism.config.shutil.which", return_value=str(pathbin)):
                 hit = resolve_adapter(Config(), "klee", ("klee",))
             self.assertEqual(Path(hit).resolve(), pathbin.resolve())
 
-            with mock.patch("helix.config.find_vendored_exe", return_value=None), \
-                 mock.patch("helix.config.shutil.which", return_value=None):
+            with mock.patch("prism.config.find_vendored_exe", return_value=None), \
+                 mock.patch("prism.config.shutil.which", return_value=None):
                 self.assertIsNone(resolve_adapter(Config(), "klee", ("klee",)))
 
 

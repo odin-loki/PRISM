@@ -1,6 +1,6 @@
 """C++ run_sanitize source-contract. python -m unittest tests.test_prism_sanitize -q
 
-helix.sanitize.run_sanitize is law. adapters.cpp must probe ASan, UBSan, and
+prism.sanitize.run_sanitize is law. adapters.cpp must probe ASan, UBSan, and
 TSan. Flag-accept is not a sanitizer: UBSan must fire planted signed overflow,
 ASan must fire planted heap OOB. CLEAN is not a proof. Missing compiler or
 sanitizer is NOTRUN, never CLEAN/PROVED.
@@ -12,7 +12,7 @@ import re
 import unittest
 from pathlib import Path
 
-from helix import laws
+from prism import laws
 
 ROOT = Path(__file__).resolve().parents[1]
 ADAPTERS = ROOT / "src" / "prism" / "adapters.cpp"

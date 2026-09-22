@@ -140,7 +140,7 @@ class TestExecuteCexHonestyContract(unittest.TestCase):
 
 
 class TestHarnessParsefailContract(unittest.TestCase):
-    def test_harness_for_parsefail_is_helix_mapper_not_generic_stub(self):
+    def test_harness_for_parsefail_is_prism_mapper_not_generic_stub(self):
         rest = _read(STAGES_REST)
         self.assertNotIn("is not that model", rest)
         bmc = (ROOT / "src" / "prism" / "bmc.cpp").read_text(encoding="utf-8")

@@ -10,10 +10,10 @@ from pathlib import Path
 
 from unittest import mock
 
-from helix import laws
-from helix.contracts import parse_comments, prove_contracts
-from helix.cparse import extract_functions
-from helix.models import FunctionInfo
+from prism import laws
+from prism.contracts import parse_comments, prove_contracts
+from prism.cparse import extract_functions
+from prism.models import FunctionInfo
 
 ROOT = Path(__file__).resolve().parents[1]
 TD = ROOT / "testdata"
@@ -124,7 +124,7 @@ class TestDecreasesHonesty(unittest.TestCase):
             file="x.c", name="o", kind="OTHER", line=1,
             signature="int o(S s)", params=[("S", "s")], body="return 0;",
         )
-        with mock.patch("helix.contracts.parse_comments", return_value=spec):
+        with mock.patch("prism.contracts.parse_comments", return_value=spec):
             void_recs = prove_contracts([void_fn], 8)
             other_recs = prove_contracts([other_fn], 8)
         self.assertEqual(void_recs[0].status, laws.NEEDS_HARNESS)

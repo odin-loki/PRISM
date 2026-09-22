@@ -97,7 +97,7 @@ CliLaunch parse_cli_launch() {
 }
 
 QColor findingStatusBg(const QString& status) {
-    // Same palette as helix/gui.py. CLEAN is blue, never proof-green.
+    // Same palette as prism/gui.py. CLEAN is blue, never proof-green.
     if (status == QLatin1String("PROVED-UNBOUNDED")) return QColor(0x1f, 0x6f, 0x3a);
     if (status == QLatin1String("PROVED")) return QColor(0x2a, 0x81, 0x48);
     if (status == QLatin1String("PROVED-ASSUMING")) return QColor(0x3a, 0x7a, 0x4a);
@@ -308,7 +308,7 @@ void MainWindow::loadSameReport(const QString& outDir) {
             }
         }
         taxArr = obj.value(QStringLiteral("taxonomy")).toArray();
-        // Helix recomputes COVERED/GAP from report.json findings. report.json
+        // Python engine recomputes COVERED/GAP from report.json findings. report.json
         // has no taxonomy key; a CLEAN unify line is never COVERED.
         const auto loaded = prism::RunReport::load(
             std::filesystem::path(outDir.toStdString()) / "report.json");

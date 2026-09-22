@@ -1,15 +1,11 @@
 prism-out/
 prism-out-*/
-helix-out/
-helix-out-*/
 build/
 build_cxx/
 build_wsl/
-native/build/
 __pycache__/
 *.pyc
 .cmake/
-native/third_party/
 .venv/
 venv/
 *.egg-info/

@@ -1,6 +1,6 @@
 """libFuzzer adapter honesty: missing clang/flag is NOTRUN, never a proof.
 
-Helix `_libfuzzer_probe` is law. libfuzzer is not a PATH binary in
+Python engine `_libfuzzer_probe` is law. libfuzzer is not a PATH binary in
 OPTIONAL_TOOLS; `run_optional_tools` always appends a clang
 `-fsanitize=fuzzer` probe. Missing clang or an unsupported fuzzer flag
 is NOTRUN (the probe did not run). A present clang that compiles the
@@ -8,7 +8,7 @@ tiny LLVMFuzzerTestOneInput stub is UNKNOWN — a toolchain finding, not
 a verdict on the user's code. Never CLEAN, never PROVED.
 
 C++ `libfuzzer_probe` in src/prism/adapters.cpp must match that
-mapping (source contract; Helix is the engine).
+mapping (source contract; Python engine is the engine).
 
 python -m unittest tests.test_libfuzzer
 """
@@ -22,16 +22,16 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from helix import laws
-from helix.adapters_extra import (
+from prism import laws
+from prism.adapters_extra import (
     OPTIONAL_TOOLS,
     _LIBFUZZER_INSTALL,
     _libfuzzer_probe,
     _run_libfuzzer,
     run_optional_tools,
 )
-from helix.config import Config
-from helix.models import Finding, FunctionInfo
+from prism.config import Config
+from prism.models import Finding, FunctionInfo
 
 ROOT = Path(__file__).resolve().parents[1]
 _CPP = ROOT / "src" / "prism" / "adapters.cpp"
@@ -78,9 +78,9 @@ class TestLibfuzzerProbe(unittest.TestCase):
         self.assertIn("out.append(_libfuzzer_probe(cfg))", inspect.getsource(run_optional_tools))
 
     def test_missing_clang_via_run_optional_tools_is_notrun(self):
-        with mock.patch("helix.adapters_extra.resolve_adapter", side_effect=_no_adapter), \
-             mock.patch("helix.adapters_extra.shutil.which", return_value=None), \
-             mock.patch("helix.adapters_extra._run") as run:
+        with mock.patch("prism.adapters_extra.resolve_adapter", side_effect=_no_adapter), \
+             mock.patch("prism.adapters_extra.shutil.which", return_value=None), \
+             mock.patch("prism.adapters_extra._run") as run:
             findings = run_optional_tools([C_FILE], Config())
         run.assert_not_called()
         lf = next(f for f in findings if f.stage == "libfuzzer")
@@ -94,8 +94,8 @@ class TestLibfuzzerProbe(unittest.TestCase):
         self._never_proof([lf])
 
     def test_missing_clang_direct_probe_is_notrun(self):
-        with mock.patch("helix.adapters_extra.shutil.which", return_value=None), \
-             mock.patch("helix.adapters_extra._run") as run:
+        with mock.patch("prism.adapters_extra.shutil.which", return_value=None), \
+             mock.patch("prism.adapters_extra._run") as run:
             f = _libfuzzer_probe(Config())
         run.assert_not_called()
         self.assertEqual(f.status, laws.NOTRUN)
@@ -106,9 +106,9 @@ class TestLibfuzzerProbe(unittest.TestCase):
 
     def test_unsupported_fsanitize_fuzzer_is_notrun(self):
         unsupported = _proc(stderr="error: unsupported argument '-fsanitize=fuzzer'", rc=1)
-        with mock.patch("helix.adapters_extra.resolve_adapter", side_effect=_no_adapter), \
-             mock.patch("helix.adapters_extra.shutil.which", return_value=CLANG), \
-             mock.patch("helix.adapters_extra._run", return_value=unsupported) as run:
+        with mock.patch("prism.adapters_extra.resolve_adapter", side_effect=_no_adapter), \
+             mock.patch("prism.adapters_extra.shutil.which", return_value=CLANG), \
+             mock.patch("prism.adapters_extra._run", return_value=unsupported) as run:
             findings = run_optional_tools([], Config())
         run.assert_called()
         cmd = run.call_args[0][0]
@@ -130,8 +130,8 @@ class TestLibfuzzerProbe(unittest.TestCase):
         )
         for stderr in cases:
             with self.subTest(stderr=stderr):
-                with mock.patch("helix.adapters_extra.shutil.which", return_value=CLANG), \
-                     mock.patch("helix.adapters_extra._run", return_value=_proc(stderr=stderr, rc=1)) as run:
+                with mock.patch("prism.adapters_extra.shutil.which", return_value=CLANG), \
+                     mock.patch("prism.adapters_extra._run", return_value=_proc(stderr=stderr, rc=1)) as run:
                     f = _libfuzzer_probe(Config())
                 self.assertEqual(run.call_count, 1, "keyword reject must not fall through to a second probe")
                 self.assertEqual(f.status, laws.NOTRUN)
@@ -141,8 +141,8 @@ class TestLibfuzzerProbe(unittest.TestCase):
 
     def test_generic_compile_fail_second_probe_fail_is_notrun(self):
         fail = _proc(stderr="clang: error: linker command failed", rc=1)
-        with mock.patch("helix.adapters_extra.shutil.which", return_value=CLANG), \
-             mock.patch("helix.adapters_extra._run", return_value=fail) as run:
+        with mock.patch("prism.adapters_extra.shutil.which", return_value=CLANG), \
+             mock.patch("prism.adapters_extra._run", return_value=fail) as run:
             f = _libfuzzer_probe(Config())
         self.assertGreaterEqual(run.call_count, 2)
         self.assertEqual(f.status, laws.NOTRUN)
@@ -153,9 +153,9 @@ class TestLibfuzzerProbe(unittest.TestCase):
 
     def test_successful_probe_is_unknown_not_a_code_verdict(self):
         ok = _proc(rc=0)
-        with mock.patch("helix.adapters_extra.resolve_adapter", side_effect=_no_adapter), \
-             mock.patch("helix.adapters_extra.shutil.which", return_value=CLANG), \
-             mock.patch("helix.adapters_extra._run", return_value=ok) as run:
+        with mock.patch("prism.adapters_extra.resolve_adapter", side_effect=_no_adapter), \
+             mock.patch("prism.adapters_extra.shutil.which", return_value=CLANG), \
+             mock.patch("prism.adapters_extra._run", return_value=ok) as run:
             findings = run_optional_tools([C_FILE], Config())
         run.assert_called()
         cmd = run.call_args[0][0]
@@ -171,8 +171,8 @@ class TestLibfuzzerProbe(unittest.TestCase):
         self._never_proof([lf])
 
     def test_probe_timeout_is_notrun_never_error(self):
-        with mock.patch("helix.adapters_extra.shutil.which", return_value=CLANG), \
-             mock.patch("helix.adapters_extra._run", side_effect=subprocess.TimeoutExpired("clang", 12)):
+        with mock.patch("prism.adapters_extra.shutil.which", return_value=CLANG), \
+             mock.patch("prism.adapters_extra._run", side_effect=subprocess.TimeoutExpired("clang", 12)):
             f = _libfuzzer_probe(Config())
         self.assertEqual(f.status, laws.NOTRUN)
         self.assertNotEqual(f.status, laws.ERROR)
@@ -183,18 +183,18 @@ class TestLibfuzzerProbe(unittest.TestCase):
 
     def test_never_is_proof_on_any_mocked_path(self):
         paths = []
-        with mock.patch("helix.adapters_extra.shutil.which", return_value=None):
+        with mock.patch("prism.adapters_extra.shutil.which", return_value=None):
             paths.append(_libfuzzer_probe(Config()))
-        with mock.patch("helix.adapters_extra.shutil.which", return_value=CLANG), \
-             mock.patch("helix.adapters_extra._run", return_value=_proc(
+        with mock.patch("prism.adapters_extra.shutil.which", return_value=CLANG), \
+             mock.patch("prism.adapters_extra._run", return_value=_proc(
                  stderr="error: unsupported argument '-fsanitize=fuzzer'", rc=1,
              )):
             paths.append(_libfuzzer_probe(Config()))
-        with mock.patch("helix.adapters_extra.shutil.which", return_value=CLANG), \
-             mock.patch("helix.adapters_extra._run", return_value=_proc(rc=0)):
+        with mock.patch("prism.adapters_extra.shutil.which", return_value=CLANG), \
+             mock.patch("prism.adapters_extra._run", return_value=_proc(rc=0)):
             paths.append(_libfuzzer_probe(Config()))
-        with mock.patch("helix.adapters_extra.shutil.which", return_value=CLANG), \
-             mock.patch("helix.adapters_extra._run", side_effect=OSError("clang vanished")):
+        with mock.patch("prism.adapters_extra.shutil.which", return_value=CLANG), \
+             mock.patch("prism.adapters_extra._run", side_effect=OSError("clang vanished")):
             paths.append(_libfuzzer_probe(Config()))
         self.assertEqual(len(paths), 4)
         for f in paths:
@@ -203,7 +203,7 @@ class TestLibfuzzerProbe(unittest.TestCase):
             self.assertNotIn(f.status, _PROOF)
         self._never_proof(paths)
 
-    def test_helix_and_cpp_source_never_emit_clean_or_proved(self):
+    def test_prism_and_cpp_source_never_emit_clean_or_proved(self):
         py = inspect.getsource(_libfuzzer_probe)
         self.assertIn("laws.NOTRUN", py)
         self.assertIn("laws.UNKNOWN", py)
@@ -249,8 +249,8 @@ def _pointer(name: str = "copy") -> FunctionInfo:
 
 class TestRunLibfuzzerHonesty(unittest.TestCase):
     def test_missing_clang_is_notrun_never_engine_libfuzzer(self):
-        with mock.patch("helix.adapters_extra.shutil.which", return_value=None), \
-             mock.patch("helix.adapters_extra._run") as run:
+        with mock.patch("prism.adapters_extra.shutil.which", return_value=None), \
+             mock.patch("prism.adapters_extra._run") as run:
             f = _run_libfuzzer(_scalar(), Path("planted.c"))
         run.assert_not_called()
         self.assertEqual(f.status, laws.NOTRUN)
@@ -262,8 +262,8 @@ class TestRunLibfuzzerHonesty(unittest.TestCase):
         self.assertFalse(laws.is_proof(f.status))
 
     def test_pointer_is_needs_harness_never_error(self):
-        with mock.patch("helix.adapters_extra.shutil.which", return_value=CLANG), \
-             mock.patch("helix.adapters_extra._run") as run:
+        with mock.patch("prism.adapters_extra.shutil.which", return_value=CLANG), \
+             mock.patch("prism.adapters_extra._run") as run:
             f = _run_libfuzzer(_pointer(), Path("planted.c"))
         run.assert_not_called()
         self.assertEqual(f.status, laws.NEEDS_HARNESS)
@@ -279,8 +279,8 @@ class TestRunLibfuzzerHonesty(unittest.TestCase):
             src = Path(td) / "planted.c"
             src.write_text("int inc(int x) { return x + 1; }\n", encoding="utf-8")
             work = Path(td) / "lf"
-            with mock.patch("helix.adapters_extra.shutil.which", return_value=CLANG), \
-                 mock.patch("helix.adapters_extra._run", return_value=unsupported) as run:
+            with mock.patch("prism.adapters_extra.shutil.which", return_value=CLANG), \
+                 mock.patch("prism.adapters_extra._run", return_value=unsupported) as run:
                 f = _run_libfuzzer(_scalar(), src, timeout=1.0, work=work)
         self.assertGreaterEqual(run.call_count, 1)
         self.assertEqual(f.status, laws.NOTRUN)
@@ -294,8 +294,8 @@ class TestRunLibfuzzerHonesty(unittest.TestCase):
             src = Path(td) / "planted.c"
             src.write_text("int inc(int x) { return x + 1; }\n", encoding="utf-8")
             work = Path(td) / "lf"
-            with mock.patch("helix.adapters_extra.shutil.which", return_value=CLANG), \
-                 mock.patch("helix.adapters_extra._compile_libfuzzer",
+            with mock.patch("prism.adapters_extra.shutil.which", return_value=CLANG), \
+                 mock.patch("prism.adapters_extra._compile_libfuzzer",
                             side_effect=OSError("clang vanished")):
                 f = _run_libfuzzer(_scalar(), src, timeout=1.0, work=work)
         self.assertEqual(f.status, laws.NOTRUN)
@@ -310,8 +310,8 @@ class TestRunLibfuzzerHonesty(unittest.TestCase):
             src = Path(td) / "planted.c"
             src.write_text("int inc(int x) { return x + 1; }\n", encoding="utf-8")
             work = Path(td) / "lf"
-            with mock.patch("helix.adapters_extra.shutil.which", return_value=CLANG), \
-                 mock.patch("helix.adapters_extra._compile_libfuzzer",
+            with mock.patch("prism.adapters_extra.shutil.which", return_value=CLANG), \
+                 mock.patch("prism.adapters_extra._compile_libfuzzer",
                             side_effect=subprocess.TimeoutExpired("clang", 30)):
                 f = _run_libfuzzer(_scalar(), src, timeout=1.0, work=work)
         self.assertEqual(f.status, laws.TIMEOUT)
@@ -332,8 +332,8 @@ class TestRunLibfuzzerHonesty(unittest.TestCase):
                     raise OSError("exec format error")
                 return _proc(rc=0)
 
-            with mock.patch("helix.adapters_extra.shutil.which", return_value=CLANG), \
-                 mock.patch("helix.adapters_extra._run", side_effect=fake_run):
+            with mock.patch("prism.adapters_extra.shutil.which", return_value=CLANG), \
+                 mock.patch("prism.adapters_extra._run", side_effect=fake_run):
                 f = _run_libfuzzer(_scalar(), src, timeout=1.0, work=work)
         self.assertGreaterEqual(calls["n"], 1)
         self.assertEqual(f.status, laws.NOTRUN)
@@ -349,8 +349,8 @@ class TestRunLibfuzzerHonesty(unittest.TestCase):
             src = Path(td) / "planted.c"
             src.write_text("int inc(int x) { return x + 1; }\n", encoding="utf-8")
             work = Path(td) / "lf"
-            with mock.patch("helix.adapters_extra.shutil.which", return_value=CLANG), \
-                 mock.patch("helix.adapters_extra._run", return_value=ok):
+            with mock.patch("prism.adapters_extra.shutil.which", return_value=CLANG), \
+                 mock.patch("prism.adapters_extra._run", return_value=ok):
                 f = _run_libfuzzer(_scalar(), src, timeout=1.0, work=work)
         self.assertEqual(f.status, laws.CLEAN)
         self.assertEqual((f.extra or {}).get("engine"), "libfuzzer")
@@ -371,8 +371,8 @@ class TestRunLibfuzzerHonesty(unittest.TestCase):
             src = Path(td) / "planted.c"
             src.write_text("int inc(int x) { return x + 1; }\n", encoding="utf-8")
             work = Path(td) / "lf"
-            with mock.patch("helix.adapters_extra.shutil.which", return_value=CLANG), \
-                 mock.patch("helix.adapters_extra._run", side_effect=run_side_effect):
+            with mock.patch("prism.adapters_extra.shutil.which", return_value=CLANG), \
+                 mock.patch("prism.adapters_extra._run", side_effect=run_side_effect):
                 f = _run_libfuzzer(_scalar(), src, timeout=1.0, work=work)
         self.assertEqual(f.status, laws.CRASH)
         self.assertEqual((f.extra or {}).get("engine"), "libfuzzer")

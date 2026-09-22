@@ -5,10 +5,10 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from helix.adapters_extra import _cocci_rules
+from prism.adapters_extra import _cocci_rules
 
 ROOT = Path(__file__).resolve().parents[1]
-COCCI = ROOT / "helix" / "cocci"
+COCCI = ROOT / "prism" / "cocci"
 TD = ROOT / "testdata"
 
 

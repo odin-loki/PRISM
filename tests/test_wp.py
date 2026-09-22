@@ -6,12 +6,12 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from helix import laws
-from helix.bmc import HAS_Z3
-from helix.cparse import extract_functions
-from helix.models import Finding, FunctionInfo
-from helix.pipeline import STAGE_ORDER
-from helix.wp import encode_predicate, run_wp
+from prism import laws
+from prism.bmc import HAS_Z3
+from prism.cparse import extract_functions
+from prism.models import Finding, FunctionInfo
+from prism.pipeline import STAGE_ORDER
+from prism.wp import encode_predicate, run_wp
 
 ROOT = Path(__file__).resolve().parents[1]
 TD = ROOT / "testdata"
@@ -65,7 +65,7 @@ class TestWp(unittest.TestCase):
         self.assertNotEqual(r.status, laws.BOUNDED)
         self.assertIn("never", r.message.lower())
         extra = r.extra or {}
-        self.assertEqual(extra.get("engine"), "helix-wp")
+        self.assertEqual(extra.get("engine"), "prism-wp")
         self.assertEqual(extra.get("wp"), "return-substitution")
         self.assertTrue(extra.get("wp_qed"))
 
@@ -94,7 +94,7 @@ class TestWp(unittest.TestCase):
             "requires": [], "ensures": ["result == 0"],
             "invariant": [], "decreases": [], "diff": None,
         }
-        with mock.patch("helix.wp.parse_comments", return_value=spec):
+        with mock.patch("prism.wp.parse_comments", return_value=spec):
             void_recs = run_wp([void_fn], unwind=4)
             other_recs = run_wp([other_fn], unwind=4)
         self.assertEqual(void_recs[0].status, laws.NEEDS_HARNESS)
@@ -155,7 +155,7 @@ class TestWp(unittest.TestCase):
             function="acsl_abs", line=1, cls="FUNC-CONTRACT",
             message="proved", strength=laws.STRENGTH_PROVES, extra={},
         )
-        with mock.patch("helix.wp.bmc_function_with_assume", return_value=fake):
+        with mock.patch("prism.wp.bmc_function_with_assume", return_value=fake):
             recs = run_wp([fn("acsl_abs")], unwind=8)
         self.assertEqual(len(recs), 1)
         self.assertEqual(recs[0].status, laws.PROVED_ASSUMING)
@@ -168,7 +168,7 @@ class TestWp(unittest.TestCase):
             function="acsl_abs", line=1, cls="FUNC-CONTRACT",
             message="unbounded", strength=laws.STRENGTH_PROVES, extra={},
         )
-        with mock.patch("helix.wp.bmc_function_with_assume", return_value=fake):
+        with mock.patch("prism.wp.bmc_function_with_assume", return_value=fake):
             recs = run_wp([fn("acsl_abs")], unwind=8)
         self.assertEqual(recs[0].status, laws.PROVED_ASSUMING)
         self.assertNotEqual(recs[0].status, laws.PROVED_UNBOUNDED)
@@ -184,7 +184,7 @@ class TestWp(unittest.TestCase):
         self.assertNotEqual(r.status, laws.PROVED)
         self.assertNotEqual(r.status, laws.PROVED_UNBOUNDED)
         self.assertIn("never", r.message.lower())
-        self.assertEqual((r.extra or {}).get("engine"), "helix-wp")
+        self.assertEqual((r.extra or {}).get("engine"), "prism-wp")
 
     @unittest.skipUnless(HAS_Z3, "z3-solver not installed")
     def test_failed_ensures_not_a_proof(self):

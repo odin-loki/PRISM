@@ -11,11 +11,11 @@ from pathlib import Path
 from typing import get_type_hints
 from unittest import mock
 
-from helix import laws
-from helix.cparse import extract_functions
-from helix.models import Finding, FunctionInfo
-from helix.muttest import run_muttest
-from helix.rapid import plan_trials
+from prism import laws
+from prism.cparse import extract_functions
+from prism.models import Finding, FunctionInfo
+from prism.muttest import run_muttest
+from prism.rapid import plan_trials
 
 ROOT = Path(__file__).resolve().parents[1]
 TD = ROOT / "testdata"
@@ -74,7 +74,7 @@ class TestMuttestHonesty(unittest.TestCase):
                 return _OK
             return _DEAD
 
-        with mock.patch("helix.muttest.run_plan", side_effect=fake_plan):
+        with mock.patch("prism.muttest.run_plan", side_effect=fake_plan):
             recs = run_muttest([f], trials=4)
         self.assertTrue(recs)
         self.assertTrue(all(isinstance(r, Finding) for r in recs))
@@ -94,7 +94,7 @@ class TestMuttestHonesty(unittest.TestCase):
     def test_survived_mutant_is_failed_not_proved(self):
         f = load("contract_add.c", "loose_add")
         self.assertIsNotNone(plan_trials(f, 8))
-        with mock.patch("helix.muttest.run_plan", return_value=_OK):
+        with mock.patch("prism.muttest.run_plan", return_value=_OK):
             recs = run_muttest([f], trials=8)
         self.assertTrue(recs)
         r = recs[0]
@@ -110,8 +110,8 @@ class TestMuttestHonesty(unittest.TestCase):
 
     def test_missing_compiler_which_is_notrun_never_clean(self):
         f = load("contract_add.c", "inc")
-        with mock.patch("helix.muttest.run_plan", return_value=_COMPILE_ERR), mock.patch(
-            "helix.muttest.shutil.which", return_value=None
+        with mock.patch("prism.muttest.run_plan", return_value=_COMPILE_ERR), mock.patch(
+            "prism.muttest.shutil.which", return_value=None
         ):
             recs = run_muttest([f], trials=4)
         self.assertTrue(recs)
@@ -127,8 +127,8 @@ class TestMuttestHonesty(unittest.TestCase):
 
     def test_compiler_missing_helper_is_notrun(self):
         f = load("contract_add.c", "inc")
-        with mock.patch("helix.muttest.run_plan", return_value=_COMPILE_ERR), mock.patch(
-            "helix.muttest._compiler_missing", return_value=True
+        with mock.patch("prism.muttest.run_plan", return_value=_COMPILE_ERR), mock.patch(
+            "prism.muttest._compiler_missing", return_value=True
         ):
             recs = run_muttest([f], trials=4)
         self.assertTrue(recs)
@@ -141,7 +141,7 @@ class TestMuttestHonesty(unittest.TestCase):
 
     def test_no_plan_trials_returns_empty_not_fake_clean(self):
         f = load("contract_add.c", "inc")
-        with mock.patch("helix.muttest.plan_trials", return_value=None):
+        with mock.patch("prism.muttest.plan_trials", return_value=None):
             recs = run_muttest([f], trials=8)
         self.assertEqual(recs, [])
         self.assertIsInstance(recs, list)

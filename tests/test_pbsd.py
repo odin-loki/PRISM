@@ -1,7 +1,7 @@
 """ParanoidBSD bridge: portable checkers, never empty-ok when the tree is gone.
 
 Missing clang/goto-cc/cbmc is NOTRUN, never CLEAN or PROVED.
-PBSD lints never emit PROVED / PROVED-UNBOUNDED. Helix helix/pbsd.py is
+PBSD lints never emit PROVED / PROVED-UNBOUNDED. Python engine prism/pbsd.py is
 the engine. C++ run_pbsd_lints ports that control flow (never CLEAN-as-proof).
 """
 
@@ -14,14 +14,14 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from helix import laws
-from helix.checkers import run_lints
-from helix.config import Config
-from helix.pbsd import HEAVY, VERIFY_SCANNERS, _heavy_notrun, discover_pbsd_root, run_pbsd_lints
+from prism import laws
+from prism.checkers import run_lints
+from prism.config import Config
+from prism.pbsd import HEAVY, VERIFY_SCANNERS, _heavy_notrun, discover_pbsd_root, run_pbsd_lints
 
 ROOT = Path(__file__).resolve().parents[1]
 TD = ROOT / "testdata"
-MISSING = Path(os.path.abspath(os.sep)) / "helix-no-such-paranoidbsd"
+MISSING = Path(os.path.abspath(os.sep)) / "prism-no-such-paranoidbsd"
 _PROOF = {laws.PROVED, laws.PROVED_UNBOUNDED, laws.PROVED_ASSUMING}
 _CPP_PBSD = ROOT / "src" / "prism" / "adapters.cpp"
 
@@ -43,7 +43,7 @@ def _never_proved(hits) -> None:
 
 def _cpp_pbsd_stub_src() -> str:
     text = _CPP_PBSD.read_text(encoding="utf-8")
-    start = text.find("Helix helix/pbsd.py run_pbsd_lints")
+    start = text.find("Python engine prism/pbsd.py run_pbsd_lints")
     if start < 0:
         start = text.find("std::vector<Finding> run_pbsd_lints")
     if start < 0:
@@ -71,7 +71,7 @@ class TestOnesidedLint(unittest.TestCase):
 
 class TestPbsdBridge(unittest.TestCase):
     def test_missing_tree_not_empty_ok(self):
-        old = os.environ.pop("HELIX_PBSD", None)
+        old = os.environ.pop("PRISM_PBSD", None)
         try:
             hits = run_pbsd_lints([TD / "abs_ok.c"], _cfg(pbsd=MISSING))
             self.assertTrue(hits, "missing tree must not return an empty-ok list")
@@ -83,10 +83,10 @@ class TestPbsdBridge(unittest.TestCase):
             self.assertTrue(any(f.extra.get("install") for f in hits if f.status == laws.NOTRUN))
         finally:
             if old is not None:
-                os.environ["HELIX_PBSD"] = old
+                os.environ["PRISM_PBSD"] = old
 
     def test_missing_tree_portable_onesided_is_a_finding(self):
-        old = os.environ.pop("HELIX_PBSD", None)
+        old = os.environ.pop("PRISM_PBSD", None)
         try:
             hits = run_pbsd_lints([TD / "onesided.c"], _cfg(pbsd=MISSING))
             self.assertTrue(hits)
@@ -97,10 +97,10 @@ class TestPbsdBridge(unittest.TestCase):
             self.assertFalse(any(laws.is_proof(f.status) for f in hits))
         finally:
             if old is not None:
-                os.environ["HELIX_PBSD"] = old
+                os.environ["PRISM_PBSD"] = old
 
     def test_present_tree_invokes_scanners_not_a_note(self):
-        old = os.environ.pop("HELIX_PBSD", None)
+        old = os.environ.pop("PRISM_PBSD", None)
         try:
             cfg = _cfg()
             if discover_pbsd_root(cfg) is None:
@@ -122,10 +122,10 @@ class TestPbsdBridge(unittest.TestCase):
             )
         finally:
             if old is not None:
-                os.environ["HELIX_PBSD"] = old
+                os.environ["PRISM_PBSD"] = old
 
     def test_heavy_notrun_never_clean_or_proved(self):
-        with mock.patch("helix.pbsd.shutil.which", return_value=None):
+        with mock.patch("prism.pbsd.shutil.which", return_value=None):
             hits = _heavy_notrun()
         self.assertEqual(len(hits), len(HEAVY))
         self.assertTrue(all(f.stage == "pbsd" for f in hits))
@@ -145,9 +145,9 @@ class TestPbsdBridge(unittest.TestCase):
     def test_missing_clang_goto_cc_cbmc_with_tree_is_notrun(self):
         with tempfile.TemporaryDirectory() as td:
             (Path(td) / "tools" / "verify").mkdir(parents=True)
-            old = os.environ.pop("HELIX_PBSD", None)
+            old = os.environ.pop("PRISM_PBSD", None)
             try:
-                with mock.patch("helix.pbsd.shutil.which", return_value=None):
+                with mock.patch("prism.pbsd.shutil.which", return_value=None):
                     hits = run_pbsd_lints([TD / "abs_ok.c"], _cfg(pbsd=Path(td)))
                 notrun = [f for f in hits if f.status == laws.NOTRUN]
                 self.assertGreaterEqual(len(notrun), 3)
@@ -167,18 +167,18 @@ class TestPbsdBridge(unittest.TestCase):
                 self.assertIn("not a clean sweep", msgs)
             finally:
                 if old is not None:
-                    os.environ["HELIX_PBSD"] = old
+                    os.environ["PRISM_PBSD"] = old
 
     def test_each_heavy_binary_missing_with_tree_is_notrun(self):
         with tempfile.TemporaryDirectory() as td:
             (Path(td) / "tools" / "verify").mkdir(parents=True)
-            old = os.environ.pop("HELIX_PBSD", None)
+            old = os.environ.pop("PRISM_PBSD", None)
             try:
                 for binary, tool, _how in HEAVY:
                     with self.subTest(binary=binary, tool=tool):
                         def which(name, *args, _missing=binary, **kwargs):
-                            return None if name == _missing else os.path.join("C:\\", "helix-fake-bin", name)
-                        with mock.patch("helix.pbsd.shutil.which", side_effect=which):
+                            return None if name == _missing else os.path.join("C:\\", "prism-fake-bin", name)
+                        with mock.patch("prism.pbsd.shutil.which", side_effect=which):
                             hits = run_pbsd_lints([TD / "abs_ok.c"], _cfg(pbsd=Path(td)))
                         _never_proved(hits)
                         statuses = {f.status for f in hits}
@@ -196,16 +196,16 @@ class TestPbsdBridge(unittest.TestCase):
                         ), f"missing {binary} must record tool={tool} via=missing-bin")
             finally:
                 if old is not None:
-                    os.environ["HELIX_PBSD"] = old
+                    os.environ["PRISM_PBSD"] = old
 
     def test_heavy_missing_with_mocked_discover_is_notrun_not_clean(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             (root / "tools" / "verify").mkdir(parents=True)
-            old = os.environ.pop("HELIX_PBSD", None)
+            old = os.environ.pop("PRISM_PBSD", None)
             try:
-                with mock.patch("helix.pbsd.discover_pbsd_root", return_value=root):
-                    with mock.patch("helix.pbsd.shutil.which", return_value=None):
+                with mock.patch("prism.pbsd.discover_pbsd_root", return_value=root):
+                    with mock.patch("prism.pbsd.shutil.which", return_value=None):
                         hits = run_pbsd_lints([TD / "abs_ok.c"], _cfg(pbsd=MISSING))
                 notrun = [f for f in hits if f.status == laws.NOTRUN]
                 self.assertGreaterEqual(len(notrun), len(HEAVY))
@@ -222,12 +222,12 @@ class TestPbsdBridge(unittest.TestCase):
                 self.assertTrue({"analyze", "classify", "cbmc"} <= tools)
             finally:
                 if old is not None:
-                    os.environ["HELIX_PBSD"] = old
+                    os.environ["PRISM_PBSD"] = old
 
     def test_pbsd_lints_never_emit_proved_or_unbounded(self):
         plants = [TD / "abs_ok.c", TD / "onesided.c", TD / "uaf.c",
                   TD / "lock_imbalance.c", TD / "format.c"]
-        old = os.environ.pop("HELIX_PBSD", None)
+        old = os.environ.pop("PRISM_PBSD", None)
         try:
             for paths in ([], plants, [TD / "abs_ok.c"]):
                 with self.subTest(n=len(paths)):
@@ -238,10 +238,10 @@ class TestPbsdBridge(unittest.TestCase):
                     self.assertFalse(any(f.status == laws.CLEAN for f in hits))
         finally:
             if old is not None:
-                os.environ["HELIX_PBSD"] = old
+                os.environ["PRISM_PBSD"] = old
 
     def test_empty_scope_unknown_or_empty_not_clean_as_proof(self):
-        old = os.environ.pop("HELIX_PBSD", None)
+        old = os.environ.pop("PRISM_PBSD", None)
         try:
             missing = run_pbsd_lints([], _cfg(pbsd=MISSING))
             _never_proved(missing)
@@ -256,7 +256,7 @@ class TestPbsdBridge(unittest.TestCase):
 
             with tempfile.TemporaryDirectory() as td:
                 (Path(td) / "tools" / "verify").mkdir(parents=True)
-                with mock.patch("helix.pbsd.shutil.which", return_value=None):
+                with mock.patch("prism.pbsd.shutil.which", return_value=None):
                     present = run_pbsd_lints([], _cfg(pbsd=Path(td)))
                 _never_proved(present)
                 present_st = {f.status for f in present}
@@ -269,7 +269,7 @@ class TestPbsdBridge(unittest.TestCase):
                 )
         finally:
             if old is not None:
-                os.environ["HELIX_PBSD"] = old
+                os.environ["PRISM_PBSD"] = old
 
     def test_planted_uaf_lock_format_still_failed(self):
         plants = (
@@ -285,7 +285,7 @@ class TestPbsdBridge(unittest.TestCase):
                 _never_proved(hits)
                 self.assertFalse(any(f.status == laws.CLEAN for f in hits))
 
-        old = os.environ.pop("HELIX_PBSD", None)
+        old = os.environ.pop("PRISM_PBSD", None)
         try:
             pbsd_hits = run_pbsd_lints([p for p, _ in plants], _cfg(pbsd=MISSING))
             _never_proved(pbsd_hits)
@@ -297,22 +297,22 @@ class TestPbsdBridge(unittest.TestCase):
             ))
         finally:
             if old is not None:
-                os.environ["HELIX_PBSD"] = old
+                os.environ["PRISM_PBSD"] = old
 
     def test_adapters_run_pbsd_fake_tree_is_not_clean_as_proof(self):
-        from helix.adapters import run_pbsd
-        helix_src = inspect.getsource(run_pbsd)
-        self.assertIn("run_pbsd_lints", helix_src)
-        self.assertNotIn("laws.CLEAN", helix_src)
+        from prism.adapters import run_pbsd
+        py_src = inspect.getsource(run_pbsd)
+        self.assertIn("run_pbsd_lints", py_src)
+        self.assertNotIn("laws.CLEAN", py_src)
 
         with tempfile.TemporaryDirectory() as td:
             verify = Path(td) / "tools" / "verify"
             verify.mkdir(parents=True)
             (verify / "sweep_all.py").write_text("# fake sweep_all\n", encoding="utf-8")
-            old = os.environ.pop("HELIX_PBSD", None)
+            old = os.environ.pop("PRISM_PBSD", None)
             try:
                 cfg = _cfg(pbsd=Path(td))
-                with mock.patch("helix.pbsd.shutil.which", return_value=None):
+                with mock.patch("prism.pbsd.shutil.which", return_value=None):
                     for src in (TD / "abs_ok.c", TD / "onesided.c"):
                         with self.subTest(src=src.name):
                             adapter = run_pbsd(cfg, src)
@@ -342,21 +342,21 @@ class TestPbsdBridge(unittest.TestCase):
                                 self.assertTrue(any(f.status == laws.NOTRUN for f in adapter))
             finally:
                 if old is not None:
-                    os.environ["HELIX_PBSD"] = old
+                    os.environ["PRISM_PBSD"] = old
 
-    def test_helix_is_the_real_engine_cpp_never_clean_as_proof(self):
+    def test_prism_is_the_real_engine_cpp_never_clean_as_proof(self):
         self.assertIn("lock_balance", VERIFY_SCANNERS)
-        helix_src = inspect.getsource(run_pbsd_lints)
-        self.assertIn("_helix_portable", helix_src)
-        self.assertNotIn("laws.CLEAN", helix_src)
-        self.assertNotIn("laws.PROVED", helix_src)
-        from helix import pipeline
-        self.assertIn("from helix.pbsd import run_pbsd_lints", inspect.getsource(pipeline))
+        py_src = inspect.getsource(run_pbsd_lints)
+        self.assertIn("_prism_portable", py_src)
+        self.assertNotIn("laws.CLEAN", py_src)
+        self.assertNotIn("laws.PROVED", py_src)
+        from prism import pipeline
+        self.assertIn("from prism.pbsd import run_pbsd_lints", inspect.getsource(pipeline))
 
         cpp = _cpp_pbsd_stub_src()
         self.assertTrue(cpp, "adapters.cpp must define run_pbsd_lints")
-        self.assertIn("helix.portable", cpp)
-        self.assertIn("helix.checkers", cpp)
+        self.assertIn("prism.portable", cpp)
+        self.assertIn("prism.checkers", cpp)
         self.assertIn("MEM-ONESIDED-INDEX", cpp)
         self.assertIn("MEM-CAPACITY-FIRST", cpp)
         for cls in ("MEM-REALLOC-SELF", "MEM-NOWAIT", "FUNC-NORETURN",

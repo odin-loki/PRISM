@@ -11,9 +11,9 @@ from __future__ import annotations
 
 import unittest
 
-from helix import laws
-from helix.confidence import apply, score
-from helix.models import Finding, FunctionInfo, RunReport, StageResult
+from prism import laws
+from prism.confidence import apply, score
+from prism.models import Finding, FunctionInfo, RunReport, StageResult
 
 
 def _fn(name: str, kind: str = "SCALAR", file: str = "a.c") -> FunctionInfo:
@@ -136,7 +136,7 @@ class TestConfidenceEmptyScope(unittest.TestCase):
         self.assertEqual(conf, 0.0)
 
     def test_empty_scope_md_and_notes_never_say_na(self):
-        from helix.pipeline import _write_md
+        from prism.pipeline import _write_md
         import tempfile
         from pathlib import Path
 

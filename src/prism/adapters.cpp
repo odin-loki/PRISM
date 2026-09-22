@@ -345,7 +345,7 @@ ProcResult run_argv(const std::vector<std::string>& args, double timeout_s, cons
 }
 
 bool is_fake_adapter(const std::string& text) {
-    // Helix _is_fake_adapter: Catch2/doctest (or unknown --timeout/--unwind)
+    // Python engine _is_fake_adapter: Catch2/doctest (or unknown --timeout/--unwind)
     // is not CBMC/ESBMC/cppcheck/dafny.
     auto low = lower_copy(text);
     return low.find("doctest version") != std::string::npos ||
@@ -354,7 +354,7 @@ bool is_fake_adapter(const std::string& text) {
 }
 
 bool tool_unusable(const std::string& text, int rc) {
-    // Helix _tool_unusable: doctest/Catch2 / shell 126/127 / not-found is a
+    // Python engine _tool_unusable: doctest/Catch2 / shell 126/127 / not-found is a
     // missing tool, not a verdict.
     if (is_fake_adapter(text)) return true;
     if (rc == 126 || rc == 127) return true;
@@ -367,7 +367,7 @@ bool tool_unusable(const std::string& text, int rc) {
 }
 
 bool probe_looks_missing(const ProcResult& r) {
-    // Helix _probe_looks_missing: doctest/Catch2 masquerading as CBMC/spatch is
+    // Python engine _probe_looks_missing: doctest/Catch2 masquerading as CBMC/spatch is
     // missing even when --help returns 0 or 1. Scan those strings first.
     // Shell 'not found' / cannot-execute text is missing on any rc — Windows
     // cmd often exits 1 with "is not recognized" on stderr, never a help page.
@@ -391,7 +391,7 @@ bool probe_looks_missing(const ProcResult& r) {
 bool frama_c_probe_present(const ProcResult& r) {
     // A Frama-C stub that writes any stderr/error text is missing, not
     // "present". Real --help/--version names Frama-C. Empty rc 0/1 is still
-    // a successful probe (Helix _probe), never CLEAN.
+    // a successful probe (the Python engine _probe), never CLEAN.
     if (r.failed || probe_looks_missing(r) || tool_unusable(r.text, r.rc))
         return false;
     auto trimmed = trim_copy(r.text);
@@ -508,7 +508,7 @@ std::string dumpmachine(const std::string& cc) {
 }
 
 bool is_mingw(const std::string& cc) {
-    // Helix _is_mingw: MinGW / mingw-w64 triples and paths. Never treat as UBSan.
+    // Python engine _is_mingw: MinGW / mingw-w64 triples and paths. Never treat as UBSan.
     auto path = lower_copy(cc);
     for (char& c : path)
         if (c == '\\') c = '/';
@@ -554,7 +554,7 @@ const char* const* sanitizer_lib_names(const std::vector<std::string>& flags) {
 }
 
 bool has_sanitizer_lib(const std::string& cc, const std::vector<std::string>& flags) {
-    // Helix _has_sanitizer_lib: -print-file-name must resolve a real runtime, not echo.
+    // Python engine _has_sanitizer_lib: -print-file-name must resolve a real runtime, not echo.
     for (const char* const* n = sanitizer_lib_names(flags); *n; ++n) {
         auto r = run_argv({cc, std::string("-print-file-name=") + *n}, 15.0);
         if (r.timed_out || r.failed) continue;
@@ -760,7 +760,7 @@ std::vector<Finding> run_clang_tidy(const std::string& exe, const std::vector<fs
                                   laws::STRENGTH_FINDS));
             continue;
         }
-        // Helix _run_clang_tidy: is_fake_adapter / probe_looks_missing first.
+        // Python engine _run_clang_tidy: is_fake_adapter / probe_looks_missing first.
         if (r.failed || is_fake_adapter(r.text) || probe_looks_missing(r)) {
             auto f = finding("clang-tidy", laws::NOTRUN, p.string(), "",
                              "clang-tidy at PATH is not clang-tidy (not a proof)",
@@ -824,7 +824,7 @@ std::vector<Finding> run_cbmc(const std::string& exe, const std::vector<fs::path
         f.file = p.string();
         f.strength = std::string(laws::STRENGTH_PROVES);
         f.evidence = tail(r.text, 1500);
-        // Helix _run_cbmc: Catch2/doctest answering as cbmc is NOTRUN, not a proof.
+        // Python engine _run_cbmc: Catch2/doctest answering as cbmc is NOTRUN, not a proof.
         if (r.failed || is_fake_adapter(r.text) || probe_looks_missing(r) ||
             low.find("unknown option") != std::string::npos ||
             low.find("doctest version") != std::string::npos) {
@@ -941,7 +941,7 @@ std::vector<fs::path> cocci_rules(const std::vector<fs::path>& paths, const Conf
     std::vector<fs::path> pkg;
     auto consider = [&](fs::path base) {
         for (int i = 0; i < 8 && !base.empty(); ++i) {
-            pkg.push_back(base / "helix" / "cocci");
+            pkg.push_back(base / "prism" / "cocci");
             if (base.parent_path() == base) break;
             base = base.parent_path();
         }
@@ -1518,7 +1518,7 @@ std::vector<Finding> run_codeql(const std::string& exe, const std::vector<fs::pa
         f.extra["exe"] = exe;
         return {f};
     }
-    auto out_dir = db->parent_path() / "helix-codeql-out";
+    auto out_dir = db->parent_path() / "prism-codeql-out";
     std::error_code ec;
     fs::create_directories(out_dir, ec);
     auto sarif = out_dir / "results.sarif";
@@ -1979,7 +1979,7 @@ std::vector<Finding> run_optional_tools(const std::vector<fs::path>& paths, cons
             auto more = dispatch_optional(tool.stage, exe->string(), paths, cfg, *probed);
             out.insert(out.end(), more.begin(), more.end());
         } catch (const std::system_error& ex) {
-            // Helix adapters_extra.run_optional_tools: OSError → NOTRUN unusable.
+            // Python engine adapters_extra.run_optional_tools: OSError → NOTRUN unusable.
             auto f = notrun(tool.stage, first_name, install);
             f.message = std::string(tool.stage) + " unusable: " + ex.what();
             f.extra["exe"] = exe->string();
@@ -1998,12 +1998,12 @@ std::vector<Finding> run_optional_tools(const std::vector<fs::path>& paths, cons
 
 namespace {
 
-// Helix helix/pbsd.py run_pbsd_lints (~349). Tree present is never CLEAN-as-proof
+// Python engine prism/pbsd.py run_pbsd_lints (~349). Tree present is never CLEAN-as-proof
 // and never PROVED. C++ cannot import tools/verify modules: extra.ported lists
 // VERIFY_SCANNERS; extra.invoked lists restaged checker class names that fired.
-// Without the tree, only PORTABLE_CLS (helix.portable). With the tree, also
-// restage matching in-tree copies as helix.checkers. Do not wrap sweep_all.py as CLEAN.
-// Behavioral tests: tests/test_pbsd.py (Helix).
+// Without the tree, only PORTABLE_CLS (prism.portable). With the tree, also
+// restage matching in-tree copies as prism.checkers. Do not wrap sweep_all.py as CLEAN.
+// Behavioral tests: tests/test_pbsd.py (the Python engine).
 
 constexpr const char* kPbsdCExts[] = {".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".hh"};
 
@@ -2012,15 +2012,15 @@ constexpr const char* kPbsdVerifyScanners[] = {
     "noreturn_check",      "null_branch",    "lock_balance",   "masked_switch_check",
 };
 
-// Helix PORTABLE_CLS - restage with or without the tree (via=helix.portable).
+// Python engine PORTABLE_CLS - restage with or without the tree (via=prism.portable).
 constexpr const char* kPbsdPortableCls[] = {
     "MEM-ONESIDED-INDEX",
     "MEM-CAPACITY-FIRST",
 };
 
-// In-tree copies of Helix-imported scanners (plus sibling_guard). Restage only
-// when tools/verify is present (via=helix.checkers). PTR-NULL-DEREF /
-// LOCK-IMBALANCE match helix/pbsd.py _run_null_branch / _run_lock_balance;
+// In-tree copies of the Python engine-imported scanners (plus sibling_guard). Restage only
+// when tools/verify is present (via=prism.checkers). PTR-NULL-DEREF /
+// LOCK-IMBALANCE match prism/pbsd.py _run_null_branch / _run_lock_balance;
 // other LOCK-* / NULL-* from C++ checkers ride the same prefix.
 constexpr const char* kPbsdTreeCls[] = {
     "MEM-REALLOC-SELF",
@@ -2045,9 +2045,8 @@ constexpr PbsdHeavy kPbsdHeavy[] = {
 };
 
 fs::path pbsd_looked_root(const Config& cfg) {
-    // Honor PRISM_PBSD / HELIX_PBSD even when cfg.pbsd_root is already set.
+    // Honor PRISM_PBSD even when cfg.pbsd_root is already set.
     if (const char* env = std::getenv("PRISM_PBSD"); env && *env) return fs::path(env);
-    if (const char* env = std::getenv("HELIX_PBSD"); env && *env) return fs::path(env);
     return cfg.pbsd_root;
 }
 
@@ -2109,7 +2108,7 @@ bool pbsd_tree_extra_cls(std::string_view cls) {
     return false;
 }
 
-std::vector<Finding> helix_portable(const std::vector<fs::path>& files, const Config& cfg,
+std::vector<Finding> prism_portable(const std::vector<fs::path>& files, const Config& cfg,
                                     bool tree_present) {
     fs::path root = cfg.root;
     std::error_code ec;
@@ -2123,7 +2122,7 @@ std::vector<Finding> helix_portable(const std::vector<fs::path>& files, const Co
         Finding g = f;
         g.stage = "pbsd";
         g.extra.clear();
-        g.extra["via"] = portable ? "helix.portable" : "helix.checkers";
+        g.extra["via"] = portable ? "prism.portable" : "prism.checkers";
         out.push_back(std::move(g));
     }
     return out;
@@ -2163,7 +2162,7 @@ std::vector<Finding> run_pbsd_lints(const std::vector<fs::path>& paths, const Co
     auto files = pbsd_c_paths(paths);
     auto looked = pbsd_looked_root(cfg);
     const bool tree = pbsd_tree_present(looked);
-    auto portable = helix_portable(files, cfg, tree);
+    auto portable = prism_portable(files, cfg, tree);
 
     if (!tree) {
         if (!portable.empty()) return pbsd_dedupe(std::move(portable));
@@ -2173,7 +2172,7 @@ std::vector<Finding> run_pbsd_lints(const std::vector<fs::path>& paths, const Co
             {{"looked", looked.string()}})};
     }
 
-    // Tree present: portable + helix.checkers restage + missing-bin NOTRUN.
+    // Tree present: portable + prism.checkers restage + missing-bin NOTRUN.
     // Not a clean sweep, not CLEAN-as-proof. Empty list is OK (heavies on PATH).
     auto heavy = pbsd_heavy_notrun(cfg);
     portable.insert(portable.end(), heavy.begin(), heavy.end());

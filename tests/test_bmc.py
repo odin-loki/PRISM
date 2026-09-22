@@ -5,10 +5,10 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from helix import laws
-from helix.bmc import HAS_Z3, bmc_function, extract_enums
-from helix.cparse import extract_functions
-from helix.models import FunctionInfo
+from prism import laws
+from prism.bmc import HAS_Z3, bmc_function, extract_enums
+from prism.cparse import extract_functions
+from prism.models import FunctionInfo
 
 ROOT = Path(__file__).resolve().parents[1]
 TD = ROOT / "testdata"
@@ -49,7 +49,7 @@ class TestExtractEnums(unittest.TestCase):
 class TestMissingZ3IsNotrun(unittest.TestCase):
     def test_bmc_function_missing_z3_is_notrun_never_raises(self):
         from unittest.mock import patch
-        from helix.models import FunctionInfo
+        from prism.models import FunctionInfo
 
         fn = FunctionInfo(
             file="abs_ok.c",
@@ -60,7 +60,7 @@ class TestMissingZ3IsNotrun(unittest.TestCase):
             params=[("int", "x")],
             body="return x < 0 ? -x : x;",
         )
-        with patch("helix.bmc.HAS_Z3", False):
+        with patch("prism.bmc.HAS_Z3", False):
             rec = bmc_function(fn, unwind=8)
         self.assertEqual(rec.status, laws.NOTRUN)
         self.assertNotEqual(rec.status, laws.CLEAN)
@@ -305,7 +305,7 @@ class TestBMC(unittest.TestCase):
 @unittest.skipUnless(HAS_Z3, "z3-solver not installed")
 class TestKInduction(unittest.TestCase):
     def test_closed_step_is_proved_unbounded(self):
-        from helix.bmc import k_induction
+        from prism.bmc import k_induction
         f, _ = load("kinduct_closed")
         rec = k_induction(f, 8)
         self.assertEqual(rec.status, laws.PROVED_UNBOUNDED, rec.message)
@@ -315,7 +315,7 @@ class TestKInduction(unittest.TestCase):
         self.assertEqual(raw.status, laws.BOUNDED, raw.message)
 
     def test_open_step_stays_bounded_never_failed(self):
-        from helix.bmc import k_induction
+        from prism.bmc import k_induction
         f, _ = load("kinduct_step_open")
         rec = k_induction(f, 8)
         self.assertEqual(rec.status, laws.BOUNDED, rec.message)
@@ -324,7 +324,7 @@ class TestKInduction(unittest.TestCase):
         self.assertEqual(rec.extra.get("k_induction_tried"), [1, 2])
 
     def test_nested_ok_never_failed(self):
-        from helix.bmc import k_induction
+        from prism.bmc import k_induction
         f, _ = load("nested_ok")
         raw, _, _ = bmc("nested_ok")
         rec = k_induction(f, 8)
@@ -338,7 +338,7 @@ class TestKInduction(unittest.TestCase):
                 self.assertEqual(rec.extra.get("k_induction"), "unencoded")
 
     def test_nested_ovf_not_proved_unbounded(self):
-        from helix.bmc import k_induction
+        from prism.bmc import k_induction
         f, _ = load("nested_ovf")
         raw, _, _ = bmc("nested_ovf")
         self.assertEqual(raw.status, laws.FAILED, raw.message)

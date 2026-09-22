@@ -64,7 +64,7 @@ loaders — the *finding* vocabulary does not care which loader answered.
 3b interval      path-sensitive integer ranges (FAILED is not a proof)
 4  adapters      cppcheck / clang / esbmc / dafny / cbmc / semgrep / infer / frama-c if on PATH
 5  contracts     Dafny-style + ACSL specs (PROVED-ASSUMING under requires)
-5b wp            in-tree Frama-C WP after contracts (`helix/wp.py`); closed is PROVED-ASSUMING — see docs/MINED.md
+5b wp            in-tree Frama-C WP after contracts (`prism/wp.py`); closed is PROVED-ASSUMING — see docs/MINED.md
 6  bmc           k-induction + incremental BMC via Z3 (ESBMC method);
                  C subset includes do-while, continue, sizeof, ternary,
                  comma; unsigned params use unsigned compares and wrap;
@@ -126,7 +126,7 @@ loaders — the *finding* vocabulary does not care which loader answered.
 11 unify         report + confidence product + taxonomy coverage
 ```
 
-Each stage writes `helix-out/stages.jsonl`. The GUI tails it. `--resume` skips stages already
+Each stage writes `prism-out/stages.jsonl`. The GUI tails it. `--resume` skips stages already
 `ok`. A killed run loses at most the stage it was in.
 
 ## Also needed (and included as stages/adapters)
@@ -146,7 +146,7 @@ These are the holes the named tools do not fill:
 
 ## What "done" means for this repo
 
-A command `python -m helix path/to/code` that:
+A command `python -m prism path/to/code` that:
 
 - runs every stage that *can* run on this machine,
 - names every stage that cannot (`NOTRUN` + install line),

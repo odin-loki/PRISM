@@ -4923,7 +4923,7 @@ Finding k_induction(const FunctionInfo& fn, int unwind, bool allow_local_pointer
                 step_open = true;
                 step_cls = step.cls;
             } else if (step.status != laws::PROVED && step.status != laws::PROVED_UNBOUNDED) {
-                // Helix: only PROVED / PROVED-UNBOUNDED close a step.
+                // Python engine: only PROVED / PROVED-UNBOUNDED close a step.
                 // BOUNDED is not a closed proof and must not fold into
                 // PROVED-UNBOUNDED.
                 unencoded = true;
@@ -4969,7 +4969,7 @@ Finding k_induction(const FunctionInfo& fn, int unwind, bool allow_local_pointer
 ForkFlipResult solve_fork_flip(const FunctionInfo& fn, const std::map<std::string, int>& seed,
                                const std::string& cond, bool want) {
 #ifdef PRISM_HAS_Z3
-    // Mirrors helix.concolic._z3_solve_flip: Enc + Parser::expr on the
+    // Mirrors prism.concolic._z3_solve_flip: Enc + Parser::expr on the
     // negated branch, then getInitialValues. Solver::False → drop the side.
     try {
         Enc e(0);
@@ -5061,7 +5061,7 @@ std::vector<Finding> run_bmc(const std::vector<FunctionInfo>& functions, int unw
     std::vector<Finding> out;
     for (auto& fn : inline_static(functions))
         out.push_back(k_induction(fn, unwind, allow_local_pointers));
-    // Helix k_induction always returns a Finding (empty unwind → ERROR).
+    // Python engine k_induction always returns a Finding (empty unwind → ERROR).
     // A non-empty function list must never look like a silent clean BMC stage.
     if (out.empty() && !functions.empty()) {
         Finding f;

@@ -7,8 +7,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from helix import laws
-from helix.ai import (
+from prism import laws
+from prism.ai import (
     LLM_SKIP_FUSE_MSG,
     create_prompt_from_source,
     documentation_from_comments,
@@ -16,9 +16,9 @@ from helix.ai import (
     pick_best_prompt,
     score_prompt_seeds,
 )
-from helix.cparse import extract_functions
-from helix.fuse import branch_goals, numbered_goals, run_fuse
-from helix.models import Finding
+from prism.cparse import extract_functions
+from prism.fuse import branch_goals, numbered_goals, run_fuse
+from prism.models import Finding
 
 ROOT = Path(__file__).resolve().parents[1]
 TD = ROOT / "testdata"
@@ -54,8 +54,8 @@ class TestFuseGoals(unittest.TestCase):
             strength=laws.STRENGTH_FINDS,
             extra={"new_cov": 0, "iters": 1, "corpus": 1},
         )
-        with patch("helix.fuse.HAS_Z3", False):
-            with patch("helix.fuse.fuzz_function", return_value=clean):
+        with patch("prism.fuse.HAS_Z3", False):
+            with patch("prism.fuse.fuzz_function", return_value=clean):
                 recs = run_fuse([f], [], p.parent, budget=0.2, iters=4, engine=None)
         self.assertEqual(recs[0].status, laws.CLEAN)
         ids = recs[0].extra.get("goal_ids")
@@ -142,8 +142,8 @@ class TestFuseLlm(unittest.TestCase):
             strength=laws.STRENGTH_FINDS,
             extra={"new_cov": 0, "iters": 1, "corpus": 1},
         )
-        with patch("helix.fuse.HAS_Z3", False):
-            with patch("helix.fuse.fuzz_function", return_value=clean):
+        with patch("prism.fuse.HAS_Z3", False):
+            with patch("prism.fuse.fuzz_function", return_value=clean):
                 recs = run_fuse([f], [], p.parent, budget=0.2, iters=4, engine=Eng())
         notrun = [r for r in recs if r.status == laws.NOTRUN]
         self.assertTrue(notrun)
@@ -177,11 +177,11 @@ class TestFuseLlm(unittest.TestCase):
             strength=laws.STRENGTH_FINDS,
             extra={"new_cov": 2, "iters": 4, "corpus": 3},
         )
-        with patch("helix.fuse.HAS_Z3", False):
-            with patch("helix.fuse.fuzz_function", return_value=hit):
-                with patch("helix.agent.fuzz4all_seeds", return_value=[]):
-                    with patch("helix.agent.fuzz4all_mutate_interesting", side_effect=fake_mutate):
-                        with patch("helix.agent.fuzz4all_combine", return_value=[]):
+        with patch("prism.fuse.HAS_Z3", False):
+            with patch("prism.fuse.fuzz_function", return_value=hit):
+                with patch("prism.agent.fuzz4all_seeds", return_value=[]):
+                    with patch("prism.agent.fuzz4all_mutate_interesting", side_effect=fake_mutate):
+                        with patch("prism.agent.fuzz4all_combine", return_value=[]):
                             recs = run_fuse([f], [], p.parent, budget=0.2, iters=4, engine=Eng())
         self.assertEqual(len(called), 1, called)
         self.assertEqual(recs[0].status, laws.CLEAN)
@@ -196,8 +196,8 @@ class TestFuseLlm(unittest.TestCase):
             strength=laws.STRENGTH_FINDS,
             extra={"new_cov": 0, "iters": 1, "corpus": 1},
         )
-        with patch("helix.fuse.HAS_Z3", False):
-            with patch("helix.fuse.fuzz_function", return_value=clean):
+        with patch("prism.fuse.HAS_Z3", False):
+            with patch("prism.fuse.fuzz_function", return_value=clean):
                 recs = run_fuse([f], [], p.parent, budget=0.2, iters=4, engine=None)
         self.assertEqual(len(recs), 1)
         self.assertEqual(recs[0].status, laws.CLEAN)
@@ -215,8 +215,8 @@ class TestFuseLlm(unittest.TestCase):
             strength=laws.STRENGTH_FINDS,
             extra={"new_cov": 0, "iters": 1, "corpus": 1},
         )
-        with patch("helix.fuse.HAS_Z3", False):
-            with patch("helix.fuse.fuzz_function", return_value=clean):
+        with patch("prism.fuse.HAS_Z3", False):
+            with patch("prism.fuse.fuzz_function", return_value=clean):
                 recs = run_fuse([f], [], p.parent, budget=0.2, iters=4, engine=None)
         self.assertEqual(recs[0].extra.get("goals"), [lab for lab, _ in labeled])
         self.assertTrue(all(str(g).startswith("GOAL_") for g in recs[0].extra.get("goals") or []))
@@ -236,11 +236,11 @@ class TestFuseLlm(unittest.TestCase):
             def available(self):
                 return True
 
-        with patch("helix.fuse.HAS_Z3", False):
-            with patch("helix.fuse.fuzz_function", return_value=hit):
-                with patch("helix.agent.fuzz4all_seeds", return_value=[seed]):
-                    with patch("helix.agent.fuzz4all_mutate_interesting", return_value=[]):
-                        with patch("helix.agent.fuzz4all_combine", return_value=[]):
+        with patch("prism.fuse.HAS_Z3", False):
+            with patch("prism.fuse.fuzz_function", return_value=hit):
+                with patch("prism.agent.fuzz4all_seeds", return_value=[seed]):
+                    with patch("prism.agent.fuzz4all_mutate_interesting", return_value=[]):
+                        with patch("prism.agent.fuzz4all_combine", return_value=[]):
                             recs = run_fuse([f], [], p.parent, budget=0.2, iters=4, engine=Eng())
         fuse = recs[0]
         self.assertEqual(fuse.status, laws.CLEAN)
@@ -270,11 +270,11 @@ class TestFuseLlm(unittest.TestCase):
             extra={"new_cov": 2, "iters": 4, "corpus": 3},
         )
         two = [b"\x01\x00\x00\x00", b"\x02\x00\x00\x00"]
-        with patch("helix.fuse.HAS_Z3", False):
-            with patch("helix.fuse.fuzz_function", return_value=hit):
-                with patch("helix.agent.fuzz4all_seeds", return_value=two):
-                    with patch("helix.agent.fuzz4all_mutate_interesting", return_value=[]):
-                        with patch("helix.agent.fuzz4all_combine", side_effect=fake_combine):
+        with patch("prism.fuse.HAS_Z3", False):
+            with patch("prism.fuse.fuzz_function", return_value=hit):
+                with patch("prism.agent.fuzz4all_seeds", return_value=two):
+                    with patch("prism.agent.fuzz4all_mutate_interesting", return_value=[]):
+                        with patch("prism.agent.fuzz4all_combine", side_effect=fake_combine):
                             recs = run_fuse([f], [], p.parent, budget=0.2, iters=4, engine=Eng())
         self.assertEqual(len(combined), 1, combined)
         self.assertTrue(recs[0].extra.get("fuzz4all_combine"))
@@ -294,9 +294,9 @@ class TestFuseLlm(unittest.TestCase):
             strength=laws.STRENGTH_FINDS,
             extra={"new_cov": 0, "iters": 1, "corpus": 1},
         )
-        with patch("helix.fuse.HAS_Z3", False):
-            with patch("helix.fuse.fuzz_function", return_value=clean):
-                with patch("helix.agent.fuzz4all_seeds", return_value=[]):
+        with patch("prism.fuse.HAS_Z3", False):
+            with patch("prism.fuse.fuzz_function", return_value=clean):
+                with patch("prism.agent.fuzz4all_seeds", return_value=[]):
                     recs = run_fuse([f], [], p.parent, budget=0.2, iters=4, engine=Eng())
         hyps = [r for r in recs if r.status == laws.HYPOTHESIS]
         self.assertTrue(hyps)
@@ -346,12 +346,12 @@ class TestFuseLlm(unittest.TestCase):
             strength=laws.STRENGTH_FINDS,
             extra={"engine": "afl", "install": "install gcc or clang"},
         )
-        env = {**os.environ, "HELIX_AFL": "1"}
+        env = {**os.environ, "PRISM_AFL": "1"}
         with patch.dict(os.environ, env, clear=True):
-            with patch("helix.fuse.HAS_Z3", False):
-                with patch("helix.fuse.afl_available", return_value="/fake/afl-fuzz"):
-                    with patch("helix.fuse.fuzz_function", return_value=clean):
-                        with patch("helix.fuse.run_afl_fuzz", return_value=notrun):
+            with patch("prism.fuse.HAS_Z3", False):
+                with patch("prism.fuse.afl_available", return_value="/fake/afl-fuzz"):
+                    with patch("prism.fuse.fuzz_function", return_value=clean):
+                        with patch("prism.fuse.run_afl_fuzz", return_value=notrun):
                             recs = run_fuse(
                                 [f], [], p.parent, budget=0.2, iters=4, engine=None,
                             )
@@ -366,7 +366,7 @@ class TestFuseLlm(unittest.TestCase):
         self.assertIn("not a proof", r.message.lower())
         self.assertFalse(laws.is_proof(r.status))
 
-    def test_helix_afl_opt_in_missing_afl_is_notrun_not_engine_afl(self):
+    def test_prism_afl_opt_in_missing_afl_is_notrun_not_engine_afl(self):
         f, p = fn("saturate")
         clean = Finding(
             stage="fuzz", status=laws.CLEAN, file=f.file, function=f.name,
@@ -374,13 +374,13 @@ class TestFuseLlm(unittest.TestCase):
             strength=laws.STRENGTH_FINDS,
             extra={"new_cov": 0, "iters": 1, "corpus": 1},
         )
-        env = {k: v for k, v in os.environ.items() if k != "HELIX_LIBFUZZER"}
-        env["HELIX_AFL"] = "1"
+        env = {k: v for k, v in os.environ.items() if k != "PRISM_LIBFUZZER"}
+        env["PRISM_AFL"] = "1"
         with patch.dict(os.environ, env, clear=True):
-            with patch("helix.fuse.HAS_Z3", False):
-                with patch("helix.fuse.afl_available", return_value=None):
-                    with patch("helix.fuse.fuzz_function", return_value=clean):
-                        with patch("helix.fuse.run_afl_fuzz") as afl:
+            with patch("prism.fuse.HAS_Z3", False):
+                with patch("prism.fuse.afl_available", return_value=None):
+                    with patch("prism.fuse.fuzz_function", return_value=clean):
+                        with patch("prism.fuse.run_afl_fuzz") as afl:
                             recs = run_fuse(
                                 [f], [], p.parent, budget=0.2, iters=4, engine=None,
                             )
@@ -408,12 +408,12 @@ class TestFuseLlm(unittest.TestCase):
             strength=laws.STRENGTH_FINDS,
             extra={"install": "clang -fsanitize=fuzzer is not vendored (see third_party/SOURCES.md)"},
         )
-        env = {k: v for k, v in os.environ.items() if k != "HELIX_AFL"}
-        env["HELIX_LIBFUZZER"] = "1"
+        env = {k: v for k, v in os.environ.items() if k != "PRISM_AFL"}
+        env["PRISM_LIBFUZZER"] = "1"
         with patch.dict(os.environ, env, clear=True):
-            with patch("helix.fuse.HAS_Z3", False):
-                with patch("helix.fuse.fuzz_function", return_value=clean):
-                    with patch("helix.adapters_extra._run_libfuzzer", return_value=notrun):
+            with patch("prism.fuse.HAS_Z3", False):
+                with patch("prism.fuse.fuzz_function", return_value=clean):
+                    with patch("prism.adapters_extra._run_libfuzzer", return_value=notrun):
                         recs = run_fuse(
                             [f], [], p.parent, budget=0.2, iters=4, engine=None,
                         )

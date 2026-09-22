@@ -122,7 +122,7 @@ void write_report_md(const RunReport& report, const std::filesystem::path& path)
     o << "\n## Findings\n\n";
     for (auto& s : report.stages) {
         for (auto& f : s.findings) {
-            // UNKNOWN/TIMEOUT stay in report.md (Helix pipeline.py). Only the
+            // UNKNOWN/TIMEOUT stay in report.md (the Python engine pipeline.py). Only the
             // inventory/classify/unify noise lines are dropped.
             if ((f.status == laws::NOTRUN || f.status == laws::CLEAN) &&
                 (s.name == "inventory" || s.name == "classify" || s.name == "unify"))
@@ -153,7 +153,7 @@ RunReport run_pipeline(const Config& cfg) {
         if (jsonl_present) resume = journal_completed_ok(cfg.out);
         auto fns = journal_read_functions(cfg.out);
         if (auto old = RunReport::load(cfg.out / "report.json")) {
-            // Helix pipeline.py: report.json stages AND functions are fallbacks
+            // Python engine pipeline.py: report.json stages AND functions are fallbacks
             // only when stages.jsonl is absent. A present jsonl with no
             // functions.json must not revive stale report.json functions.
             if (!jsonl_present) {

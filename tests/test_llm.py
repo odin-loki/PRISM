@@ -1,6 +1,6 @@
 """LLM auditor honesty: hypothesize / LlamaEngine missing GGUF.
 
-Helix is law. The LLM is HYPOTHESIS/READS. Missing engine (including a
+Python engine is law. The LLM is HYPOTHESIS/READS. Missing engine (including a
 missing GGUF with no llama-server/Ollama) is NOTRUN, never CLEAN, never
 COVERED, never PROVED. Empty hypotheses stay HYPOTHESIS. complete() error
 is ERROR. No live LLM required.
@@ -14,12 +14,12 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from helix import laws
-from helix.agent import dafny_specs, hypothesize
-from helix.ai import LLM_INSTALL, LLM_UNAVAILABLE_MSG, LlamaEngine
-from helix.config import Config
-from helix.models import Finding, FunctionInfo, RunReport, StageResult
-from helix.taxonomy import coverage_from_report
+from prism import laws
+from prism.agent import dafny_specs, hypothesize
+from prism.ai import LLM_INSTALL, LLM_UNAVAILABLE_MSG, LlamaEngine
+from prism.config import Config
+from prism.models import Finding, FunctionInfo, RunReport, StageResult
+from prism.taxonomy import coverage_from_report
 
 
 def _fn() -> FunctionInfo:
@@ -145,7 +145,7 @@ class TestDafnySpecsUnavailable(unittest.TestCase):
 class TestLlamaEngineMissingGguf(unittest.TestCase):
     def test_missing_gguf_unavailable_hypothesize_notrun(self):
         cfg = Config(
-            gguf=Path("/nonexistent/helix-missing.gguf"),
+            gguf=Path("/nonexistent/prism-missing.gguf"),
             ollama_host="http://127.0.0.1:1",
             llama_server="http://127.0.0.1:1",
         )
@@ -231,7 +231,7 @@ class TestHypothesizeCannotCover(unittest.TestCase):
 
 class TestLlmForcedReads(unittest.TestCase):
     def test_proved_failed_clean_become_hypothesis_reads(self):
-        from helix.pipeline import llm_forced_reads
+        from prism.pipeline import llm_forced_reads
 
         for status, strength in (
             (laws.PROVED, laws.STRENGTH_PROVES),
@@ -254,7 +254,7 @@ class TestLlmForcedReads(unittest.TestCase):
             self.assertEqual(_covered_ids(out), [])
 
     def test_notrun_error_timeout_kept(self):
-        from helix.pipeline import llm_forced_reads
+        from prism.pipeline import llm_forced_reads
 
         for status in (laws.NOTRUN, laws.ERROR, laws.TIMEOUT, laws.HYPOTHESIS, laws.READS):
             f = Finding(

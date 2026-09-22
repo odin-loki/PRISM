@@ -7,13 +7,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from helix import laws
-from helix.bmc import HAS_Z3, bmc_function
-from helix.contracts import parse_comments, prove_contracts
-from helix.cparse import extract_functions
-from helix.diff import run_diff
-from helix.fuse import branch_goals, run_fuse, seeds_from_bmc
-from helix.ltl import F_BOUND, check_safety, extract_fsm, run_ltl
+from prism import laws
+from prism.bmc import HAS_Z3, bmc_function
+from prism.contracts import parse_comments, prove_contracts
+from prism.cparse import extract_functions
+from prism.diff import run_diff
+from prism.fuse import branch_goals, run_fuse, seeds_from_bmc
+from prism.ltl import F_BOUND, check_safety, extract_fsm, run_ltl
 
 ROOT = Path(__file__).resolve().parents[1]
 TD = ROOT / "testdata"

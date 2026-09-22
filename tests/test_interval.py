@@ -8,9 +8,9 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from helix import laws
-from helix.cparse import extract_functions
-from helix.interval import interval_function, run_interval
+from prism import laws
+from prism.cparse import extract_functions
+from prism.interval import interval_function, run_interval
 
 ROOT = Path(__file__).resolve().parents[1]
 TD = ROOT / "testdata"
@@ -156,7 +156,7 @@ class TestInterval(unittest.TestCase):
         self.assertIsNone(rec)
 
     def test_char_literal_evaluates(self):
-        from helix.interval import _Engine, _eval
+        from prism.interval import _Engine, _eval
 
         e = _Engine([])
         r = _eval(e, "'A'")

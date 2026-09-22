@@ -1,4 +1,4 @@
-# Datamined methods (what Helix actually implements)
+# Datamined methods (what the Python engine actually implements)
 
 This is not a bibliography. Each section is an algorithm we run, named
 for the project it came from, with the honesty constraints ParanoidBSD
@@ -11,7 +11,7 @@ claims. CBMC turns checks *on* with `--bounds-check`. ESBMC turns them
 *off* with `--no-bounds-check`. Passing the CBMC-shaped flag to ESBMC
 disables the check and still prints VERIFICATION SUCCESSFUL.
 
-Helix BMC:
+Python engine BMC:
 
 1. Parse a SCALAR (or VOID) function into a statement list.
 2. Encode each `int` as a Z3 32-bit bitvector (64 for `long long`).
@@ -70,7 +70,7 @@ Helix BMC:
 When `resolve_adapter` finds `esbmc` (`--tool`, an already-built exe
 under `third_party/esbmc/`, or PATH) the adapter runs it too.
 Disagreement is the point. The two verdicts are never merged. A
-missing binary is `NOTRUN`. Vendored *source* is not a proof; Helix
+missing binary is `NOTRUN`. Vendored *source* is not a proof; Python engine
 never compiles ESBMC during resolve.
 
 ## FuSeBMC — BMC seeds a fuzzer, coverage feeds BMC
@@ -123,7 +123,7 @@ invariant I(state)
 decreases D(state)
 ```
 
-Qwen proposes these as HYPOTHESIS. Helix then:
+Qwen proposes these as HYPOTHESIS. Python engine then:
 
 1. Encodes `requires` as BMC assumptions (the harness).
 2. Encodes `ensures` as BMC assertions after the call.
@@ -134,8 +134,8 @@ Qwen proposes these as HYPOTHESIS. Helix then:
 ## Frama-C WP — weakest precondition, requires is a harness
 
 Mined from Frama-C WP (`calculus.ml` get_weakest_precondition, VC.ml,
-QED, `wp_error.ml` unsupported). This is Helix's in-tree engine
-(`helix/wp.py`). Do not wrap the `frama-c` binary here: that adapter
+QED, `wp_error.ml` unsupported). This is the Python engine's in-tree engine
+(`prism/wp.py`). Do not wrap the `frama-c` binary here: that adapter
 is EVA, and a missing binary is `NOTRUN`.
 
 A closed check is `PROVED-ASSUMING`, never `PROVED` / `PROVED-UNBOUNDED`:
@@ -165,7 +165,7 @@ A closed check is `PROVED-ASSUMING`, never `PROVED` / `PROVED-UNBOUNDED`:
 
 ## Strix — LTL safety for protocol-shaped code
 
-Full Strix solves parity games and emits a Mealy machine. Helix takes
+Full Strix solves parity games and emits a Mealy machine. Python engine takes
 the safety fragment that is decidable without that machinery. This is
 a monitor on an extracted FSM, not Strix.
 
@@ -186,7 +186,7 @@ a monitor on an extracted FSM, not Strix.
 5. Synthesis (missing `G (p → X q)` edges) is `HYPOTHESIS`, never a
    proof.
 6. A `strix` binary on PATH or under `third_party/strix` is recorded.
-   Helix does not treat strix realizability as `PROVED`. Missing
+   Python engine does not treat strix realizability as `PROVED`. Missing
    Strix is `NOTRUN`.
 
 ## RLEF — reinforcement from execution feedback
@@ -213,7 +213,7 @@ No training. The *loop*:
 
 ## ParanoidBSD — the instruments that already found real bugs
 
-Helix calls `tools/verify/` when the tree is present, and ships
+Python engine calls `tools/verify/` when the tree is present, and ships
 portable copies of the shapes that do not need FreeBSD headers:
 
 - lock released on some returns and not others
@@ -321,7 +321,7 @@ the body, flip one operator, re-run.
 
 ## Optional adapters — present is not a proof
 
-Search order (`helix/config.py:resolve_adapter`):
+Search order (`prism/config.py:resolve_adapter`):
 
 1. `Config.tools` / `--tool NAME=PATH` (stage name or binary name).
 2. An *already-built* executable under `third_party/<vendor>/` (known
@@ -344,13 +344,13 @@ When present:
 - CBMC `VERIFICATION SUCCESSFUL` is `BOUNDED` (unwind limited),
   never `PROVED`.
 - KLEE binary: no error path is `UNKNOWN`. In-process concolic is
-  `helix/concolic.py`. Missing klee is `NOTRUN`.
+  `prism/concolic.py`. Missing klee is `NOTRUN`.
 - Successful `--help` / version probe is `UNKNOWN`, never CLEAN or
   PROVED.
 
 ## Pipeline order
 
-`helix/pipeline.py:STAGE_ORDER` and `include/prism/pipeline.hpp`
+`prism/pipeline.py:STAGE_ORDER` and `include/prism/pipeline.hpp`
 `STAGE_ORDER` must match:
 
 inventory, classify, lints, taint, thread, interval, warnings,
@@ -363,7 +363,7 @@ cpu/2) is the lint worker count on `Config.jobs`; `jobs>1` uses a
 ThreadPoolExecutor per file, else serial. It is not a proof flag.
 `--resume` skips `ok`/`NOTRUN` from `stages.jsonl` (classify snapshot
 in `functions.json`); `report.json` is fallback. Classify is not
-skipped into an empty function list. Remaining ISO C11 `thrd_sleep`/`thrd_yield`/`thrd_current`/`thrd_equal`/`thrd_exit` plants are `NEEDS-HARNESS`; Helix `--help` documents `--resume`.
+skipped into an empty function list. Remaining ISO C11 `thrd_sleep`/`thrd_yield`/`thrd_current`/`thrd_equal`/`thrd_exit` plants are `NEEDS-HARNESS`; Python engine `--help` documents `--resume`.
 
 ## Also in the pipeline
 
@@ -373,11 +373,11 @@ skipped into an empty function list. Remaining ISO C11 `thrd_sleep`/`thrd_yield`
 | gcc/clang -Wall | cheap, noisy, union of both compilers |
 | ASan/UBSan/TSan | probe then compile; MinGW without libubsan/libtsan is NOTRUN; TSan unexpected memory mapping is NOTRUN not FAILED; CLEAN is not a proof |
 | AFL++/libFuzzer | PATH/clang -fsanitize=fuzzer probe; NOTRUN if absent |
-| KLEE | in-process concolic in helix/concolic.py; missing binary is NOTRUN; adapter with no error path is UNKNOWN, never a proof |
+| KLEE | in-process concolic in prism/concolic.py; missing binary is NOTRUN; adapter with no error path is UNKNOWN, never a proof |
 | Semgrep | PATH adapter; real scan when present; UNKNOWN if empty |
-| Coccinelle | `spatch` + `helix/cocci/`; missing is NOTRUN |
+| Coccinelle | `spatch` + `prism/cocci/`; missing is NOTRUN |
 | Infer/CodeQL | adapters; in-process taint; CodeQL with no `codeql-db` is UNKNOWN; missing binary is NOTRUN |
-| Frama-C | EVA adapter: 0 alarms UNKNOWN; in-tree WP (`helix/wp.py`); ACSL in contracts.py. Missing `frama-c` binary is NOTRUN |
+| Frama-C | EVA adapter: 0 alarms UNKNOWN; in-tree WP (`prism/wp.py`); ACSL in contracts.py. Missing `frama-c` binary is NOTRUN |
 | clang-tidy | adapter; no diagnostics UNKNOWN; missing is NOTRUN (not vendored) |
 | CBMC | adapter; SUCCESSFUL is BOUNDED; missing is NOTRUN |
 | Interval | path-sensitive integer ranges; FAILED ≠ proof |
@@ -387,95 +387,95 @@ skipped into an empty function list. Remaining ISO C11 `thrd_sleep`/`thrd_yield`
 
 ## Implemented in code
 
-File:function pointers for the methods above. Call these from `helix/pipeline.py`; do not merge CLEAN with a proof.
+File:function pointers for the methods above. Call these from `prism/pipeline.py`; do not merge CLEAN with a proof.
 
-- `helix/bmc.py:bmc_function` — ESBMC-method BMC; statuses `PROVED` / `PROVED-UNBOUNDED` / `FAILED` / `BOUNDED`
-- `helix/bmc.py:k_induction` — base case = BMC; closed loops may be unbounded
-- `helix/bmc.py:run_bmc` — `run_bmc(functions, unwind) -> list[Finding]`
-- `helix/fuse.py:run_fuse` — FuSeBMC closed loop: `run_fuse(functions, bmc_findings, root, budget, iters) -> list[Finding]`
-- `helix/fuse.py:seeds_from_bmc` — BMC cex bytes as fuzzer seeds
-- `helix/fuse.py:numbered_goals` — FuSeBMC `GOAL_N` (`GOAL_1`, `GOAL_2`, …) per function; counter starts at 0 and increments once per instrumented branch
-- `helix/fuse.py:bmc_toward_goal` — uncovered `GOAL_N` as a BMC assumption (`if (!(cond)) return 0`)
-- `helix/fuzz.py:run_fuzz` — greybox; CLEAN is not a proof
-- `helix/fuzz.py:fuzz_function` — compile + run harness
-- `helix/contracts.py:parse_comments` — `// requires:` plus Frama-C `/*@` / `//@` ACSL; `\result` → `result`
-- `helix/contracts.py:prove_contracts` — `prove_contracts(functions, unwind) -> list[Finding]`; proof rewritten to `PROVED-ASSUMING`
-- `helix/wp.py:run_wp` — Frama-C WP-shaped return substitution; closed is `PROVED-ASSUMING` never `PROVED`/`PROVED-UNBOUNDED`; POINTER/non-SCALAR is `NEEDS-HARNESS`; unencodable ACSL is `ERROR`; QED tautology skips BMC; the `frama-c` binary stays an EVA adapter (`NOTRUN` if missing)
-- `helix/wp.py:encode_predicate` — ACSL / `requires` atom → C scalar or None; None is ERROR, never PROVED-ASSUMING
-- `helix/pipeline.py:STAGE_ORDER` — must match `include/prism/pipeline.hpp`; `wp` after `contracts` before `bmc`; `Pipeline` calls `run_wp(functions, cfg.unwind)`
-- `helix/contracts.py:bmc_function_with_assume` — `if (!(requires)) return 0;` + `assert(ensures);` then `helix.bmc.bmc_function`
-- `helix/ltl.py:run_ltl` — `run_ltl(functions, spec_paths) -> list[Finding]`; safety fragment `G p`, `G (p -> X q)`, `G (req -> F_k ack)`, `G (F_k p)` may `PROVED`; GF/FG/U and unbounded F approximations are `BOUNDED` never `PROVED` (`F_BOUND=8`); no spec / non-safety / missing Strix is `NOTRUN`; strix output is never `PROVED`
-- `helix/ltl.py:check_safety` — decide the fragment; liveness approximations rewrite success to `BOUNDED`
-- `helix/ltl.py:extract_fsm` — `switch(state)` plus transitions
-- `helix/diff.py:run_diff` — `run_diff(functions, root) -> list[Finding]`; pair `*_a`/`*_b` or `// diff: othername`; disagree = `FAILED`
-- `helix/agent.py:fuzz4all_seeds` — Fuzz4All autoprompt seeds
-- `helix/agent.py:chatfuzz_mutants` — stall mutants
-- `helix/agent.py:dafny_specs` — Dafny-shaped specs as HYPOTHESIS
-- `helix/agent.py:rlef_repair` — execution-feedback repair loop
-- `helix/agent.py:sandbox_run` — gcc/clang compile+run in tempdir; missing compiler is honest
-- `helix/agent.py:interpreter_loop` — OpenCodeInterpreter generate/run/refine
-- `helix/interval.py:run_interval` — path-sensitive integer ranges; FAILED is FINDS, silence is not PROVED
-- `helix/rapid.py:_shrink_candidates` / `shrink_counterexample` — RapidCheck integer shrinks toward 0, then half, then ±1; `extra.shrinks` counts steps; still a cex, not a proof
-- `helix/sanitize.py:run_sanitize` — UBSan/TSan probe+run; `unexpected memory mapping` is `NOTRUN` not `FAILED`; MinGW without lib is `NOTRUN`; `CLEAN` is not a proof
-- `helix/muttest.py:run_muttest` — killed mutant is `CLEAN` not a proof; survived is `FAILED`; missing compiler is `NOTRUN`
-- `helix/__main__.py` `--jobs`/`-j` — worker count for lints (`0` = cpu/2); stored on `Config.jobs`; not a pipeline-wide parallel flag
-- `helix/checkers.py:run_lints` — `run_lints(paths, root, jobs=)`; `jobs>1` ThreadPoolExecutor per file, else serial
-- `helix/checkers.py:_mem_lifetime` — `MEM-UAF` / `MEM-DOUBLE-FREE`
-- `helix/checkers.py:_fmt_string` — `FMT-STRING` (printf-family format not a literal)
-- `helix/checkers.py:_intent_mismatch` — comment/code increment mismatch is INTENT FINDS
-- `helix/checkers.py:_cxx_self_assign` / `_mismatched_free` / `_ptr_arith` / `_float_ub`
-- `helix/checkers.py:_lock_order` / `_cxx_virtual_in_ctor` / `_conc_toctou`
-- `helix/checkers.py:_infoleak_pad` / `_api_precondition` / `_mem_overlap`
-- `helix/checkers.py:_trust_unvalidated_input` / `_crypto_misuse` / `_cxx_dangling_ref` / `_cxx_iter_invalid`
-- `helix/checkers.py:_str_missing_nul` / `_cxx_delete_this` / `_api_mkstemp`
-- `helix/checkers.py:_api_tmpnam` / `_fmt_percent_n` / `_api_system`
-- `helix/checkers.py:_api_chroot` / `_int_atoi` / `_str_sprintf`
-- `helix/checkers.py:_api_getenv_null` / `_mem_sizeof_ptr` / `_popen_leak`
-- `helix/checkers.py:_cxx_catch_by_value` / `_cxx_throw_noexcept` / `_cxx_missing_virtual_dtor`
-- `helix/checkers.py:_api_umask` / `_crypto_srand` / `_mem_realloc_zero`
-- `helix/checkers.py:_cxx_lambda_dangle` / `_cxx_unique_reset` / `_cxx_const_cast`
-- `helix/checkers.py:_api_mktemp` / `_api_signal` / `_api_strdup_null`
-- `helix/checkers.py:_cxx_dynamic_cast_null` / `_cxx_reinterpret` / `_cxx_throw_copy`
-- `helix/checkers.py:_api_fork` / `_api_exec` / `_api_mmap` / `_wcs_unbounded` / `_api_getcwd` / `_api_ioctl`
-- `helix/checkers.py:_cxx_bit_cast` / `_cxx_placement_new` / `_cxx_std_thread` / `_cxx_optional_null` / `_cxx_variant_get` / `_cxx_span_dangle`
-- `helix/checkers.py:_api_dlopen` / `_api_accept` / `_api_realpath` / `_api_chmod_world` / `_int_clz_zero` / `_mem_bcopy`
-- `helix/checkers.py:_cxx_vector_index` / `_cxx_catch_all` / `_cxx_throw_new` / `_cxx_uninit_member` / `_cxx_copy_assign_ptr` / `_cxx_volatile_cast`
-- `helix/checkers.py:_api_setuid` / `_api_socket` / `_api_bind` / `_str_snprintf` / `_api_unlink` / `_api_mkfifo`
-- `helix/checkers.py:_cxx_shared_ptr_get` / `_cxx_auto_ptr` / `_cxx_string_data` / `_cxx_enable_shared` / `_cxx_forwarding_ref` / `_cxx_explicit_ctor`
-- `helix/checkers.py:_api_listen` / `_api_connect` / `_api_pipe` / `_api_dup` / `_api_fcntl` / `_api_wait`
-- `helix/checkers.py:_cxx_move_const` / `_cxx_bind_tmp` / `_cxx_expected_null` / `_cxx_std_format` / `_cxx_this_capture` / `_cxx_spaceship_default`
-- `helix/checkers.py:_api_select` / `_api_send` / `_api_shutdown` / `_api_kill` / `_api_getaddrinfo` / `_str_strncpy_nul`
-- `helix/checkers.py:_cxx_std_async` / `_cxx_future_get` / `_cxx_function_null` / `_cxx_nodiscard` / `_cxx_std_jthread` / `_cxx_mdspan_dangle`
-- `helix/checkers.py:_api_pthread_join` / `_api_sem_wait` / `_api_openat` / `_api_flock` / `_api_chown` / `_api_symlink`
-- `helix/checkers.py:_cxx_atomic_ref` / `_cxx_condition_wait` / `_cxx_std_bind` / `_cxx_assume` / `_cxx_generator` / `_cxx_shared_mutex`
-- `helix/checkers.py:_api_opendir` / `_api_setrlimit` / `_api_getsockopt` / `_api_stat` / `_api_mkdir` / `_api_getpwuid`
-- `helix/checkers.py:_cxx_any_cast` / `_cxx_filesystem` / `_cxx_regex` / `_cxx_latch` / `_cxx_from_chars` / `_cxx_init_list_dangle`
-- `helix/checkers.py:_api_clock_gettime` / `_api_shm_open` / `_api_posix_spawn` / `_api_glob` / `_api_fseek` / `_api_access`
-- `helix/checkers.py:_cxx_stop_token` / `_cxx_flat_map` / `_cxx_semaphore` / `_cxx_stacktrace` / `_cxx_unique_release` / `_cxx_pack_pragma`
-- `helix/checkers.py:_api_getopt` / `_api_uname` / `_api_sendfile` / `_api_memfd` / `_api_prctl` / `_api_tcgetattr`
-- `helix/checkers.py:_cxx_function_ref` / `_cxx_move_only_function` / `_cxx_ranges_dangle` / `_cxx_chrono_seed` / `_cxx_inplace_vector` / `_cxx_flat_set`
-- `helix/checkers.py:_api_sysconf` / `_api_getrusage` / `_api_nftw` / `_api_wordexp` / `_api_getlogin` / `_api_inet_pton`
-- `helix/checkers.py:_cxx_copyable_function` / `_cxx_hive` / `_cxx_bitset_index` / `_cxx_sstream_view` / `_cxx_optional_value` / `_cxx_indirect`
-- `helix/checkers.py:_api_mlock` / `_api_splice` / `_api_inotify` / `_api_fsync` / `_api_getrandom` / `_api_getline`
-- `helix/checkers.py:_cxx_to_chars` / `_cxx_hazard_pointer` / `_cxx_text_encoding` / `_cxx_expected_error` / `_cxx_variant_valueless` / `_cxx_simd_index`
-- `helix/checkers.py:_api_asprintf` / `_api_strlcpy` / `_api_isatty` / `_api_ptsname` / `_api_mount` / `_api_fmemopen`
-- `helix/checkers.py:_cxx_rcu` / `_cxx_linalg` / `_cxx_sync_wait` / `_cxx_embed` / `_cxx_contracts` / `_cxx_reflection`
-- `helix/checkers.py:_api_scandir` / `_api_setxattr` / `_api_sched_affinity` / `_api_aio` / `_api_statx` / `_api_pidfd`
-- `helix/checkers.py:_cxx_out_ptr` / `_cxx_flat_multimap` / `_cxx_spanstream` / `_cxx_barrier` / `_cxx_task` / `_cxx_generator_discard`
-- `helix/checkers.py:_cxx_osyncstream` / `_cxx_packaged_task` / `_cxx_flat_multiset` / `_cxx_syncbuf` / `_cxx_counted_iterator` / `_cxx_promise`
-- `helix/bmc.py:unencoded_syntax_reason` — memcpy/mkstemp/tmpnam/chroot/popen/umask/srand/signal/mktemp/fork/exec/mmap/ioctl/wcscpy/dlopen/accept/chmod/setuid/socket/bind/unlink/mkfifo/listen/connect/pipe/dup/fcntl/wait/select/send/shutdown/kill/getaddrinfo/pthread_join/sem_wait/openat/flock/chown/symlink/opendir/setrlimit/getsockopt/stat/mkdir/getpwuid/clock_gettime/gettimeofday/shm_open/posix_spawn/glob/fseek/sleep/access/getopt/uname/sendfile/memfd_create/prctl/tcgetattr/sysconf/getrusage/nftw/wordexp/getlogin/inet_pton/mlock/splice/inotify/fsync/getrandom/getline/strlcpy/isatty/ptsname/mount/fmemopen/setxattr/aio_read/statx/pidfd, designated init, alignof, va_arg, range-for, lambda, const_cast, dynamic_cast/typeid/reinterpret_cast/bit_cast/launder/start_lifetime_as, packed/#pragma pack, coroutines, GNU &&label/case-range/cleanup/vector_size, wide strings, __int128/_Decimal/_Float16, if constexpr/fold/requires/constexpr, C23 nullptr, restrict, __builtin_clz/choose_expr/atomic, typeof_unqual, std::thread/jthread/async/future/function/optional/variant/span/mdspan/vector/expected/format/mutex, condition_variable/shared_mutex/atomic_ref/generator/[[assume(/std::bind(/any/filesystem/regex/latch/from_chars/visit/initializer_list/source_location/stacktrace/stop_token/flat_map/chrono/function_ref/flat_set/views/inplace_vector/hive/bitset/indirect/polymorphic/stringstream/import-module, <=>; computed goto (plain `goto` stays ERROR)
-- `helix/concolic.py:concolic_function` — VLA/float/recursion/C++ view/alloca/setjmp/va_list are NEEDS-HARNESS; goto stays ERROR
-- `helix/bmc.py:_has_self_call` — recursive unconstrained call is NEEDS-HARNESS, never PROVED
-- `helix/bmc.py:k_induction` — havoced step k=1 then k=2; SAT stays BOUNDED
-- `helix/config.py:resolve_adapter` — search (1) `Config.tools` / `--tool`, (2) already-built exe under `third_party/<vendor>/` (never compile), (3) PATH; missing is `NOTRUN`; vendored source is not a proof
-- `helix/adapters_extra.py:run_optional_tools` — present tools run cheap analysis; empty success is UNKNOWN, never CLEAN/PROVED
-- `helix/adapters_extra.py:_run_frama_c` — EVA; `0 alarm` is UNKNOWN
-- `helix/adapters_extra.py:_run_codeql` — no `codeql-db` is UNKNOWN
-- `helix/adapters_extra.py:_run_clang_tidy` — no diagnostics is UNKNOWN
-- `helix/adapters_extra.py:_run_cbmc` — `VERIFICATION SUCCESSFUL` is BOUNDED, never PROVED
-- `helix/adapters_extra.py:_run_klee` — no error path is UNKNOWN; missing binary is NOTRUN (in-process concolic is `helix/concolic.py`)
-- `helix/adapters_extra.py:_run_spatch` — Coccinelle; missing `spatch` is NOTRUN
-- `helix/cocci/` — shipped rules `memcpy_self`, `realloc_self`, `shift_bit31`, `getenv_null`, `strcpy_self`, `sprintf_unbounded`, `strcat_self`, `strncpy_self`; `_cocci_rules` loads these first, then `*.cocci` under source roots
-- `helix/ltl.py:synthesize_missing` — Strix-shaped missing `G (p -> X q)` edges are HYPOTHESIS
-- `helix/contracts.py:_instrument_invariant` — Dafny `invariant:` around loops; PROVED-ASSUMING
-- `helix/adapters.py:run_compiler` — gcc+clang -Wall union; missing NOTRUN; no C files UNKNOWN not silence; unmatched compiler exit FAILED; empty-scope confidence is 0 not n/a (`helix/confidence.py`)
+- `prism/bmc.py:bmc_function` — ESBMC-method BMC; statuses `PROVED` / `PROVED-UNBOUNDED` / `FAILED` / `BOUNDED`
+- `prism/bmc.py:k_induction` — base case = BMC; closed loops may be unbounded
+- `prism/bmc.py:run_bmc` — `run_bmc(functions, unwind) -> list[Finding]`
+- `prism/fuse.py:run_fuse` — FuSeBMC closed loop: `run_fuse(functions, bmc_findings, root, budget, iters) -> list[Finding]`
+- `prism/fuse.py:seeds_from_bmc` — BMC cex bytes as fuzzer seeds
+- `prism/fuse.py:numbered_goals` — FuSeBMC `GOAL_N` (`GOAL_1`, `GOAL_2`, …) per function; counter starts at 0 and increments once per instrumented branch
+- `prism/fuse.py:bmc_toward_goal` — uncovered `GOAL_N` as a BMC assumption (`if (!(cond)) return 0`)
+- `prism/fuzz.py:run_fuzz` — greybox; CLEAN is not a proof
+- `prism/fuzz.py:fuzz_function` — compile + run harness
+- `prism/contracts.py:parse_comments` — `// requires:` plus Frama-C `/*@` / `//@` ACSL; `\result` → `result`
+- `prism/contracts.py:prove_contracts` — `prove_contracts(functions, unwind) -> list[Finding]`; proof rewritten to `PROVED-ASSUMING`
+- `prism/wp.py:run_wp` — Frama-C WP-shaped return substitution; closed is `PROVED-ASSUMING` never `PROVED`/`PROVED-UNBOUNDED`; POINTER/non-SCALAR is `NEEDS-HARNESS`; unencodable ACSL is `ERROR`; QED tautology skips BMC; the `frama-c` binary stays an EVA adapter (`NOTRUN` if missing)
+- `prism/wp.py:encode_predicate` — ACSL / `requires` atom → C scalar or None; None is ERROR, never PROVED-ASSUMING
+- `prism/pipeline.py:STAGE_ORDER` — must match `include/prism/pipeline.hpp`; `wp` after `contracts` before `bmc`; `Pipeline` calls `run_wp(functions, cfg.unwind)`
+- `prism/contracts.py:bmc_function_with_assume` — `if (!(requires)) return 0;` + `assert(ensures);` then `prism.bmc.bmc_function`
+- `prism/ltl.py:run_ltl` — `run_ltl(functions, spec_paths) -> list[Finding]`; safety fragment `G p`, `G (p -> X q)`, `G (req -> F_k ack)`, `G (F_k p)` may `PROVED`; GF/FG/U and unbounded F approximations are `BOUNDED` never `PROVED` (`F_BOUND=8`); no spec / non-safety / missing Strix is `NOTRUN`; strix output is never `PROVED`
+- `prism/ltl.py:check_safety` — decide the fragment; liveness approximations rewrite success to `BOUNDED`
+- `prism/ltl.py:extract_fsm` — `switch(state)` plus transitions
+- `prism/diff.py:run_diff` — `run_diff(functions, root) -> list[Finding]`; pair `*_a`/`*_b` or `// diff: othername`; disagree = `FAILED`
+- `prism/agent.py:fuzz4all_seeds` — Fuzz4All autoprompt seeds
+- `prism/agent.py:chatfuzz_mutants` — stall mutants
+- `prism/agent.py:dafny_specs` — Dafny-shaped specs as HYPOTHESIS
+- `prism/agent.py:rlef_repair` — execution-feedback repair loop
+- `prism/agent.py:sandbox_run` — gcc/clang compile+run in tempdir; missing compiler is honest
+- `prism/agent.py:interpreter_loop` — OpenCodeInterpreter generate/run/refine
+- `prism/interval.py:run_interval` — path-sensitive integer ranges; FAILED is FINDS, silence is not PROVED
+- `prism/rapid.py:_shrink_candidates` / `shrink_counterexample` — RapidCheck integer shrinks toward 0, then half, then ±1; `extra.shrinks` counts steps; still a cex, not a proof
+- `prism/sanitize.py:run_sanitize` — UBSan/TSan probe+run; `unexpected memory mapping` is `NOTRUN` not `FAILED`; MinGW without lib is `NOTRUN`; `CLEAN` is not a proof
+- `prism/muttest.py:run_muttest` — killed mutant is `CLEAN` not a proof; survived is `FAILED`; missing compiler is `NOTRUN`
+- `prism/__main__.py` `--jobs`/`-j` — worker count for lints (`0` = cpu/2); stored on `Config.jobs`; not a pipeline-wide parallel flag
+- `prism/checkers.py:run_lints` — `run_lints(paths, root, jobs=)`; `jobs>1` ThreadPoolExecutor per file, else serial
+- `prism/checkers.py:_mem_lifetime` — `MEM-UAF` / `MEM-DOUBLE-FREE`
+- `prism/checkers.py:_fmt_string` — `FMT-STRING` (printf-family format not a literal)
+- `prism/checkers.py:_intent_mismatch` — comment/code increment mismatch is INTENT FINDS
+- `prism/checkers.py:_cxx_self_assign` / `_mismatched_free` / `_ptr_arith` / `_float_ub`
+- `prism/checkers.py:_lock_order` / `_cxx_virtual_in_ctor` / `_conc_toctou`
+- `prism/checkers.py:_infoleak_pad` / `_api_precondition` / `_mem_overlap`
+- `prism/checkers.py:_trust_unvalidated_input` / `_crypto_misuse` / `_cxx_dangling_ref` / `_cxx_iter_invalid`
+- `prism/checkers.py:_str_missing_nul` / `_cxx_delete_this` / `_api_mkstemp`
+- `prism/checkers.py:_api_tmpnam` / `_fmt_percent_n` / `_api_system`
+- `prism/checkers.py:_api_chroot` / `_int_atoi` / `_str_sprintf`
+- `prism/checkers.py:_api_getenv_null` / `_mem_sizeof_ptr` / `_popen_leak`
+- `prism/checkers.py:_cxx_catch_by_value` / `_cxx_throw_noexcept` / `_cxx_missing_virtual_dtor`
+- `prism/checkers.py:_api_umask` / `_crypto_srand` / `_mem_realloc_zero`
+- `prism/checkers.py:_cxx_lambda_dangle` / `_cxx_unique_reset` / `_cxx_const_cast`
+- `prism/checkers.py:_api_mktemp` / `_api_signal` / `_api_strdup_null`
+- `prism/checkers.py:_cxx_dynamic_cast_null` / `_cxx_reinterpret` / `_cxx_throw_copy`
+- `prism/checkers.py:_api_fork` / `_api_exec` / `_api_mmap` / `_wcs_unbounded` / `_api_getcwd` / `_api_ioctl`
+- `prism/checkers.py:_cxx_bit_cast` / `_cxx_placement_new` / `_cxx_std_thread` / `_cxx_optional_null` / `_cxx_variant_get` / `_cxx_span_dangle`
+- `prism/checkers.py:_api_dlopen` / `_api_accept` / `_api_realpath` / `_api_chmod_world` / `_int_clz_zero` / `_mem_bcopy`
+- `prism/checkers.py:_cxx_vector_index` / `_cxx_catch_all` / `_cxx_throw_new` / `_cxx_uninit_member` / `_cxx_copy_assign_ptr` / `_cxx_volatile_cast`
+- `prism/checkers.py:_api_setuid` / `_api_socket` / `_api_bind` / `_str_snprintf` / `_api_unlink` / `_api_mkfifo`
+- `prism/checkers.py:_cxx_shared_ptr_get` / `_cxx_auto_ptr` / `_cxx_string_data` / `_cxx_enable_shared` / `_cxx_forwarding_ref` / `_cxx_explicit_ctor`
+- `prism/checkers.py:_api_listen` / `_api_connect` / `_api_pipe` / `_api_dup` / `_api_fcntl` / `_api_wait`
+- `prism/checkers.py:_cxx_move_const` / `_cxx_bind_tmp` / `_cxx_expected_null` / `_cxx_std_format` / `_cxx_this_capture` / `_cxx_spaceship_default`
+- `prism/checkers.py:_api_select` / `_api_send` / `_api_shutdown` / `_api_kill` / `_api_getaddrinfo` / `_str_strncpy_nul`
+- `prism/checkers.py:_cxx_std_async` / `_cxx_future_get` / `_cxx_function_null` / `_cxx_nodiscard` / `_cxx_std_jthread` / `_cxx_mdspan_dangle`
+- `prism/checkers.py:_api_pthread_join` / `_api_sem_wait` / `_api_openat` / `_api_flock` / `_api_chown` / `_api_symlink`
+- `prism/checkers.py:_cxx_atomic_ref` / `_cxx_condition_wait` / `_cxx_std_bind` / `_cxx_assume` / `_cxx_generator` / `_cxx_shared_mutex`
+- `prism/checkers.py:_api_opendir` / `_api_setrlimit` / `_api_getsockopt` / `_api_stat` / `_api_mkdir` / `_api_getpwuid`
+- `prism/checkers.py:_cxx_any_cast` / `_cxx_filesystem` / `_cxx_regex` / `_cxx_latch` / `_cxx_from_chars` / `_cxx_init_list_dangle`
+- `prism/checkers.py:_api_clock_gettime` / `_api_shm_open` / `_api_posix_spawn` / `_api_glob` / `_api_fseek` / `_api_access`
+- `prism/checkers.py:_cxx_stop_token` / `_cxx_flat_map` / `_cxx_semaphore` / `_cxx_stacktrace` / `_cxx_unique_release` / `_cxx_pack_pragma`
+- `prism/checkers.py:_api_getopt` / `_api_uname` / `_api_sendfile` / `_api_memfd` / `_api_prctl` / `_api_tcgetattr`
+- `prism/checkers.py:_cxx_function_ref` / `_cxx_move_only_function` / `_cxx_ranges_dangle` / `_cxx_chrono_seed` / `_cxx_inplace_vector` / `_cxx_flat_set`
+- `prism/checkers.py:_api_sysconf` / `_api_getrusage` / `_api_nftw` / `_api_wordexp` / `_api_getlogin` / `_api_inet_pton`
+- `prism/checkers.py:_cxx_copyable_function` / `_cxx_hive` / `_cxx_bitset_index` / `_cxx_sstream_view` / `_cxx_optional_value` / `_cxx_indirect`
+- `prism/checkers.py:_api_mlock` / `_api_splice` / `_api_inotify` / `_api_fsync` / `_api_getrandom` / `_api_getline`
+- `prism/checkers.py:_cxx_to_chars` / `_cxx_hazard_pointer` / `_cxx_text_encoding` / `_cxx_expected_error` / `_cxx_variant_valueless` / `_cxx_simd_index`
+- `prism/checkers.py:_api_asprintf` / `_api_strlcpy` / `_api_isatty` / `_api_ptsname` / `_api_mount` / `_api_fmemopen`
+- `prism/checkers.py:_cxx_rcu` / `_cxx_linalg` / `_cxx_sync_wait` / `_cxx_embed` / `_cxx_contracts` / `_cxx_reflection`
+- `prism/checkers.py:_api_scandir` / `_api_setxattr` / `_api_sched_affinity` / `_api_aio` / `_api_statx` / `_api_pidfd`
+- `prism/checkers.py:_cxx_out_ptr` / `_cxx_flat_multimap` / `_cxx_spanstream` / `_cxx_barrier` / `_cxx_task` / `_cxx_generator_discard`
+- `prism/checkers.py:_cxx_osyncstream` / `_cxx_packaged_task` / `_cxx_flat_multiset` / `_cxx_syncbuf` / `_cxx_counted_iterator` / `_cxx_promise`
+- `prism/bmc.py:unencoded_syntax_reason` — memcpy/mkstemp/tmpnam/chroot/popen/umask/srand/signal/mktemp/fork/exec/mmap/ioctl/wcscpy/dlopen/accept/chmod/setuid/socket/bind/unlink/mkfifo/listen/connect/pipe/dup/fcntl/wait/select/send/shutdown/kill/getaddrinfo/pthread_join/sem_wait/openat/flock/chown/symlink/opendir/setrlimit/getsockopt/stat/mkdir/getpwuid/clock_gettime/gettimeofday/shm_open/posix_spawn/glob/fseek/sleep/access/getopt/uname/sendfile/memfd_create/prctl/tcgetattr/sysconf/getrusage/nftw/wordexp/getlogin/inet_pton/mlock/splice/inotify/fsync/getrandom/getline/strlcpy/isatty/ptsname/mount/fmemopen/setxattr/aio_read/statx/pidfd, designated init, alignof, va_arg, range-for, lambda, const_cast, dynamic_cast/typeid/reinterpret_cast/bit_cast/launder/start_lifetime_as, packed/#pragma pack, coroutines, GNU &&label/case-range/cleanup/vector_size, wide strings, __int128/_Decimal/_Float16, if constexpr/fold/requires/constexpr, C23 nullptr, restrict, __builtin_clz/choose_expr/atomic, typeof_unqual, std::thread/jthread/async/future/function/optional/variant/span/mdspan/vector/expected/format/mutex, condition_variable/shared_mutex/atomic_ref/generator/[[assume(/std::bind(/any/filesystem/regex/latch/from_chars/visit/initializer_list/source_location/stacktrace/stop_token/flat_map/chrono/function_ref/flat_set/views/inplace_vector/hive/bitset/indirect/polymorphic/stringstream/import-module, <=>; computed goto (plain `goto` stays ERROR)
+- `prism/concolic.py:concolic_function` — VLA/float/recursion/C++ view/alloca/setjmp/va_list are NEEDS-HARNESS; goto stays ERROR
+- `prism/bmc.py:_has_self_call` — recursive unconstrained call is NEEDS-HARNESS, never PROVED
+- `prism/bmc.py:k_induction` — havoced step k=1 then k=2; SAT stays BOUNDED
+- `prism/config.py:resolve_adapter` — search (1) `Config.tools` / `--tool`, (2) already-built exe under `third_party/<vendor>/` (never compile), (3) PATH; missing is `NOTRUN`; vendored source is not a proof
+- `prism/adapters_extra.py:run_optional_tools` — present tools run cheap analysis; empty success is UNKNOWN, never CLEAN/PROVED
+- `prism/adapters_extra.py:_run_frama_c` — EVA; `0 alarm` is UNKNOWN
+- `prism/adapters_extra.py:_run_codeql` — no `codeql-db` is UNKNOWN
+- `prism/adapters_extra.py:_run_clang_tidy` — no diagnostics is UNKNOWN
+- `prism/adapters_extra.py:_run_cbmc` — `VERIFICATION SUCCESSFUL` is BOUNDED, never PROVED
+- `prism/adapters_extra.py:_run_klee` — no error path is UNKNOWN; missing binary is NOTRUN (in-process concolic is `prism/concolic.py`)
+- `prism/adapters_extra.py:_run_spatch` — Coccinelle; missing `spatch` is NOTRUN
+- `prism/cocci/` — shipped rules `memcpy_self`, `realloc_self`, `shift_bit31`, `getenv_null`, `strcpy_self`, `sprintf_unbounded`, `strcat_self`, `strncpy_self`; `_cocci_rules` loads these first, then `*.cocci` under source roots
+- `prism/ltl.py:synthesize_missing` — Strix-shaped missing `G (p -> X q)` edges are HYPOTHESIS
+- `prism/contracts.py:_instrument_invariant` — Dafny `invariant:` around loops; PROVED-ASSUMING
+- `prism/adapters.py:run_compiler` — gcc+clang -Wall union; missing NOTRUN; no C files UNKNOWN not silence; unmatched compiler exit FAILED; empty-scope confidence is 0 not n/a (`prism/confidence.py`)

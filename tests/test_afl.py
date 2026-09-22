@@ -1,6 +1,6 @@
-"""helix.afl honesty: missing AFL is None (not CLEAN); CLEAN is not a proof.
+"""prism.afl honesty: missing AFL is None (not CLEAN); CLEAN is not a proof.
 
-Helix is law. tests.test_afl_flag covers HELIX_AFL / fuse opt-in — do not
+Python engine is law. tests.test_afl_flag covers PRISM_AFL / fuse opt-in — do not
 duplicate those cases here.
 
 python -m unittest tests.test_afl tests.test_afl_flag -q
@@ -13,9 +13,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from helix import laws
-from helix.afl import afl_available, run_afl_fuzz
-from helix.models import FunctionInfo
+from prism import laws
+from prism.afl import afl_available, run_afl_fuzz
+from prism.models import FunctionInfo
 
 _PROOF = {laws.PROVED, laws.PROVED_UNBOUNDED, laws.PROVED_ASSUMING}
 AFL = r"C:\tools\afl-fuzz.exe"
@@ -67,7 +67,7 @@ def _never_proof(status: str) -> None:
 
 class TestAflAvailable(unittest.TestCase):
     def test_afl_available_none_when_which_none(self):
-        with mock.patch("helix.afl.shutil.which", return_value=None) as which:
+        with mock.patch("prism.afl.shutil.which", return_value=None) as which:
             self.assertIsNone(afl_available())
         self.assertTrue(which.called)
         names = [c.args[0] for c in which.call_args_list]
@@ -78,9 +78,9 @@ class TestAflAvailable(unittest.TestCase):
 class TestRunAflFuzzHonesty(unittest.TestCase):
     def test_missing_afl_returns_none_not_clean(self):
         src = Path("planted.c")
-        with mock.patch("helix.afl.shutil.which", return_value=None), \
-             mock.patch("helix.afl._compile") as compile_, \
-             mock.patch("helix.afl.subprocess.run") as run:
+        with mock.patch("prism.afl.shutil.which", return_value=None), \
+             mock.patch("prism.afl._compile") as compile_, \
+             mock.patch("prism.afl.subprocess.run") as run:
             rec = run_afl_fuzz(_scalar(), src)
         self.assertIsNone(rec)
         self.assertNotEqual(rec, laws.CLEAN)
@@ -90,9 +90,9 @@ class TestRunAflFuzzHonesty(unittest.TestCase):
 
     def test_pointer_returns_none_not_clean(self):
         src = Path("planted.c")
-        with mock.patch("helix.afl.shutil.which", side_effect=_which_afl_and_gcc), \
-             mock.patch("helix.afl._compile") as compile_, \
-             mock.patch("helix.afl.subprocess.run") as run:
+        with mock.patch("prism.afl.shutil.which", side_effect=_which_afl_and_gcc), \
+             mock.patch("prism.afl._compile") as compile_, \
+             mock.patch("prism.afl.subprocess.run") as run:
             rec = run_afl_fuzz(_pointer(), src)
         self.assertIsNone(rec)
         self.assertNotEqual(rec, laws.CLEAN)
@@ -101,9 +101,9 @@ class TestRunAflFuzzHonesty(unittest.TestCase):
 
     def test_missing_compiler_with_afl_present_is_notrun_never_clean(self):
         src = Path("planted.c")
-        with mock.patch("helix.afl.shutil.which", side_effect=_which_afl_only), \
-             mock.patch("helix.afl._compile") as compile_, \
-             mock.patch("helix.afl.subprocess.run") as run:
+        with mock.patch("prism.afl.shutil.which", side_effect=_which_afl_only), \
+             mock.patch("prism.afl._compile") as compile_, \
+             mock.patch("prism.afl.subprocess.run") as run:
             rec = run_afl_fuzz(_scalar(), src)
         self.assertIsNotNone(rec)
         self.assertEqual(rec.status, laws.NOTRUN)
@@ -132,9 +132,9 @@ class TestRunAflFuzzHonesty(unittest.TestCase):
                 (crash_dir / "id:000000").write_bytes(b"\x01\x02\x03\x04")
                 return mock.Mock(returncode=0, stdout=b"", stderr=b"")
 
-            with mock.patch("helix.afl.shutil.which", side_effect=_which_afl_and_gcc), \
-                 mock.patch("helix.afl._compile", return_value=(True, "")), \
-                 mock.patch("helix.afl.subprocess.run", side_effect=plant_crash):
+            with mock.patch("prism.afl.shutil.which", side_effect=_which_afl_and_gcc), \
+                 mock.patch("prism.afl._compile", return_value=(True, "")), \
+                 mock.patch("prism.afl.subprocess.run", side_effect=plant_crash):
                 rec = run_afl_fuzz(_scalar(), src, timeout=1.0, work=work)
         self.assertIsNotNone(rec)
         self.assertEqual(rec.status, laws.CRASH)
@@ -150,9 +150,9 @@ class TestRunAflFuzzHonesty(unittest.TestCase):
             src = root / "planted.c"
             src.write_text("int inc(int x) { return x + 1; }\n", encoding="utf-8")
             work = root / "aflwork"
-            with mock.patch("helix.afl.shutil.which", side_effect=_which_afl_and_gcc), \
-                 mock.patch("helix.afl._compile", return_value=(True, "")), \
-                 mock.patch("helix.afl.subprocess.run", return_value=mock.Mock(
+            with mock.patch("prism.afl.shutil.which", side_effect=_which_afl_and_gcc), \
+                 mock.patch("prism.afl._compile", return_value=(True, "")), \
+                 mock.patch("prism.afl.subprocess.run", return_value=mock.Mock(
                      returncode=0, stdout=b"", stderr=b"",
                  )):
                 rec = run_afl_fuzz(_scalar(), src, timeout=1.0, work=work)
@@ -168,7 +168,7 @@ class TestRunAflFuzzHonesty(unittest.TestCase):
 
 class TestAflCompileSanitizerComments(unittest.TestCase):
     def test_compile_afl_harness_comments_document_sanitizer_fallback(self):
-        from helix.afl import _compile_afl_harness
+        from prism.afl import _compile_afl_harness
         import inspect
 
         src = inspect.getsource(_compile_afl_harness)
@@ -188,9 +188,9 @@ class TestAflCompileSanitizerComments(unittest.TestCase):
             src = root / "planted.c"
             src.write_text("int inc(int x) { return x + 1; }\n", encoding="utf-8")
             work = root / "aflwork"
-            with mock.patch("helix.afl.shutil.which", side_effect=_which_afl_and_gcc), \
-                 mock.patch("helix.afl._compile", return_value=(False, "no C compiler on PATH")), \
-                 mock.patch("helix.afl.subprocess.run") as run:
+            with mock.patch("prism.afl.shutil.which", side_effect=_which_afl_and_gcc), \
+                 mock.patch("prism.afl._compile", return_value=(False, "no C compiler on PATH")), \
+                 mock.patch("prism.afl.subprocess.run") as run:
                 rec = run_afl_fuzz(_scalar(), src, timeout=1.0, work=work)
         self.assertEqual(rec.status, laws.NOTRUN)
         self.assertNotEqual(rec.status, laws.ERROR)

@@ -2,7 +2,7 @@ static std::optional<std::string> unencoded_syntax_reason(const FunctionInfo& fn
     const std::string& body = fn.body;
     if (body.empty()) return std::nullopt;
     std::string blob = fn.signature + "\n" + body;
-    // generated 575 gates from helix/bmc.py
+    // generated 575 gates from prism/bmc.py
     if (prism::re_search("\\{\\s*(?:\\[[^\\]]+\\]|\\.[A-Za-z_]\\w*)\\s*=", body)) {
         return std::format("designated init unencoded: {} is not a designated-init model", engine);
     }
@@ -402,9 +402,9 @@ static std::optional<std::string> unencoded_syntax_reason(const FunctionInfo& fn
     if (prism::re_search("\\b(?:_Float16|_Float32|_Float64|__fp16)\\b", body)) {
         return std::format("extra-IEEE float unencoded: {} is not an extra-IEEE model", engine);
     }
-    // Helix helix/bmc.py: re.sub(r"/\*.*?\*/", " ", flags=re.S) then
+    // Python engine prism/bmc.py: re.sub(r"/\*.*?\*/", " ", flags=re.S) then
     // re.sub(r"//.*?$", " ", flags=re.M) before nullptr / pragma pack / import.
-    auto helix_unenc_strip_comments = [](const std::string& src) {
+    auto unenc_strip_comments = [](const std::string& src) {
         auto sub = [](const std::string& s, const char* pat, bool multiline, bool dotall) {
             prism::Regex re(pat, multiline, dotall);
             std::string out;
@@ -424,7 +424,7 @@ static std::optional<std::string> unencoded_syntax_reason(const FunctionInfo& fn
         return sub(t, R"(//.*?$)", true, false);
     };
     {
-        auto code = helix_unenc_strip_comments(body);
+        auto code = unenc_strip_comments(body);
         if (prism::re_search("\\bnullptr\\b", code)) {
             return std::format("C23 nullptr unencoded: {} is not a nullptr model", engine);
         }
@@ -436,7 +436,7 @@ static std::optional<std::string> unencoded_syntax_reason(const FunctionInfo& fn
         return std::format("packed layout unencoded: {} is not a packed-layout model", engine);
     }
     {
-        // Helix helix/bmc.py: file + body, comments stripped, then pragma pack.
+        // Python engine prism/bmc.py: file + body, comments stripped, then pragma pack.
         std::string pack_src = body;
         if (!fn.file.empty()) {
             try {
@@ -455,13 +455,13 @@ static std::optional<std::string> unencoded_syntax_reason(const FunctionInfo& fn
                 pack_src = body;
             }
         }
-        auto pack_code = helix_unenc_strip_comments(pack_src);
+        auto pack_code = unenc_strip_comments(pack_src);
         if (prism::re_search("\\bpragma\\s+pack\\b", pack_code)) {
             return std::format("pragma pack unencoded: {} is not a packed-layout model", engine);
         }
     }
     {
-        auto import_code = helix_unenc_strip_comments(body);
+        auto import_code = unenc_strip_comments(body);
         if (prism::re_search("(?:\\bimport\\s+[A-Za-z_])|(?:\\bexport\\s+module\\b)", import_code)) {
             return std::format("C++ module import unencoded: {} is not a modules model", engine);
         }

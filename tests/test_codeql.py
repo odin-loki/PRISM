@@ -12,9 +12,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from helix import laws
-from helix.adapters_extra import _run_codeql, run_optional_tools
-from helix.config import Config
+from prism import laws
+from prism.adapters_extra import _run_codeql, run_optional_tools
+from prism.config import Config
 
 
 def _no_adapter(*_a, **_k):
@@ -53,8 +53,8 @@ class TestCodeqlHonesty(unittest.TestCase):
         self.assertFalse(laws.is_proof(f.status))
 
     def test_missing_codeql_is_notrun_never_clean(self):
-        with mock.patch("helix.adapters_extra.resolve_adapter", side_effect=_no_adapter), \
-             mock.patch("helix.adapters_extra.shutil.which", return_value=None):
+        with mock.patch("prism.adapters_extra.resolve_adapter", side_effect=_no_adapter), \
+             mock.patch("prism.adapters_extra.shutil.which", return_value=None):
             findings = run_optional_tools([], Config())
         codeql = next(f for f in findings if f.stage == "codeql")
         self.assertEqual(codeql.status, laws.NOTRUN)
@@ -84,7 +84,7 @@ class TestCodeqlHonesty(unittest.TestCase):
                 Path(cmd[-1]).write_text(_sarif([_one_hit()]), encoding="utf-8")
                 return _ok_proc()
 
-            with mock.patch("helix.adapters_extra._run", side_effect=fake_run):
+            with mock.patch("prism.adapters_extra._run", side_effect=fake_run):
                 findings = _run_codeql("codeql", [src], Config())
         self.assertTrue(findings)
         f = findings[0]
@@ -104,7 +104,7 @@ class TestCodeqlHonesty(unittest.TestCase):
                 Path(cmd[-1]).write_text(_sarif([]), encoding="utf-8")
                 return _ok_proc()
 
-            with mock.patch("helix.adapters_extra._run", side_effect=fake_run):
+            with mock.patch("prism.adapters_extra._run", side_effect=fake_run):
                 findings = _run_codeql("codeql", [src], Config())
         self.assertEqual(len(findings), 1)
         f = findings[0]
@@ -122,7 +122,7 @@ class TestCodeqlHonesty(unittest.TestCase):
             def fake_run(cmd, timeout):
                 raise subprocess.TimeoutExpired(cmd, timeout)
 
-            with mock.patch("helix.adapters_extra._run", side_effect=fake_run):
+            with mock.patch("prism.adapters_extra._run", side_effect=fake_run):
                 findings = _run_codeql("codeql", [src], Config())
         self.assertEqual(len(findings), 1)
         f = findings[0]
@@ -137,7 +137,7 @@ class TestCodeqlHonesty(unittest.TestCase):
             src.write_text("int main(void) { return 0; }\n", encoding="utf-8")
             (root / "codeql-db").mkdir()
             fail = mock.Mock(returncode=2, stdout="", stderr="codeql: no queries")
-            with mock.patch("helix.adapters_extra._run", return_value=fail):
+            with mock.patch("prism.adapters_extra._run", return_value=fail):
                 findings = _run_codeql("codeql", [src], Config())
         self.assertEqual(len(findings), 1)
         f = findings[0]
@@ -152,7 +152,7 @@ class TestCodeqlHonesty(unittest.TestCase):
             src = root / "foo.c"
             src.write_text("int main(void) { return 0; }\n", encoding="utf-8")
             (root / "codeql-db").mkdir()
-            with mock.patch("helix.adapters_extra._run", return_value=_ok_proc()):
+            with mock.patch("prism.adapters_extra._run", return_value=_ok_proc()):
                 findings = _run_codeql("codeql", [src], Config())
         self.assertEqual(len(findings), 1)
         f = findings[0]
@@ -171,7 +171,7 @@ class TestCodeqlHonesty(unittest.TestCase):
                 stdout="[doctest] doctest version is 2.4.11\nUnknown option: --timeout\n",
                 stderr="",
             )
-            with mock.patch("helix.adapters_extra._run", return_value=fake):
+            with mock.patch("prism.adapters_extra._run", return_value=fake):
                 findings = _run_codeql("codeql", [src], Config())
         self.assertEqual(findings[0].status, laws.NOTRUN)
         self.assertIn("not codeql", findings[0].message.lower())

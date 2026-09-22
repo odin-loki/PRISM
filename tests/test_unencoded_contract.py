@@ -7,11 +7,11 @@ import re
 import unittest
 from pathlib import Path
 
-from helix import laws
-from helix.bmc import HAS_Z3, bmc_function, unencoded_syntax_reason
-from helix.concolic import concolic_function
-from helix.cparse import extract_functions
-from helix.models import FunctionInfo
+from prism import laws
+from prism.bmc import HAS_Z3, bmc_function, unencoded_syntax_reason
+from prism.concolic import concolic_function
+from prism.cparse import extract_functions
+from prism.models import FunctionInfo
 
 ROOT = Path(__file__).resolve().parents[1]
 TD = ROOT / "testdata"

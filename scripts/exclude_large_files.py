@@ -10,7 +10,6 @@ SKIP_PARTS = {
     "build",
     "build_wsl",
     "build_cxx",
-    "native/build",
     "__pycache__",
     ".venv",
     "venv",

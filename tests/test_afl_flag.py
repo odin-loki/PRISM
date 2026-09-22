@@ -1,4 +1,4 @@
-"""AFL availability flag and HELIX_AFL opt-in. python -m unittest tests.test_afl_flag"""
+"""AFL availability flag and PRISM_AFL opt-in. python -m unittest tests.test_afl_flag"""
 
 from __future__ import annotations
 
@@ -7,10 +7,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from helix import laws
-from helix.cparse import extract_functions
-from helix.fuse import run_fuse
-from helix.models import Finding
+from prism import laws
+from prism.cparse import extract_functions
+from prism.fuse import run_fuse
+from prism.models import Finding
 
 ROOT = Path(__file__).resolve().parents[1]
 TD = ROOT / "testdata"
@@ -39,17 +39,17 @@ class TestAflFlag(unittest.TestCase):
             )
 
         env = {k: v for k, v in os.environ.items()
-               if k not in {"HELIX_AFL", "HELIX_LIBFUZZER"}}
+               if k not in {"PRISM_AFL", "PRISM_LIBFUZZER"}}
         with patch.dict(os.environ, env, clear=True):
-            with patch("helix.fuse.afl_available", return_value="/fake/afl-fuzz.exe"):
-                with patch("helix.fuse.fuzz_function", side_effect=fake_fuzz):
+            with patch("prism.fuse.afl_available", return_value="/fake/afl-fuzz.exe"):
+                with patch("prism.fuse.fuzz_function", side_effect=fake_fuzz):
                     recs = run_fuse([f], [], p.parent, budget=0.2, iters=4, engine=None)
         self.assertTrue(called)
         self.assertTrue(all(c == "saturate" for c in called))
         self.assertTrue(recs[0].extra.get("afl_available"))
         self.assertNotIn("engine", recs[0].extra)
 
-    def test_helix_afl_mocks_subprocess(self):
+    def test_prism_afl_mocks_subprocess(self):
         f, p = fn("saturate")
         clean = Finding(
             stage="fuzz", status=laws.CLEAN, file=f.file, function=f.name,
@@ -64,16 +64,16 @@ class TestAflFlag(unittest.TestCase):
             extra={"engine": "afl"},
         )
 
-        with patch.dict(os.environ, {"HELIX_AFL": "1"}, clear=False):
-            with patch("helix.fuse.afl_available", return_value="/fake/afl-fuzz.exe"):
-                with patch("helix.fuse.fuzz_function", return_value=clean):
-                    with patch("helix.fuse.run_afl_fuzz", return_value=afl_clean) as mock_afl:
+        with patch.dict(os.environ, {"PRISM_AFL": "1"}, clear=False):
+            with patch("prism.fuse.afl_available", return_value="/fake/afl-fuzz.exe"):
+                with patch("prism.fuse.fuzz_function", return_value=clean):
+                    with patch("prism.fuse.run_afl_fuzz", return_value=afl_clean) as mock_afl:
                         recs = run_fuse([f], [], p.parent, budget=0.2, iters=4, engine=None)
         mock_afl.assert_called_once()
         self.assertEqual(recs[0].extra.get("engine"), "afl")
         self.assertNotIn("afl_available", recs[0].extra)
 
-    def test_helix_afl_missing_binary_is_notrun_not_engine_afl(self):
+    def test_prism_afl_missing_binary_is_notrun_not_engine_afl(self):
         f, p = fn("saturate")
         clean = Finding(
             stage="fuzz", status=laws.CLEAN, file=f.file, function=f.name,
@@ -81,12 +81,12 @@ class TestAflFlag(unittest.TestCase):
             strength=laws.STRENGTH_FINDS,
             extra={"new_cov": 0, "iters": 1, "corpus": 1},
         )
-        env = {k: v for k, v in os.environ.items() if k != "HELIX_LIBFUZZER"}
-        env["HELIX_AFL"] = "1"
+        env = {k: v for k, v in os.environ.items() if k != "PRISM_LIBFUZZER"}
+        env["PRISM_AFL"] = "1"
         with patch.dict(os.environ, env, clear=True):
-            with patch("helix.fuse.afl_available", return_value=None):
-                with patch("helix.fuse.fuzz_function", return_value=clean):
-                    with patch("helix.fuse.run_afl_fuzz") as mock_afl:
+            with patch("prism.fuse.afl_available", return_value=None):
+                with patch("prism.fuse.fuzz_function", return_value=clean):
+                    with patch("prism.fuse.run_afl_fuzz") as mock_afl:
                         recs = run_fuse([f], [], p.parent, budget=0.2, iters=4, engine=None)
         mock_afl.assert_not_called()
         self.assertEqual(recs[0].status, laws.CLEAN)

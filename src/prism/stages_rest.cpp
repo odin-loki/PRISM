@@ -2336,7 +2336,7 @@ Spec spec_comments_rapid(const FunctionInfo& fn) {
 bool has_loop(const std::string& body) { return re_search("\\b(while|for)\\b", body); }
 bool encode_decreases(const std::string& expr) {
     // Simple identifier only. Compound measures (n - i, n - 1, *, tuples)
-    // are ERROR, never PROVED-ASSUMING: Helix does not decide their
+    // are ERROR, never PROVED-ASSUMING: Python engine does not decide their
     // well-foundedness the way Dafny's VC generator does.
     static Regex re("^[A-Za-z_]\\w*$");
     std::string compact;
@@ -2374,7 +2374,7 @@ std::string wrap_loop_inv(std::string loop_body, const std::string& inv) {
     return "{ { assert(" + inv + "); } " + inner + " { assert(" + inv + "); } }";
 }
 std::string wrap_loop_dec(std::string loop_body, const std::string& dec, int vid) {
-    auto vn = "__helix_d" + std::to_string(vid);
+    auto vn = "__prism_d" + std::to_string(vid);
     auto inner = strip(loop_body);
     if (inner.starts_with("{") && inner.ends_with("}")) inner = inner.substr(1, inner.size() - 2);
     else inner = loop_body;
@@ -3368,7 +3368,7 @@ std::string afl_harness_source(const FunctionInfo& fn, std::string src_rel) {
 }
 
 std::pair<bool, std::string> compile_afl_harness(const fs::path& harness, const fs::path& exe) {
-    // Helix helix/afl.py compile_afl_harness sanitizer fallback:
+    // Python engine prism/afl.py compile_afl_harness sanitizer fallback:
     //   1. -fsanitize=address,undefined  -fno-sanitize-recover=address,undefined
     //   2. -fsanitize=undefined          -fno-sanitize-recover=undefined
     //   3. -fsanitize=address            -fno-sanitize-recover=address
@@ -3673,9 +3673,9 @@ Finding fuse_one(const FunctionInfo& fn, const std::vector<Finding>& bmc_finding
     if (body_needs_pointer_harness(fn.body))
         return nh("local pointer or heap object: FuSeBMC harness would invent a buffer");
     bool afl_on_path = afl_fuzz_which().has_value();
-    bool opted_afl = env_flag_is_one("PRISM_AFL") || env_flag_is_one("HELIX_AFL");
+    bool opted_afl = env_flag_is_one("PRISM_AFL");
     bool use_afl = opted_afl && afl_on_path;
-    bool opted_libfuzzer = env_flag_is_one("HELIX_LIBFUZZER") || env_flag_is_one("PRISM_LIBFUZZER");
+    bool opted_libfuzzer = env_flag_is_one("PRISM_LIBFUZZER");
     fs::path src = fn.file;
     if (!src.is_absolute()) src = root / fn.file;
     if (!fs::exists(src) && fs::is_regular_file(root)) src = root;
@@ -3721,7 +3721,7 @@ Finding fuse_one(const FunctionInfo& fn, const std::vector<Finding>& bmc_finding
     if (engine && !llm_up) {
         extra["autoprompt"] = "NOTRUN";
         extra["chatfuzz"] = "NOTRUN";
-        extra["install"] = "ollama serve  (qwen3.5:9b) or build native/llama.cpp";
+        extra["install"] = "ollama serve  (qwen3.5:9b) or build prism with -DPRISM_LLAMA=ON";
     }
     if (llm_up) {
         try {
@@ -3931,7 +3931,7 @@ Finding fuse_one(const FunctionInfo& fn, const std::vector<Finding>& bmc_finding
 }
 
 const char* SYSTEM_AUDITOR =
-    "You are Helix, a code auditor. You READ code. You never claim a proof. "
+    "You are PRISM, a code auditor. You READ code. You never claim a proof. "
     "Every defect you name is a HYPOTHESIS that must be checked by BMC, a "
     "fuzzer, or a human. Reply with JSON only: "
     "{\"hypotheses\":[{\"function\":\"...\",\"line\":0,\"cls\":\"INT-SIGNED-OVF\",\"why\":\"...\"}]}";
@@ -3963,9 +3963,9 @@ const char* SYSTEM_CHATFUZZ =
     "{\"mutants\":[\"hex\", \"...\"]} semantically valid argument encodings. No prose.";
 const char* LLM_UNAVAILABLE_MSG = "llama.cpp/Ollama not reachable";
 const char* LLM_SKIP_FUSE_MSG = "llama.cpp/Ollama not reachable; stall mutants / autoprompt skipped";
-const char* LLM_INSTALL = "ollama serve  (qwen3.5:9b) or build native/llama.cpp";
+const char* LLM_INSTALL = "ollama serve  (qwen3.5:9b) or build prism with -DPRISM_LLAMA=ON";
 
-// Helix llm_complete_unavailable: HTTP/connection is a missing backend.
+// Python engine llm_complete_unavailable: HTTP/connection is a missing backend.
 auto llm_httpish = [](const std::string& err) {
     auto low = lower_copy(err);
     return low.find("http error") != std::string::npos || low.find("http ") != std::string::npos ||
@@ -5122,7 +5122,7 @@ struct LtlClass {
 };
 
 constexpr std::string_view kStrixNote =
-    "strix realizability is not PROVED unless the formula is in Helix's "
+    "strix realizability is not PROVED unless the formula is in PRISM's "
     "safety fragment (G p, G (p -> X q), G (req -> F_k ack), G (F_k p))";
 
 bool ltl_word_char(char c) {
@@ -6113,7 +6113,7 @@ std::vector<Finding> prove_contracts(const std::vector<FunctionInfo>& functions,
 
 namespace {
 
-// Helix helix/wp.py encode_predicate / _ACSL_UNENC. Regex is the honesty
+// Python engine prism/wp.py encode_predicate / _ACSL_UNENC. Regex is the honesty
 // gate: unencodable ACSL is ERROR, never PROVED-ASSUMING.
 static Regex wp_acsl_unenc(
     "(?i)\\\\(?:"
@@ -6336,7 +6336,7 @@ std::vector<Finding> run_wp(const std::vector<FunctionInfo>& functions, int unwi
         auto spec = parse_comments(fn);
         if (spec.ensures.empty()) continue;
         auto mark = [](Finding& f) {
-            f.extra["engine"] = "helix-wp";
+            f.extra["engine"] = "prism-wp";
             f.extra["wp"] = "return-substitution";
         };
         if (fn.kind == "POINTER" || body_needs_pointer_harness(fn.body)) {
@@ -6720,12 +6720,12 @@ std::vector<Finding> run_ltl(const std::vector<FunctionInfo>& functions, const s
                     msg = formula + ": in the safety fragment but predicates were not evaluable on this FSM";
             } else if (strix)
                 msg = formula +
-                      ": not in the safety fragment Helix decides "
+                      ": not in the safety fragment PRISM decides "
                       "(G p, G (p -> X q), G (req -> F_" +
                       std::to_string(F_BOUND) + " ack), G (F_" + std::to_string(F_BOUND) +
-                      " p)); strix is present but Helix does not treat strix output as PROVED";
+                      " p)); strix is present but PRISM does not treat strix output as PROVED";
             else
-                msg = formula + ": not in the safety fragment Helix decides; missing Strix binary";
+                msg = formula + ": not in the safety fragment PRISM decides; missing Strix binary";
             Finding f;
             f.stage = "ltl";
             f.status = std::string(laws::NOTRUN);
@@ -6771,7 +6771,7 @@ std::vector<Finding> hypothesize(const std::vector<FunctionInfo>& functions, int
         if (src.size() > 6000) src.resize(6000);
         auto r = engine.complete({{"system", SYSTEM_AUDITOR}, {"user", src}});
         if (!r.error.empty()) {
-            // Helix llm_complete_unavailable: HTTP/connection is a missing backend
+            // Python engine llm_complete_unavailable: HTTP/connection is a missing backend
             // (NOTRUN + LLM_INSTALL), never a code ERROR. Timed-out stays ERROR.
             if (llm_httpish(r.error)) {
                 auto f = make_find("llm", laws::NOTRUN, fn, "INTENT", r.error, laws::STRENGTH_READS);
@@ -6899,7 +6899,7 @@ std::vector<Finding> execute_cex(const std::vector<Finding>& fails, const std::v
     }
     if (cfg.llm && !fails.empty()) {
         LlamaEngine engine(cfg);
-        // Helix execute_cex: LLM half down is NOTRUN with extra.half=llm, never CLEAN.
+        // Python engine execute_cex: LLM half down is NOTRUN with extra.half=llm, never CLEAN.
         if (!engine.available()) {
             auto f = nr("execute", LLM_UNAVAILABLE_MSG);
             f.extra["install"] = LLM_INSTALL;

@@ -1,5 +1,5 @@
 /* ACSL memory / logic predicates Frama-C WP encodes in a heap model.
-   Helix has no such model: ERROR, never a proof. */
+   PRISM has no such model: ERROR, never a proof. */
 
 int wp_valid_bad(int x) {
     // requires: \valid(&x)
@@ -15,7 +15,7 @@ int wp_old_bad(int x) {
 }
 
 /* Quantifiers are VCs Frama-C sends to a prover with a logic type.
-   Helix does not decide \forall: ERROR. */
+   PRISM does not decide \forall: ERROR. */
 int wp_forall_bad(int x) {
     // requires: \forall integer k; k == x
     // ensures: result == x

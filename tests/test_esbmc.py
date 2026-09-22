@@ -1,10 +1,10 @@
 """ESBMC adapter: missing binary is NOTRUN, never a proof.
 
-Helix `run_esbmc` is law. Missing esbmc is NOTRUN (the binary did not
+Python engine `run_esbmc` is law. Missing esbmc is NOTRUN (the binary did not
 run). A present ESBMC that prints VERIFICATION SUCCESSFUL is recorded
 as the adapter maps it — never folded into in-tree BMC PROVED-UNBOUNDED.
 
-Mapping in helix/adapters.py `run_esbmc` (test the code, not a wish):
+Mapping in prism/adapters.py `run_esbmc` (test the code, not a wish):
     VERIFICATION SUCCESSFUL, default cmd (no --k-induction):
         UNWINDING ASSERTION in output → laws.BOUNDED
         else → laws.PROVED
@@ -26,10 +26,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from helix import laws
-from helix.adapters import run_esbmc
-from helix.config import Config
-from helix.laws import refuse_merge
+from prism import laws
+from prism.adapters import run_esbmc
+from prism.config import Config
+from prism.laws import refuse_merge
 
 EXE = r"C:\tools\esbmc.exe"
 C_FILE = Path("planted.c")
@@ -48,14 +48,14 @@ def _proc(stdout: str = "", stderr: str = "", rc: int = 0):
 class TestEsbmcAdapter(unittest.TestCase):
     def _esbmc(self, paths, run_side_effect, exe=EXE, cfg=None):
         cfg = cfg or Config()
-        with mock.patch("helix.adapters.resolve_adapter", return_value=exe), \
-             mock.patch("helix.adapters.subprocess.run", side_effect=run_side_effect) as run:
+        with mock.patch("prism.adapters.resolve_adapter", return_value=exe), \
+             mock.patch("prism.adapters.subprocess.run", side_effect=run_side_effect) as run:
             out = run_esbmc(paths, cfg)
         return out, run
 
     def test_missing_esbmc_is_notrun_never_proved(self):
-        with mock.patch("helix.adapters.resolve_adapter", side_effect=_no_adapter), \
-             mock.patch("helix.adapters.subprocess.run") as run:
+        with mock.patch("prism.adapters.resolve_adapter", side_effect=_no_adapter), \
+             mock.patch("prism.adapters.subprocess.run") as run:
             findings = run_esbmc([C_FILE], Config())
         run.assert_not_called()
         self.assertTrue(findings)
@@ -71,8 +71,8 @@ class TestEsbmcAdapter(unittest.TestCase):
         self.assertNotIn(f.status, _PROOF)
         self.assertFalse(laws.is_proof(f.status))
 
-    def test_verification_successful_maps_helix_never_proved_unbounded(self):
-        # Default cmd has --unwind and no --k-induction. Helix therefore
+    def test_verification_successful_maps_prism_never_proved_unbounded(self):
+        # Default cmd has --unwind and no --k-induction. Python engine therefore
         # records SUCCESSFUL as PROVED, not in-tree BMC PROVED-UNBOUNDED.
         out, run = self._esbmc(
             [C_FILE],
@@ -108,9 +108,9 @@ class TestEsbmcAdapter(unittest.TestCase):
 
     def test_present_no_c_files_is_unknown_never_clean_or_proved(self):
         # Present binary, nothing to analyse: UNKNOWN (empty success), not
-        # silence, not CLEAN, not PROVED. Same honesty as Helix `_run_cbmc`.
-        with mock.patch("helix.adapters.resolve_adapter", return_value=EXE), \
-             mock.patch("helix.adapters.subprocess.run") as run:
+        # silence, not CLEAN, not PROVED. Same honesty as the Python engine `_run_cbmc`.
+        with mock.patch("prism.adapters.resolve_adapter", return_value=EXE), \
+             mock.patch("prism.adapters.subprocess.run") as run:
             out = run_esbmc([Path("unit.cpp"), Path("hdr.h")], Config())
         run.assert_not_called()
         self.assertEqual(len(out), 1)
@@ -161,8 +161,8 @@ class TestEsbmcAdapter(unittest.TestCase):
         for flag in _DISABLE:
             with self.subTest(flag=flag):
                 cfg = mock.Mock(unwind=flag, timeout=30.0)
-                with mock.patch("helix.adapters.resolve_adapter", return_value=EXE), \
-                     mock.patch("helix.adapters.subprocess.run") as run:
+                with mock.patch("prism.adapters.resolve_adapter", return_value=EXE), \
+                     mock.patch("prism.adapters.subprocess.run") as run:
                     with self.assertRaises(ValueError) as ctx:
                         run_esbmc([C_FILE], cfg)
                 run.assert_not_called()

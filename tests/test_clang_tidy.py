@@ -10,10 +10,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from helix import laws
-from helix.adapters_extra import _run_clang_tidy, run_optional_tools
-from helix.config import Config, adapter_install
-from helix.models import Finding
+from prism import laws
+from prism.adapters_extra import _run_clang_tidy, run_optional_tools
+from prism.config import Config, adapter_install
+from prism.models import Finding
 
 ROOT = Path(__file__).resolve().parents[1]
 TD = ROOT / "testdata"
@@ -55,7 +55,7 @@ class TestClangTidy(unittest.TestCase):
     def test_empty_diagnostics_is_unknown_not_clean(self):
         self.assertTrue(ABS_OK.is_file())
         proc = mock.Mock(returncode=0, stdout="", stderr="")
-        with mock.patch("helix.adapters_extra._run", return_value=proc):
+        with mock.patch("prism.adapters_extra._run", return_value=proc):
             out = _run_clang_tidy(EXE, [ABS_OK], Config())
         self.assertEqual(len(out), 1)
         f = out[0]
@@ -74,7 +74,7 @@ class TestClangTidy(unittest.TestCase):
             stdout=f"{ABS_OK}:3:5: warning: use after free [clang-analyzer-unix.Malloc]",
             stderr="",
         )
-        with mock.patch("helix.adapters_extra._run", return_value=proc):
+        with mock.patch("prism.adapters_extra._run", return_value=proc):
             out = _run_clang_tidy(EXE, [ABS_OK], Config())
         self.assertTrue(out)
         self.assertTrue(all(f.status == laws.FAILED for f in out))
@@ -90,7 +90,7 @@ class TestClangTidy(unittest.TestCase):
             stdout=f"{ABS_OK}:1:1: error: no matching function [clang-diagnostic-error]",
             stderr="",
         )
-        with mock.patch("helix.adapters_extra._run", return_value=proc):
+        with mock.patch("prism.adapters_extra._run", return_value=proc):
             out = _run_clang_tidy(EXE, [ABS_OK], Config())
         self.assertTrue(out)
         self.assertTrue(all(f.status == laws.FAILED for f in out))
@@ -104,7 +104,7 @@ class TestClangTidy(unittest.TestCase):
             stdout="",
             stderr="clang-tidy: could not find compile_commands.json",
         )
-        with mock.patch("helix.adapters_extra._run", return_value=proc):
+        with mock.patch("prism.adapters_extra._run", return_value=proc):
             out = _run_clang_tidy(EXE, [ABS_OK], Config())
         self.assertEqual(len(out), 1)
         f = out[0]
@@ -120,7 +120,7 @@ class TestClangTidy(unittest.TestCase):
         def boom(cmd, timeout):
             raise subprocess.TimeoutExpired(cmd, timeout)
 
-        with mock.patch("helix.adapters_extra._run", side_effect=boom):
+        with mock.patch("prism.adapters_extra._run", side_effect=boom):
             out = _run_clang_tidy(EXE, [ABS_OK], Config())
         self.assertEqual(len(out), 1)
         f = out[0]
@@ -137,7 +137,7 @@ class TestClangTidy(unittest.TestCase):
             captured.append(list(cmd))
             return mock.Mock(returncode=0, stdout="", stderr="")
 
-        with mock.patch("helix.adapters_extra._run", side_effect=fake_run):
+        with mock.patch("prism.adapters_extra._run", side_effect=fake_run):
             _run_clang_tidy(EXE, [Path("unit.cpp"), Path("unit.cc"), Path("unit.cxx")], Config())
         self.assertEqual(len(captured), 3)
         for cmd in captured:
@@ -148,15 +148,15 @@ class TestClangTidy(unittest.TestCase):
                 self.assertFalse(str(flag).startswith("-Wno-"), msg=flag)
 
         captured.clear()
-        with mock.patch("helix.adapters_extra._run", side_effect=fake_run):
+        with mock.patch("prism.adapters_extra._run", side_effect=fake_run):
             _run_clang_tidy(EXE, [Path("unit.c")], Config())
         self.assertTrue(captured)
         self.assertIn("-std=c11", captured[0])
         self.assertNotIn("-std=c++11", captured[0])
 
     def test_missing_binary_is_notrun(self):
-        with mock.patch("helix.adapters_extra.resolve_adapter", side_effect=_no_adapter), \
-             mock.patch("helix.adapters_extra.shutil.which", return_value=None):
+        with mock.patch("prism.adapters_extra.resolve_adapter", side_effect=_no_adapter), \
+             mock.patch("prism.adapters_extra.shutil.which", return_value=None):
             findings = run_optional_tools([ABS_OK], Config())
         tidy = next(f for f in findings if f.stage == "clang-tidy")
         self.assertEqual(tidy.status, laws.NOTRUN)
@@ -176,7 +176,7 @@ class TestClangTidy(unittest.TestCase):
             stdout="[doctest] doctest version is \"2.4.11\"\nUnknown option: --timeout\n",
             stderr="",
         )
-        with mock.patch("helix.adapters_extra._run", return_value=proc):
+        with mock.patch("prism.adapters_extra._run", return_value=proc):
             out = _run_clang_tidy(EXE, [ABS_OK], Config())
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0].status, laws.NOTRUN)

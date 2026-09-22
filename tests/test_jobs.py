@@ -5,9 +5,9 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from helix.__main__ import main
-from helix.checkers import run_lints
-from helix.config import Config
+from prism.__main__ import main
+from prism.checkers import run_lints
+from prism.config import Config
 
 
 class TestJobs(unittest.TestCase):
@@ -26,7 +26,7 @@ class TestJobs(unittest.TestCase):
 
             return R()
 
-        with patch("helix.__main__.run_pipeline", side_effect=fake_run):
+        with patch("prism.__main__.run_pipeline", side_effect=fake_run):
             rc = main(["testdata/abs_ok.c", "--no-llm", "--jobs", "3",
                        "--skip", "fuzz,llm,repair,optional,bmc"])
         self.assertEqual(rc, 0)

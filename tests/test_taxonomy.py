@@ -6,12 +6,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from helix import laws
-from helix.confidence import score
-from helix.config import Config
-from helix.models import Finding, RunReport, StageResult
-from helix.pipeline import run_pipeline
-from helix.taxonomy import CLASSES, coverage_from_report
+from prism import laws
+from prism.confidence import score
+from prism.config import Config
+from prism.models import Finding, RunReport, StageResult
+from prism.pipeline import run_pipeline
+from prism.taxonomy import CLASSES, coverage_from_report
 
 
 def _rep(*findings: Finding, stage="bmc", status="ok") -> RunReport:
@@ -381,14 +381,14 @@ class TestCoverageFromReport(unittest.TestCase):
         self.assertEqual((vis, ans, res, conf), (0.0, 0.0, 0.0, 0.0))
 
     def test_unify_clean_coverage_is_not_a_proof(self):
-        helix = (Path(__file__).resolve().parents[1] / "helix" / "pipeline.py").read_text(
+        prism = (Path(__file__).resolve().parents[1] / "prism" / "pipeline.py").read_text(
             encoding="utf-8"
         )
-        start = helix.find("def unify()")
+        start = prism.find("def unify()")
         self.assertGreater(start, 0)
-        block = helix[start:helix.find("self._stage(", start)]
+        block = prism[start:prism.find("self._stage(", start)]
         self.assertIn("not a proof", block)
-        with tempfile.TemporaryDirectory(prefix="helix_unify_") as td:
+        with tempfile.TemporaryDirectory(prefix="prism_unify_") as td:
             out = Path(td)
             report = run_pipeline(Config(
                 root=out, out=out / "out", llm=False, stages=["unify"], skip=[],

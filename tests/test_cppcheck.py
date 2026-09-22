@@ -1,6 +1,6 @@
 """cppcheck adapter honesty: missing is NOTRUN; silence is not a proof.
 
-helix.adapters.run_cppcheck is law. Missing binary is NOTRUN, never CLEAN.
+prism.adapters.run_cppcheck is law. Missing binary is NOTRUN, never CLEAN.
 Present with no C/C++ files is UNKNOWN. A real run with no <error> rows
 is UNKNOWN (no diagnostics, not a proof) — not CLEAN, not PROVED, not
 silence. Parsed errors are FAILED never PROVED. Unmatched exit not in
@@ -17,10 +17,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from helix import laws
-from helix.adapters import run_cppcheck
-from helix.config import Config, adapter_install
-from helix.models import Finding
+from prism import laws
+from prism.adapters import run_cppcheck
+from prism.config import Config, adapter_install
+from prism.models import Finding
 
 EXE = r"C:\tools\cppcheck.exe"
 C_FILE = Path("planted.c")
@@ -84,14 +84,14 @@ class TestCppcheckHonesty(unittest.TestCase):
             self.assertFalse(laws.is_proof(f.status), f.status)
 
     def _scan(self, paths, run_side_effect, resolve=_present):
-        with mock.patch("helix.adapters.resolve_adapter", side_effect=resolve) as resolved, \
-             mock.patch("helix.adapters.subprocess.run", side_effect=run_side_effect) as run:
+        with mock.patch("prism.adapters.resolve_adapter", side_effect=resolve) as resolved, \
+             mock.patch("prism.adapters.subprocess.run", side_effect=run_side_effect) as run:
             out = run_cppcheck(paths, Config())
         return out, run, resolved
 
     def test_missing_cppcheck_is_notrun_never_clean(self):
-        with mock.patch("helix.adapters.resolve_adapter", side_effect=_no_adapter), \
-             mock.patch("helix.adapters.subprocess.run") as run:
+        with mock.patch("prism.adapters.resolve_adapter", side_effect=_no_adapter), \
+             mock.patch("prism.adapters.subprocess.run") as run:
             out = run_cppcheck([C_FILE], Config())
         run.assert_not_called()
         self.assertEqual(len(out), 1)

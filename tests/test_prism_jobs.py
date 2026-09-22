@@ -1,6 +1,6 @@
 """C++ --jobs / std::jthread source-contract. python -m unittest tests.test_prism_jobs
 
-Helix tests/test_jobs.py owns runtime Config.jobs. This module locks the
+Python engine tests/test_jobs.py owns runtime Config.jobs. This module locks the
 PRISM C++ CLI, ISO jthread workers, CMake Threads, and run_lints(jobs).
 """
 
@@ -13,7 +13,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from helix.checkers import run_lints
+from prism.checkers import run_lints
 
 ROOT = Path(__file__).resolve().parents[1]
 MAIN_CPP = ROOT / "src" / "prism" / "main.cpp"
@@ -94,17 +94,17 @@ class TestPrismJobsContract(unittest.TestCase):
         self.assertIn("--fuzz-iters", help_text)
         self.assertIn("--repair-rounds", help_text)
 
-        from helix.__main__ import main
+        from prism.__main__ import main
 
         buf = io.StringIO()
         with patch("sys.stdout", buf), self.assertRaises(SystemExit) as cm:
             main(["--help"])
         self.assertEqual(cm.exception.code, 0)
-        helix_help = buf.getvalue()
-        self.assertIn("--jobs", helix_help)
-        self.assertIn("-j", helix_help)
+        prism_help = buf.getvalue()
+        self.assertIn("--jobs", prism_help)
+        self.assertIn("-j", prism_help)
 
-    def test_clamp_jobs_zero_is_half_hardware_like_helix(self):
+    def test_clamp_jobs_zero_is_half_hardware_like_python(self):
         src = _read(THREADS_HPP)
         start = src.find("inline int clamp_jobs")
         self.assertGreaterEqual(start, 0)

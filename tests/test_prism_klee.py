@@ -1,6 +1,6 @@
 """C++ run_klee dump-scan source-contract. python -m unittest tests.test_prism_klee -q
 
-helix.adapters_extra._run_klee is law. After C++ dump scan lands, adapters.cpp
+prism.adapters_extra._run_klee is law. After C++ dump scan lands, adapters.cpp
 run_klee must treat a dump whose filename contains "error" OR whose extension
 is .err as FAILED — so test000001.ptr.err is a hit. Filename-only "error"
 misses *.ptr.err. Silence with no dump is UNKNOWN, never a proof.
@@ -12,7 +12,7 @@ import re
 import unittest
 from pathlib import Path
 
-from helix import laws
+from prism import laws
 
 ROOT = Path(__file__).resolve().parents[1]
 ADAPTERS = ROOT / "src" / "prism" / "adapters.cpp"

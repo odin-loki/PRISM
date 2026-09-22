@@ -1,6 +1,6 @@
 """C++ run_optional_tools probe source-contract. python -m unittest tests.test_prism_optional -q
 
-helix.adapters_extra.run_optional_tools is law. After C++ leftover honesty
+prism.adapters_extra.run_optional_tools is law. After C++ leftover honesty
 lands, adapters.cpp must map a present-but-unusable exe to NOTRUN: probe_exe
 catch and !probed call notrun(...), never laws::ERROR / CLEAN / PROVED.
 Dispatch run failure may still be ERROR; that is a later catch.
@@ -12,7 +12,7 @@ import re
 import unittest
 from pathlib import Path
 
-from helix import laws
+from prism import laws
 
 ROOT = Path(__file__).resolve().parents[1]
 ADAPTERS = ROOT / "src" / "prism" / "adapters.cpp"

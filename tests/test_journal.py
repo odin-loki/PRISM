@@ -6,8 +6,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from helix import journal
-from helix.models import FunctionInfo, StageResult
+from prism import journal
+from prism.models import FunctionInfo, StageResult
 
 
 class TestJournal(unittest.TestCase):
@@ -72,10 +72,10 @@ class TestJournal(unittest.TestCase):
     def test_resume_from_jsonl_without_report_json(self):
         """A killed run has stages.jsonl but no report.json. Resume must not
         skip classify into an empty function list (quiet skip)."""
-        from helix.config import Config
-        from helix.pipeline import run_pipeline
+        from prism.config import Config
+        from prism.pipeline import run_pipeline
 
-        with tempfile.TemporaryDirectory(prefix="helix_jsonl_resume_") as td:
+        with tempfile.TemporaryDirectory(prefix="prism_jsonl_resume_") as td:
             root = Path(td) / "src"
             root.mkdir()
             (root / "add.c").write_text(
@@ -108,10 +108,10 @@ class TestJournal(unittest.TestCase):
             self.assertEqual(cls.records, cls1.records)
 
     def test_resume_does_not_skip_classify_without_functions(self):
-        from helix.config import Config
-        from helix.pipeline import run_pipeline
+        from prism.config import Config
+        from prism.pipeline import run_pipeline
 
-        with tempfile.TemporaryDirectory(prefix="helix_resume_empty_") as td:
+        with tempfile.TemporaryDirectory(prefix="prism_resume_empty_") as td:
             root = Path(td) / "src"
             root.mkdir()
             (root / "add.c").write_text(
@@ -132,10 +132,10 @@ class TestJournal(unittest.TestCase):
             self.assertGreaterEqual(cls.records, 1)
 
     def test_resume_reuses_notrun_and_not_failed(self):
-        from helix.config import Config
-        from helix.pipeline import run_pipeline
+        from prism.config import Config
+        from prism.pipeline import run_pipeline
 
-        with tempfile.TemporaryDirectory(prefix="helix_resume_nr_") as td:
+        with tempfile.TemporaryDirectory(prefix="prism_resume_nr_") as td:
             root = Path(td) / "src"
             root.mkdir()
             (root / "add.c").write_text(
@@ -159,7 +159,7 @@ class TestJournal(unittest.TestCase):
             self.assertEqual(llm2.status, "NOTRUN")
             self.assertEqual(llm2.records, llm1.records)
 
-        with tempfile.TemporaryDirectory(prefix="helix_resume_fail_") as td:
+        with tempfile.TemporaryDirectory(prefix="prism_resume_fail_") as td:
             root = Path(td) / "src"
             root.mkdir()
             (root / "add.c").write_text(
@@ -179,10 +179,10 @@ class TestJournal(unittest.TestCase):
             self.assertGreaterEqual(inv.records, 1)
 
     def test_resume_falls_back_to_report_json_without_jsonl(self):
-        from helix.config import Config
-        from helix.pipeline import run_pipeline
+        from prism.config import Config
+        from prism.pipeline import run_pipeline
 
-        with tempfile.TemporaryDirectory(prefix="helix_resume_rpt_") as td:
+        with tempfile.TemporaryDirectory(prefix="prism_resume_rpt_") as td:
             root = Path(td) / "src"
             root.mkdir()
             (root / "add.c").write_text(
@@ -224,11 +224,11 @@ class TestJournal(unittest.TestCase):
     def test_resume_failed_jsonl_does_not_revive_stale_report_json(self):
         """A new run's failed stages.jsonl is the truth. Stale report.json
         ok/NOTRUN rows must not be resumed just because completed_ok is empty."""
-        from helix.config import Config
-        from helix.models import FunctionInfo, RunReport
-        from helix.pipeline import run_pipeline
+        from prism.config import Config
+        from prism.models import FunctionInfo, RunReport
+        from prism.pipeline import run_pipeline
 
-        with tempfile.TemporaryDirectory(prefix="helix_resume_stale_") as td:
+        with tempfile.TemporaryDirectory(prefix="prism_resume_stale_") as td:
             root = Path(td) / "src"
             root.mkdir()
             (root / "add.c").write_text(

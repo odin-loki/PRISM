@@ -1,9 +1,9 @@
 """C++ --gui spawn and window source-contract. python -m unittest tests.test_prism_gui -q
 
-Helix tests/test_gui.py owns widgets. This module locks the PRISM C++ CLI
-`--gui` path to Helix: missing prism_gui is NOTRUN (never CLEAN, never
+Python engine tests/test_gui.py owns widgets. This module locks the PRISM C++ CLI
+`--gui` path to the Python engine: missing prism_gui is NOTRUN (never CLEAN, never
 run_pipeline), execv/CreateProcessW with `--gui` stripped from forwarded args.
-Missing PySide on `python -m helix --gui` is the same NOTRUN contract.
+Missing PySide on `python -m prism --gui` is the same NOTRUN contract.
 src/gui MainWindow: missing report.json is confidence 0 (not em-dash), no
 taxonomy.json fallback, CLEAN stays #2a4a6b. src/gui/main.cpp: no display
 is NOTRUN unless QT_QPA_PLATFORM=offscreen.
@@ -19,20 +19,20 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from helix import laws
-from helix.__main__ import main as helix_main
+from prism import laws
+from prism.__main__ import main as py_main
 
 ROOT = Path(__file__).resolve().parents[1]
 MAIN_CPP = ROOT / "src" / "prism" / "main.cpp"
 CONFIG_HPP = ROOT / "include" / "prism" / "config.hpp"
-HELIX_MAIN = ROOT / "helix" / "__main__.py"
+PRISM_MAIN = ROOT / "prism" / "__main__.py"
 GUI_WINDOW = ROOT / "src" / "gui" / "MainWindow.cpp"
 GUI_ENTRY = ROOT / "src" / "gui" / "main.cpp"
 
 NOTRUN_CPP = "NOTRUN gui: prism_gui not found — not a clean window"
 INSTALL_CPP = "install: build prism_gui with WSL clang++ Qt6 Widgets (never MinGW)"
 ERROR_CPP = "ERROR gui: failed to spawn prism_gui — not a clean window"
-NOTRUN_HELIX = "NOTRUN gui: PySide6 not installed — not a clean window"
+NOTRUN_PY = "NOTRUN gui: PySide6 not installed — not a clean window"
 NOTRUN_DISPLAY = "NOTRUN gui: no display (not a clean window)"
 MISSING_REPORT_CPP = (
     "confidence 0  (vis 0 x ans 0 x res 0) — report.json missing; not a proof"
@@ -97,7 +97,7 @@ class TestPrismGuiCliContract(unittest.TestCase):
         self.assertIn("--gui", help_text)
         buf = io.StringIO()
         with patch("sys.stdout", buf), self.assertRaises(SystemExit) as cm:
-            helix_main(["--help"])
+            py_main(["--help"])
         self.assertEqual(cm.exception.code, 0)
         self.assertIn("--gui", buf.getvalue())
 
@@ -116,7 +116,7 @@ class TestPrismGuiCliContract(unittest.TestCase):
         self.assertNotIn("run_pipeline", notrun)
 
     def test_gui_does_not_fall_through_to_run_pipeline(self):
-        """Helix returns launch(); C++ must return launch_gui, not CLI CLEAN."""
+        """Python engine returns launch(); C++ must return launch_gui, not CLI CLEAN."""
         helpers = self.code.split("int main(", 1)[0]
         self.assertNotIn("run_pipeline", helpers)
         main = self.code.split("int main(", 1)[1]
@@ -182,30 +182,30 @@ class TestPrismGuiCliContract(unittest.TestCase):
         self.assertIn("execv:", spawn)
 
 
-class TestHelixGuiCliContract(unittest.TestCase):
-    """python -m helix --gui: missing PySide is NOTRUN, never CLEAN, never pipeline."""
+class TestPRISMGuiCliContract(unittest.TestCase):
+    """python -m prism --gui: missing PySide is NOTRUN, never CLEAN, never pipeline."""
 
-    def test_helix_source_returns_before_pipeline(self):
-        src = _read(HELIX_MAIN)
+    def test_prism_source_returns_before_pipeline(self):
+        src = _read(PRISM_MAIN)
         gui = src.split("if args.gui:", 1)[1]
         gui = gui.split("tools:", 1)[0]
-        self.assertIn("from helix.gui import launch", gui)
-        self.assertIn(NOTRUN_HELIX, gui)
+        self.assertIn("from prism.gui import launch", gui)
+        self.assertIn(NOTRUN_PY, gui)
         self.assertIn("return 0", gui)
         self.assertIn("return launch(args)", gui)
         self.assertNotIn("run_pipeline", gui)
         self.assertNotIn(laws.CLEAN, gui)
 
-    def test_helix_gui_import_error_is_notrun_never_clean(self):
-        fake = types.ModuleType("helix.gui")
+    def test_prism_gui_import_error_is_notrun_never_clean(self):
+        fake = types.ModuleType("prism.gui")
         buf = io.StringIO()
-        with patch.dict(sys.modules, {"helix.gui": fake}):
+        with patch.dict(sys.modules, {"prism.gui": fake}):
             with patch("sys.stdout", buf), \
-                 patch("helix.__main__.run_pipeline") as rp:
-                rc = helix_main(["--gui"])
+                 patch("prism.__main__.run_pipeline") as rp:
+                rc = py_main(["--gui"])
         text = buf.getvalue()
         self.assertEqual(rc, 0)
-        self.assertIn(NOTRUN_HELIX, text)
+        self.assertIn(NOTRUN_PY, text)
         self.assertIn("not a clean window", text)
         self.assertIn("pip install PySide6", text)
         self.assertIn("prism_gui", text)
@@ -213,12 +213,12 @@ class TestHelixGuiCliContract(unittest.TestCase):
         self.assertNotIn("confidence", text)
         rp.assert_not_called()
 
-    def test_helix_gui_calls_launch_not_pipeline(self):
+    def test_prism_gui_calls_launch_not_pipeline(self):
         buf = io.StringIO()
-        with patch("helix.gui.launch", return_value=0) as launch_fn, \
-             patch("helix.__main__.run_pipeline") as rp, \
+        with patch("prism.gui.launch", return_value=0) as launch_fn, \
+             patch("prism.__main__.run_pipeline") as rp, \
              patch("sys.stdout", buf):
-            rc = helix_main(["--gui"])
+            rc = py_main(["--gui"])
         self.assertEqual(rc, 0)
         launch_fn.assert_called_once()
         args = launch_fn.call_args[0][0]
@@ -228,11 +228,11 @@ class TestHelixGuiCliContract(unittest.TestCase):
         self.assertNotIn("confidence", buf.getvalue())
 
 
-class TestHelixGuiLaunchHonesty(unittest.TestCase):
-    """helix/gui.py launch: missing display is NOTRUN in source, never CLEAN."""
+class TestPRISMGuiLaunchHonesty(unittest.TestCase):
+    """prism/gui.py launch: missing display is NOTRUN in source, never CLEAN."""
 
     def test_launch_source_no_display_is_notrun(self):
-        src = _read(ROOT / "helix" / "gui.py")
+        src = _read(ROOT / "prism" / "gui.py")
         launch_src = src.split("def launch(", 1)[1]
         launch_src = launch_src.split("def ", 1)[0] if "def " in launch_src else launch_src
         self.assertIn('_notrun_gui("no display"', launch_src)
@@ -334,7 +334,7 @@ class TestCppGuiWindowSourceContract(unittest.TestCase):
         self.assertIn("#ifndef Q_OS_WIN", self.entry_code)
 
     def test_clean_status_stays_blue_0x2a4a6b(self):
-        """CLEAN is #2a4a6b, never PROVED green. Same palette as helix/gui.py."""
+        """CLEAN is #2a4a6b, never PROVED green. Same palette as prism/gui.py."""
         self.assertIn(CLEAN_BLUE, self.window)
         status_fn = _fn(self.window, "findingStatusBg")
         self.assertTrue(status_fn, msg="findingStatusBg missing")

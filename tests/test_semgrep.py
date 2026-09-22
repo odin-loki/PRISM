@@ -12,10 +12,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from helix import laws
-from helix.adapters_extra import _extract_json_object, _run_semgrep, run_optional_tools
-from helix.config import Config
-from helix.models import Finding
+from prism import laws
+from prism.adapters_extra import _extract_json_object, _run_semgrep, run_optional_tools
+from prism.config import Config
+from prism.models import Finding
 
 EXE = r"C:\tools\semgrep.exe"
 C_FILE = Path("planted.c")
@@ -60,14 +60,14 @@ class TestSemgrepHonesty(unittest.TestCase):
             self.assertFalse(laws.is_proof(f.status), f.status)
 
     def _scan(self, run_side_effect):
-        with mock.patch("helix.adapters_extra._run", side_effect=run_side_effect) as run:
+        with mock.patch("prism.adapters_extra._run", side_effect=run_side_effect) as run:
             out = _run_semgrep(EXE, [C_FILE], Config())
         return out, run
 
     def test_missing_semgrep_via_run_optional_tools_is_notrun_never_clean(self):
-        with mock.patch("helix.adapters_extra.resolve_adapter", side_effect=_no_adapter), \
-             mock.patch("helix.adapters_extra.shutil.which", return_value=None), \
-             mock.patch("helix.adapters_extra._run") as run:
+        with mock.patch("prism.adapters_extra.resolve_adapter", side_effect=_no_adapter), \
+             mock.patch("prism.adapters_extra.shutil.which", return_value=None), \
+             mock.patch("prism.adapters_extra._run") as run:
             findings = run_optional_tools([C_FILE], Config())
         run.assert_not_called()
         semgrep = next(f for f in findings if f.stage == "semgrep")
@@ -90,7 +90,7 @@ class TestSemgrepHonesty(unittest.TestCase):
         self._never_proof(out)
 
     def test_present_no_c_files_is_unknown(self):
-        with mock.patch("helix.adapters_extra._run") as run:
+        with mock.patch("prism.adapters_extra._run") as run:
             out = _run_semgrep(EXE, [Path("notes.md"), Path("unit.py")], Config())
         run.assert_not_called()
         self.assertEqual(len(out), 1)
@@ -99,7 +99,7 @@ class TestSemgrepHonesty(unittest.TestCase):
         self._never_proof(out)
 
     def test_json_on_stderr_only_is_parsed(self):
-        """Helix law: combined stdout+stderr, matching C++ parse_semgrep(r.text)."""
+        """Python engine law: combined stdout+stderr, matching C++ parse_semgrep(r.text)."""
         out, run = self._scan(lambda *_a, **_k: _proc(stdout="", stderr=_one_hit()))
         self.assertTrue(run.called)
         self.assertTrue(out)

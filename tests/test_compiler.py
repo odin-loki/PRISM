@@ -1,6 +1,6 @@
 """warnings/compiler adapter: missing is NOTRUN; empty scope is UNKNOWN.
 
-helix.adapters.run_compiler is law. Missing gcc/clang is NOTRUN, never
+prism.adapters.run_compiler is law. Missing gcc/clang is NOTRUN, never
 CLEAN/PROVED. Present with no .c/.cc/.cpp in scope is UNKNOWN (not
 silence). gcc and clang both run when both exist; same diagnostic is
 not doubled. Silence of -Wall is not CLEAN. Unmatched compiler exit is
@@ -17,10 +17,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from helix import laws
-from helix.adapters import run_compiler
-from helix.config import Config
-from helix.models import Finding
+from prism import laws
+from prism.adapters import run_compiler
+from prism.config import Config
+from prism.models import Finding
 
 ROOT = Path(__file__).resolve().parents[1]
 TD = ROOT / "testdata"
@@ -52,14 +52,14 @@ class TestCompilerAdapter(unittest.TestCase):
             self.assertFalse(laws.is_proof(f.status), f.status)
 
     def _run(self, paths, which, run_side_effect):
-        with mock.patch("helix.adapters.shutil.which", side_effect=which), \
-             mock.patch("helix.adapters.subprocess.run", side_effect=run_side_effect) as run:
+        with mock.patch("prism.adapters.shutil.which", side_effect=which), \
+             mock.patch("prism.adapters.subprocess.run", side_effect=run_side_effect) as run:
             out = run_compiler(paths, Config())
         return out, run
 
     def test_missing_compiler_is_notrun_never_clean(self):
-        with mock.patch("helix.adapters.shutil.which", return_value=None), \
-             mock.patch("helix.adapters.subprocess.run") as run:
+        with mock.patch("prism.adapters.shutil.which", return_value=None), \
+             mock.patch("prism.adapters.subprocess.run") as run:
             out = run_compiler([C_FILE], Config())
         run.assert_not_called()
         self.assertEqual(len(out), 1)

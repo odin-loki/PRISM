@@ -20,8 +20,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from helix import laws
-from helix.gui import (
+from prism import laws
+from prism.gui import (
     FINDING_COLUMNS,
     HAS_PYSIDE6,
     MISSING_REPORT_LABEL,
@@ -40,7 +40,7 @@ from helix.gui import (
     taxonomy_background,
     taxonomy_rows,
 )
-from helix.models import Finding, RunReport, StageResult
+from prism.models import Finding, RunReport, StageResult
 
 ROOT = Path(__file__).resolve().parents[1]
 CPP_MAIN = ROOT / "src" / "gui" / "MainWindow.cpp"
@@ -63,7 +63,7 @@ class TestSkipFromChecks(unittest.TestCase):
         self.assertEqual(skip_from_checks(False, False, True), ["optional"])
 
     def test_config_skip_matches_checks(self):
-        from helix.config import Config
+        from prism.config import Config
 
         skip = skip_from_checks(True, False, True)
         cfg = Config(skip=skip, llm=False)
@@ -74,12 +74,12 @@ class TestSkipFromChecks(unittest.TestCase):
         self.assertFalse(cfg.llm)
 
     def test_helpers_import_without_loading_qt(self):
-        """`from helix.gui import skip_from_checks` must not import PySide6 widgets."""
+        """`from prism.gui import skip_from_checks` must not import PySide6 widgets."""
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         code = (
             "import sys\n"
-            "from helix.gui import skip_from_checks, finding_rows, confidence_label, taxonomy_rows\n"
-            "from helix.models import RunReport\n"
+            "from prism.gui import skip_from_checks, finding_rows, confidence_label, taxonomy_rows\n"
+            "from prism.models import RunReport\n"
             "assert skip_from_checks(True, False, False) == ['fuzz']\n"
             "assert finding_rows(RunReport(root='mem')) == []\n"
             "assert taxonomy_rows(RunReport(root='mem'))\n"
@@ -422,7 +422,7 @@ class TestTaxonomyRows(unittest.TestCase):
         ovf = next(r for r in rows if r["id"] == "INT-SIGNED-OVF")
         self.assertEqual(ovf["verdict"], "GAP")
         self.assertNotEqual(ovf["verdict"], "COVERED")
-        src = (ROOT / "helix" / "gui.py").read_text(encoding="utf-8")
+        src = (ROOT / "prism" / "gui.py").read_text(encoding="utf-8")
         body = src.split("def taxonomy_rows", 1)[1].split("def finding_rows", 1)[0]
         self.assertIn("coverage_from_report", body)
         self.assertNotIn("coverage_row(", body)
@@ -455,7 +455,7 @@ class TestTaxonomyRows(unittest.TestCase):
         self.assertNotEqual(taxonomy_background("PARTIAL"), clean)
         self.assertEqual(taxonomy_background(laws.CLEAN), clean)
         self.assertNotIn(taxonomy_background(laws.CLEAN), _PROOF_GREEN)
-        src = Path(ROOT / "helix" / "gui.py").read_text(encoding="utf-8")
+        src = Path(ROOT / "prism" / "gui.py").read_text(encoding="utf-8")
         self.assertIn("status_background", src)
         self.assertIn("taxonomy_background", src)
         self.assertIn('_STATUS_BG["PROVED"]', src)
@@ -511,7 +511,7 @@ class TestMissingPyside(unittest.TestCase):
 
     def test_missing_pyside6_is_notrun_never_clean(self):
         """Always asserted — does not depend on whether PySide6 is installed."""
-        with mock.patch("helix.gui.HAS_PYSIDE6", False):
+        with mock.patch("prism.gui.HAS_PYSIDE6", False):
             self.assertEqual(gui_import_status(), laws.NOTRUN)
             self.assertNotEqual(gui_import_status(), laws.CLEAN)
             miss = missing_pyside_finding()
@@ -525,7 +525,7 @@ class TestMissingPyside(unittest.TestCase):
 
     def test_launch_without_pyside_writes_notrun(self):
         buf = io.StringIO()
-        with mock.patch("helix.gui._ensure_qt",
+        with mock.patch("prism.gui._ensure_qt",
                         side_effect=ImportError("No module named 'PySide6'")), \
              mock.patch("sys.stdout", buf):
             rc = launch()
@@ -536,16 +536,16 @@ class TestMissingPyside(unittest.TestCase):
         self.assertNotIn(laws.CLEAN, text.split())
 
     def test_cli_main_gui_launch_import_error_is_notrun(self):
-        """python -m helix --gui: helix.gui.launch ImportError is NOTRUN, never CLEAN."""
-        from helix.__main__ import main
+        """python -m prism --gui: prism.gui.launch ImportError is NOTRUN, never CLEAN."""
+        from prism.__main__ import main
 
         class _NoLaunch:
             def __getattr__(self, name: str) -> object:
                 raise ImportError("No module named 'PySide6'")
 
         buf = io.StringIO()
-        with mock.patch.dict(sys.modules, {"helix.gui": _NoLaunch()}), \
-             mock.patch("helix.__main__.run_pipeline",
+        with mock.patch.dict(sys.modules, {"prism.gui": _NoLaunch()}), \
+             mock.patch("prism.__main__.run_pipeline",
                         side_effect=AssertionError("gui must not run pipeline")), \
              mock.patch("sys.stdout", buf):
             rc = main(["--gui"])
@@ -558,17 +558,17 @@ class TestMissingPyside(unittest.TestCase):
         self.assertNotIn("confidence", text)
 
     def test_cli_main_gui_pyside_import_error_is_notrun(self):
-        """python -m helix --gui: PySide import failing in launch is NOTRUN, exit 0."""
-        from helix.__main__ import main
+        """python -m prism --gui: PySide import failing in launch is NOTRUN, exit 0."""
+        from prism.__main__ import main
 
         buf = io.StringIO()
-        with mock.patch("helix.gui._ensure_qt",
+        with mock.patch("prism.gui._ensure_qt",
                         side_effect=ImportError("No module named 'PySide6'")), \
              mock.patch.dict(sys.modules, {
                  "PySide6": None,
                  "PySide6.QtWidgets": None,
              }), \
-             mock.patch("helix.__main__.run_pipeline",
+             mock.patch("prism.__main__.run_pipeline",
                         side_effect=AssertionError("gui must not run pipeline")), \
              mock.patch("sys.stdout", buf):
             rc = main(["--gui"])
@@ -606,7 +606,7 @@ class TestMissingPyside(unittest.TestCase):
         widgets = types.ModuleType("PySide6.QtWidgets")
         widgets.QApplication = BoomApp
         pyside = types.ModuleType("PySide6")
-        with mock.patch("helix.gui._ensure_qt"), \
+        with mock.patch("prism.gui._ensure_qt"), \
              mock.patch.dict(sys.modules, {
                  "PySide6": pyside,
                  "PySide6.QtWidgets": widgets,
@@ -747,7 +747,7 @@ class TestCppGuiSameReport(unittest.TestCase):
         self.assertNotIn("missing; PROVED", self.cpp)
 
     def test_taxonomy_covered_gap_from_report_json(self):
-        """Same COVERED/GAP vocabulary as Helix. CLEAN is never COVERED."""
+        """Same COVERED/GAP vocabulary as the Python engine. CLEAN is never COVERED."""
         self.assertIn('QStringLiteral("taxonomy")', self.cpp)
         self.assertNotIn('QStringLiteral("/taxonomy.json")', self.cpp)
         self.assertIn("coverage_from_report", self.cpp)
@@ -839,7 +839,7 @@ class TestMainWindow(unittest.TestCase):
             raise unittest.SkipTest(f"NOTRUN gui display: {ex}") from ex
 
     def test_main_window_constructs(self):
-        from helix.gui import MainWindow
+        from prism.gui import MainWindow
 
         with tempfile.TemporaryDirectory() as td:
             prev = os.getcwd()
@@ -871,14 +871,14 @@ class TestMainWindow(unittest.TestCase):
 
         Missing ESBMC must not display as proved. No display required.
         """
-        from helix.gui import MainWindow
+        from prism.gui import MainWindow
 
         report = _mixed_same_report()
         expected = finding_rows(report)
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            report.save(root / "helix-out" / "report.json")
-            loaded = RunReport.load(root / "helix-out" / "report.json")
+            report.save(root / "prism-out" / "report.json")
+            loaded = RunReport.load(root / "prism-out" / "report.json")
             self.assertIsNotNone(loaded)
             assert loaded is not None
             prev = os.getcwd()
@@ -887,7 +887,7 @@ class TestMainWindow(unittest.TestCase):
                 w = MainWindow()
                 try:
                     self._app.processEvents()
-                    # Constructor loads helix-out/report.json via _load_last.
+                    # Constructor loads prism-out/report.json via _load_last.
                     # Apply again so the test does not depend on cwd side effects.
                     w._on_done(loaded)
                     self._app.processEvents()
@@ -938,7 +938,7 @@ class TestMainWindow(unittest.TestCase):
 
     def test_offscreen_llm_does_not_cover_or_paint_clean_green(self):
         """LLM hypothesis is PARTIAL/READS. Never COVERED, never proof-green."""
-        from helix.gui import MainWindow
+        from prism.gui import MainWindow
         from PySide6.QtGui import QColor
 
         report = RunReport(root="mem")

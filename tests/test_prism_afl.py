@@ -1,7 +1,7 @@
 """C++ fuse AFL source-contract. python -m unittest tests.test_prism_afl -q
 
-Helix helix/fuse.py + helix/afl.py is law. After C++ fuse AFL lands,
-stages_rest.cpp fuse_one must match: PRISM_AFL or HELIX_AFL opt-in,
+Python engine prism/fuse.py + prism/afl.py is law. After C++ fuse AFL lands,
+stages_rest.cpp fuse_one must match: PRISM_AFL opt-in,
 extra afl_available, CLEAN is not a proof, POINTER stays NEEDS-HARNESS
 (same as tests/test_fuse.py). Missing AFL in C++ fails these checks.
 """
@@ -15,11 +15,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from helix import laws
-from helix.afl import afl_available, run_afl_fuzz
-from helix.cparse import extract_functions
-from helix.fuse import _fuse_one, run_fuse
-from helix.models import Finding
+from prism import laws
+from prism.afl import afl_available, run_afl_fuzz
+from prism.cparse import extract_functions
+from prism.fuse import _fuse_one, run_fuse
+from prism.models import Finding
 
 ROOT = Path(__file__).resolve().parents[1]
 STAGES_REST = ROOT / "src" / "prism" / "stages_rest.cpp"
@@ -73,11 +73,11 @@ def fn(name: str):
 
 
 def _mentions_afl_env(text: str) -> bool:
-    return "PRISM_AFL" in text or "HELIX_AFL" in text
+    return "PRISM_AFL" in text
 
 
 class TestCppFuseAflSourceContract(unittest.TestCase):
-    """C++ fuse_one must grow the Helix AFL opt-in; absence fails honestly."""
+    """C++ fuse_one must grow the the Python engine AFL opt-in; absence fails honestly."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -85,10 +85,10 @@ class TestCppFuseAflSourceContract(unittest.TestCase):
         cls.code = _strip_comments(cls.src)
         cls.fuse_one = _brace_body(cls.src, "Finding fuse_one(")
 
-    def test_stages_rest_mentions_prism_or_helix_afl(self):
+    def test_stages_rest_mentions_prism_afl(self):
         self.assertTrue(
             _mentions_afl_env(self.src),
-            msg="stages_rest.cpp must mention PRISM_AFL or HELIX_AFL (Helix HELIX_AFL=1)",
+            msg="stages_rest.cpp must mention PRISM_AFL (PRISM_AFL=1 opt-in)",
         )
         self.assertTrue(
             _mentions_afl_env(self.fuse_one) or _mentions_afl_env(self.code),
@@ -97,14 +97,14 @@ class TestCppFuseAflSourceContract(unittest.TestCase):
         code = _strip_comments(self.fuse_one)
         self.assertTrue(
             _mentions_afl_env(code) or _mentions_afl_env(self.code),
-            msg="PRISM_AFL / HELIX_AFL must not exist only as a comment",
+            msg="PRISM_AFL must not exist only as a comment",
         )
 
     def test_extra_afl_available(self):
         py = inspect.getsource(_fuse_one)
         self.assertIn('extra["afl_available"]', py)
         self.assertIn("afl_available", py)
-        self.assertIn("HELIX_AFL", py)
+        self.assertIn("PRISM_AFL", py)
 
         self.assertTrue(
             "afl_available" in self.fuse_one,
@@ -152,7 +152,7 @@ class TestCppFuseAflSourceContract(unittest.TestCase):
         )
 
         env_at = min(
-            (i for i in (cpp.find("PRISM_AFL"), cpp.find("HELIX_AFL")) if i >= 0),
+            (i for i in (cpp.find("PRISM_AFL"),) if i >= 0),
             default=-1,
         )
         if env_at >= 0:
@@ -163,8 +163,8 @@ class TestCppFuseAflSourceContract(unittest.TestCase):
             )
 
     def test_compile_afl_harness_sanitizer_fallbacks(self):
-        """Helix helix/afl.py comments: ASan+UBSan, then UBSan, then ASan, then bare."""
-        from helix.afl import _compile_afl_harness
+        """Python engine prism/afl.py comments: ASan+UBSan, then UBSan, then ASan, then bare."""
+        from prism.afl import _compile_afl_harness
 
         py = inspect.getsource(_compile_afl_harness)
         self.assertIn("-fsanitize=address,undefined", py)
@@ -191,9 +191,9 @@ class TestCppFuseAflSourceContract(unittest.TestCase):
 
     def test_compile_afl_no_c_compiler_is_notrun(self):
         """compile_afl_harness {false, "no C compiler on PATH"} → caller NOTRUN."""
-        from helix.afl import run_afl_fuzz as helix_run
+        from prism.afl import run_afl_fuzz as py_run
 
-        py = inspect.getsource(helix_run)
+        py = inspect.getsource(py_run)
         self.assertIn('"no c compiler"', py)
         self.assertIn("laws.NOTRUN", py)
 
@@ -256,11 +256,9 @@ class TestCppFuseAflSourceContract(unittest.TestCase):
         self.assertIn('extra.erase("engine")', flag_arm)
 
     def test_opted_afl_without_afl_fuzz_sets_extra_afl_notrun(self):
-        """HELIX_AFL / PRISM_AFL=1 with no afl-fuzz → extra["afl"]="NOTRUN"."""
+        """PRISM_AFL=1 with no afl-fuzz → extra["afl"]="NOTRUN"."""
         fuse = _strip_comments(self.fuse_one)
         self.assertIn('env_flag_is_one("PRISM_AFL")', fuse)
-        self.assertIn('env_flag_is_one("HELIX_AFL")', fuse)
-        self.assertIn('env_flag_is_one("HELIX_LIBFUZZER")', fuse)
         self.assertIn('env_flag_is_one("PRISM_LIBFUZZER")', fuse)
         self.assertIn("opted_afl && !afl_on_path", fuse)
         arm = _between(fuse, "opted_afl && !afl_on_path", "afl_on_path && !use_afl")
@@ -271,8 +269,8 @@ class TestCppFuseAflSourceContract(unittest.TestCase):
         self.assertNotIn("laws::PROVED", arm)
 
 
-class TestHelixAflContractCppMustMatch(unittest.TestCase):
-    """Helix fuse/afl is the engine; C++ must match these statuses."""
+class TestPRISMAflContractCppMustMatch(unittest.TestCase):
+    """Python engine fuse/afl is the engine; C++ must match these statuses."""
 
     def test_afl_available_and_scalar_only(self):
         src = inspect.getsource(afl_available)
@@ -284,7 +282,7 @@ class TestHelixAflContractCppMustMatch(unittest.TestCase):
         self.assertIn('"afl"', run)
         self.assertIn("timeout", run)
 
-    def test_helix_extra_afl_available_when_on_path_env_off(self):
+    def test_prism_extra_afl_available_when_on_path_env_off(self):
         f, p = fn("saturate")
         clean = Finding(
             stage="fuzz", status=laws.CLEAN, file=f.file, function=f.name,
@@ -293,10 +291,10 @@ class TestHelixAflContractCppMustMatch(unittest.TestCase):
             extra={"new_cov": 0, "iters": 1, "corpus": 1},
         )
         env = {k: v for k, v in os.environ.items()
-               if k not in {"HELIX_AFL", "HELIX_LIBFUZZER"}}
+               if k not in {"PRISM_AFL", "PRISM_LIBFUZZER"}}
         with patch.dict(os.environ, env, clear=True):
-            with patch("helix.fuse.afl_available", return_value="/fake/afl-fuzz.exe"):
-                with patch("helix.fuse.fuzz_function", return_value=clean):
+            with patch("prism.fuse.afl_available", return_value="/fake/afl-fuzz.exe"):
+                with patch("prism.fuse.fuzz_function", return_value=clean):
                     recs = run_fuse([f], [], p.parent, budget=0.2, iters=4, engine=None)
         self.assertTrue(recs[0].extra.get("afl_available"))
         self.assertEqual(recs[0].status, laws.CLEAN)
@@ -304,7 +302,7 @@ class TestHelixAflContractCppMustMatch(unittest.TestCase):
         self.assertFalse(laws.is_proof(recs[0].status))
         self.assertNotIn(recs[0].extra.get("engine"), {"afl"})
 
-    def test_helix_clean_afl_finding_is_not_a_proof(self):
+    def test_prism_clean_afl_finding_is_not_a_proof(self):
         f, _ = fn("saturate")
         rec = Finding(
             stage="fuse", status=laws.CLEAN, file=f.file, function=f.name,
@@ -318,7 +316,7 @@ class TestHelixAflContractCppMustMatch(unittest.TestCase):
         self.assertNotIn(rec.status, _PROOF)
         self.assertNotEqual(rec.status, laws.PROVED)
 
-    def test_pointer_needs_harness_not_error_helix(self):
+    def test_pointer_needs_harness_not_error_python(self):
         """Same contract as tests.test_fuse.TestFuseLlm.test_pointer_needs_harness_not_error."""
         f, p = fn("null_branch")
         self.assertEqual(f.kind, "POINTER")
@@ -332,7 +330,7 @@ class TestHelixAflContractCppMustMatch(unittest.TestCase):
         self.assertFalse("afl_available" in (recs[0].extra or {}))
         self.assertNotEqual((recs[0].extra or {}).get("engine"), "afl")
 
-        env = {**os.environ, "HELIX_AFL": "1", "HELIX_LIBFUZZER": "1"}
+        env = {**os.environ, "PRISM_AFL": "1", "PRISM_LIBFUZZER": "1"}
         with patch.dict(os.environ, env, clear=True):
             recs3 = run_fuse([f], [], p.parent, budget=0.1, iters=1, engine=None)
         self.assertEqual(recs3[0].status, laws.NEEDS_HARNESS)
@@ -342,11 +340,11 @@ class TestHelixAflContractCppMustMatch(unittest.TestCase):
 
 
 class TestCppLibfuzzerFuseSource(unittest.TestCase):
-    """C++ fuse_one must match Helix opted HELIX_LIBFUZZER: NOTRUN never engine=libfuzzer."""
+    """C++ fuse_one must match the Python engine: opted PRISM_LIBFUZZER: NOTRUN never engine=libfuzzer."""
 
     def test_opted_libfuzzer_notrun_erases_engine(self):
         fuse = _strip_comments(_brace_body(_read(STAGES_REST), "Finding fuse_one("))
-        self.assertIn('env_flag_is_one("HELIX_LIBFUZZER")', fuse)
+        self.assertIn('env_flag_is_one("PRISM_LIBFUZZER")', fuse)
         self.assertIn('opted_libfuzzer && fn.kind == "SCALAR"', fuse)
         arm = _between(fuse, "lf_last.status == laws::NOTRUN", "lf_last.status == laws::NEEDS_HARNESS")
         self.assertIn('extra["libfuzzer"] = "NOTRUN"', arm)

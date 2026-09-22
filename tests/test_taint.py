@@ -5,9 +5,9 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from helix import laws
-from helix.cparse import extract_functions
-from helix.taint import run_taint
+from prism import laws
+from prism.cparse import extract_functions
+from prism.taint import run_taint
 
 ROOT = Path(__file__).resolve().parents[1]
 TD = ROOT / "testdata"

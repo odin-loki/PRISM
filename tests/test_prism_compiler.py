@@ -1,6 +1,6 @@
 """C++ run_compiler source-contract. python -m unittest tests.test_prism_compiler -q
 
-helix.adapters.run_compiler is law. After C++ gcc+clang union lands,
+prism.adapters.run_compiler is law. After C++ gcc+clang union lands,
 adapters.cpp run_compiler must match: both compilers, empty units UNKNOWN,
 .cpp/.cxx is -std=c++11, unmatched exit FAILED, refuse -w/-Wno-*, same resolved
 path is not a second compiler. Missing gcc/clang is NOTRUN, never CLEAN.
@@ -12,7 +12,7 @@ import re
 import unittest
 from pathlib import Path
 
-from helix import laws
+from prism import laws
 
 ROOT = Path(__file__).resolve().parents[1]
 ADAPTERS = ROOT / "src" / "prism" / "adapters.cpp"

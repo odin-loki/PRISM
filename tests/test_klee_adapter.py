@@ -9,9 +9,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from helix import laws
-from helix.adapters_extra import _run_klee, run_optional_tools
-from helix.config import Config
+from prism import laws
+from prism.adapters_extra import _run_klee, run_optional_tools
+from prism.config import Config
 
 ROOT = Path(__file__).resolve().parents[1]
 TD = ROOT / "testdata"
@@ -54,8 +54,8 @@ class TestKleeAdapter(unittest.TestCase):
         self.assertFalse(any(laws.is_proof(f.status) for f in findings))
 
     def test_missing_klee_via_run_optional_tools_is_notrun(self):
-        with mock.patch("helix.adapters_extra.resolve_adapter", side_effect=_no_adapter), \
-             mock.patch("helix.adapters_extra.shutil.which", return_value=None):
+        with mock.patch("prism.adapters_extra.resolve_adapter", side_effect=_no_adapter), \
+             mock.patch("prism.adapters_extra.shutil.which", return_value=None):
             findings = run_optional_tools([_c_file()], Config())
         klee = [f for f in findings if f.stage == "klee"]
         self.assertTrue(klee)
@@ -72,7 +72,7 @@ class TestKleeAdapter(unittest.TestCase):
         self._never_proved(out)
 
     def test_present_no_clang_is_unknown_not_a_verdict(self):
-        with mock.patch("helix.adapters_extra.shutil.which", return_value=None):
+        with mock.patch("prism.adapters_extra.shutil.which", return_value=None):
             out = _run_klee(KLEE_EXE, [_c_file()], Config())
         self.assertTrue(out)
         self.assertEqual(out[0].status, laws.UNKNOWN)
@@ -86,8 +86,8 @@ class TestKleeAdapter(unittest.TestCase):
         def fake_run(cmd, timeout, cwd=None):
             return fail
 
-        with mock.patch("helix.adapters_extra.shutil.which", return_value=CLANG_EXE), \
-             mock.patch("helix.adapters_extra._run", side_effect=fake_run):
+        with mock.patch("prism.adapters_extra.shutil.which", return_value=CLANG_EXE), \
+             mock.patch("prism.adapters_extra._run", side_effect=fake_run):
             out = _run_klee(KLEE_EXE, [_c_file()], Config())
         self._never_proved(out)
         if out:
@@ -109,8 +109,8 @@ class TestKleeAdapter(unittest.TestCase):
                 def fake_run(cmd, timeout, cwd=None, _proc=klee_proc, _err=err_name):
                     return _clang_writes_bc(cmd, _proc, err_name=_err)
 
-                with mock.patch("helix.adapters_extra.shutil.which", return_value=CLANG_EXE), \
-                     mock.patch("helix.adapters_extra._run", side_effect=fake_run):
+                with mock.patch("prism.adapters_extra.shutil.which", return_value=CLANG_EXE), \
+                     mock.patch("prism.adapters_extra._run", side_effect=fake_run):
                     out = _run_klee(KLEE_EXE, [_c_file()], Config())
                 self.assertTrue(out)
                 self.assertTrue(all(f.stage == "klee" for f in out))
@@ -123,8 +123,8 @@ class TestKleeAdapter(unittest.TestCase):
         def fake_run(cmd, timeout, cwd=None):
             return _clang_writes_bc(cmd, klee_proc)
 
-        with mock.patch("helix.adapters_extra.shutil.which", return_value=CLANG_EXE), \
-             mock.patch("helix.adapters_extra._run", side_effect=fake_run):
+        with mock.patch("prism.adapters_extra.shutil.which", return_value=CLANG_EXE), \
+             mock.patch("prism.adapters_extra._run", side_effect=fake_run):
             out = _run_klee(KLEE_EXE, [_c_file()], Config())
         self.assertTrue(out)
         self.assertTrue(all(f.status == laws.UNKNOWN for f in out))
@@ -146,8 +146,8 @@ class TestKleeAdapter(unittest.TestCase):
             (bc.parent / "test000001.ktest").write_bytes(b"KTEST")
             return klee_proc
 
-        with mock.patch("helix.adapters_extra.shutil.which", return_value=CLANG_EXE), \
-             mock.patch("helix.adapters_extra._run", side_effect=fake_run):
+        with mock.patch("prism.adapters_extra.shutil.which", return_value=CLANG_EXE), \
+             mock.patch("prism.adapters_extra._run", side_effect=fake_run):
             out = _run_klee(KLEE_EXE, [_c_file()], Config())
         self.assertTrue(out)
         self.assertTrue(all(f.status == laws.UNKNOWN for f in out))
@@ -164,8 +164,8 @@ class TestKleeAdapter(unittest.TestCase):
         def fake_run(cmd, timeout, cwd=None):
             return _clang_writes_bc(cmd, doctest)
 
-        with mock.patch("helix.adapters_extra.shutil.which", return_value=CLANG_EXE), \
-             mock.patch("helix.adapters_extra._run", side_effect=fake_run):
+        with mock.patch("prism.adapters_extra.shutil.which", return_value=CLANG_EXE), \
+             mock.patch("prism.adapters_extra._run", side_effect=fake_run):
             out = _run_klee(KLEE_EXE, [_c_file()], Config())
         self.assertTrue(out)
         self.assertTrue(all(f.status == laws.NOTRUN for f in out))

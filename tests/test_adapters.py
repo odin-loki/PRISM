@@ -13,9 +13,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from helix import laws
-from helix.adapters import _tool_unusable
-from helix.adapters_extra import (
+from prism import laws
+from prism.adapters import _tool_unusable
+from prism.adapters_extra import (
     OPTIONAL_TOOLS,
     _cocci_rules,
     _is_fake_adapter,
@@ -23,10 +23,10 @@ from helix.adapters_extra import (
     _run_cbmc,
     run_optional_tools,
 )
-from helix.config import Config, adapter_install, find_vendored_exe, resolve_adapter
-from helix.cparse import extract_functions
-from helix.models import Finding
-from helix.wp import run_wp
+from prism.config import Config, adapter_install, find_vendored_exe, resolve_adapter
+from prism.cparse import extract_functions
+from prism.models import Finding
+from prism.wp import run_wp
 
 ROOT = Path(__file__).resolve().parents[1]
 TD = ROOT / "testdata"
@@ -38,16 +38,16 @@ def _no_adapter(*_a, **_k):
 
 class TestOptionalAdapters(unittest.TestCase):
     def test_signature_returns_list_of_findings(self):
-        with mock.patch("helix.adapters_extra.resolve_adapter", side_effect=_no_adapter), \
-             mock.patch("helix.adapters_extra.shutil.which", return_value=None):
+        with mock.patch("prism.adapters_extra.resolve_adapter", side_effect=_no_adapter), \
+             mock.patch("prism.adapters_extra.shutil.which", return_value=None):
             out = run_optional_tools([], Config())
         self.assertIsInstance(out, list)
         self.assertTrue(out)
         self.assertTrue(all(isinstance(f, Finding) for f in out))
 
     def test_every_missing_tool_is_notrun(self):
-        with mock.patch("helix.adapters_extra.resolve_adapter", side_effect=_no_adapter), \
-             mock.patch("helix.adapters_extra.shutil.which", return_value=None):
+        with mock.patch("prism.adapters_extra.resolve_adapter", side_effect=_no_adapter), \
+             mock.patch("prism.adapters_extra.shutil.which", return_value=None):
             findings = run_optional_tools([TD], Config())
         by_stage = {f.stage: f for f in findings}
         expected = [spec[0] for spec in OPTIONAL_TOOLS] + ["libfuzzer"]
@@ -76,8 +76,8 @@ class TestOptionalAdapters(unittest.TestCase):
 
     def test_missing_is_never_clean_even_with_c_files(self):
         c_files = list(TD.glob("*.c"))[:2]
-        with mock.patch("helix.adapters_extra.resolve_adapter", side_effect=_no_adapter), \
-             mock.patch("helix.adapters_extra.shutil.which", return_value=None):
+        with mock.patch("prism.adapters_extra.resolve_adapter", side_effect=_no_adapter), \
+             mock.patch("prism.adapters_extra.shutil.which", return_value=None):
             findings = run_optional_tools(c_files, Config())
         statuses = {f.status for f in findings}
         self.assertEqual(statuses, {laws.NOTRUN})
@@ -90,8 +90,8 @@ class TestOptionalAdapters(unittest.TestCase):
             return None
 
         help_proc = mock.Mock(returncode=0, stdout="KLEE --help", stderr="")
-        with mock.patch("helix.adapters_extra.resolve_adapter", side_effect=fake_resolve), \
-             mock.patch("helix.adapters_extra._run", return_value=help_proc):
+        with mock.patch("prism.adapters_extra.resolve_adapter", side_effect=fake_resolve), \
+             mock.patch("prism.adapters_extra._run", return_value=help_proc):
             findings = run_optional_tools([], Config())
         klee = next(f for f in findings if f.stage == "klee")
         self.assertNotEqual(klee.status, laws.CLEAN)
@@ -109,10 +109,10 @@ class TestOptionalAdapters(unittest.TestCase):
                 return r"C:\tools\klee.exe"
             return None
 
-        with mock.patch("helix.adapters_extra.resolve_adapter", side_effect=fake_resolve), \
-             mock.patch("helix.adapters_extra._probe",
+        with mock.patch("prism.adapters_extra.resolve_adapter", side_effect=fake_resolve), \
+             mock.patch("prism.adapters_extra._probe",
                         side_effect=RuntimeError("exec format error")), \
-             mock.patch("helix.adapters_extra.shutil.which", return_value=None):
+             mock.patch("prism.adapters_extra.shutil.which", return_value=None):
             findings = run_optional_tools([], Config())
         klee = next(f for f in findings if f.stage == "klee")
         self.assertEqual(klee.status, laws.NOTRUN)
@@ -131,9 +131,9 @@ class TestOptionalAdapters(unittest.TestCase):
                 return r"C:\tools\infer"
             return None
 
-        with mock.patch("helix.adapters_extra.resolve_adapter", side_effect=fake_resolve), \
-             mock.patch("helix.adapters_extra._probe", return_value=None), \
-             mock.patch("helix.adapters_extra.shutil.which", return_value=None):
+        with mock.patch("prism.adapters_extra.resolve_adapter", side_effect=fake_resolve), \
+             mock.patch("prism.adapters_extra._probe", return_value=None), \
+             mock.patch("prism.adapters_extra.shutil.which", return_value=None):
             findings = run_optional_tools([], Config())
         infer = next(f for f in findings if f.stage == "infer")
         self.assertEqual(infer.status, laws.NOTRUN)
@@ -154,9 +154,9 @@ class TestOptionalAdapters(unittest.TestCase):
         def boom(cmd, timeout, cwd=None):
             raise subprocess.TimeoutExpired(cmd, timeout)
 
-        with mock.patch("helix.adapters_extra.resolve_adapter", side_effect=fake_resolve), \
-             mock.patch("helix.adapters_extra._run", side_effect=boom), \
-             mock.patch("helix.adapters_extra.shutil.which", return_value=None):
+        with mock.patch("prism.adapters_extra.resolve_adapter", side_effect=fake_resolve), \
+             mock.patch("prism.adapters_extra._run", side_effect=boom), \
+             mock.patch("prism.adapters_extra.shutil.which", return_value=None):
             findings = run_optional_tools([], Config())
         semgrep = next(f for f in findings if f.stage == "semgrep")
         self.assertEqual(semgrep.status, laws.NOTRUN)
@@ -177,9 +177,9 @@ class TestOptionalAdapters(unittest.TestCase):
             stdout="",
             stderr="sh: 1: /mnt/c/Code Analysis/third_party/Frama-C/bin/frama-c: not found\n",
         )
-        with mock.patch("helix.adapters_extra.resolve_adapter", side_effect=fake_resolve), \
-             mock.patch("helix.adapters_extra._run", return_value=missing), \
-             mock.patch("helix.adapters_extra.shutil.which", return_value=None):
+        with mock.patch("prism.adapters_extra.resolve_adapter", side_effect=fake_resolve), \
+             mock.patch("prism.adapters_extra._run", return_value=missing), \
+             mock.patch("prism.adapters_extra.shutil.which", return_value=None):
             findings = run_optional_tools([], Config())
         frama = next(f for f in findings if f.stage == "frama-c")
         self.assertEqual(frama.status, laws.NOTRUN)
@@ -212,9 +212,9 @@ class TestOptionalAdapters(unittest.TestCase):
             return None
 
         catch2 = mock.Mock(returncode=0, stdout="Catch2 v3.5.0\n", stderr="")
-        with mock.patch("helix.adapters_extra.resolve_adapter", side_effect=fake_resolve), \
-             mock.patch("helix.adapters_extra._run", return_value=catch2), \
-             mock.patch("helix.adapters_extra.shutil.which", return_value=None):
+        with mock.patch("prism.adapters_extra.resolve_adapter", side_effect=fake_resolve), \
+             mock.patch("prism.adapters_extra._run", return_value=catch2), \
+             mock.patch("prism.adapters_extra.shutil.which", return_value=None):
             findings = run_optional_tools([], Config())
         frama = next(f for f in findings if f.stage == "frama-c")
         self.assertEqual(frama.status, laws.NOTRUN)
@@ -233,9 +233,9 @@ class TestOptionalAdapters(unittest.TestCase):
             return None
 
         empty_ok = mock.Mock(returncode=0, stdout="", stderr="")
-        with mock.patch("helix.adapters_extra.resolve_adapter", side_effect=fake_resolve), \
-             mock.patch("helix.adapters_extra._run", return_value=empty_ok), \
-             mock.patch("helix.adapters_extra.shutil.which", return_value=None):
+        with mock.patch("prism.adapters_extra.resolve_adapter", side_effect=fake_resolve), \
+             mock.patch("prism.adapters_extra._run", return_value=empty_ok), \
+             mock.patch("prism.adapters_extra.shutil.which", return_value=None):
             findings = run_optional_tools([], Config())
         afl = next(f for f in findings if f.stage == "afl-fuzz")
         self.assertEqual(afl.status, laws.UNKNOWN)
@@ -253,8 +253,8 @@ class TestOptionalAdapters(unittest.TestCase):
             if sys.platform != "win32":
                 explicit.chmod(0o755)
             cfg = Config(tools={"klee": str(explicit)})
-            with mock.patch("helix.config.find_vendored_exe", return_value=str(Path(td) / "vendor")), \
-                 mock.patch("helix.config.shutil.which", return_value=str(Path(td) / "pathbin")):
+            with mock.patch("prism.config.find_vendored_exe", return_value=str(Path(td) / "vendor")), \
+                 mock.patch("prism.config.shutil.which", return_value=str(Path(td) / "pathbin")):
                 hit = resolve_adapter(cfg, "klee", ("klee",))
             self.assertEqual(Path(hit).resolve(), explicit.resolve())
 
@@ -264,12 +264,12 @@ class TestOptionalAdapters(unittest.TestCase):
             pathbin.write_bytes(b"x")
             if sys.platform != "win32":
                 pathbin.chmod(0o755)
-            with mock.patch("helix.config.find_vendored_exe", return_value=None), \
-                 mock.patch("helix.config.shutil.which", return_value=str(pathbin)):
+            with mock.patch("prism.config.find_vendored_exe", return_value=None), \
+                 mock.patch("prism.config.shutil.which", return_value=str(pathbin)):
                 hit = resolve_adapter(Config(), "infer", ("infer",))
             self.assertEqual(Path(hit).resolve(), pathbin.resolve())
-            with mock.patch("helix.config.find_vendored_exe", return_value=None), \
-                 mock.patch("helix.config.shutil.which", return_value=None):
+            with mock.patch("prism.config.find_vendored_exe", return_value=None), \
+                 mock.patch("prism.config.shutil.which", return_value=None):
                 self.assertIsNone(resolve_adapter(Config(), "infer", ("infer",)))
 
     def test_vendored_shallow_glob_without_path(self):
@@ -283,8 +283,8 @@ class TestOptionalAdapters(unittest.TestCase):
             exe.write_bytes(b"MZ" if sys.platform == "win32" else b"\x7fELF")
             if sys.platform != "win32":
                 exe.chmod(0o755)
-            with mock.patch("helix.config.repo_root", return_value=root), \
-                 mock.patch("helix.config.shutil.which", return_value=None):
+            with mock.patch("prism.config.repo_root", return_value=root), \
+                 mock.patch("prism.config.shutil.which", return_value=None):
                 hit = find_vendored_exe("klee", ("klee",))
                 resolved = resolve_adapter(Config(), "klee", ("klee",))
             self.assertEqual(Path(hit).resolve(), exe.resolve())
@@ -316,8 +316,8 @@ class TestOptionalAdapters(unittest.TestCase):
                 return help_proc
             return scan_proc
 
-        with mock.patch("helix.adapters_extra.resolve_adapter", side_effect=fake_resolve), \
-             mock.patch("helix.adapters_extra._run", side_effect=fake_run):
+        with mock.patch("prism.adapters_extra.resolve_adapter", side_effect=fake_resolve), \
+             mock.patch("prism.adapters_extra._run", side_effect=fake_run):
             findings = run_optional_tools(c_files, Config())
         semgrep = next(f for f in findings if f.stage == "semgrep")
         self.assertEqual(semgrep.status, laws.FAILED)
@@ -340,8 +340,8 @@ class TestOptionalAdapters(unittest.TestCase):
                 return help_proc
             return scan_proc
 
-        with mock.patch("helix.adapters_extra.resolve_adapter", side_effect=fake_resolve), \
-             mock.patch("helix.adapters_extra._run", side_effect=fake_run):
+        with mock.patch("prism.adapters_extra.resolve_adapter", side_effect=fake_resolve), \
+             mock.patch("prism.adapters_extra._run", side_effect=fake_run):
             findings = run_optional_tools(c_files, Config())
         semgrep = next(f for f in findings if f.stage == "semgrep")
         self.assertEqual(semgrep.status, laws.UNKNOWN)
@@ -352,8 +352,8 @@ class TestOptionalAdapters(unittest.TestCase):
     def test_missing_infer_is_notrun_never_clean_or_proved(self):
         c_files = list(TD.glob("*.c"))[:1]
         self.assertTrue(c_files)
-        with mock.patch("helix.adapters_extra.resolve_adapter", side_effect=_no_adapter), \
-             mock.patch("helix.adapters_extra.shutil.which", return_value=None):
+        with mock.patch("prism.adapters_extra.resolve_adapter", side_effect=_no_adapter), \
+             mock.patch("prism.adapters_extra.shutil.which", return_value=None):
             findings = run_optional_tools(c_files, Config())
         infer = next(f for f in findings if f.stage == "infer")
         self.assertEqual(infer.status, laws.NOTRUN)
@@ -387,9 +387,9 @@ class TestOptionalAdapters(unittest.TestCase):
                 return r"C:\tools\gcc.exe"
             return None
 
-        with mock.patch("helix.adapters_extra.resolve_adapter", side_effect=fake_resolve), \
-             mock.patch("helix.adapters_extra._run", side_effect=fake_run), \
-             mock.patch("helix.adapters_extra.shutil.which", side_effect=fake_which):
+        with mock.patch("prism.adapters_extra.resolve_adapter", side_effect=fake_resolve), \
+             mock.patch("prism.adapters_extra._run", side_effect=fake_run), \
+             mock.patch("prism.adapters_extra.shutil.which", side_effect=fake_which):
             findings = run_optional_tools(c_files, Config())
         infer = next(f for f in findings if f.stage == "infer")
         self.assertEqual(infer.status, laws.UNKNOWN)
@@ -402,8 +402,8 @@ class TestOptionalAdapters(unittest.TestCase):
     def test_missing_framac_is_notrun_wp_is_separate_stage(self):
         c_files = list(TD.glob("*.c"))[:1]
         self.assertTrue(c_files)
-        with mock.patch("helix.adapters_extra.resolve_adapter", side_effect=_no_adapter), \
-             mock.patch("helix.adapters_extra.shutil.which", return_value=None):
+        with mock.patch("prism.adapters_extra.resolve_adapter", side_effect=_no_adapter), \
+             mock.patch("prism.adapters_extra.shutil.which", return_value=None):
             findings = run_optional_tools(c_files, Config())
         frama = next(f for f in findings if f.stage == "frama-c")
         self.assertEqual(frama.status, laws.NOTRUN)
@@ -451,8 +451,8 @@ class TestOptionalAdapters(unittest.TestCase):
                 return help_proc
             return match_proc
 
-        with mock.patch("helix.adapters_extra.resolve_adapter", side_effect=fake_resolve), \
-             mock.patch("helix.adapters_extra._run", side_effect=fake_run):
+        with mock.patch("prism.adapters_extra.resolve_adapter", side_effect=fake_resolve), \
+             mock.patch("prism.adapters_extra._run", side_effect=fake_run):
             findings = run_optional_tools(c_files, Config())
         spatch = [f for f in findings if f.stage == "spatch" and f.status == laws.FAILED]
         self.assertTrue(spatch)
@@ -474,8 +474,8 @@ class TestOptionalAdapters(unittest.TestCase):
                 return help_proc
             return scan_proc
 
-        with mock.patch("helix.adapters_extra.resolve_adapter", side_effect=fake_resolve), \
-             mock.patch("helix.adapters_extra._run", side_effect=fake_run):
+        with mock.patch("prism.adapters_extra.resolve_adapter", side_effect=fake_resolve), \
+             mock.patch("prism.adapters_extra._run", side_effect=fake_run):
             findings = run_optional_tools(c_files, Config())
         spatch = next(f for f in findings if f.stage == "spatch")
         self.assertEqual(spatch.status, laws.UNKNOWN)
@@ -484,8 +484,8 @@ class TestOptionalAdapters(unittest.TestCase):
         self.assertIn("no matches", spatch.message.lower())
 
     def test_afl_missing_is_notrun_never_clean(self):
-        with mock.patch("helix.adapters_extra.resolve_adapter", side_effect=_no_adapter), \
-             mock.patch("helix.adapters_extra.shutil.which", return_value=None):
+        with mock.patch("prism.adapters_extra.resolve_adapter", side_effect=_no_adapter), \
+             mock.patch("prism.adapters_extra.shutil.which", return_value=None):
             findings = run_optional_tools([], Config())
         afl = next(f for f in findings if f.stage == "afl-fuzz")
         self.assertEqual(afl.status, laws.NOTRUN)
@@ -503,9 +503,9 @@ class TestOptionalAdapters(unittest.TestCase):
             return None
 
         help_proc = mock.Mock(returncode=0, stdout="afl-fuzz --help", stderr="")
-        with mock.patch("helix.adapters_extra.resolve_adapter", side_effect=fake_resolve), \
-             mock.patch("helix.adapters_extra._run", return_value=help_proc), \
-             mock.patch("helix.adapters_extra.shutil.which", return_value=None):
+        with mock.patch("prism.adapters_extra.resolve_adapter", side_effect=fake_resolve), \
+             mock.patch("prism.adapters_extra._run", return_value=help_proc), \
+             mock.patch("prism.adapters_extra.shutil.which", return_value=None):
             findings = run_optional_tools([], Config())
         afl = next(f for f in findings if f.stage == "afl-fuzz")
         self.assertEqual(afl.status, laws.UNKNOWN)
@@ -525,9 +525,9 @@ class TestOptionalAdapters(unittest.TestCase):
             return None
 
         help_proc = mock.Mock(returncode=0, stdout="afl-fuzz --help", stderr="")
-        with mock.patch("helix.adapters_extra.resolve_adapter", side_effect=fake_resolve), \
-             mock.patch("helix.adapters_extra._run", return_value=help_proc), \
-             mock.patch("helix.adapters_extra.shutil.which", return_value=None):
+        with mock.patch("prism.adapters_extra.resolve_adapter", side_effect=fake_resolve), \
+             mock.patch("prism.adapters_extra._run", return_value=help_proc), \
+             mock.patch("prism.adapters_extra.shutil.which", return_value=None):
             findings = run_optional_tools(c_files, Config())
         afl = next(f for f in findings if f.stage == "afl-fuzz")
         self.assertEqual(afl.status, laws.UNKNOWN)
@@ -536,8 +536,8 @@ class TestOptionalAdapters(unittest.TestCase):
         self.assertFalse(laws.is_proof(afl.status))
 
     def test_libfuzzer_missing_is_notrun_never_clean(self):
-        with mock.patch("helix.adapters_extra.resolve_adapter", side_effect=_no_adapter), \
-             mock.patch("helix.adapters_extra.shutil.which", return_value=None):
+        with mock.patch("prism.adapters_extra.resolve_adapter", side_effect=_no_adapter), \
+             mock.patch("prism.adapters_extra.shutil.which", return_value=None):
             findings = run_optional_tools([], Config())
         lf = next(f for f in findings if f.stage == "libfuzzer")
         self.assertEqual(lf.status, laws.NOTRUN)
@@ -549,9 +549,9 @@ class TestOptionalAdapters(unittest.TestCase):
 
     def test_libfuzzer_successful_probe_is_never_clean_or_proved(self):
         compile_ok = mock.Mock(returncode=0, stdout="", stderr="")
-        with mock.patch("helix.adapters_extra.resolve_adapter", side_effect=_no_adapter), \
-             mock.patch("helix.adapters_extra.shutil.which", return_value="/usr/bin/clang"), \
-             mock.patch("helix.adapters_extra._run", return_value=compile_ok):
+        with mock.patch("prism.adapters_extra.resolve_adapter", side_effect=_no_adapter), \
+             mock.patch("prism.adapters_extra.shutil.which", return_value="/usr/bin/clang"), \
+             mock.patch("prism.adapters_extra._run", return_value=compile_ok):
             findings = run_optional_tools([], Config())
         lf = next(f for f in findings if f.stage == "libfuzzer")
         self.assertEqual(lf.status, laws.UNKNOWN)
@@ -565,9 +565,9 @@ class TestOptionalAdapters(unittest.TestCase):
         unsupported = mock.Mock(
             returncode=1, stdout="", stderr="error: unsupported argument '-fsanitize=fuzzer'",
         )
-        with mock.patch("helix.adapters_extra.resolve_adapter", side_effect=_no_adapter), \
-             mock.patch("helix.adapters_extra.shutil.which", return_value="/usr/bin/clang"), \
-             mock.patch("helix.adapters_extra._run", return_value=unsupported):
+        with mock.patch("prism.adapters_extra.resolve_adapter", side_effect=_no_adapter), \
+             mock.patch("prism.adapters_extra.shutil.which", return_value="/usr/bin/clang"), \
+             mock.patch("prism.adapters_extra._run", return_value=unsupported):
             findings = run_optional_tools([], Config())
         lf = next(f for f in findings if f.stage == "libfuzzer")
         self.assertEqual(lf.status, laws.NOTRUN)
@@ -593,7 +593,7 @@ class TestOptionalAdapters(unittest.TestCase):
             cmds.append(list(cmd))
             return proc
 
-        with mock.patch("helix.adapters_extra._run", side_effect=capture):
+        with mock.patch("prism.adapters_extra._run", side_effect=capture):
             _run_cbmc(r"C:\tools\cbmc.exe", paths, Config())
         for built in cmds:
             for flag in built:
@@ -609,7 +609,7 @@ class TestOptionalAdapters(unittest.TestCase):
             stdout="",
             stderr="Unknown option: --timeout\n --stack-trace\n[doctest] doctest version is 2.4.11\n",
         )
-        with mock.patch("helix.adapters_extra._run", return_value=proc):
+        with mock.patch("prism.adapters_extra._run", return_value=proc):
             out = _run_cbmc(r"C:\tools\cbmc.exe", paths, Config())
         self.assertTrue(out)
         self.assertEqual(out[0].status, laws.NOTRUN)
@@ -625,7 +625,7 @@ class TestOptionalAdapters(unittest.TestCase):
             stdout="Catch2 v3.5.0\nUnknown option: --unwind\n",
             stderr="",
         )
-        with mock.patch("helix.adapters_extra._run", return_value=proc):
+        with mock.patch("prism.adapters_extra._run", return_value=proc):
             out = _run_cbmc(r"C:\tools\cbmc.exe", paths, Config())
         self.assertTrue(out)
         self.assertEqual(out[0].status, laws.NOTRUN)
@@ -636,10 +636,10 @@ class TestOptionalAdapters(unittest.TestCase):
         self.assertEqual((out[0].extra or {}).get("install"), adapter_install("cbmc"))
 
     def test_spatch_no_rules_apply_is_unknown_not_error(self):
-        from helix.adapters_extra import _run_spatch
+        from prism.adapters_extra import _run_spatch
         c_files = list(TD.glob("*.c"))[:1]
         proc = mock.Mock(returncode=1, stdout="", stderr="No rules apply. Perhaps your semantic patch")
-        with mock.patch("helix.adapters_extra._run", return_value=proc):
+        with mock.patch("prism.adapters_extra._run", return_value=proc):
             out = _run_spatch(r"C:\tools\spatch.exe", c_files, Config())
         self.assertTrue(out)
         self.assertTrue(all(f.status != laws.ERROR for f in out))

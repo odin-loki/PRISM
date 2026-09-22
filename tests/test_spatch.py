@@ -1,11 +1,11 @@
 """spatch / Coccinelle adapter honesty: missing binary is NOTRUN, never CLEAN.
 
-Helix `_run_spatch` is law. Shipped rules live in helix/cocci/. File
+Python engine `_run_spatch` is law. Shipped rules live in prism/cocci/. File
 presence is locked in tests/test_cocci.py; strcpy/strcat/sprintf staying
 out of BMC `unencoded_syntax_reason` is locked in
 tests/test_unencoded_contract.py.
 
-C++ `run_spatch` in src/prism/adapters.cpp must match Helix: missing
+C++ `run_spatch` in src/prism/adapters.cpp must match the Python engine: missing
 spatch is NOTRUN via `run_optional_tools` / `notrun`, never CLEAN.
 
 python -m unittest tests.test_spatch
@@ -18,18 +18,18 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from helix import laws
-from helix.adapters_extra import (
+from prism import laws
+from prism.adapters_extra import (
     OPTIONAL_TOOLS,
     _cocci_rules,
     _run_spatch,
     run_optional_tools,
 )
-from helix.config import Config, adapter_install
-from helix.models import Finding
+from prism.config import Config, adapter_install
+from prism.models import Finding
 
 ROOT = Path(__file__).resolve().parents[1]
-COCCI = ROOT / "helix" / "cocci"
+COCCI = ROOT / "prism" / "cocci"
 _CPP = ROOT / "src" / "prism" / "adapters.cpp"
 C_FILE = Path("planted.c")
 _PROOF = {laws.PROVED, laws.PROVED_UNBOUNDED, laws.PROVED_ASSUMING}
@@ -77,13 +77,13 @@ class TestSpatchHonesty(unittest.TestCase):
     def test_cocci_rules_discovers_all_shipped_stems(self):
         names = {p.stem for p in _cocci_rules([])}
         for stem in SHIPPED:
-            self.assertIn(stem, names, msg=f"helix/cocci/{stem}.cocci not discovered")
+            self.assertIn(stem, names, msg=f"prism/cocci/{stem}.cocci not discovered")
         self.assertTrue(COCCI.is_dir())
 
     def test_missing_spatch_via_run_optional_tools_is_notrun(self):
-        with mock.patch("helix.adapters_extra.resolve_adapter", side_effect=_no_adapter), \
-             mock.patch("helix.adapters_extra.shutil.which", return_value=None), \
-             mock.patch("helix.adapters_extra._run") as run:
+        with mock.patch("prism.adapters_extra.resolve_adapter", side_effect=_no_adapter), \
+             mock.patch("prism.adapters_extra.shutil.which", return_value=None), \
+             mock.patch("prism.adapters_extra._run") as run:
             findings = run_optional_tools([C_FILE], Config())
         run.assert_not_called()
         self.assertIn("spatch", [spec[0] for spec in OPTIONAL_TOOLS])
@@ -115,14 +115,14 @@ class TestSpatchHonesty(unittest.TestCase):
             stdout="[doctest] doctest version is 2.4.11\nUnknown option: --sp-file\n",
             stderr="",
         )
-        with mock.patch("helix.adapters_extra._run", return_value=proc):
+        with mock.patch("prism.adapters_extra._run", return_value=proc):
             out = _run_spatch(r"C:\tools\spatch.exe", c_files, Config())
         self.assertTrue(out)
         self.assertTrue(all(f.status == laws.NOTRUN for f in out))
         self.assertIn("not coccinelle", out[0].message.lower())
         self._never_proof(out)
 
-    def test_helix_run_spatch_source_never_clean_or_proved(self):
+    def test_prism_run_spatch_source_never_clean_or_proved(self):
         py = inspect.getsource(_run_spatch)
         self.assertIn("laws.UNKNOWN", py)
         self.assertIn("laws.FAILED", py)
@@ -165,7 +165,7 @@ class TestSpatchHonesty(unittest.TestCase):
 
         opt = _cpp_between(
             "std::vector<Finding> run_optional_tools(",
-            "namespace {\n\n// Helix helix/pbsd.py",
+            "namespace {\n\n// Python engine prism/pbsd.py",
         )
         self.assertTrue(opt, "adapters.cpp must define run_optional_tools")
         self.assertIn('{"spatch", {"spatch", "spatch.exe", nullptr}}', opt)
@@ -185,7 +185,7 @@ class TestSpatchHonesty(unittest.TestCase):
             "struct SpatchHit",
         )
         self.assertTrue(cocci, "adapters.cpp must define cocci_rules")
-        self.assertIn('"helix"', cocci)
+        self.assertIn('"prism"', cocci)
         self.assertIn('"cocci"', cocci)
         self.assertIn(".cocci", cocci)
 

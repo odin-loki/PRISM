@@ -4,7 +4,7 @@ Host havoc.cpp and src/cuda/mutate.cu must overlay the same INTERESTING_8 /
 INTERESTING_16 / INTERESTING_32 tables as AFL++ config.h. Missing nvcc is
 NOTRUN, never a fake CLEAN proof. CUDA may be OFF; these tests read sources.
 
-helix/simdmut.py may ctypes-load WSL libprism_native.so / helix_native.
+prism/simdmut.py may ctypes-load libprism_native.so (src/prism/capi.cpp).
 A missing library is a Python fallback, never CLEAN/PROVED.
 """
 
@@ -16,8 +16,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from helix import laws
-from helix.simdmut import (
+from prism import laws
+from prism.simdmut import (
     INTERESTING_8,
     INTERESTING_16,
     INTERESTING_32,
@@ -154,7 +154,7 @@ class TestHostHavocSource(unittest.TestCase):
         self.assertIn("case 6:", self.src)
 
     def test_python_binding_uses_same_overlays(self):
-        py = (ROOT / "helix" / "simdmut.py").read_text(encoding="utf-8")
+        py = (ROOT / "prism" / "simdmut.py").read_text(encoding="utf-8")
         self.assertIn("_overlay_le(b, i, v, 1)", py)
         self.assertIn("_overlay_le(b, i, v, 2)", py)
         self.assertIn("_overlay_le(b, i, v, 4)", py)
@@ -208,35 +208,29 @@ class TestCudaMutateSource(unittest.TestCase):
 
 
 class TestNativeLoadOrder(unittest.TestCase):
-    """ctypes search: HELIX_NATIVE_DLL, build_wsl/, native/. Missing lib ≠ proof."""
+    """ctypes search: PRISM_NATIVE_DLL, build_wsl/, build/. Missing lib ≠ proof."""
 
-    def test_search_dirs_include_wsl_and_native_tree(self):
+    def test_search_dirs_include_wsl_and_build_tree(self):
         dirs = _native_search_dirs()
         self.assertIn(ROOT / "build_wsl", dirs)
-        self.assertIn(ROOT / "native" / "build", dirs)
-        self.assertIn(ROOT / "native", dirs)
-        self.assertLess(dirs.index(ROOT / "build_wsl"), dirs.index(ROOT / "native" / "build"))
+        self.assertIn(ROOT / "build", dirs)
+        self.assertLess(dirs.index(ROOT / "build_wsl"), dirs.index(ROOT / "build"))
+        self.assertNotIn(ROOT / "native", dirs)
 
-    def test_cpu_names_prefer_helix_then_prism(self):
-        self.assertIn("libhelix_native.so", _CPU_LIB_NAMES)
+    def test_cpu_names_are_prism_native(self):
         self.assertIn("libprism_native.so", _CPU_LIB_NAMES)
-        self.assertIn("helix_native.dll", _CPU_LIB_NAMES)
         self.assertIn("prism_native.dll", _CPU_LIB_NAMES)
-        self.assertLess(
-            _CPU_LIB_NAMES.index("libhelix_native.so"),
-            _CPU_LIB_NAMES.index("libprism_native.so"),
-        )
+        for name in _CPU_LIB_NAMES:
+            self.assertIn("prism_native", name)
 
     def test_candidates_include_wsl_prism_native(self):
         cands = _native_lib_candidates()
         self.assertIn(ROOT / "build_wsl" / "libprism_native.so", cands)
-        self.assertIn(ROOT / "native" / "build" / "helix_native.dll", cands)
-        wsl = [p.name for p in cands if p.parent == ROOT / "build_wsl"]
-        self.assertLess(wsl.index("libhelix_native.so"), wsl.index("libprism_native.so"))
+        self.assertIn(ROOT / "build" / "prism_native.dll", cands)
 
-    def test_helix_native_dll_env_is_first(self):
-        custom = ROOT / "custom_helix.so"
-        with mock.patch.dict(os.environ, {"HELIX_NATIVE_DLL": str(custom)}):
+    def test_prism_native_dll_env_is_first(self):
+        custom = ROOT / "custom_python.so"
+        with mock.patch.dict(os.environ, {"PRISM_NATIVE_DLL": str(custom)}):
             cands = _native_lib_candidates()
         self.assertEqual(cands[0], custom)
 
@@ -244,41 +238,32 @@ class TestNativeLoadOrder(unittest.TestCase):
         self.assertIn("libprism_cuda.so", _CUDA_LIB_NAMES)
         cands = _cuda_lib_candidates()
         self.assertIn(ROOT / "build_wsl" / "libprism_cuda.so", cands)
-        self.assertIn(ROOT / "native" / "libprism_cuda.so", cands)
+        self.assertIn(ROOT / "build" / "libprism_cuda.so", cands)
 
-    def test_bind_prefers_helix_capi_then_prism_havoc(self):
+    def test_bind_prism_capi(self):
         class _Sym:
             def __init__(self):
                 self.argtypes = None
                 self.restype = None
 
-        helix_h, helix_v = _Sym(), _Sym()
         prism_h, prism_v = _Sym(), _Sym()
-
-        class Both:
-            helix_coverage_hash = helix_h
-            helix_havoc = helix_v
-            prism_coverage_hash = prism_h
-            prism_havoc = prism_v
-
-        h, v = _bind_native_symbols(Both())
-        self.assertIsNotNone(h)
-        self.assertIsNotNone(v)
-        self.assertIsNotNone(helix_h.argtypes)
-        self.assertIsNone(prism_h.argtypes)
 
         class PrismOnly:
             prism_coverage_hash = prism_h
             prism_havoc = prism_v
 
-        prism_h.argtypes = None
-        h2, v2 = _bind_native_symbols(PrismOnly())
-        self.assertIsNotNone(h2)
-        self.assertIsNotNone(v2)
+        h, v = _bind_native_symbols(PrismOnly())
+        self.assertIsNotNone(h)
+        self.assertIsNotNone(v)
         self.assertIsNotNone(prism_h.argtypes)
 
+        class Neither:
+            pass
+
+        self.assertEqual(_bind_native_symbols(Neither()), (None, None))
+
     def test_missing_library_is_python_fallback_never_proof(self):
-        with mock.patch("helix.simdmut._cdll", side_effect=OSError("no native lib")):
+        with mock.patch("prism.simdmut._cdll", side_effect=OSError("no native lib")):
             h, v = _try_load_dll()
         self.assertIsNone(h)
         self.assertIsNone(v)
@@ -289,11 +274,11 @@ class TestNativeLoadOrder(unittest.TestCase):
         self.assertNotEqual(laws.CLEAN, laws.PROVED)
 
     def test_source_documents_wsl_capi_and_no_proof(self):
-        py = (ROOT / "helix" / "simdmut.py").read_text(encoding="utf-8")
+        py = (ROOT / "prism" / "simdmut.py").read_text(encoding="utf-8")
         self.assertIn("build_wsl", py)
         self.assertIn("libprism_native.so", py)
         self.assertIn("libprism_cuda.so", py)
-        self.assertIn("HELIX_NATIVE_DLL", py)
+        self.assertIn("PRISM_NATIVE_DLL", py)
         self.assertIn("prism_havoc", py)
         self.assertIn("never CLEAN/PROVED", py)
         capi = (ROOT / "src" / "prism" / "capi.cpp").read_text(encoding="utf-8")
@@ -301,7 +286,7 @@ class TestNativeLoadOrder(unittest.TestCase):
         self.assertIn("prism_coverage_hash", capi)
 
     def test_cuda_preload_failure_is_not_required(self):
-        with mock.patch("helix.simdmut._cdll", side_effect=OSError("no gpu")):
+        with mock.patch("prism.simdmut._cdll", side_effect=OSError("no gpu")):
             self.assertFalse(_try_preload_cuda())
         self.assertFalse(laws.is_proof(laws.CLEAN))
 

@@ -1,6 +1,6 @@
 """C++ adapter honesty source-contract. python -m unittest tests.test_prism_adapters -q
 
-Helix adapters.py / adapters_extra.py is law. Missing tool is NOTRUN.
+Python engine adapters.py / adapters_extra.py is law. Missing tool is NOTRUN.
 Fake Catch2/doctest is NOTRUN, never PROVED/CLEAN/ERROR. Empty diagnostics
 are UNKNOWN, never a proof. POINTER is not this module (fuse).
 """
@@ -11,7 +11,7 @@ import re
 import unittest
 from pathlib import Path
 
-from helix import laws
+from prism import laws
 
 ROOT = Path(__file__).resolve().parents[1]
 ADAPTERS = ROOT / "src" / "prism" / "adapters.cpp"
@@ -51,7 +51,7 @@ class TestCppAdapterHonestySourceContract(unittest.TestCase):
         cls.src = _read()
         cls.code = _strip_comments(cls.src)
 
-    def test_is_fake_adapter_matches_helix(self):
+    def test_is_fake_adapter_matches_python(self):
         body = _brace_body(self.src, "bool is_fake_adapter(")
         self.assertIn("doctest version", body)
         self.assertIn("catch2 v", body)

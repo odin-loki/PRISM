@@ -1,11 +1,11 @@
-"""Emit a compiling C++23 checkers_cxx.cpp from helix/checkers.py regexes."""
+"""Emit a compiling C++23 checkers_cxx.cpp from prism/checkers.py regexes."""
 from __future__ import annotations
 
 import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-src = (ROOT / "helix" / "checkers.py").read_text(encoding="utf-8")
+src = (ROOT / "prism" / "checkers.py").read_text(encoding="utf-8")
 
 
 def unraw(lit: str) -> str:

@@ -41,7 +41,7 @@ std::vector<Finding> run_bmc(const std::vector<FunctionInfo>& functions, int unw
 std::vector<Finding> run_harness_bmc(const std::vector<FunctionInfo>& functions, int unwind);
 std::vector<Finding> run_concolic(const std::vector<FunctionInfo>& functions, int budget = 32);
 
-// Helix helix/bmc.py harness_for_parsefail. Unmapped parsefail is ERROR (nullopt),
+// Python engine prism/bmc.py harness_for_parsefail. Unmapped parsefail is ERROR (nullopt),
 // not a generic NEEDS-HARNESS. Plain goto stays ERROR.
 std::optional<std::string> harness_for_parsefail(std::string_view err, const std::string& engine);
 

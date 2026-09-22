@@ -22,7 +22,6 @@ namespace fs = std::filesystem;
 
 static fs::path default_pbsd() {
     if (const char* env = std::getenv("PRISM_PBSD"); env && *env) return env;
-    if (const char* env = std::getenv("HELIX_PBSD"); env && *env) return env;
     fs::path sibling = R"(C:\Users\odinl\OneDrive\Desktop\ParanoidBSD)";
     if (fs::exists(sibling)) return sibling;
     return fs::current_path().parent_path() / "ParanoidBSD";
@@ -30,7 +29,6 @@ static fs::path default_pbsd() {
 
 static fs::path default_gguf() {
     if (const char* env = std::getenv("PRISM_GGUF"); env && *env) return env;
-    if (const char* env = std::getenv("HELIX_GGUF"); env && *env) return env;
     fs::path home;
 #ifdef _WIN32
     if (const char* u = std::getenv("USERPROFILE")) home = u;
@@ -41,9 +39,8 @@ static fs::path default_gguf() {
            "sha256-dec52a44569a2a25341c4e4d3fee25846eed4f6f0b936278e3a3c900bb99d37c";
 }
 
-static std::string env_or(const char* a, const char* b, const char* def) {
-    if (const char* v = std::getenv(a); v && *v) return v;
-    if (const char* v = std::getenv(b); v && *v) return v;
+static std::string env_or(const char* name, const char* def) {
+    if (const char* v = std::getenv(name); v && *v) return v;
     return def;
 }
 
@@ -51,9 +48,9 @@ Config default_config() {
     Config c;
     c.pbsd_root = default_pbsd();
     c.gguf = default_gguf();
-    c.model = env_or("PRISM_MODEL", "HELIX_MODEL", "qwen3.5:9b");
-    c.ollama_host = env_or("OLLAMA_HOST", "OLLAMA_HOST", "http://127.0.0.1:11434");
-    c.llama_server = env_or("PRISM_LLAMA_SERVER", "HELIX_LLAMA_SERVER", "http://127.0.0.1:8080");
+    c.model = env_or("PRISM_MODEL", "qwen3.5:9b");
+    c.ollama_host = env_or("OLLAMA_HOST", "http://127.0.0.1:11434");
+    c.llama_server = env_or("PRISM_LLAMA_SERVER", "http://127.0.0.1:8080");
     unsigned n = std::max(2u, std::thread::hardware_concurrency());
     c.jobs = static_cast<int>(std::max(1u, n / 2));
     return c;

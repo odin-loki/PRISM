@@ -378,8 +378,8 @@ std::vector<std::filesystem::path> iter_sources(const std::filesystem::path& roo
     std::vector<std::filesystem::path> files;
     if (std::filesystem::is_regular_file(root)) return {root};
     const std::unordered_set<std::string> skip{
-        ".git", "helix-out", "prism-out", "third_party", "build", "node_modules",
-        "__pycache__", "native"};
+        ".git", "prism-out", "third_party", "build", "node_modules",
+        "__pycache__"};
     if (!std::filesystem::exists(root)) return files;
     for (auto it = std::filesystem::recursive_directory_iterator(root);
          it != std::filesystem::recursive_directory_iterator(); ++it) {

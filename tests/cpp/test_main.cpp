@@ -354,7 +354,7 @@ TEST_CASE("wp acsl_abs is PROVED-ASSUMING never PROVED") {
     CHECK(findings[0].status != std::string(prism::laws::PROVED_UNBOUNDED));
     auto engine = findings[0].extra.find("engine");
     REQUIRE(engine != findings[0].extra.end());
-    CHECK(engine->second == "helix-wp");
+    CHECK(engine->second == "prism-wp");
 }
 
 TEST_CASE("wp skips functions with no ensures") {
@@ -489,7 +489,7 @@ TEST_CASE("wp pointer is NEEDS-HARNESS never unguarded BMC") {
         CHECK(r.status != std::string(prism::laws::CLEAN));
         CHECK(r.stage == "wp");
     }
-    CHECK(extra_get(findings[0], "engine") == "helix-wp");
+    CHECK(extra_get(findings[0], "engine") == "prism-wp");
     CHECK(extra_get(findings[0], "wp") == "return-substitution");
 }
 
@@ -502,7 +502,7 @@ TEST_CASE("wp unencodable valid is ERROR never proved-assuming") {
     CHECK(findings[0].status != std::string(prism::laws::PROVED));
     CHECK(extra_get(findings[0], "wp_unencoded") == "true");
     CHECK(findings[0].message.find("\\valid") != std::string::npos);
-    CHECK(extra_get(findings[0], "engine") == "helix-wp");
+    CHECK(extra_get(findings[0], "engine") == "prism-wp");
     CHECK(extra_get(findings[0], "wp") == "return-substitution");
 }
 
@@ -874,38 +874,28 @@ TEST_CASE("missing journal is never CLEAN or PROVED") {
 static void pbsd_env_line(const std::string& line) { _putenv(line.c_str()); }
 #endif
 
-// Honor Helix: HELIX_PBSD (and C++ PRISM_PBSD) override cfg.pbsd_root.
+// PRISM_PBSD overrides cfg.pbsd_root; tests clear it and restore it after.
 struct PbsdEnvGuard {
-    std::string helix_was, prism_was;
-    bool had_helix = false, had_prism = false;
-    std::string clear_h{"HELIX_PBSD="};
-    std::string clear_p{"PRISM_PBSD="};
+    std::string was;
+    bool had = false;
+    std::string clear{"PRISM_PBSD="};
     PbsdEnvGuard() {
-        if (const char* v = std::getenv("HELIX_PBSD")) {
-            had_helix = true;
-            helix_was = v;
-        }
         if (const char* v = std::getenv("PRISM_PBSD")) {
-            had_prism = true;
-            prism_was = v;
+            had = true;
+            was = v;
         }
 #ifdef _WIN32
-        pbsd_env_line(clear_h);
-        pbsd_env_line(clear_p);
+        pbsd_env_line(clear);
 #else
-        unsetenv("HELIX_PBSD");
         unsetenv("PRISM_PBSD");
 #endif
     }
     ~PbsdEnvGuard() {
 #ifdef _WIN32
-        // _putenv may keep the pointer; leak restore lines for process lifetime.
-        pbsd_env_line(*(new std::string(had_helix ? "HELIX_PBSD=" + helix_was : "HELIX_PBSD=")));
-        pbsd_env_line(*(new std::string(had_prism ? "PRISM_PBSD=" + prism_was : "PRISM_PBSD=")));
+        // _putenv may keep the pointer; leak the restore line for process lifetime.
+        pbsd_env_line(*(new std::string(had ? "PRISM_PBSD=" + was : "PRISM_PBSD=")));
 #else
-        if (had_helix) setenv("HELIX_PBSD", helix_was.c_str(), 1);
-        else unsetenv("HELIX_PBSD");
-        if (had_prism) setenv("PRISM_PBSD", prism_was.c_str(), 1);
+        if (had) setenv("PRISM_PBSD", was.c_str(), 1);
         else unsetenv("PRISM_PBSD");
 #endif
     }
@@ -925,25 +915,25 @@ TEST_CASE("pbsd missing tree is NOTRUN never CLEAN") {
     PbsdEnvGuard env;
     prism::Config cfg = prism::default_config();
     cfg.root = testdata_root();
-    cfg.pbsd_root = std::filesystem::current_path().root_path() / "helix-no-such-paranoidbsd";
+    cfg.pbsd_root = std::filesystem::current_path().root_path() / "prism-no-such-paranoidbsd";
     auto findings = prism::run_pbsd_lints({testdata_root() / "abs_ok.c"}, cfg);
     REQUIRE_FALSE(findings.empty());
     require_pbsd_never_clean_as_proof(findings);
     for (auto& f : findings) {
         CHECK(f.stage == "pbsd");
         auto via = f.extra.find("via");
-        if (via != f.extra.end() && via->second == "helix.portable")
+        if (via != f.extra.end() && via->second == "prism.portable")
             continue;
         CHECK(f.status == std::string(prism::laws::NOTRUN));
         CHECK(f.status != std::string(prism::laws::CLEAN));
     }
 }
 
-TEST_CASE("pbsd onesided plant is FAILED via helix.portable") {
+TEST_CASE("pbsd onesided plant is FAILED via prism.portable") {
     PbsdEnvGuard env;
     prism::Config cfg = prism::default_config();
     cfg.root = testdata_root();
-    cfg.pbsd_root = std::filesystem::current_path().root_path() / "helix-no-such-paranoidbsd";
+    cfg.pbsd_root = std::filesystem::current_path().root_path() / "prism-no-such-paranoidbsd";
     auto findings = prism::run_pbsd_lints({testdata_root() / "onesided.c"}, cfg);
     REQUIRE_FALSE(findings.empty());
     require_pbsd_never_clean_as_proof(findings);
@@ -954,7 +944,7 @@ TEST_CASE("pbsd onesided plant is FAILED via helix.portable") {
         hit = true;
         CHECK(f.status == std::string(prism::laws::FAILED));
         CHECK(f.stage == "pbsd");
-        CHECK(extra_get(f, "via") == "helix.portable");
+        CHECK(extra_get(f, "via") == "prism.portable");
     }
     CHECK(hit);
 }

@@ -5,9 +5,9 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from helix import laws
-from helix.cparse import extract_functions
-from helix.thread import run_thread
+from prism import laws
+from prism.cparse import extract_functions
+from prism.thread import run_thread
 
 ROOT = Path(__file__).resolve().parents[1]
 TD = ROOT / "testdata"
@@ -109,7 +109,7 @@ class TestThread(unittest.TestCase):
             self.assertFalse([f for f in hits if f.cls == "RACE-SHARED"], msg=stem)
 
     def test_iso_thrd_one_line_not_missing_return(self):
-        from helix.checkers import run_lints
+        from prism.checkers import run_lints
         path = TD / "iso_thread_race.c"
         hits = [f for f in run_lints([path], TD) if f.cls == "CTRL-MISSING-RETURN"]
         names = {f.function for f in hits}

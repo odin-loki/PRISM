@@ -1,4 +1,4 @@
-"""C++ STAGE_ORDER must match Helix. A missing _stage call is a quiet skip."""
+"""C++ STAGE_ORDER must match the Python engine. A missing _stage call is a quiet skip."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from helix.pipeline import STAGE_ORDER, Pipeline
+from prism.pipeline import STAGE_ORDER, Pipeline
 
 ROOT = Path(__file__).resolve().parents[1]
 HPP = ROOT / "include" / "prism" / "pipeline.hpp"
@@ -25,7 +25,7 @@ def _cpp_stage_order() -> list[str]:
     return re.findall(r'"([^"]+)"', m.group(1))
 
 
-def _helix_run_stages() -> list[str]:
+def _prism_run_stages() -> list[str]:
     src = inspect.getsource(Pipeline.run)
     return re.findall(r'(?:self\.)?_stage\(\s*"([^"]+)"', src)
 
@@ -36,19 +36,19 @@ def _cpp_run_stages() -> list[str]:
 
 
 class TestStageOrderContract(unittest.TestCase):
-    def test_helix_matches_cpp_header(self):
+    def test_prism_matches_cpp_header(self):
         cpp = _cpp_stage_order()
         self.assertEqual(list(STAGE_ORDER), cpp)
 
     def test_pipeline_run_invokes_every_stage_in_order(self):
         """A name in STAGE_ORDER that Pipeline.run never calls is skipped quietly."""
-        invoked = _helix_run_stages()
+        invoked = _prism_run_stages()
         self.assertEqual(invoked, list(STAGE_ORDER))
         cpp = _cpp_run_stages()
         self.assertEqual(cpp, list(STAGE_ORDER))
 
-    def test_helix_list_stages_prints_stage_order(self):
-        from helix.__main__ import main
+    def test_prism_list_stages_prints_stage_order(self):
+        from prism.__main__ import main
 
         buf = io.StringIO()
         with patch("sys.stdout", buf):
@@ -58,8 +58,8 @@ class TestStageOrderContract(unittest.TestCase):
 
 
 class TestResumeHelp(unittest.TestCase):
-    def test_helix_help_documents_resume(self):
-        from helix.__main__ import main
+    def test_prism_help_documents_resume(self):
+        from prism.__main__ import main
 
         buf = io.StringIO()
         with patch("sys.stdout", buf), self.assertRaises(SystemExit) as cm:

@@ -1,5 +1,5 @@
 /* Frama-C WP of a pointer postcondition needs a validity model.
-   Helix does not invent a buffer: NEEDS-HARNESS, never unguarded BMC. */
+   PRISM does not invent a buffer: NEEDS-HARNESS, never unguarded BMC. */
 struct wp_cell { int x; };
 
 int wp_ptr_get(struct wp_cell *p) {

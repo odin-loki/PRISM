@@ -1,6 +1,6 @@
 """Infer adapter honesty: missing is NOTRUN; silence is UNKNOWN.
 
-Helix `_run_infer` is STRENGTH_FINDS, never a proof. Present + no `.c`
+Python engine `_run_infer` is STRENGTH_FINDS, never a proof. Present + no `.c`
 is UNKNOWN. `error:` lines are FAILED. `No issues found` / empty output
 is UNKNOWN, never CLEAN or PROVED.
 
@@ -14,9 +14,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from helix import laws
-from helix.adapters_extra import _run_infer, run_optional_tools
-from helix.config import Config
+from prism import laws
+from prism.adapters_extra import _run_infer, run_optional_tools
+from prism.config import Config
 
 EXE = r"C:\tools\infer"
 GCC = r"C:\tools\gcc.exe"
@@ -46,15 +46,15 @@ class TestInferHonesty(unittest.TestCase):
             self.assertFalse(laws.is_proof(f.status), f.status)
 
     def _infer(self, paths, run_side_effect, which=GCC):
-        with mock.patch("helix.adapters_extra.shutil.which", return_value=which), \
-             mock.patch("helix.adapters_extra._run", side_effect=run_side_effect) as run:
+        with mock.patch("prism.adapters_extra.shutil.which", return_value=which), \
+             mock.patch("prism.adapters_extra._run", side_effect=run_side_effect) as run:
             out = _run_infer(EXE, paths, Config())
         return out, run
 
     def test_missing_infer_via_run_optional_tools_is_notrun(self):
-        with mock.patch("helix.adapters_extra.resolve_adapter", side_effect=_no_adapter), \
-             mock.patch("helix.adapters_extra.shutil.which", return_value=None), \
-             mock.patch("helix.adapters_extra._run") as run:
+        with mock.patch("prism.adapters_extra.resolve_adapter", side_effect=_no_adapter), \
+             mock.patch("prism.adapters_extra.shutil.which", return_value=None), \
+             mock.patch("prism.adapters_extra._run") as run:
             findings = run_optional_tools([C_FILE], Config())
         run.assert_not_called()
         infer = next(f for f in findings if f.stage == "infer")
@@ -65,7 +65,7 @@ class TestInferHonesty(unittest.TestCase):
         self._never_proof([infer])
 
     def test_present_no_c_files_is_unknown(self):
-        with mock.patch("helix.adapters_extra._run") as run:
+        with mock.patch("prism.adapters_extra._run") as run:
             out = _run_infer(EXE, [Path("unit.cpp"), Path("hdr.h")], Config())
         run.assert_not_called()
         self.assertEqual(len(out), 1)
@@ -74,8 +74,8 @@ class TestInferHonesty(unittest.TestCase):
         self._never_proof(out)
 
     def test_no_compiler_is_notrun_never_clean(self):
-        with mock.patch("helix.adapters_extra.shutil.which", return_value=None), \
-             mock.patch("helix.adapters_extra._run") as run:
+        with mock.patch("prism.adapters_extra.shutil.which", return_value=None), \
+             mock.patch("prism.adapters_extra._run") as run:
             out = _run_infer(EXE, [C_FILE], Config())
         run.assert_not_called()
         self.assertEqual(out[0].status, laws.NOTRUN)

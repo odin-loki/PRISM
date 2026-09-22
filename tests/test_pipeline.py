@@ -1,4 +1,4 @@
-"""End-to-end Helix on testdata. python -m unittest tests.test_pipeline -v"""
+"""End-to-end the Python engine on testdata. python -m unittest tests.test_pipeline -v"""
 
 from __future__ import annotations
 
@@ -7,10 +7,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from helix import laws
-from helix.config import Config
-from helix.models import RunReport
-from helix.pipeline import STAGE_ORDER, run_pipeline
+from prism import laws
+from prism.config import Config
+from prism.models import RunReport
+from prism.pipeline import STAGE_ORDER, run_pipeline
 
 ROOT = Path(__file__).resolve().parents[1]
 TD = ROOT / "testdata"
@@ -38,7 +38,7 @@ class TestPipeline(unittest.TestCase):
                 self.assertIn(name, STAGE_ORDER)
 
     def test_inventory_empty_tu(self):
-        with tempfile.TemporaryDirectory(prefix="helix_inv_") as td:
+        with tempfile.TemporaryDirectory(prefix="prism_inv_") as td:
             out = Path(td)
             report = run_pipeline(_cfg(out, stages=["inventory", "classify"]))
             inv = next(s for s in report.stages if s.name == "inventory")
@@ -53,7 +53,7 @@ class TestPipeline(unittest.TestCase):
             self.assertEqual(add[0].status, laws.CLEAN)
 
     def test_testdata_crashes_planted_bugs(self):
-        # testdata/ is 1000+ TUs. A full pipeline there is `python -m helix testdata`,
+        # testdata/ is 1000+ TUs. A full pipeline there is `python -m prism testdata`,
         # not a unit test. Copy the planted oracles only.
         planted = (
             "add_overflow.c", "div_param.c", "oob_write.c",
@@ -65,7 +65,7 @@ class TestPipeline(unittest.TestCase):
             "execute", "harness", "wp", "contracts", "taint", "thread",
             "interval",
         ]
-        with tempfile.TemporaryDirectory(prefix="helix_pipe_") as td:
+        with tempfile.TemporaryDirectory(prefix="prism_pipe_") as td:
             root = Path(td) / "src"
             root.mkdir()
             for name in planted:
@@ -102,7 +102,7 @@ class TestPipeline(unittest.TestCase):
                                  if s.name == "fuzz" for f in s.findings))
 
     def test_repair_no_llm_is_notrun_never_clean(self):
-        with tempfile.TemporaryDirectory(prefix="helix_repair_") as td:
+        with tempfile.TemporaryDirectory(prefix="prism_repair_") as td:
             out = Path(td)
             report = run_pipeline(_cfg(out, llm=False, stages=["repair"], skip=[]))
             rec = next(s for s in report.stages if s.name == "repair")
@@ -113,7 +113,7 @@ class TestPipeline(unittest.TestCase):
             self.assertNotEqual(rec.findings[0].status, laws.CLEAN)
 
     def test_execute_without_cex_is_notrun(self):
-        with tempfile.TemporaryDirectory(prefix="helix_exec_") as td:
+        with tempfile.TemporaryDirectory(prefix="prism_exec_") as td:
             out = Path(td)
             report = run_pipeline(_cfg(out, llm=False, stages=["execute"], skip=[]))
             rec = next(s for s in report.stages if s.name == "execute")
@@ -125,7 +125,7 @@ class TestPipeline(unittest.TestCase):
     def test_resume_reuses_ok_stages(self):
         from unittest.mock import patch
 
-        from helix.models import Finding
+        from prism.models import Finding
 
         # Focused resume check: tiny tree + mocked BMC. Do not run testdata.
         bmc_hit = [Finding(
@@ -133,7 +133,7 @@ class TestPipeline(unittest.TestCase):
             line=1, cls="INT-SIGNED-OVF", message="overflow",
             strength=laws.STRENGTH_PROVES,
         )]
-        with tempfile.TemporaryDirectory(prefix="helix_resume_") as td:
+        with tempfile.TemporaryDirectory(prefix="prism_resume_") as td:
             root = Path(td) / "src"
             root.mkdir()
             (root / "add.c").write_text(
@@ -145,11 +145,11 @@ class TestPipeline(unittest.TestCase):
                 fuzz_budget=0.1, fuzz_iters=1, repair_rounds=1,
                 stages=["inventory", "classify", "bmc"], skip=[],
             )
-            with patch("helix.pipeline.run_bmc", return_value=bmc_hit):
+            with patch("prism.pipeline.run_bmc", return_value=bmc_hit):
                 first = run_pipeline(Config(**base))
             bmc = next(s for s in first.stages if s.name == "bmc")
             self.assertEqual(bmc.status, "ok")
-            with patch("helix.pipeline.run_bmc") as mocked:
+            with patch("prism.pipeline.run_bmc") as mocked:
                 second = run_pipeline(Config(**base, resume=True))
             mocked.assert_not_called()
             bmc2 = next(s for s in second.stages if s.name == "bmc")
@@ -172,8 +172,8 @@ class TestPipeline(unittest.TestCase):
             self.assertIsNone(RunReport.load(p))
 
     def test_write_md_keeps_unknown_and_timeout(self):
-        from helix.models import Finding, StageResult
-        from helix.pipeline import _write_md
+        from prism.models import Finding, StageResult
+        from prism.pipeline import _write_md
 
         rec = RunReport(root="x")
         rec.stages.append(StageResult(
@@ -203,8 +203,8 @@ class TestPipeline(unittest.TestCase):
         self.assertNotIn("`PROVED`", text)
 
     def test_write_md_empty_scope_confidence_is_zero_not_na(self):
-        from helix.confidence import apply
-        from helix.pipeline import _write_md
+        from prism.confidence import apply
+        from prism.pipeline import _write_md
 
         rec = RunReport(root="empty")
         rec.visibility = rec.answer = rec.resolution = rec.confidence = 1.0
@@ -221,9 +221,9 @@ class TestPipeline(unittest.TestCase):
     def test_llm_stage_forces_reads_so_it_cannot_cover(self):
         from unittest.mock import patch
 
-        from helix.models import Finding
-        from helix.pipeline import Pipeline, llm_forced_reads
-        from helix.taxonomy import coverage_from_report
+        from prism.models import Finding
+        from prism.pipeline import Pipeline, llm_forced_reads
+        from prism.taxonomy import coverage_from_report
 
         lie = Finding(
             stage="bmc", status=laws.PROVED, file="a.c", function="add",
@@ -242,13 +242,13 @@ class TestPipeline(unittest.TestCase):
         self.assertEqual(forced[0].status, laws.HYPOTHESIS)
         self.assertFalse(laws.is_proof(forced[0].status))
 
-        with tempfile.TemporaryDirectory(prefix="helix_llm_reads_") as td:
+        with tempfile.TemporaryDirectory(prefix="prism_llm_reads_") as td:
             root = Path(td) / "src"
             root.mkdir()
             (root / "add.c").write_text("int add(int x) { return x; }\n", encoding="utf-8")
             out = Path(td) / "out"
             with patch.object(Pipeline, "_engine", return_value=object()), patch(
-                "helix.pipeline.hypothesize", return_value=[lie],
+                "prism.pipeline.hypothesize", return_value=[lie],
             ):
                 report = run_pipeline(Config(
                     root=root, out=out, llm=True, unwind=2,
@@ -269,19 +269,19 @@ class TestPipeline(unittest.TestCase):
     def test_missing_esbmc_pipeline_is_never_a_proof(self):
         from unittest.mock import patch
 
-        from helix.models import Finding
+        from prism.models import Finding
 
         missing = Finding(
             stage="esbmc", status=laws.NOTRUN, file="", function=None,
             line=None, cls="", message="esbmc not found (config, vendored tree, PATH)",
             strength=laws.STRENGTH_FINDS, extra={"install": "build from vendored"},
         )
-        with tempfile.TemporaryDirectory(prefix="helix_esbmc_nr_") as td:
+        with tempfile.TemporaryDirectory(prefix="prism_esbmc_nr_") as td:
             root = Path(td) / "src"
             root.mkdir()
             (root / "add.c").write_text("int add(int x) { return x; }\n", encoding="utf-8")
             out = Path(td) / "out"
-            with patch("helix.pipeline.run_esbmc", return_value=[missing]):
+            with patch("prism.pipeline.run_esbmc", return_value=[missing]):
                 report = run_pipeline(Config(
                     root=root, out=out, llm=False, unwind=2,
                     fuzz_budget=0.1, fuzz_iters=1, repair_rounds=1,
@@ -295,7 +295,7 @@ class TestPipeline(unittest.TestCase):
         self.assertNotEqual(rec.findings[0].status, laws.CLEAN)
 
     def test_unify_clean_is_not_a_proof_and_empty_scope_confidence_zero(self):
-        with tempfile.TemporaryDirectory(prefix="helix_unify_conf_") as td:
+        with tempfile.TemporaryDirectory(prefix="prism_unify_conf_") as td:
             root = Path(td) / "empty"
             root.mkdir()
             out = Path(td) / "out"

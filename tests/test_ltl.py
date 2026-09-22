@@ -11,9 +11,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from helix import laws
-from helix.cparse import extract_functions
-from helix.ltl import (
+from prism import laws
+from prism.cparse import extract_functions
+from prism.ltl import (
     F_BOUND,
     check_safety,
     extract_fsm,
@@ -186,8 +186,8 @@ class TestLTLSafetyApprox(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             spec = Path(td) / "live.ltl"
             spec.write_text("F (state == ST_IDLE)\n", encoding="utf-8")
-            with mock.patch("helix.ltl.strix_available", return_value="/fake/strix"), \
-                 mock.patch("helix.ltl.subprocess.run") as run:
+            with mock.patch("prism.ltl.strix_available", return_value="/fake/strix"), \
+                 mock.patch("prism.ltl.subprocess.run") as run:
                 recs = run_ltl([self.sink_fn], [spec])
         run.assert_not_called()
         self.assertEqual(recs[0].status, laws.NOTRUN)
@@ -341,7 +341,7 @@ class TestExtractFsm(unittest.TestCase):
 
 
 class TestCppParseLtlFileSourceContract(unittest.TestCase):
-    """C++ parse_ltl_file skips # and // the same way Helix does."""
+    """C++ parse_ltl_file skips # and // the same way the Python engine does."""
 
     def test_cpp_parse_ltl_file_skips_hash_and_slash_slash(self):
         src = (ROOT / "src" / "prism" / "stages_rest.cpp").read_text(encoding="utf-8")
@@ -367,7 +367,7 @@ class TestCppParseLtlFileSourceContract(unittest.TestCase):
         self.assertIn("continue", body)
         self.assertNotIn("PROVED", body)
 
-    def test_helix_parse_ltl_file_skips_hash_and_slash_slash(self):
+    def test_prism_parse_ltl_file_skips_hash_and_slash_slash(self):
         py = inspect.getsource(parse_ltl_file)
         self.assertIn('startswith("#")', py)
         self.assertIn('startswith("//")', py)

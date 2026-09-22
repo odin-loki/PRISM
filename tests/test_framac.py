@@ -1,6 +1,6 @@
 """Frama-C EVA adapter: 0 alarms is UNKNOWN, not a proof.
 
-`_run_frama_c` is value analysis (EVA). Helix WP (`helix/wp.py`) is a
+`_run_frama_c` is value analysis (EVA). Python engine WP (`prism/wp.py`) is a
 separate in-tree stage: a closed check is PROVED-ASSUMING. EVA never
 emits PROVED or PROVED-UNBOUNDED. A missing frama-c binary is NOTRUN.
 python -m unittest tests.test_framac
@@ -13,9 +13,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from helix import laws
-from helix.adapters_extra import _run_frama_c, run_optional_tools
-from helix.config import Config
+from prism import laws
+from prism.adapters_extra import _run_frama_c, run_optional_tools
+from prism.config import Config
 
 EXE = r"C:\tools\frama-c.exe"
 C_FILE = Path("planted.c")
@@ -44,12 +44,12 @@ class TestFramaCEVA(unittest.TestCase):
             self.assertFalse(laws.is_proof(f.status), f.status)
 
     def _eva(self, paths, run_side_effect):
-        with mock.patch("helix.adapters_extra._run", side_effect=run_side_effect) as run:
+        with mock.patch("prism.adapters_extra._run", side_effect=run_side_effect) as run:
             out = _run_frama_c(EXE, paths, Config())
         return out, run
 
     def test_no_c_files_is_unknown_never_proved(self):
-        with mock.patch("helix.adapters_extra._run") as run:
+        with mock.patch("prism.adapters_extra._run") as run:
             out = _run_frama_c(EXE, [Path("unit.cpp"), Path("hdr.h")], Config())
         run.assert_not_called()
         self.assertEqual(len(out), 1)
@@ -127,9 +127,9 @@ class TestFramaCEVA(unittest.TestCase):
         self._never_proof(out)
 
     def test_missing_binary_is_notrun_never_proved(self):
-        with mock.patch("helix.adapters_extra.resolve_adapter", side_effect=_no_adapter), \
-             mock.patch("helix.adapters_extra.shutil.which", return_value=None), \
-             mock.patch("helix.adapters_extra._run") as run:
+        with mock.patch("prism.adapters_extra.resolve_adapter", side_effect=_no_adapter), \
+             mock.patch("prism.adapters_extra.shutil.which", return_value=None), \
+             mock.patch("prism.adapters_extra._run") as run:
             findings = run_optional_tools([C_FILE], Config())
         run.assert_not_called()
         frama = next(f for f in findings if f.stage == "frama-c")

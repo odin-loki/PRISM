@@ -3,9 +3,9 @@
 Missing or unusable nvcc (including clang host) is a CMake WARNING NOTRUN,
 never a silent disable that looks CLEAN. src/cuda/mutate.cu overlays the
 same INTERESTING_8 / INTERESTING_16 / INTERESTING_32 tables as host
-havoc.cpp. Helix is law: missing GPU does not invent mutation coverage.
+havoc.cpp. Python engine is law: missing GPU does not invent mutation coverage.
 
-helix/simdmut.py may search build_wsl/libprism_cuda.so. CUDA is not
+prism/simdmut.py may search build_wsl/libprism_cuda.so. CUDA is not
 required at import; GPU failure is a CPU / Python fallback, never CLEAN.
 
 These tests read sources. CUDA may be OFF.
@@ -19,10 +19,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from helix import laws
-from helix.models import Finding, RunReport, StageResult
-from helix.simdmut import _cuda_lib_candidates, _try_preload_cuda, havoc
-from helix.taxonomy import coverage_from_report
+from prism import laws
+from prism.models import Finding, RunReport, StageResult
+from prism.simdmut import _cuda_lib_candidates, _try_preload_cuda, havoc
+from prism.taxonomy import coverage_from_report
 
 ROOT = Path(__file__).resolve().parents[1]
 CMAKE = ROOT / "CMakeLists.txt"
@@ -147,9 +147,9 @@ class TestMutateCuMatchesHostHavoc(unittest.TestCase):
 
 
 class TestMissingGpuNeverCleanCoverage(unittest.TestCase):
-    """Missing GPU/nvcc is Helix NOTRUN. It must not look like CLEAN mutation coverage."""
+    """Missing GPU/nvcc is the Python engine NOTRUN. It must not look like CLEAN mutation coverage."""
 
-    def test_helix_notrun_is_no_answer_not_clean(self):
+    def test_prism_notrun_is_no_answer_not_clean(self):
         self.assertIn(laws.NOTRUN, laws.NO_ANSWER)
         self.assertNotIn(laws.CLEAN, laws.NO_ANSWER)
         self.assertNotEqual(laws.NOTRUN, laws.CLEAN)
@@ -214,7 +214,7 @@ class TestMissingGpuNeverCleanCoverage(unittest.TestCase):
         rows = {r["id"]: r for r in coverage_from_report(rec)}
         self.assertEqual(rows["FUNC-CONTRACT"]["verdict"], "GAP")
         self.assertNotEqual(rows["FUNC-CONTRACT"]["verdict"], "COVERED")
-        # A CLEAN finding from a skipped GPU would still not COVERED, and Helix
+        # A CLEAN finding from a skipped GPU would still not COVERED, and the Python engine
         # forbids treating that skip as CLEAN in the first place.
         self.assertNotEqual(laws.NOTRUN, laws.CLEAN)
         fake_clean = Finding(
@@ -236,11 +236,11 @@ class TestMissingGpuNeverCleanCoverage(unittest.TestCase):
         self.assertFalse(laws.is_proof(fake_clean.status))
 
 
-class TestHelixDoesNotRequireCudaAtImport(unittest.TestCase):
+class TestPRISMDoesNotRequireCudaAtImport(unittest.TestCase):
     """libprism_cuda.so is optional. GPU failure is CPU fallback, never CLEAN."""
 
     def test_simdmut_searches_wsl_cuda_so_but_does_not_import_gpu(self):
-        src = inspect.getsource(__import__("helix.simdmut", fromlist=["havoc"]))
+        src = inspect.getsource(__import__("prism.simdmut", fromlist=["havoc"]))
         self.assertIn("libprism_cuda.so", src)
         self.assertIn("build_wsl", src)
         self.assertNotIn("import cupy", src)
@@ -250,7 +250,7 @@ class TestHelixDoesNotRequireCudaAtImport(unittest.TestCase):
         self.assertIn(ROOT / "build_wsl" / "libprism_cuda.so", cands)
 
     def test_gpu_load_failure_is_cpu_fallback_not_proof(self):
-        with mock.patch("helix.simdmut._cdll", side_effect=OSError("GPU failure")):
+        with mock.patch("prism.simdmut._cdll", side_effect=OSError("GPU failure")):
             self.assertFalse(_try_preload_cuda())
         out = havoc(b"\x00\x01\x02\x03\x04\x05\x06\x07")
         self.assertEqual(len(out), 8)
@@ -260,7 +260,7 @@ class TestHelixDoesNotRequireCudaAtImport(unittest.TestCase):
         self.assertIn(laws.NOTRUN, laws.NO_ANSWER)
 
     def test_simdmut_source_says_gpu_failure_is_cpu_fallback(self):
-        py = (ROOT / "helix" / "simdmut.py").read_text(encoding="utf-8")
+        py = (ROOT / "prism" / "simdmut.py").read_text(encoding="utf-8")
         self.assertIn("GPU", py)
         self.assertIn("CPU fallback", py)
         self.assertIn("not required at import", py)

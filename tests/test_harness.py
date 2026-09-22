@@ -5,12 +5,12 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from helix import laws
-from helix.bmc import HAS_Z3, bmc_function
-from helix.cparse import extract_functions
-from helix.harness import materialize, run_harness_bmc
-from helix.models import FunctionInfo
-from helix.pipeline import STAGE_ORDER
+from prism import laws
+from prism.bmc import HAS_Z3, bmc_function
+from prism.cparse import extract_functions
+from prism.harness import materialize, run_harness_bmc
+from prism.models import FunctionInfo
+from prism.pipeline import STAGE_ORDER
 
 ROOT = Path(__file__).resolve().parents[1]
 TD = ROOT / "testdata"

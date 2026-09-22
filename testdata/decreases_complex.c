@@ -1,4 +1,4 @@
-/* Dafny-shaped decreases that Helix will not encode.
+/* Dafny-shaped decreases that PRISM will not encode.
    Compound measures are ERROR, never PROVED-ASSUMING. */
 int countdown_complex(int n) {
     // requires: n >= 0

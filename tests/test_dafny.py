@@ -1,14 +1,14 @@
 """Dafny adapter: missing is NOTRUN; verify rc=0 is the binary's PROVED.
 
-Helix `run_dafny` is law. A missing dafny binary is NOTRUN (never CLEAN,
+Python engine `run_dafny` is law. A missing dafny binary is NOTRUN (never CLEAN,
 never PROVED). No `.dfy` in scope is also NOTRUN with that message.
 
 A present Dafny that exits 0 is recorded as PROVED — allowed because the
 adapter actually ran — and must never be treated as in-tree BMC
 PROVED-UNBOUNDED. Nonzero is FAILED.
 
-Timeout is asserted only if Helix maps TimeoutExpired (C++ does; Helix
-currently lets it propagate). C++ `run_dafny` should match Helix;
+Timeout is asserted only if the Python engine maps TimeoutExpired (C++ does; Python engine
+currently lets it propagate). C++ `run_dafny` should match the Python engine;
 source-contract is optional.
 
 python -m unittest tests.test_dafny
@@ -23,11 +23,11 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from helix import laws
-from helix.adapters import run_dafny
-from helix.config import Config, adapter_install
-from helix.laws import refuse_merge
-from helix.models import Finding
+from prism import laws
+from prism.adapters import run_dafny
+from prism.config import Config, adapter_install
+from prism.laws import refuse_merge
+from prism.models import Finding
 
 ROOT = Path(__file__).resolve().parents[1]
 _CPP = ROOT / "src" / "prism" / "adapters.cpp"
@@ -66,14 +66,14 @@ class TestDafnyAdapter(unittest.TestCase):
             self.assertFalse(laws.is_proof(f.status), f.status)
 
     def _dafny(self, paths, run_side_effect, exe=EXE):
-        with mock.patch("helix.adapters.resolve_adapter", return_value=exe), \
-             mock.patch("helix.adapters.subprocess.run", side_effect=run_side_effect) as run:
+        with mock.patch("prism.adapters.resolve_adapter", return_value=exe), \
+             mock.patch("prism.adapters.subprocess.run", side_effect=run_side_effect) as run:
             out = run_dafny(paths, Config())
         return out, run
 
     def test_missing_dafny_is_notrun_never_clean_never_proved(self):
-        with mock.patch("helix.adapters.resolve_adapter", side_effect=_no_adapter), \
-             mock.patch("helix.adapters.subprocess.run") as run:
+        with mock.patch("prism.adapters.resolve_adapter", side_effect=_no_adapter), \
+             mock.patch("prism.adapters.subprocess.run") as run:
             findings = run_dafny([Path("spec.dfy")], Config())
         run.assert_not_called()
         self.assertEqual(len(findings), 1)
@@ -90,9 +90,9 @@ class TestDafnyAdapter(unittest.TestCase):
         self._never_clean_or_proved(findings)
 
     def test_present_no_dfy_files_is_notrun_message(self):
-        # Helix: present binary, zero .dfy in scope → NOTRUN, that message.
-        with mock.patch("helix.adapters.resolve_adapter", return_value=EXE), \
-             mock.patch("helix.adapters.subprocess.run") as run:
+        # Python engine: present binary, zero .dfy in scope → NOTRUN, that message.
+        with mock.patch("prism.adapters.resolve_adapter", return_value=EXE), \
+             mock.patch("prism.adapters.subprocess.run") as run:
             out = run_dafny([Path("unit.cpp"), Path("hdr.h")], Config())
         run.assert_not_called()
         self.assertEqual(len(out), 1)
@@ -112,7 +112,7 @@ class TestDafnyAdapter(unittest.TestCase):
         self._never_clean_or_proved(empty)
 
     def test_verify_rc0_is_proved_not_proved_unbounded(self):
-        # Helix records the Dafny binary's claim: rc=0 → PROVED. Allowed
+        # Python engine records the Dafny binary's claim: rc=0 → PROVED. Allowed
         # because Dafny ran. Must not be treated as BMC PROVED-UNBOUNDED.
         with tempfile.TemporaryDirectory() as td:
             dfy = Path(td) / "spec.dfy"
@@ -161,10 +161,10 @@ class TestDafnyAdapter(unittest.TestCase):
         self.assertNotEqual(f.status, laws.CLEAN)
         self.assertFalse(laws.is_proof(f.status))
 
-    def test_timeout_if_helix_maps_it(self):
+    def test_timeout_if_prism_maps_it(self):
         src = inspect.getsource(run_dafny)
         if "TimeoutExpired" not in src:
-            self.skipTest("Helix run_dafny does not map TimeoutExpired")
+            self.skipTest("Python engine run_dafny does not map TimeoutExpired")
 
         def boom(*_a, **_k):
             raise subprocess.TimeoutExpired(EXE, 60)
@@ -205,7 +205,7 @@ class TestDafnyAdapter(unittest.TestCase):
         self.assertEqual((f.extra or {}).get("install"), adapter_install("dafny"))
         self._never_clean_or_proved(out)
 
-    def test_cpp_run_dafny_matches_helix_mappings(self):
+    def test_cpp_run_dafny_matches_prism_mappings(self):
         stub = _cpp_between(
             "std::vector<Finding> run_dafny(",
             "std::vector<Finding> run_sanitize(",

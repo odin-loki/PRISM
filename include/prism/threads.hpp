@@ -11,7 +11,7 @@ namespace prism {
 // ISO C++ threads (std::jthread). Not POSIX pthread_* and not MinGW winpthreads.
 inline int clamp_jobs(int jobs) {
     unsigned hc = std::max(1u, std::thread::hardware_concurrency());
-    // Helix: --jobs 0 (and default) is cpu/2, never "use every core".
+    // Python engine: --jobs 0 (and default) is cpu/2, never "use every core".
     if (jobs <= 0) return static_cast<int>(std::max(1u, hc / 2));
     return std::max(1, std::min(jobs, static_cast<int>(hc)));
 }
