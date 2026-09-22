@@ -14,16 +14,18 @@ ROOT = Path(__file__).resolve().parents[1]
 TD = ROOT / "testdata"
 
 
-def load(name: str):
-    for p in list(TD.glob("*.c")) + list(TD.glob("*.cpp")):
+def load(name: str, file: str | None = None):
+    """First function called *name* in sorted testdata (or only in *file*)."""
+    paths = [TD / file] if file else sorted(TD.glob("*.c")) + sorted(TD.glob("*.cpp"))
+    for p in paths:
         for f in extract_functions(p, str(p)):
             if f.name == name:
                 return f, p
     raise AssertionError(name)
 
 
-def bmc(name: str, unwind: int = 8):
-    f, p = load(name)
+def bmc(name: str, unwind: int = 8, file: str | None = None):
+    f, p = load(name, file)
     enums = extract_enums(p.read_text(encoding="utf-8"))
     return bmc_function(f, unwind, enums=enums), f, p
 
@@ -1328,7 +1330,8 @@ class TestLocalPointerHarness(unittest.TestCase):
             )
 
     def test_spawn_ok_still_proves(self):
-        r, _, _ = bmc("spawn_ok")
+        # testdata/spawn_api.c also has a spawn_ok (posix_spawn, NEEDS-HARNESS).
+        r, _, _ = bmc("spawn_ok", file="proc_spawn.c")
         self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
         self.assertNotEqual(r.status, laws.ERROR, r.message)
         self.assertIn(r.status, {laws.PROVED, laws.PROVED_UNBOUNDED}, r.message)

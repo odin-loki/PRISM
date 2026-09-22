@@ -94,10 +94,21 @@ class TestPipeline(unittest.TestCase):
             self.assertIn("llm", skipped)
             self.assertIn("repair", skipped)
             opt = next(s for s in report.stages if s.name == "optional")
-            self.assertEqual(opt.status, "NOTRUN")
-            self.assertIn("klee", opt.detail.lower())
             self.assertGreaterEqual(opt.records, 8)
-            self.assertIn("spatch", opt.detail.lower())
+            missing = [f for f in opt.findings if f.status == laws.NOTRUN]
+            if len(missing) == len(opt.findings):
+                # Nothing installed: the stage itself is NOTRUN and names the tools.
+                self.assertEqual(opt.status, "NOTRUN")
+                self.assertIn("klee", opt.detail.lower())
+                self.assertIn("spatch", opt.detail.lower())
+            else:
+                # Some optional tool is on this machine (e.g. clang-tidy); the
+                # missing ones are still written down, never dropped.
+                self.assertEqual(opt.status, "ok")
+                self.assertTrue(all(f.extra.get("install") for f in missing))
+            self.assertFalse(any(f.status == laws.CLEAN and not f.function
+                                 and "not a proof" not in f.message
+                                 for f in opt.findings))
             self.assertFalse(any(laws.is_proof(f.status) for s in report.stages
                                  if s.name == "fuzz" for f in s.findings))
 

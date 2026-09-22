@@ -37,7 +37,13 @@ def _strip_comments(src: str) -> str:
 
 
 def _brace_body(src: str, sig: str) -> str:
+    """Body of the first *definition* of sig (forward declarations are skipped)."""
     i = src.find(sig)
+    while i >= 0:
+        brace, semi = src.find("{", i), src.find(";", i)
+        if brace >= 0 and (semi < 0 or brace < semi):
+            break
+        i = src.find(sig, i + len(sig))
     if i < 0:
         raise AssertionError(f"missing {sig!r} in {STAGES_REST.name}")
     brace = src.find("{", i)
