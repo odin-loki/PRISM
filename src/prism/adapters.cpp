@@ -3,6 +3,7 @@
 #include "prism/regex.hpp"
 #include "prism/config.hpp"
 #include "prism/cparse.hpp"
+#include "proc.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -2185,6 +2186,12 @@ std::vector<Finding> run_pbsd_lints(const std::vector<fs::path>& paths, const Co
         f.extra["ported"] = ported;
     }
     return out;
+}
+
+detail::ProcOut detail::run_process(const std::vector<std::string>& args, double timeout_s,
+                                    const fs::path& cwd) {
+    auto r = run_argv(args, timeout_s, cwd);
+    return {std::move(r.text), r.rc, r.timed_out, r.failed};
 }
 
 }  // namespace prism

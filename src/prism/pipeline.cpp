@@ -280,6 +280,7 @@ RunReport run_pipeline(const Config& cfg) {
     stage("pbsd", [&] { return run_pbsd_lints(sources, cfg); });
     stage("sanitize", [&] { return run_sanitize(sources, cfg); });
     stage("optional", [&] { return run_optional_tools(sources, cfg); });
+    stage("polyglot", [&] { return run_polyglot(cfg.root, cfg); });
     stage("esbmc", [&] { return run_esbmc(sources, cfg); });
     stage("dafny", [&] { return run_dafny(sources, cfg); });
     stage("contracts", [&] { return prove_contracts(functions, cfg.unwind); });

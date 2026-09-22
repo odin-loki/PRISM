@@ -611,6 +611,16 @@ const std::vector<TaxonomyClass>& taxonomy_classes() {
         {"CRYPTO-SRAND", "srand(time()) seeds PRNG from clock", {330}, {{"lints", "FINDS"}}},
         {"TAINT-SINK", "untrusted input reaches dangerous sink", {78, 134}, {{"taint", "FINDS"}}},
         {"RACE-SHARED", "unsynchronized write to shared global", {362, 366}, {{"thread", "FINDS"}}},
+        {"SYNTAX-ERROR", "source does not parse", {}, {{"polyglot", "FINDS"}}},
+        {"TYPE-ERROR", "static type error", {}, {{"polyglot", "FINDS"}}},
+        {"LANG-LINT", "language linter diagnostic", {}, {{"polyglot", "FINDS"}}},
+        {"VCS-CONFLICT-MARKER", "unresolved merge conflict marker", {}, {{"polyglot", "FINDS"}}},
+        {"SECRET-PRIVATE-KEY", "private key committed in source", {321}, {{"polyglot", "FINDS"}}},
+        {"SECRET-AWS-KEY", "AWS access key committed in source", {798}, {{"polyglot", "FINDS"}}},
+        {"SECRET-GITHUB-TOKEN", "GitHub token committed in source", {798}, {{"polyglot", "FINDS"}}},
+        {"SECRET-SLACK-TOKEN", "Slack token committed in source", {798}, {{"polyglot", "FINDS"}}},
+        {"SECRET-GOOGLE-API-KEY", "Google API key committed in source", {798}, {{"polyglot", "FINDS"}}},
+        {"SECRET-STRIPE-KEY", "Stripe live key committed in source", {798}, {{"polyglot", "FINDS"}}},
     };
     return C;
 }

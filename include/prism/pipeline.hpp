@@ -12,7 +12,7 @@ namespace prism {
 
 inline constexpr const char* STAGE_ORDER[] = {
     "inventory", "classify", "lints", "taint", "thread", "interval",
-    "warnings", "cppcheck", "pbsd", "sanitize", "optional", "esbmc",
+    "warnings", "cppcheck", "pbsd", "sanitize", "optional", "polyglot", "esbmc",
     "dafny", "contracts", "wp", "bmc", "harness", "concolic", "fuzz", "diff",
     "rapid", "muttest", "ltl", "llm", "execute", "repair", "unify", nullptr};
 

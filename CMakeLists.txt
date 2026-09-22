@@ -94,6 +94,7 @@ set(PRISM_SRC
   src/prism/laws.cpp
   src/prism/models.cpp
   src/prism/pipeline.cpp
+  src/prism/polyglot.cpp
   src/prism/regex.cpp
   src/prism/stages_rest.cpp
   src/prism/taxonomy.cpp

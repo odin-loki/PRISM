@@ -27,6 +27,7 @@ from prism.concolic import run_concolic
 from prism.models import Finding, FunctionInfo, RunReport, StageResult
 from prism.muttest import run_muttest
 from prism.pbsd import run_pbsd_lints
+from prism.polyglot import run_polyglot
 from prism.rapid import run_rapid
 from prism.sanitize import run_sanitize
 from prism.taint import run_taint
@@ -47,6 +48,7 @@ STAGE_ORDER = [
     "pbsd",
     "sanitize",
     "optional",
+    "polyglot",
     "esbmc",
     "dafny",
     "contracts",
@@ -228,6 +230,7 @@ class Pipeline:
         self._stage("pbsd", lambda: run_pbsd_lints(sources, cfg))
         self._stage("sanitize", lambda: run_sanitize(sources, cfg))
         self._stage("optional", lambda: run_optional_tools(sources, cfg))
+        self._stage("polyglot", lambda: run_polyglot(root, cfg))
         self._stage("esbmc", lambda: run_esbmc(sources, cfg))
         self._stage("dafny", lambda: run_dafny(sources, cfg))
 

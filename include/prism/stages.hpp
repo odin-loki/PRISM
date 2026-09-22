@@ -30,6 +30,10 @@ std::vector<Finding> run_sanitize(const std::vector<std::filesystem::path>& path
                                   const Config& cfg);
 std::vector<Finding> run_optional_tools(const std::vector<std::filesystem::path>& paths,
                                         const Config& cfg);
+// Every language in the tree (prism/polyglot.py): built-in conflict-marker /
+// credential scan plus per-language syntax, lint and type tools.
+std::vector<std::filesystem::path> iter_polyglot_sources(const std::filesystem::path& root);
+std::vector<Finding> run_polyglot(const std::filesystem::path& root, const Config& cfg);
 std::vector<Finding> run_esbmc(const std::vector<std::filesystem::path>& paths,
                                const Config& cfg);
 std::vector<Finding> run_dafny(const std::vector<std::filesystem::path>& paths,
