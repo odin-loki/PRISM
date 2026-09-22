@@ -2,7 +2,7 @@
 
 **PRISM** = Performance, Regression, Integration and Security Module.
 
-> The name is **PRISM**. The old name (Helix) is retired — see [CLAUDE.md](CLAUDE.md).
+> The name is **PRISM** (an earlier name is retired) — see [CLAUDE.md](CLAUDE.md).
 > PRISM ships two engines with the same stages and laws: the C++23 engine
 > (`src/prism`, binary `prism`) and the Python engine (package `prism/`,
 > `python -m prism PATH`).

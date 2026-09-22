@@ -63,6 +63,11 @@ const std::set<std::string> kSkipDirs = {
 constexpr std::uintmax_t MAX_FILE_BYTES = 2'000'000;
 constexpr std::size_t MAX_FILES_PER_TOOL = 2000;
 constexpr std::size_t BATCH = 200;
+#ifdef _WIN32
+const char* const DEVNULL = "nul";
+#else
+const char* const DEVNULL = "/dev/null";
+#endif
 
 // Byte-for-byte the Python engine SYNTAX_HELPER.
 const char* const SYNTAX_HELPER = R"PRISMPY(
@@ -142,7 +147,8 @@ const std::vector<PgCheck>& checks() {
         {"python-types", {"python"}, "type",
          {{"mypy", {"mypy"},
            {"{exe}", "--ignore-missing-imports", "--no-error-summary", "--show-column-numbers",
-            "--no-color-output", "--no-incremental", "{files}"},
+            "--no-color-output", "--no-incremental", "--cache-dir={devnull}",
+            "{files}"},
            R"(^(?P<file>.+?):(?P<line>\d+):(?:(?P<col>\d+):)? (?P<sev>error): (?P<msg>.+?)(?:\s+\[(?P<rule>[\w-]+)\])?$)",
            false, {0, 1}, 600.0}},
          "pip install mypy"},
@@ -385,6 +391,8 @@ std::vector<std::string> expand(const PgTool& tool, const std::string& exe,
         if (a == "{exe}") cmd.push_back(exe);
         else if (a == "{helper}") cmd.push_back(helper);
         else if (a == "{files}" || a == "{file}") cmd.insert(cmd.end(), files.begin(), files.end());
+        else if (auto k = a.find("{devnull}"); k != std::string::npos)
+            cmd.push_back(a.substr(0, k) + DEVNULL + a.substr(k + 9));
         else cmd.push_back(a);
     }
     return cmd;

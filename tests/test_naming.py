@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -22,6 +23,21 @@ def _skip_dir(name: str) -> bool:
 
 
 def _tracked_files():
+    """Files git tracks or would track (ignored caches excluded); walk if no git."""
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(ROOT), "ls-files", "--cached", "--others", "--exclude-standard"],
+            capture_output=True, text=True, check=True,
+        ).stdout.splitlines()
+    except (OSError, subprocess.CalledProcessError):
+        out = None
+    if out is not None:
+        for rel in out:
+            p = ROOT / rel
+            if p.parts[len(ROOT.parts)] in SKIP_DIRS or p in ALLOWED or not p.is_file():
+                continue
+            yield p
+        return
     for dirpath, dirnames, filenames in os.walk(ROOT):
         dirnames[:] = [d for d in dirnames if not _skip_dir(d)]
         for name in filenames:

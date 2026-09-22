@@ -148,7 +148,8 @@ CHECKS: tuple[Check, ...] = (
     Check("python-types", ("python",), "type", (
         Tool("mypy", ("mypy",), ("{exe}", "--ignore-missing-imports", "--no-error-summary",
                                  "--show-column-numbers", "--no-color-output",
-                                 "--no-incremental", "{files}"),
+                                 "--no-incremental", "--cache-dir={devnull}",
+                                 "{files}"),
              r"^(?P<file>.+?):(?P<line>\d+):(?:(?P<col>\d+):)? (?P<sev>error): (?P<msg>.+?)(?:\s+\[(?P<rule>[\w-]+)\])?$",
              timeout=600.0),
     ), "pip install mypy"),
@@ -328,7 +329,7 @@ def _expand(tool: Tool, exe: str, files: list[str], helper: str = "") -> list[st
         elif a in {"{files}", "{file}"}:
             cmd.extend(files)
         else:
-            cmd.append(a)
+            cmd.append(a.replace("{devnull}", os.devnull))
     return cmd
 
 
