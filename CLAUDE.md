@@ -43,6 +43,20 @@ that parity, so when you change one engine, change the other.
 
 Status vocabulary lives in `prism/laws.py` and `include/prism/laws.hpp`.
 
+## Adding a check
+
+- New C/C++ lint: `prism/checkers.py` + `src/prism/checkers_*.cpp`, and a
+  taxonomy class in both `prism/taxonomy.py` and `src/prism/taxonomy.cpp`.
+- New language or linter: add a `Check`/`Tool` row to `prism/polyglot.py`
+  **and** the same row to `src/prism/polyglot.cpp`; `tests/test_polyglot.py`
+  fails if the tables drift. Output parsing is one regex with named groups
+  `file line col sev rule msg`.
+- New stage: `prism/pipeline.py:STAGE_ORDER` and `include/prism/pipeline.hpp`
+  in the same position, called from both `Pipeline.run` and `run_pipeline`.
+- Reports: `report.json`, `report.md`, `report.sarif` (`prism/sarif.py`,
+  `src/prism/sarif.cpp`). `tests/test_sarif.py` runs both engines on one tree
+  and compares the SARIF when a C++ binary is available (`PRISM_BIN`).
+
 ## Build and test
 
 ```
@@ -50,7 +64,7 @@ cmake -B build -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
   -DPRISM_CUDA=OFF -DPRISM_LLAMA=OFF -DPRISM_QT=OFF -DPRISM_Z3=ON
 cmake --build build          # first build compiles vendored Z3 (slow)
 ./build/prism_tests
-python -m pytest tests       # the full suite is slow (tens of minutes)
+PRISM_BIN=build/prism python -m pytest tests   # ~10 minutes; PRISM_BIN enables engine parity
 ```
 
 `third_party/` is vendored source (copied trees, not submodules). Never
@@ -65,3 +79,5 @@ rewrite it, never glob it from CMake.
 - `testdata/` planted-bug corpus both engines run on
 - `docs/PLAN.md` pipeline design; `docs/MINED.md` what was mined from each tool
 - `tools/` one-shot generators; `scripts/` local build/smoke helpers
+- `.github/workflows/ci.yml` builds the C++ engine, runs both suites, and
+  uploads a SARIF self-check of this repo

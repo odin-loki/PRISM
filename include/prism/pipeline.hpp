@@ -6,6 +6,7 @@
 
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace prism {
@@ -21,5 +22,16 @@ PRISM_API void write_report_md(const RunReport& report, const std::filesystem::p
 PRISM_API void apply_confidence(RunReport& report);
 // llm stage is READS. A lying backend cannot COVER or prove.
 PRISM_API std::vector<Finding> llm_forced_reads(std::vector<Finding> findings);
+
+// Same version string as the Python engine (prism/__init__.py __version__).
+inline constexpr const char* PRISM_VERSION = "0.1.0";
+
+// SARIF 2.1.0 (src/prism/sarif.cpp, prism/sarif.py). Only FAILED/CRASH/SANFAIL
+// become results; HYPOTHESIS is a note; NOTRUN/failed stages are
+// tool execution notifications.
+PRISM_API std::string to_sarif(const RunReport& report);
+PRISM_API void write_sarif(const RunReport& report, const std::filesystem::path& path);
+// --fail-on never|defect|gap. 2 = a stage crashed, 1 = policy tripped, else 0.
+PRISM_API int exit_code(const RunReport& report, std::string_view fail_on);
 
 }  // namespace prism

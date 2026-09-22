@@ -9,6 +9,7 @@ from pathlib import Path
 
 from prism.config import Config
 from prism.pipeline import STAGE_ORDER, run_pipeline
+from prism.sarif import FAIL_ON, exit_code
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -34,6 +35,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--tool", action="append", default=[], metavar="NAME=PATH",
                    help="explicit adapter binary (searched before vendored/PATH)")
     p.add_argument("--list-stages", action="store_true")
+    p.add_argument("--fail-on", choices=FAIL_ON, default="never",
+                   help="exit 1 on: defect (any FAILED/CRASH/SANFAIL finding) or gap "
+                        "(defect, or anything NOTRUN/ERROR/TIMEOUT). A crashed stage is exit 2.")
     args = p.parse_args(argv)
 
     if args.list_stages:
@@ -77,7 +81,7 @@ def main(argv: list[str] | None = None) -> int:
     report = run_pipeline(cfg)
     print(f"confidence {report.confidence}  "
           f"(vis {report.visibility} x ans {report.answer} x res {report.resolution})")
-    print(f"report {cfg.out / 'report.md'}")
+    print(f"report {cfg.out / 'report.md'}  (sarif {cfg.out / 'report.sarif'})")
     notrun = [s for s in report.stages if s.status == "NOTRUN"]
     if notrun:
         print("NOTRUN:")
@@ -88,9 +92,7 @@ def main(argv: list[str] | None = None) -> int:
     failed.sort(key=lambda f: (0 if f.status == "CRASH" else 1, f.stage, f.file or ""))
     for f in failed[:30]:
         print(f"  {f.status:12} {f.stage:10} {f.file}:{f.line} {f.function} {f.message}")
-    if any(s.status == "failed" for s in report.stages):
-        return 2
-    return 0
+    return exit_code(report, args.fail_on)
 
 
 if __name__ == "__main__":

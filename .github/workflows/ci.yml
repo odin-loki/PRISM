@@ -1,0 +1,86 @@
+name: PRISM CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  cpp:
+    name: C++ engine (build + prism_tests)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: sudo apt-get update && sudo apt-get install -y ninja-build clang ccache
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-${{ runner.os }}-${{ hashFiles('CMakeLists.txt', 'third_party/z3/CMakeLists.txt') }}-${{ github.sha }}
+          restore-keys: ccache-${{ runner.os }}-${{ hashFiles('CMakeLists.txt', 'third_party/z3/CMakeLists.txt') }}-
+      - name: Configure
+        run: >
+          cmake -B build -G Ninja
+          -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          -DPRISM_CUDA=OFF -DPRISM_LLAMA=OFF -DPRISM_QT=OFF -DPRISM_Z3=ON
+      - name: Build
+        run: cmake --build build
+      - name: prism_tests
+        run: ./build/prism_tests
+      - uses: actions/upload-artifact@v4
+        with:
+          name: prism-linux
+          path: |
+            build/prism
+            build/libprism_native.so
+          retention-days: 7
+
+  python:
+    name: Python engine (pytest) + engine parity
+    runs-on: ubuntu-24.04
+    needs: cpp
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install test deps and the linters the polyglot stage drives
+        run: |
+          sudo apt-get update && sudo apt-get install -y shellcheck clang
+          python -m pip install --upgrade pip
+          python -m pip install pytest z3-solver ruff mypy yamllint
+      - uses: actions/download-artifact@v4
+        with:
+          name: prism-linux
+          path: build
+      - name: pytest
+        env:
+          PRISM_BIN: ${{ github.workspace }}/build/prism
+        run: |
+          chmod +x build/prism
+          python -m pytest -q tests
+
+  selfcheck:
+    name: PRISM on PRISM (SARIF artifact, not gating)
+    runs-on: ubuntu-24.04
+    needs: cpp
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: prism-linux
+          path: build
+      - name: Polyglot + lints over the repo
+        run: |
+          chmod +x build/prism
+          ./build/prism . --no-llm --stage inventory,lints,polyglot --out prism-out-self || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: prism-self-report
+          path: |
+            prism-out-self/report.md
+            prism-out-self/report.sarif
+          retention-days: 14

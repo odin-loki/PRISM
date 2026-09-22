@@ -3399,7 +3399,7 @@ struct PathGuard {
 TEST_CASE("polyglot builtin scan finds conflict markers and secrets") {
     PolyTree t;
     t.put("a.c", "<<<<<<< HEAD\nint x;\n=======\nint y;\n>>>>>>> b\n");
-    t.put("k.ini", "aws = AKIAABCDEFGHIJKLMNOP\n");
+    t.put("k.ini", "aws = AKIAABCDEFGHIJKLMNOP\n");  // prism:allow
     t.put("node_modules/skip.js", "<<<<<<< never scanned\n");
     auto cfg = prism::default_config();
     cfg.root = t.dir;

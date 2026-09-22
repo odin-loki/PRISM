@@ -369,6 +369,7 @@ RunReport run_pipeline(const Config& cfg) {
     apply_confidence(report);
     report.save(cfg.out / "report.json");
     write_report_md(report, cfg.out / "report.md");
+    write_sarif(report, cfg.out / "report.sarif");
     return report;
 }
 

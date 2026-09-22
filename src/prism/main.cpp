@@ -192,6 +192,7 @@ int main(int argc, char** argv) {
     using namespace prism;
     auto cfg = default_config();
     std::string path = "testdata";
+    std::string fail_on = "never";
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         auto next = [&]() -> std::string {
@@ -212,6 +213,13 @@ int main(int argc, char** argv) {
         else if (a == "--fuzz-iters") cfg.fuzz_iters = std::stoi(next());
         else if (a == "--repair-rounds") cfg.repair_rounds = std::stoi(next());
         else if (a == "--jobs" || a == "-j") cfg.jobs = std::stoi(next());
+        else if (a == "--fail-on") {
+            fail_on = next();
+            if (fail_on != "never" && fail_on != "defect" && fail_on != "gap") {
+                std::cerr << "--fail-on expects never|defect|gap\n";
+                return 2;
+            }
+        }
         else if (a == "--tool") {
             auto spec = next();
             auto eq = spec.find('=');
@@ -223,12 +231,15 @@ int main(int argc, char** argv) {
                 "prism PATH [--gui] [--no-llm] [--jobs N] [--tool NAME=PATH]\n"
                 "           [--stage a,b] [--skip a,b] [--out DIR] [--resume] [--unwind N]\n"
                 "           [--fuzz-budget N] [--fuzz-iters N] [--repair-rounds N]\n"
-                "           [--list-stages]\n"
+                "           [--list-stages] [--fail-on never|defect|gap]\n"
                 "PRISM = Performance, Regression, Integration and Security Module\n"
                 "C++23 hybrid pipeline: lints, BMC, fuzz, LTL, Qwen 3.5 9B.\n"
                 "Threads are ISO C++ std::jthread (not MinGW winpthreads).\n"
                 "Adapter search: --tool, then third_party/<name>/ if built, then PATH.\n"
-                "--resume reuses ok/NOTRUN stages from --out/stages.jsonl (report.json fallback).\n";
+                "--resume reuses ok/NOTRUN stages from --out/stages.jsonl (report.json fallback).\n"
+                "--fail-on: exit 1 on defect (FAILED/CRASH/SANFAIL) or gap (defect, or\n"
+                "  anything NOTRUN/ERROR/TIMEOUT). A crashed stage is exit 2.\n"
+                "Writes report.json, report.md and report.sarif (SARIF 2.1.0) under --out.\n";
             return 0;
         } else if (!a.starts_with("-")) {
             path = a;
@@ -244,7 +255,8 @@ int main(int argc, char** argv) {
     std::cout << "confidence " << report.confidence
               << "  (vis " << report.visibility << " x ans " << report.answer
               << " x res " << report.resolution << ")\n";
-    std::cout << "report " << (cfg.out / "report.md").string() << "\n";
+    std::cout << "report " << (cfg.out / "report.md").string() << "  (sarif "
+              << (cfg.out / "report.sarif").string() << ")\n";
     for (auto& s : report.stages) {
         if (s.status == "NOTRUN") {
             static bool hdr = false;
@@ -272,7 +284,5 @@ int main(int argc, char** argv) {
                   << (f->line ? *f->line : 0) << " "
                   << (f->function ? *f->function : "") << " " << f->message << "\n";
     }
-    for (auto& s : report.stages)
-        if (s.status == "failed") return 2;
-    return 0;
+    return exit_code(report, fail_on);
 }

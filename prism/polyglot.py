@@ -227,6 +227,10 @@ BUILTIN_SCANS: tuple[tuple[str, str, str], ...] = (
 
 _BUILTIN_RX = [(cls, re.compile(rx), msg) for cls, rx, msg in BUILTIN_SCANS]
 
+# A line carrying this marker is a deliberate fixture (e.g. a fake key in a
+# test); the built-in scan skips it. Same marker in the C++ engine.
+ALLOW_MARKER = "prism:allow"
+
 
 def _skip_dir(name: str) -> bool:
     return name in SKIP_DIRS or name.startswith(("prism-out", "build"))
@@ -284,6 +288,8 @@ def builtin_scan(files: list[Path], root: Path) -> list[Finding]:
         scanned += 1
         rel = _rel(p, root)
         for i, line in enumerate(text.splitlines(), 1):
+            if ALLOW_MARKER in line:
+                continue
             for cls, rx, msg in _BUILTIN_RX:
                 if rx.search(line):
                     out.append(_finding(laws.FAILED, rel, i, cls, msg, tool="prism-builtin"))

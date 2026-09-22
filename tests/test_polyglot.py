@@ -102,13 +102,18 @@ class TestBuiltinScan(unittest.TestCase):
 
     def test_secrets(self):
         out = _run({
-            "k.ini": "aws = AKIAABCDEFGHIJKLMNOP\n",
-            "id_rsa.conf": "-----BEGIN RSA PRIVATE KEY-----\n",
+            "k.ini": "aws = AKIAABCDEFGHIJKLMNOP\n",  # prism:allow
+            "id_rsa.conf": "-----BEGIN RSA PRIVATE KEY-----\n",  # prism:allow
             "t.env": "TOKEN=ghp_" + "a" * 36 + "\n",
         })
         found = {f.cls for f in out if f.status == laws.FAILED}
         self.assertLessEqual({"SECRET-AWS-KEY", "SECRET-PRIVATE-KEY", "SECRET-GITHUB-TOKEN"},
                              found)
+
+    def test_allow_marker_skips_line(self):
+        out = _run({"k.py": 'KEY = "AKIAABCDEFGHIJKLMNOP"  # prism:allow\n'})
+        self.assertFalse([f for f in out if f.cls.startswith("SECRET-")])
+        self.assertIn(f'"{pg.ALLOW_MARKER}"', CPP)
 
     def test_nothing_found_is_clean_not_proof(self):
         out = pg.builtin_scan([], Path("."))

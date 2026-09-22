@@ -63,6 +63,11 @@ loaders — the *finding* vocabulary does not care which loader answered.
 3  taint/thread  CodeQL-shaped sinks; unsynchronized globals
 3b interval      path-sensitive integer ranges (FAILED is not a proof)
 4  adapters      cppcheck / clang / esbmc / dafny / cbmc / semgrep / infer / frama-c if on PATH
+4b polyglot      every non-C language: syntax (python/json/toml helper, node, bash, gofmt,
+                 ruby, php, perl, luac), linters (ruff|pyflakes, eslint, shellcheck,
+                 clippy, yamllint), types (mypy, tsc); built-in conflict-marker and
+                 leaked-credential scan over every text file. Missing tool is NOTRUN;
+                 silent tool is UNKNOWN; syntax-broken files are kept from type checkers
 5  contracts     Dafny-style + ACSL specs (PROVED-ASSUMING under requires)
 5b wp            in-tree Frama-C WP after contracts (`prism/wp.py`); closed is PROVED-ASSUMING — see docs/MINED.md
 6  bmc           k-induction + incremental BMC via Z3 (ESBMC method);
@@ -124,6 +129,7 @@ loaders — the *finding* vocabulary does not care which loader answered.
 9  execute       concrete cex replay + OpenCodeInterpreter sandbox
 10 repair        RLEF: patch → run → score → keep best, budget-bounded
 11 unify         report + confidence product + taxonomy coverage
+                 (report.json, report.md, report.sarif; --fail-on never|defect|gap)
 ```
 
 Each stage writes `prism-out/stages.jsonl`. The GUI tails it. `--resume` skips stages already

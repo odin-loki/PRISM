@@ -212,6 +212,10 @@ const std::vector<PgCheck>& checks() {
     return C;
 }
 
+// A line carrying this marker is a deliberate fixture (e.g. a fake key in a
+// test); the built-in scan skips it. Same marker as prism/polyglot.py.
+const char* const ALLOW_MARKER = "prism:allow";
+
 struct BuiltinScan {
     const char* cls;
     const char* pattern;
@@ -354,6 +358,7 @@ std::vector<Finding> builtin_scan(const std::vector<fs::path>& files, const fs::
         while (std::getline(in, line)) {
             ++n;
             if (!line.empty() && line.back() == '\r') line.pop_back();
+            if (line.find(ALLOW_MARKER) != std::string::npos) continue;
             for (auto& [scan, re] : rx)
                 if (re.search(line))
                     out.push_back(pg_finding(laws::FAILED, r, n, scan->cls, scan->message,

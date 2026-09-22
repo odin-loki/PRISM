@@ -29,6 +29,7 @@ from prism.muttest import run_muttest
 from prism.pbsd import run_pbsd_lints
 from prism.polyglot import run_polyglot
 from prism.rapid import run_rapid
+from prism.sarif import write_sarif
 from prism.sanitize import run_sanitize
 from prism.taint import run_taint
 from prism.thread import run_thread
@@ -340,6 +341,7 @@ class Pipeline:
         confidence.apply(self.report)
         self.report.save(cfg.out / "report.json")
         _write_md(self.report, cfg.out / "report.md")
+        write_sarif(self.report, cfg.out / "report.sarif")
         return self.report
 
 
