@@ -44,3 +44,6 @@ third_party/FuSeBMC/obj/MyVisitor.o
 third_party/semgrep/languages/swift/tree-sitter/semgrep-swift/lib/parser.c
 third_party/semgrep/languages/hack/tree-sitter/semgrep-hack/lib/parser.c
 third_party/llama.cpp/models/ggml-vocab-command-r.gguf
+
+# Claude Code agent worktrees
+.claude/worktrees/
