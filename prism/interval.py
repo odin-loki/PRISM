@@ -163,28 +163,34 @@ def _fork(e: _Engine) -> _Engine:
 
 def interval_function(fn: FunctionInfo) -> Finding | None:
     """One finding if the over-approx sees integer UB; else None."""
-    base = dict(
-        stage="interval", file=fn.file, function=fn.name, line=fn.line,
-        strength=laws.STRENGTH_FINDS, extra={"oracle": "interval"},
-    )
     if fn.kind == "POINTER":
         return None
     if fn.kind == "OTHER":
         return None
     if body_needs_pointer_harness(fn.body):
         return None
-    if unencoded_syntax_reason(fn, "interval"):
-        return None
+    # unencoded_syntax_reason is the costly gate (hundreds of regexes per
+    # body) and only matters when the engine alarms: every other outcome
+    # is None either way. So run the cheap engine first and consult the
+    # gate only for an alarm, or for an unexpected error (where the gate
+    # used to run first and may have skipped the function).
     eng = _Engine(fn.params)
     try:
         _stmts(eng, fn.body or "")
     except _Alarm as a:
+        if unencoded_syntax_reason(fn, "interval"):
+            return None
         return Finding(
-            **base, status=laws.FAILED, cls=a.cls,
-            message=f"interval: {a.msg}",
+            stage="interval", file=fn.file, function=fn.name, line=fn.line,
+            strength=laws.STRENGTH_FINDS, extra={"oracle": "interval"},
+            status=laws.FAILED, cls=a.cls, message=f"interval: {a.msg}",
         )
     except (ParseFail, _Return, ValueError):
         return None
+    except Exception:
+        if unencoded_syntax_reason(fn, "interval"):
+            return None
+        raise
     return None
 
 
