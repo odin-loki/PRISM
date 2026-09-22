@@ -9,7 +9,7 @@ import subprocess
 
 from prism import laws
 from prism.adapters_extra import _is_fake_adapter
-from prism.config import Config, adapter_install, resolve_adapter
+from prism.config import Config, adapter_install, ordered_map, resolve_adapter
 from prism.models import Finding
 from prism.pbsd import C_EXTS, run_pbsd_lints
 
@@ -272,46 +272,57 @@ def run_compiler(paths: list[Path], cfg: Config) -> list[Finding]:
         seen.add(key)
         out.append(f)
 
-    for cc in compilers:
-        for p in units:
-            cmd = _compiler_cmd(cc, p)
-            for flag in cmd:
-                if flag == "-w" or flag.startswith("-Wno-"):
-                    raise ValueError(f"refusing to disable a check: {flag}")
-            try:
-                r = subprocess.run(
-                    cmd, capture_output=True, text=True, timeout=30,
-                    encoding="utf-8", errors="replace",
-                )
-            except subprocess.TimeoutExpired:
-                _add(Finding(
-                    stage="warnings", status=laws.TIMEOUT, file=str(p), function=None,
-                    line=None, cls="", message="compiler syntax-check timeout",
-                    strength=laws.STRENGTH_SOME,
-                ))
-                continue
-            except OSError as exc:
-                _add(Finding(
-                    stage="warnings", status=laws.NOTRUN, file=str(p), function=None,
-                    line=None, cls="", message=f"{cc} unusable: {exc}",
-                    strength=laws.STRENGTH_SOME,
-                    extra={"install": "install gcc or clang"},
-                ))
-                continue
-            text = (r.stderr or "") + (r.stdout or "")
-            hits = 0
-            for m in _WARN_RE.finditer(text):
-                hits += 1
-                _add(Finding(
-                    stage="warnings", status=laws.FAILED, file=m.group(1), function=None,
-                    line=int(m.group(2)), cls="compiler-" + m.group(4),
-                    message=m.group(5), strength=laws.STRENGTH_SOME,
-                ))
-            if hits == 0 and r.returncode != 0:
-                _add(Finding(
-                    stage="warnings", status=laws.FAILED, file=str(p), function=None,
-                    line=None, cls="compiler-error",
-                    message=(text.strip()[-400:] or f"{cc} exit {r.returncode}"),
-                    strength=laws.STRENGTH_SOME,
-                ))
+    jobs_list = [(cc, p, _compiler_cmd(cc, p)) for cc in compilers for p in units]
+    for _cc, _p, cmd in jobs_list:
+        for flag in cmd:
+            if flag == "-w" or flag.startswith("-Wno-"):
+                raise ValueError(f"refusing to disable a check: {flag}")
+
+    def syntax_check(
+        job: tuple[str, Path, list[str]],
+    ) -> subprocess.CompletedProcess[str] | subprocess.TimeoutExpired | OSError:
+        try:
+            return subprocess.run(
+                job[2], capture_output=True, text=True, timeout=30,
+                encoding="utf-8", errors="replace",
+            )
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            return exc
+
+    # Each (compiler, unit) check is independent: run them on cfg.jobs
+    # threads, then build findings in the serial order so dedup and output
+    # order are unchanged.
+    results = ordered_map(syntax_check, jobs_list, getattr(cfg, "jobs", 1))
+    for (cc, p, _cmd), r in zip(jobs_list, results):
+        if isinstance(r, subprocess.TimeoutExpired):
+            _add(Finding(
+                stage="warnings", status=laws.TIMEOUT, file=str(p), function=None,
+                line=None, cls="", message="compiler syntax-check timeout",
+                strength=laws.STRENGTH_SOME,
+            ))
+            continue
+        if isinstance(r, OSError):
+            _add(Finding(
+                stage="warnings", status=laws.NOTRUN, file=str(p), function=None,
+                line=None, cls="", message=f"{cc} unusable: {r}",
+                strength=laws.STRENGTH_SOME,
+                extra={"install": "install gcc or clang"},
+            ))
+            continue
+        text = (r.stderr or "") + (r.stdout or "")
+        hits = 0
+        for m in _WARN_RE.finditer(text):
+            hits += 1
+            _add(Finding(
+                stage="warnings", status=laws.FAILED, file=m.group(1), function=None,
+                line=int(m.group(2)), cls="compiler-" + m.group(4),
+                message=m.group(5), strength=laws.STRENGTH_SOME,
+            ))
+        if hits == 0 and r.returncode != 0:
+            _add(Finding(
+                stage="warnings", status=laws.FAILED, file=str(p), function=None,
+                line=None, cls="compiler-error",
+                message=(text.strip()[-400:] or f"{cc} exit {r.returncode}"),
+                strength=laws.STRENGTH_SOME,
+            ))
     return out

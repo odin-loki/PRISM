@@ -13,7 +13,7 @@ import sys
 import tempfile
 
 from prism import laws
-from prism.config import Config
+from prism.config import Config, ordered_map
 from prism.cparse import extract_functions
 from prism.models import Finding
 
@@ -232,17 +232,28 @@ def _sanitizer_hit(stderr: str, stdout: str, returncode: int) -> bool:
     return False
 
 
+_UNPARSED = object()
+
+
 def _compile_and_run(
     cc: str,
     source: Path,
     flags: tuple[str, ...],
     timeout: float,
+    call: str | None | object = _UNPARSED,
 ) -> tuple[str, str, str]:
-    """Compile+run one translation unit under sanitizer flags."""
+    """Compile+run one translation unit under sanitizer flags.
+
+    ``call`` is ``_zero_param_callable(source)`` when the caller already has it.
+    """
     try:
         with tempfile.TemporaryDirectory(prefix="prism_san_run_") as td:
             wrapper = Path(td) / "prism_san_main.c"
-            wrapper.write_text(_wrapper_main(_zero_param_callable(source)), encoding="utf-8")
+            if call is _UNPARSED:
+                call = _zero_param_callable(source)
+            wrapper.write_text(
+                _wrapper_main(call if isinstance(call, str) else None), encoding="utf-8",
+            )
             exe = Path(td) / f"run{_exe_suffix()}"
             comp = _run(
                 [cc, "-std=c11", *flags, str(source), str(wrapper), "-o", str(exe)],
@@ -293,32 +304,45 @@ def _notrun(message: str, sanitizer: str, install: str = _INSTALL) -> Finding:
     )
 
 
-def _run_sanitizer_on_paths(
-    cc: str,
-    paths: list[Path],
-    flags: tuple[str, ...],
-    sanitizer: str,
-    cfg: Config,
+def _c_units(paths: list[Path]) -> list[Path]:
+    return [p for p in paths if p.suffix.lower() == ".c" and p.is_file()]
+
+
+def _no_c_files(cc: str, sanitizer: str) -> Finding:
+    return Finding(
+        stage="sanitize",
+        status=laws.UNKNOWN,
+        file="",
+        function=None,
+        line=None,
+        cls=sanitizer,
+        message=f"{sanitizer} supported by {cc}; no .c files in scope",
+        strength=laws.STRENGTH_FINDS,
+        extra={"exe": cc, "sanitizer": sanitizer},
+    )
+
+
+_RunResult = tuple[tuple[str, str, str], str | None]
+
+
+def _run_one(
+    cc: str, p: Path, flags: tuple[str, ...], cfg: Config,
+    callables: dict[Path, str | None],
+) -> _RunResult:
+    # One parse per file per run: the wrapper's call and the finding's
+    # function are the same name, and every sanitizer calls the same one.
+    if p in callables:
+        fn = callables[p]
+    else:
+        fn = callables[p] = _zero_param_callable(p)
+    return _compile_and_run(cc, p, flags, cfg.timeout, fn), fn
+
+
+def _results_to_findings(
+    cc: str, c_files: list[Path], sanitizer: str, results: list[_RunResult],
 ) -> list[Finding]:
-    c_files = [p for p in paths if p.suffix.lower() == ".c" and p.is_file()]
-    if not c_files:
-        return [
-            Finding(
-                stage="sanitize",
-                status=laws.UNKNOWN,
-                file="",
-                function=None,
-                line=None,
-                cls=sanitizer,
-                message=f"{sanitizer} supported by {cc}; no .c files in scope",
-                strength=laws.STRENGTH_FINDS,
-                extra={"exe": cc, "sanitizer": sanitizer},
-            )
-        ]
     out: list[Finding] = []
-    for p in c_files:
-        st, msg, evidence = _compile_and_run(cc, p, flags, cfg.timeout)
-        fn = _zero_param_callable(p)
+    for p, ((st, msg, evidence), fn) in zip(c_files, results):
         out.append(
             Finding(
                 stage="sanitize",
@@ -336,27 +360,60 @@ def _run_sanitizer_on_paths(
     return out
 
 
+def _run_sanitizer_on_paths(
+    cc: str,
+    paths: list[Path],
+    flags: tuple[str, ...],
+    sanitizer: str,
+    cfg: Config,
+) -> list[Finding]:
+    c_files = _c_units(paths)
+    if not c_files:
+        return [_no_c_files(cc, sanitizer)]
+    callables: dict[Path, str | None] = {}
+    results = ordered_map(
+        lambda p: _run_one(cc, p, flags, cfg, callables), c_files, getattr(cfg, "jobs", 1),
+    )
+    return _results_to_findings(cc, c_files, sanitizer, results)
+
+
+_SANITIZERS = (
+    (_AS_FLAGS, "asan", "compiler has no ASan"),
+    (_UB_FLAGS, "ubsan", "compiler has no UBSan"),
+    (_TS_FLAGS, "tsan", "compiler has no TSan"),
+)
+
+
 def run_sanitize(paths: list[Path], cfg: Config) -> list[Finding]:
-    """Probe ASan, UBSan, and TSan; compile+run each .c when the sanitizer is supported."""
+    """Probe ASan, UBSan, and TSan; compile+run each .c when the sanitizer is supported.
+
+    Every (sanitizer, file) compile+run is independent, so they share one
+    pool of cfg.jobs threads. Findings keep the serial order: ASan block,
+    UBSan block, TSan block, files in input order within each.
+    """
     cc = _find_cc()
     if not cc:
         return [_notrun("gcc/clang not on PATH", "ubsan")]
 
+    supported = [(flags, name, _probe_sanitizer(cc, flags)) for flags, name, _ in _SANITIZERS]
+    c_files = _c_units(paths)
+    tasks = [
+        (flags, p)
+        for flags, _name, ok in supported if ok
+        for p in c_files
+    ]
+    callables: dict[Path, str | None] = {}
+    results = iter(ordered_map(
+        lambda t: _run_one(cc, t[1], t[0], cfg, callables), tasks, getattr(cfg, "jobs", 1),
+    ))
+
     out: list[Finding] = []
-
-    if not _probe_sanitizer(cc, _AS_FLAGS):
-        out.append(_notrun("compiler has no ASan", "asan"))
-    else:
-        out.extend(_run_sanitizer_on_paths(cc, paths, _AS_FLAGS, "asan", cfg))
-
-    if not _probe_sanitizer(cc, _UB_FLAGS):
-        out.append(_notrun("compiler has no UBSan", "ubsan"))
-    else:
-        out.extend(_run_sanitizer_on_paths(cc, paths, _UB_FLAGS, "ubsan", cfg))
-
-    if not _probe_sanitizer(cc, _TS_FLAGS):
-        out.append(_notrun("compiler has no TSan", "tsan"))
-    else:
-        out.extend(_run_sanitizer_on_paths(cc, paths, _TS_FLAGS, "tsan", cfg))
-
+    for (flags, name, ok), (_f, _n, missing) in zip(supported, _SANITIZERS):
+        if not ok:
+            out.append(_notrun(missing, name))
+        elif not c_files:
+            out.append(_no_c_files(cc, name))
+        else:
+            batch = [next(results) for _ in c_files]
+            out.extend(_results_to_findings(cc, c_files, name, batch))
     return out

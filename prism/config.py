@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TypeVar
 import os
 import shutil
 import sys
+
+_T = TypeVar("_T")
+_R = TypeVar("_R")
 
 # Adapter binaries: search (1) Config.tools / --tool, (2) a built executable
 # under third_party/<vendor>/ if already present, (3) PATH. Missing is NOTRUN
@@ -199,6 +205,26 @@ def resolve_adapter(cfg: Config, stage: str, names: tuple[str, ...] | list[str])
         if found:
             return found
     return None
+
+
+def ordered_map(fn: Callable[[_T], _R], items: Iterable[_T], jobs: int | None) -> list[_R]:
+    """``[fn(x) for x in items]``, run on up to ``jobs`` threads.
+
+    For per-file subprocess work (compile, run, lint). Results come back in
+    input order, so callers build findings exactly as the serial loop did;
+    the first exception (in input order) propagates. jobs <= 1 or a single
+    item runs inline, with no pool.
+    """
+    seq = list(items)
+    try:
+        n = int(jobs or 1)
+    except (TypeError, ValueError):
+        n = 1
+    n = min(max(1, n), len(seq))
+    if n <= 1:
+        return [fn(x) for x in seq]
+    with ThreadPoolExecutor(max_workers=n) as pool:
+        return list(pool.map(fn, seq))
 
 
 def _default_pbsd() -> Path:

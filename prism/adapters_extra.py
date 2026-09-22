@@ -21,7 +21,7 @@ import tempfile
 from typing import Any
 
 from prism import laws
-from prism.config import Config, adapter_install, resolve_adapter
+from prism.config import Config, adapter_install, ordered_map, resolve_adapter
 from prism.models import Finding, FunctionInfo
 
 # (stage, PATH names). Install hint is adapter_install(stage) → SOURCES.md.
@@ -118,13 +118,20 @@ def _run_clang_tidy(exe: str, paths: list[Path], cfg: Config) -> list[Finding]:
             cls="", message=f"clang-tidy present at {exe}; no C/C++ translation units",
             strength=laws.STRENGTH_FINDS, extra={"exe": exe},
         )]
-    out: list[Finding] = []
-    for p in files:
+
+    def tidy(p: Path) -> subprocess.CompletedProcess | subprocess.TimeoutExpired:
         std = "-std=c++11" if p.suffix.lower() in {".cc", ".cpp", ".cxx"} else "-std=c11"
-        cmd = [exe, str(p), "--", std]
         try:
-            r = _run(cmd, timeout=min(60.0, cfg.timeout + 15))
-        except subprocess.TimeoutExpired:
+            return _run([exe, str(p), "--", std], timeout=min(60.0, cfg.timeout + 15))
+        except subprocess.TimeoutExpired as exc:
+            return exc
+
+    # One clang-tidy process per file on cfg.jobs threads; findings are built
+    # in file order below, exactly as the serial loop did.
+    results = ordered_map(tidy, files, getattr(cfg, "jobs", 1))
+    out: list[Finding] = []
+    for p, r in zip(files, results):
+        if isinstance(r, subprocess.TimeoutExpired):
             out.append(Finding(
                 stage="clang-tidy", status=laws.TIMEOUT, file=str(p), function=None,
                 line=None, cls="", message="clang-tidy timeout",

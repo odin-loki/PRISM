@@ -168,15 +168,28 @@ class Pipeline:
             journal.reset(cfg.out)
         sources = iter_sources(root)
         functions: list[FunctionInfo] = list(self.report.functions)
+        # inventory and classify both need every source parsed; parse each
+        # file once and share it (classify re-parses only what inventory did
+        # not, e.g. when inventory was resumed or excluded).
+        parsed: dict[Path, list[FunctionInfo]] = {}
+
+        def source_rel(p: Path) -> str:
+            try:
+                return str(p.relative_to(root)) if root.is_dir() else p.name
+            except ValueError:
+                return p.name
+
+        def parse(p: Path, rel: str) -> list[FunctionInfo]:
+            fns = parsed.get(p)
+            if fns is None:
+                fns = parsed[p] = extract_functions(p, rel)
+            return fns
 
         def inventory() -> list[Finding]:
             out: list[Finding] = []
             for p in sources:
-                try:
-                    rel = str(p.relative_to(root)) if root.is_dir() else p.name
-                except ValueError:
-                    rel = p.name
-                fns = extract_functions(p, rel)
+                rel = source_rel(p)
+                fns = parse(p, rel)
                 if not fns:
                     if p.suffix.lower() in TU_EXTS:
                         out.append(Finding(
@@ -200,11 +213,8 @@ class Pipeline:
             functions = []
             out = []
             for p in sources:
-                try:
-                    rel = str(p.relative_to(root)) if root.is_dir() else p.name
-                except ValueError:
-                    rel = p.name
-                fns = extract_functions(p, rel)
+                rel = source_rel(p)
+                fns = parse(p, rel)
                 functions.extend(fns)
                 for fn in fns:
                     out.append(Finding(
@@ -217,6 +227,7 @@ class Pipeline:
             return out
 
         self._stage("classify", classify)
+        parsed.clear()
 
         def lints() -> list[Finding]:
             return run_lints(sources, root if root.is_dir() else root.parent,
