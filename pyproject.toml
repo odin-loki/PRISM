@@ -1,0 +1,49 @@
+# PRISM Python engine: lint and type-check configuration.
+#
+# One config for every Python file in the repo (prism/, tests/, scripts/,
+# tools/), so `ruff check .` and `mypy prism` behave the same locally and in
+# CI. Vendored trees and build/output directories are never checked.
+#
+# Note for the polyglot stage: it passes files to ruff/mypy explicitly, and
+# explicitly named files are not subject to `exclude`, so nothing here can
+# hide a finding in a tree PRISM is asked to check (law 8).
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "prism"
+dynamic = ["version"]
+description = "PRISM code checker (Python reference engine)"
+requires-python = ">=3.11"
+
+[tool.setuptools]
+packages = ["prism"]
+
+[tool.setuptools.package-data]
+prism = ["cocci/*.cocci"]
+
+[tool.setuptools.dynamic]
+version = { attr = "prism.__version__" }
+
+[tool.ruff]
+target-version = "py311"
+# extend-exclude keeps ruff's own defaults (.git, .venv, build, dist, ...).
+extend-exclude = [
+    "third_party",
+    "build*",
+    "prism-out*",
+]
+
+[tool.ruff.lint]
+# Default rule set (E4, E7, E9, F). Do not loosen it.
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+exclude = [
+    '^third_party/',
+    '^build[^/]*/',
+    '^prism-out[^/]*/',
+]
