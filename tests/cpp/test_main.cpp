@@ -17,6 +17,7 @@
 #include "prism/cuda_mutate.h"
 #endif
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <stdlib.h>
@@ -3352,3 +3353,105 @@ TEST_CASE("execute_cex LLM half down is NOTRUN never CLEAN") {
 }
 
 
+
+// ---- polyglot (src/prism/polyglot.cpp; same contract as prism/polyglot.py) ----
+
+namespace {
+struct PolyTree {
+    std::filesystem::path dir;
+    PolyTree() {
+        dir = std::filesystem::temp_directory_path() /
+              ("prism_pg_cpp_" + std::to_string(std::rand()) + std::to_string(std::rand()));
+        std::filesystem::create_directories(dir / "node_modules");
+    }
+    void put(const std::string& rel, const std::string& text) {
+        auto p = dir / rel;
+        std::filesystem::create_directories(p.parent_path());
+        std::ofstream(p, std::ios::binary) << text;
+    }
+    ~PolyTree() {
+        std::error_code ec;
+        std::filesystem::remove_all(dir, ec);
+    }
+};
+
+struct PathGuard {
+    std::string was;
+    bool had = false;
+    explicit PathGuard(const char* value) {
+        if (const char* v = std::getenv("PATH")) {
+            had = true;
+            was = v;
+        }
+#ifndef _WIN32
+        setenv("PATH", value, 1);
+#endif
+    }
+    ~PathGuard() {
+#ifndef _WIN32
+        if (had) setenv("PATH", was.c_str(), 1);
+        else unsetenv("PATH");
+#endif
+    }
+};
+}  // namespace
+
+TEST_CASE("polyglot builtin scan finds conflict markers and secrets") {
+    PolyTree t;
+    t.put("a.c", "<<<<<<< HEAD\nint x;\n=======\nint y;\n>>>>>>> b\n");
+    t.put("k.ini", "aws = AKIAABCDEFGHIJKLMNOP\n");
+    t.put("node_modules/skip.js", "<<<<<<< never scanned\n");
+    auto cfg = prism::default_config();
+    cfg.root = t.dir;
+    auto out = prism::run_polyglot(t.dir, cfg);
+    std::vector<int> marker_lines;
+    bool aws = false;
+    for (auto& f : out) {
+        CHECK(f.stage == "polyglot");
+        if (f.cls == "VCS-CONFLICT-MARKER") {
+            CHECK(f.status == prism::laws::FAILED);
+            CHECK(f.file == "a.c");
+            marker_lines.push_back(f.line.value_or(0));
+        }
+        if (f.cls == "SECRET-AWS-KEY") aws = true;
+        CHECK(f.file.find("node_modules") == std::string::npos);
+    }
+    CHECK(marker_lines == std::vector<int>{1, 5});
+    CHECK(aws);
+}
+
+#ifndef _WIN32
+TEST_CASE("polyglot missing tools are NOTRUN with install, never CLEAN") {
+    PolyTree t;
+    t.put("a.py", "x = 1\n");
+    t.put("b.sh", "echo hi\n");
+    t.put("c.rb", "x = 1\n");
+    auto cfg = prism::default_config();
+    cfg.root = t.dir;
+    std::vector<prism::Finding> out;
+    {
+        PathGuard empty_path("/nonexistent-prism-path");
+        out = prism::run_polyglot(t.dir, cfg);
+    }
+    std::map<std::string, std::string> by_check;
+    for (auto& f : out) {
+        auto it = f.extra.find("check");
+        if (it == f.extra.end()) continue;
+        by_check[it->second] = f.status;
+        CHECK(f.status == prism::laws::NOTRUN);
+        CHECK(!f.extra.at("install").empty());
+    }
+    for (auto* g : {"python-syntax", "python-lint", "python-types", "shell-syntax", "shell-lint",
+                    "ruby-syntax"})
+        CHECK_MESSAGE(by_check.contains(g), g);
+}
+#endif
+
+TEST_CASE("polyglot stage sits between optional and esbmc") {
+    std::vector<std::string> order;
+    for (const char* const* s = prism::STAGE_ORDER; *s; ++s) order.emplace_back(*s);
+    auto it = std::find(order.begin(), order.end(), "polyglot");
+    REQUIRE(it != order.end());
+    CHECK(*(it - 1) == "optional");
+    CHECK(*(it + 1) == "esbmc");
+}

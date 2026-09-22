@@ -467,9 +467,19 @@ def run_polyglot(root: Path, cfg: Config) -> list[Finding]:
         lang = language_of(p)
         if lang:
             by_lang.setdefault(lang, []).append(p)
+    # A file that does not parse makes whole-program type checkers (mypy, tsc)
+    # abort and hide every other file's errors. It already has its
+    # SYNTAX-ERROR; keep it away from the type checkers.
+    broken: set[str] = set()
     for check in CHECKS:
         mine = [p for lang in check.languages for p in by_lang.get(lang, [])]
+        if check.kind == "type":
+            mine = [p for p in mine if _rel(p, root) not in broken]
         if not mine:
             continue
-        out.extend(run_check(check, mine, root, cfg))
+        found = run_check(check, mine, root, cfg)
+        if check.kind == "syntax":
+            broken.update(f.file for f in found
+                          if f.status == laws.FAILED and f.cls == "SYNTAX-ERROR" and f.file)
+        out.extend(found)
     return out

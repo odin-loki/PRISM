@@ -584,13 +584,22 @@ std::vector<Finding> run_polyglot(const fs::path& root, const Config& cfg) {
     std::map<std::string, std::vector<fs::path>> by_lang;
     for (auto& p : files)
         if (auto lang = language_of(p); !lang.empty()) by_lang[lang].push_back(p);
+    // A file that does not parse makes whole-program type checkers (mypy, tsc)
+    // abort and hide every other file's errors. It already has its
+    // SYNTAX-ERROR; keep it away from the type checkers.
+    std::set<std::string> broken;
     for (auto& check : checks()) {
         std::vector<fs::path> mine;
         for (auto& lang : check.languages)
             if (auto it = by_lang.find(lang); it != by_lang.end())
-                mine.insert(mine.end(), it->second.begin(), it->second.end());
+                for (auto& p : it->second)
+                    if (check.kind != "type" || !broken.contains(rel(p, root))) mine.push_back(p);
         if (mine.empty()) continue;
         auto part = run_check(check, mine, root, cfg);
+        if (check.kind == "syntax")
+            for (auto& f : part)
+                if (f.status == laws::FAILED && f.cls == "SYNTAX-ERROR" && !f.file.empty())
+                    broken.insert(f.file);
         out.insert(out.end(), part.begin(), part.end());
     }
     return out;

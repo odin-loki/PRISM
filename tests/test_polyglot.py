@@ -154,6 +154,15 @@ class TestSyntaxHelper(unittest.TestCase):
         self.assertIn("not a proof", rows[0].message)
 
 
+@unittest.skipUnless(shutil.which("mypy"), "mypy not installed")
+class TestBrokenFileDoesNotBlindTypeChecker(unittest.TestCase):
+    def test_type_error_still_found_next_to_syntax_error(self):
+        out = _run({"bad.py": "def f(:\n    pass\n", "typed.py": 'x: int = "s"\n'})
+        types = [f for f in out if f.cls == "TYPE-ERROR"]
+        self.assertEqual([f.file for f in types], ["typed.py"])
+        self.assertIn("bad.py", {f.file for f in out if f.cls == "SYNTAX-ERROR"})
+
+
 class TestMissingToolsAreNotrun(unittest.TestCase):
     def test_every_language_without_tools_is_notrun(self):
         files = {
