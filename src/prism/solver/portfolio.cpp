@@ -25,6 +25,7 @@
 #include <cstdio>
 #include <condition_variable>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -376,7 +377,9 @@ fs::path make_work_dir(const SolveOptions& opt, const std::string& h) {
 
 }  // namespace
 
-SolveResult solve(z3::context& c, const z3::expr& formula, const SolveOptions& opt) {
+namespace {
+
+SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptions& opt) {
     SolveResult res;
     const double t0 = now_s();
     const double deadline = t0 + std::max(0.01, opt.timeout_s);
@@ -604,6 +607,34 @@ SolveResult solve(z3::context& c, const z3::expr& formula, const SolveOptions& o
     z3::context* blast_ctx = nullptr;
     const unsigned slots = opt.max_parallel ? opt.max_parallel : std::max(2u, std::thread::hardware_concurrency());
     unsigned running = 0;
+
+    // Stop every job and wait for it. A Z3 interrupt that lands before
+    // check() starts can be lost, so it is repeated until each thread has
+    // raised its done flag. Idempotent; also run on unwinding.
+    auto shutdown = [&] {
+        for (auto& m : members) m.stop->store(true);
+        for (;;) {
+            bool all = true;
+            for (auto& d : done) all = all && d.load();
+            if (all) break;
+            for (auto& m : members)
+                if (m.zctx) Z3_interrupt(*m.zctx);
+            if (blast_ctx) Z3_interrupt(*blast_ctx);
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        for (auto& t : threads)
+            if (t.joinable()) t.join();
+    };
+    struct Guard {
+        std::function<void()> f;
+        ~Guard() { f(); }
+    } guard{[&] {
+        shutdown();
+        if (!opt.keep_artifacts && opt.work_dir.empty()) {
+            std::error_code ec;
+            fs::remove_all(work, ec);
+        }
+    }};
 
     auto new_ctx = [&]() -> z3::context& {
         ctxs.push_back(std::make_unique<z3::context>());
@@ -845,18 +876,7 @@ SolveResult solve(z3::context& c, const z3::expr& formula, const SolveOptions& o
         if (!accepted) fill_slots();
     }
     stop_all();
-    // A Z3 interrupt that lands before check() starts can be lost: repeat it
-    // until every job thread has left.
-    for (;;) {
-        bool all = true;
-        for (auto& d : done) all = all && d.load();
-        if (all) break;
-        for (auto& m : members)
-            if (m.zctx) Z3_interrupt(*m.zctx);
-        if (blast_ctx) Z3_interrupt(*blast_ctx);
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
-    for (auto& t : threads) t.join();
+    shutdown();
     // Drain what arrived while stopping (a late certificate-member answer).
     for (Msg msg; board.wait(msg, 0.0);) {
         if (msg.type != Msg::Result) continue;
@@ -951,11 +971,25 @@ SolveResult solve(z3::context& c, const z3::expr& formula, const SolveOptions& o
         }
         detail::write_file(root / "solve_times.json", h.dump(1));
     }
-    if (!opt.keep_artifacts && opt.work_dir.empty()) {
-        std::error_code ec;
-        fs::remove_all(work, ec);
+    return finish(res);  // the guard removes the work directory
+}
+
+}  // namespace
+
+SolveResult solve(z3::context& c, const z3::expr& formula, const SolveOptions& opt) {
+    try {
+        return solve_impl(c, formula, opt);
+    } catch (const z3::exception& e) {
+        SolveResult r;
+        r.kind = SolveResult::Error;
+        r.note = std::string("internal error (z3): ") + e.msg();
+        return r;
+    } catch (const std::exception& e) {
+        SolveResult r;
+        r.kind = SolveResult::Error;
+        r.note = std::string("internal error: ") + e.what();
+        return r;
     }
-    return finish(res);
 }
 
 }  // namespace prism::solver
