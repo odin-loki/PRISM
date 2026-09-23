@@ -35,6 +35,8 @@ namespace PrismTechniques
 #assert_axioms KInduction.step_mono
 #assert_axioms KInduction.kinduction_strengthened
 #assert_axioms KInduction.kinduction_rel_sound
+#assert_axioms KInduction.kinduction_frame_sound
+#assert_axioms KInduction.step_frame_of_step
 
 -- Houdini (roadmap 8.2)
 #assert_axioms Houdini.houdini_rounds_le

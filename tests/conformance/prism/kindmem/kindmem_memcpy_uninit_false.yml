@@ -1,0 +1,10 @@
+format_version: 1
+input_files: kindmem_memcpy_uninit_false.c
+language: C
+property: memsafety
+expected:
+  kindmem_memcpy_uninit_false: false
+witness:
+  kindmem_memcpy_uninit_false: [20]
+sanitizer_blind:
+  - kindmem_memcpy_uninit_false

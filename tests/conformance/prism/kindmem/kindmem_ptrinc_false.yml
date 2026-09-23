@@ -1,0 +1,8 @@
+format_version: 1
+input_files: kindmem_ptrinc_false.c
+language: C
+property: memsafety
+expected:
+  kindmem_ptrinc_false: false
+witness:
+  kindmem_ptrinc_false: [9]
