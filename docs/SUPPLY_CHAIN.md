@@ -194,10 +194,33 @@ python3 scripts/fetch_deps.py --linked --refetch   # in-tree libs == pinned upst
 python3 scripts/licence_check.py
 ```
 
-Known limits: the Docker build was written without a Docker daemon available
-and has not been run yet. The first tagged release is the first real
-reproducibility check; if the two builds differ, `diffoscope` on the pair
-shows where. Z3's build may embed its own version string, but not a date.
+Verified 2026-09-23 at commit `0423d6c54` (`SOURCE_DATE_EPOCH` = that
+commit's time, `PRISM_VERSION=0.1.0`). Two independent `--no-cache` builds,
+run one after the other with the build cache pruned between them, each
+passed `prism_tests` (287/287) and wrote identical `SHA256SUMS`:
+
+```
+946419ea646243e6eea40cf3421d1e1ba850e595d55de83b00d49c65d0d7ecd1  prism
+29e981bc551dc3bfefc83355a1be7206a7f361afa2d09ed5057b6bc9a88aa148  libprism_native.so
+d740568217f39451c3764aeb56d241b5bb154f7728d9ac2cade5ce805e9880a1  prism.cdx.json
+```
+
+The only edits made for that run were to the build environment. This
+machine reaches the network through a TLS-intercepting proxy, so the build
+context also held the proxy's CA certificate (`COPY` and apt `CaInfo`) and
+used `https://` snapshot URLs, since the proxy refuses plain http. None of
+this reaches the build stage's compile step or the artefacts. The run did
+two things beyond confirming reproducibility:
+
+- It found that `-ffile-prefix-map` makes `__FILE__` relative, so
+  `prism_tests` now runs from `/src`.
+- It found a test that assumed the certificate tools were installed
+  (`test_certified.cpp`).
+
+Both are fixed. A tagged release on GitHub's runners is still the first
+check on another machine. If two builds ever differ, run `diffoscope` on the
+pair to see where. Z3's build may embed its own version string, but not a
+date.
 Rebuilds are expected to match only on x86-64 with AVX2, the configured
 target (`-mavx2`).
 

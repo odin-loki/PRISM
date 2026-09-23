@@ -47,7 +47,7 @@ generators): 0 wrong proofs over every campaign run.
 | 1.2 PRISM licence | **PARTIAL** — `LICENSE` is a clearly marked DRAFT source-available evaluation licence; needs an Australian IP lawyer |
 | 1.3 CycloneDX SBOM in CI | **DONE** — `scripts/sbom.py`, validated against CycloneDX 1.5 |
 | 1.3 signed releases (cosign) | **PARTIAL** — `.github/workflows/release.yml` (keyless cosign, double build + hash compare); runs on the first tag push |
-| 1.3 reproducible build recipe | see "Docker" below |
+| 1.3 reproducible build recipe | **DONE** — `Dockerfile` built twice with `--no-cache` at `0423d6c54`: identical `SHA256SUMS` for `prism`, `libprism_native.so` and the SBOM, with `prism_tests` passing in the container (`docs/SUPPLY_CHAIN.md`). This was checked on one machine; a tagged release on the GitHub runners is still the first check on another |
 | 1.4 remove `*_tmp.py` and `/mnt/c` workarounds | **DONE** |
 | 1.4 split `stages_rest.cpp` per stage | **DONE** — `src/prism/stages/`: one file per stage (`taint`, `thread`, `contracts` (+ `prove_with_contract`), `wp`, `harness_bmc`, `concolic`, `fuse`, `diff`, `rapid` (+ `muttest`), `ltl`, `hypothesize`, `execute_cex`, `rlef`), plus `interp.cpp` (concrete interpreter, `concrete_execute`), `llm.cpp` (LLM engine, sandboxed run of LLM-written C), `platform.cpp` (`run_argv`, plain HTTP) and `common.cpp`; shared helpers are declared in `common.hpp` / `interp.hpp` / `llm.hpp` (namespace `prism::stages_detail`), single-use helpers stay file-local |
 | 1.4 pure verdict module | **DONE** — `src/prism/verdict/`, `include/prism/verdict.hpp` (no I/O) |
