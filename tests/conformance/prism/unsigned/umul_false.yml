@@ -1,0 +1,8 @@
+format_version: 1
+input_files: umul_false.c
+language: C
+property: no-overflow
+expected:
+  umul_false: false
+witness:
+  umul_false: [1, 9223372036854775807]

@@ -1,0 +1,8 @@
+format_version: 1
+input_files: helper_call_false.c
+language: C
+property: no-overflow
+expected:
+  helper_call_false: false
+witness:
+  helper_call_false: [1500000000]

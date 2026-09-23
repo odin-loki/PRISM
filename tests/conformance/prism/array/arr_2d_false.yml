@@ -1,0 +1,8 @@
+format_version: 1
+input_files: arr_2d_false.c
+language: C
+property: no-oob
+expected:
+  arr_2d_false: false
+witness:
+  arr_2d_false: [3, 0]

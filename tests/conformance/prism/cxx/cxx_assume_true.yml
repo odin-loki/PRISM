@@ -1,0 +1,6 @@
+format_version: 1
+input_files: cxx_assume_true.cpp
+language: C++
+property: no-overflow
+expected:
+  cxx_assume_true: true

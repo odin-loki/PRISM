@@ -1,0 +1,8 @@
+format_version: 1
+input_files: limits_false.c
+language: C
+property: no-overflow
+expected:
+  limits_false: false
+witness:
+  limits_false: [2147483647]

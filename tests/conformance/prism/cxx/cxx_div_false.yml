@@ -1,0 +1,8 @@
+format_version: 1
+input_files: cxx_div_false.cpp
+language: C++
+property: no-overflow
+expected:
+  cxx_div_false: false
+witness:
+  cxx_div_false: [-2147483648, -1]

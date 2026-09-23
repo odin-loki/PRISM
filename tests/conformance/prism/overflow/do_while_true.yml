@@ -1,0 +1,6 @@
+format_version: 1
+input_files: do_while_true.c
+language: C
+property: no-overflow
+expected:
+  do_while_true: true

@@ -1,0 +1,8 @@
+format_version: 1
+input_files: recursion_false.c
+language: C
+property: no-overflow
+expected:
+  recursion_false: false
+witness:
+  recursion_false: [13]

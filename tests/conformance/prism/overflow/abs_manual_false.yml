@@ -1,0 +1,8 @@
+format_version: 1
+input_files: abs_manual_false.c
+language: C
+property: no-overflow
+expected:
+  abs_manual_false: false
+witness:
+  abs_manual_false: [-2147483648]

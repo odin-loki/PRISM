@@ -1,0 +1,8 @@
+format_version: 1
+input_files: compound_add_false.c
+language: C
+property: no-overflow
+expected:
+  compound_add_false: false
+witness:
+  compound_add_false: [2000000000, 2000000000]

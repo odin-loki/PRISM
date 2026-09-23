@@ -1,0 +1,6 @@
+format_version: 1
+input_files: short_promote_true.c
+language: C
+property: no-overflow
+expected:
+  short_promote_true: true

@@ -1,0 +1,8 @@
+format_version: 1
+input_files: div_ternary_false.c
+language: C
+property: no-div0
+expected:
+  div_ternary_false: false
+witness:
+  div_ternary_false: [9, 0]

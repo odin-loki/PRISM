@@ -1,0 +1,8 @@
+format_version: 1
+input_files: div_diff_false.c
+language: C
+property: no-div0
+expected:
+  div_diff_false: false
+witness:
+  div_diff_false: [5, 5]

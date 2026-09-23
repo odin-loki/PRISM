@@ -1,0 +1,6 @@
+format_version: 1
+input_files: arr_read_true.c
+language: C
+property: no-oob
+expected:
+  arr_read_true: true

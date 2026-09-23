@@ -1,0 +1,8 @@
+format_version: 1
+input_files: arr_index_expr_false.c
+language: C
+property: no-oob
+expected:
+  arr_index_expr_false: false
+witness:
+  arr_index_expr_false: [4]

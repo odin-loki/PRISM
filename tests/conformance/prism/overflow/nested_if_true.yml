@@ -1,0 +1,6 @@
+format_version: 1
+input_files: nested_if_true.c
+language: C
+property: no-overflow
+expected:
+  nested_if_true: true

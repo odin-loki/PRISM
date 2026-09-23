@@ -1,0 +1,8 @@
+format_version: 1
+input_files: nested_loop_false.c
+language: C
+property: no-overflow
+expected:
+  nested_loop_false: false
+witness:
+  nested_loop_false: [2000]

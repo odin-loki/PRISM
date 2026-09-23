@@ -1,0 +1,6 @@
+format_version: 1
+input_files: shr_negative_true.c
+language: C
+property: no-shift-ub
+expected:
+  shr_negative_true: true

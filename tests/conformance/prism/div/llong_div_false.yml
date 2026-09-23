@@ -1,0 +1,8 @@
+format_version: 1
+input_files: llong_div_false.c
+language: C
+property: no-div0
+expected:
+  llong_div_false: false
+witness:
+  llong_div_false: [-9223372036854775808, -1]

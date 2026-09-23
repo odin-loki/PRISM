@@ -1,0 +1,8 @@
+format_version: 1
+input_files: neg_false.c
+language: C
+property: no-overflow
+expected:
+  neg_false: false
+witness:
+  neg_false: [-2147483648]

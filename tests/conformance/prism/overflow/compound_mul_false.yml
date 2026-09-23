@@ -1,0 +1,8 @@
+format_version: 1
+input_files: compound_mul_false.c
+language: C
+property: no-overflow
+expected:
+  compound_mul_false: false
+witness:
+  compound_mul_false: [50000]

@@ -1,0 +1,8 @@
+format_version: 1
+input_files: long_mul_false.c
+language: C
+property: no-overflow
+expected:
+  long_mul_false: false
+witness:
+  long_mul_false: [4294967296]

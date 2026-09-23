@@ -1,0 +1,8 @@
+format_version: 1
+input_files: shl_exp_false.c
+language: C
+property: no-shift-ub
+expected:
+  shl_exp_false: false
+witness:
+  shl_exp_false: [1, 32]

@@ -1,0 +1,6 @@
+format_version: 1
+input_files: bool_arith_true.c
+language: C
+property: no-overflow
+expected:
+  bool_arith_true: true

@@ -1,0 +1,6 @@
+format_version: 1
+input_files: abs_libc_true.c
+language: C
+property: no-overflow
+expected:
+  abs_libc_true: true
