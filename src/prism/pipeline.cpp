@@ -6,6 +6,7 @@
 #include "prism/sandbox.hpp"
 #include "prism/stages.hpp"
 #include "prism/taxonomy.hpp"
+#include "prism/verdict.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -84,7 +85,7 @@ void apply_confidence(RunReport& report) {
     const StageResult* bmc = nullptr;
     for (auto& s : report.stages)
         if (s.name == "bmc") bmc = &s;
-    double visibility = 1.0;
+    // Every parsed function is classified: visibility is n_fun / n_fun.
     int answered = 0, resolved = 0, attempted = 0;
     if (bmc) {
         std::map<std::string, std::vector<const Finding*>> by_fn;
@@ -109,7 +110,7 @@ void apply_confidence(RunReport& report) {
             auto st = it->second[0]->status;
             if (laws::is_answered(st)) {
                 ++answered;
-                if (st == laws::PROVED || st == laws::PROVED_UNBOUNDED || st == laws::PROVED_ASSUMING)
+                if (laws::is_proof(st))
                     ++resolved;
                 else if (st == laws::FAILED) {
                     auto* f0 = it->second[0];
@@ -120,12 +121,13 @@ void apply_confidence(RunReport& report) {
             }
         }
     }
-    double ans = attempted ? static_cast<double>(answered) / attempted : 0.0;
-    double res = answered ? static_cast<double>(resolved) / answered : 0.0;
-    report.visibility = std::round(visibility * 10000.0) / 10000.0;
-    report.answer = std::round(ans * 10000.0) / 10000.0;
-    report.resolution = std::round(res * 10000.0) / 10000.0;
-    report.confidence = std::round(visibility * ans * res * 10000.0) / 10000.0;
+    // Law 5 through the verdict module (proofs/Prism/Verdict.lean `score`).
+    auto n = static_cast<long>(n_fun);
+    auto sc = verdict::score_counts(n, n, attempted, answered, resolved);
+    report.visibility = std::round(sc.visibility * 10000.0) / 10000.0;
+    report.answer = std::round(sc.answer * 10000.0) / 10000.0;
+    report.resolution = std::round(sc.resolution * 10000.0) / 10000.0;
+    report.confidence = std::round(sc.confidence * 10000.0) / 10000.0;
 }
 
 std::vector<Finding> llm_forced_reads(std::vector<Finding> findings) {
@@ -379,6 +381,9 @@ RunReport run_pipeline(const Config& cfg) {
                                      std::nullopt, "", "nothing to repair",
                                      std::string(laws::STRENGTH_READS)}};
     });
+    // Verdict audit (docs/VERDICTS.md): before unify so taxonomy and
+    // confidence only see admitted verdicts; again after, for unify itself.
+    laws::audit_report(report);
     stage("unify", [&] {
         auto rows = coverage_from_report(report);
         nlohmann::json j = nlohmann::json::array();
@@ -412,6 +417,7 @@ RunReport run_pipeline(const Config& cfg) {
         return std::vector<Finding>{f};
     });
 
+    laws::audit_report(report);
     apply_confidence(report);
     report.save(cfg.out / "report.json");
     write_report_md(report, cfg.out / "report.md");

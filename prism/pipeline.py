@@ -393,7 +393,11 @@ class Pipeline:
                 extra={"gaps": [g["id"] for g in gaps], "not_a_proof": "true"},
             )]
 
+        # Verdict audit (docs/VERDICTS.md): before unify so taxonomy and
+        # confidence only see admitted verdicts; again after, for unify itself.
+        laws.audit_report(self.report)
         self._stage("unify", unify)
+        laws.audit_report(self.report)
         confidence.apply(self.report)
         self.report.save(cfg.out / "report.json")
         _write_md(self.report, cfg.out / "report.md")
