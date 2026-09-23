@@ -23,7 +23,8 @@ struct Gen {
     }
 };
 static Gen counter(int start, int step) {
-    for (int i = 0;; i += step) co_yield start + i;
+    co_yield start;
+    co_yield start + step;
 }
 int coro_gen_true(int x) {
     if (x > 1000 || x < -1000) return 0;

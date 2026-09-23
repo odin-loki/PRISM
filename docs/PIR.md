@@ -279,9 +279,11 @@ per path and gets the next constant object id (the Lean `next` counter).
 `tests/cpp/test_pir_mem.cpp` checks that both encodings give the same verdict
 and class on every property (true and false variants) and that the PIR
 interpreter (`interpret`, concrete memory `ConcMem`) reproduces each
-counterexample. k-induction is not attempted for functions with memory
-(`extra.k_induction = "not-attempted (memory)"`): their loops are PROVED
-only when the unwinding assertion closes, else BOUNDED.
+counterexample. For functions with memory, k-induction is attempted only
+for a loop that does not write, allocate or free memory ("k-induction with
+memory" below); otherwise (`extra.k_induction = "not-attempted (memory
+written in the loop)"`) their loops are PROVED only when the unwinding
+assertion closes, else BOUNDED.
 
 ### Correspondence to the Lean model
 
@@ -546,16 +548,22 @@ listed in `extra.assumptions` and a proof is **PROVED-ASSUMING**, never
 PROVED. Asm with memory operands, several outputs or non-integer outputs
 stays `UNENCODED` even with a contract. `tests/pir/asm_contract.c`.
 
-## k-induction with memory (roadmap 2.6 remaining, not attempted)
+## k-induction with memory (roadmap 2.6 remaining, partial)
 
-k-induction still stops at functions that use memory
-(`extra.k_induction = "not-attempted (memory)"`; they stay BOUNDED). A sound
-step case needs an arbitrary memory state at the loop header that agrees
-with the unrolled prefix only where the loop does not write: every byte the
-loop may write (through any pointer it computes), those bytes' initialised
-flags, and the liveness/number of objects the loop allocates or frees would
-have to be havocked. The memory encodings (SymMem) have no "arbitrary
-initialised-or-not" cell and no symbolic object count, so this was left out
+The step case havocs the loop header's phis and encodes the code before the
+loop concretely. For a function with memory this is sound exactly when the
+loop leaves memory unchanged — no store, memcpy/memset, allocation, free or
+stack restore in any block of the loop (loads and memory queries are fine):
+then the memory at every iteration is the one the prefix reached. Such
+*read-only loops* get k-induction (`extra.k_induction_memory = "read-only
+loop"`, PROVED-UNBOUNDED when the step closes). A loop that writes memory is
+not attempted (`extra.k_induction = "not-attempted (memory written in the
+loop)"`; it stays BOUNDED): a sound step case would need an arbitrary memory
+state at the header that agrees with the prefix only where the loop cannot
+write — every byte it may write (through any pointer it computes), those
+bytes' initialised flags, and the liveness and number of the objects it
+allocates or frees. The memory encodings (SymMem) have no "arbitrary
+initialised-or-not" cell and no symbolic object count, so this is left out
 rather than approximated (Law 2: BOUNDED is never promoted without a closed,
 sound step).
 
@@ -579,7 +587,7 @@ pass; no `-fsanitize` check insertion (Law 8).
 | Modules (`import std;`) | handled by Clang; PRISM consumes the IR | NOT TESTED (Clang 18 needs a prebuilt `std` module) | — |
 | Inline assembly | NEEDS-HARNESS unless `// prism: asm ensures <cond>`; then PROVED-ASSUMING listing the contract | DONE | `tests/pir/asm_contract.c`, `conformance/prism/asm` |
 | C (C11 to C23): `_Generic`, VLAs, `setjmp`/`longjmp` | `_Generic` by Clang; VLAs in the memory model; setjmp/longjmp as exception-like edges (CTRL-LONGJMP-INVALID) | DONE | `tests/pir/mem_libc.c`, `tests/pir/sjlj_basic.c`, `conformance/prism/sjlj` |
-| k-induction for functions using memory | — | NOT DONE (no sound havoc of the loop's memory footprint; "k-induction with memory") | `extra.k_induction` |
+| k-induction for functions using memory | step case for loops that do not write memory | PARTIAL (loops that write memory stay BOUNDED: no sound havoc of their footprint) | `tests/pir/kind_mem.c`, `extra.k_induction_memory` |
 
 ## Encoder and verdicts
 

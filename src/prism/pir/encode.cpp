@@ -968,10 +968,25 @@ Verdict check_function(const Function& fn, int unwind, double timeout_s, const E
             return v;
         }
         if (fn.uses_memory) {
-            // The step case would start from an arbitrary memory state; not
-            // attempted (a BOUNDED result stays BOUNDED, Law 2).
-            v.extra["k_induction"] = "not-attempted (memory)";
-            return v;
+            // The step case havocs only the header phis. That is sound only
+            // when the loop leaves memory unchanged: then the memory at every
+            // iteration is the one the (concretely encoded) prefix reached.
+            // A loop that writes, allocates or frees is not attempted (a
+            // BOUNDED result stays BOUNDED, Law 2; docs/PIR.md).
+            bool writes = false;
+            const auto& body = g.loops[0].body;
+            for (std::size_t b = 0; b < body.size() && !writes; ++b) {
+                if (!body[b]) continue;
+                for (auto& s : fn.blocks[b].stmts)
+                    if (s.kind != Stmt::Assign && s.kind != Stmt::Check && s.kind != Stmt::Assume &&
+                        s.kind != Stmt::Load)
+                        writes = true;
+            }
+            if (writes) {
+                v.extra["k_induction"] = "not-attempted (memory written in the loop)";
+                return v;
+            }
+            v.extra["k_induction_memory"] = "read-only loop";
         }
         std::vector<std::string> tried;
         for (int k : {1, 2}) {
