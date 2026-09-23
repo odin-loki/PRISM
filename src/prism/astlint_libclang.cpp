@@ -87,7 +87,8 @@ namespace {
     X(clang_getEnumConstantDeclValue) X(clang_getTypeDeclaration) X(clang_getPointeeType)       \
     X(clang_getCursorResultType) X(clang_getResultType) X(clang_isExpression)                   \
     X(clang_isDeclaration) X(clang_isAttribute) X(clang_getTemplateCursorKind)                  \
-    X(clang_getCursorKindSpelling) X(clang_isCursorDefinition) X(clang_getCursorDefinition)
+    X(clang_getCursorKindSpelling) X(clang_isCursorDefinition) X(clang_getCursorDefinition)      \
+    X(clang_getArrayElementType)
 
 struct Api {
 #define PRISM_DECL_FN(n) decltype(&::n) n = nullptr;
@@ -302,6 +303,22 @@ struct Conv {
         auto d = str(A.clang_getTypeSpelling(A.clang_getCanonicalType(t)));
         if (d != q) j["desugaredQualType"] = d;
         return j;
+    }
+
+    // A declaration's type in the dump's spelling. libclang gives a parameter's
+    // type as written (`char[16]`); the dump gives the adjusted type
+    // (`char *`), which the checks expect (sizeof of an array parameter).
+    json decl_type_json(CXCursor c) {
+        CXType t = A.clang_getCursorType(c);
+        if (A.clang_getCursorKind(c) == CXCursor_ParmDecl &&
+            (t.kind == CXType_ConstantArray || t.kind == CXType_IncompleteArray || t.kind == CXType_VariableArray ||
+             t.kind == CXType_DependentSizedArray)) {
+            auto el = str(A.clang_getTypeSpelling(A.clang_getArrayElementType(t)));
+            json j = json::object();
+            j["qualType"] = el + (el.ends_with("*") ? "*" : " *");
+            return j;
+        }
+        return type_json(t);
     }
 
     static std::string decl_kind(CXCursorKind k, bool cxx) {
@@ -666,7 +683,7 @@ struct Conv {
             n["kind"] = dk;
             n["id"] = id_of(c);
             n["name"] = str(A.clang_getCursorSpelling(c));
-            if (k != CXCursor_Namespace && k != CXCursor_LinkageSpec) n["type"] = type_json(A.clang_getCursorType(c));
+            if (k != CXCursor_Namespace && k != CXCursor_LinkageSpec) n["type"] = decl_type_json(c);
             if (k == CXCursor_VarDecl) {
                 auto sc = A.clang_Cursor_getStorageClass(c);
                 if (sc == CX_SC_Static) n["storageClass"] = "static";
@@ -761,7 +778,7 @@ struct Conv {
                     n["referencedDecl"] = {{"id", id_of(r)},
                                            {"kind", rkn},
                                            {"name", str(A.clang_getCursorSpelling(r))},
-                                           {"type", type_json(A.clang_getCursorType(r))}};
+                                           {"type", decl_type_json(r)}};
                     if (rk == CXCursor_EnumConstantDecl) note_enum(r);
                     else note_facts(r);
                     n["valueCategory"] = rk == CXCursor_EnumConstantDecl ? "prvalue" : "lvalue";
@@ -940,7 +957,7 @@ struct Conv {
                     std::size_t i = t.find("delete");
                     i = i == std::string_view::npos ? t.size() : i + 6;
                     while (i < t.size() && std::isspace(static_cast<unsigned char>(t[i]))) ++i;
-                    n["isArrayForm"] = i < t.size() && t[i] == '[';
+                    n["isArrayAsWritten"] = i < t.size() && t[i] == '[';
                 } else {
                     n["arrayUnknown"] = true;
                 }

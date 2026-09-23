@@ -1222,6 +1222,15 @@ struct Checker {
             else if (std::strchr("eEfFgGaA", cv) && (integ || ptr)) want = "a floating-point value";
             else if (cv == 's' && (integ || flt)) want = "a string pointer";
             else if (cv == 'p' && (flt)) want = "a pointer";
+            // Width (LP64): %d/%x take an int (narrower arguments are
+            // promoted), %ld/%lld/%zd/%jd a 64-bit integer.
+            if (want.empty() && integ && std::strchr("diouxX", cv)) {
+                const int w = int_width(t);
+                const auto& len = convs[i].len;
+                const bool wide = one_of(len, {"l", "ll", "q", "j", "z", "t"});
+                if (w == 64 && !wide && len != "L") want = "an int (use %l" + std::string(1, cv) + ")";
+                else if (w > 0 && w <= 32 && wide) want = "a 64-bit integer";
+            }
             if (want.empty()) continue;
             add(a, "FMT-ARGS",
                 name + "() conversion %" + convs[i].len + std::string(1, cv) + " expects " + want + " but argument " +
@@ -1479,6 +1488,7 @@ struct Flow {
     // PTR-NULL-DEREF after `if (p == NULL)`: report at the if, once.
     const json* null_if = nullptr;
     bool null_reported = false;
+    bool null_after = false;  // following the NULL path past the if
 
     Flow(Checker& c) : ck(c), cx(c.cx), fn(c.fn) {}
 
@@ -1593,7 +1603,13 @@ struct Flow {
             case St::Nulled:
                 if (deref) {
                     st.erase(it);
-                    if (null_if) {
+                    if (null_if && null_after) {
+                        if (!null_reported)
+                            ck.add(ref, "PTR-NULL-DEREF",
+                                   name + " is dereferenced here, but the NULL test on line " + std::to_string(s.line) +
+                                       " lets the NULL case fall through to this statement");
+                        null_reported = true;
+                    } else if (null_if) {
                         if (!null_reported)
                             ck.add(*null_if, "PTR-NULL-DEREF",
                                    name + " is tested for NULL here and dereferenced on line " +
@@ -1727,7 +1743,7 @@ struct Flow {
                     st.erase(str_field(ref_decl(o), "id"));
                     return;
                 }
-                free_var(str_field(ref_decl(o), "id"), n, true, flag(n, "isArrayForm"));
+                free_var(str_field(ref_decl(o), "id"), n, true, flag(n, "isArrayAsWritten"));
                 return;
             }
             recurse_all();
@@ -2087,8 +2103,12 @@ struct Walker {
             for (char ch : t) low += static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
             static const std::regex ann(R"(fall[ \t-]*thr(ough|u)|no\s*break)");
             if (std::regex_search(low, ann)) continue;
-            ck.add(ls, "CTRL-FALLTHROUGH",
-                   "this case falls through into the next label without break or a [[fallthrough]] annotation");
+            // Reported at the arm's first statement, as the regex lint does
+            // (one row per arm, on the line after its label).
+            const json& at = begin_of(*real.front()).macro ? ls : *real.front();
+            ck.add(at, "CTRL-FALLTHROUGH",
+                   "this case falls through into the next label without break or a [[fallthrough]] annotation "
+                   "(line " + std::to_string(cx.line_of(begin_of(ls))) + ")");
         }
     }
 
@@ -2133,9 +2153,9 @@ struct Walker {
         if (!e || lambda_depth) return;
         const bool ret_ptr = is_pointer_type(fn.ret);
         const bool ret_ref = fn.ret.ends_with("&");
-        if (!ret_ptr && !ret_ref && !fn.ret.empty()) {
+        if ((!ret_ptr && !ret_ref && !fn.ret.empty()) || ret_ptr) {
             dangling_view(r, *e);
-            return;
+            if (!ret_ptr) return;
         }
         const auto& core = strip_casts(*e);
         const json* esc = nullptr;
@@ -2191,6 +2211,26 @@ struct Walker {
     // A view (string_view / span) of a local owning object returned by value.
     void dangling_view(const json& r, const json& e) {
         const auto& ret = fn.ret;
+        if (is_pointer_type(ret)) {
+            // `return s.c_str();` / `return v.data();` of a local owning object.
+            const auto& c = strip_all(e);
+            if (kind(c) != "CXXMemberCallExpr" || n_children(c) == 0) return;
+            const auto& me = strip_all(child(c, 0));
+            if (kind(me) != "MemberExpr" || !one_of(str_field(me, "name"), {"c_str", "data"}) || n_children(me) == 0)
+                return;
+            const auto& obj = strip_all(child(me, 0));
+            if (kind(obj) != "DeclRefExpr") return;
+            auto* v = ck.local_var(obj);
+            if (!ck.automatic(v) || kind(*v) != "VarDecl") return;
+            auto t = type_of(*v);
+            if (is_pointer_type(t) || t.find("view") != std::string::npos || t.find("span") != std::string::npos) return;
+            if (t.find("string") == std::string::npos && t.find("vector") == std::string::npos) return;
+            auto vn = str_field(*v, "name");
+            ck.add(r, "CXX-DANGLING-REF",
+                   "returns " + vn + "." + str_field(me, "name") + "() of the local " + vn +
+                       ", whose buffer is freed when the function returns");
+            return;
+        }
         if (ret.find("string_view") == std::string::npos && ret.find("span<") == std::string::npos) return;
         const json* p = &e;
         for (int guard = 0; guard < 16; ++guard) {
@@ -2354,6 +2394,33 @@ struct Walker {
         scopes.back().push_back(name);
     }
 
+    // parents.back() is an `=`: true when the expression around it uses the
+    // assigned value (not a statement, a comma's left side or a for-increment).
+    static bool assign_value_used(const std::vector<const json*>& parents) {
+        std::size_t i = parents.size() - 1;  // the `=`
+        const json* cur = parents[i];
+        while (i > 0) {
+            const json* up = parents[i - 1];
+            const auto& uk = kind(*up);
+            if (uk == "ExprWithCleanups" || uk == "ParenExpr") {
+                cur = up;
+                --i;
+                continue;
+            }
+            if (uk == "BinaryOperator" && str_field(*up, "opcode") == ",")
+                return &child(*up, 0) != cur && assign_value_used_at(parents, i - 1);
+            std::size_t at = 0;
+            for (std::size_t j = 0; j < n_children(*up); ++j)
+                if (&child(*up, j) == cur) at = j;
+            return !stmt_pos(up, at);
+        }
+        return false;
+    }
+    static bool assign_value_used_at(const std::vector<const json*>& parents, std::size_t i) {
+        std::vector<const json*> head(parents.begin(), parents.begin() + static_cast<std::ptrdiff_t>(i) + 1);
+        return assign_value_used(head);
+    }
+
     void walk(const json& n, const json* parent, std::size_t idx, std::vector<const json*>& parents) {
         if (!n.is_object()) return;
         const auto& k = kind(n);
@@ -2390,13 +2457,16 @@ struct Walker {
             if (auto it = fn.vars.find(id); it != fn.vars.end()) {
                 const bool store = parent && kind(*parent) == "BinaryOperator" && str_field(*parent, "opcode") == "=" &&
                                    idx == 0;
-                if (!store) ++it->second.reads;
+                // `if ((n = dup(fd)) < 0)`: the stored value is used by the
+                // enclosing expression, so the store is not dead even when n
+                // is never read again (the usual error-check idiom).
+                if (!store || assign_value_used(parents)) ++it->second.reads;
                 else if (!it->second.first_write && !begin_of(*parent).macro)
                     it->second.first_write = parent;
             }
         } else if (k == "IfStmt") {
             ck.assign_cond(child(n, (flag(n, "hasInit") ? 1 : 0) + (flag(n, "hasVar") ? 1 : 0)));
-            null_branch(n);
+            null_branch(n, parent, idx);
         } else if (k == "WhileStmt") {
             const auto& c = child(n, flag(n, "hasVar") ? 1 : 0);
             ck.assign_cond(c);
@@ -2465,7 +2535,12 @@ struct Walker {
     }
 
     // if (p == NULL) { ... *p ... }
-    void null_branch(const json& n) {
+    // PTR-NULL-DEREF around `if (p == NULL)` / `if (!p)` / `if (p != NULL)`:
+    //  * in the branch where p is NULL (the regex lint's rule), reported at the if;
+    //  * after the if, when that branch can fall out of it (it neither leaves
+    //    the function / loop nor gives p a value): the first dereference of p
+    //    in the following statements of the same block, reported there.
+    void null_branch(const json& n, const json* parent, std::size_t idx) {
         if (lambda_depth) return;
         std::size_t ci = (flag(n, "hasInit") ? 1 : 0) + (flag(n, "hasVar") ? 1 : 0);
         const auto& cond = strip_all(child(n, ci));
@@ -2483,11 +2558,23 @@ struct Walker {
         const auto& id = str_field(ref_decl(*var), "id");
         if (!fn.locals.contains(id)) return;
         const json* branch = null_in_then ? &child(n, ci + 1) : &child(n, ci + 2);
-        if (!branch->is_object() || branch->empty()) return;
+        const bool has_branch = branch->is_object() && !branch->empty();
         Flow fl(ck);
         fl.st[id] = {St::Nulled, cx.line_of(begin_of(n))};
         fl.null_if = &n;
-        fl.stmt(*branch);
+        if (has_branch) {
+            fl.stmt(*branch);
+            if (fl.null_reported || fl.stopped || terminates(*branch)) return;
+        } else if (null_in_then) {
+            return;
+        }
+        // The NULL path leaves the if: follow it through the rest of the block.
+        if (!parent || kind(*parent) != "CompoundStmt" || begin_of(n).macro) return;
+        auto st = fl.st.find(id);
+        if (st == fl.st.end() || st->second.st != St::Nulled) return;
+        fl.null_after = true;
+        for (std::size_t j = idx + 1; j < n_children(*parent) && !fl.stopped && !fl.null_reported; ++j)
+            fl.stmt(child(*parent, j));
     }
 
     void int_div(const json& cast) {
