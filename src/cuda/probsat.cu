@@ -9,8 +9,10 @@
 // and solve() validates it against the original formula in Z3 before anything
 // is reported. A walker that finds nothing proves nothing.
 //
-// Status: written without a GPU or nvcc on the development machine; it has
-// never been compiled or run. The CPU walker is the tested reference.
+// Status: there is no GPU and no nvcc on the development machine. This file
+// was only type-checked (host and device) with `clang++ -x cuda -nocudainc
+// --cuda-gpu-arch=sm_86 -fsyntax-only` against a stub cuda_runtime.h. It has
+// never been built by nvcc or run. The CPU walker is the tested reference.
 
 #include "prism/solver.hpp"
 
