@@ -297,7 +297,10 @@ TEST_CASE("leanbb: small overflow VCs are PROVED-CERTIFIED through the Lean-prov
         auto r = ps::solve(c, f, o);
         REQUIRE_MESSAGE(r.kind == ps::SolveResult::Unsat, name << ": " << r.note);
         if (!have_cert_chain()) {
-            CHECK_FALSE(r.certified);
+            // Without the Lean exes the Z3 bit-blaster fallback may still certify
+            // (CaDiCaL + cake_lpr); it must never claim the Lean-proved blaster.
+            CHECK(r.certificate_info.find("lean-proved") == std::string::npos);
+            if (!have_lean_tools()) CHECK(r.note.find("prism-bitblast") != std::string::npos);
             continue;
         }
         REQUIRE_MESSAGE(r.certified, name << ": " << r.note);

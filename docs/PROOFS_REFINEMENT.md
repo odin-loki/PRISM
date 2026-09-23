@@ -322,8 +322,11 @@ is claimed for them:
    arbitrary value and fails no check. Clang at `-O0` + mem2reg produces
    `undef` phi inputs for uninitialised locals (those are covered by the
    separate uninitialised-read instrumentation), and `poison` phi inputs
-   rarely; a fix is to add `check 1` (UB-POISON) on the poison edge, as
-   `Tr::operand` does for a non-phi use.
+   rarely. **Fixed in `translate.cpp`:** a `check 1` (UB-POISON) is now
+   emitted on the poison edge, as `Tr::operand` does for a non-phi use
+   (doctest "pir: poison flowing into a phi is a checked violation"). The
+   Lean translator still refuses poison phi inputs, so such functions stay
+   `outside` the proved fragment until it is extended to match.
 2. **`icmp samesign` is ignored.** Newer LLVM (the flag was added after
    LLVM 18) makes `icmp samesign` poison when the operands' signs differ;
    `translate.cpp` drops the flag. Clang 18 (the pinned front end) does not

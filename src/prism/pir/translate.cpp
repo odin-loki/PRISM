@@ -722,6 +722,15 @@ struct Tr {
                     pred = it->second;
                 }
                 Arg v = a;
+                if (kind == 2) {
+                    // Poison flowing along this edge: PRISM's strict semantics makes
+                    // creating/propagating poison a violation (the same rule as a
+                    // poison operand use above). Without this check a poison phi that
+                    // later reaches br/ret was UB in LLVM but failed no PIR check
+                    // (found by the Lean refinement proof, docs/PROOFS_REFINEMENT.md).
+                    check(pred, Arg::c(1, 1), "poison", "UB-POISON",
+                          "poison value flows into a phi (undefined behaviour folded by the front end)", 0);
+                }
                 if (kind != 0) {
                     // undef / poison incoming: an unconstrained value on that edge
                     v = havoc(pred, a.width, false, false);

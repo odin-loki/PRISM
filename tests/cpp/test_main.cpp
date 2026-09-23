@@ -4963,6 +4963,20 @@ declare { i32, i1 } @llvm.sadd.with.overflow.i32(i32, i32) #1
     CHECK(prism::pir::ir::parse_type("i1").bits == 1);
 }
 
+TEST_CASE("pir: poison flowing into a phi is a checked violation (refinement gap 1)") {
+    // A poison incoming value that reaches ret is UB in LLVM; PIR must fail a
+    // UB-POISON check on that edge, not havoc silently (docs/PROOFS_REFINEMENT.md).
+    auto t = pir_of("define i32 @f(i1 %c, i32 %x) {\nentry:\n  br i1 %c, label %a, label %b\n"
+                    "a:\n  br label %m\nb:\n  br label %m\n"
+                    "m:\n  %v = phi i32 [ poison, %a ], [ %x, %b ]\n  ret i32 %v\n}\n", "f");
+    REQUIRE(t.fn.has_value());
+    int poison_checks = 0;
+    for (auto& blk : t.fn->blocks)
+        for (auto& st : blk.stmts)
+            if (st.kind == prism::pir::Stmt::Check && st.cls == "UB-POISON") ++poison_checks;
+    CHECK(poison_checks == 1);
+}
+
 TEST_CASE("pir: unmodelled constructs are named, pointer params are Law 6") {
     auto t = pir_of("define i32 @g(ptr %p) {\nentry:\n  %v = load i32, ptr %p\n  ret i32 %v\n}\n", "g");
     CHECK_FALSE(t.fn.has_value());
