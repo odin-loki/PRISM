@@ -2971,8 +2971,8 @@ std::vector<std::string> split_comma(std::string_view s) {
     for (char ch : s) {
         if (ch == '(') ++pdepth;
         else if (ch == ')') --pdepth;
-        else if (ch == '[') ++bdepth;
-        else if (ch == ']') --bdepth;
+        else if (ch == '[' || ch == '{') ++bdepth;
+        else if (ch == ']' || ch == '}') --bdepth;
         if (ch == ',' && pdepth == 0 && bdepth == 0) {
             parts.push_back(cur);
             cur.clear();

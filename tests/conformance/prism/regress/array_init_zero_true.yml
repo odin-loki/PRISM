@@ -1,0 +1,6 @@
+format_version: 1
+input_files: array_init_zero_true.c
+language: C
+property: no-div0
+expected:
+  array_init_zero_true: true

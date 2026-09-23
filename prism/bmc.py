@@ -162,7 +162,7 @@ def _bv_zero(w: int):
 # Typed bitvector encoder for the scalar C subset. The C++ engine mirrors
 # this in src/prism/bmc_encoder.inc; both must give identical verdicts.
 #
-# Semantics (C11, LP64 x86-64; docs/CONFORMANCE.md S1-S6, F1):
+# Semantics (C11, LP64 x86-64; docs/CONFORMANCE.md S1-S7, F1):
 #  * every value carries its C type (width, signedness): TV;
 #  * integer promotions (6.3.1.1) and the usual arithmetic conversions
 #    (6.3.1.8) are applied before every arithmetic operator and comparison;
@@ -303,7 +303,10 @@ class _Enc:
         self.vars: dict[str, Any] = {}
         self.arrays: dict[str, Arr] = {}
         self.alias: dict[str, str] = {}  # pointer -> array it aliases
-        self.uninit: dict[str, Any] = {}  # name -> Bool, true = maybe uninit
+        # name -> Bool, true = maybe uninit. "@a" -> Array(BV, Bool): the
+        # per-element shadow of local array a (true = element maybe unwritten).
+        self.uninit: dict[str, Any] = {}
+        self.value_arrays: list[str] = []  # arrays used as values (escape to calls)
         self.props: list[Prop] = []
         self.pc = 0
         self.fresh = 0
@@ -363,6 +366,7 @@ class _Enc:
             self.unsigned.discard(n)
             self.vars.pop(n, None)
             self.uninit.pop(n, None)
+            self.uninit.pop("@" + n, None)
             self.arrays.pop(n, None)
             self.alias.pop(n, None)
 
@@ -426,6 +430,55 @@ class _Enc:
         except Exception:
             pass
         self.add_prop("uninit", "UNINIT-READ", flag, self.pc)
+
+    def shadow_init(self, name: str, init: bool) -> None:
+        """Declare the element shadow of array `name`: all written or none."""
+        self.uninit["@" + name] = z3.K(z3.BitVecSort(WIDTH), z3.BoolVal(not init))
+
+    def mark_elem_init(self, name: str, idx: Any) -> None:
+        u = self.uninit.get("@" + name)
+        if u is not None:
+            self.uninit["@" + name] = z3.Store(u, idx, z3.BoolVal(False))
+
+    def check_elem(self, name: str, i: TV, n: int) -> None:
+        """Reading an element never written is an indeterminate value
+        (C11 6.3.2.1p2, 6.7.9p10): UNINIT-READ. Out-of-bounds indices are the
+        OOB property's, not this one's."""
+        u = self.uninit.get("@" + name)
+        if u is None:
+            return
+        viol = z3.And(z3.Not(_oob(self, i, n)), z3.Select(u, _index32(self, i)))
+        try:
+            if z3.is_false(z3.simplify(viol)):
+                return
+        except Exception:
+            pass
+        self.add_prop("uninit", "UNINIT-READ", viol, self.pc)
+
+    def havoc_shadow(self, name: str, tag: str) -> None:
+        """A havocked loop may write any element but never unwrites one."""
+        u = self.uninit.get("@" + name)
+        if u is None:
+            return
+        self.fresh += 1
+        h = z3.Array(f"{tag}{self.fresh}_u", z3.BitVecSort(WIDTH), z3.BoolSort())
+        x = z3.BitVec(f"{tag}{self.fresh}_x", WIDTH)
+        self.uninit["@" + name] = z3.Lambda([x], z3.And(z3.Select(u, x), z3.Select(h, x)))
+
+    def escape_array(self, name: str) -> None:
+        """Array passed to an unmodelled call: the callee may write any element.
+        Its contents become unknown (quantified like a call result) and its
+        elements count as written; the unmodelled call already rules out a
+        proof (S6), so this only avoids false alarms."""
+        arr = self.arrays.get(name)
+        if arr is None:
+            return
+        self.fresh += 1
+        a = z3.Array(f"{name}_esc{self.fresh}", z3.BitVecSort(WIDTH), z3.BitVecSort(arr.w))
+        self.call_vars.append(a)
+        self.arrays[name] = Arr(a, arr.n, arr.w, arr.u)
+        if "@" + name in self.uninit:
+            self.shadow_init(name, True)
 
     def add_prop(self, name: str, cls: str, viol: Any, loc: int) -> None:
         self.props.append(Prop(name, cls, z3.And(self.path_true, viol), loc))
@@ -690,6 +743,9 @@ _CDECL_TYPE = (
     r"unsigned|signed|int|char|_Bool|bool|u?int(?:8|16|32|64)_t|"
     r"size_t|ssize_t|ptrdiff_t|u?intptr_t|u?intmax_t)"
 )
+
+# A narrow string literal (the initialiser of a char array).
+_STRING_LIT = re.compile(r'"(?:[^"\\]|\\.)*"')
 
 _CDECL_KWS = (
     "int", "unsigned", "signed", "long", "short", "char", "_Bool", "bool",
@@ -1189,11 +1245,35 @@ class Parser:
                 raise ParseFail(f"UNENCODED: element type of {name}")
             shadow(name)
             n = int(dim)
-            # Contents are arbitrary (initialisers are not modelled): a sound
-            # over-approximation, never a proof about the values.
+            init = (init or "").strip()
+            if init.startswith("{") and init.endswith("}"):
+                # Aggregate initialiser (C11 6.7.9p21): the listed elements in
+                # order, every other element zero. The items are evaluated
+                # (their UB is checked) before the name is in scope.
+                items = [x.strip() for x in _split_comma(init[1:-1])]
+                if items and not items[-1]:
+                    items.pop()  # trailing comma, or {}
+                if any(not x or x.startswith("{") for x in items):
+                    raise ParseFail(f"UNENCODED: nested initialiser of {name}")
+                if len(items) > n:
+                    raise ParseFail(f"UNENCODED: excess initialisers of {name}")
+                vals = [self._expr(e, x) for x in items]
+                arr = z3.K(z3.BitVecSort(WIDTH), z3.BitVecVal(0, ct[0]))
+                for k, v in enumerate(vals):
+                    arr = z3.Store(arr, z3.BitVecVal(k, WIDTH), e.conv(v, ct).v)
+                e.declare_array(name, Arr(arr, n, ct[0], ct[1]))
+                e.shadow_init(name, True)
+                return
+            if init and not (ct[0] == 8 and _STRING_LIT.fullmatch(init)):
+                raise ParseFail(f"UNENCODED: initialiser of {name}")
+            # No initialiser: contents arbitrary, every element unwritten. A
+            # string literal writes every element (6.7.9p14, p21); its
+            # characters are not modelled (arbitrary contents: a sound
+            # over-approximation, never a proof about the values).
             e.fresh += 1
             arr = z3.Array(f"{name}_arr{e.fresh}", z3.BitVecSort(WIDTH), z3.BitVecSort(ct[0]))
             e.declare_array(name, Arr(arr, n, ct[0], ct[1]))
+            e.shadow_init(name, bool(init))
             return
         # int x = 0;  unsigned n;  int x;
         m = _rx("(" + _CDECL_TYPE + r")\s+([A-Za-z_]\w*)(?:\s*=\s*(.*))?$").match(stmt)
@@ -1269,6 +1349,7 @@ class Parser:
         e.arrays[name] = Arr(
             z3.Store(arr.a, _index32(e, i), e.conv(v, (arr.w, arr.u)).v), arr.n, arr.w, arr.u,
         )
+        e.mark_elem_init(name, _index32(e, i))
 
     def _assert(self, e: _Enc, text: str) -> str:
         m = _re_match(r"assert\s*\((.*)\)\s*;", text, re.S)
@@ -1392,6 +1473,7 @@ class Parser:
                     e.arrays[an] = Arr(
                         z3.Const(f"{an}_hv{e.fresh}", arr.a.sort()), arr.n, arr.w, arr.u,
                     )
+                    e.havoc_shadow(an, f"{an}_hvu")
                 continue
             if n not in e.bits:
                 continue
@@ -1590,7 +1672,7 @@ def _split_semi(s: str) -> list[str]:
 
 
 def _split_comma(s: str) -> list[str]:
-    """Split on commas at paren/bracket depth 0."""
+    """Split on commas at paren/bracket/brace depth 0."""
     parts: list[str] = []
     cur: list[str] = []
     pdepth = bdepth = 0
@@ -1599,9 +1681,9 @@ def _split_comma(s: str) -> list[str]:
             pdepth += 1
         elif ch == ")":
             pdepth -= 1
-        elif ch == "[":
+        elif ch in "[{":
             bdepth += 1
-        elif ch == "]":
+        elif ch in "]}":
             bdepth -= 1
         if ch == "," and pdepth == 0 and bdepth == 0:
             parts.append("".join(cur))
@@ -1660,12 +1742,22 @@ def _block_or_stmt(text: str) -> tuple[str, str]:
 
 def _stmt(text: str) -> tuple[str, str]:
     depth = 0
+    brace = 0  # inside a `= { ... }` aggregate initialiser
     for i, ch in enumerate(text):
+        if brace:
+            if ch == "{":
+                brace += 1
+            elif ch == "}":
+                brace -= 1
+            continue
         if ch == "(":
             depth += 1
         elif ch == ")":
             depth -= 1
         elif ch == "{" and depth == 0:
+            if text[:i].rstrip().endswith("="):
+                brace = 1
+                continue
             # shouldn't start a stmt with {
             break
         elif ch == ";" and depth == 0:
@@ -2180,6 +2272,7 @@ def _pratt(e: _Enc, src: str, parser: Parser) -> TV:
             arr = e.arrays[e.canonical(name)]
             idx = e.int_val(0)
             e.add_prop("oob-read", "MEM-OOB-READ", _oob(e, idx, arr.n), e.pc)
+            e.check_elem(e.canonical(name), idx, arr.n)
             return TV(z3.Select(arr.a, _index32(e, idx)), arr.w, arr.u)
         if t == "-":
             v = e.promote(parse(110))
@@ -2426,10 +2519,12 @@ def _pratt(e: _Enc, src: str, parser: Parser) -> TV:
                     raise ParseFail(f"UNENCODED: index into unknown array {t}")
                 arr = e.arrays[e.canonical(t)]
                 e.add_prop("oob-read", "MEM-OOB-READ", _oob(e, idx, arr.n), e.pc)
+                e.check_elem(e.canonical(t), idx, arr.n)
                 return TV(z3.Select(arr.a, _index32(e, idx)), arr.w, arr.u)
             if peek() == "(" and not e.declared(t):
                 eat("(")
                 args: list[TV] = []
+                n_values = len(e.value_arrays)
                 if peek() == ")":
                     eat(")")
                 else:
@@ -2440,12 +2535,20 @@ def _pratt(e: _Enc, src: str, parser: Parser) -> TV:
                             continue
                         eat(")")
                         break
-                return _model_call(e, t, args)
+                n_calls = len(e.call_vars)
+                res = _model_call(e, t, args)
+                if len(e.call_vars) > n_calls:
+                    # unmodelled callee: every array its arguments mention escapes
+                    for an in dict.fromkeys(e.value_arrays[n_values:]):
+                        e.escape_array(an)
+                del e.value_arrays[n_values:]
+                return res
             if peek() in ("++", "--"):
                 op = eat()
                 return incdec(t, op, False)
             if e.is_array(t):
                 # pointer/array used as a value: non-null by construction
+                e.value_arrays.append(e.canonical(t))
                 return e.int_val(1)
             if t in e.bits:
                 e.check_read(t)

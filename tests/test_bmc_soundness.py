@@ -1,4 +1,4 @@
-"""BMC soundness regressions (docs/CONFORMANCE.md "Known issues" S1-S6, F1, R1).
+"""BMC soundness regressions (docs/CONFORMANCE.md "Known issues" S1-S7, F1, R1).
 
 Each function below was once PROVED although it has undefined behaviour for
 some input (a wrong proof, roadmap 6.1), or lost its verdict to an encoder
@@ -102,6 +102,47 @@ class TestKnownWrongProofs(unittest.TestCase):
         for name in ("f1", "and_guard", "kin", "w", "innocent"):
             with self.subTest(name):
                 self.assertEqual(by[name].status, laws.PROVED_UNBOUNDED, by[name].message)
+
+
+S7_SRC = """#include <string.h>
+int u1(int i) { int a[4]; a[0] = 1; return a[i & 3]; }
+int u2(int n) { int a[4]; for (int k = 0; k < n && k < 4; k++) a[k] = k; return a[0]; }
+int u3(int c) { int a[2]; if (c) a[1] = 2; a[0] = 1; return a[1]; }
+int u4(int n, int i) { int a[4]; while (n > 0) { a[n & 3] = 1; n--; } return a[i & 3]; }
+int u5(int i) { int a[2]; a[1] = i; return *a; }
+int u6(int x) { int a[2] = {x + 1, 0}; return a[1]; }
+int k1(int i) { int a[4]; for (int k = 0; k < 4; k++) a[k] = k; return a[i & 3]; }
+int k2(int i) { int a[4] = {1, 2}; return a[i & 3]; }
+int k3(int i) { int a[4] = {0}; return 100 / (a[i & 3] + 1); }
+int k4(int c, int i) { int a[2]; if (c) { a[0] = 1; a[1] = 2; } else { a[0] = 3; a[1] = 4; } return a[i & 1]; }
+int k5(int n, int i) { int a[4] = {0}; while (n > 0) { a[n & 3] = 1; n--; } return a[i & 3]; }
+int k6(int i) { char s[4] = "abc"; return s[i & 3]; }
+int m1(int i) { int a[4]; memset(a, 0, sizeof a); return 100 / (a[i & 3] + 1); }
+int m2(int i) { int a[4]; memset(a, 0, 2 * sizeof(int)); return a[i & 3]; }
+"""
+
+
+@unittest.skipUnless(HAS_Z3, "z3-solver not installed")
+class TestUninitArrayElements(unittest.TestCase):
+    """S7: an unwritten local array element is an indeterminate value."""
+
+    def test_s7(self):
+        by = bmc_source(S7_SRC)
+        for name in ("u1", "u2", "u3", "u4", "u5"):
+            with self.subTest(name):
+                self.assertEqual(by[name].status, laws.FAILED, by[name].message)
+                self.assertEqual(by[name].cls, "UNINIT-READ")
+        # initialiser items are evaluated (UB inside an initialiser)
+        self.assertEqual(by["u6"].status, laws.FAILED, by["u6"].message)
+        self.assertEqual(by["u6"].cls, "INT-SIGNED-OVF")
+        for name in ("k1", "k2", "k3", "k4", "k5", "k6"):
+            with self.subTest(name):
+                self.assertEqual(by[name].status, laws.PROVED_UNBOUNDED, by[name].message)
+        # memset is not modelled: never a proof, and no false UNINIT-READ
+        for name in ("m1", "m2"):
+            with self.subTest(name):
+                self.assertEqual(by[name].status, laws.NEEDS_HARNESS, by[name].message)
+                self.assertIn("UNENCODED", by[name].message)
 
 
 class TestConstantTables(unittest.TestCase):

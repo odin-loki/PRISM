@@ -5970,3 +5970,47 @@ TEST_CASE("export_lean_pair writes the LLVM fragment and the PIR only when enabl
     CHECK(text.find("end\n") != std::string::npos);
     std::filesystem::remove_all(dir);
 }
+
+#ifdef PRISM_HAS_Z3
+// docs/CONFORMANCE.md S7: an unwritten local array element is an
+// indeterminate value (C11 6.3.2.1p2). Same snippets as the Python engine's
+// tests/test_bmc_soundness.py TestUninitArrayElements.
+TEST_CASE("bmc soundness: unwritten array elements are UNINIT-READ (S7)") {
+    auto by = bmc_source("sound_s7.c", R"(#include <string.h>
+int u1(int i) { int a[4]; a[0] = 1; return a[i & 3]; }
+int u2(int n) { int a[4]; for (int k = 0; k < n && k < 4; k++) a[k] = k; return a[0]; }
+int u3(int c) { int a[2]; if (c) a[1] = 2; a[0] = 1; return a[1]; }
+int u4(int n, int i) { int a[4]; while (n > 0) { a[n & 3] = 1; n--; } return a[i & 3]; }
+int u5(int i) { int a[2]; a[1] = i; return *a; }
+int u6(int x) { int a[2] = {x + 1, 0}; return a[1]; }
+int k1(int i) { int a[4]; for (int k = 0; k < 4; k++) a[k] = k; return a[i & 3]; }
+int k2(int i) { int a[4] = {1, 2}; return a[i & 3]; }
+int k3(int i) { int a[4] = {0}; return 100 / (a[i & 3] + 1); }
+int k4(int c, int i) { int a[2]; if (c) { a[0] = 1; a[1] = 2; } else { a[0] = 3; a[1] = 4; } return a[i & 1]; }
+int k5(int n, int i) { int a[4] = {0}; while (n > 0) { a[n & 3] = 1; n--; } return a[i & 3]; }
+int k6(int i) { char s[4] = "abc"; return s[i & 3]; }
+int m1(int i) { int a[4]; memset(a, 0, sizeof a); return 100 / (a[i & 3] + 1); }
+int m2(int i) { int a[4]; memset(a, 0, 2 * sizeof(int)); return a[i & 3]; }
+)");
+    for (auto name : {"u1", "u2", "u3", "u4", "u5"}) {
+        INFO(name);
+        REQUIRE(by.count(name));
+        CHECK(by[name].status == prism::laws::FAILED);
+        CHECK(by[name].cls == "UNINIT-READ");
+    }
+    REQUIRE(by.count("u6"));  // initialiser items are evaluated
+    CHECK(by["u6"].status == prism::laws::FAILED);
+    CHECK(by["u6"].cls == "INT-SIGNED-OVF");
+    for (auto name : {"k1", "k2", "k3", "k4", "k5", "k6"}) {
+        INFO(name);
+        REQUIRE(by.count(name));
+        CHECK(by[name].status == prism::laws::PROVED_UNBOUNDED);
+    }
+    for (auto name : {"m1", "m2"}) {  // memset unmodelled: never a proof
+        INFO(name);
+        REQUIRE(by.count(name));
+        CHECK(by[name].status == prism::laws::NEEDS_HARNESS);
+        CHECK(by[name].message.find("UNENCODED") != std::string::npos);
+    }
+}
+#endif
