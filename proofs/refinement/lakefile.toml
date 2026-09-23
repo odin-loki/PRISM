@@ -1,0 +1,22 @@
+name = "prism-refinement"
+version = "0.1.0"
+defaultTargets = ["PrismRefine", "pir_lean_check"]
+
+[leanOptions]
+autoImplicit = false
+# Style lint only (it lists simp lemmas a call did not need); every other
+# warning, and any `sorry`, fails proofs/refinement/check.sh.
+linter.unusedSimpArgs = false
+
+# The PIR expression semantics (PrismSem.evalBin / evalPred / ubBin) is
+# imported read-only from proofs/semantics, not copied.
+[[require]]
+name = "prism-semantics"
+path = "../semantics"
+
+[[lean_lib]]
+name = "PrismRefine"
+
+[[lean_exe]]
+name = "pir_lean_check"
+root = "CheckMain"

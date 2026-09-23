@@ -1,0 +1,259 @@
+/-
+PRISM refinement — the LLVM-fragment → PIR translator, written to mirror
+`src/prism/pir/translate.cpp` statement for statement on the fragment:
+
+* variables: parameters first, then one variable per SSA result in textual
+  order (phis before the other instructions of a block; `icmp` results are
+  `i1`), then temporaries in the order the translator allocates them
+  (`Tr::newvar`);
+* block `i` of the LLVM function is PIR block `i` (no calls in the fragment,
+  so `head[q] == tail[q]`);
+* an operand that is the constant `poison` becomes `check 1` (UB-POISON) and
+  a `havoc` temporary (`Tr::operand`);
+* each instruction gets exactly the checks `Tr::binop` / `Tr::inst` insert
+  for its opcode and flags, in the same order, with the same property name
+  and taxonomy class, each as `t := test(a, b); check t` (`Tr::p2`);
+* `unreachable` becomes `check 1` (CXX-UNREACHABLE) and `stop`.
+
+Where the C++ translator would throw `UNENCODED`, or where the input is not
+in the fragment this file models, `translate` returns an error; the
+correspondence checker then reports the function as outside the fragment
+instead of comparing it.  `translate` additionally rejects, as outside the
+fragment, IR the LLVM verifier would reject anyway (duplicate SSA or block
+names, flags an opcode cannot carry) — on such input `translate.cpp` has no
+defined meaning to mirror — and a `poison` incoming value of a phi, which is
+a gap in `translate.cpp` (it havocs the value with no check; see
+docs/PROOFS_REFINEMENT.md).
+-/
+import PrismRefine.Pir
+
+namespace PrismRefine
+
+open PrismSem
+
+/-- Index and declared width of a name (first match). -/
+def findName : List (String × Nat) → String → Option (Nat × Nat)
+  | [], _ => none
+  | (m, w) :: t, n => if m = n then some (0, w) else (findName t n).map (fun p => (p.1 + 1, p.2))
+
+/-- `int_width`: PIR models `i1` … `i64`. -/
+def okW (w : Nat) : Bool := 1 ≤ w && w ≤ 64
+
+/-- `Tr::operand`.  `keep`: the use does not overwrite the argument width
+(branch and select conditions, return values); otherwise the argument gets
+the instruction's width `w` (`a.width = w` in `Tr::binop` etc.). -/
+def trOpnd (names : List (String × Nat)) (w : Nat) (keep : Bool) (k : Nat) :
+    Opnd → Except String (List PStmt × List Nat × Arg)
+  | .const b => .ok ([], [], .c w (b % 2 ^ w))
+  | .reg n =>
+    match findName names n with
+    | some (i, wd) => .ok ([], [], .v i (if keep then wd else w))
+    | none => .error s!"UNENCODED: value %{n}"
+  | .poison => .ok ([.check (.c 1 1) "poison" "UB-POISON", .havoc k], [w], .v k w)
+
+/-- One inserted check. -/
+inductive Chk where
+  /-- `t := op(a, b); check t` (`Tr::p2` + `Tr::check`). -/
+  | p (op : POp) (a b : Arg) (prop cls : String)
+  /-- `or disjoint`: `t1 := and a b; t2 := ne t1 0; check t2`. -/
+  | disj (a b : Arg) (w : Nat)
+  deriving DecidableEq, Repr
+
+def Chk.emit (k : Nat) : Chk → List PStmt × List Nat
+  | .p op a b prop cls => ([.assign k op [a, b], .check (.v k 1) prop cls], [1])
+  | .disj a b w =>
+    ([.assign k (.bin .and) [a, b], .assign (k + 1) (.cmp .ne) [.v k w, .c w 0],
+      .check (.v (k + 1) 1) "disjoint" "UB-POISON"], [w, 1])
+
+def emitAll (k : Nat) : List Chk → List PStmt × List Nat
+  | [] => ([], [])
+  | c :: cs =>
+    let r1 := c.emit k
+    let r2 := emitAll (k + r1.2.length) cs
+    (r1.1 ++ r2.1, r1.2 ++ r2.2)
+
+def opt (b : Bool) (c : Chk) : List Chk := if b then [c] else []
+
+/-- The checks `Tr::binop` inserts, in order. -/
+def checks (op : BinOp) (fl : LFlags) (w : Nat) (A B : Arg) : List Chk :=
+  let zero := Arg.c w 0
+  match op with
+  | .add => opt fl.nsw (.p (.ovf .sadd) A B "ovf+" "INT-SIGNED-OVF") ++
+            opt fl.nuw (.p (.ovf .uadd) A B "wrap+" "UB-POISON")
+  | .sub => opt fl.nsw (.p (.ovf .ssub) A B "ovf-" "INT-SIGNED-OVF") ++
+            opt fl.nuw (.p (.ovf .usub) A B "wrap-" "UB-POISON")
+  | .mul => opt fl.nsw (.p (.ovf .smul) A B "ovf*" "INT-SIGNED-OVF") ++
+            opt fl.nuw (.p (.ovf .umul) A B "wrap*" "UB-POISON")
+  | .udiv => [.p (.cmp .eq) B zero "div0" "INT-DIV-ZERO"] ++
+             opt fl.exact (.p .inexactU A B "exact" "UB-POISON")
+  | .urem => [.p (.cmp .eq) B zero "mod0" "INT-DIV-ZERO"]
+  | .sdiv => [.p (.cmp .eq) B zero "div0" "INT-DIV-ZERO", .p .sdivOvf A B "divovf" "INT-SIGNED-OVF"] ++
+             opt fl.exact (.p .inexactS A B "exact" "UB-POISON")
+  | .srem => [.p (.cmp .eq) B zero "mod0" "INT-DIV-ZERO", .p .sdivOvf A B "divovf" "INT-SIGNED-OVF"]
+  | .shl => [.p .shiftOob A B "shift" "INT-SHIFT-UB"] ++
+            opt fl.csigned (.p .shlSOvf A B "shift-base" "INT-SHIFT-UB") ++
+            opt fl.nsw (.p .shlNswOvf A B "shl-nsw" "UB-POISON") ++
+            opt fl.nuw (.p .shlNuwOvf A B "shl-nuw" "UB-POISON")
+  | .lshr => [.p .shiftOob A B "shift" "INT-SHIFT-UB"] ++
+             opt fl.exact (.p .lostBitsL A B "exact" "UB-POISON")
+  | .ashr => [.p .shiftOob A B "shift" "INT-SHIFT-UB"] ++
+             opt fl.exact (.p .lostBitsA A B "exact" "UB-POISON")
+  | .and => []
+  | .or => opt fl.disjoint (.disj A B w)
+  | .xor => []
+
+/-- Flags an opcode can carry in valid IR (anything else: outside the
+fragment). -/
+def flagsOk (op : BinOp) (fl : LFlags) : Bool :=
+  match op with
+  | .add | .sub | .mul => !fl.exact && !fl.disjoint && !fl.csigned
+  | .udiv | .sdiv => !fl.nsw && !fl.nuw && !fl.disjoint && !fl.csigned
+  | .shl => !fl.exact && !fl.disjoint
+  | .lshr | .ashr => !fl.nsw && !fl.nuw && !fl.disjoint && !fl.csigned
+  | .or => !fl.nsw && !fl.nuw && !fl.exact && !fl.csigned
+  | .urem | .srem | .and | .xor => !fl.nsw && !fl.nuw && !fl.exact && !fl.disjoint && !fl.csigned
+
+/-- The variable of a result, which must have been declared with width `w`. -/
+def dstIdx (names : List (String × Nat)) (d : String) (w : Nat) : Except String Nat :=
+  match findName names d with
+  | some (i, w') => if w' = w then .ok i else .error s!"width mismatch for %{d}"
+  | none => .error s!"undeclared result %{d}"
+
+def need (b : Bool) (msg : String) : Except String Unit := if b then .ok () else .error msg
+
+def trInst (names : List (String × Nat)) (k : Nat) : Inst → Except String (List PStmt × List Nat)
+  | .bin d op fl w a b => do
+    need (okW w) "UNENCODED: width"
+    need (flagsOk op fl) "outside fragment: flags"
+    let (sa, ta, A) ← trOpnd names w false k a
+    let (sb, tb, B) ← trOpnd names w false (k + ta.length) b
+    let (sc, tc) := emitAll (k + ta.length + tb.length) (checks op fl w A B)
+    let i ← dstIdx names d w
+    pure (sa ++ sb ++ sc ++ [.assign i (.bin op) [A, B]], ta ++ tb ++ tc)
+  | .icmp d p w a b => do
+    need (okW w) "UNENCODED: width"
+    let (sa, ta, A) ← trOpnd names w false k a
+    let (sb, tb, B) ← trOpnd names w false (k + ta.length) b
+    let i ← dstIdx names d 1
+    pure (sa ++ sb ++ [.assign i (.cmp p) [A, B]], ta ++ tb)
+  | .select d w c a b => do
+    need (okW w) "UNENCODED: width"
+    let (sc, tc, C) ← trOpnd names 1 true k c
+    let (sa, ta, A) ← trOpnd names w false (k + tc.length) a
+    let (sb, tb, B) ← trOpnd names w false (k + tc.length + ta.length) b
+    let i ← dstIdx names d w
+    pure (sc ++ sa ++ sb ++ [.assign i .select [C, A, B]], tc ++ ta ++ tb)
+  | .cast d ck nneg fw tw a => do
+    need (okW fw && okW tw) "UNENCODED: width"
+    need (!nneg || ck == .zext) "outside fragment: flags"
+    let (sa, ta, A) ← trOpnd names fw false k a
+    let (sc, tc) := emitAll (k + ta.length)
+      (opt nneg (.p (.cmp .slt) A (.c fw 0) "nneg" "UB-POISON"))
+    let i ← dstIdx names d tw
+    pure (sa ++ sc ++ [.assign i (.cast ck) [A]], ta ++ tc)
+
+def trInsts (names : List (String × Nat)) : Nat → List Inst → Except String (List PStmt × List Nat)
+  | _, [] => .ok ([], [])
+  | k, i :: is => do
+    let (s1, t1) ← trInst names k i
+    let (s2, t2) ← trInsts names (k + t1.length) is
+    pure (s1 ++ s2, t1 ++ t2)
+
+/-- A phi incoming value (`Tr::operand` with `use = false`: no width
+override). -/
+def trIncArg (names : List (String × Nat)) (w : Nat) : Opnd → Except String Arg
+  | .const b => .ok (.c w (b % 2 ^ w))
+  | .reg n =>
+    match findName names n with
+    | some (i, wd) => .ok (.v i wd)
+    | none => .error s!"UNENCODED: value %{n}"
+  | .poison => .error "outside fragment: poison incoming value of a phi"
+
+/-- Incoming entries; entries from a block that does not exist are dropped
+(`Tr::resolve_phis`: predecessor never translated). -/
+def trInc (F : LFunc) (names : List (String × Nat)) (w : Nat) :
+    List (Opnd × String) → Except String (List (Nat × Arg))
+  | [] => .ok []
+  | (o, pr) :: t => do
+    let a ← trIncArg names w o
+    let rest ← trInc F names w t
+    pure (match lookupBlock F pr with
+      | some j => (j, a) :: rest
+      | none => rest)
+
+def trPhi (F : LFunc) (names : List (String × Nat)) (p : PhiI) : Except String PPhi := do
+  need (okW p.w) "UNENCODED: width"
+  let i ← dstIdx names p.dst p.w
+  let inc ← trInc F names p.w p.inc
+  pure { dst := i, inc := inc }
+
+def trPhis (F : LFunc) (names : List (String × Nat)) : List PhiI → Except String (List PPhi)
+  | [] => .ok []
+  | p :: ps => do
+    let q ← trPhi F names p
+    let qs ← trPhis F names ps
+    pure (q :: qs)
+
+def target (F : LFunc) (t : String) : Except String Nat :=
+  match lookupBlock F t with
+  | some j => .ok j
+  | none => .error s!"UNENCODED: branch to unknown block {t}"
+
+def trTerm (F : LFunc) (names : List (String × Nat)) (k : Nat) :
+    LTerm → Except String (List PStmt × List Nat × PTerm)
+  | .br t => do
+    let j ← target F t
+    pure ([], [], .jmp j)
+  | .cbr c t f => do
+    let (s, tw, C) ← trOpnd names 1 true k c
+    let tj ← target F t
+    let fj ← target F f
+    pure (s, tw, .br C tj fj)
+  | .ret none => .ok ([], [], .ret none)
+  | .ret (some o) => do
+    let (s, tw, A) ← trOpnd names F.retw true k o
+    pure (s, tw, .ret (some A))
+  | .unreachable => .ok ([.check (.c 1 1) "unreachable" "CXX-UNREACHABLE"], [], .stop)
+
+def trBlock (F : LFunc) (names : List (String × Nat)) (k : Nat) (B : LBlock) :
+    Except String (PBlock × List Nat) := do
+  let phis ← trPhis F names B.phis
+  let (s1, t1) ← trInsts names k B.insts
+  let (s2, t2, T) ← trTerm F names (k + t1.length) B.term
+  pure ({ phis := phis, stmts := s1 ++ s2, term := T }, t1 ++ t2)
+
+def trBlocks (F : LFunc) (names : List (String × Nat)) :
+    Nat → List LBlock → Except String (List PBlock × List Nat)
+  | _, [] => .ok ([], [])
+  | k, B :: Bs => do
+    let (pb, t1) ← trBlock F names k B
+    let (pbs, t2) ← trBlocks F names (k + t1.length) Bs
+    pure (pb :: pbs, t1 ++ t2)
+
+def Inst.result : Inst → String × Nat
+  | .bin d _ _ w _ _ => (d, w)
+  | .icmp d _ _ _ _ => (d, 1)
+  | .select d w _ _ _ => (d, w)
+  | .cast d _ _ _ tw _ => (d, tw)
+
+/-- SSA results in textual order (`Tr::enter_frame`). -/
+def resultNames (F : LFunc) : List (String × Nat) :=
+  F.blocks.flatMap (fun B => B.phis.map (fun p => (p.dst, p.w)) ++ B.insts.map Inst.result)
+
+def nodupB : List String → Bool
+  | [] => true
+  | x :: xs => !xs.contains x && nodupB xs
+
+/-- The translator (`prism::pir::translate` on the fragment). -/
+def translate (F : LFunc) : Except String PFunc := do
+  need (F.params.all (fun p => okW p.2)) "UNENCODED: parameter type"
+  need (F.retw == 0 || okW F.retw) "UNENCODED: return type"
+  need (!F.blocks.isEmpty) "UNENCODED: empty function body"
+  let names := F.params ++ resultNames F
+  need (nodupB (names.map Prod.fst)) "outside fragment: duplicate SSA name"
+  need (nodupB (F.blocks.map LBlock.name)) "outside fragment: duplicate block name"
+  let (bs, temps) ← trBlocks F names names.length F.blocks
+  pure { vars := names.map Prod.snd ++ temps, params := List.range' 0 F.params.length,
+         retw := F.retw, blocks := bs }
+
+end PrismRefine
