@@ -1,36 +1,42 @@
 /-
 PRISM PIR — memory model, memory-safety instrumentation, and encoder
-soundness for straight-line code with memory (roadmap Part 2.5, Part 5.3
-layer "memory", Part 8.2 row "Memory model").
+soundness for programs with memory, branches and bounded loops (roadmap
+Part 2.5, Part 5.3 layer "memory", Part 8.2 rows "Memory model" and
+"Property instrumentation").
 
-Model (following roadmap 2.5, simplified):
-* a pointer is a pair (object id, byte offset); object ids are `Nat`, the
-  offset is a `BitVec 64`; object `0` is the null object and is never live;
+Model (roadmap 2.5, simplified — see docs/PROOFS_SEMANTICS.md for the gap):
+* a pointer is a pair (object id, byte offset), both `BitVec 64`; object `0`
+  is the null object and is never allocated;
 * every object has a size (`BitVec 64`), a liveness bit and byte contents
-  (`BitVec 64 → BitVec 8`); fresh objects are zero-filled;
+  (`BitVec 64 → BitVec 8`); fresh objects are zero-filled; allocation takes
+  the next object id (`next`, starting at 1);
 * statements: `alloc p n`, `free p`, `gep q p e` (q := p + e),
-  `load x p` (x : i8), `store p v` (v : i8), plus assign/assert/assume/seq.
+  `load x p` (x : i8), `store p v` (v : i8), plus assign/assert/assume/seq,
+  if/else and while (bounded as in `PrismSem.run`).
 
 Memory UB (the outcome `ub`):
 * `load`/`store` through a pointer whose object is not live (null
-  dereference, use after free) or whose offset is not `< size` (out of
-  bounds, including negative offsets, which wrap to large unsigned values);
+  dereference, use after free, wild pointer) or whose offset is not `< size`
+  (out of bounds, including negative offsets, which wrap to large unsigned);
 * `free` of a pointer whose object is not live (double free, free of null
   or of a never-allocated object) or whose offset is not 0 (invalid free).
 
-The encoder layer here covers straight-line code only: object ids are then
-static at encode time, sizes, offsets and contents are symbolic, and object
-contents are encoded as read-over-write `select` chains (the array theory
-eliminated, as in an Ackermannised / fixed-size array encoding).
+The symbolic memory is fully symbolic (object ids included): sizes,
+liveness and contents are read-over-write `select` chains indexed by
+symbolic object ids and offsets — the SMT array theory eliminated, as in an
+Ackermannised fixed-size array encoding.
 -/
 import PrismSem.Encode
+
+-- Proof scripts share simp sets across `<;>` branches; unused-argument noise is expected.
+set_option linter.unusedSimpArgs false
 
 namespace PrismSem.Mem
 
 /-! ### Concrete memory -/
 
 structure Ptr where
-  obj : Nat
+  obj : BitVec 64
   off : BitVec 64
 
 structure Obj where
@@ -41,25 +47,51 @@ structure Obj where
 structure MState where
   ρ : Env
   π : String → Ptr
-  heap : Nat → Obj
-  next : Nat
+  heap : BitVec 64 → Obj
+  next : BitVec 64
 
 def upd {α : Type} {β : Type} [DecidableEq α] (f : α → β) (a : α) (b : β) : α → β :=
   fun a' => if a' = a then b else f a'
 
+theorem upd_apply {α β : Type} [DecidableEq α] (f : α → β) (a a' : α) (b : β) :
+    upd f a b a' = if a' = a then b else f a' := rfl
+
 def deadObj : Obj := ⟨0, false, fun _ => 0⟩
 
-/-- Initial state for inputs `ρ₀`: no object is allocated, all pointer
-variables are null. -/
+/-- Initial state for inputs `ρ₀`: nothing allocated, every pointer
+variable null, next object id 1. -/
 def MState.init (ρ₀ : Env) : MState :=
   { ρ := ρ₀, π := fun _ => ⟨0, 0⟩, heap := fun _ => deadObj, next := 1 }
+
+def MState.setVar (st : MState) (w : Nat) (x : String) (v : BitVec w) : MState :=
+  { st with ρ := st.ρ.set w x v }
+
+def MState.setPtr (st : MState) (q : String) (v : Ptr) : MState :=
+  { st with π := upd st.π q v }
+
+def MState.allocObj (st : MState) (p : String) (sz : BitVec 64) : MState :=
+  { st with heap := upd st.heap st.next ⟨sz, true, fun _ => 0⟩,
+            π := upd st.π p ⟨st.next, 0⟩, next := st.next + 1 }
+
+def MState.freeObj (st : MState) (p : String) : MState :=
+  let n := (st.π p).obj
+  let o : Obj := { st.heap n with live := false }
+  { st with heap := upd st.heap n o }
+
+def MState.storeByte (st : MState) (p : String) (b : BitVec 8) : MState :=
+  let n := (st.π p).obj
+  let o : Obj := { st.heap n with data := upd (st.heap n).data (st.π p).off b }
+  { st with heap := upd st.heap n o }
+
+def MState.loadByte (st : MState) (p : String) : BitVec 8 :=
+  (st.heap (st.π p).obj).data (st.π p).off
 
 /-- Conditions that may be asserted. -/
 inductive MCond where
   | bv (c : Expr 1)
   /-- the object `p` points into is live -/
   | live (p : String)
-  /-- `p`'s offset is within its object's size -/
+  /-- `p`'s offset is below its object's size -/
   | inBounds (p : String)
   /-- `p` points to the start of its object -/
   | atBase (p : String)
@@ -75,28 +107,45 @@ inductive MStmt where
   | load (x : String) (p : String)
   | store (p : String) (v : Expr 8)
   | seq (s t : MStmt)
+  | ite (c : Expr 1) (s t : MStmt)
+  | loop (c : Expr 1) (body : MStmt)
 
 inductive MOutcome where
   | normal (st : MState)
   | fail (t : Tag)
   | blocked
+  | unwind
   | ub
 
-def MOutcome.bind : MOutcome → (MState → MOutcome) → MOutcome
+namespace MOutcome
+
+def bind : MOutcome → (MState → MOutcome) → MOutcome
   | .normal st, k => k st
   | o, _ => o
 
-def MOutcome.isNormal : MOutcome → Bool
+def isNormal : MOutcome → Bool
   | .normal _ => true
   | _ => false
 
-def MOutcome.isFail : MOutcome → Bool
+def isFail : MOutcome → Bool
   | .fail _ => true
   | _ => false
 
-def MOutcome.isUb : MOutcome → Bool
+def isUnwind : MOutcome → Bool
+  | .unwind => true
+  | _ => false
+
+def isUb : MOutcome → Bool
   | .ub => true
   | _ => false
+
+@[simp] theorem bind_normal (st : MState) (k : MState → MOutcome) : (normal st).bind k = k st := rfl
+@[simp] theorem bind_fail (t : Tag) (k : MState → MOutcome) : (fail t).bind k = .fail t := rfl
+@[simp] theorem bind_blocked (k : MState → MOutcome) : blocked.bind k = .blocked := rfl
+@[simp] theorem bind_unwind (k : MState → MOutcome) : unwind.bind k = .unwind := rfl
+@[simp] theorem bind_ub (k : MState → MOutcome) : ub.bind k = .ub := rfl
+
+end MOutcome
 
 def liveC (st : MState) (p : String) : Bool := (st.heap (st.π p).obj).live
 def inBoundsC (st : MState) (p : String) : Bool := (st.π p).off.ult (st.heap (st.π p).obj).size
@@ -112,44 +161,38 @@ def ubC (st : MState) : MCond → Bool
   | .bv c => ubE st.ρ c
   | _ => false
 
-/-- Mark the object `p` points into as freed. -/
-def MState.freeObj (st : MState) (p : String) : MState :=
-  let n := (st.π p).obj
-  let o : Obj := { st.heap n with live := false }
-  { st with heap := upd st.heap n o }
+def mloopRun (c : Expr 1) (B : MState → MOutcome) : Nat → MState → MOutcome
+  | 0, st =>
+    if ubE st.ρ c then .ub else if truth (evalE st.ρ c) then .unwind else .normal st
+  | n + 1, st =>
+    if ubE st.ρ c then .ub else
+    if truth (evalE st.ρ c) then (B st).bind (mloopRun c B n) else .normal st
 
-/-- Write byte `b` at the address `p`. -/
-def MState.storeByte (st : MState) (p : String) (b : BitVec 8) : MState :=
-  let n := (st.π p).obj
-  let o : Obj := { st.heap n with data := upd (st.heap n).data (st.π p).off b }
-  { st with heap := upd st.heap n o }
-
-/-- Concrete semantics of straight-line memory programs. -/
-def mrun : MStmt → MState → MOutcome
+/-- Bounded concrete semantics of PIR with memory (bound `k` per loop
+entry, as `PrismSem.run`). -/
+def mrun (k : Nat) : MStmt → MState → MOutcome
   | .skip, st => .normal st
   | .assign (w := w) x e, st =>
-    if ubE st.ρ e then .ub else .normal { st with ρ := st.ρ.set w x (evalE st.ρ e) }
+    if ubE st.ρ e then .ub else .normal (st.setVar w x (evalE st.ρ e))
   | .assert t c, st =>
     if ubC st c then .ub else if evalC st c then .normal st else .fail t
   | .assume c, st =>
     if ubE st.ρ c then .ub else if truth (evalE st.ρ c) then .normal st else .blocked
   | .alloc p sz, st =>
-    if ubE st.ρ sz then .ub else
-    let o : Obj := ⟨evalE st.ρ sz, true, fun _ => 0⟩
-    .normal { st with heap := upd st.heap st.next o, π := upd st.π p ⟨st.next, 0⟩, next := st.next + 1 }
+    if ubE st.ρ sz then .ub else .normal (st.allocObj p (evalE st.ρ sz))
   | .free p, st =>
     if liveC st p && atBaseC st p then .normal (st.freeObj p) else .ub
   | .gep q p e, st =>
-    if ubE st.ρ e then .ub else
-    .normal { st with π := upd st.π q ⟨(st.π p).obj, (st.π p).off + evalE st.ρ e⟩ }
+    if ubE st.ρ e then .ub else .normal (st.setPtr q ⟨(st.π p).obj, (st.π p).off + evalE st.ρ e⟩)
   | .load x p, st =>
-    if liveC st p && inBoundsC st p then
-      .normal { st with ρ := st.ρ.set 8 x ((st.heap (st.π p).obj).data (st.π p).off) }
-    else .ub
+    if liveC st p && inBoundsC st p then .normal (st.setVar 8 x (st.loadByte p)) else .ub
   | .store p v, st =>
     if ubE st.ρ v then .ub else
     if liveC st p && inBoundsC st p then .normal (st.storeByte p (evalE st.ρ v)) else .ub
-  | .seq s t, st => (mrun s st).bind (mrun t)
+  | .seq s t, st => (mrun k s st).bind (mrun k t)
+  | .ite c s t, st =>
+    if ubE st.ρ c then .ub else if truth (evalE st.ρ c) then mrun k s st else mrun k t st
+  | .loop c b, st => mloopRun c (mrun k b) k st
 
 /-! ### Memory-safety instrumentation -/
 
@@ -168,6 +211,8 @@ def minstr : MStmt → MStmt
   | .store p v =>
     .seq (mchk v) (.seq (.assert .ub (.live p)) (.seq (.assert .ub (.inBounds p)) (.store p v)))
   | .seq s t => .seq (minstr s) (minstr t)
+  | .ite c s t => .seq (mchk c) (.ite c (minstr s) (minstr t))
+  | .loop c b => .seq (mchk c) (.loop c (.seq (minstr b) (mchk c)))
 
 def mapUbM : MOutcome → MOutcome
   | .ub => .fail .ub
@@ -176,16 +221,11 @@ def mapUbM : MOutcome → MOutcome
 @[simp] theorem mapUbM_normal (st : MState) : mapUbM (.normal st) = .normal st := rfl
 @[simp] theorem mapUbM_fail (t : Tag) : mapUbM (.fail t) = .fail t := rfl
 @[simp] theorem mapUbM_blocked : mapUbM .blocked = .blocked := rfl
+@[simp] theorem mapUbM_unwind : mapUbM .unwind = .unwind := rfl
 @[simp] theorem mapUbM_ub : mapUbM .ub = .fail .ub := rfl
-@[simp] theorem MOutcome.bind_normal (st : MState) (k : MState → MOutcome) :
-    (MOutcome.normal st).bind k = k st := rfl
-@[simp] theorem MOutcome.bind_fail (t : Tag) (k : MState → MOutcome) :
-    (MOutcome.fail t).bind k = .fail t := rfl
-@[simp] theorem MOutcome.bind_blocked (k : MState → MOutcome) : MOutcome.blocked.bind k = .blocked := rfl
-@[simp] theorem MOutcome.bind_ub (k : MState → MOutcome) : MOutcome.ub.bind k = .ub := rfl
 
-theorem mrun_mchk {w : Nat} (e : Expr w) (st : MState) :
-    mrun (mchk e) st = if ubE st.ρ e then .fail .ub else .normal st := by
+theorem mrun_mchk (k : Nat) {w : Nat} (e : Expr w) (st : MState) :
+    mrun k (mchk e) st = if ubE st.ρ e then .fail .ub else .normal st := by
   have h1 : ubE st.ρ (Expr.not' (ubExpr e)) = false := by
     simp [Expr.not', Expr.tt, ubE, ubBin, ubE_ubExpr]
   have h2 : truth (evalE st.ρ (Expr.not' (ubExpr e))) = !ubE st.ρ e := by
@@ -193,11 +233,48 @@ theorem mrun_mchk {w : Nat} (e : Expr w) (st : MState) :
   simp only [mchk, mrun, ubC, evalC, h1, h2]
   cases ubE st.ρ e <;> simp
 
+theorem mloopRun_ub (c : Expr 1) (B : MState → MOutcome) (n : Nat) (st : MState)
+    (h : ubE st.ρ c = true) : mloopRun c B n st = .ub := by
+  cases n <;> simp [mloopRun, h]
+
+theorem mloopRun_minstr (k : Nat) (c : Expr 1) (b : MStmt)
+    (ihb : ∀ st, mrun k (minstr b) st = mapUbM (mrun k b st)) :
+    ∀ n st, ubE st.ρ c = false →
+      mloopRun c (mrun k (.seq (minstr b) (mchk c))) n st = mapUbM (mloopRun c (mrun k b) n st) := by
+  intro n
+  induction n with
+  | zero =>
+    intro st hu
+    by_cases hc : truth (evalE st.ρ c) <;> simp [mloopRun, hu, hc]
+  | succ n ih =>
+    intro st hu
+    by_cases hc : truth (evalE st.ρ c)
+    · have e1 : mloopRun c (mrun k (.seq (minstr b) (mchk c))) (n + 1) st
+          = (mrun k (.seq (minstr b) (mchk c)) st).bind
+              (mloopRun c (mrun k (.seq (minstr b) (mchk c))) n) := by
+        simp [mloopRun, hu, hc]
+      have e2 : mloopRun c (mrun k b) (n + 1) st = (mrun k b st).bind (mloopRun c (mrun k b) n) := by
+        simp [mloopRun, hu, hc]
+      have e3 : mrun k (.seq (minstr b) (mchk c)) st = (mapUbM (mrun k b st)).bind (mrun k (mchk c)) := by
+        show (mrun k (minstr b) st).bind (mrun k (mchk c)) = _
+        rw [ihb]
+      rw [e1, e2, e3]
+      cases hb : mrun k b st with
+      | normal st' =>
+        simp only [mapUbM_normal, MOutcome.bind_normal]
+        rw [mrun_mchk]
+        by_cases hu' : ubE st'.ρ c
+        · simp [hu', mloopRun_ub c _ n st' hu']
+        · simp only [hu', Bool.false_eq_true, ↓reduceIte, MOutcome.bind_normal]
+          exact ih st' (by simpa using hu')
+      | _ => simp
+    · simp [mloopRun, hu, hc]
+
 /-- **Memory instrumentation theorem (exact form).**  The instrumented
 program behaves as the original, except that every UB — arithmetic or
 memory (null dereference, use after free, out of bounds, double/invalid
-free) — becomes a failure of an inserted `.ub` assertion. -/
-theorem mrun_minstr (s : MStmt) : ∀ st, mrun (minstr s) st = mapUbM (mrun s st) := by
+free) — becomes the failure of an inserted `.ub` assertion. -/
+theorem mrun_minstr (k : Nat) (s : MStmt) : ∀ st, mrun k (minstr s) st = mapUbM (mrun k s st) := by
   induction s with
   | skip => intro st; rfl
   | assign x e =>
@@ -236,16 +313,34 @@ theorem mrun_minstr (s : MStmt) : ∀ st, mrun (minstr s) st = mapUbM (mrun s st
       simp [hu, hl, hb]
   | seq s t ihs iht =>
     intro st
-    show (mrun (minstr s) st).bind (mrun (minstr t)) = mapUbM ((mrun s st).bind (mrun t))
+    show (mrun k (minstr s) st).bind (mrun k (minstr t)) = mapUbM ((mrun k s st).bind (mrun k t))
     rw [ihs]
-    cases mrun s st <;> simp [iht]
+    cases mrun k s st <;> simp [iht]
+  | ite c s t ihs iht =>
+    intro st
+    show (mrun k (mchk c) st).bind (mrun k (.ite c (minstr s) (minstr t))) = mapUbM (mrun k (.ite c s t) st)
+    rw [mrun_mchk]
+    by_cases hu : ubE st.ρ c
+    · simp [hu, mrun]
+    · by_cases hc : truth (evalE st.ρ c) <;> simp [hu, hc, mrun, ihs, iht]
+  | loop c b ihb =>
+    intro st
+    show (mrun k (mchk c) st).bind (mrun k (.loop c (.seq (minstr b) (mchk c)))) =
+      mapUbM (mloopRun c (mrun k b) k st)
+    rw [mrun_mchk]
+    by_cases hu : ubE st.ρ c
+    · simp [hu, mloopRun_ub c _ k st hu]
+    · simp only [hu, Bool.false_eq_true, ↓reduceIte, MOutcome.bind_normal]
+      exact mloopRun_minstr k c b ihb k st (by simpa using hu)
 
 def MStmt.NoUbTags : MStmt → Prop
   | .assert t _ => t = .user
   | .seq s t => s.NoUbTags ∧ t.NoUbTags
+  | .ite _ s t => s.NoUbTags ∧ t.NoUbTags
+  | .loop _ b => b.NoUbTags
   | _ => True
 
-theorem mrun_ne_fail_ub (s : MStmt) (hs : s.NoUbTags) : ∀ st, mrun s st ≠ .fail .ub := by
+theorem mrun_ne_fail_ub (k : Nat) (s : MStmt) (hs : s.NoUbTags) : ∀ st, mrun k s st ≠ .fail .ub := by
   induction s with
   | assert t c =>
     intro st
@@ -257,473 +352,359 @@ theorem mrun_ne_fail_ub (s : MStmt) (hs : s.NoUbTags) : ∀ st, mrun s st ≠ .f
   | seq s t ihs iht =>
     intro st
     simp only [mrun]
-    cases h : mrun s st with
+    cases h : mrun k s st with
     | normal st' => exact iht hs.2 st'
     | fail t => have := ihs hs.1 st; rw [h] at this; simpa using this
     | _ => simp
+  | ite c s t ihs iht =>
+    intro st
+    simp only [mrun]
+    cases ubE st.ρ c <;> cases truth (evalE st.ρ c) <;> simp [ihs hs.1, iht hs.2]
+  | loop c b ihb =>
+    intro st
+    simp only [mrun]
+    have key : ∀ n st, mloopRun c (mrun k b) n st ≠ .fail .ub := by
+      intro n
+      induction n with
+      | zero => intro st; simp only [mloopRun]; cases ubE st.ρ c <;> cases truth (evalE st.ρ c) <;> simp
+      | succ n ih =>
+        intro st
+        simp only [mloopRun]
+        cases ubE st.ρ c <;> cases truth (evalE st.ρ c) <;> simp
+        cases h : mrun k b st with
+        | normal st' => exact ih st'
+        | fail t => have := ihb hs st; rw [h] at this; simpa using this
+        | _ => simp
+    exact key k st
   | _ => intro st; simp only [mrun]; repeat' split
          all_goals simp
 
 /-- **Memory-safety instrumentation (8.2 "Property instrumentation",
 memory part).**  An inserted assertion fails iff the original program
-executes an operation with UB (including every memory error). -/
-theorem minstr_fail_ub_iff (s : MStmt) (hs : s.NoUbTags) (st : MState) :
-    mrun (minstr s) st = .fail .ub ↔ mrun s st = .ub := by
+executes an operation with UB (every memory error included), within the
+bound `k`. -/
+theorem minstr_fail_ub_iff (k : Nat) (s : MStmt) (hs : s.NoUbTags) (st : MState) :
+    mrun k (minstr s) st = .fail .ub ↔ mrun k s st = .ub := by
   rw [mrun_minstr]
-  have := mrun_ne_fail_ub s hs st
-  cases h : mrun s st <;> simp_all
+  have := mrun_ne_fail_ub k s hs st
+  cases h : mrun k s st <;> simp_all
 
-/-! ### Symbolic memory and the encoder (straight-line) -/
+/-! ### Reference (unbounded) semantics with memory -/
 
-/-- Symbolic object: static liveness, symbolic size, contents as a
-read-over-write function from a symbolic offset to a symbolic byte. -/
-structure SObj where
-  size : Expr 64
-  live : Bool
-  data : Expr 64 → Expr 8
+/-- Statements without sub-statements. -/
+def MStmt.atomic : MStmt → Bool
+  | .seq .. | .ite .. | .loop .. => false
+  | _ => true
 
-structure MSym where
-  σ : Subst
-  π : String → Nat × Expr 64
-  heap : Nat → SObj
-  next : Nat
-  g : Expr 1
-  fl : Expr 1
-  ub : Expr 1
+/-- Big-step reference semantics.  Atomic statements take their meaning
+from `mrun` (which does not depend on the bound for them, `mrun_atomic`);
+loops iterate without bound. -/
+inductive MBigStep : MStmt → MState → MOutcome → Prop where
+  | atom {s st} : s.atomic = true → MBigStep s st (mrun 0 s st)
+  | seq_normal {s t st st' o} :
+      MBigStep s st (.normal st') → MBigStep t st' o → MBigStep (.seq s t) st o
+  | seq_abrupt {s t st o} :
+      MBigStep s st o → o.isNormal = false → MBigStep (.seq s t) st o
+  | ite_ub {c s t st} : ubE st.ρ c = true → MBigStep (.ite c s t) st .ub
+  | ite_true {c s t st o} :
+      ubE st.ρ c = false → truth (evalE st.ρ c) = true → MBigStep s st o → MBigStep (.ite c s t) st o
+  | ite_false {c s t st o} :
+      ubE st.ρ c = false → truth (evalE st.ρ c) = false → MBigStep t st o → MBigStep (.ite c s t) st o
+  | loop_ub {c b st} : ubE st.ρ c = true → MBigStep (.loop c b) st .ub
+  | loop_exit {c b st} :
+      ubE st.ρ c = false → truth (evalE st.ρ c) = false → MBigStep (.loop c b) st (.normal st)
+  | loop_normal {c b st st' o} :
+      ubE st.ρ c = false → truth (evalE st.ρ c) = true →
+      MBigStep b st (.normal st') → MBigStep (.loop c b) st' o → MBigStep (.loop c b) st o
+  | loop_abrupt {c b st o} :
+      ubE st.ρ c = false → truth (evalE st.ρ c) = true →
+      MBigStep b st o → o.isNormal = false → MBigStep (.loop c b) st o
 
-def SObj.toObj (ρ₀ : Env) (o : SObj) : Obj :=
-  ⟨evalE ρ₀ o.size, o.live, fun i => evalE ρ₀ (o.data (.const i))⟩
+theorem mrun_atomic (k : Nat) (s : MStmt) (h : s.atomic = true) (st : MState) :
+    mrun k s st = mrun 0 s st := by
+  cases s <;> simp_all [MStmt.atomic, mrun]
 
-/-- The concrete state a symbolic state denotes at inputs `ρ₀`. -/
-def MSym.toState (S : MSym) (ρ₀ : Env) : MState :=
-  { ρ := S.σ.eval ρ₀,
-    π := fun p => ⟨(S.π p).1, evalE ρ₀ (S.π p).2⟩,
-    heap := fun n => (S.heap n).toObj ρ₀,
-    next := S.next }
+theorem mrun_atomic_ne_unwind (s : MStmt) (h : s.atomic = true) (st : MState) :
+    mrun 0 s st ≠ .unwind := by
+  cases s <;> simp only [MStmt.atomic, Bool.false_eq_true] at h <;> simp only [mrun] <;>
+    repeat' split
+  all_goals simp
 
-/-- Symbolic contents respect evaluation (true of every read-over-write
-chain the encoder builds). -/
-def DataWF (d : Expr 64 → Expr 8) : Prop :=
-  ∀ ρ₀ o₁ o₂, evalE ρ₀ o₁ = evalE ρ₀ o₂ → evalE ρ₀ (d o₁) = evalE ρ₀ (d o₂)
+theorem MBigStep.not_unwind {s st o} (h : MBigStep s st o) : o ≠ .unwind := by
+  induction h with
+  | atom ha => exact mrun_atomic_ne_unwind _ ha _
+  | seq_normal _ _ _ ih2 => exact ih2
+  | seq_abrupt _ _ ih => exact ih
+  | ite_true _ _ _ ih => exact ih
+  | ite_false _ _ _ ih => exact ih
+  | loop_normal _ _ _ _ _ ih2 => exact ih2
+  | loop_abrupt _ _ _ _ ih => exact ih
+  | _ => simp
 
-def MSym.WF (S : MSym) : Prop := ∀ n, DataWF (S.heap n).data
+theorem MBigStep.det {s st o₁ o₂} (h₁ : MBigStep s st o₁) (h₂ : MBigStep s st o₂) : o₁ = o₂ := by
+  induction h₁ generalizing o₂ with
+  | atom ha =>
+    cases h₂ <;> first | rfl | simp [MStmt.atomic] at ha
+  | seq_normal _ _ ih1 ih2 =>
+    cases h₂ with
+    | atom ha => simp [MStmt.atomic] at ha
+    | seq_normal ha hb => cases ih1 ha; exact ih2 hb
+    | seq_abrupt ha hn => have := ih1 ha; subst this; simp [MOutcome.isNormal] at hn
+  | seq_abrupt _ hn ih =>
+    cases h₂ with
+    | atom ha => simp [MStmt.atomic] at ha
+    | seq_normal ha _ => have := ih ha; subst this; simp [MOutcome.isNormal] at hn
+    | seq_abrupt ha _ => exact ih ha
+  | loop_normal hu hc _ _ ih1 ih2 =>
+    cases h₂ with
+    | atom ha => simp [MStmt.atomic] at ha
+    | loop_ub h => simp_all
+    | loop_exit _ h => simp_all
+    | loop_normal _ _ ha hb => cases ih1 ha; exact ih2 hb
+    | loop_abrupt _ _ ha hn => have := ih1 ha; subst this; simp [MOutcome.isNormal] at hn
+  | loop_abrupt hu hc _ hn ih =>
+    cases h₂ with
+    | atom ha => simp [MStmt.atomic] at ha
+    | loop_ub h => simp_all
+    | loop_exit _ h => simp_all
+    | loop_normal _ _ ha _ => have := ih ha; subst this; simp [MOutcome.isNormal] at hn
+    | loop_abrupt _ _ ha _ => exact ih ha
+  | ite_true hu hc _ ih =>
+    cases h₂ with
+    | atom ha => simp [MStmt.atomic] at ha
+    | ite_ub h => simp_all
+    | ite_true _ _ h => exact ih h
+    | ite_false _ h _ => simp_all
+  | ite_false hu hc _ ih =>
+    cases h₂ with
+    | atom ha => simp [MStmt.atomic] at ha
+    | ite_ub h => simp_all
+    | ite_true _ h _ => simp_all
+    | ite_false _ _ h => exact ih h
+  | ite_ub hu =>
+    cases h₂ with
+    | atom ha => simp [MStmt.atomic] at ha
+    | _ => simp_all
+  | loop_ub hu =>
+    cases h₂ with
+    | atom ha => simp [MStmt.atomic] at ha
+    | _ => simp_all
+  | loop_exit hu hc =>
+    cases h₂ with
+    | atom ha => simp [MStmt.atomic] at ha
+    | _ => simp_all
 
-open Expr in
-def okExpr (S : MSym) (p : String) : Expr 1 :=
-  and' (if (S.heap (S.π p).1).live then tt else ff) (.icmp .ult (S.π p).2 (S.heap (S.π p).1).size)
+theorem mloopRun_sound (c : Expr 1) (b : MStmt) (B : MState → MOutcome)
+    (hB : ∀ st o, B st = o → o ≠ .unwind → MBigStep b st o) :
+    ∀ n st o, mloopRun c B n st = o → o ≠ .unwind → MBigStep (.loop c b) st o := by
+  intro n
+  induction n with
+  | zero =>
+    intro st o h hne
+    simp only [mloopRun] at h
+    by_cases hu : ubE st.ρ c
+    · simp [hu] at h; subst h; exact .loop_ub hu
+    · by_cases hc : truth (evalE st.ρ c)
+      · simp [hu, hc] at h; subst h; exact absurd rfl hne
+      · simp [hu, hc] at h; subst h
+        exact .loop_exit (by simpa using hu) (by simpa using hc)
+  | succ n ih =>
+    intro st o h hne
+    simp only [mloopRun] at h
+    by_cases hu : ubE st.ρ c
+    · simp [hu] at h; subst h; exact .loop_ub hu
+    · have hu' : ubE st.ρ c = false := by simpa using hu
+      by_cases hc : truth (evalE st.ρ c)
+      · simp [hu, hc] at h
+        cases hb : B st with
+        | normal st' =>
+          rw [hb] at h
+          exact .loop_normal hu' hc (hB st _ hb (by simp)) (ih st' o h hne)
+        | _ =>
+          rw [hb] at h; simp [MOutcome.bind] at h; subst h
+          exact .loop_abrupt hu' hc (hB st _ hb hne) (by simp [MOutcome.isNormal])
+      · simp [hu, hc] at h; subst h
+        exact .loop_exit hu' (by simpa using hc)
 
-open Expr in
-def freeOkExpr (S : MSym) (p : String) : Expr 1 :=
-  and' (if (S.heap (S.π p).1).live then tt else ff) (.icmp .eq (S.π p).2 (.const 0#64))
-
-open Expr in
-def condExpr (S : MSym) : MCond → Expr 1
-  | .bv c => c.subst S.σ
-  | .live p => if (S.heap (S.π p).1).live then tt else ff
-  | .inBounds p => .icmp .ult (S.π p).2 (S.heap (S.π p).1).size
-  | .atBase p => .icmp .eq (S.π p).2 (.const 0#64)
-
-def ubCond : MCond → Expr 1
-  | .bv c => ubExpr c
-  | _ => Expr.ff
-
-open Expr in
-/-- Record UB condition `u` (already over the inputs) and continue where it
-is false. -/
-def MSym.guardUb (S : MSym) (u : Expr 1) : MSym :=
-  { S with ub := or' S.ub (and' S.g u), g := and' S.g (not' u) }
-
-open Expr in
-def menc : MStmt → MSym → MSym
-  | .skip, S => S
-  | .assign (w := w) x e, S =>
-    let S₁ := S.guardUb ((ubExpr e).subst S.σ)
-    { S₁ with σ := S₁.σ.set w x (e.subst S₁.σ) }
-  | .assert _ c, S =>
-    let S₁ := S.guardUb ((ubCond c).subst S.σ)
-    let c' := condExpr S₁ c
-    { S₁ with fl := or' S₁.fl (and' S₁.g (not' c')), g := and' S₁.g c' }
-  | .assume c, S =>
-    let S₁ := S.guardUb ((ubExpr c).subst S.σ)
-    { S₁ with g := and' S₁.g (c.subst S₁.σ) }
-  | .alloc p sz, S =>
-    let S₁ := S.guardUb ((ubExpr sz).subst S.σ)
-    let ob : SObj := ⟨sz.subst S₁.σ, true, fun _ => .const 0#8⟩
-    { S₁ with heap := upd S₁.heap S₁.next ob, π := upd S₁.π p (S₁.next, .const 0#64), next := S₁.next + 1 }
-  | .free p, S =>
-    let S₁ := S.guardUb (not' (freeOkExpr S p))
-    let ob' : SObj := { S₁.heap (S₁.π p).1 with live := false }
-    { S₁ with heap := upd S₁.heap (S₁.π p).1 ob' }
-  | .gep q p e, S =>
-    let S₁ := S.guardUb ((ubExpr e).subst S.σ)
-    { S₁ with π := upd S₁.π q ((S₁.π p).1, .bin .add {} (S₁.π p).2 (e.subst S₁.σ)) }
-  | .load x p, S =>
-    let S₁ := S.guardUb (not' (okExpr S p))
-    { S₁ with σ := S₁.σ.set 8 x ((S₁.heap (S₁.π p).1).data (S₁.π p).2) }
-  | .store p v, S =>
-    let S₀ := S.guardUb ((ubExpr v).subst S.σ)
-    let S₁ := S₀.guardUb (not' (okExpr S₀ p))
-    let o := (S₁.π p).2
-    let ob := S₁.heap (S₁.π p).1
-    let ob' : SObj := { ob with data := fun o' => .select (.icmp .eq o' o) (v.subst S₁.σ) (ob.data o') }
-    { S₁ with heap := upd S₁.heap (S₁.π p).1 ob' }
-  | .seq s t, S => menc t (menc s S)
-
-def MSym.init : MSym :=
-  { σ := Subst.id, π := fun _ => (0, .const 0#64),
-    heap := fun _ => ⟨.const 0#64, false, fun _ => .const 0#8⟩, next := 1,
-    g := Expr.tt, fl := Expr.ff, ub := Expr.ff }
-
-def mencode (p : MStmt) : MSym := menc p MSym.init
-
-/-! ### Soundness of the memory encoding -/
-
-structure MSpec (ρ₀ : Env) (S S' : MSym) (o : MOutcome) : Prop where
-  g : truth (evalE ρ₀ S'.g) = o.isNormal
-  fl : truth (evalE ρ₀ S'.fl) = (truth (evalE ρ₀ S.fl) || o.isFail)
-  ub : truth (evalE ρ₀ S'.ub) = (truth (evalE ρ₀ S.ub) || o.isUb)
-  st : ∀ st', o = .normal st' → S'.toState ρ₀ = st'
-  wf : S'.WF
-
-def mtarget (ρ₀ : Env) (S : MSym) (s : MStmt) : MOutcome :=
-  if truth (evalE ρ₀ S.g) then mrun s (S.toState ρ₀) else .blocked
-
-theorem upd_apply {α β : Type} [DecidableEq α] (f : α → β) (a a' : α) (b : β) :
-    upd f a b a' = if a' = a then b else f a' := rfl
-
-theorem guardUb_eval (ρ₀ : Env) (S : MSym) (u : Expr 1) :
-    (S.guardUb u).σ = S.σ ∧ (S.guardUb u).π = S.π ∧ (S.guardUb u).heap = S.heap ∧
-    (S.guardUb u).next = S.next ∧ (S.guardUb u).fl = S.fl ∧
-    truth (evalE ρ₀ (S.guardUb u).g) = (truth (evalE ρ₀ S.g) && !truth (evalE ρ₀ u)) ∧
-    truth (evalE ρ₀ (S.guardUb u).ub) = (truth (evalE ρ₀ S.ub) || (truth (evalE ρ₀ S.g) && truth (evalE ρ₀ u))) := by
-  simp [MSym.guardUb]
-
-theorem guardUb_toState (ρ₀ : Env) (S : MSym) (u : Expr 1) :
-    (S.guardUb u).toState ρ₀ = S.toState ρ₀ := rfl
-
-theorem guardUb_wf (S : MSym) (u : Expr 1) (h : S.WF) : (S.guardUb u).WF := h
-
-theorem okExpr_eval (ρ₀ : Env) (S : MSym) (p : String) :
-    truth (evalE ρ₀ (okExpr S p)) = (liveC (S.toState ρ₀) p && inBoundsC (S.toState ρ₀) p) := by
-  unfold okExpr liveC inBoundsC MSym.toState SObj.toObj
-  by_cases h : (S.heap (S.π p).1).live <;> simp [h, evalE, evalPred]
-
-theorem freeOkExpr_eval (ρ₀ : Env) (S : MSym) (p : String) :
-    truth (evalE ρ₀ (freeOkExpr S p)) = (liveC (S.toState ρ₀) p && atBaseC (S.toState ρ₀) p) := by
-  unfold freeOkExpr liveC atBaseC MSym.toState SObj.toObj
-  by_cases h : (S.heap (S.π p).1).live <;> simp [h, evalE, evalPred]
-
-theorem condExpr_eval (ρ₀ : Env) (S : MSym) (c : MCond) :
-    truth (evalE ρ₀ (condExpr S c)) = evalC (S.toState ρ₀) c := by
-  cases c with
-  | bv c => simp [condExpr, evalC, evalE_subst, MSym.toState]
-  | live p =>
-    unfold condExpr evalC liveC MSym.toState SObj.toObj
-    by_cases h : (S.heap (S.π p).1).live <;> simp [h]
-  | inBounds p => simp [condExpr, evalC, inBoundsC, MSym.toState, SObj.toObj, evalE, evalPred]
-  | atBase p => simp [condExpr, evalC, atBaseC, MSym.toState, evalE, evalPred]
-
-theorem ubCond_eval (ρ₀ : Env) (S : MSym) (c : MCond) :
-    truth (evalE ρ₀ ((ubCond c).subst S.σ)) = ubC (S.toState ρ₀) c := by
-  cases c with
-  | bv c => simp [ubCond, ubC, truth_ub_subst, MSym.toState]
-  | _ => simp [ubCond, ubC, Expr.subst, Expr.ff, evalE]
-
-theorem truth_ub_subst' (ρ₀ : Env) (S : MSym) {w : Nat} (e : Expr w) :
-    truth (evalE ρ₀ ((ubExpr e).subst S.σ)) = ubE (S.toState ρ₀).ρ e := by
-  simp [truth_ub_subst, MSym.toState]
-
-theorem evalE_subst' (ρ₀ : Env) (S : MSym) {w : Nat} (e : Expr w) :
-    evalE ρ₀ (e.subst S.σ) = evalE (S.toState ρ₀).ρ e := by
-  simp [evalE_subst, MSym.toState]
-
-/-- A generic lemma for statements that first guard on a UB condition `u`
-and then either stop (`ub`) or make a normal step. -/
-theorem mspec_guarded (ρ₀ : Env) (S S' : MSym) (u : Expr 1) (bad : Bool) (next : MState)
-    (hu : truth (evalE ρ₀ u) = bad)
-    (hwf : S'.WF)
-    (hg : S'.g = (S.guardUb u).g) (hfl : S'.fl = S.fl) (hub : S'.ub = (S.guardUb u).ub)
-    (hst : S'.toState ρ₀ = next) :
-    MSpec ρ₀ S S' (if truth (evalE ρ₀ S.g) then (if bad then .ub else .normal next) else .blocked) := by
-  obtain ⟨-, -, -, -, -, eg, eub⟩ := guardUb_eval ρ₀ S u
-  refine ⟨?_, ?_, ?_, ?_, hwf⟩
-  · rw [hg, eg, hu]; by_cases g : truth (evalE ρ₀ S.g) <;> cases bad <;> simp [g, MOutcome.isNormal]
-  · rw [hfl]; by_cases g : truth (evalE ρ₀ S.g) <;> cases bad <;> simp [g, MOutcome.isFail]
-  · rw [hub, eub, hu]; by_cases g : truth (evalE ρ₀ S.g) <;> cases bad <;> simp [g, MOutcome.isUb]
-  · intro st' h
-    by_cases g : truth (evalE ρ₀ S.g) <;> cases bad <;> simp [g] at h
-    subst h; exact hst
-
-theorem MSpec.bind {ρ₀ : Env} {S S₁ S₂ : MSym} {o₁ : MOutcome} {t : MStmt}
-    (h₁ : MSpec ρ₀ S S₁ o₁) (h₂ : MSpec ρ₀ S₁ S₂ (mtarget ρ₀ S₁ t)) :
-    MSpec ρ₀ S S₂ (o₁.bind (mrun t)) := by
-  cases o₁ with
-  | normal st' =>
-    have hg : truth (evalE ρ₀ S₁.g) = true := by simpa [MOutcome.isNormal] using h₁.g
-    have he := h₁.st st' rfl
-    simp only [mtarget, hg, he, ↓reduceIte] at h₂
-    refine ⟨h₂.g, ?_, ?_, h₂.st, h₂.wf⟩
-    · rw [h₂.fl, h₁.fl]; simp [MOutcome.isFail]
-    · rw [h₂.ub, h₁.ub]; simp [MOutcome.isUb]
-  | _ =>
-    have hg : truth (evalE ρ₀ S₁.g) = false := by simpa [MOutcome.isNormal] using h₁.g
-    simp only [mtarget, hg, Bool.false_eq_true, ↓reduceIte] at h₂
-    refine ⟨?_, ?_, ?_, ?_, h₂.wf⟩
-    · rw [h₂.g]; rfl
-    · rw [h₂.fl, h₁.fl]; simp [MOutcome.isFail]
-    · rw [h₂.ub, h₁.ub]; simp [MOutcome.isUb]
-    · intro st' h; cases h
-
-theorem heap_toObj_upd (ρ₀ : Env) (h : Nat → SObj) (n : Nat) (o : SObj) :
-    (fun m => (upd h n o m).toObj ρ₀) = upd (fun m => (h m).toObj ρ₀) n (o.toObj ρ₀) := by
-  funext m; simp only [upd_apply]; split <;> rfl
-
-theorem wf_upd (h : Nat → SObj) (n : Nat) (o : SObj)
-    (hh : ∀ m, DataWF (h m).data) (ho : DataWF o.data) : ∀ m, DataWF (upd h n o m).data := by
-  intro m; simp only [upd_apply]; split
-  · exact ho
-  · exact hh m
-
-theorem menc_spec (ρ₀ : Env) (s : MStmt) :
-    ∀ S, S.WF → MSpec ρ₀ S (menc s S) (mtarget ρ₀ S s) := by
+/-- Bounded executions with memory are real executions. -/
+theorem mrun_sound (k : Nat) (s : MStmt) :
+    ∀ st o, mrun k s st = o → o ≠ .unwind → MBigStep s st o := by
   induction s with
-  | skip =>
-    intro S hwf
-    refine ⟨?_, ?_, ?_, ?_, hwf⟩ <;>
-      by_cases g : truth (evalE ρ₀ S.g) <;>
-      simp [menc, mtarget, mrun, g, MOutcome.isNormal, MOutcome.isFail, MOutcome.isUb]
-  | assign x e =>
-    intro S hwf
-    unfold mtarget
-    simp only [mrun]
-    rw [← truth_ub_subst' ρ₀ S e]
-    refine mspec_guarded ρ₀ S (menc (.assign x e) S) ((ubExpr e).subst S.σ) _ _ rfl hwf rfl rfl rfl ?_
-    simp [menc, MSym.toState, MSym.guardUb, Subst.eval_set, evalE_subst]
-  | assume c =>
-    intro S hwf
-    obtain ⟨hσ, hπ, hh, hn, hfl, hg, hub⟩ := guardUb_eval ρ₀ S ((ubExpr c).subst S.σ)
-    have htoS : (menc (.assume c) S).toState ρ₀ = S.toState ρ₀ := rfl
-    refine ⟨?_, ?_, ?_, ?_, hwf⟩
-    rotate_left 3
-    · intro st' h
-      rw [htoS]
-      by_cases g : truth (evalE ρ₀ S.g) <;>
-      by_cases u : ubE (S.toState ρ₀).ρ c <;>
-      by_cases cv : truth (evalE (S.toState ρ₀).ρ c) <;>
-      simp_all [mtarget, mrun]
-    all_goals
-      by_cases g : truth (evalE ρ₀ S.g) <;>
-      by_cases u : ubE (S.toState ρ₀).ρ c <;>
-      by_cases cv : truth (evalE (S.toState ρ₀).ρ c) <;>
-      simp_all [menc, mtarget, mrun, truth_ub_subst', evalE_subst', ubExpr_correct,
-        MOutcome.isNormal, MOutcome.isFail, MOutcome.isUb]
-  | assert t c =>
-    intro S hwf
-    obtain ⟨hσ, hπ, hh, hn, hfl, hg, hub⟩ := guardUb_eval ρ₀ S ((ubCond c).subst S.σ)
-    have hc := condExpr_eval ρ₀ (S.guardUb ((ubCond c).subst S.σ)) c
-    rw [guardUb_toState] at hc
-    have hu := ubCond_eval ρ₀ S c
-    have htoS : (menc (.assert t c) S).toState ρ₀ = S.toState ρ₀ := rfl
-    refine ⟨?_, ?_, ?_, ?_, hwf⟩
-    rotate_left 3
-    · intro st' h
-      rw [htoS]
-      by_cases g : truth (evalE ρ₀ S.g) <;>
-      by_cases u : ubC (S.toState ρ₀) c <;>
-      by_cases cv : evalC (S.toState ρ₀) c <;>
-      simp_all [mtarget, mrun]
-    all_goals
-      by_cases g : truth (evalE ρ₀ S.g) <;>
-      by_cases u : ubC (S.toState ρ₀) c <;>
-      by_cases cv : evalC (S.toState ρ₀) c <;>
-      simp_all [menc, mtarget, mrun, MOutcome.isNormal, MOutcome.isFail, MOutcome.isUb]
-  | alloc p sz =>
-    intro S hwf
-    unfold mtarget
-    simp only [mrun]
-    rw [← truth_ub_subst' ρ₀ S sz]
-    refine mspec_guarded ρ₀ S (menc (.alloc p sz) S) ((ubExpr sz).subst S.σ) _ _ rfl ?_ rfl rfl rfl ?_
-    · exact wf_upd _ _ _ hwf (fun _ _ _ _ => rfl)
-    · simp only [menc, MSym.toState, MSym.guardUb]
-      rw [heap_toObj_upd]
-      simp only [SObj.toObj, evalE, evalE_subst, MState.mk.injEq, true_and]
-      constructor
-      · funext q; simp only [upd_apply]; split <;> rfl
-      · exact ⟨rfl, trivial⟩
-  | free p =>
-    intro S hwf
-    unfold mtarget
-    simp only [mrun]
-    have e : (liveC (S.toState ρ₀) p && atBaseC (S.toState ρ₀) p) =
-        !truth (evalE ρ₀ (Expr.not' (freeOkExpr S p))) := by
-      rw [truth_eval_not, freeOkExpr_eval]; simp
-    rw [e]
-    have key : ∀ (b : Bool) (A : MOutcome), (if (!b) = true then A else MOutcome.ub) =
-        (if b then .ub else A) := by intro b A; cases b <;> rfl
-    rw [key]
-    refine mspec_guarded ρ₀ S (menc (.free p) S) (Expr.not' (freeOkExpr S p)) _ _ rfl ?_ rfl rfl rfl ?_
-    · exact wf_upd _ _ _ hwf (hwf _)
-    · simp only [menc, MSym.toState, MSym.guardUb, MState.freeObj]
-      rw [heap_toObj_upd]
-      rfl
-  | gep q p e =>
-    intro S hwf
-    unfold mtarget
-    simp only [mrun]
-    rw [← truth_ub_subst' ρ₀ S e]
-    refine mspec_guarded ρ₀ S (menc (.gep q p e) S) ((ubExpr e).subst S.σ) _ _ rfl hwf rfl rfl rfl ?_
-    simp only [menc, MSym.toState, MSym.guardUb, MState.mk.injEq, true_and]
-    refine ⟨?_, trivial⟩
-    funext r; simp only [upd_apply]; split <;> simp [evalE, evalBin, evalE_subst]
-  | load x p =>
-    intro S hwf
-    unfold mtarget
-    simp only [mrun]
-    have e : (liveC (S.toState ρ₀) p && inBoundsC (S.toState ρ₀) p) =
-        !truth (evalE ρ₀ (Expr.not' (okExpr S p))) := by
-      rw [truth_eval_not, okExpr_eval]; simp
-    rw [e]
-    have key : ∀ (b : Bool) (A : MOutcome), (if (!b) = true then A else MOutcome.ub) =
-        (if b then .ub else A) := by intro b A; cases b <;> rfl
-    rw [key]
-    refine mspec_guarded ρ₀ S (menc (.load x p) S) (Expr.not' (okExpr S p)) _ _ rfl hwf rfl rfl rfl ?_
-    simp only [menc, MSym.toState, MSym.guardUb, SObj.toObj, MState.mk.injEq, and_true]
-    rw [Subst.eval_set]
-    congr 1
-    apply hwf
-    simp [evalE]
-  | store p v =>
-    intro S hwf
-    unfold mtarget
-    simp only [mrun]
-    let S₀ := S.guardUb ((ubExpr v).subst S.σ)
-    have hS₀ : S₀.toState ρ₀ = S.toState ρ₀ := rfl
-    have e : (liveC (S.toState ρ₀) p && inBoundsC (S.toState ρ₀) p) =
-        !truth (evalE ρ₀ (Expr.not' (okExpr S₀ p))) := by
-      rw [truth_eval_not, okExpr_eval, hS₀]; simp
-    rw [e, ← truth_ub_subst' ρ₀ S v]
-    obtain ⟨-, -, -, -, -, eg0, eub0⟩ := guardUb_eval ρ₀ S ((ubExpr v).subst S.σ)
-    obtain ⟨-, -, -, -, -, eg1, eub1⟩ := guardUb_eval ρ₀ S₀ (Expr.not' (okExpr S₀ p))
-    have hdata : DataWF (fun o' => Expr.select (.icmp .eq o' (S.π p).2) (v.subst S.σ)
-        ((S.heap (S.π p).1).data o')) := by
-      intro ρ o₁ o₂ h
-      simp only [evalE, evalPred, h, hwf _ ρ o₁ o₂ h]; rfl
-    have hst : (menc (.store p v) S).toState ρ₀ =
-        (S.toState ρ₀).storeByte p (evalE (S.toState ρ₀).ρ v) := by
-      simp only [menc, MSym.toState, MSym.guardUb, MState.storeByte]
-      rw [heap_toObj_upd]
-      simp only [SObj.toObj, MState.mk.injEq, true_and, and_true]
-      congr 2
-      funext i
-      simp only [upd_apply, evalE, evalPred, evalE_subst]
-      by_cases hi : i = evalE ρ₀ (S.π p).2 <;> simp [hi]
-    have hwf' : (menc (.store p v) S).WF := wf_upd _ _ _ hwf hdata
-    refine ⟨?_, ?_, ?_, ?_, hwf'⟩
-    · show truth (evalE ρ₀ (S₀.guardUb (Expr.not' (okExpr S₀ p))).g) = _
-      rw [eg1, eg0]
-      by_cases g : truth (evalE ρ₀ S.g) <;>
-      by_cases u : truth (evalE ρ₀ ((ubExpr v).subst S.σ)) <;>
-      by_cases k : truth (evalE ρ₀ (Expr.not' (okExpr S₀ p))) <;>
-      simp [g, u, k, MOutcome.isNormal]
-    · show truth (evalE ρ₀ S.fl) = _
-      by_cases g : truth (evalE ρ₀ S.g) <;>
-      by_cases u : truth (evalE ρ₀ ((ubExpr v).subst S.σ)) <;>
-      by_cases k : truth (evalE ρ₀ (Expr.not' (okExpr S₀ p))) <;>
-      simp [g, u, k, MOutcome.isFail]
-    · show truth (evalE ρ₀ (S₀.guardUb (Expr.not' (okExpr S₀ p))).ub) = _
-      rw [eub1, eg0, eub0]
-      by_cases g : truth (evalE ρ₀ S.g) <;>
-      by_cases u : truth (evalE ρ₀ ((ubExpr v).subst S.σ)) <;>
-      by_cases k : truth (evalE ρ₀ (Expr.not' (okExpr S₀ p))) <;>
-      simp [g, u, k, MOutcome.isUb]
-    · intro st' h
-      by_cases g : truth (evalE ρ₀ S.g) <;>
-      by_cases u : truth (evalE ρ₀ ((ubExpr v).subst S.σ)) <;>
-      by_cases k : truth (evalE ρ₀ (Expr.not' (okExpr S₀ p))) <;>
-      simp [g, u, k] at h
-      subst h; exact hst
   | seq s t ihs iht =>
-    intro S hwf
-    have h1 := ihs S hwf
-    have h2 := iht (menc s S) h1.wf
-    have h := MSpec.bind h1 h2
-    have e : mtarget ρ₀ S (.seq s t) = (mtarget ρ₀ S s).bind (mrun t) := by
-      unfold mtarget; split <;> rfl
-    rw [e]; exact h
+    intro st o h hne
+    simp only [mrun] at h
+    cases hs : mrun k s st with
+    | normal st' =>
+      rw [hs] at h
+      exact .seq_normal (ihs st _ hs (by simp)) (iht st' o h hne)
+    | _ =>
+      rw [hs] at h; simp [MOutcome.bind] at h; subst h
+      exact .seq_abrupt (ihs st _ hs hne) (by simp [MOutcome.isNormal])
+  | ite c s t ihs iht =>
+    intro st o h hne
+    simp only [mrun] at h
+    by_cases hu : ubE st.ρ c
+    · simp [hu] at h; subst h; exact .ite_ub hu
+    · by_cases hc : truth (evalE st.ρ c)
+      · simp [hu, hc] at h; exact .ite_true (by simpa using hu) hc (ihs st o h hne)
+      · simp [hu, hc] at h
+        exact .ite_false (by simpa using hu) (by simpa using hc) (iht st o h hne)
+  | loop c b ihb =>
+    intro st o h hne
+    exact mloopRun_sound c b (mrun k b) ihb k st o h hne
+  | _ =>
+    intro st o h _
+    rw [mrun_atomic k _ rfl] at h
+    subst h
+    exact .atom rfl
 
-theorem MSym.init_toState (ρ₀ : Env) : MSym.init.toState ρ₀ = MState.init ρ₀ := rfl
+theorem mloopRun_mono (c : Expr 1) (B B' : MState → MOutcome)
+    (hB : ∀ st, B st ≠ .unwind → B' st = B st) :
+    ∀ n st, mloopRun c B n st ≠ .unwind → ∀ m, n ≤ m → mloopRun c B' m st = mloopRun c B n st := by
+  intro n
+  induction n with
+  | zero =>
+    intro st h m _
+    cases m with
+    | zero => rfl
+    | succ m =>
+      simp only [mloopRun] at h ⊢
+      by_cases hu : ubE st.ρ c <;> by_cases hc : truth (evalE st.ρ c) <;> simp_all
+  | succ n ih =>
+    intro st h m hm
+    obtain ⟨m, rfl⟩ : ∃ m', m = m' + 1 := ⟨m - 1, by omega⟩
+    simp only [mloopRun] at h ⊢
+    by_cases hu : ubE st.ρ c
+    · simp [hu]
+    · by_cases hc : truth (evalE st.ρ c)
+      · simp [hu, hc] at h ⊢
+        cases hb : B st with
+        | normal st' =>
+          rw [hb] at h
+          rw [hB st (by simp [hb]), hb]
+          exact ih st' h m (by omega)
+        | unwind => rw [hb] at h; simp at h
+        | _ => rw [hB st (by simp [hb]), hb]; rfl
+      · simp [hu, hc]
 
-theorem MSym.init_wf : MSym.init.WF := fun _ _ _ _ _ => rfl
+theorem mrun_mono (s : MStmt) :
+    ∀ k k', k ≤ k' → ∀ st, mrun k s st ≠ .unwind → mrun k' s st = mrun k s st := by
+  induction s with
+  | seq s t ihs iht =>
+    intro k k' hk st h
+    simp only [mrun] at h ⊢
+    cases hs : mrun k s st with
+    | normal st' =>
+      rw [hs] at h
+      rw [ihs k k' hk st (by simp [hs]), hs]
+      exact iht k k' hk st' h
+    | unwind => rw [hs] at h; simp at h
+    | _ => rw [ihs k k' hk st (by simp [hs]), hs]; rfl
+  | ite c s t ihs iht =>
+    intro k k' hk st h
+    simp only [mrun] at h ⊢
+    by_cases hu : ubE st.ρ c
+    · simp [hu]
+    · by_cases hc : truth (evalE st.ρ c)
+      · simp [hu, hc] at h ⊢; exact ihs k k' hk st h
+      · simp [hu, hc] at h ⊢; exact iht k k' hk st h
+  | loop c b ihb =>
+    intro k k' hk st h
+    simp only [mrun] at h ⊢
+    exact mloopRun_mono c (mrun k b) (mrun k' b) (fun st h => ihb k k' hk st h) k st h k' hk
+  | _ =>
+    intro k k' _ st _
+    rw [mrun_atomic k' _ rfl, mrun_atomic k _ rfl]
 
-theorem mencode_spec (p : MStmt) (ρ₀ : Env) :
-    MSpec ρ₀ MSym.init (mencode p) (mrun p (MState.init ρ₀)) := by
-  have h := menc_spec ρ₀ p MSym.init MSym.init_wf
-  unfold mtarget at h
-  unfold mencode
-  simpa [MSym.init, truth_eval_tt, ← MSym.init_toState] using h
+theorem mrun_adequate {s st o} (h : MBigStep s st o) : ∃ k, mrun k s st = o := by
+  induction h with
+  | atom ha => exact ⟨0, rfl⟩
+  | ite_ub hu => exact ⟨0, by simp [mrun, hu]⟩
+  | loop_ub hu => exact ⟨0, by simp [mrun, mloopRun, hu]⟩
+  | loop_exit hu hc => exact ⟨0, by simp [mrun, mloopRun, hu, hc]⟩
+  | ite_true hu hc _ ih =>
+    obtain ⟨k, hk⟩ := ih; exact ⟨k, by simp [mrun, hu, hc, hk]⟩
+  | ite_false hu hc _ ih =>
+    obtain ⟨k, hk⟩ := ih; exact ⟨k, by simp [mrun, hu, hc, hk]⟩
+  | @seq_normal s t st st' o h1 h2 ih1 ih2 =>
+    obtain ⟨k1, hk1⟩ := ih1
+    obtain ⟨k2, hk2⟩ := ih2
+    refine ⟨k1 + k2, ?_⟩
+    simp only [mrun]
+    rw [mrun_mono s k1 (k1 + k2) (by omega) st (by simp [hk1]), hk1]
+    rw [MOutcome.bind_normal, mrun_mono t k2 (k1 + k2) (by omega) st' (by rw [hk2]; exact h2.not_unwind), hk2]
+  | @seq_abrupt s t st o h1 hn ih =>
+    obtain ⟨k, hk⟩ := ih
+    refine ⟨k, ?_⟩
+    simp only [mrun]; rw [hk]
+    cases o <;> simp_all [MOutcome.isNormal]
+  | @loop_normal c b st st' o hu hc h1 h2 ih1 ih2 =>
+    obtain ⟨k1, hk1⟩ := ih1
+    obtain ⟨k2, hk2⟩ := ih2
+    refine ⟨k1 + k2 + 1, ?_⟩
+    simp only [mrun, mloopRun, hu, hc]
+    simp only [Bool.false_eq_true, ↓reduceIte]
+    rw [mrun_mono b k1 (k1 + k2 + 1) (by omega) st (by simp [hk1]), hk1, MOutcome.bind_normal]
+    simp only [mrun] at hk2
+    rw [← hk2]
+    exact mloopRun_mono c (mrun k2 b) (mrun (k1 + k2 + 1) b)
+      (fun st h => mrun_mono b k2 _ (by omega) st h) k2 st'
+      (by rw [hk2]; exact h2.not_unwind) (k1 + k2) (by omega)
+  | @loop_abrupt c b st o hu hc h1 hn ih =>
+    obtain ⟨k, hk⟩ := ih
+    refine ⟨k + 1, ?_⟩
+    simp only [mrun, mloopRun, hu, hc]
+    simp only [Bool.false_eq_true, ↓reduceIte]
+    rw [mrun_mono b k (k + 1) (by omega) st (by rw [hk]; exact h1.not_unwind), hk]
+    cases o <;> simp_all [MOutcome.isNormal]
 
-/-- **Exactness of the memory encoder: assertion failures.** -/
-theorem mencode_fail_iff (p : MStmt) (ρ₀ : Env) :
-    truth (evalE ρ₀ (mencode p).fl) = true ↔ ∃ t, mrun p (MState.init ρ₀) = .fail t := by
-  rw [(mencode_spec p ρ₀).fl]
-  cases mrun p (MState.init ρ₀) <;> simp [MSym.init, MOutcome.isFail]
+theorem mbigStep_iff_mrun (s : MStmt) (st : MState) (o : MOutcome) :
+    MBigStep s st o ↔ o ≠ .unwind ∧ ∃ k, mrun k s st = o :=
+  ⟨fun h => ⟨h.not_unwind, mrun_adequate h⟩,
+   fun ⟨hne, k, hk⟩ => mrun_sound k s st o hk hne⟩
 
-/-- **Exactness of the memory encoder: UB, including every memory error.** -/
-theorem mencode_ub_iff (p : MStmt) (ρ₀ : Env) :
-    truth (evalE ρ₀ (mencode p).ub) = true ↔ mrun p (MState.init ρ₀) = .ub := by
-  rw [(mencode_spec p ρ₀).ub]
-  cases mrun p (MState.init ρ₀) <;> simp [MSym.init, MOutcome.isUb]
+/-- Memory instrumentation in the reference semantics. -/
+theorem mbigStep_minstr_fail_ub_iff (s : MStmt) (hs : s.NoUbTags) (st : MState) :
+    MBigStep (minstr s) st (.fail .ub) ↔ MBigStep s st .ub := by
+  simp only [mbigStep_iff_mrun, mrun_minstr]
+  constructor
+  · rintro ⟨-, k, hk⟩
+    refine ⟨by simp, k, ?_⟩
+    have := mrun_ne_fail_ub k s hs st
+    cases h : mrun k s st <;> simp_all
+  · rintro ⟨-, k, hk⟩
+    exact ⟨by simp, k, by rw [hk]; rfl⟩
 
-/-- **Encoder soundness with memory (straight-line).**  If `fl ∨ ub` is
-unsatisfiable, no input leads to an assertion failure, arithmetic UB, null
-dereference, use after free, out-of-bounds access, double free or invalid
-free. -/
-theorem mbmc_sound (p : MStmt) (h : ¬ Sat (Expr.or' (mencode p).fl (mencode p).ub)) :
-    ∀ ρ₀, (∀ t, mrun p (MState.init ρ₀) ≠ .fail t) ∧ mrun p (MState.init ρ₀) ≠ .ub := by
-  intro ρ₀
-  refine ⟨fun t ht => h ⟨ρ₀, ?_⟩, fun hu => h ⟨ρ₀, ?_⟩⟩
-  · simp only [truth_eval_or, Bool.or_eq_true]; exact Or.inl ((mencode_fail_iff p ρ₀).2 ⟨t, ht⟩)
-  · simp only [truth_eval_or, Bool.or_eq_true]; exact Or.inr ((mencode_ub_iff p ρ₀).2 hu)
-
-/-- **Completeness with memory (straight-line):** every model is a real
-counterexample. -/
-theorem mbmc_complete (p : MStmt) (ρ₀ : Env)
-    (h : truth (evalE ρ₀ (Expr.or' (mencode p).fl (mencode p).ub)) = true) :
-    (∃ t, mrun p (MState.init ρ₀) = .fail t) ∨ mrun p (MState.init ρ₀) = .ub := by
-  simp only [truth_eval_or, Bool.or_eq_true] at h
-  rcases h with h | h
-  · exact Or.inl ((mencode_fail_iff p ρ₀).1 h)
-  · exact Or.inr ((mencode_ub_iff p ρ₀).1 h)
-
-/-! ### The classic memory errors are UB in this model (sanity checks) -/
+/-! ### Sanity checks: the classic memory errors are UB in this model -/
 
 /-- Use after free. -/
-theorem uaf_is_ub (ρ₀ : Env) :
-    mrun (.seq (.alloc "p" (.const 4#64)) (.seq (.free "p") (.load "x" "p"))) (MState.init ρ₀) = .ub := by
-  simp [mrun, MState.init, MState.freeObj, upd, liveC, atBaseC, inBoundsC, ubE, evalE, MOutcome.bind]
+theorem uaf_is_ub (k : Nat) (ρ₀ : Env) :
+    mrun k (.seq (.alloc "p" (.const 4#64)) (.seq (.free "p") (.load "x" "p"))) (MState.init ρ₀) = .ub := by
+  simp [mrun, MState.init, MState.allocObj, MState.freeObj, upd, liveC, atBaseC, inBoundsC, ubE, evalE]
 
 /-- Double free. -/
-theorem double_free_is_ub (ρ₀ : Env) :
-    mrun (.seq (.alloc "p" (.const 4#64)) (.seq (.free "p") (.free "p"))) (MState.init ρ₀) = .ub := by
-  simp [mrun, MState.init, MState.freeObj, upd, liveC, atBaseC, ubE, evalE, MOutcome.bind]
+theorem double_free_is_ub (k : Nat) (ρ₀ : Env) :
+    mrun k (.seq (.alloc "p" (.const 4#64)) (.seq (.free "p") (.free "p"))) (MState.init ρ₀) = .ub := by
+  simp [mrun, MState.init, MState.allocObj, MState.freeObj, upd, liveC, atBaseC, ubE, evalE]
 
 /-- Out of bounds (one past the end). -/
-theorem oob_is_ub (ρ₀ : Env) :
-    mrun (.seq (.alloc "p" (.const 4#64)) (.seq (.gep "q" "p" (.const 4#64)) (.load "x" "q")))
+theorem oob_is_ub (k : Nat) (ρ₀ : Env) :
+    mrun k (.seq (.alloc "p" (.const 4#64)) (.seq (.gep "q" "p" (.const 4#64)) (.load "x" "q")))
       (MState.init ρ₀) = .ub := by
-  simp [mrun, MState.init, upd, liveC, inBoundsC, ubE, evalE, MOutcome.bind]
+  simp [mrun, MState.init, MState.allocObj, MState.setPtr, upd, liveC, inBoundsC, ubE, evalE]
 
 /-- Null dereference. -/
-theorem null_deref_is_ub (ρ₀ : Env) : mrun (.load "x" "p") (MState.init ρ₀) = .ub := by
+theorem null_deref_is_ub (k : Nat) (ρ₀ : Env) : mrun k (.load "x" "p") (MState.init ρ₀) = .ub := by
   simp [mrun, MState.init, liveC, deadObj]
 
-/-- In-bounds access to a live object is fine, and reads back what was
-stored. -/
-theorem store_load_ok (ρ₀ : Env) :
-    ∃ st, mrun (.seq (.alloc "p" (.const 4#64)) (.seq (.gep "q" "p" (.const 3#64))
+/-- In-bounds access to a live object is fine and reads back the stored
+byte. -/
+theorem store_load_ok (k : Nat) (ρ₀ : Env) :
+    ∃ st, mrun k (.seq (.alloc "p" (.const 4#64)) (.seq (.gep "q" "p" (.const 3#64))
         (.seq (.store "q" (.const 7#8)) (.load "x" "q")))) (MState.init ρ₀) = .normal st ∧
       st.ρ 8 "x" = 7#8 := by
   refine ⟨_, rfl, ?_⟩
-  simp [mrun, MState.init, MState.storeByte, upd, liveC, inBoundsC, ubE, evalE, MOutcome.bind, Env.set]
+  simp [mrun, MState.init, MState.allocObj, MState.setPtr, MState.storeByte, MState.loadByte,
+    MState.setVar, upd, liveC, inBoundsC, ubE, evalE, Env.set]
 
 end PrismSem.Mem

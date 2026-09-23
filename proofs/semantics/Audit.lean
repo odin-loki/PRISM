@@ -38,3 +38,25 @@ open PrismSem
 #print axioms straightLine_encode_exact
 #print axioms loopFree_encode_exact
 #print axioms instr_encode_sound
+-- Part 2.5 / 5.3 / 8.2: memory model, memory instrumentation, memory encoder
+#print axioms Mem.MBigStep.det
+#print axioms Mem.mrun_sound
+#print axioms Mem.mrun_adequate
+#print axioms Mem.mbigStep_iff_mrun
+#print axioms Mem.mrun_minstr
+#print axioms Mem.minstr_fail_ub_iff
+#print axioms Mem.mbigStep_minstr_fail_ub_iff
+#print axioms Mem.uaf_is_ub
+#print axioms Mem.double_free_is_ub
+#print axioms Mem.oob_is_ub
+#print axioms Mem.null_deref_is_ub
+#print axioms Mem.store_load_ok
+#print axioms Mem.menc_spec
+#print axioms Mem.mencode_fail_iff
+#print axioms Mem.mencode_ub_iff
+#print axioms Mem.mencode_unwind_iff
+#print axioms Mem.mbmc_sound
+#print axioms Mem.mbmc_complete
+#print axioms Mem.mbmc_sound_unbounded
+#print axioms Mem.mloopFree_encode_exact
+#print axioms Mem.minstr_encode_sound

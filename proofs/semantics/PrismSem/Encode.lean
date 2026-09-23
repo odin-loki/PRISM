@@ -32,6 +32,9 @@ Main results (`ρ₀` ranges over all inputs = initial environments):
 -/
 import PrismSem.Instrument
 
+-- Proof scripts share simp sets across `<;>` branches; unused-argument noise is expected.
+set_option linter.unusedSimpArgs false
+
 namespace PrismSem
 
 /-! ### Substitutions (SSA) -/

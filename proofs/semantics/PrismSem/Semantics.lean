@@ -18,6 +18,9 @@ was exhausted).
 -/
 import PrismSem.Eval
 
+-- Proof scripts share simp sets across `<;>` branches; unused-argument noise is expected.
+set_option linter.unusedSimpArgs false
+
 namespace PrismSem
 
 inductive Outcome where
