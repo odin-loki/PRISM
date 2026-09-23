@@ -1,35 +1,33 @@
 /-
-PRISM techniques: a certified-mode bit-blaster (roadmap 5.4 and 8.2, row
-"Bit-blaster"; roadmap 3.2 "Certified mode").
+PRISM techniques: the certified-mode bit-blaster, circuit layer (roadmap 5.4
+and 8.2, row "Bit-blaster"; roadmap 3.2 "Certified mode").
 
-A small bitvector expression language (`BVExpr`) with `var`, `const`, `not`,
-`and`, `or`, `xor`, `add` (ripple-carry), `mul` (shift-and-add), `ite`, and
-the 1-bit predicates
-`eq`, `ult`, `slt`, is bit-blasted into an and/or/xor gate circuit and
-Tseitin-encoded into `Std.Sat.CNF Nat` (core Lean's CNF type, the one the
-verified LRAT checker `Std.Tactic.BVDecide.LRAT.check` consumes).
+This file holds the bit-level semantic facts (reused from core Lean's
+`bv_decide` development in `Init.Data.BitVec.Bitblast`), the and/or/xor gate
+circuits, their Tseitin clauses, and the specification (`Spec`, `Rep`) every
+circuit builder is proved against.  `PrismTechniques/BitblastOps.lean` builds
+the operator circuits, `PrismTechniques/BitblastDiv.lean` the divider, and
+`PrismTechniques/BitblastEncode.lean` the expression language, the encoder,
+`toCNF` and the main theorems (`toCNF_equisat`, `certified_unsat`,
+`certified_dag_unsat`).
 
-Proved (no unfinished proofs, standard axioms only):
-* `toCNF_equisat`: the CNF is satisfiable iff the formula is satisfiable;
-* `toCNF_unsat_imp`: CNF unsatisfiable ⇒ the formula is unsatisfiable (the
-  direction certified mode needs);
-* `certified_unsat`: a certificate accepted by core Lean's verified LRAT
-  checker for `toCNF φ` proves `φ` unsatisfiable.
-
-Reuse of core Lean's `bv_decide` development: the arithmetic facts come from
-`Init.Data.BitVec.Bitblast` — `BitVec.carry`, `BitVec.carry_succ`,
-`BitVec.mulRec`, `BitVec.mulRec_succ_eq`, `BitVec.getLsbD_mul` (multiplier),
-`BitVec.getLsbD_add` (ripple-carry adder), `BitVec.ult_eq_not_carry` (unsigned
-comparison as a carry chain), `BitVec.slt_eq_ult` and
-`BitVec.msb_eq_getLsbD_last` (signed comparison) — and the soundness theorem
-of the LRAT checker, `Std.Tactic.BVDecide.LRAT.check_sound`.  The circuit,
-Tseitin encoding, and equisatisfiability proof are PRISM's own.
+Reuse of core Lean: `BitVec.carry`, `BitVec.carry_succ`, `BitVec.getLsbD_add`,
+`BitVec.getLsbD_add_add_bool` (ripple-carry adder / subtractor),
+`BitVec.ult_eq_not_carry`, `BitVec.ule_eq_carry`, `BitVec.slt_eq_ult`
+(comparators), `BitVec.mulRec`, `BitVec.getLsbD_mul` (multiplier), the shift
+recurrences `shiftLeftRec` / `ushiftRightRec` / `sshiftRightRec` (barrel
+shifters), the overflow characterisations `saddOverflow_eq`, `ssubOverflow_eq`,
+`umulOverflow_eq`, `two_pow_le_toInt_mul_toInt_iff`,
+`toInt_mul_toInt_lt_neg_two_pow_iff`, the division recurrence `divRec`
+(`udiv_eq_divRec`, `umod_eq_divRec`) and the soundness theorem of the LRAT
+checker, `Std.Tactic.BVDecide.LRAT.check_sound`.  The circuits, the Tseitin
+encoding and the equisatisfiability proof are PRISM's own.
 
 Variable layout: formula input bit `j` is CNF variable `2*j`; CNF variable
 `1` is the constant `true`; gate `k` (0-based, in creation order) is CNF
-variable `2*k+3`.  A `BVExpr.var base : BVExpr w` names the input bits
-`base, …, base+w-1`; the front end gives distinct program variables disjoint
-bit ranges.
+variable `2*k+3`.  A circuit caches its gate count (`Circuit.len`) so the
+executable encoder is linear, not quadratic, in the number of gates; the
+well-formedness invariant `Circuit.WF` says the cache is right.
 -/
 import Std.Tactic.BVDecide.LRAT.Checker
 
@@ -208,41 +206,51 @@ theorem toBits_mul {w : Nat} (x y : BitVec w) : toBits (x * y) = toBits (BitVec.
   funext i
   exact BitVec.getLsbD_mul x y i
 
-/-! ## Bitvector expressions -/
 
-/-- PRISM's bit-blastable bitvector fragment. -/
-inductive BVExpr : Nat → Type
-  | var {w : Nat} (base : Nat) : BVExpr w
-  | const {w : Nat} (v : BitVec w) : BVExpr w
-  | not {w : Nat} (e : BVExpr w) : BVExpr w
-  | and {w : Nat} (a b : BVExpr w) : BVExpr w
-  | or {w : Nat} (a b : BVExpr w) : BVExpr w
-  | xor {w : Nat} (a b : BVExpr w) : BVExpr w
-  | add {w : Nat} (a b : BVExpr w) : BVExpr w
-  | ite {w : Nat} (c : BVExpr 1) (a b : BVExpr w) : BVExpr w
-  | eq {w : Nat} (a b : BVExpr w) : BVExpr 1
-  | ult {w : Nat} (a b : BVExpr w) : BVExpr 1
-  | slt {w : Nat} (a b : BVExpr w) : BVExpr 1
-  | mul {w : Nat} (a b : BVExpr w) : BVExpr w
+/-! ### More adder facts: carry out, subtraction, comparisons -/
 
-/-- Semantics under an assignment `ρ` of the input bits. -/
-def BVExpr.denote (ρ : Nat → Bool) : {w : Nat} → BVExpr w → BitVec w
-  | w, .var base => bvOf w (fun i => ρ (base + i))
-  | _, .const v => v
-  | _, .not e => ~~~(e.denote ρ)
-  | _, .and a b => a.denote ρ &&& b.denote ρ
-  | _, .or a b => a.denote ρ ||| b.denote ρ
-  | _, .xor a b => a.denote ρ ^^^ b.denote ρ
-  | _, .add a b => a.denote ρ + b.denote ρ
-  | _, .ite c a b => if (c.denote ρ).getLsbD 0 then a.denote ρ else b.denote ρ
-  | _, .eq a b => BitVec.ofBool (a.denote ρ == b.denote ρ)
-  | _, .ult a b => BitVec.ofBool ((a.denote ρ).ult (b.denote ρ))
-  | _, .slt a b => BitVec.ofBool ((a.denote ρ).slt (b.denote ρ))
-  | _, .mul a b => a.denote ρ * b.denote ρ
+theorem rippleSem_eq {w : Nat} (x y : BitVec w) (c : Bool) :
+    rippleSem (toBits x) (toBits y) c =
+      (List.range w).map (fun i => x.getLsbD i ^^ (y.getLsbD i ^^ BitVec.carry i x y c)) ++
+        [BitVec.carry w x y c] := by
+  have h := rippleSem_range x y c w 0
+  rw [BitVec.carry_zero, Nat.zero_add] at h
+  simpa only [toBits, List.range_eq_range'] using h
 
-/-- A 1-bit formula is satisfiable when some input makes it `1`. -/
-def FSat (φ : BVExpr 1) : Prop := ∃ ρ, φ.denote ρ = 1#1
+/-- The carry out of the list adder is core Lean's `BitVec.carry w`. -/
+theorem rippleSem_last {w : Nat} (x y : BitVec w) (c : Bool) :
+    (rippleSem (toBits x) (toBits y) c).getLastD false = BitVec.carry w x y c := by
+  rw [rippleSem_eq, List.getLastD_concat]
 
+theorem ult_bits' {w : Nat} (x y : BitVec w) :
+    x.ult y = !(rippleSem (toBits x) (toBits (~~~y)) true).getLastD false := by
+  rw [rippleSem_last, BitVec.ult_eq_not_carry]
+
+theorem ule_bits {w : Nat} (x y : BitVec w) :
+    x.ule y = (rippleSem (toBits y) (toBits (~~~x)) true).getLastD false := by
+  rw [rippleSem_last, BitVec.ule_eq_carry]
+
+theorem sub_eq_add_not_add_one {w : Nat} (x y : BitVec w) :
+    x - y = x + ~~~y + BitVec.setWidth w (BitVec.ofBool true) := by
+  rw [BitVec.sub_eq_add_neg, BitVec.neg_eq_not_add, ← BitVec.add_assoc]
+  congr 1
+  apply BitVec.eq_of_toNat_eq
+  simp
+
+/-- Subtraction is the adder on `x`, `~~~y` with carry-in `true`. -/
+theorem toBits_sub {w : Nat} (x y : BitVec w) :
+    toBits (x - y) = (rippleSem (toBits x) (toBits (~~~y)) true).dropLast := by
+  rw [rippleSem_eq, List.dropLast_concat]
+  simp only [toBits]
+  apply List.map_congr_left
+  intro i hi
+  rw [sub_eq_add_not_add_one, BitVec.getLsbD_add_add_bool (List.mem_range.1 hi)]
+
+theorem uaddOverflow_carry {w : Nat} (x y : BitVec w) :
+    x.uaddOverflow y = BitVec.carry w x y false := by
+  simp [BitVec.uaddOverflow, BitVec.carry, Nat.mod_eq_of_lt x.isLt, Nat.mod_eq_of_lt y.isLt]
+
+/-- A 1-bit value is `1` exactly when its bit 0 is set. -/
 theorem bv1_eq_one (x : BitVec 1) : x = 1#1 ↔ x.getLsbD 0 = true := by
   constructor
   · rintro rfl; rfl
@@ -252,6 +260,16 @@ theorem bv1_eq_one (x : BitVec 1) : x = 1#1 ↔ x.getLsbD 0 = true := by
     have : i = 0 := by omega
     subst this
     simpa using h
+
+theorem toBits_length {w : Nat} (x : BitVec w) : (toBits x).length = w := by simp [toBits]
+
+/-- Two bit lists of the same bitvector width agree when they agree bitwise. -/
+theorem toBits_eq_map {w : Nat} (x : BitVec w) (f : Nat → Bool)
+    (h : ∀ i, i < w → f i = x.getLsbD i) : (List.range w).map f = toBits x := by
+  simp only [toBits]
+  apply List.map_congr_left
+  intro i hi
+  exact h i (List.mem_range.1 hi)
 
 /-! ## Literals, gates and circuits -/
 
@@ -298,42 +316,67 @@ theorem Gate.clauses_all (α : Nat → Bool) (o : Nat) (g : Gate) :
     cases h0 : α o <;> cases h1 : α av <;> cases h2 : α bv <;> cases ap <;> cases bp <;>
       simp [Gate.clauses, Gate.eval, Lit.val, Lit.neg, h0, h1, h2]
 
-/-- A circuit: gates, newest first.  The head of `g :: gs` is gate number
-`gs.length`, defining CNF variable `outVar gs.length`. -/
-abbrev Circuit := List Gate
-
 def outVar (n : Nat) : Nat := 2 * n + 3
 
+/-- A circuit: its gates, newest first (the head of `g :: gs` is gate number
+`gs.length`, defining CNF variable `outVar gs.length`), and the cached gate
+count. -/
+structure Circuit where
+  gates : List Gate
+  len : Nat
+
+def Circuit.empty : Circuit := ⟨[], 0⟩
+
 /-- `α` respects every gate definition (and `α 1 = true`). -/
-def Consistent (α : Nat → Bool) : Circuit → Prop
+def ConsL (α : Nat → Bool) : List Gate → Prop
   | [] => α 1 = true
-  | g :: gs => α (outVar gs.length) = g.eval α ∧ Consistent α gs
+  | g :: gs => α (outVar gs.length) = g.eval α ∧ ConsL α gs
 
-def Circuit.clauses : Circuit → List (CNF.Clause Nat)
+def Consistent (α : Nat → Bool) (c : Circuit) : Prop := ConsL α c.gates
+
+/-- The Tseitin clauses of all gates (specification form). -/
+def clausesL : List Gate → List (CNF.Clause Nat)
   | [] => [[(1, true)]]
-  | g :: gs => g.clauses (outVar gs.length) ++ Circuit.clauses gs
+  | g :: gs => g.clauses (outVar gs.length) ++ clausesL gs
 
-theorem clauses_all_iff (α : Nat → Bool) :
-    ∀ gs : Circuit, (Circuit.clauses gs).all (CNF.Clause.eval α) = true ↔ Consistent α gs
-  | [] => by simp [Circuit.clauses, Consistent]
+/-- The same clauses, computed tail-recursively from the cached count (the
+executable form). -/
+def clausesAcc : Nat → List Gate → Array (CNF.Clause Nat) → Array (CNF.Clause Nat)
+  | _, [], acc => acc.push [(1, true)]
+  | n, g :: gs, acc => clausesAcc (n - 1) gs (acc ++ (g.clauses (outVar (n - 1))).toArray)
+
+theorem clausesAcc_toList : ∀ (gs : List Gate) (acc : Array (CNF.Clause Nat)),
+    (clausesAcc gs.length gs acc).toList = acc.toList ++ clausesL gs
+  | [], acc => by simp [clausesAcc, clausesL]
+  | g :: gs, acc => by
+    simp only [clausesAcc, List.length_cons, Nat.add_sub_cancel, clausesL]
+    rw [clausesAcc_toList gs]
+    simp
+
+theorem clausesL_all_iff (α : Nat → Bool) :
+    ∀ gs : List Gate, (clausesL gs).all (CNF.Clause.eval α) = true ↔ ConsL α gs
+  | [] => by simp [clausesL, ConsL]
   | g :: gs => by
-    rw [Circuit.clauses, List.all_append, Bool.and_eq_true, Gate.clauses_all,
-      clauses_all_iff α gs, Consistent, beq_iff_eq]
+    rw [clausesL, List.all_append, Bool.and_eq_true, Gate.clauses_all,
+      clausesL_all_iff α gs, ConsL, beq_iff_eq]
 
-theorem consistent_of_suffix {α : Nat → Bool} {gs gs' : Circuit} (h : gs <:+ gs')
-    (hc : Consistent α gs') : Consistent α gs := by
+theorem consL_of_suffix {α : Nat → Bool} {gs gs' : List Gate} (h : gs <:+ gs')
+    (hc : ConsL α gs') : ConsL α gs := by
   obtain ⟨l, rfl⟩ := h
   induction l with
   | nil => simpa using hc
   | cons g l ih => exact ih hc.2
 
-theorem consistent_true {α : Nat → Bool} {gs : Circuit} (hc : Consistent α gs) : α 1 = true :=
-  consistent_of_suffix (gs := []) (List.nil_suffix) hc
+theorem consistent_of_suffix {α : Nat → Bool} {c c' : Circuit} (h : c.gates <:+ c'.gates)
+    (hc : Consistent α c') : Consistent α c := consL_of_suffix h hc
 
-theorem val_TT {α : Nat → Bool} {gs : Circuit} (hc : Consistent α gs) : TT.val α = true := by
+theorem consistent_true {α : Nat → Bool} {c : Circuit} (hc : Consistent α c) : α 1 = true :=
+  consL_of_suffix (gs := []) (List.nil_suffix) hc
+
+theorem val_TT {α : Nat → Bool} {c : Circuit} (hc : Consistent α c) : TT.val α = true := by
   simp [TT, Lit.val, consistent_true hc]
 
-theorem val_FF {α : Nat → Bool} {gs : Circuit} (hc : Consistent α gs) : FF.val α = false := by
+theorem val_FF {α : Nat → Bool} {c : Circuit} (hc : Consistent α c) : FF.val α = false := by
   simp [FF, Lit.val, consistent_true hc]
 
 /-! ### Well-formedness and the canonical extension of an input assignment -/
@@ -355,9 +398,19 @@ def Gate.Scoped (n : Nat) : Gate → Prop
       PrismTechniques.Bitblast.Scoped n b
 
 /-- Gates only read input bits, the constant, and earlier gates. -/
-def WF : Circuit → Prop
+def WFL : List Gate → Prop
   | [] => True
-  | g :: gs => g.Scoped gs.length ∧ WF gs
+  | g :: gs => g.Scoped gs.length ∧ WFL gs
+
+/-- A well-formed circuit: gates read only earlier gates, and the cached count
+is the number of gates. -/
+def Circuit.WF (c : Circuit) : Prop := c.len = c.gates.length ∧ WFL c.gates
+
+theorem Circuit.wf_empty : Circuit.empty.WF := ⟨rfl, trivial⟩
+
+theorem Circuit.len_le {c c' : Circuit} (h : c.gates <:+ c'.gates) (hc : c.WF) (hc' : c'.WF) :
+    c.len ≤ c'.len := by
+  rw [hc.1, hc'.1]; exact h.length_le
 
 /-- Two assignments agree on everything a circuit with `n` gates can read. -/
 def Agree (n : Nat) (α β : Nat → Bool) : Prop := ∀ v, (v % 2 = 0 ∨ v < 2 * n + 2) → α v = β v
@@ -369,106 +422,225 @@ theorem Gate.eval_congr {n : Nat} {α β : Nat → Bool} {g : Gate} (hs : g.Scop
     obtain ⟨ha, hb⟩ := hs
     simp [Gate.eval, Lit.val, h a.1 ha, h b.1 hb]
 
-theorem consistent_congr {α β : Nat → Bool} :
-    ∀ gs : Circuit, WF gs → Agree gs.length α β → (Consistent α gs ↔ Consistent β gs)
-  | [], _, h => by simp [Consistent, h 1 (by omega)]
+theorem consL_congr {α β : Nat → Bool} :
+    ∀ gs : List Gate, WFL gs → Agree gs.length α β → (ConsL α gs ↔ ConsL β gs)
+  | [], _, h => by simp [ConsL, h 1 (by omega)]
   | g :: gs, ⟨hg, hwf⟩, h => by
     have h' : Agree gs.length α β := fun v hv => h v (by simp; omega)
-    simp only [Consistent]
+    simp only [ConsL]
     rw [h (outVar gs.length) (by simp [outVar]; omega), Gate.eval_congr hg h',
-      consistent_congr gs hwf h']
+      consL_congr gs hwf h']
 
 /-- Extend an input assignment `ρ` (input bit `j` ↦ variable `2*j`) to all
 gate variables by evaluating the gates in order. -/
-def extend (ρ : Nat → Bool) : Circuit → Nat → Bool
+def extendL (ρ : Nat → Bool) : List Gate → Nat → Bool
   | [] => fun v => if v % 2 = 0 then ρ (v / 2) else v == 1
-  | g :: gs => fun v => if v = outVar gs.length then g.eval (extend ρ gs) else extend ρ gs v
+  | g :: gs => fun v => if v = outVar gs.length then g.eval (extendL ρ gs) else extendL ρ gs v
 
-theorem extend_input (ρ : Nat → Bool) (j : Nat) : ∀ gs : Circuit, extend ρ gs (2 * j) = ρ j
-  | [] => by simp [extend]
+theorem extendL_input (ρ : Nat → Bool) (j : Nat) : ∀ gs : List Gate, extendL ρ gs (2 * j) = ρ j
+  | [] => by simp [extendL]
   | g :: gs => by
     have : 2 * j ≠ outVar gs.length := by simp [outVar]; omega
-    simp [extend, this, extend_input ρ j gs]
+    simp [extendL, this, extendL_input ρ j gs]
 
-theorem extend_agree (ρ : Nat → Bool) (g : Gate) (gs : Circuit) :
-    Agree gs.length (extend ρ (g :: gs)) (extend ρ gs) := by
+theorem extendL_agree (ρ : Nat → Bool) (g : Gate) (gs : List Gate) :
+    Agree gs.length (extendL ρ (g :: gs)) (extendL ρ gs) := by
   intro v hv
   have : v ≠ outVar gs.length := by simp [outVar]; omega
-  simp [extend, this]
+  simp [extendL, this]
 
-theorem extend_consistent (ρ : Nat → Bool) : ∀ gs : Circuit, WF gs → Consistent (extend ρ gs) gs
-  | [], _ => by simp [extend, Consistent]
+theorem extendL_consistent (ρ : Nat → Bool) :
+    ∀ gs : List Gate, WFL gs → ConsL (extendL ρ gs) gs
+  | [], _ => by simp [extendL, ConsL]
   | g :: gs, ⟨hg, hwf⟩ => by
     refine ⟨?_, ?_⟩
-    · simp only [extend, ite_true]
-      exact (Gate.eval_congr hg (extend_agree ρ g gs)).symm
-    · exact (consistent_congr gs hwf (extend_agree ρ g gs)).2 (extend_consistent ρ gs hwf)
+    · simp only [extendL, ite_true]
+      exact (Gate.eval_congr hg (extendL_agree ρ g gs)).symm
+    · exact (consL_congr gs hwf (extendL_agree ρ g gs)).2 (extendL_consistent ρ gs hwf)
 
-/-! ## The encoder -/
+/-! ## The builder specification -/
 
-def mkGate (g : Gate) (gs : Circuit) : Lit × Circuit := ((outVar gs.length, true), g :: gs)
-
-/-- Encoder specification: the new circuit extends the old one, stays
-well-formed, the output literals are in scope, and under every consistent
-assignment the output literals evaluate to `sem α`. -/
-structure Spec (gs : Circuit) (r : List Lit × Circuit) (sem : (Nat → Bool) → List Bool) :
-    Prop where
-  suffix : gs <:+ r.2
-  wf : WF r.2
-  good : ∀ l ∈ r.1, Scoped r.2.length l
-  sem : ∀ α, Consistent α r.2 → r.1.map (Lit.val α) = sem α
+def mkGate (g : Gate) (c : Circuit) : Lit × Circuit :=
+  ((outVar c.len, true), ⟨g :: c.gates, c.len + 1⟩)
 
 def Good (n : Nat) (ls : List Lit) : Prop := ∀ l ∈ ls, Scoped n l
 
 theorem Good.mono {n m : Nat} {ls : List Lit} (h : Good n ls) (hnm : n ≤ m) : Good m ls :=
   fun l hl => (h l hl).mono hnm
 
-theorem mkGate_wf {g : Gate} {gs : Circuit} (hwf : WF gs) (hg : g.Scoped gs.length) :
-    WF (mkGate g gs).2 := ⟨hg, hwf⟩
+theorem good_nil (n : Nat) : Good n [] := fun _ h => absurd h List.not_mem_nil
 
-theorem mkGate_scoped (g : Gate) (gs : Circuit) : Scoped (mkGate g gs).2.length (mkGate g gs).1 := by
-  simp only [mkGate, Scoped, outVar, List.length_cons]
+theorem good_cons {n : Nat} {l : Lit} {ls : List Lit} (h1 : Scoped n l) (h2 : Good n ls) :
+    Good n (l :: ls) := by
+  intro x hx
+  rcases List.mem_cons.1 hx with rfl | hx
+  · exact h1
+  · exact h2 x hx
+
+theorem good_append {n : Nat} {as bs : List Lit} (h1 : Good n as) (h2 : Good n bs) :
+    Good n (as ++ bs) := by
+  intro x hx
+  rcases List.mem_append.1 hx with hx | hx
+  · exact h1 x hx
+  · exact h2 x hx
+
+theorem good_map_neg {n : Nat} {ls : List Lit} (h : Good n ls) : Good n (ls.map Lit.neg) := by
+  intro l hl
+  obtain ⟨l', hl', rfl⟩ := List.mem_map.1 hl
+  exact h l' hl'
+
+theorem good_range {n w : Nat} (f : Nat → Lit) (h : ∀ i, i < w → Scoped n (f i)) :
+    Good n ((List.range w).map f) := by
+  intro l hl
+  obtain ⟨i, hi, rfl⟩ := List.mem_map.1 hl
+  exact h i (List.mem_range.1 hi)
+
+theorem good_dropLast {n : Nat} {ls : List Lit} (h : Good n ls) : Good n ls.dropLast :=
+  fun l hl => h l (List.dropLast_subset _ hl)
+
+theorem good_getD {n : Nat} {ls : List Lit} (h : Good n ls) (j : Nat) : Scoped n (ls.getD j FF) := by
+  rw [List.getD_eq_getElem?_getD]
+  cases hj : ls[j]? with
+  | none => exact scoped_FF n
+  | some l => exact h l (List.mem_of_getElem? hj)
+
+theorem good_headD {n : Nat} {ls : List Lit} (h : Good n ls) : Scoped n (ls.headD FF) := by
+  cases ls with
+  | nil => exact scoped_FF n
+  | cons l ls => exact h l (List.mem_cons_self ..)
+
+theorem good_getLastD {n : Nat} {ls : List Lit} (h : Good n ls) : Scoped n (ls.getLastD FF) := by
+  rw [List.getLastD_eq_getLast?]
+  cases hl : ls.getLast? with
+  | none => exact scoped_FF n
+  | some l => exact h l (List.mem_of_getLast? hl)
+
+theorem val_getD {α : Nat → Bool} {c : Circuit} (hc : Consistent α c) (ls : List Lit) (j : Nat) :
+    (ls.getD j FF).val α = (ls.map (Lit.val α)).getD j false := by
+  rw [List.getD_eq_getElem?_getD, List.getD_eq_getElem?_getD, List.getElem?_map]
+  cases ls[j]? with
+  | none => exact val_FF hc
+  | some l => rfl
+
+theorem val_headD {α : Nat → Bool} {c : Circuit} (hc : Consistent α c) (ls : List Lit) :
+    (ls.headD FF).val α = (ls.map (Lit.val α)).headD false := by
+  rw [← val_FF hc, List.headD_map]
+
+theorem val_getLastD {α : Nat → Bool} {c : Circuit} (hc : Consistent α c) (ls : List Lit) :
+    (ls.getLastD FF).val α = (ls.map (Lit.val α)).getLastD false := by
+  rw [← val_FF hc, List.getLastD_map]
+
+theorem map_neg_val (α : Nat → Bool) (ls : List Lit) :
+    (ls.map Lit.neg).map (Lit.val α) = (ls.map (Lit.val α)).map (!·) := by
+  simp [List.map_map, Function.comp_def]
+
+/-- Builder specification: the new circuit extends the old one and is
+well-formed, the output literals are in scope, and under every consistent
+assignment the output literals evaluate to `sem α`. -/
+structure Spec (c : Circuit) (r : List Lit × Circuit) (sem : (Nat → Bool) → List Bool) :
+    Prop where
+  suffix : c.gates <:+ r.2.gates
+  wf : r.2.WF
+  good : Good r.2.len r.1
+  sem : ∀ α, Consistent α r.2 → r.1.map (Lit.val α) = sem α
+
+theorem Spec.trans {c : Circuit} {r r' : List Lit × Circuit} {s s' : (Nat → Bool) → List Bool}
+    (h : Spec c r s) (h' : Spec r.2 r' s') : Spec c r' s' :=
+  ⟨h.suffix.trans h'.suffix, h'.wf, h'.good, h'.sem⟩
+
+theorem Spec.congr {c : Circuit} {r : List Lit × Circuit} {s s' : (Nat → Bool) → List Bool}
+    (h : Spec c r s) (hs : ∀ α, Consistent α r.2 → s α = s' α) : Spec c r s' :=
+  ⟨h.suffix, h.wf, h.good, fun α hc => (h.sem α hc).trans (hs α hc)⟩
+
+theorem Spec.refl {c : Circuit} (hwf : c.WF) : Spec c ([], c) (fun _ => []) :=
+  ⟨List.suffix_refl _, hwf, good_nil _, fun _ _ => rfl⟩
+
+/-- `ls` represents the bitvector `X α` in every assignment consistent with `c`. -/
+structure Rep (c : Circuit) (ls : List Lit) {w : Nat} (X : (Nat → Bool) → BitVec w) : Prop where
+  wf : c.WF
+  good : Good c.len ls
+  sem : ∀ α, Consistent α c → ls.map (Lit.val α) = toBits (X α)
+
+theorem Rep.mono {c c' : Circuit} {ls : List Lit} {w : Nat} {X : (Nat → Bool) → BitVec w}
+    (h : Rep c ls X) (hs : c.gates <:+ c'.gates) (hwf : c'.WF) : Rep c' ls X :=
+  ⟨hwf, h.good.mono (Circuit.len_le hs h.wf hwf), fun α hc => h.sem α (consistent_of_suffix hs hc)⟩
+
+theorem Spec.rep {c : Circuit} {r : List Lit × Circuit} {w : Nat} {X : (Nat → Bool) → BitVec w}
+    (h : Spec c r (fun α => toBits (X α))) : Rep r.2 r.1 X :=
+  ⟨h.wf, h.good, h.sem⟩
+
+theorem Rep.spec {c : Circuit} {ls : List Lit} {w : Nat} {X : (Nat → Bool) → BitVec w}
+    (h : Rep c ls X) : Spec c (ls, c) (fun α => toBits (X α)) :=
+  ⟨List.suffix_refl _, h.wf, h.good, h.sem⟩
+
+theorem Rep.length {c : Circuit} {ls : List Lit} {w : Nat} {X : (Nat → Bool) → BitVec w}
+    (h : Rep c ls X) : ls.length = w := by
+  have := congrArg List.length (h.sem (extendL (fun _ => false) c.gates)
+    (extendL_consistent _ _ h.wf.2))
+  simpa [toBits_length] using this
+
+theorem Rep.bit {c : Circuit} {ls : List Lit} {w : Nat} {X : (Nat → Bool) → BitVec w}
+    (h : Rep c ls X) {α : Nat → Bool} (hc : Consistent α c) (j : Nat) :
+    (ls.getD j FF).val α = (X α).getLsbD j := by
+  rw [val_getD hc, h.sem α hc, toBits_getD]
+
+theorem Rep.msb {c : Circuit} {ls : List Lit} {w : Nat} {X : (Nat → Bool) → BitVec w}
+    (h : Rep c ls X) {α : Nat → Bool} (hc : Consistent α c) :
+    (ls.getLastD FF).val α = (X α).msb := by
+  rw [val_getLastD hc, h.sem α hc, msb_bits]
+
+/-- A one-literal representation of a Boolean. -/
+theorem rep_single {c : Circuit} {l : Lit} {B : (Nat → Bool) → Bool} (hwf : c.WF)
+    (hl : Scoped c.len l) (hv : ∀ α, Consistent α c → l.val α = B α) :
+    Rep c [l] (fun α => BitVec.ofBool (B α)) :=
+  ⟨hwf, good_cons hl (good_nil _), fun α hc => by simp [toBits_ofBool, hv α hc]⟩
+
+/-- Rewiring: a list of literals picked from existing ones, with no new
+gates, is correct when it is correct bit by bit. -/
+theorem wire_spec {c : Circuit} {w : Nat} (f : Nat → Lit) (Z : (Nat → Bool) → BitVec w)
+    (hwf : c.WF) (hs : ∀ i, i < w → Scoped c.len (f i))
+    (hv : ∀ α, Consistent α c → ∀ i, i < w → (f i).val α = (Z α).getLsbD i) :
+    Spec c ((List.range w).map f, c) (fun α => toBits (Z α)) :=
+  ⟨List.suffix_refl _, hwf, good_range f hs, fun α hc => by
+    rw [List.map_map]
+    exact toBits_eq_map _ _ (fun i hi => hv α hc i hi)⟩
+
+/-! ### Gates -/
+
+theorem mkGate_wf {g : Gate} {c : Circuit} (hwf : c.WF) (hg : g.Scoped c.len) :
+    (mkGate g c).2.WF := by
+  obtain ⟨h1, h2⟩ := hwf
+  refine ⟨by simp [mkGate, h1], ?_, h2⟩
+  rw [← h1]; exact hg
+
+theorem mkGate_scoped (g : Gate) (c : Circuit) : Scoped (mkGate g c).2.len (mkGate g c).1 := by
+  simp only [mkGate, Scoped, outVar]
   omega
 
-theorem mkGate_val {α : Nat → Bool} {g : Gate} {gs : Circuit}
-    (hc : Consistent α (mkGate g gs).2) : (mkGate g gs).1.val α = g.eval α := by
-  simp [mkGate, Lit.val, hc.1]
+theorem mkGate_val {α : Nat → Bool} {g : Gate} {c : Circuit} (hwf : c.WF)
+    (hc : Consistent α (mkGate g c).2) : (mkGate g c).1.val α = g.eval α := by
+  have h := hc.1
+  simp only [mkGate, Lit.val, beq_true]
+  rw [hwf.1]
+  exact h
 
-@[simp] theorem mkGate_len (g : Gate) (gs : Circuit) : (mkGate g gs).2.length = gs.length + 1 := rfl
+@[simp] theorem mkGate_len (g : Gate) (c : Circuit) : (mkGate g c).2.len = c.len + 1 := rfl
 
-theorem mkGate_suffix (g : Gate) (gs : Circuit) : gs <:+ (mkGate g gs).2 := List.suffix_cons g gs
+theorem mkGate_suffix (g : Gate) (c : Circuit) : c.gates <:+ (mkGate g c).2.gates :=
+  List.suffix_cons g c.gates
 
-/-- Apply a two-input gate bitwise. -/
-def zipGate (mk : Lit → Lit → Gate) : List Lit → List Lit → Circuit → List Lit × Circuit
-  | a :: as, b :: bs, gs =>
-    let r := mkGate (mk a b) gs
-    let rs := zipGate mk as bs r.2
-    (r.1 :: rs.1, rs.2)
-  | _, _, gs => ([], gs)
+/-- One gate as a builder step. -/
+theorem mkGate_spec {g : Gate} {c : Circuit} (hwf : c.WF) (hg : g.Scoped c.len) :
+    Spec c ([(mkGate g c).1], (mkGate g c).2) (fun α => [g.eval α]) :=
+  ⟨mkGate_suffix g c, mkGate_wf hwf hg, good_cons (mkGate_scoped g c) (good_nil _),
+    fun α hc => by simp [mkGate_val hwf hc]⟩
 
-theorem zipGate_spec (mk : Lit → Lit → Gate) (f : Bool → Bool → Bool)
-    (hmk : ∀ α a b, (mk a b).eval α = f (a.val α) (b.val α))
-    (hsc : ∀ n a b, Scoped n a → Scoped n b → (mk a b).Scoped n) :
-    ∀ (as bs : List Lit) (gs : Circuit), WF gs → Good gs.length as → Good gs.length bs →
-      Spec gs (zipGate mk as bs gs)
-        (fun α => List.zipWith f (as.map (Lit.val α)) (bs.map (Lit.val α)))
-  | a :: as, b :: bs, gs, hwf, ha, hb => by
-    let r := mkGate (mk a b) gs
-    have hwf1 : WF r.2 := mkGate_wf hwf
-      (hsc _ a b (ha a (List.mem_cons_self ..)) (hb b (List.mem_cons_self ..)))
-    have ih := zipGate_spec mk f hmk hsc as bs r.2 hwf1
-      ((fun l hl => ha l (List.mem_cons_of_mem _ hl)) |> fun h => Good.mono h (by simp [r]))
-      ((fun l hl => hb l (List.mem_cons_of_mem _ hl)) |> fun h => Good.mono h (by simp [r]))
-    refine ⟨(mkGate_suffix _ gs).trans ih.suffix, ih.wf, ?_, ?_⟩
-    · intro l hl
-      simp only [zipGate, List.mem_cons] at hl
-      rcases hl with rfl | hl
-      · exact (mkGate_scoped _ gs).mono ih.suffix.length_le
-      · exact ih.good l hl
-    · intro α hc
-      simp only [zipGate, List.map_cons, List.zipWith_cons_cons]
-      rw [ih.sem α hc, mkGate_val (consistent_of_suffix ih.suffix hc), hmk]
-  | [], _, gs, hwf, _, _ => ⟨List.suffix_refl gs, hwf, by simp [zipGate], by simp [zipGate]⟩
-  | _ :: _, [], gs, hwf, _, _ => ⟨List.suffix_refl gs, hwf, by simp [zipGate], by simp [zipGate]⟩
+/-- A one-gate Boolean: the output literal represents `B` when the gate
+evaluates to `B`. -/
+theorem mkGate_rep {g : Gate} {c : Circuit} {B : (Nat → Bool) → Bool} (hwf : c.WF)
+    (hg : g.Scoped c.len) (hv : ∀ α, Consistent α (mkGate g c).2 → g.eval α = B α) :
+    Rep (mkGate g c).2 [(mkGate g c).1] (fun α => BitVec.ofBool (B α)) :=
+  rep_single (mkGate_wf hwf hg) (mkGate_scoped g c)
+    (fun α hc => (mkGate_val hwf hc).trans (hv α hc))
 
 end PrismTechniques.Bitblast

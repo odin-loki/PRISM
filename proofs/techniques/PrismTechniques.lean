@@ -2,7 +2,10 @@ import PrismTechniques.KInduction
 import PrismTechniques.Houdini
 import PrismTechniques.Contracts
 import PrismTechniques.Bitblast
+import PrismTechniques.BitblastOps
+import PrismTechniques.BitblastDiv
 import PrismTechniques.BitblastEncode
+import PrismTechniques.BitblastSexp
 import PrismTechniques.LazySeq
 import PrismTechniques.FloatRound
 import PrismTechniques.Audit

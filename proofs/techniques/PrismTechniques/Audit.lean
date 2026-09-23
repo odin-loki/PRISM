@@ -60,6 +60,39 @@ namespace PrismTechniques
 #assert_axioms Bitblast.toCNF_equisat
 #assert_axioms Bitblast.toCNF_unsat_imp
 #assert_axioms Bitblast.certified_unsat
+-- operator circuits (roadmap 3.2 step 2: the fragment PIR VCs use)
+#assert_axioms Bitblast.subOp_spec
+#assert_axioms Bitblast.negOp_spec
+#assert_axioms Bitblast.uleOp_spec
+#assert_axioms Bitblast.sleOp_spec
+#assert_axioms Bitblast.shlOp_spec
+#assert_axioms Bitblast.lshrOp_spec
+#assert_axioms Bitblast.ashrOp_spec
+#assert_axioms Bitblast.shlW_rep
+#assert_axioms Bitblast.lshrW_rep
+#assert_axioms Bitblast.ashrW_rep
+#assert_axioms Bitblast.zextW_rep
+#assert_axioms Bitblast.sextW_rep
+#assert_axioms Bitblast.extractW_rep
+#assert_axioms Bitblast.concatOp_spec
+#assert_axioms Bitblast.uaddoOp_spec
+#assert_axioms Bitblast.saddoOp_spec
+#assert_axioms Bitblast.usuboOp_spec
+#assert_axioms Bitblast.ssuboOp_spec
+#assert_axioms Bitblast.umuloOp_spec
+#assert_axioms Bitblast.smulHiOp_spec
+#assert_axioms Bitblast.smulLoOp_spec
+#assert_axioms Bitblast.smulOverflow_hi_lo
+#assert_axioms Bitblast.smulOverflow_expr
+#assert_axioms Bitblast.udivOp_spec
+#assert_axioms Bitblast.uremOp_spec
+#assert_axioms Bitblast.sdivOp_spec
+#assert_axioms Bitblast.sremOp_spec
+-- sharing (the DAG format prism-bitblast reads) and the executed checker
+#assert_axioms Bitblast.BVExpr.denote_congr
+#assert_axioms Bitblast.dag_sat_imp
+#assert_axioms Bitblast.certified_dag_unsat
+#assert_axioms Bitblast.checkDag_sound
 
 -- Lazy sequentialisation (roadmap 8.2, stretch)
 #assert_axioms LazySeq.lazy_seq_covers

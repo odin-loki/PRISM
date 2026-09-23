@@ -1,6 +1,6 @@
 name = "prism-techniques"
 version = "0.1.0"
-defaultTargets = ["PrismTechniques", "certified-demo"]
+defaultTargets = ["PrismTechniques", "certified-demo", "prism-bitblast", "prism-lrat-check"]
 
 [leanOptions]
 autoImplicit = false
@@ -11,3 +11,14 @@ name = "PrismTechniques"
 [[lean_exe]]
 name = "certified-demo"
 root = "CertifiedDemo"
+
+# The proved bit-blaster (PrismTechniques.Bitblast.toCNF) as a program:
+# S-expression formula on stdin, DIMACS + variable map on stdout.
+[[lean_exe]]
+name = "prism-bitblast"
+root = "BitblastMain"
+
+# Core Lean's verified LRAT checker (Std.Tactic.BVDecide.LRAT.check).
+[[lean_exe]]
+name = "prism-lrat-check"
+root = "LratCheckMain"

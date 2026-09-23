@@ -24,6 +24,9 @@ def y8 : BVExpr 8 := .var 8
 def x6 : BVExpr 6 := .var 0
 def y6 : BVExpr 6 := .var 6
 
+/-- `a ↔ b` for 1-bit formulas, as "they differ" (so the check is unsat). -/
+def differ (a b : BVExpr 1) : BVExpr 1 := .xor a b
+
 /-- The formulas: `(name, φ, expectUnsat)`. -/
 def cases : List (String × BVExpr 1 × Bool) :=
   [ ("x <u x", .ult x8 x8, true),
@@ -33,6 +36,30 @@ def cases : List (String × BVExpr 1 × Bool) :=
     ("ite(x <u y, x, y) >u y", .ult y8 (.ite (.ult x8 y8) x8 y8), true),
     ("x * 3 != x + x + x", .not (.eq (.mul x8 (.const 3#8)) (.add (.add x8 x8) x8)), true),
     ("x * y != y * x (6-bit)", .not (.eq (.mul x6 y6) (.mul y6 x6)), true),
+    ("x - y != x + -y", .not (.eq (.sub x8 y8) (.add x8 (.neg y8))), true),
+    ("x << 1 != x + x (shift by a variable-width amount)",
+      .not (.eq (.shl x8 (.const 1#8)) (.add x8 x8)), true),
+    ("(x >>a 7) != -(x >>l 7)", .not (.eq (.ashrC 7 x8) (.neg (.lshrC 7 x8))), true),
+    ("saddo(x,y) differs from sext9 x + sext9 y != sext9 (x + y)",
+      differ (.saddo x8 y8) (.not (.eq (.add (.sext 9 x8) (.sext 9 y8)) (.sext 9 (.add x8 y8)))),
+      true),
+    ("ssubo(x,y) differs from sext9 x - sext9 y != sext9 (x - y)",
+      differ (.ssubo x8 y8) (.not (.eq (.sub (.sext 9 x8) (.sext 9 y8)) (.sext 9 (.sub x8 y8)))),
+      true),
+    ("umulo(x,y) differs from the high half of zext x * zext y being nonzero (6-bit)",
+      differ (.umulo x6 y6)
+        (.not (.eq (.extract 6 6 (.mul (.zext 12 x6) (.zext 12 y6))) (.const 0#6))), true),
+    ("smulo(x,y) differs from sext12 x * sext12 y != sext12 (x * y) (6-bit)",
+      differ (.or (.smulHi x6 y6) (.smulLo x6 y6))
+        (.not (.eq (.mul (.sext 12 x6) (.sext 12 y6)) (.sext 12 (.mul x6 y6)))), true),
+    ("x != (x udiv y) * y + (x urem y) (6-bit)",
+      .not (.eq x6 (.add (.mul (.udiv x6 y6) y6) (.urem x6 y6))), true),
+    ("x != (x sdiv y) * y + (x srem y) (6-bit)",
+      .not (.eq x6 (.add (.mul (.sdiv x6 y6) y6) (.srem x6 y6))), true),
+    ("x udiv 0 != ~0 (SMT-LIB division by zero)",
+      .not (.eq (.udiv x8 (.const 0#8)) (.const (BitVec.allOnes 8))), true),
+    ("concat (extract 4 4 x) (extract 0 4 x) != x",
+      .not (.eq (.concat (.extract 4 4 x8) (.extract 0 4 x8)) x8), true),
     ("x <u y (satisfiable)", .ult x8 y8, false),
     ("x * y = 35 (satisfiable)", .eq (.mul x8 y8) (.const 35#8), false) ]
 
