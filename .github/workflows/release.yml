@@ -1,0 +1,90 @@
+name: PRISM release
+
+# Tag v* -> reproducible container build (Dockerfile), CycloneDX SBOM,
+# SHA256SUMS, Sigstore keyless signatures, GitHub release. See
+# docs/SUPPLY_CHAIN.md for how a buyer verifies and rebuilds.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Reproducible build (x2) + SBOM
+    runs-on: ubuntu-24.04
+    outputs:
+      epoch: ${{ steps.meta.outputs.epoch }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - id: meta
+        name: SOURCE_DATE_EPOCH from the tagged commit
+        run: echo "epoch=$(git log -1 --format=%ct)" >> "$GITHUB_OUTPUT"
+      - name: Licence firewall
+        run: python3 scripts/licence_check.py
+      - name: Linked libraries match the manifest (offline)
+        run: python3 scripts/fetch_deps.py --linked
+      - uses: docker/setup-buildx-action@v3
+      - name: Build (first)
+        run: >
+          docker buildx build --no-cache
+          --build-arg SOURCE_DATE_EPOCH=${{ steps.meta.outputs.epoch }}
+          --build-arg PRISM_VERSION=${{ github.ref_name }}
+          --output type=local,dest=out .
+      - name: Build (second, from scratch) and compare
+        run: |
+          docker buildx build --no-cache \
+            --build-arg SOURCE_DATE_EPOCH=${{ steps.meta.outputs.epoch }} \
+            --build-arg PRISM_VERSION=${{ github.ref_name }} \
+            --output type=local,dest=out2 .
+          (cd out && sha256sum -c SHA256SUMS)
+          if ! diff out/SHA256SUMS out2/SHA256SUMS; then
+            echo "::error::two clean builds differ - the release is not reproducible"
+            exit 1
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: prism-release
+          path: out/
+          retention-days: 30
+
+  sign-and-publish:
+    name: cosign (keyless) + GitHub release
+    runs-on: ubuntu-24.04
+    needs: build
+    permissions:
+      contents: write     # create the release
+      id-token: write     # Sigstore keyless: GitHub OIDC -> Fulcio certificate
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: prism-release
+          path: out
+      - uses: sigstore/cosign-installer@v3
+      - name: Sign every artefact (Sigstore bundle per file)
+        working-directory: out
+        run: |
+          for f in prism libprism_native.so prism.cdx.json SHA256SUMS; do
+            cosign sign-blob --yes --bundle "$f.sigstore.json" "$f"
+          done
+      - name: Verify the signatures before publishing
+        working-directory: out
+        run: |
+          for f in prism libprism_native.so prism.cdx.json SHA256SUMS; do
+            cosign verify-blob --bundle "$f.sigstore.json" \
+              --certificate-identity "https://github.com/${{ github.repository }}/.github/workflows/release.yml@${{ github.ref }}" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              "$f"
+          done
+      - name: GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" out/* \
+            --repo "${{ github.repository }}" \
+            --title "PRISM ${{ github.ref_name }}" \
+            --notes "Reproducible build (SOURCE_DATE_EPOCH=${{ needs.build.outputs.epoch }}). Verify: see docs/SUPPLY_CHAIN.md."

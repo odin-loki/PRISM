@@ -19,7 +19,7 @@ bounded proofs, then fuzzing, then an LLM (Qwen 3.5 9B) that may only
 | C / C++ | ~600-class defect taxonomy: pattern lints, taint, threads, interval ranges, compiler warnings, cppcheck, sanitizers (ASan/UBSan/TSan), Z3 bounded model checking + k-induction, Dafny/ACSL contracts, Frama-C-style WP, harness BMC, concolic, greybox fuzzing (FuSeBMC loop, AFL++/libFuzzer when present), differential + property + mutation testing, LTL on state machines |
 | Every other language | `polyglot` stage: Python/JSON/TOML syntax, ruff or pyflakes, mypy, `node --check`, tsc, eslint, `bash -n`, shellcheck, gofmt, cargo clippy, `ruby -wc`, `php -l`, `perl -c`, `luac -p`, yamllint |
 | Any text file | merge-conflict markers; leaked credentials (private keys, AWS, GitHub, Slack, Google, Stripe) |
-| External analyzers | ESBMC, CBMC, Infer, CodeQL, Semgrep, Coccinelle, KLEE, Frama-C, clang-tidy, Strix — run when installed |
+| External analyzers | ESBMC, CBMC, Infer, Semgrep, Coccinelle, KLEE, Frama-C, clang-tidy, Strix — run when installed (`python scripts/fetch_deps.py --tool NAME` builds the pinned version) |
 
 ## Run
 
@@ -83,7 +83,13 @@ See [docs/PLAN.md](docs/PLAN.md) and [docs/MINED.md](docs/MINED.md).
 GUI is Qt. Inference is llama.cpp (Ollama fallback). SIMD is vendored xsimd.
 GPU mutation is CUDA. SMT is vendored Z3. Regex is vendored PCRE2.
 
-Third-party sources live in `third_party/` (xsimd, Z3, PCRE2, nlohmann/json,
-doctest, llama.cpp, plus the mined adapter projects listed in
-[`third_party/SOURCES.md`](third_party/SOURCES.md)). They are trees copied
-into this repo, not package downloads at build time and not git submodules.
+`third_party/` holds only the six linked libraries (xsimd, Z3, PCRE2,
+nlohmann/json, doctest, llama.cpp), about 140 MB of source. They are unmodified
+upstream copies, each pinned by commit and SHA-256 in
+[`third_party/MANIFEST.toml`](third_party/MANIFEST.toml). External tools are
+not in the repo: `python scripts/fetch_deps.py --tool NAME` fetches the pinned
+commit, checks its hash and builds it into `~/.prism/tools/`. Every finding
+records the exact tool build (`extra["tool_sha"]`). Licence firewall, SBOM and
+reproducible signed releases:
+[`docs/SUPPLY_CHAIN.md`](docs/SUPPLY_CHAIN.md). Licence: [`LICENSE`](LICENSE)
+(draft) and [`NOTICE`](NOTICE).

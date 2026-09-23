@@ -1,0 +1,84 @@
+DRAFT — not legal advice; must be reviewed by an Australian IP lawyer before
+any sale or distribution.
+Until that review is complete, no rights beyond those in section 2 are
+granted and this draft may change without notice.
+
+PRISM Source-Available Evaluation Licence (Draft 0.1)
+
+Copyright (c) 2026 Odin Loch / Imortek. All rights reserved.
+
+1. Definitions
+   "Software" means the PRISM source code, documentation, build scripts and
+   any binaries built from them that are made available in this repository,
+   excluding the third-party components listed in NOTICE and
+   third_party/MANIFEST.toml, which remain under their own licences.
+   "Licensor" means Odin Loch, trading as Imortek.
+   "You" means the individual or legal entity exercising rights under this
+   licence.
+   "Evaluation Purpose" means reading, auditing, building and running the
+   Software internally to assess its fitness, security or correctness,
+   including security accreditation and procurement review.
+
+2. Grant
+   Subject to this licence, the Licensor grants You a non-exclusive,
+   non-transferable, non-sublicensable, royalty-free, revocable licence to
+   (a) view and audit the source code of the Software;
+   (b) build the Software from source and verify that the build reproduces
+       published release artefacts; and
+   (c) run the Software internally for an Evaluation Purpose for a period of
+       ninety (90) days from first use, or longer if agreed in writing.
+
+3. Restrictions
+   You must not, without a separate written licence from the Licensor:
+   (a) redistribute, publish, sell, lease, lend or sublicense the Software or
+       any modified version of it, in source or binary form;
+   (b) use the Software in production, for the benefit of third parties, or
+       to provide a hosted or managed service;
+   (c) remove or alter any copyright, licence or attribution notice; or
+   (d) use the Software to build a competing product.
+   Findings and reports that the Software produces about Your own code are
+   Yours, and may be shared as You wish.
+
+4. Modifications
+   You may modify the Software only for an Evaluation Purpose. Modifications
+   may not be distributed. If You send the Licensor feedback or patches, You
+   grant the Licensor a perpetual, irrevocable, worldwide, royalty-free
+   licence to use them for any purpose.
+
+5. Third-party components
+   Third-party components keep their own licences (see NOTICE and
+   third_party/MANIFEST.toml). Nothing in this licence restricts rights You
+   have under those licences. External tools that PRISM invokes are not part
+   of the Software and are not distributed with it.
+
+6. No warranty
+   To the maximum extent permitted by law, the Software is provided "as is",
+   without warranty of any kind. A PRISM verdict is evidence, not a
+   guarantee: read the report's NOTRUN, BOUNDED and HYPOTHESIS entries.
+   Nothing in this licence excludes, restricts or modifies any right or
+   remedy, or any guarantee, warranty or other term or condition, implied or
+   imposed by the Australian Consumer Law (Schedule 2 of the Competition and
+   Consumer Act 2010 (Cth)) or any other legislation that cannot lawfully be
+   excluded or limited. Where liability can be limited, the Licensor's
+   liability is limited, at its option, to resupplying the Software or
+   paying the cost of having it resupplied.
+
+7. Limitation of liability
+   To the maximum extent permitted by law, the Licensor is not liable for
+   any indirect, consequential, special or incidental loss, or loss of
+   profit, revenue, data or goodwill, arising out of or in connection with
+   the Software or this licence.
+
+8. Termination
+   This licence ends automatically if You breach it, and otherwise at the end
+   of the evaluation period. On termination You must stop using the Software
+   and delete all copies, except that You may keep reports it produced.
+
+9. Governing law
+   This licence is governed by the laws of [State/Territory — to be confirmed
+   by counsel], Australia, and the parties submit to the non-exclusive
+   jurisdiction of its courts.
+
+10. Commercial licences
+    For production, redistribution or hosted use, contact the Licensor
+    (Imortek) for a commercial licence.
