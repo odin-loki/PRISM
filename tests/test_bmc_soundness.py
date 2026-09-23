@@ -145,6 +145,41 @@ class TestDynamicInitBeforeMain(unittest.TestCase):
         self.assertIn("dynamic initialisation before main unencoded: constructor ", cpp)
 
 
+F10_SRC = """#include <cassert>
+void f(int &x) try { throw 10; } catch (const int &i) { x = i; }
+void g(int &x);
+int main() { int v = 0; f(v); assert(v == 10); return 0; }
+int elem(int n) { int a[4] = {0, 0, 0, 0}; g(a[1]); return 100 / a[1] + (n & 1); }
+int paren(int n) { int v = 0; g((v)); return 100 / v + (n & 1); }
+int other(int n) { int v = 0; g(v); int w = 0; return 100 / w + (n & 1); }
+int byval(int n) { int v = 0; g(v + 1); return 100 / v + (n & 1); }
+"""
+
+
+@unittest.skipUnless(HAS_Z3, "z3-solver not installed")
+class TestReferenceArguments(unittest.TestCase):
+    """F10: an unmodelled C++ callee may write an argument bound to a
+    non-const reference (here f, a function-try-block, is not extracted).
+    The C++ engine runs the same snippet ("bmc soundness: an unmodelled C++
+    callee may write reference arguments (F10)")."""
+
+    def test_f10(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "t.cpp"
+            p.write_text(F10_SRC, encoding="utf-8")
+            by = {f.function: f for f in run_bmc(extract_functions(p, str(p)), 8)}
+        for name in ("main", "elem", "paren"):
+            with self.subTest(name):
+                self.assertEqual(by[name].status, laws.NEEDS_HARNESS, by[name].message)
+        for name in ("other", "byval"):
+            with self.subTest(name):
+                self.assertEqual(by[name].status, laws.FAILED, by[name].message)
+                self.assertEqual(by[name].cls, "INT-DIV-ZERO")
+        # C passes by value: the refutation stands
+        c = bmc_source("void g(int x);\nint cval(int n) { int v = 0; g(v); return 100 / v + (n & 1); }\n")
+        self.assertEqual(c["cval"].status, laws.FAILED)
+
+
 @unittest.skipUnless(HAS_Z3, "z3-solver not installed")
 class TestUninitArrayElements(unittest.TestCase):
     """S7: an unwritten local array element is an indeterminate value."""

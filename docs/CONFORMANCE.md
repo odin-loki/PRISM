@@ -612,19 +612,43 @@ flagged (SV-COMP `NoNegativeIntegerConstant`, true).
 **F7. C++20 shift semantics.** `1 << 31` is well defined in C++20 but flagged
 (`cxx/cxx_shift_cpp20_true`); `shift31` should be C-only.
 
-*Open* (ESBMC C++ tasks, full fetched set; none in the committed subset).
+*Fixed* (ESBMC C++ tasks, full fetched set; none in the committed subset).
+Regression pairs: `prism/regress/global_zero_table_*`, `malloc_abort_*`,
+`fn_try_block_*` (each `_true` was a false alarm before the fix).
 **F8. pir: zero-initialised global array of structs with 1024 elements.**
-`struct uint3 a[1024]; assert(a[0].x == 0);` in `main` is FAILED
-(`bug_fixes/1006_aggregate`); the same with 4 elements, or a flat
-`int a[1024]`, is PROVED. A false alarm in the global-initialiser encoding of
-large aggregate arrays, not a soundness issue.
-**F9. pir: `abort()` after a failed `malloc` in a constructor**
-(`cpp/github_6464_placement_new_incremental`): PRISM's `malloc` model may
-return NULL, so `if (!buf) abort();` is reachable; ESBMC's label assumes
-allocation succeeds. A model difference, reported as FUNC-CONTRACT.
+`struct uint3 a[1024]; assert(a[0].x == 0);` in `main` was FAILED
+(`bug_fixes/1006_aggregate`). Cause: every initialised global larger than
+4096 bytes was modelled as arbitrary initialised bytes (a guard against long
+initialiser store chains), although the zero fill itself is one memory entry
+whatever the size. Now only a large global whose initializer needs more than
+256 non-zero stores is havocked (`translate_mem.cpp` `MemTr::init_stores`);
+the over-approximation that remains can only cost proofs, never make one.
+**F9. pir: `abort()` after a failed `malloc`**
+(`cpp/github_6464_placement_new_incremental`). PRISM's `malloc` model may
+return NULL (ESBMC's too: `--force-malloc-success` is off by default), so
+`if (!buf) abort();` is reachable. ESBMC models `abort()` as
+`__ESBMC_assume(0)` (`src/c2goto/library/stdlib.c` at the pinned commit): a
+path that aborts is cut, never an assertion failure. PRISM keeps reporting
+`abort()` as FUNC-CONTRACT ("process crash"), except on an execution where
+a library allocation already failed: there it is the program's
+out-of-memory handling. The malloc/calloc/realloc models record a failure
+(`__prism_alloc_failed`, a hidden flag object zero at function entry) and
+the `abort` check is `flag == 0`. Unchanged: a dereference of an unchecked
+NULL result (PTR-NULL-DEREF), `assert(p)` after `malloc` (FUNC-CONTRACT),
+and `abort()` on any execution where every allocation succeeded.
 **F10. bmc: function-try-block** (`void f(int &x) try { throw 10; } catch
-(const int &i) { x = i; }`, `try_catch/try-catch_tryblock_08`): the handler's
-store is lost and `assert(v == 10)` in `main` is FAILED.
+(const int &i) { x = i; }`, `try_catch/try-catch_tryblock_08`): `assert(v
+== 10)` in `main` was FAILED. The front end does not extract a
+function-try-block (an honest PARSE-GAP row), so `f(v)` was an unmodelled
+call, whose result is quantified but whose effect on `v` was not: a C++
+callee may take `v` by non-const reference. Both engines' bmc now treat an
+unmodelled call in a C++ file (anything but `.c`/`.i`) as writing what an
+argument may name: a named scalar or the array of an element gets a value
+quantified like a call result (`escape_scalar`, `escape_array`); an
+argument of any other lvalue shape (`(v)`, `++v`, `*p`, `v = x`, `c ? a :
+b`) lets everything it mentions escape. By-value C calls are unchanged. The
+unmodelled call already ruled out a proof (S6), so this only removes wrong
+refutations; `main` is now NEEDS-HARNESS (pir proves it).
 
 ### Coverage gaps (honest `ERROR` / `NEEDS-HARNESS`, costing completeness)
 

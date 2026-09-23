@@ -150,6 +150,7 @@ struct Enc {
     std::vector<Jump> jumps;
     std::vector<std::vector<std::string>> scopes;
     bool havoc = false;  // loops are havocked (unbounded step) instead of unrolled
+    bool cxx = false;    // C++ source: call arguments may bind references
 
     explicit Enc(int u)
         : unwind(u), s(ctx), path_true(ctx.bool_val(true)) {
@@ -416,6 +417,42 @@ void escape_array(Enc& e, const std::string& name) {
     if (e.uninit.count("@" + name)) shadow_init(e, name, true);
 }
 
+// C++ scalar passed to an unmodelled call: bound to a non-const reference
+// parameter, the callee may write it. Its value becomes unknown (quantified
+// like a call result) and it counts as written; no proof follows (S6).
+void escape_scalar(Enc& e, const std::string& name) {
+    auto t = e.type_of(name);
+    auto v = e.bv(name + "_esc" + std::to_string(e.fresh + 1), t.w);
+    e.call_vars.push_back(v);
+    e.vars.insert_or_assign(name, v);
+    e.mark_init(name);
+}
+
+// Names a C++ call argument tokens[from, to) may bind by reference (F10).
+std::vector<std::string> lvalue_names(const Enc& e, const std::vector<std::string>& tok, size_t from, size_t to) {
+    auto var = [&](const std::string& n) { return e.bits.count(n) != 0 || e.is_array(n); };
+    if (to == from + 1) return var(tok[from]) ? std::vector<std::string>{tok[from]} : std::vector<std::string>{};
+    if (to > from + 1 && tok[from + 1] == "[" && tok[to - 1] == "]" && e.is_array(tok[from])) {
+        int depth = 0;  // a[i] as a whole (not a[i] + 1)
+        bool whole = true;
+        for (size_t k = from + 1; k < to; ++k) {
+            if (tok[k] == "[") ++depth;
+            else if (tok[k] == "]" && --depth == 0 && k + 1 != to) whole = false;
+        }
+        if (whole) return {tok[from]};
+    }
+    static const std::unordered_set<std::string> LV = {"(", "++", "--", "*"};
+    static const std::unordered_set<std::string> ANY = {"=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=",
+                                                        "<<=", ">>=", "?", ",", ".", "->"};
+    bool maybe = to > from && LV.count(tok[from]) != 0;
+    for (size_t k = from; k < to && !maybe; ++k) maybe = ANY.count(tok[k]) != 0;
+    std::vector<std::string> out;
+    if (!maybe) return out;
+    for (size_t k = from; k < to; ++k)
+        if (var(tok[k]) && std::find(out.begin(), out.end(), tok[k]) == out.end()) out.push_back(tok[k]);
+    return out;
+}
+
 std::pair<std::string, std::string> paren(std::string text);
 std::pair<std::string, std::string> brace(std::string text);
 std::pair<std::string, std::string> stmt_split(std::string text);
@@ -630,6 +667,7 @@ struct Parser {
     // AI hook statements (__prism_assume/assert/havoc/step) are only parsed
     // for programs built by prism::ai::check_program, never for user code.
     bool ai_hooks = false;
+    bool cxx = false;  // C++ source (Enc::cxx)
 
     Parser(std::string b, std::vector<std::pair<std::string, std::string>> p, int u,
            std::map<std::string, int> en, std::map<std::string, std::string> mac = {},
@@ -640,6 +678,7 @@ struct Parser {
     std::unique_ptr<Enc> run() {
         auto e = std::make_unique<Enc>(unwind);
         e->havoc = havoc;
+        e->cxx = cxx;
         try {
             for (auto& [typ, name] : params) {
                 if (name.empty()) continue;
@@ -2264,11 +2303,14 @@ TV parse_expr(Enc& e, std::string src, Parser& parser) {
             if (peek() == "(" && !e.declared(t)) {
                 eat("(");
                 std::vector<TV> args;
+                std::vector<std::pair<size_t, size_t>> spans;  // token range of each argument
                 size_t n_values = e.value_arrays.size();
                 if (peek() == ")") eat(")");
                 else {
                     while (true) {
+                        size_t from = pos;
                         args.push_back(parse(2));
+                        spans.emplace_back(from, pos);
                         if (peek() == ",") { eat(","); continue; }
                         eat(")");
                         break;
@@ -2285,6 +2327,19 @@ TV parse_expr(Enc& e, std::string src, Parser& parser) {
                         seen.push_back(an);
                         escape_array(e, an);
                     }
+                    // C++: a parameter may be a non-const reference, so an
+                    // lvalue argument may be written by the callee
+                    // (docs/CONFORMANCE.md F10). What it may name becomes
+                    // unknown, quantified like a call result: a named scalar,
+                    // or the array of an element; an argument of any other
+                    // lvalue shape (parenthesised, ++x, *p, x = y, c ? x : y)
+                    // lets every scalar and array it mentions escape.
+                    if (e.cxx)
+                        for (auto [from, to] : spans)
+                            for (auto& n : lvalue_names(e, tokens, from, to)) {
+                                if (e.is_array(n)) escape_array(e, e.canonical(n));
+                                else escape_scalar(e, n);
+                            }
                 }
                 e.value_arrays.resize(n_values);
                 return res;

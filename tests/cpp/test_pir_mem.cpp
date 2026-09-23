@@ -13,6 +13,7 @@
 #include "../../src/prism/pir/translate_mem.hpp"
 
 #include <filesystem>
+#include <fstream>
 #include <map>
 #include <string>
 #include <vector>
@@ -525,5 +526,70 @@ TEST_CASE("pir mem: clang round trip on tests/pir/mem_*.c (skips without clang/o
     CHECK(st["no_contract"].first == prism::laws::NEEDS_HARNESS);
     CHECK(st["first_last_ok"].first == prism::laws::PROVED_ASSUMING);
     CHECK(st["past_end_bad"].first == prism::laws::FAILED);
+}
+// docs/CONFORMANCE.md F8/F9: one program per file (main sees the static
+// initial state; each function's verdict is its own).
+static std::map<std::string, std::pair<std::string, std::string>> pir_programs(
+    const std::vector<std::pair<std::string, std::string>>& files) {
+    auto cfg = prism::default_config();
+    auto dir = std::filesystem::temp_directory_path() / "prism_pir_f8_f9";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    std::vector<std::filesystem::path> paths;
+    for (auto& [name, src] : files) {
+        std::ofstream(dir / name) << src;
+        paths.push_back(dir / name);
+    }
+    cfg.root = dir;
+    cfg.jobs = 2;
+    cfg.solver_cache = dir / "cache";
+    std::map<std::string, std::pair<std::string, std::string>> st;
+    for (auto& f : pp::run_pir(paths, cfg))
+        if (f.function) st[std::filesystem::path(f.file).filename().string() + ":" + *f.function] = {f.status, f.cls};
+    return st;
+}
+
+TEST_CASE("pir mem: large zero-initialised globals keep their contents (F8; skips without clang/opt)") {
+    auto fe = pp::find_frontend(prism::default_config());
+    if (!fe.clang || !fe.opt) return;
+    std::string dense;
+    for (int i = 0; i < 300; ++i) dense += "1,";
+    auto st = pir_programs({
+        {"f8_true.c", "#include <assert.h>\nstruct uint3 { unsigned x, y, z; };\nstruct uint3 t[1024];\n"
+                      "int main(void) { assert(t[0].x == 0 && t[1023].z == 0); return 0; }\n"},
+        {"f8_false.c", "#include <assert.h>\nstruct uint3 { unsigned x, y, z; };\nstruct uint3 t[1024];\n"
+                       "int main(void) { assert(t[1000].z == 1); return 0; }\n"},
+        // a large table with many non-zero entries is still arbitrary bytes:
+        // never a proof that depends on its contents
+        {"f8_dense.c", "#include <assert.h>\nstatic int d[2048] = {" + dense +
+                           "};\nint main(void) { assert(d[5] == 1); return 0; }\n"},
+    });
+    CHECK(st["f8_true.c:main"].first == prism::laws::PROVED);
+    CHECK(st["f8_false.c:main"].first == prism::laws::FAILED);
+    CHECK_FALSE(prism::laws::is_proof(st["f8_dense.c:main"].first));
+}
+
+TEST_CASE("pir mem: abort() after a failed allocation is OOM handling, not a defect (F9; skips without clang/opt)") {
+    auto fe = pp::find_frontend(prism::default_config());
+    if (!fe.clang || !fe.opt) return;
+    auto st = pir_programs({{"f9.c", R"(#include <stdlib.h>
+#include <assert.h>
+int oom_abort(int n) { int *p = malloc(sizeof *p); if (!p) abort(); *p = n; int r = *p; free(p); return r; }
+int oom_calloc(int n) { int *p = calloc(4, sizeof *p); if (!p) abort(); int r = p[n & 3]; free(p); return r; }
+int plain_abort(int n) { int *p = malloc(sizeof *p); if (!p) abort(); if (n == 7) abort(); free(p); return 0; }
+int abort_first(int n) { if (n == 3) abort(); int *p = malloc(sizeof *p); if (!p) abort(); free(p); return 0; }
+int unchecked(int n) { int *p = malloc(sizeof *p); *p = n; int r = *p; free(p); return r; }
+int assert_nonnull(int n) { int *p = malloc(sizeof *p); assert(p); *p = n; free(p); return 0; }
+)"}});
+    CHECK(st["f9.c:oom_abort"].first == prism::laws::PROVED);
+    CHECK(st["f9.c:oom_calloc"].first == prism::laws::PROVED);
+    // abort() on an execution where every allocation succeeded is still reported
+    CHECK(st["f9.c:plain_abort"].first == prism::laws::FAILED);
+    CHECK(st["f9.c:abort_first"].first == prism::laws::FAILED);
+    // the allocation-failure checks themselves stay
+    CHECK(st["f9.c:unchecked"].first == prism::laws::FAILED);
+    CHECK(st["f9.c:unchecked"].second == "PTR-NULL-DEREF");
+    CHECK(st["f9.c:assert_nonnull"].first == prism::laws::FAILED);
+    CHECK(st["f9.c:assert_nonnull"].second == "FUNC-CONTRACT");
 }
 #endif

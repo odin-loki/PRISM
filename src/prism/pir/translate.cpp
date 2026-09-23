@@ -134,6 +134,7 @@ struct Tr final : pirmem::TrApi {
     std::map<std::string, uint64_t> fn_ids;         // function symbol -> object id of its address
     std::optional<std::vector<std::string>> thrown_;  // every type the module throws
     std::optional<Arg> caught_;                       // hidden object: stack of caught exceptions
+    std::optional<Arg> oom_;                          // hidden object: an allocation failed (F9)
 
     Arg fn_addr(const std::string& name) override;
     Snap snap();
@@ -1015,8 +1016,17 @@ struct Tr final : pirmem::TrApi {
                 return;
             }
             if (n == "abort") {
-                // defined behaviour, but a crash: never a clean PROVED path
-                check(cur, Arg::c(1, 1), "abort", "FUNC-CONTRACT", "abort() is reachable (process crash)", line);
+                // Defined behaviour, but a crash: never a clean PROVED path,
+                // except out-of-memory handling. On an execution where an
+                // allocation already failed (the malloc/calloc/realloc models
+                // call __prism_alloc_failed), abort() is the program's answer
+                // to the failure, not a defect (docs/PIR.md "Library models",
+                // F9; ESBMC lets malloc fail by default and models abort() as
+                // assume(false)). Dereferencing an unchecked NULL result is
+                // still a separate check.
+                Arg viol = Arg::c(1, 1);
+                if (oom_) viol = assign(cur, Op::Eq, 1, {ld(cur, *oom_, 8, line), Arg::c(8, 0)}, "c");
+                check(cur, viol, "abort", "FUNC-CONTRACT", "abort() is reachable (process crash)", line);
                 noreturn = true;
                 return;
             }
@@ -1352,6 +1362,12 @@ struct Tr final : pirmem::TrApi {
         if (n == "__prism_assume") {
             Arg c = arg(0);
             assume(cur, assign(cur, Op::Ne, 1, {c, Arg::c(c.width, 0)}, "c"));
+            return;
+        }
+        if (n == "__prism_alloc_failed") {
+            // hidden flag object, zero at entry: set when a library allocation fails
+            if (!oom_) oom_ = mt.alloc(-1, Arg::c(64, 1), MemKind::Static, 1, "allocation failed (PRISM)", 0);
+            st(cur, *oom_, Arg::c(8, 1), line);
             return;
         }
         if (n == "__prism_obj_size") {

@@ -319,6 +319,7 @@ class _Enc:
         self.jumps: list[_Jump] = []
         self.scopes: list[list[str]] = []
         self.havoc = False  # loops are havocked (unbounded step) instead of unrolled
+        self.cxx = False  # C++ source: call arguments may bind references
 
     def retag_unsigned(self) -> None:
         return None
@@ -479,6 +480,17 @@ class _Enc:
         self.arrays[name] = Arr(a, arr.n, arr.w, arr.u)
         if "@" + name in self.uninit:
             self.shadow_init(name, True)
+
+    def escape_scalar(self, name: str) -> None:
+        """C++ scalar passed to an unmodelled call: bound to a non-const
+        reference parameter, the callee may write it. Its value becomes unknown
+        (quantified like a call result) and it counts as written; no proof
+        follows (S6)."""
+        w, _u = self.type_of(name)
+        v = self.bv(f"{name}_esc{self.fresh + 1}", w)
+        self.call_vars.append(v)
+        self.vars[name] = v
+        self.mark_init(name)
 
     def add_prop(self, name: str, cls: str, viol: Any, loc: int) -> None:
         self.props.append(Prop(name, cls, z3.And(self.path_true, viol), loc))
@@ -861,6 +873,7 @@ class Parser:
         self.enums: dict[str, int] = dict(enums or {})
         self.macros: dict[str, str] = dict(macros or {})
         self.havoc = havoc
+        self.cxx = False  # C++ source (_Enc.cxx)
         self.err: str | None = None
 
     def run(self) -> _Enc | None:
@@ -868,6 +881,7 @@ class Parser:
             return None
         e = _Enc(self.unwind)
         e.havoc = self.havoc
+        e.cxx = self.cxx
         try:
             for typ, name in self.params:
                 if not name:
@@ -2188,6 +2202,34 @@ _PREC = {
 }
 
 
+_LV_START = frozenset({"(", "++", "--", "*"})
+_LV_ANY = frozenset({"=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>=", "?", ",", ".", "->"})
+
+
+def _lvalue_names(e: _Enc, tok: list[str], a: int, b: int) -> list[str]:
+    """Names a C++ call argument tok[a:b] may bind by reference (F10)."""
+
+    def var(n: str) -> bool:
+        return n in e.bits or e.is_array(n)
+
+    if b == a + 1:
+        return [tok[a]] if var(tok[a]) else []
+    if b > a + 1 and tok[a + 1] == "[" and tok[b - 1] == "]" and e.is_array(tok[a]):
+        depth, whole = 0, True  # a[i] as a whole (not a[i] + 1)
+        for k in range(a + 1, b):
+            if tok[k] == "[":
+                depth += 1
+            elif tok[k] == "]":
+                depth -= 1
+                if depth == 0 and k + 1 != b:
+                    whole = False
+        if whole:
+            return [tok[a]]
+    if not ((b > a and tok[a] in _LV_START) or any(t in _LV_ANY for t in tok[a:b])):
+        return []
+    return list(dict.fromkeys(t for t in tok[a:b] if var(t)))
+
+
 def _pratt(e: _Enc, src: str, parser: Parser) -> TV:
     tokens = _expand_macros(_ctok(src), e, parser.macros)
     pos = 0
@@ -2531,12 +2573,15 @@ def _pratt(e: _Enc, src: str, parser: Parser) -> TV:
             if peek() == "(" and not e.declared(t):
                 eat("(")
                 args: list[TV] = []
+                spans: list[tuple[int, int]] = []  # token range of each argument
                 n_values = len(e.value_arrays)
                 if peek() == ")":
                     eat(")")
                 else:
                     while True:
+                        start = pos
                         args.append(parse(2))
+                        spans.append((start, pos))
                         if peek() == ",":
                             eat(",")
                             continue
@@ -2548,6 +2593,20 @@ def _pratt(e: _Enc, src: str, parser: Parser) -> TV:
                     # unmodelled callee: every array its arguments mention escapes
                     for an in dict.fromkeys(e.value_arrays[n_values:]):
                         e.escape_array(an)
+                    # C++: a parameter may be a non-const reference, so an
+                    # lvalue argument may be written by the callee
+                    # (docs/CONFORMANCE.md F10). What it may name becomes
+                    # unknown, quantified like a call result: a named scalar,
+                    # or the array of an element; an argument of any other
+                    # lvalue shape (parenthesised, ++x, *p, x = y, c ? x : y)
+                    # lets every scalar and array it mentions escape.
+                    if e.cxx:
+                        for a, b in spans:
+                            for n in _lvalue_names(e, tokens, a, b):
+                                if e.is_array(n):
+                                    e.escape_array(e.canonical(n))
+                                else:
+                                    e.escape_scalar(n)
                 del e.value_arrays[n_values:]
                 return res
             if peek() in ("++", "--"):
@@ -2744,6 +2803,12 @@ def _param_premise(cex: str, params: list[tuple[str, str]]) -> str:
     return "local"
 
 
+def _cxx_source(file: str) -> bool:
+    """C++ unless the file is C (.c, .i): a header may be either, so it counts
+    as C++ (call arguments may bind references; _Enc.cxx)."""
+    return Path(file or "").suffix.lower() not in (".c", ".i")
+
+
 def _bmc_once(
     fn: FunctionInfo,
     unwind: int,
@@ -2754,6 +2819,7 @@ def _bmc_once(
     havoc: bool = False,
 ) -> Finding:
     p = Parser(fn.body, fn.params, unwind, enums=enums, macros=macros, havoc=havoc)
+    p.cxx = _cxx_source(fn.file)
     enc = p.run()
     if enc is None:
         b = dict(base)

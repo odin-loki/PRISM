@@ -36,6 +36,9 @@ void __prism_free(void *p, int kind);
 void __prism_free_check(void *p, int kind);
 void __prism_check(int ok, const char *cls, const char *msg);
 void __prism_assume(int cond);
+/* this execution saw an allocation fail: a later abort() is out-of-memory
+ * handling, not a defect (translate.cpp, abort) */
+void __prism_alloc_failed(void);
 size_t __prism_obj_size(const void *p); /* bytes from p to the end of its object */
 void __prism_memcpy(void *d, const void *s, size_t n, int overlap_ok);
 void __prism_memset(void *d, int c, size_t n);

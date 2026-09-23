@@ -228,6 +228,10 @@ Arg MemTr::ptr_add(int b, Arg p, Arg delta, int dst) {
     return Arg::v(s.dst, kPtrW);
 }
 
+// Past this many non-zero initialiser stores a large (> 4096-byte) global is
+// havocked instead (see MemTr::global).
+constexpr uint64_t kMaxInitStores = 256;
+
 Arg MemTr::global(const std::string& name) {
     if (auto it = globals_.find(name); it != globals_.end()) return it->second;
     const auto& m = t_.module();
@@ -266,7 +270,12 @@ Arg MemTr::global(const std::string& name) {
     else if (g->external) init = 2;
     else if (g->is_const || t_.options().globals_initial) init = 1;
     if (!g->is_const) t_.fn().mutable_globals = true;
-    bool big = init == 1 && size > 4096;  // large initialised tables: arbitrary initialised bytes
+    // Large tables with many non-zero entries: arbitrary initialised bytes (an
+    // over-approximation, never a wrong proof). The zero fill itself is one
+    // memory entry whatever the size, so a large all-zero (or mostly zero)
+    // global keeps its exact contents (F8: `struct S a[1024];` reads 0).
+    bool big = init == 1 && size > 4096 && !g->init.empty() &&
+               init_stores(g->ty, g->init[0].v, kMaxInitStores + 1) > kMaxInitStores;
     if (big) init = 2;
     Stmt s;
     s.kind = Stmt::Alloc;
@@ -290,6 +299,32 @@ Arg MemTr::global(const std::string& name) {
         emit_init(p, 0, g->ty, g->init[0].v, name);
     }
     return p;
+}
+
+uint64_t MemTr::init_stores(const ir::Type& ty, const ir::Value& v, uint64_t cap) const {
+    switch (v.kind) {
+        case ir::Value::Int:
+        case ir::Value::Fp: return v.bits != 0 ? 1 : 0;
+        case ir::Value::Zero:
+        case ir::Value::Null: return 0;
+        case ir::Value::Str: {
+            uint64_t n = 0;
+            for (char ch : v.bytes) n += ch != 0;
+            return n;
+        }
+        case ir::Value::Aggregate: {
+            const auto& rt = lay_.resolve(ty);
+            uint64_t n = 0;
+            for (std::size_t k = 0; k < v.elems.size() && n < cap; ++k) {
+                const ir::Type& et = rt.kind == ir::Type::Array    ? rt.elems.at(0)
+                                     : rt.kind == ir::Type::Struct ? lay_.field_type(rt, static_cast<unsigned>(k))
+                                                                   : ty;
+                n += init_stores(et, v.elems[k].v, cap - n);
+            }
+            return n;
+        }
+        default: return 1;  // one store (or an UNENCODED refusal in emit_init)
+    }
 }
 
 void MemTr::emit_init(Arg base, uint64_t offs, const ir::Type& ty, const ir::Value& v, const std::string& gname) {

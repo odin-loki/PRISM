@@ -1,19 +1,26 @@
 /* <stdlib.h> and C++ operator new/delete operational models (docs/PIR.md
  * "Library models"). Allocation may fail (malloc/calloc/realloc return NULL
  * on some paths): code that dereferences the result without a test is a
- * real defect (CWE-690). operator new never returns NULL (it throws; the
- * throwing path leaves the function and is not followed). */
+ * real defect (CWE-690). A failure is recorded (__prism_alloc_failed): an
+ * abort() after it is the program's out-of-memory handling, not a finding.
+ * operator new never returns NULL (it throws; the throwing path leaves the
+ * function and is not followed). */
 #include "prism_model.h"
 
 void *malloc(size_t n) {
-    if (n >= PRISM_MAX_OBJ || __VERIFIER_nondet_int()) return 0;
+    if (n >= PRISM_MAX_OBJ || __VERIFIER_nondet_int()) {
+        __prism_alloc_failed();
+        return 0;
+    }
     return __prism_alloc(n, PRISM_HEAP, PRISM_UNINIT);
 }
 
 void *calloc(size_t n, size_t sz) {
     size_t t;
-    if (__builtin_mul_overflow(n, sz, &t)) return 0;
-    if (t >= PRISM_MAX_OBJ || __VERIFIER_nondet_int()) return 0;
+    if (__builtin_mul_overflow(n, sz, &t) || t >= PRISM_MAX_OBJ || __VERIFIER_nondet_int()) {
+        __prism_alloc_failed();
+        return 0;
+    }
     return __prism_alloc(t, PRISM_HEAP, PRISM_ZERO);
 }
 
@@ -28,7 +35,10 @@ void *realloc(void *p, size_t n) {
         __prism_free(p, PRISM_HEAP);
         return 0;
     }
-    if (n >= PRISM_MAX_OBJ || __VERIFIER_nondet_int()) return 0; /* p stays valid */
+    if (n >= PRISM_MAX_OBJ || __VERIFIER_nondet_int()) { /* p stays valid */
+        __prism_alloc_failed();
+        return 0;
+    }
     size_t old = __prism_obj_size(p);
     void *q = __prism_alloc(n, PRISM_HEAP, PRISM_UNINIT);
     __prism_memcpy(q, p, old < n ? old : n, 0);
