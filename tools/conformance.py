@@ -15,6 +15,11 @@ computes, per verdict stage:
                 inputs (inside bwrap when available); the sanitizer must fire.
   FALSE ALARMS  FAILED on a `true` function.
 
+With --certified the pir stage is run a second time with `prism --certified`
+and scored as the verdict stage `pir-certified` (roadmap 3.2). The report then
+also says how many loop-free `true` functions became PROVED-CERTIFIED (the
+roadmap 3 exit criterion: all of them) and why the others did not.
+
 Task format (tests/conformance/prism/**.yml, one sidecar per source file):
 
   format_version: 1
@@ -75,6 +80,10 @@ VERDICT_STAGES = ["bmc", "harness", "pir"]
 # functions under `// requires:`). A function they do not mention is out of
 # scope, not silently skipped; bmc and pir must report every function.
 SCOPED_STAGES = {"harness"}
+# --certified: the pir stage again with `prism --certified`, scored under this name.
+CERT_STAGE = "pir-certified"
+# Finding extras kept in results.json (pir: loop count and certificate fields).
+KEEP_EXTRA = ("loops", "properties", "certificate", "certify_note", "certified_mode", "solver")
 
 # SV-COMP property file -> suite property
 SV_PROPERTIES = {"no-overflow.prp": "no-overflow", "valid-memsafety.prp": "memsafety"}
@@ -497,13 +506,15 @@ def list_stages(cmd: list[str]) -> list[str]:
 
 
 def run_prism(cmd: list[str], task: Task, stages: list[str], work: Path, timeout: float,
-              unwind: int | None) -> dict[str, Any]:
-    out = work / "prism" / task.ident.replace("/", "__")
+              unwind: int | None, extra_args: list[str] | None = None,
+              rename: dict[str, str] | None = None, tag: str = "prism") -> dict[str, Any]:
+    out = work / tag / task.ident.replace("/", "__")
     if out.exists():
         shutil.rmtree(out)
     argv = cmd + [str(task.source), "--no-llm", "--stage", ",".join(stages), "--out", str(out)]
     if unwind:
         argv += ["--unwind", str(unwind)]
+    argv += extra_args or []
     t0 = time.monotonic()
     env = dict(os.environ)
     env.setdefault("PYTHONPATH", str(REPO))
@@ -525,12 +536,15 @@ def run_prism(cmd: list[str], task: Task, stages: list[str], work: Path, timeout
         stage_status[name] = st.get("status", "")
         if name not in VERDICT_STAGES:
             continue
+        name = (rename or {}).get(name, name)
         for f in st.get("findings", []):
             fn = f.get("function")
             if fn in task.expected:
-                per.setdefault(name, {}).setdefault(fn, []).append(
-                    {k: f.get(k) for k in ("status", "cls", "message", "counterexample", "line")}
-                )
+                rec = {k: f.get(k) for k in ("status", "cls", "message", "counterexample", "line")}
+                ex = {k: v for k, v in (f.get("extra") or {}).items() if k in KEEP_EXTRA}
+                if ex:
+                    rec["extra"] = ex
+                per.setdefault(name, {}).setdefault(fn, []).append(rec)
         if st.get("status") == "failed":
             # A crashed stage loses every function of the file: record why
             # instead of reporting the functions as silently missing.
@@ -671,6 +685,46 @@ def compute_metrics(rows: list[dict[str, Any]], stages: list[str]) -> dict[str, 
     return metrics
 
 
+def certified_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Roadmap 3 exit criterion: loop-free `true` functions -> PROVED-CERTIFIED.
+
+    Loop-free means the pir stage encoded the function and found no loop
+    (extra.loops == "0"). A function pir did not encode (NEEDS-HARNESS,
+    UNKNOWN before encoding) has no loop count and is listed separately.
+    """
+    sel = [r for r in rows if r["stage"] == CERT_STAGE and r["expected"] and not r["law_task"]]
+    loop_free, looped, unencoded = [], [], []
+    for r in sel:
+        loops = next((f.get("extra", {}).get("loops") for f in r["findings"] if f.get("extra", {}).get("loops")),
+                     None)
+        (loop_free if loops == "0" else looped if loops else unencoded).append(r)
+
+    def st(r: dict[str, Any]) -> set[str]:
+        return {f["status"] for f in r["findings"]}
+
+    cert = [r for r in loop_free if "PROVED-CERTIFIED" in st(r)]
+    proved = [r for r in loop_free if st(r) & PROOF]
+    not_cert = []
+    for r in proved:
+        if r in cert:
+            continue
+        note = next((f.get("extra", {}).get("certify_note", "") for f in r["findings"]), "")
+        not_cert.append({"task": r["task"], "function": r["function"], "note": note})
+    wrong_cert = [r for r in rows if r["stage"] == CERT_STAGE and not r["expected"]
+                  and "PROVED-CERTIFIED" in st(r)]
+    return {
+        "true_functions": len(sel),
+        "loop_free_true": len(loop_free),
+        "loop_free_true_proved": len(proved),
+        "loop_free_true_certified": len(cert),
+        "looped_true": len(looped),
+        "looped_true_certified": sum(1 for r in looped if "PROVED-CERTIFIED" in st(r)),
+        "not_encoded_true": len(unencoded),
+        "wrong_certified": len(wrong_cert),
+        "proved_not_certified": not_cert,
+    }
+
+
 def markdown(metrics: dict[str, Any], rows: list[dict[str, Any]], meta: dict[str, Any]) -> str:
     out = ["# PRISM conformance results", ""]
     out.append(f"- engine: `{meta['engine']}` (`{' '.join(meta['command'])}`)")
@@ -695,6 +749,19 @@ def markdown(metrics: dict[str, Any], rows: list[dict[str, Any]], meta: dict[str
                 f"| {m['no_answer']} | {m['law_ok']}/{m['law_tasks']} |"
             )
     out.append("")
+    cs = meta.get("certified")
+    if cs:
+        out += ["## Certified mode (roadmap 3.2, `prism --certified`)", "",
+                f"- loop-free `true` functions encoded by pir: {cs['loop_free_true']}",
+                f"- of those PROVED (any proof) under --certified: {cs['loop_free_true_proved']}",
+                f"- of those **PROVED-CERTIFIED**: **{cs['loop_free_true_certified']}/{cs['loop_free_true']}**",
+                f"- `true` functions with loops: {cs['looped_true']} "
+                f"({cs['looped_true_certified']} PROVED-CERTIFIED: loops closed within the unwind)",
+                f"- `true` functions pir did not encode (NEEDS-HARNESS etc.): {cs['not_encoded_true']}",
+                f"- PROVED-CERTIFIED on a `false` function (must be 0): **{cs['wrong_certified']}**", ""]
+        for x in cs["proved_not_certified"]:
+            out.append(f"  - proved, not certified: `{x['task']}` `{x['function']}`: {x['note']}")
+        out.append("")
     # per-category matrix (first stage that ran, in-house tasks)
     cats = sorted({(r["origin"], r["category"]) for r in rows})
     stages = list(metrics)
@@ -829,6 +896,11 @@ def main(argv: list[str] | None = None) -> int:
                     help="do not compile/run counterexamples (detection is then reported as 0 replayed)")
     ap.add_argument("--self-check", action="store_true",
                     help="validate the suite labels with sanitizers instead of running PRISM")
+    ap.add_argument("--certified", action="store_true",
+                    help="also run the pir stage with --certified and score it as 'pir-certified'")
+    ap.add_argument("--solver-cache", type=Path,
+                    help="solver query cache for the pir runs (default: a fresh one in the work dir, "
+                         "so no answer comes from an earlier run)")
     args = ap.parse_args(argv)
 
     if args.fetch_juliet:
@@ -878,8 +950,27 @@ def main(argv: list[str] | None = None) -> int:
         # keep the pipeline's own order
         run_stages.sort(key=lambda s: listed.index(s) if s in listed else 999)
 
+        cache = args.solver_cache or (work / "solver-cache")
+        extra = ["--solver-cache", str(cache)] if engine == "cpp" else []
+        cert_on = bool(args.certified) and "pir" in listed
+        if cert_on:
+            vstages.append(CERT_STAGE)
+        cert_stages = [s for s in ("inventory", "classify", "pir") if s in listed]
+
         def one(t: Task) -> tuple[Task, dict[str, Any]]:
-            return t, run_prism(cmd, t, run_stages, work, args.timeout, args.unwind)
+            res = run_prism(cmd, t, run_stages, work, args.timeout, args.unwind, extra)
+            if cert_on and "error" not in res:
+                # Certificates cost time (bit-blast, LRAT, checking): twice the budget.
+                cres = run_prism(cmd, t, cert_stages, work, 2 * args.timeout, args.unwind,
+                                 extra + ["--certified"], rename={"pir": CERT_STAGE}, tag="prism-cert")
+                if "error" in cres:
+                    res.setdefault("findings", {})[CERT_STAGE] = {
+                        fn: [{"status": "STAGE-FAILED", "cls": "", "message": cres["error"][:300],
+                              "counterexample": "", "line": None}] for fn in t.expected}
+                else:
+                    res.setdefault("findings", {}).update(cres.get("findings", {}))
+                res["seconds_certified"] = cres.get("seconds")
+            return t, res
 
         rows: list[dict[str, Any]] = []
         with cf.ThreadPoolExecutor(max_workers=args.jobs) as ex:
@@ -926,6 +1017,9 @@ def main(argv: list[str] | None = None) -> int:
             "wrong_proofs": wrong, "release_gate": "PASS" if wrong == 0 else "FAIL",
             "errors": sorted({r["task"] + ": " + r["error"] for r in rows if "error" in r}),
         }
+        if cert_on:
+            # Wrong proofs above already include the pir-certified rows.
+            meta["certified"] = certified_summary(rows)
         (args.out / "results.json").write_text(json.dumps(rows, indent=1), encoding="utf-8")
         (args.out / "metrics.json").write_text(json.dumps({"meta": meta, "metrics": metrics}, indent=1),
                                                encoding="utf-8")

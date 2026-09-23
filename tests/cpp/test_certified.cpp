@@ -350,6 +350,26 @@ TEST_CASE("certified: a function with no VC is certified vacuously and says so")
     CHECK(prism::pir::check_function(*t.fn, cert_opts(false)).status == prism::laws::PROVED);
 }
 
+TEST_CASE("pir: C23 units that do not compile as C17 are lowered as C23 (skips without clang/opt)") {
+    auto cfg = prism::default_config();
+    auto fe = prism::pir::find_frontend(cfg);
+    if (!fe.clang || !fe.opt) return;
+    CertTmp tmp;
+    auto src = tmp.dir / "c23.c";
+    std::ofstream(src) << "bool c23_ok(int a) {\n    typeof(a) b = a & 7;\n    return b < 8 && nullptr == (void *)0;\n}\n";
+    cfg.root = tmp.dir;
+    cfg.jobs = 1;
+    cfg.solver_cache = tmp.dir / "cache";
+    auto out = prism::pir::run_pir({src}, cfg);
+    bool seen = false;
+    for (auto& f : out)
+        if (f.function && *f.function == "c23_ok") {
+            seen = true;
+            CHECK(prism::laws::is_proof(f.status));
+        }
+    CHECK(seen);
+}
+
 TEST_CASE("certified: a certified request never loses a cached plain answer") {
     CertTmp tmp;
     z3::context c;
