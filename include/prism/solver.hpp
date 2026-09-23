@@ -47,7 +47,7 @@ struct SolveOptions {
     bool certified = false;     // roadmap 3.2: try to produce PROVED-CERTIFIED
     bool portfolio = true;      // false: Z3 only (plus the certificate chain when certified)
     std::string cache_dir;      // empty: $XDG_CACHE_HOME/prism/solver or ~/.cache/prism/solver
-    bool use_cache = true;
+    bool use_cache = true;      // the query cache; solve times are always recorded in cache_dir
     bool cache_certificates = true;  // keep CNF + LRAT so a certified hit is re-checked
     bool sls = true;            // ProbSAT walker (counterexamples only)
     double sls_budget_s = 0.0;  // 0: max(1 s, 10% of timeout_s); it then frees its core

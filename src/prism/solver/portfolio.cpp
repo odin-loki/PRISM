@@ -360,11 +360,18 @@ fs::path make_work_dir(const SolveOptions& opt, const std::string& h) {
 #else
     const long long pid = 0;
 #endif
-    fs::path d = fs::temp_directory_path(ec) /
-                 ("prism-solve-" + h.substr(0, 12) + "-" + std::to_string(pid) + "-" +
-                  std::to_string(g_dir_counter.fetch_add(1)));
-    fs::create_directories(d, ec);
-    return d;
+    // A directory this call creates itself (never one that already exists:
+    // the CNF and proof in it are what gets certified).
+    const fs::path base = fs::temp_directory_path(ec);
+    for (;;) {
+        fs::path d = base / ("prism-solve-" + h.substr(0, 12) + "-" + std::to_string(pid) + "-" +
+                             std::to_string(g_dir_counter.fetch_add(1)));
+        if (fs::create_directory(d, ec)) {
+            fs::permissions(d, fs::perms::owner_all, fs::perm_options::replace, ec);
+            return d;
+        }
+        if (ec && ec != std::errc::file_exists) return d;  // unwritable: members fail and say so
+    }
 }
 
 }  // namespace
