@@ -1,0 +1,6 @@
+format_version: 1
+input_files: loop_break_path_true.c
+language: C
+property: no-div0
+expected:
+  loop_break_path_true: true

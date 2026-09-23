@@ -1,0 +1,8 @@
+format_version: 1
+input_files: cast_alias_false.c
+language: C
+property: no-overflow
+expected:
+  cast_alias_false: false
+witness:
+  cast_alias_false: [2147483647]

@@ -1,0 +1,8 @@
+format_version: 1
+input_files: and_effect_false.c
+language: C
+property: no-div0
+expected:
+  and_effect_false: false
+witness:
+  and_effect_false: [0]

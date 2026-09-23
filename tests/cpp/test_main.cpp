@@ -463,6 +463,105 @@ TEST_CASE("bmc fails oob_write") {
     CHECK(findings[0].status == prism::laws::FAILED);
 }
 
+// docs/CONFORMANCE.md "Known issues": every wrong proof S1-S6 and the
+// soundness-relevant F/R items, reduced to one function each. A function
+// with a violation must never be proved; the expected refutation class is
+// checked where the encoder models it.
+static std::map<std::string, prism::Finding> bmc_source(const std::string& name, const std::string& src) {
+    auto dir = std::filesystem::temp_directory_path() / "prism_bmc_soundness";
+    std::filesystem::create_directories(dir);
+    auto path = dir / name;
+    {
+        std::ofstream out(path, std::ios::binary);
+        out << src;
+    }
+    auto fns = prism::extract_functions(path, path.string());
+    std::map<std::string, prism::Finding> by;
+    for (auto& f : prism::run_bmc(fns, 8))
+        if (f.function) by[*f.function] = f;
+    return by;
+}
+
+TEST_CASE("bmc soundness: known wrong proofs are refuted (S1-S6)") {
+    auto by = bmc_source("sound_s.c", R"(#include <stdlib.h>
+#include <limits.h>
+int s1(int a, int b) { if (a < 0) return 0; return a - b; }
+int s2(int a, int b) { if (b == 0) return 0; return a % b; }
+int s3a(int x) { if (x < -1000 || x > 1000) return 0; return x << 2; }
+int s3b(int x) { if (x < 0 || x > 4) return 0; return x << 30; }
+int s3c(int x) { if (x < 0 || x > 7) return 0; return 2147483647 << x; }
+unsigned s4a(unsigned short a, unsigned short b) { return a * b; }
+int s4b(unsigned char c) { return c << 24; }
+int s4c(int a, unsigned char b) { return a + b; }
+int s4d(unsigned char c, int d) { if (c < -10 || c > 100) return 0; return 20 / d; }
+int s5(int a, unsigned s) { if (s < 1 || s > 7) return 0; return (a >> s) - 2147483647; }
+int s6a(int x) { return abs(x); }
+void sink(int);
+int s6c(int d) { sink(100 / d); return 0; }
+int s6e(void) { int v = INT_MIN; if (v < 0) return v * 2; return 0; }
+int add_neg(int a, int b) { if (a > 0) return 0; return a + b; }
+long long mul_ll(long long a) { return a * 3; }
+)");
+    struct Want { const char* fn; const char* cls; };
+    for (auto w : {Want{"s1", "INT-SIGNED-OVF"}, Want{"s2", "INT-SIGNED-OVF"},
+                   Want{"s3a", "INT-SHIFT-UB"}, Want{"s3b", "INT-SHIFT-UB"}, Want{"s3c", "INT-SHIFT-UB"},
+                   Want{"s4a", "INT-SIGNED-OVF"}, Want{"s4b", "INT-SHIFT-UB"}, Want{"s4c", "INT-SIGNED-OVF"},
+                   Want{"s4d", "INT-DIV-ZERO"}, Want{"s5", "INT-SIGNED-OVF"}, Want{"s6a", "INT-SIGNED-OVF"},
+                   Want{"s6c", "INT-DIV-ZERO"}, Want{"s6e", "INT-SIGNED-OVF"},
+                   Want{"add_neg", "INT-SIGNED-OVF"}, Want{"mul_ll", "INT-SIGNED-OVF"}}) {
+        INFO(w.fn);
+        REQUIRE(by.count(w.fn));
+        CHECK(by[w.fn].status == prism::laws::FAILED);
+        CHECK(by[w.fn].cls == w.cls);
+    }
+}
+
+TEST_CASE("bmc soundness: unmodelled constructs are never proofs") {
+    auto by = bmc_source("sound_u.c", R"(#define SQ(x) ((x) * (x))
+int b6(int x) { return SQ(x); }
+int g6(int x) { return UNKNOWN_BOUND + x; }
+int glob;
+int h6(int x) { return glob / x; }
+)");
+    for (auto name : {"b6", "g6"}) {
+        INFO(name);
+        REQUIRE(by.count(name));
+        CHECK(by[name].status == prism::laws::NEEDS_HARNESS);
+        CHECK(by[name].message.find("UNENCODED") != std::string::npos);
+    }
+    REQUIRE(by.count("h6"));
+    CHECK_FALSE(prism::laws::is_proof(by["h6"].status));
+}
+
+TEST_CASE("bmc soundness: control flow keeps every path") {
+    auto by = bmc_source("sound_cf.c", R"(static int g(int a) { if (a == 0) return 0; return 1; }
+int inl(int a) { int r = g(a); return 10 / r; }
+int loopk(int n) { int s = 0; for (int i = 0; i < n; i++) s = i; return 100 / (s - 20); }
+int loopb(int n) { int i; if (n < 0) return 0; for (i = 0; i < n && i < 5; i++) { } return 100 / (n - 2); }
+int brk(int a) { int x = 2; for (;;) { if (a) break; x = 3; break; } return 10 / (x - 2); }
+int cont(int d) { int s = 0; for (int i = 0; i < 3; i++) { if (i == 1) continue; s += 1; } return 10 / (s - 2 + d); }
+int dangling(int a, int b) { int x = 1; if (a) if (b) x = 2; else x = 0; return 10 / x; }
+unsigned f1(unsigned a, unsigned b) { return b ? a / b : 0; }
+int and_guard(int a, int b) { return b > 0 && a / b > 1; }
+int kin(int n) { while (n > 0) { n = n - 1; } return n; }
+int w(long long p0) { unsigned v0 = 12; v0 &= (p0 + (~p0)); return (int)v0; }
+int innocent(int a) { if (a < 0 || a > 10) return 0; return a * 2; }
+)");
+    for (auto name : {"inl", "loopb", "brk", "cont", "dangling"}) {
+        INFO(name);
+        REQUIRE(by.count(name));
+        CHECK(by[name].status == prism::laws::FAILED);
+        CHECK(by[name].cls == "INT-DIV-ZERO");
+    }
+    REQUIRE(by.count("loopk"));
+    CHECK_FALSE(prism::laws::is_proof(by["loopk"].status));
+    for (auto name : {"f1", "and_guard", "kin", "w", "innocent"}) {
+        INFO(name);
+        REQUIRE(by.count(name));
+        CHECK(by[name].status == prism::laws::PROVED_UNBOUNDED);
+    }
+}
+
 TEST_CASE("thrd_create is not a vacuous proof") {
     auto fn = load_fn("iso_thread_race.c", "iso_thrd_start");
     auto findings = prism::run_bmc({fn}, 8);
