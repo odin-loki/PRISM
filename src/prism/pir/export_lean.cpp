@@ -15,10 +15,14 @@
 
 #include "prism/pir.hpp"
 
+#include "translate_mem.hpp"
+
 #include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <fstream>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <sstream>
 
@@ -67,6 +71,129 @@ std::string arg(const Arg& a) {
 
 std::string word(const std::string& s) { return s.empty() ? "-" : s; }
 
+// A pointer operand: a register (an alloca or getelementptr result).
+std::string ptr_opnd(const ir::Operand& o) {
+    if (o.ty.kind != ir::Type::Ptr || o.ty.text != "ptr" || o.v.kind != ir::Value::Local)
+        throw Unsupported{"pointer operand " + o.v.text};
+    return "%" + name(o.v.name);
+}
+
+uint64_t count_of(const ir::Type& t) {  // "[N x T]" (translate_mem.cpp)
+    std::size_t i = 1;
+    while (i < t.text.size() && t.text[i] == ' ') ++i;
+    uint64_t n = 0;
+    while (i < t.text.size() && std::isdigit(static_cast<unsigned char>(t.text[i])))
+        n = n * 10 + static_cast<uint64_t>(t.text[i++] - '0');
+    return n;
+}
+
+const ir::Inst* def_of(const ir::Function& f, const std::string& n) {
+    for (auto& bl : f.blocks)
+        for (auto& in : bl.insts)
+            if (in.result == n) return &in;
+    return nullptr;
+}
+
+// Tr::mem_inst's test for an integer load of a whole aggregate (a raw byte
+// copy whose uninitialised bytes follow the value): outside the fragment.
+bool aggregate_load(const pirmem::Layout& lay, const ir::Function& f, const ir::Inst& in) {
+    if (in.ty.kind != ir::Type::Int || in.ops[0].v.kind != ir::Value::Local) return false;
+    const auto* d = def_of(f, in.ops[0].v.name);
+    if (!d) return false;
+    try {
+        std::optional<ir::Type> pt;
+        if (d->op == "alloca") {
+            pt = d->ety;
+        } else if (d->op == "getelementptr") {
+            const ir::Type* t = &d->ety;
+            bool ok = true;
+            for (std::size_t k = 2; ok && k < d->ops.size(); ++k) {
+                const auto& rt = lay.resolve(*t);
+                if (rt.kind == ir::Type::Struct && d->ops[k].v.kind == ir::Value::Int)
+                    t = &lay.field_type(rt, static_cast<unsigned>(d->ops[k].v.bits));
+                else if (rt.kind == ir::Type::Array)
+                    t = &rt.elems.at(0);
+                else
+                    ok = false;
+            }
+            if (ok) pt = *t;
+        }
+        if (!pt) return false;
+        const auto& rt = lay.resolve(*pt);
+        return rt.kind == ir::Type::Struct || rt.kind == ir::Type::Array;
+    } catch (const pirmem::Unenc&) {
+        return false;
+    }
+}
+
+// `L gep %d INB BASE N` then per index `f OPND W SCALE` (the first), `s OFF`
+// (a struct field), `a OPND W SCALE BOUND USE` (an array index; BOUND 0: no C
+// array-bound check), computed as MemTr::gep and Tr::mem_inst do.
+void gep_line(std::ostream& b, const pirmem::Layout& lay, const ir::Function& f, const ir::Inst& in) {
+    if (in.ty.kind != ir::Type::Ptr || in.ops.empty() || in.ops[0].ty.text != "ptr" || in.result.empty())
+        throw Unsupported{"vector getelementptr"};
+    for (auto& fl : in.flags)
+        if (fl != "inbounds") throw Unsupported{"getelementptr " + fl};
+    int use = 0;  // 0 address, 1 loaded, 2 stored through, 3 deeper GEP
+    for (auto& bl : f.blocks)
+        for (auto& u : bl.insts) {
+            auto is_res = [&](std::size_t i) {
+                return i < u.ops.size() && u.ops[i].v.kind == ir::Value::Local && u.ops[i].v.name == in.result;
+            };
+            if (u.op == "load" && is_res(0)) use = std::max(use, 1);
+            if (u.op == "store" && is_res(1)) use = std::max(use, 2);
+            if (u.op == "getelementptr" && is_res(0)) use = std::max(use, 3);
+        }
+    bool base_last = false;
+    if (in.ops[0].v.kind == ir::Value::Local)
+        if (const auto* d = def_of(f, in.ops[0].v.name); d && d->op == "getelementptr") try {
+                const ir::Type* t = &d->ety;
+                for (std::size_t k = 2; k < d->ops.size(); ++k) {
+                    const auto& rt = lay.resolve(*t);
+                    if (rt.kind == ir::Type::Struct && d->ops[k].v.kind == ir::Value::Int) {
+                        auto fi = static_cast<unsigned>(d->ops[k].v.bits);
+                        base_last = fi + 1 == rt.elems.size();
+                        t = &lay.field_type(rt, fi);
+                    } else if (rt.kind == ir::Type::Array) {
+                        base_last = false;
+                        t = &rt.elems.at(0);
+                    } else {
+                        break;
+                    }
+                }
+            } catch (const pirmem::Unenc&) {
+                base_last = true;
+            }
+    b << "L gep %" << name(in.result) << " " << (std::find(in.flags.begin(), in.flags.end(), "inbounds") != in.flags.end())
+      << " " << ptr_opnd(in.ops[0]) << " " << in.ops.size() - 1;
+    const ir::Type* t = &in.ety;
+    bool last_field = base_last;
+    for (std::size_t k = 1; k < in.ops.size(); ++k) {
+        const auto& o = in.ops[k];
+        unsigned w = width(o.ty);
+        if (k == 1) {
+            b << " f " << opnd(o) << " " << w << " " << lay.alloc_size(in.ety);
+            continue;
+        }
+        const auto& rt = lay.resolve(*t);
+        if (rt.kind == ir::Type::Struct) {
+            if (o.v.kind != ir::Value::Int) throw Unsupported{"getelementptr with a variable struct index"};
+            auto fi = static_cast<unsigned>(o.v.bits);
+            b << " s " << lay.field_offset(rt, fi);
+            t = &lay.field_type(rt, fi);
+            last_field = fi + 1 == rt.elems.size();
+            continue;
+        }
+        if (rt.kind != ir::Type::Array) throw Unsupported{"getelementptr into " + rt.text};
+        uint64_t n = count_of(rt);
+        uint64_t bound = !last_field && n > 0 ? n : 0;
+        last_field = false;
+        t = &rt.elems.at(0);
+        b << " a " << opnd(o) << " " << w << " " << lay.alloc_size(*t) << " " << bound << " " << use;
+    }
+    b << "\n";
+}
+
 // A call translate.cpp inlines (Tr::call -> Tr::inline_call): a function
 // defined in the module that no earlier handler of Tr::call claims. Library
 // code (a model, or a function from another file: its checks are reported at
@@ -92,14 +219,23 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
     b << "\nL ret " << (f.ret.kind == ir::Type::Void ? 0u : width(f.ret)) << "\n";
     static const std::set<std::string> bins{"add", "sub", "mul", "udiv", "sdiv", "urem", "srem",
                                             "shl", "lshr", "ashr", "and", "or", "xor"};
+    const pirmem::Layout lay(m);
     for (auto& bl : f.blocks) {
         b << "L block " << name(bl.name) << "\n";
         for (auto& in : bl.insts) {
             if (!in.parsed) throw Unsupported{in.op};
+            const std::string& op = in.op;
+            if (op == "getelementptr") {  // its flags are checked by gep_line
+                try {
+                    gep_line(b, lay, f, in);
+                } catch (const pirmem::Unenc& u) {
+                    throw Unsupported{"getelementptr: " + u.reason};
+                }
+                continue;
+            }
             for (auto& fl : in.flags)
                 if (fl != "nsw" && fl != "nuw" && fl != "exact" && fl != "disjoint" && fl != "nneg")
                     throw Unsupported{in.op + " " + fl};
-            const std::string& op = in.op;
             if (op == "phi") {
                 b << "L phi %" << name(in.result) << " " << width(in.ty) << " " << in.incoming.size();
                 for (auto& [v, pred] : in.incoming) b << " " << opnd(v) << " " << name(pred);
@@ -149,6 +285,23 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
             } else if (op == "call" && in.callee.starts_with("__prism.uninit.") && !in.result.empty()) {
                 // stage.cpp's marker for a scalar local: an indeterminate value
                 b << "L uninit %" << name(in.result) << " " << width(in.ty) << "\n";
+            } else if (op == "alloca") {
+                if (in.result.empty() || !in.ops.empty()) throw Unsupported{"alloca with a count"};
+                try {
+                    b << "L alloca %" << name(in.result) << " " << lay.alloc_size(in.ety) << " "
+                      << (in.align ? in.align : lay.align(in.ety)) << "\n";
+                } catch (const pirmem::Unenc& u) {
+                    throw Unsupported{"alloca: " + u.reason};
+                }
+            } else if (op == "load") {
+                if (in.result.empty() || in.ops.size() != 1) throw Unsupported{"load shape"};
+                std::string p = ptr_opnd(in.ops[0]);
+                if (aggregate_load(lay, f, in)) throw Unsupported{"integer load of an aggregate (raw byte copy)"};
+                b << "L load %" << name(in.result) << " " << width(in.ty) << " " << p << " " << in.align << "\n";
+            } else if (op == "store") {
+                if (in.ops.size() != 2) throw Unsupported{"store shape"};
+                b << "L store " << width(in.ops[0].ty) << " " << opnd(in.ops[0]) << " " << ptr_opnd(in.ops[1]) << " "
+                  << in.align << "\n";
             } else if (op == "freeze") {
                 if (in.result.empty() || in.ops.size() != 1) throw Unsupported{"freeze shape"};
                 b << "L freeze %" << name(in.result) << " " << width(in.ty) << " " << opnd(in.ops[0]) << "\n";

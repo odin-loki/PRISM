@@ -21,6 +21,12 @@ def SLX : Res (SRegs × World) → Res (LSt × World) → Prop
   | .stuck, l => l = .stuck
   | .ub, l => l = .ub ∨ l = .stuck ∨ ∃ S' t', l = .ok (S', t') ∧ S'.c = true
 
+theorem lower_lift (R : SRegs) : lower (lift R) = R := by
+  funext n; simp only [lower, lift]
+  cases R n with
+  | none => rfl
+  | some x => cases x <;> rfl
+
 theorem sinst_liftX (ω : Nat → Nat) (R : SRegs) (t : World) (i : SInst) :
     SLX (sSInst ω R t i) (lSInst ω ⟨lift R, false⟩ t i) := by
   cases i with
@@ -51,6 +57,60 @@ theorem sinst_liftX (ω : Nat → Nat) (R : SRegs) (t : World) (i : SInst) :
         rcases h with h | h
         · rw [h]; simp [Res.bind, SLX]
         · rw [h]; simp [Res.bind, SLX]
+  | alloca d size al => simp [sSInst, lSInst, SLX, lift_set]
+  | load d w p al =>
+    have h := opnd_lift R 64 p
+    simp only [sSInst, lSInst]
+    cases hs : sOpnd R 64 p with
+    | ok pv =>
+      rw [hs] at h; simp only [OpRel] at h; rw [h]
+      simp only [Res.bind]
+      split
+      · exact .inl rfl
+      · split
+        · rename_i hn
+          exact .inr (.inr ⟨_, t, rfl, by simp [hn]⟩)
+        · rename_i hn
+          simp only [Bool.not_eq_true] at hn
+          simp [SLX, lift_set, hn]
+    | stuck => rw [hs] at h; simp only [OpRel] at h; rw [h]; rfl
+    | ub =>
+      rw [hs] at h; simp only [OpRel] at h
+      rcases h with h | h <;> rw [h] <;> exact .inl rfl
+  | store w v p al =>
+    have h := opnd_lift R 64 p
+    simp only [sSInst, lSInst, lower_lift]
+    cases hv : sStoreVal ω R t w v with
+    | ok a =>
+      obtain ⟨vv, init, W1⟩ := a
+      simp only [Res.bind]
+      cases hs : sOpnd R 64 p with
+      | ok pv =>
+        rw [hs] at h; simp only [OpRel] at h; rw [h]
+        simp only [Res.bind]
+        split
+        · exact .inl rfl
+        · rfl
+      | stuck => rw [hs] at h; simp only [OpRel] at h; rw [h]; rfl
+      | ub =>
+        rw [hs] at h; simp only [OpRel] at h
+        rcases h with h | h <;> rw [h] <;> exact .inl rfl
+    | ub => exact .inl rfl
+    | stuck => rfl
+  | gep d inb base ix =>
+    simp only [sSInst, lSInst, lower_lift]
+    have e : ((sOpnd R 64 base).bind fun b => (sIdxVals R ix).bind fun vs =>
+        (gepVal t.mem inb b ix vs).bind fun r => Res.ok (R.set d r, t)) =
+        ((sOpnd R 64 base).bind fun b => (sIdxVals R ix).bind fun vs => gepVal t.mem inb b ix vs).bind
+          (fun r => Res.ok (R.set d r, t)) := by
+      cases sOpnd R 64 base <;> simp only [Res.bind]
+      rename_i b
+      cases sIdxVals R ix <;> simp only [Res.bind]
+    rw [e]
+    cases hg : ((sOpnd R 64 base).bind fun b => (sIdxVals R ix).bind fun vs => gepVal t.mem inb b ix vs) with
+    | ok r => simp [Res.bind, SLX, lift_set]
+    | ub => exact .inr (.inr ⟨_, t, rfl, rfl⟩)
+    | stuck => rfl
 
 theorem lSInst_mono {ω : Nat → Nat} {S S' : LSt} {t t' : World} {i : SInst}
     (h : lSInst ω S t i = .ok (S', t')) (hc : S.c = true) : S'.c = true := by
@@ -78,6 +138,32 @@ theorem lSInst_mono {ω : Nat → Nat} {S S' : LSt} {t t' : World} {i : SInst}
         · cases h
       | ub => rw [hl] at h; cases h
       | stuck => rw [hl] at h; cases h
+  | alloca d size al => simp only [lSInst, Res.ok.injEq, Prod.mk.injEq] at h; obtain ⟨rfl, _⟩ := h; exact hc
+  | load d w p al =>
+    simp only [lSInst] at h
+    split at h
+    · split at h
+      · cases h
+      · simp only [Res.ok.injEq, Prod.mk.injEq] at h; obtain ⟨rfl, _⟩ := h; simp [hc]
+    all_goals cases h
+  | store w v p al =>
+    simp only [lSInst] at h
+    cases hv : sStoreVal ω (lower S.R) t w v with
+    | ok a =>
+      rw [hv] at h; simp only [Res.bind] at h
+      split at h
+      · split at h
+        · cases h
+        · simp only [Res.ok.injEq, Prod.mk.injEq] at h; obtain ⟨rfl, _⟩ := h; exact hc
+      all_goals cases h
+    | ub => rw [hv] at h; cases h
+    | stuck => rw [hv] at h; cases h
+  | gep d inb base ix =>
+    simp only [lSInst] at h
+    split at h
+    · simp only [Res.ok.injEq, Prod.mk.injEq] at h; obtain ⟨rfl, _⟩ := h; exact hc
+    · simp only [Res.ok.injEq, Prod.mk.injEq] at h; obtain ⟨rfl, _⟩ := h; rfl
+    · cases h
 
 /-- Once poison has been created, the rest of a segment stays bad. -/
 def LBadX : Res (LSt × World) → Prop

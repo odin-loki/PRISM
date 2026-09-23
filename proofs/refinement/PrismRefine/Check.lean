@@ -61,6 +61,8 @@ def pop? (s : String) : Option POp :=
     match s with
     | "select" => some .select
     | "copy" => some .copy
+    | "obj.size" => some .objSize | "obj.live" => some .objLive
+    | "obj.kind" => some .objKind | "obj.align" => some .objAlign
     | "sadd.ovf" => some (.ovf .sadd) | "ssub.ovf" => some (.ovf .ssub) | "smul.ovf" => some (.ovf .smul)
     | "uadd.ovf" => some (.ovf .uadd) | "usub.ovf" => some (.ovf .usub) | "umul.ovf" => some (.ovf .umul)
     | "sdiv.ovf" => some .sdivOvf
@@ -210,6 +212,17 @@ def parsePir (ls : List (List String)) : Except String PFunc := do
     | ["assume", a] =>
       let (ps, ss) ← match cur with | some c => pure c | none => throw "statement outside a block"
       cur := some (ps, .assume (← arg? a) :: ss)
+    | ["alloc", d, sz, kind, init, al] =>
+      let (ps, ss) ← match cur with | some c => pure c | none => throw "statement outside a block"
+      cur := some (ps, .alloc (← nat? d) (← arg? sz) (← nat? kind) (← nat? init) (← nat? al) :: ss)
+    | ["load", d, u, d3, p, tag] =>
+      let (ps, ss) ← match cur with | some c => pure c | none => throw "statement outside a block"
+      if d3 != "-1" || tag != "0" then throw "PIR load with an effective-type tag"
+      cur := some (ps, .load (← nat? d) (← nat? u) (← arg? p) :: ss)
+    | ["store", p, v, init, tag] =>
+      let (ps, ss) ← match cur with | some c => pure c | none => throw "statement outside a block"
+      if tag != "0" then throw "PIR store with an effective-type tag"
+      cur := some (ps, .store (← arg? p) (← arg? v) (← arg? init) :: ss)
     | _ =>
       let (ps, ss) ← match cur with | some c => pure c | none => throw s!"bad line {l}"
       let t ← match l with
@@ -270,6 +283,15 @@ def diff (a b : PFunc) : String := Id.run do
 
 def fopnd? (s : String) : Except String FOpnd :=
   if s == "undef" then .ok .undef else do pure (.o (← opnd? s))
+
+/-- `getelementptr` indices: `f OPND W SCALE`, `s OFF`, `a OPND W SCALE N USE`. -/
+def gidx? : List String → Except String (List GIdx)
+  | [] => .ok []
+  | "f" :: o :: w :: sc :: t => do pure (.first (← opnd? o) (← nat? w) (← nat? sc) :: (← gidx? t))
+  | "s" :: off :: t => do pure (.field (← nat? off) :: (← gidx? t))
+  | "a" :: o :: w :: sc :: n :: u :: t => do
+    pure (.arr (← opnd? o) (← nat? w) (← nat? sc) (← nat? n) (← nat? u) :: (← gidx? t))
+  | t => .error s!"bad getelementptr index {t}"
 
 /-- A function being parsed: name, params, ret width, finished blocks
 (reversed), the open block (name, phis, finished segments, instructions; all
@@ -337,6 +359,19 @@ def parseXLlvm (name : String) (ls : List (List String)) :
     | ["freeze", d, w, a] =>
       let (bn, ps, sg, is) ← inBlock
       f := { f with cur := some (bn, ps, sg, .freeze (← reg? d) (← nat? w) (← fopnd? a) :: is) }
+    | ["alloca", d, sz, al] =>
+      let (bn, ps, sg, is) ← inBlock
+      f := { f with cur := some (bn, ps, sg, .alloca (← reg? d) (← nat? sz) (← nat? al) :: is) }
+    | ["load", d, w, p, al] =>
+      let (bn, ps, sg, is) ← inBlock
+      f := { f with cur := some (bn, ps, sg, .load (← reg? d) (← nat? w) (← opnd? p) (← nat? al) :: is) }
+    | ["store", w, v, p, al] =>
+      let (bn, ps, sg, is) ← inBlock
+      f := { f with cur := some (bn, ps, sg, .store (← nat? w) (← fopnd? v) (← opnd? p) (← nat? al) :: is) }
+    | "gep" :: d :: inb :: base :: _ :: rest =>
+      let (bn, ps, sg, is) ← inBlock
+      let ix ← gidx? rest
+      f := { f with cur := some (bn, ps, sg, .gep (← reg? d) (inb == "1") (← opnd? base) ix :: is) }
     | "call" :: d :: rw :: callee :: _ :: args =>
       let (bn, ps, sg, is) ← inBlock
       let dst ← if d == "-" then pure none else do pure (some (← reg? d))

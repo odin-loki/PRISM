@@ -68,6 +68,12 @@ open PrismRefine
 #print axioms step_lift
 #print axioms run_liftX
 #print axioms validB_facts
+#print axioms accessChecks_run
+#print axioms gLoop_sim
+#print axioms gEnd_sim
+#print axioms gFin_run
+#print axioms storeVal_sim
+#print axioms idxOps_sim
 -- Part 8.2 "Floating point" (stretch): IEEE binary formats, correctly rounded addition
 #print axioms PrismRefine.Float.roundU_repr
 #print axioms PrismRefine.Float.roundU_nearest

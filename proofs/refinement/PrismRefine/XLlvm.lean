@@ -57,11 +57,34 @@ inductive FOpnd where
   | undef
   deriving DecidableEq, Repr, Inhabited
 
+/-- One index of a `getelementptr`, with what the data layout says of it
+(the exporter computes allocation sizes, field offsets and array lengths
+with the translator's own `Layout`, `translate_mem.cpp`). -/
+inductive GIdx where
+  /-- the first index, scaled by the allocation size of the source element type -/
+  | first (o : Opnd) (w scale : Nat)
+  /-- a struct field: a constant byte offset -/
+  | field (off : Nat)
+  /-- an index into an array of `n` elements of `scale` bytes; `n > 0`: the C
+  array bound is checked (C17 6.5.6p8: the index stays in its array, also in a
+  nested array), `use` says what the result is for (0 an address, 1 a load,
+  2 a store, 3 a further `getelementptr`) -/
+  | arr (o : Opnd) (w scale n use : Nat)
+  deriving DecidableEq, Repr, Inhabited
+
 /-- A non-call instruction. -/
 inductive SInst where
   | i (x : Inst)
   /-- `%dst = freeze iw a` -/
   | freeze (dst : String) (w : Nat) (a : FOpnd)
+  /-- `%dst = alloca` of `size` bytes, `align` -/
+  | alloca (dst : String) (size align : Nat)
+  /-- `%dst = load iw, ptr p, align al` -/
+  | load (dst : String) (w : Nat) (p : Opnd) (al : Nat)
+  /-- `store iw v, ptr p, align al` (`v` may be `undef`) -/
+  | store (w : Nat) (v : FOpnd) (p : Opnd) (al : Nat)
+  /-- `%dst = getelementptr [inbounds] T, ptr base, ix…` -/
+  | gep (dst : String) (inb : Bool) (base : Opnd) (ix : List GIdx)
   deriving DecidableEq, Repr, Inhabited
 
 /-- `%dst = call i<rw> @f(a₁ w₁, …)` (`rw = 0`: `void`; `dst = none`: result
@@ -112,6 +135,103 @@ def Inst.draws : Inst → Nat
   | .uninit _ _ => 1
   | _ => 0
 
+/-! ## Memory operations (shared by both semantics) -/
+
+/-- `w`-bit value `v` sign-extended to 64 bits. -/
+def sext64 (w v : Nat) : Nat := ((bv w v).signExtend 64).toNat
+
+/-- Pointer arithmetic, as the translator computes it (`MemTr::gep`): the
+variable part of the offset is accumulated left to right in signed 64 bits,
+every scaling and every addition checked for overflow (C17 6.5.6p8: the
+result of pointer arithmetic must be representable), constant indices are
+folded into `cst`. -/
+structure GAcc where
+  cst : Int
+  var : Option Nat
+  deriving DecidableEq, Repr, Inhabited
+
+def gAddVar (acc : GAcc) (x : Nat) : Res GAcc :=
+  match acc.var with
+  | none => .ok { acc with var := some x }
+  | some y => if ovfTest .sadd 64 y x then .ub else .ok { acc with var := some ((y + x) % 2 ^ 64) }
+
+/-- One scaled index term (value `v` of the `w`-bit operand `o`). -/
+def gTerm (acc : GAcc) (o : Opnd) (w scale v : Nat) : Res GAcc :=
+  match o with
+  | .const _ => .ok { acc with cst := acc.cst + (bv 64 (sext64 w v)).toInt * scale }
+  | _ =>
+    let s := if w < 64 then sext64 w v else v
+    if scale = 0 then .ok acc
+    else if scale = 1 then gAddVar acc s
+    else if ovfTest .smul 64 s scale then .ub
+    else gAddVar acc ((bv 64 s * bv 64 scale).toNat)
+
+/-- The C array bound: the index (sign-extended) stays below `n` (`≤ n` for
+an address that is not dereferenced). -/
+def gBoundBad (w n use v : Nat) : Bool :=
+  let s := if w < 64 then sext64 w v % 2 ^ 64 else v % 2 ^ 64
+  decide (0 < n) && (if use = 0 then decide (n < s) else decide (n ≤ s))
+
+def gFold : GAcc → List (GIdx × Nat) → Res GAcc
+  | acc, [] => .ok acc
+  | acc, (.first o w scale, v) :: t => (gTerm acc o w scale v).bind fun a => gFold a t
+  | acc, (.field off, _) :: t => gFold { acc with cst := acc.cst + off } t
+  | acc, (.arr o w scale n use, v) :: t =>
+    if gBoundBad w n use v then .ub else (gTerm acc o w scale v).bind fun a => gFold a t
+
+/-- The result of `getelementptr` from base `b` and the accumulated offset;
+UB (C17 6.5.6p8, and LLVM `inbounds` poison) if it leaves its object:
+arithmetic on null, beyond one past the end or before the start
+(`inbounds`), or out of the object's address range. -/
+def gFin (m : Mem) (inb : Bool) (b delta : Nat) : Res Nat :=
+  let r := (b % 2 ^ 64 + delta) % 2 ^ 64
+  let b' := b % 2 ^ 64
+  if inb then
+    if (ptrObj b' == 0 && delta % 2 ^ 64 != 0) ||
+       (m.kind b' != 0 && (ptrObj r != ptrObj b' || decide (m.size b' < ptrOff r))) then .ub
+    else .ok r
+  else if ptrObj b' != 0 && ptrObj r != ptrObj b' then .ub else .ok r
+
+def gFinish (m : Mem) (inb : Bool) (b : Nat) (acc : GAcc) : Res Nat :=
+  let dc := (acc.cst % 2 ^ 64).toNat
+  match acc.var with
+  | none => if acc.cst = 0 then .ok (b % 2 ^ 64) else gFin m inb b dc
+  | some y =>
+    if acc.cst = 0 then gFin m inb b y
+    else (gAddVar acc dc).bind fun a => gFin m inb b (a.var.getD 0)
+
+/-- `getelementptr` on register values: base `b`, the index values `vs`. -/
+def gepVal (m : Mem) (inb : Bool) (b : Nat) (ix : List GIdx) (vs : List Nat) : Res Nat :=
+  (gFold { cst := 0, var := none } (ix.zip vs)).bind fun acc => gFinish m inb b acc
+
+/-- The operand of an index (`none`: a struct field, no operand). -/
+def GIdx.opnd : GIdx → Option (Opnd × Nat)
+  | .first o w _ => some (o, w)
+  | .field _ => none
+  | .arr o w _ _ _ => some (o, w)
+
+/-- Index values (every operand is read before the arithmetic, as
+`Tr::mem_inst`); a field index reads 0. -/
+def sIdxVals (R : SRegs) : List GIdx → Res (List Nat)
+  | [] => .ok []
+  | g :: t =>
+    match g.opnd with
+    | some (o, w) => (sOpnd R w o).bind fun v => (sIdxVals R t).bind fun vs => .ok (v :: vs)
+    | none => (sIdxVals R t).bind fun vs => .ok (0 :: vs)
+
+/-- The value `store` writes and whether its bytes are initialised: an
+indeterminate register or `undef`/`poison` writes uninitialised bytes (the
+translator writes a `havoc` value marked uninitialised), which draws. -/
+def sStoreVal (ω : Nat → Nat) (R : SRegs) (W : World) (w : Nat) : FOpnd → Res (Nat × Bool × World)
+  | .undef => .ok (ω W.t % 2 ^ w, false, W.adv 1)
+  | .o .poison => .ok (ω W.t % 2 ^ w, false, W.adv 1)
+  | .o (.const b) => .ok (b % 2 ^ w, true, W)
+  | .o (.reg n) =>
+    match R n with
+    | some (.val v) => .ok (v, true, W)
+    | some .ind => .ok (0, false, W)
+    | none => .stuck
+
 /-! ## Strict semantics -/
 
 /-- One non-call instruction; `t` is the number of values drawn so far. -/
@@ -121,6 +241,23 @@ def sSInst (ω : Nat → Nat) (R : SRegs) (W : World) : SInst → Res (SRegs × 
     match a with
     | .undef => .ok (R.set d (ω W.t % 2 ^ w), W.adv 1)
     | .o o => (sOpnd R w o).bind fun v => .ok (R.set d (v % 2 ^ w), W)
+  | .alloca d size al =>
+    let (m', p) := W.mem.alloc (size % 2 ^ 64) 1 al 0
+    .ok (R.set d p, { W with mem := m' })
+  | .load d w p al =>
+    (sOpnd R 64 p).bind fun pv =>
+      if accessBad W.mem (pv % 2 ^ 64) ((w + 7) / 8) false al then .ub
+      -- PRISM's rule: reading uninitialised memory is an error at the load
+      else if (loadCells W.mem pv w).any (·.isNone) then .ub
+      else .ok (R.set d (bytesVal ((loadCells W.mem pv w).map (·.getD 0)) % 2 ^ w), W)
+  | .store w v p al =>
+    (sStoreVal ω R W w v).bind fun (vv, init, W1) =>
+      (sOpnd R 64 p).bind fun pv =>
+        if accessBad W1.mem (pv % 2 ^ 64) ((w + 7) / 8) true al then .ub
+        else .ok (R, W1.store pv vv w init)
+  | .gep d inb base ix =>
+    (sOpnd R 64 base).bind fun b => (sIdxVals R ix).bind fun vs =>
+      (gepVal W.mem inb b ix vs).bind fun r => .ok (R.set d r, W)
 
 def sSInsts (ω : Nat → Nat) : SRegs → World → List SInst → Res (SRegs × World)
   | R, W, [] => .ok (R, W)
@@ -229,6 +366,12 @@ def sRunXF (M : XMod) (F : XFunc) (args : List Nat) (ω : Nat → Nat) (fuel : N
 
 /-! ## LangRef semantics (lazy poison) -/
 
+/-- The registers holding numbers, as strict registers (poison and
+indeterminate: indeterminate). -/
+def lower (R : LRegs) : SRegs := fun n => (R n).map fun
+  | .val v => .val v
+  | _ => .ind
+
 def lSInst (ω : Nat → Nat) (S : LSt) (W : World) : SInst → Res (LSt × World)
   | .i x => (lInst S x).bind fun S' => .ok (S', W.adv x.draws)
   | .freeze d w a =>
@@ -240,6 +383,36 @@ def lSInst (ω : Nat → Nat) (S : LSt) (W : World) : SInst → Res (LSt × Worl
         | .val v => .ok (⟨S.R.set d (.val (v % 2 ^ w)), S.c || cx⟩, W)
         | .poison => .ok (⟨S.R.set d (.val (ω W.t % 2 ^ w)), S.c || cx⟩, W.adv 1)
         | .ind => .ub
+  | .alloca d size al =>
+    let (m', p) := W.mem.alloc (size % 2 ^ 64) 1 al 0
+    .ok (⟨S.R.set d (.val p), S.c⟩, { W with mem := m' })
+  | .load d w p al =>
+    match lOpnd S.R 64 p with
+    | .ok (.val pv, _) =>
+      if accessBad W.mem (pv % 2 ^ 64) ((w + 7) / 8) false al then .ub
+      -- uninitialised bytes: an indeterminate value, flagged (PRISM reports it at the load)
+      else .ok (⟨S.R.set d (.val (bytesVal ((loadCells W.mem pv w).map (·.getD 0)) % 2 ^ w)),
+                S.c || (loadCells W.mem pv w).any (·.isNone)⟩, W)
+    | .ok (_, _) => .ub
+    | .ub => .ub
+    | .stuck => .stuck
+  | .store w v p al =>
+    (sStoreVal ω (lower S.R) W w v).bind fun (vv, init, W1) =>
+      match lOpnd S.R 64 p with
+      | .ok (.val pv, _) =>
+        if accessBad W1.mem (pv % 2 ^ 64) ((w + 7) / 8) true al then .ub
+        else .ok (S, W1.store pv vv w init)
+      | .ok (_, _) => .ub
+      | .ub => .ub
+      | .stuck => .stuck
+  | .gep d inb base ix =>
+    -- a poison or indeterminate operand, an overflow, a C bound or leaving the
+    -- object: the result is poison (LLVM) or C UB; flagged
+    match ((sOpnd (lower S.R) 64 base).bind fun b => (sIdxVals (lower S.R) ix).bind fun vs =>
+            gepVal W.mem inb b ix vs) with
+    | .ok r => .ok (⟨S.R.set d (.val r), S.c⟩, W)
+    | .ub => .ok (⟨S.R.set d (.val 0), true⟩, W)
+    | .stuck => .stuck
 
 def lSInsts (ω : Nat → Nat) : LSt → World → List SInst → Res (LSt × World)
   | S, W, [] => .ok (S, W)

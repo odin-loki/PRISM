@@ -71,6 +71,8 @@ structure Ctx where
   lo : Nat
   hi : Nat
   vars : List Nat
+  /-- an inlined instance (its `alloca`s would end at its `ret`: outside the fragment) -/
+  inlined : Bool := false
   deriving Repr, Inhabited
 
 /-- The uninitialised-read shadow checked at a use of `n` (`Tr::operand`:
@@ -157,6 +159,206 @@ def trInstX (c : Ctx) (k : Nat) : Inst → Except String (List PStmt × List Nat
     need (look c.sh d == some (.c 1 1)) "outside fragment: uninit marker without its shadow"
     pure ([.havoc i], [])
 
+/-! ### Memory (`translate_mem.cpp`) -/
+
+/-- `c64(v)`. -/
+def c64 (v : Nat) : Arg := .c 64 (v % 2 ^ 64)
+
+/-- `MemTr::access_checks` (no guard), first part: the object, offset,
+kind, liveness and size of the pointer (temporaries `k … k+4`), then the
+null, wild, freed and bounds checks. -/
+def accChk0 (k : Nat) (P : Arg) (n : Nat) (write : Bool) : List PStmt :=
+  let o := k
+  let f := k + 1
+  let kd := k + 2
+  let lv := k + 3
+  let sz := k + 4
+  [.assign o (.bin .lshr) [P, c64 48], .assign f (.bin .and) [P, c64 (2 ^ 48 - 1)],
+   .assign kd .objKind [P], .assign lv .objLive [P], .assign sz .objSize [P],
+   .assign (k + 5) (.cmp .eq) [.v o 64, c64 0], .check (.v (k + 5) 1) "null" "PTR-NULL-DEREF",
+   .assign (k + 6) (.cmp .ne) [.v o 64, c64 0], .assign (k + 7) (.cmp .eq) [.v kd 8, .c 8 0],
+   .assign (k + 8) (.bin .and) [.v (k + 6) 1, .v (k + 7) 1],
+   .check (.v (k + 8) 1) "wild" "PTR-INVALID-DEREF",
+   .assign (k + 9) (.cmp .ne) [.v kd 8, .c 8 0], .assign (k + 10) (.cmp .eq) [.v lv 1, .c 1 0],
+   .assign (k + 11) (.bin .and) [.v (k + 9) 1, .v (k + 10) 1], .check (.v (k + 11) 1) "uaf" "MEM-UAF",
+   .assign (k + 12) (.bin .add) [.v f 64, c64 n], .assign (k + 13) (.cmp .ugt) [.v (k + 12) 64, .v sz 64],
+   .assign (k + 14) (.ovf .uadd) [.v f 64, c64 n], .assign (k + 15) (.bin .or) [.v (k + 13) 1, .v (k + 14) 1],
+   .assign (k + 16) (.bin .and) [.v (k + 3) 1, .v (k + 15) 1],
+   .check (.v (k + 16) 1) (if write then "oob-write" else "oob-read")
+     (if write then "MEM-OOB-WRITE" else "MEM-OOB-READ")]
+
+/-- The alignment check (temporaries `a … a+5`; the offset is `k+1`, the
+liveness `k+3`). -/
+def accAlign (k a : Nat) (P : Arg) (al : Nat) : List PStmt :=
+  [.assign a (.bin .and) [.v (k + 1) 64, c64 (al - 1)], .assign (a + 1) .objAlign [P],
+   .assign (a + 2) (.cmp .ne) [.v a 64, c64 0], .assign (a + 3) (.cmp .ult) [.v (a + 1) 64, c64 al],
+   .assign (a + 4) (.bin .or) [.v (a + 2) 1, .v (a + 3) 1],
+   .assign (a + 5) (.bin .and) [.v (k + 3) 1, .v (a + 4) 1], .check (.v (a + 5) 1) "align" "MEM-MISALIGNED"]
+
+/-- The read-only check of a write (temporaries `j`, `j+1`; the kind is
+`k+2`, the liveness `k+3`). -/
+def accConst (k j : Nat) : List PStmt :=
+  [.assign j (.cmp .eq) [.v (k + 2) 8, .c 8 4], .assign (j + 1) (.bin .and) [.v (k + 3) 1, .v j 1],
+   .check (.v (j + 1) 1) "write-const" "MEM-WRITE-CONST"]
+
+def accT0 : List Nat := [64, 64, 8, 1, 64, 1, 1, 1, 1, 1, 1, 1, 64, 1, 1, 1, 1]
+def accT1 (al : Nat) : List Nat := if 1 < al then [64, 64, 1, 1, 1, 1] else []
+def accT2 (write : Bool) : List Nat := if write then [1, 1] else []
+
+/-- `MemTr::access_checks` (no guard): the checks above, the alignment check
+when `al > 1`, the read-only check for a write. -/
+def accessChecks (k : Nat) (P : Arg) (n : Nat) (write : Bool) (al : Nat) : List PStmt × List Nat :=
+  (accChk0 k P n write ++ (if 1 < al then accAlign k (k + 17) P al else []) ++
+    (if write then accConst k (k + 17 + (accT1 al).length) else []),
+   accT0 ++ accT1 al ++ accT2 write)
+
+/-- Alignments the fragment accepts: none, or a power of two below `2^32`. -/
+def alignOK (al : Nat) : Bool := al == 0 || (List.range 32).any (fun e => al == 2 ^ e)
+
+/-- The value a `store` writes, and its "initialised" argument. -/
+def trStoreVal (c : Ctx) (w k : Nat) : FOpnd → Except String (List PStmt × List Nat × Arg × Arg)
+  | .undef => .ok ([.havoc k], [w], .v k w, .c 1 0)
+  | .o .poison => .ok ([.havoc k], [w], .v k w, .c 1 0)
+  | .o (.const b) => .ok ([], [], .c w (b % 2 ^ w), .c 1 1)
+  | .o (.reg n) =>
+    match look c.env n with
+    | some a =>
+      if a.lt c.hi then
+        match c.shOf n with
+        | some s =>
+          if s.width == 1 then .ok ([.assign k (.cmp .eq) [s, .c 1 0]], [1], a, .v k 1)
+          else .error "outside fragment: shadow width"
+        | none => .ok ([], [], a, .c 1 1)
+      else .error s!"outside fragment: %{n} reads above its instance"
+    | none => .error s!"UNENCODED: value %{n}"
+
+/-- Index operands (`Tr::mem_inst`: each at its own width). -/
+def trIdxOps (c : Ctx) : Nat → List GIdx → Except String (List PStmt × List Nat × List Arg)
+  | _, [] => .ok ([], [], [])
+  | k, g :: t =>
+    match g.opnd with
+    | some (o, w) => do
+      need (okW w) "UNENCODED: width"
+      let (s1, t1, A) ← trOpndX c w false k o
+      -- a register bound to a constant (an inlined argument) is folded by the
+      -- translator: outside the fragment, whose semantics reads it as a register
+      match o, A with
+      | .reg _, .c _ _ => throw "outside fragment: constant-bound getelementptr index"
+      | _, _ => pure ()
+      let (s2, t2, As) ← trIdxOps c (k + t1.length) t
+      pure (s1 ++ s2, t1 ++ t2, A :: As)
+    | none => do
+      let (s2, t2, As) ← trIdxOps c k t
+      pure (s2, t2, .c 64 0 :: As)
+
+/-- `MemTr::gep`'s running state. -/
+structure GSt where
+  s : List PStmt
+  ts : List Nat
+  cst : Int
+  var : Option Arg
+
+def inI64 (x : Int) : Bool := decide (-2 ^ 63 ≤ x ∧ x < 2 ^ 63)
+
+/-- `add_var`. -/
+def gAddVarT (k : Nat) (g : GSt) (x : Arg) : GSt :=
+  match g.var with
+  | none => { g with var := some x }
+  | some y =>
+    let j := k + g.ts.length
+    { g with s := g.s ++ [.assign j (.ovf .sadd) [y, x], .check (.v j 1) "ptr-arith" "MEM-PTR-ARITH",
+                          .assign (j + 1) (.bin .add) [y, x]],
+             ts := g.ts ++ [1, 64], var := some (.v (j + 1) 64) }
+
+/-- The sign extension of a variable index narrower than 64 bits. -/
+def gSext (k : Nat) (g : GSt) (A : Arg) : GSt × Arg :=
+  match A with
+  | .v _ w =>
+    if w < 64 then
+      let j := k + g.ts.length
+      ({ g with s := g.s ++ [.assign j (.cast .sext) [A]], ts := g.ts ++ [64] }, .v j 64)
+    else (g, A)
+  | .c _ _ => (g, A)
+
+/-- One scaled index. -/
+def gTermT (k : Nat) (g : GSt) (A : Arg) (scale : Nat) : Except String GSt :=
+  match A with
+  | .c w b =>
+    let cst := g.cst + (bv 64 (sext64 w b)).toInt * scale
+    if inI64 cst then .ok { g with cst := cst } else .error "UNENCODED: constant pointer offset overflows"
+  | .v _ _ =>
+    let (g, s) := gSext k g A
+    if scale = 0 then .ok g
+    else if scale = 1 then .ok (gAddVarT k g s)
+    else
+      let j := k + g.ts.length
+      .ok (gAddVarT k { g with s := g.s ++ [.assign j (.ovf .smul) [s, c64 scale],
+                                            .check (.v j 1) "ptr-arith" "MEM-PTR-ARITH",
+                                            .assign (j + 1) (.bin .mul) [s, c64 scale]],
+                               ts := g.ts ++ [1, 64] } (.v (j + 1) 64))
+
+/-- The C array-bound check of an index. -/
+def gBoundT (k : Nat) (g : GSt) (A : Arg) (n use : Nat) : GSt :=
+  if n = 0 then g
+  else
+    let (g, s64) : GSt × Arg :=
+      match A with
+      | .c w b => (g, if w < 64 then c64 (sext64 w b) else A)
+      | .v _ _ => gSext k g A
+    let j := k + g.ts.length
+    let (prop, cls) :=
+      if use = 1 then ("oob-read", "MEM-OOB-READ")
+      else if use = 2 then ("oob-write", "MEM-OOB-WRITE") else ("ptr-arith", "MEM-PTR-ARITH")
+    { g with s := g.s ++ [.assign j (.cmp (if use = 0 then .ugt else .uge)) [s64, c64 n], .check (.v j 1) prop cls],
+             ts := g.ts ++ [1] }
+
+def gLoop (k : Nat) : GSt → List (GIdx × Arg) → Except String GSt
+  | g, [] => .ok g
+  | g, (.first _ _ scale, A) :: t => do gLoop k (← gTermT k g A scale) t
+  | g, (.field off, _) :: t => gLoop k { g with cst := g.cst + off } t
+  | g, (.arr _ _ scale n use, A) :: t => do
+    if !decide (n < 2 ^ 63) then throw "outside fragment: array length"
+    gLoop k (← gTermT k (gBoundT k g A n use) A scale) t
+
+/-- The pointer addition and the object checks of `MemTr::gep` (result `i`,
+temporaries from `j`). -/
+def gFinS (i j : Nat) (B delta : Arg) (inb : Bool) : List PStmt :=
+  [.assign i (.bin .add) [B, delta], .assign j (.bin .lshr) [B, c64 48],
+   .assign (j + 1) (.bin .lshr) [.v i 64, c64 48]] ++
+  (if inb then
+    [.assign (j + 2) (.cmp .eq) [.v j 64, c64 0], .assign (j + 3) (.cmp .ne) [delta, c64 0],
+     .assign (j + 4) (.bin .and) [.v (j + 2) 1, .v (j + 3) 1],
+     .check (.v (j + 4) 1) "ptr-arith" "MEM-PTR-ARITH",
+     .assign (j + 5) .objKind [B], .assign (j + 6) .objSize [B],
+     .assign (j + 7) (.cmp .ne) [.v (j + 1) 64, .v j 64],
+     .assign (j + 8) (.bin .and) [.v i 64, c64 (2 ^ 48 - 1)],
+     .assign (j + 9) (.cmp .ugt) [.v (j + 8) 64, .v (j + 6) 64],
+     .assign (j + 10) (.bin .or) [.v (j + 7) 1, .v (j + 9) 1],
+     .assign (j + 11) (.cmp .ne) [.v (j + 5) 8, .c 8 0],
+     .assign (j + 12) (.bin .and) [.v (j + 11) 1, .v (j + 10) 1],
+     .check (.v (j + 12) 1) "ptr-arith" "MEM-PTR-ARITH"]
+  else
+    [.assign (j + 2) (.cmp .ne) [.v j 64, c64 0], .assign (j + 3) (.cmp .ne) [.v (j + 1) 64, .v j 64],
+     .assign (j + 4) (.bin .and) [.v (j + 2) 1, .v (j + 3) 1],
+     .check (.v (j + 4) 1) "ptr-arith" "MEM-PTR-ARITH"])
+
+def gFinT (inb : Bool) : List Nat :=
+  if inb then [64, 64, 1, 1, 1, 8, 64, 1, 64, 1, 1, 1, 1] else [64, 64, 1, 1, 1]
+
+/-- `MemTr::gep` after the loop: the offset, the pointer addition and the
+object checks. -/
+def gEnd (k i : Nat) (B : Arg) (inb : Bool) (g : GSt) : List PStmt × List Nat :=
+  let dc := c64 (g.cst % 2 ^ 64).toNat
+  let (g, delta) : GSt × Arg :=
+    match g.var with
+    | some v => if g.cst ≠ 0 then (let g' := gAddVarT k g dc; (g', g'.var.getD dc)) else (g, v)
+    | none => (g, dc)
+  if g.var.isNone && g.cst == 0 then (g.s ++ [.assign i .copy [B]], g.ts)
+  else (g.s ++ gFinS i (k + g.ts.length) B delta inb, g.ts ++ gFinT inb)
+
+/-- The operands a `getelementptr` reads. -/
+def gepUses (base : Opnd) (ix : List GIdx) : List Opnd := base :: ix.filterMap (fun g => g.opnd.map (·.1))
+
 /-- A non-call instruction.  `freeze`: `Op::Copy` of the operand at the
 result width (`Tr::inst`). -/
 def trSInstX (c : Ctx) (k : Nat) : SInst → Except String (List PStmt × List Nat)
@@ -167,6 +369,38 @@ def trSInstX (c : Ctx) (k : Nat) : SInst → Except String (List PStmt × List N
     let i ← dstX c d w
     need (look c.sh d).isNone "outside fragment: result with a shadow"
     pure (sa ++ [.assign i .copy [A.setW w]], ta)
+  | .alloca d size al => do
+    need (!c.inlined) "outside fragment: alloca in an inlined function"
+    need (decide (size < 2 ^ 47)) "UNENCODED: stack object larger than 2^47 bytes"
+    let i ← dstX c d 64
+    need (look c.sh d).isNone "outside fragment: result with a shadow"
+    pure ([.alloc i (.c 64 size) 1 0 al], [])
+  | .load d w p al => do
+    need (okW w) "UNENCODED: width"
+    need (alignOK al) "outside fragment: alignment"
+    let (sp, tp, P) ← trOpndX c 64 true k p
+    let i ← dstX c d w
+    need (look c.sh d).isNone "outside fragment: result with a shadow"
+    let (sa, ta) := accessChecks (k + tp.length) P ((w + 7) / 8) false al
+    let u := k + tp.length + ta.length
+    pure (sp ++ sa ++ [.load i u P, .check (.v u 1) "uninit" "UNINIT-READ"], tp ++ ta ++ [1])
+  | .store w v p al => do
+    need (okW w) "UNENCODED: width"
+    need (alignOK al) "outside fragment: alignment"
+    let (sv, tv, V, I) ← trStoreVal c w k v
+    let (sp, tp, P) ← trOpndX c 64 true (k + tv.length) p
+    let (sa, ta) := accessChecks (k + tv.length + tp.length) P ((w + 7) / 8) true al
+    pure (sv ++ sp ++ sa ++ [.store P (V.setW w) I], tv ++ tp ++ ta)
+  | .gep d inb base ix => do
+    need ((gepUses base ix).all (· != .reg d)) "outside fragment: getelementptr reads its own result"
+    let (sb, tb, B) ← trOpndX c 64 true k base
+    let (si, ti, As) ← trIdxOps c (k + tb.length) ix
+    let i ← dstX c d 64
+    need (look c.sh d).isNone "outside fragment: result with a shadow"
+    let k' := k + tb.length + ti.length
+    let g ← gLoop k' { s := [], ts := [], cst := 0, var := none } (ix.zip As)
+    let (sg, tg) := gEnd k' i B inb g
+    pure (sb ++ si ++ sg, tb ++ ti ++ tg)
 
 def trSInstsX (c : Ctx) : Nat → List SInst → Except String (List PStmt × List Nat)
   | _, [] => .ok ([], [])
@@ -287,12 +521,16 @@ def xResultNames (G : XFunc) : List (String × Nat) :=
   G.blocks.flatMap fun B =>
     B.phis.map (fun p => (p.dst, p.w)) ++
     (B.segs.flatMap fun (is, cl) =>
-      is.map SInst.result ++ (match cl.dst with | some d => [(d, cl.rw)] | none => [])) ++
-    B.last.map SInst.result
+      is.flatMap SInst.result ++ (match cl.dst with | some d => [(d, cl.rw)] | none => [])) ++
+    B.last.flatMap SInst.result
 where
-  SInst.result : SInst → String × Nat
-    | .i x => x.result
-    | .freeze d w _ => (d, w)
+  SInst.result : SInst → List (String × Nat)
+    | .i x => [x.result]
+    | .freeze d w _ => [(d, w)]
+    | .alloca d _ _ => [(d, 64)]
+    | .load d w _ _ => [(d, w)]
+    | .store .. => []
+    | .gep d _ _ _ => [(d, 64)]
 
 def xPhisOf (G : XFunc) : List PhiI := G.blocks.flatMap (·.phis)
 
@@ -328,7 +566,7 @@ structure IInfo where
   deriving Repr, Inhabited
 
 def IInfo.ctx (I : IInfo) (vars : List Nat) : Ctx :=
-  { env := I.env, sh := I.sh, lo := I.lo, hi := I.hi, vars := vars }
+  { env := I.env, sh := I.sh, lo := I.lo, hi := I.hi, vars := vars, inlined := I.retTo.isSome }
 
 def IInfo.heads (I : IInfo) : List Nat := I.blks.map (·.headD 0)
 def IInfo.tails (I : IInfo) : List Nat := I.blks.map (·.getLastD 0)

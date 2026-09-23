@@ -19,12 +19,32 @@ inductive XPRes where
   | fail
   | blocked
 
+/-- The value of an operator; the memory queries read the memory (at the
+64-bit pointer, as the C++ engine's `uint64_t`). -/
+def evalOpM (m : Mem) (σ : Store) (op : POp) (w : Nat) (args : List Arg) : Nat :=
+  match op, args with
+  | .objSize, [a] => m.size (a.get σ % 2 ^ 64)
+  | .objLive, [a] => if m.live (a.get σ % 2 ^ 64) then 1 else 0
+  | .objKind, [a] => m.kind (a.get σ % 2 ^ 64)
+  | .objAlign, [a] => m.align (a.get σ % 2 ^ 64)
+  | _, _ => evalOp σ op w args
+
+
+
 def xStmts (P : PFunc) (ω : Nat → Nat) : Store → World → List PStmt → XPRes
   | σ, t, [] => .ok σ t
-  | σ, t, .assign d op args :: r => xStmts P ω (σ.set d (evalOp σ op (P.wd d) args % 2 ^ P.wd d)) t r
+  | σ, t, .assign d op args :: r => xStmts P ω (σ.set d (evalOpM t.mem σ op (P.wd d) args % 2 ^ P.wd d)) t r
   | σ, t, .havoc d :: r => xStmts P ω (σ.set d (ω t.t % 2 ^ P.wd d)) (t.adv 1) r
   | σ, t, .check a _ _ :: r => if truthN (a.get σ) then .fail else xStmts P ω σ t r
   | σ, t, .assume a :: r => if truthN (a.get σ) then xStmts P ω σ t r else .blocked
+  | σ, t, .alloc d size kind init align :: r =>
+    xStmts P ω (σ.set d ((t.mem.alloc (size.get σ % 2 ^ 64) kind align init).2 % 2 ^ P.wd d))
+      { t with mem := (t.mem.alloc (size.get σ % 2 ^ 64) kind align init).1 } r
+  | σ, t, .load d u p :: r =>
+    xStmts P ω ((σ.set d (bytesVal ((loadCells t.mem (p.get σ) (P.wd d)).map (·.getD 0)) % 2 ^ P.wd d)).set u
+      ((if (loadCells t.mem (p.get σ) (P.wd d)).any (·.isNone) then 1 else 0) % 2 ^ P.wd u)) t r
+  | σ, t, .store p v init :: r =>
+    xStmts P ω σ (t.store (p.get σ) (v.get σ) v.width (truthN (init.get σ))) r
 
 def XPRes.run : XPRes → (Store → World → POut) → POut
   | .ok σ t, f => f σ t

@@ -175,6 +175,9 @@ theorem pStmts_append (P : PFunc) : ∀ (σ : Store) (xs ys : List PStmt),
     simp only [List.cons_append, pStmts]; split
     · exact pStmts_append P σ t ys
     · rfl
+  | σ, .alloc .. :: t, ys => rfl
+  | σ, .load .. :: t, ys => rfl
+  | σ, .store .. :: t, ys => rfl
 
 /-! ## Widths of variables -/
 

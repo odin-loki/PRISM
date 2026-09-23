@@ -61,7 +61,7 @@ theorem instOK_facts {M : XMod} {P : PFunc} {C : List IInfo} {I : IInfo} (h : in
   unfold instOK at h
   simp only [Bool.and_eq_true, decide_eq_true_eq, beq_iff_eq, List.all_eq_true, List.mem_range] at h
   obtain ⟨⟨⟨⟨⟨⟨⟨hlo, henv⟩, hsh⟩, hbl⟩, hks⟩, hkids⟩, htl⟩, hall⟩ := h
-  refine ⟨⟨rfl, fun n a hl => allLtB_look henv hl, fun n s hl => allLtB_look hsh hl⟩, hlo, htl, hbl, ?_, ?_⟩
+  refine ⟨⟨rfl, fun n a hl => allLtB_look henv hl, fun n s hl => allLtB_look hsh hl, hlo⟩, hlo, htl, hbl, ?_, ?_⟩
   · intro b bl s pb hb hs
     have hbb : b < I.fn.blocks.length := by
       rw [← hbl]; exact (List.getElem?_eq_some_iff.mp hb).1

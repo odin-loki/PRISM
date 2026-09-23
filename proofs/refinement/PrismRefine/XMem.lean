@@ -42,11 +42,27 @@ def Mem.obj? (m : Mem) (p : Nat) : Option MObj :=
   if ptrObj p = 0 then none else m.objs[ptrObj p - 1]?
 
 /-- `Op::ObjSize` / `ObjLive` / `ObjKind` / `ObjAlign` (`ConcMem::size` …):
-0 / false / 0 / 1 for a pointer to no object. -/
-def Mem.size (m : Mem) (p : Nat) : Nat := ((m.obj? p).map (·.size)).getD 0
+0 / false / 0 / 1 for a pointer to no object; as the C++ model's machine
+integers (64-bit size and alignment, 8-bit kind). -/
+def Mem.size (m : Mem) (p : Nat) : Nat := ((m.obj? p).map (·.size)).getD 0 % 2 ^ 64
 def Mem.live (m : Mem) (p : Nat) : Bool := ((m.obj? p).map (·.live)).getD false
-def Mem.kind (m : Mem) (p : Nat) : Nat := ((m.obj? p).map (·.kind)).getD 0
-def Mem.align (m : Mem) (p : Nat) : Nat := ((m.obj? p).map (·.align)).getD 1
+def Mem.kind (m : Mem) (p : Nat) : Nat := ((m.obj? p).map (·.kind)).getD 0 % 256
+def Mem.align (m : Mem) (p : Nat) : Nat := ((m.obj? p).map (·.align)).getD 1 % 2 ^ 64
+
+/-- An access of `n` bytes at `p` (a 64-bit pointer) is undefined:
+through null (`PTR-NULL-DEREF`), through a pointer to no object
+(`PTR-INVALID-DEREF`), to an object whose lifetime ended (`MEM-UAF`),
+beyond the object's end (`MEM-OOB-READ/WRITE`), at an address that is not a
+multiple of the access's `align` or in an object less aligned
+(`MEM-MISALIGNED`), or a write to a read-only object (`MEM-WRITE-CONST`,
+kind 4).  These are the conditions `MemTr::access_checks` tests. -/
+def accessBad (m : Mem) (p n : Nat) (write : Bool) (al : Nat) : Bool :=
+  ptrObj p == 0 ||
+  (ptrObj p != 0 && m.kind p == 0) ||
+  (m.kind p != 0 && !m.live p) ||
+  (m.live p && decide (m.size p < ptrOff p + n)) ||
+  (decide (1 < al) && m.live p && (ptrOff p % al != 0 || decide (m.align p < al))) ||
+  (write && m.live p && m.kind p == 4)
 
 /-- The cell at address `a` (`ConcMem::read`). -/
 def Mem.read (m : Mem) (a : Nat) : Option Nat :=
@@ -97,6 +113,14 @@ def World.init : World := { t := 0, mem := { objs := [] } }
 
 /-- `n` more values drawn. -/
 def World.adv (W : World) (n : Nat) : World := { W with t := W.t + n }
+
+/-- The cells a `load` into a variable of width `w` reads. -/
+def loadCells (m : Mem) (p w : Nat) : List (Option Nat) := m.readN (p % 2 ^ 64) ((w + 7) / 8)
+
+/-- `Stmt::Store` of a value of width `w` (little endian, each byte
+initialised or not). -/
+def World.store (t : World) (p v w : Nat) (init : Bool) : World :=
+  { t with mem := t.mem.writeN (p % 2 ^ 64) v ((w + 7) / 8) init }
 
 @[simp] theorem World.adv_zero (W : World) : W.adv 0 = W := by
   cases W; simp [World.adv]

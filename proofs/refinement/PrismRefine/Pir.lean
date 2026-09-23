@@ -37,6 +37,9 @@ inductive POp where
   | lostBitsL | lostBitsA | inexactU | inexactS
   /-- `copy` (`Op::Copy`): the translation of `freeze` (`XTranslate.lean`). -/
   | copy
+  /-- memory queries (`Op::ObjSize` …): read the memory, so only the
+  extended semantics (`XPir.lean`) gives them a value -/
+  | objSize | objLive | objKind | objAlign
   deriving DecidableEq, Repr, Inhabited
 
 /-- `Arg`: a constant `(width, bits)` (bits already masked) or variable
@@ -57,6 +60,12 @@ inductive PStmt where
   `Stmt::prop` / `Stmt::cls`; the semantics ignores them). -/
   | check (a : Arg) (prop cls : String)
   | assume (a : Arg)
+  /-- memory statements (`Stmt::Alloc`, `Load`, `Store`; `XPir.lean`):
+  `alloc d size kind init align`; `load d u p` (`u`: some loaded byte is
+  uninitialised); `store p v init` -/
+  | alloc (d : Nat) (size : Arg) (kind init align : Nat)
+  | load (d u : Nat) (p : Arg)
+  | store (p v init : Arg)
   deriving DecidableEq, Repr, Inhabited
 
 structure PPhi where
@@ -150,6 +159,10 @@ def pStmts (P : PFunc) (σ : Store) : List PStmt → PRes
   | .havoc d :: t => pStmts P (σ.set d 0) t
   | .check a _ _ :: t => if truthN (a.get σ) then .fail else pStmts P σ t
   | .assume a :: t => if truthN (a.get σ) then pStmts P σ t else .blocked
+  -- the base fragment has no memory: no claim is made about these (`XPir.lean` runs them)
+  | .alloc .. :: _ => .blocked
+  | .load .. :: _ => .blocked
+  | .store .. :: _ => .blocked
 
 def pickInc (prev : Nat) : List (Nat × Arg) → Option Arg
   | [] => none
