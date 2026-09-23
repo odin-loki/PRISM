@@ -1,0 +1,114 @@
+func div_bad
+L params 2 a 32 b 32
+L ret 32
+L block entry
+L bin %div sdiv - 32 %a %b
+L ret %div
+status ok
+P vars 5 32 32 32 1 1
+P params 2 0 1
+P retw 32
+P block
+P assign 3 eq 2 v1:32 c32:0
+P check v3:1 div0 INT-DIV-ZERO
+P assign 4 sdiv.ovf 2 v0:32 v1:32
+P check v4:1 divovf INT-SIGNED-OVF
+P assign 2 sdiv 2 v0:32 v1:32
+P ret v2:32
+end
+func div_ok
+L params 2 a 32 b 32
+L ret 32
+L block entry
+L icmp %cmp eq 32 %b #0
+L cbr %cmp if.then lor.lhs.false
+L block lor.lhs.false
+L icmp %cmp1 eq 32 %a #18446744071562067968
+L cbr %cmp1 land.lhs.true if.end
+L block land.lhs.true
+L icmp %cmp2 eq 32 %b #18446744073709551615
+L cbr %cmp2 if.then if.end
+L block if.then
+L br return
+L block if.end
+L bin %div sdiv - 32 %a %b
+L br return
+L block return
+L phi %retval.0 32 2 #0 if.then %div if.end
+L ret %retval.0
+status ok
+P vars 9 32 32 1 1 1 32 32 1 1
+P params 2 0 1
+P retw 32
+P block
+P assign 2 eq 2 v1:32 c32:0
+P br v2:1 3 1
+P block
+P assign 3 eq 2 v0:32 c32:2147483648
+P br v3:1 2 4
+P block
+P assign 4 eq 2 v1:32 c32:4294967295
+P br v4:1 3 4
+P block
+P jmp 5
+P block
+P assign 7 eq 2 v1:32 c32:0
+P check v7:1 div0 INT-DIV-ZERO
+P assign 8 sdiv.ovf 2 v0:32 v1:32
+P check v8:1 divovf INT-SIGNED-OVF
+P assign 5 sdiv 2 v0:32 v1:32
+P jmp 5
+P block
+P phi 6 2 3 c32:0 4 v5:32
+P ret v6:32
+end
+func mod_min_bad
+L params 1 a 32
+L ret 32
+L block entry
+L icmp %cmp eq 32 %a #0
+L cbr %cmp if.then if.end
+L block if.then
+L br return
+L block if.end
+L bin %rem srem - 32 #18446744071562067968 %a
+L br return
+L block return
+L phi %retval.0 32 2 #0 if.then %rem if.end
+L ret %retval.0
+status ok
+P vars 6 32 1 32 32 1 1
+P params 1 0
+P retw 32
+P block
+P assign 1 eq 2 v0:32 c32:0
+P br v1:1 1 2
+P block
+P jmp 3
+P block
+P assign 4 eq 2 v0:32 c32:0
+P check v4:1 mod0 INT-DIV-ZERO
+P assign 5 sdiv.ovf 2 c32:2147483648 v0:32
+P check v5:1 divovf INT-SIGNED-OVF
+P assign 2 srem 2 c32:2147483648 v0:32
+P jmp 3
+P block
+P phi 3 2 1 c32:0 2 v2:32
+P ret v3:32
+end
+func urem_bad
+L params 2 a 32 b 32
+L ret 32
+L block entry
+L bin %rem urem - 32 %a %b
+L ret %rem
+status ok
+P vars 4 32 32 32 1
+P params 2 0 1
+P retw 32
+P block
+P assign 3 eq 2 v1:32 c32:0
+P check v3:1 mod0 INT-DIV-ZERO
+P assign 2 urem 2 v0:32 v1:32
+P ret v2:32
+end

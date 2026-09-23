@@ -1,0 +1,30 @@
+func f
+L params 2 a 32 b 32
+L ret 32
+L block entry
+L bin %add add nsw 32 %a %b
+L ret %add
+status ok
+P vars 4 32 32 32 1
+P params 2 0 1
+P retw 32
+P block
+P assign 3 sadd.ovf 2 v0:32 v1:32
+P check v3:1 ovf+ INT-SIGNED-OVF
+P assign 2 add 2 v0:32 v1:32
+P ret v2:32
+end
+func g
+L params 2 a 32 b 32
+L ret 32
+L block entry
+L bin %add add nsw 32 %a %b
+L ret %add
+status ok
+P vars 4 32 32 32 1
+P params 2 0 1
+P retw 32
+P block
+P assign 2 add 2 v0:32 v1:32
+P ret v2:32
+end

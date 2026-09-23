@@ -1,0 +1,116 @@
+func sw_bad
+L params 1 x 32
+L ret 32
+L block entry
+L br NodeBlock
+L block NodeBlock
+L icmp %Pivot slt 32 %x #7
+L cbr %Pivot LeafBlock LeafBlock1
+L block LeafBlock1
+L icmp %SwitchLeaf2 eq 32 %x #7
+L cbr %SwitchLeaf2 sw.bb1 sw.default
+L block LeafBlock
+L icmp %SwitchLeaf eq 32 %x #1
+L cbr %SwitchLeaf sw.bb sw.default
+L block sw.bb
+L br return
+L block sw.bb1
+L bin %sub sub nsw 32 %x #7
+L bin %div sdiv - 32 #100 %sub
+L br return
+L block sw.default
+L br return
+L block return
+L phi %retval.0 32 3 #0 sw.default %div sw.bb1 #10 sw.bb
+L ret %retval.0
+status ok
+P vars 10 32 1 1 1 32 32 32 1 1 1
+P params 1 0
+P retw 32
+P block
+P jmp 1
+P block
+P assign 1 slt 2 v0:32 c32:7
+P br v1:1 3 2
+P block
+P assign 2 eq 2 v0:32 c32:7
+P br v2:1 5 6
+P block
+P assign 3 eq 2 v0:32 c32:1
+P br v3:1 4 6
+P block
+P jmp 7
+P block
+P assign 7 ssub.ovf 2 v0:32 c32:7
+P check v7:1 ovf- INT-SIGNED-OVF
+P assign 4 sub 2 v0:32 c32:7
+P assign 8 eq 2 v4:32 c32:0
+P check v8:1 div0 INT-DIV-ZERO
+P assign 9 sdiv.ovf 2 c32:100 v4:32
+P check v9:1 divovf INT-SIGNED-OVF
+P assign 5 sdiv 2 c32:100 v4:32
+P jmp 7
+P block
+P jmp 7
+P block
+P phi 6 3 6 c32:0 5 v5:32 4 c32:10
+P ret v6:32
+end
+func sw_ok
+L params 1 x 32
+L ret 32
+L block entry
+L br NodeBlock
+L block NodeBlock
+L icmp %Pivot slt 32 %x #7
+L cbr %Pivot LeafBlock LeafBlock1
+L block LeafBlock1
+L icmp %SwitchLeaf2 eq 32 %x #7
+L cbr %SwitchLeaf2 sw.bb1 sw.default
+L block LeafBlock
+L icmp %SwitchLeaf eq 32 %x #1
+L cbr %SwitchLeaf sw.bb sw.default
+L block sw.bb
+L br return
+L block sw.bb1
+L bin %sub sub nsw 32 %x #6
+L bin %div sdiv - 32 #100 %sub
+L br return
+L block sw.default
+L br return
+L block return
+L phi %retval.0 32 3 #0 sw.default %div sw.bb1 #10 sw.bb
+L ret %retval.0
+status ok
+P vars 10 32 1 1 1 32 32 32 1 1 1
+P params 1 0
+P retw 32
+P block
+P jmp 1
+P block
+P assign 1 slt 2 v0:32 c32:7
+P br v1:1 3 2
+P block
+P assign 2 eq 2 v0:32 c32:7
+P br v2:1 5 6
+P block
+P assign 3 eq 2 v0:32 c32:1
+P br v3:1 4 6
+P block
+P jmp 7
+P block
+P assign 7 ssub.ovf 2 v0:32 c32:6
+P check v7:1 ovf- INT-SIGNED-OVF
+P assign 4 sub 2 v0:32 c32:6
+P assign 8 eq 2 v4:32 c32:0
+P check v8:1 div0 INT-DIV-ZERO
+P assign 9 sdiv.ovf 2 c32:100 v4:32
+P check v9:1 divovf INT-SIGNED-OVF
+P assign 5 sdiv 2 c32:100 v4:32
+P jmp 7
+P block
+P jmp 7
+P block
+P phi 6 3 6 c32:0 5 v5:32 4 c32:10
+P ret v6:32
+end

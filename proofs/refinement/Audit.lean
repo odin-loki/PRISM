@@ -48,3 +48,10 @@ open PrismRefine
 #print axioms emit_all
 #print axioms inst_lift
 #print axioms run_lift
+-- Part 8.2 "Floating point" (stretch): IEEE binary formats, correctly rounded addition
+#print axioms PrismRefine.Float.roundU_repr
+#print axioms PrismRefine.Float.roundU_nearest
+#print axioms PrismRefine.Float.roundU_tie_even
+#print axioms PrismRefine.Float.round_correct
+#print axioms PrismRefine.Float.decode_encode
+#print axioms PrismRefine.Float.add_correct

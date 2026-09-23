@@ -1,0 +1,50 @@
+func fold_shift_bad
+L params 0
+L ret 32
+L block entry
+L ret #18446744071562067968
+status ok
+P vars 0
+P params 0
+P retw 32
+P block
+P ret c32:2147483648
+end
+func fold_div_bad
+L params 1 x 32
+L ret 32
+L block entry
+L icmp %cmp sgt 32 %x #5
+L cbr %cmp if.then if.end
+L block if.then
+L br return
+L block if.end
+L br return
+L block return
+L ret %x
+status ok
+P vars 2 32 1
+P params 1 0
+P retw 32
+P block
+P assign 1 sgt 2 v0:32 c32:5
+P br v1:1 1 2
+P block
+P jmp 3
+P block
+P jmp 3
+P block
+P ret v0:32
+end
+func fold_ok
+L params 0
+L ret 32
+L block entry
+L ret #1073741824
+status ok
+P vars 0
+P params 0
+P retw 32
+P block
+P ret c32:1073741824
+end
