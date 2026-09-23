@@ -14,6 +14,7 @@ func fold_div_bad
 L params 1 x 32
 L ret 32
 L block entry
+L uninit %__prism_uninit.0 32
 L icmp %cmp sgt 32 %x #5
 L cbr %cmp if.then if.end
 L block if.then
@@ -23,12 +24,13 @@ L br return
 L block return
 L ret %x
 status ok
-P vars 2 32 1
+P vars 3 32 32 1
 P params 1 0
 P retw 32
 P block
-P assign 1 sgt 2 v0:32 c32:5
-P br v1:1 1 2
+P havoc 1
+P assign 2 sgt 2 v0:32 c32:5
+P br v2:1 1 2
 P block
 P jmp 3
 P block

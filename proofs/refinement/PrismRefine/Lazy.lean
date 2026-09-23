@@ -18,28 +18,48 @@ namespace PrismRefine
 open PrismSem
 
 /-- A strict register file seen as a lazy one (no poison). -/
-def lift (R : SRegs) : LRegs := fun n => (R n).map LV.val
+def lift (R : SRegs) : LRegs := fun n => (R n).map SV.lift
+
+theorem lift_put (R : SRegs) (n : String) (x : SV) :
+    lift (R.put n x) = (lift R).set n x.lift := by
+  funext m; simp only [lift, SRegs.put, LRegs.set]; split <;> rfl
 
 theorem lift_set (R : SRegs) (n : String) (v : Nat) :
-    lift (R.set n v) = (lift R).set n (.val v) := by
-  funext m; simp only [lift, SRegs.set, LRegs.set]; split <;> rfl
+    lift (R.set n v) = (lift R).set n (.val v) := lift_put R n (.val v)
 
-theorem lift_setAll : ∀ (upd : List (String × Nat)) (R : SRegs),
-    lift (R.setAll upd) = (lift R).setAll (upd.map (fun p => (p.1, LV.val p.2)))
+theorem lift_setAll : ∀ (upd : List (String × SV)) (R : SRegs),
+    lift (R.setAll upd) = (lift R).setAll (upd.map (fun p => (p.1, p.2.lift)))
   | [], _ => rfl
   | (n, v) :: t, R => by
     simp only [SRegs.setAll, List.map, LRegs.setAll]
-    rw [lift_setAll t, lift_set]
+    rw [lift_setAll t, lift_put]
 
-/-- Operand reads correspond. -/
+/-- Operand reads correspond: a strict UB read is a poison literal (poison
+created) or an indeterminate register (UB in both semantics). -/
 def OpRel : Res Nat → Res (LV × Bool) → Prop
   | .ok v, l => l = .ok (.val v, false)
   | .stuck, l => l = .stuck
-  | .ub, l => l = .ok (.poison, true)
+  | .ub, l => l = .ok (.poison, true) ∨ l = .ub
 
 theorem opnd_lift (R : SRegs) (w : Nat) (o : Opnd) : OpRel (sOpnd R w o) (lOpnd (lift R) w o) := by
   cases o with
-  | reg n => cases h : R n <;> simp [sOpnd, lOpnd, lift, h, OpRel]
+  | reg n =>
+    cases h : R n with
+    | none => simp [sOpnd, lOpnd, lift, h, OpRel]
+    | some x => cases x <;> simp [sOpnd, lOpnd, lift, h, OpRel, SV.lift]
+  | const b => rfl
+  | poison => exact .inl rfl
+
+/-- Phi incoming reads correspond. -/
+def PhiRel : Res SV → Res (LV × Bool) → Prop
+  | .ok x, l => l = .ok (x.lift, false)
+  | .stuck, l => l = .stuck
+  | .ub, l => l = .ok (.poison, true)
+
+theorem phiOpnd_lift (R : SRegs) (w : Nat) (o : Opnd) :
+    PhiRel (sPhiOpnd R w o) (lPhiOpnd (lift R) w o) := by
+  cases o with
+  | reg n => cases h : R n <;> simp [sPhiOpnd, lPhiOpnd, lift, h, PhiRel]
   | const b => rfl
   | poison => rfl
 
@@ -66,28 +86,37 @@ theorem inst_lift (R : SRegs) (i : Inst) : SL (sInst R i) (lInst ⟨lift R, fals
     have hb := opnd_lift R w b
     simp only [sInst, lInst]
     cases hsa : sOpnd R w a <;> cases hsb : sOpnd R w b <;>
-      simp only [hsa, hsb, OpRel] at ha hb <;> rw [ha, hb] <;> simp only [Res.bind, lBin, SL_ite] <;>
+      simp only [hsa, hsb, OpRel] at ha hb <;>
+      (try obtain ha | ha := ha) <;> (try obtain hb | hb := hb) <;>
+      rw [ha, hb] <;> simp only [Res.bind, lBin, SL_ite] <;>
       simp only [SL] <;> (repeat' split) <;> simp_all [lift_set]
   | icmp d p w a b =>
     have ha := opnd_lift R w a
     have hb := opnd_lift R w b
     simp only [sInst, lInst]
     cases hsa : sOpnd R w a <;> cases hsb : sOpnd R w b <;>
-      simp only [hsa, hsb, OpRel] at ha hb <;> rw [ha, hb] <;> simp [Res.bind, SL, lift_set]
+      simp only [hsa, hsb, OpRel] at ha hb <;>
+      (try obtain ha | ha := ha) <;> (try obtain hb | hb := hb) <;>
+      rw [ha, hb] <;> simp [Res.bind, SL, lift_set]
   | select d w c a b =>
     have hc := opnd_lift R 1 c
     have ha := opnd_lift R w a
     have hb := opnd_lift R w b
     simp only [sInst, lInst]
     cases hsc : sOpnd R 1 c <;> cases hsa : sOpnd R w a <;> cases hsb : sOpnd R w b <;>
-      simp only [hsc, hsa, hsb, OpRel] at hc ha hb <;> rw [hc, ha, hb] <;>
+      simp only [hsc, hsa, hsb, OpRel] at hc ha hb <;>
+      (try obtain hc | hc := hc) <;> (try obtain ha | ha := ha) <;> (try obtain hb | hb := hb) <;>
+      rw [hc, ha, hb] <;>
       simp only [Res.bind, SL, ite_val] <;> (repeat' split) <;> subst_vars <;>
       simp_all [lift_set, selVal, apply_ite]
   | cast d k nneg fw tw a =>
     have ha := opnd_lift R fw a
     simp only [sInst, lInst]
-    cases hsa : sOpnd R fw a <;> simp only [hsa, OpRel] at ha <;> rw [ha] <;>
+    cases hsa : sOpnd R fw a <;> simp only [hsa, OpRel] at ha <;>
+      (try obtain ha | ha := ha) <;> rw [ha] <;>
       simp only [Res.bind, SL_ite] <;> simp only [SL] <;> (repeat' split) <;> simp_all [lift_set]
+  | uninit d w =>
+    simp only [sInst, lInst, SL, lift_put, SV.lift]
 
 theorem lInst_mono {S S' : LSt} {i : Inst} (h : lInst S i = .ok S') (hc : S.c = true) :
     S'.c = true := by
@@ -112,6 +141,9 @@ theorem lInst_mono {S S' : LSt} {i : Inst} (h : lInst S i = .ok S') (hc : S.c = 
     simp only [lInst] at h
     cases h1 : lOpnd S.R fw a <;> simp [h1, Res.bind] at h
     (repeat' split at h) <;> simp_all <;> (subst h; simp [hc])
+  | uninit d w =>
+    simp only [lInst] at h
+    cases h; exact hc
 
 /-- Once poison has been created, the rest of a block stays "bad". -/
 def LBad : Res LSt → Prop
@@ -154,7 +186,7 @@ theorem insts_lift : ∀ (is : List Inst) (R : SRegs), SL (sInsts R is) (lInsts 
 /-- Phis. -/
 theorem phis_lift (F : LFunc) (R : SRegs) (prev : Option Nat) : ∀ (ps : List PhiI),
     (∀ upd, sPhis F R prev ps = .ok upd →
-      lPhis F (lift R) prev ps = .ok (upd.map (fun p => (p.1, LV.val p.2)), false)) ∧
+      lPhis F (lift R) prev ps = .ok (upd.map (fun p => (p.1, p.2.lift)), false)) ∧
     (sPhis F R prev ps = .stuck → lPhis F (lift R) prev ps = .stuck) ∧
     (sPhis F R prev ps = .ub → lPhis F (lift R) prev ps = .ub ∨ lPhis F (lift R) prev ps = .stuck ∨
       ∃ upd, lPhis F (lift R) prev ps = .ok (upd, true))
@@ -169,8 +201,9 @@ theorem phis_lift (F : LFunc) (R : SRegs) (prev : Option Nat) : ∀ (ps : List P
       | none => simp
       | some o =>
         simp only
-        have ho := opnd_lift R p.w o
-        cases hso : sOpnd R p.w o <;> simp only [hso, OpRel] at ho <;> rw [ho] <;> simp only [Res.bind]
+        have ho := phiOpnd_lift R p.w o
+        cases hso : sPhiOpnd R p.w o <;> simp only [hso, PhiRel] at ho <;> rw [ho] <;>
+          simp only [Res.bind]
         · cases hsp : sPhis F R (some pv) ps with
           | ok upd => simp [ih1 upd hsp]
           | stuck => simp [ih2 hsp]
@@ -182,6 +215,7 @@ theorem phis_lift (F : LFunc) (R : SRegs) (prev : Option Nat) : ∀ (ps : List P
           | ub => simp
           | stuck => simp
         · simp
+
 /-! ## Runs -/
 
 /-- Strict and lazy outcomes correspond. -/
@@ -225,6 +259,7 @@ theorem lRun_mono (F : LFunc) : ∀ (n : Nat) (prev : Option Nat) (cur : Nat) (S
               · simp
             · simp [LOut.bad]
             · simp [LOut.bad]
+            · simp [LOut.bad]
             · simp
           | ret o =>
             cases o with
@@ -244,20 +279,21 @@ theorem term_lift (F : LFunc) (R : SRegs) (runS : Nat → SRegs → Out) (runL :
   | cbr c tn fn =>
     have hc := opnd_lift R 1 c
     simp only [sTerm, lTerm]
-    cases hs : sOpnd R 1 c <;> simp only [hs, OpRel] at hc <;> rw [hc] <;> simp only [Res.out]
-    · split
+    cases hs : sOpnd R 1 c <;> simp only [hs, OpRel] at hc
+    · rw [hc]; simp only [Res.out]
+      split
       · exact hrun _ R
       · rfl
-    · simp [OL, LOut.bad]
-    · rfl
+    · rcases hc with hc | hc <;> rw [hc] <;> simp [Res.out, OL, LOut.bad]
+    · rw [hc]; rfl
   | ret o =>
     cases o with
     | none => rfl
     | some o =>
       have hc := opnd_lift R F.retw o
       simp only [sTerm, lTerm]
-      cases hs : sOpnd R F.retw o <;> simp only [hs, OpRel] at hc <;> rw [hc] <;>
-        simp [Res.out, OL, LOut.bad]
+      cases hs : sOpnd R F.retw o <;> simp only [hs, OpRel] at hc <;>
+        (try obtain hc | hc := hc) <;> rw [hc] <;> simp [Res.out, OL, LOut.bad]
   | unreachable => simp [sTerm, lTerm, OL, LOut.bad]
 
 theorem run_lift (F : LFunc) : ∀ (n : Nat) (prev : Option Nat) (cur : Nat) (R : SRegs),
@@ -300,6 +336,7 @@ theorem run_lift (F : LFunc) : ∀ (n : Nat) (prev : Option Nat) (cur : Nat) (R 
                 · simp
               · simp [LOut.bad]
               · simp [LOut.bad]
+              · simp [LOut.bad]
               · simp
             | ret o =>
               cases o with
@@ -330,6 +367,7 @@ theorem run_lift (F : LFunc) : ∀ (n : Nat) (prev : Option Nat) (cur : Nat) (R 
               · split
                 · exact lRun_mono F n _ _ S' hm
                 · simp
+              · simp [LOut.bad]
               · simp [LOut.bad]
               · simp [LOut.bad]
               · simp

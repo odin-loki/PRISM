@@ -70,31 +70,90 @@ theorem findName_append_left : ∀ {l r : List (String × Nat)} {n : String} {p 
 theorem Store.set_other (σ : Store) {i j : Nat} (v : Nat) (h : j ≠ i) : σ.set i v j = σ j := by
   simp [Store.set, h]
 
-@[simp] theorem SRegs.set_same (R : SRegs) (n : String) (v : Nat) : R.set n v n = some v := by
-  simp [SRegs.set]
+@[simp] theorem SRegs.put_same (R : SRegs) (n : String) (x : SV) : R.put n x n = some x := by
+  simp [SRegs.put]
+
+/-- Well-formed shadows (uninitialised-read instrumentation): a shadow is the
+constant `1` or an `i1` variable numbered after the named variables and below
+the first temporary `base`; distinct registers have distinct shadow
+variables. -/
+structure ShWF (P : PFunc) (names : List (String × Nat)) (sh : String → Option Arg) (base : Nat) :
+    Prop where
+  var : ∀ n s w, sh n = some (.v s w) → names.length ≤ s ∧ s < base ∧ w = 1 ∧ P.wd s = 1
+  inj : ∀ n m s w w', sh n = some (.v s w) → sh m = some (.v s w') → n = m
+  con : ∀ n w b, sh n = some (.c w b) → b = 1
+  le : names.length ≤ base
+
+/-- A register value and its PIR image: a defined value is stored and its
+shadow (if any) is clear; an indeterminate value has a shadow that is set. -/
+def ShOK (sh : Option Arg) (σ : Store) (i : Nat) : SV → Prop
+  | .val v => σ i = v ∧ ∀ a, sh = some a → truthN (a.get σ) = false
+  | .ind => ∃ a, sh = some a ∧ truthN (a.get σ) = true
 
 /-- The register file `R` and the PIR store `σ` agree on every defined
-register (through the translator's name → variable map). -/
-def Rel (names : List (String × Nat)) (R : SRegs) (σ : Store) : Prop :=
-  ∀ n v, R n = some v → ∃ i w, findName names n = some (i, w) ∧ σ i = v
+register (through the translator's name → variable map and shadows). -/
+def Rel (names : List (String × Nat)) (sh : String → Option Arg) (R : SRegs) (σ : Store) : Prop :=
+  ∀ n x, R n = some x → ∃ i w, findName names n = some (i, w) ∧ ShOK (sh n) σ i x
 
-theorem Rel.set {names : List (String × Nat)} {R : SRegs} {σ : Store} (h : Rel names R σ)
-    {n : String} {i w : Nat} (hf : findName names n = some (i, w)) (v : Nat) :
-    Rel names (R.set n v) (σ.set i v) := by
-  intro m u hm
+/-- Indices that carry a register's value or shadow. -/
+def Owns (sh : String → Option Arg) (n : String) (i j : Nat) : Prop :=
+  j = i ∨ ∃ s w, sh n = some (.v s w) ∧ j = s
+
+theorem ShOK.transfer {sh : Option Arg} {σ σ' : Store} {i : Nat} {x : SV}
+    (h : ShOK sh σ i x) (hi : σ' i = σ i) (hs : ∀ s w, sh = some (.v s w) → σ' s = σ s) :
+    ShOK sh σ' i x := by
+  have hget : ∀ a, sh = some a → a.get σ' = a.get σ := by
+    intro a ha
+    cases a with
+    | c w b => rfl
+    | v s w => exact hs s w ha
+  cases x with
+  | val v =>
+    obtain ⟨h1, h2⟩ := h
+    exact ⟨by rw [hi, h1], fun a ha => by rw [hget a ha]; exact h2 a ha⟩
+  | ind =>
+    obtain ⟨a, ha, h1⟩ := h
+    exact ⟨a, ha, by rw [hget a ha]; exact h1⟩
+
+/-- Updating one register: its image satisfies `ShOK` in the new store, and
+the new store agrees with the old one outside the register's own indices. -/
+theorem Rel.put' {P : PFunc} {names : List (String × Nat)} {sh : String → Option Arg}
+    {base : Nat} (hW : ShWF P names sh base) {R : SRegs} {σ σ' : Store} (hR : Rel names sh R σ)
+    {n : String} {i w : Nat} (hf : findName names n = some (i, w)) {x : SV}
+    (hn : ShOK (sh n) σ' i x) (hag : ∀ j, ¬ Owns sh n i j → σ' j = σ j) :
+    Rel names sh (R.put n x) σ' := by
+  intro m y hm
   by_cases e : m = n
-  · subst e; simp [SRegs.set] at hm; subst hm; exact ⟨i, w, hf, by simp⟩
-  · simp only [SRegs.set, e, ite_false] at hm
-    obtain ⟨j, w', hj, hv⟩ := h m u hm
-    refine ⟨j, w', hj, ?_⟩
-    have : j ≠ i := fun hji => e (findName_inj hj (hji ▸ hf))
-    rw [Store.set_other _ _ this, hv]
+  · subst e; simp at hm; subst hm; exact ⟨i, w, hf, hn⟩
+  · simp only [SRegs.put, e, ite_false] at hm
+    obtain ⟨j, w', hj, hy⟩ := hR m y hm
+    refine ⟨j, w', hj, hy.transfer ?_ ?_⟩
+    · apply hag
+      rintro (hji | ⟨s, w'', hs, rfl⟩)
+      · exact e (findName_inj hj (hji ▸ hf))
+      · have := (hW.var _ _ _ hs).1; have := findName_lt hj; omega
+    · intro s w'' hs
+      apply hag
+      rintro (hsi | ⟨s', w''', hs', rfl⟩)
+      · have := (hW.var _ _ _ hs).1; have := findName_lt hf; omega
+      · exact e (hW.inj _ _ _ _ _ hs hs')
 
-theorem Rel.agree {names : List (String × Nat)} {R : SRegs} {σ σ' : Store} (h : Rel names R σ)
-    (ha : ∀ i, i < names.length → σ' i = σ i) : Rel names R σ' := by
-  intro n v hn
-  obtain ⟨i, w, hi, hv⟩ := h n v hn
-  exact ⟨i, w, hi, by rw [ha i (findName_lt hi), hv]⟩
+/-- A register written with a defined value (no shadow). -/
+theorem Rel.set {P : PFunc} {names : List (String × Nat)} {sh : String → Option Arg} {base : Nat}
+    (hW : ShWF P names sh base) {R : SRegs} {σ : Store} (hR : Rel names sh R σ)
+    {n : String} {i w : Nat} (hf : findName names n = some (i, w)) (hsh : sh n = none) (v : Nat) :
+    Rel names sh (R.set n v) (σ.set i v) := by
+  refine Rel.put' hW hR hf ⟨by simp, by simp [hsh]⟩ ?_
+  intro j hj
+  exact Store.set_other _ _ (fun e => hj (.inl e))
+
+theorem Rel.agree {names : List (String × Nat)} {sh : String → Option Arg} {P : PFunc}
+    {base : Nat} (hW : ShWF P names sh base) {R : SRegs} {σ σ' : Store}
+    (h : Rel names sh R σ) (ha : ∀ i, i < base → σ' i = σ i) : Rel names sh R σ' := by
+  intro n x hn
+  obtain ⟨i, w, hi, hx⟩ := h n x hn
+  refine ⟨i, w, hi, hx.transfer (ha i ?_) (fun s w' hs => ha s (hW.var _ _ _ hs).2.1)⟩
+  have := findName_lt hi; have := hW.le; omega
 
 /-! ## Composition of PIR statement runs -/
 
@@ -261,15 +320,15 @@ theorem emit_all (P : PFunc) : ∀ (cs : List Chk) (σ : Store) (k : Nat),
 /-! ## Simulation of one step -/
 
 /-- A strict LLVM step result and a PIR statement-run result correspond. -/
-def Sim (names : List (String × Nat)) : Res SRegs → PRes → Prop
-  | .ok R', p => ∃ σ', p = .ok σ' ∧ Rel names R' σ'
+def Sim (names : List (String × Nat)) (sh : String → Option Arg) : Res SRegs → PRes → Prop
+  | .ok R', p => ∃ σ', p = .ok σ' ∧ Rel names sh R' σ'
   | .ub, p => p = .fail
   | .stuck, _ => True
 
-theorem Sim.bind {names : List (String × Nat)} {r : Res SRegs} {p : PRes} (h : Sim names r p)
-    {g : SRegs → Res SRegs} {q : Store → PRes}
-    (hg : ∀ R' σ', Rel names R' σ' → Sim names (g R') (q σ')) :
-    Sim names (r.bind g) (p.then q) := by
+theorem Sim.bind {names : List (String × Nat)} {sh : String → Option Arg} {r : Res SRegs} {p : PRes}
+    (h : Sim names sh r p) {g : SRegs → Res SRegs} {q : Store → PRes}
+    (hg : ∀ R' σ', Rel names sh R' σ' → Sim names sh (g R') (q σ')) :
+    Sim names sh (r.bind g) (p.then q) := by
   cases r with
   | ok R' => obtain ⟨σ', rfl, hr⟩ := h; exact hg R' σ' hr
   | ub => simp only [Sim] at h; subst h; rfl
@@ -284,32 +343,50 @@ theorem Except.bind_ok {ε α β : Type} {x : Except ε α} {f : α → Except �
 theorem need_ok {b : Bool} {m : String} {u : Unit} (h : need b m = .ok u) : b = true := by
   unfold need at h; split at h <;> simp_all
 
-theorem opnd_sim {names : List (String × Nat)} {R : SRegs} {σ : Store} (hR : Rel names R σ)
+/-- The uninitialised-read check of a register use passes on a defined
+value. -/
+theorem shadow_check_pass (P : PFunc) (σ : Store) {sh : Option Arg}
+    (hsh : ∀ a, sh = some a → truthN (a.get σ) = false) (rest : List PStmt) :
+    pStmts P σ (shChecks sh ++ rest) = pStmts P σ rest := by
+  cases sh with
+  | none => rfl
+  | some a => simp [shChecks, pStmts, hsh a rfl]
+
+theorem opnd_sim {P : PFunc} {names : List (String × Nat)} {sh : String → Option Arg} {base : Nat}
+    (hW : ShWF P names sh base) {R : SRegs} {σ : Store} (hR : Rel names sh R σ)
     {w : Nat} {keep : Bool} {k : Nat} {o : Opnd} {s : List PStmt} {tws : List Nat} {A : Arg}
-    (h : trOpnd names w keep k o = .ok (s, tws, A)) (hk : names.length ≤ k)
-    (P : PFunc) (f : Nat → Res SRegs) (rest : List PStmt)
-    (hc : ∀ v, sOpnd R w o = .ok v → s = [] → tws = [] → A.get σ = v → A.below k →
-      (keep = false → A.width = w) → Sim names (f v) (pStmts P σ rest)) :
-    Sim names ((sOpnd R w o).bind f) (pStmts P σ (s ++ rest)) := by
+    (h : trOpnd names sh w keep k o = .ok (s, tws, A)) (hk : base ≤ k)
+    (f : Nat → Res SRegs) (rest : List PStmt)
+    (hc : ∀ v, sOpnd R w o = .ok v → tws = [] → A.get σ = v → A.below k →
+      (keep = false → A.width = w) → Sim names sh (f v) (pStmts P σ rest)) :
+    Sim names sh ((sOpnd R w o).bind f) (pStmts P σ (s ++ rest)) := by
   cases o with
   | const b =>
     simp only [trOpnd, Except.ok.injEq, Prod.mk.injEq] at h
     obtain ⟨rfl, rfl, rfl⟩ := h
-    exact hc _ rfl rfl rfl rfl trivial (fun _ => rfl)
+    exact hc _ rfl rfl rfl trivial (fun _ => rfl)
   | reg n =>
     simp only [trOpnd] at h
     split at h
     · rename_i i wd hf
       simp only [Except.ok.injEq, Prod.mk.injEq] at h
       obtain ⟨rfl, rfl, rfl⟩ := h
-      simp only [sOpnd]
+      have hib : i < k := by have := findName_lt hf; have := hW.le; omega
       cases hn : R n with
-      | none => trivial
-      | some v =>
-        obtain ⟨i', w', hf', hv⟩ := hR n v hn
+      | none => simp [sOpnd, hn, Res.bind, Sim]
+      | some x =>
+        obtain ⟨i', w', hf', hx⟩ := hR n x hn
         rw [hf] at hf'; simp at hf'; obtain ⟨rfl, rfl⟩ := hf'
-        refine hc v (by simp [sOpnd, hn]) rfl rfl hv (by simp only [Arg.below]; have := findName_lt hf; omega) ?_
-        intro hkp; simp [hkp, Arg.width]
+        cases x with
+        | val v =>
+          obtain ⟨hv, hsh⟩ := hx
+          rw [shadow_check_pass P σ hsh rest]
+          have hs : sOpnd R w (.reg n) = .ok v := by simp [sOpnd, hn]
+          rw [hs]
+          exact hc v hs rfl hv hib (fun hkp => by simp [hkp, Arg.width])
+        | ind =>
+          obtain ⟨a, ha, ht⟩ := hx
+          simp only [sOpnd, hn, Res.bind, Sim, ha, shChecks, List.cons_append, pStmts, ht, ite_true]
     · simp at h
   | poison =>
     simp only [trOpnd, Except.ok.injEq, Prod.mk.injEq] at h
@@ -326,18 +403,24 @@ theorem checks_below {k w : Nat} {A B : Arg} (hA : A.below k) (hB : B.below k)
     simp_all
 
 /-- Store update of a result that is already in range. -/
-theorem assign_sim {names : List (String × Nat)} {R : SRegs} {σ : Store} (hR : Rel names R σ)
-    {d : String} {i w : Nat} (hf : findName names d = some (i, w)) (v : Nat) (hv : v < 2 ^ w) :
-    Rel names (R.set d v) (σ.set i (v % 2 ^ w)) := by
-  rw [Nat.mod_eq_of_lt hv]; exact hR.set hf v
+theorem assign_sim {P : PFunc} {names : List (String × Nat)} {sh : String → Option Arg}
+    {base : Nat} (hW : ShWF P names sh base) {R : SRegs} {σ : Store} (hR : Rel names sh R σ)
+    {d : String} {i w : Nat} (hf : findName names d = some (i, w)) (hsh : sh d = none)
+    (v : Nat) (hv : v < 2 ^ w) :
+    Rel names sh (R.set d v) (σ.set i (v % 2 ^ w)) := by
+  rw [Nat.mod_eq_of_lt hv]; exact Rel.set hW hR hf hsh v
 
 theorem binVal_lt (op : BinOp) (w x y : Nat) : binVal op w x y < 2 ^ w := (BitVec.isLt _)
 
-theorem inst_sim {P : PFunc} {names : List (String × Nat)} (hN : NamesOK P names)
-    {R : SRegs} {σ : Store} (hR : Rel names R σ) {k : Nat} (hk : names.length ≤ k)
-    {i : Inst} {s : List PStmt} {tws : List Nat} (h : trInst names k i = .ok (s, tws))
+theorem isNone_eq {α : Type} {o : Option α} (h : o.isNone = true) : o = none := by
+  cases o <;> simp_all
+
+theorem inst_sim {P : PFunc} {names : List (String × Nat)} {sh : String → Option Arg} {base : Nat}
+    (hW : ShWF P names sh base) (hN : NamesOK P names)
+    {R : SRegs} {σ : Store} (hR : Rel names sh R σ) {k : Nat} (hk : base ≤ k)
+    {i : Inst} {s : List PStmt} {tws : List Nat} (h : trInst names sh k i = .ok (s, tws))
     (hT : TempsOK P k tws) :
-    Sim names (sInst R i) (pStmts P σ s) := by
+    Sim names sh (sInst R i) (pStmts P σ s) := by
   cases i with
   | bin d op fl w a b =>
     simp only [trInst] at h
@@ -347,18 +430,20 @@ theorem inst_sim {P : PFunc} {names : List (String × Nat)} (hN : NamesOK P name
     obtain ⟨⟨sa, ta, A⟩, ha, h⟩ := Except.bind_ok h
     obtain ⟨⟨sb, tb, B⟩, hb, h⟩ := Except.bind_ok h
     obtain ⟨di, hdi, h⟩ := Except.bind_ok h
+    obtain ⟨u3, hu3, h⟩ := Except.bind_ok h
+    have hsh := isNone_eq (need_ok hu3)
     simp only [pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at h
     obtain ⟨rfl, rfl⟩ := h
     obtain ⟨hfd, hwd⟩ := hN.dst hdi
     simp only [sInst]
     rw [List.append_assoc, List.append_assoc]
-    refine opnd_sim hR ha hk P _ _ ?_
-    intro x _ hsa hta hAx hAb hAw
-    subst hsa hta
+    refine opnd_sim hW hR ha hk _ _ ?_
+    intro x _ hta hAx hAb hAw
+    subst hta
     simp only [List.nil_append, List.length_nil, Nat.add_zero] at hb hT ⊢
-    refine opnd_sim hR hb hk P _ _ ?_
-    intro y _ hsb htb hBy hBb hBw
-    subst hsb htb
+    refine opnd_sim hW hR hb hk _ _ ?_
+    intro y _ htb hBy hBb hBw
+    subst htb
     simp only [List.nil_append, List.length_nil, Nat.add_zero] at hT ⊢
     have hbad := checks_bad σ op fl w A B (hAw rfl) (hBw rfl) hf
     rw [hAx, hBy] at hbad
@@ -370,7 +455,7 @@ theorem inst_sim {P : PFunc} {names : List (String × Nat)} (hN : NamesOK P name
       simp only [hc, Bool.false_eq_true, ite_false, Sim, e, PRes.then, pStmts, hwd, evalOp]
       refine ⟨_, rfl, ?_⟩
       rw [Arg.get_agree hag hAb, Arg.get_agree hag hBb, hAx, hBy]
-      exact assign_sim (hR.agree (fun j hj => hag j (by omega))) hfd _ (binVal_lt _ _ _ _)
+      exact assign_sim hW (Rel.agree hW hR (fun j hj => hag j (by omega))) hfd hsh _ (binVal_lt _ _ _ _)
     · rw [hc] at hbad
       simp only [hc, ite_true, Sim, hem.1 hbad, PRes.then]
   | icmp d p w a b =>
@@ -379,20 +464,22 @@ theorem inst_sim {P : PFunc} {names : List (String × Nat)} (hN : NamesOK P name
     obtain ⟨⟨sa, ta, A⟩, ha, h⟩ := Except.bind_ok h
     obtain ⟨⟨sb, tb, B⟩, hb, h⟩ := Except.bind_ok h
     obtain ⟨di, hdi, h⟩ := Except.bind_ok h
+    obtain ⟨u3, hu3, h⟩ := Except.bind_ok h
+    have hsh := isNone_eq (need_ok hu3)
     simp only [pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at h
     obtain ⟨rfl, rfl⟩ := h
     obtain ⟨hfd, hwd⟩ := hN.dst hdi
     simp only [sInst]
     rw [List.append_assoc]
-    refine opnd_sim hR ha hk P _ _ ?_
-    intro x _ hsa hta hAx _ hAw
-    subst hsa hta
+    refine opnd_sim hW hR ha hk _ _ ?_
+    intro x _ hta hAx _ hAw
+    subst hta
     simp only [List.nil_append, List.length_nil, Nat.add_zero] at hb ⊢
-    refine opnd_sim hR hb hk P _ _ ?_
-    intro y _ hsb htb hBy _ _
-    subst hsb htb
-    simp only [List.nil_append, Res.bind, Sim, pStmts, hwd, evalOp, hAw rfl, hAx, hBy]
-    exact ⟨_, rfl, assign_sim hR hfd _ (by have := icmpVal_lt2 p w x y; simpa using this)⟩
+    refine opnd_sim hW hR hb hk _ _ ?_
+    intro y _ htb hBy _ _
+    subst htb
+    simp only [Res.bind, Sim, pStmts, hwd, evalOp, hAw rfl, hAx, hBy]
+    exact ⟨_, rfl, assign_sim hW hR hfd hsh _ (by have := icmpVal_lt2 p w x y; simpa using this)⟩
   | select d w c a b =>
     simp only [trInst] at h
     obtain ⟨u1, hu1, h⟩ := Except.bind_ok h
@@ -400,24 +487,26 @@ theorem inst_sim {P : PFunc} {names : List (String × Nat)} (hN : NamesOK P name
     obtain ⟨⟨sa, ta, A⟩, ha, h⟩ := Except.bind_ok h
     obtain ⟨⟨sb, tb, B⟩, hb, h⟩ := Except.bind_ok h
     obtain ⟨di, hdi, h⟩ := Except.bind_ok h
+    obtain ⟨u3, hu3, h⟩ := Except.bind_ok h
+    have hsh := isNone_eq (need_ok hu3)
     simp only [pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at h
     obtain ⟨rfl, rfl⟩ := h
     obtain ⟨hfd, hwd⟩ := hN.dst hdi
     simp only [sInst]
     rw [List.append_assoc, List.append_assoc]
-    refine opnd_sim hR hc hk P _ _ ?_
-    intro z _ hsc htc hCz _ _
-    subst hsc htc
+    refine opnd_sim hW hR hc hk _ _ ?_
+    intro z _ htc hCz _ _
+    subst htc
     simp only [List.nil_append, List.length_nil, Nat.add_zero] at ha hb ⊢
-    refine opnd_sim hR ha hk P _ _ ?_
-    intro x _ hsa hta hAx _ _
-    subst hsa hta
+    refine opnd_sim hW hR ha hk _ _ ?_
+    intro x _ hta hAx _ _
+    subst hta
     simp only [List.nil_append, List.length_nil, Nat.add_zero] at hb ⊢
-    refine opnd_sim hR hb hk P _ _ ?_
-    intro y _ hsb htb hBy _ _
-    subst hsb htb
-    simp only [List.nil_append, Res.bind, Sim, pStmts, hwd, evalOp, hAx, hBy, hCz]
-    refine ⟨_, rfl, assign_sim hR hfd _ ?_⟩
+    refine opnd_sim hW hR hb hk _ _ ?_
+    intro y _ htb hBy _ _
+    subst htb
+    simp only [Res.bind, Sim, pStmts, hwd, evalOp, hAx, hBy, hCz]
+    refine ⟨_, rfl, assign_sim hW hR hfd hsh _ ?_⟩
     unfold selVal; split <;> exact Nat.mod_lt _ (Nat.two_pow_pos w)
   | cast d ck nneg fw tw a =>
     simp only [trInst] at h
@@ -426,14 +515,16 @@ theorem inst_sim {P : PFunc} {names : List (String × Nat)} (hN : NamesOK P name
     have hnn := need_ok hu2
     obtain ⟨⟨sa, ta, A⟩, ha, h⟩ := Except.bind_ok h
     obtain ⟨di, hdi, h⟩ := Except.bind_ok h
+    obtain ⟨u3, hu3, h⟩ := Except.bind_ok h
+    have hsh := isNone_eq (need_ok hu3)
     simp only [pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at h
     obtain ⟨rfl, rfl⟩ := h
     obtain ⟨hfd, hwd⟩ := hN.dst hdi
     simp only [sInst]
     rw [List.append_assoc]
-    refine opnd_sim hR ha hk P _ _ ?_
-    intro x _ hsa hta hAx hAb hAw
-    subst hsa hta
+    refine opnd_sim hW hR ha hk _ _ ?_
+    intro x _ hta hAx hAb hAw
+    subst hta
     simp only [List.nil_append, List.length_nil, Nat.add_zero] at hT ⊢
     have hbad := nneg_bad σ fw A (hAw rfl) nneg
     rw [hAx] at hbad
@@ -453,15 +544,29 @@ theorem inst_sim {P : PFunc} {names : List (String × Nat)} (hN : NamesOK P name
       simp only [hc, Bool.false_eq_true, ite_false, Sim, e, PRes.then, pStmts, hwd, evalOp]
       refine ⟨_, rfl, ?_⟩
       rw [Arg.get_agree hag hAb, hAx, hAw rfl]
-      exact assign_sim (hR.agree (fun j hj => hag j (by omega))) hfd _ (by
+      exact assign_sim hW (Rel.agree hW hR (fun j hj => hag j (by omega))) hfd hsh _ (by
         unfold castVal; split <;> exact BitVec.isLt _)
     · rw [hc] at hbad
       simp only [hc, ite_true, Sim, hem.1 hbad, PRes.then]
+  | uninit d w =>
+    simp only [trInst] at h
+    obtain ⟨u1, hu1, h⟩ := Except.bind_ok h
+    obtain ⟨di, hdi, h⟩ := Except.bind_ok h
+    obtain ⟨u3, hu3, h⟩ := Except.bind_ok h
+    have hsh : sh d = some (.c 1 1) := by simpa using need_ok hu3
+    simp only [pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at h
+    obtain ⟨rfl, rfl⟩ := h
+    obtain ⟨hfd, _⟩ := hN.dst hdi
+    simp only [sInst, Sim, pStmts]
+    refine ⟨_, rfl, Rel.put' (x := .ind) hW hR hfd ⟨.c 1 1, hsh, rfl⟩ ?_⟩
+    intro j hj
+    exact Store.set_other _ _ (fun e => hj (.inl e))
 
-theorem insts_sim {P : PFunc} {names : List (String × Nat)} (hN : NamesOK P names) :
+theorem insts_sim {P : PFunc} {names : List (String × Nat)} {sh : String → Option Arg} {base : Nat}
+    (hW : ShWF P names sh base) (hN : NamesOK P names) :
     ∀ (is : List Inst) (R : SRegs) (σ : Store) (k : Nat) (s : List PStmt) (tws : List Nat),
-    Rel names R σ → names.length ≤ k → trInsts names k is = .ok (s, tws) → TempsOK P k tws →
-    Sim names (sInsts R is) (pStmts P σ s)
+    Rel names sh R σ → base ≤ k → trInsts names sh k is = .ok (s, tws) → TempsOK P k tws →
+    Sim names sh (sInsts R is) (pStmts P σ s)
   | [], R, σ, k, s, tws, hR, _, h, _ => by
     simp only [trInsts, Except.ok.injEq, Prod.mk.injEq] at h
     obtain ⟨rfl, rfl⟩ := h
@@ -474,26 +579,52 @@ theorem insts_sim {P : PFunc} {names : List (String × Nat)} (hN : NamesOK P nam
     obtain ⟨rfl, rfl⟩ := h
     simp only [sInsts]
     rw [pStmts_append]
-    exact Sim.bind (inst_sim hN hR hk h1 hT.left) (fun R' σ' hr =>
-      insts_sim hN is R' σ' (k + t1.length) s2 t2 hr (by omega) h2 hT.right)
+    exact Sim.bind (inst_sim hW hN hR hk h1 hT.left) (fun R' σ' hr =>
+      insts_sim hW hN is R' σ' (k + t1.length) s2 t2 hr (by omega) h2 hT.right)
 
 /-! ## Phis -/
 
-/-- The updates computed by the LLVM phis and by the PIR phis correspond. -/
-def UpdRel (names : List (String × Nat)) : List (String × Nat) → List (Nat × Nat) → Prop
-  | [], [] => True
-  | (n, v) :: t, (i, u) :: t' => (∃ w, findName names n = some (i, w)) ∧ v = u ∧ UpdRel names t t'
-  | _, _ => False
+/-- The updates computed by the LLVM phis and by the PIR phis (value phi,
+then shadow phi when the register has a shadow variable) correspond. -/
+inductive UpdRel (names : List (String × Nat)) (sh : String → Option Arg) :
+    List (String × SV) → List (Nat × Nat) → Prop
+  | nil : UpdRel names sh [] []
+  | plain {n : String} {i w v : Nat} {t : List (String × SV)} {L : List (Nat × Nat)} :
+      findName names n = some (i, w) → sh n = none → UpdRel names sh t L →
+      UpdRel names sh ((n, .val v) :: t) ((i, v) :: L)
+  | shVal {n : String} {i w s w' v b : Nat} {t : List (String × SV)} {L : List (Nat × Nat)} :
+      findName names n = some (i, w) → sh n = some (.v s w') → truthN b = false →
+      UpdRel names sh t L → UpdRel names sh ((n, .val v) :: t) ((i, v) :: (s, b) :: L)
+  | shInd {n : String} {i w s w' u b : Nat} {t : List (String × SV)} {L : List (Nat × Nat)} :
+      findName names n = some (i, w) → sh n = some (.v s w') → truthN b = true →
+      UpdRel names sh t L → UpdRel names sh ((n, .ind) :: t) ((i, u) :: (s, b) :: L)
 
-theorem Rel.setAll {names : List (String × Nat)} :
-    ∀ (upd : List (String × Nat)) (upd' : List (Nat × Nat)) (R : SRegs) (σ : Store),
-    Rel names R σ → UpdRel names upd upd' → Rel names (R.setAll upd) (σ.setAll upd')
-  | [], [], _, _, hR, _ => hR
-  | (n, v) :: t, (i, u) :: t', R, σ, hR, ⟨⟨w, hf⟩, hv, hr⟩ => by
-    subst hv
-    exact Rel.setAll t t' _ _ (hR.set hf v) hr
-  | [], _ :: _, _, _, _, h => h.elim
-  | _ :: _, [], _, _, _, h => h.elim
+theorem Rel.setAll {P : PFunc} {names : List (String × Nat)} {sh : String → Option Arg}
+    {base : Nat} (hW : ShWF P names sh base) :
+    ∀ {upd : List (String × SV)} {upd' : List (Nat × Nat)} {R : SRegs} {σ : Store},
+    UpdRel names sh upd upd' → Rel names sh R σ → Rel names sh (R.setAll upd) (σ.setAll upd')
+  | _, _, _, _, .nil, hR => hR
+  | _, _, R, σ, @UpdRel.plain _ _ n i w v _ _ hf hsh ht, hR => by
+    simp only [SRegs.setAll, Store.setAll]
+    exact Rel.setAll hW ht (Rel.set hW hR hf hsh v)
+  | _, _, R, σ, @UpdRel.shVal _ _ n i w s w' v b _ _ hf hsh hb ht, hR => by
+    have hsi : s ≠ i := by
+      have := (hW.var _ _ _ hsh).1; have := findName_lt hf; omega
+    simp only [SRegs.setAll, Store.setAll]
+    refine Rel.setAll hW ht (Rel.put' (x := .val v) hW hR hf ?_ ?_)
+    · refine ⟨by rw [Store.set_other _ _ (Ne.symm hsi)]; simp, fun a ha => ?_⟩
+      rw [hsh] at ha; cases ha; simpa [Arg.get] using hb
+    · intro j hj
+      have h1 : j ≠ i := fun e => hj (.inl e)
+      have h2 : j ≠ s := fun e => hj (.inr ⟨s, w', hsh, e⟩)
+      rw [Store.set_other _ _ h2, Store.set_other _ _ h1]
+  | _, _, R, σ, @UpdRel.shInd _ _ n i w s w' u b _ _ hf hsh hb ht, hR => by
+    simp only [SRegs.setAll, Store.setAll]
+    refine Rel.setAll hW ht (Rel.put' (x := .ind) hW hR hf ⟨.v s w', hsh, by simpa [Arg.get] using hb⟩ ?_)
+    intro j hj
+    have h1 : j ≠ i := fun e => hj (.inl e)
+    have h2 : j ≠ s := fun e => hj (.inr ⟨s, w', hsh, e⟩)
+    rw [Store.set_other _ _ h2, Store.set_other _ _ h1]
 
 theorem dstIdx_ok {names : List (String × Nat)} {d : String} {w i : Nat}
     (h : dstIdx names d w = .ok i) : findName names d = some (i, w) := by
@@ -509,6 +640,15 @@ theorem dstIdx_ok {names : List (String × Nat)} {d : String} {w i : Nat}
 def OpndArg (names : List (String × Nat)) (w : Nat) (o : Opnd) (a : Arg) : Prop :=
   (∃ b, o = .const b ∧ a = .c w (b % 2 ^ w)) ∨
   (∃ n i wd, o = .reg n ∧ findName names n = some (i, wd) ∧ a = .v i wd)
+
+theorem phiPick_mem {F : LFunc} {pv : Nat} :
+    ∀ {inc : List (Opnd × String)} {o : Opnd}, phiPick F pv inc = some o → ∃ pr, (o, pr) ∈ inc
+  | [], _, h => by simp [phiPick] at h
+  | (o', pr) :: t, o, h => by
+    simp only [phiPick] at h
+    split at h
+    · simp at h; subst h; exact ⟨pr, by simp⟩
+    · obtain ⟨pr', hm⟩ := phiPick_mem h; exact ⟨pr', by simp [hm]⟩
 
 theorem trInc_pick {F : LFunc} {names : List (String × Nat)} {w pv : Nat} :
     ∀ {inc : List (Opnd × String)} {L : List (Nat × Arg)} {o : Opnd},
@@ -547,25 +687,58 @@ theorem trInc_pick {F : LFunc} {names : List (String × Nat)} {w pv : Nat} :
         simp [pickInc, this, hpa]
       · exact hpa
 
-theorem phis_sim {F : LFunc} {names : List (String × Nat)} {R : SRegs} {σ : Store}
-    (hR : Rel names R σ) (prev : Option Nat) :
-    ∀ (ps : List PhiI) (qs : List PPhi), trPhis F names ps = .ok qs →
+theorem trIncSh_pick {F : LFunc} {sh : String → Option Arg} {pv : Nat} :
+    ∀ {inc : List (Opnd × String)} {o : Opnd}, phiPick F pv inc = some o →
+    pickInc pv (trIncSh F sh inc) = some (incShadow sh o)
+  | [], _, h => by simp [phiPick] at h
+  | (o', pr) :: t, o, hp => by
+    simp only [phiPick] at hp
+    simp only [trIncSh]
+    split at hp
+    · rename_i hl
+      simp at hp; subst hp
+      rw [hl]; simp [pickInc]
+    · rename_i hl
+      split
+      · rename_i j hj
+        have : j ≠ pv := fun e => hl (e ▸ hj)
+        simp [pickInc, this, trIncSh_pick hp]
+      · exact trIncSh_pick hp
+
+theorem phiUpd_append (σ : Store) (prev : Option Nat) :
+    ∀ (a b : List PPhi), phiUpd σ prev (a ++ b) = phiUpd σ prev a ++ phiUpd σ prev b
+  | [], _ => rfl
+  | q :: a, b => by
+    simp only [List.cons_append, phiUpd]
+    split <;> simp [phiUpd_append σ prev a b]
+
+theorem hasShadowedInput_false {sh : String → Option Arg} {inc : List (Opnd × String)}
+    (h : hasShadowedInput sh inc = false) {n : String} {pr : String} (hm : (Opnd.reg n, pr) ∈ inc) :
+    sh n = none := by
+  unfold hasShadowedInput at h
+  rw [List.any_eq_false] at h
+  have := h _ hm
+  simpa using this
+
+theorem phis_sim {F : LFunc} {P : PFunc} {names : List (String × Nat)} {sh : String → Option Arg}
+    {base : Nat} (hW : ShWF P names sh base) {R : SRegs} {σ : Store}
+    (hR : Rel names sh R σ) (prev : Option Nat) :
+    ∀ (ps : List PhiI) (qs : List PPhi), trPhis F names sh ps = .ok qs →
     (sPhis F R prev ps = .ub → False) ∧
-    (∀ upd, sPhis F R prev ps = .ok upd → UpdRel names upd (phiUpd σ prev qs))
+    (∀ upd, sPhis F R prev ps = .ok upd → UpdRel names sh upd (phiUpd σ prev qs))
   | [], qs, h => by
     simp only [trPhis, Except.ok.injEq] at h; subst h
-    simp [sPhis, phiUpd, UpdRel]
+    simp [sPhis, phiUpd, UpdRel.nil]
   | p :: ps, qs, h => by
     simp only [trPhis] at h
     obtain ⟨q, hq, h⟩ := Except.bind_ok h
     obtain ⟨qs', hqs, h⟩ := Except.bind_ok h
     simp only [pure, Except.pure, Except.ok.injEq] at h; subst h
-    have ih := phis_sim hR prev ps qs' hqs
+    have ih := phis_sim hW hR prev ps qs' hqs
     simp only [trPhi] at hq
     obtain ⟨u, _, hq⟩ := Except.bind_ok hq
     obtain ⟨i, hi, hq⟩ := Except.bind_ok hq
     obtain ⟨L, hL, hq⟩ := Except.bind_ok hq
-    simp only [pure, Except.pure, Except.ok.injEq] at hq; subst hq
     have hfd : findName names p.dst = some (i, p.w) := dstIdx_ok hi
     cases prev with
     | none => simp [sPhis]
@@ -574,35 +747,83 @@ theorem phis_sim {F : LFunc} {names : List (String × Nat)} {R : SRegs} {σ : St
       | none => simp [sPhis, hpk]
       | some o =>
         obtain ⟨a, hpa, hoa⟩ := trInc_pick hL hpk
-        have hphi : phiUpd σ (some pv) ({ dst := i, inc := L } :: qs') =
-            (i, a.get σ) :: phiUpd σ (some pv) qs' := by
-          simp [phiUpd, hpa]
-        rw [hphi]
-        rcases hoa with ⟨b, rfl, rfl⟩ | ⟨n, j, wd, rfl, hf, rfl⟩
-        · simp only [sPhis, hpk, sOpnd, Res.bind]
+        obtain ⟨pr, hmem⟩ := phiPick_mem hpk
+        rw [phiUpd_append]
+        -- the incoming value, read in the old state
+        rcases hoa with ⟨b, rfl, rfl⟩ | ⟨n, j, wd, rfl, hfn, rfl⟩
+        · -- a constant: defined, no shadow
+          have hx : sPhiOpnd R p.w (.const b) = .ok (.val (b % 2 ^ p.w)) := rfl
+          simp only [sPhis, hpk, hx, Res.bind]
           constructor
           · intro hu
-            cases hs : sPhis F R (some pv) ps <;> simp [hs, Res.bind] at hu
+            cases hs : sPhis F R (some pv) ps <;> simp [hs] at hu
             exact ih.1 hs
           · intro upd hu
-            cases hs : sPhis F R (some pv) ps <;> simp [hs, Res.bind] at hu
+            cases hs : sPhis F R (some pv) ps <;> simp [hs] at hu
             subst hu
-            exact ⟨⟨p.w, hfd⟩, rfl, ih.2 _ hs⟩
-        · simp only [sPhis, hpk, sOpnd]
-          cases hn : R n with
-          | none => simp [Res.bind]
-          | some v =>
-            obtain ⟨j', w', hf', hv⟩ := hR n v hn
-            rw [hf] at hf'; simp at hf'; obtain ⟨rfl, rfl⟩ := hf'
-            simp only [Res.bind]
+            have ih2 := ih.2 _ hs
+            split at hq
+            · rename_i sv w' hsv
+              simp only [pure, Except.pure, Except.ok.injEq] at hq; subst hq
+              simp only [phiUpd, Option.bind, hpa, trIncSh_pick (sh := sh) hpk, List.cons_append,
+                List.nil_append, incShadow]
+              exact .shVal hfd hsv rfl ih2
+            · simp at hq
+            · rename_i hnone
+              obtain ⟨_, _, hq⟩ := Except.bind_ok hq
+              simp only [pure, Except.pure, Except.ok.injEq] at hq; subst hq
+              simp only [phiUpd, Option.bind, hpa, List.cons_append, List.nil_append]
+              exact .plain hfd hnone ih2
+        · cases hn : R n with
+          | none => simp [sPhis, hpk, sPhiOpnd, hn, Res.bind]
+          | some x =>
+            obtain ⟨j', w', hf', hx⟩ := hR n x hn
+            rw [hfn] at hf'; simp at hf'; obtain ⟨rfl, rfl⟩ := hf'
+            have hxo : sPhiOpnd R p.w (.reg n) = .ok x := by simp [sPhiOpnd, hn]
+            simp only [sPhis, hpk, hxo, Res.bind]
             constructor
             · intro hu
-              cases hs : sPhis F R (some pv) ps <;> simp [hs, Res.bind] at hu
+              cases hs : sPhis F R (some pv) ps <;> simp [hs] at hu
               exact ih.1 hs
             · intro upd hu
-              cases hs : sPhis F R (some pv) ps <;> simp [hs, Res.bind] at hu
+              cases hs : sPhis F R (some pv) ps <;> simp [hs] at hu
               subst hu
-              exact ⟨⟨p.w, hfd⟩, by simp [Arg.get, hv], ih.2 _ hs⟩
+              have ih2 := ih.2 _ hs
+              split at hq
+              · rename_i sv w'' hsv
+                simp only [pure, Except.pure, Except.ok.injEq] at hq; subst hq
+                simp only [phiUpd, Option.bind, hpa, trIncSh_pick (sh := sh) hpk, List.cons_append,
+                  List.nil_append]
+                cases x with
+                | val v =>
+                  obtain ⟨hv, hsh⟩ := hx
+                  have hb : truthN ((incShadow sh (.reg n)).get σ) = false := by
+                    simp only [incShadow]
+                    cases hs' : sh n with
+                    | none => rfl
+                    | some a => simpa using hsh a hs'
+                  simp only [Arg.get, hv]
+                  exact .shVal hfd hsv hb ih2
+                | ind =>
+                  obtain ⟨a, ha, ht⟩ := hx
+                  have hb : truthN ((incShadow sh (.reg n)).get σ) = true := by
+                    simp only [incShadow, ha]; simpa using ht
+                  exact .shInd hfd hsv hb ih2
+              · simp at hq
+              · rename_i hnone
+                obtain ⟨_, hsi, hq⟩ := Except.bind_ok hq
+                simp only [pure, Except.pure, Except.ok.injEq] at hq; subst hq
+                simp only [phiUpd, Option.bind, hpa, List.cons_append, List.nil_append]
+                cases x with
+                | val v =>
+                  obtain ⟨hv, _⟩ := hx
+                  simp only [Arg.get, hv]
+                  exact .plain hfd hnone ih2
+                | ind =>
+                  exfalso
+                  obtain ⟨a, ha, _⟩ := hx
+                  have := hasShadowedInput_false (by simpa using need_ok hsi) hmem
+                  rw [this] at ha; cases ha
 
 /-! ## Terminators, blocks, runs -/
 
@@ -613,9 +834,9 @@ def OSim : Out → POut → Prop
   | .fuel, p => p = .fuel
   | .stuck, _ => True
 
-theorem Sim.out {names : List (String × Nat)} {r : Res SRegs} {p : PRes} (h : Sim names r p)
-    {f : SRegs → Out} {g : Store → POut}
-    (hfg : ∀ R σ, Rel names R σ → OSim (f R) (g σ)) : OSim (r.out f) (p.run g) := by
+theorem Sim.out {names : List (String × Nat)} {sh : String → Option Arg} {r : Res SRegs} {p : PRes}
+    (h : Sim names sh r p) {f : SRegs → Out} {g : Store → POut}
+    (hfg : ∀ R σ, Rel names sh R σ → OSim (f R) (g σ)) : OSim (r.out f) (p.run g) := by
   cases r with
   | ok R' => obtain ⟨σ', rfl, hr⟩ := h; exact hfg R' σ' hr
   | ub => simp only [Sim] at h; subst h; rfl
@@ -625,16 +846,17 @@ theorem PRes.then_run (p : PRes) (q : Store → PRes) (g : Store → POut) :
     (p.then q).run g = p.run (fun σ => (q σ).run g) := by
   cases p <;> rfl
 
-theorem opnd_osim {names : List (String × Nat)} {R : SRegs} {σ : Store} (hR : Rel names R σ)
+theorem opnd_osim {P : PFunc} {names : List (String × Nat)} {sh : String → Option Arg} {base : Nat}
+    (_hW : ShWF P names sh base) {R : SRegs} {σ : Store} (hR : Rel names sh R σ)
     {w : Nat} {keep : Bool} {k : Nat} {o : Opnd} {s : List PStmt} {tws : List Nat} {A : Arg}
-    (h : trOpnd names w keep k o = .ok (s, tws, A)) (P : PFunc) (f : Nat → Out) (g : Store → POut)
-    (hc : ∀ v, sOpnd R w o = .ok v → s = [] → A.get σ = v → OSim (f v) (g σ)) :
+    (h : trOpnd names sh w keep k o = .ok (s, tws, A)) (f : Nat → Out) (g : Store → POut)
+    (hc : ∀ v, sOpnd R w o = .ok v → A.get σ = v → OSim (f v) (g σ)) :
     OSim ((sOpnd R w o).out f) ((pStmts P σ s).run g) := by
   cases o with
   | const b =>
     simp only [trOpnd, Except.ok.injEq, Prod.mk.injEq] at h
     obtain ⟨rfl, rfl, rfl⟩ := h
-    exact hc _ rfl rfl rfl
+    exact hc _ rfl rfl
   | reg n =>
     simp only [trOpnd] at h
     split at h
@@ -643,11 +865,21 @@ theorem opnd_osim {names : List (String × Nat)} {R : SRegs} {σ : Store} (hR : 
       obtain ⟨rfl, rfl, rfl⟩ := h
       cases hn : R n with
       | none => simp [sOpnd, hn, Res.out, OSim]
-      | some v =>
-        obtain ⟨i', w', hf', hv⟩ := hR n v hn
+      | some x =>
+        obtain ⟨i', w', hf', hx⟩ := hR n x hn
         rw [hf] at hf'; simp at hf'; obtain ⟨rfl, rfl⟩ := hf'
-        have := hc v (by simp [sOpnd, hn]) rfl hv
-        simpa [sOpnd, hn, Res.out, pStmts, PRes.run] using this
+        cases x with
+        | val v =>
+          obtain ⟨hv, hsh⟩ := hx
+          have e := shadow_check_pass P σ hsh []
+          rw [List.append_nil] at e
+          rw [e]
+          have hs : sOpnd R w (.reg n) = .ok v := by simp [sOpnd, hn]
+          rw [hs]
+          simpa [Res.out, pStmts, PRes.run] using hc v hs hv
+        | ind =>
+          obtain ⟨a, ha, ht⟩ := hx
+          simp only [sOpnd, hn, Res.out, OSim, ha, shChecks, pStmts, ht, ite_true, PRes.run]
     · simp at h
   | poison =>
     simp only [trOpnd, Except.ok.injEq, Prod.mk.injEq] at h
@@ -658,11 +890,12 @@ theorem target_ok {F : LFunc} {t : String} {j : Nat} (h : target F t = .ok j) :
     lookupBlock F t = some j := by
   unfold target at h; split at h <;> simp_all
 
-theorem term_sim {F : LFunc} {P : PFunc} {names : List (String × Nat)} {R : SRegs} {σ : Store}
-    (hR : Rel names R σ) {k : Nat} {t : LTerm} {s : List PStmt}
-    {tws : List Nat} {T : PTerm} (h : trTerm F names k t = .ok (s, tws, T))
+theorem term_sim {F : LFunc} {P : PFunc} {names : List (String × Nat)} {sh : String → Option Arg}
+    {base : Nat} (hW : ShWF P names sh base) {R : SRegs} {σ : Store}
+    (hR : Rel names sh R σ) {k : Nat} {t : LTerm} {s : List PStmt}
+    {tws : List Nat} {T : PTerm} (h : trTerm F names sh k t = .ok (s, tws, T))
     (runL : Nat → SRegs → Out) (runP : Nat → Store → POut)
-    (hrun : ∀ j R σ, Rel names R σ → OSim (runL j R) (runP j σ)) :
+    (hrun : ∀ j R σ, Rel names sh R σ → OSim (runL j R) (runP j σ)) :
     OSim (sTerm F R runL t) ((pStmts P σ s).run (fun σ' => pTerm σ' runP T)) := by
   cases t with
   | br tn =>
@@ -680,8 +913,8 @@ theorem term_sim {F : LFunc} {P : PFunc} {names : List (String × Nat)} {R : SRe
     simp only [pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at h
     obtain ⟨rfl, rfl, rfl⟩ := h
     simp only [sTerm]
-    refine opnd_osim hR hc P _ _ ?_
-    intro v _ _ hv
+    refine opnd_osim hW hR hc _ _ ?_
+    intro v _ hv
     simp only [pTerm, hv]
     cases truthN v
     · simp only [Bool.false_eq_true, ite_false, target_ok hfj]; exact hrun fj R σ hR
@@ -698,18 +931,19 @@ theorem term_sim {F : LFunc} {P : PFunc} {names : List (String × Nat)} {R : SRe
       simp only [pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at h
       obtain ⟨rfl, rfl, rfl⟩ := h
       simp only [sTerm]
-      refine opnd_osim hR ho P _ _ ?_
-      intro v _ _ hv
+      refine opnd_osim hW hR ho _ _ ?_
+      intro v _ hv
       simp [pTerm, hv, OSim]
   | unreachable =>
     simp only [trTerm, Except.ok.injEq, Prod.mk.injEq] at h
     obtain ⟨rfl, rfl, rfl⟩ := h
     rfl
 
-theorem run_sim {F : LFunc} {P : PFunc} {names : List (String × Nat)} (hN : NamesOK P names)
-    (hB : ∀ (cur : Nat) (B : LBlock), F.blocks[cur]? = some B → ∃ k pb tws, names.length ≤ k ∧
-      trBlock F names k B = .ok (pb, tws) ∧ P.blocks[cur]? = some pb ∧ TempsOK P k tws) :
-    ∀ n prev cur R σ, Rel names R σ → OSim (sRun F n prev cur R) (pRun P n prev cur σ)
+theorem run_sim {F : LFunc} {P : PFunc} {names : List (String × Nat)} {sh : String → Option Arg}
+    {base : Nat} (hW : ShWF P names sh base) (hN : NamesOK P names)
+    (hB : ∀ (cur : Nat) (B : LBlock), F.blocks[cur]? = some B → ∃ k pb tws, base ≤ k ∧
+      trBlock F names sh k B = .ok (pb, tws) ∧ P.blocks[cur]? = some pb ∧ TempsOK P k tws) :
+    ∀ n prev cur R σ, Rel names sh R σ → OSim (sRun F n prev cur R) (pRun P n prev cur σ)
   | 0, _, _, _, _, _ => rfl
   | n + 1, prev, cur, R, σ, hR => by
     cases hb : F.blocks[cur]? with
@@ -723,22 +957,23 @@ theorem run_sim {F : LFunc} {P : PFunc} {names : List (String × Nat)} (hN : Nam
       simp only [pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at htr
       obtain ⟨rfl, rfl⟩ := htr
       simp only [sRun, pRun, hb, hpb]
-      have hph := phis_sim (F := F) hR prev B.phis qs hqs
+      have hph := phis_sim (F := F) hW hR prev B.phis qs hqs
       cases hsp : sPhis F R prev B.phis with
       | ub => exact (hph.1 hsp).elim
       | stuck => trivial
       | ok upd =>
-        have hR1 := Rel.setAll _ _ _ _ hR (hph.2 upd hsp)
+        have hR1 := Rel.setAll hW (hph.2 upd hsp) hR
         simp only [Res.out]
         rw [pStmts_append, PRes.then_run]
-        exact Sim.out (insts_sim hN _ _ _ _ _ _ hR1 hk h1 hT.left) (fun R' σ' hr =>
-          term_sim hr h2 _ _ (fun j R'' σ'' hr' => run_sim hN hB n (some cur) j R'' σ'' hr'))
+        exact Sim.out (insts_sim hW hN _ _ _ _ _ _ hR1 hk h1 hT.left) (fun R' σ' hr =>
+          term_sim hW hr h2 _ _ (fun j R'' σ'' hr' => run_sim hW hN hB n (some cur) j R'' σ'' hr'))
 
-theorem trBlocks_get {F : LFunc} {names : List (String × Nat)} {P : PFunc} :
+theorem trBlocks_get {F : LFunc} {names : List (String × Nat)} {sh : String → Option Arg}
+    {P : PFunc} :
     ∀ (Bs : List LBlock) (k : Nat) (pbs : List PBlock) (ts : List Nat),
-    trBlocks F names k Bs = .ok (pbs, ts) → TempsOK P k ts →
-    ∀ (cur : Nat) (B : LBlock), Bs[cur]? = some B → ∃ k' pb tws, k ≤ k' ∧ trBlock F names k' B = .ok (pb, tws) ∧
-      pbs[cur]? = some pb ∧ TempsOK P k' tws
+    trBlocks F names sh k Bs = .ok (pbs, ts) → TempsOK P k ts →
+    ∀ (cur : Nat) (B : LBlock), Bs[cur]? = some B → ∃ k' pb tws, k ≤ k' ∧
+      trBlock F names sh k' B = .ok (pb, tws) ∧ pbs[cur]? = some pb ∧ TempsOK P k' tws
   | [], _, _, _, _, _, _, _, hB => by simp at hB
   | B0 :: Bs, k, pbs, ts, h, hT, cur, B, hB => by
     simp only [trBlocks] at h
@@ -758,7 +993,7 @@ theorem trBlocks_get {F : LFunc} {names : List (String × Nat)} {P : PFunc} :
 /-! ## Initial state -/
 
 theorem initRegs_eq : ∀ (ps : List (String × Nat)) (args : List Nat) (n : String),
-    initRegs ps args n = (findName ps n).map (fun p => args.getD p.1 0 % 2 ^ p.2)
+    initRegs ps args n = (findName ps n).map (fun p => SV.val (args.getD p.1 0 % 2 ^ p.2))
   | [], _, _ => rfl
   | (m, w) :: ps, args, n => by
     simp only [initRegs, findName]
@@ -792,44 +1027,106 @@ theorem pInitAux_eq (wd : Nat → Nat) : ∀ (m s : Nat) (args : List Nat) (σ :
 /-! ## The translator's output -/
 
 theorem translate_spec {F : LFunc} {P : PFunc} (h : translate F = .ok P) :
-    ∃ temps, trBlocks F (F.params ++ resultNames F) (F.params ++ resultNames F).length F.blocks =
+    ∃ temps, trBlocks F (F.params ++ resultNames F)
+        (shadowOf F (F.params ++ resultNames F).length)
+        ((F.params ++ resultNames F).length + (shadowPhis F).length) F.blocks =
         .ok (P.blocks, temps) ∧
-      P.vars = (F.params ++ resultNames F).map Prod.snd ++ temps ∧
-      P.params = List.range' 0 F.params.length ∧ P.retw = F.retw := by
+      P.vars = (F.params ++ resultNames F).map Prod.snd ++
+        List.replicate (shadowPhis F).length 1 ++ temps ∧
+      P.params = List.range' 0 F.params.length ∧ P.retw = F.retw ∧
+      F.params.all (fun p => (shadowOf F (F.params ++ resultNames F).length p.1).isNone) = true := by
   simp only [translate] at h
   obtain ⟨_, _, h⟩ := Except.bind_ok h
   obtain ⟨_, _, h⟩ := Except.bind_ok h
   obtain ⟨_, _, h⟩ := Except.bind_ok h
   obtain ⟨_, _, h⟩ := Except.bind_ok h
   obtain ⟨_, _, h⟩ := Except.bind_ok h
+  obtain ⟨_, hpar, h⟩ := Except.bind_ok h
   obtain ⟨⟨bs, temps⟩, hb, h⟩ := Except.bind_ok h
   simp only [pure, Except.pure, Except.ok.injEq] at h
   subst h
-  exact ⟨temps, hb, rfl, rfl, rfl⟩
+  exact ⟨temps, hb, rfl, rfl, rfl, need_ok hpar⟩
+
+/-- The shadows the translator computes are well formed. -/
+theorem shadowOf_wf (F : LFunc) (names : List (String × Nat)) (P : PFunc)
+    (hv : ∀ j, j < (shadowPhis F).length → P.wd (names.length + j) = 1) :
+    ShWF P names (shadowOf F names.length) (names.length + (shadowPhis F).length) where
+  var := by
+    intro n s w h
+    unfold shadowOf at h
+    split at h
+    · simp at h
+    · cases hf : findName (shadowPhis F) n with
+      | none => simp [hf] at h
+      | some p =>
+        simp [hf] at h
+        obtain ⟨rfl, rfl⟩ := h
+        have hl := findName_lt hf
+        exact ⟨by omega, by omega, rfl, hv _ hl⟩
+  inj := by
+    intro n m s w w' hn hm
+    unfold shadowOf at hn hm
+    split at hn
+    · simp at hn
+    · split at hm
+      · simp at hm
+      · cases hf : findName (shadowPhis F) n with
+        | none => simp [hf] at hn
+        | some p =>
+          cases hg : findName (shadowPhis F) m with
+          | none => simp [hg] at hm
+          | some q =>
+            simp [hf] at hn; simp [hg] at hm
+            obtain ⟨rfl, _⟩ := hn
+            obtain ⟨hq, _⟩ := hm
+            have e : q.1 = p.1 := by omega
+            obtain ⟨p1, p2⟩ := p; obtain ⟨q1, q2⟩ := q
+            simp at e; subst e
+            have g1 := findName_get hf
+            have g2 := findName_get hg
+            rw [g1] at g2; simp at g2; exact g2.1
+  con := by
+    intro n w b h
+    unfold shadowOf at h
+    split at h
+    · simp at h; exact h.2.symm
+    · cases hf : findName (shadowPhis F) n <;> simp [hf] at h
+  le := Nat.le_add_right _ _
 
 /-- **The translation is exact with respect to the strict semantics.** For
 every accepted function, input and fuel: PIR returns `v` iff LLVM returns `v`,
-PIR fails a check iff LLVM reaches UB (strict: including poison creation),
-PIR runs out of fuel iff LLVM does — whenever the LLVM run is not stuck. -/
+PIR fails a check iff LLVM reaches UB (strict: including poison creation and
+reads of uninitialised locals), PIR runs out of fuel iff LLVM does — whenever
+the LLVM run is not stuck. -/
 theorem translate_exact {F : LFunc} {P : PFunc} (h : translate F = .ok P) (args : List Nat)
     (n : Nat) : OSim (sRunF F args n) (pRunF P args n) := by
-  obtain ⟨temps, hb, hv, hp, _⟩ := translate_spec h
-  generalize hn : F.params ++ resultNames F = names at hb hv
+  obtain ⟨temps, hb, hv, hp, _, hpar⟩ := translate_spec h
+  generalize hn : F.params ++ resultNames F = names at hb hv hpar
+  generalize hsh : shadowOf F names.length = sh at hb hpar
   have hN : NamesOK P names := by
     intro i hi
-    simp only [PFunc.wd, hv, List.getD_eq_getElem?_getD]
+    simp only [PFunc.wd, hv, List.getD_eq_getElem?_getD, List.append_assoc]
     rw [List.getElem?_append_left (by simpa using hi)]
     simp [List.getElem?_eq_getElem hi]
-  have hT : TempsOK P names.length temps := by
+  have hwd : ∀ j, j < (shadowPhis F).length → P.wd (names.length + j) = 1 := by
+    intro j hj
+    simp only [PFunc.wd, hv, List.getD_eq_getElem?_getD, List.append_assoc]
+    rw [List.getElem?_append_right (by simp)]
+    simp only [List.length_map, Nat.add_sub_cancel_left]
+    rw [List.getElem?_append_left (by simpa using hj)]
+    simp [hj]
+  have hW : ShWF P names sh (names.length + (shadowPhis F).length) := by
+    rw [← hsh]; exact shadowOf_wf F names P hwd
+  have hT : TempsOK P (names.length + (shadowPhis F).length) temps := by
     intro j hj
     simp only [PFunc.wd, hv, List.getD_eq_getElem?_getD]
     rw [List.getElem?_append_right (by simp)]
     simp [hj]
-  apply run_sim hN (fun cur B hB => by
+  apply run_sim hW hN (fun cur B hB => by
     obtain ⟨k', pb, tws, hk', htr, hpb, hT'⟩ := trBlocks_get F.blocks _ _ _ hb hT cur B hB
     exact ⟨k', pb, tws, hk', htr, hpb, hT'⟩)
   -- the initial states are related
-  intro m v hm
+  intro m x hm
   rw [initRegs_eq] at hm
   cases hf : findName F.params m with
   | none => simp [hf] at hm
@@ -839,15 +1136,24 @@ theorem translate_exact {F : LFunc} {P : PFunc} (h : translate F = .ok P) (args 
     subst hm
     have hfn : findName names m = some (i, w) := by
       rw [← hn]; exact findName_append_left hf
-    refine ⟨i, w, hfn, ?_⟩
-    have hil := findName_lt hf
-    simp only [pInit, hp]
-    rw [pInitAux_eq]
-    simp only [Nat.zero_le, true_and, Nat.zero_add, hil, ite_true, Nat.sub_zero]
-    congr 2
-    rw [hN i (findName_lt hfn)]
-    have g1 := findName_get hfn
-    rw [List.getElem?_eq_getElem (findName_lt hfn)] at g1
-    simp at g1; rw [g1]
+    refine ⟨i, w, hfn, ?_, ?_⟩
+    · have hil := findName_lt hf
+      simp only [pInit, hp]
+      rw [pInitAux_eq]
+      simp only [Nat.zero_le, true_and, Nat.zero_add, hil, ite_true, Nat.sub_zero]
+      congr 2
+      rw [hN i (findName_lt hfn)]
+      have g1 := findName_get hfn
+      rw [List.getElem?_eq_getElem (findName_lt hfn)] at g1
+      simp at g1; rw [g1]
+    · -- parameters have no shadow
+      intro a ha
+      have hmem : (m, w) ∈ F.params := by
+        have g := findName_get hf
+        exact List.mem_of_getElem? g
+      rw [List.all_eq_true] at hpar
+      have := hpar _ hmem
+      simp at this
+      rw [this] at ha; cases ha
 
 end PrismRefine

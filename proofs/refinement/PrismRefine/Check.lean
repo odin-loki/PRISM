@@ -153,6 +153,9 @@ def parseLlvm (name : String) (ls : List (List String)) : Except String LFunc :=
     | ["select", d, w, c, a, b] =>
       let (bn, ps, is) ← match cur with | some c => pure c | none => throw "instruction outside a block"
       cur := some (bn, ps, .select (← reg? d) (← nat? w) (← opnd? c) (← opnd? a) (← opnd? b) :: is)
+    | ["uninit", d, w] =>
+      let (bn, ps, is) ← match cur with | some c => pure c | none => throw "instruction outside a block"
+      cur := some (bn, ps, .uninit (← reg? d) (← nat? w) :: is)
     | ["cast", d, k, nn, fw, tw, a] =>
       let (bn, ps, is) ← match cur with | some c => pure c | none => throw "instruction outside a block"
       let ck ← match castK? k with | some c => pure c | none => throw s!"cast {k}"

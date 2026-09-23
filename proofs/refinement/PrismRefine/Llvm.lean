@@ -12,7 +12,11 @@ function whose values are all integers):
   `disjoint`, `xor`;
 * `icmp` (all ten predicates), `select`, `zext` (with `nneg`), `sext`,
   `trunc`, `phi`;
-* terminators `br label`, `br i1`, `ret`, `ret void`, `unreachable`.
+* terminators `br label`, `br i1`, `ret`, `ret void`, `unreachable`;
+* `call iN @__prism.uninit.iN()`, the marker the pir stage inserts (before
+  mem2reg) for every scalar local: its result is *indeterminate*, and using
+  an indeterminate value (as any operand except a phi incoming value) is
+  undefined behaviour (C11 6.3.2.1p2); phis copy it.
 
 Two semantics are given, both deterministic interpreters over a control
 state *(previous block, current block, register file)* whose fuel counts
@@ -86,6 +90,8 @@ inductive Inst where
   | icmp (dst : String) (p : Pred) (w : Nat) (a b : Opnd)
   | select (dst : String) (w : Nat) (c a b : Opnd)
   | cast (dst : String) (k : CastK) (nneg : Bool) (fw tw : Nat) (a : Opnd)
+  /-- `%dst = call iw @__prism.uninit.iw()`: an indeterminate value. -/
+  | uninit (dst : String) (w : Nat)
   deriving Repr, Inhabited
 
 /-- `%dst = phi iw [v, %pred], ...` -/
@@ -225,15 +231,34 @@ inductive Out where
 
 /-! ## Strict semantics (`sRun`): poison creation is an error -/
 
-abbrev SRegs := String → Option Nat
+/-- A register value of the strict semantics: a number, or indeterminate. -/
+inductive SV where
+  | val (v : Nat)
+  | ind
+  deriving DecidableEq, Repr
 
-def SRegs.set (R : SRegs) (n : String) (v : Nat) : SRegs := fun m => if m = n then some v else R m
+abbrev SRegs := String → Option SV
 
+def SRegs.put (R : SRegs) (n : String) (x : SV) : SRegs := fun m => if m = n then some x else R m
+
+def SRegs.set (R : SRegs) (n : String) (v : Nat) : SRegs := R.put n (.val v)
+
+/-- A use of an operand: an indeterminate value is UB, so is `poison`
+(strict). -/
 def sOpnd (R : SRegs) (w : Nat) : Opnd → Res Nat
   | .reg n => match R n with
-    | some v => .ok v
+    | some (.val v) => .ok v
+    | some .ind => .ub
     | none => .stuck
   | .const b => .ok (b % 2 ^ w)
+  | .poison => .ub
+
+/-- A phi incoming value: copied, indeterminate or not. -/
+def sPhiOpnd (R : SRegs) (w : Nat) : Opnd → Res SV
+  | .reg n => match R n with
+    | some x => .ok x
+    | none => .stuck
+  | .const b => .ok (.val (b % 2 ^ w))
   | .poison => .ub
 
 def sInst (R : SRegs) : Inst → Res SRegs
@@ -249,13 +274,14 @@ def sInst (R : SRegs) : Inst → Res SRegs
   | .cast d k nneg fw tw a =>
     (sOpnd R fw a).bind fun x =>
       if castPoison k nneg fw x then .ub else .ok (R.set d (castVal k fw tw x))
+  | .uninit d _ => .ok (R.put d .ind)
 
 def sInsts (R : SRegs) : List Inst → Res SRegs
   | [] => .ok R
   | i :: is => (sInst R i).bind fun R' => sInsts R' is
 
 /-- Values of the phis of a block entered from `prev` (read in parallel). -/
-def sPhis (F : LFunc) (R : SRegs) (prev : Option Nat) : List PhiI → Res (List (String × Nat))
+def sPhis (F : LFunc) (R : SRegs) (prev : Option Nat) : List PhiI → Res (List (String × SV))
   | [] => .ok []
   | p :: ps =>
     match prev with
@@ -263,11 +289,11 @@ def sPhis (F : LFunc) (R : SRegs) (prev : Option Nat) : List PhiI → Res (List 
     | some pv =>
       match phiPick F pv p.inc with
       | none => .stuck
-      | some o => (sOpnd R p.w o).bind fun v => (sPhis F R prev ps).bind fun t => .ok ((p.dst, v) :: t)
+      | some o => (sPhiOpnd R p.w o).bind fun v => (sPhis F R prev ps).bind fun t => .ok ((p.dst, v) :: t)
 
-def SRegs.setAll (R : SRegs) : List (String × Nat) → SRegs
+def SRegs.setAll (R : SRegs) : List (String × SV) → SRegs
   | [] => R
-  | (n, v) :: t => (R.set n v).setAll t
+  | (n, v) :: t => (R.put n v).setAll t
 
 /-- Continue a step result into an outcome. -/
 def Res.out {α : Type} : Res α → (α → Out) → Out
@@ -304,7 +330,7 @@ def sRun (F : LFunc) : Nat → Option Nat → Nat → SRegs → Out
 the C++ interpreter; with a repeated name the first parameter wins). -/
 def initRegs : List (String × Nat) → List Nat → SRegs
   | [], _ => fun _ => none
-  | (p, w) :: ps, args => fun n => if n = p then some (args.headD 0 % 2 ^ w) else initRegs ps args.tail n
+  | (p, w) :: ps, args => fun n => if n = p then some (.val (args.headD 0 % 2 ^ w)) else initRegs ps args.tail n
 
 def sRunF (F : LFunc) (args : List Nat) (fuel : Nat) : Out :=
   sRun F fuel none 0 (initRegs F.params args)
@@ -314,6 +340,7 @@ def sRunF (F : LFunc) (args : List Nat) (fuel : Nat) : Out :=
 inductive LV where
   | poison
   | val (v : Nat)
+  | ind
   deriving DecidableEq, Repr
 
 abbrev LRegs := String → Option LV
@@ -323,6 +350,15 @@ def LRegs.set (R : LRegs) (n : String) (v : LV) : LRegs := fun m => if m = n the
 /-- Operand read: the value, and whether the read *created* poison (the
 literal constant `poison`). -/
 def lOpnd (R : LRegs) (w : Nat) : Opnd → Res (LV × Bool)
+  | .reg n => match R n with
+    | some .ind => .ub
+    | some v => .ok (v, false)
+    | none => .stuck
+  | .const b => .ok (.val (b % 2 ^ w), false)
+  | .poison => .ok (.poison, true)
+
+/-- A phi incoming value: copied (poison and indeterminate included). -/
+def lPhiOpnd (R : LRegs) (w : Nat) : Opnd → Res (LV × Bool)
   | .reg n => match R n with
     | some v => .ok (v, false)
     | none => .stuck
@@ -348,6 +384,7 @@ def lBin (S : LSt) (d : String) (op : BinOp) (fl : LFlags) (w : Nat) :
       if binUB op w x y || cUB op fl w x y then .ub
       else if binPoison op fl w x y then .ok ⟨S.R.set d .poison, true⟩
       else .ok ⟨S.R.set d (.val (binVal op w x y)), c⟩
+    | _, _ => .ub  -- an indeterminate operand (not produced by `lOpnd`)
 
 def lInst (S : LSt) : Inst → Res LSt
   | .bin d op fl w a b =>
@@ -369,6 +406,8 @@ def lInst (S : LSt) : Inst → Res LSt
         match pick with
         | .poison => .ok ⟨S.R.set d .poison, cc⟩
         | .val v => .ok ⟨S.R.set d (.val (v % 2 ^ w)), cc⟩
+        | .ind => .ub
+      | .ind => .ub
   | .cast d k nneg fw tw a =>
     (lOpnd S.R fw a).bind fun (x, ca) =>
       let c := S.c || ca
@@ -377,6 +416,8 @@ def lInst (S : LSt) : Inst → Res LSt
       | .val x =>
         if castPoison k nneg fw x then .ok ⟨S.R.set d .poison, true⟩
         else .ok ⟨S.R.set d (.val (castVal k fw tw x)), c⟩
+      | .ind => .ub
+  | .uninit d _ => .ok ⟨S.R.set d .ind, S.c⟩
 
 def lInsts (S : LSt) : List Inst → Res LSt
   | [] => .ok S
@@ -390,7 +431,7 @@ def lPhis (F : LFunc) (R : LRegs) (prev : Option Nat) : List PhiI → Res (List 
     | some pv =>
       match phiPick F pv p.inc with
       | none => .stuck
-      | some o => (lOpnd R p.w o).bind fun (v, c1) => (lPhis F R prev ps).bind fun (t, c2) =>
+      | some o => (lPhiOpnd R p.w o).bind fun (v, c1) => (lPhis F R prev ps).bind fun (t, c2) =>
           .ok ((p.dst, v) :: t, c1 || c2)
 
 def LRegs.setAll (R : LRegs) : List (String × LV) → LRegs
@@ -429,6 +470,7 @@ def lTerm (F : LFunc) (S : LSt) (run : Nat → LSt → LOut) : LTerm → LOut
       | some j => run j S
       | none => .stuck
     | .ok (.poison, _) => .ub
+    | .ok (.ind, _) => .ub
     | .ub => .ub
     | .stuck => .stuck
   | .ret none => .ret none S.c
@@ -436,6 +478,7 @@ def lTerm (F : LFunc) (S : LSt) (run : Nat → LSt → LOut) : LTerm → LOut
     match lOpnd S.R F.retw o with
     | .ok (.val v, cv) => .ret (some v) (S.c || cv)
     | .ok (.poison, _) => .ub
+    | .ok (.ind, _) => .ub
     | .ub => .ub
     | .stuck => .stuck
   | .unreachable => .ub
@@ -450,8 +493,12 @@ def lRun (F : LFunc) : Nat → Option Nat → Nat → LSt → LOut
         (lInsts ⟨S.R.setAll upd, S.c || c1⟩ B.insts).lout fun S' =>
           lTerm F S' (fun j S'' => lRun F n (some cur) j S'') B.term
 
+def SV.lift : SV → LV
+  | .val v => .val v
+  | .ind => .ind
+
 def lInit (ps : List (String × Nat)) (args : List Nat) : LRegs :=
-  fun n => (initRegs ps args n).map LV.val
+  fun n => (initRegs ps args n).map SV.lift
 
 def lRunF (F : LFunc) (args : List Nat) (fuel : Nat) : LOut :=
   lRun F fuel none 0 ⟨lInit F.params args, false⟩

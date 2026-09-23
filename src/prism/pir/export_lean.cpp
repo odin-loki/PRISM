@@ -129,6 +129,9 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
                 b << "L ret " << (in.ops.empty() ? std::string("-") : opnd(in.ops[0])) << "\n";
             } else if (op == "unreachable") {
                 b << "L unreachable\n";
+            } else if (op == "call" && in.callee.starts_with("__prism.uninit.") && !in.result.empty()) {
+                // stage.cpp's marker for a scalar local: an indeterminate value
+                b << "L uninit %" << name(in.result) << " " << width(in.ty) << "\n";
             } else {
                 throw Unsupported{op};
             }
