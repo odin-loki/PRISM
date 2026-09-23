@@ -1,5 +1,0 @@
-@@
-declarer name RB_DECLARE_CALLBACKS_MAX;
-@@
-
-- RB_DECLARE_CALLBACKS_MAX(..., NODE_END);

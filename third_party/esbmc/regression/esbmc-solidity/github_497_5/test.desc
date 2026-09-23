@@ -1,4 +1,0 @@
-CORE
-MyContract_array.solast
---falsification --sol MyContract_array.sol
-^VERIFICATION FAILED$

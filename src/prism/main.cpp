@@ -240,7 +240,7 @@ int main(int argc, char** argv) {
                 "language through the polyglot stage (syntax, linters, type checkers) and a\n"
                 "secrets/conflict-marker scan of every text file. What could not be checked\n"
                 "is reported as NOTRUN, never as clean.\n"
-                "Adapter search: --tool, then third_party/<name>/ if built, then PATH.\n"
+                "Adapter search: --tool, then ~/.prism/tools/<name>/<commit>/bin (fetch_deps), then PATH.\n"
                 "--resume reuses ok/NOTRUN stages from --out/stages.jsonl (report.json fallback).\n"
                 "--fail-on: exit 1 on defect (FAILED/CRASH/SANFAIL, except findings with\n"
                 "  extra.severity warning/note/style) or gap (defect, or anything\n"

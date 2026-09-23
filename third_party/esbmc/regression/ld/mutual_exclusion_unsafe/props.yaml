@@ -1,5 +1,0 @@
-properties:
-  - id: P1
-    kind: mutual_exclusion
-    variables: [A, B]
-    description: "Coils A and B must never be simultaneously energised"

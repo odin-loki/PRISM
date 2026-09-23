@@ -1,6 +1,0 @@
-CORE
-main.py
---unwind 1
-^\[Counterexample\]$
-^.*Unsupported function 'abspath' is reached$
-^VERIFICATION FAILED$

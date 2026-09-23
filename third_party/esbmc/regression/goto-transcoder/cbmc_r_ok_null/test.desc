@@ -1,4 +1,0 @@
-CORE
-cbmc_r_ok_null.goto
---binary
-^VERIFICATION SUCCESSFUL$

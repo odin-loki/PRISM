@@ -1,4 +1,0 @@
-CORE
-main.py
-
-^ERROR: comparing dict.items\(\) with a set of tuples is not yet supported.*$

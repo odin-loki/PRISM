@@ -1,4 +1,0 @@
-CORE
-main.cpp
---std c++17 --unwind 25
-^VERIFICATION SUCCESSFUL$

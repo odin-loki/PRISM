@@ -1,2 +1,0 @@
-query: Security/CWE/CWE-367/TOCTOUFilesystemRace.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

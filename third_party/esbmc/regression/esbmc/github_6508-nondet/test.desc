@@ -1,5 +1,0 @@
-CORE
-main.c
-
-^VERIFICATION FAILED$
-^\s*array bounds violated: array upper bound$

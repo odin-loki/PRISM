@@ -1,2 +1,0 @@
-query: Security/CWE/CWE-114/UncontrolledProcessOperation.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

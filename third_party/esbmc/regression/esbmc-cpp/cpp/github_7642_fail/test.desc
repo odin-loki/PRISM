@@ -1,5 +1,0 @@
-CORE
-main.cpp
-
-^\s*FAILED\s+\[main\.assertion\.1\]\s+line\s+10\s+assertion flag == 1$
-^VERIFICATION FAILED$

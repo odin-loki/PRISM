@@ -1,5 +1,0 @@
-CORE
-char16-lit.c
-
-REQUIRES uchar_h
-^VERIFICATION SUCCESSFUL$

@@ -1,2 +1,0 @@
-query: experimental/Security/CWE/CWE-703/FindIncorrectlyUsedExceptions.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

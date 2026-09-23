@@ -1,6 +1,0 @@
-(executable
- (name stdcompatpp)
- (modules compiler_version stdcompatpp))
-
-(ocamllex stdcompatpp)
-

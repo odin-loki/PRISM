@@ -1,1 +1,0 @@
-#define __struct_endattr MACROANNOTATION

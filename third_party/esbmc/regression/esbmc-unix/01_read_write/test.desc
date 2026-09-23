@@ -1,4 +1,0 @@
-CORE
-test.c
---context-bound 2 --no-por
-^VERIFICATION FAILED$

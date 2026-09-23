@@ -1,5 +1,0 @@
-CORE
-notgoto.goto
---binary
-^ERROR: .*notgoto\.goto. is not a goto-binary\.$
-^ERROR: Failed to read .*notgoto\.goto.$

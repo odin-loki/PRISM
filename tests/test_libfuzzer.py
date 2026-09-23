@@ -87,7 +87,7 @@ class TestLibfuzzerProbe(unittest.TestCase):
         self.assertEqual(lf.status, laws.NOTRUN)
         self.assertIn("clang not on PATH", lf.message)
         self.assertEqual((lf.extra or {}).get("install"), _LIBFUZZER_INSTALL)
-        self.assertIn("SOURCES.md", (lf.extra or {}).get("install", ""))
+        self.assertIn("third_party/MANIFEST.toml", (lf.extra or {}).get("install", ""))
         self.assertNotEqual(lf.status, laws.CLEAN)
         self.assertNotEqual(lf.status, laws.PROVED)
         self.assertFalse(laws.is_proof(lf.status))

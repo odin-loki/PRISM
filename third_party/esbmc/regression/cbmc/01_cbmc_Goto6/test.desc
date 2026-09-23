@@ -1,4 +1,0 @@
-CORE
-main.c
- --unwind 2 -Wno-error=implicit-function-declaration
-^VERIFICATION SUCCESSFUL$

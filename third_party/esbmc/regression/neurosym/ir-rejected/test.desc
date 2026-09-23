@@ -1,4 +1,0 @@
-CORE
-main.c
---neurosym --ir
-bit-vector-only

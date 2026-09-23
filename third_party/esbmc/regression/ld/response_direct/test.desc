@@ -1,4 +1,0 @@
-CORE
-response_direct.ld
---ld-props props.yaml --k-induction
-^VERIFICATION SUCCESSFUL$

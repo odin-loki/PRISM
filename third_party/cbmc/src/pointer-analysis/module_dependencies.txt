@@ -1,4 +1,0 @@
-analyses
-goto-programs
-pointer-analysis
-util

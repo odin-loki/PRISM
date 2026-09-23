@@ -1,5 +1,0 @@
-CORE
-main.c
---loop-invariant-check --loop-frame-rule
-^VERIFICATION FAILED$
-^.*global\[5\] not in assigns clause.*$

@@ -166,7 +166,8 @@ class TestClangTidy(unittest.TestCase):
         self.assertIn("not found", tidy.message)
         install = (tidy.extra or {}).get("install", "")
         self.assertEqual(install, adapter_install("clang-tidy"))
-        self.assertIn("SOURCES.md", install)
+        self.assertIn("system tool", install)
+        self.assertIn("third_party/MANIFEST.toml", install)
         _assert_no_proof(self, [tidy])
 
     def test_doctest_binary_is_notrun_even_on_rc0(self):

@@ -1,9 +1,10 @@
 """Optional external tools. Missing binary = NOTRUN, never a clean result.
 
-KLEE, AFL++, Frama-C, Infer, CodeQL, clang-tidy, CBMC, Strix, semgrep:
-search (1) Config.tools / --tool, (2) a built executable under
-third_party/<vendor>/ if present, (3) PATH. Missing is NOTRUN with an
-install hint at the vendored tree in third_party/SOURCES.md. If present
+KLEE, AFL++, Frama-C, Infer, clang-tidy, CBMC, Strix, semgrep, spatch:
+search (1) Config.tools / --tool, (2) the pinned scripts/fetch_deps.py build
+under ~/.prism/tools/<name>/<commit>/, (3) PATH. Missing is NOTRUN with an
+install hint naming the fetch_deps command. Every finding a tool produced
+carries extra["tool_sha"] (config.tool_identity). If present
 we run a safe --help when there is nothing to analyse, or a cheap real
 check when C/C++ sources exist. Absence is never CLEAN. A successful
 help/version probe is never CLEAN or PROVED.
@@ -21,16 +22,16 @@ import tempfile
 from typing import Any
 
 from prism import laws, sandbox
-from prism.config import Config, adapter_install, ordered_map, resolve_adapter
+from prism.config import Config, adapter_install, ordered_map, resolve_adapter, stamp_tool_sha
 from prism.models import Finding, FunctionInfo
 
-# (stage, PATH names). Install hint is adapter_install(stage) → SOURCES.md.
+# (stage, PATH names). Install hint is adapter_install(stage) → fetch_deps.
+# No CodeQL: its engine terms restrict commercial use (roadmap 1.2).
 OPTIONAL_TOOLS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("klee", ("klee",)),
     ("afl-fuzz", ("afl-fuzz", "afl-fuzz.exe")),
     ("frama-c", ("frama-c", "frama-c.exe")),
     ("infer", ("infer",)),
-    ("codeql", ("codeql", "codeql.exe")),
     ("clang-tidy", ("clang-tidy", "clang-tidy.exe")),
     ("cbmc", ("cbmc", "cbmc.exe")),
     ("strix", ("strix", "strix.exe")),
@@ -38,7 +39,7 @@ OPTIONAL_TOOLS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("spatch", ("spatch", "spatch.exe")),
 )
 
-_LIBFUZZER_INSTALL = "clang -fsanitize=fuzzer is not vendored (see third_party/SOURCES.md)"
+_LIBFUZZER_INSTALL = "clang -fsanitize=fuzzer is a system tool: apt install clang-18 (see third_party/MANIFEST.toml)"
 
 _C_EXTS = {".c", ".cc", ".cpp", ".cxx", ".h", ".hpp"}
 
@@ -62,7 +63,7 @@ def cocci_has_script(rule: Path) -> bool:
 def _not_run(stage: str, binary: str, how: str) -> Finding:
     return Finding(
         stage=stage, status=laws.NOTRUN, file="", function=None, line=None,
-        cls="", message=f"{binary} not found (config, vendored tree, PATH)",
+        cls="", message=f"{binary} not found (config, ~/.prism/tools, PATH)",
         strength=laws.STRENGTH_FINDS, extra={"install": how},
     )
 
@@ -1124,93 +1125,6 @@ def _run_strix(exe: str, paths: list[Path], cfg: Config,
     return out
 
 
-def _find_codeql_db(paths: list[Path]) -> Path | None:
-    for root in _source_roots(paths):
-        cand = root / "codeql-db"
-        if cand.is_dir():
-            return cand
-    return None
-
-
-def _run_codeql(exe: str, paths: list[Path], cfg: Config) -> list[Finding]:
-    db = _find_codeql_db(paths)
-    if db is None:
-        return [Finding(
-            stage="codeql", status=laws.UNKNOWN, file="", function=None, line=None,
-            cls="", message="codeql present; no database (not a verdict)",
-            strength=laws.STRENGTH_FINDS, extra={"exe": exe},
-        )]
-    out_dir = db.parent / "prism-codeql-out"
-    try:
-        out_dir.mkdir(exist_ok=True)
-        r = _run(
-            [exe, "database", "analyze", str(db), "--format=sarif-latest",
-             str(out_dir / "results.sarif")],
-            timeout=min(60.0, cfg.timeout + 30),
-        )
-    except subprocess.TimeoutExpired:
-        return [Finding(
-            stage="codeql", status=laws.TIMEOUT, file=str(db), function=None,
-            line=None, cls="", message="codeql database analyze timeout",
-            strength=laws.STRENGTH_FINDS, extra={"exe": exe},
-        )]
-    except OSError as exc:
-        return [Finding(
-            stage="codeql", status=laws.NOTRUN, file=str(db), function=None,
-            line=None, cls="", message=f"codeql unusable: {exc}",
-            strength=laws.STRENGTH_FINDS,
-            extra={"exe": exe, "install": adapter_install("codeql")},
-        )]
-    text = (r.stdout or "") + (r.stderr or "")
-    if _is_fake_adapter(text) or _probe_looks_missing(text, r.returncode):
-        return [Finding(
-            stage="codeql", status=laws.NOTRUN, file=str(db), function=None,
-            line=None, cls="",
-            message="codeql at PATH is not CodeQL (not a proof)",
-            strength=laws.STRENGTH_FINDS,
-            extra={"exe": exe, "install": adapter_install("codeql")},
-        )]
-    if r.returncode != 0:
-        return [Finding(
-            stage="codeql", status=laws.ERROR, file=str(db), function=None,
-            line=None, cls="", message=text[-400:] or f"codeql exit {r.returncode}",
-            strength=laws.STRENGTH_FINDS, extra={"exe": exe},
-        )]
-    try:
-        sarif = json.loads((out_dir / "results.sarif").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return [Finding(
-            stage="codeql", status=laws.UNKNOWN, file=str(db), function=None,
-            line=None, cls="", message="codeql analyze ran; no SARIF parsed (not a proof)",
-            strength=laws.STRENGTH_FINDS, extra={"exe": exe},
-        )]
-    runs = sarif.get("runs") or []
-    findings: list[Finding] = []
-    for run in runs:
-        for res in run.get("results") or []:
-            rule_id = str((res.get("ruleId") or "codeql"))
-            msg = str(((res.get("message") or {}).get("text")) or rule_id)
-            locs = res.get("locations") or []
-            path, line = "", None
-            if locs:
-                phys = (locs[0].get("physicalLocation") or {})
-                art = phys.get("artifactLocation") or {}
-                path = str(art.get("uri") or "")
-                line = (phys.get("region") or {}).get("startLine")
-            findings.append(Finding(
-                stage="codeql", status=laws.FAILED, file=path, function=None,
-                line=line, cls=rule_id, message=msg[:400],
-                strength=laws.STRENGTH_FINDS, extra={"exe": exe},
-            ))
-    if findings:
-        return findings
-    return [Finding(
-        stage="codeql", status=laws.UNKNOWN, file=str(db), function=None,
-        line=None, cls="", message="codeql analyze ran; no results (not a proof)",
-        strength=laws.STRENGTH_FINDS, extra={"exe": exe},
-    )]
-
-
 def _dispatch_optional(stage: str, exe: str, paths: list[Path], cfg: Config,
                        probed: subprocess.CompletedProcess) -> list[Finding]:
     c_files = _c_files(paths)
@@ -1222,8 +1136,6 @@ def _dispatch_optional(stage: str, exe: str, paths: list[Path], cfg: Config,
         return [_help_ok_finding(stage, exe, probed)]
     if stage == "strix":
         return _run_strix(exe, paths, cfg, probed)
-    if stage == "codeql":
-        return _run_codeql(exe, paths, cfg)
     if stage == "spatch":
         return _run_spatch(exe, paths, cfg)
     if not c_files:
@@ -1243,8 +1155,9 @@ def _dispatch_optional(stage: str, exe: str, paths: list[Path], cfg: Config,
 def run_optional_tools(paths: list[Path], cfg: Config) -> list[Finding]:
     """Probe optional adapters plus a libFuzzer clang probe.
 
-    Search order: config/explicit, vendored third_party/<name>/ binary if
-    already built, then PATH. Missing → NOTRUN + vendored install hint.
+    Search order: config/explicit, the pinned ~/.prism/tools build, then
+    PATH. Missing → NOTRUN + fetch_deps install hint. Findings from a present
+    tool carry extra["tool_sha"].
     Present → --help or a real check. Never maps a missing binary to CLEAN.
     Successful --help is never CLEAN or PROVED. A --help/-h/--version probe
     that raises or does not answer is NOTRUN, never CLEAN, PROVED, or ERROR.
@@ -1271,7 +1184,9 @@ def run_optional_tools(paths: list[Path], cfg: Config) -> list[Finding]:
             out.append(f)
             continue
         try:
-            out.extend(_dispatch_optional(stage, exe, paths, cfg, probed))
+            got = _dispatch_optional(stage, exe, paths, cfg, probed)
+            stamp_tool_sha(got, exe)
+            out.extend(got)
         except OSError as exc:
             f = _not_run(stage, names[0], install)
             f.message = f"{stage} unusable: {exc}"

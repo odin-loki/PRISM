@@ -1,4 +1,0 @@
-CORE
-main.c
---enforce-contract set_value
-^VERIFICATION FAILED$

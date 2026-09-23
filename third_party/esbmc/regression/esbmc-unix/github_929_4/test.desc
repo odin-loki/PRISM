@@ -1,4 +1,0 @@
-CORE
-main.c
---smt-formula-only --output -
-^\(set-logic QF\_BV\)$

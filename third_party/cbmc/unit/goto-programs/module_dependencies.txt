@@ -1,5 +1,0 @@
-ansi-c
-goto-programs
-json
-testing-utils
-util

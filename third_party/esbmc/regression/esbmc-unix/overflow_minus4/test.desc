@@ -1,4 +1,0 @@
-THOROUGH
-main.c
---overflow-check --z3 --context-bound 2
-^VERIFICATION SUCCESSFUL$

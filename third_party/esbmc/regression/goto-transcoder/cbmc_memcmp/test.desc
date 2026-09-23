@@ -1,4 +1,0 @@
-CORE
-cbmc_memcmp.goto
---binary
-^VERIFICATION SUCCESSFUL$

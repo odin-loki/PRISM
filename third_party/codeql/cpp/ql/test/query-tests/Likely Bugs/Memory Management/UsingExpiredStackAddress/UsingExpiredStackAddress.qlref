@@ -1,2 +1,0 @@
-query: Likely Bugs/Memory Management/UsingExpiredStackAddress.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

@@ -1,1 +1,0 @@
-interface StubSuperinterface extends StubInterface {}

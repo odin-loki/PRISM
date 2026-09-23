@@ -1,4 +1,0 @@
-THOROUGH
-main.c
---unwind 2 --context-bound 2 -Wno-error=implicit-function-declaration
-^VERIFICATION SUCCESSFUL$

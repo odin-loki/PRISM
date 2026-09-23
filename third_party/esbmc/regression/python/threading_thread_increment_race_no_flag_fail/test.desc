@@ -1,5 +1,0 @@
-CORE
-main.py
---incremental-bmc --context-bound 2
-^VERIFICATION FAILED$
-^.*assertion.*$

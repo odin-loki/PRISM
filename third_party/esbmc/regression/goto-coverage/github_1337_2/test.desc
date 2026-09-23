@@ -1,6 +1,0 @@
-CORE
-main.c
---assertion-coverage --unwind 3
-^Total Asserts: 4
-^Total Assertion Instances: 4
-^COVERAGE ANALYSIS INCOMPLETE

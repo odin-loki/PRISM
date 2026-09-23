@@ -1,0 +1,7 @@
+# PRISM counterexample explanation: plain-language explanation plus an
+# optional replacement function body. The explanation is HYPOTHESIS (READS);
+# the fix is shown as "verified fix" only when BMC proves the patched function.
+root  ::= "{" ws "\"explanation\"" ws ":" ws str ws "," ws "\"fix_body\"" ws ":" ws str ws "}" ws
+str   ::= "\"" char{0,2000} "\""
+char  ::= [^"\\\x00-\x1f] | "\\" ["\\/bfnrt]
+ws    ::= [ ]{0,2}

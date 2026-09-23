@@ -1,4 +1,0 @@
-CORE
-main.py
-
-^ERROR: passing a value of this type to a dynamically-typed parameter is not yet supported$

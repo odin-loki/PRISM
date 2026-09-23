@@ -1,5 +1,0 @@
-CORE
-main.py
-
-^  assertion amount <= balance$
-^VERIFICATION FAILED$

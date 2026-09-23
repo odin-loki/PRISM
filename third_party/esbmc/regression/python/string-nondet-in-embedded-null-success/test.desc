@@ -1,4 +1,0 @@
-FUTURE
-main.py
---nondet-str-length 5 --unwind 6
-^VERIFICATION SUCCESSFUL$

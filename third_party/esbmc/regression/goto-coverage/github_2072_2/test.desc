@@ -1,5 +1,0 @@
-CORE
-main.c
- --condition-coverage-claims --no-cov-asserts --unwind 10 
-^Short Circuited Conditions:  2
-^COVERAGE ANALYSIS COMPLETE$

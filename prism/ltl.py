@@ -749,27 +749,19 @@ _STRIX_CACHE: str | None | bool = False
 
 
 def strix_available() -> str | None:
-    """PATH, then a few known slots under third_party/strix. Never compile or walk."""
+    """PATH, then the pinned fetch_deps build (~/.prism/tools/strix/<commit>/bin).
+
+    Never compiles or walks a source tree.
+    """
     global _STRIX_CACHE
     if not isinstance(_STRIX_CACHE, bool):
         return _STRIX_CACHE
-    hit = shutil.which("strix") or shutil.which("strix.exe")
-    if hit:
-        _STRIX_CACHE = hit
-        return hit
-    root = Path(__file__).resolve().parents[1] / "third_party" / "strix"
-    for sub in ("", "bin", "target/release", "target/debug", "build", "build/bin"):
-        base = root.joinpath(*sub.split("/")) if sub else root
-        for n in ("strix", "strix.exe"):
-            cand = base / n
-            try:
-                if cand.is_file():
-                    _STRIX_CACHE = str(cand)
-                    return _STRIX_CACHE
-            except OSError:
-                continue
-    _STRIX_CACHE = None
-    return None
+    from prism.config import find_vendored_exe
+
+    hit = (shutil.which("strix") or shutil.which("strix.exe")
+           or find_vendored_exe("strix", ("strix", "strix.exe")))
+    _STRIX_CACHE = hit or None
+    return _STRIX_CACHE
 
 
 def _formula_atoms(formula: str) -> list[str]:

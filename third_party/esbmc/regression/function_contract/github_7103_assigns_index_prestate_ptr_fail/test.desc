@@ -1,5 +1,0 @@
-CORE
-main.c
---enforce-contract push_bad --function push_bad
-^VERIFICATION FAILED$
-^.*buf\[j\] not in assigns clause.*$

@@ -1,4 +1,0 @@
-CORE
-contract.solast
---incremental-bmc --unbound --sol contract.sol
-^VERIFICATION FAILED$

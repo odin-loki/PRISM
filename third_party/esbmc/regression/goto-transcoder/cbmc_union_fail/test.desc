@@ -1,5 +1,0 @@
-CORE
-cbmc_union_fail.goto
---binary
-^VERIFICATION FAILED$
-assertion u\.i == 0

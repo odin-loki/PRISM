@@ -1,4 +1,0 @@
-CORE
-main.c
---bitwuzla --fp2bv
-^VERIFICATION SUCCESSFUL$

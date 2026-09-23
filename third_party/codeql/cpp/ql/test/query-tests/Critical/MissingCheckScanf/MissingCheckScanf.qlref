@@ -1,2 +1,0 @@
-query: Critical/MissingCheckScanf.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

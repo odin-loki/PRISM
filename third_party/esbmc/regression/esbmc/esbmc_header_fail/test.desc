@@ -1,5 +1,0 @@
-CORE
-main.c
--I ../../../include
-^  unconstrained value is not bounded$
-^VERIFICATION FAILED$

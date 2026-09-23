@@ -11,7 +11,8 @@ code base and says honestly what it could not check.
   If you find "Helix"/"helix"/"HELIX" anywhere outside `third_party/`, it is a
   leftover: rename it to PRISM (`tests/test_naming.py` fails on it).
 - Env vars are `PRISM_*` only (`PRISM_AFL`, `PRISM_LIBFUZZER`, `PRISM_PBSD`,
-  `PRISM_GGUF`, `PRISM_MODEL`, `PRISM_LLAMA_SERVER`, `PRISM_NATIVE_DLL`).
+  `PRISM_GGUF`, `PRISM_MODEL`, `PRISM_LLAMA_SERVER`, `PRISM_NATIVE_DLL`,
+  `PRISM_TOOLS_DIR`).
   There are no `HELIX_*` fallbacks.
 - Output directory is `prism-out/` (GUI: `prism-out-gui/`).
 
@@ -74,8 +75,15 @@ cmake --build build          # first build compiles vendored Z3 (slow)
 PRISM_BIN=build/prism python -m pytest tests   # ~10 minutes; PRISM_BIN enables engine parity
 ```
 
-`third_party/` is vendored source (copied trees, not submodules). Never
-rewrite it, never glob it from CMake.
+`third_party/` holds only the six linked libraries (z3, pcre2, xsimd,
+nlohmann, doctest, llama.cpp; ~140 MB), pinned in `third_party/MANIFEST.toml`.
+Never edit them (`fetch_deps.py --linked` checks their tree digest), never
+glob them from CMake. External tools are not vendored:
+`python scripts/fetch_deps.py --tool NAME` builds the pinned commit into
+`~/.prism/tools/<name>/<commit>/`, which adapters search before PATH. Linked
+components must stay permissive (`scripts/licence_check.py`, in CI). New tool:
+add a manifest row, and a `VENDOR_DIR` entry in `prism/config.py` plus the same
+entry in `src/prism/config.cpp`. See `docs/SUPPLY_CHAIN.md`.
 
 ## Layout
 
@@ -85,6 +93,8 @@ rewrite it, never glob it from CMake.
 - `tests/` Python tests (+ `tests/cpp/` doctest suite)
 - `testdata/` planted-bug corpus both engines run on
 - `docs/PLAN.md` pipeline design; `docs/MINED.md` what was mined from each tool
-- `tools/` one-shot generators; `scripts/` local build/smoke helpers
+  (the mined source trees were deleted); `docs/SUPPLY_CHAIN.md` pins, SBOM, releases
+- `tools/` one-shot generators; `scripts/` local build/smoke helpers,
+  `fetch_deps.py`, `licence_check.py`, `sbom.py`, `rewrite_history.sh`
 - `.github/workflows/ci.yml` builds the C++ engine, runs both suites, and
   uploads a SARIF self-check of this repo

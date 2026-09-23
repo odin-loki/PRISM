@@ -1,4 +1,0 @@
-CORE
-cbmc_int128_mul_fail.goto
---binary
-^VERIFICATION FAILED$

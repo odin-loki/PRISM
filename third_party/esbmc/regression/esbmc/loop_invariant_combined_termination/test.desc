@@ -1,5 +1,0 @@
-CORE
-main.c
---loop-invariant --termination
-\A(?![\s\S]*cannot be combined with --termination)[\s\S]*\Z
-^VERIFICATION UNKNOWN$

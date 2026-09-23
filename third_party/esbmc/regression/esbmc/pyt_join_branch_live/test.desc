@@ -1,5 +1,0 @@
-CORE
-harness.c
---incremental-bmc --enable-unreachability-intrinsic --unwind 4
-^VERIFICATION FAILED$
-reachability: unreachable code reached

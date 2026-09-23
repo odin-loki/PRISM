@@ -1,5 +1,0 @@
-CORE
-main.c
---unwind 4
-^.*a null entry must keep its miss path.*$
-^VERIFICATION FAILED$

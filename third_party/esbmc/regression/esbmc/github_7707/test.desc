@@ -1,5 +1,0 @@
-CORE
-main.c
-
-^VERIFICATION FAILED$
-^.*\[main\.assertion\.1\].*dereference failure: Incorrect alignment when accessing data object.*$

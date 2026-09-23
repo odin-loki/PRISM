@@ -1,7 +1,0 @@
-| AdminAreaFallbackController.cs | AreaFallbackController |
-| AttributePocoController.cs | AttributePocoController |
-| FallbackOnlyController.cs | FallbackOnlyController |
-| GeneratedController.cs | GeneratedController |
-| IncludedController.cs | IncludedController |
-| StructuralController.cs | StructuralController |
-| WebPocoController.cs | WebPocoController |

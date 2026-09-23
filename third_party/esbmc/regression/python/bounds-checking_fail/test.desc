@@ -1,4 +1,0 @@
-THOROUGH
-main.py
---no-pointer-check  --ir
-^\s*uncaught exception: IndexError\s*$

@@ -1,8 +1,0 @@
-CORE
-
-mypackage.Baggage.do -cp target/classes
-^EXIT=6$
-^SIGNAL=0$
-^Error: Could not find or load main class mypackage\.Baggage\.do$
---
---

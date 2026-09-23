@@ -15,35 +15,11 @@ err*.txt
 _tmp_*.txt
 %TEMP%/
 
-# Windows MAX_PATH: semgrep e2e snapshot trees use pathnames git cannot index
-third_party/semgrep/cli/tests/
-third_party/semgrep/tests/snapshots/
-third_party/FuSeBMC/obj/
-third_party/infer/infer/tests/
-third_party/codeql/java/kotlin-extractor/deps/
-third_party/codeql/swift/third_party/resources/*.zip
-third_party/codeql/swift/third_party/resources/*.tar.zst
+# Model weights are never vendored (llama.cpp's vocab test files included).
 third_party/llama.cpp/models/*.gguf
 
-# Auto-excluded files larger than 10MB
-# Generated — do not hand-edit the list below
-third_party/semgrep/languages/julia/tree-sitter/semgrep-julia/lib/parser.c
-third_party/semgrep/languages/ruby/tree-sitter/semgrep-ruby/lib/parser.c
-third_party/semgrep/languages/csharp/tree-sitter/semgrep-c-sharp/lib/parser.c
-third_party/semgrep/languages/scala/tree-sitter/semgrep-scala/lib/parser.c
-third_party/semgrep/languages/ocaml/tree-sitter/semgrep-ocaml/lib/parser.c
-third_party/semgrep/languages/kotlin/tree-sitter/semgrep-kotlin/lib/parser.c
-third_party/infer/infer/lib/java/android/android-23.jar
-third_party/semgrep/languages/cpp/tree-sitter/semgrep-cpp/lib/parser.c
-third_party/infer/dependencies/java/sun-tools/tools.jar
-third_party/semgrep/tests/snapshots/semgrep-core/4013b5032e79/stdout
-third_party/infer/infer/tests/codetoanalyze/python/semdiff-benchs/fastapi.tgz
-third_party/infer/infer/tests/codetoanalyze/python/semdiff-benchs/rich.tgz
-third_party/klee/utils/data/Queries/pcresymperf-4.kquery
-third_party/FuSeBMC/obj/MyVisitor.o
-third_party/semgrep/languages/swift/tree-sitter/semgrep-swift/lib/parser.c
-third_party/semgrep/languages/hack/tree-sitter/semgrep-hack/lib/parser.c
-third_party/llama.cpp/models/ggml-vocab-command-r.gguf
+# scripts/fetch_deps.py installs external tools under ~/.prism/tools, never in the repo.
+.prism/
 
 # Claude Code agent worktrees
 .claude/worktrees/

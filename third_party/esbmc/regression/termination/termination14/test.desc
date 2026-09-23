@@ -1,4 +1,0 @@
-CORE
-main.c
---termination --unwind 3
-^VERIFICATION SUCCESSFUL$

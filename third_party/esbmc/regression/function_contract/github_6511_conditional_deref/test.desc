@@ -1,4 +1,0 @@
-CORE
-main.c
---enforce-contract f --function f
-contract states no extent for pointer parameter\(s\) out

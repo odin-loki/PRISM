@@ -1,4 +1,0 @@
-CORE
-main.py
---incremental-bmc
-^ERROR: .*main\.py:5:11: Async list comprehensions are not supported$

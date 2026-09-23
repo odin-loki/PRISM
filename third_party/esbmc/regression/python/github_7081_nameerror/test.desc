@@ -1,4 +1,0 @@
-CORE
-main.py
---unwind 3
-^ERROR: NameError: name 'Undefined1' is not defined$

@@ -1,4 +1,0 @@
-CORE
-cbmc_complex_fail.goto
---binary
-^VERIFICATION FAILED$

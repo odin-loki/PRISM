@@ -1,4 +1,0 @@
-THOROUGH
-main.c
---floatbv --unwind 5 --fp2bv
-^VERIFICATION SUCCESSFUL$

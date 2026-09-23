@@ -1,4 +1,0 @@
-CORE
-main.c
---memory-leak-check --force-malloc-success --no-simplify --no-unwinding-assertions --unwind 2
-^VERIFICATION FAILED$

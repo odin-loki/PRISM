@@ -1,4 +1,0 @@
-CORE
-cbmc_local_union.goto
---binary
-^VERIFICATION SUCCESSFUL$

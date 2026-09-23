@@ -1,5 +1,0 @@
-@@
-identifier i;
-@@
-
-- #define i

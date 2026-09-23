@@ -1,8 +1,0 @@
-CORE
-memcpy3_02.c
-
-^EXIT=0$
-^SIGNAL=0$
-^VERIFICATION SUCCESSFUL$
---
-^warning: ignoring

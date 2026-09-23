@@ -1,4 +1,0 @@
-THOROUGH
-main.c
---floatbv --overflow-check --mathsat
-^VERIFICATION FAILED$

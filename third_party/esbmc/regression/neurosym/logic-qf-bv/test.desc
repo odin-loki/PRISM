@@ -1,6 +1,0 @@
-CORE
-main.c
---neurosym --smt-formula-only
-\(set-logic QF_BV\)
-\(check-sat\)
-SMT formula written to standard output

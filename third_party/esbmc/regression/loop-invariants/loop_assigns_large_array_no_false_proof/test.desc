@@ -1,5 +1,0 @@
-CORE
-main.c
---loop-invariant-check --loop-frame-rule --z3
-^WARNING: every violated claim lies downstream of a loop invariant havoc
-^VERIFICATION UNKNOWN$

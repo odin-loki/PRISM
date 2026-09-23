@@ -1,5 +1,0 @@
-CORE
-sfc.ld
---ld-props props.yaml --k-induction --unlimited-k-steps
-^ERROR: UnsupportedConstruct\(SFC body of POU 'Mutex', tier=2\)$
-^ERROR: PARSING ERROR$

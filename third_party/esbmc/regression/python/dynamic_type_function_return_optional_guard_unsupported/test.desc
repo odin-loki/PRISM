@@ -1,4 +1,0 @@
-CORE
-main.py
-
-^ERROR: returning a value of this type from a dynamically-typed function is not yet supported$

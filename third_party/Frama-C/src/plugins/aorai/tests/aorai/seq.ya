@@ -1,6 +1,0 @@
-%init: S0;
-%accept: Sf;
-
-S0: { [ main( f()?; g(){1,2}) ] } -> Sf;
-
-Sf: -> Sf;

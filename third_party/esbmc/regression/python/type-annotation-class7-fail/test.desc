@@ -1,4 +1,0 @@
-CORE
-main.py
---unwind 1
-^ERROR: .*\_\_init\_\_\(\) takes 2 positional arguments but 3 were given$

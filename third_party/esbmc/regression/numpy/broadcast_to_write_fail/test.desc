@@ -1,4 +1,0 @@
-CORE
-main.py
---incremental-bmc
-^ERROR: ValueError: assignment destination is read-only

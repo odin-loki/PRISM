@@ -1,7 +1,0 @@
-Makefile
-Makefile.in
-solver_config.h
-CMakeCache.txt
-CMakeFiles/
-CPack*
-cmake_install.cmake

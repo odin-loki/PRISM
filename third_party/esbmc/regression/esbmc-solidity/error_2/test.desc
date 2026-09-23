@@ -1,4 +1,0 @@
-CORE
-contract.solast
---sol contract.sol --contract rStatement --k-induction
-^VERIFICATION FAILED$

@@ -1,4 +1,0 @@
-CORE
-main.py
---bitwuzla --unwind 6
-^VERIFICATION SUCCESSFUL$

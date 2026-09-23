@@ -1,8 +1,0 @@
-CORE
-NondetByte
---function NondetByte.main -cp target/classes
-^VERIFICATION FAILED$
-^EXIT=10$
-^SIGNAL=0$
---
-^warning: ignoring

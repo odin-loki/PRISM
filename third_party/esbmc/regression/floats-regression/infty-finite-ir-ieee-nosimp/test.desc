@@ -1,4 +1,0 @@
-CORE
-infty-finite.c
---ir-ieee --z3 --no-simplify
-^VERIFICATION SUCCESSFUL$

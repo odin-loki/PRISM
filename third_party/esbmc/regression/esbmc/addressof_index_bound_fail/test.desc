@@ -1,5 +1,0 @@
-CORE
-main.c
---unwind 6
-^VERIFICATION FAILED$
-array bounds violated

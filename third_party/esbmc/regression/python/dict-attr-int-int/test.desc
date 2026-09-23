@@ -1,4 +1,0 @@
-CORE
-main.py
---z3 --unwind 1
-^VERIFICATION SUCCESSFUL$

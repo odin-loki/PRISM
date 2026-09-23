@@ -1,4 +1,0 @@
-CORE
-cbmc_string_ident.goto
---binary
-^VERIFICATION SUCCESSFUL$

@@ -1,5 +1,0 @@
-CORE
-cbmc_fmax_fail.goto
---binary
-^VERIFICATION FAILED$
-assertion

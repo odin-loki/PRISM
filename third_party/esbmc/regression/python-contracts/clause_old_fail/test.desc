@@ -1,4 +1,0 @@
-CORE
-main.py
---enforce-contract f
-^ERROR: __ESBMC_old at line 3 takes 'l', which is not an int, float or bool; only scalars can be snapshotted by the Python frontend yet$

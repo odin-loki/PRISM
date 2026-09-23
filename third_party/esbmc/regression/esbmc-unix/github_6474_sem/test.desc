@@ -1,4 +1,0 @@
-THOROUGH
-main.c
---deadlock-check --context-bound 3
-^VERIFICATION SUCCESSFUL$

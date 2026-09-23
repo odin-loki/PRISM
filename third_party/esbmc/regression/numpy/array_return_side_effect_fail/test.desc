@@ -1,4 +1,0 @@
-CORE
-main.py
---incremental-bmc
-^ERROR: Can't construct rvalue reference to array type during dereference

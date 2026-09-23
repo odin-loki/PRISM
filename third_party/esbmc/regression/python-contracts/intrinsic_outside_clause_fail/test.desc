@@ -1,5 +1,0 @@
-CORE
-main.py
---enforce-contract bump
-^VERIFICATION FAILED$
-Unsupported function '__ESBMC_is_fresh' is reached

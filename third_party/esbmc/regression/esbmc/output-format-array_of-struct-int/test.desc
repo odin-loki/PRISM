@@ -1,6 +1,0 @@
-CORE
-main.c
---witness-output-graphml - --compact-trace -Wno-error=implicit-function-declaration
-^VERIFICATION FAILED$
-\bA = \{ \{ \.x\s*=\s*0 \} \}
-(?s)\A(?!.*key="assumption">[^<]*[{}])

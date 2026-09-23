@@ -1,4 +1,0 @@
-CORE
-cbmc_memmove.goto
---binary
-^VERIFICATION SUCCESSFUL$

@@ -1,4 +1,0 @@
-CORE
-main.py
---no-standard-checks
-^ERROR: nondet_list: unexpected keyword argument 'elemtype'; accepts max_size, elem_type$

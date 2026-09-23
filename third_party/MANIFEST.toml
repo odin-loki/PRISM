@@ -1,0 +1,628 @@
+# PRISM third-party manifest (roadmap Part 1.1).
+#
+# One [[component]] per dependency. Read by scripts/fetch_deps.py,
+# scripts/sbom.py, scripts/licence_check.py, prism/config.py and (at CMake
+# configure time) CMakeLists.txt, which bakes name -> commit into the C++
+# engine so `prism` knows which ~/.prism/tools/<name>/<commit>/ to trust.
+#
+# kind:
+#   linked    compiled into PRISM from the source copy under `path`. Must carry a
+#             permissive SPDX licence (scripts/licence_check.py fails otherwise).
+#   external  run as a separate, unmodified process. Never linked. Fetched by
+#             `python scripts/fetch_deps.py --tool NAME` into
+#             ~/.prism/tools/<name>/<commit>/ (bin/ holds the executables).
+#   system    taken from the host (package manager / PATH). Not pinned by SHA;
+#             PRISM still records "path:<abs>;sha256:<file hash>" as tool_sha.
+#
+# commit          the exact upstream commit (40 hex). Resolved with
+#                 `git ls-remote <url> refs/tags/<tag>` (peeled ^{} for annotated tags).
+# archive_sha256  SHA-256 of the *uncompressed* tar produced by
+#                   git archive --format=tar --prefix=<name>-<commit>/ <commit>
+#                 after `git fetch --depth 1 <url> <commit>`. The git fetch is
+#                 content-addressed by the commit id; the SHA-256 is a second,
+#                 collision-resistant check over the exact bytes PRISM builds from.
+#                 (GitHub's .tar.gz archive endpoints were not reachable from the
+#                 machine that pinned these, and their gzip bytes are not a
+#                 stable contract; the git-archive tar is.)
+# tree_sha256     (linked) SHA-256 over sorted "<relpath>\0<sha256(file)>\n" lines of
+#                 the in-tree copy; `fetch_deps.py --tree-digest DIR` prints it.
+# drift           (linked) files where the in-tree copy differs from the pinned
+#                 upstream tree: "D path" upstream only, "M path" content differs,
+#                 "A path" in-tree only. `fetch_deps.py --linked --refetch` checks it.
+# spdx            read from the licence file in the source tree (licence_file),
+#                 before the mined copies were deleted from this repository.
+#
+# Provenance of the pins (2026-09-23):
+#   third_party/vendor.log recorded clone URLs and timestamps (2026-09-19) but no
+#   commit hashes: the mined trees were shallow clones with .git removed.
+#   * Linked libraries: the version was read from the in-tree source
+#     (CMakeLists / configure.ac / version macros), the matching upstream tag
+#     resolved with `git ls-remote`, and the tag's git tree compared file by file
+#     with the in-tree copy. Every file matches except the ones listed under
+#     `drift` (line-ending / trailing-whitespace edits and files the vendoring
+#     dropped). llama.cpp has no version string in tree: its commit was found by
+#     comparing the in-tree tree against every upstream commit since 2025-09-01;
+#     3eb2be1 (tag b6875) is the only exact match.
+#   * External tools: pinned to the upstream release tag at or just below the
+#     version string found in the mined copy (e.g. cppcheck 2.21.99 -> 2.21.1,
+#     KLEE 3.3-pre -> v3.2, Dafny 4.11.1-dev -> v4.11.0). The mined snapshots
+#     themselves were development heads and are not reproducible.
+#   * cadical, kissat, cake_lpr were added for certified mode (roadmap 3.2).
+#
+# The fifteen mined source trees were removed from third_party/ (roadmap 1.1);
+# docs/MINED.md records what PRISM re-implemented from each. They are listed at
+# the end under [[mined]] for provenance and attribution only.
+
+schema = 1
+archive_format = "git-archive-tar"
+
+# ---------------------------------------------------------------- linked ----
+
+[[component]]
+name = "z3"
+kind = "linked"
+version = "4.13.4"
+url = "https://github.com/Z3Prover/z3"
+tag = "z3-4.13.4"
+commit = "6f24123f0c9d1d8bd84dec275c5c7aea939a19fe"
+archive_sha256 = "8723197f4827370e26e6b845dc310be68b3d348acada91e8ef75995be7bd7ee5"
+spdx = "MIT"
+licence_file = "LICENSE.txt"
+path = "third_party/z3"
+tree_sha256 = "e769f0f2c796c69c95acf1885b2e994563326801e46fabac52c03e44b17c76ff"
+tree_version_file = "CMakeLists.txt"
+tree_version_regex = 'project\(Z3 VERSION (\d+)\.(\d+)\.(\d+)'
+tree_version = "4.13.4"
+drift = [
+  "D src/api/js/package-lock.json",
+  "D src/api/js/package.json",
+  "M src/math/simplex/model_based_opt.cpp",
+]
+
+[[component]]
+name = "pcre2"
+kind = "linked"
+version = "10.44"
+url = "https://github.com/PCRE2Project/pcre2"
+tag = "pcre2-10.44"
+commit = "6ae58beca071f13ccfed31d03b3f479ab520639b"
+archive_sha256 = "43564cb79cd589ab65ea89b9d38b1983a7e8d66ca6d9eb556744c4481b4d887e"
+spdx = "BSD-3-Clause WITH PCRE2-exception"
+licence_file = "LICENCE"
+path = "third_party/pcre2"
+tree_sha256 = "e1fb3c95a7555a7652040d59e69e6fb247cf314063b40064ea0dec26d3a14712"
+tree_version_file = "configure.ac"
+tree_version_regex = 'm4_define\(pcre2_major, \[(\d+)\]\)\s*m4_define\(pcre2_minor, \[(\d+)\]\)'
+tree_version = "10.44"
+drift = [
+  "D testdata/testbtables",
+  "M RunGrepTest.bat",
+  "M testdata/grepoutputUN",
+  "M testdata/greppatN4",
+]
+
+[[component]]
+name = "xsimd"
+kind = "linked"
+version = "13.2.0"
+url = "https://github.com/xtensor-stack/xsimd"
+tag = "13.2.0"
+commit = "1f8dd9c8e162968d9b4ff0251c56d431b8777f36"
+archive_sha256 = "8840df5f469d8068fafc1dcae60caccdc0a868ffa3e2158426883bc607d1a59f"
+spdx = "BSD-3-Clause"
+licence_file = "LICENSE"
+path = "third_party/xsimd"
+tree_sha256 = "119271bdec94760e06639a05b7180f0437e138aab262e0c7276f565c144d7c60"
+tree_version_file = "include/xsimd/config/xsimd_config.hpp"
+tree_version_regex = 'XSIMD_VERSION_MAJOR (\d+)\s*#define XSIMD_VERSION_MINOR (\d+)\s*#define XSIMD_VERSION_PATCH (\d+)'
+tree_version = "13.2.0"
+drift = [
+  "M docs/make.bat",
+  "M docs/source/xsimd.svg",
+]
+
+[[component]]
+name = "nlohmann_json"
+kind = "linked"
+version = "3.11.3"
+url = "https://github.com/nlohmann/json"
+tag = "v3.11.3"
+commit = "9cca280a4d0ccf0c08f47a99aa71d1b0e52f8d03"
+archive_sha256 = "51d36f2bf4a6ce74d29a6ae030d12e9a21faa79b433ff94fa9fb24a8e611507d"
+spdx = "MIT"
+licence_file = "json.hpp (SPDX header; upstream LICENSE.MIT)"
+path = "third_party/nlohmann"
+tree_sha256 = "4bf28510b8b77bf1afb32db301a3c1ebd60875054ab8b800b6bbd91119434088"
+# Only the amalgamated header is kept: upstream single_include/nlohmann/json.hpp.
+upstream_subdir = "single_include/nlohmann"
+upstream_files = ["json.hpp"]
+tree_version_file = "json.hpp"
+tree_version_regex = 'NLOHMANN_JSON_VERSION_MAJOR (\d+).*?NLOHMANN_JSON_VERSION_MINOR (\d+).*?NLOHMANN_JSON_VERSION_PATCH (\d+)'
+tree_version = "3.11.3"
+drift = []
+
+[[component]]
+name = "doctest"
+kind = "linked"
+version = "2.4.11"
+url = "https://github.com/doctest/doctest"
+tag = "v2.4.11"
+commit = "ae7a13539fb71f270b87eb2e874fbac80bc8dda2"
+archive_sha256 = "9ace7f00cb3bbd5620edb885e4418fdca2a0f16d89ad2f4054528553a8d27a51"
+spdx = "MIT"
+licence_file = "doctest.h (header; upstream LICENSE.txt)"
+path = "third_party/doctest"
+tree_sha256 = "c0467c4ad6648b4e1a4863db320788bbdd878c3648fea6dec3ff199308635468"
+# Only the single header is kept: upstream doctest/doctest.h.
+upstream_subdir = "doctest"
+upstream_files = ["doctest.h"]
+tree_version_file = "doctest.h"
+tree_version_regex = 'DOCTEST_VERSION_MAJOR (\d+)\s*#define DOCTEST_VERSION_MINOR (\d+)\s*#define DOCTEST_VERSION_PATCH (\d+)'
+tree_version = "2.4.11"
+drift = []
+
+[[component]]
+name = "llama.cpp"
+kind = "linked"
+version = "b6875"
+url = "https://github.com/ggml-org/llama.cpp"
+tag = "b6875"
+commit = "3eb2be1ca5f37480aeb16102970d9e65f43347fe"
+archive_sha256 = "8ec335a2254ca0393c5471c3df84fe758ca63e9aa2f7ddc216bcf8cceb5e070b"
+spdx = "MIT"
+licence_file = "LICENSE"
+path = "third_party/llama.cpp"
+tree_sha256 = "2af497071fc799683f82530c5225540d5ec37e0f823ae30f6d45e2769c064e40"
+# No release number in tree; the ggml version is the in-tree marker.
+tree_version_file = "ggml/CMakeLists.txt"
+tree_version_regex = 'GGML_VERSION_MAJOR (\d+)\)\s*set\(GGML_VERSION_MINOR (\d+)\)\s*set\(GGML_VERSION_PATCH (\d+)\)'
+tree_version = "0.9.4"
+# *.gguf vocab files are ignored on both sides (never vendored, .gitignore).
+drift = [
+  "D build-xcframework.sh",
+  "D docs/build-riscv64-spacemit.md",
+  "D docs/build-s390x.md",
+  "D examples/llama.swiftui/llama.swiftui.xcodeproj/project.xcworkspace/xcshareddata/IDEWorkspaceChecks.plist",
+  "M models/templates/moonshotai-Kimi-K2.jinja",
+]
+
+# -------------------------------------------------------------- external ----
+# Run as separate processes only (licence firewall, roadmap 1.2).
+
+[[component]]
+name = "esbmc"
+kind = "external"
+version = "8.5"
+url = "https://github.com/esbmc/esbmc"
+tag = "v8.5"
+commit = "6411c9333b4fa9ccddd97cac941e936e31e6cf9c"
+archive_sha256 = "e16179387be2ec02a6cb865320f5ecb9cede259878a951b7bb642b804c799d26"
+spdx = "Apache-2.0 AND BSD-4-Clause"
+licence_file = "COPYING"
+licence_note = "ESBMC changes Apache-2.0 on a BSD-4-Clause CBMC base; bundled SMT solvers carry their own (some non-commercial) terms - see COPYING."
+stages = ["esbmc"]
+bins = ["esbmc"]
+build_hint = "cmake -B build -DENABLE_Z3=ON && cmake --build build; copy build/src/esbmc/esbmc to <prefix>/bin/"
+
+[[component]]
+name = "cbmc"
+kind = "external"
+version = "6.11.0"
+url = "https://github.com/diffblue/cbmc"
+tag = "cbmc-6.11.0"
+commit = "820ff0f555b43fb78e0cd9332e498461bd14244b"
+archive_sha256 = "ab5b0ca763a42da5589c6c01ee742f54763b6d34a012f840ddf5015b08a8de4a"
+spdx = "BSD-4-Clause"
+licence_file = "LICENSE"
+stages = ["cbmc"]
+bins = ["cbmc"]
+build_hint = "cmake -S . -B build -DWITH_JBMC=OFF && cmake --build build --target cbmc; copy build/bin/cbmc to <prefix>/bin/"
+
+[[component]]
+name = "klee"
+kind = "external"
+version = "3.2"
+url = "https://github.com/klee/klee"
+tag = "v3.2"
+commit = "92ee8201a050184aacaaeef645ade491f5c93c41"
+archive_sha256 = "6d29b2f0b66dfc7dbdce675465f78e0bd7d88a37b072b436a1009fdd123db84a"
+spdx = "NCSA"
+licence_file = "LICENSE.TXT"
+stages = ["klee"]
+bins = ["klee"]
+build_hint = "needs LLVM 13-16 + STP or Z3; see https://klee-se.org/build/ then copy build/bin/klee to <prefix>/bin/"
+
+[[component]]
+name = "cppcheck"
+kind = "external"
+version = "2.21.1"
+url = "https://github.com/danmar/cppcheck"
+tag = "2.21.1"
+commit = "904cfdcf774c44b17db789c8a212e2f1c69fc833"
+archive_sha256 = "88d3384eb1769e27033085dbbd62290d7bed140c2f4b9dd2cdf609a759995580"
+spdx = "GPL-3.0-or-later"
+licence_file = "COPYING"
+stages = ["cppcheck"]
+bins = ["cppcheck"]
+build_hint = "cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build; copy build/bin/cppcheck (and cfg/) to <prefix>/bin/"
+
+[[component]]
+name = "frama-c"
+kind = "external"
+version = "20.0"
+url = "https://github.com/Frama-C/Frama-C-snapshot"
+tag = "20.0"
+commit = "5ced1d30439aec500d0a82cb8e9b07693c4dd538"
+archive_sha256 = "717918b9c89980edb17184b173eaf7970696bd170daa37f5699278acfe3a2f3b"
+spdx = "LGPL-2.1-only"
+licence_file = "licenses/LGPLv2.1"
+licence_note = "Some Frama-C components carry CDDL-1.0 / Q-modified licences (see licenses/)."
+stages = ["frama-c"]
+bins = ["frama-c"]
+build_hint = "opam install frama-c is the supported route; the snapshot repository is archived. Put frama-c on PATH or in <prefix>/bin/"
+
+[[component]]
+name = "infer"
+kind = "external"
+version = "1.3.0"
+url = "https://github.com/facebook/infer"
+tag = "v1.3.0"
+commit = "410a6d9394b9c9794bf9469ee0e1aa8d3ae91031"
+archive_sha256 = "ff9443bf98131c22d18f94b8f8e901ec351bbec85a350d526c480dfa1559654c"
+spdx = "MIT"
+licence_file = "LICENSE"
+stages = ["infer"]
+bins = ["infer"]
+build_hint = "./build-infer.sh clang (needs opam + a clang build, ~1 h); copy infer/bin/infer tree to <prefix>/"
+
+[[component]]
+name = "semgrep"
+kind = "external"
+version = "1.176.0"
+url = "https://github.com/semgrep/semgrep"
+tag = "v1.176.0"
+commit = "5bdaec16e18e33c520426dc1e4417161219daf35"
+archive_sha256 = "993e48703031433108e5d54ab23d2b4989174016738efcfa232e2d14e6ad4802"
+spdx = "LGPL-2.1-only"
+licence_file = "LICENSE"
+stages = ["semgrep"]
+bins = ["semgrep"]
+build_hint = "pip install semgrep==1.176.0 into a venv and link its semgrep to <prefix>/bin/ (the source build needs OCaml + submodules)"
+
+[[component]]
+name = "coccinelle"
+kind = "external"
+version = "1.3.3"
+url = "https://github.com/coccinelle/coccinelle"
+tag = "1.3.3"
+commit = "11b93adb6516a358a6687051e5762136666626e0"
+archive_sha256 = "b119726e60721caf9562e359088fe5446a2eee20ab2621bdcfe97b9bca105d2e"
+spdx = "GPL-2.0-only"
+licence_file = "license.txt"
+stages = ["spatch"]
+bins = ["spatch"]
+build_hint = "./autogen && ./configure --prefix=<prefix> && make && make install (needs OCaml)"
+
+[[component]]
+name = "aflplusplus"
+kind = "external"
+version = "5.03c"
+url = "https://github.com/AFLplusplus/AFLplusplus"
+tag = "v5.03c"
+commit = "dbaf11913c1b2702dee5b4d3dcfffd52f1defe50"
+archive_sha256 = "6442e017f2db165b977e799941c140e21fdf6f6e98ccb76593ac38882886756b"
+spdx = "AGPL-3.0-or-later"
+licence_file = "LICENSE"
+licence_note = "Recorded from the in-tree LICENSE / LICENSING.md (AGPL-3.0-or-later; LICENSE.COMMERCIAL offers other terms). Older AFL++ releases were Apache-2.0: verify the current upstream licence before any release."
+stages = ["afl-fuzz"]
+bins = ["afl-fuzz", "afl-cc"]
+build_hint = "make distrib PREFIX=<prefix> && make install PREFIX=<prefix>"
+
+[[component]]
+name = "dafny"
+kind = "external"
+version = "4.11.0"
+url = "https://github.com/dafny-lang/dafny"
+tag = "v4.11.0"
+commit = "fcb2042d6d043a2634f0854338c08feeaaaf4ae2"
+archive_sha256 = "36c371cf3d1167e1481066a615283fb5c36da98c1dfe160d7a931473f6f048bb"
+spdx = "MIT"
+licence_file = "LICENSE.txt"
+stages = ["dafny"]
+bins = ["dafny"]
+build_hint = "dotnet build Source/Dafny.sln -c Release (needs .NET 8 + Z3 4.12); link Binaries/dafny to <prefix>/bin/"
+
+[[component]]
+name = "strix"
+kind = "external"
+version = "21.0.0"
+url = "https://github.com/meyerphi/strix"
+tag = "21.0.0"
+commit = "fe2555e11857d447fee9137d2c6fe5fdac848a8c"
+archive_sha256 = "a8c6bd7a556d7fb594712a6457ecf20976bd8b647ca2b1a740f8cb84a33046d4"
+spdx = "AGPL-3.0-or-later"
+licence_file = "LICENSE.md"
+licence_note = "In-tree LICENSE.md is the GNU AGPL v3 text and Cargo.toml says license = \"AGPLv3\"; verify the upstream licence before any release."
+stages = ["strix"]
+bins = ["strix"]
+build_hint = "cargo build --release (needs Rust + Owl/Java submodules); copy target/release/strix to <prefix>/bin/"
+
+[[component]]
+name = "cadical"
+kind = "external"
+version = "3.0.1"
+url = "https://github.com/arminbiere/cadical"
+tag = "rel-3.0.1"
+commit = "c60730422e758ef1cebe7aeddf2dda31c996bf04"
+archive_sha256 = "d4cb37ba435d64893189cd08a3f009f9008cf633938263643aba963c0b4c4c90"
+spdx = "MIT"
+licence_file = "LICENSE"
+stages = ["cadical"]
+bins = ["cadical"]
+recipe = "configure-make"
+recipe_out = ["build/cadical"]
+
+[[component]]
+name = "kissat"
+kind = "external"
+version = "4.0.4"
+url = "https://github.com/arminbiere/kissat"
+tag = "rel-4.0.4"
+commit = "8af8e56f174b778aef3aa45af9f739b2a5f492c2"
+archive_sha256 = "1cc60e16135feae33a86fab08a47e45e0c8fe69b3dd5d20f23c19bf51fba83b0"
+spdx = "MIT"
+licence_file = "LICENSE"
+stages = ["kissat"]
+bins = ["kissat"]
+recipe = "configure-make"
+recipe_out = ["build/kissat"]
+
+[[component]]
+name = "cake_lpr"
+kind = "external"
+version = "a36874a"
+url = "https://github.com/tanyongkiam/cake_lpr"
+commit = "a36874a8b750b43fe4b385b8ddbf5b033e46a3fa"
+archive_sha256 = "57828bd7e635373b45a53554e6ccf0af15f21f9d0f7df9d362c1d86b81a3b9f2"
+spdx = "BSD-3-Clause"
+licence_file = "LICENSE"
+licence_note = "CakeML copyright notice (3-clause BSD text). No release tags upstream: pinned to the default-branch head of 2026-09-23. The verified checker is the shipped, CakeML-compiled cake_lpr.S; only the C FFI shim is compiled locally."
+stages = ["cake_lpr"]
+bins = ["cake_lpr"]
+recipe = "cake_lpr"
+recipe_out = ["cake_lpr"]
+
+# ---------------------------------------------------------------- system ----
+# Host tools. Not pinned; tool_sha is "path:<abs>;sha256:<hash of the binary>".
+
+[[component]]
+name = "clang-tidy"
+kind = "system"
+version = "18"
+url = "https://github.com/llvm/llvm-project"
+spdx = "Apache-2.0 WITH LLVM-exception"
+stages = ["clang-tidy"]
+bins = ["clang-tidy"]
+install = "apt install clang-tidy-18"
+
+[[component]]
+name = "clang"
+kind = "system"
+version = "18"
+url = "https://github.com/llvm/llvm-project"
+spdx = "Apache-2.0 WITH LLVM-exception"
+stages = ["warnings", "sanitize", "libfuzzer", "fuzz"]
+bins = ["clang", "clang++"]
+install = "apt install clang-18"
+
+[[component]]
+name = "gcc"
+kind = "system"
+version = "any"
+url = "https://gcc.gnu.org"
+spdx = "GPL-3.0-or-later WITH GCC-exception-3.1"
+stages = ["warnings", "sanitize"]
+bins = ["gcc"]
+install = "apt install gcc"
+
+# Polyglot linters (prism/polyglot.py, src/prism/polyglot.cpp). All optional;
+# a missing one is NOTRUN for its language.
+[[component]]
+name = "python3"
+kind = "system"
+version = "3.11+"
+url = "https://www.python.org"
+spdx = "PSF-2.0"
+stages = ["polyglot"]
+bins = ["python3"]
+install = "install Python 3.11+"
+
+[[component]]
+name = "ruff"
+kind = "system"
+version = "any"
+url = "https://github.com/astral-sh/ruff"
+spdx = "MIT"
+stages = ["polyglot"]
+bins = ["ruff"]
+install = "pip install ruff"
+
+[[component]]
+name = "pyflakes"
+kind = "system"
+version = "any"
+url = "https://github.com/PyCQA/pyflakes"
+spdx = "MIT"
+stages = ["polyglot"]
+bins = ["pyflakes"]
+install = "pip install pyflakes"
+
+[[component]]
+name = "mypy"
+kind = "system"
+version = "any"
+url = "https://github.com/python/mypy"
+spdx = "MIT"
+stages = ["polyglot"]
+bins = ["mypy"]
+install = "pip install mypy"
+
+[[component]]
+name = "node"
+kind = "system"
+version = "any"
+url = "https://github.com/nodejs/node"
+spdx = "MIT"
+stages = ["polyglot"]
+bins = ["node"]
+install = "install Node.js"
+
+[[component]]
+name = "typescript"
+kind = "system"
+version = "any"
+url = "https://github.com/microsoft/TypeScript"
+spdx = "Apache-2.0"
+stages = ["polyglot"]
+bins = ["tsc"]
+install = "npm install -g typescript"
+
+[[component]]
+name = "eslint"
+kind = "system"
+version = "any"
+url = "https://github.com/eslint/eslint"
+spdx = "MIT"
+stages = ["polyglot"]
+bins = ["eslint"]
+install = "npm install -g eslint"
+
+[[component]]
+name = "bash"
+kind = "system"
+version = "any"
+url = "https://www.gnu.org/software/bash/"
+spdx = "GPL-3.0-or-later"
+stages = ["polyglot"]
+bins = ["bash"]
+install = "install bash"
+
+[[component]]
+name = "shellcheck"
+kind = "system"
+version = "any"
+url = "https://github.com/koalaman/shellcheck"
+spdx = "GPL-3.0-only"
+stages = ["polyglot"]
+bins = ["shellcheck"]
+install = "apt install shellcheck"
+
+[[component]]
+name = "gofmt"
+kind = "system"
+version = "any"
+url = "https://github.com/golang/go"
+spdx = "BSD-3-Clause"
+stages = ["polyglot"]
+bins = ["gofmt"]
+install = "install Go"
+
+[[component]]
+name = "cargo-clippy"
+kind = "system"
+version = "any"
+url = "https://github.com/rust-lang/rust-clippy"
+spdx = "MIT OR Apache-2.0"
+stages = ["polyglot"]
+bins = ["cargo"]
+install = "rustup component add clippy"
+
+[[component]]
+name = "ruby"
+kind = "system"
+version = "any"
+url = "https://github.com/ruby/ruby"
+spdx = "Ruby OR BSD-2-Clause"
+stages = ["polyglot"]
+bins = ["ruby"]
+install = "install Ruby"
+
+[[component]]
+name = "php"
+kind = "system"
+version = "any"
+url = "https://github.com/php/php-src"
+spdx = "PHP-3.01"
+stages = ["polyglot"]
+bins = ["php"]
+install = "install the PHP CLI"
+
+[[component]]
+name = "perl"
+kind = "system"
+version = "any"
+url = "https://github.com/Perl/perl5"
+spdx = "Artistic-1.0-Perl OR GPL-1.0-or-later"
+stages = ["polyglot"]
+bins = ["perl"]
+install = "install Perl"
+
+[[component]]
+name = "luac"
+kind = "system"
+version = "any"
+url = "https://www.lua.org"
+spdx = "MIT"
+stages = ["polyglot"]
+bins = ["luac"]
+install = "install Lua"
+
+[[component]]
+name = "yamllint"
+kind = "system"
+version = "any"
+url = "https://github.com/adrienverge/yamllint"
+spdx = "GPL-3.0-or-later"
+stages = ["polyglot"]
+bins = ["yamllint"]
+install = "pip install yamllint"
+
+[[component]]
+name = "bwrap"
+kind = "system"
+version = "any"
+url = "https://github.com/containers/bubblewrap"
+spdx = "LGPL-2.0-or-later"
+stages = ["sandbox"]
+bins = ["bwrap"]
+install = "apt install bubblewrap"
+
+# ----------------------------------------------------------------- mined ----
+# Source trees that used to sit in third_party/ and were deleted (roadmap 1.1).
+# Not fetched, not built, not invoked. Kept for provenance and attribution;
+# docs/MINED.md lists what PRISM re-implemented from each. Tools that PRISM
+# still invokes (esbmc, cbmc, ...) are the [[component]] rows above.
+
+[[mined]]
+name = "rapidcheck"
+url = "https://github.com/emil-e/rapidcheck"
+spdx = "BSD-2-Clause"
+note = "property-based testing ideas re-implemented in prism/rapid.py; no release tags upstream"
+
+[[mined]]
+name = "FuSeBMC"
+url = "https://github.com/kaled-alshmrany/FuSeBMC"
+spdx = "NOASSERTION"
+note = "no licence file in the mined copy and the upstream repository is no longer public; goal-labelling algorithm re-implemented in prism/fuse.py from the published papers"
+
+[[mined]]
+name = "Fuzz4All"
+url = "https://github.com/fuzz4all/fuzz4all"
+spdx = "CC-BY-4.0"
+note = "autoprompt / mutate loop re-implemented in prism/fuse.py; attribution in NOTICE"
+
+[[mined]]
+name = "codeql"
+url = "https://github.com/github/codeql"
+spdx = "MIT"
+note = "the queries repository is MIT but the CodeQL engine/CLI is under the GitHub CodeQL Terms (restricted commercial use); the CodeQL adapter was removed from both engines (roadmap 1.2)"

@@ -1,4 +1,0 @@
-CORE
-main.cpp
---enforce-contract "*" --function sum_point
-^VERIFICATION FAILED$

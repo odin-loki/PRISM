@@ -1,8 +1,0 @@
-CORE
-nil
---function nil.getNil -cp target/classes
-^VERIFICATION SUCCESSFUL$
-^EXIT=0$
-^SIGNAL=0$
---
-std::bad_cast

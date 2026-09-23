@@ -1,5 +1,0 @@
-CORE
-main.c
---enforce-contract f --function f
-^VERIFICATION FAILED$
-assigns compliance: .*b->data\[k\]

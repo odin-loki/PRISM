@@ -1,4 +1,0 @@
-CORE
-cbmc_expr_overflow_shl.goto
---binary
-^VERIFICATION SUCCESSFUL$

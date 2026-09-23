@@ -1,4 +1,0 @@
-CORE
-cbmc_atoi_fail.goto
---binary --unwind 8
-^VERIFICATION FAILED$

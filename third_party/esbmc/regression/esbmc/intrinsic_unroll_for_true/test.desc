@@ -1,5 +1,0 @@
-CORE
-main.c
---verbosity 9
-Applying #pragma unroll 6 to loop
-^VERIFICATION SUCCESSFUL$

@@ -1,0 +1,12 @@
+# Keep the build context to what the build reads (reproducibility: no local
+# build trees, caches or reports leak into the image).
+.git
+.github
+.claude
+build*/
+prism-out*/
+**/__pycache__
+**/*.pyc
+.venv
+venv
+third_party/llama.cpp/models/*.gguf

@@ -1,4 +1,0 @@
-CORE
-contract.solast
---k-induction --sol contract.sol
-^VERIFICATION SUCCESSFUL$

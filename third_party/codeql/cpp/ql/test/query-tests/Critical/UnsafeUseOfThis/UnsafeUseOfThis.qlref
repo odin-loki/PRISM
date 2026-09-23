@@ -1,2 +1,0 @@
-query: Likely Bugs/OO/UnsafeUseOfThis.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

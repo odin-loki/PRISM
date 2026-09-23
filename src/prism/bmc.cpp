@@ -1,4 +1,5 @@
 #include "prism/stages.hpp"
+#include "prism/ai.hpp"
 #include "prism/cparse.hpp"
 #include "prism/laws.hpp"
 #include "prism/regex.hpp"
@@ -3380,10 +3381,129 @@ Finding k_induction(const FunctionInfo& fn, int unwind, bool allow_local_pointer
     return rec;
 }
 
+// Hook (roadmap 4.2): a function k-induction leaves BOUNDED gets one more try
+// with the step strengthened by Houdini-filtered invariants (prism::ai).
+// Only a closed step plus a holding base case turns it PROVED-UNBOUNDED.
+Finding k_induction_strengthened(const FunctionInfo& fn, int unwind, bool allow_local_pointers) {
+    auto rec = k_induction(fn, unwind, allow_local_pointers);
+    if (rec.status == laws::PROVED_UNBOUNDED && rec.extra["k_induction"] == "closed") {
+        // The havocked step (Parser::loop_havoc) already checks the code after
+        // every loop from the havocked state, so a closed step covers it.
+        rec.extra["post_loop_check"] = "closed (havoc step)";
+        return rec;
+    }
+    if (rec.status != laws::BOUNDED) return rec;
+    return ai::strengthen_bounded(fn, rec, unwind);
+}
+
 #endif  // PRISM_HAS_Z3
 
 
 }  // namespace
+
+namespace ai {
+
+ProgramCheck check_program(const FunctionInfo& fn, const std::string& body, int unwind,
+                           unsigned timeout_ms, bool only_invariants) {
+    ProgramCheck out;
+#ifdef PRISM_HAS_Z3
+    try {
+        Parser p(body, fn.params, unwind, enums_from_fn(fn));
+        p.ai_hooks = true;
+        auto enc = p.run();
+        if (!enc) {
+            out.error = p.err.empty() ? std::string("parse failed") : p.err;
+            return out;
+        }
+        out.encoded = true;
+        out.unwind_ok = enc->unwind_ok;
+        // One call for all properties first: unsat means every one holds.
+        // Otherwise the model refutes each property it satisfies (Houdini
+        // drops many candidates per solver call); the rest are re-checked.
+        std::vector<int> todo;
+        for (int i = 0; i < static_cast<int>(enc->props.size()); ++i) {
+            bool inv = enc->props[static_cast<size_t>(i)].name.rfind("ai-inv#", 0) == 0;
+            if (!only_invariants || inv) todo.push_back(i);
+        }
+        std::map<int, std::string> verdict, models;
+        auto model_text = [](const z3::model& m) {
+            std::string txt;
+            int shown = 0;
+            for (unsigned i = 0; i < m.num_consts() && shown < 24; ++i) {
+                auto d = m.get_const_decl(i);
+                if (!d.range().is_bv()) continue;
+                auto v = m.get_const_interp(d);
+                if (!txt.empty()) txt += ", ";
+                txt += d.name().str() + "=" + v.to_string();
+                ++shown;
+            }
+            return txt;
+        };
+        for (int guard = 0; !todo.empty() && guard < 64; ++guard) {
+            z3::expr_vector any(enc->ctx);
+            for (int i : todo) any.push_back(enc->props[static_cast<size_t>(i)].cond);
+            z3::solver s(enc->ctx);
+            s.set("timeout", timeout_ms);
+            s.add(z3::mk_or(any));
+            auto r = s.check();
+            if (r == z3::unsat) {
+                for (int i : todo) verdict[i] = "unsat";
+                todo.clear();
+                break;
+            }
+            if (r != z3::sat) break;
+            auto m = s.get_model();
+            std::vector<int> left;
+            for (int i : todo) {
+                auto v = m.eval(enc->props[static_cast<size_t>(i)].cond, true);
+                if (v.is_true()) {
+                    verdict[i] = "sat";
+                    models[i] = model_text(m);
+                } else {
+                    left.push_back(i);
+                }
+            }
+            if (left.size() == todo.size()) break;  // no progress: fall back to single checks
+            todo = std::move(left);
+        }
+        for (int i : todo) {
+            z3::solver s(enc->ctx);
+            s.set("timeout", timeout_ms);
+            s.add(enc->props[static_cast<size_t>(i)].cond);
+            auto r = s.check();
+            verdict[i] = r == z3::sat ? "sat" : r == z3::unsat ? "unsat" : "unknown";
+            if (r == z3::sat) models[i] = model_text(s.get_model());
+        }
+        for (int i = 0; i < static_cast<int>(enc->props.size()); ++i) {
+            auto& prop = enc->props[static_cast<size_t>(i)];
+            ProgramProp pp;
+            pp.name = prop.name;
+            pp.cls = prop.cls;
+            auto it = verdict.find(i);
+            bool inv = prop.name.rfind("ai-inv#", 0) == 0;
+            if (only_invariants && !inv) pp.result = "skipped";
+            else pp.result = it == verdict.end() ? "unknown" : it->second;
+            if (auto mt = models.find(i); mt != models.end()) pp.model = mt->second;
+            out.props.push_back(std::move(pp));
+        }
+    } catch (const z3::exception& ex) {
+        out.encoded = false;
+        out.error = std::string("z3: ") + ex.msg();
+    } catch (const std::exception& ex) {
+        out.encoded = false;
+        out.error = ex.what();
+    }
+#else
+    (void)fn;
+    (void)body;
+    (void)unwind;
+    (void)timeout_ms;
+    out.error = "z3 not built";
+#endif
+    return out;
+}
+
+}  // namespace ai
 
 ForkFlipResult solve_fork_flip(const FunctionInfo& fn, const std::map<std::string, int>& seed,
                                const std::string& cond, bool want) {
@@ -3482,7 +3602,7 @@ std::vector<Finding> run_bmc(const std::vector<FunctionInfo>& functions, int unw
         // R1: one function the encoder cannot handle (a Z3 sort error, ...)
         // is an ERROR for that function, never a crash of the whole stage.
         try {
-            out.push_back(k_induction(fn, unwind, allow_local_pointers));
+            out.push_back(k_induction_strengthened(fn, unwind, allow_local_pointers));
         } catch (const std::exception& ex) {
             Finding f = mk_base(fn);
             f.status = std::string(laws::ERROR);

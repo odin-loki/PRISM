@@ -1,6 +1,0 @@
-CORE
-main.py
---multi-property
-SIZE == .*?9
-X == 15
-^VERIFICATION FAILED$

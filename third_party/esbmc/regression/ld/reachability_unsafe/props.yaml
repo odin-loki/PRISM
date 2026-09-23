@@ -1,6 +1,0 @@
-properties:
-  - id: P1
-    kind: reachability
-    expression: "Shutdown"
-    description: "Shutdown state is reachable"
-    justification: "Liveness: an alarm can trigger shutdown"

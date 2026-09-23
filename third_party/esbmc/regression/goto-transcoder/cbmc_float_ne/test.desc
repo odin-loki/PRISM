@@ -1,4 +1,0 @@
-CORE
-cbmc_float_ne.goto
---binary
-^VERIFICATION SUCCESSFUL$

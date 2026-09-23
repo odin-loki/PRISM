@@ -1,2 +1,0 @@
-query: JPL_C/LOC-3/Rule 13/LimitedScopeFunction.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

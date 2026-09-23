@@ -1,4 +1,0 @@
-CORE
-cbmc_enum.goto
---binary
-^VERIFICATION SUCCESSFUL$

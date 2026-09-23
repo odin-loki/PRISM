@@ -1,4 +1,0 @@
-CORE
-main.py
---incremental-bmc
-^ERROR: f\(\) missing 1 required positional argument\: \'x\'$

@@ -1,8 +1,10 @@
 #include "prism/pipeline.hpp"
 
+#include "prism/ai.hpp"
 #include "prism/cparse.hpp"
 #include "prism/journal.hpp"
 #include "prism/laws.hpp"
+#include "prism/pir.hpp"
 #include "prism/sandbox.hpp"
 #include "prism/scope.hpp"
 #include "prism/stages.hpp"
@@ -48,6 +50,7 @@ const std::map<std::string, std::string>& exec_stages() {
         {"pbsd", "part"},       // imports the configured ParanoidBSD tools/verify modules
         {"sanitize", "whole"},  // compiles + runs `// prism: run` functions under ASan/UBSan/TSan
         {"optional", "part"},   // klee (native external calls), .cocci script rules
+        {"pir", "part"},        // Clang->PIR->Z3 runs; lli translation validation does not
         {"polyglot", "part"},   // perl -c, cargo clippy, eslint (PgTool::executes)
         {"fuzz", "part"},       // concrete oracle runs; compiled harness / AFL++ / libFuzzer do not
         {"diff", "whole"},      // compiles + runs both functions
@@ -185,6 +188,9 @@ RunReport run_pipeline(const Config& cfg) {
     // Law 9: the exec policy holds for this run only (stages without a
     // Config read it through sandbox::allowed()).
     sandbox::Policy exec_policy(cfg.allow_exec);
+    // Roadmap 4.2/9.6: model-assisted invariants, harnesses and explanations
+    // see this run's config and log to <out>/ai_audit.jsonl.
+    ai::Session ai_session(cfg);
     RunReport report;
     report.root = cfg.root.string();
     report.started = now_secs();
@@ -343,6 +349,7 @@ RunReport run_pipeline(const Config& cfg) {
     stage("contracts", [&] { return prove_contracts(functions, cfg.unwind); });
     stage("wp", [&] { return run_wp(functions, cfg.unwind); });
     auto bmc_rec = stage("bmc", [&] { return run_bmc(inline_static(functions), cfg.unwind); });
+    stage("pir", [&] { return pir::run_pir(sources, cfg); });
     stage("harness", [&] { return run_harness_bmc(functions, cfg.unwind); });
     stage("concolic", [&] { return run_concolic(functions, 32); });
     stage("fuzz", [&] {
@@ -391,8 +398,24 @@ RunReport run_pipeline(const Config& cfg) {
         }
         for (auto& s : report.stages)
             for (auto& f : s.findings)
-                if ((f.status == laws::FAILED || f.status == laws::CRASH) && !f.file.empty())
-                    return rlef_repair(f, cfg);
+                if ((f.status == laws::FAILED || f.status == laws::CRASH) && !f.file.empty()) {
+                    auto out = rlef_repair(f, cfg);
+                    // Roadmap 9.3: counterexample explanation + BMC-verified fix
+                    // for up to 4 FAILED findings (HYPOTHESIS / READS; one NOTRUN
+                    // row without a model). Never a verdict change.
+                    int explained = 0;
+                    for (auto& s2 : report.stages)
+                        for (auto& g : s2.findings) {
+                            if (g.status != laws::FAILED || !g.function || g.file.empty() || explained >= 4)
+                                continue;
+                            auto ex = ai::explain_failed(g, cfg);
+                            ++explained;
+                            bool notrun = !ex.empty() && ex[0].status == laws::NOTRUN;
+                            out.insert(out.end(), ex.begin(), ex.end());
+                            if (notrun) explained = 4;  // no model: say so once
+                        }
+                    return out;
+                }
         return std::vector<Finding>{{"repair", std::string(laws::NOTRUN), "", std::nullopt,
                                      std::nullopt, "", "nothing to repair",
                                      std::string(laws::STRENGTH_READS)}};

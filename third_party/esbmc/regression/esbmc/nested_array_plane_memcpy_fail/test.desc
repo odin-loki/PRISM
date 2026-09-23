@@ -1,5 +1,0 @@
-CORE
-main.c
-
-^\s+the plane.s first element was grafted too$
-^VERIFICATION FAILED$

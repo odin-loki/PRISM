@@ -1,5 +1,0 @@
-CORE
-trans.ld
---ld-props props.yaml --k-induction --unlimited-k-steps
-^ERROR: UnsupportedConstruct\(LD body of transition 'T1' of POU 'Mutex', tier=2\)$
-^ERROR: PARSING ERROR$

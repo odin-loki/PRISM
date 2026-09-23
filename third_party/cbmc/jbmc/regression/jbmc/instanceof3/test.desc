@@ -1,8 +1,0 @@
-CORE
-instanceof3
--cp target/classes
-^EXIT=0$
-^SIGNAL=0$
-^VERIFICATION SUCCESSFUL$
---
-^warning: ignoring

@@ -1,2 +1,0 @@
-query: Security/CWE/CWE-253/HResultBooleanConversion.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

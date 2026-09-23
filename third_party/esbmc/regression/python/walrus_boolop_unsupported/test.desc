@@ -1,4 +1,0 @@
-CORE
-main.py
-
-^ERROR: Walrus operator ':=' in a boolean \(and/or\) operand is not supported$

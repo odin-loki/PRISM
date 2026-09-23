@@ -1,4 +1,0 @@
-CORE
-cbmc_rounding_mode_fail.goto
---binary
-^VERIFICATION FAILED$

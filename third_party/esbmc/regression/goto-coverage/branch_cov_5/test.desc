@@ -1,6 +1,0 @@
-CORE
-main.c
---branch-function-coverage --unlimited-goto-unwind --k-induction
-^Function Entry Points & Branches : 11
-^Reached : 11
-^COVERAGE ANALYSIS COMPLETE$

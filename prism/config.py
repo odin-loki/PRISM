@@ -4,80 +4,90 @@ from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TypeVar
+from typing import Any, TypeVar
+import functools
+import hashlib
 import os
+import re
 import shutil
 import sys
+import threading
+import tomllib
 
 _T = TypeVar("_T")
 _R = TypeVar("_R")
 
-# Adapter binaries: search (1) Config.tools / --tool, (2) a built executable
-# under third_party/<vendor>/ if already present, (3) PATH. Missing is NOTRUN
-# with install pointing at the vendored tree in third_party/SOURCES.md.
-# Do not compile these trees from the adapter.
+# Adapter binaries: search (1) Config.tools / --tool, (2) the pinned build
+# ~/.prism/tools/<component>/<commit>/bin/ made by scripts/fetch_deps.py
+# (commit from third_party/MANIFEST.toml), (3) PATH. Missing is NOTRUN with an
+# install hint naming the fetch_deps command. PRISM never compiles a tool from
+# an adapter. Stage -> manifest component (same table in src/prism/config.cpp):
 VENDOR_DIR = {
     "esbmc": "esbmc",
     "dafny": "dafny",
     "cppcheck": "cppcheck",
     "klee": "klee",
-    "afl-fuzz": "AFLplusplus",
-    "frama-c": "Frama-C",
+    "afl-fuzz": "aflplusplus",
+    "frama-c": "frama-c",
     "infer": "infer",
-    "codeql": "codeql",
     "cbmc": "cbmc",
     "strix": "strix",
     "semgrep": "semgrep",
     "spatch": "coccinelle",
-    "fuse": "FuSeBMC",
-    "fuzz4all": "Fuzz4All",
+    "cadical": "cadical",
+    "kissat": "kissat",
+    "cake_lpr": "cake_lpr",
 }
 
-# Known *output* dirs only. "src/" is the vendored source tree, not a proof.
-_BUILD_SUBDIRS = (
-    "",
-    "bin",
-    "build",
-    "build/bin",
-    "build/src",
-    "Release",
-    "Debug",
-    "build/Release",
-    "build/Debug",
-)
-
-_SKIP_VENDOR_PARTS = {
-    "scripts", "tests", "docs", "examples", "regression", "website",
-    "ql", "misc", "javascript", "change-notes", ".github",
-}
-
-# Only descend into these names during the shallow glob (never src/).
-_WALK_ALLOW = {
-    "bin", "build", "release", "debug", "out", "dist", "install",
-}
-
-_SOURCE_SUFFIX = {
-    ".c", ".cc", ".cpp", ".cxx", ".h", ".hpp", ".py", ".md", ".txt",
-    ".json", ".o", ".obj", ".a", ".lib", ".so", ".dll", ".sh", ".bat",
-}
+_HEX40 = re.compile(r"^[0-9a-f]{40}$")
 
 
 def repo_root() -> Path:
+    """The PRISM checkout holding third_party/MANIFEST.toml (package dir first)."""
     here = Path(__file__).resolve().parents[1]
-    if (here / "third_party" / "SOURCES.md").is_file():
+    if (here / "third_party" / "MANIFEST.toml").is_file():
         return here
     cwd = Path.cwd()
     for p in (cwd, *cwd.parents):
-        if (p / "third_party" / "SOURCES.md").is_file():
+        if (p / "third_party" / "MANIFEST.toml").is_file():
             return p
     return here
 
 
+def tools_home() -> Path:
+    """Install root of scripts/fetch_deps.py: $PRISM_TOOLS_DIR or ~/.prism/tools."""
+    env = os.environ.get("PRISM_TOOLS_DIR")
+    if env:
+        return Path(env).expanduser()
+    return Path.home() / ".prism" / "tools"
+
+
+def load_manifest(root: Path | None = None) -> dict[str, dict[str, Any]]:
+    """name -> component row of third_party/MANIFEST.toml ({} when unreadable)."""
+    path = (root or repo_root()) / "third_party" / "MANIFEST.toml"
+    try:
+        with open(path, "rb") as fh:
+            data = tomllib.load(fh)
+    except (OSError, tomllib.TOMLDecodeError):
+        return {}
+    return {str(c.get("name")): c for c in data.get("component") or [] if c.get("name")}
+
+
+def pinned_commit(component: str, root: Path | None = None) -> str | None:
+    """The manifest commit for an external component, or None."""
+    row = load_manifest(root).get(component) or {}
+    commit = str(row.get("commit") or "")
+    if row.get("kind") != "external" or not _HEX40.match(commit):
+        return None
+    return commit
+
+
 def adapter_install(stage: str) -> str:
-    vendor = VENDOR_DIR.get(stage)
-    if vendor:
-        return f"build from vendored third_party/{vendor} (see third_party/SOURCES.md)"
-    return f"{stage} is not vendored (see third_party/SOURCES.md)"
+    comp = VENDOR_DIR.get(stage)
+    if comp:
+        return (f"python scripts/fetch_deps.py --tool {comp} "
+                f"(pinned in third_party/MANIFEST.toml)")
+    return f"{stage} is a system tool, not pinned by fetch_deps (see third_party/MANIFEST.toml)"
 
 
 def _is_built_exe(path: Path) -> bool:
@@ -86,69 +96,12 @@ def _is_built_exe(path: Path) -> bool:
             return False
     except OSError:
         return False
-    if path.suffix.lower() in _SOURCE_SUFFIX:
-        return False
-    parts = {p.lower() for p in path.parts}
-    if parts & _SKIP_VENDOR_PARTS:
-        return False
     if sys.platform == "win32":
         return path.suffix.lower() == ".exe"
     try:
         return os.access(path, os.X_OK)
     except OSError:
         return False
-
-
-def _shallow_glob_exe(root: Path, names: tuple[str, ...], max_depth: int = 3) -> str | None:
-    """Walk a few levels under a vendored tree for a built binary. Never compile."""
-    want = {str(n).lower() for n in names}
-    want |= {n if n.endswith(".exe") else n + ".exe" for n in want}
-    skip = _SKIP_VENDOR_PARTS | {
-        ".git", "node_modules", "__pycache__", "src", "include", "lib",
-    }
-    try:
-        if not root.is_dir():
-            return None
-    except OSError:
-        return None
-    stack: list[tuple[Path, int]] = [(root, 0)]
-    seen: set[str] = set()
-    visited = 0
-    while stack:
-        d, depth = stack.pop()
-        try:
-            entries = list(d.iterdir())
-        except OSError:
-            continue
-        for ent in entries:
-            visited += 1
-            if visited > 4000:
-                return None
-            try:
-                name = ent.name
-            except OSError:
-                continue
-            low = name.lower()
-            if low.startswith(".") or low in skip:
-                continue
-            key = str(ent)
-            if key in seen:
-                continue
-            seen.add(key)
-            try:
-                is_dir = ent.is_dir()
-            except OSError:
-                continue
-            if is_dir:
-                # Do not walk source trees. release/out is a build layout.
-                if low not in _WALK_ALLOW:
-                    continue
-                if depth + 1 <= max_depth:
-                    stack.append((ent, depth + 1))
-                continue
-            if low in want and _is_built_exe(ent):
-                return str(ent)
-    return None
 
 
 def path_within(p: Path, root: Path) -> bool:
@@ -163,45 +116,108 @@ def path_within(p: Path, root: Path) -> bool:
 def find_vendored_exe(
     stage: str, names: tuple[str, ...] | list[str], *, exclude: Path | None = None,
 ) -> str | None:
-    """Return a pre-built binary under third_party/<vendor>/, or None.
+    """Return the fetch_deps build of a pinned tool, or None.
 
-    Never compiles. Known output dirs first, then a shallow glob
-    (esbmc, cbmc, klee, cppcheck, infer, dafny, strix, semgrep, frama-c, afl-fuzz).
-    Law 9: a repo root inside ``exclude`` (the scanned tree) is refused — a
-    hostile tree could plant third_party/SOURCES.md and a fake esbmc.
+    Looks only in <tools_home>/<component>/<commit>/bin/ (then that dir's
+    root) for the commit pinned in third_party/MANIFEST.toml: a build of any
+    other commit is not the tool the manifest names. Never compiles.
+    Law 9: when the manifest or the tools dir lies inside ``exclude`` (the
+    scanned tree) nothing is taken from it; a hostile tree could plant both.
     """
-    vendor = VENDOR_DIR.get(stage)
-    if not vendor:
+    comp = VENDOR_DIR.get(stage)
+    if not comp:
         return None
     base_root = repo_root()
-    if exclude is not None and path_within(base_root, exclude):
+    home = tools_home()
+    if exclude is not None and (path_within(base_root, exclude) or path_within(home, exclude)):
         return None
-    root = base_root / "third_party" / vendor
-    try:
-        if not root.is_dir():
-            return None
-    except OSError:
+    commit = pinned_commit(comp, base_root)
+    if not commit:
         return None
-    names_t = tuple(names)
-    seen: set[str] = set()
-    for sub in _BUILD_SUBDIRS:
+    root = home / comp / commit
+    for sub in ("bin", ""):
         base = root / sub if sub else root
-        for n in names_t:
+        for n in names:
             cands = [base / n]
-            if not str(n).lower().endswith(".exe"):
+            if sys.platform == "win32" and not str(n).lower().endswith(".exe"):
                 cands.append(base / f"{n}.exe")
             for cand in cands:
-                key = str(cand)
-                if key in seen:
-                    continue
-                seen.add(key)
                 if _is_built_exe(cand):
                     return str(cand)
-    return _shallow_glob_exe(root, names_t, max_depth=3)
+    return None
+
+
+_IDENTITY_CACHE: dict[tuple[str, int, int], str] = {}
+_IDENTITY_LOCK = threading.Lock()
+
+
+def tool_identity(exe: str | Path) -> str:
+    """Which exact build produced a finding (roadmap 1.1: tool SHA in findings).
+
+    The manifest commit when ``exe`` lives under <tools_home>/<name>/<commit>/,
+    else ``path:<abs>;sha256:<hash of the file>``. Cached per (path, size, mtime).
+    Same format as src/prism/config.cpp tool_identity.
+    """
+    p = Path(exe)
+    try:
+        ap = p.resolve()
+    except OSError:
+        ap = p.absolute()
+    try:
+        rel = ap.relative_to(tools_home().resolve())
+        parts = rel.parts
+        if len(parts) >= 3 and _HEX40.match(parts[1]):
+            return parts[1]
+    except (ValueError, OSError):
+        pass
+    try:
+        st = ap.stat()
+    except OSError:
+        return f"path:{ap};sha256:unreadable"
+    key = (str(ap), st.st_size, st.st_mtime_ns)
+    with _IDENTITY_LOCK:
+        hit = _IDENTITY_CACHE.get(key)
+    if hit:
+        return hit
+    h = hashlib.sha256()
+    try:
+        with open(ap, "rb") as fh:
+            for block in iter(lambda: fh.read(1 << 20), b""):
+                h.update(block)
+        ident = f"path:{ap};sha256:{h.hexdigest()}"
+    except OSError:
+        ident = f"path:{ap};sha256:unreadable"
+    with _IDENTITY_LOCK:
+        _IDENTITY_CACHE[key] = ident
+    return ident
+
+
+def stamp_tool_sha(findings: Iterable[Any], exe: str | Path | None) -> None:
+    """Set extra["tool_sha"] on every finding an external tool produced."""
+    if not exe:
+        return
+    ident = tool_identity(exe)
+    for f in findings:
+        extra = getattr(f, "extra", None)
+        if extra is None:
+            f.extra = extra = {}
+        extra.setdefault("tool_sha", ident)
+
+
+def stamps_tool(stage: str, names: tuple[str, ...]) -> Callable[[Callable[..., list[_R]]], Callable[..., list[_R]]]:
+    """Decorator for run_<tool>(paths, cfg): stamp tool_sha when the tool resolved."""
+    def deco(fn: Callable[..., list[_R]]) -> Callable[..., list[_R]]:
+        @functools.wraps(fn)
+        def wrapper(paths: Any, cfg: Config, *a: Any, **kw: Any) -> list[_R]:
+            out = fn(paths, cfg, *a, **kw)
+            stamp_tool_sha(out, resolve_adapter(cfg, stage, names))
+            return out
+        return wrapper
+    return deco
 
 
 def resolve_adapter(cfg: Config, stage: str, names: tuple[str, ...] | list[str]) -> str | None:
-    """(1) config/explicit, (2) vendored built exe, (3) PATH."""
+    """(1) config/explicit, (2) pinned fetch_deps build (~/.prism/tools), (3) PATH."""
     names_t = tuple(names)
     for key in (stage, *names_t):
         expl = (cfg.tools or {}).get(key)

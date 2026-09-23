@@ -1,5 +1,0 @@
-CORE
-cbmc_harness_fail.goto
---binary --function verify
-^VERIFICATION FAILED$
-assertion

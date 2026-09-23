@@ -1,4 +1,0 @@
-CORE
-contract.solast
---sol contract.sol --k-induction --no-standard-checks --function toUFixed256x18
-^VERIFICATION SUCCESSFUL$

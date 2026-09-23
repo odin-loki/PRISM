@@ -1,2 +1,0 @@
-Send a mail to cocci@inria.fr, or julia.lawall@inria.fr
-with [bug-cocci] as a prefix in the subject of your mail.

@@ -1,4 +1,0 @@
-CORE
-main.cpp
---unwind 1 --no-unwinding-assertions
-\A(?=[\s\S]*VERIFICATION SUCCESSFUL)(?![\s\S]*no body for function ~Num#)[\s\S]*\Z

@@ -95,8 +95,8 @@ class TestSpatchHonesty(unittest.TestCase):
         self.assertIn("not found", spatch.message)
         install = (spatch.extra or {}).get("install", "")
         self.assertEqual(install, adapter_install("spatch"))
-        self.assertIn("SOURCES.md", install)
-        self.assertIn("coccinelle", install)
+        self.assertIn("third_party/MANIFEST.toml", install)
+        self.assertIn("fetch_deps.py --tool coccinelle", install)
         self._never_proof([spatch])
 
     def test_present_no_c_files_is_unknown_not_clean(self):

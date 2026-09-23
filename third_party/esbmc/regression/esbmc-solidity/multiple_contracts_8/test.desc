@@ -1,4 +1,0 @@
-CORE
-mul.solast
---function test --contract Derived --sol mul.sol --incremental-bmc --bound
-^VERIFICATION FAILED$

@@ -126,7 +126,7 @@ Finding finding(std::string stage, std::string_view status, std::string file, st
 
 Finding notrun(std::string stage, std::string binary, std::string how) {
     auto f = finding(std::move(stage), laws::NOTRUN, "", "",
-                     binary + " not found (config, vendored tree, PATH)",
+                     binary + " not found (config, ~/.prism/tools, PATH)",
                      laws::STRENGTH_FINDS);
     f.extra["install"] = std::move(how);
     return f;
@@ -922,7 +922,7 @@ std::vector<Finding> run_cbmc(const std::string& exe, const std::vector<fs::path
             f.status = std::string(laws::NOTRUN);
             f.message = "cbmc at PATH is not CBMC (not a proof)";
             f.extra["exe"] = exe;
-            f.extra["install"] = adapter_install("cbmc");  // third_party/cbmc
+            f.extra["install"] = adapter_install("cbmc");  // fetch_deps.py --tool cbmc
         } else if (upper.find("VERIFICATION SUCCESSFUL") != std::string::npos) {
             f.status = std::string(laws::BOUNDED);
             f.message = "CBMC: BOUNDED (unwind limited; not a proof)";
@@ -944,7 +944,7 @@ std::vector<Finding> run_cbmc(const std::string& exe, const std::vector<fs::path
 
 Finding libfuzzer_probe(const Config& cfg) {
     auto clang = cfg.which({"clang"});
-    const char* install = "clang -fsanitize=fuzzer is not vendored (see third_party/SOURCES.md)";
+    const char* install = "clang -fsanitize=fuzzer is a system tool: apt install clang-18 (see third_party/MANIFEST.toml)";
     if (!clang) {
         auto f = notrun("libfuzzer", "clang", install);
         return f;
@@ -1626,107 +1626,6 @@ std::vector<Finding> run_strix(const std::string& exe, const std::vector<fs::pat
     return out;
 }
 
-std::optional<fs::path> find_codeql_db(const std::vector<fs::path>& paths) {
-    for (const auto& root : source_roots(paths)) {
-        auto cand = root / "codeql-db";
-        std::error_code ec;
-        if (fs::is_directory(cand, ec)) return cand;
-    }
-    return std::nullopt;
-}
-
-std::vector<Finding> run_codeql(const std::string& exe, const std::vector<fs::path>& paths,
-                                const Config& cfg) {
-    auto db = find_codeql_db(paths);
-    if (!db) {
-        auto f = finding("codeql", laws::UNKNOWN, "", "",
-                         "codeql present; no database (not a verdict)", laws::STRENGTH_FINDS);
-        f.extra["exe"] = exe;
-        return {f};
-    }
-    auto out_dir = db->parent_path() / "prism-codeql-out";
-    std::error_code ec;
-    fs::create_directories(out_dir, ec);
-    auto sarif = out_dir / "results.sarif";
-    auto r = run_argv({exe, "database", "analyze", db->string(), "--format=sarif-latest", sarif.string()},
-                      std::min(60.0, cfg.timeout + 30));
-    if (r.timed_out) {
-        auto f = finding("codeql", laws::TIMEOUT, db->string(), "", "codeql database analyze timeout",
-                         laws::STRENGTH_FINDS);
-        f.extra["exe"] = exe;
-        return {f};
-    }
-    if (r.failed || is_fake_adapter(r.text) || probe_looks_missing(r)) {
-        auto f = finding("codeql", laws::NOTRUN, db->string(), "",
-                         "codeql at PATH is not CodeQL (not a proof)", laws::STRENGTH_FINDS);
-        f.extra["exe"] = exe;
-        f.extra["install"] = adapter_install("codeql");
-        return {f};
-    }
-    if (r.rc != 0) {
-        if (is_fake_adapter(r.text) || probe_looks_missing(r)) {
-            auto f = finding("codeql", laws::NOTRUN, db->string(), "",
-                             "codeql at PATH is not CodeQL (not a proof)", laws::STRENGTH_FINDS);
-            f.extra["exe"] = exe;
-            f.extra["install"] = adapter_install("codeql");
-            return {f};
-        }
-        auto msg = tail(r.text, 400);
-        if (msg.empty()) msg = "codeql exit " + std::to_string(r.rc);
-        auto f = finding("codeql", laws::ERROR, db->string(), "", msg, laws::STRENGTH_FINDS);
-        f.extra["exe"] = exe;
-        return {f};
-    }
-    nlohmann::json sarif_json;
-    try {
-        sarif_json = nlohmann::json::parse(read_text(sarif));
-    } catch (...) {
-        auto f = finding("codeql", laws::UNKNOWN, db->string(), "",
-                         "codeql analyze ran; no SARIF parsed (not a proof)", laws::STRENGTH_FINDS);
-        f.extra["exe"] = exe;
-        return {f};
-    }
-    std::vector<Finding> findings;
-    auto runs = sarif_json.contains("runs") && sarif_json["runs"].is_array() ? sarif_json["runs"]
-                                                                            : nlohmann::json::array();
-    for (const auto& run : runs) {
-        auto results = run.contains("results") && run["results"].is_array() ? run["results"]
-                                                                            : nlohmann::json::array();
-        for (const auto& res : results) {
-            std::string rule_id = "codeql";
-            if (res.contains("ruleId") && res["ruleId"].is_string())
-                rule_id = res["ruleId"].get<std::string>();
-            std::string msg = rule_id;
-            if (res.contains("message") && res["message"].is_object() &&
-                res["message"].contains("text") && res["message"]["text"].is_string())
-                msg = res["message"]["text"].get<std::string>();
-            std::string path;
-            std::optional<int> line;
-            if (res.contains("locations") && res["locations"].is_array() && !res["locations"].empty()) {
-                const auto& phys = res["locations"][0].contains("physicalLocation")
-                                       ? res["locations"][0]["physicalLocation"]
-                                       : nlohmann::json::object();
-                const auto& art = phys.contains("artifactLocation") ? phys["artifactLocation"]
-                                                                    : nlohmann::json::object();
-                if (art.contains("uri") && art["uri"].is_string()) path = art["uri"].get<std::string>();
-                if (phys.contains("region") && phys["region"].is_object() &&
-                    phys["region"].contains("startLine") && phys["region"]["startLine"].is_number_integer())
-                    line = phys["region"]["startLine"].get<int>();
-            }
-            auto f = finding("codeql", laws::FAILED, path, rule_id, msg.substr(0, 400),
-                             laws::STRENGTH_FINDS);
-            f.line = line;
-            f.extra["exe"] = exe;
-            findings.push_back(std::move(f));
-        }
-    }
-    if (!findings.empty()) return findings;
-    auto f = finding("codeql", laws::UNKNOWN, db->string(), "",
-                     "codeql analyze ran; no results (not a proof)", laws::STRENGTH_FINDS);
-    f.extra["exe"] = exe;
-    return {f};
-}
-
 std::vector<Finding> dispatch_optional(const std::string& stage, const std::string& exe,
                                        const std::vector<fs::path>& paths, const Config& cfg,
                                        const ProcResult& probed) {
@@ -1735,7 +1634,6 @@ std::vector<Finding> dispatch_optional(const std::string& stage, const std::stri
     if (stage == "cbmc") return run_cbmc(exe, paths, cfg);
     if (stage == "afl-fuzz") return {help_ok(stage, exe, probed)};
     if (stage == "strix") return run_strix(exe, paths, cfg, probed);
-    if (stage == "codeql") return run_codeql(exe, paths, cfg);
     if (stage == "spatch") return run_spatch(exe, paths, cfg);
     if (c_files.empty()) return {help_ok(stage, exe, probed)};
     if (stage == "semgrep") return run_semgrep(exe, paths, cfg);
@@ -1943,7 +1841,8 @@ std::vector<Finding> run_compiler(const std::vector<fs::path>& paths, const Conf
     return out;
 }
 
-std::vector<Finding> run_cppcheck(const std::vector<fs::path>& paths, const Config& cfg) {
+static std::vector<Finding> run_cppcheck_unstamped(const std::vector<fs::path>& paths,
+                                            const Config& cfg) {
     auto exe = cfg.which_adapter("cppcheck", {"cppcheck", "cppcheck.exe"});
     if (!exe) return {notrun("cppcheck", "cppcheck", adapter_install("cppcheck"))};
     std::vector<std::string> files;
@@ -2012,7 +1911,8 @@ std::vector<Finding> run_cppcheck(const std::vector<fs::path>& paths, const Conf
     return out;
 }
 
-std::vector<Finding> run_esbmc(const std::vector<fs::path>& paths, const Config& cfg) {
+static std::vector<Finding> run_esbmc_unstamped(const std::vector<fs::path>& paths,
+                                            const Config& cfg) {
     auto exe = cfg.which_adapter("esbmc", {"esbmc", "esbmc.exe"});
     if (!exe) return {notrun("esbmc", "esbmc", adapter_install("esbmc"))};
     std::vector<fs::path> files;
@@ -2075,7 +1975,8 @@ std::vector<Finding> run_esbmc(const std::vector<fs::path>& paths, const Config&
     return out;
 }
 
-std::vector<Finding> run_dafny(const std::vector<fs::path>& paths, const Config& cfg) {
+static std::vector<Finding> run_dafny_unstamped(const std::vector<fs::path>& paths,
+                                            const Config& cfg) {
     auto exe = cfg.which_adapter("dafny", {"dafny", "dafny.exe"});
     if (!exe) return {notrun("dafny", "dafny", adapter_install("dafny"))};
     std::vector<Finding> out;
@@ -2103,6 +2004,26 @@ std::vector<Finding> run_dafny(const std::vector<fs::path>& paths, const Config&
         out.push_back(finding("dafny", laws::NOTRUN, "", "", "no .dfy files in scope",
                               laws::STRENGTH_PROVES));
     (void)cfg;
+    return out;
+}
+
+// Findings from an external tool carry extra["tool_sha"] (roadmap 1.1);
+// prism/adapters.py @stamps_tool.
+std::vector<Finding> run_cppcheck(const std::vector<fs::path>& paths, const Config& cfg) {
+    auto out = run_cppcheck_unstamped(paths, cfg);
+    if (auto exe = cfg.which_adapter("cppcheck", {"cppcheck", "cppcheck.exe"})) stamp_tool_sha(out, *exe);
+    return out;
+}
+
+std::vector<Finding> run_esbmc(const std::vector<fs::path>& paths, const Config& cfg) {
+    auto out = run_esbmc_unstamped(paths, cfg);
+    if (auto exe = cfg.which_adapter("esbmc", {"esbmc", "esbmc.exe"})) stamp_tool_sha(out, *exe);
+    return out;
+}
+
+std::vector<Finding> run_dafny(const std::vector<fs::path>& paths, const Config& cfg) {
+    auto out = run_dafny_unstamped(paths, cfg);
+    if (auto exe = cfg.which_adapter("dafny", {"dafny", "dafny.exe"})) stamp_tool_sha(out, *exe);
     return out;
 }
 
@@ -2146,7 +2067,6 @@ std::vector<Finding> run_optional_tools(const std::vector<fs::path>& paths, cons
         {"afl-fuzz", {"afl-fuzz", "afl-fuzz.exe", nullptr}},
         {"frama-c", {"frama-c", "frama-c.exe", nullptr}},
         {"infer", {"infer", nullptr, nullptr}},
-        {"codeql", {"codeql", "codeql.exe", nullptr}},
         {"clang-tidy", {"clang-tidy", "clang-tidy.exe", nullptr}},
         {"cbmc", {"cbmc", "cbmc.exe", nullptr}},
         {"strix", {"strix", "strix.exe", nullptr}},
@@ -2202,6 +2122,7 @@ std::vector<Finding> run_optional_tools(const std::vector<fs::path>& paths, cons
         }
         try {
             auto more = dispatch_optional(tool.stage, exe->string(), paths, cfg, *probed);
+            stamp_tool_sha(more, *exe);
             out.insert(out.end(), more.begin(), more.end());
         } catch (const std::system_error& ex) {
             // Python engine adapters_extra.run_optional_tools: OSError → NOTRUN unusable.

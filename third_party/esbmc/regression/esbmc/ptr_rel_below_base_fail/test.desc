@@ -1,5 +1,0 @@
-CORE
-main.c
-
-^  assertion below >= b$
-^VERIFICATION FAILED$

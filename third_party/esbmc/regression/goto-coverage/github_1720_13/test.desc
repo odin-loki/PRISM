@@ -1,9 +1,0 @@
-CORE
-main.c
---condition-coverage
-^Reached Conditions:  8
-^Short Circuited Conditions:  4
-^Total Conditions:  12
-^Condition Properties - SATISFIED:  4
-^Condition Properties - UNSATISFIED:  4
-^COVERAGE ANALYSIS COMPLETE$

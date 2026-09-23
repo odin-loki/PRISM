@@ -1,5 +1,0 @@
-CORE
-main.c
---enforce-contract f --function f
-^VERIFICATION SUCCESSFUL$
-(?s)\A(?!.*contract states no extent)

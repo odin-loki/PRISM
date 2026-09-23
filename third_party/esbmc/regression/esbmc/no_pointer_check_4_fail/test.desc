@@ -1,4 +1,0 @@
-CORE
-main.c
---no-pointer-relation-check
-^VERIFICATION FAILED$

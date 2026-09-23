@@ -1,5 +1,0 @@
-@@
-@@
-
-foo();
-+blah(one, two);

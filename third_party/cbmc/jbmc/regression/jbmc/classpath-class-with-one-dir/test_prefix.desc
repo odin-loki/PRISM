@@ -1,9 +1,0 @@
-CORE
-src/Test
-
-^EXIT=6$
-^SIGNAL=0$
-Could not find or load main class src.Test
---
---
-Test class is not in src package. Therefore, this must fail.

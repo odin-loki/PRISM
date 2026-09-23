@@ -1,4 +1,0 @@
-CORE
-main.py
---enforce-contract k
-^ERROR: __ESBMC_requires clause at line 2 references __ESBMC_return_value; a precondition cannot mention the return value$

@@ -1,8 +1,0 @@
-CORE
-main.c
---assertion-coverage --schedule
-^Total Asserts: 1
-^Total Assertion Instances: 1
-^Reached Assertion Instances: 1
-^Assertion Instances Coverage: 100%$
-^COVERAGE ANALYSIS COMPLETE$

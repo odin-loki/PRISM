@@ -1,5 +1,0 @@
-CORE
-main.py
---unwind 6
-REQUIRES signed_char_host
-^VERIFICATION SUCCESSFUL$

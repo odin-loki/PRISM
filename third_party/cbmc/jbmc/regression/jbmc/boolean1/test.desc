@@ -1,8 +1,0 @@
-CORE
-boolean1
---function boolean1.doit -cp target/classes
-^EXIT=0$
-^SIGNAL=0$
-^VERIFICATION SUCCESSFUL$
---
-^warning: ignoring

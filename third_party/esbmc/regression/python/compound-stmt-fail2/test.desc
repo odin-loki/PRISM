@@ -1,4 +1,0 @@
-CORE
-main.py
---overflow-check --nan-check
-^VERIFICATION FAILED$

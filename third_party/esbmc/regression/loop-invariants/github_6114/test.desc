@@ -1,4 +1,0 @@
-CORE
-main.c
---multi-property --result-only --loop-invariant --no-standard-checks
-^VERIFICATION SUCCESSFUL$

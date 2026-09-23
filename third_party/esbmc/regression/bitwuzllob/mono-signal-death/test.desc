@@ -1,5 +1,0 @@
-CORE
-main.c
---bitwuzllob --bitwuzllob-prog crash-mallob.sh --result-only
-died with signal .*discarding its verdict
-SMT solver failed

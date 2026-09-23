@@ -1,5 +1,0 @@
-CORE
-esd.ld
---ld-props props.yaml --k-induction --unlimited-k-steps
-^VERIFICATION FAILED$
-^.*ESD valve must be closed when manual ESD is triggered.*$

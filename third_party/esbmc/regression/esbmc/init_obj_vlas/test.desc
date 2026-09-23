@@ -1,4 +1,0 @@
-CORE
-main.c
-
-^ERROR: __ESBMC_init_object does not support VLAs$

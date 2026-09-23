@@ -1,4 +1,0 @@
-CORE
-main.py
---incremental-bmc
-^ERROR: Variable 'args' is not defined in function 'f'

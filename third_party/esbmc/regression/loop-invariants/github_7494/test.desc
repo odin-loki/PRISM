@@ -1,5 +1,0 @@
-CORE
-main.c
---loop-invariant
-^\s+PASSED\s+\[main\.assertion\.4\]\s+line\s+13\s+assertion x == 5$
-^VERIFICATION SUCCESSFUL$

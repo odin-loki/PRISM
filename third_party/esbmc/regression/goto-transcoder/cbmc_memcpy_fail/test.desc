@@ -1,4 +1,0 @@
-CORE
-cbmc_memcpy_fail.goto
---binary
-^VERIFICATION FAILED$

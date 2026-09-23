@@ -1,5 +1,0 @@
-CORE
-main.py
---unwind 20
-^VERIFICATION SUCCESSFUL$
-^Generated [0-9]{1,4} VCC\(s\)

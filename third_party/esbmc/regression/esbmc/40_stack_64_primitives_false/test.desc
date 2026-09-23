@@ -1,4 +1,0 @@
-CORE
-main.c
---64 --stack-limit 32
-^VERIFICATION FAILED$

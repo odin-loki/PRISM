@@ -1,5 +1,0 @@
-CORE
-test.c
---ltl test.ba-2.c -DLTL_PREFIX_BOUND=10 --k-induction
-^VERIFICATION UNKNOWN$
-^WARNING: No LTL outcome seen; the property was not checked$

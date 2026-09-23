@@ -1,5 +1,0 @@
-CORE
-main.c
---smt-symex-guard --cswitch-skip-readonly-globals
-^Enabling --smt-during-symex to use features that involve encoding SMT during symex$
-^VERIFICATION SUCCESSFUL$

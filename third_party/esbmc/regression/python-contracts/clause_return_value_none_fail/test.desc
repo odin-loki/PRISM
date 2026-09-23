@@ -1,4 +1,0 @@
-CORE
-main.py
---enforce-contract g
-^ERROR: __ESBMC_ensures clause at line 3 references __ESBMC_return_value, but 'g' returns None$

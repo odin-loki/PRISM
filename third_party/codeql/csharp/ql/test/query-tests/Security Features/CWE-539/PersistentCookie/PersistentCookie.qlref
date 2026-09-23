@@ -1,2 +1,0 @@
-query: Security Features/PersistentCookie.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

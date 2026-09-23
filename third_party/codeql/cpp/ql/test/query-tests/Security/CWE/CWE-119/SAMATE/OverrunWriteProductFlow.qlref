@@ -1,2 +1,0 @@
-query: Security/CWE/CWE-119/OverrunWriteProductFlow.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

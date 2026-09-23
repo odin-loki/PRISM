@@ -1,5 +1,0 @@
-CORE
-main.c
---64 --overflow-check --witness-output-graphml -
-^VERIFICATION FAILED$
-key="assumption">d-&gt;devnum == -?\d+;

@@ -1,0 +1,83 @@
+PRISM (Performance, Regression, Integration and Security Module)
+Copyright (c) 2026 Odin Loch / Imortek. All rights reserved.
+PRISM's own code is covered by LICENSE (draft source-available evaluation
+licence). This NOTICE lists third-party work PRISM contains or builds on.
+The authoritative list of pinned components is third_party/MANIFEST.toml;
+the CycloneDX SBOM (scripts/sbom.py) is generated from it.
+
+======================================================================
+1. Libraries compiled into PRISM (third_party/, kind = "linked")
+======================================================================
+Each is an unmodified upstream source copy (see `drift` in the manifest for
+the few line-ending differences). Their licence texts ship in their trees.
+
+- Z3 4.13.4 — Copyright (c) Microsoft Corporation. MIT License.
+  third_party/z3/LICENSE.txt
+- PCRE2 10.44 — Copyright (c) 1997-2024 University of Cambridge and
+  Philip Hazel; JIT (c) Zoltan Herczeg; stack-less JIT (c) Zoltan Herczeg.
+  BSD-3-Clause WITH PCRE2-exception. third_party/pcre2/LICENCE
+- xsimd 13.2.0 — Copyright (c) 2016 Johan Mabille, Sylvain Corlay, Wolf
+  Vollprecht and Martin Renou; (c) 2016 QuantStack; (c) 2018 Serge Guelton.
+  BSD-3-Clause. third_party/xsimd/LICENSE
+- nlohmann/json 3.11.3 — Copyright (c) 2013-2023 Niels Lohmann. MIT License.
+  third_party/nlohmann/json.hpp (SPDX header)
+- doctest 2.4.11 — Copyright (c) 2016-2023 Viktor Kirilov. MIT License.
+  third_party/doctest/doctest.h (header). Used by the test binary only.
+- llama.cpp b6875 (ggml 0.9.4) — Copyright (c) 2023-2024 The ggml authors.
+  MIT License. third_party/llama.cpp/LICENSE (bundled sub-licences in
+  third_party/llama.cpp/licenses/). Linked only when PRISM_LLAMA=ON.
+
+======================================================================
+2. External tools (kind = "external"; never linked, never shipped)
+======================================================================
+PRISM runs these as separate, unmodified processes when the user has
+installed them (scripts/fetch_deps.py builds pinned commits into
+~/.prism/tools/). PRISM does not distribute them. Recorded licences, read
+from each project's licence file:
+
+  ESBMC        Apache-2.0 AND BSD-4-Clause (bundled solvers vary)
+  CBMC         BSD-4-Clause
+  KLEE         NCSA
+  cppcheck     GPL-3.0-or-later
+  Frama-C      LGPL-2.1-only (some parts CDDL-1.0 / Q-modified)
+  Infer        MIT
+  Semgrep      LGPL-2.1-only
+  Coccinelle   GPL-2.0-only
+  AFL++        AGPL-3.0-or-later (per the licence file in the mined copy)
+  Dafny        MIT
+  Strix        AGPL-3.0-or-later (per the licence file in the mined copy)
+  CaDiCaL      MIT
+  Kissat       MIT
+  cake_lpr     BSD-3-Clause (CakeML licence)
+
+======================================================================
+3. Algorithms re-implemented from published work
+======================================================================
+PRISM contains no source code from the projects below. It re-implements
+ideas described in their papers and repositories; docs/MINED.md records
+what was taken from where.
+
+- Fuzz4All (https://github.com/fuzz4all/fuzz4all) — "Fuzz4All: Universal
+  Fuzzing with Large Language Models", Chunqiu Steven Xia, Matteo Paltenghi,
+  Jia Le Tian, Michael Pradel and Lingming Zhang, ICSE 2024. Licensed under
+  Creative Commons Attribution 4.0 International (CC-BY-4.0). PRISM's
+  autoprompt / mutate loop in prism/fuse.py and src/prism/ is a
+  reimplementation of the Fuzz4All algorithm; this notice is the
+  attribution CC-BY-4.0 requires. Changes: rewritten from scratch in
+  Python and C++, driven by a local model, and bounded by PRISM's laws
+  (model output is HYPOTHESIS until a checker confirms it).
+- FuSeBMC (Kaled Alshmrany, Rafael Menezes, Mikhail Gadelha, Lucas
+  Cordeiro) — goal labelling + BMC-guided fuzzing, re-implemented from the
+  published papers.
+- AFL++ — the "interesting values" tables used by PRISM's havoc mutator
+  (src/prism/havoc.cpp, src/cuda/mutate.cu) are the well-known constants
+  from AFL/AFL++ include/config.h (facts, not expression).
+- KLEE, Frama-C WP, CBMC, ESBMC, cppcheck, Coccinelle, Infer, Semgrep,
+  Strix, RapidCheck — design ideas only; see docs/MINED.md.
+
+======================================================================
+4. Not used
+======================================================================
+The CodeQL engine/CLI is governed by the GitHub CodeQL Terms and Conditions,
+which restrict commercial use. PRISM does not invoke it (the adapter was
+removed; roadmap 1.2).

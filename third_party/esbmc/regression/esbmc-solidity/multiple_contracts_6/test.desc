@@ -1,4 +1,0 @@
-THOROUGH
-mul.solast
---function test --contract Derived --sol mul.sol  --k-induction --bound
-^VERIFICATION FAILED$

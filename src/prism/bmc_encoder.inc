@@ -548,6 +548,9 @@ struct Parser {
     std::map<std::string, std::string> macros;
     std::string err;
     bool havoc = false;
+    // AI hook statements (__prism_assume/assert/havoc/step) are only parsed
+    // for programs built by prism::ai::check_program, never for user code.
+    bool ai_hooks = false;
 
     Parser(std::string b, std::vector<std::pair<std::string, std::string>> p, int u,
            std::map<std::string, int> en, std::map<std::string, std::string> mac = {},
@@ -606,6 +609,7 @@ struct Parser {
     void loop_havoc(Enc& e, const std::string& kind, const std::string& cond_src,
                     const std::string& body, const std::string& incr);
     void run_body(Enc& e, const std::string& body);
+    std::string ai_hook_stmt(Enc& e, std::string text);
     TV expr(Enc& e, std::string src) { return parse_expr(e, strip(src), *this); }
     TV binop(Enc& e, const TV& a, const std::string& op, const TV& b, const std::string&) {
         return apply_binop(e, a, op, b);
@@ -890,6 +894,7 @@ void Parser::stmts(Enc& e, std::string text) {
         if (rx_search(R"BMC(\(\s*\.\.\.\s*[+\-|&^]|[+\-|&^]\s*\.\.\.\s*\))BMC", text)) {
             throw ParseFail(R"BMC(fold unencoded)BMC");
         }
+        if (ai_hooks && text.starts_with("__prism_")) { text = ai_hook_stmt(e, text); continue; }
         if (starts_kw(text, "if")) { text = if_stmt(e, text); continue; }
         if (starts_kw(text, "switch")) { text = switch_stmt(e, text); continue; }
         if (starts_kw(text, "do")) { text = do_stmt(e, text); continue; }
@@ -1122,6 +1127,78 @@ void Parser::return_stmt(Enc& e, std::string stmt) {
         }
     }
     e.path_true = e.ctx.bool_val(false);
+}
+
+// prism::ai loop-cut hooks. Expressions inside assume/assert are predicates
+// over the state: UB properties raised while evaluating them are dropped (the
+// invariant text is not program code). The loop condition of __prism_step is
+// program code, so its properties stay.
+std::string Parser::ai_hook_stmt(Enc& e, std::string text) {
+    auto drop_props_from = [&](size_t n) {
+        e.props.erase(e.props.begin() + static_cast<std::ptrdiff_t>(n), e.props.end());
+    };
+    if (starts_kw(text, "__prism_assume")) {
+        auto [inner, rest] = paren_stmt(text.substr(14));
+        size_t n = e.props.size();
+        auto c = as_bool(expr(e, inner));
+        drop_props_from(n);
+        e.assume(c);
+        return rest;
+    }
+    if (starts_kw(text, "__prism_assert")) {
+        auto [inner, rest] = paren_stmt(text.substr(14));
+        auto comma = inner.find(',');
+        if (comma == std::string::npos) throw ParseFail("ai assert without tag");
+        auto tag = strip(inner.substr(0, comma));
+        size_t n = e.props.size();
+        auto c = as_bool(expr(e, inner.substr(comma + 1)));
+        drop_props_from(n);
+        e.add_prop("ai-inv#" + tag, "AI-INVARIANT", !c, e.pc);
+        return rest;
+    }
+    if (starts_kw(text, "__prism_havoc")) {
+        auto [inner, rest] = paren_stmt(text.substr(13));
+        auto name = strip(inner);
+        if (!is_ident(name)) throw ParseFail("ai havoc of non-identifier");
+        e.fresh += 1;
+        auto fresh_name = "__hv" + std::to_string(e.fresh) + "_" + name;
+        if (e.is_array(name)) {
+            auto an = e.canonical(name);
+            auto arr = e.arrays.at(an);
+            arr.a = e.ctx.constant(fresh_name.c_str(), arr.a.get_sort());
+            e.arrays.insert_or_assign(an, arr);
+        } else {
+            if (!e.bits.count(name)) throw ParseFail("UNENCODED: ai havoc of undeclared " + name);
+            auto t = e.type_of(name);
+            e.vars.insert_or_assign(name, e.bv(fresh_name, t.w));
+            auto it = e.uninit.find(name);
+            if (it != e.uninit.end()) {
+                bool surely_init = false;
+                try {
+                    surely_init = it->second.simplify().is_false();
+                } catch (...) {}
+                // Havoc keeps "maybe uninitialised" as an unknown flag: the
+                // loop may run zero times. Conservative (fails closed).
+                if (!surely_init)
+                    e.uninit.insert_or_assign(name, e.ctx.bool_const((fresh_name + "_u").c_str()));
+            }
+        }
+        return rest;
+    }
+    if (starts_kw(text, "__prism_step")) {
+        auto rest = lstrip(text.substr(12));
+        auto [cond_src, r1] = paren(rest);
+        auto [body, r2] = block_or_stmt(r1);
+        auto cond = as_bool(expr(e, cond_src));
+        auto base = e.snap();
+        e.path_true = base.path && cond;
+        // A break/continue has no enclosing loop here: ParseFail, never dropped.
+        block(e, body);
+        e.load(base);
+        e.path_true = base.path && !cond;
+        return r2;
+    }
+    throw ParseFail("unknown ai hook");
 }
 
 z3::check_result check_sat(Enc& e, const z3::expr& cond) {

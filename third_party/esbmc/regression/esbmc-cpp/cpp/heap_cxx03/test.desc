@@ -1,5 +1,0 @@
-CORE
-main.cpp
---std c++03 --unwind 6 --no-unwinding-assertions
-
-^VERIFICATION SUCCESSFUL$

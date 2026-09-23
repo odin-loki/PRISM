@@ -1,4 +1,0 @@
-CORE
-main.c
---function normalise --enforce-contract normalise --no-pointer-check --unwind 8 --loop-invariant-check
-^VERIFICATION SUCCESSFUL$

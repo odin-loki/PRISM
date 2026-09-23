@@ -1,5 +1,0 @@
-CORE
-main.c
---ub-shift-check
-^  undefined behavior on shift operation lshr$
-^VERIFICATION FAILED$

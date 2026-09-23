@@ -1,8 +1,0 @@
-name: codeql/unified-tests
-groups: [unified, test]
-dependencies:
-  codeql/unified-queries: ${workspace}
-  codeql/unified-all: ${workspace}
-extractor: unified
-tests: .
-warnOnImplicitThis: true

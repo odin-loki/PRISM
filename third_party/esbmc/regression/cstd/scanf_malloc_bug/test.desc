@@ -1,4 +1,0 @@
-CORE
-main.c
---overflow-check --k-induction
-^VERIFICATION FAILED$

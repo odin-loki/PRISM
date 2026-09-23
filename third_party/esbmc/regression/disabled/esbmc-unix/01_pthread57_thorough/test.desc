@@ -1,4 +1,0 @@
-THOROUGH
-main.c
---force-malloc-success --incremental-bmc
-^VERIFICATION SUCCESSFUL$

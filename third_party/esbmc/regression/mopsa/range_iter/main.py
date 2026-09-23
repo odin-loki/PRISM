@@ -1,6 +1,0 @@
-r = range(4)
-i1 = r.__iter__()
-i2 = r.__iter__()
-x1 = next(i1)
-x2 = next(i1)
-x3 = i2.__next__()

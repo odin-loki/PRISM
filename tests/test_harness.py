@@ -65,7 +65,9 @@ class TestHarnessHonesty(unittest.TestCase):
 
     def test_stage_after_bmc(self):
         self.assertIn("harness", STAGE_ORDER)
-        self.assertEqual(STAGE_ORDER[STAGE_ORDER.index("bmc") + 1], "harness")
+        # pir (Clang/LLVM front end, roadmap Part 2) sits between bmc and harness.
+        self.assertEqual(STAGE_ORDER[STAGE_ORDER.index("bmc") + 1], "pir")
+        self.assertEqual(STAGE_ORDER[STAGE_ORDER.index("pir") + 1], "harness")
 
     def test_pointer_without_requires_needs_harness_not_error(self):
         f, _ = load("null_branch")

@@ -1,4 +1,0 @@
-CORE
-main.py
---incremental-bmc
-^ERROR: ValueError: numpy.percentile\(\) q must be in \[0, 100\]$

@@ -1,4 +1,0 @@
-CORE
-cbmc_anon_struct.goto
---binary
-^VERIFICATION SUCCESSFUL$

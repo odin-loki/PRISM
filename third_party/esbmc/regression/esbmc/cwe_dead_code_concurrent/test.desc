@@ -1,7 +1,0 @@
-CORE
-main.c
---dead-code-check --sarif-output out.sarif
-^\[Dead code\]$
-^No provably-dead code found\.$
-^VERIFICATION SUCCESSFUL$
-CHECK_FILE out.sarif absent "ruleId": "dead-code"

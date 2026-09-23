@@ -1,4 +1,0 @@
-CORE
-cbmc_computed_goto.goto
---binary
-^VERIFICATION SUCCESSFUL$

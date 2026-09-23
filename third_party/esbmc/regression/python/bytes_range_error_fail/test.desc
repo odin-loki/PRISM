@@ -1,4 +1,0 @@
-CORE
-main.py
-
-^ERROR: ValueError: bytes must be in range\(0, 256\)$

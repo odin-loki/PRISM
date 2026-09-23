@@ -1,1 +1,0 @@
-class Button: Control, Drawable {}

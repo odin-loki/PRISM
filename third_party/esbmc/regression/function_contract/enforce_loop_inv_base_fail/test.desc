@@ -1,4 +1,0 @@
-CORE
-main.c
---enforce-contract wrong_base --loop-invariant
-^VERIFICATION FAILED$

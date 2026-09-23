@@ -1,5 +1,0 @@
-CORE
-main.py
-
-^\s*FAILED\s+\[main\.assertion\.1\].*assertion maxsize < 0$
-^VERIFICATION FAILED$

@@ -1,4 +1,0 @@
-CORE
-main.c
---data-races-check-only --context-bound 2
-^\s*R/W data race on c:@balance$

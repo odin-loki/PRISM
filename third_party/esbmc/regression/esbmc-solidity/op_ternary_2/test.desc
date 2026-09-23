@@ -1,4 +1,0 @@
-CORE
-contract.solast
---function test_op --sol contract.sol --incremental-bmc
-^VERIFICATION FAILED$

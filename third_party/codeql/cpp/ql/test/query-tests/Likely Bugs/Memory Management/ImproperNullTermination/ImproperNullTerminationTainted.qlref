@@ -1,2 +1,0 @@
-query: Security/CWE/CWE-170/ImproperNullTerminationTainted.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

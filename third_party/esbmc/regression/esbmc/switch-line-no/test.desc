@@ -1,5 +1,0 @@
-CORE
-main.c
-
-^VERIFICATION FAILED$
-main.c line 8.*\n.*\n\s*data = 

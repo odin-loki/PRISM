@@ -1,4 +1,0 @@
-CORE
-cbmc_int128_mul.goto
---binary
-^VERIFICATION SUCCESSFUL$

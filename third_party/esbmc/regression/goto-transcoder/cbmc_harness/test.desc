@@ -1,4 +1,0 @@
-CORE
-cbmc_harness.goto
---binary --function verify
-^VERIFICATION SUCCESSFUL$

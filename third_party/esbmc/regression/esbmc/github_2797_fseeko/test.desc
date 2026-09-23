@@ -1,5 +1,0 @@
-CORE
-main.c
---incremental-bmc -Wno-error=implicit-function-declaration
-^VERIFICATION SUCCESSFUL$
-(?s)\A(?!.*no body for function fseeko)
