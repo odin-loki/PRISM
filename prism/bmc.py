@@ -1273,7 +1273,10 @@ class Parser:
             e.fresh += 1
             arr = z3.Array(f"{name}_arr{e.fresh}", z3.BitVecSort(WIDTH), z3.BitVecSort(ct[0]))
             e.declare_array(name, Arr(arr, n, ct[0], ct[1]))
-            e.shadow_init(name, bool(init))
+            # `_h_p`: the harness buffer standing for the caller's object
+            # behind pointer parameter p (prism/harness.py). Its contents are
+            # the caller's, assumed initialised like the `// requires:` size.
+            e.shadow_init(name, bool(init) or name.startswith("_h_"))
             return
         # int x = 0;  unsigned n;  int x;
         m = _rx("(" + _CDECL_TYPE + r")\s+([A-Za-z_]\w*)(?:\s*=\s*(.*))?$").match(stmt)
