@@ -71,6 +71,10 @@ SUITE = REPO / "tests" / "conformance"
 PROOF = {"PROVED", "PROVED-UNBOUNDED", "PROVED-ASSUMING", "PROVED-CERTIFIED"}
 BASE_STAGES = ["inventory", "classify", "bmc", "harness"]
 VERDICT_STAGES = ["bmc", "harness", "pir"]
+# Stages that only speak about part of the functions (harness: POINTER
+# functions under `// requires:`). A function they do not mention is out of
+# scope, not silently skipped; bmc and pir must report every function.
+SCOPED_STAGES = {"harness"}
 
 # SV-COMP property file -> suite property
 SV_PROPERTIES = {"no-overflow.prp": "no-overflow", "valid-memsafety.prp": "memsafety"}
@@ -592,7 +596,7 @@ def replay(task: Task, fn: str, cex: str, work: Path) -> dict[str, Any]:
 def classify(task: Task, fn: str, found: list[dict[str, Any]]) -> str:
     statuses = {f["status"] for f in found}
     expected = task.expected[fn]
-    prop_scoped = task.origin != "prism"  # SV-COMP/Juliet labels speak for one property only
+    prop_scoped = task.origin == "sv-comp"  # SV-COMP labels speak for one property only
     classes = PROPERTY_CLASSES.get(task.prop, set())
     failed = [f for f in found if f["status"] == "FAILED"]
     failed_in_prop = [f for f in failed if not prop_scoped or f.get("cls") in classes]
@@ -886,6 +890,8 @@ def main(argv: list[str] | None = None) -> int:
                     found = res.get("findings", {}).get(stage, {}).get(fn, [])
                     if "error" in res:
                         found = []
+                    if not found and stage in SCOPED_STAGES and "error" not in res:
+                        continue  # outside the stage's scope (e.g. harness: pointer functions)
                     row: dict[str, Any] = {
                         "task": t.ident, "origin": t.origin, "category": t.category, "function": fn,
                         "expected": exp, "property": t.prop, "stage": stage,
