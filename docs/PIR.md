@@ -751,7 +751,19 @@ edge guards; each check contributes `reach ∧ violation`; assumes contribute
 `reach → cond`.
 
 * **FAILED** — some check is satisfiable. `counterexample` = `extra.cex` =
-  parameter values (signed decimal), `extra.prop`, `cls`, `line`.
+  parameter values (signed decimal), `extra.prop`, `cls`, `line`. When the
+  function calls `__VERIFIER_nondet_*` itself (not inside a library model),
+  `extra.nondet` lists the values those calls return on the violating path,
+  in call order, as `fn=value, ...` (signed per the C type, the same shape
+  as the `bmc` stage), and `extra.nondet_loc` the calls' debug locations
+  `line:col, ...` (`0:0` when unknown). A call is listed when the model makes
+  its block instance reachable and it runs before the violated check (the
+  reachable instances form one chain, and topological order is execution
+  order along it). The values come from one Z3 model of the same VC with
+  the parameters and nondet values pinned to the winning solver's model; if
+  that re-query finds no model, `extra.nondet_note` says so and there is no
+  `nondet` key. The SV-COMP wrapper replays these values and writes a
+  `function_return` waypoint at each call ([SVCOMP.md](SVCOMP.md)).
 * **PROVED** — no check is satisfiable and no unwinding cut is reachable
   (loop-free, or every loop closes within the bound: the unwinding assertion
   is proved).
