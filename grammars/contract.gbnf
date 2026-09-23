@@ -1,0 +1,12 @@
+# PRISM contract draft (ACSL-ish): requires / ensures clauses over the
+# function's parameters and \result. Drafted contracts stay HYPOTHESIS until
+# a human approves them. At run time the ident rule is replaced with the
+# parameter names.
+root   ::= clause ( "\n" clause ){0,7} "\n"?
+clause ::= ( "requires" | "ensures" ) " " expr ";"
+expr   ::= term ( " " binop " " term ){0,8}
+term   ::= "!"? atom | "-" atom
+atom   ::= ident | "\\result" | number | "(" expr ")"
+binop  ::= "+" | "-" | "*" | "/" | "%" | "<=" | ">=" | "<" | ">" | "==" | "!=" | "&&" | "||" | "==>"
+number ::= [0-9] [0-9]{0,9}
+ident  ::= [a-zA-Z_] [a-zA-Z0-9_]{0,31}

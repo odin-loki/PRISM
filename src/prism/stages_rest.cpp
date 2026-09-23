@@ -45,6 +45,9 @@
 
 #include <nlohmann/json.hpp>
 
+#include "prism/ai.hpp"
+#include "ai/ai_internal.hpp"
+
 #ifdef PRISM_HAS_LLAMA
 #  include "llama.h"
 #endif
@@ -4202,7 +4205,36 @@ struct LlamaEngine {
         backend = "none";
     }
     bool available() const { return backend != "none"; }
+    // Roadmap 9.6: every model interaction goes to <out>/ai_audit.jsonl.
+    // These chats never set a verdict by themselves (checker "none"); a caller
+    // that checks the output (RLEF BMC) logs its own checked record.
+    std::string last_prompt;
     ChatResult complete(const std::vector<std::pair<std::string, std::string>>& messages, double timeout = 180.0) {
+        auto r = complete_raw(messages, timeout);
+        std::string prompt;
+        for (auto& [role, content] : messages) prompt += role + ":\n" + content + "\n";
+        ai::AuditRecord rec;
+        rec.feature = "chat";
+        rec.model = r.backend + ":" + cfg.model;
+        rec.model_sha256 = "unknown";
+        if (r.backend == "llama.cpp" && !cfg.gguf.empty()) {
+            static std::map<std::string, std::string> cache;
+            static std::mutex mu;
+            std::lock_guard<std::mutex> lock(mu);
+            auto key = cfg.gguf.string();
+            if (!cache.count(key)) cache[key] = ai::sha256_file(cfg.gguf);
+            if (!cache[key].empty()) rec.model_sha256 = cache[key];
+        }
+        rec.grammar = "none";
+        rec.output_valid = r.error.empty();
+        rec.rejected_reason = r.error;
+        rec.checker = "none";
+        rec.verdict_effect = "none";
+        ai::audit_model_call(rec, prompt, r.text);
+        last_prompt = prompt;
+        return r;
+    }
+    ChatResult complete_raw(const std::vector<std::pair<std::string, std::string>>& messages, double timeout) {
         if (backend == "none")
             return {"", "none", "llama.cpp not loaded and Ollama not reachable"};
 #ifdef PRISM_HAS_LLAMA
@@ -6526,6 +6558,14 @@ std::vector<Finding> run_harness_bmc(const std::vector<FunctionInfo>& functions,
         if (fn.kind != "POINTER") continue;
         auto harnessed = materialize(fn);
         if (!harnessed) {
+            // Roadmap 4.2: draft the missing preconditions (template, then the
+            // model when one is bound). PROVED-ASSUMING at best, every
+            // assumption listed; no draft keeps the NEEDS-HARNESS row below.
+            std::string refused;
+            if (auto drafted = ai::drafted_harness_bmc(fn, unwind, &refused)) {
+                out.push_back(std::move(*drafted));
+                continue;
+            }
             auto f = make_find(
                 "harness", laws::NEEDS_HARNESS, fn, "",
                 "POINTER: no honest requires; unguarded BMC would invent "
@@ -6533,6 +6573,7 @@ std::vector<Finding> run_harness_bmc(const std::vector<FunctionInfo>& functions,
                 laws::STRENGTH_SOME);
             f.extra["harness"] = "false";
             f.extra["assumed"] = "false";
+            if (!refused.empty()) f.extra["harness_draft"] = "refused: " + refused;
             out.push_back(std::move(f));
             continue;
         }
@@ -7070,9 +7111,25 @@ std::vector<Finding> rlef_repair(const Finding& fail, const Config& cfg) {
             best_src = src;
         }
         if (!scored.proved.empty()) {
+            // The proof comes from BMC on the candidate, never from the model:
+            // log the checked record the finding points at (roadmap 9.6).
+            ai::AuditRecord checked;
+            checked.feature = "repair";
+            checked.file = fail.file;
+            checked.model = r.backend + ":" + cfg.model;
+            checked.model_sha256 = "unknown";
+            checked.grammar = "none";
+            checked.output_valid = true;
+            checked.checker = "bmc(rlef candidate)";
+            checked.checker_result = scored.proved;
+            checked.verdict_effect = scored.proved;
+            ai::audit_model_call(checked, engine.last_prompt, r.text);
             Finding f;
             f.stage = "repair";
             f.status = scored.proved;
+            f.extra["ai_audit_id"] = checked.id;
+            f.extra["ai_checker"] = checked.checker;
+            f.extra["ai_checker_result"] = checked.checker_result;
             f.message = "RLEF BMC " + scored.proved + " on round " + std::to_string(i + 1) +
                         " (terminal success)";
             f.strength = std::string(laws::STRENGTH_PROVES);
@@ -7095,5 +7152,12 @@ std::vector<Finding> rlef_repair(const Finding& fail, const Config& cfg) {
     f.extra["best"] = best_src.substr(0, 1000);
     return {f};
 }
+
+namespace ai {
+std::optional<std::string> http_request_raw(const std::string& method, const std::string& url,
+                                            const std::string& body, int timeout_ms) {
+    return http_request(method, url, body, timeout_ms);
+}
+}  // namespace ai
 
 }  // namespace prism
