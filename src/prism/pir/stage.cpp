@@ -83,10 +83,10 @@ struct TmpDir {
 
 bool is_cxx(const fs::path& p) {
     auto e = p.extension().string();
-    return e == ".cc" || e == ".cpp" || e == ".cxx" || e == ".C" || e == ".c++";
+    return e == ".cc" || e == ".cpp" || e == ".cxx" || e == ".C" || e == ".c++" || e == ".ii";
 }
 
-bool is_unit(const fs::path& p) { return p.extension() == ".c" || is_cxx(p); }
+bool is_unit(const fs::path& p) { return p.extension() == ".c" || p.extension() == ".i" || is_cxx(p); }
 
 std::string first_error(const std::string& text) {
     std::istringstream ss(text);

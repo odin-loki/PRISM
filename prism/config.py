@@ -68,9 +68,12 @@ def load_manifest(root: Path | None = None) -> dict[str, dict[str, Any]]:
     try:
         with open(path, "rb") as fh:
             data = tomllib.load(fh)
-    except (OSError, tomllib.TOMLDecodeError):
+    except (OSError, ValueError):  # TOMLDecodeError, and UnicodeDecodeError on non-UTF-8 bytes
         return {}
-    return {str(c.get("name")): c for c in data.get("component") or [] if c.get("name")}
+    comps = data.get("component")
+    if not isinstance(comps, list):
+        return {}
+    return {str(c.get("name")): c for c in comps if isinstance(c, dict) and c.get("name")}
 
 
 def pinned_commit(component: str, root: Path | None = None) -> str | None:

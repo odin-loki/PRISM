@@ -64,7 +64,7 @@ def read_stages(out: Path) -> list[StageResult]:
             continue
         try:
             recs.append(stage_from_dict(json.loads(ln)))
-        except (json.JSONDecodeError, TypeError, ValueError):
+        except (json.JSONDecodeError, TypeError, ValueError, AttributeError, KeyError):
             continue
     return recs
 
@@ -97,7 +97,7 @@ def read_functions(out: Path) -> list[FunctionInfo]:
         return []
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+    except (OSError, json.JSONDecodeError, TypeError, ValueError, AttributeError, KeyError):
         return []
     if not isinstance(data, list):
         return []

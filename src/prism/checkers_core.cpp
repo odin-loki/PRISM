@@ -4032,7 +4032,7 @@ void checkers_core(const std::vector<std::string>& lines, std::string_view rel,
     }
     auto ext = path.extension().string();
     for (auto& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    const bool c_only = ext != ".cpp" && ext != ".cc" && ext != ".cxx";
+    const bool c_only = ext != ".cpp" && ext != ".cc" && ext != ".cxx" && ext != ".ii";
 
     shift31_realloc(lines, rel, funcs, out);
     masked_switch(lines, rel, funcs, out);

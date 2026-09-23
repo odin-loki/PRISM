@@ -57,7 +57,7 @@ const std::map<std::string, std::string> kLangExts = {
 };
 
 const std::set<std::string> kCFamilyExts = {".c", ".h", ".cc", ".cpp", ".cxx",
-                                            ".hpp", ".hh", ".hxx", ".cu"};
+                                            ".hpp", ".hh", ".hxx", ".cu", ".i", ".ii"};
 
 const std::set<std::string> kTextOnlyExts = {".env", ".ini", ".cfg", ".conf", ".properties",
                                              ".xml", ".java", ".kt", ".cs", ".swift",

@@ -13,8 +13,9 @@
 namespace prism {
 
 inline constexpr const char* C_EXTS[] = {
-    ".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".hh", nullptr};
-inline constexpr const char* TU_EXTS[] = {".c", ".cc", ".cpp", ".cxx", nullptr};
+    ".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".hh", ".i", ".ii", nullptr};
+// .i / .ii are preprocessed C / C++ translation units (cc -E output).
+inline constexpr const char* TU_EXTS[] = {".c", ".cc", ".cpp", ".cxx", ".i", ".ii", nullptr};
 
 PRISM_API bool is_c_ext(std::string_view ext);
 PRISM_API bool is_tu_ext(std::string_view ext);

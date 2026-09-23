@@ -17,8 +17,9 @@ from prism import scope
 from prism import laws
 from prism.models import Finding, FunctionInfo
 
-C_EXTS = {".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".hh"}
-TU_EXTS = {".c", ".cc", ".cpp", ".cxx"}
+# .i / .ii are preprocessed C / C++ translation units (cc -E output).
+C_EXTS = {".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".hh", ".i", ".ii"}
+TU_EXTS = {".c", ".cc", ".cpp", ".cxx", ".i", ".ii"}
 
 def _is_pointer_type(typ: str) -> bool:
     return "*" in typ or "[" in typ

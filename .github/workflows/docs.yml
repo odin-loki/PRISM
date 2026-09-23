@@ -1,0 +1,28 @@
+name: docs
+
+# Roadmap 6.4 / 6.5: the user guide documents every CLI flag and anchor,
+# and every artefact the assurance package cites (paths, tests, anchors,
+# Lean theorem names) exists. Fast, no build needed; the C++ half of
+# tests/test_docs_cli.py runs in ci.yml's python job when PRISM_BIN is set.
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  docs:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install test deps
+        run: python -m pip install pytest pyyaml
+      - name: Assurance package cites only existing artefacts
+        run: python tools/assurance_check.py
+      - name: User guide covers every CLI flag; every anchor resolves
+        run: python -m pytest -q tests/test_docs_cli.py

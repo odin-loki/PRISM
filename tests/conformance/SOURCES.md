@@ -47,6 +47,10 @@ Licence: same as this repository.
 
 `LICENSE.Apache-2.0.txt` is the upstream Apache-2.0 text; `UPSTREAM-README.md`
 is the upstream README (licensing and attribution rules).
+`properties/` holds `no-overflow.prp`, `unreach-call.prp` and
+`valid-memsafety.prp` from `c/properties/` at the same commit, copied
+unmodified so the tasks' `../properties/*.prp` references resolve (used by
+`tools/svcomp/`, see `docs/SVCOMP.md`).
 
 SV-COMP tasks are whole programs; their verdict applies to `main`, and only
 to the named property (a FAILED of another class is reported separately, not

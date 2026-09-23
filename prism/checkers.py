@@ -217,7 +217,7 @@ def _findings_for_file(path: Path, rel: str) -> list[Finding]:
     _api_strdup_null(lines, rel, funcs, out)
     _api_chroot(lines, rel, funcs, out)
     _api_umask(lines, rel, funcs, out)
-    if path.suffix.lower() not in {".cpp", ".cc", ".cxx"}:
+    if path.suffix.lower() not in {".cpp", ".cc", ".cxx", ".ii"}:
         _api_fork(lines, rel, funcs, out)
         _api_exec(lines, rel, funcs, out)
         _api_mmap(lines, rel, funcs, out)
@@ -536,7 +536,7 @@ def _findings_for_file(path: Path, rel: str) -> list[Finding]:
     _lock_order(lines, rel, funcs, out)
     _conc_toctou(lines, rel, funcs, out)
     _conc_atomicity(lines, rel, funcs, out)
-    if path.suffix.lower() in {".cpp", ".cc", ".cxx"}:
+    if path.suffix.lower() in {".cpp", ".cc", ".cxx", ".ii"}:
         _cxx_new_delete(lines, rel, funcs, out)
         _cxx_use_after_move(lines, rel, funcs, out)
         _cxx_self_assign(lines, rel, funcs, out)

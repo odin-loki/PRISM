@@ -7,6 +7,7 @@ import os
 import sys
 from pathlib import Path
 
+from prism import __version__
 from prism.config import Config
 from prism.pipeline import STAGE_ORDER, run_pipeline
 from prism.sarif import FAIL_ON, exit_code
@@ -53,6 +54,8 @@ def main(argv: list[str] | None = None) -> int:
                    help="ParanoidBSD tree for the pbsd stage (else PRISM_PBSD; no default). "
                         "Importing its modules also needs --allow-exec")
     p.add_argument("--list-stages", action="store_true")
+    p.add_argument("--version", "-V", action="version",
+                   version=f"prism {__version__} (Python engine)")
     p.add_argument("--fail-on", choices=FAIL_ON, default="never",
                    help="exit 1 on: defect (any FAILED/CRASH/SANFAIL finding, except those "
                         "with extra.severity warning/note/style) or gap (defect, or anything "

@@ -271,9 +271,9 @@ bool full_match(const Regex& re, std::string_view s) {
 
 // Anchored at 0 like Python re.match.
 std::optional<Match> match_at_start(const Regex& re, std::string_view s) {
-    auto m = re.search_match(s);
-    if (!m || m->spans[0].first != 0) return std::nullopt;
-    return m;
+    // Anchored: an unanchored search retried every start offset, which was
+    // super-linear on crafted input (docs/FUZZ_SELF.md F1).
+    return re.match_prefix(s);
 }
 
 // `W :: go` -> `W::go`, `operator <<` -> `operator<<`; `operator bool` kept.

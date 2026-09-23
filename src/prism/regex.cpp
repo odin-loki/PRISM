@@ -105,6 +105,18 @@ std::optional<Match> Regex::search_match(std::string_view s, std::size_t offset)
     return out;
 }
 
+std::optional<Match> Regex::match_prefix(std::string_view s) const {
+    if (!code_) return std::nullopt;
+    auto* code = static_cast<pcre2_code*>(code_);
+    auto* md = pcre2_match_data_create_from_pattern(code, nullptr);
+    int rc = pcre2_match(code, reinterpret_cast<PCRE2_SPTR>(s.data()), s.size(), 0,
+                         PCRE2_ANCHORED, md, nullptr);
+    std::optional<Match> out;
+    if (rc >= 0) out = from_ovector(s, md, code);
+    pcre2_match_data_free(md);
+    return out;
+}
+
 std::vector<Match> Regex::finditer(std::string_view s) const {
     std::vector<Match> out;
     if (!code_) return out;

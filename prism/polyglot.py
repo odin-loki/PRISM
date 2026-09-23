@@ -65,7 +65,7 @@ LANG_EXTS: dict[str, str] = {
     ".yml": "yaml", ".yaml": "yaml",
 }
 
-C_FAMILY_EXTS = {".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".hh", ".hxx", ".cu"}
+C_FAMILY_EXTS = {".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".hh", ".hxx", ".cu", ".i", ".ii"}
 
 # Extra text files the built-in scan reads (credentials land in these).
 TEXT_ONLY_EXTS = {".env", ".ini", ".cfg", ".conf", ".properties", ".xml", ".java",

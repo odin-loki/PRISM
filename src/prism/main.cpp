@@ -239,7 +239,10 @@ int main(int argc, char** argv) {
         else if (a == "--allow-exec") cfg.allow_exec = true;
         else if (a == "--strict-aliasing") cfg.strict_aliasing = true;
         else if (a == "--pir-drafts") cfg.pir_drafts = true;
-        else if (a == "--list-stages") {
+        else if (a == "--version" || a == "-V") {
+            std::cout << "prism " << PRISM_VERSION << " (C++ engine)\n";
+            return 0;
+        } else if (a == "--list-stages") {
             for (auto* p = STAGE_ORDER; *p; ++p) std::cout << *p << "\n";
             return 0;
         } else if (a == "--out") cfg.out = next();
@@ -271,7 +274,7 @@ int main(int argc, char** argv) {
                 "prism PATH [--gui] [--no-llm] [--jobs N] [--tool NAME=PATH] [--pbsd PATH]\n"
                 "           [--stage a,b] [--skip a,b] [--out DIR] [--resume] [--unwind N]\n"
                 "           [--fuzz-budget N] [--fuzz-iters N] [--repair-rounds N]\n"
-                "           [--list-stages] [--fail-on never|defect|gap] [--allow-exec]\n"
+                "           [--list-stages] [--version] [--fail-on never|defect|gap] [--allow-exec]\n"
                 "           [--requirements PATH] [--contracts-approved PATH]\n"
                 "           [--strict-aliasing] [--pir-drafts]\n"
                 "prism prove FILE.lean THEOREM [--write] [--allow-exec] (Lean proof search; prove --help)\n"

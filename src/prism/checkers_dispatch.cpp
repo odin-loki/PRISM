@@ -97,7 +97,7 @@ std::vector<Finding> run_lints(const std::vector<std::filesystem::path>& paths,
         checkers_core(lines, rel, funcs, raw_funcs, p, text, local);
         auto ext = p.extension().string();
         for (auto& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-        if (ext != ".cpp" && ext != ".cc" && ext != ".cxx")
+        if (ext != ".cpp" && ext != ".cc" && ext != ".cxx" && ext != ".ii")
             checkers_api(lines, rel, funcs, local);
         else
             checkers_cxx(lines, rel, funcs, stripped, local);

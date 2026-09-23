@@ -145,7 +145,7 @@ class RunReport:
             return None
         try:
             return cls.from_dict(json.loads(path.read_text(encoding="utf-8")))
-        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        except (OSError, json.JSONDecodeError, TypeError, ValueError, AttributeError, KeyError):
             return None
 
 

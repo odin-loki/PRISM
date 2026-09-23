@@ -37,6 +37,10 @@ public:
     std::optional<Match> search_match(std::string_view s, std::size_t offset = 0) const;
     std::vector<Match> finditer(std::string_view s) const;
     bool match_line(std::string_view s) const;  // like Python re.match (start of string)
+    // Match anchored at the start of s (PCRE2_ANCHORED). Same result as a
+    // search whose match starts at 0, without trying every later start
+    // position (linear-time guard against crafted input, docs/FUZZ_SELF.md F1).
+    std::optional<Match> match_prefix(std::string_view s) const;
 
 private:
     std::string pattern_;
