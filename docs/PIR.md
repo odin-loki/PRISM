@@ -33,7 +33,7 @@ opt -passes=mem2reg,lowerswitch,loop-simplify,lcssa,instnamer -S
 
 `.cc/.cpp/.cxx` units use `clang++ -std=c++23` and the same passes with
 LLVM's coroutine lowering in between (roadmap 2.3):
-`function(mem2reg),coro-early,cgscc(coro-split),coro-cleanup,function(lowerswitch,loop-simplify,lcssa,instnamer)`
+`function(mem2reg),coro-early,cgscc(coro-split),coro-cleanup,function(lowerswitch,fix-irreducible,loop-simplify,lcssa,instnamer)`
 ("Coroutines" below). `invoke`/`landingpad` are lowered to explicit
 exception edges by the translator itself ("Exceptions"). No
 optimising pass runs (they may exploit the UB being checked) and no
@@ -479,7 +479,10 @@ C++ units run LLVM's coroutine passes (`coro-early`, `coro-split`,
 `coro-cleanup`) after `mem2reg`: each coroutine becomes a ramp function
 that allocates its frame with `operator new`, plus `.resume`, `.destroy`
 and `.cleanup` functions that switch on the suspend index stored in the
-frame. PRISM encodes the result like any other code: `coroutine_handle::
+frame. A loop around a `co_yield` is re-entered at the suspend point in the
+resume function (a second loop entry); `fix-irreducible` gives such loops a
+single header with a dispatch phi, so the encoder's natural-loop unrolling
+applies. PRISM encodes the result like any other code: `coroutine_handle::
 resume()`/`destroy()` are indirect calls through the frame's function
 pointers ("Indirect calls"), the frame is a `new` object of the memory
 model (use after `destroy()` and double destroy of the frame are
@@ -555,6 +558,28 @@ have to be havocked. The memory encodings (SymMem) have no "arbitrary
 initialised-or-not" cell and no symbolic object count, so this was left out
 rather than approximated (Law 2: BOUNDED is never promoted without a closed,
 sound step).
+
+## Roadmap 2.3 / 2.6 coverage
+
+Normalisation (2.3): `mem2reg`, `lowerswitch`, `loop-simplify`, `lcssa`
+(all units); coroutine lowering `coro-early`, `cgscc(coro-split)`,
+`coro-cleanup` and `fix-irreducible` (C++ units); `invoke`/`landingpad` →
+explicit exception edges (in the translator, "Exceptions"). No optimising
+pass; no `-fsanitize` check insertion (Law 8).
+
+| 2.6 row | how PIR handles it | status | evidence |
+|---|---|---|---|
+| Templates, concepts, overloading, `constexpr`/`consteval`, `if consteval`, deducing `this`, lambdas | resolved by Clang before IR | DONE (no encoder work) | `tests/pir/cxx.cpp`, `tests/conformance/prism/cxx` |
+| Classes, inheritance, virtual dispatch | vtable loads are memory reads; indirect calls dispatch over the module's vtable functions (class hierarchy analysis) or address-taken functions; any other target is the havoc fallback (NEEDS-HARNESS) | DONE | `tests/pir/virt_dispatch.cpp`, `conformance/prism/virt` |
+| Exceptions | explicit exception edges, catch matching (typeinfo hierarchy), cleanup, rethrow; escape from `noexcept` (CXX-THROW-NOEXCEPT) or `main` (CXX-UNCAUGHT) is a violation | DONE (dynamic exception specs, `exception_ptr`: UNENCODED) | `tests/pir/eh_*.cpp`, `conformance/prism/eh` |
+| Coroutines | LLVM coroutine passes, then normal encoding (frame = `new` object, resume/destroy = indirect calls) | DONE | `tests/pir/coro_gen.cpp`, `conformance/prism/coro` |
+| Standard library | libc operational models; libstdc++ inlined with `_GLIBCXX_ASSERTIONS`; library throws are real exceptions; unmodelled calls NEEDS-HARNESS | PARTIAL (no verified libc++ models of containers yet) | "Library models" |
+| Floating point | Z3 floating-point theory (RNE) for half/float/double; FLOAT-CAST-OVF; `--fp-checks` | DONE (x86_fp80/fp128/bfloat, fast-math: UNENCODED) | `tests/pir/fp_arith.c`, `conformance/prism/fp` |
+| Threads and atomics | separate `conc` stage (docs/CONCURRENCY.md) | other work (not in this slice) | docs/CONCURRENCY.md |
+| Modules (`import std;`) | handled by Clang; PRISM consumes the IR | NOT TESTED (Clang 18 needs a prebuilt `std` module) | — |
+| Inline assembly | NEEDS-HARNESS unless `// prism: asm ensures <cond>`; then PROVED-ASSUMING listing the contract | DONE | `tests/pir/asm_contract.c`, `conformance/prism/asm` |
+| C (C11 to C23): `_Generic`, VLAs, `setjmp`/`longjmp` | `_Generic` by Clang; VLAs in the memory model; setjmp/longjmp as exception-like edges (CTRL-LONGJMP-INVALID) | DONE | `tests/pir/mem_libc.c`, `tests/pir/sjlj_basic.c`, `conformance/prism/sjlj` |
+| k-induction for functions using memory | — | NOT DONE (no sound havoc of the loop's memory footprint; "k-induction with memory") | `extra.k_induction` |
 
 ## Encoder and verdicts
 

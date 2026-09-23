@@ -835,6 +835,9 @@ struct Enc {
                         break;
                     }
                     case Stmt::Check: {
+                        // a path PIR cannot follow (exception/indirect-call soft check): not a violation
+                        if (s.prop == "unmodelled" || s.prop == "throw-unmodelled")
+                            throw Fail{std::string(laws::NEEDS_HARNESS), "UNENCODED: " + s.msg};
                         auto cond = is1(lookup(t, node, s.args[0]));
                         violation(e && cond, s.prop, s.cls, s.msg + " in " + tname(p, t) + at_line(s.line), s.line, t,
                                   s.prop + ":" + s.cls + ":" + std::to_string(s.line));
