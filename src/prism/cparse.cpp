@@ -1,4 +1,5 @@
 #include "prism/cparse.hpp"
+#include "prism/scope.hpp"
 
 #include "prism/laws.hpp"
 #include "prism/regex.hpp"
@@ -754,20 +755,14 @@ bool tu_is_empty(const std::filesystem::path& path) {
 std::vector<std::filesystem::path> iter_sources(const std::filesystem::path& root) {
     std::vector<std::filesystem::path> files;
     if (std::filesystem::is_regular_file(root)) return {root};
-    const std::unordered_set<std::string> skip{
-        ".git", "prism-out", "third_party", "build", "node_modules",
-        "__pycache__"};
     if (!std::filesystem::exists(root)) return files;
     for (auto it = std::filesystem::recursive_directory_iterator(root);
          it != std::filesystem::recursive_directory_iterator(); ++it) {
-        bool skip_dir = false;
-        for (auto& part : it->path()) {
-            if (skip.contains(part.string())) {
-                skip_dir = true;
-                break;
-            }
+        if (it->is_directory() && scope::skip_dir(it->path().filename().string())) {
+            it.disable_recursion_pending();
+            continue;
         }
-        if (skip_dir) continue;
+        if (scope::skipped_path(it->path(), root)) continue;
         if (it->is_regular_file() && is_c_ext(it->path().extension().string()))
             files.push_back(it->path());
     }
