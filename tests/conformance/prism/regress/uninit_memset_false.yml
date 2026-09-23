@@ -1,0 +1,10 @@
+format_version: 1
+input_files: uninit_memset_false.c
+language: C
+property: memsafety
+expected:
+  uninit_memset_false: false
+witness:
+  uninit_memset_false: [3]
+sanitizer_blind:
+  - uninit_memset_false

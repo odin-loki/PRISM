@@ -19,7 +19,7 @@ int ai_sum_to_n(int n) {
 
 /* needs: i >= 0, i <= 16 (the store a[i] stays in bounds) */
 int ai_fill(int k) {
-    int a[16];
+    int a[16] = {0};
     int i;
     for (i = 0; i < 16; i = i + 1) {
         a[i] = k;

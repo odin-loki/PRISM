@@ -260,7 +260,7 @@ In-house generator, 300 programs, 900 functions, seeds 1–300:
 Every wrong proof found, reduced to a minimal reproducer. Run any of them
 with `./build/prism FILE --no-llm --stage inventory,classify,bmc`.
 
-**Status: S1–S6, R1, R2, F1–F6 are fixed in both engines** (typed encoder:
+**Status: S1–S7, R1, R2, F1–F6 are fixed in both engines** (typed encoder:
 `src/prism/bmc_encoder.inc`, `prism/bmc.py`; inliner `src/prism/inline.cpp`,
 `prism/inline.py`). Every reproducer below is a regression test
 (`tests/test_bmc_soundness.py`, doctest "bmc soundness: ..." in
@@ -380,6 +380,34 @@ Tasks: `overflow/abs_libc_false`, `macro/fn_macro_false`,
 Fix direction: an unmodelled call or unknown identifier must make the
 function `NEEDS-HARNESS`/`ERROR` (as unencoded libc calls already do), and
 call arguments must be evaluated for UB.
+
+*Fixed (both engines).*
+**S7. Reading a local array element that was never written is not a
+property.** Scalars carried an "uninitialised" flag, arrays did not, so the
+indeterminate value (C11 6.3.2.1p2, 6.7.9p10) of an unwritten element was
+proved safe. The pir stage refuted it; bmc proved it.
+```c
+int f(int i) { int a[4]; a[0] = 1; return a[i & 3]; }     /* PROVED-UNBOUNDED; i=1 reads a[1] */
+int g(int n) { int a[4]; for (int k = 0; k < n && k < 4; k++) a[k] = k; return a[0]; }  /* n=0 */
+```
+Fix: every local array carries a per-element shadow (`uninit["@a"]`, an
+array from index to "maybe unwritten"): all set at the declaration, cleared
+by a store, all clear for an aggregate initialiser (`= {0}`, `= {1, 2}`,
+`= {}`: listed items in order, the rest zero, each item checked for UB) or
+a string literal; merged over paths like any value; a havocked loop may
+clear elements but never sets one (`U' = λx. U[x] ∧ H[x]`). An in-bounds
+read of a maybe-unwritten element is `UNINIT-READ` with a counterexample.
+An array passed to an unmodelled call (`memset`, `memcpy`, ...) gets
+unknown contents and counts as written, but the call already makes the
+function `NEEDS-HARNESS` "UNENCODED: call to ... not modelled" (S6), so it
+is never a proof. Before the fix, aggregate initialisers were a front-end
+`ERROR` and their items were never evaluated. UNINIT-READ counterexamples
+are "refuted, not replayed" in the scorer: the replay sanitizers (UBSan,
+ASan) cannot see an uninitialised read, the tasks are `sanitizer_blind`.
+Tasks: `memory/mem_uninit_false`, `regress/uninit_elem_loop`,
+`regress/uninit_elem_branch`, `regress/uninit_elem_unbounded`,
+`regress/uninit_memset`, `regress/array_init_list`,
+`regress/array_init_zero`.
 
 ### Robustness (no verdict where one was possible)
 

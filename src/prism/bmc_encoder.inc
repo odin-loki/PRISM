@@ -2,7 +2,7 @@
 // (inside its anonymous namespace, under PRISM_HAS_Z3). The Python engine
 // mirrors this file in prism/bmc.py; both must give identical verdicts.
 //
-// Semantics (C11, LP64 x86-64; docs/CONFORMANCE.md S1-S6, F1):
+// Semantics (C11, LP64 x86-64; docs/CONFORMANCE.md S1-S7, F1):
 //  * every value carries its C type (width, signedness): TV;
 //  * integer promotions (6.3.1.1) and the usual arithmetic conversions
 //    (6.3.1.8) are applied before every arithmetic operator and comparison;
@@ -123,7 +123,10 @@ struct Enc {
     std::map<std::string, z3::expr> vars;
     std::map<std::string, Arr> arrays;
     std::map<std::string, std::string> alias;  // pointer -> array it aliases
+    // name -> Bool, true = maybe uninit. "@a" -> Array(BV, Bool): the
+    // per-element shadow of local array a (true = element maybe unwritten).
     std::map<std::string, z3::expr> uninit;
+    std::vector<std::string> value_arrays;  // arrays used as values (escape to calls)
     std::vector<Prop> props;
     int pc = 0;
     int fresh = 0;
@@ -181,6 +184,7 @@ struct Enc {
             unsigned_names.erase(n);
             vars.erase(n);
             uninit.erase(n);
+            uninit.erase("@" + n);
             arrays.erase(n);
             alias.erase(n);
         }
@@ -350,6 +354,57 @@ z3::expr index32(Enc& e, const TV& i) {
     return e.conv(e.promote(i), CType{WIDTH, false}).v;
 }
 
+// Per-element initialisation of local arrays (prism/bmc.py: _Enc.shadow_init
+// ... escape_array). The shadow of array a is uninit["@a"].
+void shadow_init(Enc& e, const std::string& name, bool init) {
+    e.uninit.insert_or_assign("@" + name,
+        z3::const_array(e.ctx.bv_sort(WIDTH), e.ctx.bool_val(!init)));
+}
+
+void mark_elem_init(Enc& e, const std::string& name, const z3::expr& idx) {
+    auto it = e.uninit.find("@" + name);
+    if (it != e.uninit.end()) it->second = z3::store(it->second, idx, e.ctx.bool_val(false));
+}
+
+// Reading an element never written is an indeterminate value (C11
+// 6.3.2.1p2, 6.7.9p10): UNINIT-READ. Out-of-bounds indices are the OOB
+// property's, not this one's.
+void check_elem(Enc& e, const std::string& name, const TV& i, int n) {
+    auto it = e.uninit.find("@" + name);
+    if (it == e.uninit.end()) return;
+    auto viol = !oob(e, i, n) && z3::select(it->second, index32(e, i));
+    try {
+        if (viol.simplify().is_false()) return;
+    } catch (...) {}
+    e.add_prop("uninit", "UNINIT-READ", viol, e.pc);
+}
+
+// A havocked loop may write any element but never unwrites one.
+void havoc_shadow(Enc& e, const std::string& name, const std::string& tag) {
+    auto it = e.uninit.find("@" + name);
+    if (it == e.uninit.end()) return;
+    e.fresh += 1;
+    auto h = e.ctx.constant((tag + std::to_string(e.fresh) + "_u").c_str(),
+                            e.ctx.array_sort(e.ctx.bv_sort(WIDTH), e.ctx.bool_sort()));
+    auto x = e.ctx.bv_const((tag + std::to_string(e.fresh) + "_x").c_str(), WIDTH);
+    it->second = z3::lambda(x, z3::select(it->second, x) && z3::select(h, x));
+}
+
+// Array passed to an unmodelled call: the callee may write any element. Its
+// contents become unknown (quantified like a call result) and its elements
+// count as written; the unmodelled call already rules out a proof (S6), so
+// this only avoids false alarms.
+void escape_array(Enc& e, const std::string& name) {
+    auto it = e.arrays.find(name);
+    if (it == e.arrays.end()) return;
+    e.fresh += 1;
+    auto arr = it->second;
+    arr.a = e.ctx.constant((name + "_esc" + std::to_string(e.fresh)).c_str(), arr.a.get_sort());
+    e.call_vars.push_back(arr.a);
+    e.arrays.insert_or_assign(name, arr);
+    if (e.uninit.count("@" + name)) shadow_init(e, name, true);
+}
+
 std::pair<std::string, std::string> paren(std::string text);
 std::pair<std::string, std::string> brace(std::string text);
 std::pair<std::string, std::string> stmt_split(std::string text);
@@ -395,10 +450,23 @@ std::pair<std::string, std::string> brace(std::string text) {
 
 std::pair<std::string, std::string> stmt_split(std::string text) {
     int depth = 0;
+    int brace = 0;  // inside a `= { ... }` aggregate initialiser
     for (size_t i = 0; i < text.size(); ++i) {
+        if (brace) {
+            if (text[i] == '{') ++brace;
+            else if (text[i] == '}') --brace;
+            continue;
+        }
         if (text[i] == '(') ++depth;
         else if (text[i] == ')') --depth;
-        else if (text[i] == '{' && depth == 0) break;
+        else if (text[i] == '{' && depth == 0) {
+            auto before = i == 0 ? std::string::npos : text.find_last_not_of(" \t\r\n", i - 1);
+            if (before != std::string::npos && text[before] == '=') {
+                brace = 1;
+                continue;
+            }
+            break;
+        }
         else if (text[i] == ';' && depth == 0)
             return {text.substr(0, i + 1), text.substr(i + 1)};
     }
@@ -1005,11 +1073,45 @@ void Parser::decl_one(Enc& e, const std::string& stmt) {
             if (!ct) throw ParseFail("UNENCODED: element type of " + name);
             shadow(name);
             int n = std::stoi(dim);
-            // Contents are arbitrary (initialisers are not modelled): a sound
-            // over-approximation, never a proof about the values.
+            init = strip(init);
+            if (init.size() >= 2 && init.front() == '{' && init.back() == '}') {
+                // Aggregate initialiser (C11 6.7.9p21): the listed elements in
+                // order, every other element zero. The items are evaluated
+                // (their UB is checked) before the name is in scope.
+                std::vector<std::string> items;
+                for (auto& x : split_comma(init.substr(1, init.size() - 2))) items.push_back(strip(x));
+                if (!items.empty() && items.back().empty()) items.pop_back();  // trailing comma, or {}
+                for (auto& x : items)
+                    if (x.empty() || x.front() == '{')
+                        throw ParseFail("UNENCODED: nested initialiser of " + name);
+                if (static_cast<int>(items.size()) > n)
+                    throw ParseFail("UNENCODED: excess initialisers of " + name);
+                std::vector<TV> vals;
+                for (auto& x : items) vals.push_back(expr(e, x));
+                auto arr = z3::const_array(e.ctx.bv_sort(WIDTH), e.bv_zero(ct->w));
+                for (size_t k = 0; k < vals.size(); ++k)
+                    arr = z3::store(arr, e.ctx.bv_val(static_cast<int>(k), WIDTH), e.conv(vals[k], *ct).v);
+                e.declare_array(name, Arr{arr, n, ct->w, ct->u});
+                shadow_init(e, name, true);
+                return;
+            }
+            // `= __prism_unconstrained`: a caller's object materialised by a
+            // drafted harness (ai/harness.cpp): any contents, written.
+            if (init != "__prism_unconstrained" && !init.empty() &&
+                !(ct->w == 8 && rx_fullmatch(R"BMC("(?:[^"\\]|\\.)*")BMC", init)))
+                throw ParseFail("UNENCODED: initialiser of " + name);
+            // No initialiser: contents arbitrary, every element unwritten. A
+            // string literal writes every element (6.7.9p14, p21); its
+            // characters are not modelled (arbitrary contents: a sound
+            // over-approximation, never a proof about the values).
             auto arr = e.ctx.constant((name + "_arr" + std::to_string(++e.fresh)).c_str(),
                 e.ctx.array_sort(e.ctx.bv_sort(WIDTH), e.ctx.bv_sort(static_cast<unsigned>(ct->w))));
             e.declare_array(name, Arr{arr, n, ct->w, ct->u});
+            // `_h_p`: the harness buffer standing for the caller's object
+            // behind pointer parameter p (stages_rest.cpp materialize). Its
+            // contents are the caller's, assumed initialised like the
+            // `// requires:` size.
+            shadow_init(e, name, !init.empty() || name.starts_with("_h_"));
             return;
         }
     }
@@ -1098,6 +1200,7 @@ void Parser::astore(Enc& e, const std::string& name0, const std::string& idx, co
     e.add_prop("oob-write", "MEM-OOB-WRITE", oob(e, i, arr.n), e.pc);
     arr.a = z3::store(arr.a, index32(e, i), e.conv(v, CType{arr.w, arr.u}).v);
     e.arrays.insert_or_assign(name, arr);
+    mark_elem_init(e, name, index32(e, i));
 }
 
 std::string Parser::assert_stmt(Enc& e, std::string text) {
@@ -1167,6 +1270,7 @@ std::string Parser::ai_hook_stmt(Enc& e, std::string text) {
             auto arr = e.arrays.at(an);
             arr.a = e.ctx.constant(fresh_name.c_str(), arr.a.get_sort());
             e.arrays.insert_or_assign(an, arr);
+            havoc_shadow(e, an, fresh_name + "_u");
         } else {
             if (!e.bits.count(name)) throw ParseFail("UNENCODED: ai havoc of undeclared " + name);
             auto t = e.type_of(name);
@@ -1321,6 +1425,7 @@ void Parser::loop_havoc(Enc& e, const std::string& kind, const std::string& cond
                 auto arr = it->second;
                 arr.a = e.ctx.constant((an + "_hv" + std::to_string(++e.fresh)).c_str(), arr.a.get_sort());
                 e.arrays.insert_or_assign(an, arr);
+                havoc_shadow(e, an, an + "_hvu");
             }
             continue;
         }
@@ -1972,6 +2077,7 @@ TV parse_expr(Enc& e, std::string src, Parser& parser) {
             auto arr = e.arrays.at(e.canonical(name));
             auto idx = e.int_val(0);
             e.add_prop("oob-read", "MEM-OOB-READ", oob(e, idx, arr.n), e.pc);
+            check_elem(e, e.canonical(name), idx, arr.n);
             return TV{z3::select(arr.a, index32(e, idx)), arr.w, arr.u};
         }
         if (t == "-") {
@@ -2139,11 +2245,13 @@ TV parse_expr(Enc& e, std::string src, Parser& parser) {
                 if (!e.is_array(t)) throw ParseFail("UNENCODED: index into unknown array " + t);
                 auto arr = e.arrays.at(e.canonical(t));
                 e.add_prop("oob-read", "MEM-OOB-READ", oob(e, idx, arr.n), e.pc);
+                check_elem(e, e.canonical(t), idx, arr.n);
                 return TV{z3::select(arr.a, index32(e, idx)), arr.w, arr.u};
             }
             if (peek() == "(" && !e.declared(t)) {
                 eat("(");
                 std::vector<TV> args;
+                size_t n_values = e.value_arrays.size();
                 if (peek() == ")") eat(")");
                 else {
                     while (true) {
@@ -2153,13 +2261,29 @@ TV parse_expr(Enc& e, std::string src, Parser& parser) {
                         break;
                     }
                 }
-                return model_call(e, t, args);
+                size_t n_calls = e.call_vars.size();
+                auto res = model_call(e, t, args);
+                if (e.call_vars.size() > n_calls) {
+                    // unmodelled callee: every array its arguments mention escapes
+                    std::vector<std::string> seen;
+                    for (size_t k = n_values; k < e.value_arrays.size(); ++k) {
+                        auto an = e.value_arrays[k];
+                        if (std::find(seen.begin(), seen.end(), an) != seen.end()) continue;
+                        seen.push_back(an);
+                        escape_array(e, an);
+                    }
+                }
+                e.value_arrays.resize(n_values);
+                return res;
             }
             if (peek() == "++" || peek() == "--") {
                 auto op = eat();
                 return incdec(t, op, false);
             }
-            if (e.is_array(t)) return e.int_val(1);  // array/pointer as a value: non-null
+            if (e.is_array(t)) {  // array/pointer as a value: non-null
+                e.value_arrays.push_back(e.canonical(t));
+                return e.int_val(1);
+            }
             if (e.bits.count(t)) {
                 e.check_read(t);
                 return e.get(t);
