@@ -1,0 +1,59 @@
+name: Proofs (verification techniques)
+
+# Lean 4 proofs of the verification techniques PRISM relies on (roadmap 5.4
+# and 8.2): k-induction, Houdini, contracts / PROVED-ASSUMING, the certified
+# bit-blaster with LRAT, bounded-context-switch sequentialisation, and the
+# round-to-nearest-even kernel. See docs/PROOFS_TECHNIQUES.md.
+
+on:
+  push:
+    paths:
+      - "proofs/techniques/**"
+      - "docs/PROOFS_TECHNIQUES.md"
+      - ".github/workflows/proofs-techniques.yml"
+  pull_request:
+    paths:
+      - "proofs/techniques/**"
+      - "docs/PROOFS_TECHNIQUES.md"
+      - ".github/workflows/proofs-techniques.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lean:
+    name: lake build + axiom audit + certified-mode demo
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: proofs/techniques
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install elan (toolchain comes from lean-toolchain)
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -o /tmp/elan-init.sh
+          sh /tmp/elan-init.sh -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.elan/toolchains
+            proofs/techniques/.lake
+          key: lean-techniques-${{ runner.os }}-${{ hashFiles('proofs/techniques/lean-toolchain', 'proofs/techniques/lakefile.toml') }}-${{ github.sha }}
+          restore-keys: lean-techniques-${{ runner.os }}-${{ hashFiles('proofs/techniques/lean-toolchain', 'proofs/techniques/lakefile.toml') }}-
+      - name: No unfinished proofs or extra axioms in the sources
+        run: |
+          # Audit.lean mentions these words in its own documentation.
+          if grep -rnwE 'sorry|admit|native_decide' --include='*.lean' --exclude-dir=.lake --exclude=Audit.lean .; then
+            echo "unfinished proof or native_decide found"; exit 1
+          fi
+          if grep -rnE '^\s*(private\s+)?axiom\s' --include='*.lean' --exclude-dir=.lake .; then
+            echo "axiom declaration found"; exit 1
+          fi
+      - name: lake build
+        run: lake build
+      - name: Axiom audit (fails on any axiom beyond propext, Classical.choice, Quot.sound)
+        run: lake env lean PrismTechniques/Audit.lean
+      - name: Certified mode end to end (CaDiCaL from the toolchain + verified LRAT checker)
+        run: lake exe certified-demo "$(dirname "$(elan which lean)")/cadical"

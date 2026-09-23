@@ -9,7 +9,7 @@ the 1-bit predicates
 Tseitin-encoded into `Std.Sat.CNF Nat` (core Lean's CNF type, the one the
 verified LRAT checker `Std.Tactic.BVDecide.LRAT.check` consumes).
 
-Proved (no `sorry`, standard axioms only):
+Proved (no unfinished proofs, standard axioms only):
 * `toCNF_equisat`: the CNF is satisfiable iff the formula is satisfiable;
 * `toCNF_unsat_imp`: CNF unsatisfiable ⇒ the formula is unsatisfiable (the
   direction certified mode needs);

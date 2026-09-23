@@ -1,6 +1,6 @@
 /-
-Axiom audit.  `#assert_axioms` fails the build if a theorem depends on any
-axiom other than Lean's three standard ones (`propext`, `Classical.choice`,
+Axiom audit.  `#assert_axioms` fails the build if a theorem depends on
+anything beyond Lean's three standard axioms (`propext`, `Classical.choice`,
 `Quot.sound`) — in particular `sorryAx` (an unfinished proof) or
 `Lean.ofReduceBool` (trusting compiled code, as `native_decide` and
 `bv_decide` do).  It also prints the axioms each theorem uses, which is what
