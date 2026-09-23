@@ -379,6 +379,7 @@ skipped into an empty function list. Remaining ISO C11 `thrd_sleep`/`thrd_yield`
 |---|---|
 | cppcheck | value-flow; uninit struct members |
 | gcc/clang -Wall | cheap, noisy, union of both compilers |
+| Clang AST (lints) | C++ engine only (roadmap 2.8, `src/prism/astlint.cpp`): `clang -ast-dump=json` per unit, header declarations skipped unparsed; assignment-as-condition, `sizeof(ptr param)` as a mem* length, signed/unsigned loop condition, enum switch hole without `default`, self-assignment, dead store, `memset(p, c, 0)`, integer division to floating; supersedes the regex row on the same line/class; no clang or a parse error is NOTRUN (`extra.layer`) and the regex lints still run |
 | ASan/UBSan/TSan | probe then compile; MinGW without libubsan/libtsan is NOTRUN; TSan unexpected memory mapping is NOTRUN not FAILED; CLEAN is not a proof |
 | AFL++/libFuzzer | PATH/clang -fsanitize=fuzzer probe; NOTRUN if absent |
 | KLEE | in-process concolic in prism/concolic.py; missing binary is NOTRUN; adapter with no error path is UNKNOWN, never a proof |
