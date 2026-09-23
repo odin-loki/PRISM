@@ -1,5 +1,5 @@
 /-
-PRISM refinement, extended fragment — `freeze`, `undef` and direct calls
+PRISM refinement, extended fragment — `freeze`, `undef`, direct calls and stack memory
 (roadmap 8.2, milestone M9).
 
 The base fragment (`Llvm.lean`) is one call-free function with a
@@ -8,14 +8,23 @@ deterministic semantics.  This file extends it with
 * `freeze` of an operand, a register, `poison` or `undef` (LangRef: "if the
   argument is `undef` or `poison`, `freeze` returns an arbitrary, but fixed,
   value of the type"; otherwise the argument);
-* `undef`, **only as the operand of `freeze`**.  Anywhere else an `undef`
-  value is a *set* of values that each use may pick from independently
-  (LangRef "Undefined Values"; `%y = xor %x, %x` with `%x = undef` need not be
-  0).  `translate.cpp` havocs such an operand once, which fixes one value for
-  every use, so it is not a sound translation in general; those uses stay
-  outside the fragment (the exporter writes them, the checker refuses them);
+* `undef`, **only as the operand of `freeze` or the value of a `store`**.
+  Anywhere else an `undef` value is a *set* of values that each use may pick
+  from independently (LangRef "Undefined Values"; `%y = xor %x, %x` with
+  `%x = xor i32 undef, 0` need not be 0), and branching on it or returning
+  it from a `noundef` function is UB.  `translate.cpp` havocs such an
+  operand, which fixes one value for every use of what is computed from it
+  and hides that UB, so it is not a sound translation in general; those uses
+  stay outside the fragment (the exporter writes them, the checker refuses
+  them);
 * direct calls `%r = call iN @f(args)` to functions of the same module, with
-  a stack of frames.
+  a stack of frames;
+* stack memory: `alloca` of a constant size, integer `load` / `store` (the
+  stored value may also be `undef`: its bytes are uninitialised), and
+  `getelementptr`, on the byte memory of `XMem.lean`, with the undefined
+  behaviour PRISM checks for (null, wild, freed, out of bounds, misaligned,
+  read-only, uninitialised read; pointer arithmetic that overflows, leaves
+  its array or its object).
 
 Nondeterminism is an *oracle* `ω : Nat → Nat` read in execution order: the
 `t`-th arbitrary value of a run is `ω t` (masked to the width).  `freeze` of

@@ -1,6 +1,8 @@
 /-
 PRISM refinement, extended fragment (`freeze`, `undef` under `freeze`,
-direct calls) — headline theorems.
+direct calls, stack memory: `alloca`, `load`, `store`, `getelementptr`) —
+headline theorems.  Both semantics run on the same memory model
+(`XMem.lean`), starting from an empty memory.
 
 For every module `M`, analysed function `F`, PIR function `P` and
 certificate `C` such that `validB M F P C` holds (`pir_lean_check` evaluates

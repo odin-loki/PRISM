@@ -18,6 +18,13 @@ The short version:
   (`pir_sound`), and every PIR outcome is an LLVM outcome (`pir_faithful_*`).
   Loops are covered for any number of iterations: the theorems hold for
   every fuel bound, so they are not bounded results.
+* An **extended fragment** adds `freeze`, `undef` under `freeze`, direct
+  calls (inlined as `translate.cpp` inlines them) and a stack memory
+  fragment (`alloca`, integer `load`/`store`, `getelementptr`, with the
+  bounds, lifetime, alignment, read-only and uninitialised-read checks the
+  translator inserts). It is proved for every function whose translation
+  carries a certificate the checker validates (`agree-ext`), for every
+  choice of the values LLVM leaves open.
 * Each run can check that the C++ translator's output **is** the proved
   translator's output: the pir stage exports (LLVM, PIR) pairs, and
   `pir_lean_check` compares them. On `tests/pir` and `testdata` there are no
@@ -27,7 +34,7 @@ The short version:
   independent Lean kernel written in Rust, and every declaration's axioms
   are audited.
 
-What is *not* proved, and the three gaps this work found in
+What is *not* proved, and the gaps this work found in
 `translate.cpp`, are listed in [What remains](#what-remains) and
 [Findings](#findings-in-translatecpp).
 
@@ -40,7 +47,7 @@ What is *not* proved, and the three gaps this work found in
 | Dependencies | `proofs/semantics` (PIR expression semantics: `PrismSem.evalBin`, `evalPred`, `ubBin`) and `proofs/techniques` (`PrismTechniques.FloatRound.rne`), both as Lake *path* dependencies: imported, not copied |
 | Build | `cd proofs/refinement && lake build` |
 | Audit | `./check.sh`: build with no warning, no escape hatch in any source (`sorry`, `admit`, `native_decide`, `bv_decide`, `implemented_by`, `extern`, `axiom`, `unsafe`), every theorem in `Audit.lean` within `propext` / `Classical.choice` / `Quot.sound`, checker fixtures |
-| Size | about 4 000 lines of Lean, 44 audited theorems, 2 254 declarations (all axiom-audited) |
+| Size | about 9 700 lines of Lean, 68 audited theorems |
 
 | File | Contents |
 |---|---|
@@ -51,6 +58,12 @@ What is *not* proved, and the three gaps this work found in
 | `PrismRefine/Refine.lean` | Simulation: `translate_exact` |
 | `PrismRefine/Lazy.lean` | Strict vs LangRef semantics: `strict_lazy` |
 | `PrismRefine/Sound.lean` | Headline theorems; link to `PrismSem.ubBin` |
+| `PrismRefine/XMem.lean` | Extended fragment: the byte memory and the `World` (oracle counter + memory) both sides share |
+| `PrismRefine/XLlvm.lean`, `XPir.lean` | Extended LLVM syntax (`freeze`, calls, memory), strict and LangRef-side semantics on a frame stack; PIR with oracle `havoc` and memory statements |
+| `PrismRefine/XTranslate.lean`, `XValid.lean` | The translator with inlining and `MemTr` mirrored, its certificate, the executable check `validB` |
+| `PrismRefine/XMemSim.lean` | The memory checks and `getelementptr` arithmetic compute the semantics' conditions |
+| `PrismRefine/XRefine.lean`, `XStep.lean`, `XRun.lean`, `XValidSpec.lean` | Simulation: `translateX_exact` |
+| `PrismRefine/XLazy.lean`, `XSound.lean` | Strict vs LangRef side (`strict_lazyX`); headline theorems `pir_sound_x` … |
 | `PrismRefine/Check.lean`, `CheckMain.lean` | `pir_lean_check`: the correspondence checker |
 | `EvalMain.lean` | `llvm_eval`: runs the three semantics on concrete inputs (for `tools/llvm_sem_vs_lli.py`) |
 | `AxiomReport.lean` | `axiom_report`: axioms of every declaration of a project (8.5) |
@@ -112,8 +125,8 @@ the instruction, not at the use.
 
 Modelled on Vellvm's approach (a formal operational semantics of LLVM IR
 with poison and UB as explicit outcomes) but written directly in Lean for
-this fragment: there are no interaction trees and no memory, and
-`undef`/`freeze` (nondeterminism) are outside the fragment.
+this fragment: there are no interaction trees. Memory, calls and
+`undef`/`freeze` are in the extended fragment (next sections but one).
 
 ## The translator and the theorems
 
@@ -148,6 +161,78 @@ the input is outside the fragment, `translate` returns an error.
 "Straight-line code, then branches/phi, then loops (bounded)" is covered by
 one proof: blocks, phis (parallel assignment from the predecessor) and
 back edges are all handled by `run_sim`, by induction on fuel.
+
+## The extended fragment: `freeze`, `undef`, calls, memory
+
+The theorems above are unconditional: they hold for every function the
+base translator accepts. The extended fragment adds four constructs and is
+proved *per function, under a certificate*: `pir_lean_check` re-runs a
+second Lean translator (`translateX`) that also returns a certificate, demands
+that the C++ PIR be exactly that translator's output, and evaluates the
+executable check `validB M F P C`. Every theorem below is stated for every
+module `M`, function `F`, PIR function `P` and certificate `C` with
+`validB M F P C = true`; the verdict for such a function is `agree-ext`.
+
+| Construct | Accepted | Semantics (strict / LangRef side) |
+|---|---|---|
+| `freeze` | of any fragment operand, of `poison`, of `undef` | the operand's value; `freeze undef` and `freeze poison` draw one arbitrary value from the oracle (reading the literal `poison` still counts as creating poison, see finding 5) |
+| `undef` | **only** as the operand of `freeze` or of `store` | anywhere else it is refused (finding 4) |
+| `call @f(…)` | direct calls to a function defined in the same file that `Tr::call` hands to `Tr::inline_call` (not a model, not an intrinsic, not `__prism.*` / `__cxa_*`), up to the translator's inline depth, non-recursive | a new frame; parameters bound to the argument values; `ret` resumes the caller after the call |
+| `alloca` | constant size below 2^47 bytes, in the analysed function (not in an inlined callee) | a new live stack object, every byte uninitialised |
+| `load iN` / `store iN` | `N ≤ 64`, alignment none or a power of two below 2^32, pointer a register; not an integer load of a whole aggregate | UB through null, a pointer to no object, a freed object, out of bounds, misaligned (address or object), or (store) into a read-only object; reading an uninitialised byte is UB in the strict semantics (PRISM's rule) and *flagged* on the LangRef side, like poison creation; storing `undef`, `poison` or an indeterminate register writes uninitialised bytes |
+| `getelementptr [inbounds]` | constant struct field indices, integer (≤ 64-bit) first and array indices | the offset is accumulated in signed 64 bits, each scaling and addition overflow-checked (C17 6.5.6p8); an array index must stay within its array (one past the end for an address that is not dereferenced; also in nested arrays); arithmetic on null, `inbounds` leaving the object or its address range, any other move to another object: UB (strict) / poison (LangRef side) |
+
+**Nondeterminism.** Both semantics take an oracle `ω : Nat → Nat` and read it
+in execution order (`World.t`): `freeze undef` / `freeze poison`, a stored
+`undef`/`poison` and the uninitialised-local marker each draw one value, and
+the PIR semantics (`XPir.lean`) gives the `t`-th `havoc` the value `ω t`
+(reduced to its width). The theorems quantify over every `ω`, the same on
+both sides: for every choice of the values LLVM leaves open, PIR making the
+same choices has the same outcome. `pir_sound_all_x` quantifies over all
+of them.
+
+**Calls.** The LLVM machine is a stack of frames; a block is split at its
+calls into segments, and one machine step runs one segment. The translator
+mirrors `Tr::inline_call`: each inlined call is an *instance* of the callee
+with its own names, shadows and variable range `[lo, hi)`, its blocks
+appended to the caller's PIR, its `ret` values flowing into a continuation
+phi. The certificate records, per instance, the function, the name and
+shadow maps, the variable range, the return target and the PIR block of
+every segment; `validB` checks what the proof needs of it (per instance: `lo ≤ hi`,
+every name and shadow below `hi`, one entry per block and segment, and per
+segment that its PIR block holds exactly the translated instructions, that
+the call's callee instance starts at or above the caller's `hi`, and that
+terminators and continuation phis point where the machine goes).
+
+**Memory** (`XMem.lean`). The object/offset model of `proofs/semantics`
+(`PrismSem/Memory.lean`: objects with a size and a liveness bit, object 0 is
+null, allocation takes the next id) extended to what the C++ engine models
+(`ConcMem`): each object also has a kind (stack, static, read-only, …) and
+a base alignment, each byte is initialised or not, and a pointer is one
+64-bit value with the object id in bits 63..48 and the offset in bits
+47..0. The LLVM semantics and the PIR semantics (`alloc`, `load`, `store`,
+`obj.size/live/kind/align`) share this memory and thread it with the oracle
+counter as one `World`.
+
+| Theorem (`PrismRefine.`) | Statement |
+|---|---|
+| `translateX_exact` | strict LLVM returns `v` ⇒ PIR returns `v`; strict UB ⇒ PIR fails a check; out of fuel ⇒ out of fuel (same oracle, every fuel bound) |
+| `strict_lazyX` | the strict semantics refines the LangRef-side semantics (as `strict_lazy`) |
+| **`pir_sound_x`** | LangRef-side run has UB, creates poison or reads uninitialised memory within `n` segments ⇒ PIR fails a check within `n` blocks |
+| `pir_sound_all_x` | no PIR run fails for any oracle and bound ⇒ no LLVM run is bad for any oracle and bound |
+| `pir_faithful_ret_x` / `_fail_x` / `_fuel_x`, `pir_no_stop_x` | every PIR outcome is an LLVM outcome for the same oracle (or LLVM is stuck) |
+| `accessChecks_run` | the statements of `MemTr::access_checks` fail exactly when the access is bad (`accessBad`) |
+| `gLoop_sim`, `gEnd_sim`, `gFin_run` | the statements of `MemTr::gep` compute the `getelementptr` result and fail exactly where it is undefined |
+| `storeVal_sim`, `idxOps_sim` | the stored value and its "initialised" bit; the index operands |
+| `sinstX_sim`, `phisX_sim`, `enter_sim`, `step_sim`, `run_simX` | one instruction, the phis, a call, one segment, a run |
+
+What this does **not** say: the memory model is PRISM's, shared by both
+sides, so the theorem is "PIR agrees with LLVM *in this memory model*", not a
+proof that the model is LLVM's (a flat 48-bit offset per object, at most
+2^16 objects, provenance only through the object id). The exporter computes
+allocation sizes, field offsets and array lengths with the translator's own
+`pirmem::Layout`; that computation is trusted, as is the exporter's
+rendering of LLVM into the fragment syntax.
 
 ## Property instrumentation: the C++ list, proved
 
@@ -199,24 +284,47 @@ By handler case (the branches of `Tr::operand`, `run_frame`,
 all their flags, `icmp`, `select`, the three casts, `phi`, all
 terminators, constant/register/`poison` operands, and the
 uninitialised-local instrumentation (marker, shadow phis, read check). By
-inserted-check site: **21 of 29 (72 %)**. Not covered: calls (inlining and
+inserted-check site: **21 of 29 (72 %)**. Not covered by the base fragment: calls (inlining and
 the 24 other intrinsic / library handlers), `undef` operands and phi inputs,
 `freeze`, `extractvalue` / `*.with.overflow`.
 
-By function, on the repository's own C/C++ corpus (translator output
-compared with `pir_lean_check`):
+With the extended fragment, also in the proved fragment: `freeze`,
+`undef` under `freeze` or `store`, `Tr::inline_call` (argument binding,
+callee instances, the continuation phi of an inlined `ret`), and from
+`translate_mem.cpp` `alloca`, `load`, `store`, `getelementptr` with
+`MemTr::access_checks` (null, wild, freed, bounds, alignment, read-only),
+`MemTr::gep` (overflow, C array bounds, `inbounds`, leaving the object) and
+the uninitialised-memory read check.
 
-| Input | Functions | C++ encodes | In the proved fragment, identical to the Lean translation | Both refuse | Outside the fragment | Mismatch |
+By function, on the repository's own C/C++ corpus
+(`python tools/pir_lean_check.py tests/pir testdata --bin <build>/prism`:
+the real pir stage with its uninitialised-local and folded-UB
+instrumentation and C signed-shift locations), before and after the
+extended fragment:
+
+| Input | Functions | `agree` | `agree-ext` | `agree-reject` | `outside` | Mismatch |
 |---|---|---|---|---|---|---|
-| `tests/pir`, through the `prism` binary | 54 | 48 | **40** | 0 | 14 | **0** |
-| `testdata`, through the `prism` binary | 2 487 | 915 | **900** | 2 | 1 585 | **0** |
+| `tests/pir`, before | 226 | 46 | — | 0 | 180 | **0** |
+| `tests/pir`, after | 226 | 46 | **8** | 1 | 171 | **0** |
+| `testdata`, before | 2 506 | 915 | — | 2 | 1 589 | **0** |
+| `testdata`, after | 2 506 | 915 | **21** | 4 | 1 566 | **0** |
 
-(`python tools/pir_lean_check.py --bin <build>/prism`: the real pir stage
-with its uninitialised-local and folded-UB instrumentation and C
-signed-shift locations.) Of the functions the C++ translator encodes, 83 % (`tests/pir`) and 98 %
-(`testdata`) are in the proved fragment; the rest contain calls (inlined functions,
-intrinsics, PRISM's folded-UB markers). Outside-fragment reasons in
-`testdata`: calls, pointer types, `alloca`, `undef`, floats, memory.
+`agree-ext` in `tests/pir`: two inlined calls, a C++ template call and a
+`constexpr` call, and four stack-memory functions (a struct on the stack,
+an uninitialised stack read and its fixed twin, a pointer to a local pair);
+in `testdata`: three inlined calls and 18 stack-memory functions (designated
+initialisers, packed structs, one-sided index checks, an out-of-bounds
+write, a lambda capture, object slicing). The new `agree-reject`s are
+recursive calls, which both translators refuse. What keeps the other
+`testdata` functions outside: a call to a library function or an intrinsic
+(1 340: `llvm.memcpy`/`memset` for array initialisers, `llvm.lifetime.*`,
+libc and C++ runtime calls), a pointer-typed parameter, return, phi, select
+or comparison (209), a global (6), floating point (5), `volatile` (3),
+`undef` outside `freeze` (2).
+
+The pir stage has a time budget; on a loaded machine a run can leave a
+few files unexported (two `testdata` files in one of the runs above), so
+the counts are per exported file; the mismatch count was 0 in every run.
 
 ## Per-run correspondence checking (8.2, 2.4)
 
@@ -230,13 +338,18 @@ fragment is written as `L unsupported <why>`.
 with the proved translator and demands the C++ PIR be *exactly* its output
 (variables and widths, blocks, phis, statements, operators, argument
 widths, check names and classes, terminators). Verdicts: `agree` (the
-theorems hold of the PIR PRISM verified), `agree-reject`, `outside`,
+theorems hold of the PIR PRISM verified), `agree-ext` (the function is in the
+extended fragment, its PIR is exactly `translateX`'s and the certificate
+checks: the `_x` theorems hold of it), `agree-reject`, `outside`,
 `MISMATCH` (exit 1). `tools/pir_lean_check.py [TREE…] --bin build/prism`
 drives it end to end; `tests/test_pir_refinement.py` runs it when
 `PRISM_BIN` is set and locks the check-name / operator-name parity between
 `translate.cpp` and the Lean files without Lean. `check.sh` runs the
 checker on `fixtures/` (real C++ output for `tests/pir`, plus a hand-made
-dropped-check pair that must be reported as a mismatch).
+dropped-check pair that must be reported as a mismatch; for the extended
+fragment `calls_freeze.pirl` and `memory.pirl`, and `dropped_call_check`,
+`dropped_mem_check` with an inlined callee's check, an uninitialised-memory
+check and a bounds check removed).
 
 ## Testing the formal semantics against `lli` (8.3)
 
@@ -310,7 +423,7 @@ Local run (this machine, 4 cores):
 
 ## Findings in `translate.cpp`
 
-The proof attempt surfaced three places where the C++ translator is not a
+The proof attempts surfaced five places where the C++ translator is not a
 sound over-approximation of the LangRef semantics. The Lean translator
 refuses them (the checker reports `outside`, not `agree`), so no theorem
 is claimed for them:
@@ -338,31 +451,55 @@ is claimed for them:
    `nneg`) it can report a failure LLVM would not have. `pir_faithful_fail`
    states this precisely: a PIR failure means UB *or poison creation*.
 
+4. **`undef` outside `freeze` is havocked once.** `Tr::operand` turns an
+   `undef` operand into one `havoc`. In the LangRef a value computed from
+   `undef` is a *set*: every use of it may observe a different member
+   (`%a = xor i32 undef, 0` compared with itself may be false), so fixing
+   one value under-approximates LLVM's behaviours; and `br i1 undef`,
+   `switch undef` and `ret undef` from a `noundef` function are UB, which
+   the havoc hides (it takes an arbitrary branch, returns an arbitrary
+   value). The Lean model accepts `undef` only under `freeze` and as a
+   stored value, where one arbitrary value is the LangRef semantics; the
+   exporter prints `undef` and the checker refuses it elsewhere (2 functions
+   in `testdata`). Not fixed.
+5. **`freeze poison` is reported.** `freeze` translates its operand with
+   `Tr::operand`, which fails `UB-POISON` on a literal `poison`. In LLVM
+   `freeze poison` is defined (an arbitrary value). The extended semantics
+   counts reading the literal as creating poison (the same over-approximation
+   as finding 3), so the theorems cover it; it is a possible false alarm,
+   not a missed error. Clang does not emit `freeze poison` for C.
+
 A value difference that is not a soundness issue: after a failed division
 check the C++ interpreter uses Z3's `bvudiv x 0 = ~0`, the Lean model Lean's
 `x / 0 = 0`; the value is unobservable because the check already failed.
 
 ## What remains
 
-* **Calls.** 1 370 of the outside-fragment functions in `testdata` are
-  outside because of calls: inlining (`Tr::inline_call`, including the
-  continuation phi of an inlined `ret`) and the 25 intrinsic and library
-  handlers (overflow intrinsics with `extractvalue`, `smax`… `bswap`,
-  `abs`, `ctlz`/`cttz`, `assume`, traps, `__assert_fail`, `exit`, nondet
-  sources, PRISM's `__prism.folded` / `__prism.poison` markers). Each is a small extension of
-  `Translate.lean` and of `checks_bad`; inlining needs a frame-stack
-  simulation.
-* **Nondeterminism.** `undef` operands and `freeze` need the LLVM semantics
-  to be a relation (or oracle-parameterised) and PIR `havoc` to be
-  nondeterministic; the refinement statement then becomes "every PIR
-  behaviour is an LLVM behaviour" over sets of behaviours.
-* **Memory.** `alloca`/`load`/`store`/`getelementptr` are UNENCODED in the
-  C++ translator today; the memory model of `proofs/semantics` is the
-  target.
+* **Library calls and intrinsics.** 1 340 `testdata` functions are outside
+  because of a call PRISM models rather than inlines: the overflow
+  intrinsics with `extractvalue`, `smax` … `bswap`, `abs`, `ctlz`/`cttz`,
+  `assume`, traps, `__assert_fail`, `exit`, nondet sources, the
+  `__prism.folded` / `__prism.poison` markers, and the libc / C++ runtime
+  models. Each needs its model stated in Lean.
+* **More memory.** In the proved fragment: stack objects of constant size,
+  integer loads and stores, `getelementptr`. Not yet: `llvm.memcpy` /
+  `memset` (array initialisers, the most common reason a function with a
+  local array is outside), `llvm.lifetime.*`, globals and string literals,
+  the heap (`malloc`/`free`, `new`/`delete`), pointer-typed parameters (the
+  harness objects of `Tr::enter_frame`), pointers stored in memory and
+  pointer phis, selects and comparisons, variable-size `alloca`, aggregate
+  loads (raw byte copies with per-byte shadows).
+* **Nondeterminism beyond `freeze`.** `undef` elsewhere (finding 4) needs
+  set-valued registers; the oracle semantics covers exactly the places where
+  LLVM makes one arbitrary choice.
+* **Certificates, not a translator theorem.** The extended theorems hold for
+  every function whose certificate `validB` accepts, which the checker
+  evaluates at each run; there is no theorem that `translateX` always
+  produces a valid certificate.
 * **The PIR semantics used here is the C++ CFG form.** It is linked to
   `PrismSem` through `evalBin`/`evalPred`/`ubBin` (`checks_eq_ubBin`), not
   through a proof that the CFG and `PrismSem.Stmt` programs are equivalent.
 * **The C++ encoder.** Relating `pir_vcs` (Z3) to this PIR semantics is the
   encoder row of 8.2 (proofs/semantics proves a model of it).
-* **Fixing the three findings** in `translate.cpp` (not done here: the
+* **Fixing findings 2, 4 and 5** in `translate.cpp` (not done here: the
   translator is outside this work's scope).

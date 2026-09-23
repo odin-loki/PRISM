@@ -46,6 +46,18 @@ class StaticParity(unittest.TestCase):
             self.assertIn(f'"{prop}"', self.cpp, msg=prop)
             self.assertIn(f'"{cls}"', self.cpp, msg=cls)
 
+    def test_every_lean_memory_check_is_a_cpp_check(self):
+        # the extended fragment's memory checks (XTranslate.lean) are
+        # MemTr::access_checks / MemTr::gep checks (translate_mem.cpp)
+        xlean = _read(REFINE / "PrismRefine" / "XTranslate.lean")
+        mem = _read(ROOT / "src" / "prism" / "pir" / "translate_mem.cpp") + self.cpp
+        pairs = set(re.findall(r'"([a-z0-9+*\-]+)" "([A-Z][A-Z\-]+)"', xlean))
+        pairs |= set(re.findall(r'\("([a-z0-9\-]+)", "([A-Z][A-Z\-]+)"\)', xlean))
+        self.assertGreaterEqual(len(pairs), 8)
+        for prop, cls in pairs:
+            self.assertIn(f'"{prop}"', mem, msg=prop)
+            self.assertIn(f'"{cls}"', mem, msg=cls)
+
     def test_every_cpp_binop_check_is_modelled(self):
         # every property name translate.cpp's binop() uses appears in Translate.lean
         props = set(re.findall(r'"([a-z0-9+*\-]+)",\s*"(?:INT|UB)-[A-Z\-]+"', self.binop_body()))
@@ -59,16 +71,17 @@ class StaticParity(unittest.TestCase):
         export = _read(ROOT / "src" / "prism" / "pir" / "export_lean.cpp")
         for fl in flags:
             if fl == "inbounds":
-                # getelementptr's flag (the memory model). GEP is outside the
-                # proved fragment: the exporter refuses pointer types and any op
-                # it does not list, so no proof is claimed through this flag.
-                self.assertIn('if (t.kind != ir::Type::Int) throw Unsupported{"type " + t.text};', export)
-                self.assertIn("throw Unsupported{op};", export)
-                self.assertNotIn('"getelementptr"', export)
+                # getelementptr's flag. getelementptr is in the extended fragment
+                # (proofs/refinement XTranslate.lean gEnd, proved in XMemSim.lean):
+                # the exporter passes inbounds and refuses every other GEP flag,
+                # and the Lean translator models both forms.
+                self.assertIn('if (fl != "inbounds") throw Unsupported{"getelementptr " + fl};', export)
+                self.assertIn("if inb then", _read(REFINE / "PrismRefine" / "XTranslate.lean"))
                 continue
             self.assertIn(fl, {"nsw", "nuw", "exact", "disjoint", "nneg"}, msg=fl)
-        # the exporter's flag allowlist is exactly the modelled set
-        self.assertEqual(set(re.findall(r'fl != "([a-z]+)"', export)), {"nsw", "nuw", "exact", "disjoint", "nneg"})
+        # the exporter's flag allowlist for the other instructions is exactly the modelled set
+        self.assertEqual(set(re.findall(r'fl != "([a-z]+)"', export)) - {"inbounds"},
+                         {"nsw", "nuw", "exact", "disjoint", "nneg"})
         # samesign is a poison flag translate.cpp ignores: the exporter must
         # refuse it rather than let the checker claim a proof for it
         self.assertIn('fl != "nneg"', export)
@@ -107,6 +120,11 @@ class EndToEnd(unittest.TestCase):
         assert m is not None
         self.assertEqual(int(m.group(2)), 0)
         self.assertGreaterEqual(int(m.group(1)), 30)
+        # the extended fragment (freeze, calls, memory) is checked too
+        ext = re.search(r"total: agree=\d+ agree-ext=(\d+)", r.stdout)
+        self.assertIsNotNone(ext, msg=r.stdout)
+        assert ext is not None
+        self.assertGreaterEqual(int(ext.group(1)), 5)
 
 
 if __name__ == "__main__":

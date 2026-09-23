@@ -119,7 +119,7 @@ at run time; the numbers below are for the deterministic halves.
 | 5.4 bit-blaster correctness | **DONE** — `proofs/techniques` (`toCNF_equisat` incl. division, shifts, overflow predicates) and it is the code that runs in certified mode |
 | 5.5 front-end validation | **DONE** — translation validation, differential testing, random programs |
 | 8.2 k-induction, Houdini, contracts | **DONE** — `proofs/techniques` |
-| 8.2 LLVM IR → PIR refinement | **PARTIAL** — proved for the integer fragment (`proofs/refinement`); per-run checker: 900/915 testdata functions identical to the proved translator, 0 mismatches; calls, memory, undef/freeze not in the fragment |
+| 8.2 LLVM IR → PIR refinement | **PARTIAL** — proved for the integer fragment (`proofs/refinement`), and, per function under a certificate the checker validates, for an extended fragment: `freeze`, `undef` under `freeze`/`store`, direct calls to same-file functions (inlined as `translate.cpp` does), stack memory (`alloca`, integer `load`/`store`, `getelementptr`, with the translator's null/wild/freed/bounds/alignment/read-only/uninitialised-read and pointer-arithmetic checks, on PRISM's object/offset memory model shared by both sides); per-run checker: `testdata` 915 `agree` + 21 `agree-ext` of 2 506 functions, `tests/pir` 46 + 8 of 226, 0 mismatches; library calls and intrinsics (`memcpy`/`memset`/`lifetime`), globals, heap, pointer parameters/phis, `undef` elsewhere are not in the fragment |
 | 8.2 property instrumentation | **DONE for the fragment** — `checks_bad`, `instr_fail_ub_iff` |
 | 8.2 floating point | **PARTIAL** — rounding and correctly-rounded addition proved; full IEEE 754 out of reach |
 | 8.2 concurrency | **PARTIAL** — two straight-line threads, round-robin scheme |
@@ -151,7 +151,7 @@ at run time; the numbers below are for the deterministic halves.
 | M6 | **PARTIAL** — proof search and repair built and tested with the real kernel and a fake prover |
 | M7 | **PARTIAL** — features shipped; model metrics need a model |
 | M8 | **PARTIAL** — k-induction, Houdini, contracts, bit-blaster proved; memory model proved in the semantics project; float partial |
-| M9 | **PARTIAL** — LLVM→PIR refinement for the integer fragment |
+| M9 | **PARTIAL** — LLVM→PIR refinement for the integer fragment; freeze/undef, direct calls and stack memory proved per function under a checked certificate (docs/PROOFS_REFINEMENT.md) |
 | M10 | **PARTIAL** — two-thread concurrency proof; recheck in CI done |
 
 ## Owner actions that no automation can take
