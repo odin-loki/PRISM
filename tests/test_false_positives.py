@@ -9,7 +9,8 @@ RAII, methods and templates. run_lints must report nothing FAILED there.
 testdata_tp/ holds the buggy variants of the same idioms: each must still
 fire, on the right line. Both directories sit outside testdata/ so the
 planted-bug counts there do not move. When a C++ binary is available
-(PRISM_BIN, build/), both engines must report the same findings.
+(PRISM_BIN, build/), both engines must report the same findings there and
+on testdata/.
 """
 
 from __future__ import annotations
@@ -205,11 +206,12 @@ def _engine_rows(cmd: list[str], root: Path, out: Path) -> list[list]:
 
 @unittest.skipUnless(_cpp_prism(), "C++ prism binary not built (set PRISM_BIN)")
 class TestEngineLintParity(unittest.TestCase):
-    """Both engines report the same lint findings on both corpora."""
+    """Both engines report the same lint findings on both corpora and on
+    the planted-bug corpus."""
 
     def test_same_findings(self):
         with tempfile.TemporaryDirectory(prefix="prism fp ") as td:
-            for root in (FP, TP):
+            for root in (FP, TP, ROOT / "testdata"):
                 py = _engine_rows([sys.executable, "-m", "prism"], root,
                                   Path(td) / f"py_{root.name}")
                 cpp = _engine_rows([str(_cpp_prism())], root,

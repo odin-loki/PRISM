@@ -268,6 +268,29 @@ TEST_CASE("parser forms and PARSE-GAP") {
     CHECK(recs[0].message.find("line 8") != std::string::npos);
     // The macro-bodied definition does not swallow the next function.
     CHECK(fn_names(gap) == std::vector<std::string>{"after_macro"});
+
+    // Same source as tests/test_false_positives.py::test_head_shapes.
+    auto tmp = std::filesystem::temp_directory_path() / "prism_head_shapes.cpp";
+    {
+        std::ofstream o(tmp, std::ios::binary);
+        o << "std::vector<int> make(int n) {\n    return {};\n}\n"
+             "std::map<int, std::vector<int>> nested(void) {\n    return {};\n}\n"
+             "Z3_ast Z3_API mk(Z3_context c) {\n    return 0;\n}\n"
+             "W& W::operator=(const W& o) {\n    return *this;\n}\n"
+             "W::W(int a) : v(a) {\n}\n"
+             "struct S { int get() const { return 1; } S() : x(0) {} int x; };\n"
+             "int body_char(void) {\n    return '}';\n}\n"
+             "int after(void) {\n    return 1;\n}\n";
+    }
+    auto fns = prism::extract_functions(tmp, "x.cpp");
+    std::filesystem::remove(tmp);
+    std::vector<std::string> names;
+    for (auto& f : fns) names.push_back(f.name);
+    CHECK(names == std::vector<std::string>{"make", "nested", "mk", "W::operator=", "W::W", "S::get",
+                                            "S::S", "body_char", "after"});
+    REQUIRE(fns.size() == 9);
+    for (std::size_t k = 0; k < 7; ++k) CHECK(fns[k].kind == "OTHER");
+    CHECK(fns[7].span == std::pair<int, int>{16, 18});  // `'}'` does not end the body
 }
 
 TEST_CASE("interval shift_wide is INT-SHIFT-UB") {
