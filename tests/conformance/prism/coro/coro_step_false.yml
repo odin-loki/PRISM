@@ -1,0 +1,8 @@
+format_version: 1
+input_files: coro_step_false.cpp
+language: C++
+property: no-div0
+expected:
+  coro_step_false: false
+witness:
+  coro_step_false: [0]

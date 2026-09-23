@@ -56,10 +56,33 @@ std::vector<PtrContract> contracts_from_draft(const std::vector<std::string>& as
     return out;
 }
 
+std::map<int, std::string> asm_contracts(const std::vector<std::string>& lines) {
+    // `// prism: asm ensures <cond>` on the asm statement's line or on one of
+    // the (up to) three lines above it (docs/PIR.md "Inline assembly")
+    static const std::regex contract(R"(//\s*prism:\s*asm\s+ensures\s+(.*?)\s*$)");
+    static const std::regex asm_kw(R"(\b(__asm__|__asm|asm)\b)");
+    std::map<int, std::string> out;
+    for (std::size_t i = 0; i < lines.size(); ++i) {
+        std::smatch m;
+        if (!std::regex_search(lines[i], m, contract)) continue;
+        auto cond = m[1].str();
+        for (std::size_t j = i; j < lines.size() && j <= i + 3; ++j) {
+            auto code = lines[j].substr(0, lines[j].find("//"));
+            if (std::regex_search(code, asm_kw)) {
+                out[static_cast<int>(j) + 1] = cond;
+                break;
+            }
+        }
+    }
+    return out;
+}
+
 TranslateOptions function_options(const TranslateOptions& base, const ir::Function& irf, UnitInfo& unit, int line,
                                   const Config& cfg, const std::string& source_name) {
     TranslateOptions o = base;
     o.strict_aliasing = cfg.strict_aliasing;
+    o.fp_checks = cfg.fp_checks;
+    o.asm_contracts = asm_contracts(unit.src_lines);
     o.globals_initial = source_name == "main";
     // C++ library code (constructors, accessors) nests deeper than C helpers
     if (unit.cxx) o.inline_depth = std::max(o.inline_depth, 12);
@@ -105,6 +128,11 @@ void apply_memory_policy(Finding& f, Verdict& v, Function& fn, const ir::Module&
                          const TranslateOptions& topt, const Config& cfg) {
     if (fn.uses_memory) {
         f.extra["strict_aliasing"] = cfg.strict_aliasing ? "checked" : "off (--strict-aliasing checks effective types)";
+    }
+    if (!fn.libm.empty()) {
+        std::string s;
+        for (auto& t : fn.libm) s += (s.empty() ? "" : ",") + t;
+        f.extra["libm_unconstrained"] = s;  // results not modelled beyond their range facts
     }
     if (!fn.throws.empty()) {
         std::string s;

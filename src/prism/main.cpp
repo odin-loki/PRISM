@@ -239,6 +239,7 @@ int main(int argc, char** argv) {
         else if (a == "--allow-exec") cfg.allow_exec = true;
         else if (a == "--strict-aliasing") cfg.strict_aliasing = true;
         else if (a == "--pir-drafts") cfg.pir_drafts = true;
+        else if (a == "--fp-checks") cfg.fp_checks = true;
         else if (a == "--version" || a == "-V") {
             std::cout << "prism " << PRISM_VERSION << " (C++ engine)\n";
             return 0;
@@ -276,7 +277,7 @@ int main(int argc, char** argv) {
                 "           [--fuzz-budget N] [--fuzz-iters N] [--repair-rounds N]\n"
                 "           [--list-stages] [--version] [--fail-on never|defect|gap] [--allow-exec]\n"
                 "           [--requirements PATH] [--contracts-approved PATH]\n"
-                "           [--strict-aliasing] [--pir-drafts]\n"
+                "           [--strict-aliasing] [--pir-drafts] [--fp-checks]\n"
                 "prism prove FILE.lean THEOREM [--write] [--allow-exec] (Lean proof search; prove --help)\n"
                 "PRISM = Performance, Regression, Integration and Security Module\n"
                 "Checks any codebase (PATH: file or directory, any language): deep C/C++\n"
@@ -296,6 +297,8 @@ int main(int argc, char** argv) {
                 "  off by default because real code often breaks strict aliasing on purpose.\n"
                 "--pir-drafts: pir takes pointer sizes from the template harness draft when no\n"
                 "  requires clause gives them (PROVED-ASSUMING at best; off: NEEDS-HARNESS).\n"
+                "--fp-checks: pir also reports floating-point division by zero, invalid\n"
+                "  operations (NaN) and overflow to infinity (defined by IEEE/Annex F).\n"
                 "--pbsd PATH: ParanoidBSD tree for the pbsd stage (else PRISM_PBSD; no default).\n"
                 "  Importing its modules also needs --allow-exec.\n"
                 "--requirements PATH: markdown/text requirement documents (file or directory,\n"

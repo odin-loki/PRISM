@@ -642,6 +642,12 @@ struct Enc {
                 auto ovf = a[0] == bv(uint64_t{1} << (n - 1), n) && a[1] == bv(wmask(n), n);
                 return b2bv(a[1] != bv(0, n) && !ovf && z3::srem(a[0], a[1]) != bv(0, n));
             }
+            default:
+                // IEEE floating point is encoded by the pir stage only
+                if (s.op >= Op::FAdd)
+                    throw Fail{std::string(laws::NEEDS_HARNESS),
+                               std::string("UNENCODED: floating point (") + op_name(s.op) + ") in a threaded program"};
+                break;
         }
         throw Fail{std::string(laws::ERROR), "internal: unknown PIR op"};
     }

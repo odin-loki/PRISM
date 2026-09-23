@@ -634,6 +634,15 @@ const std::vector<TaxonomyClass>& taxonomy_classes() {
         {"MEM-INVALID-FREE", "free of memory that is not a live heap object or not its start", {590, 761}, {{"pir", "PROVES"}}},
         {"PTR-COMPARE", "comparison or subtraction of pointers into different objects", {469}, {{"pir", "PROVES"}}},
         {"FMT-ARGS", "printf format does not match its arguments", {685, 686}, {{"pir", "PROVES"}}},
+        // PIR floating point, exceptions, setjmp/longjmp (docs/PIR.md; roadmap 2.6)
+        {"FLOAT-CAST-OVF", "floating-point value converted to an integer type that cannot represent it", {681}, {{"pir", "PROVES"}}},
+        {"FLOAT-DIV-ZERO", "floating-point division by zero (pir --fp-checks)", {369}, {{"pir", "PROVES"}}},
+        {"FLOAT-INVALID", "floating-point invalid operation produces NaN (pir --fp-checks)", {682}, {{"pir", "PROVES"}}},
+        {"FLOAT-OVERFLOW", "floating-point overflow to infinity (pir --fp-checks)", {682}, {{"pir", "PROVES"}}},
+        {"CXX-UNCAUGHT", "exception escapes main: std::terminate", {248}, {{"pir", "PROVES"}}},
+        {"CXX-TERMINATE", "std::terminate reached (rethrow without a handled exception, explicit call)", {248}, {{"pir", "PROVES"}}},
+        {"CXX-PURE-VIRTUAL", "pure virtual function called", {758}, {{"pir", "PROVES"}}},
+        {"CTRL-LONGJMP-INVALID", "longjmp to a jmp_buf whose setjmp caller has returned", {758}, {{"pir", "PROVES"}}},
     };
     return C;
 }

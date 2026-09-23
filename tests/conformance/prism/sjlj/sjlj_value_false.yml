@@ -1,0 +1,8 @@
+format_version: 1
+input_files: sjlj_value_false.c
+language: C
+property: no-div0
+expected:
+  sjlj_value_false: false
+witness:
+  sjlj_value_false: [9]

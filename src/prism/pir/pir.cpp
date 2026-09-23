@@ -3,6 +3,7 @@
 
 #include "prism/pir.hpp"
 
+#include "fp.hpp"
 #include "memory.hpp"
 
 #include <array>
@@ -85,6 +86,38 @@ const char* op_name(Op op) {
         case Op::ObjLive: return "obj.live";
         case Op::ObjKind: return "obj.kind";
         case Op::ObjAlign: return "obj.align";
+        case Op::FAdd: return "fadd";
+        case Op::FSub: return "fsub";
+        case Op::FMul: return "fmul";
+        case Op::FDiv: return "fdiv";
+        case Op::FRem: return "frem";
+        case Op::FSqrt: return "fsqrt";
+        case Op::FFma: return "ffma";
+        case Op::FMulAdd: return "fmuladd";
+        case Op::FMinNum: return "fminnum";
+        case Op::FMaxNum: return "fmaxnum";
+        case Op::FMinimum: return "fminimum";
+        case Op::FMaximum: return "fmaximum";
+        case Op::FFloor: return "ffloor";
+        case Op::FCeil: return "fceil";
+        case Op::FTruncI: return "ftrunc";
+        case Op::FRoundA: return "fround";
+        case Op::FRoundE: return "froundeven";
+        case Op::FOeq: return "fcmp.oeq";
+        case Op::FOlt: return "fcmp.olt";
+        case Op::FOle: return "fcmp.ole";
+        case Op::FUno: return "fcmp.uno";
+        case Op::FToSI: return "fptosi";
+        case Op::FToUI: return "fptoui";
+        case Op::SIToF: return "sitofp";
+        case Op::UIToF: return "uitofp";
+        case Op::FConv: return "fpconv";
+        case Op::FToSIOvf: return "fptosi.ovf";
+        case Op::FToUIOvf: return "fptoui.ovf";
+        case Op::FIsNaN: return "fisnan";
+        case Op::FIsZero: return "fiszero";
+        case Op::FIsInf: return "fisinf";
+        case Op::FLibm: return "libm";
     }
     return "?";
 }
@@ -152,6 +185,7 @@ std::string to_text(const Function& fn) {
                         o << (k ? ", " : " ") << arg_text(fn, s.args[k]);
                     if (s.uninit) o << "  ; uninit";
                     if (s.nondet) o << "  ; nondet";
+                    if (s.op == Op::FLibm) o << "  ; " << s.msg;
                     o << "\n";
                     break;
                 }
@@ -396,7 +430,9 @@ uint64_t eval_op(Op op, unsigned w, const std::vector<uint64_t>& a, const std::v
         case Op::ObjLive:
         case Op::ObjKind:
         case Op::ObjAlign: return 0;  // memory queries: evaluated by interpret() on its memory
+        default: break;
     }
+    if (fp::is_fp_op(op)) return fp::eval(op, w, a, aw) & m;
     return 0;
 }
 
@@ -566,6 +602,19 @@ InterpResult interpret(const Function& fn, const std::vector<uint64_t>& args, ui
                 xs.push_back(get(a));
                 ws.push_back(a.width);
                 t = t || tainted(a);
+            }
+            if (s.op == Op::FLibm) {
+                // unmodelled libm call: the host library's value
+                val[d] = fp::eval(s.op, w, xs, ws, s.msg) & mask(w);
+                taint[d] = t;
+                continue;
+            }
+            if (fp::is_fp_op(s.op) && fp::ambiguous(s.op, w, xs, ws)) {
+                // fmuladd fused or not, minnum(+0, -0): the compiler's choice; a
+                // result that depends on it is not replayable
+                val[d] = fp::eval(s.op, w, xs, ws) & mask(w);
+                taint[d] = true;
+                continue;
             }
             val[d] = eval_op(s.op, w, xs, ws) & mask(w);
             taint[d] = t;

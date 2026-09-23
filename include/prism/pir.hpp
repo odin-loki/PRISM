@@ -47,7 +47,8 @@ struct Value {
     // Aggregate: [..] / { .. } constant (elems); Str: c"..." (bytes);
     // ConstExpr: getelementptr / ptrtoint / inttoptr / bitcast (...) with
     // ce_op, ce_flags, ce_ty (GEP source element type / cast target), elems.
-    enum Kind { Local, Global, Int, Undef, Poison, Null, Zero, Other, Aggregate, Str, ConstExpr };
+    // Fp: floating-point literal, IEEE bits of its type in `bits`.
+    enum Kind { Local, Global, Int, Undef, Poison, Null, Zero, Other, Aggregate, Str, ConstExpr, Fp };
     Kind kind = Other;
     std::string name;          // Local/Global name without sigil
     uint64_t bits = 0;         // Int: two's complement bits (masked by user)
@@ -88,6 +89,11 @@ struct Inst {
     //   getelementptr: ety = source element type, ops = [base, idx...]
     Type ety;
     unsigned align = 0;        // alloca/load/store `align N` (0 = absent)
+    // control flow (docs/PIR.md "Exceptions", "Indirect calls", "Inline assembly")
+    std::optional<Operand> callee_op;  // call/invoke through a local pointer
+    std::vector<std::pair<std::string, Operand>> clauses;  // landingpad: ("catch"|"filter", typeinfo)
+    bool is_asm = false;       // call asm "..."
+    std::string asm_text;
 };
 
 struct Block {
@@ -181,6 +187,16 @@ enum class Op {
     ObjLive,      // i1: the object is allocated and not freed / out of scope
     ObjKind,      // i8: MemKind of the object (0: null / no object)
     ObjAlign,     // i64: alignment of the object's base address
+    // IEEE floating point on the bits of half/float/double (width 16/32/64),
+    // round to nearest even (docs/PIR.md "Floating point"; src/prism/pir/fp.hpp).
+    FAdd, FSub, FMul, FDiv, FRem, FSqrt, FFma, FMulAdd,
+    FMinNum, FMaxNum, FMinimum, FMaximum,
+    FFloor, FCeil, FTruncI, FRoundA, FRoundE,
+    FOeq, FOlt, FOle, FUno,          // i1 comparisons (the others are built from these)
+    FToSI, FToUI, SIToF, UIToF, FConv,
+    FToSIOvf, FToUIOvf,              // i1: value out of range of the iN in args[1] (UB)
+    FIsNaN, FIsZero, FIsInf,         // i1 classification
+    FLibm,                           // unmodelled libm function (msg = name): unconstrained result
 };
 
 // Allocation kinds (ObjKind values). Extern: an object PRISM assumes to
@@ -197,6 +213,9 @@ inline constexpr unsigned kObjShift = 48;
 inline constexpr uint64_t kOffMask = (uint64_t{1} << kObjShift) - 1;
 inline constexpr uint64_t kMaxObjSize = uint64_t{1} << 47;
 inline constexpr uint64_t kMaxObjects = 0xFFFF;
+// Object ids [kFnObjBase, kMaxObjects) are function addresses (never
+// allocated, never dereferenceable); allocations stay below kFnObjBase.
+inline constexpr uint64_t kFnObjBase = 0xF000;
 
 PRISM_API const char* op_name(Op op);
 
@@ -212,6 +231,7 @@ struct Arg {
 struct Var {
     std::string name;
     unsigned width = 0;
+    bool fp = false;           // IEEE bits of a half/float/double value
 };
 
 struct Stmt {
@@ -285,6 +305,7 @@ struct Function {
     std::vector<std::string> ptr_params;   // pointer parameters bound to contract objects
     std::vector<std::string> assumptions;  // PROVED becomes PROVED-ASSUMING when non-empty
     std::vector<std::string> throws;       // library throw calls whose paths end (not modelled)
+    std::vector<std::string> libm;         // libm functions whose results are unconstrained
 };
 
 struct Translation {
@@ -328,6 +349,10 @@ struct TranslateOptions {
     bool globals_initial = false;
     // --strict-aliasing: effective-type tags per byte (C11 6.5p6-7), opt-in.
     bool strict_aliasing = false;
+    // --fp-checks: IEEE exceptions (division by zero, invalid, overflow) as warnings, opt-in.
+    bool fp_checks = false;
+    // `// prism: asm ensures <cond>` contracts: source line of the asm -> cond
+    std::map<int, std::string> asm_contracts;
 };
 
 PRISM_API Translation translate(const ir::Module& m, const ir::Function& f,

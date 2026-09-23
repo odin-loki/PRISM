@@ -1,0 +1,6 @@
+format_version: 1
+input_files: virt_fnptr_true.c
+language: C
+property: no-overflow
+expected:
+  virt_fnptr_true: true
