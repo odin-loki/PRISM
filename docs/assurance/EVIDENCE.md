@@ -105,7 +105,9 @@ each project's `lean-toolchain`): `proofs/check.sh` passed all four steps
   `proofs/techniques/PrismTechniques/Bitblast.lean`,
   `proofs/techniques/PrismTechniques/BitblastEncode.lean`,
   `proofs/techniques/PrismTechniques/LazySeq.lean`,
-  `proofs/techniques/PrismTechniques/FloatRound.lean`, audit
+  `proofs/techniques/PrismTechniques/LazySeqN.lean`,
+  `proofs/techniques/PrismTechniques/FloatRound.lean`,
+  `proofs/refinement/PrismRefine/FloatOps.lean`, audit
   `proofs/techniques/PrismTechniques/Audit.lean`, CI
   `.github/workflows/proofs-techniques.yml`, write-up
   `docs/PROOFS_TECHNIQUES.md`.
@@ -115,7 +117,9 @@ each project's `lean-toolchain`): `proofs/check.sh` passed all four steps
   `thm:Contracts.proved_assuming_not_proved`,
   `thm:Contracts.harness_assumption_discharged`,
   `thm:Bitblast.toCNF_equisat`, `thm:Bitblast.certified_unsat`,
-  `thm:LazySeq.lazy_seq_sound`, `thm:FloatRound.rne_nearest`.
+  `thm:LazySeq.lazy_seq_sound`, `thm:LazySeqN.lazy_sound`,
+  `thm:LazySeqN.lazy_covers`, `thm:FloatRound.rne_nearest`,
+  `thm:Float.prism_overflow_eq`, `thm:Float.cast_ovf_iff`.
 - Does not show: that the C++ k-induction/Houdini code
   matches the model; see
   `docs/PROOFS_TECHNIQUES.md#gap-to-the-c-implementation-what-these-proofs-do-and-do-not-cover`.

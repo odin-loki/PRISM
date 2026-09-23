@@ -61,6 +61,8 @@ const std::vector<TaxonomyClass>& taxonomy_classes() {
         {"CTRL-SELF-ASSIGN", "variable assigned to itself", {}, {{"lints", "FINDS"}}},
         {"CTRL-DEAD-STORE", "local stored and never read", {563}, {{"lints", "FINDS"}}},
         {"INT-DIV-TO-FLOAT", "integer division result converted to floating point", {682}, {{"lints", "FINDS"}}},
+        {"CTRL-SHADOW", "local declaration shadows an outer local or parameter", {1109}, {{"lints", "FINDS"}}},
+        {"CXX-SELF-MOVE", "object moved into itself", {}, {{"lints", "FINDS"}}},
         {"UNINIT-RETURN", "return of uninitialised local", {457}, {{"lints", "FINDS"}}},
         {"PTR-UNINIT", "dereference of uninitialised local pointer", {457, 824}, {{"lints", "FINDS"}}},
         {"UNINIT-BRANCH", "uninitialised scalar in branch condition", {457}, {{"lints", "FINDS"}}},

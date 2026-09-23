@@ -198,4 +198,62 @@ theorem kinduction_rel_sound (I : S → Prop) (T : S → S → Prop) (J P : S �
       rwa [show i - 1 + 1 = i by omega] at h1
   exact fun s hs => kinduction_sound _ T' P k hbase' hstep' s (hreach s hs)
 
+/-! ### Havocking a write footprint (k-induction with memory) -/
+
+/-- Step case whose havoc is *framed* by `J`: the first state of the window is
+arbitrary except that it satisfies `J`.  For the pir stage's memory loops,
+`J s` says "the memory of `s` agrees with the memory the loop prefix reached
+everywhere outside the loop's write footprint, the object table (ids,
+sizes, liveness) is the prefix's, and every footprint byte that was
+initialised after the prefix is still initialised" (the last conjunct only
+when every write in the loop initialises its bytes); the engine realises
+`J (π 0)` by havocking exactly the footprint bytes. -/
+def StepFrame (T : S → S → Prop) (J P : S → Prop) (k : Nat) : Prop :=
+  ∀ (π : Nat → S), J (π 0) → Path T π k → (∀ i, i < k → P (π i)) → P (π k)
+
+/-- **k-induction with a framed havoc is sound**, provided the frame holds
+initially and is preserved by every violation-free iteration (`hpres`: the
+loop body writes only inside the footprint and neither allocates nor frees;
+the premise `P s` is what makes the engine's provenance of store targets
+valid).  Unlike `kinduction_rel_sound`, `J` need not be known on all reachable
+states in advance: it is carried along the path together with `P`. -/
+theorem kinduction_frame_sound (I : S → Prop) (T : S → S → Prop) (J P : S → Prop) (k : Nat)
+    (hinit : ∀ s, I s → J s) (hpres : ∀ s s', J s → P s → T s s' → J s')
+    (hbase : Base I T P k) (hstep : StepFrame T J P k) :
+    ∀ s, Reach I T s → P s := by
+  intro s hs
+  obtain ⟨π, n, h0, hp, rfl⟩ := (reach_iff_path I T s).1 hs
+  have key : ∀ m, m ≤ n → J (π m) ∧ P (π m) := by
+    intro m
+    refine Nat.strongRecOn (motive := fun m => m ≤ n → J (π m) ∧ P (π m)) m ?_
+    intro m ih hm
+    have hJ : J (π m) := by
+      cases m with
+      | zero => exact hinit _ h0
+      | succ m' =>
+        have h' := ih m' (Nat.lt_succ_self m') (by omega)
+        exact hpres _ _ h'.1 h'.2 (hp m' (by omega))
+    refine ⟨hJ, ?_⟩
+    by_cases hmk : m < k
+    · exact hbase π m hmk h0 (fun i hi => hp i (by omega))
+    · let σ : Nat → S := fun i => π (m - k + i)
+      have hσ : Path T σ k := by
+        intro i hi
+        have := hp (m - k + i) (by omega)
+        simpa [σ, Nat.add_assoc] using this
+      have hJ0 : J (σ 0) := by
+        by_cases hk0 : k = 0
+        · simpa [σ, hk0] using hJ
+        · exact (ih (m - k) (by omega) (by omega)).1
+      have hP : ∀ i, i < k → P (σ i) := fun i hi => (ih (m - k + i) (by omega) (by omega)).2
+      have := hstep σ hJ0 hσ hP
+      simpa [σ, show m - k + k = m by omega] using this
+  exact (key n (Nat.le_refl n)).2
+
+/-- A plain (unframed) step implies the framed one: havocking more of the
+state never proves more. -/
+theorem step_frame_of_step (T : S → S → Prop) (J P : S → Prop) (k : Nat) (h : Step T P k) :
+    StepFrame T J P k :=
+  fun π _ hp hP => h π hp hP
+
 end PrismTechniques.KInduction

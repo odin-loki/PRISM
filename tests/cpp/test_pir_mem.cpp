@@ -526,4 +526,157 @@ TEST_CASE("pir mem: clang round trip on tests/pir/mem_*.c (skips without clang/o
     CHECK(st["first_last_ok"].first == prism::laws::PROVED_ASSUMING);
     CHECK(st["past_end_bad"].first == prism::laws::FAILED);
 }
+// k-induction for loops that write memory (docs/PIR.md "k-induction with
+// memory"). Every function returns early for n < 20, so no path of the
+// unwind-8 unrolling gets past the loop: the verdict after the loop rests on
+// the k-induction step alone, which havocs the loop's write footprint.
+namespace kind_mem {
+
+// entry: two 16-byte arrays %a, %c (both set to `fill`), n < 20 returns;
+// loop: while (n != 0) { BODY; n-- }; after: AFTER; ret %r.
+std::string loop_fn(const std::string& name, const std::string& fill, const std::string& body,
+                    const std::string& after) {
+    return "define i32 @" + name + R"IR((i32 %n, i32 %j, i1 %s) {
+entry:
+  %a = alloca [4 x i32], align 16
+  %c = alloca [4 x i32], align 16
+)IR" + fill + R"IR(  %small = icmp ult i32 %n, 20
+  br i1 %small, label %early, label %head
+early:
+  ret i32 0
+head:
+  %i = phi i32 [ %n, %entry ], [ %dec, %body ]
+  %go = icmp ne i32 %i, 0
+  br i1 %go, label %body, label %done
+body:
+  %m = and i32 %i, 3
+  %x = zext i32 %m to i64
+  %pa = getelementptr inbounds [4 x i32], ptr %a, i64 0, i64 %x
+  %pc1 = getelementptr inbounds [4 x i32], ptr %c, i64 0, i64 1
+  %pa1 = getelementptr inbounds [4 x i32], ptr %a, i64 0, i64 1
+  %me = and i32 %i, 2
+  %xe = zext i32 %me to i64
+  %pe = getelementptr inbounds [4 x i32], ptr %a, i64 0, i64 %xe
+)IR" + body + R"IR(  %dec = add i32 %i, -1
+  br label %head
+done:
+  %mj = and i32 %j, 3
+  %y = zext i32 %mj to i64
+  %ra = getelementptr inbounds [4 x i32], ptr %a, i64 0, i64 %y
+  %rc1 = getelementptr inbounds [4 x i32], ptr %c, i64 0, i64 1
+)IR" + after + R"IR(  ret i32 %r
+}
+)IR";
+}
+
+const char* kZeroBoth =
+    "  call void @llvm.memset.p0.i64(ptr align 16 %a, i8 0, i64 16, i1 false)\n"
+    "  call void @llvm.memset.p0.i64(ptr align 16 %c, i8 1, i64 16, i1 false)\n";
+const char* kZeroC = "  call void @llvm.memset.p0.i64(ptr align 16 %c, i8 1, i64 16, i1 false)\n";
+const char* kReadA = "  %r = load i32, ptr %ra, align 4\n";
+// p = (i == 20) ? 0 : p (a write that happens once and is never undone)
+std::string kFirstZero(const std::string& p) {
+    return "  %old = load i32, ptr " + p + ", align 4\n  %first0 = icmp eq i32 %i, 20\n"
+           "  %val = select i1 %first0, i32 0, i32 %old\n  store i32 %val, ptr " + p + ", align 4\n";
+}
+const char* kDivC = "  %v = load i32, ptr %rc1, align 4\n  %r = udiv i32 100, %v\n";
+
+struct KCase {
+    std::string name, ir;
+    const char* status;
+    const char* kind;       // extra.k_induction
+    const char* footprint;  // substring of extra.k_induction_footprint ("" = none)
+    std::vector<uint64_t> witness;  // false cases: the interpreter finds the violation
+};
+
+std::vector<KCase> cases() {
+    return {
+        // a[n & 3] = 1 over a zeroed array: the read after the loop is initialised
+        {"km_fill", loop_fn("km_fill", kZeroBoth, "  store i32 1, ptr %pa, align 4\n", kReadA), "PROVED-UNBOUNDED",
+         "closed", "1 object(s): 1 havocked; initialised flags old or arbitrary", {}},
+        // a[n & 2] = 1 over an uninitialised array: the odd elements are never
+        // written (the havoc must not assume the written bytes initialised)
+        {"km_uninit", loop_fn("km_uninit", kZeroC, "  store i32 1, ptr %pe, align 4\n", kReadA), "BOUNDED",
+         "step-open", "old or arbitrary", {20, 1, 0}},
+        // the loop writes a[1]; the divisor c[1] is outside the footprint
+        {"km_other", loop_fn("km_other", kZeroBoth, "  store i32 0, ptr %pa1, align 4\n", kDivC), "PROVED-UNBOUNDED",
+         "closed", "1 object(s)", {}},
+        // the loop writes c[1] = 0 in its first iteration (n == 20) only,
+        // through a pointer computed in the loop: without the havoc the
+        // step would see c[1] == 1 and close
+        {"km_alias", loop_fn("km_alias", kZeroBoth, kFirstZero("%pc1"), kDivC), "BOUNDED", "step-open",
+         "1 object(s)", {20, 0, 0}},
+        // the target is a select between the two arrays: every object is havocked
+        {"km_select", loop_fn("km_select", kZeroBoth,
+                              "  %q = select i1 %s, ptr %pa1, ptr %pc1\n" + kFirstZero("%q"), kDivC),
+         "BOUNDED", "step-open", "every object allocated before the loop", {20, 0, 0}},
+        {"km_select_ok", loop_fn("km_select_ok", kZeroBoth,
+                                 "  %q = select i1 %s, ptr %pa1, ptr %pc1\n" + kFirstZero("%q"),
+                                 "  %v0 = load i32, ptr %rc1, align 4\n  %v = or i32 %v0, 1\n  %r = udiv i32 100, %v\n"),
+         "PROVED-UNBOUNDED", "closed", "every object allocated before the loop", {}},
+        // memcpy from an uninitialised array copies its initialised flags:
+        // the havoc makes them arbitrary, not "old or arbitrary"
+        // (the copy happens in the first iteration only: len = n == 20 ? 16 : 0)
+        {"km_memcpy", loop_fn("km_memcpy", kZeroC,
+                              "  %first = icmp eq i32 %i, 20\n  %len = select i1 %first, i64 16, i64 0\n"
+                              "  call void @llvm.memcpy.p0.p0.i64(ptr align 16 %c, ptr align 16 %a, i64 %len, i1 false)\n",
+                              "  %r = load i32, ptr %rc1, align 4\n"),
+         "BOUNDED", "step-open", "initialised flags arbitrary", {20, 0, 0}},
+    };
+}
+
+}  // namespace kind_mem
+
+TEST_CASE("pir mem: k-induction havocs the write footprint of a memory-writing loop") {
+    for (auto& c : kind_mem::cases()) {
+        CAPTURE(c.name);
+        auto t = mem_tr(with_decls(c.ir), c.name);
+        REQUIRE_MESSAGE(t.fn.has_value(), t.reason);
+        for (auto enc : {pp::MemEncoding::Array, pp::MemEncoding::Bv}) {
+            CAPTURE(static_cast<int>(enc));
+            pp::EncodeOptions eo;
+            eo.memory = enc;
+            auto v = pp::check_function(*t.fn, 8, 30, eo);
+            CAPTURE(v.message);
+            CHECK(v.status == c.status);
+            CHECK(v.extra["k_induction"] == c.kind);
+            CHECK(v.extra["k_induction_memory"] == "write footprint havocked");
+            CHECK(v.extra["k_induction_footprint"].find(c.footprint) != std::string::npos);
+        }
+        if (!c.witness.empty()) {
+            // the false cases are real: the interpreter hits the violation
+            auto r = pp::interpret(*t.fn, c.witness);
+            CHECK(r.status == pp::InterpResult::Violation);
+        }
+    }
+}
+
+TEST_CASE("pir mem: k-induction is not attempted for a loop that allocates or frees") {
+    const char* ir = R"IR(define i32 @km_free(i32 %n) {
+entry:
+  %p = call ptr @__prism_alloc(i64 4, i32 2, i32 1)
+  br label %head
+head:
+  %i = phi i32 [ %n, %entry ], [ %dec, %latch ]
+  %go = icmp ne i32 %i, 0
+  br i1 %go, label %body, label %done
+body:
+  %last = icmp eq i32 %i, 1
+  br i1 %last, label %rel, label %latch
+rel:
+  call void @__prism_free(ptr %p, i32 2)
+  br label %latch
+latch:
+  %dec = add i32 %i, -1
+  br label %head
+done:
+  ret i32 0
+}
+)IR";
+    auto t = mem_tr(with_decls(ir), "km_free");
+    REQUIRE_MESSAGE(t.fn.has_value(), t.reason);
+    auto v = pp::check_function(*t.fn, 8, 30);
+    CHECK(v.status == prism::laws::BOUNDED);
+    CHECK(v.extra["k_induction"] == "not-attempted (allocation or free in the loop)");
+}
 #endif

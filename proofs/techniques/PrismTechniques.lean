@@ -7,5 +7,6 @@ import PrismTechniques.BitblastDiv
 import PrismTechniques.BitblastEncode
 import PrismTechniques.BitblastSexp
 import PrismTechniques.LazySeq
+import PrismTechniques.LazySeqN
 import PrismTechniques.FloatRound
 import PrismTechniques.Audit

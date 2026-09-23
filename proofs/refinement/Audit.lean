@@ -55,3 +55,18 @@ open PrismRefine
 #print axioms PrismRefine.Float.round_correct
 #print axioms PrismRefine.Float.decode_encode
 #print axioms PrismRefine.Float.add_correct
+-- ... subtraction, multiplication, division, flags, float-to-int (roadmap 8.2, M8)
+#print axioms PrismRefine.Float.roundQ_repr
+#print axioms PrismRefine.Float.roundQ_nearest
+#print axioms PrismRefine.Float.roundQ_tie_even
+#print axioms PrismRefine.Float.roundF_correct
+#print axioms PrismRefine.Float.sub_correct
+#print axioms PrismRefine.Float.mul_correct
+#print axioms PrismRefine.Float.div_correct
+#print axioms PrismRefine.Float.prism_overflow_eq
+#print axioms PrismRefine.Float.prism_invalid_eq
+#print axioms PrismRefine.Float.ieee_invalid_eq
+#print axioms PrismRefine.Float.prism_divzero_eq
+#print axioms PrismRefine.Float.ieee_divzero_imp_prism
+#print axioms PrismRefine.Float.prism_divzero_extra
+#print axioms PrismRefine.Float.cast_ovf_iff
