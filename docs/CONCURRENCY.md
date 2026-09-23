@@ -108,7 +108,8 @@ reason:
 
 `pir::lower_to_ir` lowers the unit (clang `-O0`, then `mem2reg`,
 `lowerswitch`, `loop-simplify`, `lcssa`, `instnamer`) and `ir::parse_module`
-parses it. `pir::translate` has no memory model yet. So the stage copies the
+parses it. `pir::translate` models the memory of one function
+(docs/PIR.md), not memory shared between threads. So the stage copies the
 module and rewrites every *visible* operation into a **marker**, an
 instruction that `translate` already understands and whose result name
 `__prism.conc.<k>` indexes `Program::ops`:

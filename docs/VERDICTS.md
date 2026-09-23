@@ -21,26 +21,31 @@ that proves it.
 The *formal* verdicts are ordered by strength (`rank`). Everything else has
 rank 0 and is not a formal claim.
 
+Each verdict has an anchor `#verdict-<name in lower case>` (for example
+`VERDICTS.md#verdict-proved-certified`). Every run copies this file next to
+its reports, and every finding in `report.md` links its verdict here
+(roadmap 6.4).
+
 | Verdict | Rank | Class | Meaning |
 |---|---|---|---|
-| <a id="proved-certified"></a>`PROVED-CERTIFIED` | 5 | proof | The solver's UNSAT result was checked by a verified checker (cake_lpr or Lean's LRAT checker) against the exact CNF PRISM produced (roadmap 3.2). Needs `extra.certificate = "checked"`. |
-| <a id="proved-unbounded"></a>`PROVED-UNBOUNDED` | 4 | proof | k-induction closed: the property holds for every unwinding. |
-| <a id="proved"></a>`PROVED` | 3 | proof | All properties hold, loops closed within k. |
-| <a id="proved-assuming"></a>`PROVED-ASSUMING` | 2 | proof | Proved under an explicit `requires` or harness assumptions, which the report lists. |
-| <a id="bounded"></a>`BOUNDED` | 1 | formal, not a proof | Nothing found within k. That is all it says. |
-| <a id="failed"></a>`FAILED` | 0 | answer, defect | A counterexample. |
-| <a id="unknown"></a>`UNKNOWN` | 0 | no answer | The solver ran and did not conclude. Also what the audit demotes an inadmissible claim to. |
-| <a id="timeout"></a>`TIMEOUT` | 0 | no answer | Ran out of time. |
-| <a id="error"></a>`ERROR` | 0 | no answer | The instrument failed, or an internal check (such as the verdict audit) failed. |
-| <a id="nofunc"></a>`NOFUNC` | 0 | no answer | The function was not found. |
-| <a id="notrun"></a>`NOTRUN` | 0 | no answer | The tool is missing or the step was not allowed to run (Law 1, Law 9). |
-| <a id="needs-harness"></a>`NEEDS-HARNESS` | 0 | no answer | Pointer parameters, no precondition: not model-checked unguarded (Law 6). |
-| <a id="crash"></a>`CRASH` | 0 | defect | A fuzzer or execution crashed the code. |
-| <a id="clean"></a>`CLEAN` | 0 | fuzz silence | The fuzzer found nothing. Not a proof (Law 3). |
-| <a id="noseed"></a>`NOSEED` | 0 | fuzz | The fuzzer had no seed to start from. |
-| <a id="sanfail"></a>`SANFAIL` | 0 | defect | A sanitizer reported an error. |
-| <a id="hypothesis"></a>`HYPOTHESIS` | 0 | model | LLM output. It cannot cover a defect class (Law 4). |
-| <a id="reads"></a>`READS` | 0 | model | LLM reading of the code, weaker than a hypothesis. |
+| <a id="verdict-proved-certified"></a>`PROVED-CERTIFIED` | 5 | proof | The solver's UNSAT result was checked by a verified checker (cake_lpr or Lean's LRAT checker) against the exact CNF PRISM produced (roadmap 3.2). Needs `extra.certificate = "checked"`. |
+| <a id="verdict-proved-unbounded"></a>`PROVED-UNBOUNDED` | 4 | proof | k-induction closed: the property holds for every unwinding. |
+| <a id="verdict-proved"></a>`PROVED` | 3 | proof | All properties hold, loops closed within k. |
+| <a id="verdict-proved-assuming"></a>`PROVED-ASSUMING` | 2 | proof | Proved under an explicit `requires` or harness assumptions, which the report lists. |
+| <a id="verdict-bounded"></a>`BOUNDED` | 1 | formal, not a proof | Nothing found within k. That is all it says. |
+| <a id="verdict-failed"></a>`FAILED` | 0 | answer, defect | A counterexample. |
+| <a id="verdict-unknown"></a>`UNKNOWN` | 0 | no answer | The solver ran and did not conclude. Also what the audit demotes an inadmissible claim to. |
+| <a id="verdict-timeout"></a>`TIMEOUT` | 0 | no answer | Ran out of time. |
+| <a id="verdict-error"></a>`ERROR` | 0 | no answer | The instrument failed, or an internal check (such as the verdict audit) failed. |
+| <a id="verdict-nofunc"></a>`NOFUNC` | 0 | no answer | The function was not found. |
+| <a id="verdict-notrun"></a>`NOTRUN` | 0 | no answer | The tool is missing or the step was not allowed to run (Law 1, Law 9). |
+| <a id="verdict-needs-harness"></a>`NEEDS-HARNESS` | 0 | no answer | Pointer parameters, no precondition: not model-checked unguarded (Law 6). |
+| <a id="verdict-crash"></a>`CRASH` | 0 | defect | A fuzzer or execution crashed the code. |
+| <a id="verdict-clean"></a>`CLEAN` | 0 | fuzz silence | The fuzzer found nothing. Not a proof (Law 3). |
+| <a id="verdict-noseed"></a>`NOSEED` | 0 | fuzz | The fuzzer had no seed to start from. |
+| <a id="verdict-sanfail"></a>`SANFAIL` | 0 | defect | A sanitizer reported an error. |
+| <a id="verdict-hypothesis"></a>`HYPOTHESIS` | 0 | model | LLM output. It cannot cover a defect class (Law 4). |
+| <a id="verdict-reads"></a>`READS` | 0 | model | LLM reading of the code, weaker than a hypothesis. |
 
 Predicates (same in all three implementations and the model):
 

@@ -169,8 +169,35 @@ Label self-check: 212 functions ok, 6 skipped (pointer parameters), 0 failed.
 | bmc | all | 131 | 126 | **11** | 55/131 (42.0%) | 55/126 (43.7%) | 15 | 9 | 14 | 96 | 6/6 |
 | harness | all | – | – | **0** | – | – | – | 0 | – | – | 6/6 |
 
-`pir`: not present in `prism --list-stages` yet; the scorer picks it up
-automatically and reports it as its own row when it lands.
+`pir` and certified mode (roadmap 3.2): run of the `pir` stage with the
+solver library wiring and `--certified`, C++ engine at this branch
+(`python tools/conformance.py --stages pir --certified`, 2026-09-23;
+`pir-certified` is the second run with `prism --certified`, twice the time
+budget, a fresh solver cache per suite run):
+
+| stage | origin | true | false | **wrong proofs** | completeness | detection (replayed cex) | refuted, not replayed | false alarms | BOUNDED | no answer | Law 6 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| pir | in-house | 106 | 106 | **0** | 76/106 (71.7%) | 78/106 (73.6%) | 0 | 0 | 13 | 45 | 6/6 |
+| pir | SV-COMP | 25 | 20 | **0** | 3/25 (12.0%) | n/a | 5 | 0 | 7 | 29 | – |
+| pir-certified | in-house | 106 | 106 | **0** | 76/106 (71.7%) | 78/106 (73.6%) | 0 | 0 | 13 | 45 | 6/6 |
+| pir-certified | SV-COMP | 25 | 20 | **0** | 3/25 (12.0%) | n/a | 5 | 0 | 7 | 29 | – |
+
+**Certified mode (roadmap 3 exit criterion): 74/74 loop-free `true`
+functions that pir encodes are `PROVED-CERTIFIED`** (67 with one checked
+CaDiCaL LRAT proof per VC, 7 vacuously: unsigned-only code with no
+inserted property, so no solver answer to check), 3 of the 20 `true`
+functions with loops too (loops close within the unwind), and **0**
+`PROVED-CERTIFIED` on a `false` function. Certified mode changed no verdict
+other than `PROVED` → `PROVED-CERTIFIED`. The criterion is met for the
+functions pir encodes; 37 `true` functions are not encoded (pointer
+parameters, arrays, some C++) and so cannot be certified yet.
+
+Two fixes came out of these runs: a certified request that timed out while
+solving again for a certificate turned a cached plain answer into
+`UNKNOWN` (now the plain answer stands, uncertified), and cake_lpr timed
+out on a 59k-step multiplier proof under load (checker budget is now
+`max(60 s, 4 × timeout)`). pir also lowers C23 units that do not compile as
+C17 as C23 (c23 tasks: 8/11 proved and refuted, from 0).
 
 ### Concurrency (`tests/conformance/concurrency`, 22 labels, roadmap 2.6)
 

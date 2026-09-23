@@ -37,7 +37,7 @@ class AssuranceCheck(unittest.TestCase):
             doc.write_text(
                 "`thm:no_such_theorem_anywhere` `thm:proved_bounded_never_merge` "
                 "`thm:Houdini.houdini_sound` `thm:Houdini.bmc_sound`\n"
-                "`docs/NO_SUCH.md` `docs/VERDICTS.md#no-such-anchor` `docs/VERDICTS.md#proved`\n"
+                "`docs/NO_SUCH.md` `docs/VERDICTS.md#no-such-anchor` `docs/VERDICTS.md#verdict-proved`\n"
                 "`tests/test_verdict.py::NoSuchClass` `tests/test_verdict.py::TestAudit`\n"
                 "`thm:<Name>` is a placeholder\n",
                 encoding="utf-8")

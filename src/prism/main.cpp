@@ -2,6 +2,7 @@
 #include "prism/ai_assist.hpp"
 #include "prism/config.hpp"
 #include "prism/pipeline.hpp"
+#include "prism/pir.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -227,6 +228,9 @@ int main(int argc, char** argv) {
     auto cfg = default_config();
     std::string path = "testdata";
     std::string fail_on = "never";
+    // Tooling for tools/solver_bench.py (not a scan; JSON on stdout).
+    std::string pir_vcs_src, solve_smt2;
+    bool z3_only = false;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         auto next = [&]() -> std::string {
@@ -242,7 +246,14 @@ int main(int argc, char** argv) {
         else if (a == "--version" || a == "-V") {
             std::cout << "prism " << PRISM_VERSION << " (C++ engine)\n";
             return 0;
-        } else if (a == "--list-stages") {
+        }
+        else if (a == "--certified") cfg.certified = true;
+        else if (a == "--solver-cache") cfg.solver_cache = std::filesystem::absolute(next());
+        else if (a == "--timeout") cfg.timeout = std::stod(next());
+        else if (a == "--pir-vcs") pir_vcs_src = next();
+        else if (a == "--solve-smt2") solve_smt2 = next();
+        else if (a == "--z3-only") z3_only = true;
+        else if (a == "--list-stages") {
             for (auto* p = STAGE_ORDER; *p; ++p) std::cout << *p << "\n";
             return 0;
         } else if (a == "--out") cfg.out = next();
@@ -277,6 +288,7 @@ int main(int argc, char** argv) {
                 "           [--list-stages] [--version] [--fail-on never|defect|gap] [--allow-exec]\n"
                 "           [--requirements PATH] [--contracts-approved PATH]\n"
                 "           [--strict-aliasing] [--pir-drafts]\n"
+                "           [--certified] [--solver-cache DIR] [--timeout S]\n"
                 "prism prove FILE.lean THEOREM [--write] [--allow-exec] (Lean proof search; prove --help)\n"
                 "PRISM = Performance, Regression, Integration and Security Module\n"
                 "Checks any codebase (PATH: file or directory, any language): deep C/C++\n"
@@ -296,6 +308,13 @@ int main(int argc, char** argv) {
                 "  off by default because real code often breaks strict aliasing on purpose.\n"
                 "--pir-drafts: pir takes pointer sizes from the template harness draft when no\n"
                 "  requires clause gives them (PROVED-ASSUMING at best; off: NEEDS-HARNESS).\n"
+                "--certified: the pir stage asks for an LRAT certificate of every verification\n"
+                "  condition (CaDiCaL proof checked by cake_lpr, and by Lean's LRAT checker when\n"
+                "  the Lean-proved bit-blaster made the CNF); a function whose VCs are all\n"
+                "  certified is PROVED-CERTIFIED, otherwise it stays PROVED with a certify_note.\n"
+                "--solver-cache DIR: solver query cache (default $XDG_CACHE_HOME/prism/solver).\n"
+                "--timeout S: solver seconds per query (default 30).\n"
+                "Every run writes TRUSTED_BASE.md and VERDICTS.md next to the reports.\n"
                 "--pbsd PATH: ParanoidBSD tree for the pbsd stage (else PRISM_PBSD; no default).\n"
                 "  Importing its modules also needs --allow-exec.\n"
                 "--requirements PATH: markdown/text requirement documents (file or directory,\n"
@@ -316,6 +335,23 @@ int main(int argc, char** argv) {
     }
 
     if (cfg.gui) return launch_gui(argc, argv);
+    if (!pir_vcs_src.empty()) {
+        std::cout << prism::pir::unit_vcs_json(std::filesystem::absolute(pir_vcs_src), cfg,
+                                               std::filesystem::absolute(cfg.out))
+                  << "\n";
+        return 0;
+    }
+    if (!solve_smt2.empty()) {
+        std::ifstream in(solve_smt2, std::ios::binary);
+        if (!in) {
+            std::cerr << "cannot read " << solve_smt2 << "\n";
+            return 2;
+        }
+        std::ostringstream ss;
+        ss << in.rdbuf();
+        std::cout << prism::pir::solve_smt2_json(ss.str(), cfg, z3_only) << "\n";
+        return 0;
+    }
 
     cfg.root = std::filesystem::absolute(path);
     cfg.out = std::filesystem::absolute(cfg.out);

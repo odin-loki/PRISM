@@ -493,10 +493,10 @@ What remains between the proofs and a `PROVED-CERTIFIED` verdict:
   parsed formula's `Dag.eval` with Z3.
 ### Lazy sequentialisation
 
-There is no concurrency stage in the C++ engine yet (roadmap 2.6). The Lean
-result justifies the eager round-robin reduction for two threads with
-straight-line code. Four extensions are needed before it covers the planned
-stage:
+The C++ `conc` stage (roadmap 2.6, [CONCURRENCY.md](CONCURRENCY.md)) is not
+extracted from this model. The Lean result justifies the eager round-robin
+reduction for two threads with straight-line code. Four extensions are needed
+before it covers what the stage does:
 
 - per-thread loops, which need a bounded unrolling argument;
 - more than two threads, which generalises `Seg` to a round-robin over `n`

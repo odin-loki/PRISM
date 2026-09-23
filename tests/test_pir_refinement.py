@@ -67,6 +67,8 @@ class StaticParity(unittest.TestCase):
                 self.assertNotIn('"getelementptr"', export)
                 continue
             self.assertIn(fl, {"nsw", "nuw", "exact", "disjoint", "nneg"}, msg=fl)
+        # the exporter's flag allowlist is exactly the modelled set
+        self.assertEqual(set(re.findall(r'fl != "([a-z]+)"', export)), {"nsw", "nuw", "exact", "disjoint", "nneg"})
         # samesign is a poison flag translate.cpp ignores: the exporter must
         # refuse it rather than let the checker claim a proof for it
         self.assertIn('fl != "nneg"', export)
