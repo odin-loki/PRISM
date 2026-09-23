@@ -376,9 +376,16 @@ void Tr::dispatch_type(int cur, Arg exn, const std::string& t, int line) {
         return;
     }
     // no handler in the analysed function: the exception leaves it
-    if (!stack.empty() && stack.front() == "main")
+    // main, or the dynamic initialisation of globals before it (a throwing
+    // constructor of a global object): std::terminate
+    const bool entry = !stack.empty() && (stack.front() == "main" || stack.front().starts_with("_GLOBAL__sub_I") ||
+                                          stack.front().starts_with("__cxx_global_var_init"));
+    if (entry)
         check(cur, Arg::c(1, 1), "uncaught", "CXX-UNCAUGHT",
-              "exception of type " + shown + " escapes main: std::terminate is called", line);
+              "exception of type " + shown + " escapes " +
+                  (stack.front() == "main" ? std::string("main") : "static initialisation (" + stack.front() + ")") +
+                  ": std::terminate is called",
+              line);
     out.throws.push_back(shown);
     out.blocks[static_cast<std::size_t>(cur)].term = Term{};
 }
