@@ -1095,7 +1095,10 @@ void Parser::decl_one(Enc& e, const std::string& stmt) {
                 shadow_init(e, name, true);
                 return;
             }
-            if (!init.empty() && !(ct->w == 8 && rx_fullmatch(R"BMC("(?:[^"\\]|\\.)*")BMC", init)))
+            // `= __prism_unconstrained`: a caller's object materialised by a
+            // drafted harness (ai/harness.cpp): any contents, written.
+            if (init != "__prism_unconstrained" && !init.empty() &&
+                !(ct->w == 8 && rx_fullmatch(R"BMC("(?:[^"\\]|\\.)*")BMC", init)))
                 throw ParseFail("UNENCODED: initialiser of " + name);
             // No initialiser: contents arbitrary, every element unwritten. A
             // string literal writes every element (6.7.9p14, p21); its

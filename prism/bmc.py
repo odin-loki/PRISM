@@ -1264,7 +1264,11 @@ class Parser:
                 e.declare_array(name, Arr(arr, n, ct[0], ct[1]))
                 e.shadow_init(name, True)
                 return
-            if init and not (ct[0] == 8 and _STRING_LIT.fullmatch(init)):
+            # `= __prism_unconstrained`: a caller's object materialised by a
+            # drafted harness (src/prism/ai/harness.cpp): any contents, written.
+            if init == "__prism_unconstrained":
+                pass
+            elif init and not (ct[0] == 8 and _STRING_LIT.fullmatch(init)):
                 raise ParseFail(f"UNENCODED: initialiser of {name}")
             # No initialiser: contents arbitrary, every element unwritten. A
             # string literal writes every element (6.7.9p14, p21); its
