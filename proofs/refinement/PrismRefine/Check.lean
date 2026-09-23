@@ -20,6 +20,7 @@ Verdicts per function:
                   checker exits non-zero).
 -/
 import PrismRefine.Translate
+import PrismRefine.XValid
 
 namespace PrismRefine.Check
 
@@ -59,6 +60,7 @@ def pop? (s : String) : Option POp :=
   | _, _, _ =>
     match s with
     | "select" => some .select
+    | "copy" => some .copy
     | "sadd.ovf" => some (.ovf .sadd) | "ssub.ovf" => some (.ovf .ssub) | "smul.ovf" => some (.ovf .smul)
     | "uadd.ovf" => some (.ovf .uadd) | "usub.ovf" => some (.ovf .usub) | "umul.ovf" => some (.ovf .umul)
     | "sdiv.ovf" => some .sdivOvf
@@ -113,6 +115,7 @@ def pairs {α : Type} : List α → List (α × α)
 structure Record where
   name : String
   llvm : Except String LFunc      -- error: `L unsupported` or a parse error
+  ll : List (List String)         -- the raw `L` lines (extended fragment)
   cxx : Except String PFunc       -- error: C++ `status unencoded <reason>` (prefixed) or parse error
   deriving Inhabited
 
@@ -126,6 +129,7 @@ def parseLlvm (name : String) (ls : List (List String)) : Except String LFunc :=
   for l in ls do
     match l with
     | "unsupported" :: why => throw ("unsupported: " ++ " ".intercalate why)
+    | ["depth", _] => pure ()
     | "params" :: _ :: rest =>
       params ← (pairs rest).mapM (fun (n, w) => do pure (n, ← nat? w))
     | ["ret", w] =>
@@ -240,7 +244,7 @@ def parseFile (text : String) : List Record := Id.run do
         | some "" => parsePir pl.reverse
         | some why => .error ("C++ refused: " ++ why)
         | none => .error "no status line"
-      out := { name := name, llvm := llvm, cxx := cxx } :: out
+      out := { name := name, llvm := llvm, ll := ll.reverse, cxx := cxx } :: out
     | _ => pure ()
   return out.reverse
 
@@ -260,12 +264,110 @@ def diff (a b : PFunc) : String := Id.run do
     if x.term != y.term then return s!"bb{i} terminator: lean {repr x.term} vs c++ {repr y.term}"
   return "equal"
 
+/-! ### The extended fragment (`XLlvm.lean`): `freeze`, `undef`, calls -/
+
+def fopnd? (s : String) : Except String FOpnd :=
+  if s == "undef" then .ok .undef else do pure (.o (← opnd? s))
+
+/-- A function being parsed: name, params, ret width, finished blocks
+(reversed), the open block (name, phis, finished segments, instructions; all
+reversed). -/
+structure XPF where
+  name : String
+  params : List (String × Nat) := []
+  retw : Nat := 0
+  blocks : List XBlock := []
+  cur : Option (String × List PhiI × List (List SInst × CallI) × List SInst) := none
+
+def XPF.close (f : XPF) : Except String XFunc := do
+  if f.cur.isSome then throw s!"{f.name}: last block has no terminator"
+  pure { name := f.name, params := f.params, retw := f.retw, blocks := f.blocks.reverse }
+
+/-- Parse the `L ...` lines of a record in the extended syntax: the analysed
+function, then an `L fn NAME` section per function its calls reach. -/
+def parseXLlvm (name : String) (ls : List (List String)) :
+    Except String (XMod × XFunc × Nat) := do
+  let mut depth := 4
+  let mut done : List XFunc := []
+  let mut f : XPF := { name := name }
+  for l in ls do
+    let inBlock : Except String (String × List PhiI × List (List SInst × CallI) × List SInst) :=
+      match f.cur with
+      | some c => pure c
+      | none => throw s!"bad line {l}"
+    match l with
+    | "unsupported" :: why => throw ("unsupported: " ++ " ".intercalate why)
+    | ["depth", d] => depth ← nat? d
+    | ["fn", n] =>
+      done := (← f.close) :: done
+      f := { name := n }
+    | "params" :: _ :: rest =>
+      let ps ← (pairs rest).mapM (fun (n, w) => do pure (n, ← nat? w))
+      f := { f with params := ps }
+    | ["block", n] =>
+      if f.cur.isSome then throw s!"block {n}: previous block has no terminator"
+      f := { f with cur := some (n, [], [], []) }
+    | "phi" :: d :: w :: _ :: inc =>
+      let (bn, ps, sg, is) ← inBlock
+      let incs ← (pairs inc).mapM (fun (o, p) => do pure ((← opnd? o), p))
+      f := { f with cur := some (bn, ⟨← reg? d, ← nat? w, incs⟩ :: ps, sg, is) }
+    | ["bin", d, op, fl, w, a, b] =>
+      let (bn, ps, sg, is) ← inBlock
+      let o ← match binOp? op with | some o => pure o | none => throw s!"binop {op}"
+      f := { f with cur := some (bn, ps, sg,
+        .i (.bin (← reg? d) o (← flags? fl) (← nat? w) (← opnd? a) (← opnd? b)) :: is) }
+    | ["icmp", d, p, w, a, b] =>
+      let (bn, ps, sg, is) ← inBlock
+      let q ← match pred? p with | some q => pure q | none => throw s!"icmp {p}"
+      f := { f with cur := some (bn, ps, sg, .i (.icmp (← reg? d) q (← nat? w) (← opnd? a) (← opnd? b)) :: is) }
+    | ["select", d, w, c, a, b] =>
+      let (bn, ps, sg, is) ← inBlock
+      f := { f with cur := some (bn, ps, sg,
+        .i (.select (← reg? d) (← nat? w) (← opnd? c) (← opnd? a) (← opnd? b)) :: is) }
+    | ["uninit", d, w] =>
+      let (bn, ps, sg, is) ← inBlock
+      f := { f with cur := some (bn, ps, sg, .i (.uninit (← reg? d) (← nat? w)) :: is) }
+    | ["cast", d, k, nn, fw, tw, a] =>
+      let (bn, ps, sg, is) ← inBlock
+      let ck ← match castK? k with | some c => pure c | none => throw s!"cast {k}"
+      f := { f with cur := some (bn, ps, sg,
+        .i (.cast (← reg? d) ck (nn == "1") (← nat? fw) (← nat? tw) (← opnd? a)) :: is) }
+    | ["freeze", d, w, a] =>
+      let (bn, ps, sg, is) ← inBlock
+      f := { f with cur := some (bn, ps, sg, .freeze (← reg? d) (← nat? w) (← fopnd? a) :: is) }
+    | "call" :: d :: rw :: callee :: _ :: args =>
+      let (bn, ps, sg, is) ← inBlock
+      let dst ← if d == "-" then pure none else do pure (some (← reg? d))
+      let as ← (pairs args).mapM (fun (o, w) => do pure ((← opnd? o), ← nat? w))
+      let cl : CallI := { dst := dst, rw := ← nat? rw, f := callee, args := as }
+      f := { f with cur := some (bn, ps, (is.reverse, cl) :: sg, []) }
+    | ["ret", w] =>
+      match f.cur with
+      | none => f := { f with retw := ← nat? w }
+      | some (bn, ps, sg, is) =>
+        let t ← if w == "-" then pure (LTerm.ret none) else do pure (LTerm.ret (some (← opnd? w)))
+        f := { f with blocks := ⟨bn, ps.reverse, sg.reverse, is.reverse, t⟩ :: f.blocks, cur := none }
+    | _ =>
+      let (bn, ps, sg, is) ← inBlock
+      let t ← match l with
+        | ["br", t] => pure (LTerm.br t)
+        | ["cbr", c, t, e] => do pure (LTerm.cbr (← opnd? c) t e)
+        | ["unreachable"] => pure LTerm.unreachable
+        | _ => throw s!"bad line {l}"
+      f := { f with blocks := ⟨bn, ps.reverse, sg.reverse, is.reverse, t⟩ :: f.blocks, cur := none }
+  let last ← f.close
+  let fs := (last :: done).reverse
+  match fs with
+  | top :: _ => pure (fs, top, depth)
+  | [] => throw "no function"
+
 inductive Verdict where
-  | agree | agreeReject | outside | mismatch
+  | agree | agreeExt | agreeReject | outside | mismatch
   deriving DecidableEq
 
 def Verdict.tag : Verdict → String
   | .agree => "agree"
+  | .agreeExt => "agree-ext"
   | .agreeReject => "agree-reject"
   | .outside => "outside"
   | .mismatch => "MISMATCH"
@@ -281,5 +383,34 @@ def check (r : Record) : Verdict × String :=
     | .error e, .ok _ =>
       if e.startsWith "outside fragment" then (.outside, e)
       else (.mismatch, s!"C++ translates it, Lean refuses ({e})")
+
+/-- The extended fragment: the C++ PIR must be the extended translator's
+output, and the certificate must pass `validB` (the hypothesis of the
+extended theorems, `XSound.lean`). -/
+def checkX (r : Record) : Verdict × String :=
+  match parseXLlvm r.name r.ll with
+  | .error e => (.outside, e)
+  | .ok (M, F, depth) =>
+    match translateX M depth F, r.cxx with
+    | .ok (P, C), .ok Q =>
+      if P == Q then
+        if validB M F P C then (.agreeExt, "")
+        else (.mismatch, "the extended translation's certificate does not check (validB)")
+      else (.mismatch, diff P Q)
+    | .ok _, .error e => (.mismatch, s!"Lean translates it, C++ does not ({e})")
+    | .error e, .error _ => (.agreeReject, e)
+    | .error e, .ok _ =>
+      if e.startsWith "outside fragment" then (.outside, e)
+      else (.mismatch, s!"C++ translates it, Lean refuses ({e})")
+
+/-- The base fragment first (unconditional theorems, `Sound.lean`); what it
+leaves outside, the extended fragment. -/
+def checkAll (r : Record) : Verdict × String :=
+  match check r with
+  | (.outside, e) =>
+    match checkX r with
+    | (.outside, e') => (.outside, if e'.startsWith "unsupported" then e' else e ++ "; extended: " ++ e')
+    | v => v
+  | v => v
 
 end PrismRefine.Check

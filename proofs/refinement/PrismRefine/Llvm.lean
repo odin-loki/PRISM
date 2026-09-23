@@ -92,21 +92,21 @@ inductive Inst where
   | cast (dst : String) (k : CastK) (nneg : Bool) (fw tw : Nat) (a : Opnd)
   /-- `%dst = call iw @__prism.uninit.iw()`: an indeterminate value. -/
   | uninit (dst : String) (w : Nat)
-  deriving Repr, Inhabited
+  deriving DecidableEq, Repr, Inhabited
 
 /-- `%dst = phi iw [v, %pred], ...` -/
 structure PhiI where
   dst : String
   w : Nat
   inc : List (Opnd × String)
-  deriving Repr, Inhabited
+  deriving DecidableEq, Repr, Inhabited
 
 inductive LTerm where
   | br (t : String)
   | cbr (c : Opnd) (t f : String)
   | ret (v : Option Opnd)
   | unreachable
-  deriving Repr, Inhabited
+  deriving DecidableEq, Repr, Inhabited
 
 structure LBlock where
   name : String

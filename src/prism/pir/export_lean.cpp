@@ -51,7 +51,7 @@ std::string opnd(const ir::Operand& o) {
         case ir::Value::Local: return "%" + name(o.v.name);
         case ir::Value::Int: width(o.ty); return "#" + std::to_string(o.v.bits);
         case ir::Value::Poison: width(o.ty); return "poison";
-        case ir::Value::Undef: throw Unsupported{"undef operand"};
+        case ir::Value::Undef: width(o.ty); return "undef";  // only accepted under freeze
         default: throw Unsupported{"operand " + o.ty.text + " " + o.v.text};
     }
 }
@@ -67,7 +67,24 @@ std::string arg(const Arg& a) {
 
 std::string word(const std::string& s) { return s.empty() ? "-" : s; }
 
-void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, const TranslateOptions& opt) {
+// A call translate.cpp inlines (Tr::call -> Tr::inline_call): a function
+// defined in the module that no earlier handler of Tr::call claims. Library
+// code (a model, or a function from another file: its checks are reported at
+// the call site) is left out.
+bool inlined_call(const ir::Module& m, const ir::Inst& in, const std::string& top_file) {
+    const auto& n = in.callee;
+    if (in.is_asm || n.empty() || n.starts_with("llvm.") || n.starts_with("__prism") || n.starts_with("__cxa_") ||
+        n == "__clang_call_terminate" || n == "_ZSt9terminatev")
+        return false;
+    const auto* callee = m.find(n);
+    if (!callee) return false;
+    std::string cfile;
+    if (auto it = m.subprograms.find(callee->dbg); it != m.subprograms.end()) cfile = it->second.file;
+    return !callee->is_model && (cfile.empty() || top_file.empty() || cfile == top_file);
+}
+
+void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, const TranslateOptions& opt,
+               const std::string& top_file, std::vector<std::string>& callees) {
     if (!f.parse_error.empty()) throw Unsupported{"unparsed IR"};
     std::ostringstream b;
     b << "L params " << f.params.size();
@@ -132,6 +149,16 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
             } else if (op == "call" && in.callee.starts_with("__prism.uninit.") && !in.result.empty()) {
                 // stage.cpp's marker for a scalar local: an indeterminate value
                 b << "L uninit %" << name(in.result) << " " << width(in.ty) << "\n";
+            } else if (op == "freeze") {
+                if (in.result.empty() || in.ops.size() != 1) throw Unsupported{"freeze shape"};
+                b << "L freeze %" << name(in.result) << " " << width(in.ty) << " " << opnd(in.ops[0]) << "\n";
+            } else if (op == "call" && inlined_call(m, in, top_file)) {
+                b << "L call " << (in.result.empty() ? std::string("-") : "%" + name(in.result)) << " "
+                  << (in.ty.kind == ir::Type::Void ? 0u : width(in.ty)) << " " << name(in.callee) << " "
+                  << in.ops.size();
+                for (auto& a : in.ops) b << " " << opnd(a) << " " << width(a.ty);
+                b << "\n";
+                if (std::find(callees.begin(), callees.end(), in.callee) == callees.end()) callees.push_back(in.callee);
             } else {
                 throw Unsupported{op};
             }
@@ -168,6 +195,11 @@ void pir_side(std::ostream& o, const Function& fn) {
                     o << "P check " << arg(s.args[0]) << " " << word(s.prop) << " " << word(s.cls) << "\n";
                     break;
                 case Stmt::Assume: o << "P assume " << arg(s.args[0]) << "\n"; break;
+                default:
+                    // a memory statement: written so the checker can never equate
+                    // it with anything (it is not in the Lean PIR syntax)
+                    o << "P memory-statement " << static_cast<int>(s.kind) << "\n";
+                    break;
             }
         }
         auto& t = bl.term;
@@ -191,7 +223,16 @@ void export_lean_pair(const std::filesystem::path& out_root, const std::string& 
     o << "func " << (plain_name(f.name) ? f.name : std::string("?")) << "\n";
     try {
         std::ostringstream l;
-        llvm_side(l, m, f, opt);
+        std::string top_file;
+        if (auto it = m.subprograms.find(f.dbg); it != m.subprograms.end()) top_file = it->second.file;
+        std::vector<std::string> callees;
+        llvm_side(l, m, f, opt, top_file, callees);
+        // every function the calls reach, once, in order of first call
+        for (std::size_t i = 0; i < callees.size(); ++i) {
+            l << "L fn " << name(callees[i]) << "\n";
+            llvm_side(l, m, *m.find(callees[i]), opt, top_file, callees);
+        }
+        if (!callees.empty()) o << "L depth " << opt.inline_depth << "\n";
         o << l.str();
     } catch (const Unsupported& u) {
         std::string why = u.why;

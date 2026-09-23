@@ -64,7 +64,7 @@ def parse(lines: list[str]) -> tuple[Counter, list[list[str]]]:
     rows: list[list[str]] = []
     for line in lines:
         cols = line.split("\t")
-        if len(cols) >= 3 and cols[0] in {"agree", "agree-reject", "outside", "MISMATCH"}:
+        if len(cols) >= 3 and cols[0] in {"agree", "agree-ext", "agree-reject", "outside", "MISMATCH"}:
             counts[cols[0]] += 1
             rows.append(cols)
     return counts, rows
@@ -111,7 +111,7 @@ def main(argv: list[str] | None = None) -> int:
             total.update(counts)
             summary[str(tree)] = {"counts": dict(counts), "outside_reasons": dict(reasons.most_common(12))}
             print(f"{tree}: " + ", ".join(f"{k}={counts[k]}" for k in
-                                         ("agree", "agree-reject", "outside", "MISMATCH")))
+                                         ("agree", "agree-ext", "agree-reject", "outside", "MISMATCH")))
             if args.keep:
                 dst = args.keep / tree.name
                 dst.mkdir(parents=True, exist_ok=True)
@@ -119,8 +119,8 @@ def main(argv: list[str] | None = None) -> int:
                     shutil.copy2(f, dst / f.name)
     for row in mismatches:
         print("MISMATCH " + " ".join(row[1:]))
-    in_fragment = total["agree"] + total["MISMATCH"]
-    print(f"total: agree={total['agree']} agree-reject={total['agree-reject']} "
+    in_fragment = total["agree"] + total["agree-ext"] + total["MISMATCH"]
+    print(f"total: agree={total['agree']} agree-ext={total['agree-ext']} agree-reject={total['agree-reject']} "
           f"outside={total['outside']} mismatch={total['MISMATCH']} "
           f"(functions in the proved fragment: {in_fragment})")
     if args.json:

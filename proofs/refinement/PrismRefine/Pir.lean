@@ -35,6 +35,8 @@ inductive POp where
   | ovf (o : OvfOp)
   | sdivOvf | shiftOob | shlSOvf | shlNswOvf | shlNuwOvf
   | lostBitsL | lostBitsA | inexactU | inexactS
+  /-- `copy` (`Op::Copy`): the translation of `freeze` (`XTranslate.lean`). -/
+  | copy
   deriving DecidableEq, Repr, Inhabited
 
 /-- `Arg`: a constant `(width, bits)` (bits already masked) or variable
@@ -130,6 +132,7 @@ def evalOp (σ : Store) (op : POp) (w : Nat) (args : List Arg) : Nat :=
   | .cmp p, [a, b] => icmpVal p a.width (a.get σ) (b.get σ)
   | .select, [c, a, b] => selVal w (c.get σ) (a.get σ) (b.get σ)
   | .cast k, [a] => castVal k a.width w (a.get σ)
+  | .copy, [a] => a.get σ
   | op, [a, b] => (BitVec.ofBool (testVal op a.width (a.get σ) (b.get σ))).toNat
   | _, _ => 0
 
