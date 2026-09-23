@@ -468,6 +468,7 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
                             res.kind = Kind::Unsat;
                             res.certified = true;
                             res.certificate_info = ck.info;
+                            res.cnf_sha256 = cnf_sha;
                             res.winner = j->value("winner", "");
                             res.cache_hit = true;
                             notes.push_back("cache hit: certificate re-checked by cake_lpr");
@@ -914,6 +915,7 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
             if (ck.certified) {
                 res.certified = true;
                 res.certificate_info = ck.info;
+                res.cnf_sha256 = cnf_sha;
                 notes.push_back("certified: LRAT proof accepted by cake_lpr");
             } else {
                 notes.push_back(ck.note);

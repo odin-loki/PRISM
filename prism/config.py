@@ -303,6 +303,11 @@ class Config:
     # sanitizer builds, perl -c, cargo clippy, eslint) or from the LLM is
     # opt-in (--allow-exec). Default: those steps are NOTRUN.
     allow_exec: bool = False
+    # Roadmap 3.2 (--certified) and the solver query cache (--solver-cache).
+    # Recorded for parity with the C++ engine; the stages that use them (pir)
+    # run in the C++ engine only (roadmap D8).
+    certified: bool = False
+    solver_cache: str = ""
 
     def want(self, name: str) -> bool:
         if name in self.skip:

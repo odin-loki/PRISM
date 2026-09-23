@@ -39,7 +39,9 @@ class TestSolverSources(unittest.TestCase):
 
     def test_certified_status_is_one_literal(self) -> None:
         hdr = _read(HEADER)
-        self.assertIn('kProvedCertified = "PROVED-CERTIFIED"', hdr)
+        # One spelling: the verdict module owns it; the solver aliases it.
+        self.assertIn("kProvedCertified = laws::PROVED_CERTIFIED", hdr)
+        self.assertNotIn('"PROVED-CERTIFIED"', hdr)
         for f in SOLVER.glob("*.cpp"):
             self.assertNotIn('"PROVED-CERTIFIED"', _read(f), f.name)
 

@@ -13,6 +13,13 @@
 //   BOUNDED           no check fails within the bound; a cut is reachable
 //   PROVED-UNBOUNDED  BOUNDED + a single loop whose k-induction step closes
 //   UNKNOWN           solver unknown / timeout / unrolling too large
+//   PROVED-CERTIFIED  (--certified) PROVED, and every VC of the function
+//                     (each property + the unwinding assertion) has a
+//                     CaDiCaL LRAT proof that cake_lpr accepted
+//
+// Every property VC and the unwinding assertion is one query to
+// prism::solver::solve (portfolio, query cache, certified mode); the
+// k-induction step is answered by Z3 in-process.
 
 #include "prism/laws.hpp"
 #include "prism/pir.hpp"
@@ -21,11 +28,13 @@
 #include <deque>
 #include <functional>
 #include <map>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <unordered_map>
 
 #ifdef PRISM_HAS_Z3
+#  include "prism/solver.hpp"
 #  include <z3++.h>
 #endif
 
@@ -554,17 +563,6 @@ struct Encoding {
     }
 };
 
-std::vector<uint64_t> model_args(const z3::model& mdl, Encoding& e) {
-    std::vector<uint64_t> out;
-    for (std::size_t i = 0; i < e.params.size(); ++i) {
-        auto v = mdl.eval(e.params[i], true);
-        uint64_t u = 0;
-        if (!v.is_numeral_u64(u)) u = 0;
-        out.push_back(u);
-    }
-    return out;
-}
-
 void add_all(z3::solver& s, const std::vector<z3::expr>& xs) {
     for (auto& x : xs) s.add(x);
 }
@@ -633,10 +631,119 @@ std::optional<bool> kinduction_step(const Function& fn, const CfgInfo& g, int k,
 
 }  // namespace
 
+namespace {
+
+// SMT-LIB bitvector literal (#x.., #b.., true/false, decimal) -> bits (low 64).
+uint64_t literal_bits(const std::string& v) {
+    try {
+        if (v == "true") return 1;
+        if (v == "false") return 0;
+        if (v.rfind("#x", 0) == 0) {
+            auto h = v.substr(2);
+            if (h.size() > 16) h = h.substr(h.size() - 16);
+            return std::stoull(h, nullptr, 16);
+        }
+        if (v.rfind("#b", 0) == 0) {
+            auto b = v.substr(2);
+            if (b.size() > 64) b = b.substr(b.size() - 64);
+            return std::stoull(b, nullptr, 2);
+        }
+        return std::stoull(v);
+    } catch (...) {
+        return 0;
+    }
+}
+
+std::string join_s(const std::vector<std::string>& v, const std::string& sep) {
+    std::string out;
+    for (auto& x : v) out += (out.empty() ? "" : sep) + x;
+    return out;
+}
+
+// One verification condition answered by the solver library.
+struct VcAnswer {
+    std::string label;  // "ovf+@12" / "unwind"
+    solver::SolveResult r;
+};
+
+struct VcBook {
+    std::deque<VcAnswer> done;  // stable references
+    std::map<std::string, int> winners;
+    int cache_hits = 0;
+
+    const solver::SolveResult& add(std::string label, solver::SolveResult r) {
+        if (!r.winner.empty()) ++winners[r.winner + (r.cache_hit ? " (cache)" : "")];
+        if (r.cache_hit) ++cache_hits;
+        done.push_back(VcAnswer{std::move(label), std::move(r)});
+        return done.back().r;
+    }
+    std::string summary() const {
+        std::vector<std::string> w;
+        for (auto& [k, n] : winners) w.push_back(k + ":" + std::to_string(n));
+        return std::to_string(done.size()) + " VCs; answered by " + (w.empty() ? "none" : join_s(w, ", ")) +
+               "; cache hits " + std::to_string(cache_hits);
+    }
+};
+
+std::string vc_label(const PropInst& p) {
+    return p.stmt->prop + (p.stmt->line ? "@" + std::to_string(p.stmt->line) : std::string());
+}
+
+// Certified mode: PROVED becomes PROVED-CERTIFIED only when every VC of the
+// function (every property and the unwinding assertion) is certified.
+void certify(Verdict& v, const VcBook& book) {
+    v.extra["certificate_vcs"] = std::to_string(book.done.size());
+    if (book.done.empty()) {
+        // No VC at all (no property inserted, no loop cut): no solver answer
+        // is trusted, so the claim rests on the encoder alone, a subset of
+        // what every certified claim trusts (docs/TRUSTED_BASE.md T1).
+        v.status = std::string(laws::PROVED_CERTIFIED);
+        v.extra[std::string(laws::CERTIFICATE_KEY)] = std::string(laws::CERTIFICATE_CHECKED);
+        v.extra["certificate_info"] =
+            "0 VCs: no property was inserted and no loop cut is reachable; no solver answer to check "
+            "(the claim rests on the PIR encoder only)";
+        v.extra["cnf_sha256"] = "";
+        v.message += "; vacuously certified (0 VCs, no solver answer trusted)";
+        return;
+    }
+    std::vector<std::string> infos, shas;
+    for (auto& a : book.done) {
+        if (!a.r.certified || a.r.kind != solver::SolveResult::Unsat) {
+            std::string why = a.r.note;
+            auto p = why.find("not certif");
+            if (p != std::string::npos) why = why.substr(p);
+            v.extra["certify_note"] = "VC " + a.label + " " +
+                                      (why.empty() ? std::string("not certified") : why) + " (" +
+                                      std::to_string(infos.size()) + "/" + std::to_string(book.done.size()) +
+                                      " VCs certified before it); verdict stays PROVED";
+            return;
+        }
+        infos.push_back(a.label + ": " + a.r.certificate_info);
+        shas.push_back(a.r.cnf_sha256);
+    }
+    v.status = std::string(laws::PROVED_CERTIFIED);
+    v.extra[std::string(laws::CERTIFICATE_KEY)] = std::string(laws::CERTIFICATE_CHECKED);
+    v.extra["certificate_info"] = std::to_string(book.done.size()) +
+                                  " VCs, each an LRAT proof checked by cake_lpr: " + join_s(infos, " | ");
+    v.extra["cnf_sha256"] = join_s(shas, ",");
+    v.message += "; every VC certified (" + std::to_string(book.done.size()) + " LRAT proofs checked by cake_lpr)";
+}
+
+}  // namespace
+
 Verdict check_function(const Function& fn, int unwind, double timeout_s) {
+    CheckOptions o;
+    o.unwind = unwind;
+    o.timeout_s = timeout_s;
+    o.use_cache = false;
+    return check_function(fn, o);
+}
+
+Verdict check_function(const Function& fn, const CheckOptions& opt) {
     Verdict v;
-    if (unwind < 1) unwind = 1;
-    auto timeout_ms = static_cast<unsigned>(std::max(1.0, timeout_s) * 1000.0);
+    const int unwind = std::max(1, opt.unwind);
+    const double timeout_s = std::max(1.0, opt.timeout_s);
+    const auto timeout_ms = static_cast<unsigned>(timeout_s * 1000.0);
     v.extra["unwind"] = std::to_string(unwind);
     auto g = analyze(fn);
     if (!g.unencoded.empty()) {
@@ -645,46 +752,65 @@ Verdict check_function(const Function& fn, int unwind, double timeout_s) {
         return v;
     }
     v.extra["loops"] = std::to_string(g.loops.size());
+    solver::SolveOptions so;
+    so.timeout_s = timeout_s;
+    so.portfolio = opt.portfolio;
+    so.certified = opt.certified;
+    so.use_cache = opt.use_cache;
+    so.cache_dir = opt.cache_dir;
+    so.max_parallel = opt.max_parallel;
+    so.tool_dirs = opt.tool_dirs;
+    so.search_default_tools = opt.search_default_tools;
+    VcBook book;
+    auto finish = [&](Verdict& r) -> Verdict {
+        r.extra["solver"] = book.summary();
+        r.extra["certified_mode"] = opt.certified ? "on" : "off";
+        return r;
+    };
     try {
         z3::context c;
         Encoding e(c, fn, g, unwind);
         e.build();
         v.extra["instances"] = std::to_string(e.nodes.size());
         v.extra["properties"] = std::to_string(e.props.size());
-        z3::solver s(c);
-        s.set("timeout", timeout_ms);
-        add_all(s, e.assumptions);
-        if (!e.props.empty()) {
-            std::vector<z3::expr> viols;
-            for (auto& p : e.props) viols.push_back(p.viol);
-            s.push();
-            s.add(any_of(c, viols));
-            auto r = s.check();
-            if (r == z3::sat) {
-                auto mdl = s.get_model();
-                const PropInst* hit = nullptr;
-                for (auto& p : e.props)
-                    if (mdl.eval(p.viol, true).is_true()) {
-                        hit = &p;
-                        break;
-                    }
-                if (!hit) hit = &e.props.front();
-                v.status = std::string(laws::FAILED);
-                v.prop = hit->stmt->prop;
-                v.cls = hit->stmt->cls;
-                v.line = hit->stmt->line;
-                v.cex_args = model_args(mdl, e);
-                for (std::size_t i = 0; i < fn.params.size(); ++i)
-                    v.cex[fn.vars[static_cast<std::size_t>(fn.params[i])].name] = v.cex_args[i];
-                v.message = hit->stmt->prop + ": " + hit->stmt->cls + " (" + hit->stmt->msg + ")";
-                return v;
+        z3::expr_vector av(c);
+        for (auto& a : e.assumptions) av.push_back(a);
+        const z3::expr base = av.empty() ? c.bool_val(true) : z3::mk_and(av);
+        // One query per property: SAT <=> that property is violated.
+        const PropInst* hit = nullptr;
+        std::optional<solver::SolveResult> hit_r;
+        std::string no_answer;
+        for (auto& p : e.props) {
+            const auto& r = book.add(vc_label(p), solver::solve(c, base && p.viol, so));
+            if (r.kind == solver::SolveResult::Sat) {
+                hit = &p;
+                hit_r = r;
+                break;
             }
-            if (r == z3::unknown) {
-                v.status = std::string(laws::UNKNOWN);
-                v.message = "solver unknown: " + s.reason_unknown();
-                return v;
+            if (r.kind != solver::SolveResult::Unsat && no_answer.empty())
+                no_answer = "VC " + vc_label(p) + ": solver " + std::string(solver::kind_name(r.kind)) +
+                            (r.note.empty() ? std::string() : " (" + r.note + ")");
+        }
+        if (hit) {
+            v.status = std::string(laws::FAILED);
+            v.prop = hit->stmt->prop;
+            v.cls = hit->stmt->cls;
+            v.line = hit->stmt->line;
+            for (auto& pe : e.params) {
+                auto it = hit_r->model.find(pe.decl().name().str());
+                const uint64_t bits = it == hit_r->model.end() ? 0 : literal_bits(it->second);
+                v.cex_args.push_back(bits & wmask(pe.get_sort().bv_size()));
             }
-            s.pop();
+            for (std::size_t i = 0; i < fn.params.size() && i < v.cex_args.size(); ++i)
+                v.cex[fn.vars[static_cast<std::size_t>(fn.params[i])].name] = v.cex_args[i];
+            v.message = hit->stmt->prop + ": " + hit->stmt->cls + " (" + hit->stmt->msg + ")";
+            v.extra["cex_solver"] = hit_r->winner + (hit_r->cache_hit ? " (cache, re-validated)" : "");
+            return finish(v);
+        }
+        if (!no_answer.empty()) {
+            v.status = std::string(laws::UNKNOWN);
+            v.message = no_answer;
+            return finish(v);
         }
         if (e.cuts.empty()) {
             v.status = std::string(laws::PROVED);
@@ -693,52 +819,56 @@ Verdict check_function(const Function& fn, int unwind, double timeout_s) {
                                         : "encoded properties hold; every loop closes within unwind " +
                                               std::to_string(unwind);
             v.extra["k_induction"] = "not-needed";
-            return v;
+            if (opt.certified) certify(v, book);
+            return finish(v);
         }
-        s.push();
-        s.add(any_of(c, e.cuts));
-        auto r = s.check();
-        s.pop();
-        if (r == z3::unsat) {
+        const auto& ur = book.add("unwind", solver::solve(c, base && any_of(c, e.cuts), so));
+        if (ur.kind == solver::SolveResult::Unsat) {
             v.status = std::string(laws::PROVED);
             v.extra["unwind_closed"] = "true";
             v.message = "encoded properties hold; unwinding assertion proved at unwind " + std::to_string(unwind);
             v.extra["k_induction"] = "not-needed";
-            return v;
+            if (opt.certified) certify(v, book);
+            return finish(v);
         }
         v.status = std::string(laws::BOUNDED);
         v.extra["unwind_closed"] = "false";
         v.message = "no violation within unwind " + std::to_string(unwind) +
-                    (r == z3::sat ? "; loops did not close" : "; unwinding assertion unknown");
+                    (ur.kind == solver::SolveResult::Sat ? "; loops did not close" : "; unwinding assertion unknown");
+        if (opt.certified)
+            v.extra["certify_note"] =
+                "not certified: certified mode certifies PROVED only (every loop must close within the unwind)";
         if (g.loops.size() != 1) {
             v.extra["k_induction"] = g.loops.empty() ? "not-needed" : "multiple-loops";
-            return v;
+            return finish(v);
         }
+        // The k-induction step is not a property VC: Z3 answers it in-process,
+        // and PROVED-UNBOUNDED is never certified (docs/PIR.md "Solving").
         std::vector<std::string> tried;
         for (int k : {1, 2}) {
             if (k > unwind) break;
             tried.push_back(std::to_string(k));
             auto closed = kinduction_step(fn, g, k, timeout_ms);
-            v.extra["k_induction_tried"] = [&] {
-                std::string t;
-                for (auto& x : tried) t += (t.empty() ? "" : ",") + x;
-                return t;
-            }();
+            v.extra["k_induction_tried"] = join_s(tried, ",");
             if (closed && *closed) {
                 v.status = std::string(laws::PROVED_UNBOUNDED);
                 v.message = "k-induction step closed at k=" + std::to_string(k) + "; not a bounded-only result";
                 v.extra["k_induction"] = "closed";
                 v.extra["k_induction_k"] = std::to_string(k);
+                v.extra["k_induction_solver"] = "z3 (in-process)";
                 v.extra["unwind_closed"] = "true";
-                return v;
+                if (opt.certified)
+                    v.extra["certify_note"] =
+                        "not certified: the k-induction step is answered by Z3 alone; PROVED-UNBOUNDED is not certified";
+                return finish(v);
             }
             if (!closed) {
                 v.extra["k_induction"] = "unknown";
-                return v;
+                return finish(v);
             }
         }
         v.extra["k_induction"] = "step-open";
-        return v;
+        return finish(v);
     } catch (const EncodeFail& f) {
         v.status = f.status;
         v.message = f.msg;
@@ -792,12 +922,14 @@ std::vector<Vc> pir_vcs(const Function& fn, int unwind) {
 
 bool z3_available() { return false; }
 
-Verdict check_function(const Function&, int, double) {
+Verdict check_function(const Function&, const CheckOptions&) {
     Verdict v;
     v.status = std::string(laws::NOTRUN);
     v.message = "z3 not built";
     return v;
 }
+
+Verdict check_function(const Function& fn, int, double) { return check_function(fn, CheckOptions{}); }
 
 std::vector<Vc> pir_vcs(const Function&, int) { return {}; }
 

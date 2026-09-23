@@ -12,9 +12,11 @@
 //              cake_lpr, PROVED-CERTIFIED — see docs/TRUSTED_BASE.md);
 //   Unknown / Timeout / Error -> no answer; never a clean result (Law 1, 7).
 //
-// Nothing here edits the verdict lattice; `kProvedCertified` is a local
-// spelling of the status the verdict module owns (the integrator switches it
-// to laws::PROVED_CERTIFIED).
+// Nothing here edits the verdict lattice: the certified status is the one the
+// verdict module owns (laws::PROVED_CERTIFIED). The pir stage routes every
+// verification condition through solve() (docs/PIR.md, docs/SOLVERS.md).
+
+#include "prism/laws.hpp"
 
 #include <atomic>
 #include <cstdint>
@@ -31,7 +33,8 @@
 
 namespace prism::solver {
 
-inline constexpr std::string_view kProvedCertified = "PROVED-CERTIFIED";
+// Alias kept for existing callers; the one spelling is laws::PROVED_CERTIFIED.
+inline constexpr std::string_view kProvedCertified = laws::PROVED_CERTIFIED;
 
 // A portfolio member supplied by the caller (user configuration or tests).
 // "{input}" in argv is replaced by the query file path.
@@ -67,6 +70,7 @@ struct SolveResult {
     std::map<std::string, std::string> model;  // name -> SMT-LIB literal (#x.., #b.., true/false)
     bool certified = false;                    // Unsat AND cake_lpr accepted the LRAT proof
     std::string certificate_info;
+    std::string cnf_sha256;                    // certified: sha256 of the exact CNF cake_lpr checked
     std::string query_hash;                    // sha256 of the normalised query
     bool cache_hit = false;
     std::string note;                          // everything that ran, was missing, or failed

@@ -41,13 +41,13 @@ std::string_view kind_name(SolveResult::Kind k) {
 
 std::string_view verdict_status(const SolveResult& r) {
     switch (r.kind) {
-        case SolveResult::Unsat: return r.certified ? kProvedCertified : std::string_view("PROVED");
-        case SolveResult::Sat: return "FAILED";
-        case SolveResult::Timeout: return "TIMEOUT";
-        case SolveResult::Error: return "ERROR";
+        case SolveResult::Unsat: return r.certified ? laws::PROVED_CERTIFIED : laws::PROVED;
+        case SolveResult::Sat: return laws::FAILED;
+        case SolveResult::Timeout: return laws::TIMEOUT;
+        case SolveResult::Error: return laws::ERROR;
         case SolveResult::Unknown: break;
     }
-    return "UNKNOWN";
+    return laws::UNKNOWN;
 }
 
 // ---------------------------------------------------------------- SHA-256

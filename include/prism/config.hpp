@@ -39,6 +39,13 @@ struct Config {
     // builds, perl -c, cargo clippy, eslint) or from the LLM is opt-in
     // (--allow-exec). Default: those steps are NOTRUN. prism/config.py allow_exec.
     bool allow_exec = false;
+    // Roadmap 3.2 (--certified): the pir stage asks the solver library for an
+    // LRAT certificate of every verification condition; a function whose VCs
+    // are all checked by cake_lpr is PROVED-CERTIFIED. prism/config.py certified.
+    bool certified = false;
+    // Solver query cache (--solver-cache DIR); empty = the solver library's
+    // default ($XDG_CACHE_HOME/prism/solver). prism/config.py solver_cache.
+    std::filesystem::path solver_cache;
 
     PRISM_API bool want(std::string_view name) const;
     PRISM_API std::optional<std::filesystem::path> which(

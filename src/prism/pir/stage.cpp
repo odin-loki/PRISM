@@ -23,6 +23,7 @@
 #include <random>
 #include <set>
 #include <sstream>
+#include <thread>
 
 namespace prism::pir {
 namespace fs = std::filesystem;
@@ -561,7 +562,8 @@ void validate(std::vector<FnRec>& recs, const std::string& ir, const Frontend& f
         auto& r = recs[i];
         if (!r.fn) continue;
         const auto& st = r.f.status;
-        if (!(st == laws::FAILED || st == laws::PROVED || st == laws::PROVED_UNBOUNDED || st == laws::BOUNDED))
+        if (!(st == laws::FAILED || st == laws::PROVED || st == laws::PROVED_CERTIFIED ||
+              st == laws::PROVED_UNBOUNDED || st == laws::BOUNDED))
             continue;
         if (!cfg.allow_exec) {
             r.f.extra["tv"] = "NOTRUN (needs --allow-exec)";
@@ -698,6 +700,7 @@ void validate(std::vector<FnRec>& recs, const std::string& ir, const Frontend& f
         f.extra["sandbox"] = sandbox::kind();
         if (auto d = diverged.find(i); d != diverged.end()) {
             f.extra["verdict_before_tv"] = f.status;
+            f.extra.erase(std::string(laws::CERTIFICATE_KEY));  // the certificate was for a wrong VC
             f.status = std::string(laws::ERROR);
             f.message = d->second;
             f.extra["tv"] = "DIVERGED";
@@ -719,6 +722,20 @@ std::string span_text(const std::vector<std::string>& lines, const std::vector<i
     std::string out;
     for (int i = line; i <= end && i <= static_cast<int>(lines.size()); ++i) out += lines[static_cast<std::size_t>(i - 1)] + "\n";
     return out;
+}
+
+// Solver settings of the run: the portfolio and the query cache always
+// (docs/SOLVERS.md), a certificate per VC with --certified. The members of
+// one query share the cores left to this worker.
+CheckOptions check_options(const Config& cfg) {
+    CheckOptions o;
+    o.unwind = cfg.unwind;
+    o.timeout_s = cfg.timeout;
+    o.certified = cfg.certified;
+    o.cache_dir = cfg.solver_cache.string();
+    const unsigned hw = std::max(2u, std::thread::hardware_concurrency());
+    o.max_parallel = std::max(2u, hw / static_cast<unsigned>(std::max(1, cfg.jobs)));
+    return o;
 }
 
 Finding base_finding(const Unit& u) {
@@ -834,7 +851,7 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
             for (auto& n : fn.inlined) s += (s.empty() ? "" : ",") + n;
             f.extra["inlined"] = s;
         }
-        auto v = check_function(fn, cfg.unwind, cfg.timeout);
+        auto v = check_function(fn, check_options(cfg));
         f.status = v.status;
         f.message = v.message;
         f.cls = v.cls;
@@ -861,6 +878,7 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
         if (!owner) continue;
         if (owner->f.status == laws::FAILED || owner->f.status == laws::NEEDS_HARNESS) continue;
         owner->f.extra["verdict_before_folded"] = owner->f.status;
+        owner->f.extra.erase(std::string(laws::CERTIFICATE_KEY));
         owner->f.status = std::string(laws::NEEDS_HARNESS);
         owner->f.strength = std::string(laws::STRENGTH_SOME);
         owner->f.message = "UNENCODED: clang-folded UB at line " + std::to_string(line) +
