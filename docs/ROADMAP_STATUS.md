@@ -123,7 +123,7 @@ at run time; the numbers below are for the deterministic halves.
 | 8.2 property instrumentation | **DONE for the fragment** — `checks_bad`, `instr_fail_ub_iff` |
 | 8.2 floating point | **PARTIAL** — rounding and correctly-rounded addition proved; full IEEE 754 out of reach |
 | 8.2 concurrency | **PARTIAL** — two straight-line threads, round-robin scheme |
-| 8.2 libc models verified by PRISM | **NOT DONE** |
+| 8.2 libc models verified by PRISM | **PARTIAL** — `tests/conformance/libc-models/`: contract harnesses include the model sources and assert the C standard's contract; `pir`: 29/30 contracts PROVED for objects up to 4 bytes (size-bounded: every content/position/length within that size, not arbitrary lengths), `getenv` BOUNDED, 35/35 false twins refuted for the planted class; no harness yet for `fputc`/`putc`/`fputs`/`realloc(p, 0)`; printf family lives in the translator and is not checkable this way (docs/PIR.md "Library models verified by PRISM") |
 | 8.3 trusted base document | **DONE** — `docs/TRUSTED_BASE.md`, shipped with every report |
 | 8.4 PRISM on PRISM | **PARTIAL** — CI self-check (lints + polyglot) uploads a SARIF report; not a nightly memory-safety run of PRISM's C++ |
 | 8.5 proofs rechecked independently in CI | **DONE** — `proofs-recheck.yml`: `leanchecker` + `nanoda` on every Lean project |

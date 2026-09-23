@@ -56,6 +56,38 @@ std::vector<PtrContract> contracts_from_draft(const std::vector<std::string>& as
     return out;
 }
 
+bool has_dynamic_init(const ir::Module& m) {
+    for (auto& g : m.globals)
+        if (g.name == "llvm.global_ctors" || g.name == "@llvm.global_ctors") return true;
+    for (auto& f : m.functions)
+        if (f.name.starts_with("_GLOBAL__sub_I") || f.name.starts_with("__cxx_global_var_init")) return true;
+    return false;
+}
+
+std::vector<std::string> static_init_functions(const ir::Module& m) {
+    std::vector<std::string> out;
+    auto add = [&](const std::string& n) {
+        if (std::find(out.begin(), out.end(), n) == out.end()) out.push_back(n);
+    };
+    // @llvm.global_ctors = appending global [N x { i32, ptr, ptr }] [{ i32 65535, ptr @f, ptr null }, ...]
+    static const std::regex ref(R"(\{\s*i32\s+\d+\s*,\s*ptr\s+@([\w.$"]+))");
+    for (auto& g : m.globals) {
+        if (g.name != "llvm.global_ctors" && g.name != "@llvm.global_ctors") continue;
+        for (std::sregex_iterator it(g.text.begin(), g.text.end(), ref), end; it != end; ++it) {
+            auto n = (*it)[1].str();
+            if (n.size() > 1 && n.front() == '"') n = n.substr(1, n.size() - 2);
+            add(n);
+        }
+    }
+    for (auto& f : m.functions)
+        if (f.name.starts_with("_GLOBAL__sub_I")) add(f.name);
+    // no list and no _GLOBAL__sub_I: the per-variable initialisers
+    if (out.empty())
+        for (auto& f : m.functions)
+            if (f.name.starts_with("__cxx_global_var_init")) add(f.name);
+    return out;
+}
+
 TranslateOptions function_options(const TranslateOptions& base, const ir::Function& irf, UnitInfo& unit, int line,
                                   const Config& cfg, const std::string& source_name) {
     TranslateOptions o = base;
@@ -110,6 +142,62 @@ void apply_memory_policy(Finding& f, Verdict& v, Function& fn, const ir::Module&
         std::string s;
         for (auto& t : fn.throws) s += (s.empty() ? "" : ",") + t;
         f.extra["throws_not_followed"] = s;
+    }
+    // `main` starts from the globals' initializers only when the unit has no
+    // dynamic initialisation: C++ constructors of globals (`B g;` with a
+    // user constructor, `int x = f();`) and __attribute__((constructor))
+    // run before main and are not modelled, so the IR initializer (often
+    // zeroinitializer) is not the state main sees. Only a verdict that holds
+    // for arbitrary global values stands; anything else (a proof that relied
+    // on the initializers, a violation that the constructors may prevent)
+    // is NEEDS-HARNESS. Found by the ESBMC C++ conformance tasks
+    // (docs/CONFORMANCE.md "Known issues", S8).
+    // The same code must itself be free of violations for main's proof to be
+    // the program's: a constructor of a global that throws, or fails, ends
+    // the program before main runs.
+    if (topt.globals_initial && has_dynamic_init(mod) &&
+        (v.status == laws::PROVED || v.status == laws::PROVED_UNBOUNDED || v.status == laws::BOUNDED)) {
+        auto o = topt;
+        o.globals_initial = true;  // static initialisation starts from the static initializers
+        for (auto& name : static_init_functions(mod)) {
+            auto* ctor = mod.find(name);
+            if (!ctor) continue;
+            auto tr = translate(mod, *ctor, o);
+            std::string st = tr.fn ? check_function(*tr.fn, cfg.unwind, cfg.timeout).status
+                                   : (tr.status.empty() ? std::string(laws::NEEDS_HARNESS) : tr.status);
+            if (st == laws::PROVED || st == laws::PROVED_UNBOUNDED) continue;
+            f.extra["verdict_before_static_init"] = v.status;
+            v.extra["static_init"] = name + ": " + st + (tr.fn ? "" : " (" + tr.reason + ")");
+            v.status = std::string(laws::NEEDS_HARNESS);
+            v.message = "the unit's dynamic initialisation before main (" + v.extra["static_init"] +
+                        ") is not proved, so main's verdict is not the program's";
+            v.cex.clear();
+            v.cex_args.clear();
+            return;
+        }
+        v.extra["static_init"] = "proved";
+    }
+    if (topt.globals_initial && fn.mutable_globals && has_dynamic_init(mod) && v.status != laws::NEEDS_HARNESS &&
+        v.status != laws::ERROR) {
+        auto o = topt;
+        o.globals_initial = false;
+        auto tr = translate(mod, irf, o);
+        std::optional<Verdict> v2;
+        if (tr.fn) v2 = check_function(*tr.fn, cfg.unwind, cfg.timeout);
+        if (v2 && (v2->status == laws::PROVED || v2->status == laws::PROVED_UNBOUNDED)) {
+            v2->extra["globals"] = "arbitrary (dynamic initialisation not modelled): " + v2->status;
+            v = std::move(*v2);
+        } else {
+            f.extra["verdict_before_globals"] = v.status;
+            v.extra["globals"] = "initial values: " + v.status + "; arbitrary: " + (v2 ? v2->status : "UNENCODED");
+            v.status = std::string(laws::NEEDS_HARNESS);
+            v.message = "main runs after the unit's dynamic initialisation (constructors of globals), which is not "
+                        "modelled; the verdict with the globals' static initializers (" + v.extra["globals"] +
+                        ") is not the program's";
+            v.cex.clear();
+            v.cex_args.clear();
+            return;
+        }
     }
     // Global state: a violation that needs other values of mutable globals
     // than their initializers is a missing precondition, not a defect.

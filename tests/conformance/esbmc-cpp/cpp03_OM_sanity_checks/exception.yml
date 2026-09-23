@@ -1,0 +1,9 @@
+format_version: 1
+input_files: exception.cpp
+language: C++
+property: esbmc-cpp
+upstream: esbmc@653926f91580 regression/esbmc-cpp/OM_sanity_checks/exception
+esbmc_options: "--timeout 900"
+deterministic: true
+expected:
+  main: true

@@ -1,0 +1,9 @@
+format_version: 1
+input_files: 1006_aggregate_fail.cpp
+language: C++
+property: esbmc-cpp
+upstream: esbmc@653926f91580 regression/esbmc-cpp/bug_fixes/1006_aggregate_fail
+esbmc_options: "--timeout 900"
+deterministic: true
+expected:
+  main: false

@@ -58,6 +58,81 @@ as a false alarm). Their counterexamples are not replayed (inputs come from
 `__VERIFIER_nondet_*`), so SV-COMP detection is reported as "refuted, not
 replayed".
 
+## `esbmc-cpp/` — ESBMC C++ regression tests (curated subset; full set fetched)
+
+- Upstream: <https://github.com/esbmc/esbmc>, directories
+  `regression/esbmc-cpp`, `esbmc-cpp11`, `esbmc-cpp14`, `esbmc-cpp17`,
+  `esbmc-cpp20`, `esbmc-cpp23`
+- Commit: `653926f91580d8d67858d42db814f09d9a9fa257` (2026-09-23, `master`)
+- Licence: ESBMC's own code and tests are Apache-2.0 (ESBMC `COPYING`: "The
+  ESBMC code, authored by us and our modifications to the CBMC codebase, is
+  distributed under the terms of the Apache License 2.0"; copyright holders
+  Lucas Cordeiro, Jeremy Morse, Bernd Fischer, Mikhail Ramalho).
+  `LICENSE.Apache-2.0.txt` is the licence text. The subset leaves out every
+  directory or file that may carry another licence: `esbmc-cpp/cbmc` (CBMC,
+  BSD-4-clause), `esbmc-cpp/gcc-template-tests` (GCC testsuite, GPL),
+  `esbmc-cpp/qt`, `esbmc-cpp/esbmc-systemc`, and any file mentioning a
+  copyright, licence, a textbook listing ("Fig. N", Deitel/Pearson), LLBMC,
+  GCC or `dg-` directives (`ESBMC_FOREIGN_TEXT` in `tools/conformance.py`).
+- Files: the test's single source file, renamed
+  `<dir>__<test>.cpp` (unmodified content), plus a generated `.yml` sidecar
+  recording `upstream: esbmc@653926f91580 regression/<path>`, ESBMC's
+  options, the language standard and the label.
+
+Fetch and convert the whole set (not in git):
+
+```
+python tools/conformance.py --fetch-esbmc /tmp/esbmc     # sparse, blob-filtered fetch of the pinned commit
+PRISM_BIN=build/prism python tools/conformance.py --esbmc /tmp/esbmc --suite /tmp/none
+python tools/conformance.py --self-check --suite /tmp/esbmc/esbmc-cpp   # native label check
+python tools/conformance.py --curate-esbmc /tmp/esbmc    # regenerate esbmc-cpp/ (the committed subset)
+```
+
+GitHub archive downloads are not used (some proxies refuse them): the
+fetcher runs `git fetch --depth 1 --filter=blob:none <commit>` with a sparse
+checkout of the six directories and refuses any other `HEAD`.
+
+Conversion (`esbmc_convert`): `test.desc` line 1 is the level (CORE only by
+default; THOROUGH with `--esbmc-thorough`; KNOWNBUG skipped), line 2 the
+input, line 3 ESBMC's options, then output regexes, exactly one of which must
+be `VERIFICATION SUCCESSFUL` (→ `main: true`) or `VERIFICATION FAILED`
+(→ `main: false`). Skipped, with a count printed per reason: multi-file
+tests, tests using `__ESBMC_*` intrinsics, options that change the checked
+property set (`--overflow-check`, `--memory-leak-check`, `--no-*-check`,
+`--function`, `--data-races-check`, ...), and FAILED labels that come from a
+limit of ESBMC's operational model ("capacity exceeded", "forgotten
+memory"). At the pinned commit: 1919 tasks converted, 1044 THOROUGH, 113
+intrinsics, 55 multi-file, 51 without a single verdict line, 24 KNOWNBUG,
+59 property-changing options, 14 XML descriptions, 6 model limits skipped.
+
+What a label means: ESBMC checks, from `main`, assertions, array bounds,
+pointer safety and division by zero (not signed overflow). The property is
+`esbmc-cpp` and is property-scoped like SV-COMP: a PRISM FAILED of another
+class (overflow, shift, uninitialised read) on a SUCCESSFUL task is "other
+property", not a false alarm; any proof of `main` on a FAILED task is a wrong
+proof. A SUCCESSFUL under `--no-unwinding-assertions` only speaks up to
+ESBMC's bound (`label_bound:` in the sidecar).
+
+The committed subset (64 tasks: 32 SUCCESSFUL, 32 FAILED; 19 categories, at
+most 3 per category and label) is chosen by `curate_esbmc`: deterministic
+programs only (no `nondet_*`, `rand`, input, threads, time), licence-clean,
+ordered by SHA-256 of the upstream path (not by PRISM's results), and kept
+only when one native run (clang++, `-fsanitize=undefined,address`,
+assertions on) agrees with ESBMC's label. For a deterministic program that
+single run is its only behaviour, so the label is checked, not just
+inherited; `--self-check` repeats it.
+
+## `libc-models/` — contract harnesses for the pir libc models (this repository)
+
+Roadmap 8.2. Harnesses that `#include` the model sources of
+`src/prism/pir/models/libc/` and state the C standard's contract of each
+model with `assert()` (`harness.h` explains the scheme). `_true` functions:
+the model meets its contract; `_false` functions: a wrong contract or a
+precondition violation, each naming the class that must refute it
+(`expect_class:`; a refutation for another reason is not a detection).
+Results: `docs/PIR.md` "Library models verified by PRISM". Licence: same as
+this repository.
+
 ## Juliet (not in git)
 
 NIST SARD Juliet C/C++ test suite 1.3, fetched on demand:

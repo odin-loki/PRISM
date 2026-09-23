@@ -1,0 +1,9 @@
+format_version: 1
+input_files: compare_ordering.cpp
+language: C++
+property: esbmc-cpp
+upstream: esbmc@653926f91580 regression/esbmc-cpp/string/compare_ordering
+esbmc_options: "--unwind 8"
+deterministic: true
+expected:
+  main: true

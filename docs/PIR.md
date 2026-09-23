@@ -356,6 +356,82 @@ and never FAILED. Throws in user code (`__cxa_throw`) stay
 libstdc++ (D7, Linux); libc++ would need the same treatment of
 `_LIBCPP_HARDENING_MODE`.
 
+### Library models verified by PRISM (roadmap 8.2)
+
+The models are checked by PRISM itself: `tests/conformance/libc-models/`
+holds contract harnesses that `#include` the model sources
+(`string.c`, `stdlib.c`, `stdio.c`; the C++ allocation models through the
+linked copy of `stdlib.c`, since their names are mangled) and state each
+function's contract from the C standard with `assert()`. Every harness
+builds its own objects with symbolic contents and symbolic sizes/positions
+(scalar parameters, so no pointer-parameter precondition is assumed, Law 6),
+calls the model, and asserts the contract, e.g. "strlen returns the index of
+the first NUL", "strcmp's sign is the sign of the first differing byte as
+`unsigned char`, and it is antisymmetric", "memcpy copies n bytes and leaves
+the rest of the destination untouched", "strchr(s, 0) points at the
+terminator", "realloc keeps min(old, new) bytes and leaves the old object
+valid on failure", "fgets NUL-terminates within n". Every load and store in
+the model is checked by the memory model on the way. Each `_true` harness
+has `_false` twins (a wrong contract, or a precondition violation such as an
+unterminated string) that must be refuted for the class they plant
+(`expect_class:` in the task file), so a proof is not vacuous. They run in
+the conformance suite (`python tools/conformance.py`).
+
+**Scope of the proofs.** The objects in the harnesses are small (`N = 4`
+bytes; 8–9 for a `strcat`/`strncat` destination), so the model loops run at
+most N + 1 times and close within `--unwind 8`: the verdict is PROVED (the
+unwinding assertion is proved), but what is proved is the contract **for
+every content, position and length of objects up to that size**, not for
+strings of arbitrary length. That is a size-bounded result; it is not
+claimed as a proof for all sizes.
+
+Results (C++ engine, `pir` stage, 2026-09-23):
+
+| model | contract harness | verdict | false twins refuted (planted class) |
+|---|---|---|---|
+| `strlen` | first NUL index | PROVED (objects ≤ 4 bytes) | earlier NUL (FUNC-CONTRACT), unterminated (MEM-OOB-READ) |
+| `strnlen` | min(strlen, n), reads ≤ n bytes | PROVED (≤ 4) | n past the object (MEM-OOB-READ) |
+| `strcpy` | copies through the NUL, returns d | PROVED (≤ 4) | short destination (MEM-OOB-WRITE) |
+| `strncpy` | exactly n bytes: string then NULs | PROVED (≤ 4) | "always terminates" (FUNC-CONTRACT) |
+| `strcat` | appends at d's NUL | PROVED (d ≤ 8, s ≤ 4) | overflowing destination (MEM-OOB-WRITE) |
+| `strncat` | appends ≤ n chars + NUL | PROVED (d ≤ 9, s ≤ 4) | "appends n chars" (FUNC-CONTRACT) |
+| `strcmp` | 0 iff equal, antisymmetric, sign of first difference as `unsigned char` | PROVED (≤ 4) | signed-char comparison (FUNC-CONTRACT) |
+| `strncmp` | n = 0 gives 0, equality up to n, antisymmetric | PROVED (≤ 4) | "ignores n" (FUNC-CONTRACT) |
+| `strchr` | first `(char)c`, NUL included | PROVED (≤ 4) | `strchr(s, 0) == NULL` (FUNC-CONTRACT) |
+| `strrchr` | last `(char)c` | PROVED (≤ 4) | "first occurrence" (FUNC-CONTRACT) |
+| `memcpy` (`__prism_memcpy`) | n bytes copied, rest untouched, returns d | PROVED (≤ 4) | overlap (MEM-OVERLAP) |
+| `memmove` | overlapping copy as through a temporary | PROVED (≤ 5) | source too short (MEM-OOB-READ/WRITE) |
+| `memset` (`__prism_memset`) | `(unsigned char)c` into n bytes | PROVED (≤ 4) | "stores the int" (FUNC-CONTRACT) |
+| `memcmp` | sign of first difference as `unsigned char` | PROVED (≤ 4) | "stops at NUL" (FUNC-CONTRACT) |
+| `memchr` | first `(unsigned char)c` in n bytes | PROVED (≤ 4) | n past the object (MEM-OOB-READ) |
+| `strdup` | NULL or a distinct copy | PROVED (≤ 4) | unchecked NULL (PTR-NULL-DEREF) |
+| `malloc` / `free` | NULL or n writable bytes; `free(NULL)` | PROVED | one past the end (MEM-OOB-WRITE), read before write (UNINIT-READ), double free, free of a stack array |
+| `calloc` | zero-filled; `n*size` overflow gives NULL | PROVED | unchecked NULL (PTR-NULL-DEREF) |
+| `realloc` | keeps min(old, new) bytes; old object valid on failure | PROVED (≤ 8) | old pointer after success (MEM-UAF) |
+| `abs`, `labs`, `llabs` | `|x|` for x ≠ MIN | PROVED | `abs(INT_MIN)` (INT-SIGNED-OVF) |
+| `strtol`, `strtoul`, `atoi`, `atol` | `*end` within `[s, s + strlen(s)]`; argument a string | PROVED (≤ 4) | unterminated argument (MEM-OOB-READ) |
+| `rand`, `srand` | 0 ≤ r | PROVED | "r < 100" (FUNC-CONTRACT) |
+| `getenv` | NULL or a string | **BOUNDED** (the returned string has unknown length; `strlen` over it does not close) | unchecked NULL (PTR-NULL-DEREF) |
+| `fopen`, `fclose`, `fflush` | NULL or an open stream; one close | PROVED | double `fclose` (MEM-DOUBLE-FREE), unchecked NULL |
+| `fgets` | returns buf, NUL within n | PROVED | n larger than the buffer (MEM-OOB-WRITE) |
+| `fread`, `fwrite` | return ≤ nmemb | PROVED | fread past the buffer (MEM-OOB-WRITE) |
+| `fgetc`, `getc`, `getchar` | EOF or 0..255 | PROVED | "never EOF" (FUNC-CONTRACT) |
+| `putchar`, `puts` | returns `(unsigned char)c`; puts ≥ 0 | PROVED | unterminated `puts` argument (MEM-OOB-READ) |
+| `operator new[]/new/delete[]/delete` | n usable elements, never NULL | PROVED | `delete` of `new[]` (MEM-MISMATCHED-FREE), one past the end (MEM-OOB-WRITE) |
+
+Totals: 29 of 30 contract harnesses PROVED (size-bounded as above), 1
+BOUNDED (`getenv`), 35 of 35 false twins refuted for the planted class.
+The `bmc` stage has no preprocessor and does not see the models: it answers
+`NEEDS-HARNESS` on 63 of 65 functions (it refutes `abs(INT_MIN)` and the
+`rand` bound through its own built-in models).
+
+Not checked this way: `fputc`, `putc`, `fputs` and `realloc(p, 0)` have no
+harness yet; the printf family is modelled in the translator
+(`libc_format.cpp`), not in C, and cannot be run through PRISM as a model
+(its checks are unit-tested in `tests/pir/mem_libc.c`); the `__prism_*`
+intrinsics themselves are PIR statements whose encoding the harnesses
+exercise (memcpy/memset/memmove contracts) but do not verify in isolation.
+
 ## C features
 
 * `_Generic`: resolved by clang (`tests/pir/mem_libc.c:generic_ok` PROVED).

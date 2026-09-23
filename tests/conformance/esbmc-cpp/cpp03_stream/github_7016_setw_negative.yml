@@ -1,0 +1,9 @@
+format_version: 1
+input_files: github_7016_setw_negative.cpp
+language: C++
+property: esbmc-cpp
+upstream: esbmc@653926f91580 regression/esbmc-cpp/stream/github_7016_setw_negative
+esbmc_options: "--unwind 12 --timeout 120"
+deterministic: true
+expected:
+  main: true

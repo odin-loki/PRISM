@@ -1,0 +1,10 @@
+format_version: 1
+input_files: mi_base_dtor_this_fail.cpp
+language: C++
+property: esbmc-cpp
+upstream: esbmc@653926f91580 regression/esbmc-cpp/inheritance/mi_base_dtor_this_fail
+esbmc_options: "--std c++17"
+std: c++17
+deterministic: true
+expected:
+  main: false

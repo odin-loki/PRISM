@@ -1,0 +1,10 @@
+format_version: 1
+input_files: github_4195_block.cpp
+language: C++
+property: esbmc-cpp
+upstream: esbmc@653926f91580 regression/esbmc-cpp/bug_fixes/github_4195_block
+esbmc_options: "--std c++20"
+std: c++20
+deterministic: true
+expected:
+  main: true
