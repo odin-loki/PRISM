@@ -100,6 +100,11 @@ set(PRISM_SRC
   src/prism/sarif.cpp
   src/prism/stages_rest.cpp
   src/prism/taxonomy.cpp
+  # Solver library (roadmap 3.1-3.3): portfolio, query cache, certified mode, SLS.
+  src/prism/solver/cnf.cpp
+  src/prism/solver/portfolio.cpp
+  src/prism/solver/query.cpp
+  src/prism/solver/util.cpp
 )
 
 add_library(prism_core STATIC ${PRISM_SRC})
@@ -210,7 +215,8 @@ if(PRISM_CUDA)
         # PLAN stack is an RTX 3090 (sm_86). native needs a live GPU at configure.
         set(CMAKE_CUDA_ARCHITECTURES "86" CACHE STRING "nvcc -arch" FORCE)
       endif()
-      add_library(prism_cuda SHARED src/cuda/mutate.cu)
+      # probsat.cu: GPU ProbSAT walkers (roadmap 3.3), mirrors src/prism/solver/cnf.cpp.
+      add_library(prism_cuda SHARED src/cuda/mutate.cu src/cuda/probsat.cu)
       target_include_directories(prism_cuda PUBLIC "${PRISM_ROOT}/include")
       target_compile_features(prism_cuda PUBLIC cuda_std_17)
       set_target_properties(prism_cuda PROPERTIES
