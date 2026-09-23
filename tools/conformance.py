@@ -167,6 +167,14 @@ ESBMC_SKIP_OPTIONS = (
 # FAILED verdicts that come from a bound of ESBMC's C++ operational model
 # (its fixed-capacity string/stream models), not from the program.
 ESBMC_MODEL_FAILURE = re.compile(r"capacity exceed|forgotten memory|memory leak", re.I)
+# Labels that contradict the C++ standard (and a native sanitizer run of the
+# deterministic program): skipped at conversion, each with the reason.
+ESBMC_DISPUTED = {
+    "esbmc-cpp/cpp/github_6199_fail": "std::string(nullptr, 0): [nullptr, nullptr + 0) is a valid empty range "
+                                       "([string.cons]); ESBMC's string model checks null first",
+    "esbmc-cpp/cpp/github_6588_multidim_fail": "new int[2][3]() value-initialises to zero ([expr.new], "
+                                               "[dcl.init]); the assert holds",
+}
 # Programs whose single run is not their only behaviour.
 ESBMC_NONDET = re.compile(r"\bnondet_|__VERIFIER_nondet|\brand\s*\(|\bcin\b|\bscanf\b|\bgetchar\b|"
                           r"\bfgets\b|\bargv\b|\btime\s*\(|\bstd::random_device|\bthread\b|pthread_")
@@ -1013,6 +1021,9 @@ def esbmc_convert(test_dir: Path, regression: Path, thorough: bool = False) -> t
     if len(desc) < 3 or desc[0].lstrip().startswith("<"):
         return None, "test.desc not in the CORE/THOROUGH line format"
     level = desc[0].strip()
+    up = test_dir.relative_to(regression).as_posix()
+    if up in ESBMC_DISPUTED:
+        return None, "label contradicts the C++ standard (ESBMC_DISPUTED)"
     if level == "KNOWNBUG":
         return None, "KNOWNBUG (ESBMC's own label is not trusted upstream)"
     if level not in ("CORE", "THOROUGH"):
