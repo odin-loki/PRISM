@@ -3774,3 +3774,220 @@ TEST_CASE("config: vendored adapters are never taken from inside the scanned tre
     CHECK(trusted->filename() == "esbmc-planted-by-test");
 #endif
 }
+
+// ---------------------------------------------------------------------------
+// Verdict module equals the Lean model (docs/VERDICTS.md). The domain is
+// finite, so tests/data/verdict_tables.json (printed by `lake exe
+// verdict_tables` from proofs/Prism/Verdict.lean, where the laws are proved)
+// is compared with src/prism/verdict/ entry by entry: every verdict, every
+// merge pair, every rewrite pair, every (origin, status, certificate) and
+// every (stage, status, certificate). Confidence is proved for all inputs in
+// Lean; here it is checked on the table's sample grid.
+#include "prism/verdict.hpp"
+#include <limits>
+#include <nlohmann/json.hpp>
+
+namespace {
+
+nlohmann::json verdict_tables() {
+    auto p = std::filesystem::path(__FILE__).parent_path().parent_path() / "data" / "verdict_tables.json";
+    std::ifstream in(p);
+    REQUIRE(in.good());
+    return nlohmann::json::parse(in);
+}
+
+prism::verdict::Verdict vparse(const nlohmann::json& s) {
+    auto v = prism::verdict::parse(s.get<std::string>());
+    REQUIRE(v.has_value());
+    return *v;
+}
+
+prism::verdict::Origin oparse(const std::string& s) {
+    for (auto o : prism::verdict::all_origins())
+        if (prism::verdict::name(o) == s) return o;
+    FAIL("unknown origin " << s);
+    return prism::verdict::Origin::Pipeline;
+}
+
+double frac(const nlohmann::json& f) {
+    auto n = f[0].get<double>(), d = f[1].get<double>();
+    return d == 0 ? 0.0 : n / d;
+}
+
+}  // namespace
+
+TEST_CASE("verdict module equals the Lean model: vocabulary and predicates") {
+    namespace v = prism::verdict;
+    auto t = verdict_tables();
+    auto& rows = t["verdicts"];
+    REQUIRE(rows.size() == v::kVerdictCount);
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+        auto& r = rows[i];
+        auto x = v::all_verdicts()[i];
+        CAPTURE(r.dump());
+        CHECK(v::name(x) == r["name"].get<std::string>());
+        CHECK(v::is_proof(x) == r["is_proof"].get<bool>());
+        CHECK(v::is_formal(x) == r["is_formal"].get<bool>());
+        CHECK(v::is_answered(x) == r["answered"].get<bool>());
+        CHECK(v::no_answer(x) == r["no_answer"].get<bool>());
+        CHECK(v::is_defect(x) == r["defect"].get<bool>());
+        CHECK(v::is_model(x) == r["model"].get<bool>());
+        CHECK(v::rank(x) == r["rank"].get<int>());
+        // laws.hpp string API forwards to the module.
+        auto s = r["name"].get<std::string>();
+        CHECK(prism::laws::is_proof(s) == r["is_proof"].get<bool>());
+        CHECK(prism::laws::is_formal(s) == r["is_formal"].get<bool>());
+        CHECK(prism::laws::is_answered(s) == r["answered"].get<bool>());
+        CHECK(prism::laws::is_no_answer(s) == r["no_answer"].get<bool>());
+    }
+    // Every laws.hpp constant is in the lattice, and the lattice has no extra names.
+    for (auto s : {prism::laws::PROVED_CERTIFIED, prism::laws::PROVED_UNBOUNDED, prism::laws::PROVED,
+                   prism::laws::PROVED_ASSUMING, prism::laws::BOUNDED, prism::laws::FAILED,
+                   prism::laws::UNKNOWN, prism::laws::TIMEOUT, prism::laws::ERROR, prism::laws::NOFUNC,
+                   prism::laws::NOTRUN, prism::laws::NEEDS_HARNESS, prism::laws::CRASH, prism::laws::CLEAN,
+                   prism::laws::NOSEED, prism::laws::SANFAIL, prism::laws::HYPOTHESIS, prism::laws::READS})
+        CHECK(prism::laws::is_status(s));
+    CHECK_FALSE(prism::laws::is_status("PROVEN"));
+    CHECK_FALSE(prism::laws::is_proof("PROVEN"));
+    auto& origins = t["origins"];
+    REQUIRE(origins.size() == v::kOriginCount);
+    for (std::size_t i = 0; i < origins.size(); ++i) {
+        CHECK(v::name(v::all_origins()[i]) == origins[i]["name"].get<std::string>());
+        CHECK(v::may_prove(v::all_origins()[i]) == origins[i]["may_prove"].get<bool>());
+    }
+    // The audit table's stages are STAGE_ORDER plus "other".
+    auto& stages = t["stages"];
+    std::vector<std::string> order;
+    for (auto* s = prism::STAGE_ORDER; *s; ++s) order.emplace_back(*s);
+    order.emplace_back("other");
+    REQUIRE(stages.size() == order.size());
+    for (std::size_t i = 0; i < stages.size(); ++i) {
+        CHECK(stages[i]["name"].get<std::string>() == order[i]);
+        CHECK(v::audit_stages()[i] == order[i]);
+        CHECK(v::name(v::stage_origin(order[i])) == stages[i]["origin"].get<std::string>());
+    }
+}
+
+TEST_CASE("verdict module equals the Lean model: merge and rewrite, every pair") {
+    namespace v = prism::verdict;
+    auto t = verdict_tables();
+    REQUIRE(t["merge"].size() == v::kVerdictCount * v::kVerdictCount);
+    for (auto& r : t["merge"]) {
+        auto a = vparse(r["a"]), b = vparse(r["b"]);
+        auto want = r["refusal"].get<std::string>();
+        CAPTURE(r.dump());
+        CHECK(v::name(v::merge_refusal(a, b)) == want);
+        auto as = r["a"].get<std::string>(), bs = r["b"].get<std::string>();
+        if (want == "none") CHECK_NOTHROW(prism::laws::refuse_merge(as, bs));
+        else CHECK_THROWS(prism::laws::refuse_merge(as, bs));
+    }
+    REQUIRE(t["rewrite"].size() == v::kVerdictCount * v::kVerdictCount);
+    for (auto& r : t["rewrite"]) {
+        CAPTURE(r.dump());
+        CHECK(v::may_rewrite(vparse(r["from"]), vparse(r["to"])) == r["allowed"].get<bool>());
+        CHECK(prism::laws::may_rewrite(r["from"].get<std::string>(), r["to"].get<std::string>()) ==
+              r["allowed"].get<bool>());
+    }
+}
+
+TEST_CASE("verdict module equals the Lean model: admit and audit, whole domain") {
+    namespace v = prism::verdict;
+    auto t = verdict_tables();
+    REQUIRE(t["admit"].size() == v::kOriginCount * v::kVerdictCount * 2);
+    for (auto& r : t["admit"]) {
+        CAPTURE(r.dump());
+        auto got = v::admit(oparse(r["origin"].get<std::string>()), vparse(r["status"]),
+                            r["certificate"].get<bool>());
+        CHECK(v::name(got) == r["result"].get<std::string>());
+    }
+    REQUIRE(t["audit"].size() == 29 * v::kVerdictCount * 2);
+    for (auto& r : t["audit"]) {
+        CAPTURE(r.dump());
+        auto got = v::audit(r["stage"].get<std::string>(), vparse(r["status"]), r["certificate"].get<bool>());
+        CHECK(v::name(got.status) == r["result"].get<std::string>());
+        CHECK(got.violation == r["violation"].get<bool>());
+    }
+}
+
+TEST_CASE("verdict module equals the Lean model: confidence grid") {
+    namespace v = prism::verdict;
+    auto t = verdict_tables();
+    REQUIRE(t["confidence"].size() > 50);
+    for (auto& r : t["confidence"]) {
+        CAPTURE(r.dump());
+        auto s = v::score_counts(r["n_fun"].get<long>(), r["classified"].get<long>(), r["attempted"].get<long>(),
+                                 r["answered"].get<long>(), r["resolved"].get<long>());
+        CHECK(s.visibility == doctest::Approx(frac(r["vis"])).epsilon(1e-12));
+        CHECK(s.answer == doctest::Approx(frac(r["ans"])).epsilon(1e-12));
+        CHECK(s.resolution == doctest::Approx(frac(r["res"])).epsilon(1e-12));
+        CHECK(s.confidence == doctest::Approx(frac(r["conf"])).epsilon(1e-12));
+    }
+    CHECK(v::confidence(0.0, 1.0, 1.0) == 0.0);
+    CHECK(v::confidence(0.0, std::numeric_limits<double>::infinity(), 1.0) == 0.0);
+}
+
+TEST_CASE("verdict audit demotes a non-proving stage and records an ERROR") {
+    prism::RunReport rep;
+    prism::StageResult fuzz;
+    fuzz.name = "fuzz";
+    fuzz.findings.push_back({"fuzz", std::string(prism::laws::PROVED), "a.c", std::string("f"), 3, "",
+                             "lying fuzzer", std::string(prism::laws::STRENGTH_PROVES)});
+    fuzz.findings.push_back({"fuzz", std::string(prism::laws::CLEAN), "a.c", std::string("g"), 9, "",
+                             "no crash", std::string(prism::laws::STRENGTH_SOME)});
+    prism::StageResult bmc;
+    bmc.name = "bmc";
+    prism::Finding cert{"bmc", std::string(prism::laws::PROVED_CERTIFIED), "a.c", std::string("h"), 1, "",
+                        "uncertified", std::string(prism::laws::STRENGTH_PROVES)};
+    prism::Finding ok = cert;
+    ok.function = std::string("k");
+    ok.extra[std::string(prism::laws::CERTIFICATE_KEY)] = std::string(prism::laws::CERTIFICATE_CHECKED);
+    prism::Finding bounded{"bmc", std::string(prism::laws::BOUNDED), "a.c", std::string("m"), 2, "",
+                           "k=4", std::string(prism::laws::STRENGTH_SOME)};
+    bmc.findings = {cert, ok, bounded};
+    rep.stages = {fuzz, bmc};
+
+    CHECK(prism::laws::audit_report(rep) == 2);
+    auto& fz = rep.stages[0].findings;
+    REQUIRE(fz.size() == 3);
+    CHECK(fz[0].status == prism::laws::UNKNOWN);
+    CHECK(fz[0].extra.at("audit_original") == prism::laws::PROVED);
+    CHECK(fz[1].status == prism::laws::CLEAN);
+    CHECK(fz[2].status == prism::laws::ERROR);
+    CHECK(fz[2].message == "verdict audit: fuzz may not emit PROVED");
+    auto& bm = rep.stages[1].findings;
+    REQUIRE(bm.size() == 4);
+    CHECK(bm[0].status == prism::laws::PROVED);  // falls back, never upward
+    CHECK(bm[1].status == prism::laws::PROVED_CERTIFIED);
+    CHECK(bm[2].status == prism::laws::BOUNDED);
+    CHECK(bm[3].message == "verdict audit: bmc may not emit PROVED-CERTIFIED without a checked certificate");
+    // Idempotent.
+    CHECK(prism::laws::audit_report(rep) == 0);
+    CHECK(rep.stages[0].findings.size() == 3);
+}
+
+TEST_CASE("PROVED-CERTIFIED is counted in SARIF run properties, never a result") {
+    prism::RunReport rep;
+    prism::StageResult bmc;
+    bmc.name = "bmc";
+    prism::Finding f{"bmc", std::string(prism::laws::PROVED_CERTIFIED), "a.c", std::string("h"), 1, "",
+                     "certified", std::string(prism::laws::STRENGTH_PROVES)};
+    f.extra[std::string(prism::laws::CERTIFICATE_KEY)] = std::string(prism::laws::CERTIFICATE_CHECKED);
+    bmc.findings = {f};
+    rep.stages = {bmc};
+    auto doc = nlohmann::json::parse(prism::to_sarif(rep));
+    CHECK(doc["runs"][0]["results"].empty());
+    CHECK(doc["runs"][0]["properties"]["certified"] == 1);
+}
+
+TEST_CASE("NOTRUN never merges with CLEAN; model output never merges with a proof") {
+    using namespace prism::laws;
+    CHECK_THROWS(refuse_merge(NOTRUN, CLEAN));
+    CHECK_THROWS(refuse_merge(FAILED, NOTRUN));
+    CHECK_THROWS(refuse_merge(HYPOTHESIS, PROVED));
+    CHECK_THROWS(refuse_merge(PROVED_CERTIFIED, PROVED));
+    CHECK_NOTHROW(refuse_merge(NOTRUN, ERROR));
+    CHECK_FALSE(may_rewrite(CLEAN, PROVED));
+    CHECK_FALSE(may_rewrite(PROVED, PROVED_CERTIFIED));
+    CHECK(may_rewrite(PROVED_UNBOUNDED, PROVED_ASSUMING));
+    CHECK(may_rewrite(PROVED, BOUNDED));
+}

@@ -1,0 +1,13 @@
+name = "prism_proofs"
+version = "0.1.0"
+defaultTargets = ["Prism", "verdict_tables"]
+
+[leanOptions]
+autoImplicit = false
+
+[[lean_lib]]
+name = "Prism"
+
+[[lean_exe]]
+name = "verdict_tables"
+root = "Main"

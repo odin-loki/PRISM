@@ -1,0 +1,43 @@
+name: proofs
+
+# Lean 4 proof of the verdict laws (proofs/, docs/VERDICTS.md). Fails on any
+# sorry, any build warning, any axiom outside {propext, Classical.choice,
+# Quot.sound}, or truth tables that differ from tests/data/verdict_tables.json
+# (the file the C++ and Python verdict code are tested against).
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verdict-laws:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            proofs
+            tests/data
+          sparse-checkout-cone-mode: true
+
+      - name: Install elan
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -o elan-init.sh
+          sh elan-init.sh -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: Cache Lean toolchain and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.elan/toolchains
+            proofs/.lake
+          key: lean-${{ runner.os }}-${{ hashFiles('proofs/lean-toolchain') }}-${{ hashFiles('proofs/**/*.lean', 'proofs/lakefile.toml') }}
+          restore-keys: lean-${{ runner.os }}-${{ hashFiles('proofs/lean-toolchain') }}-
+
+      - name: Build, check sorry/axioms, compare truth tables
+        run: bash proofs/check.sh
