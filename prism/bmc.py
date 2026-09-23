@@ -52,7 +52,7 @@ proof. Nested loops stay unencoded BOUNDED.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field
 import functools
 from pathlib import Path
 from typing import Any
@@ -158,52 +158,133 @@ def _bv_zero(w: int):
     return z3.BitVecVal(0, w)
 
 
-def _width_of(e: "_Enc", v: Any) -> int:
-    return int(e.wtag.get(id(v), WIDTH))
+# --------------------------------------------------------------------------
+# Typed bitvector encoder for the scalar C subset. The C++ engine mirrors
+# this in src/prism/bmc_encoder.inc; both must give identical verdicts.
+#
+# Semantics (C11, LP64 x86-64; docs/CONFORMANCE.md S1-S6, F1):
+#  * every value carries its C type (width, signedness): TV;
+#  * integer promotions (6.3.1.1) and the usual arithmetic conversions
+#    (6.3.1.8) are applied before every arithmetic operator and comparison;
+#  * signed + - * overflow is checked in both directions, / and % check
+#    zero and MIN / -1, << checks the count, a negative left operand and an
+#    unrepresentable result, >> takes its type from the promoted left operand;
+#  * &&, || and ?: evaluate their right operands only under their condition;
+#  * break / continue / early loop exits merge their states (no path is
+#    silently dropped); loops are unrolled (bounded) or, for the unbounded
+#    proof, havocked (every variable the loop assigns is made arbitrary);
+#  * anything not modelled (unknown identifier, unexpanded macro, call to a
+#    function that is neither inlined nor modelled) is never a proof: it is
+#    UNENCODED (NEEDS-HARNESS), and call arguments are still checked.
+
+_CTYPE_NAMED: dict[str, tuple[int, bool]] = {
+    "_bool": (1, True), "bool": (1, True),
+    "int8_t": (8, False), "uint8_t": (8, True),
+    "int16_t": (16, False), "uint16_t": (16, True),
+    "int32_t": (32, False), "uint32_t": (32, True),
+    "int64_t": (64, False), "uint64_t": (64, True),
+    "size_t": (64, True), "ssize_t": (64, False),
+    "ptrdiff_t": (64, False), "intptr_t": (64, False),
+    "uintptr_t": (64, True), "intmax_t": (64, False),
+    "uintmax_t": (64, True),
+    "u_char": (8, True), "u_short": (16, True),
+    "u_int": (32, True), "u_long": (64, True),
+    "wchar_t": (32, False), "char8_t": (8, True),
+    "char16_t": (16, True), "char32_t": (32, True),
+}
 
 
-def _resize(v: Any, src: int, dst: int, unsigned: bool) -> Any:
-    if src == dst:
-        return v
-    if dst > src:
-        return z3.ZeroExt(dst - src, v) if unsigned else z3.SignExt(dst - src, v)
-    return z3.Extract(dst - 1, 0, v)
+def _ctype_parse(typ: str) -> tuple[int, bool] | None:
+    """(width, unsigned) of an integer type name, None if not modelled."""
+    t = (typ or "").lower()
+    if any(c in t for c in "*[&("):
+        return None
+    t = _re_sub(
+        r"\b(?:const|volatile|register|auto|static|extern|inline|restrict|__restrict|__restrict__)\b",
+        " ", t,
+    )
+    words = t.split()
+    if not words:
+        return None
+    if len(words) == 1 and words[0] in _CTYPE_NAMED:
+        return _CTYPE_NAMED[words[0]]
+    is_u = is_s = False
+    n_long = n_short = n_char = n_int = 0
+    for wd in words:
+        if wd == "unsigned":
+            is_u = True
+        elif wd == "signed":
+            is_s = True
+        elif wd == "long":
+            n_long += 1
+        elif wd == "short":
+            n_short += 1
+        elif wd == "char":
+            n_char += 1
+        elif wd == "int":
+            n_int += 1
+        else:
+            return None
+    if (is_u and is_s) or n_long > 2 or n_short > 1 or n_char > 1 or n_int > 1:
+        return None
+    if n_char and (n_long or n_short or n_int):
+        return None
+    if n_short and n_long:
+        return None
+    if n_char:
+        return (8, is_u)
+    if n_short:
+        return (16, is_u)
+    if n_long:
+        return (64, is_u)
+    return (32, is_u)
 
 
-def _align_pair(e: "_Enc", a: Any, b: Any) -> tuple[Any, Any, int]:
-    wa, wb = _width_of(e, a), _width_of(e, b)
-    w = max(wa, wb)
-    ua, ub = _is_u(e, a), _is_u(e, b)
-    if wa < w:
-        a = _resize(a, wa, w, ua)
-        e.wtag[id(a)] = w
-        if ua:
-            e.utag[id(a)] = True
-    if wb < w:
-        b = _resize(b, wb, w, ub)
-        e.wtag[id(b)] = w
-        if ub:
-            e.utag[id(b)] = True
-    return a, b, w
+def _ctype_of(typ: str) -> tuple[int, bool]:
+    ct = _ctype_parse(typ)
+    if ct is not None:
+        return ct
+    return (WIDTH, _type_is_unsigned(typ))
 
 
-def _tag(e: "_Enc", v: Any, unsigned: bool = False, width: int | None = None) -> Any:
-    e.utag[id(v)] = bool(unsigned)
-    if width is not None:
-        e.wtag[id(v)] = int(width)
-    return v
+def _re_sub(pattern: str, repl: str, s: str, flags: int = 0) -> str:
+    return _rx(pattern, flags).sub(repl, s)
 
 
-def _is_u(e: "_Enc", v: Any) -> bool:
-    return bool(e.utag.get(id(v), False))
+class TV:
+    """A typed value: a bitvector of width w holding a value of C type (w, u)."""
+
+    __slots__ = ("v", "w", "u")
+
+    def __init__(self, v: Any, w: int = WIDTH, u: bool = False) -> None:
+        self.v = v
+        self.w = w
+        self.u = u
 
 
-def _oob(e: "_Enc", i: Any, n: int) -> Any:
-    """Unsigned index cannot be negative; C usual conversions apply."""
-    bound = z3.BitVecVal(n, WIDTH)
-    if _is_u(e, i):
-        return z3.UGE(i, bound)
-    return z3.Or(slt(i, 0), sge(i, n))
+@dataclass
+class Arr:
+    a: Any
+    n: int
+    w: int = WIDTH
+    u: bool = False
+
+
+@dataclass
+class _State:
+    path: Any
+    vars: dict[str, Any]
+    arrays: dict[str, Arr]
+    uninit: dict[str, Any]
+
+
+@dataclass
+class _Jump:
+    """Pending jumps of one loop (break/continue) or switch (break)."""
+
+    loop: bool = True
+    breaks: list[_State] = field(default_factory=list)
+    conts: list[_State] = field(default_factory=list)
 
 
 @dataclass
@@ -220,7 +301,8 @@ class _Enc:
         self.s = z3.Solver()
         self.s.set("timeout", 8000)
         self.vars: dict[str, Any] = {}
-        self.arrays: dict[str, tuple[Any, int]] = {}
+        self.arrays: dict[str, Arr] = {}
+        self.alias: dict[str, str] = {}  # pointer -> array it aliases
         self.uninit: dict[str, Any] = {}  # name -> Bool, true = maybe uninit
         self.props: list[Prop] = []
         self.pc = 0
@@ -228,46 +310,105 @@ class _Enc:
         self.unwind_ok = True
         self.path_true = z3.BoolVal(True)
         self.unsigned: set[str] = set()
-        self.utag: dict[int, bool] = {}
-        self.bits: dict[str, int] = {}
-        self.wtag: dict[int, int] = {}
+        self.bits: dict[str, int] = {}  # declared (visible) scalars -> width
+        self.unmodelled: list[str] = []  # calls whose callee is not modelled
+        self.call_vars: list[Any] = []  # their unconstrained results
+        self.jumps: list[_Jump] = []
+        self.scopes: list[list[str]] = []
+        self.havoc = False  # loops are havocked (unbounded step) instead of unrolled
 
     def retag_unsigned(self) -> None:
-        for n in self.unsigned:
-            v = self.vars.get(n)
-            if v is not None:
-                self.utag[id(v)] = True
-        for n, w in self.bits.items():
-            v = self.vars.get(n)
-            if v is not None:
-                self.wtag[id(v)] = w
+        return None
+
+    def type_of(self, n: str) -> tuple[int, bool]:
+        return (self.bits.get(n, WIDTH), n in self.unsigned)
+
+    def canonical(self, n: str) -> str:
+        return self.alias.get(n, n)
+
+    def is_array(self, n: str) -> bool:
+        return self.canonical(n) in self.arrays
+
+    def declared(self, n: str) -> bool:
+        return n in self.bits or n in self.arrays or n in self.alias
+
+    def _note_scope(self, n: str) -> None:
+        if self.scopes:
+            self.scopes[-1].append(n)
+
+    def declare(self, n: str, t: tuple[int, bool]) -> None:
+        self.bits[n] = t[0]
+        if t[1]:
+            self.unsigned.add(n)
+        else:
+            self.unsigned.discard(n)
+        self._note_scope(n)
+
+    def declare_array(self, n: str, a: Arr) -> None:
+        self.arrays[n] = a
+        self._note_scope(n)
+
+    def declare_alias(self, n: str, target: str) -> None:
+        self.alias[n] = self.canonical(target)
+        self._note_scope(n)
+
+    def push_scope(self) -> None:
+        self.scopes.append([])
+
+    def pop_scope(self) -> None:
+        if not self.scopes:
+            return
+        for n in self.scopes.pop():
+            self.bits.pop(n, None)
+            self.unsigned.discard(n)
+            self.vars.pop(n, None)
+            self.uninit.pop(n, None)
+            self.arrays.pop(n, None)
+            self.alias.pop(n, None)
 
     def bv(self, name: str | None = None, width: int | None = None) -> Any:
         self.fresh += 1
         w = width or WIDTH
-        v = z3.BitVec(name or f"t{self.fresh}", w)
-        self.wtag[id(v)] = w
-        return v
+        return z3.BitVec(name or f"t{self.fresh}", w)
 
-    def get(self, name: str) -> Any:
-        w = self.bits.get(name, WIDTH)
+    def get(self, name: str) -> TV:
+        w, u = self.type_of(name)
         if name not in self.vars:
             self.vars[name] = self.bv(name, w)
-        v = self.vars[name]
-        self.wtag[id(v)] = w
-        if name in self.unsigned:
-            self.utag[id(v)] = True
-        return v
+        return TV(self.vars[name], w, u)
 
-    def set(self, name: str, val: Any) -> None:
-        w = self.bits.get(name, WIDTH)
-        vw = _width_of(self, val)
-        if vw != w:
-            val = _resize(val, vw, w, name in self.unsigned)
-        self.vars[name] = val
-        self.wtag[id(val)] = w
-        if name in self.unsigned:
-            self.utag[id(val)] = True
+    def conv(self, x: TV, t: tuple[int, bool]) -> TV:
+        w, u = t
+        if w == 1:
+            if x.w == 1:
+                return TV(x.v, 1, True)
+            return TV(z3.If(x.v != _bv_zero(x.w), z3.BitVecVal(1, 1), z3.BitVecVal(0, 1)), 1, True)
+        v = x.v
+        if x.w < w:
+            v = z3.ZeroExt(w - x.w, v) if x.u else z3.SignExt(w - x.w, v)
+        elif x.w > w:
+            v = z3.Extract(w - 1, 0, v)
+        return TV(v, w, u)
+
+    def promote(self, x: TV) -> TV:
+        """Integer promotions (C11 6.3.1.1p2): narrower than int -> int."""
+        if x.w < 32:
+            return self.conv(x, (32, False))
+        return x
+
+    def common(self, a: TV, b: TV) -> tuple[int, bool]:
+        """Usual arithmetic conversions (C11 6.3.1.8) after promotion."""
+        wa, wb = max(a.w, 32), max(b.w, 32)
+        ua, ub = a.w >= 32 and a.u, b.w >= 32 and b.u
+        if ua == ub:
+            return (max(wa, wb), ua)
+        uw, sw = (wa, wb) if ua else (wb, wa)
+        if uw >= sw:
+            return (uw, True)
+        return (sw, False)
+
+    def set(self, name: str, val: TV) -> None:
+        self.vars[name] = self.conv(val, self.type_of(name)).v
 
     def mark_init(self, name: str) -> None:
         self.uninit[name] = z3.BoolVal(False)
@@ -291,6 +432,72 @@ class _Enc:
 
     def assume(self, cond: Any) -> None:
         self.path_true = z3.And(self.path_true, cond)
+
+    def snap(self) -> _State:
+        return _State(self.path_true, dict(self.vars), dict(self.arrays), dict(self.uninit))
+
+    def load(self, st: _State) -> None:
+        self.path_true = st.path
+        self.vars = dict(st.vars)
+        self.arrays = dict(st.arrays)
+        self.uninit = dict(st.uninit)
+
+    def int_val(self, v: int) -> TV:
+        return TV(z3.BitVecVal(v, 32), 32, False)
+
+
+def _bool_tv(b: Any) -> TV:
+    return TV(z3.If(b, z3.BitVecVal(1, 32), z3.BitVecVal(0, 32)), 32, False)
+
+
+def _merge_states(e: _Enc, states: list[_State], base: _State) -> _State:
+    """Merge disjoint states, each selected by its own path condition.
+
+    Only names visible in `base` (the state before the construct) survive:
+    anything declared inside the construct is out of scope afterwards.
+    """
+    live = [st for st in states if not z3.is_false(st.path)]
+    if not live:
+        return _State(z3.BoolVal(False), dict(base.vars), dict(base.arrays), dict(base.uninit))
+    path = live[0].path if len(live) == 1 else z3.Or(*[st.path for st in live])
+    out_vars: dict[str, Any] = {}
+    for k, v0 in base.vars.items():
+        acc = live[-1].vars.get(k, v0)
+        for st in reversed(live[:-1]):
+            v = st.vars.get(k, v0)
+            if not z3.eq(v, acc):
+                acc = z3.If(st.path, v, acc)
+        out_vars[k] = acc
+    out_arrays: dict[str, Arr] = {}
+    for k, a0 in base.arrays.items():
+        last = live[-1].arrays.get(k, a0)
+        acc_a = last.a
+        for st in reversed(live[:-1]):
+            va = st.arrays.get(k, a0).a
+            if not z3.eq(va, acc_a):
+                acc_a = z3.If(st.path, va, acc_a)
+        out_arrays[k] = Arr(acc_a, last.n, last.w, last.u)
+    out_uninit: dict[str, Any] = {}
+    for k, u0 in base.uninit.items():
+        acc = live[-1].uninit.get(k, u0)
+        for st in reversed(live[:-1]):
+            v = st.uninit.get(k, u0)
+            if not z3.eq(v, acc):
+                acc = z3.If(st.path, v, acc)
+        out_uninit[k] = acc
+    return _State(path, out_vars, out_arrays, out_uninit)
+
+
+def _oob(e: _Enc, i0: TV, n: int) -> Any:
+    i = e.promote(i0)
+    bound = z3.BitVecVal(n, i.w)
+    if i.u:
+        return z3.UGE(i.v, bound)
+    return z3.Or(i.v < _bv_zero(i.w), i.v >= bound)
+
+
+def _index32(e: _Enc, i: TV) -> Any:
+    return e.conv(e.promote(i), (WIDTH, False)).v
 
 
 def _is_ident(t: str) -> bool:
@@ -341,56 +548,243 @@ def _looks_like_decl(stmt: str) -> bool:
     return any(_starts_kw(s, kw) for kw in _DECL_KWS)
 
 
-def extract_enums(text: str) -> dict[str, int]:
-    """Collect `enum { NAME = val, ... }` (and implicit 0,1,2,...) constants."""
+def _file_text_nocomments(text: str) -> str:
     try:
         from prism.cparse import strip_comments_keep_lines
-        text = strip_comments_keep_lines(text)
+        return strip_comments_keep_lines(text)
     except Exception:
         text = re.sub(r"/\*.*?\*/", " ", text, flags=re.S)
-        text = re.sub(r"//.*?$", " ", text, flags=re.M)
+        return re.sub(r"//.*?$", " ", text, flags=re.M)
+
+
+_C_INT = re.compile(r"\s*([+-]?)(0[xX][0-9a-fA-F]+|0[0-7]*|[1-9][0-9]*)", re.ASCII)
+
+
+def _c_int_full(val: str) -> int | None:
+    """strtoll(val, &end, 0) consuming all of val (C++ std::stoll + used)."""
+    m = _C_INT.fullmatch(val)
+    if not m or not val:
+        return None
+    digits = m.group(2)
+    if digits[:2] in ("0x", "0X"):
+        v = int(digits[2:], 16)
+    elif len(digits) > 1 and digits[0] == "0":
+        v = int(digits, 8)
+    else:
+        v = int(digits, 10)
+    v = -v if m.group(1) == "-" else v
+    if v < -(1 << 63) or v > (1 << 63) - 1:
+        return None
+    return v
+
+
+def extract_enums(text: str) -> dict[str, int]:
+    """Collect `enum { NAME = val, ... }` (and implicit 0,1,2,...) constants.
+
+    An enumerator whose value cannot be computed here (e.g. `A = 1 << 3`)
+    is left out together with the implicit enumerators that follow it, and a
+    name defined with two different values is left out: an unknown
+    enumerator is UNENCODED at its use, never a wrong constant.
+    """
+    text = _file_text_nocomments(text)
     out: dict[str, int] = {}
+    ambiguous: set[str] = set()
+
+    def drop(name: str) -> None:
+        ambiguous.add(name)
+        out.pop(name, None)
+
     for m in re.finditer(r"\benum\b(?:\s+[A-Za-z_]\w*)?\s*\{([^{}]*)\}", text):
-        nxt = 0
+        nxt: int | None = 0
         for part in m.group(1).split(","):
             part = " ".join(part.split())
             if not part:
                 continue
+            name = part
             if "=" in part:
                 name, val = part.split("=", 1)
                 name, val = name.strip(), val.strip().rstrip("uUlL")
-                if not _is_ident(name):
-                    continue
-                try:
-                    nxt = int(val, 0)
-                except ValueError:
-                    if val in out:
-                        nxt = out[val]
-                    else:
-                        continue
+                nxt = _c_int_full(val)
+                if nxt is None and _is_ident(val) and val not in ambiguous:
+                    nxt = out.get(val)
+            if not _is_ident(name):
+                nxt = None
+                continue
+            if nxt is None or nxt < -(1 << 31) or nxt > (1 << 31) - 1:
+                drop(name)
+                nxt = None
+                continue
+            if name in ambiguous:
+                nxt += 1
+                continue
+            if name in out and out[name] != nxt:
+                drop(name)
+            else:
                 out[name] = nxt
-                nxt += 1
-            elif _is_ident(part):
-                out[part] = nxt
-                nxt += 1
+            nxt += 1
     return out
 
 
-def _enums_from_fn(fn: FunctionInfo) -> dict[str, int]:
+def extract_macros(text: str) -> dict[str, str]:
+    """Object-like `#define NAME value` lines of the file.
+
+    There is no preprocessor: a name defined twice with different values,
+    #undef'd, or spanning lines is left out and stays UNENCODED at its use.
+    Function-like macros are never expanded.
+    """
+    text = _file_text_nocomments(text)
+    out: dict[str, str] = {}
+    ambiguous: set[str] = set()
+    for m in re.finditer(r"^[ \t]*#[ \t]*undef[ \t]+([A-Za-z_]\w*)", text, re.M | re.ASCII):
+        ambiguous.add(m.group(1))
+    for m in re.finditer(r"^[ \t]*#[ \t]*define[ \t]+([A-Za-z_]\w*)([ \t][^\n]*)?$", text,
+                         re.M | re.ASCII):
+        name = m.group(1)
+        val = (m.group(2) or "").strip()
+        bad = not val or any(c in val for c in ';{}"#\\')
+        if bad or name in ambiguous:
+            ambiguous.add(name)
+            out.pop(name, None)
+            continue
+        if name in out and out[name] != val:
+            ambiguous.add(name)
+            out.pop(name, None)
+            continue
+        out[name] = val
+    for n in ambiguous:
+        out.pop(n, None)
+    return out
+
+
+def _read_fn_file(fn: FunctionInfo) -> str:
     path = Path(fn.file)
     if not path.is_file():
-        return {}
+        return ""
     try:
-        return extract_enums(path.read_text(encoding="utf-8", errors="replace"))
+        return path.read_text(encoding="utf-8", errors="replace")
     except OSError:
-        return {}
+        return ""
+
+
+def _enums_from_fn(fn: FunctionInfo) -> dict[str, int]:
+    text = _read_fn_file(fn)
+    return extract_enums(text) if text else {}
+
+
+def _macros_from_fn(fn: FunctionInfo) -> dict[str, str]:
+    text = _read_fn_file(fn)
+    return extract_macros(text) if text else {}
 
 
 @dataclass
 class _SwitchArm:
-    labels: list[Any]  # z3 BitVec case value, or None for default
+    labels: list[Any]  # TV case value, or None for default
     code: str
     stops: bool  # arm ends with break (no fallthrough)
+
+
+# Declaration type prefix the encoder models (a superset of _DECL_TYPE).
+_CDECL_TYPE = (
+    r"(?:(?:unsigned|signed)\s+(?:long\s+long|long|short|char|int)(?:\s+int)?|"
+    r"long\s+long(?:\s+int)?|long(?:\s+int)?|short(?:\s+int)?|"
+    r"unsigned|signed|int|char|_Bool|bool|u?int(?:8|16|32|64)_t|"
+    r"size_t|ssize_t|ptrdiff_t|u?intptr_t|u?intmax_t)"
+)
+
+_CDECL_KWS = (
+    "int", "unsigned", "signed", "long", "short", "char", "_Bool", "bool",
+    "int8_t", "uint8_t", "int16_t", "uint16_t", "uint32_t", "int32_t",
+    "uint64_t", "int64_t", "size_t", "ssize_t", "ptrdiff_t", "intptr_t",
+    "uintptr_t", "intmax_t", "uintmax_t",
+)
+
+
+def _looks_like_cdecl(stmt: str) -> bool:
+    s = stmt.lstrip()
+    return any(_starts_kw(s, kw) for kw in _CDECL_KWS)
+
+
+def _assigned_names(text: str) -> set[str]:
+    """Names a loop may assign (over-approximation is sound: more havoc)."""
+    out: set[str] = set()
+    for pat in (
+        r"([A-Za-z_]\w*)\s*(?:\[[^\]]*\]\s*)?(?:<<|>>|[-+*/%&|^])?=(?!=)",
+        r"(?:\+\+|--)\s*([A-Za-z_]\w*)",
+        r"([A-Za-z_]\w*)\s*(?:\+\+|--)",
+    ):
+        for m in _rx(pat).finditer(text):
+            out.add(m.group(1))
+    for m in _rx(r"[A-Za-z_]\w*").finditer(text):
+        out.add("@" + m.group(0))  # every mention (arrays)
+    return out
+
+
+def _const_false_cond(src: str) -> bool:
+    s = src.strip()
+    while len(s) >= 2 and s[0] == "(" and s[-1] == ")":
+        s = s[1:-1].strip()
+    return s in ("0", "false")
+
+
+def _block_or_stmt_c(text: str) -> tuple[str, str]:
+    """Like _block_or_stmt, but a nested if/loop/switch body is one statement
+    including its own else (dangling else binds to the innermost if)."""
+    text = text.lstrip()
+    if text.startswith("{"):
+        return _brace(text)
+    for kw in ("if", "switch", "while", "for", "do"):
+        if _starts_kw(text, kw):
+            return _consume_stmt_src_c(text)
+    return _stmt(text)
+
+
+def _consume_stmt_src_c(text: str) -> tuple[str, str]:
+    """_consume_stmt_src over _block_or_stmt_c (the encoder's statement split)."""
+    raw = text
+    text = text.lstrip()
+    skip = len(raw) - len(text)
+
+    def taken(rest: str) -> tuple[str, str]:
+        return raw[skip:len(raw) - len(rest)], rest
+
+    if not text:
+        return "", ""
+    if text.startswith("{"):
+        _, rest = _brace(text)
+        return taken(rest)
+    if _starts_kw(text, "do"):
+        rest = text[2:].lstrip()
+        _, rest = _block_or_stmt_c(rest)
+        rest = rest.lstrip()
+        if not _starts_kw(rest, "while"):
+            raise ParseFail("do without while")
+        rest = rest[5:].lstrip()
+        _, rest = _paren(rest)
+        rest = rest.lstrip()
+        if rest.startswith(";"):
+            rest = rest[1:]
+        return taken(rest)
+    for kw in ("if", "switch", "while", "for"):
+        if _starts_kw(text, kw):
+            rest = text[len(kw):].lstrip()
+            if kw == "if" and rest.startswith("constexpr"):
+                raise ParseFail("if constexpr unencoded")
+            _, rest = _paren(rest)
+            _, rest = _block_or_stmt_c(rest)
+            if kw == "if":
+                r2 = rest.lstrip()
+                if _starts_kw(r2, "else"):
+                    _, rest = _block_or_stmt_c(r2[4:])
+            return taken(rest)
+    return _stmt(text)
+
+
+def _check_sat(e: _Enc, cond: Any) -> Any:
+    s = z3.Solver()
+    s.set("timeout", 2000)
+    s.add(e.path_true)
+    s.add(cond)
+    return s.check()
 
 
 class Parser:
@@ -402,34 +796,50 @@ class Parser:
         params: list[tuple[str, str]],
         unwind: int,
         enums: dict[str, int] | None = None,
+        macros: dict[str, str] | None = None,
+        havoc: bool = False,
     ) -> None:
         self.body = body
         self.params = params
         self.unwind = unwind
         self.enums: dict[str, int] = dict(enums or {})
+        self.macros: dict[str, str] = dict(macros or {})
+        self.havoc = havoc
         self.err: str | None = None
 
     def run(self) -> _Enc | None:
         if not HAS_Z3:
             return None
         e = _Enc(self.unwind)
-        for typ, name in self.params:
-            if not name:
-                continue
-            if _type_is_unsigned(typ):
-                e.unsigned.add(name)
-            e.bits[name] = _type_width(typ)
-            e.get(name)  # unconstrained input
+        e.havoc = self.havoc
         try:
+            for typ, name in self.params:
+                if not name:
+                    continue
+                t = _ctype_parse(typ)
+                if t is None:
+                    raise ParseFail(f"UNENCODED: parameter type '{(typ or '').strip()}' of {name}")
+                e.declare(name, t)
+                e.get(name)  # unconstrained input
+            e.push_scope()
             self._stmts(e, self._prep(self.body))
+            e.pop_scope()
         except ParseFail as ex:
             self.err = str(ex)
+            return None
+        except z3.Z3Exception as ex:
+            self.err = f"z3: {ex}"
             return None
         return e
 
     def _prep(self, body: str) -> str:
         body = re.sub(r"#.*", " ", body)
         return body
+
+    def _block(self, e: _Enc, text: str) -> None:
+        e.push_scope()
+        self._stmts(e, text)
+        e.pop_scope()
 
     def _stmts(self, e: _Enc, text: str) -> None:
         text = text.strip()
@@ -439,7 +849,7 @@ class Parser:
                 break
             if text.startswith("{"):
                 inner, rest = _brace(text)
-                self._stmts(e, inner)
+                self._block(e, inner)
                 text = rest
                 continue
             if _re_match(r"if\s+constexpr\b", text):
@@ -690,14 +1100,20 @@ class Parser:
                 self._return(e, stmt)
                 continue
             if _starts_kw(text, "break"):
-                stmt, text = _stmt(text)
-                # terminates the innermost switch arm (path-kill)
+                _, text = _stmt(text)
+                if not e.jumps:
+                    raise ParseFail("break outside loop/switch")
+                e.jumps[-1].breaks.append(e.snap())
                 e.path_true = z3.BoolVal(False)
                 continue
             if _starts_kw(text, "continue"):
                 _, text = _stmt(text)
-                # skip the rest of this loop body; the loop catches it
-                raise _Continue()
+                loops = [j for j in e.jumps if j.loop]
+                if not loops:
+                    raise ParseFail("continue outside loop")
+                loops[-1].conts.append(e.snap())
+                e.path_true = z3.BoolVal(False)
+                continue
             if _is_nested_function(text):
                 raise ParseFail("nested function unencoded")
             if _starts_kw(text, "goto"):
@@ -720,34 +1136,47 @@ class Parser:
             miss = unencoded_layout_stmt(stmt)
             if miss:
                 raise ParseFail(miss)
-            if _looks_like_decl(stmt):
+            if _looks_like_cdecl(stmt):
                 self._decl(e, stmt)
             else:
                 self._assign_or_expr(e, stmt)
 
     def _decl(self, e: _Enc, stmt: str) -> None:
         stmt = stmt.rstrip(";").strip()
+        parts = _split_comma(stmt)
+        if len(parts) <= 1:
+            self._decl_one(e, stmt)
+            return
+        # int x = 1, y, z = 2;  ->  one declaration per declarator.
+        m = _re_match("(" + _CDECL_TYPE + r")\s+[A-Za-z_*]", parts[0])
+        if not m:
+            raise ParseFail(f"unparsed decl: {stmt[:80]}")
+        prefix = m.group(1)
+        self._decl_one(e, parts[0].strip())
+        for part in parts[1:]:
+            self._decl_one(e, prefix + " " + part.strip())
+
+    def _decl_one(self, e: _Enc, stmt: str) -> None:
+        def shadow(name: str) -> None:
+            if e.declared(name):
+                raise ParseFail(f"UNENCODED: shadowed declaration of {name}")
+
         # int *p = buf;  (harness pointer alias of a local array)
-        mptr = _re_match(
-            _DECL_TYPE + r"\s*\*+\s*([A-Za-z_]\w*)(?:\s*=\s*(.*))?$",
-            stmt,
-        )
-        if mptr:
+        mptr = _rx(_CDECL_TYPE + r"\s*\*+\s*([A-Za-z_]\w*)(?:\s*=\s*(.*))?$").match(stmt)
+        if mptr and mptr.end() == len(stmt):
             name, init = mptr.group(1), mptr.group(2)
-            if init is None:
+            if not init:
                 raise ParseFail(f"uninitialised pointer decl: {stmt[:80]}")
             src = init.strip()
-            if _is_ident(src) and src in e.arrays:
-                e.arrays[name] = e.arrays[src]
+            if _is_ident(src) and e.is_array(src):
+                shadow(name)
+                e.declare_alias(name, src)
                 return
             raise ParseFail(f"pointer decl must alias an array: {stmt[:80]}")
         # int a[n];  VLA is a missing bound, not a closed proof.
-        marr = _re_match(
-            _DECL_TYPE + r"\s+([A-Za-z_]\w*)\s*\[([^\]]+)\](?:\s*=\s*(.*))?$",
-            stmt,
-        )
-        if marr:
-            name, dim, init = marr.group(1), marr.group(2).strip(), marr.group(3)
+        marr = _rx("(" + _CDECL_TYPE + r")\s+([A-Za-z_]\w*)\s*\[([^\]]+)\](?:\s*=\s*(.*))?$").match(stmt)
+        if marr and marr.end() == len(stmt):
+            typ, name, dim, init = marr.group(1), marr.group(2), marr.group(3).strip(), marr.group(4)
             if init and _re_search(
                 r"\{\s*(?:\[[^\]]+\]|\.[A-Za-z_]\w*)\s*=",
                 init,
@@ -755,31 +1184,38 @@ class Parser:
                 raise ParseFail("designated init unencoded")
             if not re.fullmatch(r"\d+", dim):
                 raise ParseFail("VLA unencoded")
+            ct = _ctype_parse(typ)
+            if ct is None:
+                raise ParseFail(f"UNENCODED: element type of {name}")
+            shadow(name)
             n = int(dim)
-            arr = z3.Array(name, z3.BitVecSort(WIDTH), z3.BitVecSort(WIDTH))
-            e.arrays[name] = (arr, n)
+            # Contents are arbitrary (initialisers are not modelled): a sound
+            # over-approximation, never a proof about the values.
+            e.fresh += 1
+            arr = z3.Array(f"{name}_arr{e.fresh}", z3.BitVecSort(WIDTH), z3.BitVecSort(ct[0]))
+            e.declare_array(name, Arr(arr, n, ct[0], ct[1]))
             return
         # int x = 0;  unsigned n;  int x;
-        m = _re_match(
-            _DECL_TYPE + r"\s+([A-Za-z_]\w*)(?:\s*=\s*(.*))?$",
-            stmt,
-        )
-        if not m:
+        m = _rx("(" + _CDECL_TYPE + r")\s+([A-Za-z_]\w*)(?:\s*=\s*(.*))?$").match(stmt)
+        if not m or m.end() != len(stmt):
             if _re_search(r":\s*[A-Za-z_]", stmt):
                 raise ParseFail("range-for unencoded")
             raise ParseFail(f"unparsed decl: {stmt[:80]}")
-        name, init = m.group(1), m.group(2)
-        prefix = stmt[: m.start(1)]
-        if _type_is_unsigned(prefix):
-            e.unsigned.add(name)
-        e.bits[name] = _type_width(prefix)
+        typ, name, init = m.group(1), m.group(2), m.group(3)
+        ct = _ctype_parse(typ)
+        if ct is None:
+            raise ParseFail(f"UNENCODED: type of {name}")
+        shadow(name)
         if init is not None:
-            e.set(name, self._expr(e, init))
+            # The initialiser is evaluated before the name is in scope.
+            val = self._expr(e, init)
+            e.declare(name, ct)
+            e.set(name, val)
             e.mark_init(name)
         else:
-            # uninitialised local: symbolic garbage; a later read is UNINIT-READ
-            v = e.bv(name + "_uninit", e.bits[name])
-            e.set(name, v)
+            e.declare(name, ct)
+            v = e.bv(name + "_uninit", ct[0])
+            e.set(name, TV(v, ct[0], ct[1]))
             e.mark_uninit(name)
 
     def _assign_or_expr(self, e: _Enc, stmt: str) -> None:
@@ -795,37 +1231,44 @@ class Parser:
             return
         # *p = e  (single-element store through a pointer alias)
         m = _re_match(r"\*\s*([A-Za-z_]\w*)\s*=\s*(.+)$", stmt)
-        if m:
+        if m and m.end() == len(stmt) and not m.group(2).startswith("="):
             self._astore(e, m.group(1), "0", m.group(2))
             return
         # a[i] = e
         m = _re_match(r"([A-Za-z_]\w*)\s*\[(.+)\]\s*=\s*(.+)$", stmt)
-        if m:
+        if m and m.end() == len(stmt) and not m.group(3).startswith("="):
             self._astore(e, m.group(1), m.group(2), m.group(3))
             return
-        m = _re_match(r"([A-Za-z_]\w*)\s*([+\-*/%|&^]?=)\s*(.+)$", stmt)
-        if m:
+        m = _re_match(r"([A-Za-z_]\w*)\s*((?:<<|>>|[-+*/%|&^])?=)\s*(.+)$", stmt)
+        if m and m.end() == len(stmt) and not m.group(3).startswith("="):
             name, op, rhs = m.group(1), m.group(2), m.group(3)
+            if name not in e.bits:
+                if e.declared(name):
+                    raise ParseFail(f"UNENCODED: assignment to array/pointer {name}")
+                raise ParseFail(f"UNENCODED: assignment to undeclared {name}")
             val = self._expr(e, rhs)
             if op == "=":
                 e.set(name, val)
             else:
                 e.check_read(name)
                 cur = e.get(name)
-                e.set(name, self._binop(e, cur, op[0], val, stmt))
+                e.set(name, self._binop(e, cur, op[:-1], val, stmt))
             e.mark_init(name)
             return
         # expression statement
         self._expr(e, stmt)
 
-    def _astore(self, e: _Enc, name: str, idx: str, rhs: str) -> None:
+    def _astore(self, e: _Enc, name0: str, idx: str, rhs: str) -> None:
+        name = e.canonical(name0)
         if name not in e.arrays:
-            raise ParseFail(f"unknown array {name}")
-        arr, n = e.arrays[name]
+            raise ParseFail(f"UNENCODED: store to unknown array {name0}")
         i = self._expr(e, idx)
         v = self._expr(e, rhs)
-        e.add_prop("oob-write", "MEM-OOB-WRITE", _oob(e, i, n), e.pc)
-        e.arrays[name] = (z3.Store(arr, i, v), n)
+        arr = e.arrays[name]
+        e.add_prop("oob-write", "MEM-OOB-WRITE", _oob(e, i, arr.n), e.pc)
+        e.arrays[name] = Arr(
+            z3.Store(arr.a, _index32(e, i), e.conv(v, (arr.w, arr.u)).v), arr.n, arr.w, arr.u,
+        )
 
     def _assert(self, e: _Enc, text: str) -> str:
         m = _re_match(r"assert\s*\((.*)\)\s*;", text, re.S)
@@ -845,7 +1288,7 @@ class Parser:
             expr = rest[6:].strip().rstrip(";").strip()
             if expr:
                 val = self._expr(e, expr)
-                e.set("__ret", val)
+                e.vars["__ret"] = val.v
         e.path_true = z3.BoolVal(False)
 
     def _if(self, e: _Enc, text: str) -> str:
@@ -853,86 +1296,143 @@ class Parser:
         if rest.startswith("constexpr"):
             raise ParseFail("if constexpr unencoded")
         cond_src, rest = _paren(rest)
-        then_src, rest = _block_or_stmt(rest)
+        then_src, rest = _block_or_stmt_c(rest)
         else_src = None
         rest2 = rest.lstrip()
-        if rest2.startswith("else"):
-            else_src, rest = _block_or_stmt(rest2[4:])
+        if _starts_kw(rest2, "else"):
+            else_src, rest = _block_or_stmt_c(rest2[4:])
         cond = _as_bool(self._expr(e, cond_src))
-        saved_vars = dict(e.vars)
-        saved_arr = dict(e.arrays)
-        saved_uninit = dict(e.uninit)
-        saved_path = e.path_true
-        e.path_true = z3.And(saved_path, cond)
-        self._stmts(e, then_src)
-        then_vars, then_arr, then_uninit, then_path = (
-            dict(e.vars), dict(e.arrays), dict(e.uninit), e.path_true
-        )
-        e.vars, e.arrays, e.uninit, e.path_true = (
-            saved_vars, saved_arr, saved_uninit, z3.And(saved_path, z3.Not(cond))
-        )
-        if else_src:
-            self._stmts(e, else_src)
-        else_vars, else_arr, else_uninit, else_path = (
-            dict(e.vars), dict(e.arrays), dict(e.uninit), e.path_true
-        )
-        names = set(then_vars) | set(else_vars)
-        merged = {}
-        for n in names:
-            a = then_vars.get(n, saved_vars.get(n))
-            b = else_vars.get(n, saved_vars.get(n))
-            if a is None or b is None:
-                merged[n] = a if a is not None else b
-            elif z3.eq(a, b):
-                merged[n] = a
-            else:
-                merged[n] = z3.If(cond, a, b)
-        e.vars = merged
-        e.retag_unsigned()
-        e.arrays = then_arr if then_arr else else_arr
-        e.uninit = _merge_uninit(cond, then_uninit, else_uninit, saved_uninit)
-        e.path_true = z3.simplify(z3.Or(then_path, else_path))
+        base = e.snap()
+        e.path_true = z3.And(base.path, cond)
+        self._block(e, then_src)
+        then_st = e.snap()
+        e.load(base)
+        e.path_true = z3.And(base.path, z3.Not(cond))
+        if else_src is not None:
+            self._block(e, else_src)
+        else_st = e.snap()
+        e.load(_merge_states(e, [then_st, else_st], base))
         return rest
+
+    def _run_body(self, e: _Enc, body: str) -> None:
+        """One execution of a loop body; `continue` states rejoin at its end."""
+        base = e.snap()
+        e.jumps[-1].conts = []
+        self._block(e, body)
+        conts = e.jumps[-1].conts
+        if conts:
+            states = list(conts) + [e.snap()]
+            e.jumps[-1].conts = []
+            e.load(_merge_states(e, states, base))
+
+    def _loop(self, e: _Enc, kind: str, cond_src: str, body: str, incr: str) -> None:
+        """Bounded unrolling.
+
+        Every iteration's exit (condition false) and every break is kept and
+        merged after the loop; a path still looping after `unwind`
+        iterations is cut and makes the result BOUNDED (unwind_ok=False).
+        """
+        if e.havoc:
+            self._loop_havoc(e, kind, cond_src, body, incr)
+            return
+        base = e.snap()
+        e.jumps.append(_Jump(True))
+        exits: list[_State] = []
+        iters = e.unwind
+        if kind == "do":
+            self._run_body(e, body)
+            iters = max(e.unwind - 1, 0)
+        stopped = False
+        for _ in range(iters):
+            cond = _as_bool(self._expr(e, cond_src))
+            ex = e.snap()
+            ex.path = z3.And(e.path_true, z3.Not(cond))
+            exits.append(ex)
+            e.path_true = z3.And(e.path_true, cond)
+            if _check_sat(e, z3.BoolVal(True)) == z3.unsat:
+                stopped = True
+                break
+            self._run_body(e, body)
+            if incr:
+                self._assign_or_expr(e, incr)
+        if not stopped:
+            cond = _as_bool(self._expr(e, cond_src))
+            if _check_sat(e, cond) != z3.unsat:
+                e.unwind_ok = False
+            ex = e.snap()
+            ex.path = z3.And(e.path_true, z3.Not(cond))
+            exits.append(ex)
+        j = e.jumps.pop()
+        exits.extend(j.breaks)
+        e.load(_merge_states(e, exits, base))
+
+    def _loop_havoc(self, e: _Enc, kind: str, cond_src: str, body: str, incr: str) -> None:
+        """Unbounded step: every variable (and array) the loop may assign is
+        made arbitrary, the condition and one body execution are checked
+        from that state, and the loop is left with the condition false (or
+        by break). Every concrete iteration starts in a havocked state, so no
+        UB inside the loop is missed and every post-loop state is covered.
+        """
+        if _const_false_cond(cond_src):
+            if kind != "do":
+                return
+            base = e.snap()
+            e.jumps.append(_Jump(True))
+            self._run_body(e, body)
+            j = e.jumps.pop()
+            e.load(_merge_states(e, list(j.breaks) + [e.snap()], base))
+            return
+        names = _assigned_names(cond_src + ";\n" + body + ";\n" + incr)
+        for n in sorted(names):
+            if n.startswith("@"):
+                an = e.canonical(n[1:])
+                arr = e.arrays.get(an)
+                if arr is not None:
+                    e.fresh += 1
+                    e.arrays[an] = Arr(
+                        z3.Const(f"{an}_hv{e.fresh}", arr.a.sort()), arr.n, arr.w, arr.u,
+                    )
+                continue
+            if n not in e.bits:
+                continue
+            w, _u = e.type_of(n)
+            e.vars[n] = e.bv(f"{n}_hv{e.fresh + 1}", w)
+            flag = e.uninit.get(n)
+            if flag is not None:
+                e.fresh += 1
+                e.uninit[n] = z3.And(flag, z3.Bool(f"{n}_hvu{e.fresh}"))
+        base = e.snap()
+        e.jumps.append(_Jump(True))
+        exits: list[_State] = []
+        if kind == "do":
+            self._run_body(e, body)
+            cond = _as_bool(self._expr(e, cond_src))
+            ex = e.snap()
+            ex.path = z3.And(e.path_true, z3.Not(cond))
+            exits.append(ex)
+        else:
+            cond = _as_bool(self._expr(e, cond_src))
+            ex = e.snap()
+            ex.path = z3.And(e.path_true, z3.Not(cond))
+            exits.append(ex)
+            e.path_true = z3.And(e.path_true, cond)
+            self._run_body(e, body)
+            if incr:
+                self._assign_or_expr(e, incr)
+        j = e.jumps.pop()
+        exits.extend(j.breaks)
+        e.load(_merge_states(e, exits, base))
 
     def _while(self, e: _Enc, text: str) -> str:
         rest = text[5:].lstrip()
         cond_src, rest = _paren(rest)
-        body, rest = _block_or_stmt(rest)
-        closed = False
-        for _ in range(e.unwind):
-            cond = _as_bool(self._expr(e, cond_src))
-            # if cond can still be true after K, unwind assertion
-            s = z3.Solver()
-            s.set("timeout", 2000)
-            s.add(e.path_true)
-            s.add(cond)
-            r = s.check()
-            if r == z3.unsat:
-                closed = True
-                break
-            e.assume(cond)
-            try:
-                self._stmts(e, body)
-            except _Continue:
-                pass
-        else:
-            cond = _as_bool(self._expr(e, cond_src))
-            s = z3.Solver()
-            s.set("timeout", 2000)
-            s.add(e.path_true)
-            s.add(cond)
-            if s.check() == z3.sat:
-                e.unwind_ok = False
-                e.assume(z3.Not(cond))  # bound the leftover
-            else:
-                closed = True
-        if closed:
-            pass
+        body, rest = _block_or_stmt_c(rest)
+        self._loop(e, "while", cond_src, body, "")
         return rest
 
     def _do(self, e: _Enc, text: str) -> str:
         rest = text[2:].lstrip()
-        body, rest = _block_or_stmt(rest)
+        body, rest = _block_or_stmt_c(rest)
         rest = rest.lstrip()
         if not _starts_kw(rest, "while"):
             raise ParseFail("do without while")
@@ -941,50 +1441,43 @@ class Parser:
         rest = rest.lstrip()
         if rest.startswith(";"):
             rest = rest[1:]
-        try:
-            self._stmts(e, body)
-        except _Continue:
-            pass
-        remaining = max(e.unwind - 1, 0)
-        closed = False
-        for _ in range(remaining):
-            cond = _as_bool(self._expr(e, cond_src))
-            s = z3.Solver()
-            s.set("timeout", 2000)
-            s.add(e.path_true)
-            s.add(cond)
-            if s.check() == z3.unsat:
-                closed = True
-                break
-            e.assume(cond)
-            try:
-                self._stmts(e, body)
-            except _Continue:
-                pass
-        else:
-            cond = _as_bool(self._expr(e, cond_src))
-            s = z3.Solver()
-            s.set("timeout", 2000)
-            s.add(e.path_true)
-            s.add(cond)
-            if s.check() == z3.sat:
-                e.unwind_ok = False
-                e.assume(z3.Not(cond))
+        self._loop(e, "do", cond_src, body, "")
+        return rest
+
+    def _for(self, e: _Enc, text: str) -> str:
+        rest = text[3:].lstrip()
+        head, rest = _paren(rest)
+        parts = _split_semi(head)
+        while len(parts) < 3:
+            parts.append("")
+        if len(parts) > 3:
+            raise ParseFail("unparsed for header")
+        init, cond_src, incr = (p.strip() for p in parts)
+        body, rest = _block_or_stmt_c(rest)
+        e.push_scope()
+        if init:
+            init_stmt = init if init.endswith(";") else init + ";"
+            miss = unencoded_layout_stmt(init_stmt)
+            if miss:
+                raise ParseFail(miss)
+            if _looks_like_cdecl(init_stmt):
+                self._decl(e, init_stmt)
             else:
-                closed = True
-        if closed:
-            pass
+                self._assign_or_expr(e, init_stmt)
+        incr_stmt = "" if not incr else (incr if incr.endswith(";") else incr + ";")
+        self._loop(e, "for", cond_src or "1", body, incr_stmt)
+        e.pop_scope()
         return rest
 
     def _switch(self, e: _Enc, text: str) -> str:
         rest = text[6:].lstrip()
         cond_src, rest = _paren(rest)
-        body, rest = _block_or_stmt(rest)
-        scrut = self._expr(e, cond_src)
+        body, rest = _block_or_stmt_c(rest)
+        scrut = e.promote(self._expr(e, cond_src))
         arms = self._parse_switch_arms(e, body)
         if not arms:
             return rest
-
+        st = (scrut.w, scrut.u)
         case_eqs = []
         has_default = False
         for arm in arms:
@@ -992,85 +1485,29 @@ class Parser:
                 if lab is None:
                     has_default = True
                 else:
-                    case_eqs.append(scrut == lab)
+                    case_eqs.append(scrut.v == e.conv(lab, st).v)
         any_case = z3.Or(*case_eqs) if case_eqs else z3.BoolVal(False)
-
-        saved_vars = dict(e.vars)
-        saved_arr = dict(e.arrays)
-        saved_uninit = dict(e.uninit)
-        saved_path = e.path_true
-        taken: list[tuple[Any, dict, dict, dict, Any]] = []
-
+        base = e.snap()
+        e.jumps.append(_Jump(False))
+        taken: list[_State] = []
         for i, arm in enumerate(arms):
             if not arm.labels:
                 continue
-            parts = []
-            for lab in arm.labels:
-                if lab is None:
-                    parts.append(z3.Not(any_case))
-                else:
-                    parts.append(scrut == lab)
+            parts = [
+                z3.Not(any_case) if lab is None else scrut.v == e.conv(lab, st).v
+                for lab in arm.labels
+            ]
             cond = parts[0] if len(parts) == 1 else z3.Or(*parts)
-            e.vars = dict(saved_vars)
-            e.arrays = dict(saved_arr)
-            e.uninit = dict(saved_uninit)
-            e.path_true = z3.And(saved_path, cond)
-            self._stmts(e, _arm_code(arms, i))
-            taken.append((cond, dict(e.vars), dict(e.arrays), dict(e.uninit), e.path_true))
-
+            e.load(base)
+            e.path_true = z3.And(base.path, cond)
+            self._block(e, _arm_code(arms, i))
+            taken.append(e.snap())
         if not has_default:
-            skip = z3.Not(any_case)
-            taken.append(
-                (skip, dict(saved_vars), dict(saved_arr), dict(saved_uninit),
-                 z3.And(saved_path, skip))
-            )
-
-        if not taken:
-            e.vars, e.arrays, e.uninit, e.path_true = (
-                saved_vars, saved_arr, saved_uninit, saved_path
-            )
-            return rest
-
-        names: set[str] = set()
-        for _, vs, _, _, _ in taken:
-            names |= set(vs)
-        names |= set(saved_vars)
-        merged: dict[str, Any] = {}
-        for n in names:
-            acc = saved_vars.get(n)
-            for cond, vs, _, _, _ in reversed(taken):
-                v = vs.get(n, saved_vars.get(n))
-                if acc is None:
-                    acc = v
-                elif v is None:
-                    pass
-                elif z3.eq(acc, v):
-                    pass
-                else:
-                    acc = z3.If(cond, v, acc)
-            if acc is not None:
-                merged[n] = acc
-        e.vars = merged
-        e.retag_unsigned()
-        e.arrays = dict(saved_arr)
-        for _, _, arrs, _, _ in taken:
-            for k, av in arrs.items():
-                e.arrays[k] = av
-        unames: set[str] = set(saved_uninit)
-        for _, _, _, un, _ in taken:
-            unames |= set(un)
-        u_acc: dict[str, Any] = dict(saved_uninit)
-        for n in unames:
-            accu = saved_uninit.get(n, z3.BoolVal(False))
-            for cond, _, _, un, _ in reversed(taken):
-                v = un.get(n, saved_uninit.get(n, z3.BoolVal(False)))
-                if z3.eq(accu, v):
-                    pass
-                else:
-                    accu = z3.If(cond, v, accu)
-            u_acc[n] = accu
-        e.uninit = u_acc
-        e.path_true = z3.simplify(z3.Or(*[p for _, _, _, _, p in taken]))
+            taken.append(_State(z3.And(base.path, z3.Not(any_case)),
+                                dict(base.vars), dict(base.arrays), dict(base.uninit)))
+        j = e.jumps.pop()
+        taken.extend(j.breaks)
+        e.load(_merge_states(e, taken, base))
         return rest
 
     def _parse_switch_arms(self, e: _Enc, body: str) -> list[_SwitchArm]:
@@ -1083,7 +1520,7 @@ class Parser:
         def flush() -> None:
             nonlocal labels, chunks, stops
             if labels or chunks:
-                arms.append(_SwitchArm(labels, "\n".join(chunks), stops))
+                arms.append(_SwitchArm(list(labels), "\n".join(chunks), stops))
             labels, chunks, stops = [], [], False
 
         while text:
@@ -1093,8 +1530,7 @@ class Parser:
             if _starts_kw(text, "case"):
                 if chunks or stops:
                     flush()
-                rest = text[4:].lstrip()
-                src, text = _upto_colon(rest)
+                src, text = _upto_colon(text[4:].lstrip())
                 if _re_search(r"\.\.\.", src):
                     raise ParseFail("case-range unencoded")
                 labels.append(self._expr(e, src))
@@ -1112,73 +1548,18 @@ class Parser:
                 _, text = _stmt(text)
                 stops = True
                 continue
-            src, text = _consume_stmt_src(text)
+            src, text = _consume_stmt_src_c(text)
             if stops:
-                continue  # unreachable after break until next label
+                continue
             if src.strip():
                 chunks.append(src.strip())
         flush()
         return arms
 
-    def _for(self, e: _Enc, text: str) -> str:
-        rest = text[3:].lstrip()
-        head, rest = _paren(rest)
-        parts = [p.strip() for p in _split_semi(head)]
-        while len(parts) < 3:
-            parts.append("")
-        init, cond_src, incr = parts[0], parts[1], parts[2]
-        if init:
-            for piece in _split_comma(init):
-                piece = piece.strip()
-                if not piece:
-                    continue
-                init_stmt = piece if piece.endswith(";") else piece + ";"
-                miss = unencoded_layout_stmt(init_stmt)
-                if miss:
-                    raise ParseFail(miss)
-                if _looks_like_decl(init_stmt):
-                    self._decl(e, init_stmt)
-                else:
-                    self._assign_or_expr(e, init_stmt)
-        body, rest = _block_or_stmt(rest)
-        closed = False
-        for _ in range(e.unwind):
-            cond = _as_bool(self._expr(e, cond_src or "1"))
-            s = z3.Solver()
-            s.set("timeout", 2000)
-            s.add(e.path_true)
-            s.add(cond)
-            if s.check() == z3.unsat:
-                closed = True
-                break
-            e.assume(cond)
-            try:
-                self._stmts(e, body)
-            except _Continue:
-                pass
-            if incr:
-                incr_stmt = incr if incr.endswith(";") else incr + ";"
-                self._assign_or_expr(e, incr_stmt)
-        else:
-            cond = _as_bool(self._expr(e, cond_src or "1"))
-            s = z3.Solver()
-            s.set("timeout", 2000)
-            s.add(e.path_true)
-            s.add(cond)
-            if s.check() == z3.sat:
-                e.unwind_ok = False
-                e.assume(z3.Not(cond))
-            else:
-                closed = True
-        if closed:
-            pass
-        return rest
+    def _expr(self, e: _Enc, src: str) -> TV:
+        return _parse_expr(e, src.strip(), self)
 
-    def _expr(self, e: _Enc, src: str) -> Any:
-        src = src.strip()
-        return _parse_expr(e, src, self)
-
-    def _binop(self, e: _Enc, a: Any, op: str, b: Any, loc: str) -> Any:
+    def _binop(self, e: _Enc, a: TV, op: str, b: TV, loc: str) -> TV:
         return apply_binop(e, a, op, b)
 
 
@@ -1357,124 +1738,363 @@ def _arm_code(arms: list[_SwitchArm], i: int) -> str:
 
 
 def _as_bool(v: Any) -> Any:
+    if isinstance(v, TV):
+        return v.v != z3.BitVecVal(0, v.w)
     if isinstance(v, z3.BoolRef):
         return v
     return v != 0
 
 
-def _merge_uninit(
-    cond: Any,
-    then_u: dict[str, Any],
-    else_u: dict[str, Any],
-    saved_u: dict[str, Any],
-) -> dict[str, Any]:
-    names = set(then_u) | set(else_u) | set(saved_u)
-    merged: dict[str, Any] = {}
-    false = z3.BoolVal(False)
-    for n in names:
-        a = then_u.get(n, saved_u.get(n, false))
-        b = else_u.get(n, saved_u.get(n, false))
-        if z3.eq(a, b):
-            merged[n] = a
+def _signed_ovf(wide: Any, w: int) -> Any:
+    """Signed result `wide` (computed exactly in more bits) does not fit in w bits."""
+    narrow = z3.Extract(w - 1, 0, wide)
+    return z3.SignExt(wide.size() - w, narrow) != wide
+
+
+def apply_binop(e: _Enc, a: TV, op: str, b: TV) -> TV:
+    if op in ("<<", ">>"):
+        # C11 6.5.7: promotions on each operand separately; the result has
+        # the type of the promoted left operand.
+        a = e.promote(a)
+        b = e.promote(b)
+        w = a.w
+        if b.u:
+            bad_count = z3.UGE(b.v, z3.BitVecVal(w, b.w))
         else:
-            merged[n] = z3.If(cond, a, b)
-    return merged
-
-
-def apply_binop(e: _Enc, a: Any, op: str, b: Any) -> Any:
-    a, b, w = _align_pair(e, a, b)
-    u = _is_u(e, a) or _is_u(e, b)
-    if op in "+-*/":
+            bad_count = z3.Or(b.v < _bv_zero(b.w), b.v >= z3.BitVecVal(w, b.w))
+        e.add_prop("shift", "INT-SHIFT-UB", bad_count, e.pc)
+        cnt = e.conv(b, (w, True)).v
+        if op == "<<":
+            if not a.u:
+                # Negative left operand, or a * 2^b not representable (6.5.7p4).
+                e.add_prop("shift-neg", "INT-SHIFT-UB", a.v < _bv_zero(w), e.pc)
+                top = z3.LShR(a.v, z3.BitVecVal(w - 1, w) - cnt)
+                e.add_prop("shift31", "INT-SHIFT-UB",
+                           z3.And(z3.Not(bad_count), a.v >= _bv_zero(w), top != _bv_zero(w)), e.pc)
+            return TV(a.v << cnt, w, a.u)
+        return TV(z3.LShR(a.v, cnt) if a.u else a.v >> cnt, w, a.u)
+    w, u = e.common(a, b)
+    a = e.conv(a, (w, u))
+    b = e.conv(b, (w, u))
+    if op in ("+", "-", "*"):
         if op == "+":
-            r = a + b
-            if not u:
-                ov = z3.Not(z3.BVAddNoOverflow(a, b, True))
-                e.add_prop("ovf+", "INT-SIGNED-OVF", ov, e.pc)
-            return _tag(e, r, u, w)
-        if op == "-":
-            r = a - b
-            if not u:
-                try:
-                    ov = z3.Not(z3.BVSubNoUnderflow(a, b, True))
-                except Exception:
-                    ov = z3.BoolVal(False)
-                e.add_prop("ovf-", "INT-SIGNED-OVF", ov, e.pc)
-            return _tag(e, r, u, w)
-        if op == "*":
-            r = a * b
-            if not u:
-                ov = z3.Not(z3.BVMulNoOverflow(a, b, True))
-                e.add_prop("ovf*", "INT-SIGNED-OVF", ov, e.pc)
-            return _tag(e, r, u, w)
-        if op == "/":
-            e.add_prop("div0", "INT-DIV-ZERO", b == 0, e.pc)
-            z = _bv_zero(w)
-            if u:
-                r = z3.If(b == 0, z, z3.UDiv(a, b))
-                return _tag(e, r, True, w)
-            e.add_prop("divovf", "INT-SIGNED-OVF",
-                       z3.And(a == _bv_min(w), b == -1), e.pc)
-            return _tag(e, z3.If(b == 0, z, a / b), False, w)
-    if op == "%":
-        e.add_prop("mod0", "INT-DIV-ZERO", b == 0, e.pc)
-        rem = z3.URem(a, b) if u else z3.SRem(a, b)
-        r = z3.If(b == 0, _bv_zero(w), rem)
-        return _tag(e, r, u, w)
-    if op == "<<":
-        if u:
-            e.add_prop("shift", "INT-SHIFT-UB", uge(b, w), e.pc)
+            r = a.v + b.v
+        elif op == "-":
+            r = a.v - b.v
         else:
-            e.add_prop("shift", "INT-SHIFT-UB",
-                       z3.Or(slt(b, 0), uge(b, w)), e.pc)
-            e.add_prop("shift31", "INT-SHIFT-UB",
-                       z3.And(a == 1, uge(b, w - 1)), e.pc)
-        return _tag(e, a << b, u, w)
-    if op == ">>":
+            r = a.v * b.v
+        if not u:
+            # Both directions (S1). + and - are computed exactly one bit
+            # wider; * uses Z3's overflow/underflow predicates, which are
+            # exact and far cheaper than a 2w-bit product.
+            if op == "*":
+                viol = z3.Or(z3.Not(z3.BVMulNoOverflow(a.v, b.v, True)),
+                             z3.Not(z3.BVMulNoUnderflow(a.v, b.v)))
+            else:
+                wa, wb = z3.SignExt(1, a.v), z3.SignExt(1, b.v)
+                viol = _signed_ovf(wa + wb if op == "+" else wa - wb, w)
+            e.add_prop("ovf" + op, "INT-SIGNED-OVF", viol, e.pc)
+        return TV(r, w, u)
+    if op in ("/", "%"):
+        div = op == "/"
+        z = _bv_zero(w)
+        e.add_prop("div0" if div else "mod0", "INT-DIV-ZERO", b.v == z, e.pc)
         if u:
-            e.add_prop("shift", "INT-SHIFT-UB", uge(b, w), e.pc)
-            return _tag(e, z3.LShR(a, b), True, w)
-        e.add_prop("shift", "INT-SHIFT-UB",
-                   z3.Or(slt(b, 0), uge(b, w)), e.pc)
-        return _tag(e, a >> b, False, w)
+            r = z3.UDiv(a.v, b.v) if div else z3.URem(a.v, b.v)
+            return TV(z3.If(b.v == z, z, r), w, True)
+        # INT_MIN / -1 and INT_MIN % -1 are both undefined (6.5.5p6).
+        e.add_prop("divovf" if div else "modovf", "INT-SIGNED-OVF",
+                   z3.And(a.v == _bv_min(w), b.v == z3.BitVecVal(-1, w)), e.pc)
+        r = a.v / b.v if div else z3.SRem(a.v, b.v)
+        return TV(z3.If(b.v == z, z, r), w, False)
     if op == "&":
-        return _tag(e, a & b, u, w)
+        return TV(a.v & b.v, w, u)
     if op == "|":
-        return _tag(e, a | b, u, w)
+        return TV(a.v | b.v, w, u)
     if op == "^":
-        return _tag(e, a ^ b, u, w)
-    one, zero = z3.BitVecVal(1, WIDTH), z3.BitVecVal(0, WIDTH)
+        return TV(a.v ^ b.v, w, u)
     if op == "==":
-        return _tag(e, z3.If(a == b, one, zero), False, WIDTH)
+        return _bool_tv(a.v == b.v)
     if op == "!=":
-        return _tag(e, z3.If(a != b, one, zero), False, WIDTH)
+        return _bool_tv(a.v != b.v)
     if op == "<":
-        pred = ult(a, b) if u else slt(a, b)
-        return _tag(e, z3.If(pred, one, zero), False, WIDTH)
+        return _bool_tv(z3.ULT(a.v, b.v) if u else a.v < b.v)
     if op == ">":
-        pred = ugt(a, b) if u else sgt(a, b)
-        return _tag(e, z3.If(pred, one, zero), False, WIDTH)
+        return _bool_tv(z3.UGT(a.v, b.v) if u else a.v > b.v)
     if op == "<=":
-        pred = ule(a, b) if u else sle(a, b)
-        return _tag(e, z3.If(pred, one, zero), False, WIDTH)
+        return _bool_tv(z3.ULE(a.v, b.v) if u else a.v <= b.v)
     if op == ">=":
-        pred = uge(a, b) if u else sge(a, b)
-        return _tag(e, z3.If(pred, one, zero), False, WIDTH)
+        return _bool_tv(z3.UGE(a.v, b.v) if u else a.v >= b.v)
     raise ParseFail(f"op {op}")
 
 
-def _parse_expr(e: _Enc, src: str, parser: Parser) -> Any:
+def _guarded(e: _Enc, cond: Any, fn: Any) -> TV:
+    """Evaluate fn() only on the paths where cond holds (&&, ||, ?:), then
+    merge its side effects back: state = cond ? after : before."""
+    base = e.snap()
+    e.path_true = z3.And(base.path, cond)
+    r = fn()
+    taken = e.snap()
+    skipped = _State(z3.And(base.path, z3.Not(cond)), dict(base.vars), dict(base.arrays),
+                     dict(base.uninit))
+    e.load(_merge_states(e, [taken, skipped], base))
+    return r
+
+
+def _cchar_lit_value(tok: str) -> int:
+    """A character constant: type int, value of the (signed, x86-64) char."""
+    inner = tok[1:-1]
+    if not inner:
+        raise ParseFail("empty character literal")
+    bad = ParseFail(f"UNENCODED: character literal {tok}")
+    if inner[0] == "\\" and len(inner) >= 2:
+        esc = inner[1]
+        if esc == "x":
+            if not re.fullmatch(r"[0-9a-fA-F]{1,8}", inner[2:]):
+                raise bad
+            v = int(inner[2:], 16)
+        elif "0" <= esc <= "7":
+            if not re.fullmatch(r"[0-7]{1,8}", inner[1:]):
+                raise bad
+            v = int(inner[1:], 8)
+        else:
+            if len(inner) != 2:
+                raise bad
+            table = {"n": 10, "t": 9, "r": 13, "a": 7, "b": 8, "f": 12, "v": 11,
+                     "\\": 92, "'": 39, '"': 34, "?": 63}
+            if esc not in table:
+                raise bad
+            v = table[esc]
+    else:
+        if len(inner) != 1 or ord(inner) > 127:
+            raise bad
+        v = ord(inner)
+    if v > 255:
+        raise bad
+    return v - 256 if v > 127 else v
+
+
+def _int_literal(tok: str) -> TV:
+    """Integer constant with its C type (C11 6.4.4.1p5, LP64)."""
+    m = re.fullmatch(r"(0[xX][0-9a-fA-F]+|0[bB][01]+|[0-9]+)([uUlL]*)", tok)
+    if not m:
+        raise ParseFail(f"UNENCODED: integer literal {tok}")
+    digits, suf = m.group(1), m.group(2)
+    has_u = any(c in "uU" for c in suf)
+    nl = sum(1 for c in suf if c in "lL")
+    if len(suf) - (1 if has_u else 0) != nl or nl > 2 or sum(1 for c in suf if c in "uU") > 1:
+        raise ParseFail(f"UNENCODED: integer literal {tok}")
+    decimal = True
+    if digits[:2] in ("0x", "0X"):
+        decimal = False
+        val = int(digits[2:], 16)
+    elif digits[:2] in ("0b", "0B"):
+        decimal = False
+        val = int(digits[2:], 2)
+    elif len(digits) > 1 and digits[0] == "0":
+        decimal = False
+        if not re.fullmatch(r"[0-7]+", digits):
+            raise ParseFail(f"UNENCODED: integer literal {tok}")
+        val = int(digits, 8)
+    else:
+        val = int(digits, 10)
+    if val > (1 << 64) - 1:
+        raise ParseFail(f"UNENCODED: integer literal {tok}")
+    if has_u:
+        cands = ([(32, True)] if nl == 0 else []) + [(64, True)]
+    elif decimal:
+        cands = ([(32, False)] if nl == 0 else []) + [(64, False)]
+    else:
+        cands = ([(32, False), (32, True)] if nl == 0 else []) + [(64, False), (64, True)]
+    for w, u in cands:
+        maxv = (1 << w) - 1 if u else (1 << (w - 1)) - 1
+        if val <= maxv:
+            return TV(z3.BitVecVal(val, w), w, u)
+    raise ParseFail(f"UNENCODED: integer literal {tok} has no type")
+
+
+_CAST_TYPE_WORDS = {
+    "char", "short", "int", "long", "unsigned", "signed",
+    "const", "volatile", "void", "_Bool", "bool",
+    "int8_t", "uint8_t", "int16_t", "uint16_t",
+    "uint32_t", "int32_t", "uint64_t", "int64_t", "size_t", "ssize_t",
+    "ptrdiff_t", "intptr_t", "uintptr_t", "intmax_t", "uintmax_t",
+}
+
+# Object-like macros the encoder knows without a preprocessor: <limits.h>,
+# <stdint.h>, <stdlib.h>, <stdbool.h> (LP64 glibc values). A #define in the
+# file itself takes precedence (Parser.macros).
+_BUILTIN_MACROS: dict[str, str] = {
+    "CHAR_BIT": "8",
+    "SCHAR_MIN": "(-128)", "SCHAR_MAX": "127", "UCHAR_MAX": "255",
+    "CHAR_MIN": "(-128)", "CHAR_MAX": "127",
+    "SHRT_MIN": "(-32768)", "SHRT_MAX": "32767", "USHRT_MAX": "65535",
+    "INT_MIN": "(-2147483647 - 1)", "INT_MAX": "2147483647",
+    "UINT_MAX": "4294967295U",
+    "LONG_MIN": "(-9223372036854775807L - 1L)", "LONG_MAX": "9223372036854775807L",
+    "ULONG_MAX": "18446744073709551615UL",
+    "LLONG_MIN": "(-9223372036854775807LL - 1LL)", "LLONG_MAX": "9223372036854775807LL",
+    "ULLONG_MAX": "18446744073709551615ULL",
+    "INT8_MIN": "(-128)", "INT8_MAX": "127", "UINT8_MAX": "255",
+    "INT16_MIN": "(-32768)", "INT16_MAX": "32767", "UINT16_MAX": "65535",
+    "INT32_MIN": "(-2147483647 - 1)", "INT32_MAX": "2147483647",
+    "UINT32_MAX": "4294967295U",
+    "INT64_MIN": "(-9223372036854775807L - 1L)", "INT64_MAX": "9223372036854775807L",
+    "UINT64_MAX": "18446744073709551615UL",
+    "SIZE_MAX": "18446744073709551615UL",
+    "RAND_MAX": "2147483647",
+    "EXIT_SUCCESS": "0", "EXIT_FAILURE": "1",
+    "true": "1", "false": "0", "NULL": "0",
+}
+
+_CTOK = re.compile(
+    r"(0[xX][0-9a-fA-F]+[uUlL]*)|(0[bB][01]+[uUlL]*)|([0-9]+[uUlL]*)|"
+    r"('(?:\\.|[^\\'])+')|(\"(?:\\.|[^\\\"])*\")|"
+    r"([A-Za-z_]\w*)|(::|->|&&|\|\||==|!=|<=|>=|<<|>>|\+\+|--)|"
+    r"([+\-*/%<>=!&|^~()[\],?:.;{}])|(\S)",
+    re.ASCII,
+)
+
+
+def _ctok(src: str) -> list[str]:
+    return [m.group(0) for m in _CTOK.finditer(src)]
+
+
+def _expand_macros(toks: list[str], e: _Enc, file_macros: dict[str, str],
+                   depth: int = 0) -> list[str]:
+    """Expand object-like macros (file #defines first, then the builtin
+    table) that do not name a visible variable."""
+    if depth > 8:
+        raise ParseFail("UNENCODED: macro expansion too deep")
+    out: list[str] = []
+    for t in toks:
+        rep = None
+        if _is_ident(t) and not e.declared(t):
+            rep = file_macros.get(t)
+            if rep is None:
+                rep = _BUILTIN_MACROS.get(t)
+        if rep is None:
+            out.append(t)
+            continue
+        out.append("(")
+        out.extend(_expand_macros(_ctok(rep), e, file_macros, depth + 1))
+        out.append(")")
+    return out
+
+
+_NONDET: dict[str, tuple[int, bool]] = {
+    "__VERIFIER_nondet_int": (32, False), "__VERIFIER_nondet_uint": (32, True),
+    "__VERIFIER_nondet_unsigned": (32, True),
+    "__VERIFIER_nondet_long": (64, False), "__VERIFIER_nondet_ulong": (64, True),
+    "__VERIFIER_nondet_longlong": (64, False), "__VERIFIER_nondet_ulonglong": (64, True),
+    "__VERIFIER_nondet_short": (16, False), "__VERIFIER_nondet_ushort": (16, True),
+    "__VERIFIER_nondet_char": (8, False), "__VERIFIER_nondet_uchar": (8, True),
+    "__VERIFIER_nondet_bool": (1, True), "__VERIFIER_nondet__Bool": (1, True),
+    "__VERIFIER_nondet_size_t": (64, True),
+}
+
+_NORETURN = {
+    "abort", "exit", "_Exit", "quick_exit", "reach_error", "__assert_fail",
+    "__VERIFIER_error",
+}
+
+# Juliet support-library output helpers (io.c): print one scalar or a string
+# literal; no undefined behaviour for any argument value.
+_PRINT_HELPERS = {
+    "printLine", "printWLine", "printIntLine", "printShortLine", "printLongLine",
+    "printLongLongLine", "printSizeTLine", "printHexCharLine", "printUnsignedLine",
+    "printHexUnsignedCharLine",
+}
+
+
+def _model_call(e: _Enc, t: str, args: list[TV]) -> TV:
+    """Calls whose semantics are modelled. Everything else: arguments are
+    checked, the result is unconstrained, and the verdict can never be a
+    proof."""
+    def nargs(n: int) -> None:
+        if len(args) != n:
+            raise ParseFail(f"UNENCODED: call to {t} with {len(args)} arguments")
+
+    if t in ("abs", "labs", "llabs"):
+        nargs(1)
+        ct = (32, False) if t == "abs" else (64, False)
+        a = e.conv(e.promote(args[0]), ct)
+        # abs(INT_MIN) is undefined (C11 7.22.6.1p2).
+        e.add_prop("abs", "INT-SIGNED-OVF", a.v == _bv_min(ct[0]), e.pc)
+        return TV(z3.If(a.v < _bv_zero(ct[0]), _bv_zero(ct[0]) - a.v, a.v), ct[0], False)
+    if t == "__builtin_expect":
+        nargs(2)
+        return e.conv(args[0], (64, False))
+    if t in _NONDET:
+        nargs(0)
+        w, u = _NONDET[t]
+        return TV(e.bv(f"nondet_{e.fresh + 1}", w), w, u)
+    if t == "rand":
+        nargs(0)
+        v = e.bv(f"rand_{e.fresh + 1}", 32)
+        e.assume(v >= _bv_zero(32))
+        return TV(v, 32, False)
+    if t in ("__VERIFIER_assume", "assume_abort_if_not"):
+        # SV-COMP harness convention: execution continues only if cond != 0.
+        nargs(1)
+        e.assume(_as_bool(args[0]))
+        return e.int_val(0)
+    if t in _NORETURN:
+        # Does not return: nothing after it runs on this path.
+        e.path_true = z3.BoolVal(False)
+        return e.int_val(0)
+    if t in _PRINT_HELPERS:
+        nargs(1)
+        return e.int_val(0)
+    if t not in e.unmodelled:
+        e.unmodelled.append(t)
+    r = e.bv(f"call_{t}_{e.fresh + 1}", 32)
+    e.call_vars.append(r)
+    return TV(r, 32, False)
+
+
+def _sizeof_type(inner: list[str], e: _Enc) -> int:
+    if "*" in inner:
+        return 8
+    joined = " ".join(inner)
+    if len(inner) == 1 and _is_ident(inner[0]) and e.declared(inner[0]):
+        name = inner[0]
+        if name in e.alias:
+            return 8
+        if name in e.arrays:
+            a = e.arrays[name]
+            return a.n * max(1, a.w // 8)
+        return max(1, e.type_of(name)[0] // 8)
+    ct = _ctype_parse(joined)
+    if ct is not None:
+        return max(1, ct[0] // 8)
+    if len(inner) == 4 and e.is_array(inner[0]) and inner[1] == "[" and inner[3] == "]":
+        return max(1, e.arrays[e.canonical(inner[0])].w // 8)
+    raise ParseFail(f"UNENCODED: sizeof {joined}")
+
+
+def _parse_expr(e: _Enc, src: str, parser: Parser) -> TV:
     src = src.strip()
-    # ternary
-    # logical
     return _pratt(e, src, parser)
 
 
-def _pratt(e: _Enc, src: str, parser: Parser) -> Any:
-    tokens = _tok(src)
+_PREC = {
+    "||": 10, "&&": 20,
+    "|": 30, "^": 40, "&": 50,
+    "==": 60, "!=": 60,
+    "<": 70, ">": 70, "<=": 70, ">=": 70,
+    "<<": 80, ">>": 80,
+    "+": 90, "-": 90,
+    "*": 100, "/": 100, "%": 100,
+}
+
+
+def _pratt(e: _Enc, src: str, parser: Parser) -> TV:
+    tokens = _expand_macros(_ctok(src), e, parser.macros)
     pos = 0
 
-    def peek() -> str:
-        return tokens[pos] if pos < len(tokens) else ""
+    def peek(k: int = 0) -> str:
+        return tokens[pos + k] if pos + k < len(tokens) else ""
 
     def eat(t: str | None = None) -> str:
         nonlocal pos
@@ -1486,19 +2106,31 @@ def _pratt(e: _Enc, src: str, parser: Parser) -> Any:
         pos += 1
         return got
 
-    def nud() -> Any:
+    def incdec(name: str, op: str, prefix: bool) -> TV:
+        if name not in e.bits:
+            if e.declared(name):
+                raise ParseFail(f"UNENCODED: {op} on array/pointer {name}")
+            raise ParseFail(f"UNENCODED: identifier {name}")
+        e.check_read(name)
+        cur = e.get(name)
+        new = apply_binop(e, cur, "+" if op == "++" else "-", e.int_val(1))
+        e.set(name, new)
+        e.mark_init(name)
+        return e.get(name) if prefix else cur
+
+    def nud() -> TV:
         t = eat()
         if len(t) >= 3 and t.startswith("'") and t.endswith("'"):
-            return z3.BitVecVal(_char_lit_value(t), WIDTH)
+            return e.int_val(_cchar_lit_value(t))
         if len(t) >= 2 and t.startswith('"') and t.endswith('"'):
             # string literal is a non-null address, not a proof of the bytes
-            return z3.BitVecVal(1, WIDTH)
+            return e.int_val(1)
         if t in ("alignof", "_Alignof"):
             raise ParseFail("alignof unencoded")
         if t == "sizeof":
+            inner: list[str] = []
             if peek() == "(":
                 eat("(")
-                inner: list[str] = []
                 depth = 1
                 while depth:
                     ntok = eat()
@@ -1511,26 +2143,27 @@ def _pratt(e: _Enc, src: str, parser: Parser) -> Any:
                             inner.append(ntok)
                     else:
                         inner.append(ntok)
-                return z3.BitVecVal(_sizeof_tokens(inner, e), WIDTH)
-            name = eat()
-            return z3.BitVecVal(_sizeof_tokens([name], e), WIDTH)
+            else:
+                inner.append(eat())
+            return TV(z3.BitVecVal(_sizeof_type(inner, e), 64), 64, True)
         if t == "(":
             if peek() == "{":
                 raise ParseFail("statement-expr unencoded")
-            if peek() in _CAST_WORDS:
+            if peek() in _CAST_TYPE_WORDS:
                 words: list[str] = []
                 while peek() and peek() != ")":
-                    if peek() not in _CAST_WORDS and peek() != "*":
+                    if peek() not in _CAST_TYPE_WORDS and peek() != "*":
                         break
                     words.append(eat())
                 eat(")")
                 v = parse(110)
+                if all(wd in ("void", "const", "volatile") for wd in words):
+                    return e.int_val(0)  # (void)x: evaluated, value unused
                 joined = " ".join(words)
-                dst = _type_width(joined)
-                src = _width_of(e, v)
-                u = _type_is_unsigned(joined)
-                v = _resize(v, src, dst, u)
-                return _tag(e, v, u, dst)
+                ct = _ctype_parse(joined)
+                if ct is None:
+                    raise ParseFail(f"UNENCODED: cast to {joined}")
+                return e.conv(v, ct)
             v = parse(0)
             eat(")")
             return v
@@ -1538,38 +2171,50 @@ def _pratt(e: _Enc, src: str, parser: Parser) -> Any:
             name = eat()
             if not _is_ident(name):
                 raise ParseFail(f"prefix {t} needs an identifier")
-            e.check_read(name)
-            cur = e.get(name)
-            one = z3.BitVecVal(1, WIDTH)
-            new = apply_binop(e, cur, "+" if t == "++" else "-", one)
-            e.set(name, new)
-            e.mark_init(name)
-            return new
+            return incdec(name, t, True)
         if t == "*":
             name = peek()
-            if not _is_ident(name) or name not in e.arrays:
+            if not _is_ident(name) or not e.is_array(name):
                 raise ParseFail(f"deref of {name!r}")
             eat()
-            arr, n = e.arrays[name]
-            idx = z3.BitVecVal(0, WIDTH)
-            e.add_prop("oob-read", "MEM-OOB-READ", _oob(e, idx, n), e.pc)
-            return z3.Select(arr, idx)
+            arr = e.arrays[e.canonical(name)]
+            idx = e.int_val(0)
+            e.add_prop("oob-read", "MEM-OOB-READ", _oob(e, idx, arr.n), e.pc)
+            return TV(z3.Select(arr.a, _index32(e, idx)), arr.w, arr.u)
         if t == "-":
-            v = parse(110)
-            w = _width_of(e, v)
-            z = _bv_zero(w)
-            r = z - v
-            if not _is_u(e, v):
-                e.add_prop("neg", "INT-SIGNED-OVF", v == _bv_min(w), e.pc)
-            return _tag(e, r, _is_u(e, v), w)
+            v = e.promote(parse(110))
+            if not v.u:
+                e.add_prop("neg", "INT-SIGNED-OVF", v.v == _bv_min(v.w), e.pc)
+            return TV(_bv_zero(v.w) - v.v, v.w, v.u)
+        if t == "+":
+            return e.promote(parse(110))
         if t == "!":
-            v = parse(110)
-            return z3.If(_as_bool(v), z3.BitVecVal(0, WIDTH), z3.BitVecVal(1, WIDTH))
+            return _bool_tv(z3.Not(_as_bool(parse(110))))
         if t == "~":
-            return ~parse(110)
-        if t.isdigit() or (t.startswith("0x")):
-            return _tag(e, z3.BitVecVal(int(t, 0), WIDTH), False, WIDTH)
+            v = e.promote(parse(110))
+            return TV(~v.v, v.w, v.u)
+        if t == "&":
+            raise ParseFail("UNENCODED: address-of")
+        if "0" <= t[0] <= "9":
+            return _int_literal(t)
         if _is_ident(t):
+            if peek() == "::":
+                raise ParseFail(f"UNENCODED: qualified name {t}::{peek(1)}")
+            if t == "static_cast" and peek() == "<":
+                # static_cast<T>(e) between integer types is the C cast (T)e.
+                eat("<")
+                sc_words: list[str] = []
+                while peek() and peek() != ">":
+                    sc_words.append(eat())
+                eat(">")
+                joined = " ".join(sc_words)
+                ct = _ctype_parse(joined)
+                if ct is None:
+                    raise ParseFail(f"UNENCODED: static_cast to {joined}")
+                eat("(")
+                v = parse(0)
+                eat(")")
+                return e.conv(v, ct)
             if t in ("_Generic", "offsetof"):
                 raise ParseFail(f"{t} unencoded")
             if t in ("__int128", "__int128_t", "_BitInt"):
@@ -1777,72 +2422,64 @@ def _pratt(e: _Enc, src: str, parser: Parser) -> Any:
                 eat("[")
                 idx = parse(0)
                 eat("]")
-                if t not in e.arrays:
-                    raise ParseFail(f"unknown array {t}")
-                arr, n = e.arrays[t]
-                e.add_prop("oob-read", "MEM-OOB-READ", _oob(e, idx, n), e.pc)
-                return z3.Select(arr, idx)
-            if peek() == "(":
-                # function call — unconstrained result, not a proof of callees
+                if not e.is_array(t):
+                    raise ParseFail(f"UNENCODED: index into unknown array {t}")
+                arr = e.arrays[e.canonical(t)]
+                e.add_prop("oob-read", "MEM-OOB-READ", _oob(e, idx, arr.n), e.pc)
+                return TV(z3.Select(arr.a, _index32(e, idx)), arr.w, arr.u)
+            if peek() == "(" and not e.declared(t):
                 eat("(")
-                depth = 1
-                while depth:
-                    ntok = eat()
-                    if ntok == "(":
-                        depth += 1
-                    elif ntok == ")":
-                        depth -= 1
-                return e.bv("call_" + t)
+                args: list[TV] = []
+                if peek() == ")":
+                    eat(")")
+                else:
+                    while True:
+                        args.append(parse(2))
+                        if peek() == ",":
+                            eat(",")
+                            continue
+                        eat(")")
+                        break
+                return _model_call(e, t, args)
             if peek() in ("++", "--"):
                 op = eat()
-                e.check_read(t)
-                cur = e.get(t)
-                one = z3.BitVecVal(1, WIDTH)
-                new = apply_binop(e, cur, "+" if op == "++" else "-", one)
-                e.set(t, new)
-                e.mark_init(t)
-                return cur
-            if t in e.arrays:
+                return incdec(t, op, False)
+            if e.is_array(t):
                 # pointer/array used as a value: non-null by construction
-                return z3.BitVecVal(1, WIDTH)
-            if t in e.vars:
+                return e.int_val(1)
+            if t in e.bits:
                 e.check_read(t)
                 return e.get(t)
             if t in parser.enums:
-                return z3.BitVecVal(parser.enums[t], WIDTH)
-            return e.get(t)
+                return e.int_val(parser.enums[t])
+            raise ParseFail(f"UNENCODED: identifier {t}")
         raise ParseFail(f"bad token {t}")
 
-    PREC = {
-        "||": 10, "&&": 20,
-        "|": 30, "^": 40, "&": 50,
-        "==": 60, "!=": 60,
-        "<": 70, ">": 70, "<=": 70, ">=": 70,
-        "<<": 80, ">>": 80,
-        "+": 90, "-": 90,
-        "*": 100, "/": 100, "%": 100,
-    }
-
-    def parse(minp: int) -> Any:
+    def parse(minp: int) -> TV:
         left = nud()
-        while peek() in PREC and PREC[peek()] >= minp:
+        while peek() in _PREC and _PREC[peek()] >= minp:
             op = eat()
-            right = parse(PREC[op] + 1)
+            p = _PREC[op] + 1
             if op == "&&":
-                left = z3.If(z3.And(_as_bool(left), _as_bool(right)),
-                             z3.BitVecVal(1, WIDTH), z3.BitVecVal(0, WIDTH))
+                lb = _as_bool(left)
+                right = _guarded(e, lb, lambda: parse(p))
+                left = _bool_tv(z3.And(lb, _as_bool(right)))
             elif op == "||":
-                left = z3.If(z3.Or(_as_bool(left), _as_bool(right)),
-                             z3.BitVecVal(1, WIDTH), z3.BitVecVal(0, WIDTH))
+                lb = _as_bool(left)
+                right = _guarded(e, z3.Not(lb), lambda: parse(p))
+                left = _bool_tv(z3.Or(lb, _as_bool(right)))
             else:
+                right = parse(p)
                 left = apply_binop(e, left, op, right)
-        # C ternary binds below ||, right-associative.
+        # C ternary binds below ||, right-associative; only the taken arm runs.
         if minp <= 5 and peek() == "?":
             eat("?")
-            then_v = parse(0)
+            c = _as_bool(left)
+            then_v = _guarded(e, c, lambda: parse(0))
             eat(":")
-            else_v = parse(5)
-            left = z3.If(_as_bool(left), then_v, else_v)
+            else_v = _guarded(e, z3.Not(c), lambda: parse(5))
+            ct = e.common(then_v, else_v)
+            left = TV(z3.If(c, e.conv(then_v, ct).v, e.conv(else_v, ct).v), ct[0], ct[1])
         # Comma: evaluate left for side effects; value is the right.
         if minp <= 1 and peek() == ",":
             eat(",")
@@ -1875,7 +2512,7 @@ def _cex(model: Any, params: list[tuple[str, str]]) -> str:
         if not name:
             continue
         try:
-            d = model.eval(z3.BitVec(name, _type_width(typ)), model_completion=True)
+            d = model.eval(z3.BitVec(name, _ctype_of(typ)[0]), model_completion=True)
             bits.append(f"{name}={d}")
         except Exception:
             pass
@@ -1931,135 +2568,16 @@ _TYPE_SIZE = {
 }
 
 
-def _sizeof_tokens(inner: list[str], e: _Enc) -> int:
-    """Bytes for sizeof(type) / sizeof ident. Pointers are WIDTH/8."""
-    if not inner:
-        return WIDTH // 8
-    if "*" in inner:
-        return WIDTH // 8
-    joined = " ".join(inner)
-    if joined in _TYPE_SIZE:
-        return _TYPE_SIZE[joined]
-    if len(inner) == 1 and _is_ident(inner[0]):
-        name = inner[0]
-        if name in e.arrays:
-            _arr, n = e.arrays[name]
-            return n * (WIDTH // 8)
-        return WIDTH // 8
-    if "[" in inner:
-        return WIDTH // 8
-    return WIDTH // 8
-
-
-def _loop_kw(src: str) -> bool:
-    return bool(_re_search(r"\b(do|while|for)\b", src or ""))
-
-
-def _extract_simple_loops(text: str) -> list[tuple[str, str, str]] | None:
-    """Top-level and branch-nested loop-free loops: (kind, cond, body).
-
-    Nested loops are unencoded (None). ParseFail is unencoded.
-    """
-    loops: list[tuple[str, str, str]] = []
-
-    def walk(src: str) -> None:
-        while src:
-            src = src.lstrip()
-            if not src:
-                break
-            if src.startswith("{"):
-                inner, src = _brace(src)
-                walk(inner)
-                continue
-            if _starts_kw(src, "do"):
-                rest = src[2:].lstrip()
-                body, rest = _block_or_stmt(rest)
-                rest = rest.lstrip()
-                if not _starts_kw(rest, "while"):
-                    raise ParseFail("do without while")
-                rest = rest[5:].lstrip()
-                cond, rest = _paren(rest)
-                rest = rest.lstrip()
-                if rest.startswith(";"):
-                    rest = rest[1:]
-                if _loop_kw(body):
-                    raise ParseFail("nested loop")
-                loops.append(("do", cond, body))
-                src = rest
-                continue
-            if _starts_kw(src, "while"):
-                rest = src[5:].lstrip()
-                cond, rest = _paren(rest)
-                body, rest = _block_or_stmt(rest)
-                if _loop_kw(body):
-                    raise ParseFail("nested loop")
-                loops.append(("while", cond, body))
-                src = rest
-                continue
-            if _starts_kw(src, "for"):
-                rest = src[3:].lstrip()
-                head, rest = _paren(rest)
-                body, rest = _block_or_stmt(rest)
-                if _loop_kw(body):
-                    raise ParseFail("nested loop")
-                parts = [p.strip() for p in _split_semi(head)]
-                while len(parts) < 3:
-                    parts.append("")
-                _init, cond, incr = parts[0], parts[1], parts[2]
-                incr_stmt = incr if not incr or incr.endswith(";") else incr + ";"
-                loops.append(("for", cond or "1", f"{body}\n{incr_stmt}"))
-                src = rest
-                continue
-            if _starts_kw(src, "if"):
-                rest = src[2:].lstrip()
-                _, rest = _paren(rest)
-                then_src, rest = _block_or_stmt(rest)
-                walk(then_src)
-                r2 = rest.lstrip()
-                if _starts_kw(r2, "else"):
-                    else_src, rest = _block_or_stmt(r2[4:])
-                    walk(else_src)
-                src = rest
-                continue
-            if _starts_kw(src, "switch"):
-                rest = src[6:].lstrip()
-                _, rest = _paren(rest)
-                body, rest = _block_or_stmt(rest)
-                walk(body)
-                src = rest
-                continue
-            if _starts_kw(src, "case"):
-                rest = src[4:].lstrip()
-                _, src = _upto_colon(rest)
-                continue
-            if _starts_kw(src, "default"):
-                rest = src[7:].lstrip()
-                if not rest.startswith(":"):
-                    raise ParseFail("expected : after default")
-                src = rest[1:]
-                continue
-            _, src = _consume_stmt_src(src)
-
-    try:
-        walk(text or "")
-    except ParseFail:
-        return None
-    return loops
-
-
-def _k_step_body(kind: str, cond: str, body: str, k: int) -> str:
-    """k concatenated iterations after havoc. do-while runs the body k times."""
-    piece = body if kind == "do" else f"if ({cond}) {{\n{body}\n}}"
-    return "\n".join(piece for _ in range(max(1, k)))
-
-
 def k_induction(fn: FunctionInfo, unwind: int) -> Finding:
-    """Base case = BMC; step = havoc + k=1 then k=2 iterations.
+    """Base case = BMC; inductive step (k=1) = every loop havocked.
 
-    SAT on a havoced step is not a counterexample of the original
-    function: the record stays BOUNDED. Closing the step is
-    PROVED-UNBOUNDED and is never merged down into PROVED/BOUNDED.
-    Nested loops stay unencoded.
+    Each variable a loop may assign is arbitrary at the loop head; the
+    condition, one body execution and everything after the loop are checked
+    from there (Parser._loop_havoc). Every reachable state is covered, so an
+    unsat step proves the function for all unrollings. SAT on the havocked
+    step is not a counterexample of the original function: the record stays
+    BOUNDED. Closing the step is PROVED-UNBOUNDED and is never merged down
+    into PROVED/BOUNDED.
     """
     rec = bmc_function(fn, unwind, try_unbounded=True)
     extra = dict(rec.extra or {})
@@ -2067,55 +2585,25 @@ def k_induction(fn: FunctionInfo, unwind: int) -> Finding:
         extra["k_induction"] = "not-needed"
         rec.extra = extra
         return rec
-    loops = _extract_simple_loops(fn.body or "")
-    if not loops:
-        extra["k_induction"] = "unencoded"
-        rec.extra = extra
-        return rec
-
-    last_open_cls = ""
-    tried: list[int] = []
-    for kstep in (1, 2):
-        step_open = False
-        step_cls = ""
-        unencoded = False
-        k_steps: list[str] = []
-        for kind, cond, body in loops:
-            piece = _k_step_body(kind, cond, body, kstep)
-            cloned = replace(fn, body=piece)
-            step = bmc_function(
-                cloned, unwind=1, try_unbounded=False,
-                allow_local_pointers=True,
-            )
-            k_steps.append(step.status)
-            if step.status == laws.FAILED:
-                step_open = True
-                step_cls = step.cls
-            elif step.status not in {laws.PROVED, laws.PROVED_UNBOUNDED}:
-                unencoded = True
-        tried.append(kstep)
-        extra["k_steps"] = k_steps
-        extra["k_induction_tried"] = list(tried)
-        extra["k_induction_k"] = kstep
-        if not step_open and not unencoded:
-            extra["k_induction"] = "closed"
-            extra["unwind_closed"] = True
-            return Finding(
-                stage="bmc", status=laws.PROVED_UNBOUNDED,
-                file=fn.file, function=fn.name, line=fn.line, cls="",
-                message=f"k-induction step closed at k={kstep}; "
-                "not a bounded-only result",
-                strength=laws.STRENGTH_PROVES, extra=extra,
-            )
-        if step_open:
-            last_open_cls = step_cls
-        if unencoded:
-            break
-
-    extra["k_induction_tried"] = tried
-    if last_open_cls:
+    base: dict[str, Any] = dict(stage="bmc", file=fn.file, function=fn.name, line=fn.line,
+                                cls="", strength=laws.STRENGTH_PROVES, extra={})
+    step = _bmc_once(fn, 1, True, _enums_from_fn(fn), base,
+                     macros=_macros_from_fn(fn), havoc=True)
+    extra["k_steps"] = [step.status]
+    extra["k_induction_tried"] = [1]
+    extra["k_induction_k"] = 1
+    if step.status in {laws.PROVED, laws.PROVED_UNBOUNDED}:
+        extra["k_induction"] = "closed"
+        extra["unwind_closed"] = True
+        return Finding(
+            stage="bmc", status=laws.PROVED_UNBOUNDED,
+            file=fn.file, function=fn.name, line=fn.line, cls="",
+            message="k-induction step closed at k=1; not a bounded-only result",
+            strength=laws.STRENGTH_PROVES, extra=extra,
+        )
+    if step.status == laws.FAILED:
         extra["k_induction"] = "step-open"
-        extra["k_induction_cls"] = last_open_cls
+        extra["k_induction_cls"] = step.cls
         rec.extra = extra
         return rec
     extra["k_induction"] = "unencoded"
@@ -2152,8 +2640,10 @@ def _bmc_once(
     try_unbounded: bool,
     enums: dict[str, int],
     base: dict,
+    macros: dict[str, str] | None = None,
+    havoc: bool = False,
 ) -> Finding:
-    p = Parser(fn.body, fn.params, unwind, enums=enums)
+    p = Parser(fn.body, fn.params, unwind, enums=enums, macros=macros, havoc=havoc)
     enc = p.run()
     if enc is None:
         b = dict(base)
@@ -2170,6 +2660,16 @@ def _bmc_once(
         s.set("timeout", 8000)
         s.add(prop.cond)
         r = s.check()
+        if enc.call_vars and r != z3.unsat:
+            # A violation that needs an unmodelled call to return some
+            # particular value is not a refutation (the callee may never
+            # return it): it must hold for every value the calls return.
+            s.reset()
+            s.set("timeout", 8000)
+            s.add(z3.ForAll(enc.call_vars, prop.cond))
+            r = s.check()
+            if r != z3.sat:
+                continue
         if r == z3.sat:
             cex = _cex(s.model(), fn.params) or f"{prop.name}=sat"
             return Finding(
@@ -2187,6 +2687,18 @@ def _bmc_once(
         if r == z3.unknown:
             return Finding(**base, status=laws.UNKNOWN,
                            message=f"solver unknown on {prop.name}")
+
+    # S6: a call that is neither inlined nor modelled has an unknown effect
+    # and may itself be undefined; its arguments were checked above, but no
+    # verdict of this function can be a proof.
+    if enc.unmodelled:
+        b = dict(base)
+        b["strength"] = laws.STRENGTH_SOME
+        return Finding(
+            **b, status=laws.NEEDS_HARNESS,
+            message=f"UNENCODED: call to {','.join(enc.unmodelled)} not modelled "
+            "(arguments checked, result unconstrained): not a proof",
+        )
 
     # Vacuous "properties hold" of system/exit/pthread_create/printf is not a
     # proof of those calls. Mixed bodies that did encode overflow/OOB
@@ -6485,6 +6997,8 @@ def unencoded_layout_stmt(stmt: str) -> str | None:
 
 def harness_for_parsefail(err: str, engine: str) -> str | None:
     """Map a frontend ParseFail to NEEDS-HARNESS. goto stays ERROR."""
+    if err.startswith("UNENCODED: "):
+        return f"{err} (not modelled by {engine}): not a proof"
     low = (err or "").lower()
     if "vla" in low:
         if engine == "bitvector BMC":
@@ -9402,11 +9916,12 @@ def bmc_function(
         )
     if enums is None:
         enums = _enums_from_fn(fn)
+    macros = _macros_from_fn(fn)
     schedule = _unwind_schedule(unwind) if incremental else [unwind]
     last: Finding | None = None
     tried: list[int] = []
     for k in schedule:
-        rec = _bmc_once(fn, k, try_unbounded, enums, base)
+        rec = _bmc_once(fn, k, try_unbounded, enums, base, macros=macros)
         extra = dict(rec.extra or {})
         tried.append(k)
         extra["incremental_k"] = k
@@ -9422,4 +9937,16 @@ def bmc_function(
 
 def run_bmc(functions: list[FunctionInfo], unwind: int) -> list[Finding]:
     from prism.inline import inline_static
-    return [k_induction(fn, unwind) for fn in inline_static(functions)]
+    out: list[Finding] = []
+    for fn in inline_static(functions):
+        # R1: one function the encoder cannot handle (a Z3 sort error, ...)
+        # is an ERROR for that function, never a crash of the whole stage.
+        try:
+            out.append(k_induction(fn, unwind))
+        except Exception as ex:  # noqa: BLE001 - Law 7: record, never lose the stage
+            out.append(Finding(
+                stage="bmc", status=laws.ERROR, file=fn.file, function=fn.name,
+                line=fn.line, cls="", message=f"BMC internal error: {ex}",
+                strength=laws.STRENGTH_SOME, extra={},
+            ))
+    return out
