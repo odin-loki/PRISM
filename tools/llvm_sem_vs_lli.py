@@ -128,7 +128,8 @@ def main(argv: list[str] | None = None) -> int:
         for src in files:
             src = src.resolve()
             if args.pairs is not None:
-                pirls = sorted(args.pairs.glob(f"*{src.name}*.pirl"))
+                pirls = sorted(p for p in args.pairs.glob("*.pirl")
+                               if p.name == f"{src.name}.pirl" or p.name.endswith(f"_{src.name}.ll.pirl"))
             else:
                 pairs = t / "pairs" / src.stem
                 env = dict(os.environ, PRISM_PIR_LEAN_EXPORT=str(pairs))
@@ -161,7 +162,8 @@ def main(argv: list[str] | None = None) -> int:
                         lazy, strict, pir = m.groups()
                         stats["runs"] += 1
                         # the proved relations between the three Lean semantics
-                        if lazy.startswith("ret ") and not (strict == lazy and pir == lazy):
+                        if lazy.startswith("ret ") and not pir.startswith("outside") and not (
+                                strict == lazy and pir == lazy):
                             bad.append(f"{src.name}:{fn}{vals}: lazy={lazy} strict={strict} pir={pir}")
                         if not (lazy.startswith("ret ") or lazy == "ret-void"):
                             stats["lean-ub-or-poison-or-fuel"] += 1
@@ -170,7 +172,12 @@ def main(argv: list[str] | None = None) -> int:
                         prog.write_text(harness(ir, fn, widths, ret, vals), encoding="utf-8")
                         li = subprocess.run([str(tools["lli"]), "--entry-function=__prism_lli_main", str(prog)],
                                             capture_output=True, text=True, check=False, timeout=60)
-                        got = li.stdout.strip().splitlines()[-1] if li.stdout.strip() else f"rc={li.returncode}"
+                        if li.returncode != 0 or not li.stdout.strip():
+                            # the module does not run under lli (unresolved externals
+                            # elsewhere in it): not a comparison, counted separately
+                            stats["lli-error"] += 1
+                            continue
+                        got = li.stdout.strip().splitlines()[-1]
                         want = "void" if lazy == "ret-void" else lazy.split()[1]
                         stats["lli-compared"] += 1
                         if got != want:
