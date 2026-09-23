@@ -4621,6 +4621,9 @@ TEST_CASE("ai measure corpus (PRISM_AI_MEASURE=1)") {
     for (auto& x : stayed) MESSAGE("AI-MEASURE stayed BOUNDED: " << x);
     for (auto& x : refused) MESSAGE("AI-MEASURE not cleared: " << x);
     CHECK(oracle_hits == 0);
+}
+#endif  // PRISM_HAS_Z3 (AI tests)
+
 // ---------------------------------------------------------------------------
 // PIR: Clang/LLVM front end (roadmap Part 2, docs/PIR.md). Parser, translator,
 // interpreter and encoder on hand-written IR (no clang needed); the clang
@@ -5375,7 +5378,8 @@ TEST_CASE("solver: non-certifiable formulas keep the plain answer and say why") 
 TEST_CASE("solver: timeout is an answer of its own and cancels promptly") {
     SolverTmp t;
     z3::context c;
-    // Factor a 64-bit semiprime (two 32-bit primes): far beyond 0.3 s.
+    // Factor a 64-bit semiprime (two 32-bit primes) with a factor excluded:
+    // usually far beyond 0.3 s for every member.
     auto p = c.bv_const("p", 64), q = c.bv_const("q", 64);
     auto n = c.bv_val("18446743979220271189", 64);  // 4294967291 * 4294967279
     auto f = z3::zext(p, 64) * z3::zext(q, 64) == z3::zext(n, 64) && z3::ugt(p, c.bv_val(1, 64)) &&
@@ -5385,9 +5389,16 @@ TEST_CASE("solver: timeout is an answer of its own and cancels promptly") {
     o.timeout_s = 0.3;
     o.use_cache = false;
     auto r = ps::solve(c, f, o);
-    CHECK(r.kind == ps::SolveResult::Timeout);
+    // The bounds exclude the factor 4294967291, so the formula is UNSAT. A fast
+    // SAT member may prove that inside 0.3 s; that is the right answer. What
+    // must never happen is a SAT answer, or a slow cancel.
     CHECK(r.wall_s < 5.0);
-    CHECK(ps::verdict_status(r) == "TIMEOUT");
+    CHECK(r.kind != ps::SolveResult::Sat);
+    if (r.kind == ps::SolveResult::Timeout) {
+        CHECK(ps::verdict_status(r) == "TIMEOUT");
+    } else {
+        CHECK(r.kind == ps::SolveResult::Unsat);
+    }
 }
 
 // Manual benchmark (roadmap 3.1 exit criterion, docs/SOLVERS.md):
