@@ -9,8 +9,8 @@ The executable is ``prism_svcomp.py`` (next to this file), which runs::
 
     prism TASK.c --no-llm --stage inventory,classify,bmc,pir --out DIR
 
-maps report.json to an SV-COMP answer and, for ``false``, writes
-``witness.yml`` (format 2.0). See docs/SVCOMP.md for the mapping rules.
+maps report.json to an SV-COMP answer and writes ``witness.yml`` (format
+2.0: a violation witness for ``false``, a correctness witness for ``true``). See docs/SVCOMP.md for the mapping rules.
 
 Benchmark definitions should pass ``<option name="--allow-exec"/>``: a
 ``false`` answer needs the counterexample to replay, and replay compiles and

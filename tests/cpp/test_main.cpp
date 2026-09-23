@@ -562,6 +562,26 @@ int nothing(int x) { return x / 2; }
     CHECK(v > 2147483000);
     // a function that reads no nondet input carries no nondet key
     if (by.count("nothing")) CHECK_FALSE(by["nothing"].extra.count("nondet"));
+    // each listed call's physical source position (SV-COMP witness waypoints)
+    CHECK(f.extra["nondet_loc"] == "5:11, 7:21");
+    CHECK(f.extra["nondet_loc_kind"] == "physical");
+}
+
+TEST_CASE("bmc: nondet call sites survive inlining and several calls on a line") {
+    auto by = bmc_source("nondet_sites.c", R"(extern int __VERIFIER_nondet_int(void);
+static int get(void) { return __VERIFIER_nondet_int(); }
+int main(void) {
+  int a = get(); int b = __VERIFIER_nondet_int ( );
+  if (a > 2147483000 && b == 7) { int c = a + 1000; return c; }
+  return 0;
+}
+)");
+    REQUIRE(by.count("main"));
+    auto& f = by["main"];
+    REQUIRE(f.status == std::string(prism::laws::FAILED));
+    CHECK(f.extra["nondet"].find("__prism_at_") == std::string::npos);
+    // get()'s call keeps get's own position
+    CHECK(f.extra["nondet_loc"] == "2:31, 4:26");
 }
 
 TEST_CASE("bmc soundness: known wrong proofs are refuted (S1-S6)") {
@@ -4602,6 +4622,9 @@ TEST_CASE("ai template invariants move BOUNDED to PROVED-UNBOUNDED without a mod
         CHECK(r.extra["bounded_status"] == std::string(prism::laws::BOUNDED));
         CHECK(r.extra["k_induction"] == "closed-invariants");
         CHECK(r.extra["invariants"].find('[') == 0);
+        CHECK(r.extra["invariant_loops"].find("\"kind\"") != std::string::npos);
+        if (std::string(name) == "ai_sum_to_n")  // the while keyword in testdata/ai_invariants.c
+            CHECK(r.extra["invariant_loops"] == R"([{"column":5,"kind":"while","line":13}])");
         // Soundness oracle: no UB on 2000 random/boundary inputs.
         CHECK_MESSAGE(oracle_ub(fn, 2000, 7).empty(), name);
     }

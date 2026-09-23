@@ -128,6 +128,21 @@ class DecideTest(unittest.TestCase):
         rep = report(bmc=[{"status": "FAILED", "cls": "INT-SHIFT-UB"}])
         self.assertEqual(P.decide(rep, "no-overflow", replayed).answer, "unknown")
 
+    def test_shift_overflow_is_an_overflow(self) -> None:
+        # SV-COMP no-overflow: a signed `<<` whose result is not representable
+        # counts (pir: shift-base, bmc: shift31); a bad shift count does not
+        for f in ({"status": "FAILED", "cls": "INT-SHIFT-UB", "message": "shift31: INT-SHIFT-UB"},
+                  {"status": "FAILED", "cls": "INT-SHIFT-UB", "extra": {"prop": "shift-base"}}):
+            self.assertEqual(P.decide(report(bmc=[f]), "no-overflow", replayed).answer, "false(no-overflow)")
+            self.assertEqual(P.decide(report(bmc=[f]), "no-overflow", not_replayed).answer, "unknown")
+        for f in ({"status": "FAILED", "cls": "INT-SHIFT-UB", "message": "shift: INT-SHIFT-UB"},
+                  {"status": "FAILED", "cls": "INT-SHIFT-UB", "message": "shift-neg: INT-SHIFT-UB"},
+                  {"status": "FAILED", "cls": "INT-SHIFT-UB", "extra": {"prop": "shift"}}):
+            self.assertEqual(P.decide(report(bmc=[f]), "no-overflow", replayed).answer, "unknown")
+        # not an unreach-call refutation
+        f = {"status": "FAILED", "cls": "INT-SHIFT-UB", "message": "shift31: INT-SHIFT-UB"}
+        self.assertEqual(P.decide(report(pir=[f]), "unreach-call", replayed).answer, "unknown")
+
     def test_refutation_with_call_sites_is_preferred(self) -> None:
         # both stages refute; pir's also has the nondet call sites: its
         # witness can place every function_return waypoint
@@ -220,6 +235,46 @@ class WitnessTest(unittest.TestCase):
                          params={"n": 1}, param_location=W.Location("t.c", 1, 18))
         self.assertEqual(yaml.safe_load(W.to_yaml(doc)), doc)
 
+    def test_correctness_witness(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "t.c"
+            src.write_text("int main(void) {\n  int i = 0;\n  while (i < 9) i++;\n  return 0;\n}\n")
+            kw = dict(input_file=src, input_file_name="t.c", specification="CHECK( init(main()), LTL(G ! overflow) )",
+                      producer_version="test", creation_time="2026-09-23T00:00:00Z",
+                      witness_uuid="00000000-0000-4000-8000-000000000000")
+            empty = W.build_correctness_witness([], **kw)
+            self.assertEqual(empty[0]["entry_type"], "invariant_set")
+            self.assertEqual(empty[0]["content"], [])
+            self.assertIn("content: []", W.to_yaml(empty))
+            inv = W.Invariant("loop_invariant", W.Location("t.c", 3, 3, "main"), "(i >= 0) && (i <= 9)")
+            doc = W.build_correctness_witness([inv], **kw)
+            e = doc[0]["content"][0]["invariant"]
+            self.assertEqual(e, {"type": "loop_invariant", "value": "(i >= 0) && (i <= 9)", "format": "c_expression",
+                                 "location": {"file_name": "t.c", "line": 3, "column": 3, "function": "main"}})
+            if yaml is not None:
+                self.assertEqual(yaml.safe_load(W.to_yaml(doc)), doc)
+
+    def test_correctness_invariants_only_proved_ones(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "t.c"
+            src.write_text("int main(void) {\n  int i = 0, n = 5;\n  while (i < n) i++;\n"
+                           "  for (int k = 0; k < 3; k++) i--;\n  do { i++; } while (i < 3);\n  return 0;\n}\n")
+            base = {"stage": "bmc", "function": "main", "status": "PROVED-UNBOUNDED"}
+            loops = ('[{"kind":"while","line":3,"column":3},{"kind":"for","line":4,"column":3},'
+                     '{"kind":"do","line":5,"column":3}]')
+            f = dict(base, extra={"k_induction": "closed-invariants", "invariant_loops": loops,
+                                  "invariants": '[["i >= 0", "i <= n", "i == 2 * n"], ["k >= 0", "i <= 5"], ["i >= 0"]]'})
+            invs, _ = P.correctness_invariants(src, f)
+            # arithmetic conjuncts, names declared in a for-init and do loops are left out
+            self.assertEqual([(i.location.line, i.value) for i in invs], [(3, "(i >= 0) && (i <= n)"), (4, "(i <= 5)")])
+            # arithmetic only when constant bounds keep every subterm in int
+            self.assertEqual(P.exportable_conjuncts(["i >= 0", "i <= 1000", "s == 2 * i", "s == 3000000 * i",
+                                                     "t <= s + 1", "i - 1 < i"]),
+                             ["i >= 0", "i <= 1000", "s == 2 * i", "i - 1 < i"])
+            # plain k-induction or a bounded-unwind proof: no invariant (empty set)
+            for extra in ({"k_induction": "closed"}, {"k_induction": "not-needed", "unwind_closed": "true"}):
+                self.assertEqual(P.correctness_invariants(src, dict(base, extra=extra))[0], [])
+
     def test_cex_parsing(self) -> None:
         self.assertEqual(W.parse_assignments("a=1, b=-2"), {"a": 1, "b": -2})
         vals = W.parse_assignments("a=#xffffffff, b=#b101, c=true")
@@ -256,6 +311,23 @@ class ReplayTest(unittest.TestCase):
             self.assertEqual(rp["replay"], "replayed", rp)
             rp = P.replay(src, "no-overflow", allow_exec=True, nondet_values=[5], work=Path(d) / "w3")
             self.assertEqual(rp["replay"], "not-replayed", rp)
+
+    def test_shift_overflow_replays_other_shift_ub_does_not(self) -> None:
+        # only a left shift whose result is not representable is an overflow
+        cases = {"31": "replayed", "0": "not-replayed"}
+        for s, want in cases.items():
+            with tempfile.TemporaryDirectory() as d:
+                src = Path(d) / "t.c"
+                src.write_text("int main(void) {\n  int x = 1, s = %s;\n  x = x << s;\n  return x == 0;\n}\n" % s)
+                rp = P.replay(src, "no-overflow", allow_exec=True, nondet_values=None, work=Path(d) / "w")
+                self.assertEqual(rp["replay"], want, (s, rp))
+                if want == "replayed":
+                    self.assertEqual(rp["line"], 3)
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "t.c"
+            src.write_text("int main(void) {\n  int x = -1, s = 1;\n  x = x << s;\n  return x == 0;\n}\n")
+            rp = P.replay(src, "no-overflow", allow_exec=True, nondet_values=None, work=Path(d) / "w")
+            self.assertEqual(rp["replay"], "not-replayed", rp)  # negative base: UB, but not an overflow
 
 
 class NondetTraceTest(unittest.TestCase):
@@ -329,6 +401,9 @@ class NondetTraceTest(unittest.TestCase):
             src.write_text('# 1 "t.c"\n' + self.SRC)
             wps = P.nondet_waypoints(src, self.TRACE, [(5, 11), (6, 21), (7, 20)])
             self.assertEqual(wps, [])  # int has two sites: nothing placed without the locations
+            # bmc's positions are physical (the analysed text itself): kept
+            wps = P.nondet_waypoints(src, self.TRACE, [(5, 11), (6, 21), (7, 20)], physical=True)
+            self.assertEqual(len(wps), 3)
 
     def test_doctests(self) -> None:
         import doctest
@@ -400,7 +475,10 @@ class EndToEndTest(unittest.TestCase):
     def test_true_task(self) -> None:
         dec, wit = self.run_task("loop-simple/nested_1.c")
         self.assertEqual(dec.answer, "true", dec.reason)
-        self.assertIsNone(wit)
+        # a `true` answer carries a correctness witness (format 2.0 invariant_set)
+        self.assertIsNotNone(wit)
+        assert wit is not None
+        self.assertIn("entry_type: invariant_set", wit)
 
 
 if __name__ == "__main__":

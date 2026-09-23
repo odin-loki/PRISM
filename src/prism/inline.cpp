@@ -442,6 +442,8 @@ FunctionInfo inline_function(FunctionInfo fn, const Index& index) {
     auto new_body = transform_body(fn.body, fn, index, counter);
     if (counter == 0) return fn;
     fn.body = std::move(new_body);
+    // The inlined body no longer maps offset for offset onto the source.
+    fn.body_line = fn.body_col = 0;
     return fn;
 }
 

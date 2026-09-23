@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """PRISM as an SV-COMP verifier: run PRISM on one task, map report.json to an
-SV-COMP answer, replay the counterexample and write a violation witness.
+SV-COMP answer, replay the counterexample and write a witness (a violation
+witness for ``false``, a correctness witness for ``true``).
 
 Roadmap 6.3. This is the executable the BenchExec tool-info module
 (``tools/svcomp/prism.py``) runs:
@@ -35,7 +36,7 @@ The mapping keeps PRISM's laws (docs/VERDICTS.md):
   ``UNKNOWN``, ``TIMEOUT``, ``ERROR``, a refutation that does not replay, a
   refutation of a program with ``__VERIFIER_nondet_*`` inputs whose stage did
   not report the nondet values (``bmc`` and ``pir`` report them for main in
-  ``extra["nondet"]``; ``pir`` also gives each call's source position in
+  ``extra["nondet"]``, and each call's source position in
   ``extra["nondet_loc"]``), a stage that
   disagrees with another, and every unsupported property.
 
@@ -85,7 +86,16 @@ REASON_PREFIX = "PRISM-SVCOMP-REASON: "
 
 # property -> which stages' proofs of main cover it, which finding classes refute it
 PROPERTIES: dict[str, dict[str, Any]] = {
-    "no-overflow": {"prove": {"bmc", "pir"}, "classes": {"INT-SIGNED-OVF"}},
+    # A signed left shift whose result is not representable is an overflow
+    # under the SV-COMP rules ("the resulting type of an operation is a
+    # signed-integer type but the resulting value is not in the range ...",
+    # C11 6.5.7p4); a negative or too large shift count, or a negative left
+    # operand, is not. `refute_props` names the INT-SHIFT-UB checks that can
+    # be such an overflow (pir: shift-base, which also covers a negative
+    # base; bmc: shift31); the replay under -fsanitize=shift-base then has to
+    # show "left shift of N by M places cannot be represented".
+    "no-overflow": {"prove": {"bmc", "pir"}, "classes": {"INT-SIGNED-OVF", "INT-SHIFT-UB"},
+                    "refute_props": {"INT-SHIFT-UB": {"shift-base", "shift31"}}},
     "unreach-call": {"prove": {"pir"}, "classes": {"FUNC-CONTRACT"}, "props": {"reach_error", "assert"}},
     # valid-memtrack (leaks) and valid-free are not encoded by any verdict
     # stage: a proof never covers the whole property, so no `true`.
@@ -190,12 +200,29 @@ def main_findings(report: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
     return per
 
 
+def finding_prop(f: dict[str, Any]) -> str:
+    """The engine's name of the violated check: ``extra["prop"]`` (pir), else
+    the message prefix (bmc: ``shift31: INT-SHIFT-UB``).
+
+    >>> finding_prop({"message": "shift31: INT-SHIFT-UB"}), finding_prop({"extra": {"prop": "shift-base"}})
+    ('shift31', 'shift-base')
+    """
+    extra = f.get("extra") or {}
+    if extra.get("prop"):
+        return str(extra["prop"])
+    head, sep, _ = str(f.get("message", "")).partition(":")
+    return head.strip() if sep else ""
+
+
 def refutes(f: dict[str, Any], prop: str) -> bool:
     spec = PROPERTIES[prop]
     if f.get("status") != "FAILED" or f.get("cls") not in spec["classes"]:
         return False
     if "props" in spec:
         return str((f.get("extra") or {}).get("prop", "")) in spec["props"]
+    only = spec.get("refute_props", {}).get(f.get("cls"))
+    if only is not None:
+        return finding_prop(f) in only
     return True
 
 
@@ -315,7 +342,8 @@ def _rlimits(timeout: float) -> Any:
 UBSAN_RE = re.compile(r"^(?P<file>[^\s:][^:]*):(?P<line>\d+):(?P<col>\d+): runtime error: (?P<msg>.*)$", re.M)
 ASAN_RE = re.compile(r"ERROR: AddressSanitizer: (?P<kind>[\w-]+)")
 ASAN_FRAME_RE = re.compile(r"#\d+ 0x[0-9a-f]+ in \S+ (?P<file>[^\s:]+):(?P<line>\d+):(?P<col>\d+)")
-OVERFLOW_MSG = re.compile(r"^(signed integer overflow|negation of .* cannot be represented|division of .* cannot be represented)")
+OVERFLOW_MSG = re.compile(r"^(signed integer overflow|negation of .* cannot be represented|division of .* cannot be represented"
+                          r"|left shift of \d+ by \d+ places cannot be represented)")
 ASAN_DEREF = {"heap-buffer-overflow", "stack-buffer-overflow", "global-buffer-overflow", "SEGV",
               "heap-use-after-free", "stack-use-after-return", "stack-use-after-scope", "stack-buffer-underflow"}
 ASAN_FREE = {"attempting", "bad-free", "double-free"}
@@ -416,16 +444,18 @@ def _call_at(text: str, name: str, line: int, col: int) -> tuple[int, int] | Non
 
 
 def nondet_waypoints(task: Path, trace: list[tuple[str, int | float]],
-                     locs: list[tuple[int, int] | None] | None = None) -> list[Any]:
+                     locs: list[tuple[int, int] | None] | None = None, physical: bool = False) -> list[Any]:
     """function_return waypoints for the longest prefix of ``trace`` whose
     calls can each be placed exactly: at the engine's debug location of the
     call (``locs``, from ``pir``) when the task text really has that call
     there, else at the call's only call site in the task. A call that is
     neither ends the prefix: a waypoint at the wrong call would make the
-    witness wrong, a missing one only weaker. Debug locations are ignored in
-    a task with line markers (they then name another file's lines)."""
+    witness wrong, a missing one only weaker. Debug locations (pir) are
+    ignored in a task with line markers (they then name another file's
+    lines); ``physical`` locations (bmc: positions in the analysed text) are
+    not."""
     text = task.read_text(encoding="utf-8", errors="replace")
-    if locs is not None and (len(locs) != len(trace) or LINE_MARKER.search(text)):
+    if locs is not None and (len(locs) != len(trace) or (not physical and LINE_MARKER.search(text))):
         locs = None
     out: list[Any] = []  # witness.NondetValue
     for i, (name, value) in enumerate(trace):
@@ -454,7 +484,9 @@ def replay(src: Path, prop: str, *, allow_exec: bool, nondet_values: list[int | 
     cc = which_cc()
     if cc is None:
         return {"replay": "notrun", "why": "no C compiler (clang/gcc) on PATH"}
-    san = {"no-overflow": "signed-integer-overflow", "valid-memsafety": "address"}.get(prop)
+    # shift-base: `x << n` whose result is not representable, and a negative
+    # x (a report OVERFLOW_MSG does not accept: not an overflow).
+    san = {"no-overflow": "signed-integer-overflow,shift-base", "valid-memsafety": "address"}.get(prop)
     work = work.resolve()
     work.mkdir(parents=True, exist_ok=True)
     stubs = work / "prism_stubs.c"
@@ -628,6 +660,197 @@ def target_column(src: Path, line: int, col: int) -> int | None:
     return s + 1
 
 
+# Invariant conjuncts the witness may carry. The engine proves its
+# invariants in C semantics over bit-vectors, where a signed `+`, `-` or `*`
+# in the invariant text wraps; in C that is an overflow (UB), so a conjunct
+# with arithmetic is exported only when the other exported conjuncts bound
+# every variable in it so tightly that no subterm leaves the range of int
+# (then wrapping and C agree, whatever the variables' integer types). A
+# plain comparison of identifiers and constants is always exported. Leaving
+# out a conjunct keeps the witness valid (each proved conjunct holds by
+# itself); it only gives the validator less to work with.
+_ATOM = re.compile(r"^\(?\s*([A-Za-z_]\w*|-?\d+)\s*(<=|>=|==|!=|<|>)\s*([A-Za-z_]\w*|-?\d+)\s*\)?$")
+_CMP = re.compile(r"^(.*?)\s*(<=|>=|==|!=|<|>)\s*(.*)$")
+_INT_MIN, _INT_MAX = -(1 << 31), (1 << 31) - 1
+
+
+def _bounds(atoms: list[str]) -> dict[str, tuple[int | None, int | None]]:
+    """Constant bounds of variables implied by comparison conjuncts."""
+    lo: dict[str, int] = {}
+    hi: dict[str, int] = {}
+    rel: list[tuple[str, str, str]] = []
+    for a in atoms:
+        m = _ATOM.match(a)
+        if not m:
+            continue
+        x, op, y = m.groups()
+        if re.fullmatch(r"-?\d+", x) and not re.fullmatch(r"-?\d+", y):
+            x, y, op = y, x, {"<": ">", ">": "<", "<=": ">=", ">=": "<="}.get(op, op)
+        rel.append((x, op, y))
+    # Only `variable op constant`: a bound carried through `x <= y` could be
+    # wrong when x and y differ in signedness (C compares them unsigned).
+    for x, op, y in rel:
+        if re.fullmatch(r"-?\d+", x) or not re.fullmatch(r"-?\d+", y):
+            continue
+        c = int(y)
+        if op in ("<=", "=="):
+            hi[x] = min(hi.get(x, c), c)
+        if op == "<":
+            hi[x] = min(hi.get(x, c - 1), c - 1)
+        if op in (">=", "=="):
+            lo[x] = max(lo.get(x, c), c)
+        if op == ">":
+            lo[x] = max(lo.get(x, c + 1), c + 1)
+    return {v: (lo.get(v), hi.get(v)) for v in set(lo) | set(hi)}
+
+
+def _int_safe(expr: str, bounds: dict[str, tuple[int | None, int | None]]) -> bool:
+    """Every subterm of the arithmetic ``expr`` (identifiers, decimal
+    constants, ``+ - *``, parentheses) stays within int for all values in
+    ``bounds``.
+
+    >>> b = {"i": (0, 1000), "s": (0, None)}
+    >>> _int_safe("2 * i", b), _int_safe("i + 1", b), _int_safe("2 * s", b), _int_safe("i / 2", b)
+    (True, True, False, False)
+    """
+    toks = re.findall(r"\d+|[A-Za-z_]\w*|[-+*()]|\S", expr)
+    pos = 0
+
+    def ok(iv: tuple[int, int]) -> tuple[int, int]:
+        if iv[0] < _INT_MIN or iv[1] > _INT_MAX:
+            raise ValueError
+        return iv
+
+    def atom() -> tuple[int, int]:
+        nonlocal pos
+        if pos >= len(toks):
+            raise ValueError
+        t = toks[pos]
+        pos += 1
+        if t == "(":
+            v = add()
+            if pos >= len(toks) or toks[pos] != ")":
+                raise ValueError
+            pos += 1
+            return v
+        if t == "-":
+            a = atom()
+            return ok((-a[1], -a[0]))
+        if t.isdigit():
+            return ok((int(t), int(t)))
+        if re.fullmatch(r"[A-Za-z_]\w*", t):
+            lo_, hi_ = bounds.get(t, (None, None))
+            if lo_ is None or hi_ is None:
+                raise ValueError
+            return ok((lo_, hi_))
+        raise ValueError
+
+    def mul() -> tuple[int, int]:
+        nonlocal pos
+        v = atom()
+        while pos < len(toks) and toks[pos] == "*":
+            pos += 1
+            w = atom()
+            ps = [v[0] * w[0], v[0] * w[1], v[1] * w[0], v[1] * w[1]]
+            v = ok((min(ps), max(ps)))
+        return v
+
+    def add() -> tuple[int, int]:
+        nonlocal pos
+        v = mul()
+        while pos < len(toks) and toks[pos] in "+-":
+            op = toks[pos]
+            pos += 1
+            w = mul()
+            v = ok((v[0] + w[0], v[1] + w[1]) if op == "+" else (v[0] - w[1], v[1] - w[0]))
+        return v
+
+    try:
+        add()
+    except ValueError:
+        return False
+    return pos == len(toks)
+
+
+def exportable_conjuncts(conjuncts: list[str]) -> list[str]:
+    """The proved conjuncts a witness may carry (see above).
+
+    >>> exportable_conjuncts(["i >= 0", "i <= 1000", "s == 2 * i", "s <= 2 * n", "i != s", "f(i) > 0"])
+    ['i >= 0', 'i <= 1000', 's == 2 * i', 'i != s']
+    """
+    atoms = [c for c in conjuncts if _ATOM.match(c)]
+    b = _bounds(atoms)
+    out = []
+    for c in conjuncts:
+        if _ATOM.match(c):
+            out.append(c)
+            continue
+        m = _CMP.match(c)
+        if m and not re.search(r"[<>=!]", m.group(1) + m.group(3)) and all(
+                re.fullmatch(r"[A-Za-z_]\w*|-?\d+", side.strip()) or _int_safe(side, b) for side in (m.group(1), m.group(3))):
+            out.append(c)
+    return out
+
+
+def correctness_invariants(task: Path, finding: dict[str, Any]) -> tuple[list[Any], str]:
+    """Loop invariants for a correctness witness of a ``true`` answer, and a
+    note on where they came from.
+
+    Only invariants the engine proved are exported: the Houdini-filtered
+    loop invariants of a ``bmc`` ``PROVED-UNBOUNDED`` (``extra["invariants"]``,
+    one list per cut loop, with the loops' source positions in
+    ``extra["invariant_loops"]``). A loop whose position is unknown (inlined
+    body), that is a ``do`` loop (its invariant is proved at the top of the
+    body, not where the condition is evaluated), or whose keyword is not at
+    that position in the task text gets none. Every other proof (``pir``
+    PROVED within the unwind, k-induction without an invariant) exports
+    nothing, and the witness is the empty ``invariant_set``: trivially valid,
+    the validator has to find the proof itself.
+
+    >>> import tempfile
+    >>> p = Path(tempfile.mkdtemp()) / "t.c"
+    >>> _ = p.write_text("int main() {\\n  int i = 0;\\n  while (i < 10) i++;\\n}\\n")
+    >>> f = {"function": "main", "extra": {"k_induction": "closed-invariants",
+    ...      "invariants": '[["i >= 0", "i <= 10", "i + 1 > i", "i <= 2 * n"]]',
+    ...      "invariant_loops": '[{"kind": "while", "line": 3, "column": 3}]'}}
+    >>> invs, note = correctness_invariants(p, f)
+    >>> [(i.kind, i.location.line, i.location.column, i.value) for i in invs]
+    [('loop_invariant', 3, 3, '(i >= 0) && (i <= 10) && (i + 1 > i)')]
+    >>> f["extra"]["invariant_loops"] = '[{"kind": "while", "line": 2, "column": 3}]'
+    >>> correctness_invariants(p, f)[0]
+    []
+    """
+    extra = finding.get("extra") or {}
+    if extra.get("k_induction") != "closed-invariants" or "invariants" not in extra:
+        return [], "no loop invariant exported by the proving stage (empty invariant set)"
+    try:
+        invs = json.loads(str(extra["invariants"]))
+        loops = json.loads(str(extra.get("invariant_loops", "[]")))
+    except ValueError:
+        return [], "unreadable invariants (empty invariant set)"
+    lines = task.read_text(encoding="utf-8", errors="replace").split("\n")
+    out: list[Any] = []
+    for j, loop in enumerate(loops if isinstance(loops, list) else []):
+        if j >= len(invs) or not isinstance(loop, dict) or loop.get("kind") not in ("for", "while"):
+            continue
+        line, col = int(loop.get("line") or 0), int(loop.get("column") or 0)
+        if not (1 <= line <= len(lines)) or col < 1:
+            continue
+        kw = str(loop["kind"])
+        at = lines[line - 1][col - 1:]
+        if not re.match(rf"{kw}\b", at) or (col > 1 and re.match(r"\w", lines[line - 1][col - 2])):
+            continue
+        # a name declared in the for-init is not in scope at the keyword
+        decl = re.match(r"for\s*\(\s*(?:[A-Za-z_]\w*\s+)+\**\s*([A-Za-z_]\w*)\s*=", at)
+        kept = exportable_conjuncts([str(e).strip() for e in invs[j]
+                                     if not (decl and re.search(rf"\b{decl.group(1)}\b", str(e)))])
+        if kept:
+            out.append(W.Invariant("loop_invariant", W.Location(task.name, line, col, finding.get("function")),
+                                   " && ".join(f"({e})" for e in kept)))
+    n = sum(len(i.value.split(" && ")) for i in out)
+    return out, f"{n} Houdini loop invariant conjunct(s) from {finding.get('stage', 'bmc')}"
+
+
 @dataclass
 class Outcome:
     decision: Decision
@@ -664,6 +887,15 @@ def solve(task: Path, prop_file: Path, *, prism: str | None, allow_exec: bool, d
 
     dec = decide(report, prop, rp)
     oc = Outcome(dec)
+    if dec.answer == "true" and witness_path is not None and dec.finding is not None:
+        invariants, note = correctness_invariants(task, dec.finding)
+        doc = W.build_correctness_witness(
+            invariants, input_file=task, input_file_name=task.name, specification=spec,
+            data_model=data_model.upper(), producer_version=version_string(exe))
+        W.write_witness(doc, witness_path)
+        oc.witness_path = witness_path
+        dec.reason += f"; correctness witness: {note}"
+        return oc
     if dec.answer.startswith("false") and witness_path is not None and dec.finding is not None:
         line = int(dec.replay.get("line") or dec.finding.get("line") or 1)
         col: int | None = (target_column(task, line, int(dec.replay["column"])) if dec.replay.get("column")
@@ -679,7 +911,8 @@ def solve(task: Path, prop_file: Path, *, prism: str | None, allow_exec: bool, d
         # call) need not be in main, and the field is optional in format 2.0.
         cex = W.Counterexample(function="main", target=W.Location(task.name, line, col))
         trace = nondet_trace(dec.finding) or []
-        cex.nondet = nondet_waypoints(task, trace, nondet_locations(dec.finding, len(trace)))
+        physical = (dec.finding.get("extra") or {}).get("nondet_loc_kind") == "physical"
+        cex.nondet = nondet_waypoints(task, trace, nondet_locations(dec.finding, len(trace)), physical)
         doc = W.build_violation_witness(
             cex, input_file=task, input_file_name=task.name, specification=spec,
             data_model=data_model.upper(), producer_version=version_string(exe))

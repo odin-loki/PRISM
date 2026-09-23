@@ -26,6 +26,7 @@
 #include <cstring>
 #include <map>
 #include <set>
+#include <string_view>
 
 namespace prism::ai {
 namespace {
@@ -728,8 +729,48 @@ std::string inv_json(const std::vector<std::vector<std::string>>& inv) {
     return j.dump();
 }
 
+// Source position (line, byte column) of offset `off` of fn.body, or
+// {0, 0} when the body does not map onto the source (inlined, or parsed
+// without positions). The bmc stage renames nondet calls
+// `__VERIFIER_nondet_X__prism_at_L_C`; the tag is not source text.
+std::pair<int, int> body_source_pos(const FunctionInfo& fn, std::size_t off) {
+    if (fn.body_line <= 0 || fn.body_col <= 0 || off > fn.body.size()) return {0, 0};
+    static constexpr std::string_view TAG = "__prism_at_";
+    int line = fn.body_line, col = fn.body_col;
+    const std::string& b = fn.body;
+    for (std::size_t i = 0; i < off;) {
+        if (b.compare(i, TAG.size(), TAG) == 0) {
+            std::size_t j = i + TAG.size();
+            while (j < b.size() && (std::isdigit(static_cast<unsigned char>(b[j])) || b[j] == '_')) ++j;
+            if (j > off) return {0, 0};
+            i = j;
+            continue;
+        }
+        if (b[i] == '\n') {
+            ++line;
+            col = 1;
+        } else {
+            ++col;
+        }
+        ++i;
+    }
+    return {line, col};
+}
+
+// Where each cut loop starts in the source: [{"kind", "line", "column"}],
+// line/column 0 when unknown. SV-COMP correctness witnesses place a loop
+// invariant at the loop keyword (tools/svcomp).
+std::string loops_json(const FunctionInfo& fn, const std::vector<LoopCut>& loops) {
+    nlohmann::json j = nlohmann::json::array();
+    for (auto& L : loops) {
+        auto [line, col] = body_source_pos(fn, L.begin);
+        j.push_back({{"kind", L.kind}, {"line", line}, {"column", col}});
+    }
+    return j.dump();
+}
+
 Finding proved_finding(const FunctionInfo& fn, const Finding& bounded, const HoudiniResult& h,
-                       const std::string& source) {
+                       const std::string& source, const std::vector<LoopCut>& loops) {
     Finding f;
     f.stage = "bmc";
     f.status = std::string(laws::PROVED_UNBOUNDED);
@@ -742,6 +783,7 @@ Finding proved_finding(const FunctionInfo& fn, const Finding& bounded, const Hou
     f.extra["unwind_closed"] = "false";
     f.extra["bounded_status"] = bounded.status;
     f.extra["invariants"] = inv_json(h.invariants);
+    f.extra["invariant_loops"] = loops_json(fn, loops);
     f.extra["invariant_source"] = source;
     f.extra["houdini_rounds"] = std::to_string(h.rounds);
     f.extra["invariant_checker"] = "z3: Houdini filter + loop-cut induction (base and step)";
@@ -772,7 +814,7 @@ Finding strengthen_bounded(const FunctionInfo& fn, const Finding& bounded, int u
         srcs.push_back(std::vector<std::string>(cands.back().size(), "template"));
     }
     auto h = houdini(fn, *loops, cands, srcs, unwind);
-    if (h.proved) return proved_finding(fn, bounded, h, "template");
+    if (h.proved) return proved_finding(fn, bounded, h, "template", *loops);
     rec.extra["invariants_attempt"] = h.why.empty() ? std::string("open") : h.why;
     rec.extra["invariants"] = inv_json(h.invariants);
     if (!h.encoded) return rec;
@@ -848,7 +890,7 @@ Finding strengthen_bounded(const FunctionInfo& fn, const Finding& bounded, int u
         ar.verdict_effect = (h.proved && llm_survivor) ? std::string(laws::PROVED_UNBOUNDED) : "none";
         audit_append(ar);
         if (h.proved) {
-            auto f = proved_finding(fn, bounded, h, llm_survivor ? tagsrc : "template");
+            auto f = proved_finding(fn, bounded, h, llm_survivor ? tagsrc : "template", *loops);
             f.extra["ai_audit_id"] = ar.id;
             f.extra["ai_checker"] = ar.checker;
             f.extra["ai_checker_result"] = ar.checker_result;

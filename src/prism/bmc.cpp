@@ -24,6 +24,7 @@
 #include <vector>
 #include <filesystem>
 #include <cstring>
+#include <cstdio>
 
 #ifdef PRISM_HAS_Z3
 #include <z3++.h>
@@ -3207,7 +3208,14 @@ Finding bmc_once(const FunctionInfo& fn, int unwind, bool try_unbounded,
             f.extra["oracle"] = "false";
             f.extra["unwind"] = std::to_string(unwind);
             f.extra["param_premise"] = param_premise(c, fn.params);
-            if (!enc->nondets.empty()) f.extra["nondet"] = nondet_trace(s.get_model(), *enc);
+            if (!enc->nondets.empty()) {
+                // nondet_loc: each call's physical source position (line:col,
+                // 0:0 unknown), not a debug location: no #line mapping.
+                std::string locs;
+                f.extra["nondet"] = nondet_trace(s.get_model(), *enc, &locs);
+                f.extra["nondet_loc"] = locs;
+                f.extra["nondet_loc_kind"] = "physical";
+            }
             return f;
         }
         if (r == z3::unknown) {
@@ -3624,7 +3632,12 @@ std::vector<Finding> run_bmc(const std::vector<FunctionInfo>& functions, int unw
                              bool allow_local_pointers) {
 #ifdef PRISM_HAS_Z3
     std::vector<Finding> out;
-    for (auto& fn : inline_static(functions)) {
+    // Nondet call sites are tagged with their source positions before
+    // inlining, so a callee's calls keep the callee's positions.
+    std::vector<FunctionInfo> tagged;
+    tagged.reserve(functions.size());
+    for (auto& fn : functions) tagged.push_back(tag_nondet_sites(fn));
+    for (auto& fn : inline_static(tagged)) {
         // R1: one function the encoder cannot handle (a Z3 sort error, ...)
         // is an ERROR for that function, never a crash of the whole stage.
         try {

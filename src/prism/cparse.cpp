@@ -366,6 +366,8 @@ struct Parser {
         f.fn.body = bodies.substr(static_cast<std::size_t>(brace + 1),
                                   static_cast<std::size_t>(close - brace - 1));
         f.fn.span = {f.fn.line, line_of(close)};
+        f.fn.body_line = line_of(brace + 1);
+        f.fn.body_col = brace + 1 - (f.fn.body_line > 1 ? newlines[static_cast<std::size_t>(f.fn.body_line - 2)] : -1);
         return &found.emplace(brace, std::move(f)).first->second;
     }
 

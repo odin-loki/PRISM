@@ -149,7 +149,6 @@ def build_violation_witness(
     witness_uuid: str | None = None,
 ) -> list[dict[str, Any]]:
     """The witness document (a YAML list with one ``violation_sequence`` entry)."""
-    now = creation_time or _dt.datetime.now(_dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     segments: list[dict[str, Any]] = []
     if cex.params and cex.param_location is not None:
         conj = " && ".join(f"({k} == {_c_literal(v)})" for k, v in cex.params.items())
@@ -170,20 +169,72 @@ def build_violation_witness(
     }}]})
     return [{
         "entry_type": "violation_sequence",
-        "metadata": {
-            "format_version": FORMAT_VERSION,
-            "uuid": witness_uuid or str(_uuid.uuid4()),
-            "creation_time": now,
-            "producer": {"name": PRODUCER, "version": producer_version},
-            "task": {
-                "input_files": [input_file_name],
-                "input_file_hashes": {input_file_name: sha256_file(input_file)},
-                "specification": specification.strip(),
-                "data_model": data_model,
-                "language": language,
-            },
-        },
+        "metadata": _metadata(input_file=input_file, input_file_name=input_file_name, specification=specification,
+                              data_model=data_model, language=language, producer_version=producer_version,
+                              creation_time=creation_time, witness_uuid=witness_uuid),
         "content": segments,
+    }]
+
+
+@dataclass
+class Invariant:
+    """One entry of a correctness witness (format 2.0 ``invariant_set``).
+
+    ``kind`` is ``loop_invariant`` (location: the first character of the
+    ``for``/``while``/``do`` keyword; the value must hold whenever the loop
+    condition is about to be evaluated) or ``location_invariant`` (location:
+    the first character of a statement inside a compound statement).
+    """
+
+    kind: str
+    location: Location
+    value: str
+
+
+def _metadata(*, input_file: Path, input_file_name: str, specification: str, data_model: str, language: str,
+              producer_version: str, creation_time: str | None, witness_uuid: str | None) -> dict[str, Any]:
+    now = creation_time or _dt.datetime.now(_dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return {
+        "format_version": FORMAT_VERSION,
+        "uuid": witness_uuid or str(_uuid.uuid4()),
+        "creation_time": now,
+        "producer": {"name": PRODUCER, "version": producer_version},
+        "task": {
+            "input_files": [input_file_name],
+            "input_file_hashes": {input_file_name: sha256_file(input_file)},
+            "specification": specification.strip(),
+            "data_model": data_model,
+            "language": language,
+        },
+    }
+
+
+def build_correctness_witness(
+    invariants: list[Invariant],
+    *,
+    input_file: Path,
+    input_file_name: str,
+    specification: str,
+    data_model: str = "LP64",
+    language: str = "C",
+    producer_version: str = "unknown",
+    creation_time: str | None = None,
+    witness_uuid: str | None = None,
+) -> list[dict[str, Any]]:
+    """The correctness witness document (one ``invariant_set`` entry).
+
+    Every invariant must be one the engine proved; ``1`` (true) is the
+    trivially valid invariant the format allows when the engine proved the
+    program without exporting a loop invariant.
+    """
+    content = [{"invariant": {"type": inv.kind, "location": inv.location.as_dict(), "value": inv.value,
+                              "format": "c_expression"}} for inv in invariants]
+    return [{
+        "entry_type": "invariant_set",
+        "metadata": _metadata(input_file=input_file, input_file_name=input_file_name, specification=specification,
+                              data_model=data_model, language=language, producer_version=producer_version,
+                              creation_time=creation_time, witness_uuid=witness_uuid),
+        "content": content,
     }]
 
 
