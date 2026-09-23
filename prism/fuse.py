@@ -5,6 +5,8 @@ A fuzzer that finds nothing is CLEAN, which is not a proof.
 
 from __future__ import annotations
 
+from typing import Any
+
 from dataclasses import replace
 from pathlib import Path
 import os
@@ -13,10 +15,15 @@ import re
 from prism import laws
 from prism.afl import afl_available, run_afl_fuzz
 from prism.ai import LLM_INSTALL, LLM_SKIP_FUSE_MSG, create_prompt_from_source
-from prism.bmc import HAS_Z3, bmc_function, unencoded_syntax_reason
+from prism.bmc import HAS_Z3, bmc_function
 from prism.config import adapter_install
 from prism.cparse import body_needs_pointer_harness
-from prism.fuzz import bytes_from_cex, fuzz_function, param_nbytes
+from prism.fuzz import (
+    bytes_from_cex,
+    fuzz_function,
+    param_nbytes,
+    unencoded_syntax_reason,
+)
 from prism.models import Finding, FunctionInfo
 
 _IF = re.compile(r"\bif\s*\(([^)]+)\)")
@@ -247,7 +254,7 @@ def _fuse_one(
     rounds: int,
     engine=None,
 ) -> Finding:
-    base = dict(
+    base: dict[str, Any] = dict(
         stage="fuse", file=fn.file, function=fn.name, line=fn.line,
         cls="", strength=laws.STRENGTH_FINDS,
     )
@@ -454,9 +461,9 @@ def _fuse_one(
                 covered_goals.add(lab)
                 extra.setdefault("bmc_goals", []).append(lab)
                 n = param_nbytes(fn.params)
-                b = bytes_from_cex(g.counterexample, n)
-                if b and b not in seeds:
-                    seeds.append(b)
+                cex_b = bytes_from_cex(g.counterexample, n)
+                if cex_b and cex_b not in seeds:
+                    seeds.append(cex_b)
                     extra["new_bmc_seeds"] += 1
             elif g.status in {laws.PROVED, laws.PROVED_UNBOUNDED, laws.BOUNDED}:
                 # BMC closed that branch for the encoded UB; not a fuse proof.

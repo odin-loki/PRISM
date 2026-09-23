@@ -9,7 +9,9 @@ gcc/clang is the fallback when the oracle cannot parse the body.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 import ast
 import hashlib
 import os
@@ -23,13 +25,18 @@ from prism import laws
 from prism.contracts import ENS_ATOM, REQ_ATOM, parse_comments
 from prism.models import Finding, FunctionInfo
 
+if TYPE_CHECKING:
+    from prism.concrete import ExecResult
+
 _COMMENT_CLAUSE = re.compile(
     r"(?://|/\*|\*)\s*(requires|ensures|invariant|decreases|diff)\s*:\s*(.+?)(?:\*/)?\s*$",
     re.I,
 )
 
+concrete_execute: Callable[[FunctionInfo, dict[str, int]], ExecResult] | None
 try:
-    from prism.concrete import execute as concrete_execute  # type: ignore
+    from prism.concrete import execute as _concrete_execute
+    concrete_execute = _concrete_execute
 except Exception:  # pragma: no cover
     concrete_execute = None
 
@@ -37,6 +44,12 @@ DEFAULT_LO = -256
 DEFAULT_HI = 256
 _EXTRA_ATOM = re.compile(r"^([A-Za-z_]\w*)\s*(<=|>|==)\s*(0|[1-9]\d*|-?[1-9]\d*)$")
 _IDENT = re.compile(r"[A-Za-z_]\w*")
+_BANG = re.compile(r"(?<![\w=])!(?!=)")
+_LOCAL_DECL = re.compile(
+    r"(?:(?:unsigned|signed|const|static)\s+)*(?:int|long|short|char)\s+"
+    r"([A-Za-z_]\w*)\s*(?:=\s*([^;]+))?;"
+)
+_LOCAL_ASSIGN = re.compile(r"([A-Za-z_]\w*)\s*=\s*([^;]+);")
 
 
 def _contract_spec(fn: FunctionInfo) -> dict:
@@ -258,7 +271,7 @@ def _eval_status(err: str | None) -> tuple[str, dict]:
 
 
 def _finding_from_plan(fn: FunctionInfo, plan: dict, *, stage: str) -> Finding:
-    base = dict(
+    base: dict[str, Any] = dict(
         stage=stage,
         file=fn.file,
         function=fn.name,
@@ -534,7 +547,8 @@ def _execute_many(
             pass
     ok, results, err = _execute_gcc(fn, samples)
     if ok:
-        return results, "gcc", ""
+        widened: list[int | None] = list(results)
+        return widened, "gcc", ""
     try:
         out = [_interpret(fn.body, env) for env in samples]
         return out, "interp", ""
@@ -625,7 +639,7 @@ def _eval_c_expr(expr: str, env: dict[str, int]) -> int:
     if not src:
         raise ValueError("empty expression")
     src = src.replace("&&", " and ").replace("||", " or ")
-    src = re.sub(r"(?<![\w=])!(?!=)", " not ", src)
+    src = _BANG.sub(" not ", src)
     tree = ast.parse(src, mode="eval")
     return int(_eval_ast(tree.body, env))
 
@@ -662,7 +676,9 @@ def _eval_ast(node: ast.AST, env: dict[str, int]) -> int:
         if isinstance(node.op, (ast.Div, ast.FloorDiv)):
             if b == 0:
                 raise ZeroDivisionError("division by zero")
-            return int(a / b)
+            # C truncation, exact (int(a / b) rounds through a double).
+            q = abs(a) // abs(b)
+            return q if (a < 0) == (b < 0) else -q
         if isinstance(node.op, ast.Mod):
             if b == 0:
                 raise ZeroDivisionError("modulo by zero")
@@ -670,13 +686,13 @@ def _eval_ast(node: ast.AST, env: dict[str, int]) -> int:
         raise ValueError("unsupported binop")
     if isinstance(node, ast.BoolOp):
         if isinstance(node.op, ast.And):
-            for v in node.values:
-                if not _eval_ast(v, env):
+            for sub in node.values:
+                if not _eval_ast(sub, env):
                     return 0
             return 1
         if isinstance(node.op, ast.Or):
-            for v in node.values:
-                if _eval_ast(v, env):
+            for sub in node.values:
+                if _eval_ast(sub, env):
                     return 1
             return 0
     if isinstance(node, ast.Compare):
@@ -813,23 +829,19 @@ def _exec_block(text: str, env: dict[str, int]) -> int | None:
                     return got
             i = rest
             continue
-        decl = re.match(
-            r"(?:(?:unsigned|signed|const|static)\s+)*(?:int|long|short|char)\s+"
-            r"([A-Za-z_]\w*)\s*(?:=\s*([^;]+))?;",
-            text[i:],
-        )
+        decl = _LOCAL_DECL.match(text, i)
         if decl:
             name = decl.group(1)
             if decl.group(2) is not None:
                 env[name] = _eval_c_expr(decl.group(2), env)
             else:
                 env[name] = 0
-            i += decl.end()
+            i = decl.end()
             continue
-        assign = re.match(r"([A-Za-z_]\w*)\s*=\s*([^;]+);", text[i:])
+        assign = _LOCAL_ASSIGN.match(text, i)
         if assign:
             env[assign.group(1)] = _eval_c_expr(assign.group(2), env)
-            i += assign.end()
+            i = assign.end()
             continue
         k = text.find(";", i)
         if k < 0:

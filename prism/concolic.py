@@ -13,6 +13,7 @@ POINTER functions are skipped — never invent buffers.
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 from itertools import product
 from typing import Any
 
@@ -34,19 +35,22 @@ from prism.bmc import (
     _type_is_unsigned,
     _type_width,
     harness_for_parsefail,
-    unencoded_syntax_reason,
-    extract_enums,
 )
 from prism.cparse import body_needs_pointer_harness
 from prism.concrete import (
+    _enums_from_text,
     decode_args,
     execute,
     i32,
     interesting_seeds,
 )
+from prism.fuzz import unencoded_syntax_reason
 from prism.models import Finding, FunctionInfo
 
 _IF = re.compile(r"\bif\s*\(([^)]+)\)")
+_CMP_CONST = re.compile(r"(\w+)\s*(>=|<=|==|!=|>|<)\s*(-?\d+)")
+_CMP_WORD = re.compile(r"(\w+)\s*(>=|<=|==|!=|>|<)\s*(\w+)")
+_WORD = re.compile(r"(\w+)")
 
 _EXTREMES = (0, 1, -1, INT_MAX, INT_MIN)
 
@@ -60,7 +64,7 @@ def run_concolic(functions: list[FunctionInfo], budget: int = 32) -> list[Findin
 
 
 def concolic_function(fn: FunctionInfo, budget: int = 32) -> Finding:
-    base = dict(
+    base: dict[str, Any] = dict(
         stage="concolic",
         file=fn.file,
         function=fn.name,
@@ -238,12 +242,17 @@ def _initial_seeds(fn: FunctionInfo) -> list[dict[str, int]]:
 
 
 def _branch_conditions(fn: FunctionInfo) -> list[str]:
+    return list(_branch_conditions_of(fn.body or ""))
+
+
+@lru_cache(maxsize=1024)
+def _branch_conditions_of(body: str) -> tuple[str, ...]:
     seen: list[str] = []
-    for m in _IF.finditer(fn.body or ""):
+    for m in _IF.finditer(body):
         cond = " ".join(m.group(1).split())
         if cond and cond not in seen:
             seen.append(cond)
-    return seen
+    return tuple(seen)
 
 
 def _oracle_tag(this_from_z3: bool, z3_seeds: int) -> str:
@@ -342,9 +351,10 @@ def _enums_for(fn: FunctionInfo) -> dict[str, int]:
     path = Path(fn.file) if fn.file else Path()
     if path.is_file():
         try:
-            return extract_enums(path.read_text(encoding="utf-8", errors="replace"))
+            text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             return {}
+        return dict(_enums_from_text(text))
     return {}
 
 
@@ -430,13 +440,12 @@ def _heuristic_flip(
     param_names = {name for _, name in fn.params if name}
     cond = " ".join(cond.split())
 
-    m = re.match(r"(\w+)\s*(>=|<=|==|!=|>|<)\s*(-?\d+)", cond)
+    m = _CMP_CONST.match(cond)
     if m:
         var, op, raw = m.group(1), m.group(2), int(m.group(3))
         if var not in param_names:
             return None
         val = i32(raw)
-        cur = i32(args.get(var, 0))
         nxt = dict(args)
         if op == ">":
             nxt[var] = val + 1 if want else val
@@ -460,13 +469,12 @@ def _heuristic_flip(
             return nxt
         return None
 
-    m = re.match(r"(\w+)\s*(>=|<=|==|!=|>|<)\s*(\w+)", cond)
+    m = _CMP_WORD.match(cond)
     if m:
         left, op, right = m.group(1), m.group(2), m.group(3)
         if left not in param_names:
             return None
         nxt = dict(args)
-        cur = i32(args.get(left, 0))
         if right in param_names:
             rhs = i32(args.get(right, 0))
         else:
@@ -494,7 +502,7 @@ def _heuristic_flip(
             return nxt
         return None
 
-    if re.fullmatch(r"(\w+)", cond):
+    if _WORD.fullmatch(cond):
         var = cond
         if var not in param_names:
             return None

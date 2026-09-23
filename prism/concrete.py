@@ -7,6 +7,7 @@ POINTER functions are skipped: ub=None, not a crash.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 import re
@@ -18,28 +19,90 @@ from prism.bmc import (
     ParseFail,
     WIDTH,
     _CAST_WORDS,
-    _block_or_stmt,
-    _brace,
+    _block_or_stmt as _bmc_block_or_stmt,
+    _brace as _bmc_brace,
     _char_lit_value,
-    _consume_stmt_src,
+    _consume_stmt_src as _bmc_consume_stmt_src,
     _is_computed_goto,
-    _is_ident,
+    _is_ident as _bmc_is_ident,
     _is_nested_function,
-    _paren,
-    _split_comma,
-    _split_semi,
+    _paren as _bmc_paren,
+    _split_comma as _bmc_split_comma,
+    _split_semi as _bmc_split_semi,
     _starts_kw,
-    _stmt,
+    _stmt as _bmc_stmt,
     _string_lit_value,
-    _tok,
-    _type_is_unsigned,
-    _type_width,
-    _upto_colon,
+    _tok as _bmc_tok,
+    _type_is_unsigned as _bmc_type_is_unsigned,
+    _type_width as _bmc_type_width,
+    _upto_colon as _bmc_upto_colon,
     extract_enums,
-    unencoded_layout_prefix,
-    unencoded_layout_stmt,
+    unencoded_layout_prefix as _bmc_unencoded_layout_prefix,
+    unencoded_layout_stmt as _bmc_unencoded_layout_stmt,
 )
 from prism.models import FunctionInfo
+
+# The interpreter re-lexes the same body text on every run and every loop
+# iteration. These bmc helpers are pure functions of their string argument,
+# so memoizing them changes no result (exceptions are never cached: a
+# ParseFail is re-raised at the same point every time). Cached str results
+# are the same objects each time, so their hashes are computed once.
+_MEMO = 4096
+_brace = lru_cache(maxsize=_MEMO)(_bmc_brace)
+_paren = lru_cache(maxsize=_MEMO)(_bmc_paren)
+_block_or_stmt = lru_cache(maxsize=_MEMO)(_bmc_block_or_stmt)
+_stmt = lru_cache(maxsize=_MEMO)(_bmc_stmt)
+_consume_stmt_src = lru_cache(maxsize=_MEMO)(_bmc_consume_stmt_src)
+_upto_colon = lru_cache(maxsize=_MEMO)(_bmc_upto_colon)
+_is_ident = lru_cache(maxsize=_MEMO)(_bmc_is_ident)
+_type_is_unsigned = lru_cache(maxsize=256)(_bmc_type_is_unsigned)
+_type_width = lru_cache(maxsize=256)(_bmc_type_width)
+unencoded_layout_prefix = lru_cache(maxsize=_MEMO)(_bmc_unencoded_layout_prefix)
+unencoded_layout_stmt = lru_cache(maxsize=_MEMO)(_bmc_unencoded_layout_stmt)
+
+
+@lru_cache(maxsize=_MEMO)
+def _split_semi(s: str) -> tuple[str, ...]:
+    return tuple(_bmc_split_semi(s))
+
+
+@lru_cache(maxsize=_MEMO)
+def _split_comma(s: str) -> tuple[str, ...]:
+    return tuple(_bmc_split_comma(s))
+
+
+@lru_cache(maxsize=_MEMO)
+def _tok(src: str) -> tuple[str, ...]:
+    return tuple(_bmc_tok(src))
+
+
+@lru_cache(maxsize=256)
+def _enums_from_text(text: str) -> dict[str, int]:
+    return extract_enums(text)
+
+
+_PREP_RE = re.compile(r"#.*")
+_DECL_RE = re.compile(
+    r"(?:int|unsigned(?:\s+int)?|long|short|char|uint32_t|int32_t|size_t)"
+    r"\s+([A-Za-z_]\w*)(?:\s*\[(\d+)\])?(?:\s*=\s*(.*))?$"
+)
+_VLA_RE = re.compile(r"\[[^\]]+\]")
+_ASTORE_RE = re.compile(r"([A-Za-z_]\w*)\s*\[(.+)\]\s*=\s*(.+)$")
+_ASSIGN_RE = re.compile(r"([A-Za-z_]\w*)\s*([+\-*/%|&^]?=)\s*(.+)$")
+_ASSERT_RE = re.compile(r"assert\s*\((.*)\)\s*;", re.S)
+_DECL_PREFIXES = (
+    "int ", "unsigned ", "long ", "short ", "char ",
+    "uint32_t ", "int32_t ", "size_t ",
+)
+_PREC = {
+    "||": 10, "&&": 20,
+    "|": 30, "^": 40, "&": 50,
+    "==": 60, "!=": 60,
+    "<": 70, ">": 70, "<=": 70, ">=": 70,
+    "<<": 80, ">>": 80,
+    "+": 90, "-": 90,
+    "*": 100, "/": 100, "%": 100,
+}
 
 INT64_MIN = -(1 << 63)
 INT64_MAX = (1 << 63) - 1
@@ -134,6 +197,8 @@ class _St:
             self.bits[name] = w
             raw = int(args.get(name, 0))
             self.vars[name] = i32(raw) if w <= 32 else raw
+        # bits never changes after this; lets _tree_width skip the walk.
+        self.wide = any(w > WIDTH for w in self.bits.values())
 
     def tick(self) -> None:
         self.steps += 1
@@ -262,13 +327,74 @@ def _enums_for(fn: FunctionInfo) -> dict[str, int]:
     path = Path(fn.file) if fn.file else Path()
     if path.is_file():
         try:
-            return extract_enums(path.read_text(encoding="utf-8", errors="replace"))
+            text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             return {}
+        return dict(_enums_from_text(text))
     return {}
 
 
 # ----- statement / expression interpreter (same subset as prism.bmc) -----
+
+_STMT_KWS = (
+    "if", "switch", "do", "while", "for", "assert", "return", "break", "continue",
+)
+
+
+@lru_cache(maxsize=_MEMO)
+def _prep(body: str) -> str:
+    return _PREP_RE.sub(" ", body)
+
+
+@lru_cache(maxsize=_MEMO)
+def _assign_plan(stmt: str) -> tuple[Any, ...]:
+    """How `_assign_or_expr` splits `stmt`; a pure function of the text.
+
+    ("",) empty, (",", pieces) comma list, ("[]=", name, idx, rhs) array
+    store, ("=", name, op, rhs) (compound) assignment, ("e", expr) expression.
+    """
+    stmt = stmt.rstrip(";").strip()
+    if not stmt:
+        return ("",)
+    parts = _split_comma(stmt)
+    if len(parts) > 1:
+        return (",", tuple(p.strip() for p in parts if p.strip()))
+    m = _ASTORE_RE.match(stmt)
+    if m:
+        return ("[]=", m.group(1), m.group(2), m.group(3))
+    m = _ASSIGN_RE.match(stmt)
+    if m:
+        return ("=", m.group(1), m.group(2), m.group(3))
+    return ("e", stmt)
+
+
+@lru_cache(maxsize=_MEMO)
+def _stmt_kind(text: str) -> str:
+    """Which `_stmts` branch `text` takes: "{", a keyword, a ParseFail
+    message, or "" for a plain statement. Pure in `text`; checked in the
+    same order as the original if-chain, so the first match still wins.
+    """
+    if text.startswith("{"):
+        return "{"
+    for kw in _STMT_KWS:
+        if _starts_kw(text, kw):
+            return kw
+    if _is_nested_function(text):
+        return "nested function unencoded"
+    if _starts_kw(text, "goto"):
+        if _is_computed_goto(text):
+            return "computed goto unencoded"
+        return "goto unencoded"
+    if _starts_kw(text, "throw"):
+        return "throw unencoded"
+    if (_starts_kw(text, "asm") or _starts_kw(text, "__asm__")
+            or _starts_kw(text, "__asm")):
+        return "asm unencoded"
+    if _starts_kw(text, "try") or _starts_kw(text, "catch"):
+        return "try unencoded"
+    if _starts_kw(text, "case") or _starts_kw(text, "default"):
+        return "case/default outside switch"
+    return ""
 
 
 class _Parser:
@@ -280,7 +406,7 @@ class _Parser:
         self._stmts(self._prep(self.body))
 
     def _prep(self, body: str) -> str:
-        return re.sub(r"#.*", " ", body)
+        return _prep(body)
 
     def _stmts(self, text: str) -> None:
         text = text.strip()
@@ -289,54 +415,42 @@ class _Parser:
             text = text.lstrip()
             if not text:
                 break
-            if text.startswith("{"):
+            kind = _stmt_kind(text)
+            if kind == "{":
                 inner, rest = _brace(text)
                 self._stmts(inner)
                 text = rest
                 continue
-            if _starts_kw(text, "if"):
+            if kind == "if":
                 text = self._if(text)
                 continue
-            if _starts_kw(text, "switch"):
+            if kind == "switch":
                 text = self._switch(text)
                 continue
-            if _starts_kw(text, "do"):
+            if kind == "do":
                 text = self._do(text)
                 continue
-            if _starts_kw(text, "while"):
+            if kind == "while":
                 text = self._while(text)
                 continue
-            if _starts_kw(text, "for"):
+            if kind == "for":
                 text = self._for(text)
                 continue
-            if _starts_kw(text, "assert"):
+            if kind == "assert":
                 text = self._assert(text)
                 continue
-            if _starts_kw(text, "return"):
+            if kind == "return":
                 stmt, text = _stmt(text)
                 self._return(stmt)
                 continue
-            if _starts_kw(text, "break"):
+            if kind == "break":
                 _, text = _stmt(text)
                 raise _Break()
-            if _starts_kw(text, "continue"):
+            if kind == "continue":
                 _, text = _stmt(text)
                 raise _Continue()
-            if _is_nested_function(text):
-                raise ParseFail("nested function unencoded")
-            if _starts_kw(text, "goto"):
-                if _is_computed_goto(text):
-                    raise ParseFail("computed goto unencoded")
-                raise ParseFail("goto unencoded")
-            if _starts_kw(text, "throw"):
-                raise ParseFail("throw unencoded")
-            if (_starts_kw(text, "asm") or _starts_kw(text, "__asm__")
-                    or _starts_kw(text, "__asm")):
-                raise ParseFail("asm unencoded")
-            if _starts_kw(text, "try") or _starts_kw(text, "catch"):
-                raise ParseFail("try unencoded")
-            if _starts_kw(text, "case") or _starts_kw(text, "default"):
-                raise ParseFail("case/default outside switch")
+            if kind:
+                raise ParseFail(kind)
             miss = unencoded_layout_prefix(text)
             if miss:
                 raise ParseFail(miss)
@@ -344,23 +458,16 @@ class _Parser:
             miss = unencoded_layout_stmt(stmt)
             if miss:
                 raise ParseFail(miss)
-            if stmt.startswith((
-                "int ", "unsigned ", "long ", "short ", "char ",
-                "uint32_t ", "int32_t ", "size_t ",
-            )):
+            if stmt.startswith(_DECL_PREFIXES):
                 self._decl(stmt)
             else:
                 self._assign_or_expr(stmt)
 
     def _decl(self, stmt: str) -> None:
         stmt = stmt.rstrip(";").strip()
-        m = re.match(
-            r"(?:int|unsigned(?:\s+int)?|long|short|char|uint32_t|int32_t|size_t)"
-            r"\s+([A-Za-z_]\w*)(?:\s*\[(\d+)\])?(?:\s*=\s*(.*))?$",
-            stmt,
-        )
+        m = _DECL_RE.match(stmt)
         if not m:
-            if re.search(r"\[[^\]]+\]", stmt):
+            if _VLA_RE.search(stmt):
                 raise ParseFail("VLA unencoded")
             raise ParseFail(f"unparsed decl: {stmt[:80]}")
         name, dim, init = m.group(1), m.group(2), m.group(3)
@@ -375,23 +482,19 @@ class _Parser:
             self.st.vars[name] = 0
 
     def _assign_or_expr(self, stmt: str) -> None:
-        stmt = stmt.rstrip(";").strip()
-        if not stmt:
+        plan = _assign_plan(stmt)
+        kind = plan[0]
+        if kind == "":
             return
-        parts = _split_comma(stmt)
-        if len(parts) > 1:
-            for part in parts:
-                piece = part.strip()
-                if piece:
-                    self._assign_or_expr(piece)
+        if kind == ",":
+            for piece in plan[1]:
+                self._assign_or_expr(piece)
             return
-        m = re.match(r"([A-Za-z_]\w*)\s*\[(.+)\]\s*=\s*(.+)$", stmt)
-        if m:
-            self._astore(m.group(1), m.group(2), m.group(3))
+        if kind == "[]=":
+            self._astore(plan[1], plan[2], plan[3])
             return
-        m = re.match(r"([A-Za-z_]\w*)\s*([+\-*/%|&^]?=)\s*(.+)$", stmt)
-        if m:
-            name, op, rhs = m.group(1), m.group(2), m.group(3)
+        if kind == "=":
+            name, op, rhs = plan[1], plan[2], plan[3]
             val = self._eval(rhs)
             if op == "=":
                 w = self.st.bits.get(name, WIDTH)
@@ -402,7 +505,7 @@ class _Parser:
                 r = _binop(cur, op[0], val, name in self.st.unsigned, w)
                 self.st.vars[name] = i32(r) if w <= 32 else int(r)
             return
-        self._eval(stmt)
+        self._eval(plan[1])
 
     def _astore(self, name: str, idx: str, rhs: str) -> None:
         if name not in self.st.arrays:
@@ -424,7 +527,7 @@ class _Parser:
         arr[i] = i32(v)
 
     def _assert(self, text: str) -> str:
-        m = re.match(r"assert\s*\((.*)\)\s*;", text, re.S)
+        m = _ASSERT_RE.match(text)
         if not m:
             from prism.bmc import _paren_stmt
             inner, rest = _paren_stmt(text[text.find("("):])
@@ -614,125 +717,137 @@ class _Parser:
 
     def _parse_expr(self, src: str) -> Any:
         tokens = _tok(src.strip())
-        pos = 0
+        if "sizeof" in tokens:
+            # sizeof(arr) reads the live array table: never cached.
+            return _parse_tokens(tokens, self.st)
+        return _parse_expr_pure(src)
 
-        def peek() -> str:
-            return tokens[pos] if pos < len(tokens) else ""
 
-        def eat(t: str | None = None) -> str:
-            nonlocal pos
-            if pos >= len(tokens):
-                raise ParseFail("unexpected end")
-            got = tokens[pos]
-            if t is not None and got != t:
-                raise ParseFail(f"expected {t} got {got}")
-            pos += 1
-            return got
+def _parse_tokens(tokens: tuple[str, ...], st: _St | None) -> Any:
+    """Pratt parse of one expression. `st` is only read by `sizeof`."""
+    pos = 0
 
-        PREC = {
-            "||": 10, "&&": 20,
-            "|": 30, "^": 40, "&": 50,
-            "==": 60, "!=": 60,
-            "<": 70, ">": 70, "<=": 70, ">=": 70,
-            "<<": 80, ">>": 80,
-            "+": 90, "-": 90,
-            "*": 100, "/": 100, "%": 100,
-        }
+    def peek() -> str:
+        return tokens[pos] if pos < len(tokens) else ""
 
-        def nud() -> Any:
-            t = eat()
-            if t == "sizeof":
-                if peek() == "(":
-                    eat("(")
-                    inner: list[str] = []
-                    depth = 1
-                    while depth:
-                        ntok = eat()
-                        if ntok == "(":
-                            depth += 1
+    def eat(t: str | None = None) -> str:
+        nonlocal pos
+        if pos >= len(tokens):
+            raise ParseFail("unexpected end")
+        got = tokens[pos]
+        if t is not None and got != t:
+            raise ParseFail(f"expected {t} got {got}")
+        pos += 1
+        return got
+
+    PREC = _PREC
+
+    def nud() -> Any:
+        t = eat()
+        if t == "sizeof":
+            if peek() == "(":
+                eat("(")
+                inner: list[str] = []
+                depth = 1
+                while depth:
+                    ntok = eat()
+                    if ntok == "(":
+                        depth += 1
+                        inner.append(ntok)
+                    elif ntok == ")":
+                        depth -= 1
+                        if depth:
                             inner.append(ntok)
-                        elif ntok == ")":
-                            depth -= 1
-                            if depth:
-                                inner.append(ntok)
-                        else:
-                            inner.append(ntok)
-                    return ("num", _sizeof_concrete(inner, self.st))
-                name = eat()
-                return ("num", _sizeof_concrete([name], self.st))
-            if t == "(":
-                if peek() == "{":
-                    raise ParseFail("statement-expr unencoded")
-                if peek() in _CAST_WORDS:
-                    while peek() and peek() != ")":
-                        if peek() not in _CAST_WORDS and peek() != "*":
-                            break
-                        eat()
-                    eat(")")
-                    return parse(110)
-                v = parse(0)
+                    else:
+                        inner.append(ntok)
+                return ("num", _sizeof_concrete(inner, _need_st(st)))
+            name = eat()
+            return ("num", _sizeof_concrete([name], _need_st(st)))
+        if t == "(":
+            if peek() == "{":
+                raise ParseFail("statement-expr unencoded")
+            if peek() in _CAST_WORDS:
+                while peek() and peek() != ")":
+                    if peek() not in _CAST_WORDS and peek() != "*":
+                        break
+                    eat()
                 eat(")")
-                return v
-            if t in ("-", "!", "~"):
-                return ("un", t, parse(110))
-            if t in ("++", "--"):
-                name = eat()
-                if not _is_ident(name):
-                    raise ParseFail(f"bad token {name}")
-                return ("pre", t, name)
-            if len(t) >= 3 and t.startswith("'") and t.endswith("'"):
-                return ("num", _char_lit_value(t))
-            if len(t) >= 2 and t.startswith('"') and t.endswith('"'):
-                return ("str", _string_lit_value(t))
-            if t.isdigit() or t.startswith("0x") or t.startswith("0X"):
-                return ("num", int(t, 0))
-            if _is_ident(t):
-                if t in ("_Generic", "offsetof"):
-                    raise ParseFail(f"{t} unencoded")
-                if peek() == "[":
-                    eat("[")
-                    idx = parse(0)
-                    eat("]")
-                    return ("idx", t, idx)
-                if peek() == "(":
-                    eat("(")
-                    args: list[Any] = []
-                    if peek() != ")":
-                        # minp 2: above comma, so `f(a, b)` is two args.
+                return parse(110)
+            v = parse(0)
+            eat(")")
+            return v
+        if t in ("-", "!", "~"):
+            return ("un", t, parse(110))
+        if t in ("++", "--"):
+            name = eat()
+            if not _is_ident(name):
+                raise ParseFail(f"bad token {name}")
+            return ("pre", t, name)
+        if len(t) >= 3 and t.startswith("'") and t.endswith("'"):
+            return ("num", _char_lit_value(t))
+        if len(t) >= 2 and t.startswith('"') and t.endswith('"'):
+            return ("str", _string_lit_value(t))
+        if t.isdigit() or t.startswith("0x") or t.startswith("0X"):
+            return ("num", int(t, 0))
+        if _is_ident(t):
+            if t in ("_Generic", "offsetof"):
+                raise ParseFail(f"{t} unencoded")
+            if peek() == "[":
+                eat("[")
+                idx = parse(0)
+                eat("]")
+                return ("idx", t, idx)
+            if peek() == "(":
+                eat("(")
+                args: list[Any] = []
+                if peek() != ")":
+                    # minp 2: above comma, so `f(a, b)` is two args.
+                    args.append(parse(2))
+                    while peek() == ",":
+                        eat(",")
                         args.append(parse(2))
-                        while peek() == ",":
-                            eat(",")
-                            args.append(parse(2))
-                    eat(")")
-                    return ("call", t, args)
-                if peek() in ("++", "--"):
-                    op = eat()
-                    return ("post", op, t)
-                return ("id", t)
-            raise ParseFail(f"bad token {t}")
-
-        def parse(minp: int) -> Any:
-            left = nud()
-            while peek() in PREC and PREC[peek()] >= minp:
+                eat(")")
+                return ("call", t, args)
+            if peek() in ("++", "--"):
                 op = eat()
-                right = parse(PREC[op] + 1)
-                left = ("bin", op, left, right)
-            if minp <= 5 and peek() == "?":
-                eat("?")
-                then_t = parse(0)
-                eat(":")
-                else_t = parse(5)
-                left = ("tern", left, then_t, else_t)
-            if minp <= 1 and peek() == ",":
-                eat(",")
-                right = parse(0)
-                left = ("comma", left, right)
-            return left
+                return ("post", op, t)
+            return ("id", t)
+        raise ParseFail(f"bad token {t}")
 
-        tree = parse(0)
-        if pos != len(tokens):
-            raise ParseFail(f"trailing {tokens[pos:]}")
-        return tree
+    def parse(minp: int) -> Any:
+        left = nud()
+        while peek() in PREC and PREC[peek()] >= minp:
+            op = eat()
+            right = parse(PREC[op] + 1)
+            left = ("bin", op, left, right)
+        if minp <= 5 and peek() == "?":
+            eat("?")
+            then_t = parse(0)
+            eat(":")
+            else_t = parse(5)
+            left = ("tern", left, then_t, else_t)
+        if minp <= 1 and peek() == ",":
+            eat(",")
+            right = parse(0)
+            left = ("comma", left, right)
+        return left
+
+    tree = parse(0)
+    if pos != len(tokens):
+        raise ParseFail(f"trailing {list(tokens[pos:])}")
+    return tree
+
+
+def _need_st(st: _St | None) -> _St:
+    if st is None:  # pragma: no cover - sizeof trees never reach the cache
+        raise ParseFail("sizeof needs state")
+    return st
+
+
+@lru_cache(maxsize=_MEMO)
+def _parse_expr_pure(src: str) -> Any:
+    """Parse tree of a sizeof-free expression; a pure function of `src`."""
+    return _parse_tokens(_tok(src.strip()), None)
 
 
 def _eval_cstr_copy(
@@ -845,26 +960,28 @@ def _eval_tree(tree: Any, st: _St) -> int:
         _eval_tree(tree[1], st)
         return _eval_tree(tree[2], st)
     if kind == "bin":
-        op, l, r = tree[1], tree[2], tree[3]
+        op, lhs, rhs = tree[1], tree[2], tree[3]
         if op == "&&":
-            lv = _eval_tree(l, st)
+            lv = _eval_tree(lhs, st)
             if not _truth(lv):
                 return 0
-            return 1 if _truth(_eval_tree(r, st)) else 0
+            return 1 if _truth(_eval_tree(rhs, st)) else 0
         if op == "||":
-            lv = _eval_tree(l, st)
+            lv = _eval_tree(lhs, st)
             if _truth(lv):
                 return 1
-            return 1 if _truth(_eval_tree(r, st)) else 0
-        a = _eval_tree(l, st)
-        b = _eval_tree(r, st)
-        u = _tree_unsigned(l, st) or _tree_unsigned(r, st)
-        w = max(_tree_width(l, st), _tree_width(r, st))
+            return 1 if _truth(_eval_tree(rhs, st)) else 0
+        a = _eval_tree(lhs, st)
+        b = _eval_tree(rhs, st)
+        u = _tree_unsigned(lhs, st) or _tree_unsigned(rhs, st)
+        w = max(_tree_width(lhs, st), _tree_width(rhs, st))
         return _binop(a, op, b, u, w)
     raise ParseFail(f"bad tree {tree[:1]}")
 
 
 def _tree_unsigned(tree: Any, st: _St) -> bool:
+    if not st.unsigned:
+        return False  # nothing unsigned: every branch below is False
     if not isinstance(tree, tuple):
         return False
     kind = tree[0]
@@ -882,6 +999,8 @@ def _tree_unsigned(tree: Any, st: _St) -> bool:
 
 
 def _tree_width(tree: Any, st: _St) -> int:
+    if not st.wide:
+        return WIDTH  # every width below is st.bits (all WIDTH) or WIDTH
     if not isinstance(tree, tuple):
         return WIDTH
     kind = tree[0]
@@ -898,6 +1017,16 @@ def _tree_width(tree: Any, st: _St) -> int:
     if kind == "comma":
         return _tree_width(tree[2], st)
     return WIDTH
+
+
+def _tdiv(a: int, b: int) -> int:
+    """C99 integer division (truncates toward zero), exact at any width.
+
+    `int(a / b)` goes through a double and is wrong once the quotient
+    exceeds 2**53 (64-bit operands); the C++ engine divides exactly.
+    """
+    q = abs(a) // abs(b)
+    return q if (a < 0) == (b < 0) else -q
 
 
 def _binop(a: int, op: str, b: int, unsigned: bool = False, width: int = WIDTH) -> int:
@@ -967,11 +1096,11 @@ def _binop(a: int, op: str, b: int, unsigned: bool = False, width: int = WIDTH) 
                 raise _UB("INT-DIV-ZERO")
             if a == lo and b == -1:
                 raise _UB("INT-SIGNED-OVF")
-            return int(a / b)
+            return _tdiv(a, b)
         if op == "%":
             if b == 0:
                 raise _UB("INT-DIV-ZERO")
-            q = int(a / b)
+            q = _tdiv(a, b)
             return a - q * b
         if op == "<<":
             if b < 0 or b >= 64:
@@ -1067,11 +1196,11 @@ def _binop(a: int, op: str, b: int, unsigned: bool = False, width: int = WIDTH) 
             raise _UB("INT-DIV-ZERO")
         if a == INT_MIN and b == -1:
             raise _UB("INT-SIGNED-OVF")
-        return int(a / b)  # C99 toward zero
+        return _tdiv(a, b)  # C99 toward zero
     if op == "%":
         if b == 0:
             raise _UB("INT-DIV-ZERO")
-        q = int(a / b)
+        q = _tdiv(a, b)
         return a - q * b
     if op == "<<":
         if b < 0 or b >= WIDTH:

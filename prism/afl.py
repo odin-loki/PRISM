@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import os
 import shutil
 import subprocess
@@ -56,7 +58,7 @@ def run_afl_fuzz(
     if not afl or fn.kind != "SCALAR":
         return None
 
-    base = dict(
+    base: dict[str, Any] = dict(
         stage="fuse", file=fn.file, function=fn.name, line=fn.line,
         cls="", strength=laws.STRENGTH_FINDS,
     )
