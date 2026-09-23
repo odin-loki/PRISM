@@ -74,7 +74,12 @@ A missing tool is `NOTRUN`. It is never a clean result. `PROVED` and
 is `HYPOTHESIS`. A Dafny-style proof under `requires` is `PROVED-ASSUMING`.
 A linter that ran and said nothing is `UNKNOWN`, not clean.
 Executing scanned code requires `--allow-exec`; without it that step is
-`NOTRUN`.
+`NOTRUN`. `PROVED-CERTIFIED` (an UNSAT result checked by a verified
+checker) is never merged with a weaker verdict either.
+
+These laws are proved in Lean 4 (`proofs/`) and the C++ and Python verdict
+code is tested entry by entry against the proved model; see
+[docs/VERDICTS.md](docs/VERDICTS.md) for the full lattice.
 
 See [docs/PLAN.md](docs/PLAN.md) and [docs/MINED.md](docs/MINED.md).
 
