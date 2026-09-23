@@ -79,13 +79,16 @@ with `--tool NAME=PATH`). A tool that is not installed is reported as
 | `--repair-rounds N` | budget for the repair stage |
 | `--tool NAME=PATH` | use this binary for an adapter (searched before `PATH`) |
 | `--allow-exec` | allow steps that run code from the scanned tree (section 6) |
+| `--certified` | the `pir` stage asks for a checked certificate of every verification condition; a function whose VCs are all certified is `PROVED-CERTIFIED` (section 9) |
+| `--solver-cache DIR` | solver query cache and solve-time history (default `$XDG_CACHE_HOME/prism/solver`, else `~/.cache/prism/solver`) |
+| `--timeout S` | solver seconds per query (default 30) |
 | `--fail-on never\|defect\|gap` | exit-code policy for CI (section 5) |
 | `--resume` | reuse stages already `ok`/`NOTRUN` in `--out/stages.jsonl` |
 | `--gui` | open the Qt GUI (C++ build with `-DPRISM_QT=ON`) |
 
 The stages run in a fixed order (`--list-stages`): inventory, classify,
 lints, taint, thread, interval, warnings, cppcheck, pbsd, sanitize, optional,
-polyglot, esbmc, dafny, contracts, wp, bmc, harness, concolic, fuzz, diff,
+polyglot, esbmc, dafny, contracts, wp, bmc, pir, harness, concolic, fuzz, diff,
 rapid, muttest, ltl, llm, execute, repair, unify. What each one does is in
 [PLAN.md](PLAN.md#pipeline-order-is-the-method).
 
@@ -101,6 +104,8 @@ Everything lands in `--out` (default `prism-out/`):
 | `stages.jsonl` | one line per stage as it finishes; `--resume` reads it |
 | `functions.json` | the inventory: every function and its class |
 | `taxonomy.json` | which defect classes were COVERED / PARTIAL / GAP |
+| `TRUSTED_BASE.md` | what a proof in this report depends on (a copy of [TRUSTED_BASE.md](TRUSTED_BASE.md); SARIF names it with its SHA-256) |
+| `VERDICTS.md` | the verdict definitions; every finding in `report.md` links its verdict here |
 
 ### Findings
 
@@ -118,18 +123,18 @@ In short:
 
 | verdict | reads as |
 |---|---|
-| [`PROVED-CERTIFIED`](VERDICTS.md#proved-certified) | proved, and the solver's answer was checked by a verified proof checker |
-| [`PROVED-UNBOUNDED`](VERDICTS.md#proved-unbounded) | the encoded properties hold for every input and every number of loop iterations |
-| [`PROVED`](VERDICTS.md#proved) | the encoded properties hold; loops closed within the bound |
-| [`PROVED-ASSUMING`](VERDICTS.md#proved-assuming) | proved under an explicit precondition (`requires`) you wrote |
-| [`BOUNDED`](VERDICTS.md#bounded) | nothing found within the unwind bound. **Not a proof** (Law 2) |
-| [`FAILED`](VERDICTS.md#failed) | a counterexample exists; see `counterexample` |
-| [`NEEDS-HARNESS`](VERDICTS.md#needs-harness) | PRISM will not guess preconditions (pointer parameters, Law 6) or cannot model a construct yet |
-| [`UNKNOWN`](VERDICTS.md#unknown), [`TIMEOUT`](VERDICTS.md#timeout), [`ERROR`](VERDICTS.md#error) | the tool ran and did not conclude |
-| [`NOTRUN`](VERDICTS.md#notrun) | the tool or step did not run (missing tool, or `--allow-exec` not given). Never a clean result (Law 1) |
-| [`CRASH`](VERDICTS.md#crash), [`SANFAIL`](VERDICTS.md#sanfail) | a fuzzer or sanitizer observed the defect |
-| [`CLEAN`](VERDICTS.md#clean) | a fuzzer found nothing. **Not a proof** (Law 3) |
-| [`HYPOTHESIS`](VERDICTS.md#hypothesis), [`READS`](VERDICTS.md#reads) | LLM output: a lead to check, never evidence (Law 4) |
+| [`PROVED-CERTIFIED`](VERDICTS.md#verdict-proved-certified) | proved, and the solver's answer was checked by a verified proof checker |
+| [`PROVED-UNBOUNDED`](VERDICTS.md#verdict-proved-unbounded) | the encoded properties hold for every input and every number of loop iterations |
+| [`PROVED`](VERDICTS.md#verdict-proved) | the encoded properties hold; loops closed within the bound |
+| [`PROVED-ASSUMING`](VERDICTS.md#verdict-proved-assuming) | proved under an explicit precondition (`requires`) you wrote |
+| [`BOUNDED`](VERDICTS.md#verdict-bounded) | nothing found within the unwind bound. **Not a proof** (Law 2) |
+| [`FAILED`](VERDICTS.md#verdict-failed) | a counterexample exists; see `counterexample` |
+| [`NEEDS-HARNESS`](VERDICTS.md#verdict-needs-harness) | PRISM will not guess preconditions (pointer parameters, Law 6) or cannot model a construct yet |
+| [`UNKNOWN`](VERDICTS.md#verdict-unknown), [`TIMEOUT`](VERDICTS.md#verdict-timeout), [`ERROR`](VERDICTS.md#verdict-error) | the tool ran and did not conclude |
+| [`NOTRUN`](VERDICTS.md#verdict-notrun) | the tool or step did not run (missing tool, or `--allow-exec` not given). Never a clean result (Law 1) |
+| [`CRASH`](VERDICTS.md#verdict-crash), [`SANFAIL`](VERDICTS.md#verdict-sanfail) | a fuzzer or sanitizer observed the defect |
+| [`CLEAN`](VERDICTS.md#verdict-clean) | a fuzzer found nothing. **Not a proof** (Law 3) |
+| [`HYPOTHESIS`](VERDICTS.md#verdict-hypothesis), [`READS`](VERDICTS.md#verdict-reads) | LLM output: a lead to check, never evidence (Law 4) |
 
 Two things to keep in mind:
 
@@ -264,3 +269,27 @@ PRISM_BIN=build/prism python tools/csmith_soundness.py -n 300   # random program
 
 The metric definitions, the current numbers and every known wrong proof with
 a reproducer are in [CONFORMANCE.md](CONFORMANCE.md).
+
+### Certified mode
+
+A plain `PROVED` trusts the solver that answered. With `--certified`, the
+`pir` stage (Clang → LLVM IR → PIR, [PIR.md](PIR.md)) asks for more: every
+verification condition of a function (each inserted property and, for a
+loop, the unwinding assertion) is bit-blasted to CNF, CaDiCaL writes an LRAT
+proof that the CNF is unsatisfiable, and the formally verified checker
+`cake_lpr` must accept it. Only when every VC of the function passes is the
+function `PROVED-CERTIFIED`, with `extra.certificate = "checked"`,
+`extra.certificate_info` and `extra.cnf_sha256` (one hash per VC).
+
+```
+python scripts/fetch_deps.py --tool cadical --tool cake_lpr   # once
+./build/prism src/ --stage inventory,classify,pir --certified
+```
+
+Anything short of that stays `PROVED` and `extra.certify_note` says why (a
+checker or CaDiCaL not installed is named as `NOTRUN` there). `BOUNDED` and
+`PROVED-UNBOUNDED` are never certified. A certificate is about the CNF: what
+it still trusts (Clang, the PIR encoder, Z3's bit-blaster) is listed in the
+`TRUSTED_BASE.md` that every run writes next to the report.
+`python tools/conformance.py --certified` measures how many loop-free
+functions of the suite become `PROVED-CERTIFIED`.

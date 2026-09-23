@@ -3,8 +3,9 @@
 This file says what a PRISM proof verdict depends on. If a component listed
 here is wrong, PRISM can print a proof that is false. Everything not listed
 is quarantined: it can be buggy, but it cannot on its own make PRISM claim a
-proof. Roadmap Parts 3.2, 5 and 8.3 require this file, and it is meant to be
-shipped with every report.
+proof. Roadmap Parts 3.2, 5 and 8.3 require this file. **Every PRISM run
+writes a copy of it next to `report.md`** (both engines), `report.md` links to
+it, and SARIF `runs[0].properties.trustedBase` names it with its SHA-256.
 
 It describes the code **as it is today**. Where the roadmap plans something
 that does not exist yet (the Lean-proved bit-blaster, the Lean verdict module,
@@ -12,6 +13,36 @@ per-run translation validation), the file says "planned" and lists what stands
 in its place now.
 
 ## 1. What `PROVED-CERTIFIED` depends on today
+
+`PROVED-CERTIFIED` is emitted by one stage, `pir`, and only with
+`--certified` (`Config.certified`). The pir stage turns each function into
+verification conditions (VCs): one per inserted property (signed overflow,
+division, shifts, uninitialised reads, clz/ctz of zero, `assert`, poison
+flags), plus the unwinding assertion when the function has a loop. Every VC
+goes through the solver library (`prism::solver::solve`: the portfolio and the
+query cache). A function becomes `PROVED-CERTIFIED` only when:
+
+- it would be plain `PROVED` (no property VC satisfiable, and every loop
+  closes within `--unwind`, shown by the unwinding assertion), **and**
+- **every** one of its VCs, each property and the unwinding assertion, came
+  back `certified` by the chain below.
+
+The finding then carries `extra.certificate = "checked"` (the verdict audit
+admits `PROVED-CERTIFIED` from the `pir` stage only with it),
+`extra.certificate_info` (one entry per VC: solver build, LRAT steps, checker
+build, CNF hash) and `extra.cnf_sha256` (one hash per VC, comma-separated).
+If any VC is not certified, the function stays `PROVED` and
+`extra.certify_note` names the first VC that was not certified and why.
+`BOUNDED` and `PROVED-UNBOUNDED` are never certified: the k-induction step is
+answered by Z3 in-process, and the note says so. A function with no VCs at
+all (no property was inserted and no loop cut is reachable, e.g. unsigned
+arithmetic only) is `PROVED-CERTIFIED` **vacuously**: no solver answer is
+trusted, so the claim rests on T1 alone, a subset of what every other
+certified claim trusts. It says so: `extra.certificate_vcs = "0"` and
+`certificate_info` begins `0 VCs:`. Every certified finding carries
+`extra.certificate_vcs`, the number of checked certificates. When `--allow-exec` translation
+validation later disagrees with a certified function, the function becomes
+`ERROR` and the certificate is dropped.
 
 The solver library (`include/prism/solver.hpp`, `src/prism/solver/`) returns
 `certified = true`, which the verdict module reports as `PROVED-CERTIFIED`,
@@ -61,7 +92,7 @@ bit-blasts the formula again, requires the new CNF to hash to the stored
 
 | # | Component | Why it is trusted | Mitigation today | Roadmap target |
 |---|---|---|---|---|
-| T1 | The formula: Clang, the LLVM→PIR translation, property instrumentation and the PIR encoder that produce the Z3 bitvector VC (Parts 2 and 5.3; the `pir` stage) | If the VC does not mean "the property is violated", nothing downstream can notice | Out of this library's scope. It is described by the `pir` stage. This library only checks SAT models against the VC. Replaying a counterexample on the real program is the caller's job. | Encoder soundness proved in Lean (5.3), LLVM→PIR refinement proof (8.2), per-run translation validation (2.4) |
+| T1 | The formula: Clang, the LLVM→PIR translation, property instrumentation and the PIR encoder that produce the Z3 bitvector VC (Parts 2 and 5.3; the `pir` stage, `src/prism/pir/`). A certificate says "this CNF is unsatisfiable", never "this CNF means the C function is safe". | If the VC does not mean "the property is violated", nothing downstream can notice | The pir stage (docs/PIR.md): named `UNENCODED` constructs are `NEEDS-HARNESS`, never proved; with `--allow-exec` every verdict is translation-validated against `lli` on 64 inputs; the conformance suite (`tools/conformance.py`, 0 wrong proofs required) and the differential oracle against the bmc stage. This library only checks SAT models against the VC. | Encoder soundness proved in Lean (5.3), LLVM→PIR refinement proof (8.2), per-run translation validation (2.4) |
 | T2 | `Z3_translate` into the fresh context | Copies the term. A bug would change the formula. | Z3 is widely used. SAT answers are validated on the **original** term in the caller's context. | Replaced by the Lean-proved bit-blaster reading the VC directly (5.4) |
 | T3 | **Z3's `simplify`, `bit-blast` and `tseitin-cnf` tactics** (Z3 4.13.4 vendored in `third_party/z3`) | These are the bit-blaster. If they produce a CNF that is UNSAT while the formula is SAT, cake_lpr will correctly certify the wrong CNF. **This is the largest unproved part of the certified path.** | (a) Every SAT model found on the CNF, by CaDiCaL, Kissat or ProbSAT, is mapped back through the variable map and evaluated on the original formula in Z3, so a bad bit-blast shows up as a rejected model. (b) In certified mode, CaDiCaL's run on the CNF is always waited for, even when Z3 answered UNSAT first. If CaDiCaL then finds a model that validates, the counterexample wins and the note says `DISAGREEMENT:`. If its model does not validate, the result is not certified. (c) The doctest suite checks the variable map on known models. None of these is a proof. | A bit-blaster proved correct in Lean, reusing `bv_decide` (roadmap 5.4). That removes T2 and T3. |
 | T4 | PRISM's clause reader and DIMACS writer (`bitblast_fresh`, `to_dimacs`, about 80 lines) | A dropped or changed clause would change the CNF | Unit tests: DIMACS round trip, and the kept CNF equals a fresh bit-blast. The reader accepts only `Or` of literals over Boolean constants and refuses anything else. | Emitted by the Lean bit-blaster (5.4) |
@@ -69,7 +100,7 @@ bit-blasts the formula again, requires the new CNF to hash to the stored
 | T6 | The CNF file on disk between writing and checking | cake_lpr must check the exact CNF | SHA-256 recorded when the CNF is written and verified again after the checker runs. The file sits in a private temp directory. | Same |
 | T7 | PRISM's SHA-256 (`util.cpp`) | Identifies the exact CNF and the cache entries | Tested against the FIPS 180-2 vectors | Same |
 | T8 | The process runner and the verdict-line match (`detail::run`, `check_lrat`) | A wrong parse could accept a rejection | Exact whole-line match on `s VERIFIED UNSAT`. The exit code is ignored. A test runs a tampered proof. | Same |
-| T9 | `verdict_status` / the verdict module mapping `certified` to `PROVED-CERTIFIED` | Decides the word printed | The solver library uses a local `kProvedCertified` constant until the integrator switches it to `laws::PROVED_CERTIFIED`. `certified` is set in exactly two places, both straight after `run_checkers` accepted. | Verdict module in Lean, compiled into PRISM (5.1) |
+| T9 | `verdict_status`, the pir stage's `certify` step (`src/prism/pir/encode.cpp`) and the verdict audit, which together decide the word printed | Decides the word printed | The status is `laws::PROVED_CERTIFIED`, the verdict module's own spelling. `certified` is set in exactly two places in the solver, both straight after `run_checkers` accepted. The pir stage writes `PROVED-CERTIFIED` only when every VC of the function is certified, and the verdict audit (`laws::audit_report`, proved in `proofs/Prism/Verdict.lean`) demotes any `PROVED-CERTIFIED` without `certificate = "checked"` or from a stage that is not a solver stage. | Verdict module in Lean, compiled into PRISM (5.1) |
 | T10 | The C++ compiler that builds PRISM, the Z3 library build, the hardware and the OS | Everything runs on them | Out of scope. They are listed so the reader knows they are assumed. | Clang and GCC cross-builds, reproducible builds (8.3) |
 
 ### Not trusted (quarantined) on the certified path
@@ -107,7 +138,7 @@ now. "Planned" is what the roadmap will add.
 
 | Trusted component | Mitigation (planned, roadmap 8.3) | Status today |
 |---|---|---|
-| Clang (C/C++ to LLVM IR) | Pinned release. Per-run concrete execution check of the LLVM IR against the source build. Csmith and YARPGen random testing. Conformance suite on every upgrade. | Planned (Part 2). Today's C/C++ front end is `src/prism/cparse.cpp` plus the adapters, and none of it is proved. |
+| Clang (C/C++ to LLVM IR) | Pinned release. Per-run concrete execution check of the LLVM IR against the source build. Csmith and YARPGen random testing. Conformance suite on every upgrade. | The `pir` stage (the only stage that can emit `PROVED-CERTIFIED`) lowers with the Clang/LLVM found on the machine (18 on the reference machine; the version is in `extra.frontend`). With `--allow-exec` each verdict is translation-validated against `lli`. Not proved. The older stages use `src/prism/cparse.cpp` plus the adapters, none of it proved. |
 | Lean kernel | Small and widely audited. Every proof rechecked by an independent checker (lean4checker and a second implementation such as nanoda). | No Lean proofs exist in the repository yet (Part 5). |
 | Lean compiler (for the verdict module) | Differential property testing of the compiled module against the Lean model with rapidcheck | Planned (5.1). Today the verdict module is plain C++ (`src/prism/laws.cpp`, `include/prism/laws.hpp`). |
 | The C++ compiler that builds PRISM | Build with Clang and GCC and cross-check results on the conformance suite. Reproducible builds. | CI builds with Clang only (`.github/workflows/ci.yml`) |

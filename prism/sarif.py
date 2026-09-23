@@ -16,7 +16,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from prism import __version__, laws
+from prism import __version__, laws, shipdocs
 from prism.models import Finding, RunReport
 
 SARIF_SCHEMA = "https://json.schemastore.org/sarif-2.1.0.json"
@@ -122,6 +122,8 @@ def to_sarif(report: RunReport) -> dict[str, Any]:
                 1 for s in report.stages for f in s.findings
                 if f.status == laws.PROVED_CERTIFIED
             ),
+            # The trusted base shipped next to this report (roadmap 3.2 / 8.3).
+            "trustedBase": {"file": shipdocs.TRUSTED_BASE_FILE, "sha256": shipdocs.trusted_base_sha256()},
         },
     }
     if base is not None:

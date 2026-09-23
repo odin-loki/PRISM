@@ -3,6 +3,7 @@
 
 #include "prism/pipeline.hpp"
 #include "prism/laws.hpp"
+#include "prism/shipdocs.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -147,7 +148,11 @@ std::string to_sarif(const RunReport& report) {
         {"invocations",
          ojson::array({{{"executionSuccessful", !crashed}, {"toolExecutionNotifications", notes}}})},
         {"results", results},
-        {"properties", {{"confidence", report.confidence}, {"certified", certified}}},
+        // The trusted base shipped next to this report (roadmap 3.2 / 8.3).
+        {"properties",
+         {{"confidence", report.confidence},
+          {"certified", certified},
+          {"trustedBase", {{"file", std::string(TRUSTED_BASE_FILE)}, {"sha256", trusted_base_sha256()}}}}},
     };
     if (!report.root.empty()) {
         std::error_code ec;
