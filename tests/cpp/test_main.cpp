@@ -4907,3 +4907,583 @@ TEST_CASE("pir: clang round trip on tests/pir (skips without clang/opt)") {
     CHECK(frontend);
 }
 #endif
+// ---------------------------------------------------------------------------
+// Solver library (roadmap 3.1 portfolio + cache, 3.2 certified mode, 3.3 SLS).
+// Tests that need CaDiCaL / cake_lpr look them up the way solve() does
+// (~/.prism/tools/<name>/<sha>/ then PATH); without them they assert the
+// honest degradation (certified=false, NOTRUN note) instead.
+// ---------------------------------------------------------------------------
+#include "prism/solver.hpp"
+
+#include <cstdio>
+#include <random>
+
+namespace {
+
+namespace ps = prism::solver;
+
+struct SolverTmp {
+    std::filesystem::path dir;
+    SolverTmp() {
+        static int n = 0;
+        dir = std::filesystem::temp_directory_path() /
+              ("prism-solver-test-" + std::to_string(std::random_device{}()) + "-" + std::to_string(n++));
+        std::filesystem::remove_all(dir);
+        std::filesystem::create_directories(dir);
+    }
+    ~SolverTmp() {
+        std::error_code ec;
+        std::filesystem::remove_all(dir, ec);
+    }
+    std::filesystem::path script(const std::string& rel, const std::string& body) {
+        auto p = dir / rel;
+        std::filesystem::create_directories(p.parent_path());
+        std::ofstream(p) << body;
+        std::filesystem::permissions(p, std::filesystem::perms::owner_all);
+        return p;
+    }
+};
+
+ps::SolveOptions solver_opts(const SolverTmp& t) {
+    ps::SolveOptions o;
+    o.cache_dir = (t.dir / "cache").string();
+    o.timeout_s = 20;
+    return o;
+}
+
+std::string solver_read(const std::filesystem::path& p) {
+    std::ifstream in(p, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+
+bool have_cert_tools() {
+    ps::SolveOptions o;
+    return ps::find_tool("cadical", o) && ps::find_tool("cake_lpr", o);
+}
+
+}  // namespace
+
+TEST_CASE("solver: sha256 matches the FIPS 180-2 vectors") {
+    CHECK(ps::sha256_hex("") == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+    CHECK(ps::sha256_hex("abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    CHECK(ps::sha256_hex(std::string(1000, 'a')) ==
+          "41edece42d63e8d9bf515a9ba6932e1c20cbc9f5a5d134645adb5db1b9737ea3");
+}
+
+TEST_CASE("solver: DIMACS round trip and malformed input") {
+    ps::Cnf c;
+    c.num_vars = 3;
+    c.clauses = {{1, -2}, {2, 3}, {-1}};
+    auto back = ps::parse_dimacs(ps::to_dimacs(c));
+    REQUIRE(back);
+    CHECK(back->num_vars == 3);
+    CHECK(back->clauses == c.clauses);
+    std::string why;
+    CHECK_FALSE(ps::parse_dimacs("p cnf 2 1\n1 3 0\n", &why));
+    CHECK(why.find("range") != std::string::npos);
+    CHECK_FALSE(ps::parse_dimacs("p cnf 2 2\n1 0\n", &why));
+    CHECK_FALSE(ps::parse_dimacs("1 2 0\n", &why));
+    auto vals = ps::parse_sat_values("s SATISFIABLE\nv 1 -2\nv 3 0\n", 3);
+    REQUIRE(vals);
+    CHECK((*vals)[1] == 1);
+    CHECK((*vals)[2] == 0);
+    CHECK((*vals)[3] == 1);
+    CHECK_FALSE(ps::parse_sat_values("s SATISFIABLE\nv 1 -2\n", 3));  // no terminating 0
+}
+
+TEST_CASE("solver: ProbSAT finds assignments and never claims unsat") {
+    ps::Cnf sat;
+    sat.num_vars = 4;
+    sat.clauses = {{1, 2}, {-1, 3}, {-3, 4}, {-4, -2}, {2, 3}};
+    ps::SlsOptions so;
+    so.max_flips = 100000;
+    auto r = ps::probsat(sat, so);
+    REQUIRE(r.found);
+    CHECK(ps::assignment_satisfies(sat, r.assignment));
+    ps::Cnf unsat;
+    unsat.num_vars = 2;
+    unsat.clauses = {{1, 2}, {-1, 2}, {1, -2}, {-1, -2}};
+    so.max_flips = 20000;
+    auto u = ps::probsat(unsat, so);
+    CHECK_FALSE(u.found);  // "not found" is all it can say
+    ps::Cnf empty_clause;
+    empty_clause.num_vars = 1;
+    empty_clause.clauses = {{}};
+    CHECK_FALSE(ps::probsat(empty_clause, so).found);
+}
+
+// The portfolio's process runner is POSIX (posix_spawn); roadmap D7.
+#if defined(PRISM_HAS_Z3) && !defined(_WIN32)
+TEST_CASE("solver: features, certifiability and query normalisation") {
+    z3::context c;
+    auto x = c.bv_const("x", 8), y = c.bv_const("y", 8);
+    auto f = z3::ult(x, y) && (x * y == c.bv_val(12, 8));
+    auto ft = ps::features(f);
+    CHECK(ft.max_bv_width == 8);
+    CHECK(ft.bv_mul_div);
+    CHECK(ft.logic() == "QF_BV");
+    CHECK(ps::not_certifiable_reason(f).empty());
+    auto a = c.constant("m", c.array_sort(c.bv_sort(8), c.bv_sort(8)));
+    CHECK(ps::not_certifiable_reason(z3::select(a, x) == y).find("arrays") != std::string::npos);
+    auto fx = c.fpa_const("fx", 8, 24);
+    CHECK(ps::not_certifiable_reason(fx == fx).find("floating") != std::string::npos);
+    auto g = c.function("g", c.bv_sort(8), c.bv_sort(8));
+    CHECK(ps::not_certifiable_reason(g(x) == y).find("uninterpreted") != std::string::npos);
+    CHECK(ps::not_certifiable_reason(c.int_const("i") > 0).find("arithmetic") != std::string::npos);
+    // Renaming constants does not change the hash; changing the formula does.
+    auto p = c.bv_const("p", 8), q = c.bv_const("q", 8);
+    auto f2 = z3::ult(p, q) && (p * q == c.bv_val(12, 8));
+    CHECK(ps::query_hash(c, f) == ps::query_hash(c, f2));
+    CHECK(ps::query_hash(c, f) != ps::query_hash(c, z3::ult(x, y) && (x * y == c.bv_val(13, 8))));
+    std::vector<std::string> canon;
+    ps::normalized_query(c, f, &canon);
+    CHECK(canon.size() == 2);
+}
+
+TEST_CASE("solver: model validation accepts true models and rejects bogus ones") {
+    z3::context c;
+    auto x = c.bv_const("x", 8);
+    auto b = c.bool_const("b");
+    auto f = (x * c.bv_val(3, 8) == c.bv_val(21, 8)) && b;
+    std::string why;
+    CHECK(ps::validate_model(c, f, {{"x", "#x07"}, {"b", "true"}}, &why));
+    CHECK(ps::validate_model(c, f, {{"x", "(_ bv7 8)"}, {"b", "true"}}, &why));
+    CHECK(ps::validate_model(c, f, {{"x", "#b00000111"}, {"b", "true"}, {"unrelated", "#x01"}}, &why));
+    CHECK_FALSE(ps::validate_model(c, f, {{"x", "#x08"}, {"b", "true"}}, &why));
+    CHECK(why.find("does not satisfy") != std::string::npos);
+    CHECK_FALSE(ps::validate_model(c, f, {{"x", "#x7"}, {"b", "true"}}, &why));  // 4 bits for 8
+    CHECK(why.find("malformed") != std::string::npos);
+    CHECK_FALSE(ps::validate_model(c, f, {{"x", "(bvadd #x07 #x00)"}, {"b", "true"}}, &why));
+}
+
+TEST_CASE("solver: bit-blast keeps a variable map back to the bitvectors") {
+    z3::context c;
+    auto x = c.bv_const("x", 8), y = c.bv_const("y", 4);
+    auto f = (x * c.bv_val(3, 8) == c.bv_val(21, 8)) && (z3::zext(y, 4) + x == c.bv_val(9, 8));
+    std::string why;
+    auto cnf = ps::bitblast(c, f, &why);
+    REQUIRE_MESSAGE(cnf, why);
+    REQUIRE(cnf->symbols.size() == 2);
+    CHECK(cnf->symbols[0].width + cnf->symbols[1].width == 12);
+    ps::SlsOptions so;
+    so.max_flips = 2000000;
+    so.seed = 7;
+    auto r = ps::probsat(*cnf, so);
+    REQUIRE(r.found);
+    auto m = ps::model_from_assignment(*cnf, r.assignment);
+    CHECK(m["x"] == "#x07");
+    CHECK(m["y"] == "#x2");
+    CHECK(ps::validate_model(c, f, m, &why));
+    // Decided goals: the empty clause, or no clauses at all.
+    auto dead = ps::bitblast(c, x != x, &why);
+    REQUIRE(dead);
+    REQUIRE(dead->clauses.size() == 1);
+    CHECK(dead->clauses[0].empty());
+    CHECK_FALSE(ps::bitblast(c, c.int_const("i") > 0, &why));
+}
+
+TEST_CASE("solver: sat answer is a validated counterexample; unsat is plain PROVED") {
+    SolverTmp t;
+    z3::context c;
+    auto x = c.bv_const("x", 8);
+    auto o = solver_opts(t);
+    auto s = ps::solve(c, x * c.bv_val(3, 8) == c.bv_val(21, 8), o);
+    REQUIRE(s.kind == ps::SolveResult::Sat);
+    CHECK_FALSE(s.winner.empty());
+    CHECK(ps::validate_model(c, x * c.bv_val(3, 8) == c.bv_val(21, 8), s.model));
+    CHECK(ps::verdict_status(s) == "FAILED");
+    CHECK_FALSE(s.certified);
+    // x < 255 (unsigned) and not (x + 1 > x): impossible without wrap-around.
+    auto u = ps::solve(c, z3::ult(x, c.bv_val(255, 8)) && !z3::ugt(x + 1, x), o);
+    REQUIRE(u.kind == ps::SolveResult::Unsat);
+    CHECK_FALSE(u.certified);  // not requested
+    CHECK(ps::verdict_status(u) == "PROVED");
+    CHECK(u.query_hash.size() == 64);
+    CHECK(std::filesystem::exists(std::filesystem::path(o.cache_dir) / "solve_times.json"));
+}
+
+TEST_CASE("solver: the scheduler gives a historic winner a head start") {
+    SolverTmp t;
+    z3::context c;
+    auto x = c.bv_const("x", 8);
+    auto o = solver_opts(t);
+    o.use_cache = false;  // same query twice, solved twice
+    auto f = x * c.bv_val(3, 8) == c.bv_val(21, 8);
+    auto first = ps::solve(c, f, o);
+    REQUIRE(first.kind == ps::SolveResult::Sat);
+    CHECK(first.note.find("leads by") == std::string::npos);  // no history yet
+    auto second = ps::solve(c, f, o);
+    REQUIRE(second.kind == ps::SolveResult::Sat);
+    CHECK(second.note.find("scheduler: " + first.winner + " leads by") != std::string::npos);
+    CHECK(ps::validate_model(c, f, second.model));
+}
+
+TEST_CASE("solver: cache hit and miss") {
+    SolverTmp t;
+    z3::context c;
+    auto x = c.bv_const("x", 16), y = c.bv_const("y", 16);
+    auto f = (x ^ y) == c.bv_val(0x5a5a, 16) && z3::ugt(x, c.bv_val(1000, 16));
+    auto o = solver_opts(t);
+    auto a = ps::solve(c, f, o);
+    REQUIRE(a.kind == ps::SolveResult::Sat);
+    CHECK_FALSE(a.cache_hit);
+    auto b = ps::solve(c, f, o);
+    REQUIRE(b.kind == ps::SolveResult::Sat);
+    CHECK_MESSAGE(b.cache_hit, b.note);
+    CHECK(ps::validate_model(c, f, b.model));
+    // A renamed copy is the same normalised query: a hit, with the model
+    // mapped back to the new names.
+    auto p = c.bv_const("p", 16), q = c.bv_const("q", 16);
+    auto g = (p ^ q) == c.bv_val(0x5a5a, 16) && z3::ugt(p, c.bv_val(1000, 16));
+    auto h = ps::solve(c, g, o);
+    CHECK(h.cache_hit);
+    CHECK(h.model.count("p") == 1);
+    CHECK(ps::validate_model(c, g, h.model));
+    // A different query misses.
+    auto d = ps::solve(c, (x ^ y) == c.bv_val(0x5a5b, 16), o);
+    CHECK_FALSE(d.cache_hit);
+    // use_cache=false never hits.
+    o.use_cache = false;
+    CHECK_FALSE(ps::solve(c, f, o).cache_hit);
+    // A tampered Sat entry (model no longer satisfies) is ignored, not trusted.
+    o.use_cache = true;
+    auto entry = std::filesystem::path(o.cache_dir) / "queries" / a.query_hash.substr(0, 2) /
+                 (a.query_hash + ".json");
+    REQUIRE(std::filesystem::exists(entry));
+    {
+        std::ofstream(entry) << "{\"schema\":1,\"hash\":\"" << a.query_hash
+                             << "\",\"kind\":\"sat\",\"winner\":\"z3\",\"model\":{\"prism!v0\":\"#x0000\","
+                                "\"prism!v1\":\"#x0000\"}}";
+    }
+    auto e = ps::solve(c, f, o);
+    CHECK_FALSE(e.cache_hit);
+    CHECK(e.kind == ps::SolveResult::Sat);
+    CHECK(e.note.find("cache entry ignored") != std::string::npos);
+}
+
+TEST_CASE("solver: a cached plain unsat never satisfies a certified request") {
+    SolverTmp t;
+    z3::context c;
+    auto x = c.bv_const("x", 8);
+    auto f = z3::ult(x, c.bv_val(255, 8)) && !z3::ugt(x + 1, x);
+    auto o = solver_opts(t);
+    auto plain = ps::solve(c, f, o);
+    REQUIRE(plain.kind == ps::SolveResult::Unsat);
+    CHECK_FALSE(plain.certified);
+    CHECK(ps::solve(c, f, o).cache_hit);  // plain request: hit
+    o.certified = true;
+    auto cert = ps::solve(c, f, o);
+    CHECK_FALSE(cert.cache_hit);
+    CHECK(cert.kind == ps::SolveResult::Unsat);
+    CHECK(cert.note.find("uncertified") != std::string::npos);
+    if (have_cert_tools()) {
+        CHECK(cert.certified);
+        // Now a certified entry exists: the next certified request hits, and
+        // the stored proof is re-checked by cake_lpr, not trusted from disk.
+        auto again = ps::solve(c, f, o);
+        CHECK(again.cache_hit);
+        CHECK(again.certified);
+        CHECK(again.note.find("re-checked by cake_lpr") != std::string::npos);
+        // Corrupt the stored proof: the hit is refused and the query re-solved.
+        auto lrat = std::filesystem::path(o.cache_dir) / "certs" / (again.query_hash + ".lrat");
+        REQUIRE(std::filesystem::exists(lrat));
+        std::ofstream(lrat, std::ios::trunc) << "1 0 0\n";
+        auto third = ps::solve(c, f, o);
+        CHECK_FALSE(third.cache_hit);
+        CHECK_MESSAGE(third.note.find("failed re-check") != std::string::npos, third.note);
+        CHECK(third.certified);  // freshly certified again
+    } else {
+        CHECK_FALSE(cert.certified);
+    }
+}
+
+TEST_CASE("solver: certified unsat end to end (CaDiCaL LRAT checked by cake_lpr)") {
+    SolverTmp t;
+    z3::context c;
+    auto x = c.bv_const("x", 8), y = c.bv_const("y", 8);
+    // Unsigned 8-bit: x < 255 implies x + 1 > x (no wrap); and x*y is
+    // commutative. Both violation formulas are unsat.
+    auto f = (z3::ult(x, c.bv_val(255, 8)) && !z3::ugt(x + 1, x)) || (x * y != y * x);
+    auto o = solver_opts(t);
+    o.certified = true;
+    o.keep_artifacts = true;
+    o.work_dir = (t.dir / "work").string();
+    auto r = ps::solve(c, f, o);
+    REQUIRE(r.kind == ps::SolveResult::Unsat);
+    if (!have_cert_tools()) {
+        CHECK_FALSE(r.certified);
+        CHECK(r.note.find("NOTRUN") != std::string::npos);
+        return;
+    }
+    REQUIRE_MESSAGE(r.certified, r.note);
+    CHECK(ps::verdict_status(r) == ps::kProvedCertified);
+    CHECK(r.certificate_info.find("checked by cake_lpr") != std::string::npos);
+    CHECK(r.certificate_info.find("cnf sha256 " + ps::sha256_file(t.dir / "work" / "query.cnf")) !=
+          std::string::npos);
+    // The kept CNF parses and matches a fresh bit-blast exactly.
+    auto kept = ps::parse_dimacs(solver_read(t.dir / "work" / "query.cnf"));
+    REQUIRE(kept);
+    auto fresh = ps::bitblast(c, f);
+    REQUIRE(fresh);
+    CHECK(kept->clauses == fresh->clauses);
+    // Tampering with the proof makes the checker refuse it.
+    auto lrat = t.dir / "work" / "proof.lrat";
+    auto good = ps::check_lrat(*ps::find_tool("cake_lpr", o), t.dir / "work" / "query.cnf", lrat, 30);
+    CHECK(good.verified);
+    {
+        std::string txt = solver_read(lrat);
+        auto cut = txt.rfind('\n', txt.size() - 2);
+        std::ofstream(lrat, std::ios::trunc) << txt.substr(0, cut + 1);  // drop the empty-clause step
+    }
+    auto bad = ps::check_lrat(*ps::find_tool("cake_lpr", o), t.dir / "work" / "query.cnf", lrat, 30);
+    CHECK(bad.ran);
+    CHECK_FALSE(bad.verified);
+}
+
+TEST_CASE("solver: a goal the simplifier decides is still certified through the checker") {
+    if (!have_cert_tools()) return;
+    SolverTmp t;
+    z3::context c;
+    auto x = c.bv_const("x", 8);
+    auto o = solver_opts(t);
+    o.certified = true;
+    o.use_cache = false;
+    auto r = ps::solve(c, x != x, o);  // bit-blasts to the empty clause
+    REQUIRE(r.kind == ps::SolveResult::Unsat);
+    CHECK_MESSAGE(r.certified, r.note);
+    CHECK(r.certificate_info.find("checked by cake_lpr") != std::string::npos);
+}
+
+TEST_CASE("solver: a tampered LRAT proof never yields PROVED-CERTIFIED") {
+    if (!have_cert_tools()) return;  // needs the real CaDiCaL behind the wrapper
+    SolverTmp t;
+    ps::SolveOptions def;
+    auto real = ps::find_tool("cadical", def);
+    // A CaDiCaL wrapper that solves honestly, then corrupts the proof file.
+    t.script("tools/cadical/tampered/bin/cadical",
+             "#!/bin/sh\n\"" + real->path.string() + "\" \"$@\"\nrc=$?\n"
+             "for a in \"$@\"; do p=\"$a\"; done\n"
+             "case \"$p\" in *.lrat) sed -i '$d' \"$p\" ;; esac\nexit $rc\n");
+    z3::context c;
+    auto x = c.bv_const("x", 8);
+    auto f = z3::ult(x, c.bv_val(255, 8)) && !z3::ugt(x + 1, x);
+    auto o = solver_opts(t);
+    o.certified = true;
+    o.use_cache = false;
+    o.tool_dirs = {(t.dir / "tools").string()};
+    auto r = ps::solve(c, f, o);
+    CHECK(r.kind == ps::SolveResult::Unsat);  // the answer stands (plain PROVED) ...
+    CHECK_FALSE(r.certified);                 // ... but is never upgraded
+    CHECK(ps::verdict_status(r) == "PROVED");
+    CHECK(r.note.find("not certified: cake_lpr") != std::string::npos);
+}
+
+TEST_CASE("solver: a portfolio member's bogus SAT model is rejected") {
+    SolverTmp t;
+    auto fake = t.script("fake-solver", "#!/bin/sh\nprintf 'sat\\n((|x| #x00))\\n'\n");
+    z3::context c;
+    auto x = c.bv_const("x", 8);
+    auto o = solver_opts(t);
+    o.use_cache = false;
+    o.z3_in_process = false;
+    o.search_default_tools = false;
+    o.sls = false;
+    o.extra_solvers = {{"liar", {fake.string(), "{input}"}, ps::ExternalSolver::Input::Smt2}};
+    // Sat formula, wrong model: rejected, so no answer at all.
+    auto r = ps::solve(c, x == c.bv_val(5, 8), o);
+    CHECK(r.kind != ps::SolveResult::Sat);
+    CHECK(r.note.find("liar: SAT model rejected") != std::string::npos);
+    // Unsat formula: a SAT claim can never turn into FAILED.
+    auto u = ps::solve(c, x != x, o);
+    CHECK(u.kind != ps::SolveResult::Sat);
+    // With Z3 back in the portfolio the true answer still comes through.
+    o.z3_in_process = true;
+    auto z = ps::solve(c, x == c.bv_val(5, 8), o);
+    REQUIRE(z.kind == ps::SolveResult::Sat);
+    CHECK(z.model["x"] == "#x05");
+    // A DIMACS member whose assignment does not satisfy the CNF is refused too.
+    auto dfake = t.script("fake-sat", "#!/bin/sh\nprintf 's SATISFIABLE\\nv -1 -2 -3 -4 -5 -6 -7 -8 0\\n'\nexit 10\n");
+    o.z3_in_process = false;
+    o.extra_solvers = {{"dliar", {dfake.string(), "{input}"}, ps::ExternalSolver::Input::Dimacs}};
+    auto d = ps::solve(c, x == c.bv_val(5, 8), o);
+    CHECK(d.kind != ps::SolveResult::Sat);
+    CHECK(d.note.find("dliar") != std::string::npos);
+}
+
+TEST_CASE("solver: missing solvers degrade gracefully and are named") {
+    SolverTmp t;
+    z3::context c;
+    auto x = c.bv_const("x", 8);
+    auto o = solver_opts(t);
+    o.search_default_tools = false;  // nothing external can be found
+    auto r = ps::solve(c, x * x == c.bv_val(49, 8), o);
+    CHECK(r.kind == ps::SolveResult::Sat);
+    for (const char* m : {"bitwuzla", "cadical", "kissat"})
+        CHECK(std::find(r.missing.begin(), r.missing.end(), m) != r.missing.end());
+    CHECK(std::find(r.ran.begin(), r.ran.end(), "z3") != r.ran.end());
+    CHECK(r.note.find("missing: bitwuzla") != std::string::npos);
+    o.certified = true;
+    auto u = ps::solve(c, x != x, o);
+    CHECK(u.kind == ps::SolveResult::Unsat);
+    CHECK_FALSE(u.certified);
+    CHECK(u.note.find("cadical not found (NOTRUN)") != std::string::npos);
+    // No member at all: Unknown, never a clean result.
+    o.z3_in_process = false;
+    o.sls = false;
+    o.certified = false;
+    o.use_cache = false;
+    auto none = ps::solve(c, x != x, o);
+    CHECK(none.kind == ps::SolveResult::Unknown);
+    CHECK(none.note.find("NOTRUN") != std::string::npos);
+}
+
+TEST_CASE("solver: the ProbSAT walker answers alone but only with a counterexample") {
+    SolverTmp t;
+    z3::context c;
+    auto x = c.bv_const("x", 8), y = c.bv_const("y", 8);
+    auto o = solver_opts(t);
+    o.search_default_tools = false;
+    o.z3_in_process = false;
+    o.use_cache = false;
+    o.timeout_s = 10;
+    auto f = (x + y == c.bv_val(100, 8)) && z3::ugt(x, y);
+    auto r = ps::solve(c, f, o);
+    REQUIRE(r.kind == ps::SolveResult::Sat);
+    CHECK(r.winner == "sls");
+    CHECK(ps::validate_model(c, f, r.model));
+    o.timeout_s = 0.5;
+    auto u = ps::solve(c, z3::ult(x, c.bv_val(255, 8)) && !z3::ugt(x + 1, x), o);
+    // Never Unsat from local search: it runs out of budget (Unknown) or time.
+    CHECK((u.kind == ps::SolveResult::Timeout || u.kind == ps::SolveResult::Unknown));
+    CHECK(u.kind != ps::SolveResult::Unsat);
+}
+
+TEST_CASE("solver: non-certifiable formulas keep the plain answer and say why") {
+    SolverTmp t;
+    z3::context c;
+    auto x = c.bv_const("x", 8);
+    auto a = c.constant("mem", c.array_sort(c.bv_sort(8), c.bv_sort(8)));
+    auto f = z3::select(z3::store(a, x, c.bv_val(1, 8)), x) != c.bv_val(1, 8);
+    auto o = solver_opts(t);
+    o.certified = true;
+    auto r = ps::solve(c, f, o);
+    CHECK(r.kind == ps::SolveResult::Unsat);
+    CHECK_FALSE(r.certified);
+    CHECK(r.note.find("not certifiable: arrays") != std::string::npos);
+}
+
+TEST_CASE("solver: timeout is an answer of its own and cancels promptly") {
+    SolverTmp t;
+    z3::context c;
+    // Factor a 64-bit semiprime (two 32-bit primes): far beyond 0.3 s.
+    auto p = c.bv_const("p", 64), q = c.bv_const("q", 64);
+    auto n = c.bv_val("18446743979220271189", 64);  // 4294967291 * 4294967279
+    auto f = z3::zext(p, 64) * z3::zext(q, 64) == z3::zext(n, 64) && z3::ugt(p, c.bv_val(1, 64)) &&
+             z3::ugt(q, c.bv_val(1, 64)) && z3::ult(p, c.bv_val(static_cast<uint64_t>(4294967291ull), 64)) &&
+             z3::ult(q, c.bv_val(static_cast<uint64_t>(4294967291ull), 64));
+    auto o = solver_opts(t);
+    o.timeout_s = 0.3;
+    o.use_cache = false;
+    auto r = ps::solve(c, f, o);
+    CHECK(r.kind == ps::SolveResult::Timeout);
+    CHECK(r.wall_s < 5.0);
+    CHECK(ps::verdict_status(r) == "TIMEOUT");
+}
+
+// Manual benchmark (roadmap 3.1 exit criterion, docs/SOLVERS.md):
+//   ./prism_tests -tc="solver bench*" --no-skip
+TEST_CASE("solver bench: portfolio vs Z3 alone" * doctest::skip()) {
+    SolverTmp t;
+    struct Row { std::string name; std::function<z3::expr(z3::context&)> make; };
+    std::vector<Row> rows;
+    // Unsat: a*b against an unrolled shift-and-add multiplier (hard for SAT).
+    for (unsigned w : {8u, 10u, 12u}) {
+        rows.push_back({"mulimpl" + std::to_string(w), [w](z3::context& c) {
+                            auto a = c.bv_const("a", w), b = c.bv_const("b", w);
+                            z3::expr acc = c.bv_val(0, w);
+                            for (unsigned i = 0; i < w; ++i)
+                                acc = z3::ite(b.extract(i, i) == c.bv_val(1, 1),
+                                              acc + z3::shl(a, c.bv_val(i, w)), acc);
+                            return a * b != acc;
+                        }});
+    }
+    // Unsat: the division identity.
+    for (unsigned w : {8u, 12u, 16u}) {
+        rows.push_back({"divmod" + std::to_string(w), [w](z3::context& c) {
+                            auto a = c.bv_const("a", w), b = c.bv_const("b", w);
+                            return b != c.bv_val(0, w) && z3::udiv(a, b) * b + z3::urem(a, b) != a;
+                        }});
+    }
+    // Sat: factor a semiprime without overflow.
+    for (auto [w, n] : std::vector<std::pair<unsigned, std::uint64_t>>{
+             {24u, 16744463ull}, {28u, 268140589ull}, {32u, 4292870399ull}, {40u, 1099503239183ull}}) {
+        rows.push_back({"factor" + std::to_string(w), [w, n](z3::context& c) {
+                            auto a = c.bv_const("a", w), b = c.bv_const("b", w);
+                            auto one = c.bv_val(1, w);
+                            return a * b == c.bv_val(n, w) && z3::ugt(a, one) && z3::ugt(b, one) &&
+                                   z3::bvmul_no_overflow(a, b, false);
+                        }});
+    }
+    // Unsat: naive popcount against the SWAR popcount.
+    for (unsigned w : {32u, 64u}) {
+        rows.push_back({"popcount" + std::to_string(w), [w](z3::context& c) {
+                            auto x = c.bv_const("x", w);
+                            z3::expr naive = c.bv_val(0, w);
+                            for (unsigned i = 0; i < w; ++i) naive = naive + z3::zext(x.extract(i, i), w - 1);
+                            auto m = [&](std::uint64_t v) { return c.bv_val(v, w); };
+                            auto y = x - (z3::lshr(x, 1) & m(0x5555555555555555ull));
+                            y = (y & m(0x3333333333333333ull)) + (z3::lshr(y, 2) & m(0x3333333333333333ull));
+                            y = (y + z3::lshr(y, 4)) & m(0x0f0f0f0f0f0f0f0full);
+                            y = z3::lshr(y * m(0x0101010101010101ull), w - 8);
+                            return naive != y;
+                        }});
+    }
+    // Easy ones the rewriter settles (portfolio overhead is visible here).
+    rows.push_back({"xorswap32", [](z3::context& c) {
+                        auto a = c.bv_const("a", 32), b = c.bv_const("b", 32);
+                        auto a1 = a ^ b, b1 = a1 ^ b, a2 = a1 ^ b1;
+                        return !(a2 == b && b1 == a);
+                    }});
+    rows.push_back({"shiftadd32", [](z3::context& c) {
+                        auto a = c.bv_const("a", 32);
+                        return z3::shl(a, c.bv_val(1, 32)) != a + a;
+                    }});
+    // Three passes: Z3 alone; the portfolio with an empty solve-time
+    // history; the portfolio again, now scheduling from that history.
+    std::vector<ps::SolveResult> zr, cold, warm;
+    auto run = [&](std::vector<ps::SolveResult>& out, bool portfolio, const std::string& cache) {
+        for (const auto& row : rows) {
+            z3::context c;
+            auto f = row.make(c);
+            ps::SolveOptions o;
+            o.use_cache = false;  // time the solvers, not the query cache
+            o.portfolio = portfolio;
+            o.timeout_s = 30;
+            o.cache_dir = (t.dir / cache).string();
+            out.push_back(ps::solve(c, f, o));
+        }
+    };
+    run(zr, false, "z3only");
+    run(cold, true, "history");
+    run(warm, true, "history");
+    double tz = 0, tc = 0, tw = 0;
+    MESSAGE("query         z3-only  kind    | portfolio  kind    winner   | +history  kind    winner");
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+        const auto &a = zr[i], &b = cold[i], &w = warm[i];
+        tz += a.wall_s;
+        tc += b.wall_s;
+        tw += w.wall_s;
+        char line[256];
+        std::snprintf(line, sizeof line, "%-12s %8.3f  %-7s | %9.3f  %-7s %-8s | %8.3f  %-7s %s", rows[i].name.c_str(),
+                      a.wall_s, std::string(ps::kind_name(a.kind)).c_str(), b.wall_s,
+                      std::string(ps::kind_name(b.kind)).c_str(), b.winner.c_str(), w.wall_s,
+                      std::string(ps::kind_name(w.kind)).c_str(), w.winner.c_str());
+        MESSAGE(line);
+        for (const auto* r : {&b, &w})
+            CHECK((a.kind == r->kind || a.kind == ps::SolveResult::Timeout || r->kind == ps::SolveResult::Timeout));
+    }
+    char tot[160];
+    std::snprintf(tot, sizeof tot, "total        %8.3f          | %9.3f                   | %8.3f", tz, tc, tw);
+    MESSAGE(tot);
+}
+#endif  // PRISM_HAS_Z3 && !_WIN32
