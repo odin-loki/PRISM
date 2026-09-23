@@ -3,6 +3,7 @@
 #include "prism/cparse.hpp"
 #include "prism/journal.hpp"
 #include "prism/laws.hpp"
+#include "prism/pir.hpp"
 #include "prism/sandbox.hpp"
 #include "prism/stages.hpp"
 #include "prism/taxonomy.hpp"
@@ -46,6 +47,7 @@ const std::map<std::string, std::string>& exec_stages() {
     static const std::map<std::string, std::string> k{
         {"sanitize", "whole"},  // compiles + runs `// prism: run` functions under ASan/UBSan/TSan
         {"optional", "part"},   // klee (native external calls), .cocci script rules
+        {"pir", "part"},        // Clang->PIR->Z3 runs; lli translation validation does not
         {"polyglot", "part"},   // perl -c, cargo clippy, eslint (PgTool::executes)
         {"fuzz", "part"},       // concrete oracle runs; compiled harness / AFL++ / libFuzzer do not
         {"diff", "whole"},      // compiles + runs both functions
@@ -325,6 +327,7 @@ RunReport run_pipeline(const Config& cfg) {
     stage("contracts", [&] { return prove_contracts(functions, cfg.unwind); });
     stage("wp", [&] { return run_wp(functions, cfg.unwind); });
     auto bmc_rec = stage("bmc", [&] { return run_bmc(inline_static(functions), cfg.unwind); });
+    stage("pir", [&] { return pir::run_pir(sources, cfg); });
     stage("harness", [&] { return run_harness_bmc(functions, cfg.unwind); });
     stage("concolic", [&] { return run_concolic(functions, 32); });
     stage("fuzz", [&] {
