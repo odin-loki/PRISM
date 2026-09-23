@@ -56,8 +56,11 @@ class StaticParity(unittest.TestCase):
 
     def test_every_binop_flag_is_modelled_or_refused(self):
         flags = set(re.findall(r'has_flag\(in, "([a-z]+)"\)', self.cpp))
-        for fl in flags:
+        # getelementptr `inbounds` is a memory-model flag (translate_mem.cpp
+        # checks the result stays in its object), not a binop flag
+        for fl in flags - {"inbounds"}:
             self.assertIn(fl, {"nsw", "nuw", "exact", "disjoint", "nneg"}, msg=fl)
+        self.assertIn('has_flag(in, "inbounds"), line', self.cpp)
         export = _read(ROOT / "src" / "prism" / "pir" / "export_lean.cpp")
         # samesign is a poison flag translate.cpp ignores: the exporter must
         # refuse it rather than let the checker claim a proof for it

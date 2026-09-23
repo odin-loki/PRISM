@@ -86,6 +86,7 @@ with `--tool NAME=PATH`). A tool that is not installed is reported as
 | `--requirements PATH` | C++ engine only. Markdown/text requirement documents (a file or a directory; repeatable); the `review` stage drafts contracts traced to their sentences ([AI.md](AI.md)) |
 | `--strict-aliasing` | C++ engine only. The `pir` stage also checks effective types / strict aliasing (C11 6.5p6-7) per byte; opt-in because real code often breaks the rule on purpose ([PIR.md](PIR.md)) |
 | `--pir-drafts` | C++ engine only. Let `pir` size pointer parameters from the template harness draft when no `// requires:` gives them; a violation found only under a drafted size stays `NEEDS-HARNESS` (Law 6) |
+| `--fp-checks` | C++ engine only. `pir` also reports IEEE floating-point division by zero, invalid operations (NaN from non-NaN operands) and overflow to infinity (FLOAT-DIV-ZERO / FLOAT-INVALID / FLOAT-OVERFLOW); off by default because Annex F defines these results. An out-of-range float-to-integer conversion (FLOAT-CAST-OVF) is always checked |
 | `--contracts-approved PATH` | C++ engine only. Approvals of drafted contracts (default `<root>/contracts.approved.json`); only approved clauses give `PROVED-ASSUMING` |
 | `--list-stages` | print the stage order and exit |
 | `--version`, `-V` | print the PRISM version and engine, then exit |

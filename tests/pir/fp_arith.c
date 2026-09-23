@@ -11,14 +11,14 @@ int fp_cast_ok(double d) {
     return 0;
 }
 
-int fp_nan_guard_ok(double d) {
+int fp_nan_guard_ok(float d) {
     if (d != d) return 0;                      /* NaN */
-    if (d >= 2147483647.0 || d <= -2147483649.0) return 0;
+    if (d >= 2147483648.0f || d < -2147483648.0f) return 0;
     return (int)d;
 }
 
-int fp_exact_ok(short x) {
-    float d = x;                               /* every short is a float */
+int fp_exact_ok(signed char x) {
+    float d = x;                               /* every char is a float */
     assert((int)d == x);
     return 0;
 }
