@@ -1,0 +1,6 @@
+name = "prism-semantics"
+version = "0.1.0"
+defaultTargets = ["PrismSem"]
+
+[[lean_lib]]
+name = "PrismSem"

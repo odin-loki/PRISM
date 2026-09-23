@@ -1,0 +1,54 @@
+name: Proofs — PIR semantics and encoder (Lean)
+
+# Builds proofs/semantics (roadmap Part 5.2, 5.3, 8.2) and fails if any
+# proof uses `sorry`, if a source file contains an escape hatch
+# (admit, axiom, native_decide, bv_decide, implemented_by, extern), or if
+# any audited theorem depends on an axiom other than Lean's standard
+# propext, Classical.choice and Quot.sound.  The axiom list is uploaded as
+# an artifact so a reader can see exactly what the proofs assume.
+
+on:
+  push:
+    paths:
+      - 'proofs/semantics/**'
+      - '.github/workflows/proofs-semantics.yml'
+  pull_request:
+    paths:
+      - 'proofs/semantics/**'
+      - '.github/workflows/proofs-semantics.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lean:
+    name: lake build + sorry/axiom audit
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: proofs/semantics
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install elan (toolchain from proofs/semantics/lean-toolchain)
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -o elan-init.sh
+          sh elan-init.sh -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - name: Show toolchain
+        run: lean --version && lake --version
+      - uses: actions/cache@v4
+        with:
+          path: proofs/semantics/.lake
+          key: lake-semantics-${{ hashFiles('proofs/semantics/lean-toolchain', 'proofs/semantics/lake-manifest.json') }}-${{ github.sha }}
+          restore-keys: lake-semantics-${{ hashFiles('proofs/semantics/lean-toolchain', 'proofs/semantics/lake-manifest.json') }}-
+      - name: Build and audit (fails on sorry or non-standard axioms)
+        run: ./check.sh
+      - name: Upload axiom list
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: proofs-semantics-axioms
+          path: |
+            proofs/semantics/axioms.txt
+            proofs/semantics/build.log
