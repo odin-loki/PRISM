@@ -129,6 +129,9 @@ PRISM_API void set_session_backend_for_testing(std::shared_ptr<ModelBackend> bac
 // hashes of `rec`. Callers finish `rec` (validity, checker result) and append it.
 PRISM_API ModelReply ask(ModelBackend& backend, const ModelRequest& req, AuditRecord& rec);
 PRISM_API void audit_append(AuditRecord& rec);
+// For model calls made outside ask() (the llm/fuzz/execute/repair stages'
+// chat engine): fills id and hashes from the prompt and raw output, appends.
+PRISM_API void audit_model_call(AuditRecord& rec, const std::string& prompt, const std::string& output);
 PRISM_API std::filesystem::path audit_path();  // "" when no session
 
 // ---------------------------------------------------------------- BMC primitive
@@ -205,8 +208,10 @@ struct HarnessDraft {
 };
 // One draft per concrete size case (size range); empty = could not draft.
 PRISM_API std::vector<HarnessDraft> draft_harness(const FunctionInfo& fn, std::string* why = nullptr);
-// Runs the drafted harness through BMC. nullopt when no draft was possible.
-PRISM_API std::optional<Finding> drafted_harness_bmc(const FunctionInfo& fn, int unwind);
+// Runs the drafted harness through BMC. nullopt when no draft was possible
+// (`refused` then says why: template reason, and the model note).
+PRISM_API std::optional<Finding> drafted_harness_bmc(const FunctionInfo& fn, int unwind,
+                                                     std::string* refused = nullptr);
 
 // ---------------------------------------------------------------- explanation / repair
 // For a FAILED finding: explanation (HYPOTHESIS/READS) and a proposed fix

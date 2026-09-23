@@ -50,6 +50,7 @@ struct PtrUse {
     std::string why;
     std::set<long long> literal_idx;
     bool symbolic_idx = false;
+    std::set<std::string> sym_idx;  // symbolic index expressions, trimmed
 };
 
 PtrUse pointer_uses(const std::string& body, const std::string& p) {
@@ -67,7 +68,10 @@ PtrUse pointer_uses(const std::string& body, const std::string& p) {
             if (close == std::string::npos) return (u.ok = false, u.why = "unbalanced [", u);
             auto idx = trim(body.substr(after + 1, close - after - 1));
             if (!idx.empty() && std::all_of(idx.begin(), idx.end(), ::isdigit)) u.literal_idx.insert(std::stoll(idx));
-            else u.symbolic_idx = true;
+            else {
+                u.symbolic_idx = true;
+                u.sym_idx.insert(idx);
+            }
             continue;
         }
         if (prev == '*' ) {
@@ -95,7 +99,11 @@ std::string apply_nonnull(std::string body, const std::string& p) {
     body = std::regex_replace(body, std::regex("\\b" + p + "\\s*!=\\s*(NULL|0|nullptr)\\b"), "1");
     body = std::regex_replace(body, std::regex("\\b(NULL|0|nullptr)\\s*!=\\s*" + p + "\\b"), "1");
     body = std::regex_replace(body, std::regex("!\\s*" + p + "\\b(?!\\s*\\[)"), "0");
-    body = std::regex_replace(body, std::regex("\\(\\s*" + p + "\\s*\\)"), "(1)");
+    // Truth tests only (if (p) / while (p) / && p / || p); a call argument f(p)
+    // is a real use of the pointer and must stay visible to pointer_uses.
+    body = std::regex_replace(body, std::regex("\\b(if|while)\\s*\\(\\s*" + p + "\\s*\\)"), "$1 (1)");
+    body = std::regex_replace(body, std::regex("(&&|\\|\\|)\\s*" + p + "\\b(?!\\s*\\[)"), "$1 1");
+    body = std::regex_replace(body, std::regex("\\b" + p + "\\s*(&&|\\|\\|)"), "1 $1");
     return body;
 }
 
@@ -195,22 +203,43 @@ std::optional<Plan> template_plan(const FunctionInfo& fn, std::string* why) {
         if (!u.ok) return say(u.why);
         std::string size;
         if (u.symbolic_idx) {
-            // (a) a loop bound that guards the index: i < n with n a scalar parameter
-            std::smatch m;
             std::string b = fn.body;
+            auto is_scalar = [&](const std::string& v) {
+                return std::find(scal.begin(), scal.end(), v) != scal.end();
+            };
+            // (a) the index is one variable bounded by an early return:
+            //     if (v >= K) return ...;  ->  at least K elements
+            if (u.sym_idx.size() == 1 && is_identifier(*u.sym_idx.begin())) {
+                auto v = *u.sym_idx.begin();
+                std::smatch m;
+                std::regex ge("if\\s*\\(\\s*" + v + "\\s*(>=|>)\\s*(\\d+)\\s*\\)\\s*return\\b");
+                if (std::regex_search(b, m, ge)) {
+                    long long k = std::stoll(m[2].str()) + (m[1].str() == ">" ? 1 : 0);
+                    if (k >= 1 && k <= 4096) {
+                        plan.size_of[p] = std::to_string(k);
+                        plan.assumptions.push_back(p + " != NULL");
+                        plan.assumptions.push_back(p + " points to at least " + std::to_string(k) +
+                                                   " int element(s) (index " + v + " < " + std::to_string(k) +
+                                                   " by the early return)");
+                        continue;
+                    }
+                }
+            }
+            // (b) a loop bound on an index variable: i < n, n a scalar parameter
             std::regex bound("\\b([A-Za-z_]\\w*)\\s*<\\s*([A-Za-z_]\\w*)\\b");
             for (auto it = std::sregex_iterator(b.begin(), b.end(), bound); it != std::sregex_iterator(); ++it) {
-                auto rhs = (*it)[2].str();
-                if (std::find(scal.begin(), scal.end(), rhs) != scal.end()) {
+                auto lhs = (*it)[1].str(), rhs = (*it)[2].str();
+                if (is_scalar(rhs) && u.sym_idx.count(lhs)) {
                     size = rhs;
                     break;
                 }
             }
-            // (b) a conventional length name among the scalar parameters
+            // (c) a conventional length name among the scalar parameters that
+            //     is not itself used as the index
             if (size.empty())
-                for (auto& s : scal)
-                    if (looks_like_length(s)) {
-                        size = s;
+                for (auto& sc : scal)
+                    if (looks_like_length(sc) && !u.sym_idx.count(sc)) {
+                        size = sc;
                         break;
                     }
             if (size.empty()) return say("no length parameter for symbolic index into '" + p + "'");
@@ -315,34 +344,12 @@ std::vector<HarnessDraft> draft_harness(const FunctionInfo& fn, std::string* why
     return build(fn, *plan, why);
 }
 
-std::optional<Finding> drafted_harness_bmc(const FunctionInfo& fn, int unwind) {
-    if (fn.kind != "POINTER") return std::nullopt;
-    std::string why;
-    auto drafts = draft_harness(fn, &why);
-    std::optional<AuditRecord> ar;
-    std::string model_note;
-    if (drafts.empty()) {
-        std::string unavailable;
-        auto backend = session_backend(&unavailable);
-        if (!backend) {
-            model_note = "NOTRUN: " + unavailable;
-        } else {
-            ar.emplace();
-            std::string lwhy;
-            auto plan = llm_plan(fn, *backend, *ar, &lwhy);
-            if (plan) drafts = build(fn, *plan, &lwhy);
-            if (drafts.empty()) {
-                model_note = "model draft unusable: " + lwhy;
-                if (ar->checker.empty()) ar->checker = "harness-builder";
-                if (ar->checker_result.empty()) ar->checker_result = "rejected";
-                audit_append(*ar);
-            }
-        }
-    }
-    if (drafts.empty()) return std::nullopt;
+namespace {
+
+// Runs every size case of a draft through BMC and folds the results.
+Finding evaluate(const FunctionInfo& fn, const std::vector<HarnessDraft>& drafts, int unwind) {
     auto& A = drafts.front().assumptions;
     nlohmann::json aj = A;
-    Finding worst;
     std::vector<std::string> statuses;
     std::optional<Finding> failed;
     bool all_proof = true, any_bounded = false;
@@ -373,7 +380,6 @@ std::optional<Finding> drafted_harness_bmc(const FunctionInfo& fn, int unwind) {
     f.extra["assumed"] = "true";
     f.extra["assumptions"] = aj.dump();
     f.extra["draft_cases"] = nlohmann::json(statuses).dump();
-    if (!model_note.empty()) f.extra["llm_harness"] = model_note;
     auto listed = join(A, "; ");
     if (all_proof) {
         f.status = std::string(laws::PROVED_ASSUMING);
@@ -383,7 +389,6 @@ std::optional<Finding> drafted_harness_bmc(const FunctionInfo& fn, int unwind) {
     } else if (failed) {
         f.status = std::string(laws::NEEDS_HARNESS);
         f.strength = std::string(laws::STRENGTH_SOME);
-        f.cls = "";
         f.extra["draft_cls"] = failed->cls;
         f.extra["draft_cex"] = failed->counterexample;
         f.message = "drafted harness (" + listed + ") admits a counterexample (" + failed->cls + ": " +
@@ -398,16 +403,55 @@ std::optional<Finding> drafted_harness_bmc(const FunctionInfo& fn, int unwind) {
         f.extra["harness"] = "false";
         f.message = "drafted harness (" + listed + ") not decidable by BMC: " + blocking;
     }
-    if (ar) {
-        ar->checker = "bmc(drafted harness)";
-        ar->checker_result = f.status;
-        ar->verdict_effect = laws::is_proof(f.status) ? f.status : "none";
-        audit_append(*ar);
-        f.extra["ai_audit_id"] = ar->id;
-        f.extra["ai_checker"] = ar->checker;
-        f.extra["ai_checker_result"] = ar->checker_result;
-    }
     return f;
+}
+
+}  // namespace
+
+std::optional<Finding> drafted_harness_bmc(const FunctionInfo& fn, int unwind, std::string* refused) {
+    if (fn.kind != "POINTER") return std::nullopt;
+    std::string why;
+    auto drafts = draft_harness(fn, &why);
+    std::optional<Finding> templ;
+    if (!drafts.empty()) templ = evaluate(fn, drafts, unwind);
+    if (templ && templ->status == laws::PROVED_ASSUMING) return templ;
+
+    // Template could not draft, or its draft does not prove: ask the model
+    // (when one is bound). Its draft goes through the same builder and BMC.
+    auto finish = [&](std::string note) -> std::optional<Finding> {
+        if (templ) {
+            templ->extra["llm_harness"] = note;
+            return templ;
+        }
+        if (refused) *refused = why + "; model: " + note;
+        return std::nullopt;
+    };
+    std::string unavailable;
+    auto backend = session_backend(&unavailable);
+    if (!backend) return finish("NOTRUN: " + unavailable);
+    AuditRecord ar;
+    std::string lwhy;
+    auto plan = llm_plan(fn, *backend, ar, &lwhy);
+    std::vector<HarnessDraft> mdrafts;
+    if (plan) mdrafts = build(fn, *plan, &lwhy);
+    if (mdrafts.empty()) {
+        if (ar.checker.empty()) ar.checker = "harness-builder";
+        if (ar.checker_result.empty()) ar.checker_result = "rejected";
+        audit_append(ar);
+        return finish("model draft unusable: " + lwhy);
+    }
+    auto mf = evaluate(fn, mdrafts, unwind);
+    ar.checker = "bmc(drafted harness)";
+    ar.checker_result = mf.status;
+    bool use_model = !templ || mf.status == laws::PROVED_ASSUMING;
+    ar.verdict_effect = (use_model && laws::is_proof(mf.status)) ? mf.status : "none";
+    audit_append(ar);
+    if (!use_model) return finish("model draft " + mf.status + " (audit " + ar.id + ")");
+    mf.extra["ai_audit_id"] = ar.id;
+    mf.extra["ai_checker"] = ar.checker;
+    mf.extra["ai_checker_result"] = ar.checker_result;
+    if (templ) mf.extra["template_harness"] = templ->status;
+    return mf;
 }
 
 }  // namespace prism::ai

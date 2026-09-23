@@ -4095,6 +4095,59 @@ TEST_CASE("ai drafted harness gives PROVED-ASSUMING with every assumption listed
     CHECK(first[0].extra["assumptions"].find("p != NULL") != std::string::npos);
 }
 
+TEST_CASE("ai drafted harness refuses pointers passed on, sizes an index guard") {
+    // mtx_lock(m): the pointer escapes to a call; no draft, the row says why.
+    auto lock = prism::run_harness_bmc({load_fn("double_lock.c", "double_lock_bad")}, 8);
+    REQUIRE(lock.size() == 1);
+    CHECK(lock[0].status == std::string(prism::laws::NEEDS_HARNESS));
+    CHECK(lock[0].extra["harness"] == "false");
+    CHECK(lock[0].extra["harness_draft"].find("used other than") != std::string::npos);
+    // p[n] with if (n >= 4) return: at least 4 elements, not "exactly n".
+    auto ok = prism::run_harness_bmc({load_fn("ptr_arith.c", "arith_ok")}, 8);
+    REQUIRE(ok.size() == 1);
+    CHECK_MESSAGE(ok[0].status == std::string(prism::laws::PROVED_ASSUMING), ok[0].message);
+    CHECK(ok[0].extra["assumptions"].find("at least 4") != std::string::npos);
+}
+
+TEST_CASE("ai model harness draft is built, checked by BMC and logged") {
+    auto out = ai_tmp_out("harness");
+    prism::Config cfg = prism::default_config();
+    cfg.out = out;
+    prism::ai::Session session(cfg);
+    auto fake = std::make_shared<FakeModel>();
+    prism::ai::set_session_backend_for_testing(fake);
+    prism::FunctionInfo fn;
+    fn.file = "mem.c";
+    fn.name = "pick";
+    fn.kind = "POINTER";
+    fn.params = {{"int *", "p"}, {"int", "idx"}};
+    // No length parameter and a non-variable index: the template refuses.
+    fn.body = "if (idx < 1 || idx > 3) return 0; return p[idx - 1];";
+    std::string why;
+    CHECK(prism::ai::draft_harness(fn, &why).empty());
+    fake->replies = {R"({"assumptions":[{"kind":"nonnull","param":"p"},{"kind":"size","param":"p","elements":3}]})"};
+    auto recs = prism::run_harness_bmc({fn}, 8);
+    REQUIRE(recs.size() == 1);
+    auto& r = recs[0];
+    CHECK_MESSAGE(r.status == std::string(prism::laws::PROVED_ASSUMING), r.message);
+    CHECK(r.extra["harness_source"] == "llm:fake:test-double");
+    CHECK(r.extra["assumptions"].find("p points to 3 int element(s)") != std::string::npos);
+    auto lines = read_lines(out / "ai_audit.jsonl");
+    REQUIRE(lines.size() == 1);
+    auto j = nlohmann::json::parse(lines[0]);
+    CHECK(j["id"] == r.extra["ai_audit_id"]);
+    CHECK(j["checker"] == "bmc(drafted harness)");
+    CHECK(j["checker_result"] == std::string(prism::laws::PROVED_ASSUMING));
+    CHECK(j["verdict_effect"] == std::string(prism::laws::PROVED_ASSUMING));
+    // A draft that is too small is caught by BMC, not believed.
+    fake->replies = {R"({"assumptions":[{"kind":"nonnull","param":"p"},{"kind":"size","param":"p","elements":1}]})"};
+    fake->next = 0;
+    auto small = prism::run_harness_bmc({fn}, 8);
+    REQUIRE(small.size() == 1);
+    CHECK(small[0].status == std::string(prism::laws::NEEDS_HARNESS));
+    CHECK_FALSE(prism::laws::is_proof(small[0].status));
+}
+
 TEST_CASE("ai drafted harness counterexample is not a defect") {
     auto recs = prism::run_harness_bmc({load_fn("ai_harness.c", "ai_off_by_one")}, 8);
     REQUIRE(recs.size() == 1);
@@ -4163,7 +4216,7 @@ TEST_CASE("ai measure corpus (PRISM_AI_MEASURE=1)") {
     const char* on = std::getenv("PRISM_AI_MEASURE");
     if (!on || std::string(on) != "1") return;
     int bounded_before = 0, moved = 0, needs_before = 0, cleared = 0, oracle_hits = 0;
-    std::vector<std::string> moved_names, cleared_names;
+    std::vector<std::string> moved_names, cleared_names, stayed, refused;
     std::vector<std::filesystem::path> files;
     for (auto& e : std::filesystem::directory_iterator(testdata_root()))
         if (e.path().extension() == ".c") files.push_back(e.path());
@@ -4175,6 +4228,8 @@ TEST_CASE("ai measure corpus (PRISM_AI_MEASURE=1)") {
             if (recs.empty()) continue;
             auto& r = recs[0];
             if (r.extra.count("bounded_status") || r.status == prism::laws::BOUNDED) ++bounded_before;
+            if (r.status == prism::laws::BOUNDED)
+                stayed.push_back(fn.name + " [" + r.extra["invariants_attempt"] + "]");
             if (r.extra["k_induction"] == "closed-invariants") {
                 ++moved;
                 moved_names.push_back(p.filename().string() + ":" + fn.name);
@@ -4190,6 +4245,9 @@ TEST_CASE("ai measure corpus (PRISM_AI_MEASURE=1)") {
             auto h = prism::run_harness_bmc({fn}, 8);
             if (h.empty() || h[0].extra["harness"] == "true") continue;  // user-written requires
             ++needs_before;
+            if (h[0].extra.count("harness_draft")) refused.push_back(fn.name + " [" + h[0].extra["harness_draft"] + "]");
+            else if (h[0].status != prism::laws::PROVED_ASSUMING)
+                refused.push_back(fn.name + " [" + h[0].status + ": " + h[0].message.substr(0, 120) + "]");
             if (h[0].status == prism::laws::PROVED_ASSUMING) {
                 ++cleared;
                 cleared_names.push_back(p.filename().string() + ":" + fn.name);
@@ -4205,6 +4263,8 @@ TEST_CASE("ai measure corpus (PRISM_AI_MEASURE=1)") {
                                          << " oracle_hits=" << oracle_hits);
     MESSAGE("AI-MEASURE moved:" << mv);
     MESSAGE("AI-MEASURE cleared:" << cl);
+    for (auto& x : stayed) MESSAGE("AI-MEASURE stayed BOUNDED: " << x);
+    for (auto& x : refused) MESSAGE("AI-MEASURE not cleared: " << x);
     CHECK(oracle_hits == 0);
 }
 #endif

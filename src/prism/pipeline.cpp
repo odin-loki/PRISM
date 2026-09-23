@@ -377,8 +377,24 @@ RunReport run_pipeline(const Config& cfg) {
         }
         for (auto& s : report.stages)
             for (auto& f : s.findings)
-                if ((f.status == laws::FAILED || f.status == laws::CRASH) && !f.file.empty())
-                    return rlef_repair(f, cfg);
+                if ((f.status == laws::FAILED || f.status == laws::CRASH) && !f.file.empty()) {
+                    auto out = rlef_repair(f, cfg);
+                    // Roadmap 9.3: counterexample explanation + BMC-verified fix
+                    // for up to 4 FAILED findings (HYPOTHESIS / READS; one NOTRUN
+                    // row without a model). Never a verdict change.
+                    int explained = 0;
+                    for (auto& s2 : report.stages)
+                        for (auto& g : s2.findings) {
+                            if (g.status != laws::FAILED || !g.function || g.file.empty() || explained >= 4)
+                                continue;
+                            auto ex = ai::explain_failed(g, cfg);
+                            ++explained;
+                            bool notrun = !ex.empty() && ex[0].status == laws::NOTRUN;
+                            out.insert(out.end(), ex.begin(), ex.end());
+                            if (notrun) explained = 4;  // no model: say so once
+                        }
+                    return out;
+                }
         return std::vector<Finding>{{"repair", std::string(laws::NOTRUN), "", std::nullopt,
                                      std::nullopt, "", "nothing to repair",
                                      std::string(laws::STRENGTH_READS)}};

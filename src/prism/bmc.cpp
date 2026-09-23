@@ -4981,7 +4981,7 @@ Finding bmc_function(const FunctionInfo& fn, int unwind, bool try_unbounded,
     return base;
 }
 
-Finding k_induction_base(const FunctionInfo& fn, int unwind, bool allow_local_pointers) {
+Finding k_induction(const FunctionInfo& fn, int unwind, bool allow_local_pointers = false) {
     auto rec = bmc_function(fn, unwind, true, nullptr, allow_local_pointers, true);
     if (rec.status != laws::BOUNDED) {
         rec.extra["k_induction"] = "not-needed";
@@ -5050,8 +5050,8 @@ Finding k_induction_base(const FunctionInfo& fn, int unwind, bool allow_local_po
 // Hook (roadmap 4.2): a function k-induction leaves BOUNDED gets one more try
 // with the step strengthened by Houdini-filtered invariants (prism::ai).
 // Only a closed step plus a holding base case turns it PROVED-UNBOUNDED.
-Finding k_induction(const FunctionInfo& fn, int unwind, bool allow_local_pointers = false) {
-    auto rec = k_induction_base(fn, unwind, allow_local_pointers);
+Finding k_induction_strengthened(const FunctionInfo& fn, int unwind, bool allow_local_pointers) {
+    auto rec = k_induction(fn, unwind, allow_local_pointers);
     if (rec.status != laws::BOUNDED) return rec;
     return ai::strengthen_bounded(fn, rec, unwind);
 }
@@ -5259,7 +5259,7 @@ std::vector<Finding> run_bmc(const std::vector<FunctionInfo>& functions, int unw
 #ifdef PRISM_HAS_Z3
     std::vector<Finding> out;
     for (auto& fn : inline_static(functions))
-        out.push_back(k_induction(fn, unwind, allow_local_pointers));
+        out.push_back(k_induction_strengthened(fn, unwind, allow_local_pointers));
     // Python engine k_induction always returns a Finding (empty unwind → ERROR).
     // A non-empty function list must never look like a silent clean BMC stage.
     if (out.empty() && !functions.empty()) {

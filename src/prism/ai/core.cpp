@@ -708,6 +708,15 @@ ModelReply ask(ModelBackend& backend, const ModelRequest& req, AuditRecord& rec)
     return reply;
 }
 
+void audit_model_call(AuditRecord& rec, const std::string& prompt, const std::string& output) {
+    rec.prompt_sha256 = sha256_hex(prompt);
+    rec.raw_output_sha256 = sha256_hex(output);
+    auto n = state().counter.fetch_add(1);
+    auto now = std::chrono::system_clock::now().time_since_epoch().count();
+    rec.id = "ai-" + sha256_hex(rec.prompt_sha256 + ":" + std::to_string(n) + ":" + std::to_string(now)).substr(0, 16);
+    audit_append(rec);
+}
+
 void audit_append(AuditRecord& rec) {
     auto path = audit_path();
     if (rec.verdict_effect.empty()) rec.verdict_effect = "none";
