@@ -212,6 +212,29 @@ class TestPipeline(unittest.TestCase):
         self.assertIn("cppcheck timeout", text)
         self.assertNotIn("`PROVED`", text)
 
+    def test_write_md_omits_empty_location_and_function(self):
+        from prism.models import Finding, StageResult
+        from prism.pipeline import _write_md
+
+        rec = RunReport(root="x")
+        rec.stages.append(StageResult(name="polyglot", status="ok", records=2, findings=[
+            Finding(stage="polyglot", status=laws.UNKNOWN, file="", function=None, line=None,
+                    cls="", message="mypy: 1 python file(s), no diagnostics (not a proof)",
+                    strength=laws.STRENGTH_FINDS),
+            Finding(stage="polyglot", status=laws.FAILED, file="a.py", function="f", line=3,
+                    cls="LANG-LINT", message="ruff: x", strength=laws.STRENGTH_FINDS),
+        ]))
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "report.md"
+            _write_md(rec, p)
+            text = p.read_text(encoding="utf-8")
+        self.assertNotIn("``", text)
+        self.assertIn("- `UNKNOWN` **polyglot** — mypy: 1 python file(s)", text)
+        self.assertIn("- `FAILED` **polyglot** a.py:3 `f` LANG-LINT — ruff: x", text)
+        cpp = (Path(__file__).resolve().parents[1] / "src" / "prism" / "pipeline.cpp"
+               ).read_text(encoding="utf-8")
+        self.assertIn("if (f.function && !f.function->empty())", cpp)
+
     def test_write_md_empty_scope_confidence_is_zero_not_na(self):
         from prism.confidence import apply
         from prism.pipeline import _write_md

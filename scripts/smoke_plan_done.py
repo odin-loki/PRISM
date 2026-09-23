@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
+import tempfile
 
-ROOT = Path("/mnt/c/Users/odinl/OneDrive/Desktop/Code Analysis")
-PRISM = Path("/var/tmp/prism-wsl/prism")
-OUT = Path("/var/tmp/prism-plan-done")
+ROOT = Path(__file__).resolve().parents[1]
+PRISM = Path(os.environ.get("PRISM_BIN") or ROOT / "build" / "prism")
+OUT = Path(os.environ.get("PRISM_SMOKE_OUT") or Path(tempfile.gettempdir()) / "prism-plan-done")
 
 
 def load_report(dest: Path) -> dict:

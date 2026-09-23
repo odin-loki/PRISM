@@ -177,7 +177,8 @@ executes code derived from the scanned tree or from the LLM is opt-in:
 |---|---|---|---|
 | inventory, classify, lints, taint, thread, interval | no (parse / in-process analysis) | runs | runs |
 | warnings | no (`-fsyntax-only` compiler diagnostics) | runs | runs |
-| cppcheck, pbsd, esbmc, dafny | no (static analyzers; pbsd imports the configured ParanoidBSD tree, not the scanned one) | runs | runs |
+| cppcheck, esbmc, dafny | no (static analyzers) | runs | runs |
+| pbsd | PRISM portable copies: no. The ParanoidBSD tree (only when named with `--pbsd PATH` / `PRISM_PBSD`; no guessed default): **yes** — its `tools/verify` modules are imported (external code) | portable copies run; the tree half is NOTRUN | tree modules imported |
 | sanitize | **yes** — compiles and runs the unit | NOTRUN | calls only a zero-argument function marked `// prism: run`, in the sandbox; never "any `void(void)`" |
 | optional | clang-tidy, cbmc, infer (compile only, scratch results dir), frama-c, semgrep, strix, codeql: no. **klee**: yes (external calls run natively). **spatch** rules with `@script:`/`@initialize:`/`@finalize:` blocks: yes | klee and script rules NOTRUN, the rest run | klee in the sandbox; script rules run |
 | polyglot | `perl -c` (BEGIN/use), `cargo clippy` (build.rs, proc macros), `eslint` (eslint.config.js): **yes** (`Tool.executes`). python `compile()`, ruff, pyflakes, mypy (`--config-file=`, so a project `mypy.ini` cannot load plugins), `node --check`, tsc (explicit files), `bash -n`, shellcheck, `gofmt -e`, `ruby -wc`, `php -l`, `luac -p`, yamllint: no | the three are NOTRUN, the rest run | the three run (with the user's privileges: they are the project's own build/lint code) |

@@ -38,6 +38,11 @@ std::vector<Finding> run_optional_tools(const std::vector<std::filesystem::path>
 // Every language in the tree (prism/polyglot.py): built-in conflict-marker /
 // credential scan plus per-language syntax, lint and type tools.
 std::vector<std::filesystem::path> iter_polyglot_sources(const std::filesystem::path& root);
+// Every text file in scope (no NUL in the first 8 KiB, <= 2 MB), whatever its name.
+std::vector<std::filesystem::path> iter_text_files(const std::filesystem::path& root);
+// Known source/config extension (prism/polyglot.py is_known_source).
+bool is_known_source(const std::filesystem::path& p);
+bool is_text_file(const std::filesystem::path& p);
 std::vector<Finding> run_polyglot(const std::filesystem::path& root, const Config& cfg);
 std::vector<Finding> run_esbmc(const std::vector<std::filesystem::path>& paths,
                                const Config& cfg);

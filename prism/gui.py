@@ -302,7 +302,7 @@ def _ensure_qt() -> None:
                 self.failed.emit(str(ex))
 
     class MainWindow(QMainWindow):
-        def __init__(self, path: Path | None = None) -> None:
+        def __init__(self, path: Path | None = None, allow_exec: bool = False) -> None:
             super().__init__()
             self.setWindowTitle("PRISM — hybrid code testing")
             self.resize(1280, 800)
@@ -326,12 +326,20 @@ def _ensure_qt() -> None:
             self.llm_ck = QCheckBox("Qwen 3.5 9B")
             self.llm_ck.setChecked(True)
             self.resume_ck = QCheckBox("Resume last report")
+            # Law 9: off unless the user opts in (or launched with --allow-exec).
+            self.allow_exec_ck = QCheckBox("Allow executing scanned code")
+            self.allow_exec_ck.setChecked(bool(allow_exec))
+            self.allow_exec_ck.setToolTip(
+                "--allow-exec: sanitizer/fuzz/diff harnesses, perl -c, cargo clippy, "
+                "eslint, ParanoidBSD modules, LLM programs. Only on code you trust; "
+                "off = those steps are NOTRUN.")
             self.run_btn = QPushButton("Run pipeline")
             self.run_btn.clicked.connect(self._run)
             bar.addWidget(self.path_lbl, 1)
             bar.addWidget(pick)
             bar.addWidget(self.llm_ck)
             bar.addWidget(self.resume_ck)
+            bar.addWidget(self.allow_exec_ck)
             bar.addWidget(self.run_btn)
             layout.addLayout(bar)
 
@@ -410,6 +418,7 @@ def _ensure_qt() -> None:
                 skip=skip,
                 llm=self.llm_ck.isChecked(),
                 resume=self.resume_ck.isChecked(),
+                allow_exec=self.allow_exec_ck.isChecked(),
                 fuzz_budget=4.0,
                 fuzz_iters=256,
                 repair_rounds=1,
@@ -514,7 +523,8 @@ def launch(args=None) -> int:
         return _notrun_gui("no display", str(ex))
     try:
         path = Path(getattr(args, "path", "testdata")).resolve()
-        w = sys.modules[__name__].MainWindow(path)
+        w = sys.modules[__name__].MainWindow(
+            path, allow_exec=bool(getattr(args, "allow_exec", False)))
         w.show()
         return app.exec()
     except Exception as ex:

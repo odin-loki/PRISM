@@ -38,6 +38,7 @@ struct CliLaunch {
     bool no_llm = false;
     bool skip_fuzz = false;
     bool skip_repair = false;
+    bool allow_exec = false;
     QStringList extra_skip;
     QStringList extra;
     bool from_cli = false;
@@ -78,6 +79,11 @@ CliLaunch parse_cli_launch() {
         }
         if (takes_value(a)) {
             c.extra << a << next();
+            c.from_cli = true;
+            continue;
+        }
+        if (a == QLatin1String("--allow-exec")) {
+            c.allow_exec = true;
             c.from_cli = true;
             continue;
         }
@@ -160,12 +166,18 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     no_llm_->setChecked(true);
     skip_fuzz_ = new QCheckBox(QStringLiteral("skip fuzz"));
     skip_repair_ = new QCheckBox(QStringLiteral("skip repair"));
+    allow_exec_ = new QCheckBox(QStringLiteral("Allow executing scanned code"));
+    allow_exec_->setChecked(false);
+    allow_exec_->setToolTip(QStringLiteral(
+        "--allow-exec: sanitizer/fuzz/diff harnesses, perl -c, cargo clippy, eslint, "
+        "ParanoidBSD modules, LLM programs. Only on code you trust; off = NOTRUN."));
     h->addWidget(new QLabel(QStringLiteral("Path")));
     h->addWidget(path_, 1);
     h->addWidget(browse);
     h->addWidget(no_llm_);
     h->addWidget(skip_fuzz_);
     h->addWidget(skip_repair_);
+    h->addWidget(allow_exec_);
     h->addWidget(run_);
     v->addLayout(h);
     auto *stats = new QHBoxLayout();
@@ -216,6 +228,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
         no_llm_->setChecked(cli.no_llm);
     if (cli.skip_fuzz) skip_fuzz_->setChecked(true);
     if (cli.skip_repair) skip_repair_->setChecked(true);
+    if (cli.allow_exec) allow_exec_->setChecked(true);
     if (QFileInfo::exists(out_dir_ + QStringLiteral("/report.json")))
         loadSameReport(out_dir_);
 }
@@ -241,6 +254,7 @@ void MainWindow::onRun() {
     proc_->setProgram(prismBinary());
     QStringList args{path_->text(), QStringLiteral("--out"), out_dir_};
     if (no_llm_->isChecked()) args << QStringLiteral("--no-llm");
+    if (allow_exec_->isChecked()) args << QStringLiteral("--allow-exec");
     QStringList skip;
     if (skip_fuzz_->isChecked()) skip << QStringLiteral("fuzz");
     if (skip_repair_->isChecked()) skip << QStringLiteral("repair");

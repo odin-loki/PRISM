@@ -27,7 +27,7 @@ from prism.concolic import run_concolic
 from prism.models import Finding, FunctionInfo, RunReport, StageResult
 from prism.muttest import run_muttest
 from prism.pbsd import run_pbsd_lints
-from prism.polyglot import run_polyglot
+from prism.polyglot import is_known_source, run_polyglot
 from prism.rapid import run_rapid
 from prism.sarif import write_sarif
 from prism.sanitize import run_sanitize
@@ -36,6 +36,7 @@ from prism.thread import run_thread
 from prism.taxonomy import coverage_from_report
 from prism import journal
 from prism import sandbox
+from prism import scope
 
 
 STAGE_ORDER = [
@@ -82,6 +83,7 @@ _LLM_KEEP_STATUS = frozenset({
 # the analysis half runs, the execute half is NOTRUN without the flag.
 # Same table in src/prism/pipeline.cpp (kExecStages).
 EXEC_STAGES: dict[str, str] = {
+    "pbsd": "part",        # imports the configured ParanoidBSD tools/verify modules
     "sanitize": "whole",   # compiles + runs `// prism: run` functions under ASan/UBSan/TSan
     "optional": "part",    # klee (native external calls), tree-local .cocci scripts
     "polyglot": "part",    # perl -c, cargo clippy, eslint (Tool.executes)
@@ -244,6 +246,15 @@ class Pipeline:
                     stage="inventory", status=laws.CLEAN, file=rel,
                     function=None, line=None, cls="",
                     message="translation unit", strength=laws.STRENGTH_FINDS,
+                ))
+            # Law 7: a skipped vendor/build directory holding sources is
+            # written down, not skipped quietly (prism/scope.py).
+            for rel_dir, n in scope.skipped_dirs(root, is_known_source):
+                out.append(Finding(
+                    stage="inventory", status=laws.UNKNOWN, file="", function=None,
+                    line=None, cls="", message=scope.skipped_message(rel_dir, n),
+                    strength=laws.STRENGTH_FINDS,
+                    extra={"skipped": rel_dir, "files": str(n)},
                 ))
             return out
 
@@ -429,10 +440,24 @@ def _write_md(report: RunReport, path: Path) -> None:
             # Same rows as prism.gui.finding_rows: UNKNOWN/TIMEOUT stay visible.
             # A whitelist that dropped them made a present-but-silent adapter
             # look like an empty ok stage in report.md.
-            loc = f"{f.file}:{f.line}" if f.line else (f.file or "")
-            cex = f"  cex `{f.counterexample}`" if f.counterexample else ""
-            lines.append(f"- `{f.status}` **{s.name}** {loc} `{f.function or ''}` {f.cls} — {f.message}{cex}")
+            lines.append(_md_finding(s.name, f))
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _md_finding(stage: str, f: Finding) -> str:
+    """One report.md bullet. Empty location/function/class parts are left
+    out (a summary row has no file); report.json keeps every field."""
+    parts = [f"- `{f.status}` **{stage}**"]
+    if f.file:
+        parts.append(f"{f.file}:{f.line}" if f.line else f.file)
+    if f.function:
+        parts.append(f"`{f.function}`")
+    if f.cls:
+        parts.append(f.cls)
+    line = " ".join(parts) + f" — {f.message}"
+    if f.counterexample:
+        line += f"  cex `{f.counterexample}`"
+    return line
 
 
 def run_pipeline(cfg: Config) -> RunReport:

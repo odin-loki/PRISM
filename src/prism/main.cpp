@@ -207,6 +207,7 @@ int main(int argc, char** argv) {
             for (auto* p = STAGE_ORDER; *p; ++p) std::cout << *p << "\n";
             return 0;
         } else if (a == "--out") cfg.out = next();
+        else if (a == "--pbsd") cfg.pbsd_root = std::filesystem::absolute(next());
         else if (a == "--stage") cfg.stages = split_csv(next());
         else if (a == "--skip") cfg.skip = split_csv(next());
         else if (a == "--unwind") cfg.unwind = std::stoi(next());
@@ -229,20 +230,26 @@ int main(int argc, char** argv) {
         }
         else if (a == "-h" || a == "--help") {
             std::cout <<
-                "prism PATH [--gui] [--no-llm] [--jobs N] [--tool NAME=PATH]\n"
+                "prism PATH [--gui] [--no-llm] [--jobs N] [--tool NAME=PATH] [--pbsd PATH]\n"
                 "           [--stage a,b] [--skip a,b] [--out DIR] [--resume] [--unwind N]\n"
                 "           [--fuzz-budget N] [--fuzz-iters N] [--repair-rounds N]\n"
                 "           [--list-stages] [--fail-on never|defect|gap] [--allow-exec]\n"
                 "PRISM = Performance, Regression, Integration and Security Module\n"
-                "C++23 hybrid pipeline: lints, BMC, fuzz, LTL, Qwen 3.5 9B.\n"
-                "Threads are ISO C++ std::jthread (not MinGW winpthreads).\n"
+                "Checks any codebase (PATH: file or directory, any language): deep C/C++\n"
+                "analysis (lints, compiler warnings, BMC, fuzzing, contracts) plus every other\n"
+                "language through the polyglot stage (syntax, linters, type checkers) and a\n"
+                "secrets/conflict-marker scan of every text file. What could not be checked\n"
+                "is reported as NOTRUN, never as clean.\n"
                 "Adapter search: --tool, then third_party/<name>/ if built, then PATH.\n"
                 "--resume reuses ok/NOTRUN stages from --out/stages.jsonl (report.json fallback).\n"
-                "--fail-on: exit 1 on defect (FAILED/CRASH/SANFAIL) or gap (defect, or\n"
-                "  anything NOTRUN/ERROR/TIMEOUT). A crashed stage is exit 2.\n"
+                "--fail-on: exit 1 on defect (FAILED/CRASH/SANFAIL, except findings with\n"
+                "  extra.severity warning/note/style) or gap (defect, or anything\n"
+                "  NOTRUN/ERROR/TIMEOUT). A crashed stage is exit 2.\n"
                 "--allow-exec: run code from the scanned tree (sanitizer/fuzz/diff harnesses,\n"
                 "  perl -c, cargo clippy, eslint, LLM programs) in a sandbox; only on code you\n"
                 "  trust. Without it those steps are NOTRUN (Law 9).\n"
+                "--pbsd PATH: ParanoidBSD tree for the pbsd stage (else PRISM_PBSD; no default).\n"
+                "  Importing its modules also needs --allow-exec.\n"
                 "Writes report.json, report.md and report.sarif (SARIF 2.1.0) under --out.\n";
             return 0;
         } else if (!a.starts_with("-")) {

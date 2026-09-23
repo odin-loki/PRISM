@@ -18,7 +18,7 @@ bounded proofs, then fuzzing, then an LLM (Qwen 3.5 9B) that may only
 |---|---|
 | C / C++ | ~600-class defect taxonomy: pattern lints, taint, threads, interval ranges, compiler warnings, cppcheck, sanitizers (ASan/UBSan/TSan), Z3 bounded model checking + k-induction, Dafny/ACSL contracts, Frama-C-style WP, harness BMC, concolic, greybox fuzzing (FuSeBMC loop, AFL++/libFuzzer when present), differential + property + mutation testing, LTL on state machines |
 | Every other language | `polyglot` stage: Python/JSON/TOML syntax, ruff or pyflakes, mypy, `node --check`, tsc, eslint, `bash -n`, shellcheck, gofmt, cargo clippy, `ruby -wc`, `php -l`, `perl -c`, `luac -p`, yamllint |
-| Any text file | merge-conflict markers; leaked credentials (private keys, AWS, GitHub, Slack, Google, Stripe) |
+| Any text file | merge-conflict markers; leaked credentials (private keys, AWS, GitHub, Slack, Google, Stripe) — every text file in scope, whatever its name (`id_rsa`, `key.pem`, `.npmrc`, `Dockerfile`) |
 | External analyzers | ESBMC, CBMC, Infer, CodeQL, Semgrep, Coccinelle, KLEE, Frama-C, clang-tidy, Strix — run when installed |
 
 ## Run
@@ -63,9 +63,24 @@ rlimits; findings record `extra.sandbox`. The sanitize stage only calls
 functions you mark with `// prism: run`. The per-stage table is in
 [docs/PLAN.md](docs/PLAN.md#running-on-untrusted-code-law-9).
 
-CI gating: `--fail-on defect` exits 1 on any FAILED/CRASH/SANFAIL finding;
+The ParanoidBSD bridge (`pbsd` stage) uses a ParanoidBSD tree only when you
+name it with `--pbsd PATH` or `PRISM_PBSD`; importing its `tools/verify`
+modules is external code, so it also needs `--allow-exec`. Without either,
+only PRISM's portable copies of those checks run and the rest is `NOTRUN`.
+
+CI gating: `--fail-on defect` exits 1 on any FAILED/CRASH/SANFAIL finding
+at error level — a finding whose `extra.severity` is `warning`, `note` or
+`style` (compiler `-Wall` warnings, shellcheck/ruby/yamllint warnings) is
+still reported (SARIF level `warning`) but does not fail the build.
 `--fail-on gap` also exits 1 when anything was NOTRUN/ERROR/TIMEOUT. A stage
 that crashed is exit 2.
+
+Nothing is skipped quietly: vendor/build directories (`third_party/`,
+`node_modules/`, `build*/`, `.venv/`, `target/`, ...; one list in
+`prism/scope.py`) are skipped by every stage, and the inventory stage lists
+each one that holds source files as `UNKNOWN`. A tool whose output PRISM
+cannot parse is `ERROR "output not understood"`, never a quiet
+"no diagnostics".
 
 ## Laws
 

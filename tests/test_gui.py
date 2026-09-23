@@ -630,6 +630,19 @@ class TestCppGuiSameReport(unittest.TestCase):
         cls.cpp = CPP_MAIN.read_text(encoding="utf-8")
         cls.hdr = CPP_HDR.read_text(encoding="utf-8")
 
+    def test_allow_exec_checkbox_default_off(self):
+        """Law 9 in the GUI: opt-in checkbox, off by default, passes --allow-exec."""
+        self.assertIn('QStringLiteral("Allow executing scanned code")', self.cpp)
+        self.assertIn("allow_exec_->setChecked(false);", self.cpp)
+        self.assertIn('if (allow_exec_->isChecked()) args << QStringLiteral("--allow-exec");',
+                      self.cpp)
+        self.assertIn("QCheckBox *allow_exec_ = nullptr;", self.hdr)
+        py = (ROOT / "prism" / "gui.py").read_text(encoding="utf-8")
+        self.assertIn('QCheckBox("Allow executing scanned code")', py)
+        self.assertIn("allow_exec=self.allow_exec_ck.isChecked()", py)
+        self.assertIn("self.allow_exec_ck.setChecked(bool(allow_exec))", py)
+        self.assertIn('allow_exec=bool(getattr(args, "allow_exec", False))', py)
+
     def test_q_object_stays_in_header(self):
         self.assertIn("Q_OBJECT", self.hdr)
         self.assertNotIn("Q_OBJECT", self.cpp)
