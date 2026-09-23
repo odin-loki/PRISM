@@ -171,9 +171,11 @@ What the run shows:
 - **History fixes most of that.** Once history exists, the head start brings
   those queries back to about Z3's own time (popcount64 7.2 s).
 - **divmod12 is a real loss.** Z3 alone proves it in 28.1 s, and the
-  portfolio times out in both passes. The history comes from the smaller
-  divmod8, where CaDiCaL won, so the scheduler favoured the wrong member at
-  12 bits.
+  portfolio times out in both passes. Z3 needs nearly the whole budget, and
+  once the other members join it no longer gets enough CPU. The buckets are
+  coarse: divmod12 shares `QF_BV|w32|n100|muldiv` with the factoring queries,
+  where Kissat won. So the history gives Kissat, not Z3, the head start. A
+  finer bucket, or the learned model the roadmap plans, is needed here.
 - **Totals.** The portfolio beats Z3 alone on total time on this small set:
   138.7 s with history and 178.8 s without, against 202.2 s. It also solves
   one more query. This set is not the roadmap's conformance suite, so the
