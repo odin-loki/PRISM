@@ -282,10 +282,6 @@ declare void @__clang_call_terminate(ptr)
     // the handler divides by the thrown value (> 10): no division by zero
     CHECK(verdict(ir, "catch_it") == prism::laws::PROVED);
     std::string cls;
-    if (std::getenv("PIR3_DEBUG")) {
-        auto dt = tr(ir, "nothrow");
-        MESSAGE((dt.fn ? pp::to_text(*dt.fn) : dt.reason));
-    }
     CHECK(verdict(ir, "nothrow", {}, &cls) == prism::laws::FAILED);
     CHECK(cls == "CXX-THROW-NOEXCEPT");
 }
