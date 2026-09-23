@@ -1,0 +1,58 @@
+name: PRISM on PRISM (nightly)
+
+# Roadmap 8.4: PRISM's own C++ (everything not written in Lean) is checked
+# for memory errors and undefined behaviour every night by running the full
+# C++ and Python test suites and the conformance suite against an
+# ASan + UBSan build of PRISM. Not a soundness proof (PRISM checking itself
+# is circular); it removes crash and memory bugs from quarantined code.
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sanitizers:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    env:
+      ASAN_OPTIONS: detect_leaks=0:abort_on_error=1:strict_string_checks=1
+      UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build clang-18 llvm-18 libclang-rt-18-dev bubblewrap
+          python -m pip install pytest z3-solver ruff mypy
+      - name: Configure (ASan + UBSan)
+        run: >
+          cmake -B build-san -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCMAKE_C_COMPILER=clang-18 -DCMAKE_CXX_COMPILER=clang++-18
+          -DPRISM_SANITIZE=ON -DPRISM_CUDA=OFF -DPRISM_LLAMA=OFF -DPRISM_QT=OFF -DPRISM_Z3=ON
+      - name: Build
+        run: cmake --build build-san
+      - name: prism_tests under sanitizers
+        run: (cd build-san && ./prism_tests)
+      - name: pytest with the sanitized binary
+        env:
+          PRISM_BIN: ${{ github.workspace }}/build-san/prism
+        run: python -m pytest -q tests
+      - name: conformance suite with the sanitized binary
+        env:
+          PRISM_BIN: ${{ github.workspace }}/build-san/prism
+        run: python tools/conformance.py
+      - name: PRISM scans its own tree (report only)
+        run: ./build-san/prism . --no-llm --out prism-self || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: prism-self-sanitized
+          path: prism-self/
+          retention-days: 14

@@ -19,6 +19,17 @@ option(PRISM_LLAMA "Build in-tree llama.cpp inference" ON)
 option(PRISM_QT "Build native Qt GUI" ON)
 option(PRISM_Z3 "Build in-tree Z3 for BMC" ON)
 option(PRISM_TESTS "Build C++ unit tests" ON)
+# Roadmap 8.4 (PRISM on PRISM): build PRISM itself with ASan + UBSan so the
+# test suite doubles as a memory-safety / UB check of the quarantined C++.
+option(PRISM_SANITIZE "Build PRISM with -fsanitize=address,undefined" OFF)
+if(PRISM_SANITIZE)
+  if(MSVC)
+    message(FATAL_ERROR "PRISM_SANITIZE needs clang or gcc")
+  endif()
+  add_compile_options(-fsanitize=address,undefined -fno-sanitize-recover=undefined
+                      -fno-omit-frame-pointer)
+  add_link_options(-fsanitize=address,undefined)
+endif()
 
 set(PRISM_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
 
