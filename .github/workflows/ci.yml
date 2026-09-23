@@ -36,7 +36,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install toolchain
-        run: sudo apt-get update && sudo apt-get install -y ninja-build clang ccache
+        run: sudo apt-get update && sudo apt-get install -y ninja-build clang ccache qt6-base-dev libgl-dev
       - uses: actions/cache@v4
         with:
           path: ~/.cache/ccache
@@ -47,11 +47,24 @@ jobs:
           cmake -B build -G Ninja
           -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
           -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-          -DPRISM_CUDA=OFF -DPRISM_LLAMA=OFF -DPRISM_QT=OFF -DPRISM_Z3=ON
+          -DPRISM_CUDA=OFF -DPRISM_LLAMA=OFF -DPRISM_QT=ON -DPRISM_Z3=ON
       - name: Build
         run: cmake --build build
       - name: prism_tests
         run: ./build/prism_tests
+      - name: GUI smoke (headless Qt, real pipeline run through the window)
+        run: |
+          mkdir -p gui-smoke/src
+          cp testdata/add_overflow.c testdata/div_param.c testdata/oob_write.c gui-smoke/src/
+          QT_QPA_PLATFORM=offscreen timeout 600 ./build/prism_gui gui-smoke/src --no-llm \
+            --stage inventory,classify,lints,bmc --out gui-smoke/out \
+            --smoke-screenshot gui-smoke/prism_gui.png
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: prism-gui-smoke
+          path: gui-smoke/prism_gui.png
+          retention-days: 7
       - uses: actions/upload-artifact@v4
         with:
           name: prism-linux
@@ -73,7 +86,8 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y shellcheck clang
           python -m pip install --upgrade pip
-          python -m pip install pytest z3-solver ruff mypy yamllint
+          python -m pip install pytest z3-solver ruff mypy yamllint PySide6-Essentials
+          sudo apt-get install -y libegl1 libxkbcommon0
       - uses: actions/download-artifact@v4
         with:
           name: prism-linux
@@ -81,6 +95,7 @@ jobs:
       - name: pytest
         env:
           PRISM_BIN: ${{ github.workspace }}/build/prism
+          QT_QPA_PLATFORM: offscreen
         run: |
           chmod +x build/prism
           python -m pytest -q tests

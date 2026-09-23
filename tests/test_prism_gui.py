@@ -366,3 +366,28 @@ class TestCppGuiWindowSourceContract(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestGuiSmokeContract(unittest.TestCase):
+    """--smoke-screenshot runs the real pipeline through the Qt window
+    headless (CI: QT_QPA_PLATFORM=offscreen). An empty findings table is a
+    failure (exit 3), a missing prism binary is NOTRUN (exit 2): never a
+    clean pass."""
+
+    def test_flag_is_stripped_before_qt_sees_argv(self):
+        src = GUI_ENTRY.read_text(encoding="utf-8")
+        self.assertIn('"--smoke-screenshot"', src)
+        self.assertIn("argc -= 2", src)
+        self.assertLess(src.index("--smoke-screenshot"), src.index("QApplication app(argc, argv)"))
+
+    def test_empty_table_or_unsaved_screenshot_fails(self):
+        src = GUI_WINDOW.read_text(encoding="utf-8")
+        body = src[src.index("void MainWindow::runSmoke("):src.index("void MainWindow::onDone(")]
+        self.assertIn("rows > 0 && saved ? 0 : 3", body)
+        self.assertIn("QCoreApplication::exit(2)", body)
+
+    def test_ci_runs_the_smoke(self):
+        ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        self.assertIn("-DPRISM_QT=ON", ci)
+        self.assertIn("--smoke-screenshot", ci)
+        self.assertIn("QT_QPA_PLATFORM=offscreen", ci)

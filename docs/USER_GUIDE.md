@@ -35,6 +35,19 @@ links llama.cpp for the LLM stage, `-DPRISM_CUDA=ON` builds the GPU mutator.
 Add `-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache`
 to make rebuilds cheap.
 
+The GUI builds against Qt 6.4 or later (`apt install qt6-base-dev libgl-dev`).
+To check it without a display, run the pipeline through the window headless:
+
+```
+QT_QPA_PLATFORM=offscreen ./build/prism_gui SRC --no-llm --out OUT \
+  --smoke-screenshot gui.png
+```
+
+When the run finishes, the report loads into the window and the window is
+saved to `gui.png`. The exit code is 0 only when the findings table is
+non-empty and the screenshot was written. It is 3 for an empty table and 2
+when the `prism` binary is not found. CI runs this on every push.
+
 ### Python engine (reference)
 
 ```

@@ -106,7 +106,7 @@ at run time; the numbers below are for the deterministic halves.
 | 9.3 triage | **DONE** — ordering only |
 | 9.3 solver/bound prediction | **PARTIAL** — built, off by default |
 | 9.4 questions, report/assurance drafting | **DONE** — `prism ask`, `prism draft` |
-| 9.4 GUI assistant | **PARTIAL** — source written for Qt and PySide6; Qt not buildable here |
+| 9.4 GUI assistant | **DONE** except model-backed answers — `prism_gui` builds against Qt 6.4.2. A headless smoke run (`--smoke-screenshot`, in CI on every push) runs the real pipeline through the window and checks the findings table fills. The PySide6 GUI tests (43) now run in CI too, offscreen. The assistant panel answers structured queries without a model; LLM-backed answers need a model |
 | 9.7 per-feature metrics | **DONE** for deterministic halves (`docs/AI.md`); model metrics need a model |
 
 ## Part 5 / 8 — Proofs (Lean 4, no `sorry`, standard axioms only)

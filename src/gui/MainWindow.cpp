@@ -1,5 +1,7 @@
 #include "MainWindow.h"
 
+#include <cstdio>
+
 #include "prism/ai.hpp"
 #include "prism/ai_assist.hpp"
 #include "prism/config.hpp"
@@ -404,6 +406,20 @@ void MainWindow::onAsk() {
     prism::ai::Session session(cfg);
     const auto reply = prism::ai::assistant_reply(*report, q.toStdString(), cfg.llm);
     chat_->appendPlainText(QString::fromStdString(reply));
+}
+
+void MainWindow::runSmoke(const QString& screenshot) {
+    // Connected after onDone (constructor), so the report is loaded first.
+    connect(proc_, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), this,
+            [this, screenshot](int, QProcess::ExitStatus) {
+                const int rows = findings_->rowCount();
+                const bool saved = grab().save(screenshot);
+                std::fprintf(stderr, "gui smoke: %d finding rows, screenshot %s\n", rows,
+                             saved ? "saved" : "NOT saved");
+                QCoreApplication::exit(rows > 0 && saved ? 0 : 3);
+            });
+    onRun();
+    if (proc_->state() == QProcess::NotRunning) QCoreApplication::exit(2);  // prism not found: NOTRUN
 }
 
 void MainWindow::onDone(int exitCode, QProcess::ExitStatus) {
