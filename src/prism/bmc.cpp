@@ -1,4 +1,5 @@
 #include "prism/stages.hpp"
+#include "prism/ai.hpp"
 #include "prism/cparse.hpp"
 #include "prism/laws.hpp"
 #include "prism/regex.hpp"
@@ -3214,6 +3215,9 @@ struct Parser {
     int unwind = 8;
     std::map<std::string, int> enums;
     std::string err;
+    // AI hook statements (__prism_assume/assert/havoc/step) are only parsed
+    // for programs built by prism::ai::check_program, never for user code.
+    bool ai_hooks = false;
 
     Parser(std::string b, std::vector<std::pair<std::string, std::string>> p, int u,
            std::map<std::string, int> en)
@@ -3252,6 +3256,7 @@ struct Parser {
     std::string switch_stmt(Enc& e, std::string text);
     std::vector<SwitchArm> parse_switch_arms(Enc& e, std::string body);
     std::string for_stmt(Enc& e, std::string text);
+    std::string ai_hook_stmt(Enc& e, std::string text);
     z3::expr expr(Enc& e, std::string src) { return parse_expr(e, strip(src), *this); }
     z3::expr binop(Enc& e, const z3::expr& a, const std::string& op, const z3::expr& b, const std::string&) {
         return apply_binop(e, a, op, b);
@@ -3536,6 +3541,7 @@ void Parser::stmts(Enc& e, std::string text) {
         if (rx_search(R"BMC(\(\s*\.\.\.\s*[+\-|&^]|[+\-|&^]\s*\.\.\.\s*\))BMC", text)) {
             throw ParseFail(R"BMC(fold unencoded)BMC");
         }
+        if (ai_hooks && text.starts_with("__prism_")) { text = ai_hook_stmt(e, text); continue; }
         if (starts_kw(text, "if")) { text = if_stmt(e, text); continue; }
         if (starts_kw(text, "switch")) { text = switch_stmt(e, text); continue; }
         if (starts_kw(text, "do")) { text = do_stmt(e, text); continue; }
@@ -3707,6 +3713,86 @@ std::string Parser::assert_stmt(Enc& e, std::string text) {
     auto cond = expr(e, inner);
     e.add_prop("assert", "FUNC-CONTRACT", !as_bool(cond), e.pc);
     return rest;
+}
+
+// prism::ai loop-cut hooks. Expressions inside assume/assert are predicates
+// over the state: UB properties raised while evaluating them are dropped (the
+// invariant text is not program code). The loop condition of __prism_step is
+// program code, so its properties stay.
+std::string Parser::ai_hook_stmt(Enc& e, std::string text) {
+    auto drop_props_from = [&](size_t n) {
+        e.props.erase(e.props.begin() + static_cast<std::ptrdiff_t>(n), e.props.end());
+    };
+    if (starts_kw(text, "__prism_assume")) {
+        auto [inner, rest] = paren_stmt(text.substr(14));
+        size_t n = e.props.size();
+        auto c = as_bool(expr(e, inner));
+        drop_props_from(n);
+        e.assume(c);
+        return rest;
+    }
+    if (starts_kw(text, "__prism_assert")) {
+        auto [inner, rest] = paren_stmt(text.substr(14));
+        auto comma = inner.find(',');
+        if (comma == std::string::npos) throw ParseFail("ai assert without tag");
+        auto tag = strip(inner.substr(0, comma));
+        size_t n = e.props.size();
+        auto c = as_bool(expr(e, inner.substr(comma + 1)));
+        drop_props_from(n);
+        e.add_prop("ai-inv#" + tag, "AI-INVARIANT", !c, e.pc);
+        return rest;
+    }
+    if (starts_kw(text, "__prism_havoc")) {
+        auto [inner, rest] = paren_stmt(text.substr(13));
+        auto name = strip(inner);
+        if (!is_ident(name)) throw ParseFail("ai havoc of non-identifier");
+        e.fresh += 1;
+        auto fresh_name = "__hv" + std::to_string(e.fresh) + "_" + name;
+        if (e.arrays.count(name)) {
+            int n = e.arrays.at(name).n;
+            auto arr = e.ctx.constant(fresh_name.c_str(),
+                e.ctx.array_sort(e.ctx.bv_sort(WIDTH), e.ctx.bv_sort(WIDTH)));
+            e.arrays.insert_or_assign(name, Arr{arr, n});
+        } else {
+            int w = e.bits.count(name) ? e.bits[name] : WIDTH;
+            e.set(name, e.bv(fresh_name, w));
+            auto it = e.uninit.find(name);
+            bool surely_init = false;
+            if (it != e.uninit.end()) {
+                try {
+                    surely_init = it->second.simplify().is_false();
+                } catch (...) {}
+                // Havoc keeps "maybe uninitialised" as an unknown flag: the
+                // loop may run zero times. Conservative (fails closed).
+                if (!surely_init)
+                    e.uninit.insert_or_assign(name, e.ctx.bool_const((fresh_name + "_u").c_str()));
+            }
+        }
+        return rest;
+    }
+    if (starts_kw(text, "__prism_step")) {
+        auto rest = lstrip(text.substr(12));
+        auto [cond_src, r1] = paren(rest);
+        auto [body, r2] = block_or_stmt(r1);
+        auto cond = as_bool(expr(e, cond_src));
+        auto saved_vars = e.vars;
+        auto saved_arr = e.arrays;
+        auto saved_uninit = e.uninit;
+        auto saved_path = e.path_true;
+        e.path_true = saved_path && cond;
+        try {
+            stmts(e, body);
+        } catch (const ContinueLoop&) {
+            throw ParseFail("continue in ai loop cut");
+        }
+        e.vars = saved_vars;
+        e.arrays = saved_arr;
+        e.uninit = saved_uninit;
+        e.path_true = saved_path && !cond;
+        e.retag_unsigned();
+        return r2;
+    }
+    throw ParseFail("unknown ai hook");
 }
 
 void Parser::return_stmt(Enc& e, std::string stmt) {
@@ -4895,7 +4981,7 @@ Finding bmc_function(const FunctionInfo& fn, int unwind, bool try_unbounded,
     return base;
 }
 
-Finding k_induction(const FunctionInfo& fn, int unwind, bool allow_local_pointers = false) {
+Finding k_induction_base(const FunctionInfo& fn, int unwind, bool allow_local_pointers) {
     auto rec = bmc_function(fn, unwind, true, nullptr, allow_local_pointers, true);
     if (rec.status != laws::BOUNDED) {
         rec.extra["k_induction"] = "not-needed";
@@ -4961,10 +5047,123 @@ Finding k_induction(const FunctionInfo& fn, int unwind, bool allow_local_pointer
     return rec;
 }
 
+// Hook (roadmap 4.2): a function k-induction leaves BOUNDED gets one more try
+// with the step strengthened by Houdini-filtered invariants (prism::ai).
+// Only a closed step plus a holding base case turns it PROVED-UNBOUNDED.
+Finding k_induction(const FunctionInfo& fn, int unwind, bool allow_local_pointers = false) {
+    auto rec = k_induction_base(fn, unwind, allow_local_pointers);
+    if (rec.status != laws::BOUNDED) return rec;
+    return ai::strengthen_bounded(fn, rec, unwind);
+}
+
 #endif  // PRISM_HAS_Z3
 
 
 }  // namespace
+
+namespace ai {
+
+ProgramCheck check_program(const FunctionInfo& fn, const std::string& body, int unwind,
+                           unsigned timeout_ms, bool only_invariants) {
+    ProgramCheck out;
+#ifdef PRISM_HAS_Z3
+    try {
+        Parser p(body, fn.params, unwind, enums_from_fn(fn));
+        p.ai_hooks = true;
+        auto enc = p.run();
+        if (!enc) {
+            out.error = p.err.empty() ? std::string("parse failed") : p.err;
+            return out;
+        }
+        out.encoded = true;
+        out.unwind_ok = enc->unwind_ok;
+        // One call for all properties first: unsat means every one holds.
+        // Otherwise the model refutes each property it satisfies (Houdini
+        // drops many candidates per solver call); the rest are re-checked.
+        std::vector<int> todo;
+        for (int i = 0; i < static_cast<int>(enc->props.size()); ++i) {
+            bool inv = enc->props[static_cast<size_t>(i)].name.rfind("ai-inv#", 0) == 0;
+            if (!only_invariants || inv) todo.push_back(i);
+        }
+        std::map<int, std::string> verdict, models;
+        auto model_text = [](const z3::model& m) {
+            std::string txt;
+            int shown = 0;
+            for (unsigned i = 0; i < m.num_consts() && shown < 24; ++i) {
+                auto d = m.get_const_decl(i);
+                if (!d.range().is_bv()) continue;
+                auto v = m.get_const_interp(d);
+                if (!txt.empty()) txt += ", ";
+                txt += d.name().str() + "=" + v.to_string();
+                ++shown;
+            }
+            return txt;
+        };
+        for (int guard = 0; !todo.empty() && guard < 64; ++guard) {
+            z3::expr_vector any(enc->ctx);
+            for (int i : todo) any.push_back(enc->props[static_cast<size_t>(i)].cond);
+            z3::solver s(enc->ctx);
+            s.set("timeout", timeout_ms);
+            s.add(z3::mk_or(any));
+            auto r = s.check();
+            if (r == z3::unsat) {
+                for (int i : todo) verdict[i] = "unsat";
+                todo.clear();
+                break;
+            }
+            if (r != z3::sat) break;
+            auto m = s.get_model();
+            std::vector<int> left;
+            for (int i : todo) {
+                auto v = m.eval(enc->props[static_cast<size_t>(i)].cond, true);
+                if (v.is_true()) {
+                    verdict[i] = "sat";
+                    models[i] = model_text(m);
+                } else {
+                    left.push_back(i);
+                }
+            }
+            if (left.size() == todo.size()) break;  // no progress: fall back to single checks
+            todo = std::move(left);
+        }
+        for (int i : todo) {
+            z3::solver s(enc->ctx);
+            s.set("timeout", timeout_ms);
+            s.add(enc->props[static_cast<size_t>(i)].cond);
+            auto r = s.check();
+            verdict[i] = r == z3::sat ? "sat" : r == z3::unsat ? "unsat" : "unknown";
+            if (r == z3::sat) models[i] = model_text(s.get_model());
+        }
+        for (int i = 0; i < static_cast<int>(enc->props.size()); ++i) {
+            auto& prop = enc->props[static_cast<size_t>(i)];
+            ProgramProp pp;
+            pp.name = prop.name;
+            pp.cls = prop.cls;
+            auto it = verdict.find(i);
+            bool inv = prop.name.rfind("ai-inv#", 0) == 0;
+            if (only_invariants && !inv) pp.result = "skipped";
+            else pp.result = it == verdict.end() ? "unknown" : it->second;
+            if (auto mt = models.find(i); mt != models.end()) pp.model = mt->second;
+            out.props.push_back(std::move(pp));
+        }
+    } catch (const z3::exception& ex) {
+        out.encoded = false;
+        out.error = std::string("z3: ") + ex.msg();
+    } catch (const std::exception& ex) {
+        out.encoded = false;
+        out.error = ex.what();
+    }
+#else
+    (void)fn;
+    (void)body;
+    (void)unwind;
+    (void)timeout_ms;
+    out.error = "z3 not built";
+#endif
+    return out;
+}
+
+}  // namespace ai
 
 ForkFlipResult solve_fork_flip(const FunctionInfo& fn, const std::map<std::string, int>& seed,
                                const std::string& cond, bool want) {

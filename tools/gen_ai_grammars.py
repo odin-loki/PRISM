@@ -1,0 +1,11 @@
+"""Regenerate src/prism/ai/grammars.inc from grammars/*.gbnf (verbatim raw strings)."""
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).resolve().parents[1]
+out = ["// Generated from grammars/*.gbnf. Keep byte-identical (tests/test_ai.py).\n"]
+for name in ("invariants", "harness", "contract", "explain"):
+    text = (root / "grammars" / f"{name}.gbnf").read_text(encoding="utf-8")
+    assert ")GBNF\"" not in text
+    out.append(f'constexpr const char* GBNF_{name.upper()} = R"GBNF({text})GBNF";\n')
+(root / "src/prism/ai/grammars.inc").write_text("".join(out), encoding="utf-8")

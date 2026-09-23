@@ -1,0 +1,13 @@
+# PRISM loop-invariant candidates: a JSON list of C boolean expressions.
+# At run time PRISM replaces the ident rule with the loop's variable names,
+# so the model can only name variables that exist. Output is re-validated
+# after decoding; anything else is rejected and logged (ai_audit.jsonl).
+root   ::= "[" ws ( inv ( ws "," ws inv ){0,15} )? ws "]" ws
+inv    ::= "\"" expr "\""
+expr   ::= term ( ws binop ws term ){0,8}
+term   ::= "!"? atom | "-" atom
+atom   ::= ident | number | "(" ws expr ws ")"
+binop  ::= "+" | "-" | "*" | "/" | "%" | "<=" | ">=" | "<" | ">" | "==" | "!=" | "&&" | "||"
+number ::= [0-9] [0-9]{0,9}
+ident  ::= [a-zA-Z_] [a-zA-Z0-9_]{0,31}
+ws     ::= [ ]{0,2}

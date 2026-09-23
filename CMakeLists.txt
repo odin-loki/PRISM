@@ -78,6 +78,10 @@ endif()
 # made Ninja run cmake --regenerate-during-build on every source-tree change.
 set(PRISM_SRC
   src/prism/adapters.cpp
+  src/prism/ai/core.cpp
+  src/prism/ai/explain.cpp
+  src/prism/ai/harness.cpp
+  src/prism/ai/invariants.cpp
   src/prism/bmc.cpp
   src/prism/capi.cpp
   src/prism/checkers_api.cpp

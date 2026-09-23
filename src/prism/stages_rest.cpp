@@ -45,6 +45,9 @@
 
 #include <nlohmann/json.hpp>
 
+#include "prism/ai.hpp"
+#include "ai/ai_internal.hpp"
+
 #ifdef PRISM_HAS_LLAMA
 #  include "llama.h"
 #endif
@@ -6526,6 +6529,13 @@ std::vector<Finding> run_harness_bmc(const std::vector<FunctionInfo>& functions,
         if (fn.kind != "POINTER") continue;
         auto harnessed = materialize(fn);
         if (!harnessed) {
+            // Roadmap 4.2: draft the missing preconditions (template, then the
+            // model when one is bound). PROVED-ASSUMING at best, every
+            // assumption listed; no draft keeps the NEEDS-HARNESS row below.
+            if (auto drafted = ai::drafted_harness_bmc(fn, unwind)) {
+                out.push_back(std::move(*drafted));
+                continue;
+            }
             auto f = make_find(
                 "harness", laws::NEEDS_HARNESS, fn, "",
                 "POINTER: no honest requires; unguarded BMC would invent "
@@ -6980,7 +6990,24 @@ std::vector<Finding> execute_cex(const std::vector<Finding>& fails, const std::v
     return out;
 }
 
+namespace {
+std::vector<Finding> rlef_repair_rounds(const Finding& fail, const Config& cfg);
+}
+
+// Repair stage: the RLEF rounds, then (roadmap 9.3) the counterexample
+// explanation and BMC-verified fix rows of prism::ai (HYPOTHESIS / READS,
+// NOTRUN without a model). Neither changes the FAILED verdict.
 std::vector<Finding> rlef_repair(const Finding& fail, const Config& cfg) {
+    auto out = rlef_repair_rounds(fail, cfg);
+    if (fail.status == laws::FAILED) {
+        auto ex = ai::explain_failed(fail, cfg);
+        out.insert(out.end(), ex.begin(), ex.end());
+    }
+    return out;
+}
+
+namespace {
+std::vector<Finding> rlef_repair_rounds(const Finding& fail, const Config& cfg) {
     LlamaEngine engine(cfg);
     if (!engine.available()) {
         auto f = nr("repair", LLM_UNAVAILABLE_MSG);
@@ -7095,5 +7122,13 @@ std::vector<Finding> rlef_repair(const Finding& fail, const Config& cfg) {
     f.extra["best"] = best_src.substr(0, 1000);
     return {f};
 }
+}  // namespace
+
+namespace ai {
+std::optional<std::string> http_request_raw(const std::string& method, const std::string& url,
+                                            const std::string& body, int timeout_ms) {
+    return http_request(method, url, body, timeout_ms);
+}
+}  // namespace ai
 
 }  // namespace prism

@@ -1,5 +1,6 @@
 #include "prism/pipeline.hpp"
 
+#include "prism/ai.hpp"
 #include "prism/cparse.hpp"
 #include "prism/journal.hpp"
 #include "prism/laws.hpp"
@@ -324,6 +325,9 @@ RunReport run_pipeline(const Config& cfg) {
     stage("dafny", [&] { return run_dafny(sources, cfg); });
     stage("contracts", [&] { return prove_contracts(functions, cfg.unwind); });
     stage("wp", [&] { return run_wp(functions, cfg.unwind); });
+    // Roadmap 4.2/9.6: model-assisted invariants, harnesses and explanations
+    // see this run's config and log to <out>/ai_audit.jsonl.
+    ai::Session ai_session(cfg);
     auto bmc_rec = stage("bmc", [&] { return run_bmc(inline_static(functions), cfg.unwind); });
     stage("harness", [&] { return run_harness_bmc(functions, cfg.unwind); });
     stage("concolic", [&] { return run_concolic(functions, 32); });
