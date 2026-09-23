@@ -1,0 +1,10 @@
+format_version: 1
+input_files: kindmem_prefix_false.c
+language: C
+property: memsafety
+expected:
+  kindmem_prefix_false: false
+witness:
+  kindmem_prefix_false: [20, 40]
+sanitizer_blind:
+  - kindmem_prefix_false

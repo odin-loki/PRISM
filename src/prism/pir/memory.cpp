@@ -130,9 +130,27 @@ z3::expr SymMem::align(const z3::expr& ptr) {
     return per_obj(ptr, bv(1, 64), [&](const Obj& o) { return bv(o.align, 64); });
 }
 
+std::size_t SymMem::havoc_objects(const z3::expr& guard, const std::vector<uint64_t>& ids, bool all,
+                                  bool keep_init) {
+    std::vector<uint64_t> todo;
+    if (all) {
+        for (auto& o : objs_)
+            if (o.kind != MemKind::Const) todo.push_back(o.id);
+    } else {
+        todo = ids;
+    }
+    for (auto id : todo) {
+        auto p = bv(make_ptr(id, 0), 64);  // numeral: known(p) == id
+        Entry e{Entry::HavocObj, guard, p, bv(0, 64), p, bv(0, cw_)};
+        e.keep = keep_init;
+        add_entry(std::move(e));
+    }
+    return todo.size();
+}
+
 void SymMem::add_entry(Entry e) {
     if (enc_ == MemEncoding::Bv) {
-        if (e.kind == Entry::Havoc) {
+        if (e.kind == Entry::Havoc || e.kind == Entry::HavocObj) {
             e.havoc = static_cast<int>(havoc_reads_.size());
             havoc_reads_.emplace_back();
         }
@@ -145,6 +163,14 @@ void SymMem::add_entry(Entry e) {
         return;
     }
     auto x = c_.bv_const(("mem!x" + std::to_string(fresh_++)).c_str(), 64);
+    if (e.kind == Entry::HavocObj) {
+        auto h = c_.constant(("mem!havocobj" + std::to_string(fresh_++)).c_str(),
+                             c_.array_sort(c_.bv_sort(64), c_.bv_sort(cw_)));
+        z3::expr val = z3::select(h, x);
+        if (e.keep) val = val | (z3::select(A, x) & bv(uint64_t{1} << kCellInit, cw_));
+        A = z3::lambda(x, z3::ite(e.guard && objid(x) == objid(e.addr), val, z3::select(A, x)));
+        return;
+    }
     z3::expr hit = e.guard && in_range(x, e.addr, e.len);
     z3::expr val = e.cell;
     if (e.kind == Entry::Copy) {
@@ -189,6 +215,17 @@ z3::expr SymMem::read_cell_log(const z3::expr& addr, std::size_t upto) {
                 for (auto& [a2, h2] : reads) side_.push_back(z3::implies(addr == a2, h == h2));
                 reads.emplace_back(addr, h);
                 v = z3::ite(e.guard && in_range(addr, e.addr, e.len), cell_of(h, bv(1, 1), 0), v);
+                break;
+            }
+            case Entry::HavocObj: {
+                // one arbitrary cell per address (value, initialised, tag)
+                auto h = c_.bv_const(("mem!ho" + std::to_string(fresh_++)).c_str(), cw_);
+                auto& reads = havoc_reads_[static_cast<std::size_t>(e.havoc)];
+                for (auto& [a2, h2] : reads) side_.push_back(z3::implies(addr == a2, h == h2));
+                reads.emplace_back(addr, h);
+                z3::expr cell = h;
+                if (e.keep) cell = h | (v & bv(uint64_t{1} << kCellInit, cw_));
+                v = z3::ite(e.guard && objid(addr) == objid(e.addr), cell, v);
                 break;
             }
         }

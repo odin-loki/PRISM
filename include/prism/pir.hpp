@@ -255,6 +255,13 @@ struct Stmt {
     std::vector<Arg> args;     // Check/Assume: args[0] is the i1 condition
     bool uninit = false;       // Havoc of an uninitialised local
     bool nondet = false;       // Havoc of a nondet source (__VERIFIER_nondet_*)
+    // Havoc of a program's own __VERIFIER_nondet_* call (not one inside a
+    // library model): the callee, its C signedness and the call's source
+    // column (`line` holds the line). The counterexample of a refutation
+    // lists these values in call order (Verdict::extra["nondet"]).
+    std::string nondet_fn;
+    bool nondet_unsigned = false;
+    int col = 0;
     // Check: violation when args[0] == 1 (PIR `check` = assert(!args[0])).
     std::string prop;          // "ovf+", "div0", "shift", ...
     std::string cls;           // taxonomy class (INT-SIGNED-OVF ...)

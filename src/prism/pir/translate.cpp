@@ -62,6 +62,15 @@ bool is_overflow_intrinsic(std::string_view n) {
 
 bool starts(std::string_view s, std::string_view p) { return s.starts_with(p); }
 
+// C signedness of a __VERIFIER_nondet_<type>() result (the IR type has none):
+// uint, ulong, uchar, ushort, unsigned, ulonglong, u32, ..., bool, _Bool,
+// size_t, pointer are unsigned; char is signed (x86-64 and AArch64 Linux differ,
+// SV-COMP's LP64 tasks follow x86-64).
+bool nondet_is_unsigned(std::string_view fn) {
+    auto t = fn.substr(std::string_view("__VERIFIER_nondet_").size());
+    return t.starts_with("u") || t == "bool" || t == "_Bool" || t == "size_t" || t == "pointer";
+}
+
 struct Frame {
     const ir::Function* f = nullptr;
     std::string prefix;
@@ -976,7 +985,18 @@ struct Tr final : pirmem::TrApi {
             if (starts(n, "__VERIFIER_nondet_") || starts(n, "nondet_")) {
                 int dst = result_var(fr, in);
                 if (in.ty.kind != ir::Type::Void && dst < 0) throw Unenc{"UNENCODED: call @" + n};
-                if (dst >= 0) havoc(cur, out.vars[static_cast<std::size_t>(dst)].width, false, true, dst);
+                if (dst >= 0) {
+                    havoc(cur, out.vars[static_cast<std::size_t>(dst)].width, false, true, dst);
+                    if (model_stack.empty() && starts(n, "__VERIFIER_nondet_")) {
+                        // a call of the program itself: its value goes into the
+                        // counterexample's nondet trace (encode.cpp nondet_trace)
+                        auto& s = stmts(cur).back();
+                        s.nondet_fn = n;
+                        s.nondet_unsigned = nondet_is_unsigned(n);
+                        s.line = line;
+                        s.col = l.col;
+                    }
+                }
                 out.nondet = true;
                 return;
             }

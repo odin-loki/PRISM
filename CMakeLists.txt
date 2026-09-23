@@ -131,6 +131,8 @@ endif()
 set(PRISM_SRC
   src/prism/adapters.cpp
   src/prism/astlint.cpp
+  src/prism/astlint_checks.cpp
+  src/prism/astlint_libclang.cpp
   src/prism/ai/ask.cpp
   src/prism/ai/core.cpp
   src/prism/ai/draft.cpp
@@ -269,6 +271,34 @@ if(PRISM_HAS_Z3)
     "${PRISM_ROOT}/third_party/z3/src/api"
     "${PRISM_ROOT}/third_party/z3/src/api/c++")
   target_compile_definitions(prism_core PUBLIC PRISM_HAS_Z3)
+endif()
+
+# Roadmap 2.8: the Clang-AST lints parse in process through libclang's C API.
+# Only the header is needed at build time: the library is dlopen()ed at run
+# time (src/prism/astlint_libclang.cpp), so a machine without libclang.so still
+# runs PRISM and the layer falls back to clang as a process. Default ON when
+# <clang-c/Index.h> is found (apt install libclang-18-dev).
+option(PRISM_LIBCLANG "Clang-AST lints through libclang (header needed at build time)" ON)
+if(PRISM_LIBCLANG)
+  set(_llvm_hints)
+  foreach(_v 21 20 19 18 17)
+    list(APPEND _llvm_hints "/usr/lib/llvm-${_v}")
+  endforeach()
+  list(APPEND _llvm_hints "/usr/local/opt/llvm" "/opt/homebrew/opt/llvm" "C:/Program Files/LLVM")
+  find_path(PRISM_CLANG_C_INCLUDE clang-c/Index.h
+    HINTS ${_llvm_hints} PATH_SUFFIXES include)
+  find_library(PRISM_LIBCLANG_LIBRARY NAMES clang libclang clang-18 clang-19 clang-20 clang-17
+    HINTS ${_llvm_hints} PATH_SUFFIXES lib)
+  if(PRISM_CLANG_C_INCLUDE)
+    target_include_directories(prism_core SYSTEM PRIVATE "${PRISM_CLANG_C_INCLUDE}")
+    target_compile_definitions(prism_core PRIVATE PRISM_HAS_LIBCLANG)
+    if(PRISM_LIBCLANG_LIBRARY)
+      target_compile_definitions(prism_core PRIVATE PRISM_LIBCLANG_HINT="${PRISM_LIBCLANG_LIBRARY}")
+    endif()
+    message(STATUS "libclang: ${PRISM_CLANG_C_INCLUDE} (run time: ${PRISM_LIBCLANG_LIBRARY}, dlopen)")
+  else()
+    message(STATUS "libclang header not found: the Clang-AST lints use clang as a process")
+  endif()
 endif()
 
 # ISO C++ <thread> / std::jthread (glibc also provides C11 <threads.h>).

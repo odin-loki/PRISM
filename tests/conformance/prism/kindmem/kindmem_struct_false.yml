@@ -1,0 +1,10 @@
+format_version: 1
+input_files: kindmem_struct_false.c
+language: C
+property: memsafety
+expected:
+  kindmem_struct_false: false
+witness:
+  kindmem_struct_false: [20, 5]
+sanitizer_blind:
+  - kindmem_struct_false
