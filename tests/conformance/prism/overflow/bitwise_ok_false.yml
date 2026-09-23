@@ -1,0 +1,8 @@
+format_version: 1
+input_files: bitwise_ok_false.c
+language: C
+property: no-overflow
+expected:
+  bitwise_ok_false: false
+witness:
+  bitwise_ok_false: [2147483647, 1]

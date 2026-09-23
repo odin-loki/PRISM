@@ -1,0 +1,8 @@
+format_version: 1
+input_files: c23_enum_fixed_false.c
+language: C
+property: no-overflow
+expected:
+  c23_enum_fixed_false: false
+witness:
+  c23_enum_fixed_false: [10000000]

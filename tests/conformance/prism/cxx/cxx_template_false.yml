@@ -1,0 +1,8 @@
+format_version: 1
+input_files: cxx_template_false.cpp
+language: C++
+property: no-overflow
+expected:
+  cxx_template_false: false
+witness:
+  cxx_template_false: [1500000000]

@@ -1,0 +1,6 @@
+format_version: 1
+input_files: c23_empty_init_true.c
+language: C
+property: no-oob
+expected:
+  c23_empty_init_true: true

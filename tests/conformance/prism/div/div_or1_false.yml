@@ -1,0 +1,8 @@
+format_version: 1
+input_files: div_or1_false.c
+language: C
+property: no-div0
+expected:
+  div_or1_false: false
+witness:
+  div_or1_false: [3, 2]

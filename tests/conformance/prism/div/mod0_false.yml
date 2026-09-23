@@ -1,0 +1,8 @@
+format_version: 1
+input_files: mod0_false.c
+language: C
+property: no-div0
+expected:
+  mod0_false: false
+witness:
+  mod0_false: [7, 0]

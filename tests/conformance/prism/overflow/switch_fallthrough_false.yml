@@ -1,0 +1,8 @@
+format_version: 1
+input_files: switch_fallthrough_false.c
+language: C
+property: no-overflow
+expected:
+  switch_fallthrough_false: false
+witness:
+  switch_fallthrough_false: [0, 2000000000]

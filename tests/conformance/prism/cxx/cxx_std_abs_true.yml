@@ -1,0 +1,6 @@
+format_version: 1
+input_files: cxx_std_abs_true.cpp
+language: C++
+property: no-overflow
+expected:
+  cxx_std_abs_true: true

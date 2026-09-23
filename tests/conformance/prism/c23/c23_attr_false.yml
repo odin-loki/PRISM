@@ -1,0 +1,8 @@
+format_version: 1
+input_files: c23_attr_false.c
+language: C
+property: no-overflow
+expected:
+  c23_attr_false: false
+witness:
+  c23_attr_false: [46341]

@@ -1,0 +1,8 @@
+format_version: 1
+input_files: assign_chain_false.c
+language: C
+property: no-overflow
+expected:
+  assign_chain_false: false
+witness:
+  assign_chain_false: [134217727]

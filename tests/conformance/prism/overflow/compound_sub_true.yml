@@ -1,0 +1,6 @@
+format_version: 1
+input_files: compound_sub_true.c
+language: C
+property: no-overflow
+expected:
+  compound_sub_true: true

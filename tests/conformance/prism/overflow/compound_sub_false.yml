@@ -1,0 +1,8 @@
+format_version: 1
+input_files: compound_sub_false.c
+language: C
+property: no-overflow
+expected:
+  compound_sub_false: false
+witness:
+  compound_sub_false: [-2147483648, 1]

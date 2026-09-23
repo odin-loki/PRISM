@@ -1,0 +1,8 @@
+format_version: 1
+input_files: nested_if_false.c
+language: C
+property: no-overflow
+expected:
+  nested_if_false: false
+witness:
+  nested_if_false: [69999, 69999]

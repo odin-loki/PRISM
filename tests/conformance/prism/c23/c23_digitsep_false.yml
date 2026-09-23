@@ -1,0 +1,8 @@
+format_version: 1
+input_files: c23_digitsep_false.c
+language: C
+property: no-overflow
+expected:
+  c23_digitsep_false: false
+witness:
+  c23_digitsep_false: [2148]

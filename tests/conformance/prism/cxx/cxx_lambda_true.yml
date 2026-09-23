@@ -1,0 +1,6 @@
+format_version: 1
+input_files: cxx_lambda_true.cpp
+language: C++
+property: no-overflow
+expected:
+  cxx_lambda_true: true

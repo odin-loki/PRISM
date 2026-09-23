@@ -1,0 +1,8 @@
+format_version: 1
+input_files: arr_char_idx_false.c
+language: C
+property: no-oob
+expected:
+  arr_char_idx_false: false
+witness:
+  arr_char_idx_false: [-1]

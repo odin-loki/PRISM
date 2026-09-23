@@ -1,0 +1,8 @@
+format_version: 1
+input_files: abs_libc_false.c
+language: C
+property: no-overflow
+expected:
+  abs_libc_false: false
+witness:
+  abs_libc_false: [-2147483648]

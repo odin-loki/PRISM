@@ -1,0 +1,8 @@
+format_version: 1
+input_files: shift_by_unsigned_false.c
+language: C
+property: no-shift-ub
+expected:
+  shift_by_unsigned_false: false
+witness:
+  shift_by_unsigned_false: [-8, 1]

@@ -1,0 +1,8 @@
+format_version: 1
+input_files: preinc_false.c
+language: C
+property: no-overflow
+expected:
+  preinc_false: false
+witness:
+  preinc_false: [2147483647]

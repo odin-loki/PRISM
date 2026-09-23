@@ -1,0 +1,6 @@
+format_version: 1
+input_files: mod0_true.c
+language: C
+property: no-div0
+expected:
+  mod0_true: true

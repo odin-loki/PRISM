@@ -1,0 +1,8 @@
+format_version: 1
+input_files: char_shift_false.c
+language: C
+property: no-shift-ub
+expected:
+  char_shift_false: false
+witness:
+  char_shift_false: [255]

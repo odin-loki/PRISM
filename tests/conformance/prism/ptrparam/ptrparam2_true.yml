@@ -1,0 +1,8 @@
+format_version: 1
+input_files: ptrparam2_true.c
+language: C
+property: no-null-deref
+expected:
+  ptrparam2_true: true
+expect_status:
+  ptrparam2_true: NEEDS-HARNESS

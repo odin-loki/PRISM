@@ -1,0 +1,6 @@
+format_version: 1
+input_files: c23_binlit_true.c
+language: C
+property: no-overflow
+expected:
+  c23_binlit_true: true

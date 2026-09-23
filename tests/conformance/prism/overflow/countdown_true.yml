@@ -1,0 +1,6 @@
+format_version: 1
+input_files: countdown_true.c
+language: C
+property: no-overflow
+expected:
+  countdown_true: true

@@ -1,0 +1,6 @@
+format_version: 1
+input_files: div_const_ok_true.c
+language: C
+property: no-div0
+expected:
+  div_const_ok_true: true

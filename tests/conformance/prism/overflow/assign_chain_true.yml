@@ -1,0 +1,6 @@
+format_version: 1
+input_files: assign_chain_true.c
+language: C
+property: no-overflow
+expected:
+  assign_chain_true: true

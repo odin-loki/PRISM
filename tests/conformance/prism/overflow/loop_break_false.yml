@@ -1,0 +1,8 @@
+format_version: 1
+input_files: loop_break_false.c
+language: C
+property: no-overflow
+expected:
+  loop_break_false: false
+witness:
+  loop_break_false: [2147483000]

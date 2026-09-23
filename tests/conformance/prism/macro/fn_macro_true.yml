@@ -1,0 +1,6 @@
+format_version: 1
+input_files: fn_macro_true.c
+language: C
+property: no-overflow
+expected:
+  fn_macro_true: true

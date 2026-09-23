@@ -1,0 +1,8 @@
+format_version: 1
+input_files: ushl_false.c
+language: C
+property: no-shift-ub
+expected:
+  ushl_false: false
+witness:
+  ushl_false: [1, 32]
