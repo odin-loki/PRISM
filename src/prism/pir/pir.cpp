@@ -3,6 +3,8 @@
 
 #include "prism/pir.hpp"
 
+#include "memory.hpp"
+
 #include <array>
 #include <cstdio>
 #include <sstream>
@@ -79,6 +81,10 @@ const char* op_name(Op op) {
         case Op::LostBitsA: return "ashr.inexact";
         case Op::InexactU: return "udiv.inexact";
         case Op::InexactS: return "sdiv.inexact";
+        case Op::ObjSize: return "obj.size";
+        case Op::ObjLive: return "obj.live";
+        case Op::ObjKind: return "obj.kind";
+        case Op::ObjAlign: return "obj.align";
     }
     return "?";
 }
@@ -89,6 +95,32 @@ std::string arg_text(const Function& fn, const Arg& a) {
     if (a.is_const) return "i" + std::to_string(a.width) + " " + std::to_string(a.bits);
     if (a.var < 0 || a.var >= static_cast<int>(fn.vars.size())) return "%?";
     return "%" + fn.vars[static_cast<std::size_t>(a.var)].name;
+}
+
+std::string var_text(const Function& fn, int v) {
+    if (v < 0 || v >= static_cast<int>(fn.vars.size())) return "%?";
+    auto& x = fn.vars[static_cast<std::size_t>(v)];
+    return "%" + x.name + ":i" + std::to_string(x.width);
+}
+
+std::string mem_stmt_text(const Function& fn, const Stmt& s) {
+    std::string args;
+    for (std::size_t k = 0; k < s.args.size(); ++k) args += (k ? ", " : "") + arg_text(fn, s.args[k]);
+    switch (s.kind) {
+        case Stmt::Alloc:
+            return var_text(fn, s.dst) + " = alloc " + mem_kind_name(s.mkind) + " " + args + " align " +
+                   std::to_string(s.align) + " init " + std::to_string(s.init) + (s.msg.empty() ? "" : "  ; " + s.msg);
+        case Stmt::Free: return "free " + args;
+        case Stmt::Load:
+            return var_text(fn, s.dst) + ", " + var_text(fn, s.dst2) + ", " + var_text(fn, s.dst3) + " = load " + args +
+                   (s.tag ? " tag " + std::to_string(s.tag) : "");
+        case Stmt::Store: return "store " + args + (s.tag ? " tag " + std::to_string(s.tag) : "");
+        case Stmt::MemCpy: return "memcpy " + args;
+        case Stmt::MemSet: return "memset " + args;
+        case Stmt::StackSave: return var_text(fn, s.dst) + " = stacksave";
+        case Stmt::StackRestore: return "stackrestore " + args;
+        default: return "?";
+    }
 }
 
 }  // namespace
@@ -130,6 +162,7 @@ std::string to_text(const Function& fn) {
                 case Stmt::Assume:
                     o << "  assume " << arg_text(fn, s.args[0]) << "\n";
                     break;
+                default: o << "  " << mem_stmt_text(fn, s) << "\n"; break;
             }
         }
         auto& t = bl.term;
@@ -359,12 +392,20 @@ uint64_t eval_op(Op op, unsigned w, const std::vector<uint64_t>& a, const std::v
             if (x == smin(xw) && y == mask(xw)) return 0;
             return (sval(x, xw) % sval(y, xw)) != 0;
         }
+        case Op::ObjSize:
+        case Op::ObjLive:
+        case Op::ObjKind:
+        case Op::ObjAlign: return 0;  // memory queries: evaluated by interpret() on its memory
     }
     return 0;
 }
 
 InterpResult interpret(const Function& fn, const std::vector<uint64_t>& args, uint64_t step_limit) {
     InterpResult r;
+    mem::ConcMem M;
+    // a store/copy/set whose address or length depends on a havoc makes every
+    // later load depend on it (the concrete run picked one of many writes)
+    bool mem_taint = false;
     std::vector<uint64_t> val(fn.vars.size(), 0);
     std::vector<char> taint(fn.vars.size(), 0);
     for (std::size_t i = 0; i < fn.params.size() && i < args.size(); ++i) {
@@ -421,8 +462,98 @@ InterpResult interpret(const Function& fn, const std::vector<uint64_t>& args, ui
                 }
                 continue;
             }
+            if (s.kind != Stmt::Assign) {
+                // memory statements (memory.hpp ConcMem; same semantics as SymMem)
+                auto A = [&](std::size_t i) { return get(s.args[i]); };
+                auto setv = [&](int dst, uint64_t v, bool t) {
+                    if (dst < 0) return;
+                    val[static_cast<std::size_t>(dst)] = v & mask(fn.vars[static_cast<std::size_t>(dst)].width);
+                    taint[static_cast<std::size_t>(dst)] = t;
+                };
+                switch (s.kind) {
+                    case Stmt::Alloc: {
+                        auto p = M.alloc(A(0), s.mkind, s.align, s.init);
+                        if (!p) {
+                            r.status = InterpResult::StepLimit;  // too large to run concretely
+                            return r;
+                        }
+                        setv(s.dst, *p, tainted(s.args[0]));
+                        break;
+                    }
+                    case Stmt::Free: M.free(A(0)); break;
+                    case Stmt::Load: {
+                        unsigned w = fn.vars[static_cast<std::size_t>(s.dst)].width;
+                        unsigned n = (w + 7) / 8;
+                        uint64_t v = 0, umask = 0;
+                        bool uninit = false, t = tainted(s.args[0]) || mem_taint, tagbad = false;
+                        for (unsigned k = 0; k < n; ++k) {
+                            auto c = M.read(A(0) + k);
+                            v |= static_cast<uint64_t>(c.val) << (8 * k);
+                            if (!c.init) umask |= uint64_t{1} << k;
+                            uninit = uninit || !c.init;
+                            t = t || c.taint;
+                            if (M.tags && s.tag && c.tag && c.tag != s.tag) tagbad = true;
+                        }
+                        setv(s.dst, v, t);
+                        if (s.dst2 >= 0)
+                            setv(s.dst2, fn.vars[static_cast<std::size_t>(s.dst2)].width == 1 ? uint64_t{uninit} : umask,
+                                 false);
+                        setv(s.dst3, tagbad, false);
+                        break;
+                    }
+                    case Stmt::Store: {
+                        unsigned n = (s.args[1].width + 7) / 8;
+                        uint64_t v = A(1);
+                        bool t = tainted(s.args[1]);
+                        if (tainted(s.args[0])) mem_taint = true;
+                        const bool per_byte = s.args[2].width > 1;
+                        for (unsigned k = 0; k < n; ++k)
+                            M.write(A(0) + k, mem::ConcMem::Cell{static_cast<uint8_t>(v >> (8 * k)),
+                                                                 ((A(2) >> (per_byte ? k : 0)) & 1) != 0,
+                                                                 static_cast<uint8_t>(s.tag), t});
+                        break;
+                    }
+                    case Stmt::MemCpy: {
+                        uint64_t n = A(2);
+                        if (tainted(s.args[0]) || tainted(s.args[2])) mem_taint = true;
+                        if (n > (uint64_t{1} << 24)) {
+                            r.status = InterpResult::StepLimit;
+                            return r;
+                        }
+                        std::vector<mem::ConcMem::Cell> tmp;
+                        for (uint64_t k = 0; k < n; ++k) tmp.push_back(M.read(A(1) + k));
+                        for (uint64_t k = 0; k < n; ++k) M.write(A(0) + k, tmp[static_cast<std::size_t>(k)]);
+                        steps += n;
+                        break;
+                    }
+                    case Stmt::MemSet: {
+                        uint64_t n = A(2);
+                        if (tainted(s.args[0]) || tainted(s.args[2])) mem_taint = true;
+                        if (n > (uint64_t{1} << 24)) {
+                            r.status = InterpResult::StepLimit;
+                            return r;
+                        }
+                        for (uint64_t k = 0; k < n; ++k)
+                            M.write(A(0) + k, mem::ConcMem::Cell{static_cast<uint8_t>(A(1)), true, 0, tainted(s.args[1])});
+                        steps += n;
+                        break;
+                    }
+                    case Stmt::StackSave: setv(s.dst, M.token(), false); break;
+                    case Stmt::StackRestore: M.stack_restore(A(0)); break;
+                    default: break;
+                }
+                continue;
+            }
             auto d = static_cast<std::size_t>(s.dst);
             unsigned w = fn.vars[d].width;
+            if (s.op == Op::ObjSize || s.op == Op::ObjLive || s.op == Op::ObjKind || s.op == Op::ObjAlign) {
+                auto p = get(s.args[0]);
+                uint64_t v = s.op == Op::ObjSize ? M.size(p) : s.op == Op::ObjLive ? M.live(p)
+                             : s.op == Op::ObjKind ? M.kind(p) : M.align(p);
+                val[d] = v & mask(w);
+                taint[d] = tainted(s.args[0]);
+                continue;
+            }
             if (s.op == Op::Havoc) {
                 val[d] = 0;
                 taint[d] = 1;

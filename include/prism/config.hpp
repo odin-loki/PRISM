@@ -39,6 +39,10 @@ struct Config {
     // builds, perl -c, cargo clippy, eslint) or from the LLM is opt-in
     // (--allow-exec). Default: those steps are NOTRUN. prism/config.py allow_exec.
     bool allow_exec = false;
+    // --strict-aliasing: the pir stage also checks effective types (C11
+    // 6.5p6-7) per byte. Opt-in: real code often violates them on purpose.
+    // C++ engine only (the Python engine is frozen, roadmap D8).
+    bool strict_aliasing = false;
 
     PRISM_API bool want(std::string_view name) const;
     PRISM_API std::optional<std::filesystem::path> which(

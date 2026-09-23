@@ -16,11 +16,14 @@
 //   __assert_fail          reached                    FUNC-CONTRACT
 //   read of an uninitialised local (instrumented before mem2reg) UNINIT-READ
 //   clang-folded UB (poison constant / UB diagnostic)  per diagnostic
+//   memory (alloca/load/store/getelementptr/memcpy/free ...): translate_mem.cpp
 //
 // Everything else is thrown as "UNENCODED: <construct>" (roadmap 2.1).
 
 #include "prism/laws.hpp"
 #include "prism/pir.hpp"
+
+#include "translate_mem.hpp"
 
 #include <algorithm>
 #include <map>
@@ -31,9 +34,8 @@
 namespace prism::pir {
 namespace {
 
-struct Unenc {
-    std::string reason;
-};
+using pirmem::Unenc;
+using pirmem::kPtrW;
 
 bool has_flag(const ir::Inst& in, std::string_view f) {
     return std::find(in.flags.begin(), in.flags.end(), f) != in.flags.end();
@@ -63,6 +65,12 @@ struct Frame {
     std::map<int, Arg> shadow;                          // var -> uninit shadow (i1)
     int ret_block = -1;
     int ret_var = -1;
+    std::map<std::string, const ir::Inst*> defs;        // result name -> defining instruction
+    std::vector<Arg> allocas;                           // entry-block stack objects (end at return)
+    int site_line = 0;                                  // inside a library model: the call site's line
+    std::set<int> raw;                                  // shadowed vars that are raw byte copies
+    int ret_shadow = -1;                                // uninit shadow of the returned value (inlined)
+    bool ret_shadow_used = false;
 };
 
 struct PPhi {
@@ -73,7 +81,7 @@ struct PPhi {
     std::vector<std::tuple<std::string, int, Arg, int>> in;
 };
 
-struct Tr {
+struct Tr final : pirmem::TrApi {
     const ir::Module& m;
     const TranslateOptions& opt;
     Function out;
@@ -82,8 +90,30 @@ struct Tr {
     std::vector<std::string> stack;
     std::set<int> folded_used;
     int uniq = 0;
+    std::vector<Stmt> prologue;  // runs before block 0 (globals, pointer-parameter objects)
+    std::vector<std::string> model_stack;  // library models being inlined (outermost first)
+    std::vector<char> unwind_ctx;          // enclosing invokes: 'T' terminate, 'H' handler/cleanup
+    std::string top_file;                  // source file of the analysed function
 
-    Tr(const ir::Module& mm, const TranslateOptions& o) : m(mm), opt(o) {}
+    static std::string model_display(const std::string& n) {
+        static const std::map<std::string, std::string> k{
+            {"_Znwm", "operator new"},       {"_Znam", "operator new[]"},     {"_ZdlPv", "operator delete"},
+            {"_ZdlPvm", "operator delete"}, {"_ZdaPv", "operator delete[]"}, {"_ZdaPvm", "operator delete[]"}};
+        auto it = k.find(n);
+        return it == k.end() ? n : it->second;
+    }
+    pirmem::MemTr mt;
+
+    Tr(const ir::Module& mm, const TranslateOptions& o) : m(mm), opt(o), mt(*this, mm) {}
+
+    // pirmem::TrApi
+    const ir::Module& module() const override { return m; }
+    const TranslateOptions& options() const override { return opt; }
+    Function& fn() override { return out; }
+    std::vector<Stmt>& stmts(int b) {
+        return b < 0 ? prologue : out.blocks[static_cast<std::size_t>(b)].stmts;
+    }
+    void push(int b, Stmt s) override { stmts(b).push_back(std::move(s)); }
 
     ir::DILoc loc(const ir::Inst& in) const {
         if (in.dbg.empty()) return {};
@@ -91,7 +121,7 @@ struct Tr {
         return it == m.locs.end() ? ir::DILoc{} : it->second;
     }
 
-    int newvar(const std::string& name, unsigned w) {
+    int newvar(const std::string& name, unsigned w) override {
         out.vars.push_back(Var{name, w});
         return static_cast<int>(out.vars.size()) - 1;
     }
@@ -107,14 +137,15 @@ struct Tr {
         s.dst = dst;
         s.op = op;
         s.args = std::move(args);
-        out.blocks[static_cast<std::size_t>(b)].stmts.push_back(std::move(s));
+        stmts(b).push_back(std::move(s));
     }
-    Arg assign(int b, Op op, unsigned w, std::vector<Arg> args, const char* base = "t") {
+    Arg assign(int b, Op op, unsigned w, std::vector<Arg> args, const char* base = "t") override {
         int v = newvar(tmpname(base), w);
         emit_assign(b, v, op, std::move(args));
         return Arg::v(v, w);
     }
-    void check(int b, Arg viol, std::string prop, std::string cls, std::string msg, int line) {
+    void check(int b, Arg viol, std::string prop, std::string cls, std::string msg, int line) override {
+        if (viol.is_const && viol.bits == 0) return;  // statically safe
         Stmt s;
         s.kind = Stmt::Check;
         s.args = {viol};
@@ -122,15 +153,16 @@ struct Tr {
         s.cls = std::move(cls);
         s.msg = std::move(msg);
         s.line = line;
-        out.blocks[static_cast<std::size_t>(b)].stmts.push_back(std::move(s));
+        if (!model_stack.empty()) s.msg += " (in the " + model_stack.front() + " library model)";
+        stmts(b).push_back(std::move(s));
     }
-    void assume(int b, Arg cond) {
+    void assume(int b, Arg cond) override {
         Stmt s;
         s.kind = Stmt::Assume;
         s.args = {cond};
-        out.blocks[static_cast<std::size_t>(b)].stmts.push_back(std::move(s));
+        stmts(b).push_back(std::move(s));
     }
-    Arg havoc(int b, unsigned w, bool uninit, bool nondet, int dst = -1) {
+    Arg havoc(int b, unsigned w, bool uninit, bool nondet, int dst = -1) override {
         if (dst < 0) dst = newvar(tmpname(uninit ? "uninit" : "undef"), w);
         Stmt s;
         s.kind = Stmt::Assign;
@@ -138,9 +170,12 @@ struct Tr {
         s.op = Op::Havoc;
         s.uninit = uninit;
         s.nondet = nondet;
-        out.blocks[static_cast<std::size_t>(b)].stmts.push_back(std::move(s));
+        stmts(b).push_back(std::move(s));
         return Arg::v(dst, w);
     }
+
+    // iN (<= 64) or ptr
+    unsigned vwidth(const ir::Type& t, std::string_view what = "type") const { return mt.value_width(t, what); }
 
     int var_of(Frame& fr, const std::string& name) {
         auto it = fr.env.find(name);
@@ -161,21 +196,45 @@ struct Tr {
                     throw Unenc{"UNENCODED: value %" + o.v.name + " of type " + o.ty.text};
                 Arg a = it->second;
                 if (use && !a.is_const) {
-                    if (auto sh = fr.shadow.find(a.var); sh != fr.shadow.end())
-                        check(b, sh->second, "uninit", "UNINIT-READ",
-                              "read of an uninitialised local variable", line);
+                    if (auto sh = fr.shadow.find(a.var); sh != fr.shadow.end()) {
+                        Arg s = sh->second;
+                        bool bytes = s.width > 1;  // raw byte copy: per-byte mask
+                        if (bytes) s = assign(b, Op::Ne, 1, {s, Arg::c(s.width, 0)}, "u");
+                        check(b, s, "uninit", "UNINIT-READ",
+                              bytes ? "use of a value with uninitialised bytes"
+                                    : "read of an uninitialised local variable",
+                              line);
+                    }
                 }
                 return a;
             }
             case ir::Value::Undef:
-                return havoc(b, int_width(o.ty, "operand type"), false, false);
+                return havoc(b, vwidth(o.ty, "operand type"), false, false);
             case ir::Value::Poison: {
-                auto w = int_width(o.ty, "operand type");
+                auto w = vwidth(o.ty, "operand type");
                 check(b, Arg::c(1, 1), "poison", "UB-POISON",
                       "poison value used (undefined behaviour folded by the front end)", line);
                 return havoc(b, w, false, false);
             }
-            default:
+            case ir::Value::Null:
+                if (o.ty.kind == ir::Type::Ptr) return Arg::c(kPtrW, 0);
+                break;
+            case ir::Value::Zero:
+                if (o.ty.kind == ir::Type::Ptr) return Arg::c(kPtrW, 0);
+                break;
+            case ir::Value::Global:
+                if (o.ty.kind == ir::Type::Ptr) return mt.global(o.v.name);
+                break;
+            case ir::Value::ConstExpr:
+                if (o.v.ce_op == "getelementptr") return mt.const_gep(b, o.v, line);
+                if ((o.v.ce_op == "inttoptr" || o.v.ce_op == "bitcast") && o.ty.kind == ir::Type::Ptr &&
+                    !o.v.elems.empty() && o.v.elems[0].v.kind == ir::Value::Int && o.v.elems[0].v.bits == 0)
+                    return Arg::c(kPtrW, 0);
+                throw Unenc{"UNENCODED: constant expression " + o.v.ce_op +
+                            (o.v.ce_op == "ptrtoint" ? " (address values are not modelled)" : "")};
+            default: break;
+        }
+        {
                 throw Unenc{"UNENCODED: operand " + o.ty.text + " " + o.v.text};
         }
     }
@@ -200,7 +259,9 @@ struct Tr {
                     }
                     continue;
                 }
+                fr.defs[in.result] = &in;
                 auto ty = in.op == "icmp" ? ir::Type{ir::Type::Int, 1, "i1", {}} : in.ty;
+                if (ty.kind == ir::Type::Ptr && ty.text == "ptr") ty = ir::Type{ir::Type::Int, kPtrW, "ptr", {}};
                 if (ty.kind == ir::Type::Int && ty.bits > 0 && ty.bits <= 64) {
                     int v = newvar(fr.prefix + in.result, ty.bits);
                     fr.env[in.result] = Arg::v(v, ty.bits);
@@ -236,9 +297,48 @@ struct Tr {
                 }
     }
 
+    // Blocks reachable from the entry along normal edges (br, switch, the
+    // normal destination of invoke). Landing pads and the cleanup code after
+    // them are only entered by an exception, which PIR does not propagate
+    // (a throw PRISM sees ends its path, see call()); they are not translated.
+    static std::set<std::string> normal_blocks(const ir::Function& f) {
+        std::map<std::string, const ir::Block*> by;
+        for (auto& b : f.blocks) by[b.name] = &b;
+        std::set<std::string> seen;
+        std::vector<std::string> work{f.blocks.front().name};
+        while (!work.empty()) {
+            auto n = work.back();
+            work.pop_back();
+            if (!seen.insert(n).second || !by.count(n)) continue;
+            for (auto& in : by[n]->insts) {
+                if (in.op == "br" || in.op == "switch")
+                    for (auto& t : in.targets) work.push_back(t);
+                if (in.op == "switch")
+                    for (auto& [c, t] : in.cases) work.push_back(t);
+                if (in.op == "invoke" && !in.targets.empty()) work.push_back(in.targets[0]);
+            }
+        }
+        return seen;
+    }
+
+    // Where an exception raised under an invoke goes: 'T' std::terminate
+    // (noexcept boundary), 'H' a catch handler or cleanup code.
+    static char unwind_kind(const ir::Function& f, const std::string& lpad) {
+        for (auto& b : f.blocks) {
+            if (b.name != lpad) continue;
+            for (auto& in : b.insts)
+                if (in.op == "call" && (in.callee == "__clang_call_terminate" || in.callee == "_ZSt9terminatev"))
+                    return 'T';
+            return 'H';
+        }
+        return 'H';
+    }
+
     void run_frame(Frame& fr) {
         const auto& f = *fr.f;
+        const auto live = normal_blocks(f);
         for (auto& bl : f.blocks) {
+            if (!live.count(bl.name)) continue;
             auto q = fr.prefix + bl.name;
             int cur = head[q];
             bool noreturn = false;
@@ -246,6 +346,7 @@ struct Tr {
             for (auto& in : bl.insts) {
                 if (terminated) break;
                 auto l = loc(in);
+                if (fr.site_line) l = ir::DILoc{fr.site_line, 0};
                 int line = l.line;
                 if (in.op == "phi") {
                     int dst = var_of(fr, in.result);
@@ -263,7 +364,7 @@ struct Tr {
                         int kind = o.v.kind == ir::Value::Undef ? 1 : o.v.kind == ir::Value::Poison ? 2 : 0;
                         Arg a;
                         if (kind == 0) a = operand(fr, o, cur, line, /*use=*/false);
-                        else a.width = int_width(o.ty);
+                        else a.width = vwidth(o.ty);
                         p.in.emplace_back(fr.prefix + pred, -1, a, kind);
                         if (ps.dst >= 0) {
                             Arg s = Arg::c(1, 0);
@@ -274,6 +375,27 @@ struct Tr {
                     }
                     pphis.push_back(std::move(p));
                     if (ps.dst >= 0) pphis.push_back(std::move(ps));
+                    continue;
+                }
+                if (in.op == "invoke") {
+                    // the call, then the normal edge (exception edges: see normal_blocks)
+                    ir::Inst call = in;
+                    call.op = "call";
+                    call.targets.clear();
+                    unwind_ctx.push_back(unwind_kind(f, in.targets.at(1)));
+                    bool nr = false;
+                    inst(fr, call, cur, l, nr);
+                    unwind_ctx.pop_back();
+                    Term t;
+                    if (!nr) {
+                        t.kind = Term::Jmp;
+                        auto it = head.find(fr.prefix + in.targets.at(0));
+                        if (it == head.end()) throw Unenc{"UNENCODED: invoke to unknown block"};
+                        t.t = it->second;
+                    }
+                    out.blocks[static_cast<std::size_t>(cur)].term = t;
+                    tail[q] = cur;
+                    terminated = true;
                     continue;
                 }
                 if (in.op == "br" || in.op == "ret" || in.op == "unreachable" || in.op == "switch") {
@@ -326,9 +448,37 @@ struct Tr {
             out.blocks[static_cast<std::size_t>(cur)].term = t;
             return;
         }
-        // ret
+        // ret (a raw byte copy is not a use: its shadow goes to the caller)
         std::optional<Arg> v;
-        if (!in.ops.empty()) v = operand(fr, in.ops[0], cur, line);
+        bool raw = !in.ops.empty() && in.ops[0].v.kind == ir::Value::Local && fr.env.count(in.ops[0].v.name) &&
+                   !fr.env[in.ops[0].v.name].is_const && fr.raw.count(fr.env[in.ops[0].v.name].var);
+        if (!in.ops.empty()) v = operand(fr, in.ops[0], cur, line, !raw);
+        if (fr.ret_shadow >= 0 && v) {
+            Arg s = Arg::c(out.vars[static_cast<std::size_t>(fr.ret_shadow)].width, 0);
+            if (raw && fr.shadow[v->var].width == s.width) {
+                s = fr.shadow[v->var];
+                fr.ret_shadow_used = true;
+            }
+            PPhi sp;
+            bool found = false;
+            for (auto& p : pphis)
+                if (p.block == fr.ret_block && p.dst == fr.ret_shadow) {
+                    p.in.emplace_back("", cur, s, 0);
+                    found = true;
+                }
+            if (!found) {
+                sp.block = fr.ret_block;
+                sp.dst = fr.ret_shadow;
+                sp.in.emplace_back("", cur, s, 0);
+                pphis.push_back(std::move(sp));
+            }
+        }
+        if (v && !in.ops.empty() && in.ops[0].ty.kind == ir::Type::Ptr) {
+            v->width = kPtrW;
+            mt.stack_escape_check(cur, *v, fr.allocas, line);
+        }
+        if (fr.ret_block >= 0)
+            for (auto& a : fr.allocas) mt.end_lifetime(cur, a);  // callee locals end here
         if (fr.ret_block >= 0) {
             Term t;
             t.kind = Term::Jmp;
@@ -373,6 +523,7 @@ struct Tr {
         Arg a = operand(fr, in.ops[0], cur, line);
         Arg b = operand(fr, in.ops[1], cur, line);
         a.width = b.width = w;
+        if (op == "sub" && is_ptrtoint(fr, in.ops[0]) && is_ptrtoint(fr, in.ops[1])) mt.ptr_sub_check(cur, a, b, line);
         bool nsw = has_flag(in, "nsw"), nuw = has_flag(in, "nuw"), exact = has_flag(in, "exact");
         Op r = Op::Add;
         auto zero = Arg::c(w, 0);
@@ -438,10 +589,10 @@ struct Tr {
         const auto& op = in.op;
         if (!in.parsed) {
             std::string what = op;
-            if (op == "load" || op == "store" || op == "alloca" || op == "getelementptr")
-                what += " (memory model not yet in PIR)";
+            for (auto& fl : in.flags) what += " " + fl;
             throw Unenc{"UNENCODED: " + what};
         }
+        if (mem_inst(fr, in, cur, line)) return;
         if (op == "add" || op == "sub" || op == "mul" || op == "udiv" || op == "sdiv" || op == "urem" ||
             op == "srem" || op == "shl" || op == "lshr" || op == "ashr" || op == "and" || op == "or" ||
             op == "xor" || op == "fadd" || op == "fsub" || op == "fmul" || op == "fdiv" || op == "frem") {
@@ -449,7 +600,13 @@ struct Tr {
             return;
         }
         if (op == "icmp") {
-            if (in.ty.kind == ir::Type::Ptr) throw Unenc{"UNENCODED: icmp on ptr"};
+            if (in.ty.kind == ir::Type::Ptr) {
+                if (in.ty.text != "ptr") throw Unenc{"UNENCODED: icmp on " + in.ty.text};
+                Arg a = operand(fr, in.ops[0], cur, line);
+                Arg b = operand(fr, in.ops[1], cur, line);
+                mt.icmp(cur, result_var(fr, in), in.pred, a, b, line);
+                return;
+            }
             unsigned w = int_width(in.ty, "icmp operand type");
             Arg a = operand(fr, in.ops[0], cur, line);
             Arg b = operand(fr, in.ops[1], cur, line);
@@ -465,7 +622,7 @@ struct Tr {
         if (op == "select") {
             if (in.ops[0].ty.kind != ir::Type::Int || in.ops[0].ty.bits != 1)
                 throw Unenc{"UNENCODED: select on " + in.ops[0].ty.text};
-            unsigned w = int_width(in.ty, "select type");
+            unsigned w = vwidth(in.ty, "select type");
             Arg c = operand(fr, in.ops[0], cur, line);
             Arg a = operand(fr, in.ops[1], cur, line);
             Arg b = operand(fr, in.ops[2], cur, line);
@@ -488,7 +645,7 @@ struct Tr {
             return;
         }
         if (op == "freeze") {
-            unsigned w = int_width(in.ty, "freeze type");
+            unsigned w = vwidth(in.ty, "freeze type");
             Arg a = operand(fr, in.ops[0], cur, line);
             a.width = w;
             emit_assign(cur, result_var(fr, in), Op::Copy, {a});
@@ -590,6 +747,23 @@ struct Tr {
                 assume(cur, arg(0));
                 return;
             }
+            if (starts(n, "llvm.memcpy.") || starts(n, "llvm.memmove.")) {
+                mt.memcpy_(cur, arg(0), arg(1), arg(2), starts(n, "llvm.memmove."), line);
+                return;
+            }
+            if (starts(n, "llvm.memset.")) {
+                mt.memset_(cur, arg(0), arg(1), arg(2), line);
+                return;
+            }
+            if (starts(n, "llvm.stacksave")) {
+                auto t = mt.stack_save(cur);
+                if (int dst = result_var(fr, in); dst >= 0) emit_assign(cur, dst, Op::Copy, {t});
+                return;
+            }
+            if (starts(n, "llvm.stackrestore")) {
+                mt.stack_restore(cur, arg(0));
+                return;
+            }
             if (starts(n, "llvm.dbg.") || n == "llvm.donothing" || n == "llvm.sideeffect" ||
                 starts(n, "llvm.experimental.noalias.scope.decl") || starts(n, "llvm.pseudoprobe"))
                 return;
@@ -600,6 +774,11 @@ struct Tr {
             }
             throw Unenc{"UNENCODED: call @" + n};
         }
+        if (starts(n, "__prism_")) {
+            model_intrinsic(fr, in, cur, line);
+            return;
+        }
+        if (format_call(fr, in, cur, line)) return;
         if (starts(n, "__prism.uninit.")) {
             int dst = result_var(fr, in);
             if (dst >= 0) havoc(cur, out.vars[static_cast<std::size_t>(dst)].width, true, false, dst);
@@ -652,6 +831,44 @@ struct Tr {
                 noreturn = true;
                 return;
             }
+            if (n == "_ZSt21__glibcxx_assert_failPKciS0_S0_" || n == "_ZSt21__glibcxx_assert_failv") {
+                // libstdc++ precondition (_GLIBCXX_ASSERTIONS, docs/PIR.md "C++ library")
+                std::string cond = in.ops.size() > 3 ? mt.const_string(in.ops[3].v).value_or("") : "";
+                std::string where = in.ops.size() > 2 ? mt.const_string(in.ops[2].v).value_or("") : "";
+                std::string cls = "FUNC-CONTRACT";
+                if (cond.find("size()") != std::string::npos || cond.find("_Nm") != std::string::npos)
+                    cls = "MEM-OOB-READ";
+                else if (cond.find("_M_is_engaged") != std::string::npos || cond.find("has_value") != std::string::npos)
+                    cls = "CXX-OPTIONAL-NULL";
+                else if (cond.find("pointer()") != std::string::npos || cond.find("nullptr") != std::string::npos)
+                    cls = "PTR-NULL-DEREF";
+                check(cur, Arg::c(1, 1), "precondition", cls,
+                      "C++ library precondition violated" + (where.empty() ? "" : " in " + where) +
+                          (cond.empty() ? "" : ": " + cond),
+                      line);
+                noreturn = true;
+                return;
+            }
+            if (starts(n, "_ZSt") && n.find("__throw_") != std::string::npos) {
+                // std::__throw_*: the path leaves by an exception. Not UB when
+                // it leaves the analysed function; under an enclosing invoke it
+                // reaches std::terminate (noexcept) or handler/cleanup code
+                // that PIR does not follow (exception edges are not modelled):
+                // reaching it is reported as unencoded, never proved away.
+                for (std::size_t i = 0; i < in.ops.size(); ++i)
+                    if (in.ops[i].ty.kind != ir::Type::Float) arg(i);
+                if (!unwind_ctx.empty()) {
+                    if (unwind_ctx.back() == 'T')
+                        check(cur, Arg::c(1, 1), "terminate", "CXX-THROW-NOEXCEPT",
+                              "exception (" + n + ") escapes a noexcept function: std::terminate", line);
+                    else
+                        check(cur, Arg::c(1, 1), "throw-unmodelled", "UNENCODED",
+                              "exception path reachable (" + n + "); catch/cleanup code is not modelled", line);
+                }
+                out.throws.push_back(n);
+                noreturn = true;
+                return;
+            }
             if (n == "abort") {
                 // defined behaviour, but a crash: never a clean PROVED path
                 check(cur, Arg::c(1, 1), "abort", "FUNC-CONTRACT", "abort() is reachable (process crash)", line);
@@ -677,28 +894,54 @@ struct Tr {
             throw Unenc{"UNENCODED: call depth > " + std::to_string(opt.inline_depth) + " (@" + n + ")"};
         if (!callee->parse_error.empty())
             throw Unenc{"UNENCODED: call @" + n + " (unparsed IR: " + callee->parse_error + ")"};
-        if (callee->ret.kind != ir::Type::Void) int_width(callee->ret, "call @" + n + " returning");
+        if (callee->ret.kind != ir::Type::Void) vwidth(callee->ret, "call @" + n + " returning");
         std::vector<Arg> args;
+        std::vector<char> raw_arg;
         for (std::size_t i = 0; i < in.ops.size(); ++i) {
-            if (in.ops[i].ty.kind == ir::Type::Ptr) throw Unenc{"UNENCODED: call @" + n + " with ptr argument"};
-            args.push_back(operand(fr, in.ops[i], cur, line));
+            const auto& o = in.ops[i];
+            bool raw = o.v.kind == ir::Value::Local && fr.env.count(o.v.name) && !fr.env[o.v.name].is_const &&
+                       fr.raw.count(fr.env[o.v.name].var);
+            raw_arg.push_back(raw);
+            args.push_back(operand(fr, o, cur, line, !raw));  // passing raw bytes is no use
         }
         if (args.size() != callee->params.size()) throw Unenc{"UNENCODED: call @" + n + " arity"};
         Frame cf;
+        for (std::size_t i = 0; i < args.size(); ++i)
+            if (raw_arg[i] && !args[i].is_const) {
+                cf.shadow[args[i].var] = fr.shadow[args[i].var];
+                cf.raw.insert(args[i].var);
+            }
         cf.f = callee;
         cf.prefix = n + "#" + std::to_string(uniq++) + ".";
         for (std::size_t i = 0; i < args.size(); ++i) {
-            auto w = int_width(callee->params[i].ty, "call @" + n + " parameter");
+            auto w = vwidth(callee->params[i].ty, "call @" + n + " parameter");
             args[i].width = w;
+            if (auto bt = byval_type(callee->params[i].attrs)) {
+                // by-value aggregate: the callee gets its own copy
+                auto sz = mt.layout().alloc_size(*bt);
+                auto copy = mt.alloc(cur, Arg::c(64, sz), MemKind::Stack, 0, callee->params[i].name, line);
+                mt.memcpy_(cur, copy, args[i], Arg::c(64, sz), true, line);
+                cf.allocas.push_back(copy);
+                args[i] = copy;
+            }
             cf.env[callee->params[i].name] = args[i];
         }
         int cont = newblock(fr.prefix + "call." + n + "." + std::to_string(uniq++));
         cf.ret_block = cont;
         if (callee->ret.kind != ir::Type::Void) {
-            int rv = in.result.empty() ? newvar(tmpname("ret"), callee->ret.bits) : result_var(fr, in);
+            int rv = in.result.empty() ? newvar(tmpname("ret"), vwidth(callee->ret)) : result_var(fr, in);
             cf.ret_var = rv;
+            cf.ret_shadow = newvar(tmpname("retu"), (vwidth(callee->ret) + 7) / 8);
         }
         stack.push_back(n);
+        // Library code (a model, or a function from a header such as
+        // libstdc++): its checks are reported at the user's call site.
+        std::string cfile;
+        if (auto it = m.subprograms.find(callee->dbg); it != m.subprograms.end()) cfile = it->second.file;
+        bool foreign = callee->is_model || (!cfile.empty() && !top_file.empty() && cfile != top_file);
+        if (foreign || fr.site_line) cf.site_line = fr.site_line ? fr.site_line : line;
+        bool pushed_model = callee->is_model;
+        if (pushed_model) model_stack.push_back(model_display(n));
         out.inlined.push_back(n);
         enter_frame(cf);
         Term j;
@@ -707,7 +950,304 @@ struct Tr {
         out.blocks[static_cast<std::size_t>(cur)].term = j;
         run_frame(cf);
         stack.pop_back();
+        if (pushed_model) model_stack.pop_back();
+        if (cf.ret_shadow_used && cf.ret_var >= 0) {
+            fr.shadow[cf.ret_var] = Arg::v(cf.ret_shadow, out.vars[static_cast<std::size_t>(cf.ret_shadow)].width);
+            fr.raw.insert(cf.ret_var);
+        }
         cur = cont;
+    }
+
+    // ---- memory (translate_mem.cpp does the encoding) -------------------------
+
+    static std::optional<ir::Type> byval_type(const std::string& attrs) {
+        for (auto* key : {"byval(", "byref("}) {
+            auto p = attrs.find(key);
+            if (p == std::string::npos) continue;
+            auto a = p + std::string_view(key).size();
+            int depth = 1;
+            auto e = a;
+            while (e < attrs.size() && depth > 0) {
+                if (attrs[e] == '(') ++depth;
+                if (attrs[e] == ')') --depth;
+                if (depth > 0) ++e;
+            }
+            return ir::parse_type(attrs.substr(a, e - a));
+        }
+        return std::nullopt;
+    }
+
+    bool is_ptrtoint(Frame& fr, const ir::Operand& o) {
+        if (o.v.kind != ir::Value::Local) return false;
+        auto it = fr.defs.find(o.v.name);
+        return it != fr.defs.end() && it->second->op == "ptrtoint";
+    }
+
+    // alloca/load/store/getelementptr/ptrtoint/inttoptr/bitcast; false = not a memory instruction
+    bool mem_inst(Frame& fr, const ir::Inst& in, int cur, int line) {
+        const auto& op = in.op;
+        if (op == "alloca") {
+            int dst = result_var(fr, in);
+            std::optional<Arg> count, src;
+            if (!in.ops.empty()) {
+                count = operand(fr, in.ops[0], cur, line);
+                count->width = int_width(in.ops[0].ty, "alloca count");
+                if (in.ops[0].v.kind == ir::Value::Local)
+                    if (auto it = fr.defs.find(in.ops[0].v.name);
+                        it != fr.defs.end() && (it->second->op == "zext" || it->second->op == "sext") &&
+                        !it->second->ops.empty() && it->second->ops[0].ty.kind == ir::Type::Int) {
+                        src = operand(fr, it->second->ops[0], cur, line);
+                        src->width = int_width(it->second->ops[0].ty);
+                    }
+            }
+            mt.alloca_(cur, dst, in.ety, in.align, count, src, in.result, line);
+            if (!count && fr.f && !fr.f->blocks.empty() && cur == head[fr.prefix + fr.f->blocks.front().name])
+                fr.allocas.push_back(Arg::v(dst, kPtrW));
+            return true;
+        }
+        if (op == "load") {
+            if (in.ops.empty() || in.ops[0].ty.kind != ir::Type::Ptr || in.ops[0].ty.text != "ptr")
+                throw Unenc{"UNENCODED: load"};
+            Arg p = operand(fr, in.ops[0], cur, line);
+            vwidth(in.ty, "load of");
+            // An integer load of a whole aggregate object (ABI coercion of a
+            // struct passed or returned by value) copies bytes: padding may be
+            // uninitialised without a defect, so its shadow follows the value
+            // to its uses instead of being checked here.
+            bool agg = false;
+            if (in.ty.kind == ir::Type::Int && in.ops[0].v.kind == ir::Value::Local) {
+                // static pointee type of the loaded location: the alloca's
+                // type, or the type a getelementptr selects ("coerce.dive")
+                if (auto it = fr.defs.find(in.ops[0].v.name); it != fr.defs.end()) try {
+                    const auto* d = it->second;
+                    std::optional<ir::Type> pt;
+                    if (d->op == "alloca") {
+                        pt = d->ety;
+                    } else if (d->op == "getelementptr") {
+                        const ir::Type* t = &d->ety;
+                        bool ok = true;
+                        for (std::size_t k = 2; ok && k < d->ops.size(); ++k) {
+                            const auto& rt = mt.layout().resolve(*t);
+                            if (rt.kind == ir::Type::Struct && d->ops[k].v.kind == ir::Value::Int)
+                                t = &mt.layout().field_type(rt, static_cast<unsigned>(d->ops[k].v.bits));
+                            else if (rt.kind == ir::Type::Array)
+                                t = &rt.elems.at(0);
+                            else
+                                ok = false;
+                        }
+                        if (ok) pt = *t;
+                    }
+                    if (pt) {
+                        const auto& rt = mt.layout().resolve(*pt);
+                        agg = rt.kind == ir::Type::Struct || rt.kind == ir::Type::Array;
+                    }
+                } catch (const Unenc&) {
+                    agg = false;  // opaque type: an ordinary checked load
+                }
+            }
+            int dst = result_var(fr, in);
+            int sh = mt.load(cur, dst, in.ty, p, in.align, line, !agg);
+            if (agg && dst >= 0) {
+                fr.shadow[dst] = Arg::v(sh, out.vars[static_cast<std::size_t>(sh)].width);
+                fr.raw.insert(dst);
+            }
+            return true;
+        }
+        if (op == "store") {
+            if (in.ops.size() != 2 || in.ops[1].ty.kind != ir::Type::Ptr || in.ops[1].ty.text != "ptr")
+                throw Unenc{"UNENCODED: store"};
+            auto w = vwidth(in.ops[0].ty, "store of");
+            Arg init = Arg::c(1, 1);
+            Arg v;
+            const auto& vo = in.ops[0];
+            if (vo.v.kind == ir::Value::Undef || vo.v.kind == ir::Value::Poison) {
+                v = havoc(cur, w, false, false);
+                init = Arg::c(1, 0);  // storing an indeterminate value
+            } else {
+                v = operand(fr, vo, cur, line, /*use=*/false);  // copying a maybe-uninitialised value is no use
+                if (!v.is_const)
+                    if (auto sh = fr.shadow.find(v.var); sh != fr.shadow.end()) {
+                        const auto& s = sh->second;
+                        if (s.width == 1)
+                            init = assign(cur, Op::Eq, 1, {s, Arg::c(1, 0)}, "init");
+                        else  // per-byte mask of a raw copy: initialised = not uninitialised
+                            init = assign(cur, Op::Xor, s.width, {s, Arg::c(s.width, ~uint64_t{0})}, "init");
+                    }
+            }
+            Arg p = operand(fr, in.ops[1], cur, line);
+            mt.store(cur, p, v, init, vo.ty, in.align, line);
+            return true;
+        }
+        if (op == "getelementptr") {
+            if (in.ty.kind != ir::Type::Ptr || in.ops.empty() || in.ops[0].ty.text != "ptr")
+                throw Unenc{"UNENCODED: vector getelementptr"};
+            Arg base = operand(fr, in.ops[0], cur, line);
+            std::vector<Arg> idx;
+            for (std::size_t k = 1; k < in.ops.size(); ++k) {
+                Arg x = operand(fr, in.ops[k], cur, line);
+                x.width = int_width(in.ops[k].ty, "getelementptr index");
+                idx.push_back(x);
+            }
+            // how the result is used: 0 address, 1 loaded, 2 stored through, 3 deeper GEP
+            int use = 0;
+            for (auto& bl : fr.f->blocks)
+                for (auto& u : bl.insts) {
+                    auto is_res = [&](std::size_t i) {
+                        return i < u.ops.size() && u.ops[i].v.kind == ir::Value::Local && u.ops[i].v.name == in.result;
+                    };
+                    if (u.op == "load" && is_res(0)) use = std::max(use, 1);
+                    if (u.op == "store" && is_res(1)) use = std::max(use, 2);
+                    if (u.op == "getelementptr" && is_res(0)) use = std::max(use, 3);
+                }
+            // base = the last field of a struct (flexible array member / struct hack)?
+            bool base_last = false;
+            if (in.ops[0].v.kind == ir::Value::Local)
+                if (auto it = fr.defs.find(in.ops[0].v.name); it != fr.defs.end() && it->second->op == "getelementptr")
+                    try {
+                        const auto* d = it->second;
+                        const ir::Type* t = &d->ety;
+                        for (std::size_t k = 2; k < d->ops.size(); ++k) {
+                            const auto& rt = mt.layout().resolve(*t);
+                            if (rt.kind == ir::Type::Struct && d->ops[k].v.kind == ir::Value::Int) {
+                                auto fi = static_cast<unsigned>(d->ops[k].v.bits);
+                                base_last = fi + 1 == rt.elems.size();
+                                t = &mt.layout().field_type(rt, fi);
+                            } else if (rt.kind == ir::Type::Array) {
+                                base_last = false;
+                                t = &rt.elems.at(0);
+                            } else {
+                                break;
+                            }
+                        }
+                    } catch (const Unenc&) {
+                        base_last = true;  // unknown layout: no sub-array check
+                    }
+            mt.gep(cur, result_var(fr, in), base, in.ety, idx, has_flag(in, "inbounds"), line, use, base_last);
+            return true;
+        }
+        if (op == "ptrtoint") {
+            // Only pointer differences are modelled: every use must be a sub
+            // of two ptrtoint values (checked to be in the same object).
+            if (in.ty.kind != ir::Type::Int || in.ty.bits != 64)
+                throw Unenc{"UNENCODED: ptrtoint (address values are not modelled)"};
+            for (auto& bl : fr.f->blocks)
+                for (auto& u : bl.insts) {
+                    bool uses = false;
+                    for (auto& o : u.ops)
+                        if (o.v.kind == ir::Value::Local && o.v.name == in.result) uses = true;
+                    for (auto& [o, _] : u.incoming)
+                        if (o.v.kind == ir::Value::Local && o.v.name == in.result) uses = true;
+                    if (!uses) continue;
+                    if (u.op != "sub" || u.ops.size() != 2 || !is_ptrtoint(fr, u.ops[0]) || !is_ptrtoint(fr, u.ops[1]))
+                        throw Unenc{"UNENCODED: ptrtoint (address values are not modelled)"};
+                }
+            Arg p = operand(fr, in.ops[0], cur, line);
+            emit_assign(cur, result_var(fr, in), Op::Copy, {p});
+            return true;
+        }
+        if (op == "inttoptr") {
+            const auto& o = in.ops[0];
+            if (o.v.kind == ir::Value::Int && o.v.bits == 0) {
+                emit_assign(cur, result_var(fr, in), Op::Copy, {Arg::c(kPtrW, 0)});
+                return true;
+            }
+            throw Unenc{"UNENCODED: inttoptr (integer-to-pointer casts are not modelled)"};
+        }
+        if (op == "bitcast" && in.ty.kind == ir::Type::Ptr && in.ops[0].ty.kind == ir::Type::Ptr) {
+            emit_assign(cur, result_var(fr, in), Op::Copy, {operand(fr, in.ops[0], cur, line)});
+            return true;
+        }
+        return false;
+    }
+
+    // Model intrinsics used by the libc / libc++ operational models
+    // (src/prism/pir/models/, docs/PIR.md "Library models").
+    void model_intrinsic(Frame& fr, const ir::Inst& in, int& cur, int line) {
+        const auto& n = in.callee;
+        auto arg = [&](std::size_t i) {
+            if (i >= in.ops.size()) throw Unenc{"UNENCODED: call @" + n + " arity"};
+            return operand(fr, in.ops[i], cur, line);
+        };
+        auto cint = [&](std::size_t i) -> uint64_t {
+            if (i >= in.ops.size() || in.ops[i].v.kind != ir::Value::Int)
+                throw Unenc{"UNENCODED: call @" + n + " with a non-constant argument"};
+            return in.ops[i].v.bits;
+        };
+        auto kind_what = [](MemKind k) -> std::string {
+            switch (k) {
+                case MemKind::New: return "delete";
+                case MemKind::NewArr: return "delete[]";
+                case MemKind::File: return "fclose()";
+                default: return "free()";
+            }
+        };
+        int dst = in.result.empty() ? -1 : result_var(fr, in);
+        if (n == "__prism_alloc") {
+            auto k = static_cast<MemKind>(cint(1));
+            auto what = k == MemKind::New ? "operator new" : k == MemKind::NewArr ? "operator new[]"
+                        : k == MemKind::File ? "FILE" : "heap allocation";
+            mt.alloc(cur, arg(0), k, static_cast<int>(cint(2)), what, line, dst);
+            return;
+        }
+        if (n == "__prism_free" || n == "__prism_free_check") {
+            auto k = static_cast<MemKind>(cint(1));
+            mt.dealloc(cur, arg(0), k, kind_what(k), line, n == "__prism_free");
+            return;
+        }
+        if (n == "__prism_check") {
+            Arg ok = arg(0);
+            auto cls = mt.const_string(in.ops.at(1).v), msg = mt.const_string(in.ops.at(2).v);
+            if (!cls || !msg) throw Unenc{"UNENCODED: __prism_check without literal class/message"};
+            check(cur, assign(cur, Op::Eq, 1, {ok, Arg::c(ok.width, 0)}, "c"), "model", *cls, *msg, line);
+            return;
+        }
+        if (n == "__prism_assume") {
+            Arg c = arg(0);
+            assume(cur, assign(cur, Op::Ne, 1, {c, Arg::c(c.width, 0)}, "c"));
+            return;
+        }
+        if (n == "__prism_obj_size") {
+            auto r = mt.obj_size_remaining(cur, arg(0));
+            if (dst >= 0) emit_assign(cur, dst, Op::Copy, {r});
+            return;
+        }
+        if (n == "__prism_memcpy") {
+            mt.memcpy_(cur, arg(0), arg(1), arg(2), cint(3) != 0, line);
+            return;
+        }
+        if (n == "__prism_memset") {
+            mt.memset_(cur, arg(0), arg(1), arg(2), line);
+            return;
+        }
+        if (n == "__prism_read_range") {
+            mt.read_range(cur, arg(0), arg(1), line);
+            return;
+        }
+        if (n == "__prism_havoc_bytes") {
+            mt.write_havoc(cur, arg(0), arg(1), line);
+            return;
+        }
+        if (n == "__prism_fresh_cstr") {
+            auto p = mt.fresh_cstr(cur, static_cast<MemKind>(cint(0)), line);
+            if (dst >= 0) emit_assign(cur, dst, Op::Copy, {p});
+            return;
+        }
+        throw Unenc{"UNENCODED: call @" + n};
+    }
+
+    // printf family (format checks: %n, argument count and types); false = not handled
+    bool format_call(Frame& fr, const ir::Inst& in, int& cur, int line);
+
+    // Inline a module function with the given arguments (used for string
+    // validity checks of %s arguments: strlen model).
+    void inline_named(Frame& fr, const std::string& name, const std::vector<ir::Operand>& ops, int& cur, int line) {
+        ir::Inst call;
+        call.op = "call";
+        call.callee = name;
+        call.ty = ir::Type{ir::Type::Void, 0, "void", {}};
+        call.ops = ops;
+        if (!m.find(name)) throw Unenc{"UNENCODED: call @" + name + " (no model)"};
+        inline_call(fr, call, cur, line);
     }
 
     void resolve_phis() {
@@ -733,6 +1273,132 @@ struct Tr {
     }
 };
 
+bool Tr::format_call(Frame& fr, const ir::Inst& in, int& cur, int line) {
+    const auto& n = in.callee;
+    if (m.find(n) || !pirmem::is_format_function(n)) return false;
+    std::vector<ir::Type> tys;
+    for (auto& o : in.ops) tys.push_back(o.ty);
+    std::optional<std::string> fmt;
+    auto fi = n == "printf" ? 0u : n == "snprintf" ? 2u : 1u;
+    if (fi < in.ops.size()) fmt = mt.const_string(in.ops[fi].v);
+    auto plan = pirmem::plan_format(n, fmt, tys);
+    if (!plan.handled) return false;
+    if (!plan.unencoded.empty()) throw Unenc{plan.unencoded};
+    std::vector<Arg> args;
+    for (auto& o : in.ops) {
+        if (o.ty.kind == ir::Type::Float) {
+            args.push_back(Arg::c(1, 0));  // a double argument is only type-checked
+            continue;
+        }
+        args.push_back(operand(fr, o, cur, line));
+    }
+    for (auto& [cls, msg] : plan.violations) check(cur, Arg::c(1, 1), "format", cls, msg, line);
+    for (auto i : plan.cstr_args) {
+        Arg a = args[i];
+        a.width = kPtrW;
+        check(cur, assign(cur, Op::Eq, 1, {assign(cur, Op::LShr, 64, {a, Arg::c(64, kObjShift)}), Arg::c(64, 0)}),
+              "null", "PTR-NULL-DEREF", n + " %s argument is a null pointer", line);
+        inline_named(fr, "strlen", {in.ops[i]}, cur, line);
+    }
+    if (plan.buf_arg >= 0) {
+        Arg buf = args[static_cast<std::size_t>(plan.buf_arg)];
+        buf.width = kPtrW;
+        Arg len = havoc(cur, 64, false, false);
+        if (plan.size_arg >= 0) {
+            Arg sz = args[static_cast<std::size_t>(plan.size_arg)];
+            if (sz.width < 64) sz = assign(cur, Op::ZExt, 64, {sz});
+            // snprintf(buf, 0, ...) writes nothing; otherwise at most size-1 characters and a NUL
+            int wb = newblock("snprintf.write"), done = newblock("snprintf.done");
+            Term t;
+            t.kind = Term::Br;
+            t.cond = assign(cur, Op::Ne, 1, {sz, Arg::c(64, 0)});
+            t.t = wb;
+            t.f = done;
+            out.blocks[static_cast<std::size_t>(cur)].term = t;
+            cur = wb;
+            assume(cur, assign(cur, Op::Ult, 1, {len, sz}));
+            mt.write_havoc(cur, buf, len, line);
+            int end = newvar(tmpname("end"), kPtrW);
+            mt.gep(cur, end, buf, ir::Type{ir::Type::Int, 8, "i8", {}}, {len}, true, line);
+            mt.store(cur, Arg::v(end, kPtrW), Arg::c(8, 0), Arg::c(1, 1), ir::Type{ir::Type::Int, 8, "i8", {}}, 1, line);
+            Term j;
+            j.kind = Term::Jmp;
+            j.t = done;
+            out.blocks[static_cast<std::size_t>(cur)].term = j;
+            cur = done;
+        } else {
+            assume(cur, assign(cur, Op::Ule, 1, {len, Arg::c(64, plan.max_len)}));
+            mt.write_havoc(cur, buf, len, line);
+            int end = newvar(tmpname("end"), kPtrW);
+            mt.gep(cur, end, buf, ir::Type{ir::Type::Int, 8, "i8", {}}, {len}, true, line);
+            mt.store(cur, Arg::v(end, kPtrW), Arg::c(8, 0), Arg::c(1, 1), ir::Type{ir::Type::Int, 8, "i8", {}}, 1, line);
+        }
+    }
+    if (int dst = in.result.empty() ? -1 : result_var(fr, in); dst >= 0)
+        havoc(cur, out.vars[static_cast<std::size_t>(dst)].width, false, false, dst);
+    return true;
+}
+
+// Pointer parameter bound to a contract object (Law 6 relaxation, docs/PIR.md).
+void bind_contract(Tr& tr, const ir::Function& f, const ir::Param& p, const PtrContract& c, Frame& top) {
+    const auto& lay = tr.mt.layout();
+    uint64_t esz = c.elem_bytes;
+    if (!esz) {
+        // element type from the first access through p
+        for (auto& bl : f.blocks) {
+            for (auto& in : bl.insts) {
+                auto is_p = [&](std::size_t i) {
+                    return i < in.ops.size() && in.ops[i].v.kind == ir::Value::Local && in.ops[i].v.name == p.name;
+                };
+                if (in.op == "load" && is_p(0)) esz = lay.store_size(in.ty);
+                else if (in.op == "store" && is_p(1)) esz = lay.store_size(in.ops[0].ty);
+                else if (in.op == "getelementptr" && is_p(0)) esz = lay.alloc_size(in.ety);
+                if (esz) break;
+            }
+            if (esz) break;
+        }
+    }
+    if (!esz)
+        throw Unenc{"UNENCODED: element size of pointer parameter " + p.name + " unknown (contract " + c.text + ")"};
+    Arg size;
+    std::string count_text;
+    if (c.count >= 0) {
+        if (static_cast<uint64_t>(c.count) > kMaxObjSize / esz) throw Unenc{"UNENCODED: contract object too large"};
+        size = Arg::c(64, static_cast<uint64_t>(c.count) * esz);
+        count_text = std::to_string(c.count);
+    } else {
+        int pv = -1;
+        for (std::size_t i = 0; i < f.params.size(); ++i)
+            if (f.params[i].name == c.count_param && f.params[i].ty.kind == ir::Type::Int) {
+                auto it = top.env.find(c.count_param);
+                if (it != top.env.end() && !it->second.is_const) pv = it->second.var;
+            }
+        if (pv < 0) throw Unenc{"UNENCODED: contract size " + c.count_param + " is not an integer parameter"};
+        Arg n = Arg::v(pv, tr.out.vars[static_cast<std::size_t>(pv)].width);
+        if (n.width < 64) n = tr.assign(-1, Op::SExt, 64, {n});
+        if (c.count_add) n = tr.assign(-1, Op::Add, 64, {n, Arg::c(64, static_cast<uint64_t>(c.count_add))});
+        if (c.count_min != INT64_MIN || c.count_max != INT64_MAX) {
+            // drafted size range (the draft's own assumption, listed)
+            tr.assume(-1, tr.assign(-1, Op::Sge, 1, {n, Arg::c(64, static_cast<uint64_t>(c.count_min))}));
+            tr.assume(-1, tr.assign(-1, Op::Sle, 1, {n, Arg::c(64, static_cast<uint64_t>(c.count_max))}));
+            tr.out.assumptions.push_back(std::to_string(c.count_min) + " <= " + c.count_param +
+                                         " <= " + std::to_string(c.count_max) + " (drafted size range)");
+        }
+        Arg pos = tr.assign(-1, Op::Sgt, 1, {n, Arg::c(64, 0)});
+        Arg nn = tr.assign(-1, Op::Select, 64, {pos, n, Arg::c(64, 0)});
+        tr.assume(-1, tr.assign(-1, Op::Ult, 1, {nn, Arg::c(64, kMaxObjSize / esz)}));
+        size = tr.assign(-1, Op::Mul, 64, {nn, Arg::c(64, esz)});
+        count_text = c.count_param + (c.count_add ? (c.count_add > 0 ? "+" : "") + std::to_string(c.count_add) : "");
+        tr.out.assumptions.push_back(count_text + " * " + std::to_string(esz) + " < 2^47 (object size fits the model)");
+    }
+    auto obj = tr.mt.alloc(-1, size, c.read_only ? MemKind::Const : MemKind::Extern, 2, "*" + p.name + " (contract)", 0);
+    top.env[p.name] = obj;
+    tr.out.ptr_params.push_back(p.name);
+    tr.out.assumptions.push_back(p.name + " points to the start of a valid object of max(" + count_text + ", 0) x " +
+                                 std::to_string(esz) + " bytes, 16-byte aligned, initialised with arbitrary values (" +
+                                 c.source + ": " + c.text + ")");
+}
+
 }  // namespace
 
 Translation translate(const ir::Module& m, const ir::Function& f, const TranslateOptions& opt) {
@@ -742,8 +1408,16 @@ Translation translate(const ir::Module& m, const ir::Function& f, const Translat
         t.reason = "UNENCODED: unparsed IR (" + f.parse_error + ")";
         return t;
     }
+    auto contract_of = [&](const std::string& name) -> const PtrContract* {
+        for (auto& c : opt.contracts)
+            if (c.param == name) return &c;
+        return nullptr;
+    };
+    auto own_object = [](const std::string& attrs) {
+        return attrs.find("byval(") != std::string::npos || attrs.find("sret(") != std::string::npos;
+    };
     for (auto& p : f.params) {
-        if (p.ty.kind == ir::Type::Ptr) {
+        if (p.ty.kind == ir::Type::Ptr && !own_object(p.attrs) && !contract_of(p.name)) {
             t.reason = "pointer parameter: unguarded model checking reports missing preconditions, "
                        "not defects (Law 6)";
             return t;
@@ -753,21 +1427,49 @@ Translation translate(const ir::Module& m, const ir::Function& f, const Translat
         Tr tr(m, opt);
         tr.out.ir_name = f.name;
         tr.out.name = f.name;
+        Frame top;
+        top.f = &f;
+        std::vector<const ir::Param*> ptrs;
         for (auto& p : f.params) {
+            if (p.ty.kind == ir::Type::Ptr) {
+                ptrs.push_back(&p);
+                continue;
+            }
             auto w = int_width(p.ty, "parameter type");
             int v = tr.newvar(p.name.empty() ? tr.tmpname("arg") : p.name, w);
             tr.out.params.push_back(v);
+            top.env[p.name] = Arg::v(v, w);
         }
-        if (f.ret.kind != ir::Type::Void) tr.out.ret_width = int_width(f.ret, "return type");
+        int contracts = 0;
+        for (auto* p : ptrs) {
+            auto sret = p->attrs.find("sret(");
+            if (auto bt = Tr::byval_type(p->attrs); bt || sret != std::string::npos) {
+                // by-value aggregate (the caller's copy, initialised) or the
+                // return slot (uninitialised): objects the language provides
+                ir::Type ty = bt ? *bt : ir::parse_type(p->attrs.substr(sret + 5, p->attrs.find(')', sret) - sret - 5));
+                auto sz = tr.mt.layout().alloc_size(ty);
+                top.env[p->name] = tr.mt.alloc(-1, Arg::c(64, sz), MemKind::Stack, bt ? 2 : 0, p->name, 0);
+                continue;
+            }
+            bind_contract(tr, f, *p, *contract_of(p->name), top);
+            ++contracts;
+        }
+        if (contracts > 1)
+            tr.out.assumptions.push_back("pointer parameters point to distinct objects (\\separated)");
+        if (f.ret.kind != ir::Type::Void) {
+            tr.out.ret_width = tr.vwidth(f.ret, "return type");
+            tr.out.returns_ptr = f.ret.kind == ir::Type::Ptr;
+        }
         if (f.blocks.empty()) throw Unenc{"UNENCODED: empty function body"};
-        Frame top;
-        top.f = &f;
-        for (std::size_t i = 0; i < f.params.size(); ++i)
-            top.env[f.params[i].name] = Arg::v(tr.out.params[i], tr.out.vars[static_cast<std::size_t>(tr.out.params[i])].width);
         tr.stack.push_back(f.name);
+        if (auto it = m.subprograms.find(f.dbg); it != m.subprograms.end()) tr.top_file = it->second.file;
         tr.enter_frame(top);
         tr.run_frame(top);
         tr.resolve_phis();
+        if (!tr.prologue.empty()) {
+            auto& b0 = tr.out.blocks.front().stmts;
+            b0.insert(b0.begin(), tr.prologue.begin(), tr.prologue.end());
+        }
         t.fn = std::move(tr.out);
         t.folded_used.assign(tr.folded_used.begin(), tr.folded_used.end());
         t.status.clear();

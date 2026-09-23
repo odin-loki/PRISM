@@ -203,6 +203,7 @@ int main(int argc, char** argv) {
         else if (a == "--gui") cfg.gui = true;
         else if (a == "--resume") cfg.resume = true;
         else if (a == "--allow-exec") cfg.allow_exec = true;
+        else if (a == "--strict-aliasing") cfg.strict_aliasing = true;
         else if (a == "--list-stages") {
             for (auto* p = STAGE_ORDER; *p; ++p) std::cout << *p << "\n";
             return 0;
@@ -234,6 +235,7 @@ int main(int argc, char** argv) {
                 "           [--stage a,b] [--skip a,b] [--out DIR] [--resume] [--unwind N]\n"
                 "           [--fuzz-budget N] [--fuzz-iters N] [--repair-rounds N]\n"
                 "           [--list-stages] [--fail-on never|defect|gap] [--allow-exec]\n"
+                "           [--strict-aliasing]\n"
                 "PRISM = Performance, Regression, Integration and Security Module\n"
                 "Checks any codebase (PATH: file or directory, any language): deep C/C++\n"
                 "analysis (lints, compiler warnings, BMC, fuzzing, contracts) plus every other\n"
@@ -248,6 +250,8 @@ int main(int argc, char** argv) {
                 "--allow-exec: run code from the scanned tree (sanitizer/fuzz/diff harnesses,\n"
                 "  perl -c, cargo clippy, eslint, LLM programs) in a sandbox; only on code you\n"
                 "  trust. Without it those steps are NOTRUN (Law 9).\n"
+                "--strict-aliasing: the pir stage also checks effective types (C11 6.5p7);\n"
+                "  off by default because real code often breaks strict aliasing on purpose.\n"
                 "--pbsd PATH: ParanoidBSD tree for the pbsd stage (else PRISM_PBSD; no default).\n"
                 "  Importing its modules also needs --allow-exec.\n"
                 "Writes report.json, report.md and report.sarif (SARIF 2.1.0) under --out.\n";

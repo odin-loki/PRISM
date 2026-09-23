@@ -41,13 +41,23 @@ struct Type {
     bool is_int() const { return kind == Int; }
 };
 
+struct Operand;
+
 struct Value {
-    enum Kind { Local, Global, Int, Undef, Poison, Null, Zero, Other };
+    // Aggregate: [..] / { .. } constant (elems); Str: c"..." (bytes);
+    // ConstExpr: getelementptr / ptrtoint / inttoptr / bitcast (...) with
+    // ce_op, ce_flags, ce_ty (GEP source element type / cast target), elems.
+    enum Kind { Local, Global, Int, Undef, Poison, Null, Zero, Other, Aggregate, Str, ConstExpr };
     Kind kind = Other;
     std::string name;          // Local/Global name without sigil
     uint64_t bits = 0;         // Int: two's complement bits (masked by user)
     bool negative = false;     // Int literal was written negative
     std::string text;          // as written (constant expressions etc.)
+    std::string bytes;         // Str: decoded bytes
+    std::string ce_op;
+    std::vector<std::string> ce_flags;
+    Type ce_ty;
+    std::vector<Operand> elems;
 };
 
 struct Operand {
@@ -71,6 +81,13 @@ struct Inst {
     std::string dbg;           // "!13" (DILocation ref) or empty
     std::string text;          // original text (messages)
     bool parsed = true;        // false: opcode known, operands not modelled
+    // memory instructions (docs/PIR.md "Memory model"):
+    //   alloca:        ety = allocated type, ops = [count] (optional)
+    //   load:          ty = loaded type, ops = [ptr]
+    //   store:         ops = [value, ptr]
+    //   getelementptr: ety = source element type, ops = [base, idx...]
+    Type ety;
+    unsigned align = 0;        // alloca/load/store `align N` (0 = absent)
 };
 
 struct Block {
@@ -93,6 +110,7 @@ struct Function {
     std::string dbg;           // "!10" (DISubprogram ref)
     std::string parse_error;   // non-empty: body not parsed
     bool is_declaration = false;
+    bool is_model = false;     // linked from the library models (link_models)
 };
 
 struct DILoc {
@@ -108,12 +126,27 @@ struct DISub {
     bool artificial = false;
 };
 
+struct Global {
+    std::string name;
+    Type ty;                   // value type
+    bool is_const = false;     // `constant`
+    bool external = false;     // declaration only (no initializer)
+    bool thread_local_ = false;
+    std::vector<Operand> init; // [initializer] (empty when external)
+    unsigned align = 0;
+    std::string text;          // declaration line (messages)
+};
+
 struct Module {
+    std::vector<Global> globals;
+    std::string datalayout;                    // target datalayout string
+    std::map<std::string, Type> types;         // named struct types ("struct.S" -> body; opaque: kind Other)
     std::vector<Function> functions;           // definitions only
     std::vector<std::string> declarations;      // declared symbol names
     std::map<std::string, DILoc> locs;          // "!13" -> line/col
     std::map<std::string, DISub> subprograms;   // "!10" -> source name/line/file
     const Function* find(std::string_view name) const;
+    const Global* find_global(std::string_view name) const;
 };
 
 PRISM_API Module parse_module(std::string_view text);
@@ -142,7 +175,28 @@ enum class Op {
     LostBitsA,    // exact ashr
     InexactU,     // exact udiv: a %u b != 0
     InexactS,     // exact sdiv: a %s b != 0
+    // Memory queries (read the memory state at this point; docs/PIR.md
+    // "Memory model"). Argument: a pointer (i64: object id << 48 | offset).
+    ObjSize,      // i64: byte size of the pointer's object (0: null / no object)
+    ObjLive,      // i1: the object is allocated and not freed / out of scope
+    ObjKind,      // i8: MemKind of the object (0: null / no object)
+    ObjAlign,     // i64: alignment of the object's base address
 };
+
+// Allocation kinds (ObjKind values). Extern: an object PRISM assumes to
+// exist (a pointer parameter under a contract, a FILE, a getenv string).
+enum class MemKind : uint8_t { None = 0, Stack = 1, Heap = 2, Static = 3, Const = 4, New = 5, NewArr = 6, Extern = 7, File = 8 };
+PRISM_API const char* mem_kind_name(MemKind k);
+
+// Pointer encoding: bits 63..48 object id (0 = null object), bits 47..0 byte
+// offset. Object sizes stay below 2^47, and every pointer arithmetic step is
+// checked to stay inside its object (or one past the end), so the packed
+// value and the (object, offset) pair of the Lean model coincide on every
+// execution without a reported violation (docs/PIR.md).
+inline constexpr unsigned kObjShift = 48;
+inline constexpr uint64_t kOffMask = (uint64_t{1} << kObjShift) - 1;
+inline constexpr uint64_t kMaxObjSize = uint64_t{1} << 47;
+inline constexpr uint64_t kMaxObjects = 0xFFFF;
 
 PRISM_API const char* op_name(Op op);
 
@@ -161,7 +215,20 @@ struct Var {
 };
 
 struct Stmt {
-    enum Kind { Assign, Check, Assume };
+    // Memory statements (docs/PIR.md "Memory model"):
+    //   Alloc        dst := fresh object; args [size i64]; mkind, init, align
+    //   Free         args [ptr]            object ends its lifetime (checks are separate)
+    //   Load         dst := bytes at args[0] (width of dst, little endian);
+    //                dst2 := i1: some loaded byte is uninitialised, or iN
+    //                (N = bytes): bit k = byte k uninitialised (raw copies);
+    //                dst3 (i1) := effective-type mismatch (strict aliasing)
+    //   Store        args [ptr, value, init] init: i1 for all bytes, or iN
+    //                (N = bytes) with bit k = byte k initialised
+    //   MemCpy       args [dst, src, len i64]  (memmove semantics: reads before writes)
+    //   MemSet       args [dst, byte i8, len i64]
+    //   StackRestore args [token i64]      stack objects with id > token end
+    //   StackSave    dst := token (i64)
+    enum Kind { Assign, Check, Assume, Alloc, Free, Load, Store, MemCpy, MemSet, StackSave, StackRestore };
     Kind kind = Assign;
     int dst = -1;              // Assign
     Op op = Op::Copy;
@@ -173,6 +240,12 @@ struct Stmt {
     std::string cls;           // taxonomy class (INT-SIGNED-OVF ...)
     std::string msg;
     int line = 0;
+    MemKind mkind = MemKind::None;  // Alloc
+    int init = 0;              // Alloc: 0 uninitialised, 1 zero-filled, 2 initialised with arbitrary bytes
+    unsigned align = 1;        // Alloc: base alignment
+    unsigned tag = 0;          // Load/Store: effective-type tag (strict aliasing), 0 = untyped
+    int dst2 = -1, dst3 = -1;  // Load shadows
+    bool ptr_arith = false;    // Assign add/copy/select: result stays in args[0]'s object (checked)
 };
 
 struct Phi {
@@ -206,6 +279,12 @@ struct Function {
     std::vector<Block> blocks; // blocks[0] is the entry
     bool nondet = false;       // uses a nondet source (translation validation partial)
     std::vector<std::string> inlined;
+    bool uses_memory = false;  // has memory statements (k-induction is not attempted)
+    bool mutable_globals = false;  // reads/writes a mutable global (translation validation partial)
+    bool returns_ptr = false;
+    std::vector<std::string> ptr_params;   // pointer parameters bound to contract objects
+    std::vector<std::string> assumptions;  // PROVED becomes PROVED-ASSUMING when non-empty
+    std::vector<std::string> throws;       // library throw calls whose paths end (not modelled)
 };
 
 struct Translation {
@@ -222,10 +301,33 @@ struct FoldedUb {              // clang constant-folded UB (diagnostic at line:c
     std::string msg;
 };
 
+// A pointer-parameter precondition (Law 6): `// requires: \valid(p+(0..n-1))`
+// (or ACSL `/*@ requires ... */`) or a drafted harness gives the size of the
+// object p points to; p is then bound to a fresh object and a proof is
+// PROVED-ASSUMING with the assumptions listed.
+struct PtrContract {
+    std::string param;         // IR parameter name
+    int64_t count = -1;        // constant element count, or
+    std::string count_param;   // element count taken from this integer parameter
+    int64_t count_add = 0;     // count = count_param + count_add
+    unsigned elem_bytes = 0;   // 0: from the IR (first load/store/GEP through p)
+    bool read_only = false;    // \valid_read
+    int64_t count_min = INT64_MIN, count_max = INT64_MAX;  // range assumed for count_param (drafted harness)
+    std::string text;          // the clause as written
+    std::string source;        // "requires" | "harness"
+};
+
 struct TranslateOptions {
     std::vector<std::pair<int, int>> signed_shl;  // (line, col) of C signed `<<`
     std::vector<FoldedUb> folded;                 // @__prism.folded(i32 k) -> folded[k]
     int inline_depth = 4;
+    // pointer parameters of the function being translated
+    std::vector<PtrContract> contracts;
+    // Mutable globals start at their initializer (program entry, `main`).
+    // Otherwise their contents are arbitrary initialised bytes.
+    bool globals_initial = false;
+    // --strict-aliasing: effective-type tags per byte (C11 6.5p6-7), opt-in.
+    bool strict_aliasing = false;
 };
 
 PRISM_API Translation translate(const ir::Module& m, const ir::Function& f,
@@ -282,9 +384,25 @@ struct Verdict {
     std::map<std::string, std::string> extra;  // unwind, unwind_closed, k_induction ...
 };
 
+// Memory encoding (docs/PIR.md "Memory model"):
+//   Array  one SMT array from address (object id, offset) to byte cell
+//          (unbounded; QF_ABV + lambdas for ranged copies)
+//   Bv     Ackermannised read-over-write chains: every load is an ite chain
+//          over the guarded writes before it, and arbitrary initial bytes are
+//          fresh variables with pairwise consistency constraints (QF_BV, the
+//          form the certified back end accepts; mirrors PrismSem/MemEncode)
+enum class MemEncoding { Array, Bv };
+
+struct EncodeOptions {
+    MemEncoding memory = MemEncoding::Array;
+};
+
 PRISM_API bool z3_available();
+// pir_vcs always uses MemEncoding::Bv unless told otherwise (QF_BV VCs).
 PRISM_API std::vector<Vc> pir_vcs(const Function& fn, int unwind = 8);
+PRISM_API std::vector<Vc> pir_vcs(const Function& fn, int unwind, const EncodeOptions& eo);
 PRISM_API Verdict check_function(const Function& fn, int unwind, double timeout_s = 30.0);
+PRISM_API Verdict check_function(const Function& fn, int unwind, double timeout_s, const EncodeOptions& eo);
 // "name=value, ..." with signed decimal values (the bmc stage's format).
 PRISM_API std::string format_cex(const Function& fn, const std::vector<uint64_t>& args);
 
@@ -305,6 +423,37 @@ PRISM_API std::optional<std::string> lower_to_ir(const Frontend& fe,
                                                  double timeout_s, std::string& err,
                                                  std::vector<FoldedUb>* folded = nullptr,
                                                  std::vector<std::pair<int, int>>* signed_shl = nullptr);
+
+// ---------------------------------------------------------------------------
+// Library models (roadmap 2.6, docs/PIR.md "Library models")
+// ---------------------------------------------------------------------------
+
+// C sources of the operational models (src/prism/pir/models/libc/*.c),
+// embedded in the binary at build time: (file name, text).
+PRISM_API const std::vector<std::pair<std::string, std::string>>& model_sources();
+
+struct ModelLibrary {
+    std::vector<ir::Module> units;  // lowered model files
+    std::string error;              // non-empty: the models could not be built
+};
+// Lower the embedded models with the same clang/opt pipeline (once per run).
+PRISM_API ModelLibrary build_models(const Frontend& fe, double timeout_s);
+// Link into m every model function m declares but does not define
+// (transitively, with the globals they use). Returns the linked names.
+PRISM_API std::vector<std::string> link_models(ir::Module& m, const ModelLibrary& lib);
+
+// ---------------------------------------------------------------------------
+// Pointer-parameter contracts (Law 6, docs/PIR.md "Pointer parameters")
+// ---------------------------------------------------------------------------
+
+// `// requires: \valid(p + (0..n-1))`, `\valid(p)`, `\valid_read(...)`, and
+// ACSL `/*@ requires \valid(...); */` clauses in the comment block right
+// before the function (or its first body lines). Unrecognised requires
+// clauses are returned in *unparsed (the function stays NEEDS-HARNESS for
+// the pointers they would cover).
+PRISM_API std::vector<PtrContract> parse_contracts(const std::vector<std::string>& source_lines, int fn_line,
+                                                   const ir::Function& f,
+                                                   std::vector<std::string>* unparsed = nullptr);
 
 // The pir stage: one finding per defined function of every C/C++ unit.
 PRISM_API std::vector<Finding> run_pir(const std::vector<std::filesystem::path>& sources,

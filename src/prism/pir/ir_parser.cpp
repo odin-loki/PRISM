@@ -373,9 +373,76 @@ struct P {
                 if (!keep->empty()) *keep += ' ';
                 *keep += w;
             }
-            if (is_punct('(')) skip_group();
-            else if (w == "align" && peek().kind == Tok::Num) ++i;
+            if (is_punct('(') && (w == "byval" || w == "sret" || w == "byref")) {
+                // keep the pointee type: "byval(<type>)"
+                ++i;
+                auto ty = type();
+                expect_punct(')');
+                if (keep) *keep += "(" + ty.text + ")";
+            } else if (is_punct('(')) {
+                skip_group();
+            } else if (w == "align" && peek().kind == Tok::Num) {
+                auto n = next().text;
+                if (keep) *keep += " " + n;
+            }
         }
+    }
+
+    // `, align N` suffix of alloca/load/store (other trailing words ignored)
+    unsigned trailing_align() {
+        unsigned a = 0;
+        while (!at_end()) {
+            if (accept_punct(',')) continue;
+            if (accept_word("align") && peek().kind == Tok::Num) {
+                a = static_cast<unsigned>(std::stoul(next().text));
+                continue;
+            }
+            ++i;
+        }
+        return a;
+    }
+
+    // Constant expression after its opcode word: getelementptr [flags] (T, ops...)
+    // or a cast (T v to T2).
+    void const_expr(Value& v, const std::string& op) {
+        v.kind = Value::ConstExpr;
+        v.ce_op = op;
+        v.text = op;
+        while (peek().kind == Tok::Word) v.ce_flags.push_back(next().text);
+        if (!is_punct('(')) throw ParseError("constant expression without operands");
+        ++i;
+        if (op == "getelementptr") {
+            v.ce_ty = type();
+            while (accept_punct(',')) {
+                if (is_word("inrange")) {
+                    ++i;
+                    if (is_punct('(')) skip_group();
+                }
+                v.elems.push_back(typed_operand());
+            }
+        } else {
+            v.elems.push_back(typed_operand());
+            if (!accept_word("to")) throw ParseError("expected 'to' in constant cast");
+            v.ce_ty = type();
+        }
+        expect_punct(')');
+    }
+
+    // [ T v, ... ] / { T v, ... } / <{ ... }> aggregate constant elements
+    void aggregate(Value& v) {
+        v.kind = Value::Aggregate;
+        v.text = "aggregate";
+        bool packed = is_punct('<') && is_punct('{', 1);
+        if (packed) ++i;
+        char open = peek().text[0];
+        char close = open == '[' ? ']' : open == '{' ? '}' : '>';
+        ++i;
+        while (!is_punct(close)) {
+            if (!v.elems.empty()) expect_punct(',');
+            v.elems.push_back(typed_operand());
+        }
+        expect_punct(close);
+        if (packed) expect_punct('>');
     }
 
     Value value(const Type& ty) {
@@ -435,28 +502,63 @@ struct P {
                         v.kind = Value::Int;
                         v.bits = 0;
                     }
+                } else if (w == "getelementptr" || w == "ptrtoint" || w == "inttoptr" || w == "bitcast" ||
+                           w == "addrspacecast") {
+                    auto save = i;
+                    try {
+                        const_expr(v, w);
+                    } catch (const ParseError&) {
+                        i = save;
+                        v = Value{};
+                        v.text = w;
+                        v.kind = Value::Other;
+                        while (peek().kind == Tok::Word) ++i;
+                        if (is_punct('(')) skip_group();
+                    }
                 } else {
-                    // constant expression: getelementptr (...), ptrtoint (...), ...
+                    // other constant expression: kept opaque
                     v.kind = Value::Other;
                     while (peek().kind == Tok::Word) ++i;  // inbounds, nuw ...
                     if (is_punct('(')) skip_group();
                 }
                 return v;
             }
-            case Tok::Str:
-                v.kind = Value::Other;
-                v.text = "c\"" + next().text + "\"";
+            case Tok::Str: {
+                v.kind = Value::Str;
+                auto raw = next().text;
+                v.text = "c\"" + raw + "\"";
+                for (std::size_t k = 0; k < raw.size(); ++k) {
+                    if (raw[k] == '\\' && k + 2 < raw.size() &&
+                        std::isxdigit(static_cast<unsigned char>(raw[k + 1])) &&
+                        std::isxdigit(static_cast<unsigned char>(raw[k + 2]))) {
+                        v.bytes.push_back(static_cast<char>(std::stoi(raw.substr(k + 1, 2), nullptr, 16)));
+                        k += 2;
+                    } else if (raw[k] == '\\' && k + 1 < raw.size() && raw[k + 1] == '\\') {
+                        v.bytes.push_back('\\');
+                        ++k;
+                    } else {
+                        v.bytes.push_back(raw[k]);
+                    }
+                }
                 return v;
+            }
             case Tok::Punct:
                 if (is_punct('{') || is_punct('[') || is_punct('<')) {
-                    v.kind = Value::Other;
-                    v.text = "aggregate";
-                    if (is_punct('<') && is_punct('{', 1)) {
-                        ++i;
-                        skip_group();
-                        expect_punct('>');
-                    } else {
-                        skip_group();
+                    auto save = i;
+                    try {
+                        aggregate(v);
+                    } catch (const ParseError&) {
+                        i = save;
+                        v = Value{};
+                        v.kind = Value::Other;
+                        v.text = "aggregate";
+                        if (is_punct('<') && is_punct('{', 1)) {
+                            ++i;
+                            skip_group();
+                            expect_punct('>');
+                        } else {
+                            skip_group();
+                        }
                     }
                     return v;
                 }
@@ -648,6 +750,84 @@ Inst parse_inst(const std::vector<Tok>& toks, std::string text) {
         }
         if (!a.ty.elems.empty() && in.indices.size() == 1 && in.indices[0] < a.ty.elems.size())
             in.ty = a.ty.elems[in.indices[0]];
+        return in;
+    }
+    if (op == "alloca") {
+        if (p.is_word("inalloca")) {
+            in.parsed = false;
+            return in;
+        }
+        in.ety = p.type();
+        in.ty = Type{Type::Ptr, 0, "ptr", {}};
+        if (p.is_punct(',') && !p.is_word("align", 1) && !p.is_word("addrspace", 1)) {
+            ++p.i;
+            in.ops.push_back(p.typed_operand());
+        }
+        in.align = p.trailing_align();
+        return in;
+    }
+    if (op == "load") {
+        if (p.is_word("atomic") || p.is_word("volatile")) {
+            in.flags.push_back(p.next().text);
+            in.parsed = false;
+            return in;
+        }
+        in.ty = p.type();
+        p.expect_punct(',');
+        in.ops.push_back(p.typed_operand());
+        in.align = p.trailing_align();
+        return in;
+    }
+    if (op == "store") {
+        if (p.is_word("atomic") || p.is_word("volatile")) {
+            in.flags.push_back(p.next().text);
+            in.parsed = false;
+            return in;
+        }
+        auto v = p.typed_operand();
+        p.expect_punct(',');
+        auto ptr = p.typed_operand();
+        in.ty = v.ty;
+        in.ops = {v, ptr};
+        in.align = p.trailing_align();
+        return in;
+    }
+    if (op == "getelementptr") {
+        while (p.is_word("inbounds") || p.is_word("nuw") || p.is_word("nusw")) in.flags.push_back(p.next().text);
+        in.ety = p.type();
+        in.ty = Type{Type::Ptr, 0, "ptr", {}};
+        while (p.accept_punct(',')) {
+            if (p.is_word("inrange")) {
+                ++p.i;
+                if (p.is_punct('(')) p.skip_group();
+            }
+            in.ops.push_back(p.typed_operand());
+        }
+        if (!in.ops.empty() && in.ops[0].ty.kind == Type::Vector) in.ty = in.ops[0].ty;
+        return in;
+    }
+    if (op == "invoke") {
+        // invoke <ty> @f(args) [fn attrs] to label %normal unwind label %lpad
+        while (p.peek().kind == Tok::Word && call_prefix_words().count(p.peek().text)) ++p.i;
+        p.skip_param_attrs();
+        in.ty = p.type();
+        if (in.ty.kind == Type::Other && !in.ty.elems.empty()) in.ty = in.ty.elems[0];
+        auto cal = p.next();
+        if (cal.kind == Tok::Global) in.callee = cal.text;
+        else if (cal.kind != Tok::Local && p.is_punct('(') && !p.is_punct('(', 1)) p.skip_group();
+        p.expect_punct('(');
+        bool first = true;
+        while (!p.is_punct(')')) {
+            if (!first) p.expect_punct(',');
+            first = false;
+            in.ops.push_back(p.typed_operand(true));
+        }
+        p.expect_punct(')');
+        while (!p.at_end() && !p.is_word("to")) ++p.i;
+        if (!p.accept_word("to")) throw ParseError("invoke without normal destination");
+        in.targets.push_back(p.label());
+        if (!p.accept_word("unwind")) throw ParseError("invoke without unwind destination");
+        in.targets.push_back(p.label());
         return in;
     }
     if (op == "call") {
@@ -855,6 +1035,11 @@ void parse_define(std::string_view header, const std::vector<std::string_view>& 
             if (c == ']') --depth;
         }
         pending += pending.empty() ? line : " " + line;
+        // `invoke ...` continues on the next line with "to label ... unwind label ..."
+        bool open_invoke = (pending.starts_with("invoke ") || pending.find(" = invoke ") != std::string::npos) &&
+                           pending.find(" unwind label ") == std::string::npos &&
+                           pending.find(" unwind to caller") == std::string::npos;
+        if (depth <= 0 && open_invoke) continue;
         if (depth <= 0) {
             depth = 0;
             flush(pending);
@@ -871,6 +1056,62 @@ const Function* Module::find(std::string_view name) const {
         if (f.name == name) return &f;
     return nullptr;
 }
+
+const Global* Module::find_global(std::string_view name) const {
+    for (auto& g : globals)
+        if (g.name == name) return &g;
+    return nullptr;
+}
+
+namespace {
+
+// "@name = [linkage...] (global|constant) T [init][, align N][, ...]"
+bool parse_global(std::string_view line, Global& g) {
+    auto toks = lex(line);
+    strip_attachments(toks);
+    if (toks.size() < 4 || toks[0].kind != Tok::Global || toks[1].kind != Tok::Punct || toks[1].text != "=")
+        return false;
+    g.name = toks[0].text;
+    g.text = std::string(line);
+    std::vector<Tok> rest(toks.begin() + 2, toks.end());
+    P p{rest};
+    bool found = false;
+    while (!p.at_end()) {
+        if (p.is_word("alias") || p.is_word("ifunc")) return false;
+        if (p.is_word("global") || p.is_word("constant")) {
+            g.is_const = p.next().text == "constant";
+            found = true;
+            break;
+        }
+        auto w = p.next();
+        if (w.kind == Tok::Word && w.text == "external") g.external = true;
+        if (w.kind == Tok::Word && w.text == "extern_weak") g.external = true;
+        if (w.kind == Tok::Word && w.text == "thread_local") {
+            g.thread_local_ = true;
+            if (p.is_punct('(')) p.skip_group();
+        }
+        if (w.kind == Tok::Word && w.text == "addrspace" && p.is_punct('(')) p.skip_group();
+    }
+    if (!found) return false;
+    try {
+        g.ty = p.type();
+        if (!g.external && !p.at_end() && !p.is_punct(',')) {
+            Operand o;
+            o.ty = g.ty;
+            o.v = p.value(g.ty);
+            g.init.push_back(std::move(o));
+        } else if (!g.external) {
+            g.external = true;
+        }
+        g.align = p.trailing_align();
+    } catch (const ParseError&) {
+        g.init.clear();
+        g.external = true;  // unparsed initializer: contents unknown
+    }
+    return true;
+}
+
+}  // namespace
 
 Type parse_type(std::string_view text) {
     auto toks = lex(text);
@@ -908,6 +1149,38 @@ Module parse_module(std::string_view text) {
             }
             m.functions.push_back(std::move(fn));
             i = j;
+            continue;
+        }
+        if (line.starts_with("@")) {
+            Global g;
+            if (parse_global(line, g)) m.globals.push_back(std::move(g));
+            continue;
+        }
+        if (line.starts_with("%") && line.find(" = type ") != std::string_view::npos) {
+            auto toks = lex(line);
+            if (toks.size() >= 4 && toks[0].kind == Tok::Local) {
+                std::vector<Tok> rest(toks.begin() + 3, toks.end());
+                Type body;
+                if (rest.size() == 1 && rest[0].kind == Tok::Word && rest[0].text == "opaque") {
+                    body.kind = Type::Other;
+                    body.text = "opaque";
+                } else {
+                    try {
+                        P p{rest};
+                        body = p.type();
+                    } catch (const ParseError&) {
+                        body = Type{};
+                        body.text = "unparsed";
+                    }
+                }
+                m.types[toks[0].text] = body;
+            }
+            continue;
+        }
+        if (line.starts_with("target datalayout = \"")) {
+            auto a = line.find('"');
+            auto b = line.rfind('"');
+            if (a != std::string_view::npos && b > a) m.datalayout = std::string(line.substr(a + 1, b - a - 1));
             continue;
         }
         if (line.starts_with("declare ")) {
