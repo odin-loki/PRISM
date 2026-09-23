@@ -15,7 +15,7 @@ from prism.checkers import run_lints
 from prism.config import Config
 from prism.contracts import prove_contracts
 from prism.wp import run_wp
-from prism.cparse import TU_EXTS, extract_functions, iter_sources
+from prism.cparse import TU_EXTS, extract_functions, iter_sources, parse_gap_findings
 from prism.diff import run_diff
 from prism.fuse import run_fuse
 from prism.harness import run_harness_bmc
@@ -231,6 +231,7 @@ class Pipeline:
             for p in sources:
                 rel = source_rel(p)
                 fns = parse(p, rel)
+                out.extend(parse_gap_findings(p, rel))
                 if not fns:
                     if p.suffix.lower() in TU_EXTS:
                         out.append(Finding(

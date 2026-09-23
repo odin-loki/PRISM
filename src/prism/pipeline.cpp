@@ -267,6 +267,8 @@ RunReport run_pipeline(const Config& cfg) {
         for (auto& p : sources) {
             auto rel = rel_of(p, cfg.root);
             auto fns = extract_functions(p, rel);
+            auto gaps = parse_gap_findings(p, rel);
+            out.insert(out.end(), gaps.begin(), gaps.end());
             if (fns.empty()) {
                 if (is_tu_ext(p.extension().string())) {
                     out.push_back(Finding{"inventory", std::string(laws::ERROR), rel, std::nullopt,
