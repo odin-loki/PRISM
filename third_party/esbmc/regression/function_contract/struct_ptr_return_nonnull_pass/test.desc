@@ -1,4 +1,0 @@
-CORE
-main.c
---enforce-contract alloc_point --function alloc_point --no-pointer-check
-^VERIFICATION SUCCESSFUL$

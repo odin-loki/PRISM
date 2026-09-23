@@ -1,4 +1,0 @@
-CORE
-main.cpp
---std c++03 --incremental-bmc
-^VERIFICATION FAILED$

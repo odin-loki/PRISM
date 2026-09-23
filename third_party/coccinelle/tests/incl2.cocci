@@ -1,5 +1,0 @@
-@@
-@@
-
-+ #include "beginning.h"
-  #include ...

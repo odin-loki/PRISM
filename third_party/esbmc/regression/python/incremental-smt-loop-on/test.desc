@@ -1,4 +1,0 @@
-CORE
-main.py
---unwind 5 --no-unwinding-assertions --smt-during-symex --smt-symex-assert
-^VERIFICATION SUCCESSFUL$

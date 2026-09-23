@@ -1,5 +1,0 @@
-CORE
-arith.ld
---incremental-bmc --unwind 2
-^VERIFICATION FAILED$
-division by zero

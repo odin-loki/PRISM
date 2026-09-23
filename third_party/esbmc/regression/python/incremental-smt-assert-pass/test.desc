@@ -1,4 +1,0 @@
-CORE
-main.py
---is-instance-check --smt-during-symex --smt-symex-assert --unwind 5
-^VERIFICATION SUCCESSFUL$

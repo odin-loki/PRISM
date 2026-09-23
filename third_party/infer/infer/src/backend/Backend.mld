@@ -1,9 +1,0 @@
-{0 Orchestration of the Backend Analyses}
-
-Important modules:
-- {!module-Backend.InferAnalyze}
-- {!module-Backend.Ondemand}
-- {!module-Backend.RegisterCheckers}
-- {!module-Backend.Summary}
-
-All modules: {!module-Backend}

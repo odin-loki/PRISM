@@ -1,2 +1,0 @@
-tests/misc/log-file.i:17:[eva] warning: no 'assigns \result \from ...' clause specified for function g
-[eva] ====== VALUES COMPUTED ======

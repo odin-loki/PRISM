@@ -1,2 +1,0 @@
-query: Best Practices/Likely Errors/Slicing.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

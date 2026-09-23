@@ -1,4 +1,0 @@
-CORE
-cbmc_ffs.goto
---binary
-^VERIFICATION SUCCESSFUL$

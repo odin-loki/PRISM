@@ -1,4 +1,0 @@
-CORE
-cbmc_array_set.goto
---binary
-^VERIFICATION SUCCESSFUL$

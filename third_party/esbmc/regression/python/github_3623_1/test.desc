@@ -1,4 +1,0 @@
-CORE
-main.py
---unwind 1
-^ERROR: Unsupported reassignment from dict to list for variable 'd'$

@@ -1,6 +1,0 @@
-CORE
-main.c
---dead-store-check --result-only --sarif-output -
-^VERIFICATION SUCCESSFUL$
-"level": "note"
-"id": "563"

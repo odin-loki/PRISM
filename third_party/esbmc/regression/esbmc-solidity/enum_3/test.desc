@@ -1,4 +1,0 @@
-THOROUGH
-contract.solast
---contract Base --sol contract.sol --k-induction --no-standard-checks
-^VERIFICATION SUCCESSFUL$

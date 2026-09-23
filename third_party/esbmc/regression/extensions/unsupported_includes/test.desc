@@ -1,5 +1,0 @@
-CORE
-main.c
---dont-care-about-missing-extensions
-REQUIRES arch_x86
-^VERIFICATION SUCCESSFUL$

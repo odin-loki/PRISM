@@ -1,4 +1,0 @@
-CORE
-main.cpp
---std c++11 --64 --unwind 12 --timeout 120
-^VERIFICATION SUCCESSFUL$

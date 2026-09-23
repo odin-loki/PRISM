@@ -1,2 +1,0 @@
-query: Linq/MissedFirstOrDefaultOpportunity.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

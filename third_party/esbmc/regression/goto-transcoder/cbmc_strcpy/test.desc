@@ -1,4 +1,0 @@
-CORE
-cbmc_strcpy.goto
---binary --unwind 10
-^VERIFICATION SUCCESSFUL$

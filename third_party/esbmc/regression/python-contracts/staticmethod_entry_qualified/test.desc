@@ -1,4 +1,0 @@
-CORE
-main.py
---enforce-contract add --function Counter.add
-^VERIFICATION SUCCESSFUL$

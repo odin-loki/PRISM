@@ -1,5 +1,0 @@
-CORE
-main.c
---conv-assert-to-assume
-
-^VERIFICATION SUCCESSFUL$

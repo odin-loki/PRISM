@@ -1,4 +1,0 @@
-CORE
-cbmc_forall_fail.goto
---binary
-^VERIFICATION FAILED$

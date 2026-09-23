@@ -1,2 +1,0 @@
-query: experimental/Security/CWE/CWE-190/DangerousUseOfTransformationAfterOperation.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

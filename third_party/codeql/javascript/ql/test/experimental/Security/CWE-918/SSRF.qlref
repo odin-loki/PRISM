@@ -1,2 +1,0 @@
-query: ./experimental/Security/CWE-918/SSRF.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

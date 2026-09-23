@@ -1,2 +1,0 @@
-query: Security/CWE/CWE-428/UnsafeCreateProcessCall.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

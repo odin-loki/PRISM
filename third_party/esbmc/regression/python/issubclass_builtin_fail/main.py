@@ -1,1 +1,0 @@
-assert issubclass(int, bool)

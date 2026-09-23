@@ -1,4 +1,0 @@
-CORE
-main.py
---no-standard-checks --incremental-bmc --smt-symex-guard
-^VERIFICATION FAILED$

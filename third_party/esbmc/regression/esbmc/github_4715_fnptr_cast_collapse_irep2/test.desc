@@ -1,4 +1,0 @@
-CORE
-main.c
---clang-c-irep2-adjust-only --goto-functions-only
-^ +ASSIGN p=&g;$

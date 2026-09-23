@@ -1,4 +1,0 @@
-CORE
-cbmc_inf.goto
---binary
-^VERIFICATION SUCCESSFUL$

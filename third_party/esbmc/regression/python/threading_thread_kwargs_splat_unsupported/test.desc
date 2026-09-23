@@ -1,4 +1,0 @@
-CORE
-main.py
---incremental-bmc
-^ERROR:.*Thread\(\*\*kwargs\) is not supported

@@ -1,4 +1,0 @@
-CORE
-cbmc_contract_is_fresh_fail.goto
---binary --function read_second
-^VERIFICATION FAILED$

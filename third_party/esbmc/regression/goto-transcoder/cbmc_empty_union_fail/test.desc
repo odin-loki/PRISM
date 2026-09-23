@@ -1,5 +1,0 @@
-CORE
-cbmc_empty_union_fail.goto
---binary
-^VERIFICATION FAILED$
-assertion p\.s\.x == 1

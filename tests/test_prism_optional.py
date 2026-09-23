@@ -93,7 +93,7 @@ class TestCppOptionalProbeSourceContract(unittest.TestCase):
         self.assertIn("doctest version", body)
         self.assertIn("laws::NOTRUN", body)
         self.assertIn("not CBMC", body)
-        self.assertIn("third_party/cbmc", body)
+        self.assertIn('adapter_install("cbmc")', body)
         self.assertLess(body.find("unknown option"), body.find("VERIFICATION SUCCESSFUL"))
         successful = body[body.find("VERIFICATION SUCCESSFUL"):body.find("VERIFICATION FAILED")]
         self.assertIn("laws::BOUNDED", successful)

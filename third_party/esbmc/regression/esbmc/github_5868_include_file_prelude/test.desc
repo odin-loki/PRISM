@@ -1,4 +1,0 @@
-CORE
-main.c
---include-file pch.h --incremental-bmc
-^VERIFICATION SUCCESSFUL$

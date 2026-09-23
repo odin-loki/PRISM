@@ -1,4 +1,0 @@
-CORE
-main.c
---no-por --context-bound 3
-^VERIFICATION SUCCESSFUL$

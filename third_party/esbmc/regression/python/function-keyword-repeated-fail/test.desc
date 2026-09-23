@@ -1,4 +1,0 @@
-CORE
-main.py
---unwind 1
-^ERROR: .*main\.py:4:23: Keyword argument repeated:x$

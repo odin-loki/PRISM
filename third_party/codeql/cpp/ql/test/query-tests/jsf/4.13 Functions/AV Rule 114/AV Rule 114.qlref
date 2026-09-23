@@ -1,2 +1,0 @@
-query: jsf/4.13 Functions/AV Rule 114.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

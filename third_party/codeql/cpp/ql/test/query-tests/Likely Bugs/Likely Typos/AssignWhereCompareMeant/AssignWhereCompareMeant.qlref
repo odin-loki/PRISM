@@ -1,2 +1,0 @@
-query: Likely Bugs/Likely Typos/AssignWhereCompareMeant.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

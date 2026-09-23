@@ -1,5 +1,0 @@
-CORE
-main.cpp
---std c++11
-^VERIFICATION FAILED$
-^.*assertion std::codecvt_utf8<char16_t>\(\).max_length\(\) == 4$

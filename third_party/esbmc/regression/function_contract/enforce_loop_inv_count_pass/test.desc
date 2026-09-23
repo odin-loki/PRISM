@@ -1,5 +1,0 @@
-CORE
-main.c
---enforce-contract count_to --loop-invariant-check
-^Processing 1 loop invariant$
-^VERIFICATION SUCCESSFUL$

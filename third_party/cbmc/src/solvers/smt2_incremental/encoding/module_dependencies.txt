@@ -1,2 +1,0 @@
-solvers/smt2_incremental/encoding
-util

@@ -1,4 +1,0 @@
-CORE
-main.c
---64 --stack-limit 96 --no-return-value-opt
-^VERIFICATION SUCCESSFUL$

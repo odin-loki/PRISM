@@ -1,5 +1,0 @@
-CORE
-main.c
---no-simplify
-^VERIFICATION FAILED$
-the array does not have four elements

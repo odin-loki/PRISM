@@ -1,4 +1,0 @@
-THOROUGH
-double_free.c
---bitwuzla
-^VERIFICATION FAILED$

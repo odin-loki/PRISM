@@ -1,6 +1,0 @@
-CORE
-main.cpp
---std c++03
-
-^VERIFICATION FAILED$
-exception specification violated

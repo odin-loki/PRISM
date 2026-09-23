@@ -1,5 +1,0 @@
-CORE
-main.py
---function foo
-
-^ERROR: Function foo not found

@@ -1,4 +1,0 @@
-CORE
-contract.solast
---sol contract.sol --contract C --goto-functions-only
-^WARNING: function should not return value$

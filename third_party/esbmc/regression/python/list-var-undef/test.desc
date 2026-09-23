@@ -1,4 +1,0 @@
-CORE
-main.py
---unwind 1
-^ERROR\: Variable \'l\' is not defined in function \'max\' at line 4.$

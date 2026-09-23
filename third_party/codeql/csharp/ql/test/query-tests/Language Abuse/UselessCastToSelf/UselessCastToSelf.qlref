@@ -1,2 +1,0 @@
-query: Language Abuse/UselessCastToSelf.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

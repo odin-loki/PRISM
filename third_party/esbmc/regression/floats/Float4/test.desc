@@ -1,4 +1,0 @@
-THOROUGH
-main.c
---floatbv -Wno-error=implicit-function-declaration
-^VERIFICATION SUCCESSFUL$

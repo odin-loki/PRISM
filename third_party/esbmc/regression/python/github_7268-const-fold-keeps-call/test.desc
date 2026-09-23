@@ -1,4 +1,0 @@
-CORE
-main.py
---dead-code-check --goto-functions-only
-FUNCTION_CALL:.*=pick\(5\)$

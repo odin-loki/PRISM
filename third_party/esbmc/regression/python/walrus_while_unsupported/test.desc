@@ -1,4 +1,0 @@
-CORE
-main.py
-
-^ERROR: Walrus operator ':=' in a while-loop condition is not supported$

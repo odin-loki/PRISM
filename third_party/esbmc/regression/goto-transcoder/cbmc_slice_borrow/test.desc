@@ -1,4 +1,0 @@
-CORE
-cbmc_slice_borrow.goto
---binary --unwind 8
-^VERIFICATION SUCCESSFUL$

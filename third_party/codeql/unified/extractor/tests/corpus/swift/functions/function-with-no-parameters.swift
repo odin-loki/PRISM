@@ -1,3 +1,0 @@
-func greet() {
-  print("hello")
-}

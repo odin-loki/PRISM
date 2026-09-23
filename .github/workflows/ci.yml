@@ -8,6 +8,28 @@ permissions:
   contents: read
 
 jobs:
+  supply-chain:
+    name: Licence firewall + manifest + SBOM
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Licence firewall (no copyleft in linked components)
+        run: python scripts/licence_check.py
+      - name: Linked libraries match third_party/MANIFEST.toml
+        run: python scripts/fetch_deps.py --linked
+      - name: Linked libraries match the pinned upstream archives (sha256)
+        run: python scripts/fetch_deps.py --linked --refetch
+      - name: CycloneDX SBOM
+        run: python scripts/sbom.py --version "${GITHUB_SHA::12}" -o prism.cdx.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: prism-sbom
+          path: prism.cdx.json
+          retention-days: 30
+
   cpp:
     name: C++ engine (build + prism_tests)
     runs-on: ubuntu-24.04

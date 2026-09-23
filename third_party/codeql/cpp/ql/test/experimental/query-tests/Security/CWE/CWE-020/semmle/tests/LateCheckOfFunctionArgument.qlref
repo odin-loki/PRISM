@@ -1,2 +1,0 @@
-query: experimental/Security/CWE/CWE-020/LateCheckOfFunctionArgument.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

@@ -217,7 +217,7 @@ class TestEsbmcAdapter(unittest.TestCase):
         self.assertNotEqual(f.status, laws.PROVED)
         self.assertNotEqual(f.status, laws.CLEAN)
         self.assertFalse(laws.is_proof(f.status))
-        self.assertIn("third_party/esbmc", (f.extra or {}).get("install", ""))
+        self.assertIn("fetch_deps.py --tool esbmc", (f.extra or {}).get("install", ""))
 
     def test_verification_unknown_and_no_verdict_are_not_proofs(self):
         unknown, _ = self._esbmc(
@@ -245,10 +245,11 @@ class TestEsbmcAdapter(unittest.TestCase):
         text = Path(__file__).resolve().parents[1].joinpath(
             "src", "prism", "adapters.cpp"
         ).read_text(encoding="utf-8")
-        start = text.find("std::vector<Finding> run_esbmc(")
+        # The body is run_esbmc_unstamped; run_esbmc adds extra["tool_sha"].
+        start = text.find("std::vector<Finding> run_esbmc_unstamped(")
         if start < 0:
             self.skipTest("adapters.cpp has no run_esbmc")
-        stub = text[start:text.find("std::vector<Finding> run_dafny(", start)]
+        stub = text[start:text.find("std::vector<Finding> run_dafny_unstamped(", start)]
         self.assertIn('notrun("esbmc"', stub)
         self.assertIn("no .c files in scope", stub)
         self.assertIn("laws::UNKNOWN", stub)

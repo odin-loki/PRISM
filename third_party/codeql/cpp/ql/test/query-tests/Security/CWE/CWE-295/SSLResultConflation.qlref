@@ -1,2 +1,0 @@
-query: Security/CWE/CWE-295/SSLResultConflation.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

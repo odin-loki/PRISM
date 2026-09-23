@@ -1,4 +1,0 @@
-CORE
-main.c
---unwind 10 --overflow-check --no-unwinding-assertions
-^VERIFICATION SUCCESSFUL$

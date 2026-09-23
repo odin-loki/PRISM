@@ -9,7 +9,7 @@ import subprocess
 
 from prism import laws
 from prism.adapters_extra import _is_fake_adapter
-from prism.config import Config, adapter_install, ordered_map, resolve_adapter
+from prism.config import Config, adapter_install, ordered_map, resolve_adapter, stamps_tool
 from prism.models import Finding
 from prism.pbsd import C_EXTS, run_pbsd_lints
 
@@ -17,7 +17,7 @@ from prism.pbsd import C_EXTS, run_pbsd_lints
 def _not_run(stage: str, binary: str, how: str) -> Finding:
     return Finding(
         stage=stage, status=laws.NOTRUN, file="", function=None, line=None,
-        cls="", message=f"{binary} not found (config, vendored tree, PATH)",
+        cls="", message=f"{binary} not found (config, ~/.prism/tools, PATH)",
         strength=laws.STRENGTH_FINDS, extra={"install": how},
     )
 
@@ -38,6 +38,7 @@ def _tool_unusable(text: str, rc: int) -> bool:
     )
 
 
+@stamps_tool("cppcheck", ("cppcheck", "cppcheck.exe"))
 def run_cppcheck(paths: list[Path], cfg: Config) -> list[Finding]:
     exe = resolve_adapter(cfg, "cppcheck", ("cppcheck", "cppcheck.exe"))
     if not exe:
@@ -104,6 +105,7 @@ def run_cppcheck(paths: list[Path], cfg: Config) -> list[Finding]:
     return out
 
 
+@stamps_tool("esbmc", ("esbmc", "esbmc.exe"))
 def run_esbmc(paths: list[Path], cfg: Config) -> list[Finding]:
     exe = resolve_adapter(cfg, "esbmc", ("esbmc", "esbmc.exe"))
     if not exe:
@@ -164,6 +166,7 @@ def run_esbmc(paths: list[Path], cfg: Config) -> list[Finding]:
     return out
 
 
+@stamps_tool("dafny", ("dafny", "dafny.exe"))
 def run_dafny(paths: list[Path], cfg: Config) -> list[Finding]:
     exe = resolve_adapter(cfg, "dafny", ("dafny", "dafny.exe"))
     if not exe:

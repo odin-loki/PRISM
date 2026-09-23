@@ -1,4 +1,0 @@
-CORE
-main.py
---python-no-fold --incremental-bmc
-^VERIFICATION SUCCESSFUL$

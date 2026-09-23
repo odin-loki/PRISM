@@ -1,6 +1,7 @@
 #pragma once
 
 #include "prism/export.hpp"
+#include "prism/models.hpp"
 
 #include <filesystem>
 #include <initializer_list>
@@ -32,7 +33,7 @@ struct Config {
     std::vector<std::string> skip;
     bool resume = false;
     bool gui = false;
-    // Explicit adapter binaries (--tool NAME=PATH). Searched before vendored/PATH.
+    // Explicit adapter binaries (--tool NAME=PATH). Searched before ~/.prism/tools and PATH.
     std::map<std::string, std::filesystem::path> tools;
     // Law 9: running code from the scanned tree (compiled harnesses, sanitizer
     // builds, perl -c, cargo clippy, eslint) or from the LLM is opt-in
@@ -42,15 +43,28 @@ struct Config {
     PRISM_API bool want(std::string_view name) const;
     PRISM_API std::optional<std::filesystem::path> which(
         std::initializer_list<std::string_view> names) const;
-    // (1) tools[], (2) third_party/<vendor>/ built exe, (3) PATH.
+    // (1) tools[], (2) the pinned scripts/fetch_deps.py build
+    // <tools_home>/<component>/<commit>/bin/ (commit from third_party/MANIFEST.toml,
+    // baked in at configure time), (3) PATH.
     PRISM_API std::optional<std::filesystem::path> which_adapter(
         std::string_view stage, std::initializer_list<std::string_view> names) const;
 };
 
 PRISM_API Config default_config();
-// True when p is root or lies below it. Law 9: vendored adapter binaries are
+// True when p is root or lies below it. Law 9: pinned adapter binaries are
 // never taken from inside the scanned tree without --allow-exec.
 PRISM_API bool path_within(const std::filesystem::path& p, const std::filesystem::path& root);
+// "python scripts/fetch_deps.py --tool <component> ..." or a system-tool hint.
 PRISM_API std::string adapter_install(std::string_view stage);
+// $PRISM_TOOLS_DIR or ~/.prism/tools (scripts/fetch_deps.py install root).
+PRISM_API std::filesystem::path tools_home();
+// Commit that third_party/MANIFEST.toml pins for an external component.
+PRISM_API std::optional<std::string> pinned_commit(std::string_view component);
+// Manifest commit when exe is under <tools_home>/<name>/<commit>/, else
+// "path:<abs>;sha256:<hash>". prism/config.py tool_identity.
+PRISM_API std::string tool_identity(const std::filesystem::path& exe);
+// extra["tool_sha"] = tool_identity(exe) on every finding (existing kept).
+PRISM_API void stamp_tool_sha(std::vector<Finding>& findings, const std::filesystem::path& exe);
+PRISM_API std::string sha256_hex(std::string_view data);
 
 }  // namespace prism

@@ -1,6 +1,0 @@
-CORE
-main.c
---branch-coverage --no-slice
-\ba = 1\b
-\bb = 2\b
-^COVERAGE ANALYSIS COMPLETE$

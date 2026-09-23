@@ -1,4 +1,0 @@
-CORE
-main.py
---incremental-bmc
-^ERROR: TypeError: numpy.arange\(\) currently supports constant numeric inputs only$

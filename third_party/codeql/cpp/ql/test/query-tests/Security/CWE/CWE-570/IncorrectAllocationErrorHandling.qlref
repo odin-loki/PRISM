@@ -1,2 +1,0 @@
-query: Security/CWE/CWE-570/IncorrectAllocationErrorHandling.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

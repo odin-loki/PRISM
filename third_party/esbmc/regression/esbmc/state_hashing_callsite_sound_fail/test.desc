@@ -1,4 +1,0 @@
-CORE
-main.c
---unwind 4 --state-hashing
-^VERIFICATION FAILED$

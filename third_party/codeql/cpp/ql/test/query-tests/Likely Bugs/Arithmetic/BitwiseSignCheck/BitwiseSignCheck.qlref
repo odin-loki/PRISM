@@ -1,2 +1,0 @@
-query: Likely Bugs/Arithmetic/BitwiseSignCheck.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

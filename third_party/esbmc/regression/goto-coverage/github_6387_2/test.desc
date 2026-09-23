@@ -1,5 +1,0 @@
-CORE
-main.cpp
---falsification --assertion-coverage
-^Assertion Instances Coverage: 100%$
-\A(?![\s\S]*VERIFICATION FAILED)[\s\S]*\Z

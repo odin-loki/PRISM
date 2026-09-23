@@ -1,6 +1,0 @@
-ansi-c
-cpp
-goto-programs
-langapi # should go away
-linking
-util

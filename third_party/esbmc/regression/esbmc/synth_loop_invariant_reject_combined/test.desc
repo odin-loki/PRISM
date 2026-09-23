@@ -1,4 +1,0 @@
-CORE
-main.c
---synthesise-loop-invariants --loop-invariant
-^ERROR: --synthesise-loop-invariants cannot be combined with --loop-invariant; use --loop-invariant-check, which it implies$

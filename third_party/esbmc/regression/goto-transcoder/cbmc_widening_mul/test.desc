@@ -1,4 +1,0 @@
-CORE
-cbmc_widening_mul.goto
---binary
-^VERIFICATION SUCCESSFUL$

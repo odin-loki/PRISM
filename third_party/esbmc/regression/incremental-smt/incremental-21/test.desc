@@ -1,4 +1,0 @@
-CORE
-main.c
---smt-during-symex --add-symex-value-sets -Wno-error=implicit-function-declaration
-^VERIFICATION FAILED$

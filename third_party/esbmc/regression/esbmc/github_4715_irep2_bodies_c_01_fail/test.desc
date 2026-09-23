@@ -1,4 +1,0 @@
-CORE
-main.c
---irep2-bodies --unwind 1 --incremental-bmc
-^VERIFICATION FAILED$

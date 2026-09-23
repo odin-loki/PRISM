@@ -1,3 +1,0 @@
-solvers
-theories
-util

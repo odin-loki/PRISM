@@ -1,4 +1,0 @@
-CORE
-main.c
---memory-leak-check -Wno-error=implicit-int
-^VERIFICATION SUCCESSFUL$

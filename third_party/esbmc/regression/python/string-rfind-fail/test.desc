@@ -1,4 +1,0 @@
-CORE
-main.py
---smt-during-symex --smt-symex-guard --z3 --no-unwinding-assertions --unwind 12
-^VERIFICATION FAILED$

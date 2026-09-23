@@ -1,2 +1,0 @@
-query: Security/CWE/CWE-190/ArithmeticTainted.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

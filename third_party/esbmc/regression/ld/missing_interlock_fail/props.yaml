@@ -1,5 +1,0 @@
-properties:
-  - id: P1
-    kind: mutual_exclusion
-    variables: [Motor_Forward, Motor_Reverse]
-    description: "Forward and Reverse coils must never be simultaneously energised"

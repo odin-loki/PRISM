@@ -1,4 +1,0 @@
-CORE
-cbmc_struct_swap.goto
---binary --unwind 8
-^VERIFICATION SUCCESSFUL$

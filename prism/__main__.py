@@ -44,7 +44,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--resume", action="store_true",
                    help="reuse ok/NOTRUN stages from --out/stages.jsonl (report.json fallback)")
     p.add_argument("--tool", action="append", default=[], metavar="NAME=PATH",
-                   help="explicit adapter binary (searched before vendored/PATH)")
+                   help="explicit adapter binary (searched before ~/.prism/tools and PATH)")
     p.add_argument("--allow-exec", action="store_true",
                    help="run code from the scanned tree (sanitizer/fuzz/diff harnesses, "
                         "perl -c, cargo clippy, eslint, LLM programs) in a sandbox; "

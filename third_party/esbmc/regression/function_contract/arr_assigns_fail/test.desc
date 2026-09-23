@@ -1,4 +1,0 @@
-CORE
-main.c
---enforce-contract arr_write2 --function arr_write2 --no-pointer-check
-^VERIFICATION FAILED$

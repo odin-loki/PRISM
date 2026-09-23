@@ -1,5 +1,0 @@
-CORE
-main.c
---function f --enforce-contract f --unwind 8
-^VERIFICATION FAILED$
-^.*assigns compliance.*not in assigns clause.*$

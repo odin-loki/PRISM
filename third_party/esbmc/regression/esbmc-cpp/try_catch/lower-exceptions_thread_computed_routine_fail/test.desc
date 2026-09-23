@@ -1,5 +1,0 @@
-KNOWNBUG
-main.cpp
---unwind 2 --no-unwinding-assertions
-
-^VERIFICATION FAILED$

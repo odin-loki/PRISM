@@ -1,4 +1,0 @@
-CORE
-cbmc_ptr_decl.goto
---binary
-^VERIFICATION SUCCESSFUL$

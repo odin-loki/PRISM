@@ -1,4 +1,0 @@
-CORE
-main.c
---enable-unreachability-intrinsic
-^VERIFICATION SUCCESSFUL$

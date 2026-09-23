@@ -1,4 +1,0 @@
-CORE
-main.py
---unwind 1
-ERROR: Type inference failed at line 1. Variable q not found

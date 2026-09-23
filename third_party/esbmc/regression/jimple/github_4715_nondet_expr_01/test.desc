@@ -1,4 +1,0 @@
-CORE
-main.jimple
---irep2-bodies --force-malloc-success
-^VERIFICATION SUCCESSFUL$

@@ -1,5 +1,0 @@
-CORE
-main.cpp
---incremental-bmc --memory-leak-check
-
-^VERIFICATION SUCCESSFUL$

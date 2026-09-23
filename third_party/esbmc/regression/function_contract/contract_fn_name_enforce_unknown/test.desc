@@ -1,5 +1,0 @@
-CORE
-main.c
---enforce-contract no_such_function --function f
-^ERROR: --enforce-contract: cannot use 'no_such_function': no function of that name, or the name is ambiguous$
-\A(?!(.|\n)*VERIFICATION)

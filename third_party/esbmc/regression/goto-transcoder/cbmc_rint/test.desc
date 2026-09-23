@@ -1,4 +1,0 @@
-CORE
-cbmc_rint.goto
---binary
-^VERIFICATION SUCCESSFUL$

@@ -1,4 +1,0 @@
-[kernel] Parsing tests/misc/behavior_names.i (no preprocessing)
-stmt: bli bar
-new1: foo_0
-new2: bla

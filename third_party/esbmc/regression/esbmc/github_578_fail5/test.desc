@@ -1,4 +1,0 @@
-CORE
-main.c
---unwind 32 --overflow-check -Wno-error=implicit-function-declaration
-^VERIFICATION FAILED$

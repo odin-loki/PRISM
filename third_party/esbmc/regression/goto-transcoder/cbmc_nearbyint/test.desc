@@ -1,4 +1,0 @@
-CORE
-cbmc_nearbyint.goto
---binary
-^VERIFICATION SUCCESSFUL$

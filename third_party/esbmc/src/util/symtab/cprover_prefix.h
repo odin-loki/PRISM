@@ -1,1 +1,0 @@
-#define CPROVER_PREFIX "__ESBMC_"

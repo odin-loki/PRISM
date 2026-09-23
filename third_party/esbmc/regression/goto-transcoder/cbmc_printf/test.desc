@@ -1,4 +1,0 @@
-CORE
-cbmc_printf.goto
---binary
-^VERIFICATION SUCCESSFUL$

@@ -1,5 +1,0 @@
-CORE
-main.cpp
---std c++11
-REQUIRES x87_long_double
-^VERIFICATION SUCCESSFUL$

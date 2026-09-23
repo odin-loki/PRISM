@@ -1,2 +1,0 @@
-query: ASP/SplitControlStructure.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

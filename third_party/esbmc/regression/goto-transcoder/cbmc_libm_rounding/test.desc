@@ -1,4 +1,0 @@
-CORE
-cbmc_libm_rounding.goto
---binary --unwind 4
-^VERIFICATION SUCCESSFUL$

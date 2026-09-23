@@ -1,8 +1,0 @@
-CORE
-main.c
---unwind 10 --pointer-check --bounds-check
-^VERIFICATION SUCCESSFUL$
-^EXIT=0$
-^SIGNAL=0$
---
-^warning: ignoring

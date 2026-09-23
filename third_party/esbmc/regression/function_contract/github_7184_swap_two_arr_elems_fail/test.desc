@@ -1,5 +1,0 @@
-CORE
-main.c
---function array_swap --enforce-contract array_swap
-^VERIFICATION FAILED$
-^.*assigns compliance: .*arr\[j\] not in assigns clause.*$

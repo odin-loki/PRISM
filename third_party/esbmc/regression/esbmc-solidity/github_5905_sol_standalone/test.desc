@@ -1,4 +1,0 @@
-CORE
-
---sol contract.solast --contract AbiEncodePackedBound --unwind 1 --no-unwinding-assertions --no-standard-checks
-^VERIFICATION SUCCESSFUL$

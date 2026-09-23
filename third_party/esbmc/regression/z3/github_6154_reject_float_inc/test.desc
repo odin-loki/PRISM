@@ -1,5 +1,0 @@
-CORE
-main.c
---z3
-^Unwinding loop .* function f$
-^VERIFICATION SUCCESSFUL$

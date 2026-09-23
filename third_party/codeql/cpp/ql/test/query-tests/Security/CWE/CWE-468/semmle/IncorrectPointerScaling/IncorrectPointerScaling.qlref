@@ -1,2 +1,0 @@
-query: Security/CWE/CWE-468/IncorrectPointerScaling.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

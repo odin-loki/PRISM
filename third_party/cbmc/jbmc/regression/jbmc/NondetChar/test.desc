@@ -1,8 +1,0 @@
-CORE
-NondetChar
---function NondetChar.main -cp target/classes
-^VERIFICATION FAILED$
-^EXIT=10$
-^SIGNAL=0$
---
-^warning: ignoring

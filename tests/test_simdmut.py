@@ -36,7 +36,52 @@ from prism.simdmut import (
 ROOT = Path(__file__).resolve().parents[1]
 HAVOC_CPP = ROOT / "src" / "prism" / "havoc.cpp"
 MUTATE_CU = ROOT / "src" / "cuda" / "mutate.cu"
-AFL_CONFIG = ROOT / "third_party" / "AFLplusplus" / "include" / "config.h"
+# The mined AFL++ tree is gone (roadmap 1.1). This is the verbatim
+# "interesting values" block of AFL++ include/config.h at the pinned commit
+# (third_party/MANIFEST.toml: aflplusplus v5.03c, dbaf11913c1b2702dee5b4d3dcfffd52f1defe50,
+# lines 384-422), kept as a fixture so the havoc tables stay locked to upstream.
+AFL_CONFIG = "AFL++ v5.03c include/config.h"
+AFL_CONFIG_TEXT = r"""
+#define INTERESTING_8                                    \
+  -128,    /* Overflow signed 8-bit when decremented  */ \
+      -1,  /*                                         */ \
+      0,   /*                                         */ \
+      1,   /*                                         */ \
+      16,  /* One-off with common buffer size         */ \
+      32,  /* One-off with common buffer size         */ \
+      64,  /* One-off with common buffer size         */ \
+      100, /* One-off with common buffer size         */ \
+      127                        /* Overflow signed 8-bit when incremented  */
+
+#define INTERESTING_8_LEN 9
+
+#define INTERESTING_16                                    \
+  -32768,   /* Overflow signed 16-bit when decremented */ \
+      -129, /* Overflow signed 8-bit                   */ \
+      128,  /* Overflow signed 8-bit                   */ \
+      255,  /* Overflow unsig 8-bit when incremented   */ \
+      256,  /* Overflow unsig 8-bit                    */ \
+      512,  /* One-off with common buffer size         */ \
+      1000, /* One-off with common buffer size         */ \
+      1024, /* One-off with common buffer size         */ \
+      4096, /* One-off with common buffer size         */ \
+      32767                      /* Overflow signed 16-bit when incremented */
+
+#define INTERESTING_16_LEN 10
+
+#define INTERESTING_32                                          \
+  -2147483648LL,  /* Overflow signed 32-bit when decremented */ \
+      -100663046, /* Large negative number (endian-agnostic) */ \
+      -32769,     /* Overflow signed 16-bit                  */ \
+      32768,      /* Overflow signed 16-bit                  */ \
+      65535,      /* Overflow unsig 16-bit when incremented  */ \
+      65536,      /* Overflow unsig 16 bit                   */ \
+      100663045,  /* Large positive number (endian-agnostic) */ \
+      2139095040, /* float infinite                          */ \
+      2147483647                 /* Overflow signed 32-bit when incremented */
+
+#define INTERESTING_32_LEN 9
+"""
 CMAKE = ROOT / "CMakeLists.txt"
 
 AFL_8 = (-128, -1, 0, 1, 16, 32, 64, 100, 127)
@@ -55,7 +100,7 @@ AFL_32 = (
 
 
 def _afl_macro_ints(name: str) -> tuple[int, ...]:
-    text = AFL_CONFIG.read_text(encoding="utf-8", errors="replace")
+    text = AFL_CONFIG_TEXT
     m = re.search(
         rf"#define {re.escape(name)}\b(.*?)#define {re.escape(name)}_LEN",
         text,

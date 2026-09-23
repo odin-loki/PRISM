@@ -1,4 +1,0 @@
-CORE
-main.goto
---binary --unwind 2
-^VERIFICATION FAILED$

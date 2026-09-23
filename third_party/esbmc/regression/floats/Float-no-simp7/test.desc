@@ -1,4 +1,0 @@
-CORE
-main.c
---floatbv --no-simplify
-^VERIFICATION SUCCESSFUL$

@@ -1,5 +1,0 @@
-CORE
-main.c
---32 -Wno-error=implicit-function-declaration -Wno-error=int-conversion
-REQUIRES arch32
-^VERIFICATION SUCCESSFUL$

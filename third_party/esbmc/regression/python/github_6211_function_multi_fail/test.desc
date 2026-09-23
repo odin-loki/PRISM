@@ -1,4 +1,0 @@
-CORE
-helper.py
---unwind 2 --function main main.py
-ERROR: --function does not support multiple positional Python files

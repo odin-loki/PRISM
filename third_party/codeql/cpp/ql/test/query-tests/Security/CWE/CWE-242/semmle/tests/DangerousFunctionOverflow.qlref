@@ -1,2 +1,0 @@
-query: Security/CWE/CWE-676/DangerousFunctionOverflow.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

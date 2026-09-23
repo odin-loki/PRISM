@@ -1,4 +1,0 @@
-CORE
-contract.solast
---sol contract.sol contract.solast --contract MyContract --unwind 5 --no-unwinding-assertions --no-standard-checks
-^VERIFICATION FAILED$

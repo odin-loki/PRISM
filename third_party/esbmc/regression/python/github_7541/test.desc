@@ -1,4 +1,0 @@
-CORE
-main.py
---incremental-bmc
-^ERROR: class 'A' is defined in more than one function body

@@ -1,4 +1,0 @@
-CORE
-main.py
---enforce-contract bump
-^ERROR: __ESBMC_old at line 6 is only meaningful inside a contract clause$

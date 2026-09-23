@@ -104,8 +104,8 @@ class TestCppcheckHonesty(unittest.TestCase):
         self.assertFalse(laws.is_proof(f.status))
         self.assertIn("not found", f.message)
         self.assertEqual((f.extra or {}).get("install"), adapter_install("cppcheck"))
-        self.assertIn("SOURCES.md", (f.extra or {}).get("install", ""))
-        self.assertIn("third_party/cppcheck", (f.extra or {}).get("install", ""))
+        self.assertIn("third_party/MANIFEST.toml", (f.extra or {}).get("install", ""))
+        self.assertIn("fetch_deps.py --tool cppcheck", (f.extra or {}).get("install", ""))
         self._never_proof(out)
 
     def test_present_no_c_files_is_unknown_not_silence(self):
@@ -366,7 +366,8 @@ class TestCppCppcheckSourceContract(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.src = ADAPTERS.read_text(encoding="utf-8")
-        cls.body = _brace_body(cls.src, "std::vector<Finding> run_cppcheck(")
+        # The body is run_cppcheck_unstamped; run_cppcheck adds extra["tool_sha"].
+        cls.body = _brace_body(cls.src, "std::vector<Finding> run_cppcheck_unstamped(")
 
     def test_empty_files_is_unknown_never_silence(self):
         self.assertIn("files.empty()", self.body)

@@ -1,4 +1,0 @@
-THOROUGH
-test.c
---unwind 200
-^VERIFICATION FAILED$

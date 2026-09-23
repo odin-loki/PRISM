@@ -1,2 +1,0 @@
-[alias]
-dist = "run --release --manifest-path dist/Cargo.toml --"

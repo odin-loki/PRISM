@@ -1,5 +1,0 @@
-CORE
-main.c
-
-^VERIFICATION FAILED$
-alloca: size exceeds PTRDIFF_MAX

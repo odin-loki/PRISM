@@ -1,2 +1,0 @@
-query: experimental/Security/CWE-099/EnvValueInjection.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

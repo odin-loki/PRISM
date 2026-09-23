@@ -1,4 +1,0 @@
-CORE
-main.c
---ir-ieee --z3 --unwind 1
-^VERIFICATION SUCCESSFUL$

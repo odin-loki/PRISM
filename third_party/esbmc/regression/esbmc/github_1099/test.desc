@@ -1,4 +1,0 @@
-THOROUGH
-gh-1099.c
---unwind 1
-^VERIFICATION FAILED$

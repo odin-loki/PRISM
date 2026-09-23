@@ -1,5 +1,0 @@
-CORE
-main.c
---ppc-macos
-unknown target triple
-^ERROR: PARSING ERROR$

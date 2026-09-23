@@ -1,5 +1,0 @@
-CORE
-main.c
---synthesise-loop-invariants --interval-analysis
-^Synthesised loop invariants for 1 loop$
-^VERIFICATION SUCCESSFUL$

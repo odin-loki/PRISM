@@ -1,4 +1,0 @@
-CORE
-main.c
---no-simplify --multi-property
-^\*\* 9 of 15 properties failed, 6 passed$

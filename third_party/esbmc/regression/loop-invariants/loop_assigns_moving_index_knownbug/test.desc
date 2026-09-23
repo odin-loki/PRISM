@@ -1,4 +1,0 @@
-KNOWNBUG
-main.c
---loop-invariant-check --loop-frame-rule
-^VERIFICATION SUCCESSFUL$

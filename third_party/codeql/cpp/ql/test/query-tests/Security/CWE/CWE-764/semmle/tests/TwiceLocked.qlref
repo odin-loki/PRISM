@@ -1,2 +1,0 @@
-query: Security/CWE/CWE-764/TwiceLocked.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

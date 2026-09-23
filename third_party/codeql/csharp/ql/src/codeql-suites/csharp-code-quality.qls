@@ -1,6 +1,0 @@
-- queries: .
-- apply: code-quality-selectors.yml
-  from: codeql/suite-helpers
-- exclude:
-    id:
-      - cs/useless-assignment-to-local

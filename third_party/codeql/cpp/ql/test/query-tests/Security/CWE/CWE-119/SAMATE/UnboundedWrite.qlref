@@ -1,2 +1,0 @@
-query: Security/CWE/CWE-120/UnboundedWrite.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

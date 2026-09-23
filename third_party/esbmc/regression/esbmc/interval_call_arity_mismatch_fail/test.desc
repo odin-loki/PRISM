@@ -1,5 +1,0 @@
-CORE
-main.c
---std c17 --interval-analysis
-^VERIFICATION FAILED$
-the second call passes no argument

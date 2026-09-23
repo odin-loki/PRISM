@@ -1,4 +1,0 @@
-CORE
-main.py
---incremental-bmc --function is_shuffling_stable
-^VERIFICATION SUCCESSFUL$

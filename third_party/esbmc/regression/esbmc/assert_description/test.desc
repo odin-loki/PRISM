@@ -1,5 +1,0 @@
-CORE
-main.c
-
-^  assertion x > 5$
-^VERIFICATION FAILED$

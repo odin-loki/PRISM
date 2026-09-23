@@ -1,7 +1,0 @@
-CORE
-main.c
---function sort --no-standard-checks --condition-coverage 
-^Reached Conditions:  2
-^Short Circuited Conditions:  0
-^Total Conditions:  2
-^COVERAGE ANALYSIS COMPLETE$

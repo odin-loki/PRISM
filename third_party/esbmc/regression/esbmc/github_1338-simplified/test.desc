@@ -1,4 +1,0 @@
-CORE
-gh-1338.c
---unwind 4 -Wno-error=implicit-function-declaration
-^VERIFICATION SUCCESSFUL$

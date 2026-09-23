@@ -1,5 +1,0 @@
-CORE
-main.c
---dead-store-check
-^VERIFICATION SUCCESSFUL$
-\A(?![\s\S]*dead store)[\s\S]*\Z

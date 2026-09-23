@@ -1,2 +1,0 @@
-query: Security/CWE/CWE-457/ConditionallyUninitializedVariable.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

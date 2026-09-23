@@ -1,2 +1,0 @@
-query: Likely Bugs/StringBuilderCharInit.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

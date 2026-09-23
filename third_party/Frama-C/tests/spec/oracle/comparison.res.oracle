@@ -1,9 +1,0 @@
-[kernel] Parsing tests/spec/comparison.i (no preprocessing)
-[kernel] Predicate comparison between a of type 𝔹 and b of type 𝔹
-[kernel] Predicate comparison between x of type int and y of type int
-[kernel] Predicate comparison between (long)x of type long and z of type long
-[kernel] Predicate comparison between (long)x of type long and z of type long
-[kernel] Term comparison between x of type int and y of type int
-[kernel] Term comparison between (long)x of type long and z of type long
-[kernel] Term comparison between z of type long and (long)y of type long
-[kernel] Term comparison between y of type int and x of type int

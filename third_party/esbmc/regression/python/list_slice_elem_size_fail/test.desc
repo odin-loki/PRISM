@@ -1,5 +1,0 @@
-THOROUGH
-main.py
---unwind 10
-^VERIFICATION FAILED$
-^ *FAILED .*assertion 1 == 77$

@@ -1,2 +1,0 @@
-func doWork() {}
-unsafe doWork()

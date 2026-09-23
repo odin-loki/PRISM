@@ -1,2 +1,0 @@
-query: Security/CWE/CWE-732/OpenCallMissingModeArgument.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

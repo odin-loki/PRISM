@@ -1,4 +1,0 @@
-CORE
-unsafe.ld
---ld-props props.yaml --incremental-bmc
-^VERIFICATION FAILED$

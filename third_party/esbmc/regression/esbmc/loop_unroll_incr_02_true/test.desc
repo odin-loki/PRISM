@@ -1,4 +1,0 @@
-THOROUGH
-main.c
---incremental-bmc --goto-unwind --unlimited-goto-unwind
-^VERIFICATION FAILED$

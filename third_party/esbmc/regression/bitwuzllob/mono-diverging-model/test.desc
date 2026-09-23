@@ -1,4 +1,0 @@
-CORE
-main.c
---bitwuzllob --bitwuzllob-prog always-sat-mallob.sh --bitwuzllob-model-prog "z3 -in"
-refusing to build a counterexample from a diverging model

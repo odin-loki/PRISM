@@ -1,2 +1,0 @@
-query: Security/CWE/CWE-190/IntegerOverflowTainted.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

@@ -1,5 +1,0 @@
-CORE
-cbmc_sqrtf_fail.goto
---binary
-^VERIFICATION FAILED$
-y = 2.000000f

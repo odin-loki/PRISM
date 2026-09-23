@@ -1,4 +1,0 @@
-CORE
-main.py
---incremental-bmc
-^ERROR: TypeError: numpy fill_diagonal value must be a scalar or 1-D literal

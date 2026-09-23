@@ -1,4 +1,0 @@
-CORE
-main.c
---total-stack-limit 256
-^VERIFICATION SUCCESSFUL$

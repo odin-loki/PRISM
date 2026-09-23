@@ -1,4 +1,0 @@
-CORE
-main.c
---goto-unwind --no-simplify
-^VERIFICATION FAILED$

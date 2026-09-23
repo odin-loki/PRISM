@@ -1,5 +1,0 @@
-CORE
-main.py
---incremental-bmc
-^VERIFICATION FAILED$
-^  assertion s0\[0\] == 999$

@@ -1,2 +1,0 @@
-query: API Abuse/IncorrectEqualsSignature.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

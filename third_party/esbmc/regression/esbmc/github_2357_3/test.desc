@@ -1,4 +1,0 @@
-CORE
-main.c
---z3 --unsigned-overflow-check --ir 
-^VERIFICATION FAILED$

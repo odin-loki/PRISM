@@ -1,1 +1,0 @@
-../svcomp_switch_1A0/switch.c

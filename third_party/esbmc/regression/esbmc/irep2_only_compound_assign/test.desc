@@ -1,7 +1,0 @@
-CORE
-main.c
---clang-c-irep2-adjust-only --symbol-table-only
-^\(signed int\)b \+= a;$
-^\(signed int\)b -= a;$
-^\(signed int\)b \*= a;$
-^\(signed int\)b &= a;$

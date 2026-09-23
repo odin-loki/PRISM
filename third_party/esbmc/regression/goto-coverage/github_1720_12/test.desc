@@ -1,5 +1,0 @@
-CORE
-main.c
---condition-coverage-claims --no-cov-asserts --goto-unwind 
-^Condition Coverage: 100%
-^COVERAGE ANALYSIS COMPLETE$

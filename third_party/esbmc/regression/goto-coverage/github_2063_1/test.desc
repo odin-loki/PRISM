@@ -1,9 +1,0 @@
-CORE
-main.c
---unwind 4 --assertion-coverage
-^Total Asserts: 1
-^Total Assertion Instances: unknown / non-deterministic
-^Reached Assertion Instances: 4
-^Assertion Instances Coverage Unknown
-^COVERAGE ANALYSIS INCOMPLETE
-reason: the total number of assertion instances could not be determined

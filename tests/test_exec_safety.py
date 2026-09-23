@@ -255,31 +255,68 @@ class TestOptInRule(unittest.TestCase):
 
 
 class TestVendoredToolsNotFromTheScannedTree(unittest.TestCase):
-    """A planted third_party/SOURCES.md + third_party/esbmc/bin/esbmc is not run."""
+    """Pinned tools (~/.prism/tools) inside the scanned tree are not run.
 
-    def test_planted_vendor_binary_is_refused(self):
+    The mined third_party/ trees are gone (roadmap 1.1); adapters look in the
+    fetch_deps install root instead. A hostile tree could plant that layout
+    (<tree>/.prism/tools/esbmc/<commit>/bin/esbmc) or its own
+    third_party/MANIFEST.toml, so without --allow-exec neither is trusted.
+    """
+
+    def test_planted_tools_dir_is_refused(self):
+        import os
         from unittest import mock
 
-        from prism.config import path_within, resolve_adapter
+        from prism.config import path_within, pinned_commit, resolve_adapter
 
+        commit = pinned_commit("esbmc")
+        self.assertIsNotNone(commit)
         with tempfile.TemporaryDirectory(prefix="prism_vendor_") as td:
             tree = Path(td)
-            (tree / "third_party").mkdir()
-            (tree / "third_party" / "SOURCES.md").write_text("x\n", encoding="utf-8")
-            fake = tree / "third_party" / "esbmc" / "bin" / "esbmc"
+            tools = tree / ".prism" / "tools"
+            fake = tools / "esbmc" / str(commit) / "bin" / "esbmc"
             fake.parent.mkdir(parents=True)
             fake.write_text("#!/bin/sh\ntouch SENTINEL\n", encoding="utf-8")
             fake.chmod(0o755)
-            self.assertTrue(path_within(tree / "third_party", tree))
+            self.assertTrue(path_within(tools, tree))
             self.assertFalse(path_within(ROOT, tree))
-            with mock.patch("prism.config.repo_root", return_value=tree), \
+            with mock.patch.dict(os.environ, {"PRISM_TOOLS_DIR": str(tools)}), \
                  mock.patch("prism.config.shutil.which", return_value=None):
                 self.assertIsNone(resolve_adapter(Config(root=tree), "esbmc", ("esbmc",)))
                 trusted = resolve_adapter(Config(root=tree, allow_exec=True), "esbmc", ("esbmc",))
             self.assertEqual(trusted, str(fake))
+            self.assertFalse((tree / "SENTINEL").exists())
+
+    def test_planted_manifest_is_refused(self):
+        import os
+        from unittest import mock
+
+        from prism.config import resolve_adapter
+
+        with tempfile.TemporaryDirectory(prefix="prism_vendor_") as td:
+            tree = Path(td) / "tree"
+            (tree / "third_party").mkdir(parents=True)
+            planted = "b" * 40
+            (tree / "third_party" / "MANIFEST.toml").write_text(
+                '[[component]]\nname = "esbmc"\nkind = "external"\n'
+                f'commit = "{planted}"\n', encoding="utf-8")
+            tools = Path(td) / "tools"  # outside the tree
+            fake = tools / "esbmc" / planted / "bin" / "esbmc"
+            fake.parent.mkdir(parents=True)
+            fake.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            fake.chmod(0o755)
+            with mock.patch.dict(os.environ, {"PRISM_TOOLS_DIR": str(tools)}), \
+                 mock.patch("prism.config.repo_root", return_value=tree), \
+                 mock.patch("prism.config.shutil.which", return_value=None):
+                self.assertIsNone(resolve_adapter(Config(root=tree), "esbmc", ("esbmc",)))
+
+    def test_cpp_refuses_tools_dir_inside_the_tree(self):
         cpp = (ROOT / "src" / "prism" / "config.cpp").read_text(encoding="utf-8")
-        self.assertIn("cfg.allow_exec || !path_within(p, cfg.root)", cpp)
-        self.assertNotIn("std::vector<fs::path> starts{cfg.root", cpp)
+        self.assertIn("if (!cfg.allow_exec && path_within(home, cfg.root)) return std::nullopt;", cpp)
+        # The C++ engine takes pins from its own build (manifest_pins.hpp), never
+        # from a third_party/ found by walking up from the cwd.
+        self.assertIn('#include "prism/manifest_pins.hpp"', cpp)
+        self.assertNotIn("find_repo_root", cpp)
 
 
 class TestPolicyAndSandbox(unittest.TestCase):

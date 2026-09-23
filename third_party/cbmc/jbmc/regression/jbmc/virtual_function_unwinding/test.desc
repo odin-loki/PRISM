@@ -1,9 +1,0 @@
-CORE
-Virtual
--cp target/classes
-^EXIT=0$
-^SIGNAL=0$
-^VERIFICATION SUCCESSFUL$
---
---
-See diffblue/test-gen#845 for details

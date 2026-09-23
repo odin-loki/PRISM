@@ -1,4 +1,0 @@
-CORE
-main.c
---unwind 2 --unwind 2
-Invalid command line: option .--unwind. cannot be specified more than once

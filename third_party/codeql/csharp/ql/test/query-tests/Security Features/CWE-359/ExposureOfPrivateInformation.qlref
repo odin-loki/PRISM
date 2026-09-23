@@ -1,2 +1,0 @@
-query: Security Features/CWE-359/ExposureOfPrivateInformation.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

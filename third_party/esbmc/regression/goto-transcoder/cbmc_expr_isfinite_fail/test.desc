@@ -1,4 +1,0 @@
-CORE
-cbmc_expr_isfinite_fail.goto
---binary
-^VERIFICATION FAILED$

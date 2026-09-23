@@ -1,7 +1,0 @@
-@@
-identifier func;
-@@
-func(...)
-{
--...
-}

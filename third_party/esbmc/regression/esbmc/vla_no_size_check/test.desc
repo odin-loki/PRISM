@@ -1,4 +1,0 @@
-CORE
-main.c
---32 --no-vla-size-check
-^VERIFICATION SUCCESSFUL$

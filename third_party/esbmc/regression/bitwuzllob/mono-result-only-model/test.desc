@@ -1,5 +1,0 @@
-CORE
-main.c
---bitwuzllob --bitwuzllob-prog fake-mallob.sh --bitwuzllob-model-prog "z3 -in" --result-only
-ignoring --bitwuzllob-model-prog
-^VERIFICATION FAILED$

@@ -1,4 +1,0 @@
-CORE
-main.py
---unwind 1
-^ValueError\: range\(\) arg 3 must not be zero$

@@ -1,2 +1,0 @@
-query: Bad Practices/VirtualCallInConstructorOrDestructor.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

@@ -1,4 +1,0 @@
-CORE
-main.py
---multi-property --strict-types
-^VERIFICATION FAILED$

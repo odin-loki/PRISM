@@ -1,4 +1,0 @@
-CORE
-main.c
---incremental-context-bound --incremental-bmc
-^ERROR: --incremental-context-bound cannot be combined with --incremental-bmc$

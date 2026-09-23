@@ -1,4 +1,0 @@
-THOROUGH
-contract.solast
---sol contract.sol --contract Base --incremental-bmc --no-pointer-check
-^VERIFICATION FAILED$
