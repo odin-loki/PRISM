@@ -1,0 +1,37 @@
+name = "prism-refinement"
+version = "0.1.0"
+defaultTargets = ["PrismRefine", "pir_lean_check", "axiom_report", "llvm_eval"]
+
+[leanOptions]
+autoImplicit = false
+# Style lint only (it lists simp lemmas a call did not need); every other
+# warning, and any `sorry`, fails proofs/refinement/check.sh.
+linter.unusedSimpArgs = false
+
+# The PIR expression semantics (PrismSem.evalBin / evalPred / ubBin) is
+# imported read-only from proofs/semantics, not copied.
+[[require]]
+name = "prism-semantics"
+path = "../semantics"
+
+# The round-to-nearest-even kernel (PrismTechniques.FloatRound) is imported
+# from proofs/techniques for the floating-point piece (PrismRefine/Float.lean).
+[[require]]
+name = "prism-techniques"
+path = "../techniques"
+
+[[lean_lib]]
+name = "PrismRefine"
+
+[[lean_exe]]
+name = "pir_lean_check"
+root = "CheckMain"
+
+[[lean_exe]]
+name = "axiom_report"
+root = "AxiomReport"
+supportInterpreter = true
+
+[[lean_exe]]
+name = "llvm_eval"
+root = "EvalMain"

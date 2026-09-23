@@ -1,0 +1,114 @@
+func add_bad
+L params 2 a 32 b 32
+L ret 32
+L block entry
+L uninit %__prism_uninit.0 32
+L uninit %__prism_uninit.1 32
+L bin %add add nsw 32 %a %b
+L ret %add
+status ok
+P vars 6 32 32 32 32 32 1
+P params 2 0 1
+P retw 32
+P block
+P havoc 2
+P havoc 3
+P assign 5 sadd.ovf 2 v0:32 v1:32
+P check v5:1 ovf+ INT-SIGNED-OVF
+P assign 4 add 2 v0:32 v1:32
+P ret v4:32
+end
+func add_ok
+L params 1 a 32
+L ret 32
+L block entry
+L uninit %__prism_uninit.2 32
+L icmp %cmp sgt 32 %a #1000
+L cbr %cmp if.then lor.lhs.false
+L block lor.lhs.false
+L icmp %cmp1 slt 32 %a #18446744073709550616
+L cbr %cmp1 if.then if.end
+L block if.then
+L br return
+L block if.end
+L bin %add add nsw 32 %a #1
+L br return
+L block return
+L phi %retval.0 32 2 #0 if.then %add if.end
+L ret %retval.0
+status ok
+P vars 7 32 32 1 1 32 32 1
+P params 1 0
+P retw 32
+P block
+P havoc 1
+P assign 2 sgt 2 v0:32 c32:1000
+P br v2:1 2 1
+P block
+P assign 3 slt 2 v0:32 c32:4294966296
+P br v3:1 2 3
+P block
+P jmp 4
+P block
+P assign 6 sadd.ovf 2 v0:32 c32:1
+P check v6:1 ovf+ INT-SIGNED-OVF
+P assign 4 add 2 v0:32 c32:1
+P jmp 4
+P block
+P phi 5 2 2 c32:0 3 v4:32
+P ret v5:32
+end
+func add_unsigned_ok
+L params 2 a 32 b 32
+L ret 32
+L block entry
+L uninit %__prism_uninit.3 32
+L uninit %__prism_uninit.4 32
+L bin %add add - 32 %a %b
+L ret %add
+status ok
+P vars 5 32 32 32 32 32
+P params 2 0 1
+P retw 32
+P block
+P havoc 2
+P havoc 3
+P assign 4 add 2 v0:32 v1:32
+P ret v4:32
+end
+func mul_bad
+L params 1 a 64
+L ret 64
+L block entry
+L uninit %__prism_uninit.5 64
+L bin %mul mul nsw 64 %a #3
+L ret %mul
+status ok
+P vars 4 64 64 64 1
+P params 1 0
+P retw 64
+P block
+P havoc 1
+P assign 3 smul.ovf 2 v0:64 c64:3
+P check v3:1 ovf* INT-SIGNED-OVF
+P assign 2 mul 2 v0:64 c64:3
+P ret v2:64
+end
+func neg_bad
+L params 1 a 32
+L ret 32
+L block entry
+L uninit %__prism_uninit.6 32
+L bin %sub sub nsw 32 #0 %a
+L ret %sub
+status ok
+P vars 4 32 32 32 1
+P params 1 0
+P retw 32
+P block
+P havoc 1
+P assign 3 ssub.ovf 2 c32:0 v0:32
+P check v3:1 ovf- INT-SIGNED-OVF
+P assign 2 sub 2 c32:0 v0:32
+P ret v2:32
+end

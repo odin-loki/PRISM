@@ -1,0 +1,180 @@
+func shl_amount_bad
+L params 2 a 32 s 32
+L ret 32
+L block entry
+L uninit %__prism_uninit.0 32
+L uninit %__prism_uninit.1 32
+L icmp %cmp slt 32 %a #0
+L cbr %cmp if.then lor.lhs.false
+L block lor.lhs.false
+L icmp %cmp1 sgt 32 %a #1
+L cbr %cmp1 if.then if.end
+L block if.then
+L br return
+L block if.end
+L bin %shl shl - 32 %a %s
+L br return
+L block return
+L phi %retval.0 32 2 #0 if.then %shl if.end
+L ret %retval.0
+status ok
+P vars 9 32 32 32 32 1 1 32 32 1
+P params 2 0 1
+P retw 32
+P block
+P havoc 2
+P havoc 3
+P assign 4 slt 2 v0:32 c32:0
+P br v4:1 2 1
+P block
+P assign 5 sgt 2 v0:32 c32:1
+P br v5:1 2 3
+P block
+P jmp 4
+P block
+P assign 8 shift.oob 2 v0:32 v1:32
+P check v8:1 shift INT-SHIFT-UB
+P assign 6 shl 2 v0:32 v1:32
+P jmp 4
+P block
+P phi 7 2 2 c32:0 3 v6:32
+P ret v7:32
+end
+func shl_masked_ok
+L params 2 a 32 s 32
+L ret 32
+L block entry
+L uninit %__prism_uninit.2 32
+L uninit %__prism_uninit.3 32
+L bin %and and - 32 %s #31
+L bin %shl shl - 32 %a %and
+L ret %shl
+status ok
+P vars 7 32 32 32 32 32 32 1
+P params 2 0 1
+P retw 32
+P block
+P havoc 2
+P havoc 3
+P assign 4 and 2 v1:32 c32:31
+P assign 6 shift.oob 2 v0:32 v4:32
+P check v6:1 shift INT-SHIFT-UB
+P assign 5 shl 2 v0:32 v4:32
+P ret v5:32
+end
+func shl_sign_bad
+L params 1 a 32
+L ret 32
+L block entry
+L uninit %__prism_uninit.4 32
+L icmp %cmp slt 32 %a #0
+L cbr %cmp if.then if.end
+L block if.then
+L br return
+L block if.end
+L bin %shl shl - 32 %a #4
+L br return
+L block return
+L phi %retval.0 32 2 #0 if.then %shl if.end
+L ret %retval.0
+status ok
+P vars 6 32 32 1 32 32 1
+P params 1 0
+P retw 32
+P block
+P havoc 1
+P assign 2 slt 2 v0:32 c32:0
+P br v2:1 1 2
+P block
+P jmp 3
+P block
+P assign 5 shift.oob 2 v0:32 c32:4
+P check v5:1 shift INT-SHIFT-UB
+P assign 3 shl 2 v0:32 c32:4
+P jmp 3
+P block
+P phi 4 2 1 c32:0 2 v3:32
+P ret v4:32
+end
+func shl_sign_ok
+L params 1 a 32
+L ret 32
+L block entry
+L uninit %__prism_uninit.5 32
+L icmp %cmp slt 32 %a #0
+L cbr %cmp if.then lor.lhs.false
+L block lor.lhs.false
+L icmp %cmp1 sgt 32 %a #1000
+L cbr %cmp1 if.then if.end
+L block if.then
+L br return
+L block if.end
+L bin %shl shl - 32 %a #4
+L br return
+L block return
+L phi %retval.0 32 2 #0 if.then %shl if.end
+L ret %retval.0
+status ok
+P vars 7 32 32 1 1 32 32 1
+P params 1 0
+P retw 32
+P block
+P havoc 1
+P assign 2 slt 2 v0:32 c32:0
+P br v2:1 2 1
+P block
+P assign 3 sgt 2 v0:32 c32:1000
+P br v3:1 2 3
+P block
+P jmp 4
+P block
+P assign 6 shift.oob 2 v0:32 c32:4
+P check v6:1 shift INT-SHIFT-UB
+P assign 4 shl 2 v0:32 c32:4
+P jmp 4
+P block
+P phi 5 2 2 c32:0 3 v4:32
+P ret v5:32
+end
+func ashr_ok
+L params 2 a 32 s 32
+L ret 32
+L block entry
+L uninit %__prism_uninit.6 32
+L uninit %__prism_uninit.7 32
+L icmp %cmp slt 32 %s #0
+L cbr %cmp if.then lor.lhs.false
+L block lor.lhs.false
+L icmp %cmp1 sgt 32 %s #31
+L cbr %cmp1 if.then if.end
+L block if.then
+L br return
+L block if.end
+L bin %shr ashr - 32 %a %s
+L br return
+L block return
+L phi %retval.0 32 2 #0 if.then %shr if.end
+L ret %retval.0
+status ok
+P vars 9 32 32 32 32 1 1 32 32 1
+P params 2 0 1
+P retw 32
+P block
+P havoc 2
+P havoc 3
+P assign 4 slt 2 v1:32 c32:0
+P br v4:1 2 1
+P block
+P assign 5 sgt 2 v1:32 c32:31
+P br v5:1 2 3
+P block
+P jmp 4
+P block
+P assign 8 shift.oob 2 v0:32 v1:32
+P check v8:1 shift INT-SHIFT-UB
+P assign 6 ashr 2 v0:32 v1:32
+P jmp 4
+P block
+P phi 7 2 2 c32:0 3 v6:32
+P ret v7:32
+end

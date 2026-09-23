@@ -1,0 +1,16 @@
+func deref_ptr
+L unsupported type ptr
+status unencoded pointer parameter: unguarded model checking reports missing preconditions, not defects (Law 6)
+end
+func local_array
+L unsupported alloca
+status unencoded UNENCODED: alloca (memory model not yet in PIR)
+end
+func twice_double
+L unsupported type double
+status unencoded UNENCODED: parameter type double
+end
+func recurse
+L unsupported call
+status unencoded UNENCODED: recursive call @recurse
+end

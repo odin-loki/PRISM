@@ -231,6 +231,11 @@ struct TranslateOptions {
 PRISM_API Translation translate(const ir::Module& m, const ir::Function& f,
                                 const TranslateOptions& opt = {});
 PRISM_API std::string to_text(const Function& fn);
+// Appends (LLVM fragment, PIR) for the Lean correspondence checker to
+// <dir>/<unit>.pirl when PRISM_PIR_LEAN_EXPORT is set (src/prism/pir/export_lean.cpp).
+PRISM_API void export_lean_pair(const std::filesystem::path& out_root, const std::string& unit,
+                                const ir::Module& m, const ir::Function& f, const TranslateOptions& opt,
+                                const Translation& t);
 PRISM_API std::string sha256_hex(std::string_view data);
 
 // ---------------------------------------------------------------------------

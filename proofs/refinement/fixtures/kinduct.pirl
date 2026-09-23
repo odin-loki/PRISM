@@ -1,0 +1,120 @@
+func kind_closed
+L params 1 n 32
+L ret 32
+L block entry
+L uninit %__prism_uninit.0 32
+L br while.cond
+L block while.cond
+L phi %n.addr.0 32 2 %n entry %dec while.body
+L icmp %cmp sgt 32 %n.addr.0 #0
+L cbr %cmp while.body while.end
+L block while.body
+L bin %dec add nsw 32 %n.addr.0 #18446744073709551615
+L br while.cond
+L block while.end
+L phi %n.addr.0.lcssa 32 1 %n.addr.0 while.cond
+L ret %n.addr.0.lcssa
+status ok
+P vars 7 32 32 32 1 32 32 1
+P params 1 0
+P retw 32
+P block
+P havoc 1
+P jmp 1
+P block
+P phi 2 2 0 v0:32 2 v4:32
+P assign 3 sgt 2 v2:32 c32:0
+P br v3:1 2 3
+P block
+P assign 6 sadd.ovf 2 v2:32 c32:4294967295
+P check v6:1 ovf+ INT-SIGNED-OVF
+P assign 4 add 2 v2:32 c32:4294967295
+P jmp 1
+P block
+P phi 5 1 1 v2:32
+P ret v5:32
+end
+func kind_countdown
+L params 1 n 32
+L ret 32
+L block entry
+L uninit %__prism_uninit.1 32
+L uninit %__prism_uninit.2 32
+L br while.cond
+L block while.cond
+L phi %s.0 32 2 #0 entry %inc while.body
+L phi %n.addr.0 32 2 %n entry %dec while.body
+L icmp %cmp ne 32 %n.addr.0 #0
+L cbr %cmp while.body while.end
+L block while.body
+L bin %dec add - 32 %n.addr.0 #18446744073709551615
+L bin %inc add - 32 %s.0 #1
+L br while.cond
+L block while.end
+L phi %s.0.lcssa 32 1 %s.0 while.cond
+L ret %s.0.lcssa
+status ok
+P vars 9 32 32 32 32 32 1 32 32 32
+P params 1 0
+P retw 32
+P block
+P havoc 1
+P havoc 2
+P jmp 1
+P block
+P phi 3 2 0 c32:0 2 v7:32
+P phi 4 2 0 v0:32 2 v6:32
+P assign 5 ne 2 v4:32 c32:0
+P br v5:1 2 3
+P block
+P assign 6 add 2 v4:32 c32:4294967295
+P assign 7 add 2 v3:32 c32:1
+P jmp 1
+P block
+P phi 8 1 1 v3:32
+P ret v8:32
+end
+func kind_open
+L params 1 n 32
+L ret 32
+L block entry
+L uninit %__prism_uninit.3 32
+L uninit %__prism_uninit.4 32
+L br while.cond
+L block while.cond
+L phi %x.0 32 2 #1 entry %add while.body
+L phi %n.addr.0 32 2 %n entry %dec while.body
+L icmp %cmp sgt 32 %n.addr.0 #0
+L cbr %cmp while.body while.end
+L block while.body
+L bin %add add nsw 32 %x.0 %x.0
+L bin %dec add nsw 32 %n.addr.0 #18446744073709551615
+L br while.cond
+L block while.end
+L phi %x.0.lcssa 32 1 %x.0 while.cond
+L ret %x.0.lcssa
+status ok
+P vars 11 32 32 32 32 32 1 32 32 32 1 1
+P params 1 0
+P retw 32
+P block
+P havoc 1
+P havoc 2
+P jmp 1
+P block
+P phi 3 2 0 c32:1 2 v6:32
+P phi 4 2 0 v0:32 2 v7:32
+P assign 5 sgt 2 v4:32 c32:0
+P br v5:1 2 3
+P block
+P assign 9 sadd.ovf 2 v3:32 v3:32
+P check v9:1 ovf+ INT-SIGNED-OVF
+P assign 6 add 2 v3:32 v3:32
+P assign 10 sadd.ovf 2 v4:32 c32:4294967295
+P check v10:1 ovf+ INT-SIGNED-OVF
+P assign 7 add 2 v4:32 c32:4294967295
+P jmp 1
+P block
+P phi 8 1 1 v3:32
+P ret v8:32
+end

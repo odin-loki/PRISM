@@ -1,0 +1,118 @@
+func trunc_ok
+L params 1 x 64
+L ret 32
+L block entry
+L uninit %__prism_uninit.0 64
+L cast %conv trunc 0 64 32 %x
+L ret %conv
+status ok
+P vars 3 64 64 32
+P params 1 0
+P retw 32
+P block
+P havoc 1
+P assign 2 trunc 1 v0:64
+P ret v2:32
+end
+func widen_bad
+L params 2 a 16 b 16
+L ret 32
+L block entry
+L uninit %__prism_uninit.1 16
+L uninit %__prism_uninit.2 16
+L cast %conv sext 0 16 32 %a
+L cast %conv1 sext 0 16 32 %b
+L bin %mul mul nsw 32 %conv %conv1
+L bin %mul2 mul nsw 32 %mul #2
+L ret %mul2
+status ok
+P vars 10 16 16 16 16 32 32 32 32 1 1
+P params 2 0 1
+P retw 32
+P block
+P havoc 2
+P havoc 3
+P assign 4 sext 1 v0:16
+P assign 5 sext 1 v1:16
+P assign 8 smul.ovf 2 v4:32 v5:32
+P check v8:1 ovf* INT-SIGNED-OVF
+P assign 6 mul 2 v4:32 v5:32
+P assign 9 smul.ovf 2 v6:32 c32:2
+P check v9:1 ovf* INT-SIGNED-OVF
+P assign 7 mul 2 v6:32 c32:2
+P ret v7:32
+end
+func widen_ok
+L params 2 a 16 b 16
+L ret 32
+L block entry
+L uninit %__prism_uninit.3 16
+L uninit %__prism_uninit.4 16
+L cast %conv sext 0 16 32 %a
+L cast %conv1 sext 0 16 32 %b
+L bin %mul mul nsw 32 %conv %conv1
+L ret %mul
+status ok
+P vars 8 16 16 16 16 32 32 32 1
+P params 2 0 1
+P retw 32
+P block
+P havoc 2
+P havoc 3
+P assign 4 sext 1 v0:16
+P assign 5 sext 1 v1:16
+P assign 7 smul.ovf 2 v4:32 v5:32
+P check v7:1 ovf* INT-SIGNED-OVF
+P assign 6 mul 2 v4:32 v5:32
+P ret v6:32
+end
+func uchar_ok
+L params 2 a 8 b 8
+L ret 8
+L block entry
+L uninit %__prism_uninit.5 8
+L uninit %__prism_uninit.6 8
+L cast %conv zext 0 8 32 %a
+L cast %conv1 zext 0 8 32 %b
+L bin %add add nsw 32 %conv %conv1
+L cast %conv2 trunc 0 32 8 %add
+L ret %conv2
+status ok
+P vars 9 8 8 8 8 32 32 32 8 1
+P params 2 0 1
+P retw 8
+P block
+P havoc 2
+P havoc 3
+P assign 4 zext 1 v0:8
+P assign 5 zext 1 v1:8
+P assign 8 sadd.ovf 2 v4:32 v5:32
+P check v8:1 ovf+ INT-SIGNED-OVF
+P assign 6 add 2 v4:32 v5:32
+P assign 7 trunc 1 v6:32
+P ret v7:8
+end
+func sext_mul_ok
+L params 2 a 32 b 32
+L ret 64
+L block entry
+L uninit %__prism_uninit.7 32
+L uninit %__prism_uninit.8 32
+L cast %conv sext 0 32 64 %a
+L cast %conv1 sext 0 32 64 %b
+L bin %mul mul nsw 64 %conv %conv1
+L ret %mul
+status ok
+P vars 8 32 32 32 32 64 64 64 1
+P params 2 0 1
+P retw 64
+P block
+P havoc 2
+P havoc 3
+P assign 4 sext 1 v0:32
+P assign 5 sext 1 v1:32
+P assign 7 smul.ovf 2 v4:64 v5:64
+P check v7:1 ovf* INT-SIGNED-OVF
+P assign 6 mul 2 v4:64 v5:64
+P ret v6:64
+end

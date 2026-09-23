@@ -1,0 +1,61 @@
+func uninit_bad
+L params 1 c 32
+L ret 32
+L block entry
+L uninit %__prism_uninit.0 32
+L uninit %__prism_uninit.1 32
+L icmp %tobool ne 32 %c #0
+L cbr %tobool if.then if.end
+L block if.then
+L br if.end
+L block if.end
+L phi %x.0 32 2 #1 if.then %__prism_uninit.1 entry
+L ret %x.0
+status ok
+P vars 6 32 32 32 1 32 1
+P params 1 0
+P retw 32
+P block
+P havoc 1
+P havoc 2
+P assign 3 ne 2 v0:32 c32:0
+P br v3:1 1 2
+P block
+P jmp 2
+P block
+P phi 4 2 1 c32:1 0 v2:32
+P phi 5 2 1 c1:0 0 c1:1
+P ret v4:32
+end
+func uninit_ok
+L params 1 c 32
+L ret 32
+L block entry
+L uninit %__prism_uninit.2 32
+L uninit %__prism_uninit.3 32
+L icmp %tobool ne 32 %c #0
+L cbr %tobool if.then if.else
+L block if.then
+L br if.end
+L block if.else
+L br if.end
+L block if.end
+L phi %x.0 32 2 #1 if.then #2 if.else
+L ret %x.0
+status ok
+P vars 5 32 32 32 1 32
+P params 1 0
+P retw 32
+P block
+P havoc 1
+P havoc 2
+P assign 3 ne 2 v0:32 c32:0
+P br v3:1 1 2
+P block
+P jmp 3
+P block
+P jmp 3
+P block
+P phi 4 2 1 c32:1 2 c32:2
+P ret v4:32
+end

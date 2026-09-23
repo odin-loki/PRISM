@@ -1,0 +1,126 @@
+name: Proofs — independent recheck (Lean)
+
+# Roadmap 8.5: every Lean project of PRISM (proofs/, proofs/semantics,
+# proofs/techniques, proofs/refinement) is built and re-checked by more than
+# the kernel that produced it:
+#
+#   1. lake build;
+#   2. source scan: no sorry / native_decide / bv_decide / axiom / unsafe;
+#   3. axiom audit of EVERY declaration (not just the curated theorems):
+#      only propext, Classical.choice, Quot.sound (axiom_report);
+#   4. leanchecker (formerly lean4checker; ships with the pinned toolchain):
+#      replays every declaration of the .olean files into a kernel environment;
+#   5. nanoda: an independent Lean kernel written in Rust type-checks the
+#      lean4export NDJSON export of each project and all its dependencies
+#      (both pinned in third_party/MANIFEST.toml, built by scripts/fetch_deps.py).
+#
+# The per-project axiom lists are uploaded as an artifact on every run and
+# attached to the GitHub release when a release is published.
+# Script: proofs/refinement/recheck.sh; design: docs/PROOFS_REFINEMENT.md.
+
+on:
+  push:
+    paths:
+      - "proofs/**"
+      - "third_party/MANIFEST.toml"
+      - "scripts/fetch_deps.py"
+      - ".github/workflows/proofs-recheck.yml"
+  pull_request:
+    paths:
+      - "proofs/**"
+      - "third_party/MANIFEST.toml"
+      - "scripts/fetch_deps.py"
+      - ".github/workflows/proofs-recheck.yml"
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  recheck:
+    name: recheck ${{ matrix.project.dir }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        project:
+          - { dir: proofs, roots: Prism, name: verdict }
+          - { dir: proofs/semantics, roots: PrismSem, name: semantics }
+          - { dir: proofs/techniques, roots: PrismTechniques, name: techniques }
+          - { dir: proofs/refinement, roots: PrismRefine, name: refinement }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install elan (toolchain from each lean-toolchain file)
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -o elan-init.sh
+          sh elan-init.sh -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: Cache toolchain, builds and pinned checkers
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.elan/toolchains
+            ~/.prism/tools/lean4export
+            ~/.prism/tools/nanoda
+            proofs/.lake
+            proofs/semantics/.lake
+            proofs/techniques/.lake
+            proofs/refinement/.lake
+          key: recheck-${{ matrix.project.name }}-${{ hashFiles('proofs/**/lean-toolchain', 'third_party/MANIFEST.toml') }}-${{ hashFiles('proofs/**/*.lean', 'proofs/**/lakefile.toml') }}
+          restore-keys: recheck-${{ matrix.project.name }}-${{ hashFiles('proofs/**/lean-toolchain', 'third_party/MANIFEST.toml') }}-
+
+      - name: Fetch and build the pinned re-checkers (lean4export, nanoda)
+        run: |
+          python3 scripts/fetch_deps.py --tool lean4export
+          python3 scripts/fetch_deps.py --tool nanoda
+
+      - name: Build axiom_report (proofs/refinement)
+        working-directory: proofs/refinement
+        run: lake build axiom_report
+
+      - name: Recheck (build, scan, axioms, leanchecker, nanoda)
+        run: proofs/refinement/recheck.sh ${{ matrix.project.dir }} ${{ matrix.project.roots }}
+
+      - name: Project's own check script
+        run: |
+          case "${{ matrix.project.dir }}" in
+            proofs) bash proofs/check.sh ;;
+            proofs/semantics) (cd proofs/semantics && ./check.sh) ;;
+            proofs/refinement) (cd proofs/refinement && ./check.sh) ;;
+            *) echo "no project-specific check script" ;;
+          esac
+
+      - name: Upload the axiom list
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: axioms-${{ matrix.project.name }}
+          path: ${{ matrix.project.dir }}/.lake/recheck-report.txt
+
+  release-axioms:
+    name: attach axiom lists to the release
+    if: github.event_name == 'release'
+    needs: recheck
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: axioms-*
+          path: axioms
+      - name: Print and attach
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for d in axioms/*; do
+            cp "$d/recheck-report.txt" "$d.txt"
+            echo "=== ${d#axioms/}"; grep -E "^(modules|declarations|axiom |ok|FAIL|recheck)" "$d.txt"
+          done
+          gh release upload "${{ github.event.release.tag_name }}" axioms/*.txt \
+            --repo "${{ github.repository }}" --clobber

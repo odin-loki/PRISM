@@ -793,6 +793,7 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
         f.extra["frontend"] = fe.version;
         if (!sub.linkage.empty()) f.extra["ir_name"] = irf.name;
         auto tr = translate(mod, irf, topt);
+        export_lean_pair(cfg.out, unit_name, mod, irf, topt, tr);
         for (int k : tr.folded_used) used_folded.insert(k);
         if (!tr.fn) {
             f.status = tr.status.empty() ? std::string(laws::NEEDS_HARNESS) : tr.status;
