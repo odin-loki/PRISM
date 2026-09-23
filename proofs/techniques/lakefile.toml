@@ -1,0 +1,13 @@
+name = "prism-techniques"
+version = "0.1.0"
+defaultTargets = ["PrismTechniques", "certified-demo"]
+
+[leanOptions]
+autoImplicit = false
+
+[[lean_lib]]
+name = "PrismTechniques"
+
+[[lean_exe]]
+name = "certified-demo"
+root = "CertifiedDemo"
