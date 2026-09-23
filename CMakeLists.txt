@@ -137,6 +137,7 @@ set(PRISM_SRC
   src/prism/scope.cpp
   src/prism/stages_rest.cpp
   src/prism/taxonomy.cpp
+  src/prism/verdict/verdict.cpp
   # Solver library (roadmap 3.1-3.3): portfolio, query cache, certified mode, SLS.
   src/prism/solver/cnf.cpp
   src/prism/solver/portfolio.cpp

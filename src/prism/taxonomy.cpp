@@ -657,7 +657,7 @@ std::vector<TaxonomyRow> coverage_from_report(const RunReport& report) {
             if (f.status == laws::NOTRUN || f.status == laws::CLEAN || f.status == laws::ERROR ||
                 f.status == laws::NEEDS_HARNESS || f.status == laws::TIMEOUT ||
                 f.status == laws::UNKNOWN || f.status == laws::NOSEED) continue;
-            if (f.status == laws::PROVED || f.status == laws::PROVED_UNBOUNDED || f.status == laws::PROVED_ASSUMING) {
+            if (laws::is_proof(f.status)) {  // incl. PROVED-CERTIFIED
                 // WP/contracts stay PROVED-ASSUMING; only BMC folds encoded UB.
                 if (s.name == "bmc") bmc_closed = true;
                 std::string cls = f.cls;

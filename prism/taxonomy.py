@@ -1316,7 +1316,7 @@ def coverage_from_report(report) -> list[dict]:
             if f.status in {laws.NOTRUN, laws.CLEAN, laws.ERROR, laws.NEEDS_HARNESS,
                             laws.TIMEOUT, laws.UNKNOWN, laws.NOSEED}:
                 continue
-            if f.status in {laws.PROVED, laws.PROVED_UNBOUNDED, laws.PROVED_ASSUMING}:
+            if laws.is_proof(f.status):  # incl. PROVED-CERTIFIED
                 # WP/contracts stay PROVED-ASSUMING; only BMC folds encoded UB.
                 if s.name == "bmc":
                     bmc_closed = True

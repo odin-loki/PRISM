@@ -6,7 +6,8 @@ Laws still hold in this format:
     `note`, never an error, and is marked as a hypothesis;
   - a stage that could not run is a tool execution notification, so a
     missing tool is visible, not silently absent;
-  - nothing here claims a proof.
+  - nothing here claims a proof; PROVED-CERTIFIED is only counted in
+    run.properties.certified, never a result.
 """
 
 from __future__ import annotations
@@ -113,7 +114,15 @@ def to_sarif(report: RunReport) -> dict[str, Any]:
             "toolExecutionNotifications": notes,
         }],
         "results": results,
-        "properties": {"confidence": report.confidence},
+        # PROVED-CERTIFIED is not a result (nothing to fix); the run says
+        # how many findings carry a certificate-checked proof.
+        "properties": {
+            "confidence": report.confidence,
+            "certified": sum(
+                1 for s in report.stages for f in s.findings
+                if f.status == laws.PROVED_CERTIFIED
+            ),
+        },
     }
     if base is not None:
         run["originalUriBaseIds"] = {"SRCROOT": {"uri": base.resolve().as_uri() + "/"}}

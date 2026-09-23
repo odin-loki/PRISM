@@ -129,6 +129,12 @@ std::string to_sarif(const RunReport& report) {
                           {{"text", rstrip_colon_space(s.name + " " + s.status + ": " +
                                                        (s.detail.empty() ? s.install : s.detail))}}}});
     }
+    // PROVED-CERTIFIED is not a result (nothing to fix); the run says how
+    // many findings carry a certificate-checked proof.
+    int certified = 0;
+    for (auto& s : report.stages)
+        for (auto& f : s.findings)
+            if (f.status == laws::PROVED_CERTIFIED) ++certified;
     ojson rule_arr = ojson::array();
     for (auto& [id, r] : rules) rule_arr.push_back(r);  // std::map: sorted by id
     ojson run = {
@@ -141,7 +147,7 @@ std::string to_sarif(const RunReport& report) {
         {"invocations",
          ojson::array({{{"executionSuccessful", !crashed}, {"toolExecutionNotifications", notes}}})},
         {"results", results},
-        {"properties", {{"confidence", report.confidence}}},
+        {"properties", {{"confidence", report.confidence}, {"certified", certified}}},
     };
     if (!report.root.empty()) {
         std::error_code ec;

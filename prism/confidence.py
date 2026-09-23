@@ -19,8 +19,7 @@ def score(report: RunReport) -> tuple[float, float, float, float]:
         return 0.0, 0.0, 0.0, 0.0
 
     bmc = next((s for s in report.stages if s.name == "bmc"), None)
-    classified = n_fun
-    visibility = classified / n_fun  # we parsed them; compile-reach is adapters
+    classified = n_fun  # we parsed them; compile-reach is adapters
 
     answered = 0
     resolved = 0
@@ -42,7 +41,7 @@ def score(report: RunReport) -> tuple[float, float, float, float]:
             st = recs[0].status
             if st in laws.ANSWERED:
                 answered += 1
-                if st in {laws.PROVED, laws.PROVED_UNBOUNDED, laws.PROVED_ASSUMING}:
+                if laws.is_proof(st):
                     resolved += 1
                 elif st == laws.FAILED:
                     # A counterexample is the instrument's answer. A
@@ -52,11 +51,9 @@ def score(report: RunReport) -> tuple[float, float, float, float]:
                         resolved += 1
                 elif st == laws.BOUNDED:
                     resolved += 1
-    vis = visibility
-    ans = (answered / attempted) if attempted else 0.0
-    res = (resolved / answered) if answered else 0.0
-    conf = vis * ans * res
-    return vis, ans, res, conf
+    # Law 5 through the verdict lattice (prism/laws.py score_counts, the
+    # proved `score` of proofs/Prism/Verdict.lean).
+    return laws.score_counts(n_fun, classified, attempted, answered, resolved)
 
 
 def apply(report: RunReport) -> RunReport:
