@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from pathlib import Path
 import os
 import shutil
@@ -75,7 +77,7 @@ def _pairs(functions: list[FunctionInfo]) -> list[tuple[FunctionInfo, FunctionIn
 
 
 def _diff_pair(a: FunctionInfo, b: FunctionInfo, root: Path) -> Finding:
-    base = dict(
+    base: dict[str, Any] = dict(
         stage="diff", file=a.file, function=f"{a.name}/{b.name}",
         line=a.line, strength=laws.STRENGTH_FINDS,
     )

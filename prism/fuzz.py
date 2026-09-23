@@ -7,6 +7,7 @@ POINTER functions are not harnessed.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 import hashlib
 import os
 import shutil
@@ -14,10 +15,11 @@ import struct
 import subprocess
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from prism import laws
 from prism.ai import LLM_INSTALL, LLM_UNAVAILABLE_MSG
-from prism.bmc import unencoded_syntax_reason
+from prism import bmc
 from prism.concrete import decode_args, execute, interesting_seeds
 from prism.cparse import body_needs_pointer_harness
 from prism.models import Finding, FunctionInfo
@@ -37,6 +39,47 @@ C_TYPE_SIZE = {
 }
 
 
+# `bmc.unencoded_syntax_reason` runs several hundred regexes (more than the
+# `re` module cache holds, so each call recompiles them) and the concolic,
+# FuSeBMC and fuzzer stages each ask it about the same function. Its result
+# depends only on fn.body, fn.signature, the file at fn.file and the engine
+# name, which it only interpolates into the message. Memoize with a sentinel
+# engine name and substitute: the text is identical, computed once per run.
+_ENGINE_SENTINEL = "\x00prism-engine\x00"
+_SYNTAX_MEMO: dict[tuple[Any, ...], str | None] = {}
+_SYNTAX_MEMO_MAX = 4096
+
+
+def _file_key(path: str) -> tuple[str, str] | None:
+    """What unencoded_syntax_reason reads from fn.file (relative to cwd)."""
+    if not path:
+        return None
+    try:
+        pth = Path(path)
+        if not pth.is_file():
+            return None
+        return os.getcwd(), hashlib.sha1(pth.read_bytes()).hexdigest()
+    except OSError:
+        return os.getcwd(), "<unreadable>"
+
+
+def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
+    """`bmc.unencoded_syntax_reason`, memoized across stages (same text)."""
+    body = fn.body or ""
+    sig = fn.signature or ""
+    if _ENGINE_SENTINEL in body or _ENGINE_SENTINEL in sig or _ENGINE_SENTINEL in engine:
+        return bmc.unencoded_syntax_reason(fn, engine)
+    key = (fn.file, sig, body, _file_key(fn.file or ""))
+    if key in _SYNTAX_MEMO:
+        hit = _SYNTAX_MEMO[key]
+    else:
+        hit = bmc.unencoded_syntax_reason(fn, _ENGINE_SENTINEL)
+        if len(_SYNTAX_MEMO) >= _SYNTAX_MEMO_MAX:
+            _SYNTAX_MEMO.clear()
+        _SYNTAX_MEMO[key] = hit
+    return None if hit is None else hit.replace(_ENGINE_SENTINEL, engine)
+
+
 def param_nbytes(params: list[tuple[str, str]]) -> int:
     n = 0
     for typ, _ in params:
@@ -53,12 +96,9 @@ def harness_source(fn: FunctionInfo, src_rel: str) -> str:
     for typ, name in fn.params:
         key = " ".join(typ.replace("*", " ").split())
         sz = C_TYPE_SIZE.get(key, 4)
-        t = key if key in C_TYPE_SIZE else "int"
         reads.append(f"    memcpy(&{name}, buf + {off}, {sz});")
         args.append(name)
         off += sz
-    decls = "\n".join(f"    {t if False else 'int'} {name};"  # filled below
-                      for typ, name in fn.params)
     # proper types
     dlines = []
     for typ, name in fn.params:
@@ -169,7 +209,7 @@ def fuzz_function(
     seeds: list[bytes] | None = None,
     work: Path | None = None,
 ) -> Finding:
-    base = dict(stage="fuzz", file=fn.file, function=fn.name, line=fn.line,
+    base: dict[str, Any] = dict(stage="fuzz", file=fn.file, function=fn.name, line=fn.line,
                 cls="", strength=laws.STRENGTH_FINDS)
     if fn.kind == "POINTER":
         return Finding(**base, status=laws.NEEDS_HARNESS,
@@ -216,6 +256,7 @@ def fuzz_function(
     # Concrete oracle FIRST — host gcc (Strawberry) often has no UBSan.
     # Dictionary seeds always run (small); they are what crash the planted bugs.
     queue = list(corpus)
+    extra: dict[str, Any]
     while queue and (time.time() - t0) < max(budget, 1.0):
         child = queue.pop(0)
         i += 1
@@ -278,6 +319,23 @@ def _binary_fuzz(
     cc = shutil.which("gcc") or shutil.which("clang")
     if not cc:
         return {}
+    harness = harness_source(fn, src.name)
+    key: tuple[str, ...] | None = None
+    if work is None:
+        # Fresh temp dir: the binary is a pure function of the compiler,
+        # the harness text and the source text, so a second fuzz of the
+        # same function (FuSeBMC runs two rounds) reuses the first build.
+        try:
+            src_text = src.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return {}
+        key = (cc, os.environ.get("PATH", ""), src.name, fn.name, harness, src_text)
+        cached = _EXE_CACHE.get(key)
+        if cached is not None:
+            if cached == "":
+                return {"extra": {"binary": "compile-failed"}}
+            if Path(cached).is_file():
+                return _binary_run(Path(cached), corpus, budget=budget, iters=iters)
     work = work or Path(tempfile.mkdtemp(prefix="prism_fuzz_"))
     work.mkdir(parents=True, exist_ok=True)
     src_copy = work / src.name
@@ -287,27 +345,57 @@ def _binary_fuzz(
         except OSError:
             return {}
     hpath = work / f"harness_{fn.name}.c"
-    hpath.write_text(harness_source(fn, src.name), encoding="utf-8")
+    hpath.write_text(harness, encoding="utf-8")
     exe = work / f"harness_{fn.name}.exe"
-    ok, _err = _compile(hpath, exe)
+    ok, err = _compile(hpath, exe)
+    if key is not None and err != "compile timeout":
+        if len(_EXE_CACHE) >= 512:
+            _EXE_CACHE.clear()
+        _EXE_CACHE[key] = str(exe) if ok else ""
     if not ok:
         return {"extra": {"binary": "compile-failed"}}
+    return _binary_run(exe, corpus, budget=budget, iters=iters)
+
+
+# (compiler, PATH, src name, fn name, harness, source) -> exe path; "" = failed.
+_EXE_CACHE: dict[tuple[str, ...], str] = {}
+
+
+def _binary_run(exe: Path, corpus: list[bytes], *, budget: float, iters: int) -> dict:
+    """Run the harness on the seeds, then havoc children, first crash wins.
+
+    Runs are independent processes, so a window of them goes in parallel
+    (~9 ms of ASan start-up each); results are still taken in input order,
+    so the reported crash and `binary_iters` match a sequential run.
+    """
     t0 = time.time()
     n = 0
-    for child in corpus[: max(1, iters)]:
-        if (time.time() - t0) > budget:
-            break
-        n += 1
-        st, detail = _run(exe, child)
-        if st == "crash":
-            return {"crash": (child, detail), "extra": {"binary_iters": n}}
-    while n < iters and (time.time() - t0) < budget:
-        child = havoc(corpus[n % len(corpus)])
-        n += 1
-        st, detail = _run(exe, child)
-        if st == "crash":
-            return {"crash": (child, detail), "extra": {"binary_iters": n}}
+    width = max(1, min(_RUN_WIDTH, iters))
+    with ThreadPoolExecutor(max_workers=width) as pool:
+        seeds = corpus[: max(1, iters)]
+        k = 0
+        while k < len(seeds):
+            if (time.time() - t0) > budget:
+                break
+            window = seeds[k:k + width]
+            k += len(window)
+            for child, (st, detail) in zip(window, pool.map(lambda c: _run(exe, c), window)):
+                n += 1
+                if st == "crash":
+                    return {"crash": (child, detail), "extra": {"binary_iters": n}}
+        while n < iters and (time.time() - t0) < budget:
+            window = [
+                havoc(corpus[(n + j) % len(corpus)])
+                for j in range(min(width, iters - n))
+            ]
+            for child, (st, detail) in zip(window, pool.map(lambda c: _run(exe, c), window)):
+                n += 1
+                if st == "crash":
+                    return {"crash": (child, detail), "extra": {"binary_iters": n}}
     return {"extra": {"binary_iters": n}}
+
+
+_RUN_WIDTH = max(1, min(4, os.cpu_count() or 1))
 
 
 def run_fuzz(
@@ -384,7 +472,7 @@ def bytes_from_cex(cex: str, nbytes: int) -> bytes | None:
     """Turn 'x=5, y=-1' into little-endian arg bytes."""
     if not cex:
         return None
-    vals = []
+    vals: list[int] = []
     for part in cex.split(","):
         if "=" not in part:
             continue
@@ -394,6 +482,6 @@ def bytes_from_cex(cex: str, nbytes: int) -> bytes | None:
         except ValueError:
             return None
     raw = b""
-    for v in vals:
-        raw += struct.pack("<I", v & 0xFFFFFFFF)
+    for iv in vals:
+        raw += struct.pack("<I", iv & 0xFFFFFFFF)
     return raw[:nbytes].ljust(nbytes, b"\x00")

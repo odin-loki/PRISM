@@ -79,9 +79,9 @@ def _muttest_function(fn: FunctionInfo, trials: int) -> list[Finding]:
             "requires": plan.get("requires") or [],
             "ensures": plan.get("ensures") or [],
         }
-        err = info.get("error")
-        if err and not info.get("counterexample"):
-            missing = _compiler_missing(str(err)) or not (
+        mut_err = info.get("error")
+        if mut_err and not info.get("counterexample"):
+            missing = _compiler_missing(str(mut_err)) or not (
                 shutil.which("gcc") or shutil.which("clang")
             )
             if missing:
@@ -93,7 +93,7 @@ def _muttest_function(fn: FunctionInfo, trials: int) -> list[Finding]:
                 function=fn.name,
                 line=fn.line,
                 cls="",
-                message=f"cannot score mutant {src} -> {dst}: {err}",
+                message=f"cannot score mutant {src} -> {dst}: {mut_err}",
                 strength=laws.STRENGTH_SOME,
                 extra=extra,
             ))

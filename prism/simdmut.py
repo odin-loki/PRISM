@@ -17,10 +17,12 @@ from __future__ import annotations
 
 import os
 import struct
+from collections.abc import Callable
 from pathlib import Path
 
 HAS_NATIVE = False
-_native_havoc = _native_hash = None
+_native_havoc: Callable[[bytes], bytes] | None = None
+_native_hash: Callable[[bytes], int] | None = None
 
 _CPU_LIB_NAMES = (
     "libprism_native.so",
@@ -155,7 +157,8 @@ if not HAS_NATIVE:
             HAS_NATIVE = True
     except Exception:
         HAS_NATIVE = False
-        _native_havoc = _native_hash = None
+        _native_havoc = None
+        _native_hash = None
 
 
 def _py_hash(data: bytes) -> int:
@@ -180,7 +183,7 @@ def _py_hash(data: bytes) -> int:
 
 
 def coverage_hash(data: bytes) -> int:
-    if HAS_NATIVE:
+    if HAS_NATIVE and _native_hash is not None:
         return int(_native_hash(data))
     return _py_hash(data)
 
@@ -213,32 +216,39 @@ def _overlay_le(buf: bytearray, i: int, value: int, width: int) -> None:
 
 
 def havoc(data: bytes) -> bytes:
-    if HAS_NATIVE:
+    if HAS_NATIVE and _native_havoc is not None:
         return bytes(_native_havoc(data))
     b = bytearray(data or b"\x00")
     n = len(b)
-    ops = os.urandom(1)[0] % 8 + 1
+    # One urandom read per call instead of one per byte drawn: each op draws
+    # at most 3 bytes (kind, index, operand), plus 1 for the op count.
+    # Same distribution (independent uniform bytes), far fewer syscalls.
+    rnd = os.urandom(1 + 8 * 3)
+    ops = rnd[0] % 8 + 1
+    r = 1
     for _ in range(ops):
-        kind = os.urandom(1)[0] % 8
-        i = os.urandom(1)[0] % n
+        kind = rnd[r] % 8
+        i = rnd[r + 1] % n
+        x = rnd[r + 2]
+        r += 3
         if kind == 0:
-            b[i] ^= os.urandom(1)[0]
+            b[i] ^= x
         elif kind == 1:
-            b[i] = os.urandom(1)[0]
+            b[i] = x
         elif kind == 2:
             b[i] = 0xFF
         elif kind == 3:
             b[i] = 0x00
         elif kind == 4:
-            v = INTERESTING_8[os.urandom(1)[0] % len(INTERESTING_8)]
+            v = INTERESTING_8[x % len(INTERESTING_8)]
             _overlay_le(b, i, v, 1)
         elif kind == 5:
-            v = INTERESTING_16[os.urandom(1)[0] % len(INTERESTING_16)]
+            v = INTERESTING_16[x % len(INTERESTING_16)]
             _overlay_le(b, i, v, 2)
         elif kind == 6:
-            v = INTERESTING_32[os.urandom(1)[0] % len(INTERESTING_32)]
+            v = INTERESTING_32[x % len(INTERESTING_32)]
             _overlay_le(b, i, v, 4)
         else:
-            j = os.urandom(1)[0] % n
+            j = x % n
             b[i], b[j] = b[j], b[i]
     return bytes(b)
