@@ -228,6 +228,21 @@ In-house generator, 300 programs, 900 functions, seeds 1–300:
   in-house generator is the useful one until the Clang front end (Part 2)
   lands.
 
+### Roadmap 2.6 categories (`fp`, `eh`, `coro`, `sjlj`, `virt`, `asm`; 30 tasks)
+
+One true/false pair per construct (docs/PIR.md "Roadmap 2.3 / 2.6
+coverage"); two new suite properties: `no-fp-cast` (FLOAT-CAST-OVF, the
+UBSan float-cast-overflow check) and `no-uncaught` (an exception reaching
+`std::terminate`; the replay counts the runtime's "terminate called …" as
+the violation). Label self-check: 30/30 ok. `pir` (2026-09-23): **0 wrong
+proofs**, 15/15 true proved (asm: PROVED-ASSUMING under its contract),
+15/15 false refuted with a replayed counterexample. `bmc` (the old encoder)
+answers none of them (NEEDS-HARNESS / no answer), never a proof. Full suite
+with these tasks (385 functions, before `fp_div_*` moved from double to
+float, when that pair was still a solver timeout): `pir` 0 wrong proofs,
+completeness 144/181, detection 137/176; the only wrong proof in the run is
+the known `bmc` `mem_uninit_false` (being fixed separately).
+
 ## Known issues
 
 Every wrong proof found, reduced to a minimal reproducer. Run any of them
