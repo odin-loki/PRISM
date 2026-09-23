@@ -163,6 +163,90 @@ theorem andAll_spec : ∀ (ls : List Lit) (acc : Lit) (gs : Circuit), WF gs →
     rw [andAll, ih.sem α hcons, mkGate_val (consistent_of_suffix ih.suffix hcons)]
     simp [andSem, Gate.eval]
 
+/-! ### Shift-and-add multiplier -/
+
+theorem good_getD {n : Nat} {ls : List Lit} (h : Good n ls) (j : Nat) : Scoped n (ls.getD j FF) := by
+  rw [List.getD_eq_getElem?_getD]
+  cases hj : ls[j]? with
+  | none => exact scoped_FF n
+  | some l => exact h l (List.mem_of_getElem? hj)
+
+theorem val_getD {α : Nat → Bool} {gs : Circuit} (hc : Consistent α gs) (ls : List Lit) (j : Nat) :
+    (ls.getD j FF).val α = (ls.map (Lit.val α)).getD j false := by
+  rw [List.getD_eq_getElem?_getD, List.getD_eq_getElem?_getD, List.getElem?_map]
+  cases ls[j]? with
+  | none => exact val_FF hc
+  | some l => rfl
+
+/-- Partial product `s`: bit `i` is `x[i-s] ∧ yb` for `i ≥ s`, else `0`. -/
+def ppEnc (w : Nat) (xs : List Lit) (yb : Lit) (s : Nat) (gs : Circuit) : List Lit × Circuit :=
+  zipGate Gate.and ((List.range w).map fun i => if s ≤ i then xs.getD (i - s) FF else FF)
+    ((List.range w).map fun _ => yb) gs
+
+theorem ppEnc_spec (w : Nat) (xs : List Lit) (yb : Lit) (s : Nat) (gs : Circuit) (hwf : WF gs)
+    (hxs : Good gs.length xs) (hyb : Scoped gs.length yb) :
+    Spec gs (ppEnc w xs yb s gs) (fun α => (List.range w).map fun i =>
+      (if s ≤ i then (xs.getD (i - s) FF).val α else FF.val α) && yb.val α) := by
+  have hz := zipGate_spec Gate.and (· && ·) (fun _ _ _ => rfl) (fun _ _ _ h1 h2 => ⟨h1, h2⟩)
+    ((List.range w).map fun i => if s ≤ i then xs.getD (i - s) FF else FF)
+    ((List.range w).map fun _ => yb) gs hwf
+    (by
+      intro l hl
+      obtain ⟨i, _, rfl⟩ := List.mem_map.1 hl
+      split
+      · exact good_getD hxs _
+      · exact scoped_FF _)
+    (by
+      intro l hl
+      obtain ⟨i, _, rfl⟩ := List.mem_map.1 hl
+      exact hyb)
+  refine ⟨hz.suffix, hz.wf, hz.good, fun α hc => ?_⟩
+  change List.map (Lit.val α) (zipGate Gate.and _ _ gs).1 = _
+  rw [hz.sem α hc, List.map_map, List.map_map, zipWith_map_same]
+  apply List.map_congr_left
+  intro i _
+  simp only [Function.comp_def]
+  split <;> rfl
+
+/-- Accumulate partial products `s+1, …, s+n` onto `acc` (= `mulRec x y s`). -/
+def mulFrom (w : Nat) (xs ys : List Lit) : Nat → Nat → List Lit → Circuit → List Lit × Circuit
+  | _, 0, acc, gs => (acc, gs)
+  | s, n + 1, acc, gs =>
+    let p := ppEnc w xs (ys.getD (s + 1) FF) (s + 1) gs
+    let r := ripple acc p.1 FF p.2
+    mulFrom w xs ys (s + 1) n r.1.dropLast r.2
+
+theorem mulFrom_spec {w : Nat} (X Y : (Nat → Bool) → BitVec w) (xs ys : List Lit) :
+    ∀ (n s : Nat) (acc : List Lit) (gs : Circuit), WF gs →
+      Good gs.length xs → Good gs.length ys → Good gs.length acc →
+      (∀ α, Consistent α gs → xs.map (Lit.val α) = toBits (X α) ∧
+        ys.map (Lit.val α) = toBits (Y α) ∧
+        acc.map (Lit.val α) = toBits (BitVec.mulRec (X α) (Y α) s)) →
+      Spec gs (mulFrom w xs ys s n acc gs)
+        (fun α => toBits (BitVec.mulRec (X α) (Y α) (s + n)))
+  | 0, s, acc, gs, hwf, _, _, hacc, hsem =>
+    ⟨List.suffix_refl gs, hwf, hacc, fun α hc => (hsem α hc).2.2⟩
+  | n + 1, s, acc, gs, hwf, hxs, hys, hacc, hsem => by
+    have hp := ppEnc_spec w xs (ys.getD (s + 1) FF) (s + 1) gs hwf hxs (good_getD hys _)
+    have hl1 := hp.suffix.length_le
+    have hr := ripple_spec acc _ FF _ hp.wf (hacc.mono hl1) hp.good (scoped_FF _)
+    have hl2 := hr.suffix.length_le
+    have ih := mulFrom_spec X Y xs ys n (s + 1) _ _ hr.wf (hxs.mono (by omega))
+      (hys.mono (by omega)) (fun l hl => hr.good l (List.dropLast_subset _ hl)) (by
+        intro α hc
+        have hc1 : Consistent α (ppEnc w xs (ys.getD (s + 1) FF) (s + 1) gs).2 :=
+          consistent_of_suffix hr.suffix hc
+        have hc0 : Consistent α gs := consistent_of_suffix hp.suffix hc1
+        obtain ⟨ex, ey, ea⟩ := hsem α hc0
+        refine ⟨ex, ey, ?_⟩
+        rw [List.map_dropLast, hr.sem α hc, hp.sem α hc1, ea, val_FF hc, BitVec.mulRec_succ_eq,
+          toBits_add, toBits_pp]
+        congr 3
+        funext i
+        simp only [val_getD hc1, ex, ey, toBits_getD])
+    refine ⟨hp.suffix.trans (hr.suffix.trans ih.suffix), ih.wf, ih.good, fun α hc => ?_⟩
+    rw [mulFrom, ih.sem α hc, Nat.add_assoc, Nat.add_comm 1 n]
+
 /-! ### The expression encoder -/
 
 def varLits (w base : Nat) : List Lit := (List.range w).map fun i => (2 * (base + i), true)
@@ -216,6 +300,11 @@ def encode : {w : Nat} → BVExpr w → Circuit → List Lit × Circuit
     let d := mkGate (.xor (r1.1.getLastD FF) (r2.1.getLastD FF)) r.2
     let e := mkGate (.xor d.1 (r.1.getLastD FF).neg) d.2
     ([e.1], e.2)
+  | w, .mul a b, gs =>
+    let r1 := encode a gs
+    let r2 := encode b r1.2
+    let p0 := ppEnc w r1.1 (r2.1.getD 0 FF) 0 r2.2
+    mulFrom w r1.1 r2.1 0 w p0.1 p0.2
 
 /-- The input assignment read back from a CNF assignment. -/
 def inputOf (α : Nat → Bool) : Nat → Bool := fun j => α (2 * j)
@@ -403,6 +492,27 @@ theorem encode_spec : ∀ {w : Nat} (e : BVExpr w) (gs : Circuit), WF gs →
       simp only [Gate.eval, Lit.val_neg]
       rw [hdv, val_getLastD hcr, val_getLastD hcr, val_getLastD hcr, hr.sem α hcr, map_neg_val,
         e1, e2, val_TT hcr, ← toBits_not, toBits_ofBool, slt_bits]
+  | w, .mul a b, gs, hwf => by
+    have ha := encode_spec a gs hwf
+    have hb := encode_spec b _ ha.wf
+    obtain ⟨hsuf, hwf2, hga, hgb, hsem⟩ := spec_pair ha hb
+    have hp := ppEnc_spec w (encode a gs).1 ((encode b (encode a gs).2).1.getD 0 FF) 0 _ hwf2 hga
+      (good_getD hgb 0)
+    have hl1 := hp.suffix.length_le
+    have hm := mulFrom_spec (fun α => a.denote (inputOf α)) (fun α => b.denote (inputOf α))
+      (encode a gs).1 (encode b (encode a gs).2).1 w 0 _ _ hp.wf (hga.mono hl1) (hgb.mono hl1)
+      hp.good (by
+        intro α hc
+        obtain ⟨e1, e2⟩ := hsem _ hp.suffix α hc
+        refine ⟨e1, e2, ?_⟩
+        have hc1 := consistent_of_suffix hp.suffix hc
+        rw [hp.sem α hc, mulRec_zero', toBits_pp]
+        apply List.map_congr_left
+        intro i _
+        simp only [val_getD hc1, val_FF hc1, e1, e2, toBits_getD])
+    refine ⟨hsuf.trans (hp.suffix.trans hm.suffix), hm.wf, hm.good, fun α hc => ?_⟩
+    simp only [encode, BVExpr.denote]
+    rw [hm.sem α hc, Nat.zero_add, toBits_mul]
 
 /-! ## CNF and the main theorems -/
 

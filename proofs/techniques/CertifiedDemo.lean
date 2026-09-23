@@ -20,6 +20,9 @@ open Std.Tactic.BVDecide
 /-- 8-bit variables `x` (input bits 0..7) and `y` (bits 8..15). -/
 def x8 : BVExpr 8 := .var 0
 def y8 : BVExpr 8 := .var 8
+/-- 6-bit variables for the (harder) multiplier commutativity check. -/
+def x6 : BVExpr 6 := .var 0
+def y6 : BVExpr 6 := .var 6
 
 /-- The formulas: `(name, φ, expectUnsat)`. -/
 def cases : List (String × BVExpr 1 × Bool) :=
@@ -28,7 +31,10 @@ def cases : List (String × BVExpr 1 × Bool) :=
     ("x <s y && y <s x", .and (.slt x8 y8) (.slt y8 x8), true),
     ("(x & y) != ~(~x | ~y)", .not (.eq (.and x8 y8) (.not (.or (.not x8) (.not y8)))), true),
     ("ite(x <u y, x, y) >u y", .ult y8 (.ite (.ult x8 y8) x8 y8), true),
-    ("x <u y (satisfiable)", .ult x8 y8, false) ]
+    ("x * 3 != x + x + x", .not (.eq (.mul x8 (.const 3#8)) (.add (.add x8 x8) x8)), true),
+    ("x * y != y * x (6-bit)", .not (.eq (.mul x6 y6) (.mul y6 x6)), true),
+    ("x <u y (satisfiable)", .ult x8 y8, false),
+    ("x * y = 35 (satisfiable)", .eq (.mul x8 y8) (.const 35#8), false) ]
 
 def runCase (cadical : String) (dir : System.FilePath) (name : String) (φ : BVExpr 1)
     (expectUnsat : Bool) (idx : Nat) : IO Bool := do

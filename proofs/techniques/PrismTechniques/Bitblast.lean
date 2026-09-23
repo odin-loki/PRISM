@@ -3,7 +3,8 @@ PRISM techniques: a certified-mode bit-blaster (roadmap 5.4 and 8.2, row
 "Bit-blaster"; roadmap 3.2 "Certified mode").
 
 A small bitvector expression language (`BVExpr`) with `var`, `const`, `not`,
-`and`, `or`, `xor`, `add` (ripple-carry), `ite`, and the 1-bit predicates
+`and`, `or`, `xor`, `add` (ripple-carry), `mul` (shift-and-add), `ite`, and
+the 1-bit predicates
 `eq`, `ult`, `slt`, is bit-blasted into an and/or/xor gate circuit and
 Tseitin-encoded into `Std.Sat.CNF Nat` (core Lean's CNF type, the one the
 verified LRAT checker `Std.Tactic.BVDecide.LRAT.check` consumes).
@@ -17,6 +18,7 @@ Proved (no `sorry`, standard axioms only):
 
 Reuse of core Lean's `bv_decide` development: the arithmetic facts come from
 `Init.Data.BitVec.Bitblast` — `BitVec.carry`, `BitVec.carry_succ`,
+`BitVec.mulRec`, `BitVec.mulRec_succ_eq`, `BitVec.getLsbD_mul` (multiplier),
 `BitVec.getLsbD_add` (ripple-carry adder), `BitVec.ult_eq_not_carry` (unsigned
 comparison as a carry chain), `BitVec.slt_eq_ult` and
 `BitVec.msb_eq_getLsbD_last` (signed comparison) — and the soundness theorem
@@ -171,6 +173,41 @@ theorem toBits_bvOf (w : Nat) (f : Nat → Bool) :
   rw [getLsbD_bvOf]
   simp [List.mem_range.1 hi]
 
+/-! ### Multiplication (shift-and-add, core Lean's `BitVec.mulRec`) -/
+
+theorem toBits_getD {w : Nat} (x : BitVec w) (j : Nat) : (toBits x).getD j false = x.getLsbD j := by
+  rw [List.getD_eq_getElem?_getD]
+  by_cases h : j < w
+  · simp [toBits, h]
+  · simp [toBits, h, BitVec.getLsbD_of_ge x j (by omega)]
+
+/-- The bits of one partial product `if b then x <<< s else 0`. -/
+theorem toBits_pp {w : Nat} (b : Bool) (x : BitVec w) (s : Nat) :
+    toBits (if b then x <<< s else 0) =
+      (List.range w).map (fun i => (if s ≤ i then x.getLsbD (i - s) else false) && b) := by
+  cases b
+  · simp [toBits]
+  · simp only [toBits, ite_true, Bool.and_true]
+    apply List.map_congr_left
+    intro i hi
+    have hi' := List.mem_range.1 hi
+    rw [BitVec.getLsbD_shiftLeft]
+    by_cases hs : s ≤ i
+    · simp only [decide_eq_true hi', decide_eq_false (Nat.not_lt.2 hs), hs, ite_true,
+        Bool.true_and, Bool.not_false]
+    · simp only [decide_eq_true hi', decide_eq_true (Nat.lt_of_not_le hs), hs, ite_false,
+        Bool.true_and, Bool.not_true, Bool.false_and]
+
+theorem mulRec_zero' {w : Nat} (x y : BitVec w) :
+    BitVec.mulRec x y 0 = if y.getLsbD 0 then x <<< 0 else 0 := rfl
+
+/-- Multiplication is the shift-and-add recurrence (core `BitVec.getLsbD_mul`). -/
+theorem toBits_mul {w : Nat} (x y : BitVec w) : toBits (x * y) = toBits (BitVec.mulRec x y w) := by
+  simp only [toBits]
+  congr 1
+  funext i
+  exact BitVec.getLsbD_mul x y i
+
 /-! ## Bitvector expressions -/
 
 /-- PRISM's bit-blastable bitvector fragment. -/
@@ -186,6 +223,7 @@ inductive BVExpr : Nat → Type
   | eq {w : Nat} (a b : BVExpr w) : BVExpr 1
   | ult {w : Nat} (a b : BVExpr w) : BVExpr 1
   | slt {w : Nat} (a b : BVExpr w) : BVExpr 1
+  | mul {w : Nat} (a b : BVExpr w) : BVExpr w
 
 /-- Semantics under an assignment `ρ` of the input bits. -/
 def BVExpr.denote (ρ : Nat → Bool) : {w : Nat} → BVExpr w → BitVec w
@@ -200,6 +238,7 @@ def BVExpr.denote (ρ : Nat → Bool) : {w : Nat} → BVExpr w → BitVec w
   | _, .eq a b => BitVec.ofBool (a.denote ρ == b.denote ρ)
   | _, .ult a b => BitVec.ofBool ((a.denote ρ).ult (b.denote ρ))
   | _, .slt a b => BitVec.ofBool ((a.denote ρ).slt (b.denote ρ))
+  | _, .mul a b => a.denote ρ * b.denote ρ
 
 /-- A 1-bit formula is satisfiable when some input makes it `1`. -/
 def FSat (φ : BVExpr 1) : Prop := ∃ ρ, φ.denote ρ = 1#1
