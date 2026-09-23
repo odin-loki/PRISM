@@ -1137,7 +1137,7 @@ def _taut_bound(lines, rel, funcs, out) -> None:
                     var = sorted(both)[0]
                     cls = "INT-TAUTOLOGY"
                     msg = f"{var} contradictory bounds use &&; always false"
-            if cls is None or var is None:
+            if cls is None or var is None or msg is None:
                 continue
             key = (var, i)
             if key in seen:
@@ -1298,13 +1298,13 @@ def _int_trunc(lines, rel, funcs, out) -> None:
                     if 0 < line <= len(lines) else "",
                 ))
             for name, narrow_ty in narrow.items():
-                m = re.search(
+                am = re.search(
                     rf"\b{re.escape(name)}\s*=(?!=)\s*(?P<rhs>[^;,]+)",
                     ln,
                 )
-                if not m or _NARROW_DECL_INIT.search(ln):
+                if not am or _NARROW_DECL_INIT.search(ln):
                     continue
-                rhs = m.group("rhs").strip()
+                rhs = am.group("rhs").strip()
                 if not _trunc_rhs_bad(rhs, narrow_ty):
                     continue
                 key = (name, i)
@@ -1823,7 +1823,7 @@ def _alloc_in_null_condition(line: str, var: str) -> bool:
     """`if ((p = malloc(n)) == NULL)` — alloc and test on one condition."""
     v = re.escape(var)
     return bool(
-        re.search(rf"\bif\s*\(", line)
+        _rx(r"\bif\s*\(").search(line)
         and re.search(rf"\b{v}\s*=(?!=)", line)
         and _rx(r"==\s*(?:NULL|nullptr|0)\b").search(line)
     )
@@ -3096,10 +3096,10 @@ def _lock_missing_init(lines, rel, funcs, out) -> None:
         start = fn.span[0]
         reported: set[str] = set()
         for i, ln in enumerate(_gated_lines(fn.body, _MUTEX_LOCK_CALL)):
-            m = _MUTEX_LOCK_CALL.search(ln)
-            if not m:
+            sm = _MUTEX_LOCK_CALL.search(ln)
+            if not sm:
                 continue
-            name = m.group(1)
+            name = sm.group(1)
             if name not in locals_ or name in inited or name in reported:
                 continue
             reported.add(name)
@@ -3850,7 +3850,7 @@ def _getenv_only_returned(var: str, chunk: list[str], assign_i: int) -> bool:
         ln = chunk[j]
         if _getenv_uses(var, ln):
             return False
-        if re.search(rf"\breturn\b", ln):
+        if _rx(r"\breturn\b").search(ln):
             if re.search(rf"\breturn\s+{v}\s*;", ln):
                 saw_return = True
             else:
@@ -3926,7 +3926,7 @@ def _strdup_only_returned(var: str, chunk: list[str], assign_i: int) -> bool:
         ln = chunk[j]
         if _getenv_uses(var, ln):
             return False
-        if re.search(rf"\breturn\b", ln):
+        if _rx(r"\breturn\b").search(ln):
             if re.search(rf"\breturn\s+{v}\s*;", ln):
                 saw_return = True
             else:
@@ -13287,16 +13287,16 @@ def _cxx_unique_reset(lines, rel, funcs, out) -> None:
         for i, ln in enumerate(body_lines):
             for m in _UNIQUE_PTR_DECL.finditer(ln):
                 unique_ptrs.add(m.group("name"))
-            m = _UNIQUE_RAW_GET.search(ln)
-            if m and m.group("up") in unique_ptrs:
-                raw_owner[m.group("raw")] = m.group("up")
+            sm = _UNIQUE_RAW_GET.search(ln)
+            if sm and sm.group("up") in unique_ptrs:
+                raw_owner[sm.group("raw")] = sm.group("up")
             for m in _UNIQUE_RESET.finditer(ln):
                 up = m.group("up")
                 if up in unique_ptrs:
                     reset_at.setdefault(up, i)
-            m = _UNIQUE_NULL.search(ln)
-            if m and m.group("up") in unique_ptrs:
-                reset_at.setdefault(m.group("up"), i)
+            sm = _UNIQUE_NULL.search(ln)
+            if sm and sm.group("up") in unique_ptrs:
+                reset_at.setdefault(sm.group("up"), i)
             for raw, up in raw_owner.items():
                 rline = reset_at.get(up)
                 if rline is None or i <= rline:
@@ -14030,16 +14030,16 @@ def _cxx_shared_get(lines, rel, funcs, out) -> None:
         for i, ln in enumerate(body_lines):
             for m in _SHARED_PTR_DECL.finditer(ln):
                 shared_ptrs.add(m.group("name"))
-            m = _UNIQUE_RAW_GET.search(ln)
-            if m and m.group("up") in shared_ptrs:
-                raw_owner[m.group("raw")] = m.group("up")
+            sm = _UNIQUE_RAW_GET.search(ln)
+            if sm and sm.group("up") in shared_ptrs:
+                raw_owner[sm.group("raw")] = sm.group("up")
             for m in _UNIQUE_RESET.finditer(ln):
                 up = m.group("up")
                 if up in shared_ptrs:
                     reset_at.setdefault(up, i)
-            m = _UNIQUE_NULL.search(ln)
-            if m and m.group("up") in shared_ptrs:
-                reset_at.setdefault(m.group("up"), i)
+            sm = _UNIQUE_NULL.search(ln)
+            if sm and sm.group("up") in shared_ptrs:
+                reset_at.setdefault(sm.group("up"), i)
             for raw, up in raw_owner.items():
                 rline = reset_at.get(up)
                 if rline is None or i <= rline:
@@ -14092,9 +14092,9 @@ def _cxx_string_data(lines, rel, funcs, out) -> None:
         for i, ln in enumerate(body_lines):
             for m in _STR_OWN_DECL.finditer(ln):
                 strings.add(m.group("name"))
-            m = _STR_CSTR_GET.search(ln)
-            if m and m.group("s") in strings:
-                raw_owner[m.group("raw")] = m.group("s")
+            sm = _STR_CSTR_GET.search(ln)
+            if sm and sm.group("s") in strings:
+                raw_owner[sm.group("raw")] = sm.group("s")
             for m in _STR_MUTATE.finditer(ln):
                 s = m.group("s")
                 if s in strings:
@@ -14308,7 +14308,7 @@ def _cxx_bind_tmp(stripped, lines, rel, funcs, out) -> None:
                 if re.search(rf"\breturn\s+{re.escape(nm)}\s*;", body):
                     hit_line = stripped[: brace + 1 + bm.start()].count("\n") + 1
                     msg = f"return of {nm} bound to a temporary"
-        if not hit_line or name in reported:
+        if not hit_line or msg is None or name in reported:
             continue
         reported.add(name)
         _emit_bind_tmp(lines, rel, out, name, hit_line, msg)
@@ -14810,22 +14810,22 @@ def _cxx_atomic_ref(lines, rel, funcs, out) -> None:
                 src = m.group("name")
                 if src in locals_ok:
                     ref_from_local[m.group("ref")] = src
-            m = _CXX_RETURN_ATOMIC_REF.search(ln)
-            if m and m.group("name") in locals_ok:
+            sm = _CXX_RETURN_ATOMIC_REF.search(ln)
+            if sm and sm.group("name") in locals_ok:
                 line = start + i
                 out.append(Finding(
                     stage="lints", status=laws.FAILED, file=rel,
                     function=fn.name, line=line, cls="CXX-ATOMIC-REF",
                     message="return atomic_ref constructed from local "
-                    f"{m.group('name')}",
+                    f"{sm.group('name')}",
                     strength=laws.STRENGTH_FINDS,
                     evidence=lines[line - 1].strip()
                     if 0 < line <= len(lines) else ln.strip(),
                 ))
                 return
-            m = _CXX_RETURN_NAME.search(ln)
-            if m and m.group("name") in ref_from_local:
-                src = ref_from_local[m.group("name")]
+            sm = _CXX_RETURN_NAME.search(ln)
+            if sm and sm.group("name") in ref_from_local:
+                src = ref_from_local[sm.group("name")]
                 line = start + i
                 out.append(Finding(
                     stage="lints", status=laws.FAILED, file=rel,
@@ -17264,17 +17264,17 @@ def _cxx_wstring_view(lines, rel, funcs, out) -> None:
         start = fn.span[0]
         for i, ln in enumerate((fn.body or "").splitlines()):
             hit = None
-            m = _RETURN_VAR.search(ln)
-            if m:
-                name = m.group(1)
+            sm = _RETURN_VAR.search(ln)
+            if sm:
+                name = sm.group(1)
                 if name in view_from_local:
                     hit = name
                 elif name in local_ws and ret_is_wview:
                     hit = name
             if not hit:
-                m = _CXX_RETURN_WVIEW.search(ln)
-                if m and m.group("name") in local_ws:
-                    hit = m.group("name")
+                sm = _CXX_RETURN_WVIEW.search(ln)
+                if sm and sm.group("name") in local_ws:
+                    hit = sm.group("name")
             if not hit:
                 continue
             line = start + i
@@ -17559,17 +17559,17 @@ def _cxx_u8string_view(lines, rel, funcs, out) -> None:
         start = fn.span[0]
         for i, ln in enumerate((fn.body or "").splitlines()):
             hit = None
-            m = _RETURN_VAR.search(ln)
-            if m:
-                name = m.group(1)
+            sm = _RETURN_VAR.search(ln)
+            if sm:
+                name = sm.group(1)
                 if name in view_from_local:
                     hit = name
                 elif name in local_u8 and ret_is_u8view:
                     hit = name
             if not hit:
-                m = _CXX_RETURN_U8VIEW.search(ln)
-                if m and m.group("name") in local_u8:
-                    hit = m.group("name")
+                sm = _CXX_RETURN_U8VIEW.search(ln)
+                if sm and sm.group("name") in local_u8:
+                    hit = sm.group("name")
             if not hit:
                 continue
             line = start + i
@@ -18464,8 +18464,8 @@ def _cxx_reference_wrapper(lines, rel, funcs, out) -> None:
             rm = _CXX_REFWRAP_RETURN.search(ln)
             if rm and rm.group("arg") in locals_ and rm.group("arg") not in params:
                 hit = True
-            elif _RETURN_VAR.search(ln):
-                ret = _RETURN_VAR.search(ln).group(1)
+            elif rv := _RETURN_VAR.search(ln):
+                ret = rv.group(1)
                 if ret in wrapped:
                     hit = True
             if not hit:
@@ -18684,9 +18684,9 @@ def _cxx_quick_exit(lines, rel, funcs, out) -> None:
         if close < 0:
             continue
         body = text[brace + 1: close]
-        if not _lit_search(_CXX_QUICK_EXIT, body):
-            continue
         tm = _lit_search(_CXX_QUICK_EXIT, body)
+        if not tm:
+            continue
         line = text[: brace + 1 + tm.start()].count("\n") + 1
         _emit(f"~{m.group('name')}", line, body.splitlines()[0] if body else "")
         return
@@ -18831,7 +18831,7 @@ def _cxx_kill_dependency(lines, rel, funcs, out) -> None:
         for i, ln in enumerate(body.splitlines()):
             for m in _KILLDEP_ASSIGN.finditer(ln):
                 assigned.add(m.group("var"))
-            hit = only_sync and _CXX_KILLDEP.search(ln)
+            hit = bool(only_sync and _CXX_KILLDEP.search(ln))
             if _KILLDEP_IN_INDEX.search(ln):
                 hit = True
             if not hit:
@@ -19027,7 +19027,7 @@ def _cxx_lerp(lines, rel, funcs, out) -> None:
         for i, ln in enumerate(body.splitlines()):
             for m in _LERP_ASSIGN.finditer(ln):
                 assigned.add(m.group("var"))
-            hit = _LERP_IN_INDEX.search(ln)
+            hit = bool(_LERP_IN_INDEX.search(ln))
             if not hit:
                 for m in _CXX_SUBSCRIPT.finditer(ln):
                     idx = m.group("idx").strip()
@@ -21505,9 +21505,9 @@ def _mem_flex_array(stripped: str, lines, rel, funcs, out) -> None:
                 continue
             t = _rx(r"\b(?:const|volatile|struct|class)\b").sub(" ", typ)
             t = t.replace("*", " ")
-            tag = " ".join(t.split())
-            if tag in tags:
-                ptrs[name] = tag
+            ptag = " ".join(t.split())
+            if ptag in tags:
+                ptrs[name] = ptag
         for m in _lit_finditer(_FAM_PTR, fn.body):
             if m.group("tag") in tags:
                 ptrs[m.group("name")] = m.group("tag")
@@ -21527,7 +21527,7 @@ def _mem_flex_array(stripped: str, lines, rel, funcs, out) -> None:
                 else:
                     continue
                 kind, ident = _bare_sizeof(size)
-                tag = None
+                tag: str | None = None
                 if kind == "struct" and ident in tags:
                     tag = ident
                 elif kind == "star" and ident in ptrs:
