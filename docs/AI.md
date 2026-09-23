@@ -15,7 +15,7 @@ involved (`extra.ai_audit_id` → a line of `<out>/ai_audit.jsonl`).
 | Feature | What the model may propose | Who decides | Best verdict |
 |---|---|---|---|
 | Loop invariants | candidate C boolean expressions | Z3: Houdini filter, then the loop-cut induction (base and step) | `PROVED-UNBOUNDED` |
-| Harness drafting | non-NULL, element counts, integer ranges | bitvector BMC on the drafted harness | `PROVED-ASSUMING` (assumptions listed) |
+| Harness drafting | non-NULL, element counts, integer ranges | bitvector BMC on the drafted harness | `NEEDS-HARNESS` with `draft_verdict=PROVED-ASSUMING` and the `// requires:` lines to confirm; `PROVED-ASSUMING` only once a human writes them |
 | Counterexample explanation | plain-language text | nobody: it is text | `HYPOTHESIS` / `READS` |
 | Verified repair | a replacement function body | BMC on the patched function | label "verified fix"; the `FAILED` verdict is unchanged |
 
@@ -92,8 +92,14 @@ For a `POINTER` function without `// requires:` (which would otherwise end
   so an off-by-one at `p[n]` is caught, not hidden by a larger buffer),
 * element values unconstrained.
 
-All sizes proved → `PROVED-ASSUMING`, and every assumption is in
-`extra.assumptions` (JSON list) and in the message. A counterexample under a
+All sizes proved → the row stays `NEEDS-HARNESS` with
+`extra.draft_verdict = PROVED-ASSUMING`, every assumption in
+`extra.assumptions` (JSON list) and in the message, and `extra.confirm_with`
+holding the `// requires:` lines. A drafted assumption was invented by PRISM,
+not stated by a human, and can hide the bug (`p != NULL` when NULL is a legal
+input), so it never yields a proof class on its own (Law 6; the conformance
+tasks `ptrparam*_false` check this). Paste the lines into the source and the
+ordinary harness path reports `PROVED-ASSUMING`. A counterexample under a
 *drafted* assumption is not a defect (the draft may be too narrow): the row
 stays `NEEDS-HARNESS` with `extra.draft_cls` / `extra.draft_cex` so a
 reviewer can confirm the assumption as a `// requires:` and get a real

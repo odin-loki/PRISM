@@ -183,7 +183,9 @@ class TestAiEndToEnd(unittest.TestCase):
                 self.assertEqual(f["status"], laws.BOUNDED, f)
                 self.assertTrue(f["extra"]["llm_invariants"].startswith("NOTRUN"), f)
             h = self._by_fn(rep, "harness", "ai_max")
-            self.assertEqual(h["status"], laws.PROVED_ASSUMING)
+            # Drafted assumptions never yield a proof class (Law 6).
+            self.assertEqual(h["status"], laws.NEEDS_HARNESS)
+            self.assertEqual(h["extra"]["draft_verdict"], laws.PROVED_ASSUMING)
             self.assertIn("a != NULL", json.loads(h["extra"]["assumptions"]))
             audit = td / "out" / "ai_audit.jsonl"
             self.assertFalse(audit.exists() and audit.read_text().strip(), "no model, no audit records")

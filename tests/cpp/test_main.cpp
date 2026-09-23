@@ -4621,7 +4621,10 @@ TEST_CASE("ai drafted harness gives PROVED-ASSUMING with every assumption listed
     auto recs = prism::run_harness_bmc({fn}, 8);
     REQUIRE(recs.size() == 1);
     auto& r = recs[0];
-    CHECK_MESSAGE(r.status == std::string(prism::laws::PROVED_ASSUMING), r.status, " ", r.message);
+    // Drafted assumptions never yield a proof class (Law 6): NEEDS-HARNESS with
+    // the draft verdict and the `// requires:` lines to confirm.
+    CHECK_MESSAGE((r.status == std::string(prism::laws::NEEDS_HARNESS) && r.extra["draft_verdict"] == std::string(prism::laws::PROVED_ASSUMING)), r.status, " ", r.message);
+    CHECK(r.extra["confirm_with"].find("// requires: ") != std::string::npos);
     CHECK(r.status != std::string(prism::laws::PROVED));
     CHECK(r.stage == "harness");
     CHECK(r.extra["harness"] == "drafted");
@@ -4636,7 +4639,7 @@ TEST_CASE("ai drafted harness gives PROVED-ASSUMING with every assumption listed
 
     auto first = prism::run_harness_bmc({load_fn("ai_harness.c", "ai_first")}, 8);
     REQUIRE(first.size() == 1);
-    CHECK_MESSAGE(first[0].status == std::string(prism::laws::PROVED_ASSUMING), first[0].message);
+    CHECK_MESSAGE((first[0].status == std::string(prism::laws::NEEDS_HARNESS) && first[0].extra["draft_verdict"] == std::string(prism::laws::PROVED_ASSUMING)), first[0].message);
     CHECK(first[0].extra["assumptions"].find("p != NULL") != std::string::npos);
 }
 
@@ -4650,7 +4653,7 @@ TEST_CASE("ai drafted harness refuses pointers passed on, sizes an index guard")
     // p[n] with if (n >= 4) return: at least 4 elements, not "exactly n".
     auto ok = prism::run_harness_bmc({load_fn("ptr_arith.c", "arith_ok")}, 8);
     REQUIRE(ok.size() == 1);
-    CHECK_MESSAGE(ok[0].status == std::string(prism::laws::PROVED_ASSUMING), ok[0].message);
+    CHECK_MESSAGE((ok[0].status == std::string(prism::laws::NEEDS_HARNESS) && ok[0].extra["draft_verdict"] == std::string(prism::laws::PROVED_ASSUMING)), ok[0].message);
     CHECK(ok[0].extra["assumptions"].find("at least 4") != std::string::npos);
 }
 
@@ -4674,7 +4677,7 @@ TEST_CASE("ai model harness draft is built, checked by BMC and logged") {
     auto recs = prism::run_harness_bmc({fn}, 8);
     REQUIRE(recs.size() == 1);
     auto& r = recs[0];
-    CHECK_MESSAGE(r.status == std::string(prism::laws::PROVED_ASSUMING), r.message);
+    CHECK_MESSAGE((r.status == std::string(prism::laws::NEEDS_HARNESS) && r.extra["draft_verdict"] == std::string(prism::laws::PROVED_ASSUMING)), r.message);
     CHECK(r.extra["harness_source"] == "llm:fake:test-double");
     CHECK(r.extra["assumptions"].find("p points to 3 int element(s)") != std::string::npos);
     auto lines = read_lines(out / "ai_audit.jsonl");
@@ -4682,8 +4685,8 @@ TEST_CASE("ai model harness draft is built, checked by BMC and logged") {
     auto j = nlohmann::json::parse(lines[0]);
     CHECK(j["id"] == r.extra["ai_audit_id"]);
     CHECK(j["checker"] == "bmc(drafted harness)");
-    CHECK(j["checker_result"] == std::string(prism::laws::PROVED_ASSUMING));
-    CHECK(j["verdict_effect"] == std::string(prism::laws::PROVED_ASSUMING));
+    CHECK(j["checker_result"] == std::string(prism::laws::PROVED_ASSUMING) + " (drafted, unconfirmed)");
+    CHECK(j["verdict_effect"] == "none");  // a drafted harness never raises a verdict
     // A draft that is too small is caught by BMC, not believed.
     fake->replies = {R"({"assumptions":[{"kind":"nonnull","param":"p"},{"kind":"size","param":"p","elements":1}]})"};
     fake->next = 0;
@@ -4791,9 +4794,9 @@ TEST_CASE("ai measure corpus (PRISM_AI_MEASURE=1)") {
             if (h.empty() || h[0].extra["harness"] == "true") continue;  // user-written requires
             ++needs_before;
             if (h[0].extra.count("harness_draft")) refused.push_back(fn.name + " [" + h[0].extra["harness_draft"] + "]");
-            else if (h[0].status != prism::laws::PROVED_ASSUMING)
+            else if (h[0].extra["draft_verdict"] != prism::laws::PROVED_ASSUMING)
                 refused.push_back(fn.name + " [" + h[0].status + ": " + h[0].message.substr(0, 120) + "]");
-            if (h[0].status == prism::laws::PROVED_ASSUMING) {
+            if (h[0].extra["draft_verdict"] == prism::laws::PROVED_ASSUMING) {
                 ++cleared;
                 cleared_names.push_back(p.filename().string() + ":" + fn.name);
             }

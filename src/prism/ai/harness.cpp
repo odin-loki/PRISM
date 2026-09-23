@@ -3,8 +3,14 @@
 // Law 6 keeps pointer functions out of unguarded BMC. A drafted harness makes
 // the missing preconditions explicit: the pointer is not NULL, it addresses
 // exactly `n` elements (n taken from how the body indexes it), and the size
-// lies in a small checked range. Every assumption is listed in the finding;
-// the best verdict is PROVED-ASSUMING, never PROVED. A counterexample found
+// lies in a small checked range. Every assumption is listed in the finding.
+// Drafted assumptions were invented by PRISM (template or model), not stated
+// by a human, so even when BMC closes under them the row stays NEEDS-HARNESS
+// with extra.draft_verdict=PROVED-ASSUMING and the `// requires:` lines to
+// confirm; once a human writes them into the source, the ordinary harness
+// path reports PROVED-ASSUMING. A drafted assumption can hide the bug (e.g.
+// p != NULL when NULL is a legal input), so it never yields a proof class
+// on its own (Law 6; tests/conformance ptrparam*_false). A counterexample found
 // under a drafted (not user-written) assumption is not reported as a defect:
 // the assumption may be too narrow, so the row stays NEEDS-HARNESS with the
 // counterexample attached for a reviewer.
@@ -382,10 +388,16 @@ Finding evaluate(const FunctionInfo& fn, const std::vector<HarnessDraft>& drafts
     f.extra["draft_cases"] = nlohmann::json(statuses).dump();
     auto listed = join(A, "; ");
     if (all_proof) {
-        f.status = std::string(laws::PROVED_ASSUMING);
+        f.status = std::string(laws::NEEDS_HARNESS);
+        f.strength = std::string(laws::STRENGTH_SOME);
+        f.extra["draft_verdict"] = std::string(laws::PROVED_ASSUMING);
         f.extra["original_status"] = statuses.front();
-        f.message = "encoded UB properties hold assuming drafted harness: " + listed +
-                    "; never an unconditional PROVED";
+        std::string confirm;
+        for (auto& a : A) confirm += "// requires: " + a + "\n";
+        f.extra["confirm_with"] = confirm;
+        f.message = "encoded UB properties hold under a drafted harness (" + listed +
+                    "); drafted assumptions are not a proof: confirm them as `// requires:` "
+                    "to get PROVED-ASSUMING";
     } else if (failed) {
         f.status = std::string(laws::NEEDS_HARNESS);
         f.strength = std::string(laws::STRENGTH_SOME);
@@ -414,7 +426,11 @@ std::optional<Finding> drafted_harness_bmc(const FunctionInfo& fn, int unwind, s
     auto drafts = draft_harness(fn, &why);
     std::optional<Finding> templ;
     if (!drafts.empty()) templ = evaluate(fn, drafts, unwind);
-    if (templ && templ->status == laws::PROVED_ASSUMING) return templ;
+    auto closes = [](const Finding& f) {
+        auto it = f.extra.find("draft_verdict");
+        return it != f.extra.end() && it->second == laws::PROVED_ASSUMING;
+    };
+    if (templ && closes(*templ)) return templ;
 
     // Template could not draft, or its draft does not prove: ask the model
     // (when one is bound). Its draft goes through the same builder and BMC.
@@ -442,9 +458,9 @@ std::optional<Finding> drafted_harness_bmc(const FunctionInfo& fn, int unwind, s
     }
     auto mf = evaluate(fn, mdrafts, unwind);
     ar.checker = "bmc(drafted harness)";
-    ar.checker_result = mf.status;
-    bool use_model = !templ || mf.status == laws::PROVED_ASSUMING;
-    ar.verdict_effect = (use_model && laws::is_proof(mf.status)) ? mf.status : "none";
+    ar.checker_result = closes(mf) ? std::string(laws::PROVED_ASSUMING) + " (drafted, unconfirmed)" : mf.status;
+    bool use_model = !templ || closes(mf);
+    ar.verdict_effect = "none";  // drafted harnesses never change a verdict to a proof
     audit_append(ar);
     if (!use_model) return finish("model draft " + mf.status + " (audit " + ar.id + ")");
     mf.extra["ai_audit_id"] = ar.id;
