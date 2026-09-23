@@ -447,9 +447,11 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
         return std::nullopt;
     }
     // C++: coroutines are lowered to state machines by LLVM's coroutine
-    // passes (roadmap 2.3), then encoded like any other code (docs/PIR.md "Coroutines").
+    // passes (roadmap 2.3), then encoded like any other code (docs/PIR.md "Coroutines");
+    // fix-irreducible gives their resume functions (loops re-entered at a
+    // suspend point) a single loop header.
     const char* passes = cxx ? "-passes=function(mem2reg),coro-early,cgscc(coro-split),coro-cleanup,"
-                               "function(lowerswitch,loop-simplify,lcssa,instnamer)"
+                               "function(lowerswitch,fix-irreducible,loop-simplify,lcssa,instnamer)"
                              : "-passes=mem2reg,lowerswitch,loop-simplify,lcssa,instnamer";
     auto ro = detail::run_process({fe.opt->string(), passes,
                                    "-S", "-o", o2.string(), o1.string()},
@@ -612,6 +614,10 @@ void validate(std::vector<FnRec>& recs, const std::string& ir, const Frontend& f
         }
         if (r.fn->nondet) {
             r.f.extra["tv"] = "PARTIAL (nondet inputs are not replayed; not validated)";
+            continue;
+        }
+        if (r.irf && r.irf->params.size() != r.fn->params.size()) {
+            r.f.extra["tv"] = "PARTIAL (sret/byval object parameters are not replayed; not validated)";
             continue;
         }
         if (auto why = pirmem::tv_exclusion(*r.fn); !why.empty()) {

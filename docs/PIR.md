@@ -11,11 +11,14 @@ C/C++ unit ──clang -O0──▶ LLVM IR ──PRISM instrumentation──▶
 ```
 
 Sources: `include/prism/pir.hpp`, `src/prism/pir/{ir_parser,pir,translate,encode,stage}.cpp`;
+floating point `src/prism/pir/{fp,translate_fp}.cpp`; exceptions, setjmp/longjmp,
+indirect calls and inline assembly `src/prism/pir/translate_ctl.inc` (+ `lower_ctl.cpp`);
 memory model `src/prism/pir/{memory,translate_mem,stage_mem,contracts}.cpp`; library
 models `src/prism/pir/{libc_models,libc_format}.cpp` + `src/prism/pir/models/libc/*.c`.
 Tests: `tests/pir/*` (true and false variants; `mem_*.c` for the memory
-model), `tests/test_pir.py`, doctests `pir: …` in `tests/cpp/test_main.cpp` and
-`pir mem: …` in `tests/cpp/test_pir_mem.cpp`. Differential oracle: `tools/pir_vs_bmc.py`.
+model; `fp_*`, `eh_*`, `coro_*`, `sjlj_*`, `virt_*`, `asm_*` for roadmap 2.6), `tests/test_pir.py`,
+doctests `pir: …` in `tests/cpp/test_main.cpp`, `pir mem: …` in `tests/cpp/test_pir_mem.cpp`
+and `pir3 …` in `tests/cpp/test_pir3.cpp`. Differential oracle: `tools/pir_vs_bmc.py`.
 
 ## Front end
 
@@ -28,7 +31,11 @@ clang -S -emit-llvm -O0 -Xclang -disable-O0-optnone -fno-discard-value-names \
 opt -passes=mem2reg,lowerswitch,loop-simplify,lcssa,instnamer -S
 ```
 
-`.cc/.cpp/.cxx` units use `clang++ -std=c++23` and the same passes. No
+`.cc/.cpp/.cxx` units use `clang++ -std=c++23` and the same passes with
+LLVM's coroutine lowering in between (roadmap 2.3):
+`function(mem2reg),coro-early,cgscc(coro-split),coro-cleanup,function(lowerswitch,loop-simplify,lcssa,instnamer)`
+("Coroutines" below). `invoke`/`landingpad` are lowered to explicit
+exception edges by the translator itself ("Exceptions"). No
 optimising pass runs (they may exploit the UB being checked) and no
 `-fsanitize` check is inserted (Law 8: PRISM owns the check polarity). For C
 units `-Wno-error=implicit-function-declaration` keeps a unit with an
@@ -60,6 +67,14 @@ PRISM rewrites the `-O0` IR before `opt`:
   check with the warning's class). A warning with no instruction on its line
   makes the enclosing function `NEEDS-HARNESS` ("clang-folded UB … not
   attributable"). Warnings inside headers are not attributed.
+* **Floating-point locals.** `alloca half|float|double` get the same
+  initial `@__prism.uninit.<type>()` value (`lower_ctl.cpp`
+  `uninit_fp_locals`): UNINIT-READ covers them too.
+* **setjmp functions.** In a function that calls `setjmp`, every alloca
+  gets a `call void @__prism.keep(ptr %x)` use so mem2reg keeps it in
+  memory (`keep_setjmp_locals`): after a `longjmp` the program reads what
+  the -O0 build reads (the last stored value), not the SSA value of the
+  `setjmp` call ("setjmp/longjmp").
 
 **C signed left shift.** IR does not say whether `shl` came from a signed C
 `<<`. For C units that contain a `shl`, clang runs a second time with
@@ -91,9 +106,14 @@ Typed SSA over bitvectors of width 1..64 (`include/prism/pir.hpp`):
 
 Operators: `add sub mul udiv sdiv urem srem shl lshr ashr and or xor`,
 comparisons, `select zext sext trunc`, `smax smin umax umin abs ctlz cttz
-ctpop bswap`, `copy`, `havoc`, and the i1 property predicates
+ctpop bswap`, `copy`, `havoc`, the i1 property predicates
 (`sadd.ovf … sdiv.ovf shift.oob shl.signed.ovf shl.nsw.ovf shl.nuw.ovf
-lshr/ashr.inexact udiv/sdiv.inexact`). `to_text` prints PIR; its SHA-256 is
+lshr/ashr.inexact udiv/sdiv.inexact`), and the IEEE operators on the bits
+of half/float/double values (`fadd fsub fmul fdiv frem fsqrt ffma fmuladd
+fminnum fmaxnum fminimum fmaximum ffloor fceil ftrunc fround froundeven`,
+`fcmp.oeq/olt/ole/uno`, `fptosi fptoui sitofp uitofp fpconv`, the range
+predicates `fptosi.ovf fptoui.ovf`, `fisnan fiszero fisinf`, and `libm`,
+an unconstrained libm result; "Floating point" below). `to_text` prints PIR; its SHA-256 is
 `extra.pir_hash`.
 
 ### Properties (inserted by PRISM, Law 8)
@@ -112,6 +132,14 @@ lshr/ashr.inexact udiv/sdiv.inexact`). `to_text` prints PIR; its SHA-256 is
 | `__assert_fail`, `reach_error`, `__VERIFIER_error`, `abort` | reached | FUNC-CONTRACT |
 | uninitialised local read | reached with shadow set | UNINIT-READ |
 | clang-folded UB | reached | per warning / UB-POISON |
+| `fptosi`/`fptoui` | value (truncated) outside the integer type, NaN, ±inf (C11 6.3.1.4p1) | FLOAT-CAST-OVF |
+| `fdiv`/… under `--fp-checks` (opt-in) | division by ±0; NaN from non-NaN operands; infinite result from finite operands | FLOAT-DIV-ZERO / FLOAT-INVALID / FLOAT-OVERFLOW |
+| exception reaching `__clang_call_terminate` | a `noexcept` function (or a destructor during unwinding) throws | CXX-THROW-NOEXCEPT |
+| exception leaving `main` | uncaught: `std::terminate` | CXX-UNCAUGHT |
+| `std::terminate()`, `throw;` with no handled exception | reached | CXX-TERMINATE |
+| `__cxa_pure_virtual` | pure virtual call | CXX-PURE-VIRTUAL |
+| `longjmp` | its `setjmp` caller has returned (C11 7.13.2.1p2) | CTRL-LONGJMP-INVALID |
+| call through a null function pointer | reached | PTR-NULL-DEREF |
 
 Modelled calls: `llvm.{s,u}{add,sub,mul}.with.overflow` (+ `extractvalue`),
 `llvm.{s,u}{max,min}`, `abs`, `ctlz`, `cttz`, `ctpop`, `bswap`, `expect`,
@@ -123,15 +151,23 @@ an assume. Calls to functions defined in the same unit are **inlined**
 ### What is not encoded (named, never dropped — roadmap 2.1)
 
 Everything else makes the function `NEEDS-HARNESS` with
-`UNENCODED: <construct>`: floating point, integers wider than 64 bits,
+`UNENCODED: <construct>`: floating-point formats other than
+half/float/double (`long double` = x86_fp80, `__float128`, bfloat),
+fast-math flags, fused multiply-add on half, integers wider than 64 bits,
 external calls without a library model (`UNENCODED: call @f`), `switch` if
-lowerswitch did not run, a reachable throw whose exception would reach
-catch or cleanup code (see "C++ library"), irreducible control flow,
-vectors and first-class aggregates, `ptrtoint` other than pointer
+lowerswitch did not run, irreducible control flow (e.g. a `longjmp` from
+code the `setjmp` does not dominate), vectors and first-class aggregates
+other than the `{ ptr, i32 }` exception pair, `ptrtoint` other than pointer
 differences, `inttoptr` other than of 0, volatile/atomic loads and stores,
-`thread_local` globals, function pointers, extern arrays of unknown size,
-`llvm.lifetime.*`, and `setjmp`/`longjmp` (`UNENCODED: call @_setjmp`; not
-modelled as exception-like edges yet). Pointer parameters are
+`thread_local` globals, extern arrays of unknown size, dynamic exception
+specifications (`__cxa_call_unexpected`, `filter` clauses), indirect calls
+with more than 16 candidate targets, and inline assembly without a
+contract. Some constructs end only *one path* instead of the whole function
+(a *soft* check, `prop = unmodelled`: reachable means `NEEDS-HARNESS`,
+never FAILED and never proved away): a landing pad whose code cannot be
+translated, a thrown type whose match against a catch clause PRISM cannot
+decide, an indirect call whose pointer is none of its candidate targets
+(the "havoc fallback"), or an exception type it cannot identify. Pointer parameters are
 `NEEDS-HARNESS` by Law 6 unless a precondition gives the object size
 ("Pointer parameters" below; C++ member functions have `this`). In C++
 units, a function whose source contains `const_cast` is
@@ -142,9 +178,11 @@ mem2reg), falling off the end of a non-void C function (UB only when the
 caller uses the value), sub-array bounds of the last struct field
 (flexible-array idiom) and dereferences of a one-past-the-end sub-array
 address computed separately, memory leaks (valid-memtrack), effective types unless `--strict-aliasing`, pointer
-arithmetic on an already freed object, and paths that leave the function by
-a C++ library throw (`std::__throw_*`: the path ends; the finding lists them
-in `extra.throws_not_followed`).
+arithmetic on an already freed object, reads of a non-volatile local
+modified between `setjmp` and `longjmp` (C11 7.13.2.1p3 makes its value
+indeterminate; PIR reads the stored value, as the -O0 build does), and
+exceptions that leave a function other than `main` (not UB there: the
+path ends and `extra.throws_not_followed` names the types).
 
 ## Memory model (roadmap 2.5)
 
@@ -337,19 +375,11 @@ and is inlined (depth 12 for C++). A reachable `std::__glibcxx_assert_fail`
 is a violation: bounds (`__n < this->size()`, `std::span`, `std::array`
 `operator[]`) are MEM-OOB-READ, `std::optional::operator*` on an empty
 optional is CXX-OPTIONAL-NULL, `std::unique_ptr::operator*` on null is
-PTR-NULL-DEREF. `invoke` is translated as the call followed by its normal edge; landing
-pads and the cleanup code after them are not translated (exception edges
-are lowered by separate work, roadmap 2.6 "Exceptions"). A throw PRISM sees
-(`std::__throw_*`, e.g. `vector::at`, `optional::value`, the vector
-length check) ends its path and is listed in `extra.throws_not_followed`:
-when no enclosing `invoke` exists the exception leaves the analysed
-function (not UB); under an `invoke` whose landing pad calls
-`std::terminate` (a `noexcept` boundary) it is a violation
-(CXX-THROW-NOEXCEPT); under a landing pad with catch or cleanup code the
-throw is a *soft* check: if it is reachable the function is
-`NEEDS-HARNESS` ("UNENCODED: exception path reachable …"), never PROVED
-and never FAILED. Throws in user code (`__cxa_throw`) stay
-`UNENCODED: call @__cxa_allocate_exception`. With this, `std::vector`
+PTR-NULL-DEREF. Library throws (`std::__throw_*`, e.g. `vector::at`,
+`optional::value`, the vector length check) throw the libstdc++ exception
+class they name (`std::out_of_range`, `std::length_error`, …) along the
+explicit exception edges of "Exceptions" below, so a `catch` of that
+class or one of its bases catches them. With this, `std::vector`
 (`operator[]`), `std::span`, `std::array`, `std::optional` (`operator*`),
 `std::unique_ptr` (`operator*`) and `std::string_view` work
 (`tests/pir/mem_stl.cpp`). The platform C++ library is
@@ -362,8 +392,169 @@ libstdc++ (D7, Linux); libc++ would need the same treatment of
 * VLAs: `alloca T, iN n` with a symbolic size; the size must be positive
   (checked on the value before its `zext`/`sext`) and below 2^47; the
   object ends at `llvm.stackrestore`.
-* `setjmp`/`longjmp`: `NEEDS-HARNESS` (`UNENCODED: call @_setjmp`); modelling
-  them as exception-like edges is future work (roadmap 2.6 stretch).
+* `setjmp`/`longjmp`: exception-like edges ("setjmp/longjmp" below).
+
+## Floating point (roadmap 2.6)
+
+`half`, `float` and `double` values are PIR bitvectors of width 16/32/64
+holding their IEEE bits (`Var::fp` marks them); `long double` (x86_fp80),
+`__float128`, `bfloat` and vectors stay `UNENCODED`. The encoder uses Z3's
+floating-point theory with round to nearest even (the C default
+environment; PRISM does not model `fesetround`): every FP operator reads its
+arguments with `(_ to_fp e s)` and gives back the bits of the result through
+a fresh bitvector `b` with `to_fp(b) = result`, so a NaN result has an
+unspecified payload (LLVM's NaN semantics). `frem` is C `fmod` (derived from
+the IEEE remainder, exact), `llvm.fmuladd` is fused *or* not (a free choice
+per call), `minnum`/`maxnum` of `+0`/`-0` may return either.
+
+Translated: `fadd fsub fmul fdiv frem fneg fcmp` (all 16 predicates from
+`oeq olt ole uno`), `fptosi fptoui sitofp uitofp fpext fptrunc`, `bitcast`
+between FP and integers of the same width, loads/stores/phis/selects of FP
+values, `llvm.{fabs,copysign,sqrt,fma,fmuladd,minnum,maxnum,minimum,maximum,
+floor,ceil,trunc,round,roundeven,rint,nearbyint}` and the same libm functions
+by name (`sqrt`, `fabs`, `floor`, `fmod`, `fmin`, … and their `f` forms).
+Other pure libm functions (`sin cos tan asin acos atan atan2 sinh cosh tanh
+asinh acosh atanh exp exp2 expm1 log log2 log10 log1p pow cbrt hypot erf
+erfc tgamma` and `f` forms) return an **unconstrained** value (`Op::FLibm`,
+listed in `extra.libm_unconstrained`) apart from range facts every IEEE libm
+keeps: `|sin|`, `|cos|`, `|tanh|` ≤ 1 and `exp`, `exp2`, `cosh` ≥ +0 (or
+NaN). Any fast-math flag makes the instruction `UNENCODED` (the flags allow
+results IEEE does not). errno is not modelled (a program reading `errno`
+calls `__errno_location`, which is `UNENCODED`).
+
+Properties: `fptosi`/`fptoui` whose truncated value is outside the target
+type, or NaN/±inf, is FLOAT-CAST-OVF (always on: C11 6.3.1.4p1 undefined
+behaviour; `-0.9 → unsigned` is fine, it truncates to 0). With
+`--fp-checks` (opt-in; Annex F defines these results) PRISM also reports
+division by ±0 (FLOAT-DIV-ZERO), a NaN produced from non-NaN operands
+(FLOAT-INVALID) and an infinite result from finite operands
+(FLOAT-OVERFLOW), for `fdiv fadd fsub fmul frem sqrt fma fptrunc`.
+
+The interpreter (`fp.cpp`) computes float/double with the host's SSE
+arithmetic (round to nearest even, no excess precision on x86-64) and half
+in double with one final rounding (exact for `+ - * / sqrt` since
+53 ≥ 2·11 + 2); results the encoder leaves open (`fmuladd`, `minnum(+0,-0)`)
+taint the value, so translation validation skips inputs that depend on them,
+and an FP return compares NaN with any NaN. Translation validation passes FP
+arguments as LLVM hex literals and draws ordinary values (0.5, -1000.25,
+3e9, 1e300, ±inf, NaN, 16777217, …) besides raw bit patterns.
+`tests/pir/fp_arith.c`.
+
+## Exceptions (roadmap 2.3, 2.6)
+
+Every call is inlined, so the chain of enclosing `invoke`s of a throw is
+known while it is translated. `invoke` becomes its call plus the normal
+edge, with its landing pad pushed as the exception destination of
+everything inside the call. A throw (`__cxa_throw`, a library
+`std::__throw_*`, `resume`, `throw;`) becomes an explicit jump to the
+innermost landing pad whose clauses catch the thrown type — exact typeinfo,
+public unambiguous bases read from the module's `__si_class_type_info` /
+`__vmi_class_type_info` typeinfo, the libstdc++ exception hierarchy,
+`catch (...)` — or that has cleanup code; the frames between the throw and
+that landing pad are unwound (their locals end). The landing pad's
+`{ ptr, i32 }` value is a phi over those edges (exception pointer and the
+`llvm.eh.typeid.for` selector of the matching clause). The exception object
+gets a 16-byte PRISM header in front of the thrown object (type id,
+"rethrown" flag): `__cxa_begin_catch`/`__cxa_end_catch` keep a stack of
+handled exceptions, `__cxa_end_catch` runs the thrown type's destructor and
+frees the object unless it was rethrown, `throw;` re-raises the innermost
+handled exception (`throw;` with none is CXX-TERMINATE), and `resume` re-throws
+with the type read back from the header. Landing pads are translated after
+the normal blocks of their function, and only when a throw reaches them.
+An exception reaching `__clang_call_terminate` (a `noexcept` boundary or a
+destructor throwing during unwinding) is CXX-THROW-NOEXCEPT, one that
+leaves `main` is CXX-UNCAUGHT, `std::terminate()` is CXX-TERMINATE, a pure
+virtual call is CXX-PURE-VIRTUAL. An exception that leaves any other
+analysed function is not a defect there: the path ends and the type is
+listed in `extra.throws_not_followed`. Soft (NEEDS-HARNESS when reachable):
+a type match PRISM cannot decide (pointer conversions, ambiguous bases,
+typeinfo not in the module), handlers nested deeper than 8, landing pad
+code that cannot be translated. Not modelled (`UNENCODED`): dynamic
+exception specifications (`filter`, `__cxa_call_unexpected`),
+`std::exception_ptr`, `std::uncaught_exceptions`. `tests/pir/eh_*.cpp`.
+
+## Coroutines (roadmap 2.3, 2.6)
+
+C++ units run LLVM's coroutine passes (`coro-early`, `coro-split`,
+`coro-cleanup`) after `mem2reg`: each coroutine becomes a ramp function
+that allocates its frame with `operator new`, plus `.resume`, `.destroy`
+and `.cleanup` functions that switch on the suspend index stored in the
+frame. PRISM encodes the result like any other code: `coroutine_handle::
+resume()`/`destroy()` are indirect calls through the frame's function
+pointers ("Indirect calls"), the frame is a `new` object of the memory
+model (use after `destroy()` and double destroy of the frame are
+memory-model properties), and `llvm.lifetime.end` of a frame temporary
+ends its lifetime (`llvm.lifetime.start` makes its bytes indeterminate
+again; an object already ended stays dead, so a later access is reported,
+never assumed valid). `tests/pir/coro_gen.cpp`.
+
+## setjmp/longjmp (roadmap 2.6)
+
+`setjmp` (`_setjmp`, `__sigsetjmp`, …) splits its block: it stores a site
+id in the first 8 bytes of the `jmp_buf` and continues in a new block whose
+phi is the return value (0 on the direct path). `longjmp` reads the id back
+(an unset `jmp_buf` is UNINIT-READ, a bad pointer a memory violation) and
+jumps to the continuation of the site with that id whose frame is still
+active, unwinding the frames in between; the value is `v`, or 1 for
+`v == 0`. A site whose function has returned is C11 7.13.2.1p2 undefined
+behaviour: CTRL-LONGJMP-INVALID. Locals of a function that calls `setjmp`
+stay in memory (pre-mem2reg `@__prism.keep`), so after the jump they hold
+their last stored value, as in the -O0 build; C11 7.13.2.1p3 calls a
+non-volatile local modified in between indeterminate, which PRISM does not
+report (a gap listed above). A `longjmp` from code the `setjmp` does not
+dominate makes the control flow irreducible (`UNENCODED`).
+`tests/pir/sjlj_basic.c`.
+
+## Indirect calls (roadmap 2.6)
+
+The address of a function is a constant pointer whose object id lies in
+`[kFnObjBase, kMaxObjects)` (0xF000 … 0xFFFE): never allocated, never
+dereferenceable (loads and stores through it are memory violations;
+allocations stay below `kFnObjBase`). A call through a pointer compares the
+pointer with each candidate target and inlines the matching one:
+
+* the pointer is loaded from a vtable slot (`load (gep (load p))`): the
+  functions stored in the module's `_ZTV*` vtables with the call's
+  signature — class hierarchy analysis over the classes the unit defines;
+  virtual functions declared but defined elsewhere are soft branches;
+* otherwise (or when no vtable function fits): every address-taken function
+  of the module with the call's signature.
+
+A null pointer is PTR-NULL-DEREF; any other value — a function outside the
+candidate set — is the **havoc fallback**: a soft check reported as
+`NEEDS-HARNESS` ("indirect call to a target outside …") when reachable.
+Choosing candidates therefore only affects completeness, never soundness.
+More than 16 candidates is `UNENCODED`. `tests/pir/virt_dispatch.cpp`.
+
+## Inline assembly (roadmap 2.6)
+
+An `asm` call is `UNENCODED: inline assembly` unless the source states its
+effect on the asm statement's line or one of the three lines above it:
+
+```c
+// prism: asm ensures r >= 0 && r <= 7
+__asm__("movl %1, %0\n\tandl $7, %0" : "=r"(r) : "r"(x));
+```
+
+`cond` is `true` or comparisons (`== != < <= > >=`) of the output with
+integer constants joined by `&&`. PRISM then assumes the block writes only
+its (integer) output and that `cond` holds afterwards; the contract is
+listed in `extra.assumptions` and a proof is **PROVED-ASSUMING**, never
+PROVED. Asm with memory operands, several outputs or non-integer outputs
+stays `UNENCODED` even with a contract. `tests/pir/asm_contract.c`.
+
+## k-induction with memory (roadmap 2.6 remaining, not attempted)
+
+k-induction still stops at functions that use memory
+(`extra.k_induction = "not-attempted (memory)"`; they stay BOUNDED). A sound
+step case needs an arbitrary memory state at the loop header that agrees
+with the unrolled prefix only where the loop does not write: every byte the
+loop may write (through any pointer it computes), those bytes' initialised
+flags, and the liveness/number of objects the loop allocates or frees would
+have to be havocked. The memory encodings (SymMem) have no "arbitrary
+initialised-or-not" cell and no symbolic object count, so this was left out
+rather than approximated (Law 2: BOUNDED is never promoted without a closed,
+sound step).
 
 ## Encoder and verdicts
 

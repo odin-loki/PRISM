@@ -1145,9 +1145,18 @@ void parse_define(std::string_view header, const std::vector<std::string_view>& 
         in.dbg = dbg;
         cur->insts.push_back(std::move(in));
     };
+    std::string lpad;  // a landingpad whose clauses continue on the next lines
     for (auto raw : body) {
         auto line = trim(raw);
         if (line.empty() || line[0] == ';') continue;
+        if (!lpad.empty()) {
+            if (line.starts_with("catch ") || line.starts_with("filter ") || line.starts_with("cleanup")) {
+                lpad += " " + line;
+                continue;
+            }
+            flush(lpad);
+            lpad.clear();
+        }
         if (depth == 0) {
             // label?
             std::string lab;
@@ -1175,10 +1184,14 @@ void parse_define(std::string_view header, const std::vector<std::string_view>& 
         if (depth <= 0 && open_invoke) continue;
         if (depth <= 0) {
             depth = 0;
-            flush(pending);
+            if (pending.find(" = landingpad ") != std::string::npos || pending.starts_with("landingpad "))
+                lpad = pending;  // clauses follow on the next lines
+            else
+                flush(pending);
             pending.clear();
         }
     }
+    if (!lpad.empty()) flush(lpad);
     if (!pending.empty()) flush(pending);
 }
 

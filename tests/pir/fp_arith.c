@@ -56,13 +56,6 @@ int fp_half_way_ok(int x) {
     return r;
 }
 
-int fp_sqrt_ok(int x) {
-    if (x < 0 || x > 1000000) return 0;
-    double r = sqrt((double)x);
-    assert(r >= 0.0 && r <= 1000.0);
-    return (int)r;
-}
-
 int fp_sin_ok(double x) {
     double s = sin(x);                         /* unconstrained libm value */
     if (s != s) return 0;

@@ -34,7 +34,8 @@ std::string keep_setjmp_locals(const std::string& ir) {
         }
         std::size_t end = i;
         bool sj = false;
-        while (end < lines.size() && lines[end] != "}") sj = sj || calls_setjmp(lines[end++]);
+        for (; end < lines.size() && lines[end] != "}"; ++end)
+            if (calls_setjmp(lines[end])) sj = true;
         for (std::size_t k = i; k <= end && k < lines.size(); ++k) {
             out << lines[k] << "\n";
             if (!sj) continue;

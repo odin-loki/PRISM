@@ -6,6 +6,7 @@
 #  undef ERROR
 #endif
 
+#include "prism/config.hpp"
 #include "prism/laws.hpp"
 #include "prism/pir.hpp"
 
@@ -14,7 +15,10 @@
 #include "../../src/prism/pir/stage_mem.hpp"
 
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -278,6 +282,10 @@ declare void @__clang_call_terminate(ptr)
     // the handler divides by the thrown value (> 10): no division by zero
     CHECK(verdict(ir, "catch_it") == prism::laws::PROVED);
     std::string cls;
+    if (std::getenv("PIR3_DEBUG")) {
+        auto dt = tr(ir, "nothrow");
+        MESSAGE((dt.fn ? pp::to_text(*dt.fn) : dt.reason));
+    }
     CHECK(verdict(ir, "nothrow", {}, &cls) == prism::laws::FAILED);
     CHECK(cls == "CXX-THROW-NOEXCEPT");
 }
@@ -325,4 +333,29 @@ TEST_CASE("pir3 setjmp: locals of a setjmp function stay in memory") {
     CHECK(out.find("call void @__prism.keep(ptr %x)") != std::string::npos);
     CHECK(out.find("@__prism.keep(ptr %y)") == std::string::npos);
     CHECK(out.find("declare void @__prism.keep(ptr)") != std::string::npos);
+}
+
+TEST_CASE("pir3 debug dump (PIR3_DUMP=file.ll:function, developer aid)") {
+    const char* spec = std::getenv("PIR3_DUMP");
+    if (!spec) return;
+    std::string s(spec);
+    auto colon = s.rfind(':');
+    REQUIRE(colon != std::string::npos);
+    std::ifstream in(s.substr(0, colon));
+    std::stringstream ss;
+    ss << in.rdbuf();
+    static std::vector<pp::ir::Module> keep;
+    keep.push_back(pp::ir::parse_module(ss.str()));
+    auto lib = pp::build_models(pp::find_frontend(prism::Config{}), 60.0);
+    pp::link_models(keep.back(), lib);
+    const auto* f = keep.back().find(s.substr(colon + 1));
+    REQUIRE(f);
+    pp::TranslateOptions o;
+    o.inline_depth = 12;
+    auto t = pp::translate(keep.back(), *f, o);
+    MESSAGE((t.fn ? pp::to_text(*t.fn) : t.reason));
+    if (t.fn) {
+        auto v = pp::check_function(*t.fn, 8, 60.0);
+        MESSAGE((v.status + ": " + v.message));
+    }
 }
