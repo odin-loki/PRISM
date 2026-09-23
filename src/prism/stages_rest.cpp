@@ -1454,11 +1454,13 @@ int64_t binop(int64_t a, const std::string& op, int64_t b, bool uns, int width) 
         }
         if (op == "%") {
             if (b == 0) throw UB("INT-DIV-ZERO");
+            if (a == INT64_MIN_V && b == -1) throw UB("INT-SIGNED-OVF");  // C11 6.5.5p6
             return a - (a / b) * b;
         }
         if (op == "<<") {
             if (b < 0 || b >= 64) throw UB("INT-SHIFT-UB");
-            if (a == 1 && b >= 63) throw UB("INT-SHIFT-UB");
+            // Negative operand or unrepresentable result (C11 6.5.7p4).
+            if (a < 0 || a > (INT64_MAX_V >> b)) throw UB("INT-SHIFT-UB");
             return a << b;
         }
         if (op == ">>") {
@@ -1500,11 +1502,13 @@ int64_t binop(int64_t a, const std::string& op, int64_t b, bool uns, int width) 
     }
     if (op == "%") {
         if (b == 0) throw UB("INT-DIV-ZERO");
+        if (a == INT_MIN_32 && b == -1) throw UB("INT-SIGNED-OVF");  // C11 6.5.5p6
         return a - (a / b) * b;
     }
     if (op == "<<") {
         if (b < 0 || b >= WIDTH) throw UB("INT-SHIFT-UB");
-        if (a == 1 && b >= WIDTH - 1) throw UB("INT-SHIFT-UB");
+        // Negative operand or unrepresentable result (C11 6.5.7p4).
+        if (a < 0 || a > (INT_MAX_32 >> b)) throw UB("INT-SHIFT-UB");
         return i32(a << b);
     }
     if (op == ">>") {

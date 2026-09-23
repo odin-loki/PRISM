@@ -1100,12 +1100,15 @@ def _binop(a: int, op: str, b: int, unsigned: bool = False, width: int = WIDTH) 
         if op == "%":
             if b == 0:
                 raise _UB("INT-DIV-ZERO")
+            if a == lo and b == -1:
+                raise _UB("INT-SIGNED-OVF")  # C11 6.5.5p6
             q = _tdiv(a, b)
             return a - q * b
         if op == "<<":
             if b < 0 or b >= 64:
                 raise _UB("INT-SHIFT-UB")
-            if a == 1 and b >= 63:
+            # Negative operand or unrepresentable result (C11 6.5.7p4).
+            if a < 0 or a > (hi >> b):
                 raise _UB("INT-SHIFT-UB")
             return a << b
         if op == ">>":
@@ -1200,12 +1203,15 @@ def _binop(a: int, op: str, b: int, unsigned: bool = False, width: int = WIDTH) 
     if op == "%":
         if b == 0:
             raise _UB("INT-DIV-ZERO")
+        if a == INT_MIN and b == -1:
+            raise _UB("INT-SIGNED-OVF")  # C11 6.5.5p6
         q = _tdiv(a, b)
         return a - q * b
     if op == "<<":
         if b < 0 or b >= WIDTH:
             raise _UB("INT-SHIFT-UB")
-        if a == 1 and b >= WIDTH - 1:
+        # Negative operand or unrepresentable result (C11 6.5.7p4).
+        if a < 0 or a > (INT_MAX >> b):
             raise _UB("INT-SHIFT-UB")
         return i32(a << b)
     if op == ">>":
