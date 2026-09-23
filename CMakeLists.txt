@@ -351,3 +351,44 @@ if(PRISM_TESTS)
   enable_testing()
   add_test(NAME prism_tests COMMAND prism_tests)
 endif()
+
+# --- self-fuzzing (roadmap 6.2): libFuzzer target for PRISM's own parsers ---
+# cmake -DPRISM_FUZZ=ON (clang); target prism_fuzz_self; see docs/FUZZ_SELF.md.
+# Built from the parser sources directly (not prism_core) so that only they
+# carry the fuzzer and sanitizer instrumentation; Z3 is not linked.
+option(PRISM_FUZZ "Build the libFuzzer self-fuzz target prism_fuzz_self (clang only)" OFF)
+if(PRISM_FUZZ)
+  include(CheckCXXSourceCompiles)
+  set(CMAKE_REQUIRED_FLAGS "-fsanitize=fuzzer,address")
+  check_cxx_source_compiles(
+    "#include <cstddef>\n#include <cstdint>\nextern \"C\" int LLVMFuzzerTestOneInput(const uint8_t*, size_t) { return 0; }"
+    PRISM_HAS_LIBFUZZER)
+  unset(CMAKE_REQUIRED_FLAGS)
+  if(PRISM_HAS_LIBFUZZER)
+    add_executable(prism_fuzz_self
+      tests/fuzz/fuzz_cparse.cpp
+      src/prism/cparse.cpp
+      src/prism/scope.cpp
+      src/prism/laws.cpp
+      src/prism/regex.cpp
+      src/prism/models.cpp
+      src/prism/journal.cpp
+      src/prism/pir/ir_parser.cpp
+      src/prism/verdict/verdict.cpp)
+    target_include_directories(prism_fuzz_self PRIVATE "${PRISM_ROOT}/include" "${PRISM_ROOT}/third_party")
+    set(_prism_fuzz_flags -g -O1 -fno-omit-frame-pointer
+        -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=undefined)
+    target_compile_options(prism_fuzz_self PRIVATE ${_prism_fuzz_flags})
+    target_link_options(prism_fuzz_self PRIVATE ${_prism_fuzz_flags})
+    target_link_libraries(prism_fuzz_self PRIVATE nlohmann_json)
+    if(TARGET pcre2-8-static)
+      target_link_libraries(prism_fuzz_self PRIVATE pcre2-8-static)
+      target_compile_definitions(prism_fuzz_self PRIVATE PCRE2_STATIC)
+    elseif(TARGET pcre2-8)
+      target_link_libraries(prism_fuzz_self PRIVATE pcre2-8)
+    endif()
+  else()
+    message(WARNING "PRISM_FUZZ=ON but ${CMAKE_CXX_COMPILER_ID} does not accept -fsanitize=fuzzer: "
+                    "prism_fuzz_self is NOTRUN (use clang).")
+  endif()
+endif()
