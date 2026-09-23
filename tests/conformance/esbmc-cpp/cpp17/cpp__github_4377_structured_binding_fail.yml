@@ -1,0 +1,10 @@
+format_version: 1
+input_files: cpp__github_4377_structured_binding_fail.cpp
+language: C++
+property: esbmc-cpp
+upstream: esbmc@653926f91580 regression/esbmc-cpp17/cpp/github_4377_structured_binding_fail
+esbmc_options: "--std c++17 --incremental-bmc"
+std: c++17
+deterministic: true
+expected:
+  main: false

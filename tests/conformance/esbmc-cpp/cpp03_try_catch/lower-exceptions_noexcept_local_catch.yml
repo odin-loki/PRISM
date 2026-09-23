@@ -1,0 +1,10 @@
+format_version: 1
+input_files: lower-exceptions_noexcept_local_catch.cpp
+language: C++
+property: esbmc-cpp
+upstream: esbmc@653926f91580 regression/esbmc-cpp/try_catch/lower-exceptions_noexcept_local_catch
+esbmc_options: "--std c++11"
+std: c++11
+deterministic: true
+expected:
+  main: true

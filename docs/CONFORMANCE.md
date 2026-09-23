@@ -189,6 +189,69 @@ After merging the AI layer and the `pir` stage the C++ campaign was re-run
 with both verdict stages: 464 proofs executed under UBSan, **0 wrong**; 431
 `FAILED`, 430 replay; 0 suspected false alarms.
 
+### ESBMC C++ regression tests (roadmap 2.7; `tests/conformance/esbmc-cpp`, fetched set)
+
+Source, licence and conversion rules: `tests/conformance/SOURCES.md`
+("`esbmc-cpp/`"). Labels are ESBMC's `VERIFICATION SUCCESSFUL/FAILED` for
+`main`, property-scoped to ESBMC's default checks (assertions, bounds,
+pointers, division by zero). No counterexample is replayed (whole programs):
+detection is "refuted, not replayed". C++ engine, this branch, 2026-09-23.
+
+**Full fetched set** (`--fetch-esbmc` at `653926f9`, 1917 CORE tasks: 1253
+SUCCESSFUL, 664 FAILED; 240 s per task, 3 jobs):
+
+| stage | wrong proofs | proved (true) | refuted (false) | false alarms | BOUNDED | no answer | timeout / killed |
+|---|---|---|---|---|---|---|---|
+| bmc | **0** (was 1, S8) | 64/1253 (5.1%) | 1/664 | 1 (F10) | 0 | 1787 (1735 NEEDS-HARNESS, 52 ERROR) | 64 |
+| pir | **0** (was 3: 1 S8, 2 disputed labels) | 435/1253 (34.7%) | 245/664 (36.9%) | 2 (F8, F9) | 13 | 1150 (1090 NEEDS-HARNESS, 59 ERROR, 3 UNKNOWN) | 62 |
+
+Plus 4 + 4 pir FAILED of another class (e.g. UNINIT-READ, signed overflow,
+which ESBMC does not check by default). The first run found **4 wrong
+proofs**: S8 (a global's constructor throws before `main`; bmc and pir both
+proved `main`, fixed, see "Known issues") and two labels that contradict the
+C++ standard — `cpp/github_6199_fail` (`std::string(nullptr, 0)`: an empty
+range is valid) and `cpp/github_6588_multidim_fail` (`new int[2][3]()`
+value-initialises to zero); a native sanitizer run of both deterministic
+programs is clean. PRISM's proofs are right there; the two tasks are skipped
+at conversion with the reason (`ESBMC_DISPUTED` in `tools/conformance.py`),
+not relabelled. S8 also turned one pir false alarm into NEEDS-HARNESS
+(`cpp11/constructors/Constructor9-1`). The fixed build was re-run on the
+whole set: 0 wrong proofs in both stages. The 62–64 tasks without an answer
+by timeout are libstdc++-heavy (`std::string`, `vector::reserve`,
+iterators): 51 exceed 240 s, 11 are killed for memory (exit -9).
+
+Label check of the fetched set (`--self-check`, one native clang++ run under
+UBSan/ASan with assertions on, deterministic programs only): 1639 labels
+confirmed, 162 skipped (nondeterministic), 116 not confirmed (48 do not
+compile with clang/libstdc++, 33 crash otherwise, 19 FAILED labels run
+clean, 16 SUCCESSFUL labels hit a sanitizer or assert natively). Cross-check
+against the PRISM run: **no PRISM proof on any program whose native run
+hits UB or a failed assert**, and no pir/bmc FAILED on a natively clean
+program except the false alarms F8–F10 above, `cpp/github_1807` (FAILED
+label, clean natively; refuted by pir) and two FAILED of another class.
+
+**Committed subset** (64 tasks: 32 true, 32 false, deterministic,
+labels confirmed by one native sanitizer run), in `python tools/conformance.py`:
+
+| stage | wrong proofs | proved (true) | refuted (false) | false alarms | no answer |
+|---|---|---|---|---|---|
+| bmc | **0** | 1/32 | 0/32 | 0 | 63 |
+| pir | **0** | 12/32 (37.5%; 15/32 on an idle machine) | 12/32 | 0 | 40 |
+
+Three subset tasks (`github_5868_find_last_not_of`, `string/compare_ordering`,
+`vector/vector_back_reference`) hit the 180 s default timeout on a loaded
+machine and are listed as "never reported" with `TIMEOUT` (they are proved
+or refuted within it when the machine is idle).
+
+### libc model contracts (roadmap 8.2; `tests/conformance/libc-models`)
+
+65 functions (30 contract harnesses, 35 false twins); see docs/PIR.md
+"Library models verified by PRISM". `pir`: 29/30 PROVED (size-bounded
+objects, see there), 1 BOUNDED (`getenv`), 35/35 false twins refuted for the
+planted class, 0 wrong proofs, 0 false alarms. `bmc`: 0 proofs, 2
+refutations (`abs(INT_MIN)`, `rand() < 100`), NEEDS-HARNESS elsewhere (no
+preprocessor: the included model code is invisible to it).
+
 ## Before the fixes (2026-09-23, `24a72d40b`)
 
 Engine: C++ engine built from `claude/prism-code-checker-x7538r` at
@@ -465,6 +528,33 @@ Tasks: `memory/mem_uninit_false`, `regress/uninit_elem_loop`,
 `regress/uninit_memset`, `regress/array_init_list`,
 `regress/array_init_zero`.
 
+*Fixed (both stages; bmc in both engines).*
+**S8. `main` was checked as if the program started at `main`.** C++
+dynamic initialisation (constructors of global objects, non-constant
+initialisers, `llvm.global_ctors`) runs before `main`. `pir` gave `main` the
+globals' *static* initialisers (the IR's `zeroinitializer`) and ignored the
+constructors; `bmc` ignored them as well. Found by the ESBMC C++ tasks:
+```c++
+struct C { C() { throw 1; } };
+C global_c;                   // throws before main: std::terminate
+int main() { return 0; }      /* bmc PROVED-UNBOUNDED, pir PROVED */
+
+struct B { int i; B() : i(5) {} };
+B g;
+int main() { assert(g.i == 0); }   /* pir PROVED; the constructor set 5 */
+```
+Fix: `pir` (`src/prism/pir/stage_mem.cpp`) checks every
+static-initialisation function listed in `llvm.global_ctors`; unless each is
+proved, `main` is `NEEDS-HARNESS` naming it. When they are proved, `main`
+keeps a verdict only if it holds for *arbitrary* values of the mutable
+globals (the constructors' stores are not carried into `main`); otherwise
+`NEEDS-HARNESS`. `bmc` (`dynamic_init_before_main` in `src/prism/bmc.cpp`,
+`prism/bmc.py`) turns a proof or BOUNDED of `main` into `NEEDS-HARNESS` when
+the file defines a constructor. Tasks: ESBMC
+`try_catch/lower-exceptions_static_init_fail`, `cpp11/constructors/Constructor9-1`;
+`tests/pir/static_init_{throw,value,ok}.cpp`, doctest "bmc soundness:
+dynamic initialisation before main (S8)", `tests/test_bmc_soundness.py`.
+
 ### Robustness (no verdict where one was possible)
 
 *Fixed:* widths are consistent by construction, and any exception is an `ERROR` for that one function.
@@ -521,6 +611,20 @@ flagged (SV-COMP `NoNegativeIntegerConstant`, true).
 *Open:* C semantics are applied to C++ files (conservative false alarm).
 **F7. C++20 shift semantics.** `1 << 31` is well defined in C++20 but flagged
 (`cxx/cxx_shift_cpp20_true`); `shift31` should be C-only.
+
+*Open* (ESBMC C++ tasks, full fetched set; none in the committed subset).
+**F8. pir: zero-initialised global array of structs with 1024 elements.**
+`struct uint3 a[1024]; assert(a[0].x == 0);` in `main` is FAILED
+(`bug_fixes/1006_aggregate`); the same with 4 elements, or a flat
+`int a[1024]`, is PROVED. A false alarm in the global-initialiser encoding of
+large aggregate arrays, not a soundness issue.
+**F9. pir: `abort()` after a failed `malloc` in a constructor**
+(`cpp/github_6464_placement_new_incremental`): PRISM's `malloc` model may
+return NULL, so `if (!buf) abort();` is reachable; ESBMC's label assumes
+allocation succeeds. A model difference, reported as FUNC-CONTRACT.
+**F10. bmc: function-try-block** (`void f(int &x) try { throw 10; } catch
+(const int &i) { x = i; }`, `try_catch/try-catch_tryblock_08`): the handler's
+store is lost and `assert(v == 10)` in `main` is FAILED.
 
 ### Coverage gaps (honest `ERROR` / `NEEDS-HARNESS`, costing completeness)
 

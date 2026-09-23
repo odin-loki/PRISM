@@ -1,0 +1,10 @@
+format_version: 1
+input_files: func_type_catch.cpp
+language: C++
+property: esbmc-cpp
+upstream: esbmc@653926f91580 regression/esbmc-cpp/try_catch/func_type_catch
+esbmc_options: "--unwind 3 --no-unwinding-assertions"
+label_bound: 3
+deterministic: true
+expected:
+  main: true

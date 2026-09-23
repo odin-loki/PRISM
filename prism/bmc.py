@@ -10045,6 +10045,34 @@ def bmc_function(
     )
 
 
+_CTOR_NAME = re.compile(r"(?:^|::)([A-Za-z_]\w*)::\1$")
+
+
+def _dynamic_init_before_main(functions: list[FunctionInfo], out: list[Finding]) -> None:
+    """A C++ constructor defined in the analysed code may run before main (a
+    global object's dynamic initialisation) and fail or throw there; bmc does
+    not model static initialisation, so a proof of `main` is not the
+    program's: NEEDS-HARNESS (docs/CONFORMANCE.md S8). Same rule in bmc.cpp.
+    """
+    ctor_name = ""
+    for fn in functions:
+        if _CTOR_NAME.search(fn.name):
+            ctor_name = fn.name
+            break
+    if not ctor_name:
+        return
+    for f in out:
+        if f.function != "main" or f.status not in (laws.PROVED, laws.PROVED_UNBOUNDED, laws.BOUNDED):
+            continue
+        extra = dict(f.extra or {})
+        extra["verdict_before_static_init"] = f.status
+        f.extra = extra
+        f.status = laws.NEEDS_HARNESS
+        f.strength = laws.STRENGTH_SOME
+        f.message = (f"dynamic initialisation before main unencoded: constructor {ctor_name} "
+                     "may run for a global object; bitvector BMC does not model static initialisation")
+
+
 def run_bmc(functions: list[FunctionInfo], unwind: int) -> list[Finding]:
     from prism.inline import inline_static
     out: list[Finding] = []
@@ -10059,4 +10087,5 @@ def run_bmc(functions: list[FunctionInfo], unwind: int) -> list[Finding]:
                 line=fn.line, cls="", message=f"BMC internal error: {ex}",
                 strength=laws.STRENGTH_SOME, extra={},
             ))
+    _dynamic_init_before_main(functions, out)
     return out

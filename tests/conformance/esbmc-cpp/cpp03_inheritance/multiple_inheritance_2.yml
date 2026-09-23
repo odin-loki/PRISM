@@ -1,0 +1,10 @@
+format_version: 1
+input_files: multiple_inheritance_2.cpp
+language: C++
+property: esbmc-cpp
+upstream: esbmc@653926f91580 regression/esbmc-cpp/inheritance/multiple_inheritance_2
+esbmc_options: "--unwind 10 --no-unwinding-assertions --timeout 900"
+label_bound: 10
+deterministic: true
+expected:
+  main: true

@@ -1,0 +1,9 @@
+format_version: 1
+input_files: github_6300_aggregate_throw.cpp
+language: C++
+property: esbmc-cpp
+upstream: esbmc@653926f91580 regression/esbmc-cpp/try_catch/github_6300_aggregate_throw
+esbmc_options: "--incremental-bmc"
+deterministic: true
+expected:
+  main: true

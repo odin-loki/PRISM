@@ -77,6 +77,10 @@ EXPECTED: dict[tuple[str, str], str] = {
     ("cxx.cpp", "get"): laws.NEEDS_HARNESS,  # `this` is a pointer (Law 6)
     ("cxx.cpp", "cxx_shl_ok"): laws.PROVED,  # C++20+: signed << is defined
     ("cxx.cpp", "constexpr_ok"): laws.PROVED,
+    # S8 (docs/CONFORMANCE.md): main runs after dynamic initialisation
+    ("static_init_throw.cpp", "main"): laws.NEEDS_HARNESS,  # a global's constructor throws
+    ("static_init_value.cpp", "main"): laws.NEEDS_HARNESS,  # was PROVED: the constructor sets g.i = 5
+    ("static_init_ok.cpp", "main"): laws.PROVED,  # static init proved, main reads no global
 }
 
 # Memory model, library models, pointer contracts (docs/PIR.md "Memory

@@ -1,0 +1,10 @@
+format_version: 1
+input_files: list_incomplete_element_type.cpp
+language: C++
+property: esbmc-cpp
+upstream: esbmc@653926f91580 regression/esbmc-cpp/list/list_incomplete_element_type
+esbmc_options: "--unwind 4 --no-unwinding-assertions"
+label_bound: 4
+deterministic: true
+expected:
+  main: true

@@ -94,6 +94,8 @@ SCOPED_STAGES = {"harness"}
 # check single functions, conc checks whole programs that create threads.
 STAGE_TASK_ORIGINS = {"conc": {"concurrency"}}
 ORIGIN_STAGES = {"concurrency": {"conc"}}
+# Suite directories run by default (tests/conformance/<dir>).
+DEFAULT_ROOTS = ("prism", "sv-comp", "concurrency", "esbmc-cpp", "libc-models")
 # Task origins whose labels speak for one property only (another class of
 # FAILED is reported separately, not as a false alarm).
 PROPERTY_SCOPED = {"sv-comp", "concurrency"}
@@ -153,6 +155,46 @@ JULIET_PROPERTY = {
     "CWE680": "memsafety",
 }
 
+# ESBMC C++ regression tests (kept out of git; fetched at a pinned commit with
+# --fetch-esbmc; a curated subset is committed under tests/conformance/esbmc-cpp).
+ESBMC_REPO = "https://github.com/esbmc/esbmc.git"
+ESBMC_COMMIT = "653926f91580d8d67858d42db814f09d9a9fa257"
+ESBMC_DIRS = tuple(f"regression/esbmc-{d}" for d in ("cpp", "cpp11", "cpp14", "cpp17", "cpp20", "cpp23"))
+ESBMC_SOURCE_SUFFIXES = {".c", ".cc", ".cpp", ".cxx", ".c++", ".h", ".hh", ".hpp", ".hxx", ".inc", ".tcc"}
+# Options that change what "VERIFICATION SUCCESSFUL/FAILED" speaks about.
+ESBMC_SKIP_OPTIONS = (
+    "--no-assertions", "--no-bounds-check", "--no-pointer-check", "--no-div-by-zero-check",
+    "--no-align-check", "--no-pointer-relation-check", "--memory-leak-check", "--overflow-check",
+    "--unsigned-overflow-check", "--ub-shift-check", "--nan-check", "--data-races-check",
+    "--deadlock-check", "--function", "--cheri", "--struct-fields-check", "--is-instr-modelling",
+)
+# FAILED verdicts that come from a bound of ESBMC's C++ operational model
+# (its fixed-capacity string/stream models), not from the program.
+ESBMC_MODEL_FAILURE = re.compile(r"capacity exceed|forgotten memory|memory leak", re.I)
+# Labels that contradict the C++ standard (and a native sanitizer run of the
+# deterministic program): skipped at conversion, each with the reason.
+ESBMC_DISPUTED = {
+    "esbmc-cpp/cpp/github_6199_fail": "std::string(nullptr, 0): [nullptr, nullptr + 0) is a valid empty range "
+                                       "([string.cons]); ESBMC's string model checks null first",
+    "esbmc-cpp/cpp/github_6588_multidim_fail": "new int[2][3]() value-initialises to zero ([expr.new], "
+                                               "[dcl.init]); the assert holds",
+}
+# Programs whose single run is not their only behaviour.
+ESBMC_NONDET = re.compile(r"\bnondet_|__VERIFIER_nondet|\brand\s*\(|\bcin\b|\bscanf\b|\bgetchar\b|"
+                          r"\bfgets\b|\bargv\b|\btime\s*\(|\bstd::random_device|\bthread\b|pthread_")
+# ESBMC's default property set: assertions, bounds, pointer safety, division
+# by zero (signed overflow, shifts and uninitialised reads are not checked
+# without extra options, so a PRISM FAILED of those classes on a SUCCESSFUL
+# task is "other property"). An uncaught exception / violated noexcept
+# aborts the program and ESBMC reports it.
+ESBMC_CLASSES = {"FUNC-CONTRACT", "INT-DIV-ZERO", "CXX-UNREACHABLE", "CXX-THROW-NOEXCEPT", "CXX-OPTIONAL-NULL",
+                 "CXX-VECTOR-INDEX", "CXX-ARRAY-INDEX", "CXX-DEQUE-INDEX", "CXX-BITSET-INDEX",
+                 "MEM-OOB-READ", "MEM-OOB-WRITE", "MEM-NULL-DEREF", "NULL-DEREF", "MEM-USE-AFTER-FREE",
+                 "PTR-NULL-DEREF", "PTR-INVALID-DEREF", "MEM-UAF", "MEM-DOUBLE-FREE", "MEM-INVALID-FREE",
+                 "MEM-MISMATCHED-FREE", "MEM-PTR-ARITH", "MEM-STACK-ESCAPE"}
+PROPERTY_CLASSES["esbmc-cpp"] = ESBMC_CLASSES
+PROPERTY_SCOPED.add("esbmc-cpp")
+
 SAN_FLAGS = ["-g", "-O0", "-w", "-fsanitize=undefined,address", "-fno-sanitize-recover=all"]
 SAN_ENV = {
     "ASAN_OPTIONS": "detect_leaks=0:abort_on_error=0:halt_on_error=1",
@@ -177,6 +219,10 @@ class Task:
     expect_status: dict[str, str] = field(default_factory=dict)
     sanitizer_blind: set[str] = field(default_factory=set)
     data_model: str = ""
+    std: str = ""  # whole-program tasks (esbmc-cpp): language standard of the native self-check
+    deterministic: bool = False  # whole program whose one run is its only behaviour
+    unwind: int = 0  # per-task --unwind (0: the run's default)
+    expect_class: dict[str, set[str]] = field(default_factory=dict)  # false fn -> classes that refute it
 
 
 def _load_yaml(path: Path) -> Any:
@@ -217,6 +263,10 @@ def load_task(yml: Path, root: Path) -> Task | None:
             witness={str(k): [int(x) for x in v] for k, v in (data.get("witness") or {}).items()},
             expect_status={str(k): str(v) for k, v in (data.get("expect_status") or {}).items()},
             sanitizer_blind={str(x) for x in (data.get("sanitizer_blind") or [])},
+            std=str(data.get("std", "")),
+            deterministic=_as_bool(data.get("deterministic", False)),
+            unwind=int(data.get("unwind", 0) or 0),
+            expect_class={str(k): set(str(v).split("|")) for k, v in (data.get("expect_class") or {}).items()},
         )
     # SV-COMP task-definition format 2.0
     props = data.get("properties") or []
@@ -436,7 +486,7 @@ def run_sanitized(task: Task, fn: str, params: list[tuple[str, str]], rows: list
                "--unshare-all", "--die-with-parent", "--new-session", *cmd]
     env = dict(os.environ, **SAN_ENV)
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
+        r = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=timeout, env=env)
     except subprocess.TimeoutExpired:
         return Exec("timeout", f">{timeout}s")
     err = r.stderr or ""
@@ -484,7 +534,7 @@ def input_grid(params: list[tuple[str, str]], n_random: int = 2000, seed: int = 
 def self_check(tasks: list[Task], work: Path, jobs: int) -> tuple[list[dict[str, Any]], int]:
     jobs_list = []
     for t in tasks:
-        if t.origin != "prism":
+        if t.origin not in ("prism", "esbmc-cpp"):
             continue
         for fn, exp in t.expected.items():
             jobs_list.append((t, fn, exp))
@@ -492,6 +542,16 @@ def self_check(tasks: list[Task], work: Path, jobs: int) -> tuple[list[dict[str,
     def one(item: tuple[Task, str, bool]) -> dict[str, Any]:
         t, fn, exp = item
         rec: dict[str, Any] = {"task": t.ident, "function": fn, "expected": exp}
+        if t.origin == "esbmc-cpp":
+            # whole program: a deterministic one has one behaviour, so one
+            # native run under the sanitizers (assertions on) decides it
+            if not t.deterministic:
+                rec.update(check="skipped", why="nondeterministic program (label is ESBMC's)")
+                return rec
+            res = run_program(t, work / "selfcheck" / t.ident.replace("/", "__"))
+            ok = res.outcome == ("clean" if exp else "ub")
+            rec.update(check="ok" if ok else "FAIL", outcome=res.outcome, detail=res.detail)
+            return rec
         if fn in t.expect_status:
             rec.update(check="skipped", why="non-scalar parameters (expect_status)")
             return rec
@@ -545,8 +605,8 @@ def run_prism(cmd: list[str], task: Task, stages: list[str], work: Path, timeout
     if out.exists():
         shutil.rmtree(out)
     argv = cmd + [str(task.source), "--no-llm", "--stage", ",".join(stages), "--out", str(out)]
-    if unwind:
-        argv += ["--unwind", str(unwind)]
+    if task.unwind or unwind:
+        argv += ["--unwind", str(task.unwind or unwind)]
     argv += extra_args or []
     t0 = time.monotonic()
     env = dict(os.environ)
@@ -578,6 +638,16 @@ def run_prism(cmd: list[str], task: Task, stages: list[str], work: Path, timeout
                 if ex:
                     rec["extra"] = ex
                 per.setdefault(name, {}).setdefault(fn, []).append(rec)
+        # A unit-level ERROR (e.g. the Clang front end rejects the file) speaks
+        # for every function of the unit: recorded as ERROR, not as missing.
+        unit_err = next((f for f in st.get("findings", []) if not f.get("function") and f.get("status") == "ERROR"),
+                        None)
+        if unit_err is not None:
+            for fn in task.expected:
+                lst = per.setdefault(name, {}).setdefault(fn, [])
+                if not lst:
+                    lst.append({"status": "ERROR", "cls": "", "message": str(unit_err.get("message", ""))[:300],
+                                "counterexample": "", "line": None})
         if st.get("status") == "failed":
             # A crashed stage loses every function of the file: record why
             # instead of reporting the functions as silently missing.
@@ -647,6 +717,9 @@ def classify(task: Task, fn: str, found: list[dict[str, Any]]) -> str:
     classes = PROPERTY_CLASSES.get(task.prop, set())
     failed = [f for f in found if f["status"] == "FAILED"]
     failed_in_prop = [f for f in failed if not prop_scoped or f.get("cls") in classes]
+    if not expected and fn in task.expect_class:
+        # the refutation must be for the violation the task plants
+        failed_in_prop = [f for f in failed_in_prop if f.get("cls") in task.expect_class[fn]]
     if not statuses:
         return "missing"
     if not expected and statuses & PROOF:
@@ -931,6 +1004,249 @@ def fetch_juliet(dest: Path, flows: list[str]) -> Path:
     return tasks_root
 
 
+# --------------------------------------------------------------------------- ESBMC C++ regression tests
+
+
+def _esbmc_option_skip(opts: str) -> str:
+    for flag in ESBMC_SKIP_OPTIONS:
+        if re.search(r"(?:^|\s)" + re.escape(flag) + r"(?:[\s=]|$)", opts):
+            return f"option {flag} changes the checked property set"
+    return ""
+
+
+def esbmc_convert(test_dir: Path, regression: Path, thorough: bool = False) -> tuple[dict[str, Any] | None, str]:
+    """One ESBMC regression test -> (task description, "") or (None, skip reason).
+
+    `test.desc`: line 1 the test level (CORE / THOROUGH / KNOWNBUG), line 2
+    the input file, line 3 ESBMC's options, then regexes over its output, one
+    of which is `^VERIFICATION SUCCESSFUL$` or `^VERIFICATION FAILED$`.
+    ESBMC checks, by default, assertions, array bounds, pointer safety and
+    division by zero from `main`; signed overflow only with
+    `--overflow-check` (such tests are skipped: another property set).
+    """
+    desc = (test_dir / "test.desc").read_text(encoding="utf-8", errors="replace").splitlines()
+    if len(desc) < 3 or desc[0].lstrip().startswith("<"):
+        return None, "test.desc not in the CORE/THOROUGH line format"
+    level = desc[0].strip()
+    up = test_dir.relative_to(regression).as_posix()
+    if up in ESBMC_DISPUTED:
+        return None, "label contradicts the C++ standard (ESBMC_DISPUTED)"
+    if level == "KNOWNBUG":
+        return None, "KNOWNBUG (ESBMC's own label is not trusted upstream)"
+    if level not in ("CORE", "THOROUGH"):
+        return None, f"test level {level!r}"
+    if level == "THOROUGH" and not thorough:
+        return None, "THOROUGH (slow tier; --esbmc-thorough)"
+    main_file = desc[1].strip()
+    sources = [p for p in test_dir.iterdir() if p.is_file() and p.suffix.lower() in ESBMC_SOURCE_SUFFIXES]
+    if not main_file or Path(main_file).suffix.lower() not in (".cpp", ".cc", ".cxx", ".c++"):
+        return None, "input is not a single C++ file"
+    if len(sources) != 1 or sources[0].name != main_file:
+        return None, "several source/header files (PRISM tasks are single files)"
+    opts = desc[2].strip()
+    why = _esbmc_option_skip(opts)
+    if why:
+        return None, why
+    verdicts = {m.group(1) for line in desc[3:]
+                for m in [re.fullmatch(r"\s*\^?\s*VERIFICATION (SUCCESSFUL|FAILED)\s*\$?\s*", line)] if m}
+    if len(verdicts) != 1:
+        return None, "no single VERIFICATION SUCCESSFUL/FAILED line"
+    expected = verdicts.pop() == "SUCCESSFUL"
+    patterns = "\n".join(desc[3:])
+    if not expected and ESBMC_MODEL_FAILURE.search(patterns):
+        return None, "failure is a limit of ESBMC's operational model, not of the program"
+    text = sources[0].read_text(encoding="utf-8", errors="replace")
+    if "__ESBMC" in text:
+        return None, "uses ESBMC intrinsics"
+    std = ""
+    m = re.search(r"--std[= ]\s*(\S+)", opts)
+    if m:
+        std = m.group(1).replace("gnu++", "c++")
+    unwind = re.search(r"--unwind\s+(\d+)", opts)
+    rel = test_dir.relative_to(regression)
+    return {
+        "source": sources[0],
+        "text": text,
+        "upstream": str(rel),
+        "level": level,
+        "options": opts,
+        "std": std,
+        "expected": expected,
+        # a SUCCESSFUL under --no-unwinding-assertions only speaks up to the bound
+        "label_bound": int(unwind.group(1)) if expected and unwind and "--no-unwinding-assertions" in opts else 0,
+        "deterministic": not ESBMC_NONDET.search(text),
+        "reason": [ln.strip() for ln in desc[3:] if ln.strip() and "VERIFICATION" not in ln][:3],
+    }, ""
+
+
+def esbmc_task_name(upstream: str) -> tuple[str, str]:
+    """regression/<dir>/<sub>/.../<test> -> (category, file stem)."""
+    parts = Path(upstream).parts
+    if parts[0] == "esbmc-cpp" and len(parts) > 2:
+        return "cpp03_" + re.sub(r"\W", "_", parts[1]), "__".join(parts[2:])
+    return parts[0].replace("esbmc-", ""), "__".join(parts[1:])
+
+
+def esbmc_task_yaml(t: dict[str, Any], src_name: str) -> str:
+    lines = ["format_version: 1", f"input_files: {src_name}", "language: C++", "property: esbmc-cpp",
+             f"upstream: esbmc@{ESBMC_COMMIT[:12]} regression/{t['upstream']}",
+             f"esbmc_options: {json.dumps(t['options'])}"]
+    if t["std"]:
+        lines.append(f"std: {t['std']}")
+    if t["label_bound"]:
+        lines.append(f"label_bound: {t['label_bound']}")
+    lines.append(f"deterministic: {'true' if t['deterministic'] else 'false'}")
+    lines += ["expected:", f"  main: {'true' if t['expected'] else 'false'}"]
+    return "\n".join(lines) + "\n"
+
+
+def fetch_esbmc(dest: Path, thorough: bool = False) -> Path:
+    """Clone ESBMC's C++ regression directories at ESBMC_COMMIT and convert them.
+
+    GitHub archive downloads are not used (some proxies refuse them): a
+    shallow, blob-filtered, sparse fetch of the one pinned commit is, and
+    HEAD is checked against the pin.
+    """
+    dest.mkdir(parents=True, exist_ok=True)
+    repo = dest / "esbmc-src"
+
+    def git(*a: str) -> str:
+        r = subprocess.run(["git", "-C", str(repo), *a], capture_output=True, text=True, timeout=1800)
+        if r.returncode != 0:
+            raise SystemExit(f"git {' '.join(a)}: {r.stderr.strip()[-400:]}")
+        return r.stdout
+
+    if not (repo / ".git").exists():
+        repo.mkdir(parents=True, exist_ok=True)
+        git("init", "-q")
+        git("remote", "add", "origin", ESBMC_REPO)
+    head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    if head != ESBMC_COMMIT:
+        print(f"fetching {ESBMC_REPO} @ {ESBMC_COMMIT}", file=sys.stderr)
+        git("fetch", "-q", "--depth", "1", "--filter=blob:none", "origin", ESBMC_COMMIT)
+        git("sparse-checkout", "set", *ESBMC_DIRS)
+        git("checkout", "-q", "--detach", "FETCH_HEAD")
+    else:
+        git("sparse-checkout", "set", *ESBMC_DIRS)
+    head = git("rev-parse", "HEAD").strip()
+    if head != ESBMC_COMMIT:
+        raise SystemExit(f"ESBMC checkout is at {head}, pinned {ESBMC_COMMIT}")
+    regression = repo / "regression"
+    tasks_root = dest / "esbmc-cpp"
+    if tasks_root.exists():
+        shutil.rmtree(tasks_root)
+    skipped: dict[str, int] = {}
+    written = 0
+    for d in ESBMC_DIRS:
+        for desc in sorted((repo / d).rglob("test.desc")):
+            t, why = esbmc_convert(desc.parent, regression, thorough)
+            if t is None:
+                skipped[why] = skipped.get(why, 0) + 1
+                continue
+            cat, stem = esbmc_task_name(t["upstream"])
+            out = tasks_root / cat
+            out.mkdir(parents=True, exist_ok=True)
+            src_name = stem + ".cpp"
+            (out / src_name).write_text(t["text"], encoding="utf-8")
+            (out / f"{stem}.yml").write_text(esbmc_task_yaml(t, src_name), encoding="utf-8")
+            written += 1
+    print(f"esbmc-cpp: {written} task files under {tasks_root}", file=sys.stderr)
+    for why, n in sorted(skipped.items(), key=lambda kv: -kv[1]):
+        print(f"  skipped {n:5d}: {why}", file=sys.stderr)
+    return tasks_root
+
+
+# Curated subset (tests/conformance/esbmc-cpp): categories and files whose
+# licence is not ESBMC's own Apache-2.0 are left out (CBMC's BSD-4-clause
+# tests, GCC testsuite files, Qt, textbook listings).
+ESBMC_CURATE_SKIP_CATEGORIES = {"cpp03_cbmc", "cpp03_gcc_template_tests", "cpp03_qt", "cpp03_esbmc_systemc"}
+ESBMC_FOREIGN_TEXT = re.compile(r"copyright|\(c\)|deitel|pearson|fig\.\s*\d|llbmc|gnu general|licen[cs]e|"
+                                r"\bgcc\b|\bdg-", re.I)
+
+
+def curate_esbmc(fetched: Path, dest: Path, per_verdict: int, per_category: int, work: Path) -> int:
+    """Copy a label-checked, licence-clean sample of the fetched tasks into dest.
+
+    Candidates: deterministic programs (one run is their only behaviour),
+    no foreign copyright/licence text, not in ESBMC_CURATE_SKIP_CATEGORIES.
+    Order: SHA-256 of the upstream path (stable, not chosen by PRISM's
+    results). A candidate is kept only if one native run under the
+    sanitizers agrees with ESBMC's label (run_program); at most
+    `per_category` tasks per category and verdict, `per_verdict` per verdict.
+    """
+    cands = []
+    for yml in sorted(fetched.rglob("*.yml")):
+        t = load_task(yml, fetched.parent)
+        if t is None or not t.deterministic or t.category in ESBMC_CURATE_SKIP_CATEGORIES:
+            continue
+        text = t.source.read_text(encoding="utf-8", errors="replace")
+        if ESBMC_FOREIGN_TEXT.search(text):
+            continue
+        up = next((ln.split(" ", 2)[-1] for ln in yml.read_text().splitlines() if ln.startswith("upstream:")), "")
+        cands.append((hashlib.sha256(up.encode()).hexdigest(), t))
+    cands.sort(key=lambda c: c[0])
+    kept: dict[bool, int] = {True: 0, False: 0}
+    per_cat: dict[tuple[str, bool], int] = {}
+    for sub in (dest.iterdir() if dest.exists() else []):
+        if sub.is_dir():  # task directories; LICENSE/NOTICE files stay
+            shutil.rmtree(sub)
+    for _, t in cands:
+        exp = t.expected["main"]
+        if kept[exp] >= per_verdict or per_cat.get((t.category, exp), 0) >= per_category:
+            continue
+        res = run_program(t, work / "curate" / t.ident.replace("/", "__"))
+        if res.outcome != ("clean" if exp else "ub"):
+            continue
+        out = dest / t.category
+        out.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(t.source, out / t.source.name)
+        shutil.copy2(t.yml, out / t.yml.name)
+        kept[exp] += 1
+        per_cat[(t.category, exp)] = per_cat.get((t.category, exp), 0) + 1
+        if all(v >= per_verdict for v in kept.values()):
+            break
+    print(f"esbmc-cpp subset: {kept[True]} true, {kept[False]} false under {dest}", file=sys.stderr)
+    return kept[True] + kept[False]
+
+
+def run_program(task: Task, work: Path, timeout: float = 60.0) -> Exec:
+    """Compile a whole-program task natively (sanitizers, assertions on) and run main.
+
+    For a deterministic program this one execution is the program's only
+    behaviour, so it decides the label: `ub` covers a sanitizer report, a
+    failed assert() and an uncaught exception (both abort).
+    """
+    work.mkdir(parents=True, exist_ok=True)
+    exe = work / "prog.bin"
+    std = task.std or ("c++17" if task.lang.upper().startswith("C+") else "c17")
+    cc, cxx = sanitizer_compilers()
+    comp = cxx if task.lang.upper().startswith("C+") else cc
+    cmd = [comp, f"-std={std}", str(task.source), *SAN_FLAGS, "-UNDEBUG", "-o", str(exe)]
+    try:
+        r = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=300)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return Exec("compile-error", str(e))
+    if r.returncode != 0:
+        return Exec("compile-error", (r.stderr or r.stdout)[-400:])
+    run = [str(exe)]
+    if bwrap_ok():
+        run = ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp",
+               "--ro-bind", str(work), str(work), "--unshare-all", "--die-with-parent", "--new-session", *run]
+    try:
+        r = subprocess.run(run, capture_output=True, encoding="utf-8", errors="replace", timeout=timeout, stdin=subprocess.DEVNULL,
+                           env=dict(os.environ, **SAN_ENV))
+    except subprocess.TimeoutExpired:
+        return Exec("timeout", f">{timeout}s")
+    err = r.stderr or ""
+    hit = re.search(r"runtime error: .*|ERROR: AddressSanitizer: \S+.*|Assertion `.*' failed|"
+                    r"terminate called .*", err)
+    if hit:
+        return Exec("ub", hit.group(0)[:300])
+    if r.returncode != 0:
+        return Exec("crash", f"exit {r.returncode}: {err[-300:]}")
+    return Exec("clean")
+
+
 # --------------------------------------------------------------------------- main
 
 
@@ -943,6 +1259,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--fetch-juliet", type=Path, metavar="DIR",
                     help="download NIST Juliet 1.3, check sha256, extract CWE190/191/369/476/680 into DIR")
     ap.add_argument("--juliet-flows", default="01", help="Juliet flow variants to keep (comma list, default 01)")
+    ap.add_argument("--esbmc", type=Path, help="include ESBMC C++ regression tasks from DIR/esbmc-cpp")
+    ap.add_argument("--fetch-esbmc", type=Path, metavar="DIR",
+                    help=f"clone ESBMC's C++ regression tests at {ESBMC_COMMIT[:12]} and convert them into DIR")
+    ap.add_argument("--esbmc-thorough", action="store_true", help="also convert ESBMC's THOROUGH tests")
+    ap.add_argument("--curate-esbmc", type=Path, metavar="DIR",
+                    help="write the committed subset (tests/conformance/esbmc-cpp) from fetched tasks in DIR")
     ap.add_argument("--stages", help="override verdict stages (default: bmc,harness + pir,conc when listed)")
     ap.add_argument("--out", type=Path, default=Path("conformance-out"))
     ap.add_argument("--jobs", "-j", type=int, default=max(1, (os.cpu_count() or 2)))
@@ -963,15 +1285,31 @@ def main(argv: list[str] | None = None) -> int:
     if args.fetch_juliet:
         fetch_juliet(args.fetch_juliet, args.juliet_flows.split(","))
         return 0
+    if args.fetch_esbmc:
+        fetch_esbmc(args.fetch_esbmc, args.esbmc_thorough)
+        return 0
+    if args.curate_esbmc:
+        src = args.curate_esbmc / "esbmc-cpp" if (args.curate_esbmc / "esbmc-cpp").exists() else args.curate_esbmc
+        with tempfile.TemporaryDirectory(prefix="prism-curate-") as d:
+            n = curate_esbmc(src, SUITE / "esbmc-cpp", 32, 3, Path(d))
+        return 0 if n else 1
 
-    roots = args.suite or [SUITE / "prism", SUITE / "sv-comp", SUITE / "concurrency"]
-    tasks = discover([r.resolve() for r in roots])
+    roots = args.suite or [SUITE / d for d in DEFAULT_ROOTS]
+    tasks = discover([r.resolve() for r in roots if r.exists()])
     if args.juliet:
         jr = args.juliet / "juliet" if (args.juliet / "juliet").exists() else args.juliet
         for yml in sorted(jr.rglob("*.yml")):
             t = load_task(yml, jr.parent)
             if t is not None:
                 t.origin = "juliet"
+                tasks.append(t)
+    if args.esbmc:
+        er = args.esbmc / "esbmc-cpp" if (args.esbmc / "esbmc-cpp").exists() else args.esbmc
+        for yml in sorted(er.rglob("*.yml")):
+            t = load_task(yml, er.parent)
+            if t is not None:
+                t.origin = "esbmc-cpp"
+                t.ident = "esbmc-fetched/" + str(yml.relative_to(er))
                 tasks.append(t)
     if args.filter:
         rx = re.compile(args.filter)

@@ -3595,6 +3595,31 @@ ForkFlipResult solve_fork_flip(const FunctionInfo& fn, const std::map<std::strin
 #endif
 }
 
+// A C++ constructor defined in the analysed code may run before main (a
+// global object's dynamic initialisation) and fail or throw there; bmc does
+// not model static initialisation, so a proof of `main` is not the
+// program's: NEEDS-HARNESS (found by the ESBMC C++ conformance tasks,
+// docs/CONFORMANCE.md S8). Same rule in prism/bmc.py.
+void dynamic_init_before_main(const std::vector<FunctionInfo>& functions, std::vector<Finding>& out) {
+    std::string ctor_name;
+    for (auto& fn : functions) {
+        if (rx_search(R"((?:^|::)([A-Za-z_]\w*)::\1$)", fn.name)) {
+            ctor_name = fn.name;
+            break;
+        }
+    }
+    if (ctor_name.empty()) return;
+    for (auto& f : out) {
+        if (f.function != "main") continue;
+        if (f.status != laws::PROVED && f.status != laws::PROVED_UNBOUNDED && f.status != laws::BOUNDED) continue;
+        f.extra["verdict_before_static_init"] = f.status;
+        f.status = std::string(laws::NEEDS_HARNESS);
+        f.strength = std::string(laws::STRENGTH_SOME);
+        f.message = "dynamic initialisation before main unencoded: constructor " + ctor_name +
+                    " may run for a global object; bitvector BMC does not model static initialisation";
+    }
+}
+
 std::vector<Finding> run_bmc(const std::vector<FunctionInfo>& functions, int unwind,
                              bool allow_local_pointers) {
 #ifdef PRISM_HAS_Z3
@@ -3612,6 +3637,7 @@ std::vector<Finding> run_bmc(const std::vector<FunctionInfo>& functions, int unw
             out.push_back(std::move(f));
         }
     }
+    dynamic_init_before_main(functions, out);
     // Python engine k_induction always returns a Finding (empty unwind → ERROR).
     // A non-empty function list must never look like a silent clean BMC stage.
     if (out.empty() && !functions.empty()) {

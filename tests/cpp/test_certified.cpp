@@ -255,12 +255,19 @@ TEST_CASE("certified: the pir stage end to end on tests/pir (skips without clang
     }
     // --solver-cache: the cache (and the solve-time history) lives there
     CHECK(fs::exists(tmp.dir / "cache" / "solve_times.json"));
-    // A second run answers from the cache; certified entries are re-checked.
+    // A second run: with the certificate chain it answers from the cache
+    // (certified entries are re-checked by cake_lpr). Without it the cached
+    // answers are plain unsats, which a certified request never takes as
+    // they are (portfolio.cpp: "solving again for a certificate"), so it
+    // solves again and still never claims a certificate.
     auto again = prism::pir::run_pir({dir / "overflow.c"}, cfg);
     for (auto& f : again)
         if (f.function && *f.function == "add_ok") {
             CHECK(f.status == by["add_ok"]->status);
-            CHECK(f.extra.at("solver").find("cache hits 0") == std::string::npos);
+            if (have_cert_chain())
+                CHECK(f.extra.at("solver").find("cache hits 0") == std::string::npos);
+            else
+                CHECK(f.status != std::string(prism::laws::PROVED_CERTIFIED));
         }
 }
 #endif

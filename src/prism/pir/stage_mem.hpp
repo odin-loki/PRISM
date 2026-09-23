@@ -33,6 +33,13 @@ std::map<int, std::string> asm_contracts(const std::vector<std::string>& lines);
 TranslateOptions function_options(const TranslateOptions& base, const ir::Function& irf, UnitInfo& unit, int line,
                                   const Config& cfg, const std::string& source_name);
 
+// The unit initialises globals dynamically before main (llvm.global_ctors:
+// C++ constructors of globals, non-constant initializers,
+// __attribute__((constructor))).
+bool has_dynamic_init(const ir::Module& m);
+// The functions that run before main (llvm.global_ctors entries).
+std::vector<std::string> static_init_functions(const ir::Module& m);
+
 // Harness-draft assumptions ("p points to at least 4 int element(s)", "p
 // points to exactly n int elements ...", "1 <= n <= 8 ...") as contracts.
 std::vector<PtrContract> contracts_from_draft(const std::vector<std::string>& assumptions, const ir::Function& irf);
@@ -41,6 +48,9 @@ std::vector<PtrContract> contracts_from_draft(const std::vector<std::string>& as
 //  * a proof under listed assumptions (pointer contracts) becomes PROVED-ASSUMING;
 //  * a violation that disappears when mutable globals hold their initial
 //    values is a missing precondition on global state: NEEDS-HARNESS;
+//  * main of a unit with dynamic initialisation keeps a proof only when the
+//    static-initialisation functions are proved too and the proof holds
+//    for arbitrary globals; else NEEDS-HARNESS;
 //  * memory-model notes (encoding, strict aliasing off, library models).
 void apply_memory_policy(Finding& f, Verdict& v, Function& fn, const ir::Module& mod, const ir::Function& irf,
                          const TranslateOptions& topt, const Config& cfg);

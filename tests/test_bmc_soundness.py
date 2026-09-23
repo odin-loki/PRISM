@@ -122,6 +122,29 @@ int m2(int i) { int a[4]; memset(a, 0, 2 * sizeof(int)); return a[i & 3]; }
 """
 
 
+S8_SRC = """struct C { C() { throw 1; } };
+C global_c;
+int main() { return 0; }
+"""
+
+
+@unittest.skipUnless(HAS_Z3, "z3-solver not installed")
+class TestDynamicInitBeforeMain(unittest.TestCase):
+    """S8: a global's constructor runs (and may fail) before main."""
+
+    def test_s8(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "t.cpp"
+            p.write_text(S8_SRC, encoding="utf-8")
+            by = {f.function: f for f in run_bmc(extract_functions(p, str(p)), 8)}
+        self.assertEqual(by["main"].status, laws.NEEDS_HARNESS, by["main"].message)
+        self.assertIn("dynamic initialisation before main", by["main"].message)
+        # the same rule in the C++ engine
+        cpp = (Path(__file__).resolve().parents[1] / "src" / "prism" / "bmc.cpp").read_text(encoding="utf-8")
+        self.assertIn("dynamic_init_before_main(functions, out);", cpp)
+        self.assertIn("dynamic initialisation before main unencoded: constructor ", cpp)
+
+
 @unittest.skipUnless(HAS_Z3, "z3-solver not installed")
 class TestUninitArrayElements(unittest.TestCase):
     """S7: an unwritten local array element is an indeterminate value."""
