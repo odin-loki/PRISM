@@ -1170,6 +1170,16 @@ std::optional<Unit> libclang_unit(const std::vector<std::string>& args, const st
         A.clang_disposeIndex(idx);
         return std::nullopt;
     }
+    // Released on every exit, a conversion that throws included.
+    struct Release {
+        const Api& A;
+        CXIndex idx;
+        CXTranslationUnit tu;
+        ~Release() {
+            A.clang_disposeTranslationUnit(tu);
+            A.clang_disposeIndex(idx);
+        }
+    } release{A, idx, tu};
     Unit u;
     u.cxx = cxx;
     u.backend = "libclang";
@@ -1191,8 +1201,6 @@ std::optional<Unit> libclang_unit(const std::vector<std::string>& args, const st
         if (!w.file || !w.file->wanted) continue;
         u.decls.push_back(cv.node(c));
     }
-    A.clang_disposeTranslationUnit(tu);
-    A.clang_disposeIndex(idx);
     return u;
 }
 
