@@ -101,9 +101,11 @@ tests, tests using `__ESBMC_*` intrinsics, options that change the checked
 property set (`--overflow-check`, `--memory-leak-check`, `--no-*-check`,
 `--function`, `--data-races-check`, ...), and FAILED labels that come from a
 limit of ESBMC's operational model ("capacity exceeded", "forgotten
-memory"). At the pinned commit: 1919 tasks converted, 1044 THOROUGH, 113
+memory"). At the pinned commit: 1917 tasks converted, 1044 THOROUGH, 113
 intrinsics, 55 multi-file, 51 without a single verdict line, 24 KNOWNBUG,
-59 property-changing options, 14 XML descriptions, 6 model limits skipped.
+59 property-changing options, 14 XML descriptions, 6 model limits and 2
+labels that contradict the C++ standard (`ESBMC_DISPUTED`, each with its
+reason) skipped.
 
 What a label means: ESBMC checks, from `main`, assertions, array bounds,
 pointer safety and division by zero (not signed overflow). The property is
