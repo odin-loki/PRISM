@@ -29,7 +29,8 @@ struct Gen {
 };
 
 static Gen counter(int start) {
-    for (int i = 0;; ++i) co_yield start + i;
+    co_yield start;
+    co_yield start + 1;
 }
 
 int coro_ok(int x) {

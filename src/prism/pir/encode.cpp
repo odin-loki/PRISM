@@ -1013,8 +1013,49 @@ Verdict check_function(const Function& fn, const CheckOptions& opt) {
         const PropInst* hit = nullptr;
         std::optional<solver::SolveResult> hit_r;
         std::string no_answer;
+        // Many properties (memory checks of inlined library, exception and
+        // coroutine code): outside certified mode, one query for "some hard
+        // property is violated" first. UNSAT there means every per-property
+        // VC is UNSAT (sound), so they are skipped; SAT or unknown falls
+        // through to the per-property queries, which find the violation.
+        // A SAT group is split in halves until one property is left (its own
+        // query gives the counterexample), so a violation costs O(log n)
+        // queries instead of up to n.
+        std::vector<const PropInst*> hard;
+        for (auto& p : e.props)
+            if (!soft(p)) hard.push_back(&p);
+        bool all_unsat = false;
+        if (!opt.certified && hard.size() > 16) {
+            std::function<int(std::size_t, std::size_t)> group = [&](std::size_t lo, std::size_t hi) -> int {
+                // 1 SAT (hit set), 0 UNSAT, -1 no answer
+                if (hi - lo == 1) {
+                    const auto& r = book.add(vc_label(*hard[lo]), solver::solve(c, base && hard[lo]->viol, so));
+                    if (r.kind == solver::SolveResult::Sat) {
+                        hit = hard[lo];
+                        hit_r = r;
+                        return 1;
+                    }
+                    return r.kind == solver::SolveResult::Unsat ? 0 : -1;
+                }
+                std::vector<z3::expr> vs;
+                for (std::size_t i = lo; i < hi; ++i) vs.push_back(hard[i]->viol);
+                const auto& r = book.add("properties[" + std::to_string(lo) + "," + std::to_string(hi) + ")",
+                                         solver::solve(c, base && any_of(c, vs), so));
+                if (r.kind == solver::SolveResult::Unsat) return 0;
+                if (r.kind != solver::SolveResult::Sat) return -1;
+                std::size_t mid = lo + (hi - lo) / 2;
+                int a = group(lo, mid);
+                if (a == 1) return 1;
+                int b = group(mid, hi);
+                // SAT group whose halves are both UNSAT: the answers disagree;
+                // never read that as "all UNSAT" (fall back to per-property VCs)
+                return b == 1 ? 1 : -1;
+            };
+            int g = group(0, hard.size());
+            all_unsat = g != -1;  // 0: every property UNSAT; 1: hit found (loop below is skipped)
+        }
         for (auto& p : e.props) {
-            if (soft(p)) continue;
+            if (soft(p) || all_unsat) continue;
             const auto& r = book.add(vc_label(p), solver::solve(c, base && p.viol, so));
             if (r.kind == solver::SolveResult::Sat) {
                 hit = &p;
