@@ -206,7 +206,12 @@ class TestPirStage(unittest.TestCase):
             self.assertEqual(f["status"], v, (k, f.get("message")))
             if v in (laws.NEEDS_HARNESS,):
                 continue
-            self.assertTrue(f["extra"]["tv"].startswith("PASS"), (k, f["extra"].get("tv")))
+            # PASS, or NONE when every input hits the UB (e.g. fold_shift_bad
+            # takes no parameters and always shifts into the sign bit).
+            tv = f["extra"]["tv"]
+            self.assertTrue(tv.startswith("PASS") or tv.startswith("NONE"), (k, tv))
+            if v != laws.FAILED:
+                self.assertTrue(tv.startswith("PASS"), (k, tv))
 
 
 if __name__ == "__main__":
