@@ -5298,6 +5298,10 @@ TEST_CASE("solver: certified unsat end to end (CaDiCaL LRAT checked by cake_lpr)
     auto f = (z3::ult(x, c.bv_val(255, 8)) && !z3::ugt(x + 1, x)) || (x * y != y * x);
     auto o = solver_opts(t);
     o.certified = true;
+    // This test is about Z3's bit-blast tactics (the kept CNF is compared with
+    // ps::bitblast below); the Lean-proved bit-blaster path, which certified
+    // mode prefers when proofs/techniques is built, is tests/cpp/test_leanbb.cpp.
+    o.bitblaster = ps::Bitblaster::Z3;
     o.keep_artifacts = true;
     o.work_dir = (t.dir / "work").string();
     auto r = ps::solve(c, f, o);
@@ -5340,6 +5344,7 @@ TEST_CASE("solver: a goal the simplifier decides is still certified through the 
     auto o = solver_opts(t);
     o.certified = true;
     o.use_cache = false;
+    o.bitblaster = ps::Bitblaster::Z3;  // Z3's simplifier decides the goal (the Lean CNF never has an empty clause)
     auto r = ps::solve(c, x != x, o);  // bit-blasts to the empty clause
     REQUIRE(r.kind == ps::SolveResult::Unsat);
     CHECK_MESSAGE(r.certified, r.note);

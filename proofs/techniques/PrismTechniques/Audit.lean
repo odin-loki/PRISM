@@ -93,6 +93,7 @@ namespace PrismTechniques
 #assert_axioms Bitblast.dag_sat_imp
 #assert_axioms Bitblast.certified_dag_unsat
 #assert_axioms Bitblast.checkDag_sound
+#assert_axioms Bitblast.denote_eq_denoteExec
 
 -- Lazy sequentialisation (roadmap 8.2, stretch)
 #assert_axioms LazySeq.lazy_seq_covers

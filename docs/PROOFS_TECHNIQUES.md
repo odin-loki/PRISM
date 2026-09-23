@@ -98,6 +98,7 @@ Bitblast.BVExpr.denote_congr               [propext, Quot.sound]
 Bitblast.dag_sat_imp                       [propext, Classical.choice, Quot.sound]
 Bitblast.certified_dag_unsat               [propext, Classical.choice, Quot.sound]
 Bitblast.checkDag_sound                    [propext, Classical.choice, Quot.sound]
+Bitblast.denote_eq_denoteExec              [propext, Quot.sound]
 LazySeq.lazy_seq_covers                    [propext, Quot.sound]
 LazySeq.lazy_seq_sound                     [propext, Quot.sound]
 LazySeq.lazy_seq_reach_iff                 [propext, Quot.sound]
@@ -313,7 +314,9 @@ bit-blaster uses different data structures.
   `CNF.dimacs` numbers CNF variable `v` as DIMACS variable `v+1`, so input bit
   `j` is DIMACS variable `2j+1`. `--eval` instead evaluates `Dag.eval` under
   `(rho (BASE WIDTH VALUE)*)` assignments; PRISM's C++ serializer is tested
-  against it.
+  against it. (The compiled `denote` is `denoteExec` through the proved `@[csimp]`
+  lemma `denote_eq_denoteExec`: it only avoids core's `x.toNat <<< s` for
+  huge left-shift amounts, which would abort the program.)
 - `prism-lrat-check CNF LRAT` parses DIMACS (strictly) and runs
   `Std.Tactic.BVDecide.LRAT.check`, the checker `certified_unsat` relies on.
   `prism-lrat-check --dag FORMULA CNF LRAT` rebuilds the CNF from the formula

@@ -110,6 +110,71 @@ def BVExpr.denote (ρ : Nat → Bool) : {w : Nat} → BVExpr w → BitVec w
   | _, .sdiv a b => smtSdiv (a.denote ρ) (b.denote ρ)
   | _, .srem a b => smtSrem (a.denote ρ) (b.denote ρ)
 
+/-- A left shift that never builds a huge intermediate number: core's
+`x <<< s` computes `x.toNat <<< s` first, which aborts the compiled program
+for shift amounts like `2^63`. Equal to `x <<< s` (`shlSafe_eq`). -/
+def shlSafe {n : Nat} (x : BitVec n) (s : Nat) : BitVec n := if s < n then x <<< s else 0#n
+
+theorem shlSafe_eq {n : Nat} (x : BitVec n) (s : Nat) : shlSafe x s = x <<< s := by
+  unfold shlSafe
+  split
+  · rfl
+  · apply BitVec.eq_of_getLsbD_eq
+    intro i hi
+    simp [BitVec.getLsbD_shiftLeft]
+    omega
+
+/-- The executable twin of `denote` (only the left shifts differ, through
+`shlSafe`); `denote_eq_denoteExec` makes the compiler use it, so
+`prism-bitblast --eval` runs `Dag.eval` without aborting on large shifts. -/
+def BVExpr.denoteExec (ρ : Nat → Bool) : {w : Nat} → BVExpr w → BitVec w
+  | w, .var base => bvOf w (fun i => ρ (base + i))
+  | _, .const v => v
+  | _, .not e => ~~~(e.denoteExec ρ)
+  | _, .and a b => a.denoteExec ρ &&& b.denoteExec ρ
+  | _, .or a b => a.denoteExec ρ ||| b.denoteExec ρ
+  | _, .xor a b => a.denoteExec ρ ^^^ b.denoteExec ρ
+  | _, .add a b => a.denoteExec ρ + b.denoteExec ρ
+  | _, .ite c a b => if (c.denoteExec ρ).getLsbD 0 then a.denoteExec ρ else b.denoteExec ρ
+  | _, .eq a b => BitVec.ofBool (a.denoteExec ρ == b.denoteExec ρ)
+  | _, .ult a b => BitVec.ofBool ((a.denoteExec ρ).ult (b.denoteExec ρ))
+  | _, .slt a b => BitVec.ofBool ((a.denoteExec ρ).slt (b.denoteExec ρ))
+  | _, .mul a b => a.denoteExec ρ * b.denoteExec ρ
+  | _, .sub a b => a.denoteExec ρ - b.denoteExec ρ
+  | _, .neg e => -(e.denoteExec ρ)
+  | _, .ule a b => BitVec.ofBool ((a.denoteExec ρ).ule (b.denoteExec ρ))
+  | _, .sle a b => BitVec.ofBool ((a.denoteExec ρ).sle (b.denoteExec ρ))
+  | _, .shl a b => shlSafe (a.denoteExec ρ) (b.denoteExec ρ).toNat
+  | _, .lshr a b => a.denoteExec ρ >>> b.denoteExec ρ
+  | _, .ashr a b => (a.denoteExec ρ).sshiftRight' (b.denoteExec ρ)
+  | _, .shlC k a => shlSafe (a.denoteExec ρ) k
+  | _, .lshrC k a => a.denoteExec ρ >>> k
+  | _, .ashrC k a => (a.denoteExec ρ).sshiftRight k
+  | _, .zext n a => (a.denoteExec ρ).setWidth n
+  | _, .sext n a => (a.denoteExec ρ).signExtend n
+  | _, .extract lo len a => (a.denoteExec ρ).extractLsb' lo len
+  | _, .concat a b => a.denoteExec ρ ++ b.denoteExec ρ
+  | _, .uaddo a b => BitVec.ofBool ((a.denoteExec ρ).uaddOverflow (b.denoteExec ρ))
+  | _, .saddo a b => BitVec.ofBool ((a.denoteExec ρ).saddOverflow (b.denoteExec ρ))
+  | _, .usubo a b => BitVec.ofBool ((a.denoteExec ρ).usubOverflow (b.denoteExec ρ))
+  | _, .ssubo a b => BitVec.ofBool ((a.denoteExec ρ).ssubOverflow (b.denoteExec ρ))
+  | _, .umulo a b => BitVec.ofBool ((a.denoteExec ρ).umulOverflow (b.denoteExec ρ))
+  | _, .smulHi a b => BitVec.ofBool (Bitblast.smulHi (a.denoteExec ρ) (b.denoteExec ρ))
+  | _, .smulLo a b => BitVec.ofBool (Bitblast.smulLo (a.denoteExec ρ) (b.denoteExec ρ))
+  | _, .udiv a b => smtUdiv (a.denoteExec ρ) (b.denoteExec ρ)
+  | _, .urem a b => a.denoteExec ρ % b.denoteExec ρ
+  | _, .sdiv a b => smtSdiv (a.denoteExec ρ) (b.denoteExec ρ)
+  | _, .srem a b => smtSrem (a.denoteExec ρ) (b.denoteExec ρ)
+
+theorem denote_eq_denoteExec : @BVExpr.denote = @BVExpr.denoteExec := by
+  funext ρ w e
+  induction e with
+  | shl a b iha ihb => simp only [BVExpr.denote, BVExpr.denoteExec, iha, ihb, shlSafe_eq, BitVec.shiftLeft_eq']
+  | shlC k a iha => simp only [BVExpr.denote, BVExpr.denoteExec, iha, shlSafe_eq]
+  | _ => simp only [BVExpr.denote, BVExpr.denoteExec, *]
+
+attribute [csimp] denote_eq_denoteExec
+
 /-- A 1-bit formula is satisfiable when some input makes it `1`. -/
 def FSat (φ : BVExpr 1) : Prop := ∃ ρ, φ.denote ρ = 1#1
 

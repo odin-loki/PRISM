@@ -42,6 +42,19 @@ struct ExternalSolver {
     Input input = Input::Smt2;
 };
 
+// Which bit-blaster makes the CNF of a certified query (roadmap 3.2 step 2).
+//   Lean: the Lean-proved bit-blaster (proofs/techniques, `prism-bitblast`,
+//         theorem toCNF_equisat / checkDag_sound); its certificate must be
+//         accepted by cake_lpr AND by Lean's verified LRAT checker
+//         (`prism-lrat-check --dag`).
+//   Z3:   Z3's simplify + bit-blast + tseitin-cnf tactics (unproved).
+//   Auto: Lean for certified requests whose formula is inside the proved
+//         fragment and whose tools are present; Z3 otherwise. Every fallback
+//         is written into the note and the certificate_info.
+// Plain (uncertified) requests use Z3's tactics unless Lean is forced.
+enum class Bitblaster { Auto, Lean, Z3 };
+std::string_view bitblaster_name(Bitblaster b);
+
 struct SolveOptions {
     double timeout_s = 30.0;
     bool certified = false;     // roadmap 3.2: try to produce PROVED-CERTIFIED
@@ -59,6 +72,7 @@ struct SolveOptions {
     std::string work_dir;       // CNF / LRAT / SMT2 files; empty: fresh temp dir
     bool keep_artifacts = false;
     std::uint64_t seed = 1;
+    Bitblaster bitblaster = Bitblaster::Auto;
 };
 
 struct SolveResult {
@@ -142,6 +156,40 @@ CheckOutcome check_lrat(const ToolInfo& checker, const std::filesystem::path& cn
                         const std::filesystem::path& lrat, double timeout_s);
 std::size_t lrat_steps(const std::filesystem::path& lrat);  // addition lines
 
+// ---- the Lean-proved bit-blaster (proofs/techniques; docs/PROOFS_TECHNIQUES.md) ----
+// A formula in the proved bit-blaster's input format: `(dag (def W BASE e)* e)`
+// (grammar in proofs/techniques/PrismTechniques/BitblastSexp.lean). Shared
+// Z3 subterms become definitions, so the text is linear in the Z3 DAG.
+struct LeanDag {
+    struct Input {
+        std::string name;
+        unsigned width = 1;
+        bool is_bool = false;
+        unsigned long long base = 0;  // Lean input bits base..base+width-1
+    };
+    std::string text;
+    std::vector<Input> inputs;
+    std::size_t defs = 0;
+};
+// The model as `(rho (BASE WIDTH VALUE)*)`, for `prism-bitblast --eval`;
+// nullopt when a value is malformed.
+std::optional<std::string> lean_rho(const LeanDag& dag, const std::map<std::string, std::string>& model);
+// C++ reference evaluator of the format (the semantics of `Dag.eval`), for
+// widths up to 128 bits; nullopt (with why) otherwise. Used to test the
+// serializer against Z3 when the Lean executables are not built.
+std::optional<bool> eval_lean_dag(const LeanDag& dag, const std::map<std::string, std::string>& model,
+                                  std::string* why = nullptr);
+// Run `prism-bitblast` on the DAG: writes <work>/query.dag and the exact
+// DIMACS text to <work>/query.cnf, returns the CNF with its variable map.
+std::optional<Cnf> lean_bitblast(const LeanDag& dag, const ToolInfo& exe, const std::filesystem::path& work,
+                                 double timeout_s, std::string* why = nullptr,
+                                 const std::atomic<bool>* stop = nullptr);
+// `prism-lrat-check --dag DAG CNF LRAT`: Lean's verified LRAT checker on the
+// CNF rebuilt by the proved bit-blaster (and byte-compared with CNF).
+CheckOutcome check_lrat_dag(const ToolInfo& checker, const std::filesystem::path& dag,
+                            const std::filesystem::path& cnf, const std::filesystem::path& lrat,
+                            double timeout_s);
+
 #ifdef PRISM_HAS_Z3
 struct Features {
     unsigned max_bv_width = 0;
@@ -163,6 +211,10 @@ std::string query_hash(z3::context& c, const z3::expr& f);
 // Bit-blast a certifiable formula to CNF with Z3's simplify, bit-blast and
 // tseitin-cnf tactics; nullopt (with why) when that is not possible.
 std::optional<Cnf> bitblast(z3::context& c, const z3::expr& f, std::string* why = nullptr);
+// Serialize a QF_BV formula into the proved bit-blaster's format; nullopt
+// (with why, naming the operator) when it uses anything outside the proved
+// fragment. Certified mode then falls back to bitblast() and says why.
+std::optional<LeanDag> to_lean_dag(const z3::expr& f, std::string* why = nullptr);
 // Evaluate the formula under the model (completion on) in Z3; true only if it
 // evaluates to true. A malformed value fails; names that are not constants of
 // the formula are ignored (they cannot change its value).
