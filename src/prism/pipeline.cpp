@@ -3,6 +3,7 @@
 #include "prism/cparse.hpp"
 #include "prism/journal.hpp"
 #include "prism/laws.hpp"
+#include "prism/sandbox.hpp"
 #include "prism/stages.hpp"
 #include "prism/taxonomy.hpp"
 
@@ -35,6 +36,41 @@ std::string rel_of(const std::filesystem::path& p, const std::filesystem::path& 
 }
 
 }  // namespace
+
+// Law 9 (docs/PLAN.md "Running on untrusted code"): what each stage may
+// execute. Same table as prism/pipeline.py EXEC_STAGES.
+//   none  = pure analysis / parse / compile-only (not listed)
+//   whole = only runs scanned code; NOTRUN without --allow-exec
+//   part  = the analysis half runs, the execute half is NOTRUN without it
+const std::map<std::string, std::string>& exec_stages() {
+    static const std::map<std::string, std::string> k{
+        {"sanitize", "whole"},  // compiles + runs `// prism: run` functions under ASan/UBSan/TSan
+        {"optional", "part"},   // klee (native external calls), .cocci script rules
+        {"polyglot", "part"},   // perl -c, cargo clippy, eslint (PgTool::executes)
+        {"fuzz", "part"},       // concrete oracle runs; compiled harness / AFL++ / libFuzzer do not
+        {"diff", "whole"},      // compiles + runs both functions
+        {"rapid", "part"},      // interpreter runs; gcc fallback does not
+        {"muttest", "part"},    // interpreter runs; gcc fallback does not
+        {"execute", "part"},    // concrete cex replay runs; LLM-written C does not
+        {"repair", "whole"},    // compiles + runs LLM-written candidates
+    };
+    return k;
+}
+
+// A "part" stage that held back its execute half says so once (Law 7).
+std::vector<Finding> exec_gate_note(const std::string& stage, std::vector<Finding> findings,
+                                    std::string_view what) {
+    bool marked = false, noted = false;
+    for (const auto& f : findings) {
+        if (auto it = f.extra.find("exec"); it != f.extra.end() && it->second == laws::NOTRUN)
+            marked = true;
+        if (auto it = f.extra.find("reason");
+            f.status == laws::NOTRUN && it != f.extra.end() && it->second == sandbox::EXEC_REASON)
+            noted = true;
+    }
+    if (marked && !noted) findings.push_back(sandbox::exec_notrun(stage, what));
+    return findings;
+}
 
 void apply_confidence(RunReport& report) {
     auto n_fun = report.functions.size();
@@ -139,6 +175,9 @@ void write_report_md(const RunReport& report, const std::filesystem::path& path)
 }
 
 RunReport run_pipeline(const Config& cfg) {
+    // Law 9: the exec policy holds for this run only (stages without a
+    // Config read it through sandbox::allowed()).
+    sandbox::Policy exec_policy(cfg.allow_exec);
     RunReport report;
     report.root = cfg.root.string();
     report.started = now_secs();
@@ -289,11 +328,18 @@ RunReport run_pipeline(const Config& cfg) {
     stage("harness", [&] { return run_harness_bmc(functions, cfg.unwind); });
     stage("concolic", [&] { return run_concolic(functions, 32); });
     stage("fuzz", [&] {
-        return run_fuse(functions, bmc_rec.findings, src_root, cfg.fuzz_budget, cfg.fuzz_iters, cfg.llm);
+        return exec_gate_note(
+            "fuzz",
+            run_fuse(functions, bmc_rec.findings, src_root, cfg.fuzz_budget, cfg.fuzz_iters, cfg.llm),
+            "fuzz (compiled harness, AFL++, libFuzzer)");
     });
     stage("diff", [&] { return run_diff(functions, src_root); });
-    stage("rapid", [&] { return run_rapid(functions, 64); });
-    stage("muttest", [&] { return run_muttest(functions, 32); });
+    stage("rapid", [&] {
+        return exec_gate_note("rapid", run_rapid(functions, 64), "rapid (gcc fallback harness)");
+    });
+    stage("muttest", [&] {
+        return exec_gate_note("muttest", run_muttest(functions, 32), "muttest (gcc fallback harness)");
+    });
     stage("ltl", [&] {
         std::vector<std::filesystem::path> specs;
         if (std::filesystem::exists(src_root)) {

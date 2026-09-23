@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import get_type_hints
 from unittest import mock
 
-from prism import laws
+from prism import laws, sandbox
 from prism.cparse import extract_functions
 from prism.models import Finding, FunctionInfo
 from prism.muttest import run_muttest
@@ -65,6 +65,10 @@ class TestMuttestSignature(unittest.TestCase):
 
 
 class TestMuttestHonesty(unittest.TestCase):
+    def setUp(self):
+        # Law 9: these tests drive the execute path on purpose (--allow-exec).
+        self.addCleanup(sandbox.set_allowed, sandbox.set_allowed(True))
+
     def test_killed_mutant_is_clean_not_a_proof(self):
         f = load("contract_add.c", "inc")
         self.assertIsNotNone(plan_trials(f, 4))

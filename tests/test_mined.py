@@ -272,6 +272,11 @@ class TestFuse(unittest.TestCase):
 
 @unittest.skipUnless(HAS_CC, "no C compiler")
 class TestDiff(unittest.TestCase):
+    def setUp(self):
+        # Law 9: the diff harness runs the planted functions (--allow-exec).
+        from prism import sandbox
+        self.addCleanup(sandbox.set_allowed, sandbox.set_allowed(True))
+
     def test_disagree_failed(self):
         funcs = []
         for p in (TD / "diff_a.c", TD / "diff_b.c"):

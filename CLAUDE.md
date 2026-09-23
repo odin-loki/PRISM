@@ -40,6 +40,13 @@ that parity, so when you change one engine, change the other.
 6. Pointer-parameter functions are not model-checked unguarded (`NEEDS-HARNESS`).
 7. A stage that cannot run writes that down. Nothing is skipped quietly.
 8. Never pass a flag that silently disables a check.
+9. Executing scanned code requires `--allow-exec` (`Config.allow_exec`, default
+   off). Without it any step that runs code from the scanned tree or the LLM
+   is `NOTRUN` with the hint (`prism/sandbox.py` / `src/prism/sandbox.cpp`
+   `exec_notrun`); with it binaries run in the sandbox (bwrap + rlimits).
+   sanitize calls only `// prism: run` functions. New exec-type tools get
+   `executes=True` in the polyglot table; new exec stages go in `EXEC_STAGES`
+   (both engines). Table: `docs/PLAN.md` "Running on untrusted code".
 
 Status vocabulary lives in `prism/laws.py` and `include/prism/laws.hpp`.
 

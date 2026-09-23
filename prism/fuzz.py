@@ -2,6 +2,11 @@
 
 COMPILE + RUN. A crash is certainty. Finding nothing is CLEAN, not a proof.
 POINTER functions are not harnessed.
+
+Law 9: the concrete oracle interprets and always runs; the compiled
+harness executes the scanned function, so it runs only under --allow-exec
+(prism.sandbox.allowed()) and then inside prism.sandbox. Held back, the
+finding carries extra.binary = extra.exec = NOTRUN.
 """
 
 from __future__ import annotations
@@ -17,7 +22,7 @@ import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from prism import laws
+from prism import laws, sandbox
 from prism.ai import LLM_INSTALL, LLM_UNAVAILABLE_MSG
 from prism import bmc
 from prism.concrete import decode_args, execute, interesting_seeds
@@ -151,8 +156,9 @@ def _compile(harness: Path, out_exe: Path) -> tuple[bool, str]:
 
 def _run(exe: Path, data: bytes, timeout: float = 1.0) -> tuple[str, str]:
     try:
-        p = subprocess.run(
-            [str(exe)], input=data, capture_output=True, timeout=timeout
+        # ASan/UBSan harness: no address-space cap (shadow memory).
+        p = sandbox.run_binary(
+            [str(exe)], scratch=exe.parent, timeout=timeout, input=data, limit_as=False,
         )
     except subprocess.TimeoutExpired:
         return "timeout", ""
@@ -315,7 +321,13 @@ def _binary_fuzz(
     iters: int,
     work: Path | None,
 ) -> dict:
-    """Optional compile+run. Failures are silent: concrete already decided."""
+    """Optional compile+run. Failures are silent: concrete already decided.
+
+    Law 9: without --allow-exec nothing is compiled or run; the finding
+    says so (extra.binary / extra.exec = NOTRUN).
+    """
+    if not sandbox.allowed():
+        return {"extra": {"binary": laws.NOTRUN, "exec": laws.NOTRUN}}
     cc = shutil.which("gcc") or shutil.which("clang")
     if not cc:
         return {}
@@ -370,6 +382,7 @@ def _binary_run(exe: Path, corpus: list[bytes], *, budget: float, iters: int) ->
     """
     t0 = time.time()
     n = 0
+    kind = sandbox.sandbox_kind()
     width = max(1, min(_RUN_WIDTH, iters))
     with ThreadPoolExecutor(max_workers=width) as pool:
         seeds = corpus[: max(1, iters)]
@@ -382,7 +395,8 @@ def _binary_run(exe: Path, corpus: list[bytes], *, budget: float, iters: int) ->
             for child, (st, detail) in zip(window, pool.map(lambda c: _run(exe, c), window)):
                 n += 1
                 if st == "crash":
-                    return {"crash": (child, detail), "extra": {"binary_iters": n}}
+                    return {"crash": (child, detail),
+                            "extra": {"binary_iters": n, "sandbox": kind}}
         while n < iters and (time.time() - t0) < budget:
             window = [
                 havoc(corpus[(n + j) % len(corpus)])
@@ -391,8 +405,9 @@ def _binary_run(exe: Path, corpus: list[bytes], *, budget: float, iters: int) ->
             for child, (st, detail) in zip(window, pool.map(lambda c: _run(exe, c), window)):
                 n += 1
                 if st == "crash":
-                    return {"crash": (child, detail), "extra": {"binary_iters": n}}
-    return {"extra": {"binary_iters": n}}
+                    return {"crash": (child, detail),
+                            "extra": {"binary_iters": n, "sandbox": kind}}
+    return {"extra": {"binary_iters": n, "sandbox": kind}}
 
 
 _RUN_WIDTH = max(1, min(4, os.cpu_count() or 1))

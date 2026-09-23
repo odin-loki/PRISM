@@ -33,6 +33,10 @@ struct Config {
     bool gui = false;
     // Explicit adapter binaries (--tool NAME=PATH). Searched before vendored/PATH.
     std::map<std::string, std::filesystem::path> tools;
+    // Law 9: running code from the scanned tree (compiled harnesses, sanitizer
+    // builds, perl -c, cargo clippy, eslint) or from the LLM is opt-in
+    // (--allow-exec). Default: those steps are NOTRUN. prism/config.py allow_exec.
+    bool allow_exec = false;
 
     PRISM_API bool want(std::string_view name) const;
     PRISM_API std::optional<std::filesystem::path> which(
@@ -43,6 +47,9 @@ struct Config {
 };
 
 PRISM_API Config default_config();
+// True when p is root or lies below it. Law 9: vendored adapter binaries are
+// never taken from inside the scanned tree without --allow-exec.
+PRISM_API bool path_within(const std::filesystem::path& p, const std::filesystem::path& root);
 PRISM_API std::string adapter_install(std::string_view stage);
 
 }  // namespace prism

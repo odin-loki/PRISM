@@ -15,6 +15,15 @@ Status mapping (same as the C++ engine, src/prism/polyglot.cpp):
   tool crashed/unusable -> ERROR    (tail of its output)
   tool timed out        -> TIMEOUT
   tool missing          -> NOTRUN   (extra.install)
+  tool executes code    -> NOTRUN   without --allow-exec (Law 9; Tool.executes)
+
+Tool.executes marks a tool that runs code from the scanned tree while
+"checking" it: ``perl -c`` runs BEGIN/use blocks, ``cargo clippy`` builds
+build.rs and proc macros, ``eslint`` loads the project's eslint.config.js.
+The rest only parse or type-check (python compile(), ruff, pyflakes, mypy
+with --config-file= so a project mypy.ini cannot load plugins, node --check,
+tsc with explicit files, bash -n, shellcheck, gofmt -e, ruby -wc, php -l,
+luac -p, yamllint).
 """
 
 from __future__ import annotations
@@ -28,7 +37,7 @@ import subprocess
 import sys
 import tempfile
 
-from prism import laws
+from prism import laws, sandbox
 from prism.config import Config, resolve_adapter
 from prism.models import Finding
 
@@ -119,6 +128,7 @@ class Tool:
     timeout: float = 120.0
     cwd_marker: str = ""       # run once per dir holding this file (e.g. Cargo.toml)
     unconfigured: str = ""     # output regex meaning "project not set up for this tool"
+    executes: bool = False     # runs code from the scanned tree (Law 9: --allow-exec)
 
 
 @dataclass(frozen=True)
@@ -149,7 +159,7 @@ CHECKS: tuple[Check, ...] = (
         Tool("mypy", ("mypy",), ("{exe}", "--ignore-missing-imports", "--no-error-summary",
                                  "--show-column-numbers", "--no-color-output",
                                  "--no-incremental", "--cache-dir={devnull}",
-                                 "{files}"),
+                                 "--config-file=", "{files}"),
              r"^(?P<file>.+?):(?P<line>\d+):(?:(?P<col>\d+):)? (?P<sev>error): (?P<msg>.+?)(?:\s+\[(?P<rule>[\w-]+)\])?$",
              timeout=600.0),
     ), "pip install mypy"),
@@ -167,7 +177,8 @@ CHECKS: tuple[Check, ...] = (
     Check("javascript-lint", ("javascript", "typescript"), "lint", (
         Tool("eslint", ("eslint",), ("{exe}", "--format", "unix", "{files}"),
              r"^(?P<file>.+?):(?P<line>\d+):(?P<col>\d+): (?P<msg>.+?)(?: \[(?P<sev>Error|Warning)/(?P<rule>[^\]]+)\])?$",
-             unconfigured=r"couldn't find (?:a|an) (?:eslint\.config|configuration file)"),
+             unconfigured=r"couldn't find (?:a|an) (?:eslint\.config|configuration file)",
+             executes=True),
     ), "npm install -g eslint  (needs an eslint.config.* in the project)"),
     Check("shell-syntax", ("shell",), "syntax", (
         Tool("bash", ("bash",), ("{exe}", "-n", "{file}"),
@@ -183,7 +194,7 @@ CHECKS: tuple[Check, ...] = (
     Check("rust-lint", ("rust",), "lint", (
         Tool("cargo-clippy", ("cargo",), ("{exe}", "clippy", "--quiet", "--message-format=short"),
              r"^(?P<file>[^\s:][^:]*?\.rs):(?P<line>\d+):(?P<col>\d+): (?P<sev>error|warning)(?:\[(?P<rule>[^\]]+)\])?: (?P<msg>.+)$",
-             ok_rcs=(0, 101), timeout=900.0, cwd_marker="Cargo.toml"),
+             ok_rcs=(0, 101), timeout=900.0, cwd_marker="Cargo.toml", executes=True),
     ), "install Rust (rustup component add clippy); needs a Cargo.toml"),
     Check("ruby-syntax", ("ruby",), "syntax", (
         Tool("ruby", ("ruby",), ("{exe}", "-wc", "{file}"),
@@ -198,7 +209,7 @@ CHECKS: tuple[Check, ...] = (
     Check("perl-syntax", ("perl",), "syntax", (
         Tool("perl", ("perl",), ("{exe}", "-c", "{file}"),
              r"^(?P<msg>.+?) at (?P<file>.+?) line (?P<line>\d+)[.,]",
-             per_file=True, ok_rcs=(0,)),
+             per_file=True, ok_rcs=(0,), executes=True),
     ), "install Perl"),
     Check("lua-syntax", ("lua",), "syntax", (
         Tool("luac", ("luac", "luac5.4", "luac5.3"), ("{exe}", "-p", "{file}"),
@@ -385,12 +396,21 @@ def _invocations(tool: Tool, files: list[Path]) -> list[tuple[list[str], Path | 
 
 def run_check(check: Check, files: list[Path], root: Path, cfg: Config) -> list[Finding]:
     tool = exe = None
+    held: Tool | None = None  # present, but executes scanned code (Law 9)
+    allow = bool(getattr(cfg, "allow_exec", False))
     for t in check.tools:
-        exe = _resolve(t, cfg)
-        if exe:
-            tool = t
-            break
+        found = _resolve(t, cfg)
+        if not found:
+            continue
+        if t.executes and not allow:
+            held = held or t
+            continue
+        tool, exe = t, found
+        break
     langs = "/".join(check.languages)
+    if (tool is None or exe is None) and held is not None:
+        return [sandbox.exec_notrun(STAGE, f"{check.group} ({held.name})",
+                                    tool=held.name, check=check.group)]
     if tool is None or exe is None:
         names = " / ".join(t.name for t in check.tools)
         return [_finding(laws.NOTRUN, "", None, "",

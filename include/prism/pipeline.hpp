@@ -5,6 +5,7 @@
 #include "prism/models.hpp"
 
 #include <filesystem>
+#include <map>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -22,6 +23,13 @@ PRISM_API void write_report_md(const RunReport& report, const std::filesystem::p
 PRISM_API void apply_confidence(RunReport& report);
 // llm stage is READS. A lying backend cannot COVER or prove.
 PRISM_API std::vector<Finding> llm_forced_reads(std::vector<Finding> findings);
+// Law 9: stage -> "whole" | "part" (prism/pipeline.py EXEC_STAGES). Stages
+// not listed execute nothing from the scanned tree.
+PRISM_API const std::map<std::string, std::string>& exec_stages();
+// Appends the stage-level --allow-exec NOTRUN row when a finding carries
+// extra.exec = NOTRUN and no such row exists yet (prism/pipeline.py exec_gate_note).
+PRISM_API std::vector<Finding> exec_gate_note(const std::string& stage, std::vector<Finding> findings,
+                                              std::string_view what);
 
 // Same version string as the Python engine (prism/__init__.py __version__).
 inline constexpr const char* PRISM_VERSION = "0.1.0";

@@ -162,25 +162,60 @@ static bool is_built_exe(const fs::path& p) {
 #endif
 }
 
+// True when p is root or lies below it (both made canonical).
+bool path_within(const fs::path& p, const fs::path& root) {
+    std::error_code ec;
+    auto cp = fs::weakly_canonical(fs::absolute(p, ec), ec);
+    auto cr = fs::weakly_canonical(fs::absolute(root, ec), ec);
+    auto it = cp.begin();
+    for (auto rt = cr.begin(); rt != cr.end(); ++rt, ++it) {
+        if (rt->empty()) continue;  // trailing separator
+        if (it == cp.end() || *it != *rt) return false;
+    }
+    return true;
+}
+
+static fs::path self_dir() {
+#ifdef _WIN32
+    wchar_t buf[MAX_PATH]{};
+    DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH);
+    if (n > 0 && n < MAX_PATH) return fs::path(buf).parent_path();
+#else
+    std::error_code ec;
+    auto exe = fs::read_symlink("/proc/self/exe", ec);
+    if (!ec) return exe.parent_path();
+#endif
+    return {};
+}
+
+// The PRISM checkout that holds third_party/SOURCES.md: searched from the
+// prism executable's directory, then the cwd. Law 9: a root inside the
+// scanned tree is refused (a hostile tree could plant third_party/SOURCES.md
+// and third_party/esbmc/bin/esbmc) unless the user passed --allow-exec.
 static fs::path find_repo_root(const Config& cfg) {
-    std::vector<fs::path> starts{cfg.root, fs::current_path()};
+    std::vector<fs::path> starts{self_dir(), fs::current_path()};
     for (auto p : starts) {
         for (int i = 0; i < 8 && !p.empty(); ++i) {
             std::error_code ec;
-            if (fs::exists(p / "third_party" / "SOURCES.md", ec)) return p;
+            if (fs::exists(p / "third_party" / "SOURCES.md", ec)) {
+                if (cfg.allow_exec || !path_within(p, cfg.root)) return p;
+                break;
+            }
             auto parent = p.parent_path();
             if (parent == p) break;
             p = std::move(parent);
         }
     }
-    return fs::current_path();
+    return {};
 }
 
 static std::optional<fs::path> find_vendored_exe(const Config& cfg, std::string_view stage,
                                                  std::initializer_list<std::string_view> names) {
     const char* vendor = vendor_dir_for(stage);
     if (!vendor) return std::nullopt;
-    auto root = find_repo_root(cfg) / "third_party" / vendor;
+    auto repo = find_repo_root(cfg);
+    if (repo.empty()) return std::nullopt;
+    auto root = repo / "third_party" / vendor;
     std::error_code ec;
     if (!fs::is_directory(root, ec) || ec) return std::nullopt;
     static const char* kSubs[] = {

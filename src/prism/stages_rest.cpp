@@ -3,6 +3,7 @@
 #include "prism/config.hpp"
 #include "prism/laws.hpp"
 #include "prism/regex.hpp"
+#include "prism/sandbox.hpp"
 #include "prism/simd.hpp"
 
 #ifdef _WIN32
@@ -444,26 +445,24 @@ std::wstring wide_utf8(const std::string& s) {
     MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()), w.data(), n);
     return w;
 }
-std::string quote_win(const std::string& a) {
-    if (a.find_first_of(" \t\"") == std::string::npos) return a;
-    std::string o = "\"";
-    for (char c : a) {
-        if (c == '"') o += "\\\"";
-        else o += c;
-    }
-    o += '"';
-    return o;
-}
 ProcRun win_create_process(const std::vector<std::string>& args, const std::string& input, double timeout_s) {
     ProcRun r;
     if (args.empty()) {
         r.err = "no argv";
         return r;
     }
+    // CommandLineToArgvW quoting (sandbox::windows_command_line); a .bat/.cmd
+    // target runs through cmd.exe, so it gets cmd quoting or is refused.
     std::string cl;
-    for (std::size_t i = 0; i < args.size(); ++i) {
-        if (i) cl += ' ';
-        cl += quote_win(args[i]);
+    if (sandbox::is_batch_file(args[0])) {
+        auto bl = sandbox::batch_command_line(args);
+        if (!bl) {
+            r.err = "refusing to pass %, !, \" or a newline to a batch file";
+            return r;
+        }
+        cl = *bl;
+    } else {
+        cl = sandbox::windows_command_line(args);
     }
     SECURITY_ATTRIBUTES sa{};
     sa.nLength = sizeof sa;
@@ -540,8 +539,12 @@ ProcRun win_create_process(const std::vector<std::string>& args, const std::stri
 }
 #endif
 
-ProcRun run_argv(const std::vector<std::string>& args, const std::string& input, double timeout_s) {
+// limits: rlimits applied in the forked child (Law 9 sandbox for built
+// binaries; the caller wraps argv with sandbox::wrap_argv). Default: none.
+ProcRun run_argv(const std::vector<std::string>& args, const std::string& input, double timeout_s,
+                 const sandbox::Limits& limits = sandbox::Limits()) {
 #ifdef _WIN32
+    (void)limits;  // no rlimits on Windows (sandbox kind "none")
     return win_create_process(args, input, timeout_s);
 #else
     ProcRun r;
@@ -586,6 +589,7 @@ ProcRun run_argv(const std::vector<std::string>& args, const std::string& input,
         return r;
     }
     if (pid == 0) {
+        sandbox::apply_child_limits(limits);
         ::dup2(in_p[0], STDIN_FILENO);
         ::dup2(out_p[1], STDOUT_FILENO);
         ::dup2(err_p[1], STDERR_FILENO);
@@ -2770,7 +2774,10 @@ Finding fuzz_function(const FunctionInfo& fn, const fs::path& src, double budget
     auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     double remain = std::max(0.05, budget - elapsed);
     int bin_iters = std::min(32, std::max(1, iters));
-    auto cc = Config{}.which({"gcc", "clang"});
+    // Law 9: the compiled harness runs the scanned function; without
+    // --allow-exec only the concrete oracle above ran.
+    const bool exec_ok = sandbox::allowed();
+    auto cc = exec_ok ? Config{}.which({"gcc", "clang"}) : std::nullopt;
     if (cc && fs::exists(src)) {
         auto td = fs::temp_directory_path() / ("prism_fuzzbin_" + std::to_string(std::random_device{}()));
         fs::create_directories(td);
@@ -2821,6 +2828,7 @@ Finding fuzz_function(const FunctionInfo& fn, const fs::path& src, double budget
                 }
                 auto f = make_find("fuzz", laws::CRASH, fn, "FUZZ-CRASH", "crash on " + hex + "…",
                                    laws::STRENGTH_FINDS);
+                f.extra["sandbox"] = sandbox::kind();
                 std::string full;
                 for (auto b : child) {
                     char buf[8];
@@ -2864,7 +2872,8 @@ Finding fuzz_function(const FunctionInfo& fn, const fs::path& src, double budget
                 ++n;
                 std::string in(corpus[static_cast<std::size_t>(k)].begin(),
                                corpus[static_cast<std::size_t>(k)].end());
-                auto rr = run_argv({exe.string()}, in, 1.0);
+                auto rr = run_argv(sandbox::wrap_argv({exe.string()}, td), in, 1.0,
+                                   sandbox::limits_for(1.0, /*limit_as=*/false));
                 if (is_bin_crash(rr))
                     return bin_crash(corpus[static_cast<std::size_t>(k)], rr.err, n);
             }
@@ -2877,7 +2886,8 @@ Finding fuzz_function(const FunctionInfo& fn, const fs::path& src, double budget
                 havoc(child.data(), child.size(), ++hbin);
                 ++n;
                 std::string in(child.begin(), child.end());
-                auto rr = run_argv({exe.string()}, in, 1.0);
+                auto rr = run_argv(sandbox::wrap_argv({exe.string()}, td), in, 1.0,
+                                   sandbox::limits_for(1.0, /*limit_as=*/false));
                 if (is_bin_crash(rr)) return bin_crash(child, rr.err, n);
             }
             auto f = make_find("fuzz", laws::CLEAN, fn, "",
@@ -2891,6 +2901,7 @@ Finding fuzz_function(const FunctionInfo& fn, const fs::path& src, double budget
             f.extra["stall"] = extra_stall;
             f.extra["oracle"] = "concrete";
             f.extra["binary_iters"] = std::to_string(n);
+            f.extra["sandbox"] = sandbox::kind();
             return f;
         }
     }
@@ -2904,6 +2915,10 @@ Finding fuzz_function(const FunctionInfo& fn, const fs::path& src, double budget
     f.extra["noseed"] = extra_noseed;
     f.extra["stall"] = extra_stall;
     f.extra["oracle"] = "concrete";
+    if (!exec_ok) {
+        f.extra["binary"] = std::string(laws::NOTRUN);
+        f.extra["exec"] = std::string(laws::NOTRUN);
+    }
     return f;
 }
 
@@ -3419,6 +3434,14 @@ std::optional<Finding> run_afl_fuzz(const FunctionInfo& fn, const fs::path& src,
         if (st != laws::NOTRUN) f.extra["engine"] = "afl";
         return f;
     };
+    if (!sandbox::allowed()) {
+        // Law 9: the harness runs the scanned function.
+        auto f = sandbox::exec_notrun("fuse", "AFL++ harness", {{"exec", std::string(laws::NOTRUN)}});
+        f.file = fn.file;
+        f.function = fn.name;
+        f.line = fn.line;
+        return f;
+    }
     auto cc = Config{}.which({"gcc", "clang"});
     if (!cc) {
         auto f = afl_base(laws::NOTRUN, "", "AFL: no C compiler on PATH");
@@ -3472,9 +3495,10 @@ std::optional<Finding> run_afl_fuzz(const FunctionInfo& fn, const fs::path& src,
     env_setdefault("AFL_SKIP_CPUFREQ", "1");
     env_setdefault("AFL_NO_AFFINITY", "1");
     int vsec = std::max(1, static_cast<int>(timeout));
-    run_argv({afl->string(), "-i", in_dir.string(), "-o", out_dir.string(), "-V", std::to_string(vsec),
-              "--", exe.string()},
-             {}, timeout + 10.0);
+    run_argv(sandbox::wrap_argv({afl->string(), "-i", in_dir.string(), "-o", out_dir.string(), "-V",
+                                 std::to_string(vsec), "--", exe.string()},
+                                td),
+             {}, timeout + 10.0, sandbox::limits_for(timeout + 10.0, /*limit_as=*/false));
     std::vector<fs::path> crash_dirs{out_dir / "crashes", out_dir / "default" / "crashes"};
     for (auto& cdir : crash_dirs) {
         std::error_code ec;
@@ -3573,6 +3597,15 @@ Finding run_libfuzzer(const FunctionInfo& fn, const fs::path& src, double timeou
     if (body_needs_pointer_harness(fn.body))
         return lf_base(laws::NEEDS_HARNESS, "",
                        "local pointer or heap object: libFuzzer harness would invent a buffer");
+    if (!sandbox::allowed()) {
+        // Law 9: the libFuzzer binary runs the scanned function.
+        auto f = sandbox::exec_notrun("libfuzzer", "libFuzzer harness",
+                                      {{"exec", std::string(laws::NOTRUN)}});
+        f.file = fn.file;
+        f.function = fn.name;
+        f.line = fn.line;
+        return f;
+    }
     auto clang = Config{}.which({"clang", "clang.exe"});
     if (!clang) {
         auto f = lf_base(laws::NOTRUN, "", "clang not on PATH");
@@ -3628,8 +3661,12 @@ Finding run_libfuzzer(const FunctionInfo& fn, const fs::path& src, double timeou
         seed.write(zeros.data(), static_cast<std::streamsize>(zeros.size()));
     }
     int vsec = std::max(1, static_cast<int>(timeout));
-    auto r = run_argv({exe.string(), corpus.string(), "-max_total_time=" + std::to_string(vsec), "-timeout=1"},
-                      {}, timeout + 10.0);
+    // crash-* artifacts land in the scratch dir (the jail's only writable dir).
+    auto r = run_argv(sandbox::wrap_argv({exe.string(), corpus.string(),
+                                          "-max_total_time=" + std::to_string(vsec), "-timeout=1",
+                                          "-artifact_prefix=" + (td / "").string()},
+                                         td),
+                      {}, timeout + 10.0, sandbox::limits_for(timeout + 10.0, /*limit_as=*/false));
     std::vector<fs::path> crashes;
     std::error_code ec;
     for (auto it = fs::recursive_directory_iterator(td, ec); it != fs::recursive_directory_iterator();
@@ -3753,6 +3790,12 @@ Finding fuse_one(const FunctionInfo& fn, const std::vector<Finding>& bmc_finding
         if (last.extra.contains("iters")) extra["fuzz_iters"] = last.extra["iters"];
         if (last.extra.contains("corpus")) extra["corpus"] = last.extra["corpus"];
         if (last.extra.contains("new_cov")) extra["new_cov"] = last.extra["new_cov"];
+        if (last.extra.contains("sandbox")) extra["sandbox"] = last.extra["sandbox"];
+        if (auto ex = last.extra.find("exec"); ex != last.extra.end() && ex->second == laws::NOTRUN) {
+            // Law 9: the compiled-harness half was held back (no --allow-exec).
+            extra["binary"] = std::string(laws::NOTRUN);
+            extra["exec"] = std::string(laws::NOTRUN);
+        }
         if (last.status == laws::CRASH || last.status == laws::ERROR || last.status == laws::NEEDS_HARNESS) {
             for (auto& [k, v] : extra) last.extra[k] = v;
             return last;
@@ -3765,6 +3808,7 @@ Finding fuse_one(const FunctionInfo& fn, const std::vector<Finding>& bmc_finding
                     extra["afl"] = "NOTRUN";
                     extra.erase("engine");
                     if (afl_last->extra.contains("install")) extra["install"] = afl_last->extra["install"];
+                    if (afl_last->extra.contains("exec")) extra["exec"] = afl_last->extra["exec"];
                 } else if (afl_last->status == laws::CRASH || afl_last->status == laws::ERROR) {
                     extra["engine"] = "afl";
                     for (auto& [k, v] : extra) afl_last->extra[k] = v;
@@ -3783,6 +3827,7 @@ Finding fuse_one(const FunctionInfo& fn, const std::vector<Finding>& bmc_finding
                 if (eng != extra.end() && eng->second == "libfuzzer") extra.erase(eng);
                 if (lf_last.extra.contains("install")) extra["install"] = lf_last.extra["install"];
                 else extra["install"] = kLibfuzzerInstall;
+                if (lf_last.extra.contains("exec")) extra["exec"] = lf_last.extra["exec"];
             } else if (lf_last.status == laws::NEEDS_HARNESS) {
                 for (auto& [k, v] : extra) lf_last.extra[k] = v;
                 return lf_last;
@@ -4364,7 +4409,11 @@ std::vector<std::vector<uint8_t>> chatfuzz_mutants(LlamaEngine& engine, const Fu
     return out;
 }
 
-nlohmann::json sandbox_run(const std::string& source, double timeout = 8.0) {
+// Law 9: the program is LLM-written; it runs only with --allow-exec and then
+// inside the sandbox (bubblewrap when available, rlimits always).
+nlohmann::json sandbox_run(const std::string& source, double timeout = 8.0, bool allow_exec = false) {
+    if (!allow_exec)
+        return {{"ok", false}, {"error", "exec-disabled"}, {"stdout", ""}, {"stderr", ""}, {"code", nullptr}};
     auto cc = which_cc();
     if (!cc) return {{"ok", false}, {"error", "no compiler"}, {"stdout", ""}, {"stderr", ""}, {"code", nullptr}};
     auto td = fs::temp_directory_path() / ("prism_oci_" + std::to_string(std::random_device{}()));
@@ -4395,7 +4444,7 @@ nlohmann::json sandbox_run(const std::string& source, double timeout = 8.0) {
                 {"stdout", cr.out.substr(0, 2000)},
                 {"stderr", cr.err.substr(0, 2000)},
                 {"code", cr.rc}};
-    auto rr = run_argv({exe.string()}, {}, timeout);
+    auto rr = run_argv(sandbox::wrap_argv({exe.string()}, td), {}, timeout, sandbox::limits_for(timeout));
     bool ok = rr.rc == 0 && !rr.timeout;
     bool crashed = rr.crashed || rr.rc < 0 || static_cast<unsigned>(rr.rc) >= 0xC0000000u ||
                    rr.err.find("Aborted") != std::string::npos;
@@ -4409,7 +4458,8 @@ nlohmann::json sandbox_run(const std::string& source, double timeout = 8.0) {
             {"error", err},
             {"stdout", rr.out.substr(0, 2000)},
             {"stderr", rr.err.substr(0, 2000)},
-            {"code", rr.timeout ? nlohmann::json(nullptr) : nlohmann::json(rr.rc)}};
+            {"code", rr.timeout ? nlohmann::json(nullptr) : nlohmann::json(rr.rc)},
+            {"sandbox", sandbox::kind()}};
 }
 
 std::string sandbox_err(const nlohmann::json& result) {
@@ -4420,7 +4470,7 @@ std::string sandbox_err(const nlohmann::json& result) {
 
 std::string sandbox_verdict(const nlohmann::json& result) {
     auto err = sandbox_err(result);
-    if (err == "no compiler") return std::string(laws::NOTRUN);
+    if (err == "no compiler" || err == "exec-disabled") return std::string(laws::NOTRUN);
     if (result.value("ok", false)) return std::string(laws::CLEAN);
     if (err == "crash") return std::string(laws::CRASH);
     return std::string(laws::FAILED);
@@ -4488,7 +4538,8 @@ std::string bmc_status_of_source(const std::string& source, int unwind = 2) {
     return st;
 }
 
-std::vector<Finding> interpreter_loop(LlamaEngine& engine, const std::string& prompt, int rounds) {
+std::vector<Finding> interpreter_loop(LlamaEngine& engine, const std::string& prompt, int rounds,
+                                      bool allow_exec) {
     if (!engine.available()) {
         auto f = nr("execute", LLM_UNAVAILABLE_MSG);
         f.extra["install"] = LLM_INSTALL;
@@ -4499,6 +4550,8 @@ std::vector<Finding> interpreter_loop(LlamaEngine& engine, const std::string& pr
         f.extra["install"] = "install gcc or clang";
         return {f};
     }
+    if (!allow_exec)
+        return {sandbox::exec_notrun("execute", "execute (LLM-written C)", {{"half", "llm"}})};
     std::vector<std::pair<std::string, std::string>> messages{{"system", SYSTEM_HARNESS}, {"user", prompt}};
     std::string last_src;
     bool ran = false;
@@ -4521,7 +4574,7 @@ std::vector<Finding> interpreter_loop(LlamaEngine& engine, const std::string& pr
             continue;
         }
         last_src = src;
-        auto result = sandbox_run(src);
+        auto result = sandbox_run(src, 8.0, /*allow_exec=*/true);
         ran = true;
         auto verdict = sandbox_verdict(result);
         if (verdict == laws::NOTRUN) {
@@ -5896,6 +5949,14 @@ Finding diff_pair(const FunctionInfo& a, const FunctionInfo& b, const fs::path&)
         base.message = "parameter lists differ; same bytes would not mean the same arguments";
         return base;
     }
+    if (!sandbox::allowed()) {
+        // Law 9: the harness compiles and runs both scanned functions.
+        auto f = sandbox::exec_notrun("diff", "diff " + a.name + "/" + b.name);
+        f.file = a.file;
+        f.function = a.name + "/" + b.name;
+        f.line = a.line;
+        return f;
+    }
     auto cc = Config{}.which({"gcc", "clang"});
     if (!cc) {
         base.status = std::string(laws::NOTRUN);
@@ -5925,7 +5986,7 @@ Finding diff_pair(const FunctionInfo& a, const FunctionInfo& b, const fs::path&)
     bool timed_out = false;
     for (auto& data : diff_inputs(nbytes)) {
         std::string in(data.begin(), data.end());
-        auto rr = run_argv({exe.string()}, in, 1.0);
+        auto rr = run_argv(sandbox::wrap_argv({exe.string()}, td), in, 1.0, sandbox::limits_for(1.0));
         bool disagree = rr.rc == 2 || rr.err.starts_with("DIFF");
         if (disagree) {
             fs::remove_all(td);
@@ -6911,7 +6972,7 @@ std::vector<Finding> execute_cex(const std::vector<Finding>& fails, const std::v
                                  ":" + (f0.line ? std::to_string(*f0.line) : "0") + " " +
                                  (f0.function ? *f0.function : "") + " " + f0.cls + ": " + f0.message +
                                  "\ncounterexample: " + f0.counterexample;
-            auto extra = interpreter_loop(engine, prompt, 2);
+            auto extra = interpreter_loop(engine, prompt, 2, cfg.allow_exec);
             out.insert(out.end(), extra.begin(), extra.end());
         }
     }
@@ -6929,6 +6990,11 @@ std::vector<Finding> rlef_repair(const Finding& fail, const Config& cfg) {
     if (!which_cc()) {
         auto f = nr("repair", "gcc/clang not on PATH", std::string(laws::STRENGTH_FINDS));
         f.extra["install"] = "install gcc or clang";
+        return {f};
+    }
+    if (!cfg.allow_exec) {
+        auto f = sandbox::exec_notrun("repair", "repair (LLM-written candidates)");
+        f.strength = std::string(laws::STRENGTH_READS);
         return {f};
     }
     fs::path src_path = fail.file;
@@ -6984,7 +7050,7 @@ std::vector<Finding> rlef_repair(const Finding& fail, const Config& cfg) {
             messages.push_back({"user", "Reply with a complete corrected C file only."});
             continue;
         }
-        auto result = sandbox_run(src);
+        auto result = sandbox_run(src, 8.0, /*allow_exec=*/true);
         auto err = sandbox_err(result);
         if (err == "no compiler") {
             auto f = nr("repair", "gcc/clang not on PATH", std::string(laws::STRENGTH_FINDS));

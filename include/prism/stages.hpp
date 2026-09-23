@@ -28,6 +28,11 @@ std::vector<Finding> run_pbsd_lints(const std::vector<std::filesystem::path>& pa
                                     const Config& cfg);
 std::vector<Finding> run_sanitize(const std::vector<std::filesystem::path>& paths,
                                   const Config& cfg);
+// Law 9 (sanitize calls only what the author opted in): `// prism: run` on
+// the definition or in the comment block directly above it (1-based line).
+// Same rule as the Python engine prism/sanitize.py marked_run / _opted_in_callable.
+bool marked_run(const std::vector<std::string>& lines, int line);
+std::optional<std::string> opted_in_callable(const std::filesystem::path& path);
 std::vector<Finding> run_optional_tools(const std::vector<std::filesystem::path>& paths,
                                         const Config& cfg);
 // Every language in the tree (prism/polyglot.py): built-in conflict-marker /

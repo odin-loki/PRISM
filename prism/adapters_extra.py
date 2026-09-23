@@ -20,7 +20,7 @@ import sys
 import tempfile
 from typing import Any
 
-from prism import laws
+from prism import laws, sandbox
 from prism.config import Config, adapter_install, ordered_map, resolve_adapter
 from prism.models import Finding, FunctionInfo
 
@@ -46,6 +46,18 @@ _PKG_COCCI = Path(__file__).resolve().parent / "cocci"
 
 _SPATCH_HIT_RE = re.compile(r"^(.+):(\d+):\s*(.*)$")
 
+# A .cocci rule with a script/initialize/finalize block runs embedded
+# Python/OCaml inside spatch (Law 9). Same regex in src/prism/adapters.cpp.
+_COCCI_SCRIPT_RE = re.compile(r"^\s*@\s*(?:script|initialize|finalize)\s*:", re.M)
+
+
+def cocci_has_script(rule: Path) -> bool:
+    """True when the rule would execute embedded code in spatch."""
+    try:
+        return bool(_COCCI_SCRIPT_RE.search(rule.read_text(encoding="utf-8", errors="replace")))
+    except OSError:
+        return False
+
 
 def _not_run(stage: str, binary: str, how: str) -> Finding:
     return Finding(
@@ -60,6 +72,12 @@ def _run(cmd: list[str], timeout: float, cwd: Path | None = None) -> subprocess.
         cmd, capture_output=True, text=True, encoding="utf-8",
         errors="replace", timeout=timeout, cwd=cwd,
     )
+
+
+def _run_harness(cmd: list[str], timeout: float, cwd: Path) -> subprocess.CompletedProcess:
+    """Run a built harness (Law 9): prism.sandbox jail + rlimits, cwd as scratch."""
+    return sandbox.run_binary(cmd, scratch=cwd, timeout=timeout, text=True, cwd=cwd,
+                              limit_as=False)
 
 
 def _is_fake_adapter(text: str) -> bool:
@@ -393,6 +411,11 @@ def _run_libfuzzer(
             message="local pointer or heap object: libFuzzer harness would invent a buffer",
         )
 
+    if not sandbox.allowed():
+        # Law 9: the libFuzzer binary runs the scanned function.
+        return sandbox.exec_notrun("libfuzzer", "libFuzzer harness", file=fn.file,
+                                   function=fn.name, line=fn.line, exec=laws.NOTRUN)
+
     clang = shutil.which("clang")
     if not clang:
         return Finding(
@@ -441,17 +464,17 @@ def _run_libfuzzer(
                 extra={"exe": clang},
             )
 
-        extra = {"engine": "libfuzzer", "exe": clang}
+        extra = {"engine": "libfuzzer", "exe": clang, "sandbox": sandbox.sandbox_kind()}
         corpus = work / "corpus"
         corpus.mkdir(exist_ok=True)
         from prism.fuzz import param_nbytes
         (corpus / "seed").write_bytes(b"\x00" * param_nbytes(fn.params))
         try:
-            r = _run(
+            r = _run_harness(
                 [str(exe), str(corpus), f"-max_total_time={max(1, int(timeout))}",
                  "-timeout=1"],
-                timeout=timeout + 10,
-                cwd=work,
+                timeout + 10,
+                work,
             )
         except subprocess.TimeoutExpired:
             r = None
@@ -546,6 +569,16 @@ def _parse_spatch_hits(text: str) -> list[tuple[str, int | None, str]]:
 
 def _run_spatch(exe: str, paths: list[Path], cfg: Config) -> list[Finding]:
     rules = _cocci_rules(paths)
+    held: list[Finding] = []
+    if not getattr(cfg, "allow_exec", False):
+        for rule in [r for r in rules if cocci_has_script(r)]:
+            held.append(sandbox.exec_notrun(
+                "spatch", f"spatch ({rule.name} has a script block)",
+                exe=exe, rule=rule.name,
+            ))
+        rules = [r for r in rules if not cocci_has_script(r)]
+    if not rules and held:
+        return held
     if not rules:
         return [Finding(
             stage="spatch", status=laws.UNKNOWN, file="", function=None, line=None,
@@ -626,10 +659,10 @@ def _run_spatch(exe: str, paths: list[Path], cfg: Config) -> list[Finding]:
                     extra={"exe": exe, "rule": rule.name},
                 ))
     if any_hit:
-        return out
+        return held + out
     if out and all(f.status in {laws.TIMEOUT, laws.ERROR, laws.NOTRUN} for f in out):
-        return out
-    return [Finding(
+        return held + out
+    return held + [Finding(
         stage="spatch", status=laws.UNKNOWN, file="", function=None, line=None,
         cls="", message="spatch ran; no matches (not a proof)",
         strength=laws.STRENGTH_FINDS, extra={"exe": exe},
@@ -964,6 +997,10 @@ def _run_klee(exe: str, paths: list[Path], cfg: Config) -> list[Finding]:
             cls="", message="klee present; no bitcode toolchain (not a verdict)",
             strength=laws.STRENGTH_FINDS, extra={"exe": exe},
         )]
+    if not getattr(cfg, "allow_exec", False):
+        # KLEE interprets bitcode but performs external calls (unlink,
+        # system, ...) natively on the host.
+        return [sandbox.exec_notrun("klee", "klee (native external calls)", exe=exe)]
     out: list[Finding] = []
     bitcode_ok = False
     for p in c_files:
@@ -979,10 +1016,10 @@ def _run_klee(exe: str, paths: list[Path], cfg: Config) -> list[Finding]:
                     continue
                 bitcode_ok = True
                 try:
-                    kr = _run(
+                    kr = _run_harness(
                         [exe, "--max-time=5", "--max-forks=16", str(bc)],
-                        timeout=min(20.0, cfg.timeout + 10),
-                        cwd=td_path,
+                        min(20.0, cfg.timeout + 10),
+                        td_path,
                     )
                 except subprocess.TimeoutExpired:
                     out.append(Finding(

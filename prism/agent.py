@@ -9,7 +9,7 @@ import subprocess
 import sys
 import tempfile
 
-from prism import laws
+from prism import laws, sandbox
 from prism.ai import (
     AP_INSTRUCTION,
     AP_SYSTEM_MESSAGE,
@@ -247,7 +247,7 @@ def _is_crash_code(code: int | None) -> bool:
 def sandbox_verdict(result: dict) -> str:
     """Map sandbox_run to a status. Missing compiler is NOTRUN. Never PROVED."""
     err = result.get("error")
-    if err == "no compiler":
+    if err in {"no compiler", "exec-disabled"}:
         return laws.NOTRUN
     if result.get("ok"):
         return laws.CLEAN
@@ -347,8 +347,19 @@ def _silence_win_abort() -> None:
         pass
 
 
-def sandbox_run(source: str, timeout: float = 8.0) -> dict:
-    """OpenCodeInterpreter execute step: real gcc/clang compile+run in a tempdir."""
+def _exec_ok(allow_exec: bool | None) -> bool:
+    return sandbox.allowed() if allow_exec is None else bool(allow_exec)
+
+
+def sandbox_run(source: str, timeout: float = 8.0, *, allow_exec: bool | None = None) -> dict:
+    """OpenCodeInterpreter execute step: real gcc/clang compile+run in a tempdir.
+
+    Law 9: the program is LLM-written, so it runs only with --allow-exec
+    (``allow_exec``, else the run's policy) and then inside
+    prism.sandbox (bubblewrap when available, rlimits always).
+    """
+    if not _exec_ok(allow_exec):
+        return {"ok": False, "error": "exec-disabled", "stdout": "", "stderr": "", "code": None}
     cc = find_cc()
     if not cc:
         return {"ok": False, "error": "no compiler", "stdout": "", "stderr": "", "code": None}
@@ -372,11 +383,8 @@ def sandbox_run(source: str, timeout: float = 8.0) -> dict:
                 "stderr": (p.stderr or "")[-2000:],
                 "code": p.returncode,
             }
-        run_kw: dict = {"capture_output": True, "text": True, "timeout": timeout}
-        if sys.platform == "win32":
-            run_kw["creationflags"] = int(getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
         try:
-            r = subprocess.run([str(exe)], **run_kw)
+            r = sandbox.run_binary([str(exe)], scratch=Path(td), timeout=timeout, text=True)
         except subprocess.TimeoutExpired as ex:
             out = (ex.stdout or "") if isinstance(ex.stdout, str) else ""
             err = (ex.stderr or "") if isinstance(ex.stderr, str) else ""
@@ -398,10 +406,13 @@ def sandbox_run(source: str, timeout: float = 8.0) -> dict:
             "stdout": (r.stdout or "")[-2000:],
             "stderr": err_text[-2000:],
             "code": r.returncode,
+            "sandbox": sandbox.sandbox_kind(),
         }
 
 
-def interpreter_loop(engine: LlamaEngine, prompt: str, rounds: int = 3) -> list[Finding]:
+def interpreter_loop(
+    engine: LlamaEngine, prompt: str, rounds: int = 3, *, allow_exec: bool | None = None,
+) -> list[Finding]:
     if not engine.available():
         return [Finding(
             stage="execute", status=laws.NOTRUN, file="", function=None, line=None,
@@ -416,6 +427,8 @@ def interpreter_loop(engine: LlamaEngine, prompt: str, rounds: int = 3) -> list[
             strength=laws.STRENGTH_FINDS,
             extra={"install": CC_INSTALL},
         )]
+    if not _exec_ok(allow_exec):
+        return [sandbox.exec_notrun("execute", "execute (LLM-written C)", half="llm")]
     messages = [
         {"role": "system", "content": SYSTEM_HARNESS},
         {"role": "user", "content": prompt},
@@ -437,7 +450,7 @@ def interpreter_loop(engine: LlamaEngine, prompt: str, rounds: int = 3) -> list[
             messages.append({"role": "user", "content": "Reply with a complete C file only."})
             continue
         last_src = src
-        result = sandbox_run(src)
+        result = sandbox_run(src, allow_exec=True)
         ran = True
         verdict = sandbox_verdict(result)
         if verdict == laws.NOTRUN:
@@ -452,7 +465,8 @@ def interpreter_loop(engine: LlamaEngine, prompt: str, rounds: int = 3) -> list[
                 stage="execute", status=laws.CLEAN, file="", function=None, line=None,
                 cls="", message=f"interpreter harness passed on round {i+1} (not a proof)",
                 strength=laws.STRENGTH_FINDS,
-                extra={"stdout": result["stdout"][-400:], "rounds": i + 1},
+                extra={"stdout": result["stdout"][-400:], "rounds": i + 1,
+                       "sandbox": result.get("sandbox", "")},
             )]
         if verdict == laws.CRASH:
             return [Finding(
@@ -460,7 +474,7 @@ def interpreter_loop(engine: LlamaEngine, prompt: str, rounds: int = 3) -> list[
                 cls="", message=f"sandbox crash on round {i+1} (not a proof)",
                 strength=laws.STRENGTH_FINDS,
                 extra={"stderr": (result.get("stderr") or "")[-400:], "rounds": i + 1,
-                       "code": result.get("code")},
+                       "code": result.get("code"), "sandbox": result.get("sandbox", "")},
             )]
         messages.append({"role": "assistant", "content": r.text})
         messages.append({
@@ -482,7 +496,7 @@ def interpreter_loop(engine: LlamaEngine, prompt: str, rounds: int = 3) -> list[
 
 def rlef_repair(
     engine: LlamaEngine, source: str, feedback: str, rounds: int,
-    *, bmc_oracle=None,
+    *, bmc_oracle=None, allow_exec: bool | None = None,
 ) -> list[Finding]:
     """Execution feedback as the reward. Keep the best candidate.
 
@@ -503,6 +517,9 @@ def rlef_repair(
             strength=laws.STRENGTH_FINDS,
             extra={"install": CC_INSTALL},
         )]
+    if not _exec_ok(allow_exec):
+        return [sandbox.exec_notrun("repair", "repair (LLM-written candidates)",
+                                    strength=laws.STRENGTH_READS)]
     oracle = bmc_oracle if bmc_oracle is not None else _bmc_status_of_source
     best_score = -1
     best_src = source
@@ -529,7 +546,7 @@ def rlef_repair(
             messages.append({"role": "assistant", "content": r.text or ""})
             messages.append({"role": "user", "content": "Reply with a complete corrected C file only."})
             continue
-        result = sandbox_run(src)
+        result = sandbox_run(src, allow_exec=True)
         if result.get("error") == "no compiler":
             return [Finding(
                 stage="repair", status=laws.NOTRUN, file="", function=None, line=None,
@@ -576,8 +593,12 @@ def execute_cex(
     *,
     llm: bool = False,
     engine: LlamaEngine | None = None,
+    allow_exec: bool | None = None,
 ) -> list[Finding]:
     """Concrete cex replay plus optional OpenCodeInterpreter sandbox.
+
+    The replay interprets (prism.concrete), so it always runs. The LLM half
+    compiles and runs LLM-written C: Law 9, only with --allow-exec.
 
     Replay CLEAN is not a proof. LLM down is NOTRUN for that half, never CLEAN.
     Missing compiler is NOTRUN inside interpreter_loop.
@@ -655,7 +676,7 @@ def execute_cex(
                 f"{f0.file}:{f0.line} {f0.function} {f0.cls}: {f0.message}\n"
                 f"counterexample: {f0.counterexample}"
             )
-            out.extend(interpreter_loop(engine, prompt, rounds=2))
+            out.extend(interpreter_loop(engine, prompt, rounds=2, allow_exec=allow_exec))
     if not out:
         return [Finding(
             stage="execute", status=laws.NOTRUN, file="", function=None,

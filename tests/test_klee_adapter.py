@@ -64,7 +64,7 @@ class TestKleeAdapter(unittest.TestCase):
         self.assertIn("not found", klee[0].message)
 
     def test_present_no_c_files_is_unknown(self):
-        out = _run_klee(KLEE_EXE, [TD / "README.md"] if (TD / "README.md").is_file() else [], Config())
+        out = _run_klee(KLEE_EXE, [TD / "README.md"] if (TD / "README.md").is_file() else [], Config(allow_exec=True))
         self.assertTrue(out)
         self.assertTrue(all(f.stage == "klee" for f in out))
         self.assertTrue(all(f.status == laws.UNKNOWN for f in out))
@@ -73,7 +73,7 @@ class TestKleeAdapter(unittest.TestCase):
 
     def test_present_no_clang_is_unknown_not_a_verdict(self):
         with mock.patch("prism.adapters_extra.shutil.which", return_value=None):
-            out = _run_klee(KLEE_EXE, [_c_file()], Config())
+            out = _run_klee(KLEE_EXE, [_c_file()], Config(allow_exec=True))
         self.assertTrue(out)
         self.assertEqual(out[0].status, laws.UNKNOWN)
         self.assertIn("no bitcode toolchain (not a verdict)", out[0].message)
@@ -87,8 +87,9 @@ class TestKleeAdapter(unittest.TestCase):
             return fail
 
         with mock.patch("prism.adapters_extra.shutil.which", return_value=CLANG_EXE), \
-             mock.patch("prism.adapters_extra._run", side_effect=fake_run):
-            out = _run_klee(KLEE_EXE, [_c_file()], Config())
+             mock.patch("prism.adapters_extra._run", side_effect=fake_run), \
+                 mock.patch("prism.adapters_extra._run_harness", side_effect=fake_run):
+            out = _run_klee(KLEE_EXE, [_c_file()], Config(allow_exec=True))
         self._never_proved(out)
         if out:
             self.assertTrue(all(f.status == laws.UNKNOWN for f in out))
@@ -110,8 +111,9 @@ class TestKleeAdapter(unittest.TestCase):
                     return _clang_writes_bc(cmd, _proc, err_name=_err)
 
                 with mock.patch("prism.adapters_extra.shutil.which", return_value=CLANG_EXE), \
-                     mock.patch("prism.adapters_extra._run", side_effect=fake_run):
-                    out = _run_klee(KLEE_EXE, [_c_file()], Config())
+                     mock.patch("prism.adapters_extra._run", side_effect=fake_run), \
+                 mock.patch("prism.adapters_extra._run_harness", side_effect=fake_run):
+                    out = _run_klee(KLEE_EXE, [_c_file()], Config(allow_exec=True))
                 self.assertTrue(out)
                 self.assertTrue(all(f.stage == "klee" for f in out))
                 self.assertTrue(all(f.status == laws.FAILED for f in out), msg=[f.status for f in out])
@@ -124,8 +126,9 @@ class TestKleeAdapter(unittest.TestCase):
             return _clang_writes_bc(cmd, klee_proc)
 
         with mock.patch("prism.adapters_extra.shutil.which", return_value=CLANG_EXE), \
-             mock.patch("prism.adapters_extra._run", side_effect=fake_run):
-            out = _run_klee(KLEE_EXE, [_c_file()], Config())
+             mock.patch("prism.adapters_extra._run", side_effect=fake_run), \
+                 mock.patch("prism.adapters_extra._run_harness", side_effect=fake_run):
+            out = _run_klee(KLEE_EXE, [_c_file()], Config(allow_exec=True))
         self.assertTrue(out)
         self.assertTrue(all(f.status == laws.UNKNOWN for f in out))
         self.assertIn("not a proof", out[0].message.lower())
@@ -147,8 +150,9 @@ class TestKleeAdapter(unittest.TestCase):
             return klee_proc
 
         with mock.patch("prism.adapters_extra.shutil.which", return_value=CLANG_EXE), \
-             mock.patch("prism.adapters_extra._run", side_effect=fake_run):
-            out = _run_klee(KLEE_EXE, [_c_file()], Config())
+             mock.patch("prism.adapters_extra._run", side_effect=fake_run), \
+                 mock.patch("prism.adapters_extra._run_harness", side_effect=fake_run):
+            out = _run_klee(KLEE_EXE, [_c_file()], Config(allow_exec=True))
         self.assertTrue(out)
         self.assertTrue(all(f.status == laws.UNKNOWN for f in out))
         self.assertIn("not a proof", out[0].message.lower())
@@ -165,8 +169,9 @@ class TestKleeAdapter(unittest.TestCase):
             return _clang_writes_bc(cmd, doctest)
 
         with mock.patch("prism.adapters_extra.shutil.which", return_value=CLANG_EXE), \
-             mock.patch("prism.adapters_extra._run", side_effect=fake_run):
-            out = _run_klee(KLEE_EXE, [_c_file()], Config())
+             mock.patch("prism.adapters_extra._run", side_effect=fake_run), \
+                 mock.patch("prism.adapters_extra._run_harness", side_effect=fake_run):
+            out = _run_klee(KLEE_EXE, [_c_file()], Config(allow_exec=True))
         self.assertTrue(out)
         self.assertTrue(all(f.status == laws.NOTRUN for f in out))
         self.assertIn("not klee", out[0].message.lower())

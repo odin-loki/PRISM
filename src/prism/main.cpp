@@ -202,6 +202,7 @@ int main(int argc, char** argv) {
         if (a == "--no-llm") cfg.llm = false;
         else if (a == "--gui") cfg.gui = true;
         else if (a == "--resume") cfg.resume = true;
+        else if (a == "--allow-exec") cfg.allow_exec = true;
         else if (a == "--list-stages") {
             for (auto* p = STAGE_ORDER; *p; ++p) std::cout << *p << "\n";
             return 0;
@@ -231,7 +232,7 @@ int main(int argc, char** argv) {
                 "prism PATH [--gui] [--no-llm] [--jobs N] [--tool NAME=PATH]\n"
                 "           [--stage a,b] [--skip a,b] [--out DIR] [--resume] [--unwind N]\n"
                 "           [--fuzz-budget N] [--fuzz-iters N] [--repair-rounds N]\n"
-                "           [--list-stages] [--fail-on never|defect|gap]\n"
+                "           [--list-stages] [--fail-on never|defect|gap] [--allow-exec]\n"
                 "PRISM = Performance, Regression, Integration and Security Module\n"
                 "C++23 hybrid pipeline: lints, BMC, fuzz, LTL, Qwen 3.5 9B.\n"
                 "Threads are ISO C++ std::jthread (not MinGW winpthreads).\n"
@@ -239,6 +240,9 @@ int main(int argc, char** argv) {
                 "--resume reuses ok/NOTRUN stages from --out/stages.jsonl (report.json fallback).\n"
                 "--fail-on: exit 1 on defect (FAILED/CRASH/SANFAIL) or gap (defect, or\n"
                 "  anything NOTRUN/ERROR/TIMEOUT). A crashed stage is exit 2.\n"
+                "--allow-exec: run code from the scanned tree (sanitizer/fuzz/diff harnesses,\n"
+                "  perl -c, cargo clippy, eslint, LLM programs) in a sandbox; only on code you\n"
+                "  trust. Without it those steps are NOTRUN (Law 9).\n"
                 "Writes report.json, report.md and report.sarif (SARIF 2.1.0) under --out.\n";
             return 0;
         } else if (!a.starts_with("-")) {

@@ -13,7 +13,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from prism import laws
+from prism import laws, sandbox
 from prism.afl import afl_available, run_afl_fuzz
 from prism.models import FunctionInfo
 
@@ -76,6 +76,10 @@ class TestAflAvailable(unittest.TestCase):
 
 
 class TestRunAflFuzzHonesty(unittest.TestCase):
+    def setUp(self):
+        # Law 9: these tests drive the execute path on purpose (--allow-exec).
+        self.addCleanup(sandbox.set_allowed, sandbox.set_allowed(True))
+
     def test_missing_afl_returns_none_not_clean(self):
         src = Path("planted.c")
         with mock.patch("prism.afl.shutil.which", return_value=None), \

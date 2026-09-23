@@ -10,7 +10,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from prism import laws
+from prism import laws, sandbox
 from prism.fuzz import _compile, harness_source, param_nbytes
 from prism.models import Finding, FunctionInfo
 
@@ -63,6 +63,12 @@ def run_afl_fuzz(
         cls="", strength=laws.STRENGTH_FINDS,
     )
 
+    if not sandbox.allowed():
+        # Law 9: the harness runs the scanned function.
+        f = sandbox.exec_notrun("fuse", "AFL++ harness", file=fn.file,
+                                function=fn.name, line=fn.line, exec=laws.NOTRUN)
+        return f
+
     cc = shutil.which("gcc") or shutil.which("clang")
     if not cc:
         return Finding(
@@ -71,7 +77,7 @@ def run_afl_fuzz(
             extra={"install": "install gcc or clang"},
         )
 
-    extra: dict = {"engine": "afl"}
+    extra: dict = {"engine": "afl", "sandbox": sandbox.sandbox_kind()}
     cleanup = work is None
     work = work or Path(tempfile.mkdtemp(prefix="prism_afl_"))
     work.mkdir(parents=True, exist_ok=True)
@@ -110,16 +116,17 @@ def run_afl_fuzz(
         env.setdefault("AFL_NO_AFFINITY", "1")
 
         try:
-            subprocess.run(
+            sandbox.run_binary(
                 [
                     afl, "-i", str(in_dir), "-o", str(out_dir),
                     "-V", str(max(1, int(timeout))),
                     "--", str(exe),
                 ],
-                capture_output=True,
+                scratch=work,
                 timeout=timeout + 10,
                 env=env,
-                cwd=str(work),
+                cwd=work,
+                limit_as=False,
             )
         except subprocess.TimeoutExpired:
             pass

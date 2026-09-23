@@ -7,10 +7,12 @@
 //   tool crashed/unusable -> ERROR
 //   tool timed out        -> TIMEOUT
 //   tool missing          -> NOTRUN   (extra.install)
+//   tool executes code    -> NOTRUN   without --allow-exec (Law 9; PgTool::executes)
 
 #include "prism/stages.hpp"
 #include "prism/laws.hpp"
 #include "prism/regex.hpp"
+#include "prism/sandbox.hpp"
 #include "proc.hpp"
 
 #include <algorithm>
@@ -117,6 +119,10 @@ struct PgTool {
     double timeout = 120.0;
     std::string cwd_marker{};
     std::string unconfigured{};
+    // Runs code from the scanned tree while "checking" it (perl -c BEGIN
+    // blocks, cargo build.rs / proc macros, eslint.config.js). Law 9:
+    // NOTRUN without --allow-exec. prism/polyglot.py Tool.executes.
+    bool executes = false;
 };
 
 struct PgCheck {
@@ -147,7 +153,7 @@ const std::vector<PgCheck>& checks() {
         {"python-types", {"python"}, "type",
          {{"mypy", {"mypy"},
            {"{exe}", "--ignore-missing-imports", "--no-error-summary", "--show-column-numbers",
-            "--no-color-output", "--no-incremental", "--cache-dir={devnull}",
+            "--no-color-output", "--no-incremental", "--cache-dir={devnull}", "--config-file=",
             "{files}"},
            R"(^(?P<file>.+?):(?P<line>\d+):(?:(?P<col>\d+):)? (?P<sev>error): (?P<msg>.+?)(?:\s+\[(?P<rule>[\w-]+)\])?$)",
            false, {0, 1}, 600.0}},
@@ -168,7 +174,7 @@ const std::vector<PgCheck>& checks() {
          {{"eslint", {"eslint"}, {"{exe}", "--format", "unix", "{files}"},
            R"(^(?P<file>.+?):(?P<line>\d+):(?P<col>\d+): (?P<msg>.+?)(?: \[(?P<sev>Error|Warning)/(?P<rule>[^\]]+)\])?$)",
            false, {0, 1}, 120.0, "",
-           R"(couldn't find (?:a|an) (?:eslint\.config|configuration file))"}},
+           R"(couldn't find (?:a|an) (?:eslint\.config|configuration file))", /*executes=*/true}},
          "npm install -g eslint  (needs an eslint.config.* in the project)"},
         {"shell-syntax", {"shell"}, "syntax",
          {{"bash", {"bash"}, {"{exe}", "-n", "{file}"},
@@ -184,7 +190,7 @@ const std::vector<PgCheck>& checks() {
         {"rust-lint", {"rust"}, "lint",
          {{"cargo-clippy", {"cargo"}, {"{exe}", "clippy", "--quiet", "--message-format=short"},
            R"(^(?P<file>[^\s:][^:]*?\.rs):(?P<line>\d+):(?P<col>\d+): (?P<sev>error|warning)(?:\[(?P<rule>[^\]]+)\])?: (?P<msg>.+)$)",
-           false, {0, 101}, 900.0, "Cargo.toml"}},
+           false, {0, 101}, 900.0, "Cargo.toml", "", /*executes=*/true}},
          "install Rust (rustup component add clippy); needs a Cargo.toml"},
         {"ruby-syntax", {"ruby"}, "syntax",
          {{"ruby", {"ruby"}, {"{exe}", "-wc", "{file}"},
@@ -198,7 +204,8 @@ const std::vector<PgCheck>& checks() {
          "install PHP CLI"},
         {"perl-syntax", {"perl"}, "syntax",
          {{"perl", {"perl"}, {"{exe}", "-c", "{file}"},
-           R"(^(?P<msg>.+?) at (?P<file>.+?) line (?P<line>\d+)[.,])", true, {0}}},
+           R"(^(?P<msg>.+?) at (?P<file>.+?) line (?P<line>\d+)[.,])", true, {0}, 120.0, "", "",
+           /*executes=*/true}},
          "install Perl"},
         {"lua-syntax", {"lua"}, "syntax",
          {{"luac", {"luac", "luac5.4", "luac5.3"}, {"{exe}", "-p", "{file}"},
@@ -489,16 +496,24 @@ struct HelperFile {
 std::vector<Finding> run_check(const PgCheck& check, std::vector<fs::path> files,
                                const fs::path& root, const Config& cfg) {
     const PgTool* tool = nullptr;
+    const PgTool* held = nullptr;  // present, but executes scanned code (Law 9)
     std::optional<fs::path> exe;
     for (auto& t : check.tools) {
-        exe = resolve(t, cfg);
-        if (exe) {
-            tool = &t;
-            break;
+        auto found = resolve(t, cfg);
+        if (!found) continue;
+        if (t.executes && !cfg.allow_exec) {
+            if (!held) held = &t;
+            continue;
         }
+        exe = found;
+        tool = &t;
+        break;
     }
     auto langs = join(check.languages, "/");
     auto nfiles = std::to_string(files.size());
+    if (!tool && held)
+        return {sandbox::exec_notrun(STAGE, check.group + " (" + held->name + ")",
+                                     {{"tool", held->name}, {"check", check.group}})};
     if (!tool) {
         std::vector<std::string> names;
         for (auto& t : check.tools) names.push_back(t.name);

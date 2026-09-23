@@ -1,11 +1,17 @@
 """Sanitizer adapter: missing compiler/sanitizer = NOTRUN, never CLEAN from a probe.
 
+Law 9: the stage runs code from the scanned tree, so every test that
+exercises the compile+run path opts in (Config(allow_exec=True)) and names
+the opted-in function (the `// prism: run` marker, patched here as
+_opted_in_callable). tests/test_exec_safety.py covers the refusals.
+
 python -m unittest tests.test_sanitize
 """
 
 from __future__ import annotations
 
 import shutil
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -29,17 +35,28 @@ TD = ROOT / "testdata"
 HAS_CC = bool(shutil.which("gcc") or shutil.which("clang"))
 
 
+def _cfg(**kw) -> Config:
+    return Config(allow_exec=True, **kw)
+
+
 class TestSanitize(unittest.TestCase):
+    def setUp(self):
+        # Every planted file "has" an opted-in function; the selection rule
+        # itself is tested in tests/test_exec_safety.py.
+        self._optin = mock.patch("prism.sanitize._opted_in_callable", return_value="planted")
+        self._optin.start()
+        self.addCleanup(mock.patch.stopall)
+
     def test_signature_returns_list_of_findings(self):
         with mock.patch("prism.sanitize.shutil.which", return_value=None):
-            out = run_sanitize([], Config())
+            out = run_sanitize([], _cfg())
         self.assertIsInstance(out, list)
         self.assertTrue(out)
         self.assertTrue(all(isinstance(f, Finding) for f in out))
 
     def test_missing_compiler_is_notrun(self):
         with mock.patch("prism.sanitize.shutil.which", return_value=None):
-            out = run_sanitize([TD / "abs_ok.c"], Config())
+            out = run_sanitize([TD / "abs_ok.c"], _cfg())
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0].stage, "sanitize")
         self.assertEqual(out[0].status, laws.NOTRUN)
@@ -52,7 +69,7 @@ class TestSanitize(unittest.TestCase):
     def test_unsupported_ubsan_is_notrun(self):
         with mock.patch("prism.sanitize._find_cc", return_value="/bin/gcc"), \
              mock.patch("prism.sanitize._probe_sanitizer", return_value=False):
-            out = run_sanitize([TD / "abs_ok.c"], Config())
+            out = run_sanitize([TD / "abs_ok.c"], _cfg())
         asan = [f for f in out if (f.extra or {}).get("sanitizer") == "asan"]
         ubsan = [f for f in out if (f.extra or {}).get("sanitizer") == "ubsan"]
         tsan = [f for f in out if (f.extra or {}).get("sanitizer") == "tsan"]
@@ -73,7 +90,7 @@ class TestSanitize(unittest.TestCase):
         with mock.patch("prism.sanitize._find_cc", return_value="/bin/gcc"), \
              mock.patch("prism.sanitize._probe_sanitizer", side_effect=lambda _cc, flags: flags[0] == "-fsanitize=undefined"), \
              mock.patch("prism.sanitize._compile_and_run", return_value=(laws.CLEAN, "ran under sanitizer with exit 0 (not a proof of absence)", "")):
-            out = run_sanitize([TD / "abs_ok.c"], Config())
+            out = run_sanitize([TD / "abs_ok.c"], _cfg())
         ubsan = [f for f in out if (f.extra or {}).get("sanitizer") == "ubsan" and f.file]
         self.assertTrue(ubsan)
         self.assertEqual(ubsan[0].status, laws.CLEAN)
@@ -88,13 +105,18 @@ class TestSanitize(unittest.TestCase):
                  "prism.sanitize._compile_and_run",
                  return_value=(laws.FAILED, "UndefinedBehaviorSanitizer: shift exponent", "ubsan trace"),
              ):
-            out = run_sanitize([TD / "shift_ub.c"], Config())
+            out = run_sanitize([TD / "shift_ub.c"], _cfg())
         ubsan = [f for f in out if (f.extra or {}).get("sanitizer") == "ubsan" and f.file]
         self.assertEqual(ubsan[0].status, laws.FAILED)
 
     @unittest.skipUnless(HAS_CC, "no C compiler")
     def test_live_probe_reports_notrun_or_results(self):
-        out = run_sanitize([TD / "abs_ok.c"], Config())
+        self._optin.stop()
+        td = Path(tempfile.mkdtemp(prefix="prism_san_live_"))
+        self.addCleanup(shutil.rmtree, td, True)
+        src = td / "live.c"
+        src.write_text("// prism: run\nint live(void) { return 0; }\n", encoding="utf-8")
+        out = run_sanitize([src], _cfg())
         self.assertTrue(out)
         self.assertTrue(all(f.stage == "sanitize" for f in out))
         self.assertNotIn(laws.CLEAN, {f.status for f in out if f.status == laws.NOTRUN})
@@ -128,7 +150,7 @@ class TestSanitize(unittest.TestCase):
         with mock.patch("prism.sanitize._find_cc", return_value=r"C:\mingw64\bin\gcc.exe"), \
              mock.patch("prism.sanitize._has_sanitizer_lib", return_value=False), \
              mock.patch("prism.sanitize._compile_and_run") as compile_and_run:
-            out = run_sanitize([TD / "abs_ok.c"], Config())
+            out = run_sanitize([TD / "abs_ok.c"], _cfg())
         compile_and_run.assert_not_called()
         self.assertTrue(out)
         statuses = {f.status for f in out}
@@ -161,7 +183,7 @@ class TestSanitize(unittest.TestCase):
         with mock.patch("prism.sanitize._find_cc", return_value="/bin/gcc"), \
              mock.patch("prism.sanitize._probe_sanitizer", side_effect=lambda _cc, flags: flags[0] == "-fsanitize=address"), \
              mock.patch("prism.sanitize._compile_and_run", return_value=(laws.CLEAN, "ran under sanitizer with exit 0 (not a proof of absence)", "")):
-            out = run_sanitize([TD / "abs_ok.c"], Config())
+            out = run_sanitize([TD / "abs_ok.c"], _cfg())
         asan = [f for f in out if (f.extra or {}).get("sanitizer") == "asan" and f.file]
         self.assertTrue(asan)
         self.assertEqual(asan[0].status, laws.CLEAN)
@@ -176,7 +198,7 @@ class TestSanitize(unittest.TestCase):
                  "prism.sanitize._compile_and_run",
                  return_value=(laws.FAILED, "AddressSanitizer: heap-buffer-overflow", "asan trace"),
              ):
-            out = run_sanitize([TD / "oob_write.c"], Config())
+            out = run_sanitize([TD / "oob_write.c"], _cfg())
         asan = [f for f in out if (f.extra or {}).get("sanitizer") == "asan" and f.file]
         self.assertEqual(asan[0].status, laws.FAILED)
 
@@ -211,7 +233,7 @@ class TestSanitize(unittest.TestCase):
                      mapping,
                  ),
              ):
-            out = run_sanitize([TD / "abs_ok.c"], Config())
+            out = run_sanitize([TD / "abs_ok.c"], _cfg())
         self.assertTrue(out)
         self.assertTrue(all(f.status == laws.NOTRUN for f in out))
         self.assertFalse(any(f.status == laws.FAILED for f in out))
@@ -223,7 +245,7 @@ class TestSanitize(unittest.TestCase):
              mock.patch("prism.sanitize._compile_and_run", return_value=(
                  laws.NOTRUN, "gcc vanished", "",
              )):
-            out = run_sanitize([TD / "abs_ok.c"], Config())
+            out = run_sanitize([TD / "abs_ok.c"], _cfg())
         self.assertTrue(out)
         self.assertTrue(all(f.status == laws.NOTRUN for f in out))
         self.assertFalse(any(f.status == laws.ERROR for f in out))

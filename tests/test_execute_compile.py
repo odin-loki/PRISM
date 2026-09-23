@@ -14,7 +14,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from prism import laws
+from prism import laws, sandbox
 from prism.adapters import run_compiler
 from prism.agent import (
     CC_INSTALL,
@@ -49,6 +49,10 @@ def _engine(available: bool = True, text: str = "", error=None):
 
 
 class TestSandboxRun(unittest.TestCase):
+    def setUp(self):
+        # Law 9: these tests drive the execute path on purpose (--allow-exec).
+        self.addCleanup(sandbox.set_allowed, sandbox.set_allowed(True))
+
     def test_missing_compiler(self):
         with mock.patch("prism.agent.shutil.which", return_value=None):
             result = sandbox_run("int main(void){return 0;}")
@@ -150,6 +154,10 @@ class TestRunCompiler(unittest.TestCase):
 
 
 class TestInterpreterLoopCompilerGate(unittest.TestCase):
+    def setUp(self):
+        # Law 9: these tests drive the execute path on purpose (--allow-exec).
+        self.addCleanup(sandbox.set_allowed, sandbox.set_allowed(True))
+
     def test_no_compiler_is_notrun(self):
         engine = _engine(text="int main(void){ return 0; }")
         with mock.patch("prism.agent.find_cc", return_value=None):
@@ -224,6 +232,10 @@ class TestInterpreterLoopCompilerGate(unittest.TestCase):
 
 
 class TestRlefRepairHonesty(unittest.TestCase):
+    def setUp(self):
+        # Law 9: these tests drive the execute path on purpose (--allow-exec).
+        self.addCleanup(sandbox.set_allowed, sandbox.set_allowed(True))
+
     def test_no_llm_is_notrun_with_install(self):
         engine = _engine(available=False)
         with mock.patch("prism.agent.find_cc", return_value="/usr/bin/gcc"):

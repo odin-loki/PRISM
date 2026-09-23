@@ -11,6 +11,7 @@
 #include "prism/stages.hpp"
 #include "prism/journal.hpp"
 #include "prism/pipeline.hpp"
+#include "prism/sandbox.hpp"
 #include "prism/taxonomy.hpp"
 #include "prism/simd.hpp"
 #ifdef PRISM_HAS_CUDA
@@ -18,6 +19,7 @@
 #endif
 
 #include <algorithm>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <stdlib.h>
@@ -3454,4 +3456,321 @@ TEST_CASE("polyglot stage sits between optional and esbmc") {
     REQUIRE(it != order.end());
     CHECK(*(it - 1) == "optional");
     CHECK(*(it + 1) == "esbmc");
+}
+
+// ---------------------------------------------------------------------------
+// Law 9: executing code from the scanned tree requires --allow-exec
+// (include/prism/sandbox.hpp; Python twin tests/test_exec_safety.py).
+// ---------------------------------------------------------------------------
+namespace {
+
+std::string extra_or(const prism::Finding& f, const char* key) {
+    auto it = f.extra.find(key);
+    return it == f.extra.end() ? std::string() : it->second;
+}
+
+// CommandLineToArgvW / MSVC CRT rules for the arguments after argv[0].
+std::vector<std::string> crt_split(const std::string& cl) {
+    std::vector<std::string> out;
+    std::size_t i = 0;
+    const std::size_t n = cl.size();
+    while (i < n) {
+        while (i < n && (cl[i] == ' ' || cl[i] == '\t')) ++i;
+        if (i >= n) break;
+        std::string arg;
+        bool inq = false;
+        while (i < n) {
+            char c = cl[i];
+            if ((c == ' ' || c == '\t') && !inq) break;
+            if (c == '\\') {
+                std::size_t k = 0;
+                while (i + k < n && cl[i + k] == '\\') ++k;
+                if (i + k < n && cl[i + k] == '"') {
+                    arg.append(k / 2, '\\');
+                    if (k % 2 == 1) {
+                        arg += '"';
+                        i += k + 1;
+                    } else {
+                        i += k;
+                    }
+                } else {
+                    arg.append(k, '\\');
+                    i += k;
+                }
+                continue;
+            }
+            if (c == '"') {
+                if (inq && i + 1 < n && cl[i + 1] == '"') {
+                    arg += '"';
+                    i += 2;
+                    continue;
+                }
+                inq = !inq;
+                ++i;
+                continue;
+            }
+            arg += c;
+            ++i;
+        }
+        out.push_back(arg);
+    }
+    return out;
+}
+
+struct ExecTree {
+    std::filesystem::path dir;
+    ExecTree() {
+        dir = std::filesystem::temp_directory_path() /
+              ("prism_exec_" + std::to_string(std::rand()) + "_" +
+               std::to_string(reinterpret_cast<std::uintptr_t>(this)));
+        std::filesystem::create_directories(dir);
+    }
+    std::filesystem::path put(const std::string& rel, const std::string& text) {
+        auto p = dir / rel;
+        std::filesystem::create_directories(p.parent_path());
+        std::ofstream(p, std::ios::binary) << text;
+        return p;
+    }
+    ~ExecTree() {
+        std::error_code ec;
+        std::filesystem::remove_all(dir, ec);
+    }
+};
+
+bool has_exec_notrun(const std::vector<prism::Finding>& out) {
+    for (auto& f : out)
+        if (f.status == prism::laws::NOTRUN && extra_or(f, "reason") == prism::sandbox::EXEC_REASON &&
+            f.message.find("--allow-exec") != std::string::npos && !extra_or(f, "install").empty())
+            return true;
+    return false;
+}
+
+}  // namespace
+
+TEST_CASE("windows quoting: CommandLineToArgvW round trip on hostile names") {
+    using prism::sandbox::quote_windows_arg;
+    CHECK(quote_windows_arg("abc") == "abc");
+    CHECK(quote_windows_arg("") == "\"\"");
+    CHECK(quote_windows_arg("a b") == "\"a b\"");
+    CHECK(quote_windows_arg("a\"b") == "\"a\\\"b\"");
+    CHECK(quote_windows_arg("x", true) == "\"x\"");
+    CHECK(quote_windows_arg("C:\\my dir\\") == "\"C:\\my dir\\\\\"");
+    CHECK(quote_windows_arg("a\\\"b") == "\"a\\\\\\\"b\"");
+    CHECK(quote_windows_arg("a\\b c") == "\"a\\b c\"");
+    // No cmd.exe in the CreateProcessW path: metacharacters need no quoting.
+    CHECK(quote_windows_arg("a&calc&.c") == "a&calc&.c");
+    CHECK(prism::sandbox::windows_command_line({"C:\\Program Files\\t.exe", "a b", "c"}) ==
+          "\"C:\\Program Files\\t.exe\" \"a b\" c");
+    const std::vector<std::string> hostile{
+        "a&calc&.c", "x|y", "a^b", "%PATH%.c", "!x!", "<in>", "a\"&calc&\"b", "trail\\",
+        "sp ace\\", "\\\\server\\share", "a\\\\\"b", "(x)", "", " ", "\t", "\"", "\\\"",
+        "semi;colon", "new\nline"};
+    for (const auto& h : hostile) {
+        std::vector<std::string> args{"prog.exe", h, "tail"};
+        auto split = crt_split(prism::sandbox::windows_command_line(args));
+        REQUIRE(split.size() == 3);
+        CHECK_MESSAGE(split[1] == h, h);
+        CHECK(split[2] == "tail");
+    }
+}
+
+TEST_CASE("windows quoting: batch targets get cmd.exe quoting or are refused") {
+    using prism::sandbox::batch_command_line;
+    using prism::sandbox::is_batch_file;
+    CHECK(is_batch_file("eslint.cmd"));
+    CHECK(is_batch_file("C:\\x\\RUN.BAT"));
+    CHECK_FALSE(is_batch_file("prog.exe"));
+    CHECK_FALSE(is_batch_file("cmd"));
+    auto ok = batch_command_line({"eslint.cmd", "a&calc&.js", "x|y.js"});
+    REQUIRE(ok.has_value());
+    CHECK(*ok == "cmd.exe /d /s /c \"\"eslint.cmd\" \"a&calc&.js\" \"x|y.js\"\"");
+    CHECK_FALSE(batch_command_line({"eslint.cmd", "%PATH%.js"}).has_value());
+    CHECK_FALSE(batch_command_line({"eslint.cmd", "!x!.js"}).has_value());
+    CHECK_FALSE(batch_command_line({"eslint.cmd", "a\"b.js"}).has_value());
+    CHECK_FALSE(batch_command_line({"eslint.cmd", "a\nb.js"}).has_value());
+}
+
+TEST_CASE("sandbox: exec NOTRUN row, policy default deny, bwrap argv") {
+    CHECK(prism::sandbox::exec_message("fuzz") ==
+          "fuzz: executes code from the scanned tree; re-run with --allow-exec (only on code you trust)");
+    auto f = prism::sandbox::exec_notrun("sanitize", "sanitize (ASan/UBSan/TSan runs)", {{"tool", "x"}});
+    CHECK(f.stage == "sanitize");
+    CHECK(f.status == prism::laws::NOTRUN);
+    CHECK(extra_or(f, "install") == prism::sandbox::EXEC_INSTALL);
+    CHECK(extra_or(f, "reason") == prism::sandbox::EXEC_REASON);
+    CHECK(extra_or(f, "tool") == "x");
+    CHECK_FALSE(prism::laws::is_proof(f.status));
+
+    CHECK_FALSE(prism::sandbox::allowed());
+    {
+        prism::sandbox::Policy p(true);
+        CHECK(prism::sandbox::allowed());
+    }
+    CHECK_FALSE(prism::sandbox::allowed());
+
+    auto argv = prism::sandbox::bwrap_argv("/usr/bin/bwrap", {"/s/a.out", "x"}, "/s");
+    const std::vector<std::string> want{
+        "/usr/bin/bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs",
+        "/tmp", "--bind", "/s", "/s", "--unshare-all", "--die-with-parent", "--", "/s/a.out", "x"};
+    CHECK(argv == want);
+    auto k = prism::sandbox::kind();
+    CHECK((k == "bwrap" || k == "rlimits-only" || k == "none"));
+    auto l = prism::sandbox::limits_for(1.0, false);
+    CHECK(l.enabled);
+    CHECK_FALSE(l.limit_as);
+}
+
+TEST_CASE("pipeline: exec stage table and the stage-level --allow-exec row") {
+    const auto& t = prism::exec_stages();
+    CHECK(t.at("sanitize") == "whole");
+    CHECK(t.at("diff") == "whole");
+    CHECK(t.at("repair") == "whole");
+    for (auto* s : {"optional", "polyglot", "fuzz", "rapid", "muttest", "execute"})
+        CHECK_MESSAGE(t.at(s) == "part", s);
+    for (auto* s : {"lints", "bmc", "warnings", "concolic", "contracts", "cppcheck", "ltl"})
+        CHECK_MESSAGE(!t.contains(s), s);
+    prism::Finding held;
+    held.stage = "fuzz";
+    held.status = prism::laws::CLEAN;
+    held.extra["exec"] = prism::laws::NOTRUN;
+    auto out = prism::exec_gate_note("fuzz", {held}, "fuzz (compiled harness, AFL++, libFuzzer)");
+    CHECK(out.size() == 2);
+    CHECK(has_exec_notrun(out));
+    CHECK(prism::exec_gate_note("fuzz", out, "fuzz").size() == 2);  // once
+    prism::Finding plain;
+    plain.status = prism::laws::CLEAN;
+    CHECK(prism::exec_gate_note("fuzz", {plain}, "fuzz").size() == 1);
+}
+
+TEST_CASE("sanitize: NOTRUN without --allow-exec; never calls an arbitrary void(void)") {
+    ExecTree t;
+    auto sentinel = t.dir / "SENTINEL";
+    auto hostile = t.put("hostile.c",
+                         "#include <stdio.h>\n"
+                         "void cleanup_everything(void) {\n"
+                         "    FILE *f = fopen(\"" + sentinel.generic_string() + "\", \"w\");\n"
+                         "    if (f) fclose(f);\n"
+                         "}\n");
+    auto cfg = prism::default_config();
+    cfg.root = t.dir;
+    auto out = prism::run_sanitize({hostile}, cfg);
+    REQUIRE(out.size() == 1);
+    CHECK(has_exec_notrun(out));
+    CHECK_FALSE(std::filesystem::exists(sentinel));
+
+    // Even with --allow-exec, an unmarked void(void) is not a target.
+    CHECK_FALSE(prism::opted_in_callable(hostile).has_value());
+    cfg.allow_exec = true;
+    out = prism::run_sanitize({hostile}, cfg);
+    for (auto& f : out) CHECK(f.status != prism::laws::CLEAN);
+    CHECK_FALSE(std::filesystem::exists(sentinel));
+}
+
+TEST_CASE("sanitize: `// prism: run` is the only opt-in") {
+    ExecTree t;
+    auto marked = t.put("m.c",
+                        "static int helper(void) { return 0; }\n"
+                        "void cleanup_everything(void) { }\n"
+                        "\n"
+                        "/* entry point for the sanitizer run\n"
+                        " * prism: run */\n"
+                        "int\n"
+                        "selftest(void)\n"
+                        "{\n"
+                        "    return helper();\n"
+                        "}\n"
+                        "void trailing(void) { } // prism: run\n");
+    auto fn = prism::opted_in_callable(marked);
+    REQUIRE(fn.has_value());
+    CHECK(*fn == "selftest");
+    auto st = t.put("s.c", "// prism: run\nstatic void only_static(void) { }\n");
+    CHECK_FALSE(prism::opted_in_callable(st).has_value());
+    auto par = t.put("p.c", "// prism: run\nint takes(int x) { return x; }\n");
+    CHECK_FALSE(prism::opted_in_callable(par).has_value());
+    std::vector<std::string> lines{"// prism: run", "", "void gap(void) {}"};
+    CHECK_FALSE(prism::marked_run(lines, 3));  // a blank line breaks "directly above"
+    CHECK(prism::marked_run({"// prism:run", "void f(void) {}"}, 2));
+    CHECK(prism::marked_run({"void f(void) { } /* prism: run */"}, 1));
+    CHECK_FALSE(prism::marked_run({"// prism: running", "void f(void) {}"}, 2));
+}
+
+#ifndef _WIN32
+TEST_CASE("polyglot: perl -c / cargo clippy / eslint are NOTRUN without --allow-exec") {
+    auto cfg = prism::default_config();
+    if (!cfg.which({"perl"})) return;
+    ExecTree t;
+    auto sentinel = t.dir / "PERL_SENTINEL";
+    t.put("evil.pl", "BEGIN { open(my $f, '>', '" + sentinel.generic_string() +
+                         "'); close($f); }\nprint 1;\n");
+    cfg.root = t.dir;
+    auto out = prism::run_polyglot(t.dir, cfg);
+    bool held = false;
+    for (auto& f : out)
+        if (extra_or(f, "check") == "perl-syntax") {
+            CHECK(f.status == prism::laws::NOTRUN);
+            CHECK(extra_or(f, "reason") == prism::sandbox::EXEC_REASON);
+            CHECK(f.message == "perl-syntax (perl): executes code from the scanned tree; "
+                               "re-run with --allow-exec (only on code you trust)");
+            held = true;
+        }
+    CHECK(held);
+    CHECK_FALSE(std::filesystem::exists(sentinel));
+}
+
+TEST_CASE("pipeline: hostile tree runs nothing without --allow-exec") {
+    ExecTree t;
+    auto sentinel = t.dir / "PIPE_SENTINEL";
+    const auto s = sentinel.generic_string();
+    t.put("hostile.c",
+          "#include <stdio.h>\n"
+          "void cleanup_everything(void) { FILE *f = fopen(\"" + s + "\", \"w\"); if (f) fclose(f); }\n"
+          "int touch(int x) { FILE *f = fopen(\"" + s + "\", \"w\"); if (f) fclose(f); return x; }\n"
+          "int pick_a(int x) { cleanup_everything(); return x; }\n"
+          "int pick_b(int x) { return x + 1; }\n");
+    auto cfg = prism::default_config();
+    cfg.root = t.dir;
+    cfg.out = t.dir / "prism-out";
+    cfg.llm = false;
+    cfg.fuzz_budget = 0.5;
+    cfg.fuzz_iters = 16;
+    cfg.stages = std::vector<std::string>{"inventory", "classify", "sanitize", "fuzz", "diff"};
+    auto report = prism::run_pipeline(cfg);
+    CHECK_FALSE(prism::sandbox::allowed());  // policy restored after the run
+    std::map<std::string, const prism::StageResult*> by;
+    for (auto& st : report.stages) by[st.name] = &st;
+    REQUIRE(by.contains("sanitize"));
+    CHECK(by["sanitize"]->status == "NOTRUN");
+    CHECK(has_exec_notrun(by["sanitize"]->findings));
+    REQUIRE(by.contains("fuzz"));
+    CHECK(has_exec_notrun(by["fuzz"]->findings));
+    REQUIRE(by.contains("diff"));
+    CHECK(by["diff"]->status == "NOTRUN");
+    CHECK(has_exec_notrun(by["diff"]->findings));
+    CHECK_FALSE(std::filesystem::exists(sentinel));
+}
+#endif
+
+TEST_CASE("config: vendored adapters are never taken from inside the scanned tree") {
+    ExecTree t;
+    CHECK(prism::path_within(t.dir, t.dir));
+    CHECK(prism::path_within(t.dir / "third_party" / "esbmc", t.dir));
+    CHECK_FALSE(prism::path_within(t.dir.parent_path(), t.dir));
+    CHECK_FALSE(prism::path_within(t.dir.string() + "-sibling", t.dir));
+#ifndef _WIN32
+    t.put("third_party/SOURCES.md", "x\n");
+    auto fake = t.put("third_party/esbmc/bin/esbmc-planted-by-test", "#!/bin/sh\nexit 0\n");
+    std::filesystem::permissions(fake, std::filesystem::perms::owner_all);
+    auto cfg = prism::default_config();
+    cfg.root = t.dir;
+    // cwd inside the hostile tree: the planted third_party/ is still refused.
+    auto was = std::filesystem::current_path();
+    std::filesystem::current_path(t.dir);
+    auto hit = cfg.which_adapter("esbmc", {"esbmc-planted-by-test"});
+    cfg.allow_exec = true;
+    auto trusted = cfg.which_adapter("esbmc", {"esbmc-planted-by-test"});
+    std::filesystem::current_path(was);
+    CHECK_FALSE(hit.has_value());
+    REQUIRE(trusted.has_value());
+    CHECK(trusted->filename() == "esbmc-planted-by-test");
+#endif
 }

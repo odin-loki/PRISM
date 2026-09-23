@@ -48,6 +48,21 @@ Output under `--out` (default `prism-out/`):
 - `stages.jsonl` — live stage log (`--resume` picks up from it)
 - `taxonomy.json` — which defect classes were COVERED / PARTIAL / GAP
 
+## Running on untrusted code
+
+PRISM never runs the code it checks unless you say so. Stages that would
+execute code from the scanned tree — sanitizer runs, compiled fuzz/diff
+harnesses, AFL++/libFuzzer, KLEE, `perl -c`, `cargo clippy`, `eslint`,
+Coccinelle script rules, LLM-written programs — are `NOTRUN` with the hint
+`re-run with --allow-exec (only on code you trust)`. Parsing, lints, BMC
+(Z3), the concrete interpreter, and compile-only diagnostics still run.
+
+With `--allow-exec`, built binaries run in a bubblewrap jail when `bwrap` is
+installed (read-only filesystem, private /tmp, no network) and always under
+rlimits; findings record `extra.sandbox`. The sanitize stage only calls
+functions you mark with `// prism: run`. The per-stage table is in
+[docs/PLAN.md](docs/PLAN.md#running-on-untrusted-code-law-9).
+
 CI gating: `--fail-on defect` exits 1 on any FAILED/CRASH/SANFAIL finding;
 `--fail-on gap` also exits 1 when anything was NOTRUN/ERROR/TIMEOUT. A stage
 that crashed is exit 2.
@@ -58,6 +73,8 @@ A missing tool is `NOTRUN`. It is never a clean result. `PROVED` and
 `BOUNDED` are never merged. A fuzzer `CLEAN` is not a proof. LLM output
 is `HYPOTHESIS`. A Dafny-style proof under `requires` is `PROVED-ASSUMING`.
 A linter that ran and said nothing is `UNKNOWN`, not clean.
+Executing scanned code requires `--allow-exec`; without it that step is
+`NOTRUN`.
 
 See [docs/PLAN.md](docs/PLAN.md) and [docs/MINED.md](docs/MINED.md).
 

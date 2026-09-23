@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from prism import laws
+from prism import laws, sandbox
 from prism.cparse import extract_functions
 from prism.diff import run_diff
 from prism.models import FunctionInfo
@@ -36,6 +36,10 @@ def _scalar(name: str, *, file: str = "x.c", body: str = "    return x;",
 
 
 class TestDiffHonesty(unittest.TestCase):
+    def setUp(self):
+        # Law 9: these tests drive the execute path on purpose (--allow-exec).
+        self.addCleanup(sandbox.set_allowed, sandbox.set_allowed(True))
+
     def test_missing_compiler_is_notrun_not_clean(self):
         with mock.patch("prism.diff.shutil.which", return_value=None):
             recs = run_diff(_pair(), TD)

@@ -347,6 +347,12 @@ def _fuse_one(
         extra["fuzz_iters"] = (last.extra or {}).get("iters")
         extra["corpus"] = (last.extra or {}).get("corpus")
         extra["new_cov"] = (last.extra or {}).get("new_cov")
+        if (last.extra or {}).get("sandbox"):
+            extra["sandbox"] = (last.extra or {})["sandbox"]
+        if (last.extra or {}).get("exec") == laws.NOTRUN:
+            # Law 9: the compiled-harness half was held back (no --allow-exec).
+            extra["binary"] = laws.NOTRUN
+            extra["exec"] = laws.NOTRUN
         if last.status == laws.CRASH:
             last.extra = {**(last.extra or {}), **extra}
             return last
@@ -366,6 +372,8 @@ def _fuse_one(
                     inst = (afl_last.extra or {}).get("install")
                     if inst:
                         extra["install"] = inst
+                    if (afl_last.extra or {}).get("exec") == laws.NOTRUN:
+                        extra["exec"] = laws.NOTRUN  # Law 9: no --allow-exec
                 elif afl_last.status == laws.CRASH:
                     extra["engine"] = "afl"
                     afl_last.extra = {**(afl_last.extra or {}), **extra}
@@ -387,6 +395,8 @@ def _fuse_one(
                     extra.pop("engine", None)
                 inst = (lf_last.extra or {}).get("install")
                 extra["install"] = inst or _LIBFUZZER_INSTALL
+                if (lf_last.extra or {}).get("exec") == laws.NOTRUN:
+                    extra["exec"] = laws.NOTRUN  # Law 9: no --allow-exec
             elif lf_last.status == laws.NEEDS_HARNESS:
                 lf_last.extra = {**(lf_last.extra or {}), **extra}
                 return lf_last

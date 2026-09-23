@@ -151,16 +151,32 @@ def _shallow_glob_exe(root: Path, names: tuple[str, ...], max_depth: int = 3) ->
     return None
 
 
-def find_vendored_exe(stage: str, names: tuple[str, ...] | list[str]) -> str | None:
+def path_within(p: Path, root: Path) -> bool:
+    """True when p is root or lies below it (resolved)."""
+    try:
+        Path(p).resolve().relative_to(Path(root).resolve())
+        return True
+    except (ValueError, OSError):
+        return False
+
+
+def find_vendored_exe(
+    stage: str, names: tuple[str, ...] | list[str], *, exclude: Path | None = None,
+) -> str | None:
     """Return a pre-built binary under third_party/<vendor>/, or None.
 
     Never compiles. Known output dirs first, then a shallow glob
     (esbmc, cbmc, klee, cppcheck, infer, dafny, strix, semgrep, frama-c, afl-fuzz).
+    Law 9: a repo root inside ``exclude`` (the scanned tree) is refused — a
+    hostile tree could plant third_party/SOURCES.md and a fake esbmc.
     """
     vendor = VENDOR_DIR.get(stage)
     if not vendor:
         return None
-    root = repo_root() / "third_party" / vendor
+    base_root = repo_root()
+    if exclude is not None and path_within(base_root, exclude):
+        return None
+    root = base_root / "third_party" / vendor
     try:
         if not root.is_dir():
             return None
@@ -197,7 +213,8 @@ def resolve_adapter(cfg: Config, stage: str, names: tuple[str, ...] | list[str])
                 return str(p)
         except OSError:
             continue
-    hit = find_vendored_exe(stage, names_t)
+    exclude = None if getattr(cfg, "allow_exec", False) else Path(cfg.root)
+    hit = find_vendored_exe(stage, names_t, exclude=exclude)
     if hit:
         return hit
     for n in names_t:
@@ -269,6 +286,10 @@ class Config:
     skip: list[str] = field(default_factory=list)
     resume: bool = False
     tools: dict[str, str] = field(default_factory=dict)
+    # Law 9: running code from the scanned tree (compiled harnesses,
+    # sanitizer builds, perl -c, cargo clippy, eslint) or from the LLM is
+    # opt-in (--allow-exec). Default: those steps are NOTRUN.
+    allow_exec: bool = False
 
     def want(self, name: str) -> bool:
         if name in self.skip:

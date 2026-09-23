@@ -34,6 +34,10 @@ def main(argv: list[str] | None = None) -> int:
                    help="reuse ok/NOTRUN stages from --out/stages.jsonl (report.json fallback)")
     p.add_argument("--tool", action="append", default=[], metavar="NAME=PATH",
                    help="explicit adapter binary (searched before vendored/PATH)")
+    p.add_argument("--allow-exec", action="store_true",
+                   help="run code from the scanned tree (sanitizer/fuzz/diff harnesses, "
+                        "perl -c, cargo clippy, eslint, LLM programs) in a sandbox; "
+                        "only on code you trust. Without it those steps are NOTRUN")
     p.add_argument("--list-stages", action="store_true")
     p.add_argument("--fail-on", choices=FAIL_ON, default="never",
                    help="exit 1 on: defect (any FAILED/CRASH/SANFAIL finding) or gap "
@@ -77,6 +81,7 @@ def main(argv: list[str] | None = None) -> int:
         skip=[s.strip() for s in args.skip.split(",") if s.strip()],
         resume=args.resume,
         tools=tools,
+        allow_exec=args.allow_exec,
     )
     report = run_pipeline(cfg)
     print(f"confidence {report.confidence}  "

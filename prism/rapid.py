@@ -21,7 +21,7 @@ import shutil
 import subprocess
 import tempfile
 
-from prism import laws
+from prism import laws, sandbox
 from prism.contracts import ENS_ATOM, REQ_ATOM, parse_comments
 from prism.models import Finding, FunctionInfo
 
@@ -262,7 +262,13 @@ def _compiler_missing(err: str | None) -> bool:
 
 
 def _eval_status(err: str | None) -> tuple[str, dict]:
-    """Missing gcc/clang is NOTRUN, never CLEAN. Other eval errors stay ERROR."""
+    """Missing gcc/clang is NOTRUN, never CLEAN. Other eval errors stay ERROR.
+
+    A gcc fallback held back by Law 9 (no --allow-exec) is NOTRUN with the hint.
+    """
+    if sandbox.EXEC_FLAG in (err or ""):
+        return laws.NOTRUN, {"install": sandbox.EXEC_INSTALL, "reason": sandbox.EXEC_REASON,
+                             "exec": laws.NOTRUN}
     missing = _compiler_missing(err) or not (shutil.which("gcc") or shutil.which("clang"))
     extra: dict = {}
     if missing:
@@ -561,6 +567,9 @@ def _execute_gcc(
     fn: FunctionInfo,
     samples: list[dict[str, int]],
 ) -> tuple[bool, list[int], str]:
+    if not sandbox.allowed():
+        # Law 9: the fallback harness runs the scanned function.
+        return False, [], sandbox.exec_message("rapid (gcc fallback harness)")
     cc = shutil.which("gcc") or shutil.which("clang")
     if not cc:
         return False, [], "no gcc/clang on PATH"
@@ -580,10 +589,10 @@ def _execute_gcc(
             payload = "\n".join(lines) + "\n"
             env = os.environ.copy()
             env["MSYSTEM"] = env.get("MSYSTEM", "")
-            r = subprocess.run(
+            r = sandbox.run_binary(
                 [str(exe)],
+                scratch=td_path,
                 input=payload,
-                capture_output=True,
                 text=True,
                 timeout=10,
                 env=env,

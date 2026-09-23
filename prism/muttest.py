@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import replace
 import shutil
 
-from prism import laws
+from prism import laws, sandbox
 from prism.models import Finding, FunctionInfo
 from prism.rapid import contract_kind_finding, plan_trials, run_plan
 
@@ -24,6 +24,14 @@ def _compiler_missing(err: str | None) -> bool:
     if "not on path" in text and ("gcc" in text or "clang" in text or "compiler" in text):
         return True
     return False
+
+
+def _held_by_law9(err: str | None) -> dict | None:
+    """extra for a gcc fallback Law 9 held back (no --allow-exec), else None."""
+    if sandbox.EXEC_FLAG in (err or ""):
+        return {"install": sandbox.EXEC_INSTALL, "reason": sandbox.EXEC_REASON,
+                "exec": laws.NOTRUN}
+    return None
 
 
 def run_muttest(functions: list[FunctionInfo], trials: int = 32) -> list[Finding]:
@@ -47,11 +55,12 @@ def _muttest_function(fn: FunctionInfo, trials: int) -> list[Finding]:
     baseline = run_plan(fn, plan)
     if baseline.get("error") and not baseline.get("counterexample"):
         err = str(baseline["error"])
-        missing = _compiler_missing(err) or not (
+        held = _held_by_law9(err)
+        missing = held is not None or _compiler_missing(err) or not (
             shutil.which("gcc") or shutil.which("clang")
         )
-        extra: dict = {}
-        if missing:
+        extra: dict = dict(held or {})
+        if missing and held is None:
             extra["install"] = "install gcc or clang"
         return [Finding(
             stage="muttest",
@@ -81,10 +90,13 @@ def _muttest_function(fn: FunctionInfo, trials: int) -> list[Finding]:
         }
         mut_err = info.get("error")
         if mut_err and not info.get("counterexample"):
-            missing = _compiler_missing(str(mut_err)) or not (
+            held = _held_by_law9(str(mut_err))
+            missing = held is not None or _compiler_missing(str(mut_err)) or not (
                 shutil.which("gcc") or shutil.which("clang")
             )
-            if missing:
+            if held is not None:
+                extra.update(held)
+            elif missing:
                 extra["install"] = "install gcc or clang"
             out.append(Finding(
                 stage="muttest",

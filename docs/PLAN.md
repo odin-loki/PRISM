@@ -22,6 +22,10 @@ source of the *laws* this pipeline is not allowed to break.
    reports the absence of a precondition, not a defect.
 7. A stage that cannot run writes that down. Nothing is skipped quietly.
 8. Check polarity: never pass a flag that silently disables a check.
+9. Executing code from the scanned tree (or written by the LLM) requires
+   `--allow-exec`. Without it every such step is `NOTRUN` with the
+   `--allow-exec` hint — never CLEAN. With it, built binaries run in a
+   sandbox. See "Running on untrusted code" below.
 
 ## What we mine from each project (algorithms, not wrappers)
 
@@ -134,6 +138,59 @@ loaders — the *finding* vocabulary does not care which loader answered.
 
 Each stage writes `prism-out/stages.jsonl`. The GUI tails it. `--resume` skips stages already
 `ok`. A killed run loses at most the stage it was in.
+
+## Running on untrusted code (Law 9)
+
+PRISM is pointed at code it does not trust. Reading, parsing, model checking
+and compiling that code is safe; *running* it is not (a `void
+cleanup_everything(void)`, a Perl `BEGIN` block, a Cargo `build.rs`, an
+`eslint.config.js` all run with the user's privileges). So every step that
+executes code derived from the scanned tree or from the LLM is opt-in:
+
+- `--allow-exec` (`Config.allow_exec`, default false, both engines). Without
+  it the step does not run and writes `NOTRUN` with
+  `message = "<step>: executes code from the scanned tree; re-run with
+  --allow-exec (only on code you trust)"`, `extra.install` = the hint and
+  `extra.reason = "executes-scanned-code"`. A "part" stage keeps its analysis
+  half and adds one such row for the held-back half.
+- The policy lives in `prism/sandbox.py` / `src/prism/sandbox.cpp`
+  (`allowed()`, set for the run by the pipeline); stages that get a Config
+  read `allow_exec` directly. The stage table is `EXEC_STAGES`
+  (`prism/pipeline.py`) = `exec_stages()` (`src/prism/pipeline.cpp`).
+- Sandbox (with the flag): on Linux with a working `bwrap`, built binaries
+  run as `bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp --bind
+  <scratch> <scratch> --unshare-all --die-with-parent` (read-only root,
+  private /tmp, only the scratch dir writable, no network). Always, on POSIX,
+  rlimits: CPU (timeout + 1 s), address space 2 GiB (not for ASan/TSan
+  builds), 256 open files, 64 MiB file size, no core. Findings record
+  `extra.sandbox = "bwrap" | "rlimits-only" | "none"` (Windows).
+- sanitize never calls an arbitrary function, even with the flag: only a
+  zero-argument, non-static function marked `// prism: run` (on the
+  definition or in the comment block directly above it). Scalar functions
+  fed chosen inputs are the fuzz stage's harness.
+- Windows (C++): adapters no longer go through `cmd.exe` (`_popen`); the
+  command line is quoted for `CommandLineToArgvW` and started with
+  `CreateProcessW`. A `.bat`/`.cmd` target is quoted for `cmd.exe` or refused
+  when an argument holds `%`, `!`, `"` or a newline.
+
+| stage | executes scanned code? | without `--allow-exec` | with `--allow-exec` |
+|---|---|---|---|
+| inventory, classify, lints, taint, thread, interval | no (parse / in-process analysis) | runs | runs |
+| warnings | no (`-fsyntax-only` compiler diagnostics) | runs | runs |
+| cppcheck, pbsd, esbmc, dafny | no (static analyzers; pbsd imports the configured ParanoidBSD tree, not the scanned one) | runs | runs |
+| sanitize | **yes** — compiles and runs the unit | NOTRUN | calls only a zero-argument function marked `// prism: run`, in the sandbox; never "any `void(void)`" |
+| optional | clang-tidy, cbmc, infer (compile only, scratch results dir), frama-c, semgrep, strix, codeql: no. **klee**: yes (external calls run natively). **spatch** rules with `@script:`/`@initialize:`/`@finalize:` blocks: yes | klee and script rules NOTRUN, the rest run | klee in the sandbox; script rules run |
+| polyglot | `perl -c` (BEGIN/use), `cargo clippy` (build.rs, proc macros), `eslint` (eslint.config.js): **yes** (`Tool.executes`). python `compile()`, ruff, pyflakes, mypy (`--config-file=`, so a project `mypy.ini` cannot load plugins), `node --check`, tsc (explicit files), `bash -n`, shellcheck, `gofmt -e`, `ruby -wc`, `php -l`, `luac -p`, yamllint: no | the three are NOTRUN, the rest run | the three run (with the user's privileges: they are the project's own build/lint code) |
+| contracts, wp, bmc, harness | no (in-process Z3) | runs | runs |
+| concolic | no (in-process KLEE-style engine over the concrete interpreter) | runs | runs |
+| fuzz | concrete oracle: no. Compiled harness, AFL++ (`PRISM_AFL=1`), libFuzzer (`PRISM_LIBFUZZER=1`): **yes** | concrete oracle runs; the binary half is NOTRUN (`extra.binary = NOTRUN` + one stage row) | binary half in the sandbox |
+| diff | **yes** — compiles and runs both functions | NOTRUN | sandbox |
+| rapid, muttest | interpreter: no; gcc fallback harness: **yes** | interpreter runs; the fallback is NOTRUN | fallback in the sandbox |
+| ltl | no (strix only synthesizes from `.ltl` specs) | runs | runs |
+| llm | no (the model reads source) | runs | runs |
+| execute | concrete cex replay: no. LLM-written C (interpreter loop): **yes** | replay runs; the LLM half is NOTRUN | LLM half in the sandbox |
+| repair | **yes** — compiles and runs LLM-written candidates | NOTRUN | sandbox |
+| unify | no | runs | runs |
 
 ## Also needed (and included as stages/adapters)
 

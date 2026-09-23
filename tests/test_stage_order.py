@@ -26,7 +26,8 @@ def _cpp_stage_order() -> list[str]:
 
 
 def _prism_run_stages() -> list[str]:
-    src = inspect.getsource(Pipeline.run)
+    # Pipeline.run holds the Law 9 exec policy and calls _run, which runs the stages.
+    src = inspect.getsource(Pipeline._run)
     return re.findall(r'(?:self\.)?_stage\(\s*"([^"]+)"', src)
 
 

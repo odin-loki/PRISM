@@ -66,6 +66,21 @@ class TestCppParity(unittest.TestCase):
                 self.assertIn(f'{{"{tool.name}", {{{exes}}}', CPP, f"{tool.name} exes drifted")
         self.assertIn(f'GCC_PATTERN =\n    R"({pg._GCC})";', CPP)
 
+    def test_executes_column_matches(self):
+        """Law 9: Tool.executes (Python) == PgTool::executes (C++), tool by tool."""
+        for check in pg.CHECKS:
+            for tool in check.tools:
+                m = re.search(r'\{\{?"' + re.escape(tool.name) + r'", \{', CPP)
+                self.assertIsNotNone(m, tool.name)
+                assert m is not None
+                # The row runs to the next tool row or the check's install line.
+                end = re.compile(r'\n {9}(?:"| \{")').search(CPP, m.end())
+                row = CPP[m.start():end.start() if end else len(CPP)]
+                self.assertEqual("/*executes=*/true" in row, tool.executes,
+                                 f"{tool.name} executes drifted")
+        self.assertEqual({t.name for c in pg.CHECKS for t in c.tools if t.executes},
+                         {"perl", "cargo-clippy", "eslint"})
+
     def test_builtin_scans_match(self):
         for cls, rx, msg in pg.BUILTIN_SCANS:
             self.assertIn(f'{{"{cls}", R"({rx})"', CPP.replace("\n     ", " "), cls)
@@ -166,6 +181,45 @@ class TestBrokenFileDoesNotBlindTypeChecker(unittest.TestCase):
         types = [f for f in out if f.cls == "TYPE-ERROR"]
         self.assertEqual([f.file for f in types], ["typed.py"])
         self.assertIn("bad.py", {f.file for f in out if f.cls == "SYNTAX-ERROR"})
+
+
+class TestExecToolsNeedAllowExec(unittest.TestCase):
+    """Law 9: perl -c, cargo clippy and eslint run project code."""
+
+    FILES = {"a.pl": "print 1;\n", "k/Cargo.toml": "[package]\n",
+             "k/src/main.rs": "fn main(){}\n", "a.js": "let x = 1;\n"}
+
+    def test_present_exec_tool_is_notrun_without_the_flag(self):
+        with mock.patch("prism.polyglot.resolve_adapter", return_value="/usr/bin/true"), \
+             mock.patch("prism.polyglot._run") as run:
+            run.return_value = (0, "", False)
+            out = _run(self.FILES)
+        rows = {f.extra.get("check"): f for f in out if f.extra.get("check")}
+        for group, tool in (("perl-syntax", "perl"), ("rust-lint", "cargo-clippy"),
+                            ("javascript-lint", "eslint")):
+            f = rows[group]
+            self.assertEqual(f.status, laws.NOTRUN, group)
+            self.assertEqual(f.extra["reason"], "executes-scanned-code")
+            self.assertIn("--allow-exec", f.extra["install"])
+            self.assertEqual(f.message, f"{group} ({tool}): executes code from the scanned "
+                                        "tree; re-run with --allow-exec (only on code you trust)")
+        argv = [c.args[0] for c in run.call_args_list]
+        self.assertFalse(any("-c" in a and a[-1].endswith(".pl") for a in argv))
+        self.assertFalse(any("clippy" in a for a in argv))
+        self.assertFalse(any("unix" in a for a in argv))  # eslint --format unix
+
+    def test_allow_exec_runs_them(self):
+        with mock.patch("prism.polyglot.resolve_adapter", return_value="/usr/bin/true"), \
+             mock.patch("prism.polyglot._run", return_value=(0, "", False)) as run:
+            out = _run(self.FILES, allow_exec=True)
+        self.assertFalse(any(f.extra.get("reason") == "executes-scanned-code" for f in out))
+        argv = [c.args[0] for c in run.call_args_list]
+        self.assertTrue(any("clippy" in a for a in argv))
+
+    def test_mypy_never_reads_project_config(self):
+        mypy = next(t for c in pg.CHECKS for t in c.tools if t.name == "mypy")
+        self.assertIn("--config-file=", mypy.argv)
+        self.assertFalse(mypy.executes)
 
 
 class TestMissingToolsAreNotrun(unittest.TestCase):

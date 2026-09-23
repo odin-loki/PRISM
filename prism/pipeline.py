@@ -35,6 +35,7 @@ from prism.taint import run_taint
 from prism.thread import run_thread
 from prism.taxonomy import coverage_from_report
 from prism import journal
+from prism import sandbox
 
 
 STAGE_ORDER = [
@@ -73,6 +74,40 @@ STAGE_ORDER = [
 _LLM_KEEP_STATUS = frozenset({
     laws.NOTRUN, laws.ERROR, laws.TIMEOUT, laws.HYPOTHESIS, laws.READS,
 })
+
+
+# Law 9 (docs/PLAN.md "Running on untrusted code"): what each stage may
+# execute. "none" = pure analysis / parse / compile-only; "whole" = the
+# stage only runs scanned code and is NOTRUN without --allow-exec; "part" =
+# the analysis half runs, the execute half is NOTRUN without the flag.
+# Same table in src/prism/pipeline.cpp (kExecStages).
+EXEC_STAGES: dict[str, str] = {
+    "sanitize": "whole",   # compiles + runs `// prism: run` functions under ASan/UBSan/TSan
+    "optional": "part",    # klee (native external calls), tree-local .cocci scripts
+    "polyglot": "part",    # perl -c, cargo clippy, eslint (Tool.executes)
+    "fuzz": "part",        # concrete oracle runs; compiled harness / AFL++ / libFuzzer do not
+    "diff": "whole",       # compiles + runs both functions
+    "rapid": "part",       # interpreter runs; gcc fallback does not
+    "muttest": "part",     # interpreter runs; gcc fallback does not
+    "execute": "part",     # concrete cex replay runs; LLM-written C does not
+    "repair": "whole",     # compiles + runs LLM-written candidates
+}
+
+
+def exec_gate_note(stage: str, findings: list[Finding], what: str) -> list[Finding]:
+    """A "part" stage that held back its execute half says so once (Law 7).
+
+    The stage's modules mark the skipped half with extra.exec = NOTRUN;
+    this adds the stage-level NOTRUN row with the --allow-exec hint.
+    """
+    marked = any((f.extra or {}).get("exec") == laws.NOTRUN for f in findings)
+    noted = any(
+        f.status == laws.NOTRUN and (f.extra or {}).get("reason") == sandbox.EXEC_REASON
+        for f in findings
+    )
+    if marked and not noted:
+        findings.append(sandbox.exec_notrun(stage, what))
+    return findings
 
 
 def llm_forced_reads(findings: list[Finding]) -> list[Finding]:
@@ -141,6 +176,12 @@ class Pipeline:
         ))
 
     def run(self) -> RunReport:
+        # Law 9: the exec policy holds for this run only (modules without a
+        # Config read it through prism.sandbox.allowed()).
+        with sandbox.policy(self.cfg.allow_exec):
+            return self._run()
+
+    def _run(self) -> RunReport:
         cfg = self.cfg
         root = cfg.root
         cfg.out.mkdir(parents=True, exist_ok=True)
@@ -268,18 +309,20 @@ class Pipeline:
 
         def fuzz() -> list[Finding]:
             src_root = root if root.is_dir() else root.parent
-            return run_fuse(
+            return exec_gate_note("fuzz", run_fuse(
                 functions, bmc_rec.findings, src_root,
                 budget=cfg.fuzz_budget, iters=cfg.fuzz_iters,
                 engine=self._engine() if cfg.llm else None,
-            )
+            ), "fuzz (compiled harness, AFL++, libFuzzer)")
 
         self._stage("fuzz", fuzz)
         self._stage("diff", lambda: run_diff(
             functions, root if root.is_dir() else root.parent,
         ))
-        self._stage("rapid", lambda: run_rapid(functions, trials=64))
-        self._stage("muttest", lambda: run_muttest(functions, trials=32))
+        self._stage("rapid", lambda: exec_gate_note(
+            "rapid", run_rapid(functions, trials=64), "rapid (gcc fallback harness)"))
+        self._stage("muttest", lambda: exec_gate_note(
+            "muttest", run_muttest(functions, trials=32), "muttest (gcc fallback harness)"))
 
         def ltl() -> list[Finding]:
             base = root if root.is_dir() else root.parent
@@ -305,7 +348,8 @@ class Pipeline:
             ]
             fails.sort(key=lambda f: (0 if f.status == laws.CRASH else 1, f.stage))
             eng = self._engine() if cfg.llm and fails else None
-            return execute_cex(fails, functions, llm=cfg.llm, engine=eng)
+            return execute_cex(fails, functions, llm=cfg.llm, engine=eng,
+                               allow_exec=cfg.allow_exec)
 
         self._stage("execute", execute)
 
@@ -331,7 +375,8 @@ class Pipeline:
                                 function=None, line=None, cls="", message=str(ex),
                                 strength=laws.STRENGTH_READS)]
             fb = f"{f0.stage} {f0.status} {f0.cls} {f0.message} {f0.counterexample}"
-            return rlef_repair(self._engine(), src, fb, cfg.repair_rounds)
+            return rlef_repair(self._engine(), src, fb, cfg.repair_rounds,
+                               allow_exec=cfg.allow_exec)
 
         self._stage("repair", repair)
 

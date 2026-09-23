@@ -101,11 +101,11 @@ class TestStagesSameOutputAnyJobs(unittest.TestCase):
             with mock.patch("prism.sanitize._find_cc", return_value="/bin/gcc"), \
                  mock.patch("prism.sanitize._probe_sanitizer",
                             side_effect=lambda _cc, flags: flags != sanitize._UB_FLAGS), \
-                 mock.patch("prism.sanitize._zero_param_callable",
+                 mock.patch("prism.sanitize._opted_in_callable",
                             side_effect=lambda p: f"fn_{p.stem}"), \
                  mock.patch("prism.sanitize._compile_and_run", side_effect=fake_cr), \
                  mock.patch.object(Path, "is_file", return_value=True):
-                return sanitize.run_sanitize(_files(6), Config(jobs=jobs))
+                return sanitize.run_sanitize(_files(6), Config(jobs=jobs, allow_exec=True))
 
         serial, parallel = run(1), run(4)
         self.assertEqual(_key(serial), _key(parallel))

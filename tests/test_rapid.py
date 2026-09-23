@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from prism import laws
+from prism import laws, sandbox
 from prism.cparse import extract_functions
 from prism.muttest import iter_mutations, run_muttest
 from prism.rapid import check_function, run_rapid
@@ -154,6 +154,10 @@ class TestRapid(unittest.TestCase):
 
 
 class TestMuttest(unittest.TestCase):
+    def setUp(self):
+        # Law 9: these tests drive the execute path on purpose (--allow-exec).
+        self.addCleanup(sandbox.set_allowed, sandbox.set_allowed(True))
+
     def test_inc_plus_to_minus_killed(self):
         f, _ = fn("inc")
         sites = iter_mutations(f.body)

@@ -22,7 +22,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from prism import laws
+from prism import laws, sandbox
 from prism.adapters_extra import (
     OPTIONAL_TOOLS,
     _LIBFUZZER_INSTALL,
@@ -248,6 +248,10 @@ def _pointer(name: str = "copy") -> FunctionInfo:
 
 
 class TestRunLibfuzzerHonesty(unittest.TestCase):
+    def setUp(self):
+        # Law 9: these tests drive the execute path on purpose (--allow-exec).
+        self.addCleanup(sandbox.set_allowed, sandbox.set_allowed(True))
+
     def test_missing_clang_is_notrun_never_engine_libfuzzer(self):
         with mock.patch("prism.adapters_extra.shutil.which", return_value=None), \
              mock.patch("prism.adapters_extra._run") as run:
@@ -333,7 +337,8 @@ class TestRunLibfuzzerHonesty(unittest.TestCase):
                 return _proc(rc=0)
 
             with mock.patch("prism.adapters_extra.shutil.which", return_value=CLANG), \
-                 mock.patch("prism.adapters_extra._run", side_effect=fake_run):
+                 mock.patch("prism.adapters_extra._run", side_effect=fake_run), \
+                 mock.patch("prism.adapters_extra._run_harness", side_effect=fake_run):
                 f = _run_libfuzzer(_scalar(), src, timeout=1.0, work=work)
         self.assertGreaterEqual(calls["n"], 1)
         self.assertEqual(f.status, laws.NOTRUN)
@@ -350,7 +355,8 @@ class TestRunLibfuzzerHonesty(unittest.TestCase):
             src.write_text("int inc(int x) { return x + 1; }\n", encoding="utf-8")
             work = Path(td) / "lf"
             with mock.patch("prism.adapters_extra.shutil.which", return_value=CLANG), \
-                 mock.patch("prism.adapters_extra._run", return_value=ok):
+                 mock.patch("prism.adapters_extra._run", return_value=ok), \
+                 mock.patch("prism.adapters_extra._run_harness", return_value=ok):
                 f = _run_libfuzzer(_scalar(), src, timeout=1.0, work=work)
         self.assertEqual(f.status, laws.CLEAN)
         self.assertEqual((f.extra or {}).get("engine"), "libfuzzer")
@@ -372,7 +378,8 @@ class TestRunLibfuzzerHonesty(unittest.TestCase):
             src.write_text("int inc(int x) { return x + 1; }\n", encoding="utf-8")
             work = Path(td) / "lf"
             with mock.patch("prism.adapters_extra.shutil.which", return_value=CLANG), \
-                 mock.patch("prism.adapters_extra._run", side_effect=run_side_effect):
+                 mock.patch("prism.adapters_extra._run", side_effect=run_side_effect), \
+                 mock.patch("prism.adapters_extra._run_harness", side_effect=run_side_effect):
                 f = _run_libfuzzer(_scalar(), src, timeout=1.0, work=work)
         self.assertEqual(f.status, laws.CRASH)
         self.assertEqual((f.extra or {}).get("engine"), "libfuzzer")

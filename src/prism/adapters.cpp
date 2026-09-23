@@ -3,6 +3,7 @@
 #include "prism/regex.hpp"
 #include "prism/config.hpp"
 #include "prism/cparse.hpp"
+#include "prism/sandbox.hpp"
 #include "proc.hpp"
 
 #include <nlohmann/json.hpp>
@@ -94,25 +95,13 @@ std::string tail(const std::string& s, std::size_t n) {
 }
 
 #ifdef _WIN32
-std::string quote_arg(const std::string& a) {
-    std::string o = "\"";
-    for (char c : a) {
-        if (c == '"') o += '"';
-        o += c;
-    }
-    o += '"';
-    return o;
-}
-
-std::string join_cmd(const std::vector<std::string>& args, const fs::path& cwd) {
-    std::string cmd;
-    for (std::size_t i = 0; i < args.size(); ++i) {
-        if (i) cmd += ' ';
-        cmd += quote_arg(args[i]);
-    }
-    cmd += " 2>&1";
-    if (cwd.empty()) return cmd;
-    return "cd /d " + quote_arg(cwd.string()) + " && " + cmd;
+std::wstring widen_utf8(const std::string& s) {
+    if (s.empty()) return {};
+    int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()), nullptr, 0);
+    std::wstring w(static_cast<std::size_t>(n > 0 ? n : 0), L'\0');
+    if (n > 0)
+        MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()), w.data(), n);
+    return w;
 }
 #endif
 
@@ -181,66 +170,97 @@ struct TempDir {
     TempDir& operator=(const TempDir&) = delete;
 };
 
-ProcResult run_argv(const std::vector<std::string>& args, double timeout_s, const fs::path& cwd = {}) {
+// limits: rlimits applied in the forked child (Law 9 sandbox for built
+// binaries; the caller wraps argv with sandbox::wrap_argv). Default: none.
+ProcResult run_argv(const std::vector<std::string>& args, double timeout_s, const fs::path& cwd = {},
+                    const sandbox::Limits& limits = sandbox::Limits()) {
     refuse_disabled_checks(args);
     ProcResult r;
 #ifdef _WIN32
-    const std::string cmd = join_cmd(args, cwd);
-    FILE* pipe = _popen(cmd.c_str(), "r");
-    if (!pipe) {
+    // No cmd.exe in between (the old _popen path let a file name such as
+    // `a&calc&.c` or `%PATH%.c` reach cmd.exe's parser). CreateProcessW gets
+    // one command line quoted for CommandLineToArgvW; a .bat/.cmd target
+    // (which Windows runs through cmd.exe anyway) is quoted for cmd.exe or
+    // refused. stdout and stderr share one pipe, like the POSIX branch.
+    (void)limits;  // Windows has no rlimits; the sandbox kind is "none".
+    if (args.empty()) {
         r.failed = true;
         return r;
     }
-    setvbuf(pipe, nullptr, _IONBF, 0);
+    std::string cl;
+    if (sandbox::is_batch_file(args[0])) {
+        auto bl = sandbox::batch_command_line(args);
+        if (!bl) {
+            r.failed = true;
+            return r;
+        }
+        cl = *bl;
+    } else {
+        cl = sandbox::windows_command_line(args);
+    }
+    std::wstring wcl = widen_utf8(cl);
+    std::vector<wchar_t> clbuf(wcl.begin(), wcl.end());
+    clbuf.push_back(L'\0');
+    SECURITY_ATTRIBUTES sa{};
+    sa.nLength = sizeof sa;
+    sa.bInheritHandle = TRUE;
+    HANDLE out_r = nullptr;
+    HANDLE out_w = nullptr;
+    if (!CreatePipe(&out_r, &out_w, &sa, 0)) {
+        r.failed = true;
+        return r;
+    }
+    SetHandleInformation(out_r, HANDLE_FLAG_INHERIT, 0);
+    HANDLE nul_in = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa,
+                                OPEN_EXISTING, 0, nullptr);
+    STARTUPINFOW si{};
+    si.cb = sizeof si;
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdInput = nul_in != INVALID_HANDLE_VALUE ? nul_in : nullptr;
+    si.hStdOutput = out_w;
+    si.hStdError = out_w;
+    PROCESS_INFORMATION pi{};
+    const std::wstring wcwd = cwd.empty() ? std::wstring() : cwd.wstring();
+    BOOL ok = CreateProcessW(nullptr, clbuf.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW,
+                             nullptr, wcwd.empty() ? nullptr : wcwd.c_str(), &si, &pi);
+    CloseHandle(out_w);
+    if (nul_in != INVALID_HANDLE_VALUE) CloseHandle(nul_in);
+    if (!ok) {
+        CloseHandle(out_r);
+        r.failed = true;
+        return r;
+    }
     const auto deadline =
         std::chrono::steady_clock::now() + std::chrono::duration<double>(std::max(0.1, timeout_s));
     char buf[4096];
-
-    HANDLE h = reinterpret_cast<HANDLE>(_get_osfhandle(_fileno(pipe)));
-    DWORD pid = 0;
-    if (h != INVALID_HANDLE_VALUE) GetNamedPipeServerProcessId(h, &pid);
-    HANDLE proc = pid ? OpenProcess(SYNCHRONIZE | PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION,
-                                    FALSE, pid)
-                      : nullptr;
+    auto drain = [&]() {
+        for (;;) {
+            DWORD avail = 0;
+            if (!PeekNamedPipe(out_r, nullptr, 0, nullptr, &avail, nullptr) || avail == 0) return;
+            DWORD got = 0;
+            const DWORD want = avail < static_cast<DWORD>(sizeof buf) ? avail
+                                                                      : static_cast<DWORD>(sizeof buf);
+            if (!ReadFile(out_r, buf, want, &got, nullptr) || got == 0) return;
+            r.text.append(buf, got);
+        }
+    };
     for (;;) {
-        DWORD avail = 0;
-        if (h != INVALID_HANDLE_VALUE && PeekNamedPipe(h, nullptr, 0, nullptr, &avail, nullptr) &&
-            avail > 0) {
-            const std::size_t n = std::min(sizeof buf, static_cast<std::size_t>(avail));
-            const std::size_t got = std::fread(buf, 1, n, pipe);
-            if (got) r.text.append(buf, got);
-            continue;
-        }
-        if (proc && WaitForSingleObject(proc, 0) == WAIT_OBJECT_0) {
-            while (std::fgets(buf, sizeof buf, pipe)) r.text += buf;
-            break;
-        }
+        drain();
+        if (WaitForSingleObject(pi.hProcess, 20) == WAIT_OBJECT_0) break;
         if (std::chrono::steady_clock::now() >= deadline) {
-            if (proc) TerminateProcess(proc, 1);
+            TerminateProcess(pi.hProcess, 1);
+            WaitForSingleObject(pi.hProcess, 2000);
             r.timed_out = true;
-            if (proc) CloseHandle(proc);
-            _pclose(pipe);
-            return r;
-        }
-        if (h == INVALID_HANDLE_VALUE) {
-            if (std::fgets(buf, sizeof buf, pipe)) {
-                r.text += buf;
-                continue;
-            }
             break;
-        }
-        Sleep(20);
-        DWORD err = 0;
-        if (h != INVALID_HANDLE_VALUE && !PeekNamedPipe(h, nullptr, 0, nullptr, &avail, nullptr)) {
-            err = GetLastError();
-            if (err == ERROR_BROKEN_PIPE || err == ERROR_NO_DATA) {
-                while (std::fgets(buf, sizeof buf, pipe)) r.text += buf;
-                break;
-            }
         }
     }
-    if (proc) CloseHandle(proc);
-    r.rc = _pclose(pipe);
+    drain();
+    DWORD code = 1;
+    GetExitCodeProcess(pi.hProcess, &code);
+    r.rc = r.timed_out ? -1 : static_cast<int>(code);
+    CloseHandle(out_r);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
 #else
     if (args.empty()) {
         r.failed = true;
@@ -265,6 +285,7 @@ ProcResult run_argv(const std::vector<std::string>& args, double timeout_s, cons
     if (pid == 0) {
         ::setpgid(0, 0);
         if (!cwd.empty() && ::chdir(cwd.c_str()) != 0) ::_exit(127);
+        sandbox::apply_child_limits(limits);
         ::dup2(out_p[1], STDOUT_FILENO);
         ::dup2(out_p[1], STDERR_FILENO);
         ::close(out_p[0]);
@@ -472,13 +493,68 @@ Finding help_ok(const std::string& stage, const std::string& exe, const ProcResu
     return f;
 }
 
-std::optional<std::string> zero_param_callable(const fs::path& path) {
+// `// prism: run` or `/* prism: run */` on the definition (signature lines up
+// to the opening brace) or in the comment block directly above it. Same
+// rule as the Python engine prism/sanitize.py marked_run.
+bool has_run_marker(const std::string& line) {
+    static const Regex re(R"((?://|/\*)\s*prism:\s*run\b)");
+    return re.search(line);
+}
+
+bool run_word(const std::string& line) {
+    static const Regex re(R"(\bprism:\s*run\b)");
+    return re.search(line);
+}
+
+bool comment_line(const std::string& line) {
+    static const Regex re(R"(^\s*(?://|/\*|\*)|\*/\s*$)");
+    return re.search(line);
+}
+
+}  // namespace
+
+bool marked_run(const std::vector<std::string>& lines, int line) {
+    const std::size_t i = line > 0 ? static_cast<std::size_t>(line - 1) : 0;
+    for (std::size_t j = i; j < lines.size(); ++j) {
+        if (has_run_marker(lines[j])) return true;
+        if (lines[j].find('{') != std::string::npos || j - i >= 8) break;
+    }
+    for (std::size_t k = i; k > 0; --k) {
+        const auto& ln = lines[k - 1];
+        if (trim_copy(ln).empty() || !comment_line(ln)) break;
+        if (run_word(ln)) return true;
+    }
+    return false;
+}
+
+// Never "any void(void)": a hostile tree's cleanup_everything() is not
+// called. Only a zero-argument, non-static function the author marked.
+std::optional<std::string> opted_in_callable(const fs::path& path) {
+    std::vector<std::string> lines;
+    {
+        std::istringstream in(read_text(path));
+        std::string ln;
+        while (std::getline(in, ln)) {
+            if (!ln.empty() && ln.back() == '\r') ln.pop_back();
+            lines.push_back(ln);
+        }
+    }
     const std::string rel = path.string();
     for (const auto& fn : extract_functions(path, rel)) {
-        if (!fn.params.empty()) continue;
-        if ((fn.kind == "SCALAR" || fn.kind == "VOID") && fn.name != "main") return fn.name;
+        if (!fn.params.empty() || fn.is_static || fn.name == "main") continue;
+        if ((fn.kind == "SCALAR" || fn.kind == "VOID") && marked_run(lines, fn.line)) return fn.name;
     }
     return std::nullopt;
+}
+
+namespace {
+
+const char* const kOptInHint =
+    "mark a zero-argument function with a `// prism: run` comment (trusted code only)";
+
+std::string no_opt_in_message(std::size_t n) {
+    return "no function marked `// prism: run` in " + std::to_string(n) +
+           " .c file(s); sanitize calls only opted-in zero-argument functions";
 }
 
 std::string wrapper_main(const std::optional<std::string>& call) {
@@ -649,11 +725,12 @@ bool probe_sanitizer(const std::string& cc, const std::vector<std::string>& flag
 
 std::tuple<std::string, std::string, std::string> compile_and_run_san(
     const std::string& cc, const fs::path& source, const std::vector<std::string>& flags,
-    double timeout) {
+    double timeout, const std::optional<std::string>& call) {
+    if (!call) return {std::string(laws::NOTRUN), no_opt_in_message(1), ""};
     try {
         TempDir td("prism_san_run_");
         auto wrapper = td.path / "prism_san_main.c";
-        write_text(wrapper, wrapper_main(zero_param_callable(source)));
+        write_text(wrapper, wrapper_main(call));
 #ifdef _WIN32
         auto exe = td.path / "run.exe";
 #else
@@ -681,7 +758,9 @@ std::tuple<std::string, std::string, std::string> compile_and_run_san(
         std::error_code ec;
         if (!fs::is_regular_file(exe, ec))
             return {std::string(laws::ERROR), "compile produced no binary", comp.text};
-        auto run = run_argv({exe.string()}, cap);
+        // Law 9 sandbox; sanitizer shadow memory needs an unlimited address space.
+        auto run = run_argv(sandbox::wrap_argv({exe.string()}, td.path), cap, {},
+                            sandbox::limits_for(cap, /*limit_as=*/false));
         if (run.timed_out) return {std::string(laws::TIMEOUT), "sanitizer run timeout", ""};
         if (run.failed) return {std::string(laws::NOTRUN), "sanitizer run failed to start", ""};
         if (sanitizer_runtime_unusable(run.text))
@@ -718,14 +797,25 @@ std::vector<Finding> run_sanitizer_on_paths(const std::string& cc, const std::ve
         f.extra["sanitizer"] = sanitizer;
         return {f};
     }
+    std::vector<std::pair<fs::path, std::string>> targets;
+    for (const auto& p : c_files)
+        if (auto fn = opted_in_callable(p)) targets.emplace_back(p, *fn);
+    if (targets.empty()) {
+        auto f = finding("sanitize", laws::NOTRUN, "", sanitizer,
+                         no_opt_in_message(c_files.size()), laws::STRENGTH_FINDS);
+        f.extra["install"] = kOptInHint;
+        f.extra["sanitizer"] = sanitizer;
+        return {f};
+    }
     std::vector<Finding> out;
-    for (const auto& p : c_files) {
-        auto [st, msg, evidence] = compile_and_run_san(cc, p, flags, cfg.timeout);
+    for (const auto& [p, fn] : targets) {
+        auto [st, msg, evidence] = compile_and_run_san(cc, p, flags, cfg.timeout, fn);
         auto f = finding("sanitize", st, p.string(), sanitizer, msg, laws::STRENGTH_FINDS);
-        if (auto fn = zero_param_callable(p)) f.function = *fn;
+        f.function = fn;
         f.evidence = tail(evidence, 1500);
         f.extra["exe"] = cc;
         f.extra["sanitizer"] = sanitizer;
+        f.extra["sandbox"] = sandbox::kind();
         out.push_back(std::move(f));
     }
     return out;
@@ -984,9 +1074,29 @@ std::vector<SpatchHit> parse_spatch_hits(const std::string& text) {
     return hits;
 }
 
+bool cocci_has_script(const fs::path& rule) {
+    // Same regex as the Python engine adapters_extra._COCCI_SCRIPT_RE.
+    static const Regex re(R"(^\s*@\s*(?:script|initialize|finalize)\s*:)", /*multiline=*/true);
+    return re.search(read_text(rule));
+}
+
 std::vector<Finding> run_spatch(const std::string& exe, const std::vector<fs::path>& paths,
                                 const Config& cfg) {
     auto rules = cocci_rules(paths, cfg);
+    std::vector<Finding> held;
+    if (!cfg.allow_exec) {
+        std::vector<fs::path> keep;
+        for (const auto& r : rules) {
+            if (cocci_has_script(r))
+                held.push_back(sandbox::exec_notrun(
+                    "spatch", "spatch (" + r.filename().string() + " has a script block)",
+                    {{"exe", exe}, {"rule", r.filename().string()}}));
+            else
+                keep.push_back(r);
+        }
+        rules = std::move(keep);
+        if (rules.empty() && !held.empty()) return held;
+    }
     if (rules.empty()) {
         auto f = finding("spatch", laws::UNKNOWN, "", "",
                          "spatch present; no .cocci rules (not a verdict)", laws::STRENGTH_FINDS);
@@ -1067,8 +1177,9 @@ std::vector<Finding> run_spatch(const std::string& exe, const std::vector<fs::pa
             }
         }
     }
+    out.insert(out.begin(), held.begin(), held.end());
     if (any_hit) return out;
-    if (!out.empty()) {
+    if (out.size() > held.size()) {
         bool only_bad = true;
         for (const auto& f : out)
             if (f.status != laws::TIMEOUT && f.status != laws::ERROR && f.status != laws::NOTRUN)
@@ -1226,7 +1337,14 @@ std::vector<Finding> run_infer(const std::string& exe, const std::vector<fs::pat
     std::vector<Finding> out;
     for (const auto& p : c_files) {
         auto abs = fs::absolute(p);
-        auto r = run_argv({exe, "run", "--", compiler->string(), "-c", abs.string()}, cfg.timeout + 15);
+        // Each file gets its own scratch dir for infer-out/ and the object:
+        // `infer run -- cc -c` would otherwise write both into the cwd
+        // (often the user's tree). Same as the Python engine _run_infer.
+        TempDir scratch("prism_infer_");
+        auto r = run_argv({exe, "run", "--results-dir", (scratch.path / "infer-out").string(), "--",
+                           compiler->string(), "-c", abs.string(), "-o",
+                           (scratch.path / "unit.o").string()},
+                          cfg.timeout + 15);
         if (r.timed_out) {
             out.push_back(finding("infer", laws::TIMEOUT, p.string(), "", "infer timeout",
                                   laws::STRENGTH_FINDS));
@@ -1383,6 +1501,11 @@ std::vector<Finding> run_klee(const std::string& exe, const std::vector<fs::path
         f.extra["exe"] = exe;
         return {f};
     }
+    if (!cfg.allow_exec) {
+        // KLEE interprets bitcode but performs external calls (unlink,
+        // system, ...) natively on the host.
+        return {sandbox::exec_notrun("klee", "klee (native external calls)", {{"exe", exe}})};
+    }
     std::vector<Finding> out;
     bool bitcode_ok = false;
     for (const auto& p : c_files) {
@@ -1395,8 +1518,10 @@ std::vector<Finding> run_klee(const std::string& exe, const std::vector<fs::path
             std::error_code ec;
             if (br.rc != 0 || !fs::is_regular_file(bc, ec)) continue;
             bitcode_ok = true;
-            auto kr = run_argv({exe, "--max-time=5", "--max-forks=16", bc.string()},
-                               std::min(20.0, cfg.timeout + 10), td.path);
+            const double kcap = std::min(20.0, cfg.timeout + 10);
+            auto kr = run_argv(sandbox::wrap_argv({exe, "--max-time=5", "--max-forks=16", bc.string()},
+                                                  td.path),
+                               kcap, td.path, sandbox::limits_for(kcap, /*limit_as=*/false));
             if (kr.timed_out) {
                 out.push_back(finding("klee", laws::TIMEOUT, p.string(), "", "klee timeout",
                                       laws::STRENGTH_FINDS));
@@ -1885,6 +2010,8 @@ std::vector<Finding> run_dafny(const std::vector<fs::path>& paths, const Config&
 }
 
 std::vector<Finding> run_sanitize(const std::vector<fs::path>& paths, const Config& cfg) {
+    // Law 9: the stage runs code from the scanned tree.
+    if (!cfg.allow_exec) return {sandbox::exec_notrun("sanitize", "sanitize (ASan/UBSan/TSan runs)")};
     auto cc = cfg.which({"gcc", "clang"});
     if (!cc) {
         auto missing = sanitizer_notrun("gcc/clang not on PATH", "ubsan");

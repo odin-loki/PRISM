@@ -1,4 +1,9 @@
-"""Differential testing: two SCALAR functions, same byte inputs, disagree = FAILED."""
+"""Differential testing: two SCALAR functions, same byte inputs, disagree = FAILED.
+
+Law 9: the harness compiles and runs both scanned functions, so a pair is
+NOTRUN without --allow-exec (prism.sandbox.allowed()); with it the harness
+runs inside prism.sandbox.
+"""
 
 from __future__ import annotations
 
@@ -11,7 +16,7 @@ import struct
 import subprocess
 import tempfile
 
-from prism import laws
+from prism import laws, sandbox
 from prism.contracts import parse_comments
 from prism.fuzz import C_TYPE_SIZE, param_nbytes
 from prism.models import Finding, FunctionInfo
@@ -95,6 +100,11 @@ def _diff_pair(a: FunctionInfo, b: FunctionInfo, root: Path) -> Finding:
             message="parameter lists differ; same bytes would not mean the same arguments",
         )
 
+    if not sandbox.allowed():
+        return sandbox.exec_notrun(
+            "diff", f"diff {a.name}/{b.name}", file=a.file,
+            function=f"{a.name}/{b.name}", line=a.line,
+        )
     src = _emit_program(a, b)
     cc = shutil.which("gcc") or shutil.which("clang")
     if not cc:
@@ -119,7 +129,7 @@ def _diff_pair(a: FunctionInfo, b: FunctionInfo, root: Path) -> Finding:
                     message=f"{a.name} and {b.name} disagree",
                     evidence=detail[:800],
                     counterexample=data.hex(),
-                    extra={"a": a.file, "b": b.file},
+                    extra={"a": a.file, "b": b.file, "sandbox": sandbox.sandbox_kind()},
                 )
             if st == "crash":
                 return Finding(
@@ -198,7 +208,7 @@ def _compile(cc: str, src: Path, exe: Path) -> tuple[bool, str]:
 
 def _run(exe: Path, data: bytes, timeout: float = 1.0) -> tuple[str, str]:
     try:
-        p = subprocess.run([str(exe)], input=data, capture_output=True, timeout=timeout)
+        p = sandbox.run_binary([str(exe)], scratch=exe.parent, timeout=timeout, input=data)
     except subprocess.TimeoutExpired:
         return "timeout", ""
     err = (p.stderr or b"").decode("utf-8", "replace")

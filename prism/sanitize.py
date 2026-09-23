@@ -2,17 +2,25 @@
 
 Never reports CLEAN from a probe alone. A CLEAN run is not a proof of absence.
 A MinGW-only compiler with no libubsan is NOTRUN, never a fake sanitized CLEAN.
+
+Law 9: this stage runs code from the scanned tree, so it is NOTRUN without
+--allow-exec (Config.allow_exec). Even with it, PRISM never calls an
+arbitrary function: only a zero-argument function the author marked with a
+``// prism: run`` comment on or directly above its definition is called
+from the generated main, and the binary runs inside prism.sandbox. (Scalar
+functions fed chosen inputs are the fuzz stage's job, under ASan+UBSan.)
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 
-from prism import laws
+from prism import laws, sandbox
 from prism.config import Config, ordered_map
 from prism.cparse import extract_functions
 from prism.models import Finding
@@ -194,13 +202,52 @@ def _probe_sanitizer(cc: str, flags: tuple[str, ...]) -> bool:
         return False
 
 
-def _zero_param_callable(path: Path) -> str | None:
-    """Name of a zero-argument function we may call, or None."""
-    rel = str(path)
-    for fn in extract_functions(path, rel):
-        if fn.params:
+# `// prism: run` or `/* prism: run */` (same marker in src/prism/adapters.cpp).
+RUN_MARKER = re.compile(r"(?://|/\*)\s*prism:\s*run\b")
+_RUN_WORD = re.compile(r"\bprism:\s*run\b")  # inside a comment block line
+_COMMENT_LINE = re.compile(r"^\s*(?://|/\*|\*)|\*/\s*$")
+NO_OPT_IN = ("no function marked `// prism: run` in {n} .c file(s); sanitize calls "
+             "only opted-in zero-argument functions")
+OPT_IN_HINT = "mark a zero-argument function with a `// prism: run` comment (trusted code only)"
+
+
+def marked_run(lines: list[str], line: int) -> bool:
+    """True when `// prism: run` sits on the definition or directly above it.
+
+    ``line`` is the 1-based first line of the definition. The signature
+    lines up to the opening brace count as "on"; the contiguous comment
+    block right above counts as "above".
+    """
+    i = max(0, line - 1)
+    j = i
+    while j < len(lines):
+        if RUN_MARKER.search(lines[j]):
+            return True
+        if "{" in lines[j] or j - i >= 8:
+            break
+        j += 1
+    k = i - 1
+    while k >= 0 and lines[k].strip() and _COMMENT_LINE.search(lines[k]):
+        if _RUN_WORD.search(lines[k]):
+            return True
+        k -= 1
+    return False
+
+
+def _opted_in_callable(path: Path) -> str | None:
+    """Name of the zero-argument function the author opted in, or None.
+
+    Never "any void(void)": a hostile tree's cleanup_everything() is not
+    called. A static function cannot be called from the separate main TU.
+    """
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    for fn in extract_functions(path, str(path)):
+        if fn.params or fn.static or fn.name == "main":
             continue
-        if fn.kind in {"SCALAR", "VOID"} and fn.name != "main":
+        if fn.kind in {"SCALAR", "VOID"} and marked_run(lines, fn.line):
             return fn.name
     return None
 
@@ -244,16 +291,17 @@ def _compile_and_run(
 ) -> tuple[str, str, str]:
     """Compile+run one translation unit under sanitizer flags.
 
-    ``call`` is ``_zero_param_callable(source)`` when the caller already has it.
+    ``call`` is ``_opted_in_callable(source)`` when the caller already has it.
+    No opted-in function means nothing is compiled or run (NOTRUN).
     """
+    if call is _UNPARSED:
+        call = _opted_in_callable(source)
+    if not isinstance(call, str):
+        return laws.NOTRUN, NO_OPT_IN.format(n=1), ""
     try:
         with tempfile.TemporaryDirectory(prefix="prism_san_run_") as td:
             wrapper = Path(td) / "prism_san_main.c"
-            if call is _UNPARSED:
-                call = _zero_param_callable(source)
-            wrapper.write_text(
-                _wrapper_main(call if isinstance(call, str) else None), encoding="utf-8",
-            )
+            wrapper.write_text(_wrapper_main(call), encoding="utf-8")
             exe = Path(td) / f"run{_exe_suffix()}"
             comp = _run(
                 [cc, "-std=c11", *flags, str(source), str(wrapper), "-o", str(exe)],
@@ -265,7 +313,11 @@ def _compile_and_run(
             if not exe.is_file():
                 return laws.ERROR, "compile produced no binary", (comp.stderr or "") + (comp.stdout or "")
             try:
-                run = _run([str(exe)], min(timeout, _PROBE_TIMEOUT))
+                # Sanitizer shadow memory needs an unlimited address space.
+                run = sandbox.run_binary(
+                    [str(exe)], scratch=Path(td), timeout=min(timeout, _PROBE_TIMEOUT),
+                    text=True, limit_as=False,
+                )
             except subprocess.TimeoutExpired:
                 return laws.TIMEOUT, "sanitizer run timeout", ""
             text = (run.stderr or "") + (run.stdout or "")
@@ -288,6 +340,10 @@ def _compile_and_run(
         return laws.TIMEOUT, "sanitizer compile/run timeout", ""
     except OSError as exc:
         return laws.NOTRUN, str(exc), ""
+
+
+def _no_opt_in(n: int, sanitizer: str) -> Finding:
+    return _notrun(NO_OPT_IN.format(n=n), sanitizer, OPT_IN_HINT)
 
 
 def _notrun(message: str, sanitizer: str, install: str = _INSTALL) -> Finding:
@@ -334,7 +390,7 @@ def _run_one(
     if p in callables:
         fn = callables[p]
     else:
-        fn = callables[p] = _zero_param_callable(p)
+        fn = callables[p] = _opted_in_callable(p)
     return _compile_and_run(cc, p, flags, cfg.timeout, fn), fn
 
 
@@ -354,7 +410,7 @@ def _results_to_findings(
                 message=msg,
                 strength=laws.STRENGTH_FINDS,
                 evidence=evidence[-1500:],
-                extra={"exe": cc, "sanitizer": sanitizer},
+                extra={"exe": cc, "sanitizer": sanitizer, "sandbox": sandbox.sandbox_kind()},
             )
         )
     return out
@@ -367,14 +423,19 @@ def _run_sanitizer_on_paths(
     sanitizer: str,
     cfg: Config,
 ) -> list[Finding]:
+    if not getattr(cfg, "allow_exec", False):
+        return [sandbox.exec_notrun("sanitize", "sanitize (ASan/UBSan/TSan runs)")]
     c_files = _c_units(paths)
     if not c_files:
         return [_no_c_files(cc, sanitizer)]
-    callables: dict[Path, str | None] = {}
+    callables = {p: _opted_in_callable(p) for p in c_files}
+    targets = [p for p in c_files if callables[p]]
+    if not targets:
+        return [_no_opt_in(len(c_files), sanitizer)]
     results = ordered_map(
-        lambda p: _run_one(cc, p, flags, cfg, callables), c_files, getattr(cfg, "jobs", 1),
+        lambda p: _run_one(cc, p, flags, cfg, callables), targets, getattr(cfg, "jobs", 1),
     )
-    return _results_to_findings(cc, c_files, sanitizer, results)
+    return _results_to_findings(cc, targets, sanitizer, results)
 
 
 _SANITIZERS = (
@@ -390,19 +451,25 @@ def run_sanitize(paths: list[Path], cfg: Config) -> list[Finding]:
     Every (sanitizer, file) compile+run is independent, so they share one
     pool of cfg.jobs threads. Findings keep the serial order: ASan block,
     UBSan block, TSan block, files in input order within each.
+
+    Law 9: NOTRUN without cfg.allow_exec; with it, only files holding a
+    `// prism: run` function are compiled and run (inside prism.sandbox).
     """
+    if not getattr(cfg, "allow_exec", False):
+        return [sandbox.exec_notrun("sanitize", "sanitize (ASan/UBSan/TSan runs)")]
     cc = _find_cc()
     if not cc:
         return [_notrun("gcc/clang not on PATH", "ubsan")]
 
     supported = [(flags, name, _probe_sanitizer(cc, flags)) for flags, name, _ in _SANITIZERS]
-    c_files = _c_units(paths)
+    all_c = _c_units(paths)
+    callables: dict[Path, str | None] = {p: _opted_in_callable(p) for p in all_c}
+    c_files = [p for p in all_c if callables[p]]
     tasks = [
         (flags, p)
         for flags, _name, ok in supported if ok
         for p in c_files
     ]
-    callables: dict[Path, str | None] = {}
     results = iter(ordered_map(
         lambda t: _run_one(cc, t[1], t[0], cfg, callables), tasks, getattr(cfg, "jobs", 1),
     ))
@@ -411,8 +478,10 @@ def run_sanitize(paths: list[Path], cfg: Config) -> list[Finding]:
     for (flags, name, ok), (_f, _n, missing) in zip(supported, _SANITIZERS):
         if not ok:
             out.append(_notrun(missing, name))
-        elif not c_files:
+        elif not all_c:
             out.append(_no_c_files(cc, name))
+        elif not c_files:
+            out.append(_no_opt_in(len(all_c), name))
         else:
             batch = [next(results) for _ in c_files]
             out.extend(_results_to_findings(cc, c_files, name, batch))
