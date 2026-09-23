@@ -1119,7 +1119,7 @@ void Parser::decl_one(Enc& e, const std::string& stmt) {
                 e.ctx.array_sort(e.ctx.bv_sort(WIDTH), e.ctx.bv_sort(static_cast<unsigned>(ct->w))));
             e.declare_array(name, Arr{arr, n, ct->w, ct->u});
             // `_h_p`: the harness buffer standing for the caller's object
-            // behind pointer parameter p (stages_rest.cpp materialize). Its
+            // behind pointer parameter p (stages/harness_bmc.cpp materialize). Its
             // contents are the caller's, assumed initialised like the
             // `// requires:` size.
             shadow_init(e, name, !init.empty() || name.starts_with("_h_"));

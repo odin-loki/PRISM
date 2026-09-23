@@ -161,7 +161,7 @@ class TestHarnessBMC(unittest.TestCase):
 
 class TestCppHarnessKinductionSource(unittest.TestCase):
     def test_harness_pointer_without_requires_emits_needs_harness(self):
-        src = (ROOT / "src" / "prism" / "stages_rest.cpp").read_text(encoding="utf-8")
+        src = (ROOT / "src" / "prism" / "stages" / "harness_bmc.cpp").read_text(encoding="utf-8")
         start = src.find("std::vector<Finding> run_harness_bmc(")
         self.assertGreaterEqual(start, 0)
         body = src[start : start + 2500]

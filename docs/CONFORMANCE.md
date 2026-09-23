@@ -332,7 +332,7 @@ the code after the loop (`regress/kind_postloop`, `regress/post_loop`);
 `enum { A = 1 << 3, B }` gave `B` the value 1 (`regress/enum_expr`); an
 unknown-callee refutation that needs a particular return value is no longer
 reported; the harness buffer had type `int` whatever the pointee type.
-The concrete oracle (`prism/concrete.py`, `src/prism/stages_rest.cpp`) had
+The concrete oracle (`prism/concrete.py`, `src/prism/stages/interp.cpp`) had
 S2 and S3 too: fixed there as well.
 
 ### Soundness (wrong proofs)

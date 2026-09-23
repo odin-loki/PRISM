@@ -344,10 +344,10 @@ class TestCppParseLtlFileSourceContract(unittest.TestCase):
     """C++ parse_ltl_file skips # and // the same way the Python engine does."""
 
     def test_cpp_parse_ltl_file_skips_hash_and_slash_slash(self):
-        src = (ROOT / "src" / "prism" / "stages_rest.cpp").read_text(encoding="utf-8")
+        src = (ROOT / "src" / "prism" / "stages" / "ltl.cpp").read_text(encoding="utf-8")
         sig = "std::vector<std::string> parse_ltl_file("
         i = src.find(sig)
-        self.assertNotEqual(i, -1, msg="parse_ltl_file missing from stages_rest.cpp")
+        self.assertNotEqual(i, -1, msg="parse_ltl_file missing from stages/ltl.cpp")
         brace = src.find("{", i)
         self.assertGreater(brace, i)
         depth = 0
