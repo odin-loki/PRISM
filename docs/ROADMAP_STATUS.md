@@ -76,10 +76,10 @@ generators): 0 wrong proofs over every campaign run.
 | Item | Status |
 |---|---|
 | 3.1 portfolio + scheduler + query cache | **DONE** — Z3, Bitwuzla, CaDiCaL, Kissat, SLS; SAT answers re-validated in Z3; cache never lets a plain UNSAT answer a certified request |
-| 3.1 exit criterion (beats Z3 alone) | **PARTIAL** — narrowly (211 s vs 229 s over 4,179 pir VCs); `docs/SOLVERS.md` |
+| 3.1 exit criterion (beats Z3 alone) | **PARTIAL** — narrowly on pir VCs (211 s vs 229 s over 4,179). On the hard-query benchmark with Bitwuzla installed: 164.9 s vs 190.9 s, and the portfolio closes 3 of the 5 queries that Z3 alone times out on (`docs/SOLVERS.md`) |
 | 3.1 learned scheduler | **PARTIAL** — GBDT predictor built and measured; off by default because it did not beat the rules |
 | 3.2 certified mode | **DONE** — pir `--certified`: bit-blast (Lean-proved `toCNF` when the Lean exes are built, else Z3 tactics), CaDiCaL LRAT, cake_lpr **and** Lean's LRAT checker |
-| 3.2 exit criterion (all loop-free suite tasks certified) | see certified-merge result at the end |
+| 3.2 exit criterion (all loop-free suite tasks certified) | **PARTIAL** — `conformance.py --certified`: 109 of the 125 loop-free `true` functions pir proves are `PROVED-CERTIFIED`, all 109 through the Lean bit-blaster. Of the other 16, 11 have no VCs (stay `PROVED`) and 5 wide multiplications ran out of time in CaDiCaL LRAT (stay `PROVED`). 0 `false` functions certified; 0 wrong proofs |
 | 3.3 GPU stages | **NOT DONE on GPU** — no GPU here; CPU reference walker only |
 | 3.4 upstream forks | **NOT DONE** — owner activity |
 
@@ -125,7 +125,7 @@ at run time; the numbers below are for the deterministic halves.
 | 8.2 concurrency | **PARTIAL** — two straight-line threads, round-robin scheme |
 | 8.2 libc models verified by PRISM | **NOT DONE** |
 | 8.3 trusted base document | **DONE** — `docs/TRUSTED_BASE.md`, shipped with every report |
-| 8.4 PRISM on PRISM | **PARTIAL** — CI self-check (lints + polyglot) uploads a SARIF report; not a nightly memory-safety run of PRISM's C++ |
+| 8.4 PRISM on PRISM | **DONE** — `.github/workflows/self-check.yml` runs nightly. It builds PRISM with `-DPRISM_SANITIZE=ON` (ASan + UBSan) and runs both suites and the conformance gate under it. PRISM also scans its own tree. The first local sanitizer run found a signed overflow in `stages_rest.cpp` (fixed) and Z3-dependent tests that did not guard for a missing solver (fixed). All 158 no-Z3 cases pass under ASan/UBSan |
 | 8.5 proofs rechecked independently in CI | **DONE** — `proofs-recheck.yml`: `leanchecker` + `nanoda` on every Lean project |
 
 ## Part 6 — Engineering and release
@@ -134,7 +134,7 @@ at run time; the numbers below are for the deterministic halves.
 |---|---|
 | 6.1 CI + release gate | **DONE** — `ci.yml`, `conformance.yml`, `proofs*.yml`, `docs.yml`; self-hosted GPU runner **NOT DONE** (hardware) |
 | 6.2 five testing layers | **DONE** — doctest, conformance, differential (vs the frozen Python engine), random programs, self-fuzzing (`docs/FUZZ_SELF.md`; all findings fixed) |
-| 6.3 SV-COMP readiness | **PARTIAL** — BenchExec tool-info, witness 2.0 writer, scored subset (`docs/SVCOMP.md`); no validated witnesses yet, no entry |
+| 6.3 SV-COMP readiness | **PARTIAL** — BenchExec tool-info, witness 2.0 writer, scored subset (`docs/SVCOMP.md`). `bmc` counterexamples carry nondet values, so its refutations replay and the witnesses get `function_return` waypoints. Local unvalidated score: no-overflow 35/70, unreach-call 9/36, 0 incorrect. `pir` does not report nondet values yet; no witness validator has been run; no entry |
 | 6.4 documentation | **DONE** — `VERDICTS.md`, `TRUSTED_BASE.md`, `CONFORMANCE.md`, `USER_GUIDE.md`; every report finding links its verdict definition |
 | 6.5 assurance packaging | **DONE as mappings** — `docs/assurance/` (DO-333, DO-330, Def Stan 00-055, ISM); no qualification is claimed |
 | 6.6 SARIF | **DONE** |

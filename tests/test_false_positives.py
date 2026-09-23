@@ -230,7 +230,8 @@ class TestEngineLintParity(unittest.TestCase):
                 py = _engine_rows([sys.executable, "-m", "prism"], root,
                                   Path(td) / f"py_{root.name}")
                 ast_only: list = []
-                cpp = _engine_rows([str(_cpp_prism())], root,
+                # The Clang-AST layer runs clang once per unit: use every core.
+                cpp = _engine_rows([str(_cpp_prism()), "--jobs", str(os.cpu_count() or 2)], root,
                                    Path(td) / f"cpp_{root.name}", ast_only)
                 self.assertEqual(py, cpp, msg=root.name)
                 if root == FP:
