@@ -32,9 +32,12 @@ ws         ::= [ ]{0,2}
 constexpr const char* GBNF_CONTRACT = R"GBNF(# PRISM contract draft (ACSL-ish): requires / ensures clauses over the
 # function's parameters and \result. Drafted contracts stay HYPOTHESIS until
 # a human approves them. At run time the ident rule is replaced with the
-# parameter names.
+# parameter names. Each clause may end with a trace link to where it came
+# from: a requirement sentence id (R12, from --requirements), "comment" (the
+# function's comments / header documentation) or "code" (the body itself).
 root   ::= clause ( "\n" clause ){0,7} "\n"?
-clause ::= ( "requires" | "ensures" ) " " expr ";"
+clause ::= ( "requires" | "ensures" ) " " expr ";" trace?
+trace  ::= " // from " ( "R" [1-9] [0-9]{0,3} | "comment" | "code" )
 expr   ::= term ( " " binop " " term ){0,8}
 term   ::= "!"? atom | "-" atom
 atom   ::= ident | "\\result" | number | "(" expr ")"
@@ -49,4 +52,28 @@ root  ::= "{" ws "\"explanation\"" ws ":" ws str ws "," ws "\"fix_body\"" ws ":"
 str   ::= "\"" char{0,2000} "\""
 char  ::= [^"\\\x00-\x1f] | "\\" ["\\/bfnrt]
 ws    ::= [ ]{0,2}
+)GBNF";
+constexpr const char* GBNF_LEAN_PROOF = R"GBNF(# PRISM Lean proof candidate (roadmap 9.2): a JSON object with the tactic
+# lines that replace one `sorry`, in order. A partial list is allowed (the
+# search keeps it when Lean reports only "unsolved goals"). The Lean kernel
+# checks every candidate, `#print axioms` must stay within propext /
+# Classical.choice / Quot.sound, and `lake build` gates acceptance. The
+# decoded text is validated again: commands and escape hatches (sorry,
+# admit, native_decide, #eval, set_option, axiom, run_tac, ...) are rejected.
+root   ::= "{" ws "\"tactics\"" ws ":" ws "[" ws line ( ws "," ws line ){0,39} ws "]" ws "}" ws
+line   ::= "\"" char{1,400} "\""
+char   ::= [^"\\\x00-\x1f] | "\\" ( "\"" | "\\" )
+ws     ::= [ \n]{0,2}
+)GBNF";
+constexpr const char* GBNF_ASSUMPTION_AUDIT = R"GBNF(# PRISM assumption audit (roadmap 9.3): an independent review of harness
+# assumptions and contract `requires`. Each flag names the assumption by
+# its index in the list PRISM gave, a realistic input it would exclude, and
+# why. Flags are READS findings for the human reviewer; they never change a
+# verdict.
+root   ::= "{" ws "\"flags\"" ws ":" ws "[" ws ( flag ( ws "," ws flag ){0,15} )? ws "]" ws "}" ws
+flag   ::= "{" ws "\"index\"" ws ":" ws number ws "," ws "\"input\"" ws ":" ws str ws "," ws "\"reason\"" ws ":" ws str ws "}"
+str    ::= "\"" char{0,300} "\""
+char   ::= [^"\\\x00-\x1f] | "\\" ( "\"" | "\\" )
+number ::= [0-9] [0-9]{0,2}
+ws     ::= [ \n]{0,2}
 )GBNF";

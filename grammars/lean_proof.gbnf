@@ -1,0 +1,11 @@
+# PRISM Lean proof candidate (roadmap 9.2): a JSON object with the tactic
+# lines that replace one `sorry`, in order. A partial list is allowed (the
+# search keeps it when Lean reports only "unsolved goals"). The Lean kernel
+# checks every candidate, `#print axioms` must stay within propext /
+# Classical.choice / Quot.sound, and `lake build` gates acceptance. The
+# decoded text is validated again: commands and escape hatches (sorry,
+# admit, native_decide, #eval, set_option, axiom, run_tac, ...) are rejected.
+root   ::= "{" ws "\"tactics\"" ws ":" ws "[" ws line ( ws "," ws line ){0,39} ws "]" ws "}" ws
+line   ::= "\"" char{1,400} "\""
+char   ::= [^"\\\x00-\x1f] | "\\" ( "\"" | "\\" )
+ws     ::= [ \n]{0,2}

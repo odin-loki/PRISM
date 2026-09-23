@@ -157,11 +157,13 @@ namespace {
 
 const std::string& grammar_text(const std::string& name) {
     static const std::string inv(GBNF_INVARIANTS), har(GBNF_HARNESS), con(GBNF_CONTRACT),
-        exp(GBNF_EXPLAIN), none;
+        exp(GBNF_EXPLAIN), lean(GBNF_LEAN_PROOF), aud(GBNF_ASSUMPTION_AUDIT), none;
     if (name == "invariants") return inv;
     if (name == "harness") return har;
     if (name == "contract") return con;
     if (name == "explain") return exp;
+    if (name == "lean_proof") return lean;
+    if (name == "assumption_audit") return aud;
     return none;
 }
 
@@ -216,6 +218,29 @@ std::string grammar_json_schema(const std::string& name) {
                {"fix_body", {{"type", "string"}, {"maxLength", 4000}}}}}};
     } else if (name == "contract") {
         s = {{"type", "string"}, {"maxLength", 2000}};
+    } else if (name == "lean_proof") {
+        s = {{"type", "object"},
+             {"required", {"tactics"}},
+             {"properties",
+              {{"tactics",
+                {{"type", "array"},
+                 {"minItems", 1},
+                 {"maxItems", 40},
+                 {"items", {{"type", "string"}, {"minLength", 1}, {"maxLength", 400}}}}}}}};
+    } else if (name == "assumption_audit") {
+        s = {{"type", "object"},
+             {"required", {"flags"}},
+             {"properties",
+              {{"flags",
+                {{"type", "array"},
+                 {"maxItems", 16},
+                 {"items",
+                  {{"type", "object"},
+                   {"required", {"index", "input", "reason"}},
+                   {"properties",
+                    {{"index", {{"type", "integer"}}},
+                     {"input", {{"type", "string"}, {"maxLength", 300}}},
+                     {"reason", {{"type", "string"}, {"maxLength", 300}}}}}}}}}}}};
     }
     return s.dump();
 }
@@ -469,15 +494,29 @@ Validated validate_contract(const std::string& raw, const std::vector<std::strin
         if (line.rfind("requires ", 0) == 0) kind = "requires";
         else if (line.rfind("ensures ", 0) == 0) kind = "ensures";
         else return (v.reason = "clause must start with requires/ensures", v.pairs.clear(), v);
-        if (line.back() != ';') return (v.reason = "clause must end with ;", v.pairs.clear(), v);
+        // Optional trace link (contract.gbnf `trace`): " // from R12|comment|code".
+        std::string trace;
+        if (auto tp = line.find(" // from "); tp != std::string::npos) {
+            trace = trim(line.substr(tp + 9));
+            line = trim(line.substr(0, tp));
+            bool ok_trace = trace == "comment" || trace == "code";
+            if (!ok_trace && trace.size() >= 2 && trace.size() <= 5 && trace[0] == 'R' && trace[1] != '0') {
+                ok_trace = true;
+                for (std::size_t k = 1; k < trace.size(); ++k)
+                    if (!std::isdigit(static_cast<unsigned char>(trace[k]))) ok_trace = false;
+            }
+            if (!ok_trace) return (v.reason = "bad trace link '" + trace.substr(0, 20) + "'", v.pairs.clear(), v);
+        }
+        if (line.empty() || line.back() != ';') return (v.reason = "clause must end with ;", v.pairs.clear(), v);
         auto e = trim(line.substr(kind.size(), line.size() - kind.size() - 1));
         std::string ex = e;
         for (std::size_t p; (p = ex.find("\\result")) != std::string::npos;) ex.replace(p, 7, "__prism_result");
         std::string why;
         if (!check_expr_impl(ex, vs, &why, true)) return (v.reason = why, v.pairs.clear(), v);
         v.pairs.push_back({kind, e});
+        v.traces.push_back(trace);
     }
-    if (v.pairs.empty() || v.pairs.size() > 8) return (v.reason = "need 1..8 clauses", v.pairs.clear(), v);
+    if (v.pairs.empty() || v.pairs.size() > 8) return (v.reason = "need 1..8 clauses", v.pairs.clear(), v.traces.clear(), v);
     v.ok = true;
     return v;
 }

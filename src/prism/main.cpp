@@ -1,3 +1,4 @@
+#include "prism/ai_proof.hpp"
 #include "prism/config.hpp"
 #include "prism/pipeline.hpp"
 
@@ -8,6 +9,7 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #ifdef _WIN32
@@ -190,6 +192,8 @@ static int launch_gui(int argc, char** argv) {
 
 int main(int argc, char** argv) {
     using namespace prism;
+    // Roadmap 9.2: `prism prove FILE.lean THEOREM` (Lean proof search).
+    if (argc > 1 && std::string_view(argv[1]) == "prove") return ai::prove_main(argc - 1, argv + 1);
     auto cfg = default_config();
     std::string path = "testdata";
     std::string fail_on = "never";
@@ -215,6 +219,8 @@ int main(int argc, char** argv) {
         else if (a == "--fuzz-iters") cfg.fuzz_iters = std::stoi(next());
         else if (a == "--repair-rounds") cfg.repair_rounds = std::stoi(next());
         else if (a == "--jobs" || a == "-j") cfg.jobs = std::stoi(next());
+        else if (a == "--requirements") cfg.requirements.push_back(std::filesystem::absolute(next()));
+        else if (a == "--contracts-approved") cfg.contracts_approved = std::filesystem::absolute(next());
         else if (a == "--fail-on") {
             fail_on = next();
             if (fail_on != "never" && fail_on != "defect" && fail_on != "gap") {
@@ -234,6 +240,8 @@ int main(int argc, char** argv) {
                 "           [--stage a,b] [--skip a,b] [--out DIR] [--resume] [--unwind N]\n"
                 "           [--fuzz-budget N] [--fuzz-iters N] [--repair-rounds N]\n"
                 "           [--list-stages] [--fail-on never|defect|gap] [--allow-exec]\n"
+                "           [--requirements PATH] [--contracts-approved PATH]\n"
+                "prism prove FILE.lean THEOREM [--write] [--allow-exec] (Lean proof search; prove --help)\n"
                 "PRISM = Performance, Regression, Integration and Security Module\n"
                 "Checks any codebase (PATH: file or directory, any language): deep C/C++\n"
                 "analysis (lints, compiler warnings, BMC, fuzzing, contracts) plus every other\n"
@@ -250,6 +258,10 @@ int main(int argc, char** argv) {
                 "  trust. Without it those steps are NOTRUN (Law 9).\n"
                 "--pbsd PATH: ParanoidBSD tree for the pbsd stage (else PRISM_PBSD; no default).\n"
                 "  Importing its modules also needs --allow-exec.\n"
+                "--requirements PATH: markdown/text requirement documents (file or directory,\n"
+                "  repeatable); the review stage drafts contracts traced to their sentences.\n"
+                "--contracts-approved PATH: approvals of drafted contracts (default\n"
+                "  <root>/contracts.approved.json); only approved clauses give PROVED-ASSUMING.\n"
                 "Writes report.json, report.md and report.sarif (SARIF 2.1.0) under --out.\n";
             return 0;
         } else if (!a.starts_with("-")) {

@@ -31,7 +31,8 @@ PRISM_API std::string sha256_file(const std::filesystem::path& path);  // "" whe
 
 // ---------------------------------------------------------------- grammars
 // GBNF text shipped in grammars/<name>.gbnf (embedded verbatim; tests/test_ai.py
-// locks the embedded copy to the file). Names: invariants, harness, contract, explain.
+// locks the embedded copy to the file). Names: invariants, harness, contract, explain,
+// lean_proof, assumption_audit (include/prism/ai_proof.hpp).
 PRISM_API const std::string& grammar_text(const std::string& name);
 // JSON schema used for Ollama's "format" parameter (same shape as the grammar).
 PRISM_API std::string grammar_json_schema(const std::string& name);
@@ -45,6 +46,7 @@ struct Validated {
     std::string explanation;            // explain
     std::string fix_body;               // explain
     std::vector<std::pair<std::string, std::string>> pairs;  // harness/contract: (kind, text)
+    std::vector<std::string> traces;    // contract: per clause "R<n>" | "comment" | "code" | ""
 };
 // A C boolean expression over `vars` only: identifiers, integer literals,
 // arithmetic / comparison / logical operators, parentheses. No assignment,
