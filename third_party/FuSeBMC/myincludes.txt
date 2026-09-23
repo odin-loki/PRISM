@@ -1,5 +1,0 @@
-/home/kaled/Downloads/clang_base/lib/clang/6.0.0/include  "the path of clang"
-/usr/include
-/usr/include/linux
-/usr/include/c++/8/tr1
-/usr/include/c++/8

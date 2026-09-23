@@ -1,4 +1,0 @@
-CORE
-main.py
---incremental-bmc
-^ERROR: list\(\) over a bytes object is not supported; bytes elements are integers, not characters$

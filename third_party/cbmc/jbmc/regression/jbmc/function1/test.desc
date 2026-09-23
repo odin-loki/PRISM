@@ -1,8 +1,0 @@
-CORE
-Main
---function 'Other.fail:()V' -cp target/classes
-^EXIT=10$
-^SIGNAL=0$
-^VERIFICATION FAILED$
---
-^warning: ignoring

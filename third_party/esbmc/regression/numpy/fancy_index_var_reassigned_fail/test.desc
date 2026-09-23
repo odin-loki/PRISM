@@ -1,4 +1,0 @@
-CORE
-main.py
---incremental-bmc
-^ERROR: TypeError: fancy indexing through a variable \(a\[idx\]\) requires an index variable that is assigned exactly once

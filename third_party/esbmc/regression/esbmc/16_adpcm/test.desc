@@ -1,4 +1,0 @@
-THOROUGH
-main.c
---unwind 100 --no-library
-^VERIFICATION SUCCESSFUL$

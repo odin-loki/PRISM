@@ -1,5 +1,0 @@
-CORE
-main.py
---strict-types
-^VERIFICATION FAILED$
-FAILED .* line +9 +assertion

@@ -1,2 +1,0 @@
-query: Security/CWE/CWE-191/UnsignedDifferenceExpressionComparedZero.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

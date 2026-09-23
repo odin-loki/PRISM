@@ -1,5 +1,0 @@
-CORE
-main.c
---synthesise-loop-invariants
-^  UNKNOWN      \[main\.assertion\.1\]  line 11  vacuous \(vacuous discharge: path assumptions are unsatisfiable
-^VERIFICATION UNKNOWN$

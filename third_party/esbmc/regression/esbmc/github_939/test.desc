@@ -1,5 +1,0 @@
-THOROUGH
-alglin1.c
---function det2 --incremental-bmc
-REQUIRES arch_x86
-^VERIFICATION FAILED$

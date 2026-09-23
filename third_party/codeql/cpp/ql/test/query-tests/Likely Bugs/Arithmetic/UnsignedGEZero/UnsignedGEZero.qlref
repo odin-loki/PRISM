@@ -1,2 +1,0 @@
-query: Likely Bugs/Arithmetic/UnsignedGEZero.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

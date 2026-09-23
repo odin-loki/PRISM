@@ -1,6 +1,0 @@
-CORE
-main.c
---function foo --assign-param-nondet
-
-\bx = 0\b
-^VERIFICATION FAILED$

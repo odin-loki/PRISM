@@ -1,2 +1,0 @@
-query: Security/CWE/CWE-807/TaintedCondition.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

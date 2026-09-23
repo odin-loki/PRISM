@@ -1,4 +1,0 @@
-CORE
-main.cpp
---data-races-check
-^VERIFICATION SUCCESSFUL$

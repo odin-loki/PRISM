@@ -1,2 +1,0 @@
-query: Dead Code/DeadRefTypes.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

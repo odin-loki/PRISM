@@ -1,6 +1,0 @@
-CORE
-gh-1776.cc
-
-^ERROR: main symbol `main' not found
-^ERROR: CONVERSION ERROR
-

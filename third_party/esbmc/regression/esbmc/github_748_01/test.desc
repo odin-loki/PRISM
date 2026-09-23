@@ -1,4 +1,0 @@
-CORE
-test.c
---no-pointer-check --unwind 1
-^VERIFICATION SUCCESSFUL$

@@ -1,2 +1,0 @@
-query: Critical/OverflowStatic.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

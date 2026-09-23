@@ -1,3 +1,0 @@
-norm1: /dir1/dir/file
-norm2: /dir2/dir/file
-[kernel] Parsing tests/misc/issue_191.c (with preprocessing)

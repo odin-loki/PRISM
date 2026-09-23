@@ -1,4 +1,0 @@
-CORE
-main.py
---enforce-contract add --function add
-^ERROR: --function: 'add' is defined by 2 classes; qualify it as Class.method$

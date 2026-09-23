@@ -1,5 +1,0 @@
-CORE
-main.c
-
-^\s*FAILED\s+\[main\.assertion\.1\]\s+line\s+26\s+the innermost grafted row must not read back with its elements swapped$
-^VERIFICATION FAILED$

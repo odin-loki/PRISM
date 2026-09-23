@@ -1,6 +1,0 @@
-CORE
-main.py
---incremental-bmc
-^VERIFICATION FAILED$
-shapes\.py, function Shape$
-^\s*PASSED\s+\[read_sides\.assertion\.1\]

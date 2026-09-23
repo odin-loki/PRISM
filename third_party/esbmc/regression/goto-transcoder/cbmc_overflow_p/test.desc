@@ -1,4 +1,0 @@
-CORE
-cbmc_overflow_p.goto
---binary
-^VERIFICATION SUCCESSFUL$

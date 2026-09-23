@@ -1,4 +1,0 @@
-CORE
-multi.ld
---ld-props props.yaml --k-induction --unlimited-k-steps
-^VERIFICATION SUCCESSFUL$

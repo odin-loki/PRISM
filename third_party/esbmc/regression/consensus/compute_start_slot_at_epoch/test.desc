@@ -1,4 +1,0 @@
-CORE
-main.py
---incremental-bmc --function compute_start_slot_at_epoch
-^VERIFICATION SUCCESSFUL$

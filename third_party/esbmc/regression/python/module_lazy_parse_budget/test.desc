@@ -1,5 +1,0 @@
-CORE
-main.py
---verbosity python:9
-^module cache: [0-9]+ modules discovered, 0 parsed$
-^VERIFICATION SUCCESSFUL$

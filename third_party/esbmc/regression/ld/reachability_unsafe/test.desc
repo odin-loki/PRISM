@@ -1,4 +1,0 @@
-CORE
-signals.ld
---ld-props props.yaml --incremental-bmc --unwind 2
-^VERIFICATION FAILED$

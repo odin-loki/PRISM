@@ -1,4 +1,0 @@
-CORE
-lu-fig2.fixed.c
---unwind 1 --no-unwinding-assertions -Wno-error=incompatible-function-pointer-types
-^VERIFICATION SUCCESSFUL$

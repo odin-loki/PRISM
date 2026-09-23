@@ -1,4 +1,0 @@
-CORE
-main.py
---incremental-bmc
-^ERROR: TypeError: numpy\.moveaxis\(\) axis must be a concrete integer$

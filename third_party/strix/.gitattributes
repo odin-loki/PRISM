@@ -1,4 +1,0 @@
-lib/cudd/c/** linguist-vendored
-lib/abc/c/** linguist-vendored
-lib/aiger/c/** linguist-vendored
-.github/scripts/* linguist-vendored

@@ -1,4 +1,0 @@
-CORE
-cbmc_bad_version.goto
---binary
-unsupported CBMC goto-binary version 7

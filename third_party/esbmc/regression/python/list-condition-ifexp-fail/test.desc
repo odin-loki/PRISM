@@ -1,4 +1,0 @@
-CORE
-main.py
---no-standard-checks --smt-during-symex --smt-symex-guard --no-unwinding-assertions --unwind 1
-^VERIFICATION FAILED$

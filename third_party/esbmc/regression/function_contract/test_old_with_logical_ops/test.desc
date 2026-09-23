@@ -1,5 +1,0 @@
-CORE
-main.c
---function test_or --enforce-contract test_or
-^VERIFICATION SUCCESSFUL$
-

@@ -1,5 +1,0 @@
-CORE
-cbmc_abs_fail.goto
---binary
-^VERIFICATION FAILED$
-assertion

@@ -1,4 +1,0 @@
-CORE
-main.cpp
---std c++11 --memory-leak-check
-^VERIFICATION SUCCESSFUL$

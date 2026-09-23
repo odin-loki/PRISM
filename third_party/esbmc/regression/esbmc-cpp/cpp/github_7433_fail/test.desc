@@ -1,5 +1,0 @@
-CORE
-main.cpp
-
-^VERIFICATION FAILED$
-^  FAILED       \[main\.assertion\.[0-9]+\] +line +7 +uncaught exception: struct my_error$

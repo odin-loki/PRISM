@@ -1,4 +1,0 @@
-THOROUGH
-inheritance.solast
---function test_override --sol inheritance.sol --k-induction --bound
-^VERIFICATION FAILED$

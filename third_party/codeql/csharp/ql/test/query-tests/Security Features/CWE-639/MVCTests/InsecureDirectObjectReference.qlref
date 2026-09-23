@@ -1,2 +1,0 @@
-query: Security Features/CWE-639/InsecureDirectObjectReference.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

@@ -1,4 +1,0 @@
-CORE
-main.py
---incremental-bmc
-^ERROR: TypeError: numpy call composition could not resolve an operand to a constant value$

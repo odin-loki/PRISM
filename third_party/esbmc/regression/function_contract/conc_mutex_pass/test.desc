@@ -1,4 +1,0 @@
-CORE
-main.c
---enforce-contract inc_counter --function inc_counter --no-bounds-check --no-pointer-check
-^VERIFICATION SUCCESSFUL$

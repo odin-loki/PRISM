@@ -1,4 +1,0 @@
-CORE
-cbmc_expr_aggregate_literal_fail.goto
---binary
-^VERIFICATION FAILED$

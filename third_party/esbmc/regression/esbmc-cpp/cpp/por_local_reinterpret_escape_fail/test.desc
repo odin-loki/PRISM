@@ -1,5 +1,0 @@
-CORE
-main.cpp
---std c++11
-^VERIFICATION FAILED$
-^  assertion \*static_cast<int \*>\(arg\) == 0$

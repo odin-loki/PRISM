@@ -1,5 +1,0 @@
-CORE
-main.py
---enforce-contract add --function add
-^  contract ensures$
-^VERIFICATION FAILED$

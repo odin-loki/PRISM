@@ -1,4 +1,0 @@
-CORE
-main.py
---incremental-bmc --function hash_to_bls_field
-^VERIFICATION FAILED$

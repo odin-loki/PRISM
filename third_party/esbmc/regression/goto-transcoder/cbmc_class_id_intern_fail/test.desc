@@ -1,4 +1,0 @@
-CORE
-cbmc_class_id_intern_fail.goto
---binary --function main
-^VERIFICATION FAILED$

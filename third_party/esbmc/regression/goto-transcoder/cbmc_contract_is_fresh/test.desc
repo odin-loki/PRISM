@@ -1,4 +1,0 @@
-CORE
-cbmc_contract_is_fresh.goto
---binary --function read_first
-^VERIFICATION SUCCESSFUL$

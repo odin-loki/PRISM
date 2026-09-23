@@ -1,4 +1,0 @@
-cplusplus # cudd
-cudd
-solvers
-util

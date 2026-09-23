@@ -1,4 +1,0 @@
-CORE
-main.c
---enforce-contract process_buffer --function process_buffer
-^VERIFICATION SUCCESSFUL$

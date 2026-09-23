@@ -1,5 +1,0 @@
-CORE
-main.cpp
---branch-coverage --generate-ctest-testcase
-^Generated 2 CTest test case\(s\) with CMakeLists\.txt
-^COVERAGE ANALYSIS COMPLETE$

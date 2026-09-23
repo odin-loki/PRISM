@@ -1,5 +1,0 @@
-CORE
-main.cpp
---unwind 10 --no-unwinding-assertions --error-label ERROR --timeout 900
-
-^VERIFICATION FAILED$

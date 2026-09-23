@@ -1,5 +1,0 @@
-%init: S0;
-%accept: Sf;
-
-S0: { [main()] } -> Sf;
-Sf: -> Sf;

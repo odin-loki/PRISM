@@ -1,4 +1,0 @@
-CORE
-main.c
---enforce-contract init
-^VERIFICATION FAILED$

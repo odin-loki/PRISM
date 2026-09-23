@@ -1,5 +1,0 @@
-CORE
-main.cpp
---std c++17
-^VERIFICATION FAILED$
-^\s*assertion width<char\[4\]\[5\]>\(\) == 20$

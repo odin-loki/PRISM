@@ -1,5 +1,0 @@
-THOROUGH
-gh-1070.c
---unwind 1
-^VERIFICATION FAILED$
-\b(dereference failure:|unwinding assertion loop|VLA array dimension must be greater than zero)\b

@@ -1,4 +1,0 @@
-CORE
-main.py
---incremental-bmc
-^ERROR:.*Thread subclass `Worker` assigned to the `global`/`nonlocal` name `w` inside a function

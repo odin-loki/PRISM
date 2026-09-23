@@ -1,4 +1,0 @@
-CORE
-main.c
---atomicity-check
-^VERIFICATION FAILED$

@@ -1,4 +1,0 @@
-CORE
-cbmc_popcount.goto
---binary
-^VERIFICATION SUCCESSFUL$

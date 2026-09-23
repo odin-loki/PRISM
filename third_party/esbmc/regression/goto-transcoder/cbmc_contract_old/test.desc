@@ -1,4 +1,0 @@
-CORE
-cbmc_contract_old.goto
---binary --function inc
-^VERIFICATION SUCCESSFUL$

@@ -1,2 +1,0 @@
-query: ASP/BlockCodeResponseWrite.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

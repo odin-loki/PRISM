@@ -1,5 +1,0 @@
-CORE
-main.c
---enforce-contract f --function f --no-pointer-check
-^VERIFICATION FAILED$
-^.*p->top not in assigns clause.*$

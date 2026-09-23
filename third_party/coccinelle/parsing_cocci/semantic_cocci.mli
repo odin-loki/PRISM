@@ -1,1 +1,0 @@
-exception Semantic of string

@@ -1,4 +1,0 @@
-KNOWNBUG
-main.c
---k-induction --std=gnu89 --z3
-^VERIFICATION SUCCESSFUL$

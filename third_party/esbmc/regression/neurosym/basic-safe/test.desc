@@ -1,4 +1,0 @@
-CORE
-main.c
---neurosym --neurosym-prog fake-neurosym.sh
-^VERIFICATION SUCCESSFUL$

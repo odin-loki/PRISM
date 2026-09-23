@@ -1,4 +1,0 @@
-CORE
-main.c
---func f
-^VERIFICATION SUCCESSFUL$

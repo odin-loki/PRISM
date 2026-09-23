@@ -1,4 +1,0 @@
-CORE
-cbmc_printf_fail.goto
---binary
-^VERIFICATION FAILED$

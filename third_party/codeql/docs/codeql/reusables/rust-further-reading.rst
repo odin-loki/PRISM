@@ -1,3 +1,0 @@
-- `CodeQL queries for Rust <https://github.com/github/codeql/tree/main/rust/ql/src>`__
-- `Example queries for Rust <https://github.com/github/codeql/tree/main/rust/ql/examples>`__
-- `CodeQL library reference for Rust <https://codeql.github.com/codeql-standard-libraries/rust/>`__

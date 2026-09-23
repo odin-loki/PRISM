@@ -1,5 +1,0 @@
-CORE
-main.c
---goto-functions-only
-main\.c line 13 column 3 function countdown\n\s+ASSIGN tmp\$1=t;
-main\.c line 13 column 3 function countdown\n\s+ASSIGN t=t - 1;

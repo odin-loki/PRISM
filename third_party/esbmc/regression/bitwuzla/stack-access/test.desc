@@ -1,4 +1,0 @@
-THOROUGH
-stack_access.c
---bitwuzla
-^VERIFICATION FAILED$

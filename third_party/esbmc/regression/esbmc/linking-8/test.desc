@@ -1,4 +1,0 @@
-CORE
-../linking-common/main_init_extern.c
- -DEXPECTED_VALUE=222
-^VERIFICATION SUCCESSFUL$

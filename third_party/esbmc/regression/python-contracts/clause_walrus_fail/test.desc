@@ -1,4 +1,0 @@
-CORE
-main.py
---enforce-contract w
-^ERROR: __ESBMC_requires clause at line 2 contains an assignment expression

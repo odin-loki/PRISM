@@ -1,4 +1,0 @@
-CORE
-main.py
---replace-call-with-contract bump
-^VERIFICATION SUCCESSFUL$

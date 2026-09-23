@@ -1,5 +1,0 @@
-CORE
-main.c
-
-^VERIFICATION FAILED$
-assertion p == &a\[i\]\[1\]

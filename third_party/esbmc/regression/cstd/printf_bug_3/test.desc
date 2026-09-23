@@ -1,5 +1,0 @@
-KNOWNBUG
-main.c
---k-induction
-^VERIFICATION FAILED$
-^dereference failure: NULL pointer$

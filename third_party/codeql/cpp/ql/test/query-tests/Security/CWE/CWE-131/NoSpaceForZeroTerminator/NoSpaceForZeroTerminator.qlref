@@ -1,2 +1,0 @@
-query: Security/CWE/CWE-131/NoSpaceForZeroTerminator.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

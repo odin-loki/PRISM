@@ -1,4 +1,0 @@
-CORE
-main.py
---unwind 2 --no-unwinding-assertions --strict-types
-^VERIFICATION FAILED$

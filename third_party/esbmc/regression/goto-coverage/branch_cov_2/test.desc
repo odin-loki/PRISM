@@ -1,6 +1,0 @@
-CORE
-main.c
---branch-function-coverage --unwind 2 --no-unwinding-assertions
-^Function Entry Points & Branches : 15
-^Reached : 10
-^COVERAGE ANALYSIS INCOMPLETE

@@ -1,4 +1,0 @@
-CORE
-main.c
---multi-property --assertion-coverage
-^COVERAGE ANALYSIS COMPLETE$

@@ -1,4 +1,0 @@
-THOROUGH
-main.c
---unwind 1 --no-slice --context-bound 2 --array-flattener
-^VERIFICATION FAILED$

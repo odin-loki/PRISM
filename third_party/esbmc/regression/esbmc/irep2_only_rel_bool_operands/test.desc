@@ -1,4 +1,0 @@
-CORE
-main.c
---goto-functions-only --clang-c-irep2-adjust-only
-ASSERT \(\(signed int\)\(-x == -y\)\) == \(\(signed int\)\(x == y\)\)

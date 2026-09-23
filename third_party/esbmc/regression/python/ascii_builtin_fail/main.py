@@ -1,1 +1,0 @@
-assert ascii("a") == "a"

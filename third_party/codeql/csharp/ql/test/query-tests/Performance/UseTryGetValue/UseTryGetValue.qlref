@@ -1,2 +1,0 @@
-query: Performance/UseTryGetValue.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

@@ -1,5 +1,0 @@
-CORE
-cbmc_copysign_fail.goto
---binary
-^VERIFICATION FAILED$
-assertion

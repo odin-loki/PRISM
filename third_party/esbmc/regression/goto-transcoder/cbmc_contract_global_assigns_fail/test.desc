@@ -1,4 +1,0 @@
-CORE
-cbmc_contract_global_assigns_fail.goto
---binary --function setg
-^VERIFICATION FAILED$

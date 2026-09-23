@@ -1,4 +1,0 @@
-CORE
-cbmc_thread_local.goto
---binary
-^VERIFICATION SUCCESSFUL$

@@ -1,5 +1,0 @@
-CORE
-main.py
---incremental-bmc
-^VERIFICATION FAILED$
-assertion return_value\$_twice\$[0-9]+ == 999

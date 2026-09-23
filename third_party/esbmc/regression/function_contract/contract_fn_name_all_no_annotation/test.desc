@@ -1,5 +1,0 @@
-CORE
-main.c
---enforce-all-contracts
-^ERROR: --enforce-all-contracts: no function carries the __ESBMC_contract annotation$
-\A(?!(.|\n)*VERIFICATION)

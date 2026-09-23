@@ -1,4 +1,0 @@
-CORE
-main.c
---error-label ERR --no-assertions
-^VERIFICATION SUCCESSFUL$

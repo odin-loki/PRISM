@@ -1,4 +1,0 @@
-THOROUGH
-main.c
---smt-during-symex --smt-symex-guard --bitwuzla
-^VERIFICATION SUCCESSFUL$

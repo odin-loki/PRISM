@@ -1,4 +1,0 @@
-CORE
-cbmc_contract_old_fail.goto
---binary --function inc
-^VERIFICATION FAILED$

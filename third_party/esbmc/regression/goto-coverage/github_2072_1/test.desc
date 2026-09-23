@@ -1,8 +1,0 @@
-CORE
-main.c
---unwind 1 --assertion-coverage
-^Total Asserts: 2
-^Total Assertion Instances: 6
-^Reached Assertion Instances: 6
-^Assertion Instances Coverage: 100%
-^COVERAGE ANALYSIS COMPLETE$

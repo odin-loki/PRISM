@@ -1,4 +1,0 @@
-CORE
-main.cpp
-String1.cpp --unwind 2 --no-unwinding-assertions  --no-bounds-check --timeout 900
-^VERIFICATION SUCCESSFUL$

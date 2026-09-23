@@ -1,4 +1,0 @@
-THOROUGH
-main.c
---unwind 1 --ir --z3
-^VERIFICATION FAILED$

@@ -1,1 +1,0 @@
-int main(void){int x=1; __CPROVER_assert(x==1,"holds"); return 0;}

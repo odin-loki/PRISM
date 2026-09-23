@@ -1,4 +1,0 @@
-CORE
-cbmc_expr_ieee_sqrt_fail.goto
---binary
-^VERIFICATION FAILED$

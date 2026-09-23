@@ -1,4 +1,0 @@
-CORE
-main.c
---proof-cache proof-store
-^ERROR: --proof-cache reuses claims one at a time and needs --multi-property$

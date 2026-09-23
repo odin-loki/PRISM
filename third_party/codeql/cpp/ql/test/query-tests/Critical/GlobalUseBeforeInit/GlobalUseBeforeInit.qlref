@@ -1,2 +1,0 @@
-query: Critical/GlobalUseBeforeInit.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

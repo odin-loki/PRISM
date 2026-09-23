@@ -1,4 +1,0 @@
-CORE
-main.py
---unwind 3
-^ERROR: bytearray is not supported; use bytes for an immutable byte sequence$

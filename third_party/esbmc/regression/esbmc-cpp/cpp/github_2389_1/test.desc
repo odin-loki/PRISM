@@ -1,4 +1,0 @@
-CORE
-main.cpp
---class "A B" --function test
-^VERIFICATION SUCCESSFUL$

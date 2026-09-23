@@ -1,4 +1,0 @@
-CORE
-main.py
---enforce-contract pick
-^ERROR: __ESBMC_requires clause at line 2 references .o., whose type could not be determined

@@ -1,2 +1,0 @@
-query: Critical/LargeParameter.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

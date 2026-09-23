@@ -1,5 +1,0 @@
-CORE
-main.c
-
-^\s+an aliased read must not fold$
-^VERIFICATION FAILED$

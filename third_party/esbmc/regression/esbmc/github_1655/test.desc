@@ -1,4 +1,0 @@
-CORE
-gh-1655.c
---smt-during-symex
-^VERIFICATION FAILED$

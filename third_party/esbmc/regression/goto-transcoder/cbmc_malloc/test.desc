@@ -1,4 +1,0 @@
-CORE
-cbmc_malloc.goto
---binary
-^VERIFICATION SUCCESSFUL$

@@ -1,6 +1,0 @@
-@@
-declaration d;
-@@
-
-- d
-+ d

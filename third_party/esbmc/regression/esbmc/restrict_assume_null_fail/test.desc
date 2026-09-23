@@ -1,4 +1,0 @@
-CORE
-main.c
---func f --restrict-assume
-^VERIFICATION FAILED$

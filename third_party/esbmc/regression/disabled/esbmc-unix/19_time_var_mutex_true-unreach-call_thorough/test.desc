@@ -1,4 +1,0 @@
-THOROUGH
-main.c
---error-label ERROR --context-bound 7
-^VERIFICATION SUCCESSFUL$

@@ -1,4 +1,0 @@
-CORE
-main.c
---neurosym --k-induction --neurosym-prog fake-neurosym.sh
-does not support --k-induction

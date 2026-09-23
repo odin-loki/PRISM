@@ -1,4 +1,0 @@
-THOROUGH
-main.py
---no-unwinding-assertions --unwind 12
-^VERIFICATION FAILED$

@@ -1,4 +1,0 @@
-CORE
-main.py
---unwind 3
-^ERROR: TypeError: 'float' object is not subscriptable at .*main\.py:4$

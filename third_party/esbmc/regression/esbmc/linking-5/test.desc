@@ -1,4 +1,0 @@
-CORE
-../linking-common/main_init_weak.c
--DEXPECTED_VALUE=999
-^VERIFICATION SUCCESSFUL$

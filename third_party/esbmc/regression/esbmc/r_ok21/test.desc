@@ -1,4 +1,0 @@
-CORE
-main.c
---no-simplify --no-pointer-check
-^VERIFICATION FAILED$

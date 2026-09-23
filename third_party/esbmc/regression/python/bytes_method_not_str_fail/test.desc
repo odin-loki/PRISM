@@ -1,4 +1,0 @@
-KNOWNBUG
-main.py
---no-unwinding-assertions --unwind 4
-^VERIFICATION FAILED$

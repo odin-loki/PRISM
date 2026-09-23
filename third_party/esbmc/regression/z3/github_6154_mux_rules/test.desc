@@ -1,4 +1,0 @@
-CORE
-main.c
---unwind 10 --no-standard-checks --z3
-^VERIFICATION SUCCESSFUL$

@@ -1,2 +1,0 @@
-query: Bad Practices/PathCombine.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

@@ -1,5 +1,0 @@
-CORE
-main.py
-
-^  assertion return_value\$_strcmp\$\d+ < 0$
-^VERIFICATION FAILED$

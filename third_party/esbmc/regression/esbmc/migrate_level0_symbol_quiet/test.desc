@@ -1,4 +1,0 @@
-CORE
-main.c
---goto-functions-only
-(?s)\A(?!.*missing renaming delimiters)

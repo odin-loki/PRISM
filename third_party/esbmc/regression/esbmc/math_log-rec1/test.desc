@@ -1,4 +1,0 @@
-THOROUGH
-main.c
---unwind 10 --boolector
-^VERIFICATION SUCCESSFUL$

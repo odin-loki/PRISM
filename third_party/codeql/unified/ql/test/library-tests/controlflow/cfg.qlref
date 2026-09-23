@@ -1,2 +1,0 @@
-query: cfg.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

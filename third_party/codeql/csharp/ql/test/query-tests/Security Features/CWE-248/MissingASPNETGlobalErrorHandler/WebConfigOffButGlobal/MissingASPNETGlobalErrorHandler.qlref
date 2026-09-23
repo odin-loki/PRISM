@@ -1,2 +1,0 @@
-query: Security Features/CWE-248/MissingASPNETGlobalErrorHandler.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

@@ -1,5 +1,0 @@
-CORE
-main.c
---double-assign-check
-^VERIFICATION FAILED$
-^.*dereference failure: accessed expired variable pointer.*$

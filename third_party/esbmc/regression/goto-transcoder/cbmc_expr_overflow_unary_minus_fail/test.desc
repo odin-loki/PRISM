@@ -1,4 +1,0 @@
-CORE
-cbmc_expr_overflow_unary_minus_fail.goto
---binary
-^VERIFICATION FAILED$

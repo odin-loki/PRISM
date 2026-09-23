@@ -1,4 +1,0 @@
-CORE
-cbmc_havoc_object.goto
---binary
-^VERIFICATION SUCCESSFUL$

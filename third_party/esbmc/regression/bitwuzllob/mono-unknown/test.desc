@@ -1,5 +1,0 @@
-CORE
-main.c
---bitwuzllob --bitwuzllob-prog unknown-mallob.sh --result-only
-solver returned unknown
-SMT solver failed

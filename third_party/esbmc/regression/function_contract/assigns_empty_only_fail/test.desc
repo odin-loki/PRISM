@@ -1,5 +1,0 @@
-CORE
-main.c
---enforce-contract impure
-^VERIFICATION FAILED$
-assigns compliance: c:@g not in assigns clause

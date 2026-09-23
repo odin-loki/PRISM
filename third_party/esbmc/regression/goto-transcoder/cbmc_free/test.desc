@@ -1,4 +1,0 @@
-CORE
-cbmc_free.goto
---binary
-^VERIFICATION SUCCESSFUL$

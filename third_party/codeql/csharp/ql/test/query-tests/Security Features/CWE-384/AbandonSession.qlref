@@ -1,2 +1,0 @@
-query: Security Features/CWE-384/AbandonSession.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

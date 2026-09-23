@@ -1,5 +1,0 @@
-CORE
-main.py
---unwind 6
-^  uncaught exception: TypeError$
-^VERIFICATION FAILED$

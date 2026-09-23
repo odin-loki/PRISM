@@ -1,2 +1,0 @@
-query: Critical/ReturnValueIgnored.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

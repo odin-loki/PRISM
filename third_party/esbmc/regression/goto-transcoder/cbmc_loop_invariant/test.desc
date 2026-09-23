@@ -1,4 +1,0 @@
-CORE
-cbmc_loop_invariant.goto
---binary --unwind 10
-^VERIFICATION SUCCESSFUL$

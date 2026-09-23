@@ -1,4 +1,0 @@
-CORE
-main.c
---floatbv --overflow-check
-^VERIFICATION SUCCESSFUL$

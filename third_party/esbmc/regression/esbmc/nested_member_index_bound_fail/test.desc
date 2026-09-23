@@ -1,5 +1,0 @@
-CORE
-main.c
---unwind 8
-^VERIFICATION FAILED$
-the walk does not cover four elements

@@ -1,4 +1,0 @@
-CORE
-main.py
---enforce-contract h
-^ERROR: __ESBMC_requires at line 2 takes exactly one argument, got 2

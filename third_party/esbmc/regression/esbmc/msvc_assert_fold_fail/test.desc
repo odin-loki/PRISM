@@ -1,5 +1,0 @@
-CORE
-main.c
-
-FAILED.*assertion n <= 2
-^VERIFICATION FAILED$

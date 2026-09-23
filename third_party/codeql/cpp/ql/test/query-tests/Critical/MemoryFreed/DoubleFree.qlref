@@ -1,2 +1,0 @@
-query: Critical/DoubleFree.ql
-postprocess: utils/test/InlineExpectationsTestQuery.ql

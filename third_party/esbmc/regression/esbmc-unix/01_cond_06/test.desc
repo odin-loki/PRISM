@@ -1,4 +1,0 @@
-CORE
-main.c
---unwind 4 --context-bound 4 --deadlock-check
-^VERIFICATION FAILED$

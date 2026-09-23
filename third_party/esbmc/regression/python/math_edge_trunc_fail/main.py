@@ -1,3 +1,0 @@
-import math
-
-assert math.trunc(1.9) == 2

@@ -1,5 +1,0 @@
-CORE
-gh-151-2.c
-
-REQUIRES signed_char_host
-^VERIFICATION SUCCESSFUL$

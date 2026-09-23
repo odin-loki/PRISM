@@ -1,4 +1,0 @@
-KNOWNBUG
-main.c
---enforce-contract f --function f
-^VERIFICATION SUCCESSFUL$

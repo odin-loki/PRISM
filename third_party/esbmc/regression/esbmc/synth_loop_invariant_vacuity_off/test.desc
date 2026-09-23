@@ -1,5 +1,0 @@
-CORE
-main.c
---synthesise-loop-invariants --no-vacuity-check
-^  PASSED       \[main\.assertion\.1\]  line 11  vacuous$
-^VERIFICATION SUCCESSFUL$

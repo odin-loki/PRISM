@@ -1,4 +1,0 @@
-CORE
-cbmc_bitfield_bool.goto
---binary
-^VERIFICATION SUCCESSFUL$

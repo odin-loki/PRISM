@@ -1,5 +1,0 @@
-CORE
-main.c
---condition-coverage --generate-ctest-testcase --unwind 1 --no-unwinding-assertions --no-bounds-check --force-malloc-success
-^Generated 4 CTest test case\(s\) with CMakeLists\.txt
-^COVERAGE ANALYSIS COMPLETE$

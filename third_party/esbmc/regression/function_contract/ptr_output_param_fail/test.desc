@@ -1,4 +1,0 @@
-CORE
-main.c
---enforce-contract compute_max
-^VERIFICATION FAILED$

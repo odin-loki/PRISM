@@ -1,4 +1,0 @@
-CORE
-main.c
---incremental-bmc --context-bound 2
-^VERIFICATION FAILED$

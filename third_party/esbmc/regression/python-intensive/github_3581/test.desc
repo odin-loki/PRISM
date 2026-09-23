@@ -1,4 +1,0 @@
-THOROUGH
-main.py
---no-standard-checks --unwind 9
-^VERIFICATION SUCCESSFUL$
