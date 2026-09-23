@@ -2,6 +2,7 @@
 
 #include "prism/ai.hpp"
 #include "prism/ai_proof.hpp"
+#include "prism/ai_assist.hpp"
 #include "prism/cparse.hpp"
 #include "prism/journal.hpp"
 #include "prism/laws.hpp"
@@ -16,6 +17,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <cmath>
 #include <fstream>
 #include <iomanip>
@@ -466,6 +468,10 @@ RunReport run_pipeline(const Config& cfg) {
     apply_confidence(report);
     report.save(cfg.out / "report.json");
     write_report_md(report, cfg.out / "report.md");
+    // Roadmap 9.3 triage: triage.json + the report.md "Clusters" section.
+    // Ordering only: the report (and so every status) is const here.
+    // PRISM_TRIAGE=0 switches it off (docs/AI.md: its measured value).
+    if (const char* t = std::getenv("PRISM_TRIAGE"); !t || std::string(t) != "0") ai::write_triage(report, cfg.out);
     write_sarif(report, cfg.out / "report.sarif");
     return report;
 }

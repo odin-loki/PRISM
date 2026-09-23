@@ -12,7 +12,10 @@ code base and says honestly what it could not check.
   leftover: rename it to PRISM (`tests/test_naming.py` fails on it).
 - Env vars are `PRISM_*` only (`PRISM_AFL`, `PRISM_LIBFUZZER`, `PRISM_PBSD`,
   `PRISM_GGUF`, `PRISM_MODEL`, `PRISM_LLAMA_SERVER`, `PRISM_NATIVE_DLL`,
-  `PRISM_TOOLS_DIR`).
+  `PRISM_TOOLS_DIR`, AI: `PRISM_PROVER_SERVER`, `PRISM_PROVER_GGUF`,
+  `PRISM_PROOF_CACHE`, `PRISM_EMBED_SERVER`, `PRISM_TRIAGE`,
+  `PRISM_SOLVER_MODEL`, `PRISM_SOLVER_PREDICT`, `PRISM_PREDICT_COLLECT`,
+  `PRISM_PREDICT_BUDGET`).
   There are no `HELIX_*` fallbacks.
 - Output directory is `prism-out/` (GUI: `prism-out-gui/`).
 

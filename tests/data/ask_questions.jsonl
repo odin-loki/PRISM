@@ -1,0 +1,32 @@
+{"question": "unproved memory safety in module net", "expect": {"file_glob": "*net*", "cls": ["MEM-", "PTR-", "OOB", "UAF", "NULL", "LEAK"], "statuses": ["BOUNDED", "FAILED", "UNKNOWN", "TIMEOUT", "ERROR", "NOTRUN", "NEEDS-HARNESS", "CRASH", "SANFAIL", "HYPOTHESIS"]}}
+{"question": "how many FAILED by stage", "expect": {"statuses": ["FAILED"], "count_only": true, "group_by": "stage"}}
+{"question": "show all bounded results from bmc", "expect": {"statuses": ["BOUNDED"], "stages": ["bmc"]}}
+{"question": "which functions are proved", "expect": {"statuses": ["PROVED-CERTIFIED", "PROVED-UNBOUNDED", "PROVED", "PROVED-ASSUMING"]}}
+{"question": "certified proofs", "expect": {"statuses": ["PROVED-CERTIFIED", "PROVED-UNBOUNDED", "PROVED", "PROVED-ASSUMING"]}}
+{"question": "PROVED-CERTIFIED", "expect": {"statuses": ["PROVED-CERTIFIED"]}}
+{"question": "integer overflows in parser.c", "expect": {"cls": ["OVF", "OVERFLOW", "WRAP"], "file_glob": "*parser.c*"}}
+{"question": "division by zero found by the fuzzer", "expect": {"cls": ["DIV"], "stages": ["fuzz"]}}
+{"question": "what did the sanitizer report", "expect": {"stages": ["sanitize"]}}
+{"question": "crashes", "expect": {"statuses": ["CRASH"]}}
+{"question": "all bugs in directory src/net", "expect": {"statuses": ["FAILED", "CRASH", "SANFAIL"], "file_glob": "*src/net*"}}
+{"question": "null pointer dereferences in function parse_header", "expect": {"cls": ["NULL"], "function_glob": "parse_header"}}
+{"question": "functions that need a harness", "expect": {"statuses": ["NEEDS-HARNESS"]}}
+{"question": "which stages did not run", "expect": {"statuses": ["NOTRUN"]}}
+{"question": "timeouts grouped by file", "expect": {"statuses": ["TIMEOUT"], "group_by": "file"}}
+{"question": "count failed per function", "expect": {"statuses": ["FAILED"], "count_only": true, "group_by": "function"}}
+{"question": "shift problems from pir", "expect": {"cls": ["SHIFT"], "stages": ["pir"]}}
+{"question": "data races", "expect": {"cls": ["RACE", "CONC-", "LOCK-"]}}
+{"question": "use after free in module alloc", "expect": {"cls": ["UAF", "DANGLE", "STACK-ESCAPE"], "file_glob": "*alloc*"}}
+{"question": "leaks", "expect": {"cls": ["LEAK"]}}
+{"question": "hypotheses from the llm stage", "expect": {"statuses": ["HYPOTHESIS"], "stages": ["llm"]}}
+{"question": "findings mentioning 'signed integer overflow'", "expect": {"text": "signed integer overflow"}}
+{"question": "top 5 failed in file main.c", "expect": {"statuses": ["FAILED"], "file_glob": "*main.c*", "limit": 5}}
+{"question": "unproved functions in file util.c", "expect": {"file_glob": "*util.c*", "statuses": ["BOUNDED", "FAILED", "UNKNOWN", "TIMEOUT", "ERROR", "NOTRUN", "NEEDS-HARNESS", "CRASH", "SANFAIL", "HYPOTHESIS"]}}
+{"question": "counterexamples for add_*()", "expect": {"statuses": ["FAILED"], "function_glob": "add_*"}}
+{"question": "proofs by k-induction", "expect": {"statuses": ["PROVED-CERTIFIED", "PROVED-UNBOUNDED", "PROVED", "PROVED-ASSUMING"], "stages": ["bmc"]}}
+{"question": "errors grouped by stage", "expect": {"statuses": ["ERROR"], "group_by": "stage"}}
+{"question": "uninitialized reads", "expect": {"cls": ["UNINIT"]}}
+{"question": "format string bugs", "expect": {"cls": ["FMT-"], "statuses": ["FAILED", "CRASH", "SANFAIL"]}}
+{"question": "secrets in the polyglot scan", "expect": {"cls": ["SECRET"], "stages": ["polyglot"]}}
+{"question": "unbounded proofs in module crypto", "expect": {"statuses": ["PROVED-UNBOUNDED", "PROVED-CERTIFIED", "PROVED", "PROVED-ASSUMING"], "file_glob": "*crypto*"}}
+{"question": "what is not proven in harness", "expect": {"stages": ["harness"], "statuses": ["BOUNDED", "FAILED", "UNKNOWN", "TIMEOUT", "ERROR", "NOTRUN", "NEEDS-HARNESS", "CRASH", "SANFAIL", "HYPOTHESIS"]}}

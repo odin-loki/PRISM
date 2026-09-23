@@ -1,0 +1,12 @@
+{"question": "unproved integer overflows in src/codec", "expect": {"cls": ["OVF", "OVERFLOW", "WRAP"], "file_glob": "*src/codec*", "statuses": ["BOUNDED", "FAILED", "UNKNOWN", "TIMEOUT", "ERROR", "NOTRUN", "NEEDS-HARNESS", "CRASH", "SANFAIL", "HYPOTHESIS"]}}
+{"question": "number of crashes per file", "expect": {"statuses": ["CRASH"], "count_only": true, "group_by": "file"}}
+{"question": "out of bounds writes found by fuzzing", "expect": {"cls": ["OOB", "INDEX", "BUFFER"], "stages": ["fuzz"]}}
+{"question": "PROVED-UNBOUNDED results in module math", "expect": {"statuses": ["PROVED-UNBOUNDED"], "file_glob": "*math*"}}
+{"question": "what did cppcheck find", "expect": {"stages": ["cppcheck"]}}
+{"question": "failed checks in function checksum", "expect": {"statuses": ["FAILED"], "function_glob": "checksum"}}
+{"question": "bounded results grouped by function", "expect": {"statuses": ["BOUNDED"], "group_by": "function"}}
+{"question": "double free bugs", "expect": {"cls": ["DOUBLE-FREE"], "statuses": ["FAILED", "CRASH", "SANFAIL"]}}
+{"question": "which tools were missing", "expect": {"statuses": ["NOTRUN"]}}
+{"question": "division problems in lib/fixed.c", "expect": {"cls": ["DIV"], "file_glob": "*lib/fixed.c*"}}
+{"question": "unknown or timeout results from pir", "expect": {"statuses": ["UNKNOWN", "TIMEOUT"], "stages": ["pir"]}}
+{"question": "memory leaks reported by the sanitizers", "expect": {"cls": ["MEM-", "PTR-", "OOB", "UAF", "NULL", "LEAK"], "stages": ["sanitize"]}}

@@ -19,6 +19,8 @@ public:
 private slots:
     void onRun();
     void onDone(int exitCode, QProcess::ExitStatus st);
+    // Roadmap 9.4 assistant: questions over findings, "explain <id>", "trusted base".
+    void onAsk();
 
 private:
     void loadSameReport(const QString& outDir);
@@ -40,6 +42,11 @@ private:
     QLabel *res_ = nullptr;
     QLabel *conf_ = nullptr;
     QString out_dir_;
+    // Assistant chat panel (roadmap 9.4). Answers show the structured query;
+    // nothing typed here can change a verdict.
+    QLineEdit *ask_ = nullptr;
+    QPushButton *ask_btn_ = nullptr;
+    QPlainTextEdit *chat_ = nullptr;
 };
 
 }  // namespace prism
