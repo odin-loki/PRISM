@@ -1071,38 +1071,76 @@ std::optional<std::string> unencoded_layout_stmt(std::string_view stmt_s) {
     return "typedef local unencoded";
 }
 
+// Enumerator values of every plain `enum { ... }` in the file. An
+// enumerator whose value cannot be computed here (e.g. `A = 1 << 3`) is left
+// out together with the implicit enumerators that follow it, and a name
+// defined with two different values is left out: an unknown enumerator is
+// UNENCODED at its use, never a wrong constant.
 std::map<std::string, int> extract_enums(std::string text) {
+    // Same semantics as bmc.cpp / prism/bmc.py extract_enums (the Python
+    // concrete oracle imports that one).
     text = strip_comments_keep_lines(text);
     std::map<std::string, int> out;
-    static Regex re("\\benum\\b(?:\\s+[A-Za-z_]\\w*)?\\s*\\{([^{}]*)\\}");
-    for (auto& m : re.finditer(text)) {
-        int nxt = 0;
-        for (auto part0 : split_comma(m.group(1))) {
-            auto part = strip(part0);
+    std::set<std::string> ambiguous;
+    auto drop = [&](const std::string& name) {
+        ambiguous.insert(name);
+        out.erase(name);
+    };
+    static Regex en("\\benum\\b(?:\\s+[A-Za-z_]\\w*)?\\s*\\{([^{}]*)\\}");
+    for (auto& m : en.finditer(text)) {
+        std::optional<int64_t> nxt = 0;
+        auto inner = m.group(1);
+        std::string part;
+        std::stringstream ss(inner);
+        while (std::getline(ss, part, ',')) {
+            {
+                std::istringstream ws(part);
+                std::string w, sq;
+                while (ws >> w) sq += (sq.empty() ? "" : " ") + w;
+                part = sq;
+            }
             if (part.empty()) continue;
+            std::string name = part;
             auto eq = part.find('=');
             if (eq != std::string::npos) {
-                auto name = strip(part.substr(0, eq));
+                name = strip(part.substr(0, eq));
                 auto val = strip(part.substr(eq + 1));
-                while (!val.empty() && (val.back() == 'u' || val.back() == 'U' || val.back() == 'l' ||
-                                        val.back() == 'L'))
+                while (!val.empty() && (val.back() == 'u' || val.back() == 'U' ||
+                                        val.back() == 'l' || val.back() == 'L'))
                     val.pop_back();
-                if (!is_ident(name)) continue;
+                nxt = std::nullopt;
                 try {
-                    nxt = std::stoi(val, nullptr, 0);
-                } catch (...) {
+                    size_t used = 0;
+                    auto v = std::stoll(val, &used, 0);
+                    if (used == val.size() && !val.empty()) nxt = v;
+                } catch (...) {}
+                if (!nxt && is_ident(val) && !ambiguous.count(val)) {
                     auto it = out.find(val);
-                    if (it == out.end()) continue;
-                    nxt = it->second;
+                    if (it != out.end()) nxt = it->second;
                 }
-                out[name] = nxt++;
-            } else if (is_ident(part)) {
-                out[part] = nxt++;
             }
+            if (!is_ident(name)) {
+                nxt = std::nullopt;
+                continue;
+            }
+            if (!nxt || *nxt < INT32_MIN || *nxt > INT32_MAX) {
+                drop(name);
+                nxt = std::nullopt;
+                continue;
+            }
+            if (ambiguous.count(name)) {
+                nxt = *nxt + 1;
+                continue;
+            }
+            auto it = out.find(name);
+            if (it != out.end() && it->second != *nxt) drop(name);
+            else out[name] = static_cast<int>(*nxt);
+            nxt = *nxt + 1;
         }
     }
     return out;
 }
+
 std::map<std::string, int> enums_for(const FunctionInfo& fn) {
     auto p = locate_source(fn);
     if (!p) return {};
@@ -2568,6 +2606,36 @@ Finding bmc_with_assume(const FunctionInfo& fn, int unwind, const std::optional<
     return r;
 }
 
+// Element type of a one-level pointer/array parameter, if the BMC encoder
+// models it (an integer type); nullopt keeps NEEDS-HARNESS. Mirrors
+// prism/harness.py _pointee_type.
+std::optional<std::string> pointee_type(const std::string& typ) {
+    int stars = 0;
+    for (char c : typ)
+        if (c == '*' || c == '[') ++stars;
+    if (stars != 1) return std::nullopt;
+    // The base type is what precedes the declarator (`char *dst`, `int a[]`).
+    std::string t = typ.substr(0, typ.find_first_of("*["));
+    std::istringstream ss(t);
+    std::string w, out;
+    while (ss >> w) {
+        if (w == "const" || w == "volatile" || w == "restrict" || w == "__restrict" || w == "__restrict__")
+            continue;
+        if (!out.empty()) out += ' ';
+        out += w;
+    }
+    static Regex elem(
+        "^(?:(?:unsigned|signed)\\s+(?:long\\s+long|long|short|char|int)(?:\\s+int)?|"
+        "long\\s+long(?:\\s+int)?|long(?:\\s+int)?|short(?:\\s+int)?|"
+        "unsigned|signed|int|char|_Bool|bool|u?int(?:8|16|32|64)_t|"
+        "size_t|ssize_t|ptrdiff_t|u?intptr_t|u?intmax_t)$");
+    auto m = elem.search_match(out, 0);
+    if (!m || m->spans.empty() || m->spans[0].first != 0 ||
+        static_cast<std::size_t>(m->spans[0].second) != out.size())
+        return std::nullopt;
+    return out;
+}
+
 std::vector<std::pair<std::string, std::string>> ptr_params(const FunctionInfo& fn) {
     std::vector<std::pair<std::string, std::string>> out;
     for (auto& [t, n] : fn.params)
@@ -2635,8 +2703,12 @@ std::optional<FunctionInfo> materialize(const FunctionInfo& fn) {
     if (!k) return std::nullopt;
     std::vector<std::string> decls;
     for (auto& [t, name] : ptrs) {
-        decls.push_back("int _h_" + name + "[" + std::to_string(*k) + "];");
-        decls.push_back("int *" + name + " = _h_" + name + ";");
+        // The buffer has the pointee's own integer type: an `int` stand-in
+        // for a `long *` or `char *` would change every value range.
+        auto elem_t = pointee_type(t);
+        if (!elem_t) return std::nullopt;
+        decls.push_back(*elem_t + " _h_" + name + "[" + std::to_string(*k) + "];");
+        decls.push_back(*elem_t + " *" + name + " = _h_" + name + ";");
     }
     std::string guard;
     for (std::size_t i = 0; i < reqs.size(); ++i) {
