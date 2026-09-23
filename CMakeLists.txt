@@ -100,6 +100,7 @@ set(PRISM_SRC
   src/prism/sarif.cpp
   src/prism/stages_rest.cpp
   src/prism/taxonomy.cpp
+  src/prism/verdict/verdict.cpp
 )
 
 add_library(prism_core STATIC ${PRISM_SRC})
