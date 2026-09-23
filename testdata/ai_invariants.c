@@ -53,3 +53,15 @@ int ai_doubling(int n) {
     }
     return x;
 }
+
+/* The plain k-induction step closes (i + 1 cannot overflow under i < n), but
+ * the division after the loop fails at n == 500, far beyond the unwind. The
+ * step alone never looked at post-loop code; the loop cut does, so this is
+ * BOUNDED, never PROVED-UNBOUNDED. */
+int ai_post_loop(int n) {
+    int i;
+    i = 0;
+    if (n < 0 || n > 1000) return 0;
+    while (i < n) i = i + 1;
+    return 100 / (i - 500);
+}

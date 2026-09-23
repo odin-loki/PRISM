@@ -179,6 +179,9 @@ RunReport run_pipeline(const Config& cfg) {
     // Law 9: the exec policy holds for this run only (stages without a
     // Config read it through sandbox::allowed()).
     sandbox::Policy exec_policy(cfg.allow_exec);
+    // Roadmap 4.2/9.6: model-assisted invariants, harnesses and explanations
+    // see this run's config and log to <out>/ai_audit.jsonl.
+    ai::Session ai_session(cfg);
     RunReport report;
     report.root = cfg.root.string();
     report.started = now_secs();
@@ -325,9 +328,6 @@ RunReport run_pipeline(const Config& cfg) {
     stage("dafny", [&] { return run_dafny(sources, cfg); });
     stage("contracts", [&] { return prove_contracts(functions, cfg.unwind); });
     stage("wp", [&] { return run_wp(functions, cfg.unwind); });
-    // Roadmap 4.2/9.6: model-assisted invariants, harnesses and explanations
-    // see this run's config and log to <out>/ai_audit.jsonl.
-    ai::Session ai_session(cfg);
     auto bmc_rec = stage("bmc", [&] { return run_bmc(inline_static(functions), cfg.unwind); });
     stage("harness", [&] { return run_harness_bmc(functions, cfg.unwind); });
     stage("concolic", [&] { return run_concolic(functions, 32); });

@@ -670,12 +670,6 @@ std::shared_ptr<ModelBackend> session_backend(std::string* why) {
     return s.backend;
 }
 
-std::string model_unavailable_reason() {
-    std::string why;
-    auto b = session_backend(&why);
-    return b ? std::string() : why;
-}
-
 void set_session_backend_for_testing(std::shared_ptr<ModelBackend> backend) {
     auto& s = state();
     std::lock_guard<std::mutex> lock(s.mu);

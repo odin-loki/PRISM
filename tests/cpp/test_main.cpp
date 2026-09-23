@@ -3986,6 +3986,23 @@ TEST_CASE("ai template invariants move BOUNDED to PROVED-UNBOUNDED without a mod
     }
 }
 
+TEST_CASE("ai closed k-induction step does not cover post-loop code") {
+    auto fn = load_fn("ai_invariants.c", "ai_post_loop");
+    auto recs = prism::run_bmc({fn}, 8);
+    REQUIRE(recs.size() == 1);
+    CHECK_MESSAGE(recs[0].status == std::string(prism::laws::BOUNDED), recs[0].message);
+    CHECK(recs[0].extra["k_induction"] == "step-closed-post-open");
+    CHECK_FALSE(prism::laws::is_proof(recs[0].status));
+    std::map<std::string, int> args{{"n", 500}};
+    CHECK(prism::concrete_execute(fn, args).ub == "INT-DIV-ZERO");
+    // A loop whose post-loop code is safe keeps PROVED-UNBOUNDED, now checked.
+    auto closed = prism::run_bmc({load_fn("kinduct.c", "kinduct_closed")}, 8);
+    REQUIRE(closed.size() == 1);
+    CHECK(closed[0].status == std::string(prism::laws::PROVED_UNBOUNDED));
+    CHECK(closed[0].extra["k_induction"] == "closed");
+    CHECK(closed[0].extra["post_loop_check"] == "closed (loop cut)");
+}
+
 TEST_CASE("ai real overflow stays BOUNDED and the model half is NOTRUN") {
     auto fn = load_fn("ai_invariants.c", "ai_doubling");
     auto recs = prism::run_bmc({fn}, 8);

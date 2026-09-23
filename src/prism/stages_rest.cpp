@@ -4208,7 +4208,6 @@ struct LlamaEngine {
     // Roadmap 9.6: every model interaction goes to <out>/ai_audit.jsonl.
     // These chats never set a verdict by themselves (checker "none"); a caller
     // that checks the output (RLEF BMC) logs its own checked record.
-    std::string last_audit_id;
     std::string last_prompt;
     ChatResult complete(const std::vector<std::pair<std::string, std::string>>& messages, double timeout = 180.0) {
         auto r = complete_raw(messages, timeout);
@@ -4232,7 +4231,6 @@ struct LlamaEngine {
         rec.checker = "none";
         rec.verdict_effect = "none";
         ai::audit_model_call(rec, prompt, r.text);
-        last_audit_id = rec.id;
         last_prompt = prompt;
         return r;
     }

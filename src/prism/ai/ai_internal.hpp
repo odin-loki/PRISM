@@ -18,9 +18,6 @@ std::optional<std::string> http_request_raw(const std::string& method, const std
 // Grammar with its `ident` rule narrowed to exactly `names` (GBNF alternatives).
 std::string grammar_for(const std::string& name, const std::vector<std::string>& names);
 
-// Why model features are unavailable right now ("" when a backend is bound).
-std::string model_unavailable_reason();
-
 std::string trim(const std::string& s);
 bool is_identifier(const std::string& s);
 std::string join(const std::vector<std::string>& v, const std::string& sep);

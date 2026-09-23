@@ -5052,6 +5052,28 @@ Finding k_induction(const FunctionInfo& fn, int unwind, bool allow_local_pointer
 // Only a closed step plus a holding base case turns it PROVED-UNBOUNDED.
 Finding k_induction_strengthened(const FunctionInfo& fn, int unwind, bool allow_local_pointers) {
     auto rec = k_induction(fn, unwind, allow_local_pointers);
+    if (rec.status == laws::PROVED_UNBOUNDED && rec.extra["k_induction"] == "closed") {
+        // The k-induction step checks each loop body from an arbitrary state;
+        // code after a loop was only checked on paths within the unwind (e.g.
+        // `while (i < n) i++; return 100 / (i - 500);`). Keep PROVED-UNBOUNDED
+        // only when the loop cut, which covers the post-loop code, closes too.
+        auto as_bounded = rec;
+        as_bounded.status = std::string(laws::BOUNDED);
+        auto v = ai::strengthen_bounded(fn, as_bounded, unwind);
+        if (v.status == laws::PROVED_UNBOUNDED) {
+            for (auto* k : {"invariants", "invariant_source", "ai_audit_id", "ai_checker", "ai_checker_result"})
+                if (v.extra.count(k)) rec.extra[k] = v.extra[k];
+            rec.extra["post_loop_check"] = "closed (loop cut)";
+            return rec;
+        }
+        v.status = std::string(laws::BOUNDED);
+        v.message = "k-induction step closed for the loop body only; code after the loop is not covered by "
+                    "that step and the loop-cut check did not close; no violation within unwind " +
+                    std::to_string(unwind);
+        v.extra["k_induction"] = "step-closed-post-open";
+        v.extra["unwind_closed"] = "false";
+        return v;
+    }
     if (rec.status != laws::BOUNDED) return rec;
     return ai::strengthen_bounded(fn, rec, unwind);
 }

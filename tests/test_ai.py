@@ -178,7 +178,7 @@ class TestAiEndToEnd(unittest.TestCase):
                 self.assertEqual(f["status"], laws.PROVED_UNBOUNDED, f)
                 self.assertEqual(f["extra"]["invariant_source"], "template")
                 self.assertTrue(json.loads(f["extra"]["invariants"]))
-            for fn in ("ai_doubling", "ai_injection", "llm_needed"):
+            for fn in ("ai_doubling", "ai_injection", "llm_needed", "ai_post_loop"):
                 f = self._by_fn(rep, "bmc", fn)
                 self.assertEqual(f["status"], laws.BOUNDED, f)
                 self.assertTrue(f["extra"]["llm_invariants"].startswith("NOTRUN"), f)
