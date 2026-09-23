@@ -1,5 +1,8 @@
 #include "MainWindow.h"
 
+#include "prism/ai.hpp"
+#include "prism/ai_assist.hpp"
+#include "prism/config.hpp"
 #include "prism/models.hpp"
 #include "prism/taxonomy.hpp"
 
@@ -204,6 +207,27 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     v->addWidget(log_, 2);
     v->addWidget(findings_, 2);
     v->addWidget(tax_, 1);
+    // Assistant (roadmap 9.4): "unproved memory safety in module net",
+    // "explain bmc#3", "trusted base". Double-click a finding to explain it.
+    auto *chatRow = new QHBoxLayout();
+    ask_ = new QLineEdit;
+    ask_->setPlaceholderText(QStringLiteral("Ask about findings, or: explain <id> / trusted base"));
+    ask_btn_ = new QPushButton(QStringLiteral("Ask"));
+    chatRow->addWidget(new QLabel(QStringLiteral("Assistant")));
+    chatRow->addWidget(ask_, 1);
+    chatRow->addWidget(ask_btn_);
+    v->addLayout(chatRow);
+    chat_ = new QPlainTextEdit;
+    chat_->setReadOnly(true);
+    v->addWidget(chat_, 1);
+    connect(ask_btn_, &QPushButton::clicked, this, &MainWindow::onAsk);
+    connect(ask_, &QLineEdit::returnPressed, this, &MainWindow::onAsk);
+    connect(findings_, &QTableWidget::cellDoubleClicked, this, [this](int row, int) {
+        if (auto *it = findings_->item(row, 0)) {
+            ask_->setText(QStringLiteral("explain ") + it->data(Qt::UserRole).toString());
+            onAsk();
+        }
+    });
     proc_ = new QProcess(this);
     connect(browse, &QPushButton::clicked, this, [this] {
         auto d = QFileDialog::getExistingDirectory(this, QStringLiteral("Code"), path_->text());
@@ -291,7 +315,9 @@ void MainWindow::loadSameReport(const QString& outDir) {
             const auto s = sVal.toObject();
             const auto name = s.value(QStringLiteral("name")).toString();
             const auto recs = s.value(QStringLiteral("findings")).toArray();
+            int idx = -1;  // finding id "<stage>#<index>" (prism::ai::enumerate_findings)
             for (const auto& fVal : recs) {
+                ++idx;
                 const auto f = fVal.toObject();
                 const auto status = f.value(QStringLiteral("status")).toString();
                 if ((status == QLatin1String("NOTRUN") || status == QLatin1String("CLEAN")) &&
@@ -316,6 +342,7 @@ void MainWindow::loadSameReport(const QString& outDir) {
                     if (c == 0) {
                         const auto bg = findingStatusBg(status);
                         if (bg.isValid()) item->setBackground(QBrush(bg));
+                        item->setData(Qt::UserRole, name + QStringLiteral("#") + QString::number(idx));
                     }
                     findings_->setItem(row, c, item);
                 }
@@ -354,6 +381,29 @@ void MainWindow::loadSameReport(const QString& outDir) {
         fillTaxonomyTable(tax_, taxArr);
     else
         tax_->setRowCount(0);
+}
+
+void MainWindow::onAsk() {
+    const QString q = ask_->text().trimmed();
+    if (q.isEmpty()) return;
+    chat_->appendPlainText(QStringLiteral("> ") + q);
+    const auto path = std::filesystem::path(out_dir_.toStdString()) / "report.json";
+    const auto report = prism::RunReport::load(path);
+    if (!report) {
+        chat_->appendPlainText(QStringLiteral("NOTRUN assistant: no report.json in ") + out_dir_ +
+                               QStringLiteral(" (run the pipeline first)"));
+        return;
+    }
+    // A session so a model (when reachable and --no-llm is off) can translate
+    // the question; it appends to ai_audit.jsonl and never truncates it.
+    prism::Config cfg = prism::default_config();
+    cfg.out = std::filesystem::path(out_dir_.toStdString());
+    cfg.root = report->root;
+    cfg.resume = true;
+    cfg.llm = !no_llm_->isChecked();
+    prism::ai::Session session(cfg);
+    const auto reply = prism::ai::assistant_reply(*report, q.toStdString(), cfg.llm);
+    chat_->appendPlainText(QString::fromStdString(reply));
 }
 
 void MainWindow::onDone(int exitCode, QProcess::ExitStatus) {

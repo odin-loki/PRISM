@@ -8,6 +8,9 @@ from __future__ import annotations
 
 from pathlib import Path
 import importlib.util
+import os
+import shutil
+import subprocess
 import sys
 from typing import Any
 
@@ -252,6 +255,45 @@ def taxonomy_background(verdict: str) -> str:
     return ""
 
 
+def prism_cpp_binary(explicit: str | None = None) -> str | None:
+    """The C++ `prism` binary the assistant runs (explicit, PRISM_BIN, PATH)."""
+    for cand in (explicit, os.environ.get("PRISM_BIN"), shutil.which("prism")):
+        if cand and Path(cand).is_file() and os.access(cand, os.X_OK):
+            return str(cand)
+    return None
+
+
+def assistant_reply(question: str, out_dir: Path, prism_bin: str | None = None,
+                    use_model: bool = False, timeout: float = 120.0) -> str:
+    """One assistant turn (roadmap 9.4): `prism ask` over <out_dir>/report.json.
+
+    The assistant is C++ engine only (roadmap D8): this helper runs the C++
+    binary and shows its answer, which always starts with the structured
+    query. Without the binary or a report the reply is NOTRUN, never an
+    invented answer. Nothing here can change a verdict.
+    """
+    q = question.strip()
+    if not q:
+        return ""
+    report = Path(out_dir) / "report.json"
+    if not report.is_file():
+        return f"NOTRUN assistant: no report.json in {out_dir} (run the pipeline first)"
+    exe = prism_cpp_binary(prism_bin)
+    if exe is None:
+        return ("NOTRUN assistant: C++ prism binary not found (set PRISM_BIN); the assistant "
+                "runs `prism ask` (C++ engine only, roadmap D8)")
+    cmd = [exe, "ask", q, "--report", str(report)]
+    if not use_model:
+        cmd.append("--no-llm")
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as ex:
+        return f"ERROR assistant: {ex}"
+    if r.returncode != 0:
+        return f"ERROR assistant: exit {r.returncode}: {(r.stderr or r.stdout).strip()[:500]}"
+    return r.stdout.rstrip()
+
+
 def _notrun_gui(reason: str, detail: str = "") -> int:
     """Missing toolkit/display is NOTRUN. Never a fake CLEAN window. Exit 0."""
     print(f"NOTRUN gui: {reason} — not a clean window")
@@ -275,6 +317,7 @@ def _ensure_qt() -> None:
         QHBoxLayout,
         QHeaderView,
         QLabel,
+        QLineEdit,
         QMainWindow,
         QMessageBox,
         QPushButton,
@@ -384,7 +427,32 @@ def _ensure_qt() -> None:
             self.log.setReadOnly(True)
             self.log.setMaximumHeight(140)
             layout.addWidget(self.log)
+
+            # Assistant (roadmap 9.4): questions over findings, "explain <id>",
+            # "trusted base". Runs the C++ `prism ask`; the answer shows the
+            # structured query. It never changes a verdict.
+            ask_bar = QHBoxLayout()
+            ask_bar.addWidget(QLabel("Assistant"))
+            self.ask_edit = QLineEdit()
+            self.ask_edit.setPlaceholderText("Ask about findings, or: explain <id> / trusted base")
+            self.ask_btn = QPushButton("Ask")
+            self.ask_btn.clicked.connect(self._ask)
+            self.ask_edit.returnPressed.connect(self._ask)
+            ask_bar.addWidget(self.ask_edit, 1)
+            ask_bar.addWidget(self.ask_btn)
+            layout.addLayout(ask_bar)
+            self.chat = QTextEdit()
+            self.chat.setReadOnly(True)
+            self.chat.setMaximumHeight(160)
+            layout.addWidget(self.chat)
             self._load_last()
+
+        def _ask(self) -> None:
+            q = self.ask_edit.text().strip()
+            if not q:
+                return
+            self.chat.append(f"> {q}")
+            self.chat.append(assistant_reply(q, self._out, use_model=self.llm_ck.isChecked()))
 
         def _load_last(self) -> None:
             p = Path("prism-out") / "report.json"
