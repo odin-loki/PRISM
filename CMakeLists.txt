@@ -126,6 +126,7 @@ set(PRISM_SRC
   src/prism/models.cpp
   src/prism/pipeline.cpp
   src/prism/pir/encode.cpp
+  src/prism/pir/export_lean.cpp
   src/prism/pir/ir_parser.cpp
   src/prism/pir/pir.cpp
   src/prism/pir/stage.cpp

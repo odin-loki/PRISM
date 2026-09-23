@@ -5804,3 +5804,41 @@ TEST_CASE("NOTRUN never merges with CLEAN; model output never merges with a proo
     CHECK(may_rewrite(PROVED_UNBOUNDED, PROVED_ASSUMING));
     CHECK(may_rewrite(PROVED, BOUNDED));
 }
+
+// ---- (LLVM fragment, PIR) export for the Lean correspondence checker ------
+// src/prism/pir/export_lean.cpp; proofs/refinement checks these pairs.
+TEST_CASE("export_lean_pair writes the LLVM fragment and the PIR only when enabled") {
+    const std::string ir =
+        "define i32 @lean_add(i32 %a, i32 %b) {\n"
+        "entry:\n"
+        "  %add = add nsw i32 %a, %b\n"
+        "  ret i32 %add\n"
+        "}\n";
+    auto m = prism::pir::ir::parse_module(ir);
+    const auto* f = m.find("lean_add");
+    REQUIRE(f != nullptr);
+    auto t = prism::pir::translate(m, *f);
+    REQUIRE(t.fn.has_value());
+    auto dir = std::filesystem::temp_directory_path() / "prism_lean_export_test";
+    std::filesystem::remove_all(dir);
+    const char* old = std::getenv("PRISM_PIR_LEAN_EXPORT");
+    std::string saved = old ? old : "";
+    unsetenv("PRISM_PIR_LEAN_EXPORT");
+    prism::pir::export_lean_pair(dir, "u.c", m, *f, {}, t);
+    CHECK_FALSE(std::filesystem::exists(dir));  // off by default
+    setenv("PRISM_PIR_LEAN_EXPORT", dir.string().c_str(), 1);
+    prism::pir::export_lean_pair(dir, "u.c", m, *f, {}, t);
+    if (old) setenv("PRISM_PIR_LEAN_EXPORT", saved.c_str(), 1); else unsetenv("PRISM_PIR_LEAN_EXPORT");
+    std::ifstream in(dir / "u.c.pirl");
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    CHECK(text.find("func lean_add\n") != std::string::npos);
+    CHECK(text.find("L params 2 a 32 b 32\n") != std::string::npos);
+    CHECK(text.find("L bin %add add nsw 32 %a %b\n") != std::string::npos);
+    CHECK(text.find("status ok\n") != std::string::npos);
+    CHECK(text.find("P vars 4 32 32 32 1\n") != std::string::npos);
+    CHECK(text.find("P assign 3 sadd.ovf 2 v0:32 v1:32\n") != std::string::npos);
+    CHECK(text.find("P check v3:1 ovf+ INT-SIGNED-OVF\n") != std::string::npos);
+    CHECK(text.find("P ret v2:32\n") != std::string::npos);
+    CHECK(text.find("end\n") != std::string::npos);
+    std::filesystem::remove_all(dir);
+}
