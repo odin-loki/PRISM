@@ -58,6 +58,7 @@ STAGE_ORDER = [
     "wp",
     "bmc",
     "pir",
+    "conc",
     "harness",
     "review",
     "concolic",
@@ -124,6 +125,20 @@ def run_review_notrun() -> list[Finding]:
         message="C++ engine only (Python engine frozen as oracle, roadmap D8)",
         strength=laws.STRENGTH_PROVES,
         extra={"install": "run the C++ engine (build/prism) for the review stage"},
+    )]
+
+
+def run_conc_notrun() -> list[Finding]:
+    """The conc stage (lazy sequentialisation of threads) exists only in the C++ engine.
+
+    Roadmap D8 freezes this engine as a differential oracle; the stage keeps
+    its STAGE_ORDER slot and records one NOTRUN row (Law 7).
+    """
+    return [Finding(
+        stage="conc", status=laws.NOTRUN, file="", function=None, line=None, cls="",
+        message="C++ engine only (Python engine frozen as oracle, roadmap D8)",
+        strength=laws.STRENGTH_FINDS,
+        extra={"install": "run the C++ engine (build/prism) for the conc stage"},
     )]
 
 
@@ -348,6 +363,7 @@ class Pipeline:
 
         bmc_rec = self._stage("bmc", bmc)
         self._stage("pir", run_pir_notrun)
+        self._stage("conc", run_conc_notrun)
         self._stage("harness", lambda: run_harness_bmc(functions, cfg.unwind))
         self._stage("review", run_review_notrun)
         self._stage("concolic", lambda: run_concolic(functions, budget=32))
