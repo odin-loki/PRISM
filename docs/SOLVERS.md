@@ -94,7 +94,7 @@ and the note says `DISAGREEMENT`.
 
 `SolveOptions::certified = true`. The chain is QF_BV → Z3 `simplify`,
 `bit-blast`, `simplify`, `tseitin-cnf` → DIMACS (the variable map is kept by
-construction) → CaDiCaL `--lrat=true --binary=false` → `cake_lpr cnf lrat`
+construction) → CaDiCaL `--lrat=true --binary=false --unsat` → `cake_lpr cnf lrat`
 must print `s VERIFIED UNSAT`. drat-trim `lrat-check` can veto. The CNF hash
 is checked before and after. Any failure leaves the plain result with the
 reason in the note. Formulas with arrays, floating point, UF, arithmetic or
@@ -112,6 +112,32 @@ cake_lpr; otherwise the Z3 chain above is used and `certificate_info` says
 `bitblast: z3 tactics, unproved (Lean bit-blaster not used: <why>)`
 ([TRUSTED_BASE.md](TRUSTED_BASE.md) sections 1.1 and 1.2).
 
+**Certificate budget.** The answer is due within `timeout_s`, as in plain
+mode. Once some member has answered UNSAT and only the certificate is
+outstanding, CaDiCaL-with-LRAT (and the bit-blast feeding it) may keep
+running until `cert_timeout_s` from the start of the query (default
+`max(60 s, 4 × timeout_s)`, the same as the checker budget
+`check_timeout_s`). Running out costs only the certificate: the note says
+`not certified: cadical did not finish within the certificate budget (N s)`
+and the plain UNSAT stands. cake_lpr and Lean's checker (Lean path) run at
+the same time; both must accept.
+
+**CaDiCaL options** (roadmap 3.2, measured 2026-09-23 on the Lean-bit-blasted
+CNFs of the multiplication-overflow VCs, CaDiCaL 3.0.1, which is also the
+newest upstream release; user CPU seconds on the shared 4-core machine):
+
+| CNF | default | `--unsat` | other presets / options |
+|---|---|---|---|
+| `mul_true` (32-bit `smulo`, 101k vars, 169k clauses) | 9.1 s, 160 MB LRAT | **7.2 s, 117 MB** | `--sat` 11.8 s; `--plain`, `--congruence=false`, `--inprocessing=false` no answer in 120 s; `--elim=false`, `--chrono=0`, `--probe=false`, `--vivify=false`, `--factor=false` 8.9–10.1 s; `--sweep=false` 16.7 s |
+| `widen_mul_true` (64-bit `smulo` of sign-extended 32-bit values, 397k vars, 661k clauses) | 194 s | **76 s** | `--unsat --elim=false` 171 s; `--unsat --congruencexorarity=8` 76 s |
+| `long_mul_true` (64-bit `a*a`, `|a| ≤ 3·10⁹`, 398k vars) | – | no answer in 184 s CPU | – |
+
+Congruence closure (gate extraction) is what makes the multiplier miters
+tractable at all; `--unsat` is used for every certificate. Checking the
+`widen_mul_true` proof (862 MB LRAT): cake_lpr 64 s at 4.1 GB resident,
+Lean's checker 56 s CPU, lrat-check 12 s CPU. Kissat writes no LRAT, so it
+cannot make certificates.
+
 ## Use in the pir stage
 
 The `pir` stage sends every verification condition through `solve()`: one
@@ -120,7 +146,9 @@ query per inserted property and one for the unwinding assertion
 portfolio and the query cache (`--solver-cache DIR`); `--timeout S` is the
 budget per query; `--certified` sets `SolveOptions::certified`, and a
 function becomes `PROVED-CERTIFIED` only when it has at least one VC and
-every one of its VCs came back `certified` (a function with none stays
+every one of its VCs came back `certified`, either through one certificate
+of the disjunction of all its VCs (tried first) or one certificate per VC
+([PIR.md](PIR.md#solving-roadmap-31--32)) (a function with none stays
 `PROVED`, `certify_note = "no verification conditions (nothing to
 certify)"`). Memory-model VCs are QF_BV (the default `MemEncoding::Bv`), so
 they are certified like the rest. The k-induction step is still answered by

@@ -941,7 +941,31 @@ void certify(Verdict& v, const VcBook& book) {
     v.extra["certificate_info"] = std::to_string(book.done.size()) +
                                   " VCs, each an LRAT proof checked by cake_lpr: " + join_s(infos, " | ");
     v.extra["cnf_sha256"] = join_s(shas, ",");
+    v.extra["certificate_scope"] = "per-vc";
+    v.extra["certificate_proofs"] = std::to_string(book.done.size());
     v.message += "; every VC certified (" + std::to_string(book.done.size()) + " LRAT proofs checked by cake_lpr)";
+}
+
+// Certified mode, one certificate for the whole function: `r` answered
+// base && (viol_1 || ... || viol_n) and its LRAT proof was accepted by the
+// checkers. UNSAT of the disjunction is UNSAT of every disjunct, so this is
+// the claim the per-VC certificates make; the record says which VCs the one
+// proof covers.
+void certify_combined(Verdict& v, const solver::SolveResult& r, const std::vector<std::string>& labels) {
+    const auto n = std::to_string(labels.size());
+    v.status = std::string(laws::PROVED_CERTIFIED);
+    v.extra[std::string(laws::CERTIFICATE_KEY)] = std::string(laws::CERTIFICATE_CHECKED);
+    v.extra["certificate_vcs"] = n;
+    v.extra["certificate_scope"] = "combined";
+    v.extra["certificate_proofs"] = "1";
+    v.extra["certificate_covers"] = join_s(labels, ", ");
+    const bool lean = r.certificate_info.find("bitblast: lean-proved") != std::string::npos;
+    v.extra["certificate_bitblast"] = std::string(lean ? "1/1" : "0/1") + " lean-proved (one CNF for " + n + " VCs)";
+    v.extra["certificate_info"] = n + " VCs, one LRAT proof of their disjunction (UNSAT iff every VC is UNSAT) " +
+                                  "checked by cake_lpr: combined[" + join_s(labels, ", ") + "]: " + r.certificate_info;
+    v.extra["cnf_sha256"] = r.cnf_sha256;
+    v.message += "; every VC certified (one LRAT proof of the disjunction of all " + n +
+                 " VCs, checked by cake_lpr)";
 }
 
 }  // namespace
@@ -1024,6 +1048,45 @@ Verdict check_function(const Function& fn, const CheckOptions& opt) {
         std::vector<const PropInst*> hard;
         for (auto& p : e.props)
             if (!soft(p)) hard.push_back(&p);
+        // Certified mode: one certificate for every VC at once (the
+        // disjunction of all property VCs, soft ones included, and the
+        // unwinding assertion). Only a CERTIFIED UNSAT answer is used; any
+        // other outcome falls back to the per-VC queries below, unchanged.
+        if (opt.certified && opt.certify_combined) {
+            std::vector<z3::expr> all;
+            std::vector<std::string> labels;
+            for (auto& p : e.props) {
+                all.push_back(p.viol);
+                labels.push_back(vc_label(p));
+            }
+            if (!e.cuts.empty()) {
+                all.push_back(any_of(c, e.cuts));
+                labels.push_back("unwind");
+            }
+            if (all.size() >= 2) {
+                auto cr = solver::solve(c, base && any_of(c, all), so);
+                if (cr.kind == solver::SolveResult::Unsat && cr.certified) {
+                    book.add("combined[" + std::to_string(all.size()) + " VCs]", cr);
+                    v.status = std::string(laws::PROVED);
+                    v.extra["unwind_closed"] = "true";
+                    v.extra["k_induction"] = "not-needed";
+                    v.message = e.cuts.empty() ? (g.loops.empty() ? "encoded properties hold on every path (loop-free)"
+                                                                  : "encoded properties hold; every loop closes within "
+                                                                    "unwind " + std::to_string(unwind))
+                                               : "encoded properties hold; unwinding assertion proved at unwind " +
+                                                     std::to_string(unwind);
+                    certify_combined(v, cr, labels);
+                    return finish(v);
+                }
+                std::string why = cr.note;
+                if (auto q = why.find("not certif"); q != std::string::npos) why = why.substr(q);
+                if (auto q = why.find("; ran:"); q != std::string::npos) why = why.substr(0, q);
+                v.extra["certificate_combined"] =
+                    "one certificate for " + std::to_string(all.size()) + " VCs not obtained (" +
+                    std::string(solver::kind_name(cr.kind)) + (cr.kind == solver::SolveResult::Unsat ? ", " + why : "") +
+                    "); one certificate per VC instead";
+            }
+        }
         bool all_unsat = false;
         if (!opt.certified && hard.size() > 16) {
             std::function<int(std::size_t, std::size_t)> group = [&](std::size_t lo, std::size_t hi) -> int {
