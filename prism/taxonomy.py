@@ -1198,6 +1198,8 @@ CLASSES: list[dict] = [
          seen={"lints": FINDS}),
     dict(id="EMPTY-TU", name="translation unit parsed no functions", cwe=[],
          seen={"inventory": FINDS}),
+    dict(id="PARSE-GAP", name="code in braces the parser attributed to no function", cwe=[],
+         seen={"inventory": FINDS}),
     dict(id="LTL-SAFETY", name="LTL safety violation", cwe=[],
          seen={"ltl": PROVES, "strix": PROVES}),
     dict(id="FUNC-CONTRACT", name="ensures clause fails", cwe=[],

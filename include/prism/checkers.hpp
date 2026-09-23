@@ -32,8 +32,11 @@ std::vector<Finding> run_lints(const std::vector<std::filesystem::path>& paths,
                                const std::filesystem::path& root, int jobs = 0);
 
 // Split implementations (all called from checkers_dispatch.cpp)
+// `funcs` bodies have string-literal contents blanked; `raw_funcs` keep
+// them for the few checkers that read literal bytes.
 void checkers_core(const std::vector<std::string>& lines, std::string_view rel,
-                   const std::vector<FunctionInfo>& funcs, const std::filesystem::path& path,
+                   const std::vector<FunctionInfo>& funcs,
+                   const std::vector<FunctionInfo>& raw_funcs, const std::filesystem::path& path,
                    std::string_view raw_text, std::vector<Finding>& out);
 void checkers_api(const std::vector<std::string>& lines, std::string_view rel,
                   const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out);

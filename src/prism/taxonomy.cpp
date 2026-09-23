@@ -601,6 +601,7 @@ const std::vector<TaxonomyClass>& taxonomy_classes() {
         {"MEM-PTR-ARITH", "pointer index without bound or null guard", {125, 787}, {{"lints", "FINDS"}}},
         {"FLOAT-UB", "division by floating zero literal", {369}, {{"lints", "FINDS"}}},
         {"EMPTY-TU", "translation unit parsed no functions", {}, {{"inventory", "FINDS"}}},
+        {"PARSE-GAP", "code in braces the parser attributed to no function", {}, {{"inventory", "FINDS"}}},
         {"LTL-SAFETY", "LTL safety violation", {}, {{"ltl", "PROVES"}, {"strix", "PROVES"}}},
         {"FUNC-CONTRACT", "ensures clause fails", {}, {{"bmc", "PROVES"}, {"dafny", "PROVES"}, {"wp", "PROVES"}, {"contracts", "PROVES"}, {"rapid", "FINDS"}, {"muttest", "SOME"}, {"llm", "READS"}}},
         {"INTENT", "comment/code contract mismatch", {}, {{"lints", "FINDS"}, {"llm", "READS"}}},

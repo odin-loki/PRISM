@@ -884,6 +884,250 @@ void cxx_sub_no_size(const std::vector<std::string>& lines, std::string_view rel
     }
 }
 
+// Python-parity helpers for the checkers below (prism/checkers.py twins).
+bool rx_search(const std::string& pat, std::string_view s) { return re_search(pat, s); }
+
+std::optional<Match> rx_match_start(const std::string& pat, std::string_view s) {
+    auto m = re_search_match(pat, s);
+    if (!m || m->spans.empty() || m->spans[0].first != 0) return std::nullopt;
+    return m;
+}
+
+
+bool all_digits(std::string_view s) {
+    if (s.empty()) return false;
+    for (unsigned char ch : s)
+        if (!std::isdigit(ch)) return false;
+    return true;
+}
+
+// `*p`, `p[` or `p->` on the line.
+bool ptr_deref_on(std::string_view ptr, std::string_view ln) {
+    auto v = re_escape(ptr);
+    return rx_search("(?:\\*\\s*" + v + "\\b|" + v + "\\s*\\[|" + v + "\\s*->)", ln);
+}
+
+
+// File-scope `int x;` / `unsigned x;` names, sorted (prism/checkers.py
+// _file_scope_int_globals; checkers_core.cpp keeps its own copy).
+std::set<std::string> file_int_globals(const std::vector<std::string>& lines) {
+    static const Regex ig(R"(^int\s+(?P<name>[A-Za-z_]\w*)\s*;)");
+    static const Regex ug(R"(^unsigned\s+(?P<name>[A-Za-z_]\w*)\s*;)");
+    int depth = 0;
+    std::set<std::string> g;
+    for (auto& line : lines) {
+        auto s = strip(line);
+        auto delta = static_cast<int>(std::count(s.begin(), s.end(), '{') - std::count(s.begin(), s.end(), '}'));
+        if (s.empty() || s[0] == '#') {
+            depth += delta;
+            continue;
+        }
+        if (depth == 0) {
+            if (auto m = match_at_start_line(ig, line)) g.insert(m->named("name"));
+            else if (auto m2 = match_at_start_line(ug, line)) g.insert(m2->named("name"));
+        }
+        depth += delta;
+    }
+    return g;
+}
+
+
+// True if placement storage is an unsigned char/byte buffer or void*; false
+// if `name` is a typed object pointer; nullopt if unknown.
+std::optional<bool> place_storage_ok(const std::string& name, const FunctionInfo& fn) {
+    for (auto& [typ, pname] : fn.params) {
+        if (pname != name) continue;
+        if (typ.find('*') == std::string::npos) return std::nullopt;
+        return allowed_reinterp_pointee(typ);
+    }
+    for (auto& m : _PLACE_BUF_DECL.finditer(fn.body))
+        if (m.named("name") == name) return true;
+    std::optional<std::string> last_typ;
+    for (auto& m : _PLACE_PTR_DECL.finditer(fn.body))
+        if (m.named("name") == name) last_typ = m.named("typ");
+    if (!last_typ) return std::nullopt;
+    auto t = lower_copy(strip(re_sub_pat(R"(\s+)", " ", *last_typ)));
+    t = re_sub_pat(R"(std::)", "", t);
+    return t == "unsigned char" || t == "byte" || t == "void";
+}
+
+std::set<std::string> cxx_local_scalar_names(const FunctionInfo& fn) {
+    static const Regex decl(
+        R"(\b(?:(?:unsigned|signed|const|volatile)\s+)*(?:int|short|long|char|bool|float|double)\s+(?P<name>[A-Za-z_]\w*)\b)");
+    std::set<std::string> params, names;
+    for (auto& [typ, name] : fn.params)
+        if (!name.empty()) params.insert(name);
+    for (auto& m : decl.finditer(fn.body))
+        if (!params.count(m.named("name"))) names.insert(m.named("name"));
+    return names;
+}
+
+
+// Report the first line where a name recorded by `rec_re` (group `grp`, last
+// line seen) is used again, not on a line that `rec_re` also matches.
+bool report_use_after(const std::vector<std::string>& lines, std::string_view rel, const FunctionInfo& fn,
+                      const Regex& rec_re, const char* grp, std::string_view cls, const std::string& what,
+                      std::vector<Finding>& out) {
+    auto bl = split_lines(fn.body);
+    std::vector<std::pair<std::string, int>> recs;  // insertion order, last line
+    for (int i = 0; i < static_cast<int>(bl.size()); ++i)
+        for (auto& m : rec_re.finditer(bl[static_cast<std::size_t>(i)])) {
+            auto v = m.named(grp);
+            auto it = std::find_if(recs.begin(), recs.end(), [&](auto& p) { return p.first == v; });
+            if (it == recs.end()) recs.emplace_back(v, i);
+            else it->second = i;
+        }
+    if (recs.empty()) return false;
+    for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
+        auto& ln = bl[static_cast<std::size_t>(i)];
+        for (auto& [var, prev] : recs) {
+            if (i <= prev) continue;
+            if (!rx_search("\\b" + re_escape(var) + "\\b", ln)) continue;
+            if (rec_re.search(ln)) continue;
+            report(out, rel, fn.name, fn.span.first + i, cls, var + what, lines);
+            return true;
+        }
+    }
+    return false;
+}
+
+
+// Ordered name -> value map with Python dict semantics (first insertion
+// keeps its position, the last assignment wins).
+using OrderedBinds = std::vector<std::pair<std::string, std::string>>;
+
+void bind_set(OrderedBinds& b, const std::string& k, const std::string& v) {
+    for (auto& [kk, vv] : b)
+        if (kk == k) {
+            vv = v;
+            return;
+        }
+    b.emplace_back(k, v);
+}
+
+const std::string* bind_get(const OrderedBinds& b, const std::string& k) {
+    for (auto& [kk, vv] : b)
+        if (kk == k) return &vv;
+    return nullptr;
+}
+
+std::map<std::string, int> c_array_sizes(std::string_view body) {
+    std::map<std::string, int> sizes;
+    for (auto& m : _C_ARRAY_SIZE.finditer(body)) {
+        try {
+            sizes[m.named("name")] = std::stoi(m.named("n"));
+        } catch (...) {
+        }
+    }
+    return sizes;
+}
+
+std::optional<int> size_of(const std::map<std::string, int>& sizes, const std::string& k) {
+    auto it = sizes.find(k);
+    if (it == sizes.end()) return std::nullopt;
+    return it->second;
+}
+
+// Return borrows a local (w/u8)string: prism/checkers.py
+// _cxx_wstring_view / _cxx_u8string_view.
+void view_of_local_return(const std::vector<std::string>& lines, std::string_view rel,
+                          const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out,
+                          const char* token_pat, const char* view_word_pat,
+                          const std::function<std::set<std::string>(const FunctionInfo&)>& locals_of,
+                          const Regex& view_bind, const Regex& return_view, std::string_view cls,
+                          const std::string& what) {
+    for (auto& fn : funcs) {
+        if (!rx_search(token_pat, fn.signature + "\n" + fn.return_type + "\n" + fn.body)) continue;
+        auto local = locals_of(fn);
+        if (local.empty()) continue;
+        std::set<std::string> view_from_local;
+        for (auto& m : view_bind.finditer(fn.body))
+            if (local.count(m.named("src"))) view_from_local.insert(m.named("name"));
+        bool ret_is_view = rx_search(view_word_pat, fn.return_type);
+        auto start = fn.span.first;
+        auto bl = split_lines(fn.body);
+        for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
+            auto& ln = bl[static_cast<std::size_t>(i)];
+            std::string hit;
+            if (auto sm = _RETURN_VAR.search_match(ln)) {
+                auto name = sm->group(1);
+                if (view_from_local.count(name)) hit = name;
+                else if (local.count(name) && ret_is_view) hit = name;
+            }
+            if (hit.empty())
+                if (auto sm = return_view.search_match(ln); sm && local.count(sm->named("name")))
+                    hit = sm->named("name");
+            if (hit.empty()) continue;
+            report(out, rel, fn.name, start + i, cls, what + hit, lines);
+            return;
+        }
+    }
+}
+
+
+// Lambda body after a capture list ending at `capture_end`, if any.
+std::optional<std::string> lambda_body_from(std::string_view text, std::size_t capture_end) {
+    static const Regex head(R"(\s*(?:\([^;{}]*\))?\s*(?:mutable\s*)?\{)");
+    auto rest = text.substr(capture_end);
+    auto m = head.search_match(rest);
+    if (!m || m->spans[0].first != 0) return std::nullopt;
+    auto brace = static_cast<int>(capture_end) + m->spans[0].second - 1;
+    auto close = match_brace(text, brace);
+    if (close < 0) return std::nullopt;
+    return std::string(text.substr(static_cast<std::size_t>(brace + 1),
+                                   static_cast<std::size_t>(close - brace - 1)));
+}
+
+std::string lambda_capture_kind(const std::string& capture) {
+    auto cap = re_sub_pat(R"(\s+)", "", capture);
+    if (cap == "this" || cap.starts_with("this,")) return "this";
+    if (cap == "=" || cap.starts_with("=,")) return "eq";
+    return "other";
+}
+
+std::set<std::string> lambda_idents(std::string_view body) {
+    static const Regex ident(R"(\b([A-Za-z_]\w*)\b(?!\s*\())");
+    std::set<std::string> names;
+    for (auto& m : ident.finditer(body))
+        if (!LAMBDA_SKIP.count(m.group(1))) names.insert(m.group(1));
+    return names;
+}
+
+bool this_capture_hit(const std::string& capture, const std::optional<std::string>& lam,
+                      const std::set<std::string>& locals_ok, const std::optional<std::set<std::string>>& members) {
+    auto kind = lambda_capture_kind(capture);
+    if (kind == "this") return true;
+    if (kind != "eq" || !lam) return false;
+    if (rx_search(R"(\bthis\b)", *lam)) return true;
+    if (!members) return false;
+    for (auto& u : lambda_idents(*lam))
+        if (!locals_ok.count(u) && members->count(u)) return true;
+    return false;
+}
+
+std::set<std::string> class_member_names(std::string_view cbody) {
+    std::set<std::string> names;
+    for (auto& m : _PTR_MEMBER.finditer(cbody)) names.insert(m.named("name"));
+    for (auto& m : _CXX_SCALAR_MEMBER.finditer(cbody)) names.insert(m.named("name"));
+    return names;
+}
+
+// Member names when fn is defined inside a class/struct, else nullopt.
+std::optional<std::set<std::string>> fn_class_members(const FunctionInfo& fn, std::string_view stripped) {
+    for (auto& m : _CLASS_DEF.finditer(stripped)) {
+        int brace = m.spans[0].second - 1;
+        int close = match_brace(stripped, brace);
+        if (close < 0) continue;
+        int start_line = static_cast<int>(std::count(stripped.begin(), stripped.begin() + brace, '\n')) + 1;
+        int end_line = static_cast<int>(std::count(stripped.begin(), stripped.begin() + close, '\n')) + 1;
+        if (!(start_line <= fn.line && fn.line <= end_line)) continue;
+        return class_member_names(stripped.substr(static_cast<std::size_t>(brace + 1),
+                                                  static_cast<std::size_t>(close - brace - 1)));
+    }
+    return std::nullopt;
+}
+
+
 void _cxx_new_delete(const std::vector<std::string>& lines, std::string_view rel,
                      const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     for (auto& fn : funcs) {
@@ -1913,21 +2157,19 @@ void _cxx_bit_cast(const std::vector<std::string>& lines, std::string_view rel,
     }
 }
 
+// placement new (p) where p is a typed object pointer, not a byte buffer.
 void _cxx_placement_new(const std::vector<std::string>& lines, std::string_view rel,
                         const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     for (auto& fn : funcs) {
+        auto bl = split_lines(fn.body);
         auto start = fn.span.first;
-        auto body_lines = split_lines(fn.body);
-        for (int i = 0; i < static_cast<int>(body_lines.size()); ++i) {
-            auto m = _PLACE_NEW.search_match(body_lines[static_cast<std::size_t>(i)]);
+        for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
+            auto m = _PLACE_NEW.search_match(bl[static_cast<std::size_t>(i)]);
             if (!m) continue;
             auto ptr = m->named("ptr");
             if (PLACE_SKIP_PTR.count(ptr)) continue;
-            bool ok = true;
-            for (auto& [typ, pname] : fn.params)
-                if (pname == ptr && typ.find('*') != std::string::npos)
-                    ok = allowed_reinterp_pointee(typ);
-            if (ok) continue;
+            auto ok = place_storage_ok(ptr, fn);
+            if (!ok || *ok) continue;
             report(out, rel, fn.name, start + i, "CXX-PLACEMENT-NEW",
                    "placement new into typed object pointer " + ptr, lines);
             return;
@@ -2159,29 +2401,81 @@ void _cxx_bind_tmp(std::string_view stripped, const std::vector<std::string>& li
     }
 }
 
+// Returned lambda with [this] or [=] capturing a class member. Distinct from
+// CXX-LAMBDA-DANGLE (`[&]` / explicit `&local`).
 void _cxx_this_capture(std::string_view stripped, const std::vector<std::string>& lines,
                        std::string_view rel, const std::vector<FunctionInfo>& funcs,
                        std::vector<Finding>& out) {
     std::set<std::string> reported;
     for (auto& fn : funcs) {
-        auto body_lines = split_lines(fn.body);
-        bool hit = false;
-        int hit_off = 0;
-        for (int i = 0; i < static_cast<int>(body_lines.size()); ++i) {
-            auto& ln = body_lines[static_cast<std::size_t>(i)];
-            if (auto m = _CXX_RETURN_LAMBDA.search_match(ln)) {
-                auto cap = re_sub_pat(R"(\s+)", "", m->named("capture"));
-                if (cap == "this" || cap.find("this,") == 0 || cap == "=" || cap.find("=,") == 0) {
-                    hit = true;
-                    hit_off = i;
+        auto& body = fn.body;
+        if (body.find('[') == std::string::npos ||
+            (!_CXX_RETURN_LAMBDA.search(body) && !_CXX_AUTO_LAMBDA.search(body)))
+            continue;
+        std::set<std::string> params;
+        for (auto& [typ, name] : fn.params)
+            if (!name.empty()) params.insert(name);
+        auto members = fn_class_members(fn, stripped);
+        std::set<std::string> locals_ok = params;
+        for (auto& ln : split_lines(body)) {
+            auto mloc = match_at_start_line(_CXX_LOCAL_LINE, ln);
+            if (!mloc) continue;
+            auto name = mloc->named("name");
+            if (!params.count(name) && !KW.count(name)) locals_ok.insert(name);
+        }
+        std::map<std::string, std::pair<std::string, std::string>> stored;
+        for (auto& m : _CXX_AUTO_LAMBDA.finditer(body))
+            stored[m.named("name")] = {m.named("capture"),
+                                       lambda_body_from(body, static_cast<std::size_t>(m.spans[0].second))
+                                           .value_or("")};
+        std::optional<int> hit_off;
+        for (auto& m : _CXX_RETURN_LAMBDA.finditer(body)) {
+            auto lam = lambda_body_from(body, static_cast<std::size_t>(m.spans[0].second));
+            if (this_capture_hit(m.named("capture"), lam, locals_ok, members)) {
+                hit_off = m.spans[0].first;
+                break;
+            }
+        }
+        if (!hit_off) {
+            for (auto& m : _CXX_RETURN_NAME.finditer(body)) {
+                auto it = stored.find(m.named("name"));
+                if (it == stored.end()) continue;
+                if (this_capture_hit(it->second.first, it->second.second, locals_ok, members)) {
+                    hit_off = m.spans[0].first;
                     break;
                 }
             }
         }
-        if (!hit) continue;
+        if (!hit_off) continue;
+        int line = fn.span.first +
+                   static_cast<int>(std::count(body.begin(), body.begin() + *hit_off, '\n'));
         reported.insert(fn.name);
-        report(out, rel, fn.name, fn.span.first + hit_off, "CXX-THIS-CAPTURE",
+        report(out, rel, fn.name, line, "CXX-THIS-CAPTURE",
                "returned lambda captures this by [=] or [this]", lines);
+    }
+
+    static const Regex fn_head(R"(\b(?P<name>[A-Za-z_]\w*)\s*\([^;{}]*\)[^{]*\{)");
+    for (auto& cm : _CLASS_DEF.finditer(stripped)) {
+        auto cls = cm.named("name");
+        int brace = cm.spans[0].second - 1;
+        int close = match_brace(stripped, brace);
+        if (close < 0) continue;
+        auto cbody = stripped.substr(static_cast<std::size_t>(brace + 1),
+                                     static_cast<std::size_t>(close - brace - 1));
+        auto members = class_member_names(cbody);
+        for (auto& m : _CXX_RETURN_LAMBDA.finditer(cbody)) {
+            auto lam = lambda_body_from(cbody, static_cast<std::size_t>(m.spans[0].second));
+            if (!this_capture_hit(m.named("capture"), lam, {}, members)) continue;
+            std::string hit_fn = cls;
+            for (auto& hm : fn_head.finditer(cbody.substr(0, static_cast<std::size_t>(m.spans[0].first))))
+                hit_fn = hm.named("name");
+            if (reported.count(hit_fn)) continue;
+            int line = static_cast<int>(std::count(stripped.begin(),
+                                                   stripped.begin() + brace + 1 + m.spans[0].first, '\n')) + 1;
+            reported.insert(hit_fn);
+            report(out, rel, hit_fn, line, "CXX-THIS-CAPTURE",
+                   "returned lambda captures this by [=] or [this]", lines);
+        }
     }
 }
 
@@ -2366,18 +2660,27 @@ void _cxx_shared_mutex(const std::vector<std::string>& lines, std::string_view r
     }
 }
 
+// any_cast<T>(v) by value without type()/has_value/try or pointer form.
 void _cxx_any_cast(const std::vector<std::string>& lines, std::string_view rel,
                    const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     for (auto& fn : funcs) {
+        if (rx_search(R"(\btry\b)", fn.body) && rx_search(R"(\bcatch\b)", fn.body)) continue;
         auto start = fn.span.first;
         auto bl = split_lines(fn.body);
         for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
-            if (!_ANY_CAST_CALL.search(bl[static_cast<std::size_t>(i)])) continue;
-            if (re_search(R"(\btype\s*\()", fn.body) || re_search(R"(any_cast\s*<[^>]+\s*\*)", fn.body))
-                continue;
-            report(out, rel, fn.name, start + i, "CXX-ANY-CAST",
-                   "any_cast by value without type() or pointer form", lines);
-            return;
+            auto& ln = bl[static_cast<std::size_t>(i)];
+            if (rx_search(R"(\(\s*void\s*\)\s*(?:std\s*::\s*)?any_cast\s*<)", ln)) continue;
+            for (auto& m : _ANY_CAST_CALL.finditer(ln)) {
+                auto arg = strip(m.named("arg"));
+                if (!arg.empty() && arg[0] == '&') continue;
+                if (auto var = rx_match_start(R"(^([A-Za-z_]\w*)\s*$)", arg)) {
+                    auto v = re_escape(var->group(1));
+                    if (rx_search("\\b" + v + "\\s*\\.\\s*(?:type|has_value)\\s*\\(", fn.body)) continue;
+                }
+                report(out, rel, fn.name, start + i, "CXX-ANY-CAST",
+                       "any_cast by value without type() or pointer form", lines);
+                return;
+            }
         }
     }
 }
@@ -2420,35 +2723,44 @@ void _cxx_latch(const std::vector<std::string>& lines, std::string_view rel,
     }
 }
 
+// from_chars out-parameter used without checking r.ec / errc / ptr.
 void _cxx_from_chars(const std::vector<std::string>& lines, std::string_view rel,
                      const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     for (auto& fn : funcs) {
-        if (re_search(R"(\.ec\b|\bec\s*==)", fn.body)) continue;
+        if (rx_search(R"(\.(?:ec|ptr)\b|\berrc\b)", fn.body)) continue;
         auto start = fn.span.first;
         auto bl = split_lines(fn.body);
+        std::vector<std::pair<std::string, int>> outs;  // insertion order, last line
+        for (int i = 0; i < static_cast<int>(bl.size()); ++i)
+            for (auto& m : _FROM_CHARS_OUT.finditer(bl[static_cast<std::size_t>(i)])) {
+                auto var = m.named("var");
+                auto it = std::find_if(outs.begin(), outs.end(), [&](auto& p) { return p.first == var; });
+                if (it == outs.end()) outs.emplace_back(var, i);
+                else it->second = i;
+            }
+        if (outs.empty()) continue;
         for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
-            auto m = _FROM_CHARS_OUT.search_match(bl[static_cast<std::size_t>(i)]);
-            if (!m) continue;
-            report(out, rel, fn.name, start + i, "CXX-FROM-CHARS",
-                   m->named("var") + " used after from_chars without checking ec", lines);
-            return;
+            auto& ln = bl[static_cast<std::size_t>(i)];
+            for (auto& [var, prev] : outs) {
+                if (i <= prev) continue;
+                if (!rx_search("\\b" + re_escape(var) + "\\b", ln)) continue;
+                if (_FROM_CHARS_OUT.search(ln)) continue;
+                report(out, rel, fn.name, start + i, "CXX-FROM-CHARS",
+                       var + " used after from_chars without checking ec", lines);
+                return;
+            }
         }
     }
 }
 
+// to_chars buffer used without checking r.ec / errc / ptr (CWE-252).
 void _cxx_to_chars(const std::vector<std::string>& lines, std::string_view rel,
                    const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     for (auto& fn : funcs) {
-        if (re_search(R"(\.ec\b|\bec\s*==)", fn.body)) continue;
-        auto start = fn.span.first;
-        auto bl = split_lines(fn.body);
-        for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
-            auto m = _TO_CHARS_BUF.search_match(bl[static_cast<std::size_t>(i)]);
-            if (!m) continue;
-            report(out, rel, fn.name, start + i, "CXX-TO-CHARS",
-                   m->named("buf") + " used after to_chars without checking ec", lines);
+        if (rx_search(R"(\.(?:ec|ptr)\b|\berrc\b)", fn.body)) continue;
+        if (report_use_after(lines, rel, fn, _TO_CHARS_BUF, "buf", "CXX-TO-CHARS",
+                             " used after to_chars without checking ec", out))
             return;
-        }
     }
 }
 
@@ -2458,19 +2770,20 @@ void _cxx_init_list_dangle(const std::vector<std::string>& lines, std::string_vi
                     "pointer from a temporary initializer_list.begin()");
 }
 
+// stop_token in while(true)/for(;;) without stop_requested() (CWE-833).
 void _cxx_stop_token(const std::vector<std::string>& lines, std::string_view rel,
                      const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     for (auto& fn : funcs) {
-        if (!_CXX_STOP_TOKEN.search(fn.body) || !_CXX_INF_LOOP.search(fn.body)) continue;
-        if (re_search(R"(\bstop_requested\s*\()", fn.body)) continue;
+        if (!_CXX_STOP_TOKEN.search(fn.signature + "\n" + fn.body)) continue;
+        if (rx_search(R"(\bstop_requested\s*\()", fn.body)) continue;
         auto start = fn.span.first;
         auto bl = split_lines(fn.body);
-        for (int i = 0; i < static_cast<int>(bl.size()); ++i)
-            if (_CXX_STOP_TOKEN.search(bl[static_cast<std::size_t>(i)]) || _CXX_INF_LOOP.search(bl[static_cast<std::size_t>(i)])) {
-                report(out, rel, fn.name, start + i, "CXX-STOP-TOKEN",
-                       "stop_token used in an infinite loop without stop_requested()", lines);
-                return;
-            }
+        for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
+            if (!_CXX_INF_LOOP.search(bl[static_cast<std::size_t>(i)])) continue;
+            report(out, rel, fn.name, start + i, "CXX-STOP-TOKEN",
+                   "stop_token used in an infinite loop without stop_requested()", lines);
+            return;
+        }
     }
 }
 
@@ -2515,18 +2828,32 @@ void _cxx_semaphore(const std::vector<std::string>& lines, std::string_view rel,
     }
 }
 
+// stacktrace::current() [0]/at(0) without empty/size check (CWE-125).
 void _cxx_stacktrace(const std::vector<std::string>& lines, std::string_view rel,
                      const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     for (auto& fn : funcs) {
-        if (re_search(R"(\.(?:empty|size)\s*\()", fn.body)) continue;
+        if (!_STACKTRACE_CURRENT.search(fn.body)) continue;
         auto start = fn.span.first;
+        auto assigned = names_of(_STACKTRACE_ASSIGN, fn.body);
         auto bl = split_lines(fn.body);
         for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
-            if (_STACKTRACE_DIRECT_ZERO.search(bl[static_cast<std::size_t>(i)])
-                || (_STACKTRACE_CURRENT.search(bl[static_cast<std::size_t>(i)])
-                    && re_search(R"(\[\s*0\s*\])", bl[static_cast<std::size_t>(i)]))) {
+            auto& ln = bl[static_cast<std::size_t>(i)];
+            if (_STACKTRACE_DIRECT_ZERO.search(ln)) {
+                if (rx_search(R"(\.(?:empty|size)\s*\()", fn.body)) continue;
                 report(out, rel, fn.name, start + i, "CXX-STACKTRACE",
                        "stacktrace::current()[0] without empty()/size()", lines);
+                return;
+            }
+            for (auto& name : assigned) {
+                auto n = re_escape(name);
+                if (rx_search("\\b" + n + "\\s*\\.\\s*(?:empty|size)\\s*\\(", fn.body) ||
+                    rx_search("\\bif\\s*\\(\\s*!\\s*" + n + "\\b", fn.body))
+                    continue;
+                if (!(rx_search("\\b" + n + "\\s*\\[\\s*0\\s*\\]", ln) ||
+                      rx_search("\\b" + n + "\\s*\\.\\s*at\\s*\\(\\s*0\\s*\\)", ln)))
+                    continue;
+                report(out, rel, fn.name, start + i, "CXX-STACKTRACE",
+                       name + "[0] from stacktrace::current() without empty()/size()", lines);
                 return;
             }
         }
@@ -2731,20 +3058,21 @@ void _cxx_indirect(const std::vector<std::string>& lines, std::string_view rel,
     }
 }
 
+// hazard_pointer in scope but atomic load dereferenced without protect.
 void _cxx_hazard_pointer(const std::vector<std::string>& lines, std::string_view rel,
                          const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     for (auto& fn : funcs) {
         if (!_HAZARD_DECL.search(fn.body)) continue;
-        if (re_search(R"(\.protect\s*\()", fn.body)) continue;
-        if (!re_search(R"(\.load\s*\()", fn.body)) continue;
+        if (rx_search(R"(\bprotect\s*\(|\bhazard_pointer_for\s*\()", fn.body)) continue;
+        if (!rx_search(R"(\.load\s*\()", fn.body)) continue;
         auto start = fn.span.first;
         auto bl = split_lines(fn.body);
-        for (int i = 0; i < static_cast<int>(bl.size()); ++i)
-            if (re_search(R"(\.load\s*\()", bl[static_cast<std::size_t>(i)])) {
-                report(out, rel, fn.name, start + i, "CXX-HAZARD-POINTER",
-                       "atomic load used without hazard_pointer::protect()", lines);
-                return;
-            }
+        for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
+            if (bl[static_cast<std::size_t>(i)].find("->") == std::string::npos) continue;
+            report(out, rel, fn.name, start + i, "CXX-HAZARD-POINTER",
+                   "atomic load used without hazard_pointer::protect()", lines);
+            return;
+        }
     }
 }
 
@@ -2804,37 +3132,62 @@ void _cxx_simd_index(const std::vector<std::string>& lines, std::string_view rel
                     " without a size() guard");
 }
 
+// rcu_obj update / retire without rcu_synchronize() (CWE-416).
 void _cxx_rcu(const std::vector<std::string>& lines, std::string_view rel,
               const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     for (auto& fn : funcs) {
-        if (!_RCU_OBJ_DECL.search(fn.body)) continue;
-        if (re_search(R"(\brcu_synchronize\s*\()", fn.body)) continue;
-        if (!re_search(R"(\.(?:update|retire)\s*\()", fn.body)) continue;
+        if (rx_search(R"(\brcu_synchronize\s*\()", fn.body)) continue;
+        auto names = names_of(_RCU_OBJ_DECL, fn.body);
+        if (names.empty() && !rx_search(R"(\bstd\s*::\s*rcu\b)", fn.body)) continue;
         auto start = fn.span.first;
         auto bl = split_lines(fn.body);
-        for (int i = 0; i < static_cast<int>(bl.size()); ++i)
-            if (re_search(R"(\.(?:update|retire)\s*\()", bl[static_cast<std::size_t>(i)])) {
-                report(out, rel, fn.name, start + i, "CXX-RCU",
-                       "rcu_obj update/retire without rcu_synchronize()", lines);
-                return;
-            }
+        for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
+            auto& ln = bl[static_cast<std::size_t>(i)];
+            bool hit = rx_search(R"(\bretire\s*\()", ln);
+            for (auto& name : names)
+                if (rx_search("\\b" + re_escape(name) + "\\s*=(?!=)", ln)) {
+                    hit = true;
+                    break;
+                }
+            if (!hit) continue;
+            report(out, rel, fn.name, start + i, "CXX-RCU",
+                   "rcu_obj update/retire without rcu_synchronize()", lines);
+            return;
+        }
     }
 }
 
+// linalg matrix(i,j) / scaled return without extents (CWE-125).
 void _cxx_linalg(const std::vector<std::string>& lines, std::string_view rel,
                  const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     for (auto& fn : funcs) {
-        if (!_LINALG_SCALED.search(fn.body) && !_LINALG_MATRIX_DECL.search(fn.body)) continue;
-        if (re_search(R"(\.extents\s*\()", fn.body)) continue;
+        if (!rx_search(R"((?:std\s*::\s*)?linalg\s*::)", fn.body)) continue;
+        if (rx_search(R"(\b(?:extents|extent|size)\s*\()", fn.body)) continue;
+        auto names = names_of(_LINALG_MATRIX_DECL, fn.body);
         auto start = fn.span.first;
         auto bl = split_lines(fn.body);
-        for (int i = 0; i < static_cast<int>(bl.size()); ++i)
-            if (_LINALG_SCALED.search(bl[static_cast<std::size_t>(i)])
-                || _CXX_SUBSCRIPT.search(bl[static_cast<std::size_t>(i)])) {
+        if (_LINALG_SCALED.search(fn.body) && rx_search(R"(\breturn\b)", fn.body)) {
+            int hit_i = 0;
+            for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
+                auto& ln = bl[static_cast<std::size_t>(i)];
+                if (_LINALG_SCALED.search(ln) || rx_search(R"(\breturn\b)", ln)) {
+                    hit_i = i;
+                    break;
+                }
+            }
+            report(out, rel, fn.name, start + hit_i, "CXX-LINALG",
+                   "linalg scaled/copied result used without extents", lines);
+            return;
+        }
+        for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
+            for (auto& name : names) {
+                if (!rx_search("\\b" + re_escape(name) + "\\s*\\(\\s*[^,\\)]+\\s*,", bl[static_cast<std::size_t>(i)]))
+                    continue;
                 report(out, rel, fn.name, start + i, "CXX-LINALG",
-                       "linalg scaled/copied result used without extents", lines);
+                       name + "(i, j) without an extents guard", lines);
                 return;
             }
+        }
     }
 }
 
@@ -2871,35 +3224,59 @@ void _cxx_contracts(const std::vector<std::string>& lines, std::string_view rel,
                     "contract_assert(false)/pre(false) is an unreachable lie");
 }
 
+// ^^ / std::meta:: with define_aggregate/define_class and no namespace.
 void _cxx_reflection(const std::vector<std::string>& lines, std::string_view rel,
                      const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     for (auto& fn : funcs) {
-        if (!_CXX_REFLECT_DEFINE.search(fn.body) && !_CXX_REFLECT_META.search(fn.body)) continue;
-        if (re_search(R"(\bnamespace\b)", fn.body)) continue;
-        auto start = fn.span.first;
+        if (!_CXX_REFLECT_META.search(fn.body)) continue;
+        if (!_CXX_REFLECT_DEFINE.search(fn.body)) continue;
+        if (rx_search(R"(\bnamespace\s+[A-Za-z_])", fn.body)) continue;
+        int hit_i = 0;
         auto bl = split_lines(fn.body);
-        for (int i = 0; i < static_cast<int>(bl.size()); ++i)
-            if (_CXX_REFLECT_DEFINE.search(bl[static_cast<std::size_t>(i)])) {
-                report(out, rel, fn.name, start + i, "CXX-REFLECTION",
-                       "define_aggregate/define_class without a named namespace", lines);
-                return;
+        for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
+            auto& ln = bl[static_cast<std::size_t>(i)];
+            if (_CXX_REFLECT_DEFINE.search(ln) || _CXX_REFLECT_META.search(ln)) {
+                hit_i = i;
+                break;
             }
+        }
+        report(out, rel, fn.name, fn.span.first + hit_i, "CXX-REFLECTION",
+               "define_aggregate/define_class without a named namespace", lines);
     }
 }
 
+// out_ptr/inout_ptr fill then unique_ptr/shared_ptr used without a null check.
 void _cxx_out_ptr(const std::vector<std::string>& lines, std::string_view rel,
                   const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     for (auto& fn : funcs) {
-        auto start = fn.span.first;
+        if (!rx_search(R"(\b(?:inout_ptr|out_ptr)\s*(?:<|\())", fn.body)) continue;
+        auto names = names_of(_UNIQUE_PTR_DECL, fn.body);
+        for (auto& n : names_of(_SHARED_PTR_DECL, fn.body)) names.insert(n);
+        if (names.empty()) continue;
         auto bl = split_lines(fn.body);
+        auto start = fn.span.first;
+        std::vector<std::pair<std::string, int>> filled;  // insertion order, last line
+        for (int i = 0; i < static_cast<int>(bl.size()); ++i)
+            for (auto& m : _OUT_PTR_CALL.finditer(bl[static_cast<std::size_t>(i)])) {
+                auto ptr = m.named("ptr");
+                auto it = std::find_if(filled.begin(), filled.end(), [&](auto& p) { return p.first == ptr; });
+                if (it == filled.end()) filled.emplace_back(ptr, i);
+                else it->second = i;
+            }
+        if (filled.empty()) continue;
         for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
-            auto m = _OUT_PTR_CALL.search_match(bl[static_cast<std::size_t>(i)]);
-            if (!m) continue;
-            auto name = m->named("ptr");
-            if (param_null_tested(name, fn.body) || optional_has_guard(name, fn.body)) continue;
-            report(out, rel, fn.name, start + i, "CXX-OUT-PTR",
-                   name + " used after out_ptr without a null check", lines);
-            return;
+            auto& ln = bl[static_cast<std::size_t>(i)];
+            for (auto& [name, prev] : filled) {
+                if (i <= prev || !names.count(name)) continue;
+                if (optional_has_guard(name, fn.body)) continue;
+                auto n = re_escape(name);
+                if (!(rx_search("(?<!\\w)\\*\\s*" + n + "\\b", ln) || rx_search("\\b" + n + "\\s*->", ln) ||
+                      rx_search("\\b" + n + "\\s*\\.\\s*get\\s*\\(", ln)))
+                    continue;
+                report(out, rel, fn.name, start + i, "CXX-OUT-PTR",
+                       name + " used after out_ptr without a null check", lines);
+                return;
+            }
         }
     }
 }
@@ -3055,21 +3432,24 @@ void _cxx_counted_iterator(const std::vector<std::string>& lines, std::string_vi
     }
 }
 
+// promise.get_future() then .get() without set_value (CWE-394).
 void _cxx_promise(const std::vector<std::string>& lines, std::string_view rel,
                   const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     for (auto& fn : funcs) {
-        auto names = names_of(_CXX_PROMISE_DECL, fn.body);
-        if (!re_search(R"(\bget_future\s*\()", fn.body)) continue;
-        if (re_search(R"(\bset_value\s*\(|\bset_exception\s*\()", fn.body)) continue;
+        if (names_of(_CXX_PROMISE_DECL, fn.body).empty()) continue;
+        if (!rx_search(R"(\bget_future\s*\()", fn.body)) continue;
+        if (rx_search(R"(\bset_value(?:_at_thread_exit)?\s*\()", fn.body)) continue;
+        if (rx_search(R"(\bset_exception(?:_at_thread_exit)?\s*\()", fn.body)) continue;
         auto start = fn.span.first;
         auto bl = split_lines(fn.body);
-        for (int i = 0; i < static_cast<int>(bl.size()); ++i)
-            if (re_search(R"(\bget_future\s*\()", bl[static_cast<std::size_t>(i)])) {
-                report(out, rel, fn.name, start + i, "CXX-PROMISE",
-                       "promise get_future used without set_value/set_exception", lines);
-                return;
-            }
-        (void)names;
+        for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
+            auto& ln = bl[static_cast<std::size_t>(i)];
+            if (rx_search(R"(\.\s*get_future\s*\()", ln)) continue;
+            if (!rx_search(R"(\.\s*get\s*\()", ln)) continue;
+            report(out, rel, fn.name, start + i, "CXX-PROMISE",
+                   "promise get_future used without set_value/set_exception", lines);
+            return;
+        }
     }
 }
 
@@ -3168,20 +3548,25 @@ void _cxx_unexpected(const std::vector<std::string>& lines, std::string_view rel
     }
 }
 
+// std::get on tuple without tuple_size / structured binding (CWE-125).
 void _cxx_tuple_get(const std::vector<std::string>& lines, std::string_view rel,
                     const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     for (auto& fn : funcs) {
-        if (!names_of(_CXX_TUPLE_DECL, fn.body).empty() || _CXX_TUPLE_GET.search(fn.body)) {
-            if (re_search(R"(\btuple_size\b|\bstd\s*::\s*tuple_size\b)", fn.body)) continue;
-            auto start = fn.span.first;
-            auto bl = split_lines(fn.body);
-            for (int i = 0; i < static_cast<int>(bl.size()); ++i)
-                if (_CXX_TUPLE_GET.search(bl[static_cast<std::size_t>(i)])
-                    && !re_search(R"(\bholds_alternative\b)", bl[static_cast<std::size_t>(i)])) {
-                    report(out, rel, fn.name, start + i, "CXX-TUPLE-GET",
-                           "std::get on tuple without tuple_size/index guard", lines);
-                    return;
-                }
+        auto& body = fn.body;
+        bool has_tuple = body.find("tuple") != std::string::npos;
+        if (body.find("variant") != std::string::npos && !has_tuple) continue;
+        if (!has_tuple) continue;
+        if (!(rx_search(R"(std\s*::\s*get)", body) || rx_search(R"(get\s*<)", body))) continue;
+        if (!_CXX_TUPLE_DECL.search(body)) continue;
+        if (rx_search(R"(\btuple_size\b)", body)) continue;
+        if (rx_search(R"(\bauto\s*\[)", body)) continue;
+        auto start = fn.span.first;
+        auto bl = split_lines(body);
+        for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
+            if (!_CXX_TUPLE_GET.search(bl[static_cast<std::size_t>(i)])) continue;
+            report(out, rel, fn.name, start + i, "CXX-TUPLE-GET",
+                   "std::get on tuple without tuple_size/index guard", lines);
+            return;
         }
     }
 }
@@ -3286,47 +3671,20 @@ void _cxx_priority_queue(const std::vector<std::string>& lines, std::string_view
                         ".top()/.pop() without empty()");
 }
 
+// wstring_view / wstring borrows local storage (CWE-416).
 void _cxx_wstring_view(const std::vector<std::string>& lines, std::string_view rel,
                        const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
-    for (auto& fn : funcs) {
-        auto local_ws = cxx_local_wstrings(fn);
-        if (local_ws.empty()) continue;
-        auto start = fn.span.first;
-        auto bl = split_lines(fn.body);
-        for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
-            std::string hit;
-            if (auto m = _CXX_RETURN_WVIEW.search_match(bl[static_cast<std::size_t>(i)]);
-                m && local_ws.count(m->named("name")))
-                hit = m->named("name");
-            else if (auto m2 = _CXX_WSTRING_VIEW_BIND.search_match(bl[static_cast<std::size_t>(i)]);
-                     m2 && local_ws.count(m2->named("src")) && re_search(R"(\breturn\b)", fn.body))
-                hit = m2->named("src");
-            if (hit.empty()) continue;
-            report(out, rel, fn.name, start + i, "CXX-WSTRING-VIEW",
-                   "return borrows local wstring " + hit, lines);
-            return;
-        }
-    }
+    view_of_local_return(lines, rel, funcs, out, R"(\bwstring_view\b|\bwstring\b)", R"(\bwstring_view\b)",
+                         cxx_local_wstrings, _CXX_WSTRING_VIEW_BIND, _CXX_RETURN_WVIEW,
+                         "CXX-WSTRING-VIEW", "return borrows local wstring ");
 }
 
+// u8string_view / u8string borrows local storage (CWE-416).
 void _cxx_u8string_view(const std::vector<std::string>& lines, std::string_view rel,
                         const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
-    for (auto& fn : funcs) {
-        auto local_u8 = cxx_local_u8strings(fn);
-        if (local_u8.empty()) continue;
-        auto start = fn.span.first;
-        auto bl = split_lines(fn.body);
-        for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
-            std::string hit;
-            if (auto m = _CXX_RETURN_U8VIEW.search_match(bl[static_cast<std::size_t>(i)]);
-                m && local_u8.count(m->named("name")))
-                hit = m->named("name");
-            if (hit.empty()) continue;
-            report(out, rel, fn.name, start + i, "CXX-U8STRING-VIEW",
-                   "return borrows local u8string " + hit, lines);
-            return;
-        }
-    }
+    view_of_local_return(lines, rel, funcs, out, R"(\bu8string_view\b|\bu8string\b)", R"(\bu8string_view\b)",
+                         cxx_local_u8strings, _CXX_U8STRING_VIEW_BIND, _CXX_RETURN_U8VIEW,
+                         "CXX-U8STRING-VIEW", "return borrows local u8string ");
 }
 
 void _cxx_binary_semaphore(const std::vector<std::string>& lines, std::string_view rel,
@@ -3493,22 +3851,28 @@ void _cxx_timed_mutex(const std::vector<std::string>& lines, std::string_view re
     }
 }
 
+// ifstream/ofstream used without is_open() / truth test (CWE-252).
 void _cxx_fstream(const std::vector<std::string>& lines, std::string_view rel,
                   const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     for (auto& fn : funcs) {
+        if (!rx_search(R"(\b(?:ifstream|ofstream|fstream)\b)", fn.body)) continue;
         auto names = names_of(_CXX_FSTREAM_DECL, fn.body);
+        if (names.empty()) continue;
         auto start = fn.span.first;
         auto bl = split_lines(fn.body);
         for (auto& name : names) {
-            if (re_search("\\b" + re_escape(name) + "\\s*\\.\\s*is_open\\s*\\(", fn.body)
-                || optional_has_guard(name, fn.body))
-                continue;
-            for (int i = 0; i < static_cast<int>(bl.size()); ++i)
-                if (re_search("\\b" + re_escape(name) + "\\s*<<|\\b" + re_escape(name) + "\\s*>>", bl[static_cast<std::size_t>(i)])) {
-                    report(out, rel, fn.name, start + i, "CXX-FSTREAM",
-                           name + " used without is_open() or a truth test", lines);
-                    return;
-                }
+            auto n = re_escape(name);
+            if (rx_search("\\b" + n + "\\s*\\.\\s*is_open\\s*\\(", fn.body)) continue;
+            if (rx_search("\\bif\\s*\\(\\s*!?" + n + "\\b", fn.body)) continue;
+            Regex use("\\b" + n + "\\s*\\.\\s*(?:get|read|write|getline|put|peek)\\s*\\(");
+            Regex shift("\\b" + n + "\\s*(?:<<|>>)");
+            for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
+                auto& ln = bl[static_cast<std::size_t>(i)];
+                if (!(use.search(ln) || shift.search(ln))) continue;
+                report(out, rel, fn.name, start + i, "CXX-FSTREAM",
+                       name + " used without is_open() or a truth test", lines);
+                return;
+            }
         }
     }
 }
@@ -3679,12 +4043,22 @@ void _cxx_format_to(const std::vector<std::string>& lines, std::string_view rel,
     }
 }
 
+// error_category used without == / .name() / .message() (CWE-252).
 void _cxx_error_category(const std::vector<std::string>& lines, std::string_view rel,
                          const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
-    cxx_token_unless(lines, rel, funcs, out, _CXX_ERROR_CATEGORY,
-                     R"(\b(?:generic_category|system_category)\s*\()",
-                     "CXX-ERROR-CATEGORY",
-                     "error_category used without generic/system category");
+    for (auto& fn : funcs) {
+        if (!_CXX_ERROR_CATEGORY.search(fn.body)) continue;
+        if (fn.body.find("==") != std::string::npos) continue;
+        if (rx_search(R"(\.\s*(?:name|message)\s*\()", fn.body)) continue;
+        auto start = fn.span.first;
+        auto bl = split_lines(fn.body);
+        for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
+            if (!_CXX_ERROR_CATEGORY.search(bl[static_cast<std::size_t>(i)])) continue;
+            report(out, rel, fn.name, start + i, "CXX-ERROR-CATEGORY",
+                   "error_category used without generic/system compare or .message()", lines);
+            return;
+        }
+    }
 }
 
 void _cxx_nested_exception(const std::vector<std::string>& lines, std::string_view rel,
@@ -3694,11 +4068,30 @@ void _cxx_nested_exception(const std::vector<std::string>& lines, std::string_vi
                      "throw_with_nested / nested_exception without current_exception");
 }
 
+// atomic_*_fence without memory_order, or as only sync (CWE-362).
 void _cxx_atomic_fence(const std::vector<std::string>& lines, std::string_view rel,
                        const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
-    cxx_token_unless(lines, rel, funcs, out, _CXX_ATOMIC_FENCE, R"(\bmemory_order)",
-                     "CXX-ATOMIC-FENCE",
-                     "atomic_thread_fence without memory_order or pairing");
+    auto globals_ = file_int_globals(lines);
+    for (auto& fn : funcs) {
+        if (!_CXX_ATOMIC_FENCE.search(fn.body)) continue;
+        bool missing_order = !_CXX_FENCE_ORDER.search(fn.body);
+        bool has_atomic_obj = rx_search(R"(\batomic\s*<)", fn.body);
+        auto stores = globals_;
+        static const Regex statics(R"(\bstatic\s+int\s+([A-Za-z_]\w*)\b)");
+        for (auto& m : statics.finditer(fn.body)) stores.insert(m.group(1));
+        bool has_plain_store = false;
+        for (auto& g : stores)
+            if (rx_search("\\b" + re_escape(g) + "\\s*=", fn.body)) has_plain_store = true;
+        if (!missing_order && (has_atomic_obj || !has_plain_store)) continue;
+        auto start = fn.span.first;
+        auto bl = split_lines(fn.body);
+        for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
+            if (!_CXX_ATOMIC_FENCE.search(bl[static_cast<std::size_t>(i)])) continue;
+            report(out, rel, fn.name, start + i, "CXX-ATOMIC-FENCE",
+                   "atomic_thread_fence without memory_order or as only sync around a store", lines);
+            return;
+        }
+    }
 }
 
 void _cxx_notify_thread_exit(const std::vector<std::string>& lines, std::string_view rel,
@@ -3708,12 +4101,24 @@ void _cxx_notify_thread_exit(const std::vector<std::string>& lines, std::string_
                      "notify_all_at_thread_exit without a waiting thread");
 }
 
+// wstring_convert without .converted() / .empty() (CWE-416/252).
 void _cxx_wstring_convert(const std::vector<std::string>& lines, std::string_view rel,
                           const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
-    cxx_token_unless(lines, rel, funcs, out, _CXX_WSTRING_CONVERT,
-                     R"(\.(?:converted|state)\s*\()",
-                     "CXX-WSTRING-CONVERT",
-                     "wstring_convert without .converted() or state check");
+    for (auto& fn : funcs) {
+        if (!_CXX_WSTRING_CONVERT.search(fn.body)) continue;
+        if (!_CXX_WCONVERT_XFORM.search(fn.body)) continue;
+        if (rx_search(R"(\.\s*converted\s*\()", fn.body)) continue;
+        if (rx_search(R"(\.\s*empty\s*\()", fn.body)) continue;
+        auto start = fn.span.first;
+        auto bl = split_lines(fn.body);
+        for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
+            auto& ln = bl[static_cast<std::size_t>(i)];
+            if (!(_CXX_WCONVERT_XFORM.search(ln) || _CXX_WSTRING_CONVERT.search(ln))) continue;
+            report(out, rel, fn.name, start + i, "CXX-WSTRING-CONVERT",
+                   "wstring_convert without .converted() or dangling local converter", lines);
+            return;
+        }
+    }
 }
 
 void _cxx_invoke(const std::vector<std::string>& lines, std::string_view rel,
@@ -3748,22 +4153,34 @@ void _cxx_apply(const std::vector<std::string>& lines, std::string_view rel,
     }
 }
 
+// std::ref/cref of a local that is returned (CWE-416).
 void _cxx_reference_wrapper(const std::vector<std::string>& lines, std::string_view rel,
                             const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     for (auto& fn : funcs) {
         if (!_CXX_REFWRAP_TOKEN.search(fn.body)) continue;
-        auto [scalars, arrays] = locals_in_fn(fn);
-        auto locals = scalars;
-        locals.insert(arrays.begin(), arrays.end());
+        auto locals_ = cxx_local_scalar_names(fn);
+        std::set<std::string> params, wrapped;
+        for (auto& [typ, name] : fn.params)
+            if (!name.empty()) params.insert(name);
+        for (auto& m : _CXX_REFWRAP_BIND.finditer(fn.body)) {
+            auto arg = m.named("arg");
+            if (locals_.count(arg) && !params.count(arg)) wrapped.insert(m.named("w"));
+        }
         auto start = fn.span.first;
         auto bl = split_lines(fn.body);
         for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
-            if (auto m = _CXX_REFWRAP_RETURN.search_match(bl[static_cast<std::size_t>(i)]);
-                m && locals.count(m->named("arg"))) {
-                report(out, rel, fn.name, start + i, "CXX-REFERENCE-WRAPPER",
-                       "std::ref/cref/reference_wrapper wraps a local then escapes", lines);
-                return;
+            auto& ln = bl[static_cast<std::size_t>(i)];
+            bool hit = false;
+            auto rm = _CXX_REFWRAP_RETURN.search_match(ln);
+            if (rm && locals_.count(rm->named("arg")) && !params.count(rm->named("arg"))) {
+                hit = true;
+            } else if (auto rv = _RETURN_VAR.search_match(ln)) {
+                if (wrapped.count(rv->group(1))) hit = true;
             }
+            if (!hit) continue;
+            report(out, rel, fn.name, start + i, "CXX-REFERENCE-WRAPPER",
+                   "std::ref/cref/reference_wrapper wraps a local that is returned", lines);
+            return;
         }
     }
 }
@@ -3789,10 +4206,10 @@ void _cxx_uncaught_exceptions(const std::vector<std::string>& lines, std::string
         auto start = fn.span.first;
         auto bl = split_lines(fn.body);
         for (int i = 0; i < static_cast<int>(bl.size()); ++i)
-            if (_UNCAUGHT_BOOL_IF.search(bl[static_cast<std::size_t>(i)]) || _CXX_UNCAUGHT.search(bl[static_cast<std::size_t>(i)])) {
+            if (_UNCAUGHT_BOOL_IF.search(bl[static_cast<std::size_t>(i)])) {
                 report(out, rel, fn.name, start + i, "CXX-UNCAUGHT-EXCEPTIONS",
                        "std::uncaught_exceptions() used as a boolean", lines);
-                return;
+                break;  // one per function
             }
     }
 }
@@ -3803,28 +4220,42 @@ void _cxx_quick_exit(const std::vector<std::string>& lines, std::string_view rel
                      "CXX-QUICK-EXIT", "std::quick_exit without a prior at_quick_exit");
 }
 
+// to_array result OOB-indexed, or source mutated while used (CWE-125/416).
 void _cxx_to_array(const std::vector<std::string>& lines, std::string_view rel,
                    const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     for (auto& fn : funcs) {
         if (!_CXX_TO_ARRAY.search(fn.body)) continue;
+        auto sizes = c_array_sizes(fn.body);
+        OrderedBinds binds;
+        for (auto& m : _TO_ARRAY_BIND.finditer(fn.body)) bind_set(binds, m.named("name"), m.named("src"));
+        std::set<std::string> srcs;
+        for (auto& [k, v] : binds) srcs.insert(v);
         auto start = fn.span.first;
         auto bl = split_lines(fn.body);
+        std::set<std::string> mutated;
         for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
-            if (auto m = _TO_ARRAY_INLINE_IDX.search_match(bl[static_cast<std::size_t>(i)])) {
-                if (!toarr_idx_bad(strip(m->named("idx")), std::nullopt, fn.body)) continue;
+            auto& ln = bl[static_cast<std::size_t>(i)];
+            for (auto& src : srcs) {
+                auto s = re_escape(src);
+                if (rx_search("\\b" + s + "\\s*\\[", ln) && rx_search("\\b" + s + "\\s*\\[[^\\]]+\\]\\s*=", ln))
+                    mutated.insert(src);
+                else if (rx_search("\\b" + s + "\\s*=(?!=)", ln) && !_TO_ARRAY_BIND.search(ln))
+                    mutated.insert(src);
+            }
+            auto inl = _TO_ARRAY_INLINE_IDX.search_match(ln);
+            if (inl && toarr_idx_bad(strip(inl->named("idx")), std::nullopt, fn.body)) {
                 report(out, rel, fn.name, start + i, "CXX-TO-ARRAY",
                        "to_array result indexed without a size guard", lines);
                 return;
             }
-            for (auto& m : _CXX_SUBSCRIPT.finditer(bl[static_cast<std::size_t>(i)])) {
-                if (!toarr_idx_bad(strip(m.named("idx")), std::nullopt, fn.body)) continue;
-                if (!_TO_ARRAY_BIND.search(fn.body) && m.named("cont").find("to_array") == std::string::npos) {
-                    auto names = names_of(_TO_ARRAY_BIND, fn.body);
-                    if (!names.count(m.named("cont"))) continue;
-                }
+            for (auto& m : _CXX_SUBSCRIPT.finditer(ln)) {
+                auto name = m.named("cont");
+                auto src = bind_get(binds, name);
+                if (!src) continue;
+                auto idx = strip(m.named("idx"));
+                if (!mutated.count(*src) && !toarr_idx_bad(idx, size_of(sizes, *src), fn.body)) continue;
                 report(out, rel, fn.name, start + i, "CXX-TO-ARRAY",
-                       m.named("cont") + " from to_array indexed without size or after the source was mutated",
-                       lines);
+                       name + " from to_array indexed without size or after the source was mutated", lines);
                 return;
             }
         }
@@ -3974,11 +4405,37 @@ void _cxx_clamp(const std::vector<std::string>& lines, std::string_view rel,
     cxx_index_token_scan(lines, rel, funcs, out, _CXX_CLAMP_TOKEN, _CLAMP_IN_INDEX, _CLAMP_ASSIGN,
                          "CXX-CLAMP", "std::clamp result used as an array index without a range check");
 }
+// std::exchange result or object used as an unguarded index (CWE-672/125).
 void _cxx_exchange(const std::vector<std::string>& lines, std::string_view rel,
                    const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
-    cxx_index_token_scan(lines, rel, funcs, out, _CXX_EXCHANGE_TOKEN, _EXCHANGE_IN_INDEX, _EXCHANGE_ASSIGN,
-                         "CXX-EXCHANGE",
-                         "std::exchange result used as an array index without a range check");
+    for (auto& fn : funcs) {
+        if (!_CXX_EXCHANGE_TOKEN.search(fn.body)) continue;
+        std::set<std::string> assigned, exchanged;
+        auto start = fn.span.first;
+        auto bl = split_lines(fn.body);
+        for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
+            auto& ln = bl[static_cast<std::size_t>(i)];
+            for (auto& m : _EXCHANGE_ASSIGN.finditer(ln)) {
+                assigned.insert(m.named("var"));
+                exchanged.insert(m.named("obj"));
+            }
+            for (auto& m : _EXCHANGE_CALL.finditer(ln)) exchanged.insert(m.named("obj"));
+            if (_EXCHANGE_IN_INDEX.search(ln)) {
+                report(out, rel, fn.name, start + i, "CXX-EXCHANGE",
+                       "std::exchange result used as an array index without a range check", lines);
+                return;
+            }
+            for (auto& m : _CXX_SUBSCRIPT.finditer(ln)) {
+                auto idx = strip(m.named("idx"));
+                if (!assigned.count(idx) && !exchanged.count(idx)) continue;
+                if (byteswap_idx_guarded(idx, fn.body)) continue;
+                report(out, rel, fn.name, start + i, "CXX-EXCHANGE",
+                       m.named("cont") + "[" + idx + "] indexes with std::exchange without a range check",
+                       lines);
+                return;
+            }
+        }
+    }
 }
 void _cxx_transform_reduce(const std::vector<std::string>& lines, std::string_view rel,
                            const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
@@ -4003,19 +4460,71 @@ void _cxx_add_sat(const std::vector<std::string>& lines, std::string_view rel,
                          "CXX-ADD-SAT", "std::add_sat result used as an array index without a range check");
 }
 
+// to_address result used after source reset, or indexed OOB (CWE-416/125).
 void _cxx_to_address(const std::vector<std::string>& lines, std::string_view rel,
                      const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
-    cxx_token_subscript_unguarded(lines, rel, funcs, out, _CXX_TO_ADDRESS, "CXX-TO-ADDRESS",
-                                  "to_address result indexed without a bound");
+    for (auto& fn : funcs) {
+        if (!_CXX_TO_ADDRESS.search(fn.body)) continue;
+        auto sizes = c_array_sizes(fn.body);
+        OrderedBinds binds;
+        for (auto& m : _TO_ADDR_BIND.finditer(fn.body)) bind_set(binds, m.named("name"), m.named("src"));
+        std::set<std::string> srcs;
+        for (auto& [k, v] : binds) srcs.insert(v);
+        auto start = fn.span.first;
+        auto bl = split_lines(fn.body);
+        std::set<std::string> reset_srcs;
+        for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
+            auto& ln = bl[static_cast<std::size_t>(i)];
+            for (auto& src : srcs)
+                if (rx_search("\\b" + re_escape(src) + "\\s*\\.\\s*(?:reset|release)\\s*\\(", ln))
+                    reset_srcs.insert(src);
+            auto inl = _TO_ADDR_INLINE_IDX.search_match(ln);
+            if (inl && toarr_idx_bad(strip(inl->named("idx")), std::nullopt, fn.body)) {
+                report(out, rel, fn.name, start + i, "CXX-TO-ADDRESS",
+                       "to_address result indexed without a bound", lines);
+                return;
+            }
+            for (auto& m : _CXX_SUBSCRIPT.finditer(ln)) {
+                auto name = m.named("cont");
+                auto src = bind_get(binds, name);
+                if (!src) continue;
+                auto idx = strip(m.named("idx"));
+                if (!reset_srcs.count(*src) && !toarr_idx_bad(idx, size_of(sizes, *src), fn.body)) continue;
+                report(out, rel, fn.name, start + i, "CXX-TO-ADDRESS",
+                       name + " from to_address indexed without a bound or after the source was reset", lines);
+                return;
+            }
+            for (auto& [raw, src] : binds) {
+                if (!reset_srcs.count(src)) continue;
+                auto r = re_escape(raw);
+                if (!rx_search("(?:\\*\\s*" + r + "\\b|" + r + "\\s*->)", ln)) continue;
+                report(out, rel, fn.name, start + i, "CXX-TO-ADDRESS",
+                       raw + " from to_address used after " + src + " was reset or released", lines);
+                return;
+            }
+        }
+    }
 }
+// is_constant_evaluated false-path indexes without a bound (CWE-125).
 void _cxx_is_constant_evaluated(const std::vector<std::string>& lines, std::string_view rel,
                                 const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     for (auto& fn : funcs) {
         if (!_CXX_ICE_TOKEN.search(fn.body)) continue;
-        if (re_search(R"(\bif\s+constexpr\b)", fn.body)) continue;
-        cxx_first_token(lines, rel, funcs, out, _CXX_ICE_TOKEN, "CXX-IS-CONSTANT-EVALUATED",
-                        "is_constant_evaluated() runtime path without if constexpr");
-        break;
+        auto start = fn.span.first;
+        auto bl = split_lines(fn.body);
+        for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
+            for (auto& m : _CXX_SUBSCRIPT.finditer(bl[static_cast<std::size_t>(i)])) {
+                auto idx = strip(m.named("idx"));
+                if (byteswap_idx_guarded(idx, fn.body)) continue;
+                bool digits = !idx.empty();
+                for (unsigned char ch : idx)
+                    if (!std::isdigit(ch)) digits = false;
+                if (digits && idx.size() < 10 && std::stoi(idx) < 4) continue;
+                report(out, rel, fn.name, start + i, "CXX-IS-CONSTANT-EVALUATED",
+                       "is_constant_evaluated() runtime path indexes without a bound", lines);
+                return;
+            }
+        }
     }
 }
 void _cxx_addressof(const std::vector<std::string>& lines, std::string_view rel,
@@ -4023,10 +4532,31 @@ void _cxx_addressof(const std::vector<std::string>& lines, std::string_view rel,
     cxx_token_subscript_unguarded(lines, rel, funcs, out, _CXX_ADDRESSOF, "CXX-ADDRESSOF",
                                   "std::addressof result used as an array index without a bound");
 }
+// assume_aligned result indexed without a bound (CWE-125).
 void _cxx_assume_aligned(const std::vector<std::string>& lines, std::string_view rel,
                          const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
-    cxx_token_subscript_unguarded(lines, rel, funcs, out, _CXX_ASSUME_ALIGNED, "CXX-ASSUME-ALIGNED",
-                                  "assume_aligned result indexed without a bound");
+    for (auto& fn : funcs) {
+        if (!_CXX_ASSUME_ALIGNED.search(fn.body)) continue;
+        auto binds = names_of(_ASMALIGN_BIND, fn.body);
+        auto start = fn.span.first;
+        auto bl = split_lines(fn.body);
+        for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
+            auto& ln = bl[static_cast<std::size_t>(i)];
+            auto inl = _ASMALIGN_INLINE_IDX.search_match(ln);
+            if (inl && toarr_idx_bad(strip(inl->named("idx")), std::nullopt, fn.body)) {
+                report(out, rel, fn.name, start + i, "CXX-ASSUME-ALIGNED",
+                       "assume_aligned result indexed without a bound", lines);
+                return;
+            }
+            for (auto& m : _CXX_SUBSCRIPT.finditer(ln)) {
+                if (!binds.count(m.named("cont"))) continue;
+                if (!toarr_idx_bad(strip(m.named("idx")), std::nullopt, fn.body)) continue;
+                report(out, rel, fn.name, start + i, "CXX-ASSUME-ALIGNED",
+                       "assume_aligned result indexed without a bound", lines);
+                return;
+            }
+        }
+    }
 }
 void _cxx_as_const(const std::vector<std::string>& lines, std::string_view rel,
                    const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
@@ -4043,69 +4573,142 @@ void _cxx_as_const(const std::vector<std::string>& lines, std::string_view rel,
     }
 }
 
+// exclusive_scan dest OOB-indexed or overlapping source (CWE-125).
 void _cxx_exclusive_scan(const std::vector<std::string>& lines, std::string_view rel,
                          const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     for (auto& fn : funcs) {
+        if (!_CXX_EXCLUSIVE_SCAN.search(fn.body)) continue;
+        std::set<std::string> dests, overlap;
+        for (auto& m : _EXSCAN_CALL.finditer(fn.body)) {
+            dests.insert(m.named("dst"));
+            if (m.named("src") == m.named("dst")) overlap.insert(m.named("dst"));
+        }
         auto start = fn.span.first;
         auto bl = split_lines(fn.body);
         for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
-            auto m = _EXSCAN_CALL.search_match(bl[static_cast<std::size_t>(i)]);
-            if (!m) continue;
-            if (m->named("src") != m->named("dst")) continue;
-            report(out, rel, fn.name, start + i, "CXX-EXCLUSIVE-SCAN",
-                   "exclusive_scan dest overlaps source", lines);
-            return;
+            auto& ln = bl[static_cast<std::size_t>(i)];
+            if (_CXX_EXCLUSIVE_SCAN.search(ln) && !overlap.empty()) {
+                report(out, rel, fn.name, start + i, "CXX-EXCLUSIVE-SCAN",
+                       "exclusive_scan dest overlaps source", lines);
+                return;
+            }
+            for (auto& m : _CXX_SUBSCRIPT.finditer(ln)) {
+                if (!dests.count(m.named("cont"))) continue;
+                if (!toarr_idx_bad(strip(m.named("idx")), std::nullopt, fn.body)) continue;
+                report(out, rel, fn.name, start + i, "CXX-EXCLUSIVE-SCAN",
+                       "exclusive_scan output indexed without a size guard", lines);
+                return;
+            }
         }
     }
 }
+// inclusive_scan dest OOB-indexed or overlapping source (CWE-125).
 void _cxx_inclusive_scan(const std::vector<std::string>& lines, std::string_view rel,
                          const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     for (auto& fn : funcs) {
+        if (!_CXX_INCLUSIVE_SCAN.search(fn.body)) continue;
+        std::set<std::string> dests, overlap;
+        for (auto& m : _INSCAN_CALL.finditer(fn.body)) {
+            dests.insert(m.named("dst"));
+            if (m.named("src") == m.named("dst")) overlap.insert(m.named("dst"));
+        }
         auto start = fn.span.first;
         auto bl = split_lines(fn.body);
         for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
-            auto m = _INSCAN_CALL.search_match(bl[static_cast<std::size_t>(i)]);
-            if (!m || m->named("src") != m->named("dst")) continue;
-            report(out, rel, fn.name, start + i, "CXX-INCLUSIVE-SCAN",
-                   "inclusive_scan dest overlaps source", lines);
-            return;
+            auto& ln = bl[static_cast<std::size_t>(i)];
+            if (_CXX_INCLUSIVE_SCAN.search(ln) && !overlap.empty()) {
+                report(out, rel, fn.name, start + i, "CXX-INCLUSIVE-SCAN",
+                       "inclusive_scan dest overlaps source", lines);
+                return;
+            }
+            for (auto& m : _CXX_SUBSCRIPT.finditer(ln)) {
+                if (!dests.count(m.named("cont"))) continue;
+                if (!toarr_idx_bad(strip(m.named("idx")), std::nullopt, fn.body)) continue;
+                report(out, rel, fn.name, start + i, "CXX-INCLUSIVE-SCAN",
+                       "inclusive_scan output indexed without a size guard", lines);
+                return;
+            }
         }
     }
 }
+// uninitialized_copy/move dest OOB-indexed or overlapping (CWE-125/824).
 void _cxx_uninitialized_copy(const std::vector<std::string>& lines, std::string_view rel,
                              const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     for (auto& fn : funcs) {
+        if (!_CXX_UNINITIALIZED_COPY.search(fn.body)) continue;
+        std::set<std::string> dests, overlap;
+        for (auto& m : _UICOPY_CALL.finditer(fn.body)) {
+            dests.insert(m.named("dst"));
+            if (m.named("src") == m.named("dst")) overlap.insert(m.named("dst"));
+        }
         auto start = fn.span.first;
         auto bl = split_lines(fn.body);
         for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
-            auto m = _UICOPY_CALL.search_match(bl[static_cast<std::size_t>(i)]);
-            if (!m || m->named("src") != m->named("dst")) continue;
-            report(out, rel, fn.name, start + i, "CXX-UNINITIALIZED-COPY",
-                   "uninitialized_copy/move dest overlaps source", lines);
-            return;
+            auto& ln = bl[static_cast<std::size_t>(i)];
+            if (_CXX_UNINITIALIZED_COPY.search(ln) && !overlap.empty()) {
+                report(out, rel, fn.name, start + i, "CXX-UNINITIALIZED-COPY",
+                       "uninitialized_copy/move dest overlaps source", lines);
+                return;
+            }
+            for (auto& m : _CXX_SUBSCRIPT.finditer(ln)) {
+                if (!dests.count(m.named("cont"))) continue;
+                if (!toarr_idx_bad(strip(m.named("idx")), std::nullopt, fn.body)) continue;
+                report(out, rel, fn.name, start + i, "CXX-UNINITIALIZED-COPY",
+                       "uninitialized_copy/move dest indexed without a size guard", lines);
+                return;
+            }
         }
     }
 }
+// transform_*_scan dest indexed without a size guard (CWE-125).
 void _cxx_transform_scan(const std::vector<std::string>& lines, std::string_view rel,
                          const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     for (auto& fn : funcs) {
+        if (!_CXX_TRANSFORM_SCAN.search(fn.body)) continue;
+        std::set<std::string> dests;
+        for (auto& m : _TSCAN_CALL.finditer(fn.body)) dests.insert(m.named("dst"));
         auto start = fn.span.first;
         auto bl = split_lines(fn.body);
         for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
-            auto m = _TSCAN_CALL.search_match(bl[static_cast<std::size_t>(i)]);
-            if (!m || m->named("src") != m->named("dst")) continue;
-            report(out, rel, fn.name, start + i, "CXX-TRANSFORM-SCAN",
-                   "transform_inclusive_scan/transform_exclusive_scan dest overlaps source", lines);
-            return;
+            for (auto& m : _CXX_SUBSCRIPT.finditer(bl[static_cast<std::size_t>(i)])) {
+                if (!dests.count(m.named("cont"))) continue;
+                if (!toarr_idx_bad(strip(m.named("idx")), std::nullopt, fn.body)) continue;
+                report(out, rel, fn.name, start + i, "CXX-TRANSFORM-SCAN",
+                       "transform_inclusive_scan/transform_exclusive_scan output indexed without a size guard",
+                       lines);
+                return;
+            }
         }
     }
 }
 
+// make_exception_ptr rethrown without a nullptr test (CWE-476).
 void _cxx_make_exception_ptr(const std::vector<std::string>& lines, std::string_view rel,
                              const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
-    cxx_token_unless(lines, rel, funcs, out, _CXX_MAKE_EPTR, R"(\bif\s*\(.*nullptr)",
-                     "CXX-MAKE-EXCEPTION-PTR",
-                     "std::make_exception_ptr() rethrown without a nullptr test");
+    for (auto& fn : funcs) {
+        if (!_CXX_MAKE_EPTR.search(fn.body)) continue;
+        if (!_CXX_RETHROW_EXC.search(fn.body)) continue;
+        auto bound = names_of(_MAKE_EPTR_BIND, fn.body);
+        auto start = fn.span.first;
+        auto bl = split_lines(fn.body);
+        for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
+            auto& ln = bl[static_cast<std::size_t>(i)];
+            if (_MAKE_EPTR_INLINE.search(ln)) {
+                report(out, rel, fn.name, start + i, "CXX-MAKE-EXCEPTION-PTR",
+                       "std::make_exception_ptr() rethrown without a nullptr test", lines);
+                return;
+            }
+            for (auto& name : bound) {
+                if (param_if_guard(name, fn.body) || param_null_tested(name, fn.body)) continue;
+                if (!rx_search("(?:std\\s*::\\s*)?rethrow_exception\\s*\\(\\s*" + re_escape(name) + "\\b", ln))
+                    continue;
+                report(out, rel, fn.name, start + i, "CXX-MAKE-EXCEPTION-PTR",
+                       "rethrow_exception(" + name + ") from make_exception_ptr without a nullptr test",
+                       lines);
+                return;
+            }
+        }
+    }
 }
 void _cxx_set_terminate(const std::vector<std::string>& lines, std::string_view rel,
                         const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
@@ -4114,19 +4717,35 @@ void _cxx_set_terminate(const std::vector<std::string>& lines, std::string_view 
                      "set_terminate/get_terminate without storing the previous handler");
 }
 
+// destroy_at then use, or construct_at dest indexed OOB (CWE-416/125).
 void _cxx_construct_at(const std::vector<std::string>& lines, std::string_view rel,
                        const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     for (auto& fn : funcs) {
+        if (!_CXX_CONSTRUCT_AT.search(fn.body)) continue;
+        std::set<std::string> dests, destroyed;
         auto start = fn.span.first;
         auto bl = split_lines(fn.body);
-        std::set<std::string> destroyed;
         for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
-            if (auto m = _DESTROY_AT_CALL.search_match(bl[static_cast<std::size_t>(i)]))
-                destroyed.insert(m->named("ptr"));
-            auto v = re_search_match(R"(\b([A-Za-z_]\w*)\s*->)", bl[static_cast<std::size_t>(i)]);
-            if (v && destroyed.count(v->group(1))) {
+            auto& ln = bl[static_cast<std::size_t>(i)];
+            for (auto& m : _CONSTRUCT_AT_CALL.finditer(ln)) {
+                dests.insert(m.named("ptr"));
+                destroyed.erase(m.named("ptr"));
+            }
+            for (auto& m : _DESTROY_AT_CALL.finditer(ln)) destroyed.insert(m.named("ptr"));
+            if (!_DESTROY_AT_CALL.search(ln)) {
+                for (auto& ptr : destroyed) {
+                    auto v = re_escape(ptr);
+                    if (!rx_search("(?:\\*\\s*" + v + "\\b|" + v + "\\s*\\[|" + v + "\\s*->)", ln)) continue;
+                    report(out, rel, fn.name, start + i, "CXX-CONSTRUCT-AT",
+                           ptr + " used after destroy_at", lines);
+                    return;
+                }
+            }
+            for (auto& m : _CXX_SUBSCRIPT.finditer(ln)) {
+                if (!dests.count(m.named("cont"))) continue;
+                if (!toarr_idx_bad(strip(m.named("idx")), std::nullopt, fn.body)) continue;
                 report(out, rel, fn.name, start + i, "CXX-CONSTRUCT-AT",
-                       v->group(1) + " used after destroy_at", lines);
+                       "construct_at result indexed without a size guard", lines);
                 return;
             }
         }
@@ -4149,26 +4768,65 @@ void _cxx_uninitialized_fill(const std::vector<std::string>& lines, std::string_
     }
 }
 
+// destroy_n then use, or count is unchecked (CWE-416).
 void _cxx_destroy_n(const std::vector<std::string>& lines, std::string_view rel,
                     const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     for (auto& fn : funcs) {
+        if (!_CXX_DESTROY_N.search(fn.body)) continue;
+        std::set<std::string> destroyed;
         auto start = fn.span.first;
         auto bl = split_lines(fn.body);
         for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
-            auto m = _DESTROY_N_CALL.search_match(bl[static_cast<std::size_t>(i)]);
-            if (!m) continue;
-            if (byteswap_idx_guarded(strip(m->named("n")), fn.body)) continue;
-            report(out, rel, fn.name, start + i, "CXX-DESTROY-N", "destroy_n count is unchecked", lines);
-            return;
+            auto& ln = bl[static_cast<std::size_t>(i)];
+            for (auto& m : _DESTROY_N_CALL.finditer(ln)) {
+                auto n = strip(m.named("n"));
+                destroyed.insert(m.named("ptr"));
+                if (!all_digits(n) && !byteswap_idx_guarded(n, fn.body)) {
+                    report(out, rel, fn.name, start + i, "CXX-DESTROY-N",
+                           "destroy_n count is unchecked", lines);
+                    return;
+                }
+            }
+            if (!_DESTROY_N_CALL.search(ln)) {
+                for (auto& ptr : destroyed) {
+                    if (!ptr_deref_on(ptr, ln)) continue;
+                    report(out, rel, fn.name, start + i, "CXX-DESTROY-N",
+                           ptr + " used after destroy_n", lines);
+                    return;
+                }
+            }
         }
     }
 }
 
+// type_identity recast pointer indexed OOB (CWE-125).
 void _cxx_type_identity(const std::vector<std::string>& lines, std::string_view rel,
                         const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
-    cxx_token_unless(lines, rel, funcs, out, _CXX_TYPE_IDENTITY, R"(\.size\s*\()",
-                     "CXX-TYPE-IDENTITY",
-                     "type_identity recast pointer indexed without a size guard");
+    for (auto& fn : funcs) {
+        if (!_CXX_TYPE_IDENTITY.search(fn.body)) continue;
+        std::set<std::string> dests;
+        for (auto& m : _TYPEIDENT_DIRECT_PTR.finditer(fn.body)) dests.insert(m.named("ptr"));
+        std::set<std::string> aliases;
+        for (auto& m : _TYPEIDENT_ALIAS.finditer(fn.body)) aliases.insert(m.named("alias"));
+        if (!aliases.empty()) {
+            std::string al;
+            for (auto& a : aliases) al += (al.empty() ? "" : "|") + re_escape(a);
+            Regex alias_ptr("\\b(?:" + al + ")\\s*\\*\\s*(?P<ptr>[A-Za-z_]\\w*)");
+            for (auto& m : alias_ptr.finditer(fn.body)) dests.insert(m.named("ptr"));
+        }
+        if (dests.empty()) continue;
+        auto start = fn.span.first;
+        auto bl = split_lines(fn.body);
+        for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
+            for (auto& m : _CXX_SUBSCRIPT.finditer(bl[static_cast<std::size_t>(i)])) {
+                if (!dests.count(m.named("cont"))) continue;
+                if (!toarr_idx_bad(strip(m.named("idx")), std::nullopt, fn.body)) continue;
+                report(out, rel, fn.name, start + i, "CXX-TYPE-IDENTITY",
+                       "type_identity recast pointer indexed without a size guard", lines);
+                return;
+            }
+        }
+    }
 }
 void _cxx_nontype(const std::vector<std::string>& lines, std::string_view rel,
                   const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
@@ -4185,11 +4843,25 @@ void _cxx_ptr_interconvertible(const std::vector<std::string>& lines, std::strin
     cxx_token_subscript_unguarded(lines, rel, funcs, out, _CXX_PTR_INTERCONV, "CXX-PTR-INTERCONVERTIBLE",
                                   "pointer-interconvertible recast pointer indexed without a size guard");
 }
+// uninitialized_value_construct dest indexed OOB (CWE-125).
 void _cxx_uninitialized_value(const std::vector<std::string>& lines, std::string_view rel,
                               const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
-    cxx_token_unless(lines, rel, funcs, out, _CXX_UNINITIALIZED_VALUE, R"(\.size\s*\()",
-                     "CXX-UNINITIALIZED-VALUE",
-                     "uninitialized_value_construct dest indexed without a size guard");
+    for (auto& fn : funcs) {
+        if (!_CXX_UNINITIALIZED_VALUE.search(fn.body)) continue;
+        std::set<std::string> dests;
+        for (auto& m : _UVALUE_CALL.finditer(fn.body)) dests.insert(m.named("dst"));
+        auto start = fn.span.first;
+        auto bl = split_lines(fn.body);
+        for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
+            for (auto& m : _CXX_SUBSCRIPT.finditer(bl[static_cast<std::size_t>(i)])) {
+                if (!dests.count(m.named("cont"))) continue;
+                if (!toarr_idx_bad(strip(m.named("idx")), std::nullopt, fn.body)) continue;
+                report(out, rel, fn.name, start + i, "CXX-UNINITIALIZED-VALUE",
+                       "uninitialized_value_construct dest indexed without a size guard", lines);
+                return;
+            }
+        }
+    }
 }
 void _cxx_const_iterator(const std::vector<std::string>& lines, std::string_view rel,
                          const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {

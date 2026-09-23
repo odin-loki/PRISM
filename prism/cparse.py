@@ -7,10 +7,14 @@ records say so: a mis-parsed declarator is OTHER, never SCALAR.
 
 from __future__ import annotations
 
+from bisect import bisect_left
+from collections.abc import Callable
 from pathlib import Path
 import re
+from typing import NamedTuple
 
-from prism.models import FunctionInfo
+from prism import laws
+from prism.models import Finding, FunctionInfo
 
 C_EXTS = {".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".hh"}
 TU_EXTS = {".c", ".cc", ".cpp", ".cxx"}
@@ -41,28 +45,96 @@ KW = {
 }
 
 # Trailing declarator junk is not a parameter list. `throw()` must not
-# be swallowed as params or `noexcept` functions are invisible.
+# be swallowed as params or `noexcept` functions are invisible. C++
+# ref-qualifiers and a trailing return type (`-> int`) end here too.
 _ATTR = (
     r"(?:"
     r"\s*__attribute__\s*\(\s*\([^;{}]*?\)\s*\)"
     r"|\s*noexcept(?:\s*\([^;{}]*?\))?"
     r"|\s*throw\s*\([^;{}]*?\)"
     r"|\s*(?:const|volatile|override|final)"
+    r"|\s*&&?"
     r")*"
+    r"(?:\s*->[^;{}]*)?"
+)
+# `<...>` nested three deep: `std::map<int, std::vector<int>>`.
+_T0 = r"[^<>;{}()]*"
+_T2 = r"<" + _T0 + r"(?:<" + _T0 + r">" + _T0 + r")*>"
+_TMPL = r"<" + _T0 + r"(?:" + _T2 + _T0 + r")*>"
+# Qualifier chain: `std::`, `W::`, `W<T>::`.
+_QUAL = r"(?:[A-Za-z_]\w*\s*(?:" + _TMPL + r"\s*)?::\s*)*"
+# A parameter list: no `)` escapes it, so `int m(void) BODY` never runs
+# on into the next function's parameters. Two levels of nested parens
+# cover `void (*cb)(int)`.
+_P0 = r"[^;{}()]*"
+_P2 = r"\(" + _P0 + r"(?:\(" + _P0 + r"\)" + _P0 + r")*\)"
+_PARAMS = _P0 + r"(?:" + _P2 + _P0 + r")*"
+# Leading attribute forms: GNU, C++11/C23, MSVC.
+_PRE_ATTR = (
+    r"(?:__attribute__\s*\(\s*\(" + _PARAMS + r"\)\s*\)"
+    r"|\[\[[^\];{}]*\]\]"
+    r"|__declspec\s*\([^;{}()]*\))"
+)
+_OPERATOR = (
+    r"operator\s*(?:\(\s*\)|\[\s*\]|new(?:\s*\[\s*\])?|delete(?:\s*\[\s*\])?"
+    r"|[^\s\w(){};]{1,3})"
 )
 
 FUNC_HEAD = re.compile(
     r"(?m)^[ \t]*"
     r"(?P<head>"
-    r"(?P<mods>(?:(?:static|inline|extern|constexpr|unsigned|signed|"
-    r"const|volatile|restrict|_Noreturn)\s+)*)"
-    r"(?P<ret>(?:(?:struct|enum|union)\s+)?(?:long\s+long|[A-Za-z_]\w*))"
-    r"(?P<stars>(?:\s*\*+\s*|\s+))"
-    r"(?P<name>[A-Za-z_]\w*)\s*"
-    r"\((?P<params>[^;{}]*?)\)"
+    r"(?P<tmpl>template[ \t]*" + _TMPL + r"[ \t]*)?"
+    r"(?P<mods>(?:(?:static|inline|extern|constexpr|consteval|virtual|"
+    r"explicit|friend|unsigned|signed|const|volatile|restrict|"
+    r"_Noreturn|__inline|__inline__|__forceinline|thread_local|"
+    r"__extension__)\s+|" + _PRE_ATTR + r"[ \t]*)*)"
+    r"(?P<ret>(?:(?:struct|enum|union|class|typename)\s+)?"
+    r"(?:long\s+long|long\s+(?:int|double)\b|short\s+int\b"
+    r"|[A-Za-z_]\w*(?:\s*" + _TMPL + r")?"
+    r"(?:\s*::\s*[A-Za-z_]\w*(?:\s*" + _TMPL + r")?)*))"
+    r"(?P<stars>(?:\s*(?:[*&]|\b(?:const|volatile)\b))+\s*|\s+)"
+    # A calling-convention / export macro: `Z3_ast Z3_API Z3_mk_add(`.
+    r"(?P<cc>(?:[A-Z_][A-Z0-9_]*|__\w+)[ \t]+)?"
+    r"(?P<name>" + _QUAL + r"(?:" + _OPERATOR + r"|[A-Za-z_]\w*))\s*"
+    r"\((?P<params>" + _PARAMS + r")\)"
+    r"(?P<knr>(?:\s*(?:register\s+)?[A-Za-z_][\w \t\n*,\[\]]*;)*)"
     r"(?P<attrs>" + _ATTR + r")"
     r"\s*)"
     r"\{",
+)
+_KNR_PARAMS = re.compile(r"\s*[A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*\s*")
+
+# The declarators below are matched by the scope scan against the text
+# before an unattributed `{` (from the previous `;`, `{` or `}`).
+
+# `int (*get_handler(int sig))(int)`: a function returning a function
+# pointer.
+_FUNC_PTR_DECL = re.compile(
+    r"\s*(?P<mods>(?:(?:static|inline|extern|const|unsigned|signed)\s+)*)"
+    r"(?P<ret>(?:(?:struct|enum|union)\s+)?[A-Za-z_]\w*)\s*(?P<stars>\**)\s*"
+    r"\(\s*\*\s*(?P<name>[A-Za-z_]\w*)\s*\((?P<params>" + _PARAMS + r")\)\s*\)"
+    r"\s*\((?P<fparams>" + _PARAMS + r")\)\s*\Z"
+)
+# Out-of-line constructor / destructor: `W::W(int a) : v(a)`, `W::~W()`.
+_CTOR_DECL = re.compile(
+    r"\s*(?:template\s*" + _TMPL + r"\s*)?(?:(?:inline|constexpr)\s+)*"
+    r"(?P<name>(?:[A-Za-z_]\w*\s*(?:" + _TMPL + r"\s*)?::\s*)+~?[A-Za-z_]\w*)\s*"
+    r"\((?P<params>" + _PARAMS + r")\)" + _ATTR +
+    r"(?:\s*:(?!:)[^;{}]*)?\s*\Z"
+)
+# In-class definition FUNC_HEAD cannot see: a constructor, destructor,
+# conversion operator, or a method not at the start of a line
+# (`struct W { int go() { return 1; } };`).
+_MEMBER_DECL = re.compile(
+    r"\s*(?:template\s*" + _TMPL + r"\s*)?"
+    r"(?:(?:inline|constexpr|consteval|explicit|virtual|static|friend)\s+"
+    r"|" + _PRE_ATTR + r"\s*)*"
+    r"(?P<ret>[A-Za-z_][\w:<>,\s*&]*?[\s*&])??"
+    r"(?P<name>operator\s+(?:(?:const|volatile)\s+)*[A-Za-z_][\w:<>]*"
+    r"(?:\s*(?:[*&]|\b(?:const|volatile)\b))*"
+    r"|~?[A-Za-z_]\w*|" + _OPERATOR + r")\s*"
+    r"\((?P<params>" + _PARAMS + r")\)" + _ATTR +
+    r"(?:\s*:(?!:)[^;{}]*)?\s*\Z"
 )
 
 # Heap / local pointers: checking the function unguarded invents a buffer.
@@ -233,6 +305,8 @@ def _split_params(params: str) -> list[tuple[str, str]]:
         raw = raw.strip()
         if not raw or raw == "...":
             continue
+        if "=" in raw:
+            raw = raw.split("=", 1)[0].strip()  # C++ default argument
         raw = re.sub(r"\b(const|volatile|restrict|register)\b", "", raw)
         raw = " ".join(raw.split())
         m = re.search(r"([A-Za-z_]\w*)\s*$", raw.replace("*", " * "))
@@ -297,46 +371,299 @@ def extract_functions_from_text(
 
     `stripped` is `strip_comments_keep_lines(text)` when the caller has it.
     """
+    return _parse_text(text, rel, stripped)[0]
+
+
+def parse_gaps(path: Path) -> list[tuple[int, str]]:
+    """Top-level brace-delimited code no parsed function owns (Law 7).
+
+    Each gap is (line, first line of the text before its `{`). A gap is
+    code the lints, BMC and every other per-function stage never saw.
+    """
+    text = path.read_text(encoding="utf-8", errors="replace")
+    return _parse_text(text, str(path))[1]
+
+
+def parse_gap_findings(path: Path, rel: str) -> list[Finding]:
+    """parse_gaps as inventory records: NOTRUN, cls PARSE-GAP, one per gap."""
+    return [
+        Finding(
+            stage="inventory", status=laws.NOTRUN, file=rel, function=None,
+            line=line, cls="PARSE-GAP",
+            message=f"line {line}: code in braces not attributed to any "
+            f"function; not checked: {head}",
+            strength=laws.STRENGTH_FINDS,
+        )
+        for line, head in parse_gaps(path)
+    ]
+
+
+def _collapse(s: str) -> str:
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _norm_name(s: str) -> str:
+    """`W :: go` -> `W::go`, `operator <<` -> `operator<<`; `operator bool` kept."""
+    s = re.sub(r"\s*::\s*", "::", _collapse(s))
+    return re.sub(r"\boperator\s+(?=[^\w\s])", "operator", s)
+
+
+# `virtual ~W() {` / `explicit W(int) {` in a class: the scope scan names
+# these; FUNC_HEAD must not take the keyword for a return type.
+_NOT_A_TYPE = {
+    "virtual", "explicit", "friend", "typedef", "using", "new", "delete", "operator",
+}
+_CXX_MODS = re.compile(r"\b(?:virtual|explicit|friend|consteval)\b")
+
+
+class _Found(NamedTuple):
+    head_start: int
+    close: int
+    fn: FunctionInfo
+
+
+def _parse_text(
+    text: str, rel: str, stripped: str | None = None,
+) -> tuple[list[FunctionInfo], list[tuple[int, str]]]:
+    """(functions, gaps). Discovery runs on string-blanked text."""
     if stripped is None:
         stripped = strip_comments_keep_lines(text)
     bodies = strip_comments_keep_lines(text, blank_strings=False)
-    out: list[FunctionInfo] = []
-    for m in FUNC_HEAD.finditer(stripped):
-        name = m.group("name")
-        if name in KW or m.group("ret") in KW:
-            continue
-        brace = m.end() - 1
-        close = _match_brace(stripped, brace)
+    # Character literals blanked too: `'}'` must not close a body.
+    code = _blank_char_literals(stripped)
+    found: dict[int, _Found] = {}  # keyed by the body's `{`
+    newlines = [m.start() for m in _NEWLINE.finditer(code)]
+
+    def line_of(pos: int) -> int:
+        return bisect_left(newlines, pos) + 1
+
+    def add(head_start: int, brace: int, name: str, kind: str, signature: str,
+            params: list[tuple[str, str]], return_type: str,
+            static: bool) -> None:
+        if brace in found:
+            return
+        close = _match_brace(code, brace)
         if close < 0:
+            return
+        line = line_of(head_start)
+        found[brace] = _Found(head_start, close, FunctionInfo(
+            file=rel,
+            name=name,
+            kind=kind,
+            line=line,
+            signature=_collapse(signature),
+            params=params,
+            return_type=return_type,
+            static=static,
+            # Discovery blanks strings so `"int foo("` is not a function.
+            # Bodies keep literals so strcpy/snprintf oracles see the bytes.
+            body=bodies[brace + 1 : close],
+            span=(line, line_of(close)),
+        ))
+
+    pos = 0
+    while True:
+        m = FUNC_HEAD.search(code, pos)
+        if m is None:
+            break
+        name = _norm_name(m.group("name"))
+        ret = (m.group("ret") or "int").strip()
+        knr = m.group("knr") or ""
+        if (name.rsplit("::", 1)[-1] in KW or ret in KW or ret in _NOT_A_TYPE
+                or (knr.strip() and (
+                    not _KNR_PARAMS.fullmatch(m.group("params"))
+                    or m.group("params").strip() == "void"))):
+            # Not a definition. Resume on the next line: this match may
+            # have run over a real head.
+            nl = code.find("\n", m.start() + 1)
+            if nl < 0:
+                break
+            pos = nl + 1
             continue
-        # Discovery blanks strings so `"int foo("` is not a function.
-        # Bodies keep literals so strcpy/snprintf oracles see the bytes.
-        body = bodies[brace + 1 : close]
-        head = m.group("head")
-        line = stripped.count("\n", 0, m.start("head")) + 1
         params = _split_params(m.group("params"))
         stars = m.group("stars") or ""
-        ret = (m.group("ret") or "int").strip()
         mods = m.group("mods") or ""
+        attrs = m.group("attrs") or ""
         kind = _kind_of(ret, stars, params)
-        end_line = stripped.count("\n", 0, close) + 1
-        out.append(
-            FunctionInfo(
-                file=rel,
-                name=name,
-                kind=kind,
-                line=line,
-                signature=re.sub(r"\s+", " ", head).strip(),
-                params=params,
-                return_type=(stars.strip() + " " + ret).strip(),
-                static="static" in mods,
-                body=body,
-                span=(line, end_line),
-            )
+        if (
+            "::" in name or "::" in ret or "<" in ret or ret == "auto"
+            or name.startswith("operator") or m.group("tmpl")
+            or "&" in stars or "&" in attrs or "->" in attrs
+            or _CXX_MODS.search(mods) or knr.strip() or m.group("cc")
+        ):
+            # A method, template, K&R, calling-convention or C++-typed
+            # definition: BMC must not model it as a plain C function.
+            kind = "OTHER"
+        add(m.start("head"), m.end() - 1, name, kind, m.group("head"), params,
+            (stars.strip() + " " + ret).strip(), "static" in mods)
+        pos = m.end()
+
+    gaps = _scope_scan(code, found, add, line_of)
+    out = [f.fn for _, f in sorted(found.items(), key=lambda kv: (kv[1].head_start, kv[0]))]
+    return out, gaps
+
+
+# --- scope scan ------------------------------------------------------------
+#
+# Walks file scope and namespace, extern "C" and class bodies. Every `{`
+# there is a function body FUNC_HEAD found, a container, an initializer
+# or type body, a definition only the declarator regexes above recognize,
+# or a gap: code no per-function stage sees (Law 7).
+
+_PP_LINE = re.compile(r"(?m)^[ \t]*#(?:[^\n]*\\\n)*[^\n]*")
+_SCOPE_TOKEN = re.compile(r"[{};]")
+_ACCESS_LABEL = re.compile(
+    r"\s*(?:(?:public|private|protected)(?:\s+(?:slots|Q_SLOTS))?"
+    r"|signals|Q_SIGNALS)\s*:(?!:)"
+)
+_NAMESPACE_HEAD = re.compile(r"(?:^|\s)namespace\b")
+_EXTERN_HEAD = re.compile(r"\s*extern\s*\"[^\"]*\"\s*\Z")
+_TYPE_HEAD = re.compile(
+    r"\s*(?:template\s*" + _TMPL + r"\s*)?(?:typedef\s+)?"
+    r"(?:(?P<enum>enum)|class|struct|union)\b"
+)
+_CLASS_NAME = re.compile(
+    r"\s*(?:template\s*" + _TMPL + r"\s*)?(?:typedef\s+)?(?:class|struct|union)\s+"
+    r"(?:" + _PRE_ATTR + r"\s*|alignas\s*\([^;{}()]*\)\s*)*"
+    r"(?P<name>[A-Za-z_]\w*)"
+)
+_PRE_ATTR_RE = re.compile(_PRE_ATTR + r"|alignas\s*\([^;{}()]*\)")
+_OPERATOR_SYM = re.compile(r"\boperator\s*[^\s\w(]{1,3}")
+_PAREN_GROUP = re.compile(r"\([^()]*\)")
+
+
+def _head_shape(head: str) -> str:
+    """`head` with `operator=` names and parenthesized text collapsed.
+
+    `=` left in the shape is an initializer, not a default argument.
+    """
+    s = _OPERATOR_SYM.sub("operator", head) if "operator" in head else head
+    while "(" in s:
+        t = _PAREN_GROUP.sub("", s)
+        if t == s:
+            break
+        s = t
+    return s.replace(")", "") + ("(" if "(" in head else "")
+
+
+_NEWLINE = re.compile(r"\n")
+_CHAR_LITERAL = re.compile(r"'(?:\\.|[^'\\\n])*'")
+
+
+def _blank_char_literals(text: str) -> str:
+    """Character literal interiors as spaces, quotes kept (`'}'` -> `' '`)."""
+    if "'" not in text:
+        return text
+    return _CHAR_LITERAL.sub(lambda m: "'" + " " * (len(m.group()) - 2) + "'", text)
+
+
+def _scope_scan(
+    stripped: str,
+    found: dict[int, _Found],
+    add: Callable[..., None],
+    line_of: Callable[[int], int],
+) -> list[tuple[int, str]]:
+    """Attribute container-level `{`; qualify in-class methods; list gaps."""
+    text = stripped
+    if "#" in text:
+        text = _PP_LINE.sub(lambda m: _spaces_keep_newlines(m.group()), text)
+    gaps: list[tuple[int, str]] = []
+    # Open containers: (is_class, qualified class name or "").
+    stack: list[tuple[bool, str]] = []
+    head_start = 0
+    pos = 0
+    while True:
+        m = _SCOPE_TOKEN.search(text, pos)
+        if m is None:
+            break
+        c = m.group()
+        brace = m.start()
+        pos = m.end()
+        if c == ";":
+            head_start = pos
+            continue
+        if c == "}":
+            if stack:
+                stack.pop()
+            head_start = pos
+            continue
+        in_class, qual = stack[-1] if stack else (False, "")
+        head = text[head_start:brace]
+        lab = _ACCESS_LABEL.match(head)
+        if lab:
+            head = head[lab.end():]
+        lead = len(head) - len(head.lstrip())
+        start = brace - len(head) + lead
+        head_start = pos
+        shape = _head_shape(head)
+        hit = found.get(brace)
+        if hit is None and "(" in shape and "=" not in shape:
+            hit = _scan_definition(head, start, brace, qual, in_class, add, found)
+        if hit is not None:
+            if in_class:
+                if qual and "::" not in hit.fn.name:
+                    hit.fn.name = f"{qual}::{hit.fn.name}"
+                hit.fn.kind = "OTHER"
+            pos = head_start = hit.close + 1
+            continue
+        if _EXTERN_HEAD.match(head) or (
+            _NAMESPACE_HEAD.search(head) and "(" not in head
+        ):
+            stack.append((False, qual))
+            continue
+        tm = _TYPE_HEAD.match(head)
+        is_type = tm is not None and "=" not in shape and (
+            bool(tm.group("enum")) or "(" not in _PRE_ATTR_RE.sub("", head)
         )
-    return out
+        if is_type and tm and not tm.group("enum"):
+            cm = _CLASS_NAME.match(head)
+            cname = cm.group("name") if cm else ""
+            if cname and qual:
+                cname = f"{qual}::{cname}"
+            stack.append((True, cname))
+            continue
+        if not is_type and "(" in shape and "=" not in shape:
+            line = line_of(start)
+            gaps.append((line, head.strip().split("\n", 1)[0].strip()[:80]))
+        # Initializer, enum or brace-init body, or a gap: skip it whole.
+        close = _match_brace(text, brace)
+        if close < 0:
+            break
+        pos = head_start = close + 1
+    return gaps
 
 
+def _scan_definition(
+    head: str, start: int, brace: int, qual: str,
+    in_class: bool, add: Callable[..., None], found: dict[int, _Found],
+) -> _Found | None:
+    """A definition FUNC_HEAD missed, recognized from its declarator."""
+    m = _FUNC_PTR_DECL.match(head)
+    if m and m.group("name") not in KW and m.group("ret") not in KW:
+        ret = m.group("ret").strip()
+        stars = m.group("stars") or ""
+        add(start, brace, m.group("name"), "OTHER", head,
+            _split_params(m.group("params")),
+            f"{ret} {stars}(*)({_collapse(m.group('fparams'))})",
+            "static" in (m.group("mods") or ""))
+        return found.get(brace)
+    m = _CTOR_DECL.match(head)
+    if m:
+        name = _norm_name(m.group("name"))
+        parts = [re.sub(r"<.*$", "", p) for p in name.split("::")]
+        if parts[-1].startswith("~") or parts[-1] == parts[-2]:
+            add(start, brace, name, "OTHER", head,
+                _split_params(m.group("params")), "", False)
+            return found.get(brace)
+    if in_class:
+        m = _MEMBER_DECL.match(head)
+        if m and m.group("name") not in KW:
+            name = _norm_name(m.group("name"))
+            add(start, brace, f"{qual}::{name}" if qual else name, "OTHER",
+                head, _split_params(m.group("params")),
+                _collapse(m.group("ret") or ""), False)
+            return found.get(brace)
+    return None
 def iter_sources(root: Path) -> list[Path]:
     files: list[Path] = []
     if root.is_file():
