@@ -116,8 +116,7 @@ each project's `lean-toolchain`): `proofs/check.sh` passed all four steps
   `thm:Contracts.harness_assumption_discharged`,
   `thm:Bitblast.toCNF_equisat`, `thm:Bitblast.certified_unsat`,
   `thm:LazySeq.lazy_seq_sound`, `thm:FloatRound.rne_nearest`.
-- Does not show: that PRISM's certified path uses this bit-blaster (it
-  uses Z3's tactics, see E08), or that the C++ k-induction/Houdini code
+- Does not show: that the C++ k-induction/Houdini code
   matches the model; see
   `docs/PROOFS_TECHNIQUES.md#gap-to-the-c-implementation-what-these-proofs-do-and-do-not-cover`.
 
@@ -128,26 +127,37 @@ each project's `lean-toolchain`): `proofs/check.sh` passed all four steps
 - Artefact: `docs/TRUSTED_BASE.md`.
 - Shows: what a proof verdict depends on, component by component, with
   the mitigation in place today.
-- Known inconsistency: its section 3 table still says "No Lean proofs exist
-  in the repository yet" for the Lean kernel row. That sentence predates
-  E02, E05 and E06 and is out of date.
 - Does not show: that any trusted component is correct.
 
-### E08 Certified mode in the solver library
+### E08 Certified mode (`--certified`)
 
 - Artefacts: `src/prism/solver/portfolio.cpp`, `src/prism/solver/query.cpp`,
-  `docs/SOLVERS.md#certified-mode`, `docs/TRUSTED_BASE.md`,
+  `src/prism/solver/leanbb.cpp`, `src/prism/pir/encode.cpp`,
+  `docs/SOLVERS.md#certified-mode`, `docs/PIR.md#solving-roadmap-31--32`,
+  `docs/TRUSTED_BASE.md`,
   `tests/cpp/test_main.cpp::solver: certified unsat end to end (CaDiCaL LRAT checked by cake_lpr)`,
-  `tests/cpp/test_main.cpp::solver: a cached plain unsat never satisfies a certified request`.
-- Shows: the library can bit-blast a quantifier-free bitvector query to
-  CNF, have CaDiCaL write an LRAT proof and accept `certified` only when
-  cake_lpr (verified in CakeML) prints `s VERIFIED UNSAT` for the exact
-  CNF (hash-checked).
-- Does not show: any `PROVED-CERTIFIED` in a PRISM report. **No pipeline
-  stage calls the solver library today** (the stages in `src/prism/pir/`
-  and `src/prism/bmc.cpp` use Z3 directly), so the current pipeline never
-  emits `PROVED-CERTIFIED`. The Z3 bit-blasting tactics are trusted (T3 in
-  `docs/TRUSTED_BASE.md`).
+  `tests/cpp/test_main.cpp::solver: a cached plain unsat never satisfies a certified request`,
+  `tests/cpp/test_certified.cpp::certified: loop-free safe function is PROVED-CERTIFIED with one certificate per VC`,
+  `tests/cpp/test_certified.cpp::certified: a function with no VC stays PROVED (nothing to certify)`,
+  `tests/cpp/test_leanbb.cpp::leanbb: small overflow VCs are PROVED-CERTIFIED through the Lean-proved bit-blaster`,
+  `tests/cpp/test_leanbb.cpp::leanbb: a tampered LRAT proof is rejected by Lean's checker`.
+- Shows: with `--certified` the `pir` stage sends every verification
+  condition (properties, memory-model checks and the unwinding assertion;
+  QF_BV) through the solver library, which bit-blasts it to CNF (with the
+  Lean-proved bit-blaster, `thm:Bitblast.toCNF_equisat`, when the formula is
+  in its fragment and the tools are built; else with Z3's tactics, and the
+  certificate says which), has CaDiCaL write an LRAT proof and accepts
+  `certified` only when cake_lpr (verified in CakeML) prints `s VERIFIED
+  UNSAT` for the exact CNF (hash-checked) and, on the Lean path, Lean's
+  verified LRAT checker accepts it too. A function is `PROVED-CERTIFIED` only
+  when it has at least one VC and every VC is certified; the verdict audit
+  admits `PROVED-CERTIFIED` only with `certificate = "checked"`
+  (`thm:audit_certified`).
+- Does not show: that the VC means what the C function does (clang, the
+  PIR encoder and memory model are trusted, T1/L1-L3 in
+  `docs/TRUSTED_BASE.md`). `BOUNDED`, `PROVED-UNBOUNDED`, plain `PROVED` and
+  the `bmc` stage trust Z3. On the Z3 fallback path Z3's bit-blasting
+  tactics are trusted (T3).
 
 ## Testing and measurement
 

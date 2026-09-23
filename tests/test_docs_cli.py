@@ -161,10 +161,13 @@ class AnchorsExist(unittest.TestCase):
 
     def test_every_verdict_has_an_anchor(self) -> None:
         sys.path.insert(0, str(REPO))
-        from prism import laws
+        from prism import laws, shipdocs
 
+        # One scheme: #verdict-<name in lower case>, what both engines'
+        # report.md writers link to (prism/shipdocs.py, src/prism/shipdocs.cpp).
         anchors = anchors_of(REPO / "docs" / "VERDICTS.md")
-        missing = [v for v in laws.VERDICTS if v.lower() not in anchors]
+        missing = [v for v in laws.VERDICTS
+                   if shipdocs.verdict_anchor(v) != f"verdict-{v.lower()}" or f"verdict-{v.lower()}" not in anchors]
         self.assertEqual(missing, [], "docs/VERDICTS.md needs an anchor per verdict (reports link to them)")
 
 

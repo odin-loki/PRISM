@@ -103,6 +103,15 @@ quantifiers get `not certifiable: <reason>`. `verdict_status` maps
 spelling; `kProvedCertified` is only an alias of it), and
 `SolveResult::cnf_sha256` is the hash of the exact CNF cake_lpr checked.
 
+`SolveOptions::bitblaster` (`auto`, the default; `lean`; `z3`) picks who makes
+the CNF. With `auto`, a certified request whose formula is inside the proved
+fragment and whose Lean tools are built (`lake build` in `proofs/techniques`:
+`prism-bitblast`, `prism-lrat-check`) is bit-blasted by the Lean-proved
+`toCNF`, and Lean's verified LRAT checker must accept the proof next to
+cake_lpr; otherwise the Z3 chain above is used and `certificate_info` says
+`bitblast: z3 tactics, unproved (Lean bit-blaster not used: <why>)`
+([TRUSTED_BASE.md](TRUSTED_BASE.md) sections 1.1 and 1.2).
+
 ## Use in the pir stage
 
 The `pir` stage sends every verification condition through `solve()`: one
@@ -110,8 +119,12 @@ query per inserted property and one for the unwinding assertion
 ([PIR.md](PIR.md#solving-roadmap-31--32)). The stage always uses the
 portfolio and the query cache (`--solver-cache DIR`); `--timeout S` is the
 budget per query; `--certified` sets `SolveOptions::certified`, and a
-function becomes `PROVED-CERTIFIED` only when every one of its VCs came back
-`certified`. The k-induction step is still answered by Z3 alone.
+function becomes `PROVED-CERTIFIED` only when it has at least one VC and
+every one of its VCs came back `certified` (a function with none stays
+`PROVED`, `certify_note = "no verification conditions (nothing to
+certify)"`). Memory-model VCs are QF_BV (the default `MemEncoding::Bv`), so
+they are certified like the rest. The k-induction step is still answered by
+Z3 alone.
 
 ## ProbSAT (roadmap 3.3)
 

@@ -40,8 +40,9 @@ follows the verdict laws in [VERDICTS.md](VERDICTS.md).
   `unreach-call` (the `pir` stage checks reachability of `reach_error` /
   `__assert_fail` as a property; `bmc` treats those calls as the end of a
   path, not as a property); none for `valid-memsafety`
-  (no stage encodes `valid-free` or `valid-memtrack`, and the `pir` stage has
-  no memory model yet), so `valid-memsafety` is never `true`.
+  (the `pir` memory model checks dereferences and frees but no stage
+  encodes `valid-memtrack`, memory leaks), so `valid-memsafety` is never
+  `true`.
   `PROVED-ASSUMING` and `BOUNDED` are never `true` (Law 2).
 - **`false(...)`** only when a verdict stage reports `FAILED` of the
   property's class (`INT-SIGNED-OVF` for no-overflow; `FUNC-CONTRACT` with

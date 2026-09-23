@@ -394,4 +394,57 @@ TEST_CASE("certified: a certified request never loses a cached plain answer") {
     CHECK(prism::solver::verdict_status(r) == prism::laws::PROVED);
     CHECK(r.note.find("cached plain unsat stands") != std::string::npos);
 }
+
+// Memory-model VCs (docs/PIR.md "Memory model") are QF_BV in the default
+// Bv encoding, so they are certified like any other VC; the Array encoding
+// is not certifiable and says so.
+TEST_CASE("certified: memory-model VCs are certified in the Bv encoding, not in the Array encoding") {
+    const std::string ir = R"IR(define i32 @arr_ok(i32 %i) {
+entry:
+  %a = alloca [4 x i32], align 16
+  call void @llvm.memset.p0.i64(ptr align 16 %a, i8 0, i64 16, i1 false)
+  %m = and i32 %i, 3
+  %x = sext i32 %m to i64
+  %p = getelementptr inbounds [4 x i32], ptr %a, i64 0, i64 %x
+  %v = load i32, ptr %p, align 4
+  ret i32 %v
+}
+declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)
+)IR";
+    auto t = cert_pir(ir, "arr_ok");
+    REQUIRE(t.fn.has_value());
+    REQUIRE(t.fn->uses_memory);
+    auto o = cert_opts(true);
+    auto v = prism::pir::check_function(*t.fn, o);
+    CAPTURE(v.message);
+    CHECK(v.extra.at("memory") == "bv");
+    CHECK(std::stoi(v.extra.at("certificate_vcs")) > 0);
+    if (have_cert_chain()) {
+        CHECK(v.status == prism::laws::PROVED_CERTIFIED);
+        CHECK(v.extra.at("certificate") == "checked");
+        CHECK(v.extra.count("certificate_bitblast") == 1);
+    } else {
+        CHECK(v.status == prism::laws::PROVED);
+        CHECK(v.extra.count("certify_note") == 1);
+    }
+    o.encode.memory = prism::pir::MemEncoding::Array;
+    auto va = prism::pir::check_function(*t.fn, o);
+    CAPTURE(va.message);
+    CHECK(va.extra.at("memory") == "array");
+    CHECK(va.status == prism::laws::PROVED);
+    REQUIRE(va.extra.count("certify_note") == 1);
+    CHECK(va.extra.at("certify_note").find("not certif") != std::string::npos);
+
+    // An out-of-bounds read is FAILED through the solver library, with a
+    // counterexample the PIR interpreter replays.
+    std::string bad = ir;
+    bad.replace(bad.find("and i32 %i, 3"), 13, "and i32 %i, 4");
+    auto tb = cert_pir(bad, "arr_ok");
+    REQUIRE(tb.fn.has_value());
+    auto vb = prism::pir::check_function(*tb.fn, cert_opts(true));
+    CHECK(vb.status == prism::laws::FAILED);
+    CHECK(vb.cls == "MEM-OOB-READ");
+    REQUIRE(!vb.cex_args.empty());
+    CHECK(prism::pir::interpret(*tb.fn, vb.cex_args).status == prism::pir::InterpResult::Violation);
+}
 #endif
