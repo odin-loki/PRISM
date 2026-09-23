@@ -23,24 +23,24 @@ rank 0 and is not a formal claim.
 
 | Verdict | Rank | Class | Meaning |
 |---|---|---|---|
-| `PROVED-CERTIFIED` | 5 | proof | The solver's UNSAT result was checked by a verified checker (cake_lpr or Lean's LRAT checker) against the exact CNF PRISM produced (roadmap 3.2). Needs `extra.certificate = "checked"`. |
-| `PROVED-UNBOUNDED` | 4 | proof | k-induction closed: the property holds for every unwinding. |
-| `PROVED` | 3 | proof | All properties hold, loops closed within k. |
-| `PROVED-ASSUMING` | 2 | proof | Proved under an explicit `requires` or harness assumptions, which the report lists. |
-| `BOUNDED` | 1 | formal, not a proof | Nothing found within k. That is all it says. |
-| `FAILED` | 0 | answer, defect | A counterexample. |
-| `UNKNOWN` | 0 | no answer | The solver ran and did not conclude. Also what the audit demotes an inadmissible claim to. |
-| `TIMEOUT` | 0 | no answer | Ran out of time. |
-| `ERROR` | 0 | no answer | The instrument failed, or an internal check (such as the verdict audit) failed. |
-| `NOFUNC` | 0 | no answer | The function was not found. |
-| `NOTRUN` | 0 | no answer | The tool is missing or the step was not allowed to run (Law 1, Law 9). |
-| `NEEDS-HARNESS` | 0 | no answer | Pointer parameters, no precondition: not model-checked unguarded (Law 6). |
-| `CRASH` | 0 | defect | A fuzzer or execution crashed the code. |
-| `CLEAN` | 0 | fuzz silence | The fuzzer found nothing. Not a proof (Law 3). |
-| `NOSEED` | 0 | fuzz | The fuzzer had no seed to start from. |
-| `SANFAIL` | 0 | defect | A sanitizer reported an error. |
-| `HYPOTHESIS` | 0 | model | LLM output. It cannot cover a defect class (Law 4). |
-| `READS` | 0 | model | LLM reading of the code, weaker than a hypothesis. |
+| <a id="proved-certified"></a>`PROVED-CERTIFIED` | 5 | proof | The solver's UNSAT result was checked by a verified checker (cake_lpr or Lean's LRAT checker) against the exact CNF PRISM produced (roadmap 3.2). Needs `extra.certificate = "checked"`. |
+| <a id="proved-unbounded"></a>`PROVED-UNBOUNDED` | 4 | proof | k-induction closed: the property holds for every unwinding. |
+| <a id="proved"></a>`PROVED` | 3 | proof | All properties hold, loops closed within k. |
+| <a id="proved-assuming"></a>`PROVED-ASSUMING` | 2 | proof | Proved under an explicit `requires` or harness assumptions, which the report lists. |
+| <a id="bounded"></a>`BOUNDED` | 1 | formal, not a proof | Nothing found within k. That is all it says. |
+| <a id="failed"></a>`FAILED` | 0 | answer, defect | A counterexample. |
+| <a id="unknown"></a>`UNKNOWN` | 0 | no answer | The solver ran and did not conclude. Also what the audit demotes an inadmissible claim to. |
+| <a id="timeout"></a>`TIMEOUT` | 0 | no answer | Ran out of time. |
+| <a id="error"></a>`ERROR` | 0 | no answer | The instrument failed, or an internal check (such as the verdict audit) failed. |
+| <a id="nofunc"></a>`NOFUNC` | 0 | no answer | The function was not found. |
+| <a id="notrun"></a>`NOTRUN` | 0 | no answer | The tool is missing or the step was not allowed to run (Law 1, Law 9). |
+| <a id="needs-harness"></a>`NEEDS-HARNESS` | 0 | no answer | Pointer parameters, no precondition: not model-checked unguarded (Law 6). |
+| <a id="crash"></a>`CRASH` | 0 | defect | A fuzzer or execution crashed the code. |
+| <a id="clean"></a>`CLEAN` | 0 | fuzz silence | The fuzzer found nothing. Not a proof (Law 3). |
+| <a id="noseed"></a>`NOSEED` | 0 | fuzz | The fuzzer had no seed to start from. |
+| <a id="sanfail"></a>`SANFAIL` | 0 | defect | A sanitizer reported an error. |
+| <a id="hypothesis"></a>`HYPOTHESIS` | 0 | model | LLM output. It cannot cover a defect class (Law 4). |
+| <a id="reads"></a>`READS` | 0 | model | LLM reading of the code, weaker than a hypothesis. |
 
 Predicates (same in all three implementations and the model):
 

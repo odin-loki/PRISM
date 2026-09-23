@@ -77,17 +77,51 @@ with `--tool NAME=PATH`). A tool that is not installed is reported as
 | `--jobs N`, `-j N` | worker count for lints (0 = half the CPUs) |
 | `--fuzz-budget S`, `--fuzz-iters N` | fuzzing time / iteration budget |
 | `--repair-rounds N` | budget for the repair stage |
-| `--tool NAME=PATH` | use this binary for an adapter (searched before `PATH`) |
+| `--tool NAME=PATH` | use this binary for an adapter (searched before `~/.prism/tools/<name>/<commit>/bin` and `PATH`) |
 | `--allow-exec` | allow steps that run code from the scanned tree (section 6) |
 | `--fail-on never\|defect\|gap` | exit-code policy for CI (section 5) |
-| `--resume` | reuse stages already `ok`/`NOTRUN` in `--out/stages.jsonl` |
+| `--resume` | reuse stages already `ok`/`NOTRUN` in `--out/stages.jsonl` (`report.json` as fallback) |
 | `--gui` | open the Qt GUI (C++ build with `-DPRISM_QT=ON`) |
+| `--pbsd PATH` | ParanoidBSD tree for the `pbsd` stage (else `PRISM_PBSD`; no default). Importing its modules also needs `--allow-exec` |
+| `--requirements PATH` | C++ engine only. Markdown/text requirement documents (a file or a directory; repeatable); the `review` stage drafts contracts traced to their sentences ([AI.md](AI.md)) |
+| `--contracts-approved PATH` | C++ engine only. Approvals of drafted contracts (default `<root>/contracts.approved.json`); only approved clauses give `PROVED-ASSUMING` |
+| `--list-stages` | print the stage order and exit |
+| `--help`, `-h` | print the option summary and exit |
 
 The stages run in a fixed order (`--list-stages`): inventory, classify,
 lints, taint, thread, interval, warnings, cppcheck, pbsd, sanitize, optional,
-polyglot, esbmc, dafny, contracts, wp, bmc, harness, concolic, fuzz, diff,
-rapid, muttest, ltl, llm, execute, repair, unify. What each one does is in
-[PLAN.md](PLAN.md#pipeline-order-is-the-method).
+polyglot, esbmc, dafny, contracts, wp, bmc, pir, harness, review, concolic,
+fuzz, diff, rapid, muttest, ltl, llm, execute, repair, unify. What each one
+does is in [PLAN.md](PLAN.md#pipeline-order-is-the-method). `pir` (the
+Clang/LLVM front end, [PIR.md](PIR.md)) and `review` ([AI.md](AI.md)) run in
+the C++ engine only; the frozen Python engine lists them and records one
+`NOTRUN` row each (roadmap D8).
+
+### `prism prove` (C++ engine only)
+
+`prism prove FILE.lean THEOREM` searches for a Lean proof of one theorem
+(roadmap 9.2): a prover model proposes tactics, the Lean kernel checks each
+one, and the axioms must stay within `propext`, `Classical.choice` and
+`Quot.sound`. Details are in [AI.md](AI.md). Elaborating Lean runs code, so
+it needs `--allow-exec` (Law 9); without it the result is `NOTRUN`. Exit
+code: 0 proved, 1 not proved, 3 `NOTRUN`, 2 error.
+
+| option | meaning |
+|---|---|
+| `FILE.lean THEOREM` | the Lean file and the theorem to prove |
+| `--list` | print the theorems in `FILE.lean` that still contain a `sorry` |
+| `--write` | write the proof back into the file and add it to the lemma library (default `proofs/lemmas.jsonl`) |
+| `--allow-exec` | allow Lean elaboration (required) |
+| `--project DIR` | the Lake project to elaborate in (default: the nearest parent directory with a lakefile) |
+| `--lemmas PATH` | lemma library to read and extend (default `<project>/lemmas.jsonl` under `proofs/`, else `proofs/lemmas.jsonl`) |
+| `--budget N`, `--beam N` | model calls allowed (default 24) and partial proofs kept (default 4) |
+| `--timeout S` | Lean time limit per check in seconds (default 120, minimum 5) |
+| `--out DIR` | output directory (default `prism-out`) |
+| `--prover-server URL` | a llama.cpp server running the prover model (else `PRISM_PROVER_SERVER`) |
+| `--prover-gguf PATH`, `--prover-model NAME` | a local GGUF prover model (else `PRISM_PROVER_GGUF`) and the model name recorded in the audit (else `PRISM_PROVER_MODEL`) |
+| `--json` | print only the JSON result |
+| `--help`, `-h` | print the option summary and exit |
+
 
 ## 3. Read the report
 
