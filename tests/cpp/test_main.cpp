@@ -3897,13 +3897,13 @@ TEST_CASE("pbsd: no configured tree is NOTRUN; a tree without --allow-exec is he
     int n_held = 0;
     bool portable = false;
     for (auto& f : held) {
-        if (extra_get(f, "reason") == prism::sandbox::EXEC_REASON) {
+        if (extra_or(f, "reason") == prism::sandbox::EXEC_REASON) {
             ++n_held;
             CHECK(f.status == std::string(prism::laws::NOTRUN));
         }
         if (f.cls == "MEM-ONESIDED-INDEX" && f.status == std::string(prism::laws::FAILED))
             portable = true;
-        CHECK(extra_get(f, "via") != "prism.checkers");
+        CHECK(extra_or(f, "via") != "prism.checkers");
     }
     CHECK(n_held == 1);
     CHECK(portable);
