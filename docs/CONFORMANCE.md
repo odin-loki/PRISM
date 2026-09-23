@@ -116,6 +116,45 @@ The release gate stays red until that stage reports such rows as
 not-a-proof; the gate must not simply be relaxed). The Python engine has no
 drafted harness and passes (0 wrong proofs, Law 6 6/6).
 
+### Certified mode after the memory model and the Lean bit-blaster
+
+`PRISM_BIN=build/prism python tools/conformance.py --certified`, C++ engine
+with the pir memory model (QF_BV `MemEncoding::Bv`), the Lean-proved
+bit-blaster (`bitblaster=auto`, `prism-bitblast` / `prism-lrat-check` built
+by `lake build` in `proofs/techniques`) and the solver-library wiring; 367
+tasks, 4-core machine shared with other builds. Release gate: **PASS, 0
+wrong proofs on every stage** (`bmc`, `harness`, `pir`, `conc`,
+`pir-certified`), plain run and certified run alike.
+
+| stage | origin | true | false | **wrong proofs** | completeness | detection (replayed cex) | refuted, not replayed | false alarms | BOUNDED | no answer | Law 6 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| pir | in-house | 147 | 147 | **0** | 131/147 (89.1%) | 129/147 (87.8%) | 5 | 0 | 19 | 10 | 6/6 |
+| pir | SV-COMP | 25 | 20 | **0** | 10/25 (40.0%) | 0/20 | 15 | 0 | 11 | 1 | – |
+| pir-certified | in-house | 147 | 147 | **0** | 127/147 (86.4%) | 129/147 (87.8%) | 3 | 0 | 16 | 19 | 6/6 |
+| pir-certified | SV-COMP | 25 | 20 | **0** | 8/25 (32.0%) | 0/20 | 15 | 0 | 10 | 9 | – |
+
+- loop-free `true` functions pir encodes: 125, all proved under `--certified`;
+- **109/125 `PROVED-CERTIFIED`, all 109 with every CNF made by the
+  Lean-proved bit-blaster** and every LRAT proof accepted by both cake_lpr
+  and Lean's checker (0 via the Z3-tactics fallback, 0 mixed);
+- 11/125 have no verification condition at all and stay `PROVED` ("nothing
+  to certify");
+- 5/125 stay `PROVED`: a 32/64-bit multiplication overflow VC whose CaDiCaL
+  LRAT run did not finish within the budget (`fn_macro_true`,
+  `long_mul_true`, `mul_true`, `switch_true`, `widen_mul_true`);
+- 6 of the 30 `true` functions with loops are `PROVED-CERTIFIED` (loops close
+  within the unwind); 0 `PROVED-CERTIFIED` on a `false` function.
+
+Certified mode costs time: every VC runs Z3, the Lean bit-blaster, CaDiCaL
+with LRAT, cake_lpr, Lean's LRAT checker and lrat-check, about 2.4 s per VC
+on the loaded machine. Memory functions with loops have many VCs
+(`mem_uninit_true`: 99, 4 minutes), so 18 tasks exceed the certified run's
+budget (twice `--timeout`) and are scored as no answer (`arr_sum_true`,
+`mem_uninit_true`, `mem_vla_true`, the `uninit_elem_*` regress tasks,
+`nested_loop_*`, six SV-COMP `byte_add*`, `id_trans`, `nested6`). That is
+the whole difference between the `pir` and `pir-certified` rows: no verdict
+changed except `PROVED` → `PROVED-CERTIFIED` or a timeout.
+
 ### NIST Juliet 1.3 (CWE190/191/369/476/680, flow `_01`, 104 files, 410 functions)
 
 Identical in both engines:
@@ -182,10 +221,12 @@ budget, a fresh solver cache per suite run):
 | pir-certified | in-house | 106 | 106 | **0** | 76/106 (71.7%) | 78/106 (73.6%) | 0 | 0 | 13 | 45 | 6/6 |
 | pir-certified | SV-COMP | 25 | 20 | **0** | 3/25 (12.0%) | n/a | 5 | 0 | 7 | 29 | – |
 
-**Certified mode (roadmap 3 exit criterion): 74/74 loop-free `true`
-functions that pir encodes are `PROVED-CERTIFIED`** (67 with one checked
-CaDiCaL LRAT proof per VC, 7 vacuously: unsigned-only code with no
-inserted property, so no solver answer to check), 3 of the 20 `true`
+**Certified mode (roadmap 3 exit criterion), at that time: 74/74 loop-free
+`true` functions that pir encodes were `PROVED-CERTIFIED`** (67 with one
+checked CaDiCaL LRAT proof per VC, 7 then counted vacuously: unsigned-only
+code with no inserted property; such a function now stays `PROVED` with
+`certify_note = "no verification conditions (nothing to certify)"`, see the
+current numbers below), 3 of the 20 `true`
 functions with loops too (loops close within the unwind), and **0**
 `PROVED-CERTIFIED` on a `false` function. Certified mode changed no verdict
 other than `PROVED` → `PROVED-CERTIFIED`. The criterion is met for the
