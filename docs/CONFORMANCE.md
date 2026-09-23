@@ -220,6 +220,16 @@ whole set: 0 wrong proofs in both stages. The 62–64 tasks without an answer
 by timeout are libstdc++-heavy (`std::string`, `vector::reserve`,
 iterators): 51 exceed 240 s, 11 are killed for memory (exit -9).
 
+Label check of the fetched set (`--self-check`, one native clang++ run under
+UBSan/ASan with assertions on, deterministic programs only): 1639 labels
+confirmed, 162 skipped (nondeterministic), 116 not confirmed (48 do not
+compile with clang/libstdc++, 33 crash otherwise, 19 FAILED labels run
+clean, 16 SUCCESSFUL labels hit a sanitizer or assert natively). Cross-check
+against the PRISM run: **no PRISM proof on any program whose native run
+hits UB or a failed assert**, and no pir/bmc FAILED on a natively clean
+program except the false alarms F8–F10 above, `cpp/github_1807` (FAILED
+label, clean natively; refuted by pir) and two FAILED of another class.
+
 **Committed subset** (64 tasks: 32 true, 32 false, deterministic,
 labels confirmed by one native sanitizer run), in `python tools/conformance.py`:
 
