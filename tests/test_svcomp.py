@@ -95,6 +95,18 @@ class PropertyTest(unittest.TestCase):
             "void reach_error() { ((void) sizeof ((0) ? 1 : 0)); }\nint main(){ return 0; }"))
 
 
+class ReachErrorSiteTest(unittest.TestCase):
+    def test_call_site_not_definition(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "t.c"
+            src.write_text("void reach_error() { __assert_fail(\"0\", \"t.c\", 1, \"reach_error\"); }\n"
+                           "int main(void) {\n  if (1) reach_error();\n  return 0;\n}\n")
+            self.assertEqual(P.reach_error_call_site(src, None), (3, 10))
+            src.write_text("void reach_error(void) {}\nint main(void) {\n  reach_error();\n  reach_error();\n}\n")
+            self.assertIsNone(P.reach_error_call_site(src, None))
+            self.assertEqual(P.reach_error_call_site(src, 4), (4, 3))
+
+
 class DecideTest(unittest.TestCase):
     def test_true_only_from_covering_proofs(self) -> None:
         for st in ("PROVED", "PROVED-UNBOUNDED", "PROVED-CERTIFIED"):

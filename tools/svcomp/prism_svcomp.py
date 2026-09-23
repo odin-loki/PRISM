@@ -364,10 +364,9 @@ def replay(src: Path, prop: str, *, allow_exec: bool, nondet_values: list[int | 
                 return rec
     elif prop == "unreach-call":
         if "reach_error" in err and p.returncode != 0:
-            m = re.search(r":(\d+):", err)
+            # The assertion message names reach_error's own line, not the call
+            # site; the witness target comes from reach_error_call_site().
             rec.update(replay="replayed", detail="reach_error() was called and the program aborted")
-            if m:
-                rec["line"] = int(m.group(1))
             return rec
     elif prop == "valid-memsafety":
         m = ASAN_RE.search(err)
@@ -404,6 +403,21 @@ def run_prism(prism: str, task_c: Path, out: Path, timeout: float | None) -> dic
     if not rep.exists():
         raise RuntimeError(f"prism wrote no report.json ({' '.join(argv)})")
     return dict(json.loads(rep.read_text(encoding="utf-8")))
+
+
+def reach_error_call_site(src: Path, hint: int | None) -> tuple[int, int] | None:
+    """(line, column) of the reach_error() call the witness targets: the only
+    call site, or the one on the finding's line; None when ambiguous."""
+    sites = []
+    for n, text in enumerate(src.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+        for m in re.finditer(r"\breach_error\s*\(\s*\)", text):
+            if re.search(r"\breach_error\s*\(\s*(void)?\s*\)\s*\{", text[m.start():]):
+                continue  # the definition
+            sites.append((n, m.start() + 1))
+    if len(sites) == 1:
+        return sites[0]
+    same = [s for s in sites if s[0] == hint]
+    return same[0] if len(same) == 1 else None
 
 
 def first_code_column(src: Path, line: int) -> int:
@@ -451,6 +465,13 @@ def solve(task: Path, prop_file: Path, *, prism: str | None, allow_exec: bool, d
     if dec.answer.startswith("false") and witness_path is not None and dec.finding is not None:
         line = int(dec.replay.get("line") or dec.finding.get("line") or 1)
         col = int(dec.replay.get("column") or first_code_column(task, line))
+        if prop == "unreach-call":
+            site = reach_error_call_site(task, dec.finding.get("line"))
+            if site is None:
+                # No witness rather than a witness pointing at the wrong call.
+                dec.reason += "; no witness: the reach_error() call site is ambiguous"
+                return oc
+            line, col = site
         cex = W.Counterexample(function="main", target=W.Location(task.name, line, col, "main"))
         doc = W.build_violation_witness(
             cex, input_file=task, input_file_name=task.name, specification=spec,
