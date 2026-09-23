@@ -12,45 +12,59 @@ def _fn_key(file: str, function: str | None) -> str:
     return f"{file}::{function or ''}"
 
 
+# The instruments that answer per function (Law 5 "answer"). pir counts like
+# bmc: either one answering is an answer (src/prism/pipeline.cpp kFormalStages).
+FORMAL_STAGES = ("bmc", "pir")
+
+
+def _resolves(r: Finding) -> bool:
+    if laws.is_proof(r.status) or r.status == laws.BOUNDED:
+        return True
+    if r.status == laws.FAILED:
+        # A counterexample is the instrument's answer. A failure with no
+        # cex still needs a person.
+        extra = r.extra or {}
+        return bool(r.counterexample or extra.get("oracle") or extra.get("read"))
+    return False
+
+
 def score(report: RunReport) -> tuple[float, float, float, float]:
     n_fun = len(report.functions)
     if n_fun == 0:
         # Empty scope: product is 0, never None / n/a / skipped.
         return 0.0, 0.0, 0.0, 0.0
 
-    bmc = next((s for s in report.stages if s.name == "bmc"), None)
+    formal = [s for s in report.stages if s.name in FORMAL_STAGES]
     classified = n_fun  # we parsed them; compile-reach is adapters
 
     answered = 0
     resolved = 0
     attempted = 0
-    if bmc:
+    if formal:
+        # One record per function per formal instrument (bmc, pir): the
+        # first one that stage wrote for it.
         by_fn: dict[str, list[Finding]] = {}
-        for f in bmc.findings:
-            by_fn.setdefault(_fn_key(f.file, f.function), []).append(f)
+        for s in formal:
+            seen: set[str] = set()
+            for f in s.findings:
+                k = _fn_key(f.file, f.function)
+                if k not in seen:
+                    seen.add(k)
+                    by_fn.setdefault(k, []).append(f)
         scalar = [fn for fn in report.functions if fn.kind in {"SCALAR", "VOID"}]
         attempted = 0
         for fn in scalar or report.functions:
             recs = by_fn.get(_fn_key(fn.file, fn.name), [])
-            if recs and recs[0].status == laws.NEEDS_HARNESS:
+            if recs and all(r.status == laws.NEEDS_HARNESS for r in recs):
                 # Same as POINTER: absence of a precondition, not a missing answer.
                 continue
             attempted += 1
-            if not recs:
+            answers = [r for r in recs if r.status in laws.ANSWERED]
+            if not answers:
                 continue
-            st = recs[0].status
-            if st in laws.ANSWERED:
-                answered += 1
-                if laws.is_proof(st):
-                    resolved += 1
-                elif st == laws.FAILED:
-                    # A counterexample is the instrument's answer. A
-                    # failure with no cex still needs a person.
-                    extra = recs[0].extra or {}
-                    if recs[0].counterexample or extra.get("oracle") or extra.get("read"):
-                        resolved += 1
-                elif st == laws.BOUNDED:
-                    resolved += 1
+            answered += 1
+            if any(_resolves(r) for r in answers):
+                resolved += 1
     # Law 5 through the verdict lattice (prism/laws.py score_counts, the
     # proved `score` of proofs/Prism/Verdict.lean).
     return laws.score_counts(n_fun, classified, attempted, answered, resolved)

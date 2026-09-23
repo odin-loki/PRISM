@@ -24,6 +24,7 @@
 #include <random>
 #include <set>
 #include <sstream>
+#include <thread>
 
 namespace prism::pir {
 namespace fs = std::filesystem;
@@ -423,6 +424,21 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
     argv.insert(argv.end(), fl.begin(), fl.end());
     argv.insert(argv.end(), {"-o", o0.string(), src.string()});
     auto r = detail::run_process(argv, timeout_s);
+    if (!cxx && !r.timed_out && (r.failed || r.rc != 0)) {
+        // C23 code (bool, nullptr, typeof, digit separators ...) does not
+        // compile as C17: try once more as C23 before giving up. Only the
+        // language level changes; every check flag stays.
+        auto c23 = fl;
+        std::replace(c23.begin(), c23.end(), std::string("-std=c17"), std::string("-std=c23"));
+        std::vector<std::string> av{cc->string()};
+        av.insert(av.end(), c23.begin(), c23.end());
+        av.insert(av.end(), {"-o", o0.string(), src.string()});
+        auto r2 = detail::run_process(av, timeout_s);
+        if (!r2.failed && !r2.timed_out && r2.rc == 0) {
+            r = std::move(r2);
+            fl = std::move(c23);
+        }
+    }
     if (r.failed || r.timed_out || r.rc != 0) {
         err = r.timed_out ? "clang timed out" : "clang: " + first_error(r.text);
         return std::nullopt;
@@ -582,8 +598,8 @@ void validate(std::vector<FnRec>& recs, const std::string& ir, const Frontend& f
         auto& r = recs[i];
         if (!r.fn) continue;
         const auto& st = r.f.status;
-        if (!(st == laws::FAILED || st == laws::PROVED || st == laws::PROVED_UNBOUNDED || st == laws::BOUNDED ||
-              st == laws::PROVED_ASSUMING))
+        if (!(st == laws::FAILED || st == laws::PROVED || st == laws::PROVED_CERTIFIED ||
+              st == laws::PROVED_UNBOUNDED || st == laws::BOUNDED || st == laws::PROVED_ASSUMING))
             continue;
         if (!cfg.allow_exec) {
             r.f.extra["tv"] = "NOTRUN (needs --allow-exec)";
@@ -724,6 +740,7 @@ void validate(std::vector<FnRec>& recs, const std::string& ir, const Frontend& f
         f.extra["sandbox"] = sandbox::kind();
         if (auto d = diverged.find(i); d != diverged.end()) {
             f.extra["verdict_before_tv"] = f.status;
+            f.extra.erase(std::string(laws::CERTIFICATE_KEY));  // the certificate was for a wrong VC
             f.status = std::string(laws::ERROR);
             f.message = d->second;
             f.extra["tv"] = "DIVERGED";
@@ -745,6 +762,20 @@ std::string span_text(const std::vector<std::string>& lines, const std::vector<i
     std::string out;
     for (int i = line; i <= end && i <= static_cast<int>(lines.size()); ++i) out += lines[static_cast<std::size_t>(i - 1)] + "\n";
     return out;
+}
+
+// Solver settings of the run: the portfolio and the query cache always
+// (docs/SOLVERS.md), a certificate per VC with --certified. The members of
+// one query share the cores left to this worker.
+CheckOptions check_options(const Config& cfg) {
+    CheckOptions o;
+    o.unwind = cfg.unwind;
+    o.timeout_s = cfg.timeout;
+    o.certified = cfg.certified;
+    o.cache_dir = cfg.solver_cache.string();
+    const unsigned hw = std::max(2u, std::thread::hardware_concurrency());
+    o.max_parallel = std::max(2u, hw / static_cast<unsigned>(std::max(1, cfg.jobs)));
+    return o;
 }
 
 Finding base_finding(const Unit& u) {
@@ -866,7 +897,7 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
             for (auto& n : fn.inlined) s += (s.empty() ? "" : ",") + n;
             f.extra["inlined"] = s;
         }
-        auto v = check_function(fn, cfg.unwind, cfg.timeout);
+        auto v = check_function(fn, check_options(cfg));
         pirmem::apply_memory_policy(f, v, fn, mod, irf, fopt, cfg);
         f.status = v.status;
         f.message = v.message;
@@ -894,6 +925,7 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
         if (!owner) continue;
         if (owner->f.status == laws::FAILED || owner->f.status == laws::NEEDS_HARNESS) continue;
         owner->f.extra["verdict_before_folded"] = owner->f.status;
+        owner->f.extra.erase(std::string(laws::CERTIFICATE_KEY));
         owner->f.status = std::string(laws::NEEDS_HARNESS);
         owner->f.strength = std::string(laws::STRENGTH_SOME);
         owner->f.message = "UNENCODED: clang-folded UB at line " + std::to_string(line) +

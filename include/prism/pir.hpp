@@ -406,6 +406,27 @@ PRISM_API bool z3_available();
 // pir_vcs always uses MemEncoding::Bv unless told otherwise (QF_BV VCs).
 PRISM_API std::vector<Vc> pir_vcs(const Function& fn, int unwind = 8);
 PRISM_API std::vector<Vc> pir_vcs(const Function& fn, int unwind, const EncodeOptions& eo);
+// How check_function answers its verification conditions (docs/PIR.md
+// "Solving"). Every property VC and the unwinding assertion is one query to
+// prism::solver::solve (include/prism/solver.hpp): the portfolio, the query
+// cache and, with `certified`, CaDiCaL LRAT proofs checked by cake_lpr (and
+// also by Lean's verified LRAT checker when the Lean-proved bit-blaster made
+// the CNF: SolveOptions::bitblaster = auto). A function with no VC at all
+// stays PROVED with certify_note: a certificate that checks nothing is not one.
+struct CheckOptions {
+    int unwind = 8;
+    double timeout_s = 30.0;    // per verification condition
+    bool portfolio = true;      // false: Z3 alone (plus CaDiCaL when certified)
+    bool certified = false;     // roadmap 3.2: PROVED-CERTIFIED when every VC is certified
+    bool use_cache = true;
+    std::string cache_dir;      // empty: the solver library's default
+    unsigned max_parallel = 0;  // solver members at once; 0: hardware threads
+    std::vector<std::string> tool_dirs;  // searched first (tests); see SolveOptions
+    bool search_default_tools = true;
+    EncodeOptions encode;       // memory encoding (Bv: QF_BV, certifiable)
+};
+PRISM_API Verdict check_function(const Function& fn, const CheckOptions& opt);
+// The portfolio without the query cache (library callers and tests).
 PRISM_API Verdict check_function(const Function& fn, int unwind, double timeout_s = 30.0);
 PRISM_API Verdict check_function(const Function& fn, int unwind, double timeout_s, const EncodeOptions& eo);
 // "name=value, ..." with signed decimal values (the bmc stage's format).
@@ -463,5 +484,15 @@ PRISM_API std::vector<PtrContract> parse_contracts(const std::vector<std::string
 // The pir stage: one finding per defined function of every C/C++ unit.
 PRISM_API std::vector<Finding> run_pir(const std::vector<std::filesystem::path>& sources,
                                        const Config& cfg);
+
+// Tooling (tools/solver_bench.py; src/prism/pir/bench.cpp). JSON on return.
+// Every VC of every encodable function of `src`, written as SMT-LIB2 files
+// under out_dir; functions that are not encoded are listed with their status.
+PRISM_API std::string unit_vcs_json(const std::filesystem::path& src, const Config& cfg,
+                                    const std::filesystem::path& out_dir);
+// One VC through prism::solver::solve (Z3 alone when z3_only; cfg.timeout,
+// cfg.certified). The query cache is off (a timing tool); cfg.solver_cache
+// is where the scheduler's solve-time history is kept.
+PRISM_API std::string solve_smt2_json(const std::string& smt2, const Config& cfg, bool z3_only);
 
 }  // namespace prism::pir

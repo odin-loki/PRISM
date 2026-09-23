@@ -567,11 +567,16 @@ def rlef_repair(
             best_score = score
             best_src = src
         if proved:
+            # The proof is about the LLM-written patch, not the scanned code:
+            # HYPOTHESIS / READS with the patch's verdict alongside (Law 4),
+            # so the verdict audit has nothing to demote.
             return [Finding(
-                stage="repair", status=proved, file="", function=None, line=None, cls="",
-                message=f"RLEF BMC {proved} on round {i+1} (terminal success)",
-                strength=laws.STRENGTH_PROVES,
-                extra={"history": history, "best": best_src[:1000], "bmc": proved},
+                stage="repair", status=laws.HYPOTHESIS, file="", function=None, line=None, cls="",
+                message=(f"verified fix: BMC {proved} on the LLM-written patch, round {i+1} "
+                         "(terminal success; a claim about the patch, not the scanned code)"),
+                strength=laws.STRENGTH_READS,
+                extra={"history": history, "best": best_src[:1000], "bmc": proved,
+                       "patch_verdict": proved, "fix_label": "verified fix"},
             )]
         if result.get("ok") and bmc_st != laws.FAILED:
             break

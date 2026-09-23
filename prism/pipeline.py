@@ -6,7 +6,7 @@ from pathlib import Path
 import json
 import time
 
-from prism import confidence, laws
+from prism import confidence, laws, shipdocs
 from prism.adapters import run_compiler, run_cppcheck, run_dafny, run_esbmc
 from prism.adapters_extra import run_optional_tools
 from prism.agent import dafny_specs, execute_cex, hypothesize, rlef_repair
@@ -100,18 +100,25 @@ EXEC_STAGES: dict[str, str] = {
 }
 
 
-def run_pir_notrun() -> list[Finding]:
+def run_pir_notrun(cfg: Config | None = None) -> list[Finding]:
     """The pir stage (Clang -> LLVM IR -> PIR -> Z3) exists only in the C++ engine.
 
     Roadmap D8 freezes this engine as a differential oracle, so it keeps the
     stage in STAGE_ORDER and says in one NOTRUN row that it did not run it
-    (Law 7), instead of skipping it quietly.
+    (Law 7), instead of skipping it quietly. --certified / --solver-cache are
+    accepted for CLI parity and recorded here: nothing was certified.
     """
+    extra = {"install": "run the C++ engine (build/prism) for the pir stage"}
+    if cfg is not None and cfg.certified:
+        extra["certified_mode"] = "on"
+        extra["certify_note"] = "not certified: the pir stage did not run (C++ engine only)"
+    if cfg is not None and cfg.solver_cache:
+        extra["solver_cache"] = str(cfg.solver_cache)
     return [Finding(
         stage="pir", status=laws.NOTRUN, file="", function=None, line=None, cls="",
         message="C++ engine only (Python engine frozen as oracle, roadmap D8)",
         strength=laws.STRENGTH_PROVES,
-        extra={"install": "run the C++ engine (build/prism) for the pir stage"},
+        extra=extra,
     )]
 
 
@@ -362,7 +369,7 @@ class Pipeline:
             return run_bmc(inline_static(functions), cfg.unwind)
 
         bmc_rec = self._stage("bmc", bmc)
-        self._stage("pir", run_pir_notrun)
+        self._stage("pir", lambda: run_pir_notrun(cfg))
         self._stage("conc", run_conc_notrun)
         self._stage("harness", lambda: run_harness_bmc(functions, cfg.unwind))
         self._stage("review", run_review_notrun)
@@ -478,6 +485,12 @@ def _write_md(report: RunReport, path: Path) -> None:
         "",
         "Confidence is a product. 0 means no data, not clean.",
         "",
+        # Roadmap 3.2 / 8.3 / 6.4: the trusted base and the verdict
+        # definitions are written next to this file (prism/shipdocs.py).
+        f"Trusted base: [{shipdocs.TRUSTED_BASE_FILE}]({shipdocs.TRUSTED_BASE_FILE}) says what a proof "
+        f"in this report depends on. Every verdict links to its definition in "
+        f"[{shipdocs.VERDICTS_FILE}]({shipdocs.VERDICTS_FILE}).",
+        "",
         "## Stages",
         "",
         "| stage | status | records | seconds | note |",
@@ -496,6 +509,7 @@ def _write_md(report: RunReport, path: Path) -> None:
             # look like an empty ok stage in report.md.
             lines.append(_md_finding(s.name, f))
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    shipdocs.write_shipped_docs(path.parent)
 
 
 def _md_finding(stage: str, f: Finding) -> str:
@@ -511,6 +525,9 @@ def _md_finding(stage: str, f: Finding) -> str:
     line = " ".join(parts) + f" — {f.message}"
     if f.counterexample:
         line += f"  cex `{f.counterexample}`"
+    anchor = shipdocs.verdict_anchor(f.status)
+    if anchor:
+        line += f"  ([{f.status}]({shipdocs.VERDICTS_FILE}#{anchor}))"
     return line
 
 

@@ -3,7 +3,7 @@
 - Every command-line flag that ``--help`` prints (C++ engine via PRISM_BIN,
   its ``prove`` subcommand, and ``python -m prism``) is documented in
   docs/USER_GUIDE.md.
-- Every Markdown link with an anchor (``VERDICTS.md#proved``, ``#section``)
+- Every Markdown link with an anchor (``VERDICTS.md#verdict-proved``, ``#section``)
   in docs/, README.md and the report writers of both engines points at a
   heading or an explicit ``<a id>`` that exists.
 """
