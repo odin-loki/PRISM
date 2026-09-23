@@ -82,6 +82,21 @@ Label self-check: 212 functions ok, 6 skipped (pointer parameters), 0 failed.
 `pir`: not present in `prism --list-stages` yet; the scorer picks it up
 automatically and reports it as its own row when it lands.
 
+### Concurrency (`tests/conformance/concurrency`, 22 labels, roadmap 2.6)
+
+This suite is scored by the `conc` stage only (docs/CONCURRENCY.md), and
+`conc` is scored on it only. The labels are `norace`, `noassert` and
+`nodeadlock`, each property-scoped, and the verdict applies to `main`.
+`conc` never proves: completeness is 0 by definition, and every true label
+is `BOUNDED`. Its counterexamples are schedules, so detection is "refuted,
+not replayed".
+
+| stage | true | false | **wrong proofs** | BOUNDED (true) | refuted, not replayed | false alarms | no answer |
+|---|---|---|---|---|---|---|---|
+| conc | 13 | 9 | **0** | 13/13 | 9/9 | 0 | 0 |
+
+(C++ engine at the conc branch, `K = 2` rounds, default unwind.)
+
 Per category (bmc, in-house): overflow 26/41 proved, 30/41 refuted;
 div 8/10, 10/10; shift 8/11, 6/11; unsigned 4/5, 3/5; c23 2/11, 3/11;
 C++ 2/14, 6/14; macro 1/3, 1/3; array 0/9, 0/9 (every array task is

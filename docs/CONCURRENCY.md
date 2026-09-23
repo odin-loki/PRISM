@@ -258,11 +258,10 @@ Completeness is 0 by definition, because every true task is `BOUNDED`.
 Detection is measured as "refuted, not replayed", because a counterexample
 is a schedule, not an input vector.
 
-Result (`PRISM_BIN=… python tools/conformance.py --suite
-tests/conformance/concurrency --no-replay`): see docs/CONFORMANCE.md
-"Concurrency". With the quick driver during development, all 9 `false`
-labels were refuted in their property class, all 13 `true` labels were
-`BOUNDED`, and there were no false alarms. A non-vacuity probe appended
+Result (`PRISM_BIN=build/prism python tools/conformance.py --suite
+tests/conformance/concurrency --no-replay`; see also docs/CONFORMANCE.md):
+0 wrong proofs, 9/9 `false` labels refuted in their property class, 13/13
+`true` labels `BOUNDED`, and 0 false alarms. A non-vacuity probe appended
 `assert(0)` to the end of `main` in every true task, and every probe was
 `FAILED`, so the end of `main` is reachable within the bound and `BOUNDED`
 is not a side effect of an unsatisfiable encoding.
