@@ -115,6 +115,9 @@ set(PRISM_SRC
   src/prism/checkers_core.cpp
   src/prism/checkers_cxx.cpp
   src/prism/checkers_dispatch.cpp
+  src/prism/conc/extract.cpp
+  src/prism/conc/lazy.cpp
+  src/prism/conc/stage.cpp
   src/prism/config.cpp
   src/prism/cparse.cpp
   src/prism/hash.cpp
@@ -335,7 +338,7 @@ if(PRISM_QT)
 endif()
 
 if(PRISM_TESTS)
-  add_executable(prism_tests tests/cpp/test_main.cpp)
+  add_executable(prism_tests tests/cpp/test_main.cpp tests/cpp/test_conc.cpp)
   target_include_directories(prism_tests PRIVATE
     "${PRISM_ROOT}/include"
     "${PRISM_ROOT}/third_party")

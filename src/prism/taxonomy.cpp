@@ -30,6 +30,8 @@ const std::vector<TaxonomyClass>& taxonomy_classes() {
         {"CXX-SLICING", "derived object passed by value as base", {704}, {{"lints", "FINDS"}}},
         {"CONC-TOCTOU", "check-then-use race on path", {367}, {{"lints", "FINDS"}}},
         {"CONC-ATOMICITY", "non-atomic increment of shared global", {362, 667}, {{"lints", "FINDS"}, {"thread", "SOME"}}},
+        {"CONC-DATA-RACE", "data race: conflicting unordered accesses by two threads", {362}, {{"conc", "FINDS"}}},
+        {"CONC-DEADLOCK", "deadlock: every live thread blocked", {833}, {{"conc", "FINDS"}}},
         {"CXX-EXCEPTION-LEAK", "heap allocation not deleted before throwing call", {401}, {{"lints", "FINDS"}}},
         {"CXX-THROW-DESTRUCTOR", "destructor throws", {248}, {{"lints", "FINDS"}}},
         {"CXX-THROW-SPEC", "dynamic exception specification", {248}, {{"lints", "FINDS"}}},

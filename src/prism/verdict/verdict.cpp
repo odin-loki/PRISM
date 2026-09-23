@@ -13,14 +13,14 @@ constexpr std::array<std::string_view, kVerdictCount> kNames{
     "FAILED", "UNKNOWN", "TIMEOUT", "ERROR", "NOFUNC", "NOTRUN", "NEEDS-HARNESS",
     "CRASH", "CLEAN", "NOSEED", "SANFAIL", "HYPOTHESIS", "READS"};
 
-constexpr std::array<std::string_view, 30> kStages{
+constexpr std::array<std::string_view, 31> kStages{
     "inventory", "classify", "lints", "taint", "thread", "interval",
     "warnings", "cppcheck", "pbsd", "sanitize", "optional", "polyglot", "esbmc",
-    "dafny", "contracts", "wp", "bmc", "pir", "harness", "concolic", "fuzz", "diff",
+    "dafny", "contracts", "wp", "bmc", "pir", "conc", "harness", "concolic", "fuzz", "diff",
     "rapid", "muttest", "ltl", "llm", "execute", "repair", "unify", "other"};
 
 // Same rows as Stage.origin in the Lean model.
-constexpr std::array<Origin, 30> kStageOrigin{
+constexpr std::array<Origin, 31> kStageOrigin{
     Origin::Pipeline, Origin::Pipeline,                            // inventory classify
     Origin::Lint, Origin::Lint, Origin::Lint, Origin::Lint,        // lints taint thread interval
     Origin::Lint, Origin::Lint, Origin::Lint,                      // warnings cppcheck pbsd
@@ -30,6 +30,7 @@ constexpr std::array<Origin, 30> kStageOrigin{
     Origin::ExternalProver, Origin::ExternalProver,                // esbmc dafny
     Origin::Solver, Origin::Solver, Origin::Solver,                // contracts wp bmc
     Origin::Solver,                                                // pir (Clang/LLVM front end)
+    Origin::Solver,                                                // conc (lazy sequentialisation; never PROVED)
     Origin::Solver,                                                // harness
     Origin::Execution,                                             // concolic
     Origin::Fuzzer,                                                // fuzz
@@ -150,7 +151,7 @@ Verdict admit(Origin origin, Verdict requested, bool certificate_checked) {
     return requested;
 }
 
-const std::array<std::string_view, 30>& audit_stages() { return kStages; }
+const std::array<std::string_view, 31>& audit_stages() { return kStages; }
 
 Origin stage_origin(std::string_view stage) {
     for (std::size_t i = 0; i < kStages.size(); ++i)
