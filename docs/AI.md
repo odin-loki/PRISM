@@ -124,7 +124,9 @@ suggestion"`. The `FAILED` verdict never changes. No model → one `NOTRUN` row.
 |---|---|---|
 | `grammars/invariants.gbnf` | JSON list of C boolean expressions | llama-server `/completion` `"grammar"`; Ollama `/api/generate` `"format"` (JSON schema) |
 | `grammars/harness.gbnf` | `{"assumptions": [nonnull / size / range]}` | same |
-| `grammars/contract.gbnf` | ACSL-ish `requires ...;` / `ensures ...;` | same (validator `validate_contract`; contract drafting itself is not wired yet) |
+| `grammars/contract.gbnf` | ACSL-ish `requires ...;` / `ensures ...;`, each with an optional trace ` // from R<n>|comment|code` | same (validator `validate_contract`, `Validated.traces`) |
+| `grammars/lean_proof.gbnf` | `{"tactics": [str, ...]}` (1..40 lines) | same (validator `validate_lean_tactics`) |
+| `grammars/assumption_audit.gbnf` | `{"flags": [{"index", "input", "reason"}]}` | same (validator `validate_assumption_audit`) |
 | `grammars/explain.gbnf` | `{"explanation": str, "fix_body": str}` | same |
 
 At run time the `ident` rule is narrowed to the names in scope, so the
@@ -201,6 +203,170 @@ post-loop code) also closes; otherwise it is `BOUNDED` with
 Python engine (`prism/bmc.py:k_induction`) has the same gap and is not
 changed (D8: frozen).
 
+## Lean proof search (9.2)
+
+`prism prove FILE.lean THEOREM` (`src/prism/ai/proof_search.cpp`, driver
+`tools/prism_prove.py` for every `sorry` under `proofs/`, `proofs/semantics`,
+`proofs/techniques`). The target is a theorem whose whole proof is `sorry` /
+`by sorry` (a `sorry` inside a longer proof is refused, and so is a theorem
+with two).
+
+1. **Prover model (role "prover").** `PRISM_PROVER_SERVER` (a llama-server
+   URL) or `PRISM_PROVER_GGUF` (a DeepSeek-Prover / Goedel-Prover /
+   Kimina-Prover GGUF; also any `*prover*.gguf` in `~/.prism/models`),
+   which PRISM serves with `llama-server` (PATH or
+   `PRISM_LLAMA_SERVER_BIN`) for the session and stops afterwards
+   (one large model resident at a time, roadmap 9.1). `--prover-model`
+   / `PRISM_PROVER_MODEL` names it in the audit. None → `NOTRUN` (exit 3).
+2. **Scratch copy.** The lake package is copied (nested packages and `.git`
+   excluded) and `lake build <Module>` is run once so imports resolve; the
+   source tree is never touched unless `--write`.
+3. **Best-first search.** A node is a tactic prefix that Lean accepts with
+   only `unsolved goals` left; the root is the theorem's goal. The node to
+   expand is the one with the best score (deeper prefixes first, then fewer
+   and shorter goals; each expansion of a node pushes it back), the frontier
+   keeps `--beam` nodes (default 4), the budget is `--budget` model calls
+   (default 24). The prompt holds the statement, the file's context, the
+   accepted prefix, the goal state, the last Lean error of that node and up
+   to 8 lemmas from the library (by word overlap), all fenced as untrusted.
+   The model returns `{"tactics": [...]}` — the rest of the proof or the
+   next step.
+4. **Validation.** Before Lean sees anything: no `sorry`, `admit`,
+   `native_decide`, `decide!`, `#` commands, `set_option`, `axiom`,
+   attributes, block comments, declarations, `open`/`end`, and no token
+   `IO`, `unsafe*`, `Elab`/`Meta`/`Compiler`, `run_tac`/`run_cmd`/`elab`/
+   `macro`/`syntax` (tokens are split at dots, so `IO.println` and
+   `Lean.Elab.Command` are caught).
+5. **Kernel check.** The candidate is spliced in place of the `sorry` with
+   `#print axioms <theorem>` after the declaration and elaborated with
+   `lake env lean` (in the bwrap jail when available, only the scratch copy
+   writable). Any error other than `unsolved goals` rejects it and is fed
+   back; `unsolved goals` alone makes it a new node.
+6. **Acceptance gate.** No error, an axiom report that is present and within
+   `{propext, Classical.choice, Quot.sound}` (a proof from a user `axiom`
+   or `sorryAx` is rejected, even though the kernel accepts it), **and**
+   `lake build <Module>` of the spliced file succeeding. Only then
+   `PROVED`. With `--write` the proof is written into the file (only if the
+   file did not change during the search), `lake build` runs again in place
+   (the file is restored if that fails), and the proof is appended to the
+   lemma library (`proofs/lemmas.jsonl` for the three proof packages,
+   `--lemmas PATH` otherwise).
+
+Law 9: elaborating the project and the model's tactics runs code (Lean
+elaborators and the project's own macros), so `prism prove` without
+`--allow-exec` is `NOTRUN`. Every model call is an audit record (`feature:
+"lean-proof"`, `checker: "lean-kernel(lake env lean)+#print axioms+lake
+build"`, `checker_result` = `accepted` / `partial: N goal(s) left` /
+`rejected: <first Lean error>` / `rejected: axioms [...]` / `rejected: lake
+build failed`; `verdict_effect: "PROVED"` only for the accepted one). The
+result JSON (`--json`, and `<out>/prove/<theorem>.json`) lists every
+attempt. Exit 0 proved, 1 not proved, 3 NOTRUN, 2 error.
+
+Tested with the real Lean kernel (v4.34.0) and a fake prover: `a + b = b +
+a` gets `rfl` (kernel error, fed back), `sorry` (validator), then `omega`
+(accepted, written, in the library); `a + b = b + a ∧ True` gets
+`constructor` (partial, two goals) then `· omega` / `· trivial` from that
+node; `(1 : Nat) = 2` with `exact bad.elim` from a user `axiom bad : False`
+is accepted by the kernel and rejected by the axiom audit. The Python test
+drives the same through `prism prove` and a fake llama-server over HTTP.
+
+The repository's own proofs have no `sorry` (`proofs/check.sh` forbids it),
+so the driver has nothing to search there today; the "proofs completed by
+the prover model" metric (9.7) is `tools/prism_prove.py`'s summary line.
+
+## The review stage (9.2 proof repair, 9.3, 4.2 contract drafting)
+
+A pipeline stage after `harness` (C++ engine; the Python engine lists it and
+records `NOTRUN`, D8). Origin `solver` in the verdict audit table (it emits
+re-checked proofs and proofs of approved contracts); everything the model
+writes there is `HYPOTHESIS` / `READS`. `src/prism/ai/review.cpp` runs, in
+order:
+
+### Assumption auditing (9.3)
+
+* **Vacuity (Z3, no model).** For every `contracts` / `wp` / `harness` /
+  approved-contract finding, the `requires` conjuncts over integer
+  parameters and the drafted integer ranges (`1 <= n <= 4`) are conjoined
+  and checked with the bitvector encoder (parameter widths, C semantics:
+  `__prism_assume(R); __prism_assert(1, 0)`). UNSAT → a `FAILED` finding of
+  class `VACUOUS-ASSUMPTION` naming the culprit clause (or the conjunction),
+  the audited stage and status: a `PROVED-ASSUMING` under it proves nothing.
+  Clauses the encoder cannot express (`p != NULL`) are listed as not
+  audited, never assumed satisfiable. The audited finding itself is not
+  rewritten (the stage journal is append-only); the `FAILED` row is next to it.
+* **Independent model pass.** Each finding's assumption list (with the
+  source fenced) goes to the model (grammar `assumption_audit.gbnf`); each
+  flag names an assumption by index, an input it would exclude and why.
+  Flags are `READS` rows (`extra.assumption`, `extra.excluded_input`,
+  `extra.ai_audit_id`, `extra.verdict_effect = "none"`); the audited
+  verdict never changes.
+
+### Contract drafting and contracts from requirements (4.2, 9.3)
+
+* `--requirements PATH` (file or directory of `.md` / `.txt` / `.rst`,
+  repeatable) is split into sentences `R1, R2, ...` with file and line
+  (headings, bullets and quotes stripped, code fences skipped).
+* For up to 8 `SCALAR` functions without any spec (`requires:`, `ensures:`,
+  ACSL), those mentioned by requirements first, the model drafts clauses
+  (grammar `contract.gbnf`, identifiers narrowed to the parameters), each
+  with a trace ` // from R<n>` / `comment` / `code`. A trace to a sentence
+  that was not offered rejects the draft.
+* Z3 vacuity check of the drafted `requires` (a vacuous draft is a
+  `HYPOTHESIS` `VACUOUS-ASSUMPTION` row, never proved); the contracts engine
+  (`prism::prove_with_contract`: BMC with the requires assumed and the
+  ensures asserted at every return) proves the function against the draft;
+  every caller in the tree is checked to satisfy the requires at each call
+  (`check_callers_requires`: the call is replaced by a fresh value, the
+  requires with the arguments substituted is asserted before the statement;
+  calls under `&&`/`||`/`?:`, in loop headers or in unbraced branches, and
+  non-side-effect-free arguments are `unknown`, never "satisfies").
+* The row is `HYPOTHESIS` (strength `READS`) with `extra.contract`,
+  `extra.trace` (clause → requirement file, line and sentence),
+  `extra.proof_status` (what the checker said), `extra.callers`, and
+  `extra.approve_with`: the approval entries to paste.
+* **Approval.** `contracts.approved.json` in the scanned root (or
+  `--contracts-approved PATH`): `{"approved": [{"function", "file",
+  "clause", "hash"}]}` with `hash = sha256(function "\n" clause)[:16]`
+  (whitespace-normalised clause). An entry whose hash does not match its
+  clause is ignored. Approved clauses are proved on every run without a
+  model: a proof is `PROVED-ASSUMING` (never more), a counterexample is
+  `FAILED` (`FUNC-CONTRACT`), and a caller that violates an approved
+  `requires` is `FAILED` on the caller. Only approved contracts can yield
+  `PROVED-ASSUMING`.
+
+### Proof store and proof repair (9.2)
+
+* After the solver stages, every function with a proof-class result is
+  recorded in `<out>/proof_store.json` (and, when `PRISM_PROOF_CACHE` is
+  set, in `<PRISM_PROOF_CACHE>/<sha(root)[:16]>.json`, so it survives a new
+  `--out`): the fingerprint (sha256 of signature + body with comments and
+  whitespace removed) and each artefact that proved it: loop invariants
+  (`extra.invariants`), contract `requires` / `ensures`, harness
+  assumptions, stage, status, source, unwind.
+* Next run, a stored function the current run proves at the same or a
+  stronger rank is maintained. Otherwise every stored artefact is
+  re-checked against the current code, strongest first: invariants by
+  Houdini + the loop-cut induction (a changed loop count is refused),
+  contracts by the contracts engine, harness assumptions by re-drafting
+  (a proof under *different* assumptions is flagged
+  `extra.assumptions_changed`), plain BMC by BMC. A re-check that proves is
+  reported by the checker (`extra.proof_store = "reused"`) — this also keeps
+  model-found invariants alive on runs without a model.
+* Nothing re-checks → with a model, repairs: new invariants seeded with the
+  stored ones (accepted only if Houdini + induction close:
+  `extra.regression = "repaired"`, audit `checker_result`
+  `PROVED-UNBOUNDED`), or an updated contract, which is a new specification
+  and therefore a `HYPOTHESIS` with `extra.approve_with`. Otherwise
+  `UNKNOWN`, class `PROOF-REGRESSION`, `extra.regression = "true"`,
+  `previous_status`, `previous_stage`, both fingerprints, `code_changed`,
+  every re-check result, and `extra.repair` (`NOTRUN: <why>` without a
+  model). The old entry stays in the store, so the regression is reported
+  again until it is fixed. Detection needs no model.
+
+Without a model the review stage writes one `NOTRUN` row naming the model
+features that did not run (drafting, model assumption audit, proof repair);
+the Z3 vacuity audit, approved contracts and regression detection still run.
+
 ## What needs a real model (not measured here)
 
 This machine has no GPU and no model (no GGUF, no Ollama), so the following
@@ -214,5 +380,8 @@ their value is **not measured**:
 * roadmap 4.3 (LoRA fine-tuning on accepted invariants/harnesses, compared on
   a held-out split) needs the RTX 3090 and the model; nothing is done for it
   here beyond the audit log, which is the data it would train on;
-* 9.2 Lean proof search, proof repair, 9.3 contracts from requirements,
-  assumption auditing, regression-test generation, solver/bound prediction.
+* Lean proof search: the share of theorems a real prover model closes (the
+  loop, kernel check, axiom audit and lake-build gate are tested with the
+  real Lean kernel and a fake prover); proofs repaired after edits by a real
+  model; the quality of drafted contracts and of model assumption flags;
+* not built: 9.3 regression-test generation, solver/bound prediction.

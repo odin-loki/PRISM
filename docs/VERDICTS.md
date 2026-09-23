@@ -84,7 +84,7 @@ Every result has an *origin*. Only two origins may prove.
 
 | Origin | May prove | Stages |
 |---|---|---|
-| `solver` | yes | `contracts`, `wp`, `bmc`, `harness`, `ltl` |
+| `solver` | yes | `contracts`, `wp`, `bmc`, `pir`, `harness`, `review` (re-checked proofs, approved contracts), `ltl` |
 | `external-prover` | yes | `optional` (CBMC), `esbmc`, `dafny` |
 | `fuzzer` | no | `fuzz`, `rapid` |
 | `model` | no | `llm`, `repair` |
@@ -165,7 +165,7 @@ arbitrary chains of rewrites.
 | cert | `admit_certified_iff` | `admit o v c = PROVED-CERTIFIED` iff `o = solver`, `v = PROVED-CERTIFIED`, `c = true` |
 | cert | `certified_only_with_certificate` | any chain of rewrites ending in `PROVED-CERTIFIED` started from a checked certificate on the solver origin |
 | - | `admit_rank_le`, `admit_proof_requires_proof`, `admit_idem` | `admit` never strengthens, never makes a proof out of a non-proof, and is idempotent |
-| audit | `proving_stages` | exactly `optional`, `esbmc`, `dafny`, `contracts`, `wp`, `bmc`, `harness`, `ltl` may prove |
+| audit | `proving_stages` | exactly `optional`, `esbmc`, `dafny`, `contracts`, `wp`, `bmc`, `pir`, `harness`, `review`, `ltl` may prove |
 | audit | `audit_nonproving` | the audit never lets a non-proving stage output a formal verdict |
 | audit | `audit_flags_nonproving` | a non-proving stage's formal verdict becomes `UNKNOWN` with a violation |
 | audit | `audit_certified` | the audit never outputs `PROVED-CERTIFIED` without a checked certificate |

@@ -124,6 +124,12 @@ loaders — the *finding* vocabulary does not care which loader answered.
                  incremental unwind k=1,2,4,…,K; static SCALAR callees
                  in the same file are inlined one level first
 6b harness       POINTER → SCALAR under `// requires:` (never unguarded)
+6c review        (C++ engine; docs/AI.md) Z3 vacuity audit of every requires /
+                 drafted range (VACUOUS-ASSUMPTION), approved contracts
+                 (contracts.approved.json → PROVED-ASSUMING, callers checked),
+                 drafted contracts from code/comments/--requirements (HYPOTHESIS,
+                 trace links), model assumption audit (READS), proof store and
+                 PROOF-REGRESSION (<out>/proof_store.json); model half NOTRUN without a model
 6c concolic      KLEE-style seed + branch negation via concrete UB oracle
 7  fuzz          FuSeBMC loop + Fuzz4All seeds + ChatFuzz stall mutants;
                  POINTER is NEEDS-HARNESS (missing harness), never ERROR
@@ -183,6 +189,7 @@ executes code derived from the scanned tree or from the LLM is opt-in:
 | optional | clang-tidy, cbmc, infer (compile only, scratch results dir), frama-c, semgrep, strix: no. **klee**: yes (external calls run natively). **spatch** rules with `@script:`/`@initialize:`/`@finalize:` blocks: yes | klee and script rules NOTRUN, the rest run | klee in the sandbox; script rules run |
 | polyglot | `perl -c` (BEGIN/use), `cargo clippy` (build.rs, proc macros), `eslint` (eslint.config.js): **yes** (`Tool.executes`). python `compile()`, ruff, pyflakes, mypy (`--config-file=`, so a project `mypy.ini` cannot load plugins), `node --check`, tsc (explicit files), `bash -n`, shellcheck, `gofmt -e`, `ruby -wc`, `php -l`, `luac -p`, yamllint: no | the three are NOTRUN, the rest run | the three run (with the user's privileges: they are the project's own build/lint code) |
 | contracts, wp, bmc, harness | no (in-process Z3) | runs | runs |
+| review (C++ engine) | no (in-process Z3; the model reads source). `prism prove` (Lean elaboration of the project and of model tactics) is a separate command that needs `--allow-exec` | runs | runs |
 | pir (C++ engine) | Clang/opt compile only, PIR + Z3 in-process: no. Translation validation (`lli` on the lowered IR): **yes** | verdicts run; validation is NOTRUN (`extra.tv`, `extra.exec = NOTRUN` + one stage row) | `lli` in the sandbox (bwrap + prlimit) |
 | concolic | no (in-process KLEE-style engine over the concrete interpreter) | runs | runs |
 | fuzz | concrete oracle: no. Compiled harness, AFL++ (`PRISM_AFL=1`), libFuzzer (`PRISM_LIBFUZZER=1`): **yes** | concrete oracle runs; the binary half is NOTRUN (`extra.binary = NOTRUN` + one stage row) | binary half in the sandbox |
