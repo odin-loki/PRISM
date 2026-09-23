@@ -1,6 +1,7 @@
 #include "prism/pipeline.hpp"
 
 #include "prism/ai.hpp"
+#include "prism/ai_assist.hpp"
 #include "prism/cparse.hpp"
 #include "prism/journal.hpp"
 #include "prism/laws.hpp"
@@ -462,6 +463,9 @@ RunReport run_pipeline(const Config& cfg) {
     apply_confidence(report);
     report.save(cfg.out / "report.json");
     write_report_md(report, cfg.out / "report.md");
+    // Roadmap 9.3 triage: triage.json + the report.md "Clusters" section.
+    // Ordering only: the report (and so every status) is const here.
+    ai::write_triage(report, cfg.out);
     write_sarif(report, cfg.out / "report.sarif");
     return report;
 }

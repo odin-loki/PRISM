@@ -1,3 +1,4 @@
+#include "prism/ai_assist.hpp"
 #include "prism/config.hpp"
 #include "prism/pipeline.hpp"
 
@@ -5,6 +6,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -190,6 +192,27 @@ static int launch_gui(int argc, char** argv) {
 
 int main(int argc, char** argv) {
     using namespace prism;
+    // Report-level subcommands (roadmap 9.3 / 9.4): they read report.json and
+    // never change a verdict.
+    if (argc > 1) {
+        const std::string sub = argv[1];
+        if (sub == "regress") return ai::regress_main(argc - 2, argv + 2);
+        if (sub == "ask") return ai::ask_main(argc - 2, argv + 2);
+        if (sub == "draft") return ai::draft_main(argc - 2, argv + 2);
+        if (sub == "triage") {
+            std::filesystem::path rp = argc > 2 ? argv[2] : "prism-out";
+            if (std::filesystem::is_regular_file(rp)) rp = rp.parent_path();
+            auto rep = RunReport::load(rp / "report.json");
+            if (!rep) {
+                std::cerr << "ERROR triage: cannot read " << (rp / "report.json").string() << "\n";
+                return 2;
+            }
+            auto t = ai::triage(*rep);
+            std::ofstream(rp / "triage.json", std::ios::binary) << ai::triage_json(t);
+            std::cout << ai::triage_markdown(t, *rep);
+            return 0;
+        }
+    }
     auto cfg = default_config();
     std::string path = "testdata";
     std::string fail_on = "never";
@@ -250,7 +273,13 @@ int main(int argc, char** argv) {
                 "  trust. Without it those steps are NOTRUN (Law 9).\n"
                 "--pbsd PATH: ParanoidBSD tree for the pbsd stage (else PRISM_PBSD; no default).\n"
                 "  Importing its modules also needs --allow-exec.\n"
-                "Writes report.json, report.md and report.sarif (SARIF 2.1.0) under --out.\n";
+                "Writes report.json, report.md and report.sarif (SARIF 2.1.0) under --out, plus\n"
+                "triage.json (root-cause clusters; ordering only, never a status change).\n"
+                "Subcommands over a finished report (see docs/AI.md):\n"
+                "  prism regress [--report OUT/report.json] [--write-tests DIR] [--run --allow-exec]\n"
+                "  prism ask \"<question>\" [--report OUT/report.json] [--json] [--no-llm]\n"
+                "  prism draft [--report OUT/report.json] [--kind report|assurance]\n"
+                "  prism triage [OUT]\n";
             return 0;
         } else if (!a.starts_with("-")) {
             path = a;

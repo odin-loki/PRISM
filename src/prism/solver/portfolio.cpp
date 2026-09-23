@@ -16,6 +16,7 @@
 #ifdef PRISM_HAS_Z3
 
 #include "prism/solver.hpp"
+#include "prism/solver_predict.hpp"
 #include "internal.hpp"
 #include "query.hpp"
 
@@ -562,6 +563,16 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
             }
         }
     }
+    if (predict::enabled(root)) {  // roadmap 9.1/9.3 learned scheduler; off unless the model file enables it
+        const auto x = predict::query_features(ft);
+        std::optional<std::size_t> best;
+        for (std::size_t i = 0; i < members.size(); ++i)
+            if (auto p = predict::seconds(root, members[i].name, x); p && !members[i].lrat) {
+                members[i].est = *p;
+                if (!best || *p < members[*best].est) best = i;
+            }
+        if (best) lead = best;
+    }
     if (lead && members.size() > 1) {
         const double delay = std::min(3.0 * members[*lead].est + 0.2, 0.3 * opt.timeout_s);
         for (std::size_t i = 0; i < members.size(); ++i)
@@ -970,6 +981,7 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
             if (name == res.winner) s["wins"] = s.value("wins", 0) + 1;
         }
         detail::write_file(root / "solve_times.json", h.dump(1));
+        predict::log_query(root, ft, res, res.ran, now_s() - t0);  // training data for tools/prism_ai/predict.py
     }
     return finish(res);  // the guard removes the work directory
 }

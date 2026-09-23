@@ -1,0 +1,14 @@
+# PRISM questions over findings (roadmap 9.4): a natural-language question is
+# translated into this structured query. The query is printed with the answer
+# so it can be checked; the model never sees findings and cannot set a verdict.
+# At run time the stage and status rules are the pipeline's own vocabularies.
+root     ::= "{" ws "\"stages\"" ws ":" ws stages ws "," ws "\"statuses\"" ws ":" ws statuses ws "," ws "\"cls\"" ws ":" ws strs ws "," ws "\"file_glob\"" ws ":" ws str ws "," ws "\"function_glob\"" ws ":" ws str ws "," ws "\"text\"" ws ":" ws str ws "," ws "\"group_by\"" ws ":" ws groupby ws "," ws "\"count_only\"" ws ":" ws bool ws "}" ws
+stages   ::= "[" ws ( stage ( ws "," ws stage ){0,8} )? ws "]"
+statuses ::= "[" ws ( status ( ws "," ws status ){0,12} )? ws "]"
+strs     ::= "[" ws ( str ( ws "," ws str ){0,8} )? ws "]"
+stage    ::= "\"" [a-z]{2,12} "\""
+status   ::= "\"PROVED-CERTIFIED\"" | "\"PROVED-UNBOUNDED\"" | "\"PROVED\"" | "\"PROVED-ASSUMING\"" | "\"BOUNDED\"" | "\"FAILED\"" | "\"UNKNOWN\"" | "\"TIMEOUT\"" | "\"ERROR\"" | "\"NOTRUN\"" | "\"NEEDS-HARNESS\"" | "\"CRASH\"" | "\"CLEAN\"" | "\"SANFAIL\"" | "\"HYPOTHESIS\"" | "\"READS\""
+groupby  ::= "\"\"" | "\"stage\"" | "\"status\"" | "\"cls\"" | "\"file\"" | "\"function\""
+bool     ::= "true" | "false"
+str      ::= "\"" [a-zA-Z0-9_ .*?/+:-]{0,80} "\""
+ws       ::= [ ]{0,2}

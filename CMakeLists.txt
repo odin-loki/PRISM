@@ -105,10 +105,14 @@ endif()
 # Explicit source list (no file(GLOB)).
 set(PRISM_SRC
   src/prism/adapters.cpp
+  src/prism/ai/ask.cpp
   src/prism/ai/core.cpp
+  src/prism/ai/draft.cpp
   src/prism/ai/explain.cpp
   src/prism/ai/harness.cpp
   src/prism/ai/invariants.cpp
+  src/prism/ai/regress.cpp
+  src/prism/ai/triage.cpp
   src/prism/bmc.cpp
   src/prism/capi.cpp
   src/prism/checkers_api.cpp
@@ -141,6 +145,7 @@ set(PRISM_SRC
   # Solver library (roadmap 3.1-3.3): portfolio, query cache, certified mode, SLS.
   src/prism/solver/cnf.cpp
   src/prism/solver/portfolio.cpp
+  src/prism/solver/predict.cpp
   src/prism/solver/query.cpp
   src/prism/solver/util.cpp
 )
@@ -335,7 +340,9 @@ if(PRISM_QT)
 endif()
 
 if(PRISM_TESTS)
-  add_executable(prism_tests tests/cpp/test_main.cpp)
+  add_executable(prism_tests tests/cpp/test_main.cpp
+    # Roadmap 9.1/9.3/9.4 AI assistant features (regress, triage, ask, draft, predict).
+    tests/cpp/test_ai_assist.cpp)
   target_include_directories(prism_tests PRIVATE
     "${PRISM_ROOT}/include"
     "${PRISM_ROOT}/third_party")
