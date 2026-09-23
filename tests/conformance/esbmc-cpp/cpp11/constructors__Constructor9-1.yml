@@ -1,0 +1,9 @@
+format_version: 1
+input_files: constructors__Constructor9-1.cpp
+language: C++
+property: esbmc-cpp
+upstream: esbmc@653926f91580 regression/esbmc-cpp11/constructors/Constructor9-1
+esbmc_options: ""
+deterministic: true
+expected:
+  main: true

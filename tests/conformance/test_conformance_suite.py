@@ -10,6 +10,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import shutil
 import sys
 import textwrap
@@ -89,6 +90,110 @@ class SuiteShape(unittest.TestCase):
         self.assertIn(conf.JULIET_SHA256, sources)
         self.assertIn(str(conf.JULIET_SIZE), sources)
         self.assertFalse(list(SUITE.rglob("CWE*")), "Juliet stays out of git")
+
+
+class EsbmcCpp(unittest.TestCase):
+    """Roadmap 2.7: ESBMC's C++ regression tests (pinned; a curated subset in git)."""
+
+    def test_subset_is_pinned_and_small(self) -> None:
+        tasks = conf.discover([SUITE / "esbmc-cpp"])
+        self.assertGreaterEqual(len(tasks), 40)
+        self.assertLessEqual(len(tasks), 80, "the full ESBMC set stays out of git (--fetch-esbmc)")
+        for t in tasks:
+            self.assertEqual(t.origin, "esbmc-cpp", t.ident)
+            self.assertEqual(t.prop, "esbmc-cpp", t.ident)
+            self.assertEqual(list(t.expected), ["main"], t.ident)
+            self.assertTrue(t.deterministic, t.ident)
+            self.assertIn(f"esbmc@{conf.ESBMC_COMMIT[:12]} regression/esbmc-cpp", t.yml.read_text(), t.ident)
+            self.assertNotRegex(t.source.read_text(errors="replace"), conf.ESBMC_FOREIGN_TEXT, t.ident)
+        self.assertEqual({t.expected["main"] for t in tasks}, {True, False})
+        sources = (SUITE / "SOURCES.md").read_text()
+        self.assertIn(conf.ESBMC_COMMIT, sources)
+        self.assertTrue((SUITE / "esbmc-cpp" / "LICENSE.Apache-2.0.txt").exists())
+        self.assertIn("esbmc-cpp", conf.PROPERTY_SCOPED)
+        self.assertIn("esbmc-cpp", conf.DEFAULT_ROOTS)
+
+    def test_convert(self) -> None:
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            reg = Path(d) / "regression"
+
+            def mk(name: str, desc: str, files: dict[str, str]) -> Path:
+                td = reg / "esbmc-cpp" / "vector" / name
+                td.mkdir(parents=True)
+                (td / "test.desc").write_text(desc)
+                for fn, text in files.items():
+                    (td / fn).write_text(text)
+                return td
+
+            ok = mk("v1", "CORE\nmain.cpp\n--unwind 10 --no-unwinding-assertions\n^VERIFICATION SUCCESSFUL$\n",
+                    {"main.cpp": "#include <cassert>\nint main() { assert(1); }\n"})
+            t, why = conf.esbmc_convert(ok, reg)
+            self.assertEqual(why, "")
+            assert t is not None
+            self.assertTrue(t["expected"])
+            self.assertEqual(t["label_bound"], 10)
+            self.assertTrue(t["deterministic"])
+            self.assertEqual(conf.esbmc_task_name(t["upstream"]), ("cpp03_vector", "v1"))
+            bad = mk("v2", "CORE\nmain.cpp\n\n^VERIFICATION FAILED$\n",
+                     {"main.cpp": "int nondet_int();\nint main() { return 1 / nondet_int(); }\n"})
+            t, why = conf.esbmc_convert(bad, reg)
+            assert t is not None
+            self.assertFalse(t["expected"])
+            self.assertFalse(t["deterministic"])
+            for name, desc, files, reason in [
+                ("k", "KNOWNBUG\nmain.cpp\n\n^VERIFICATION FAILED$\n", {"main.cpp": ""}, "KNOWNBUG"),
+                ("o", "CORE\nmain.cpp\n--overflow-check\n^VERIFICATION FAILED$\n", {"main.cpp": ""},
+                 "--overflow-check"),
+                ("m", "CORE\nmain.cpp\n\n^VERIFICATION FAILED$\n", {"main.cpp": "", "a.h": ""}, "several"),
+                ("c", "CORE\nmain.cpp\n\n^VERIFICATION FAILED$\n^  String capacity exceeded$\n",
+                 {"main.cpp": ""}, "operational model"),
+                ("n", "CORE\nmain.cpp\n\n^EXIT=0$\n", {"main.cpp": ""}, "no single"),
+            ]:
+                t, why = conf.esbmc_convert(mk(name, desc, files), reg)
+                self.assertIsNone(t, name)
+                self.assertIn(reason, why, name)
+
+    def test_property_scope(self) -> None:
+        t = conf.Task(ident="x.yml", yml=Path("x.yml"), source=Path("x.cpp"), origin="esbmc-cpp", category="c",
+                      lang="C++", prop="esbmc-cpp", expected={"main": True})
+        # ESBMC does not check signed overflow by default: another property
+        self.assertEqual(conf.classify(t, "main", [{"status": "FAILED", "cls": "INT-SIGNED-OVF"}]),
+                         "failed-other-property")
+        self.assertEqual(conf.classify(t, "main", [{"status": "FAILED", "cls": "FUNC-CONTRACT"}]), "false-alarm")
+        t.expected["main"] = False
+        self.assertEqual(conf.classify(t, "main", [{"status": "PROVED"}]), "wrong-proof")
+
+
+class LibcModels(unittest.TestCase):
+    """Roadmap 8.2: contract harnesses for the pir stage's libc models."""
+
+    def test_harnesses(self) -> None:
+        tasks = conf.discover([SUITE / "libc-models"])
+        self.assertGreaterEqual(len(tasks), 4)
+        models = REPO / "src" / "prism" / "pir" / "models" / "libc"
+        included: set[str] = set()
+        for t in tasks:
+            self.assertEqual(t.origin, "libc-models", t.ident)
+            text = t.source.read_text()
+            included |= set(re.findall(r'#include "\.\./\.\./\.\./src/prism/pir/models/libc/(\w+\.c)"', text))
+            for fn, exp in t.expected.items():
+                self.assertIn(f"int {fn}(", text, t.ident)
+                self.assertEqual(fn.endswith("_true"), exp, fn)
+            self.assertEqual({True, False}, set(t.expected.values()), t.ident)
+            # every false harness names the violation it plants
+            self.assertEqual(set(t.expect_class), {fn for fn, e in t.expected.items() if not e}, t.ident)
+        self.assertEqual(included, {p.name for p in models.glob("*.c")}, "every model file has a harness")
+        self.assertIn("libc-models", conf.DEFAULT_ROOTS)
+
+    def test_expect_class(self) -> None:
+        t = conf.Task(ident="x.yml", yml=Path("x.yml"), source=Path("x.c"), origin="libc-models", category="c",
+                      lang="C", prop="libc-contract", expected={"f": False},
+                      expect_class={"f": {"MEM-OOB-WRITE", "MEM-OOB-READ"}})
+        self.assertEqual(conf.classify(t, "f", [{"status": "FAILED", "cls": "MEM-OOB-WRITE"}]), "refuted")
+        # refuted for another reason than the planted one: not a detection
+        self.assertEqual(conf.classify(t, "f", [{"status": "FAILED", "cls": "UNINIT-READ"}]),
+                         "failed-other-property")
 
 
 class ScorerRules(unittest.TestCase):

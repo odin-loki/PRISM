@@ -1,0 +1,56 @@
+format_version: 1
+input_files: string_contracts.c
+language: C
+property: libc-contract
+expected:
+  strlen_true: true
+  strlen_earlier_nul_false: false
+  strlen_unterminated_false: false
+  strnlen_true: true
+  strnlen_oob_false: false
+  strcpy_true: true
+  strcpy_short_dest_false: false
+  strncpy_true: true
+  strncpy_terminates_false: false
+  strcat_true: true
+  strcat_overflow_false: false
+  strncat_true: true
+  strncat_count_false: false
+  strcmp_true: true
+  strcmp_signed_false: false
+  strncmp_true: true
+  strncmp_prefix_false: false
+  strchr_true: true
+  strchr_nul_false: false
+  strrchr_true: true
+  strrchr_first_false: false
+  memcpy_true: true
+  memcpy_overlap_false: false
+  memmove_true: true
+  memmove_oob_false: false
+  memset_true: true
+  memset_int_false: false
+  memcmp_true: true
+  memcmp_nul_false: false
+  memchr_true: true
+  memchr_oob_false: false
+  strdup_true: true
+  strdup_null_false: false
+expect_class:  # the violation each false harness plants
+  strlen_earlier_nul_false: "FUNC-CONTRACT"
+  strlen_unterminated_false: "MEM-OOB-READ"
+  strnlen_oob_false: "MEM-OOB-READ"
+  strcpy_short_dest_false: "MEM-OOB-WRITE"
+  strncpy_terminates_false: "FUNC-CONTRACT"
+  strcat_overflow_false: "MEM-OOB-WRITE"
+  strncat_count_false: "FUNC-CONTRACT"
+  strcmp_signed_false: "FUNC-CONTRACT"
+  strncmp_prefix_false: "FUNC-CONTRACT"
+  strchr_nul_false: "FUNC-CONTRACT"
+  strrchr_first_false: "FUNC-CONTRACT"
+  memcpy_overlap_false: "MEM-OVERLAP"
+  memmove_oob_false: "MEM-OOB-READ|MEM-OOB-WRITE"
+  memset_int_false: "FUNC-CONTRACT"
+  memcmp_nul_false: "FUNC-CONTRACT"
+  memchr_oob_false: "MEM-OOB-READ"
+  strdup_null_false: "PTR-NULL-DEREF|MEM-NULL-DEREF|NULL-DEREF"

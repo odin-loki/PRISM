@@ -1,0 +1,11 @@
+format_version: 1
+input_files: new_delete.cpp
+language: C++
+property: libc-contract
+expected:
+  new_array_true: true
+  new_delete_mismatch_false: false
+  new_array_oob_false: false
+expect_class:  # the violation each false harness plants
+  new_delete_mismatch_false: "MEM-MISMATCHED-FREE"
+  new_array_oob_false: "MEM-OOB-WRITE"

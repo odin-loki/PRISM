@@ -1,0 +1,10 @@
+format_version: 1
+input_files: irep2_nested_array_row_address.cpp
+language: C++
+property: esbmc-cpp
+upstream: esbmc@653926f91580 regression/esbmc-cpp/cpp/irep2_nested_array_row_address
+esbmc_options: "--clang-cpp-irep2-adjust-only --std c++17 --incremental-bmc"
+std: c++17
+deterministic: true
+expected:
+  main: true

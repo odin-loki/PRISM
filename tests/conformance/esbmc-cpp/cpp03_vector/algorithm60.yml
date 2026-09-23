@@ -1,0 +1,10 @@
+format_version: 1
+input_files: algorithm60.cpp
+language: C++
+property: esbmc-cpp
+upstream: esbmc@653926f91580 regression/esbmc-cpp/vector/algorithm60
+esbmc_options: "--unwind 10 --no-unwinding-assertions --timeout 900"
+label_bound: 10
+deterministic: true
+expected:
+  main: true

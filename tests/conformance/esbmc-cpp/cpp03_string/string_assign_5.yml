@@ -1,0 +1,10 @@
+format_version: 1
+input_files: string_assign_5.cpp
+language: C++
+property: esbmc-cpp
+upstream: esbmc@653926f91580 regression/esbmc-cpp/string/string_assign_5
+esbmc_options: "--unwind 30 --no-unwinding-assertions --timeout 900"
+label_bound: 30
+deterministic: true
+expected:
+  main: true

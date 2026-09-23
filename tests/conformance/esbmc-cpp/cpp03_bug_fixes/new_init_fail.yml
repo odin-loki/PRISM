@@ -1,0 +1,9 @@
+format_version: 1
+input_files: new_init_fail.cpp
+language: C++
+property: esbmc-cpp
+upstream: esbmc@653926f91580 regression/esbmc-cpp/bug_fixes/new_init_fail
+esbmc_options: "--multi-property"
+deterministic: true
+expected:
+  main: false

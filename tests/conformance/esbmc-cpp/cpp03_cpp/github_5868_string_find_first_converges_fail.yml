@@ -1,0 +1,10 @@
+format_version: 1
+input_files: github_5868_string_find_first_converges_fail.cpp
+language: C++
+property: esbmc-cpp
+upstream: esbmc@653926f91580 regression/esbmc-cpp/cpp/github_5868_string_find_first_converges_fail
+esbmc_options: "--std gnu++17"
+std: c++17
+deterministic: true
+expected:
+  main: false

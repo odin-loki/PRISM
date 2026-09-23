@@ -598,6 +598,17 @@ long long mul_ll(long long a) { return a * 3; }
     }
 }
 
+TEST_CASE("bmc soundness: dynamic initialisation before main (S8)") {
+    // a global's constructor throws before main: main's proof is not the program's
+    auto by = bmc_source("sound_s8.cpp", R"(struct C { C() { throw 1; } };
+C global_c;
+int main() { return 0; }
+)");
+    REQUIRE(by.count("main"));
+    CHECK(by["main"].status == prism::laws::NEEDS_HARNESS);
+    CHECK(by["main"].message.find("dynamic initialisation before main") != std::string::npos);
+}
+
 TEST_CASE("bmc soundness: unmodelled constructs are never proofs") {
     auto by = bmc_source("sound_u.c", R"(#define SQ(x) ((x) * (x))
 int b6(int x) { return SQ(x); }

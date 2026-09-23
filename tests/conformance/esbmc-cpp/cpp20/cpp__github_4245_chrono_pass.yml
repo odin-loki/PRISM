@@ -1,0 +1,10 @@
+format_version: 1
+input_files: cpp__github_4245_chrono_pass.cpp
+language: C++
+property: esbmc-cpp
+upstream: esbmc@653926f91580 regression/esbmc-cpp20/cpp/github_4245_chrono_pass
+esbmc_options: "--unwind 2 --std c++20"
+std: c++20
+deterministic: true
+expected:
+  main: true

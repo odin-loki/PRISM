@@ -1,0 +1,9 @@
+format_version: 1
+input_files: convert_vft_multi_fail.cpp
+language: C++
+property: esbmc-cpp
+upstream: esbmc@653926f91580 regression/esbmc-cpp/polymorphism_bringup_overload/convert_vft_multi_fail
+esbmc_options: "--unwind 10 --no-unwinding-assertions --timeout 900"
+deterministic: true
+expected:
+  main: false

@@ -1,0 +1,10 @@
+format_version: 1
+input_files: lower-exceptions_bad_exception_terminate_fail.cpp
+language: C++
+property: esbmc-cpp
+upstream: esbmc@653926f91580 regression/esbmc-cpp/try_catch/lower-exceptions_bad_exception_terminate_fail
+esbmc_options: "--unwind 4 --no-unwinding-assertions --std c++03"
+std: c++03
+deterministic: true
+expected:
+  main: false
