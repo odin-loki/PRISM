@@ -185,7 +185,23 @@ set(PRISM_SRC
   src/prism/sarif.cpp
   src/prism/scope.cpp
   src/prism/shipdocs.cpp
-  src/prism/stages_rest.cpp
+  src/prism/stages/common.cpp
+  src/prism/stages/concolic.cpp
+  src/prism/stages/contracts.cpp
+  src/prism/stages/diff.cpp
+  src/prism/stages/execute_cex.cpp
+  src/prism/stages/fuse.cpp
+  src/prism/stages/harness_bmc.cpp
+  src/prism/stages/hypothesize.cpp
+  src/prism/stages/interp.cpp
+  src/prism/stages/llm.cpp
+  src/prism/stages/ltl.cpp
+  src/prism/stages/platform.cpp
+  src/prism/stages/rapid.cpp
+  src/prism/stages/rlef.cpp
+  src/prism/stages/taint.cpp
+  src/prism/stages/thread.cpp
+  src/prism/stages/wp.cpp
   src/prism/taxonomy.cpp
   src/prism/verdict/verdict.cpp
   # Solver library (roadmap 3.1-3.3): portfolio, query cache, certified mode, SLS.

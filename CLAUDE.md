@@ -92,6 +92,7 @@ entry in `src/prism/config.cpp`. See `docs/SUPPLY_CHAIN.md`.
 
 - `prism/` Python engine; `prism/cocci/` shipped Coccinelle rules
 - `src/prism/` C++ engine; `src/gui/` Qt GUI; `src/cuda/` CUDA havoc
+- `src/prism/stages/` one .cpp per analysis stage + shared `common`/`interp`/`llm`/`platform` (internal headers)
 - `include/prism/` C++ headers
 - `tests/` Python tests (+ `tests/cpp/` doctest suite)
 - `testdata/` planted-bug corpus both engines run on

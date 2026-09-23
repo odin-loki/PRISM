@@ -541,7 +541,7 @@ class TestCppFuzzBinarySource(unittest.TestCase):
     """C++ fuzz_function must match the Python engine _binary_fuzz after concrete."""
 
     def test_binary_fuzz_after_concrete_before_clean(self):
-        src = (ROOT / "src" / "prism" / "stages_rest.cpp").read_text(encoding="utf-8")
+        src = (ROOT / "src" / "prism" / "stages" / "fuse.cpp").read_text(encoding="utf-8")
         start = src.find("Finding fuzz_function(")
         self.assertGreaterEqual(start, 0)
         body = src[start : start + 16000]

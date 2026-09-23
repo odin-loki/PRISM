@@ -10,7 +10,7 @@
 
 namespace prism::ai {
 
-// Plain-HTTP client of the pipeline (defined in src/prism/stages_rest.cpp,
+// Plain-HTTP client of the pipeline (defined in src/prism/stages/platform.cpp,
 // same socket code the llm stage uses). nullopt on connection failure or non-2xx.
 std::optional<std::string> http_request_raw(const std::string& method, const std::string& url,
                                             const std::string& body, int timeout_ms);
