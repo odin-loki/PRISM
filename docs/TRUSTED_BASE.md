@@ -7,21 +7,78 @@ proof. Roadmap Parts 3.2, 5 and 8.3 require this file, and it is meant to be
 shipped with every report.
 
 It describes the code **as it is today**. Where the roadmap plans something
-that does not exist yet (the Lean-proved bit-blaster, the Lean verdict module,
-per-run translation validation), the file says "planned" and lists what stands
-in its place now.
+that does not exist yet (the Lean verdict module compiled into PRISM, per-run
+translation validation), the file says "planned" and lists what stands in its
+place now. The Lean-proved bit-blaster and Lean's LRAT checker exist and are
+used by certified mode (section 1.1); Z3's tactics remain as the fallback
+(section 1.2), and every certificate says which one made its CNF.
 
 ## 1. What `PROVED-CERTIFIED` depends on today
 
 The solver library (`include/prism/solver.hpp`, `src/prism/solver/`) returns
 `certified = true`, which the verdict module reports as `PROVED-CERTIFIED`,
-only when **all** of these steps succeed for one query:
+only when a checked certificate exists for the exact CNF of the query. There
+are two ways the CNF is made; `certificate_info` always starts with which one
+(`bitblast: lean-proved (toCNF_equisat) …` or `bitblast: z3 tactics …`).
 
-1. The formula is quantifier-free bitvector/Boolean: no arrays, floating
-   point, uninterpreted functions, integers or reals
-   (`not_certifiable_reason`). Otherwise the result is the plain answer with
-   the note `not certifiable: <reason>`.
-2. **Bit-blast.** The formula is translated into a fresh private Z3 context.
+`SolveOptions::bitblaster` chooses (`auto`, the default; `lean`; `z3`).
+`auto` uses the Lean-proved bit-blaster for every certified request whose
+formula is inside its fragment and whose two executables are built, and Z3's
+tactics otherwise. A fallback is never silent: the note and the
+`certificate_info` say `bitblast: z3 tactics, unproved (Lean bit-blaster not
+used: <why>)`, where `<why>` is `formula outside the proved fragment:
+operator bvsmod is outside the proved fragment`, `prism-bitblast not found
+(NOTRUN; …)` or `prism-lrat-check not found (NOTRUN; …)`.
+
+Common first step: the formula is quantifier-free bitvector/Boolean, with no
+arrays, floating point, uninterpreted functions, integers or reals
+(`not_certifiable_reason`). Otherwise the result is the plain answer with the
+note `not certifiable: <reason>`.
+
+### 1.1 The Lean-proved path (roadmap 3.2 steps 2–5)
+
+1. **Serialize.** `to_lean_dag` (`src/prism/solver/leanbb.cpp`) writes the Z3
+   term as the proved bit-blaster's input: `(dag (def W BASE e)* e)`
+   (grammar in `proofs/techniques/PrismTechniques/BitblastSexp.lean`). Each
+   Z3 operator maps to one `BVExpr` constructor, a few by definition
+   (`bvuge x y` → `ule y x`, `=>` → `or (not a) b`, `bvnand` → `not (and …)`,
+   rotations → `concat` of `extract`s, `bvredor` → `not (eq x 0)`). Free
+   constants get disjoint bit blocks from 0; every subterm used more than
+   once becomes a definition with a base above all inputs and all earlier
+   definitions, so the text is linear in the Z3 DAG. Any other operator
+   (`bvsmod`, arrays, UF, …) makes the whole query fall back (1.2).
+2. **Bit-blast with the proved code.** `prism-bitblast` (a `lean_exe` of
+   `proofs/techniques`) parses the text, checks `defsOK`, and prints
+   `Std.Sat.CNF.dimacs (dagCNF g)` — exactly the function `toCNF` whose
+   correctness is `toCNF_equisat` and `certified_dag_unsat`
+   (`docs/PROOFS_TECHNIQUES.md`, section 4) — plus a variable map. PRISM
+   checks the map against its own layout (input bit `j` is DIMACS variable
+   `2j+1`), writes the DIMACS text byte for byte to `query.cnf` and records its
+   SHA-256.
+3. **Solve.** CaDiCaL runs on `query.cnf` with `--lrat=true --binary=false` and
+   writes `proof.lrat`. It must report UNSAT. CaDiCaL is **not** trusted.
+4. **Check twice.** Both must accept:
+   - `cake_lpr query.cnf proof.lrat` prints the exact line `s VERIFIED UNSAT`;
+   - `prism-lrat-check --dag query.dag query.cnf proof.lrat` — core Lean's
+     verified LRAT checker (`Std.Tactic.BVDecide.LRAT.check`, soundness
+     `LRAT.check_sound`). It rebuilds the CNF from `query.dag` with the proved
+     bit-blaster, refuses unless `query.cnf` is byte for byte that CNF, and
+     runs `checkDag g cert`, the exact premise of the theorem
+     `checkDag_sound : checkDag g cert = true → ∀ ρ, g.eval ρ ≠ 1#1`. It must
+     print `s VERIFIED UNSAT` and exit 0.
+   drat-trim's `lrat-check` runs as well when installed and can only veto.
+5. The SHA-256 of `query.cnf` is taken again after checking and must equal
+   the recorded one.
+
+`certificate_info` then reads, for example: `bitblast: lean-proved
+(toCNF_equisat), prism-bitblast proofs/techniques, 2 shared definitions;
+cadical c607304… lrat 224 steps, checked by cake_lpr 2e3b2dc…; and by Lean's
+verified LRAT checker (prism-lrat-check --dag proofs/techniques,
+checkDag_sound); lrat-check a36874a… agrees; cnf sha256 …`.
+
+### 1.2 The Z3-tactics path (fallback, and `bitblaster = z3`)
+
+1. **Bit-blast.** The formula is translated into a fresh private Z3 context.
    Each bitvector constant `x` of width `w` is replaced by the concatenation of
    `w` fresh Boolean constants, and the fixed Z3 tactic chain
    `simplify` → `bit-blast` → `simplify` → `tseitin-cnf` is applied
@@ -31,44 +88,67 @@ only when **all** of these steps succeed for one query:
    deletion except clauses that contain a literal `true`. The bit constants
    are numbered first, so the variable map back to `x` is known by
    construction. It does not go through Z3's model converter.
-3. The DIMACS text is written to `query.cnf` and its SHA-256 is recorded.
-4. **Solve.** CaDiCaL runs on that file with `--lrat=true --binary=false` and
-   writes `proof.lrat`. It must report UNSAT. CaDiCaL itself is **not**
-   trusted.
-5. **Check.** `cake_lpr query.cnf proof.lrat` must print the exact line
+2. The DIMACS text is written to `query.cnf` and its SHA-256 is recorded.
+3. **Solve.** CaDiCaL, as in 1.1.
+4. **Check.** `cake_lpr query.cnf proof.lrat` must print the exact line
    `s VERIFIED UNSAT` (it exits 0 on rejection too, so only that line counts).
-   If drat-trim's `lrat-check` is installed, it runs as a second checker and
-   can only veto: if it rejects, the result is not certified. When the CNF
-   already contains the empty clause, `lrat-check` does not apply and the
-   certificate info says so.
-6. The SHA-256 of `query.cnf` is taken again after checking and must equal
+   If `prism-lrat-check` (Lean's checker, DIMACS mode) or drat-trim's
+   `lrat-check` is installed, each runs as a further checker and can only
+   veto: if one rejects, the result is not certified. When the CNF already
+   contains the empty clause, neither applies and the certificate info says so.
+5. The SHA-256 of `query.cnf` is taken again after checking and must equal
    the recorded one.
 
+### Failure and caching (both paths)
+
 If any step fails, `certified` stays `false` and the note gives the reason,
-for example `not certified: cake_lpr rejected: ...`, `cadical not found
+for example `not certified: cake_lpr rejected: ...`, `not certified: cake_lpr
+accepted but Lean's LRAT checker rejected: ...`, `cadical not found
 (NOTRUN)` or `cadical did not finish in time`. The plain answer (`PROVED`
 trusts the solver) is still reported. The result is never quietly upgraded
-(roadmap 3.2). `certificate_info` records the solver and checker builds, the
-number of LRAT steps and the CNF hash, for example
-`cadical c607304… lrat 131 steps, checked by cake_lpr 2e3b2dc…; lrat-check a36874a… agrees; cnf sha256 …`.
+(roadmap 3.2).
 
 A cached certified result is **not** trusted from disk. On a cache hit, PRISM
-bit-blasts the formula again, requires the new CNF to hash to the stored
-`cnf_sha256`, and runs cake_lpr on the stored proof again. A cached plain
+bit-blasts the formula again with the bit-blaster recorded in the entry
+(`"bitblaster": "lean"` or `"z3"`; a request that would use the other one
+solves again), requires the new CNF to hash to the stored `cnf_sha256`, and
+runs the checkers of that path on the stored proof again. A cached plain
 `Unsat` never answers a certified request.
 
-### Trusted components for `PROVED-CERTIFIED` (today)
+### Trusted components for `PROVED-CERTIFIED` on the Lean-proved path
+
+This is the trusted base when `certificate_info` starts with
+`bitblast: lean-proved`.
+
+| # | Component | Why it is trusted | Mitigation today |
+|---|---|---|---|
+| L1 | Clang (C/C++ to LLVM IR) | Produces the program that is verified | Pinned release. Out of this library's scope (Part 2). |
+| L2 | The LLVM→PIR translation | If it changes the program, the VC is about another program | Validated per run by the `pir` stage (roadmap 2.4: translation checked by execution). |
+| L3 | PIR property instrumentation and the PIR encoder (C++, `src/prism/pir/`) | If the VC does not mean "the property is violated", nothing downstream can notice | Modelled and proved in `proofs/semantics` (roadmap 5.3), but the C++ is not extracted from the model. Counterexamples are replayed. |
+| L4 | **The Z3 → S-expression serializer** (`to_lean_dag`, about 250 lines of C++) | A wrong mapping would bit-blast a different formula | Small, one operator per case. `tests/cpp/test_leanbb.cpp` evaluates Z3's term and the serialized formula on random and boundary assignments for every mapped operator at widths 8, 13, 32 and 64, against a C++ reference evaluator and against the Lean semantics itself (`prism-bitblast --eval`, i.e. `Dag.eval` of the parsed formula), and requires them to agree. SAT answers are still validated on the original Z3 term. |
+| L5 | **The Lean compiler** (and the unproved S-expression parser in `BitblastSexp.lean`) | `prism-bitblast` and `prism-lrat-check` are compiled Lean: the executed code is the proved code (`toCNF`, `checkDag`, `LRAT.check`) only modulo the compiler. A parser bug can only change which formula is checked. | The round trip in L4 runs through the same parser and compiler. The Lean kernel checked every proof (`#assert_axioms`: standard axioms only). |
+| L6 | The Lean kernel and the three standard axioms | Checks `toCNF_equisat`, `checkDag_sound` and core's `LRAT.check_sound` | Widely audited; `proofs/techniques` CI rebuilds and re-audits. |
+| — | CaDiCaL | **Not trusted.** Its UNSAT counts only through the checked LRAT proof. | — |
+| L7 | **cake_lpr** and **Lean's LRAT checker**, run together | The certificate checkers; both must accept | cake_lpr is verified in CakeML down to machine code (it still trusts the HOL4 kernel, CakeML's x86-64 model, `basis_ffi.c` and the OS). Lean's checker is verified in Lean (`LRAT.check_sound`) and runs on the CNF it rebuilds from the formula. A bug in one alone cannot certify a false claim. |
+| L8 | The CNF file on disk, PRISM's SHA-256, the process runner and the verdict-line match | Identify and read back the exact CNF and the checkers' verdicts | As T6–T8 below. |
+| L9 | The verdict mapping, the C++ compiler that builds PRISM, the hardware and the OS | As T9–T10 below | As T9–T10 below |
+
+Compared with the Z3 path, T2–T4 (Z3's tactics, `Z3_translate`, PRISM's
+clause reader) are gone from this base; L4 (the serializer) and L5 (the Lean
+compiler) take their place.
+
+### Trusted components for `PROVED-CERTIFIED` on the Z3-tactics path
 
 | # | Component | Why it is trusted | Mitigation today | Roadmap target |
 |---|---|---|---|---|
 | T1 | The formula: Clang, the LLVM→PIR translation, property instrumentation and the PIR encoder that produce the Z3 bitvector VC (Parts 2 and 5.3; the `pir` stage) | If the VC does not mean "the property is violated", nothing downstream can notice | Out of this library's scope. It is described by the `pir` stage. This library only checks SAT models against the VC. Replaying a counterexample on the real program is the caller's job. | Encoder soundness proved in Lean (5.3), LLVM→PIR refinement proof (8.2), per-run translation validation (2.4) |
-| T2 | `Z3_translate` into the fresh context | Copies the term. A bug would change the formula. | Z3 is widely used. SAT answers are validated on the **original** term in the caller's context. | Replaced by the Lean-proved bit-blaster reading the VC directly (5.4) |
-| T3 | **Z3's `simplify`, `bit-blast` and `tseitin-cnf` tactics** (Z3 4.13.4 vendored in `third_party/z3`) | These are the bit-blaster. If they produce a CNF that is UNSAT while the formula is SAT, cake_lpr will correctly certify the wrong CNF. **This is the largest unproved part of the certified path.** | (a) Every SAT model found on the CNF, by CaDiCaL, Kissat or ProbSAT, is mapped back through the variable map and evaluated on the original formula in Z3, so a bad bit-blast shows up as a rejected model. (b) In certified mode, CaDiCaL's run on the CNF is always waited for, even when Z3 answered UNSAT first. If CaDiCaL then finds a model that validates, the counterexample wins and the note says `DISAGREEMENT:`. If its model does not validate, the result is not certified. (c) The doctest suite checks the variable map on known models. None of these is a proof. | A bit-blaster proved correct in Lean, reusing `bv_decide` (roadmap 5.4). That removes T2 and T3. |
-| T4 | PRISM's clause reader and DIMACS writer (`bitblast_fresh`, `to_dimacs`, about 80 lines) | A dropped or changed clause would change the CNF | Unit tests: DIMACS round trip, and the kept CNF equals a fresh bit-blast. The reader accepts only `Or` of literals over Boolean constants and refuses anything else. | Emitted by the Lean bit-blaster (5.4) |
-| T5 | **cake_lpr** (`tanyongkiam/cake_lpr`, built from the shipped CakeML-compiled `cake_lpr.S`) | The certificate checker | Verified in CakeML: the proof covers the DIMACS and LRAT parsers and the checking algorithm down to the generated machine code. It still trusts the HOL4 kernel, CakeML's x86-64 ISA model, the small C FFI shim `basis_ffi.c` compiled with gcc, and the OS. Second checker: drat-trim `lrat-check` (unverified C) runs when present and can only veto. | Also run Lean's LRAT checker (roadmap 3.2 step 4, 8.2) |
+| T2 | `Z3_translate` into the fresh context | Copies the term. A bug would change the formula. | Z3 is widely used. SAT answers are validated on the **original** term in the caller's context. | Replaced by the Lean-proved bit-blaster (1.1) for formulas in its fragment |
+| T3 | **Z3's `simplify`, `bit-blast` and `tseitin-cnf` tactics** (Z3 4.13.4 vendored in `third_party/z3`) | These are the bit-blaster on this path. If they produce a CNF that is UNSAT while the formula is SAT, cake_lpr will correctly certify the wrong CNF. **This is the largest unproved part of this path.** | (a) Every SAT model found on the CNF, by CaDiCaL, Kissat or ProbSAT, is mapped back through the variable map and evaluated on the original formula in Z3, so a bad bit-blast shows up as a rejected model. (b) In certified mode, CaDiCaL's run on the CNF is always waited for, even when Z3 answered UNSAT first. If CaDiCaL then finds a model that validates, the counterexample wins and the note says `DISAGREEMENT:`. If its model does not validate, the result is not certified. (c) The doctest suite checks the variable map on known models. None of these is a proof. | The Lean-proved bit-blaster (1.1), which reuses `bv_decide`'s lemmas, already replaces it for formulas in the proved fragment |
+| T4 | PRISM's clause reader and DIMACS writer (`bitblast_fresh`, `to_dimacs`, about 80 lines) | A dropped or changed clause would change the CNF | Unit tests: DIMACS round trip, and the kept CNF equals a fresh bit-blast. The reader accepts only `Or` of literals over Boolean constants and refuses anything else. | Emitted by the Lean bit-blaster (1.1) |
+| T5 | **cake_lpr** (`tanyongkiam/cake_lpr`, built from the shipped CakeML-compiled `cake_lpr.S`) | The certificate checker | Verified in CakeML: the proof covers the DIMACS and LRAT parsers and the checking algorithm down to the generated machine code. It still trusts the HOL4 kernel, CakeML's x86-64 ISA model, the small C FFI shim `basis_ffi.c` compiled with gcc, and the OS. Further checkers: Lean's verified checker (`prism-lrat-check`, DIMACS mode) and drat-trim `lrat-check` (unverified C) run when present and can only veto. | Lean's checker required on this path too once it ships with PRISM |
 | T6 | The CNF file on disk between writing and checking | cake_lpr must check the exact CNF | SHA-256 recorded when the CNF is written and verified again after the checker runs. The file sits in a private temp directory. | Same |
 | T7 | PRISM's SHA-256 (`util.cpp`) | Identifies the exact CNF and the cache entries | Tested against the FIPS 180-2 vectors | Same |
-| T8 | The process runner and the verdict-line match (`detail::run`, `check_lrat`) | A wrong parse could accept a rejection | Exact whole-line match on `s VERIFIED UNSAT`. The exit code is ignored. A test runs a tampered proof. | Same |
+| T8 | The process runner and the verdict-line match (`detail::run`, `check_lrat`) | A wrong parse could accept a rejection | Exact whole-line match on `s VERIFIED UNSAT`. The exit code is ignored for cake_lpr. A test runs a tampered proof. | Same |
 | T9 | `verdict_status` / the verdict module mapping `certified` to `PROVED-CERTIFIED` | Decides the word printed | The solver library uses a local `kProvedCertified` constant until the integrator switches it to `laws::PROVED_CERTIFIED`. `certified` is set in exactly two places, both straight after `run_checkers` accepted. | Verdict module in Lean, compiled into PRISM (5.1) |
 | T10 | The C++ compiler that builds PRISM, the Z3 library build, the hardware and the OS | Everything runs on them | Out of scope. They are listed so the reader knows they are assumed. | Clang and GCC cross-builds, reproducible builds (8.3) |
 
@@ -86,6 +166,8 @@ bit-blasts the formula again, requires the new CNF to hash to the stored
 - **The query cache and the solve-time history** (`~/.cache/prism/solver`):
   a cached SAT model is validated again, and a cached certificate is checked
   again (see above). A corrupt history file can only change solver order.
+- **The C++ reference evaluator** of the S-expression format
+  (`eval_lean_dag`): used only by tests.
 
 ## 2. What plain `PROVED` (from the solver library) depends on
 
@@ -93,8 +175,9 @@ Plain `PROVED` trusts whichever solver answered UNSAT first:
 
 - Z3 in-process: Z3 as a whole.
 - Bitwuzla: Bitwuzla plus Z3's SMT-LIB2 printer (`Z3_benchmark_to_smtlib_string`).
-- CaDiCaL or Kissat on DIMACS: that SAT solver plus T2–T4 (Z3 bit-blast and
-  PRISM's DIMACS writer).
+- CaDiCaL or Kissat on DIMACS: that SAT solver plus the bit-blaster that made
+  the CNF (T2–T4 for Z3's tactics; plain requests use them unless
+  `bitblaster = lean`, which puts L4–L5 in their place).
 - A cached plain UNSAT: whichever solver produced it (`winner` is kept).
 
 SAT answers (`FAILED`, counterexample) depend on the evaluator in Z3's model
@@ -110,6 +193,7 @@ now. "Planned" is what the roadmap will add.
 | Clang (C/C++ to LLVM IR) | Pinned release. Per-run concrete execution check of the LLVM IR against the source build. Csmith and YARPGen random testing. Conformance suite on every upgrade. | Planned (Part 2). Today's C/C++ front end is `src/prism/cparse.cpp` plus the adapters, and none of it is proved. |
 | Lean kernel | Small and widely audited. Every proof rechecked by an independent checker (lean4checker and a second implementation such as nanoda). | No Lean proofs exist in the repository yet (Part 5). |
 | Lean compiler (for the verdict module) | Differential property testing of the compiled module against the Lean model with rapidcheck | Planned (5.1). Today the verdict module is plain C++ (`src/prism/laws.cpp`, `include/prism/laws.hpp`). |
+| Lean compiler (for `prism-bitblast` / `prism-lrat-check`) | The compiled bit-blaster and checker are the proved Lean functions; the serializer round trip (`tests/cpp/test_leanbb.cpp`) runs through the compiled parser and `Dag.eval`, and cake_lpr checks every certificate independently. | In use (section 1.1, L5). |
 | The C++ compiler that builds PRISM | Build with Clang and GCC and cross-check results on the conformance suite. Reproducible builds. | CI builds with Clang only (`.github/workflows/ci.yml`) |
 | Hardware and operating system running PRISM | Out of scope, and stated in the report | Stated here |
 | Formal LLVM semantics | Its assumptions are documented. It is tested against `lli` on generated programs. | Planned (8.2) |
@@ -119,10 +203,10 @@ Components that are unproved today but are meant to be **proved** (roadmap
 
 | Component | Mitigation today | Proof planned |
 |---|---|---|
-| Certified-mode bit-blaster (Z3 tactics, T2–T4 above) | Model validation of every SAT answer on the original formula. Z3 and CaDiCaL answers compared. DIMACS round-trip tests. | Lean, reusing `bv_decide` (5.4) |
+| Certified-mode bit-blaster | **Proved** for the fragment PIR VCs use (`proofs/techniques`, `toCNF_equisat`, `checkDag_sound`) and used by certified mode (1.1). Formulas outside it (`bvsmod`, arrays, UF) fall back to Z3's tactics (T2–T4), with the reason in the note. | Done for the fragment (5.4); the Z3 → S-expression serializer (L4) stays trusted and tested |
 | PIR encoder / VC generation (the `pir` stage) | Counterexamples are replayed. Engine parity tests. | Lean (5.3) |
 | Verdict lattice (`laws`) | Python and C++ parity tests for the law strings and merge rules (`tests/test_*`, `tests/cpp/test_main.cpp`) | Lean, compiled into PRISM (5.1) |
-| LRAT checking | cake_lpr is already verified in CakeML. drat-trim `lrat-check` is a second opinion. | Add Lean's checker alongside cake_lpr (8.2) |
+| LRAT checking | cake_lpr (verified in CakeML) and Lean's verified checker (`prism-lrat-check`, `LRAT.check_sound`) run together; on the Lean path both must accept (1.1). drat-trim `lrat-check` is a further veto. | Done (8.2) |
 | Solver portfolio, cache, scheduler, SLS, CUDA kernels | Quarantined. No answer from them is accepted without a model check or a checked certificate. | None needed (8.1) |
 
 ## 4. Solver builds used when this was written
@@ -136,6 +220,7 @@ Built under `~/.prism/tools/<name>/<commit>/bin/` (the layout
 | CaDiCaL 3.0.1 | `c60730422e758ef1cebe7aeddf2dda31c996bf04` | Portfolio member. Writes the LRAT proof in certified mode. |
 | Kissat | `8af8e56f174b778aef3aa45af9f739b2a5f492c2` | Portfolio member (DIMACS) |
 | cake_lpr | `2e3b2dc0ecf938addbd779d42877b6ed69d9a985` | Verified LRAT checker (decides certification) |
-| drat-trim (`lrat-check`) | `a36874a8b750b43fe4b385b8ddbf5b033e46a3fa` | Second LRAT checker (veto only) |
+| drat-trim (`lrat-check`) | `a36874a8b750b43fe4b385b8ddbf5b033e46a3fa` | Further LRAT checker (veto only) |
+| `prism-bitblast`, `prism-lrat-check` | built from `proofs/techniques` (`lake build`, Lean 4.34.0) | The proved bit-blaster and Lean's verified LRAT checker (1.1). Found under `~/.prism/tools`, on `PATH`, or in `proofs/techniques/.lake/build/bin` of the source tree PRISM was built from |
 | Bitwuzla | not built here (needs meson + GMP) | Portfolio member when present on `PATH` or under `~/.prism/tools/bitwuzla/` |
 | Z3 | 4.13.4 (vendored `third_party/z3`) | In-process member, bit-blaster, model validation |

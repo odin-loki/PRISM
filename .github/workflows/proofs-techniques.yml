@@ -4,17 +4,24 @@ name: Proofs (verification techniques)
 # and 8.2): k-induction, Houdini, contracts / PROVED-ASSUMING, the certified
 # bit-blaster with LRAT, bounded-context-switch sequentialisation, and the
 # round-to-nearest-even kernel. See docs/PROOFS_TECHNIQUES.md.
+#
+# `lake build` also builds the two executables certified mode runs
+# (roadmap 3.2 step 2, 8.2 "Certificate checking"): prism-bitblast (the
+# proved toCNF) and prism-lrat-check (Lean's verified LRAT checker). The main
+# CI C++ job runs without them and tests the honest fallback to Z3's tactics.
 
 on:
   push:
     paths:
       - "proofs/techniques/**"
       - "docs/PROOFS_TECHNIQUES.md"
+      - "src/prism/solver/leanbb.cpp"
       - ".github/workflows/proofs-techniques.yml"
   pull_request:
     paths:
       - "proofs/techniques/**"
       - "docs/PROOFS_TECHNIQUES.md"
+      - "src/prism/solver/leanbb.cpp"
       - ".github/workflows/proofs-techniques.yml"
   workflow_dispatch:
 
@@ -51,9 +58,40 @@ jobs:
           if grep -rnE '^\s*(private\s+)?axiom\s' --include='*.lean' --exclude-dir=.lake .; then
             echo "axiom declaration found"; exit 1
           fi
-      - name: lake build
-        run: lake build
+      - name: lake build (library, certified-demo, prism-bitblast, prism-lrat-check)
+        run: |
+          lake build
+          test -x .lake/build/bin/prism-bitblast
+          test -x .lake/build/bin/prism-lrat-check
       - name: Axiom audit (fails on any axiom beyond propext, Classical.choice, Quot.sound)
         run: lake env lean PrismTechniques/Audit.lean
       - name: Certified mode end to end (CaDiCaL from the toolchain + verified LRAT checker)
         run: lake exe certified-demo "$(dirname "$(elan which lean)")/cadical"
+      - name: prism-bitblast + CaDiCaL + prism-lrat-check (both modes), and a tampered proof
+        run: |
+          set -eu
+          cadical="$(dirname "$(elan which lean)")/cadical"
+          d="$(mktemp -d)"
+          # int8 signed-add overflow of x, y in [0, 60] (the PIR shape): unsat.
+          cat > "$d/vc.sexp" <<'SEXP'
+          (dag
+            (def 9 16 (sext 9 (var 8 0)))
+            (def 9 25 (sext 9 (var 8 8)))
+            (and (and (sle (var 8 0) (const 8 60)) (sle (const 8 0) (var 8 0)))
+                 (and (and (sle (var 8 8) (const 8 60)) (sle (const 8 0) (var 8 8)))
+                      (not (eq (add (var 9 16) (var 9 25)) (sext 9 (add (var 8 0) (var 8 8))))))))
+          SEXP
+          .lake/build/bin/prism-bitblast < "$d/vc.sexp" > "$d/vc.out"
+          grep -q '^c prism-bitblast 1$' "$d/vc.out"
+          grep -q '^c var 0 8 1 3 5 7 9 11 13 15$' "$d/vc.out"
+          grep -v '^c' "$d/vc.out" > "$d/vc.cnf"
+          rc=0; "$cadical" -q --lrat=true --binary=false "$d/vc.cnf" "$d/vc.lrat" || rc=$?
+          test "$rc" = 20
+          .lake/build/bin/prism-lrat-check "$d/vc.cnf" "$d/vc.lrat" | grep -qx 's VERIFIED UNSAT'
+          .lake/build/bin/prism-lrat-check --dag "$d/vc.sexp" "$d/vc.cnf" "$d/vc.lrat" | grep -qx 's VERIFIED UNSAT'
+          sed -i '$d' "$d/vc.lrat"   # drop the empty-clause step
+          if .lake/build/bin/prism-lrat-check --dag "$d/vc.sexp" "$d/vc.cnf" "$d/vc.lrat"; then
+            echo "tampered proof accepted"; exit 1
+          fi
+          # --eval runs the proved semantics (Dag.eval): x = y = 60 is in range, no overflow.
+          printf '%s\n' '(rho (0 8 60) (8 8 60))' | cat "$d/vc.sexp" - | .lake/build/bin/prism-bitblast --eval | grep -qx 0

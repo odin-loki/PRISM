@@ -1,6 +1,7 @@
 // solve(): query cache, scheduler, parallel portfolio (Z3 in-process, Bitwuzla
 // on SMT-LIB2, CaDiCaL / Kissat on DIMACS, ProbSAT walker), and certified mode
-// (CaDiCaL LRAT proof of the exact CNF, checked by cake_lpr).
+// (CaDiCaL LRAT proof of the exact CNF, checked by cake_lpr; with the
+// Lean-proved bit-blaster, also by Lean's verified LRAT checker).
 //
 // Rules this file keeps (roadmap 3.1-3.3, Laws 1 and 7):
 //  - a SAT answer from ANY member is accepted only after its model evaluates
@@ -11,7 +12,13 @@
 //    sha256 is recorded; every other path leaves certified=false with a note;
 //  - a cached plain Unsat never answers a certified request, and a cached
 //    certified Unsat is re-checked by cake_lpr against a freshly bit-blasted CNF;
-//  - a missing solver binary does not participate and is named in `missing`.
+//  - a missing solver binary does not participate and is named in `missing`;
+//  - the CNF of a certified query comes from the Lean-proved bit-blaster
+//    (prism-bitblast) when the formula is inside its fragment and the tools
+//    are built; its proof must then ALSO be accepted by Lean's verified LRAT
+//    checker on the CNF rebuilt from the formula (prism-lrat-check --dag).
+//    Otherwise Z3's tactics make the CNF and the note / certificate_info say
+//    why (roadmap 3.2 step 2; docs/TRUSTED_BASE.md).
 
 #ifdef PRISM_HAS_Z3
 
@@ -299,6 +306,15 @@ struct Certify {
     std::string note;
 };
 
+// Which bit-blaster made the CNF, and what the certificate chain then needs.
+struct BlastPlan {
+    bool lean = false;          // the Lean-proved bit-blaster makes the CNF
+    LeanDag dag;
+    ToolInfo bb, chk;           // prism-bitblast, prism-lrat-check
+    bool have_chk = false;
+    std::string desc;           // "bitblast: ..." for notes and certificate_info
+};
+
 bool has_empty_clause(const Cnf& cnf) {
     return std::any_of(cnf.clauses.begin(), cnf.clauses.end(), [](const auto& c) { return c.empty(); });
 }
@@ -309,7 +325,7 @@ bool has_empty_clause(const Cnf& cnf) {
 // decided the goal) it is not applicable and says so in the info.
 Certify run_checkers(const SolveOptions& opt, const fs::path& cnf_path, const std::string& cnf_sha,
                      const fs::path& lrat, const std::string& solver_desc, double budget,
-                     bool empty_clause) {
+                     bool empty_clause, const BlastPlan& plan, const fs::path& dag_path) {
     Certify c;
     auto cake = find_tool("cake_lpr", opt);
     if (!cake) {
@@ -332,6 +348,34 @@ Certify run_checkers(const SolveOptions& opt, const fs::path& cnf_path, const st
         c.note = "not certified: cake_lpr " + (o.ran ? o.detail : "did not run: " + o.detail);
         return c;
     }
+    // Lean's verified LRAT checker. On the Lean path it is required, and it
+    // checks the CNF it rebuilds from the formula with the proved
+    // bit-blaster (checkDag_sound); on the Z3 path it is a second opinion on
+    // the DIMACS file that can only veto.
+    std::string lean_part;
+    if (plan.lean) {
+        if (!plan.have_chk) {
+            c.note = "not certified: prism-lrat-check not found (NOTRUN)";
+            return c;
+        }
+        auto ol = check_lrat_dag(plan.chk, dag_path, cnf_path, lrat, budget);
+        if (!ol.ran || !ol.verified) {
+            c.note = "not certified: cake_lpr accepted but Lean's LRAT checker " +
+                     (ol.ran ? ol.detail : "did not run: " + ol.detail);
+            return c;
+        }
+        lean_part = "; and by Lean's verified LRAT checker (prism-lrat-check --dag " + plan.chk.version +
+                    ", checkDag_sound)";
+    } else if (empty_clause) {
+        lean_part = "; Lean's LRAT checker not applicable (the CNF contains the empty clause)";
+    } else if (auto lk = find_tool("prism-lrat-check", opt)) {
+        auto ol = check_lrat(*lk, cnf_path, lrat, budget);
+        if (ol.ran && !ol.verified) {
+            c.note = "not certified: cake_lpr accepted but Lean's LRAT checker rejected (" + ol.detail + ")";
+            return c;
+        }
+        if (ol.ran) lean_part = "; Lean's LRAT checker (prism-lrat-check " + lk->version + ") agrees";
+    }
     std::string second;
     if (empty_clause) {
         second = "; lrat-check not applicable (the CNF contains the empty clause)";
@@ -344,8 +388,8 @@ Certify run_checkers(const SolveOptions& opt, const fs::path& cnf_path, const st
         if (o2.ran) second = "; lrat-check " + lc->version + " agrees";
     }
     c.certified = true;
-    c.info = solver_desc + " lrat " + std::to_string(lrat_steps(lrat)) + " steps, checked by cake_lpr " +
-             cake->version + second + "; cnf sha256 " + cnf_sha;
+    c.info = plan.desc + "; " + solver_desc + " lrat " + std::to_string(lrat_steps(lrat)) +
+             " steps, checked by cake_lpr " + cake->version + lean_part + second + "; cnf sha256 " + cnf_sha;
     return c;
 }
 
@@ -416,6 +460,41 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
     if (opt.certified && !blastable) notes.push_back("not certifiable: " + cert_reason);
     const fs::path root = cache_root(opt);
 
+    // ---------------------------------------------------------------- bit-blaster
+    BlastPlan plan;
+    const bool lean_wanted = blastable && (opt.bitblaster == Bitblaster::Lean ||
+                                           (opt.bitblaster == Bitblaster::Auto && opt.certified));
+    if (blastable) {
+        std::string fallback;
+        if (lean_wanted) {
+            std::string why;
+            auto dag = to_lean_dag(formula, &why);
+            auto bb = find_tool("prism-bitblast", opt);
+            auto chk = find_tool("prism-lrat-check", opt);
+            if (!dag) fallback = "formula outside the proved fragment: " + why;
+            else if (!bb) fallback = "prism-bitblast not found (NOTRUN; build it: lake build in proofs/techniques)";
+            else if (!chk && opt.certified)
+                fallback = "prism-lrat-check not found (NOTRUN; build it: lake build in proofs/techniques)";
+            else {
+                plan.lean = true;
+                plan.dag = std::move(*dag);
+                plan.bb = *bb;
+                if (chk) { plan.chk = *chk; plan.have_chk = true; }
+            }
+        }
+        if (plan.lean)
+            plan.desc = "bitblast: lean-proved (toCNF_equisat), prism-bitblast " + plan.bb.version + ", " +
+                        std::to_string(plan.dag.defs) + " shared definitions";
+        else if (opt.bitblaster == Bitblaster::Z3)
+            plan.desc = "bitblast: z3 tactics (bitblaster=z3)";
+        else if (lean_wanted)
+            plan.desc = "bitblast: z3 tactics, unproved (Lean bit-blaster not used: " + fallback + ")";
+        else
+            plan.desc = "bitblast: z3 tactics";
+        if (lean_wanted || opt.certified) notes.push_back(plan.desc);
+    }
+    const std::string plan_name = plan.lean ? "lean" : "z3";
+
     // ---------------------------------------------------------------- cache
     if (opt.use_cache) {
         if (auto j = cache_load(root, res.query_hash)) {
@@ -449,12 +528,31 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
             } else if (kind == "unsat" && want_cert) {
                 if (!j->value("certified", false)) {
                     notes.push_back("cached unsat is uncertified: solving again for a certificate");
+                } else if (j->value("bitblaster", "z3") != plan_name) {
+                    notes.push_back("cached certificate was made with the " + j->value("bitblaster", "z3") +
+                                    " bit-blaster, this request uses " + plan_name + ": solving again");
                 } else {
                     // Re-derive the CNF and re-check the stored proof: a cache
                     // file is not a certificate by itself.
                     std::string why;
-                    auto cnf = bitblast(c, formula, &why);
-                    const auto cnf_txt = cnf ? to_dimacs(*cnf) : std::string();
+                    fs::path recheck_dir;
+                    std::optional<Cnf> cnf;
+                    std::string cnf_txt;
+                    if (plan.lean) {
+                        recheck_dir = make_work_dir(SolveOptions{}, res.query_hash);
+                        cnf = lean_bitblast(plan.dag, plan.bb, recheck_dir, std::max(10.0, opt.timeout_s), &why);
+                        if (cnf) cnf_txt = detail::read_file(recheck_dir / "query.cnf");
+                    } else {
+                        cnf = bitblast(c, formula, &why);
+                        if (cnf) cnf_txt = to_dimacs(*cnf);
+                    }
+                    struct Cleanup {
+                        fs::path d;
+                        ~Cleanup() {
+                            std::error_code ec;
+                            if (!d.empty()) fs::remove_all(d, ec);
+                        }
+                    } cleanup{recheck_dir};
                     const auto cnf_sha = sha256_hex(cnf_txt);
                     const fs::path cp = root / "certs" / (res.query_hash + ".cnf");
                     const fs::path lp = root / "certs" / (res.query_hash + ".lrat");
@@ -464,7 +562,8 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
                         notes.push_back("cached certificate is for a different CNF: solving again");
                     } else {
                         auto ck = run_checkers(opt, cp, cnf_sha, lp, j->value("cert_solver", "cadical"),
-                                               std::max(10.0, opt.timeout_s), has_empty_clause(*cnf));
+                                               std::max(10.0, opt.timeout_s), has_empty_clause(*cnf), plan,
+                                               recheck_dir / "query.dag");
                         if (ck.certified) {
                             res.kind = Kind::Unsat;
                             res.certified = true;
@@ -616,6 +715,7 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
     std::string cnf_sha;
     enum class CnfState { None, Running, Ready, Failed } cnf_state = CnfState::None;
     z3::context* blast_ctx = nullptr;
+    std::atomic<bool> blast_stop{false};  // the prism-bitblast process
     const unsigned slots = opt.max_parallel ? opt.max_parallel : std::max(2u, std::thread::hardware_concurrency());
     unsigned running = 0;
 
@@ -624,6 +724,7 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
     // raised its done flag. Idempotent; also run on unwinding.
     auto shutdown = [&] {
         for (auto& m : members) m.stop->store(true);
+        blast_stop.store(true);
         for (;;) {
             bool all = true;
             for (auto& d : done) all = all && d.load();
@@ -663,6 +764,24 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
     auto start_blast = [&] {
         cnf_state = CnfState::Running;
         ++running;
+        if (plan.lean) {
+            const double left = std::max(0.01, deadline - now_s());
+            spawn([&board, &plan, work, cnf_path, &cnf, &cnf_sha, left, &blast_stop] {
+                Msg m;
+                m.type = Msg::CnfFailed;
+                std::string why;
+                auto r = lean_bitblast(plan.dag, plan.bb, work, left, &why, &blast_stop);
+                if (r) {
+                    cnf_sha = sha256_file(cnf_path);
+                    cnf = std::make_shared<const Cnf>(std::move(*r));
+                    m.type = Msg::CnfReady;
+                } else {
+                    m.detail = "prism-bitblast: " + why;
+                }
+                board.post(std::move(m));
+            });
+            return;
+        }
         z3::context& bc = new_ctx();
         blast_ctx = &bc;
         z3::expr f2(bc, Z3_translate(c, formula, bc));
@@ -807,6 +926,7 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
             if (members[i].zctx) Z3_interrupt(*members[i].zctx);
         }
         if (!keep && blast_ctx) Z3_interrupt(*blast_ctx);
+        if (!keep) blast_stop.store(true);
     };
 
     std::optional<Msg> accepted;
@@ -921,11 +1041,13 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
                             (cert_msg->detail.empty() ? "" : " (" + cert_msg->detail + ")"));
         } else {
             auto ck = run_checkers(opt, cnf_path, cnf_sha, lrat_path, "cadical " + cm.version,
-                                   std::max(10.0, opt.timeout_s), cnf && has_empty_clause(*cnf));
+                                   std::max(10.0, opt.timeout_s), cnf && has_empty_clause(*cnf), plan,
+                                   work / "query.dag");
             if (ck.certified) {
                 res.certified = true;
                 res.certificate_info = ck.info;
-                notes.push_back("certified: LRAT proof accepted by cake_lpr");
+                notes.push_back(plan.lean ? "certified: LRAT proof accepted by cake_lpr and Lean's LRAT checker"
+                                          : "certified: LRAT proof accepted by cake_lpr");
             } else {
                 notes.push_back(ck.note);
             }
@@ -950,6 +1072,7 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
         if (res.certified) {
             e["certificate_info"] = res.certificate_info;
             e["cnf_sha256"] = cnf_sha;
+            e["bitblaster"] = plan_name;
             e["cert_solver"] = cert_member ? "cadical " + members[*cert_member].version : "cadical";
             if (opt.cache_certificates) {
                 std::error_code ec;

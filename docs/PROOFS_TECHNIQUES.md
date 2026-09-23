@@ -16,6 +16,8 @@ dependencies: core Lean 4 and its bundled `Std` only, no Mathlib.
 | Build | `cd proofs/techniques && lake build` |
 | Axiom audit | `lake env lean PrismTechniques/Audit.lean` (also runs as part of `lake build`) |
 | End-to-end certified mode | `lake exe certified-demo "$(dirname "$(elan which lean)")/cadical"` |
+| Proved bit-blaster as a program | `lake exe prism-bitblast < formula.sexp` (DIMACS + variable map) |
+| Lean's verified LRAT checker as a program | `lake exe prism-lrat-check [--dag formula.sexp] query.cnf proof.lrat` |
 | CI | `.github/workflows/proofs-techniques.yml` |
 
 ## Trust statement
@@ -65,6 +67,38 @@ Bitblast.cnf_sat_of_sat                    [propext, Classical.choice, Quot.soun
 Bitblast.toCNF_equisat                     [propext, Classical.choice, Quot.sound]
 Bitblast.toCNF_unsat_imp                   [propext, Classical.choice, Quot.sound]
 Bitblast.certified_unsat                   [propext, Classical.choice, Quot.sound]
+Bitblast.subOp_spec                        [propext, Classical.choice, Quot.sound]
+Bitblast.negOp_spec                        [propext, Classical.choice, Quot.sound]
+Bitblast.uleOp_spec                        [propext, Classical.choice, Quot.sound]
+Bitblast.sleOp_spec                        [propext, Classical.choice, Quot.sound]
+Bitblast.shlOp_spec                        [propext, Classical.choice, Quot.sound]
+Bitblast.lshrOp_spec                       [propext, Classical.choice, Quot.sound]
+Bitblast.ashrOp_spec                       [propext, Classical.choice, Quot.sound]
+Bitblast.shlW_rep                          [propext, Quot.sound]
+Bitblast.lshrW_rep                         [propext, Quot.sound]
+Bitblast.ashrW_rep                         [propext, Classical.choice, Quot.sound]
+Bitblast.zextW_rep                         [propext, Quot.sound]
+Bitblast.sextW_rep                         [propext, Classical.choice, Quot.sound]
+Bitblast.extractW_rep                      [propext, Quot.sound]
+Bitblast.concatOp_spec                     [propext, Quot.sound]
+Bitblast.uaddoOp_spec                      [propext, Classical.choice, Quot.sound]
+Bitblast.saddoOp_spec                      [propext, Classical.choice, Quot.sound]
+Bitblast.usuboOp_spec                      [propext, Classical.choice, Quot.sound]
+Bitblast.ssuboOp_spec                      [propext, Classical.choice, Quot.sound]
+Bitblast.umuloOp_spec                      [propext, Classical.choice, Quot.sound]
+Bitblast.smulHiOp_spec                     [propext, Classical.choice, Quot.sound]
+Bitblast.smulLoOp_spec                     [propext, Classical.choice, Quot.sound]
+Bitblast.smulOverflow_hi_lo                [propext]
+Bitblast.smulOverflow_expr                 [propext, Quot.sound]
+Bitblast.udivOp_spec                       [propext, Classical.choice, Quot.sound]
+Bitblast.uremOp_spec                       [propext, Classical.choice, Quot.sound]
+Bitblast.sdivOp_spec                       [propext, Classical.choice, Quot.sound]
+Bitblast.sremOp_spec                       [propext, Classical.choice, Quot.sound]
+Bitblast.BVExpr.denote_congr               [propext, Quot.sound]
+Bitblast.dag_sat_imp                       [propext, Classical.choice, Quot.sound]
+Bitblast.certified_dag_unsat               [propext, Classical.choice, Quot.sound]
+Bitblast.checkDag_sound                    [propext, Classical.choice, Quot.sound]
+Bitblast.denote_eq_denoteExec              [propext, Quot.sound]
 LazySeq.lazy_seq_covers                    [propext, Quot.sound]
 LazySeq.lazy_seq_sound                     [propext, Quot.sound]
 LazySeq.lazy_seq_reach_iff                 [propext, Quot.sound]
@@ -160,60 +194,142 @@ def WP spec : Prog Fn Arg Ret R → (R → Prop) → Prop
 | `harness_assumption_discharged` | A function proved `PROVED-ASSUMING H` (no UB when `H` holds), called only at call sites that prove `H` (`WP` with `req := H`), gives `∃ r, run impl p = some r ∧ Q r`. |
 | `caller_safe` | Worked example: a guarded division caller. |
 
-## 4. Bit-blaster (`PrismTechniques/Bitblast.lean`, `BitblastEncode.lean`)
+## 4. Bit-blaster (`PrismTechniques/Bitblast*.lean`)
 
-**Fragment.** `BVExpr : Nat → Type` has the constructors `var` (a block of
-input bits), `const`, `not`, `and`, `or`, `xor`, `add` (ripple-carry), `mul`
-(shift-and-add), `ite` (with a 1-bit condition), and the 1-bit results `eq`,
-`ult` and `slt`. Its semantics, `BVExpr.denote ρ`, is core Lean's `BitVec`.
+Files: `Bitblast.lean` (bit-level facts, gates, Tseitin clauses, the
+builder specification), `BitblastOps.lean` (operator circuits),
+`BitblastDiv.lean` (divider), `BitblastEncode.lean` (expression language,
+encoder, `toCNF`, the main theorems, sharing), `BitblastSexp.lean` (the text
+format the executables read; not part of any proof).
+
+**Fragment** (roadmap 3.2 step 2: everything the PIR verification conditions
+use). `BVExpr : Nat → Type`, widths per variable:
+
+| Group | Constructors | Circuit |
+|---|---|---|
+| Leaves | `var base` (a block of input bits), `const` | wires |
+| Bitwise | `not`, `and`, `or`, `xor` | one gate per bit |
+| Arithmetic | `add`, `sub`, `neg`, `mul` | ripple-carry adder; `x + ~~~y + 1`; `0 - x`; shift-and-add |
+| Division | `udiv`, `urem`, `sdiv`, `srem` | restoring divider (`divRec`), SMT-LIB division by zero, SMT-LIB sign cases |
+| Shifts | `shl`, `lshr`, `ashr` by a variable; `shlC`, `lshrC`, `ashrC` by a constant | barrel shifters (`shiftLeftRec` …); wires |
+| Width | `zext n`, `sext n`, `extract lo len`, `concat` | wires |
+| Choice | `ite` (1-bit condition) | multiplexer |
+| Predicates (1 bit) | `eq`, `ult`, `ule`, `slt`, `sle` | xor + and-chain; carry chains |
+| Overflow (1 bit) | `uaddo`, `saddo`, `usubo`, `ssubo`, `umulo`, `smulHi`, `smulLo` | carry out; sign tests; double-width products |
+
+Semantics (`BVExpr.denote ρ`) is core Lean's `BitVec` operation for every
+constructor: `BitVec.saddOverflow`, `BitVec.umulOverflow`,
+`BitVec.sshiftRight'`, `BitVec.extractLsb'`, and so on. The two exceptions
+are spelled out: division is SMT-LIB's (`smtUdiv x 0 = allOnes`, `x % 0 = x`,
+`smtSdiv`/`smtSrem` by the standard's four sign cases), because Z3 and the
+PIR encoder use SMT-LIB semantics; and signed multiplication overflow is
+split into its two halves `smulHi` (`2^(w-1) ≤ x.toInt * y.toInt`) and
+`smulLo` (`x.toInt * y.toInt < -2^(w-1)`), because Z3's
+`bvmul_no_overflow` / `bvmul_no_underflow` are separate predicates;
+`smulOverflow_hi_lo` proves `BitVec.smulOverflow = smulHi || smulLo`.
 `FSat φ := ∃ ρ, φ.denote ρ = 1#1`.
 
 **Encoding.**
 
-- The encoder builds an and/or/xor circuit.
-- Each gate is Tseitin-encoded into `Std.Sat.CNF Nat`, the CNF type the
-  verified LRAT checker takes.
+- The encoder builds an and/or/xor circuit and Tseitin-encodes each gate into
+  `Std.Sat.CNF Nat`, the CNF type the verified LRAT checker takes.
 - Input bit `j` is variable `2j`, variable `1` is the constant `true`, and
   gate `k` is variable `2k+3`.
 - `toCNF φ` contains every gate's defining clauses, the unit clause `[1]`,
   and a unit clause asserting the output bit.
+- The circuit caches its gate count (`Circuit.len`, invariant `Circuit.WF`)
+  and the clauses are emitted by a tail-recursive loop (`clausesAcc`, proved
+  equal to the specification `clausesL`), so the compiled encoder is linear
+  in the number of gates. Measured: a 64-bit signed-multiplication overflow
+  check (396k variables, 660k clauses) in 1.4 s; 20 000 chained 32-bit
+  definitions (15.4M clauses) in 34 s.
 
 **Proof structure.**
 
-- `Consistent α gs` means that `α` satisfies every gate definition.
-  `clauses_all_iff` proves that the clauses hold exactly when `Consistent`
-  does.
-- `encode_spec`: under every consistent `α`, the encoder's output literals are
-  `toBits (e.denote (inputOf α))`.
-- `extend ρ gs` extends any input assignment to a consistent one, by
-  evaluating the gates in order (`extend_consistent`, `extend_input`). This
-  relies on the circuit being well-formed: gates only read earlier variables.
+- `Consistent α c` means that `α` satisfies every gate definition;
+  `clausesL_all_iff` proves the clauses hold exactly when it does.
+- Every circuit builder is proved against `Rep c ls X` ("under every
+  assignment consistent with `c`, the literals `ls` are the bits of `X α`")
+  and `Spec`. `Op1`/`Op2` package "the builder computes the `BitVec`
+  operation `F`", so `encode_spec` is one line per constructor
+  (`case1`/`case2`).
+- `extend ρ c` extends any input assignment to a consistent one, by
+  evaluating the gates in order (`extendL_consistent`, `extendL_input`).
 
 | Theorem | Statement |
 |---|---|
-| `encode_spec` | `WF gs → Spec gs (encode e gs) (fun α => toBits (e.denote (inputOf α)))` |
+| `encode_spec` | `c.WF → Spec c (encode e c) (fun α => toBits (e.denote (inputOf α)))`, every constructor |
 | `sat_of_cnf_sat` | `(toCNF φ).Sat α → φ.denote (inputOf α) = 1#1` |
-| `cnf_sat_of_sat` | `φ.denote ρ = 1#1 → (toCNF φ).Sat (extend ρ (encode φ []).2)` |
+| `cnf_sat_of_sat` | `φ.denote ρ = 1#1 → (toCNF φ).Sat (extend ρ (encode φ Circuit.empty).2)` |
 | `toCNF_equisat` | `(∃ α, (toCNF φ).Sat α) ↔ FSat φ` (equisatisfiable, both directions) |
 | `toCNF_unsat_imp` | `(toCNF φ).Unsat → ∀ ρ, φ.denote ρ ≠ 1#1` (the direction certified mode needs) |
 | `certified_unsat` | `Std.Tactic.BVDecide.LRAT.check cert (toCNF φ) = true → ∀ ρ, φ.denote ρ ≠ 1#1` |
+| `dag_sat_imp` | `defsOK 0 g.defs → g.eval ρ = 1#1 → FSat g.toExpr` |
+| `certified_dag_unsat` | `defsOK 0 g.defs → LRAT.check cert (toCNF g.toExpr) = true → ∀ ρ, g.eval ρ ≠ 1#1` |
+| `checkDag_sound` | `checkDag g cert = true → ∀ ρ, g.eval ρ ≠ 1#1` (`checkDag` is what `prism-lrat-check --dag` runs) |
 
-**Reuse of core Lean's `bv_decide` development.**
+**Sharing (`Dag`).** Z3 terms are DAGs; writing one as a tree can be
+exponentially larger. A `Dag` is a list of definitions `(w, base, e)` ("input
+bits `base … base+w-1` name the value of `e`") and a top formula. Its meaning,
+`Dag.eval ρ`, evaluates the definitions in order (`evalDefs`, each on the
+assignment so far) and then the top formula. `defsOK` (checked at run time by
+both executables) requires each definition to read only bits below its own
+base and the definitions to be laid out upwards; `BVExpr.denote_congr` (an
+expression depends only on the bits below `reads`) then gives `dag_sat_imp`:
+a satisfying input of the DAG extends to one of the flat formula
+`(v₁ = e₁) ∧ … ∧ (vₙ = eₙ) ∧ top`.
 
-- The arithmetic facts are core lemmas:
-  - the adder: `BitVec.carry`, `BitVec.carry_succ`, `BitVec.getLsbD_add`;
-  - unsigned comparison: `BitVec.ult_eq_not_carry`;
-  - signed comparison: `BitVec.slt_eq_ult` and
-    `BitVec.msb_eq_getLsbD_last`;
-  - the multiplier: `BitVec.mulRec`, `BitVec.mulRec_succ_eq`,
-    `BitVec.getLsbD_mul`.
-- The certificate step is `Std.Tactic.BVDecide.LRAT.check_sound`.
-- The circuit, the Tseitin clauses and the equisatisfiability proof are
-  PRISM's own. `bv_decide`'s AIG bit-blaster uses different data structures,
-  so its lemmas were not reused directly.
+**Reuse of core Lean's `bv_decide` development.** The arithmetic facts are
+core lemmas from `Init.Data.BitVec.Bitblast` / `Lemmas`:
+
+- adder/subtractor: `BitVec.carry`, `carry_succ`, `getLsbD_add`,
+  `getLsbD_add_add_bool`, `neg_eq_not_add`;
+- comparisons: `ult_eq_not_carry`, `ule_eq_carry`, `slt_eq_ult`,
+  `sle_eq_not_slt`, `msb_eq_getLsbD_last`;
+- multiplier: `mulRec`, `mulRec_succ_eq`, `getLsbD_mul`;
+- shifts: `shiftLeftRec` / `ushiftRightRec` / `sshiftRightRec` with
+  `shiftLeft_eq_shiftLeftRec`, `shiftRight_eq_ushiftRightRec`,
+  `sshiftRight_eq_sshiftRightRec`, `and_twoPow`, `toNat_twoPow_of_lt`;
+- width: `getLsbD_setWidth`, `getLsbD_signExtend`, `getLsbD_extractLsb'`,
+  `getLsbD_append`, `getLsbD_shiftConcat`;
+- overflow: `saddOverflow_eq`, `ssubOverflow_eq`, `umulOverflow_eq`,
+  `two_pow_le_toInt_mul_toInt_iff`, `toInt_mul_toInt_lt_neg_two_pow_iff`;
+- division: `divRec`, `divSubtractShift`, `udiv_eq_divRec`,
+  `umod_eq_divRec`, `umod_zero`;
+- the certificate step: `Std.Tactic.BVDecide.LRAT.check_sound`.
+
+The circuits, the Tseitin clauses, the builder specification and the
+equisatisfiability and sharing proofs are PRISM's own; `bv_decide`'s AIG
+bit-blaster uses different data structures.
+
+**Executables.** Both are `lean_exe` targets of this project and are built by
+`lake build` (and in CI):
+
+- `prism-bitblast` reads a formula in the S-expression format of
+  `BitblastSexp.lean` on stdin (`(dag (def W BASE e)* e)`, one constructor
+  name per `BVExpr` constructor) and writes `c prism-bitblast 1`, one
+  `c var BASE WIDTH V0 … V(W-1)` line per free input variable, and then
+  `Std.Sat.CNF.dimacs (dagCNF g)`: exactly `toCNF` of the flattened DAG. The
+  executed code is the proved code, modulo the Lean compiler.
+  `CNF.dimacs` numbers CNF variable `v` as DIMACS variable `v+1`, so input bit
+  `j` is DIMACS variable `2j+1`. `--eval` instead evaluates `Dag.eval` under
+  `(rho (BASE WIDTH VALUE)*)` assignments; PRISM's C++ serializer is tested
+  against it. (The compiled `denote` is `denoteExec` through the proved `@[csimp]`
+  lemma `denote_eq_denoteExec`: it only avoids core's `x.toNat <<< s` for
+  huge left-shift amounts, which would abort the program.)
+- `prism-lrat-check CNF LRAT` parses DIMACS (strictly) and runs
+  `Std.Tactic.BVDecide.LRAT.check`, the checker `certified_unsat` relies on.
+  `prism-lrat-check --dag FORMULA CNF LRAT` rebuilds the CNF from the formula
+  with the proved bit-blaster, insists that the CNF file is byte for byte
+  that CNF, and runs `checkDag g cert` — the exact premise of
+  `checkDag_sound`, with no DIMACS parser in between. Both print
+  `s VERIFIED UNSAT` (exit 0) or `s NOT VERIFIED` (exit 1).
+
+PRISM's certified mode uses both (`src/prism/solver/leanbb.cpp`, see
+`docs/TRUSTED_BASE.md`).
 
 **End to end.** `lake exe certified-demo <cadical>` runs the full certified
-path on concrete formulas:
+path on concrete formulas, one or more per operator group:
 
 1. bit-blast the formula with `toCNF`;
 2. write DIMACS;
@@ -233,6 +349,17 @@ x <s y && y <s x: UNSAT, 293 clauses, 50 LRAT steps, verified checker: true
 ite(x <u y, x, y) >u y: UNSAT, 362 clauses, 50 LRAT steps, verified checker: true
 x * 3 != x + x + x: UNSAT, 1634 clauses, 540 LRAT steps, verified checker: true
 x * y != y * x (6-bit): UNSAT, 1520 clauses, 4389 LRAT steps, verified checker: true
+x - y != x + -y: UNSAT, 466 clauses, 314 LRAT steps, verified checker: true
+x << 1 != x + x (shift by a variable-width amount): UNSAT, 898 clauses, 191 LRAT steps, verified checker: true
+(x >>a 7) != -(x >>l 7): UNSAT, 194 clauses, 91 LRAT steps, verified checker: true
+saddo(x,y) differs from sext9 x + sext9 y != sext9 (x + y): UNSAT, 505 clauses, 224 LRAT steps, verified checker: true
+ssubo(x,y) differs from sext9 x - sext9 y != sext9 (x - y): UNSAT, 505 clauses, 244 LRAT steps, verified checker: true
+umulo(x,y) differs from the high half of zext x * zext y being nonzero (6-bit): UNSAT, 6084 clauses, 1909 LRAT steps, verified checker: true
+smulo(x,y) differs from sext12 x * sext12 y != sext12 (x * y) (6-bit): UNSAT, 10003 clauses, 21023 LRAT steps, verified checker: true
+x != (x udiv y) * y + (x urem y) (6-bit): UNSAT, 3116 clauses, 5395 LRAT steps, verified checker: true
+x != (x sdiv y) * y + (x srem y) (6-bit): UNSAT, 4128 clauses, 11970 LRAT steps, verified checker: true
+x udiv 0 != ~0 (SMT-LIB division by zero): UNSAT, 1994 clauses, 125 LRAT steps, verified checker: true
+concat (extract 4 4 x) (extract 0 4 x) != x: UNSAT, 58 clauses, 49 LRAT steps, verified checker: true
 x <u y (satisfiable): SAT (138 clauses) — no certificate, nothing to check
 x * y = 35 (satisfiable): SAT (1362 clauses) — no certificate, nothing to check
 ```
@@ -344,25 +471,26 @@ The model is first-order and non-recursive, with UB as `Option.none`.
 
 ### Bit-blaster
 
-The C++ engine sends bitvector queries to Z3; there is no C++ bit-blaster or
-LRAT path yet (roadmap 3.2). There are two ways to make a certified verdict
-rest on these proofs:
+Closed for the certified path by **extraction** (option 1 of the earlier
+plan): PRISM's certified mode runs the compiled `toCNF` (`prism-bitblast`)
+and Lean's verified LRAT checker (`prism-lrat-check --dag`) next to cake_lpr
+(`src/prism/solver/leanbb.cpp`, `portfolio.cpp`; `docs/TRUSTED_BASE.md`).
+What remains between the proofs and a `PROVED-CERTIFIED` verdict:
 
-1. **Extract.** Compile `toCNF` from Lean, via `lake build` of a
-   `lean_exe`/shared library, and call it from C++. Then the CNF that
-   CaDiCaL/Kissat solve is produced by the proved code, and `certified-demo`
-   is already the prototype of this path.
-2. **Validate per run.** Keep a C++ bit-blaster, but re-run the Lean `toCNF`
-   and require the two CNFs to be identical before a certificate counts.
-
-In both cases the formula handed over must be the one produced by the proved
-encoder (roadmap 5.3). Two more restrictions apply:
-
-- The fragment has no shifts by variable amounts, `udiv`/`urem`, extract or
-  concat, and no arrays.
-- `var` names a block of input bits, and the front end must give different
-  program variables disjoint blocks.
-
+- **The Z3 → S-expression serializer** (`to_lean_dag`, C++). It is small, it
+  maps each Z3 operator to one constructor (a few by definition: `bvuge x y`
+  is `ule y x`, `=>` is `or (not a) b`, rotations are `concat` of
+  `extract`s), and it is tested on random assignments against Z3's evaluator
+  and against `Dag.eval` itself (`prism-bitblast --eval`) in
+  `tests/cpp/test_leanbb.cpp`. Formulas using anything else (`bvsmod`,
+  arrays, UF, …) fall back to Z3's tactics and say so.
+- **The formula itself**: the PIR encoder and property instrumentation that
+  produce the Z3 VC (roadmap 5.3; `proofs/semantics` models them, nothing is
+  extracted).
+- **The Lean compiler** that compiles `toCNF`, `checkDag` and the S-expression
+  parser, and the parser (`BitblastSexp.lean`, unproved). A parser bug can
+  only change *which* formula is checked; the round-trip test compares the
+  parsed formula's `Dag.eval` with Z3.
 ### Lazy sequentialisation
 
 There is no concurrency stage in the C++ engine yet (roadmap 2.6). The Lean

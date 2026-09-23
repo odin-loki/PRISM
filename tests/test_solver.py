@@ -67,6 +67,48 @@ class TestSolverSources(unittest.TestCase):
         self.assertNotIn("Kind::Unsat", sls)
 
 
+class TestLeanBitblaster(unittest.TestCase):
+    """Certified mode's Lean-proved bit-blaster (roadmap 3.2 step 2, 5.4, 8.2)."""
+
+    def test_lean_path_needs_both_checkers(self) -> None:
+        src = _read(SOLVER / "portfolio.cpp")
+        body = src[src.index("Certify run_checkers(") :]
+        body = body[: body.index("c.certified = true;")]
+        cake = body.index('find_tool("cake_lpr"')
+        lean = body.index("check_lrat_dag(plan.chk")
+        self.assertLess(cake, lean, "cake_lpr decides first, then Lean's checker must accept too")
+        self.assertIn('"not certified: prism-lrat-check not found (NOTRUN)"', body)
+
+    def test_certificate_says_which_bitblaster(self) -> None:
+        src = _read(SOLVER / "portfolio.cpp")
+        self.assertIn('"bitblast: lean-proved (toCNF_equisat), prism-bitblast "', src)
+        self.assertIn('"bitblast: z3 tactics, unproved (Lean bit-blaster not used: "', src)
+        self.assertIn("c.info = plan.desc + ", src)
+
+    def test_executables_are_built_and_found(self) -> None:
+        lake = _read(ROOT / "proofs" / "techniques" / "lakefile.toml")
+        for exe in ("prism-bitblast", "prism-lrat-check"):
+            self.assertIn(f'name = "{exe}"', lake)
+            self.assertIn(f'"{exe}"', lake.split("defaultTargets", 1)[1].split("\n", 1)[0])
+        self.assertIn("PRISM_LEAN_BIN_DIR", _read(CMAKE))
+        self.assertIn("proofs/techniques/.lake/build/bin", _read(CMAKE))
+
+    def test_executables_run_the_proved_functions(self) -> None:
+        tech = ROOT / "proofs" / "techniques"
+        bb = _read(tech / "BitblastMain.lean")
+        self.assertIn("Std.Sat.CNF.dimacs (dagCNF g)", bb)
+        self.assertIn("defsOK 0 g.defs", bb)
+        chk = _read(tech / "LratCheckMain.lean")
+        self.assertIn("verdict (checkDag g cert)", chk)
+        self.assertIn("verdict (LRAT.check cert cnf)", chk)
+        enc = _read(tech / "PrismTechniques" / "BitblastEncode.lean")
+        self.assertIn("def dagCNF (g : Dag) : CNF Nat := toCNF g.toExpr", enc)
+        self.assertIn("theorem checkDag_sound", enc)
+        audit = _read(tech / "PrismTechniques" / "Audit.lean")
+        for thm in ("toCNF_equisat", "certified_unsat", "checkDag_sound", "udivOp_spec", "smulHiOp_spec"):
+            self.assertIn(f"#assert_axioms Bitblast.{thm}", audit)
+
+
 class TestTrustedBaseDocument(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -89,6 +131,18 @@ class TestTrustedBaseDocument(unittest.TestCase):
 
     def test_checker_and_fallback_documented(self) -> None:
         for s in ("cake_lpr", "s VERIFIED UNSAT", "never quietly upgraded", "lrat-check", "SHA-256"):
+            self.assertIn(s, self.doc)
+
+    def test_lean_path_trusted_base_documented(self) -> None:
+        for s in (
+            "bitblast: lean-proved",
+            "prism-lrat-check --dag",
+            "checkDag_sound",
+            "Z3 → S-expression serializer",
+            "Lean compiler",
+            "Both must accept",
+            "tests/cpp/test_leanbb.cpp",
+        ):
             self.assertIn(s, self.doc)
 
 

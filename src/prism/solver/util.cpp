@@ -187,11 +187,11 @@ bool write_file(const fs::path& p, std::string_view data) {
 }
 
 Proc run(const std::vector<std::string>& argv, double timeout_s, const std::atomic<bool>* stop,
-         std::size_t cap) {
+         std::size_t cap, const std::string& stdin_path, const std::string& stdout_path) {
     Proc r;
     const double t0 = now_s();
 #ifdef _WIN32
-    (void)argv; (void)timeout_s; (void)stop; (void)cap;
+    (void)argv; (void)timeout_s; (void)stop; (void)cap; (void)stdin_path; (void)stdout_path;
     r.failed = true;
     r.out = "process runner not implemented on Windows";
     return r;
@@ -203,8 +203,12 @@ Proc run(const std::vector<std::string>& argv, double timeout_s, const std::atom
     if (pipe2(fds, O_CLOEXEC) != 0) { r.failed = true; return r; }
     posix_spawn_file_actions_t fa;
     posix_spawn_file_actions_init(&fa);
-    posix_spawn_file_actions_addopen(&fa, 0, "/dev/null", O_RDONLY, 0);
-    posix_spawn_file_actions_adddup2(&fa, fds[1], 1);
+    posix_spawn_file_actions_addopen(&fa, 0, stdin_path.empty() ? "/dev/null" : stdin_path.c_str(),
+                                     O_RDONLY, 0);
+    if (stdout_path.empty())
+        posix_spawn_file_actions_adddup2(&fa, fds[1], 1);
+    else
+        posix_spawn_file_actions_addopen(&fa, 1, stdout_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
     posix_spawn_file_actions_adddup2(&fa, fds[1], 2);
     posix_spawnattr_t at;
     posix_spawnattr_init(&at);
@@ -304,6 +308,24 @@ std::optional<ToolInfo> in_root(const fs::path& root, std::string_view exe) {
     return best;
 }
 
+// The Lean executables of proofs/techniques (`lake build` in that directory)
+// are found in its build directory when they are not installed elsewhere.
+std::optional<ToolInfo> lean_build_tool(std::string_view name) {
+#ifdef PRISM_LEAN_BIN_DIR
+    if (name != "prism-bitblast" && name != "prism-lrat-check") return std::nullopt;
+    fs::path cand = fs::path(PRISM_LEAN_BIN_DIR) / std::string(name);
+    std::error_code ec;
+    if (!fs::is_regular_file(cand, ec)) return std::nullopt;
+#ifndef _WIN32
+    if (access(cand.c_str(), X_OK) != 0) return std::nullopt;
+#endif
+    return ToolInfo{std::string(name), cand, "proofs/techniques"};
+#else
+    (void)name;
+    return std::nullopt;
+#endif
+}
+
 }  // namespace
 
 std::optional<ToolInfo> find_tool(std::string_view name, const SolveOptions& opt) {
@@ -312,7 +334,7 @@ std::optional<ToolInfo> find_tool(std::string_view name, const SolveOptions& opt
     if (!opt.search_default_tools) return std::nullopt;
     if (auto t = in_root(fs::path(detail::home_dir()) / ".prism" / "tools", name)) return t;
     const char* path = std::getenv("PATH");
-    if (!path) return std::nullopt;
+    if (!path) return lean_build_tool(name);
     std::string p = path;
     std::size_t s = 0;
     while (s <= p.size()) {
@@ -330,7 +352,7 @@ std::optional<ToolInfo> find_tool(std::string_view name, const SolveOptions& opt
             return ToolInfo{std::string(name), cand, "PATH"};
         }
     }
-    return std::nullopt;
+    return lean_build_tool(name);
 }
 
 // ---------------------------------------------------------------- LRAT
@@ -377,7 +399,7 @@ CheckOutcome check_lrat(const ToolInfo& checker, const fs::path& cnf, const fs::
     o.ran = true;
     if (p.timed_out) { o.detail = "checker timed out"; return o; }
     // Both checkers exit 0 on rejection; only their verdict line counts.
-    if (checker.name == "cake_lpr") {
+    if (checker.name == "cake_lpr" || checker.name == "prism-lrat-check") {
         o.verified = has_line(p.out, "s VERIFIED UNSAT");
     } else {  // drat-trim's lrat-check
         o.verified = has_line(p.out, "c VERIFIED") && p.out.find("NOT VERIFIED") == std::string::npos;

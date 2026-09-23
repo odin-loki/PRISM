@@ -152,6 +152,7 @@ set(PRISM_SRC
   src/prism/verdict/verdict.cpp
   # Solver library (roadmap 3.1-3.3): portfolio, query cache, certified mode, SLS.
   src/prism/solver/cnf.cpp
+  src/prism/solver/leanbb.cpp
   src/prism/solver/portfolio.cpp
   src/prism/solver/predict.cpp
   src/prism/solver/query.cpp
@@ -165,6 +166,12 @@ target_include_directories(prism_core PUBLIC
 )
 target_include_directories(prism_core PRIVATE "${_pins_dir}")
 target_compile_definitions(prism_core PRIVATE PRISM_EXPORTS)
+# Certified mode's Lean-proved bit-blaster and LRAT checker (roadmap 3.2 / 5.4):
+# `lake build` in proofs/techniques puts prism-bitblast / prism-lrat-check here.
+# They are searched after ~/.prism/tools and PATH; absent, certified mode falls
+# back to Z3's bit-blast tactics and says so (NOTRUN, never silent).
+target_compile_definitions(prism_core PRIVATE
+  PRISM_LEAN_BIN_DIR="${PRISM_ROOT}/proofs/techniques/.lake/build/bin")
 target_link_libraries(prism_core PUBLIC xsimd nlohmann_json)
 # pcre2-8 is the 8-bit library target from the vendored tree
 if(TARGET pcre2-8-static)
@@ -349,6 +356,7 @@ endif()
 
 if(PRISM_TESTS)
   add_executable(prism_tests tests/cpp/test_main.cpp tests/cpp/test_ai9.cpp tests/cpp/test_conc.cpp
+    tests/cpp/test_leanbb.cpp
     # Roadmap 9.1/9.3/9.4 AI assistant features (regress, triage, ask, draft, predict).
     tests/cpp/test_ai_assist.cpp)
   target_include_directories(prism_tests PRIVATE
