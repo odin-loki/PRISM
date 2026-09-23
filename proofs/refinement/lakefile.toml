@@ -1,6 +1,6 @@
 name = "prism-refinement"
 version = "0.1.0"
-defaultTargets = ["PrismRefine", "pir_lean_check"]
+defaultTargets = ["PrismRefine", "pir_lean_check", "axiom_report", "llvm_eval"]
 
 [leanOptions]
 autoImplicit = false
@@ -26,3 +26,12 @@ name = "PrismRefine"
 [[lean_exe]]
 name = "pir_lean_check"
 root = "CheckMain"
+
+[[lean_exe]]
+name = "axiom_report"
+root = "AxiomReport"
+supportInterpreter = true
+
+[[lean_exe]]
+name = "llvm_eval"
+root = "EvalMain"
