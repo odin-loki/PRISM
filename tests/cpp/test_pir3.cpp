@@ -310,6 +310,97 @@ entry:
     o.asm_contracts[5] = "r is small";
     CHECK(verdict(ir, "a", o).find("not understood") != std::string::npos);
 }
+
+TEST_CASE("pir nondet: a refutation reports the nondet values and call sites its path reads, in call order") {
+    // SV-COMP replay and witnesses (tools/svcomp): the same "fn=value, ..." as
+    // the bmc stage, signed per C type, only calls that run before the
+    // violated check, and each call's debug location in extra["nondet_loc"].
+    const char* ir = R"IR(define i32 @main() {
+entry:
+  %a = call i32 @__VERIFIER_nondet_int(), !dbg !1
+  %neg = icmp slt i32 %a, 0
+  br i1 %neg, label %skip, label %go
+skip:
+  %c = call signext i8 @__VERIFIER_nondet_char(), !dbg !2
+  ret i32 0
+go:
+  %k = call zeroext i8 @__VERIFIER_nondet_uchar(), !dbg !3
+  %big = icmp sgt i32 %a, 2147483000
+  %k200 = icmp eq i8 %k, 200
+  %both = and i1 %big, %k200
+  br i1 %both, label %ovf, label %done
+ovf:
+  %b = add nsw i32 %a, 1000
+  %z = call i32 @__VERIFIER_nondet_int(), !dbg !4
+  %r = add i32 %b, %z
+  ret i32 %r
+done:
+  ret i32 0
+}
+define i32 @neg() {
+entry:
+  %c = call signext i8 @__VERIFIER_nondet_char(), !dbg !5
+  %lo = icmp slt i8 %c, -100
+  br i1 %lo, label %bad, label %ok
+bad:
+  call void @reach_error(), !dbg !6
+  unreachable
+ok:
+  ret i32 0
+}
+define i32 @pure(i32 %x) {
+entry:
+  %y = add nsw i32 %x, 1
+  ret i32 %y
+}
+declare i32 @__VERIFIER_nondet_int()
+declare signext i8 @__VERIFIER_nondet_char()
+declare zeroext i8 @__VERIFIER_nondet_uchar()
+declare void @reach_error()
+!1 = !DILocation(line: 5, column: 11, scope: !9)
+!2 = !DILocation(line: 6, column: 25, scope: !9)
+!3 = !DILocation(line: 7, column: 21, scope: !9)
+!4 = !DILocation(line: 8, column: 13, scope: !9)
+!5 = !DILocation(line: 12, column: 12, scope: !9)
+!6 = !DILocation(line: 13, column: 20, scope: !9)
+)IR";
+    auto t = tr(ir, "main");
+    REQUIRE(t.fn);
+    auto v = pp::check_function(*t.fn, 4, 30.0);
+    REQUIRE(v.status == std::string(prism::laws::FAILED));
+    CHECK(v.cls == "INT-SIGNED-OVF");
+    REQUIRE(v.extra.count("nondet"));
+    auto nd = v.extra.at("nondet");
+    // the char call is on the branch the violating path skips; the second
+    // int call runs after the violated check
+    CHECK(nd.find("__VERIFIER_nondet_char") == std::string::npos);
+    const std::string pre = "__VERIFIER_nondet_int=";
+    REQUIRE(nd.rfind(pre, 0) == 0);
+    auto comma = nd.find(", ");
+    REQUIRE(comma != std::string::npos);
+    CHECK(std::stoll(nd.substr(pre.size(), comma - pre.size())) > 2147483000);
+    CHECK(nd.substr(comma + 2) == "__VERIFIER_nondet_uchar=200");  // unsigned char: 200, not -56
+    CHECK(v.extra.at("nondet_loc") == "5:11, 7:21");
+
+    auto tn = tr(ir, "neg");
+    REQUIRE(tn.fn);
+    auto vn = pp::check_function(*tn.fn, 4, 30.0);
+    REQUIRE(vn.status == std::string(prism::laws::FAILED));
+    REQUIRE(vn.extra.count("nondet"));
+    const std::string cpre = "__VERIFIER_nondet_char=";
+    REQUIRE(vn.extra.at("nondet").rfind(cpre, 0) == 0);
+    auto cv = std::stoll(vn.extra.at("nondet").substr(cpre.size()));  // signed char: negative
+    CHECK(cv < -100);
+    CHECK(cv >= -128);
+    CHECK(vn.extra.at("nondet_loc") == "12:12");
+
+    // no nondet call: no nondet key
+    auto tp = tr(ir, "pure");
+    REQUIRE(tp.fn);
+    auto vp = pp::check_function(*tp.fn, 4, 30.0);
+    CHECK(vp.status == std::string(prism::laws::FAILED));
+    CHECK_FALSE(vp.extra.count("nondet"));
+}
 #endif
 
 TEST_CASE("pir3 inline assembly: contract comments map to the asm line") {

@@ -12,15 +12,16 @@ witness in the SV-COMP witness format 2.0:
       content:
         - segment: [ {waypoint: {type: function_return, action: follow,
                                  location: {...}, constraint: {value: "\\result == 5",
-                                                               format: c_expression}}} ]
+                                                               format: acsl_expression}}} ]
         - ...
         - segment: [ {waypoint: {type: target, action: follow, location: {...}}} ]
 
 Format reference: https://gitlab.com/sosy-lab/benchmarking/sv-witnesses
-(``README-YAML.md``, version 2.0). What this module does NOT do: validate the
-witness. A witness is only worth points in SV-COMP once a validator
-(CPAchecker, UAutomizer, ...) confirms it; PRISM has not run one (see
-docs/SVCOMP.md).
+(``format/schemas/archive/v2.0/violation-witness-2.0-schema.yml``). What
+this module does NOT do: validate the witness. A witness is only worth
+points in SV-COMP once a validator confirms it; the witnesses of the pinned
+subset were checked with CPAchecker 4.2.2 and UAutomizer 0.3.1 outside this
+repository (results in docs/SVCOMP.md, "Witness validation").
 
 Self-contained on purpose (standard library only): it ships next to the
 BenchExec wrapper in an SV-COMP tool archive.
@@ -56,11 +57,13 @@ _WIDTH = {
 class Location:
     file_name: str
     line: int
-    column: int = 1
+    column: int | None = 1  # None: no column (format 2.0 then means the line's first match)
     function: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
-        d: dict[str, Any] = {"file_name": self.file_name, "line": int(self.line), "column": max(1, int(self.column))}
+        d: dict[str, Any] = {"file_name": self.file_name, "line": int(self.line)}
+        if self.column is not None:
+            d["column"] = max(1, int(self.column))
         if self.function:
             d["function"] = self.function
         return d
@@ -124,6 +127,15 @@ def _c_literal(v: int | float) -> str:
     return str(v) if v >= 0 else f"({v})"
 
 
+def _acsl_literal(v: int | float) -> str:
+    """A constant for ``\\result == <constant>`` (ACSL, format 2.0).
+
+    >>> _acsl_literal(-5), _acsl_literal(7), _acsl_literal(0.5)
+    ('-5', '7', '0.5')
+    """
+    return repr(v) if isinstance(v, float) else str(v)
+
+
 def build_violation_witness(
     cex: Counterexample,
     *,
@@ -150,7 +162,8 @@ def build_violation_witness(
         segments.append({"segment": [{"waypoint": {
             "type": "function_return", "action": "follow",
             "location": nv.location.as_dict(),
-            "constraint": {"value": f"\\result == {_c_literal(nv.value)}", "format": "c_expression"},
+            # format 2.0: `\result <op> <constant>` in ACSL (not a C expression)
+            "constraint": {"value": f"\\result == {_acsl_literal(nv.value)}", "format": "acsl_expression"},
         }}]})
     segments.append({"segment": [{"waypoint": {
         "type": "target", "action": "follow", "location": cex.target.as_dict(),

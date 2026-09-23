@@ -128,6 +128,17 @@ class DecideTest(unittest.TestCase):
         rep = report(bmc=[{"status": "FAILED", "cls": "INT-SHIFT-UB"}])
         self.assertEqual(P.decide(rep, "no-overflow", replayed).answer, "unknown")
 
+    def test_refutation_with_call_sites_is_preferred(self) -> None:
+        # both stages refute; pir's also has the nondet call sites: its
+        # witness can place every function_return waypoint
+        rep = report(bmc=[{"status": "FAILED", "cls": "INT-SIGNED-OVF", "extra": {"nondet": "f=1"}}],
+                     pir=[{"status": "FAILED", "cls": "INT-SIGNED-OVF",
+                           "extra": {"nondet": "f=1", "nondet_loc": "3:9"}}])
+        d = P.decide(rep, "no-overflow", replayed)
+        self.assertEqual(d.answer, "false(no-overflow)")
+        assert d.finding is not None
+        self.assertEqual(d.finding["stage"], "pir")
+
     def test_unreplayed_refutation_blocks_true(self) -> None:
         rep = report(bmc=[{"status": "PROVED", "cls": ""}],
                      pir=[{"status": "FAILED", "cls": "INT-SIGNED-OVF"}])
@@ -183,9 +194,19 @@ class WitnessTest(unittest.TestCase):
         self.assertEqual(segs[-1]["segment"][0]["waypoint"]["type"], "target")
         self.assertEqual(segs[0]["segment"][0]["waypoint"]["type"], "function_return")
         self.assertEqual(segs[0]["segment"][0]["waypoint"]["constraint"]["value"], "\\result == 2147483647")
+        # format 2.0: a function_return constraint is `\result <op> <constant>` in ACSL
+        self.assertEqual(segs[0]["segment"][0]["waypoint"]["constraint"]["format"], "acsl_expression")
+        neg = self.build(nondet=[W.NondetValue(W.Location("t.c", 1, 50), -3)])
+        self.assertEqual(neg[0]["content"][0]["segment"][0]["waypoint"]["constraint"]["value"], "\\result == -3")
         # exactly one target, and it is last
         types = [s["segment"][0]["waypoint"]["type"] for s in segs]
         self.assertEqual(types.count("target"), 1)
+
+    def test_target_without_column(self) -> None:
+        # a statement first on its line: no column ("the first statement or
+        # full expression in that line"), never column 1 by default
+        self.assertEqual(W.Location("t.c", 4, None).as_dict(), {"file_name": "t.c", "line": 4})
+        self.assertEqual(W.Location("t.c", 4).as_dict()["column"], 1)
 
     def test_params(self) -> None:
         doc = self.build(params={"a": 5, "b": -1}, param_location=W.Location("t.c", 1, 18, "main"))
@@ -266,6 +287,56 @@ class NondetTraceTest(unittest.TestCase):
             self.assertEqual(wps[0].value, 1)
             # __VERIFIER_nondet_int is called at two sites: no waypoint for it
             self.assertEqual(P.nondet_waypoints(src, [("__VERIFIER_nondet_int", 3)]), [])
+
+    TRACE = [("__VERIFIER_nondet_int", 7), ("__VERIFIER_nondet_uchar", 1), ("__VERIFIER_nondet_int", -2)]
+
+    def test_locations_from_extra(self) -> None:
+        f = {"function": "main", "extra": {"nondet": "a=1, b=2", "nondet_loc": "4:11, 0:0"}}
+        self.assertEqual(P.nondet_locations(f, 2), [(4, 11), None])
+        self.assertIsNone(P.nondet_locations(f, 3))  # does not match the trace
+        self.assertIsNone(P.nondet_locations({"extra": {}}, 0))
+        self.assertIsNone(P.nondet_locations({"extra": {"nondet_loc": "4:x"}}, 1))
+        f = {"function": "main", "extra": {"nondet": "__VERIFIER_nondet_float=0.25"}}
+        self.assertEqual(P.nondet_trace(f), [("__VERIFIER_nondet_float", 0.25)])
+
+    def test_exact_locations_place_every_call(self) -> None:
+        # pir's debug locations point at the start of each call; the waypoint
+        # goes on its closing parenthesis, also where a function has two sites
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "t.c"
+            src.write_text(self.SRC)
+            wps = P.nondet_waypoints(src, self.TRACE, [(4, 11), (5, 21), (6, 20)])
+            self.assertEqual([(w.location.line, w.location.column, w.value) for w in wps],
+                             [(4, 33, 7), (5, 45, 1), (6, 42, -2)])
+
+    def test_wrong_location_falls_back_to_the_unique_site(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "t.c"
+            src.write_text(self.SRC)
+            # the first location names no call of that function: the int call
+            # has two sites, so the prefix ends before it
+            self.assertEqual(P.nondet_waypoints(src, self.TRACE, [(4, 12), (5, 21), (6, 20)]), [])
+            # an unknown uchar location falls back to its only call site
+            wps = P.nondet_waypoints(src, self.TRACE, [(4, 11), None, (6, 20)])
+            self.assertEqual([(w.location.line, w.location.column) for w in wps], [(4, 33), (5, 45), (6, 42)])
+            # a location list of the wrong length is ignored as a whole
+            self.assertEqual(len(P.nondet_waypoints(src, self.TRACE, [(4, 11)])), 0)
+
+    def test_line_markers_disable_debug_locations(self) -> None:
+        # in a preprocessed task, debug lines name the original file's lines
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "t.i"
+            src.write_text('# 1 "t.c"\n' + self.SRC)
+            wps = P.nondet_waypoints(src, self.TRACE, [(5, 11), (6, 21), (7, 20)])
+            self.assertEqual(wps, [])  # int has two sites: nothing placed without the locations
+
+    def test_doctests(self) -> None:
+        import doctest
+
+        for mod in (P, W):
+            res = doctest.testmod(mod, verbose=False)
+            self.assertGreater(res.attempted, 0, mod.__name__)
+            self.assertEqual(res.failed, 0, mod.__name__)
 
 
 class ToolInfoTest(unittest.TestCase):
