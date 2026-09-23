@@ -394,7 +394,7 @@ struct Verdict {
 enum class MemEncoding { Array, Bv };
 
 struct EncodeOptions {
-    MemEncoding memory = MemEncoding::Array;
+    MemEncoding memory = MemEncoding::Bv;  // QF_BV; Array is the unbounded alternative (slower on ranged copies)
 };
 
 PRISM_API bool z3_available();

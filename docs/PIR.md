@@ -225,10 +225,13 @@ instances off the executed path are false, so one global memory state is
 exact (no merge at joins). Each `alloc` instance of the DAG runs at most once
 per path and gets the next constant object id (the Lean `next` counter).
 
-* `MemEncoding::Array` (default of `check_function`): one SMT array from
-  address to cell; ranged writes (`memcpy`, `memset`, arbitrary-byte
-  initialisation) are lambdas.
-* `MemEncoding::Bv` (default of `pir_vcs`, for the certified back end):
+* `MemEncoding::Array` (`EncodeOptions`, unbounded mode): one SMT array
+  from address to cell; ranged writes (`memcpy`, `memset`, arbitrary-byte
+  initialisation) are lambdas. Z3 handles the lambdas of symbolic-length
+  `memcpy` poorly (a random pointer program: 53 s vs 0.24 s for Bv), so it
+  is not the stage default.
+* `MemEncoding::Bv` (default of `check_function`, the stage and `pir_vcs`;
+  QF_BV, what the certified back end accepts):
   arrays eliminated. A load is an ite chain over the guarded writes before
   it (read-over-write, as `PrismSem/MemEncode.lean` `menc`), writes to other
   objects are skipped when both object ids are known; arbitrary initial bytes
