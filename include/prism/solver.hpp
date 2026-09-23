@@ -48,6 +48,7 @@ struct ExternalSolver {
 struct SolveOptions {
     double timeout_s = 30.0;
     bool certified = false;     // roadmap 3.2: try to produce PROVED-CERTIFIED
+    double check_timeout_s = 0; // LRAT checker budget; 0: max(60 s, 4 x timeout_s)
     bool portfolio = true;      // false: Z3 only (plus the certificate chain when certified)
     std::string cache_dir;      // empty: $XDG_CACHE_HOME/prism/solver or ~/.cache/prism/solver
     bool use_cache = true;      // the query cache; solve times are always recorded in cache_dir

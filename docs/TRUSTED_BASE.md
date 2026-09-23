@@ -86,7 +86,8 @@ number of LRAT steps and the CNF hash, for example
 A cached certified result is **not** trusted from disk. On a cache hit, PRISM
 bit-blasts the formula again, requires the new CNF to hash to the stored
 `cnf_sha256`, and runs cake_lpr on the stored proof again. A cached plain
-`Unsat` never answers a certified request.
+`Unsat` is never certified: a certified request solves again, and only if
+that gives no answer does the plain `Unsat` stand, uncertified.
 
 ### Trusted components for `PROVED-CERTIFIED` (today)
 

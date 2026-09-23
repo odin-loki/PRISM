@@ -349,4 +349,28 @@ TEST_CASE("certified: a function with no VC is certified vacuously and says so")
     // plain mode never certifies, even vacuously
     CHECK(prism::pir::check_function(*t.fn, cert_opts(false)).status == prism::laws::PROVED);
 }
+
+TEST_CASE("certified: a certified request never loses a cached plain answer") {
+    CertTmp tmp;
+    z3::context c;
+    auto x = c.bv_const("x", 16);
+    auto f = (x * 3) != (x + x + x);  // unsat
+    prism::solver::SolveOptions o;
+    o.cache_dir = (tmp.dir / "cache").string();
+    o.timeout_s = 20;
+    auto plain = prism::solver::solve(c, f, o);
+    REQUIRE(plain.kind == prism::solver::SolveResult::Unsat);
+    // No member can run now (Z3 off, no tools): the certified request gets
+    // the cached plain unsat, never certified.
+    o.certified = true;
+    o.z3_in_process = false;
+    o.search_default_tools = false;
+    o.sls = false;
+    auto r = prism::solver::solve(c, f, o);
+    CHECK(r.kind == prism::solver::SolveResult::Unsat);
+    CHECK_FALSE(r.certified);
+    CHECK(r.cache_hit);
+    CHECK(prism::solver::verdict_status(r) == prism::laws::PROVED);
+    CHECK(r.note.find("cached plain unsat stands") != std::string::npos);
+}
 #endif

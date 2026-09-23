@@ -9,8 +9,10 @@
 //  - certified=true only when a solver said UNSAT AND cake_lpr printed
 //    "s VERIFIED UNSAT" for the LRAT proof against the exact CNF file whose
 //    sha256 is recorded; every other path leaves certified=false with a note;
-//  - a cached plain Unsat never answers a certified request, and a cached
-//    certified Unsat is re-checked by cake_lpr against a freshly bit-blasted CNF;
+//  - a cached plain Unsat is never certified: a certified request solves
+//    again (the plain answer stands, uncertified, only if that gives no
+//    answer), and a cached certified Unsat is re-checked by cake_lpr against
+//    a freshly bit-blasted CNF;
 //  - a missing solver binary does not participate and is named in `missing`.
 
 #ifdef PRISM_HAS_Z3
@@ -298,6 +300,13 @@ struct Certify {
     std::string note;
 };
 
+// Seconds cake_lpr (and lrat-check) may take for one proof. Checking a
+// multiplier's LRAT proof can take longer than finding it, so the default is
+// generous; running out only costs the certificate, never the answer.
+double check_budget(const SolveOptions& o) {
+    return o.check_timeout_s > 0 ? o.check_timeout_s : std::max(60.0, 4.0 * o.timeout_s);
+}
+
 bool has_empty_clause(const Cnf& cnf) {
     return std::any_of(cnf.clauses.begin(), cnf.clauses.end(), [](const auto& c) { return c.empty(); });
 }
@@ -416,6 +425,10 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
     const fs::path root = cache_root(opt);
 
     // ---------------------------------------------------------------- cache
+    // A cached unsat that a certified request could not use: if solving
+    // again yields no answer, the plain answer still stands (a plain request
+    // would have taken it); certification only ever adds.
+    std::optional<std::string> cached_unsat_winner;
     if (opt.use_cache) {
         if (auto j = cache_load(root, res.query_hash)) {
             const std::string kind = j->value("kind", "");
@@ -446,6 +459,7 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
                 if (opt.certified) notes.push_back("not certified: " + cert_reason);
                 return finish(res);
             } else if (kind == "unsat" && want_cert) {
+                cached_unsat_winner = j->value("winner", "");
                 if (!j->value("certified", false)) {
                     notes.push_back("cached unsat is uncertified: solving again for a certificate");
                 } else {
@@ -463,7 +477,7 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
                         notes.push_back("cached certificate is for a different CNF: solving again");
                     } else {
                         auto ck = run_checkers(opt, cp, cnf_sha, lp, j->value("cert_solver", "cadical"),
-                                               std::max(10.0, opt.timeout_s), has_empty_clause(*cnf));
+                                               check_budget(opt), has_empty_clause(*cnf));
                         if (ck.certified) {
                             res.kind = Kind::Unsat;
                             res.certified = true;
@@ -578,6 +592,12 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
     if (members.empty()) {
         res.kind = Kind::Unknown;
         notes.push_back("no solver available (NOTRUN)");
+        if (cached_unsat_winner) {
+            res.kind = Kind::Unsat;
+            res.winner = *cached_unsat_winner;
+            res.cache_hit = true;
+            notes.push_back("the cached plain unsat stands (not certified)");
+        }
         return finish(res);
     }
 
@@ -892,6 +912,11 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
             res.model = accepted->model;
             if (opt.certified) notes.push_back("counterexample (model validated in Z3); certification applies to unsat only");
         }
+    } else if (cached_unsat_winner) {
+        res.kind = Kind::Unsat;
+        res.winner = *cached_unsat_winner;
+        res.cache_hit = true;
+        notes.push_back("no answer while solving again for a certificate: the cached plain unsat stands");
     } else {
         res.kind = timed_out || now_s() >= deadline ? Kind::Timeout : Kind::Unknown;
     }
@@ -911,7 +936,7 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
                             (cert_msg->detail.empty() ? "" : " (" + cert_msg->detail + ")"));
         } else {
             auto ck = run_checkers(opt, cnf_path, cnf_sha, lrat_path, "cadical " + cm.version,
-                                   std::max(10.0, opt.timeout_s), cnf && has_empty_clause(*cnf));
+                                   check_budget(opt), cnf && has_empty_clause(*cnf));
             if (ck.certified) {
                 res.certified = true;
                 res.certificate_info = ck.info;

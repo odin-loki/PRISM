@@ -41,7 +41,11 @@ every reason certification did not happen. Nothing is dropped quietly
 - **Rules.**
   - A cached SAT model is validated again in Z3, and if it fails the entry is
     ignored with a note.
-  - A cached plain UNSAT answers plain requests only.
+  - A cached plain UNSAT answers plain requests. A certified request solves
+    again for a certificate; if that gives no answer at all, the cached plain
+    UNSAT stands, uncertified (certification never loses an answer).
+  - The LRAT checkers get `check_timeout_s`, default `max(60 s, 4 x
+    timeout_s)`: checking a multiplier's proof can take longer than finding it.
   - A certified request needs a certified entry. On that hit the formula is
     bit-blasted again, its CNF must match `cnf_sha256`, and cake_lpr checks
     the stored proof again.
@@ -90,9 +94,20 @@ construction) → CaDiCaL `--lrat=true --binary=false` → `cake_lpr cnf lrat`
 must print `s VERIFIED UNSAT`. drat-trim `lrat-check` can veto. The CNF hash
 is checked before and after. Any failure leaves the plain result with the
 reason in the note. Formulas with arrays, floating point, UF, arithmetic or
-quantifiers get `not certifiable: <reason>`. The integrator maps
-`certified == true` to `laws::PROVED_CERTIFIED`. Until then the library
-spells it `kProvedCertified`.
+quantifiers get `not certifiable: <reason>`. `verdict_status` maps
+`certified == true` to `laws::PROVED_CERTIFIED` (the verdict module's own
+spelling; `kProvedCertified` is only an alias of it), and
+`SolveResult::cnf_sha256` is the hash of the exact CNF cake_lpr checked.
+
+## Use in the pir stage
+
+The `pir` stage sends every verification condition through `solve()`: one
+query per inserted property and one for the unwinding assertion
+([PIR.md](PIR.md#solving-roadmap-31--32)). The stage always uses the
+portfolio and the query cache (`--solver-cache DIR`); `--timeout S` is the
+budget per query; `--certified` sets `SolveOptions::certified`, and a
+function becomes `PROVED-CERTIFIED` only when every one of its VCs came back
+`certified`. The k-induction step is still answered by Z3 alone.
 
 ## ProbSAT (roadmap 3.3)
 
