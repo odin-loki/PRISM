@@ -209,16 +209,20 @@ class TestConformanceCertifiedSummary(unittest.TestCase):
 
         def row(fn: str, expected: bool, status: str, loops: str | None, note: str = "") -> dict:
             extra = {"loops": loops} if loops is not None else {}
+            if fn == "v":
+                extra["certificate_vcs"] = "0"
             if note:
                 extra["certify_note"] = note
             return {"task": "t", "function": fn, "stage": conformance.CERT_STAGE, "expected": expected,
                     "law_task": False, "findings": [{"status": status, "extra": extra}]}
 
         rows = [row("a", True, laws.PROVED_CERTIFIED, "0"), row("b", True, laws.PROVED, "0", "VC x: why"),
+                row("v", True, laws.PROVED_CERTIFIED, "0"),
                 row("c", True, laws.PROVED_CERTIFIED, "1"), row("d", True, laws.NEEDS_HARNESS, None),
                 row("e", False, laws.FAILED, "0")]
         s = conformance.certified_summary(rows)
-        self.assertEqual((s["loop_free_true"], s["loop_free_true_proved"], s["loop_free_true_certified"]), (2, 2, 1))
+        self.assertEqual((s["loop_free_true"], s["loop_free_true_proved"], s["loop_free_true_certified"]), (3, 3, 2))
+        self.assertEqual(s["loop_free_true_certified_vacuous"], 1)
         self.assertEqual((s["looped_true"], s["looped_true_certified"], s["not_encoded_true"]), (1, 1, 1))
         self.assertEqual(s["wrong_certified"], 0)
         self.assertEqual(s["proved_not_certified"], [{"task": "t", "function": "b", "note": "VC x: why"}])

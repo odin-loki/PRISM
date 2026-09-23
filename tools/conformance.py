@@ -83,7 +83,7 @@ SCOPED_STAGES = {"harness"}
 # --certified: the pir stage again with `prism --certified`, scored under this name.
 CERT_STAGE = "pir-certified"
 # Finding extras kept in results.json (pir: loop count and certificate fields).
-KEEP_EXTRA = ("loops", "properties", "certificate", "certify_note", "certified_mode", "solver")
+KEEP_EXTRA = ("loops", "properties", "certificate", "certificate_vcs", "certify_note", "certified_mode", "solver")
 
 # SV-COMP property file -> suite property
 SV_PROPERTIES = {"no-overflow.prp": "no-overflow", "valid-memsafety.prp": "memsafety"}
@@ -717,6 +717,9 @@ def certified_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "loop_free_true": len(loop_free),
         "loop_free_true_proved": len(proved),
         "loop_free_true_certified": len(cert),
+        # certified with 0 VCs: no solver answer to check (docs/TRUSTED_BASE.md)
+        "loop_free_true_certified_vacuous": sum(
+            1 for r in cert if any(f.get("extra", {}).get("certificate_vcs") == "0" for f in r["findings"])),
         "looped_true": len(looped),
         "looped_true_certified": sum(1 for r in looped if "PROVED-CERTIFIED" in st(r)),
         "not_encoded_true": len(unencoded),
@@ -754,7 +757,8 @@ def markdown(metrics: dict[str, Any], rows: list[dict[str, Any]], meta: dict[str
         out += ["## Certified mode (roadmap 3.2, `prism --certified`)", "",
                 f"- loop-free `true` functions encoded by pir: {cs['loop_free_true']}",
                 f"- of those PROVED (any proof) under --certified: {cs['loop_free_true_proved']}",
-                f"- of those **PROVED-CERTIFIED**: **{cs['loop_free_true_certified']}/{cs['loop_free_true']}**",
+                f"- of those **PROVED-CERTIFIED**: **{cs['loop_free_true_certified']}/{cs['loop_free_true']}** "
+                f"({cs['loop_free_true_certified_vacuous']} vacuously: no VC, no solver answer to check)",
                 f"- `true` functions with loops: {cs['looped_true']} "
                 f"({cs['looped_true_certified']} PROVED-CERTIFIED: loops closed within the unwind)",
                 f"- `true` functions pir did not encode (NEEDS-HARNESS etc.): {cs['not_encoded_true']}",
