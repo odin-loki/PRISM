@@ -680,7 +680,10 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
             }
         }
     }
-    if (predict::enabled(root)) {  // roadmap 9.1/9.3 learned scheduler; off unless the model file enables it
+    // Roadmap 3.1 / 9.3 learned scheduler (solver/predict.cpp, docs/SOLVERS.md):
+    // order and head start only; certified requests keep the rules.
+    const char* why = "history";
+    if (!want_cert && predict::enabled(root)) {
         const auto x = predict::query_features(ft);
         std::optional<std::size_t> best;
         for (std::size_t i = 0; i < members.size(); ++i)
@@ -688,15 +691,15 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
                 members[i].est = *p;
                 if (!best || *p < members[*best].est) best = i;
             }
-        if (best) lead = best;
+        if (best) lead = best, why = "model";
     }
     if (lead && members.size() > 1) {
         const double delay = std::min(3.0 * members[*lead].est + 0.2, 0.3 * opt.timeout_s);
         for (std::size_t i = 0; i < members.size(); ++i)
             if (i != *lead && !members[i].lrat) members[i].not_before = t0 + delay;
         char buf[160];
-        std::snprintf(buf, sizeof buf, "scheduler: %s leads by %.2fs (history, bucket %s)",
-                      members[*lead].name.c_str(), delay, res.bucket.c_str());
+        std::snprintf(buf, sizeof buf, "scheduler: %s leads by %.2fs (%s, bucket %s)",
+                      members[*lead].name.c_str(), delay, why, res.bucket.c_str());
         notes.push_back(buf);
     } else if (members.size() > 1 && opt.z3_in_process) {
         // No history: in-process Z3 goes first for a moment. Most
@@ -735,7 +738,8 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
     const bool need_smt = std::any_of(members.begin(), members.end(), [](const Member& m) { return m.kind == MemberKind::Smt2; });
     if (need_smt) {
         std::string txt = "(set-option :produce-models true)\n";
-        txt += Z3_benchmark_to_smtlib_string(c, "prism", ft.logic().c_str(), "unknown", "", 0, nullptr, formula);
+        txt += Z3_benchmark_to_smtlib_string(c, "prism", ft.logic().c_str(), "unknown", "", 0, nullptr,
+                                             detail::portable_smt2(formula));
         std::vector<std::string> names;
         for (const auto& k : collect_consts(formula))
             if (plain_symbol(const_name(k))) names.push_back("|" + const_name(k) + "|");

@@ -16,6 +16,7 @@
 #ifdef PRISM_HAS_Z3
 #include "prism/pir.hpp"
 #include "prism/solver.hpp"
+#include "../../src/prism/solver/query.hpp"
 #endif
 
 #include <nlohmann/json.hpp>
@@ -24,6 +25,8 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <optional>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -568,15 +571,32 @@ TEST_CASE("ai-assist draft: model rewording is validated like any draft") {
 }
 
 // ------------------------------------------------------------------ predict
-TEST_CASE("ai-assist predict: GBDT evaluation, off by default, enabled only by the model file") {
+// The built-in model (src/prism/solver/predict_default.inc) is on by default
+// since it beat the rules on held-out files (docs/SOLVERS.md "Learned
+// scheduler"); a model file replaces it, even a disabled one, and
+// PRISM_SOLVER_PREDICT=0 switches prediction off (the rules decide).
+TEST_CASE("ai-assist predict: GBDT evaluation, built-in model, a model file overrides it") {
     auto dir = assist_tmp("predict");
     const std::string tree = R"({"base":1.0,"lr":0.5,"trees":[{"f":0,"t":2.0,"l":{"v":-2.0},"r":{"f":1,"t":0.5,"l":{"v":4.0},"r":{"v":6.0}}}]})";
     CHECK(prism::solver::predict::gbdt_eval(tree, {1.0, 0.0}) == doctest::Approx(0.0));
     CHECK(prism::solver::predict::gbdt_eval(tree, {3.0, 0.0}) == doctest::Approx(3.0));
     CHECK(prism::solver::predict::gbdt_eval(tree, {3.0, 1.0}) == doctest::Approx(4.0));
-    CHECK_FALSE(prism::solver::predict::enabled(dir));
-    CHECK_FALSE(prism::solver::predict::seconds(dir, "z3", {0, 0, 0, 0, 0, 0, 0, 0, 0}));
+    // No model file: the built-in model, solver targets only (no unwind model).
+    CHECK(prism::solver::predict::enabled(dir));
+    const std::vector<double> small{5.0, 1.5, 0.3, 0, 0, 0, 0, 0, 0};  // a 32-bit, ~30-node QF_BV VC
+    for (const char* m : {"z3", "bitwuzla", "cadical", "kissat", "sls"}) {
+        auto s = prism::solver::predict::seconds(dir, m, small);
+        REQUIRE(s);
+        CHECK(*s >= 0.0);
+        CHECK(*s < 8.0);
+    }
+    CHECK(*prism::solver::predict::seconds(dir, "bitwuzla", small) <
+          *prism::solver::predict::seconds(dir, "cadical", small));
     CHECK(prism::solver::predict::unwind_for(dir, {}, 8) == 8);
+    ::setenv("PRISM_SOLVER_PREDICT", "0", 1);
+    CHECK_FALSE(prism::solver::predict::enabled(dir));
+    CHECK_FALSE(prism::solver::predict::seconds(dir, "z3", small));
+    ::unsetenv("PRISM_SOLVER_PREDICT");
     nlohmann::json m;
     m["schema"] = 1;
     m["kind"] = "prism-gbdt";
@@ -586,7 +606,8 @@ TEST_CASE("ai-assist predict: GBDT evaluation, off by default, enabled only by t
     m["solvers"]["z3"] = nlohmann::json::parse(R"({"base":0.0,"lr":1.0,"trees":[]})");
     m["bound"] = nlohmann::json::parse(R"({"base":2.0,"lr":1.0,"trees":[]})");
     write(dir / "predict_model.json", m.dump());
-    CHECK_FALSE(prism::solver::predict::enabled(dir));  // a trained model that did not beat the baseline
+    // A model file replaces the built-in model, even one that did not beat the baseline.
+    CHECK_FALSE(prism::solver::predict::enabled(dir));
     m["enabled"] = true;
     write(dir / "predict_model.json", m.dump());
     // mtime granularity: force a different timestamp
@@ -635,108 +656,213 @@ TEST_CASE("ai-assist predict: every solve logs a training line; an enabled model
     CHECK(r2.kind == prism::solver::SolveResult::Sat);
     auto r3 = prism::solver::solve(c, (x & 1) == 2, o);
     CHECK(r3.kind == prism::solver::SolveResult::Unsat);
+    CHECK(r3.note.find("scheduler: sls leads by") != std::string::npos);
+    CHECK(r3.note.find("(model, bucket") != std::string::npos);
     CHECK(lines_of(dir / "solve_log.jsonl").size() == 3);
+    // Certified requests keep the rules: the model never reorders them.
+    o.certified = true;
+    auto r4 = prism::solver::solve(c, (x & 3) == 7, o);
+    CHECK(r4.kind == prism::solver::SolveResult::Unsat);
+    CHECK(r4.note.find("(model") == std::string::npos);
 }
 
-// Data collection for tools/prism_ai/predict.py (roadmap 9.7 measurement).
+// The SMT-LIB2 members (Bitwuzla) rejected most pir VCs: Z3 prints 1-argument
+// `or` and its own bvsmul_noovfl-style predicates. portable_smt2 removes both
+// without changing the formula's meaning (checked here by Z3 for small widths;
+// a wider multiplier equivalence is itself a hard query).
+TEST_CASE("solver: the SMT-LIB2 copy for Bitwuzla is portable and equivalent") {
+    z3::context c;
+    for (unsigned w : {1u, 3u, 6u}) {
+        auto x = c.bv_const(("x" + std::to_string(w)).c_str(), w);
+        auto y = c.bv_const(("y" + std::to_string(w)).c_str(), w);
+        z3::expr_vector one(c);
+        one.push_back(x == y);
+        Z3_ast one_a[1] = {one[0]};
+        z3::expr unary_or(c, Z3_mk_or(c, 1, one_a));  // what the pir VCs contain
+        std::vector<z3::expr> preds{z3::expr(c, Z3_mk_bvmul_no_overflow(c, x, y, true)),
+                                    z3::expr(c, Z3_mk_bvmul_no_underflow(c, x, y)),
+                                    z3::expr(c, Z3_mk_bvmul_no_overflow(c, x, y, false)), unary_or};
+        for (const auto& p : preds) {
+            auto q = prism::solver::detail::portable_smt2(p);
+            z3::solver s(c);
+            s.add(q != p);
+            CHECK(s.check() == z3::unsat);
+            z3::solver pr(c);
+            pr.add(q);
+            auto txt = pr.to_smt2();
+            CHECK(txt.find("_noovfl") == std::string::npos);
+            CHECK(txt.find("_noudfl") == std::string::npos);
+        }
+    }
+    // End to end through Bitwuzla alone, when it is installed.
+    prism::solver::SolveOptions o;
+    o.use_cache = false;
+    o.cache_dir = assist_tmp("portable-bw").string();
+    if (auto bw = prism::solver::find_tool("bitwuzla", o)) {
+        auto x = c.bv_const("px", 8);
+        z3::expr_vector one(c);
+        one.push_back(x * 3 == 9);  // x = 3 (3 is invertible mod 256), 3 * 3 does not overflow
+        Z3_ast one_a[1] = {one[0]};
+        z3::expr f(c, Z3_mk_or(c, 1, one_a));
+        f = f && z3::expr(c, Z3_mk_bvmul_no_overflow(c, x, x, true));
+        o.z3_in_process = false;
+        o.sls = false;
+        o.search_default_tools = false;
+        o.extra_solvers = {{"bitwuzla", {bw->path.string(), "{input}"}, prism::solver::ExternalSolver::Input::Smt2}};
+        auto r = prism::solver::solve(c, f, o);
+        CHECK(r.winner == "bitwuzla");
+        CHECK(r.kind == prism::solver::SolveResult::Sat);  // model validated in Z3
+    }
+}
+
+// Data collection for tools/prism_ai/predict.py (roadmap 3.1 / 9.3 measurement).
 // PRISM_PREDICT_COLLECT=<dir> ./prism_tests -tc="ai-assist predict collect*"
-// Runs the conformance suite through the PIR front end: per function the
-// verdict and time at unwind 1,2,4,8,16 (bound data), and per verification
-// condition the time of Z3, CaDiCaL and Kissat each ALONE (solver data).
+// Sources: the directories listed one per line in <dir>/roots.txt (relative
+// to the repository root), else the conformance suite. Every .c/.cpp/.i file
+// goes through the PIR front end. Per function: the verdict and time at
+// unwind 1,2,4,8,16 (bound data, Z3 alone, no cache). Per verification
+// condition (up to 6 per function, unwind 8): every portfolio member ALONE
+// -- z3, bitwuzla, cadical, kissat (bit-blast included) with an 8 s timeout,
+// and the ProbSAT walker with a 0.25 s budget -- so the trainer can replay
+// any ordering; a timeout is a censored time. Files already in
+// <dir>/solve_runs.jsonl are skipped (the collection resumes).
 TEST_CASE("ai-assist predict collect conformance logs") {
     const char* outp = std::getenv("PRISM_PREDICT_COLLECT");
     if (!outp || !*outp) return;
     fs::path out = outp;
     fs::create_directories(out);
-    auto suite = fs::path(__FILE__).parent_path().parent_path() / "conformance";
+    const auto repo = fs::path(__FILE__).parent_path().parent_path().parent_path();
+    std::vector<fs::path> roots;
+    for (const auto& l : lines_of(out / "roots.txt")) roots.push_back(repo / l);
+    if (roots.empty()) roots.push_back(repo / "tests" / "conformance");
     auto cfg = prism::default_config();
     auto fe = prism::pir::find_frontend(cfg);
     REQUIRE(fe.clang);
+    std::set<std::string> done;
+    for (const auto& l : lines_of(out / "files_done.txt")) done.insert(l);
     std::ofstream bound_log(out / "bound_runs.jsonl", std::ios::app);
     std::ofstream solve_log(out / "solve_runs.jsonl", std::ios::app);
+    std::ofstream done_log(out / "files_done.txt", std::ios::app);
     prism::solver::SolveOptions base;
     base.use_cache = false;
     base.timeout_s = 8.0;
     base.cache_dir = (out / "cache").string();
-    auto cad = prism::solver::find_tool("cadical", base);
-    auto kis = prism::solver::find_tool("kissat", base);
+    std::vector<std::optional<prism::solver::ToolInfo>> tools;
+    for (const char* n : {"bitwuzla", "cadical", "kissat"}) tools.push_back(prism::solver::find_tool(n, base));
     double budget = std::getenv("PRISM_PREDICT_BUDGET") ? std::atof(std::getenv("PRISM_PREDICT_BUDGET")) : 1800.0;
     auto t_start = std::chrono::steady_clock::now();
     auto elapsed = [&] {
         return std::chrono::duration<double>(std::chrono::steady_clock::now() - t_start).count();
     };
     std::vector<fs::path> srcs;
-    for (auto& e : fs::recursive_directory_iterator(suite)) {
-        auto ext = e.path().extension().string();
-        if (e.is_regular_file() && (ext == ".c" || ext == ".cpp")) srcs.push_back(e.path());
-    }
-    std::sort(srcs.begin(), srcs.end());
+    for (const auto& root : roots)
+        for (auto& e : fs::recursive_directory_iterator(root)) {
+            auto ext = e.path().extension().string();
+            if (e.is_regular_file() && (ext == ".c" || ext == ".cpp" || ext == ".i")) srcs.push_back(e.path());
+        }
+    // A deterministic shuffle (by the hash of the path), so a run cut short by
+    // the budget is still a sample of every root, not the first directory.
+    std::sort(srcs.begin(), srcs.end(), [&](const fs::path& a, const fs::path& b) {
+        return prism::solver::sha256_hex(fs::relative(a, repo).generic_string()) <
+               prism::solver::sha256_hex(fs::relative(b, repo).generic_string());
+    });
     int nfn = 0, nvc = 0;
     for (auto& src : srcs) {
         if (elapsed() > budget) break;
+        const auto key = fs::relative(src, repo).generic_string();
+        if (done.count(key)) continue;
         std::string err;
-        auto ir = prism::pir::lower_to_ir(fe, src, 30.0, err);
-        if (!ir) continue;
-        auto mod = prism::pir::ir::parse_module(*ir);
-        for (auto& irf : mod.functions) {
-            if (elapsed() > budget) break;
-            auto tr = prism::pir::translate(mod, irf);
-            if (!tr.fn) continue;
-            auto& fn = *tr.fn;
-            fn.name = irf.name;
-            ++nfn;
-            nlohmann::json b;
-            b["file"] = fs::relative(src, suite).generic_string();
-            b["function"] = irf.name;
-            b["features"] = prism::solver::predict::function_features(fn);
-            for (int u : {1, 2, 4, 8, 16}) {
-                auto t0 = std::chrono::steady_clock::now();
-                auto v = prism::pir::check_function(fn, u, 10.0);
-                double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-                b["runs"].push_back({{"unwind", u}, {"status", v.status}, {"seconds", s}, {"prop", v.prop}});
-            }
-            bound_log << b.dump() << "\n";
-            auto vcs = prism::pir::pir_vcs(fn, 8);
-            int k = 0;
-            for (auto& vc : vcs) {
-                if (++k > 6 || elapsed() > budget) break;
-                z3::context c;
-                z3::expr f(c);
-                try {
-                    auto v = c.parse_string(vc.smt2.c_str());
-                    f = z3::mk_and(v);
-                } catch (...) {
-                    continue;
+        std::vector<prism::pir::FoldedUb> folded;
+        std::vector<std::pair<int, int>> sshl;
+        auto ir = prism::pir::lower_to_ir(fe, src, 30.0, err, &folded, &sshl);
+        if (ir) {
+            auto mod = prism::pir::ir::parse_module(*ir);
+            prism::pir::TranslateOptions topt;
+            topt.signed_shl = sshl;
+            topt.folded = folded;
+            for (auto& irf : mod.functions) {
+                if (elapsed() > budget) break;
+                auto tr = prism::pir::translate(mod, irf, topt);
+                if (!tr.fn) continue;
+                auto& fn = *tr.fn;
+                fn.name = irf.name;
+                ++nfn;
+                nlohmann::json b;
+                b["file"] = key;
+                b["function"] = irf.name;
+                b["features"] = prism::solver::predict::function_features(fn);
+                for (int u : {1, 2, 4, 8, 16}) {
+                    prism::pir::CheckOptions co;
+                    co.unwind = u;
+                    co.timeout_s = 10.0;
+                    co.portfolio = false;
+                    co.use_cache = false;
+                    co.cache_dir = (out / "cache-bound").string();
+                    auto t0 = std::chrono::steady_clock::now();
+                    auto v = prism::pir::check_function(fn, co);
+                    double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+                    b["runs"].push_back({{"unwind", u}, {"status", v.status}, {"seconds", s}, {"prop", v.prop}});
                 }
-                ++nvc;
-                auto feats = prism::solver::features(f);
-                nlohmann::json s;
-                s["file"] = b["file"];
-                s["function"] = irf.name;
-                s["vc"] = vc.kind + ":" + vc.prop;
-                s["bucket"] = feats.bucket();
-                s["features"] = prism::solver::predict::query_features(feats);
-                auto run = [&](const std::string& name, prism::solver::SolveOptions o) {
-                    auto r = prism::solver::solve(c, f, o);
-                    s["runs"][name] = {{"kind", std::string(prism::solver::kind_name(r.kind))}, {"wall_s", r.wall_s}};
-                };
-                auto z = base;
-                z.portfolio = false;
-                run("z3", z);
-                for (auto* t : {&cad, &kis}) {
-                    if (!*t) continue;
-                    auto o = base;
-                    o.z3_in_process = false;
-                    o.sls = false;
-                    o.search_default_tools = false;
-                    std::vector<std::string> argv{(*t)->path.string()};
-                    if ((*t)->name == "kissat") argv.push_back("--quiet");
-                    argv.push_back("{input}");
-                    o.extra_solvers = {{(*t)->name, argv, prism::solver::ExternalSolver::Input::Dimacs}};
-                    run((*t)->name, o);
+                bound_log << b.dump() << "\n";
+                auto vcs = prism::pir::pir_vcs(fn, 8);
+                int k = 0;
+                for (auto& vc : vcs) {
+                    if (++k > 6 || elapsed() > budget) break;
+                    z3::context c;
+                    z3::expr f(c);
+                    try {
+                        auto v = c.parse_string(vc.smt2.c_str());
+                        f = z3::mk_and(v);
+                    } catch (...) {
+                        continue;
+                    }
+                    ++nvc;
+                    auto feats = prism::solver::features(f);
+                    nlohmann::json s;
+                    s["file"] = key;
+                    s["function"] = irf.name;
+                    s["vc"] = vc.kind + ":" + vc.prop;
+                    s["sha"] = prism::solver::sha256_hex(vc.smt2).substr(0, 16);
+                    s["bucket"] = feats.bucket();
+                    s["features"] = prism::solver::predict::query_features(feats);
+                    s["timeout_s"] = base.timeout_s;
+                    auto run = [&](const std::string& name, const prism::solver::SolveOptions& o) {
+                        auto r = prism::solver::solve(c, f, o);
+                        if (r.ran.empty()) return;  // the member does not take this query (e.g. not bit-blastable)
+                        s["runs"][name] = {{"kind", std::string(prism::solver::kind_name(r.kind))},
+                                           {"wall_s", r.wall_s}};
+                    };
+                    auto z = base;
+                    z.portfolio = false;
+                    run("z3", z);
+                    for (const auto& t : tools) {
+                        if (!t) continue;
+                        auto o = base;
+                        o.z3_in_process = false;
+                        o.sls = false;
+                        o.search_default_tools = false;
+                        std::vector<std::string> argv{t->path.string()};
+                        if (t->name == "kissat") argv.push_back("--quiet");
+                        argv.push_back("{input}");
+                        o.extra_solvers = {{t->name, argv,
+                                            t->name == "bitwuzla" ? prism::solver::ExternalSolver::Input::Smt2
+                                                                  : prism::solver::ExternalSolver::Input::Dimacs}};
+                        run(t->name, o);
+                    }
+                    auto w = base;
+                    w.z3_in_process = false;
+                    w.search_default_tools = false;
+                    w.sls = true;
+                    w.sls_budget_s = 0.25;
+                    run("sls", w);
+                    solve_log << s.dump() << "\n";
                 }
-                solve_log << s.dump() << "\n";
             }
+        }
+        if (elapsed() <= budget) {
+            bound_log.flush();
+            solve_log.flush();
+            done_log << key << "\n" << std::flush;
         }
     }
     MESSAGE("collected ", nfn, " functions, ", nvc, " VCs in ", elapsed(), " s");

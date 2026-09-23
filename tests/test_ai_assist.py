@@ -30,7 +30,7 @@ import threading
 import unittest
 from pathlib import Path
 
-from tools.prism_ai import measure, predict
+from tools.prism_ai import measure, predict, sched
 from tools.prism_ai.gbdt import GBDT, eval_tree, rmse
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -190,6 +190,124 @@ class TestPredictTool(unittest.TestCase):
             m = json.loads(out.read_text(encoding="utf-8"))
             self.assertEqual(m["kind"], "prism-gbdt")
             self.assertIn("solver choice", md.read_text(encoding="utf-8"))
+
+
+class TestBuiltinModel(unittest.TestCase):
+    """src/prism/solver/predict_default.inc: the model the C++ engine uses
+    when there is no model file (docs/SOLVERS.md "Learned scheduler")."""
+
+    INC = ROOT / "src" / "prism" / "solver" / "predict_default.inc"
+
+    def test_generated_and_consistent(self):
+        text = self.INC.read_text(encoding="utf-8")
+        m = predict.parse_inc(text)
+        self.assertEqual(predict.emit_inc(m), text, "regenerate with predict.py --emit-inc")
+        self.assertEqual(m["query_features"], predict.QUERY_FEATURES)
+        self.assertEqual(m["kind"], "prism-gbdt")
+        self.assertTrue(all(len(p) <= predict.INC_PART for p in re.findall(r'R"JSON\((.*?)\)JSON"', text, re.S)))
+
+    def test_enabled_only_with_a_measured_win(self):
+        m = predict.parse_inc(self.INC.read_text(encoding="utf-8"))
+        if not m["enabled"]:
+            return
+        rp = m["metrics"]["replay"]
+        self.assertTrue(rp["chosen"])
+        self.assertNotIn("bound", m)  # the unwind model did not win (it lost a verdict)
+        for k in predict.DECIDE_KS:
+            per = rp["k"][str(k)]
+            noise = max(v["rel"] for key, v in rp["noise"].items() if key != "queries")
+            best = min(per["rules"]["total_s"], per["history"]["total_s"])
+            self.assertLess(per[rp["chosen"]]["total_s"], (1 - noise) * best)
+            self.assertLessEqual(per[rp["chosen"]]["timeouts"], per["rules"]["timeouts"])
+        for run in m["metrics"].get("end_to_end", {}).values():
+            self.assertEqual(run["disagreements"], 0)
+            self.assertLess(run["model"]["total_s"], run["rules"]["total_s"])
+
+
+class TestSchedReplay(unittest.TestCase):
+    """tools/prism_ai/sched.py: the portfolio scheduler replayed on alone-times."""
+
+    @staticmethod
+    def _row(runs: dict, key: str = "a.c", T: float = 8.0) -> dict:
+        return {"key": key, "sha": "", "bucket": "b", "x": [5.0, 2.0, 1.0, 0, 0, 0, 0, 0, 0], "T": T,
+                "runs": runs, "answer": "unsat"}
+
+    def test_rules_replay_matches_the_portfolio_order(self):
+        r = self._row({"z3": ("ans", 1.0), "cadical": ("ans", 0.2)})
+        est, lead, delay = sched.plan_rules(r)
+        # Two cores: Z3 alone for 0.15 s, then CaDiCaL joins and answers at 0.35 s.
+        self.assertEqual(sched.simulate(r, est, lead, delay, k=2), (0.35, "cadical"))
+        # One core: Z3 holds it until it answers.
+        self.assertEqual(sched.simulate(r, est, lead, delay, k=1), (1.0, "z3"))
+
+    def test_censored_member_holds_its_core_until_the_timeout(self):
+        r = self._row({"z3": ("cens", 8.0), "kissat": ("ans", 0.5)})
+        est, lead, delay = sched.plan_rules(r)
+        self.assertEqual(sched.simulate(r, est, lead, delay, k=1), (8.0, ""))  # a timeout
+        self.assertEqual(sched.simulate(r, est, "kissat", 0.15, k=1), (0.5, "kissat"))
+        self.assertEqual(sched.simulate(r, est, lead, delay, k=2), (0.65, "kissat"))
+
+    def test_a_member_that_gives_up_frees_its_core(self):
+        r = self._row({"z3": ("ans", 2.0), "bitwuzla": ("gave", 0.01), "sls": ("gave", 0.25)})
+        est = {"bitwuzla": 0.0, "sls": 0.1, "z3": 1.0}
+        # bitwuzla fails at 0.01, the walker keeps its core for its budget (max(1 s, 10% T)).
+        self.assertEqual(sched.simulate(r, est, "bitwuzla", 0.0, k=1), (3.01, "z3"))
+
+    def test_censored_boosting_predicts_above_the_censoring_point(self):
+        xs = [[float(i % 2)] for i in range(40)]
+        # x=1: the solver always times out at log T = 1.0 (true time unknown, >= 1)
+        ys = [1.0 if x[0] else 0.0 for x in xs]
+        cens = [bool(x[0]) for x in xs]
+        plain = GBDT(n_trees=30, min_leaf=1).fit(xs, ys)
+        aft = GBDT(n_trees=30, min_leaf=1).fit_censored(xs, ys, cens)
+        self.assertLessEqual(plain.predict([1.0]), 1.0 + 1e-9)  # squared loss: a timeout is its time
+        self.assertGreater(aft.predict([1.0]), 1.0)  # censored: at least the timeout
+        self.assertAlmostEqual(aft.predict([0.0]), 0.0, places=1)
+        self.assertEqual(GBDT.from_json(aft.to_json()).predict([1.0]), aft.predict([1.0]))
+
+    def test_load_dedups_by_vc_and_splits_by_file(self):
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "s.jsonl"
+            recs = [{"file": f, "function": "f", "vc": "p", "sha": sha, "bucket": "b", "timeout_s": 8.0,
+                     "features": [5, 2, 1, 0, 0, 0, 0, 0, 0],
+                     "runs": {"z3": {"kind": "unsat", "wall_s": 0.1}, "kissat": {"kind": "timeout", "wall_s": 8.0},
+                              "sls": {"kind": "unknown", "wall_s": 0.25}}}
+                    for f, sha in (("b.c", "s1"), ("a.c", "s1"), ("a.c", "s2"))]
+            p.write_text("\n".join(json.dumps(r) for r in recs), encoding="utf-8")
+            rows = sched.load([p])
+            self.assertEqual([(r["key"], r["sha"]) for r in rows], [("a.c", "s1"), ("a.c", "s2")])
+            self.assertEqual(rows[0]["runs"], {"z3": ("ans", 0.1), "kissat": ("cens", 8.0), "sls": ("gave", 0.25)})
+        train, test = sched.split([self._row({}, key=f"f{i}.c") for i in range(200)])
+        self.assertTrue(train and test)
+        self.assertFalse({r["key"] for r in train} & {r["key"] for r in test})
+
+    def test_noise_only_data_enables_nothing(self):
+        rows = []
+        for i in range(300):
+            h = i * 2654435761 % 97
+            rows.append({**self._row({"z3": ("ans", 0.05 + (h % 10) / 1000.0),
+                                      "cadical": ("ans", 0.05 + (h % 7) / 1000.0)}, key=f"f{i}.c"),
+                         "sha": f"s{i}"})
+        res = sched.run_all(rows, [1, 2], n_trees=10)
+        chosen, why = sched.decide(res, [1, 2])
+        self.assertIsNone(chosen, why)
+
+    def test_a_learnable_split_is_found_and_exported(self):
+        rows = []
+        for i in range(300):
+            big = i % 2 == 0
+            x = [5.0, 4.0 if big else 1.5, 1.0, 0, 0, 0, 0, 0, 0]
+            runs = {"z3": ("cens", 8.0) if big else ("ans", 0.01), "kissat": ("ans", 0.3) if big else ("ans", 0.2)}
+            rows.append({"key": f"f{i}.c", "sha": f"s{i}", "bucket": "b", "x": x, "T": 8.0, "runs": runs,
+                         "answer": "unsat"})
+        res = sched.run_all(rows, [1, 2], n_trees=20)
+        chosen, _ = sched.decide(res, [1])
+        self.assertIsNotNone(chosen)  # one core: rules put Z3 first and time out on every big query
+        self.assertLess(res["k"]["1"][chosen]["timeouts"], res["k"]["1"]["rules"]["timeouts"])
+        res["chosen"], res["why"] = chosen, ""
+        model = predict.build_model(None, None, res)
+        self.assertTrue(model["enabled"])
+        self.assertEqual(set(model["solvers"]), {"z3", "kissat"})
 
 
 class TestMeasure(unittest.TestCase):

@@ -5414,6 +5414,11 @@ TEST_CASE("solver: sat answer is a validated counterexample; unsat is plain PROV
 }
 
 TEST_CASE("solver: the scheduler gives a historic winner a head start") {
+    // History alone (the learned scheduler would otherwise pick the leader).
+    ::setenv("PRISM_SOLVER_PREDICT", "0", 1);
+    struct Unset {
+        ~Unset() { ::unsetenv("PRISM_SOLVER_PREDICT"); }
+    } unset;
     SolverTmp t;
     z3::context c;
     auto x = c.bv_const("x", 8);

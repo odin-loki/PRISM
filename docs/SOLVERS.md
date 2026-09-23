@@ -86,9 +86,26 @@ and the note says `DISAGREEMENT`.
   alone for `min(0.15 s, 10 % of timeout)`. Most pir VCs are answered in
   milliseconds, and then no bit-blast, process spawn or walker is paid for.
   The CaDiCaL-with-LRAT member of certified mode is never delayed.
+- **Learned scheduler (on by default).** A GBDT per member predicts its
+  seconds from the query features (`src/prism/solver/predict.cpp`, the
+  built-in model `predict_default.inc`, or `$PRISM_SOLVER_MODEL` /
+  `<cache_dir>/predict_model.json`, which replace it). The predictions
+  replace the estimates, and the member predicted fastest leads by
+  `min(3 × predicted + 0.2 s, 30 % of timeout)`, instead of the history
+  leader or Z3. It only orders members and sets the head start: every answer
+  still comes from a solver, SAT is still validated in Z3, and certified
+  requests keep the rules. `PRISM_SOLVER_PREDICT=0` switches it off. The
+  measurement that switched it on is below ("Learned scheduler").
 - The ProbSAT walker gets `max(1 s, 10 % of timeout)` and then gives its core
   back.
 - `max_parallel` defaults to the hardware thread count.
+- Bitwuzla (and any SMT-LIB2 extra solver) gets a portable copy of the
+  formula (`detail::portable_smt2`): Z3 prints 1-argument `(or x)` and its own
+  `bvsmul_noovfl` / `bvsmul_noudfl` / `bvumul_noovfl`, which Bitwuzla
+  rejects. Before this, Bitwuzla failed on 119 of the first 120 `tests/pir` VCs (it
+  answered "unknown" in milliseconds, so it never won). The rewrite is an
+  equivalence (1-argument `and`/`or` dropped; the overflow predicates stated
+  on the double-width product); the doctest checks it with Z3.
 
 ## Certified mode
 
@@ -198,6 +215,124 @@ average 7–9 during the run):
   is the only fair one.
 - 65 conformance functions are not encoded by pir (pointer parameters,
   arrays): their VCs do not exist and are not in the count.
+
+## Learned scheduler (roadmap 3.1 "learned scheduler", 9.3), measured 2026-09-23
+
+**Data.** `PRISM_PREDICT_COLLECT=DIR prism_tests -tc="ai-assist predict collect*"`
+with `DIR/roots.txt` = `tests/pir`, `tests/conformance` (prism, sv-comp,
+esbmc-cpp, libc-models, concurrency) and `testdata`: 2,247 source files, in a
+hash-shuffled order. Every encodable function goes through pir; for up to 6
+VCs per function (unwind 8) **every member runs alone**: Z3, Bitwuzla,
+CaDiCaL, Kissat (bit-blast included) with an 8 s timeout, and the ProbSAT
+walker with a 0.25 s budget. A timeout is a censored time (">= 8 s"). Result:
+3,172 VC records, **2,060 distinct VCs** (identical SMT-LIB2 kept once) from
+412 files; 1,745 functions with the verdict at unwind 1, 2, 4, 8, 16.
+
+- Fastest member alone: Bitwuzla 1,065, Z3 663, Kissat 174, CaDiCaL 111,
+  ProbSAT 46; one VC (`long_mul_true`, a 64-bit multiplication) times out in
+  every member.
+- 1,816 unsat, 243 sat, **0 disagreements** between members.
+- Almost everything is easy: median 19–29 ms per member, p90 33–63 ms.
+
+**Split.** 30% of the **source files** held out (deterministic hash of the
+path): 1,461 training VCs from 279 files, 599 held-out VCs from 133 files.
+No VC is in both halves.
+
+**Noise.** The 679 held-out files were collected a second time
+(`collect-repeat`) and the rule policy replayed on both: 10–16% apart. The
+machine had 4 cores shared with five other agents (load average 12–29), so
+every number below is inflated and noisy.
+
+**Replay** (`tools/prism_ai/sched.py`). The portfolio scheduler of
+`portfolio.cpp` replayed on the alone-times: expected-time order, the leader's
+head start (else Z3's 0.15 s), `k` cores, first answer wins, 8 s timeout. It
+assumes no contention between cores and a bit-blast per DIMACS member.
+Held-out totals over 599 VCs:
+
+| policy | k = 1 total s / timeouts | k = 2 | k = 5 | median s | p90 s | k = 2 vs rules (95% CI, files resampled) |
+|---|---|---|---|---:|---:|---|
+| rules (Z3 first, today without history) | 26.67 / 1 | 17.31 / 0 | 17.31 / 0 | 0.022 | 0.043 | |
+| history (per-bucket means, today with history) | 16.73 / 0 | 15.89 / 0 | 15.88 / 0 | 0.021 | 0.041 | −13.3% .. −2.2% |
+| **GBDT** (squared loss, timeout = 8 s) | **13.05 / 0** | **13.02 / 0** | **13.00 / 0** | 0.018 | 0.033 | −30.7% .. −18.2% |
+| AFT GBDT (censored Tobit loss) | 13.05 / 0 | 13.02 / 0 | 13.00 / 0 | 0.018 | 0.033 | −30.7% .. −18.2% |
+| k-NN (k = 15, median log time) | 14.78 / 0 | 13.97 / 0 | 13.93 / 0 | 0.019 | 0.034 | −26.5% .. −10.5% |
+| winner classifier (k-NN vote), first member only | 13.60 / 0 | 13.36 / 0 | 13.31 / 0 | 0.019 | 0.033 | −29.2% .. −15.6% |
+| same models, ordering only (no head start) | = rules | = rules | = rules | | | ±0 |
+| static rule "Bitwuzla first" (diagnostic) | 13.32 / 0 | 13.09 / 0 | 13.04 / 0 | 0.018 | 0.033 | −30.6% .. −17.2% |
+| oracle (fastest member alone) | 10.82 / 0 | | | | | |
+
+**End to end** (the real portfolio, `prism --solve-smt2`, 781 VCs of the
+133 held-out files, 8 s timeout, the four passes interleaved per VC so load
+changes hit them alike; solver wall time summed):
+
+| run | rules | rules again (noise) | history | GBDT model |
+|---|---:|---:|---:|---:|
+| 1 | 59.97 s | 58.08 s (3.2%) | 55.89 s | 56.66 s (48.66 s without the one stall) |
+| 2 | 43.35 s | 43.56 s (0.5%) | 41.73 s | **35.91 s** (−17.2% vs rules, −13.9% vs history) |
+
+No verdict differed between passes (0 disagreements). Winners with the
+model: Bitwuzla 720, Z3 60, CaDiCaL 1.
+
+**Decision: on by default.** The GBDT beats the rules and the history on
+held-out files at every core count, by more than the run-to-run noise
+(replay: −25% vs rules, −18% vs history at k = 2, noise ≤ 15.7%; end-to-end
+run 2: −17% / −14% with 0.5% noise), with no more timeouts. It is exported
+as `src/prism/solver/predict_default.inc` (`predict.py --emit-inc`), is
+deterministic (fixed trees, no randomness), only sets order and head start,
+never applies to certified requests, and `PRISM_SOLVER_PREDICT=0` restores
+the rules. What to know about it:
+
+- **The gain is "Bitwuzla first".** Bitwuzla only started answering pir VCs
+  with the portable SMT-LIB2 fix above; a static "Bitwuzla first" rule is
+  within 1% of the model in the replay. The model still lets Z3 lead where
+  it was faster in training (Z3 won 60 of the 781 end-to-end VCs), but a
+  reader should not expect more from it than that.
+- **Without Bitwuzla** (a machine that has not run
+  `fetch_deps.py --tool bitwuzla`) the model is within noise of the rules:
+  replay k = 2 18.98 s vs 18.60 s (+2%), k = 1 identical.
+- **Ordering alone does nothing** on these VCs: every "-order" variant equals
+  the rules, because Z3's 0.15 s head start already answers most of them.
+  All of the gain is in who gets the head start.
+- **AFT = GBDT** here: only 8 of about 10,000 member runs were censored, too few
+  for a censored loss to change a split.
+- **Two unexplained stalls.** Once a Bitwuzla-alone collection run reported
+  117 s on a VC Bitwuzla answers in 16 ms (8 s timeout), and once an
+  end-to-end model pass did not return within 120 s (the stall above, counted
+  as a timeout). Neither reproduced (400 reruns of the second VC, worst
+  0.44 s). At one check the machine had about 1 GB of free memory and no swap.
+  A stall costs time, never an answer.
+- These VCs are small. On hard queries (the generated benchmark above) the
+  training data has almost nothing to say; `<cache>/solve_log.jsonl` keeps
+  collecting production lines for a retrain.
+
+**Unwind prediction (9.3), off.** 525 held-out functions; the unwind tried
+first vs the verdict at unwind 16:
+
+| policy | agreement with unwind 16 | seconds | first counterexample | BOUNDED | no verdict |
+|---|---:|---:|---:|---:|---:|
+| fixed 8 (today) | 99.4% | 66.2 | 38.0 | 21 | 0 |
+| fixed 16 | 100% | 115.9 | 74.1 | 19 | 0 |
+| GBDT | 98.3% | 52.9 | 28.2 | 24 | 0 |
+| k-NN (largest neighbour label) | 99.6% | 112.8 | 69.1 | 20 | 0 |
+| oracle | 100% | 52.3 | 22.7 | 19 | 0 |
+
+Run-to-run noise of the fixed-8 time: 12%. The GBDT is faster by more than
+the noise but **loses verdicts** (3 more BOUNDED); the k-NN keeps them (one
+BOUNDED fewer) but costs 70% more time. Neither passes "no verdict lost and
+less time", so the unwind model stays off and is not wired into `pir`. No
+policy can change soundness: a smaller unwind only turns a verdict into an
+honest `BOUNDED`, and no function was `PROVED` at a small unwind and `FAILED`
+at 16 (0 contradictions).
+
+Reproduce (REP: the same collection with `files_done.txt` pre-filled with
+the training files, so only held-out files are timed again):
+
+```
+python tools/prism_ai/sched_e2e.py --prism build/prism --solve-log DIR/solve_runs.jsonl --out E2E
+python tools/prism_ai/predict.py --solve-log DIR/solve_runs.jsonl --bound-log DIR/bound_runs.jsonl \
+  --repeat-solve-log REP/solve_runs.jsonl --repeat-bound-log REP/bound_runs.jsonl \
+  --end-to-end E2E/e2e.json --out model.json --emit-inc src/prism/solver/predict_default.inc
+```
 
 ## Measurement: portfolio vs Z3 alone (generated queries)
 
