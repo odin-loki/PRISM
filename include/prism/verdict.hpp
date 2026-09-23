@@ -84,7 +84,7 @@ PRISM_API Verdict admit(Origin origin, Verdict requested, bool certificate_check
 // Stage -> origin: the audit table. Unknown stage names are Pipeline.
 PRISM_API Origin stage_origin(std::string_view stage);
 // The stages of the table, in STAGE_ORDER, plus "other".
-PRISM_API const std::array<std::string_view, 30>& audit_stages();
+PRISM_API const std::array<std::string_view, 31>& audit_stages();
 
 struct AuditResult {
     Verdict status;

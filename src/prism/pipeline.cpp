@@ -1,6 +1,7 @@
 #include "prism/pipeline.hpp"
 
 #include "prism/ai.hpp"
+#include "prism/ai_proof.hpp"
 #include "prism/cparse.hpp"
 #include "prism/journal.hpp"
 #include "prism/laws.hpp"
@@ -353,6 +354,9 @@ RunReport run_pipeline(const Config& cfg) {
     auto bmc_rec = stage("bmc", [&] { return run_bmc(inline_static(functions), cfg.unwind); });
     stage("pir", [&] { return pir::run_pir(sources, cfg); });
     stage("harness", [&] { return run_harness_bmc(functions, cfg.unwind); });
+    // Roadmap 9.2/9.3/4.2: vacuity audit, approved/drafted contracts, model
+    // assumption audit, proof store and PROOF-REGRESSION (src/prism/ai/review.cpp).
+    stage("review", [&] { return ai::run_review(functions, report.stages, cfg); });
     stage("concolic", [&] { return run_concolic(functions, 32); });
     stage("fuzz", [&] {
         return exec_gate_note(

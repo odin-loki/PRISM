@@ -39,6 +39,12 @@ struct Config {
     // builds, perl -c, cargo clippy, eslint) or from the LLM is opt-in
     // (--allow-exec). Default: those steps are NOTRUN. prism/config.py allow_exec.
     bool allow_exec = false;
+    // Roadmap 9.3: requirement documents (markdown/text files or directories)
+    // the model may draft contracts from (--requirements PATH, repeatable).
+    std::vector<std::filesystem::path> requirements;
+    // Human approvals of drafted contracts (--contracts-approved PATH);
+    // empty = <root>/contracts.approved.json.
+    std::filesystem::path contracts_approved;
 
     PRISM_API bool want(std::string_view name) const;
     PRISM_API std::optional<std::filesystem::path> which(

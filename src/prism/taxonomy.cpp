@@ -605,6 +605,8 @@ const std::vector<TaxonomyClass>& taxonomy_classes() {
         {"LTL-SAFETY", "LTL safety violation", {}, {{"ltl", "PROVES"}, {"strix", "PROVES"}}},
         {"FUNC-CONTRACT", "ensures clause fails", {}, {{"bmc", "PROVES"}, {"dafny", "PROVES"}, {"wp", "PROVES"}, {"contracts", "PROVES"}, {"rapid", "FINDS"}, {"muttest", "SOME"}, {"llm", "READS"}}},
         {"INTENT", "comment/code contract mismatch", {}, {{"lints", "FINDS"}, {"llm", "READS"}}},
+        {"VACUOUS-ASSUMPTION", "requires/harness assumption no input satisfies (vacuous proof)", {}, {{"review", "PROVES"}}},
+        {"PROOF-REGRESSION", "a stored proof no longer checks after a change", {}, {{"review", "FINDS"}}},
         {"INFOLEAK-PAD", "struct padding copied without zero-init", {200}, {{"lints", "FINDS"}}},
         {"API-PRECONDITION", "documented precondition unchecked in body", {}, {{"lints", "FINDS"}, {"llm", "READS"}}},
         {"TRUST-UNVALIDATED-INPUT", "parsed input used without range check", {20, 1284}, {{"lints", "FINDS"}, {"taint", "SOME"}}},

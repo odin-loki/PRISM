@@ -49,6 +49,11 @@ std::vector<Finding> run_esbmc(const std::vector<std::filesystem::path>& paths,
 std::vector<Finding> run_dafny(const std::vector<std::filesystem::path>& paths,
                                const Config& cfg);
 std::vector<Finding> prove_contracts(const std::vector<FunctionInfo>& functions, int unwind);
+// The contracts engine (BMC with requires assumed, ensures asserted at every
+// return) for a contract given here instead of in fn's comments. SCALAR only;
+// anything else is NEEDS-HARNESS. Stage "contracts" on the result.
+PRISM_API Finding prove_with_contract(const FunctionInfo& fn, int unwind, const std::optional<std::string>& requires_,
+                                      const std::optional<std::string>& ensures);
 std::vector<Finding> run_wp(const std::vector<FunctionInfo>& functions, int unwind);
 std::vector<Finding> run_bmc(const std::vector<FunctionInfo>& functions, int unwind,
                              bool allow_local_pointers = false);

@@ -196,6 +196,7 @@ STAGE_ORIGIN: dict[str, str] = {
     "bmc": ORIGIN_SOLVER,
     "pir": ORIGIN_SOLVER,
     "harness": ORIGIN_SOLVER,
+    "review": ORIGIN_SOLVER,
     "concolic": ORIGIN_EXECUTION,
     "fuzz": ORIGIN_FUZZER,
     "diff": ORIGIN_EXECUTION,

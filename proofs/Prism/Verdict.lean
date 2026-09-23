@@ -381,7 +381,7 @@ theorem notrun_never_clean (o : Origin) (c : Bool) (w : Verdict)
 inductive Stage where
   | inventory | classify | lints | taint | thread | interval
   | warnings | cppcheck | pbsd | sanitize | optional | polyglot | esbmc
-  | dafny | contracts | wp | bmc | pir | harness | concolic | fuzz | diff
+  | dafny | contracts | wp | bmc | pir | harness | review | concolic | fuzz | diff
   | rapid | muttest | ltl | llm | execute | repair | unify
   | other
   deriving DecidableEq, Repr
@@ -391,7 +391,7 @@ namespace Stage
 def all : List Stage :=
   [inventory, classify, lints, taint, thread, interval,
    warnings, cppcheck, pbsd, sanitize, optional, polyglot, esbmc,
-   dafny, contracts, wp, bmc, pir, harness, concolic, fuzz, diff,
+   dafny, contracts, wp, bmc, pir, harness, review, concolic, fuzz, diff,
    rapid, muttest, ltl, llm, execute, repair, unify, other]
 
 theorem mem_all (s : Stage) : s ∈ all := by cases s <;> decide
@@ -405,7 +405,8 @@ def name : Stage → String
   | warnings => "warnings" | cppcheck => "cppcheck" | pbsd => "pbsd"
   | sanitize => "sanitize" | optional => "optional" | polyglot => "polyglot"
   | esbmc => "esbmc" | dafny => "dafny" | contracts => "contracts" | wp => "wp"
-  | bmc => "bmc" | pir => "pir" | harness => "harness" | concolic => "concolic" | fuzz => "fuzz"
+  | bmc => "bmc" | pir => "pir" | harness => "harness" | review => "review"
+  | concolic => "concolic" | fuzz => "fuzz"
   | diff => "diff" | rapid => "rapid" | muttest => "muttest" | ltl => "ltl"
   | llm => "llm" | execute => "execute" | repair => "repair" | unify => "unify"
   | other => "other"
@@ -418,7 +419,7 @@ def origin : Stage → Origin
   | fuzz | rapid => .fuzzer
   | llm | repair => .model
   | optional | esbmc | dafny => .externalProver
-  | contracts | wp | bmc | pir | harness | ltl => .solver
+  | contracts | wp | bmc | pir | harness | review | ltl => .solver
 
 def mayProve (s : Stage) : Bool := s.origin.mayProve
 
@@ -437,7 +438,7 @@ def audit (s : Stage) (v : Verdict) (cert : Bool) : AuditResult :=
 
 /-- Exactly these stages may emit a formal claim. -/
 theorem proving_stages (s : Stage) :
-    s.mayProve = true ↔ s ∈ [Stage.optional, .esbmc, .dafny, .contracts, .wp, .bmc, .pir, .harness, .ltl] := by
+    s.mayProve = true ↔ s ∈ [Stage.optional, .esbmc, .dafny, .contracts, .wp, .bmc, .pir, .harness, .review, .ltl] := by
   revert s; decide
 
 /-- The audit never lets a non-proving stage output a formal verdict. -/

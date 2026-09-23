@@ -15,7 +15,7 @@ namespace prism {
 inline constexpr const char* STAGE_ORDER[] = {
     "inventory", "classify", "lints", "taint", "thread", "interval",
     "warnings", "cppcheck", "pbsd", "sanitize", "optional", "polyglot", "esbmc",
-    "dafny", "contracts", "wp", "bmc", "pir", "harness", "concolic", "fuzz", "diff",
+    "dafny", "contracts", "wp", "bmc", "pir", "harness", "review", "concolic", "fuzz", "diff",
     "rapid", "muttest", "ltl", "llm", "execute", "repair", "unify", nullptr};
 
 PRISM_API RunReport run_pipeline(const Config& cfg);

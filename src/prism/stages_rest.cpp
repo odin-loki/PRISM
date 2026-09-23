@@ -407,6 +407,14 @@ std::optional<fs::path> locate_source(const FunctionInfo& fn) {
     if (fs::is_regular_file(p)) return p;
     auto cwd = fs::current_path() / p;
     if (fs::is_regular_file(cwd)) return cwd;
+    // In a pipeline run fn.file is relative to the scanned root, which need
+    // not be the cwd: without this, `// requires:` specs were silently not
+    // found (contracts/wp/harness saw no spec) for `prism /some/tree`.
+    if (auto* c = ai::session_config()) {
+        std::error_code ec;
+        auto base = fs::is_directory(c->root, ec) ? c->root : c->root.parent_path();
+        if (fs::is_regular_file(base / p, ec)) return base / p;
+    }
     fs::path name = p.filename();
     fs::path walk = fs::current_path();
     for (int i = 0; i < 6; ++i) {
@@ -6133,6 +6141,20 @@ std::vector<Finding> run_thread(const std::vector<FunctionInfo>& functions) {
         }
     }
     return out;
+}
+
+Finding prove_with_contract(const FunctionInfo& fn, int unwind, const std::optional<std::string>& requires_,
+                            const std::optional<std::string>& ensures) {
+    // Roadmap 4.2 / 9.2 (src/prism/ai/contracts.cpp, proof_repair.cpp): the
+    // contracts engine for a contract that is not written in fn's comments.
+    if (fn.kind != "SCALAR" || body_needs_pointer_harness(fn.body)) {
+        auto f = make_find("contracts", laws::NEEDS_HARNESS, fn, "FUNC-CONTRACT",
+                           fn.kind + ": contract scalar subset only; not a proof", laws::STRENGTH_PROVES);
+        if (requires_) f.extra["requires"] = *requires_;
+        if (ensures) f.extra["ensures"] = *ensures;
+        return f;
+    }
+    return bmc_with_assume(fn, unwind, requires_, ensures, std::nullopt, std::nullopt);
 }
 
 std::vector<Finding> prove_contracts(const std::vector<FunctionInfo>& functions, int unwind) {

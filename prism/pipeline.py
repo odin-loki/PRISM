@@ -59,6 +59,7 @@ STAGE_ORDER = [
     "bmc",
     "pir",
     "harness",
+    "review",
     "concolic",
     "fuzz",
     "diff",
@@ -110,6 +111,19 @@ def run_pir_notrun() -> list[Finding]:
         message="C++ engine only (Python engine frozen as oracle, roadmap D8)",
         strength=laws.STRENGTH_PROVES,
         extra={"install": "run the C++ engine (build/prism) for the pir stage"},
+    )]
+
+
+def run_review_notrun() -> list[Finding]:
+    """The review stage (vacuity audit, approved/drafted contracts, assumption
+    audit, proof store / PROOF-REGRESSION; roadmap 9.2, 9.3, 4.2) exists only in
+    the C++ engine (src/prism/ai/review.cpp). Roadmap D8: one NOTRUN row here.
+    """
+    return [Finding(
+        stage="review", status=laws.NOTRUN, file="", function=None, line=None, cls="",
+        message="C++ engine only (Python engine frozen as oracle, roadmap D8)",
+        strength=laws.STRENGTH_PROVES,
+        extra={"install": "run the C++ engine (build/prism) for the review stage"},
     )]
 
 
@@ -335,6 +349,7 @@ class Pipeline:
         bmc_rec = self._stage("bmc", bmc)
         self._stage("pir", run_pir_notrun)
         self._stage("harness", lambda: run_harness_bmc(functions, cfg.unwind))
+        self._stage("review", run_review_notrun)
         self._stage("concolic", lambda: run_concolic(functions, budget=32))
 
         def fuzz() -> list[Finding]:

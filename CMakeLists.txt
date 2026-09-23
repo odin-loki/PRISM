@@ -109,6 +109,11 @@ set(PRISM_SRC
   src/prism/ai/explain.cpp
   src/prism/ai/harness.cpp
   src/prism/ai/invariants.cpp
+  src/prism/ai/proof_search.cpp
+  src/prism/ai/proof_repair.cpp
+  src/prism/ai/contracts.cpp
+  src/prism/ai/assumption_audit.cpp
+  src/prism/ai/review.cpp
   src/prism/bmc.cpp
   src/prism/capi.cpp
   src/prism/checkers_api.cpp
@@ -335,7 +340,7 @@ if(PRISM_QT)
 endif()
 
 if(PRISM_TESTS)
-  add_executable(prism_tests tests/cpp/test_main.cpp)
+  add_executable(prism_tests tests/cpp/test_main.cpp tests/cpp/test_ai9.cpp)
   target_include_directories(prism_tests PRIVATE
     "${PRISM_ROOT}/include"
     "${PRISM_ROOT}/third_party")
