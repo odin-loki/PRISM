@@ -1,0 +1,8 @@
+format_version: 1
+input_files: mem_null_false.c
+language: C
+property: memsafety
+expected:
+  mem_null_false: false
+witness:
+  mem_null_false: [0]

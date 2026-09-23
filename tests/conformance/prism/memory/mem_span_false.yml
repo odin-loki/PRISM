@@ -1,0 +1,10 @@
+format_version: 1
+input_files: mem_span_false.cpp
+language: C++
+property: memsafety
+expected:
+  mem_span_false: false
+witness:
+  mem_span_false: [4]
+sanitizer_blind:
+  - mem_span_false

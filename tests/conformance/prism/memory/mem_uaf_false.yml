@@ -1,0 +1,8 @@
+format_version: 1
+input_files: mem_uaf_false.c
+language: C
+property: memsafety
+expected:
+  mem_uaf_false: false
+witness:
+  mem_uaf_false: [1]

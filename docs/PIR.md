@@ -10,9 +10,12 @@ C/C++ unit ──clang -O0──▶ LLVM IR ──PRISM instrumentation──▶
           ──(--allow-exec)──▶ translation validation against lli
 ```
 
-Sources: `include/prism/pir.hpp`, `src/prism/pir/{ir_parser,pir,translate,encode,stage}.cpp`.
-Tests: `tests/pir/*` (true and false variants), `tests/test_pir.py`, doctests
-`pir: …` in `tests/cpp/test_main.cpp`. Differential oracle: `tools/pir_vs_bmc.py`.
+Sources: `include/prism/pir.hpp`, `src/prism/pir/{ir_parser,pir,translate,encode,stage}.cpp`;
+memory model `src/prism/pir/{memory,translate_mem,stage_mem,contracts}.cpp`; library
+models `src/prism/pir/{libc_models,libc_format}.cpp` + `src/prism/pir/models/libc/*.c`.
+Tests: `tests/pir/*` (true and false variants; `mem_*.c` for the memory
+model), `tests/test_pir.py`, doctests `pir: …` in `tests/cpp/test_main.cpp` and
+`pir mem: …` in `tests/cpp/test_pir_mem.cpp`. Differential oracle: `tools/pir_vs_bmc.py`.
 
 ## Front end
 
@@ -120,18 +123,241 @@ an assume. Calls to functions defined in the same unit are **inlined**
 ### What is not encoded (named, never dropped — roadmap 2.1)
 
 Everything else makes the function `NEEDS-HARNESS` with
-`UNENCODED: <construct>`: `alloca/load/store/getelementptr` (memory model,
-roadmap 2.5, not in this slice), floating point, integers wider than 64
-bits, other calls (`UNENCODED: call @malloc`), `switch` if lowerswitch did not
-run, `invoke`/exceptions, irreducible control flow, vectors and aggregates.
-Pointer parameters are `NEEDS-HARNESS` by Law 6 (C++ member functions have
-`this`). In C++ units, a function whose source contains `const_cast` is
-`UNENCODED: const_cast` (a write to a const object is UB that the IR cannot
-show). Known gaps of the *property set* (a PROVED means these were not
-checked): writes to const objects via C casts, strict aliasing, reading an
-indeterminate value that is only copied (`int y = x;` with `y` unused — the
-read has no IR instruction after mem2reg), falling off the end of a non-void
-C function (UB only when the caller uses the value).
+`UNENCODED: <construct>`: floating point, integers wider than 64 bits,
+external calls without a library model (`UNENCODED: call @f`), `switch` if
+lowerswitch did not run, a reachable throw whose exception would reach
+catch or cleanup code (see "C++ library"), irreducible control flow,
+vectors and first-class aggregates, `ptrtoint` other than pointer
+differences, `inttoptr` other than of 0, volatile/atomic loads and stores,
+`thread_local` globals, function pointers, extern arrays of unknown size,
+`llvm.lifetime.*`, and `setjmp`/`longjmp` (`UNENCODED: call @_setjmp`; not
+modelled as exception-like edges yet). Pointer parameters are
+`NEEDS-HARNESS` by Law 6 unless a precondition gives the object size
+("Pointer parameters" below; C++ member functions have `this`). In C++
+units, a function whose source contains `const_cast` is
+`UNENCODED: const_cast`. Known gaps of the *property set* (a PROVED means
+these were not checked): reading an indeterminate value that is only copied
+(`int y = x;` with `y` unused — the read has no IR instruction after
+mem2reg), falling off the end of a non-void C function (UB only when the
+caller uses the value), sub-array bounds of the last struct field
+(flexible-array idiom) and dereferences of a one-past-the-end sub-array
+address computed separately, memory leaks (valid-memtrack), effective types unless `--strict-aliasing`, pointer
+arithmetic on an already freed object, and paths that leave the function by
+a C++ library throw (`std::__throw_*`: the path ends; the finding lists them
+in `extra.throws_not_followed`).
+
+## Memory model (roadmap 2.5)
+
+Follows ESBMC/SMACK and the Lean model `proofs/semantics/PrismSem/Memory.lean`.
+
+**Pointers** are one 64-bit PIR value: object id in bits 63..48 (`0` is the
+null object, never allocated), byte offset in bits 47..0. Every object is
+smaller than 2^47 bytes and every `getelementptr` is checked to stay inside
+its object (or one past its end), so on every execution without a reported
+violation the packed value *is* the Lean pair `(obj, off)`: `p + d` keeps the
+object bits and adds `d` to the offset (proof sketch: `obj·2^48 + off + d ≡
+obj'·2^48 + off' (mod 2^64)` with `off, off' ∈ [0, 2^48)` and `d ∈ [-2^63,
+2^63)` forces `obj' = obj`, `off' = off + d` exactly when the checked
+offset stays in range).
+
+**Objects** carry size (64-bit, possibly symbolic: VLAs, `malloc(n)`),
+liveness, allocation kind (`stack`, `heap`, `static`, `const` (string
+literals, `constant` globals), `new`, `new[]`, `extern` (contract objects),
+`FILE`) and base alignment. Every memory byte is a *cell*: value (8 bits),
+initialised (1 bit) and, with `--strict-aliasing`, an effective-type tag.
+
+**PIR statements**: `alloc` (size, kind, initial contents: uninitialised,
+zero, or initialised with arbitrary bytes), `free` (end of lifetime),
+`load` (value + "some byte uninitialised" + "effective-type mismatch"),
+`store`, `memcpy` (memmove semantics), `memset`, `stacksave`,
+`stackrestore`; queries `obj.size`, `obj.live`, `obj.kind`, `obj.align`
+usable in any expression. The translator (`translate_mem.cpp`) turns every
+property into ordinary `check`s over these (Law 8):
+
+| IR | check | class |
+|---|---|---|
+| load/store through object 0 | null dereference | PTR-NULL-DEREF |
+| load/store, object id not allocated | wild pointer | PTR-INVALID-DEREF |
+| load/store, object not live | use after free / after its lifetime | MEM-UAF |
+| load/store, `off + n > size` | out of bounds | MEM-OOB-READ / MEM-OOB-WRITE |
+| load/store `align a`, `off % a ≠ 0` or object alignment `< a` | misaligned access | MEM-MISALIGNED |
+| store to a `const` object | write to read-only memory | MEM-WRITE-CONST |
+| load of a byte never written | uninitialised memory read | UNINIT-READ |
+| load, effective type differs (`--strict-aliasing`) | strict aliasing | MEM-STRICT-ALIAS |
+| `getelementptr` offset `idx·size` / sum overflows | offset overflow | MEM-PTR-ARITH |
+| `getelementptr inbounds` on null with offset ≠ 0, or result outside `[0, size]` | invalid pointer arithmetic | MEM-PTR-ARITH |
+| `getelementptr` index into a nested array `[N x T]` (not the last struct field): `≥ N` when dereferenced, `> N` otherwise | sub-array bounds (`a[1][7]` in `int a[4][5]`, C17 J.2) | MEM-PTR-ARITH |
+| `icmp ult/ule/…` on pointers, `ptrtoint`-`sub` | pointers into different objects | PTR-COMPARE |
+| `llvm.memcpy` (not memmove) | overlapping ranges | MEM-OVERLAP |
+| `free`/`delete`/`delete[]`/`fclose` | not an object, not its start, not heap memory | MEM-INVALID-FREE |
+| same | allocated by another allocator (malloc/new/new[]) | MEM-MISMATCHED-FREE |
+| same | already released | MEM-DOUBLE-FREE |
+| `alloca T, iN n` (VLA) | `n <= 0` (C17 6.7.6.2p5), size overflow, size `>= 2^47` | MEM-VLA-SIZE |
+| `ret` of a pointer | into the function's own stack object | MEM-STACK-ESCAPE |
+
+Lifetimes: `alloca`s of an inlined callee end at its `ret`; VLAs end at
+`llvm.stackrestore` (objects allocated after the matching `stacksave`).
+Struct layout, field offsets, sizes and alignments come from the module's
+`target datalayout` (`Layout`, x86-64 defaults). A `byval` parameter is a
+fresh copy for the callee; `sret` is a fresh uninitialised return slot.
+
+**Uninitialised bytes.** A load checks that its bytes are initialised
+(UNINIT-READ), except an integer load of a whole aggregate location (the
+ABI coercion of a struct passed or returned by value, e.g. `load i64` of a
+`std::optional<int>`): padding bytes may legitimately be indeterminate, so
+such a load carries a per-byte mask that follows the value (stores copy it
+back to memory, inlined calls and returns pass it on) and is checked only
+where the value is used.
+
+**Global state.** Globals referenced by the function are allocated in a
+prologue. `constant` globals hold their initializer; mutable globals hold
+arbitrary initialised bytes, except when the function is `main` (program
+entry: initializers). A `FAILED` that disappears when the mutable globals
+hold their initializers is reported `NEEDS-HARNESS` ("the global state the
+function is called in is an unstated precondition"; `extra.globals`).
+`stdin`/`stdout`/`stderr` point to valid `FILE` objects.
+
+### Encodings
+
+The unrolled program is a DAG encoded in topological order, and every memory
+update is guarded by the reach condition of its block instance: guards of
+instances off the executed path are false, so one global memory state is
+exact (no merge at joins). Each `alloc` instance of the DAG runs at most once
+per path and gets the next constant object id (the Lean `next` counter).
+
+* `MemEncoding::Array` (default of `check_function`): one SMT array from
+  address to cell; ranged writes (`memcpy`, `memset`, arbitrary-byte
+  initialisation) are lambdas.
+* `MemEncoding::Bv` (default of `pir_vcs`, for the certified back end):
+  arrays eliminated. A load is an ite chain over the guarded writes before
+  it (read-over-write, as `PrismSem/MemEncode.lean` `menc`), writes to other
+  objects are skipped when both object ids are known; arbitrary initial bytes
+  are fresh variables with pairwise Ackermann constraints
+  (`a = a' → h = h'`). The VCs are QF_BV.
+
+`tests/cpp/test_pir_mem.cpp` checks that both encodings give the same verdict
+and class on every property (true and false variants) and that the PIR
+interpreter (`interpret`, concrete memory `ConcMem`) reproduces each
+counterexample. k-induction is not attempted for functions with memory
+(`extra.k_induction = "not-attempted (memory)"`): their loops are PROVED
+only when the unwinding assertion closes, else BOUNDED.
+
+### Correspondence to the Lean model
+
+| `PrismSem/Memory.lean` | C++ |
+|---|---|
+| `Ptr = (obj, off : BitVec 64)` | packed 16/48 bits (faithful on violation-free runs, above) |
+| `Obj.size/live/data` | `SymMem::Obj::size/alive` + byte cells (`ConcMem` concretely) |
+| `MState.next` (fresh ids from 1) | constant id per `alloc` instance, in encoding order |
+| `MCond.live` / `inBounds` / `atBase` | `obj.live`; `off + n <= obj.size`; `off == 0` in the free checks |
+| `mrun` `.load`/`.store` UB (dead or out of bounds) | MEM-UAF / MEM-OOB-* / PTR-NULL-DEREF / PTR-INVALID-DEREF checks |
+| `mrun` `.free` UB (dead or not at base) | MEM-DOUBLE-FREE / MEM-INVALID-FREE checks |
+| `MemEncode.menc` select chains, `MSym.WF` congruence | `MemEncoding::Bv` read-over-write + Ackermann constraints |
+| `uaf_is_ub`, `double_free_is_ub` | doctests `pir mem: every property …` |
+
+Not covered by the Lean proofs (trusted C++ code): multi-byte little-endian
+loads/stores (sequences of byte cells), the uninitialised-byte shadow (Lean
+objects are zero-filled), allocation kinds and their free checks, ranged
+`memcpy`/`memset`, alignment, the Array encoding, and the packing argument
+above (a paper proof).
+
+## Pointer parameters (Law 6)
+
+A pointer parameter stays `NEEDS-HARNESS` unless a precondition gives the
+size of its object, in the comment block right before the function or the
+leading comment lines of its body:
+
+```c
+// requires: \valid(p + (0..n-1))        n elements, n an int parameter
+// requires: \valid(p + (0..7))          8 elements
+// requires: \valid(p)                   one element
+// requires: \valid_read(p + (0..n-1))   read-only (writes are MEM-WRITE-CONST)
+/*@ requires \valid(p + (0..n-1)); */   ACSL block
+```
+
+Without such a clause (C units), the deterministic template harness draft
+(`ai::draft_harness`, the one the `harness` stage uses; never an LLM here,
+Law 4) may supply the size: "`a` points to exactly `n` int elements"
+(a length parameter) with its drafted range "`1 <= n <= 4`", or "at least
+K elements" when an early return bounds the index. A size read off the
+largest literal index is not used (it would make exactly those accesses
+in bounds by construction). The draft's assumptions are listed like a
+`requires` clause (`source: harness (template draft)`).
+
+The element size is that of the first access through `p` in the IR. `p` is
+bound to a fresh `extern` object of `max(n, 0) × size` bytes, initialised
+with arbitrary bytes, 16-byte aligned; several such parameters are distinct
+objects. A proof is then **PROVED-ASSUMING**, never PROVED, with every
+assumption in `extra.assumptions` and the message; a violation is FAILED
+under the stated precondition. Translation validation does not replay such
+functions (`tv = PARTIAL`).
+
+## Library models (roadmap 2.6)
+
+Operational models are C files in `src/prism/pir/models/libc/`
+(`string.c`, `stdlib.c`, `stdio.c`, `prism_model.h`), embedded in the binary
+at build time (CMake), lowered once per run with the same clang/opt pipeline
+(`-fno-builtin -ffreestanding`), and linked into every unit that declares a
+modelled symbol and does not define it (`link_models`, on the parsed
+module: model metadata and private globals are renamed, so no `llvm-link`
+run is needed). Model code is checked like user code, so the models'
+preconditions (`requires:` comments) are enforced by the memory model;
+checks inside a model report the call site's line and name the model
+("… (in the strcpy library model)"). Model intrinsics `__prism_alloc`,
+`__prism_free`, `__prism_check`, `__prism_assume`, `__prism_memcpy`,
+`__prism_havoc_bytes`, `__prism_fresh_cstr`, … are PIR statements
+(`translate.cpp` `model_intrinsic`).
+
+| models | behaviour |
+|---|---|
+| `malloc`, `calloc`, `realloc`, `free` | may fail (NULL); calloc zero-fills and checks `n*size` overflow; `realloc(p, 0)` frees p and returns NULL (glibc) |
+| `operator new/new[]/delete/delete[]` (`_Znwm` … `_ZdaPvm`) | never NULL; kinds checked against the matching delete |
+| `strlen`, `strnlen`, `strcpy`, `strncpy`, `strcat`, `strncat`, `strcmp`, `strncmp`, `strchr`, `strrchr`, `strdup` | C loops over the bytes (bounds and termination checked) |
+| `memcpy`, `memmove`, `memset`, `memcmp`, `memchr` | ranges checked; memcpy overlap |
+| `abs`, `labs`, `llabs` | `-x` is a checked `sub nsw` (abs(INT_MIN)) |
+| `atoi`, `atol`, `strtol`, `strtoul` | argument must be a string; value unknown |
+| `getenv` | NULL or a read-only string of unknown contents |
+| `rand`, `srand` | unknown non-negative value |
+| `fopen`, `fclose`, `fgets`, `fread`, `fwrite`, `fgetc`, `getc`, `getchar`, `fputc`, `putc`, `putchar`, `fputs`, `puts`, `fflush` | fopen may fail; FILE objects checked (double fclose); input bytes unknown |
+| `printf`, `fprintf`, `dprintf`, `sprintf`, `snprintf` (translator, `libc_format.cpp`) | literal format: argument count and IR types per conversion (FMT-ARGS), `%n` (FMT-PERCENT-N), `%s` arguments must be strings, sprintf/snprintf write up to the maximal output length into the buffer; non-literal format, `v*printf`, `scanf` are UNENCODED |
+
+Unmodelled external calls stay `NEEDS-HARNESS` (`UNENCODED: call @name`).
+If the models cannot be built (no clang), the stage records one ERROR row
+saying so (Law 7).
+
+**C++ library.** C++ units are compiled with `-D_GLIBCXX_ASSERTIONS`, which
+turns on libstdc++'s own precondition checks; library code is ordinary IR
+and is inlined (depth 12 for C++). A reachable `std::__glibcxx_assert_fail`
+is a violation: bounds (`__n < this->size()`, `std::span`, `std::array`
+`operator[]`) are MEM-OOB-READ, `std::optional::operator*` on an empty
+optional is CXX-OPTIONAL-NULL, `std::unique_ptr::operator*` on null is
+PTR-NULL-DEREF. `invoke` is translated as the call followed by its normal edge; landing
+pads and the cleanup code after them are not translated (exception edges
+are lowered by separate work, roadmap 2.6 "Exceptions"). A throw PRISM sees
+(`std::__throw_*`, e.g. `vector::at`, `optional::value`, the vector
+length check) ends its path and is listed in `extra.throws_not_followed`:
+when no enclosing `invoke` exists the exception leaves the analysed
+function (not UB); under an `invoke` whose landing pad calls
+`std::terminate` (a `noexcept` boundary) it is a violation
+(CXX-THROW-NOEXCEPT); under a landing pad with catch or cleanup code the
+throw is a *soft* check: if it is reachable the function is
+`NEEDS-HARNESS` ("UNENCODED: exception path reachable …"), never PROVED
+and never FAILED. Throws in user code (`__cxa_throw`) stay
+`UNENCODED: call @__cxa_allocate_exception`. With this, `std::vector`
+(`operator[]`), `std::span`, `std::array`, `std::optional` (`operator*`),
+`std::unique_ptr` (`operator*`) and `std::string_view` work
+(`tests/pir/mem_stl.cpp`). The platform C++ library is
+libstdc++ (D7, Linux); libc++ would need the same treatment of
+`_LIBCPP_HARDENING_MODE`.
+
+## C features
+
+* `_Generic`: resolved by clang (`tests/pir/mem_libc.c:generic_ok` PROVED).
+* VLAs: `alloca T, iN n` with a symbolic size; the size must be positive
+  (checked on the value before its `zext`/`sext`) and below 2^47; the
+  object ends at `llvm.stackrestore`.
+* `setjmp`/`longjmp`: `NEEDS-HARNESS` (`UNENCODED: call @_setjmp`); modelling
+  them as exception-like edges is future work (roadmap 2.6 stretch).
 
 ## Encoder and verdicts
 

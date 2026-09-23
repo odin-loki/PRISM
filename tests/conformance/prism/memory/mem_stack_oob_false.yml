@@ -1,0 +1,8 @@
+format_version: 1
+input_files: mem_stack_oob_false.c
+language: C
+property: memsafety
+expected:
+  mem_stack_oob_false: false
+witness:
+  mem_stack_oob_false: [8]

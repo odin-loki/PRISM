@@ -63,7 +63,7 @@ EXPECTED: dict[tuple[str, str], str] = {
     ("assert.c", "assert_bad"): laws.FAILED,
     ("assert.c", "assert_ok"): laws.PROVED,
     ("unencoded.c", "deref_ptr"): laws.NEEDS_HARNESS,
-    ("unencoded.c", "local_array"): laws.NEEDS_HARNESS,
+    ("unencoded.c", "local_array"): laws.PROVED,  # memory model (docs/PIR.md): a[i & 3] is in bounds
     ("unencoded.c", "twice_double"): laws.NEEDS_HARNESS,
     ("unencoded.c", "recurse"): laws.NEEDS_HARNESS,
     ("calls.c", "helper"): laws.FAILED,
@@ -77,6 +77,102 @@ EXPECTED: dict[tuple[str, str], str] = {
     ("cxx.cpp", "get"): laws.NEEDS_HARNESS,  # `this` is a pointer (Law 6)
     ("cxx.cpp", "cxx_shl_ok"): laws.PROVED,  # C++20+: signed << is defined
     ("cxx.cpp", "constexpr_ok"): laws.PROVED,
+}
+
+# Memory model, library models, pointer contracts (docs/PIR.md "Memory
+# model", "Library models", "Pointer parameters"): tests/pir/mem_*.
+MEM_EXPECTED: dict[tuple[str, str], tuple[str, str]] = {
+    ("mem_array.c", "arr_read_ok"): (laws.PROVED, ""),
+    ("mem_array.c", "arr_read_bad"): (laws.FAILED, "MEM-OOB-READ"),
+    ("mem_array.c", "arr_write_ok"): (laws.PROVED, ""),
+    ("mem_array.c", "arr_write_bad"): (laws.FAILED, "MEM-OOB-WRITE"),
+    ("mem_array.c", "arr_2d_ok"): (laws.PROVED, ""),
+    ("mem_array.c", "global_ok"): (laws.PROVED, ""),
+    ("mem_array.c", "global_bad"): (laws.FAILED, "MEM-OOB-READ"),
+    ("mem_array.c", "struct_ok"): (laws.PROVED, ""),
+    ("mem_array.c", "uninit_mem_bad"): (laws.FAILED, "UNINIT-READ"),
+    ("mem_array.c", "uninit_mem_ok"): (laws.PROVED, ""),
+    ("mem_heap.c", "heap_ok"): (laws.PROVED, ""),
+    ("mem_heap.c", "heap_oob_bad"): (laws.FAILED, "MEM-OOB-WRITE"),
+    ("mem_heap.c", "null_bad"): (laws.FAILED, "PTR-NULL-DEREF"),
+    ("mem_heap.c", "uaf_bad"): (laws.FAILED, "MEM-UAF"),
+    ("mem_heap.c", "double_free_bad"): (laws.FAILED, "MEM-DOUBLE-FREE"),
+    ("mem_heap.c", "invalid_free_bad"): (laws.FAILED, "MEM-INVALID-FREE"),
+    ("mem_heap.c", "free_offset_bad"): (laws.FAILED, "MEM-INVALID-FREE"),
+    ("mem_heap.c", "free_null_ok"): (laws.PROVED, ""),
+    ("mem_heap.c", "heap_uninit_bad"): (laws.FAILED, "UNINIT-READ"),
+    ("mem_heap.c", "calloc_ok"): (laws.PROVED, ""),
+    ("mem_heap.c", "realloc_ok"): (laws.PROVED, ""),
+    ("mem_heap.c", "realloc_stale_bad"): (laws.FAILED, "MEM-UAF"),
+    ("mem_ptr.c", "one_past_ok"): (laws.PROVED, ""),
+    ("mem_ptr.c", "arith_bad"): (laws.FAILED, "MEM-PTR-ARITH"),
+    ("mem_ptr.c", "arith_ok"): (laws.PROVED, ""),
+    ("mem_ptr.c", "cmp_bad"): (laws.FAILED, "PTR-COMPARE"),
+    ("mem_ptr.c", "cmp_ok"): (laws.PROVED, ""),
+    ("mem_ptr.c", "diff_ok"): (laws.PROVED, ""),
+    ("mem_ptr.c", "escape_bad"): (laws.FAILED, "MEM-STACK-ESCAPE"),
+    ("mem_ptr.c", "escape_ok"): (laws.PROVED, ""),
+    ("mem_ptr.c", "null_deref_bad"): (laws.FAILED, "PTR-NULL-DEREF"),
+    ("mem_ptr.c", "null_deref_ok"): (laws.PROVED, ""),
+    ("mem_ptr.c", "misaligned_bad"): (laws.FAILED, "MEM-MISALIGNED"),
+    ("mem_ptr.c", "aligned_ok"): (laws.PROVED, ""),
+    ("mem_ptr.c", "literal_write_bad"): (laws.FAILED, "MEM-WRITE-CONST"),
+    ("mem_ptr.c", "literal_read_ok"): (laws.PROVED, ""),
+    ("mem_ptr.c", "lifetime_bad"): (laws.FAILED, "MEM-UAF"),
+    ("mem_ptr.c", "byval_ok"): (laws.PROVED, ""),
+    ("mem_str.c", "strlen_ok"): (laws.PROVED, ""),
+    ("mem_str.c", "strcpy_bad"): (laws.FAILED, "MEM-OOB-WRITE"),
+    ("mem_str.c", "strcpy_ok"): (laws.PROVED, ""),
+    ("mem_str.c", "unterminated_bad"): (laws.FAILED, "MEM-OOB-READ"),
+    ("mem_str.c", "memcpy_ok"): (laws.PROVED, ""),
+    ("mem_str.c", "memcpy_bad"): (laws.FAILED, "MEM-OOB-WRITE"),
+    ("mem_str.c", "overlap_bad"): (laws.FAILED, "MEM-OVERLAP"),
+    ("mem_str.c", "memmove_ok"): (laws.PROVED, ""),
+    ("mem_str.c", "memset_bad"): (laws.FAILED, "MEM-OOB-WRITE"),
+    ("mem_str.c", "strcat_bad"): (laws.FAILED, "MEM-OOB-WRITE"),
+    ("mem_libc.c", "abs_bad"): (laws.FAILED, "INT-SIGNED-OVF"),
+    ("mem_libc.c", "abs_ok"): (laws.PROVED, ""),
+    ("mem_libc.c", "getenv_bad"): (laws.FAILED, "PTR-NULL-DEREF"),
+    ("mem_libc.c", "getenv_ok"): (laws.PROVED, ""),
+    ("mem_libc.c", "atoi_ok"): (laws.PROVED, ""),
+    ("mem_libc.c", "printf_ok"): (laws.PROVED, ""),
+    ("mem_libc.c", "printf_n_bad"): (laws.FAILED, "FMT-PERCENT-N"),
+    ("mem_libc.c", "printf_args_bad"): (laws.FAILED, "FMT-ARGS"),
+    ("mem_libc.c", "printf_type_bad"): (laws.FAILED, "FMT-ARGS"),
+    ("mem_libc.c", "snprintf_ok"): (laws.PROVED, ""),
+    ("mem_libc.c", "sprintf_bad"): (laws.FAILED, "MEM-OOB-WRITE"),
+    ("mem_libc.c", "fgets_ok"): (laws.PROVED, ""),
+    ("mem_libc.c", "fgets_bad"): (laws.FAILED, "MEM-OOB-WRITE"),
+    ("mem_libc.c", "fopen_bad"): (laws.FAILED, "PTR-NULL-DEREF"),
+    ("mem_libc.c", "fclose_twice_bad"): (laws.FAILED, "MEM-DOUBLE-FREE"),
+    ("mem_libc.c", "generic_ok"): (laws.PROVED, ""),
+    ("mem_libc.c", "vla_ok"): (laws.PROVED, ""),
+    ("mem_libc.c", "vla_size_bad"): (laws.FAILED, "MEM-VLA-SIZE"),
+    ("mem_libc.c", "vla_oob_bad"): (laws.FAILED, "MEM-OOB-WRITE"),
+    ("mem_libc.c", "setjmp_unenc"): (laws.NEEDS_HARNESS, ""),
+    ("mem_contract.c", "no_contract"): (laws.NEEDS_HARNESS, ""),
+    ("mem_contract.c", "first_last_ok"): (laws.PROVED_ASSUMING, ""),
+    ("mem_contract.c", "past_end_bad"): (laws.FAILED, "MEM-OOB-READ"),
+    ("mem_contract.c", "count_pos_ok"): (laws.PROVED_ASSUMING, ""),
+    ("mem_contract.c", "off_by_one_bad"): (laws.FAILED, "MEM-OOB-WRITE"),
+    ("mem_contract.c", "readonly_write_bad"): (laws.FAILED, "MEM-WRITE-CONST"),
+    ("mem_contract.c", "draft_count"): (laws.PROVED_ASSUMING, ""),  # sizes from the template harness draft
+    ("mem_cxx.cpp", "new_delete_ok"): (laws.PROVED, ""),
+    ("mem_cxx.cpp", "new_array_ok"): (laws.PROVED, ""),
+    ("mem_cxx.cpp", "mismatch_bad"): (laws.FAILED, "MEM-MISMATCHED-FREE"),
+    ("mem_cxx.cpp", "new_oob_bad"): (laws.FAILED, "MEM-OOB-READ"),
+    ("mem_cxx.cpp", "delete_twice_bad"): (laws.FAILED, "MEM-DOUBLE-FREE"),
+    ("mem_stl.cpp", "span_ok"): (laws.PROVED, ""),
+    ("mem_stl.cpp", "span_bad"): (laws.FAILED, "MEM-OOB-READ"),
+    ("mem_stl.cpp", "array_ok"): (laws.PROVED, ""),
+    ("mem_stl.cpp", "array_bad"): (laws.FAILED, "MEM-OOB-READ"),
+    ("mem_stl.cpp", "optional_ok"): (laws.PROVED, ""),
+    ("mem_stl.cpp", "optional_bad"): (laws.FAILED, "CXX-OPTIONAL-NULL"),
+    ("mem_stl.cpp", "unique_ok"): (laws.PROVED, ""),
+    ("mem_stl.cpp", "unique_bad"): (laws.FAILED, "PTR-NULL-DEREF"),
+    ("mem_stl.cpp", "vector_ok"): (laws.PROVED, ""),
+    ("mem_stl.cpp", "vector_bad"): (laws.FAILED, "MEM-OOB-READ"),
+    ("mem_stl.cpp", "vector_at_throws"): (laws.NEEDS_HARNESS, ""),  # exception path: cleanup not modelled
 }
 
 CLASSES = {
@@ -177,9 +273,54 @@ class TestPirStage(unittest.TestCase):
     def test_unencoded_is_named(self):
         got = self._verdicts(self.report)
         self.assertIn("Law 6", got[("unencoded.c", "deref_ptr")]["message"])
-        self.assertTrue(got[("unencoded.c", "local_array")]["message"].startswith("UNENCODED: "))
+        # local arrays are in the memory model now; setjmp is still named
+        self.assertEqual(got[("mem_libc.c", "setjmp_unenc")]["message"], "UNENCODED: call @_setjmp")
         self.assertEqual(got[("unencoded.c", "twice_double")]["message"],
                          "UNENCODED: parameter type double")
+
+    def test_memory_verdicts_and_classes(self):
+        got = self._verdicts(self.report)
+        wrong = {}
+        for k, (st, cls) in MEM_EXPECTED.items():
+            f = got.get(k, {})
+            if f.get("status") != st or (cls and f.get("cls") != cls):
+                wrong[k] = ((st, cls), (f.get("status"), f.get("cls"), f.get("message")))
+        self.assertEqual(wrong, {})
+
+    def test_memory_failed_has_line_and_prop(self):
+        got = self._verdicts(self.report)
+        for k, (st, _) in MEM_EXPECTED.items():
+            if st == laws.FAILED:
+                self.assertTrue(got[k]["extra"].get("prop"), k)
+                self.assertTrue(got[k].get("line"), k)
+
+    def test_contract_proof_lists_assumptions(self):
+        got = self._verdicts(self.report)
+        f = got[("mem_contract.c", "first_last_ok")]
+        self.assertIn("assumptions", f["extra"])
+        self.assertIn("\\valid(p + (0..3))", f["extra"]["assumptions"])
+        self.assertEqual(f["extra"]["verdict_before_assumptions"], laws.PROVED)
+        self.assertIn("Law 6", got[("mem_contract.c", "no_contract")]["message"])
+        d = got[("mem_contract.c", "draft_count")]["extra"]["assumptions"]
+        self.assertIn("harness (template draft)", d)
+        self.assertIn("(drafted size range)", d)
+
+    def test_library_models_and_memory_notes(self):
+        got = self._verdicts(self.report)
+        f = got[("mem_str.c", "strcpy_bad")]
+        self.assertIn("strcpy", f["extra"].get("inlined", ""))
+        self.assertIn("strcpy library model", f["message"])
+        self.assertTrue(f["extra"]["strict_aliasing"].startswith("off"))
+        self.assertIn(f["extra"]["memory"], ("array", "bv"))
+
+    def test_strict_aliasing_is_opt_in(self):
+        on = self._run("--strict-aliasing")
+        got = self._verdicts(on)
+        f = got[("mem_alias.c", "pun_bad")]
+        self.assertEqual((f["status"], f["cls"]), (laws.FAILED, "MEM-STRICT-ALIAS"))
+        self.assertEqual(got[("mem_alias.c", "char_ok")]["status"], laws.PROVED)
+        off = self._verdicts(self.report)
+        self.assertEqual(off[("mem_alias.c", "pun_bad")]["status"], laws.PROVED)
 
     def test_never_merged(self):
         # Law 2: a loop cut at the bound is BOUNDED, never PROVED.
@@ -212,6 +353,18 @@ class TestPirStage(unittest.TestCase):
             self.assertTrue(tv.startswith("PASS") or tv.startswith("NONE"), (k, tv))
             if v != laws.FAILED:
                 self.assertTrue(tv.startswith("PASS"), (k, tv))
+        # memory functions: validated against lli, or PARTIAL with the reason
+        # (nondet library results, contracts, pointer results, globals); never diverged
+        for k, (st, _) in MEM_EXPECTED.items():
+            f = got[k]
+            self.assertEqual(f["status"], st, (k, f.get("message")))
+            if st in (laws.NEEDS_HARNESS,):
+                continue
+            tv = f["extra"]["tv"]
+            self.assertTrue(tv.startswith(("PASS", "NONE", "PARTIAL")), (k, tv))
+        for k in [("mem_array.c", "arr_read_ok"), ("mem_array.c", "uninit_mem_ok"), ("mem_ptr.c", "one_past_ok"),
+                  ("mem_str.c", "memcpy_ok")]:
+            self.assertTrue(got[k]["extra"]["tv"].startswith("PASS"), (k, got[k]["extra"]["tv"]))
 
 
 if __name__ == "__main__":

@@ -13,6 +13,9 @@ FAILED function on which neither the counterexample nor the input grid
 triggers the sanitizer is listed as a suspected false alarm.
 
 Generators:
+  inhouse-ptr  pointer programs for the pir memory model: stack/heap int
+           arrays, masked or reduced indices, pointer walks, memcpy, free
+           (a minority reach one past the end or use after free).
   inhouse  (default) a targeted generator for the C subset PRISM claims to
            model: int/unsigned/short/char/long long parameters, locals,
            + - * / % << >> & | ^ ~ ! unary minus, casts, ternaries, if/else,
@@ -189,6 +192,70 @@ class Gen:
         return f"int {name}({sig}) {{\n" + "\n".join(body) + "\n}\n"
 
 
+class PtrGen(Gen):
+    """Pointer programs for the pir memory model (docs/PIR.md "Memory model"):
+    a stack or heap int array, indexed reads/writes, pointer walks, memcpy
+    between arrays, free. Indices are masked or reduced so that most
+    functions are memory-safe; a minority reach one past the end or use the
+    heap array after free. Parameters stay scalar so functions can be driven."""
+
+    def index(self, env: list[Var], n: int, bug: bool) -> str:
+        e = self.expr(env, 1)
+        if bug:
+            return f"((unsigned)({e}) % {n + 1}u)"
+        if n & (n - 1) == 0:
+            return f"(({e}) & {n - 1})"
+        return f"((unsigned)({e}) % {n}u)"
+
+    def function(self, name: str) -> str:
+        params = [Var(f"p{i}", self.r.choice(["int", "int", "unsigned", "short"])) for i in range(self.r.randint(1, 3))]
+        env = list(params)
+        body: list[str] = []
+        for p in params:
+            if self.r.random() < 0.5:
+                body.append(self.guard(p, "    "))
+        n = self.r.randint(2, 8)
+        m = self.r.randint(2, 8)
+        heap = self.r.random() < 0.35
+        if heap:
+            body += [f"    int *a = malloc({n} * sizeof(int));", "    if (!a) return 0;"]
+        else:
+            body.append(f"    int a[{n}];")
+        body.append(f"    int b[{m}];")
+        body.append(f"    for (int k = 0; k < {n}; k++) a[k] = k * {self.r.randint(1, 9)};")
+        body.append(f"    for (int k = 0; k < {m}; k++) b[k] = {self.r.randint(0, 9)};")
+        body.append("    int v = 0;")
+        for _ in range(self.r.randint(2, 5)):
+            bug = self.r.random() < 0.12
+            k = self.r.random()
+            if k < 0.35:
+                body.append(f"    v += a[{self.index(env, n, bug)}];")
+            elif k < 0.6:
+                body.append(f"    a[{self.index(env, n, bug)}] = {self.r.randint(0, 50)};")
+            elif k < 0.8:
+                body.append(f"    {{ int *q = a + {self.index(env, n, bug)}; v ^= *q; }}")
+            else:
+                cap = min(n, m) + (1 if bug else 0)
+                body.append(f"    memcpy(b, a, ((unsigned)({self.expr(env, 1)}) % {cap + 1}u) * sizeof(int));")
+                body.append("    v += b[0];")
+        if heap:
+            body.append("    free(a);")
+            if self.r.random() < 0.1:
+                body.append("    v += a[0];")
+        body.append("    return v;")
+        sig = ", ".join(f"{p.typ} {p.name}" for p in params)
+        return f"int {name}({sig}) {{\n" + "\n".join(body) + "\n}\n"
+
+
+def gen_inhouse_ptr(seed: int, nfuncs: int) -> str:
+    g = PtrGen(random.Random(seed))
+    parts = [f"/* PRISM random soundness program, pointer generator, seed {seed} */\n"
+             "#include <stdlib.h>\n#include <string.h>\n"]
+    for k in range(nfuncs):
+        parts.append(g.function(f"rf{seed}_{k}"))
+    return "\n".join(parts)
+
+
 def gen_inhouse(seed: int, nfuncs: int) -> str:
     g = Gen(random.Random(seed))
     parts = [f"/* PRISM random soundness program, in-house generator, seed {seed} */\n"]
@@ -272,7 +339,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("-n", "--programs", type=int, default=300)
     ap.add_argument("--funcs", type=int, default=3, help="functions per in-house program")
     ap.add_argument("--seed", type=int, default=1)
-    ap.add_argument("--generator", choices=["inhouse", "csmith"], default="inhouse")
+    ap.add_argument("--generator", choices=["inhouse", "inhouse-ptr", "csmith"], default="inhouse")
     ap.add_argument("--prism", help="PRISM binary (default: $PRISM_BIN, else python -m prism)")
     ap.add_argument("--out", type=Path, default=Path("soundness-out"))
     ap.add_argument("--jobs", "-j", type=int, default=max(1, (os.cpu_count() or 2)))
@@ -297,8 +364,9 @@ def main(argv: list[str] | None = None) -> int:
         programs: list[tuple[Path, list[str]]] = []
         for k in range(args.programs):
             seed = args.seed + k
-            if args.generator == "inhouse":
-                text = gen_inhouse(seed, args.funcs)
+            if args.generator in ("inhouse", "inhouse-ptr"):
+                gen = gen_inhouse if args.generator == "inhouse" else gen_inhouse_ptr
+                text = gen(seed, args.funcs)
                 fns = re.findall(r"(?m)^int (rf\d+_\d+)\(", text)
             else:
                 text = gen_csmith(seed, work) or ""

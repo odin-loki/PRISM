@@ -1,0 +1,10 @@
+format_version: 1
+input_files: mem_struct_false.c
+language: C
+property: memsafety
+expected:
+  mem_struct_false: false
+witness:
+  mem_struct_false: [4]
+sanitizer_blind:
+  - mem_struct_false
