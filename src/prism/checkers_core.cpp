@@ -1,8 +1,10 @@
 #include "prism/checkers.hpp"
+#include "prism/cparse.hpp"
 
 #include <algorithm>
 #include <bit>
 #include <cctype>
+#include <functional>
 #include <map>
 #include <optional>
 #include <set>
@@ -377,6 +379,281 @@ bool reads_var(std::string_view var, std::string_view line) {
 
 std::string cap_norm(std::string_view s) { return strip_ws(s); }
 
+// --- block-structured reachability ---------------------------------------
+//
+// Not a CFG. A braced block whose last statement leaves (return, goto,
+// break, continue, throw, exit(), abort(), ...) does not fall through, so
+// what it did (a free, an unlock) does not reach the code after it. A
+// block that leaves by break/continue rejoins after the loop or switch
+// it leaves. Same walk as prism/checkers.py:exit_blocks.
+
+struct ExitBlock {
+    int open_line = 0;
+    int close_line = 0;
+    bool close_first = false;  // `}` is the first non-blank character of close_line
+    bool loop_exit = false;    // left by break/continue
+    int merge_line = -1;       // close line of the loop/switch it leaves
+};
+
+std::string strip_labels(const std::string& stmt) {
+    static Regex labels(R"((?:(?:case\b[^:;]*|default|[A-Za-z_]\w*)\s*:(?!:)\s*)+)");
+    auto m = labels.search_match(stmt);
+    if (m && m->spans[0].first == 0) return stmt.substr(static_cast<std::size_t>(m->spans[0].second));
+    return stmt;
+}
+
+std::string blank_char_literals_full(std::string text) {
+    if (text.find('\'') == std::string::npos) return text;
+    static Regex lit(R"('(?:\\.|[^'\\\n])*')");
+    for (auto& m : lit.finditer(text))
+        for (int k = m.spans[0].first; k < m.spans[0].second; ++k) text[static_cast<std::size_t>(k)] = ' ';
+    return text;
+}
+
+std::vector<ExitBlock> exit_blocks(const std::vector<std::string>& lines) {
+    static Regex exit_stmt(
+        R"((?:return|goto|break|continue|throw)\b)"
+        R"(|(?:exit|_exit|_Exit|quick_exit|abort|err|errx|verr|verrx)"
+        R"(|longjmp|siglongjmp|__builtin_trap|__builtin_unreachable)\s*\()"
+        R"(|std\s*::\s*(?:exit|abort|terminate|quick_exit)\s*\()");
+    static Regex loop_head(R"((?:for|while|switch|do)\b)");
+    auto text = blank_char_literals_full(join_all(lines));
+    std::vector<ExitBlock> out;
+    if (text.find('{') == std::string::npos) return out;
+    struct Frame {
+        int open_line;
+        bool is_loop;
+        std::optional<std::string> last;  // nullopt: none yet; "": a block
+        int saved_paren;
+        std::vector<std::size_t> waiting;
+    };
+    std::vector<Frame> stack;
+    int line = 0;
+    std::size_t line_start = 0, stmt_start = 0;
+    int paren = 0;
+    for (std::size_t pos = 0; pos < text.size(); ++pos) {
+        char c = text[pos];
+        if (c == '\n') {
+            ++line;
+            line_start = pos + 1;
+        } else if (c == '(') {
+            ++paren;
+        } else if (c == ')') {
+            if (paren) --paren;
+        } else if (c == ';') {
+            if (paren == 0) {
+                auto stmt = text.substr(stmt_start, pos - stmt_start);
+                if (!stack.empty() && !strip(stmt).empty()) stack.back().last = stmt;
+                stmt_start = pos + 1;
+            }
+        } else if (c == '{') {
+            auto head = strip_labels(strip(text.substr(stmt_start, pos - stmt_start)));
+            if (head.starts_with("else")) head = strip(head.substr(4));
+            bool is_loop = loop_head.match_line(head);
+            stack.push_back(Frame{line, is_loop, std::nullopt, paren, {}});
+            paren = 0;
+            stmt_start = pos + 1;
+        } else if (c == '}') {
+            if (stack.empty()) {
+                stmt_start = pos + 1;
+                continue;
+            }
+            auto tail = text.substr(stmt_start, pos - stmt_start);
+            Frame frame = std::move(stack.back());
+            stack.pop_back();
+            std::optional<std::string> last = !strip(tail).empty() ? std::optional<std::string>(tail) : frame.last;
+            paren = frame.saved_paren;
+            stmt_start = pos + 1;
+            for (auto k : frame.waiting) out[k].merge_line = line;
+            if (!stack.empty()) stack.back().last = std::string();
+            if (!last || last->empty()) continue;
+            auto s = strip_labels(strip(*last));
+            auto em = exit_stmt.search_match(s);
+            if (!em || em->spans[0].first != 0) continue;
+            auto word = em->group(0);
+            bool loop_exit = word.starts_with("break") || word.starts_with("continue");
+            if (loop_exit) {
+                if (frame.is_loop) continue;  // break/continue of this very loop or switch
+                Frame* target = nullptr;
+                for (auto it = stack.rbegin(); it != stack.rend(); ++it)
+                    if (it->is_loop) {
+                        target = &*it;
+                        break;
+                    }
+                if (!target) loop_exit = false;
+                else target->waiting.push_back(out.size());
+            }
+            out.push_back(ExitBlock{frame.open_line, line,
+                                    strip(text.substr(line_start, pos - line_start)).empty(),
+                                    loop_exit, -1});
+        }
+    }
+    return out;
+}
+
+// Replays exit_blocks over a line walk: before(i), then after(i). A
+// block's effects are undone when it closes; a break/continue block's
+// effects merge back in after the loop or switch it leaves.
+template <class State>
+class ExitReplay {
+public:
+    ExitReplay(std::vector<ExitBlock> blocks, State& state,
+               std::function<void(State&, const State&)> merge)
+        : blocks_(std::move(blocks)), state_(state), merge_(std::move(merge)) {
+        for (std::size_t k = 0; k < blocks_.size(); ++k) {
+            auto& b = blocks_[k];
+            opens_[b.open_line].push_back(k);
+            (b.close_first ? close_first_ : close_after_)[b.close_line].push_back(k);
+        }
+    }
+    bool empty() const { return blocks_.empty(); }
+    void before(int i) {
+        if (auto it = close_first_.find(i); it != close_first_.end())
+            for (auto k : it->second) leave(k);
+        if (auto it = opens_.find(i); it != opens_.end())
+            for (auto k : it->second) saved_[k] = state_;
+    }
+    void after(int i) {
+        if (auto it = close_after_.find(i); it != close_after_.end())
+            for (auto k : it->second) leave(k);
+        if (auto it = merges_.find(i); it != merges_.end()) {
+            for (auto& st : it->second) merge_(state_, st);
+            merges_.erase(it);
+        }
+    }
+
+private:
+    void leave(std::size_t k) {
+        auto it = saved_.find(k);
+        if (it == saved_.end()) return;
+        auto& b = blocks_[k];
+        if (b.loop_exit && b.merge_line >= 0) merges_[b.merge_line].push_back(state_);
+        state_ = std::move(it->second);
+        saved_.erase(it);
+    }
+    std::vector<ExitBlock> blocks_;
+    State& state_;
+    std::function<void(State&, const State&)> merge_;
+    std::map<int, std::vector<std::size_t>> opens_, close_first_, close_after_;
+    std::map<std::size_t, State> saved_;
+    std::map<int, std::vector<State>> merges_;
+};
+
+// True when every read of `var` on `ln` is the free() call itself.
+bool frees_only_in_call(const std::string& var, const std::string& ln, const std::optional<Match>& fm) {
+    if (!fm || cap_norm(fm->named("var")) != var) return false;
+    auto a = static_cast<std::size_t>(fm->spans[0].first);
+    auto b = static_cast<std::size_t>(fm->spans[0].second);
+    return !reads_var(var, ln.substr(0, a) + ln.substr(b));
+}
+
+// `if (!p)` / `if (p == NULL)` / `if ((p = f()) == NULL)`; `if (fd < 0)` /
+// `if (fd == -1)`: the open failed.
+Regex null_guard_re(std::string_view var) {
+    auto v = re_escape(var);
+    return Regex("\\bif\\s*\\(\\s*(?:!\\s*" + v + "\\b|" + v + "\\s*==\\s*(?:NULL|nullptr|0)\\b" +
+                 "|(?:NULL|nullptr|0)\\s*==\\s*" + v + "\\b" +
+                 "|" + v + "\\s*<\\s*0\\b|" + v + "\\s*==\\s*-\\s*1\\b" +
+                 "|\\(\\s*" + v + "\\s*=(?!=)[^;]*?\\)\\s*==\\s*(?:NULL|nullptr|0)\\b)");
+}
+
+// The return on line r sits under an `if (!var)`-style test: on its own
+// line, an unbraced `if` on the line before, or the head of the innermost
+// block holding it.
+bool null_guarded_return(const Regex& pat, const std::vector<std::string>& body_lines, int r) {
+    if (pat.search(body_lines[static_cast<std::size_t>(r)])) return true;
+    if (r > 0) {
+        auto prev = body_lines[static_cast<std::size_t>(r - 1)];
+        while (!prev.empty() && std::isspace(static_cast<unsigned char>(prev.back()))) prev.pop_back();
+        if (!prev.empty() && prev.back() != ';' && prev.back() != '{' && prev.back() != '}' &&
+            pat.search(prev))
+            return true;
+    }
+    int depth = 0;
+    for (int j = r - 1; j >= 0; --j) {
+        auto& ln = body_lines[static_cast<std::size_t>(j)];
+        for (int k = static_cast<int>(ln.size()) - 1; k >= 0; --k) {
+            char c = ln[static_cast<std::size_t>(k)];
+            if (c == '}') {
+                ++depth;
+            } else if (c == '{') {
+                --depth;
+                if (depth < 0) {
+                    auto head = ln.substr(0, static_cast<std::size_t>(k));
+                    if (strip(head).empty() && j > 0) head = body_lines[static_cast<std::size_t>(j - 1)];
+                    return pat.search(head);
+                }
+            }
+        }
+    }
+    return false;
+}
+
+// `var->`, `*var` or `var[` in text, sizeof operands aside.
+bool ptr_use_in(std::string_view var, std::string_view text) {
+    static Regex sz(R"(sizeof\s*\([^)]*\))");
+    std::string stripped;
+    std::size_t off = 0;
+    for (auto& m : sz.finditer(text)) {
+        auto a = static_cast<std::size_t>(std::max(0, m.spans[0].first));
+        stripped.append(text.substr(off, a - off));
+        off = static_cast<std::size_t>(std::max(0, m.spans[0].second));
+    }
+    stripped.append(text.substr(std::min(off, text.size())));
+    auto v = re_escape(var);
+    return Regex("\\b" + v + "\\s*->").search(stripped) || Regex("\\*\\s*" + v + "\\b").search(stripped) ||
+           Regex("\\b" + v + "\\s*\\[").search(stripped);
+}
+
+// Index of the `;` ending the statement running through `pos`, or npos.
+std::size_t stmt_end(std::string_view line, std::size_t pos) {
+    int depth = 0;
+    for (std::size_t k = pos; k < line.size(); ++k) {
+        char c = line[k];
+        if (c == '(') ++depth;
+        else if (c == ')') --depth;
+        else if (c == ';' && depth <= 0) return k;
+    }
+    return std::string_view::npos;
+}
+
+// ALL_CAPS names this file #defines to a string literal.
+std::set<std::string> string_macros(const std::vector<std::string>& lines) {
+    static Regex def(R"(^\s*#\s*define\s+([A-Z_][A-Z0-9_]*)\s+(?:L|u8|u|U)?")");
+    std::set<std::string> names;
+    for (auto& ln : lines) {
+        if (ln.find("define") == std::string::npos) continue;
+        if (auto m = def.search_match(ln); m && m->spans[0].first == 0) names.insert(m->group(1));
+    }
+    return names;
+}
+
+// A string literal, or literals and string macros pasted together:
+// `#define FMT "%d\n"` then `printf(FMT, x)` is a literal format.
+bool is_literal_format(const std::string& fmt, const std::set<std::string>& macros) {
+    if (is_string_literal(fmt)) return true;
+    if (macros.empty()) return false;
+    static Regex pieces(R"((?:\s*(?:[A-Z_][A-Z0-9_]*|(?:L|u8|u|U)?"[^"]*"))+\s*)");
+    if (!fullmatch(pieces, fmt)) return false;
+    static Regex lit(R"("[^"]*")");
+    static Regex name(R"([A-Z_][A-Z0-9_]*)");
+    std::string bare;
+    std::size_t off = 0;
+    for (auto& m : lit.finditer(fmt)) {
+        bare.append(fmt, off, static_cast<std::size_t>(m.spans[0].first) - off);
+        bare.push_back(' ');
+        off = static_cast<std::size_t>(m.spans[0].second);
+    }
+    bare.append(fmt, std::min(off, fmt.size()), std::string::npos);
+    bool any = false;
+    for (auto& m : name.finditer(bare)) {
+        any = true;
+        if (!macros.contains(m.group(0))) return false;
+    }
+    return any;
+}
+
+
 bool trunc_rhs_bad(std::string rhs, std::string_view narrow) {
     rhs = strip(rhs);
     if (is_char_literal(rhs)) return false;
@@ -606,7 +883,8 @@ std::optional<int> first_ptr_use(std::string_view var, const std::vector<std::st
 std::optional<std::pair<std::string, int>> unchecked_alloc_site(const std::vector<std::string>& chunk,
                                                                 int i, std::string var,
                                                                 std::string_view fn,
-                                                                bool require_nowait) {
+                                                                bool require_nowait,
+                                                                std::size_t match_end) {
     var = strip_ws(var);
     auto& line = chunk[static_cast<std::size_t>(i)];
     if (fn == "realloc") {
@@ -614,10 +892,20 @@ std::optional<std::pair<std::string, int>> unchecked_alloc_site(const std::vecto
         if (argm.search(line)) return std::nullopt;
     }
     if (alloc_in_null_condition(line, var)) return std::nullopt;
-    auto use_j = first_ptr_use(var, chunk, i);
-    if (!use_j) return std::nullopt;
-    auto between = join_range(chunk, static_cast<std::size_t>(i),
-                              static_cast<std::size_t>(*use_j + 1));
+    // `int *p = malloc(4); *p = 3;` on one line is the same unchecked use
+    // as on two lines.
+    std::optional<int> use_j;
+    std::string between;
+    auto semi = stmt_end(line, match_end);
+    std::string rest = semi != std::string_view::npos ? line.substr(semi + 1) : std::string();
+    if (!rest.empty() && ptr_use_in(var, rest)) {
+        use_j = i;
+        between = line;
+    } else {
+        use_j = first_ptr_use(var, chunk, i);
+        if (!use_j) return std::nullopt;
+        between = join_range(chunk, static_cast<std::size_t>(i), static_cast<std::size_t>(*use_j + 1));
+    }
     if (null_test_for(var, between)) return std::nullopt;
     std::string stmt;
     for (int x = i; x < i + 4 && x < static_cast<int>(chunk.size()); ++x) {
@@ -868,11 +1156,12 @@ std::optional<std::pair<std::string, std::string>> first_two_locks(std::string_v
     return std::nullopt;
 }
 
-std::unordered_set<std::string> file_scope_int_globals(const std::vector<std::string>& lines) {
+// Ordered: callers iterate it, and the Python engine walks sorted(names).
+std::set<std::string> file_scope_int_globals(const std::vector<std::string>& lines) {
     static Regex ig(R"(^int\s+(?P<name>[A-Za-z_]\w*)\s*;)");
     static Regex ug(R"(^unsigned\s+(?P<name>[A-Za-z_]\w*)\s*;)");
     int depth = 0;
-    std::unordered_set<std::string> g;
+    std::set<std::string> g;
     for (auto& line : lines) {
         auto stripped = strip(line);
         if (stripped.empty() || stripped.starts_with('#')) {
@@ -1430,49 +1719,72 @@ std::unordered_set<std::string> pointer_locals(const FunctionInfo& fn) {
 
 // --- lints ---
 
+// Use-after-free and double-free within a function body. A free inside a
+// block that leaves (exit_blocks) does not reach the code after the block.
+// A second free is MEM-DOUBLE-FREE only, not also MEM-UAF on that line.
 void mem_lifetime(const std::vector<std::string>& lines, std::string_view rel,
                   const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     static Regex free_call(
         R"(\b(?:free|kfree|ck_free)\s*\(\s*(?:\([^)]*\)\s*)*(?P<var>[A-Za-z_]\w*(?:\s*(?:->|\.)\s*[A-Za-z_]\w*)*)\s*\))");
+    struct Freed {
+        std::map<std::string, int> uaf, df;
+        std::set<std::string> reported_uaf;
+    };
     for (auto& fn : funcs) {
         auto chunk = chunk_of(lines, fn);
         int start = fn.span.first;
-        std::map<std::string, int> freed_uaf, freed_df;
-        std::unordered_set<std::string> reported_uaf;
+        Freed st;
         std::set<std::pair<std::string, int>> reported_df;
+        bool any_free = false;
+        for (auto& ln : chunk)
+            if (ln.find("free") != std::string::npos) any_free = true;
+        std::optional<ExitReplay<Freed>> replay;
+        if (any_free) {
+            auto blocks = exit_blocks(chunk);
+            if (!blocks.empty())
+                replay.emplace(std::move(blocks), st, [](Freed& cur, const Freed& other) {
+                    for (auto& [k, v] : other.uaf) cur.uaf.emplace(k, v);
+                    for (auto& [k, v] : other.df) cur.df.emplace(k, v);
+                    cur.reported_uaf.insert(other.reported_uaf.begin(), other.reported_uaf.end());
+                });
+        }
         for (int i = 0; i < static_cast<int>(chunk.size()); ++i) {
+            if (replay) replay->before(i);
             auto& ln = chunk[static_cast<std::size_t>(i)];
-            for (auto it = freed_uaf.begin(); it != freed_uaf.end();) {
+            for (auto it = st.uaf.begin(); it != st.uaf.end();) {
                 if (reassigns_var(it->first, ln)) {
-                    freed_df.erase(it->first);
-                    reported_uaf.erase(it->first);
-                    it = freed_uaf.erase(it);
+                    st.df.erase(it->first);
+                    st.reported_uaf.erase(it->first);
+                    it = st.uaf.erase(it);
                 } else {
-                    if (has_assignment(it->first, ln)) freed_df.erase(it->first);
+                    if (has_assignment(it->first, ln)) st.df.erase(it->first);
                     ++it;
                 }
             }
-            for (auto& [var, _] : freed_uaf) {
-                if (reported_uaf.contains(var)) continue;
-                if (reads_var(var, ln)) {
+            std::optional<Match> fm;
+            if (ln.find("free") != std::string::npos) fm = free_call.search_match(ln);
+            for (auto& [var, _] : st.uaf) {
+                if (st.reported_uaf.contains(var)) continue;
+                if (reads_var(var, ln) && !frees_only_in_call(var, ln, fm)) {
                     lint_add(out, rel, fn.name, start + i, "MEM-UAF",
                              var + " used after free without reassignment", lines);
-                    reported_uaf.insert(var);
+                    st.reported_uaf.insert(var);
                 }
             }
-            auto fm = free_call.search_match(ln);
-            if (!fm) continue;
-            auto var = cap_norm(fm->named("var"));
-            if (freed_df.contains(var)) {
-                auto key = std::pair{var, freed_df[var]};
-                if (!reported_df.contains(key)) {
-                    lint_add(out, rel, fn.name, start + i, "MEM-DOUBLE-FREE",
-                             var + " freed again without reassignment", lines);
-                    reported_df.insert(key);
+            if (fm) {
+                auto var = cap_norm(fm->named("var"));
+                if (auto it = st.df.find(var); it != st.df.end()) {
+                    auto key = std::pair{var, it->second};
+                    if (!reported_df.contains(key)) {
+                        lint_add(out, rel, fn.name, start + i, "MEM-DOUBLE-FREE",
+                                 var + " freed again without reassignment", lines);
+                        reported_df.insert(key);
+                    }
                 }
+                st.uaf[var] = i;
+                st.df[var] = i;
             }
-            freed_uaf[var] = i;
-            freed_df[var] = i;
+            if (replay) replay->after(i);
         }
     }
 }
@@ -1683,10 +1995,24 @@ void lock_double_unlock(const std::vector<std::string>& lines, std::string_view 
                         const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     static Regex call(R"(\b([A-Za-z_]\w*lock[A-Za-z0-9_]*)\s*\(([^)]*)\)\s*;)");
     static Regex unlk(R"((?i)unlock)");
+    // An unlock inside a block that leaves (exit_blocks) does not reach the
+    // code after the block.
+    using Held = std::map<std::pair<std::string, std::string>, std::optional<bool>>;
     for (auto& fn : funcs) {
-        std::map<std::pair<std::string, std::string>, std::optional<bool>> held;
+        Held held;
         auto body_lines = split_lines(fn.body);
+        std::optional<ExitReplay<Held>> replay;
+        if (unlk.search(fn.body)) {
+            auto blocks = exit_blocks(body_lines);
+            if (!blocks.empty())
+                // A lock released on the path that rejoins is released (may-analysis).
+                replay.emplace(std::move(blocks), held, [](Held& cur, const Held& other) {
+                    for (auto& [k, v] : other)
+                        if (v == false || !cur.contains(k)) cur[k] = v;
+                });
+        }
         for (int i = 0; i < static_cast<int>(body_lines.size()); ++i) {
+            if (replay) replay->before(i);
             bool found = false;
             for (auto& m : call.finditer(body_lines[static_cast<std::size_t>(i)])) {
                 auto name = m.group(1);
@@ -1707,6 +2033,7 @@ void lock_double_unlock(const std::vector<std::string>& lines, std::string_view 
                 if (auto u = unlock_of(name)) held[{*u, arg}] = true;
             }
             if (found) break;
+            if (replay) replay->after(i);
         }
     }
 }
@@ -1900,7 +2227,8 @@ void unchecked_alloc(const std::vector<std::string>& lines, std::string_view rel
                 stmt += strip(chunk[static_cast<std::size_t>(x)]);
             }
             if (stmt.find("M_NOWAIT") != std::string::npos) continue;
-            auto hit = unchecked_alloc_site(chunk, i, m->named("var"), m->named("fn"), false);
+            auto hit = unchecked_alloc_site(chunk, i, m->named("var"), m->named("fn"), false,
+                                            static_cast<std::size_t>(m->spans[0].second));
             if (!hit) continue;
             auto key = std::pair{hit->first, i};
             if (seen.contains(key)) continue;
@@ -1923,7 +2251,8 @@ void nowait_alloc(const std::vector<std::string>& lines, std::string_view rel,
         for (int i = 0; i < static_cast<int>(chunk.size()); ++i) {
             auto m = re.search_match(chunk[static_cast<std::size_t>(i)]);
             if (!m) continue;
-            auto hit = unchecked_alloc_site(chunk, i, m->named("var"), m->named("fn"), true);
+            auto hit = unchecked_alloc_site(chunk, i, m->named("var"), m->named("fn"), true,
+                                            static_cast<std::size_t>(m->spans[0].second));
             if (!hit) continue;
             auto key = std::pair{hit->first, i};
             if (seen.contains(key)) continue;
@@ -1962,8 +2291,11 @@ void noreturn_fatal(const std::vector<std::string>& lines, std::string_view rel,
     }
 }
 
+// printf-family calls whose format argument is not a string literal. An
+// ALL_CAPS macro #defined to a string literal in the same file is a literal.
 void fmt_string(const std::vector<std::string>& lines, std::string_view rel,
                 const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
+    auto macros = string_macros(lines);
     for (auto& fn : funcs) {
         auto chunk = chunk_of(lines, fn);
         int start = fn.span.first;
@@ -1972,7 +2304,7 @@ void fmt_string(const std::vector<std::string>& lines, std::string_view rel,
             for (auto& [fname, idx] : kFmtFn) {
                 auto args = find_call_args(chunk[static_cast<std::size_t>(i)], fname);
                 if (!args || static_cast<int>(args->size()) <= idx) continue;
-                if (is_string_literal((*args)[static_cast<std::size_t>(idx)])) continue;
+                if (is_literal_format((*args)[static_cast<std::size_t>(idx)], macros)) continue;
                 auto key = std::pair{fname, i};
                 if (seen.contains(key)) continue;
                 seen.insert(key);
@@ -2451,8 +2783,12 @@ void uninit_branch(const std::vector<std::string>& lines, std::string_view rel,
     }
 }
 
+// `lines` blank literal contents (an escape pair is two blanks), so a strcpy
+// source literal is measured on the raw line from `raw_text`.
 void off_by_one(const std::vector<std::string>& lines, std::string_view rel,
-                const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
+                const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out,
+                std::string_view raw_text) {
+    std::vector<std::string> raw_lines;
     for (auto& fn : funcs) {
         auto arrays = local_char_array_sizes(fn);
         if (arrays.empty()) continue;
@@ -2481,7 +2817,17 @@ void off_by_one(const std::vector<std::string>& lines, std::string_view rel,
             }
             if (auto args = find_call_args(ln, "strcpy"); args && args->size() >= 2) {
                 auto dst = strip_ws((*args)[0]);
-                if (arrays.contains(dst)) {
+                if (arrays.contains(dst) && string_lit_len((*args)[1])) {
+                    if (!raw_text.empty() && raw_lines.empty()) {
+                        auto raw = strip_comments_keep_lines(raw_text, false);
+                        raw_lines = split_lines(raw);
+                    }
+                    int raw_ln = start + i;
+                    if (raw_ln > 0 && raw_ln <= static_cast<int>(raw_lines.size())) {
+                        auto raw_args = find_call_args(raw_lines[static_cast<std::size_t>(raw_ln - 1)], "strcpy");
+                        if (raw_args && raw_args->size() >= 2 && strip_ws((*raw_args)[0]) == dst)
+                            args = raw_args;
+                    }
                     auto lit_len = string_lit_len((*args)[1]);
                     if (lit_len && *lit_len + 1 > arrays[dst]) {
                         auto key = std::pair{std::string("strcpy"), i};
@@ -2674,15 +3020,21 @@ void fd_leak(const std::vector<std::string>& lines, std::string_view rel,
         for (auto& [var, open_hits] : opens) {
             auto& close_hits = closes[var];
             if (close_hits.empty()) continue;
-            std::vector<int> held_returns;
+            // `if (fd < 0) return -1;` leaves with nothing open.
+            auto guard = null_guard_re(var);
+            std::vector<int> var_returns;
             for (int r : returns)
+                if (!null_guarded_return(guard, body_lines, r)) var_returns.push_back(r);
+            if (var_returns.size() < 2) continue;
+            std::vector<int> held_returns;
+            for (int r : var_returns)
                 if (max_before(open_hits, r) > max_before(close_hits, r)) held_returns.push_back(r);
-            if (!held_returns.empty() && held_returns.size() < returns.size())
+            if (!held_returns.empty() && held_returns.size() < var_returns.size())
                 lint_add(out, rel, fn.name, fn.span.first + held_returns[0], "RES-FD-LEAK",
                          var + " open on " + std::to_string(open_hits.size()) +
                              " path(s) but closed before only " +
-                             std::to_string(returns.size() - held_returns.size()) + " of " +
-                             std::to_string(returns.size()) + " returns",
+                             std::to_string(var_returns.size() - held_returns.size()) + " of " +
+                             std::to_string(var_returns.size()) + " returns",
                          lines);
         }
     }
@@ -2757,15 +3109,21 @@ void mem_leak(const std::vector<std::string>& lines, std::string_view rel,
         for (auto& [var, alloc_hits] : allocs) {
             auto& free_hits = frees[var];
             if (free_hits.empty()) continue;
-            std::vector<int> held_returns;
+            // `if (!p) return 0;` leaves with p NULL: not a path that holds p.
+            auto guard = null_guard_re(var);
+            std::vector<int> var_returns;
             for (int r : returns)
+                if (!null_guarded_return(guard, body_lines, r)) var_returns.push_back(r);
+            if (var_returns.size() < 2) continue;
+            std::vector<int> held_returns;
+            for (int r : var_returns)
                 if (max_before(alloc_hits, r) > max_before(free_hits, r)) held_returns.push_back(r);
-            if (!held_returns.empty() && held_returns.size() < returns.size())
+            if (!held_returns.empty() && held_returns.size() < var_returns.size())
                 lint_add(out, rel, fn.name, fn.span.first + held_returns[0], "MEM-LEAK",
                          var + " allocated on " + std::to_string(alloc_hits.size()) +
                              " path(s) but freed before only " +
-                             std::to_string(returns.size() - held_returns.size()) + " of " +
-                             std::to_string(returns.size()) + " returns",
+                             std::to_string(var_returns.size() - held_returns.size()) + " of " +
+                             std::to_string(var_returns.size()) + " returns",
                          lines);
         }
     }
@@ -3660,7 +4018,8 @@ void api_umask(const std::vector<std::string>& lines, std::string_view rel,
 
 
 void checkers_core(const std::vector<std::string>& lines, std::string_view rel,
-                   const std::vector<FunctionInfo>& funcs, const std::filesystem::path& path,
+                   const std::vector<FunctionInfo>& funcs,
+                   const std::vector<FunctionInfo>& raw_funcs, const std::filesystem::path& path,
                    std::string_view raw_text, std::vector<Finding>& out) {
     std::vector<std::string> orig_lines;
     {
@@ -3707,8 +4066,8 @@ void checkers_core(const std::vector<std::string>& lines, std::string_view rel,
     uninit_return(lines, rel, funcs, out);
     ptr_uninit(lines, rel, funcs, out);
     uninit_branch(lines, rel, funcs, out);
-    off_by_one(lines, rel, funcs, out);
-    str_missing_nul(lines, rel, funcs, out);
+    off_by_one(lines, rel, funcs, out, raw_text);
+    str_missing_nul(lines, rel, raw_funcs, out);
     sibling_asymmetry(lines, rel, funcs, out);
     ignored_error(lines, rel, funcs, out);
     scanf_unchecked(lines, rel, funcs, out);
@@ -3718,7 +4077,7 @@ void checkers_core(const std::vector<std::string>& lines, std::string_view rel,
     api_tmpnam(lines, rel, funcs, out);
     api_mktemp(lines, rel, funcs, out);
     api_signal(lines, rel, funcs, out);
-    fmt_percent_n(lines, rel, funcs, out);
+    fmt_percent_n(lines, rel, raw_funcs, out);
     api_system(lines, rel, funcs, out);
     api_getenv_null(lines, rel, funcs, out);
     api_strdup_null(lines, rel, funcs, out);

@@ -169,6 +169,107 @@ TEST_CASE("one-line return is not missing-return") {
     CHECK_FALSE(oneline_ok);
 }
 
+// testdata_fp/ (correct code in the idioms the lints used to misread) and
+// testdata_tp/ (the buggy twins) sit beside testdata/. Same corpus and
+// expectations as tests/test_false_positives.py.
+static std::filesystem::path repo_dir(const char* name) {
+    return std::filesystem::path(__FILE__).parent_path().parent_path().parent_path() / name;
+}
+
+static std::vector<std::string> fn_names(const std::filesystem::path& p) {
+    std::vector<std::string> out;
+    for (auto& f : prism::extract_functions(p, p.filename().string())) out.push_back(f.name);
+    return out;
+}
+
+static bool has_hit(const std::vector<prism::Finding>& fs, int line, const char* cls) {
+    for (auto& f : fs)
+        if (f.status == prism::laws::FAILED && f.line && *f.line == line && f.cls == cls) return true;
+    return false;
+}
+
+TEST_CASE("false-positive corpus: zero FAILED lint findings") {
+    auto root = repo_dir("testdata_fp");
+    auto srcs = prism::iter_sources(root);
+    CHECK(srcs.size() >= 20);
+    for (auto& f : prism::run_lints(srcs, root)) {
+        INFO(f.file << ":" << f.line.value_or(0) << " " << f.cls << " " << f.message);
+        CHECK(f.status != prism::laws::FAILED);
+    }
+    for (auto& p : srcs) {
+        INFO(p.filename().string());
+        CHECK(prism::parse_gaps(p).empty());
+        CHECK_FALSE(prism::extract_functions(p).empty());
+    }
+}
+
+TEST_CASE("true-positive twins still fire") {
+    auto root = repo_dir("testdata_tp");
+    auto lint = [&](const char* name) { return prism::run_lints({root / name}, root); };
+    auto uaf = lint("uaf_paths.c");
+    CHECK(has_hit(uaf, 13, "MEM-UAF"));
+    CHECK(has_hit(uaf, 25, "MEM-UAF"));
+    CHECK(has_hit(uaf, 44, "MEM-UAF"));
+    CHECK(has_hit(uaf, 55, "MEM-DOUBLE-FREE"));
+    CHECK_FALSE(has_hit(uaf, 55, "MEM-UAF"));
+    CHECK(has_hit(lint("lock_twice.c"), 15, "LOCK-DOUBLE-UNLOCK"));
+    auto leaks = lint("leaks.c");
+    CHECK(has_hit(leaks, 12, "MEM-LEAK"));
+    CHECK(has_hit(leaks, 23, "RES-FD-LEAK"));
+    auto api = lint("api_and_fmt.c");
+    CHECK(has_hit(api, 11, "API-GETS"));
+    CHECK_FALSE(has_hit(api, 10, "API-GETS"));
+    CHECK(has_hit(api, 18, "FMT-STRING"));
+    CHECK(has_hit(api, 19, "FMT-STRING"));
+    CHECK_FALSE(has_hit(api, 17, "FMT-STRING"));
+    auto alloc = lint("unchecked_alloc.c");
+    CHECK(has_hit(alloc, 6, "PTR-UNCHECKED-ALLOC"));
+    CHECK(has_hit(alloc, 12, "PTR-UNCHECKED-ALLOC"));
+    auto cpy = lint("strcpy_escape.c");
+    CHECK(has_hit(cpy, 7, "STR-OFF-BY-ONE"));
+    CHECK_FALSE(has_hit(cpy, 14, "STR-OFF-BY-ONE"));
+    bool go = false, inl = false, inner = false;
+    for (auto& f : lint("methods_uaf.cpp")) {
+        if (f.cls != "MEM-UAF") continue;
+        go = go || (f.function == "W::go" && f.line == 21);
+        inl = inl || (f.function == "W::inl" && f.line == 11);
+        inner = inner || (f.function == "inner" && f.line == 30);
+    }
+    CHECK(go);
+    CHECK(inl);
+    CHECK(inner);
+}
+
+TEST_CASE("parser forms and PARSE-GAP") {
+    auto fp = repo_dir("testdata_fp");
+    CHECK(fn_names(fp / "methods.cpp") ==
+          std::vector<std::string>{"Buffer::Buffer", "Buffer::~Buffer", "Buffer::ok", "Buffer::size",
+                                   "Buffer::fill", "use_buffer"});
+    CHECK(fn_names(fp / "namespaced.cpp") ==
+          std::vector<std::string>{"clamp_to", "twice", "Point::operator==", "label"});
+    CHECK(fn_names(fp / "knr_style.c") == std::vector<std::string>{"knr_add", "knr_first"});
+    CHECK(fn_names(fp / "attr_static_inline.c") ==
+          std::vector<std::string>{"attr_first", "sinl", "pick", "run_pick"});
+    std::map<std::string, std::string> kinds;
+    for (auto& f : prism::extract_functions(fp / "attr_static_inline.c")) kinds[f.name] = f.kind;
+    CHECK(kinds["pick"] == "OTHER");
+    CHECK(kinds["attr_first"] == "SCALAR");
+    for (auto& f : prism::extract_functions(fp / "knr_style.c")) CHECK(f.kind == "OTHER");
+
+    auto gap = repo_dir("testdata_tp") / "parse_gap.c";
+    auto gaps = prism::parse_gaps(gap);
+    REQUIRE(gaps.size() == 1);
+    CHECK(gaps[0].first == 8);
+    auto recs = prism::parse_gap_findings(gap, "parse_gap.c");
+    REQUIRE(recs.size() == 1);
+    CHECK(recs[0].stage == "inventory");
+    CHECK(recs[0].status == prism::laws::NOTRUN);
+    CHECK(recs[0].cls == "PARSE-GAP");
+    CHECK(recs[0].message.find("line 8") != std::string::npos);
+    // The macro-bodied definition does not swallow the next function.
+    CHECK(fn_names(gap) == std::vector<std::string>{"after_macro"});
+}
+
 TEST_CASE("interval shift_wide is INT-SHIFT-UB") {
     auto fn = load_fn("interval_ops.c", "shift_wide");
     auto findings = prism::run_interval({fn});

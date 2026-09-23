@@ -4,6 +4,7 @@
 #include "prism/cparse.hpp"
 #include "prism/laws.hpp"
 
+#include <algorithm>
 #include <cctype>
 #include <fstream>
 #include <mutex>
@@ -72,9 +73,28 @@ std::vector<Finding> run_lints(const std::vector<std::filesystem::path>& paths,
         std::string line;
         std::istringstream ls(stripped);
         while (std::getline(ls, line)) lines.push_back(line);
-        auto funcs = extract_functions(p, rel);
+        // cparse bodies keep string literals. Pattern checks read code, so
+        // they get bodies with literal contents blanked (quotes, lengths and
+        // lines kept): `puts("never call gets(b)")` is not a gets() call.
+        // Only checkers that read literal bytes get `raw_funcs`.
+        auto raw_funcs = extract_functions(p, rel);
+        // Pad each body so body line i is file line span.first + i: a body
+        // starts after its `{`, and with the brace on a line below the head
+        // body-walking checkers reported one line early.
+        for (auto& f : raw_funcs) {
+            int head = f.span.first - 1;
+            int end = std::min(static_cast<int>(lines.size()), f.span.second);
+            for (int j = std::max(head, 0); j < end; ++j) {
+                if (lines[static_cast<std::size_t>(j)].find('{') == std::string::npos) continue;
+                if (j > head) f.body = std::string(static_cast<std::size_t>(j - head), '\n') + f.body;
+                break;
+            }
+        }
+        auto funcs = raw_funcs;
+        for (auto& f : funcs)
+            if (f.body.find('"') != std::string::npos) f.body = strip_comments_keep_lines(f.body, true);
         std::vector<Finding> local;
-        checkers_core(lines, rel, funcs, p, text, local);
+        checkers_core(lines, rel, funcs, raw_funcs, p, text, local);
         auto ext = p.extension().string();
         for (auto& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
         if (ext != ".cpp" && ext != ".cc" && ext != ".cxx")

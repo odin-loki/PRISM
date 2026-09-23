@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+import dataclasses
 from pathlib import Path
 import re
+from typing import Any, NamedTuple
 
 from prism import laws
 from prism.cparse import (
@@ -12,7 +14,7 @@ from prism.cparse import (
     extract_functions_from_text,
     strip_comments_keep_lines,
 )
-from prism.models import Finding
+from prism.models import Finding, FunctionInfo
 
 SHIFT31 = re.compile(
     r"(?<![A-Za-z0-9_])1\s*<<\s*(?:31|0x1f|0x1F)\b"
@@ -91,6 +93,41 @@ _FMT_FN: dict[str, int] = {
 }
 
 
+def _align_bodies(funcs: list[FunctionInfo], lines: list[str]) -> list[FunctionInfo]:
+    """Bodies padded so body line i is file line span[0] + i.
+
+    A body starts after its `{`. With the brace on a line below the head
+    (`int f(void)\\n{`), body-walking checkers reported one line early.
+    """
+    out: list[FunctionInfo] = []
+    for f in funcs:
+        head = f.span[0] - 1
+        k = 0
+        for j in range(head, min(len(lines), f.span[1])):
+            if "{" in lines[j]:
+                k = j - head
+                break
+        if k > 0:
+            f = dataclasses.replace(f, body="\n" * k + f.body)
+        out.append(f)
+    return out
+
+
+def _code_bodies(funcs: list[FunctionInfo]) -> list[FunctionInfo]:
+    """Copies of `funcs` whose bodies have string-literal contents blanked.
+
+    A body is comment-free and starts outside any literal, so stripping
+    it again blanks exactly its literals (quotes, lengths, lines kept).
+    """
+    out: list[FunctionInfo] = []
+    for f in funcs:
+        body = f.body
+        if '"' in body:
+            f = dataclasses.replace(f, body=strip_comments_keep_lines(body))
+        out.append(f)
+    return out
+
+
 def _findings_for_file(path: Path, rel: str) -> list[Finding]:
     text = path.read_text(encoding="utf-8", errors="replace")
     stripped = strip_comments_keep_lines(text)
@@ -104,7 +141,15 @@ def _findings_for_file(path: Path, rel: str) -> list[Finding]:
             evidence=lines[line - 1].strip() if 0 < line <= len(lines) else "",
         ))
 
-    funcs = extract_functions_from_text(text, rel or str(path), stripped)
+    # cparse bodies keep string literals. Pattern checks read code, so
+    # they get bodies with literal contents blanked (quotes, lengths and
+    # lines kept): `puts("never call gets(b)")` is not a gets() call.
+    # Only checkers that read literal bytes (format specifiers, literal
+    # lengths) get `raw_funcs`.
+    raw_funcs = _align_bodies(
+        extract_functions_from_text(text, rel or str(path), stripped), lines,
+    )
+    funcs = _code_bodies(raw_funcs)
     fn_at = []
     for f in funcs:
         fn_at.append((f.span[0], f.span[1], f.name))
@@ -155,8 +200,8 @@ def _findings_for_file(path: Path, rel: str) -> list[Finding]:
     _uninit_return(lines, rel, funcs, out)
     _ptr_uninit(lines, rel, funcs, out)
     _uninit_branch(lines, rel, funcs, out)
-    _off_by_one(lines, rel, funcs, out)
-    _str_missing_nul(lines, rel, funcs, out)
+    _off_by_one(lines, rel, funcs, out, text)
+    _str_missing_nul(lines, rel, raw_funcs, out)
     _sibling_asymmetry(lines, rel, funcs, out)
     _ignored_error(lines, rel, func_of, out)
     _scanf_unchecked(lines, rel, func_of, out)
@@ -166,7 +211,7 @@ def _findings_for_file(path: Path, rel: str) -> list[Finding]:
     _api_tmpnam(lines, rel, funcs, out)
     _api_mktemp(lines, rel, funcs, out)
     _api_signal(lines, rel, funcs, out)
-    _fmt_percent_n(lines, rel, funcs, out)
+    _fmt_percent_n(lines, rel, raw_funcs, out)
     _api_system(lines, rel, funcs, out)
     _api_getenv_null(lines, rel, funcs, out)
     _api_strdup_null(lines, rel, funcs, out)
@@ -986,8 +1031,184 @@ def _literal_has_percent_n(s: str) -> bool:
     return False
 
 
+# --- block-structured reachability -------------------------------------
+#
+# Not a CFG. A braced block whose last statement leaves (return, goto,
+# break, continue, throw, exit(), abort(), ...) does not fall through, so
+# what it did (a free, an unlock) does not reach the code after it. A
+# block that leaves by break/continue rejoins after the loop or switch
+# it leaves. Checkers replay this over their per-line walk.
+
+_EXIT_STMT = re.compile(
+    r"(?:return|goto|break|continue|throw)\b"
+    r"|(?:exit|_exit|_Exit|quick_exit|abort|err|errx|verr|verrx"
+    r"|longjmp|siglongjmp|__builtin_trap|__builtin_unreachable)\s*\("
+    r"|std\s*::\s*(?:exit|abort|terminate|quick_exit)\s*\("
+)
+_STMT_LABELS = re.compile(
+    r"(?:(?:case\b[^:;]*|default|[A-Za-z_]\w*)\s*:(?!:)\s*)+"
+)
+_LOOP_HEAD = re.compile(r"(?:for|while|switch|do)\b")
+_CHAR_LITERAL = re.compile(r"'(?:\\.|[^'\\\n])*'")
+_BLOCK_TOKEN = re.compile(r"[{};()\n]")
+
+
+class ExitBlock(NamedTuple):
+    """A braced block that does not fall through. Lines are 0-based."""
+
+    open_line: int
+    close_line: int
+    close_first: bool  # `}` is the first non-blank character of close_line
+    loop_exit: bool  # left by break/continue
+    merge_line: int  # close line of the loop/switch it leaves, else -1
+
+
+def _strip_labels(stmt: str) -> str:
+    m = _STMT_LABELS.match(stmt)
+    return stmt[m.end():] if m else stmt
+
+
+def exit_blocks(lines: list[str]) -> list[ExitBlock]:
+    """Blocks in `lines` (comment- and string-blanked) that end by leaving.
+
+    Listed in closing order, so inner blocks come before outer ones.
+    """
+    text = "\n".join(lines)
+    if "{" not in text:
+        return []
+    if "'" in text:
+        text = _CHAR_LITERAL.sub(lambda m: " " * len(m.group()), text)
+    out: list[ExitBlock] = []
+    # frame: [open_line, is_loop, last statement, saved paren depth, waiting]
+    stack: list[list[Any]] = []
+    line = 0
+    line_start = 0
+    paren = 0
+    stmt_start = 0
+    for m in _BLOCK_TOKEN.finditer(text):
+        c = m.group()
+        pos = m.start()
+        if c == "\n":
+            line += 1
+            line_start = pos + 1
+        elif c == "(":
+            paren += 1
+        elif c == ")":
+            if paren:
+                paren -= 1
+        elif c == ";":
+            if paren == 0:
+                stmt = text[stmt_start:pos]
+                if stack and stmt.strip():
+                    stack[-1][2] = stmt
+                stmt_start = pos + 1
+        elif c == "{":
+            head = _strip_labels(text[stmt_start:pos].strip())
+            if head.startswith("else"):
+                head = head[4:].lstrip()
+            stack.append([line, bool(_LOOP_HEAD.match(head)), None, paren, []])
+            paren = 0
+            stmt_start = pos + 1
+        else:
+            if not stack:
+                stmt_start = pos + 1
+                continue
+            tail = text[stmt_start:pos]
+            frame = stack.pop()
+            last = tail if tail.strip() else frame[2]
+            paren = frame[3]
+            stmt_start = pos + 1
+            for k in frame[4]:
+                out[k] = out[k]._replace(merge_line=line)
+            if stack:
+                stack[-1][2] = ""  # the parent's last statement is a block
+            if not last:
+                continue
+            em = _EXIT_STMT.match(_strip_labels(last.strip()))
+            if not em:
+                continue
+            loop_exit = em.group().startswith(("break", "continue"))
+            if loop_exit:
+                if frame[1]:
+                    continue  # break/continue of this very loop or switch
+                target = next((f for f in reversed(stack) if f[1]), None)
+                if target is None:
+                    loop_exit = False
+                else:
+                    target[4].append(len(out))
+            out.append(ExitBlock(
+                frame[0], line, not text[line_start:pos].strip(), loop_exit, -1,
+            ))
+    return out
+
+
+class _ExitReplay:
+    """Replays exit_blocks over a line walk: call before(i), then after(i).
+
+    A block's effects are undone when it closes; a break/continue block's
+    effects are merged back in after the loop or switch it leaves.
+    """
+
+    def __init__(
+        self,
+        blocks: list[ExitBlock],
+        snap: Callable[[], Any],
+        restore: Callable[[Any], None],
+        merge: Callable[[Any], None],
+    ) -> None:
+        self.blocks = blocks
+        self.snap = snap
+        self.restore = restore
+        self.merge = merge
+        self.opens: dict[int, list[int]] = {}
+        self.close_first: dict[int, list[int]] = {}
+        self.close_after: dict[int, list[int]] = {}
+        for k, b in enumerate(blocks):
+            self.opens.setdefault(b.open_line, []).append(k)
+            where = self.close_first if b.close_first else self.close_after
+            where.setdefault(b.close_line, []).append(k)
+        self.saved: dict[int, Any] = {}
+        self.merges: dict[int, list[Any]] = {}
+
+    def _leave(self, k: int) -> None:
+        state = self.saved.pop(k, None)
+        if state is None:
+            return
+        b = self.blocks[k]
+        if b.loop_exit and b.merge_line >= 0:
+            self.merges.setdefault(b.merge_line, []).append(self.snap())
+        self.restore(state)
+
+    def before(self, i: int) -> None:
+        for k in self.close_first.get(i, ()):
+            self._leave(k)
+        for k in self.opens.get(i, ()):
+            self.saved[k] = self.snap()
+
+    def after(self, i: int) -> None:
+        for k in self.close_after.get(i, ()):
+            self._leave(k)
+        for state in self.merges.pop(i, ()):
+            self.merge(state)
+
+
+def _frees_only_in_call(var: str, ln: str, fm: re.Match[str] | None) -> bool:
+    """True when every read of `var` on `ln` is the free() call itself."""
+    if fm is None or _norm_var(fm.group("var")) != var:
+        return False
+    return not _reads_var(var, ln[: fm.start()] + ln[fm.end():])
+
+
+_FreedState = tuple[dict[str, int], dict[str, int], set[str]]
+
+
 def _mem_lifetime(lines, rel, funcs, out) -> None:
-    """Use-after-free and double-free within a function body."""
+    """Use-after-free and double-free within a function body.
+
+    A free inside a block that leaves (see exit_blocks) does not reach
+    the code after the block. A second free is MEM-DOUBLE-FREE only, not
+    also MEM-UAF on the same line.
+    """
     for fn in funcs:
         start, end = fn.span
         chunk = lines[start - 1 : end]
@@ -995,7 +1216,33 @@ def _mem_lifetime(lines, rel, funcs, out) -> None:
         freed_df: dict[str, int] = {}
         reported_uaf: set[str] = set()
         reported_df: set[tuple[str, int]] = set()
+
+        def snap() -> _FreedState:
+            return dict(freed_uaf), dict(freed_df), set(reported_uaf)
+
+        def restore(st: _FreedState) -> None:
+            freed_uaf.clear()
+            freed_uaf.update(st[0])
+            freed_df.clear()
+            freed_df.update(st[1])
+            reported_uaf.clear()
+            reported_uaf.update(st[2])
+
+        def merge(st: _FreedState) -> None:
+            for k, v in st[0].items():
+                freed_uaf.setdefault(k, v)
+            for k, v in st[1].items():
+                freed_df.setdefault(k, v)
+            reported_uaf.update(st[2])
+
+        replay: _ExitReplay | None = None
+        if any("free" in ln for ln in chunk):
+            blocks = exit_blocks(chunk)
+            if blocks:
+                replay = _ExitReplay(blocks, snap, restore, merge)
         for i, ln in enumerate(chunk):
+            if replay is not None:
+                replay.before(i)
             for var in list(freed_uaf):
                 if _reassigns_var(var, ln):
                     freed_uaf.pop(var, None)
@@ -1003,10 +1250,11 @@ def _mem_lifetime(lines, rel, funcs, out) -> None:
                     reported_uaf.discard(var)
                 elif _has_assignment(var, ln):
                     freed_df.pop(var, None)
+            fm = FREE_CALL.search(ln) if "free" in ln else None
             for var in list(freed_uaf):
                 if var in reported_uaf:
                     continue
-                if _reads_var(var, ln):
+                if _reads_var(var, ln) and not _frees_only_in_call(var, ln, fm):
                     line = start + i
                     out.append(Finding(
                         stage="lints", status=laws.FAILED, file=rel,
@@ -1017,25 +1265,25 @@ def _mem_lifetime(lines, rel, funcs, out) -> None:
                         if 0 < line <= len(lines) else "",
                     ))
                     reported_uaf.add(var)
-            fm = FREE_CALL.search(ln)
-            if not fm:
-                continue
-            var = _norm_var(fm.group("var"))
-            if var in freed_df:
-                key = (var, freed_df[var])
-                if key not in reported_df:
-                    line = start + i
-                    out.append(Finding(
-                        stage="lints", status=laws.FAILED, file=rel,
-                        function=fn.name, line=line, cls="MEM-DOUBLE-FREE",
-                        message=f"{var} freed again without reassignment",
-                        strength=laws.STRENGTH_FINDS,
-                        evidence=lines[line - 1].strip()
-                        if 0 < line <= len(lines) else "",
-                    ))
-                    reported_df.add(key)
-            freed_uaf[var] = i
-            freed_df[var] = i
+            if fm:
+                var = _norm_var(fm.group("var"))
+                if var in freed_df:
+                    key = (var, freed_df[var])
+                    if key not in reported_df:
+                        line = start + i
+                        out.append(Finding(
+                            stage="lints", status=laws.FAILED, file=rel,
+                            function=fn.name, line=line, cls="MEM-DOUBLE-FREE",
+                            message=f"{var} freed again without reassignment",
+                            strength=laws.STRENGTH_FINDS,
+                            evidence=lines[line - 1].strip()
+                            if 0 < line <= len(lines) else "",
+                        ))
+                        reported_df.add(key)
+                freed_uaf[var] = i
+                freed_df[var] = i
+            if replay is not None:
+                replay.after(i)
 
 
 def _is_zero_literal(s: str) -> bool:
@@ -1701,8 +1949,44 @@ def _wrap_alloc(lines, rel, funcs, out) -> None:
                     ))
 
 
+_FMT_MACRO_DEF = re.compile(
+    r'^\s*#\s*define\s+([A-Z_][A-Z0-9_]*)\s+(?:L|u8|u|U)?"'
+)
+_FMT_PIECES = re.compile(r'(?:\s*(?:[A-Z_][A-Z0-9_]*|(?:L|u8|u|U)?"[^"]*"))+\s*')
+_FMT_MACRO_NAME = re.compile(r"[A-Z_][A-Z0-9_]*")
+
+
+def _string_macros(lines: list[str]) -> set[str]:
+    """ALL_CAPS names this file #defines to a string literal."""
+    names: set[str] = set()
+    for ln in lines:
+        if "define" in ln:
+            m = _FMT_MACRO_DEF.match(ln)
+            if m:
+                names.add(m.group(1))
+    return names
+
+
+def _is_literal_format(fmt: str, macros: set[str]) -> bool:
+    """A string literal, or literals and string macros pasted together.
+
+    `#define FMT "%d\\n"` then `printf(FMT, x)` is a literal format.
+    """
+    if _is_string_literal(fmt):
+        return True
+    if not macros or not _FMT_PIECES.fullmatch(fmt):
+        return False
+    names = _FMT_MACRO_NAME.findall(_rx(r'"[^"]*"').sub(" ", fmt))
+    return bool(names) and all(n in macros for n in names)
+
+
 def _fmt_string(lines, rel, funcs, out) -> None:
-    """printf-family calls whose format argument is not a string literal."""
+    """printf-family calls whose format argument is not a string literal.
+
+    An ALL_CAPS macro #defined to a string literal in the same file is a
+    literal.
+    """
+    macros = _string_macros(lines)
     for fn in funcs:
         start, end = fn.span
         chunk = lines[start - 1 : end]
@@ -1713,7 +1997,7 @@ def _fmt_string(lines, rel, funcs, out) -> None:
                 if args is None or len(args) <= idx:
                     continue
                 fmt = args[idx].strip()
-                if _is_string_literal(fmt):
+                if _is_literal_format(fmt, macros):
                     continue
                 key = (fname, i)
                 if key in seen:
@@ -1829,17 +2113,36 @@ def _alloc_in_null_condition(line: str, var: str) -> bool:
     )
 
 
-def _first_ptr_use(var: str, chunk: list[str], start: int) -> int | None:
+def _ptr_use_in(var: str, text: str) -> bool:
+    """`var->`, `*var` or `var[` in text, sizeof operands aside."""
     v = re.escape(var)
+    stripped = _rx(r"sizeof\s*\([^)]*\)").sub("", text)
+    if re.search(rf"\b{v}\s*->", stripped):
+        return True
+    if re.search(rf"\*\s*{v}\b", stripped):
+        return True
+    return bool(re.search(rf"\b{v}\s*\[", stripped))
+
+
+def _first_ptr_use(var: str, chunk: list[str], start: int) -> int | None:
     for j in range(start + 1, len(chunk)):
-        stripped = _rx(r"sizeof\s*\([^)]*\)").sub("", chunk[j])
-        if re.search(rf"\b{v}\s*->", stripped):
-            return j
-        if re.search(rf"\*\s*{v}\b", stripped):
-            return j
-        if re.search(rf"\b{v}\s*\[", stripped):
+        if _ptr_use_in(var, chunk[j]):
             return j
     return None
+
+
+def _stmt_end(line: str, pos: int) -> int:
+    """Index of the `;` ending the statement running through `pos`, or -1."""
+    depth = 0
+    for k in range(pos, len(line)):
+        c = line[k]
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+        elif c == ";" and depth <= 0:
+            return k
+    return -1
 
 
 def _unchecked_alloc_site(
@@ -1862,10 +2165,19 @@ def _unchecked_alloc_site(
             return None
     if _alloc_in_null_condition(line, var):
         return None
-    use_j = _first_ptr_use(var, chunk, i)
-    if use_j is None:
-        return None
-    between = "\n".join(chunk[i:use_j + 1])
+    # `int *p = malloc(4); *p = 3;` on one line is the same unchecked use
+    # as on two lines.
+    semi = _stmt_end(line, m.end())
+    rest = line[semi + 1:] if semi >= 0 else ""
+    if rest and _ptr_use_in(var, rest):
+        use_j = i
+        between = line
+    else:
+        found = _first_ptr_use(var, chunk, i)
+        if found is None:
+            return None
+        use_j = found
+        between = "\n".join(chunk[i:use_j + 1])
     if _null_test_for(var, between):
         return None
     stmt = " ".join(x.strip() for x in chunk[i:i + 4])
@@ -2358,8 +2670,13 @@ def _string_lit_len(s: str) -> int | None:
     return length
 
 
-def _off_by_one(lines, rel, funcs, out) -> None:
-    """strncpy/strcpy into a local buffer with no room for a trailing NUL."""
+def _off_by_one(lines, rel, funcs, out, text: str = "") -> None:
+    """strncpy/strcpy into a local buffer with no room for a trailing NUL.
+
+    `lines` blank literal contents (an escape pair is two blanks), so a
+    strcpy source literal is measured on the raw line from `text`.
+    """
+    raw_lines: list[str] = []
     for fn in funcs:
         arrays = _local_char_array_sizes(fn)
         if not arrays:
@@ -2391,7 +2708,17 @@ def _off_by_one(lines, rel, funcs, out) -> None:
             args = _find_call_args(ln, "strcpy")
             if args is not None and len(args) >= 2:
                 dst = _rx(r"\s+").sub("", args[0])
-                if dst in arrays:
+                if dst in arrays and _string_lit_len(args[1]) is not None:
+                    if text and not raw_lines:
+                        raw_lines = strip_comments_keep_lines(
+                            text, blank_strings=False,
+                        ).splitlines()
+                    raw_ln = start + i
+                    if 0 < raw_ln <= len(raw_lines):
+                        raw_args = _find_call_args(raw_lines[raw_ln - 1], "strcpy")
+                        if (raw_args is not None and len(raw_args) >= 2
+                                and _rx(r"\s+").sub("", raw_args[0]) == dst):
+                            args = raw_args
                     lit_len = _string_lit_len(args[1])
                     if lit_len is not None and lit_len + 1 > arrays[dst]:
                         key = ("strcpy", i)
@@ -2985,12 +3312,24 @@ def _lock_double_unlock(lines, rel, funcs, out) -> None:
     """Two unlocks of the same lock with no acquire between them.
 
     A function that unlocks once without locking is a contract, not a
-    finding. A second unlock before the next acquire is CWE-765.
+    finding. A second unlock before the next acquire is CWE-765. An
+    unlock inside a block that leaves (see exit_blocks) does not reach
+    the code after the block.
     """
     for fn in funcs:
         held: dict[tuple[str, str], bool] = {}
         body_lines = fn.body.splitlines()
+        replay: _ExitReplay | None = None
+        if _rx(r"(?i)unlock").search(fn.body):
+            blocks = exit_blocks(body_lines)
+            if blocks:
+                replay = _ExitReplay(
+                    blocks, lambda: dict(held), _held_restore(held),
+                    _held_merge(held),
+                )
         for i, ln in enumerate(body_lines):
+            if replay is not None:
+                replay.before(i)
             found = False
             for m in LOCK_CALL.finditer(ln):
                 name, arg = m.group(1), " ".join(m.group(2).split())
@@ -3017,6 +3356,28 @@ def _lock_double_unlock(lines, rel, funcs, out) -> None:
                     held[(u, arg)] = True
             if found:
                 break
+            if replay is not None:
+                replay.after(i)
+
+
+def _held_restore(
+    held: dict[tuple[str, str], bool],
+) -> Callable[[dict[tuple[str, str], bool]], None]:
+    def restore(st: dict[tuple[str, str], bool]) -> None:
+        held.clear()
+        held.update(st)
+    return restore
+
+
+def _held_merge(
+    held: dict[tuple[str, str], bool],
+) -> Callable[[dict[tuple[str, str], bool]], None]:
+    """A lock released on the path that rejoins is released (may-analysis)."""
+    def merge(st: dict[tuple[str, str], bool]) -> None:
+        for k, v in st.items():
+            if v is False or k not in held:
+                held[k] = v
+    return merge
 
 
 def _lock_double_lock(lines, rel, funcs, out) -> None:
@@ -12913,23 +13274,78 @@ def _mem_leak(lines, rel, funcs, out) -> None:
             free_hits = frees.get(var, [])
             if not free_hits:
                 continue
+            # `if (!p) return 0;` leaves with p NULL: not a path that holds p.
+            var_returns = [
+                r for r in returns
+                if not _null_guarded_return(var, body_lines, r)
+            ]
+            if len(var_returns) < 2:
+                continue
             held_returns = []
-            for r in returns:
+            for r in var_returns:
                 last_alloc = max((h for h in alloc_hits if h < r), default=-1)
                 last_free = max((h for h in free_hits if h < r), default=-1)
                 if last_alloc > last_free:
                     held_returns.append(r)
-            if held_returns and len(held_returns) < len(returns):
+            if held_returns and len(held_returns) < len(var_returns):
                 ln = fn.span[0] + held_returns[0]
                 out.append(Finding(
                     stage="lints", status=laws.FAILED, file=rel,
                     function=fn.name, line=ln, cls="MEM-LEAK",
                     message=f"{var} allocated on {len(alloc_hits)} path(s) but freed "
-                    f"before only {len(returns) - len(held_returns)} of "
-                    f"{len(returns)} returns",
+                    f"before only {len(var_returns) - len(held_returns)} of "
+                    f"{len(var_returns)} returns",
                     strength=laws.STRENGTH_FINDS,
                     evidence=body_lines[held_returns[0]].strip(),
                 ))
+
+
+_NULL_GUARD: dict[str, re.Pattern[str]] = {}
+
+
+def _null_guard_re(var: str) -> re.Pattern[str]:
+    pat = _NULL_GUARD.get(var)
+    if pat is None:
+        v = re.escape(var)
+        pat = _NULL_GUARD[var] = re.compile(
+            rf"\bif\s*\(\s*(?:!\s*{v}\b|{v}\s*==\s*(?:NULL|nullptr|0)\b"
+            rf"|(?:NULL|nullptr|0)\s*==\s*{v}\b"
+            rf"|{v}\s*<\s*0\b|{v}\s*==\s*-\s*1\b"
+            rf"|\(\s*{v}\s*=(?!=)[^;]*?\)\s*==\s*(?:NULL|nullptr|0)\b)"
+        )
+    return pat
+
+
+def _null_guarded_return(var: str, body_lines: list[str], r: int) -> bool:
+    """True when the return on line r sits under an `if (!var)`-style test.
+
+    `if (fd < 0)` / `if (fd == -1)` count too: the open failed.
+
+    Looks at the return line, an unbraced `if` on the line before, and the
+    head of the innermost block holding the return.
+    """
+    pat = _null_guard_re(var)
+    if pat.search(body_lines[r]):
+        return True
+    if r > 0:
+        prev = body_lines[r - 1].rstrip()
+        if prev and prev[-1] not in ";{}" and pat.search(prev):
+            return True
+    depth = 0
+    for j in range(r - 1, -1, -1):
+        ln = body_lines[j]
+        for k in range(len(ln) - 1, -1, -1):
+            c = ln[k]
+            if c == "}":
+                depth += 1
+            elif c == "{":
+                depth -= 1
+                if depth < 0:
+                    head = ln[:k]
+                    if not head.strip() and j > 0:
+                        head = body_lines[j - 1]
+                    return bool(pat.search(head))
+    return False
 
 
 def _param_if_guard(name: str, body: str) -> bool:
@@ -18600,7 +19016,7 @@ def _cxx_uncaught_exceptions(lines, rel, funcs, out) -> None:
                 evidence=lines[line - 1].strip()
                 if 0 < line <= len(lines) else ln.strip(),
             ))
-            return
+            break  # one per function
 
 
 def _cxx_ranges_join(lines, rel, funcs, out) -> None:
@@ -20875,20 +21291,27 @@ def _fd_leak(lines, rel, funcs, out) -> None:
             close_hits = closes.get(var, [])
             if not close_hits:
                 continue
+            # `if (fd < 0) return -1;` leaves with nothing open.
+            var_returns = [
+                r for r in returns
+                if not _null_guarded_return(var, body_lines, r)
+            ]
+            if len(var_returns) < 2:
+                continue
             held_returns = []
-            for r in returns:
+            for r in var_returns:
                 last_open = max((h for h in open_hits if h < r), default=-1)
                 last_close = max((h for h in close_hits if h < r), default=-1)
                 if last_open > last_close:
                     held_returns.append(r)
-            if held_returns and len(held_returns) < len(returns):
+            if held_returns and len(held_returns) < len(var_returns):
                 ln = fn.span[0] + held_returns[0]
                 out.append(Finding(
                     stage="lints", status=laws.FAILED, file=rel,
                     function=fn.name, line=ln, cls="RES-FD-LEAK",
                     message=f"{var} open on {len(open_hits)} path(s) but closed "
-                    f"before only {len(returns) - len(held_returns)} of "
-                    f"{len(returns)} returns",
+                    f"before only {len(var_returns) - len(held_returns)} of "
+                    f"{len(var_returns)} returns",
                     strength=laws.STRENGTH_FINDS,
                     evidence=body_lines[held_returns[0]].strip(),
                 ))

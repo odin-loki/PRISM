@@ -3789,10 +3789,10 @@ void _cxx_uncaught_exceptions(const std::vector<std::string>& lines, std::string
         auto start = fn.span.first;
         auto bl = split_lines(fn.body);
         for (int i = 0; i < static_cast<int>(bl.size()); ++i)
-            if (_UNCAUGHT_BOOL_IF.search(bl[static_cast<std::size_t>(i)]) || _CXX_UNCAUGHT.search(bl[static_cast<std::size_t>(i)])) {
+            if (_UNCAUGHT_BOOL_IF.search(bl[static_cast<std::size_t>(i)])) {
                 report(out, rel, fn.name, start + i, "CXX-UNCAUGHT-EXCEPTIONS",
                        "std::uncaught_exceptions() used as a boolean", lines);
-                return;
+                break;  // one per function
             }
     }
 }

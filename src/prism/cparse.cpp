@@ -1,10 +1,14 @@
 #include "prism/cparse.hpp"
 
+#include "prism/laws.hpp"
 #include "prism/regex.hpp"
 
 #include <algorithm>
 #include <cctype>
 #include <fstream>
+#include <map>
+#include <optional>
+#include <set>
 #include <sstream>
 #include <unordered_set>
 
@@ -27,24 +31,92 @@ const std::unordered_set<std::string> KW = {
     "else", "do", "case", "default", "_Generic",
 };
 
-const char* FUNC_HEAD_PAT =
-    "(?m)^[ \\t]*"
-    "(?P<head>"
-    "(?P<mods>(?:(?:static|inline|extern|constexpr|unsigned|signed|"
-    "const|volatile|restrict|_Noreturn)\\s+)*)"
-    "(?P<ret>(?:(?:struct|enum|union)\\s+)?(?:long\\s+long|[A-Za-z_]\\w*))"
-    "(?P<stars>(?:\\s*\\*+\\s*|\\s+))"
-    "(?P<name>[A-Za-z_]\\w*)\\s*"
-    "\\((?P<params>[^;{}]*?)\\)"
-    "(?P<attrs>"
-    "(?:"
-    "\\s*__attribute__\\s*\\(\\s*\\([^;{}]*?\\)\\s*\\)"
-    "|\\s*noexcept(?:\\s*\\([^;{}]*?\\))?"
-    "|\\s*throw\\s*\\([^;{}]*?\\)"
-    "|\\s*(?:const|volatile|override|final)"
-    ")*)"
-    "\\s*)"
-    "\\{";
+// Same patterns as prism/cparse.py; keep the two in step.
+//
+// Trailing declarator junk is not a parameter list. `throw()` must not be
+// swallowed as params or `noexcept` functions are invisible. C++
+// ref-qualifiers and a trailing return type (`-> int`) end here too.
+const std::string ATTR =
+    R"((?:)"
+    R"(\s*__attribute__\s*\(\s*\([^;{}]*?\)\s*\))"
+    R"(|\s*noexcept(?:\s*\([^;{}]*?\))?)"
+    R"(|\s*throw\s*\([^;{}]*?\))"
+    R"(|\s*(?:const|volatile|override|final))"
+    R"(|\s*&&?)"
+    R"()*)"
+    R"((?:\s*->[^;{}]*)?)";
+// `<...>` nested three deep: `std::map<int, std::vector<int>>`.
+const std::string T0 = R"([^<>;{}()]*)";
+const std::string T2 = "<" + T0 + "(?:<" + T0 + ">" + T0 + ")*>";
+const std::string TMPL = "<" + T0 + "(?:" + T2 + T0 + ")*>";
+// Qualifier chain: `std::`, `W::`, `W<T>::`.
+const std::string QUAL = R"((?:[A-Za-z_]\w*\s*(?:)" + TMPL + R"(\s*)?::\s*)*)";
+// A parameter list: no `)` escapes it, so `int m(void) BODY` never runs on
+// into the next function's parameters. Two levels of nested parens cover
+// `void (*cb)(int)`.
+const std::string P0 = R"([^;{}()]*)";
+const std::string P2 = R"(\()" + P0 + R"((?:\()" + P0 + R"(\))" + P0 + R"()*\))";
+const std::string PARAMS = P0 + "(?:" + P2 + P0 + ")*";
+// Leading attribute forms: GNU, C++11/C23, MSVC.
+const std::string PRE_ATTR =
+    R"((?:__attribute__\s*\(\s*\()" + PARAMS + R"(\)\s*\))"
+    R"(|\[\[[^\];{}]*\]\])"
+    R"(|__declspec\s*\([^;{}()]*\)))";
+const std::string OPERATOR =
+    R"(operator\s*(?:\(\s*\)|\[\s*\]|new(?:\s*\[\s*\])?|delete(?:\s*\[\s*\])?)"
+    R"(|[^\s\w(){};]{1,3}))";
+
+const std::string FUNC_HEAD_PAT =
+    R"((?m)^[ \t]*)"
+    R"((?P<head>)"
+    R"((?P<tmpl>template[ \t]*)" + TMPL + R"([ \t]*)?)"
+    R"((?P<mods>(?:(?:static|inline|extern|constexpr|consteval|virtual|)"
+    R"(explicit|friend|unsigned|signed|const|volatile|restrict|)"
+    R"(_Noreturn|__inline|__inline__|__forceinline|thread_local|)"
+    R"(__extension__)\s+|)" + PRE_ATTR + R"([ \t]*)*))"
+    R"((?P<ret>(?:(?:struct|enum|union|class|typename)\s+)?)"
+    R"((?:long\s+long|long\s+(?:int|double)\b|short\s+int\b)"
+    R"(|[A-Za-z_]\w*(?:\s*)" + TMPL + R"()?)"
+    R"((?:\s*::\s*[A-Za-z_]\w*(?:\s*)" + TMPL + R"()?)*)))"
+    R"((?P<stars>(?:\s*(?:[*&]|\b(?:const|volatile)\b))+\s*|\s+))"
+    // A calling-convention / export macro: `Z3_ast Z3_API Z3_mk_add(`.
+    R"((?P<cc>(?:[A-Z_][A-Z0-9_]*|__\w+)[ \t]+)?)"
+    R"((?P<name>)" + QUAL + R"((?:)" + OPERATOR + R"(|[A-Za-z_]\w*))\s*)"
+    R"(\((?P<params>)" + PARAMS + R"()\))"
+    R"((?P<knr>(?:\s*(?:register\s+)?[A-Za-z_][\w \t\n*,\[\]]*;)*))"
+    R"((?P<attrs>)" + ATTR + R"())"
+    R"(\s*))"
+    R"(\{)";
+const std::string KNR_PARAMS_PAT = R"(\s*[A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*\s*)";
+
+// The declarators below are matched by the scope scan against the text
+// before an unattributed `{` (from the previous `;`, `{` or `}`).
+
+// `int (*get_handler(int sig))(int)`: a function returning a function pointer.
+const std::string FUNC_PTR_DECL_PAT =
+    R"(\s*(?P<mods>(?:(?:static|inline|extern|const|unsigned|signed)\s+)*))"
+    R"((?P<ret>(?:(?:struct|enum|union)\s+)?[A-Za-z_]\w*)\s*(?P<stars>\**)\s*)"
+    R"(\(\s*\*\s*(?P<name>[A-Za-z_]\w*)\s*\((?P<params>)" + PARAMS + R"()\)\s*\))"
+    R"(\s*\((?P<fparams>)" + PARAMS + R"()\)\s*\Z)";
+// Out-of-line constructor / destructor: `W::W(int a) : v(a)`, `W::~W()`.
+const std::string CTOR_DECL_PAT =
+    R"(\s*(?:template\s*)" + TMPL + R"(\s*)?(?:(?:inline|constexpr)\s+)*)"
+    R"((?P<name>(?:[A-Za-z_]\w*\s*(?:)" + TMPL + R"(\s*)?::\s*)+~?[A-Za-z_]\w*)\s*)"
+    R"(\((?P<params>)" + PARAMS + R"()\))" + ATTR +
+    R"((?:\s*:(?!:)[^;{}]*)?\s*\Z)";
+// In-class definition FUNC_HEAD cannot see: a constructor, destructor,
+// conversion operator, or a method not at the start of a line
+// (`struct W { int go() { return 1; } };`).
+const std::string MEMBER_DECL_PAT =
+    R"(\s*(?:template\s*)" + TMPL + R"(\s*)?)"
+    R"((?:(?:inline|constexpr|consteval|explicit|virtual|static|friend)\s+)"
+    R"(|)" + PRE_ATTR + R"(\s*)*)"
+    R"((?P<ret>[A-Za-z_][\w:<>,\s*&]*?[\s*&])??)"
+    R"((?P<name>operator\s+(?:(?:const|volatile)\s+)*[A-Za-z_][\w:<>]*)"
+    R"((?:\s*(?:[*&]|\b(?:const|volatile)\b))*)"
+    R"(|~?[A-Za-z_]\w*|)" + OPERATOR + R"()\s*)"
+    R"(\((?P<params>)" + PARAMS + R"()\))" + ATTR +
+    R"((?:\s*:(?!:)[^;{}]*)?\s*\Z)";
 
 bool is_pointer_type(std::string_view typ) {
     return typ.find('*') != std::string_view::npos || typ.find('[') != std::string_view::npos;
@@ -74,6 +146,10 @@ std::vector<std::pair<std::string, std::string>> split_params(std::string params
         while (!raw.empty() && std::isspace(static_cast<unsigned char>(raw.front()))) raw.erase(raw.begin());
         while (!raw.empty() && std::isspace(static_cast<unsigned char>(raw.back()))) raw.pop_back();
         if (raw.empty() || raw == "...") continue;
+        if (auto eq = raw.find('='); eq != std::string::npos) {
+            raw = raw.substr(0, eq);  // C++ default argument
+            while (!raw.empty() && std::isspace(static_cast<unsigned char>(raw.back()))) raw.pop_back();
+        }
         raw = Regex("\\b(const|volatile|restrict|register)\\b").search(raw)
                   ? [&] {
                         std::string r;
@@ -150,6 +226,341 @@ std::string kind_of(const std::string& ret, const std::string& stars,
     if (pointer) return "POINTER";
     if (other) return "OTHER";
     return "SCALAR";
+}
+
+std::string collapse_ws(std::string_view s) {
+    std::string out;
+    bool sp = false;
+    for (char c : s) {
+        if (std::isspace(static_cast<unsigned char>(c))) {
+            sp = true;
+        } else {
+            if (sp && !out.empty()) out.push_back(' ');
+            sp = false;
+            out.push_back(c);
+        }
+    }
+    return out;
+}
+
+std::string trim(std::string_view s) {
+    std::size_t a = 0, b = s.size();
+    while (a < b && std::isspace(static_cast<unsigned char>(s[a]))) ++a;
+    while (b > a && std::isspace(static_cast<unsigned char>(s[b - 1]))) --b;
+    return std::string(s.substr(a, b - a));
+}
+
+std::string regex_sub(const Regex& re, std::string_view repl, std::string_view s) {
+    std::string out;
+    std::size_t off = 0;
+    for (auto& m : re.finditer(s)) {
+        auto a = static_cast<std::size_t>(m.spans[0].first);
+        out.append(s.substr(off, a - off));
+        out.append(repl);
+        off = static_cast<std::size_t>(m.spans[0].second);
+    }
+    out.append(s.substr(std::min(off, s.size())));
+    return out;
+}
+
+bool full_match(const Regex& re, std::string_view s) {
+    auto m = re.search_match(s);
+    return m && m->spans[0].first == 0 && m->spans[0].second == static_cast<int>(s.size());
+}
+
+// Anchored at 0 like Python re.match.
+std::optional<Match> match_at_start(const Regex& re, std::string_view s) {
+    auto m = re.search_match(s);
+    if (!m || m->spans[0].first != 0) return std::nullopt;
+    return m;
+}
+
+// `W :: go` -> `W::go`, `operator <<` -> `operator<<`; `operator bool` kept.
+std::string norm_name(std::string_view s) {
+    static Regex colons(R"(\s*::\s*)");
+    static Regex op(R"(\boperator\s+(?=[^\w\s]))");
+    return regex_sub(op, "operator", regex_sub(colons, "::", collapse_ws(s)));
+}
+
+// Character literal interiors as spaces, quotes kept (`'}'` -> `' '`).
+std::string blank_char_literals(std::string text) {
+    if (text.find('\'') == std::string::npos) return text;
+    static Regex lit(R"('(?:\\.|[^'\\\n])*')");
+    for (auto& m : lit.finditer(text))
+        for (int k = m.spans[0].first + 1; k < m.spans[0].second - 1; ++k)
+            text[static_cast<std::size_t>(k)] = ' ';
+    return text;
+}
+
+// Preprocessor lines (with continuations) as spaces, newlines kept.
+std::string blank_preprocessor(std::string text) {
+    if (text.find('#') == std::string::npos) return text;
+    static Regex pp(R"((?m)^[ \t]*#(?:[^\n]*\\\n)*[^\n]*)", true);
+    for (auto& m : pp.finditer(text))
+        for (int k = m.spans[0].first; k < m.spans[0].second; ++k)
+            if (text[static_cast<std::size_t>(k)] != '\n') text[static_cast<std::size_t>(k)] = ' ';
+    return text;
+}
+
+// `head` with `operator=` names and parenthesized text collapsed: `=` left
+// in the shape is an initializer, not a default argument.
+std::string head_shape(const std::string& head) {
+    static Regex op_sym(R"(\boperator\s*[^\s\w(]{1,3})");
+    static Regex paren(R"(\([^()]*\))");
+    std::string s = head.find("operator") != std::string::npos ? regex_sub(op_sym, "operator", head) : head;
+    while (s.find('(') != std::string::npos) {
+        auto t = regex_sub(paren, "", s);
+        if (t == s) break;
+        s = std::move(t);
+    }
+    std::string out;
+    for (char c : s)
+        if (c != ')') out.push_back(c);
+    if (head.find('(') != std::string::npos) out.push_back('(');
+    return out;
+}
+
+// `virtual ~W() {` / `explicit W(int) {` in a class: the scope scan names
+// these; FUNC_HEAD must not take the keyword for a return type.
+const std::set<std::string> NOT_A_TYPE = {
+    "virtual", "explicit", "friend", "typedef", "using", "new", "delete", "operator",
+};
+
+struct Found {
+    int head_start = 0;
+    int close = 0;
+    FunctionInfo fn;
+};
+
+struct Parser {
+    std::string rel;
+    std::string code;    // comments, strings and char literals blanked
+    std::string bodies;  // comments blanked, literals kept
+    std::vector<int> newlines;
+    std::map<int, Found> found;  // keyed by the body's `{`
+
+    int line_of(int pos) const {
+        return static_cast<int>(std::lower_bound(newlines.begin(), newlines.end(), pos) - newlines.begin()) + 1;
+    }
+
+    Found* add(int head_start, int brace, const std::string& name, const std::string& kind,
+               std::string_view signature, std::vector<std::pair<std::string, std::string>> params,
+               const std::string& return_type, bool is_static) {
+        if (auto it = found.find(brace); it != found.end()) return &it->second;
+        int close = match_brace(code, brace);
+        if (close < 0) return nullptr;
+        Found f;
+        f.head_start = head_start;
+        f.close = close;
+        f.fn.file = rel;
+        f.fn.name = name;
+        f.fn.kind = kind;
+        f.fn.line = line_of(head_start);
+        f.fn.signature = collapse_ws(signature);
+        f.fn.params = std::move(params);
+        f.fn.return_type = return_type;
+        f.fn.is_static = is_static;
+        // Discovery blanks strings so `"int foo("` is not a function. Bodies
+        // keep literals so strcpy/snprintf oracles see the bytes.
+        f.fn.body = bodies.substr(static_cast<std::size_t>(brace + 1),
+                                  static_cast<std::size_t>(close - brace - 1));
+        f.fn.span = {f.fn.line, line_of(close)};
+        return &found.emplace(brace, std::move(f)).first->second;
+    }
+
+    void heads() {
+        static Regex head(FUNC_HEAD_PAT, true);
+        static Regex knr_params(KNR_PARAMS_PAT);
+        static Regex cxx_mods(R"(\b(?:virtual|explicit|friend|consteval)\b)");
+        std::size_t pos = 0;
+        while (pos <= code.size()) {
+            auto m = head.search_match(code, pos);
+            if (!m) break;
+            auto name = norm_name(m->named("name"));
+            auto ret = trim(m->named("ret"));
+            if (ret.empty()) ret = "int";
+            auto knr = trim(m->named("knr"));
+            auto params_text = m->named("params");
+            auto last = name.rfind("::") == std::string::npos ? name : name.substr(name.rfind("::") + 2);
+            if (KW.contains(last) || KW.contains(ret) || NOT_A_TYPE.contains(ret) ||
+                (!knr.empty() && (!full_match(knr_params, params_text) || trim(params_text) == "void"))) {
+                // Not a definition. Resume on the next line: this match may
+                // have run over a real head.
+                auto nl = code.find('\n', static_cast<std::size_t>(m->spans[0].first) + 1);
+                if (nl == std::string::npos) break;
+                pos = nl + 1;
+                continue;
+            }
+            auto params = split_params(params_text);
+            auto stars = m->named("stars");
+            auto mods = m->named("mods");
+            auto attrs = m->named("attrs");
+            auto kind = kind_of(ret, stars, params);
+            if (name.find("::") != std::string::npos || ret.find("::") != std::string::npos ||
+                ret.find('<') != std::string::npos || ret == "auto" || name.starts_with("operator") ||
+                !m->named("tmpl").empty() || stars.find('&') != std::string::npos ||
+                attrs.find('&') != std::string::npos || attrs.find("->") != std::string::npos ||
+                cxx_mods.search(mods) || !knr.empty() || !m->named("cc").empty()) {
+                // A method, template, K&R, calling-convention or C++-typed
+                // definition: BMC must not model it as a plain C function.
+                kind = "OTHER";
+            }
+            int head_start = m->spans[0].first;
+            while (head_start < m->spans[0].second &&
+                   (code[static_cast<std::size_t>(head_start)] == ' ' ||
+                    code[static_cast<std::size_t>(head_start)] == '\t'))
+                ++head_start;
+            int brace = m->spans[0].second - 1;
+            auto sig = code.substr(static_cast<std::size_t>(head_start),
+                                   static_cast<std::size_t>(brace - head_start));
+            add(head_start, brace, name, kind, sig, std::move(params), trim(trim(stars) + " " + ret),
+                mods.find("static") != std::string::npos);
+            pos = static_cast<std::size_t>(m->spans[0].second);
+        }
+    }
+
+    // A definition FUNC_HEAD missed, recognized from its declarator.
+    Found* scan_definition(const std::string& head, int start, int brace, const std::string& qual,
+                           bool in_class) {
+        static Regex ptr_decl(FUNC_PTR_DECL_PAT);
+        static Regex ctor_decl(CTOR_DECL_PAT);
+        static Regex member_decl(MEMBER_DECL_PAT);
+        static Regex tmpl_tail(R"(<.*$)");
+        if (auto m = match_at_start(ptr_decl, head);
+            m && !KW.contains(m->named("name")) && !KW.contains(m->named("ret"))) {
+            auto ret = trim(m->named("ret"));
+            return add(start, brace, m->named("name"), "OTHER", head, split_params(m->named("params")),
+                       ret + " " + m->named("stars") + "(*)(" + collapse_ws(m->named("fparams")) + ")",
+                       m->named("mods").find("static") != std::string::npos);
+        }
+        if (auto m = match_at_start(ctor_decl, head)) {
+            auto name = norm_name(m->named("name"));
+            std::vector<std::string> parts;
+            std::size_t a = 0;
+            while (true) {
+                auto b = name.find("::", a);
+                parts.push_back(regex_sub(tmpl_tail, "", name.substr(a, b == std::string::npos ? b : b - a)));
+                if (b == std::string::npos) break;
+                a = b + 2;
+            }
+            if (parts.size() >= 2 && (parts.back().starts_with("~") || parts.back() == parts[parts.size() - 2]))
+                return add(start, brace, name, "OTHER", head, split_params(m->named("params")), "", false);
+        }
+        if (in_class) {
+            if (auto m = match_at_start(member_decl, head); m && !KW.contains(m->named("name"))) {
+                auto name = norm_name(m->named("name"));
+                return add(start, brace, qual.empty() ? name : qual + "::" + name, "OTHER", head,
+                           split_params(m->named("params")), collapse_ws(m->named("ret")), false);
+            }
+        }
+        return nullptr;
+    }
+
+    // Walks file scope and namespace, extern "C" and class bodies. Every `{`
+    // there is a function body FUNC_HEAD found, a container, an initializer
+    // or type body, a definition only the declarator regexes recognize, or a
+    // gap: code no per-function stage sees (Law 7).
+    std::vector<std::pair<int, std::string>> scope_scan() {
+        static Regex access_label(
+            R"(\s*(?:(?:public|private|protected)(?:\s+(?:slots|Q_SLOTS))?|signals|Q_SIGNALS)\s*:(?!:))");
+        static Regex namespace_head(R"((?:^|\s)namespace\b)");
+        static Regex extern_head(R"(\s*extern\s*"[^"]*"\s*\Z)");
+        static Regex type_head(R"(\s*(?:template\s*)" + TMPL +
+                               R"(\s*)?(?:typedef\s+)?(?:(?P<enum>enum)|class|struct|union)\b)");
+        static Regex class_name(R"(\s*(?:template\s*)" + TMPL +
+                                R"(\s*)?(?:typedef\s+)?(?:class|struct|union)\s+(?:)" + PRE_ATTR +
+                                R"(\s*|alignas\s*\([^;{}()]*\)\s*)*(?P<name>[A-Za-z_]\w*))");
+        static Regex pre_attr(PRE_ATTR + R"(|alignas\s*\([^;{}()]*\))");
+        auto text = blank_preprocessor(code);
+        std::vector<std::pair<int, std::string>> gaps;
+        std::vector<std::pair<bool, std::string>> stack;  // (is_class, qualified class name)
+        std::size_t head_start = 0;
+        std::size_t pos = 0;
+        while (pos < text.size()) {
+            auto k = text.find_first_of("{};", pos);
+            if (k == std::string::npos) break;
+            char c = text[k];
+            int brace = static_cast<int>(k);
+            pos = k + 1;
+            if (c == ';') {
+                head_start = pos;
+                continue;
+            }
+            if (c == '}') {
+                if (!stack.empty()) stack.pop_back();
+                head_start = pos;
+                continue;
+            }
+            bool in_class = !stack.empty() && stack.back().first;
+            std::string qual = stack.empty() ? std::string() : stack.back().second;
+            std::string head = text.substr(head_start, k - head_start);
+            if (auto lab = match_at_start(access_label, head))
+                head = head.substr(static_cast<std::size_t>(lab->spans[0].second));
+            std::size_t lead = 0;
+            while (lead < head.size() && std::isspace(static_cast<unsigned char>(head[lead]))) ++lead;
+            int start = brace - static_cast<int>(head.size()) + static_cast<int>(lead);
+            head_start = pos;
+            auto shape = head_shape(head);
+            Found* hit = nullptr;
+            if (auto it = found.find(brace); it != found.end()) hit = &it->second;
+            else if (shape.find('(') != std::string::npos && shape.find('=') == std::string::npos)
+                hit = scan_definition(head, start, brace, qual, in_class);
+            if (hit) {
+                if (in_class) {
+                    if (!qual.empty() && hit->fn.name.find("::") == std::string::npos)
+                        hit->fn.name = qual + "::" + hit->fn.name;
+                    hit->fn.kind = "OTHER";
+                }
+                pos = head_start = static_cast<std::size_t>(hit->close) + 1;
+                continue;
+            }
+            if (match_at_start(extern_head, head) ||
+                (namespace_head.search(head) && head.find('(') == std::string::npos)) {
+                stack.emplace_back(false, qual);
+                continue;
+            }
+            auto tm = match_at_start(type_head, head);
+            bool is_type = tm && shape.find('=') == std::string::npos &&
+                           (!tm->named("enum").empty() ||
+                            regex_sub(pre_attr, "", head).find('(') == std::string::npos);
+            if (is_type && tm->named("enum").empty()) {
+                auto cm = match_at_start(class_name, head);
+                std::string cname = cm ? cm->named("name") : std::string();
+                if (!cname.empty() && !qual.empty()) cname = qual + "::" + cname;
+                stack.emplace_back(true, cname);
+                continue;
+            }
+            if (!is_type && shape.find('(') != std::string::npos && shape.find('=') == std::string::npos) {
+                auto t = trim(head);
+                auto first = trim(t.substr(0, t.find('\n')));
+                gaps.emplace_back(line_of(start), first.substr(0, 80));
+            }
+            // Initializer, enum or brace-init body, or a gap: skip it whole.
+            int close = match_brace(text, brace);
+            if (close < 0) break;
+            pos = head_start = static_cast<std::size_t>(close) + 1;
+        }
+        return gaps;
+    }
+};
+
+std::pair<std::vector<FunctionInfo>, std::vector<std::pair<int, std::string>>> parse_text(
+    std::string_view text, const std::string& rel) {
+    Parser p;
+    p.rel = rel;
+    p.code = blank_char_literals(strip_comments_keep_lines(text, true));
+    p.bodies = strip_comments_keep_lines(text, false);
+    for (std::size_t i = 0; i < p.code.size(); ++i)
+        if (p.code[i] == '\n') p.newlines.push_back(static_cast<int>(i));
+    p.heads();
+    auto gaps = p.scope_scan();
+    std::vector<std::pair<std::pair<int, int>, FunctionInfo*>> order;
+    for (auto& [brace, f] : p.found) order.push_back({{f.head_start, brace}, &f.fn});
+    std::sort(order.begin(), order.end(), [](auto& a, auto& b) { return a.first < b.first; });
+    std::vector<FunctionInfo> out;
+    out.reserve(order.size());
+    for (auto& [_, fn] : order) out.push_back(std::move(*fn));
+    return {std::move(out), std::move(gaps)};
 }
 
 }  // namespace
@@ -308,62 +719,28 @@ bool body_needs_pointer_harness(std::string_view body) {
 
 std::vector<FunctionInfo> extract_functions(const std::filesystem::path& path, std::string rel) {
     auto text = read_file(path);
-    auto stripped = strip_comments_keep_lines(text, true);
-    auto bodies = strip_comments_keep_lines(text, false);
     if (rel.empty()) rel = path.string();
-    static Regex head(FUNC_HEAD_PAT, true);
-    std::vector<FunctionInfo> out;
-    for (auto& m : head.finditer(stripped)) {
-        auto name = m.named("name");
-        auto ret = m.named("ret");
-        if (KW.contains(name) || KW.contains(ret)) continue;
-        int brace = m.spans.empty() ? -1 : m.spans[0].second - 1;
-        // finditer full match ends after '{'; the last char of group 0 is '{'
-        if (brace < 0 || static_cast<std::size_t>(brace) >= stripped.size() ||
-            stripped[static_cast<std::size_t>(brace)] != '{') {
-            auto pos = m.spans[0].second;
-            brace = pos - 1;
-        }
-        int close = match_brace(stripped, brace);
-        if (close < 0) continue;
-        FunctionInfo fn;
-        fn.file = rel;
-        fn.name = name;
-        fn.body = bodies.substr(static_cast<std::size_t>(brace + 1),
-                                static_cast<std::size_t>(close - brace - 1));
-        fn.signature = m.named("head");
-        // collapse whitespace in signature
-        {
-            std::string sig;
-            bool sp = false;
-            for (char c : fn.signature) {
-                if (std::isspace(static_cast<unsigned char>(c))) {
-                    if (!sp && !sig.empty()) sig.push_back(' ');
-                    sp = true;
-                } else {
-                    sig.push_back(c);
-                    sp = false;
-                }
-            }
-            fn.signature = sig;
-        }
-        fn.line = 1 + static_cast<int>(std::count(stripped.begin(),
-                                                  stripped.begin() + std::max(0, m.spans[0].first),
-                                                  '\n'));
-        fn.params = split_params(m.named("params"));
-        fn.return_type = m.named("stars");
-        while (!fn.return_type.empty() && std::isspace(static_cast<unsigned char>(fn.return_type.front())))
-            fn.return_type.erase(fn.return_type.begin());
-        fn.return_type = (fn.return_type + " " + ret);
-        while (!fn.return_type.empty() && std::isspace(static_cast<unsigned char>(fn.return_type.front())))
-            fn.return_type.erase(fn.return_type.begin());
-        while (!fn.return_type.empty() && std::isspace(static_cast<unsigned char>(fn.return_type.back())))
-            fn.return_type.pop_back();
-        fn.is_static = m.named("mods").find("static") != std::string::npos;
-        fn.kind = kind_of(ret, m.named("stars"), fn.params);
-        fn.span = {fn.line, 1 + static_cast<int>(std::count(stripped.begin(),
-                                                            stripped.begin() + close, '\n'))};
-        out.push_back(std::move(fn));
+    return parse_text(text, rel).first;
+}
+
+std::vector<std::pair<int, std::string>> parse_gaps(const std::filesystem::path& path) {
+    auto text = read_file(path);
+    return parse_text(text, path.string()).second;
+}
+
+std::vector<Finding> parse_gap_findings(const std::filesystem::path& path, const std::string& rel) {
+    std::vector<Finding> out;
+    for (auto& [line, head] : parse_gaps(path)) {
+        Finding f;
+        f.stage = "inventory";
+        f.status = std::string(laws::NOTRUN);
+        f.file = rel;
+        f.line = line;
+        f.cls = "PARSE-GAP";
+        f.message = "line " + std::to_string(line) +
+                    ": code in braces not attributed to any function; not checked: " + head;
+        f.strength = std::string(laws::STRENGTH_FINDS);
+        out.push_back(std::move(f));
     }
     return out;
 }

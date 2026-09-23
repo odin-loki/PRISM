@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace prism {
@@ -26,6 +27,12 @@ PRISM_API bool body_needs_pointer_harness(std::string_view body);
 PRISM_API std::vector<FunctionInfo> extract_functions(const std::filesystem::path& path,
                                                       std::string rel = {});
 PRISM_API std::vector<std::filesystem::path> iter_sources(const std::filesystem::path& root);
+// Top-level brace-delimited code no parsed function owns (Law 7): (line,
+// first line of the text before its `{`). Nothing checks that code.
+PRISM_API std::vector<std::pair<int, std::string>> parse_gaps(const std::filesystem::path& path);
+// parse_gaps as inventory records: NOTRUN, cls PARSE-GAP, one per gap.
+PRISM_API std::vector<Finding> parse_gap_findings(const std::filesystem::path& path,
+                                                  const std::string& rel);
 PRISM_API bool tu_is_empty(const std::filesystem::path& path);
 
 }  // namespace prism
