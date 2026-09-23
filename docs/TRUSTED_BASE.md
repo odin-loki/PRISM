@@ -222,5 +222,5 @@ Built under `~/.prism/tools/<name>/<commit>/bin/` (the layout
 | cake_lpr | `2e3b2dc0ecf938addbd779d42877b6ed69d9a985` | Verified LRAT checker (decides certification) |
 | drat-trim (`lrat-check`) | `a36874a8b750b43fe4b385b8ddbf5b033e46a3fa` | Further LRAT checker (veto only) |
 | `prism-bitblast`, `prism-lrat-check` | built from `proofs/techniques` (`lake build`, Lean 4.34.0) | The proved bit-blaster and Lean's verified LRAT checker (1.1). Found under `~/.prism/tools`, on `PATH`, or in `proofs/techniques/.lake/build/bin` of the source tree PRISM was built from |
-| Bitwuzla | not built here (needs meson + GMP) | Portfolio member when present on `PATH` or under `~/.prism/tools/bitwuzla/` |
+| Bitwuzla | 0.9.1 (`8d1eb01093ae`), `fetch_deps.py --tool bitwuzla` | Portfolio member when present on `PATH` or under `~/.prism/tools/bitwuzla/` |
 | Z3 | 4.13.4 (vendored `third_party/z3`) | In-process member, bit-blaster, model validation |

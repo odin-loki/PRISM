@@ -48,6 +48,7 @@
 #     KLEE 3.3-pre -> v3.2, Dafny 4.11.1-dev -> v4.11.0). The mined snapshots
 #     themselves were development heads and are not reproducible.
 #   * cadical, kissat, cake_lpr were added for certified mode (roadmap 3.2).
+#   * bitwuzla is a portfolio member (roadmap 3.1), built with meson.
 #
 # The fifteen mined source trees were removed from third_party/ (roadmap 1.1);
 # docs/MINED.md records what PRISM re-implemented from each. They are listed at
@@ -376,6 +377,22 @@ stages = ["kissat"]
 bins = ["kissat"]
 recipe = "configure-make"
 recipe_out = ["build/kissat"]
+
+[[component]]
+name = "bitwuzla"
+kind = "external"
+version = "0.9.1"
+url = "https://github.com/bitwuzla/bitwuzla"
+tag = "0.9.1"
+commit = "8d1eb01093ae54d9b4586456b69c3bf31000a4c2"
+archive_sha256 = "1beb69c08949084ca81a9f7b5dcbc6371bfa25a5d3e39e9ac3cb7ce8f727c78e"
+spdx = "MIT"
+licence_file = "COPYING"
+licence_note = "Build needs meson, ninja, GMP and MPFR. Its CaDiCaL subproject (rel-2.1.2, MIT) is cloned by commit (3ff42f0) because the wrap's archive download is refused by some proxies; symfpu (header-only, dual GPL-3.0 or BSD-3-Clause; PRISM takes BSD-3-Clause) is compiled into the static binary. PRISM runs bitwuzla as a separate process, never links it."
+stages = ["bitwuzla"]
+bins = ["bitwuzla"]
+recipe = "bitwuzla"
+recipe_out = ["build/src/main/bitwuzla"]
 
 [[component]]
 name = "cake_lpr"

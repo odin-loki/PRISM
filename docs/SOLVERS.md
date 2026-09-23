@@ -115,10 +115,13 @@ The solvers are built from source under `~/.prism/tools/<name>/<commit>/bin/`:
 - cake_lpr: `make`, which assembles the shipped CakeML `cake_lpr.S` with gcc
 - drat-trim: `make`, which gives `drat-trim` and `lrat-check`
 
-Bitwuzla was not built. It needs meson plus the GMP and MPFR development
-packages, none of which are on this machine. It takes part whenever a
-`bitwuzla` binary is found. The exact commits are listed in `TRUSTED_BASE.md`
-§4.
+- Bitwuzla 0.9.1: `python scripts/fetch_deps.py --tool bitwuzla` (meson +
+  ninja, needs the GMP and MPFR development packages). The recipe clones its
+  CaDiCaL subproject by pinned commit, because the meson wrap's GitHub archive
+  download is refused by some proxies.
+
+A member takes part whenever its binary is found. The exact commits are
+listed in `TRUSTED_BASE.md` §4 and `third_party/MANIFEST.toml`.
 
 ## Measurement: portfolio vs Z3 alone
 
@@ -186,3 +189,24 @@ scheduling, gave these totals (Z3 alone vs portfolio):
 
 - before the SLS cap: 201.5 s vs 197.6 s;
 - after the SLS cap: 208.1 s vs 187.9 s.
+
+
+### With Bitwuzla (2026-09-23)
+
+The same benchmark was rerun with Bitwuzla 0.9.1 installed. The machine was
+shared with a conformance run, so the wall times are noisy; the verdicts are
+not. Totals were 190.9 s for Z3 alone, 164.9 s for the portfolio, and 121.3 s
+for the portfolio with scheduler history.
+
+| query | Z3 alone | portfolio (winner) |
+|---|---|---|
+| mulimpl8 | 2.8 s unsat | 1.7 s unsat (bitwuzla) |
+| mulimpl10 | timeout | 9.7 s unsat (bitwuzla) |
+| divmod12 | 21.1 s unsat | 28.1 s unsat (bitwuzla) |
+| factor32 | timeout | 0.7 s sat (kissat) |
+| factor40 | timeout | 23.1 s sat (cadical) |
+| popcount64 | 6.4 s unsat | 28.2 s unsat (z3; 6.9 s with history) |
+
+Bitwuzla closes `mulimpl10`, which Z3 alone does not close in 30 s. Its
+UNSAT answers stay plain `PROVED`, never `PROVED-CERTIFIED`: only CaDiCaL LRAT
+proofs checked by cake_lpr are certified.

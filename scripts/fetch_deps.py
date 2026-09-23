@@ -308,6 +308,33 @@ def _recipe_cake_lpr(src: Path) -> None:
     _run([cc, "-O2", "basis_ffi.c", "cake_lpr.S", "-o", "cake_lpr", "-std=c99"], src)
 
 
+def _recipe_bitwuzla(src: Path) -> None:
+    # Bitwuzla builds with meson. Its CaDiCaL subproject is a wrap-file whose
+    # source is a GitHub archive download, which some proxies refuse (403);
+    # meson uses an already-present subproject directory instead, so clone the
+    # wrap's tag with git and check the commit before configuring.
+    sub = src / "subprojects" / f"cadical-{BITWUZLA_CADICAL_TAG}"
+    if not sub.is_dir():
+        r = _git(["clone", "-q", "--depth", "1", "--branch", BITWUZLA_CADICAL_TAG,
+                  "https://github.com/arminbiere/cadical", str(sub)], src)
+        if r.returncode:
+            raise FetchError(f"bitwuzla: cadical subproject clone failed: {r.stderr.decode(errors='replace')}")
+        head = _git(["rev-parse", "HEAD"], sub).stdout.decode().strip()
+        if head != BITWUZLA_CADICAL_COMMIT:
+            shutil.rmtree(sub, ignore_errors=True)
+            raise FetchError(f"bitwuzla: cadical {BITWUZLA_CADICAL_TAG} is {head}, "
+                             f"expected {BITWUZLA_CADICAL_COMMIT}")
+        overlay = src / "subprojects" / "packagefiles" / "cadical"
+        if overlay.is_dir():
+            shutil.copytree(overlay, sub, dirs_exist_ok=True)
+    _run([sys.executable, "configure.py", "release"], src)
+    _run(["ninja", "-C", "build", "-j", _jobs()], src)
+
+
+BITWUZLA_CADICAL_TAG = "rel-2.1.2"
+BITWUZLA_CADICAL_COMMIT = "3ff42f04384489916f017acd6d5e7cbfa7257be7"
+
+
 def _recipe_lake(src: Path) -> None:
     lake = shutil.which("lake") or str(Path.home() / ".elan" / "bin" / "lake")
     if not Path(lake).is_file():
@@ -325,6 +352,7 @@ def _recipe_cargo(src: Path) -> None:
 RECIPES: dict[str, Callable[[Path], None]] = {
     "configure-make": _recipe_configure_make,
     "cake_lpr": _recipe_cake_lpr,
+    "bitwuzla": _recipe_bitwuzla,
     "lake": _recipe_lake,
     "cargo": _recipe_cargo,
 }
