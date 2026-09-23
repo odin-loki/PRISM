@@ -3774,3 +3774,290 @@ TEST_CASE("config: vendored adapters are never taken from inside the scanned tre
     CHECK(trusted->filename() == "esbmc-planted-by-test");
 #endif
 }
+
+// ---------------------------------------------------------------------------
+// PIR: Clang/LLVM front end (roadmap Part 2, docs/PIR.md). Parser, translator,
+// interpreter and encoder on hand-written IR (no clang needed); the clang
+// round trip runs when clang/opt are on PATH.
+// ---------------------------------------------------------------------------
+#include "prism/pir.hpp"
+
+namespace {
+
+prism::pir::Translation pir_of(const std::string& ir, const std::string& fn) {
+    auto m = prism::pir::ir::parse_module(ir);
+    const auto* f = m.find(fn);
+    REQUIRE(f != nullptr);
+    return prism::pir::translate(m, *f);  // PIR owns its data; the module may go
+}
+
+const char* kPirLoopIr = R"IR(
+define dso_local i32 @down(i32 noundef %n) #0 {
+entry:
+  br label %while.cond
+
+while.cond:                                       ; preds = %while.body, %entry
+  %n.addr.0 = phi i32 [ %n, %entry ], [ %dec, %while.body ]
+  %cmp = icmp sgt i32 %n.addr.0, 0
+  br i1 %cmp, label %while.body, label %while.end
+
+while.body:                                       ; preds = %while.cond
+  %dec = add nsw i32 %n.addr.0, -1
+  br label %while.cond, !llvm.loop !6
+
+while.end:                                        ; preds = %while.cond
+  %n.addr.0.lcssa = phi i32 [ %n.addr.0, %while.cond ]
+  ret i32 %n.addr.0.lcssa
+}
+
+define dso_local i32 @three(i32 noundef %x) {
+entry:
+  br label %for.cond
+
+for.cond:
+  %s.0 = phi i32 [ 0, %entry ], [ %add, %for.body ]
+  %i.0 = phi i32 [ 0, %entry ], [ %inc, %for.body ]
+  %cmp = icmp slt i32 %i.0, 3
+  br i1 %cmp, label %for.body, label %for.end
+
+for.body:
+  %add = add nsw i32 %s.0, %i.0
+  %inc = add nsw i32 %i.0, 1
+  br label %for.cond
+
+for.end:
+  %s.0.lcssa = phi i32 [ %s.0, %for.cond ]
+  ret i32 %s.0.lcssa
+}
+
+define dso_local i32 @dbl(i32 noundef %x) {
+entry:
+  br label %for.cond
+
+for.cond:
+  %x.addr.0 = phi i32 [ %x, %entry ], [ %add, %for.body ]
+  %i.0 = phi i32 [ 0, %entry ], [ %inc, %for.body ]
+  %cmp = icmp slt i32 %i.0, 4
+  br i1 %cmp, label %for.body, label %for.end
+
+for.body:
+  %add = add nsw i32 %x.addr.0, %x.addr.0
+  %inc = add nsw i32 %i.0, 1
+  br label %for.cond
+
+for.end:
+  %x.addr.0.lcssa = phi i32 [ %x.addr.0, %for.cond ]
+  ret i32 %x.addr.0.lcssa
+}
+
+!6 = distinct !{!6, !7}
+!7 = !{!"llvm.loop.mustprogress"}
+)IR";
+
+}  // namespace
+
+TEST_CASE("pir: IR parser reads the opt -S subset") {
+    const char* ir = R"IR(
+; ModuleID = 't.ll'
+target triple = "x86_64-pc-linux-gnu"
+define dso_local i32 @f(i32 noundef %a, i16 noundef signext %b, ptr noundef %p) #0 !dbg !10 {
+entry:
+  %conv = sext i16 %b to i32, !dbg !13
+  %add = add nsw i32 %a, %conv, !dbg !13
+  %r = call { i32, i1 } @llvm.sadd.with.overflow.i32(i32 %a, i32 1)
+  %ov = extractvalue { i32, i1 } %r, 1
+  %cmp = icmp ult i32 %add, 7
+  %sel = select i1 %cmp, i32 %a, i32 -5
+  %v = load i32, ptr %p, align 4
+  switch i32 %a, label %d [
+    i32 1, label %d
+    i32 2, label %d
+  ]
+
+d:                                                ; preds = %entry
+  %ph = phi i32 [ %sel, %entry ], [ 0, %entry ]
+  ret i32 %ph
+}
+declare { i32, i1 } @llvm.sadd.with.overflow.i32(i32, i32) #1
+!10 = distinct !DISubprogram(name: "f", scope: !1, file: !1, line: 3, type: !11, spFlags: DISPFlagDefinition, unit: !0)
+!1 = !DIFile(filename: "t.c", directory: "/tmp")
+!13 = !DILocation(line: 4, column: 12, scope: !10)
+)IR";
+    auto m = prism::pir::ir::parse_module(ir);
+    REQUIRE(m.functions.size() == 1);
+    auto& f = m.functions[0];
+    CHECK(f.name == "f");
+    CHECK(f.parse_error.empty());
+    REQUIRE(f.params.size() == 3);
+    CHECK(f.params[1].ty.bits == 16);
+    CHECK(f.params[1].attrs.find("signext") != std::string::npos);
+    CHECK(f.params[2].ty.kind == prism::pir::ir::Type::Ptr);
+    REQUIRE(f.blocks.size() == 2);
+    auto& b = f.blocks[0].insts;
+    REQUIRE(b.size() == 8);
+    CHECK(b[0].op == "sext");
+    CHECK(b[1].op == "add");
+    CHECK(std::find(b[1].flags.begin(), b[1].flags.end(), "nsw") != b[1].flags.end());
+    CHECK(b[1].dbg == "!13");
+    CHECK(b[2].callee == "llvm.sadd.with.overflow.i32");
+    CHECK(b[2].ty.kind == prism::pir::ir::Type::Struct);
+    CHECK(b[3].indices == std::vector<unsigned>{1});
+    CHECK(b[4].pred == "ult");
+    CHECK(b[5].ops[2].v.kind == prism::pir::ir::Value::Int);
+    CHECK(b[5].ops[2].v.bits == static_cast<uint64_t>(-5));
+    CHECK_FALSE(b[6].parsed);  // load: opcode kept for the UNENCODED reason
+    CHECK(b[6].op == "load");
+    CHECK(b[7].op == "switch");
+    CHECK(b[7].cases.size() == 2);
+    CHECK(f.blocks[1].insts[0].incoming.size() == 2);
+    CHECK(m.locs.at("!13").line == 4);
+    CHECK(m.locs.at("!13").col == 12);
+    CHECK(m.subprograms.at("!10").name == "f");
+    CHECK(m.subprograms.at("!10").line == 3);
+    CHECK(m.subprograms.at("!10").file == "t.c");
+    auto t = prism::pir::ir::parse_type("[4 x { i8, <2 x i32> }]");
+    CHECK(t.kind == prism::pir::ir::Type::Array);
+    CHECK(t.elems[0].kind == prism::pir::ir::Type::Struct);
+    CHECK(prism::pir::ir::parse_type("i1").bits == 1);
+}
+
+TEST_CASE("pir: unmodelled constructs are named, pointer params are Law 6") {
+    auto t = pir_of("define i32 @g(ptr %p) {\nentry:\n  %v = load i32, ptr %p\n  ret i32 %v\n}\n", "g");
+    CHECK_FALSE(t.fn.has_value());
+    CHECK(t.status == prism::laws::NEEDS_HARNESS);
+    CHECK(t.reason.find("Law 6") != std::string::npos);
+    auto u = pir_of("define i32 @h(i32 %x) {\nentry:\n  %a = alloca i32\n  ret i32 %x\n}\n", "h");
+    CHECK_FALSE(u.fn.has_value());
+    CHECK(u.reason.rfind("UNENCODED: alloca", 0) == 0);
+    auto d = pir_of("define double @k(double %x) {\nentry:\n  ret double %x\n}\n", "k");
+    CHECK(d.reason == "UNENCODED: parameter type double");
+    auto c = pir_of("define i32 @e(i32 %x) {\nentry:\n  %r = call i32 @ext(i32 %x)\n  ret i32 %r\n}\n"
+                    "declare i32 @ext(i32)\n",
+                    "e");
+    CHECK(c.reason == "UNENCODED: call @ext");
+    auto r = pir_of("define i32 @r(i32 %x) {\nentry:\n  %v = call i32 @r(i32 %x)\n  ret i32 %v\n}\n", "r");
+    CHECK(r.reason == "UNENCODED: recursive call @r");
+}
+
+TEST_CASE("pir: interpreter semantics and sha256") {
+    using prism::pir::Op;
+    using prism::pir::eval_op;
+    CHECK(eval_op(Op::SDiv, 32, {static_cast<uint64_t>(-7) & 0xffffffffu, 2}, {32, 32}) ==
+          (static_cast<uint64_t>(-3) & 0xffffffffu));
+    CHECK(eval_op(Op::SRem, 32, {static_cast<uint64_t>(-7) & 0xffffffffu, 2}, {32, 32}) ==
+          (static_cast<uint64_t>(-1) & 0xffffffffu));
+    CHECK(eval_op(Op::SAddOvf, 1, {0x7fffffffu, 1}, {32, 32}) == 1);
+    CHECK(eval_op(Op::SAddOvf, 1, {0x7ffffffeu, 1}, {32, 32}) == 0);
+    CHECK(eval_op(Op::ShlSOvf, 1, {1, 31}, {32, 32}) == 1);           // 1 << 31 in C
+    CHECK(eval_op(Op::ShlSOvf, 1, {1, 30}, {32, 32}) == 0);
+    CHECK(eval_op(Op::ShlSOvf, 1, {0xffffffffu, 1}, {32, 32}) == 1);  // -1 << 1
+    CHECK(eval_op(Op::SExt, 64, {0x80u}, {8}) == 0xffffffffffffff80ULL);
+    CHECK(eval_op(Op::Ctlz, 32, {1}, {32}) == 31);
+    CHECK(eval_op(Op::Cttz, 32, {8}, {32}) == 3);
+    CHECK(prism::pir::sha256_hex("abc") ==
+          "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    CHECK(prism::pir::sha256_hex("") ==
+          "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+}
+
+#ifdef PRISM_HAS_Z3
+TEST_CASE("pir: encoder verdicts on straight-line code") {
+    auto ovf = pir_of("define i32 @f(i32 %a, i32 %b) {\nentry:\n  %s = add nsw i32 %a, %b\n  ret i32 %s\n}\n", "f");
+    REQUIRE(ovf.fn.has_value());
+    auto v = prism::pir::check_function(*ovf.fn, 8, 30);
+    CHECK(v.status == prism::laws::FAILED);
+    CHECK(v.cls == "INT-SIGNED-OVF");
+    REQUIRE(v.cex_args.size() == 2);
+    auto a = static_cast<int64_t>(static_cast<int32_t>(v.cex_args[0]));
+    auto b = static_cast<int64_t>(static_cast<int32_t>(v.cex_args[1]));
+    CHECK((a + b > INT32_MAX || a + b < INT32_MIN));
+    auto r = prism::pir::interpret(*ovf.fn, v.cex_args);  // the interpreter reproduces it
+    CHECK(r.status == prism::pir::InterpResult::Violation);
+    CHECK(r.prop == "ovf+");
+
+    auto wrap = pir_of("define i32 @w(i32 %a, i32 %b) {\nentry:\n  %s = add i32 %a, %b\n  ret i32 %s\n}\n", "w");
+    auto pv = prism::pir::check_function(*wrap.fn, 8, 30);
+    CHECK(pv.status == prism::laws::PROVED);
+    CHECK(pv.extra.at("unwind_closed") == "true");
+
+    auto div = pir_of("define i32 @d(i32 %a, i32 %b) {\nentry:\n  %q = sdiv i32 %a, %b\n  ret i32 %q\n}\n", "d");
+    auto dv = prism::pir::check_function(*div.fn, 8, 30);
+    CHECK(dv.status == prism::laws::FAILED);
+    CHECK((dv.cls == "INT-DIV-ZERO" || dv.cls == "INT-SIGNED-OVF"));
+
+    auto sh = pir_of("define i32 @s(i32 %a, i32 %b) {\nentry:\n  %m = and i32 %b, 31\n  %q = lshr i32 %a, %m\n"
+                     "  ret i32 %q\n}\n",
+                     "s");
+    CHECK(prism::pir::check_function(*sh.fn, 8, 30).status == prism::laws::PROVED);
+}
+
+TEST_CASE("pir: loops - unwinding assertion, BOUNDED vs PROVED, k-induction") {
+    auto three = pir_of(kPirLoopIr, "three");
+    REQUIRE(three.fn.has_value());
+    CHECK(prism::pir::check_function(*three.fn, 8, 30).status == prism::laws::PROVED);  // closes: 3 < 8
+    // bound 2 cannot close a 3-iteration loop: never plain PROVED (Law 2)
+    auto v3b = prism::pir::check_function(*three.fn, 2, 30);
+    CHECK((v3b.status == prism::laws::BOUNDED || v3b.status == prism::laws::PROVED_UNBOUNDED));
+
+    auto down = pir_of(kPirLoopIr, "down");
+    auto vd = prism::pir::check_function(*down.fn, 8, 30);
+    CHECK(vd.status == prism::laws::PROVED_UNBOUNDED);
+    CHECK(vd.extra.at("k_induction") == "closed");
+    auto r = prism::pir::interpret(*down.fn, {5});
+    CHECK(r.status == prism::pir::InterpResult::Returned);
+    CHECK(r.ret == 0);
+    auto neg = prism::pir::interpret(*down.fn, {static_cast<uint64_t>(-7) & 0xffffffffu});
+    CHECK(neg.ret == (static_cast<uint64_t>(-7) & 0xffffffffu));
+
+    auto dbl = pir_of(kPirLoopIr, "dbl");
+    auto vb = prism::pir::check_function(*dbl.fn, 8, 30);
+    CHECK(vb.status == prism::laws::FAILED);
+    CHECK(prism::pir::interpret(*dbl.fn, vb.cex_args).status == prism::pir::InterpResult::Violation);
+}
+
+TEST_CASE("pir: VCs are solver-neutral SMT-LIB2 per property") {
+    auto t = pir_of(kPirLoopIr, "dbl");
+    auto vcs = prism::pir::pir_vcs(*t.fn, 8);
+    REQUIRE(!vcs.empty());
+    bool prop = false;
+    for (auto& vc : vcs) {
+        if (vc.kind == "property") {
+            prop = true;
+            CHECK(vc.cls == "INT-SIGNED-OVF");
+        }
+        CHECK(vc.smt2.find("(check-sat)") != std::string::npos);
+    }
+    CHECK(prop);
+}
+
+TEST_CASE("pir: clang round trip on tests/pir (skips without clang/opt)") {
+    auto cfg = prism::default_config();
+    auto fe = prism::pir::find_frontend(cfg);
+    if (!fe.clang || !fe.opt) {
+        MESSAGE("clang/opt not on PATH: pir round trip skipped");
+        return;
+    }
+    auto dir = testdata_root().parent_path() / "tests" / "pir";
+    cfg.root = dir;
+    cfg.jobs = 1;
+    auto out = prism::pir::run_pir({dir / "overflow.c", dir / "unencoded.c", dir / "uninit.c"}, cfg);
+    std::map<std::string, std::string> st;
+    for (auto& f : out)
+        if (f.function) st[*f.function] = f.status;
+    CHECK(st["add_bad"] == prism::laws::FAILED);
+    CHECK(st["add_ok"] == prism::laws::PROVED);
+    CHECK(st["add_unsigned_ok"] == prism::laws::PROVED);
+    CHECK(st["deref_ptr"] == prism::laws::NEEDS_HARNESS);
+    CHECK(st["local_array"] == prism::laws::NEEDS_HARNESS);
+    CHECK(st["recurse"] == prism::laws::NEEDS_HARNESS);
+    CHECK(st["uninit_bad"] == prism::laws::FAILED);
+    CHECK(st["uninit_ok"] == prism::laws::PROVED);
+    bool tv_note = false, frontend = false;
+    for (auto& f : out) {
+        if (f.status == prism::laws::NOTRUN && f.extra.count("reason")) tv_note = true;
+        if (f.extra.count("frontend") && f.extra.at("frontend").rfind("clang", 0) == 0) frontend = true;
+    }
+    CHECK(tv_note);  // Law 9: validation held back without --allow-exec, and it says so
+    CHECK(frontend);
+}
+#endif
