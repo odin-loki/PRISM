@@ -2,8 +2,10 @@
 
 Two halves:
 
-1. Built-in scans over every text source (C/C++ included): VCS conflict
-   markers and leaked credentials. These need no tool and always run.
+1. Built-in scans over every text file in scope, whatever its name
+   (C/C++, id_rsa, key.pem, .npmrc, Dockerfile, ...; text = no NUL byte in
+   the first 8 KiB and at most 2 MB): VCS conflict markers and leaked
+   credentials. These need no tool and always run.
 2. Per-language checkers (syntax first, then linters / type checkers). Each
    checker is a group of interchangeable tools; the first one found runs.
    A language present in the tree with no tool for a group is NOTRUN with an
@@ -12,6 +14,8 @@ Two halves:
 Status mapping (same as the C++ engine, src/prism/polyglot.cpp):
   diagnostic            -> FAILED   (strength FINDS; extra.severity/rule/tool)
   tool ran, silent      -> UNKNOWN  ("no diagnostics (not a proof)")
+  tool said something   -> ERROR    ("output not understood: <tail>") when no
+    no diagnostic parsed   diagnostic parsed and the output is not in Tool.benign
   tool crashed/unusable -> ERROR    (tail of its output)
   tool timed out        -> TIMEOUT
   tool missing          -> NOTRUN   (extra.install)
@@ -37,7 +41,7 @@ import subprocess
 import sys
 import tempfile
 
-from prism import laws, sandbox
+from prism import laws, sandbox, scope
 from prism.config import Config, resolve_adapter
 from prism.models import Finding
 
@@ -67,10 +71,8 @@ C_FAMILY_EXTS = {".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".hh", ".hxx", ".cu"
 TEXT_ONLY_EXTS = {".env", ".ini", ".cfg", ".conf", ".properties", ".xml", ".java",
                   ".kt", ".cs", ".swift", ".scala", ".sql", ".tf", ".gradle"}
 
-SKIP_DIRS = {
-    ".git", "prism-out", "third_party", "build", "node_modules", "__pycache__",
-    ".venv", "venv", "target", ".tox", ".mypy_cache", ".ruff_cache", ".pytest_cache",
-}
+# One skip list for every stage (prism/scope.py); inventory records what it skips.
+SKIP_DIRS = scope.SKIP_DIRS
 
 MAX_FILE_BYTES = 2_000_000
 MAX_FILES_PER_TOOL = 2000
@@ -129,6 +131,10 @@ class Tool:
     cwd_marker: str = ""       # run once per dir holding this file (e.g. Cargo.toml)
     unconfigured: str = ""     # output regex meaning "project not set up for this tool"
     executes: bool = False     # runs code from the scanned tree (Law 9: --allow-exec)
+    # Output lines (full match, stripped) that mean "ran fine, nothing to
+    # report". Any other output that yields no diagnostic is ERROR "output
+    # not understood", never a quiet UNKNOWN.
+    benign: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -146,12 +152,13 @@ CHECKS: tuple[Check, ...] = (
     Check("python-syntax", ("python", "json", "toml"), "syntax", (
         Tool("prism-syntax", ("python3", "python"), ("{exe}", "{helper}", "{files}"),
              r"^PRISM-SYNTAX\t(?P<file>[^\t]+)\t(?P<line>\d+)\t(?P<col>\d+)\t(?P<msg>.+)$",
-             ok_rcs=(0,)),
+             ok_rcs=(0,), benign=(r"PRISM-OK\t.+", r"PRISM-NOTOML\t.+")),
     ), "install Python 3.11+ (python3 on PATH)"),
     Check("python-lint", ("python",), "lint", (
         Tool("ruff", ("ruff",), ("{exe}", "check", "--output-format=concise", "--no-cache",
                                  "--quiet", "{files}"),
-             r"^(?P<file>.+?):(?P<line>\d+):(?P<col>\d+): (?P<rule>[A-Z]+\d+) (?P<msg>.+)$"),
+             r"^(?P<file>.+?):(?P<line>\d+):(?P<col>\d+): (?P<rule>[A-Z]+\d+|[a-z][a-z0-9]*(?:-[a-z0-9]+)+|SyntaxError):? (?P<msg>.+)$",
+             benign=(r"All checks passed!",)),
         Tool("pyflakes", ("pyflakes",), ("{exe}", "{files}"),
              r"^(?P<file>.+?):(?P<line>\d+):(?:(?P<col>\d+):?)?\s+(?P<msg>.+)$"),
     ), "pip install ruff  (or pyflakes)"),
@@ -161,7 +168,7 @@ CHECKS: tuple[Check, ...] = (
                                  "--no-incremental", "--cache-dir={devnull}",
                                  "--config-file=", "{files}"),
              r"^(?P<file>.+?):(?P<line>\d+):(?:(?P<col>\d+):)? (?P<sev>error): (?P<msg>.+?)(?:\s+\[(?P<rule>[\w-]+)\])?$",
-             timeout=600.0),
+             timeout=600.0, benign=(r"Success: no issues found in \d+ source files?",)),
     ), "pip install mypy"),
     Check("javascript-syntax", ("javascript",), "syntax", (
         Tool("node", ("node",), ("{exe}", "--check", "{file}"),
@@ -189,7 +196,8 @@ CHECKS: tuple[Check, ...] = (
     ), "apt install shellcheck"),
     Check("go-syntax", ("go",), "syntax", (
         Tool("gofmt", ("gofmt",), ("{exe}", "-e", "-l", "{files}"),
-             r"^(?P<file>.+?\.go):(?P<line>\d+):(?P<col>\d+): (?P<msg>.+)$", ok_rcs=(0,)),
+             r"^(?P<file>.+?\.go):(?P<line>\d+):(?P<col>\d+): (?P<msg>.+)$", ok_rcs=(0,),
+             benign=(r".+\.go",)),
     ), "install Go (gofmt on PATH)"),
     Check("rust-lint", ("rust",), "lint", (
         Tool("cargo-clippy", ("cargo",), ("{exe}", "clippy", "--quiet", "--message-format=short"),
@@ -199,17 +207,17 @@ CHECKS: tuple[Check, ...] = (
     Check("ruby-syntax", ("ruby",), "syntax", (
         Tool("ruby", ("ruby",), ("{exe}", "-wc", "{file}"),
              r"^(?:\S*ruby\S*: )?(?P<file>[^:\n]+?):(?P<line>\d+): (?:(?P<sev>warning): )?(?P<msg>.+)$",
-             per_file=True, ok_rcs=(0,)),
+             per_file=True, ok_rcs=(0,), benign=(r"Syntax OK",)),
     ), "install Ruby"),
     Check("php-syntax", ("php",), "syntax", (
         Tool("php", ("php",), ("{exe}", "-l", "{file}"),
              r"^(?:PHP )?(?P<msg>(?:Parse|Fatal) error:.+?) in (?P<file>.+?) on line (?P<line>\d+)$",
-             per_file=True, ok_rcs=(0,)),
+             per_file=True, ok_rcs=(0,), benign=(r"No syntax errors detected in .+",)),
     ), "install PHP CLI"),
     Check("perl-syntax", ("perl",), "syntax", (
         Tool("perl", ("perl",), ("{exe}", "-c", "{file}"),
              r"^(?P<msg>.+?) at (?P<file>.+?) line (?P<line>\d+)[.,]",
-             per_file=True, ok_rcs=(0,), executes=True),
+             per_file=True, ok_rcs=(0,), executes=True, benign=(r".+ syntax OK",)),
     ), "install Perl"),
     Check("lua-syntax", ("lua",), "syntax", (
         Tool("luac", ("luac", "luac5.4", "luac5.3"), ("{exe}", "-p", "{file}"),
@@ -244,26 +252,53 @@ ALLOW_MARKER = "prism:allow"
 
 
 def _skip_dir(name: str) -> bool:
-    return name in SKIP_DIRS or name.startswith(("prism-out", "build"))
+    return scope.skip_dir(name)
 
 
-def iter_polyglot_sources(root: Path) -> list[Path]:
-    """Every file the stage looks at: language files, C family, text configs."""
-    wanted = set(LANG_EXTS) | C_FAMILY_EXTS | TEXT_ONLY_EXTS
+def _walk(root: Path) -> list[Path]:
+    """Every regular file under root outside the skipped dirs, sorted walk."""
     if root.is_file():
-        return [root] if _classify(root, wanted) else []
+        return [root]
     out: list[Path] = []
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = sorted(d for d in dirnames if not _skip_dir(d))
+        dirnames[:] = sorted(d for d in dirnames if not _skip_dir(d)
+                             and not (Path(dirpath) / d).is_symlink())
         for name in sorted(filenames):
             p = Path(dirpath) / name
-            if _classify(p, wanted):
+            if p.is_file():
                 out.append(p)
     return out
 
 
-def _classify(p: Path, wanted: set[str]) -> bool:
-    return p.suffix.lower() in wanted or p.name == ".env"
+def iter_polyglot_sources(root: Path) -> list[Path]:
+    """Files with a known extension: language files, C family, text configs."""
+    return [p for p in _walk(root) if is_known_source(p)]
+
+
+def iter_text_files(root: Path) -> list[Path]:
+    """Every text file in scope, whatever its name (id_rsa, key.pem, .npmrc,
+    Dockerfile). The built-in scans read these; language tools go by extension."""
+    return [p for p in _walk(root) if is_text_file(p)]
+
+
+_WANTED = set(LANG_EXTS) | C_FAMILY_EXTS | TEXT_ONLY_EXTS
+SNIFF_BYTES = 8192
+
+
+def is_known_source(p: Path) -> bool:
+    return p.suffix.lower() in _WANTED or p.name == ".env"
+
+
+def is_text_file(p: Path) -> bool:
+    """Text sniff: at most MAX_FILE_BYTES and no NUL byte in the first 8 KiB."""
+    try:
+        if p.stat().st_size > MAX_FILE_BYTES:
+            return False
+        with p.open("rb") as fh:
+            head = fh.read(SNIFF_BYTES)
+    except OSError:
+        return False
+    return b"\0" not in head
 
 
 def language_of(p: Path) -> str | None:
@@ -290,9 +325,9 @@ def builtin_scan(files: list[Path], root: Path) -> list[Finding]:
     out: list[Finding] = []
     scanned = 0
     for p in files:
+        if not is_text_file(p):
+            continue
         try:
-            if p.stat().st_size > MAX_FILE_BYTES:
-                continue
             text = p.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
@@ -461,6 +496,11 @@ def run_check(check: Check, files: list[Path], root: Path, cfg: Config) -> list[
                              "SYNTAX-ERROR" if check.kind == "syntax" else "LANG-LINT",
                              f"{tool.name} exit {rc}: {text.strip()[-300:]}",
                              tool=tool.name, check=check.group)]
+        residue = unexplained_output(tool, text)
+        if residue:
+            return [_finding(laws.ERROR, "", None, "",
+                             f"{tool.name}: output not understood: {residue[-400:]}",
+                             tool=tool.name, check=check.group)]
         return []
 
     jobs = max(1, int(getattr(cfg, "jobs", 1) or 1))
@@ -484,11 +524,26 @@ def run_check(check: Check, files: list[Path], root: Path, cfg: Config) -> list[
     return note + results
 
 
+def unexplained_output(tool: Tool, text: str) -> str:
+    """Output lines that are neither diagnostics nor the tool's known-benign
+    chatter. Called only when no diagnostic was kept: a non-empty result means
+    the tool said something PRISM did not understand (ERROR, not UNKNOWN).
+    Text the tool pattern matches (e.g. a dropped note) is understood."""
+    text = re.sub(tool.pattern, "", text, flags=re.M)
+    rxs = [re.compile(b) for b in tool.benign]
+    rest = [ln for ln in (x.strip() for x in text.splitlines())
+            if ln and not any(r.fullmatch(ln) for r in rxs)]
+    return "\n".join(rest)
+
+
 def run_polyglot(root: Path, cfg: Config) -> list[Finding]:
-    files = iter_polyglot_sources(root)
-    if not files:
+    all_files = _walk(root)
+    if not all_files:
         return [_finding(laws.UNKNOWN, "", None, "", "no source files in scope")]
-    out = builtin_scan(files, root)
+    # Built-in scans read every text file (builtin_scan sniffs); language
+    # tools only files with their extension.
+    out = builtin_scan(all_files, root)
+    files = [p for p in all_files if is_known_source(p)]
     by_lang: dict[str, list[Path]] = {}
     for p in files:
         lang = language_of(p)

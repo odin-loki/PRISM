@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -99,6 +100,33 @@ class TestExitCode(unittest.TestCase):
             self.assertEqual(exit_code(rep, "defect"), dfct)
             self.assertEqual(exit_code(rep, "gap"), gp)
 
+    def test_warning_severity_does_not_trip_fail_on(self):
+        for sev in ("warning", "note", "style", "WARNING"):
+            with self.subTest(sev=sev):
+                rep = _report(StageResult("warnings", "ok", findings=[
+                    _f(laws.FAILED, extra={"severity": sev})]))
+                self.assertEqual(exit_code(rep, "defect"), 0)
+                self.assertEqual(exit_code(rep, "gap"), 0)
+        err = _report(StageResult("warnings", "ok", findings=[
+            _f(laws.FAILED, extra={"severity": "error"})]))
+        self.assertEqual(exit_code(err, "defect"), 1)
+        cpp = (ROOT / "src" / "prism" / "sarif.cpp").read_text(encoding="utf-8")
+        self.assertIn('sev != "warning" && sev != "note" && sev != "style"', cpp)
+        self.assertIn("if (blocks(f)) return 1;", cpp)
+
+    def test_help_describes_any_codebase_in_both_clis(self):
+        r = subprocess.run([sys.executable, "-m", "prism", "--help"], cwd=ROOT,
+                           capture_output=True, text=True, timeout=60)
+        cpp = (ROOT / "src" / "prism" / "main.cpp").read_text(encoding="utf-8")
+        cpp_help = cpp[cpp.index('a == "--help"'):cpp.index("return 0;", cpp.index('a == "--help"'))]
+        for text in (" ".join(r.stdout.split()), cpp_help):
+            self.assertNotIn("Qwen", text)
+            self.assertNotIn("Hybrid code-testing", text)
+            self.assertNotIn("directory of C/C++", text)
+            for want in ("--allow-exec", "--fail-on", "report.sarif", "polyglot", "--pbsd",
+                         "warning/note/style"):
+                self.assertIn(want, text)
+
     def test_cli_fail_on(self):
         with tempfile.TemporaryDirectory(prefix="prism_sarif_") as td:
             src = Path(td) / "src"
@@ -156,6 +184,9 @@ class TestEngineParity(unittest.TestCase):
             "a.c": "<<<<<<< HEAD\nint x;\n>>>>>>> b\n",
             "k.ini": "aws = AKIAABCDEFGHIJKLMNOP\n",  # prism:allow
             "s.sh": "if then\nfi\n",
+            "id_rsa": "-----BEGIN OPENSSH PRIVATE KEY-----\n",  # prism:allow
+            "key.pem": "-----BEGIN PRIVATE KEY-----\n",  # prism:allow
+            "lint.py": "import os\n",
         }
         with tempfile.TemporaryDirectory(prefix="prism parity ") as td:
             src = Path(td) / "src dir"
@@ -174,6 +205,51 @@ class TestEngineParity(unittest.TestCase):
                 outs[name] = self._norm(json.loads((out / "report.sarif").read_text("utf-8")))
             self.assertEqual(outs["py"], outs["cpp"])
             self.assertTrue(outs["py"]["results"])
+            uris = {r[3] for r in outs["py"]["results"]}
+            self.assertLessEqual({"id_rsa", "key.pem"}, uris)
+
+    def _report_rows(self, stage: str, tree: dict[str, str], cfg_args=()) -> dict:
+        with tempfile.TemporaryDirectory(prefix="prism parity ") as td:
+            src = Path(td) / "src"
+            for rel, text in tree.items():
+                (src / rel).parent.mkdir(parents=True, exist_ok=True)
+                (src / rel).write_text(text, encoding="utf-8")
+            rows = {}
+            for name, cmd in (("py", [sys.executable, "-m", "prism"]),
+                              ("cpp", [str(_cpp_prism())])):
+                out = Path(td) / f"out_{name}"
+                subprocess.run([*cmd, str(src), "--no-llm", "--stage", stage, *cfg_args,
+                                "--out", str(out)], cwd=ROOT, capture_output=True,
+                               text=True, timeout=600)
+                doc = json.loads((out / "report.json").read_text("utf-8"))
+                rows[name] = sorted(
+                    (f["status"], f["file"], f.get("line") or 0, f["cls"], f["message"],
+                     sorted((f.get("extra") or {}).items()))
+                    for s in doc["stages"] if s["name"] == stage for f in s["findings"])
+            return rows
+
+    def test_inventory_skipped_dirs_match(self):
+        rows = self._report_rows("inventory", {
+            "a.c": "int f(void) { return 0; }\n",
+            "node_modules/m/x.js": "x\n", "node_modules/m/y.js": "y\n",
+            "sub/build-rel/gen.c": "int g(void){return 1;}\n",
+            ".git/HEAD": "ref\n",
+        })
+        self.assertEqual(rows["py"], rows["cpp"])
+        msgs = [r[4] for r in rows["py"] if r[0] == laws.UNKNOWN]
+        self.assertEqual(msgs, [
+            "skipped node_modules/ (2 source files): vendor/build directory",
+            "skipped sub/build-rel/ (1 source files): vendor/build directory",
+        ])
+
+    @unittest.skipUnless(shutil.which("gcc") or shutil.which("clang"), "no C compiler")
+    def test_compiler_warnings_match(self):
+        rows = self._report_rows("warnings", {
+            "w.c": "int f(int a) { int unused; unsigned u = a; return u < -1; }\n",
+        })
+        self.assertEqual(rows["py"], rows["cpp"])
+        self.assertTrue(rows["py"])
+        self.assertTrue(all(r[1] == "w.c" for r in rows["py"]))
 
 
 if __name__ == "__main__":

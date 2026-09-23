@@ -1763,6 +1763,67 @@ std::string compiler_key(const fs::path& p) {
     return s;
 }
 
+namespace {
+
+// gcc / clang from a resolved path (either separator, .exe dropped).
+// prism/adapters.py _cc_name.
+std::string cc_name(const std::string& cc) {
+    auto k = cc.find_last_of("/\\");
+    auto name = k == std::string::npos ? cc : cc.substr(k + 1);
+    if (name.size() > 4 && lower_copy(name.substr(name.size() - 4)) == ".exe")
+        name.resize(name.size() - 4);
+    return name;
+}
+
+// gcc and clang word one diagnostic alike but quote and tag it apart: drop
+// the trailing [-Wflag], unify quotes, fold case and spaces. adapters.py _norm_diag.
+std::string norm_diag(const std::string& msg) {
+    static const Regex flag(R"(\s*\[-W[^\]]*\]\s*$)");
+    std::string m = msg;
+    if (auto hit = flag.search_match(m)) m = m.substr(0, static_cast<std::size_t>(hit->spans[0].first));
+    std::string q;
+    for (std::size_t i = 0; i < m.size(); ++i) {
+        unsigned char c = static_cast<unsigned char>(m[i]);
+        // U+2018 U+2019 U+201C U+201D are E2 80 98/99/9C/9D in UTF-8.
+        if (c == 0xE2 && i + 2 < m.size() && static_cast<unsigned char>(m[i + 1]) == 0x80) {
+            unsigned char d = static_cast<unsigned char>(m[i + 2]);
+            if (d == 0x98 || d == 0x99 || d == 0x9C || d == 0x9D) {
+                q += '\'';
+                i += 2;
+                continue;
+            }
+        }
+        q += (c == '`' || c == '"') ? '\'' : static_cast<char>(c);
+    }
+    std::string out;
+    bool space = false;
+    for (char c : lower_copy(q)) {
+        if (std::isspace(static_cast<unsigned char>(c))) {
+            space = !out.empty();
+            continue;
+        }
+        if (space) out += ' ';
+        space = false;
+        out += c;
+    }
+    return out;
+}
+
+// Path relative to the scan root, like every other stage's findings.
+std::string rel_to_root(const fs::path& p, const Config& cfg) {
+    std::error_code ec;
+    fs::path base = fs::is_directory(cfg.root, ec) ? cfg.root : cfg.root.parent_path();
+    auto a = fs::weakly_canonical(fs::absolute(p, ec), ec);
+    if (ec) return p.generic_string();
+    auto b = fs::weakly_canonical(fs::absolute(base, ec), ec);
+    if (ec) return p.generic_string();
+    auto r = a.lexically_relative(b);
+    if (r.empty() || r.native().starts_with(fs::path("..").native())) return p.generic_string();
+    return r.generic_string();
+}
+
+}  // namespace
+
 std::vector<Finding> run_compiler(const std::vector<fs::path>& paths, const Config& cfg) {
     std::vector<fs::path> compilers;
     if (auto gcc = cfg.which({"gcc"})) compilers.push_back(*gcc);
@@ -1795,6 +1856,44 @@ std::vector<Finding> run_compiler(const std::vector<fs::path>& paths, const Conf
         if (!seen.insert(key).second) return;
         out.push_back(std::move(f));
     };
+    // One finding per (file, line, normalized message): gcc and clang
+    // agreeing is one defect with extra.compilers naming both.
+    std::map<std::tuple<std::string, std::optional<int>, std::string>, std::size_t> by_diag;
+    auto diag = [&](const std::string& cc, std::string file, std::optional<int> line,
+                    const std::string& sev, const std::string& msg) {
+        auto name = cc_name(cc);
+        auto key = std::make_tuple(file, line, norm_diag(msg));
+        if (auto it = by_diag.find(key); it != by_diag.end()) {
+            auto& f = out[it->second];
+            auto& names = f.extra["compilers"];
+            bool have = false;
+            std::size_t pos = 0;
+            while (pos <= names.size()) {
+                auto comma = names.find(',', pos);
+                if (comma == std::string::npos) comma = names.size();
+                if (names.substr(pos, comma - pos) == name) have = true;
+                pos = comma + 1;
+            }
+            if (!have) names += "," + name;
+            if (sev == "error" && f.extra["severity"] != "error") {
+                f.extra["severity"] = "error";
+                f.cls = "compiler-error";
+            }
+            return;
+        }
+        Finding f;
+        f.stage = "warnings";
+        f.status = std::string(laws::FAILED);
+        f.file = std::move(file);
+        f.line = line;
+        f.cls = "compiler-" + sev;
+        f.message = msg;
+        f.strength = std::string(laws::STRENGTH_SOME);
+        f.extra["severity"] = sev;
+        f.extra["compilers"] = name;
+        by_diag[key] = out.size();
+        out.push_back(std::move(f));
+    };
     static Regex wrn("^(.+):(\\d+):(\\d+):\\s+(warning|error):\\s+(.*)$", true);
     for (const auto& cc : compilers) {
         for (const auto& p : units) {
@@ -1807,13 +1906,14 @@ std::vector<Finding> run_compiler(const std::vector<fs::path>& paths, const Conf
                     throw std::runtime_error("refusing to disable a check: " + flag);
             }
             auto r = run_argv(cmd, 30.0);
+            const auto rel = rel_to_root(p, cfg);
             if (r.timed_out) {
-                add(finding("warnings", laws::TIMEOUT, p.string(), "",
+                add(finding("warnings", laws::TIMEOUT, rel, "",
                             "compiler syntax-check timeout", laws::STRENGTH_SOME));
                 continue;
             }
             if (r.failed || tool_unusable(r.text, r.rc)) {
-                auto f = finding("warnings", laws::NOTRUN, p.string(), "",
+                auto f = finding("warnings", laws::NOTRUN, rel, "",
                                  cc.string() + " unusable: failed to start", laws::STRENGTH_SOME);
                 f.extra["install"] = "install gcc or clang";
                 add(std::move(f));
@@ -1822,24 +1922,21 @@ std::vector<Finding> run_compiler(const std::vector<fs::path>& paths, const Conf
             int hits = 0;
             for (auto& m : wrn.finditer(r.text)) {
                 ++hits;
-                Finding f;
-                f.stage = "warnings";
-                f.status = std::string(laws::FAILED);
-                f.file = m.group(1);
+                std::optional<int> line;
                 try {
-                    f.line = std::stoi(m.group(2));
+                    line = std::stoi(m.group(2));
                 } catch (...) {
                 }
-                f.cls = std::string("compiler-") + m.group(4);
-                f.message = m.group(5);
-                f.strength = std::string(laws::STRENGTH_SOME);
-                add(std::move(f));
+                diag(cc.string(), rel_to_root(m.group(1), cfg), line, m.group(4), m.group(5));
             }
             if (hits == 0 && r.rc != 0) {
                 auto msg = tail(r.text, 400);
                 if (msg.empty()) msg = cc.string() + " exit " + std::to_string(r.rc);
-                add(finding("warnings", laws::FAILED, p.string(), "compiler-error", msg,
-                            laws::STRENGTH_SOME));
+                auto f = finding("warnings", laws::FAILED, rel, "compiler-error", msg,
+                                 laws::STRENGTH_SOME);
+                f.extra["severity"] = "error";
+                f.extra["compilers"] = cc_name(cc.string());
+                add(std::move(f));
             }
         }
     }
@@ -2172,11 +2269,16 @@ constexpr PbsdHeavy kPbsdHeavy[] = {
     {"cbmc", "cbmc", "pkg install cbmc / apt install cbmc"},
 };
 
+// cfg.pbsd_root (--pbsd PATH), else PRISM_PBSD, else empty: there is no
+// guessed default location. prism/pbsd.py _looked_root.
 fs::path pbsd_looked_root(const Config& cfg) {
-    // Honor PRISM_PBSD even when cfg.pbsd_root is already set.
+    if (!cfg.pbsd_root.empty()) return cfg.pbsd_root;
     if (const char* env = std::getenv("PRISM_PBSD"); env && *env) return fs::path(env);
-    return cfg.pbsd_root;
+    return {};
 }
+
+const char* const PBSD_INSTALL =
+    "set PRISM_PBSD or pass --pbsd PATH (a ParanoidBSD tree with tools/verify)";
 
 bool pbsd_tree_present(const fs::path& looked) {
     std::error_code ec;
@@ -2289,15 +2391,27 @@ std::string pbsd_invoked_json(const std::vector<Finding>& findings) {
 std::vector<Finding> run_pbsd_lints(const std::vector<fs::path>& paths, const Config& cfg) {
     auto files = pbsd_c_paths(paths);
     auto looked = pbsd_looked_root(cfg);
-    const bool tree = pbsd_tree_present(looked);
-    auto portable = prism_portable(files, cfg, tree);
+    const bool tree = !looked.empty() && pbsd_tree_present(looked);
+    // Law 9: the Python engine imports the tree's tools/verify modules
+    // (external code), so using the tree needs --allow-exec in both engines.
+    auto portable = prism_portable(files, cfg, tree && cfg.allow_exec);
 
+    if (looked.empty()) {
+        if (!portable.empty()) return pbsd_dedupe(std::move(portable));
+        return {pbsd_not_run("ParanoidBSD tree not configured", PBSD_INSTALL, {})};
+    }
     if (!tree) {
         if (!portable.empty()) return pbsd_dedupe(std::move(portable));
         return {pbsd_not_run(
             "ParanoidBSD tree not found at " + looked.string(),
-            "set PRISM_PBSD to the ParanoidBSD tree (looked at " + looked.string() + ")",
+            std::string(PBSD_INSTALL) + " (looked at " + looked.string() + ")",
             {{"looked", looked.string()}})};
+    }
+    if (!cfg.allow_exec) {
+        auto out = pbsd_dedupe(std::move(portable));
+        out.push_back(sandbox::exec_notrun(
+            "pbsd", "pbsd (import ParanoidBSD tools/verify modules)", {{"looked", looked.string()}}));
+        return out;
     }
 
     // Tree present: portable + prism.checkers restage + missing-bin NOTRUN.

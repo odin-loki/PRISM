@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
-PRISM="${PRISM:-/tmp/prism-link/prism}"
-OUT="${OUT:-/tmp/prism-smoke}"
-ROOT="/mnt/c/Users/odinl/OneDrive/Desktop/Code Analysis"
+PRISM="${PRISM_BIN:-build/prism}"
+OUT="${OUT:-${TMPDIR:-/tmp}/prism-smoke}"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 mkdir -p "$OUT"
 

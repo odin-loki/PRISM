@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -194,7 +195,44 @@ class TestCompilerAdapter(unittest.TestCase):
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0].status, laws.FAILED)
         self.assertEqual(out[0].cls, "compiler-warning")
+        self.assertEqual(out[0].extra["compilers"], "gcc,clang")
+        self.assertEqual(out[0].extra["severity"], "warning")
         self._never_proof(out)
+
+    def test_gcc_and_clang_same_warning_different_quotes_is_one_finding(self):
+        """gcc quotes with U+2018/2019, clang with ASCII; same defect, one row."""
+        def fake_run(cmd, **_k):
+            if cmd[0] == GCC:
+                return _proc(stderr="planted.c:4:9: warning: unused variable \u2018x\u2019 "
+                                    "[-Wunused-variable]\n")
+            return _proc(stderr="planted.c:4:9: warning: unused variable 'x' "
+                                "[-Wunused-variable]\n")
+
+        out, _ = self._run([C_FILE], _which_map({"gcc": GCC, "clang": CLANG}), fake_run)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0].extra, {"severity": "warning", "compilers": "gcc,clang"})
+
+    def test_paths_are_relative_to_scan_root(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "sub").mkdir()
+            unit = root / "sub" / "a.c"
+            unit.write_text("int f(void){return 0;}\n", encoding="utf-8")
+            stderr = f"{unit}:1:5: warning: w [-Wx]\n"
+            with mock.patch("prism.adapters.shutil.which", side_effect=_which_map({"gcc": GCC})), \
+                 mock.patch("prism.adapters.subprocess.run",
+                            side_effect=lambda *_a, **_k: _proc(stderr=stderr)):
+                out = run_compiler([unit], Config(root=root))
+        self.assertEqual([f.file for f in out], ["sub/a.c"])
+
+    def test_severity_recorded_for_sarif_and_fail_on(self):
+        stderr = ("planted.c:1:1: warning: w1 [-Wx]\n"
+                  "planted.c:2:1: error: e1\n")
+        out, _ = self._run([C_FILE], _which_map({"gcc": GCC}),
+                           lambda *_a, **_k: _proc(stderr=stderr, rc=1))
+        self.assertEqual([(f.cls, f.extra["severity"]) for f in out],
+                         [("compiler-warning", "warning"), ("compiler-error", "error")])
+        self.assertTrue(all(f.status == laws.FAILED for f in out))
 
     def test_gcc_and_clang_keep_distinct_diagnostics(self):
         def fake_run(cmd, **_k):

@@ -242,6 +242,28 @@ def _host_compilers() -> list[str]:
     return out
 
 
+def _cc_name(cc: str) -> str:
+    """gcc / clang from a resolved path (either separator, .exe dropped)."""
+    name = re.split(r"[\\/]", cc)[-1]
+    return name[:-4] if name.lower().endswith(".exe") else name
+
+
+def _norm_diag(msg: str) -> str:
+    """gcc and clang word one diagnostic alike but quote and tag it apart:
+    drop the trailing [-Wflag], unify quotes, fold case and spaces."""
+    m = re.sub(r"\s*\[-W[^\]]*\]\s*$", "", msg)
+    m = re.sub(r"[\u2018\u2019\u201c\u201d`\"]", "'", m)
+    return " ".join(m.lower().split())
+
+
+def _rel_to(p: Path, base: Path) -> str:
+    """Path relative to the scan root, like every other stage's findings."""
+    try:
+        return Path(p).resolve().relative_to(Path(base).resolve()).as_posix()
+    except (ValueError, OSError):
+        return Path(p).as_posix()
+
+
 def _compiler_cmd(cc: str, path: Path) -> list[str]:
     # Enable checks. Never -w / -Wno-* / a flag that silences diagnostics.
     std = "-std=c++11" if path.suffix.lower() in {".cc", ".cpp", ".cxx"} else "-std=c11"
@@ -264,12 +286,36 @@ def run_compiler(paths: list[Path], cfg: Config) -> list[Finding]:
         )]
     out: list[Finding] = []
     seen: set[tuple] = set()
+    by_diag: dict[tuple, Finding] = {}
+    base = cfg.root if Path(cfg.root).is_dir() else Path(cfg.root).parent
 
     def _add(f: Finding) -> None:
         key = (f.file, f.line, f.cls, f.status, f.message)
         if key in seen:
             return
         seen.add(key)
+        out.append(f)
+
+    def _diag(cc: str, file: str, line: int, sev: str, msg: str) -> None:
+        """One finding per (file, line, message): gcc and clang agreeing is
+        one defect with extra.compilers naming both."""
+        name = _cc_name(cc)
+        key = (file, line, _norm_diag(msg))
+        f = by_diag.get(key)
+        if f is not None:
+            names = f.extra["compilers"].split(",")
+            if name not in names:
+                f.extra["compilers"] = ",".join([*names, name])
+            if sev == "error" and f.extra.get("severity") != "error":
+                f.extra["severity"] = "error"
+                f.cls = "compiler-error"
+            return
+        f = Finding(
+            stage="warnings", status=laws.FAILED, file=file, function=None,
+            line=line, cls="compiler-" + sev, message=msg, strength=laws.STRENGTH_SOME,
+            extra={"severity": sev, "compilers": name},
+        )
+        by_diag[key] = f
         out.append(f)
 
     jobs_list = [(cc, p, _compiler_cmd(cc, p)) for cc in compilers for p in units]
@@ -294,16 +340,17 @@ def run_compiler(paths: list[Path], cfg: Config) -> list[Finding]:
     # order are unchanged.
     results = ordered_map(syntax_check, jobs_list, getattr(cfg, "jobs", 1))
     for (cc, p, _cmd), r in zip(jobs_list, results):
+        rel = _rel_to(p, base)
         if isinstance(r, subprocess.TimeoutExpired):
             _add(Finding(
-                stage="warnings", status=laws.TIMEOUT, file=str(p), function=None,
+                stage="warnings", status=laws.TIMEOUT, file=rel, function=None,
                 line=None, cls="", message="compiler syntax-check timeout",
                 strength=laws.STRENGTH_SOME,
             ))
             continue
         if isinstance(r, OSError):
             _add(Finding(
-                stage="warnings", status=laws.NOTRUN, file=str(p), function=None,
+                stage="warnings", status=laws.NOTRUN, file=rel, function=None,
                 line=None, cls="", message=f"{cc} unusable: {r}",
                 strength=laws.STRENGTH_SOME,
                 extra={"install": "install gcc or clang"},
@@ -313,16 +360,14 @@ def run_compiler(paths: list[Path], cfg: Config) -> list[Finding]:
         hits = 0
         for m in _WARN_RE.finditer(text):
             hits += 1
-            _add(Finding(
-                stage="warnings", status=laws.FAILED, file=m.group(1), function=None,
-                line=int(m.group(2)), cls="compiler-" + m.group(4),
-                message=m.group(5), strength=laws.STRENGTH_SOME,
-            ))
+            _diag(cc, _rel_to(Path(m.group(1)), base), int(m.group(2)), m.group(4),
+                  m.group(5))
         if hits == 0 and r.returncode != 0:
             _add(Finding(
-                stage="warnings", status=laws.FAILED, file=str(p), function=None,
+                stage="warnings", status=laws.FAILED, file=rel, function=None,
                 line=None, cls="compiler-error",
                 message=(text.strip()[-400:] or f"{cc} exit {r.returncode}"),
                 strength=laws.STRENGTH_SOME,
+                extra={"severity": "error", "compilers": _cc_name(cc)},
             ))
     return out

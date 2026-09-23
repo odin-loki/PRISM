@@ -17,11 +17,13 @@ from unittest import mock
 from prism import laws
 from prism.config import Config
 from prism import polyglot as pg
+from prism import scope
 from prism.pipeline import STAGE_ORDER
 from prism.taxonomy import CLASSES
 
 ROOT = Path(__file__).resolve().parents[1]
 CPP = (ROOT / "src" / "prism" / "polyglot.cpp").read_text(encoding="utf-8")
+SCOPE_CPP = (ROOT / "src" / "prism" / "scope.cpp").read_text(encoding="utf-8")
 R = ROOT / "testdata"  # an existing directory; parser paths are made relative to it
 
 
@@ -81,6 +83,28 @@ class TestCppParity(unittest.TestCase):
         self.assertEqual({t.name for c in pg.CHECKS for t in c.tools if t.executes},
                          {"perl", "cargo-clippy", "eslint"})
 
+    def _cpp_row(self, name: str) -> str:
+        m = re.search(r'\{\{?"' + re.escape(name) + r'", \{', CPP)
+        self.assertIsNotNone(m, name)
+        assert m is not None
+        end = re.compile(r'\n {9}(?:"| \{")').search(CPP, m.end())
+        return CPP[m.start():end.start() if end else len(CPP)]
+
+    def test_benign_column_matches(self):
+        """Tool.benign (Python) == PgTool::benign (C++), tool by tool, in order."""
+        for check in pg.CHECKS:
+            for tool in check.tools:
+                row = self._cpp_row(tool.name)
+                m = re.search(r'/\*benign=\*/\{(.*?)\}\}', row, re.S)
+                cpp = re.findall(r'R"\((.*?)\)"', m.group(1)) if m else []
+                self.assertEqual(tuple(cpp), tool.benign, f"{tool.name} benign drifted")
+                for b in tool.benign:
+                    re.compile(b)
+        # The tools that print a success line have one.
+        named = {t.name for c in pg.CHECKS for t in c.tools if t.benign}
+        self.assertLessEqual({"prism-syntax", "ruff", "mypy", "ruby", "php", "perl", "gofmt"},
+                             named)
+
     def test_builtin_scans_match(self):
         for cls, rx, msg in pg.BUILTIN_SCANS:
             self.assertIn(f'{{"{cls}", R"({rx})"', CPP.replace("\n     ", " "), cls)
@@ -89,8 +113,18 @@ class TestCppParity(unittest.TestCase):
     def test_extension_and_skip_tables_match(self):
         for ext, lang in pg.LANG_EXTS.items():
             self.assertIn(f'{{"{ext}", "{lang}"}}', CPP)
-        for d in pg.SKIP_DIRS:
-            self.assertIn(f'"{d}"', CPP)
+        # One skip list for every stage: prism/scope.py == src/prism/scope.cpp.
+        self.assertIs(pg.SKIP_DIRS, scope.SKIP_DIRS)
+        cpp_dirs = re.search(
+            r"skip_dirs\(\) \{\s*static const std::set<std::string> k = \{(.*?)\};",
+            SCOPE_CPP, re.S)
+        self.assertIsNotNone(cpp_dirs)
+        assert cpp_dirs is not None
+        self.assertEqual(set(re.findall(r'"([^"]+)"', cpp_dirs.group(1))), set(scope.SKIP_DIRS))
+        for pre in scope.SKIP_PREFIXES:
+            self.assertIn(f'name.starts_with("{pre}")', SCOPE_CPP)
+        self.assertIn('#include "prism/scope.hpp"', CPP)
+        self.assertIn("scope::skip_dir(", CPP)
         for e in pg.TEXT_ONLY_EXTS | pg.C_FAMILY_EXTS:
             self.assertIn(f'"{e}"', CPP)
 
@@ -124,6 +158,36 @@ class TestBuiltinScan(unittest.TestCase):
         found = {f.cls for f in out if f.status == laws.FAILED}
         self.assertLessEqual({"SECRET-AWS-KEY", "SECRET-PRIVATE-KEY", "SECRET-GITHUB-TOKEN"},
                              found)
+
+    def test_secrets_in_any_text_file_whatever_its_name(self):
+        """id_rsa, key.pem, .npmrc, Dockerfile: no known extension, still scanned."""
+        out = _run({
+            "id_rsa": "-----BEGIN OPENSSH PRIVATE KEY-----\n",  # prism:allow
+            "certs/key.pem": "-----BEGIN PRIVATE KEY-----\n",  # prism:allow
+            ".npmrc": "//registry.npmjs.org/:_authToken=ghp_" + "b" * 36 + "\n",
+            "Dockerfile": "ENV AWS_KEY=AKIA" + "ABCDEFGHIJKLMNOP\n",
+            "blob.bin": "AKIA" + "ABCDEFGHIJKLMNOP\0\n",
+        })
+        hits = {(f.file, f.cls) for f in out if f.status == laws.FAILED}
+        self.assertIn(("id_rsa", "SECRET-PRIVATE-KEY"), hits)
+        self.assertIn(("certs/key.pem", "SECRET-PRIVATE-KEY"), hits)
+        self.assertIn((".npmrc", "SECRET-GITHUB-TOKEN"), hits)
+        self.assertIn(("Dockerfile", "SECRET-AWS-KEY"), hits)
+        # A NUL byte in the first 8 KiB is binary: not a text file.
+        self.assertNotIn("blob.bin", {f for f, _ in hits})
+        # Language tools still go by extension: none of these is a language file.
+        self.assertFalse([f for f in out if f.extra.get("check")])
+
+    def test_text_sniff(self):
+        d = _tree({"a": "text\n", "b.dat": "x\0y", "sub/c.txt": "ok\n"})
+        try:
+            (d / "big.txt").write_bytes(b"a" * (pg.MAX_FILE_BYTES + 1))
+            names = [p.relative_to(d).as_posix() for p in pg.iter_text_files(d)]
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+        self.assertEqual(names, ["a", "sub/c.txt"])
+        self.assertIn("SNIFF_BYTES = 8192", CPP)
+        self.assertIn("head.find('\\0') == std::string::npos", CPP)
 
     def test_allow_marker_skips_line(self):
         out = _run({"k.py": 'KEY = "AKIAABCDEFGHIJKLMNOP"  # prism:allow\n'})
@@ -273,6 +337,14 @@ class TestParsers(unittest.TestCase):
         self.assertEqual(out[0].message, "ruff: `os` imported but unused")
         self.assertEqual(out[0].cls, "LANG-LINT")
 
+    def test_ruff_named_rules_and_syntax_errors(self):
+        """ruff >= 0.5 names syntax errors `invalid-syntax`; older prints SyntaxError."""
+        out = self._parse("ruff", "/r/b.py:1:7: invalid-syntax: Expected a parameter\n"
+                                  "/r/c.py:2:1: SyntaxError: Expected an expression\n")
+        self.assertEqual([(f.file, f.line, f.extra["rule"]) for f in out],
+                         [("b.py", 1, "invalid-syntax"), ("c.py", 2, "SyntaxError")])
+        self.assertEqual(out[0].message, "ruff: Expected a parameter")
+
     def test_mypy_skips_notes(self):
         out = self._parse("mypy", "/r/a.py:2:10: error: Incompatible types  [assignment]\n"
                                   "/r/a.py:2:10: note: see docs\n")
@@ -316,6 +388,89 @@ class TestParsers(unittest.TestCase):
         t, _ = self._tool("eslint")
         self.assertRegex("ESLint couldn't find an eslint.config.(js|mjs|cjs) file.",
                          re.compile(t.unconfigured, re.I))
+
+
+class TestOutputNotUnderstood(unittest.TestCase):
+    """Output that parsed to nothing is ERROR, unless it is the tool's benign chatter."""
+
+    def _ruff_only(self, text: str, rc: int = 1) -> list:
+        def fake_run(cmd, timeout, cwd=None):
+            return (rc, text, False) if cmd[1:2] == ["check"] else (0, "", False)
+
+        def resolve(cfg, name, exes):
+            return "/x/ruff" if name == "ruff" else None
+
+        with mock.patch("prism.polyglot.resolve_adapter", side_effect=resolve), \
+             mock.patch("prism.polyglot._run", side_effect=fake_run):
+            out = _run({"a.py": "x = 1\n"})
+        return [f for f in out if f.extra.get("check") == "python-lint"]
+
+    def test_unparsed_output_is_error_not_unknown(self):
+        rows = self._ruff_only("ruff: something new happened\n")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].status, laws.ERROR)
+        self.assertEqual(rows[0].message,
+                         "ruff: output not understood: ruff: something new happened")
+
+    def test_benign_output_is_unknown(self):
+        rows = self._ruff_only("All checks passed!\n", rc=0)
+        self.assertEqual([r.status for r in rows], [laws.UNKNOWN])
+        self.assertIn("no diagnostics (not a proof)", rows[0].message)
+
+    def test_unexplained_output(self):
+        ruby = next(t for c in pg.CHECKS for t in c.tools if t.name == "ruby")
+        self.assertEqual(pg.unexplained_output(ruby, "Syntax OK\n\n"), "")
+        self.assertEqual(pg.unexplained_output(ruby, "Syntax OK\nweird\n"), "weird")
+        # A line the tool pattern matches but parse_output drops (a note) is understood.
+        sc = next(t for c in pg.CHECKS for t in c.tools if t.name == "shellcheck")
+        self.assertEqual(pg.parse_output(sc, "/r/a.sh:2:6: note: quote it [SC2086]\n", R, None,
+                                         next(c for c in pg.CHECKS if c.group == "shell-lint")),
+                         [])
+        self.assertEqual(pg.unexplained_output(sc, "/r/a.sh:2:6: note: quote it [SC2086]\n"), "")
+        self.assertIn('": output not understood: "', CPP)
+
+
+# Real tools on this machine: a well-formed file must come back UNKNOWN (ran,
+# nothing to say), never ERROR "output not understood" (a benign line missing
+# from Tool.benign); a broken file must be FAILED with a file (the regex matches).
+_REAL = {
+    "python-lint": ("ruff", {"ok.py": "x = 1\n"}, {"bad.py": "def f(:\n    pass\n"}),
+    "python-types": ("mypy", {"ok.py": "x: int = 1\n"}, {"t.py": 'x: int = "s"\n'}),
+    "javascript-syntax": ("node", {"ok.js": "let x = 1;\n"}, {"bad.js": "let = ;\n"}),
+    "typescript-types": ("tsc", {"ok.ts": "let y: number = 1;\n"},
+                         {"bad.ts": "let y: number = 's';\n"}),
+    "shell-syntax": ("bash", {"ok.sh": "echo hi\n"}, {"bad.sh": "if then\nfi\n"}),
+    "shell-lint": ("shellcheck", {"ok.sh": "#!/bin/sh\necho hi\n"},
+                   {"bad.sh": "#!/bin/sh\nx=1\n"}),
+    "go-syntax": ("gofmt", {"ok.go": "package main\nfunc main(){}\n"},
+                  {"bad.go": "package main\nfunc main( {\n"}),
+    "ruby-syntax": ("ruby", {"ok.rb": "puts 1\n"}, {"bad.rb": "def (\n"}),
+    "php-syntax": ("php", {"ok.php": "<?php echo 1;\n"}, {"bad.php": "<?php echo ;\n"}),
+    "perl-syntax": ("perl", {"ok.pl": "print 1;\n"}, {"bad.pl": "my $x = ;\n"}),
+    "yaml-lint": ("yamllint", {"ok.yml": "---\na: 1\n"}, {"bad.yml": "---\na: [1\n"}),
+}
+
+
+class TestRealToolsUnderstood(unittest.TestCase):
+    def _rows(self, group: str, files: dict[str, str]) -> list:
+        out = _run(files, allow_exec=True)
+        return [f for f in out if f.extra.get("check") == group]
+
+    def test_each_installed_tool(self):
+        ran = 0
+        for group, (exe, ok, bad) in _REAL.items():
+            if not shutil.which(exe):
+                continue
+            ran += 1
+            with self.subTest(group=group, tool=exe):
+                good = self._rows(group, ok)
+                self.assertEqual([f.status for f in good], [laws.UNKNOWN],
+                                 [(f.status, f.message) for f in good])
+                broken = self._rows(group, bad)
+                self.assertTrue(any(f.status == laws.FAILED and f.file for f in broken),
+                                [(f.status, f.message) for f in broken])
+        if not ran:
+            self.skipTest("no polyglot tools installed")
 
 
 if __name__ == "__main__":

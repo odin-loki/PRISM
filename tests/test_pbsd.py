@@ -26,8 +26,10 @@ _PROOF = {laws.PROVED, laws.PROVED_UNBOUNDED, laws.PROVED_ASSUMING}
 _CPP_PBSD = ROOT / "src" / "prism" / "adapters.cpp"
 
 
-def _cfg(*, pbsd: Path | None = None) -> Config:
-    kw = {"root": TD}
+def _cfg(*, pbsd: Path | None = None, allow_exec: bool = False) -> Config:
+    # A present ParanoidBSD tree is imported only under --allow-exec (Law 9):
+    # tests that exercise the tree half opt in, as a user would.
+    kw: dict = {"root": TD, "allow_exec": allow_exec}
     if pbsd is not None:
         kw["pbsd_root"] = pbsd
     return Config(**kw)
@@ -69,6 +71,69 @@ class TestOnesidedLint(unittest.TestCase):
         self.assertTrue(hits)
 
 
+class TestPbsdExplicitOnly(unittest.TestCase):
+    """No personal/guessed default tree; using a tree needs --allow-exec (Law 9)."""
+
+    def test_no_hardcoded_default_location(self):
+        for rel in ("prism/config.py", "src/prism/config.cpp", "prism/pbsd.py",
+                    "src/prism/adapters.cpp"):
+            text = (ROOT / rel).read_text(encoding="utf-8")
+            self.assertNotIn("odinl", text, rel)
+            self.assertNotIn("Desktop", text, rel)
+        self.assertNotIn('"ParanoidBSD"', (ROOT / "src" / "prism" / "config.cpp").read_text("utf-8"))
+        old = os.environ.pop("PRISM_PBSD", None)
+        try:
+            self.assertIsNone(Config().pbsd_root)
+            os.environ["PRISM_PBSD"] = str(MISSING)
+            self.assertEqual(Config().pbsd_root, MISSING)
+        finally:
+            os.environ.pop("PRISM_PBSD", None)
+            if old is not None:
+                os.environ["PRISM_PBSD"] = old
+
+    def test_not_configured_is_notrun_with_how(self):
+        old = os.environ.pop("PRISM_PBSD", None)
+        try:
+            hits = run_pbsd_lints([TD / "abs_ok.c"], Config(root=TD))
+        finally:
+            if old is not None:
+                os.environ["PRISM_PBSD"] = old
+        self.assertEqual([f.status for f in hits], [laws.NOTRUN])
+        self.assertEqual(hits[0].message, "ParanoidBSD tree not configured")
+        self.assertIn("--pbsd PATH", hits[0].extra["install"])
+
+    def test_present_tree_without_allow_exec_is_not_imported(self):
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "tools" / "verify").mkdir(parents=True)
+            with mock.patch("prism.pbsd._load_verify") as load, \
+                 mock.patch("prism.pbsd._run_sibling_guard") as sib:
+                hits = run_pbsd_lints([TD / "onesided.c"], _cfg(pbsd=Path(td)))
+            load.assert_not_called()
+            sib.assert_not_called()
+        held = [f for f in hits if f.extra.get("reason") == "executes-scanned-code"]
+        self.assertEqual(len(held), 1)
+        self.assertEqual(held[0].status, laws.NOTRUN)
+        self.assertIn("--allow-exec", held[0].extra["install"])
+        # The PRISM portable copies still run.
+        self.assertTrue(any(f.cls == "MEM-ONESIDED-INDEX" and f.status == laws.FAILED
+                            for f in hits))
+        _never_proved(hits)
+
+    def test_cli_flag_both_engines(self):
+        main_py = (ROOT / "prism" / "__main__.py").read_text(encoding="utf-8")
+        self.assertIn('"--pbsd"', main_py)
+        self.assertIn("cfg.pbsd_root = Path(args.pbsd)", main_py)
+        main_cpp = (ROOT / "src" / "prism" / "main.cpp").read_text(encoding="utf-8")
+        self.assertIn('a == "--pbsd"', main_cpp)
+        self.assertIn("cfg.pbsd_root = ", main_cpp)
+        cpp = _CPP_PBSD.read_text(encoding="utf-8")
+        self.assertIn("ParanoidBSD tree not configured", cpp)
+        self.assertIn("pbsd (import ParanoidBSD tools/verify modules)", cpp)
+        self.assertIn("!cfg.allow_exec", cpp)
+        from prism.pipeline import EXEC_STAGES
+        self.assertEqual(EXEC_STAGES["pbsd"], "part")
+
+
 class TestPbsdBridge(unittest.TestCase):
     def test_missing_tree_not_empty_ok(self):
         old = os.environ.pop("PRISM_PBSD", None)
@@ -102,9 +167,9 @@ class TestPbsdBridge(unittest.TestCase):
     def test_present_tree_invokes_scanners_not_a_note(self):
         old = os.environ.pop("PRISM_PBSD", None)
         try:
-            cfg = _cfg()
+            cfg = _cfg(pbsd=Path(old) if old else None, allow_exec=True)
             if discover_pbsd_root(cfg) is None:
-                self.skipTest("ParanoidBSD tree not on this machine")
+                self.skipTest("ParanoidBSD tree not configured (PRISM_PBSD)")
             hits = run_pbsd_lints([TD / "realloc_self.c", TD / "capacity.c"], cfg)
             self.assertFalse(any("use --pbsd-sweep" in (f.message or "") for f in hits))
             self.assertFalse(any(f.status == laws.CLEAN for f in hits))
@@ -148,7 +213,7 @@ class TestPbsdBridge(unittest.TestCase):
             old = os.environ.pop("PRISM_PBSD", None)
             try:
                 with mock.patch("prism.pbsd.shutil.which", return_value=None):
-                    hits = run_pbsd_lints([TD / "abs_ok.c"], _cfg(pbsd=Path(td)))
+                    hits = run_pbsd_lints([TD / "abs_ok.c"], _cfg(pbsd=Path(td), allow_exec=True))
                 notrun = [f for f in hits if f.status == laws.NOTRUN]
                 self.assertGreaterEqual(len(notrun), 3)
                 statuses = {f.status for f in hits}
@@ -179,7 +244,7 @@ class TestPbsdBridge(unittest.TestCase):
                         def which(name, *args, _missing=binary, **kwargs):
                             return None if name == _missing else os.path.join("C:\\", "prism-fake-bin", name)
                         with mock.patch("prism.pbsd.shutil.which", side_effect=which):
-                            hits = run_pbsd_lints([TD / "abs_ok.c"], _cfg(pbsd=Path(td)))
+                            hits = run_pbsd_lints([TD / "abs_ok.c"], _cfg(pbsd=Path(td), allow_exec=True))
                         _never_proved(hits)
                         statuses = {f.status for f in hits}
                         self.assertIn(laws.NOTRUN, statuses)
@@ -206,7 +271,8 @@ class TestPbsdBridge(unittest.TestCase):
             try:
                 with mock.patch("prism.pbsd.discover_pbsd_root", return_value=root):
                     with mock.patch("prism.pbsd.shutil.which", return_value=None):
-                        hits = run_pbsd_lints([TD / "abs_ok.c"], _cfg(pbsd=MISSING))
+                        hits = run_pbsd_lints([TD / "abs_ok.c"],
+                                              _cfg(pbsd=MISSING, allow_exec=True))
                 notrun = [f for f in hits if f.status == laws.NOTRUN]
                 self.assertGreaterEqual(len(notrun), len(HEAVY))
                 _never_proved(hits)
@@ -257,7 +323,7 @@ class TestPbsdBridge(unittest.TestCase):
             with tempfile.TemporaryDirectory() as td:
                 (Path(td) / "tools" / "verify").mkdir(parents=True)
                 with mock.patch("prism.pbsd.shutil.which", return_value=None):
-                    present = run_pbsd_lints([], _cfg(pbsd=Path(td)))
+                    present = run_pbsd_lints([], _cfg(pbsd=Path(td), allow_exec=True))
                 _never_proved(present)
                 present_st = {f.status for f in present}
                 self.assertNotIn(laws.CLEAN, present_st)
@@ -311,7 +377,7 @@ class TestPbsdBridge(unittest.TestCase):
             (verify / "sweep_all.py").write_text("# fake sweep_all\n", encoding="utf-8")
             old = os.environ.pop("PRISM_PBSD", None)
             try:
-                cfg = _cfg(pbsd=Path(td))
+                cfg = _cfg(pbsd=Path(td), allow_exec=True)
                 with mock.patch("prism.pbsd.shutil.which", return_value=None):
                     for src in (TD / "abs_ok.c", TD / "onesided.c"):
                         with self.subTest(src=src.name):

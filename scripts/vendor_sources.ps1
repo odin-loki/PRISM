@@ -1,5 +1,5 @@
 $ErrorActionPreference = "Continue"
-$root = "c:\Users\odinl\OneDrive\Desktop\Code Analysis\third_party"
+$root = Join-Path (Split-Path -Parent $PSScriptRoot) "third_party"
 $log = Join-Path $root "vendor.log"
 Set-Content -Path $log -Value "vendor start $(Get-Date -Format o)"
 

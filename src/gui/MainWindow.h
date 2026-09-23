@@ -31,6 +31,8 @@ private:
     QCheckBox *no_llm_ = nullptr;
     QCheckBox *skip_fuzz_ = nullptr;
     QCheckBox *skip_repair_ = nullptr;
+    // Law 9: --allow-exec, default off.
+    QCheckBox *allow_exec_ = nullptr;
     QTableWidget *tax_ = nullptr;
     QTableWidget *findings_ = nullptr;
     QLabel *vis_ = nullptr;

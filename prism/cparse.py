@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 from typing import NamedTuple
 
+from prism import scope
 from prism import laws
 from prism.models import Finding, FunctionInfo
 
@@ -668,9 +669,8 @@ def iter_sources(root: Path) -> list[Path]:
     files: list[Path] = []
     if root.is_file():
         return [root]
-    skip = {".git", "prism-out", "third_party", "build", "node_modules", "__pycache__"}
     for p in root.rglob("*"):
-        if any(part in skip for part in p.parts):
+        if scope.skipped_path(p, root):
             continue
         if p.suffix.lower() in C_EXTS and p.is_file():
             files.append(p)

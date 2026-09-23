@@ -20,11 +20,11 @@
 namespace prism {
 namespace fs = std::filesystem;
 
+// PRISM_PBSD only. No guessed location: the ParanoidBSD tree is used when
+// named explicitly (PRISM_PBSD or --pbsd PATH). Empty = not configured.
 static fs::path default_pbsd() {
     if (const char* env = std::getenv("PRISM_PBSD"); env && *env) return env;
-    fs::path sibling = R"(C:\Users\odinl\OneDrive\Desktop\ParanoidBSD)";
-    if (fs::exists(sibling)) return sibling;
-    return fs::current_path().parent_path() / "ParanoidBSD";
+    return {};
 }
 
 static fs::path default_gguf() {

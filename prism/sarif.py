@@ -24,6 +24,17 @@ INFO_URI = "https://github.com/odin-loki/PRISM"
 DEFECT_STATUSES = (laws.FAILED, laws.CRASH, laws.SANFAIL)
 GAP_STATUSES = (laws.NOTRUN, laws.ERROR, laws.TIMEOUT)
 FAIL_ON = ("never", "defect", "gap")
+# --fail-on counts a defect only at error level: a finding whose
+# extra.severity is one of these (a compiler/linter warning) is reported
+# (SARIF level "warning") but does not fail the build.
+NON_BLOCKING_SEVERITIES = ("warning", "note", "style")
+
+
+def blocks(f: Finding) -> bool:
+    """A defect --fail-on defect/gap counts (not a warning/note/style)."""
+    if f.status not in DEFECT_STATUSES:
+        return False
+    return str((f.extra or {}).get("severity", "")).lower() not in NON_BLOCKING_SEVERITIES
 
 
 def _level(f: Finding) -> str | None:
@@ -115,13 +126,16 @@ def write_sarif(report: RunReport, path: Path) -> None:
 
 
 def exit_code(report: RunReport, fail_on: str) -> int:
-    """2 = a stage crashed; 1 = --fail-on policy tripped; 0 otherwise."""
+    """2 = a stage crashed; 1 = --fail-on policy tripped; 0 otherwise.
+
+    Defects with extra.severity warning/note/style never trip the policy.
+    """
     if any(s.status == "failed" for s in report.stages):
         return 2
     if fail_on == "never":
         return 0
     findings = [f for s in report.stages for f in s.findings]
-    if any(f.status in DEFECT_STATUSES for f in findings):
+    if any(blocks(f) for f in findings):
         return 1
     if fail_on == "gap" and (
         any(s.status == "NOTRUN" for s in report.stages)

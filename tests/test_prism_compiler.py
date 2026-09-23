@@ -84,6 +84,14 @@ class TestCppCompilerSourceContract(unittest.TestCase):
         self.assertIn("FAILED", self.body)
         self.assertRegex(self.body, r"hits\s*==\s*0.*rc\s*!=\s*0|rc\s*!=\s*0.*hits\s*==\s*0", re.S)
 
+    def test_merges_gcc_clang_and_records_severity(self):
+        """Same (file, line, normalized message) from gcc and clang is ONE finding
+        with extra.compilers; extra.severity drives SARIF level and --fail-on."""
+        self.assertIn('f.extra["compilers"]', self.src)
+        self.assertIn('f.extra["severity"] = sev', self.src)
+        self.assertIn("norm_diag(msg)", self.src)
+        self.assertIn("rel_to_root(", self.body)
+
     def test_refuses_wno_and_w(self):
         self.assertIn('"-w"', self.body)
         self.assertIn("-Wno-", self.body)

@@ -244,16 +244,11 @@ def ordered_map(fn: Callable[[_T], _R], items: Iterable[_T], jobs: int | None) -
         return list(pool.map(fn, seq))
 
 
-def _default_pbsd() -> Path:
+def _default_pbsd() -> Path | None:
+    """PRISM_PBSD only. No guessed location: the ParanoidBSD tree is used
+    when named explicitly (PRISM_PBSD or --pbsd PATH)."""
     env = os.environ.get("PRISM_PBSD")
-    if env:
-        return Path(env)
-    sibling = Path(r"C:\Users\odinl\OneDrive\Desktop\ParanoidBSD")
-    if sibling.exists():
-        return sibling
-    here = Path(__file__).resolve().parents[1]
-    cand = here.parent / "ParanoidBSD"
-    return cand
+    return Path(env) if env else None
 
 
 def _default_gguf() -> Path:
@@ -270,7 +265,9 @@ def _default_gguf() -> Path:
 class Config:
     root: Path = Path(".")
     out: Path = Path("prism-out")
-    pbsd_root: Path = field(default_factory=_default_pbsd)
+    # ParanoidBSD tree (--pbsd PATH or PRISM_PBSD); None = not configured.
+    # Importing its tools/verify modules executes external code: Law 9.
+    pbsd_root: Path | None = field(default_factory=_default_pbsd)
     model: str = os.environ.get("PRISM_MODEL", "qwen3.5:9b")
     ollama_host: str = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
     gguf: Path = field(default_factory=_default_gguf)
