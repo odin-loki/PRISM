@@ -3257,7 +3257,7 @@ std::optional<Args> heuristic_flip(const FunctionInfo& fn, const Args& args, con
         auto nxt = args;
         int v = i32(args.contains(name) ? args.at(name) : 0);
         for (int64_t cand : {int64_t{0}, int64_t{1}, int64_t{-1}, int64_t{INT_MAX_32},
-                             int64_t{INT_MIN_32}, int64_t{-v}, int64_t{v + 1}, int64_t{v - 1}}) {
+                             int64_t{INT_MIN_32}, -int64_t{v}, int64_t{v} + 1, int64_t{v} - 1}) {
             nxt[name] = i32(cand);
             auto got = eval_cond(fn, nxt, cond);
             if (got && *got == want && args_key(nxt) != args_key(args)) return nxt;

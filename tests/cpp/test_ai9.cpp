@@ -283,6 +283,7 @@ TEST_CASE("ai9 lean: no prover model is NOTRUN, never a proof") {
 }
 
 // ============================================================ assumption audit
+#ifdef PRISM_HAS_Z3  // these cases need a solver answer (Law 1: without Z3 they are NOTRUN)
 TEST_CASE("ai9 vacuity: Z3 flags a requires no input satisfies, and only that") {
     auto fn = scalar("vac", "return n;");
     CHECK(ai::assumptions_satisfiable(fn, {"n > 5", "n < 3"}) == "unsat");
@@ -311,6 +312,8 @@ TEST_CASE("ai9 vacuity: Z3 flags a requires no input satisfies, and only that") 
     CHECK(out[0].extra["audited_status"] == std::string(laws::PROVED_ASSUMING));
     CHECK(out[1].extra["culprit"] == "n >= 5 && n <= 4");
 }
+
+#endif
 
 TEST_CASE("ai9 assumption audit: model flags are READS, never a verdict change") {
     auto out_dir = tmp("audit-model");
@@ -365,6 +368,7 @@ TEST_CASE("ai9 contracts: syntax helpers, hashes and requirements") {
     CHECK_FALSE(ai::validate_contract("requires n >= 0; // from somewhere\n", {"n"}).ok);
 }
 
+#ifdef PRISM_HAS_Z3  // these cases need a solver answer (Law 1: without Z3 they are NOTRUN)
 TEST_CASE("ai9 contracts: callers are checked against a requires, modularly") {
     auto callee = scalar("half", "return n / 2;");
     auto ok = scalar("use_half", "if (x < 0) return 0; return half(x);", {{"int", "x"}});
@@ -551,6 +555,8 @@ TEST_CASE("ai9 proof repair: model invariants for the changed loop are accepted 
     CHECK(ai::run_proof_regression({v2}, {}, cfg).at(0).extra["proof_store"] == "reused");
 }
 
+#endif
+
 TEST_CASE("ai9 review stage in the pipeline: vacuous requires found without a model; one NOTRUN row") {
     auto dir = tmp("pipeline");
     write(dir / "src" / "v.c",
@@ -569,13 +575,19 @@ TEST_CASE("ai9 review stage in the pipeline: vacuous requires found without a mo
     for (auto& s : rep.stages)
         if (s.name == "review") review = &s;
     REQUIRE(review);
-    CHECK(review->status == "ok");
     bool vac = false, notrun = false;
     for (auto& f : review->findings) {
         if (f.cls == "VACUOUS-ASSUMPTION" && f.status == std::string(laws::FAILED)) vac = true;
         if (f.status == std::string(laws::NOTRUN)) notrun = true;
     }
+#ifdef PRISM_HAS_Z3
+    CHECK(review->status == "ok");
     CHECK(vac);
     CHECK(notrun);
+#else
+    // the vacuity check needs Z3: without it the stage is NOTRUN (Law 1)
+    CHECK(review->status == std::string(laws::NOTRUN));
+    CHECK_FALSE(vac);
+#endif
     CHECK(fs::exists(cfg.out / "proof_store.json"));
 }

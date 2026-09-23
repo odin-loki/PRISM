@@ -3207,6 +3207,7 @@ Finding bmc_once(const FunctionInfo& fn, int unwind, bool try_unbounded,
             f.extra["oracle"] = "false";
             f.extra["unwind"] = std::to_string(unwind);
             f.extra["param_premise"] = param_premise(c, fn.params);
+            if (!enc->nondets.empty()) f.extra["nondet"] = nondet_trace(s.get_model(), *enc);
             return f;
         }
         if (r == z3::unknown) {

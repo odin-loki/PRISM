@@ -484,6 +484,38 @@ static std::map<std::string, prism::Finding> bmc_source(const std::string& name,
     return by;
 }
 
+TEST_CASE("bmc: a refutation reports the nondet values its path reads, in call order") {
+    auto by = bmc_source("nondet_trace.c", R"(extern int __VERIFIER_nondet_int(void);
+extern unsigned char __VERIFIER_nondet_uchar(void);
+extern char __VERIFIER_nondet_char(void);
+int main(void) {
+  int a = __VERIFIER_nondet_int();
+  if (a < 0) { char c = __VERIFIER_nondet_char(); return c; }
+  unsigned char k = __VERIFIER_nondet_uchar();
+  if (a > 2147483000 && k == 200) { int b = a + 1000; return b; }
+  return 0;
+}
+int nothing(int x) { return x / 2; }
+)");
+    REQUIRE(by.count("main"));
+    auto& f = by["main"];
+    CHECK(f.status == std::string(prism::laws::FAILED));
+    CHECK(f.cls == "INT-SIGNED-OVF");
+    REQUIRE(f.extra.count("nondet"));
+    auto nd = f.extra.at("nondet");
+    // the char call sits on the a < 0 branch, which the violating path skips
+    CHECK(nd.find("__VERIFIER_nondet_char") == std::string::npos);
+    auto i = nd.find("__VERIFIER_nondet_int=");
+    auto k = nd.find("__VERIFIER_nondet_uchar=200");
+    REQUIRE(i != std::string::npos);
+    REQUIRE(k != std::string::npos);
+    CHECK(i < k);
+    auto v = std::stoll(nd.substr(i + std::string("__VERIFIER_nondet_int=").size()));
+    CHECK(v > 2147483000);
+    // a function that reads no nondet input carries no nondet key
+    if (by.count("nothing")) CHECK_FALSE(by["nothing"].extra.count("nondet"));
+}
+
 TEST_CASE("bmc soundness: known wrong proofs are refuted (S1-S6)") {
     auto by = bmc_source("sound_s.c", R"(#include <stdlib.h>
 #include <limits.h>
@@ -1592,7 +1624,11 @@ TEST_CASE("failed jsonl does not resume stale report.json ok rows") {
         }
     }
     CHECK_FALSE(bmc_stale);
+#ifdef PRISM_HAS_Z3
     CHECK(bmc_proved);
+#else
+    CHECK_FALSE(bmc_proved);  // no solver: never a proof (Law 1)
+#endif
     std::error_code ec;
     std::filesystem::remove_all(out, ec);
 }
