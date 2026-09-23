@@ -204,6 +204,7 @@ int main(int argc, char** argv) {
         else if (a == "--resume") cfg.resume = true;
         else if (a == "--allow-exec") cfg.allow_exec = true;
         else if (a == "--strict-aliasing") cfg.strict_aliasing = true;
+        else if (a == "--pir-drafts") cfg.pir_drafts = true;
         else if (a == "--list-stages") {
             for (auto* p = STAGE_ORDER; *p; ++p) std::cout << *p << "\n";
             return 0;
@@ -235,7 +236,7 @@ int main(int argc, char** argv) {
                 "           [--stage a,b] [--skip a,b] [--out DIR] [--resume] [--unwind N]\n"
                 "           [--fuzz-budget N] [--fuzz-iters N] [--repair-rounds N]\n"
                 "           [--list-stages] [--fail-on never|defect|gap] [--allow-exec]\n"
-                "           [--strict-aliasing]\n"
+                "           [--strict-aliasing] [--pir-drafts]\n"
                 "PRISM = Performance, Regression, Integration and Security Module\n"
                 "Checks any codebase (PATH: file or directory, any language): deep C/C++\n"
                 "analysis (lints, compiler warnings, BMC, fuzzing, contracts) plus every other\n"
@@ -252,6 +253,8 @@ int main(int argc, char** argv) {
                 "  trust. Without it those steps are NOTRUN (Law 9).\n"
                 "--strict-aliasing: the pir stage also checks effective types (C11 6.5p7);\n"
                 "  off by default because real code often breaks strict aliasing on purpose.\n"
+                "--pir-drafts: pir takes pointer sizes from the template harness draft when no\n"
+                "  requires clause gives them (PROVED-ASSUMING at best; off: NEEDS-HARNESS).\n"
                 "--pbsd PATH: ParanoidBSD tree for the pbsd stage (else PRISM_PBSD; no default).\n"
                 "  Importing its modules also needs --allow-exec.\n"
                 "Writes report.json, report.md and report.sarif (SARIF 2.1.0) under --out.\n";

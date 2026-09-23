@@ -1,0 +1,6 @@
+format_version: 1
+input_files: mem_ptr_arith_true.c
+language: C
+property: memsafety
+expected:
+  mem_ptr_arith_true: true

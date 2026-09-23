@@ -31,9 +31,10 @@ int readonly_write_bad(char *s) {
     return 0;
 }
 
-/* No precondition: the deterministic template harness draft
- * (ai::draft_harness) gives "a points to exactly n int elements" and the
- * size range "1 <= n <= 4"; both are listed as assumptions. */
+/* No precondition: NEEDS-HARNESS by default. With --pir-drafts the
+ * deterministic template harness draft (ai::draft_harness) gives "a points to
+ * exactly n int elements" and the size range "1 <= n <= 4"; both are listed
+ * as assumptions (PROVED-ASSUMING). */
 int draft_count(int *a, int n) {
     int s = 0;
     for (int i = 0; i < n; i++) s += (a[i] > 0);

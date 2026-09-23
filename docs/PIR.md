@@ -275,14 +275,17 @@ leading comment lines of its body:
 /*@ requires \valid(p + (0..n-1)); */   ACSL block
 ```
 
-Without such a clause (C units), the deterministic template harness draft
+With `--pir-drafts` (opt-in; the default keeps Law 6's NEEDS-HARNESS) and
+without such a clause (C units), the deterministic template harness draft
 (`ai::draft_harness`, the one the `harness` stage uses; never an LLM here,
 Law 4) may supply the size: "`a` points to exactly `n` int elements"
 (a length parameter) with its drafted range "`1 <= n <= 4`", or "at least
 K elements" when an early return bounds the index. A size read off the
 largest literal index is not used (it would make exactly those accesses
 in bounds by construction). The draft's assumptions are listed like a
-`requires` clause (`source: harness (template draft)`).
+`requires` clause (`source: harness (template draft)`). A violation found
+only under a drafted precondition is reported NEEDS-HARNESS (the
+precondition was invented), never FAILED.
 
 The element size is that of the first access through `p` in the IR. `p` is
 bound to a fresh `extern` object of `max(n, 0) × size` bytes, initialised

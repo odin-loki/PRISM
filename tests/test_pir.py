@@ -156,7 +156,7 @@ MEM_EXPECTED: dict[tuple[str, str], tuple[str, str]] = {
     ("mem_contract.c", "count_pos_ok"): (laws.PROVED_ASSUMING, ""),
     ("mem_contract.c", "off_by_one_bad"): (laws.FAILED, "MEM-OOB-WRITE"),
     ("mem_contract.c", "readonly_write_bad"): (laws.FAILED, "MEM-WRITE-CONST"),
-    ("mem_contract.c", "draft_count"): (laws.PROVED_ASSUMING, ""),  # sizes from the template harness draft
+    ("mem_contract.c", "draft_count"): (laws.NEEDS_HARNESS, ""),  # drafts are opt-in (--pir-drafts)
     ("mem_cxx.cpp", "new_delete_ok"): (laws.PROVED, ""),
     ("mem_cxx.cpp", "new_array_ok"): (laws.PROVED, ""),
     ("mem_cxx.cpp", "mismatch_bad"): (laws.FAILED, "MEM-MISMATCHED-FREE"),
@@ -301,9 +301,17 @@ class TestPirStage(unittest.TestCase):
         self.assertIn("\\valid(p + (0..3))", f["extra"]["assumptions"])
         self.assertEqual(f["extra"]["verdict_before_assumptions"], laws.PROVED)
         self.assertIn("Law 6", got[("mem_contract.c", "no_contract")]["message"])
-        d = got[("mem_contract.c", "draft_count")]["extra"]["assumptions"]
-        self.assertIn("harness (template draft)", d)
-        self.assertIn("(drafted size range)", d)
+        self.assertIn("Law 6", got[("mem_contract.c", "draft_count")]["message"])
+
+    def test_harness_drafts_are_opt_in(self):
+        on = self._verdicts(self._run("--pir-drafts"))
+        f = on[("mem_contract.c", "draft_count")]
+        self.assertEqual(f["status"], laws.PROVED_ASSUMING)
+        self.assertIn("harness (template draft)", f["extra"]["assumptions"])
+        self.assertIn("(drafted size range)", f["extra"]["assumptions"])
+        # a user-stated contract still decides; unguarded literal-index sizes are not drafted
+        self.assertEqual(on[("mem_contract.c", "first_last_ok")]["status"], laws.PROVED_ASSUMING)
+        self.assertEqual(on[("mem_contract.c", "no_contract")]["status"], laws.NEEDS_HARNESS)
 
     def test_library_models_and_memory_notes(self):
         got = self._verdicts(self.report)

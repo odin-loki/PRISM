@@ -77,7 +77,7 @@ TranslateOptions function_options(const TranslateOptions& base, const ir::Functi
                 return false;
         return true;
     };
-    if (covered() || unit.cxx) return o;
+    if (covered() || unit.cxx || !cfg.pir_drafts) return o;
     // no (complete) precondition: a deterministic template harness draft may
     // give the sizes (ai::draft_harness; never an LLM here, Law 4)
     if (!unit.functions) {
@@ -131,6 +131,18 @@ void apply_memory_policy(Finding& f, Verdict& v, Function& fn, const ir::Module&
             }
             v.extra["globals"] = "FAILED also with the globals' initial values";
         }
+    }
+    // A violation under a drafted (not user-stated) precondition is not a
+    // defect report: the precondition was invented (Law 6).
+    bool drafted = false;
+    for (auto& a : fn.assumptions) drafted = drafted || a.find("harness (template draft)") != std::string::npos;
+    if (drafted && v.status == laws::FAILED) {
+        v.extra["verdict_under_draft"] = v.status + ": " + v.message;
+        v.status = std::string(laws::NEEDS_HARNESS);
+        v.message = "pointer parameter: violation only under a drafted harness (" + v.message +
+                    "); state the precondition with // requires: (Law 6)";
+        v.cex.clear();
+        v.cex_args.clear();
     }
     if (!fn.assumptions.empty()) {
         std::string s;
