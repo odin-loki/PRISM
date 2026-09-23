@@ -84,6 +84,15 @@ public:
 
     std::size_t objects() const { return objs_.size(); }
 
+    // k-induction footprint havoc (docs/PIR.md "k-induction with memory"):
+    // every byte of each listed object (all = every object allocated so far
+    // except `const` ones) gets an arbitrary value and tag. Its initialised
+    // flag becomes arbitrary too, or, with keep_init, "initialised before or
+    // arbitrary" (old | fresh): a byte that may be uninitialised before stays
+    // maybe-uninitialised, never assumed initialised. Liveness, size and
+    // kind are unchanged. Returns the number of objects havocked.
+    std::size_t havoc_objects(const z3::expr& guard, const std::vector<uint64_t>& ids, bool all, bool keep_init);
+
     // Provenance: `e` is known to point into object `obj` on every path
     // without a reported violation (pointer arithmetic is checked to stay in
     // its object). Used only to skip writes to other objects in a read.
@@ -102,9 +111,10 @@ private:
         z3::expr alive;  // bool
     };
     struct Entry {
-        enum Kind { Byte, Set, Copy, Havoc } kind;
+        enum Kind { Byte, Set, Copy, Havoc, HavocObj } kind;
         z3::expr guard, addr, len, src, cell;
         int havoc = -1;
+        bool keep = false;  // HavocObj: initialised flag = old | fresh
     };
     z3::context& c_;
     MemEncoding enc_;

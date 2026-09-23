@@ -1,0 +1,8 @@
+format_version: 1
+input_files: kindmem_global_false.c
+language: C
+property: memsafety
+expected:
+  kindmem_global_false: false
+witness:
+  kindmem_global_false: [9, 0]

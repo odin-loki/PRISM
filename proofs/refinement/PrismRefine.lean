@@ -7,3 +7,4 @@ import PrismRefine.Lazy
 import PrismRefine.Sound
 import PrismRefine.Check
 import PrismRefine.Float
+import PrismRefine.FloatOps

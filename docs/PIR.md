@@ -283,11 +283,11 @@ per path and gets the next constant object id (the Lean `next` counter).
 `tests/cpp/test_pir_mem.cpp` checks that both encodings give the same verdict
 and class on every property (true and false variants) and that the PIR
 interpreter (`interpret`, concrete memory `ConcMem`) reproduces each
-counterexample. For functions with memory, k-induction is attempted only
-for a loop that does not write, allocate or free memory ("k-induction with
-memory" below); otherwise (`extra.k_induction = "not-attempted (memory
-written in the loop)"`) their loops are PROVED only when the unwinding
-assertion closes, else BOUNDED.
+counterexample. For functions with memory, the k-induction step havocs the
+loop's write footprint ("k-induction with memory" below); a loop that
+allocates or frees memory is not attempted (`extra.k_induction =
+"not-attempted (allocation or free in the loop)"`), so it is PROVED only
+when the unwinding assertion closes, else BOUNDED.
 
 ### Correspondence to the Lean model
 
@@ -628,24 +628,99 @@ listed in `extra.assumptions` and a proof is **PROVED-ASSUMING**, never
 PROVED. Asm with memory operands, several outputs or non-integer outputs
 stays `UNENCODED` even with a contract. `tests/pir/asm_contract.c`.
 
-## k-induction with memory (roadmap 2.6 remaining, partial)
+## k-induction with memory (roadmap 2.6)
 
-The step case havocs the loop header's phis and encodes the code before the
-loop concretely. For a function with memory this is sound exactly when the
-loop leaves memory unchanged — no store, memcpy/memset, allocation, free or
-stack restore in any block of the loop (loads and memory queries are fine):
-then the memory at every iteration is the one the prefix reached. Such
-*read-only loops* get k-induction (`extra.k_induction_memory = "read-only
-loop"`, PROVED-UNBOUNDED when the step closes). A loop that writes memory is
-not attempted (`extra.k_induction = "not-attempted (memory written in the
-loop)"`; it stays BOUNDED): a sound step case would need an arbitrary memory
-state at the header that agrees with the prefix only where the loop cannot
-write — every byte it may write (through any pointer it computes), those
-bytes' initialised flags, and the liveness and number of the objects it
-allocates or frees. The memory encodings (SymMem) have no "arbitrary
-initialised-or-not" cell and no symbolic object count, so this is left out
-rather than approximated (Law 2: BOUNDED is never promoted without a closed,
-sound step).
+The step case encodes the code before the loop concretely, then starts the
+loop from an arbitrary header state and asks whether k violation-free
+iterations can be followed by a violation (iteration k or the code after the
+loop). For a function with memory the header state is the header phis
+**and the memory the loop may have written**:
+
+1. **Footprint.** Every store, `memcpy` and `memset` in a block of the loop
+   is mapped to the object its target points into by the memory model's
+   provenance analysis (`SymMem::known`: allocation results, checked pointer
+   arithmetic, selects and phis whose inputs agree). Provenance is
+   structural — never read from memory or from the havocked phis — so an
+   object it names is the target of that write in every iteration of every
+   run that has reported no violation (pointer arithmetic is checked to stay
+   in its object). The footprint is the set of those objects, computed on
+   the bounded encoding and re-checked on the step encoding. If some write's
+   target is not resolved (a pointer loaded from memory, a phi or select over
+   different objects, a havocked induction pointer), the footprint is every
+   object allocated before the loop except `const` ones. That set is finite
+   and sound: the loop allocates nothing, and a write that reports no
+   violation goes to a live, non-`const` object that already exists.
+2. **Havoc.** At the header, every byte of every footprint object gets an
+   arbitrary value and tag (`SymMem::havoc_objects`, both encodings; Bv: one
+   fresh cell per read address with Ackermann constraints). Its
+   *initialised* flag becomes `old | arbitrary` when every write in the loop
+   initialises the bytes it writes (plain stores with a constant all-ones
+   mask, `memset`): a byte that may be uninitialised before the loop stays
+   "maybe initialised", never assumed initialised. When the loop has a
+   `memcpy` or a store with a per-byte mask (which can copy uninitialised
+   bytes), the flag is fully arbitrary.
+3. **Allocation.** A loop that allocates, frees or restores the stack is not
+   attempted (`extra.k_induction = "not-attempted (allocation or free in the
+   loop)"`): the number and liveness of objects would change across
+   iterations, which the havoc does not cover. Sizes, kinds and liveness of
+   the objects that exist are unchanged by the loop and are not havocked.
+
+The base case is the concrete unrolling of `--unwind` iterations (k ≤ unwind).
+A closed step makes the function **PROVED-UNBOUNDED** exactly as for scalar
+loops; an open or unknown step leaves it **BOUNDED** (Law 2). Evidence in the
+verdict: `extra.k_induction_memory` (`read-only loop` for an empty footprint,
+else `write footprint havocked`) and `extra.k_induction_footprint` (objects
+havocked, whether the footprint was resolved, and the initialised-flag
+mode).
+
+Soundness in short: on any run whose first violation is at iteration
+N ≥ unwind, the state at header visit N − k agrees with the prefix outside
+the footprint, has the prefix's objects, and has footprint bytes whose
+initialised flags only grew (when every write initialises); the havocked
+header state covers it, and the step encoding then follows the run exactly
+for k + 1 iterations, so the step query is satisfiable. The abstract form of
+this argument is `PrismTechniques.KInduction.kinduction_frame_sound`
+(`proofs/techniques`, frame predicate `J`); what the Lean memory semantics
+(`proofs/semantics/PrismSem/Memory.lean`) would still need to prove it for
+PIR is a frame lemma "a loop body with no `alloc`/`free` whose stores all
+target objects in F leaves every other object's bytes, every object's size
+and liveness, and `next` unchanged", a provenance lemma for `gep`, and a
+per-byte initialised flag in `Obj` (the Lean model zero-fills fresh objects
+and has no uninitialised memory yet).
+
+Precision is object-granular: a loop that writes `d[1]` havocs all of `d`,
+so a later read of `d[0]` is arbitrary (`conformance/prism/kindmem/
+kindmem_overwrite_true` stays BOUNDED). No loop invariant is inferred, so
+"`a[0..i)` is initialised" style facts are not available to the step: after
+the loop, a read of an element written by an earlier iteration stays BOUNDED
+when the array was uninitialised before the loop, while one written by the
+last k iterations is seen by the step itself (`array/arr_loop_true` reads
+`a[9]`, written by the final iteration).
+
+Tasks: `tests/pir/kind_mem.c`; `tests/conformance/prism/kindmem/` (13
+true/false pairs: prefix writes then a read beyond the prefix, even-only
+writes, late out-of-bounds writes, writes through aliasing, selected and
+loaded pointers, `memcpy` of uninitialised bytes, pointer walks, struct
+buffers, globals, frees and allocations inside the loop); doctests `pir mem:
+k-induction havocs the write footprint …` (each footprint rule, both
+encodings; mutating the havoc to "no havoc", "assume initialised" or
+"memcpy initialises" makes them fail).
+
+Measured (unwind 8): of the 13 `kindmem` pairs, 8 true functions are
+PROVED-UNBOUNDED and none of the 13 false ones is proved (the other five
+true ones stay BOUNDED: allocation or free in the loop, a `memcpy`, an
+object-granular overwrite, a havocked pointer walk). On the rest of the
+conformance suite two BOUNDED true tasks become PROVED-UNBOUNDED
+(`array/arr_loop_true`, `regress/uninit_elem_unbounded_true`), in
+`tests/pir` one (`kind_mem.c`); the strict gate has 0 wrong proofs and
+`tools/csmith_soundness.py` (`--generator inhouse-ptr -n 80`, `--generator
+inhouse -n 60`) finds 0 wrong proofs. Those generators produce few
+single-loop functions that write memory, so a targeted run was added (an
+ad-hoc generator of 300 single-loop functions writing partly initialised
+arrays through plain, aliased, selected and loaded pointers, with late
+conditional writes and `memcpy`): 49 PROVED-UNBOUNDED, each executed on a
+228-point input grid under ASan+UBSan and again under MSan (which sees
+uninitialised reads): 0 sanitizer reports.
 
 ## Roadmap 2.3 / 2.6 coverage
 
@@ -667,7 +742,7 @@ pass; no `-fsanitize` check insertion (Law 8).
 | Modules (`import std;`) | handled by Clang; PRISM consumes the IR | NOT TESTED (Clang 18 needs a prebuilt `std` module) | — |
 | Inline assembly | NEEDS-HARNESS unless `// prism: asm ensures <cond>`; then PROVED-ASSUMING listing the contract | DONE | `tests/pir/asm_contract.c`, `conformance/prism/asm` |
 | C (C11 to C23): `_Generic`, VLAs, `setjmp`/`longjmp` | `_Generic` by Clang; VLAs in the memory model; setjmp/longjmp as exception-like edges (CTRL-LONGJMP-INVALID) | DONE | `tests/pir/mem_libc.c`, `tests/pir/sjlj_basic.c`, `conformance/prism/sjlj` |
-| k-induction for functions using memory | step case for loops that do not write memory | PARTIAL (loops that write memory stay BOUNDED: no sound havoc of their footprint) | `tests/pir/kind_mem.c`, `extra.k_induction_memory` |
+| k-induction for functions using memory | step case havocs the loop's write footprint (provenance-resolved objects, else every pre-loop object; initialised flags `old \| arbitrary` or arbitrary) | DONE for loops that do not allocate or free (those stay BOUNDED, `not-attempted`); object-granular, no invariant inference | `tests/pir/kind_mem.c`, `conformance/prism/kindmem`, `extra.k_induction_footprint` |
 
 ## Encoder and verdicts
 
@@ -680,7 +755,19 @@ edge guards; each check contributes `reach ∧ violation`; assumes contribute
 `reach → cond`.
 
 * **FAILED** — some check is satisfiable. `counterexample` = `extra.cex` =
-  parameter values (signed decimal), `extra.prop`, `cls`, `line`.
+  parameter values (signed decimal), `extra.prop`, `cls`, `line`. When the
+  function calls `__VERIFIER_nondet_*` itself (not inside a library model),
+  `extra.nondet` lists the values those calls return on the violating path,
+  in call order, as `fn=value, ...` (signed per the C type, the same shape
+  as the `bmc` stage), and `extra.nondet_loc` the calls' debug locations
+  `line:col, ...` (`0:0` when unknown). A call is listed when the model makes
+  its block instance reachable and it runs before the violated check (the
+  reachable instances form one chain, and topological order is execution
+  order along it). The values come from one Z3 model of the same VC with
+  the parameters and nondet values pinned to the winning solver's model; if
+  that re-query finds no model, `extra.nondet_note` says so and there is no
+  `nondet` key. The SV-COMP wrapper replays these values and writes a
+  `function_return` waypoint at each call ([SVCOMP.md](SVCOMP.md)).
 * **PROVED** — no check is satisfiable and no unwinding cut is reachable
   (loop-free, or every loop closes within the bound: the unwinding assertion
   is proved).

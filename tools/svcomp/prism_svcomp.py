@@ -34,8 +34,9 @@ The mapping keeps PRISM's laws (docs/VERDICTS.md):
 - Everything else is ``unknown``: ``NEEDS-HARNESS``, ``BOUNDED``,
   ``UNKNOWN``, ``TIMEOUT``, ``ERROR``, a refutation that does not replay, a
   refutation of a program with ``__VERIFIER_nondet_*`` inputs whose stage did
-  not report the nondet values (``bmc`` reports them for main in
-  ``extra["nondet"]``; ``pir`` does not yet), a stage that
+  not report the nondet values (``bmc`` and ``pir`` report them for main in
+  ``extra["nondet"]``; ``pir`` also gives each call's source position in
+  ``extra["nondet_loc"]``), a stage that
   disagrees with another, and every unsupported property.
 
 Standard library only (it ships in an SV-COMP archive next to witness.py).
@@ -210,6 +211,9 @@ def decide(report: dict[str, Any], prop: str, replay_fn: Any) -> Decision:
     if not any(per.values()):
         return Decision("unknown", "no verdict stage reported main")
     refutations = [(st, f) for st, rows in per.items() for f in rows if refutes(f, prop)]
+    # Replay first the refutation that also gives the nondet calls' source
+    # positions (pir): its witness can place every function_return waypoint.
+    refutations.sort(key=lambda sf: "nondet_loc" not in (sf[1].get("extra") or {}))
     proofs = [(st, f) for st, rows in per.items() for f in rows
               if f.get("status") in PROOF_TRUE and st in PROPERTIES[prop]["prove"]]
     last_replay: dict[str, Any] = {}
@@ -317,25 +321,61 @@ ASAN_DEREF = {"heap-buffer-overflow", "stack-buffer-overflow", "global-buffer-ov
 ASAN_FREE = {"attempting", "bad-free", "double-free"}
 
 
-def nondet_trace(f: dict[str, Any]) -> list[tuple[str, int]] | None:
+def nondet_trace(f: dict[str, Any]) -> list[tuple[str, int | float]] | None:
     """The ``__VERIFIER_nondet_*`` values a refutation of main reads, in call
-    order, from the engine's ``extra["nondet"]`` ("fn=value, ...");
-    None when the engine did not report them (then the refutation cannot be
-    replayed). Only a finding of main is a whole-program trace."""
+    order, from the engine's ``extra["nondet"]`` ("fn=value, ...", reported by
+    ``bmc`` and ``pir``); None when the engine did not report them (then the
+    refutation cannot be replayed). Only a finding of main is a whole-program
+    trace.
+
+    >>> nondet_trace({"function": "main", "extra": {"nondet": "__VERIFIER_nondet_int=-5, __VERIFIER_nondet_float=0.5"}})
+    [('__VERIFIER_nondet_int', -5), ('__VERIFIER_nondet_float', 0.5)]
+    """
     extra = f.get("extra") or {}
     if f.get("function") != "main" or "nondet" not in extra:
         return None
-    out: list[tuple[str, int]] = []
+    out: list[tuple[str, int | float]] = []
     for part in str(extra["nondet"]).split(","):
         part = part.strip()
         if not part:
             continue
         name, _, val = part.partition("=")
+        val = val.strip()
         try:
-            out.append((name.strip(), int(val.strip(), 0)))
+            out.append((name.strip(), int(val, 0)))
         except ValueError:
-            return None
+            try:
+                out.append((name.strip(), float(val)))
+            except ValueError:
+                return None
     return out
+
+
+def nondet_locations(f: dict[str, Any], count: int) -> list[tuple[int, int] | None] | None:
+    """Source (line, column) of each call in the nondet trace, from
+    ``extra["nondet_loc"]`` ("line:col, ...", ``pir`` reports it from debug
+    info; 0:0 means unknown, given as None). None when absent or when it does
+    not match the trace entry for entry.
+
+    >>> nondet_locations({"extra": {"nondet_loc": "6:13, 0:0"}}, 2)
+    [(6, 13), None]
+    >>> nondet_locations({"extra": {"nondet_loc": "6:13"}}, 2) is None
+    True
+    """
+    raw = (f.get("extra") or {}).get("nondet_loc")
+    if raw is None:
+        return None
+    out: list[tuple[int, int] | None] = []
+    for part in str(raw).split(","):
+        part = part.strip()
+        if not part:
+            continue
+        m = re.fullmatch(r"(\d+):(\d+)", part)
+        if not m:
+            return None
+        line, col = int(m.group(1)), int(m.group(2))
+        out.append((line, col) if line > 0 and col > 0 else None)
+    return out if len(out) == count else None
 
 
 def _is_declaration(text: str, start: int) -> bool:
@@ -346,22 +386,59 @@ def _is_declaration(text: str, start: int) -> bool:
     return m is not None and m.group(1) != "return" and not before.endswith(("=", "(", ","))
 
 
-def nondet_waypoints(task: Path, trace: list[tuple[str, int]]) -> list[Any]:
+# `# 12 "file.c"` / `#line 12`: debug lines then name another file's lines
+LINE_MARKER = re.compile(r"^[ \t]*#[ \t]*(line[ \t]+)?\d+", re.M)
+
+
+def _paren_location(text: str, end: int) -> tuple[int, int]:
+    """(line, column) of the character just before offset ``end`` (the call's ``)``)."""
+    line = text.count("\n", 0, end) + 1
+    return line, end - (text.rfind("\n", 0, end) + 1)
+
+
+def _call_at(text: str, name: str, line: int, col: int) -> tuple[int, int] | None:
+    """(line, column) of the ``)`` of a call of ``name`` that starts exactly at
+    line:col (1-based), or None when the text has no such call there.
+
+    >>> _call_at("int x;\\n  y = f ( );\\n", "f", 2, 7)
+    (2, 11)
+    >>> _call_at("int x;\\n  y = gf();\\n", "f", 2, 8) is None
+    True
+    """
+    lines = text.split("\n")
+    if not 1 <= line <= len(lines) or col < 1 or col > len(lines[line - 1]):
+        return None
+    start = sum(len(ln) + 1 for ln in lines[:line - 1]) + col - 1
+    if start > 0 and (text[start - 1].isalnum() or text[start - 1] == "_"):
+        return None
+    m = re.compile(rf"{re.escape(name)}\s*\(\s*\)").match(text, start)
+    return None if m is None else _paren_location(text, m.end())
+
+
+def nondet_waypoints(task: Path, trace: list[tuple[str, int | float]],
+                     locs: list[tuple[int, int] | None] | None = None) -> list[Any]:
     """function_return waypoints for the longest prefix of ``trace`` whose
-    calls each have exactly one call site in the task (the engine reports no
-    source positions, so an ambiguous site ends the prefix: a waypoint at the
-    wrong call would make the witness wrong, a missing one only weaker)."""
+    calls can each be placed exactly: at the engine's debug location of the
+    call (``locs``, from ``pir``) when the task text really has that call
+    there, else at the call's only call site in the task. A call that is
+    neither ends the prefix: a waypoint at the wrong call would make the
+    witness wrong, a missing one only weaker. Debug locations are ignored in
+    a task with line markers (they then name another file's lines)."""
     text = task.read_text(encoding="utf-8", errors="replace")
+    if locs is not None and (len(locs) != len(trace) or LINE_MARKER.search(text)):
+        locs = None
     out: list[Any] = []  # witness.NondetValue
-    for name, value in trace:
-        sites = [m for m in re.finditer(rf"\b{re.escape(name)}\s*\(\s*\)", text)
-                 if not _is_declaration(text, m.start())]
-        if len(sites) != 1:
-            break
-        end = sites[0].end()  # just past ')': format 2.0 points at the closing parenthesis
-        line = text.count("\n", 0, end) + 1
-        col = end - (text.rfind("\n", 0, end) + 1)
-        out.append(W.NondetValue(W.Location(task.name, line, col), value))
+    for i, (name, value) in enumerate(trace):
+        at = locs[i] if locs is not None else None
+        pos = _call_at(text, name, *at) if at is not None else None
+        if pos is None:
+            sites = [m for m in re.finditer(rf"\b{re.escape(name)}\s*\(\s*\)", text)
+                     if not _is_declaration(text, m.start())]
+            if len(sites) != 1:
+                break
+            # just past ')': format 2.0 points at the closing parenthesis
+            pos = _paren_location(text, sites[0].end())
+        out.append(W.NondetValue(W.Location(task.name, pos[0], pos[1]), value))
     return out
 
 
@@ -477,6 +554,80 @@ def first_code_column(src: Path, line: int) -> int:
     return 1
 
 
+# `int x`, `unsigned long *p`, `struct s v[3]`: a declarator, not an lvalue like `y`, `*p`, `a[i]`
+_DECL_HEAD = re.compile(r"^[A-Za-z_]\w*(?:\s+[A-Za-z_]\w*)*[\s*]+[A-Za-z_]\w*\s*(?:\[[^\]]*\]\s*)*$")
+_CONTROL = re.compile(r"^(if|while|switch)\s*\(")
+
+
+def target_column(src: Path, line: int, col: int) -> int | None:
+    """Column of a violation ``target`` waypoint for a violation a sanitizer
+    reported at ``line:col`` (the operator), or None to give no column.
+
+    Format 2.0 puts the target at the first character of the statement or
+    full expression whose evaluation the violation ends: an expression
+    statement's start, a declaration's initializer, the controlling
+    expression of ``if``/``while``/``switch``, the expression of ``return``.
+    Without a column the target is "the first statement or full expression in
+    that line", so a statement that is the first on its line gets no column:
+    validators differ on parenthesised starts (UAutomizer 0.3.1 matches
+    ``int x = (a + 1) - 2;`` at ``a`` or without a column, not at ``(``).
+    A later statement on the line gets its start column (past any opening
+    parentheses). Anything this cannot place on one line (``for`` headers,
+    several declarators, a statement that begins on an earlier line) keeps
+    the sanitizer's column.
+
+    >>> import tempfile, os
+    >>> d = tempfile.mkdtemp(); p = Path(d) / "t.c"
+    >>> _ = p.write_text("int main() {\\n  y = y +2*f();\\n int x = (1 + 2) - 3;\\n  if (a + b > 0) g();\\n"
+    ...                  "  return a * b;\\n  for (i = 0; i + 1 < n; i++) ;\\n  x = a +\\n    b;\\n  --x;\\n"
+    ...                  "  a = 1; b = c + d;\\n  a = 1; int e = (c + d);\\n  a = 1; if (c + d) g();\\n}\\n")
+    >>> [target_column(p, n, c) for n, c in [(2, 10), (3, 13), (4, 9), (5, 12), (9, 3)]]
+    [None, None, None, None, None]
+    >>> [target_column(p, 6, 20), target_column(p, 8, 5)]
+    [20, 5]
+    >>> [target_column(p, 10, 16), target_column(p, 11, 21), target_column(p, 12, 15)]
+    [10, 19, 14]
+    >>> [bool(_DECL_HEAD.match(h)) for h in ("int x", "unsigned int *p", "struct s v[3]", "y", "*p", "a[i]")]
+    [True, True, True, False, False, False]
+    """
+    lines = src.read_text(encoding="utf-8", errors="replace").split("\n")
+    if not 1 <= line <= len(lines):
+        return col
+    text = lines[line - 1]
+    p = min(max(col - 1, 0), len(text))
+    for fm in re.finditer(r"\bfor\s*\(", text[:p]):
+        if text[fm.end() - 1:p].count("(") > text[fm.end() - 1:p].count(")"):
+            return col  # inside a for header: its ';' are not statement ends
+    cut = max(text.rfind(ch, 0, p) for ch in ";{}")
+    if cut < 0:
+        # the statement starts on this line only if the previous code line ends one
+        prev = next((ln.strip() for ln in reversed(lines[:line - 1]) if ln.strip()), "")
+        if prev and not prev.endswith((";", "{", "}")) and not prev.startswith("#"):
+            return col
+    s = cut + 1
+    while s < p and text[s] in " \t":
+        s += 1
+    stmt = text[s:p]
+    if stmt.startswith("for") and re.match(r"for\s*\(", stmt):
+        return col
+    if not text[:s].strip():
+        return None  # the first statement on its line
+    m = _CONTROL.match(stmt)
+    if m:
+        s += m.end()
+    elif re.match(r"return\b", stmt):
+        s += len("return")
+    else:
+        eq = re.search(r"(?<![=!<>+\-*/%&|^])=(?!=)", stmt)
+        if eq and _DECL_HEAD.match(stmt[:eq.start()].strip()) and "," not in stmt[:eq.start()]:
+            if "," in stmt[eq.end():]:
+                return col  # several declarators, or a comma inside the initializer
+            s += eq.end()
+    while s < p and text[s] in " \t(":
+        s += 1  # past opening parentheses: the first operand (see above)
+    return s + 1
+
+
 @dataclass
 class Outcome:
     decision: Decision
@@ -515,7 +666,8 @@ def solve(task: Path, prop_file: Path, *, prism: str | None, allow_exec: bool, d
     oc = Outcome(dec)
     if dec.answer.startswith("false") and witness_path is not None and dec.finding is not None:
         line = int(dec.replay.get("line") or dec.finding.get("line") or 1)
-        col = int(dec.replay.get("column") or first_code_column(task, line))
+        col: int | None = (target_column(task, line, int(dec.replay["column"])) if dec.replay.get("column")
+                           else first_code_column(task, line))
         if prop == "unreach-call":
             site = reach_error_call_site(task, dec.finding.get("line"))
             if site is None:
@@ -523,8 +675,11 @@ def solve(task: Path, prop_file: Path, *, prism: str | None, allow_exec: bool, d
                 dec.reason += "; no witness: the reach_error() call site is ambiguous"
                 return oc
             line, col = site
-        cex = W.Counterexample(function="main", target=W.Location(task.name, line, col, "main"))
-        cex.nondet = nondet_waypoints(task, nondet_trace(dec.finding) or [])
+        # No "function" on the target: the location (UBSan report, reach_error()
+        # call) need not be in main, and the field is optional in format 2.0.
+        cex = W.Counterexample(function="main", target=W.Location(task.name, line, col))
+        trace = nondet_trace(dec.finding) or []
+        cex.nondet = nondet_waypoints(task, trace, nondet_locations(dec.finding, len(trace)))
         doc = W.build_violation_witness(
             cex, input_file=task, input_file_name=task.name, specification=spec,
             data_model=data_model.upper(), producer_version=version_string(exe))

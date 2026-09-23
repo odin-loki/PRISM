@@ -9,7 +9,8 @@ so nondeterminism and blocking `assume`s are allowed; thread-local variables
 live in `G`).  This covers the *round-robin, guess-and-check* reduction of
 Lal and Reps (the eager scheme underlying Lazy-CSeq); the "lazy" variant's
 re-execution of prefixes, loops, dynamic thread creation, more than two
-threads, and weak memory are not modelled.
+threads, and weak memory are not modelled here (`LazySeqN.lean` covers `N` threads,
+`K` rounds and threads with any control flow, the schedule of `lazy.cpp`).
 
 * `Step`/`Star`: the real interleaving semantics, counting context switches.
 * `SeqLR K`: runs of the sequentialised program with `K` rounds — thread 1
