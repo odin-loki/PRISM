@@ -32,6 +32,9 @@ public:
     virtual Arg havoc(int b, unsigned w, bool uninit, bool nondet, int dst = -1) = 0;
     // b == -1: the function prologue (runs first, before block 0's statements)
     virtual void push(int b, Stmt s) = 0;
+    // address of function @name: a constant pointer to a non-dereferenceable
+    // object with id in [kFnObjBase, kMaxObjects) (translate_ctl.inc)
+    virtual Arg fn_addr(const std::string& name) = 0;
 };
 
 // Target data layout (x86-64 defaults, overridden by the module's

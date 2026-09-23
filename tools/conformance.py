@@ -26,7 +26,7 @@ Task format (tests/conformance/prism/**.yml, one sidecar per source file):
   input_files: add_false.c
   language: C            # or C++
   property: no-overflow  # no-overflow | no-div0 | no-shift-ub | no-oob |
-                         # no-null-deref | memsafety
+                         # no-null-deref | memsafety | no-fp-cast | no-uncaught
                          # concurrency/: norace | noassert | nodeadlock
   expected:              # function -> true (no UB for any input) | false
     add_false: false
@@ -119,6 +119,10 @@ PROPERTY_CLASSES = {
                   "PTR-NULL-DEREF", "PTR-INVALID-DEREF", "MEM-UAF", "MEM-DOUBLE-FREE", "MEM-INVALID-FREE",
                   "MEM-MISMATCHED-FREE", "MEM-PTR-ARITH", "MEM-OVERLAP", "MEM-VLA-SIZE", "MEM-STACK-ESCAPE",
                   "MEM-MISALIGNED", "MEM-WRITE-CONST", "PTR-COMPARE", "UNINIT-READ"},
+    # roadmap 2.6: floating point to integer conversion out of range, and
+    # std::terminate reached by an exception (noexcept boundary, main)
+    "no-fp-cast": {"FLOAT-CAST-OVF"},
+    "no-uncaught": {"CXX-UNCAUGHT", "CXX-THROW-NOEXCEPT", "CXX-TERMINATE"},
     # concurrency tasks (whole programs; the verdict applies to main)
     "norace": {"CONC-DATA-RACE"},
     "noassert": {"FUNC-CONTRACT"},
@@ -486,7 +490,10 @@ def run_sanitized(task: Task, fn: str, params: list[tuple[str, str]], rows: list
     except subprocess.TimeoutExpired:
         return Exec("timeout", f">{timeout}s")
     err = r.stderr or ""
-    hit = re.search(r"runtime error: .*|ERROR: AddressSanitizer: \S+.*", err)
+    # std::terminate (an exception escaping main or a noexcept function) is a
+    # property violation for PRISM (roadmap 2.6), reported by the C++ runtime
+    hit = re.search(r"runtime error: .*|ERROR: AddressSanitizer: \S+.*|terminate called .*|pure virtual method called",
+                    err)
     if hit:
         return Exec("ub", hit.group(0)[:300])
     if r.returncode != 0:

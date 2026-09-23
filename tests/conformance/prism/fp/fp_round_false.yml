@@ -1,0 +1,8 @@
+format_version: 1
+input_files: fp_round_false.c
+language: C
+property: no-div0
+expected:
+  fp_round_false: false
+witness:
+  fp_round_false: [16777217]

@@ -1274,6 +1274,23 @@ CLASSES: list[dict] = [
          seen={"pir": PROVES}),
     dict(id="FMT-ARGS", name="printf format does not match its arguments", cwe=[685, 686],
          seen={"pir": PROVES}),
+    # PIR floating point, exceptions, setjmp/longjmp (docs/PIR.md; roadmap 2.6)
+    dict(id="FLOAT-CAST-OVF", name="floating-point value converted to an integer type that cannot represent it", cwe=[681],
+         seen={"pir": PROVES}),
+    dict(id="FLOAT-DIV-ZERO", name="floating-point division by zero (pir --fp-checks)", cwe=[369],
+         seen={"pir": PROVES}),
+    dict(id="FLOAT-INVALID", name="floating-point invalid operation produces NaN (pir --fp-checks)", cwe=[682],
+         seen={"pir": PROVES}),
+    dict(id="FLOAT-OVERFLOW", name="floating-point overflow to infinity (pir --fp-checks)", cwe=[682],
+         seen={"pir": PROVES}),
+    dict(id="CXX-UNCAUGHT", name="exception escapes main: std::terminate", cwe=[248],
+         seen={"pir": PROVES}),
+    dict(id="CXX-TERMINATE", name="std::terminate reached (rethrow without a handled exception, explicit call)", cwe=[248],
+         seen={"pir": PROVES}),
+    dict(id="CXX-PURE-VIRTUAL", name="pure virtual function called", cwe=[758],
+         seen={"pir": PROVES}),
+    dict(id="CTRL-LONGJMP-INVALID", name="longjmp to a jmp_buf whose setjmp caller has returned", cwe=[758],
+         seen={"pir": PROVES}),
 ]
 
 

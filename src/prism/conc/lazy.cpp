@@ -642,6 +642,12 @@ struct Enc {
                 auto ovf = a[0] == bv(uint64_t{1} << (n - 1), n) && a[1] == bv(wmask(n), n);
                 return b2bv(a[1] != bv(0, n) && !ovf && z3::srem(a[0], a[1]) != bv(0, n));
             }
+            default:
+                // IEEE floating point is encoded by the pir stage only
+                if (s.op >= Op::FAdd)
+                    throw Fail{std::string(laws::NEEDS_HARNESS),
+                               std::string("UNENCODED: floating point (") + op_name(s.op) + ") in a threaded program"};
+                break;
         }
         throw Fail{std::string(laws::ERROR), "internal: unknown PIR op"};
     }
@@ -829,6 +835,9 @@ struct Enc {
                         break;
                     }
                     case Stmt::Check: {
+                        // a path PIR cannot follow (exception/indirect-call soft check): not a violation
+                        if (s.prop == "unmodelled" || s.prop == "throw-unmodelled")
+                            throw Fail{std::string(laws::NEEDS_HARNESS), "UNENCODED: " + s.msg};
                         auto cond = is1(lookup(t, node, s.args[0]));
                         violation(e && cond, s.prop, s.cls, s.msg + " in " + tname(p, t) + at_line(s.line), s.line, t,
                                   s.prop + ":" + s.cls + ":" + std::to_string(s.line));

@@ -24,9 +24,11 @@
 #include "prism/laws.hpp"
 #include "prism/pir.hpp"
 
+#include "fp.hpp"
 #include "memory.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <deque>
 #include <functional>
 #include <map>
@@ -208,7 +210,7 @@ std::string format_cex(const Function& fn, const std::vector<uint64_t>& args) {
     for (std::size_t i = 0; i < fn.params.size() && i < args.size(); ++i) {
         auto& v = fn.vars[static_cast<std::size_t>(fn.params[i])];
         if (i) out += ", ";
-        out += v.name + "=" + std::to_string(as_signed(args[i], v.width));
+        out += v.name + "=" + (v.fp ? fp::format(args[i], v.width) : std::to_string(as_signed(args[i], v.width)));
     }
     return out;
 }
@@ -560,6 +562,142 @@ struct Encoding {
             case Op::ObjLive: return M().live(a[0]);
             case Op::ObjKind: return M().kind(a[0]);
             case Op::ObjAlign: return M().align(a[0]);
+            default: return fp_expr(s, a, w);
+        }
+        throw EncodeFail{std::string(laws::ERROR), "internal: unknown PIR op"};
+    }
+
+    // ---- floating point (Z3 FPA theory; docs/PIR.md "Floating point") ------
+    z3::sort fsort(unsigned w) {
+        if (!fp::is_fp_width(w)) throw EncodeFail{std::string(laws::ERROR), "internal: FP op on width " + std::to_string(w)};
+        return c.fpa_sort(fp::ebits(w), fp::sbits(w));
+    }
+    z3::expr to_fp(const z3::expr& bits, unsigned w) { return z3::expr(c, Z3_mk_fpa_to_fp_bv(c, bits, fsort(w))); }
+    z3::expr rm(Z3_ast r) { return z3::expr(c, r); }
+    z3::expr rne() { return rm(Z3_mk_fpa_rne(c)); }
+    // IEEE bits of an FP term: a fresh bitvector whose value is that term.
+    // `(= ((_ to_fp e s) b) f)` holds for every NaN encoding b when f is NaN,
+    // so a NaN result has an unspecified payload (LLVM's NaN semantics).
+    z3::expr bits_of(const z3::expr& f, unsigned w) {
+        auto b = fresh_const("fp", w);
+        assumptions.push_back(z3::expr(c, Z3_mk_eq(c, to_fp(b, w), f)));
+        return b;
+    }
+    z3::expr fresh_nan_bits(unsigned w) {
+        auto b = fresh_const("nan", w);
+        assumptions.push_back(z3::expr(c, Z3_mk_fpa_is_nan(c, to_fp(b, w))));
+        return b;
+    }
+    z3::expr is_nan(const z3::expr& f) { return z3::expr(c, Z3_mk_fpa_is_nan(c, f)); }
+    z3::expr is_zero(const z3::expr& f) { return z3::expr(c, Z3_mk_fpa_is_zero(c, f)); }
+    z3::expr is_inf(const z3::expr& f) { return z3::expr(c, Z3_mk_fpa_is_infinite(c, f)); }
+    z3::expr is_neg(const z3::expr& f) { return z3::expr(c, Z3_mk_fpa_is_negative(c, f)); }
+    z3::expr flt(const z3::expr& x, const z3::expr& y) { return z3::expr(c, Z3_mk_fpa_lt(c, x, y)); }
+    z3::expr fnum(double d, unsigned w) { return z3::expr(c, Z3_mk_fpa_numeral_double(c, d, fsort(w))); }
+
+    z3::expr fp_expr(const Stmt& s, const std::vector<z3::expr>& a, unsigned w) {
+        auto aw = [&](std::size_t i) { return s.args[i].width; };
+        auto F = [&](std::size_t i) { return to_fp(a[i], aw(i)); };
+        auto bin = [&](Z3_ast (*mk)(Z3_context, Z3_ast, Z3_ast, Z3_ast)) {
+            return bits_of(z3::expr(c, mk(c, rne(), F(0), F(1))), w);
+        };
+        auto round = [&](Z3_ast mode) { return bits_of(z3::expr(c, Z3_mk_fpa_round_to_integral(c, rm(mode), F(0))), w); };
+        switch (s.op) {
+            case Op::FAdd: return bin(Z3_mk_fpa_add);
+            case Op::FSub: return bin(Z3_mk_fpa_sub);
+            case Op::FMul: return bin(Z3_mk_fpa_mul);
+            case Op::FDiv: return bin(Z3_mk_fpa_div);
+            case Op::FRem: {
+                // C fmod from the IEEE remainder r: same sign as x (or r + sign(x)|y|,
+                // exact), a zero carries the sign of x.
+                auto x = F(0), y = F(1);
+                auto r = z3::expr(c, Z3_mk_fpa_rem(c, x, y));
+                auto ay = z3::expr(c, Z3_mk_fpa_abs(c, y));
+                auto sy = z3::ite(is_neg(x), z3::expr(c, Z3_mk_fpa_neg(c, ay)), ay);
+                auto adj = z3::expr(c, Z3_mk_fpa_add(c, rne(), r, sy));
+                auto zero = z3::ite(is_neg(x), z3::expr(c, Z3_mk_fpa_zero(c, fsort(w), true)),
+                                    z3::expr(c, Z3_mk_fpa_zero(c, fsort(w), false)));
+                auto res = z3::ite(is_nan(r), r, z3::ite(is_zero(r), zero, z3::ite(is_neg(r) == is_neg(x), r, adj)));
+                return bits_of(res, w);
+            }
+            case Op::FSqrt: return bits_of(z3::expr(c, Z3_mk_fpa_sqrt(c, rne(), F(0))), w);
+            case Op::FFma: return bits_of(z3::expr(c, Z3_mk_fpa_fma(c, rne(), F(0), F(1), F(2))), w);
+            case Op::FMulAdd: {
+                auto fused = z3::expr(c, Z3_mk_fpa_fma(c, rne(), F(0), F(1), F(2)));
+                auto m = z3::expr(c, Z3_mk_fpa_mul(c, rne(), F(0), F(1)));
+                auto split = z3::expr(c, Z3_mk_fpa_add(c, rne(), m, F(2)));
+                auto pick = c.bool_const(("fuse!" + std::to_string(fresh++)).c_str());
+                return bits_of(z3::ite(pick, fused, split), w);
+            }
+            case Op::FMinNum:
+            case Op::FMaxNum: {
+                auto x = F(0), y = F(1);
+                auto pick = c.bool_const(("pick!" + std::to_string(fresh++)).c_str());
+                bool mn = s.op == Op::FMinNum;
+                auto first = mn ? flt(x, y) : flt(y, x);
+                auto second = mn ? flt(y, x) : flt(x, y);
+                return z3::ite(is_nan(x), a[1],
+                               z3::ite(is_nan(y), a[0],
+                                       z3::ite(first, a[0], z3::ite(second, a[1], z3::ite(pick, a[0], a[1])))));
+            }
+            case Op::FMinimum:
+            case Op::FMaximum: {
+                auto x = F(0), y = F(1);
+                bool mn = s.op == Op::FMinimum;
+                auto first = mn ? flt(x, y) : flt(y, x);
+                auto second = mn ? flt(y, x) : flt(x, y);
+                // equal values: -0 is the smaller of the zeros; otherwise the bits agree
+                auto zpick = mn ? is_neg(x) : !is_neg(x);
+                return z3::ite(is_nan(x) || is_nan(y), fresh_nan_bits(w),
+                               z3::ite(first, a[0], z3::ite(second, a[1], z3::ite(zpick, a[0], a[1]))));
+            }
+            case Op::FFloor: return round(Z3_mk_fpa_rtn(c));
+            case Op::FCeil: return round(Z3_mk_fpa_rtp(c));
+            case Op::FTruncI: return round(Z3_mk_fpa_rtz(c));
+            case Op::FRoundA: return round(Z3_mk_fpa_rna(c));
+            case Op::FRoundE: return round(Z3_mk_fpa_rne(c));
+            case Op::FOeq: return b2bv(z3::expr(c, Z3_mk_fpa_eq(c, F(0), F(1))));
+            case Op::FOlt: return b2bv(flt(F(0), F(1)));
+            case Op::FOle: return b2bv(z3::expr(c, Z3_mk_fpa_leq(c, F(0), F(1))));
+            case Op::FUno: return b2bv(is_nan(F(0)) || is_nan(F(1)));
+            case Op::FIsNaN: return b2bv(is_nan(F(0)));
+            case Op::FIsZero: return b2bv(is_zero(F(0)));
+            case Op::FIsInf: return b2bv(is_inf(F(0)));
+            case Op::FToSI: return z3::expr(c, Z3_mk_fpa_to_sbv(c, rm(Z3_mk_fpa_rtz(c)), F(0), w));
+            case Op::FToUI: return z3::expr(c, Z3_mk_fpa_to_ubv(c, rm(Z3_mk_fpa_rtz(c)), F(0), w));
+            case Op::SIToF: return bits_of(z3::expr(c, Z3_mk_fpa_to_fp_signed(c, rne(), a[0], fsort(w))), w);
+            case Op::UIToF: return bits_of(z3::expr(c, Z3_mk_fpa_to_fp_unsigned(c, rne(), a[0], fsort(w))), w);
+            case Op::FConv:
+                if (w == aw(0)) return a[0];
+                return bits_of(z3::expr(c, Z3_mk_fpa_to_fp_float(c, rne(), F(0), fsort(w))), w);
+            case Op::FToSIOvf:
+            case Op::FToUIOvf: {
+                auto k = static_cast<unsigned>(s.args.at(1).bits);
+                auto x = F(0);
+                auto t = z3::expr(c, Z3_mk_fpa_round_to_integral(c, rm(Z3_mk_fpa_rtz(c)), x));
+                auto fw = aw(0);
+                z3::expr lo = s.op == Op::FToSIOvf ? fnum(-std::ldexp(1.0, static_cast<int>(k) - 1), fw)
+                                                   : z3::expr(c, Z3_mk_fpa_zero(c, fsort(fw), false));
+                z3::expr hi = fnum(std::ldexp(1.0, static_cast<int>(s.op == Op::FToSIOvf ? k - 1 : k)), fw);
+                auto below = s.op == Op::FToSIOvf ? flt(t, lo) : (flt(t, lo));  // -0 is not below +0
+                auto above = z3::expr(c, Z3_mk_fpa_geq(c, t, hi));
+                return b2bv(is_nan(x) || is_inf(x) || below || above);
+            }
+            case Op::FLibm: {
+                // unmodelled libm function: an unconstrained value, except for
+                // range facts every IEEE libm keeps (and the interpreter's host
+                // library satisfies): |sin|, |cos|, |tanh| <= 1; exp, exp2, cosh >= +0
+                auto r = fresh_const("libm", w);
+                auto n = s.msg;
+                if (w == 32 && n.size() > 1 && n.back() == 'f') n.pop_back();
+                auto R = to_fp(r, w);
+                if (n == "sin" || n == "cos" || n == "tanh")
+                    assumptions.push_back(is_nan(R) || (z3::expr(c, Z3_mk_fpa_leq(c, fnum(-1.0, w), R)) &&
+                                                        z3::expr(c, Z3_mk_fpa_leq(c, R, fnum(1.0, w)))));
+                if (n == "exp" || n == "exp2" || n == "cosh") assumptions.push_back(is_nan(R) || !is_neg(R));
+                return r;
+            }
+            default: break;
         }
         throw EncodeFail{std::string(laws::ERROR), "internal: unknown PIR op"};
     }
@@ -870,13 +1008,54 @@ Verdict check_function(const Function& fn, const CheckOptions& opt) {
         // "Soft" checks mark a path PIR cannot follow (an exception reaching
         // catch/cleanup code): reachable means NEEDS-HARNESS, never FAILED,
         // and never proved away. They are answered after every hard property.
-        auto soft = [](const PropInst& p) { return p.stmt->prop == "throw-unmodelled"; };
+        auto soft = [](const PropInst& p) { return p.stmt->prop == "throw-unmodelled" || p.stmt->prop == "unmodelled"; };
         // One query per property: SAT <=> that property is violated.
         const PropInst* hit = nullptr;
         std::optional<solver::SolveResult> hit_r;
         std::string no_answer;
+        // Many properties (memory checks of inlined library, exception and
+        // coroutine code): outside certified mode, one query for "some hard
+        // property is violated" first. UNSAT there means every per-property
+        // VC is UNSAT (sound), so they are skipped; SAT or unknown falls
+        // through to the per-property queries, which find the violation.
+        // A SAT group is split in halves until one property is left (its own
+        // query gives the counterexample), so a violation costs O(log n)
+        // queries instead of up to n.
+        std::vector<const PropInst*> hard;
+        for (auto& p : e.props)
+            if (!soft(p)) hard.push_back(&p);
+        bool all_unsat = false;
+        if (!opt.certified && hard.size() > 16) {
+            std::function<int(std::size_t, std::size_t)> group = [&](std::size_t lo, std::size_t hi) -> int {
+                // 1 SAT (hit set), 0 UNSAT, -1 no answer
+                if (hi - lo == 1) {
+                    const auto& r = book.add(vc_label(*hard[lo]), solver::solve(c, base && hard[lo]->viol, so));
+                    if (r.kind == solver::SolveResult::Sat) {
+                        hit = hard[lo];
+                        hit_r = r;
+                        return 1;
+                    }
+                    return r.kind == solver::SolveResult::Unsat ? 0 : -1;
+                }
+                std::vector<z3::expr> vs;
+                for (std::size_t i = lo; i < hi; ++i) vs.push_back(hard[i]->viol);
+                const auto& r = book.add("properties[" + std::to_string(lo) + "," + std::to_string(hi) + ")",
+                                         solver::solve(c, base && any_of(c, vs), so));
+                if (r.kind == solver::SolveResult::Unsat) return 0;
+                if (r.kind != solver::SolveResult::Sat) return -1;
+                std::size_t mid = lo + (hi - lo) / 2;
+                int a = group(lo, mid);
+                if (a == 1) return 1;
+                int b = group(mid, hi);
+                // SAT group whose halves are both UNSAT: the answers disagree;
+                // never read that as "all UNSAT" (fall back to per-property VCs)
+                return b == 1 ? 1 : -1;
+            };
+            int g = group(0, hard.size());
+            all_unsat = g != -1;  // 0: every property UNSAT; 1: hit found (loop below is skipped)
+        }
         for (auto& p : e.props) {
-            if (soft(p)) continue;
+            if (soft(p) || all_unsat) continue;
             const auto& r = book.add(vc_label(p), solver::solve(c, base && p.viol, so));
             if (r.kind == solver::SolveResult::Sat) {
                 hit = &p;
@@ -947,10 +1126,25 @@ Verdict check_function(const Function& fn, const CheckOptions& opt) {
             return finish(v);
         }
         if (fn.uses_memory) {
-            // The step case would start from an arbitrary memory state; not
-            // attempted (a BOUNDED result stays BOUNDED, Law 2).
-            v.extra["k_induction"] = "not-attempted (memory)";
-            return finish(v);
+            // The step case havocs only the header phis. That is sound only
+            // when the loop leaves memory unchanged: then the memory at every
+            // iteration is the one the (concretely encoded) prefix reached.
+            // A loop that writes, allocates or frees is not attempted (a
+            // BOUNDED result stays BOUNDED, Law 2; docs/PIR.md).
+            bool writes = false;
+            const auto& body = g.loops[0].body;
+            for (std::size_t b = 0; b < body.size() && !writes; ++b) {
+                if (!body[b]) continue;
+                for (auto& s : fn.blocks[b].stmts)
+                    if (s.kind != Stmt::Assign && s.kind != Stmt::Check && s.kind != Stmt::Assume &&
+                        s.kind != Stmt::Load)
+                        writes = true;
+            }
+            if (writes) {
+                v.extra["k_induction"] = "not-attempted (memory written in the loop)";
+                return finish(v);
+            }
+            v.extra["k_induction_memory"] = "read-only loop";
         }
         // The k-induction step is not a property VC: Z3 answers it in-process,
         // and PROVED-UNBOUNDED is never certified (docs/PIR.md "Solving").

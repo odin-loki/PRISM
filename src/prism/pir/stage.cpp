@@ -12,11 +12,14 @@
 #include "prism/threads.hpp"
 
 #include "../proc.hpp"
+#include "fp.hpp"
+#include "lower_ctl.hpp"
 #include "stage_mem.hpp"
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <fstream>
 #include <memory>
@@ -445,7 +448,7 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
     }
     auto diags = parse_folded(r.text, src);
     std::vector<int> placed;
-    auto text = instrument(read_file(o0), diags, placed);
+    auto text = pirctl::keep_setjmp_locals(pirctl::uninit_fp_locals(instrument(read_file(o0), diags, placed)));
     if (folded) {
         // index = marker id; unplaced diagnostics are kept with line < 0
         folded->clear();
@@ -459,7 +462,14 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
         err = "cannot write temporary IR";
         return std::nullopt;
     }
-    auto ro = detail::run_process({fe.opt->string(), "-passes=mem2reg,lowerswitch,loop-simplify,lcssa,instnamer",
+    // C++: coroutines are lowered to state machines by LLVM's coroutine
+    // passes (roadmap 2.3), then encoded like any other code (docs/PIR.md "Coroutines");
+    // fix-irreducible gives their resume functions (loops re-entered at a
+    // suspend point) a single loop header.
+    const char* passes = cxx ? "-passes=function(mem2reg),coro-early,cgscc(coro-split),coro-cleanup,"
+                               "function(lowerswitch,fix-irreducible,loop-simplify,lcssa,instnamer)"
+                             : "-passes=mem2reg,lowerswitch,loop-simplify,lcssa,instnamer";
+    auto ro = detail::run_process({fe.opt->string(), passes,
                                    "-S", "-o", o2.string(), o1.string()},
                                   timeout_s);
     if (ro.failed || ro.timed_out || ro.rc != 0) {
@@ -521,11 +531,19 @@ std::vector<std::vector<uint64_t>> tv_inputs(const Function& fn, const std::vect
     }
     uint64_t seed = 0;
     for (char c : fn.ir_name) seed = seed * 131 + static_cast<unsigned char>(c);
+    // floating-point parameters: ordinary values too, not only bit patterns
+    static const double kFp[] = {0.0,   -0.0,   1.0,    -1.0,          0.5,   2.5,    -7.75,  100.0,   -1000.25,
+                                 3e9,   -3e9,   1e300,  16777217.0,    1e-310, 65504.0, 1e10,  INFINITY, NAN};
     while (static_cast<int>(out.size()) < kTvVectors) {
         std::vector<uint64_t> v;
-        for (auto w : ws) {
+        for (std::size_t k = 0; k < ws.size(); ++k) {
+            auto w = ws[k];
             uint64_t m = w >= 64 ? ~uint64_t{0} : ((uint64_t{1} << w) - 1);
             auto r = splitmix(seed);
+            if (fn.vars[static_cast<std::size_t>(fn.params[k])].fp && r % 3 != 0) {
+                v.push_back(fp::from_double(kFp[(r >> 8) % std::size(kFp)], w) & m);
+                continue;
+            }
             auto pick = r % 4;
             if (pick == 0) v.push_back(edges(w)[(r >> 8) % 5]);
             else if (pick == 1) v.push_back(((r >> 8) % 33) & m);                     // small
@@ -572,8 +590,8 @@ std::string tv_module_text(const std::string& ir) {
             // strip attributes before the type (e.g. "noundef")
             auto sp = ty.rfind(' ');
             if (sp != std::string::npos) ty = ty.substr(sp + 1);
-            if (ty == "void") out << "define void " << name << "(i32 %k) {\n  ret void\n}\n";
-            else out << "define " << ty << " " << name << "() {\n  ret " << ty << (ty == "ptr" ? " null" : " 0")
+            if (ty == "void") out << "define void " << name << (name == "@__prism.keep" ? "(ptr %p)" : "(i32 %k)") << " {\n  ret void\n}\n";
+            else out << "define " << ty << " " << name << "() {\n  ret " << ty << (ty == "ptr" ? " null" : ty == "half" || ty == "float" || ty == "double" ? " 0.0" : " 0")
                      << "\n}\n";
             continue;
         }
@@ -612,6 +630,10 @@ void validate(std::vector<FnRec>& recs, const std::string& ir, const Frontend& f
         }
         if (r.fn->nondet) {
             r.f.extra["tv"] = "PARTIAL (nondet inputs are not replayed; not validated)";
+            continue;
+        }
+        if (r.irf && r.irf->params.size() != r.fn->params.size()) {
+            r.f.extra["tv"] = "PARTIAL (sret/byval object parameters are not replayed; not validated)";
             continue;
         }
         if (auto why = pirmem::tv_exclusion(*r.fn); !why.empty()) {
@@ -656,6 +678,10 @@ void validate(std::vector<FnRec>& recs, const std::string& ir, const Frontend& f
         for (std::size_t k = 0; k < c.args.size(); ++k) {
             auto w = r.fn->vars[static_cast<std::size_t>(r.fn->params[k])].width;
             if (k) args += ", ";
+            if (irf->params[k].ty.kind == ir::Type::Float) {  // IEEE bits as an LLVM float literal
+                args += irf->params[k].ty.text + " " + fp::ll_const(c.args[k], w);
+                continue;
+            }
             args += "i" + std::to_string(w);
             auto& at = irf->params[k].attrs;
             if (at.find("signext") != std::string::npos) args += " signext";
@@ -663,8 +689,13 @@ void validate(std::vector<FnRec>& recs, const std::string& ir, const Frontend& f
             args += " " + ll_const(c.args[k], w);
         }
         std::string callee = "@\"" + irf->name + "\"";
-        if (c.w) {
+        if (c.w && irf->ret.kind == ir::Type::Float) {
+            drv << "  %q" << t << " = call " << irf->ret.text << " " << callee << "(" << args << ")\n";
+            drv << "  %r" << t << " = bitcast " << irf->ret.text << " %q" << t << " to i" << c.w << "\n";
+        } else if (c.w) {
             drv << "  %r" << t << " = call i" << c.w << " " << callee << "(" << args << ")\n";
+        }
+        if (c.w) {
             if (c.w < 64) drv << "  %z" << t << " = zext i" << c.w << " %r" << t << " to i64\n";
             else drv << "  %z" << t << " = add i64 %r" << t << ", 0\n";
         } else {
@@ -728,7 +759,9 @@ void validate(std::vector<FnRec>& recs, const std::string& ir, const Frontend& f
                               (rr.timed_out ? ", timeout" : "") + ")";
             continue;
         }
-        if ((it->second & m) != (c.expect & m)) {
+        const bool fp_ret = r.irf->ret.kind == ir::Type::Float;
+        if ((it->second & m) != (c.expect & m) &&
+            !(fp_ret && fp::is_nan(it->second & m, c.w) && fp::is_nan(c.expect & m, c.w))) {  // NaN payloads are unspecified
             diverged[c.rec] = "translation validation diverged: " + r.fn->name + "(" + args + ") PIR=" +
                               ll_const(c.expect, c.w ? c.w : 1) + " lli=" + ll_const(it->second, c.w ? c.w : 1);
             continue;

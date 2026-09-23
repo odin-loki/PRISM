@@ -81,8 +81,9 @@ z3::expr SymMem::cell_of(const z3::expr& byte, const z3::expr& init, unsigned ta
 
 z3::expr SymMem::alloc(const z3::expr& guard, const z3::expr& size, MemKind k, unsigned align, int init) {
     uint64_t id = objs_.size() + 1;
-    if (id > kMaxObjects)
-        throw EncodeError{std::string(laws::UNKNOWN), "more than 65535 memory objects in the unrolling"};
+    if (id >= kFnObjBase)  // ids from kFnObjBase up are function addresses
+        throw EncodeError{std::string(laws::UNKNOWN),
+                          "more than " + std::to_string(kFnObjBase - 1) + " memory objects in the unrolling"};
     auto p = bv(make_ptr(id, 0), 64);
     objs_.push_back(Obj{id, size, k, std::max(1u, align), guard});
     if (init == 1) {
@@ -259,7 +260,7 @@ void SymMem::set(const z3::expr& guard, const z3::expr& dst, const z3::expr& byt
 // ---------------------------------------------------------------------------
 
 std::optional<uint64_t> ConcMem::alloc(uint64_t size, MemKind k, unsigned align, int init) {
-    if (size > (uint64_t{1} << 24) || objs.size() + 1 > kMaxObjects) return std::nullopt;
+    if (size > (uint64_t{1} << 24) || objs.size() + 1 >= kFnObjBase) return std::nullopt;
     Obj o;
     o.size = size;
     o.live = true;

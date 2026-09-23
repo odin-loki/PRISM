@@ -9,9 +9,13 @@
 
 #include "prism/pir.hpp"
 
+#include "fp.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <charconv>
+#include <cstdlib>
+#include <cstring>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -146,6 +150,41 @@ std::vector<Tok> lex(std::string_view s) {
 bool is_float_word(std::string_view w) {
     return w == "half" || w == "bfloat" || w == "float" || w == "double" || w == "x86_fp80" ||
            w == "fp128" || w == "ppc_fp128";
+}
+
+// IEEE bits of a floating-point literal of type `ty` (half/float/double):
+// decimal ("1.500000e+00"), the double-precision hex form LLVM prints for
+// float and double ("0x3FF8000000000000"), or "0xH3C00" for half.
+std::optional<uint64_t> fp_literal(std::string_view s, std::string_view ty) {
+    auto w = ty == "half" ? 16u : ty == "float" ? 32u : ty == "double" ? 64u : 0u;
+    if (!w) return std::nullopt;
+    auto hex = [](std::string_view h) -> std::optional<uint64_t> {
+        if (h.empty() || h.size() > 16) return std::nullopt;
+        uint64_t v = 0;
+        auto r = std::from_chars(h.data(), h.data() + h.size(), v, 16);
+        if (r.ec != std::errc() || r.ptr != h.data() + h.size()) return std::nullopt;
+        return v;
+    };
+    if (s.starts_with("0xH")) {
+        if (w != 16) return std::nullopt;
+        return hex(s.substr(3));
+    }
+    uint64_t dbits = 0;
+    if (s.starts_with("0x")) {
+        if (s.size() > 2 && !std::isxdigit(static_cast<unsigned char>(s[2])))
+            return std::nullopt;  // 0xK / 0xL / 0xM / 0xR: other formats
+        auto h = hex(s.substr(2));
+        if (!h) return std::nullopt;
+        dbits = *h;
+    } else {
+        std::string t(s);
+        char* end = nullptr;
+        double d = std::strtod(t.c_str(), &end);
+        if (end != t.c_str() + t.size()) return std::nullopt;
+        std::memcpy(&dbits, &d, 8);
+    }
+    if (w == 64) return dbits;
+    return fp::from_double_bits(dbits, w);
 }
 
 const std::unordered_set<std::string>& param_attr_words() {
@@ -469,6 +508,15 @@ struct P {
                              std::all_of(digits.begin(), digits.end(), [](char ch) {
                                  return std::isdigit(static_cast<unsigned char>(ch));
                              });
+                if (ty.kind == Type::Float) {
+                    if (auto b = fp_literal(s, ty.text)) {
+                        v.kind = Value::Fp;
+                        v.bits = *b;
+                    } else {
+                        v.kind = Value::Other;
+                    }
+                    return v;
+                }
                 if (!plain || ty.kind != Type::Int) {
                     v.kind = Value::Other;
                     return v;
@@ -498,6 +546,10 @@ struct P {
                     v.kind = Value::Null;
                 } else if (w == "zeroinitializer") {
                     v.kind = Value::Zero;
+                    if (ty.kind == Type::Float && fp_literal("0x0", ty.text)) {
+                        v.kind = Value::Fp;
+                        v.bits = 0;
+                    }
                     if (ty.kind == Type::Int) {
                         v.kind = Value::Int;
                         v.bits = 0;
@@ -597,6 +649,15 @@ struct P {
     }
 };
 
+Operand local_ptr(const std::string& name) {
+    Operand o;
+    o.ty = Type{Type::Ptr, 0, "ptr", {}};
+    o.v.kind = Value::Local;
+    o.v.name = name;
+    o.v.text = "%" + name;
+    return o;
+}
+
 bool is_binop(std::string_view op) {
     static const std::unordered_set<std::string_view> k{
         "add", "sub", "mul", "udiv", "sdiv", "urem", "srem", "shl", "lshr", "ashr",
@@ -653,6 +714,62 @@ Inst parse_inst(const std::vector<Tok>& toks, std::string text) {
         Operand b{ty, p.value(ty), {}};
         in.ty = ty;  // operand type; result is i1
         in.ops = {a, b};
+        return in;
+    }
+    if (op == "fcmp") {
+        while (p.peek().kind == Tok::Word && call_prefix_words().count(p.peek().text))
+            in.flags.push_back(p.next().text);  // fast-math flags
+        in.pred = p.next().text;
+        auto ty = p.type();
+        Operand a{ty, p.value(ty), {}};
+        p.expect_punct(',');
+        Operand b{ty, p.value(ty), {}};
+        in.ty = ty;  // operand type; result is i1
+        in.ops = {a, b};
+        return in;
+    }
+    if (op == "fneg") {
+        while (p.peek().kind == Tok::Word && call_prefix_words().count(p.peek().text))
+            in.flags.push_back(p.next().text);
+        auto a = p.typed_operand();
+        in.ty = a.ty;
+        in.ops = {a};
+        return in;
+    }
+    if (op == "landingpad") {
+        // landingpad T [cleanup] (catch T v | filter T v)*
+        in.ty = p.type();
+        while (!p.at_end()) {
+            if (p.accept_word("cleanup")) {
+                in.flags.push_back("cleanup");
+                continue;
+            }
+            if (p.is_word("catch") || p.is_word("filter")) {
+                auto kind = p.next().text;
+                in.clauses.emplace_back(kind, p.typed_operand());
+                continue;
+            }
+            throw ParseError("unexpected landingpad clause");
+        }
+        return in;
+    }
+    if (op == "resume") {
+        auto a = p.typed_operand();
+        in.ty = a.ty;
+        in.ops = {a};
+        return in;
+    }
+    if (op == "insertvalue") {
+        auto agg = p.typed_operand();
+        p.expect_punct(',');
+        auto val = p.typed_operand();
+        in.ty = agg.ty;
+        in.ops = {agg, val};
+        while (p.accept_punct(',')) {
+            auto n = p.next();
+            if (n.kind != Tok::Num) throw ParseError("expected index");
+            in.indices.push_back(static_cast<unsigned>(std::stoul(n.text)));
+        }
         return in;
     }
     if (op == "select") {
@@ -814,7 +931,8 @@ Inst parse_inst(const std::vector<Tok>& toks, std::string text) {
         if (in.ty.kind == Type::Other && !in.ty.elems.empty()) in.ty = in.ty.elems[0];
         auto cal = p.next();
         if (cal.kind == Tok::Global) in.callee = cal.text;
-        else if (cal.kind != Tok::Local && p.is_punct('(') && !p.is_punct('(', 1)) p.skip_group();
+        else if (cal.kind == Tok::Local) in.callee_op = local_ptr(cal.text);
+        else if (p.is_punct('(') && !p.is_punct('(', 1)) p.skip_group();
         p.expect_punct('(');
         bool first = true;
         while (!p.is_punct(')')) {
@@ -835,10 +953,25 @@ Inst parse_inst(const std::vector<Tok>& toks, std::string text) {
         p.skip_param_attrs();
         in.ty = p.type();
         if (in.ty.kind == Type::Other && !in.ty.elems.empty()) in.ty = in.ty.elems[0];  // fnty
-        auto cal = p.next();
-        if (cal.kind == Tok::Global) {
+        if (p.is_word("asm")) {
+            // inline assembly: asm [sideeffect] [alignstack] [inteldialect] [unwind] "text", "constraints"
+            ++p.i;
+            while (p.peek().kind == Tok::Word) ++p.i;
+            auto t = p.next();
+            if (t.kind != Tok::Str) throw ParseError("expected asm string");
+            in.is_asm = true;
+            in.asm_text = t.text;
+            p.expect_punct(',');
+            p.next();  // constraint string
+        }
+        auto cal = in.is_asm ? Tok{Tok::Word, "asm"} : p.next();
+        if (in.is_asm) {
+            // no callee symbol
+        } else if (cal.kind == Tok::Global) {
             in.callee = cal.text;
-        } else if (cal.kind != Tok::Local) {
+        } else if (cal.kind == Tok::Local) {
+            in.callee_op = local_ptr(cal.text);
+        } else {
             // constant-expression callee
             if (p.is_punct('(')) p.skip_group();
         }
@@ -1012,9 +1145,18 @@ void parse_define(std::string_view header, const std::vector<std::string_view>& 
         in.dbg = dbg;
         cur->insts.push_back(std::move(in));
     };
+    std::string lpad;  // a landingpad whose clauses continue on the next lines
     for (auto raw : body) {
         auto line = trim(raw);
         if (line.empty() || line[0] == ';') continue;
+        if (!lpad.empty()) {
+            if (line.starts_with("catch ") || line.starts_with("filter ") || line.starts_with("cleanup")) {
+                lpad += " " + line;
+                continue;
+            }
+            flush(lpad);
+            lpad.clear();
+        }
         if (depth == 0) {
             // label?
             std::string lab;
@@ -1042,10 +1184,14 @@ void parse_define(std::string_view header, const std::vector<std::string_view>& 
         if (depth <= 0 && open_invoke) continue;
         if (depth <= 0) {
             depth = 0;
-            flush(pending);
+            if (pending.find(" = landingpad ") != std::string::npos || pending.starts_with("landingpad "))
+                lpad = pending;  // clauses follow on the next lines
+            else
+                flush(pending);
             pending.clear();
         }
     }
+    if (!lpad.empty()) flush(lpad);
     if (!pending.empty()) flush(pending);
 }
 

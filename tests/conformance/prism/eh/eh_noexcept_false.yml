@@ -1,0 +1,8 @@
+format_version: 1
+input_files: eh_noexcept_false.cpp
+language: C++
+property: no-uncaught
+expected:
+  eh_noexcept_false: false
+witness:
+  eh_noexcept_false: [20]

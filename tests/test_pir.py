@@ -64,7 +64,7 @@ EXPECTED: dict[tuple[str, str], str] = {
     ("assert.c", "assert_ok"): laws.PROVED,
     ("unencoded.c", "deref_ptr"): laws.NEEDS_HARNESS,
     ("unencoded.c", "local_array"): laws.PROVED,  # memory model (docs/PIR.md): a[i & 3] is in bounds
-    ("unencoded.c", "twice_double"): laws.NEEDS_HARNESS,
+    ("unencoded.c", "twice_double"): laws.PROVED,  # IEEE floating point is encoded (docs/PIR.md)
     ("unencoded.c", "recurse"): laws.NEEDS_HARNESS,
     ("calls.c", "helper"): laws.FAILED,
     ("calls.c", "caller_ok"): laws.PROVED,
@@ -153,7 +153,7 @@ MEM_EXPECTED: dict[tuple[str, str], tuple[str, str]] = {
     ("mem_libc.c", "vla_ok"): (laws.PROVED, ""),
     ("mem_libc.c", "vla_size_bad"): (laws.FAILED, "MEM-VLA-SIZE"),
     ("mem_libc.c", "vla_oob_bad"): (laws.FAILED, "MEM-OOB-WRITE"),
-    ("mem_libc.c", "setjmp_unenc"): (laws.NEEDS_HARNESS, ""),
+    ("mem_libc.c", "setjmp_unenc"): (laws.PROVED, ""),  # setjmp/longjmp are exception-like edges now
     ("mem_contract.c", "no_contract"): (laws.NEEDS_HARNESS, ""),
     ("mem_contract.c", "first_last_ok"): (laws.PROVED_ASSUMING, ""),
     ("mem_contract.c", "past_end_bad"): (laws.FAILED, "MEM-OOB-READ"),
@@ -176,7 +176,58 @@ MEM_EXPECTED: dict[tuple[str, str], tuple[str, str]] = {
     ("mem_stl.cpp", "unique_bad"): (laws.FAILED, "PTR-NULL-DEREF"),
     ("mem_stl.cpp", "vector_ok"): (laws.PROVED, ""),
     ("mem_stl.cpp", "vector_bad"): (laws.FAILED, "MEM-OOB-READ"),
-    ("mem_stl.cpp", "vector_at_throws"): (laws.NEEDS_HARNESS, ""),  # exception path: cleanup not modelled
+    # at(3) throws std::out_of_range: the cleanup runs and the exception leaves
+    # the function (not main, not noexcept): no violation (docs/PIR.md "Exceptions")
+    ("mem_stl.cpp", "vector_at_throws"): (laws.PROVED, ""),
+}
+
+# Roadmap 2.6 (docs/PIR.md "Floating point", "Exceptions", "Coroutines",
+# "setjmp/longjmp", "Indirect calls", "Inline assembly"): tests/pir/{fp,eh,
+# coro,sjlj,virt,asm}_*.
+PIR3_EXPECTED: dict[tuple[str, str], tuple[str, str]] = {
+    ("fp_arith.c", "fp_cast_bad"): (laws.FAILED, "FLOAT-CAST-OVF"),
+    ("fp_arith.c", "fp_cast_ok"): (laws.PROVED, ""),
+    ("fp_arith.c", "fp_nan_guard_ok"): (laws.PROVED, ""),
+    ("fp_arith.c", "fp_exact_ok"): (laws.PROVED, ""),
+    ("fp_arith.c", "fp_float_round_bad"): (laws.FAILED, "FUNC-CONTRACT"),
+    ("fp_arith.c", "fp_add_ok"): (laws.PROVED, ""),
+    ("fp_arith.c", "fp_add_bad"): (laws.FAILED, "FUNC-CONTRACT"),
+    ("fp_arith.c", "twice_ok"): (laws.PROVED, ""),
+    ("fp_arith.c", "fp_to_unsigned_bad"): (laws.FAILED, "FLOAT-CAST-OVF"),
+    ("fp_arith.c", "fp_half_way_ok"): (laws.PROVED, ""),
+    ("fp_arith.c", "fp_sin_ok"): (laws.PROVED, ""),
+    ("fp_arith.c", "fp_sin_bad"): (laws.FAILED, "FLOAT-CAST-OVF"),
+    ("fp_arith.c", "fp_div"): (laws.PROVED, ""),  # FLOAT-DIV-ZERO etc. only with --fp-checks
+    ("fp_arith.c", "fp_div_guard"): (laws.PROVED, ""),
+    ("eh_catch.cpp", "eh_catch_ok"): (laws.PROVED, ""),
+    ("eh_catch.cpp", "eh_catch_bad"): (laws.FAILED, "INT-DIV-ZERO"),
+    ("eh_catch.cpp", "eh_noexcept_bad"): (laws.FAILED, "CXX-THROW-NOEXCEPT"),
+    ("eh_catch.cpp", "eh_noexcept_ok"): (laws.PROVED, ""),
+    ("eh_catch.cpp", "eh_wrong_type_bad"): (laws.FAILED, "CXX-THROW-NOEXCEPT"),
+    ("eh_catch.cpp", "eh_base_ok"): (laws.PROVED, ""),
+    ("eh_catch.cpp", "eh_cleanup_ok"): (laws.PROVED, ""),
+    ("eh_catch.cpp", "eh_cleanup_bad"): (laws.FAILED, "FUNC-CONTRACT"),
+    ("eh_catch.cpp", "eh_rethrow_ok"): (laws.PROVED, ""),
+    ("eh_catch.cpp", "eh_std_ok"): (laws.PROVED, ""),
+    ("eh_catch.cpp", "eh_std_bad"): (laws.FAILED, "CXX-THROW-NOEXCEPT"),
+    ("eh_uncaught.cpp", "main"): (laws.FAILED, "CXX-UNCAUGHT"),
+    ("coro_gen.cpp", "coro_ok"): (laws.PROVED, ""),
+    ("coro_gen.cpp", "coro_bad"): (laws.FAILED, "INT-DIV-ZERO"),
+    ("sjlj_basic.c", "sjlj_ok"): (laws.PROVED, ""),
+    ("sjlj_basic.c", "sjlj_zero_ok"): (laws.PROVED, ""),
+    ("sjlj_basic.c", "sjlj_bad"): (laws.FAILED, "INT-DIV-ZERO"),
+    ("sjlj_basic.c", "sjlj_dead_frame_bad"): (laws.FAILED, "CTRL-LONGJMP-INVALID"),
+    ("virt_dispatch.cpp", "virt_ok"): (laws.PROVED, ""),
+    ("virt_dispatch.cpp", "virt_bad"): (laws.FAILED, "INT-DIV-ZERO"),
+    ("virt_dispatch.cpp", "fnptr_ok"): (laws.PROVED, ""),
+    ("virt_dispatch.cpp", "fnptr_bad"): (laws.FAILED, "INT-SIGNED-OVF"),
+    ("asm_contract.c", "asm_nocontract"): (laws.NEEDS_HARNESS, ""),
+    ("asm_contract.c", "asm_ok"): (laws.PROVED_ASSUMING, ""),
+    ("asm_contract.c", "asm_bad"): (laws.FAILED, "MEM-OOB-READ"),
+    # k-induction for read-only loops of functions with memory (docs/PIR.md)
+    ("kind_mem.c", "kind_mem_read_closed"): (laws.PROVED_UNBOUNDED, ""),
+    ("kind_mem.c", "kind_mem_write_bounded"): (laws.BOUNDED, ""),
+    ("kind_mem.c", "kind_mem_read_bad"): (laws.FAILED, "MEM-OOB-READ"),
 }
 
 CLASSES = {
@@ -277,10 +328,10 @@ class TestPirStage(unittest.TestCase):
     def test_unencoded_is_named(self):
         got = self._verdicts(self.report)
         self.assertIn("Law 6", got[("unencoded.c", "deref_ptr")]["message"])
-        # local arrays are in the memory model now; setjmp is still named
-        self.assertEqual(got[("mem_libc.c", "setjmp_unenc")]["message"], "UNENCODED: call @_setjmp")
-        self.assertEqual(got[("unencoded.c", "twice_double")]["message"],
-                         "UNENCODED: parameter type double")
+        # local arrays, floating point and setjmp are in the model now; inline
+        # assembly without a contract is named
+        self.assertIn("inline assembly", got[("asm_contract.c", "asm_nocontract")]["message"])
+        self.assertEqual(got[("unencoded.c", "twice_double")]["status"], laws.PROVED)
 
     def test_memory_verdicts_and_classes(self):
         got = self._verdicts(self.report)
@@ -290,6 +341,32 @@ class TestPirStage(unittest.TestCase):
             if f.get("status") != st or (cls and f.get("cls") != cls):
                 wrong[k] = ((st, cls), (f.get("status"), f.get("cls"), f.get("message")))
         self.assertEqual(wrong, {})
+
+    def test_roadmap_26_verdicts_and_classes(self):
+        got = self._verdicts(self.report)
+        wrong = {}
+        for k, (st, cls) in PIR3_EXPECTED.items():
+            f = got.get(k, {})
+            if f.get("status") != st or (cls and f.get("cls") != cls):
+                wrong[k] = ((st, cls), (f.get("status"), f.get("cls"), f.get("message")))
+        self.assertEqual(wrong, {})
+        # the asm contract is an assumption, listed like a pointer contract
+        f = got[("asm_contract.c", "asm_ok")]
+        self.assertIn("asm contract", f["extra"]["assumptions"])
+        self.assertEqual(f["extra"]["verdict_before_assumptions"], laws.PROVED)
+        self.assertIn("sin", got[("fp_arith.c", "fp_sin_ok")]["extra"]["libm_unconstrained"])
+        self.assertRegex(got[("fp_arith.c", "fp_cast_bad")]["counterexample"], r"^d=")
+        self.assertEqual(got[("kind_mem.c", "kind_mem_read_closed")]["extra"]["k_induction_memory"], "read-only loop")
+        self.assertEqual(got[("kind_mem.c", "kind_mem_write_bounded")]["extra"]["k_induction"],
+                         "not-attempted (memory written in the loop)")
+
+    def test_fp_checks_are_opt_in(self):
+        on = self._verdicts(self._run("--fp-checks"))
+        f = on[("fp_arith.c", "fp_div")]
+        self.assertEqual(f["status"], laws.FAILED)
+        self.assertIn(f["cls"], {"FLOAT-DIV-ZERO", "FLOAT-INVALID", "FLOAT-OVERFLOW"})
+        self.assertEqual(on[("fp_arith.c", "fp_div_guard")]["status"], laws.PROVED)
+        self.assertEqual(on[("fp_arith.c", "fp_cast_ok")]["status"], laws.PROVED)
 
     def test_memory_failed_has_line_and_prop(self):
         got = self._verdicts(self.report)
@@ -374,6 +451,16 @@ class TestPirStage(unittest.TestCase):
                 continue
             tv = f["extra"]["tv"]
             self.assertTrue(tv.startswith(("PASS", "NONE", "PARTIAL")), (k, tv))
+        # roadmap 2.6 functions: validated or PARTIAL/NONE with the reason; never diverged
+        for k, (st, _) in PIR3_EXPECTED.items():
+            f = got[k]
+            self.assertEqual(f["status"], st, (k, f.get("message")))
+            if st == laws.NEEDS_HARNESS:
+                continue
+            self.assertTrue(f["extra"]["tv"].startswith(("PASS", "NONE", "PARTIAL")), (k, f["extra"]["tv"]))
+        for k in [("fp_arith.c", "fp_add_ok"), ("eh_catch.cpp", "eh_cleanup_ok"), ("sjlj_basic.c", "sjlj_ok"),
+                  ("virt_dispatch.cpp", "virt_ok"), ("coro_gen.cpp", "coro_ok")]:
+            self.assertTrue(got[k]["extra"]["tv"].startswith("PASS"), (k, got[k]["extra"]["tv"]))
         for k in [("mem_array.c", "arr_read_ok"), ("mem_array.c", "uninit_mem_ok"), ("mem_ptr.c", "one_past_ok"),
                   ("mem_str.c", "memcpy_ok")]:
             self.assertTrue(got[k]["extra"]["tv"].startswith("PASS"), (k, got[k]["extra"]["tv"]))

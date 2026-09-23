@@ -8,6 +8,7 @@
 #include "prism/pir.hpp"
 
 #include <filesystem>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -21,6 +22,9 @@ struct UnitInfo {
     const std::vector<std::string>& src_lines;
     std::optional<std::vector<FunctionInfo>> functions;  // cparse view, for harness drafts (lazy)
 };
+
+// `// prism: asm ensures <cond>` contracts of a unit: source line of the asm -> cond.
+std::map<int, std::string> asm_contracts(const std::vector<std::string>& lines);
 
 // Options for translating one function: pointer-parameter contracts from the
 // source (`requires:`) or, failing that, from a template harness draft

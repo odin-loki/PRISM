@@ -17,6 +17,7 @@
 
 #include "translate_mem.hpp"
 
+#include "fp.hpp"
 #include "memory.hpp"
 
 #include <algorithm>
@@ -196,6 +197,11 @@ unsigned MemTr::value_width(const ir::Type& t, std::string_view what) const {
         if (t.text != "ptr") throw Unenc{"UNENCODED: " + std::string(what) + " " + t.text};
         return kPtrW;
     }
+    if (t.kind == ir::Type::Float) {
+        // half / float / double: IEEE bits (docs/PIR.md "Floating point")
+        if (auto w = fp::width_of(t)) return *w;
+        throw Unenc{"UNENCODED: " + std::string(what) + " " + t.text + " (floating-point format not modelled)"};
+    }
     if (t.kind != ir::Type::Int) throw Unenc{"UNENCODED: " + std::string(what) + " " + t.text};
     if (t.bits == 0 || t.bits > 64)
         throw Unenc{"UNENCODED: " + std::string(what) + " " + t.text + " (wider than 64 bits)"};
@@ -204,6 +210,7 @@ unsigned MemTr::value_width(const ir::Type& t, std::string_view what) const {
 
 unsigned MemTr::tag_of(const ir::Type& ty) const {
     if (!t_.options().strict_aliasing) return 0;
+    if (auto w = fp::width_of(ty)) return *w == 16 ? 7u : *w == 32 ? 8u : 9u;  // half / float / double
     return mem::type_tag(ty.kind == ir::Type::Int ? ty.bits : 64, ty.kind == ir::Type::Ptr);
 }
 
@@ -226,13 +233,32 @@ Arg MemTr::global(const std::string& name) {
     const auto& m = t_.module();
     const auto* g = m.find_global(name);
     if (!g) {
-        if (m.find(name) || std::find(m.declarations.begin(), m.declarations.end(), name) != m.declarations.end())
-            throw Unenc{"UNENCODED: function pointer @" + name};
+        if (m.find(name) || std::find(m.declarations.begin(), m.declarations.end(), name) != m.declarations.end()) {
+            mark_memory();
+            return t_.fn_addr(name);  // function address: calls through it dispatch (translate_ctl.inc)
+        }
         throw Unenc{"UNENCODED: global @" + name + " (not parsed)"};
     }
     if (g->thread_local_) throw Unenc{"UNENCODED: thread_local global @" + name};
     auto size = lay_.alloc_size(g->ty);
-    if (g->external && size == 0) throw Unenc{"UNENCODED: extern object of unknown size @" + name};
+    if (g->external && size == 0) {
+        // The C++ runtime's typeinfo vtables (referenced from every class's
+        // typeinfo, which vtables point to): an object PRISM knows nothing
+        // about. Any access through it is out of bounds (reported), never
+        // assumed to read anything particular.
+        if (!name.starts_with("_ZTVN10__cxxabiv1")) throw Unenc{"UNENCODED: extern object of unknown size @" + name};
+        mark_memory();
+        Stmt s;
+        s.kind = Stmt::Alloc;
+        s.dst = t_.newvar("@" + name, kPtrW);
+        s.args = {c64(0)};
+        s.mkind = MemKind::Const;
+        s.init = 1;
+        s.align = 16;
+        s.msg = "@" + name + " (C++ runtime, contents not modelled)";
+        t_.push(-1, s);
+        return globals_[name] = Arg::v(s.dst, kPtrW);
+    }
     mark_memory();
     const bool stream = g->external && (name == "stdin" || name == "stdout" || name == "stderr");
     int init = 2;
@@ -276,6 +302,11 @@ void MemTr::emit_init(Arg base, uint64_t offs, const ir::Type& ty, const ir::Val
     };
     switch (v.kind) {
         case ir::Value::Int: {
+            auto w = value_width(ty, "initializer of");
+            if (v.bits != 0) put(offs, Arg::c(w, v.bits));
+            return;
+        }
+        case ir::Value::Fp: {
             auto w = value_width(ty, "initializer of");
             if (v.bits != 0) put(offs, Arg::c(w, v.bits));
             return;

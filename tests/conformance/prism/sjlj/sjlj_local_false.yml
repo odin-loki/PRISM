@@ -1,0 +1,8 @@
+format_version: 1
+input_files: sjlj_local_false.c
+language: C
+property: no-div0
+expected:
+  sjlj_local_false: false
+witness:
+  sjlj_local_false: [1]

@@ -1,0 +1,8 @@
+format_version: 1
+input_files: virt_fnptr_false.c
+language: C
+property: no-overflow
+expected:
+  virt_fnptr_false: false
+witness:
+  virt_fnptr_false: [2000000000]

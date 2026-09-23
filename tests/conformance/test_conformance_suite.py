@@ -26,7 +26,8 @@ conf = importlib.util.module_from_spec(_spec)
 sys.modules["prism_conformance_t"] = conf
 _spec.loader.exec_module(conf)
 
-PROPERTIES = {"no-overflow", "no-div0", "no-shift-ub", "no-oob", "no-null-deref", "memsafety"}
+PROPERTIES = {"no-overflow", "no-div0", "no-shift-ub", "no-oob", "no-null-deref", "memsafety", "no-fp-cast",
+              "no-uncaught"}
 
 
 def _tasks() -> list:

@@ -17,15 +17,20 @@
 //   read of an uninitialised local (instrumented before mem2reg) UNINIT-READ
 //   clang-folded UB (poison constant / UB diagnostic)  per diagnostic
 //   memory (alloca/load/store/getelementptr/memcpy/free ...): translate_mem.cpp
+//   floating point (IEEE, fptosi range FLOAT-CAST-OVF): translate_fp.cpp
+//   exceptions, setjmp/longjmp, indirect calls, inline asm: translate_ctl.inc
 //
 // Everything else is thrown as "UNENCODED: <construct>" (roadmap 2.1).
 
 #include "prism/laws.hpp"
 #include "prism/pir.hpp"
 
+#include "fp.hpp"
+#include "translate_fp.hpp"
 #include "translate_mem.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <map>
 #include <set>
 #include <stdexcept>
@@ -71,6 +76,7 @@ struct Frame {
     std::set<int> raw;                                  // shadowed vars that are raw byte copies
     int ret_shadow = -1;                                // uninit shadow of the returned value (inlined)
     bool ret_shadow_used = false;
+    int serial = 0;                                     // unique per inlined instance (translate_ctl.inc)
 };
 
 struct PPhi {
@@ -92,8 +98,66 @@ struct Tr final : pirmem::TrApi {
     int uniq = 0;
     std::vector<Stmt> prologue;  // runs before block 0 (globals, pointer-parameter objects)
     std::vector<std::string> model_stack;  // library models being inlined (outermost first)
-    std::vector<char> unwind_ctx;          // enclosing invokes: 'T' terminate, 'H' handler/cleanup
     std::string top_file;                  // source file of the analysed function
+
+    // ---- control-flow lowering (translate_ctl.inc; docs/PIR.md "Exceptions",
+    // "setjmp/longjmp", "Indirect calls", "Inline assembly") ----
+    struct Handler {                       // an enclosing invoke: where an exception goes
+        Frame* fr;
+        std::string lpad;                  // landing pad block (IR name in fr)
+        std::string invoke_block;          // block of the invoke (the IR predecessor of lpad)
+        std::size_t depth;                 // frames[depth..] are unwound when it catches
+    };
+    struct EhEdge {                        // a throw that reaches a landing pad
+        int frame;                         // Frame::serial
+        std::string lpad, invoke_block;
+        int pred;                          // PIR block that jumps to the landing pad
+    };
+    struct LpadPhi {                       // IR phi in a landing pad (incoming = invoke blocks)
+        int frame;
+        std::string lpad;
+        int block, dst;
+        std::vector<std::pair<std::string, Arg>> in;
+    };
+    struct SjSite {                        // setjmp call site (continuation block, result phi)
+        int frame, id, cont, dst;
+    };
+    struct Snap;
+    std::vector<Handler> handlers;
+    std::vector<EhEdge> eh_edges;
+    std::vector<LpadPhi> lpad_phis;
+    std::vector<Frame*> frames;            // inlined frames, outermost first
+    int frame_serial = 0;
+    std::vector<SjSite> sj_sites;
+    std::map<std::string, uint64_t> type_ids;       // typeinfo symbol -> selector value
+    std::map<std::string, std::string> type_dtor;   // thrown typeinfo -> destructor symbol ("" none)
+    std::map<std::string, uint64_t> fn_ids;         // function symbol -> object id of its address
+    std::optional<std::vector<std::string>> thrown_;  // every type the module throws
+    std::optional<Arg> caught_;                       // hidden object: stack of caught exceptions
+
+    Arg fn_addr(const std::string& name) override;
+    Snap snap();
+    void restore(const Snap& s);
+    void soft_stop(int b, const std::string& msg, int line);
+    void add_phi(int block, int dst, int pred, Arg v);
+    void eh_pass(Frame& fr);
+    void region(Frame& fr, const std::string& start);
+    static const ir::Inst* landingpad_of(const ir::Function& f, const std::string& lpad);
+    uint64_t type_id(const std::string& tinfo);
+    const std::vector<std::string>& thrown_types();
+    int derives(const std::string& t, const std::string& c, int depth);
+    int catches(const std::string& thrown, const ir::Operand& clause);
+    std::pair<int, uint64_t> enters(const ir::Inst& lp, const std::string& t);
+    void raise(int& cur, Arg exn, const std::optional<std::string>& type, int line);
+    void dispatch_type(int cur, Arg exn, const std::string& type, int line);
+    Arg caught_slot();
+    Arg ld(int b, Arg p, unsigned w, int line);
+    void st(int b, Arg p, Arg v, int line);
+    Arg at(int b, Arg p, int64_t off, int line);
+    bool eh_call(Frame& fr, const ir::Inst& in, int& cur, int line, bool& noreturn);
+    bool sjlj_call(Frame& fr, const ir::Inst& in, int& cur, int line, bool& noreturn);
+    void indirect_call(Frame& fr, const ir::Inst& in, int& cur, ir::DILoc l, bool& noreturn);
+    void asm_call(Frame& fr, const ir::Inst& in, int& cur, int line);
 
     static std::string model_display(const std::string& n) {
         static const std::map<std::string, std::string> k{
@@ -103,8 +167,9 @@ struct Tr final : pirmem::TrApi {
         return it == k.end() ? n : it->second;
     }
     pirmem::MemTr mt;
+    pirfp::FpTr fpt;
 
-    Tr(const ir::Module& mm, const TranslateOptions& o) : m(mm), opt(o), mt(*this, mm) {}
+    Tr(const ir::Module& mm, const TranslateOptions& o) : m(mm), opt(o), mt(*this, mm), fpt(*this) {}
 
     // pirmem::TrApi
     const ir::Module& module() const override { return m; }
@@ -221,7 +286,9 @@ struct Tr final : pirmem::TrApi {
                 break;
             case ir::Value::Zero:
                 if (o.ty.kind == ir::Type::Ptr) return Arg::c(kPtrW, 0);
+                if (auto w = fp::width_of(o.ty)) return Arg::c(*w, 0);
                 break;
+            case ir::Value::Fp: return Arg::c(vwidth(o.ty, "operand type"), o.v.bits);
             case ir::Value::Global:
                 if (o.ty.kind == ir::Type::Ptr) return mt.global(o.v.name);
                 break;
@@ -259,11 +326,27 @@ struct Tr final : pirmem::TrApi {
                     }
                     continue;
                 }
+                if ((in.op == "landingpad" || in.op == "insertvalue") && in.ty.kind == ir::Type::Struct &&
+                    in.ty.elems.size() == 2 && in.ty.elems[0].kind == ir::Type::Ptr &&
+                    in.ty.elems[1].kind == ir::Type::Int && in.ty.elems[1].bits == 32) {
+                    // { ptr, i32 }: exception pointer and selector (translate_ctl.inc)
+                    int a = newvar(fr.prefix + in.result + ".exn", kPtrW);
+                    int s = newvar(fr.prefix + in.result + ".sel", 32);
+                    fr.pairs[in.result] = {a, s};
+                    fr.defs[in.result] = &in;
+                    continue;
+                }
                 fr.defs[in.result] = &in;
-                auto ty = in.op == "icmp" ? ir::Type{ir::Type::Int, 1, "i1", {}} : in.ty;
+                auto ty = in.op == "icmp" || in.op == "fcmp" ? ir::Type{ir::Type::Int, 1, "i1", {}} : in.ty;
                 if (ty.kind == ir::Type::Ptr && ty.text == "ptr") ty = ir::Type{ir::Type::Int, kPtrW, "ptr", {}};
+                bool is_fp = false;
+                if (auto fw = fp::width_of(ty)) {
+                    ty = ir::Type{ir::Type::Int, *fw, ty.text, {}};  // IEEE bits
+                    is_fp = true;
+                }
                 if (ty.kind == ir::Type::Int && ty.bits > 0 && ty.bits <= 64) {
                     int v = newvar(fr.prefix + in.result, ty.bits);
+                    out.vars[static_cast<std::size_t>(v)].fp = is_fp;
                     fr.env[in.result] = Arg::v(v, ty.bits);
                     if (in.op == "call" && starts(in.callee, "__prism.uninit.")) {
                         maybe_uninit.insert(in.result);
@@ -298,9 +381,9 @@ struct Tr final : pirmem::TrApi {
     }
 
     // Blocks reachable from the entry along normal edges (br, switch, the
-    // normal destination of invoke). Landing pads and the cleanup code after
-    // them are only entered by an exception, which PIR does not propagate
-    // (a throw PRISM sees ends its path, see call()); they are not translated.
+    // normal destination of invoke). Landing pads and the code after them are
+    // only entered by an exception: eh_pass (translate_ctl.inc) translates
+    // them once a throw edge reaches them.
     static std::set<std::string> normal_blocks(const ir::Function& f) {
         std::map<std::string, const ir::Block*> by;
         for (auto& b : f.blocks) by[b.name] = &b;
@@ -321,24 +404,17 @@ struct Tr final : pirmem::TrApi {
         return seen;
     }
 
-    // Where an exception raised under an invoke goes: 'T' std::terminate
-    // (noexcept boundary), 'H' a catch handler or cleanup code.
-    static char unwind_kind(const ir::Function& f, const std::string& lpad) {
-        for (auto& b : f.blocks) {
-            if (b.name != lpad) continue;
-            for (auto& in : b.insts)
-                if (in.op == "call" && (in.callee == "__clang_call_terminate" || in.callee == "_ZSt9terminatev"))
-                    return 'T';
-            return 'H';
-        }
-        return 'H';
-    }
-
     void run_frame(Frame& fr) {
         const auto& f = *fr.f;
         const auto live = normal_blocks(f);
-        for (auto& bl : f.blocks) {
-            if (!live.count(bl.name)) continue;
+        for (auto& bl : f.blocks)
+            if (live.count(bl.name)) translate_block(fr, bl);
+        eh_pass(fr);  // landing pads that a throw reaches, and the code after them
+    }
+
+    void translate_block(Frame& fr, const ir::Block& bl) {
+        const auto& f = *fr.f;
+        {
             auto q = fr.prefix + bl.name;
             int cur = head[q];
             bool noreturn = false;
@@ -348,6 +424,22 @@ struct Tr final : pirmem::TrApi {
                 auto l = loc(in);
                 if (fr.site_line) l = ir::DILoc{fr.site_line, 0};
                 int line = l.line;
+                if (in.op == "phi" && landingpad_of(f, bl.name)) {
+                    // landing pad phi: its predecessors are the throw sites under the
+                    // invokes named here (resolved from eh_edges in resolve_phis)
+                    int dst = var_of(fr, in.result);
+                    if (dst < 0) throw Unenc{"UNENCODED: phi " + in.ty.text};
+                    LpadPhi lp{fr.serial, bl.name, cur, dst, {}};
+                    for (auto& [o, pred] : in.incoming) {
+                        if (o.v.kind == ir::Value::Undef || o.v.kind == ir::Value::Poison)
+                            lp.in.emplace_back(pred, havoc(cur, vwidth(o.ty), false, false));
+                        else
+                            lp.in.emplace_back(pred, operand(fr, o, cur, line, /*use=*/false));
+                    }
+                    lpad_phis.push_back(std::move(lp));
+                    continue;
+                }
+                if (in.op == "landingpad") continue;  // its { exn, selector } pair is set by the throw edges
                 if (in.op == "phi") {
                     int dst = var_of(fr, in.result);
                     if (dst < 0) throw Unenc{"UNENCODED: phi " + in.ty.text};
@@ -378,14 +470,15 @@ struct Tr final : pirmem::TrApi {
                     continue;
                 }
                 if (in.op == "invoke") {
-                    // the call, then the normal edge (exception edges: see normal_blocks)
+                    // the call with the landing pad as its exception destination
+                    // (a throw inside jumps there: translate_ctl.inc), then the normal edge
                     ir::Inst call = in;
                     call.op = "call";
                     call.targets.clear();
-                    unwind_ctx.push_back(unwind_kind(f, in.targets.at(1)));
+                    handlers.push_back(Handler{&fr, in.targets.at(1), bl.name, frames.size()});
                     bool nr = false;
                     inst(fr, call, cur, l, nr);
-                    unwind_ctx.pop_back();
+                    handlers.pop_back();
                     Term t;
                     if (!nr) {
                         t.kind = Term::Jmp;
@@ -398,7 +491,8 @@ struct Tr final : pirmem::TrApi {
                     terminated = true;
                     continue;
                 }
-                if (in.op == "br" || in.op == "ret" || in.op == "unreachable" || in.op == "switch") {
+                if (in.op == "br" || in.op == "ret" || in.op == "unreachable" || in.op == "switch" ||
+                    in.op == "resume") {
                     terminator(fr, in, cur, line, noreturn);
                     tail[q] = cur;
                     terminated = true;
@@ -420,6 +514,14 @@ struct Tr final : pirmem::TrApi {
         auto& T = out.blocks[static_cast<std::size_t>(cur)].term;
         if (in.op == "switch") throw Unenc{"UNENCODED: switch (lowerswitch did not run)"};
         if (!in.parsed) throw Unenc{"UNENCODED: " + in.op};
+        if (in.op == "resume") {
+            // re-throw after cleanup code: the exception continues to the next handler
+            if (in.ops.empty() || in.ops[0].v.kind != ir::Value::Local || !fr.pairs.count(in.ops[0].v.name))
+                throw Unenc{"UNENCODED: resume of " + (in.ops.empty() ? std::string("?") : in.ops[0].ty.text)};
+            int ev = fr.pairs[in.ops[0].v.name].first;
+            raise(cur, Arg::v(ev, kPtrW), std::nullopt, line);
+            return;
+        }
         if (in.op == "unreachable") {
             if (!noreturn)
                 check(cur, Arg::c(1, 1), "unreachable", "CXX-UNREACHABLE",
@@ -593,6 +695,12 @@ struct Tr final : pirmem::TrApi {
             throw Unenc{"UNENCODED: " + what};
         }
         if (mem_inst(fr, in, cur, line)) return;
+        {
+            // floating point (translate_fp.cpp)
+            pirfp::Ctx c{[&](std::size_t i) { return operand(fr, in.ops.at(i), cur, line); },
+                         [&] { return in.result.empty() ? -1 : result_var(fr, in); }, line};
+            if (fpt.inst(cur, in, c)) return;
+        }
         if (op == "add" || op == "sub" || op == "mul" || op == "udiv" || op == "sdiv" || op == "urem" ||
             op == "srem" || op == "shl" || op == "lshr" || op == "ashr" || op == "and" || op == "or" ||
             op == "xor" || op == "fadd" || op == "fsub" || op == "fmul" || op == "fdiv" || op == "frem") {
@@ -651,6 +759,30 @@ struct Tr final : pirmem::TrApi {
             emit_assign(cur, result_var(fr, in), Op::Copy, {a});
             return;
         }
+        if (op == "insertvalue") {
+            // { ptr, i32 } exception pair (rebuilt by clang before `resume`)
+            auto it = fr.pairs.find(in.result);
+            if (it == fr.pairs.end() || in.indices.size() != 1 || in.indices[0] > 1 || in.ops.size() != 2)
+                throw Unenc{"UNENCODED: insertvalue " + in.ty.text};
+            Arg base0, base1;
+            const auto& agg = in.ops[0];
+            if (agg.v.kind == ir::Value::Local && fr.pairs.count(agg.v.name)) {
+                auto [a, s] = fr.pairs[agg.v.name];
+                base0 = Arg::v(a, kPtrW);
+                base1 = Arg::v(s, 32);
+            } else if (agg.v.kind == ir::Value::Undef || agg.v.kind == ir::Value::Poison) {
+                base0 = havoc(cur, kPtrW, false, false);
+                base1 = havoc(cur, 32, false, false);
+            } else {
+                throw Unenc{"UNENCODED: insertvalue into " + agg.v.text};
+            }
+            Arg v = operand(fr, in.ops[1], cur, line, /*use=*/false);
+            v.width = in.indices[0] == 0 ? kPtrW : 32;
+            emit_assign(cur, it->second.first, Op::Copy, {in.indices[0] == 0 ? v : base0});
+            emit_assign(cur, it->second.second, Op::Copy, {in.indices[0] == 1 ? v : base1});
+            return;
+        }
+        if (op == "landingpad") return;
         if (op == "extractvalue") {
             if (in.ops.empty() || in.ops[0].v.kind != ir::Value::Local || in.indices.size() != 1)
                 throw Unenc{"UNENCODED: extractvalue"};
@@ -672,7 +804,16 @@ struct Tr final : pirmem::TrApi {
     void call(Frame& fr, const ir::Inst& in, int& cur, ir::DILoc l, bool& noreturn) {
         int line = l.line;
         const auto& n = in.callee;
-        if (n.empty()) throw Unenc{"UNENCODED: indirect call"};
+        if (in.is_asm) {
+            asm_call(fr, in, cur, line);
+            return;
+        }
+        if (n.empty()) {
+            indirect_call(fr, in, cur, l, noreturn);  // virtual dispatch / function pointers
+            return;
+        }
+        if (eh_call(fr, in, cur, line, noreturn)) return;    // __cxa_* exception runtime
+        if (sjlj_call(fr, in, cur, line, noreturn)) return;  // setjmp / longjmp
         auto arg = [&](std::size_t i) {
             if (i >= in.ops.size()) throw Unenc{"UNENCODED: call @" + n + " arity"};
             return operand(fr, in.ops[i], cur, line);
@@ -680,6 +821,12 @@ struct Tr final : pirmem::TrApi {
         auto flag_arg = [&](std::size_t i) {
             return i < in.ops.size() && in.ops[i].v.kind == ir::Value::Int && in.ops[i].v.bits != 0;
         };
+        {
+            // floating-point intrinsics and libm calls (translate_fp.cpp)
+            pirfp::Ctx c{[&](std::size_t i) { return arg(i); },
+                         [&] { return in.result.empty() ? -1 : result_var(fr, in); }, line};
+            if (fpt.call(cur, in, c)) return;
+        }
         if (starts(n, "llvm.")) {
             if (is_overflow_intrinsic(n)) {
                 auto it = fr.pairs.find(in.result);
@@ -760,6 +907,23 @@ struct Tr final : pirmem::TrApi {
                 if (int dst = result_var(fr, in); dst >= 0) emit_assign(cur, dst, Op::Copy, {t});
                 return;
             }
+            if (starts(n, "llvm.lifetime.start") || starts(n, "llvm.lifetime.end")) {
+                // (coroutine frames, docs/PIR.md "Coroutines") end: the object's
+                // lifetime ends; start: its bytes become indeterminate again
+                // (an object already ended stays dead: later accesses are reported)
+                Arg p = arg(1);
+                if (starts(n, "llvm.lifetime.end")) {
+                    mt.end_lifetime(cur, p);
+                    return;
+                }
+                if (in.ops.empty() || in.ops[0].v.kind != ir::Value::Int || in.ops[0].v.bits == 0 ||
+                    in.ops[0].v.bits > 8)
+                    throw Unenc{"UNENCODED: call @" + n + " (object larger than 8 bytes)"};
+                auto bytes = static_cast<unsigned>(in.ops[0].v.bits);
+                ir::Type ty{ir::Type::Int, bytes * 8, "i" + std::to_string(bytes * 8), {}};
+                mt.store(cur, p, havoc(cur, bytes * 8, false, false), Arg::c(1, 0), ty, 1, line);
+                return;
+            }
             if (starts(n, "llvm.stackrestore")) {
                 mt.stack_restore(cur, arg(0));
                 return;
@@ -779,6 +943,7 @@ struct Tr final : pirmem::TrApi {
             return;
         }
         if (format_call(fr, in, cur, line)) return;
+        if (n == "__prism.keep") return;  // keeps a setjmp function's local in memory (lower_ctl.cpp)
         if (starts(n, "__prism.uninit.")) {
             int dst = result_var(fr, in);
             if (dst >= 0) havoc(cur, out.vars[static_cast<std::size_t>(dst)].width, true, false, dst);
@@ -849,26 +1014,6 @@ struct Tr final : pirmem::TrApi {
                 noreturn = true;
                 return;
             }
-            if (starts(n, "_ZSt") && n.find("__throw_") != std::string::npos) {
-                // std::__throw_*: the path leaves by an exception. Not UB when
-                // it leaves the analysed function; under an enclosing invoke it
-                // reaches std::terminate (noexcept) or handler/cleanup code
-                // that PIR does not follow (exception edges are not modelled):
-                // reaching it is reported as unencoded, never proved away.
-                for (std::size_t i = 0; i < in.ops.size(); ++i)
-                    if (in.ops[i].ty.kind != ir::Type::Float) arg(i);
-                if (!unwind_ctx.empty()) {
-                    if (unwind_ctx.back() == 'T')
-                        check(cur, Arg::c(1, 1), "terminate", "CXX-THROW-NOEXCEPT",
-                              "exception (" + n + ") escapes a noexcept function: std::terminate", line);
-                    else
-                        check(cur, Arg::c(1, 1), "throw-unmodelled", "UNENCODED",
-                              "exception path reachable (" + n + "); catch/cleanup code is not modelled", line);
-                }
-                out.throws.push_back(n);
-                noreturn = true;
-                return;
-            }
             if (n == "abort") {
                 // defined behaviour, but a crash: never a clean PROVED path
                 check(cur, Arg::c(1, 1), "abort", "FUNC-CONTRACT", "abort() is reachable (process crash)", line);
@@ -913,6 +1058,7 @@ struct Tr final : pirmem::TrApi {
             }
         cf.f = callee;
         cf.prefix = n + "#" + std::to_string(uniq++) + ".";
+        cf.serial = ++frame_serial;
         for (std::size_t i = 0; i < args.size(); ++i) {
             auto w = vwidth(callee->params[i].ty, "call @" + n + " parameter");
             args[i].width = w;
@@ -943,12 +1089,14 @@ struct Tr final : pirmem::TrApi {
         bool pushed_model = callee->is_model;
         if (pushed_model) model_stack.push_back(model_display(n));
         out.inlined.push_back(n);
+        frames.push_back(&cf);
         enter_frame(cf);
         Term j;
         j.kind = Term::Jmp;
         j.t = head[cf.prefix + callee->blocks.front().name];
         out.blocks[static_cast<std::size_t>(cur)].term = j;
         run_frame(cf);
+        frames.pop_back();
         stack.pop_back();
         if (pushed_model) model_stack.pop_back();
         if (cf.ret_shadow_used && cf.ret_var >= 0) {
@@ -1251,6 +1399,20 @@ struct Tr final : pirmem::TrApi {
     }
 
     void resolve_phis() {
+        for (auto& lp : lpad_phis) {
+            // one incoming per throw edge, valued by the invoke it passed through
+            PPhi p;
+            p.block = lp.block;
+            p.dst = lp.dst;
+            for (auto& e : eh_edges)
+                if (e.frame == lp.frame && e.lpad == lp.lpad)
+                    for (auto& [pred, v] : lp.in)
+                        if (pred == e.invoke_block) {
+                            p.in.emplace_back("", e.pred, v, 0);
+                            break;
+                        }
+            pphis.push_back(std::move(p));
+        }
         for (auto& p : pphis) {
             Phi phi;
             phi.dst = p.dst;
@@ -1281,6 +1443,8 @@ struct Tr final : pirmem::TrApi {
         }
     }
 };
+
+#include "translate_ctl.inc"
 
 bool Tr::format_call(Frame& fr, const ir::Inst& in, int& cur, int line) {
     const auto& n = in.callee;
@@ -1444,8 +1608,9 @@ Translation translate(const ir::Module& m, const ir::Function& f, const Translat
                 ptrs.push_back(&p);
                 continue;
             }
-            auto w = int_width(p.ty, "parameter type");
+            auto w = p.ty.kind == ir::Type::Float ? tr.vwidth(p.ty, "parameter type") : int_width(p.ty, "parameter type");
             int v = tr.newvar(p.name.empty() ? tr.tmpname("arg") : p.name, w);
+            tr.out.vars[static_cast<std::size_t>(v)].fp = p.ty.kind == ir::Type::Float;
             tr.out.params.push_back(v);
             top.env[p.name] = Arg::v(v, w);
         }
@@ -1472,6 +1637,8 @@ Translation translate(const ir::Module& m, const ir::Function& f, const Translat
         if (f.blocks.empty()) throw Unenc{"UNENCODED: empty function body"};
         tr.stack.push_back(f.name);
         if (auto it = m.subprograms.find(f.dbg); it != m.subprograms.end()) tr.top_file = it->second.file;
+        top.serial = ++tr.frame_serial;
+        tr.frames.push_back(&top);
         tr.enter_frame(top);
         tr.run_frame(top);
         tr.resolve_phis();

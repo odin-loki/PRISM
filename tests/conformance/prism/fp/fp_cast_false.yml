@@ -1,0 +1,8 @@
+format_version: 1
+input_files: fp_cast_false.c
+language: C
+property: no-fp-cast
+expected:
+  fp_cast_false: false
+witness:
+  fp_cast_false: [3000000]

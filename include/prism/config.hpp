@@ -53,6 +53,9 @@ struct Config {
     // harness draft (ai::draft_harness) when no requires clause gives them.
     // Opt-in: without it unguarded pointer parameters stay NEEDS-HARNESS (Law 6).
     bool pir_drafts = false;
+    // --fp-checks: pir also reports IEEE floating-point exceptions (division
+    // by zero, invalid operation, overflow) that Annex F defines. Opt-in.
+    bool fp_checks = false;
     // Roadmap 3.2 (--certified): the pir stage asks the solver library for an
     // LRAT certificate of every verification condition; a function whose VCs
     // are all checked by cake_lpr is PROVED-CERTIFIED. prism/config.py certified.

@@ -167,14 +167,17 @@ set(PRISM_SRC
   src/prism/pir/contracts.cpp
   src/prism/pir/encode.cpp
   src/prism/pir/export_lean.cpp
+  src/prism/pir/fp.cpp
   src/prism/pir/ir_parser.cpp
   src/prism/pir/libc_format.cpp
   src/prism/pir/libc_models.cpp
+  src/prism/pir/lower_ctl.cpp
   src/prism/pir/memory.cpp
   src/prism/pir/pir.cpp
   src/prism/pir/stage.cpp
   src/prism/pir/stage_mem.cpp
   src/prism/pir/translate.cpp
+  src/prism/pir/translate_fp.cpp
   src/prism/pir/translate_mem.cpp
   src/prism/polyglot.cpp
   src/prism/regex.cpp
@@ -427,7 +430,7 @@ endif()
 
 if(PRISM_TESTS)
   add_executable(prism_tests tests/cpp/test_main.cpp tests/cpp/test_ai9.cpp tests/cpp/test_conc.cpp
-    tests/cpp/test_leanbb.cpp tests/cpp/test_pir_mem.cpp tests/cpp/test_certified.cpp
+    tests/cpp/test_leanbb.cpp tests/cpp/test_pir_mem.cpp tests/cpp/test_certified.cpp tests/cpp/test_pir3.cpp
     # Roadmap 2.8 Clang-AST lints.
     tests/cpp/test_astlint.cpp
     # Roadmap 9.1/9.3/9.4 AI assistant features (regress, triage, ask, draft, predict).
@@ -465,6 +468,7 @@ if(PRISM_FUZZ)
       src/prism/models.cpp
       src/prism/journal.cpp
       src/prism/pir/ir_parser.cpp
+      src/prism/pir/fp.cpp
       src/prism/verdict/verdict.cpp)
     target_include_directories(prism_fuzz_self PRIVATE "${PRISM_ROOT}/include" "${PRISM_ROOT}/third_party")
     set(_prism_fuzz_flags -g -O1 -fno-omit-frame-pointer

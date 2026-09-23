@@ -5085,8 +5085,9 @@ TEST_CASE("pir: unmodelled constructs are named, pointer params are Law 6") {
                     "h");
     CHECK_FALSE(u.fn.has_value());
     CHECK(u.reason.rfind("UNENCODED: inttoptr", 0) == 0);
-    auto d = pir_of("define double @k(double %x) {\nentry:\n  ret double %x\n}\n", "k");
-    CHECK(d.reason == "UNENCODED: parameter type double");
+    // double is encoded now (docs/PIR.md "Floating point"); x86_fp80 is not
+    auto d = pir_of("define x86_fp80 @k(x86_fp80 %x) {\nentry:\n  ret x86_fp80 %x\n}\n", "k");
+    CHECK(d.reason == "UNENCODED: parameter type x86_fp80 (floating-point format not modelled)");
     auto c = pir_of("define i32 @e(i32 %x) {\nentry:\n  %r = call i32 @ext(i32 %x)\n  ret i32 %r\n}\n"
                     "declare i32 @ext(i32)\n",
                     "e");
