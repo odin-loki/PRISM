@@ -12,6 +12,7 @@
 #include "prism/journal.hpp"
 #include "prism/pipeline.hpp"
 #include "prism/sandbox.hpp"
+#include "prism/scope.hpp"
 #include "prism/taxonomy.hpp"
 #include "prism/simd.hpp"
 #ifdef PRISM_HAS_CUDA
@@ -28,6 +29,7 @@
 #include <functional>
 #include <iterator>
 #include <map>
+#include <set>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -3897,4 +3899,217 @@ TEST_CASE("config: vendored adapters are never taken from inside the scanned tre
     REQUIRE(trusted.has_value());
     CHECK(trusted->filename() == "esbmc-planted-by-test");
 #endif
+}
+
+// ---- scope: one skip list; skipped sources are written down (Law 7) --------
+
+TEST_CASE("scope: skip_dir, skipped_path and skipped_dirs match prism/scope.py") {
+    for (auto* n : {"node_modules", "third_party", ".git", "build", "build-release",
+                    "prism-out-gui", ".venv", "target"})
+        CHECK_MESSAGE(prism::scope::skip_dir(n), n);
+    for (auto* n : {"src", "lib", "rebuild", "tests"}) CHECK_MESSAGE(!prism::scope::skip_dir(n), n);
+    std::filesystem::path root = "/work/build/project";
+    CHECK_FALSE(prism::scope::skipped_path(root / "src" / "a.c", root));
+    CHECK(prism::scope::skipped_path(root / "node_modules" / "x" / "a.js", root));
+    CHECK_FALSE(prism::scope::skipped_path(root / "build.c", root));
+
+    PolyTree t;
+    t.put("a.c", "int f(void) { return 0; }\n");
+    t.put("node_modules/m/x.js", "x\n");
+    t.put("node_modules/m/y.js", "y\n");
+    t.put("node_modules/m/README", "no source extension\n");
+    t.put("sub/build-rel/gen.c", "int g(void) { return 1; }\n");
+    t.put(".git/HEAD", "ref\n");
+    auto got = prism::scope::skipped_dirs(t.dir, prism::is_known_source);
+    REQUIRE(got.size() == 2);
+    CHECK(got[0].dir == "node_modules");
+    CHECK(got[0].files == 2);
+    CHECK(got[1].dir == "sub/build-rel");
+    CHECK(got[1].files == 1);
+    CHECK(prism::scope::skipped_message("node_modules", 2) ==
+          "skipped node_modules/ (2 source files): vendor/build directory");
+
+    auto cfg = prism::default_config();
+    cfg.root = t.dir;
+    cfg.out = t.dir / "prism-out";
+    cfg.llm = false;
+    cfg.stages = std::vector<std::string>{"inventory"};
+    auto report = prism::run_pipeline(cfg);
+    std::vector<std::string> msgs;
+    for (auto& s : report.stages)
+        if (s.name == "inventory")
+            for (auto& f : s.findings)
+                if (f.status == prism::laws::UNKNOWN) msgs.push_back(f.message);
+    CHECK(msgs == std::vector<std::string>{
+                      "skipped node_modules/ (2 source files): vendor/build directory",
+                      "skipped sub/build-rel/ (1 source files): vendor/build directory"});
+}
+
+// ---- polyglot: every text file for secrets; unparsed output is ERROR -------
+
+TEST_CASE("polyglot: secrets in id_rsa / key.pem / .npmrc / Dockerfile, binary skipped") {
+    PolyTree t;
+    t.put("id_rsa", "-----BEGIN OPENSSH PRIVATE KEY-----\n");
+    t.put("certs/key.pem", "-----BEGIN PRIVATE KEY-----\n");
+    t.put(".npmrc", "//registry.npmjs.org/:_authToken=ghp_" + std::string(36, 'b') + "\n");
+    t.put("Dockerfile", "ENV K=AKIA" "ABCDEFGHIJKLMNOP\n");
+    t.put("blob.bin", std::string("AKIA" "ABCDEFGHIJKLMNOP") + std::string(1, '\0') + "\n");
+    auto cfg = prism::default_config();
+    cfg.root = t.dir;
+    auto out = prism::run_polyglot(t.dir, cfg);
+    std::set<std::pair<std::string, std::string>> hits;
+    for (auto& f : out)
+        if (f.status == prism::laws::FAILED) hits.insert({f.file, f.cls});
+    CHECK(hits.contains({"id_rsa", "SECRET-PRIVATE-KEY"}));
+    CHECK(hits.contains({"certs/key.pem", "SECRET-PRIVATE-KEY"}));
+    CHECK(hits.contains({".npmrc", "SECRET-GITHUB-TOKEN"}));
+    CHECK(hits.contains({"Dockerfile", "SECRET-AWS-KEY"}));
+    for (auto& h : hits) CHECK(h.first != "blob.bin");
+    CHECK(prism::is_text_file(t.dir / "id_rsa"));
+    CHECK_FALSE(prism::is_text_file(t.dir / "blob.bin"));
+}
+
+#ifndef _WIN32
+TEST_CASE("polyglot: tool output that parses to nothing is ERROR, benign is UNKNOWN") {
+    PolyTree t;
+    t.put("a.py", "x = 1\n");
+    auto fake = t.dir / "fake-ruff";
+    auto run_with = [&](const std::string& script) {
+        std::ofstream(fake, std::ios::binary) << "#!/bin/sh\n" << script;
+        std::filesystem::permissions(fake, std::filesystem::perms::owner_all);
+        auto cfg = prism::default_config();
+        cfg.root = t.dir;
+        cfg.tools["ruff"] = fake;
+        std::vector<prism::Finding> rows;
+        for (auto& f : prism::run_polyglot(t.dir, cfg))
+            if (extra_or(f, "check") == "python-lint") rows.push_back(f);
+        return rows;
+    };
+    auto bad = run_with("echo 'ruff: something new happened'\nexit 1\n");
+    REQUIRE(bad.size() == 1);
+    CHECK(bad[0].status == prism::laws::ERROR);
+    CHECK(bad[0].message == "ruff: output not understood: ruff: something new happened");
+    auto ok = run_with("echo 'All checks passed!'\nexit 0\n");
+    REQUIRE(ok.size() == 1);
+    CHECK(ok[0].status == prism::laws::UNKNOWN);
+    // ruff >= 0.5 names syntax errors `invalid-syntax`.
+    auto syn = run_with("echo \"$5:1:7: invalid-syntax: Expected a parameter\"\nexit 1\n");
+    REQUIRE(syn.size() == 1);
+    CHECK(syn[0].status == prism::laws::FAILED);
+    CHECK(extra_or(syn[0], "rule") == "invalid-syntax");
+    CHECK(syn[0].file == "a.py");
+}
+#endif
+
+// ---- pbsd: explicit tree only; importing it needs --allow-exec -------------
+
+TEST_CASE("pbsd: no configured tree is NOTRUN; a tree without --allow-exec is held") {
+    PbsdEnvGuard env;
+    auto cfg = prism::default_config();
+    CHECK(cfg.pbsd_root.empty());
+    cfg.root = testdata_root();
+    auto none = prism::run_pbsd_lints({testdata_root() / "abs_ok.c"}, cfg);
+    REQUIRE(none.size() == 1);
+    CHECK(none[0].status == std::string(prism::laws::NOTRUN));
+    CHECK(none[0].message == "ParanoidBSD tree not configured");
+    CHECK(extra_get(none[0], "install").find("--pbsd PATH") != std::string::npos);
+
+    auto td = journal_tmpdir("pbsd_held");
+    std::filesystem::create_directories(td / "tools" / "verify");
+    cfg.pbsd_root = td;
+    auto held = prism::run_pbsd_lints({testdata_root() / "onesided.c"}, cfg);
+    int n_held = 0;
+    bool portable = false;
+    for (auto& f : held) {
+        if (extra_or(f, "reason") == prism::sandbox::EXEC_REASON) {
+            ++n_held;
+            CHECK(f.status == std::string(prism::laws::NOTRUN));
+        }
+        if (f.cls == "MEM-ONESIDED-INDEX" && f.status == std::string(prism::laws::FAILED))
+            portable = true;
+        CHECK(extra_or(f, "via") != "prism.checkers");
+    }
+    CHECK(n_held == 1);
+    CHECK(portable);
+    CHECK(prism::exec_stages().at("pbsd") == "part");
+    std::error_code ec;
+    std::filesystem::remove_all(td, ec);
+}
+
+// ---- sarif / report.md / warnings ------------------------------------------
+
+TEST_CASE("fail-on defect ignores warning/note/style severity") {
+    auto rep_with = [](const std::string& sev) {
+        prism::RunReport r;
+        prism::StageResult s;
+        s.name = "warnings";
+        s.status = "ok";
+        prism::Finding f;
+        f.stage = "warnings";
+        f.status = std::string(prism::laws::FAILED);
+        f.extra["severity"] = sev;
+        s.findings = {f};
+        r.stages = {s};
+        return r;
+    };
+    for (auto* sev : {"warning", "note", "style", "WARNING"}) {
+        CHECK(prism::exit_code(rep_with(sev), "defect") == 0);
+        CHECK(prism::exit_code(rep_with(sev), "gap") == 0);
+    }
+    CHECK(prism::exit_code(rep_with("error"), "defect") == 1);
+    CHECK(prism::exit_code(rep_with(""), "defect") == 1);
+}
+
+TEST_CASE("write_report_md omits empty location and function") {
+    auto out = journal_tmpdir("report_md_empty");
+    prism::RunReport r;
+    r.root = "x";
+    prism::StageResult s;
+    s.name = "polyglot";
+    s.status = "ok";
+    prism::Finding u;
+    u.stage = "polyglot";
+    u.status = std::string(prism::laws::UNKNOWN);
+    u.message = "mypy: 1 python file(s), no diagnostics (not a proof)";
+    prism::Finding f;
+    f.stage = "polyglot";
+    f.status = std::string(prism::laws::FAILED);
+    f.file = "a.py";
+    f.line = 3;
+    f.function = "f";
+    f.cls = "LANG-LINT";
+    f.message = "ruff: x";
+    s.findings = {u, f};
+    r.stages = {s};
+    auto md = out / "report.md";
+    prism::write_report_md(r, md);
+    std::ifstream in(md);
+    std::string body((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    CHECK(body.find("``") == std::string::npos);
+    CHECK(body.find("- `UNKNOWN` **polyglot** — mypy: 1 python file(s)") != std::string::npos);
+    CHECK(body.find("- `FAILED` **polyglot** a.py:3 `f` LANG-LINT — ruff: x") != std::string::npos);
+    std::error_code ec;
+    std::filesystem::remove_all(out, ec);
+}
+
+TEST_CASE("warnings: relative paths, one finding per gcc+clang diagnostic, severity") {
+    auto cfg = prism::default_config();
+    if (!cfg.which({"gcc"}) && !cfg.which({"clang"})) return;
+    PolyTree t;
+    t.put("sub/w.c", "int f(void) { int unused_v; return 0; }\n");
+    cfg.root = t.dir;
+    auto out = prism::run_compiler({t.dir / "sub" / "w.c"}, cfg);
+    int unused = 0;
+    for (auto& f : out) {
+        CHECK(f.file == "sub/w.c");
+        CHECK(f.status == std::string(prism::laws::FAILED));
+        CHECK((extra_get(f, "severity") == "warning" || extra_get(f, "severity") == "error"));
+        CHECK_FALSE(extra_get(f, "compilers").empty());
+        if (f.message.find("unused_v") != std::string::npos) {
+            ++unused;
+            if (cfg.which({"gcc"}) && cfg.which({"clang"}))
+                CHECK(extra_get(f, "compilers") == "gcc,clang");
+        }
+    }
+    CHECK(unused == 1);
 }

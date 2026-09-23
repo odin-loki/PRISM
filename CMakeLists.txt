@@ -98,6 +98,7 @@ set(PRISM_SRC
   src/prism/regex.cpp
   src/prism/sandbox.cpp
   src/prism/sarif.cpp
+  src/prism/scope.cpp
   src/prism/stages_rest.cpp
   src/prism/taxonomy.cpp
 )

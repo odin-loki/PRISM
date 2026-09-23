@@ -4,15 +4,21 @@
 //
 //   diagnostic            -> FAILED   (strength FINDS; extra.severity/rule/tool)
 //   tool ran, silent      -> UNKNOWN  ("no diagnostics (not a proof)")
+//   tool said something   -> ERROR    ("output not understood: <tail>") when no
+//     no diagnostic parsed   diagnostic parsed and the output is not in PgTool::benign
 //   tool crashed/unusable -> ERROR
 //   tool timed out        -> TIMEOUT
 //   tool missing          -> NOTRUN   (extra.install)
 //   tool executes code    -> NOTRUN   without --allow-exec (Law 9; PgTool::executes)
+//
+// Built-in scans read every text file in scope (id_rsa, key.pem, .npmrc,
+// Dockerfile, ...); language tools go by extension.
 
 #include "prism/stages.hpp"
 #include "prism/laws.hpp"
 #include "prism/regex.hpp"
 #include "prism/sandbox.hpp"
+#include "prism/scope.hpp"
 #include "proc.hpp"
 
 #include <algorithm>
@@ -57,12 +63,10 @@ const std::set<std::string> kTextOnlyExts = {".env", ".ini", ".cfg", ".conf", ".
                                              ".xml", ".java", ".kt", ".cs", ".swift",
                                              ".scala", ".sql", ".tf", ".gradle"};
 
-const std::set<std::string> kSkipDirs = {
-    ".git", "prism-out", "third_party", "build", "node_modules", "__pycache__",
-    ".venv", "venv", "target", ".tox", ".mypy_cache", ".ruff_cache", ".pytest_cache",
-};
+// Skipped directories: one list for every stage (prism/scope.hpp).
 
 constexpr std::uintmax_t MAX_FILE_BYTES = 2'000'000;
+constexpr std::size_t SNIFF_BYTES = 8192;
 constexpr std::size_t MAX_FILES_PER_TOOL = 2000;
 constexpr std::size_t BATCH = 200;
 #ifdef _WIN32
@@ -123,6 +127,10 @@ struct PgTool {
     // blocks, cargo build.rs / proc macros, eslint.config.js). Law 9:
     // NOTRUN without --allow-exec. prism/polyglot.py Tool.executes.
     bool executes = false;
+    // Output lines (full match, stripped) meaning "ran fine, nothing to
+    // report". Other output with no parsed diagnostic is ERROR "output not
+    // understood", never a quiet UNKNOWN. prism/polyglot.py Tool.benign.
+    std::vector<std::string> benign{};
 };
 
 struct PgCheck {
@@ -141,12 +149,15 @@ const std::vector<PgCheck>& checks() {
         {"python-syntax", {"python", "json", "toml"}, "syntax",
          {{"prism-syntax", {"python3", "python"}, {"{exe}", "{helper}", "{files}"},
            R"(^PRISM-SYNTAX\t(?P<file>[^\t]+)\t(?P<line>\d+)\t(?P<col>\d+)\t(?P<msg>.+)$)",
-           false, {0}}},
+           false, {0}, 120.0, "", "", /*executes=*/false,
+           /*benign=*/{R"(PRISM-OK\t.+)", R"(PRISM-NOTOML\t.+)"}}},
          "install Python 3.11+ (python3 on PATH)"},
         {"python-lint", {"python"}, "lint",
          {{"ruff", {"ruff"},
            {"{exe}", "check", "--output-format=concise", "--no-cache", "--quiet", "{files}"},
-           R"(^(?P<file>.+?):(?P<line>\d+):(?P<col>\d+): (?P<rule>[A-Z]+\d+) (?P<msg>.+)$)"},
+           R"(^(?P<file>.+?):(?P<line>\d+):(?P<col>\d+): (?P<rule>[A-Z]+\d+|[a-z][a-z0-9]*(?:-[a-z0-9]+)+|SyntaxError):? (?P<msg>.+)$)",
+           false, {0, 1}, 120.0, "", "", /*executes=*/false,
+           /*benign=*/{R"(All checks passed!)"}},
           {"pyflakes", {"pyflakes"}, {"{exe}", "{files}"},
            R"(^(?P<file>.+?):(?P<line>\d+):(?:(?P<col>\d+):?)?\s+(?P<msg>.+)$)"}},
          "pip install ruff  (or pyflakes)"},
@@ -156,7 +167,8 @@ const std::vector<PgCheck>& checks() {
             "--no-color-output", "--no-incremental", "--cache-dir={devnull}", "--config-file=",
             "{files}"},
            R"(^(?P<file>.+?):(?P<line>\d+):(?:(?P<col>\d+):)? (?P<sev>error): (?P<msg>.+?)(?:\s+\[(?P<rule>[\w-]+)\])?$)",
-           false, {0, 1}, 600.0}},
+           false, {0, 1}, 600.0, "", "", /*executes=*/false,
+           /*benign=*/{R"(Success: no issues found in \d+ source files?)"}}},
          "pip install mypy"},
         {"javascript-syntax", {"javascript"}, "syntax",
          {{"node", {"node"}, {"{exe}", "--check", "{file}"},
@@ -185,7 +197,8 @@ const std::vector<PgCheck>& checks() {
          "apt install shellcheck"},
         {"go-syntax", {"go"}, "syntax",
          {{"gofmt", {"gofmt"}, {"{exe}", "-e", "-l", "{files}"},
-           R"(^(?P<file>.+?\.go):(?P<line>\d+):(?P<col>\d+): (?P<msg>.+)$)", false, {0}}},
+           R"(^(?P<file>.+?\.go):(?P<line>\d+):(?P<col>\d+): (?P<msg>.+)$)", false, {0}, 120.0, "",
+           "", /*executes=*/false, /*benign=*/{R"(.+\.go)"}}},
          "install Go (gofmt on PATH)"},
         {"rust-lint", {"rust"}, "lint",
          {{"cargo-clippy", {"cargo"}, {"{exe}", "clippy", "--quiet", "--message-format=short"},
@@ -195,17 +208,18 @@ const std::vector<PgCheck>& checks() {
         {"ruby-syntax", {"ruby"}, "syntax",
          {{"ruby", {"ruby"}, {"{exe}", "-wc", "{file}"},
            R"(^(?:\S*ruby\S*: )?(?P<file>[^:\n]+?):(?P<line>\d+): (?:(?P<sev>warning): )?(?P<msg>.+)$)",
-           true, {0}}},
+           true, {0}, 120.0, "", "", /*executes=*/false, /*benign=*/{R"(Syntax OK)"}}},
          "install Ruby"},
         {"php-syntax", {"php"}, "syntax",
          {{"php", {"php"}, {"{exe}", "-l", "{file}"},
            R"(^(?:PHP )?(?P<msg>(?:Parse|Fatal) error:.+?) in (?P<file>.+?) on line (?P<line>\d+)$)",
-           true, {0}}},
+           true, {0}, 120.0, "", "", /*executes=*/false,
+           /*benign=*/{R"(No syntax errors detected in .+)"}}},
          "install PHP CLI"},
         {"perl-syntax", {"perl"}, "syntax",
          {{"perl", {"perl"}, {"{exe}", "-c", "{file}"},
            R"(^(?P<msg>.+?) at (?P<file>.+?) line (?P<line>\d+)[.,])", true, {0}, 120.0, "", "",
-           /*executes=*/true}},
+           /*executes=*/true, /*benign=*/{R"(.+ syntax OK)"}}},
          "install Perl"},
         {"lua-syntax", {"lua"}, "syntax",
          {{"luac", {"luac", "luac5.4", "luac5.3"}, {"{exe}", "-p", "{file}"},
@@ -262,15 +276,6 @@ std::string join(const std::vector<std::string>& v, const std::string& sep) {
     return o;
 }
 
-bool skip_dir(const std::string& name) {
-    return kSkipDirs.contains(name) || name.starts_with("prism-out") || name.starts_with("build");
-}
-
-bool wanted_file(const fs::path& p) {
-    auto e = lower(p.extension().string());
-    return kLangExts.contains(e) || kCFamilyExts.contains(e) || kTextOnlyExts.contains(e) ||
-           p.filename() == ".env";
-}
 
 std::string language_of(const fs::path& p) {
     auto it = kLangExts.find(lower(p.extension().string()));
@@ -311,15 +316,36 @@ Finding pg_finding(std::string_view status, std::string file, std::optional<int>
 
 }  // namespace
 
-std::vector<fs::path> iter_polyglot_sources(const fs::path& root) {
+bool is_known_source(const fs::path& p) {
+    auto e = lower(p.extension().string());
+    return kLangExts.contains(e) || kCFamilyExts.contains(e) || kTextOnlyExts.contains(e) ||
+           p.filename() == ".env";
+}
+
+bool is_text_file(const fs::path& p) {
+    std::error_code ec;
+    auto sz = fs::file_size(p, ec);
+    if (ec || sz > MAX_FILE_BYTES) return false;
+    std::ifstream in(p, std::ios::binary);
+    if (!in) return false;
+    std::string head(SNIFF_BYTES, '\0');
+    in.read(head.data(), static_cast<std::streamsize>(head.size()));
+    head.resize(static_cast<std::size_t>(in.gcount()));
+    return head.find('\0') == std::string::npos;
+}
+
+namespace {
+
+// Every regular file under root outside the skipped dirs. Sorted,
+// depth-first: the same order as os.walk with sorted dirnames/filenames.
+std::vector<fs::path> walk_files(const fs::path& root) {
     std::vector<fs::path> out;
     std::error_code ec;
     if (fs::is_regular_file(root, ec)) {
-        if (wanted_file(root)) out.push_back(root);
+        out.push_back(root);
         return out;
     }
     if (!fs::is_directory(root, ec)) return out;
-    // Sorted, depth-first, same order as os.walk with sorted dirnames/filenames.
     std::vector<fs::path> stack{root};
     while (!stack.empty()) {
         auto dir = stack.back();
@@ -329,16 +355,33 @@ std::vector<fs::path> iter_polyglot_sources(const fs::path& root) {
              !ec && it != fs::directory_iterator(); it.increment(ec)) {
             std::error_code e2;
             if (it->is_directory(e2) && !it->is_symlink(e2)) {
-                if (!skip_dir(it->path().filename().string())) dirs.push_back(it->path());
-            } else if (it->is_regular_file(e2) && wanted_file(it->path())) {
+                if (!scope::skip_dir(it->path().filename().string())) dirs.push_back(it->path());
+            } else if (it->is_regular_file(e2)) {
                 files.push_back(it->path());
             }
         }
+        ec.clear();
         std::sort(files.begin(), files.end());
         std::sort(dirs.begin(), dirs.end());
         out.insert(out.end(), files.begin(), files.end());
         for (auto d = dirs.rbegin(); d != dirs.rend(); ++d) stack.push_back(*d);
     }
+    return out;
+}
+
+}  // namespace
+
+std::vector<fs::path> iter_polyglot_sources(const fs::path& root) {
+    std::vector<fs::path> out;
+    for (auto& p : walk_files(root))
+        if (is_known_source(p)) out.push_back(p);
+    return out;
+}
+
+std::vector<fs::path> iter_text_files(const fs::path& root) {
+    std::vector<fs::path> out;
+    for (auto& p : walk_files(root))
+        if (is_text_file(p)) out.push_back(p);
     return out;
 }
 
@@ -353,9 +396,7 @@ std::vector<Finding> builtin_scan(const std::vector<fs::path>& files, const fs::
     std::vector<Finding> out;
     int scanned = 0;
     for (auto& p : files) {
-        std::error_code ec;
-        auto sz = fs::file_size(p, ec);
-        if (ec || sz > MAX_FILE_BYTES) continue;
+        if (!is_text_file(p)) continue;
         std::ifstream in(p, std::ios::binary);
         if (!in) continue;
         ++scanned;
@@ -439,6 +480,47 @@ std::vector<Finding> parse_output(const PgTool& tool, const std::string& text, c
                                   {"col", m.named("col")}}));
     }
     return out;
+}
+
+// Output lines that are neither diagnostics nor the tool's known-benign
+// chatter (prism/polyglot.py unexplained_output). Only asked when no
+// diagnostic was kept: non-empty means PRISM did not understand the tool.
+// Text the tool pattern matches (e.g. a dropped note) is understood.
+std::string unexplained_output(const PgTool& tool, const std::string& raw) {
+    std::string text;
+    {
+        Regex pat(tool.pattern, /*multiline=*/true);
+        std::size_t at = 0;
+        for (auto& m : pat.finditer(raw)) {
+            auto b = static_cast<std::size_t>(m.spans[0].first);
+            auto e = static_cast<std::size_t>(m.spans[0].second);
+            if (b < at || e < b) continue;
+            text += raw.substr(at, b - at);
+            at = e;
+        }
+        text += raw.substr(std::min(at, raw.size()));
+    }
+    std::vector<Regex> rxs;
+    for (auto& b : tool.benign) rxs.emplace_back("^(?:" + b + ")$");
+    std::string rest;
+    std::size_t pos = 0;
+    while (pos < text.size()) {
+        auto nl = text.find('\n', pos);
+        if (nl == std::string::npos) nl = text.size();
+        auto line = trim(text.substr(pos, nl - pos));
+        pos = nl + 1;
+        if (line.empty()) continue;
+        bool ok = false;
+        for (auto& r : rxs)
+            if (r.search(line)) {
+                ok = true;
+                break;
+            }
+        if (ok) continue;
+        if (!rest.empty()) rest += "\n";
+        rest += line;
+    }
+    return rest;
 }
 
 struct Call {
@@ -579,6 +661,12 @@ std::vector<Finding> run_check(const PgCheck& check, std::vector<fs::path> files
                                tool->name + " exit " + std::to_string(r.rc) + ": " + t,
                                {{"tool", tool->name}, {"check", check.group}})};
         }
+        if (auto rest = unexplained_output(*tool, r.text); !rest.empty()) {
+            if (rest.size() > 400) rest = rest.substr(rest.size() - 400);
+            return {pg_finding(laws::ERROR, "", std::nullopt, "",
+                               tool->name + ": output not understood: " + rest,
+                               {{"tool", tool->name}, {"check", check.group}})};
+        }
         return {};
     };
 
@@ -605,10 +693,15 @@ std::vector<Finding> run_check(const PgCheck& check, std::vector<fs::path> files
 }  // namespace
 
 std::vector<Finding> run_polyglot(const fs::path& root, const Config& cfg) {
-    auto files = iter_polyglot_sources(root);
-    if (files.empty())
+    auto all_files = walk_files(root);
+    if (all_files.empty())
         return {pg_finding(laws::UNKNOWN, "", std::nullopt, "", "no source files in scope")};
-    auto out = builtin_scan(files, root);
+    // Built-in scans read every text file (builtin_scan sniffs); language
+    // tools only files with their extension.
+    auto out = builtin_scan(all_files, root);
+    std::vector<fs::path> files;
+    for (auto& p : all_files)
+        if (is_known_source(p)) files.push_back(p);
     std::map<std::string, std::vector<fs::path>> by_lang;
     for (auto& p : files)
         if (auto lang = language_of(p); !lang.empty()) by_lang[lang].push_back(p);

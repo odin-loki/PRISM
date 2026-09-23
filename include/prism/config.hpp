@@ -15,6 +15,7 @@ namespace prism {
 struct Config {
     std::filesystem::path root{"."};
     std::filesystem::path out{"prism-out"};
+    // ParanoidBSD tree (--pbsd PATH or PRISM_PBSD); empty = not configured.
     std::filesystem::path pbsd_root;
     std::string model{"qwen3.5:9b"};
     std::string ollama_host{"http://127.0.0.1:11434"};

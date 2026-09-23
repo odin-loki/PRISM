@@ -15,10 +15,21 @@ from prism.sarif import FAIL_ON, exit_code
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         prog="prism",
-        description="Hybrid code-testing pipeline: BMC, fuzz, LTL, Qwen 3.5 9B.",
+        description=(
+            "PRISM (Performance, Regression, Integration and Security Module) checks any "
+            "codebase: deep C/C++ analysis (lints, compiler warnings, BMC, fuzzing, "
+            "contracts) plus every other language through the polyglot stage (syntax, "
+            "linters, type checkers) and a secrets/conflict-marker scan of every text "
+            "file. What could not be checked is reported as NOTRUN, never as clean."
+        ),
+        epilog=(
+            "Writes report.json, report.md and report.sarif (SARIF 2.1.0) under --out. "
+            "Steps that execute scanned code need --allow-exec. "
+            "--fail-on defect ignores warning/note/style-severity findings."
+        ),
     )
     p.add_argument("path", nargs="?", default="testdata",
-                   help="file or directory of C/C++ (default: testdata)")
+                   help="file or directory to check, any language (default: testdata)")
     p.add_argument("--out", default="prism-out")
     p.add_argument("--no-llm", action="store_true")
     p.add_argument("--gui", action="store_true")
@@ -38,10 +49,14 @@ def main(argv: list[str] | None = None) -> int:
                    help="run code from the scanned tree (sanitizer/fuzz/diff harnesses, "
                         "perl -c, cargo clippy, eslint, LLM programs) in a sandbox; "
                         "only on code you trust. Without it those steps are NOTRUN")
+    p.add_argument("--pbsd", default="", metavar="PATH",
+                   help="ParanoidBSD tree for the pbsd stage (else PRISM_PBSD; no default). "
+                        "Importing its modules also needs --allow-exec")
     p.add_argument("--list-stages", action="store_true")
     p.add_argument("--fail-on", choices=FAIL_ON, default="never",
-                   help="exit 1 on: defect (any FAILED/CRASH/SANFAIL finding) or gap "
-                        "(defect, or anything NOTRUN/ERROR/TIMEOUT). A crashed stage is exit 2.")
+                   help="exit 1 on: defect (any FAILED/CRASH/SANFAIL finding, except those "
+                        "with extra.severity warning/note/style) or gap (defect, or anything "
+                        "NOTRUN/ERROR/TIMEOUT). A crashed stage is exit 2.")
     args = p.parse_args(argv)
 
     if args.list_stages:
@@ -83,6 +98,8 @@ def main(argv: list[str] | None = None) -> int:
         tools=tools,
         allow_exec=args.allow_exec,
     )
+    if args.pbsd:
+        cfg.pbsd_root = Path(args.pbsd).resolve()
     report = run_pipeline(cfg)
     print(f"confidence {report.confidence}  "
           f"(vis {report.visibility} x ans {report.answer} x res {report.resolution})")

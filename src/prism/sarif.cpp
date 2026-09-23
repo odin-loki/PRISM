@@ -32,6 +32,17 @@ std::string lower(std::string s) {
     return s;
 }
 
+// --fail-on counts a defect only at error level: extra.severity
+// warning/note/style is reported (SARIF "warning") but does not fail the
+// build. prism/sarif.py blocks / NON_BLOCKING_SEVERITIES.
+bool blocks(const Finding& f) {
+    if (!is_defect(f.status)) return false;
+    auto it = f.extra.find("severity");
+    if (it == f.extra.end()) return true;
+    auto sev = lower(it->second);
+    return sev != "warning" && sev != "note" && sev != "style";
+}
+
 std::optional<std::string> level_of(const Finding& f) {
     if (is_defect(f.status)) {
         std::string sev;
@@ -157,7 +168,7 @@ int exit_code(const RunReport& report, std::string_view fail_on) {
     if (fail_on == "never") return 0;
     for (auto& s : report.stages)
         for (auto& f : s.findings)
-            if (is_defect(f.status)) return 1;
+            if (blocks(f)) return 1;
     if (fail_on == "gap") {
         for (auto& s : report.stages) {
             if (s.status == "NOTRUN") return 1;

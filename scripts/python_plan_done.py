@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
-"""PRISM PLAN.md done smoke (WSL)."""
+"""PRISM PLAN.md done smoke (Python engine)."""
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
+import tempfile
 
-ROOT = Path("/mnt/c/Users/odinl/OneDrive/Desktop/Code Analysis")
-OUT = Path("/var/tmp/prism-plan-done")
+ROOT = Path(__file__).resolve().parents[1]
+OUT = Path(os.environ.get("PRISM_SMOKE_OUT") or Path(tempfile.gettempdir()) / "prism-plan-done")
 
 
 def main() -> int:

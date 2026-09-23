@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Smoke in-tree PRISM (vendored Z3) on core plants."""
+"""Smoke the C++ engine (PRISM_BIN, default build/prism) on core plants."""
+import os
 import subprocess
 from pathlib import Path
+import tempfile
 
-ROOT = Path("/mnt/c/Users/odinl/OneDrive/Desktop/Code Analysis")
-PRISM = Path("/var/tmp/prism-wsl/prism")
-OUT = Path("/var/tmp/prism-smoke")
+ROOT = Path(__file__).resolve().parents[1]
+PRISM = Path(os.environ.get("PRISM_BIN") or ROOT / "build" / "prism")
+OUT = Path(os.environ.get("PRISM_SMOKE_OUT") or Path(tempfile.gettempdir()) / "prism-smoke")
 OUT.mkdir(parents=True, exist_ok=True)
 
 JOBS = [

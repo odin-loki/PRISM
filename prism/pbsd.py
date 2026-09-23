@@ -8,6 +8,11 @@ headers or KNF column-0 braces.
 
 Missing clang/goto-cc/cbmc is recorded as NOTRUN, never as a clean sweep.
 A missing tree is NOTRUN unless a PRISM portable copy already fired.
+
+The tree is used only when named (--pbsd PATH or PRISM_PBSD); there is no
+guessed default location. Importing its modules executes code from outside
+PRISM, so it also needs --allow-exec (Law 9); without it that half is NOTRUN
+and only the PRISM portable copies run.
 """
 
 from __future__ import annotations
@@ -20,7 +25,7 @@ import shutil
 import sys
 from types import ModuleType, SimpleNamespace
 
-from prism import laws
+from prism import laws, sandbox
 from prism.checkers import run_lints
 from prism.config import Config
 from prism.models import Finding
@@ -50,19 +55,24 @@ HEAVY = (
 PORTABLE_CLS = {"MEM-ONESIDED-INDEX", "MEM-CAPACITY-FIRST"}
 
 
-def _looked_root(cfg: Config) -> Path:
+def _looked_root(cfg: Config) -> Path | None:
+    """cfg.pbsd_root (--pbsd PATH), else PRISM_PBSD, else None: there is no
+    guessed default location."""
+    if getattr(cfg, "pbsd_root", None):
+        return Path(cfg.pbsd_root)  # type: ignore[arg-type]
     env = os.environ.get("PRISM_PBSD")
-    if env:
-        return Path(env)
-    return Path(cfg.pbsd_root)
+    return Path(env) if env else None
 
 
 def discover_pbsd_root(cfg: Config) -> Path | None:
-    """PRISM_PBSD, else cfg.pbsd_root (Desktop ParanoidBSD by default)."""
+    """The configured ParanoidBSD tree when it has tools/verify, else None."""
     cand = _looked_root(cfg)
-    if (cand / "tools" / "verify").is_dir():
+    if cand is not None and (cand / "tools" / "verify").is_dir():
         return cand
     return None
+
+
+PBSD_INSTALL = "set PRISM_PBSD or pass --pbsd PATH (a ParanoidBSD tree with tools/verify)"
 
 
 def _not_run(message: str, install: str, extra: dict | None = None) -> Finding:
@@ -354,15 +364,24 @@ def run_pbsd_lints(paths: list[Path], cfg: Config) -> list[Finding]:
     root = discover_pbsd_root(cfg)
     portable = _prism_portable(files, cfg)
 
+    if looked is None:
+        if portable:
+            return _dedupe(portable)
+        return [_not_run("ParanoidBSD tree not configured", PBSD_INSTALL)]
     if root is None:
         if portable:
             return _dedupe(portable)
-        install = f"set PRISM_PBSD to the ParanoidBSD tree (looked at {looked})"
+        install = f"{PBSD_INSTALL} (looked at {looked})"
         return [_not_run(
             f"ParanoidBSD tree not found at {looked}",
             install,
             extra={"looked": str(looked)},
         )]
+    if not getattr(cfg, "allow_exec", False):
+        # Importing tools/verify/*.py and sibling_guard.py runs code from
+        # outside PRISM: Law 9, same gate as scanned code.
+        return _dedupe(portable) + [sandbox.exec_notrun(
+            "pbsd", "pbsd (import ParanoidBSD tools/verify modules)", looked=str(root))]
 
     imported, invoked, ported = _run_imported(root, files, cfg)
     out = _dedupe(imported + portable + _heavy_notrun())

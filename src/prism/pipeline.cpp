@@ -4,6 +4,7 @@
 #include "prism/journal.hpp"
 #include "prism/laws.hpp"
 #include "prism/sandbox.hpp"
+#include "prism/scope.hpp"
 #include "prism/stages.hpp"
 #include "prism/taxonomy.hpp"
 
@@ -44,6 +45,7 @@ std::string rel_of(const std::filesystem::path& p, const std::filesystem::path& 
 //   part  = the analysis half runs, the execute half is NOTRUN without it
 const std::map<std::string, std::string>& exec_stages() {
     static const std::map<std::string, std::string> k{
+        {"pbsd", "part"},       // imports the configured ParanoidBSD tools/verify modules
         {"sanitize", "whole"},  // compiles + runs `// prism: run` functions under ASan/UBSan/TSan
         {"optional", "part"},   // klee (native external calls), .cocci script rules
         {"polyglot", "part"},   // perl -c, cargo clippy, eslint (PgTool::executes)
@@ -163,9 +165,14 @@ void write_report_md(const RunReport& report, const std::filesystem::path& path)
             if ((f.status == laws::NOTRUN || f.status == laws::CLEAN) &&
                 (s.name == "inventory" || s.name == "classify" || s.name == "unify"))
                 continue;
-            std::string loc = f.line ? f.file + ":" + std::to_string(*f.line) : f.file;
-            o << "- `" << f.status << "` **" << s.name << "** " << loc << " `"
-              << (f.function ? *f.function : "") << "` " << f.cls << " — " << f.message;
+            // Empty location/function/class parts are left out (a summary
+            // row has no file); report.json keeps every field. pipeline.py _md_finding.
+            o << "- `" << f.status << "` **" << s.name << "**";
+            if (!f.file.empty())
+                o << " " << (f.line ? f.file + ":" + std::to_string(*f.line) : f.file);
+            if (f.function && !f.function->empty()) o << " `" << *f.function << "`";
+            if (!f.cls.empty()) o << " " << f.cls;
+            o << " — " << f.message;
             if (!f.counterexample.empty()) o << "  cex `" << f.counterexample << "`";
             o << "\n";
         }
@@ -281,6 +288,15 @@ RunReport run_pipeline(const Config& cfg) {
             out.push_back(Finding{"inventory", std::string(laws::CLEAN), rel, std::nullopt,
                                   std::nullopt, "", "translation unit",
                                   std::string(laws::STRENGTH_FINDS)});
+        }
+        // Law 7: a skipped vendor/build directory holding sources is written
+        // down, not skipped quietly (prism/scope.hpp).
+        for (auto& sk : scope::skipped_dirs(cfg.root, is_known_source)) {
+            Finding f{"inventory", std::string(laws::UNKNOWN), "", std::nullopt, std::nullopt, "",
+                      scope::skipped_message(sk.dir, sk.files), std::string(laws::STRENGTH_FINDS)};
+            f.extra["skipped"] = sk.dir;
+            f.extra["files"] = std::to_string(sk.files);
+            out.push_back(std::move(f));
         }
         return out;
     });
