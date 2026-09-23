@@ -167,7 +167,10 @@ class TestInlineBeforeBMC(unittest.TestCase):
         self.assertEqual(recs["caller"].cls, "INT-SIGNED-OVF")
         raw = next(f for f in fns if f.name == "caller")
         r = bmc_function(raw, 8)
-        self.assertIn(r.status, {laws.PROVED, laws.PROVED_UNBOUNDED})
+        # Without inlining the call is unmodelled: never a proof (S6; this
+        # used to assert PROVED, which was the wrong proof itself).
+        self.assertEqual(r.status, laws.NEEDS_HARNESS, r.message)
+        self.assertIn("UNENCODED", r.message)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,6 @@
+format_version: 1
+input_files: uchar_cmp_neg_true.c
+language: C
+property: no-div0
+expected:
+  uchar_cmp_neg_true: true

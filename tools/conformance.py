@@ -756,7 +756,9 @@ def fetch_juliet(dest: Path, flows: list[str]) -> Path:
     if not zpath.exists() or zpath.stat().st_size != JULIET_SIZE:
         print(f"downloading {JULIET_URL}", file=sys.stderr)
         tmp = zpath.with_suffix(".part")
-        with urllib.request.urlopen(JULIET_URL, timeout=600) as r, open(tmp, "wb") as fh:
+        # NIST answers 403 to the default Python-urllib User-Agent.
+        req = urllib.request.Request(JULIET_URL, headers={"User-Agent": "prism-conformance/1 (curl-compatible)"})
+        with urllib.request.urlopen(req, timeout=600) as r, open(tmp, "wb") as fh:
             shutil.copyfileobj(r, fh)
         tmp.replace(zpath)
     h = hashlib.sha256()

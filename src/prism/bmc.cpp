@@ -1062,6 +1062,8 @@ return R"BMC(typedef local unencoded)BMC";
 }  // namespace
 
 std::optional<std::string> harness_for_parsefail(std::string_view err, const std::string& engine) {
+    if (err.starts_with("UNENCODED: "))
+        return std::string(err) + " (not modelled by " + engine + "): not a proof";
     std::string low = std::string(err);
     for (char& c : low) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
 if (low.find(R"BMC(vla)BMC") != std::string::npos) {
@@ -2805,50 +2807,112 @@ int type_width(std::string_view typ) {
     return WIDTH;
 }
 
-std::map<std::string, int> extract_enums(std::string text) {
+std::string file_text_nocomments(std::string text) {
     try {
         text = strip_comments_keep_lines(text);
     } catch (...) {
         text = rx_sub("/\\*.*?\\*/", " ", text, false, true);
         text = rx_sub("//.*?$", " ", text, true, false);
     }
+    return text;
+}
+
+// Enumerator values of every plain `enum { ... }` in the file. An
+// enumerator whose value cannot be computed here (e.g. `A = 1 << 3`) is left
+// out together with the implicit enumerators that follow it, and a name
+// defined with two different values is left out: an unknown enumerator is
+// UNENCODED at its use, never a wrong constant.
+std::map<std::string, int> extract_enums(std::string text) {
+    text = file_text_nocomments(text);
     std::map<std::string, int> out;
+    std::set<std::string> ambiguous;
+    auto drop = [&](const std::string& name) {
+        ambiguous.insert(name);
+        out.erase(name);
+    };
     static Regex en("\\benum\\b(?:\\s+[A-Za-z_]\\w*)?\\s*\\{([^{}]*)\\}");
     for (auto& m : en.finditer(text)) {
-        int nxt = 0;
+        std::optional<int64_t> nxt = 0;
         auto inner = m.group(1);
         std::string part;
         std::stringstream ss(inner);
         while (std::getline(ss, part, ',')) {
             part = rx_sub("\\s+", " ", strip(part));
             if (part.empty()) continue;
+            std::string name = part;
             auto eq = part.find('=');
             if (eq != std::string::npos) {
-                auto name = strip(part.substr(0, eq));
+                name = strip(part.substr(0, eq));
                 auto val = strip(part.substr(eq + 1));
                 while (!val.empty() && (val.back() == 'u' || val.back() == 'U' ||
                                         val.back() == 'l' || val.back() == 'L'))
                     val.pop_back();
-                if (!is_ident(name)) continue;
+                nxt = std::nullopt;
                 try {
-                    nxt = static_cast<int>(std::stoll(val, nullptr, 0));
-                } catch (...) {
+                    size_t used = 0;
+                    auto v = std::stoll(val, &used, 0);
+                    if (used == val.size() && !val.empty()) nxt = v;
+                } catch (...) {}
+                if (!nxt && is_ident(val) && !ambiguous.count(val)) {
                     auto it = out.find(val);
-                    if (it == out.end()) continue;
-                    nxt = it->second;
+                    if (it != out.end()) nxt = it->second;
                 }
-                out[name] = nxt;
-                nxt += 1;
-            } else if (is_ident(part)) {
-                out[part] = nxt;
-                nxt += 1;
             }
+            if (!is_ident(name)) {
+                nxt = std::nullopt;
+                continue;
+            }
+            if (!nxt || *nxt < INT32_MIN || *nxt > INT32_MAX) {
+                drop(name);
+                nxt = std::nullopt;
+                continue;
+            }
+            if (ambiguous.count(name)) {
+                nxt = *nxt + 1;
+                continue;
+            }
+            auto it = out.find(name);
+            if (it != out.end() && it->second != *nxt) drop(name);
+            else out[name] = static_cast<int>(*nxt);
+            nxt = *nxt + 1;
         }
     }
     return out;
 }
 
-std::map<std::string, int> enums_from_fn(const FunctionInfo& fn) {
+// Object-like `#define NAME value` lines of the file (there is no
+// preprocessor: a name defined twice with different values, #undef'd, or
+// spanning lines is left out and stays UNENCODED at its use). Function-like
+// macros are never expanded.
+std::map<std::string, std::string> extract_macros(std::string text) {
+    text = file_text_nocomments(text);
+    std::map<std::string, std::string> out;
+    std::set<std::string> ambiguous;
+    static Regex def("^[ \\t]*#[ \\t]*define[ \\t]+([A-Za-z_]\\w*)([ \\t][^\\n]*)?$", true);
+    static Regex undef("^[ \\t]*#[ \\t]*undef[ \\t]+([A-Za-z_]\\w*)", true);
+    for (auto& m : undef.finditer(text)) ambiguous.insert(m.group(1));
+    for (auto& m : def.finditer(text)) {
+        auto name = m.group(1);
+        auto val = m.groups.size() > 2 && m.groups[2] ? strip(*m.groups[2]) : std::string{};
+        bool bad = val.empty() || val.find_first_of(";{}\"#\\") != std::string::npos;
+        if (bad || ambiguous.count(name)) {
+            ambiguous.insert(name);
+            out.erase(name);
+            continue;
+        }
+        auto it = out.find(name);
+        if (it != out.end() && it->second != val) {
+            ambiguous.insert(name);
+            out.erase(it);
+            continue;
+        }
+        out[name] = val;
+    }
+    for (auto& n : ambiguous) out.erase(n);
+    return out;
+}
+
+std::string read_fn_file(const FunctionInfo& fn) {
     std::filesystem::path path(fn.file);
     if (!std::filesystem::is_regular_file(path)) return {};
     try {
@@ -2856,7 +2920,27 @@ std::map<std::string, int> enums_from_fn(const FunctionInfo& fn) {
         if (!in) return {};
         std::ostringstream ss;
         ss << in.rdbuf();
-        return extract_enums(ss.str());
+        return ss.str();
+    } catch (...) {
+        return {};
+    }
+}
+
+std::map<std::string, int> enums_from_fn(const FunctionInfo& fn) {
+    auto text = read_fn_file(fn);
+    if (text.empty()) return {};
+    try {
+        return extract_enums(text);
+    } catch (...) {
+        return {};
+    }
+}
+
+std::map<std::string, std::string> macros_from_fn(const FunctionInfo& fn) {
+    auto text = read_fn_file(fn);
+    if (text.empty()) return {};
+    try {
+        return extract_macros(text);
     } catch (...) {
         return {};
     }
@@ -2902,1754 +2986,7 @@ std::vector<std::string> split_comma(std::string_view s) {
 
 #ifdef PRISM_HAS_Z3
 
-struct Prop {
-    std::string name;
-    std::string cls;
-    z3::expr cond;
-    int loc;
-};
-
-struct Arr {
-    z3::expr a;
-    int n;
-};
-
-struct Enc {
-    int unwind = 8;
-    z3::context ctx;
-    z3::solver s;
-    std::map<std::string, z3::expr> vars;
-    std::map<std::string, Arr> arrays;
-    std::map<std::string, z3::expr> uninit;
-    std::vector<Prop> props;
-    int pc = 0;
-    int fresh = 0;
-    bool unwind_ok = true;
-    z3::expr path_true;
-    std::unordered_set<std::string> unsigned_names;
-    std::unordered_map<unsigned, bool> utag;
-    std::map<std::string, int> bits;
-    std::unordered_map<unsigned, int> wtag;
-
-    explicit Enc(int u)
-        : unwind(u), s(ctx), path_true(ctx.bool_val(true)) {
-        s.set("timeout", 8000u);
-    }
-
-    unsigned eid(const z3::expr& v) const { return v.id(); }
-
-    void retag_unsigned() {
-        for (auto& n : unsigned_names) {
-            auto it = vars.find(n);
-            if (it != vars.end()) utag[eid(it->second)] = true;
-        }
-        for (auto& [n, w] : bits) {
-            auto it = vars.find(n);
-            if (it != vars.end()) wtag[eid(it->second)] = w;
-        }
-    }
-
-    z3::expr bv(std::string name = {}, int width = 0) {
-        fresh += 1;
-        int w = width ? width : WIDTH;
-        if (name.empty()) name = "t" + std::to_string(fresh);
-        auto v = ctx.bv_const(name.c_str(), static_cast<unsigned>(w));
-        wtag[eid(v)] = w;
-        return v;
-    }
-
-    z3::expr get(const std::string& name) {
-        int w = bits.count(name) ? bits[name] : WIDTH;
-        if (!vars.count(name)) vars.emplace(name, bv(name, w));
-        auto v = vars.at(name);
-        wtag[eid(v)] = w;
-        if (unsigned_names.count(name)) utag[eid(v)] = true;
-        return v;
-    }
-
-    z3::expr resize(const z3::expr& v, int src, int dst, bool unsign);
-    int width_of(const z3::expr& v) const {
-        auto it = wtag.find(eid(v));
-        return it == wtag.end() ? WIDTH : it->second;
-    }
-    bool is_u(const z3::expr& v) const {
-        auto it = utag.find(eid(v));
-        return it != utag.end() && it->second;
-    }
-    z3::expr tag(const z3::expr& v, bool unsign, int width = -1) {
-        utag[eid(v)] = unsign;
-        if (width >= 0) wtag[eid(v)] = width;
-        return v;
-    }
-
-    void set(const std::string& name, z3::expr val) {
-        int w = bits.count(name) ? bits[name] : WIDTH;
-        int vw = width_of(val);
-        if (vw != w) val = resize(val, vw, w, unsigned_names.count(name) != 0);
-        vars.insert_or_assign(name, val);
-        wtag[eid(val)] = w;
-        if (unsigned_names.count(name)) utag[eid(val)] = true;
-    }
-
-    void mark_init(const std::string& name) { uninit.insert_or_assign(name, ctx.bool_val(false)); }
-    void mark_uninit(const std::string& name) { uninit.insert_or_assign(name, ctx.bool_val(true)); }
-
-    void add_prop(std::string name, std::string cls, const z3::expr& viol, int loc) {
-        props.push_back(Prop{std::move(name), std::move(cls), path_true && viol, loc});
-    }
-
-    void check_read(const std::string& name) {
-        auto it = uninit.find(name);
-        if (it == uninit.end()) return;
-        try {
-            if (it->second.simplify().is_false()) return;
-        } catch (...) {}
-        add_prop("uninit", "UNINIT-READ", it->second, pc);
-    }
-
-    void assume(const z3::expr& cond) { path_true = path_true && cond; }
-
-    z3::expr bv_min(int w) {
-        int64_t v = -(int64_t{1} << (w - 1));
-        return ctx.bv_val(v, static_cast<unsigned>(w));
-    }
-    z3::expr bv_zero(int w) { return ctx.bv_val(0, static_cast<unsigned>(w)); }
-    z3::expr bv_val_w(int64_t v, int w = WIDTH) {
-        return ctx.bv_val(v, static_cast<unsigned>(w));
-    }
-};
-
-z3::expr Enc::resize(const z3::expr& v, int src, int dst, bool unsign) {
-    if (src == dst) return v;
-    if (dst > src)
-        return unsign ? z3::zext(v, static_cast<unsigned>(dst - src))
-                      : z3::sext(v, static_cast<unsigned>(dst - src));
-    return v.extract(static_cast<unsigned>(dst - 1), 0);
-}
-
-z3::expr oob(Enc& e, const z3::expr& i, int n) {
-    auto bound = e.ctx.bv_val(n, WIDTH);
-    if (e.is_u(i)) return z3::uge(i, bound);
-    return (i < 0) || (i >= n);
-}
-
-z3::expr as_bool(const z3::expr& v) {
-    if (v.is_bool()) return v;
-    return v != 0;
-}
-
-std::map<std::string, z3::expr> merge_uninit(const z3::expr& cond,
-    const std::map<std::string, z3::expr>& then_u,
-    const std::map<std::string, z3::expr>& else_u,
-    const std::map<std::string, z3::expr>& saved_u,
-    Enc& e) {
-    std::set<std::string> names;
-    for (auto& m : {then_u, else_u, saved_u})
-        for (auto& [k, _] : m) names.insert(k);
-    std::map<std::string, z3::expr> merged;
-    auto falseb = e.ctx.bool_val(false);
-    auto getu = [&](const std::map<std::string, z3::expr>& m, const std::string& n) -> z3::expr {
-        auto it = m.find(n);
-        if (it != m.end()) return it->second;
-        auto jt = saved_u.find(n);
-        if (jt != saved_u.end()) return jt->second;
-        return falseb;
-    };
-    for (auto& n : names) {
-        auto a = getu(then_u, n);
-        auto b = getu(else_u, n);
-        if (z3::eq(a, b)) merged.insert_or_assign(n, a);
-        else merged.insert_or_assign(n, z3::ite(cond, a, b));
-    }
-    return merged;
-}
-
-std::pair<std::string, std::string> paren(std::string text);
-std::pair<std::string, std::string> brace(std::string text);
-std::pair<std::string, std::string> stmt_split(std::string text);
-std::pair<std::string, std::string> block_or_stmt(std::string text);
-std::pair<std::string, std::string> paren_stmt(std::string text);
-std::pair<std::string, std::string> upto_colon(std::string text);
-std::pair<std::string, std::string> consume_stmt_src(std::string text);
-
-std::pair<std::string, std::string> paren(std::string text) {
-    text = lstrip(text);
-    if (!text.starts_with("(")) throw ParseFail("expected (");
-    int depth = 0;
-    for (size_t i = 0; i < text.size(); ++i) {
-        if (text[i] == '(') ++depth;
-        else if (text[i] == ')') {
-            --depth;
-            if (depth == 0) return {text.substr(1, i - 1), text.substr(i + 1)};
-        }
-    }
-    throw ParseFail("unbalanced (");
-}
-
-std::pair<std::string, std::string> paren_stmt(std::string text) {
-    auto [inner, rest] = paren(text);
-    rest = lstrip(rest);
-    if (rest.starts_with(";")) rest = rest.substr(1);
-    return {inner, rest};
-}
-
-std::pair<std::string, std::string> brace(std::string text) {
-    text = lstrip(text);
-    if (!text.starts_with("{")) throw ParseFail("expected {");
-    int depth = 0;
-    for (size_t i = 0; i < text.size(); ++i) {
-        if (text[i] == '{') ++depth;
-        else if (text[i] == '}') {
-            --depth;
-            if (depth == 0) return {text.substr(1, i - 1), text.substr(i + 1)};
-        }
-    }
-    throw ParseFail("unbalanced {");
-}
-
-std::pair<std::string, std::string> stmt_split(std::string text) {
-    int depth = 0;
-    for (size_t i = 0; i < text.size(); ++i) {
-        if (text[i] == '(') ++depth;
-        else if (text[i] == ')') --depth;
-        else if (text[i] == '{' && depth == 0) break;
-        else if (text[i] == ';' && depth == 0)
-            return {text.substr(0, i + 1), text.substr(i + 1)};
-    }
-    throw ParseFail("no semicolon in " + text.substr(0, std::min<size_t>(80, text.size())));
-}
-
-std::pair<std::string, std::string> block_or_stmt(std::string text) {
-    text = lstrip(text);
-    if (text.starts_with("{")) return brace(text);
-    return stmt_split(text);
-}
-
-std::pair<std::string, std::string> upto_colon(std::string text) {
-    int depth = 0;
-    for (size_t i = 0; i < text.size(); ++i) {
-        if (text[i] == '(') ++depth;
-        else if (text[i] == ')') --depth;
-        else if (text[i] == ':' && depth == 0)
-            return {text.substr(0, i), text.substr(i + 1)};
-    }
-    throw ParseFail("expected :");
-}
-
-std::pair<std::string, std::string> consume_stmt_src(std::string text_in) {
-    std::string raw = text_in;
-    std::string text = lstrip(text_in);
-    size_t skip = raw.size() - text.size();
-    auto taken = [&](const std::string& rest) -> std::pair<std::string, std::string> {
-        size_t idx = rest.empty() && rest != raw ? raw.size() : (raw.size() - rest.size());
-        // Python: idx = len(raw) - len(rest)
-        idx = raw.size() - rest.size();
-        return {raw.substr(skip, idx - skip), rest};
-    };
-    (void)skip;
-    if (text.empty()) return {"", ""};
-    if (text.starts_with("{")) {
-        auto [_, rest] = brace(text);
-        return taken(rest);
-    }
-    if (starts_kw(text, "do")) {
-        auto rest = lstrip(text.substr(2));
-        auto [__, r2] = block_or_stmt(rest);
-        rest = lstrip(r2);
-        if (!starts_kw(rest, "while")) throw ParseFail("do without while");
-        rest = lstrip(rest.substr(5));
-        auto [___, r3] = paren(rest);
-        rest = lstrip(r3);
-        if (rest.starts_with(";")) rest = rest.substr(1);
-        return taken(rest);
-    }
-    for (auto kw : {"if", "switch", "while", "for"}) {
-        if (starts_kw(text, kw)) {
-            auto rest = lstrip(text.substr(std::strlen(kw)));
-            if (std::string(kw) == "if" && rest.starts_with("constexpr"))
-                throw ParseFail("if constexpr unencoded");
-            auto [_, r1] = paren(rest);
-            auto [__, r2] = block_or_stmt(r1);
-            rest = r2;
-            if (std::string(kw) == "if") {
-                auto r2s = lstrip(rest);
-                if (starts_kw(r2s, "else")) {
-                    auto [___, r3] = block_or_stmt(r2s.substr(4));
-                    rest = r3;
-                }
-            }
-            return taken(rest);
-        }
-    }
-    return stmt_split(text);
-}
-
-struct SwitchArm {
-    std::vector<std::optional<z3::expr>> labels;
-    std::string code;
-    bool stops = false;
-};
-
-std::string arm_code(const std::vector<SwitchArm>& arms, size_t i) {
-    std::string parts;
-    for (size_t j = i; j < arms.size(); ++j) {
-        auto t = strip(arms[j].code);
-        if (!t.empty()) {
-            if (!parts.empty()) parts += "\n";
-            parts += arms[j].code;
-        }
-        if (arms[j].stops) break;
-    }
-    return parts;
-}
-
-z3::expr apply_binop(Enc& e, z3::expr a, const std::string& op, z3::expr b);
-
-struct Parser;
-
-z3::expr parse_expr(Enc& e, std::string src, Parser& parser);
-
-struct Parser {
-    std::string body;
-    std::vector<std::pair<std::string, std::string>> params;
-    int unwind = 8;
-    std::map<std::string, int> enums;
-    std::string err;
-    // AI hook statements (__prism_assume/assert/havoc/step) are only parsed
-    // for programs built by prism::ai::check_program, never for user code.
-    bool ai_hooks = false;
-
-    Parser(std::string b, std::vector<std::pair<std::string, std::string>> p, int u,
-           std::map<std::string, int> en)
-        : body(std::move(b)), params(std::move(p)), unwind(u), enums(std::move(en)) {}
-
-    std::unique_ptr<Enc> run() {
-        auto e = std::make_unique<Enc>(unwind);
-        for (auto& [typ, name] : params) {
-            if (name.empty()) continue;
-            if (type_is_unsigned(typ)) e->unsigned_names.insert(name);
-            e->bits[name] = type_width(typ);
-            e->get(name);
-        }
-        try {
-            stmts(*e, prep(body));
-        } catch (const ParseFail& ex) {
-            err = ex.what();
-            return nullptr;
-        }
-        return e;
-    }
-
-    static std::string prep(std::string body) {
-        return rx_sub("#.*", " ", body);
-    }
-
-    void stmts(Enc& e, std::string text);
-    void decl(Enc& e, std::string stmt);
-    void assign_or_expr(Enc& e, std::string stmt);
-    void astore(Enc& e, const std::string& name, const std::string& idx, const std::string& rhs);
-    std::string assert_stmt(Enc& e, std::string text);
-    void return_stmt(Enc& e, std::string stmt);
-    std::string if_stmt(Enc& e, std::string text);
-    std::string while_stmt(Enc& e, std::string text);
-    std::string do_stmt(Enc& e, std::string text);
-    std::string switch_stmt(Enc& e, std::string text);
-    std::vector<SwitchArm> parse_switch_arms(Enc& e, std::string body);
-    std::string for_stmt(Enc& e, std::string text);
-    std::string ai_hook_stmt(Enc& e, std::string text);
-    z3::expr expr(Enc& e, std::string src) { return parse_expr(e, strip(src), *this); }
-    z3::expr binop(Enc& e, const z3::expr& a, const std::string& op, const z3::expr& b, const std::string&) {
-        return apply_binop(e, a, op, b);
-    }
-};
-
-void Parser::stmts(Enc& e, std::string text) {
-    text = strip(text);
-    while (!text.empty()) {
-        text = lstrip(text);
-        if (text.empty()) break;
-        if (text.starts_with("{")) {
-            auto [inner, rest] = brace(text);
-            stmts(e, inner);
-            text = rest;
-            continue;
-        }
-        if (rx_match(R"BMC(if\s+constexpr\b)BMC", text)) {
-            throw ParseFail(R"BMC(if constexpr unencoded)BMC");
-        }
-        if (rx_match(R"BMC(constexpr\b)BMC", text)) {
-            throw ParseFail(R"BMC(constexpr unencoded)BMC");
-        }
-        if (text.find(R"BMC(<=>)BMC") != std::string::npos) {
-            throw ParseFail(R"BMC(spaceship unencoded)BMC");
-        }
-        if (rx_search(R"BMC(__attribute__\s*\(\s*\(\s*cleanup)BMC", text)) {
-            throw ParseFail(R"BMC(cleanup unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\bstd\s*::\s*expected\b|\bexpected\s*<)BMC", text)) {
-            throw ParseFail(R"BMC(expected unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\bformat_to(?:_n)?\s*\()BMC", text)) {
-            throw ParseFail(R"BMC(format_to unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\bstd\s*::\s*(?:format|print|println)\b)BMC", text)) {
-            throw ParseFail(R"BMC(format unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\bstd\s*::\s*jthread\b)BMC", text)) {
-            throw ParseFail(R"BMC(jthread unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\bstd\s*::\s*(?:async|future|promise)\b|(?:future|promise)\s*<)BMC", text)) {
-            throw ParseFail(R"BMC(async unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\bstd\s*::\s*function\b|function\s*<)BMC", text)) {
-            throw ParseFail(R"BMC(function unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\bstd\s*::\s*mdspan\b|mdspan\s*<)BMC", text)) {
-            throw ParseFail(R"BMC(mdspan unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\bstd\s*::\s*(?:mutex|lock_guard|unique_lock|scoped_lock)\b|(?:lock_guard|unique_lock|scoped_lock)\s*<)BMC", text)) {
-            throw ParseFail(R"BMC(std mutex unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\bcondition_variable_any\b)BMC", text)) {
-            throw ParseFail(R"BMC(condition_variable_any unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\bshared_timed_mutex\b)BMC", text)) {
-            throw ParseFail(R"BMC(shared_timed_mutex unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\brecursive_timed_mutex\b)BMC", text)) {
-            throw ParseFail(R"BMC(recursive_timed_mutex unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\berror_category\b)BMC", text)) {
-            throw ParseFail(R"BMC(error_category unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\bnested_exception\b)BMC", text)) {
-            throw ParseFail(R"BMC(nested_exception unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\bwstring_convert\b)BMC", text)) {
-            throw ParseFail(R"BMC(wstring_convert unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\bsystem_error\b)BMC", text)) {
-            throw ParseFail(R"BMC(system_error unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\b(?:current_zone|tzdb)\b)BMC", text)) {
-            throw ParseFail(R"BMC(tzdb unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\bis_scoped_enum\b)BMC", text)) {
-            throw ParseFail(R"BMC(is_scoped_enum unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\b(?:views\s*::\s*)?enumerate(?:_view)?\b)BMC", text)) {
-            throw ParseFail(R"BMC(enumerate unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\bcartesian_product(?:_view)?\b)BMC", text)) {
-            throw ParseFail(R"BMC(cartesian_product unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\b(?:views\s*::\s*chunk(?:_by)?|chunk(?:_by|_view))\b)BMC", text)) {
-            throw ParseFail(R"BMC(chunk unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\b(?:views\s*::\s*slide|slide_view)\b)BMC", text)) {
-            throw ParseFail(R"BMC(slide unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\b(?:views\s*::\s*adjacent(?:_transform)?|adjacent(?:_transform|_view))\b)BMC", text)) {
-            throw ParseFail(R"BMC(adjacent unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\bjoin_with(?:_view)?\b)BMC", text)) {
-            throw ParseFail(R"BMC(join_with unencoded)BMC");
-        }
-        if (rx_search(R"BMC(views\s*::\s*join|\bjoin_view\b)BMC", text)) {
-            throw ParseFail(R"BMC(views::join unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\bzip_transform(?:_view)?\b)BMC", text)) {
-            throw ParseFail(R"BMC(zip_transform unencoded)BMC");
-        }
-        if (rx_search(R"BMC(views\s*::\s*zip|\bzip_view\b)BMC", text)) {
-            throw ParseFail(R"BMC(views::zip unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\bas_rvalue(?:_view)?\b)BMC", text)) {
-            throw ParseFail(R"BMC(as_rvalue unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\bfrom_range\b)BMC", text)) {
-            throw ParseFail(R"BMC(from_range unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\b(?:views\s*::\s*)?stride(?:_view)?\b)BMC", text)) {
-            throw ParseFail(R"BMC(stride unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\b(?:views\s*::\s*repeat|repeat_view)\b)BMC", text)) {
-            throw ParseFail(R"BMC(repeat unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\b(?:views\s*::\s*take\b|\btake_view\b))BMC", text)) {
-            throw ParseFail(R"BMC(take unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\b(?:views\s*::\s*drop\b|\bdrop_view\b))BMC", text)) {
-            throw ParseFail(R"BMC(drop unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\b(?:views\s*::\s*filter\b|\bfilter_view\b))BMC", text)) {
-            throw ParseFail(R"BMC(filter unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\b(?:views\s*::\s*transform\b|\btransform_view\b))BMC", text)) {
-            throw ParseFail(R"BMC(transform_view unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\b(?:views\s*::\s*elements\b|\belements_view\b))BMC", text)) {
-            throw ParseFail(R"BMC(elements unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\b(?:views\s*::\s*iota\b|\biota_view\b))BMC", text)) {
-            throw ParseFail(R"BMC(iota unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\breference_wrapper\b)BMC", text)) {
-            throw ParseFail(R"BMC(reference_wrapper unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\bstd\s*::\s*endian\b)BMC", text)) {
-            throw ParseFail(R"BMC(std::endian unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\bstd\s*::\s*apply\s*\()BMC", text)) {
-            throw ParseFail(R"BMC(std::apply unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\b(?:bit_ceil|bit_floor|has_single_bit|std\s*::\s*popcount)\s*\()BMC", text)) {
-            throw ParseFail(R"BMC(bit_ceil unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\bstd\s*::\s*bit_width\s*\()BMC", text)) {
-            throw ParseFail(R"BMC(bit_width unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\bstd\s*::\s*gcd\s*\()BMC", text)) {
-            throw ParseFail(R"BMC(gcd unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\bstd\s*::\s*lcm\s*\()BMC", text)) {
-            throw ParseFail(R"BMC(lcm unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\bstd\s*::\s*clamp\s*\()BMC", text)) {
-            throw ParseFail(R"BMC(clamp unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\bstd\s*::\s*exchange\s*\()BMC", text)) {
-            throw ParseFail(R"BMC(exchange unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\bstd\s*::\s*to_address\s*\()BMC", text)) {
-            throw ParseFail(R"BMC(to_address unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\bstd\s*::\s*addressof\s*\()BMC", text)) {
-            throw ParseFail(R"BMC(addressof unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\bassume_aligned\s*\()BMC", text)) {
-            throw ParseFail(R"BMC(assume_aligned unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\bas_const\s*\()BMC", text)) {
-            throw ParseFail(R"BMC(as_const unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\btransform_(?:inclusive|exclusive)_scan\s*\()BMC", text)) {
-            throw ParseFail(R"BMC(transform_inclusive_scan unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\bexclusive_scan\s*\()BMC", text)) {
-            throw ParseFail(R"BMC(exclusive_scan unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\binclusive_scan\s*\()BMC", text)) {
-            throw ParseFail(R"BMC(inclusive_scan unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\btransform_reduce\s*\()BMC", text)) {
-            throw ParseFail(R"BMC(transform_reduce unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\bstd\s*::\s*reduce\s*\()BMC", text)) {
-            throw ParseFail(R"BMC(std::reduce unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\buninitialized_(?:fill(?:_n)?|default_construct(?:_n)?)\s*\()BMC", text)) {
-            throw ParseFail(R"BMC(uninitialized_fill unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\buninitialized_value_construct(?:_n)?\s*\()BMC", text)) {
-            throw ParseFail(R"BMC(uninitialized_value_construct unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\buninitialized_(?:copy|move)(?:_n)?\s*\()BMC", text)) {
-            throw ParseFail(R"BMC(uninitialized_copy unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\b(?:construct_at|destroy_at)\s*\()BMC", text)) {
-            throw ParseFail(R"BMC(construct_at unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\bdestroy_n\s*\()BMC", text)) {
-            throw ParseFail(R"BMC(destroy_n unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\b(?:add_sat|sub_sat|mul_sat|div_sat|saturate_cast)\s*\()BMC", text)) {
-            throw ParseFail(R"BMC(add_sat unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\btype_identity\b)BMC", text)) {
-            throw ParseFail(R"BMC(type_identity unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\bnontype\b)BMC", text)) {
-            throw ParseFail(R"BMC(nontype unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\bis_layout_compatible\b)BMC", text)) {
-            throw ParseFail(R"BMC(is_layout_compatible unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\bis_pointer_interconvertible_(?:with_class|base_of)\b)BMC", text)) {
-            throw ParseFail(R"BMC(is_pointer_interconvertible unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\bbasic_const_iterator\b)BMC", text)) {
-            throw ParseFail(R"BMC(basic_const_iterator unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\bis_corresponding_member\b)BMC", text)) {
-            throw ParseFail(R"BMC(is_corresponding_member unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\branges\s*::\s*to\s*[<(])BMC", text)) {
-            throw ParseFail(R"BMC(ranges::to unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\bforward_like\b)BMC", text)) {
-            throw ParseFail(R"BMC(forward_like unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\bmake_exception_ptr\s*\()BMC", text)) {
-            throw ParseFail(R"BMC(make_exception_ptr unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\b(?:set|get)_terminate\s*\()BMC", text)) {
-            throw ParseFail(R"BMC(set_terminate unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\bis_constant_evaluated\s*\()BMC", text)) {
-            throw ParseFail(R"BMC(is_constant_evaluated unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\bstd\s*::\s*lerp\s*\()BMC", text)) {
-            throw ParseFail(R"BMC(lerp unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\bstd\s*::\s*midpoint\s*\()BMC", text)) {
-            throw ParseFail(R"BMC(midpoint unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\bstd\s*::\s*(?:cmp_(?:less|greater|less_equal|greater_equal|equal_to|not_equal_to)|in_range)\s*\()BMC", text)) {
-            throw ParseFail(R"BMC(cmp_less unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\bstd\s*::\s*count[lr]_(?:zero|one)\s*\()BMC", text)) {
-            throw ParseFail(R"BMC(countl_zero unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\bstd\s*::\s*unreachable\s*\()BMC", text)) {
-            throw ParseFail(R"BMC(std::unreachable unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\buncaught_exceptions\s*\()BMC", text)) {
-            throw ParseFail(R"BMC(uncaught_exceptions unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\bstd\s*::\s*(?:condition_variable|shared_mutex)\b|\b(?:condition_variable|shared_mutex)\b)BMC", text)) {
-            throw ParseFail(R"BMC(condition_variable unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\bstd\s*::\s*atomic_ref\b|atomic_ref\s*<)BMC", text)) {
-            throw ParseFail(R"BMC(atomic_ref unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\bstd\s*::\s*generator\b|generator\s*<)BMC", text)) {
-            throw ParseFail(R"BMC(generator unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\[\[\s*assume\s*\()BMC", text)) {
-            throw ParseFail(R"BMC(assume unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\bstd\s*::\s*bind\s*\()BMC", text)) {
-            throw ParseFail(R"BMC(std bind unencoded)BMC");
-        }
-        if (rx_search(R"BMC(__attribute__\s*\(\s*\(\s*(?:__)?vector_size|\b__vector_size\b)BMC", text)) {
-            throw ParseFail(R"BMC(vector_size unencoded)BMC");
-        }
-        if ((rx_match(R"BMC(requires\s*\()BMC", text) || rx_match(R"BMC(concept\s+)BMC", text))) {
-            throw ParseFail(R"BMC(concepts unencoded)BMC");
-        }
-        if (rx_search(R"BMC(\(\s*\.\.\.\s*[+\-|&^]|[+\-|&^]\s*\.\.\.\s*\))BMC", text)) {
-            throw ParseFail(R"BMC(fold unencoded)BMC");
-        }
-        if (ai_hooks && text.starts_with("__prism_")) { text = ai_hook_stmt(e, text); continue; }
-        if (starts_kw(text, "if")) { text = if_stmt(e, text); continue; }
-        if (starts_kw(text, "switch")) { text = switch_stmt(e, text); continue; }
-        if (starts_kw(text, "do")) { text = do_stmt(e, text); continue; }
-        if (starts_kw(text, "while")) { text = while_stmt(e, text); continue; }
-        if (starts_kw(text, "for")) { text = for_stmt(e, text); continue; }
-        if (starts_kw(text, "assert")) { text = assert_stmt(e, text); continue; }
-        if (starts_kw(text, "static_assert") || starts_kw(text, "_Static_assert")) {
-            auto [_, rest] = stmt_split(text);
-            text = rest;
-            continue;
-        }
-        if (starts_kw(text, "return")) {
-            auto [stmt, rest] = stmt_split(text);
-            return_stmt(e, stmt);
-            text = rest;
-            continue;
-        }
-        if (starts_kw(text, "break")) {
-            auto [_, rest] = stmt_split(text);
-            e.path_true = e.ctx.bool_val(false);
-            text = rest;
-            continue;
-        }
-        if (starts_kw(text, "continue")) {
-            auto [_, rest] = stmt_split(text);
-            (void)rest;
-            throw ContinueLoop();
-        }
-        if (is_nested_function(text)) throw ParseFail("nested function unencoded");
-        if (starts_kw(text, "goto")) {
-            if (is_computed_goto(text)) throw ParseFail("computed goto unencoded");
-            throw ParseFail("goto unencoded");
-        }
-        if (starts_kw(text, "throw")) throw ParseFail("throw unencoded");
-        if (starts_kw(text, "asm") || starts_kw(text, "__asm__") || starts_kw(text, "__asm"))
-            throw ParseFail("asm unencoded");
-        if (starts_kw(text, "try") || starts_kw(text, "catch"))
-            throw ParseFail("try unencoded");
-        if (starts_kw(text, "case") || starts_kw(text, "default"))
-            throw ParseFail("case/default outside switch");
-        if (auto miss = unencoded_layout_prefix(text)) throw ParseFail(*miss);
-        auto [stmt, rest] = stmt_split(text);
-        text = rest;
-        if (auto miss = unencoded_layout_stmt(stmt)) throw ParseFail(*miss);
-        if (looks_like_decl(stmt)) decl(e, stmt);
-        else assign_or_expr(e, stmt);
-    }
-}
-
-void Parser::decl(Enc& e, std::string stmt) {
-    while (!stmt.empty() && stmt.back() == ';') stmt.pop_back();
-    stmt = strip(stmt);
-    {
-        static Regex mptr(std::string(DECL_TYPE) + "\\s*\\*+\\s*([A-Za-z_]\\w*)(?:\\s*=\\s*(.*))?$");
-        if (auto m = mptr.search_match(stmt); m && m->spans.size() > 1 && m->spans[0].first == 0 &&
-            static_cast<size_t>(m->spans[0].second) == stmt.size()) {
-            auto name = m->group(1);
-            auto init = m->groups.size() > 2 && m->groups[2] ? *m->groups[2] : std::string{};
-            if (!m->groups[2] || !m->groups[2]->size())
-                throw ParseFail("uninitialised pointer decl: " + stmt.substr(0, 80));
-            auto src = strip(init);
-            if (is_ident(src) && e.arrays.count(src)) {
-                e.arrays.insert_or_assign(name, e.arrays.at(src));
-                return;
-            }
-            throw ParseFail("pointer decl must alias an array: " + stmt.substr(0, 80));
-        }
-    }
-    {
-        static Regex marr(std::string(DECL_TYPE) + "\\s+([A-Za-z_]\\w*)\\s*\\[([^\\]]+)\\](?:\\s*=\\s*(.*))?$");
-        if (auto m = marr.search_match(stmt); m && m->spans.size() > 1 && m->spans[0].first == 0 &&
-            static_cast<size_t>(m->spans[0].second) == stmt.size()) {
-            auto name = m->group(1);
-            auto dim = strip(m->group(2));
-            auto init = m->groups.size() > 3 && m->groups[3] ? *m->groups[3] : std::string{};
-            if (!init.empty() && rx_search("\\{\\s*(?:\\[[^\\]]+\\]|\\.[A-Za-z_]\\w*)\\s*=", init))
-                throw ParseFail("designated init unencoded");
-            if (!rx_fullmatch("\\d+", dim)) throw ParseFail("VLA unencoded");
-            int n = std::stoi(dim);
-            auto arr = e.ctx.constant(name.c_str(),
-                e.ctx.array_sort(e.ctx.bv_sort(WIDTH), e.ctx.bv_sort(WIDTH)));
-            e.arrays.insert_or_assign(name, Arr{arr, n});
-            return;
-        }
-    }
-    static Regex md(std::string(DECL_TYPE) + "\\s+([A-Za-z_]\\w*)(?:\\s*=\\s*(.*))?$");
-    auto m = md.search_match(stmt);
-    if (!(m && m->spans[0].first == 0 && static_cast<size_t>(m->spans[0].second) == stmt.size())) {
-        if (rx_search(":\\s*[A-Za-z_]", stmt)) throw ParseFail("range-for unencoded");
-        throw ParseFail("unparsed decl: " + stmt.substr(0, 80));
-    }
-    auto name = m->group(1);
-    bool has_init = m->groups.size() > 2 && m->groups[2].has_value();
-    auto prefix = stmt.substr(0, static_cast<size_t>(std::max(0, m->spans[1].first)));
-    if (type_is_unsigned(prefix)) e.unsigned_names.insert(name);
-    e.bits[name] = type_width(prefix);
-    if (has_init) {
-        e.set(name, expr(e, *m->groups[2]));
-        e.mark_init(name);
-    } else {
-        auto v = e.bv(name + "_uninit", e.bits[name]);
-        e.set(name, v);
-        e.mark_uninit(name);
-    }
-}
-
-void Parser::assign_or_expr(Enc& e, std::string stmt) {
-    while (!stmt.empty() && stmt.back() == ';') stmt.pop_back();
-    stmt = strip(stmt);
-    if (stmt.empty()) return;
-    auto parts = split_comma(stmt);
-    if (parts.size() > 1) {
-        for (auto& part : parts) {
-            auto piece = strip(part);
-            if (!piece.empty()) assign_or_expr(e, piece);
-        }
-        return;
-    }
-    static Regex star("\\*\\s*([A-Za-z_]\\w*)\\s*=\\s*(.+)$");
-    if (auto m = star.search_match(stmt); m && m->spans[0].first == 0 &&
-        static_cast<size_t>(m->spans[0].second) == stmt.size()) {
-        astore(e, m->group(1), "0", m->group(2));
-        return;
-    }
-    static Regex aidx("([A-Za-z_]\\w*)\\s*\\[(.+)\\]\\s*=\\s*(.+)$");
-    if (auto m = aidx.search_match(stmt); m && m->spans[0].first == 0 &&
-        static_cast<size_t>(m->spans[0].second) == stmt.size()) {
-        astore(e, m->group(1), m->group(2), m->group(3));
-        return;
-    }
-    static Regex asg("([A-Za-z_]\\w*)\\s*([+\\-*/%|&^]?=)\\s*(.+)$");
-    if (auto m = asg.search_match(stmt); m && m->spans[0].first == 0 &&
-        static_cast<size_t>(m->spans[0].second) == stmt.size()) {
-        auto name = m->group(1);
-        auto op = m->group(2);
-        auto rhs = m->group(3);
-        auto val = expr(e, rhs);
-        if (op == "=") e.set(name, val);
-        else {
-            e.check_read(name);
-            auto cur = e.get(name);
-            e.set(name, binop(e, cur, op.substr(0, 1), val, stmt));
-        }
-        e.mark_init(name);
-        return;
-    }
-    expr(e, stmt);
-}
-
-void Parser::astore(Enc& e, const std::string& name, const std::string& idx, const std::string& rhs) {
-    if (!e.arrays.count(name)) throw ParseFail("unknown array " + name);
-    auto [arr, n] = e.arrays.at(name);
-    auto i = expr(e, idx);
-    auto v = expr(e, rhs);
-    e.add_prop("oob-write", "MEM-OOB-WRITE", oob(e, i, n), e.pc);
-    e.arrays.insert_or_assign(name, Arr{z3::store(arr, i, v), n});
-}
-
-std::string Parser::assert_stmt(Enc& e, std::string text) {
-    static Regex as("assert\\s*\\((.*)\\)\\s*;", false, true);
-    if (auto m = as.search_match(text); m && m->spans[0].first == 0) {
-        auto cond = expr(e, m->group(1));
-        e.add_prop("assert", "FUNC-CONTRACT", !as_bool(cond), e.pc);
-        return text.substr(static_cast<size_t>(m->spans[0].second));
-    }
-    auto p = text.find('(');
-    if (p == std::string::npos) throw ParseFail("assert");
-    auto [inner, rest] = paren_stmt(text.substr(p));
-    auto cond = expr(e, inner);
-    e.add_prop("assert", "FUNC-CONTRACT", !as_bool(cond), e.pc);
-    return rest;
-}
-
-// prism::ai loop-cut hooks. Expressions inside assume/assert are predicates
-// over the state: UB properties raised while evaluating them are dropped (the
-// invariant text is not program code). The loop condition of __prism_step is
-// program code, so its properties stay.
-std::string Parser::ai_hook_stmt(Enc& e, std::string text) {
-    auto drop_props_from = [&](size_t n) {
-        e.props.erase(e.props.begin() + static_cast<std::ptrdiff_t>(n), e.props.end());
-    };
-    if (starts_kw(text, "__prism_assume")) {
-        auto [inner, rest] = paren_stmt(text.substr(14));
-        size_t n = e.props.size();
-        auto c = as_bool(expr(e, inner));
-        drop_props_from(n);
-        e.assume(c);
-        return rest;
-    }
-    if (starts_kw(text, "__prism_assert")) {
-        auto [inner, rest] = paren_stmt(text.substr(14));
-        auto comma = inner.find(',');
-        if (comma == std::string::npos) throw ParseFail("ai assert without tag");
-        auto tag = strip(inner.substr(0, comma));
-        size_t n = e.props.size();
-        auto c = as_bool(expr(e, inner.substr(comma + 1)));
-        drop_props_from(n);
-        e.add_prop("ai-inv#" + tag, "AI-INVARIANT", !c, e.pc);
-        return rest;
-    }
-    if (starts_kw(text, "__prism_havoc")) {
-        auto [inner, rest] = paren_stmt(text.substr(13));
-        auto name = strip(inner);
-        if (!is_ident(name)) throw ParseFail("ai havoc of non-identifier");
-        e.fresh += 1;
-        auto fresh_name = "__hv" + std::to_string(e.fresh) + "_" + name;
-        if (e.arrays.count(name)) {
-            int n = e.arrays.at(name).n;
-            auto arr = e.ctx.constant(fresh_name.c_str(),
-                e.ctx.array_sort(e.ctx.bv_sort(WIDTH), e.ctx.bv_sort(WIDTH)));
-            e.arrays.insert_or_assign(name, Arr{arr, n});
-        } else {
-            int w = e.bits.count(name) ? e.bits[name] : WIDTH;
-            e.set(name, e.bv(fresh_name, w));
-            auto it = e.uninit.find(name);
-            bool surely_init = false;
-            if (it != e.uninit.end()) {
-                try {
-                    surely_init = it->second.simplify().is_false();
-                } catch (...) {}
-                // Havoc keeps "maybe uninitialised" as an unknown flag: the
-                // loop may run zero times. Conservative (fails closed).
-                if (!surely_init)
-                    e.uninit.insert_or_assign(name, e.ctx.bool_const((fresh_name + "_u").c_str()));
-            }
-        }
-        return rest;
-    }
-    if (starts_kw(text, "__prism_step")) {
-        auto rest = lstrip(text.substr(12));
-        auto [cond_src, r1] = paren(rest);
-        auto [body, r2] = block_or_stmt(r1);
-        auto cond = as_bool(expr(e, cond_src));
-        auto saved_vars = e.vars;
-        auto saved_arr = e.arrays;
-        auto saved_uninit = e.uninit;
-        auto saved_path = e.path_true;
-        e.path_true = saved_path && cond;
-        try {
-            stmts(e, body);
-        } catch (const ContinueLoop&) {
-            throw ParseFail("continue in ai loop cut");
-        }
-        e.vars = saved_vars;
-        e.arrays = saved_arr;
-        e.uninit = saved_uninit;
-        e.path_true = saved_path && !cond;
-        e.retag_unsigned();
-        return r2;
-    }
-    throw ParseFail("unknown ai hook");
-}
-
-void Parser::return_stmt(Enc& e, std::string stmt) {
-    auto rest = strip(stmt);
-    if (rest.starts_with("return")) {
-        auto exprs = strip(rest.substr(6));
-        while (!exprs.empty() && exprs.back() == ';') exprs.pop_back();
-        exprs = strip(exprs);
-        if (!exprs.empty()) {
-            auto val = expr(e, exprs);
-            e.set("__ret", val);
-        }
-    }
-    e.path_true = e.ctx.bool_val(false);
-}
-
-z3::check_result check_sat(Enc& e, const z3::expr& cond) {
-    z3::solver s(e.ctx);
-    s.set("timeout", 2000u);
-    s.add(e.path_true);
-    s.add(cond);
-    return s.check();
-}
-
-std::string Parser::if_stmt(Enc& e, std::string text) {
-    auto rest = lstrip(text.substr(2));
-    if (rest.starts_with("constexpr")) throw ParseFail("if constexpr unencoded");
-    auto [cond_src, r1] = paren(rest);
-    auto [then_src, r2] = block_or_stmt(r1);
-    rest = r2;
-    std::optional<std::string> else_src;
-    auto rest2 = lstrip(rest);
-    if (rest2.starts_with("else")) {
-        auto [es, r3] = block_or_stmt(rest2.substr(4));
-        else_src = es;
-        rest = r3;
-    }
-    auto cond = as_bool(expr(e, cond_src));
-    auto saved_vars = e.vars;
-    auto saved_arr = e.arrays;
-    auto saved_uninit = e.uninit;
-    auto saved_path = e.path_true;
-    e.path_true = saved_path && cond;
-    stmts(e, then_src);
-    auto then_vars = e.vars;
-    auto then_arr = e.arrays;
-    auto then_uninit = e.uninit;
-    auto then_path = e.path_true;
-    e.vars = saved_vars;
-    e.arrays = saved_arr;
-    e.uninit = saved_uninit;
-    e.path_true = saved_path && !cond;
-    if (else_src) stmts(e, *else_src);
-    auto else_vars = e.vars;
-    auto else_arr = e.arrays;
-    auto else_uninit = e.uninit;
-    auto else_path = e.path_true;
-    std::set<std::string> names;
-    for (auto& m : {then_vars, else_vars})
-        for (auto& [k, _] : m) names.insert(k);
-    std::map<std::string, z3::expr> merged;
-    for (auto& n : names) {
-        std::optional<z3::expr> a, b;
-        if (then_vars.count(n)) a = then_vars.at(n);
-        else if (saved_vars.count(n)) a = saved_vars.at(n);
-        if (else_vars.count(n)) b = else_vars.at(n);
-        else if (saved_vars.count(n)) b = saved_vars.at(n);
-        if (!a || !b) merged.insert_or_assign(n, a ? *a : *b);
-        else if (z3::eq(*a, *b)) merged.insert_or_assign(n, *a);
-        else merged.insert_or_assign(n, z3::ite(cond, *a, *b));
-    }
-    e.vars = merged;
-    e.retag_unsigned();
-    e.arrays = !then_arr.empty() ? then_arr : else_arr;
-    e.uninit = merge_uninit(cond, then_uninit, else_uninit, saved_uninit, e);
-    e.path_true = (then_path || else_path).simplify();
-    return rest;
-}
-
-std::string Parser::while_stmt(Enc& e, std::string text) {
-    auto rest = lstrip(text.substr(5));
-    auto [cond_src, r1] = paren(rest);
-    auto [body, r2] = block_or_stmt(r1);
-    rest = r2;
-    bool closed = false;
-    bool broke = false;
-    for (int i = 0; i < e.unwind; ++i) {
-        auto cond = as_bool(expr(e, cond_src));
-        if (check_sat(e, cond) == z3::unsat) {
-            closed = true;
-            broke = true;
-            break;
-        }
-        e.assume(cond);
-        try { stmts(e, body); } catch (const ContinueLoop&) {}
-    }
-    if (!broke) {
-        auto cond = as_bool(expr(e, cond_src));
-        if (check_sat(e, cond) == z3::sat) {
-            e.unwind_ok = false;
-            e.assume(!cond);
-        } else {
-            closed = true;
-        }
-    }
-    (void)closed;
-    return rest;
-}
-
-std::string Parser::do_stmt(Enc& e, std::string text) {
-    auto rest = lstrip(text.substr(2));
-    auto [body, r1] = block_or_stmt(rest);
-    rest = lstrip(r1);
-    if (!starts_kw(rest, "while")) throw ParseFail("do without while");
-    rest = lstrip(rest.substr(5));
-    auto [cond_src, r2] = paren(rest);
-    rest = lstrip(r2);
-    if (rest.starts_with(";")) rest = rest.substr(1);
-    try { stmts(e, body); } catch (const ContinueLoop&) {}
-    int remaining = std::max(e.unwind - 1, 0);
-    bool closed = false;
-    bool broke = false;
-    for (int i = 0; i < remaining; ++i) {
-        auto cond = as_bool(expr(e, cond_src));
-        if (check_sat(e, cond) == z3::unsat) {
-            closed = true;
-            broke = true;
-            break;
-        }
-        e.assume(cond);
-        try { stmts(e, body); } catch (const ContinueLoop&) {}
-    }
-    if (!broke) {
-        auto cond = as_bool(expr(e, cond_src));
-        if (check_sat(e, cond) == z3::sat) {
-            e.unwind_ok = false;
-            e.assume(!cond);
-        } else {
-            closed = true;
-        }
-    }
-    (void)closed;
-    return rest;
-}
-
-std::string Parser::switch_stmt(Enc& e, std::string text) {
-    auto rest = lstrip(text.substr(6));
-    auto [cond_src, r1] = paren(rest);
-    auto [body, r2] = block_or_stmt(r1);
-    rest = r2;
-    auto scrut = expr(e, cond_src);
-    auto arms = parse_switch_arms(e, body);
-    if (arms.empty()) return rest;
-
-    z3::expr_vector case_eqs(e.ctx);
-    bool has_default = false;
-    for (auto& arm : arms) {
-        for (auto& lab : arm.labels) {
-            if (!lab) has_default = true;
-            else case_eqs.push_back(scrut == *lab);
-        }
-    }
-    z3::expr any_case = case_eqs.empty() ? e.ctx.bool_val(false) : z3::mk_or(case_eqs);
-
-    auto saved_vars = e.vars;
-    auto saved_arr = e.arrays;
-    auto saved_uninit = e.uninit;
-    auto saved_path = e.path_true;
-    struct Taken {
-        z3::expr cond;
-        std::map<std::string, z3::expr> vars;
-        std::map<std::string, Arr> arrs;
-        std::map<std::string, z3::expr> uninit;
-        z3::expr path;
-    };
-    std::vector<Taken> taken;
-
-    for (size_t i = 0; i < arms.size(); ++i) {
-        auto& arm = arms[i];
-        if (arm.labels.empty()) continue;
-        z3::expr_vector parts(e.ctx);
-        for (auto& lab : arm.labels) {
-            if (!lab) parts.push_back(!any_case);
-            else parts.push_back(scrut == *lab);
-        }
-        z3::expr cond = parts.size() == 1 ? parts[0] : z3::mk_or(parts);
-        e.vars = saved_vars;
-        e.arrays = saved_arr;
-        e.uninit = saved_uninit;
-        e.path_true = saved_path && cond;
-        stmts(e, arm_code(arms, i));
-        taken.push_back(Taken{cond, e.vars, e.arrays, e.uninit, e.path_true});
-    }
-    if (!has_default) {
-        auto skip = !any_case;
-        taken.push_back(Taken{skip, saved_vars, saved_arr, saved_uninit, saved_path && skip});
-    }
-    if (taken.empty()) {
-        e.vars = saved_vars;
-        e.arrays = saved_arr;
-        e.uninit = saved_uninit;
-        e.path_true = saved_path;
-        return rest;
-    }
-    std::set<std::string> names;
-    for (auto& t : taken)
-        for (auto& [k, _] : t.vars) names.insert(k);
-    for (auto& [k, _] : saved_vars) names.insert(k);
-    std::map<std::string, z3::expr> merged;
-    for (auto& n : names) {
-        std::optional<z3::expr> acc;
-        if (saved_vars.count(n)) acc = saved_vars.at(n);
-        for (auto it = taken.rbegin(); it != taken.rend(); ++it) {
-            std::optional<z3::expr> v;
-            if (it->vars.count(n)) v = it->vars.at(n);
-            else if (saved_vars.count(n)) v = saved_vars.at(n);
-            if (!acc) acc = v;
-            else if (!v) {}
-            else if (z3::eq(*acc, *v)) {}
-            else acc = z3::ite(it->cond, *v, *acc);
-        }
-        if (acc) merged.insert_or_assign(n, *acc);
-    }
-    e.vars = merged;
-    e.retag_unsigned();
-    e.arrays = saved_arr;
-    for (auto& t : taken)
-        for (auto& [k, av] : t.arrs) e.arrays.insert_or_assign(k, av);
-    std::set<std::string> unames;
-    for (auto& [k, _] : saved_uninit) unames.insert(k);
-    for (auto& t : taken)
-        for (auto& [k, _] : t.uninit) unames.insert(k);
-    std::map<std::string, z3::expr> u_acc = saved_uninit;
-    auto falseb = e.ctx.bool_val(false);
-    for (auto& n : unames) {
-        z3::expr accu = saved_uninit.count(n) ? saved_uninit.at(n) : falseb;
-        for (auto it = taken.rbegin(); it != taken.rend(); ++it) {
-            z3::expr v = it->uninit.count(n) ? it->uninit.at(n)
-                : (saved_uninit.count(n) ? saved_uninit.at(n) : falseb);
-            if (z3::eq(accu, v)) {}
-            else accu = z3::ite(it->cond, v, accu);
-        }
-        u_acc.insert_or_assign(n, accu);
-    }
-    e.uninit = u_acc;
-    z3::expr_vector paths(e.ctx);
-    for (auto& t : taken) paths.push_back(t.path);
-    e.path_true = z3::mk_or(paths).simplify();
-    return rest;
-}
-
-std::vector<SwitchArm> Parser::parse_switch_arms(Enc& e, std::string body) {
-    std::vector<SwitchArm> arms;
-    std::vector<std::optional<z3::expr>> labels;
-    std::vector<std::string> chunks;
-    bool stops = false;
-    std::string text = body;
-    auto flush = [&] {
-        if (!labels.empty() || !chunks.empty()) {
-            std::string code;
-            for (size_t i = 0; i < chunks.size(); ++i) {
-                if (i) code += "\n";
-                code += chunks[i];
-            }
-            arms.push_back(SwitchArm{labels, code, stops});
-        }
-        labels.clear();
-        chunks.clear();
-        stops = false;
-    };
-    while (!text.empty()) {
-        text = lstrip(text);
-        if (text.empty()) break;
-        if (starts_kw(text, "case")) {
-            if (!chunks.empty() || stops) flush();
-            auto rest = lstrip(text.substr(4));
-            auto [src, t2] = upto_colon(rest);
-            text = t2;
-            if (rx_search("\\.\\.\\.", src)) throw ParseFail("case-range unencoded");
-            labels.push_back(expr(e, src));
-            continue;
-        }
-        if (starts_kw(text, "default")) {
-            if (!chunks.empty() || stops) flush();
-            auto rest = lstrip(text.substr(7));
-            if (!rest.starts_with(":")) throw ParseFail("expected : after default");
-            labels.push_back(std::nullopt);
-            text = rest.substr(1);
-            continue;
-        }
-        if (starts_kw(text, "break")) {
-            auto [_, t2] = stmt_split(text);
-            text = t2;
-            stops = true;
-            continue;
-        }
-        auto [src, t2] = consume_stmt_src(text);
-        text = t2;
-        if (stops) continue;
-        if (!strip(src).empty()) chunks.push_back(strip(src));
-    }
-    flush();
-    return arms;
-}
-
-std::string Parser::for_stmt(Enc& e, std::string text) {
-    auto rest = lstrip(text.substr(3));
-    auto [head, r1] = paren(rest);
-    auto parts = split_semi(head);
-    while (parts.size() < 3) parts.push_back("");
-    auto init = strip(parts[0]);
-    auto cond_src = strip(parts[1]);
-    auto incr = strip(parts[2]);
-    if (!init.empty()) {
-        for (auto& piece0 : split_comma(init)) {
-            auto piece = strip(piece0);
-            if (piece.empty()) continue;
-            auto init_stmt = piece.ends_with(";") ? piece : piece + ";";
-            if (auto miss = unencoded_layout_stmt(init_stmt)) throw ParseFail(*miss);
-            if (looks_like_decl(init_stmt)) decl(e, init_stmt);
-            else assign_or_expr(e, init_stmt);
-        }
-    }
-    auto [body, r2] = block_or_stmt(r1);
-    rest = r2;
-    bool closed = false;
-    bool broke = false;
-    for (int i = 0; i < e.unwind; ++i) {
-        auto cond = as_bool(expr(e, cond_src.empty() ? "1" : cond_src));
-        if (check_sat(e, cond) == z3::unsat) {
-            closed = true;
-            broke = true;
-            break;
-        }
-        e.assume(cond);
-        try { stmts(e, body); } catch (const ContinueLoop&) {}
-        if (!incr.empty()) {
-            auto incr_stmt = incr.ends_with(";") ? incr : incr + ";";
-            assign_or_expr(e, incr_stmt);
-        }
-    }
-    if (!broke) {
-        auto cond = as_bool(expr(e, cond_src.empty() ? "1" : cond_src));
-        if (check_sat(e, cond) == z3::sat) {
-            e.unwind_ok = false;
-            e.assume(!cond);
-        } else {
-            closed = true;
-        }
-    }
-    (void)closed;
-    return rest;
-}
-
-z3::expr apply_binop(Enc& e, z3::expr a, const std::string& op, z3::expr b) {
-    int wa = e.width_of(a), wb = e.width_of(b);
-    int w = std::max(wa, wb);
-    bool ua = e.is_u(a), ub = e.is_u(b);
-    if (wa < w) {
-        a = e.resize(a, wa, w, ua);
-        e.wtag[e.eid(a)] = w;
-        if (ua) e.utag[e.eid(a)] = true;
-    }
-    if (wb < w) {
-        b = e.resize(b, wb, w, ub);
-        e.wtag[e.eid(b)] = w;
-        if (ub) e.utag[e.eid(b)] = true;
-    }
-    bool u = ua || ub;
-    if (op == "+" || op == "-" || op == "*" || op == "/") {
-        if (op == "+") {
-            auto r = a + b;
-            if (!u) {
-                auto ov = !z3::bvadd_no_overflow(a, b, true);
-                e.add_prop("ovf+", "INT-SIGNED-OVF", ov, e.pc);
-            }
-            return e.tag(r, u, w);
-        }
-        if (op == "-") {
-            auto r = a - b;
-            if (!u) {
-                z3::expr ov = e.ctx.bool_val(false);
-                try { ov = !z3::bvsub_no_underflow(a, b, true); } catch (...) {}
-                e.add_prop("ovf-", "INT-SIGNED-OVF", ov, e.pc);
-            }
-            return e.tag(r, u, w);
-        }
-        if (op == "*") {
-            auto r = a * b;
-            if (!u) {
-                auto ov = !z3::bvmul_no_overflow(a, b, true);
-                e.add_prop("ovf*", "INT-SIGNED-OVF", ov, e.pc);
-            }
-            return e.tag(r, u, w);
-        }
-        if (op == "/") {
-            e.add_prop("div0", "INT-DIV-ZERO", b == 0, e.pc);
-            auto z = e.bv_zero(w);
-            if (u) {
-                auto r = z3::ite(b == 0, z, z3::udiv(a, b));
-                return e.tag(r, true, w);
-            }
-            e.add_prop("divovf", "INT-SIGNED-OVF", (a == e.bv_min(w)) && (b == -1), e.pc);
-            return e.tag(z3::ite(b == 0, z, a / b), false, w);
-        }
-    }
-    if (op == "%") {
-        e.add_prop("mod0", "INT-DIV-ZERO", b == 0, e.pc);
-        auto rem = u ? z3::urem(a, b) : z3::srem(a, b);
-        auto r = z3::ite(b == 0, e.bv_zero(w), rem);
-        return e.tag(r, u, w);
-    }
-    if (op == "<<") {
-        if (u) e.add_prop("shift", "INT-SHIFT-UB", z3::uge(b, w), e.pc);
-        else {
-            e.add_prop("shift", "INT-SHIFT-UB", (b < 0) || z3::uge(b, w), e.pc);
-            e.add_prop("shift31", "INT-SHIFT-UB", (a == 1) && z3::uge(b, w - 1), e.pc);
-        }
-        return e.tag(z3::shl(a, b), u, w);
-    }
-    if (op == ">>") {
-        if (u) {
-            e.add_prop("shift", "INT-SHIFT-UB", z3::uge(b, w), e.pc);
-            return e.tag(z3::lshr(a, b), true, w);
-        }
-        e.add_prop("shift", "INT-SHIFT-UB", (b < 0) || z3::uge(b, w), e.pc);
-        return e.tag(z3::ashr(a, b), false, w);
-    }
-    if (op == "&") return e.tag(a & b, u, w);
-    if (op == "|") return e.tag(a | b, u, w);
-    if (op == "^") return e.tag(a ^ b, u, w);
-    auto one = e.ctx.bv_val(1, WIDTH);
-    auto zero = e.ctx.bv_val(0, WIDTH);
-    if (op == "==") return e.tag(z3::ite(a == b, one, zero), false, WIDTH);
-    if (op == "!=") return e.tag(z3::ite(a != b, one, zero), false, WIDTH);
-    if (op == "<") {
-        auto pred = u ? z3::ult(a, b) : (a < b);
-        return e.tag(z3::ite(pred, one, zero), false, WIDTH);
-    }
-    if (op == ">") {
-        auto pred = u ? z3::ugt(a, b) : (a > b);
-        return e.tag(z3::ite(pred, one, zero), false, WIDTH);
-    }
-    if (op == "<=") {
-        auto pred = u ? z3::ule(a, b) : (a <= b);
-        return e.tag(z3::ite(pred, one, zero), false, WIDTH);
-    }
-    if (op == ">=") {
-        auto pred = u ? z3::uge(a, b) : (a >= b);
-        return e.tag(z3::ite(pred, one, zero), false, WIDTH);
-    }
-    throw ParseFail("op " + op);
-}
-
-int char_lit_value(const std::string& tok) {
-    auto inner = tok.substr(1, tok.size() - 2);
-    if (inner.empty()) throw ParseFail("empty character literal");
-    if (inner[0] == '\\' && inner.size() >= 2) {
-        char esc = inner[1];
-        switch (esc) {
-        case 'n': return 10;
-        case 't': return 9;
-        case 'r': return 13;
-        case '0': return 0;
-        case '\\': return 92;
-        case '\'': return 39;
-        case '"': return 34;
-        default: return static_cast<unsigned char>(esc);
-        }
-    }
-    return static_cast<unsigned char>(inner[0]);
-}
-
-const std::unordered_set<std::string> CAST_WORDS = {
-    "char", "short", "int", "long", "unsigned", "signed",
-    "const", "volatile", "void", "_Bool", "bool",
-    "uint32_t", "int32_t", "uint64_t", "int64_t", "size_t",
-};
-
-const std::map<std::string, int> TYPE_SIZE = {
-    {"char", 1}, {"signed char", 1}, {"unsigned char", 1},
-    {"short", 2}, {"short int", 2}, {"signed short", 2}, {"unsigned short", 2},
-    {"int", 4}, {"signed", 4}, {"signed int", 4}, {"unsigned", 4}, {"unsigned int", 4},
-    {"long", 4}, {"long int", 4}, {"unsigned long", 4},
-    {"long long", 8}, {"long long int", 8}, {"unsigned long long", 8},
-    {"uint32_t", 4}, {"int32_t", 4}, {"size_t", 4},
-    {"_Bool", 1}, {"bool", 1},
-};
-
-int sizeof_tokens(const std::vector<std::string>& inner, Enc& e) {
-    if (inner.empty()) return WIDTH / 8;
-    for (auto& t : inner)
-        if (t == "*") return WIDTH / 8;
-    std::string joined;
-    for (size_t i = 0; i < inner.size(); ++i) {
-        if (i) joined += " ";
-        joined += inner[i];
-    }
-    auto it = TYPE_SIZE.find(joined);
-    if (it != TYPE_SIZE.end()) return it->second;
-    if (inner.size() == 1 && is_ident(inner[0])) {
-        auto name = inner[0];
-        if (e.arrays.count(name)) return e.arrays.at(name).n * (WIDTH / 8);
-        return WIDTH / 8;
-    }
-    for (auto& t : inner)
-        if (t == "[") return WIDTH / 8;
-    return WIDTH / 8;
-}
-
-std::vector<std::string> tok(const std::string& src) {
-    static Regex rx(
-        "(0x[0-9a-fA-F]+)|(\\d+)|('(?:\\\\.|[^\\\\'])')|(\"(?:\\\\.|[^\\\\\"])*\")|"
-        "([A-Za-z_]\\w*)|(&&|\\|\\||==|!=|<=|>=|<<|>>|\\+\\+|--)|"
-        "([+\\-*/%<>=!&|^~()[\\],?:])");
-    std::vector<std::string> out;
-    for (auto& m : rx.finditer(src)) out.push_back(m.text);
-    return out;
-}
-
-z3::expr parse_expr(Enc& e, std::string src, Parser& parser) {
-    src = strip(src);
-    auto tokens = tok(src);
-    size_t pos = 0;
-    auto peek = [&]() -> std::string {
-        return pos < tokens.size() ? tokens[pos] : std::string{};
-    };
-    auto eat = [&](std::string t = {}) -> std::string {
-        if (pos >= tokens.size()) throw ParseFail("unexpected end of expression");
-        auto got = tokens[pos];
-        if (!t.empty() && got != t) throw ParseFail("expected " + t + " got " + got);
-        ++pos;
-        return got;
-    };
-    std::function<z3::expr(int)> parse;
-    std::function<z3::expr()> nud;
-    static const std::map<std::string, int> PREC = {
-        {"||", 10}, {"&&", 20},
-        {"|", 30}, {"^", 40}, {"&", 50},
-        {"==", 60}, {"!=", 60},
-        {"<", 70}, {">", 70}, {"<=", 70}, {">=", 70},
-        {"<<", 80}, {">>", 80},
-        {"+", 90}, {"-", 90},
-        {"*", 100}, {"/", 100}, {"%", 100},
-    };
-    nud = [&]() -> z3::expr {
-        auto t = eat();
-        if (t.size() >= 3 && t.front() == '\'' && t.back() == '\'')
-            return e.ctx.bv_val(char_lit_value(t), WIDTH);
-        if (t.size() >= 2 && t.front() == '"' && t.back() == '"')
-            return e.ctx.bv_val(1, WIDTH);
-        if (t == "alignof" || t == "_Alignof") throw ParseFail("alignof unencoded");
-        if (t == "sizeof") {
-            if (peek() == "(") {
-                eat("(");
-                std::vector<std::string> inner;
-                int depth = 1;
-                while (depth) {
-                    auto ntok = eat();
-                    if (ntok == "(") { ++depth; inner.push_back(ntok); }
-                    else if (ntok == ")") {
-                        --depth;
-                        if (depth) inner.push_back(ntok);
-                    } else inner.push_back(ntok);
-                }
-                return e.ctx.bv_val(sizeof_tokens(inner, e), WIDTH);
-            }
-            auto name = eat();
-            return e.ctx.bv_val(sizeof_tokens({name}, e), WIDTH);
-        }
-        if (t == "(") {
-            if (peek() == "{") throw ParseFail("statement-expr unencoded");
-            if (CAST_WORDS.count(peek())) {
-                std::vector<std::string> words;
-                while (!peek().empty() && peek() != ")") {
-                    if (!CAST_WORDS.count(peek()) && peek() != "*") break;
-                    words.push_back(eat());
-                }
-                eat(")");
-                auto v = parse(110);
-                std::string joined;
-                for (size_t i = 0; i < words.size(); ++i) {
-                    if (i) joined += " ";
-                    joined += words[i];
-                }
-                int dst = type_width(joined);
-                int srcw = e.width_of(v);
-                bool u = type_is_unsigned(joined);
-                v = e.resize(v, srcw, dst, u);
-                return e.tag(v, u, dst);
-            }
-            auto v = parse(0);
-            eat(")");
-            return v;
-        }
-        if (t == "++" || t == "--") {
-            auto name = eat();
-            if (!is_ident(name)) throw ParseFail("prefix " + t + " needs an identifier");
-            e.check_read(name);
-            auto cur = e.get(name);
-            auto one = e.ctx.bv_val(1, WIDTH);
-            auto nw = apply_binop(e, cur, t == "++" ? "+" : "-", one);
-            e.set(name, nw);
-            e.mark_init(name);
-            return nw;
-        }
-        if (t == "*") {
-            auto name = peek();
-            if (!is_ident(name) || !e.arrays.count(name))
-                throw ParseFail("deref of '" + name + "'");
-            eat();
-            auto [arr, n] = e.arrays.at(name);
-            auto idx = e.ctx.bv_val(0, WIDTH);
-            e.add_prop("oob-read", "MEM-OOB-READ", oob(e, idx, n), e.pc);
-            return z3::select(arr, idx);
-        }
-        if (t == "-") {
-            auto v = parse(110);
-            int w = e.width_of(v);
-            auto z = e.bv_zero(w);
-            auto r = z - v;
-            if (!e.is_u(v)) e.add_prop("neg", "INT-SIGNED-OVF", v == e.bv_min(w), e.pc);
-            return e.tag(r, e.is_u(v), w);
-        }
-        if (t == "!") {
-            auto v = parse(110);
-            return z3::ite(as_bool(v), e.ctx.bv_val(0, WIDTH), e.ctx.bv_val(1, WIDTH));
-        }
-        if (t == "~") return ~parse(110);
-        if (std::isdigit(static_cast<unsigned char>(t[0])) || t.starts_with("0x")) {
-            uint64_t val = 0;
-            try { val = std::stoull(t, nullptr, 0); } catch (...) { val = 0; }
-            return e.tag(e.ctx.bv_val(static_cast<uint64_t>(val), WIDTH), false, WIDTH);
-        }
-        if (is_ident(t)) {
-            if (t == "_Generic" || t == "offsetof") throw ParseFail(t + " unencoded");
-            if (t == "__int128" || t == "__int128_t" || t == "_BitInt")
-                throw ParseFail("128-bit unencoded");
-            if (t == "_Decimal32" || t == "_Decimal64" || t == "_Decimal128")
-                throw ParseFail("decimal-float unencoded");
-            if (t == "_Float16" || t == "_Float32" || t == "_Float64" || t == "__fp16")
-                throw ParseFail("extra-IEEE unencoded");
-            if (t == "typeof_unqual" || t == "__typeof_unqual__")
-                throw ParseFail("typeof_unqual unencoded");
-            if (t == "start_lifetime_as" || t == "start_lifetime_as_array")
-                throw ParseFail("start_lifetime_as unencoded");
-            if (t == "nullptr") throw ParseFail("nullptr unencoded");
-            if (t == "restrict") throw ParseFail("restrict unencoded");
-            if (t == "launder" || (t == "std" && peek() == "launder"))
-                throw ParseFail("launder unencoded");
-            if (t == "requires" && peek() == "(") throw ParseFail("concepts unencoded");
-            if (t == "__builtin_choose_expr") throw ParseFail("choose_expr unencoded");
-            if (t == "dlopen" || t == "dlsym" || t == "dlclose")
-                throw ParseFail("dlopen unencoded");
-            if (t == "__builtin_clz" || t == "__builtin_ctz" || t == "__builtin_clzll" || t == "__builtin_ctzll")
-                throw ParseFail("clz unencoded");
-            if (t == "bit_cast") throw ParseFail("bit_cast unencoded");
-            if (t == "shared_from_this" || t == "enable_shared_from_this"
-                || (t == "std" && (peek() == "shared_from_this" || peek() == "enable_shared_from_this")))
-                throw ParseFail("shared_from_this unencoded");
-            if (t == "__atomic_load" || t == "__atomic_store"
-                || t == "__sync_fetch_and_add" || t == "__sync_bool_compare_and_swap")
-                throw ParseFail("atomic builtin unencoded");
-            if ((t == "optional" || t == "variant" || t == "span" || t == "expected"
-                 || t == "function" || t == "mdspan" || t == "future" || t == "promise"
-                 || t == "atomic_ref" || t == "generator")
-                && peek() == "<")
-                throw ParseFail("std::" + t + " unencoded");
-            if (t == "condition_variable_any") throw ParseFail("condition_variable_any unencoded");
-            if (t == "shared_timed_mutex") throw ParseFail("shared_timed_mutex unencoded");
-            if (t == "recursive_timed_mutex") throw ParseFail("recursive_timed_mutex unencoded");
-            if (t == "error_category") throw ParseFail("error_category unencoded");
-            if (t == "nested_exception") throw ParseFail("nested_exception unencoded");
-            if (t == "wstring_convert") throw ParseFail("wstring_convert unencoded");
-            if (t == "system_error") throw ParseFail("system_error unencoded");
-            if (t == "current_zone" || t == "tzdb") throw ParseFail("tzdb unencoded");
-            if (t == "is_scoped_enum") throw ParseFail("is_scoped_enum unencoded");
-            if (t == "enumerate" || t == "enumerate_view") throw ParseFail("enumerate unencoded");
-            if (t == "cartesian_product" || t == "cartesian_product_view")
-                throw ParseFail("cartesian_product unencoded");
-            if (t == "chunk_by" || t == "chunk_view") throw ParseFail("chunk unencoded");
-            if (t == "slide_view") throw ParseFail("slide unencoded");
-            if (t == "adjacent_transform" || t == "adjacent_view")
-                throw ParseFail("adjacent unencoded");
-            if (t == "join_with" || t == "join_with_view") throw ParseFail("join_with unencoded");
-            if (t == "join_view") throw ParseFail("views::join unencoded");
-            if (t == "zip_transform" || t == "zip_transform_view")
-                throw ParseFail("zip_transform unencoded");
-            if (t == "zip_view") throw ParseFail("views::zip unencoded");
-            if (t == "as_rvalue" || t == "as_rvalue_view") throw ParseFail("as_rvalue unencoded");
-            if (t == "from_range" || t == "from_range_t") throw ParseFail("from_range unencoded");
-            if (t == "stride_view") throw ParseFail("stride unencoded");
-            if (t == "repeat_view") throw ParseFail("repeat unencoded");
-            if (t == "take_view") throw ParseFail("take unencoded");
-            if (t == "drop_view") throw ParseFail("drop unencoded");
-            if (t == "filter_view") throw ParseFail("filter unencoded");
-            if (t == "transform_view") throw ParseFail("transform_view unencoded");
-            if (t == "elements_view") throw ParseFail("elements unencoded");
-            if (t == "iota_view") throw ParseFail("iota unencoded");
-            if (t == "reference_wrapper") throw ParseFail("reference_wrapper unencoded");
-            if (t == "uncaught_exceptions" && peek() == "(")
-                throw ParseFail("uncaught_exceptions unencoded");
-            if ((t == "bit_ceil" || t == "bit_floor" || t == "has_single_bit") && peek() == "(")
-                throw ParseFail("bit_ceil unencoded");
-            if (t == "bit_width" && peek() == "(") throw ParseFail("bit_width unencoded");
-            if (t == "gcd" && peek() == "(") throw ParseFail("gcd unencoded");
-            if (t == "lcm" && peek() == "(") throw ParseFail("lcm unencoded");
-            if (t == "clamp" && peek() == "(") throw ParseFail("clamp unencoded");
-            if (t == "exchange" && peek() == "(") throw ParseFail("exchange unencoded");
-            if (t == "to_address" && peek() == "(") throw ParseFail("to_address unencoded");
-            if (t == "addressof" && peek() == "(") throw ParseFail("addressof unencoded");
-            if (t == "assume_aligned" && peek() == "(") throw ParseFail("assume_aligned unencoded");
-            if (t == "as_const" && peek() == "(") throw ParseFail("as_const unencoded");
-            if ((t == "transform_inclusive_scan" || t == "transform_exclusive_scan") && peek() == "(")
-                throw ParseFail("transform_inclusive_scan unencoded");
-            if (t == "exclusive_scan" && peek() == "(") throw ParseFail("exclusive_scan unencoded");
-            if (t == "inclusive_scan" && peek() == "(") throw ParseFail("inclusive_scan unencoded");
-            if (t == "transform_reduce" && peek() == "(") throw ParseFail("transform_reduce unencoded");
-            if ((t == "uninitialized_fill" || t == "uninitialized_fill_n"
-                 || t == "uninitialized_default_construct"
-                 || t == "uninitialized_default_construct_n")
-                && peek() == "(")
-                throw ParseFail("uninitialized_fill unencoded");
-            if ((t == "uninitialized_value_construct" || t == "uninitialized_value_construct_n")
-                && peek() == "(")
-                throw ParseFail("uninitialized_value_construct unencoded");
-            if ((t == "uninitialized_copy" || t == "uninitialized_move"
-                 || t == "uninitialized_copy_n" || t == "uninitialized_move_n")
-                && peek() == "(")
-                throw ParseFail("uninitialized_copy unencoded");
-            if ((t == "construct_at" || t == "destroy_at") && peek() == "(")
-                throw ParseFail("construct_at unencoded");
-            if (t == "destroy_n" && peek() == "(") throw ParseFail("destroy_n unencoded");
-            if ((t == "add_sat" || t == "sub_sat" || t == "mul_sat" || t == "div_sat"
-                 || t == "saturate_cast")
-                && peek() == "(")
-                throw ParseFail("add_sat unencoded");
-            if (t == "type_identity") throw ParseFail("type_identity unencoded");
-            if (t == "nontype") throw ParseFail("nontype unencoded");
-            if (t == "is_layout_compatible") throw ParseFail("is_layout_compatible unencoded");
-            if (t == "is_pointer_interconvertible_with_class"
-                || t == "is_pointer_interconvertible_base_of")
-                throw ParseFail("is_pointer_interconvertible unencoded");
-            if (t == "basic_const_iterator") throw ParseFail("basic_const_iterator unencoded");
-            if (t == "is_corresponding_member") throw ParseFail("is_corresponding_member unencoded");
-            if (t == "forward_like") throw ParseFail("forward_like unencoded");
-            if (t == "make_exception_ptr" && peek() == "(")
-                throw ParseFail("make_exception_ptr unencoded");
-            if ((t == "set_terminate" || t == "get_terminate") && peek() == "(")
-                throw ParseFail("set_terminate unencoded");
-            if (t == "is_constant_evaluated" && peek() == "(")
-                throw ParseFail("is_constant_evaluated unencoded");
-            if (t == "lerp" && peek() == "(") throw ParseFail("lerp unencoded");
-            if (t == "midpoint" && peek() == "(") throw ParseFail("midpoint unencoded");
-            if ((t == "cmp_less" || t == "cmp_greater" || t == "cmp_less_equal"
-                 || t == "cmp_greater_equal" || t == "cmp_equal_to" || t == "cmp_not_equal_to"
-                 || t == "in_range")
-                && peek() == "(")
-                throw ParseFail("cmp_less unencoded");
-            if ((t == "countl_zero" || t == "countr_zero" || t == "countl_one" || t == "countr_one")
-                && peek() == "(")
-                throw ParseFail("countl_zero unencoded");
-            if (t == "unreachable" && peek() == "(") throw ParseFail("std::unreachable unencoded");
-            if (t == "condition_variable" || t == "shared_mutex")
-                throw ParseFail("condition_variable unencoded");
-            if (peek() == "[") {
-                eat("[");
-                auto idx = parse(0);
-                eat("]");
-                if (!e.arrays.count(t)) throw ParseFail("unknown array " + t);
-                auto [arr, n] = e.arrays.at(t);
-                e.add_prop("oob-read", "MEM-OOB-READ", oob(e, idx, n), e.pc);
-                return z3::select(arr, idx);
-            }
-            if (peek() == "(") {
-                eat("(");
-                int depth = 1;
-                while (depth) {
-                    auto ntok = eat();
-                    if (ntok == "(") ++depth;
-                    else if (ntok == ")") --depth;
-                }
-                return e.bv("call_" + t);
-            }
-            if (peek() == "++" || peek() == "--") {
-                auto op = eat();
-                e.check_read(t);
-                auto cur = e.get(t);
-                auto one = e.ctx.bv_val(1, WIDTH);
-                auto nw = apply_binop(e, cur, op == "++" ? "+" : "-", one);
-                e.set(t, nw);
-                e.mark_init(t);
-                return cur;
-            }
-            if (e.arrays.count(t)) return e.ctx.bv_val(1, WIDTH);
-            if (e.vars.count(t)) {
-                e.check_read(t);
-                return e.get(t);
-            }
-            if (parser.enums.count(t)) return e.ctx.bv_val(parser.enums.at(t), WIDTH);
-            return e.get(t);
-        }
-        throw ParseFail("bad token " + t);
-    };
-    parse = [&](int minp) -> z3::expr {
-        auto left = nud();
-        while (PREC.count(peek()) && PREC.at(peek()) >= minp) {
-            auto op = eat();
-            auto right = parse(PREC.at(op) + 1);
-            if (op == "&&")
-                left = z3::ite(as_bool(left) && as_bool(right), e.ctx.bv_val(1, WIDTH), e.ctx.bv_val(0, WIDTH));
-            else if (op == "||")
-                left = z3::ite(as_bool(left) || as_bool(right), e.ctx.bv_val(1, WIDTH), e.ctx.bv_val(0, WIDTH));
-            else
-                left = apply_binop(e, left, op, right);
-        }
-        if (minp <= 5 && peek() == "?") {
-            eat("?");
-            auto then_v = parse(0);
-            eat(":");
-            auto else_v = parse(5);
-            left = z3::ite(as_bool(left), then_v, else_v);
-        }
-        if (minp <= 1 && peek() == ",") {
-            eat(",");
-            left = parse(0);
-        }
-        return left;
-    };
-    auto v = parse(0);
-    if (pos != tokens.size()) {
-        std::string trail;
-        for (size_t i = pos; i < tokens.size(); ++i) {
-            if (i > pos) trail += " ";
-            trail += tokens[i];
-        }
-        throw ParseFail("trailing " + trail);
-    }
-    return v;
-}
-
-std::string cex(const z3::model& model, Enc& e, const std::vector<std::pair<std::string, std::string>>& params) {
-    std::vector<std::string> bits;
-    for (auto& [typ, name] : params) {
-        if (name.empty()) continue;
-        try {
-            auto d = model.eval(e.ctx.bv_const(name.c_str(), static_cast<unsigned>(type_width(typ))), true);
-            bits.push_back(name + "=" + d.to_string());
-        } catch (...) {}
-    }
-    std::string out;
-    for (size_t i = 0; i < bits.size(); ++i) {
-        if (i) out += ", ";
-        out += bits[i];
-    }
-    return out;
-}
+#include "bmc_encoder.inc"
 
 bool loop_kw(std::string_view src) {
     return rx_search("\\b(do|while|for)\\b", src);
@@ -4821,8 +3158,9 @@ Finding bmc_function(const FunctionInfo& fn, int unwind, bool try_unbounded = tr
                      bool allow_local_pointers = false, bool incremental = true);
 
 Finding bmc_once(const FunctionInfo& fn, int unwind, bool try_unbounded,
-                 const std::map<std::string, int>& enums, Finding base) {
-    Parser p(fn.body, fn.params, unwind, enums);
+                 const std::map<std::string, int>& enums, Finding base,
+                 const std::map<std::string, std::string>& macros = {}, bool havoc = false) {
+    Parser p(fn.body, fn.params, unwind, enums, macros, havoc);
     auto enc = p.run();
     if (!enc) {
         base.strength = std::string(laws::STRENGTH_SOME);
@@ -4841,6 +3179,18 @@ Finding bmc_once(const FunctionInfo& fn, int unwind, bool try_unbounded,
         s.set("timeout", 8000u);
         s.add(prop.cond);
         auto r = s.check();
+        if (!enc->call_vars.empty() && r != z3::unsat) {
+            // A violation that needs an unmodelled call to return some
+            // particular value is not a refutation (the callee may never
+            // return it): it must hold for every value the calls return.
+            z3::expr_vector cv(enc->ctx);
+            for (auto& c : enc->call_vars) cv.push_back(c);
+            s.reset();
+            s.set("timeout", 8000u);
+            s.add(z3::forall(cv, prop.cond));
+            r = s.check();
+            if (r != z3::sat) continue;
+        }
         if (r == z3::sat) {
             auto c = cex(s.get_model(), *enc, fn.params);
             if (c.empty()) c = prop.name + "=sat";
@@ -4864,6 +3214,16 @@ Finding bmc_once(const FunctionInfo& fn, int unwind, bool try_unbounded,
             base.message = "solver unknown on " + prop.name;
             return base;
         }
+    }
+    if (!enc->unmodelled.empty()) {
+        // S6: a call that is neither inlined nor modelled has an unknown
+        // effect and may itself be undefined; its arguments were checked
+        // above, but no verdict of this function can be a proof.
+        base.strength = std::string(laws::STRENGTH_SOME);
+        base.status = std::string(laws::NEEDS_HARNESS);
+        base.message = "UNENCODED: call to " + join_csv(enc->unmodelled) +
+                       " not modelled (arguments checked, result unconstrained): not a proof";
+        return base;
     }
     if (enc->props.empty() && has_unencoded_libc_effect(fn)) {
         base.strength = std::string(laws::STRENGTH_SOME);
@@ -4962,12 +3322,13 @@ Finding bmc_function(const FunctionInfo& fn, int unwind, bool try_unbounded,
     std::map<std::string, int> local_en;
     if (!enums) local_en = enums_from_fn(fn);
     const auto& en = enums ? *enums : local_en;
+    auto macros = macros_from_fn(fn);
     auto schedule = incremental ? unwind_schedule(unwind) : std::vector<int>{unwind};
     Finding last;
     bool have = false;
     std::vector<int> tried;
     for (int k : schedule) {
-        auto rec = bmc_once(fn, k, try_unbounded, en, base);
+        auto rec = bmc_once(fn, k, try_unbounded, en, base, macros);
         tried.push_back(k);
         rec.extra["incremental_k"] = std::to_string(k);
         rec.extra["incremental"] = join_csv(tried);
@@ -4987,60 +3348,33 @@ Finding k_induction(const FunctionInfo& fn, int unwind, bool allow_local_pointer
         rec.extra["k_induction"] = "not-needed";
         return rec;
     }
-    auto loops = extract_simple_loops(fn.body);
-    if (!loops || loops->empty()) {
-        rec.extra["k_induction"] = "unencoded";
-        return rec;
+    // Inductive step (k=1): every loop is havocked -- each variable it may
+    // assign is arbitrary at the loop head -- and the condition, one body
+    // execution and everything after the loop are checked from there
+    // (Parser::loop_havoc). Every reachable state is covered, so an unsat
+    // step proves the function for all unrollings. A violation of the
+    // step is not a counterexample of the function: the result stays BOUNDED.
+    auto step = bmc_once(fn, 1, true, enums_from_fn(fn), mk_base(fn), macros_from_fn(fn), true);
+    rec.extra["k_steps"] = step.status;
+    rec.extra["k_induction_tried"] = "1";
+    rec.extra["k_induction_k"] = "1";
+    if (step.status == laws::PROVED_UNBOUNDED || step.status == laws::PROVED) {
+        Finding f;
+        f.stage = "bmc";
+        f.status = std::string(laws::PROVED_UNBOUNDED);
+        f.file = fn.file;
+        f.function = fn.name;
+        f.line = fn.line;
+        f.message = "k-induction step closed at k=1; not a bounded-only result";
+        f.strength = std::string(laws::STRENGTH_PROVES);
+        f.extra = rec.extra;
+        f.extra["k_induction"] = "closed";
+        f.extra["unwind_closed"] = "true";
+        return f;
     }
-    std::string last_open_cls;
-    std::vector<int> tried;
-    for (int kstep : {1, 2}) {
-        bool step_open = false;
-        std::string step_cls;
-        bool unencoded = false;
-        std::vector<std::string> k_steps;
-        for (auto& [kind, cond, body] : *loops) {
-            auto piece = k_step_body(kind, cond, body, kstep);
-            FunctionInfo cloned = fn;
-            cloned.body = piece;
-            auto step = bmc_function(cloned, 1, false, nullptr, true, true);
-            k_steps.push_back(step.status);
-            if (step.status == laws::FAILED) {
-                step_open = true;
-                step_cls = step.cls;
-            } else if (step.status != laws::PROVED && step.status != laws::PROVED_UNBOUNDED) {
-                // Python engine: only PROVED / PROVED-UNBOUNDED close a step.
-                // BOUNDED is not a closed proof and must not fold into
-                // PROVED-UNBOUNDED.
-                unencoded = true;
-            }
-        }
-        tried.push_back(kstep);
-        rec.extra["k_steps"] = join_csv(k_steps);
-        rec.extra["k_induction_tried"] = join_csv(tried);
-        rec.extra["k_induction_k"] = std::to_string(kstep);
-        if (!step_open && !unencoded) {
-            Finding f;
-            f.stage = "bmc";
-            f.status = std::string(laws::PROVED_UNBOUNDED);
-            f.file = fn.file;
-            f.function = fn.name;
-            f.line = fn.line;
-            f.message = "k-induction step closed at k=" + std::to_string(kstep) +
-                        "; not a bounded-only result";
-            f.strength = std::string(laws::STRENGTH_PROVES);
-            f.extra = rec.extra;
-            f.extra["k_induction"] = "closed";
-            f.extra["unwind_closed"] = "true";
-            return f;
-        }
-        if (step_open) last_open_cls = step_cls;
-        if (unencoded) break;
-    }
-    rec.extra["k_induction_tried"] = join_csv(tried);
-    if (!last_open_cls.empty()) {
+    if (step.status == laws::FAILED) {
         rec.extra["k_induction"] = "step-open";
-        rec.extra["k_induction_cls"] = last_open_cls;
+        rec.extra["k_induction_cls"] = step.cls;
         return rec;
     }
     rec.extra["k_induction"] = "unencoded";
@@ -5053,26 +3387,10 @@ Finding k_induction(const FunctionInfo& fn, int unwind, bool allow_local_pointer
 Finding k_induction_strengthened(const FunctionInfo& fn, int unwind, bool allow_local_pointers) {
     auto rec = k_induction(fn, unwind, allow_local_pointers);
     if (rec.status == laws::PROVED_UNBOUNDED && rec.extra["k_induction"] == "closed") {
-        // The k-induction step checks each loop body from an arbitrary state;
-        // code after a loop was only checked on paths within the unwind (e.g.
-        // `while (i < n) i++; return 100 / (i - 500);`). Keep PROVED-UNBOUNDED
-        // only when the loop cut, which covers the post-loop code, closes too.
-        auto as_bounded = rec;
-        as_bounded.status = std::string(laws::BOUNDED);
-        auto v = ai::strengthen_bounded(fn, as_bounded, unwind);
-        if (v.status == laws::PROVED_UNBOUNDED) {
-            for (auto* k : {"invariants", "invariant_source", "ai_audit_id", "ai_checker", "ai_checker_result"})
-                if (v.extra.count(k)) rec.extra[k] = v.extra[k];
-            rec.extra["post_loop_check"] = "closed (loop cut)";
-            return rec;
-        }
-        v.status = std::string(laws::BOUNDED);
-        v.message = "k-induction step closed for the loop body only; code after the loop is not covered by "
-                    "that step and the loop-cut check did not close; no violation within unwind " +
-                    std::to_string(unwind);
-        v.extra["k_induction"] = "step-closed-post-open";
-        v.extra["unwind_closed"] = "false";
-        return v;
+        // The havocked step (Parser::loop_havoc) already checks the code after
+        // every loop from the havocked state, so a closed step covers it.
+        rec.extra["post_loop_check"] = "closed (havoc step)";
+        return rec;
     }
     if (rec.status != laws::BOUNDED) return rec;
     return ai::strengthen_bounded(fn, rec, unwind);
@@ -5280,8 +3598,19 @@ std::vector<Finding> run_bmc(const std::vector<FunctionInfo>& functions, int unw
                              bool allow_local_pointers) {
 #ifdef PRISM_HAS_Z3
     std::vector<Finding> out;
-    for (auto& fn : inline_static(functions))
-        out.push_back(k_induction_strengthened(fn, unwind, allow_local_pointers));
+    for (auto& fn : inline_static(functions)) {
+        // R1: one function the encoder cannot handle (a Z3 sort error, ...)
+        // is an ERROR for that function, never a crash of the whole stage.
+        try {
+            out.push_back(k_induction_strengthened(fn, unwind, allow_local_pointers));
+        } catch (const std::exception& ex) {
+            Finding f = mk_base(fn);
+            f.status = std::string(laws::ERROR);
+            f.strength = std::string(laws::STRENGTH_SOME);
+            f.message = std::string("BMC internal error: ") + ex.what();
+            out.push_back(std::move(f));
+        }
+    }
     // Python engine k_induction always returns a Finding (empty unwind → ERROR).
     // A non-empty function list must never look like a silent clean BMC stage.
     if (out.empty() && !functions.empty()) {

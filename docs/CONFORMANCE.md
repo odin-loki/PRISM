@@ -60,7 +60,97 @@ function, stage, verdict, counterexample and replay). `.github/workflows/conform
 runs the self-check and the suite on every push (gating), and the random
 programs and Juliet nightly.
 
-## Current numbers (2026-09-23)
+## Current numbers (2026-09-23, after the encoder soundness fixes)
+
+Engines: C++ engine (`/tmp/prism-build-sound/prism`, this branch merged with
+`claude/prism-code-checker-x7538r` incl. the AI layer and the `pir` stage)
+and the frozen Python engine, same tree. Stages `inventory,classify,bmc,
+harness` (+ `pir`, C++ only). The bitvector encoder is the typed rewrite
+described under "Known issues" (all S items fixed in both engines).
+
+Engine parity: on every `bmc` row the two engines give the same outcome
+except where the C++-only AI layer (`k_induction_strengthened`, Houdini
+invariants, roadmap 4.2) closes a loop the plain step leaves `BOUNDED`
+(7 in-house `true` tasks). Juliet and the random programs agree too (the
+Python run has 9 `UNKNOWN` against 3 in C++: solver timeouts on a loaded
+machine, never a different sat/unsat answer).
+
+Label self-check: all in-house tasks ok (the 34 new `regress/` tasks
+included), pointer-parameter tasks skipped.
+
+### In-house suite + SV-COMP (`tests/conformance`)
+
+The original 263 tasks, `bmc` stage, before → after:
+
+| origin | wrong proofs | completeness | detection (replayed cex) | refuted, not replayed | false alarms | BOUNDED |
+|---|---|---|---|---|---|---|
+| in-house (C++) | **11 → 0** | 51/106 (48.1%) → 64/106 (60.4%) | 55/106 (51.9%) → 70/106 (66.0%) | 4 → 0 | 8 → 1 | 14 → 11 |
+| in-house (Python) | **11 → 0** | 51/106 → 59/106 (55.7%) | 55/106 → 70/106 (66.0%) | 4 → 0 | 8 → 1 | 14 → 16 |
+| SV-COMP (both) | 0 → 0 | 4/25 (16.0%) → 3/25 (12.0%) | n/a | 11/20 → 15/20 | 1 → 0 | 0 → 0 |
+| all (C++) | **11 → 0** | 55/131 (42.0%) → 67/131 (51.1%) | 55/126 (43.7%) → 70/126 (55.6%) | 15 → 15 | 9 → 1 | 14 → 11 |
+
+With the 34 `regress/` tasks (one `_true`/`_false` pair per encoder bug fixed
+here) the full suite is 291 tasks: C++ `bmc` 0 wrong proofs, completeness
+82/148 (55.4%), detection 84/143 (58.7%), 1 false alarm; Python `bmc` 0 wrong
+proofs, 75/148 (50.7%), 84/143 (58.7%), 1 false alarm.
+
+The one remaining false alarm is F7 (`cxx_shift_cpp20_true`, C semantics of
+`<<` applied to a C++20 file; conservative, not a soundness issue).
+
+Per category (C++, `bmc`, proved true / refuted false): overflow 31/41,
+36/41; div 10/10, 10/10; shift 11/11, 11/11; unsigned 5/5, 4/5; c23 3/11,
+3/11; C++ 2/14, 5/14; macro 1/3, 1/3; array 1/9, 0/9; local pointers 0/2,
+0/2; regress 15/17, 14/17; SV-COMP signedintegeroverflow 0/5, 10/10;
+bitvector 0/13, 5/10; loop-simple 3/3.
+
+**`harness` stage (C++ only): 1 wrong proof and 3 Law 6 violations** —
+`ptrparam0_false` is `PROVED-ASSUMING` under a harness the AI layer drafted
+itself (`p != NULL; p points to at least 1 int element`), and
+`ptrparam0_true`/`ptrparam1_true` get `PROVED-ASSUMING` where the suite
+requires `NEEDS-HARNESS` (no `// requires:`). This comes from
+`src/prism/ai/harness.cpp` (`drafted_harness_bmc`, merged from the AI
+branch), not from the encoder: a drafted assumption is not a caller
+contract, so a proof under it must not be scored as a proof of the task.
+The release gate stays red until that stage reports such rows as
+`NEEDS-HARNESS` (or the scorer is taught to treat drafted-harness proofs as
+not-a-proof; the gate must not simply be relaxed). The Python engine has no
+drafted harness and passes (0 wrong proofs, Law 6 6/6).
+
+### NIST Juliet 1.3 (CWE190/191/369/476/680, flow `_01`, 104 files, 410 functions)
+
+Identical in both engines:
+
+| stage | true | false | **wrong proofs** | completeness | refuted (not replayed) | false alarms | no answer |
+|---|---|---|---|---|---|---|---|
+| bmc (before) | 306 | 104 | **6** | 190/306 (62.1%) | 17/104 | 1 | 196 |
+| bmc (after) | 306 | 104 | **0** | 129/306 (42.2%) | 20/104 | 0 | 261 |
+
+Completeness dropped because many "proofs" were vacuous: calls such as
+`printIntLine(100 / data)` were never evaluated, `RAND32()` and globals were
+free constants. Every unmodelled call is now `NEEDS-HARNESS` ("UNENCODED:
+call to X"); the `_good()` wrappers that call a helper using `RAND32()`,
+`fscanf`, sockets or `fgets` and the `RAND32()` helpers themselves are the
+bulk of the 261 (100 unmodelled calls, 20 address-of, 18 heap, 22 sockets,
+10 VLA).
+
+### Random programs (`tools/csmith_soundness.py`, in-house generator, 300 programs, 900 functions)
+
+| | before | after (C++) | after (Python) |
+|---|---|---|---|
+| `PROVED-UNBOUNDED` | 304 | 466 | 463 |
+| of which wrong (UB under UBSan) | **57** | **0** | **0** |
+| `FAILED` | 153 | 431 | 428 |
+| `FAILED` with a replaying counterexample | 129 | 430 | 427 |
+| suspected false alarms | 17 | 0 | 0 |
+| `ERROR` | 136 | 0 | 0 |
+| `UNKNOWN` (solver timeout) | 1 | 3 | 9 |
+| stage crashed (whole file lost, R1) | 306 functions | 0 | 0 |
+
+After merging the AI layer and the `pir` stage the C++ campaign was re-run
+with both verdict stages: 464 proofs executed under UBSan, **0 wrong**; 431
+`FAILED`, 430 replay; 0 suspected false alarms.
+
+## Before the fixes (2026-09-23, `24a72d40b`)
 
 Engine: C++ engine built from `claude/prism-code-checker-x7538r` at
 `24a72d40b` (stages `inventory,classify,bmc,harness`; no `pir` stage yet).
@@ -70,7 +160,7 @@ encoding design, so the differential oracle cannot catch them.
 
 Label self-check: 212 functions ok, 6 skipped (pointer parameters), 0 failed.
 
-### In-house suite + SV-COMP (`tests/conformance`, 263 tasks)
+#### In-house suite + SV-COMP (`tests/conformance`, 263 tasks)
 
 | stage | origin | true | false | **wrong proofs** | completeness | detection (replayed cex) | refuted, not replayed | false alarms | BOUNDED | no answer | Law 6 |
 |---|---|---|---|---|---|---|---|---|---|---|---|
@@ -89,7 +179,7 @@ C++ 2/14, 6/14; macro 1/3, 1/3; array 0/9, 0/9 (every array task is
 signedintegeroverflow 1/5 proved, 10/10 refuted; bitvector 0/13, 1/10
 (front-end `ERROR`s, see G2); loop-simple 3/3.
 
-### NIST Juliet 1.3 (CWE190/191/369/476/680, flow `_01`, 104 files, 410 functions)
+#### NIST Juliet 1.3 (CWE190/191/369/476/680, flow `_01`, 104 files, 410 functions)
 
 | stage | true | false | **wrong proofs** | completeness | refuted (not replayed) | false alarms | no answer |
 |---|---|---|---|---|---|---|---|
@@ -99,7 +189,7 @@ By CWE (false functions): CWE190 10 refuted / 35 no answer; CWE191 6 refuted,
 **2 wrong proofs**; CWE369 **4 wrong proofs**, 8 no answer; CWE476 1 refuted;
 CWE680 0 refuted.
 
-### Random programs (`tools/csmith_soundness.py`)
+#### Random programs (`tools/csmith_soundness.py`)
 
 In-house generator, 300 programs, 900 functions, seeds 1–300:
 
@@ -126,12 +216,45 @@ In-house generator, 300 programs, 900 functions, seeds 1–300:
 ## Known issues
 
 Every wrong proof found, reduced to a minimal reproducer. Run any of them
-with `./build/prism FILE --no-llm --stage inventory,classify,bmc`. None is
-fixed here (this change only measures); each needs the same fix in
-`src/prism/bmc.cpp` and `prism/bmc.py`.
+with `./build/prism FILE --no-llm --stage inventory,classify,bmc`.
+
+**Status: S1–S6, R1, R2, F1–F6 are fixed in both engines** (typed encoder:
+`src/prism/bmc_encoder.inc`, `prism/bmc.py`; inliner `src/prism/inline.cpp`,
+`prism/inline.py`). Every reproducer below is a regression test
+(`tests/test_bmc_soundness.py`, doctest "bmc soundness: ..." in
+`tests/cpp/test_main.cpp`, conformance tasks under
+`tests/conformance/prism/regress/`). F7 remains (a false alarm, not a
+soundness issue). The fix, in one paragraph: every value carries its C type
+(width, signedness; LP64), integer promotions and the usual arithmetic
+conversions are applied before every operator, every signed operation is
+checked in both directions, `&&`/`||`/`?:` evaluate their right operand only
+under their condition, `break`/`continue`/early loop exits are merged instead
+of dropped, the k-induction step havocks every loop and checks the code after
+it, and anything not modelled (unknown identifier, unexpanded macro, call
+that is neither inlined nor modelled) is `NEEDS-HARNESS` "UNENCODED: ...",
+never a proof; call arguments are still checked, and a refutation must hold
+for every value an unmodelled call may return.
+
+Found and fixed while doing this (not in the list below, each also a wrong
+proof): the C++ encoder tagged types per Z3 AST, and Z3 hash-conses ASTs, so
+`(unsigned)x` retyped `x` itself (`regress/cast_alias`); loops dropped every
+path that left the loop before the last unrolled iteration
+(`regress/loop_early_exit`); `break` and `continue` lost their paths
+(`regress/loop_break_path`, `regress/loop_continue`); a dangling `else`
+bound to the outer `if` (`regress/dangling_else`); `if` merged arrays by
+taking the `then` branch's; the inliner turned `return` in the middle of a
+helper into an assignment and declared its result `int`
+(`regress/helper_early_return`); k-induction checked loop bodies only, not
+the code after the loop (`regress/kind_postloop`, `regress/post_loop`);
+`enum { A = 1 << 3, B }` gave `B` the value 1 (`regress/enum_expr`); an
+unknown-callee refutation that needs a particular return value is no longer
+reported; the harness buffer had type `int` whatever the pointee type.
+The concrete oracle (`prism/concrete.py`, `src/prism/stages_rest.cpp`) had
+S2 and S3 too: fixed there as well.
 
 ### Soundness (wrong proofs)
 
+*Fixed:* `+ - *` are checked in both directions.
 **S1. Signed subtraction overflow is only checked downward.** `bmc.cpp`
 `apply_binop` uses `bvsub_no_underflow` alone; `a - b` overflowing upward
 (`b` negative) is never checked.
@@ -141,6 +264,7 @@ int sub_false(int a, int b) { if (a < 0) return 0; return a - b; }
 ```
 Tasks: `overflow/sub_false`.
 
+*Fixed:* `modovf`.
 **S2. `INT_MIN % -1` is not a property.** `%` adds `mod0` but not the
 `divovf` check that `/` has (C11 6.5.5p6 makes it undefined).
 ```c
@@ -148,6 +272,7 @@ int r(int a, int b) { if (b == 0) return 0; return a % b; }   /* PROVED */
 ```
 Tasks: `overflow/mod_intmin_false`.
 
+*Fixed:* `shift-neg`, `shift31` (unrepresentable result), `shift` (count).
 **S3. Signed left shift: only `1 << 31` is checked.** Left shift of a
 negative value and left shift whose result does not fit are not properties
 (`shift31` only fires when the left operand is the constant 1).
@@ -158,6 +283,7 @@ int c(int x) { if (x < 0 || x > 7) return 0; return 2147483647 << x; } /* PROVED
 ```
 Tasks: `shift/shl_negative_false`, `shift/shl_overflow_false`; 9 random programs.
 
+*Fixed:* parameters have their own width and are promoted to `int`.
 **S4. Integer promotions of `unsigned char` / `unsigned short` are wrong.**
 They are modelled as 32-bit *unsigned* values ("unsigned params use unsigned
 compares and wrap", PLAN.md) instead of values in 0..255 / 0..65535 promoted
@@ -175,6 +301,7 @@ Tasks: `overflow/ushort_mul_false`, `overflow/mixed_sign_false`,
 `shift/char_shift_false`; 45 of 57 random-program wrong proofs. The same
 root cause gives false alarms on `signed char`/`short` (F2).
 
+*Fixed:* the result type is the promoted left operand's.
 **S5. `int >> unsigned` is a logical shift.** The signedness of a shift is
 taken from either operand (`u = ua || ub`); C takes it from the promoted left
 operand, so `-8 >> 1u` is modelled as `0x7FFFFFFC`.
@@ -184,6 +311,7 @@ int f(int a, unsigned s) { if (s < 1 || s > 7) return 0; return (a >> s) - 21474
 ```
 Tasks: `shift/shift_by_unsigned_false`.
 
+*Fixed:* `NEEDS-HARNESS` "UNENCODED: ..."; `abs`/`labs`/`llabs` are modelled; limits.h macros and the file's object-like `#define`s are expanded; call arguments are checked.
 **S6. Unmodelled calls and unexpanded macros are treated as UB-free, and
 unknown identifiers as a constant.** There is no preprocessor: `abs`, a
 template call, a function-like macro, or a call whose arguments contain the
@@ -213,6 +341,7 @@ call arguments must be evaluated for UB.
 
 ### Robustness (no verdict where one was possible)
 
+*Fixed:* widths are consistent by construction, and any exception is an `ERROR` for that one function.
 **R1. One Z3 sort error kills the bmc stage for the whole file** (Law 7 is
 kept: the stage is `failed` with the message, but every function in the file
 loses its verdict). 102 of 300 random programs.
@@ -222,6 +351,7 @@ int innocent(int a) { if (a < 0 || a > 10) return 0; return a * 2; }  /* also lo
 /* bmc failed: Argument ((_ sign_extend 32) (bvnot p0)) ... has sort (_ BitVec 96) */
 ```
 
+*Fixed* (by the cparse widening, verified: 0 functions never reported).
 **R2. Functions never reported** (not in `classify`/`bmc` at all):
 `[[nodiscard]] int f(...)` (C23 attribute before the declaration) and
 `auto f(int a) -> int` (trailing return type). Tasks: `c23/c23_attr_*`,
@@ -229,6 +359,7 @@ int innocent(int a) { if (a < 0 || a > 10) return 0; return a * 2; }  /* also lo
 
 ### False alarms and right-for-the-wrong-reason refutations
 
+*Fixed.*
 **F1. Both arms of `?:` are checked unconditionally.**
 ```c
 unsigned f(unsigned a, unsigned b) { return b ? a / b : 0; }   /* FAILED div0, b=0 */
@@ -236,26 +367,32 @@ unsigned f(unsigned a, unsigned b) { return b ? a / b : 0; }   /* FAILED div0, b
 Tasks: `div/udiv0_true`, `cxx/cxx_div_true`; `c23/c23_bool_false` and
 `cxx/cxx_div_false` are refuted with counterexamples that do not replay.
 
+*Fixed.*
 **F2. `short`/`signed char` parameters range over all 32-bit values**, so
 `short + short` "overflows" (`overflow/short_promote_true`,
 `char_promote_true`; `short_promote_false` is refuted with a non-replaying
 counterexample).
 
+*Fixed:* returns leave the inlined body; a call that is not inlined is UNENCODED.
 **F3. A static helper's properties are reported on its caller without the
 caller's guards** (`overflow/helper_call_true`: `a` in [-1000,1000],
 `twice(a)`, FAILED with `a=-4`).
 
+*Fixed:* LP64.
 **F4. `long` is 32 bits** in the encoder (LP64 Linux is the primary platform,
 D7): `overflow/long_mul_false` is refuted with `a=0x56127fff`, which does not
 overflow a 64-bit `long`.
 
+*Fixed:* C11 6.4.4.1 literal types with suffixes.
 **F5. Integer literal types.** `-2147483648 - 1` in a `long` context is
 flagged (SV-COMP `NoNegativeIntegerConstant`, true).
 
+*Fixed:* known or UNENCODED, never free (enums with a fixed underlying type stay UNENCODED).
 **F6. Macros/enum constants as free values**: `a == INT_MAX` guards
 (`macro/limits_true`) and `enum : unsigned char` constants
 (`c23/c23_enum_fixed_true`).
 
+*Open:* C semantics are applied to C++ files (conservative false alarm).
 **F7. C++20 shift semantics.** `1 << 31` is well defined in C++20 but flagged
 (`cxx/cxx_shift_cpp20_true`); `shift31` should be C-only.
 
@@ -277,7 +414,9 @@ flagged (SV-COMP `NoNegativeIntegerConstant`, true).
 ## Release gate
 
 `tools/conformance.py` exits 1 while any wrong proof exists, and
-`.github/workflows/conformance.yml` runs it on every push, so **the gate is
-currently red: 11 wrong proofs in the suite, 6 in Juliet, 57 in the random
-campaign**. That is the intended state until S1–S6 are fixed; the gate must
-not be relaxed to make it green.
+`.github/workflows/conformance.yml` runs it on every push. The encoder's
+wrong proofs are gone (was: 11 in the suite, 6 in Juliet, 57 in the random
+campaign; now 0/0/0 in both engines). **The gate is still red on the C++
+engine because of one `harness` row** (`ptrparam0_false`, `PROVED-ASSUMING`
+under an AI-drafted harness, see "Current numbers"); the Python engine's
+gate is green. The gate must not be relaxed to make it green.

@@ -1,0 +1,8 @@
+format_version: 1
+input_files: helper_early_return_false.c
+language: C
+property: no-div0
+expected:
+  helper_early_return_false: false
+witness:
+  helper_early_return_false: [0]

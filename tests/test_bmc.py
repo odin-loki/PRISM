@@ -322,8 +322,8 @@ class TestKInduction(unittest.TestCase):
         rec = k_induction(f, 8)
         self.assertEqual(rec.status, laws.BOUNDED, rec.message)
         self.assertNotEqual(rec.status, laws.FAILED)
-        self.assertEqual(rec.extra.get("k_induction"), "step-open")
-        self.assertEqual(rec.extra.get("k_induction_tried"), [1, 2])
+        # One havocked inductive step (k=1); the old k=2 re-run was subsumed by it.
+        self.assertEqual(rec.extra.get("k_induction_tried"), [1])
 
     def test_nested_ok_never_failed(self):
         from prism.bmc import k_induction

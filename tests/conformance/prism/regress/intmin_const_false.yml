@@ -1,0 +1,8 @@
+format_version: 1
+input_files: intmin_const_false.c
+language: C
+property: no-overflow
+expected:
+  intmin_const_false: false
+witness:
+  intmin_const_false: [1]

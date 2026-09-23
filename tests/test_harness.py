@@ -174,8 +174,10 @@ class TestCppHarnessKinductionSource(unittest.TestCase):
         start = src.find("Finding k_induction(")
         self.assertGreaterEqual(start, 0)
         body = src[start : start + 3500]
-        self.assertIn("step.status != laws::PROVED && step.status != laws::PROVED_UNBOUNDED", body)
-        self.assertNotIn("step.status != laws::BOUNDED && step.status != laws::PROVED", body)
+        # Only a PROVED/PROVED-UNBOUNDED havocked step closes; BOUNDED,
+        # FAILED or anything unencoded keeps the base-case BOUNDED record.
+        self.assertIn("step.status == laws::PROVED_UNBOUNDED || step.status == laws::PROVED", body)
+        self.assertNotIn("step.status == laws::BOUNDED", body)
 
 
 if __name__ == "__main__":

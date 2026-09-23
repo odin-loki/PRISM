@@ -28,10 +28,22 @@ def _is_ident(name: str) -> bool:
     return bool(re.fullmatch(r"[A-Za-z_]\w*", name))
 
 
+# Calls the BMC encoder models (bmc._model_call): a callee that only calls
+# these can still be inlined. __VERIFIER_nondet_* is matched by prefix.
+_MODELLED_CALLS = {
+    "abs", "labs", "llabs", "__builtin_expect", "rand", "__VERIFIER_assume",
+    "assume_abort_if_not", "abort", "exit", "_Exit", "quick_exit", "reach_error",
+    "__assert_fail", "__VERIFIER_error", "printLine", "printWLine", "printIntLine", "printShortLine",
+    "printLongLine", "printLongLongLine", "printSizeTLine", "printHexCharLine", "printUnsignedLine", "printHexUnsignedCharLine",
+}
+
+
 def _has_calls(body: str) -> bool:
     for m in re.finditer(r"\b([A-Za-z_]\w*)\s*\(", body or ""):
-        if m.group(1) not in _KW:
-            return True
+        n = m.group(1)
+        if n in _KW or n in _MODELLED_CALLS or n.startswith("__VERIFIER_nondet_"):
+            continue
+        return True
     return False
 
 
@@ -40,12 +52,46 @@ def _returns_value(callee: FunctionInfo) -> bool:
     return rt != "void" and not rt.endswith(" void")
 
 
+# Integer type names the BMC encoder declares (bmc._CDECL_TYPE).
+_DECL_TYPE = (
+    r"(?:(?:unsigned|signed)\s+(?:long\s+long|long|short|char|int)(?:\s+int)?|"
+    r"long\s+long(?:\s+int)?|long(?:\s+int)?|short(?:\s+int)?|"
+    r"unsigned|signed|int|char|_Bool|bool|u?int(?:8|16|32|64)_t|"
+    r"size_t|ssize_t|ptrdiff_t|u?intptr_t|u?intmax_t)"
+)
+
+
+def _callee_ret_type(callee: FunctionInfo) -> str | None:
+    """The callee's full return type, from its signature.
+
+    `return_type` keeps only the last word (`unsigned char` would read as
+    `char`). None: not a type the encoder can declare, so no inlining.
+    """
+    sig = callee.signature or ""
+    at = sig.find(callee.name + "(")
+    if at < 0:
+        at = sig.find(callee.name)
+    if at < 0:
+        return None
+    head = sig[:at]
+    head = re.sub(r"\[\[[^\]]*\]\]|\b(?:static|inline|__inline__|__inline|extern|constexpr)\b",
+                  " ", head)
+    head = " ".join(head.split())
+    if head == "void":
+        return head
+    if not re.fullmatch(_DECL_TYPE, head):
+        return None
+    return head
+
+
 def _inlineable_callee(callee: FunctionInfo) -> bool:
     if not callee.static:
         return False
     if callee.kind not in ("SCALAR", "VOID"):
         return False
     if _has_calls(callee.body):
+        return False
+    if _returns_value(callee) and _callee_ret_type(callee) is None:
         return False
     return True
 
@@ -130,20 +176,48 @@ def _take_stmt(text: str) -> tuple[str, str]:
 
 
 def _rename_params(body: str, rename: dict[str, str]) -> str:
-    out = body
-    for old, new in rename.items():
-        out = re.sub(rf"\b{re.escape(old)}\b", new, out)
-    return out
+    """One pass over the identifiers (the C++ engine's rename_params)."""
+    return re.sub(r"[A-Za-z_]\w*", lambda m: rename.get(m.group(0), m.group(0)), body)
 
 
-def _adapt_callee_body(body: str, rename: dict[str, str], ret_var: str | None) -> str:
-    body = _rename_params(body, rename)
+def _adapt_callee_body(body: str, rename: dict[str, str], ret_var: str | None) -> str | None:
+    """A `return` must leave the inlined body.
+
+    Every return becomes `{ ret = X; break; }` inside `do { ... } while (0)`.
+    A callee with its own loop or switch (where that break would bind to the
+    wrong statement) is inlined only when its single return is its last
+    top-level statement; otherwise None (not inlined).
+    """
+    body = _rename_params(body, rename).strip()
+    rets = list(re.finditer(r"\breturn\b", body))
+    if not rets:
+        return body
+    single_final = False
+    if len(rets) == 1:
+        at = rets[0].start()
+        depth = body[:at].count("{") - body[:at].count("}")
+        semi = body.find(";", at)
+        single_final = depth == 0 and semi >= 0 and not body[semi + 1:].strip()
+    if single_final:
+        if ret_var:
+            body = re.sub(r"\breturn\s+([^;]+);", lambda m: f"{ret_var} = {m.group(1)};", body)
+        return re.sub(r"\breturn\s*;", "", body).strip()
+    if re.search(r"\b(?:for|while|do|switch)\b", body):
+        return None
     if ret_var:
-        body = re.sub(r"\breturn\s+([^;]+);", rf"{ret_var} = \1;", body)
-        body = re.sub(r"\breturn\s*;", "", body)
-    else:
-        body = re.sub(r"\breturn\s*;", "", body)
-    return body.strip()
+        body = re.sub(r"\breturn\s+([^;]+);", lambda m: f"{{ {ret_var} = {m.group(1)}; break; }}", body)
+    body = re.sub(r"\breturn\s*;", "break;", body)
+    return "do {\n" + body + "\n} while (0);"
+
+
+def _add_callee_locals(body: str, prefix: str, rename: dict[str, str]) -> None:
+    """Locals the callee declares, renamed with the call-site prefix."""
+    type_words = {"int", "unsigned", "signed", "long", "short", "char", "_Bool", "bool"}
+    for m in re.finditer(r"\b" + _DECL_TYPE + r"\s+([A-Za-z_]\w*)\s*(?=[=;,\[)])", body):
+        name = m.group(1)
+        if name in type_words or name in rename:
+            continue
+        rename[name] = f"{prefix}_l_{name}"
 
 
 def _param_type(typ: str) -> str:
@@ -168,8 +242,14 @@ def _build_inline_block(
         decls.append(f"{_param_type(typ)} {temp} = {arg};")
     ret_var = f"{prefix}_ret" if _returns_value(callee) else None
     if ret_var:
-        decls.append(f"int {ret_var};")
+        rt = _callee_ret_type(callee)
+        if rt is None:
+            return None
+        decls.append(f"{rt} {ret_var};")
+    _add_callee_locals(callee.body, prefix, rename)
     adapted = _adapt_callee_body(callee.body, rename, ret_var)
+    if adapted is None:
+        return None
     parts = decls + ([adapted] if adapted else [])
     if tail:
         parts.append(tail.rstrip(";") + ";")
@@ -265,7 +345,8 @@ def _try_inline_stmt(
             prefix=prefix,
             tail=f"{lhs} = {prefix}_ret",
         )
-        return block if block else raw
+        # The declaration stays in the caller's scope; the block assigns it.
+        return f"{m.group('typ')} {lhs};\n{block}" if block else raw
 
     # callee(...);  void helper, no result use
     call = _parse_call(s, 0)

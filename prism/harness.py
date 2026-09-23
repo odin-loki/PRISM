@@ -50,9 +50,14 @@ def materialize(fn: FunctionInfo) -> FunctionInfo | None:
         return None
 
     decls: list[str] = []
-    for _, name in ptrs:
-        decls.append(f"int _h_{name}[{k}];")
-        decls.append(f"int *{name} = _h_{name};")
+    for typ, name in ptrs:
+        # The buffer has the pointee's own integer type: an `int` stand-in
+        # for a `long *` or `char *` would change every value range.
+        elem = _pointee_type(typ)
+        if elem is None:
+            return None
+        decls.append(f"{elem} _h_{name}[{k}];")
+        decls.append(f"{elem} *{name} = _h_{name};")
 
     guard = " && ".join(f"({r})" for r in reqs)
     parts = list(decls)
@@ -119,6 +124,27 @@ def run_harness_bmc(functions: list[FunctionInfo], unwind: int) -> list[Finding]
             )
         out.append(r)
     return out
+
+
+_ELEM_TYPE = re.compile(
+    r"(?:(?:unsigned|signed)\s+(?:long\s+long|long|short|char|int)(?:\s+int)?|"
+    r"long\s+long(?:\s+int)?|long(?:\s+int)?|short(?:\s+int)?|"
+    r"unsigned|signed|int|char|_Bool|bool|u?int(?:8|16|32|64)_t|"
+    r"size_t|ssize_t|ptrdiff_t|u?intptr_t|u?intmax_t)"
+)
+
+
+def _pointee_type(typ: str) -> str | None:
+    """Element type of a one-level pointer/array parameter, if the BMC
+    encoder models it (an integer type); None keeps NEEDS-HARNESS."""
+    typ = typ or ""
+    if typ.count("*") + typ.count("[") != 1:
+        return None
+    # The base type is what precedes the declarator (`char *dst`, `int a[]`).
+    t = re.split(r"[*\[]", typ, maxsplit=1)[0]
+    t = re.sub(r"\b(?:const|volatile|restrict|__restrict|__restrict__)\b", " ", t)
+    t = " ".join(t.split())
+    return t if _ELEM_TYPE.fullmatch(t) else None
 
 
 def _ptr_params(fn: FunctionInfo) -> list[tuple[str, str]]:

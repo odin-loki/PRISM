@@ -66,10 +66,20 @@ bool is_ident(std::string_view name) {
            static_cast<std::size_t>(m->spans[0].second) == name.size();
 }
 
+// Calls the BMC encoder models (bmc_encoder.inc model_call): a callee that
+// only calls these can still be inlined. __VERIFIER_nondet_* is matched by prefix.
+const std::unordered_set<std::string> kModelledCalls = {
+    "abs", "labs", "llabs", "__builtin_expect", "rand", "__VERIFIER_assume",
+    "assume_abort_if_not", "abort", "exit", "_Exit", "quick_exit", "reach_error",
+    "__assert_fail", "__VERIFIER_error", "printLine", "printWLine", "printIntLine", "printShortLine",
+    "printLongLine", "printLongLongLine", "printSizeTLine", "printHexCharLine", "printUnsignedLine", "printHexUnsignedCharLine"};
+
 bool has_calls(std::string_view body) {
     static Regex re("\\b([A-Za-z_]\\w*)\\s*\\(");
     for (auto& m : re.finditer(body)) {
-        if (!kKw.contains(m.group(1))) return true;
+        auto n = m.group(1);
+        if (kKw.contains(n) || kModelledCalls.contains(n) || n.starts_with("__VERIFIER_nondet_")) continue;
+        return true;
     }
     return false;
 }
@@ -79,10 +89,38 @@ bool returns_value(const FunctionInfo& callee) {
     return rt != "void" && !rt.ends_with(" void");
 }
 
+// Integer type names the BMC encoder declares (bmc_encoder.inc CDECL_TYPE).
+const char* kDeclType =
+    "(?:(?:unsigned|signed)\\s+(?:long\\s+long|long|short|char|int)(?:\\s+int)?|"
+    "long\\s+long(?:\\s+int)?|long(?:\\s+int)?|short(?:\\s+int)?|"
+    "unsigned|signed|int|char|_Bool|bool|u?int(?:8|16|32|64)_t|"
+    "size_t|ssize_t|ptrdiff_t|u?intptr_t|u?intmax_t)";
+
+std::string regex_sub(const Regex& re, const std::string& src, const std::string& repl);
+
+// The callee's full return type, from its signature (return_type keeps only
+// the last word: `unsigned char` would read as `char`). nullopt: not a type
+// the encoder can declare, so the callee is not inlined.
+std::optional<std::string> callee_ret_type(const FunctionInfo& callee) {
+    auto sig = callee.signature;
+    auto at = sig.find(callee.name + "(");
+    if (at == std::string::npos) at = sig.find(callee.name);
+    if (at == std::string::npos) return std::nullopt;
+    auto head = sig.substr(0, at);
+    static Regex attrs("\\[\\[[^\\]]*\\]\\]|\\b(?:static|inline|__inline__|__inline|extern|constexpr)\\b");
+    head = squeeze_ws(strip(regex_sub(attrs, head, " ")));
+    if (head == "void") return head;
+    static Regex full(std::string("^") + kDeclType + "$");
+    auto m = full.search_match(head, 0);
+    if (!m) return std::nullopt;
+    return head;
+}
+
 bool inlineable_callee(const FunctionInfo& callee) {
     if (!callee.is_static) return false;
     if (callee.kind != "SCALAR" && callee.kind != "VOID") return false;
     if (has_calls(callee.body)) return false;
+    if (returns_value(callee) && !callee_ret_type(callee)) return false;
     return true;
 }
 
@@ -207,18 +245,52 @@ std::string rename_params(const std::string& body, const std::map<std::string, s
     return out;
 }
 
-std::string adapt_callee_body(std::string body, const std::map<std::string, std::string>& rename,
-                              const std::optional<std::string>& ret_var) {
-    body = rename_params(body, rename);
+// A `return` must leave the inlined body: every return becomes
+// `{ ret = X; break; }` inside `do { ... } while (0)`. A callee with its own
+// loop or switch (where that break would bind to the wrong statement) is
+// inlined only when its single return is its last top-level statement.
+std::optional<std::string> adapt_callee_body(std::string body, const std::map<std::string, std::string>& rename,
+                                             const std::optional<std::string>& ret_var) {
+    body = strip(rename_params(body, rename));
+    static Regex ret_any("\\breturn\\b");
     static Regex ret_val("\\breturn\\s+([^;]+);");
     static Regex ret_bare("\\breturn\\s*;");
-    if (ret_var) {
-        body = regex_sub(ret_val, body, *ret_var + " = $1;");
-        body = regex_sub(ret_bare, body, "");
-    } else {
-        body = regex_sub(ret_bare, body, "");
+    static Regex loops("\\b(?:for|while|do|switch)\\b");
+    auto rets = ret_any.finditer(body);
+    if (rets.empty()) return body;
+    bool single_final = false;
+    if (rets.size() == 1) {
+        auto at = static_cast<std::size_t>(rets[0].spans[0].first);
+        int depth = 0;
+        for (std::size_t i = 0; i < at; ++i) {
+            if (body[i] == '{') ++depth;
+            else if (body[i] == '}') --depth;
+        }
+        auto semi = body.find(';', at);
+        single_final = depth == 0 && semi != std::string::npos && strip(body.substr(semi + 1)).empty();
     }
-    return strip(std::move(body));
+    if (single_final) {
+        if (ret_var) body = regex_sub(ret_val, body, *ret_var + " = $1;");
+        return strip(regex_sub(ret_bare, body, ""));
+    }
+    if (!loops.finditer(body).empty()) return std::nullopt;
+    if (ret_var) body = regex_sub(ret_val, body, "{ " + *ret_var + " = $1; break; }");
+    body = regex_sub(ret_bare, body, "break;");
+    return "do {\n" + body + "\n} while (0);";
+}
+
+// Locals the callee declares, renamed with the call-site prefix so they do
+// not collide with the caller's names.
+void add_callee_locals(const std::string& body, const std::string& prefix,
+                       std::map<std::string, std::string>& rename) {
+    static Regex decl(std::string("\\b") + kDeclType + "\\s+([A-Za-z_]\\w*)\\s*(?=[=;,\\[)])");
+    static const std::unordered_set<std::string> type_words = {
+        "int", "unsigned", "signed", "long", "short", "char", "_Bool", "bool"};
+    for (auto& m : decl.finditer(body)) {
+        auto name = m.group(1);
+        if (type_words.contains(name) || rename.count(name)) continue;
+        rename[name] = prefix + "_l_" + name;
+    }
 }
 
 std::string param_type(const std::string& typ) {
@@ -241,12 +313,16 @@ std::optional<std::string> build_inline_block(const FunctionInfo& callee,
     }
     std::optional<std::string> ret_var;
     if (returns_value(callee)) {
+        auto rt = callee_ret_type(callee);
+        if (!rt) return std::nullopt;
         ret_var = prefix + "_ret";
-        decls.push_back("int " + *ret_var + ";");
+        decls.push_back(*rt + " " + *ret_var + ";");
     }
+    add_callee_locals(callee.body, prefix, rename);
     auto adapted = adapt_callee_body(callee.body, rename, ret_var);
+    if (!adapted) return std::nullopt;
     std::vector<std::string> parts = std::move(decls);
-    if (!adapted.empty()) parts.push_back(std::move(adapted));
+    if (!adapted->empty()) parts.push_back(std::move(*adapted));
     if (!tail.empty()) {
         std::string t = tail;
         while (!t.empty() && t.back() == ';') t.pop_back();
@@ -317,7 +393,8 @@ std::string try_inline_stmt(const std::string& stmt, const FunctionInfo& fn, con
         if (strip(s.substr(call_end)) != ";") return raw;
         auto args = split_args(args_src);
         auto block = build_inline_block(*callee, args, prefix, lhs + " = " + prefix + "_ret");
-        return block ? *block : raw;
+        // The declaration stays in the caller's scope; the block assigns it.
+        return block ? m->named("typ") + " " + lhs + ";\n" + *block : raw;
     }
 
     auto call = parse_call(s, 0);

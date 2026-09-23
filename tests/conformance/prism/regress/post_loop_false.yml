@@ -1,0 +1,8 @@
+format_version: 1
+input_files: post_loop_false.c
+language: C
+property: no-div0
+expected:
+  post_loop_false: false
+witness:
+  post_loop_false: [500]
