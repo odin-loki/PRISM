@@ -50,6 +50,8 @@ KInduction.step_one_iff                    [propext, Quot.sound]
 KInduction.step_mono                       [propext, Quot.sound]
 KInduction.kinduction_strengthened         [propext, Quot.sound]
 KInduction.kinduction_rel_sound            [propext, Quot.sound]
+KInduction.kinduction_frame_sound          [propext, Quot.sound]
+KInduction.step_frame_of_step              []
 Houdini.houdini_rounds_le                  [propext, Quot.sound]
 Houdini.houdini_inductive                  [propext, Quot.sound]
 Houdini.houdini_sound                      [propext, Quot.sound]
@@ -149,6 +151,8 @@ def Step (T : S → S → Prop) (P : S → Prop) (k : Nat) : Prop :=
 | `step_mono` | `Step T P k → Step T P (k+1)`. |
 | `kinduction_strengthened` | `Base I T (P ∧ J) k → Step T (P ∧ J) k → ∀ s, Reach I T s → P s`. |
 | `kinduction_rel_sound` | `(∀ s, Reach I T s → J s) → Base I T P k → StepRel T J P k → ∀ s, Reach I T s → P s`. Here `StepRel` may assume `J` on all `k+1` window states. |
+| `kinduction_frame_sound` | `(∀ s, I s → J s) → (∀ s s', J s → P s → T s s' → J s') → Base I T P k → StepFrame T J P k → ∀ s, Reach I T s → P s`, where `StepFrame` havocs the first window state only up to `J`. This is the pir stage's step for memory-writing loops (docs/PIR.md "k-induction with memory"): `J` = memory equals the prefix's outside the loop's write footprint (initialised flags inside it only grow when every write initialises), same object table. `J`'s preservation by the C++ loop body is not proved here (it needs a frame lemma over `PrismSem/Memory.lean`, which has no initialised flags). |
+| `step_frame_of_step` | `Step T P k → StepFrame T J P k`. |
 
 ## 2. Houdini (`PrismTechniques/Houdini.lean`)
 

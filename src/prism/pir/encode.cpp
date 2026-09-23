@@ -239,12 +239,37 @@ struct EncodeFail {
     std::string msg;
 };
 
+// A memory write (store / memcpy / memset) of one block instance: the
+// object its target points into when the provenance analysis knows it
+// (SymMem::known), and whether it sets every byte it writes initialised.
+struct WriteInst {
+    int block;
+    std::optional<uint64_t> obj;
+    bool inits;
+};
+
+// Write footprint of the k-induction loop (docs/PIR.md "k-induction with
+// memory"): the objects havocked at the step's header. all = every object
+// allocated before the loop except `const` ones (a store target the
+// provenance analysis does not resolve). keep_init: every write in the loop
+// initialises what it writes, so a havocked byte's initialised flag is
+// "initialised before or arbitrary"; otherwise it is arbitrary.
+struct Footprint {
+    bool all = false;
+    std::set<uint64_t> objs;
+    bool keep_init = true;
+    bool empty() const { return !all && objs.empty(); }
+};
+
 struct Encoding {
     z3::context& c;
     const Function& fn;
     const CfgInfo& g;
     int unwind;
     int step_loop = -1;  // k-induction: havoc this loop's header phis at count 0
+    Footprint step_fp;   // ... and these objects' bytes (memory written by the loop)
+    std::size_t step_havocked = 0;
+    std::vector<WriteInst> writes;
 
     std::vector<Node> nodes;
     std::map<std::pair<int, std::vector<int>>, int> ids;
@@ -291,9 +316,26 @@ struct Encoding {
                 if (s.dst3 >= 0) m.insert_or_assign(s.dst3, ld.tagbad);
                 break;
             }
-            case Stmt::Store: M().store(r, arg(0), arg(1), s.args[1].width, arg(2), s.tag); break;
-            case Stmt::MemCpy: M().copy(r, arg(0), arg(1), arg(2)); break;
-            case Stmt::MemSet: M().set(r, arg(0), arg(1), arg(2)); break;
+            case Stmt::Store: {
+                auto p = arg(0);
+                auto& in = s.args[2];
+                bool inits = in.is_const && in.bits == wmask(in.width);
+                writes.push_back(WriteInst{nodes[static_cast<std::size_t>(id)].block, M().known(p), inits});
+                M().store(r, p, arg(1), s.args[1].width, arg(2), s.tag);
+                break;
+            }
+            case Stmt::MemCpy: {
+                auto p = arg(0);
+                writes.push_back(WriteInst{nodes[static_cast<std::size_t>(id)].block, M().known(p), false});
+                M().copy(r, p, arg(1), arg(2));
+                break;
+            }
+            case Stmt::MemSet: {
+                auto p = arg(0);
+                writes.push_back(WriteInst{nodes[static_cast<std::size_t>(id)].block, M().known(p), true});
+                M().set(r, p, arg(1), arg(2));
+                break;
+            }
             case Stmt::StackSave: m.insert_or_assign(s.dst, M().stack_save()); break;
             case Stmt::StackRestore: M().stack_restore(r, arg(0)); break;
             default: break;
@@ -721,6 +763,12 @@ struct Encoding {
         }
         bool havoc_phis = step_loop >= 0 && nd.block == g.loops[static_cast<std::size_t>(step_loop)].header &&
                           !nd.ctx.empty() && nd.ctx.back() == 0;
+        if (havoc_phis && mem && !step_fp.empty()) {
+            // the memory the loop may have written since the prefix: arbitrary
+            std::vector<uint64_t> ids(step_fp.objs.begin(), step_fp.objs.end());
+            step_havocked = mem->havoc_objects(reach[static_cast<std::size_t>(id)], ids, step_fp.all,
+                                               step_fp.keep_init);
+        }
         std::vector<std::pair<int, z3::expr>> phi_vals;
         for (auto& p : bl.phis) {
             unsigned w = fn.vars[static_cast<std::size_t>(p.dst)].width;
@@ -813,36 +861,96 @@ std::vector<char> post_loop_blocks(const CfgInfo& g, int L) {
     return after;
 }
 
-// k-induction step for the single loop L: from an arbitrary header state,
-// k violation-free iterations that loop back imply iteration k (and the code
-// after the loop) is violation-free. true = step closed.
-std::optional<bool> kinduction_step(const Function& fn, const CfgInfo& g, int k, unsigned timeout_ms) {
-    z3::context c;
-    Encoding e(c, fn, g, k + 1);
-    e.step_loop = 0;
-    e.build();
-    auto after = post_loop_blocks(g, 0);
-    std::vector<z3::expr> goal;
-    z3::solver s(c);
-    s.set("timeout", timeout_ms);
-    add_all(s, e.assumptions);
-    for (auto& p : e.props) {
-        auto& nd = e.nodes[static_cast<std::size_t>(p.node)];
-        if (!nd.ctx.empty()) {
-            if (nd.ctx[0] < k) s.add(!p.viol);
-            else goal.push_back(p.viol);
-        } else if (after[static_cast<std::size_t>(nd.block)]) {
-            goal.push_back(p.viol);
-        }
+// Loop footprint check: every write of a loop-body block instance in `e`
+// goes to an object of fp (or fp.all). Provenance is structural (allocation
+// results, checked pointer arithmetic, phis that agree), never read from
+// memory or from the havocked header phis, so a target it knows in the
+// step encoding is the target of that write in every iteration of every
+// violation-free run. keep_init needs every write to initialise its bytes.
+bool footprint_covers(const Footprint& fp, const std::vector<WriteInst>& writes, const std::vector<char>& body) {
+    for (auto& w : writes) {
+        if (!body[static_cast<std::size_t>(w.block)]) continue;
+        if (fp.keep_init && !w.inits) return false;
+        if (fp.all) continue;
+        if (!w.obj || !fp.objs.count(*w.obj)) return false;
     }
-    auto hk = e.ids.find({g.loops[0].header, std::vector<int>{k}});
-    if (hk == e.ids.end()) return true;  // header@k unreachable in the unrolling: nothing to show
-    s.add(e.reach[static_cast<std::size_t>(hk->second)]);
-    s.add(any_of(c, goal));
-    auto r = s.check();
-    if (r == z3::unsat) return true;
-    if (r == z3::sat) return false;
-    return std::nullopt;
+    return true;
+}
+
+// Footprint of the loop from the writes of an encoding of the function.
+Footprint footprint_of(const std::vector<WriteInst>& writes, const std::vector<char>& body) {
+    Footprint fp;
+    for (auto& w : writes) {
+        if (!body[static_cast<std::size_t>(w.block)]) continue;
+        if (!w.inits) fp.keep_init = false;
+        if (w.obj) fp.objs.insert(*w.obj);
+        else fp.all = true;
+    }
+    if (fp.all) fp.objs.clear();
+    return fp;
+}
+
+struct StepAnswer {
+    std::optional<bool> closed;  // true = step closed, false = open, nullopt = unknown
+    Footprint fp;                // footprint actually havocked
+    std::size_t havocked = 0;    // objects havocked
+};
+
+// k-induction step for the single loop L: from an arbitrary header state
+// (header phis and the bytes of the loop's write footprint havocked), k
+// violation-free iterations that loop back imply iteration k (and the code
+// after the loop) is violation-free.
+//
+// Memory (docs/PIR.md "k-induction with memory"): the prefix is encoded
+// concretely, then at the header every byte of every object in the loop's
+// write footprint gets an arbitrary value (and an arbitrary or
+// "old | arbitrary" initialised flag). The loop allocates and frees nothing
+// (checked by the caller), so on every run the memory at any header visit
+// is the prefix's except in those bytes: the havocked state covers it. The
+// footprint comes from the caller's encoding and is re-checked on the step
+// encoding; if it does not cover a write there, the step is re-encoded with
+// every object havocked (sound for any write target: a store that reports
+// no violation writes an object that exists at the header).
+StepAnswer kinduction_step(const Function& fn, const CfgInfo& g, int k, unsigned timeout_ms, Footprint fp,
+                           const EncodeOptions& eo) {
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        z3::context c;
+        Encoding e(c, fn, g, k + 1, eo);
+        e.step_loop = 0;
+        e.step_fp = fp;
+        e.build();
+        if (!footprint_covers(fp, e.writes, g.loops[0].body)) {
+            if (attempt == 1) return StepAnswer{std::nullopt, fp, e.step_havocked};  // cannot happen: all covers
+            auto more = footprint_of(e.writes, g.loops[0].body);
+            fp.all = true;
+            fp.objs.clear();
+            fp.keep_init = fp.keep_init && more.keep_init;
+            continue;
+        }
+        auto after = post_loop_blocks(g, 0);
+        std::vector<z3::expr> goal;
+        z3::solver s(c);
+        s.set("timeout", timeout_ms);
+        add_all(s, e.assumptions);
+        for (auto& p : e.props) {
+            auto& nd = e.nodes[static_cast<std::size_t>(p.node)];
+            if (!nd.ctx.empty()) {
+                if (nd.ctx[0] < k) s.add(!p.viol);
+                else goal.push_back(p.viol);
+            } else if (after[static_cast<std::size_t>(nd.block)]) {
+                goal.push_back(p.viol);
+            }
+        }
+        auto hk = e.ids.find({g.loops[0].header, std::vector<int>{k}});
+        if (hk == e.ids.end()) return StepAnswer{true, fp, e.step_havocked};  // header@k unreachable: nothing to show
+        s.add(e.reach[static_cast<std::size_t>(hk->second)]);
+        s.add(any_of(c, goal));
+        auto r = s.check();
+        if (r == z3::unsat) return StepAnswer{true, fp, e.step_havocked};
+        if (r == z3::sat) return StepAnswer{false, fp, e.step_havocked};
+        return StepAnswer{std::nullopt, fp, e.step_havocked};
+    }
+    return StepAnswer{std::nullopt, fp, 0};
 }
 
 }  // namespace
@@ -1125,26 +1233,26 @@ Verdict check_function(const Function& fn, const CheckOptions& opt) {
             v.extra["k_induction"] = g.loops.empty() ? "not-needed" : "multiple-loops";
             return finish(v);
         }
+        Footprint fp;
         if (fn.uses_memory) {
-            // The step case havocs only the header phis. That is sound only
-            // when the loop leaves memory unchanged: then the memory at every
-            // iteration is the one the (concretely encoded) prefix reached.
-            // A loop that writes, allocates or frees is not attempted (a
-            // BOUNDED result stays BOUNDED, Law 2; docs/PIR.md).
-            bool writes = false;
+            // The step case havocs the header phis and the loop's write
+            // footprint (docs/PIR.md "k-induction with memory"). A loop that
+            // allocates, frees or restores the stack is not attempted: the
+            // number and liveness of objects would change across iterations,
+            // which the havoc does not cover (BOUNDED stays BOUNDED, Law 2).
+            bool allocs = false;
             const auto& body = g.loops[0].body;
-            for (std::size_t b = 0; b < body.size() && !writes; ++b) {
+            for (std::size_t b = 0; b < body.size() && !allocs; ++b) {
                 if (!body[b]) continue;
                 for (auto& s : fn.blocks[b].stmts)
-                    if (s.kind != Stmt::Assign && s.kind != Stmt::Check && s.kind != Stmt::Assume &&
-                        s.kind != Stmt::Load)
-                        writes = true;
+                    if (s.kind == Stmt::Alloc || s.kind == Stmt::Free || s.kind == Stmt::StackRestore) allocs = true;
             }
-            if (writes) {
-                v.extra["k_induction"] = "not-attempted (memory written in the loop)";
+            if (allocs) {
+                v.extra["k_induction"] = "not-attempted (allocation or free in the loop)";
                 return finish(v);
             }
-            v.extra["k_induction_memory"] = "read-only loop";
+            fp = footprint_of(e.writes, body);
+            v.extra["k_induction_memory"] = fp.empty() ? "read-only loop" : "write footprint havocked";
         }
         // The k-induction step is not a property VC: Z3 answers it in-process,
         // and PROVED-UNBOUNDED is never certified (docs/PIR.md "Solving").
@@ -1152,8 +1260,17 @@ Verdict check_function(const Function& fn, const CheckOptions& opt) {
         for (int k : {1, 2}) {
             if (k > unwind) break;
             tried.push_back(std::to_string(k));
-            auto closed = kinduction_step(fn, g, k, timeout_ms);
+            auto ans = kinduction_step(fn, g, k, timeout_ms, fp, eo);
+            auto& closed = ans.closed;
             v.extra["k_induction_tried"] = join_s(tried, ",");
+            if (!ans.fp.empty()) {
+                v.extra["k_induction_footprint"] =
+                    (ans.fp.all ? std::string("every object allocated before the loop (a store target is not "
+                                              "resolved)")
+                                : std::to_string(ans.fp.objs.size()) + " object(s)") +
+                    ": " + std::to_string(ans.havocked) + " havocked; initialised flags " +
+                    (ans.fp.keep_init ? "old or arbitrary" : "arbitrary");
+            }
             if (closed && *closed) {
                 v.status = std::string(laws::PROVED_UNBOUNDED);
                 v.message = "k-induction step closed at k=" + std::to_string(k) + "; not a bounded-only result";

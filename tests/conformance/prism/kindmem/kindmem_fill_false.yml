@@ -1,0 +1,10 @@
+format_version: 1
+input_files: kindmem_fill_false.c
+language: C
+property: memsafety
+expected:
+  kindmem_fill_false: false
+witness:
+  kindmem_fill_false: [20, 1]
+sanitizer_blind:
+  - kindmem_fill_false

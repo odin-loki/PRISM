@@ -226,7 +226,9 @@ PIR3_EXPECTED: dict[tuple[str, str], tuple[str, str]] = {
     ("asm_contract.c", "asm_bad"): (laws.FAILED, "MEM-OOB-READ"),
     # k-induction for read-only loops of functions with memory (docs/PIR.md)
     ("kind_mem.c", "kind_mem_read_closed"): (laws.PROVED_UNBOUNDED, ""),
-    ("kind_mem.c", "kind_mem_write_bounded"): (laws.BOUNDED, ""),
+    ("kind_mem.c", "kind_mem_write_closed"): (laws.PROVED_UNBOUNDED, ""),
+    ("kind_mem.c", "kind_mem_write_uninit"): (laws.BOUNDED, ""),
+    ("kind_mem.c", "kind_mem_free_bounded"): (laws.BOUNDED, ""),
     ("kind_mem.c", "kind_mem_read_bad"): (laws.FAILED, "MEM-OOB-READ"),
 }
 
@@ -357,8 +359,13 @@ class TestPirStage(unittest.TestCase):
         self.assertIn("sin", got[("fp_arith.c", "fp_sin_ok")]["extra"]["libm_unconstrained"])
         self.assertRegex(got[("fp_arith.c", "fp_cast_bad")]["counterexample"], r"^d=")
         self.assertEqual(got[("kind_mem.c", "kind_mem_read_closed")]["extra"]["k_induction_memory"], "read-only loop")
-        self.assertEqual(got[("kind_mem.c", "kind_mem_write_bounded")]["extra"]["k_induction"],
-                         "not-attempted (memory written in the loop)")
+        # a memory-writing loop: the step havocs its write footprint (docs/PIR.md)
+        w = got[("kind_mem.c", "kind_mem_write_closed")]["extra"]
+        self.assertEqual(w["k_induction_memory"], "write footprint havocked")
+        self.assertIn("initialised flags old or arbitrary", w["k_induction_footprint"])
+        self.assertEqual(got[("kind_mem.c", "kind_mem_write_uninit")]["extra"]["k_induction"], "step-open")
+        self.assertEqual(got[("kind_mem.c", "kind_mem_free_bounded")]["extra"]["k_induction"],
+                         "not-attempted (allocation or free in the loop)")
 
     def test_fp_checks_are_opt_in(self):
         on = self._verdicts(self._run("--fp-checks"))
