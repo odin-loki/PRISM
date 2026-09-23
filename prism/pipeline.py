@@ -57,6 +57,7 @@ STAGE_ORDER = [
     "contracts",
     "wp",
     "bmc",
+    "pir",
     "harness",
     "concolic",
     "fuzz",
@@ -86,6 +87,7 @@ EXEC_STAGES: dict[str, str] = {
     "pbsd": "part",        # imports the configured ParanoidBSD tools/verify modules
     "sanitize": "whole",   # compiles + runs `// prism: run` functions under ASan/UBSan/TSan
     "optional": "part",    # klee (native external calls), tree-local .cocci scripts
+    "pir": "part",         # C++ engine: Clang->PIR->Z3 runs; lli translation validation does not
     "polyglot": "part",    # perl -c, cargo clippy, eslint (Tool.executes)
     "fuzz": "part",        # concrete oracle runs; compiled harness / AFL++ / libFuzzer do not
     "diff": "whole",       # compiles + runs both functions
@@ -94,6 +96,21 @@ EXEC_STAGES: dict[str, str] = {
     "execute": "part",     # concrete cex replay runs; LLM-written C does not
     "repair": "whole",     # compiles + runs LLM-written candidates
 }
+
+
+def run_pir_notrun() -> list[Finding]:
+    """The pir stage (Clang -> LLVM IR -> PIR -> Z3) exists only in the C++ engine.
+
+    Roadmap D8 freezes this engine as a differential oracle, so it keeps the
+    stage in STAGE_ORDER and says in one NOTRUN row that it did not run it
+    (Law 7), instead of skipping it quietly.
+    """
+    return [Finding(
+        stage="pir", status=laws.NOTRUN, file="", function=None, line=None, cls="",
+        message="C++ engine only (Python engine frozen as oracle, roadmap D8)",
+        strength=laws.STRENGTH_PROVES,
+        extra={"install": "run the C++ engine (build/prism) for the pir stage"},
+    )]
 
 
 def exec_gate_note(stage: str, findings: list[Finding], what: str) -> list[Finding]:
@@ -316,6 +333,7 @@ class Pipeline:
             return run_bmc(inline_static(functions), cfg.unwind)
 
         bmc_rec = self._stage("bmc", bmc)
+        self._stage("pir", run_pir_notrun)
         self._stage("harness", lambda: run_harness_bmc(functions, cfg.unwind))
         self._stage("concolic", lambda: run_concolic(functions, budget=32))
 
