@@ -5,7 +5,7 @@ Roadmap Part 2.7. Run with `python tools/conformance.py` (see
 
 ## `prism/` — in-house tasks (this repository)
 
-218 single-function tasks written for PRISM, one `.c`/`.cpp` file plus a
+252 single-function tasks written for PRISM, one `.c`/`.cpp` file plus a
 `.yml` sidecar each, grouped by feature/UB class:
 
 | directory | what it covers |
@@ -20,6 +20,7 @@ Roadmap Part 2.7. Run with `python tools/conformance.py` (see
 | `macro/` | `INT_MAX`/`INT_MIN`, `#define` bounds and function-like macros (the engine has no preprocessor) |
 | `c23/` | `bool`, binary literals, digit separators, `typeof`, `[[attributes]]`, one-argument `static_assert`, `ckd_add`, `_BitInt`, empty initialisers, `nullptr`, enums with a fixed underlying type |
 | `cxx/` | C++23: `constexpr`, trailing return types, templates, lambdas, `std::abs`, `if consteval`, `std::array`, C++20 shift semantics, `std::midpoint`, reference parameters, range-for, structured bindings, `[[assume]]` |
+| `regress/` | one `_true`/`_false` pair per encoder soundness bug fixed after the first measurement (docs/CONFORMANCE.md "Known issues"): call arguments, `INT_MIN` constant, promoted comparisons, helper early return, loop early exit / break / continue, dangling else, code after a loop under k-induction, uncomputable enumerators, cast aliasing, side effects under `?:`/`&&`, downward `+` overflow, `long long` width, mixed widths |
 
 Every feature has a `_true` variant (no undefined behaviour for any input)
 and a `_false` variant (a violation exists). `false` tasks carry a `witness`
