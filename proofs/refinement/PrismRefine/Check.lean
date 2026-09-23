@@ -76,6 +76,8 @@ def pop? (s : String) : Option POp :=
 
 def opnd? (s : String) : Except String Opnd :=
   if s == "poison" then .ok .poison
+  else if s == "undef" then
+    .error "undef operand outside freeze (a set of values each use picks from; not modelled)"
   else if s.startsWith "%" then .ok (.reg (s.drop 1).toString)
   else if s.startsWith "#" then do
     let n ← nat? (s.drop 1).toString
@@ -409,7 +411,7 @@ def checkAll (r : Record) : Verdict × String :=
   match check r with
   | (.outside, e) =>
     match checkX r with
-    | (.outside, e') => (.outside, if e'.startsWith "unsupported" then e' else e ++ "; extended: " ++ e')
+    | (.outside, e') => (.outside, if e' == e then e else s!"{e'} (base fragment: {e})")
     | v => v
   | v => v
 

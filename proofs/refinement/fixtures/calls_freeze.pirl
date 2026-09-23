@@ -1,0 +1,170 @@
+func caller
+L depth 4
+L params 1 x 32
+L ret 32
+L block entry
+L freeze %f 32 undef
+L freeze %g 32 %x
+L icmp %c sgt 32 %g #100
+L cbr %c big small
+L block big
+L call - 0 nop 1 %f 32
+L call %d 32 inc 1 %f 32
+L ret #0
+L block small
+L call %t 32 twice 1 %g 32
+L bin %s add - 32 %t %f
+L ret %s
+L fn nop
+L params 1 x 32
+L ret 0
+L block entry
+L icmp %u slt 32 %x #0
+L cbr %u a b
+L block a
+L ret -
+L block b
+L ret -
+L fn inc
+L params 1 x 32
+L ret 32
+L block entry
+L bin %r add nsw 32 %x #1
+L ret %r
+L fn twice
+L params 1 x 32
+L ret 32
+L block entry
+L call %a 32 inc 1 %x 32
+L call %b 32 inc 1 %a 32
+L ret %b
+status ok
+P vars 21 32 32 32 1 32 32 32 32 1 4 32 1 4 32 32 4 32 1 4 32 1
+P params 1 0
+P retw 32
+P block
+P havoc 7
+P assign 1 copy 1 v7:32
+P assign 2 copy 1 v0:32
+P assign 3 sgt 2 v2:32 c32:100
+P br v3:1 1 2
+P block
+P jmp 4
+P block
+P jmp 10
+P block
+P jmp 8
+P block
+P assign 8 slt 2 v1:32 c32:0
+P br v8:1 5 6
+P block
+P jmp 3
+P block
+P jmp 3
+P block
+P phi 9 1 8 c4:0
+P phi 4 1 8 v10:32
+P ret c32:0
+P block
+P assign 11 sadd.ovf 2 v1:32 c32:1
+P check v11:1 ovf+ INT-SIGNED-OVF
+P assign 10 add 2 v1:32 c32:1
+P jmp 7
+P block
+P phi 12 1 13 c4:0
+P phi 5 1 13 v14:32
+P assign 6 add 2 v5:32 v1:32
+P ret v6:32
+P block
+P jmp 12
+P block
+P phi 15 1 12 c4:0
+P phi 13 1 12 v16:32
+P jmp 14
+P block
+P assign 17 sadd.ovf 2 v2:32 c32:1
+P check v17:1 ovf+ INT-SIGNED-OVF
+P assign 16 add 2 v2:32 c32:1
+P jmp 11
+P block
+P phi 18 1 14 c4:0
+P phi 14 1 14 v19:32
+P jmp 9
+P block
+P assign 20 sadd.ovf 2 v13:32 c32:1
+P check v20:1 ovf+ INT-SIGNED-OVF
+P assign 19 add 2 v13:32 c32:1
+P jmp 13
+end
+func frz_poison
+L params 1 x 32
+L ret 32
+L block entry
+L freeze %f 32 poison
+L bin %y add - 32 %f %x
+L ret %y
+status ok
+P vars 4 32 32 32 32
+P params 1 0
+P retw 32
+P block
+P check c1:1 poison UB-POISON
+P havoc 3
+P assign 1 copy 1 v3:32
+P assign 2 add 2 v1:32 v0:32
+P ret v2:32
+end
+func undef_use
+L params 1 x 32
+L ret 32
+L block entry
+L bin %y add - 32 %x undef
+L ret %y
+status ok
+P vars 3 32 32 32
+P params 1 0
+P retw 32
+P block
+P havoc 2
+P assign 1 add 2 v0:32 v2:32
+P ret v1:32
+end
+func twice
+L depth 4
+L params 1 x 32
+L ret 32
+L block entry
+L call %a 32 inc 1 %x 32
+L call %b 32 inc 1 %a 32
+L ret %b
+L fn inc
+L params 1 x 32
+L ret 32
+L block entry
+L bin %r add nsw 32 %x #1
+L ret %r
+status ok
+P vars 9 32 32 32 4 32 1 4 32 1
+P params 1 0
+P retw 32
+P block
+P jmp 2
+P block
+P phi 3 1 2 c4:0
+P phi 1 1 2 v4:32
+P jmp 4
+P block
+P assign 5 sadd.ovf 2 v0:32 c32:1
+P check v5:1 ovf+ INT-SIGNED-OVF
+P assign 4 add 2 v0:32 c32:1
+P jmp 1
+P block
+P phi 6 1 4 c4:0
+P phi 2 1 4 v7:32
+P ret v2:32
+P block
+P assign 8 sadd.ovf 2 v1:32 c32:1
+P check v8:1 ovf+ INT-SIGNED-OVF
+P assign 7 add 2 v1:32 c32:1
+P jmp 3
+end

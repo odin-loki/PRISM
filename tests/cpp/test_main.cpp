@@ -5074,6 +5074,91 @@ TEST_CASE("pir: poison flowing into a phi is a checked violation (refinement gap
     CHECK(poison_checks == 1);
 }
 
+// IR with freeze (of undef, of poison, of a register) and direct calls (nested,
+// void, result unused): the extended fragment of the Lean refinement proof
+// (proofs/refinement/PrismRefine/X*.lean). proofs/refinement/fixtures/calls_freeze.pirl
+// is this test's export (run `prism_tests -tc='pir: lean export*' -s`).
+const char* kLeanExtIr = R"IR(
+define internal i32 @inc(i32 %x) {
+entry:
+  %r = add nsw i32 %x, 1
+  ret i32 %r
+}
+define internal void @nop(i32 %x) {
+entry:
+  %u = icmp slt i32 %x, 0
+  br i1 %u, label %a, label %b
+a:
+  ret void
+b:
+  ret void
+}
+define internal i32 @twice(i32 %x) {
+entry:
+  %a = call i32 @inc(i32 %x)
+  %b = call i32 @inc(i32 %a)
+  ret i32 %b
+}
+define i32 @caller(i32 %x) {
+entry:
+  %f = freeze i32 undef
+  %g = freeze i32 %x
+  %c = icmp sgt i32 %g, 100
+  br i1 %c, label %big, label %small
+big:
+  call void @nop(i32 %f)
+  %d = call i32 @inc(i32 %f)
+  ret i32 0
+small:
+  %t = call i32 @twice(i32 %g)
+  %s = add i32 %t, %f
+  ret i32 %s
+}
+define i32 @frz_poison(i32 %x) {
+entry:
+  %f = freeze i32 poison
+  %y = add i32 %f, %x
+  ret i32 %y
+}
+define i32 @undef_use(i32 %x) {
+entry:
+  %y = add i32 %x, undef
+  ret i32 %y
+}
+)IR";
+
+TEST_CASE("pir: lean export of freeze, undef and direct calls") {
+    namespace fs = std::filesystem;
+    auto m = prism::pir::ir::parse_module(kLeanExtIr);
+    fs::path dir = fs::temp_directory_path() / "prism-lean-export";
+    fs::remove_all(dir);
+    ::setenv("PRISM_PIR_LEAN_EXPORT", dir.string().c_str(), 1);
+    prism::pir::TranslateOptions opt;
+    for (const char* name : {"caller", "frz_poison", "undef_use", "twice"}) {
+        const auto* f = m.find(name);
+        REQUIRE(f != nullptr);
+        auto t = prism::pir::translate(m, *f, opt);
+        CHECK(t.fn.has_value());
+        prism::pir::export_lean_pair(dir, "unit", m, *f, opt, t);
+    }
+    ::unsetenv("PRISM_PIR_LEAN_EXPORT");
+    std::ifstream in(dir / "unit.pirl");
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    MESSAGE(text);
+    CHECK(text.find("L freeze %f 32 undef\n") != std::string::npos);
+    CHECK(text.find("L freeze %g 32 %g") == std::string::npos);
+    CHECK(text.find("L freeze %g 32 %x\n") != std::string::npos);
+    CHECK(text.find("L freeze %f 32 poison\n") != std::string::npos);
+    CHECK(text.find("L call - 0 nop 1 %f 32\n") != std::string::npos);
+    CHECK(text.find("L call %t 32 twice 1 %g 32\n") != std::string::npos);
+    CHECK(text.find("L fn twice\n") != std::string::npos);
+    CHECK(text.find("L fn inc\n") != std::string::npos);
+    CHECK(text.find("L depth 4\n") != std::string::npos);
+    // undef outside freeze is exported; the Lean checker refuses it
+    CHECK(text.find("L bin %y add - 32 %x undef\n") != std::string::npos);
+    fs::remove_all(dir);
+}
+
 TEST_CASE("pir: unmodelled constructs are named, pointer params are Law 6") {
     auto t = pir_of("define i32 @g(ptr %p) {\nentry:\n  %v = load i32, ptr %p\n  ret i32 %v\n}\n", "g");
     CHECK_FALSE(t.fn.has_value());

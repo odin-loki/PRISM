@@ -11,3 +11,9 @@ import PrismRefine.XLlvm
 import PrismRefine.XPir
 import PrismRefine.XTranslate
 import PrismRefine.XValid
+import PrismRefine.XRefine
+import PrismRefine.XValidSpec
+import PrismRefine.XStep
+import PrismRefine.XRun
+import PrismRefine.XLazy
+import PrismRefine.XSound

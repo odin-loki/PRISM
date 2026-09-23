@@ -48,6 +48,26 @@ open PrismRefine
 #print axioms emit_all
 #print axioms inst_lift
 #print axioms run_lift
+-- M9 extended fragment: freeze, undef under freeze, direct calls (inlined),
+-- for every certificate that passes the executable check `validB`
+#print axioms translateX_exact
+#print axioms strict_lazyX
+#print axioms pir_sound_x
+#print axioms pir_sound_all_x
+#print axioms pir_faithful_ret_x
+#print axioms pir_faithful_fail_x
+#print axioms pir_faithful_fuel_x
+#print axioms pir_no_stop_x
+#print axioms sinstX_sim
+#print axioms sinstsX_sim
+#print axioms phisX_sim
+#print axioms enter_sim
+#print axioms argsX_osim
+#print axioms step_sim
+#print axioms run_simX
+#print axioms step_lift
+#print axioms run_liftX
+#print axioms validB_facts
 -- Part 8.2 "Floating point" (stretch): IEEE binary formats, correctly rounded addition
 #print axioms PrismRefine.Float.roundU_repr
 #print axioms PrismRefine.Float.roundU_nearest

@@ -1,0 +1,38 @@
+func twice
+L depth 4
+L params 1 x 32
+L ret 32
+L block entry
+L call %a 32 inc 1 %x 32
+L call %b 32 inc 1 %a 32
+L ret %b
+L fn inc
+L params 1 x 32
+L ret 32
+L block entry
+L bin %r add nsw 32 %x #1
+L ret %r
+status ok
+P vars 9 32 32 32 4 32 1 4 32 1
+P params 1 0
+P retw 32
+P block
+P jmp 2
+P block
+P phi 3 1 2 c4:0
+P phi 1 1 2 v4:32
+P jmp 4
+P block
+P assign 5 sadd.ovf 2 v0:32 c32:1
+P assign 4 add 2 v0:32 c32:1
+P jmp 1
+P block
+P phi 6 1 4 c4:0
+P phi 2 1 4 v7:32
+P ret v2:32
+P block
+P assign 8 sadd.ovf 2 v1:32 c32:1
+P check v8:1 ovf+ INT-SIGNED-OVF
+P assign 7 add 2 v1:32 c32:1
+P jmp 3
+end
