@@ -94,6 +94,11 @@ set(PRISM_SRC
   src/prism/laws.cpp
   src/prism/models.cpp
   src/prism/pipeline.cpp
+  src/prism/pir/encode.cpp
+  src/prism/pir/ir_parser.cpp
+  src/prism/pir/pir.cpp
+  src/prism/pir/stage.cpp
+  src/prism/pir/translate.cpp
   src/prism/polyglot.cpp
   src/prism/regex.cpp
   src/prism/sandbox.cpp
