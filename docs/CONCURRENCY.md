@@ -181,6 +181,31 @@ single place where non-scalar shared data becomes `NEEDS-HARNESS` today.
 
 ## Correspondence with the Lean proof
 
+**`N` threads, `K` rounds.** `proofs/techniques/PrismTechniques/LazySeqN.lean`
+(docs/PROOFS_TECHNIQUES.md §5b) models the schedule this stage runs:
+`prismSched N K` = `K` rounds of `T0 … T(N−1)` plus `T0`'s final slot
+(`tests/test_proofs_float_conc.py` locks it to `lazy.cpp`). A thread there is
+any transition system on its local state (`pc`, locals) and the shared state,
+so the unrolled thread DAG with its node labels is an instance. Proved, under
+sequential consistency:
+
+- `lazy_sound`: every run of the sequentialised program is a real
+  interleaving with `K·N` switches, so a `FAILED` schedule is real (modulo
+  items 5–8 below);
+- `lazy_covers`: every interleaving from `T0` with at most `K − 1` context
+  switches in total is covered; `lazy_covers_runs`: more generally every
+  schedule that splits into at most `K` increasing runs of thread ids;
+- `lazy_covers_two`: with two threads (`T0` and one created thread), every
+  interleaving with at most `2K` switches is covered;
+- `per_thread_bound_not_enough`: for `N ≥ 3`, a bound on switches *per
+  thread* is **not** enough. With `N = 3`, `K = 1`, the schedule `T0, T2, T1`
+  (nobody preempted) reaches a state no run of `T0 T1 T2 T0` reaches. A
+  `BOUNDED` verdict covers only schedules of round-robin shape.
+
+Items 1–4 below are therefore covered by `LazySeqN` (item 4: loops inside a
+thread are allowed; cutting paths past `unwind` only loses interleavings).
+Items 5–9 remain outside any proof. The older two-thread proof follows.
+
 `proofs/techniques/PrismTechniques/LazySeq.lean` (docs/PROOFS_TECHNIQUES.md
 §5) proves the following, for **two** threads, each a **straight-line list
 of atomic actions** `G → G → Prop` (actions may be nondeterministic or

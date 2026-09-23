@@ -4,7 +4,9 @@ This document covers the Lean project `proofs/techniques/`. It proves that the
 *algorithms and designs* behind several PRISM verdicts are sound. These are
 roadmap 5.4 (bit-blaster) and the 8.2 rows "k-induction", "Houdini invariant
 filter", "Contracts and PROVED-ASSUMING", "Bit-blaster", "Concurrency (lazy
-sequentialisation)" and, in part, "Floating point".
+sequentialisation)" and, in part, "Floating point" (the rounding kernel; the
+IEEE operations, exception flags and PRISM's floating-point checks are in
+`proofs/refinement`, [PROOFS_REFINEMENT.md](PROOFS_REFINEMENT.md)).
 
 It is a separate Lake project from `proofs/` (verdict lattice) and
 `proofs/semantics/` (PIR semantics). It has its own toolchain and no
@@ -102,6 +104,17 @@ Bitblast.denote_eq_denoteExec              [propext, Quot.sound]
 LazySeq.lazy_seq_covers                    [propext, Quot.sound]
 LazySeq.lazy_seq_sound                     [propext, Quot.sound]
 LazySeq.lazy_seq_reach_iff                 [propext, Quot.sound]
+LazySeqN.slots_of_star                     [propext, Quot.sound]
+LazySeqN.star_of_slots                     [propext, Quot.sound]
+LazySeqN.slots_mono                        [propext, Quot.sound]
+LazySeqN.length_prismSched                 [propext]
+LazySeqN.rr_covers_runs                    [propext, Classical.choice, Quot.sound]
+LazySeqN.lazy_sound                        [propext, Quot.sound]
+LazySeqN.lazy_covers_runs                  [propext, Classical.choice, Quot.sound]
+LazySeqN.lazy_covers                       [propext, Classical.choice, Quot.sound]
+LazySeqN.lazy_between                      [propext, Classical.choice, Quot.sound]
+LazySeqN.lazy_covers_two                   [propext, Classical.choice, Quot.sound]
+LazySeqN.per_thread_bound_not_enough       [propext, Quot.sound]
 FloatRound.rne_exact                       [propext, Quot.sound]
 FloatRound.rne_half_ulp                    [propext, Quot.sound]
 FloatRound.rne_nearest                     [propext, Quot.sound]
@@ -392,13 +405,65 @@ Several things are not modelled:
 | `lazy_seq_sound` | `0 < K → SeqLR K e1 e2 g0 g' → ∃ c sw, sw + 1 ≤ 2*K ∧ Star ⟨e1 ++ q1, e2 ++ q2, g0, true, 0⟩ ⟨q1, q2, g', c, sw⟩`. There are no spurious runs. |
 | `lazy_seq_reach_iff` | For `0 < K`: a state is reachable within the switch bound **iff** the sequentialised program reaches it. |
 
-## 6. Floating point (stretch, small piece) (`PrismTechniques/FloatRound.lean`)
+## 5b. Lazy sequentialisation: `N` threads, `K` rounds (`PrismTechniques/LazySeqN.lean`)
 
-**Why the full row is out of reach.** It would need an IEEE 754 library on
-the scale of Flocq. That means formats with exponent ranges, subnormals,
-overflow, signed zeros, NaNs and all rounding modes, plus the real-valued
-semantics of every operation. Core Lean has none of this, and building it is
-research-scale.
+This is the schedule the `conc` stage runs (`src/prism/conc/lazy.cpp`,
+[CONCURRENCY.md](CONCURRENCY.md)): `K` rounds in which threads `0, 1, …, N-1`
+each get one slot, then one final slot for the harness `T0`.
+`tests/test_proofs_float_conc.py` locks `prismSched` to the loops in
+`lazy.cpp` and to its `context_switch_bound = rounds * N`.
+
+**Model (sequential consistency).**
+
+- A thread `t` has a local state `L` (its `pc` and locals) and takes atomic
+  steps `S t l g l' g'` on the shared state `G`. A step is any relation, so
+  nondeterminism, blocking `assume`s (locks, joins), branches and loops are
+  all allowed. Straight-line code, `lazy.cpp`'s unrolled thread DAG (with the
+  node label as `pc`) and code with unbounded loops are all instances.
+- `Step`/`Star`: the interleaving semantics. Either the current thread steps,
+  or control switches to any thread `t < N` (counted).
+- `Slots π`: the sequentialised program for a slot pattern `π`. In slot `t`,
+  thread `t` resumes from its saved local state, runs zero or more steps (up
+  to a nondeterministic context-switch point) and saves its state.
+- `prismSched N K = rr N K ++ [0]`, with
+  `rr N K = (List.replicate K (List.range N)).flatten`.
+
+| Theorem | Statement |
+|---|---|
+| `slots_of_star`, `star_of_slots` | Normal form. An interleaving with `sw` switches is exactly a run of `Slots σ` for its schedule `σ` (the thread of each of its `sw + 1` segments). |
+| `slots_mono` | `σ` a subsequence of `π` → every run along `σ` is a run along `π` (the extra slots run zero steps). |
+| `length_prismSched` | `(prismSched N K).length = K * N + 1`, so `K·N` switches. |
+| `lazy_sound` | `0 < N → Slots S (prismSched N K) ls g ls' g' → ∃ c, Star S N ⟨ls, g, 0, 0⟩ ⟨ls', g', c, K * N⟩`. Every run of the sequentialised program is a real SC interleaving: no spurious counterexample. |
+| `rr_covers_runs`, `lazy_covers_runs` | An interleaving whose schedule splits into at most `K` strictly increasing runs of thread ids `< N` is covered. This is the exact shape `K` round-robin rounds admit. |
+| `lazy_covers` | `0 < N → Star S N ⟨ls, g, 0, 0⟩ ⟨ls', g', c, sw⟩ → sw + 1 ≤ K → Slots S (prismSched N K) ls g ls' g'`. Every interleaving from `T0` with at most `K − 1` switches **in total** is covered, for any `N`. |
+| `lazy_covers_two` | `N = 2` (harness and one thread): every interleaving with at most `2K` switches is covered. That is the full `K·N` bound. |
+| `lazy_between` | Both directions in one statement: the reachable states of the sequentialised program lie between the interleavings with `≤ K − 1` switches and those with `≤ K·N` switches. |
+| `per_thread_bound_not_enough` | The limit. With `N = 3`, `K = 1`, the schedule `0, 2, 1` (every thread runs once and no thread is preempted) reaches a state that no run of `prismSched 3 1 = [0, 1, 2, 0]` reaches. A bound on context switches **per thread** does not imply coverage for `N ≥ 3`; the schedule must fit the round-robin shape. |
+
+**What is and is not covered.**
+
+- Covered: any number of threads and rounds, threads with any control flow
+  (in particular bounded loops) under SC, the harness's final slot, and both
+  directions (coverage and soundness).
+- Not covered by `K` rounds: schedules with more than `K` round-robin
+  "wrap-arounds" (e.g. `T2` before `T1` in every round). A `BOUNDED` verdict
+  is only about schedules that fit the pattern, and no finite `K` covers
+  every schedule (unbounded rounds are not claimed).
+- Not modelled: relaxed or weak memory (non-SC orders are `NEEDS-HARNESS` in
+  the stage), and the Z3 encoding of the slots in `lazy.cpp` (the `pc`/`cs`
+  formula, the static-locals encoding, the race, deadlock and unlock
+  monitors). What is proved is the scheduling argument that the encoding
+  relies on. Loop unrolling inside a thread cuts paths past `unwind`; that is
+  the same bounded unwinding as BMC and is not part of this proof.
+
+## 6. Floating point: the rounding kernel (`PrismTechniques/FloatRound.lean`)
+
+This file holds the kernel only. The IEEE formats, correctly rounded
+`+ - × ÷` with special values and flags, and the proofs about PRISM's
+floating-point checks build on it in `proofs/refinement/PrismRefine/Float.lean`
+and `FloatOps.lean` ([PROOFS_REFINEMENT.md](PROOFS_REFINEMENT.md), "Floating
+point"). A Flocq-scale library (all rounding modes, real-valued semantics of
+`sqrt`, `fma`, libm) is still out of reach.
 
 **What is proved.** The shared kernel of every IEEE operation:
 round-to-nearest, ties-to-even, of a magnitude `n` to a multiple of the ulp
@@ -494,19 +559,23 @@ What remains between the proofs and a `PROVED-CERTIFIED` verdict:
 ### Lazy sequentialisation
 
 The C++ `conc` stage (roadmap 2.6, [CONCURRENCY.md](CONCURRENCY.md)) is not
-extracted from this model. The Lean result justifies the eager round-robin
-reduction for two threads with straight-line code. Four extensions are needed
-before it covers what the stage does:
+extracted from this model. `LazySeqN.lean` (§5b) proves its schedule — `N`
+threads, `K` rounds, the harness's final slot, threads with any control flow —
+sound and covering under SC. Still outside the proof:
 
-- per-thread loops, which need a bounded unrolling argument;
-- more than two threads, which generalises `Seg` to a round-robin over `n`
-  threads;
-- Lazy-CSeq's lazy re-execution;
-- data-race detection as a property.
+- the Z3 formula `lazy.cpp` builds for a slot (`reach`/`exec`/`pc'` over the
+  unrolled DAG) and the static-locals encoding;
+- context-switch points only before visible operations (partial-order
+  reduction);
+- the data-race, deadlock and unlock checks as properties;
+- relaxed memory.
 
 ### Floating point
 
-Only the rounding kernel is proved. Nothing yet connects it to Z3/Bitwuzla's
-floating-point theory or to IEEE 754 as a whole. PRISM's floating-point
-verdicts therefore stay trusted, not proved, until a Flocq-style library
-exists in Lean.
+This project proves the rounding kernel. `proofs/refinement`
+(`Float.lean`, `FloatOps.lean`, [PROOFS_REFINEMENT.md](PROOFS_REFINEMENT.md))
+builds on it: correctly rounded `+ - × ÷` for any binary format with the IEEE
+special values, the exception flags, and the exact equivalence of PRISM's
+FLOAT-CAST-OVF / FLOAT-OVERFLOW / FLOAT-INVALID / FLOAT-DIV-ZERO conditions
+with IEEE 754 and C11 (with the two stated differences). Z3's floating-point
+theory itself stays trusted (it is assumed to implement IEEE 754).

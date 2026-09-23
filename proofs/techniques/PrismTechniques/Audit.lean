@@ -12,6 +12,7 @@ import PrismTechniques.Houdini
 import PrismTechniques.Contracts
 import PrismTechniques.BitblastEncode
 import PrismTechniques.LazySeq
+import PrismTechniques.LazySeqN
 import PrismTechniques.FloatRound
 
 open Lean Elab Command in
@@ -99,6 +100,18 @@ namespace PrismTechniques
 #assert_axioms LazySeq.lazy_seq_covers
 #assert_axioms LazySeq.lazy_seq_sound
 #assert_axioms LazySeq.lazy_seq_reach_iff
+-- N threads, K rounds: the schedule of src/prism/conc/lazy.cpp (roadmap 8.2, M10)
+#assert_axioms LazySeqN.slots_of_star
+#assert_axioms LazySeqN.star_of_slots
+#assert_axioms LazySeqN.slots_mono
+#assert_axioms LazySeqN.length_prismSched
+#assert_axioms LazySeqN.rr_covers_runs
+#assert_axioms LazySeqN.lazy_sound
+#assert_axioms LazySeqN.lazy_covers_runs
+#assert_axioms LazySeqN.lazy_covers
+#assert_axioms LazySeqN.lazy_between
+#assert_axioms LazySeqN.lazy_covers_two
+#assert_axioms LazySeqN.per_thread_bound_not_enough
 
 -- Floating point (roadmap 8.2, stretch, small piece)
 #assert_axioms FloatRound.rne_exact

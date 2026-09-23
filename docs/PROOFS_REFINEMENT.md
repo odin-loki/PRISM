@@ -2,7 +2,8 @@
 
 This document covers roadmap Part 8.2 rows "LLVM IR to PIR translation"
 and "Property instrumentation" (for the C++ instrumentation list itself),
-the "Floating point" row (a first proved piece), the Part 8.3 mitigation
+the "Floating point" row (IEEE operations, flags and PRISM's floating-point
+checks; see "Floating point" below for what is not covered), the Part 8.3 mitigation
 "formal LLVM semantics … tested against `lli`", and Part 8.5 (independent
 proof rechecking in CI).
 
@@ -40,7 +41,7 @@ What is *not* proved, and the three gaps this work found in
 | Dependencies | `proofs/semantics` (PIR expression semantics: `PrismSem.evalBin`, `evalPred`, `ubBin`) and `proofs/techniques` (`PrismTechniques.FloatRound.rne`), both as Lake *path* dependencies: imported, not copied |
 | Build | `cd proofs/refinement && lake build` |
 | Audit | `./check.sh`: build with no warning, no escape hatch in any source (`sorry`, `admit`, `native_decide`, `bv_decide`, `implemented_by`, `extern`, `axiom`, `unsafe`), every theorem in `Audit.lean` within `propext` / `Classical.choice` / `Quot.sound`, checker fixtures |
-| Size | about 4 000 lines of Lean, 44 audited theorems, 2 254 declarations (all axiom-audited) |
+| Size | about 4 800 lines of Lean, 58 audited theorems, 2 254 declarations (all axiom-audited) |
 
 | File | Contents |
 |---|---|
@@ -54,7 +55,8 @@ What is *not* proved, and the three gaps this work found in
 | `PrismRefine/Check.lean`, `CheckMain.lean` | `pir_lean_check`: the correspondence checker |
 | `EvalMain.lean` | `llvm_eval`: runs the three semantics on concrete inputs (for `tools/llvm_sem_vs_lli.py`) |
 | `AxiomReport.lean` | `axiom_report`: axioms of every declaration of a project (8.5) |
-| `PrismRefine/Float.lean` | IEEE 754 binary formats, correctly rounded addition |
+| `PrismRefine/Float.lean` | IEEE 754 binary formats, correctly rounded addition with special values |
+| `PrismRefine/FloatOps.lean` | Correctly rounded subtraction, multiplication, division; IEEE exception flags; PRISM's FLOAT-* conditions against IEEE 754 and C11 |
 | `recheck.sh` | Independent recheck of any of the four Lean projects (8.5) |
 
 ## The LLVM fragment and its semantics
@@ -251,25 +253,67 @@ compared, **0 disagreements**; 1 602 inputs belong to modules `lli` cannot
 run (unresolved externals elsewhere in the module) and are counted, not
 compared.
 
-## Floating point (8.2, first piece)
+## Floating point (8.2)
 
 `Float.lean` models IEEE 754 binary formats (`binary32 = ⟨24, 8⟩`,
-`binary64 = ⟨53, 11⟩`) at the bit level (sign, biased exponent, fraction),
+`binary64 = ⟨53, 11⟩`, `binary16 = ⟨11, 5⟩`; any precision `p ≥ 2` and
+exponent width `ew ≥ 2`) at the bit level (sign, biased exponent, fraction),
 with `decode` per IEEE 754-2019 §3.4. Every finite datum is an integer
-multiple of the smallest subnormal, so exact rational arithmetic on finite
-data is exact integer arithmetic in that unit. Proved for every format:
+multiple of the smallest subnormal `2^-D` (`Fmt.D`; binary32: 149), so a
+finite magnitude is a natural number in that unit. Sums are exact integers;
+products (`nx·ny / 2^D`) and quotients (`nx·2^D / ny`) are rationals `a / b`,
+rounded by `roundQ`/`roundF`, with nearness proved on distances scaled by
+`b` (`dist (r·b) a = b·|r − a/b|`). Round to nearest, ties to even
+throughout.
 
 | Theorem (`PrismRefine.Float.`) | Statement |
 |---|---|
-| `roundU_repr`, `roundU_nearest`, `roundU_tie_even` | round-to-nearest-even with unbounded exponent returns a `p`-bit value at least as close as every `p`-bit value; ties give an even significand |
-| `round_correct` | in the format: the result is the nearest finite datum when it does not overflow; overflow (to infinity, §7.4) only when the exact magnitude exceeds the largest finite one |
+| `roundU_repr`, `roundU_nearest`, `roundU_tie_even` | round-to-nearest-even of an integer with unbounded exponent returns a `p`-bit value at least as close as every `p`-bit value; ties give an even significand |
+| `roundQ_repr`, `roundQ_nearest`, `roundQ_tie_even` | the same for a rational `a / b` (`roundQ_one`: with `b = 1` it is `roundU`) |
+| `round_correct`, `roundF_correct` | in the format: the nearest finite datum when it does not overflow; overflow (to infinity, §7.4) only when the exact magnitude exceeds the largest finite one |
 | `decode_encode` | every representable magnitude is encoded exactly |
-| `add_correct` | bit-level `add` of two finite data decodes to the correctly rounded exact sum, with IEEE's sign of zero and overflow to infinity |
+| `add_correct`, `sub_correct` | bit-level `add` / `sub` of two finite data decode to the correctly rounded exact sum / difference, with IEEE's sign of an exact zero and overflow to infinity |
+| `mul_correct`, `div_correct` | bit-level `mul` / `div` (non-zero divisor) of finite data decode to the correctly rounded exact product / quotient with sign `sx xor sy`: a signed zero on underflow to zero, infinity on overflow |
 
-Not covered: other rounding modes, NaN propagation, operations other than
-addition/subtraction, and any link to an SMT floating-point encoding —
-PRISM does not encode floating point yet (`translate.cpp` refuses `fadd`
-etc. as UNENCODED).
+`add`, `sub` (`x + (−y)`), `mul` and `div` also define every special case as
+IEEE 754 §6–7: NaN operands give the default quiet NaN, `∞ − ∞`, `0 × ∞`,
+`0 / 0` and `∞ / ∞` are NaN (invalid), a finite non-zero `x / ±0` is an exact
+signed infinity, `∞ / y` is infinite, `x / ∞` is a signed zero.
+
+**PRISM's floating-point checks.** `FloatOps.lean` mirrors, operator by
+operator, the conditions `FpTr::checks` (`src/prism/pir/translate_fp.cpp`,
+`--fp-checks`) builds for `fadd`/`fsub`/`fmul`/`fdiv`, and the FLOAT-CAST-OVF
+condition the encoder builds for `fptosi`/`fptoui` (`Op::FToSIOvf` /
+`Op::FToUIOvf` in `src/prism/pir/encode.cpp`; the interpreter in `fp.cpp`
+computes the same). `tests/test_proofs_float_conc.py` locks every C++
+expression to its Lean definition: changing either side fails the test. The
+IEEE side (`ieeeOverflow`, `ieeeInvalid`, `ieeeDivByZero`, `inRange`) is
+written from IEEE 754-2019 §7.2–7.4 and C11 6.3.1.4, not from the code.
+
+| Theorem | Statement |
+|---|---|
+| `prism_overflow_eq` | FLOAT-OVERFLOW (`isInf(r) ∧ both operands finite`, and `¬isZero(y)` for `fdiv`) **equals** IEEE overflow, for every operation and every pair of operands, special values included |
+| `prism_invalid_eq` | FLOAT-INVALID (`isNaN(r) ∧ no NaN operand`) **equals** IEEE invalid operation on quiet operands (`∞ − ∞`, `0 × ∞`, `0 / 0`, `∞ / ∞`) |
+| `ieee_invalid_eq` | IEEE invalid = FLOAT-INVALID **or** a signalling-NaN operand. PRISM does not report the signalling-NaN case: Z3's FP theory has one NaN and LLVM's default floating-point environment does not preserve signalling NaNs |
+| `prism_divzero_eq` | FLOAT-DIV-ZERO (`isZero(y) ∧ ¬isNaN(x)`) = IEEE divide-by-zero **or** `0 / 0` **or** `±∞ / 0`. It is wider than IEEE: `0 / 0` is IEEE invalid (PRISM also reports it as FLOAT-INVALID), and `∞ / 0` raises no IEEE exception (the result is an exact infinity). `prism_divzero_extra` shows both extra cases are real |
+| `ieee_divzero_imp_prism` | every IEEE divide-by-zero is reported |
+| `cast_ovf_iff` | for any format, any `k`, signed or unsigned, and any well-formed datum: FLOAT-CAST-OVF (`isNaN(x) ∨ isInf(x) ∨ t < lo ∨ t ≥ hi`, `t` = `x` truncated toward zero, `lo = −2^(k−1)` or `+0`, `hi = 2^(k−1)` or `2^k` as numerals of the format) holds **iff** the value is outside the range of `iK` (C11 6.3.1.4). This includes formats where the bound is not representable (binary16 and `k ≥ 17`: `hi` rounds to `+∞`, and only NaN and infinities are out of range) |
+
+Trusted, not proved: that Z3's floating-point theory (`Z3_mk_fpa_*`)
+implements IEEE 754, and that `Z3_mk_fpa_numeral_double` rounds a numeral to
+nearest even (`pow2Val` models `fnum` that way). The model's `k` is a natural
+number; LLVM has no `i0`.
+
+Not covered: the other rounding modes; `frem`, `sqrt`, `fma`/`fmuladd` and
+libm (they get the same `--fp-checks` conditions, but their IEEE semantics is
+not modelled here); NaN payloads; the underflow and inexact flags (PRISM
+does not check them); `fptrunc` (see below); and the connection between these
+Lean definitions and the Z3 terms beyond the text-level lock of the test.
+
+A finding from this work: `fptrunc` calls `checks(cur, Op::FConv, w, {}, r,
+c.line)` with no operands, and `checks` returns early when no operand is a
+floating-point value of width `w`, so FLOAT-OVERFLOW is never reported for a
+`double`→`float` truncation that overflows, even with `--fp-checks`.
 
 ## Independent proof rechecking (8.5)
 
