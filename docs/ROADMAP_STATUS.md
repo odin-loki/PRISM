@@ -134,7 +134,7 @@ at run time; the numbers below are for the deterministic halves.
 |---|---|
 | 6.1 CI + release gate | **DONE** — `ci.yml`, `conformance.yml`, `proofs*.yml`, `docs.yml`; self-hosted GPU runner **NOT DONE** (hardware) |
 | 6.2 five testing layers | **DONE** — doctest, conformance, differential (vs the frozen Python engine), random programs, self-fuzzing (`docs/FUZZ_SELF.md`; all findings fixed) |
-| 6.3 SV-COMP readiness | **PARTIAL** — BenchExec tool-info, witness 2.0 writer, scored subset (`docs/SVCOMP.md`). `bmc` counterexamples carry nondet values, so its refutations replay and the witnesses get `function_return` waypoints. Local unvalidated score: no-overflow 35/70, unreach-call 9/36, 0 incorrect. `pir` does not report nondet values yet; no witness validator has been run; no entry |
+| 6.3 SV-COMP readiness | **PARTIAL** — BenchExec tool-info, witness 2.0 writer, scored subset (`docs/SVCOMP.md`). `bmc` and `pir` counterexamples carry nondet values (`pir` also the calls' debug locations), so their refutations replay and the witnesses get `function_return` waypoints at the exact call. Local score: no-overflow 37/70, unreach-call 13/36, 0 incorrect. All 18 violation witnesses confirmed by CPAchecker 4.2.2; UAutomizer 0.3.1 confirms 16 (it matches no `function_return` on a plain `x = nondet();` call, not even in the sv-witnesses reference example). No correctness witnesses; no entry |
 | 6.4 documentation | **DONE** — `VERDICTS.md`, `TRUSTED_BASE.md`, `CONFORMANCE.md`, `USER_GUIDE.md`; every report finding links its verdict definition |
 | 6.5 assurance packaging | **DONE as mappings** — `docs/assurance/` (DO-333, DO-330, Def Stan 00-055, ISM); no qualification is claimed |
 | 6.6 SARIF | **DONE** |

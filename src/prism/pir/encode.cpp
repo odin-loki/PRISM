@@ -281,6 +281,17 @@ struct Encoding {
     std::vector<z3::expr> assumptions;
     std::vector<z3::expr> cuts;
     int fresh = 0;
+    // The program's __VERIFIER_nondet_* calls (Stmt::nondet_fn), one per
+    // block instance, and each instance's position in topological order: on
+    // the one path a model makes reachable that order is execution order.
+    struct NondetInst {
+        const Stmt* stmt;
+        int node;
+        std::size_t idx;  // statement index in the block
+        z3::expr v;
+    };
+    std::vector<NondetInst> nondets;
+    std::vector<int> topo_pos;
     EncodeOptions eo;
     std::optional<mem::SymMem> mem;
 
@@ -447,6 +458,8 @@ struct Encoding {
             auto& v = fn.vars[static_cast<std::size_t>(fn.params[i])];
             params.push_back(c.bv_const(v.name.c_str(), v.width));
         }
+        topo_pos.assign(nodes.size(), 0);
+        for (std::size_t i = 0; i < order.size(); ++i) topo_pos[static_cast<std::size_t>(order[i])] = static_cast<int>(i);
         reach.assign(nodes.size(), c.bool_val(false));
         vals.assign(nodes.size(), {});
         for (int id : order) encode_node(id, out_edges[static_cast<std::size_t>(id)]);
@@ -800,10 +813,12 @@ struct Encoding {
         }
         for (auto& [d, e] : phi_vals) m.insert_or_assign(d, e);
         const auto& r = reach[static_cast<std::size_t>(id)];
-        for (auto& s : bl.stmts) {
+        for (std::size_t si = 0; si < bl.stmts.size(); ++si) {
+            const auto& s = bl.stmts[si];
             switch (s.kind) {
                 case Stmt::Assign: {
                     auto v = op_expr(s, id);
+                    if (s.op == Op::Havoc && !s.nondet_fn.empty()) nondets.push_back(NondetInst{&s, id, si, v});
                     note_prov(s, v, id);
                     m.insert_or_assign(s.dst, v);
                     break;
@@ -982,6 +997,68 @@ std::string join_s(const std::vector<std::string>& v, const std::string& sep) {
     std::string out;
     for (auto& x : v) out += (out.empty() ? "" : sep) + x;
     return out;
+}
+
+// The program's __VERIFIER_nondet_* values on the violating path, in call
+// order, as extra["nondet"] ("fn=value, ...", decimal, signed per the C
+// type; the same shape as the bmc stage) and extra["nondet_loc"]
+// ("line:col, ...", the call's debug location, 0:0 when unknown). A call is
+// on the path when the model makes its block instance reachable, and it is
+// listed only when it runs before the violated check (the reachable instances
+// form one chain; topological order is execution order along it).
+//
+// The model comes from an in-process Z3 query of the same VC with the
+// counterexample's parameters and nondet values pinned to the winning
+// solver's model, so every value and every reach flag is read from one model
+// of the violation (an external solver's model need not list every constant).
+// No model (timeout): no trace, and extra["nondet_note"] says why; a
+// refutation without a trace is never replayed as one (tools/svcomp).
+void nondet_trace(Encoding& e, const PropInst& hit, const z3::expr& base, const solver::SolveResult& r,
+                  double timeout_s, Verdict& v) {
+    if (e.nondets.empty()) return;
+    auto& c = e.c;
+    z3::solver s(c);
+    z3::params p(c);
+    p.set("timeout", static_cast<unsigned>(std::min(30.0, std::max(1.0, timeout_s)) * 1000));
+    s.set(p);
+    s.add(base && hit.viol);
+    auto pin = [&](const z3::expr& x) {
+        auto it = r.model.find(x.decl().name().str());
+        if (it == r.model.end()) return;
+        unsigned w = x.get_sort().bv_size();
+        s.add(x == c.bv_val(static_cast<uint64_t>(literal_bits(it->second) & wmask(w)), w));
+    };
+    for (auto& pe : e.params) pin(pe);
+    for (auto& n : e.nondets) pin(n.v);
+    if (s.check() != z3::sat) {
+        v.extra["nondet_note"] = "nondet values not reported: the pinned re-query found no model";
+        return;
+    }
+    auto m = s.get_model();
+    const auto& hb = e.fn.blocks[static_cast<std::size_t>(e.nodes[static_cast<std::size_t>(hit.node)].block)];
+    const auto hidx = static_cast<std::size_t>(hit.stmt - hb.stmts.data());
+    const int hpos = e.topo_pos[static_cast<std::size_t>(hit.node)];
+    std::vector<std::string> vals, locs;
+    for (auto& n : e.nondets) {
+        const int pos = e.topo_pos[static_cast<std::size_t>(n.node)];
+        if (pos > hpos || (pos == hpos && n.idx >= hidx)) continue;
+        if (!m.eval(e.reach[static_cast<std::size_t>(n.node)], true).is_true()) continue;
+        uint64_t raw = 0;
+        if (!m.eval(n.v, true).is_numeral_u64(raw)) {
+            v.extra["nondet_note"] = "nondet values not reported: a value is not a numeral";
+            return;
+        }
+        const auto& var = e.fn.vars[static_cast<std::size_t>(n.stmt->dst)];
+        const unsigned w = var.width;
+        std::string val;
+        if (var.fp) val = fp::format(raw, w);
+        else if (n.stmt->nondet_unsigned || w == 1) val = std::to_string(raw & wmask(w));
+        else val = std::to_string(as_signed(raw, w));
+        vals.push_back(n.stmt->nondet_fn + "=" + val);
+        locs.push_back(std::to_string(n.stmt->line) + ":" + std::to_string(n.stmt->col));
+    }
+    v.extra["nondet"] = join_s(vals, ", ");
+    v.extra["nondet_loc"] = join_s(locs, ", ");
 }
 
 // One verification condition answered by the solver library.
@@ -1188,6 +1265,7 @@ Verdict check_function(const Function& fn, const CheckOptions& opt) {
                 v.cex[fn.vars[static_cast<std::size_t>(fn.params[i])].name] = v.cex_args[i];
             v.message = hit->stmt->prop + ": " + hit->stmt->cls + " (" + hit->stmt->msg + ")";
             v.extra["cex_solver"] = hit_r->winner + (hit_r->cache_hit ? " (cache, re-validated)" : "");
+            nondet_trace(e, *hit, base, *hit_r, timeout_s, v);
             return finish(v);
         }
         if (!no_answer.empty()) {
