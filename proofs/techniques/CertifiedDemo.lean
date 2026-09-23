@@ -1,0 +1,66 @@
+/-
+End-to-end demonstration of certified mode (roadmap 3.2) with the proved
+bit-blaster: bit-blast a formula with `toCNF`, run CaDiCaL (the copy shipped
+with the Lean toolchain) to get an LRAT certificate, and run core Lean's
+verified LRAT checker on it.  When the checker accepts, `certified_unsat`
+turns that into "the formula is unsatisfiable".
+
+This is an *executed* check (compiled code), not a kernel proof: the theorem
+`certified_unsat` is proved, and this program evaluates its premise
+`LRAT.check cert (toCNF φ) = true` for concrete formulas.
+
+Usage: `lake exe certified-demo [path/to/cadical]`
+-/
+import PrismTechniques.BitblastEncode
+import Std.Tactic.BVDecide.LRAT.Parser
+
+open PrismTechniques.Bitblast
+open Std.Tactic.BVDecide
+
+/-- 8-bit variables `x` (input bits 0..7) and `y` (bits 8..15). -/
+def x8 : BVExpr 8 := .var 0
+def y8 : BVExpr 8 := .var 8
+
+/-- The formulas: `(name, φ, expectUnsat)`. -/
+def cases : List (String × BVExpr 1 × Bool) :=
+  [ ("x <u x", .ult x8 x8, true),
+    ("x + y != y + x", .not (.eq (.add x8 y8) (.add y8 x8)), true),
+    ("x <s y && y <s x", .and (.slt x8 y8) (.slt y8 x8), true),
+    ("(x & y) != ~(~x | ~y)", .not (.eq (.and x8 y8) (.not (.or (.not x8) (.not y8)))), true),
+    ("ite(x <u y, x, y) >u y", .ult y8 (.ite (.ult x8 y8) x8 y8), true),
+    ("x <u y (satisfiable)", .ult x8 y8, false) ]
+
+def runCase (cadical : String) (dir : System.FilePath) (name : String) (φ : BVExpr 1)
+    (expectUnsat : Bool) (idx : Nat) : IO Bool := do
+  let cnf := toCNF φ
+  let cnfPath := dir / s!"case{idx}.cnf"
+  let lratPath := dir / s!"case{idx}.lrat"
+  IO.FS.writeFile cnfPath (Std.Sat.CNF.dimacs cnf)
+  let out ← IO.Process.output {
+    cmd := cadical,
+    args := #[cnfPath.toString, lratPath.toString, "--lrat", "--binary=false", "--quiet",
+      "--unsat"] }
+  -- CaDiCaL exits 20 for UNSAT, 10 for SAT
+  if out.exitCode == 20 then
+    let cert ← LRAT.loadLRATProof lratPath
+    let ok := LRAT.check cert cnf
+    IO.println s!"{name}: UNSAT, {cnf.clauses.size} clauses, {cert.size} LRAT steps, verified checker: {ok}"
+    return ok && expectUnsat
+  else if out.exitCode == 10 then
+    IO.println s!"{name}: SAT ({cnf.clauses.size} clauses) — no certificate, nothing to check"
+    return !expectUnsat
+  else
+    IO.println s!"{name}: solver failed (exit {out.exitCode})"
+    return false
+
+def main (args : List String) : IO UInt32 := do
+  let cadical := args.headD "cadical"
+  let dir : System.FilePath := ".lake/certified-demo"
+  IO.FS.createDirAll dir
+  let mut allOk := true
+  let mut idx := 0
+  for (name, φ, expectUnsat) in cases do
+    let ok ← runCase cadical dir name φ expectUnsat idx
+    allOk := allOk && ok
+    idx := idx + 1
+  return if allOk then 0 else 1
