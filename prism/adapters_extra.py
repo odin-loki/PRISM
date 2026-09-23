@@ -18,9 +18,10 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from typing import Any
 
 from prism import laws
-from prism.config import Config, adapter_install, resolve_adapter
+from prism.config import Config, adapter_install, ordered_map, resolve_adapter
 from prism.models import Finding, FunctionInfo
 
 # (stage, PATH names). Install hint is adapter_install(stage) → SOURCES.md.
@@ -117,13 +118,20 @@ def _run_clang_tidy(exe: str, paths: list[Path], cfg: Config) -> list[Finding]:
             cls="", message=f"clang-tidy present at {exe}; no C/C++ translation units",
             strength=laws.STRENGTH_FINDS, extra={"exe": exe},
         )]
-    out: list[Finding] = []
-    for p in files:
+
+    def tidy(p: Path) -> subprocess.CompletedProcess | subprocess.TimeoutExpired:
         std = "-std=c++11" if p.suffix.lower() in {".cc", ".cpp", ".cxx"} else "-std=c11"
-        cmd = [exe, str(p), "--", std]
         try:
-            r = _run(cmd, timeout=min(60.0, cfg.timeout + 15))
-        except subprocess.TimeoutExpired:
+            return _run([exe, str(p), "--", std], timeout=min(60.0, cfg.timeout + 15))
+        except subprocess.TimeoutExpired as exc:
+            return exc
+
+    # One clang-tidy process per file on cfg.jobs threads; findings are built
+    # in file order below, exactly as the serial loop did.
+    results = ordered_map(tidy, files, getattr(cfg, "jobs", 1))
+    out: list[Finding] = []
+    for p, r in zip(files, results):
+        if isinstance(r, subprocess.TimeoutExpired):
             out.append(Finding(
                 stage="clang-tidy", status=laws.TIMEOUT, file=str(p), function=None,
                 line=None, cls="", message="clang-tidy timeout",
@@ -362,7 +370,7 @@ def _run_libfuzzer(
     from prism.bmc import unencoded_syntax_reason
     from prism.cparse import body_needs_pointer_harness
 
-    base = dict(
+    base: dict[str, Any] = dict(
         stage="libfuzzer", file=fn.file, function=fn.name, line=fn.line,
         cls="", strength=laws.STRENGTH_FINDS,
     )
@@ -767,11 +775,16 @@ def _run_infer(exe: str, paths: list[Path], cfg: Config) -> list[Finding]:
             extra={"exe": exe, "install": "install gcc or clang"},
         )]
     out: list[Finding] = []
+    # Each file gets its own scratch directory for infer-out/ and the object
+    # file: `infer run -- cc -c` would otherwise write both into whatever
+    # directory PRISM was launched from (often the user's tree).
     for p in c_files:
         try:
             with tempfile.TemporaryDirectory(prefix="prism_infer_") as td:
+                scratch = Path(td)
                 r = _run(
-                    [exe, "run", "--", compiler, "-c", str(p.resolve())],
+                    [exe, "run", "--results-dir", str(scratch / "infer-out"), "--",
+                     compiler, "-c", str(p.resolve()), "-o", str(scratch / "unit.o")],
                     timeout=cfg.timeout + 15,
                 )
         except subprocess.TimeoutExpired:

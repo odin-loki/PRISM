@@ -38,7 +38,7 @@ class ChatResult:
 class LlamaEngine:
     def __init__(self, cfg: Config) -> None:
         self.cfg = cfg
-        self._llama = None
+        self._llama: Any = None
         self.backend = "none"
         self._bind()
 
