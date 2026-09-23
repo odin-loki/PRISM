@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import deque
+from typing import Any
 from pathlib import Path
 import re
 import shutil
@@ -304,7 +305,7 @@ def _split_until(s: str) -> tuple[str, str] | None:
     return None
 
 
-def _liveness_approx(raw: str) -> tuple[str, object] | None:
+def _liveness_approx(raw: str) -> tuple[str, Any] | None:
     """Known unbounded F / U / GF patterns → a safety strengthening.
 
     Only the atomic shapes GF p, FG p, G (F p), and top-level p U q.
@@ -334,7 +335,7 @@ def _liveness_approx(raw: str) -> tuple[str, object] | None:
     return None
 
 
-def _g_f_inner(inner: str) -> tuple[str, object] | None:
+def _g_f_inner(inner: str) -> tuple[str, Any] | None:
     """``G (F p)`` / ``G (F_k p)`` — explicit bound is the safety fragment."""
     inner = _strip_parens(inner)
     if _split_imp(inner):
@@ -350,7 +351,7 @@ def _g_f_inner(inner: str) -> tuple[str, object] | None:
     return "gf_approx", (rest, F_BOUND)
 
 
-def _classify(formula: str) -> tuple[str, object]:
+def _classify(formula: str) -> tuple[str, Any]:
     """Return (kind, payload) where kind is invariant|next|bounded_f|
     f_approx|gf_approx|fg_approx|until_approx|nonsafety."""
     raw = formula.strip()
@@ -401,26 +402,26 @@ def check_safety(formula: str, fsm: dict) -> Finding | None:
         if kind == "invariant":
             return _check_g(str(payload), fsm, formula)
         if kind == "next":
-            p, q = payload  # type: ignore[misc]
+            p, q = payload
             return _check_next(p, q, fsm, formula)
         if kind == "bounded_f":
-            req, ack, k = payload  # type: ignore[misc]
+            req, ack, k = payload
             return _check_bounded_f(req, ack, int(k), fsm, formula)
         if kind == "f_approx":
-            req, ack, k = payload  # type: ignore[misc]
+            req, ack, k = payload
             f = _check_bounded_f(req, ack, int(k), fsm, formula)
             return _approx_finding(
                 f, formula, f"G (({req}) -> F_{k} ({ack}))", "F"
             )
         if kind == "gf_approx":
-            pred, k = payload  # type: ignore[misc]
+            pred, k = payload
             f = _check_bounded_f("true", pred, int(k), fsm, formula)
             return _approx_finding(f, formula, f"G (F_{k} ({pred}))", "GF")
         if kind == "fg_approx":
-            pred, k = payload  # type: ignore[misc]
+            pred, k = payload
             return _check_fg_approx(pred, int(k), fsm, formula)
         if kind == "until_approx":
-            p, q, k = payload  # type: ignore[misc]
+            p, q, k = payload
             return _check_until_approx(p, q, int(k), fsm, formula)
     except PredFail:
         return None
@@ -477,7 +478,7 @@ def synthesize_missing(fsm: dict, formula: str) -> Finding | None:
     kind, payload = _classify(formula)
     if kind != "next":
         return None
-    p, q = payload  # type: ignore[misc]
+    p, q = payload
     try:
         trans = fsm.get("transitions") or []
         for s, sp in trans:
@@ -743,14 +744,15 @@ def _check_until_approx(p: str, q: str, k: int, fsm: dict, formula: str) -> Find
     )
 
 
+# False = not looked yet; then the path found, or None.
 _STRIX_CACHE: str | None | bool = False
 
 
 def strix_available() -> str | None:
     """PATH, then a few known slots under third_party/strix. Never compile or walk."""
     global _STRIX_CACHE
-    if _STRIX_CACHE is not False:
-        return _STRIX_CACHE  # type: ignore[return-value]
+    if not isinstance(_STRIX_CACHE, bool):
+        return _STRIX_CACHE
     hit = shutil.which("strix") or shutil.which("strix.exe")
     if hit:
         _STRIX_CACHE = hit
@@ -833,8 +835,11 @@ def run_ltl(functions: list[FunctionInfo], spec_paths: list[Path]) -> list[Findi
             strength=laws.STRENGTH_PROVES, extra={"install": "add a file with G (...)"},
         )]
     out: list[Finding] = []
-    fsms = [(fn, extract_fsm(fn.body)) for fn in functions]
-    fsms = [(fn, fsm) for fn, fsm in fsms if fsm]
+    fsms: list[tuple[FunctionInfo, dict]] = []
+    for fn in functions:
+        fsm = extract_fsm(fn.body)
+        if fsm:
+            fsms.append((fn, fsm))
     strix = strix_available()
     for formula in formulas:
         decided = False

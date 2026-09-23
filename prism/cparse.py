@@ -128,84 +128,87 @@ def body_needs_pointer_harness(body: str) -> bool:
     return body_returns_local_array(body)
 
 
+# One token per comment / literal; everything between tokens is copied.
+# Alternatives are tried in the same order the old character loop checked
+# them (`/*`, `//`, `'`, `"`), so the output is identical to it.
+_STRIP_TOKEN = re.compile(
+    r"/\*(?P<block>.*?)(?:\*/|\Z)"
+    r"|//[^\n]*"
+    r"|'(?:\\.?|[^'\\])*'?"
+    r'|"(?P<str>(?:\\.?|[^"\\])*)(?P<close>"?)',
+    re.S,
+)
+_STRIP_ESC = re.compile(r"\\.?", re.S)
+
+
+def _spaces_keep_newlines(s: str) -> str:
+    if "\n" not in s:
+        return " " * len(s)
+    return "\n".join([" " * len(part) for part in s.split("\n")])
+
+
+def _blank_escape(m: re.Match[str]) -> str:
+    # An escape pair is two spaces, even `\\<newline>` (the old loop did so).
+    return " " * len(m.group())
+
+
 def strip_comments_keep_lines(text: str, *, blank_strings: bool = True) -> str:
-    """Blank comments (and optionally string interiors). Line numbers stay put."""
+    """Blank comments (and optionally string interiors). Line numbers stay put.
+
+    `/*` and `*/` themselves are dropped; the comment interior becomes
+    spaces with its newlines kept. `//` comments become spaces. Character
+    literals are kept verbatim. With `blank_strings`, string interiors are
+    spaces (escape pairs are two spaces), their quotes kept.
+    """
     out: list[str] = []
-    i = 0
-    n = len(text)
-    in_block = False
-    while i < n:
-        if in_block:
-            if text.startswith("*/", i):
-                in_block = False
-                i += 2
+    append = out.append
+    pos = 0
+    for m in _STRIP_TOKEN.finditer(text):
+        s = m.start()
+        if s > pos:
+            append(text[pos:s])
+        pos = m.end()
+        tok = m.group()
+        c = tok[0]
+        if c == "/":
+            if tok[1] == "*":
+                append(_spaces_keep_newlines(m.group("block")))
             else:
-                out.append("\n" if text[i] == "\n" else " ")
-                i += 1
-            continue
-        if text.startswith("/*", i):
-            in_block = True
-            i += 2
-            continue
-        if text.startswith("//", i):
-            while i < n and text[i] != "\n":
-                out.append(" ")
-                i += 1
-            continue
-        c = text[i]
-        if c == "'":
-            # Keep character literals. Blanking them to `' '` made BMC
-            # see an empty expression and report ERROR, not a finding.
-            out.append(c)
-            i += 1
-            while i < n and text[i] != "'":
-                if text[i] == "\\":
-                    out.append(text[i])
-                    i += 1
-                    if i < n:
-                        out.append(text[i])
-                        i += 1
-                    continue
-                out.append(text[i])
-                i += 1
-            if i < n:
-                out.append(text[i])
-                i += 1
-            continue
-        if c == '"':
-            q = c
-            out.append(q)
-            i += 1
-            while i < n and text[i] != q:
-                if text[i] == "\\":
-                    if blank_strings:
-                        out.append(" ")
-                        i += 1
-                        if i < n:
-                            out.append(" ")
-                            i += 1
-                    else:
-                        out.append(text[i])
-                        i += 1
-                        if i < n:
-                            out.append(text[i])
-                            i += 1
-                    continue
-                if blank_strings:
-                    out.append("\n" if text[i] == "\n" else " ")
-                else:
-                    out.append(text[i])
-                i += 1
-            if i < n:
-                out.append(text[i])
-                i += 1
-            continue
-        out.append(c)
-        i += 1
+                append(" " * len(tok))
+        elif c == '"' and blank_strings:
+            inner = m.group("str")
+            if "\\" in inner:
+                inner = _STRIP_ESC.sub(_blank_escape, inner)
+            append('"')
+            append(_spaces_keep_newlines(inner))
+            append(m.group("close"))
+        else:
+            # Character literal, or a string kept verbatim.
+            append(tok)
+    if pos < len(text):
+        append(text[pos:])
     return "".join(out)
 
 
+_BRACE = re.compile(r"[{}]")
+
+
 def _match_brace(text: str, open_idx: int) -> int:
+    """Index of the `}` closing the `{` at open_idx, or -1."""
+    if open_idx < 0:
+        return _match_brace_slow(text, open_idx)
+    depth = 0
+    for m in _BRACE.finditer(text, open_idx):
+        if m.group() == "{":
+            depth += 1
+        else:
+            depth -= 1
+            if depth == 0:
+                return m.start()
+    return -1
+
+
+def _match_brace_slow(text: str, open_idx: int) -> int:
     depth = 0
     i = open_idx
     n = len(text)
@@ -284,9 +287,19 @@ def tu_is_empty(path: Path) -> bool:
 
 def extract_functions(path: Path, rel: str | None = None) -> list[FunctionInfo]:
     text = path.read_text(encoding="utf-8", errors="replace")
-    stripped = strip_comments_keep_lines(text)
+    return extract_functions_from_text(text, rel or str(path))
+
+
+def extract_functions_from_text(
+    text: str, rel: str, stripped: str | None = None,
+) -> list[FunctionInfo]:
+    """extract_functions on text already read.
+
+    `stripped` is `strip_comments_keep_lines(text)` when the caller has it.
+    """
+    if stripped is None:
+        stripped = strip_comments_keep_lines(text)
     bodies = strip_comments_keep_lines(text, blank_strings=False)
-    rel = rel or str(path)
     out: list[FunctionInfo] = []
     for m in FUNC_HEAD.finditer(stripped):
         name = m.group("name")
@@ -300,13 +313,13 @@ def extract_functions(path: Path, rel: str | None = None) -> list[FunctionInfo]:
         # Bodies keep literals so strcpy/snprintf oracles see the bytes.
         body = bodies[brace + 1 : close]
         head = m.group("head")
-        line = stripped[: m.start("head")].count("\n") + 1
+        line = stripped.count("\n", 0, m.start("head")) + 1
         params = _split_params(m.group("params"))
         stars = m.group("stars") or ""
         ret = (m.group("ret") or "int").strip()
         mods = m.group("mods") or ""
         kind = _kind_of(ret, stars, params)
-        end_line = stripped[: close].count("\n") + 1
+        end_line = stripped.count("\n", 0, close) + 1
         out.append(
             FunctionInfo(
                 file=rel,

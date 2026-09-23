@@ -100,7 +100,7 @@ def run_thread(functions: list[FunctionInfo]) -> list[Finding]:
 
         writers: dict[str, list[FunctionInfo]] = defaultdict(list)
         for fn in fns:
-            for g in globals_:
+            for g in sorted(globals_):
                 if _writes_global(fn.body, g):
                     writers[g].append(fn)
 

@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 import re
 
 from prism import laws
-from prism.cparse import _match_brace, extract_functions, strip_comments_keep_lines
+from prism.cparse import (
+    _match_brace,
+    extract_functions_from_text,
+    strip_comments_keep_lines,
+)
 from prism.models import Finding
 
 SHIFT31 = re.compile(
@@ -99,7 +104,7 @@ def _findings_for_file(path: Path, rel: str) -> list[Finding]:
             evidence=lines[line - 1].strip() if 0 < line <= len(lines) else "",
         ))
 
-    funcs = extract_functions(path, rel)
+    funcs = extract_functions_from_text(text, rel or str(path), stripped)
     fn_at = []
     for f in funcs:
         fn_at.append((f.span[0], f.span[1], f.name))
@@ -111,11 +116,11 @@ def _findings_for_file(path: Path, rel: str) -> list[Finding]:
         return None
 
     for i, ln in enumerate(lines, 1):
-        if SHIFT31.search(ln) and not re.search(r"\bunsigned\b", ln):
+        if "<<" in ln and SHIFT31.search(ln) and not _rx(r"\bunsigned\b").search(ln):
             # 1<<31 into a signed int is UB. A cast on the 1 is the fix.
-            if not re.search(r"\(\s*uint", ln) and not re.search(r"1u\s*<<", ln, re.I):
+            if not _rx(r"\(\s*uint").search(ln) and not _rx(r"1u\s*<<", re.I).search(ln):
                 add("INT-SHIFT-UB", i, "signed 1<<31 is undefined", func_of(i))
-        m = REALLOC_SELF.search(ln)
+        m = REALLOC_SELF.search(ln) if "realloc" in ln else None
         if m:
             add("MEM-REALLOC-SELF", i, f"{m.group('p')} = realloc({m.group('p')}, …) leaks on failure", func_of(i))
 
@@ -715,11 +720,11 @@ def _findings_for_file(path: Path, rel: str) -> list[Finding]:
 
 
 def _cap_norm(s: str) -> str:
-    return re.sub(r"\s+", "", s)
+    return _rx(r"\s+").sub("", s)
 
 
 def _norm_var(s: str) -> str:
-    return re.sub(r"\s+", "", s)
+    return _rx(r"\s+").sub("", s)
 
 
 def _has_assignment(var: str, line: str) -> bool:
@@ -734,7 +739,7 @@ def _reassigns_var(var: str, line: str) -> bool:
     if not m:
         return False
     rhs = m.group(1).strip()
-    if re.match(r"^(?:NULL|nullptr|0)\b", rhs):
+    if _rx(r"^(?:NULL|nullptr|0)\b").match(rhs):
         return False
     return True
 
@@ -788,8 +793,131 @@ def _split_call_args(inner: str) -> list[str]:
     return args
 
 
+def _required_literal(pat: re.Pattern[str]) -> str | None:
+    """Longest literal every match of `pat` must contain, or None.
+
+    Walks the parsed pattern: literal runs in the mandatory top-level
+    sequence (through plain groups, and through repeats with min >= 1)
+    are required. Anything unsure (case folding, branches, classes)
+    ends a run. None means "no prefilter", which is always safe.
+    """
+    if pat.flags & re.IGNORECASE:
+        return None
+    try:
+        from re import _constants as sre_c  # type: ignore[attr-defined]
+        from re import _parser as sre_p  # type: ignore[attr-defined]
+        parsed = sre_p.parse(pat.pattern, pat.flags)
+    except Exception:
+        return None
+    runs: list[str] = []
+
+    def walk(seq, run: list[str]) -> None:
+        for op, av in seq:
+            if op is sre_c.LITERAL:
+                run.append(chr(av))
+            elif op is sre_c.AT:
+                continue  # zero width: the run stays contiguous
+            elif op is sre_c.SUBPATTERN and not av[1] and not av[2]:
+                walk(av[3], run)
+            else:
+                runs.append("".join(run))
+                run.clear()
+                if op in (sre_c.MAX_REPEAT, sre_c.MIN_REPEAT) and av[0] >= 1:
+                    inner: list[str] = []
+                    walk(av[2], inner)
+                    runs.append("".join(inner))
+
+    tail: list[str] = []
+    walk(parsed, tail)
+    runs.append("".join(tail))
+    best = max(runs, key=len)
+    return best if len(best) >= 2 else None
+
+
+_REQ_LIT: dict[re.Pattern[str], str | None] = {}
+
+
+def _pattern_literal(pat: re.Pattern[str]) -> str | None:
+    try:
+        return _REQ_LIT[pat]
+    except KeyError:
+        lit = _REQ_LIT[pat] = _required_literal(pat)
+        return lit
+
+
+def _lit_search(pat: re.Pattern[str], text: str) -> re.Match[str] | None:
+    """pat.search(text), skipped when text lacks the literal it needs."""
+    lit = _pattern_literal(pat)
+    if lit is not None and lit not in text:
+        return None
+    return pat.search(text)
+
+
+def _lit_finditer(pat: re.Pattern[str], text: str) -> Iterator[re.Match[str]]:
+    """pat.finditer(text), empty when text lacks the literal it needs."""
+    lit = _pattern_literal(pat)
+    if lit is not None and lit not in text:
+        return iter(())
+    return pat.finditer(text)
+
+
+def _gated_lines(body: str, pat: re.Pattern[str]) -> list[str]:
+    """body.splitlines(), or [] when no line can match `pat`.
+
+    For per-line loops whose first step is `if not pat.match(ln): continue`:
+    a literal every match needs, absent from the whole body, is absent
+    from every line, so the loop would do nothing.
+    """
+    lit = _pattern_literal(pat)
+    if lit is not None and lit not in body:
+        return []
+    return body.splitlines()
+
+
+_RX: dict[str, re.Pattern[str]] = {}
+_RX_FLAGS: dict[tuple[str, int], re.Pattern[str]] = {}
+
+
+def _rx(pattern: str, flags: int = 0) -> re.Pattern[str]:
+    """re.compile for the inline constant patterns, cached for good.
+
+    The checkers use far more distinct patterns than the re module's
+    512-entry cache holds, so `re.search(pattern, s)` kept recompiling.
+    """
+    if not flags:
+        pat = _RX.get(pattern)
+        if pat is None:
+            pat = _RX[pattern] = re.compile(pattern)
+        return pat
+    key = (pattern, int(flags))
+    pat = _RX_FLAGS.get(key)
+    if pat is None:
+        pat = _RX_FLAGS[key] = re.compile(pattern, flags)
+    return pat
+
+
+_CALL_OPEN_RE: dict[str, re.Pattern[str]] = {}
+_PLAIN_IDENT = re.compile(r"\w+")
+_PLAIN_NAME: dict[str, bool] = {}
+
+
+def _call_open_re(fn: str) -> re.Pattern[str]:
+    pat = _CALL_OPEN_RE.get(fn)
+    if pat is None:
+        pat = re.compile(rf"\b{fn}\s*\(")
+        _CALL_OPEN_RE[fn] = pat
+    return pat
+
+
 def _find_call_args(line: str, fn: str) -> list[str] | None:
-    m = re.search(rf"\b{fn}\s*\(", line)
+    # A plain identifier must occur literally; skip the regex when absent.
+    if fn not in line:
+        plain = _PLAIN_NAME.get(fn)
+        if plain is None:
+            plain = _PLAIN_NAME[fn] = _PLAIN_IDENT.fullmatch(fn) is not None
+        if plain:
+            return None
+    m = _call_open_re(fn).search(line)
     if not m:
         return None
     start = m.end()
@@ -807,7 +935,7 @@ def _find_call_args(line: str, fn: str) -> list[str] | None:
 
 
 def _is_string_literal(s: str) -> bool:
-    return bool(re.match(r'^L?"', s.strip()))
+    return bool(_rx(r'^L?"').match(s.strip()))
 
 
 def _string_literal_inner(s: str) -> str | None:
@@ -911,15 +1039,15 @@ def _mem_lifetime(lines, rel, funcs, out) -> None:
 
 
 def _is_zero_literal(s: str) -> bool:
-    return bool(re.match(r"^0(?:u|l|ll|ul|ull)?$", s.strip(), re.I))
+    return bool(_rx(r"^0(?:u|l|ll|ul|ull)?$", re.I).match(s.strip()))
 
 
 def _is_tiny_literal(s: str) -> bool:
-    return bool(re.match(r"^(?:0|1)(?:u|l|ll|ul|ull)?$", s.strip(), re.I))
+    return bool(_rx(r"^(?:0|1)(?:u|l|ll|ul|ull)?$", re.I).match(s.strip()))
 
 
 def _is_sizeof_expr(s: str) -> bool:
-    return bool(re.match(r"^sizeof\s*\(", s.strip()))
+    return bool(_rx(r"^sizeof\s*\(").match(s.strip()))
 
 
 def _has_wrap_mul(s: str) -> bool:
@@ -952,7 +1080,7 @@ def _memset_swap(lines, rel, funcs, out) -> None:
                 continue
             size_arg = args[1].strip()
             if not (_is_sizeof_expr(size_arg) or (
-                re.match(r"^[A-Za-z_]\w*$", size_arg) and not _is_tiny_literal(size_arg)
+                _rx(r"^[A-Za-z_]\w*$").match(size_arg) and not _is_tiny_literal(size_arg)
             )):
                 continue
             if i in seen:
@@ -986,7 +1114,7 @@ def _taut_bound(lines, rel, funcs, out) -> None:
         chunk = lines[start - 1 : end]
         seen: set[tuple[str, int]] = set()
         for i, ln in enumerate(chunk):
-            m = re.search(r"\bif\s*\(([^)]+)\)", ln)
+            m = _rx(r"\bif\s*\(([^)]+)\)").search(ln)
             if not m:
                 continue
             cond = m.group(1)
@@ -1009,7 +1137,7 @@ def _taut_bound(lines, rel, funcs, out) -> None:
                     var = sorted(both)[0]
                     cls = "INT-TAUTOLOGY"
                     msg = f"{var} contradictory bounds use &&; always false"
-            if cls is None or var is None:
+            if cls is None or var is None or msg is None:
                 continue
             key = (var, i)
             if key in seen:
@@ -1050,11 +1178,8 @@ _C_ALLOC_ASSIGN = re.compile(
 
 def _parse_int_literal(s: str) -> int | None:
     s = s.strip()
-    m = re.match(
-        r"^(?P<n>-?(?:0x[0-9a-fA-F]+|0[0-7]*|\d+))"
-        r"(?:[uUlL]{0,3})?$",
-        s,
-    )
+    m = _rx(r"^(?P<n>-?(?:0x[0-9a-fA-F]+|0[0-7]*|\d+))"
+        r"(?:[uUlL]{0,3})?$").match(s)
     if not m:
         return None
     n = m.group("n")
@@ -1069,14 +1194,14 @@ def _parse_int_literal(s: str) -> int | None:
 
 
 def _is_char_literal(s: str) -> bool:
-    return bool(re.match(r"^'(?:\\.|[^\\'])'$", s.strip()))
+    return bool(_rx(r"^'(?:\\.|[^\\'])'$").match(s.strip()))
 
 
 def _trunc_rhs_bad(rhs: str, narrow: str) -> bool:
     rhs = rhs.strip()
     if _is_char_literal(rhs):
         return False
-    if re.match(r"^[A-Za-z_]\w*$", rhs):
+    if _rx(r"^[A-Za-z_]\w*$").match(rhs):
         return rhs not in _KW
     val = _parse_int_literal(rhs)
     if val is None:
@@ -1089,9 +1214,9 @@ def _trunc_rhs_bad(rhs: str, narrow: str) -> bool:
 def _narrow_kind(typ: str) -> str | None:
     if _UNSIGNED_TY.search(typ):
         return None
-    if re.search(r"\bchar\b", typ):
+    if _rx(r"\bchar\b").search(typ):
         return "char"
-    if re.search(r"\bshort\b", typ):
+    if _rx(r"\bshort\b").search(typ):
         return "short"
     return None
 
@@ -1104,11 +1229,11 @@ def _narrow_names(fn) -> dict[str, str]:
         kind = _narrow_kind(typ)
         if kind:
             names[name] = kind
-    for m in _NARROW_DECL.finditer(fn.body):
-        kind = "char" if re.search(r"\bchar\b", m.group(0)) else "short"
+    for m in _lit_finditer(_NARROW_DECL, fn.body):
+        kind = "char" if _rx(r"\bchar\b").search(m.group(0)) else "short"
         names[m.group(1)] = kind
-    for m in _NARROW_DECL_INIT.finditer(fn.body):
-        kind = "char" if re.search(r"\bchar\b", m.group(0)) else "short"
+    for m in _lit_finditer(_NARROW_DECL_INIT, fn.body):
+        kind = "char" if _rx(r"\bchar\b").search(m.group(0)) else "short"
         names[m.group(1)] = kind
     return names
 
@@ -1120,11 +1245,8 @@ def _unsigned_names(fn) -> set[str]:
             continue
         if _UNSIGNED_TY.search(typ):
             names.add(name)
-    for m in re.finditer(
-        r"\b(?:unsigned\s+(?:int|short|long|char)|size_t|uint\d+_t)\s+"
-        r"([A-Za-z_]\w*)\s*;",
-        fn.body,
-    ):
+    for m in _rx(r"\b(?:unsigned\s+(?:int|short|long|char)|size_t|uint\d+_t)\s+"
+        r"([A-Za-z_]\w*)\s*;").finditer(fn.body):
         names.add(m.group(1))
     return names
 
@@ -1141,7 +1263,7 @@ def _int_trunc(lines, rel, funcs, out) -> None:
                 name = m.group(1)
                 rhs = m.group("rhs").strip()
                 narrow_ty = narrow.get(name) or (
-                    "char" if re.search(r"\bchar\b", m.group(0)) else "short"
+                    "char" if _rx(r"\bchar\b").search(m.group(0)) else "short"
                 )
                 if not _trunc_rhs_bad(rhs, narrow_ty):
                     continue
@@ -1176,13 +1298,13 @@ def _int_trunc(lines, rel, funcs, out) -> None:
                     if 0 < line <= len(lines) else "",
                 ))
             for name, narrow_ty in narrow.items():
-                m = re.search(
+                am = re.search(
                     rf"\b{re.escape(name)}\s*=(?!=)\s*(?P<rhs>[^;,]+)",
                     ln,
                 )
-                if not m or _NARROW_DECL_INIT.search(ln):
+                if not am or _NARROW_DECL_INIT.search(ln):
                     continue
-                rhs = m.group("rhs").strip()
+                rhs = am.group("rhs").strip()
                 if not _trunc_rhs_bad(rhs, narrow_ty):
                     continue
                 key = (name, i)
@@ -1276,7 +1398,7 @@ def _locals_in_fn(fn) -> tuple[set[str], set[str]]:
     params = {name for typ, name in fn.params if name}
     scalars: set[str] = set()
     arrays: set[str] = set()
-    for m in _LOCAL_DECL.finditer(fn.body):
+    for m in _lit_finditer(_LOCAL_DECL, fn.body):
         if m.group("static"):
             continue
         name = m.group("name")
@@ -1338,7 +1460,7 @@ def _stack_escape(lines, rel, funcs, out) -> None:
 def _local_char_arrays(fn) -> set[str]:
     params = {name for typ, name in fn.params if name}
     names: set[str] = set()
-    for m in _LOCAL_CHAR_ARRAY.finditer(fn.body):
+    for m in _lit_finditer(_LOCAL_CHAR_ARRAY, fn.body):
         if m.group("static"):
             continue
         name = m.group("name")
@@ -1350,7 +1472,7 @@ def _local_char_arrays(fn) -> set[str]:
 def _local_wchar_arrays(fn) -> set[str]:
     params = {name for typ, name in fn.params if name}
     names: set[str] = set()
-    for m in _LOCAL_WCHAR_ARRAY.finditer(fn.body):
+    for m in _lit_finditer(_LOCAL_WCHAR_ARRAY, fn.body):
         if m.group("static"):
             continue
         name = m.group("name")
@@ -1373,7 +1495,7 @@ def _str_sprintf(lines, rel, funcs, out) -> None:
                 args = _find_call_args(ln, fname)
                 if args is None or len(args) <= dst_idx:
                     continue
-                dst = re.sub(r"\s+", "", args[dst_idx])
+                dst = _rx(r"\s+").sub("", args[dst_idx])
                 if dst not in locals_arr:
                     continue
                 key = (fname, i)
@@ -1405,7 +1527,7 @@ def _unbounded_copy(lines, rel, funcs, out) -> None:
                 args = _find_call_args(ln, fname)
                 if args is None or len(args) <= dst_idx:
                     continue
-                dst = re.sub(r"\s+", "", args[dst_idx])
+                dst = _rx(r"\s+").sub("", args[dst_idx])
                 if dst not in locals_arr:
                     continue
                 key = (fname, i)
@@ -1469,21 +1591,16 @@ def _cxx_new_delete(lines, rel, funcs, out) -> None:
 _UNARY_BITOP_PREV = set("=(,?:;{[|&!~^+-*/%<>")
 
 
+# Same left-to-right scan as a character loop: == != <= >= win, << and >>
+# are stepped over whole, then a lone < or > is a comparison.
+_CMP_TOKEN = re.compile(r"==|!=|<=|>=|<<|>>|[<>]")
+
+
 def _has_comparison(s: str) -> bool:
     """True for == != <= >= < > that are not << or >>."""
-    i = 0
-    n = len(s)
-    while i < n:
-        if s.startswith("==", i) or s.startswith("!=", i):
+    for m in _CMP_TOKEN.finditer(s):
+        if m.group() not in ("<<", ">>"):
             return True
-        if s.startswith("<=", i) or s.startswith(">=", i):
-            return True
-        if s.startswith("<<", i) or s.startswith(">>", i):
-            i += 2
-            continue
-        if s[i] in "<>":
-            return True
-        i += 1
     return False
 
 
@@ -1516,9 +1633,14 @@ def _bool_as_bit(lines, rel, funcs, out) -> None:
     `flags & MASK` is not this. `a == 1 & b == 2` is. Unary `&` is not.
     """
     for fn in funcs:
+        # No & or | in the body: no binary bit-op on any line.
+        if "&" not in fn.body and "|" not in fn.body:
+            continue
         start = fn.span[0]
         seen: set[int] = set()
         for i, ln in enumerate(fn.body.splitlines()):
+            if "&" not in ln and "|" not in ln:
+                continue
             if not _has_comparison(ln):
                 continue
             if not _binary_bitop_indices(ln):
@@ -1616,14 +1738,11 @@ def _signed_index_names(fn) -> set[str]:
             continue
         if _UNSIGNED_TY.search(typ):
             continue
-        words = re.findall(r"[A-Za-z_]\w*", typ)
+        words = _rx(r"[A-Za-z_]\w*").findall(typ)
         if any(w in _SIGNED_WORDS for w in words):
             names.add(name)
-    for m in re.finditer(
-        r"\b(?:signed\s+)?(?:int|short|long|char|ssize_t|ptrdiff_t|int\d+_t"
-        r"|intmax_t|intptr_t|off_t|pid_t)\s+([A-Za-z_]\w*)\s*;",
-        fn.body,
-    ):
+    for m in _rx(r"\b(?:signed\s+)?(?:int|short|long|char|ssize_t|ptrdiff_t|int\d+_t"
+        r"|intmax_t|intptr_t|off_t|pid_t)\s+([A-Za-z_]\w*)\s*;").finditer(fn.body):
         names.add(m.group(1))
     return names
 
@@ -1704,16 +1823,16 @@ def _alloc_in_null_condition(line: str, var: str) -> bool:
     """`if ((p = malloc(n)) == NULL)` — alloc and test on one condition."""
     v = re.escape(var)
     return bool(
-        re.search(rf"\bif\s*\(", line)
+        _rx(r"\bif\s*\(").search(line)
         and re.search(rf"\b{v}\s*=(?!=)", line)
-        and re.search(r"==\s*(?:NULL|nullptr|0)\b", line)
+        and _rx(r"==\s*(?:NULL|nullptr|0)\b").search(line)
     )
 
 
 def _first_ptr_use(var: str, chunk: list[str], start: int) -> int | None:
     v = re.escape(var)
     for j in range(start + 1, len(chunk)):
-        stripped = re.sub(r"sizeof\s*\([^)]*\)", "", chunk[j])
+        stripped = _rx(r"sizeof\s*\([^)]*\)").sub("", chunk[j])
         if re.search(rf"\b{v}\s*->", stripped):
             return j
         if re.search(rf"\*\s*{v}\b", stripped):
@@ -1731,7 +1850,7 @@ def _unchecked_alloc_site(
     require_nowait: bool,
 ) -> tuple[str, int] | None:
     var = m.group("var")
-    var = re.sub(r"\s+", "", var)
+    var = _rx(r"\s+").sub("", var)
     fn = m.group("fn")
     line = chunk[i]
     if fn == "realloc":
@@ -1762,6 +1881,9 @@ def _unchecked_alloc(lines, rel, funcs, out) -> None:
         chunk = lines[start - 1 : end]
         seen: set[tuple[str, int]] = set()
         for i, ln in enumerate(chunk):
+            # UNCHECKED_ALLOC names malloc/calloc/realloc.
+            if "alloc" not in ln:
+                continue
             m = UNCHECKED_ALLOC.search(ln)
             if not m:
                 continue
@@ -1793,6 +1915,9 @@ def _nowait_alloc(lines, rel, funcs, out) -> None:
         chunk = lines[start - 1 : end]
         seen: set[tuple[str, int]] = set()
         for i, ln in enumerate(chunk):
+            # NOWAIT_ALLOC needs M_NOWAIT on the line.
+            if "M_NOWAIT" not in ln:
+                continue
             m = NOWAIT_ALLOC.search(ln)
             if not m:
                 continue
@@ -1887,7 +2012,7 @@ _BRANCH_SCALAR = re.compile(
 
 def _is_value_returning(ret: str) -> bool:
     r = ret.strip()
-    if re.search(r"\bvoid\b", r) or "*" in r:
+    if _rx(r"\bvoid\b").search(r) or "*" in r:
         return False
     return bool(_VALUE_RET.search(r))
 
@@ -1910,7 +2035,7 @@ def _missing_return(lines, rel, funcs, out) -> None:
         body_lines = fn.body.splitlines()
         if not body_lines:
             continue
-        has_return = bool(re.search(r"\breturn\b", fn.body))
+        has_return = bool(_rx(r"\breturn\b").search(fn.body))
         last = _last_body_stmt(body_lines)
         if last is None:
             continue
@@ -1941,7 +2066,7 @@ def _missing_return(lines, rel, funcs, out) -> None:
 def _switch_bodies(text: str) -> list[tuple[str, int]]:
     """Switch bodies and 0-based line offset of the opening brace line."""
     out: list[tuple[str, int]] = []
-    for m in re.finditer(r"\bswitch\s*\([^)]*\)", text):
+    for m in _rx(r"\bswitch\s*\([^)]*\)").finditer(text):
         rest = text[m.end():]
         brace = rest.find("{")
         if brace < 0:
@@ -1986,7 +2111,7 @@ def _fallthrough(lines, rel, funcs, out) -> None:
         start = fn.span[0]
         seen: set[int] = set()
         for body, line_off in _switch_bodies(fn.body):
-            cases = list(_CASE_LABEL.finditer(body))
+            cases = list(_lit_finditer(_CASE_LABEL, body))
             for idx, cm in enumerate(cases):
                 arm = body[cm.end() : (
                     cases[idx + 1].start() if idx + 1 < len(cases) else len(body)
@@ -2054,7 +2179,7 @@ def _empty_infinite(lines, rel, funcs, out) -> None:
     for fn in funcs:
         start = fn.span[0]
         seen: set[int] = set()
-        for m in _EMPTY_INF.finditer(fn.body):
+        for m in _lit_finditer(_EMPTY_INF, fn.body):
             i = fn.body[: m.start()].count("\n")
             if i in seen:
                 continue
@@ -2073,7 +2198,7 @@ def _empty_infinite(lines, rel, funcs, out) -> None:
 def _uninit_locals(fn) -> set[str]:
     params = {name for typ, name in fn.params if name}
     names: set[str] = set()
-    for m in _LOCAL_UNINIT.finditer(fn.body):
+    for m in _lit_finditer(_LOCAL_UNINIT, fn.body):
         name = m.group(1)
         if name not in params and name not in _KW:
             names.add(name)
@@ -2116,7 +2241,7 @@ def _uninit_return(lines, rel, funcs, out) -> None:
 def _local_uninit_pointers(fn) -> set[str]:
     params = {name for typ, name in fn.params if name}
     names: set[str] = set()
-    for m in _LOCAL_PTR_UNINIT.finditer(fn.body):
+    for m in _lit_finditer(_LOCAL_PTR_UNINIT, fn.body):
         name = m.group(1)
         if name not in params and name not in _KW:
             names.add(name)
@@ -2201,7 +2326,7 @@ def _uninit_branch(lines, rel, funcs, out) -> None:
 def _local_char_array_sizes(fn) -> dict[str, int]:
     params = {name for typ, name in fn.params if name}
     sizes: dict[str, int] = {}
-    for m in _LOCAL_CHAR_ARRAY.finditer(fn.body):
+    for m in _lit_finditer(_LOCAL_CHAR_ARRAY, fn.body):
         if m.group("static"):
             continue
         name = m.group("name")
@@ -2211,14 +2336,14 @@ def _local_char_array_sizes(fn) -> dict[str, int]:
 
 
 def _sizeof_dst(dst: str, buf: str) -> bool:
-    d = re.sub(r"\s+", "", dst)
-    b = re.sub(r"\s+", "", buf)
+    d = _rx(r"\s+").sub("", dst)
+    b = _rx(r"\s+").sub("", buf)
     return d in {f"sizeof({b})", f"sizeof{b}"}
 
 
 def _string_lit_len(s: str) -> int | None:
     s = s.strip()
-    if not re.match(r'^L?"', s):
+    if not _rx(r'^L?"').match(s):
         return None
     inner = s[1:-1]
     length = 0
@@ -2245,10 +2370,10 @@ def _off_by_one(lines, rel, funcs, out) -> None:
         for i, ln in enumerate(chunk):
             args = _find_call_args(ln, "strncpy")
             if args is not None and len(args) >= 3:
-                dst = re.sub(r"\s+", "", args[0])
+                dst = _rx(r"\s+").sub("", args[0])
                 if dst in arrays:
                     m = arrays[dst]
-                    n_arg = re.sub(r"\s+", "", args[2])
+                    n_arg = _rx(r"\s+").sub("", args[2])
                     if n_arg == str(m) or _sizeof_dst(n_arg, dst):
                         key = ("strncpy", i)
                         if key not in seen:
@@ -2265,7 +2390,7 @@ def _off_by_one(lines, rel, funcs, out) -> None:
                             ))
             args = _find_call_args(ln, "strcpy")
             if args is not None and len(args) >= 2:
-                dst = re.sub(r"\s+", "", args[0])
+                dst = _rx(r"\s+").sub("", args[0])
                 if dst in arrays:
                     lit_len = _string_lit_len(args[1])
                     if lit_len is not None and lit_len + 1 > arrays[dst]:
@@ -2336,7 +2461,7 @@ def _noreturn_fatal(lines, rel, funcs, out) -> None:
         if _declared_noreturn(fn, lines):
             continue
         body_lines = fn.body.splitlines()
-        if re.search(r"\breturn\b", fn.body):
+        if _rx(r"\breturn\b").search(fn.body):
             continue
         last = _last_body_stmt(body_lines)
         if last is None:
@@ -2370,9 +2495,9 @@ def _mem_overlap(lines, rel, funcs, out) -> None:
             args = _find_call_args(ln, "memcpy")
             if args is None or len(args) < 2:
                 continue
-            dst = re.sub(r"\s+", "", args[0])
-            src = re.sub(r"\s+", "", args[1])
-            if dst != src or not re.match(r"^[A-Za-z_]\w*$", dst):
+            dst = _rx(r"\s+").sub("", args[0])
+            src = _rx(r"\s+").sub("", args[1])
+            if dst != src or not _rx(r"^[A-Za-z_]\w*$").match(dst):
                 continue
             if i in seen:
                 continue
@@ -2430,9 +2555,9 @@ def _capacity_first(lines, rel, func_of, out) -> None:
 
 def _div_zero_const(lines, rel, func_of, out) -> None:
     for i, ln in enumerate(lines, 1):
-        if re.search(r"[/%]\s*0\b", ln) and not re.search(r"[0-9]\s*[/%]\s*0\.\d", ln):
+        if _rx(r"[/%]\s*0\b").search(ln) and not _rx(r"[0-9]\s*[/%]\s*0\.\d").search(ln):
             # integer /0 or %0; float 0.0 is defined IEEE
-            if re.search(r"[/%]\s*0\.", ln):
+            if _rx(r"[/%]\s*0\.").search(ln):
                 continue
             out.append(Finding(
                 stage="lints", status=laws.FAILED, file=rel,
@@ -2489,7 +2614,7 @@ def _popcount(n: int) -> int:
 
 def _masked_switch(lines, rel, func_of, out) -> None:
     text = "\n".join(lines)
-    for m in MASKED_SWITCH.finditer(text):
+    for m in _lit_finditer(MASKED_SWITCH, text):
         expr = m.group(1)
         # locate line
         line = text[: m.start()].count("\n") + 1
@@ -2511,11 +2636,11 @@ def _masked_switch(lines, rel, func_of, out) -> None:
         if end is None:
             continue
         body = rest[brace : end + 1]
-        if re.search(r"\bdefault\s*:", body):
+        if _rx(r"\bdefault\s*:").search(body):
             continue
-        cases = re.findall(r"\bcase\b", body)
-        lit = re.search(r"0x([0-9a-fA-F]+)|(\d+)\s*$", expr.replace(")", " ").split("&")[-1].strip())
-        named = re.findall(r"[A-Za-z_]\w*", expr.split("&", 1)[-1])
+        cases = _rx(r"\bcase\b").findall(body)
+        lit = _rx(r"0x([0-9a-fA-F]+)|(\d+)\s*$").search(expr.replace(")", " ").split("&")[-1].strip())
+        named = _rx(r"[A-Za-z_]\w*").findall(expr.split("&", 1)[-1])
         named = [n for n in named if n not in {"if", "switch"}]
         if lit:
             mask = int(lit.group(1), 16) if lit.group(1) else int(lit.group(2))
@@ -2531,16 +2656,13 @@ def _masked_switch(lines, rel, func_of, out) -> None:
         if len(cases) >= states:
             continue
         # uninit escape: a name assigned in an arm, declared without init, read after
-        assigned = set(re.findall(r"\b([A-Za-z_]\w*)\s*=", body))
+        assigned = set(_rx(r"\b([A-Za-z_]\w*)\s*=").findall(body))
         after_line = line + body.count("\n")
         after = "\n".join(lines[after_line: after_line + 40])
         declared = set()
         for f_line in lines[max(0, line - 80): line]:
-            dm = re.match(
-                r"\s*(?:int|unsigned|long|char|size_t|uint\d+_t|int\d+_t)\s+"
-                r"([A-Za-z_]\w*)\s*;",
-                f_line,
-            )
+            dm = _rx(r"\s*(?:int|unsigned|long|char|size_t|uint\d+_t|int\d+_t)\s+"
+                r"([A-Za-z_]\w*)\s*;").match(f_line)
             if dm:
                 declared.add(dm.group(1))
         escape = assigned & declared
@@ -2675,7 +2797,7 @@ def _global_rmw(body: str, name: str) -> bool:
 
 
 def _fn_has_lock_call(body: str) -> bool:
-    return bool(_LOCK_IN_CALL.search(body))
+    return bool(_lit_search(_LOCK_IN_CALL, body))
 
 
 def _conc_atomicity(lines, rel, funcs, out) -> None:
@@ -2687,7 +2809,7 @@ def _conc_atomicity(lines, rel, funcs, out) -> None:
     for fn in funcs:
         if _fn_has_lock_call(fn.body):
             continue
-        for g in globals_:
+        for g in sorted(globals_):
             if not _global_rmw(fn.body, g):
                 continue
             key = (fn.name, g)
@@ -2744,7 +2866,7 @@ def _cxx_virtual_in_ctor(text: str, lines, rel, funcs, out) -> None:
     """C++ only: constructor calls a method declared virtual in the TU."""
     if "virtual" not in text:
         return
-    virtuals = {m.group(1) for m in _CXX_VIRTUAL.finditer(text)}
+    virtuals = {m.group(1) for m in _lit_finditer(_CXX_VIRTUAL, text)}
     if not virtuals:
         return
     type_names = set(_CXX_TYPE.findall(text))
@@ -2779,7 +2901,7 @@ def _cxx_virtual_in_ctor(text: str, lines, rel, funcs, out) -> None:
 
 
 def _unlock_of(name: str) -> str | None:
-    hits = list(re.finditer(r"(?i)lock", name))
+    hits = list(_rx(r"(?i)lock").finditer(name))
     if not hits:
         return None
     if "ASSERT" in name.upper():
@@ -2794,7 +2916,7 @@ def _unlock_of(name: str) -> str | None:
 
 def _lock_of(name: str) -> str | None:
     """Partner that acquires what `name` releases, or None."""
-    hits = list(re.finditer(r"(?i)unlock", name))
+    hits = list(_rx(r"(?i)unlock").finditer(name))
     if not hits:
         return None
     if "ASSERT" in name.upper():
@@ -2824,9 +2946,9 @@ def _lock_balance(lines, rel, funcs, out) -> None:
                     pairs.setdefault((name, arg), [])
                     pairs[(name, arg)].append(i)
                 # unlocks
-                if re.search(r"(?i)unlock", name):
+                if _rx(r"(?i)unlock").search(name):
                     unlocks.setdefault((name, arg), []).append(i)
-        returns = [i for i, ln in enumerate(body_lines) if re.match(r"\s*return\b", ln)]
+        returns = [i for i, ln in enumerate(body_lines) if _rx(r"\s*return\b").match(ln)]
         if len(returns) < 2:
             continue
         for (lock, arg), _hits in pairs.items():
@@ -2872,7 +2994,7 @@ def _lock_double_unlock(lines, rel, funcs, out) -> None:
             found = False
             for m in LOCK_CALL.finditer(ln):
                 name, arg = m.group(1), " ".join(m.group(2).split())
-                if re.search(r"(?i)unlock", name):
+                if _rx(r"(?i)unlock").search(name):
                     key = (name, arg)
                     if held.get(key) is False:
                         line = fn.span[0] + i
@@ -2911,7 +3033,7 @@ def _lock_double_lock(lines, rel, funcs, out) -> None:
             found = False
             for m in LOCK_CALL.finditer(ln):
                 name, arg = m.group(1), " ".join(m.group(2).split())
-                if re.search(r"(?i)unlock", name):
+                if _rx(r"(?i)unlock").search(name):
                     lock_name = _lock_of(name)
                     if lock_name:
                         held[(lock_name, arg)] = False
@@ -2962,22 +3084,22 @@ def _lock_missing_init(lines, rel, funcs, out) -> None:
     for fn in funcs:
         inited: set[str] = set()
         locals_: set[str] = set()
-        for m in _MUTEX_LOCAL.finditer(fn.body):
+        for m in _lit_finditer(_MUTEX_LOCAL, fn.body):
             name = m.group("name")
             locals_.add(name)
             if m.group("init"):
                 inited.add(name)
         if not locals_:
             continue
-        for m in _MUTEX_INIT_CALL.finditer(fn.body):
+        for m in _lit_finditer(_MUTEX_INIT_CALL, fn.body):
             inited.add(m.group(1))
         start = fn.span[0]
         reported: set[str] = set()
-        for i, ln in enumerate(fn.body.splitlines()):
-            m = _MUTEX_LOCK_CALL.search(ln)
-            if not m:
+        for i, ln in enumerate(_gated_lines(fn.body, _MUTEX_LOCK_CALL)):
+            sm = _MUTEX_LOCK_CALL.search(ln)
+            if not sm:
                 continue
-            name = m.group(1)
+            name = sm.group(1)
             if name not in locals_ or name in inited or name in reported:
                 continue
             reported.add(name)
@@ -2996,7 +3118,7 @@ def _lock_missing_init(lines, rel, funcs, out) -> None:
 def _cxx_throw_destructor(stripped: str, lines, rel, out) -> None:
     """Destructor body contains a throw statement (not a throw() specifier)."""
     reported: set[str] = set()
-    for m in _DTOR_HEAD.finditer(stripped):
+    for m in _lit_finditer(_DTOR_HEAD, stripped):
         name = m.group("name")
         if name in reported:
             continue
@@ -3005,7 +3127,7 @@ def _cxx_throw_destructor(stripped: str, lines, rel, out) -> None:
         if close < 0:
             continue
         body = stripped[brace + 1: close]
-        tm = re.search(r"\bthrow\b", body)
+        tm = _rx(r"\bthrow\b").search(body)
         if not tm:
             continue
         reported.add(name)
@@ -3036,7 +3158,7 @@ def _cxx_throw_spec(stripped: str, lines, rel, out) -> None:
     is skipped because the callee name is a keyword. `noexcept` is allowed.
     """
     reported: set[str] = set()
-    for m in _CXX_THROW_SPEC.finditer(stripped):
+    for m in _lit_finditer(_CXX_THROW_SPEC, stripped):
         name = m.group("name")
         if name in _THROW_SPEC_SKIP:
             continue
@@ -3066,7 +3188,7 @@ _CXX_LOCAL_OBJ = re.compile(
 
 
 def _cxx_class_name(typ: str) -> str:
-    t = re.sub(r"\b(?:const|volatile|struct|class)\b", " ", typ)
+    t = _rx(r"\b(?:const|volatile|struct|class)\b").sub(" ", typ)
     t = t.replace("&", " ").replace("*", " ")
     return " ".join(t.split())
 
@@ -3078,7 +3200,7 @@ def _cxx_slicing(stripped: str, lines, rel, funcs, out) -> None:
     is not slicing.
     """
     inherit: dict[str, set[str]] = {}
-    for m in _CXX_INHERIT.finditer(stripped):
+    for m in _lit_finditer(_CXX_INHERIT, stripped):
         inherit.setdefault(m.group("derived"), set()).add(m.group("base"))
     if not inherit:
         return
@@ -3105,7 +3227,7 @@ def _cxx_slicing(stripped: str, lines, rel, funcs, out) -> None:
             t = _cxx_class_name(typ)
             if t in derived_names:
                 typed[name] = t
-        for m in _CXX_LOCAL_OBJ.finditer(fn.body):
+        for m in _lit_finditer(_CXX_LOCAL_OBJ, fn.body):
             if m.group("ty") in derived_names:
                 typed[m.group("name")] = m.group("ty")
         if not typed:
@@ -3149,7 +3271,7 @@ def _cxx_delete_this(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _DELETE_THIS)):
             if not _DELETE_THIS.search(ln):
                 continue
             line = start + i
@@ -3198,13 +3320,13 @@ def _cxx_catch_by_value(lines, rel, funcs, out) -> None:
 
 
 def _fn_promises_no_throw(signature: str) -> bool:
-    m = re.search(r"\)([^({]*)", signature)
+    m = _rx(r"\)([^({]*)").search(signature)
     if not m:
         return False
     tail = m.group(1)
-    if re.search(r"\bnoexcept\b", tail):
+    if _rx(r"\bnoexcept\b").search(tail):
         return True
-    return bool(re.search(r"throw\s*\(\s*\)", tail))
+    return bool(_rx(r"throw\s*\(\s*\)").search(tail))
 
 
 def _cxx_throw_noexcept(lines, rel, funcs, out) -> None:
@@ -3212,13 +3334,13 @@ def _cxx_throw_noexcept(lines, rel, funcs, out) -> None:
     for fn in funcs:
         if not _fn_promises_no_throw(fn.signature):
             continue
-        tm = re.search(r"\bthrow\b", fn.body)
+        tm = _rx(r"\bthrow\b").search(fn.body)
         if not tm:
             continue
         start = fn.span[0]
         line = start
         for i, ln in enumerate(fn.body.splitlines()):
-            if re.search(r"\bthrow\b", ln):
+            if _rx(r"\bthrow\b").search(ln):
                 line = start + i
                 break
         out.append(Finding(
@@ -3244,7 +3366,7 @@ _CXX_PTR_DECL = re.compile(
 def _class_needs_virtual_dtor(stripped: str) -> set[str]:
     """Classes with a virtual method but no virtual destructor in the TU."""
     bad: set[str] = set()
-    for m in _CLASS_DEF.finditer(stripped):
+    for m in _lit_finditer(_CLASS_DEF, stripped):
         name = m.group("name")
         brace = m.end() - 1
         close = _match_brace(stripped, brace)
@@ -3255,9 +3377,9 @@ def _class_needs_virtual_dtor(stripped: str) -> set[str]:
             re.search(rf"\bvirtual\s+~(?:{re.escape(name)})\b", body)
         )
         has_virt_method = False
-        for vm in re.finditer(r"\bvirtual\b", body):
+        for vm in _rx(r"\bvirtual\b").finditer(body):
             chunk = body[vm.start(): vm.start() + 120]
-            if re.search(r"\bvirtual\s+~", chunk):
+            if _rx(r"\bvirtual\s+~").search(chunk):
                 continue
             if "(" in chunk:
                 has_virt_method = True
@@ -3275,7 +3397,7 @@ def _fn_ptr_types(fn) -> dict[str, str]:
         cls = _cxx_class_name(typ)
         if cls:
             typed[pname] = cls.split()[-1]
-    for m in _CXX_PTR_DECL.finditer(fn.body):
+    for m in _lit_finditer(_CXX_PTR_DECL, fn.body):
         typed[m.group("name")] = m.group("cls")
     return typed
 
@@ -3291,7 +3413,7 @@ def _cxx_missing_virtual_dtor(stripped: str, lines, rel, funcs, out) -> None:
             continue
         start = fn.span[0]
         reported: set[str] = set()
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _DELETE)):
             dm = _DELETE.search(ln)
             if not dm:
                 continue
@@ -3336,8 +3458,8 @@ _VLA_DECL = re.compile(
 
 
 def _similar_param_type(a: str, b: str) -> bool:
-    na = re.sub(r"\s+", " ", a.strip().lower())
-    nb = re.sub(r"\s+", " ", b.strip().lower())
+    na = _rx(r"\s+").sub(" ", a.strip().lower())
+    nb = _rx(r"\s+").sub(" ", b.strip().lower())
     return na == nb
 
 
@@ -3365,7 +3487,7 @@ def _param_guarded(name: str, body_lines: list[str]) -> bool:
         if not any(re.search(p, ln) for p in tests):
             continue
         nxt = body_lines[i + 1] if i + 1 < len(body_lines) else ""
-        if re.search(r"\breturn\b", ln) or re.search(r"\breturn\b", nxt):
+        if _rx(r"\breturn\b").search(ln) or _rx(r"\breturn\b").search(nxt):
             return True
     return False
 
@@ -3475,7 +3597,7 @@ def _api_gets(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _GETS_CALL)):
             if not _GETS_CALL.search(ln):
                 continue
             line = start + i
@@ -3499,7 +3621,7 @@ def _api_strtok(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _STRTOK_CALL)):
             if not _STRTOK_CALL.search(ln):
                 continue
             line = start + i
@@ -3555,7 +3677,7 @@ def _api_tmpnam(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _TMPNAM_CALL)):
             if not _TMPNAM_CALL.search(ln):
                 continue
             line = start + i
@@ -3580,7 +3702,7 @@ def _api_mktemp(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _MKTEMP_CALL)):
             if not _MKTEMP_CALL.search(ln):
                 continue
             line = start + i
@@ -3680,7 +3802,7 @@ def _fmt_literal_has_percent_s(s: str) -> bool:
 
 
 def _getenv_assign_vars(ln: str) -> list[str]:
-    if not re.search(r"\b(?:secure_)?getenv\s*\(", ln):
+    if not _rx(r"\b(?:secure_)?getenv\s*\(").search(ln):
         return []
     m = _GETENV_ASSIGN.search(ln)
     return [m.group("var")] if m else []
@@ -3728,7 +3850,7 @@ def _getenv_only_returned(var: str, chunk: list[str], assign_i: int) -> bool:
         ln = chunk[j]
         if _getenv_uses(var, ln):
             return False
-        if re.search(rf"\breturn\b", ln):
+        if _rx(r"\breturn\b").search(ln):
             if re.search(rf"\breturn\s+{v}\s*;", ln):
                 saw_return = True
             else:
@@ -3783,7 +3905,7 @@ _STRDUP_ASSIGN = re.compile(
 
 
 def _strdup_assign_vars(ln: str) -> list[str]:
-    if not re.search(r"\bstrn?dup\s*\(", ln):
+    if not _rx(r"\bstrn?dup\s*\(").search(ln):
         return []
     m = _STRDUP_ASSIGN.search(ln)
     return [m.group("var")] if m else []
@@ -3804,7 +3926,7 @@ def _strdup_only_returned(var: str, chunk: list[str], assign_i: int) -> bool:
         ln = chunk[j]
         if _getenv_uses(var, ln):
             return False
-        if re.search(rf"\breturn\b", ln):
+        if _rx(r"\breturn\b").search(ln):
             if re.search(rf"\breturn\s+{v}\s*;", ln):
                 saw_return = True
             else:
@@ -4821,13 +4943,7 @@ _WORLD_WRITABLE_MODE = 0o777
 
 
 def _fork_compared_in_stmt(ln: str) -> bool:
-    return bool(re.search(
-        r"(?:vfork|fork)\s*\([^;]*\)\s*(?:==|!=|<|>|<=|>=)",
-        ln,
-    ) or re.search(
-        r"(?:==|!=|<|>|<=|>=)\s*(?:vfork|fork)\s*\(",
-        ln,
-    ))
+    return bool(_rx(r"(?:vfork|fork)\s*\([^;]*\)\s*(?:==|!=|<|>|<=|>=)").search(ln) or _rx(r"(?:==|!=|<|>|<=|>=)\s*(?:vfork|fork)\s*\(").search(ln))
 
 
 def _fork_pid_tested(var: str, text: str) -> bool:
@@ -4848,7 +4964,7 @@ def _api_fork(lines, rel, funcs, out) -> None:
         chunk = lines[start - 1 : end]
         seen: set[int] = set()
         for i, ln in enumerate(chunk):
-            if not re.search(r"(?<![A-Za-z0-9_])(?:vfork|fork)\s*\(", ln):
+            if not _rx(r"(?<![A-Za-z0-9_])(?:vfork|fork)\s*\(").search(ln):
                 continue
             if _fork_compared_in_stmt(ln):
                 continue
@@ -4971,7 +5087,7 @@ def _wcs_unbounded(lines, rel, funcs, out) -> None:
                 args = _find_call_args(ln, fname)
                 if args is None or len(args) <= dst_idx:
                     continue
-                dst = re.sub(r"\s+", "", args[dst_idx])
+                dst = _rx(r"\s+").sub("", args[dst_idx])
                 if dst not in locals_arr:
                     continue
                 key = (fname, i)
@@ -5029,7 +5145,7 @@ def _api_ioctl(lines, rel, funcs, out) -> None:
     """ioctl() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _IOCTL_DISCARDED)):
             if not _IOCTL_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -5045,14 +5161,14 @@ def _api_ioctl(lines, rel, funcs, out) -> None:
 
 def _var_in_call_args(var: str, ln: str, skip_callees: tuple[str, ...] = ()) -> bool:
     """True when `var` is passed as an argument to some call on `ln`."""
-    for m in re.finditer(r"\b([A-Za-z_]\w*)\s*\(", ln):
+    for m in _rx(r"\b([A-Za-z_]\w*)\s*\(").finditer(ln):
         name = m.group(1)
         if name in _KW or name in skip_callees:
             continue
         args = _find_call_args(ln, name)
         if not args:
             continue
-        if any(re.sub(r"\s+", "", a) == var for a in args):
+        if any(_rx(r"\s+").sub("", a) == var for a in args):
             return True
     return False
 
@@ -5075,14 +5191,11 @@ def _lt_zero_test_for(var: str, text: str) -> bool:
     v = re.escape(var)
     if re.search(rf"{v}\s*<\s*0\b", text):
         return True
-    if re.search(
-        r"(?:accept4|accept|dup3|dup2|dup|pipe2|pipe|openat2|openat|shm_open|"
+    if _rx(r"(?:accept4|accept|dup3|dup2|dup|pipe2|pipe|openat2|openat|shm_open|"
         r"memfd_secret|memfd_create|inotify_init1|inotify_init|pidfd_open|fanotify_init|"
         r"userfaultfd|landlock_create_ruleset|signalfd|perf_event_open|"
         r"pkey_alloc|fsopen|mq_open|shmget|semget|msgget)"
-        r"\s*\([^;]*\)\s*\)*\s*<\s*0\b",
-        text,
-    ):
+        r"\s*\([^;]*\)\s*\)*\s*<\s*0\b").search(text):
         return True
     return False
 
@@ -5260,7 +5373,7 @@ def _int_clz_zero(lines, rel, funcs, out) -> None:
                 lit = _parse_int_literal(arg)
                 if lit == 0:
                     bad = True
-                elif re.fullmatch(r"[A-Za-z_]\w*", arg):
+                elif _rx(r"[A-Za-z_]\w*").fullmatch(arg):
                     before = "\n".join(chunk[:i + 1])
                     bad = not _nonzero_guard_for(arg, before)
                 else:
@@ -5286,7 +5399,7 @@ def _api_setuid(lines, rel, funcs, out) -> None:
     """setuid/seteuid/setgid to 0 with the return discarded (CWE-250)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _SETUID_DISCARDED)):
             if not _SETUID_DISCARDED.match(ln):
                 continue
             fname = None
@@ -5347,7 +5460,7 @@ def _api_bind(lines, rel, funcs, out) -> None:
     """bind() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _BIND_DISCARDED)):
             if not _BIND_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -5365,7 +5478,7 @@ def _api_listen(lines, rel, funcs, out) -> None:
     """listen() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _LISTEN_DISCARDED)):
             if not _LISTEN_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -5383,7 +5496,7 @@ def _api_connect(lines, rel, funcs, out) -> None:
     """connect() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _CONNECT_DISCARDED)):
             if not _CONNECT_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -5398,13 +5511,7 @@ def _api_connect(lines, rel, funcs, out) -> None:
 
 
 def _pipe_compared_in_stmt(ln: str) -> bool:
-    return bool(re.search(
-        r"(?:pipe2|pipe)\s*\([^;]*\)\s*(?:==|!=|<|>|<=|>=)",
-        ln,
-    ) or re.search(
-        r"(?:==|!=|<|>|<=|>=)\s*(?:pipe2|pipe)\s*\(",
-        ln,
-    ))
+    return bool(_rx(r"(?:pipe2|pipe)\s*\([^;]*\)\s*(?:==|!=|<|>|<=|>=)").search(ln) or _rx(r"(?:==|!=|<|>|<=|>=)\s*(?:pipe2|pipe)\s*\(").search(ln))
 
 
 def _pipe_fds_used(name: str, chunk: list[str], start: int) -> bool:
@@ -5427,7 +5534,7 @@ def _api_pipe(lines, rel, funcs, out) -> None:
         chunk = lines[start - 1 : end]
         seen: set[int] = set()
         for i, ln in enumerate(chunk):
-            if not re.search(r"(?<![A-Za-z0-9_])(?:pipe2|pipe)\s*\(", ln):
+            if not _rx(r"(?<![A-Za-z0-9_])(?:pipe2|pipe)\s*\(").search(ln):
                 continue
             if _pipe_compared_in_stmt(ln):
                 continue
@@ -5435,8 +5542,8 @@ def _api_pipe(lines, rel, funcs, out) -> None:
             args = _find_call_args(ln, fname)
             if not args:
                 continue
-            fds = re.sub(r"\s+", "", args[0])
-            if not re.match(r"^[A-Za-z_]\w*$", fds):
+            fds = _rx(r"\s+").sub("", args[0])
+            if not _rx(r"^[A-Za-z_]\w*$").match(fds):
                 continue
             if i in seen:
                 continue
@@ -5523,7 +5630,7 @@ def _api_fcntl(lines, rel, funcs, out) -> None:
     """fcntl() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _FCNTL_DISCARDED)):
             if not _FCNTL_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -5541,7 +5648,7 @@ def _api_wait(lines, rel, funcs, out) -> None:
     """wait/waitpid/waitid return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _WAIT_DISCARDED)):
             if not _WAIT_DISCARDED.match(ln):
                 continue
             if _find_call_args(ln, "waitpid"):
@@ -5565,7 +5672,7 @@ def _api_select(lines, rel, funcs, out) -> None:
     """select()/poll()/epoll_wait() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _SELECT_DISCARDED)):
             if not _SELECT_DISCARDED.match(ln):
                 continue
             if _find_call_args(ln, "epoll_wait"):
@@ -5589,7 +5696,7 @@ def _api_send(lines, rel, funcs, out) -> None:
     """send()/recv()/sendto()/recvfrom() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _SEND_DISCARDED)):
             if not _SEND_DISCARDED.match(ln):
                 continue
             if _find_call_args(ln, "sendto"):
@@ -5615,7 +5722,7 @@ def _api_shutdown(lines, rel, funcs, out) -> None:
     """shutdown() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _SHUTDOWN_DISCARDED)):
             if not _SHUTDOWN_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -5633,7 +5740,7 @@ def _api_kill(lines, rel, funcs, out) -> None:
     """kill()/raise() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _KILL_DISCARDED)):
             if not _KILL_DISCARDED.match(ln):
                 continue
             fname = "kill" if _find_call_args(ln, "kill") else "raise"
@@ -5650,16 +5757,10 @@ def _api_kill(lines, rel, funcs, out) -> None:
 
 def _getaddrinfo_zero_test(var: str | None, text: str) -> bool:
     """True if `text` tests getaddrinfo success with `== 0` / `!= 0`."""
-    if re.search(
-        r"getaddrinfo\s*\([^;]*\)\s*\)*\s*(?:==|!=)\s*0\b",
-        text,
-    ):
+    if _rx(r"getaddrinfo\s*\([^;]*\)\s*\)*\s*(?:==|!=)\s*0\b").search(text):
         return True
-    if re.search(
-        r"(?:==|!=)\s*0\b[^=\n]*getaddrinfo\s*\(|"
-        r"0\s*(?:==|!=)\s*getaddrinfo\s*\(",
-        text,
-    ):
+    if _rx(r"(?:==|!=)\s*0\b[^=\n]*getaddrinfo\s*\(|"
+        r"0\s*(?:==|!=)\s*getaddrinfo\s*\(").search(text):
         return True
     if var:
         v = re.escape(var)
@@ -5721,7 +5822,7 @@ def _api_pthread_join(lines, rel, funcs, out) -> None:
     """pthread_join()/pthread_detach() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _PTHREAD_JOIN_DISCARDED)):
             if not _PTHREAD_JOIN_DISCARDED.match(ln):
                 continue
             fname = (
@@ -5743,7 +5844,7 @@ def _api_thrd_join(lines, rel, funcs, out) -> None:
     """ISO C11 thrd_join()/thrd_detach() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _THRD_JOIN_DISCARDED)):
             if not _THRD_JOIN_DISCARDED.match(ln):
                 continue
             fname = (
@@ -5765,7 +5866,7 @@ def _api_sem_wait(lines, rel, funcs, out) -> None:
     """sem_wait()/sem_post() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _SEM_WAIT_DISCARDED)):
             if not _SEM_WAIT_DISCARDED.match(ln):
                 continue
             fname = "sem_wait" if _find_call_args(ln, "sem_wait") else "sem_post"
@@ -5819,7 +5920,7 @@ def _api_flock(lines, rel, funcs, out) -> None:
     """flock() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _FLOCK_DISCARDED)):
             if not _FLOCK_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -5837,7 +5938,7 @@ def _api_chown(lines, rel, funcs, out) -> None:
     """chown/fchown/lchown return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _CHOWN_DISCARDED)):
             if not _CHOWN_DISCARDED.match(ln):
                 continue
             if _find_call_args(ln, "fchown"):
@@ -5861,7 +5962,7 @@ def _api_symlink(lines, rel, funcs, out) -> None:
     """symlink()/readlink() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _SYMLINK_DISCARDED)):
             if not _SYMLINK_DISCARDED.match(ln):
                 continue
             fname = "symlink" if _find_call_args(ln, "symlink") else "readlink"
@@ -5912,7 +6013,7 @@ def _api_setrlimit(lines, rel, funcs, out) -> None:
     """setrlimit()/getrlimit() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _SETRLIMIT_DISCARDED)):
             if not _SETRLIMIT_DISCARDED.match(ln):
                 continue
             fname = "setrlimit" if _find_call_args(ln, "setrlimit") else "getrlimit"
@@ -5931,7 +6032,7 @@ def _api_getsockopt(lines, rel, funcs, out) -> None:
     """getsockopt()/setsockopt() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _GETSOCKOPT_DISCARDED)):
             if not _GETSOCKOPT_DISCARDED.match(ln):
                 continue
             fname = "getsockopt" if _find_call_args(ln, "getsockopt") else "setsockopt"
@@ -5950,7 +6051,7 @@ def _api_stat(lines, rel, funcs, out) -> None:
     """stat()/lstat()/fstat() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _STAT_DISCARDED)):
             if not _STAT_DISCARDED.match(ln):
                 continue
             if _find_call_args(ln, "lstat"):
@@ -5974,7 +6075,7 @@ def _api_mkdir(lines, rel, funcs, out) -> None:
     """mkdir()/rmdir() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _MKDIR_DISCARDED)):
             if not _MKDIR_DISCARDED.match(ln):
                 continue
             fname = "mkdir" if _find_call_args(ln, "mkdir") else "rmdir"
@@ -6027,7 +6128,7 @@ def _api_clock_gettime(lines, rel, funcs, out) -> None:
     """clock_gettime()/gettimeofday() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _CLOCK_GETTIME_DISCARDED)):
             if not _CLOCK_GETTIME_DISCARDED.match(ln):
                 continue
             fname = (
@@ -6084,7 +6185,7 @@ def _api_posix_spawn(lines, rel, funcs, out) -> None:
     """posix_spawn()/posix_spawnp() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _POSIX_SPAWN_DISCARDED)):
             if not _POSIX_SPAWN_DISCARDED.match(ln):
                 continue
             fname = (
@@ -6106,7 +6207,7 @@ def _api_glob(lines, rel, funcs, out) -> None:
     """glob() return discarded (not compared to 0) (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _GLOB_DISCARDED)):
             if not _GLOB_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -6124,7 +6225,7 @@ def _api_fseek(lines, rel, funcs, out) -> None:
     """fseek()/ftell() return discarded (CWE-252). rewind is void — skip."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _FSEEK_DISCARDED)):
             if not _FSEEK_DISCARDED.match(ln):
                 continue
             fname = "ftell" if _find_call_args(ln, "ftell") else "fseek"
@@ -6143,7 +6244,7 @@ def _api_access(lines, rel, funcs, out) -> None:
     """access() return discarded (CWE-252). Not CONC-TOCTOU (no open)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _ACCESS_DISCARDED)):
             if not _ACCESS_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -6161,7 +6262,7 @@ def _api_getopt(lines, rel, funcs, out) -> None:
     """getopt()/getopt_long() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _GETOPT_DISCARDED)):
             if not _GETOPT_DISCARDED.match(ln):
                 continue
             fname = (
@@ -6183,7 +6284,7 @@ def _api_uname(lines, rel, funcs, out) -> None:
     """uname()/gethostname() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _UNAME_DISCARDED)):
             if not _UNAME_DISCARDED.match(ln):
                 continue
             fname = "gethostname" if _find_call_args(ln, "gethostname") else "uname"
@@ -6202,7 +6303,7 @@ def _api_sendfile(lines, rel, funcs, out) -> None:
     """sendfile()/copy_file_range() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _SENDFILE_DISCARDED)):
             if not _SENDFILE_DISCARDED.match(ln):
                 continue
             fname = (
@@ -6259,7 +6360,7 @@ def _api_prctl(lines, rel, funcs, out) -> None:
     """prctl()/ptrace() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _PRCTL_DISCARDED)):
             if not _PRCTL_DISCARDED.match(ln):
                 continue
             fname = "ptrace" if _find_call_args(ln, "ptrace") else "prctl"
@@ -6278,7 +6379,7 @@ def _api_tcgetattr(lines, rel, funcs, out) -> None:
     """tcgetattr()/tcsetattr() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _TCGETATTR_DISCARDED)):
             if not _TCGETATTR_DISCARDED.match(ln):
                 continue
             fname = (
@@ -6300,7 +6401,7 @@ def _api_sysconf(lines, rel, funcs, out) -> None:
     """sysconf()/pathconf() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _SYSCONF_DISCARDED)):
             if not _SYSCONF_DISCARDED.match(ln):
                 continue
             fname = "pathconf" if _find_call_args(ln, "pathconf") else "sysconf"
@@ -6319,7 +6420,7 @@ def _api_getrusage(lines, rel, funcs, out) -> None:
     """getrusage() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _GETRUSAGE_DISCARDED)):
             if not _GETRUSAGE_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -6337,7 +6438,7 @@ def _api_nftw(lines, rel, funcs, out) -> None:
     """nftw()/ftw() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _NFTW_DISCARDED)):
             if not _NFTW_DISCARDED.match(ln):
                 continue
             fname = "nftw" if _find_call_args(ln, "nftw") else "ftw"
@@ -6356,7 +6457,7 @@ def _api_wordexp(lines, rel, funcs, out) -> None:
     """wordexp() return discarded (not compared to 0) (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _WORDEXP_DISCARDED)):
             if not _WORDEXP_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -6408,7 +6509,7 @@ def _api_inet_pton(lines, rel, funcs, out) -> None:
     """inet_pton()/inet_aton() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _INET_PTON_DISCARDED)):
             if not _INET_PTON_DISCARDED.match(ln):
                 continue
             fname = (
@@ -6430,7 +6531,7 @@ def _api_mlock(lines, rel, funcs, out) -> None:
     """mlock()/munlock() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _MLOCK_DISCARDED)):
             if not _MLOCK_DISCARDED.match(ln):
                 continue
             fname = "munlock" if _find_call_args(ln, "munlock") else "mlock"
@@ -6449,7 +6550,7 @@ def _api_splice(lines, rel, funcs, out) -> None:
     """splice() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _SPLICE_DISCARDED)):
             if not _SPLICE_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -6506,7 +6607,7 @@ def _api_fsync(lines, rel, funcs, out) -> None:
     """fsync()/fdatasync() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _FSYNC_DISCARDED)):
             if not _FSYNC_DISCARDED.match(ln):
                 continue
             fname = (
@@ -6527,7 +6628,7 @@ def _api_getrandom(lines, rel, funcs, out) -> None:
     """getrandom()/getentropy() return discarded (CWE-252/330)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _GETRANDOM_DISCARDED)):
             if not _GETRANDOM_DISCARDED.match(ln):
                 continue
             fname = (
@@ -6549,7 +6650,7 @@ def _api_getline(lines, rel, funcs, out) -> None:
     """getline()/getdelim() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _GETLINE_DISCARDED)):
             if not _GETLINE_DISCARDED.match(ln):
                 continue
             fname = (
@@ -6570,7 +6671,7 @@ def _api_asprintf(lines, rel, funcs, out) -> None:
     """asprintf()/vasprintf() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _ASPRINTF_DISCARDED)):
             if not _ASPRINTF_DISCARDED.match(ln):
                 continue
             fname = (
@@ -6591,7 +6692,7 @@ def _api_strlcpy(lines, rel, funcs, out) -> None:
     """strlcpy()/strlcat() return discarded (CWE-252). Not STR-UNBOUNDED-COPY."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _STRLCPY_DISCARDED)):
             if not _STRLCPY_DISCARDED.match(ln):
                 continue
             fname = "strlcat" if _find_call_args(ln, "strlcat") else "strlcpy"
@@ -6610,7 +6711,7 @@ def _api_isatty(lines, rel, funcs, out) -> None:
     """isatty() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _ISATTY_DISCARDED)):
             if not _ISATTY_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -6661,7 +6762,7 @@ def _api_mount(lines, rel, funcs, out) -> None:
     """mount()/umount() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _MOUNT_DISCARDED)):
             if not _MOUNT_DISCARDED.match(ln):
                 continue
             fname = "umount" if _find_call_args(ln, "umount") else "mount"
@@ -6717,7 +6818,7 @@ def _api_scandir(lines, rel, funcs, out) -> None:
     """scandir() return discarded (not compared to <0) (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _SCANDIR_DISCARDED)):
             if not _SCANDIR_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -6735,7 +6836,7 @@ def _api_setxattr(lines, rel, funcs, out) -> None:
     """setxattr()/getxattr()/listxattr() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _SETXATTR_DISCARDED)):
             if not _SETXATTR_DISCARDED.match(ln):
                 continue
             if _find_call_args(ln, "listxattr"):
@@ -6759,7 +6860,7 @@ def _api_sched_affinity(lines, rel, funcs, out) -> None:
     """sched_setaffinity()/sched_getaffinity() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _SCHED_AFFINITY_DISCARDED)):
             if not _SCHED_AFFINITY_DISCARDED.match(ln):
                 continue
             fname = (
@@ -6781,7 +6882,7 @@ def _api_aio(lines, rel, funcs, out) -> None:
     """aio_read()/aio_write() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _AIO_DISCARDED)):
             if not _AIO_DISCARDED.match(ln):
                 continue
             fname = "aio_write" if _find_call_args(ln, "aio_write") else "aio_read"
@@ -6800,7 +6901,7 @@ def _api_statx(lines, rel, funcs, out) -> None:
     """statx() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _STATX_DISCARDED)):
             if not _STATX_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -6853,7 +6954,7 @@ def _api_capset(lines, rel, funcs, out) -> None:
     """capset()/capget() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _CAPSET_DISCARDED)):
             if not _CAPSET_DISCARDED.match(ln):
                 continue
             fname = "capget" if _find_call_args(ln, "capget") else "capset"
@@ -6907,7 +7008,7 @@ def _api_seccomp(lines, rel, funcs, out) -> None:
     """seccomp() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _SECCOMP_DISCARDED)):
             if not _SECCOMP_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -6964,7 +7065,7 @@ def _api_fallocate(lines, rel, funcs, out) -> None:
     """posix_fallocate()/fallocate() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _FALLOCATE_DISCARDED)):
             if not _FALLOCATE_DISCARDED.match(ln):
                 continue
             fname = (
@@ -6986,7 +7087,7 @@ def _api_close_range(lines, rel, funcs, out) -> None:
     """close_range() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _CLOSE_RANGE_DISCARDED)):
             if not _CLOSE_RANGE_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -7004,7 +7105,7 @@ def _api_bpf(lines, rel, funcs, out) -> None:
     """bpf() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _BPF_DISCARDED)):
             if not _BPF_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -7090,7 +7191,7 @@ def _api_initgroups(lines, rel, funcs, out) -> None:
     """initgroups()/setgroups() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _INITGROUPS_DISCARDED)):
             if not _INITGROUPS_DISCARDED.match(ln):
                 continue
             fname = (
@@ -7112,7 +7213,7 @@ def _api_clone(lines, rel, funcs, out) -> None:
     """unshare()/setns()/clone() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _CLONE_DISCARDED)):
             if not _CLONE_DISCARDED.match(ln):
                 continue
             if _find_call_args(ln, "unshare"):
@@ -7206,7 +7307,7 @@ def _api_getpriority(lines, rel, funcs, out) -> None:
     """getpriority()/setpriority() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _GETPRIORITY_DISCARDED)):
             if not _GETPRIORITY_DISCARDED.match(ln):
                 continue
             fname = (
@@ -7263,7 +7364,7 @@ def _api_sendmmsg(lines, rel, funcs, out) -> None:
     """sendmmsg()/recvmmsg() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _SENDMMSG_DISCARDED)):
             if not _SENDMMSG_DISCARDED.match(ln):
                 continue
             fname = (
@@ -7284,7 +7385,7 @@ def _api_personality(lines, rel, funcs, out) -> None:
     """personality() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _PERSONALITY_DISCARDED)):
             if not _PERSONALITY_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -7302,7 +7403,7 @@ def _api_quotactl(lines, rel, funcs, out) -> None:
     """quotactl() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _QUOTACTL_DISCARDED)):
             if not _QUOTACTL_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -7320,7 +7421,7 @@ def _api_name_to_handle(lines, rel, funcs, out) -> None:
     """name_to_handle_at()/open_by_handle_at() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _NAME_TO_HANDLE_DISCARDED)):
             if not _NAME_TO_HANDLE_DISCARDED.match(ln):
                 continue
             fname = (
@@ -7343,7 +7444,7 @@ def _api_process_madvise(lines, rel, funcs, out) -> None:
     """process_madvise() return discarded (CWE-252). Not madvise/posix_madvise."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _PROCESS_MADVISE_DISCARDED)):
             if not _PROCESS_MADVISE_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -7361,7 +7462,7 @@ def _api_pivot_root(lines, rel, funcs, out) -> None:
     """pivot_root() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _PIVOT_ROOT_DISCARDED)):
             if not _PIVOT_ROOT_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -7379,7 +7480,7 @@ def _api_statfs(lines, rel, funcs, out) -> None:
     """statfs()/fstatfs() return discarded (CWE-252). Not stat/fstat/lstat/statx."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _STATFS_DISCARDED)):
             if not _STATFS_DISCARDED.match(ln):
                 continue
             fname = "fstatfs" if _find_call_args(ln, "fstatfs") else "statfs"
@@ -7398,7 +7499,7 @@ def _api_prlimit(lines, rel, funcs, out) -> None:
     """prlimit()/prlimit64() return discarded (CWE-252). Not setrlimit/getrlimit."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _PRLIMIT_DISCARDED)):
             if not _PRLIMIT_DISCARDED.match(ln):
                 continue
             fname = "prlimit64" if _find_call_args(ln, "prlimit64") else "prlimit"
@@ -7452,7 +7553,7 @@ def _api_membarrier(lines, rel, funcs, out) -> None:
     """membarrier() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _MEMBARRIER_DISCARDED)):
             if not _MEMBARRIER_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -7505,7 +7606,7 @@ def _api_syncfs(lines, rel, funcs, out) -> None:
     """syncfs() return discarded (CWE-252). Not fsync/fdatasync/sync."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _SYNCFS_DISCARDED)):
             if not _SYNCFS_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -7526,7 +7627,7 @@ def _api_process_vm(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _PROCESS_VM_DISCARDED)):
             if not _PROCESS_VM_DISCARDED.match(ln):
                 continue
             fname = (
@@ -7549,7 +7650,7 @@ def _api_clone3(lines, rel, funcs, out) -> None:
     """clone3() return discarded (CWE-252). Not clone/unshare/setns."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _CLONE3_DISCARDED)):
             if not _CLONE3_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -7567,7 +7668,7 @@ def _api_futex(lines, rel, funcs, out) -> None:
     """futex() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _FUTEX_DISCARDED)):
             if not _FUTEX_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -7585,7 +7686,7 @@ def _api_keyctl(lines, rel, funcs, out) -> None:
     """keyctl() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _KEYCTL_DISCARDED)):
             if not _KEYCTL_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -7603,7 +7704,7 @@ def _api_kcmp(lines, rel, funcs, out) -> None:
     """kcmp() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _KCMP_DISCARDED)):
             if not _KCMP_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -7766,7 +7867,7 @@ def _api_reboot(lines, rel, funcs, out) -> None:
     """reboot() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _REBOOT_DISCARDED)):
             if not _REBOOT_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -7784,7 +7885,7 @@ def _api_adjtimex(lines, rel, funcs, out) -> None:
     """adjtimex() return discarded (CWE-252). Not clock_gettime."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _ADJTIMEX_DISCARDED)):
             if not _ADJTIMEX_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -7802,7 +7903,7 @@ def _api_sethostname(lines, rel, funcs, out) -> None:
     """sethostname() return discarded (CWE-252). Not gethostname/uname."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _SETHOSTNAME_DISCARDED)):
             if not _SETHOSTNAME_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -7820,7 +7921,7 @@ def _api_swapon(lines, rel, funcs, out) -> None:
     """swapon()/swapoff() return discarded (CWE-252). Not C++ swap()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _SWAPON_DISCARDED)):
             if not _SWAPON_DISCARDED.match(ln):
                 continue
             fname = "swapoff" if _find_call_args(ln, "swapoff") else "swapon"
@@ -7839,7 +7940,7 @@ def _api_acct(lines, rel, funcs, out) -> None:
     """acct() return discarded (CWE-252). Not access()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _ACCT_DISCARDED)):
             if not _ACCT_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -7857,7 +7958,7 @@ def _api_ioperm(lines, rel, funcs, out) -> None:
     """ioperm()/iopl() return discarded (CWE-252). Not ioprio_set."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _IOPERM_DISCARDED)):
             if not _IOPERM_DISCARDED.match(ln):
                 continue
             fname = "iopl" if _find_call_args(ln, "iopl") else "ioperm"
@@ -7876,7 +7977,7 @@ def _api_mincore(lines, rel, funcs, out) -> None:
     """mincore() return discarded (CWE-252). Not mlock/madvise."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _MINCORE_DISCARDED)):
             if not _MINCORE_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -7894,7 +7995,7 @@ def _api_rseq(lines, rel, funcs, out) -> None:
     """rseq() return discarded (CWE-252). Not membarrier."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _RSEQ_DISCARDED)):
             if not _RSEQ_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -7912,7 +8013,7 @@ def _api_timer_create(lines, rel, funcs, out) -> None:
     """timer_create() return discarded (CWE-252). Not timerfd_create."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _TIMER_CREATE_DISCARDED)):
             if not _TIMER_CREATE_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -8026,7 +8127,7 @@ def _api_klogctl(lines, rel, funcs, out) -> None:
     """klogctl() return discarded (CWE-252). Not a bare syslog(."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _KLOGCTL_DISCARDED)):
             if not _KLOGCTL_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -8044,7 +8145,7 @@ def _api_mount_setattr(lines, rel, funcs, out) -> None:
     """mount_setattr() return discarded (CWE-252). Not mount/umount."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _MOUNT_SETATTR_DISCARDED)):
             if not _MOUNT_SETATTR_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -8062,7 +8163,7 @@ def _api_getcpu(lines, rel, funcs, out) -> None:
     """getcpu() return discarded (CWE-252). Not getrusage()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _GETCPU_DISCARDED)):
             if not _GETCPU_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -8080,7 +8181,7 @@ def _api_process_mrelease(lines, rel, funcs, out) -> None:
     """process_mrelease() return discarded (CWE-252). Not process_madvise/process_vm."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _PROCESS_MRELEASE_DISCARDED)):
             if not _PROCESS_MRELEASE_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -8133,7 +8234,7 @@ def _api_ioprio(lines, rel, funcs, out) -> None:
     """ioprio_set()/ioprio_get() return discarded (CWE-252). Not ioperm()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _IOPRIO_DISCARDED)):
             if not _IOPRIO_DISCARDED.match(ln):
                 continue
             fname = "ioprio_get" if _find_call_args(ln, "ioprio_get") else "ioprio_set"
@@ -8152,7 +8253,7 @@ def _api_init_module(lines, rel, funcs, out) -> None:
     """init_module()/finit_module()/delete_module() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _INIT_MODULE_DISCARDED)):
             if not _INIT_MODULE_DISCARDED.match(ln):
                 continue
             if _find_call_args(ln, "finit_module"):
@@ -8176,7 +8277,7 @@ def _api_kexec(lines, rel, funcs, out) -> None:
     """kexec_load()/kexec_file_load() return discarded (CWE-252). Not a bare kexec."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _KEXEC_DISCARDED)):
             if not _KEXEC_DISCARDED.match(ln):
                 continue
             fname = (
@@ -8198,7 +8299,7 @@ def _api_quotactl_fd(lines, rel, funcs, out) -> None:
     """quotactl_fd() return discarded (CWE-252). Not quotactl()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _QUOTACTL_FD_DISCARDED)):
             if not _QUOTACTL_FD_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -8216,7 +8317,7 @@ def _api_pkey_free(lines, rel, funcs, out) -> None:
     """pkey_free()/pkey_mprotect() return discarded (CWE-252). Not pkey_alloc."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _PKEY_FREE_DISCARDED)):
             if not _PKEY_FREE_DISCARDED.match(ln):
                 continue
             fname = (
@@ -8238,7 +8339,7 @@ def _api_tgkill(lines, rel, funcs, out) -> None:
     """tgkill() return discarded (CWE-252). Not kill()/tkill()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _TGKILL_DISCARDED)):
             if not _TGKILL_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -8256,7 +8357,7 @@ def _api_add_key(lines, rel, funcs, out) -> None:
     """add_key() return discarded (CWE-252). Not keyctl()/request_key()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _ADD_KEY_DISCARDED)):
             if not _ADD_KEY_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -8274,7 +8375,7 @@ def _api_semctl(lines, rel, funcs, out) -> None:
     """semctl() return discarded (CWE-252). Not semget()/semop()/sem_wait()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _SEMCTL_DISCARDED)):
             if not _SEMCTL_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -8292,7 +8393,7 @@ def _api_msgctl(lines, rel, funcs, out) -> None:
     """msgctl() return discarded (CWE-252). Not msgget()/msgsnd()/mq_open()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _MSGCTL_DISCARDED)):
             if not _MSGCTL_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -8313,7 +8414,7 @@ def _api_io_setup(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _IO_SETUP_DISCARDED)):
             m = _IO_SETUP_DISCARDED.match(ln)
             if not m:
                 continue
@@ -8332,7 +8433,7 @@ def _api_request_key(lines, rel, funcs, out) -> None:
     """request_key() return discarded (CWE-252). Not keyctl()/add_key()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _REQUEST_KEY_DISCARDED)):
             if not _REQUEST_KEY_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -8350,7 +8451,7 @@ def _api_tkill(lines, rel, funcs, out) -> None:
     """tkill() return discarded (CWE-252). Not tgkill()/kill()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _TKILL_DISCARDED)):
             if not _TKILL_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -8371,7 +8472,7 @@ def _api_timer_delete(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _TIMER_DELETE_DISCARDED)):
             m = _TIMER_DELETE_DISCARDED.match(ln)
             if not m:
                 continue
@@ -8391,7 +8492,7 @@ def _api_mq_unlink(lines, rel, funcs, out) -> None:
     discarded (CWE-252). Not mq_open()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _MQ_UNLINK_DISCARDED)):
             m = _MQ_UNLINK_DISCARDED.match(ln)
             if not m:
                 continue
@@ -8410,7 +8511,7 @@ def _api_shmat(lines, rel, funcs, out) -> None:
     """shmat()/shmdt() return discarded (CWE-252). Not shmget()/shmctl()/shm_open()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _SHMAT_DISCARDED)):
             m = _SHMAT_DISCARDED.match(ln)
             if not m:
                 continue
@@ -8429,7 +8530,7 @@ def _api_semop(lines, rel, funcs, out) -> None:
     """semop()/semtimedop() return discarded (CWE-252). Not semget()/semctl()/sem_wait()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _SEMOP_DISCARDED)):
             m = _SEMOP_DISCARDED.match(ln)
             if not m:
                 continue
@@ -8448,7 +8549,7 @@ def _api_msgsnd(lines, rel, funcs, out) -> None:
     """msgsnd()/msgrcv() return discarded (CWE-252). Not msgget()/msgctl()/mq_open()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _MSGSND_DISCARDED)):
             m = _MSGSND_DISCARDED.match(ln)
             if not m:
                 continue
@@ -8467,7 +8568,7 @@ def _api_sync_file_range(lines, rel, funcs, out) -> None:
     """sync_file_range() return discarded (CWE-252). Not fsync()/syncfs()/sync()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _SYNC_FILE_RANGE_DISCARDED)):
             if not _SYNC_FILE_RANGE_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -8485,7 +8586,7 @@ def _api_msync(lines, rel, funcs, out) -> None:
     """msync()/mremap() return discarded (CWE-252). Not mmap()/mprotect()/munmap()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _MSYNC_DISCARDED)):
             m = _MSYNC_DISCARDED.match(ln)
             if not m:
                 continue
@@ -8504,7 +8605,7 @@ def _api_socketpair(lines, rel, funcs, out) -> None:
     """socketpair() return discarded (CWE-252). Not socket()/pipe()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _SOCKETPAIR_DISCARDED)):
             if not _SOCKETPAIR_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -8522,7 +8623,7 @@ def _api_sysinfo(lines, rel, funcs, out) -> None:
     """sysinfo() return discarded (CWE-252). Not getrusage()/uname()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _SYSINFO_DISCARDED)):
             if not _SYSINFO_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -8543,7 +8644,7 @@ def _api_clock_settime(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _CLOCK_SETTIME_DISCARDED)):
             m = _CLOCK_SETTIME_DISCARDED.match(ln)
             if not m:
                 continue
@@ -8562,7 +8663,7 @@ def _api_settimeofday(lines, rel, funcs, out) -> None:
     """settimeofday() return discarded (CWE-252). Not gettimeofday()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _SETTIMEOFDAY_DISCARDED)):
             if not _SETTIMEOFDAY_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -8580,7 +8681,7 @@ def _api_gettid(lines, rel, funcs, out) -> None:
     """gettid() return discarded (CWE-252). Not gettimeofday()/getpid()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _GETTID_DISCARDED)):
             if not _GETTID_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -8601,7 +8702,7 @@ def _api_sched_setscheduler(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _SCHED_SETSCHEDULER_DISCARDED)):
             m = _SCHED_SETSCHEDULER_DISCARDED.match(ln)
             if not m:
                 continue
@@ -8623,7 +8724,7 @@ def _api_setitimer(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _SETITIMER_DISCARDED)):
             m = _SETITIMER_DISCARDED.match(ln)
             if not m:
                 continue
@@ -8642,7 +8743,7 @@ def _api_nice(lines, rel, funcs, out) -> None:
     """nice() return discarded (CWE-252). Not getpriority()/setpriority()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _NICE_DISCARDED)):
             if not _NICE_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -8660,7 +8761,7 @@ def _api_arch_prctl(lines, rel, funcs, out) -> None:
     """arch_prctl() return discarded (CWE-252). Not prctl()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _ARCH_PRCTL_DISCARDED)):
             if not _ARCH_PRCTL_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -8678,7 +8779,7 @@ def _api_getdents(lines, rel, funcs, out) -> None:
     """getdents()/getdents64() return discarded (CWE-252). Not opendir()/readdir()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _GETDENTS_DISCARDED)):
             m = _GETDENTS_DISCARDED.match(ln)
             if not m:
                 continue
@@ -8700,7 +8801,7 @@ def _api_utimensat(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _UTIMENSAT_DISCARDED)):
             m = _UTIMENSAT_DISCARDED.match(ln)
             if not m:
                 continue
@@ -8719,7 +8820,7 @@ def _api_linkat(lines, rel, funcs, out) -> None:
     """linkat() return discarded (CWE-252). Not unlink()/symlink()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _LINKAT_DISCARDED)):
             if not _LINKAT_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -8740,7 +8841,7 @@ def _api_mbind(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _MBIND_DISCARDED)):
             m = _MBIND_DISCARDED.match(ln)
             if not m:
                 continue
@@ -8759,7 +8860,7 @@ def _api_futex_waitv(lines, rel, funcs, out) -> None:
     """futex_waitv() return discarded (CWE-252). Not futex()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _FUTEX_WAITV_DISCARDED)):
             if not _FUTEX_WAITV_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -8777,7 +8878,7 @@ def _api_syslog(lines, rel, funcs, out) -> None:
     """syslog() return discarded (CWE-252). Not klogctl()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _SYSLOG_DISCARDED)):
             if not _SYSLOG_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -8798,7 +8899,7 @@ def _api_setpgid(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _SETPGID_DISCARDED)):
             m = _SETPGID_DISCARDED.match(ln)
             if not m:
                 continue
@@ -8820,7 +8921,7 @@ def _api_setreuid(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _SETREUID_DISCARDED)):
             m = _SETREUID_DISCARDED.match(ln)
             if not m:
                 continue
@@ -8839,7 +8940,7 @@ def _api_getgroups(lines, rel, funcs, out) -> None:
     """getgroups() return discarded (CWE-252). Not initgroups()/setgroups()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _GETGROUPS_DISCARDED)):
             if not _GETGROUPS_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -8860,7 +8961,7 @@ def _api_epoll_create(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _EPOLL_CREATE_DISCARDED)):
             m = _EPOLL_CREATE_DISCARDED.match(ln)
             if not m:
                 continue
@@ -8882,7 +8983,7 @@ def _api_timerfd_settime(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _TIMERFD_SETTIME_DISCARDED)):
             m = _TIMERFD_SETTIME_DISCARDED.match(ln)
             if not m:
                 continue
@@ -8901,7 +9002,7 @@ def _api_remap_file_pages(lines, rel, funcs, out) -> None:
     """remap_file_pages() return discarded (CWE-252). Not mmap()/mprotect()/mremap()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _REMAP_FILE_PAGES_DISCARDED)):
             if not _REMAP_FILE_PAGES_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -8922,7 +9023,7 @@ def _api_move_pages(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _MOVE_PAGES_DISCARDED)):
             m = _MOVE_PAGES_DISCARDED.match(ln)
             if not m:
                 continue
@@ -8941,7 +9042,7 @@ def _api_cachestat(lines, rel, funcs, out) -> None:
     """cachestat() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _CACHESTAT_DISCARDED)):
             if not _CACHESTAT_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -8959,7 +9060,7 @@ def _api_map_shadow_stack(lines, rel, funcs, out) -> None:
     """map_shadow_stack() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _MAP_SHADOW_STACK_DISCARDED)):
             if not _MAP_SHADOW_STACK_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -8980,7 +9081,7 @@ def _api_sched_yield(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _SCHED_YIELD_DISCARDED)):
             if not _SCHED_YIELD_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -8998,7 +9099,7 @@ def _api_setfsuid(lines, rel, funcs, out) -> None:
     """setfsuid()/setfsgid() return discarded (CWE-252). Not setuid()/setgid()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _SETFSUID_DISCARDED)):
             m = _SETFSUID_DISCARDED.match(ln)
             if not m:
                 continue
@@ -9017,7 +9118,7 @@ def _api_wait4(lines, rel, funcs, out) -> None:
     """wait4()/wait3() return discarded (CWE-252). Not wait()/waitpid()/waitid()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _WAIT4_DISCARDED)):
             m = _WAIT4_DISCARDED.match(ln)
             if not m:
                 continue
@@ -9039,7 +9140,7 @@ def _api_preadv(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _PREADV_DISCARDED)):
             m = _PREADV_DISCARDED.match(ln)
             if not m:
                 continue
@@ -9061,7 +9162,7 @@ def _api_sendmsg(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _SENDMSG_DISCARDED)):
             m = _SENDMSG_DISCARDED.match(ln)
             if not m:
                 continue
@@ -9083,7 +9184,7 @@ def _api_getsockname(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _GETSOCKNAME_DISCARDED)):
             m = _GETSOCKNAME_DISCARDED.match(ln)
             if not m:
                 continue
@@ -9105,7 +9206,7 @@ def _api_epoll_pwait(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _EPOLL_PWAIT_DISCARDED)):
             m = _EPOLL_PWAIT_DISCARDED.match(ln)
             if not m:
                 continue
@@ -9127,7 +9228,7 @@ def _api_inotify_rm_watch(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _INOTIFY_RM_WATCH_DISCARDED)):
             if not _INOTIFY_RM_WATCH_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -9148,7 +9249,7 @@ def _api_eventfd_read(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _EVENTFD_RW_DISCARDED)):
             m = _EVENTFD_RW_DISCARDED.match(ln)
             if not m:
                 continue
@@ -9170,7 +9271,7 @@ def _api_sched_setattr(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _SCHED_SETATTR_DISCARDED)):
             m = _SCHED_SETATTR_DISCARDED.match(ln)
             if not m:
                 continue
@@ -9189,7 +9290,7 @@ def _api_renameat2(lines, rel, funcs, out) -> None:
     """renameat2() return discarded (CWE-252). Not rename()/renameat()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _RENAMEAT2_DISCARDED)):
             if not _RENAMEAT2_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -9207,7 +9308,7 @@ def _api_execveat(lines, rel, funcs, out) -> None:
     """execveat() return discarded (CWE-252). Not execve()/execl()/execvp()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _EXECVEAT_DISCARDED)):
             if not _EXECVEAT_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -9225,7 +9326,7 @@ def _api_mlock2(lines, rel, funcs, out) -> None:
     """mlock2() return discarded (CWE-252). Not mlock()/mlockall()/munlock()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _MLOCK2_DISCARDED)):
             if not _MLOCK2_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -9243,7 +9344,7 @@ def _api_faccessat2(lines, rel, funcs, out) -> None:
     """faccessat2() return discarded (CWE-252). Not access()/faccessat()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _FACCESSAT2_DISCARDED)):
             if not _FACCESSAT2_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -9264,7 +9365,7 @@ def _api_posix_fadvise(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _POSIX_FADVISE_DISCARDED)):
             m = _POSIX_FADVISE_DISCARDED.match(ln)
             if not m:
                 continue
@@ -9283,7 +9384,7 @@ def _api_readahead(lines, rel, funcs, out) -> None:
     """readahead() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _READAHEAD_DISCARDED)):
             if not _READAHEAD_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -9301,7 +9402,7 @@ def _api_sigaction(lines, rel, funcs, out) -> None:
     """sigaction() return discarded (CWE-252). Not signal()/signalfd()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _SIGACTION_DISCARDED)):
             if not _SIGACTION_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -9322,7 +9423,7 @@ def _api_sigprocmask(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _SIGPROCMASK_DISCARDED)):
             m = _SIGPROCMASK_DISCARDED.match(ln)
             if not m:
                 continue
@@ -9344,7 +9445,7 @@ def _api_sem_open(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _SEM_OPEN_DISCARDED)):
             m = _SEM_OPEN_DISCARDED.match(ln)
             if not m:
                 continue
@@ -9366,7 +9467,7 @@ def _api_rwlock(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _RWLOCK_DISCARDED)):
             m = _RWLOCK_DISCARDED.match(ln)
             if not m:
                 continue
@@ -9385,7 +9486,7 @@ def _api_pthread_cond(lines, rel, funcs, out) -> None:
     """pthread_cond_* return discarded (CWE-252). Not C++ condition_variable."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _PTHREAD_COND_DISCARDED)):
             m = _PTHREAD_COND_DISCARDED.match(ln)
             if not m:
                 continue
@@ -9404,7 +9505,7 @@ def _api_sigaltstack(lines, rel, funcs, out) -> None:
     """sigaltstack() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _SIGALTSTACK_DISCARDED)):
             if not _SIGALTSTACK_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -9422,7 +9523,7 @@ def _api_renameat(lines, rel, funcs, out) -> None:
     """renameat() return discarded (CWE-252). Not renameat2()/rename()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _RENAMEAT_DISCARDED)):
             if not _RENAMEAT_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -9440,7 +9541,7 @@ def _api_faccessat(lines, rel, funcs, out) -> None:
     """faccessat() return discarded (CWE-252). Not faccessat2()/access()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _FACCESSAT_DISCARDED)):
             if not _FACCESSAT_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -9458,7 +9559,7 @@ def _api_fchmodat(lines, rel, funcs, out) -> None:
     """fchmodat() return discarded (CWE-252). Not fchmodat2()/chmod()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _FCHMODAT_DISCARDED)):
             if not _FCHMODAT_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -9476,7 +9577,7 @@ def _api_pthread_barrier(lines, rel, funcs, out) -> None:
     """pthread_barrier_* return discarded (CWE-252). Not C++ std::barrier."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _PTHREAD_BARRIER_DISCARDED)):
             m = _PTHREAD_BARRIER_DISCARDED.match(ln)
             if not m:
                 continue
@@ -9495,7 +9596,7 @@ def _api_symlinkat(lines, rel, funcs, out) -> None:
     """symlinkat() return discarded (CWE-252). Not symlink()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _SYMLINKAT_DISCARDED)):
             if not _SYMLINKAT_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -9513,7 +9614,7 @@ def _api_unlinkat(lines, rel, funcs, out) -> None:
     """unlinkat() return discarded (CWE-252). Not unlink()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _UNLINKAT_DISCARDED)):
             if not _UNLINKAT_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -9531,7 +9632,7 @@ def _api_mkdirat(lines, rel, funcs, out) -> None:
     """mkdirat() return discarded (CWE-252). Not mkdir()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _MKDIRAT_DISCARDED)):
             if not _MKDIRAT_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -9549,7 +9650,7 @@ def _api_mknodat(lines, rel, funcs, out) -> None:
     """mknodat() return discarded (CWE-252). Not mknod()/mkfifo()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _MKNODAT_DISCARDED)):
             if not _MKNODAT_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -9567,7 +9668,7 @@ def _api_readlinkat(lines, rel, funcs, out) -> None:
     """readlinkat() return discarded (CWE-252). Not readlink()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _READLINKAT_DISCARDED)):
             if not _READLINKAT_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -9585,7 +9686,7 @@ def _api_fstatat(lines, rel, funcs, out) -> None:
     """fstatat() return discarded (CWE-252). Not fstat()/stat()/statx()/statfs()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _FSTATAT_DISCARDED)):
             if not _FSTATAT_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -9603,7 +9704,7 @@ def _api_pthread_spin(lines, rel, funcs, out) -> None:
     """pthread_spin_* return discarded (CWE-252). Not pthread_mutex/rwlock."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _PTHREAD_SPIN_DISCARDED)):
             m = _PTHREAD_SPIN_DISCARDED.match(ln)
             if not m:
                 continue
@@ -9622,7 +9723,7 @@ def _api_pthread_key(lines, rel, funcs, out) -> None:
     """pthread_key_create/delete/setspecific/getspecific return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _PTHREAD_KEY_DISCARDED)):
             m = _PTHREAD_KEY_DISCARDED.match(ln)
             if not m:
                 continue
@@ -9641,7 +9742,7 @@ def _api_pthread_cancel(lines, rel, funcs, out) -> None:
     """pthread_cancel() return discarded (CWE-252). Not pthread_create/join."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _PTHREAD_CANCEL_DISCARDED)):
             if not _PTHREAD_CANCEL_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -9659,7 +9760,7 @@ def _api_pthread_kill(lines, rel, funcs, out) -> None:
     """pthread_kill() return discarded (CWE-252). Not POSIX kill()/raise()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _PTHREAD_KILL_DISCARDED)):
             if not _PTHREAD_KILL_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -9677,7 +9778,7 @@ def _api_pthread_sigmask(lines, rel, funcs, out) -> None:
     """pthread_sigmask() return discarded (CWE-252). Not sigprocmask()/sigaction()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _PTHREAD_SIGMASK_DISCARDED)):
             if not _PTHREAD_SIGMASK_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -9695,7 +9796,7 @@ def _api_pthread_atfork(lines, rel, funcs, out) -> None:
     """pthread_atfork() return discarded (CWE-252). Not fork()/vfork()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _PTHREAD_ATFORK_DISCARDED)):
             if not _PTHREAD_ATFORK_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -9713,7 +9814,7 @@ def _api_pledge(lines, rel, funcs, out) -> None:
     """pledge() return discarded (CWE-252/250/273)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _PLEDGE_DISCARDED)):
             if not _PLEDGE_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -9731,7 +9832,7 @@ def _api_unveil(lines, rel, funcs, out) -> None:
     """unveil() return discarded (CWE-252/250/273)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _UNVEIL_DISCARDED)):
             if not _UNVEIL_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -9749,7 +9850,7 @@ def _api_sysctl(lines, rel, funcs, out) -> None:
     """sysctl()/sysctlbyname() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _SYSCTL_DISCARDED)):
             m = _SYSCTL_DISCARDED.match(ln)
             if not m:
                 continue
@@ -9811,7 +9912,7 @@ def _api_kevent(lines, rel, funcs, out) -> None:
     """kevent() return discarded (CWE-252). Not kqueue()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _KEVENT_DISCARDED)):
             if not _KEVENT_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -9829,7 +9930,7 @@ def _api_pause(lines, rel, funcs, out) -> None:
     """pause() return discarded (CWE-252). Not sleep()/nanosleep()/pselect()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _PAUSE_DISCARDED)):
             if not _PAUSE_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -9847,7 +9948,7 @@ def _api_ppoll(lines, rel, funcs, out) -> None:
     """ppoll() return discarded (CWE-252). Not poll()/pselect()/epoll()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _PPOLL_DISCARDED)):
             if not _PPOLL_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -9868,7 +9969,7 @@ def _api_sigwait(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _SIGWAIT_DISCARDED)):
             m = _SIGWAIT_DISCARDED.match(ln)
             if not m:
                 continue
@@ -9887,7 +9988,7 @@ def _api_sigqueue(lines, rel, funcs, out) -> None:
     """sigqueue() return discarded (CWE-252). Not rt_sigqueueinfo()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _SIGQUEUE_DISCARDED)):
             if not _SIGQUEUE_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -9908,7 +10009,7 @@ def _api_ucontext(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _UCONTEXT_DISCARDED)):
             m = _UCONTEXT_DISCARDED.match(ln)
             if not m:
                 continue
@@ -9927,7 +10028,7 @@ def _api_sem_timedwait(lines, rel, funcs, out) -> None:
     """sem_timedwait() return discarded (CWE-252). Not sem_wait()/sem_open()/semget()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _SEM_TIMEDWAIT_DISCARDED)):
             if not _SEM_TIMEDWAIT_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -9948,7 +10049,7 @@ def _api_pthread_attr(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _PTHREAD_ATTR_DISCARDED)):
             m = _PTHREAD_ATTR_DISCARDED.match(ln)
             if not m:
                 continue
@@ -9967,7 +10068,7 @@ def _api_cap_enter(lines, rel, funcs, out) -> None:
     """cap_enter() return discarded (CWE-252/250/273). Not pledge()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _CAP_ENTER_DISCARDED)):
             if not _CAP_ENTER_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -9985,7 +10086,7 @@ def _api_cap_rights(lines, rel, funcs, out) -> None:
     """cap_rights_limit()/cap_rights_get() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _CAP_RIGHTS_DISCARDED)):
             m = _CAP_RIGHTS_DISCARDED.match(ln)
             if not m:
                 continue
@@ -10004,7 +10105,7 @@ def _api_pdfork(lines, rel, funcs, out) -> None:
     """pdfork() return discarded (CWE-252). Not fork()/vfork()/pthread_atfork()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _PDFORK_DISCARDED)):
             if not _PDFORK_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -10022,7 +10123,7 @@ def _api_procctl(lines, rel, funcs, out) -> None:
     """procctl() return discarded (CWE-252). Not prctl()/ptrace()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _PROCCTL_DISCARDED)):
             if not _PROCCTL_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -10040,7 +10141,7 @@ def _api_closefrom(lines, rel, funcs, out) -> None:
     """closefrom() return discarded (CWE-252). Not close_range()/close()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _CLOSEFROM_DISCARDED)):
             if not _CLOSEFROM_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -10058,7 +10159,7 @@ def _api_issetugid(lines, rel, funcs, out) -> None:
     """issetugid() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _ISSETUGID_DISCARDED)):
             if not _ISSETUGID_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -10079,7 +10180,7 @@ def _api_arc4random(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _ARC4RANDOM_DISCARDED)):
             m = _ARC4RANDOM_DISCARDED.match(ln)
             if not m:
                 continue
@@ -10098,7 +10199,7 @@ def _api_chflags(lines, rel, funcs, out) -> None:
     """chflags()/fchflags()/lchflags() return discarded (CWE-252). Not chmod()/chown()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _CHFLAGS_DISCARDED)):
             m = _CHFLAGS_DISCARDED.match(ln)
             if not m:
                 continue
@@ -10117,7 +10218,7 @@ def _api_getfsstat(lines, rel, funcs, out) -> None:
     """getfsstat() return discarded (CWE-252). Not statfs()/fstatfs()/stat()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _GETFSSTAT_DISCARDED)):
             if not _GETFSSTAT_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -10135,7 +10236,7 @@ def _api_pthread_yield(lines, rel, funcs, out) -> None:
     """pthread_yield() return discarded (CWE-252). Not sched_yield()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _PTHREAD_YIELD_DISCARDED)):
             if not _PTHREAD_YIELD_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -10156,7 +10257,7 @@ def _api_sem_trywait(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _SEM_TRYWAIT_DISCARDED)):
             m = _SEM_TRYWAIT_DISCARDED.match(ln)
             if not m:
                 continue
@@ -10175,7 +10276,7 @@ def _api_adjtime(lines, rel, funcs, out) -> None:
     """adjtime()/ntp_adjtime() return discarded (CWE-252). Not adjtimex()/clock_adjtime()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _ADJTIME_DISCARDED)):
             m = _ADJTIME_DISCARDED.match(ln)
             if not m:
                 continue
@@ -10194,7 +10295,7 @@ def _api_revoke(lines, rel, funcs, out) -> None:
     """revoke() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _REVOKE_DISCARDED)):
             if not _REVOKE_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -10212,7 +10313,7 @@ def _api_ktrace(lines, rel, funcs, out) -> None:
     """ktrace() return discarded (CWE-252). Not ptrace()/prctl()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _KTRACE_DISCARDED)):
             if not _KTRACE_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -10230,7 +10331,7 @@ def _api_rfork(lines, rel, funcs, out) -> None:
     """rfork() return discarded (CWE-252). Not fork()/vfork()/pdfork()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _RFORK_DISCARDED)):
             if not _RFORK_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -10248,7 +10349,7 @@ def _api_jail(lines, rel, funcs, out) -> None:
     """jail()/jail_attach()/jail_get()/jail_set()/jail_remove() discarded (CWE-252/250). Not chroot()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _JAIL_DISCARDED)):
             m = _JAIL_DISCARDED.match(ln)
             if not m:
                 continue
@@ -10267,7 +10368,7 @@ def _api_setlogin(lines, rel, funcs, out) -> None:
     """setlogin() return discarded (CWE-252). Not getlogin()/getlogin_r()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _SETLOGIN_DISCARDED)):
             if not _SETLOGIN_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -10285,7 +10386,7 @@ def _api_getresuid(lines, rel, funcs, out) -> None:
     """getresuid()/getresgid() return discarded (CWE-252). Not setresuid()/setreuid()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _GETRESUID_DISCARDED)):
             m = _GETRESUID_DISCARDED.match(ln)
             if not m:
                 continue
@@ -10304,7 +10405,7 @@ def _api_getpeereid(lines, rel, funcs, out) -> None:
     """getpeereid() return discarded (CWE-252). Not getpeername()/getsockname()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _GETPEEREID_DISCARDED)):
             if not _GETPEEREID_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -10322,7 +10423,7 @@ def _api_strtonum(lines, rel, funcs, out) -> None:
     """strtonum() return discarded (CWE-252). Not strtol()/atoi()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _STRTONUM_DISCARDED)):
             if not _STRTONUM_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -10388,7 +10489,7 @@ def _api_timingsafe(lines, rel, funcs, out) -> None:
     """timingsafe_bcmp()/timingsafe_memcmp() return discarded (CWE-252/208). Not memcmp()/explicit_bzero()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _TIMINGSAFE_DISCARDED)):
             m = _TIMINGSAFE_DISCARDED.match(ln)
             if not m:
                 continue
@@ -10407,7 +10508,7 @@ def _api_getprogname(lines, rel, funcs, out) -> None:
     """getprogname()/setprogname() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _GETPROGNAME_DISCARDED)):
             m = _GETPROGNAME_DISCARDED.match(ln)
             if not m:
                 continue
@@ -10426,7 +10527,7 @@ def _api_daemon(lines, rel, funcs, out) -> None:
     """daemon()/setproctitle() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _DAEMON_DISCARDED)):
             m = _DAEMON_DISCARDED.match(ln)
             if not m:
                 continue
@@ -10445,7 +10546,7 @@ def _api_cap_fcntls(lines, rel, funcs, out) -> None:
     """cap_fcntls_limit()/cap_ioctls_limit() discarded (CWE-252). Not cap_enter()/cap_rights_limit()/fcntl()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _CAP_FCNTLS_DISCARDED)):
             m = _CAP_FCNTLS_DISCARDED.match(ln)
             if not m:
                 continue
@@ -10464,7 +10565,7 @@ def _api_pdgetpid(lines, rel, funcs, out) -> None:
     """pdgetpid()/pdwait4() return discarded (CWE-252). Not pdfork()/wait4()/getpid()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _PDGETPID_DISCARDED)):
             m = _PDGETPID_DISCARDED.match(ln)
             if not m:
                 continue
@@ -10483,7 +10584,7 @@ def _api_kldload(lines, rel, funcs, out) -> None:
     """kldload()/kldunload()/kldfind()/kldsym()/kldstat() discarded (CWE-252/114). Not dlopen()/init_module()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _KLDLOAD_DISCARDED)):
             m = _KLDLOAD_DISCARDED.match(ln)
             if not m:
                 continue
@@ -10502,7 +10603,7 @@ def _api_extattr(lines, rel, funcs, out) -> None:
     """extattr_{set,get,delete,list}_{file,fd,link}() discarded (CWE-252). Not setxattr()/getxattr()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _EXTATTR_DISCARDED)):
             m = _EXTATTR_DISCARDED.match(ln)
             if not m:
                 continue
@@ -10521,7 +10622,7 @@ def _api_mac(lines, rel, funcs, out) -> None:
     """mac_{set,get}_{proc,fd,file}() return discarded (CWE-252). Not pledge()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _MAC_DISCARDED)):
             m = _MAC_DISCARDED.match(ln)
             if not m:
                 continue
@@ -10540,7 +10641,7 @@ def _api_audit(lines, rel, funcs, out) -> None:
     """auditon()/getaudit()/setaudit()/auditctl() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _AUDIT_DISCARDED)):
             m = _AUDIT_DISCARDED.match(ln)
             if not m:
                 continue
@@ -10559,7 +10660,7 @@ def _api_kvm(lines, rel, funcs, out) -> None:
     """kvm_open()/kvm_openfiles()/kvm_getprocs()/kvm_close()/kvm_nlist() discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _KVM_DISCARDED)):
             m = _KVM_DISCARDED.match(ln)
             if not m:
                 continue
@@ -10626,7 +10727,7 @@ def _api_uuidgen(lines, rel, funcs, out) -> None:
     """uuidgen() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _UUIDGEN_DISCARDED)):
             if not _UUIDGEN_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -10644,7 +10745,7 @@ def _api_setfib(lines, rel, funcs, out) -> None:
     """setfib() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _SETFIB_DISCARDED)):
             if not _SETFIB_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -10662,7 +10763,7 @@ def _api_ntp_gettime(lines, rel, funcs, out) -> None:
     """ntp_gettime() return discarded (CWE-252). Not ntp_adjtime()/adjtime()/gettimeofday()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _NTP_GETTIME_DISCARDED)):
             if not _NTP_GETTIME_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -10680,7 +10781,7 @@ def _api_crypt_newhash(lines, rel, funcs, out) -> None:
     """crypt_newhash()/crypt_checkpass() discarded (CWE-252/916). Not bare crypt()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _CRYPT_NEWHASH_DISCARDED)):
             m = _CRYPT_NEWHASH_DISCARDED.match(ln)
             if not m:
                 continue
@@ -10699,7 +10800,7 @@ def _api_wait6(lines, rel, funcs, out) -> None:
     """wait6() return discarded (CWE-252). Not wait()/wait4()/waitpid()/pdwait4()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _WAIT6_DISCARDED)):
             if not _WAIT6_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -10717,7 +10818,7 @@ def _api_cpuset(lines, rel, funcs, out) -> None:
     """cpuset_{set,get}affinity() discarded (CWE-252). Not sched_setaffinity()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _CPUSET_DISCARDED)):
             m = _CPUSET_DISCARDED.match(ln)
             if not m:
                 continue
@@ -10736,7 +10837,7 @@ def _api_rtprio(lines, rel, funcs, out) -> None:
     """rtprio()/rtprio_thread() discarded (CWE-252). Not nice()/getpriority()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _RTPRIO_DISCARDED)):
             m = _RTPRIO_DISCARDED.match(ln)
             if not m:
                 continue
@@ -10755,7 +10856,7 @@ def _api_kenv(lines, rel, funcs, out) -> None:
     """kenv() return discarded (CWE-252/526). Not getenv()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _KENV_DISCARDED)):
             if not _KENV_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -10773,7 +10874,7 @@ def _api_getfh(lines, rel, funcs, out) -> None:
     """getfh()/fhopen()/fhstat()/fhstatfs()/getfhat() discarded (CWE-252). Not open()/stat()/statfs()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _GETFH_DISCARDED)):
             m = _GETFH_DISCARDED.match(ln)
             if not m:
                 continue
@@ -10792,7 +10893,7 @@ def _api_getmntinfo(lines, rel, funcs, out) -> None:
     """getmntinfo() return discarded (CWE-252). Not getfsstat()/statfs()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _GETMNTINFO_DISCARDED)):
             if not _GETMNTINFO_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -10810,7 +10911,7 @@ def _api_nmount(lines, rel, funcs, out) -> None:
     """nmount() return discarded (CWE-252). Not mount()/umount()/listmount()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _NMOUNT_DISCARDED)):
             if not _NMOUNT_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -10828,7 +10929,7 @@ def _api_strmode(lines, rel, funcs, out) -> None:
     """strmode() return discarded (CWE-252). Not strtonum()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _STRMODE_DISCARDED)):
             if not _STRMODE_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -10846,7 +10947,7 @@ def _api_getosreldate(lines, rel, funcs, out) -> None:
     """getosreldate() return discarded (CWE-252). Not uname()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _GETOSRELDATE_DISCARDED)):
             if not _GETOSRELDATE_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -10864,7 +10965,7 @@ def _api_cap_sandboxed(lines, rel, funcs, out) -> None:
     """cap_sandboxed() return discarded (CWE-252). Not cap_enter()/cap_fcntls_limit()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _CAP_SANDBOXED_DISCARDED)):
             if not _CAP_SANDBOXED_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -10882,7 +10983,7 @@ def _api_getgrouplist(lines, rel, funcs, out) -> None:
     """getgrouplist() return discarded (CWE-252). Not getgroups()/initgroups()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _GETGROUPLIST_DISCARDED)):
             if not _GETGROUPLIST_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -10900,7 +11001,7 @@ def _api_eaccess(lines, rel, funcs, out) -> None:
     """eaccess() return discarded (CWE-252/284). Not access()/faccessat()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _EACCESS_DISCARDED)):
             if not _EACCESS_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -10918,7 +11019,7 @@ def _api_login_getclass(lines, rel, funcs, out) -> None:
     """login_getclass()/setusercontext() discarded (CWE-252). Not getlogin()/setlogin()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _LOGIN_GETCLASS_DISCARDED)):
             m = _LOGIN_GETCLASS_DISCARDED.match(ln)
             if not m:
                 continue
@@ -10937,7 +11038,7 @@ def _api_fflags(lines, rel, funcs, out) -> None:
     """fflagstostr()/strtofflags() discarded (CWE-252). Not strmode()/strtonum()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _FFLAGS_DISCARDED)):
             m = _FFLAGS_DISCARDED.match(ln)
             if not m:
                 continue
@@ -10956,7 +11057,7 @@ def _api_getdirentries(lines, rel, funcs, out) -> None:
     """getdirentries() return discarded (CWE-252). Not getdents()/readdir()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _GETDIRENTRIES_DISCARDED)):
             if not _GETDIRENTRIES_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -10974,7 +11075,7 @@ def _api_kinfo(lines, rel, funcs, out) -> None:
     """kinfo_getproc()/kinfo_getfile() discarded (CWE-252). Not kvm_open()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _KINFO_DISCARDED)):
             m = _KINFO_DISCARDED.match(ln)
             if not m:
                 continue
@@ -10993,7 +11094,7 @@ def _api_umtx(lines, rel, funcs, out) -> None:
     """_umtx_op() return discarded (CWE-252). Not futex()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _UMTX_DISCARDED)):
             if not _UMTX_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -11011,7 +11112,7 @@ def _api_thr(lines, rel, funcs, out) -> None:
     """thr_new()/thr_kill()/thr_kill2() discarded (CWE-252). Not pthread_kill()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _THR_DISCARDED)):
             m = _THR_DISCARDED.match(ln)
             if not m:
                 continue
@@ -11030,7 +11131,7 @@ def _api_modfind(lines, rel, funcs, out) -> None:
     """modfind()/modstat()/modnext() discarded (CWE-252). Not kldload()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _MODFIND_DISCARDED)):
             m = _MODFIND_DISCARDED.match(ln)
             if not m:
                 continue
@@ -11049,7 +11150,7 @@ def _api_lpathconf(lines, rel, funcs, out) -> None:
     """lpathconf() return discarded (CWE-252). Not pathconf()/fpathconf()/sysconf()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _LPATHCONF_DISCARDED)):
             if not _LPATHCONF_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -11067,7 +11168,7 @@ def _api_loginclass(lines, rel, funcs, out) -> None:
     """getloginclass()/setloginclass() discarded (CWE-252). Not getlogin()/login_getclass()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _LOGINCLASS_DISCARDED)):
             m = _LOGINCLASS_DISCARDED.match(ln)
             if not m:
                 continue
@@ -11086,7 +11187,7 @@ def _api_getfsent(lines, rel, funcs, out) -> None:
     """getfsent()/setfsent()/endfsent() discarded (CWE-252). Not getfsstat()/getmntinfo()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _GETFSENT_DISCARDED)):
             m = _GETFSENT_DISCARDED.match(ln)
             if not m:
                 continue
@@ -11105,7 +11206,7 @@ def _api_minherit(lines, rel, funcs, out) -> None:
     """minherit() return discarded (CWE-252). Not mmap()/mprotect()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _MINHERIT_DISCARDED)):
             if not _MINHERIT_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -11123,7 +11224,7 @@ def _api_cap_getmode(lines, rel, funcs, out) -> None:
     """cap_getmode() return discarded (CWE-252). Not cap_enter()/cap_sandboxed()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _CAP_GETMODE_DISCARDED)):
             if not _CAP_GETMODE_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -11141,7 +11242,7 @@ def _api_nfssvc(lines, rel, funcs, out) -> None:
     """nfssvc() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _NFSSVC_DISCARDED)):
             if not _NFSSVC_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -11159,7 +11260,7 @@ def _api_sysarch(lines, rel, funcs, out) -> None:
     """sysarch() return discarded (CWE-252). Not syscall()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _SYSARCH_DISCARDED)):
             if not _SYSARCH_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -11177,7 +11278,7 @@ def _api_getpagesizes(lines, rel, funcs, out) -> None:
     """getpagesizes() return discarded (CWE-252). Not getpagesize()/sysconf()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _GETPAGESIZES_DISCARDED)):
             if not _GETPAGESIZES_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -11195,7 +11296,7 @@ def _api_sbrk(lines, rel, funcs, out) -> None:
     """sbrk()/brk() return discarded (CWE-252/770). Not abort(); word-bounded brk."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _SBRK_DISCARDED)):
             m = _SBRK_DISCARDED.match(ln)
             if not m:
                 continue
@@ -11214,7 +11315,7 @@ def _api_ksem(lines, rel, funcs, out) -> None:
     """ksem_open()/ksem_close()/ksem_unlink() discarded (CWE-252). Not sem_open()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _KSEM_DISCARDED)):
             m = _KSEM_DISCARDED.match(ln)
             if not m:
                 continue
@@ -11233,7 +11334,7 @@ def _api_cap_getrights(lines, rel, funcs, out) -> None:
     """cap_getrights() return discarded (CWE-252). Not cap_rights_get()/cap_rights_limit()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _CAP_GETRIGHTS_DISCARDED)):
             if not _CAP_GETRIGHTS_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -11251,7 +11352,7 @@ def _api_devname(lines, rel, funcs, out) -> None:
     """devname()/devname_r() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _DEVNAME_DISCARDED)):
             m = _DEVNAME_DISCARDED.match(ln)
             if not m:
                 continue
@@ -11270,7 +11371,7 @@ def _api_getbootfile(lines, rel, funcs, out) -> None:
     """getbootfile() return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _GETBOOTFILE_DISCARDED)):
             if not _GETBOOTFILE_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -11288,7 +11389,7 @@ def _api_kldfirstmod(lines, rel, funcs, out) -> None:
     """kldfirstmod()/kldnextmod() discarded (CWE-252). Not kldload()/modfind()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _KLDFIRSTMOD_DISCARDED)):
             m = _KLDFIRSTMOD_DISCARDED.match(ln)
             if not m:
                 continue
@@ -11307,7 +11408,7 @@ def _api_fhlink(lines, rel, funcs, out) -> None:
     """fhlink()/fhlinkat()/fhreadlink() discarded (CWE-252). Not link()/linkat()/getfh()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _FHLINK_DISCARDED)):
             m = _FHLINK_DISCARDED.match(ln)
             if not m:
                 continue
@@ -11374,7 +11475,7 @@ def _api_getdomainname(lines, rel, funcs, out) -> None:
     """getdomainname() return discarded (CWE-252). Not setdomainname()/gethostname()/uname()."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _GETDOMAINNAME_DISCARDED)):
             if not _GETDOMAINNAME_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -11414,7 +11515,7 @@ def _str_strncpy_nul(lines, rel, funcs, out) -> None:
             args = _find_call_args(ln, "strncpy")
             if args is None or len(args) < 1:
                 continue
-            dst = re.sub(r"\s+", "", args[0])
+            dst = _rx(r"\s+").sub("", args[0])
             if dst not in arrays:
                 continue
             following = "\n".join(chunk[i + 1:])
@@ -11447,7 +11548,7 @@ def _str_snprintf(lines, rel, funcs, out) -> None:
             args = _find_call_args(ln, "snprintf")
             if args is None or len(args) < 2:
                 continue
-            dst = re.sub(r"\s+", "", args[0])
+            dst = _rx(r"\s+").sub("", args[0])
             if dst not in arrays:
                 continue
             n_arg = args[1].strip()
@@ -11475,7 +11576,7 @@ def _api_unlink(lines, rel, funcs, out) -> None:
     """unlink/remove return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _UNLINK_DISCARDED)):
             if not _UNLINK_DISCARDED.match(ln):
                 continue
             fname = "unlink" if _find_call_args(ln, "unlink") else "remove"
@@ -11499,7 +11600,7 @@ def _api_mkfifo(lines, rel, funcs, out) -> None:
     """mkfifo/mknod return discarded (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _MKFIFO_DISCARDED)):
             if not _MKFIFO_DISCARDED.match(ln):
                 continue
             fname = "mkfifo" if _find_call_args(ln, "mkfifo") else "mknod"
@@ -11524,9 +11625,9 @@ def _mem_bcopy(lines, rel, funcs, out) -> None:
             args = _find_call_args(ln, "bcopy")
             if args is None or len(args) < 2:
                 continue
-            src = re.sub(r"\s+", "", args[0])
-            dst = re.sub(r"\s+", "", args[1])
-            if src != dst or not re.match(r"^[A-Za-z_]\w*$", src):
+            src = _rx(r"\s+").sub("", args[0])
+            dst = _rx(r"\s+").sub("", args[1])
+            if src != dst or not _rx(r"^[A-Za-z_]\w*$").match(src):
                 continue
             if i in seen:
                 continue
@@ -11578,7 +11679,7 @@ _ATOI_ASSIGN = re.compile(
 
 
 def _atoi_vars(body: str) -> set[str]:
-    return {m.group("var") for m in _ATOI_ASSIGN.finditer(body)}
+    return {m.group("var") for m in _lit_finditer(_ATOI_ASSIGN, body)}
 
 
 def _has_bounds_guard(var: str, body: str) -> bool:
@@ -11662,14 +11763,14 @@ _DEFAULT_LABEL = re.compile(r"\bdefault\s*:")
 def _named_enum_members(text: str) -> dict[str, list[str]]:
     """`enum Tag { A, B = 3, C }` → {Tag: [A, B, C]}. Anonymous enums omitted."""
     out: dict[str, list[str]] = {}
-    for m in _NAMED_ENUM.finditer(text):
+    for m in _lit_finditer(_NAMED_ENUM, text):
         members: list[str] = []
         for part in m.group("body").split(","):
             part = " ".join(part.split())
             if not part:
                 continue
             name = part.split("=", 1)[0].strip()
-            if re.fullmatch(r"[A-Za-z_]\w*", name):
+            if _rx(r"[A-Za-z_]\w*").fullmatch(name):
                 members.append(name)
         if members:
             out[m.group("tag")] = members
@@ -11685,7 +11786,7 @@ def _enum_vars_in_fn(fn, tags: dict[str, list[str]]) -> dict[str, str]:
         m = _ENUM_PARAM.search(typ)
         if m and m.group(1) in tags:
             vars_[name] = m.group(1)
-    for m in _ENUM_LOCAL.finditer(fn.body):
+    for m in _lit_finditer(_ENUM_LOCAL, fn.body):
         tag, name = m.group("tag"), m.group("name")
         if tag in tags and name not in _KW:
             vars_[name] = tag
@@ -11695,7 +11796,7 @@ def _enum_vars_in_fn(fn, tags: dict[str, list[str]]) -> dict[str, str]:
 def _ident_switch_bodies(text: str) -> list[tuple[str, str, int]]:
     """`switch (ident) { ... }` → (ident, body, 0-based brace line offset)."""
     out: list[tuple[str, str, int]] = []
-    for m in _SWITCH_IDENT.finditer(text):
+    for m in _lit_finditer(_SWITCH_IDENT, text):
         var = m.group(1)
         rest = text[m.end():]
         brace = rest.find("{")
@@ -11739,7 +11840,7 @@ def _enum_hole(lines, rel, funcs, out) -> None:
             tag = vars_.get(var)
             if not tag:
                 continue
-            if _DEFAULT_LABEL.search(body):
+            if _lit_search(_DEFAULT_LABEL, body):
                 continue
             covered = set(_CASE_ENUM_IDENT.findall(body))
             missing = [n for n in tags[tag] if n not in covered]
@@ -12765,21 +12866,35 @@ def _pointer_param_names(fn) -> list[str]:
     return [name for typ, name in fn.params if name and "*" in typ]
 
 
+_PARAM_NULL_TEST: dict[str, re.Pattern[str]] = {}
+
+
 def _param_null_tested(name: str, body: str) -> bool:
-    v = re.escape(name)
-    tests = (
-        rf"\bif\s*\(\s*{v}\s*==\s*(?:NULL|nullptr|0)\b",
-        rf"\bif\s*\(\s*(?:NULL|nullptr|0)\s*==\s*{v}\b",
-        rf"\bif\s*\(\s*{v}\s*!=\s*(?:NULL|nullptr|0)\b",
-        rf"\bif\s*\(\s*(?:NULL|nullptr|0)\s*!=\s*{v}\b",
-        rf"\bif\s*\(\s*!\s*{v}\b",
-    )
-    return any(re.search(p, body) for p in tests)
+    # Every test below names `name` literally.
+    if name not in body:
+        return False
+    pat = _PARAM_NULL_TEST.get(name)
+    if pat is None:
+        v = re.escape(name)
+        tests = (
+            rf"\bif\s*\(\s*{v}\s*==\s*(?:NULL|nullptr|0)\b",
+            rf"\bif\s*\(\s*(?:NULL|nullptr|0)\s*==\s*{v}\b",
+            rf"\bif\s*\(\s*{v}\s*!=\s*(?:NULL|nullptr|0)\b",
+            rf"\bif\s*\(\s*(?:NULL|nullptr|0)\s*!=\s*{v}\b",
+            rf"\bif\s*\(\s*!\s*{v}\b",
+        )
+        # One alternation matches somewhere iff one of the tests does.
+        pat = re.compile("|".join(f"(?:{t})" for t in tests))
+        _PARAM_NULL_TEST[name] = pat
+    return bool(pat.search(body))
 
 
 def _mem_leak(lines, rel, funcs, out) -> None:
     """Local malloc/calloc/realloc freed on some returns but not others."""
     for fn in funcs:
+        # UNCHECKED_ALLOC names malloc/calloc/realloc; no alloc, no finding.
+        if "alloc" not in fn.body:
+            continue
         body_lines = fn.body.splitlines()
         allocs: dict[str, list[int]] = {}
         frees: dict[str, list[int]] = {}
@@ -12790,7 +12905,7 @@ def _mem_leak(lines, rel, funcs, out) -> None:
                 frees.setdefault(_norm_var(m.group("var")), []).append(i)
         returns = [
             i for i, ln in enumerate(body_lines)
-            if re.match(r"\s*return\b", ln)
+            if _rx(r"\s*return\b").match(ln)
         ]
         if len(returns) < 2:
             continue
@@ -12927,7 +13042,7 @@ def _str_null_arg(lines, rel, funcs, out) -> None:
                     if idx >= len(args):
                         continue
                     arg = args[idx].strip()
-                    if not re.match(r"^[A-Za-z_]\w*$", arg):
+                    if not _rx(r"^[A-Za-z_]\w*$").match(arg):
                         continue
                     if arg not in unchecked:
                         continue
@@ -12960,7 +13075,7 @@ def _move_use_after(name: str, ln: str) -> bool:
 def _cxx_local_strings(fn) -> set[str]:
     params = {name for typ, name in fn.params if name}
     names: set[str] = set()
-    for m in _CXX_LOCAL_STRING.finditer(fn.body):
+    for m in _lit_finditer(_CXX_LOCAL_STRING, fn.body):
         if m.group("static"):
             continue
         name = m.group("name")
@@ -13006,7 +13121,7 @@ def _cxx_dangling_ref(lines, rel, funcs, out) -> None:
 def _hive_container_names(fn) -> set[str]:
     names = {m.group("name") for m in _CXX_HIVE_DECL.finditer(fn.body or "")}
     for typ, pname in fn.params:
-        if pname and re.search(r"\bhive\s*<", typ or ""):
+        if pname and _rx(r"\bhive\s*<").search(typ or ""):
             names.add(pname)
     return names
 
@@ -13068,7 +13183,7 @@ def _cxx_use_after_move(lines, rel, funcs, out) -> None:
 
 
 def _lambda_ref_locals(capture: str, locals_before: set[str]) -> set[str]:
-    cap = re.sub(r"\s+", "", capture)
+    cap = _rx(r"\s+").sub("", capture)
     if "&" not in cap:
         return set()
     if cap.startswith("=") and "&" not in cap[1:]:
@@ -13082,11 +13197,11 @@ def _lambda_ref_locals(capture: str, locals_before: set[str]) -> set[str]:
                         continue
                     val_only.add(re.split(r"[=:]", part)[0])
             return locals_before - val_only
-        m = re.match(r"^&([A-Za-z_]\w*)", cap)
+        m = _rx(r"^&([A-Za-z_]\w*)").match(cap)
         if m and m.group(1) in locals_before:
             return {m.group(1)}
     refs: set[str] = set()
-    for m in re.finditer(r",&([A-Za-z_]\w*)", cap):
+    for m in _rx(r",&([A-Za-z_]\w*)").finditer(cap):
         if m.group(1) in locals_before:
             refs.add(m.group(1))
     return refs
@@ -13172,16 +13287,16 @@ def _cxx_unique_reset(lines, rel, funcs, out) -> None:
         for i, ln in enumerate(body_lines):
             for m in _UNIQUE_PTR_DECL.finditer(ln):
                 unique_ptrs.add(m.group("name"))
-            m = _UNIQUE_RAW_GET.search(ln)
-            if m and m.group("up") in unique_ptrs:
-                raw_owner[m.group("raw")] = m.group("up")
+            sm = _UNIQUE_RAW_GET.search(ln)
+            if sm and sm.group("up") in unique_ptrs:
+                raw_owner[sm.group("raw")] = sm.group("up")
             for m in _UNIQUE_RESET.finditer(ln):
                 up = m.group("up")
                 if up in unique_ptrs:
                     reset_at.setdefault(up, i)
-            m = _UNIQUE_NULL.search(ln)
-            if m and m.group("up") in unique_ptrs:
-                reset_at.setdefault(m.group("up"), i)
+            sm = _UNIQUE_NULL.search(ln)
+            if sm and sm.group("up") in unique_ptrs:
+                reset_at.setdefault(sm.group("up"), i)
             for raw, up in raw_owner.items():
                 rline = reset_at.get(up)
                 if rline is None or i <= rline:
@@ -13203,9 +13318,9 @@ def _cxx_unique_reset(lines, rel, funcs, out) -> None:
 def _const_objects(fn) -> set[str]:
     objs: set[str] = set()
     for typ, name in fn.params:
-        if name and re.search(r"\bconst\b", typ):
+        if name and _rx(r"\bconst\b").search(typ):
             objs.add(name)
-    for m in _CONST_LOCAL.finditer(fn.body):
+    for m in _lit_finditer(_CONST_LOCAL, fn.body):
         objs.add(m.group("name"))
     return objs
 
@@ -13225,7 +13340,7 @@ def _cxx_const_cast(lines, rel, funcs, out) -> None:
             name = m.group("name")
             if name not in const_objs:
                 continue
-            if re.search(r"\bconst\b", m.group("target")):
+            if _rx(r"\bconst\b").search(m.group("target")):
                 continue
             line = start + i
             out.append(Finding(
@@ -13285,8 +13400,8 @@ def _cxx_dynamic_cast_null(lines, rel, funcs, out) -> None:
 
 
 def _cxx_pointee(typ: str) -> str:
-    t = re.sub(r"\b(?:const|volatile)\b", "", typ)
-    t = re.sub(r"\s+", " ", t).strip()
+    t = _rx(r"\b(?:const|volatile)\b").sub("", typ)
+    t = _rx(r"\s+").sub(" ", t).strip()
     if "*" in t:
         t = t[: t.index("*")].strip()
     elif t.endswith("&"):
@@ -13306,7 +13421,7 @@ def _cxx_ptr_decls(fn) -> dict[str, str]:
     for typ, name in fn.params:
         if name and "*" in typ:
             decls[name] = typ
-    for m in _CXX_PTR_DECL_LINE.finditer(fn.body):
+    for m in _lit_finditer(_CXX_PTR_DECL_LINE, fn.body):
         decls[m.group("name")] = m.group("typ").strip()
     return decls
 
@@ -13316,7 +13431,7 @@ def _cxx_scalar_decls(fn) -> dict[str, str]:
     for typ, name in fn.params:
         if name and "*" not in typ and "&" not in typ:
             decls[name] = typ
-    for m in _CXX_SCALAR_LOCAL.finditer(fn.body):
+    for m in _lit_finditer(_CXX_SCALAR_LOCAL, fn.body):
         decls[m.group("name")] = m.group("typ").strip()
     return decls
 
@@ -13325,13 +13440,13 @@ def _reinterp_source_type(
     src: str, ptr_decls: dict[str, str], scalar_decls: dict[str, str],
 ) -> str | None:
     src = src.strip()
-    m = re.match(r"&\s*([A-Za-z_]\w*)", src)
+    m = _rx(r"&\s*([A-Za-z_]\w*)").match(src)
     if m:
         name = m.group(1)
         if name in scalar_decls:
             return scalar_decls[name] + " *"
         return None
-    m = re.match(r"([A-Za-z_]\w*)", src)
+    m = _rx(r"([A-Za-z_]\w*)").match(src)
     if m:
         name = m.group(1)
         if name in ptr_decls:
@@ -13376,7 +13491,7 @@ def _catch_ref_name(clause: str) -> str | None:
         return None
     if "&" not in clause and "*" not in clause:
         return None
-    m = re.search(r"([A-Za-z_]\w*)\s*$", clause)
+    m = _rx(r"([A-Za-z_]\w*)\s*$").search(clause)
     return m.group(1) if m else None
 
 
@@ -13422,7 +13537,7 @@ def _bit_cast_src_is_obj_ptr(src: str, ptr_decls: dict[str, str]) -> bool:
         if src_typ is None:
             return True
         return not _allowed_reinterp_pointee(src_typ)
-    m = re.match(r"([A-Za-z_]\w*)", src)
+    m = _rx(r"([A-Za-z_]\w*)").match(src)
     if not m:
         return False
     name = m.group(1)
@@ -13435,7 +13550,7 @@ def _cxx_bit_cast(lines, rel, funcs, out) -> None:
     """bit_cast between object pointers or pointer and integer."""
     for fn in funcs:
         ptr_decls = dict(_cxx_ptr_decls(fn))
-        for m in _CXX_PTR_DECL_ANY.finditer(fn.body):
+        for m in _lit_finditer(_CXX_PTR_DECL_ANY, fn.body):
             ptr_decls.setdefault(m.group("name"), m.group("typ").strip())
         body_lines = fn.body.splitlines()
         start = fn.span[0]
@@ -13479,7 +13594,7 @@ def _place_storage_ok(name: str, fn) -> bool | None:
             last_typ = m.group("typ")
     if last_typ is None:
         return None
-    t = re.sub(r"\s+", " ", last_typ).strip().lower()
+    t = _rx(r"\s+").sub(" ", last_typ).strip().lower()
     t = t.replace("std::", "")
     if t in {"unsigned char", "byte", "void"}:
         return True
@@ -13562,13 +13677,13 @@ def _cxx_optional_null(lines, rel, funcs, out) -> None:
     """Dereference of std::optional without has_value()/operator bool."""
     for fn in funcs:
         body = fn.body or ""
-        names = {m.group("name") for m in _CXX_OPTIONAL_DECL.finditer(body)}
+        names = {m.group("name") for m in _lit_finditer(_CXX_OPTIONAL_DECL, body)}
         if not names:
             continue
         body_lines = fn.body.splitlines()
         start = fn.span[0]
         for i, ln in enumerate(body_lines):
-            for name in names:
+            for name in sorted(names):
                 if _optional_has_guard(name, body):
                     continue
                 if not _optional_deref(name, ln):
@@ -13589,14 +13704,14 @@ def _cxx_variant_get(lines, rel, funcs, out) -> None:
     """std::get<T>(v) without holds_alternative<T>(v)."""
     for fn in funcs:
         body = fn.body or ""
-        if re.search(r"\bemplace\s*<", body):
+        if _rx(r"\bemplace\s*<").search(body):
             continue
-        if re.search(r"\bvalueless_by_exception\s*\(", body):
+        if _rx(r"\bvalueless_by_exception\s*\(").search(body):
             continue
         body_lines = fn.body.splitlines()
         start = fn.span[0]
         for i, ln in enumerate(body_lines):
-            if re.search(r"\bany_cast\s*<", ln):
+            if _rx(r"\bany_cast\s*<").search(ln):
                 continue
             for m in _CXX_VARIANT_GET.finditer(ln):
                 var = m.group("var")
@@ -13632,7 +13747,7 @@ def _cxx_span_dangle(lines, rel, funcs, out) -> None:
         body_lines = fn.body.splitlines()
         start = fn.span[0]
         for i, ln in enumerate(body_lines):
-            if not re.search(r"\bspan\b", ln) and not re.search(r"\bspan\b", ret):
+            if not _rx(r"\bspan\b").search(ln) and not _rx(r"\bspan\b").search(ret):
                 continue
             m = _CXX_RETURN_SPAN.search(ln)
             if not m:
@@ -13655,7 +13770,7 @@ def _cxx_span_dangle(lines, rel, funcs, out) -> None:
 def _vec_containers(fn) -> set[str]:
     names: set[str] = set()
     for typ, pname in fn.params:
-        if pname and re.search(r"\b(?:vector\s*<|string)\b", typ):
+        if pname and _rx(r"\b(?:vector\s*<|string)\b").search(typ):
             names.add(pname)
     for m in _CXX_VEC_STR_DECL.finditer(fn.body or ""):
         names.add(m.group("name"))
@@ -13741,7 +13856,7 @@ def _cxx_throw_new(lines, rel, funcs, out) -> None:
     """`throw new T` allocates the exception; `throw T()` is the ok twin."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _THROW_NEW)):
             if not _THROW_NEW.search(ln):
                 continue
             line = start + i
@@ -13765,14 +13880,14 @@ def _cxx_uninit_member(stripped, lines, rel, funcs, out) -> None:
     name itself.
     """
     reported: set[str] = set()
-    for m in _CLASS_DEF.finditer(stripped):
+    for m in _lit_finditer(_CLASS_DEF, stripped):
         cls = m.group("name")
         brace = m.end() - 1
         close = _match_brace(stripped, brace)
         if close < 0:
             continue
         body = stripped[brace + 1: close]
-        members = [mm.group("name") for mm in _CXX_SCALAR_MEMBER.finditer(body)]
+        members = [mm.group("name") for mm in _lit_finditer(_CXX_SCALAR_MEMBER, body)]
         if not members:
             continue
         ctor = re.search(
@@ -13833,17 +13948,14 @@ def _cxx_uninit_member(stripped, lines, rel, funcs, out) -> None:
 
 def _cxx_ptr_member_names(text: str) -> set[str]:
     names: set[str] = set()
-    for m in _CLASS_DEF.finditer(text):
+    for m in _lit_finditer(_CLASS_DEF, text):
         brace = m.end() - 1
         close = _match_brace(text, brace)
         if close < 0:
             continue
         body = text[brace + 1: close]
-        for pm in re.finditer(
-            r"(?:[A-Za-z_]\w*|char|int|void|short|long)\s*\*+\s*"
-            r"(?P<name>[A-Za-z_]\w*)\s*;",
-            body,
-        ):
+        for pm in _rx(r"(?:[A-Za-z_]\w*|char|int|void|short|long)\s*\*+\s*"
+            r"(?P<name>[A-Za-z_]\w*)\s*;").finditer(body):
             names.add(pm.group("name"))
     return names
 
@@ -13860,9 +13972,9 @@ def _cxx_copy_assign_ptr(lines, rel, funcs, out) -> None:
             continue
         start = fn.span[0]
         for i, ln in enumerate(fn.body.splitlines()):
-            if re.search(r"\b(?:unique_ptr|shared_ptr|make_unique)\b", ln):
+            if _rx(r"\b(?:unique_ptr|shared_ptr|make_unique)\b").search(ln):
                 continue
-            if re.search(r"\bnew\b", ln):
+            if _rx(r"\bnew\b").search(ln):
                 continue
             m = _SHALLOW_PTR_ASSIGN.search(ln)
             if not m:
@@ -13918,16 +14030,16 @@ def _cxx_shared_get(lines, rel, funcs, out) -> None:
         for i, ln in enumerate(body_lines):
             for m in _SHARED_PTR_DECL.finditer(ln):
                 shared_ptrs.add(m.group("name"))
-            m = _UNIQUE_RAW_GET.search(ln)
-            if m and m.group("up") in shared_ptrs:
-                raw_owner[m.group("raw")] = m.group("up")
+            sm = _UNIQUE_RAW_GET.search(ln)
+            if sm and sm.group("up") in shared_ptrs:
+                raw_owner[sm.group("raw")] = sm.group("up")
             for m in _UNIQUE_RESET.finditer(ln):
                 up = m.group("up")
                 if up in shared_ptrs:
                     reset_at.setdefault(up, i)
-            m = _UNIQUE_NULL.search(ln)
-            if m and m.group("up") in shared_ptrs:
-                reset_at.setdefault(m.group("up"), i)
+            sm = _UNIQUE_NULL.search(ln)
+            if sm and sm.group("up") in shared_ptrs:
+                reset_at.setdefault(sm.group("up"), i)
             for raw, up in raw_owner.items():
                 rline = reset_at.get(up)
                 if rline is None or i <= rline:
@@ -13953,7 +14065,7 @@ def _cxx_auto_ptr(lines, rel, funcs, out) -> None:
     """std::auto_ptr is deprecated; unique_ptr is the ok twin."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _AUTO_PTR_USE)):
             if not _AUTO_PTR_USE.search(ln):
                 continue
             line = start + i
@@ -13980,9 +14092,9 @@ def _cxx_string_data(lines, rel, funcs, out) -> None:
         for i, ln in enumerate(body_lines):
             for m in _STR_OWN_DECL.finditer(ln):
                 strings.add(m.group("name"))
-            m = _STR_CSTR_GET.search(ln)
-            if m and m.group("s") in strings:
-                raw_owner[m.group("raw")] = m.group("s")
+            sm = _STR_CSTR_GET.search(ln)
+            if sm and sm.group("s") in strings:
+                raw_owner[sm.group("raw")] = sm.group("s")
             for m in _STR_MUTATE.finditer(ln):
                 s = m.group("s")
                 if s in strings:
@@ -14012,9 +14124,9 @@ def _cxx_enable_shared(lines, rel, funcs, out) -> None:
     """shared_from_this() without enable_shared_from_this in the function."""
     for fn in funcs:
         body = fn.body or ""
-        if not _SHARED_FROM_THIS.search(body):
+        if not _lit_search(_SHARED_FROM_THIS, body):
             continue
-        if _ENABLE_SHARED_FROM.search(body):
+        if _lit_search(_ENABLE_SHARED_FROM, body):
             continue
         start = fn.span[0]
         hit_i = 0
@@ -14044,7 +14156,7 @@ def _cxx_fwd_ref(lines, rel, funcs, out) -> None:
             continue
         body = fn.body or ""
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _FWD_PUSH_ARG)):
             m = _FWD_PUSH_ARG.search(ln)
             if not m:
                 continue
@@ -14073,7 +14185,7 @@ def _cxx_fwd_ref(lines, rel, funcs, out) -> None:
 def _classes_implicit_bool(stripped: str) -> set[str]:
     """Class/struct names with operator bool() that is not explicit."""
     bad: set[str] = set()
-    for m in _CLASS_DEF.finditer(stripped):
+    for m in _lit_finditer(_CLASS_DEF, stripped):
         name = m.group("name")
         brace = m.end() - 1
         close = _match_brace(stripped, brace)
@@ -14081,7 +14193,7 @@ def _classes_implicit_bool(stripped: str) -> set[str]:
             continue
         body = stripped[brace + 1: close]
         implicit = False
-        for om in _OP_BOOL.finditer(body):
+        for om in _lit_finditer(_OP_BOOL, body):
             if om.group("ex"):
                 implicit = False
                 break
@@ -14121,9 +14233,9 @@ def _cxx_explicit_ctor(stripped, lines, rel, funcs, out) -> None:
 def _const_object_names(fn) -> set[str]:
     names: set[str] = set()
     for typ, name in fn.params:
-        if not name or not re.search(r"\bconst\b", typ or ""):
+        if not name or not _rx(r"\bconst\b").search(typ or ""):
             continue
-        stripped_ty = re.sub(r"\b(?:const|volatile)\b", "", typ)
+        stripped_ty = _rx(r"\b(?:const|volatile)\b").sub("", typ)
         if "*" in stripped_ty:
             continue
         names.add(name)
@@ -14176,7 +14288,7 @@ def _emit_bind_tmp(lines, rel, out, fn_name: str, line: int, msg: str) -> None:
 def _cxx_bind_tmp(stripped, lines, rel, funcs, out) -> None:
     """Reference bound to a temporary then returned. Distinct from views."""
     reported: set[str] = set()
-    for m in _REF_RET_FN.finditer(stripped):
+    for m in _lit_finditer(_REF_RET_FN, stripped):
         name = m.group("name")
         brace = m.end() - 1
         close = _match_brace(stripped, brace)
@@ -14185,18 +14297,18 @@ def _cxx_bind_tmp(stripped, lines, rel, funcs, out) -> None:
         body = stripped[brace + 1: close]
         hit_line = None
         msg = None
-        rm = _RETURN_CTOR.search(body)
+        rm = _lit_search(_RETURN_CTOR, body)
         if rm:
             hit_line = stripped[: brace + 1 + rm.start()].count("\n") + 1
             msg = "return of a temporary bound to a reference"
         else:
-            bm = _BIND_TMP_LOCAL.search(body)
+            bm = _lit_search(_BIND_TMP_LOCAL, body)
             if bm:
                 nm = bm.group("name")
                 if re.search(rf"\breturn\s+{re.escape(nm)}\s*;", body):
                     hit_line = stripped[: brace + 1 + bm.start()].count("\n") + 1
                     msg = f"return of {nm} bound to a temporary"
-        if not hit_line or name in reported:
+        if not hit_line or msg is None or name in reported:
             continue
         reported.add(name)
         _emit_bind_tmp(lines, rel, out, name, hit_line, msg)
@@ -14204,7 +14316,7 @@ def _cxx_bind_tmp(stripped, lines, rel, funcs, out) -> None:
         if fn.name in reported:
             continue
         body = fn.body or ""
-        bm = _BIND_TMP_LOCAL.search(body)
+        bm = _lit_search(_BIND_TMP_LOCAL, body)
         if not bm:
             continue
         nm = bm.group("name")
@@ -14222,13 +14334,13 @@ def _cxx_expected_null(lines, rel, funcs, out) -> None:
     """Dereference of std::expected without has_value()/operator bool."""
     for fn in funcs:
         body = fn.body or ""
-        names = {m.group("name") for m in _CXX_EXPECTED_DECL.finditer(body)}
+        names = {m.group("name") for m in _lit_finditer(_CXX_EXPECTED_DECL, body)}
         if not names:
             continue
         body_lines = fn.body.splitlines()
         start = fn.span[0]
         for i, ln in enumerate(body_lines):
-            for name in names:
+            for name in sorted(names):
                 if _optional_has_guard(name, body):
                     continue
                 if not _optional_deref(name, ln):
@@ -14287,7 +14399,7 @@ def _cxx_std_format(lines, rel, funcs, out) -> None:
 
 def _lambda_body_from(text: str, capture_end: int) -> str | None:
     rest = text[capture_end:]
-    m = re.match(r"\s*(?:\([^;{}]*\))?\s*(?:mutable\s*)?\{", rest)
+    m = _rx(r"\s*(?:\([^;{}]*\))?\s*(?:mutable\s*)?\{").match(rest)
     if not m:
         return None
     brace = capture_end + m.end() - 1
@@ -14298,7 +14410,7 @@ def _lambda_body_from(text: str, capture_end: int) -> str | None:
 
 
 def _lambda_capture_kind(capture: str) -> str:
-    cap = re.sub(r"\s+", "", capture)
+    cap = _rx(r"\s+").sub("", capture)
     if cap == "this" or cap.startswith("this,"):
         return "this"
     if cap == "=" or cap.startswith("=,"):
@@ -14308,7 +14420,7 @@ def _lambda_capture_kind(capture: str) -> str:
 
 def _lambda_idents(body: str) -> set[str]:
     names: set[str] = set()
-    for m in re.finditer(r"\b([A-Za-z_]\w*)\b(?!\s*\()", body):
+    for m in _rx(r"\b([A-Za-z_]\w*)\b(?!\s*\()").finditer(body):
         ident = m.group(1)
         if ident not in _LAMBDA_SKIP:
             names.add(ident)
@@ -14317,7 +14429,7 @@ def _lambda_idents(body: str) -> set[str]:
 
 def _fn_class_members(fn, stripped: str) -> set[str] | None:
     """Member names when fn is defined inside a class/struct, else None."""
-    for m in _CLASS_DEF.finditer(stripped):
+    for m in _lit_finditer(_CLASS_DEF, stripped):
         brace = m.end() - 1
         close = _match_brace(stripped, brace)
         if close < 0:
@@ -14328,9 +14440,9 @@ def _fn_class_members(fn, stripped: str) -> set[str] | None:
             continue
         body = stripped[brace + 1: close]
         names: set[str] = set()
-        for pm in _PTR_MEMBER.finditer(body):
+        for pm in _lit_finditer(_PTR_MEMBER, body):
             names.add(pm.group("name"))
-        for sm in _CXX_SCALAR_MEMBER.finditer(body):
+        for sm in _lit_finditer(_CXX_SCALAR_MEMBER, body):
             names.add(sm.group("name"))
         return names
     return None
@@ -14343,7 +14455,7 @@ def _cxx_this_capture_hit(capture: str, lam: str | None, locals_ok: set[str],
         return True
     if kind != "eq" or lam is None:
         return False
-    if re.search(r"\bthis\b", lam):
+    if _rx(r"\bthis\b").search(lam):
         return True
     if members is None:
         return False
@@ -14358,8 +14470,14 @@ def _cxx_this_capture(stripped, lines, rel, funcs, out) -> None:
     """
     reported: set[str] = set()
     for fn in funcs:
-        params = {name for typ, name in fn.params if name}
         body = fn.body or ""
+        # A hit needs `return [..]` or a stored `auto f = [..]`; without
+        # either both loops below find nothing.
+        if "[" not in body or (
+            not _lit_search(_CXX_RETURN_LAMBDA, body) and not _lit_search(_CXX_AUTO_LAMBDA, body)
+        ):
+            continue
+        params = {name for typ, name in fn.params if name}
         members = _fn_class_members(fn, stripped)
         locals_ok: set[str] = set(params)
         for ln in body.splitlines():
@@ -14370,18 +14488,18 @@ def _cxx_this_capture(stripped, lines, rel, funcs, out) -> None:
             if name not in params and name not in _KW:
                 locals_ok.add(name)
         stored: dict[str, tuple[str, str]] = {}
-        for m in _CXX_AUTO_LAMBDA.finditer(body):
+        for m in _lit_finditer(_CXX_AUTO_LAMBDA, body):
             stored[m.group("name")] = (
                 m.group("capture"), _lambda_body_from(body, m.end()) or "",
             )
         hit_off = None
-        for m in _CXX_RETURN_LAMBDA.finditer(body):
+        for m in _lit_finditer(_CXX_RETURN_LAMBDA, body):
             lam = _lambda_body_from(body, m.end())
             if _cxx_this_capture_hit(m.group("capture"), lam, locals_ok, members):
                 hit_off = m.start()
                 break
         if hit_off is None:
-            for m in _CXX_RETURN_NAME.finditer(body):
+            for m in _lit_finditer(_CXX_RETURN_NAME, body):
                 stored_cap = stored.get(m.group("name"))
                 if not stored_cap:
                     continue
@@ -14402,24 +14520,21 @@ def _cxx_this_capture(stripped, lines, rel, funcs, out) -> None:
             if 0 < line <= len(lines) else "",
         ))
 
-    for cm in _CLASS_DEF.finditer(stripped):
+    for cm in _lit_finditer(_CLASS_DEF, stripped):
         cls = cm.group("name")
         brace = cm.end() - 1
         close = _match_brace(stripped, brace)
         if close < 0:
             continue
         cbody = stripped[brace + 1: close]
-        members = {pm.group("name") for pm in _PTR_MEMBER.finditer(cbody)}
-        members.update(sm.group("name") for sm in _CXX_SCALAR_MEMBER.finditer(cbody))
-        for m in _CXX_RETURN_LAMBDA.finditer(cbody):
+        members = {pm.group("name") for pm in _lit_finditer(_PTR_MEMBER, cbody)}
+        members.update(sm.group("name") for sm in _lit_finditer(_CXX_SCALAR_MEMBER, cbody))
+        for m in _lit_finditer(_CXX_RETURN_LAMBDA, cbody):
             lam = _lambda_body_from(cbody, m.end())
             if not _cxx_this_capture_hit(m.group("capture"), lam, set(), members):
                 continue
             hit_fn = cls
-            for hm in re.finditer(
-                r"\b(?P<name>[A-Za-z_]\w*)\s*\([^;{}]*\)[^{]*\{",
-                cbody[: m.start()],
-            ):
+            for hm in _rx(r"\b(?P<name>[A-Za-z_]\w*)\s*\([^;{}]*\)[^{]*\{").finditer(cbody[: m.start()]):
                 hit_fn = hm.group("name")
             if hit_fn in reported:
                 continue
@@ -14438,16 +14553,16 @@ def _cxx_this_capture(stripped, lines, rel, funcs, out) -> None:
 def _cxx_spaceship_default(stripped, lines, rel, funcs, out) -> None:
     """Defaulted operator<=> in a class that has a pointer member."""
     reported: set[str] = set()
-    for m in _CLASS_DEF.finditer(stripped):
+    for m in _lit_finditer(_CLASS_DEF, stripped):
         cls = m.group("name")
         brace = m.end() - 1
         close = _match_brace(stripped, brace)
         if close < 0:
             continue
         body = stripped[brace + 1: close]
-        if not _PTR_MEMBER.search(body):
+        if not _lit_search(_PTR_MEMBER, body):
             continue
-        sm = _SPACESHIP_DEFAULT.search(body)
+        sm = _lit_search(_SPACESHIP_DEFAULT, body)
         if not sm:
             continue
         op_line = stripped[: brace + 1 + sm.start()].count("\n") + 1
@@ -14487,7 +14602,7 @@ def _cxx_std_async(lines, rel, funcs, out) -> None:
     """Discarded std::async() — not assigned, not .wait/.get (CWE-252)."""
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _ASYNC_DISCARDED)):
             if not _ASYNC_DISCARDED.match(ln):
                 continue
             line = start + i
@@ -14518,11 +14633,11 @@ def _cxx_future_get(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if re.search(r"\bget_future\s*\(", body):
+        if _rx(r"\bget_future\s*\(").search(body):
             continue
-        if re.search(r"\b(?:std\s*::\s*)?promise\s*<", body):
+        if _rx(r"\b(?:std\s*::\s*)?promise\s*<").search(body):
             continue
-        names = {m.group("name") for m in _CXX_FUTURE_DECL.finditer(body)}
+        names = {m.group("name") for m in _lit_finditer(_CXX_FUTURE_DECL, body)}
         if not names:
             continue
         start = fn.span[0]
@@ -14556,12 +14671,12 @@ def _cxx_function_null(lines, rel, funcs, out) -> None:
     """std::function invoked without if (f) / if (fn) (CWE-476)."""
     for fn in funcs:
         body = fn.body or ""
-        names = {m.group("name") for m in _CXX_FUNCTION_DECL.finditer(body)}
+        names = {m.group("name") for m in _lit_finditer(_CXX_FUNCTION_DECL, body)}
         if not names:
             continue
         start = fn.span[0]
         for i, ln in enumerate(fn.body.splitlines()):
-            for name in names:
+            for name in sorted(names):
                 if _optional_has_guard(name, body):
                     continue
                 if not _function_invoked(name, ln):
@@ -14599,7 +14714,7 @@ def _cxx_nodiscard(lines, rel, funcs, out) -> None:
         return
     for fn in funcs:
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _NODISCARD_DISCARDED)):
             m = _NODISCARD_DISCARDED.match(ln)
             if not m:
                 continue
@@ -14622,10 +14737,10 @@ def _cxx_std_jthread(lines, rel, funcs, out) -> None:
     """std::jthread constructed with a callable and no request_stop."""
     for fn in funcs:
         body = fn.body or ""
-        if re.search(r"\brequest_stop\s*\(", body):
+        if _rx(r"\brequest_stop\s*\(").search(body):
             continue
         start = fn.span[0]
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _CXX_JTHREAD_DECL)):
             m = _CXX_JTHREAD_DECL.search(ln)
             if not m:
                 continue
@@ -14695,22 +14810,22 @@ def _cxx_atomic_ref(lines, rel, funcs, out) -> None:
                 src = m.group("name")
                 if src in locals_ok:
                     ref_from_local[m.group("ref")] = src
-            m = _CXX_RETURN_ATOMIC_REF.search(ln)
-            if m and m.group("name") in locals_ok:
+            sm = _CXX_RETURN_ATOMIC_REF.search(ln)
+            if sm and sm.group("name") in locals_ok:
                 line = start + i
                 out.append(Finding(
                     stage="lints", status=laws.FAILED, file=rel,
                     function=fn.name, line=line, cls="CXX-ATOMIC-REF",
                     message="return atomic_ref constructed from local "
-                    f"{m.group('name')}",
+                    f"{sm.group('name')}",
                     strength=laws.STRENGTH_FINDS,
                     evidence=lines[line - 1].strip()
                     if 0 < line <= len(lines) else ln.strip(),
                 ))
                 return
-            m = _CXX_RETURN_NAME.search(ln)
-            if m and m.group("name") in ref_from_local:
-                src = ref_from_local[m.group("name")]
+            sm = _CXX_RETURN_NAME.search(ln)
+            if sm and sm.group("name") in ref_from_local:
+                src = ref_from_local[sm.group("name")]
                 line = start + i
                 out.append(Finding(
                     stage="lints", status=laws.FAILED, file=rel,
@@ -14727,9 +14842,7 @@ def _cxx_condition_wait(lines, rel, funcs, out) -> None:
     """cv.wait(lk) without a predicate. Ok twin uses wait(lk, pred)."""
     for fn in funcs:
         body = fn.body or ""
-        if not re.search(
-            r"\b(?:std\s*::\s*)?condition_variable(?:_any)?\b", body
-        ):
+        if not _rx(r"\b(?:std\s*::\s*)?condition_variable(?:_any)?\b").search(body):
             continue
         start = fn.span[0]
         for i, ln in enumerate(body.splitlines()):
@@ -14770,7 +14883,7 @@ def _cxx_assume(lines, rel, funcs, out) -> None:
     """[[assume(false)]] / [[assume(0)]] in a function that still returns."""
     for fn in funcs:
         body = fn.body or ""
-        if not re.search(r"\breturn\b", body):
+        if not _rx(r"\breturn\b").search(body):
             continue
         start = fn.span[0]
         for i, ln in enumerate(body.splitlines()):
@@ -14794,21 +14907,19 @@ def _cxx_generator(lines, rel, funcs, out) -> None:
         ret = fn.return_type or ""
         body = fn.body or ""
         blob = f"{ret}\n{body}"
-        if not re.search(r"\b(?:std\s*::\s*)?generator\b", blob):
+        if not _rx(r"\b(?:std\s*::\s*)?generator\b").search(blob):
             continue
         ref_yield = bool(
-            re.search(r"\b(?:std\s*::\s*)?generator\s*<[^>]*&", blob)
+            _rx(r"\b(?:std\s*::\s*)?generator\s*<[^>]*&").search(blob)
         )
         _, arrays = _locals_in_fn(fn)
-        local_yield = bool(arrays) and bool(re.search(r"\bco_yield\b", body))
+        local_yield = bool(arrays) and bool(_rx(r"\bco_yield\b").search(body))
         if not ref_yield and not local_yield:
             continue
         start = fn.span[0]
         hit_i = 0
         for i, ln in enumerate(body.splitlines()):
-            if re.search(r"\bco_yield\b", ln) or re.search(
-                r"\b(?:std\s*::\s*)?generator\s*<[^>]*&", ln
-            ):
+            if _rx(r"\bco_yield\b").search(ln) or _rx(r"\b(?:std\s*::\s*)?generator\s*<[^>]*&").search(ln):
                 hit_i = i
                 break
         line = start + hit_i
@@ -14826,16 +14937,14 @@ def _cxx_shared_mutex(lines, rel, funcs, out) -> None:
     """shared_mutex.lock() without unlock or lock_guard/shared_lock."""
     for fn in funcs:
         body = fn.body or ""
-        if re.search(
-            r"\b(?:lock_guard|shared_lock|unique_lock|scoped_lock)\b", body
-        ):
+        if _rx(r"\b(?:lock_guard|shared_lock|unique_lock|scoped_lock)\b").search(body):
             continue
         names = {
-            m.group("name") for m in _CXX_SHARED_MUTEX_DECL.finditer(body)
+            m.group("name") for m in _lit_finditer(_CXX_SHARED_MUTEX_DECL, body)
         }
         start = fn.span[0]
         body_lines = body.splitlines()
-        for name in names:
+        for name in sorted(names):
             n = re.escape(name)
             if re.search(rf"\b{n}\s*\.\s*unlock\s*\(", body):
                 continue
@@ -14858,19 +14967,17 @@ def _cxx_any_cast(lines, rel, funcs, out) -> None:
     """any_cast<T>(v) by value without type()/has_value/try or pointer form."""
     for fn in funcs:
         body = fn.body or ""
-        if re.search(r"\btry\b", body) and re.search(r"\bcatch\b", body):
+        if _rx(r"\btry\b").search(body) and _rx(r"\bcatch\b").search(body):
             continue
         start = fn.span[0]
         for i, ln in enumerate(body.splitlines()):
-            if re.search(
-                r"\(\s*void\s*\)\s*(?:std\s*::\s*)?any_cast\s*<", ln
-            ):
+            if _rx(r"\(\s*void\s*\)\s*(?:std\s*::\s*)?any_cast\s*<").search(ln):
                 continue
             for m in _ANY_CAST_CALL.finditer(ln):
                 arg = m.group("arg").strip()
                 if arg.startswith("&"):
                     continue
-                var_m = re.match(r"^([A-Za-z_]\w*)\s*$", arg)
+                var_m = _rx(r"^([A-Za-z_]\w*)\s*$").match(arg)
                 if var_m:
                     v = re.escape(var_m.group(1))
                     if re.search(rf"\b{v}\s*\.\s*(?:type|has_value)\s*\(", body):
@@ -14940,10 +15047,10 @@ def _cxx_latch(lines, rel, funcs, out) -> None:
     """latch.wait() without count_down in the same function."""
     for fn in funcs:
         body = fn.body or ""
-        names = {m.group("name") for m in _CXX_LATCH_DECL.finditer(body)}
+        names = {m.group("name") for m in _lit_finditer(_CXX_LATCH_DECL, body)}
         start = fn.span[0]
         body_lines = body.splitlines()
-        for name in names:
+        for name in sorted(names):
             n = re.escape(name)
             if re.search(rf"\b{n}\s*\.\s*count_down\s*\(", body):
                 continue
@@ -14966,7 +15073,7 @@ def _cxx_from_chars(lines, rel, funcs, out) -> None:
     """from_chars out-parameter used without checking r.ec / errc / ptr."""
     for fn in funcs:
         body = fn.body or ""
-        if re.search(r"\.(?:ec|ptr)\b|\berrc\b", body):
+        if _rx(r"\.(?:ec|ptr)\b|\berrc\b").search(body):
             continue
         start = fn.span[0]
         outs: dict[str, int] = {}
@@ -15023,7 +15130,7 @@ def _cxx_stop_token(lines, rel, funcs, out) -> None:
         if not _CXX_STOP_TOKEN.search(blob):
             continue
         body = fn.body or ""
-        if re.search(r"\bstop_requested\s*\(", body):
+        if _rx(r"\bstop_requested\s*\(").search(body):
             continue
         start = fn.span[0]
         for i, ln in enumerate(body.splitlines()):
@@ -15051,7 +15158,7 @@ def _cxx_flat_map(lines, rel, funcs, out) -> None:
     for fn in funcs:
         body = fn.body or ""
         names: set[str] = set()
-        for m in _CXX_FLAT_MAP_DECL.finditer(body):
+        for m in _lit_finditer(_CXX_FLAT_MAP_DECL, body):
             name = m.group("name")
             if m.group("map") is not None:
                 if "flat_map" not in m.group(0) and "flat_map" not in name:
@@ -15060,7 +15167,7 @@ def _cxx_flat_map(lines, rel, funcs, out) -> None:
         if not names:
             continue
         start = fn.span[0]
-        for name in names:
+        for name in sorted(names):
             n = re.escape(name)
             if re.search(
                 rf"\b{n}\s*\.\s*(?:contains|count|find)\s*\(", body
@@ -15085,10 +15192,10 @@ def _cxx_semaphore(lines, rel, funcs, out) -> None:
     """counting_semaphore.acquire() without release in the same function."""
     for fn in funcs:
         body = fn.body or ""
-        names = {m.group("name") for m in _CXX_SEM_DECL.finditer(body)}
+        names = {m.group("name") for m in _lit_finditer(_CXX_SEM_DECL, body)}
         start = fn.span[0]
         body_lines = body.splitlines()
-        for name in names:
+        for name in sorted(names):
             n = re.escape(name)
             if re.search(rf"\b{n}\s*\.\s*release\s*\(", body):
                 continue
@@ -15118,15 +15225,15 @@ def _cxx_stacktrace(lines, rel, funcs, out) -> None:
     """stacktrace::current() [0]/at(0) without empty/size check (CWE-125)."""
     for fn in funcs:
         body = fn.body or ""
-        if not _STACKTRACE_CURRENT.search(body):
+        if not _lit_search(_STACKTRACE_CURRENT, body):
             continue
         start = fn.span[0]
         assigned = {
-            m.group("name") for m in _STACKTRACE_ASSIGN.finditer(body)
+            m.group("name") for m in _lit_finditer(_STACKTRACE_ASSIGN, body)
         }
         for i, ln in enumerate(body.splitlines()):
             if _STACKTRACE_DIRECT_ZERO.search(ln):
-                if re.search(r"\.(?:empty|size)\s*\(", body):
+                if _rx(r"\.(?:empty|size)\s*\(").search(body):
                     continue
                 line = start + i
                 out.append(Finding(
@@ -15138,7 +15245,7 @@ def _cxx_stacktrace(lines, rel, funcs, out) -> None:
                     if 0 < line <= len(lines) else ln.strip(),
                 ))
                 return
-            for name in assigned:
+            for name in sorted(assigned):
                 if _stacktrace_has_guard(name, body):
                     continue
                 n = re.escape(name)
@@ -15199,7 +15306,7 @@ def _cxx_pack_pragma(lines, rel, funcs, out) -> None:
     for fn in funcs:
         start = fn.span[0]
         for i, ln in enumerate((fn.body or "").splitlines()):
-            if re.search(r"\bmemcpy\s*\(", ln):
+            if _rx(r"\bmemcpy\s*\(").search(ln):
                 continue
             if not _PACK_INT_MEMBER_ADDR.search(ln):
                 continue
@@ -15225,7 +15332,7 @@ def _cxx_function_ref(lines, rel, funcs, out) -> None:
     for fn in funcs:
         body = fn.body or ""
         start = fn.span[0]
-        if _CXX_FN_REF_RETURN.search(body):
+        if _lit_search(_CXX_FN_REF_RETURN, body):
             for i, ln in enumerate(body.splitlines()):
                 if not _CXX_FN_REF_RETURN.search(ln):
                     continue
@@ -15268,12 +15375,12 @@ def _cxx_move_only_function(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        names = {m.group("name") for m in _CXX_MOF_DECL.finditer(body)}
+        names = {m.group("name") for m in _lit_finditer(_CXX_MOF_DECL, body)}
         if not names:
             continue
         start = fn.span[0]
         for i, ln in enumerate(body.splitlines()):
-            for name in names:
+            for name in sorted(names):
                 if _optional_has_guard(name, body):
                     continue
                 if not _mof_invoked(name, ln):
@@ -15298,18 +15405,15 @@ def _cxx_ranges_dangle(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not _RANGES_TMP_PIPE.search(body):
+        if not _lit_search(_RANGES_TMP_PIPE, body):
             continue
-        if _RANGES_MATERIALIZE.search(body):
+        if _lit_search(_RANGES_MATERIALIZE, body):
             continue
         start = fn.span[0]
         for i, ln in enumerate(body.splitlines()):
             if not (
                 _RANGES_TMP_PIPE.search(ln)
-                or re.search(
-                    r"\|\s*(?:std\s*::\s*)?(?:ranges\s*::\s*)?views\s*::",
-                    ln,
-                )
+                or _rx(r"\|\s*(?:std\s*::\s*)?(?:ranges\s*::\s*)?views\s*::").search(ln)
             ):
                 continue
             line = start + i
@@ -15331,9 +15435,9 @@ def _cxx_chrono_seed(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not _CHRONO_NOW.search(body):
+        if not _lit_search(_CHRONO_NOW, body):
             continue
-        if not _CHRONO_PRNG.search(body):
+        if not _lit_search(_CHRONO_PRNG, body):
             continue
         start = fn.span[0]
         for i, ln in enumerate(body.splitlines()):
@@ -15363,11 +15467,11 @@ def _cxx_inplace_vector(lines, rel, funcs, out) -> None:
     """inplace_vector push_back/emplace_back without a capacity guard (CWE-787)."""
     for fn in funcs:
         body = fn.body or ""
-        names = {m.group("name") for m in _CXX_INPLACE_DECL.finditer(body)}
+        names = {m.group("name") for m in _lit_finditer(_CXX_INPLACE_DECL, body)}
         if not names:
             continue
         start = fn.span[0]
-        for name in names:
+        for name in sorted(names):
             if _inplace_has_guard(name, body):
                 continue
             n = re.escape(name)
@@ -15401,11 +15505,11 @@ def _cxx_flat_set(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        names = {m.group("name") for m in _CXX_FLAT_SET_DECL.finditer(body)}
+        names = {m.group("name") for m in _lit_finditer(_CXX_FLAT_SET_DECL, body)}
         if not names:
             continue
         start = fn.span[0]
-        for name in names:
+        for name in sorted(names):
             if _flat_set_has_end_guard(name, body):
                 continue
             n = re.escape(name)
@@ -15442,12 +15546,12 @@ def _cxx_copyable_function(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        names = {m.group("name") for m in _CXX_COPYABLE_FN_DECL.finditer(body)}
+        names = {m.group("name") for m in _lit_finditer(_CXX_COPYABLE_FN_DECL, body)}
         if not names:
             continue
         start = fn.span[0]
         for i, ln in enumerate(body.splitlines()):
-            for name in names:
+            for name in sorted(names):
                 if _optional_has_guard(name, body):
                     continue
                 if not _copyable_fn_invoked(name, ln):
@@ -15559,7 +15663,7 @@ def _cxx_sstream_view(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        streams = {m.group("name") for m in _CXX_SSTREAM_DECL.finditer(body)}
+        streams = {m.group("name") for m in _lit_finditer(_CXX_SSTREAM_DECL, body)}
         if not streams:
             continue
         start = fn.span[0]
@@ -15598,12 +15702,12 @@ def _cxx_optional_value(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        names = {m.group("name") for m in _CXX_OPTIONAL_DECL.finditer(body)}
+        names = {m.group("name") for m in _lit_finditer(_CXX_OPTIONAL_DECL, body)}
         if not names:
             continue
         start = fn.span[0]
         for i, ln in enumerate(body.splitlines()):
-            for name in names:
+            for name in sorted(names):
                 if _optional_has_guard(name, body):
                     continue
                 n = re.escape(name)
@@ -15640,12 +15744,12 @@ def _cxx_indirect(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        names = {m.group("name") for m in _CXX_INDIRECT_DECL.finditer(body)}
+        names = {m.group("name") for m in _lit_finditer(_CXX_INDIRECT_DECL, body)}
         if not names:
             continue
         start = fn.span[0]
         for i, ln in enumerate(body.splitlines()):
-            for name in names:
+            for name in sorted(names):
                 if _indirect_has_value(name, body):
                     continue
                 n = re.escape(name)
@@ -15673,7 +15777,7 @@ def _cxx_to_chars(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if re.search(r"\.(?:ec|ptr)\b|\berrc\b", body):
+        if _rx(r"\.(?:ec|ptr)\b|\berrc\b").search(body):
             continue
         start = fn.span[0]
         outs: dict[str, int] = {}
@@ -15711,15 +15815,15 @@ def _cxx_hazard_pointer(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not _HAZARD_DECL.search(body):
+        if not _lit_search(_HAZARD_DECL, body):
             continue
-        if re.search(r"\bprotect\s*\(|\bhazard_pointer_for\s*\(", body):
+        if _rx(r"\bprotect\s*\(|\bhazard_pointer_for\s*\(").search(body):
             continue
-        if not re.search(r"\.load\s*\(", body):
+        if not _rx(r"\.load\s*\(").search(body):
             continue
         start = fn.span[0]
         for i, ln in enumerate(body.splitlines()):
-            if not re.search(r"->", ln):
+            if not _rx(r"->").search(ln):
                 continue
             line = start + i
             out.append(Finding(
@@ -15744,7 +15848,7 @@ def _cxx_text_encoding(lines, rel, funcs, out) -> None:
             arg = m.group("arg").strip()
             if _is_string_literal(arg):
                 continue
-            if re.search(r"\butf8\s*\(", arg):
+            if _rx(r"\butf8\s*\(").search(arg):
                 continue
             line = start + i
             out.append(Finding(
@@ -15776,7 +15880,7 @@ def _cxx_expected_error(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        names = {m.group("name") for m in _CXX_EXPECTED_DECL.finditer(body)}
+        names = {m.group("name") for m in _lit_finditer(_CXX_EXPECTED_DECL, body)}
         if not names:
             continue
         start = fn.span[0]
@@ -15806,15 +15910,15 @@ def _cxx_variant_valueless(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not re.search(r"\bemplace\s*<", body):
+        if not _rx(r"\bemplace\s*<").search(body):
             continue
-        if re.search(r"\bvalueless_by_exception\s*\(", body):
+        if _rx(r"\bvalueless_by_exception\s*\(").search(body):
             continue
         start = fn.span[0]
         for i, ln in enumerate(body.splitlines()):
             if not (
-                re.search(r"(?:std\s*::\s*)?\bget(?:_if)?\s*<", ln)
-                or re.search(r"\.\s*index\s*\(", ln)
+                _rx(r"(?:std\s*::\s*)?\bget(?:_if)?\s*<").search(ln)
+                or _rx(r"\.\s*index\s*\(").search(ln)
             ):
                 continue
             line = start + i
@@ -15871,16 +15975,16 @@ def _cxx_rcu(lines, rel, funcs, out) -> None:
     """rcu_obj update / retire without rcu_synchronize() (CWE-416)."""
     for fn in funcs:
         body = fn.body or ""
-        if re.search(r"\brcu_synchronize\s*\(", body):
+        if _rx(r"\brcu_synchronize\s*\(").search(body):
             continue
-        names = {m.group("name") for m in _RCU_OBJ_DECL.finditer(body)}
-        has_ctx = bool(names) or bool(re.search(r"\bstd\s*::\s*rcu\b", body))
+        names = {m.group("name") for m in _lit_finditer(_RCU_OBJ_DECL, body)}
+        has_ctx = bool(names) or bool(_rx(r"\bstd\s*::\s*rcu\b").search(body))
         if not has_ctx:
             continue
         start = fn.span[0]
         for i, ln in enumerate(body.splitlines()):
-            hit = bool(re.search(r"\bretire\s*\(", ln))
-            for name in names:
+            hit = bool(_rx(r"\bretire\s*\(").search(ln))
+            for name in sorted(names):
                 if not re.search(rf"\b{re.escape(name)}\s*=(?!=)", ln):
                     continue
                 if _RCU_OBJ_DECL.search(ln) and "=" not in ln.split("=", 1)[0]:
@@ -15903,7 +16007,7 @@ def _cxx_rcu(lines, rel, funcs, out) -> None:
 
 
 def _linalg_extents_guarded(body: str) -> bool:
-    return bool(re.search(r"\b(?:extents|extent|size)\s*\(", body))
+    return bool(_rx(r"\b(?:extents|extent|size)\s*\(").search(body))
 
 
 def _cxx_linalg(lines, rel, funcs, out) -> None:
@@ -15913,17 +16017,17 @@ def _cxx_linalg(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not re.search(r"(?:std\s*::\s*)?linalg\s*::", body):
+        if not _rx(r"(?:std\s*::\s*)?linalg\s*::").search(body):
             continue
         if _linalg_extents_guarded(body):
             continue
-        names = {m.group("name") for m in _LINALG_MATRIX_DECL.finditer(body)}
+        names = {m.group("name") for m in _lit_finditer(_LINALG_MATRIX_DECL, body)}
         start = fn.span[0]
         body_lines = body.splitlines()
-        if _LINALG_SCALED.search(body) and re.search(r"\breturn\b", body):
+        if _lit_search(_LINALG_SCALED, body) and _rx(r"\breturn\b").search(body):
             hit_i = 0
             for i, ln in enumerate(body_lines):
-                if _LINALG_SCALED.search(ln) or re.search(r"\breturn\b", ln):
+                if _LINALG_SCALED.search(ln) or _rx(r"\breturn\b").search(ln):
                     hit_i = i
                     break
             line = start + hit_i
@@ -15937,7 +16041,7 @@ def _cxx_linalg(lines, rel, funcs, out) -> None:
             ))
             return
         for i, ln in enumerate(body_lines):
-            for name in names:
+            for name in sorted(names):
                 if not re.search(
                     rf"\b{re.escape(name)}\s*\(\s*[^,\)]+\s*,", ln
                 ):
@@ -15974,17 +16078,17 @@ def _cxx_sync_wait(lines, rel, funcs, out) -> None:
 
 
 def _embed_arg_is_literal(arg: str) -> bool:
-    rest = re.sub(r"//.*", "", arg or "").strip().rstrip(";").strip()
+    rest = _rx(r"//.*").sub("", arg or "").strip().rstrip(";").strip()
     if not rest:
         return False
-    return bool(re.match(r'["<]', rest))
+    return bool(_rx(r'["<]').match(rest))
 
 
 def _cxx_embed(lines, rel, funcs, out) -> None:
     """#embed of a non-literal token, or pointer into embed storage without sizeof."""
     for fn in funcs:
         body = fn.body or ""
-        if not re.search(r"#\s*embed\b", body):
+        if not _rx(r"#\s*embed\b").search(body):
             continue
         start = fn.span[0]
         body_lines = body.splitlines()
@@ -16004,13 +16108,13 @@ def _cxx_embed(lines, rel, funcs, out) -> None:
                 if 0 < line <= len(lines) else ln.strip(),
             ))
             return
-        if re.search(r"\bsizeof\s*\(", body):
+        if _rx(r"\bsizeof\s*\(").search(body):
             continue
         ret = fn.return_type or ""
-        if "*" not in ret and not re.search(r"\bchar\s*\*", body):
+        if "*" not in ret and not _rx(r"\bchar\s*\*").search(body):
             continue
         for i, ln in enumerate(body_lines):
-            if not re.search(r"\breturn\s+[A-Za-z_]\w*\s*;", ln):
+            if not _rx(r"\breturn\s+[A-Za-z_]\w*\s*;").search(ln):
                 continue
             line = start + i
             out.append(Finding(
@@ -16031,7 +16135,7 @@ def _cxx_contracts(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not re.search(r"\breturn\b", body):
+        if not _rx(r"\breturn\b").search(body):
             continue
         start = fn.span[0]
         for i, ln in enumerate(body.splitlines()):
@@ -16053,11 +16157,11 @@ def _cxx_reflection(lines, rel, funcs, out) -> None:
     """^^ / std::meta:: with define_aggregate/define_class and no namespace."""
     for fn in funcs:
         body = fn.body or ""
-        if not _CXX_REFLECT_META.search(body):
+        if not _lit_search(_CXX_REFLECT_META, body):
             continue
-        if not _CXX_REFLECT_DEFINE.search(body):
+        if not _lit_search(_CXX_REFLECT_DEFINE, body):
             continue
-        if re.search(r"\bnamespace\s+[A-Za-z_]", body):
+        if _rx(r"\bnamespace\s+[A-Za-z_]").search(body):
             continue
         start = fn.span[0]
         hit_i = 0
@@ -16083,10 +16187,10 @@ def _cxx_out_ptr(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not re.search(r"\b(?:inout_ptr|out_ptr)\s*(?:<|\()", body):
+        if not _rx(r"\b(?:inout_ptr|out_ptr)\s*(?:<|\()").search(body):
             continue
-        names = {m.group("name") for m in _UNIQUE_PTR_DECL.finditer(body)}
-        names |= {m.group("name") for m in _SHARED_PTR_DECL.finditer(body)}
+        names = {m.group("name") for m in _lit_finditer(_UNIQUE_PTR_DECL, body)}
+        names |= {m.group("name") for m in _lit_finditer(_SHARED_PTR_DECL, body)}
         if not names:
             continue
         filled: dict[str, int] = {}
@@ -16130,12 +16234,12 @@ def _cxx_flat_multimap(lines, rel, funcs, out) -> None:
     for fn in funcs:
         body = fn.body or ""
         names = {
-            m.group("name") for m in _CXX_FLAT_MULTIMAP_DECL.finditer(body)
+            m.group("name") for m in _lit_finditer(_CXX_FLAT_MULTIMAP_DECL, body)
         }
         if not names:
             continue
         start = fn.span[0]
-        for name in names:
+        for name in sorted(names):
             if _flat_set_has_end_guard(name, body):
                 continue
             n = re.escape(name)
@@ -16164,12 +16268,12 @@ def _cxx_spanstream(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        names = {m.group("name") for m in _CXX_SPANSTREAM_DECL.finditer(body)}
+        names = {m.group("name") for m in _lit_finditer(_CXX_SPANSTREAM_DECL, body)}
         if not names:
             continue
         start = fn.span[0]
         for i, ln in enumerate(body.splitlines()):
-            for name in names:
+            for name in sorted(names):
                 n = re.escape(name)
                 if re.search(
                     rf"\breturn\s+{n}\s*\.\s*span\s*\(\s*\)\s*\.\s*data\s*\(",
@@ -16198,10 +16302,10 @@ def _cxx_barrier(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        names = {m.group("name") for m in _CXX_BARRIER_DECL.finditer(body)}
+        names = {m.group("name") for m in _lit_finditer(_CXX_BARRIER_DECL, body)}
         start = fn.span[0]
         body_lines = body.splitlines()
-        for name in names:
+        for name in sorted(names):
             n = re.escape(name)
             if re.search(rf"\b{n}\s*\.\s*arrive_and_wait\s*\(", body):
                 continue
@@ -16229,7 +16333,7 @@ def _cxx_task(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if re.search(r"\bsync_wait\s*\(|\bco_await\b", body):
+        if _rx(r"\bsync_wait\s*\(|\bco_await\b").search(body):
             continue
         start = fn.span[0]
         for i, ln in enumerate(body.splitlines()):
@@ -16254,7 +16358,7 @@ def _cxx_generator_discard(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if re.search(r"\bfor\s*\(", body):
+        if _rx(r"\bfor\s*\(").search(body):
             continue
         start = fn.span[0]
         for i, ln in enumerate(body.splitlines()):
@@ -16318,12 +16422,12 @@ def _cxx_packaged_task(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        names = {m.group("name") for m in _CXX_PACKAGED_DECL.finditer(body)}
+        names = {m.group("name") for m in _lit_finditer(_CXX_PACKAGED_DECL, body)}
         if not names:
             continue
         start = fn.span[0]
         for i, ln in enumerate(body.splitlines()):
-            for name in names:
+            for name in sorted(names):
                 if _optional_has_guard(name, body):
                     continue
                 if not _packaged_invoked(name, ln):
@@ -16348,12 +16452,12 @@ def _cxx_flat_multiset(lines, rel, funcs, out) -> None:
     for fn in funcs:
         body = fn.body or ""
         names = {
-            m.group("name") for m in _CXX_FLAT_MULTISET_DECL.finditer(body)
+            m.group("name") for m in _lit_finditer(_CXX_FLAT_MULTISET_DECL, body)
         }
         if not names:
             continue
         start = fn.span[0]
-        for name in names:
+        for name in sorted(names):
             if _flat_set_has_end_guard(name, body):
                 continue
             n = re.escape(name)
@@ -16427,8 +16531,8 @@ def _cxx_counted_iterator(lines, rel, funcs, out) -> None:
             src = m.group("src").strip()
             n = m.group("n")
             if not (
-                re.fullmatch(r"[A-Za-z_]\w*", src)
-                or re.search(r"\.\s*begin\s*\(", src)
+                _rx(r"[A-Za-z_]\w*").fullmatch(src)
+                or _rx(r"\.\s*begin\s*\(").search(src)
             ):
                 continue
             if _counted_count_guarded(n, body):
@@ -16452,20 +16556,20 @@ def _cxx_promise(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        names = {m.group("name") for m in _CXX_PROMISE_DECL.finditer(body)}
+        names = {m.group("name") for m in _lit_finditer(_CXX_PROMISE_DECL, body)}
         if not names:
             continue
-        if not re.search(r"\bget_future\s*\(", body):
+        if not _rx(r"\bget_future\s*\(").search(body):
             continue
-        if re.search(r"\bset_value(?:_at_thread_exit)?\s*\(", body):
+        if _rx(r"\bset_value(?:_at_thread_exit)?\s*\(").search(body):
             continue
-        if re.search(r"\bset_exception(?:_at_thread_exit)?\s*\(", body):
+        if _rx(r"\bset_exception(?:_at_thread_exit)?\s*\(").search(body):
             continue
         start = fn.span[0]
         for i, ln in enumerate(body.splitlines()):
-            if re.search(r"\.\s*get_future\s*\(", ln):
+            if _rx(r"\.\s*get_future\s*\(").search(ln):
                 continue
-            if not re.search(r"\.\s*get\s*\(", ln):
+            if not _rx(r"\.\s*get\s*\(").search(ln):
                 continue
             line = start + i
             out.append(Finding(
@@ -16493,17 +16597,17 @@ def _cxx_weak_ptr(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        names = {m.group("name") for m in _CXX_WEAK_PTR_DECL.finditer(body)}
+        names = {m.group("name") for m in _lit_finditer(_CXX_WEAK_PTR_DECL, body)}
         if not names:
             continue
-        if re.search(r"\bexpired\s*\(", body):
+        if _rx(r"\bexpired\s*\(").search(body):
             continue
         start = fn.span[0]
         for i, ln in enumerate(body.splitlines()):
-            for name in names:
+            for name in sorted(names):
                 if not re.search(rf"\b{re.escape(name)}\s*\.\s*lock\s*\(", ln):
                     continue
-                if re.search(r"\bif\s*\(", ln):
+                if _rx(r"\bif\s*\(").search(ln):
                     continue
                 m = _CXX_WEAK_LOCK.search(ln)
                 if m and m.group("weak") == name:
@@ -16533,12 +16637,12 @@ def _cxx_exception_ptr(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        names = {m.group("name") for m in _CXX_EXCEPTION_PTR_DECL.finditer(body)}
+        names = {m.group("name") for m in _lit_finditer(_CXX_EXCEPTION_PTR_DECL, body)}
         if not names:
             continue
         start = fn.span[0]
         for i, ln in enumerate(body.splitlines()):
-            for name in names:
+            for name in sorted(names):
                 if _param_if_guard(name, body) or _param_null_tested(name, body):
                     continue
                 if not re.search(
@@ -16566,14 +16670,14 @@ def _cxx_coro_handle(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        names = {m.group("name") for m in _CXX_CORO_HANDLE_DECL.finditer(body)}
+        names = {m.group("name") for m in _lit_finditer(_CXX_CORO_HANDLE_DECL, body)}
         if not names:
             continue
-        if re.search(r"\.\s*done\s*\(", body):
+        if _rx(r"\.\s*done\s*\(").search(body):
             continue
         start = fn.span[0]
         for i, ln in enumerate(body.splitlines()):
-            for name in names:
+            for name in sorted(names):
                 if not re.search(
                     rf"\b{re.escape(name)}\s*\.\s*resume\s*\(", ln,
                 ):
@@ -16631,7 +16735,7 @@ def _cxx_to_underlying(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not re.search(r"\bto_underlying\s*\(", body):
+        if not _rx(r"\bto_underlying\s*\(").search(body):
             continue
         start = fn.span[0]
         for i, ln in enumerate(body.splitlines()):
@@ -16663,11 +16767,11 @@ def _cxx_unexpected(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if re.search(r"\bhas_value\s*\(", body):
+        if _rx(r"\bhas_value\s*\(").search(body):
             continue
-        if re.search(r"\.\s*error\s*\(", body):
+        if _rx(r"\.\s*error\s*\(").search(body):
             continue
-        if re.search(r"(?:std\s*::\s*)?\bexpected\s*<", body):
+        if _rx(r"(?:std\s*::\s*)?\bexpected\s*<").search(body):
             continue
         start = fn.span[0]
         body_lines = body.splitlines()
@@ -16703,13 +16807,13 @@ def _cxx_tuple_get(lines, rel, funcs, out) -> None:
             continue
         if "tuple" not in body:
             continue
-        if not (re.search(r"std\s*::\s*get", body) or re.search(r"get\s*<", body)):
+        if not (_rx(r"std\s*::\s*get").search(body) or _rx(r"get\s*<").search(body)):
             continue
-        if not _CXX_TUPLE_DECL.search(body):
+        if not _lit_search(_CXX_TUPLE_DECL, body):
             continue
-        if re.search(r"\btuple_size\b", body):
+        if _rx(r"\btuple_size\b").search(body):
             continue
-        if re.search(r"\bauto\s*\[", body):
+        if _rx(r"\bauto\s*\[").search(body):
             continue
         start = fn.span[0]
         for i, ln in enumerate(body.splitlines()):
@@ -16736,7 +16840,7 @@ def _cxx_deque_index(lines, rel, funcs, out) -> None:
         body = fn.body or ""
         if "deque" not in body:
             continue
-        names = {m.group("name") for m in _CXX_DEQUE_DECL.finditer(body)}
+        names = {m.group("name") for m in _lit_finditer(_CXX_DEQUE_DECL, body)}
         if not names:
             continue
         start = fn.span[0]
@@ -16769,11 +16873,11 @@ def _cxx_forward_list(lines, rel, funcs, out) -> None:
         body = fn.body or ""
         if "forward_list" not in body:
             continue
-        names = {m.group("name") for m in _CXX_FWD_LIST_DECL.finditer(body)}
+        names = {m.group("name") for m in _lit_finditer(_CXX_FWD_LIST_DECL, body)}
         if not names:
             continue
         start = fn.span[0]
-        for name in names:
+        for name in sorted(names):
             n = re.escape(name)
             if re.search(rf"\b{n}\s*\.\s*empty\s*\(", body):
                 continue
@@ -16801,13 +16905,13 @@ def _cxx_list_front(lines, rel, funcs, out) -> None:
         body = fn.body or ""
         if "forward_list" in body or "initializer_list" in body:
             continue
-        if not re.search(r"(?:std\s*::\s*)?\blist\s*<", body):
+        if not _rx(r"(?:std\s*::\s*)?\blist\s*<").search(body):
             continue
-        names = {m.group("name") for m in _CXX_LIST_DECL.finditer(body)}
+        names = {m.group("name") for m in _lit_finditer(_CXX_LIST_DECL, body)}
         if not names:
             continue
         start = fn.span[0]
-        for name in names:
+        for name in sorted(names):
             n = re.escape(name)
             if re.search(rf"\b{n}\s*\.\s*empty\s*\(", body):
                 continue
@@ -16840,15 +16944,15 @@ def _cxx_map_at(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if re.search(r"flat_map|unordered_map|flat_multimap", body):
+        if _rx(r"flat_map|unordered_map|flat_multimap").search(body):
             continue
-        if not re.search(r"\bmap\s*<", body):
+        if not _rx(r"\bmap\s*<").search(body):
             continue
-        names = {m.group("name") for m in _CXX_MAP_DECL.finditer(body)}
+        names = {m.group("name") for m in _lit_finditer(_CXX_MAP_DECL, body)}
         if not names:
             continue
         start = fn.span[0]
-        for name in names:
+        for name in sorted(names):
             if _map_key_guarded(name, body):
                 continue
             for i, ln in enumerate(body.splitlines()):
@@ -16875,11 +16979,11 @@ def _cxx_unordered_at(lines, rel, funcs, out) -> None:
         body = fn.body or ""
         if "unordered_map" not in body:
             continue
-        names = {m.group("name") for m in _CXX_UMAP_DECL.finditer(body)}
+        names = {m.group("name") for m in _lit_finditer(_CXX_UMAP_DECL, body)}
         if not names:
             continue
         start = fn.span[0]
-        for name in names:
+        for name in sorted(names):
             if _map_key_guarded(name, body):
                 continue
             for i, ln in enumerate(body.splitlines()):
@@ -16905,18 +17009,18 @@ def _cxx_set_find(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if re.search(r"flat_set|unordered_set|multiset|flat_multiset", body):
+        if _rx(r"flat_set|unordered_set|multiset|flat_multiset").search(body):
             continue
         if not (
-            re.search(r"\bstd\s*::\s*set\s*<", body)
-            or re.search(r"\bset\s*<", body)
+            _rx(r"\bstd\s*::\s*set\s*<").search(body)
+            or _rx(r"\bset\s*<").search(body)
         ):
             continue
-        names = {m.group("name") for m in _CXX_SET_DECL.finditer(body)}
+        names = {m.group("name") for m in _lit_finditer(_CXX_SET_DECL, body)}
         if not names:
             continue
         start = fn.span[0]
-        for name in names:
+        for name in sorted(names):
             if _flat_set_has_end_guard(name, body):
                 continue
             n = re.escape(name)
@@ -16951,13 +17055,13 @@ def _cxx_queue_front(lines, rel, funcs, out) -> None:
         if "queue" not in body:
             continue
         stripped = body.replace("priority_queue", "")
-        if not re.search(r"\bqueue\s*<", stripped):
+        if not _rx(r"\bqueue\s*<").search(stripped):
             continue
-        names = {m.group("name") for m in _CXX_QUEUE_DECL.finditer(stripped)}
+        names = {m.group("name") for m in _lit_finditer(_CXX_QUEUE_DECL, stripped)}
         if not names:
             continue
         start = fn.span[0]
-        for name in names:
+        for name in sorted(names):
             n = re.escape(name)
             if re.search(rf"\b{n}\s*\.\s*empty\s*\(", body):
                 continue
@@ -16986,15 +17090,15 @@ def _cxx_stack_top(lines, rel, funcs, out) -> None:
         if "stacktrace" in body:
             continue
         if not (
-            re.search(r"\bstd\s*::\s*stack\s*<", body)
-            or re.search(r"\bstack\s*<", body)
+            _rx(r"\bstd\s*::\s*stack\s*<").search(body)
+            or _rx(r"\bstack\s*<").search(body)
         ):
             continue
-        names = {m.group("name") for m in _CXX_STACK_DECL.finditer(body)}
+        names = {m.group("name") for m in _lit_finditer(_CXX_STACK_DECL, body)}
         if not names:
             continue
         start = fn.span[0]
-        for name in names:
+        for name in sorted(names):
             n = re.escape(name)
             if re.search(rf"\b{n}\s*\.\s*empty\s*\(", body):
                 continue
@@ -17022,11 +17126,11 @@ def _cxx_priority_queue(lines, rel, funcs, out) -> None:
         body = fn.body or ""
         if "priority_queue" not in body:
             continue
-        names = {m.group("name") for m in _CXX_PQUEUE_DECL.finditer(body)}
+        names = {m.group("name") for m in _lit_finditer(_CXX_PQUEUE_DECL, body)}
         if not names:
             continue
         start = fn.span[0]
-        for name in names:
+        for name in sorted(names):
             n = re.escape(name)
             if re.search(rf"\b{n}\s*\.\s*empty\s*\(", body):
                 continue
@@ -17064,9 +17168,9 @@ def _cxx_array_index(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not re.search(r"\b(?:std\s*::\s*)?array\s*<", body):
+        if not _rx(r"\b(?:std\s*::\s*)?array\s*<").search(body):
             continue
-        decls = list(_CXX_ARRAY_DECL.finditer(body))
+        decls = list(_lit_finditer(_CXX_ARRAY_DECL, body))
         if not decls:
             continue
         names = {d.group("name"): d.group("n") for d in decls}
@@ -17100,11 +17204,11 @@ def _cxx_unordered_set(lines, rel, funcs, out) -> None:
         body = fn.body or ""
         if "unordered_set" not in body:
             continue
-        names = {m.group("name") for m in _CXX_USET_DECL.finditer(body)}
+        names = {m.group("name") for m in _lit_finditer(_CXX_USET_DECL, body)}
         if not names:
             continue
         start = fn.span[0]
-        for name in names:
+        for name in sorted(names):
             if _flat_set_has_end_guard(name, body):
                 continue
             n = re.escape(name)
@@ -17147,7 +17251,7 @@ def _cxx_wstring_view(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         blob = f"{fn.signature or ''}\n{fn.return_type or ''}\n{fn.body or ''}"
-        if not re.search(r"\bwstring_view\b|\bwstring\b", blob):
+        if not _rx(r"\bwstring_view\b|\bwstring\b").search(blob):
             continue
         local_ws = _cxx_local_wstrings(fn)
         if not local_ws:
@@ -17156,21 +17260,21 @@ def _cxx_wstring_view(lines, rel, funcs, out) -> None:
         for m in _CXX_WSTRING_VIEW_BIND.finditer(fn.body or ""):
             if m.group("src") in local_ws:
                 view_from_local.add(m.group("name"))
-        ret_is_wview = bool(re.search(r"\bwstring_view\b", fn.return_type or ""))
+        ret_is_wview = bool(_rx(r"\bwstring_view\b").search(fn.return_type or ""))
         start = fn.span[0]
         for i, ln in enumerate((fn.body or "").splitlines()):
             hit = None
-            m = _RETURN_VAR.search(ln)
-            if m:
-                name = m.group(1)
+            sm = _RETURN_VAR.search(ln)
+            if sm:
+                name = sm.group(1)
                 if name in view_from_local:
                     hit = name
                 elif name in local_ws and ret_is_wview:
                     hit = name
             if not hit:
-                m = _CXX_RETURN_WVIEW.search(ln)
-                if m and m.group("name") in local_ws:
-                    hit = m.group("name")
+                sm = _CXX_RETURN_WVIEW.search(ln)
+                if sm and sm.group("name") in local_ws:
+                    hit = sm.group("name")
             if not hit:
                 continue
             line = start + i
@@ -17194,13 +17298,13 @@ def _cxx_multimap_find(lines, rel, funcs, out) -> None:
         body = fn.body or ""
         if "flat_multimap" in body:
             continue
-        if not re.search(r"\bmultimap\s*<", body):
+        if not _rx(r"\bmultimap\s*<").search(body):
             continue
-        names = {m.group("name") for m in _CXX_MULTIMAP_DECL.finditer(body)}
+        names = {m.group("name") for m in _lit_finditer(_CXX_MULTIMAP_DECL, body)}
         if not names:
             continue
         start = fn.span[0]
-        for name in names:
+        for name in sorted(names):
             if _flat_set_has_end_guard(name, body):
                 continue
             n = re.escape(name)
@@ -17232,13 +17336,13 @@ def _cxx_multiset_find(lines, rel, funcs, out) -> None:
         body = fn.body or ""
         if "flat_multiset" in body:
             continue
-        if not re.search(r"\bmultiset\s*<", body):
+        if not _rx(r"\bmultiset\s*<").search(body):
             continue
-        names = {m.group("name") for m in _CXX_MULTISET_DECL.finditer(body)}
+        names = {m.group("name") for m in _lit_finditer(_CXX_MULTISET_DECL, body)}
         if not names:
             continue
         start = fn.span[0]
-        for name in names:
+        for name in sorted(names):
             if _flat_set_has_end_guard(name, body):
                 continue
             n = re.escape(name)
@@ -17272,16 +17376,16 @@ def _cxx_binary_semaphore(lines, rel, funcs, out) -> None:
             continue
         if "counting_semaphore" in body:
             continue
-        names = {m.group("name") for m in _CXX_BINSEM_ZERO.finditer(body)}
+        names = {m.group("name") for m in _lit_finditer(_CXX_BINSEM_ZERO, body)}
         if not names:
             continue
-        if re.search(r"\.\s*try_acquire\s*\(", body):
+        if _rx(r"\.\s*try_acquire\s*\(").search(body):
             continue
-        if re.search(r"\.\s*release\s*\(", body):
+        if _rx(r"\.\s*release\s*\(").search(body):
             continue
         start = fn.span[0]
         body_lines = body.splitlines()
-        for name in names:
+        for name in sorted(names):
             n = re.escape(name)
             for i, ln in enumerate(body_lines):
                 if not re.search(rf"\b{n}\s*\.\s*acquire\s*\(", ln):
@@ -17309,11 +17413,11 @@ def _cxx_error_code(lines, rel, funcs, out) -> None:
         body = fn.body or ""
         if "error_code" not in body:
             continue
-        names = {m.group("name") for m in _CXX_ERROR_CODE_DECL.finditer(body)}
+        names = {m.group("name") for m in _lit_finditer(_CXX_ERROR_CODE_DECL, body)}
         if not names:
             continue
         start = fn.span[0]
-        for name in names:
+        for name in sorted(names):
             if _param_if_guard(name, body):
                 continue
             n = re.escape(name)
@@ -17355,7 +17459,7 @@ def _cxx_byteswap(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not re.search(r"\bbyteswap\s*\(", body):
+        if not _rx(r"\bbyteswap\s*\(").search(body):
             continue
         assigned: set[str] = set()
         start = fn.span[0]
@@ -17403,7 +17507,7 @@ def _cxx_pmr(lines, rel, funcs, out) -> None:
         body = fn.body or ""
         if "pmr::" not in body and "std::pmr" not in body:
             continue
-        if re.search(r"\.\s*size\s*\(", body):
+        if _rx(r"\.\s*size\s*\(").search(body):
             continue
         start = fn.span[0]
         for i, ln in enumerate(body.splitlines()):
@@ -17442,7 +17546,7 @@ def _cxx_u8string_view(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         blob = f"{fn.signature or ''}\n{fn.return_type or ''}\n{fn.body or ''}"
-        if not re.search(r"\bu8string_view\b|\bu8string\b", blob):
+        if not _rx(r"\bu8string_view\b|\bu8string\b").search(blob):
             continue
         local_u8 = _cxx_local_u8strings(fn)
         if not local_u8:
@@ -17451,21 +17555,21 @@ def _cxx_u8string_view(lines, rel, funcs, out) -> None:
         for m in _CXX_U8STRING_VIEW_BIND.finditer(fn.body or ""):
             if m.group("src") in local_u8:
                 view_from_local.add(m.group("name"))
-        ret_is_u8view = bool(re.search(r"\bu8string_view\b", fn.return_type or ""))
+        ret_is_u8view = bool(_rx(r"\bu8string_view\b").search(fn.return_type or ""))
         start = fn.span[0]
         for i, ln in enumerate((fn.body or "").splitlines()):
             hit = None
-            m = _RETURN_VAR.search(ln)
-            if m:
-                name = m.group(1)
+            sm = _RETURN_VAR.search(ln)
+            if sm:
+                name = sm.group(1)
                 if name in view_from_local:
                     hit = name
                 elif name in local_u8 and ret_is_u8view:
                     hit = name
             if not hit:
-                m = _CXX_RETURN_U8VIEW.search(ln)
-                if m and m.group("name") in local_u8:
-                    hit = m.group("name")
+                sm = _CXX_RETURN_U8VIEW.search(ln)
+                if sm and sm.group("name") in local_u8:
+                    hit = sm.group("name")
             if not hit:
                 continue
             line = start + i
@@ -17490,11 +17594,11 @@ def _cxx_unordered_multimap(lines, rel, funcs, out) -> None:
         body = fn.body or ""
         if "unordered_multimap" not in body:
             continue
-        names = {m.group("name") for m in _CXX_UMMAP_DECL.finditer(body)}
+        names = {m.group("name") for m in _lit_finditer(_CXX_UMMAP_DECL, body)}
         if not names:
             continue
         start = fn.span[0]
-        for name in names:
+        for name in sorted(names):
             if _flat_set_has_end_guard(name, body):
                 continue
             n = re.escape(name)
@@ -17526,11 +17630,11 @@ def _cxx_unordered_multiset(lines, rel, funcs, out) -> None:
         body = fn.body or ""
         if "unordered_multiset" not in body:
             continue
-        names = {m.group("name") for m in _CXX_UMSET_DECL.finditer(body)}
+        names = {m.group("name") for m in _lit_finditer(_CXX_UMSET_DECL, body)}
         if not names:
             continue
         start = fn.span[0]
-        for name in names:
+        for name in sorted(names):
             if _flat_set_has_end_guard(name, body):
                 continue
             n = re.escape(name)
@@ -17562,11 +17666,11 @@ def _cxx_shared_lock(lines, rel, funcs, out) -> None:
         body = fn.body or ""
         if "shared_lock" not in body:
             continue
-        names = {m.group("name") for m in _CXX_SHARED_LOCK_DECL.finditer(body)}
+        names = {m.group("name") for m in _lit_finditer(_CXX_SHARED_LOCK_DECL, body)}
         if not names:
             continue
         start = fn.span[0]
-        for name in names:
+        for name in sorted(names):
             n = re.escape(name)
             if re.search(rf"\b{n}\s*\.\s*owns_lock\s*\(", body):
                 continue
@@ -17596,12 +17700,12 @@ def _cxx_atomic_flag(lines, rel, funcs, out) -> None:
         body = fn.body or ""
         if "atomic_flag" not in body:
             continue
-        names = {m.group("name") for m in _CXX_ATOMIC_FLAG_DECL.finditer(body)}
+        names = {m.group("name") for m in _lit_finditer(_CXX_ATOMIC_FLAG_DECL, body)}
         if not names:
             continue
         start = fn.span[0]
         body_lines = body.splitlines()
-        for name in names:
+        for name in sorted(names):
             n = re.escape(name)
             seen_clear = False
             for i, ln in enumerate(body_lines):
@@ -17634,11 +17738,11 @@ def _cxx_condvar_any(lines, rel, funcs, out) -> None:
         body = fn.body or ""
         if "condition_variable_any" not in body:
             continue
-        names = {m.group("name") for m in _CXX_CVANY_DECL.finditer(body)}
+        names = {m.group("name") for m in _lit_finditer(_CXX_CVANY_DECL, body)}
         if not names:
             continue
         start = fn.span[0]
-        for name in names:
+        for name in sorted(names):
             n = re.escape(name)
             for i, ln in enumerate(body.splitlines()):
                 if not re.search(rf"\b{n}\s*\.\s*wait\s*\(", ln):
@@ -17666,16 +17770,16 @@ def _cxx_recursive_mutex(lines, rel, funcs, out) -> None:
         body = fn.body or ""
         if "recursive_mutex" not in body:
             continue
-        if _CXX_LOCK_RAII.search(body):
+        if _lit_search(_CXX_LOCK_RAII, body):
             continue
         names = {
-            m.group("name") for m in _CXX_RECURSIVE_MUTEX_DECL.finditer(body)
+            m.group("name") for m in _lit_finditer(_CXX_RECURSIVE_MUTEX_DECL, body)
         }
         if not names:
             continue
         start = fn.span[0]
         body_lines = body.splitlines()
-        for name in names:
+        for name in sorted(names):
             n = re.escape(name)
             if re.search(rf"\b{n}\s*\.\s*unlock\s*\(", body):
                 continue
@@ -17702,23 +17806,21 @@ def _cxx_timed_mutex(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not re.search(r"\btimed_mutex\b", body):
+        if not _rx(r"\btimed_mutex\b").search(body):
             continue
-        names = {m.group("name") for m in _CXX_TIMED_MUTEX_DECL.finditer(body)}
+        names = {m.group("name") for m in _lit_finditer(_CXX_TIMED_MUTEX_DECL, body)}
         if not names:
             continue
-        has_raii = bool(_CXX_LOCK_RAII.search(body))
+        has_raii = bool(_lit_search(_CXX_LOCK_RAII, body))
         start = fn.span[0]
         body_lines = body.splitlines()
-        for name in names:
+        for name in sorted(names):
             n = re.escape(name)
             unlocked = bool(re.search(rf"\b{n}\s*\.\s*unlock\s*\(", body))
             for i, ln in enumerate(body_lines):
                 discarded_try = bool(
                     re.search(rf"\b{n}\s*\.\s*try_lock\s*\(", ln)
-                    and not re.search(
-                        r"\bif\s*\(|\bwhile\s*\(|\breturn\b|=", ln
-                    )
+                    and not _rx(r"\bif\s*\(|\bwhile\s*\(|\breturn\b|=").search(ln)
                 )
                 bare_lock = bool(
                     re.search(rf"\b{n}\s*\.\s*lock\s*\(", ln)
@@ -17748,13 +17850,13 @@ def _cxx_fstream(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not re.search(r"\b(?:ifstream|ofstream|fstream)\b", body):
+        if not _rx(r"\b(?:ifstream|ofstream|fstream)\b").search(body):
             continue
-        names = {m.group("name") for m in _CXX_FSTREAM_DECL.finditer(body)}
+        names = {m.group("name") for m in _lit_finditer(_CXX_FSTREAM_DECL, body)}
         if not names:
             continue
         start = fn.span[0]
-        for name in names:
+        for name in sorted(names):
             n = re.escape(name)
             if re.search(rf"\b{n}\s*\.\s*is_open\s*\(", body):
                 continue
@@ -17792,14 +17894,12 @@ def _cxx_this_thread(lines, rel, funcs, out) -> None:
         body = fn.body or ""
         if "this_thread" not in body:
             continue
-        if not re.search(r"this_thread\s*::\s*sleep_for\s*\(", body):
+        if not _rx(r"this_thread\s*::\s*sleep_for\s*\(").search(body):
             continue
-        if re.search(
-            r"\b(?:mutex|lock_guard|unique_lock|scoped_lock|atomic)\b", body
-        ):
+        if _rx(r"\b(?:mutex|lock_guard|unique_lock|scoped_lock|atomic)\b").search(body):
             continue
         statics = set(
-            re.findall(r"\bstatic\s+int\s+([A-Za-z_]\w*)\b", body)
+            _rx(r"\bstatic\s+int\s+([A-Za-z_]\w*)\b").findall(body)
         )
         stores = globals_ | statics
         if not any(
@@ -17808,7 +17908,7 @@ def _cxx_this_thread(lines, rel, funcs, out) -> None:
             continue
         start = fn.span[0]
         for i, ln in enumerate(body.splitlines()):
-            if not re.search(r"this_thread\s*::\s*sleep_for\s*\(", ln):
+            if not _rx(r"this_thread\s*::\s*sleep_for\s*\(").search(ln):
                 continue
             line = start + i
             out.append(Finding(
@@ -17832,13 +17932,13 @@ def _cxx_call_once(lines, rel, funcs, out) -> None:
         body = fn.body or ""
         if "call_once" not in body:
             continue
-        if not re.search(r"\bcall_once\s*\(", body):
+        if not _rx(r"\bcall_once\s*\(").search(body):
             continue
-        if re.search(r"\bonce_flag\b", body):
+        if _rx(r"\bonce_flag\b").search(body):
             continue
         start = fn.span[0]
         for i, ln in enumerate(body.splitlines()):
-            if not re.search(r"\bcall_once\s*\(", ln):
+            if not _rx(r"\bcall_once\s*\(").search(ln):
                 continue
             line = start + i
             out.append(Finding(
@@ -17861,19 +17961,19 @@ def _cxx_shared_timed_mutex(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not re.search(r"\bshared_timed_mutex\b", body):
+        if not _rx(r"\bshared_timed_mutex\b").search(body):
             continue
-        if _CXX_LOCK_RAII.search(body):
+        if _lit_search(_CXX_LOCK_RAII, body):
             continue
         names = {
             m.group("name")
-            for m in _CXX_SHARED_TIMED_MUTEX_DECL.finditer(body)
+            for m in _lit_finditer(_CXX_SHARED_TIMED_MUTEX_DECL, body)
         }
         if not names:
             continue
         start = fn.span[0]
         body_lines = body.splitlines()
-        for name in names:
+        for name in sorted(names):
             n = re.escape(name)
             unlocked = bool(re.search(rf"\b{n}\s*\.\s*unlock\s*\(", body))
             unshared = bool(
@@ -17910,19 +18010,19 @@ def _cxx_recursive_timed_mutex(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not re.search(r"\brecursive_timed_mutex\b", body):
+        if not _rx(r"\brecursive_timed_mutex\b").search(body):
             continue
-        if _CXX_LOCK_RAII.search(body):
+        if _lit_search(_CXX_LOCK_RAII, body):
             continue
         names = {
             m.group("name")
-            for m in _CXX_RECURSIVE_TIMED_MUTEX_DECL.finditer(body)
+            for m in _lit_finditer(_CXX_RECURSIVE_TIMED_MUTEX_DECL, body)
         }
         if not names:
             continue
         start = fn.span[0]
         body_lines = body.splitlines()
-        for name in names:
+        for name in sorted(names):
             n = re.escape(name)
             if re.search(rf"\b{n}\s*\.\s*unlock\s*\(", body):
                 continue
@@ -17951,16 +18051,16 @@ def _cxx_system_error(lines, rel, funcs, out) -> None:
         body = fn.body or ""
         if "system_error" not in body:
             continue
-        if re.search(r"\.code\s*\(", body):
+        if _rx(r"\.code\s*\(").search(body):
             continue
-        names = {m.group("name") for m in _CXX_SYSTEM_ERROR_DECL.finditer(body)}
+        names = {m.group("name") for m in _lit_finditer(_CXX_SYSTEM_ERROR_DECL, body)}
         names |= {
-            m.group("name") for m in _CXX_SYSTEM_ERROR_CATCH.finditer(body)
+            m.group("name") for m in _lit_finditer(_CXX_SYSTEM_ERROR_CATCH, body)
         }
         start = fn.span[0]
         for i, ln in enumerate(body.splitlines()):
             used = "system_error" in ln or bool(
-                re.search(r"\bthrow\s+(?:std\s*::\s*)?system_error\b", ln)
+                _rx(r"\bthrow\s+(?:std\s*::\s*)?system_error\b").search(ln)
             )
             if names and not used:
                 used = any(
@@ -17989,18 +18089,15 @@ def _cxx_chrono_tzdb(lines, rel, funcs, out) -> None:
         body = fn.body or ""
         if "current_zone" not in body and "tzdb" not in body:
             continue
-        if not _CXX_TZDB_CALL.search(body):
+        if not _lit_search(_CXX_TZDB_CALL, body):
             continue
-        names = {m.group("name") for m in _CXX_TZDB_BIND.finditer(body)}
+        names = {m.group("name") for m in _lit_finditer(_CXX_TZDB_BIND, body)}
         checked = any(_param_if_guard(n, body) for n in names)
         checked = checked or any(_param_null_tested(n, body) for n in names)
-        if re.search(r"\.empty\s*\(", body):
+        if _rx(r"\.empty\s*\(").search(body):
             checked = True
-        if re.search(
-            r"\bif\s*\(\s*!\s*(?:std\s*::\s*chrono\s*::\s*)?"
-            r"(?:current_zone|locate_zone)\s*\(",
-            body,
-        ):
+        if _rx(r"\bif\s*\(\s*!\s*(?:std\s*::\s*chrono\s*::\s*)?"
+            r"(?:current_zone|locate_zone)\s*\(").search(body):
             checked = True
         if checked:
             continue
@@ -18036,15 +18133,15 @@ def _cxx_ranges_zip(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not _CXX_VIEWS_ZIP.search(body):
+        if not _lit_search(_CXX_VIEWS_ZIP, body):
             continue
-        names = {m.group("name") for m in _CXX_ZIP_AUTO.finditer(body)}
-        names |= {m.group("name") for m in _CXX_ZIP_VIEW_DECL.finditer(body)}
+        names = {m.group("name") for m in _lit_finditer(_CXX_ZIP_AUTO, body)}
+        names |= {m.group("name") for m in _lit_finditer(_CXX_ZIP_VIEW_DECL, body)}
         if not names:
             continue
         start = fn.span[0]
         body_lines = body.splitlines()
-        for name in names:
+        for name in sorted(names):
             n = re.escape(name)
             for i, ln in enumerate(body_lines):
                 sub = re.search(
@@ -18058,7 +18155,7 @@ def _cxx_ranges_zip(lines, rel, funcs, out) -> None:
                     if _zip_idx_bound_checks(idx, body) >= 2:
                         continue
                 elif ranged and (
-                    len(re.findall(r"\.\s*size\s*\(", body)) >= 2
+                    len(_rx(r"\.\s*size\s*\(").findall(body)) >= 2
                 ):
                     continue
                 line = start + i
@@ -18081,9 +18178,9 @@ def _cxx_format_to(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not re.search(r"\bformat_to\s*\(", body):
+        if not _rx(r"\bformat_to\s*\(").search(body):
             continue
-        bufs = {m.group("name") for m in _CXX_CHAR_BUF.finditer(body)}
+        bufs = {m.group("name") for m in _lit_finditer(_CXX_CHAR_BUF, body)}
         if not bufs:
             continue
         start = fn.span[0]
@@ -18094,7 +18191,7 @@ def _cxx_format_to(lines, rel, funcs, out) -> None:
             dst = m.group("dst")
             if dst not in bufs:
                 continue
-            if re.search(r"\bback_inserter\b", ln):
+            if _rx(r"\bback_inserter\b").search(ln):
                 continue
             line = start + i
             out.append(Finding(
@@ -18116,11 +18213,11 @@ def _cxx_error_category(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not _CXX_ERROR_CATEGORY.search(body):
+        if not _lit_search(_CXX_ERROR_CATEGORY, body):
             continue
-        if re.search(r"==", body):
+        if _rx(r"==").search(body):
             continue
-        if re.search(r"\.\s*(?:name|message)\s*\(", body):
+        if _rx(r"\.\s*(?:name|message)\s*\(").search(body):
             continue
         start = fn.span[0]
         for i, ln in enumerate(body.splitlines()):
@@ -18147,9 +18244,9 @@ def _cxx_nested_exception(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not _CXX_NESTED_EXC.search(body):
+        if not _lit_search(_CXX_NESTED_EXC, body):
             continue
-        if re.search(r"\btry\b", body) and re.search(r"\bcatch\b", body):
+        if _rx(r"\btry\b").search(body) and _rx(r"\bcatch\b").search(body):
             continue
         start = fn.span[0]
         for i, ln in enumerate(body.splitlines()):
@@ -18177,12 +18274,12 @@ def _cxx_atomic_fence(lines, rel, funcs, out) -> None:
     globals_ = _file_scope_int_globals(lines)
     for fn in funcs:
         body = fn.body or ""
-        if not _CXX_ATOMIC_FENCE.search(body):
+        if not _lit_search(_CXX_ATOMIC_FENCE, body):
             continue
-        missing_order = not _CXX_FENCE_ORDER.search(body)
-        has_atomic_obj = bool(re.search(r"\batomic\s*<", body))
+        missing_order = not _lit_search(_CXX_FENCE_ORDER, body)
+        has_atomic_obj = bool(_rx(r"\batomic\s*<").search(body))
         statics = set(
-            re.findall(r"\bstatic\s+int\s+([A-Za-z_]\w*)\b", body)
+            _rx(r"\bstatic\s+int\s+([A-Za-z_]\w*)\b").findall(body)
         )
         stores = globals_ | statics
         has_plain_store = any(
@@ -18214,9 +18311,9 @@ def _cxx_notify_thread_exit(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not _CXX_NOTIFY_EXIT.search(body):
+        if not _lit_search(_CXX_NOTIFY_EXIT, body):
             continue
-        if _CXX_CV_WAITER.search(body):
+        if _lit_search(_CXX_CV_WAITER, body):
             continue
         start = fn.span[0]
         for i, ln in enumerate(body.splitlines()):
@@ -18242,13 +18339,13 @@ def _cxx_wstring_convert(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not _CXX_WSTRING_CONVERT.search(body):
+        if not _lit_search(_CXX_WSTRING_CONVERT, body):
             continue
-        if not _CXX_WCONVERT_XFORM.search(body):
+        if not _lit_search(_CXX_WCONVERT_XFORM, body):
             continue
-        if re.search(r"\.\s*converted\s*\(", body):
+        if _rx(r"\.\s*converted\s*\(").search(body):
             continue
-        if re.search(r"\.\s*empty\s*\(", body):
+        if _rx(r"\.\s*empty\s*\(").search(body):
             continue
         start = fn.span[0]
         for i, ln in enumerate(body.splitlines()):
@@ -18277,7 +18374,7 @@ def _cxx_invoke(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not re.search(r"\bstd\s*::\s*invoke\s*\(", body):
+        if not _rx(r"\bstd\s*::\s*invoke\s*\(").search(body):
             continue
         start = fn.span[0]
         for i, ln in enumerate(body.splitlines()):
@@ -18307,9 +18404,9 @@ def _cxx_apply(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not re.search(r"\bstd\s*::\s*apply\s*\(", body):
+        if not _rx(r"\bstd\s*::\s*apply\s*\(").search(body):
             continue
-        if re.search(r"\btuple_size\b", body):
+        if _rx(r"\btuple_size\b").search(body):
             continue
         start = fn.span[0]
         for i, ln in enumerate(body.splitlines()):
@@ -18335,12 +18432,9 @@ def _cxx_apply(lines, rel, funcs, out) -> None:
 def _cxx_local_scalar_names(fn) -> set[str]:
     params = {name for _, name in fn.params if name}
     names: set[str] = set()
-    for m in re.finditer(
-        r"\b(?:(?:unsigned|signed|const|volatile)\s+)*"
+    for m in _rx(r"\b(?:(?:unsigned|signed|const|volatile)\s+)*"
         r"(?:int|short|long|char|bool|float|double)\s+"
-        r"(?P<name>[A-Za-z_]\w*)\b",
-        fn.body or "",
-    ):
+        r"(?P<name>[A-Za-z_]\w*)\b").finditer(fn.body or ""):
         n = m.group("name")
         if n not in params:
             names.add(n)
@@ -18355,12 +18449,12 @@ def _cxx_reference_wrapper(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not _CXX_REFWRAP_TOKEN.search(body):
+        if not _lit_search(_CXX_REFWRAP_TOKEN, body):
             continue
         locals_ = _cxx_local_scalar_names(fn)
         params = {name for _, name in fn.params if name}
         wrapped: set[str] = set()
-        for m in _CXX_REFWRAP_BIND.finditer(body):
+        for m in _lit_finditer(_CXX_REFWRAP_BIND, body):
             arg = m.group("arg")
             if arg in locals_ and arg not in params:
                 wrapped.add(m.group("w"))
@@ -18370,8 +18464,8 @@ def _cxx_reference_wrapper(lines, rel, funcs, out) -> None:
             rm = _CXX_REFWRAP_RETURN.search(ln)
             if rm and rm.group("arg") in locals_ and rm.group("arg") not in params:
                 hit = True
-            elif _RETURN_VAR.search(ln):
-                ret = _RETURN_VAR.search(ln).group(1)
+            elif rv := _RETURN_VAR.search(ln):
+                ret = rv.group(1)
                 if ret in wrapped:
                     hit = True
             if not hit:
@@ -18396,12 +18490,10 @@ def _cxx_endian(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not _CXX_ENDIAN.search(body):
+        if not _lit_search(_CXX_ENDIAN, body):
             continue
-        ranged = bool(re.search(
-            r"\bstd\s*::\s*endian\s*::\s*(?:little|big)\b", body
-        ))
-        assigned = {m.group("var") for m in _ENDIAN_ASSIGN.finditer(body)}
+        ranged = bool(_rx(r"\bstd\s*::\s*endian\s*::\s*(?:little|big)\b").search(body))
+        assigned = {m.group("var") for m in _lit_finditer(_ENDIAN_ASSIGN, body)}
         start = fn.span[0]
         for i, ln in enumerate(body.splitlines()):
             if _ENDIAN_IN_INDEX.search(ln):
@@ -18444,7 +18536,7 @@ def _cxx_bit_ceil(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not _CXX_BITCEIL_TOKEN.search(body):
+        if not _lit_search(_CXX_BITCEIL_TOKEN, body):
             continue
         assigned: set[str] = set()
         start = fn.span[0]
@@ -18490,9 +18582,9 @@ def _cxx_uncaught_exceptions(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not _CXX_UNCAUGHT.search(body):
+        if not _lit_search(_CXX_UNCAUGHT, body):
             continue
-        if _UNCAUGHT_SAVED.search(body):
+        if _lit_search(_UNCAUGHT_SAVED, body):
             continue
         start = fn.span[0]
         for i, ln in enumerate(body.splitlines()):
@@ -18518,15 +18610,15 @@ def _cxx_ranges_join(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not _CXX_VIEWS_JOIN.search(body):
+        if not _lit_search(_CXX_VIEWS_JOIN, body):
             continue
-        names = {m.group("name") for m in _CXX_JOIN_AUTO.finditer(body)}
-        names |= {m.group("name") for m in _CXX_JOIN_VIEW_DECL.finditer(body)}
+        names = {m.group("name") for m in _lit_finditer(_CXX_JOIN_AUTO, body)}
+        names |= {m.group("name") for m in _lit_finditer(_CXX_JOIN_VIEW_DECL, body)}
         if not names:
             continue
         start = fn.span[0]
         body_lines = body.splitlines()
-        for name in names:
+        for name in sorted(names):
             n = re.escape(name)
             for i, ln in enumerate(body_lines):
                 sub = re.search(
@@ -18540,7 +18632,7 @@ def _cxx_ranges_join(lines, rel, funcs, out) -> None:
                     if _zip_idx_bound_checks(idx, body) >= 2:
                         continue
                 elif ranged and (
-                    len(re.findall(r"\.\s*size\s*\(", body)) >= 2
+                    len(_rx(r"\.\s*size\s*\(").findall(body)) >= 2
                 ):
                     continue
                 line = start + i
@@ -18574,10 +18666,10 @@ def _cxx_quick_exit(lines, rel, funcs, out) -> None:
 
     for fn in funcs:
         body = fn.body or ""
-        if not _CXX_QUICK_EXIT.search(body):
+        if not _lit_search(_CXX_QUICK_EXIT, body):
             continue
         is_dtor = fn.name.startswith("~")
-        if _CXX_AT_QUICK_EXIT.search(body) and not is_dtor:
+        if _lit_search(_CXX_AT_QUICK_EXIT, body) and not is_dtor:
             continue
         start = fn.span[0]
         for i, ln in enumerate(body.splitlines()):
@@ -18586,15 +18678,15 @@ def _cxx_quick_exit(lines, rel, funcs, out) -> None:
             _emit(fn.name, start + i, ln)
             return
     text = "\n".join(lines)
-    for m in _DTOR_HEAD.finditer(text):
+    for m in _lit_finditer(_DTOR_HEAD, text):
         brace = m.end() - 1
         close = _match_brace(text, brace)
         if close < 0:
             continue
         body = text[brace + 1: close]
-        if not _CXX_QUICK_EXIT.search(body):
+        tm = _lit_search(_CXX_QUICK_EXIT, body)
+        if not tm:
             continue
-        tm = _CXX_QUICK_EXIT.search(body)
         line = text[: brace + 1 + tm.start()].count("\n") + 1
         _emit(f"~{m.group('name')}", line, body.splitlines()[0] if body else "")
         return
@@ -18608,15 +18700,15 @@ def _cxx_to_array(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not _CXX_TO_ARRAY.search(body):
+        if not _lit_search(_CXX_TO_ARRAY, body):
             continue
         sizes = {
             m.group("name"): int(m.group("n"))
-            for m in _C_ARRAY_SIZE.finditer(body)
+            for m in _lit_finditer(_C_ARRAY_SIZE, body)
         }
         binds: dict[str, str] = {
             m.group("name"): m.group("src")
-            for m in _TO_ARRAY_BIND.finditer(body)
+            for m in _lit_finditer(_TO_ARRAY_BIND, body)
         }
         start = fn.span[0]
         body_lines = body.splitlines()
@@ -18667,7 +18759,7 @@ def _cxx_to_array(lines, rel, funcs, out) -> None:
 
 
 def _toarr_idx_bad(idx: str, size: int | None, body: str) -> bool:
-    if re.fullmatch(r"\d+", idx):
+    if _rx(r"\d+").fullmatch(idx):
         k = int(idx)
         if size is not None:
             return k >= size
@@ -18683,16 +18775,16 @@ def _cxx_zoned_time(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not _CXX_ZONED_TIME.search(body):
+        if not _lit_search(_CXX_ZONED_TIME, body):
             continue
-        if _CXX_ZONE_LOOKUP.search(body):
-            names = {m.group("name") for m in _CXX_TZDB_BIND.finditer(body)}
+        if _lit_search(_CXX_ZONE_LOOKUP, body):
+            names = {m.group("name") for m in _lit_finditer(_CXX_TZDB_BIND, body)}
             if names and all(
                 _param_if_guard(n, body) or _param_null_tested(n, body)
                 for n in names
             ):
                 continue
-            if not names and re.search(r"\bif\s*\(\s*!", body):
+            if not names and _rx(r"\bif\s*\(\s*!").search(body):
                 continue
         start = fn.span[0]
         for i, ln in enumerate(body.splitlines()):
@@ -18720,29 +18812,26 @@ def _cxx_kill_dependency(lines, rel, funcs, out) -> None:
     globals_ = _file_scope_int_globals(lines)
     for fn in funcs:
         body = fn.body or ""
-        if not _CXX_KILLDEP.search(body):
+        if not _lit_search(_CXX_KILLDEP, body):
             continue
         assigned: set[str] = set()
         start = fn.span[0]
         only_sync = False
         statics = set(
-            re.findall(r"\bstatic\s+int\s+([A-Za-z_]\w*)\b", body)
+            _rx(r"\bstatic\s+int\s+([A-Za-z_]\w*)\b").findall(body)
         )
         stores = globals_ | statics
         has_plain_store = any(
             re.search(rf"\b{re.escape(g)}\s*=", body) for g in stores
         )
-        has_real_sync = bool(re.search(
-            r"\b(?:atomic\s*<|mutex|atomic_thread_fence|atomic_signal_fence"
-            r"|memory_order)\b",
-            body,
-        ))
+        has_real_sync = bool(_rx(r"\b(?:atomic\s*<|mutex|atomic_thread_fence|atomic_signal_fence"
+            r"|memory_order)\b").search(body))
         if has_plain_store and not has_real_sync:
             only_sync = True
         for i, ln in enumerate(body.splitlines()):
             for m in _KILLDEP_ASSIGN.finditer(ln):
                 assigned.add(m.group("var"))
-            hit = only_sync and _CXX_KILLDEP.search(ln)
+            hit = bool(only_sync and _CXX_KILLDEP.search(ln))
             if _KILLDEP_IN_INDEX.search(ln):
                 hit = True
             if not hit:
@@ -18776,7 +18865,7 @@ def _cxx_rotl(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not _CXX_ROTL_TOKEN.search(body):
+        if not _lit_search(_CXX_ROTL_TOKEN, body):
             continue
         assigned: set[str] = set()
         start = fn.span[0]
@@ -18822,11 +18911,11 @@ def _cxx_current_exception(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not _CXX_CURRENT_EXC.search(body):
+        if not _lit_search(_CXX_CURRENT_EXC, body):
             continue
-        if not _CXX_RETHROW_EXC.search(body):
+        if not _lit_search(_CXX_RETHROW_EXC, body):
             continue
-        bound = {m.group("name") for m in _CUR_EXC_BIND.finditer(body)}
+        bound = {m.group("name") for m in _lit_finditer(_CUR_EXC_BIND, body)}
         start = fn.span[0]
         for i, ln in enumerate(body.splitlines()):
             if _CUR_EXC_INLINE.search(ln):
@@ -18841,7 +18930,7 @@ def _cxx_current_exception(lines, rel, funcs, out) -> None:
                     if 0 < line <= len(lines) else ln.strip(),
                 ))
                 return
-            for name in bound:
+            for name in sorted(bound):
                 if _param_if_guard(name, body) or _param_null_tested(name, body):
                     continue
                 if not re.search(
@@ -18930,7 +19019,7 @@ def _cxx_lerp(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not _CXX_LERP_TOKEN.search(body):
+        if not _lit_search(_CXX_LERP_TOKEN, body):
             continue
         assigned: set[str] = set()
         start = fn.span[0]
@@ -18938,7 +19027,7 @@ def _cxx_lerp(lines, rel, funcs, out) -> None:
         for i, ln in enumerate(body.splitlines()):
             for m in _LERP_ASSIGN.finditer(ln):
                 assigned.add(m.group("var"))
-            hit = _LERP_IN_INDEX.search(ln)
+            hit = bool(_LERP_IN_INDEX.search(ln))
             if not hit:
                 for m in _CXX_SUBSCRIPT.finditer(ln):
                     idx = m.group("idx").strip()
@@ -18964,7 +19053,7 @@ def _cxx_lerp(lines, rel, funcs, out) -> None:
             return
         if fired:
             return
-        if _CXX_LERP_FINITE.search(body):
+        if _lit_search(_CXX_LERP_FINITE, body):
             continue
         if any(_byteswap_idx_guarded(v, body) for v in assigned):
             continue
@@ -19006,7 +19095,7 @@ def _cxx_cmp_less(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not _CXX_CMPLESS_TOKEN.search(body):
+        if not _lit_search(_CXX_CMPLESS_TOKEN, body):
             continue
         assigned: set[str] = set()
         start = fn.span[0]
@@ -19042,9 +19131,9 @@ def _cxx_cmp_less(lines, rel, funcs, out) -> None:
                     if 0 < line <= len(lines) else ln.strip(),
                 ))
                 return
-        if _CXX_IN_RANGE_IF.search(body):
+        if _lit_search(_CXX_IN_RANGE_IF, body):
             continue
-        if not re.search(r"\bin_range\s*(?:<[^>;]*>)?\s*\(", body):
+        if not _rx(r"\bin_range\s*(?:<[^>;]*>)?\s*\(").search(body):
             continue
         for i, ln in enumerate(body.splitlines()):
             if not _CXX_SUBSCRIPT.search(ln):
@@ -19084,9 +19173,9 @@ def _cxx_unreachable(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not _CXX_STD_UNREACHABLE.search(body):
+        if not _lit_search(_CXX_STD_UNREACHABLE, body):
             continue
-        if not (_CXX_SUBSCRIPT.search(body) or re.search(r"\breturn\b", body)):
+        if not (_lit_search(_CXX_SUBSCRIPT, body) or _rx(r"\breturn\b").search(body)):
             continue
         start = fn.span[0]
         for i, ln in enumerate(body.splitlines()):
@@ -19160,7 +19249,7 @@ def _cxx_exchange(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not _CXX_EXCHANGE_TOKEN.search(body):
+        if not _lit_search(_CXX_EXCHANGE_TOKEN, body):
             continue
         assigned: set[str] = set()
         exchanged: set[str] = set()
@@ -19209,15 +19298,15 @@ def _cxx_to_address(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not _CXX_TO_ADDRESS.search(body):
+        if not _lit_search(_CXX_TO_ADDRESS, body):
             continue
         sizes = {
             m.group("name"): int(m.group("n"))
-            for m in _C_ARRAY_SIZE.finditer(body)
+            for m in _lit_finditer(_C_ARRAY_SIZE, body)
         }
         binds: dict[str, str] = {
             m.group("name"): m.group("src")
-            for m in _TO_ADDR_BIND.finditer(body)
+            for m in _lit_finditer(_TO_ADDR_BIND, body)
         }
         start = fn.span[0]
         body_lines = body.splitlines()
@@ -19294,7 +19383,7 @@ def _cxx_is_constant_evaluated(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not _CXX_ICE_TOKEN.search(body):
+        if not _lit_search(_CXX_ICE_TOKEN, body):
             continue
         start = fn.span[0]
         for i, ln in enumerate(body.splitlines()):
@@ -19302,7 +19391,7 @@ def _cxx_is_constant_evaluated(lines, rel, funcs, out) -> None:
                 idx = m.group("idx").strip()
                 if _byteswap_idx_guarded(idx, body):
                     continue
-                if re.fullmatch(r"\d+", idx) and int(idx) < 4:
+                if _rx(r"\d+").fullmatch(idx) and int(idx) < 4:
                     continue
                 line = start + i
                 out.append(Finding(
@@ -19332,11 +19421,11 @@ def _cxx_addressof(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not _CXX_ADDRESSOF.search(body):
+        if not _lit_search(_CXX_ADDRESSOF, body):
             continue
         binds = {
             m.group("name"): m.group("src")
-            for m in _ADDRESSOF_BIND.finditer(body)
+            for m in _lit_finditer(_ADDRESSOF_BIND, body)
         }
         start = fn.span[0]
         for i, ln in enumerate(body.splitlines()):
@@ -19354,7 +19443,7 @@ def _cxx_addressof(lines, rel, funcs, out) -> None:
                 return
             for m in _CXX_SUBSCRIPT.finditer(ln):
                 idx = m.group("idx").strip()
-                star = re.fullmatch(r"\*\s*([A-Za-z_]\w*)", idx)
+                star = _rx(r"\*\s*([A-Za-z_]\w*)").fullmatch(idx)
                 if star and star.group(1) in binds:
                     if _addr_deref_guarded(star.group(1), body):
                         continue
@@ -19405,9 +19494,9 @@ def _cxx_assume_aligned(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not _CXX_ASSUME_ALIGNED.search(body):
+        if not _lit_search(_CXX_ASSUME_ALIGNED, body):
             continue
-        binds = {m.group("name") for m in _ASMALIGN_BIND.finditer(body)}
+        binds = {m.group("name") for m in _lit_finditer(_ASMALIGN_BIND, body)}
         start = fn.span[0]
         for i, ln in enumerate(body.splitlines()):
             inline = _ASMALIGN_INLINE_IDX.search(ln)
@@ -19448,11 +19537,11 @@ def _cxx_as_const(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not _CXX_AS_CONST.search(body):
+        if not _lit_search(_CXX_AS_CONST, body):
             continue
         binds = {
             m.group("name"): m.group("src")
-            for m in _AS_CONST_BIND.finditer(body)
+            for m in _lit_finditer(_AS_CONST_BIND, body)
         }
         ret = fn.return_type or ""
         ref_ret = "*" in ret or "&" in ret
@@ -19472,7 +19561,7 @@ def _cxx_as_const(lines, rel, funcs, out) -> None:
                 return
             if not ref_ret:
                 continue
-            if re.search(r"\breturn\s+(?:std\s*::\s*)?\bas_const\s*\(", ln):
+            if _rx(r"\breturn\s+(?:std\s*::\s*)?\bas_const\s*\(").search(ln):
                 line = start + i
                 out.append(Finding(
                     stage="lints", status=laws.FAILED, file=rel,
@@ -19507,11 +19596,11 @@ def _cxx_exclusive_scan(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not _CXX_EXCLUSIVE_SCAN.search(body):
+        if not _lit_search(_CXX_EXCLUSIVE_SCAN, body):
             continue
         dests: set[str] = set()
         overlap: set[str] = set()
-        for m in _EXSCAN_CALL.finditer(body):
+        for m in _lit_finditer(_EXSCAN_CALL, body):
             src, dst = m.group("src"), m.group("dst")
             dests.add(dst)
             if src == dst:
@@ -19555,11 +19644,11 @@ def _cxx_make_exception_ptr(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not _CXX_MAKE_EPTR.search(body):
+        if not _lit_search(_CXX_MAKE_EPTR, body):
             continue
-        if not _CXX_RETHROW_EXC.search(body):
+        if not _lit_search(_CXX_RETHROW_EXC, body):
             continue
-        bound = {m.group("name") for m in _MAKE_EPTR_BIND.finditer(body)}
+        bound = {m.group("name") for m in _lit_finditer(_MAKE_EPTR_BIND, body)}
         start = fn.span[0]
         for i, ln in enumerate(body.splitlines()):
             if _MAKE_EPTR_INLINE.search(ln):
@@ -19575,7 +19664,7 @@ def _cxx_make_exception_ptr(lines, rel, funcs, out) -> None:
                     if 0 < line <= len(lines) else ln.strip(),
                 ))
                 return
-            for name in bound:
+            for name in sorted(bound):
                 if _param_if_guard(name, body) or _param_null_tested(name, body):
                     continue
                 if not re.search(
@@ -19606,11 +19695,11 @@ def _cxx_set_terminate(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not _CXX_SET_TERMINATE.search(body):
+        if not _lit_search(_CXX_SET_TERMINATE, body):
             continue
-        stored = bool(_GET_TERM_BIND.search(body))
-        throws = bool(re.search(r"\bthrow\b", body))
-        has_set = bool(_SET_TERM_CALL.search(body))
+        stored = bool(_lit_search(_GET_TERM_BIND, body))
+        throws = bool(_rx(r"\bthrow\b").search(body))
+        has_set = bool(_lit_search(_SET_TERM_CALL, body))
         if has_set:
             if not throws and stored:
                 continue
@@ -19641,11 +19730,11 @@ def _cxx_inclusive_scan(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not _CXX_INCLUSIVE_SCAN.search(body):
+        if not _lit_search(_CXX_INCLUSIVE_SCAN, body):
             continue
         dests: set[str] = set()
         overlap: set[str] = set()
-        for m in _INSCAN_CALL.finditer(body):
+        for m in _lit_finditer(_INSCAN_CALL, body):
             src, dst = m.group("src"), m.group("dst")
             dests.add(dst)
             if src == dst:
@@ -19706,9 +19795,9 @@ def _cxx_reduce(lines, rel, funcs, out) -> None:
     scoped = []
     for fn in funcs:
         body = fn.body or ""
-        if not _CXX_REDUCE_TOKEN.search(body):
+        if not _lit_search(_CXX_REDUCE_TOKEN, body):
             continue
-        if _CXX_TRANSFORM_REDUCE.search(body):
+        if _lit_search(_CXX_TRANSFORM_REDUCE, body):
             continue
         scoped.append(fn)
     _cxx_index_token_scan(
@@ -19730,11 +19819,11 @@ def _cxx_uninitialized_copy(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not _CXX_UNINITIALIZED_COPY.search(body):
+        if not _lit_search(_CXX_UNINITIALIZED_COPY, body):
             continue
         dests: set[str] = set()
         overlap: set[str] = set()
-        for m in _UICOPY_CALL.finditer(body):
+        for m in _lit_finditer(_UICOPY_CALL, body):
             src, dst = m.group("src"), m.group("dst")
             dests.add(dst)
             if src == dst:
@@ -19780,7 +19869,7 @@ def _cxx_construct_at(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not _CXX_CONSTRUCT_AT.search(body):
+        if not _lit_search(_CXX_CONSTRUCT_AT, body):
             continue
         dests: set[str] = set()
         destroyed: set[str] = set()
@@ -19793,7 +19882,7 @@ def _cxx_construct_at(lines, rel, funcs, out) -> None:
             for m in _DESTROY_AT_CALL.finditer(ln):
                 destroyed.add(m.group("ptr"))
             if not _DESTROY_AT_CALL.search(ln):
-                for ptr in destroyed:
+                for ptr in sorted(destroyed):
                     v = re.escape(ptr)
                     if not re.search(
                         rf"(?:\*\s*{v}\b|{v}\s*\[|{v}\s*->)",
@@ -19837,7 +19926,7 @@ def _cxx_forward_like(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not _CXX_FWDLIKE_TOKEN.search(body):
+        if not _lit_search(_CXX_FWDLIKE_TOKEN, body):
             continue
         assigned: set[str] = set()
         sources: set[str] = set()
@@ -19878,7 +19967,7 @@ def _cxx_forward_like(lines, rel, funcs, out) -> None:
                     if 0 < line <= len(lines) else ln.strip(),
                 ))
                 return
-            for src in sources:
+            for src in sorted(sources):
                 if _byteswap_idx_guarded(src, body):
                     continue
                 v = re.escape(src)
@@ -19906,9 +19995,9 @@ def _cxx_uninitialized_fill(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not _CXX_UNINITIALIZED_FILL.search(body):
+        if not _lit_search(_CXX_UNINITIALIZED_FILL, body):
             continue
-        dests = {m.group("dst") for m in _UIFILL_CALL.finditer(body)}
+        dests = {m.group("dst") for m in _lit_finditer(_UIFILL_CALL, body)}
         start = fn.span[0]
         for i, ln in enumerate(body.splitlines()):
             for m in _CXX_SUBSCRIPT.finditer(ln):
@@ -19937,7 +20026,7 @@ def _cxx_destroy_n(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not _CXX_DESTROY_N.search(body):
+        if not _lit_search(_CXX_DESTROY_N, body):
             continue
         destroyed: set[str] = set()
         start = fn.span[0]
@@ -19946,7 +20035,7 @@ def _cxx_destroy_n(lines, rel, funcs, out) -> None:
                 ptr = m.group("ptr")
                 n = m.group("n").strip()
                 destroyed.add(ptr)
-                if not re.fullmatch(r"\d+", n) and not _byteswap_idx_guarded(
+                if not _rx(r"\d+").fullmatch(n) and not _byteswap_idx_guarded(
                     n, body
                 ):
                     line = start + i
@@ -19960,7 +20049,7 @@ def _cxx_destroy_n(lines, rel, funcs, out) -> None:
                     ))
                     return
             if not _DESTROY_N_CALL.search(ln):
-                for ptr in destroyed:
+                for ptr in sorted(destroyed):
                     v = re.escape(ptr)
                     if not re.search(
                         rf"(?:\*\s*{v}\b|{v}\s*\[|{v}\s*->)",
@@ -20003,10 +20092,10 @@ def _cxx_transform_scan(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not _CXX_TRANSFORM_SCAN.search(body):
+        if not _lit_search(_CXX_TRANSFORM_SCAN, body):
             continue
         dests: set[str] = set()
-        for m in _TSCAN_CALL.finditer(body):
+        for m in _lit_finditer(_TSCAN_CALL, body):
             dests.add(m.group("dst"))
         start = fn.span[0]
         for i, ln in enumerate(body.splitlines()):
@@ -20035,12 +20124,12 @@ def _cxx_type_identity(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not _CXX_TYPE_IDENTITY.search(body):
+        if not _lit_search(_CXX_TYPE_IDENTITY, body):
             continue
         dests = {
-            m.group("ptr") for m in _TYPEIDENT_DIRECT_PTR.finditer(body)
+            m.group("ptr") for m in _lit_finditer(_TYPEIDENT_DIRECT_PTR, body)
         }
-        aliases = {m.group("alias") for m in _TYPEIDENT_ALIAS.finditer(body)}
+        aliases = {m.group("alias") for m in _lit_finditer(_TYPEIDENT_ALIAS, body)}
         if aliases:
             al = "|".join(re.escape(a) for a in sorted(aliases))
             for m in re.finditer(
@@ -20077,7 +20166,7 @@ def _cxx_nontype(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not _CXX_NONTYPE.search(body):
+        if not _lit_search(_CXX_NONTYPE, body):
             continue
         start = fn.span[0]
         for i, ln in enumerate(body.splitlines()):
@@ -20106,7 +20195,7 @@ def _cxx_layout_compatible(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not _CXX_LAYOUT_COMPATIBLE.search(body):
+        if not _lit_search(_CXX_LAYOUT_COMPATIBLE, body):
             continue
         start = fn.span[0]
         for i, ln in enumerate(body.splitlines()):
@@ -20136,7 +20225,7 @@ def _cxx_ptr_interconvertible(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not _CXX_PTR_INTERCONV.search(body):
+        if not _lit_search(_CXX_PTR_INTERCONV, body):
             continue
         start = fn.span[0]
         for i, ln in enumerate(body.splitlines()):
@@ -20165,9 +20254,9 @@ def _cxx_uninitialized_value(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not _CXX_UNINITIALIZED_VALUE.search(body):
+        if not _lit_search(_CXX_UNINITIALIZED_VALUE, body):
             continue
-        dests = {m.group("dst") for m in _UVALUE_CALL.finditer(body)}
+        dests = {m.group("dst") for m in _lit_finditer(_UVALUE_CALL, body)}
         start = fn.span[0]
         for i, ln in enumerate(body.splitlines()):
             for m in _CXX_SUBSCRIPT.finditer(ln):
@@ -20197,10 +20286,10 @@ def _cxx_const_iterator(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not _CXX_BASIC_CONST_ITER.search(body):
+        if not _lit_search(_CXX_BASIC_CONST_ITER, body):
             continue
-        names = {m.group("name") for m in _BCITER_DECL.finditer(body)}
-        names |= {m.group("name") for m in _BCITER_BIND.finditer(body)}
+        names = {m.group("name") for m in _lit_finditer(_BCITER_DECL, body)}
+        names |= {m.group("name") for m in _lit_finditer(_BCITER_BIND, body)}
         start = fn.span[0]
         for i, ln in enumerate(body.splitlines()):
             for m in _CXX_SUBSCRIPT.finditer(ln):
@@ -20219,7 +20308,7 @@ def _cxx_const_iterator(lines, rel, funcs, out) -> None:
                     if 0 < line <= len(lines) else ln.strip(),
                 ))
                 return
-            for name in names:
+            for name in sorted(names):
                 v = re.escape(name)
                 if not re.search(
                     rf"(?:\*\s*{v}\b|{v}\s*->)\s*=",
@@ -20246,7 +20335,7 @@ def _cxx_corresponding_member(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not _CXX_CORR_MEMBER.search(body):
+        if not _lit_search(_CXX_CORR_MEMBER, body):
             continue
         start = fn.span[0]
         for i, ln in enumerate(body.splitlines()):
@@ -20275,9 +20364,9 @@ def _cxx_ranges_to(lines, rel, funcs, out) -> None:
     """
     for fn in funcs:
         body = fn.body or ""
-        if not _CXX_RANGES_TO.search(body):
+        if not _lit_search(_CXX_RANGES_TO, body):
             continue
-        dests = {m.group("name") for m in _RANGES_TO_BIND.finditer(body)}
+        dests = {m.group("name") for m in _lit_finditer(_RANGES_TO_BIND, body)}
         if not dests:
             continue
         start = fn.span[0]
@@ -20305,7 +20394,7 @@ def _cxx_token_subscript_unguarded(
 ) -> None:
     for fn in funcs:
         body = fn.body or ""
-        if not token_re.search(body):
+        if not _lit_search(token_re, body):
             continue
         start = fn.span[0]
         for i, ln in enumerate(body.splitlines()):
@@ -20591,7 +20680,7 @@ def _cxx_counted(lines, rel, funcs, out) -> None:
 
 
 def _is_ref_or_ptr_type(typ: str) -> bool:
-    t = re.sub(r"\b(?:const|volatile|restrict)\b", "", typ)
+    t = _rx(r"\b(?:const|volatile|restrict)\b").sub("", typ)
     return "*" in t or "&" in t or "[" in t
 
 
@@ -20615,11 +20704,11 @@ def _has_self_assign_guard(self_name: str, body: str) -> bool:
         return True
     if re.search(rf"==\s*&\s*{sn}\b", body):
         return True
-    if re.search(r"\bthis\s*==\s*&", body):
+    if _rx(r"\bthis\s*==\s*&").search(body):
         return True
-    if re.search(r"&\s*\w+\s*==\s*this\b", body):
+    if _rx(r"&\s*\w+\s*==\s*this\b").search(body):
         return True
-    if re.search(r"\bthis\s*!=", body):
+    if _rx(r"\bthis\s*!=").search(body):
         return True
     return False
 
@@ -20636,7 +20725,7 @@ def _cxx_exception_leak(lines, rel, funcs, out) -> None:
             var = m.group("var")
             if var in reported:
                 continue
-            if re.search(r"\b(?:unique_ptr|shared_ptr)\b", ln):
+            if _rx(r"\b(?:unique_ptr|shared_ptr)\b").search(ln):
                 continue
             for j in range(i + 1, len(body_lines)):
                 later = body_lines[j]
@@ -20644,7 +20733,7 @@ def _cxx_exception_leak(lines, rel, funcs, out) -> None:
                     rf"\bdelete\s*(?:\[\s*\])?\s*{re.escape(var)}\b", later
                 ):
                     break
-                if re.search(r"\b(?:unique_ptr|shared_ptr)\b", later):
+                if _rx(r"\b(?:unique_ptr|shared_ptr)\b").search(later):
                     break
                 for call_m in _CXX_CALL.finditer(later):
                     callee = call_m.group(1)
@@ -20778,7 +20867,7 @@ def _fd_leak(lines, rel, funcs, out) -> None:
                 closes.setdefault(m.group("var"), []).append(i)
         returns = [
             i for i, ln in enumerate(body_lines)
-            if re.match(r"\s*return\b", ln)
+            if _rx(r"\s*return\b").match(ln)
         ]
         if len(returns) < 2:
             continue
@@ -20828,7 +20917,7 @@ def _popen_leak(lines, rel, funcs, out) -> None:
             continue
         returns = [
             i for i, ln in enumerate(body_lines)
-            if re.match(r"\s*return\b", ln)
+            if _rx(r"\s*return\b").match(ln)
         ]
         for var, open_hits in opens.items():
             close_hits = closes.get(var, [])
@@ -20928,7 +21017,7 @@ _MEMCPY_ADDR_LOCAL = re.compile(
 def _local_structs(fn) -> set[str]:
     params = {name for typ, name in fn.params if name}
     names: set[str] = set()
-    for m in _LOCAL_STRUCT_DECL.finditer(fn.body):
+    for m in _lit_finditer(_LOCAL_STRUCT_DECL, fn.body):
         if m.group("static") or m.group("zero"):
             continue
         name = m.group("name")
@@ -21007,7 +21096,7 @@ def _api_precondition(orig_lines: list[str], rel: str, funcs, out) -> None:
         if not var:
             continue
         guarded = any(
-            gm.group(1) == var for gm in _IF_PARAM_GUARD.finditer(fn.body)
+            gm.group(1) == var for gm in _lit_finditer(_IF_PARAM_GUARD, fn.body)
         )
         if guarded:
             continue
@@ -21032,7 +21121,7 @@ def _intent_mismatch(orig_lines: list[str], rel: str, funcs, out) -> None:
             continue
         start, end = fn.span
         seen = False
-        for i, ln in enumerate(fn.body.splitlines()):
+        for i, ln in enumerate(_gated_lines(fn.body, _BARE_RETURN)):
             m = _BARE_RETURN.search(ln)
             if not m:
                 continue
@@ -21064,9 +21153,9 @@ _PARSE_SCANF = re.compile(
 
 def _parsed_input_vars(body: str) -> set[str]:
     names: set[str] = set()
-    for m in _PARSE_INPUT_ASSIGN.finditer(body):
+    for m in _lit_finditer(_PARSE_INPUT_ASSIGN, body):
         names.add(m.group("var"))
-    for m in _PARSE_SCANF.finditer(body):
+    for m in _lit_finditer(_PARSE_SCANF, body):
         names.add(m.group("var"))
     return names
 
@@ -21167,7 +21256,7 @@ def _realloc_zero_old_ptr(ln: str) -> str | None:
         return None
     if _parse_int_literal(args[1]) != 0:
         return None
-    ptr = re.sub(r"^\([^)]*\)\s*", "", args[0].strip()).strip()
+    ptr = _rx(r"^\([^)]*\)\s*").sub("", args[0].strip()).strip()
     if re.match(
         rf"^{re.escape(ptr)}\s*=\s*(?:\([^)]*\)\s*)*realloc\s*\(",
         ln,
@@ -21268,7 +21357,7 @@ def _crypto_misuse(lines, rel, funcs, out) -> None:
         if not rand_locals:
             continue
         for p in ptrs:
-            for local in rand_locals:
+            for local in sorted(rand_locals):
                 if not _ptr_local_store(p, local, body):
                     continue
                 for i, ln in enumerate(body_lines):
@@ -21299,7 +21388,7 @@ def _vla_size(lines, rel, funcs, out) -> None:
         params = {name for typ, name in fn.params if name}
         start, end = fn.span
         seen: set[tuple[str, int]] = set()
-        for m in _VLA_DECL.finditer(fn.body):
+        for m in _lit_finditer(_VLA_DECL, fn.body):
             if m.group("static"):
                 continue
             name = m.group("name")
@@ -21369,7 +21458,7 @@ _BARE_SIZEOF_STAR = re.compile(
 def _flex_array_tags(text: str) -> set[str]:
     """Tags whose last member is a C99 flexible array or GNU `[0]`."""
     tags: set[str] = set()
-    for m in _STRUCT_DEF.finditer(text):
+    for m in _lit_finditer(_STRUCT_DEF, text):
         decls = [p.strip() for p in m.group("body").split(";") if p.strip()]
         if decls and _FAM_TAIL.search(decls[-1]):
             tags.add(m.group("tag"))
@@ -21414,12 +21503,12 @@ def _mem_flex_array(stripped: str, lines, rel, funcs, out) -> None:
         for typ, name in fn.params:
             if not name or "*" not in typ:
                 continue
-            t = re.sub(r"\b(?:const|volatile|struct|class)\b", " ", typ)
+            t = _rx(r"\b(?:const|volatile|struct|class)\b").sub(" ", typ)
             t = t.replace("*", " ")
-            tag = " ".join(t.split())
-            if tag in tags:
-                ptrs[name] = tag
-        for m in _FAM_PTR.finditer(fn.body):
+            ptag = " ".join(t.split())
+            if ptag in tags:
+                ptrs[name] = ptag
+        for m in _lit_finditer(_FAM_PTR, fn.body):
             if m.group("tag") in tags:
                 ptrs[m.group("name")] = m.group("tag")
         start = fn.span[0]
@@ -21438,7 +21527,7 @@ def _mem_flex_array(stripped: str, lines, rel, funcs, out) -> None:
                 else:
                     continue
                 kind, ident = _bare_sizeof(size)
-                tag = None
+                tag: str | None = None
                 if kind == "struct" and ident in tags:
                     tag = ident
                 elif kind == "star" and ident in ptrs:
@@ -21473,7 +21562,7 @@ def _pointer_locals(fn) -> set[str]:
     for typ, name in fn.params:
         if name and "*" in typ:
             ptrs.add(name)
-    for m in _PTR_DECL.finditer(fn.body):
+    for m in _lit_finditer(_PTR_DECL, fn.body):
         ptrs.add(m.group(1))
     return ptrs
 
