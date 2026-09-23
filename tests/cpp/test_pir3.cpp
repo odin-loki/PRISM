@@ -160,6 +160,36 @@ entry:
     CHECK((cls == "FLOAT-DIV-ZERO" || cls == "FLOAT-INVALID" || cls == "FLOAT-OVERFLOW"));
 }
 
+TEST_CASE("pir3 fp: --fp-checks reports a double->float narrowing that overflows") {
+    const char* ir = R"IR(define float @narrow(double %a) {
+entry:
+  %f = fptrunc double %a to float
+  ret float %f
+}
+define float @narrow_ok(double %a) {
+entry:
+  %c = fcmp olt double %a, 1.000000e+30
+  %d = fcmp ogt double %a, -1.000000e+30
+  %b = and i1 %c, %d
+  br i1 %b, label %in, label %out
+in:
+  %f = fptrunc double %a to float
+  ret float %f
+out:
+  ret float 0.000000e+00
+}
+)IR";
+    // without --fp-checks overflow is IEEE-defined (infinity): not a defect
+    CHECK(verdict(ir, "narrow") == prism::laws::PROVED);
+    pp::TranslateOptions o;
+    o.fp_checks = true;
+    std::string cls;
+    CHECK(verdict(ir, "narrow", o, &cls) == prism::laws::FAILED);
+    CHECK(cls == "FLOAT-OVERFLOW");
+    // |a| < 1e30 fits in float (max ~3.4e38): no overflow
+    CHECK(verdict(ir, "narrow_ok", o) == prism::laws::PROVED);
+}
+
 TEST_CASE("pir3 fp: fast-math flags and x86_fp80 stay unencoded") {
     const char* ir = R"IR(define double @fm(double %a) {
 entry:

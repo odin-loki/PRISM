@@ -310,10 +310,14 @@ not modelled here); NaN payloads; the underflow and inexact flags (PRISM
 does not check them); `fptrunc` (see below); and the connection between these
 Lean definitions and the Z3 terms beyond the text-level lock of the test.
 
-A finding from this work: `fptrunc` calls `checks(cur, Op::FConv, w, {}, r,
+A finding from this work: `fptrunc` called `checks(cur, Op::FConv, w, {}, r,
 c.line)` with no operands, and `checks` returns early when no operand is a
-floating-point value of width `w`, so FLOAT-OVERFLOW is never reported for a
-`double`→`float` truncation that overflows, even with `--fp-checks`.
+floating-point value of width `w`. So FLOAT-OVERFLOW was never reported for a
+`double`→`float` truncation that overflows, even with `--fp-checks`. This is
+fixed: `fptrunc` now checks "finite operand, infinite result" directly
+(doctest "pir3 fp: --fp-checks reports a double->float narrowing that
+overflows"). The Lean overflow theorem covers `fadd`/`fsub`/`fmul`/`fdiv`;
+the `fptrunc` condition is the same shape, but it is not yet a Lean theorem.
 
 ## Independent proof rechecking (8.5)
 

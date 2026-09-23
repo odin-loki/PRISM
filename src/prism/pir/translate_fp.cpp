@@ -198,7 +198,16 @@ bool FpTr::inst(int& cur, const ir::Inst& in, Ctx& c) {
         int dst = c.dst();
         Arg r = dst >= 0 ? Arg::v(dst, w) : fop(cur, Op::FConv, w, {a});
         if (dst >= 0) set(cur, dst, Op::FConv, {a});
-        if (op == "fptrunc") checks(cur, Op::FConv, w, {}, r, c.line);
+        if (op == "fptrunc" && t_.options().fp_checks) {
+            // Narrowing cannot make a NaN from a non-NaN or divide, so the only
+            // IEEE exception is overflow: a finite value rounds to infinity in
+            // the narrower format. (checks() compares operand widths with the
+            // result's, which a narrowing never matches, so it is not used.)
+            Arg fin = p(cur, Op::Xor, {p(cur, Op::Or, {p(cur, Op::FIsNaN, {a}), p(cur, Op::FIsInf, {a})}),
+                                       Arg::c(1, 1)});
+            t_.check(cur, p(cur, Op::And, {p(cur, Op::FIsInf, {r}), fin}), "fp-overflow", "FLOAT-OVERFLOW",
+                     "floating-point overflow (finite value rounds to infinity in the narrower type)", c.line);
+        }
         return true;
     }
     if (op == "bitcast" && !in.ops.empty()) {
