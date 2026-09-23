@@ -184,6 +184,7 @@ executes code derived from the scanned tree or from the LLM is opt-in:
 | polyglot | `perl -c` (BEGIN/use), `cargo clippy` (build.rs, proc macros), `eslint` (eslint.config.js): **yes** (`Tool.executes`). python `compile()`, ruff, pyflakes, mypy (`--config-file=`, so a project `mypy.ini` cannot load plugins), `node --check`, tsc (explicit files), `bash -n`, shellcheck, `gofmt -e`, `ruby -wc`, `php -l`, `luac -p`, yamllint: no | the three are NOTRUN, the rest run | the three run (with the user's privileges: they are the project's own build/lint code) |
 | contracts, wp, bmc, harness | no (in-process Z3) | runs | runs |
 | pir (C++ engine) | Clang/opt compile only, PIR + Z3 in-process: no. Translation validation (`lli` on the lowered IR): **yes** | verdicts run; validation is NOTRUN (`extra.tv`, `extra.exec = NOTRUN` + one stage row) | `lli` in the sandbox (bwrap + prlimit) |
+| conc (C++ engine) | no (Clang/opt compile only; lazy sequentialisation + Z3 in-process, docs/CONCURRENCY.md) | runs | runs |
 | concolic | no (in-process KLEE-style engine over the concrete interpreter) | runs | runs |
 | fuzz | concrete oracle: no. Compiled harness, AFL++ (`PRISM_AFL=1`), libFuzzer (`PRISM_LIBFUZZER=1`): **yes** | concrete oracle runs; the binary half is NOTRUN (`extra.binary = NOTRUN` + one stage row) | binary half in the sandbox |
 | diff | **yes** — compiles and runs both functions | NOTRUN | sandbox |

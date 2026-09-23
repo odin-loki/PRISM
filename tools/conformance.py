@@ -22,6 +22,7 @@ Task format (tests/conformance/prism/**.yml, one sidecar per source file):
   language: C            # or C++
   property: no-overflow  # no-overflow | no-div0 | no-shift-ub | no-oob |
                          # no-null-deref | memsafety
+                         # concurrency/: norace | noassert | nodeadlock
   expected:              # function -> true (no UB for any input) | false
     add_false: false
   witness:               # false functions: inputs that trigger the UB
@@ -31,6 +32,14 @@ Task format (tests/conformance/prism/**.yml, one sidecar per source file):
 
 SV-COMP task definitions (format 2.0 .yml with `properties:`) are read as-is;
 the `no-overflow` / `valid-memsafety` verdict applies to `main`.
+
+Concurrency tasks (tests/conformance/concurrency, roadmap 2.6) are whole
+programs that create threads; `expected: {main: ...}` is scored by the conc
+stage only. conc never proves (a context-switch bound is not a proof), so
+its soundness line is zero wrong proofs by construction; what it measures is
+detection (FAILED in the task's property class) and false alarms. Its
+counterexamples are schedules, not inputs, so they are "refuted, not
+replayed".
 
 `--self-check` validates the suite's own labels without PRISM: every
 witness must trip a sanitizer, and every `true` function must survive an
@@ -70,11 +79,19 @@ SUITE = REPO / "tests" / "conformance"
 
 PROOF = {"PROVED", "PROVED-UNBOUNDED", "PROVED-ASSUMING", "PROVED-CERTIFIED"}
 BASE_STAGES = ["inventory", "classify", "bmc", "harness"]
-VERDICT_STAGES = ["bmc", "harness", "pir"]
+VERDICT_STAGES = ["bmc", "harness", "pir", "conc"]
 # Stages that only speak about part of the functions (harness: POINTER
 # functions under `// requires:`). A function they do not mention is out of
 # scope, not silently skipped; bmc and pir must report every function.
 SCOPED_STAGES = {"harness"}
+# The concurrency stage (roadmap 2.6) is scored only on the thread programs
+# of tests/conformance/concurrency, and those only by it: the other stages
+# check single functions, conc checks whole programs that create threads.
+STAGE_TASK_ORIGINS = {"conc": {"concurrency"}}
+ORIGIN_STAGES = {"concurrency": {"conc"}}
+# Task origins whose labels speak for one property only (another class of
+# FAILED is reported separately, not as a false alarm).
+PROPERTY_SCOPED = {"sv-comp", "concurrency"}
 
 # SV-COMP property file -> suite property
 SV_PROPERTIES = {"no-overflow.prp": "no-overflow", "valid-memsafety.prp": "memsafety"}
@@ -86,6 +103,10 @@ PROPERTY_CLASSES = {
     "no-oob": {"MEM-OOB-READ", "MEM-OOB-WRITE"},
     "no-null-deref": {"MEM-NULL-DEREF", "NULL-DEREF"},
     "memsafety": {"MEM-OOB-READ", "MEM-OOB-WRITE", "MEM-NULL-DEREF", "NULL-DEREF", "MEM-USE-AFTER-FREE"},
+    # concurrency tasks (whole programs; the verdict applies to main)
+    "norace": {"CONC-DATA-RACE"},
+    "noassert": {"FUNC-CONTRACT"},
+    "nodeadlock": {"CONC-DEADLOCK"},
 }
 
 # NIST SARD Juliet C/C++ 1.3 (kept out of git; fetched and hash-checked).
@@ -596,7 +617,7 @@ def replay(task: Task, fn: str, cex: str, work: Path) -> dict[str, Any]:
 def classify(task: Task, fn: str, found: list[dict[str, Any]]) -> str:
     statuses = {f["status"] for f in found}
     expected = task.expected[fn]
-    prop_scoped = task.origin == "sv-comp"  # SV-COMP labels speak for one property only
+    prop_scoped = task.origin in PROPERTY_SCOPED  # SV-COMP / concurrency labels speak for one property only
     classes = PROPERTY_CLASSES.get(task.prop, set())
     failed = [f for f in found if f["status"] == "FAILED"]
     failed_in_prop = [f for f in failed if not prop_scoped or f.get("cls") in classes]
@@ -819,7 +840,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--fetch-juliet", type=Path, metavar="DIR",
                     help="download NIST Juliet 1.3, check sha256, extract CWE190/191/369/476/680 into DIR")
     ap.add_argument("--juliet-flows", default="01", help="Juliet flow variants to keep (comma list, default 01)")
-    ap.add_argument("--stages", help="override verdict stages (default: bmc,harness + pir when listed)")
+    ap.add_argument("--stages", help="override verdict stages (default: bmc,harness + pir,conc when listed)")
     ap.add_argument("--out", type=Path, default=Path("conformance-out"))
     ap.add_argument("--jobs", "-j", type=int, default=max(1, (os.cpu_count() or 2)))
     ap.add_argument("--timeout", type=float, default=180.0, help="seconds per PRISM run")
@@ -835,7 +856,7 @@ def main(argv: list[str] | None = None) -> int:
         fetch_juliet(args.fetch_juliet, args.juliet_flows.split(","))
         return 0
 
-    roots = args.suite or [SUITE / "prism", SUITE / "sv-comp"]
+    roots = args.suite or [SUITE / "prism", SUITE / "sv-comp", SUITE / "concurrency"]
     tasks = discover([r.resolve() for r in roots])
     if args.juliet:
         jr = args.juliet / "juliet" if (args.juliet / "juliet").exists() else args.juliet
@@ -886,6 +907,10 @@ def main(argv: list[str] | None = None) -> int:
             results = list(ex.map(one, tasks))
         for t, res in results:
             for stage in vstages:
+                if stage in STAGE_TASK_ORIGINS and t.origin not in STAGE_TASK_ORIGINS[stage]:
+                    continue
+                if t.origin in ORIGIN_STAGES and stage not in ORIGIN_STAGES[t.origin]:
+                    continue
                 for fn, exp in t.expected.items():
                     found = res.get("findings", {}).get(stage, {}).get(fn, [])
                     if "error" in res:

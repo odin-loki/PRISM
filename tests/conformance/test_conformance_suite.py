@@ -66,6 +66,24 @@ class SuiteShape(unittest.TestCase):
         self.assertIn("07b00127ac57f773f9de6eee95821b6947948dbe", sources)
         self.assertIn("Apache-2.0", sources)
 
+    def test_concurrency_tasks(self) -> None:
+        # roadmap 2.6: whole thread programs, true/false pairs, scored by conc only
+        tasks = conf.discover([SUITE / "concurrency"])
+        self.assertGreaterEqual(len(tasks), 20)
+        stems = {t.source.stem for t in tasks}
+        for t in tasks:
+            self.assertEqual(t.origin, "concurrency", t.ident)
+            self.assertIn(t.prop, {"norace", "noassert", "nodeadlock"}, t.ident)
+            self.assertEqual(list(t.expected), ["main"], t.ident)
+            self.assertIn("pthread_create", t.source.read_text().replace("thrd_create", "pthread_create"))
+            stem = t.source.stem
+            twin = stem[:-5] + "_false" if stem.endswith("_true") else stem[:-6] + "_true"
+            self.assertIn(twin, stems, t.ident)
+        self.assertEqual({t.prop for t in tasks}, {"norace", "noassert", "nodeadlock"})
+        self.assertEqual(conf.STAGE_TASK_ORIGINS["conc"], {"concurrency"})
+        self.assertEqual(conf.ORIGIN_STAGES["concurrency"], {"conc"})
+        self.assertIn("conc", conf.VERDICT_STAGES)
+
     def test_juliet_is_pinned_not_vendored(self) -> None:
         sources = (SUITE / "SOURCES.md").read_text()
         self.assertIn(conf.JULIET_SHA256, sources)
@@ -101,6 +119,15 @@ class ScorerRules(unittest.TestCase):
         self.assertEqual(conf.classify(sv, "f", [{"status": "FAILED", "cls": "INT-SHIFT-UB"}]),
                          "failed-other-property")
         self.assertEqual(conf.classify(sv, "f", fail), "false-alarm")
+        # concurrency labels are property-scoped too; conc is BOUNDED on true tasks
+        race = [{"status": "FAILED", "cls": "CONC-DATA-RACE"}]
+        noassert_true = self._task(True, origin="concurrency", prop="noassert")
+        self.assertEqual(conf.classify(noassert_true, "f", race), "failed-other-property")
+        self.assertEqual(conf.classify(noassert_true, "f", [{"status": "BOUNDED"}]), "bounded")
+        self.assertEqual(conf.classify(self._task(False, origin="concurrency", prop="norace"), "f", race),
+                         "refuted")
+        self.assertEqual(conf.classify(self._task(True, origin="concurrency", prop="norace"), "f", race),
+                         "false-alarm")
 
     def test_parse_cex(self) -> None:
         self.assertEqual(conf.parse_cex("a=2147418111, b=-3"), {"a": 2147418111, "b": -3})
