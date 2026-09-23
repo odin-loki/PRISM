@@ -82,6 +82,10 @@ and the note says `DISAGREEMENT`.
   and member. A recorded mean replaces the rule estimate.
 - The member with the lowest mean that has won in the bucket starts alone for
   `min(3 × mean + 0.2 s, 30 % of timeout)`. The others then join.
+- With no such member (no history for the bucket), in-process Z3 starts
+  alone for `min(0.15 s, 10 % of timeout)`. Most pir VCs are answered in
+  milliseconds, and then no bit-blast, process spawn or walker is paid for.
+  The CaDiCaL-with-LRAT member of certified mode is never delayed.
 - The ProbSAT walker gets `max(1 s, 10 % of timeout)` and then gives its core
   back.
 - `max_parallel` defaults to the hardware thread count.
@@ -135,7 +139,51 @@ packages, none of which are on this machine. It takes part whenever a
 `bitwuzla` binary is found. The exact commits are listed in `TRUSTED_BASE.md`
 §4.
 
-## Measurement: portfolio vs Z3 alone
+## Measurement: the conformance suite's pir VCs (roadmap 3.1 exit criterion)
+
+The exit criterion is "the portfolio beats Z3 alone on total time over the
+conformance suite's VCs". `tools/solver_bench.py` measures exactly that:
+`prism --pir-vcs` writes every VC of every encodable function of the 263
+conformance tasks (`tests/conformance/prism` and `sv-comp`, unwind 8), and
+`prism --solve-smt2` answers each VC three times back to back: Z3 alone
+(`--z3-only`), the portfolio with no history (a fresh history per VC), and
+the portfolio scheduling from the history it built on the VCs before
+(what the pir stage does across a run). Query cache off, timeout 30 s per
+VC, solver wall time summed (process start-up excluded), one VC at a time.
+
+```
+python tools/solver_bench.py --prism build/prism --out solver-bench-out
+```
+
+Result (2026-09-23, 4 cores shared with other agents' builds, load
+average 7–9 during the run):
+
+| pass | total solver s | solved | sat / unsat | timeouts | answered by |
+|---|---:|---:|---|---:|---|
+| Z3 alone | 229.0 | 4179 / 4179 | 499 / 3680 | 0 | z3 4179 |
+| portfolio, no history | 225.7 | 4179 / 4179 | 499 / 3680 | 0 | z3 4158, cadical 12, sls 7, kissat 2 |
+| portfolio + history | **211.4** | 4179 / 4179 | 499 / 3680 | 0 | z3 3923, cadical 255, kissat 1 |
+
+- **The criterion is met on this suite, narrowly:** −1.4 % without history
+  and −7.7 % with it. No VC disagreed between the passes.
+- The wins are few and large: `char_promote_true` (16.6 s → 0.3 s,
+  CaDiCaL), `widen_mul_true` (7.7 s → 3.8 s, Kissat) and the sv-comp `jain_*`
+  counterexamples (2.5–3.5 s → 0.05–0.4 s, CaDiCaL / ProbSAT).
+- The losses are contention: `long_mul_true` (a 64-bit multiplication, 4.7 s
+  for Z3 alone) takes 16.9 s once the other members join Z3 on the cores.
+- **The Z3 head start matters.** Before it, the portfolio started every
+  member at once on each of the 4179 mostly trivial VCs and paid a bit-blast
+  and two process spawns each time: 532 s against Z3's 444 s in a
+  pass-after-pass run. Those pass-after-pass runs (all three passes one after
+  the other) are **not** usable as evidence either way: a first run gave the
+  portfolio a win (556 s vs 612 s) only because the test suite was running
+  during the Z3 pass, and a Z3-only rerun of the final binary under lower load
+  took 270 s where the first pass had taken 449 s. The interleaved run above
+  is the only fair one.
+- 65 conformance functions are not encoded by pir (pointer parameters,
+  arrays): their VCs do not exist and are not in the count.
+
+## Measurement: portfolio vs Z3 alone (generated queries)
 
 The run was `./prism_tests -tc="solver bench*" --no-skip` (the case is
 skipped by default). The benchmark has 14 generated bitvector queries:

@@ -294,6 +294,9 @@ double rule_estimate(const std::string& solver, const Features& ft) {
     return 1.5;
 }
 
+// Head start of in-process Z3 when the history names no leader.
+constexpr double kZ3FirstS = 0.15;
+
 struct Certify {
     bool certified = false;
     std::string info;
@@ -584,6 +587,19 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
         char buf[160];
         std::snprintf(buf, sizeof buf, "scheduler: %s leads by %.2fs (history, bucket %s)",
                       members[*lead].name.c_str(), delay, res.bucket.c_str());
+        notes.push_back(buf);
+    } else if (members.size() > 1 && opt.z3_in_process) {
+        // No history: in-process Z3 goes first for a moment. Most
+        // verification conditions are answered in milliseconds, and then no
+        // bit-blast, process spawn or walker is paid for (measured on the
+        // conformance suite's pir VCs, docs/SOLVERS.md). The certificate
+        // member is never delayed.
+        const double delay = std::min(kZ3FirstS, 0.1 * opt.timeout_s);
+        for (auto& m : members)
+            if (m.kind != MemberKind::Z3 && !m.lrat) m.not_before = t0 + delay;
+        char buf[128];
+        std::snprintf(buf, sizeof buf, "scheduler: z3 first for %.2fs (no history for bucket %s)", delay,
+                      res.bucket.c_str());
         notes.push_back(buf);
     }
     for (auto& m : members)
