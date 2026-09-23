@@ -109,6 +109,10 @@ def render(seen: dict[str, tuple[str, bool]]) -> str:
 
 
 def main() -> int:
+    extra = [a for a in sys.argv[1:] if a != "--check"]
+    if extra:
+        print(__doc__, file=sys.stderr)
+        return 2
     seen, skipped = table()
     text = render(seen)
     for s in skipped:
