@@ -176,7 +176,7 @@ class TestCppDiffSource(unittest.TestCase):
     """C++ diff_pair must match the Python engine: gcc/clang only, timeout is not CLEAN."""
 
     def test_diff_pair_gcc_clang_only_and_timeout_before_clean(self):
-        src = (ROOT / "src" / "prism" / "stages_rest.cpp").read_text(encoding="utf-8")
+        src = (ROOT / "src" / "prism" / "stages" / "diff.cpp").read_text(encoding="utf-8")
         start = src.find("Finding diff_pair(")
         self.assertGreaterEqual(start, 0)
         body = src[start : start + 5500]

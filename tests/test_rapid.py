@@ -288,7 +288,7 @@ class TestMuttest(unittest.TestCase):
 
 class TestCppRapidMissingCompilerSourceContract(unittest.TestCase):
     def test_finding_from_plan_missing_compiler_is_notrun(self):
-        src = (Path(__file__).resolve().parents[1] / "src" / "prism" / "stages_rest.cpp").read_text(
+        src = (Path(__file__).resolve().parents[1] / "src" / "prism" / "stages" / "rapid.cpp").read_text(
             encoding="utf-8"
         )
         i = src.find("Finding finding_from_plan(")

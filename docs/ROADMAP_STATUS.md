@@ -49,7 +49,7 @@ generators): 0 wrong proofs over every campaign run.
 | 1.3 signed releases (cosign) | **PARTIAL** — `.github/workflows/release.yml` (keyless cosign, double build + hash compare); runs on the first tag push |
 | 1.3 reproducible build recipe | see "Docker" below |
 | 1.4 remove `*_tmp.py` and `/mnt/c` workarounds | **DONE** |
-| 1.4 split `stages_rest.cpp` per stage | see end of this file |
+| 1.4 split `stages_rest.cpp` per stage | **DONE** — `src/prism/stages/`: one file per stage (`taint`, `thread`, `contracts` (+ `prove_with_contract`), `wp`, `harness_bmc`, `concolic`, `fuse`, `diff`, `rapid` (+ `muttest`), `ltl`, `hypothesize`, `execute_cex`, `rlef`), plus `interp.cpp` (concrete interpreter, `concrete_execute`), `llm.cpp` (LLM engine, sandboxed run of LLM-written C), `platform.cpp` (`run_argv`, plain HTTP) and `common.cpp`; shared helpers are declared in `common.hpp` / `interp.hpp` / `llm.hpp` (namespace `prism::stages_detail`), single-use helpers stay file-local |
 | 1.4 pure verdict module | **DONE** — `src/prism/verdict/`, `include/prism/verdict.hpp` (no I/O) |
 
 ## Part 2 — Clang/LLVM front end, C++23
@@ -125,7 +125,7 @@ at run time; the numbers below are for the deterministic halves.
 | 8.2 concurrency | **PARTIAL** — two straight-line threads, round-robin scheme |
 | 8.2 libc models verified by PRISM | **PARTIAL** — `tests/conformance/libc-models/`: contract harnesses include the model sources and assert the C standard's contract; `pir`: 29/30 contracts PROVED for objects up to 4 bytes (size-bounded: every content/position/length within that size, not arbitrary lengths), `getenv` BOUNDED, 35/35 false twins refuted for the planted class; no harness yet for `fputc`/`putc`/`fputs`/`realloc(p, 0)`; printf family lives in the translator and is not checkable this way (docs/PIR.md "Library models verified by PRISM") |
 | 8.3 trusted base document | **DONE** — `docs/TRUSTED_BASE.md`, shipped with every report |
-| 8.4 PRISM on PRISM | **DONE** — `.github/workflows/self-check.yml` runs nightly. It builds PRISM with `-DPRISM_SANITIZE=ON` (ASan + UBSan) and runs both suites and the conformance gate under it. PRISM also scans its own tree. The first local sanitizer run found a signed overflow in `stages_rest.cpp` (fixed) and Z3-dependent tests that did not guard for a missing solver (fixed). All 158 no-Z3 cases pass under ASan/UBSan |
+| 8.4 PRISM on PRISM | **DONE** — `.github/workflows/self-check.yml` runs nightly. It builds PRISM with `-DPRISM_SANITIZE=ON` (ASan + UBSan) and runs both suites and the conformance gate under it. PRISM also scans its own tree. The first local sanitizer run found a signed overflow in `stages_rest.cpp` (now `src/prism/stages/`; fixed) and Z3-dependent tests that did not guard for a missing solver (fixed). All 158 no-Z3 cases pass under ASan/UBSan |
 | 8.5 proofs rechecked independently in CI | **DONE** — `proofs-recheck.yml`: `leanchecker` + `nanoda` on every Lean project |
 
 ## Part 6 — Engineering and release

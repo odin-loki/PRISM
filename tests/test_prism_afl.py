@@ -1,7 +1,7 @@
 """C++ fuse AFL source-contract. python -m unittest tests.test_prism_afl -q
 
 Python engine prism/fuse.py + prism/afl.py is law. After C++ fuse AFL lands,
-stages_rest.cpp fuse_one must match: PRISM_AFL opt-in,
+src/prism/stages/fuse.cpp fuse_one must match: PRISM_AFL opt-in,
 extra afl_available, CLEAN is not a proof, POINTER stays NEEDS-HARNESS
 (same as tests/test_fuse.py). Missing AFL in C++ fails these checks.
 """
@@ -22,7 +22,7 @@ from prism.fuse import _fuse_one, run_fuse
 from prism.models import Finding
 
 ROOT = Path(__file__).resolve().parents[1]
-STAGES_REST = ROOT / "src" / "prism" / "stages_rest.cpp"
+FUSE_CPP = ROOT / "src" / "prism" / "stages" / "fuse.cpp"
 TD = ROOT / "testdata"
 _PROOF = {laws.PROVED, laws.PROVED_UNBOUNDED, laws.PROVED_ASSUMING}
 
@@ -45,7 +45,7 @@ def _brace_body(src: str, sig: str) -> str:
             break
         i = src.find(sig, i + len(sig))
     if i < 0:
-        raise AssertionError(f"missing {sig!r} in {STAGES_REST.name}")
+        raise AssertionError(f"missing {sig!r} in {FUSE_CPP.name}")
     brace = src.find("{", i)
     if brace < 0:
         raise AssertionError(f"no body after {sig!r}")
@@ -87,18 +87,18 @@ class TestCppFuseAflSourceContract(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.src = _read(STAGES_REST)
+        cls.src = _read(FUSE_CPP)
         cls.code = _strip_comments(cls.src)
         cls.fuse_one = _brace_body(cls.src, "Finding fuse_one(")
 
-    def test_stages_rest_mentions_prism_afl(self):
+    def test_fuse_cpp_mentions_prism_afl(self):
         self.assertTrue(
             _mentions_afl_env(self.src),
-            msg="stages_rest.cpp must mention PRISM_AFL (PRISM_AFL=1 opt-in)",
+            msg="stages/fuse.cpp must mention PRISM_AFL (PRISM_AFL=1 opt-in)",
         )
         self.assertTrue(
             _mentions_afl_env(self.fuse_one) or _mentions_afl_env(self.code),
-            msg="fuse AFL env gate must live in stages_rest.cpp fuse path",
+            msg="fuse AFL env gate must live in stages/fuse.cpp fuse path",
         )
         code = _strip_comments(self.fuse_one)
         self.assertTrue(
@@ -224,7 +224,7 @@ class TestCppFuseAflSourceContract(unittest.TestCase):
         self.assertLess(after.find("laws::NOTRUN"), after.find("laws::ERROR"))
 
     def test_afl_missing_compiler_is_notrun_never_error(self):
-        body = _brace_body(_read(STAGES_REST), "std::optional<Finding> run_afl_fuzz(")
+        body = _brace_body(_read(FUSE_CPP), "std::optional<Finding> run_afl_fuzz(")
         self.assertIn("AFL: no C compiler on PATH", body)
         self.assertIn("NOTRUN", body)
         self.assertIn("install gcc or clang", body)
@@ -232,12 +232,12 @@ class TestCppFuseAflSourceContract(unittest.TestCase):
             'afl_base(laws::ERROR, "", "AFL: no C compiler on PATH")',
             body,
         )
-        fuse = _brace_body(_read(STAGES_REST), "Finding fuse_one(")
+        fuse = _brace_body(_read(FUSE_CPP), "Finding fuse_one(")
         self.assertIn('extra["afl"] = "NOTRUN"', fuse)
         self.assertIn('it->second != "NOTRUN"', fuse)
 
     def test_afl_notrun_must_not_claim_engine_afl(self):
-        body = _brace_body(_read(STAGES_REST), "std::optional<Finding> run_afl_fuzz(")
+        body = _brace_body(_read(FUSE_CPP), "std::optional<Finding> run_afl_fuzz(")
         code = _strip_comments(body)
         self.assertIn("st != laws::NOTRUN", code)
         self.assertIn('f.extra["engine"] = "afl"', code)
@@ -245,7 +245,7 @@ class TestCppFuseAflSourceContract(unittest.TestCase):
         guard = code.find("st != laws::NOTRUN")
         self.assertGreaterEqual(guard, 0)
         self.assertLess(guard, engine_at)
-        fuse = _brace_body(_read(STAGES_REST), "Finding fuse_one(")
+        fuse = _brace_body(_read(FUSE_CPP), "Finding fuse_one(")
         fuse_code = _strip_comments(fuse)
         self.assertIn('extra.erase("engine")', fuse)
         self.assertIn("adapter_install(\"afl-fuzz\")", fuse)
@@ -349,7 +349,7 @@ class TestCppLibfuzzerFuseSource(unittest.TestCase):
     """C++ fuse_one must match the Python engine: opted PRISM_LIBFUZZER: NOTRUN never engine=libfuzzer."""
 
     def test_opted_libfuzzer_notrun_erases_engine(self):
-        fuse = _strip_comments(_brace_body(_read(STAGES_REST), "Finding fuse_one("))
+        fuse = _strip_comments(_brace_body(_read(FUSE_CPP), "Finding fuse_one("))
         self.assertIn('env_flag_is_one("PRISM_LIBFUZZER")', fuse)
         self.assertIn('opted_libfuzzer && fn.kind == "SCALAR"', fuse)
         arm = _between(fuse, "lf_last.status == laws::NOTRUN", "lf_last.status == laws::NEEDS_HARNESS")
@@ -361,7 +361,7 @@ class TestCppLibfuzzerFuseSource(unittest.TestCase):
         self.assertNotIn("laws::PROVED", arm)
 
     def test_run_libfuzzer_missing_clang_is_notrun_never_engine(self):
-        run = _strip_comments(_brace_body(_read(STAGES_REST), "Finding run_libfuzzer("))
+        run = _strip_comments(_brace_body(_read(FUSE_CPP), "Finding run_libfuzzer("))
         self.assertIn("clang not on PATH", run)
         self.assertIn("laws::NOTRUN", run)
         self.assertIn("st != laws::NOTRUN && st != laws::NEEDS_HARNESS", run)

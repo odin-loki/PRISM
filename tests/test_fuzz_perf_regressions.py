@@ -4,7 +4,7 @@ python -m unittest tests.test_fuzz_perf_regressions
 
 - 64-bit `/` and `%` in the concrete oracle went through a double
   (`int(a / b)`), which is wrong once the quotient exceeds 2**53. The C++
-  engine divides exactly (src/prism/stages_rest.cpp), so this was also a
+  engine divides exactly (src/prism/stages/interp.cpp), so this was also a
   parity bug. Same for rapid's contract evaluator.
 - The memoized `unencoded_syntax_reason` shared by concolic / FuSeBMC /
   fuzzer must return exactly what prism.bmc returns, for every engine name.
