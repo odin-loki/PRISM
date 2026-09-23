@@ -208,15 +208,14 @@ compared with `pir_lean_check`):
 
 | Input | Functions | C++ encodes | In the proved fragment, identical to the Lean translation | Both refuse | Outside the fragment | Mismatch |
 |---|---|---|---|---|---|---|
-| `tests/pir`, stage pipeline incl. uninit markers | 46 | 40 | **38** | 0 | 8 | **0** |
-| `testdata`, plain clang + opt | 2 716 | 916 | **899** | 2 | 1 815 | **0** |
-| `testdata` (C files that compile standalone), incl. uninit markers | 1 293 | 214 | **201** | 2 | 1 090 | **0** |
+| `tests/pir`, through the `prism` binary | 54 | 48 | **40** | 0 | 14 | **0** |
+| `testdata`, through the `prism` binary | 2 487 | 915 | **900** | 2 | 1 585 | **0** |
 
-(Measured by calling `translate()` on IR produced by the pir stage's clang +
-opt pipeline, with the stage's uninitialised-local markers reproduced where
-stated; `tools/pir_lean_check.py` runs the same comparison through the
-`prism` binary.) Of the functions the C++ translator encodes, 94–98 % are in
-the proved fragment; the rest contain calls. Outside-fragment reasons in
+(`python tools/pir_lean_check.py --bin <build>/prism`: the real pir stage
+with its uninitialised-local and folded-UB instrumentation and C
+signed-shift locations.) Of the functions the C++ translator encodes, 83 % (`tests/pir`) and 98 %
+(`testdata`) are in the proved fragment; the rest contain calls (inlined functions,
+intrinsics, PRISM's folded-UB markers). Outside-fragment reasons in
 `testdata`: calls, pointer types, `alloca`, `undef`, floats, memory.
 
 ## Per-run correspondence checking (8.2, 2.4)
@@ -245,8 +244,8 @@ dropped-check pair that must be reported as a mismatch).
 files on edge-case and random inputs with `llvm_eval` (LangRef, strict and
 PIR semantics), executes each input the LangRef semantics says is defined
 with `lli` on the same IR, and compares the printed result. It also checks
-the three Lean semantics agree as proved. On `tests/pir`: 430 runs, 395
-compared with `lli`, **0 disagreements** (35 inputs have UB or poison and
+the three Lean semantics agree as proved. On `tests/pir` through the `prism` binary: 417 runs, 378
+compared with `lli`, **0 disagreements** (39 inputs have UB or poison and
 are not executed). On `testdata/*.c` (6 inputs per function): 3 603
 compared, **0 disagreements**; 1 602 inputs belong to modules `lli` cannot
 run (unresolved externals elsewhere in the module) and are counted, not
