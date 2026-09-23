@@ -392,6 +392,44 @@ bins = ["cake_lpr"]
 recipe = "cake_lpr"
 recipe_out = ["cake_lpr"]
 
+# Independent re-checkers for PRISM's Lean proofs (roadmap 8.5), run by
+# .github/workflows/proofs-recheck.yml, never by the prism binary. The third
+# checker, `leanchecker` (formerly lean4checker, merged into Lean from v4.28),
+# ships with the pinned Lean toolchain (proofs/*/lean-toolchain: v4.34.0,
+# lean4 commit 293d5d0c0c3f3dded4688b3ccd6a33939ac5102b); the lean4checker
+# repository itself is deprecated and has no v4.34 tag, so it is not pinned.
+
+[[component]]
+name = "lean4export"
+kind = "external"
+version = "4.34.0"
+url = "https://github.com/leanprover/lean4export"
+tag = "v4.34.0"
+commit = "076e8e57707e813375e8f9da8bf989799ace9680"
+archive_sha256 = "4fc23b89295c24a638a57545485bbed3aad426cede0ad60c3ed3d592dd3c4c7c"
+spdx = "Apache-2.0"
+licence_file = "LICENSE"
+licence_note = "Exports .olean declarations as NDJSON for external kernels. Must match the Lean toolchain (v4.34.0)."
+stages = []
+bins = ["lean4export"]
+recipe = "lake"
+recipe_out = [".lake/build/bin/lean4export"]
+
+[[component]]
+name = "nanoda"
+kind = "external"
+version = "0.4.19"
+url = "https://github.com/ammkrn/nanoda_lib"
+commit = "3a2407216ee84a75f9e1aead6803d0578be06ae7"
+archive_sha256 = "6a4f49d4dfd3f3bb5f812146ecfa4838eab4e4383d2ed7973136d51127e8a1de"
+spdx = "Apache-2.0"
+licence_file = "LICENSE"
+licence_note = "Independent Lean 4 kernel in Rust (type-checks lean4export output). No release tags upstream: pinned to the default-branch head of 2026-09-23 (crate version 0.4.19)."
+stages = []
+bins = ["nanoda_bin"]
+recipe = "cargo"
+recipe_out = ["target/release/nanoda_bin"]
+
 # ---------------------------------------------------------------- system ----
 # Host tools. Not pinned; tool_sha is "path:<abs>;sha256:<hash of the binary>".
 

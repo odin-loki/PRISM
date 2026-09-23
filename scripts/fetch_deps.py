@@ -308,9 +308,25 @@ def _recipe_cake_lpr(src: Path) -> None:
     _run([cc, "-O2", "basis_ffi.c", "cake_lpr.S", "-o", "cake_lpr", "-std=c99"], src)
 
 
+def _recipe_lake(src: Path) -> None:
+    lake = shutil.which("lake") or str(Path.home() / ".elan" / "bin" / "lake")
+    if not Path(lake).is_file():
+        raise FetchError("lake not found (install elan: https://github.com/leanprover/elan)")
+    _run([lake, "build"], src)
+
+
+def _recipe_cargo(src: Path) -> None:
+    cargo = shutil.which("cargo") or str(Path.home() / ".cargo" / "bin" / "cargo")
+    if not Path(cargo).is_file():
+        raise FetchError("cargo not found (install a Rust toolchain: https://rustup.rs)")
+    _run([cargo, "build", "--release", "--locked"], src)
+
+
 RECIPES: dict[str, Callable[[Path], None]] = {
     "configure-make": _recipe_configure_make,
     "cake_lpr": _recipe_cake_lpr,
+    "lake": _recipe_lake,
+    "cargo": _recipe_cargo,
 }
 
 
