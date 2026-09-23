@@ -1,8 +1,10 @@
+#include "prism/astlint.hpp"
 #include "prism/pipeline.hpp"
 
 #include "prism/ai.hpp"
 #include "prism/ai_proof.hpp"
 #include "prism/ai_assist.hpp"
+#include "prism/astlint.hpp"
 #include "prism/cparse.hpp"
 #include "prism/journal.hpp"
 #include "prism/laws.hpp"
@@ -254,8 +256,10 @@ RunReport run_pipeline(const Config& cfg) {
         std::string status = "ok", install, detail;
         if (!findings.empty()) {
             bool all_nr = true;
+            // A NOTRUN row for a sub-layer (extra.layer, e.g. the Clang-AST
+            // lints) does not make a stage whose main body ran NOTRUN.
             for (auto& f : findings)
-                if (f.status != laws::NOTRUN) all_nr = false;
+                if (f.status != laws::NOTRUN || astlint::is_layer_row(f)) all_nr = false;
             if (all_nr) {
                 status = "NOTRUN";
                 std::vector<std::string> inst, det;
@@ -340,7 +344,8 @@ RunReport run_pipeline(const Config& cfg) {
     });
 
     auto src_root = std::filesystem::is_directory(cfg.root) ? cfg.root : cfg.root.parent_path();
-    stage("lints", [&] { return run_lints(sources, src_root, cfg.jobs); });
+    // Regex lints + the Clang-AST lint layer (roadmap 2.8, src/prism/astlint.cpp).
+    stage("lints", [&] { return astlint::run_lints_ast(sources, src_root, cfg); });
     stage("taint", [&] { return run_taint(functions); });
     stage("thread", [&] { return run_thread(functions); });
     stage("interval", [&] { return run_interval(functions); });

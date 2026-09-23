@@ -193,15 +193,30 @@ def _cpp_prism() -> Path | None:
     return None
 
 
-def _engine_rows(cmd: list[str], root: Path, out: Path) -> list[list]:
+def _engine_rows(cmd: list[str], root: Path, out: Path,
+                 ast_only: list | None = None) -> list[list]:
+    """FAILED lint rows. The C++ engine's Clang-AST layer (roadmap 2.8, D8:
+    C++ only) adds rows the frozen Python engine does not have; those are
+    collected in `ast_only` and left out of the parity rows. An AST row that
+    superseded a regex row on the same line and class stays in (same triple)."""
     subprocess.run([*cmd, str(root), "--no-llm", "--stage", "lints", "--out", str(out)],
                    cwd=ROOT, capture_output=True, text=True, timeout=600)
     rep = json.loads((out / "report.json").read_text(encoding="utf-8"))
-    return sorted(
-        [f["file"], f.get("line") or 0, f["cls"]]
-        for st in rep["stages"] if st["name"] == "lints"
-        for f in st["findings"] if f["status"] == laws.FAILED
-    )
+    rows = []
+    for st in rep["stages"]:
+        if st["name"] != "lints":
+            continue
+        for f in st["findings"]:
+            if f["status"] != laws.FAILED:
+                continue
+            row = [f["file"], f.get("line") or 0, f["cls"]]
+            extra = f.get("extra") or {}
+            if extra.get("engine") == "clang-ast" and extra.get("supersedes") != "regex":
+                if ast_only is not None:
+                    ast_only.append(row)
+                continue
+            rows.append(row)
+    return sorted(rows)
 
 
 @unittest.skipUnless(_cpp_prism(), "C++ prism binary not built (set PRISM_BIN)")
@@ -214,11 +229,14 @@ class TestEngineLintParity(unittest.TestCase):
             for root in (FP, TP, ROOT / "testdata"):
                 py = _engine_rows([sys.executable, "-m", "prism"], root,
                                   Path(td) / f"py_{root.name}")
+                ast_only: list = []
                 cpp = _engine_rows([str(_cpp_prism())], root,
-                                   Path(td) / f"cpp_{root.name}")
+                                   Path(td) / f"cpp_{root.name}", ast_only)
                 self.assertEqual(py, cpp, msg=root.name)
                 if root == FP:
                     self.assertEqual(py, [])
+                    # The Clang-AST lints are held to the same corpus.
+                    self.assertEqual(ast_only, [])
 
 
 if __name__ == "__main__":

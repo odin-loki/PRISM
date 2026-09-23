@@ -69,7 +69,7 @@ generators): 0 wrong proofs over every campaign run.
 | 2.7 conformance suite | **DONE** — `tests/conformance/` (in-house true/false pairs, SV-COMP subset, concurrency, memory, regressions), Juliet fetcher; ESBMC C++ regression tests **NOT DONE** |
 | 2.7 metrics + release gate | **DONE** — `tools/conformance.py`, `.github/workflows/conformance.yml` |
 | 2.8 old encoder as differential oracle | **DONE** — `tools/pir_vs_bmc.py`; the old encoder is **not** retired yet (pir does not yet cover a superset) |
-| 2.8 lints on the Clang AST | **NOT DONE** — lints are still regex-based (with block-structured reachability and a false-positive corpus) |
+| 2.8 lints on the Clang AST | **PARTIAL** — a Clang-AST layer inside the `lints` stage (C++ engine, `src/prism/astlint.cpp`; clang as a process, `-ast-dump=json`, `compile_commands.json` flags) checks eight classes precisely: assignment as condition, `sizeof(pointer param)` as a mem* length, signed/unsigned loop condition, enum switch hole, self-assignment, dead store, `memset(p, c, 0)`, integer division to floating (`tests/cpp/test_astlint.cpp`; zero AST rows on `testdata_fp/`). It supersedes a regex row only on the same line and class; the other ~590 regex lint classes are not ported, headers are not parsed on their own, and snippets that do not compile (about 520 of the 1,726 units in `testdata/`) are `NOTRUN` for the layer and keep regex lints only |
 
 ## Part 3 — Solvers, certificates, CUDA
 

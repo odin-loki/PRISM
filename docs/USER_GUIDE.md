@@ -101,6 +101,22 @@ Clang/LLVM front end, [PIR.md](PIR.md)), `conc` (threads,
 the C++ engine only; the frozen Python engine lists them and records one
 `NOTRUN` row each (roadmap D8).
 
+In the C++ engine the `lints` stage also has a Clang-AST layer (roadmap 2.8,
+`src/prism/astlint.cpp`): each C/C++ translation unit is parsed with
+`clang -fsyntax-only -Xclang -ast-dump=json` (flags from
+`compile_commands.json` in the root or `build/` when present) and checked for
+assignment used as a condition, `sizeof` of a pointer parameter as a
+`memset`/`memcpy` length, signed/unsigned loop conditions, enum switches that
+miss enumerators and have no `default`, self-assignment, locals stored and
+never read, `memset(p, c, 0)` and integer division converted to floating
+point. Its rows carry `extra.engine = "clang-ast"`; one that replaces a regex
+lint row on the same line and class also carries `extra.supersedes = "regex"`.
+No clang, or a unit that does not parse, is a `NOTRUN` row with
+`extra.layer = "clang-ast"` and the regex lints still run for that file; such
+a row does not make the `lints` stage itself `NOTRUN`. Headers are not parsed
+on their own (one `NOTRUN` row counts them). The Python engine runs the regex
+lints and records one `NOTRUN` row for the AST layer (roadmap D8).
+
 ### Report subcommands (C++ engine only)
 
 These read a finished `report.json` and never change a verdict ([AI.md](AI.md)).

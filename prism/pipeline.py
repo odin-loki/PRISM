@@ -115,6 +115,31 @@ def run_pir_notrun() -> list[Finding]:
     )]
 
 
+ASTLINT_LAYER = "clang-ast"
+
+
+def is_layer_row(f: Finding) -> bool:
+    """A NOTRUN row describing a sub-layer of a stage that did run."""
+    return f.status == laws.NOTRUN and "layer" in (f.extra or {})
+
+
+def run_astlint_notrun(sources: list[Path]) -> list[Finding]:
+    """The Clang-AST lint layer of the lints stage (roadmap 2.8) exists only in
+    the C++ engine (src/prism/astlint.cpp). Roadmap D8: the regex lints run
+    here as before, and one NOTRUN row says the AST layer did not (Law 7).
+    """
+    if not any(p.suffix.lower() in TU_EXTS for p in sources):
+        return []
+    return [Finding(
+        stage="lints", status=laws.NOTRUN, file="", function=None, line=None, cls="",
+        message="Clang-AST lints: C++ engine only (Python engine frozen as oracle, "
+                "roadmap D8); regex lints only",
+        strength=laws.STRENGTH_FINDS,
+        extra={"layer": ASTLINT_LAYER,
+               "install": "run the C++ engine (build/prism) for the Clang-AST lints"},
+    )]
+
+
 def run_review_notrun() -> list[Finding]:
     """The review stage (vacuity audit, approved/drafted contracts, assumption
     audit, proof store / PROOF-REGRESSION; roadmap 9.2, 9.3, 4.2) exists only in
@@ -209,7 +234,10 @@ class Pipeline:
         status = "ok"
         install = ""
         detail = ""
-        if findings and all(f.status == laws.NOTRUN for f in findings):
+        # A NOTRUN row for a sub-layer (extra.layer, e.g. the Clang-AST lints)
+        # does not make a stage whose main body ran NOTRUN.
+        if findings and all(f.status == laws.NOTRUN and not is_layer_row(f)
+                            for f in findings):
             status = "NOTRUN"
             installs = [
                 (f.extra or {}).get("install", "")
@@ -329,8 +357,9 @@ class Pipeline:
         parsed.clear()
 
         def lints() -> list[Finding]:
-            return run_lints(sources, root if root.is_dir() else root.parent,
-                             jobs=cfg.jobs)
+            out = run_lints(sources, root if root.is_dir() else root.parent,
+                            jobs=cfg.jobs)
+            return out + run_astlint_notrun(sources)
 
         self._stage("lints", lints)
         self._stage("taint", lambda: run_taint(functions))
