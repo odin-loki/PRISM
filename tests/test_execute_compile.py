@@ -346,8 +346,14 @@ class TestRlefRepairHonesty(unittest.TestCase):
                 bmc_oracle=lambda _src: laws.PROVED,
             )
         self.assertEqual(len(out), 1)
-        self.assertEqual(out[0].status, laws.PROVED)
-        self.assertTrue(laws.is_proof(out[0].status))
+        # A proof of the LLM-written patch is not a proof of the scanned
+        # code: HYPOTHESIS / READS with the patch's verdict alongside.
+        self.assertEqual(out[0].status, laws.HYPOTHESIS)
+        self.assertFalse(laws.is_proof(out[0].status))
+        self.assertEqual(out[0].strength, laws.STRENGTH_READS)
+        self.assertEqual(out[0].extra.get("patch_verdict"), laws.PROVED)
+        self.assertEqual(out[0].extra.get("fix_label"), "verified fix")
+        self.assertIn("verified fix", out[0].message)
         self.assertIn("terminal success", out[0].message)
         self.assertEqual(engine.complete.call_count, 1)
 
