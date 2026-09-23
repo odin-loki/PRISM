@@ -75,12 +75,18 @@ several goals are undeveloped.
             `docs/PIR.md#translation-validation-roadmap-24` (testing, not
             proof; clang itself stays trusted, A1).
         - **G3.4** The solver's `unsat` answers are correct.
-          - **UNDEVELOPED** for the pipeline: no stage uses certified mode,
-            so every `PROVED` trusts Z3 (E08).
-          - **Sn9** E08 (library only): `src/prism/solver/portfolio.cpp`,
-            `docs/SOLVERS.md#certified-mode`,
-            `tests/cpp/test_main.cpp::solver: certified unsat end to end (CaDiCaL LRAT checked by cake_lpr)`;
-            model-level bit-blaster proof `thm:Bitblast.certified_unsat` (E06).
+          - **Sn9** E08: with `--certified` the `pir` stage sends every VC
+            through the solver library and emits `PROVED-CERTIFIED` only
+            when each has an LRAT proof accepted by cake_lpr (and by Lean's
+            checker when the Lean-proved bit-blaster made the CNF):
+            `src/prism/pir/encode.cpp`, `src/prism/solver/portfolio.cpp`,
+            `src/prism/solver/leanbb.cpp`, `docs/SOLVERS.md#certified-mode`,
+            `tests/cpp/test_certified.cpp::certified: loop-free safe function is PROVED-CERTIFIED with one certificate per VC`,
+            `tests/cpp/test_leanbb.cpp::leanbb: small overflow VCs are PROVED-CERTIFIED through the Lean-proved bit-blaster`;
+            bit-blaster proof `thm:Bitblast.certified_unsat` (E06).
+          - **Partly undeveloped**: without `--certified`, and for
+            `BOUNDED`, `PROVED-UNBOUNDED` and the `bmc` stage, a proof
+            trusts Z3 (E08).
         - **G3.5** A refutation (`FAILED`) is real.
           - **Sn10** E13: counterexample replay under sanitizers in
             `tools/conformance.py` and `tools/svcomp/prism_svcomp.py`.
@@ -117,8 +123,7 @@ several goals are undeveloped.
 
 1. **G3.2** implementation soundness of the C++ encoders (roadmap 5.3 and
    8.2); until then, G3 rests on measured soundness (Sn5 to Sn7).
-2. **G3.4** certified proofs in the pipeline (roadmap 3.2): wire the solver
-   library's certified mode into the proving stages so that `PROVED-CERTIFIED`
-   is actually emitted.
+2. **G3.4** certified proofs beyond `pir --certified`: the k-induction step
+   (`PROVED-UNBOUNDED`) and the `bmc` stage still trust Z3.
 3. **G5.1** the open self-fuzzing findings.
 4. Independent review of this case.

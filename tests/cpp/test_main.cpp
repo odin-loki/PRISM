@@ -34,6 +34,54 @@
 #include <system_error>
 #include <vector>
 
+#ifdef _WIN32
+#  include <process.h>
+#else
+#  include <unistd.h>
+#endif
+
+// Every test file names its scratch directories under
+// std::filesystem::temp_directory_path() with fixed names, so two
+// prism_tests processes running at once (a developer run next to CI, or
+// several builds on one machine) would share and clobber them. Before any
+// test runs, point the temp directory at one private to this process, and
+// remove it at exit. Child processes (clang, lake) inherit it.
+namespace {
+struct PrivateTmp {
+    std::filesystem::path dir;
+    PrivateTmp() {
+        std::error_code ec;
+        auto base = std::filesystem::temp_directory_path(ec);
+        if (ec) return;
+#ifdef _WIN32
+        auto pid = _getpid();
+#else
+        auto pid = getpid();
+#endif
+        dir = base / ("prism_tests." + std::to_string(pid));
+        std::filesystem::create_directories(dir, ec);
+        if (ec) {
+            dir.clear();
+            return;
+        }
+#ifdef _WIN32
+        _putenv_s("TMP", dir.string().c_str());
+        _putenv_s("TEMP", dir.string().c_str());
+#else
+        setenv("TMPDIR", dir.c_str(), 1);
+#endif
+    }
+    ~PrivateTmp() {
+        if (dir.empty()) return;
+        std::error_code ec;
+        std::filesystem::remove_all(dir, ec);
+    }
+    PrivateTmp(const PrivateTmp&) = delete;
+    PrivateTmp& operator=(const PrivateTmp&) = delete;
+};
+const PrivateTmp g_private_tmp;
+}  // namespace
+
 // testdata lives at <repo>/testdata. Walk from this file so a space in
 // "Code Analysis" is never split the way an env var / argv path would be.
 static std::filesystem::path testdata_root() {
@@ -482,6 +530,38 @@ static std::map<std::string, prism::Finding> bmc_source(const std::string& name,
     for (auto& f : prism::run_bmc(fns, 8))
         if (f.function) by[*f.function] = f;
     return by;
+}
+
+TEST_CASE("bmc: a refutation reports the nondet values its path reads, in call order") {
+    auto by = bmc_source("nondet_trace.c", R"(extern int __VERIFIER_nondet_int(void);
+extern unsigned char __VERIFIER_nondet_uchar(void);
+extern char __VERIFIER_nondet_char(void);
+int main(void) {
+  int a = __VERIFIER_nondet_int();
+  if (a < 0) { char c = __VERIFIER_nondet_char(); return c; }
+  unsigned char k = __VERIFIER_nondet_uchar();
+  if (a > 2147483000 && k == 200) { int b = a + 1000; return b; }
+  return 0;
+}
+int nothing(int x) { return x / 2; }
+)");
+    REQUIRE(by.count("main"));
+    auto& f = by["main"];
+    CHECK(f.status == std::string(prism::laws::FAILED));
+    CHECK(f.cls == "INT-SIGNED-OVF");
+    REQUIRE(f.extra.count("nondet"));
+    auto nd = f.extra.at("nondet");
+    // the char call sits on the a < 0 branch, which the violating path skips
+    CHECK(nd.find("__VERIFIER_nondet_char") == std::string::npos);
+    auto i = nd.find("__VERIFIER_nondet_int=");
+    auto k = nd.find("__VERIFIER_nondet_uchar=200");
+    REQUIRE(i != std::string::npos);
+    REQUIRE(k != std::string::npos);
+    CHECK(i < k);
+    auto v = std::stoll(nd.substr(i + std::string("__VERIFIER_nondet_int=").size()));
+    CHECK(v > 2147483000);
+    // a function that reads no nondet input carries no nondet key
+    if (by.count("nothing")) CHECK_FALSE(by["nothing"].extra.count("nondet"));
 }
 
 TEST_CASE("bmc soundness: known wrong proofs are refuted (S1-S6)") {
@@ -1603,7 +1683,11 @@ TEST_CASE("failed jsonl does not resume stale report.json ok rows") {
         }
     }
     CHECK_FALSE(bmc_stale);
+#ifdef PRISM_HAS_Z3
     CHECK(bmc_proved);
+#else
+    CHECK_FALSE(bmc_proved);  // no solver: never a proof (Law 1)
+#endif
     std::error_code ec;
     std::filesystem::remove_all(out, ec);
 }

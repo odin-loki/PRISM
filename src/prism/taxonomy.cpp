@@ -16,11 +16,11 @@ const std::vector<TaxonomyClass>& taxonomy_classes() {
         {"MEM-UAF", "use after free", {416}, {{"lints", "FINDS"}, {"cppcheck", "FINDS"}, {"infer", "FINDS"}}},
         {"MEM-DOUBLE-FREE", "double free", {415}, {{"lints", "FINDS"}, {"cppcheck", "FINDS"}, {"infer", "FINDS"}}},
         {"FMT-STRING", "format string from non-literal", {134}, {{"lints", "FINDS"}, {"taint", "FINDS"}, {"semgrep", "FINDS"}}},
-        {"UNINIT-READ", "uninitialised value", {457}, {{"bmc", "SOME"}, {"cppcheck", "FINDS"}, {"lints", "SOME"}}},
+        {"UNINIT-READ", "uninitialised value", {457}, {{"bmc", "SOME"}, {"pir", "PROVES"}, {"cppcheck", "FINDS"}, {"lints", "SOME"}}},
         {"UNINIT-SWITCH", "masked switch gap escapes uninit", {}, {{"lints", "FINDS"}}},
-        {"INT-SIGNED-OVF", "signed overflow", {190}, {{"bmc", "PROVES"}, {"fuzz", "FINDS"}, {"concolic", "FINDS"}, {"esbmc", "PROVES"}}},
-        {"INT-DIV-ZERO", "division by zero", {369}, {{"bmc", "PROVES"}, {"lints", "SOME"}, {"fuzz", "FINDS"}, {"concolic", "FINDS"}, {"cppcheck", "FINDS"}}},
-        {"INT-SHIFT-UB", "undefined shift", {1335}, {{"bmc", "PROVES"}, {"lints", "FINDS"}, {"cppcheck", "FINDS"}, {"fuzz", "FINDS"}, {"concolic", "FINDS"}}},
+        {"INT-SIGNED-OVF", "signed overflow", {190}, {{"bmc", "PROVES"}, {"pir", "PROVES"}, {"fuzz", "FINDS"}, {"concolic", "FINDS"}, {"esbmc", "PROVES"}}},
+        {"INT-DIV-ZERO", "division by zero", {369}, {{"bmc", "PROVES"}, {"pir", "PROVES"}, {"lints", "SOME"}, {"fuzz", "FINDS"}, {"concolic", "FINDS"}, {"cppcheck", "FINDS"}}},
+        {"INT-SHIFT-UB", "undefined shift", {1335}, {{"bmc", "PROVES"}, {"pir", "PROVES"}, {"lints", "FINDS"}, {"cppcheck", "FINDS"}, {"fuzz", "FINDS"}, {"concolic", "FINDS"}}},
         {"LOCK-IMBALANCE", "lock released on some paths only", {}, {{"lints", "FINDS"}}},
         {"LOCK-ORDER", "conflicting lock acquisition order", {833}, {{"lints", "FINDS"}}},
         {"LOCK-DOUBLE-UNLOCK", "lock released twice without acquire", {765}, {{"lints", "FINDS"}}},
@@ -56,6 +56,11 @@ const std::vector<TaxonomyClass>& taxonomy_classes() {
         {"INT-ENUM-HOLE", "switch on enum missing enumerators", {478}, {{"lints", "FINDS"}}},
         {"CTRL-DEAD-GUARD", "unsigned compared below zero", {571}, {{"lints", "FINDS"}}},
         {"CTRL-EMPTY-INFINITE", "empty infinite loop", {835}, {{"lints", "FINDS"}}},
+        // Clang-AST lint layer (roadmap 2.8, src/prism/astlint.cpp; C++ engine only)
+        {"CTRL-ASSIGN-COND", "assignment used as a condition", {481}, {{"lints", "FINDS"}}},
+        {"CTRL-SELF-ASSIGN", "variable assigned to itself", {}, {{"lints", "FINDS"}}},
+        {"CTRL-DEAD-STORE", "local stored and never read", {563}, {{"lints", "FINDS"}}},
+        {"INT-DIV-TO-FLOAT", "integer division result converted to floating point", {682}, {{"lints", "FINDS"}}},
         {"UNINIT-RETURN", "return of uninitialised local", {457}, {{"lints", "FINDS"}}},
         {"PTR-UNINIT", "dereference of uninitialised local pointer", {457, 824}, {{"lints", "FINDS"}}},
         {"UNINIT-BRANCH", "uninitialised scalar in branch condition", {457}, {{"lints", "FINDS"}}},
@@ -78,7 +83,7 @@ const std::vector<TaxonomyClass>& taxonomy_classes() {
         {"RES-FD-LEAK", "descriptor closed on some returns only", {775}, {{"lints", "FINDS"}}},
         {"API-GETENV-NULL", "getenv result used without NULL test", {690, 476}, {{"lints", "FINDS"}}},
         {"API-STRDUP-NULL", "strdup/strndup result used without NULL test", {690}, {{"lints", "FINDS"}}},
-        {"MEM-SIZEOF-PTR", "allocation size is sizeof(pointer) not pointee", {131}, {{"lints", "FINDS"}}},
+        {"MEM-SIZEOF-PTR", "allocation or buffer size is sizeof(pointer) not pointee", {131}, {{"lints", "FINDS"}}},
         {"API-POPEN", "popen stream not pclosed on every exit", {775}, {{"lints", "FINDS"}}},
         {"API-UMASK", "umask(0) leaves world-writable default", {732}, {{"lints", "FINDS"}}},
         {"API-FORK", "fork()/vfork() result unused", {362, 273}, {{"lints", "FINDS"}}},
@@ -91,7 +96,7 @@ const std::vector<TaxonomyClass>& taxonomy_classes() {
         {"API-ACCEPT", "accept()/accept4() result used without < 0 test", {252}, {{"lints", "FINDS"}}},
         {"API-REALPATH", "realpath result used without NULL test", {252, 22}, {{"lints", "FINDS"}}},
         {"API-CHMOD-WORLD", "chmod/fchmod with world-writable mode 0777", {732}, {{"lints", "FINDS"}}},
-        {"INT-CLZ-ZERO", "__builtin_clz/ctz on 0 or an unguarded variable", {758}, {{"lints", "FINDS"}}},
+        {"INT-CLZ-ZERO", "__builtin_clz/ctz on 0 or an unguarded variable", {758}, {{"lints", "FINDS"}, {"pir", "PROVES"}}},
         {"MEM-BCOPY", "bcopy with identical source and destination", {628}, {{"lints", "FINDS"}}},
         {"API-SETUID", "setuid/seteuid/setgid to 0 without a return check", {250}, {{"lints", "FINDS"}}},
         {"API-SOCKET", "socket() result used without < 0 test", {252}, {{"lints", "FINDS"}}},
@@ -605,7 +610,7 @@ const std::vector<TaxonomyClass>& taxonomy_classes() {
         {"EMPTY-TU", "translation unit parsed no functions", {}, {{"inventory", "FINDS"}}},
         {"PARSE-GAP", "code in braces the parser attributed to no function", {}, {{"inventory", "FINDS"}}},
         {"LTL-SAFETY", "LTL safety violation", {}, {{"ltl", "PROVES"}, {"strix", "PROVES"}}},
-        {"FUNC-CONTRACT", "ensures clause fails", {}, {{"bmc", "PROVES"}, {"dafny", "PROVES"}, {"wp", "PROVES"}, {"contracts", "PROVES"}, {"rapid", "FINDS"}, {"muttest", "SOME"}, {"llm", "READS"}}},
+        {"FUNC-CONTRACT", "ensures clause fails", {}, {{"bmc", "PROVES"}, {"pir", "PROVES"}, {"dafny", "PROVES"}, {"wp", "PROVES"}, {"contracts", "PROVES"}, {"rapid", "FINDS"}, {"muttest", "SOME"}, {"llm", "READS"}}},
         {"INTENT", "comment/code contract mismatch", {}, {{"lints", "FINDS"}, {"llm", "READS"}}},
         {"VACUOUS-ASSUMPTION", "requires/harness assumption no input satisfies (vacuous proof)", {}, {{"review", "PROVES"}}},
         {"PROOF-REGRESSION", "a stored proof no longer checks after a change", {}, {{"review", "FINDS"}}},
@@ -647,6 +652,7 @@ std::vector<TaxonomyRow> coverage_from_report(const RunReport& report) {
     std::map<std::string, std::string> hits;
     std::set<std::string> ran_ok;
     bool bmc_closed = false;
+    bool pir_closed = false;  // taxonomy.py _PIR_UB
     for (auto& s : report.stages) if (s.status == "ok") ran_ok.insert(s.name);
     auto note = [&](const std::string& cls, const std::string& strength) {
         if (cls.empty() || !rank.contains(strength)) return;
@@ -672,6 +678,7 @@ std::vector<TaxonomyRow> coverage_from_report(const RunReport& report) {
             if (laws::is_proof(f.status)) {  // incl. PROVED-CERTIFIED
                 // WP/contracts stay PROVED-ASSUMING; only BMC folds encoded UB.
                 if (s.name == "bmc") bmc_closed = true;
+                if (s.name == "pir") pir_closed = true;
                 std::string cls = f.cls;
                 if (cls.empty() && (s.name == "wp" || s.name == "contracts")) cls = "FUNC-CONTRACT";
                 note(cls, f.strength.empty() ? PROVES : f.strength);
@@ -687,6 +694,11 @@ std::vector<TaxonomyRow> coverage_from_report(const RunReport& report) {
     }
     if (bmc_closed) {
         for (auto* id : {"INT-DIV-ZERO", "INT-SHIFT-UB", "INT-SIGNED-OVF", "MEM-OOB-READ", "MEM-OOB-WRITE"})
+            if (!hits.contains(id)) hits[id] = PROVES;
+    }
+    if (pir_closed) {
+        // No memory model in PIR: MEM-OOB-* are not folded (taxonomy.py _PIR_UB).
+        for (auto* id : {"INT-SIGNED-OVF", "INT-DIV-ZERO", "INT-SHIFT-UB", "UNINIT-READ", "INT-CLZ-ZERO"})
             if (!hits.contains(id)) hits[id] = PROVES;
     }
     std::vector<TaxonomyRow> rows;

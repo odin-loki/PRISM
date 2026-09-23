@@ -1,8 +1,10 @@
+#include "prism/astlint.hpp"
 #include "prism/pipeline.hpp"
 
 #include "prism/ai.hpp"
 #include "prism/ai_proof.hpp"
 #include "prism/ai_assist.hpp"
+#include "prism/astlint.hpp"
 #include "prism/cparse.hpp"
 #include "prism/journal.hpp"
 #include "prism/laws.hpp"
@@ -10,6 +12,7 @@
 #include "prism/conc.hpp"
 #include "prism/sandbox.hpp"
 #include "prism/scope.hpp"
+#include "prism/shipdocs.hpp"
 #include "prism/stages.hpp"
 #include "prism/taxonomy.hpp"
 #include "prism/verdict.hpp"
@@ -91,16 +94,30 @@ void apply_confidence(RunReport& report) {
             report.notes.push_back(kEmpty);
         return;
     }
-    const StageResult* bmc = nullptr;
-    for (auto& s : report.stages)
-        if (s.name == "bmc") bmc = &s;
+    // The instruments that answer per function: pir counts like bmc
+    // (confidence.py FORMAL_STAGES). One record per function per stage: the
+    // first one that stage wrote for it.
+    static const std::set<std::string> kFormalStages{"bmc", "pir"};
+    bool any_formal = false;
+    std::map<std::string, std::vector<const Finding*>> by_fn;
+    for (auto& s : report.stages) {
+        if (!kFormalStages.contains(s.name)) continue;
+        any_formal = true;
+        std::set<std::string> seen;
+        for (auto& f : s.findings) {
+            auto k = f.file + "::" + (f.function ? *f.function : "");
+            if (seen.insert(k).second) by_fn[k].push_back(&f);
+        }
+    }
     // Every parsed function is classified: visibility is n_fun / n_fun.
     int answered = 0, resolved = 0, attempted = 0;
-    if (bmc) {
-        std::map<std::string, std::vector<const Finding*>> by_fn;
-        for (auto& f : bmc->findings) {
-            by_fn[(f.file + "::" + (f.function ? *f.function : ""))].push_back(&f);
-        }
+    auto resolves = [](const Finding* f) {
+        if (laws::is_proof(f->status) || f->status == laws::BOUNDED) return true;
+        // A counterexample is the instrument's answer; a failure without one needs a person.
+        return f->status == laws::FAILED &&
+               (!f->counterexample.empty() || f->extra.contains("oracle") || f->extra.contains("read"));
+    };
+    if (any_formal) {
         std::vector<const FunctionInfo*> scalar;
         for (auto& fn : report.functions)
             if (fn.kind == "SCALAR" || fn.kind == "VOID") scalar.push_back(&fn);
@@ -112,22 +129,19 @@ void apply_confidence(RunReport& report) {
             auto key = fn.file + "::" + fn.name;
             auto it = by_fn.find(key);
             if (it != by_fn.end() && !it->second.empty() &&
-                it->second[0]->status == laws::NEEDS_HARNESS)
+                std::all_of(it->second.begin(), it->second.end(),
+                            [](const Finding* f) { return f->status == laws::NEEDS_HARNESS; }))
                 continue;
             ++attempted;
-            if (it == by_fn.end() || it->second.empty()) continue;
-            auto st = it->second[0]->status;
-            if (laws::is_answered(st)) {
-                ++answered;
-                if (laws::is_proof(st))
-                    ++resolved;
-                else if (st == laws::FAILED) {
-                    auto* f0 = it->second[0];
-                    if (!f0->counterexample.empty() || f0->extra.contains("oracle") || f0->extra.contains("read"))
-                        ++resolved;
-                } else if (st == laws::BOUNDED)
-                    ++resolved;
+            if (it == by_fn.end()) continue;
+            bool any_answer = false, any_resolved = false;
+            for (auto* f : it->second) {
+                if (!laws::is_answered(f->status)) continue;
+                any_answer = true;
+                if (resolves(f)) any_resolved = true;
             }
+            if (any_answer) ++answered;
+            if (any_resolved) ++resolved;
         }
     }
     // Law 5 through the verdict module (proofs/Prism/Verdict.lean `score`).
@@ -160,6 +174,11 @@ void write_report_md(const RunReport& report, const std::filesystem::path& path)
     o << "| " << report.visibility << " | " << report.answer << " | " << report.resolution
       << " | **" << report.confidence << "** |\n\n";
     o << "Confidence is a product. 0 means no data, not clean.\n\n";
+    // Roadmap 3.2 / 8.3 / 6.4: the trusted base and the verdict definitions
+    // are written next to this file (shipdocs.hpp).
+    o << "Trusted base: [" << TRUSTED_BASE_FILE << "](" << TRUSTED_BASE_FILE
+      << ") says what a proof in this report depends on. Every verdict links to its definition in ["
+      << VERDICTS_FILE << "](" << VERDICTS_FILE << ").\n\n";
     o << "## Stages\n\n| stage | status | records | seconds | note |\n|---|---|---:|---:|---|\n";
     for (auto& s : report.stages) {
         auto note = s.detail.empty() ? s.install : s.detail;
@@ -183,11 +202,14 @@ void write_report_md(const RunReport& report, const std::filesystem::path& path)
             if (!f.cls.empty()) o << " " << f.cls;
             o << " — " << f.message;
             if (!f.counterexample.empty()) o << "  cex `" << f.counterexample << "`";
+            if (auto a = verdict_anchor(f.status); !a.empty())
+                o << "  ([" << f.status << "](" << VERDICTS_FILE << "#" << a << "))";
             o << "\n";
         }
     }
     std::filesystem::create_directories(path.parent_path());
     std::ofstream(path, std::ios::binary) << o.str();
+    write_shipped_docs(path.parent_path());
 }
 
 RunReport run_pipeline(const Config& cfg) {
@@ -254,8 +276,10 @@ RunReport run_pipeline(const Config& cfg) {
         std::string status = "ok", install, detail;
         if (!findings.empty()) {
             bool all_nr = true;
+            // A NOTRUN row for a sub-layer (extra.layer, e.g. the Clang-AST
+            // lints) does not make a stage whose main body ran NOTRUN.
             for (auto& f : findings)
-                if (f.status != laws::NOTRUN) all_nr = false;
+                if (f.status != laws::NOTRUN || astlint::is_layer_row(f)) all_nr = false;
             if (all_nr) {
                 status = "NOTRUN";
                 std::vector<std::string> inst, det;
@@ -340,7 +364,8 @@ RunReport run_pipeline(const Config& cfg) {
     });
 
     auto src_root = std::filesystem::is_directory(cfg.root) ? cfg.root : cfg.root.parent_path();
-    stage("lints", [&] { return run_lints(sources, src_root, cfg.jobs); });
+    // Regex lints + the Clang-AST lint layer (roadmap 2.8, src/prism/astlint.cpp).
+    stage("lints", [&] { return astlint::run_lints_ast(sources, src_root, cfg); });
     stage("taint", [&] { return run_taint(functions); });
     stage("thread", [&] { return run_thread(functions); });
     stage("interval", [&] { return run_interval(functions); });

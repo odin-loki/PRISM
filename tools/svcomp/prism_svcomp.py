@@ -33,8 +33,9 @@ The mapping keeps PRISM's laws (docs/VERDICTS.md):
   refutation is ``unknown``.
 - Everything else is ``unknown``: ``NEEDS-HARNESS``, ``BOUNDED``,
   ``UNKNOWN``, ``TIMEOUT``, ``ERROR``, a refutation that does not replay, a
-  refutation of a program with ``__VERIFIER_nondet_*`` inputs (the engines do
-  not report nondet values yet, so it cannot be replayed), a stage that
+  refutation of a program with ``__VERIFIER_nondet_*`` inputs whose stage did
+  not report the nondet values (``bmc`` reports them for main in
+  ``extra["nondet"]``; ``pir`` does not yet), a stage that
   disagrees with another, and every unsupported property.
 
 Standard library only (it ships in an SV-COMP archive next to witness.py).
@@ -316,6 +317,54 @@ ASAN_DEREF = {"heap-buffer-overflow", "stack-buffer-overflow", "global-buffer-ov
 ASAN_FREE = {"attempting", "bad-free", "double-free"}
 
 
+def nondet_trace(f: dict[str, Any]) -> list[tuple[str, int]] | None:
+    """The ``__VERIFIER_nondet_*`` values a refutation of main reads, in call
+    order, from the engine's ``extra["nondet"]`` ("fn=value, ...");
+    None when the engine did not report them (then the refutation cannot be
+    replayed). Only a finding of main is a whole-program trace."""
+    extra = f.get("extra") or {}
+    if f.get("function") != "main" or "nondet" not in extra:
+        return None
+    out: list[tuple[str, int]] = []
+    for part in str(extra["nondet"]).split(","):
+        part = part.strip()
+        if not part:
+            continue
+        name, _, val = part.partition("=")
+        try:
+            out.append((name.strip(), int(val.strip(), 0)))
+        except ValueError:
+            return None
+    return out
+
+
+def _is_declaration(text: str, start: int) -> bool:
+    """``int f()`` / ``extern unsigned f()``: a type name right before the
+    identifier (a call follows ``=``, ``(``, ``,``, an operator or ``return``)."""
+    before = text[max(0, text.rfind("\n", 0, start) + 1):start].rstrip()
+    m = re.search(r"(\w+)\s*\**$", before)
+    return m is not None and m.group(1) != "return" and not before.endswith(("=", "(", ","))
+
+
+def nondet_waypoints(task: Path, trace: list[tuple[str, int]]) -> list[Any]:
+    """function_return waypoints for the longest prefix of ``trace`` whose
+    calls each have exactly one call site in the task (the engine reports no
+    source positions, so an ambiguous site ends the prefix: a waypoint at the
+    wrong call would make the witness wrong, a missing one only weaker)."""
+    text = task.read_text(encoding="utf-8", errors="replace")
+    out: list[Any] = []  # witness.NondetValue
+    for name, value in trace:
+        sites = [m for m in re.finditer(rf"\b{re.escape(name)}\s*\(\s*\)", text)
+                 if not _is_declaration(text, m.start())]
+        if len(sites) != 1:
+            break
+        end = sites[0].end()  # just past ')': format 2.0 points at the closing parenthesis
+        line = text.count("\n", 0, end) + 1
+        col = end - (text.rfind("\n", 0, end) + 1)
+        out.append(W.NondetValue(W.Location(task.name, line, col), value))
+    return out
+
+
 def replay(src: Path, prop: str, *, allow_exec: bool, nondet_values: list[int | float] | None,
            work: Path, timeout: float = 10.0) -> dict[str, Any]:
     """Compile and run the task on the counterexample; the violation must show."""
@@ -369,9 +418,9 @@ def replay(src: Path, prop: str, *, allow_exec: bool, nondet_values: list[int | 
             rec.update(replay="replayed", detail="reach_error() was called and the program aborted")
             return rec
     elif prop == "valid-memsafety":
-        m = ASAN_RE.search(err)
-        if m:
-            kind = m.group("kind")
+        am = ASAN_RE.search(err)
+        if am:
+            kind = am.group("kind")
             sub = "valid-deref" if kind in ASAN_DEREF else "valid-free" if kind in ASAN_FREE else None
             if sub:
                 rec.update(replay="replayed", detail=f"ASan: {kind}", subproperty=sub)
@@ -457,8 +506,10 @@ def solve(task: Path, prop_file: Path, *, prism: str | None, allow_exec: bool, d
         return Outcome(Decision("error", str(e)))
 
     def rp(f: dict[str, Any]) -> dict[str, Any]:
+        trace = nondet_trace(f)
+        values: list[int | float] | None = None if trace is None else [v for _, v in trace]
         with tempfile.TemporaryDirectory(prefix="prism-replay-", dir=out) as d:
-            return replay(task, prop, allow_exec=allow_exec, nondet_values=None, work=Path(d))
+            return replay(task, prop, allow_exec=allow_exec, nondet_values=values, work=Path(d))
 
     dec = decide(report, prop, rp)
     oc = Outcome(dec)
@@ -473,6 +524,7 @@ def solve(task: Path, prop_file: Path, *, prism: str | None, allow_exec: bool, d
                 return oc
             line, col = site
         cex = W.Counterexample(function="main", target=W.Location(task.name, line, col, "main"))
+        cex.nondet = nondet_waypoints(task, nondet_trace(dec.finding) or [])
         doc = W.build_violation_witness(
             cex, input_file=task, input_file_name=task.name, specification=spec,
             data_model=data_model.upper(), producer_version=version_string(exe))

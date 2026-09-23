@@ -136,6 +136,17 @@ struct Enc {
     std::map<std::string, int> bits;  // declared (visible) scalars -> width
     std::vector<std::string> unmodelled;  // calls whose callee is not modelled
     std::vector<z3::expr> call_vars;      // their unconstrained results
+    // __VERIFIER_nondet_* results in encoding order, each with the path guard
+    // at the call: the calls a model's path executes are those whose guard it
+    // makes true, in this order (the SV-COMP replay and witness input).
+    struct Nondet {
+        std::string fn;
+        z3::expr v;
+        z3::expr guard;
+        unsigned w;
+        bool u;
+    };
+    std::vector<Nondet> nondets;
     std::vector<Jump> jumps;
     std::vector<std::vector<std::string>> scopes;
     bool havoc = false;  // loops are havocked (unbounded step) instead of unrolled
@@ -1912,7 +1923,9 @@ TV model_call(Enc& e, const std::string& t, std::vector<TV>& args) {
     if (auto it = NONDET.find(t); it != NONDET.end()) {
         nargs(0);
         auto ct = it->second;
-        return TV{e.bv("nondet_" + std::to_string(e.fresh + 1), ct.w), ct.w, ct.u};
+        auto v = e.bv("nondet_" + std::to_string(e.fresh + 1), ct.w);
+        e.nondets.push_back({t, v, e.path_true, static_cast<unsigned>(ct.w), ct.u});
+        return TV{v, ct.w, ct.u};
     }
     if (t == "rand") {
         nargs(0);
@@ -2353,6 +2366,29 @@ std::string cex(const z3::model& model, Enc& e, const std::vector<std::pair<std:
     for (size_t i = 0; i < bits.size(); ++i) {
         if (i) out += ", ";
         out += bits[i];
+    }
+    return out;
+}
+
+// The __VERIFIER_nondet_* values the model's path reads, in call order, as
+// "fn=value" pairs (decimal, signed per the function's C type). Calls whose
+// path guard the model makes false did not run and are left out.
+std::string nondet_trace(const z3::model& model, Enc& e) {
+    std::string out;
+    for (auto& n : e.nondets) {
+        if (!model.eval(n.guard, true).is_true()) continue;
+        auto d = model.eval(n.v, true);
+        uint64_t raw = 0;
+        if (!d.is_numeral_u64(raw)) continue;
+        std::string val;
+        if (!n.u && n.w < 64 && (raw >> (n.w - 1)) & 1u)
+            val = std::to_string(static_cast<int64_t>(raw) - (int64_t{1} << n.w));
+        else if (!n.u && n.w == 64)
+            val = std::to_string(static_cast<int64_t>(raw));
+        else
+            val = std::to_string(raw);
+        if (!out.empty()) out += ", ";
+        out += n.fn + "=" + val;
     }
     return out;
 }

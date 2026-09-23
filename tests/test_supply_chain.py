@@ -101,13 +101,13 @@ class TestManifest(unittest.TestCase):
 
     def test_external_tools_invoked_by_prism_are_pinned(self):
         want = {"esbmc", "cbmc", "klee", "cppcheck", "frama-c", "infer", "semgrep",
-                "coccinelle", "aflplusplus", "dafny", "strix", "cadical", "kissat", "cake_lpr",
+                "coccinelle", "aflplusplus", "dafny", "strix", "cadical", "kissat", "cake_lpr", "bitwuzla",
                 # proof re-checkers run by CI (roadmap 8.5), not by the prism binary
                 "lean4export", "nanoda"}
         external = {c["name"] for c in self.data["component"] if c["kind"] == "external"}
         self.assertEqual(want, external)
         self.assertEqual(self.rows["clang-tidy"]["kind"], "system")
-        for name in ("cadical", "kissat", "cake_lpr", "lean4export", "nanoda"):
+        for name in ("cadical", "kissat", "cake_lpr", "bitwuzla", "lean4export", "nanoda"):
             self.assertTrue(self.rows[name].get("recipe"), msg=f"{name} needs a build recipe")
 
     def test_mined_trees_are_gone(self):

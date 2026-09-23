@@ -51,6 +51,8 @@ RUN python3 scripts/licence_check.py \
 # -ffile-prefix-map strips /src and the build dir from debug info, __FILE__
 # and assertions; -Wl,--build-id=sha1 makes the build id a content hash;
 # llvm-ar is deterministic (no timestamps/uids) by default.
+# The tests find testdata/ and proofs/ from __FILE__, which the prefix map
+# makes relative to /src, so prism_tests runs with /src as its directory.
 ENV PRISM_REPRO_FLAGS="-ffile-prefix-map=/src=. -ffile-prefix-map=/build=build -fno-record-gcc-switches"
 RUN cmake -S /src -B /build -G Ninja \
       -DCMAKE_BUILD_TYPE=Release \
@@ -62,7 +64,7 @@ RUN cmake -S /src -B /build -G Ninja \
       -DCMAKE_SHARED_LINKER_FLAGS="-fuse-ld=lld -Wl,--build-id=sha1" \
       -DPRISM_Z3=ON -DPRISM_CUDA=OFF -DPRISM_LLAMA=OFF -DPRISM_QT=OFF -DPRISM_TESTS=ON \
  && cmake --build /build \
- && (cd /build && ./prism_tests) \
+ && (cd /src && /build/prism_tests) \
  && mkdir -p /out \
  && cp /build/prism /build/libprism_native.so /out/ \
  && python3 scripts/sbom.py --version "${PRISM_VERSION}" -o /out/prism.cdx.json \

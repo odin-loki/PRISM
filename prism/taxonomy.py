@@ -29,15 +29,15 @@ CLASSES: list[dict] = [
     dict(id="FMT-STRING", name="format string from non-literal", cwe=[134],
          seen={"lints": FINDS, "taint": FINDS, "semgrep": FINDS}),
     dict(id="UNINIT-READ", name="uninitialised value", cwe=[457],
-         seen={"bmc": SOME, "cppcheck": FINDS, "lints": SOME}),
+         seen={"bmc": SOME, "pir": PROVES, "cppcheck": FINDS, "lints": SOME}),
     dict(id="UNINIT-SWITCH", name="masked switch gap escapes uninit", cwe=[],
          seen={"lints": FINDS}),
     dict(id="INT-SIGNED-OVF", name="signed overflow", cwe=[190],
-         seen={"bmc": PROVES, "fuzz": FINDS, "concolic": FINDS, "esbmc": PROVES}),
+         seen={"bmc": PROVES, "pir": PROVES, "fuzz": FINDS, "concolic": FINDS, "esbmc": PROVES}),
     dict(id="INT-DIV-ZERO", name="division by zero", cwe=[369],
-         seen={"bmc": PROVES, "lints": SOME, "fuzz": FINDS, "concolic": FINDS, "cppcheck": FINDS}),
+         seen={"bmc": PROVES, "pir": PROVES, "lints": SOME, "fuzz": FINDS, "concolic": FINDS, "cppcheck": FINDS}),
     dict(id="INT-SHIFT-UB", name="undefined shift", cwe=[1335],
-         seen={"bmc": PROVES, "lints": FINDS, "cppcheck": FINDS, "fuzz": FINDS, "concolic": FINDS}),
+         seen={"bmc": PROVES, "pir": PROVES, "lints": FINDS, "cppcheck": FINDS, "fuzz": FINDS, "concolic": FINDS}),
     dict(id="LOCK-IMBALANCE", name="lock released on some paths only", cwe=[],
          seen={"lints": FINDS}),
     dict(id="LOCK-ORDER", name="conflicting lock acquisition order", cwe=[833],
@@ -108,6 +108,16 @@ CLASSES: list[dict] = [
          seen={"lints": FINDS}),
     dict(id="CTRL-EMPTY-INFINITE", name="empty infinite loop", cwe=[835],
          seen={"lints": FINDS}),
+    # Clang-AST lint layer (roadmap 2.8): C++ engine only (src/prism/astlint.cpp);
+    # this engine lists the classes so both taxonomy tables stay equal.
+    dict(id="CTRL-ASSIGN-COND", name="assignment used as a condition", cwe=[481],
+         seen={"lints": FINDS}),
+    dict(id="CTRL-SELF-ASSIGN", name="variable assigned to itself", cwe=[],
+         seen={"lints": FINDS}),
+    dict(id="CTRL-DEAD-STORE", name="local stored and never read", cwe=[563],
+         seen={"lints": FINDS}),
+    dict(id="INT-DIV-TO-FLOAT", name="integer division result converted to floating point",
+         cwe=[682], seen={"lints": FINDS}),
     dict(id="UNINIT-RETURN", name="return of uninitialised local", cwe=[457],
          seen={"lints": FINDS}),
     dict(id="PTR-UNINIT", name="dereference of uninitialised local pointer", cwe=[457, 824],
@@ -152,7 +162,7 @@ CLASSES: list[dict] = [
          seen={"lints": FINDS}),
     dict(id="API-STRDUP-NULL", name="strdup/strndup result used without NULL test", cwe=[690],
          seen={"lints": FINDS}),
-    dict(id="MEM-SIZEOF-PTR", name="allocation size is sizeof(pointer) not pointee", cwe=[131],
+    dict(id="MEM-SIZEOF-PTR", name="allocation or buffer size is sizeof(pointer) not pointee", cwe=[131],
          seen={"lints": FINDS}),
     dict(id="API-POPEN", name="popen stream not pclosed on every exit", cwe=[775],
          seen={"lints": FINDS}),
@@ -179,7 +189,7 @@ CLASSES: list[dict] = [
     dict(id="API-CHMOD-WORLD", name="chmod/fchmod with world-writable mode 0777", cwe=[732],
          seen={"lints": FINDS}),
     dict(id="INT-CLZ-ZERO", name="__builtin_clz/ctz on 0 or an unguarded variable", cwe=[758],
-         seen={"lints": FINDS}),
+         seen={"lints": FINDS, "pir": PROVES}),
     dict(id="MEM-BCOPY", name="bcopy with identical source and destination", cwe=[628],
          seen={"lints": FINDS}),
     dict(id="API-SETUID", name="setuid/seteuid/setgid to 0 without a return check", cwe=[250],
@@ -1207,7 +1217,7 @@ CLASSES: list[dict] = [
     dict(id="LTL-SAFETY", name="LTL safety violation", cwe=[],
          seen={"ltl": PROVES, "strix": PROVES}),
     dict(id="FUNC-CONTRACT", name="ensures clause fails", cwe=[],
-         seen={"bmc": PROVES, "dafny": PROVES, "wp": PROVES, "contracts": PROVES,
+         seen={"bmc": PROVES, "pir": PROVES, "dafny": PROVES, "wp": PROVES, "contracts": PROVES,
                "rapid": FINDS, "muttest": SOME, "llm": READS}),
     dict(id="INTENT", name="comment/code contract mismatch", cwe=[],
          seen={"lints": FINDS, "llm": READS}),
@@ -1297,6 +1307,14 @@ _BMC_UB = {
     "MEM-OOB-READ", "MEM-OOB-WRITE",
 }
 
+# The pir stage encodes these on every function it closes (docs/PIR.md
+# "Properties"): signed overflow, division, shifts, reads of uninitialised
+# promotable locals, clz/ctz of zero. Memory is not encoded (pointer
+# parameters are NEEDS-HARNESS), so MEM-OOB-* are not folded for pir.
+_PIR_UB = {
+    "INT-SIGNED-OVF", "INT-DIV-ZERO", "INT-SHIFT-UB", "UNINIT-READ", "INT-CLZ-ZERO",
+}
+
 _RANK = {PROVES: 3, FINDS: 2, SOME: 1, READS: 1}
 
 
@@ -1313,6 +1331,7 @@ def coverage_from_report(report) -> list[dict]:
 
     hits: dict[str, str] = {}
     bmc_closed = False
+    pir_closed = False
     ran_ok = {s.name for s in report.stages if s.status == "ok"}
     contract_stages = {"wp", "contracts"}
 
@@ -1343,6 +1362,8 @@ def coverage_from_report(report) -> list[dict]:
                 # WP/contracts stay PROVED-ASSUMING; only BMC folds encoded UB.
                 if s.name == "bmc":
                     bmc_closed = True
+                if s.name == "pir":
+                    pir_closed = True
                 cls = f.cls or ("FUNC-CONTRACT" if s.name in contract_stages else "")
                 st = f.strength if f.strength in _RANK else PROVES
                 if not f.strength:
@@ -1357,6 +1378,9 @@ def coverage_from_report(report) -> list[dict]:
 
     if bmc_closed:
         for cid in _BMC_UB:
+            hits.setdefault(cid, PROVES)
+    if pir_closed:
+        for cid in _PIR_UB:
             hits.setdefault(cid, PROVES)
 
     rows = []

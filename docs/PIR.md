@@ -469,6 +469,63 @@ edge guards; each check contributes `reach ∧ violation`; assumes contribute
 SMT-LIB2 VC per property (SAT = violated) plus the unwinding VC, for the
 certified back end (roadmap 3.2).
 
+### Solving (roadmap 3.1 / 3.2)
+
+`check_function(fn, CheckOptions)` asks one query per verification condition
+and sends every one of them to the solver library,
+`prism::solver::solve` ([SOLVERS.md](SOLVERS.md)): the portfolio (Z3
+in-process, CaDiCaL / Kissat on the bit-blasted CNF, Bitwuzla when present,
+the ProbSAT walker for counterexamples) and the query cache.
+
+1. One VC per property: `assumptions ∧ reach ∧ violation`. The properties are
+   asked in order; the first SAT answer is the `FAILED` verdict. Its model
+   was already evaluated on the VC in Z3 by the solver library; the
+   counterexample is the model's parameter values (`extra.cex_solver` names
+   the member that found it). An answer that is neither SAT nor UNSAT makes
+   the function `UNKNOWN` unless a later property is SAT.
+2. When every property VC is UNSAT and a loop cut is reachable in the
+   unrolling, the unwinding VC `assumptions ∧ (cut₁ ∨ cut₂ ∨ …)`: UNSAT means
+   `PROVED` (the loops close), anything else `BOUNDED`.
+3. The k-induction step (single-loop `BOUNDED` functions) is not a property
+   VC: Z3 answers it in-process (`extra.k_induction_solver`).
+
+`extra.solver` summarises the run: the number of VCs, which member answered
+each (`z3:3, cadical:1`, `(cache)` for a cache hit) and the cache hits.
+
+The stage uses `--solver-cache DIR` (default `$XDG_CACHE_HOME/prism/solver`)
+and gives each query `max(2, cores / --jobs)` solver members at once.
+`--timeout S` (default 30) is the budget of **each** VC.
+
+**Certified mode** (`--certified`, roadmap 3.2). Each VC is also bit-blasted
+to CNF, CaDiCaL writes an LRAT proof of its unsatisfiability, and cake_lpr
+must accept it. The bit-blaster is chosen by the solver library
+(`bitblaster = auto`): the Lean-proved bit-blaster (`prism-bitblast`) when the
+VC is inside its fragment and the Lean tools are built, and then Lean's
+verified LRAT checker (`prism-lrat-check`) must accept the proof too;
+otherwise Z3's tactics, and the certificate says so. Memory VCs are certified
+like any other: the default memory encoding (`MemEncoding::Bv`) is QF_BV.
+A function is `PROVED-CERTIFIED` only when it is `PROVED`, has at least one
+VC, and **every** VC (each property and the unwinding assertion) is
+certified. It then carries `extra.certificate = "checked"` (what the verdict
+audit requires of a `PROVED-CERTIFIED` from this stage),
+`extra.certificate_info` (one entry per VC: `<prop>@<line>: bitblast: … ;
+cadical … lrat N steps, checked by cake_lpr …; cnf sha256 …`),
+`extra.certificate_bitblast` (`N/M lean-proved`) and `extra.cnf_sha256` (one
+hash per VC, comma-separated). Otherwise the verdict is unchanged and
+`extra.certify_note` names the first VC that was not certified and why (for
+example `not certified: cake_lpr not found (NOTRUN)`). `BOUNDED` and
+`PROVED-UNBOUNDED` are never certified; a function with no VC at all stays
+`PROVED` with `extra.certify_note = "no verification conditions (nothing to
+certify)"` (a certificate that checks nothing is not one); and a certified
+proof under assumptions is `PROVED-ASSUMING`.
+Translation validation that diverges turns a certified function into `ERROR`
+and drops the certificate. What a certificate still trusts is in
+[TRUSTED_BASE.md](TRUSTED_BASE.md).
+
+`prism --pir-vcs FILE --out DIR` writes the VCs of every function of one unit
+as SMT-LIB2 files, and `prism --solve-smt2 VC [--z3-only]` answers one; both
+print JSON and exist for `tools/solver_bench.py`.
+
 ## Translation validation (roadmap 2.4)
 
 For every function with a verdict: 64 input vectors (the counterexample,
