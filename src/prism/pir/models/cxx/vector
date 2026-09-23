@@ -1,0 +1,802 @@
+// PRISM operational model of <vector> (roadmap 2.6, docs/PIR.md "C++ library
+// models"). The pir stage puts this directory first on the C++ include path,
+// so `#include <vector>` reaches this file instead of libstdc++'s. It is a
+// plain implementation of std::vector<T, std::allocator<T>> that the PIR
+// encoder can afford (libstdc++'s own vector blows up the solver past one
+// reallocation), written to reach every behaviour libstdc++ 13 can:
+//
+//  * the same capacity policy (reserve/assign/copy allocate exactly; growth
+//    is size + max(size, n) clamped to max_size(), as _M_check_len), so the
+//    same insertions reallocate and capacity()/data() read the same values;
+//  * storage from std::allocator<T> (operator new/delete, PIR models), so a
+//    reference, pointer or iterator kept across a reallocation points into a
+//    freed object: using it is MEM-UAF (iterator invalidation);
+//  * the same exceptions: std::length_error past max_size(), out_of_range
+//    from at(), with the strong guarantee for a throwing element move/copy;
+//  * the same _GLIBCXX_ASSERTIONS preconditions with the same condition text
+//    (`__n < this->size()` -> MEM-OOB-READ, `!this->empty()` -> FUNC-CONTRACT),
+//    plus the standard's preconditions on insert/erase positions;
+//  * the same element construction/destruction order on reallocation.
+//
+// What it does not model is not silently different: vector<bool> and
+// allocators other than std::allocator<T> (including pmr::vector) are left
+// undefined here, so a unit that uses them fails to compile against the
+// model and the pir stage lowers it again with libstdc++'s <vector>
+// (reported in the function's `extra.cxx_models`). Model code is library
+// code: it is inlined and checked like the unit's own code, and a violation
+// inside it is reported at the model line with the model function's name.
+#ifndef _PRISM_MODEL_VECTOR
+#define _PRISM_MODEL_VECTOR 1
+#define _GLIBCXX_VECTOR 1  // libstdc++'s <vector> include guard: never both
+
+#pragma GCC system_header
+
+#include <bits/c++config.h>
+#include <bits/stl_algobase.h>
+#include <bits/allocator.h>
+#include <bits/alloc_traits.h>
+#include <bits/stl_construct.h>
+#include <bits/stl_uninitialized.h>
+#include <bits/stl_iterator_base_funcs.h>
+#include <bits/stl_iterator.h>
+#include <bits/functexcept.h>
+#include <bits/refwrap.h>
+#include <bits/range_access.h>
+#include <bits/stl_function.h>
+#include <bits/predefined_ops.h>
+#include <bits/stl_algo.h>
+#include <initializer_list>
+#include <type_traits>
+#include <compare>
+#include <bits/memory_resource.h>
+#include <debug/assertions.h>
+
+#define __cpp_lib_constexpr_vector 201907L
+#define __cpp_lib_erase_if 202002L
+#define __cpp_lib_incomplete_container_elements 201505L
+#define __cpp_lib_nonmember_container_access 201411L
+#define __cpp_lib_allocator_traits_is_always_equal 201411L
+
+namespace std _GLIBCXX_VISIBILITY(default) {
+
+template <typename _Tp, typename _Alloc = allocator<_Tp>>
+class vector {
+    static_assert(is_same_v<_Alloc, allocator<_Tp>>,
+                  "PRISM vector model: only std::allocator<T> is modelled (the pir stage falls back to libstdc++)");
+    static_assert(is_same_v<typename remove_cv<_Tp>::type, _Tp>, "std::vector must have a non-const, non-volatile value_type");
+
+    using _Traits = allocator_traits<_Alloc>;
+
+public:
+    typedef _Tp value_type;
+    typedef _Alloc allocator_type;
+    typedef size_t size_type;
+    typedef ptrdiff_t difference_type;
+    typedef _Tp& reference;
+    typedef const _Tp& const_reference;
+    typedef _Tp* pointer;
+    typedef const _Tp* const_pointer;
+    typedef __gnu_cxx::__normal_iterator<pointer, vector> iterator;
+    typedef __gnu_cxx::__normal_iterator<const_pointer, vector> const_iterator;
+    typedef std::reverse_iterator<iterator> reverse_iterator;
+    typedef std::reverse_iterator<const_iterator> const_reverse_iterator;
+
+private:
+    [[no_unique_address]] _Alloc _M_alloc;
+    pointer _M_start = nullptr;
+    pointer _M_finish = nullptr;
+    pointer _M_end_of_storage = nullptr;
+
+    static constexpr bool _S_nothrow_move = is_nothrow_move_constructible_v<_Tp>;
+
+    // -- storage -----------------------------------------------------------
+    static constexpr size_type _S_max_size() noexcept { return size_type(__PTRDIFF_MAX__) / sizeof(_Tp); }
+    constexpr pointer _M_allocate(size_type __n) { return __n != 0 ? _Traits::allocate(_M_alloc, __n) : pointer(); }
+    constexpr void _M_deallocate(pointer __p, size_type __n) {
+        if (__p) _Traits::deallocate(_M_alloc, __p, __n);
+    }
+    static constexpr size_type _S_check_init_len(size_type __n) {
+        if (__n > _S_max_size()) __throw_length_error(__N("cannot create std::vector larger than max_size()"));
+        return __n;
+    }
+    // libstdc++'s growth policy (_M_check_len)
+    constexpr size_type _M_check_len(size_type __n, const char* __s) const {
+        if (max_size() - size() < __n) __throw_length_error(__N(__s));
+        const size_type __len = size() + (std::max)(size(), __n);
+        return (__len < size() || __len > max_size()) ? max_size() : __len;
+    }
+
+    // -- element ranges ----------------------------------------------------
+    constexpr void _M_destroy(pointer __first, pointer __last) noexcept {
+        for (; __first != __last; ++__first) _Traits::destroy(_M_alloc, __first);
+    }
+    // Constructs [__d, ...) from [__first, __last); on a throw destroys what it built.
+    template <typename _It>
+    constexpr pointer _M_uninit_copy(_It __first, _It __last, pointer __d) {
+        pointer __cur = __d;
+        if constexpr (is_nothrow_constructible_v<_Tp, decltype(*__first)>) {
+            for (; __first != __last; ++__first, (void)++__cur) _Traits::construct(_M_alloc, __cur, *__first);
+        } else {
+            try {
+                for (; __first != __last; ++__first, (void)++__cur) _Traits::construct(_M_alloc, __cur, *__first);
+            } catch (...) {
+                _M_destroy(__d, __cur);
+                throw;
+            }
+        }
+        return __cur;
+    }
+    template <typename... _Args>
+    constexpr pointer _M_uninit_fill_n(pointer __d, size_type __n, const _Args&... __args) {
+        pointer __cur = __d;
+        if constexpr (is_nothrow_constructible_v<_Tp, const _Args&...>) {
+            for (; __n > 0; --__n, (void)++__cur) _Traits::construct(_M_alloc, __cur, __args...);
+        } else {
+            try {
+                for (; __n > 0; --__n, (void)++__cur) _Traits::construct(_M_alloc, __cur, __args...);
+            } catch (...) {
+                _M_destroy(__d, __cur);
+                throw;
+            }
+        }
+        return __cur;
+    }
+    // How old elements reach new storage, per libstdc++ 13 operation:
+    // _S_relocate (_M_realloc_insert, reserve, _M_default_append): a
+    // nothrow-movable element is relocated one by one (move-construct, then
+    // destroy the source, as __relocate_a), others are moved if that cannot
+    // throw, else copied, and destroyed after the transfer;
+    // _S_move_if_noexcept (_M_fill_insert, _M_range_insert): always
+    // construct-all-then-destroy-all; _S_move (shrink_to_fit): plain moves.
+    enum { _S_relocate, _S_move_if_noexcept, _S_move };
+    template <int _Mode>
+    static constexpr bool _S_relocates = _Mode == _S_relocate && _S_nothrow_move;
+
+    template <int _Mode>
+    constexpr pointer _M_transfer(pointer __first, pointer __last, pointer __d) {
+        // Element by element, also for trivially copyable types (libstdc++
+        // uses memmove there): the same bytes move, and the encoder closes a
+        // short loop much faster than a ranged copy of symbolic length.
+        if constexpr (_S_relocates<_Mode>) {
+            for (; __first != __last; ++__first, (void)++__d) {
+                _Traits::construct(_M_alloc, __d, std::move(*__first));
+                _Traits::destroy(_M_alloc, __first);
+            }
+            return __d;
+        } else if constexpr (_S_nothrow_move) {
+            for (; __first != __last; ++__first, (void)++__d) _Traits::construct(_M_alloc, __d, std::move(*__first));
+            return __d;
+        } else {
+            pointer __cur = __d;
+            try {
+                for (; __first != __last; ++__first, (void)++__cur) {
+                    if constexpr (_Mode == _S_move)
+                        _Traits::construct(_M_alloc, __cur, std::move(*__first));
+                    else
+                        _Traits::construct(_M_alloc, __cur, std::move_if_noexcept(*__first));
+                }
+            } catch (...) {
+                _M_destroy(__d, __cur);
+                throw;
+            }
+            return __cur;
+        }
+    }
+    // Replace the storage by [__ns, __nf) of capacity __len (old elements not
+    // relocated are destroyed here, after the transfer, as libstdc++ does).
+    template <int _Mode>
+    constexpr void _M_adopt(pointer __ns, pointer __nf, size_type __len) noexcept {
+        if constexpr (!_S_relocates<_Mode>) _M_destroy(_M_start, _M_finish);
+        _M_deallocate(_M_start, size_type(_M_end_of_storage - _M_start));
+        _M_start = __ns;
+        _M_finish = __nf;
+        _M_end_of_storage = __ns + __len;
+    }
+
+    // New storage __ns of capacity __len already holds the __gap new
+    // elements at [__before, __before + __gap): move the old elements around
+    // them. On a throw (a throwing copy; never after a relocation) destroy
+    // what was built and release __ns, as libstdc++ does.
+    template <int _Mode>
+    constexpr pointer _M_transfer_around(pointer __pos, pointer __ns, size_type __before, size_type __gap,
+                                         size_type __len) {
+        if constexpr (_S_nothrow_move) {
+            pointer __nf = _M_transfer<_Mode>(_M_start, __pos, __ns);
+            return _M_transfer<_Mode>(__pos, _M_finish, __nf + __gap);
+        } else {
+            pointer __nf = pointer();
+            try {
+                __nf = _M_transfer<_Mode>(_M_start, __pos, __ns);
+                __nf += __gap;
+                __nf = _M_transfer<_Mode>(__pos, _M_finish, __nf);
+            } catch (...) {
+                if (!__nf)
+                    _M_destroy(__ns + __before, __ns + __before + __gap);
+                else
+                    _M_destroy(__ns, __nf);
+                _M_deallocate(__ns, __len);
+                throw;
+            }
+            return __nf;
+        }
+    }
+
+    // Insert one element built from __args at __pos into new storage
+    // (libstdc++ _M_realloc_insert: the new element is constructed first).
+    template <typename... _Args>
+    constexpr void _M_realloc_insert(pointer __pos, _Args&&... __args) {
+        const size_type __len = _M_check_len(size_type(1), "vector::_M_realloc_insert");
+        const size_type __before = size_type(__pos - _M_start);
+        pointer __ns = _M_allocate(__len);
+        if constexpr (is_nothrow_constructible_v<_Tp, _Args&&...>) {
+            _Traits::construct(_M_alloc, __ns + __before, std::forward<_Args>(__args)...);
+        } else {
+            try {
+                _Traits::construct(_M_alloc, __ns + __before, std::forward<_Args>(__args)...);
+            } catch (...) {
+                _M_deallocate(__ns, __len);
+                throw;
+            }
+        }
+        _M_adopt<_S_relocate>(__ns, _M_transfer_around<_S_relocate>(__pos, __ns, __before, 1, __len), __len);
+    }
+
+    // Insert __n elements at __pos in place (the capacity suffices), as
+    // libstdc++'s _M_fill_insert/_M_range_insert: __fill(dst, from, k, raw)
+    // assigns (raw = false) or constructs (raw = true) the new values
+    // [from, from + k) at dst.
+    template <typename _Fill>
+    constexpr void _M_insert_in_place(pointer __pos, size_type __n, _Fill&& __fill) {
+        const size_type __after = size_type(_M_finish - __pos);
+        pointer __old_finish = _M_finish;
+        if (__after > __n) {
+            _M_uninit_copy(std::make_move_iterator(_M_finish - __n), std::make_move_iterator(_M_finish), _M_finish);
+            _M_finish += __n;
+            std::move_backward(__pos, __old_finish - __n, __old_finish);
+            __fill(__pos, size_type(0), __n, false);
+        } else {
+            __fill(_M_finish, __after, __n - __after, true);
+            _M_finish += __n - __after;
+            _M_uninit_copy(std::make_move_iterator(__pos), std::make_move_iterator(__old_finish), _M_finish);
+            _M_finish += __after;
+            __fill(__pos, size_type(0), __after, false);
+        }
+    }
+
+public:
+    // -- construct/copy/destroy --------------------------------------------
+    constexpr vector() noexcept(is_nothrow_default_constructible_v<_Alloc>) = default;
+    constexpr explicit vector(const _Alloc& __a) noexcept : _M_alloc(__a) {}
+    constexpr explicit vector(size_type __n, const _Alloc& __a = _Alloc()) : _M_alloc(__a) {
+        _M_start = _M_allocate(_S_check_init_len(__n));
+        _M_end_of_storage = _M_start + __n;
+        _M_finish = _M_start;
+        try {
+            _M_finish = _M_uninit_fill_n(_M_start, __n);
+        } catch (...) {
+            _M_deallocate(_M_start, __n);
+            throw;
+        }
+    }
+    constexpr vector(size_type __n, const value_type& __value, const _Alloc& __a = _Alloc()) : _M_alloc(__a) {
+        _M_start = _M_allocate(_S_check_init_len(__n));
+        _M_end_of_storage = _M_start + __n;
+        _M_finish = _M_start;
+        try {
+            _M_finish = _M_uninit_fill_n(_M_start, __n, __value);
+        } catch (...) {
+            _M_deallocate(_M_start, __n);
+            throw;
+        }
+    }
+    template <typename _InputIterator, typename = _RequireInputIter<_InputIterator>>
+    constexpr vector(_InputIterator __first, _InputIterator __last, const _Alloc& __a = _Alloc()) : _M_alloc(__a) {
+        _M_range_init(__first, __last);
+    }
+    constexpr vector(const vector& __x)
+        : _M_alloc(_Traits::select_on_container_copy_construction(__x._M_alloc)) {
+        _M_range_init(__x.begin(), __x.end());
+    }
+    constexpr vector(vector&& __x) noexcept
+        : _M_alloc(std::move(__x._M_alloc)), _M_start(__x._M_start), _M_finish(__x._M_finish),
+          _M_end_of_storage(__x._M_end_of_storage) {
+        __x._M_start = __x._M_finish = __x._M_end_of_storage = pointer();
+    }
+    constexpr vector(const vector& __x, const __type_identity_t<_Alloc>& __a) : _M_alloc(__a) {
+        _M_range_init(__x.begin(), __x.end());
+    }
+    constexpr vector(vector&& __x, const __type_identity_t<_Alloc>& __a) noexcept : vector(std::move(__x)) {
+        _M_alloc = __a;
+    }
+    constexpr vector(initializer_list<value_type> __l, const _Alloc& __a = _Alloc()) : _M_alloc(__a) {
+        _M_range_init(__l.begin(), __l.end());
+    }
+    constexpr ~vector() {
+        _M_destroy(_M_start, _M_finish);
+        _M_deallocate(_M_start, size_type(_M_end_of_storage - _M_start));
+    }
+
+private:
+    template <typename _It>
+    constexpr void _M_range_init(_It __first, _It __last) {
+        if constexpr (__is_random_access_iter<_It>::value ||
+                      is_base_of_v<forward_iterator_tag, typename iterator_traits<_It>::iterator_category>) {
+            const size_type __n = _S_check_init_len(size_type(std::distance(__first, __last)));
+            _M_start = _M_allocate(__n);
+            _M_end_of_storage = _M_start + __n;
+            _M_finish = _M_start;
+            try {
+                _M_finish = _M_uninit_copy(__first, __last, _M_start);
+            } catch (...) {
+                _M_deallocate(_M_start, __n);
+                _M_start = _M_finish = _M_end_of_storage = pointer();
+                throw;
+            }
+        } else {
+            try {
+                for (; __first != __last; ++__first) emplace_back(*__first);
+            } catch (...) {
+                clear();
+                throw;
+            }
+        }
+    }
+
+public:
+    constexpr vector& operator=(const vector& __x) {
+        if (std::__addressof(__x) == this) return *this;
+        const size_type __xlen = __x.size();
+        if (__xlen > capacity()) {
+            pointer __ns = _M_allocate(__xlen);
+            try {
+                _M_uninit_copy(__x.begin(), __x.end(), __ns);
+            } catch (...) {
+                _M_deallocate(__ns, __xlen);
+                throw;
+            }
+            _M_destroy(_M_start, _M_finish);
+            _M_deallocate(_M_start, size_type(_M_end_of_storage - _M_start));
+            _M_start = __ns;
+            _M_end_of_storage = __ns + __xlen;
+        } else if (size() >= __xlen) {
+            pointer __e = std::copy(__x._M_start, __x._M_finish, _M_start);
+            _M_destroy(__e, _M_finish);
+        } else {
+            std::copy(__x._M_start, __x._M_start + size(), _M_start);
+            _M_uninit_copy(__x._M_start + size(), __x._M_finish, _M_finish);
+        }
+        _M_finish = _M_start + __xlen;
+        return *this;
+    }
+    constexpr vector& operator=(vector&& __x) noexcept {
+        vector __tmp(std::move(*this));  // our old elements die with __tmp
+        _M_start = __x._M_start;
+        _M_finish = __x._M_finish;
+        _M_end_of_storage = __x._M_end_of_storage;
+        __x._M_start = __x._M_finish = __x._M_end_of_storage = pointer();
+        return *this;
+    }
+    constexpr vector& operator=(initializer_list<value_type> __l) {
+        assign(__l.begin(), __l.end());
+        return *this;
+    }
+
+    constexpr void assign(size_type __n, const value_type& __val) {
+        if (__n > capacity()) {
+            vector __tmp(__n, __val, _M_alloc);
+            __tmp.swap(*this);
+        } else if (__n > size()) {
+            std::fill(begin(), end(), __val);
+            const size_type __add = __n - size();
+            _M_finish = _M_uninit_fill_n(_M_finish, __add, __val);
+        } else {
+            pointer __e = std::fill_n(_M_start, __n, __val);
+            _M_destroy(__e, _M_finish);
+            _M_finish = __e;
+        }
+    }
+    template <typename _InputIterator, typename = _RequireInputIter<_InputIterator>>
+    constexpr void assign(_InputIterator __first, _InputIterator __last) {
+        if constexpr (__is_random_access_iter<_InputIterator>::value ||
+                      is_base_of_v<forward_iterator_tag,
+                                   typename iterator_traits<_InputIterator>::iterator_category>) {
+            const size_type __len = size_type(std::distance(__first, __last));
+            if (__len > capacity()) {
+                _S_check_init_len(__len);
+                pointer __ns = _M_allocate(__len);
+                try {
+                    _M_uninit_copy(__first, __last, __ns);
+                } catch (...) {
+                    _M_deallocate(__ns, __len);
+                    throw;
+                }
+                _M_destroy(_M_start, _M_finish);
+                _M_deallocate(_M_start, size_type(_M_end_of_storage - _M_start));
+                _M_start = __ns;
+                _M_finish = _M_end_of_storage = __ns + __len;
+            } else if (size() >= __len) {
+                pointer __e = std::copy(__first, __last, _M_start);
+                _M_destroy(__e, _M_finish);
+                _M_finish = __e;
+            } else {
+                _InputIterator __mid = __first;
+                std::advance(__mid, size());
+                std::copy(__first, __mid, _M_start);
+                _M_finish = _M_uninit_copy(__mid, __last, _M_finish);
+            }
+        } else {
+            pointer __cur = _M_start;
+            for (; __first != __last && __cur != _M_finish; ++__cur, (void)++__first) *__cur = *__first;
+            if (__first == __last) {
+                _M_destroy(__cur, _M_finish);
+                _M_finish = __cur;
+            } else {
+                for (; __first != __last; ++__first) emplace_back(*__first);
+            }
+        }
+    }
+    constexpr void assign(initializer_list<value_type> __l) { assign(__l.begin(), __l.end()); }
+
+    constexpr allocator_type get_allocator() const noexcept { return _M_alloc; }
+
+    // -- iterators ---------------------------------------------------------
+    constexpr iterator begin() noexcept { return iterator(_M_start); }
+    constexpr const_iterator begin() const noexcept { return const_iterator(_M_start); }
+    constexpr iterator end() noexcept { return iterator(_M_finish); }
+    constexpr const_iterator end() const noexcept { return const_iterator(_M_finish); }
+    constexpr reverse_iterator rbegin() noexcept { return reverse_iterator(end()); }
+    constexpr const_reverse_iterator rbegin() const noexcept { return const_reverse_iterator(end()); }
+    constexpr reverse_iterator rend() noexcept { return reverse_iterator(begin()); }
+    constexpr const_reverse_iterator rend() const noexcept { return const_reverse_iterator(begin()); }
+    constexpr const_iterator cbegin() const noexcept { return const_iterator(_M_start); }
+    constexpr const_iterator cend() const noexcept { return const_iterator(_M_finish); }
+    constexpr const_reverse_iterator crbegin() const noexcept { return const_reverse_iterator(end()); }
+    constexpr const_reverse_iterator crend() const noexcept { return const_reverse_iterator(begin()); }
+
+    // -- capacity ----------------------------------------------------------
+    [[nodiscard]] constexpr bool empty() const noexcept { return _M_start == _M_finish; }
+    constexpr size_type size() const noexcept { return size_type(_M_finish - _M_start); }
+    constexpr size_type max_size() const noexcept { return _S_max_size(); }
+    constexpr size_type capacity() const noexcept { return size_type(_M_end_of_storage - _M_start); }
+    constexpr void reserve(size_type __n) {
+        if (__n > max_size()) __throw_length_error(__N("vector::reserve"));
+        if (capacity() < __n) _M_reallocate<_S_relocate>(__n);
+    }
+    constexpr void shrink_to_fit() {
+        if (capacity() == size()) return;
+        // libstdc++ ignores a failed shrink. The only throw left for a
+        // nothrow-movable element is bad_alloc, whose path PIR does not follow
+        // (operator new model), so that case needs no handler.
+        if constexpr (_S_nothrow_move) {
+            _M_reallocate<_S_move>(size());
+        } else {
+            try {
+                _M_reallocate<_S_move>(size());
+            } catch (...) {
+            }
+        }
+    }
+
+private:
+    // Move all elements to new storage of exactly __n (>= size()) slots.
+    template <int _Mode>
+    constexpr void _M_reallocate(size_type __n) {
+        pointer __ns = _M_allocate(__n);
+        if constexpr (_S_nothrow_move) {
+            _M_adopt<_Mode>(__ns, _M_transfer<_Mode>(_M_start, _M_finish, __ns), __n);
+        } else {
+            pointer __nf;
+            try {
+                __nf = _M_transfer<_Mode>(_M_start, _M_finish, __ns);
+            } catch (...) {
+                _M_deallocate(__ns, __n);
+                throw;
+            }
+            _M_adopt<_Mode>(__ns, __nf, __n);
+        }
+    }
+
+public:
+    constexpr void resize(size_type __new_size) {
+        if (__new_size > size())
+            _M_append_n(__new_size - size(), "vector::_M_default_append");
+        else if (__new_size < size()) {
+            _M_destroy(_M_start + __new_size, _M_finish);
+            _M_finish = _M_start + __new_size;
+        }
+    }
+    constexpr void resize(size_type __new_size, const value_type& __x) {
+        if (__new_size > size())
+            _M_fill_insert(_M_finish, __new_size - size(), __x);
+        else if (__new_size < size()) {
+            _M_destroy(_M_start + __new_size, _M_finish);
+            _M_finish = _M_start + __new_size;
+        }
+    }
+
+private:
+    // resize(n) growth: value-initialised elements at the end
+    constexpr void _M_append_n(size_type __n, const char* __what) {
+        if (size_type(_M_end_of_storage - _M_finish) >= __n) {
+            _M_finish = _M_uninit_fill_n(_M_finish, __n);
+            return;
+        }
+        const size_type __len = _M_check_len(__n, __what);
+        const size_type __old = size();
+        pointer __ns = _M_allocate(__len);
+        try {
+            _M_uninit_fill_n(__ns + __old, __n);
+        } catch (...) {
+            _M_deallocate(__ns, __len);
+            throw;
+        }
+        _M_adopt<_S_relocate>(__ns, _M_transfer_around<_S_relocate>(_M_finish, __ns, __old, __n, __len), __len);
+    }
+
+    constexpr void _M_fill_insert(pointer __pos, size_type __n, const value_type& __x) {
+        if (__n == 0) return;
+        if (size_type(_M_end_of_storage - _M_finish) >= __n) {
+            value_type __copy(__x);  // __x may be an element of this vector
+            _M_insert_in_place(__pos, __n, [&](pointer __d, size_type, size_type __k, bool __raw) {
+                if (__raw)
+                    _M_uninit_fill_n(__d, __k, __copy);
+                else
+                    std::fill_n(__d, __k, __copy);
+            });
+            return;
+        }
+        const size_type __len = _M_check_len(__n, "vector::_M_fill_insert");
+        const size_type __before = size_type(__pos - _M_start);
+        pointer __ns = _M_allocate(__len);
+        try {
+            _M_uninit_fill_n(__ns + __before, __n, __x);
+        } catch (...) {
+            _M_deallocate(__ns, __len);
+            throw;
+        }
+        _M_adopt<_S_move_if_noexcept>(__ns, _M_transfer_around<_S_move_if_noexcept>(__pos, __ns, __before, __n, __len), __len);
+    }
+
+    template <typename _It>
+    constexpr void _M_range_insert(pointer __pos, _It __first, _It __last) {
+        if (__first == __last) return;
+        const size_type __n = size_type(std::distance(__first, __last));
+        if (size_type(_M_end_of_storage - _M_finish) >= __n) {
+            _M_insert_in_place(__pos, __n, [&](pointer __d, size_type __from, size_type __k, bool __raw) {
+                _It __f = __first;
+                std::advance(__f, __from);
+                _It __l = __f;
+                std::advance(__l, __k);
+                if (__raw)
+                    _M_uninit_copy(__f, __l, __d);
+                else
+                    std::copy(__f, __l, __d);
+            });
+            return;
+        }
+        const size_type __len = _M_check_len(__n, "vector::_M_range_insert");
+        const size_type __before = size_type(__pos - _M_start);
+        pointer __ns = _M_allocate(__len);
+        try {
+            _M_uninit_copy(__first, __last, __ns + __before);
+        } catch (...) {
+            _M_deallocate(__ns, __len);
+            throw;
+        }
+        _M_adopt<_S_move_if_noexcept>(__ns, _M_transfer_around<_S_move_if_noexcept>(__pos, __ns, __before, __n, __len), __len);
+    }
+
+    // [vector.modifiers]: an insertion position is an iterator into *this
+    constexpr pointer _M_insert_pos(const_iterator __position) const noexcept {
+        pointer __p = const_cast<pointer>(__position.base());
+        __glibcxx_assert(__p >= _M_start && __p <= _M_finish);
+        return __p;
+    }
+
+public:
+    // -- element access ----------------------------------------------------
+    constexpr reference operator[](size_type __n) noexcept {
+        __glibcxx_assert(__n < this->size());
+        return *(_M_start + __n);
+    }
+    constexpr const_reference operator[](size_type __n) const noexcept {
+        __glibcxx_assert(__n < this->size());
+        return *(_M_start + __n);
+    }
+    constexpr reference at(size_type __n) {
+        _M_range_check(__n);
+        return (*this)[__n];
+    }
+    constexpr const_reference at(size_type __n) const {
+        _M_range_check(__n);
+        return (*this)[__n];
+    }
+    constexpr reference front() noexcept {
+        __glibcxx_assert(!this->empty());
+        return *begin();
+    }
+    constexpr const_reference front() const noexcept {
+        __glibcxx_assert(!this->empty());
+        return *begin();
+    }
+    constexpr reference back() noexcept {
+        __glibcxx_assert(!this->empty());
+        return *(end() - 1);
+    }
+    constexpr const_reference back() const noexcept {
+        __glibcxx_assert(!this->empty());
+        return *(end() - 1);
+    }
+    constexpr _Tp* data() noexcept { return _M_start; }
+    constexpr const _Tp* data() const noexcept { return _M_start; }
+
+private:
+    constexpr void _M_range_check(size_type __n) const {
+        if (__n >= this->size())
+            __throw_out_of_range_fmt(__N("vector::_M_range_check: __n (which is %zu) >= this->size() (which is %zu)"),
+                                     __n, this->size());
+    }
+
+public:
+    // -- modifiers ---------------------------------------------------------
+    constexpr void push_back(const value_type& __x) { emplace_back(__x); }
+    constexpr void push_back(value_type&& __x) { emplace_back(std::move(__x)); }
+    template <typename... _Args>
+    constexpr reference emplace_back(_Args&&... __args) {
+        if (_M_finish != _M_end_of_storage) {
+            _Traits::construct(_M_alloc, _M_finish, std::forward<_Args>(__args)...);
+            ++_M_finish;
+        } else
+            _M_realloc_insert(_M_finish, std::forward<_Args>(__args)...);
+        return back();
+    }
+    constexpr void pop_back() noexcept {
+        __glibcxx_assert(!this->empty());
+        --_M_finish;
+        _Traits::destroy(_M_alloc, _M_finish);
+    }
+
+    template <typename... _Args>
+    constexpr iterator emplace(const_iterator __position, _Args&&... __args) {
+        pointer __pos = _M_insert_pos(__position);
+        const size_type __n = size_type(__pos - _M_start);
+        if (_M_finish != _M_end_of_storage) {
+            if (__pos == _M_finish) {
+                _Traits::construct(_M_alloc, _M_finish, std::forward<_Args>(__args)...);
+                ++_M_finish;
+            } else {
+                // the arguments may refer to elements: build the value first
+                value_type __tmp(std::forward<_Args>(__args)...);
+                _Traits::construct(_M_alloc, _M_finish, std::move(*(_M_finish - 1)));
+                ++_M_finish;
+                std::move_backward(__pos, _M_finish - 2, _M_finish - 1);
+                *__pos = std::move(__tmp);
+            }
+        } else
+            _M_realloc_insert(__pos, std::forward<_Args>(__args)...);
+        return iterator(_M_start + __n);
+    }
+    constexpr iterator insert(const_iterator __position, const value_type& __x) { return emplace(__position, __x); }
+    constexpr iterator insert(const_iterator __position, value_type&& __x) {
+        // libstdc++ _M_insert_rval: no temporary, __x is moved in directly
+        pointer __pos = _M_insert_pos(__position);
+        const size_type __n = size_type(__pos - _M_start);
+        if (_M_finish != _M_end_of_storage) {
+            if (__pos == _M_finish) {
+                _Traits::construct(_M_alloc, _M_finish, std::move(__x));
+                ++_M_finish;
+            } else {
+                _Traits::construct(_M_alloc, _M_finish, std::move(*(_M_finish - 1)));
+                ++_M_finish;
+                std::move_backward(__pos, _M_finish - 2, _M_finish - 1);
+                *__pos = std::move(__x);
+            }
+        } else
+            _M_realloc_insert(__pos, std::move(__x));
+        return iterator(_M_start + __n);
+    }
+    constexpr iterator insert(const_iterator __position, size_type __n, const value_type& __x) {
+        pointer __pos = _M_insert_pos(__position);
+        const size_type __off = size_type(__pos - _M_start);
+        _M_fill_insert(__pos, __n, __x);
+        return iterator(_M_start + __off);
+    }
+    template <typename _InputIterator, typename = _RequireInputIter<_InputIterator>>
+    constexpr iterator insert(const_iterator __position, _InputIterator __first, _InputIterator __last) {
+        pointer __pos = _M_insert_pos(__position);
+        const size_type __off = size_type(__pos - _M_start);
+        if constexpr (__is_random_access_iter<_InputIterator>::value ||
+                      is_base_of_v<forward_iterator_tag,
+                                   typename iterator_traits<_InputIterator>::iterator_category>) {
+            _M_range_insert(__pos, __first, __last);
+        } else if (__pos == _M_finish) {
+            for (; __first != __last; ++__first) emplace_back(*__first);
+        } else if (__first != __last) {
+            vector __tmp(__first, __last, _M_alloc);
+            _M_range_insert(__pos, std::make_move_iterator(__tmp._M_start), std::make_move_iterator(__tmp._M_finish));
+        }
+        return iterator(_M_start + __off);
+    }
+    constexpr iterator insert(const_iterator __position, initializer_list<value_type> __l) {
+        return insert(__position, __l.begin(), __l.end());
+    }
+
+    constexpr iterator erase(const_iterator __position) {
+        pointer __pos = const_cast<pointer>(__position.base());
+        // [sequence.reqmts]: erase(q) needs a dereferenceable q
+        __glibcxx_assert(__pos >= _M_start && __pos < _M_finish);
+        if (__pos + 1 != _M_finish) std::move(__pos + 1, _M_finish, __pos);
+        --_M_finish;
+        _Traits::destroy(_M_alloc, _M_finish);
+        return iterator(__pos);
+    }
+    constexpr iterator erase(const_iterator __first, const_iterator __last) {
+        pointer __f = const_cast<pointer>(__first.base()), __l = const_cast<pointer>(__last.base());
+        // [sequence.reqmts]: [q1, q2) is a valid range of *this
+        __glibcxx_assert(__f >= _M_start && __f <= __l && __l <= _M_finish);
+        if (__f != __l) {
+            if (__l != _M_finish) std::move(__l, _M_finish, __f);
+            pointer __e = __f + (_M_finish - __l);
+            _M_destroy(__e, _M_finish);
+            _M_finish = __e;
+        }
+        return iterator(__f);
+    }
+
+    constexpr void swap(vector& __x) noexcept {
+        std::swap(_M_start, __x._M_start);
+        std::swap(_M_finish, __x._M_finish);
+        std::swap(_M_end_of_storage, __x._M_end_of_storage);
+    }
+    constexpr void clear() noexcept {
+        _M_destroy(_M_start, _M_finish);
+        _M_finish = _M_start;
+    }
+};
+
+// vector<bool> is a packed bit container in libstdc++; it is not modelled:
+// using it makes the unit fall back to libstdc++'s <vector>.
+template <typename _Alloc>
+class vector<bool, _Alloc>;
+
+template <typename _InputIterator,
+          typename _ValT = typename iterator_traits<_InputIterator>::value_type,
+          typename _Allocator = allocator<_ValT>, typename = _RequireInputIter<_InputIterator>,
+          typename = _RequireAllocator<_Allocator>>
+vector(_InputIterator, _InputIterator, _Allocator = _Allocator()) -> vector<_ValT, _Allocator>;
+
+template <typename _Tp, typename _Alloc>
+constexpr bool operator==(const vector<_Tp, _Alloc>& __x, const vector<_Tp, _Alloc>& __y) {
+    return __x.size() == __y.size() && std::equal(__x.begin(), __x.end(), __y.begin());
+}
+template <typename _Tp, typename _Alloc>
+constexpr __detail::__synth3way_t<_Tp> operator<=>(const vector<_Tp, _Alloc>& __x, const vector<_Tp, _Alloc>& __y) {
+    return std::lexicographical_compare_three_way(__x.begin(), __x.end(), __y.begin(), __y.end(),
+                                                  __detail::__synth3way);
+}
+template <typename _Tp, typename _Alloc>
+constexpr void swap(vector<_Tp, _Alloc>& __x, vector<_Tp, _Alloc>& __y) noexcept {
+    __x.swap(__y);
+}
+
+template <typename _Tp, typename _Alloc, typename _Predicate>
+constexpr typename vector<_Tp, _Alloc>::size_type erase_if(vector<_Tp, _Alloc>& __cont, _Predicate __pred) {
+    const auto __osz = __cont.size();
+    __cont.erase(std::remove_if(__cont.begin(), __cont.end(), std::ref(__pred)), __cont.end());
+    return __osz - __cont.size();
+}
+template <typename _Tp, typename _Alloc, typename _Up>
+constexpr typename vector<_Tp, _Alloc>::size_type erase(vector<_Tp, _Alloc>& __cont, const _Up& __value) {
+    const auto __osz = __cont.size();
+    __cont.erase(std::remove(__cont.begin(), __cont.end(), __value), __cont.end());
+    return __osz - __cont.size();
+}
+
+namespace pmr {
+template <typename _Tp>
+using vector = std::vector<_Tp, polymorphic_allocator<_Tp>>;  // not modelled (static_assert: fallback)
+}  // namespace pmr
+
+}  // namespace std
+
+#endif

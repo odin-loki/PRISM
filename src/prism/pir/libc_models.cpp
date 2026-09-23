@@ -28,6 +28,19 @@ const std::vector<std::pair<std::string, std::string>>& embedded_models();
 
 const std::vector<std::pair<std::string, std::string>>& model_sources() { return embedded_models(); }
 
+bool write_cxx_models(const std::filesystem::path& dir) {
+    std::error_code ec;
+    for (auto& [name, text] : model_sources()) {
+        if (!name.starts_with("cxx/")) continue;
+        auto dst = dir / name.substr(4);
+        std::filesystem::create_directories(dst.parent_path(), ec);
+        std::ofstream o(dst, std::ios::binary);
+        o << text;
+        if (!o) return false;
+    }
+    return true;
+}
+
 namespace {
 
 namespace fs = std::filesystem;
@@ -85,6 +98,7 @@ ModelLibrary build_models(const Frontend& fe, double timeout_s) {
         return lib;
     }
     for (auto& [name, text] : model_sources()) {
+        if (name.starts_with("cxx/")) continue;  // C++ headers: write_cxx_models
         auto dst = dir / (name.ends_with(".h") ? name : "prism_model_" + name);
         std::ofstream(dst, std::ios::binary) << text;
     }

@@ -7,6 +7,16 @@
 
 size_t strlen(const char *s);
 
+/* Output may fail on any call (disk full, closed pipe): every output
+ * function also returns EOF (-1) on some path, so code that ignores a write
+ * error is reachable (C17 7.21.7.3p3, 7.21.7.4p2, 7.21.5.2p3). */
+static int prism_eof_or(int ok) { return __VERIFIER_nondet_int() ? -1 : ok; }
+static int prism_nonneg_or_eof(void) {
+    int r = __VERIFIER_nondet_int();
+    __prism_assume(r >= -1);
+    return r;
+}
+
 FILE *fopen(const char *path, const char *mode) {
     (void)strlen(path);
     (void)strlen(mode);
@@ -14,9 +24,11 @@ FILE *fopen(const char *path, const char *mode) {
     return (FILE *)__prism_alloc(PRISM_FILE_SIZE, PRISM_FILEK, PRISM_HAVOC);
 }
 
+/* fclose(NULL) is undefined (glibc crashes); a closed FILE is released. */
 int fclose(FILE *f) {
+    __prism_check(f != 0, "PTR-NULL-DEREF", "fclose of a NULL FILE pointer");
     __prism_free(f, PRISM_FILEK);
-    return __VERIFIER_nondet_int();
+    return prism_eof_or(0);
 }
 
 static void prism_file_ok(FILE *f) {
@@ -68,24 +80,27 @@ int getchar(void) {
     return c;
 }
 
+/* fputc/putc/putchar: the character written as unsigned char, or EOF. */
 int fputc(int c, FILE *f) {
     prism_file_ok(f);
-    return c & 255;
+    return prism_eof_or(c & 255);
 }
 int putc(int c, FILE *f) { return fputc(c, f); }
-int putchar(int c) { return c & 255; }
+int putchar(int c) { return prism_eof_or(c & 255); }
 
+/* fputs/puts: a non-negative value, or EOF; s must be a string. */
 int fputs(const char *s, FILE *f) {
     prism_file_ok(f);
     (void)strlen(s);
-    return 0;
+    return prism_nonneg_or_eof();
 }
 int puts(const char *s) {
     (void)strlen(s);
-    return 0;
+    return prism_nonneg_or_eof();
 }
 
+/* fflush(NULL) flushes every stream; 0, or EOF on a write error. */
 int fflush(FILE *f) {
     if (f) prism_file_ok(f);
-    return 0;
+    return prism_eof_or(0);
 }

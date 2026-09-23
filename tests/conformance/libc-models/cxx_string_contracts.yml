@@ -1,0 +1,13 @@
+format_version: 1
+input_files: cxx_string_contracts.cpp
+language: C++
+property: libc-contract
+unwind: 40  # the heap string's constructor copies 37 characters
+expected:
+  string_index_true: true
+  string_index_oob_false: false
+  string_at_true: true
+  string_cstr_uaf_false: false
+expect_class:  # the violation each false harness plants
+  string_index_oob_false: "MEM-OOB-READ"
+  string_cstr_uaf_false: "MEM-UAF"

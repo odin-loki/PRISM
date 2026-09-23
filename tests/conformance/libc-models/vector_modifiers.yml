@@ -1,0 +1,16 @@
+format_version: 1
+input_files: vector_modifiers.cpp
+language: C++
+property: libc-contract
+expected:
+  vector_erase_true: true
+  vector_erase_end_false: false
+  vector_insert_true: true
+  vector_insert_foreign_false: false
+  vector_resize_true: true
+  vector_resize_value_false: false
+  vector_copy_true: true
+expect_class:  # the violation each false harness plants
+  vector_erase_end_false: "FUNC-CONTRACT"
+  vector_insert_foreign_false: "FUNC-CONTRACT|PTR-COMPARE"
+  vector_resize_value_false: "FUNC-CONTRACT"

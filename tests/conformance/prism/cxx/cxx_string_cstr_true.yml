@@ -1,0 +1,7 @@
+format_version: 1
+input_files: cxx_string_cstr_true.cpp
+language: C++
+property: memsafety
+unwind: 40  # the heap string constructor copies up to 37 characters
+expected:
+  cxx_string_cstr_true: true

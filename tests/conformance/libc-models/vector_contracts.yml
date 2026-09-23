@@ -1,0 +1,19 @@
+format_version: 1
+input_files: vector_contracts.cpp
+language: C++
+property: libc-contract
+expected:
+  vector_push_true: true
+  vector_index_oob_false: false
+  vector_reserve_true: true
+  vector_realloc_uaf_false: false
+  vector_pop_empty_false: false
+  vector_front_empty_false: false
+  vector_at_true: true
+  vector_at_nothrow_false: false
+expect_class:  # the violation each false harness plants
+  vector_index_oob_false: "MEM-OOB-READ"
+  vector_realloc_uaf_false: "MEM-UAF"
+  vector_pop_empty_false: "FUNC-CONTRACT"
+  vector_front_empty_false: "FUNC-CONTRACT"
+  vector_at_nothrow_false: "FUNC-CONTRACT"

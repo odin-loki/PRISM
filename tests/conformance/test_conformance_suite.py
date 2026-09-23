@@ -187,6 +187,40 @@ class LibcModels(unittest.TestCase):
         self.assertEqual(included, {p.name for p in models.glob("*.c")}, "every model file has a harness")
         self.assertIn("libc-models", conf.DEFAULT_ROOTS)
 
+    def test_every_model_function_is_called(self) -> None:
+        # roadmap 8.2: not only every model file, every model function has a
+        # contract harness that calls it (the C++ allocation functions through
+        # the new/delete expressions they implement)
+        models = REPO / "src" / "prism" / "pir" / "models" / "libc"
+        harness_c = "\n".join(p.read_text() for p in (SUITE / "libc-models").glob("*.c"))
+        harness_c = "\n".join(ln for ln in harness_c.splitlines() if not ln.startswith("#include"))
+        new_delete = (SUITE / "libc-models" / "new_delete.cpp").read_text()
+        cxx_forms = {"_Znwm": "new int(", "_Znam": "new int[", "_ZdlPv": "delete q;", "_ZdaPv": "delete[] p;",
+                     "_ZdlPvm": "::operator delete(p, sizeof(int))", "_ZdaPvm": "::operator delete[](q, 4)"}
+        defined = set()
+        for p in models.glob("*.c"):
+            defined |= set(re.findall(r"^(?!static)[A-Za-z_][\w \*]*?\b(\w+)\([^;{]*\)\s*\{", p.read_text(), re.M))
+        self.assertGreaterEqual(len(defined), 50)
+        for name in sorted(defined):
+            if name.startswith("_Z"):
+                self.assertIn(cxx_forms[name], new_delete, name)
+            else:
+                self.assertRegex(harness_c, rf"\b{name}\(", f"model function {name} has no contract harness")
+
+    def test_cxx_model_headers_have_harnesses(self) -> None:
+        # every C++ library model header (src/prism/pir/models/cxx) is embedded
+        # (CMake list) and exercised by a contract harness and in-house tasks
+        cxx = REPO / "src" / "prism" / "pir" / "models" / "cxx"
+        cmake = (REPO / "CMakeLists.txt").read_text()
+        headers = [p.name for p in cxx.iterdir() if p.is_file()]
+        self.assertIn("vector", headers)
+        harnesses = "\n".join(p.read_text() for p in (SUITE / "libc-models").rglob("*.cpp"))
+        tasks = "\n".join(p.read_text() for p in (SUITE / "prism" / "cxx").glob("*.cpp"))
+        for h in headers:
+            self.assertIn(f"src/prism/pir/models/cxx/{h}", cmake, h)
+            self.assertIn(f"#include <{h}>", harnesses, h)
+            self.assertIn(f"#include <{h}>", tasks, h)
+
     def test_expect_class(self) -> None:
         t = conf.Task(ident="x.yml", yml=Path("x.yml"), source=Path("x.c"), origin="libc-models", category="c",
                       lang="C", prop="libc-contract", expected={"f": False},

@@ -6,6 +6,11 @@ expected:
   new_array_true: true
   new_delete_mismatch_false: false
   new_array_oob_false: false
+  sized_delete_true: true
+  sized_delete_double_false: false
+  sized_delete_mismatch_false: false
 expect_class:  # the violation each false harness plants
   new_delete_mismatch_false: "MEM-MISMATCHED-FREE"
   new_array_oob_false: "MEM-OOB-WRITE"
+  sized_delete_double_false: "MEM-DOUBLE-FREE"
+  sized_delete_mismatch_false: "MEM-MISMATCHED-FREE"

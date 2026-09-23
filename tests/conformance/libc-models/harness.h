@@ -25,10 +25,17 @@ void __assert_fail(const char *assertion, const char *file, unsigned int line, c
 
 void __VERIFIER_assume(int cond);
 
-/* Buffer size of the harnesses: loops in the models run at most N + 1 times,
- * below the default --unwind 8, so a verdict is PROVED only when the
- * unwinding assertion is closed as well (never folded from BOUNDED, Law 2). */
+/* Buffer size of the harnesses: loops in the models run at most N + 1 times
+ * (2N + 1 for a strcat/strncat destination), so with N = 4 they close within
+ * the default --unwind 8 and a verdict is PROVED only when the unwinding
+ * assertion is closed as well (never folded from BOUNDED, Law 2). N can be
+ * raised with -DN=8 (tools/libc_model_bounds.py, with --unwind 2N + 2): the
+ * result is still a proof for objects up to N bytes only, not for all sizes. */
+#ifndef N
 #define N 4
+#endif
+
+#define EOF (-1)
 
 static inline char nd_char(void) { return (char)__VERIFIER_nondet_int(); }
 

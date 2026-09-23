@@ -464,6 +464,10 @@ PRISM_API std::string format_cex(const Function& fn, const std::vector<uint64_t>
 struct Frontend {
     std::optional<std::filesystem::path> clang, clangxx, opt, lli;
     std::string version;       // "clang-18"
+    // C++ library model headers (src/prism/pir/models/cxx, written out by the
+    // pir stage): searched before libstdc++ when non-empty (docs/PIR.md
+    // "C++ library models"). Empty: the platform library only.
+    std::filesystem::path cxx_models;
 };
 PRISM_API Frontend find_frontend(const Config& cfg);
 
@@ -473,15 +477,23 @@ PRISM_API std::optional<std::string> lower_to_ir(const Frontend& fe,
                                                  const std::filesystem::path& src,
                                                  double timeout_s, std::string& err,
                                                  std::vector<FoldedUb>* folded = nullptr,
-                                                 std::vector<std::pair<int, int>>* signed_shl = nullptr);
+                                                 std::vector<std::pair<int, int>>* signed_shl = nullptr,
+                                                 std::string* cxx_models = nullptr);
+// cxx_models receives which C++ library the unit was lowered with when
+// fe.cxx_models is set: "" (the unit uses no modelled header), "model: vector"
+// or "libstdc++ (fallback: <why>)" when the unit does not compile against the
+// models (it is then lowered with the platform library, never skipped).
 
 // ---------------------------------------------------------------------------
 // Library models (roadmap 2.6, docs/PIR.md "Library models")
 // ---------------------------------------------------------------------------
 
-// C sources of the operational models (src/prism/pir/models/libc/*.c),
-// embedded in the binary at build time: (file name, text).
+// Sources of the operational models, embedded in the binary at build time:
+// (file name, text). C models (src/prism/pir/models/libc/*.c, prism_model.h)
+// by file name; C++ library model headers as "cxx/<header>".
 PRISM_API const std::vector<std::pair<std::string, std::string>>& model_sources();
+// Write the C++ model headers ("cxx/..." sources) into dir; false on an I/O error.
+PRISM_API bool write_cxx_models(const std::filesystem::path& dir);
 
 struct ModelLibrary {
     std::vector<ir::Module> units;  // lowered model files

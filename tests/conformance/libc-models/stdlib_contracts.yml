@@ -10,11 +10,24 @@ expected:
   calloc_null_false: false
   realloc_true: true
   realloc_uaf_false: false
+  realloc_null_true: true
+  realloc_null_uninit_false: false
+  realloc_zero_true: true
+  realloc_zero_uaf_false: false
+  realloc_zero_double_free_false: false
+  realloc_shrink_true: true
+  realloc_shrink_oob_false: false
+  realloc_grow_true: true
+  realloc_grow_uninit_false: false
+  realloc_stack_false: false
+  realloc_freed_false: false
   free_null_true: true
   free_double_false: false
   free_stack_false: false
   abs_true: true
   abs_intmin_false: false
+  labs_min_false: false
+  llabs_min_false: false
   strtol_true: true
   atoi_unterminated_false: false
   rand_true: true
@@ -32,3 +45,12 @@ expect_class:  # the violation each false harness plants
   atoi_unterminated_false: "MEM-OOB-READ"
   rand_range_false: "FUNC-CONTRACT"
   getenv_null_false: "PTR-NULL-DEREF|MEM-NULL-DEREF|NULL-DEREF"
+  realloc_null_uninit_false: "UNINIT-READ"
+  realloc_zero_uaf_false: "MEM-UAF"
+  realloc_zero_double_free_false: "MEM-DOUBLE-FREE"
+  realloc_shrink_oob_false: "MEM-OOB-WRITE"
+  realloc_grow_uninit_false: "UNINIT-READ"
+  realloc_stack_false: "MEM-INVALID-FREE"
+  realloc_freed_false: "MEM-DOUBLE-FREE"
+  labs_min_false: "INT-SIGNED-OVF"
+  llabs_min_false: "INT-SIGNED-OVF"
