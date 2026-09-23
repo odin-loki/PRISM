@@ -58,6 +58,7 @@ struct RegressTest {
     std::string cls;
     std::string args;          // "x=2147483647, y=1" (C literals, in parameter order)
     std::string harness;       // path of the generated harness (relative to out_dir)
+    std::string flags;         // sanitizer build flags (UBSan+ASan; MSan for uninitialised reads)
     // written | unsupported | reproduces | does-not-reproduce | compile-error | NOTRUN
     std::string status;
     std::string detail;
@@ -95,7 +96,7 @@ PRISM_API std::shared_ptr<Embedder> connect_embedder(std::string* why);
 PRISM_API void set_embedder_for_testing(std::shared_ptr<Embedder> e);  // nullptr: back to env
 
 struct TriageOptions {
-    double threshold = 0.55;      // cosine similarity for a union-find edge
+    double threshold = 0.7;       // cosine similarity for a union-find edge (docs/AI.md "Triage")
     bool use_embedder = true;     // try the embedding model when one is reachable
     std::filesystem::path root;   // source root for snippets ("" = report.root)
 };

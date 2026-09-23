@@ -742,3 +742,33 @@ TEST_CASE("ai-assist predict collect conformance logs") {
     MESSAGE("collected ", nfn, " functions, ", nvc, " VCs in ", elapsed(), " s");
 }
 #endif
+
+TEST_CASE("ai-assist regress: uninitialised reads get a MemorySanitizer build and a used result") {
+    auto root = assist_tmp("regress-msan");
+    write(root / "u.c", "int uninit_bad(int c) {\n    int x;\n    if (c) x = 1;\n    return x;\n}\n");
+    prism::RunReport r;
+    r.root = root.string();
+    prism::FunctionInfo fn;
+    fn.file = "u.c";
+    fn.name = "uninit_bad";
+    fn.params = {{"int", "c"}};
+    r.functions.push_back(fn);
+    prism::StageResult s{"bmc", "ok", "", 0, 0, {}, 0, ""};
+    s.findings.push_back(mk("bmc", "FAILED", "u.c", "uninit_bad", 1, "UNINIT-READ", "uninit", "c=#x00000000"));
+    r.stages = {s};
+    prism::ai::RegressOptions opt;
+    opt.out_dir = root / "out";
+    opt.framework = "ctest";
+    auto res = prism::ai::generate_regression_tests(r, opt);
+    REQUIRE(res.tests.size() == 1);
+    CHECK(res.tests[0].flags.find("-fsanitize=memory") != std::string::npos);
+    CHECK(slurp(opt.out_dir / "u_uninit_bad.c").find("if (uninit_bad((int)0LL)) prism_regress_sink_ = 1;") !=
+          std::string::npos);
+    CHECK(slurp(opt.out_dir / "CMakeLists.txt").find("PRIVATE ${PRISM_MSAN_FLAGS}") != std::string::npos);
+    if (std::system("clang -fsanitize=memory -x c /dev/null -c -o /dev/null >/dev/null 2>&1") == 0) {
+        opt.run = true;
+        opt.allow_exec = true;
+        auto ran = prism::ai::generate_regression_tests(r, opt);
+        CHECK_MESSAGE(ran.tests[0].status == "reproduces", ran.tests[0].detail);
+    }
+}

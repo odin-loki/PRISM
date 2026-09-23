@@ -11,8 +11,9 @@
 //     at the finding's line;
 //   * character 3-grams of the normalised message + snippet;
 // compared by cosine similarity; pairs above a threshold are joined with
-// union-find. Only pairs that share a file, a class or a function are
-// compared (blocking), so large reports stay near-linear.
+// union-find. Exact duplicates (same file, line and class) always join;
+// similarity edges are only drawn within one file (blocking), so large
+// reports stay near-linear and unrelated functions are not chained together.
 //
 // When a small code embedding model is reachable (llama.cpp /embedding at
 // PRISM_EMBED_SERVER), the similarity is the mean of the TF-IDF cosine and
@@ -248,7 +249,7 @@ std::map<std::string, double> raw_features(const std::string& text) {
         auto key = line.substr(0, sp);
         auto val = line.substr(sp + 1);
         if (key == "cls" || key == "fn" || key == "file" || key == "status") {
-            if (!val.empty()) tf[key + ":" + val] += key == "cls" ? 3.0 : key == "status" ? 0.5 : 2.0;
+            if (!val.empty()) tf[key + ":" + val] += key == "fn" ? 8.0 : key == "cls" ? 3.0 : key == "status" ? 0.5 : 2.0;
             for (auto& w : words(normalise(val)))
                 if (w.size() > 1) tf["w:" + w] += 1.0;
             continue;
@@ -398,22 +399,28 @@ TriageResult triage(const RunReport& report, const TriageOptions& opt) {
         return s;
     };
 
-    // Blocking: only pairs sharing a file, class or function are compared.
+    // Edges: (1) the exact duplicate key (file, line, class) always joins;
+    // (2) a similarity edge joins two findings of the SAME file whose cosine
+    // reaches the threshold (blocking by file: comparing across files let
+    // union-find chain unrelated functions through a shared class, which
+    // measured far worse, docs/AI.md "Triage").
+    UnionFind uf(items.size());
+    std::map<std::string, std::size_t> exact;
     std::map<std::string, std::vector<std::size_t>> blocks;
     for (std::size_t i = 0; i < items.size(); ++i) {
         const auto& f = *items[i].f;
-        if (!f.file.empty()) blocks["file:" + f.file].push_back(i);
-        if (!f.cls.empty()) blocks["cls:" + lower(f.cls)].push_back(i);
-        if (f.function && !f.function->empty()) blocks["fn:" + *f.function].push_back(i);
+        auto key = f.file + "|" + std::to_string(f.line.value_or(0)) + "|" + f.cls;
+        if (!f.file.empty() && f.line) {
+            auto [it, fresh] = exact.emplace(key, i);
+            if (!fresh) uf.unite(it->second, i);
+        }
+        if (!f.file.empty()) blocks[f.file].push_back(i);
     }
-    UnionFind uf(items.size());
-    std::set<std::pair<std::size_t, std::size_t>> done;
     for (auto& [k, v] : blocks) {
         if (v.size() < 2 || v.size() > 3000) continue;
         for (std::size_t a = 0; a < v.size(); ++a)
             for (std::size_t b = a + 1; b < v.size(); ++b) {
-                auto key = std::make_pair(v[a], v[b]);
-                if (uf.find(v[a]) == uf.find(v[b]) || !done.insert(key).second) continue;
+                if (uf.find(v[a]) == uf.find(v[b])) continue;
                 if (sim(v[a], v[b]) >= opt.threshold) uf.unite(v[a], v[b]);
             }
     }
@@ -425,6 +432,7 @@ TriageResult triage(const RunReport& report, const TriageOptions& opt) {
         int sev;
         std::string file;
         int line;
+        std::size_t corroboration = 0;  // distinct stages reporting a defect-class status
     };
     std::vector<Pending> pend;
     for (auto& [root_i, mem] : groups) {
@@ -462,11 +470,17 @@ TriageResult triage(const RunReport& report, const TriageOptions& opt) {
         p.sev = severity(rep.status);
         p.file = rep.file;
         p.line = rep.line.value_or(0);
+        std::set<std::string> ds;
+        for (auto i : mem)
+            if (severity(items[i].f->status) <= 2) ds.insert(items[i].f->stage);  // CRASH / FAILED / SANFAIL
+        p.corroboration = ds.size();
         pend.push_back(std::move(p));
     }
-    // Rank: severity, then corroboration (distinct stages), then size, then location.
+    // Rank: severity, then corroboration (distinct stages reporting a defect), then
+    // distinct stages, then size, then location.
     std::sort(pend.begin(), pend.end(), [](const Pending& a, const Pending& b) {
         if (a.sev != b.sev) return a.sev < b.sev;
+        if (a.corroboration != b.corroboration) return a.corroboration > b.corroboration;
         if (a.c.stages.size() != b.c.stages.size()) return a.c.stages.size() > b.c.stages.size();
         if (a.c.members.size() != b.c.members.size()) return a.c.members.size() > b.c.members.size();
         if (a.file != b.file) return a.file < b.file;

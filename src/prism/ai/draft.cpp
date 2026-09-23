@@ -154,7 +154,7 @@ Draft draft_template(const RunReport& report, const std::string& kind, const std
     // --- defects, ordered by the triage clusters
     DraftSection defects{"Defects found", {}};
     {
-        auto tri = triage(report, TriageOptions{0.55, false, {}});
+        auto tri = triage(report, [] { TriageOptions o; o.use_embedder = false; return o; }());
         int n = 0;
         for (auto& c : tri.clusters) {
             if (c.top_status != "FAILED" && c.top_status != "CRASH" && c.top_status != "SANFAIL") continue;
@@ -165,11 +165,20 @@ Draft draft_template(const RunReport& report, const std::string& kind, const std
             cl.text = rep->status + ": " + (rep->cls.empty() ? rep->message.substr(0, 80) : rep->cls) + " at " +
                       where(*rep);
             if (!rep->counterexample.empty()) cl.text += ", counterexample " + rep->counterexample.substr(0, 80);
-            if (c.stages.size() > 1) {
-                cl.text += " (reported by " + std::to_string(c.stages.size()) + " stages: ";
-                for (std::size_t i = 0; i < c.stages.size(); ++i) cl.text += (i ? ", " : "") + c.stages[i];
+            // Corroboration counts only stages that report a defect for it;
+            // related NEEDS-HARNESS / ERROR rows are linked but not counted.
+            std::vector<std::string> by;
+            for (auto& m : c.members)
+                if (const Finding* g = find_by_id(report, m);
+                    g && (g->status == "FAILED" || g->status == "CRASH" || g->status == "SANFAIL") &&
+                    std::find(by.begin(), by.end(), g->stage) == by.end())
+                    by.push_back(g->stage);
+            if (by.size() > 1) {
+                cl.text += " (reported by " + std::to_string(by.size()) + " stages: ";
+                for (std::size_t i = 0; i < by.size(); ++i) cl.text += (i ? ", " : "") + by[i];
                 cl.text += ")";
             }
+            if (c.members.size() > by.size()) cl.text += "; related findings are linked";
             cl.text += ".";
             cl.links.push_back("verdict:" + c.representative);
             for (std::size_t i = 1; i < c.members.size() && i < 8; ++i) cl.links.push_back("finding:" + c.members[i]);

@@ -200,14 +200,21 @@ int main(int argc, char** argv) {
         if (sub == "ask") return ai::ask_main(argc - 2, argv + 2);
         if (sub == "draft") return ai::draft_main(argc - 2, argv + 2);
         if (sub == "triage") {
-            std::filesystem::path rp = argc > 2 ? argv[2] : "prism-out";
+            std::filesystem::path rp = "prism-out";
+            ai::TriageOptions topt;
+            for (int i = 2; i < argc; ++i) {
+                std::string a = argv[i];
+                if (a == "--threshold" && i + 1 < argc) topt.threshold = std::stod(argv[++i]);
+                else if (a == "--no-embed") topt.use_embedder = false;
+                else rp = a;
+            }
             if (std::filesystem::is_regular_file(rp)) rp = rp.parent_path();
             auto rep = RunReport::load(rp / "report.json");
             if (!rep) {
                 std::cerr << "ERROR triage: cannot read " << (rp / "report.json").string() << "\n";
                 return 2;
             }
-            auto t = ai::triage(*rep);
+            auto t = ai::triage(*rep, topt);
             std::ofstream(rp / "triage.json", std::ios::binary) << ai::triage_json(t);
             std::cout << ai::triage_markdown(t, *rep);
             return 0;
@@ -279,7 +286,7 @@ int main(int argc, char** argv) {
                 "  prism regress [--report OUT/report.json] [--write-tests DIR] [--run --allow-exec]\n"
                 "  prism ask \"<question>\" [--report OUT/report.json] [--json] [--no-llm]\n"
                 "  prism draft [--report OUT/report.json] [--kind report|assurance]\n"
-                "  prism triage [OUT]\n";
+                "  prism triage [OUT] [--threshold T] [--no-embed]\n";
             return 0;
         } else if (!a.starts_with("-")) {
             path = a;

@@ -12,6 +12,7 @@ where one exists; the numbers go into docs/AI.md.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import subprocess
 import sys
@@ -51,10 +52,19 @@ def pairwise(groups: list[list[str]], label: dict[str, str]) -> dict[str, float]
     return {"precision": round(p, 4), "recall": round(r, 4), "f1": round(f1, 4), "groups": len(groups)}
 
 
-def measure_triage(out: Path) -> dict[str, Any]:
+def in_split(file: str, split: str) -> bool:
+    """Deterministic half split by source file: "tune" (threshold chosen here) / "eval"."""
+    if split == "all":
+        return True
+    h = int(hashlib.sha256((file or "").encode()).hexdigest()[:8], 16) % 2
+    return (h == 0) == (split == "tune")
+
+
+def measure_triage(out: Path, split: str = "all", triage_json: Path | None = None) -> dict[str, Any]:
     report = json.loads((out / "report.json").read_text(encoding="utf-8"))
-    tri = json.loads((out / "triage.json").read_text(encoding="utf-8"))
-    fs = {k: f for k, f in findings(report).items() if f.get("status") in TRIAGE_STATUSES}
+    tri = json.loads((triage_json or out / "triage.json").read_text(encoding="utf-8"))
+    fs = {k: f for k, f in findings(report).items()
+          if f.get("status") in TRIAGE_STATUSES and in_split(f.get("file") or "", split)}
     # Proxy root cause: the function (file + name); findings without one keep
     # their own (file, line). Documented as a proxy in docs/AI.md.
     label = {k: f"{f.get('file')}::{f.get('function') or ('L' + str(f.get('line')))}" for k, f in fs.items()}
@@ -64,7 +74,8 @@ def measure_triage(out: Path) -> dict[str, Any]:
     exact: dict[tuple[Any, ...], list[str]] = {}
     for k, f in fs.items():
         exact.setdefault((f.get("file"), f.get("line"), f.get("cls")), []).append(k)
-    clusters = [c["members"] for c in tri.get("clusters", [])]
+    clusters = [[m for m in c["members"] if m in fs] for c in tri.get("clusters", [])]
+    clusters = [c for c in clusters if c]
     return {"findings": len(fs), "labels": len(set(label.values())),
             "baseline_identical": pairwise(list(base.values()), label),
             "baseline_file_line_cls": pairwise(list(exact.values()), label),
@@ -123,9 +134,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("out", type=Path)
     ap.add_argument("questions", type=Path, nargs="?")
     ap.add_argument("--prism", default="build/prism")
+    ap.add_argument("--split", choices=["all", "tune", "eval"], default="all")
+    ap.add_argument("--triage-json", type=Path)
     a = ap.parse_args(argv)
     if a.what == "triage":
-        r = measure_triage(a.out)
+        r = measure_triage(a.out, a.split, a.triage_json)
     elif a.what == "ask":
         if not a.questions:
             ap.error("ask needs a questions file")

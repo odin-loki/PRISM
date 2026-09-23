@@ -316,6 +316,16 @@ std::string detect_framework(const fs::path& root, std::string* evidence) {
 namespace {
 
 const std::string kSanFlags = "-O0 -g -fsanitize=undefined,address -fno-sanitize-recover=all -fno-omit-frame-pointer";
+// Uninitialised reads are invisible to UBSan/ASan: MemorySanitizer (clang,
+// cannot be combined with ASan) for those classes.
+const std::string kMsanFlags =
+    "-O0 -g -fsanitize=memory -fsanitize-memory-track-origins -fno-sanitize-recover=all -fno-omit-frame-pointer";
+
+std::string flags_for(const std::string& cls) {
+    std::string u = cls;
+    for (auto& ch : u) ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+    return u.find("UNINIT") != std::string::npos ? kMsanFlags : kSanFlags;
+}
 
 bool is_cxx_file(const std::string& f) {
     auto e = lower(fs::path(f).extension().string());
@@ -388,7 +398,8 @@ std::string case_source(const Case& c, bool with_main) {
       << " * aborts (test FAILS) while the defect is present and returns (test passes) once fixed. */\n"
       << "#define main prism_regress_user_main_\n"
       << "#include " << cstr(c.include) << "\n"
-      << "#undef main\n\n";
+      << "#undef main\n\n"
+      << "static volatile int prism_regress_sink_;\n";
     if (c.cxx) o << "extern \"C++\" ";
     o << "void prism_regress_" << c.t.name << "(void) {\n    " << c.call << ";\n}\n";
     if (with_main) {
@@ -409,11 +420,10 @@ void write_plain(const fs::path& dir, const std::vector<Case>& cases) {
     sh << "#!/bin/sh\n# PRISM regression tests (roadmap 9.3). Each test FAILS while its defect is present.\n"
        << "# CC / CXX select the compiler (default clang / clang++).\n"
        << "cd \"$(dirname \"$0\")\" || exit 2\nCC=${CC:-clang}\nCXX=${CXX:-clang++}\n"
-       << "FLAGS=\"" << kSanFlags << "\"\n"
        << "export UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 ASAN_OPTIONS=detect_leaks=0\n"
        << "mkdir -p bin\nfail=0\n";
     for (auto& c : cases) {
-        sh << "if " << (c.cxx ? "$CXX" : "$CC") << " $FLAGS " << case_file(c) << " -o bin/" << c.t.name
+        sh << "if " << (c.cxx ? "$CXX" : "$CC") << " " << c.t.flags << " " << case_file(c) << " -o bin/" << c.t.name
            << (c.cxx ? "" : " -lm") << " 2>bin/" << c.t.name << ".build.log; then\n"
            << "  if ./bin/" << c.t.name << " >bin/" << c.t.name << ".log 2>&1; then echo \"PASS " << c.t.name
            << "\"; else echo \"FAIL " << c.t.name << " (" << comment_safe(c.t.cls) << ")\"; fail=1; fi\n"
@@ -432,7 +442,8 @@ void write_cmake(const fs::path& dir, const std::vector<Case>& cases, const std:
       << "# cmake -S . -B build && cmake --build build && ctest --test-dir build\n"
       << "# Each test FAILS while its defect is present (sanitizer abort) and passes once fixed.\n"
       << "cmake_minimum_required(VERSION 3.16)\nproject(prism_regression C CXX)\nenable_testing()\n"
-      << "set(PRISM_SAN_FLAGS " << kSanFlags << ")\n";
+      << "set(PRISM_SAN_FLAGS " << kSanFlags << ")\n"
+      << "set(PRISM_MSAN_FLAGS " << kMsanFlags << ")  # uninitialised-read classes\n";
     if (fw == "gtest") o << "find_package(GTest REQUIRED)\n";
     if (fw == "catch2") o << "find_package(Catch2 3 REQUIRED)\n";
     for (auto& c : cases) {
@@ -449,8 +460,9 @@ void write_cmake(const fs::path& dir, const std::vector<Case>& cases, const std:
             o << "add_executable(" << exe << " " << case_file(c) << ")\n";
             if (!c.cxx) o << "target_link_libraries(" << exe << " PRIVATE m)\n";
         }
-        o << "target_compile_options(" << exe << " PRIVATE ${PRISM_SAN_FLAGS})\n"
-          << "target_link_options(" << exe << " PRIVATE ${PRISM_SAN_FLAGS})\n"
+        const std::string fv = c.t.flags == kMsanFlags ? "${PRISM_MSAN_FLAGS}" : "${PRISM_SAN_FLAGS}";
+        o << "target_compile_options(" << exe << " PRIVATE " << fv << ")\n"
+          << "target_link_options(" << exe << " PRIVATE " << fv << ")\n"
           << "add_test(NAME " << exe << " COMMAND " << exe << ")\n"
           << "set_tests_properties(" << exe << " PROPERTIES ENVIRONMENT " << sanitizer_env_cmake() << ")\n";
         if (fw == "gtest") {
@@ -483,18 +495,18 @@ void write_pytest(const fs::path& dir, const std::vector<Case>& cases) {
       << "CC / CXX select the compiler (default clang / clang++).\n\"\"\"\n\n"
       << "import os\nimport shutil\nimport subprocess\nfrom pathlib import Path\n\nimport pytest\n\n"
       << "HERE = Path(__file__).resolve().parent\n"
-      << "FLAGS = \"" << kSanFlags << "\".split()\n"
       << "CASES = [\n";
     for (auto& c : cases)
-        o << "    (" << cstr(c.t.name) << ", " << cstr(case_file(c)) << ", " << (c.cxx ? "True" : "False") << "),\n";
+        o << "    (" << cstr(c.t.name) << ", " << cstr(case_file(c)) << ", " << (c.cxx ? "True" : "False") << ", "
+          << cstr(c.t.flags) << "),\n";
     o << "]\n\n\n"
-      << "@pytest.mark.parametrize(\"name,src,cxx\", CASES, ids=[c[0] for c in CASES])\n"
-      << "def test_prism_regression(name, src, cxx, tmp_path):\n"
+      << "@pytest.mark.parametrize(\"name,src,cxx,flags\", CASES, ids=[c[0] for c in CASES])\n"
+      << "def test_prism_regression(name, src, cxx, flags, tmp_path):\n"
       << "    cc = os.environ.get(\"CXX\" if cxx else \"CC\", \"clang++\" if cxx else \"clang\")\n"
       << "    if not shutil.which(cc):\n"
       << "        pytest.skip(f\"NOTRUN: compiler {cc} not found\")\n"
       << "    exe = tmp_path / name\n"
-      << "    b = subprocess.run([cc, *FLAGS, str(HERE / src), \"-o\", str(exe)] + ([] if cxx else [\"-lm\"]),\n"
+      << "    b = subprocess.run([cc, *flags.split(), str(HERE / src), \"-o\", str(exe)] + ([] if cxx else [\"-lm\"]),\n"
       << "                       capture_output=True, text=True)\n"
       << "    assert b.returncode == 0, b.stderr\n"
       << "    env = dict(os.environ, UBSAN_OPTIONS=\"halt_on_error=1:print_stacktrace=1\", ASAN_OPTIONS=\"detect_leaks=0\")\n"
@@ -586,7 +598,8 @@ RegressResult generate_regression_tests(const RunReport& report, const RegressOp
         std::string call = *f.function + "(";
         for (std::size_t i = 0; i < args.size(); ++i) call += (i ? ", " : "") + args[i];
         call += ")";
-        if (fn->return_type != "void") call = "(void)" + call;
+        if (scalar_of(fn->return_type)) call = "if (" + call + ") prism_regress_sink_ = 1";  // a use (MSan)
+        else if (fn->return_type != "void") call = "(void)" + call;
         auto key = src.string() + "|" + call;
         std::string base = ident(fs::path(f.file).stem().string() + "_" + *f.function);
         if (!seen_calls.insert(key).second) {
@@ -622,6 +635,7 @@ RegressResult generate_regression_tests(const RunReport& report, const RegressOp
         c.stage = f.stage;
         c.status = f.status;
         t.harness = t.name + (c.cxx ? ".cpp" : ".c");
+        t.flags = flags_for(f.cls);
         t.status = "written";
         c.t = t;
         cases.push_back(c);
@@ -648,7 +662,7 @@ RegressResult generate_regression_tests(const RunReport& report, const RegressOp
             fs::path bin = dir / "bin";
             fs::create_directories(bin, ec);
             std::vector<std::string> argv{cc};
-            std::istringstream fl(kSanFlags);
+            std::istringstream fl(t.flags);
             for (std::string w; fl >> w;) argv.push_back(w);
             argv.push_back((dir / t.harness).string());
             argv.push_back("-o");
@@ -686,13 +700,15 @@ RegressResult generate_regression_tests(const RunReport& report, const RegressOp
     m["framework"] = res.framework;
     m["framework_evidence"] = res.framework_evidence;
     m["sanitizer_flags"] = kSanFlags;
+    m["msan_flags"] = kMsanFlags;
     m["note"] = "Each test fails while its defect is present and passes once it is fixed. "
                 "Generated from report.json; no model involved; statuses in the report are unchanged.";
     m["tests"] = nlohmann::json::array();
     for (auto& t : res.tests)
         m["tests"].push_back({{"name", t.name}, {"finding", t.finding_id}, {"file", t.file},
                               {"function", t.function}, {"cls", t.cls}, {"args", t.args},
-                              {"harness", t.harness}, {"status", t.status}, {"detail", t.detail}});
+                              {"harness", t.harness}, {"flags", t.flags}, {"status", t.status},
+                              {"detail", t.detail}});
     res.manifest = dir / "manifest.json";
     write_text(res.manifest, m.dump(2));
     return res;
