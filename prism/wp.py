@@ -22,6 +22,7 @@ Unencodable ACSL (\\valid, \\forall, \\old, ...) is ERROR, not a proof.
 from __future__ import annotations
 
 import re
+from typing import Any
 
 from prism import laws
 from prism.cparse import body_needs_pointer_harness
@@ -90,7 +91,7 @@ def run_wp(functions: list[FunctionInfo], unwind: int = 8) -> list[Finding]:
         ens: list[str] = spec.get("ensures") or []
         if not ens:
             continue
-        base = dict(
+        base: dict[str, Any] = dict(
             stage="wp", file=fn.file, function=fn.name, line=fn.line,
             cls="FUNC-CONTRACT", strength=laws.STRENGTH_PROVES,
         )
@@ -146,7 +147,7 @@ def run_wp(functions: list[FunctionInfo], unwind: int = 8) -> list[Finding]:
         ensures = " && ".join(encoded_ens)
         returns = [m.strip() for m in _RETURN.findall(fn.body or "")][:8]
         vcs = [_subst_result(ensures, expr) for expr in returns] or [ensures]
-        extra = {
+        extra: dict[str, Any] = {
             "engine": "prism-wp",
             "wp": "return-substitution",
             "wp_returns": returns,

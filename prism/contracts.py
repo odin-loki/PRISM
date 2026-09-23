@@ -7,8 +7,10 @@ is an explicit harness, recorded on the finding.
 from __future__ import annotations
 
 from dataclasses import replace
+import os
 from pathlib import Path
 import re
+from typing import Any
 
 from prism import laws
 from prism.bmc import bmc_function
@@ -163,7 +165,7 @@ def bmc_function_with_assume(
     invariant: str | None = None,
 ) -> Finding:
     """Instrument requires as an early return (assume) and ensures as assert."""
-    base = dict(
+    base: dict[str, Any] = dict(
         stage="contracts", file=fn.file, function=fn.name, line=fn.line,
         cls="FUNC-CONTRACT", strength=laws.STRENGTH_PROVES,
     )
@@ -570,12 +572,32 @@ def _rewrite_returns(body: str, ensures: str) -> str:
     return re.sub(r"\breturn\s+([^;]+);", repl, body)
 
 
+# Fallback corpus for bare file names. Resolved once: resolve() stats every
+# path component and _locate_source runs for every function.
+_TESTDATA = Path(__file__).resolve().parents[1] / "testdata"
+
+
+# parse_comments re-reads the source once per function; functions of one
+# file arrive together. Keyed on absolute path + mtime + size so an edited
+# file is re-read. Bounded: cleared when it grows past _SOURCE_CACHE_MAX.
+_SOURCE_CACHE: dict[tuple[str, int, int], str] = {}
+_SOURCE_CACHE_MAX = 64
+
+
 def _read_source(fn: FunctionInfo) -> str:
     p = _locate_source(fn)
     if p is None:
         return ""
     try:
-        return p.read_text(encoding="utf-8", errors="replace")
+        st = p.stat()
+        key = (os.path.abspath(p), st.st_mtime_ns, st.st_size)
+        text = _SOURCE_CACHE.get(key)
+        if text is None:
+            text = p.read_text(encoding="utf-8", errors="replace")
+            if len(_SOURCE_CACHE) >= _SOURCE_CACHE_MAX:
+                _SOURCE_CACHE.clear()
+            _SOURCE_CACHE[key] = text
+        return text
     except OSError:
         return ""
 
@@ -589,7 +611,7 @@ def _locate_source(fn: FunctionInfo) -> Path | None:
     cwd = Path.cwd() / p
     if cwd.is_file():
         return cwd
-    td = Path(__file__).resolve().parents[1] / "testdata" / p.name
+    td = _TESTDATA / p.name
     if td.is_file():
         return td
     return None
