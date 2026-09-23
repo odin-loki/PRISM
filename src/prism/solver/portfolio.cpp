@@ -22,6 +22,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cstdio>
 #include <condition_variable>
 #include <deque>
 #include <memory>
@@ -178,6 +179,7 @@ struct Member {
     std::vector<std::string> argv;  // "{input}" / "{proof}" placeholders
     std::string version;
     double est = 1.0;
+    double not_before = 0.0;        // scheduler head start for a historic winner
     bool lrat = false;              // certified CaDiCaL: writes the LRAT proof
     // runtime
     bool started = false, finished = false;
@@ -531,16 +533,36 @@ SolveResult solve(z3::context& c, const z3::expr& formula, const SolveOptions& o
             notes.push_back("not certified: cadical not found (NOTRUN)");
         }
     }
-    // Scheduler: history mean when there are >= 2 samples, else the rules.
+    // Scheduler. Expected time = the bucket's recorded mean for that member
+    // when there is one, else the feature rules. The member with the lowest
+    // recorded mean that has also won in this bucket before gets a head
+    // start: the others wait min(3 x its mean + 0.2 s, 30% of the timeout)
+    // so they do not compete with it for cores. The certificate member is
+    // never delayed.
     const auto& hb = hist["buckets"].contains(res.bucket) ? hist["buckets"][res.bucket] : json::object();
-    for (auto& m : members) {
+    std::optional<std::size_t> lead;
+    for (std::size_t i = 0; i < members.size(); ++i) {
+        auto& m = members[i];
         m.est = rule_estimate(m.name, ft);
-        if (hb.contains(m.name)) {
-            auto n = hb[m.name].value("n", 0);
-            if (n >= 2) m.est = hb[m.name].value("total", 0.0) / n;
+        if (hb.contains(m.name) && hb[m.name].is_object()) {
+            const auto n = hb[m.name].value("n", 0);
+            if (n >= 1) {
+                m.est = hb[m.name].value("total", 0.0) / n;
+                if (hb[m.name].value("wins", 0) >= 1 && (!lead || m.est < members[*lead].est)) lead = i;
+            }
         }
-        if (m.lrat) m.est = -1;  // the certificate path always gets a slot
     }
+    if (lead && members.size() > 1) {
+        const double delay = std::min(3.0 * members[*lead].est + 0.2, 0.3 * opt.timeout_s);
+        for (std::size_t i = 0; i < members.size(); ++i)
+            if (i != *lead && !members[i].lrat) members[i].not_before = t0 + delay;
+        char buf[160];
+        std::snprintf(buf, sizeof buf, "scheduler: %s leads by %.2fs (history, bucket %s)",
+                      members[*lead].name.c_str(), delay, res.bucket.c_str());
+        notes.push_back(buf);
+    }
+    for (auto& m : members)
+        if (m.lrat) m.est = -1;  // the certificate path always gets a slot
     std::stable_sort(members.begin(), members.end(), [](const Member& a, const Member& b) { return a.est < b.est; });
     if (members.empty()) {
         res.kind = Kind::Unknown;
@@ -716,6 +738,7 @@ SolveResult solve(z3::context& c, const z3::expr& formula, const SolveOptions& o
         for (std::size_t i = 0; i < members.size(); ++i) {
             Member& m = members[i];
             if (m.started || m.finished) continue;
+            if (m.not_before > now_s()) continue;
             const bool on_cnf = m.kind == MemberKind::Dimacs || m.kind == MemberKind::Sls;
             if (running >= slots && !m.lrat) break;
             if (on_cnf) {
@@ -755,8 +778,17 @@ SolveResult solve(z3::context& c, const z3::expr& formula, const SolveOptions& o
                                   return !m.started && !m.finished;
                               });
         if (!any_live) break;
+        double wake = deadline;
+        for (const auto& m : members)
+            if (!m.started && !m.finished && m.not_before > 0) wake = std::min(wake, m.not_before);
         Msg msg;
-        if (!board.wait(msg, deadline)) { timed_out = true; break; }
+        if (!board.wait(msg, wake)) {
+            if (now_s() >= deadline) { timed_out = true; break; }
+            if (!accepted) fill_slots();
+            for (auto& m : members)  // due now: never wait on them again
+                if (m.not_before <= now_s()) m.not_before = 0;
+            continue;
+        }
         if (msg.type == Msg::CnfReady || msg.type == Msg::CnfFailed) {
             --running;
             if (msg.type == Msg::CnfReady) {
