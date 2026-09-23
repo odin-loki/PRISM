@@ -1,6 +1,7 @@
 """Optional adapters: a missing tool is NOTRUN, never CLEAN.
 
-Search order: config/explicit, vendored third_party/<name>/, PATH.
+Search order: config/explicit, the pinned fetch_deps build under
+~/.prism/tools/<name>/<commit>/, PATH.
 python -m unittest tests.test_adapters
 """
 
@@ -23,7 +24,13 @@ from prism.adapters_extra import (
     _run_cbmc,
     run_optional_tools,
 )
-from prism.config import Config, adapter_install, find_vendored_exe, resolve_adapter
+from prism.config import (
+    Config,
+    adapter_install,
+    find_vendored_exe,
+    pinned_commit,
+    resolve_adapter,
+)
 from prism.cparse import extract_functions
 from prism.models import Finding
 from prism.wp import run_wp
@@ -53,7 +60,7 @@ class TestOptionalAdapters(unittest.TestCase):
         expected = [spec[0] for spec in OPTIONAL_TOOLS] + ["libfuzzer"]
         self.assertEqual(expected, [
             "klee", "afl-fuzz", "frama-c", "infer",
-            "codeql", "clang-tidy", "cbmc", "strix",
+            "clang-tidy", "cbmc", "strix",
             "semgrep", "spatch", "libfuzzer",
         ])
         for name in expected:
@@ -63,8 +70,9 @@ class TestOptionalAdapters(unittest.TestCase):
             self.assertNotEqual(f.status, laws.CLEAN)
             install = (f.extra or {}).get("install", "")
             self.assertTrue(install, msg=f"{name} has no install hint")
-            self.assertIn("SOURCES.md", install)
-            self.assertIn("third_party", install)
+            self.assertIn("third_party/MANIFEST.toml", install)
+            if name not in ("clang-tidy", "libfuzzer"):
+                self.assertIn("scripts/fetch_deps.py --tool", install, msg=name)
             if name == "libfuzzer":
                 self.assertTrue(
                     "not on PATH" in f.message or "not found" in f.message,
@@ -169,13 +177,13 @@ class TestOptionalAdapters(unittest.TestCase):
         """Vendored stub that sh cannot exec is missing, not a failed analysis."""
         def fake_resolve(_cfg, stage, names):
             if stage == "frama-c" or "frama-c" in tuple(names):
-                return "/mnt/c/Code Analysis/third_party/Frama-C/bin/frama-c"
+                return "/opt/Code Analysis/.prism/tools/frama-c/bin/frama-c"
             return None
 
         missing = mock.Mock(
             returncode=127,
             stdout="",
-            stderr="sh: 1: /mnt/c/Code Analysis/third_party/Frama-C/bin/frama-c: not found\n",
+            stderr="sh: 1: /opt/Code Analysis/.prism/tools/frama-c/bin/frama-c: not found\n",
         )
         with mock.patch("prism.adapters_extra.resolve_adapter", side_effect=fake_resolve), \
              mock.patch("prism.adapters_extra._run", return_value=missing), \
@@ -272,28 +280,37 @@ class TestOptionalAdapters(unittest.TestCase):
                  mock.patch("prism.config.shutil.which", return_value=None):
                 self.assertIsNone(resolve_adapter(Config(), "infer", ("infer",)))
 
-    def test_vendored_shallow_glob_without_path(self):
+    def test_pinned_tools_dir_without_path(self):
+        """fetch_deps layout: <tools>/<component>/<manifest commit>/bin/<exe>."""
+        commit = pinned_commit("klee")
+        self.assertIsNotNone(commit, "klee must be pinned in third_party/MANIFEST.toml")
         with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            (root / "third_party").mkdir()
-            (root / "third_party" / "SOURCES.md").write_text("vendored\n", encoding="utf-8")
-            exe_dir = root / "third_party" / "klee" / "release" / "out"
+            tools = Path(td) / "tools"
+            exe_dir = tools / "klee" / str(commit) / "bin"
             exe_dir.mkdir(parents=True)
             exe = exe_dir / ("klee.exe" if sys.platform == "win32" else "klee")
             exe.write_bytes(b"MZ" if sys.platform == "win32" else b"\x7fELF")
             if sys.platform != "win32":
                 exe.chmod(0o755)
-            with mock.patch("prism.config.repo_root", return_value=root), \
+            # A build of any other commit is not the pinned tool.
+            other = tools / "klee" / ("0" * 40) / "bin"
+            other.mkdir(parents=True)
+            with mock.patch.dict("os.environ", {"PRISM_TOOLS_DIR": str(tools)}), \
                  mock.patch("prism.config.shutil.which", return_value=None):
                 hit = find_vendored_exe("klee", ("klee",))
-                resolved = resolve_adapter(Config(), "klee", ("klee",))
+                resolved = resolve_adapter(Config(root=ROOT / "testdata"), "klee", ("klee",))
             self.assertEqual(Path(hit).resolve(), exe.resolve())
             self.assertEqual(Path(resolved).resolve(), exe.resolve())
+            exe.unlink()
+            with mock.patch.dict("os.environ", {"PRISM_TOOLS_DIR": str(tools)}), \
+                 mock.patch("prism.config.shutil.which", return_value=None):
+                self.assertIsNone(find_vendored_exe("klee", ("klee",)))
 
-    def test_adapter_install_points_at_vendored_tree(self):
+    def test_adapter_install_points_at_fetch_deps(self):
         hint = adapter_install("esbmc")
-        self.assertIn("third_party/esbmc", hint)
-        self.assertIn("SOURCES.md", hint)
+        self.assertIn("python scripts/fetch_deps.py --tool esbmc", hint)
+        self.assertIn("third_party/MANIFEST.toml", hint)
+        self.assertNotIn("SOURCES.md", hint)
         self.assertNotIn("apt install", hint)
 
     def test_semgrep_match_is_failed(self):
@@ -362,8 +379,7 @@ class TestOptionalAdapters(unittest.TestCase):
         self.assertFalse(laws.is_proof(infer.status))
         install = (infer.extra or {}).get("install", "")
         self.assertEqual(install, adapter_install("infer"))
-        self.assertIn("third_party/infer", install)
-        self.assertIn("SOURCES.md", install)
+        self.assertIn("fetch_deps.py --tool infer", install)
         self.assertIn("not found", infer.message)
 
     def test_infer_no_issues_is_unknown_not_clean(self):
@@ -412,8 +428,7 @@ class TestOptionalAdapters(unittest.TestCase):
         self.assertFalse(laws.is_proof(frama.status))
         install = (frama.extra or {}).get("install", "")
         self.assertEqual(install, adapter_install("frama-c"))
-        self.assertIn("third_party/Frama-C", install)
-        self.assertIn("SOURCES.md", install)
+        self.assertIn("fetch_deps.py --tool frama-c", install)
         self.assertIn("not found", frama.message)
         self.assertFalse(any(f.stage == "wp" for f in findings))
 
@@ -494,7 +509,7 @@ class TestOptionalAdapters(unittest.TestCase):
         self.assertFalse(laws.is_proof(afl.status))
         self.assertIn("not found", afl.message)
         self.assertTrue((afl.extra or {}).get("install"))
-        self.assertIn("SOURCES.md", (afl.extra or {}).get("install", ""))
+        self.assertIn("fetch_deps.py --tool aflplusplus", (afl.extra or {}).get("install", ""))
 
     def test_afl_help_probe_is_never_clean_or_proved(self):
         def fake_resolve(_cfg, stage, names):
@@ -545,7 +560,7 @@ class TestOptionalAdapters(unittest.TestCase):
         self.assertNotEqual(lf.status, laws.PROVED)
         self.assertFalse(laws.is_proof(lf.status))
         self.assertTrue((lf.extra or {}).get("install"))
-        self.assertIn("SOURCES.md", (lf.extra or {}).get("install", ""))
+        self.assertIn("third_party/MANIFEST.toml", (lf.extra or {}).get("install", ""))
 
     def test_libfuzzer_successful_probe_is_never_clean_or_proved(self):
         compile_ok = mock.Mock(returncode=0, stdout="", stderr="")

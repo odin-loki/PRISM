@@ -390,7 +390,7 @@ class TestFuseLlm(unittest.TestCase):
         self.assertEqual(r.status, laws.CLEAN, r.message)
         self.assertEqual((r.extra or {}).get("afl"), "NOTRUN")
         self.assertNotEqual((r.extra or {}).get("engine"), "afl")
-        self.assertIn("AFLplusplus", (r.extra or {}).get("install") or "")
+        self.assertIn("fetch_deps.py --tool aflplusplus", (r.extra or {}).get("install") or "")
         self.assertIn("not a proof", r.message.lower())
         self.assertFalse(laws.is_proof(r.status))
 
@@ -406,7 +406,7 @@ class TestFuseLlm(unittest.TestCase):
             stage="libfuzzer", status=laws.NOTRUN, file=f.file, function=f.name,
             line=f.line, cls="", message="clang not on PATH",
             strength=laws.STRENGTH_FINDS,
-            extra={"install": "clang -fsanitize=fuzzer is not vendored (see third_party/SOURCES.md)"},
+            extra={"install": "clang -fsanitize=fuzzer is a system tool: apt install clang-18 (see third_party/MANIFEST.toml)"},
         )
         env = {k: v for k, v in os.environ.items() if k != "PRISM_AFL"}
         env["PRISM_LIBFUZZER"] = "1"

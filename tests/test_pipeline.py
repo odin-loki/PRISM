@@ -283,7 +283,7 @@ class TestPipeline(unittest.TestCase):
 
         missing = Finding(
             stage="esbmc", status=laws.NOTRUN, file="", function=None,
-            line=None, cls="", message="esbmc not found (config, vendored tree, PATH)",
+            line=None, cls="", message="esbmc not found (config, ~/.prism/tools, PATH)",
             strength=laws.STRENGTH_FINDS, extra={"install": "build from vendored"},
         )
         with tempfile.TemporaryDirectory(prefix="prism_esbmc_nr_") as td:

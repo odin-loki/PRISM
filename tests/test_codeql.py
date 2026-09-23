@@ -1,181 +1,68 @@
-"""CodeQL adapter honesty: missing is NOTRUN; silence is UNKNOWN; hits are FAILED.
+"""CodeQL is not invoked by PRISM (roadmap 1.2, licence firewall).
 
-CodeQL is STRENGTH_FINDS, never a proof. python -m unittest tests.test_codeql
+The CodeQL engine/CLI is under the GitHub CodeQL Terms, which restrict
+commercial use, so the adapter was removed from both engines. This file used
+to test that adapter's honesty; its premise changed, so it now locks the
+removal: no optional-tool row, no runner, no install hint, no coverage claim,
+and a `codeql` on PATH is never executed.
+python -m unittest tests.test_codeql
 """
 
 from __future__ import annotations
 
-import json
-import subprocess
+import re
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from prism import laws
-from prism.adapters_extra import _run_codeql, run_optional_tools
-from prism.config import Config
+from prism import adapters_extra, taxonomy
+from prism.adapters_extra import OPTIONAL_TOOLS, run_optional_tools
+from prism.config import VENDOR_DIR, Config
+
+ROOT = Path(__file__).resolve().parents[1]
+CPP = ROOT / "src" / "prism"
 
 
-def _no_adapter(*_a, **_k):
-    return None
+class TestCodeqlRemoved(unittest.TestCase):
+    def test_python_engine_has_no_codeql_adapter(self):
+        self.assertNotIn("codeql", [stage for stage, _names in OPTIONAL_TOOLS])
+        self.assertNotIn("codeql", VENDOR_DIR)
+        self.assertFalse(hasattr(adapters_extra, "_run_codeql"))
+        self.assertFalse(hasattr(adapters_extra, "_find_codeql_db"))
 
+    def test_cpp_engine_has_no_codeql_adapter(self):
+        for name in ("adapters.cpp", "config.cpp"):
+            src = (CPP / name).read_text(encoding="utf-8")
+            code = re.sub(r"//[^\n]*", "", src)  # a comment may say why it is gone
+            self.assertIsNone(re.search(r"codeql", code, re.I), msg=name)
 
-def _ok_proc():
-    return mock.Mock(returncode=0, stdout="", stderr="")
-
-
-def _sarif(results: list[dict]) -> str:
-    return json.dumps({"runs": [{"results": results}]})
-
-
-def _one_hit() -> dict:
-    return {
-        "ruleId": "cpp/use-after-free",
-        "message": {"text": "use after free"},
-        "locations": [{
-            "physicalLocation": {
-                "artifactLocation": {"uri": "foo.c"},
-                "region": {"startLine": 3},
-            },
-        }],
-    }
-
-
-class TestCodeqlHonesty(unittest.TestCase):
-    def _assert_finds_not_proof(self, f):
-        self.assertEqual(f.stage, "codeql")
-        self.assertEqual(f.strength, laws.STRENGTH_FINDS)
-        self.assertNotEqual(f.status, laws.PROVED)
-        self.assertNotEqual(f.status, laws.PROVED_UNBOUNDED)
-        self.assertNotEqual(f.status, laws.PROVED_ASSUMING)
-        self.assertNotEqual(f.status, laws.CLEAN)
-        self.assertFalse(laws.is_proof(f.status))
-
-    def test_missing_codeql_is_notrun_never_clean(self):
-        with mock.patch("prism.adapters_extra.resolve_adapter", side_effect=_no_adapter), \
-             mock.patch("prism.adapters_extra.shutil.which", return_value=None):
-            findings = run_optional_tools([], Config())
-        codeql = next(f for f in findings if f.stage == "codeql")
-        self.assertEqual(codeql.status, laws.NOTRUN)
-        self.assertNotEqual(codeql.status, laws.CLEAN)
-        self._assert_finds_not_proof(codeql)
-        self.assertIn("not found", codeql.message)
-
-    def test_no_database_is_unknown_never_proved(self):
+    def test_codeql_on_path_is_never_run(self):
+        """Even with a `codeql` binary present, no stage invokes it."""
         with tempfile.TemporaryDirectory() as td:
-            src = Path(td) / "foo.c"
-            src.write_text("int main(void) { return 0; }\n", encoding="utf-8")
-            findings = _run_codeql("codeql", [src], Config())
-        self.assertEqual(len(findings), 1)
-        f = findings[0]
-        self.assertEqual(f.status, laws.UNKNOWN)
-        self.assertIn("no database", f.message.lower())
-        self._assert_finds_not_proof(f)
+            calls: list[str] = []
 
-    def test_sarif_hit_is_failed_never_proved(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            src = root / "foo.c"
-            src.write_text("int main(void) { return 0; }\n", encoding="utf-8")
-            (root / "codeql-db").mkdir()
+            def fake_resolve(_cfg, stage, names):
+                calls.append(stage)
+                return None
 
-            def fake_run(cmd, timeout):
-                Path(cmd[-1]).write_text(_sarif([_one_hit()]), encoding="utf-8")
-                return _ok_proc()
+            with mock.patch("prism.adapters_extra.resolve_adapter", side_effect=fake_resolve), \
+                 mock.patch("prism.adapters_extra.shutil.which", return_value=None):
+                findings = run_optional_tools([Path(td)], Config())
+        self.assertNotIn("codeql", calls)
+        self.assertFalse(any(f.stage == "codeql" for f in findings))
 
-            with mock.patch("prism.adapters_extra._run", side_effect=fake_run):
-                findings = _run_codeql("codeql", [src], Config())
-        self.assertTrue(findings)
-        f = findings[0]
-        self.assertEqual(f.status, laws.FAILED)
-        self.assertEqual(f.cls, "cpp/use-after-free")
-        self._assert_finds_not_proof(f)
-        self.assertFalse(any(x.status in {laws.PROVED, laws.CLEAN} for x in findings))
+    def test_taxonomy_claims_no_codeql_coverage(self):
+        py = Path(taxonomy.__file__).read_text(encoding="utf-8")
+        cpp = (CPP / "taxonomy.cpp").read_text(encoding="utf-8")
+        self.assertIsNone(re.search(r"codeql", py, re.I))
+        self.assertIsNone(re.search(r"codeql", cpp, re.I))
 
-    def test_empty_sarif_is_unknown_not_a_proof(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            src = root / "foo.c"
-            src.write_text("int main(void) { return 0; }\n", encoding="utf-8")
-            (root / "codeql-db").mkdir()
-
-            def fake_run(cmd, timeout):
-                Path(cmd[-1]).write_text(_sarif([]), encoding="utf-8")
-                return _ok_proc()
-
-            with mock.patch("prism.adapters_extra._run", side_effect=fake_run):
-                findings = _run_codeql("codeql", [src], Config())
-        self.assertEqual(len(findings), 1)
-        f = findings[0]
-        self.assertEqual(f.status, laws.UNKNOWN)
-        self.assertIn("no results (not a proof)", f.message.lower())
-        self._assert_finds_not_proof(f)
-
-    def test_analyze_timeout_is_timeout_never_proved(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            src = root / "foo.c"
-            src.write_text("int main(void) { return 0; }\n", encoding="utf-8")
-            (root / "codeql-db").mkdir()
-
-            def fake_run(cmd, timeout):
-                raise subprocess.TimeoutExpired(cmd, timeout)
-
-            with mock.patch("prism.adapters_extra._run", side_effect=fake_run):
-                findings = _run_codeql("codeql", [src], Config())
-        self.assertEqual(len(findings), 1)
-        f = findings[0]
-        self.assertEqual(f.status, laws.TIMEOUT)
-        self.assertIn("timeout", f.message.lower())
-        self._assert_finds_not_proof(f)
-
-    def test_analyze_nonzero_is_error_not_clean(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            src = root / "foo.c"
-            src.write_text("int main(void) { return 0; }\n", encoding="utf-8")
-            (root / "codeql-db").mkdir()
-            fail = mock.Mock(returncode=2, stdout="", stderr="codeql: no queries")
-            with mock.patch("prism.adapters_extra._run", return_value=fail):
-                findings = _run_codeql("codeql", [src], Config())
-        self.assertEqual(len(findings), 1)
-        f = findings[0]
-        self.assertEqual(f.status, laws.ERROR)
-        self.assertNotEqual(f.status, laws.CLEAN)
-        self.assertNotEqual(f.status, laws.UNKNOWN)
-        self._assert_finds_not_proof(f)
-
-    def test_missing_sarif_is_unknown_not_a_proof(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            src = root / "foo.c"
-            src.write_text("int main(void) { return 0; }\n", encoding="utf-8")
-            (root / "codeql-db").mkdir()
-            with mock.patch("prism.adapters_extra._run", return_value=_ok_proc()):
-                findings = _run_codeql("codeql", [src], Config())
-        self.assertEqual(len(findings), 1)
-        f = findings[0]
-        self.assertEqual(f.status, laws.UNKNOWN)
-        self.assertIn("no sarif", f.message.lower())
-        self._assert_finds_not_proof(f)
-
-    def test_doctest_analyze_is_notrun(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            src = root / "foo.c"
-            src.write_text("int main(void) { return 0; }\n", encoding="utf-8")
-            (root / "codeql-db").mkdir()
-            fake = mock.Mock(
-                returncode=0,
-                stdout="[doctest] doctest version is 2.4.11\nUnknown option: --timeout\n",
-                stderr="",
-            )
-            with mock.patch("prism.adapters_extra._run", return_value=fake):
-                findings = _run_codeql("codeql", [src], Config())
-        self.assertEqual(findings[0].status, laws.NOTRUN)
-        self.assertIn("not codeql", findings[0].message.lower())
-        self._assert_finds_not_proof(findings[0])
+    def test_manifest_records_why(self):
+        text = (ROOT / "third_party" / "MANIFEST.toml").read_text(encoding="utf-8")
+        self.assertIn('name = "codeql"', text)
+        self.assertIn("restricted commercial use", text)
+        self.assertIn("adapter was removed", text)
 
 
 if __name__ == "__main__":

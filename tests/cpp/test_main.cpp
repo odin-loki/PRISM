@@ -3750,27 +3750,116 @@ TEST_CASE("pipeline: hostile tree runs nothing without --allow-exec") {
 }
 #endif
 
-TEST_CASE("config: vendored adapters are never taken from inside the scanned tree") {
+namespace {
+// Scoped PRISM_TOOLS_DIR (the scripts/fetch_deps.py install root).
+struct ToolsDirGuard {
+    std::string was;
+    bool had = false;
+    explicit ToolsDirGuard(const std::filesystem::path& value) {
+        if (const char* v = std::getenv("PRISM_TOOLS_DIR")) {
+            had = true;
+            was = v;
+        }
+#ifndef _WIN32
+        setenv("PRISM_TOOLS_DIR", value.string().c_str(), 1);
+#endif
+    }
+    ~ToolsDirGuard() {
+#ifndef _WIN32
+        if (had) setenv("PRISM_TOOLS_DIR", was.c_str(), 1);
+        else unsetenv("PRISM_TOOLS_DIR");
+#endif
+    }
+};
+
+// commit = "..." of [[component]] name in third_party/MANIFEST.toml.
+std::string manifest_commit(const std::string& name) {
+    std::ifstream in(testdata_root().parent_path() / "third_party" / "MANIFEST.toml");
+    std::string line;
+    bool inside = false;
+    while (std::getline(in, line)) {
+        if (line.rfind("[[", 0) == 0) inside = false;
+        if (line == "name = \"" + name + "\"") inside = true;
+        if (inside && line.rfind("commit = \"", 0) == 0) return line.substr(10, 40);
+    }
+    return {};
+}
+}  // namespace
+
+TEST_CASE("config: pinned adapters are never taken from inside the scanned tree") {
+    // The mined third_party/ trees are gone (roadmap 1.1). Adapters look in
+    // <PRISM_TOOLS_DIR>/<component>/<pinned commit>/bin; a tools dir inside
+    // the scanned tree is a planted binary unless --allow-exec.
     ExecTree t;
     CHECK(prism::path_within(t.dir, t.dir));
-    CHECK(prism::path_within(t.dir / "third_party" / "esbmc", t.dir));
+    CHECK(prism::path_within(t.dir / ".prism" / "tools", t.dir));
     CHECK_FALSE(prism::path_within(t.dir.parent_path(), t.dir));
     CHECK_FALSE(prism::path_within(t.dir.string() + "-sibling", t.dir));
 #ifndef _WIN32
-    t.put("third_party/SOURCES.md", "x\n");
-    auto fake = t.put("third_party/esbmc/bin/esbmc-planted-by-test", "#!/bin/sh\nexit 0\n");
+    auto commit = prism::pinned_commit("esbmc");
+    REQUIRE(commit.has_value());
+    auto tools = t.dir / ".prism" / "tools";
+    auto fake = t.put(".prism/tools/esbmc/" + *commit + "/bin/esbmc-planted-by-test",
+                      "#!/bin/sh\nexit 0\n");
     std::filesystem::permissions(fake, std::filesystem::perms::owner_all);
+    ToolsDirGuard guard(tools);
     auto cfg = prism::default_config();
     cfg.root = t.dir;
-    // cwd inside the hostile tree: the planted third_party/ is still refused.
-    auto was = std::filesystem::current_path();
-    std::filesystem::current_path(t.dir);
     auto hit = cfg.which_adapter("esbmc", {"esbmc-planted-by-test"});
     cfg.allow_exec = true;
     auto trusted = cfg.which_adapter("esbmc", {"esbmc-planted-by-test"});
-    std::filesystem::current_path(was);
     CHECK_FALSE(hit.has_value());
     REQUIRE(trusted.has_value());
     CHECK(trusted->filename() == "esbmc-planted-by-test");
+    // Outside the scanned tree the pinned build is found without --allow-exec,
+    // but a build of any other commit is not the pinned tool.
+    auto cfg2 = prism::default_config();
+    cfg2.root = testdata_root();
+    CHECK(cfg2.which_adapter("esbmc", {"esbmc-planted-by-test"}).has_value());
+    std::filesystem::rename(tools / "esbmc" / *commit, tools / "esbmc" / std::string(40, '0'));
+    CHECK_FALSE(cfg2.which_adapter("esbmc", {"esbmc-planted-by-test"}).has_value());
+#endif
+}
+
+TEST_CASE("config: manifest pins, install hints and tool identity") {
+    // CMake bakes third_party/MANIFEST.toml into manifest_pins.hpp.
+    for (const char* name : {"esbmc", "cppcheck", "cadical", "kissat", "cake_lpr"}) {
+        auto pin = prism::pinned_commit(name);
+        REQUIRE_MESSAGE(pin.has_value(), name);
+        CHECK(*pin == manifest_commit(name));
+    }
+    CHECK_FALSE(prism::pinned_commit("z3").has_value());  // linked, not a tool
+    CHECK_FALSE(prism::pinned_commit("clang-tidy").has_value());
+    CHECK(prism::adapter_install("esbmc") ==
+          "python scripts/fetch_deps.py --tool esbmc (pinned in third_party/MANIFEST.toml)");
+    CHECK(prism::adapter_install("afl-fuzz").find("--tool aflplusplus") != std::string::npos);
+    CHECK(prism::adapter_install("clang-tidy").find("system tool") != std::string::npos);
+    // FIPS 180-4 test vectors.
+    CHECK(prism::sha256_hex("abc") ==
+          "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    CHECK(prism::sha256_hex("") ==
+          "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+    CHECK(prism::sha256_hex(std::string(1000, 'a')) ==
+          "41edece42d63e8d9bf515a9ba6932e1c20cbc9f5a5d134645adb5db1b9737ea3");
+#ifndef _WIN32
+    ExecTree t;
+    auto loose = t.put("bin/tool", "abc");
+    auto ident = prism::tool_identity(loose);
+    CHECK(ident == "path:" + std::filesystem::weakly_canonical(loose).string() +
+                       ";sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    auto commit = *prism::pinned_commit("cppcheck");
+    ToolsDirGuard guard(t.dir / "tools");
+    auto fake = t.put("tools/cppcheck/" + commit + "/bin/cppcheck",
+                      "#!/bin/sh\n"
+                      "echo '<error id=\"nullPointer\" severity=\"error\" msg=\"Null pointer\">"
+                      "<location file=\"abs_ok.c\" line=\"3\"/>' >&2\nexit 0\n");
+    std::filesystem::permissions(fake, std::filesystem::perms::owner_all);
+    CHECK(prism::tool_identity(fake) == commit);
+    auto cfg = prism::default_config();
+    cfg.root = testdata_root();
+    auto recs = prism::run_cppcheck({testdata_root() / "abs_ok.c"}, cfg);
+    REQUIRE(recs.size() == 1);
+    CHECK(recs[0].status == std::string(prism::laws::FAILED));
+    CHECK(extra_get(recs[0], "tool_sha") == commit);
 #endif
 }

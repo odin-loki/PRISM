@@ -3522,7 +3522,7 @@ std::optional<Finding> run_afl_fuzz(const FunctionInfo& fn, const fs::path& src,
     return afl_base(laws::CLEAN, "", "no AFL crash in " + std::to_string(vsec) + "s (not a proof)");
 }
 
-const char* kLibfuzzerInstall = "clang -fsanitize=fuzzer is not vendored (see third_party/SOURCES.md)";
+const char* kLibfuzzerInstall = "clang -fsanitize=fuzzer is a system tool: apt install clang-18 (see third_party/MANIFEST.toml)";
 
 std::string libfuzzer_harness_source(const FunctionInfo& fn, std::string src_rel) {
     for (char& c : src_rel)

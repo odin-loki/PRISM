@@ -4,6 +4,13 @@ This is not a bibliography. Each section is an algorithm we run, named
 for the project it came from, with the honesty constraints ParanoidBSD
 forced on the encoding.
 
+> The mined source trees were deleted from `third_party/` (roadmap 1.1); this
+> file is the record of what was taken from each. Paths such as
+> `third_party/klee/...` below refer to the upstream projects, now pinned by
+> commit in `third_party/MANIFEST.toml` and fetched on demand with
+> `scripts/fetch_deps.py`. The CodeQL adapter described below was removed
+> (roadmap 1.2: the CodeQL engine's terms restrict commercial use).
+
 ## ESBMC — bounded model checking + k-induction
 
 ESBMC: Clang → GOTO → SSA → SMT (Boolector/Z3/…). Properties are
@@ -67,8 +74,9 @@ Python engine BMC:
 9. Cannot parse / POINTER without harness → `ERROR` / `NEEDS-HARNESS`.
 10. No Z3 → `NOTRUN`.
 
-When `resolve_adapter` finds `esbmc` (`--tool`, an already-built exe
-under `third_party/esbmc/`, or PATH) the adapter runs it too.
+When `resolve_adapter` finds `esbmc` (`--tool`, the pinned build under
+`~/.prism/tools/esbmc/<commit>/bin/` from `scripts/fetch_deps.py`, or PATH)
+the adapter runs it too.
 Disagreement is the point. The two verdicts are never merged. A
 missing binary is `NOTRUN`. Vendored *source* is not a proof; Python engine
 never compiles ESBMC during resolve.
@@ -185,7 +193,7 @@ a monitor on an extracted FSM, not Strix.
    `NOTRUN`. Outside the fragment is `NOTRUN`.
 5. Synthesis (missing `G (p → X q)` edges) is `HYPOTHESIS`, never a
    proof.
-6. A `strix` binary on PATH or under `third_party/strix` is recorded.
+6. A `strix` binary on PATH or the pinned `~/.prism/tools/strix/<commit>/bin` build is recorded.
    Python engine does not treat strix realizability as `PROVED`. Missing
    Strix is `NOTRUN`.
 
@@ -324,12 +332,12 @@ the body, flip one operator, re-run.
 Search order (`prism/config.py:resolve_adapter`):
 
 1. `Config.tools` / `--tool NAME=PATH` (stage name or binary name).
-2. An *already-built* executable under `third_party/<vendor>/` (known
-   output dirs, then a shallow glob). Never compile. Source trees
-   are not proofs.
+2. The pinned build `~/.prism/tools/<component>/<commit>/bin/<exe>` made by
+   `scripts/fetch_deps.py` (commit from `third_party/MANIFEST.toml`).
+   Never compile during resolve. Source trees are not proofs.
 3. PATH.
 
-Missing is `NOTRUN` with an install hint (`third_party/SOURCES.md`).
+Missing is `NOTRUN` with an install hint (`scripts/fetch_deps.py --tool NAME`).
 ESBMC / CBMC / KLEE binaries, if found, are adapters — their
 silence is not in-tree BMC and not a vendored proof.
 
@@ -467,7 +475,7 @@ File:function pointers for the methods above. Call these from `prism/pipeline.py
 - `prism/concolic.py:concolic_function` — VLA/float/recursion/C++ view/alloca/setjmp/va_list are NEEDS-HARNESS; goto stays ERROR
 - `prism/bmc.py:_has_self_call` — recursive unconstrained call is NEEDS-HARNESS, never PROVED
 - `prism/bmc.py:k_induction` — havoced step k=1 then k=2; SAT stays BOUNDED
-- `prism/config.py:resolve_adapter` — search (1) `Config.tools` / `--tool`, (2) already-built exe under `third_party/<vendor>/` (never compile), (3) PATH; missing is `NOTRUN`; vendored source is not a proof
+- `prism/config.py:resolve_adapter` — search (1) `Config.tools` / `--tool`, (2) the pinned fetch_deps build under `~/.prism/tools/` (never compile), (3) PATH; missing is `NOTRUN`; vendored source is not a proof
 - `prism/adapters_extra.py:run_optional_tools` — present tools run cheap analysis; empty success is UNKNOWN, never CLEAN/PROVED
 - `prism/adapters_extra.py:_run_frama_c` — EVA; `0 alarm` is UNKNOWN
 - `prism/adapters_extra.py:_run_codeql` — no `codeql-db` is UNKNOWN

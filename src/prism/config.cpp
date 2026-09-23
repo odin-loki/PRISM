@@ -1,9 +1,15 @@
 #include "prism/config.hpp"
+#include "prism/manifest_pins.hpp"  // generated from third_party/MANIFEST.toml by CMake
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <map>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -97,6 +103,8 @@ std::optional<fs::path> Config::which(std::initializer_list<std::string_view> na
     return std::nullopt;
 }
 
+// Stage -> third_party/MANIFEST.toml component. Same table as
+// prism/config.py VENDOR_DIR. No CodeQL (roadmap 1.2: engine terms).
 static const char* vendor_dir_for(std::string_view stage) {
     struct Map {
         const char* stage;
@@ -107,16 +115,16 @@ static const char* vendor_dir_for(std::string_view stage) {
         {"dafny", "dafny"},
         {"cppcheck", "cppcheck"},
         {"klee", "klee"},
-        {"afl-fuzz", "AFLplusplus"},
-        {"frama-c", "Frama-C"},
+        {"afl-fuzz", "aflplusplus"},
+        {"frama-c", "frama-c"},
         {"infer", "infer"},
-        {"codeql", "codeql"},
         {"cbmc", "cbmc"},
         {"strix", "strix"},
         {"semgrep", "semgrep"},
         {"spatch", "coccinelle"},
-        {"fuse", "FuSeBMC"},
-        {"fuzz4all", "Fuzz4All"},
+        {"cadical", "cadical"},
+        {"kissat", "kissat"},
+        {"cake_lpr", "cake_lpr"},
     };
     for (auto& m : kMap)
         if (stage == m.stage) return m.dir;
@@ -124,36 +132,39 @@ static const char* vendor_dir_for(std::string_view stage) {
 }
 
 std::string adapter_install(std::string_view stage) {
-    if (const char* dir = vendor_dir_for(stage))
-        return std::string("build from vendored third_party/") + dir +
-               " (see third_party/SOURCES.md)";
-    return std::string(stage) + " is not vendored (see third_party/SOURCES.md)";
+    if (const char* comp = vendor_dir_for(stage))
+        return std::string("python scripts/fetch_deps.py --tool ") + comp +
+               " (pinned in third_party/MANIFEST.toml)";
+    return std::string(stage) +
+           " is a system tool, not pinned by fetch_deps (see third_party/MANIFEST.toml)";
 }
 
-static bool skip_vendor_part(const fs::path& p) {
-    for (auto& part : p) {
-        auto s = part.string();
-        for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-        if (s == "scripts" || s == "tests" || s == "docs" || s == "examples" ||
-            s == "regression" || s == "website" || s == "ql" || s == "misc" ||
-            s == "javascript" || s == "change-notes")
-            return true;
-    }
-    return false;
+// The commit third_party/MANIFEST.toml pins for an external component. Baked
+// in at CMake configure time (generated prism/manifest_pins.hpp), so the
+// binary trusts exactly the builds its own manifest named.
+std::optional<std::string> pinned_commit(std::string_view component) {
+    for (const auto& pin : kManifestPins)
+        if (component == pin.name) return std::string(pin.commit);
+    return std::nullopt;
+}
+
+fs::path tools_home() {
+    if (const char* env = std::getenv("PRISM_TOOLS_DIR"); env && *env) return fs::path(env);
+    fs::path home;
+#ifdef _WIN32
+    if (const char* u = std::getenv("USERPROFILE")) home = u;
+#else
+    if (const char* u = std::getenv("HOME")) home = u;
+#endif
+    return home / ".prism" / "tools";
 }
 
 static bool is_built_exe(const fs::path& p) {
     std::error_code ec;
     if (!fs::is_regular_file(p, ec) || ec) return false;
+#ifdef _WIN32
     auto ext = p.extension().string();
     for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    if (ext == ".c" || ext == ".cc" || ext == ".cpp" || ext == ".cxx" || ext == ".h" ||
-        ext == ".hpp" || ext == ".py" || ext == ".md" || ext == ".txt" || ext == ".json" ||
-        ext == ".o" || ext == ".obj" || ext == ".a" || ext == ".lib" || ext == ".so" ||
-        ext == ".dll" || ext == ".sh" || ext == ".bat")
-        return false;
-    if (skip_vendor_part(p)) return false;
-#ifdef _WIN32
     return ext == ".exe";
 #else
     auto st = fs::status(p, ec);
@@ -175,117 +186,189 @@ bool path_within(const fs::path& p, const fs::path& root) {
     return true;
 }
 
-static fs::path self_dir() {
-#ifdef _WIN32
-    wchar_t buf[MAX_PATH]{};
-    DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH);
-    if (n > 0 && n < MAX_PATH) return fs::path(buf).parent_path();
-#else
-    std::error_code ec;
-    auto exe = fs::read_symlink("/proc/self/exe", ec);
-    if (!ec) return exe.parent_path();
-#endif
-    return {};
-}
-
-// The PRISM checkout that holds third_party/SOURCES.md: searched from the
-// prism executable's directory, then the cwd. Law 9: a root inside the
-// scanned tree is refused (a hostile tree could plant third_party/SOURCES.md
-// and third_party/esbmc/bin/esbmc) unless the user passed --allow-exec.
-static fs::path find_repo_root(const Config& cfg) {
-    std::vector<fs::path> starts{self_dir(), fs::current_path()};
-    for (auto p : starts) {
-        for (int i = 0; i < 8 && !p.empty(); ++i) {
-            std::error_code ec;
-            if (fs::exists(p / "third_party" / "SOURCES.md", ec)) {
-                if (cfg.allow_exec || !path_within(p, cfg.root)) return p;
-                break;
-            }
-            auto parent = p.parent_path();
-            if (parent == p) break;
-            p = std::move(parent);
-        }
-    }
-    return {};
-}
-
+// <tools_home>/<component>/<pinned commit>/bin/<name> (then the dir root),
+// as installed by scripts/fetch_deps.py. Never compiles, never walks source.
+// Law 9: a tools dir inside the scanned tree is refused unless --allow-exec
+// (a hostile tree could plant <tree>/.prism/tools/esbmc/<commit>/bin/esbmc).
 static std::optional<fs::path> find_vendored_exe(const Config& cfg, std::string_view stage,
                                                  std::initializer_list<std::string_view> names) {
-    const char* vendor = vendor_dir_for(stage);
-    if (!vendor) return std::nullopt;
-    auto repo = find_repo_root(cfg);
-    if (repo.empty()) return std::nullopt;
-    auto root = repo / "third_party" / vendor;
-    std::error_code ec;
-    if (!fs::is_directory(root, ec) || ec) return std::nullopt;
-    static const char* kSubs[] = {
-        "", "bin", "build", "build/bin", "build/src", "Release", "Debug",
-        "build/Release", "build/Debug",
-    };
-    for (auto* sub : kSubs) {
+    const char* comp = vendor_dir_for(stage);
+    if (!comp) return std::nullopt;
+    auto commit = pinned_commit(comp);
+    if (!commit) return std::nullopt;
+    auto home = tools_home();
+    if (!cfg.allow_exec && path_within(home, cfg.root)) return std::nullopt;
+    auto root = home / comp / *commit;
+    for (const char* sub : {"bin", ""}) {
         fs::path base = *sub ? (root / sub) : root;
         for (auto n : names) {
             fs::path cand = base / std::string(n);
             if (is_built_exe(cand)) return cand;
+#ifdef _WIN32
             std::string ns(n);
             if (ns.size() < 4 || ns.substr(ns.size() - 4) != ".exe") {
                 auto with_exe = base / (ns + ".exe");
                 if (is_built_exe(with_exe)) return with_exe;
             }
-        }
-    }
-    std::vector<std::string> want;
-    for (auto n : names) {
-        std::string s(n);
-        for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-        want.push_back(s);
-        if (s.size() < 4 || s.substr(s.size() - 4) != ".exe") want.push_back(s + ".exe");
-    }
-    struct Node {
-        fs::path p;
-        int depth;
-    };
-    std::vector<Node> stack{{root, 0}};
-    int visited = 0;
-    while (!stack.empty()) {
-        auto cur = std::move(stack.back());
-        stack.pop_back();
-        std::error_code it_ec;
-        fs::directory_iterator it(cur.p, it_ec);
-        if (it_ec) continue;
-        const fs::directory_iterator end;
-        for (; it != end; it.increment(it_ec)) {
-            if (it_ec) break;
-            if (++visited > 4000) return std::nullopt;
-            auto name = it->path().filename().string();
-            std::string low = name;
-            for (char& c : low) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-            if (low.empty() || low.front() == '.') continue;
-            if (low == "scripts" || low == "tests" || low == "docs" || low == "examples" ||
-                low == "regression" || low == "website" || low == "node_modules" ||
-                low == "__pycache__" || low == "ql" || low == "misc" ||
-                low == "javascript" || low == "change-notes" || low == "src" ||
-                low == "include" || low == "lib")
-                continue;
-            std::error_code fec;
-            if (it->is_directory(fec) && !fec) {
-                if (low != "bin" && low != "build" && low != "release" && low != "debug" &&
-                    low != "out" && low != "dist" && low != "install")
-                    continue;
-                if (cur.depth + 1 <= 3) stack.push_back({it->path(), cur.depth + 1});
-                continue;
-            }
-            bool match = false;
-            for (auto& w : want) {
-                if (low == w) {
-                    match = true;
-                    break;
-                }
-            }
-            if (match && is_built_exe(it->path())) return it->path();
+#endif
         }
     }
     return std::nullopt;
+}
+
+// ---- SHA-256 (FIPS 180-4), for tool_identity of unpinned binaries ----
+namespace {
+struct Sha256 {
+    std::uint32_t h[8]{0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+                       0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
+    unsigned char buf[64]{};
+    std::size_t used = 0;
+    std::uint64_t bits = 0;
+
+    static std::uint32_t rotr(std::uint32_t x, int n) { return (x >> n) | (x << (32 - n)); }
+
+    void block(const unsigned char* p) {
+        static constexpr std::uint32_t k[64] = {
+            0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
+            0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
+            0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f,
+            0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+            0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
+            0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
+            0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116,
+            0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+            0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
+            0xc67178f2};
+        std::uint32_t w[64];
+        for (int i = 0; i < 16; ++i)
+            w[i] = (std::uint32_t(p[4 * i]) << 24) | (std::uint32_t(p[4 * i + 1]) << 16) |
+                   (std::uint32_t(p[4 * i + 2]) << 8) | std::uint32_t(p[4 * i + 3]);
+        for (int i = 16; i < 64; ++i) {
+            auto s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >> 3);
+            auto s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >> 10);
+            w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+        }
+        auto a = h[0], b = h[1], c = h[2], d = h[3], e = h[4], f = h[5], g = h[6], hh = h[7];
+        for (int i = 0; i < 64; ++i) {
+            auto t1 = hh + (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) + ((e & f) ^ (~e & g)) + k[i] + w[i];
+            auto t2 = (rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) + ((a & b) ^ (a & c) ^ (b & c));
+            hh = g;
+            g = f;
+            f = e;
+            e = d + t1;
+            d = c;
+            c = b;
+            b = a;
+            a = t1 + t2;
+        }
+        h[0] += a;
+        h[1] += b;
+        h[2] += c;
+        h[3] += d;
+        h[4] += e;
+        h[5] += f;
+        h[6] += g;
+        h[7] += hh;
+    }
+
+    void update(const unsigned char* p, std::size_t n) {
+        bits += std::uint64_t(n) * 8;
+        while (n > 0) {
+            std::size_t take = std::min(n, sizeof(buf) - used);
+            std::memcpy(buf + used, p, take);
+            used += take;
+            p += take;
+            n -= take;
+            if (used == sizeof(buf)) {
+                block(buf);
+                used = 0;
+            }
+        }
+    }
+
+    std::string hex() {
+        auto total = bits;
+        unsigned char pad = 0x80;
+        update(&pad, 1);
+        unsigned char zero = 0;
+        while (used != 56) update(&zero, 1);
+        unsigned char len[8];
+        for (int i = 0; i < 8; ++i) len[i] = static_cast<unsigned char>(total >> (56 - 8 * i));
+        update(len, 8);
+        static const char* digits = "0123456789abcdef";
+        std::string out;
+        for (auto v : h)
+            for (int s = 28; s >= 0; s -= 4) out.push_back(digits[(v >> s) & 0xf]);
+        return out;
+    }
+};
+}  // namespace
+
+std::string sha256_hex(std::string_view data) {
+    Sha256 s;
+    s.update(reinterpret_cast<const unsigned char*>(data.data()), data.size());
+    return s.hex();
+}
+
+static bool is_hex40(const std::string& s) {
+    if (s.size() != 40) return false;
+    for (char c : s)
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
+    return true;
+}
+
+// Which exact build produced a finding (roadmap 1.1). The manifest commit when
+// exe lives under <tools_home>/<name>/<commit>/, else
+// "path:<abs>;sha256:<file hash>", cached per (path, size, mtime).
+// Same format as prism/config.py tool_identity.
+std::string tool_identity(const fs::path& exe) {
+    std::error_code ec;
+    fs::path ap = fs::weakly_canonical(fs::absolute(exe, ec), ec);
+    if (ec) ap = exe;
+    auto home = fs::weakly_canonical(fs::absolute(tools_home(), ec), ec);
+    if (!home.empty() && path_within(ap, home)) {
+        auto rel = ap.lexically_relative(home);
+        std::vector<std::string> parts;
+        for (const auto& part : rel) parts.push_back(part.string());
+        if (parts.size() >= 3 && is_hex40(parts[1])) return parts[1];
+    }
+    const std::string key_path = ap.string();
+    std::error_code sec;
+    auto size = fs::file_size(ap, sec);
+    auto mtime = fs::last_write_time(ap, sec);
+    if (sec) return "path:" + key_path + ";sha256:unreadable";
+    const std::string key = key_path + "|" + std::to_string(size) + "|" +
+                            std::to_string(mtime.time_since_epoch().count());
+    static std::mutex mu;
+    static std::map<std::string, std::string> cache;
+    {
+        std::lock_guard<std::mutex> lock(mu);
+        if (auto it = cache.find(key); it != cache.end()) return it->second;
+    }
+    std::ifstream in(ap, std::ios::binary);
+    std::string ident;
+    if (!in) {
+        ident = "path:" + key_path + ";sha256:unreadable";
+    } else {
+        Sha256 s;
+        std::vector<char> chunk(1 << 20);
+        while (in) {
+            in.read(chunk.data(), static_cast<std::streamsize>(chunk.size()));
+            auto got = in.gcount();
+            if (got > 0) s.update(reinterpret_cast<const unsigned char*>(chunk.data()),
+                                  static_cast<std::size_t>(got));
+        }
+        ident = "path:" + key_path + ";sha256:" + s.hex();
+    }
+    std::lock_guard<std::mutex> lock(mu);
+    cache[key] = ident;
+    return ident;
+}
+
+void stamp_tool_sha(std::vector<Finding>& findings, const fs::path& exe) {
+    if (exe.empty()) return;
+    const auto ident = tool_identity(exe);
+    for (auto& f : findings) f.extra.try_emplace("tool_sha", ident);
 }
 
 std::optional<fs::path> Config::which_adapter(std::string_view stage,

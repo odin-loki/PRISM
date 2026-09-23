@@ -69,7 +69,7 @@ class TestCppAdapterHonestySourceContract(unittest.TestCase):
         self.assertNotIn("laws::CLEAN", body)
 
     def test_cppcheck_empty_diagnostics_unknown_fake_notrun(self):
-        body = _brace_body(self.src, "std::vector<Finding> run_cppcheck(")
+        body = _brace_body(self.src, "std::vector<Finding> run_cppcheck_unstamped(")  # + tool_sha wrapper
         self.assertIn("no diagnostics (not a proof)", body)
         self.assertIn("not cppcheck", body)
         self.assertIn("tool_unusable", body)
@@ -80,7 +80,7 @@ class TestCppAdapterHonestySourceContract(unittest.TestCase):
             self.assertNotIn(proof, body)
 
     def test_esbmc_fake_is_notrun_never_proved(self):
-        body = _brace_body(self.src, "std::vector<Finding> run_esbmc(")
+        body = _brace_body(self.src, "std::vector<Finding> run_esbmc_unstamped(")  # + tool_sha wrapper
         self.assertIn("not ESBMC", body)
         self.assertIn("tool_unusable", body)
         self.assertIn("laws::NOTRUN", body)
@@ -91,7 +91,7 @@ class TestCppAdapterHonestySourceContract(unittest.TestCase):
         self.assertNotIn("laws::PROVED", fake)
 
     def test_dafny_fake_is_notrun_never_proved(self):
-        body = _brace_body(self.src, "std::vector<Finding> run_dafny(")
+        body = _brace_body(self.src, "std::vector<Finding> run_dafny_unstamped(")  # + tool_sha wrapper
         self.assertIn("not Dafny", body)
         self.assertIn("tool_unusable", body)
         self.assertIn("laws::NOTRUN", body)
@@ -117,7 +117,6 @@ class TestCppAdapterHonestySourceContract(unittest.TestCase):
             ("std::vector<Finding> run_infer(", "not Infer"),
             ("std::vector<Finding> run_frama_c(", "not Frama-C"),
             ("std::vector<Finding> run_klee(", "not KLEE"),
-            ("std::vector<Finding> run_codeql(", "not CodeQL"),
             ("std::vector<Finding> run_semgrep(", "not semgrep"),
             ("std::vector<Finding> run_strix(", "not Strix"),
         )

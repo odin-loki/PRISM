@@ -236,7 +236,7 @@ int main(int argc, char** argv) {
                 "PRISM = Performance, Regression, Integration and Security Module\n"
                 "C++23 hybrid pipeline: lints, BMC, fuzz, LTL, Qwen 3.5 9B.\n"
                 "Threads are ISO C++ std::jthread (not MinGW winpthreads).\n"
-                "Adapter search: --tool, then third_party/<name>/ if built, then PATH.\n"
+                "Adapter search: --tool, then ~/.prism/tools/<name>/<commit>/bin (fetch_deps), then PATH.\n"
                 "--resume reuses ok/NOTRUN stages from --out/stages.jsonl (report.json fallback).\n"
                 "--fail-on: exit 1 on defect (FAILED/CRASH/SANFAIL) or gap (defect, or\n"
                 "  anything NOTRUN/ERROR/TIMEOUT). A crashed stage is exit 2.\n"

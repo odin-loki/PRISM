@@ -207,7 +207,7 @@ class TestDafnyAdapter(unittest.TestCase):
 
     def test_cpp_run_dafny_matches_prism_mappings(self):
         stub = _cpp_between(
-            "std::vector<Finding> run_dafny(",
+            "std::vector<Finding> run_dafny_unstamped(",  # run_dafny adds tool_sha
             "std::vector<Finding> run_sanitize(",
         )
         if not stub:
