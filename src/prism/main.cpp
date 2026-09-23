@@ -237,6 +237,8 @@ int main(int argc, char** argv) {
         else if (a == "--gui") cfg.gui = true;
         else if (a == "--resume") cfg.resume = true;
         else if (a == "--allow-exec") cfg.allow_exec = true;
+        else if (a == "--strict-aliasing") cfg.strict_aliasing = true;
+        else if (a == "--pir-drafts") cfg.pir_drafts = true;
         else if (a == "--list-stages") {
             for (auto* p = STAGE_ORDER; *p; ++p) std::cout << *p << "\n";
             return 0;
@@ -271,6 +273,7 @@ int main(int argc, char** argv) {
                 "           [--fuzz-budget N] [--fuzz-iters N] [--repair-rounds N]\n"
                 "           [--list-stages] [--fail-on never|defect|gap] [--allow-exec]\n"
                 "           [--requirements PATH] [--contracts-approved PATH]\n"
+                "           [--strict-aliasing] [--pir-drafts]\n"
                 "prism prove FILE.lean THEOREM [--write] [--allow-exec] (Lean proof search; prove --help)\n"
                 "PRISM = Performance, Regression, Integration and Security Module\n"
                 "Checks any codebase (PATH: file or directory, any language): deep C/C++\n"
@@ -286,6 +289,10 @@ int main(int argc, char** argv) {
                 "--allow-exec: run code from the scanned tree (sanitizer/fuzz/diff harnesses,\n"
                 "  perl -c, cargo clippy, eslint, LLM programs) in a sandbox; only on code you\n"
                 "  trust. Without it those steps are NOTRUN (Law 9).\n"
+                "--strict-aliasing: the pir stage also checks effective types (C11 6.5p7);\n"
+                "  off by default because real code often breaks strict aliasing on purpose.\n"
+                "--pir-drafts: pir takes pointer sizes from the template harness draft when no\n"
+                "  requires clause gives them (PROVED-ASSUMING at best; off: NEEDS-HARNESS).\n"
                 "--pbsd PATH: ParanoidBSD tree for the pbsd stage (else PRISM_PBSD; no default).\n"
                 "  Importing its modules also needs --allow-exec.\n"
                 "--requirements PATH: markdown/text requirement documents (file or directory,\n"

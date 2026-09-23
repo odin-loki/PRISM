@@ -626,6 +626,14 @@ const std::vector<TaxonomyClass>& taxonomy_classes() {
         {"SECRET-SLACK-TOKEN", "Slack token committed in source", {798}, {{"polyglot", "FINDS"}}},
         {"SECRET-GOOGLE-API-KEY", "Google API key committed in source", {798}, {{"polyglot", "FINDS"}}},
         {"SECRET-STRIPE-KEY", "Stripe live key committed in source", {798}, {{"polyglot", "FINDS"}}},
+        // PIR memory model and library models (docs/PIR.md)
+        {"PTR-INVALID-DEREF", "dereference of a pointer that points to no object", {822, 824}, {{"pir", "PROVES"}}},
+        {"MEM-MISALIGNED", "misaligned memory access", {704}, {{"pir", "PROVES"}}},
+        {"MEM-WRITE-CONST", "write to a string literal or const object", {758}, {{"pir", "PROVES"}}},
+        {"MEM-STRICT-ALIAS", "object accessed through an lvalue of an incompatible type (effective type)", {704, 843}, {{"pir", "PROVES"}}},
+        {"MEM-INVALID-FREE", "free of memory that is not a live heap object or not its start", {590, 761}, {{"pir", "PROVES"}}},
+        {"PTR-COMPARE", "comparison or subtraction of pointers into different objects", {469}, {{"pir", "PROVES"}}},
+        {"FMT-ARGS", "printf format does not match its arguments", {685, 686}, {{"pir", "PROVES"}}},
     };
     return C;
 }

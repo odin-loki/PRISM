@@ -1,0 +1,8 @@
+format_version: 1
+input_files: mem_realloc_false.c
+language: C
+property: memsafety
+expected:
+  mem_realloc_false: false
+witness:
+  mem_realloc_false: []

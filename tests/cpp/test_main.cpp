@@ -4947,8 +4947,10 @@ declare { i32, i1 } @llvm.sadd.with.overflow.i32(i32, i32) #1
     CHECK(b[4].pred == "ult");
     CHECK(b[5].ops[2].v.kind == prism::pir::ir::Value::Int);
     CHECK(b[5].ops[2].v.bits == static_cast<uint64_t>(-5));
-    CHECK_FALSE(b[6].parsed);  // load: opcode kept for the UNENCODED reason
+    CHECK(b[6].parsed);  // load is part of the memory model now (docs/PIR.md "Memory model")
     CHECK(b[6].op == "load");
+    CHECK(b[6].ty.bits == 32);
+    CHECK(b[6].align == 4);
     CHECK(b[7].op == "switch");
     CHECK(b[7].cases.size() == 2);
     CHECK(f.blocks[1].insts[0].incoming.size() == 2);
@@ -4982,9 +4984,12 @@ TEST_CASE("pir: unmodelled constructs are named, pointer params are Law 6") {
     CHECK_FALSE(t.fn.has_value());
     CHECK(t.status == prism::laws::NEEDS_HARNESS);
     CHECK(t.reason.find("Law 6") != std::string::npos);
-    auto u = pir_of("define i32 @h(i32 %x) {\nentry:\n  %a = alloca i32\n  ret i32 %x\n}\n", "h");
+    // alloca is encoded now (memory model); integer-to-pointer casts are not
+    auto u = pir_of("define i32 @h(i64 %x) {\nentry:\n  %p = inttoptr i64 %x to ptr\n"
+                    "  %v = load i32, ptr %p\n  ret i32 %v\n}\n",
+                    "h");
     CHECK_FALSE(u.fn.has_value());
-    CHECK(u.reason.rfind("UNENCODED: alloca", 0) == 0);
+    CHECK(u.reason.rfind("UNENCODED: inttoptr", 0) == 0);
     auto d = pir_of("define double @k(double %x) {\nentry:\n  ret double %x\n}\n", "k");
     CHECK(d.reason == "UNENCODED: parameter type double");
     auto c = pir_of("define i32 @e(i32 %x) {\nentry:\n  %r = call i32 @ext(i32 %x)\n  ret i32 %r\n}\n"
@@ -5104,7 +5109,7 @@ TEST_CASE("pir: clang round trip on tests/pir (skips without clang/opt)") {
     CHECK(st["add_ok"] == prism::laws::PROVED);
     CHECK(st["add_unsigned_ok"] == prism::laws::PROVED);
     CHECK(st["deref_ptr"] == prism::laws::NEEDS_HARNESS);
-    CHECK(st["local_array"] == prism::laws::NEEDS_HARNESS);
+    CHECK(st["local_array"] == prism::laws::PROVED);  // memory model: a[i & 3] stays in bounds
     CHECK(st["recurse"] == prism::laws::NEEDS_HARNESS);
     CHECK(st["uninit_bad"] == prism::laws::FAILED);
     CHECK(st["uninit_ok"] == prism::laws::PROVED);

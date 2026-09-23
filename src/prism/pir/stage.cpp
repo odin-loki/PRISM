@@ -12,6 +12,7 @@
 #include "prism/threads.hpp"
 
 #include "../proc.hpp"
+#include "stage_mem.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -251,6 +252,7 @@ std::string instrument(const std::string& ir, const std::vector<FoldedUb>& folde
     }
     std::ostringstream out;
     std::set<unsigned> uninit_w, poison_w;
+    bool uninit_ptr = false;
     bool in_body = false;
     int uniq = 0;
     for (std::size_t i = 0; i < lines.size(); ++i) {
@@ -302,6 +304,19 @@ std::string instrument(const std::string& ir, const std::vector<FoldedUb>& folde
             }
         }
         out << l << "\n";
+        // pointer local: "  %p = alloca ptr, align 8" -> @__prism.uninit.ptr()
+        if (auto ap = l.find(" = alloca ptr"); ap != std::string::npos) {
+            auto nm = l.substr(0, ap);
+            nm.erase(0, nm.find_first_not_of(' '));
+            auto tail = l.substr(ap + 13);
+            if ((tail.empty() || tail.starts_with(", align ")) && tail.find(", i") == std::string::npos &&
+                nm != "%retval") {
+                std::string v = "%__prism_uninit." + std::to_string(uniq++);
+                out << "  " << v << " = call ptr @__prism.uninit.ptr()\n";
+                out << "  store ptr " << v << ", ptr " << nm << "\n";
+                uninit_ptr = true;
+            }
+        }
         // promotable scalar local: "  %x = alloca iN, align A"
         auto a = l.find(" = alloca i");
         if (a != std::string::npos) {
@@ -324,6 +339,7 @@ std::string instrument(const std::string& ir, const std::vector<FoldedUb>& folde
         }
     }
     for (auto w : uninit_w) out << "declare i" << w << " @__prism.uninit.i" << w << "()\n";
+    if (uninit_ptr) out << "declare ptr @__prism.uninit.ptr()\n";
     for (auto w : poison_w) out << "declare i" << w << " @__prism.poison.i" << w << "()\n";
     if (!markers.empty()) out << "declare void @__prism.folded(i32)\n";
     return out.str();
@@ -362,6 +378,10 @@ std::vector<std::string> base_flags(const fs::path& src) {
     // function compiles (C89 rule) instead of failing the whole unit. The
     // call itself is an unknown external and becomes "UNENCODED: call @f".
     if (!is_cxx(src)) f.push_back("-Wno-error=implicit-function-declaration");
+    // Turns ON the C++ library's precondition checks (operator[] bounds,
+    // optional/unique_ptr dereference, ...): PIR reports a reachable
+    // __glibcxx_assert_fail as a violation (docs/PIR.md "C++ library").
+    if (is_cxx(src)) f.push_back("-D_GLIBCXX_ASSERTIONS");
     return f;
 }
 
@@ -537,7 +557,8 @@ std::string tv_module_text(const std::string& ir) {
             auto sp = ty.rfind(' ');
             if (sp != std::string::npos) ty = ty.substr(sp + 1);
             if (ty == "void") out << "define void " << name << "(i32 %k) {\n  ret void\n}\n";
-            else out << "define " << ty << " " << name << "() {\n  ret " << ty << " 0\n}\n";
+            else out << "define " << ty << " " << name << "() {\n  ret " << ty << (ty == "ptr" ? " null" : " 0")
+                     << "\n}\n";
             continue;
         }
         out << l << "\n";
@@ -561,7 +582,8 @@ void validate(std::vector<FnRec>& recs, const std::string& ir, const Frontend& f
         auto& r = recs[i];
         if (!r.fn) continue;
         const auto& st = r.f.status;
-        if (!(st == laws::FAILED || st == laws::PROVED || st == laws::PROVED_UNBOUNDED || st == laws::BOUNDED))
+        if (!(st == laws::FAILED || st == laws::PROVED || st == laws::PROVED_UNBOUNDED || st == laws::BOUNDED ||
+              st == laws::PROVED_ASSUMING))
             continue;
         if (!cfg.allow_exec) {
             r.f.extra["tv"] = "NOTRUN (needs --allow-exec)";
@@ -574,6 +596,10 @@ void validate(std::vector<FnRec>& recs, const std::string& ir, const Frontend& f
         }
         if (r.fn->nondet) {
             r.f.extra["tv"] = "PARTIAL (nondet inputs are not replayed; not validated)";
+            continue;
+        }
+        if (auto why = pirmem::tv_exclusion(*r.fn); !why.empty()) {
+            r.f.extra["tv"] = "PARTIAL (" + why + "; not validated)";
             continue;
         }
         auto ins = tv_inputs(*r.fn, r.cex.empty() ? nullptr : &r.cex);
@@ -747,7 +773,8 @@ struct Analyzed {
     std::vector<Finding> out;         // unit-level rows (front-end failure, no functions)
 };
 
-Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lowered& low) {
+Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lowered& low,
+                  const ModelLibrary& models) {
     Analyzed res;
     auto& out = res.out;
     auto& recs = res.recs;
@@ -765,15 +792,17 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
     }
     res.mod = std::make_unique<ir::Module>(ir::parse_module(*ir));
     auto& mod = *res.mod;
+    // library operational models for what the unit declares (docs/PIR.md "Library models")
+    link_models(mod, models);
     TranslateOptions topt;
     topt.signed_shl = sshl;
     topt.folded = folded;
     std::set<int> used_folded;
     const auto unit_name = u.path.filename().string();
-    std::vector<std::string> src_lines;
+    std::vector<std::string> src_lines = split_lines(read_file(u.path));
+    pirmem::UnitInfo uinfo{u.path, u.rel, is_cxx(u.path), src_lines, std::nullopt};
     std::vector<int> starts;  // DISubprogram lines of this unit, sorted
     if (is_cxx(u.path)) {
-        src_lines = split_lines(read_file(u.path));
         for (auto& [ref, sp] : mod.subprograms)
             if (fs::path(sp.file).filename().string() == unit_name && sp.line > 0) starts.push_back(sp.line);
         std::sort(starts.begin(), starts.end());
@@ -781,7 +810,8 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
     for (auto& irf : mod.functions) {
         ir::DISub sub;
         if (auto it = mod.subprograms.find(irf.dbg); it != mod.subprograms.end()) sub = it->second;
-        if (sub.artificial || irf.name.starts_with("__cxx_global_var_init") || irf.name.starts_with("_GLOBAL__"))
+        if (sub.artificial || irf.name.starts_with("__cxx_global_var_init") || irf.name.starts_with("_GLOBAL__") ||
+            irf.is_model)
             continue;
         if (!sub.file.empty() && fs::path(sub.file).filename().string() != unit_name) continue;  // header code
         FnRec rec;
@@ -792,8 +822,9 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
         f.line = sub.line ? std::optional<int>(sub.line) : std::nullopt;
         f.extra["frontend"] = fe.version;
         if (!sub.linkage.empty()) f.extra["ir_name"] = irf.name;
-        auto tr = translate(mod, irf, topt);
-        export_lean_pair(cfg.out, unit_name, mod, irf, topt, tr);
+        auto fopt = pirmem::function_options(topt, irf, uinfo, sub.line, cfg, sub.name.empty() ? irf.name : sub.name);
+        auto tr = translate(mod, irf, fopt);
+        export_lean_pair(cfg.out, unit_name, mod, irf, fopt, tr);
         for (int k : tr.folded_used) used_folded.insert(k);
         if (!tr.fn) {
             f.status = tr.status.empty() ? std::string(laws::NEEDS_HARNESS) : tr.status;
@@ -836,6 +867,7 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
             f.extra["inlined"] = s;
         }
         auto v = check_function(fn, cfg.unwind, cfg.timeout);
+        pirmem::apply_memory_policy(f, v, fn, mod, irf, fopt, cfg);
         f.status = v.status;
         f.message = v.message;
         f.cls = v.cls;
@@ -908,6 +940,8 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
         f.extra["install"] = kInstall;
         return {f};
     }
+    // library models: lowered once per run (process phase)
+    auto models = build_models(fe, std::max(10.0, cfg.timeout));
     std::vector<Lowered> low(units.size());
     parallel_for(cfg.jobs, units, [&](std::size_t i, const Unit& u) {
         auto& l = low[i];
@@ -921,7 +955,7 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
     std::vector<Analyzed> an(units.size());
     parallel_for(cfg.jobs, units, [&](std::size_t i, const Unit& u) {
         try {
-            an[i] = run_unit(u, fe, cfg, low[i]);
+            an[i] = run_unit(u, fe, cfg, low[i], models);
         } catch (const std::exception& ex) {
             auto f = base_finding(u);
             f.status = std::string(laws::ERROR);
@@ -939,6 +973,15 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
         for (auto& r : a.recs) per[i].push_back(std::move(r.f));
     });
     std::vector<Finding> out;
+    if (!models.error.empty()) {
+        // Law 7: without the models every library call stays UNENCODED; say why
+        Finding f;
+        f.stage = "pir";
+        f.status = std::string(laws::ERROR);
+        f.strength = std::string(laws::STRENGTH_SOME);
+        f.message = "library models could not be built: " + models.error;
+        out.push_back(std::move(f));
+    }
     for (auto& v : per)
         for (auto& f : v) out.push_back(std::move(f));
     return exec_gate_note("pir", std::move(out), "pir translation validation (lli)");

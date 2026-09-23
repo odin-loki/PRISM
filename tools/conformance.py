@@ -100,9 +100,13 @@ PROPERTY_CLASSES = {
     "no-overflow": {"INT-SIGNED-OVF"},
     "no-div0": {"INT-DIV-ZERO"},
     "no-shift-ub": {"INT-SHIFT-UB"},
-    "no-oob": {"MEM-OOB-READ", "MEM-OOB-WRITE"},
-    "no-null-deref": {"MEM-NULL-DEREF", "NULL-DEREF"},
-    "memsafety": {"MEM-OOB-READ", "MEM-OOB-WRITE", "MEM-NULL-DEREF", "NULL-DEREF", "MEM-USE-AFTER-FREE"},
+    "no-oob": {"MEM-OOB-READ", "MEM-OOB-WRITE", "MEM-PTR-ARITH"},
+    "no-null-deref": {"MEM-NULL-DEREF", "NULL-DEREF", "PTR-NULL-DEREF"},
+    # pir memory model classes (docs/PIR.md "Memory model")
+    "memsafety": {"MEM-OOB-READ", "MEM-OOB-WRITE", "MEM-NULL-DEREF", "NULL-DEREF", "MEM-USE-AFTER-FREE",
+                  "PTR-NULL-DEREF", "PTR-INVALID-DEREF", "MEM-UAF", "MEM-DOUBLE-FREE", "MEM-INVALID-FREE",
+                  "MEM-MISMATCHED-FREE", "MEM-PTR-ARITH", "MEM-OVERLAP", "MEM-VLA-SIZE", "MEM-STACK-ESCAPE",
+                  "MEM-MISALIGNED", "MEM-WRITE-CONST", "PTR-COMPARE", "UNINIT-READ"},
     # concurrency tasks (whole programs; the verdict applies to main)
     "norace": {"CONC-DATA-RACE"},
     "noassert": {"FUNC-CONTRACT"},

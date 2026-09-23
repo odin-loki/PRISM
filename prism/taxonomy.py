@@ -1249,6 +1249,21 @@ CLASSES: list[dict] = [
          seen={"polyglot": FINDS}),
     dict(id="SECRET-STRIPE-KEY", name="Stripe live key committed in source", cwe=[798],
          seen={"polyglot": FINDS}),
+    # PIR memory model and library models (docs/PIR.md; C++ engine pir stage)
+    dict(id="PTR-INVALID-DEREF", name="dereference of a pointer that points to no object", cwe=[822, 824],
+         seen={"pir": PROVES}),
+    dict(id="MEM-MISALIGNED", name="misaligned memory access", cwe=[704],
+         seen={"pir": PROVES}),
+    dict(id="MEM-WRITE-CONST", name="write to a string literal or const object", cwe=[758],
+         seen={"pir": PROVES}),
+    dict(id="MEM-STRICT-ALIAS", name="object accessed through an lvalue of an incompatible type (effective type)", cwe=[704, 843],
+         seen={"pir": PROVES}),
+    dict(id="MEM-INVALID-FREE", name="free of memory that is not a live heap object or not its start", cwe=[590, 761],
+         seen={"pir": PROVES}),
+    dict(id="PTR-COMPARE", name="comparison or subtraction of pointers into different objects", cwe=[469],
+         seen={"pir": PROVES}),
+    dict(id="FMT-ARGS", name="printf format does not match its arguments", cwe=[685, 686],
+         seen={"pir": PROVES}),
 ]
 
 

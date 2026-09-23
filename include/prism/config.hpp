@@ -45,6 +45,14 @@ struct Config {
     // Human approvals of drafted contracts (--contracts-approved PATH);
     // empty = <root>/contracts.approved.json.
     std::filesystem::path contracts_approved;
+    // --strict-aliasing: the pir stage also checks effective types (C11
+    // 6.5p6-7) per byte. Opt-in: real code often violates them on purpose.
+    // C++ engine only (the Python engine is frozen, roadmap D8).
+    bool strict_aliasing = false;
+    // --pir-drafts: pir may take pointer-object sizes from the template
+    // harness draft (ai::draft_harness) when no requires clause gives them.
+    // Opt-in: without it unguarded pointer parameters stay NEEDS-HARNESS (Law 6).
+    bool pir_drafts = false;
 
     PRISM_API bool want(std::string_view name) const;
     PRISM_API std::optional<std::filesystem::path> which(

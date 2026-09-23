@@ -17,6 +17,8 @@
 #include "prism/laws.hpp"
 #include "prism/pir.hpp"
 
+#include "memory.hpp"
+
 #include <algorithm>
 #include <deque>
 #include <functional>
@@ -182,7 +184,10 @@ CfgInfo analyze(const Function& fn) {
         auto& bl = fn.blocks[static_cast<std::size_t>(b)];
         for (auto& p : bl.phis) g.def_block[static_cast<std::size_t>(p.dst)] = b;
         for (auto& s : bl.stmts)
-            if (s.kind == Stmt::Assign) g.def_block[static_cast<std::size_t>(s.dst)] = b;
+            for (int d : {s.dst, s.dst2, s.dst3})
+                if (d >= 0 && (s.kind == Stmt::Assign || s.kind == Stmt::Alloc || s.kind == Stmt::Load ||
+                               s.kind == Stmt::StackSave))
+                    g.def_block[static_cast<std::size_t>(d)] = b;
     }
     return g;
 }
@@ -240,9 +245,64 @@ struct Encoding {
     std::vector<z3::expr> assumptions;
     std::vector<z3::expr> cuts;
     int fresh = 0;
+    EncodeOptions eo;
+    std::optional<mem::SymMem> mem;
 
-    Encoding(z3::context& cc, const Function& f, const CfgInfo& gg, int k)
-        : c(cc), fn(f), g(gg), unwind(k) {}
+    Encoding(z3::context& cc, const Function& f, const CfgInfo& gg, int k, EncodeOptions o = {})
+        : c(cc), fn(f), g(gg), unwind(k), eo(o) {
+        if (fn.uses_memory) {
+            bool tags = false;
+            for (auto& b : fn.blocks)
+                for (auto& s : b.stmts)
+                    if ((s.kind == Stmt::Load || s.kind == Stmt::Store) && s.tag) tags = true;
+            mem.emplace(c, eo.memory, tags, assumptions);
+        }
+    }
+
+    mem::SymMem& M() {
+        if (!mem) throw EncodeFail{std::string(laws::ERROR), "internal: memory statement without memory model"};
+        return *mem;
+    }
+
+    // Memory statements (docs/PIR.md "Memory model"); every update is
+    // guarded by the reach condition of this block instance.
+    void encode_mem(const Stmt& s, int id, const z3::expr& r, std::unordered_map<int, z3::expr>& m) {
+        auto arg = [&](std::size_t i) { return lookup(s.args[i], id); };
+        switch (s.kind) {
+            case Stmt::Alloc: m.insert_or_assign(s.dst, M().alloc(r, arg(0), s.mkind, s.align, s.init)); break;
+            case Stmt::Free: M().free(r, arg(0)); break;
+            case Stmt::Load: {
+                auto ptr = arg(0);
+                auto ld = M().load(ptr, fn.vars[static_cast<std::size_t>(s.dst)].width, s.tag);
+                m.insert_or_assign(s.dst, ld.val);
+                if (s.dst2 >= 0)
+                    m.insert_or_assign(s.dst2, fn.vars[static_cast<std::size_t>(s.dst2)].width == 1 ? ld.uninit : ld.mask);
+                if (s.dst3 >= 0) m.insert_or_assign(s.dst3, ld.tagbad);
+                break;
+            }
+            case Stmt::Store: M().store(r, arg(0), arg(1), s.args[1].width, arg(2), s.tag); break;
+            case Stmt::MemCpy: M().copy(r, arg(0), arg(1), arg(2)); break;
+            case Stmt::MemSet: M().set(r, arg(0), arg(1), arg(2)); break;
+            case Stmt::StackSave: m.insert_or_assign(s.dst, M().stack_save()); break;
+            case Stmt::StackRestore: M().stack_restore(r, arg(0)); break;
+            default: break;
+        }
+    }
+
+    // Provenance for pointer arithmetic (memory.hpp SymMem::note).
+    void note_prov(const Stmt& s, const z3::expr& v, int node) {
+        if (!mem || !s.ptr_arith || s.args.empty()) return;
+        std::optional<uint64_t> k;
+        if (s.op == Op::Select && s.args.size() == 3) {
+            auto k1 = mem->known(lookup(s.args[1], node));
+            auto k2 = mem->known(lookup(s.args[2], node));
+            if (!(k1 && k2 && *k1 == *k2)) return;
+            k = k1;
+        } else {
+            k = mem->known(lookup(s.args[0], node));
+        }
+        if (k) mem->note(v, *k);
+    }
 
     z3::expr bv(uint64_t v, unsigned w) { return c.bv_val(static_cast<uint64_t>(v & wmask(w)), w); }
     z3::expr b2bv(const z3::expr& b) { return z3::ite(b, c.bv_val(1, 1), c.bv_val(0, 1)); }
@@ -487,6 +547,10 @@ struct Encoding {
                 auto ovf = a[0] == bv(uint64_t{1} << (n - 1), n) && a[1] == bv(wmask(n), n);
                 return b2bv(a[1] != bv(0, n) && !ovf && z3::srem(a[0], a[1]) != bv(0, n));
             }
+            case Op::ObjSize: return M().size(a[0]);
+            case Op::ObjLive: return M().live(a[0]);
+            case Op::ObjKind: return M().kind(a[0]);
+            case Op::ObjAlign: return M().align(a[0]);
         }
         throw EncodeFail{std::string(laws::ERROR), "internal: unknown PIR op"};
     }
@@ -518,6 +582,8 @@ struct Encoding {
                 continue;
             }
             std::optional<z3::expr> acc;
+            std::optional<uint64_t> prov;
+            bool prov_ok = mem && w == 64;
             for (auto it = guards.rbegin(); it != guards.rend(); ++it) {
                 int pb = nodes[static_cast<std::size_t>(it->second)].block;
                 const Arg* src = nullptr;
@@ -527,17 +593,29 @@ struct Encoding {
                         break;
                     }
                 z3::expr v = src ? lookup(*src, it->second) : fresh_const("phi_undef", w);
+                if (prov_ok) {
+                    auto k = mem->known(v);
+                    if (!k || (prov && *prov != *k)) prov_ok = false;
+                    else prov = k;
+                }
                 acc = acc ? z3::ite(it->first, v, *acc) : v;
             }
+            if (acc && prov_ok && prov) mem->note(*acc, *prov);
             phi_vals.emplace_back(p.dst, acc ? *acc : fresh_const("phi_dead", w));
         }
         for (auto& [d, e] : phi_vals) m.insert_or_assign(d, e);
         const auto& r = reach[static_cast<std::size_t>(id)];
         for (auto& s : bl.stmts) {
             switch (s.kind) {
-                case Stmt::Assign: m.insert_or_assign(s.dst, op_expr(s, id)); break;
+                case Stmt::Assign: {
+                    auto v = op_expr(s, id);
+                    note_prov(s, v, id);
+                    m.insert_or_assign(s.dst, v);
+                    break;
+                }
                 case Stmt::Check: props.push_back(PropInst{&s, id, r && is1(lookup(s.args[0], id))}); break;
                 case Stmt::Assume: assumptions.push_back(z3::implies(r, is1(lookup(s.args[0], id)))); break;
+                default: encode_mem(s, id, r, m); break;
             }
         }
         for (auto& [from, k, to] : outs)
@@ -634,6 +712,10 @@ std::optional<bool> kinduction_step(const Function& fn, const CfgInfo& g, int k,
 }  // namespace
 
 Verdict check_function(const Function& fn, int unwind, double timeout_s) {
+    return check_function(fn, unwind, timeout_s, EncodeOptions{});
+}
+
+Verdict check_function(const Function& fn, int unwind, double timeout_s, const EncodeOptions& eo) {
     Verdict v;
     if (unwind < 1) unwind = 1;
     auto timeout_ms = static_cast<unsigned>(std::max(1.0, timeout_s) * 1000.0);
@@ -647,16 +729,24 @@ Verdict check_function(const Function& fn, int unwind, double timeout_s) {
     v.extra["loops"] = std::to_string(g.loops.size());
     try {
         z3::context c;
-        Encoding e(c, fn, g, unwind);
+        Encoding e(c, fn, g, unwind, eo);
         e.build();
+        if (fn.uses_memory) {
+            v.extra["memory"] = eo.memory == MemEncoding::Array ? "array" : "bv";
+            v.extra["objects"] = std::to_string(e.mem->objects());
+        }
         v.extra["instances"] = std::to_string(e.nodes.size());
         v.extra["properties"] = std::to_string(e.props.size());
         z3::solver s(c);
         s.set("timeout", timeout_ms);
         add_all(s, e.assumptions);
-        if (!e.props.empty()) {
-            std::vector<z3::expr> viols;
-            for (auto& p : e.props) viols.push_back(p.viol);
+        // "Soft" checks mark a path PIR cannot follow (an exception reaching
+        // catch/cleanup code): reachable means NEEDS-HARNESS, never FAILED,
+        // and never proved away.
+        auto soft = [](const PropInst& p) { return p.stmt->prop == "throw-unmodelled"; };
+        std::vector<z3::expr> viols, soft_viols;
+        for (auto& p : e.props) (soft(p) ? soft_viols : viols).push_back(p.viol);
+        if (!viols.empty()) {
             s.push();
             s.add(any_of(c, viols));
             auto r = s.check();
@@ -664,11 +754,16 @@ Verdict check_function(const Function& fn, int unwind, double timeout_s) {
                 auto mdl = s.get_model();
                 const PropInst* hit = nullptr;
                 for (auto& p : e.props)
-                    if (mdl.eval(p.viol, true).is_true()) {
+                    if (!soft(p) && mdl.eval(p.viol, true).is_true()) {
                         hit = &p;
                         break;
                     }
-                if (!hit) hit = &e.props.front();
+                if (!hit)
+                    for (auto& p : e.props)
+                        if (!soft(p)) {
+                            hit = &p;
+                            break;
+                        }
                 v.status = std::string(laws::FAILED);
                 v.prop = hit->stmt->prop;
                 v.cls = hit->stmt->cls;
@@ -682,6 +777,26 @@ Verdict check_function(const Function& fn, int unwind, double timeout_s) {
             if (r == z3::unknown) {
                 v.status = std::string(laws::UNKNOWN);
                 v.message = "solver unknown: " + s.reason_unknown();
+                return v;
+            }
+            s.pop();
+        }
+        if (!soft_viols.empty()) {
+            s.push();
+            s.add(any_of(c, soft_viols));
+            auto r = s.check();
+            if (r != z3::unsat) {
+                const Stmt* st = nullptr;
+                std::optional<z3::model> mdl;
+                if (r == z3::sat) mdl = s.get_model();
+                for (auto& p : e.props)
+                    if (soft(p) && (!mdl || mdl->eval(p.viol, true).is_true())) {
+                        st = p.stmt;
+                        break;
+                    }
+                s.pop();
+                v.status = std::string(r == z3::sat ? laws::NEEDS_HARNESS : laws::UNKNOWN);
+                v.message = "UNENCODED: " + (st ? st->msg : std::string("exception path"));
                 return v;
             }
             s.pop();
@@ -714,6 +829,12 @@ Verdict check_function(const Function& fn, int unwind, double timeout_s) {
             v.extra["k_induction"] = g.loops.empty() ? "not-needed" : "multiple-loops";
             return v;
         }
+        if (fn.uses_memory) {
+            // The step case would start from an arbitrary memory state; not
+            // attempted (a BOUNDED result stays BOUNDED, Law 2).
+            v.extra["k_induction"] = "not-attempted (memory)";
+            return v;
+        }
         std::vector<std::string> tried;
         for (int k : {1, 2}) {
             if (k > unwind) break;
@@ -743,6 +864,10 @@ Verdict check_function(const Function& fn, int unwind, double timeout_s) {
         v.status = f.status;
         v.message = f.msg;
         return v;
+    } catch (const mem::EncodeError& f) {
+        v.status = f.status;
+        v.message = f.msg;
+        return v;
     } catch (const z3::exception& ex) {
         v.status = std::string(laws::ERROR);
         v.message = std::string("z3: ") + ex.msg();
@@ -751,12 +876,18 @@ Verdict check_function(const Function& fn, int unwind, double timeout_s) {
 }
 
 std::vector<Vc> pir_vcs(const Function& fn, int unwind) {
+    EncodeOptions eo;
+    eo.memory = MemEncoding::Bv;  // QF_BV: the certified back end cannot take arrays
+    return pir_vcs(fn, unwind, eo);
+}
+
+std::vector<Vc> pir_vcs(const Function& fn, int unwind, const EncodeOptions& eo) {
     std::vector<Vc> out;
     auto g = analyze(fn);
     if (!g.unencoded.empty()) return out;
     try {
         z3::context c;
-        Encoding e(c, fn, g, std::max(1, unwind));
+        Encoding e(c, fn, g, std::max(1, unwind), eo);
         e.build();
         for (auto& p : e.props) {
             z3::solver s(c);
@@ -799,7 +930,12 @@ Verdict check_function(const Function&, int, double) {
     return v;
 }
 
+Verdict check_function(const Function& fn, int unwind, double timeout_s, const EncodeOptions&) {
+    return check_function(fn, unwind, timeout_s);
+}
+
 std::vector<Vc> pir_vcs(const Function&, int) { return {}; }
+std::vector<Vc> pir_vcs(const Function&, int, const EncodeOptions&) { return {}; }
 
 #endif
 
