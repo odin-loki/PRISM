@@ -57,14 +57,14 @@ theorem ArgVals.length {σ : Store} : ∀ {as : List Arg} {vs : List Nat}, ArgVa
   | [], [], .nil => rfl
   | _ :: _, _ :: _, .cons _ h => by simp [ArgVals.length h]
 
-def Step.out (s : Step) (K : List Frame → Nat → Out) : Out :=
+def Step.out (s : Step) (K : List Frame → World → Out) : Out :=
   match s with
   | .next st t => K st t
   | .ret v => .ret v
   | .ub => .ub
   | .stuck => .stuck
 
-theorem Res.step_out {α : Type} (r : Res α) (f : α → Step) (K : List Frame → Nat → Out) :
+theorem Res.step_out {α : Type} (r : Res α) (f : α → Step) (K : List Frame → World → Out) :
     (r.step f).out K = r.out (fun a => (f a).out K) := by
   cases r <;> rfl
 
@@ -72,12 +72,12 @@ theorem Res.bind_out {α β : Type} (r : Res α) (f : α → Res β) (g : β →
     (r.bind f).out g = r.out (fun a => (f a).out g) := by
   cases r <;> rfl
 
-theorem XPRes.then_run (p : XPRes) (q : Store → Nat → XPRes) (g : Store → Nat → POut) :
+theorem XPRes.then_run (p : XPRes) (q : Store → World → XPRes) (g : Store → World → POut) :
     (p.then q).run g = p.run (fun σ t => (q σ t).run g) := by
   cases p <;> rfl
 
-theorem SimX.out {c : Ctx} {σ0 : Store} {r : Res (SRegs × Nat)} {p : XPRes} (h : SimX c σ0 r p)
-    {f : SRegs × Nat → Out} {g : Store → Nat → POut}
+theorem SimX.out {c : Ctx} {σ0 : Store} {r : Res (SRegs × World)} {p : XPRes} (h : SimX c σ0 r p)
+    {f : SRegs × World → Out} {g : Store → World → POut}
     (hfg : ∀ R t' σ', RelX c R σ' → (∀ j, j < c.lo → σ' j = σ0 j) → OSim (f (R, t')) (g σ' t')) :
     OSim (r.out f) (p.run g) := by
   cases r with
@@ -90,8 +90,8 @@ theorem SimX.out {c : Ctx} {σ0 : Store} {r : Res (SRegs × Nat)} {p : XPRes} (h
 
 theorem opndX_osim {P : PFunc} {ω : Nat → Nat} {c : Ctx} {R : SRegs} {σ : Store} (hR : RelX c R σ)
     {w : Nat} {keep : Bool} {k : Nat} {o : Opnd} {s : List PStmt} {tws : List Nat} {A : Arg}
-    (h : trOpndX c w keep k o = .ok (s, tws, A)) (hk : c.hi ≤ k) (t : Nat) (rest : List PStmt)
-    (f : Nat → Out) (g : Store → Nat → POut)
+    (h : trOpndX c w keep k o = .ok (s, tws, A)) (hk : c.hi ≤ k) (t : World) (rest : List PStmt)
+    (f : Nat → Out) (g : Store → World → POut)
     (hc : ∀ v, sOpnd R w o = .ok v → tws = [] → A.get σ = v → A.below k →
       OSim (f v) ((xStmts P ω σ t rest).run g)) :
     OSim ((sOpnd R w o).out f) ((xStmts P ω σ t (s ++ rest)).run g) := by
@@ -137,7 +137,7 @@ theorem opndX_osim {P : PFunc} {ω : Nat → Nat} {c : Ctx} {R : SRegs} {σ : St
     rfl
 
 theorem argsX_osim {P : PFunc} {ω : Nat → Nat} {c : Ctx} {R : SRegs} {σ : Store} (hR : RelX c R σ)
-    (t : Nat) (f : List Nat → Out) (g : Store → Nat → POut) :
+    (t : World) (f : List Nat → Out) (g : Store → World → POut) :
     ∀ {k : Nat} {args3 : List (Opnd × Nat × Nat)} {s : List PStmt} {tws : List Nat} {As : List Arg},
     c.hi ≤ k → trArgsX c k args3 = .ok (s, tws, As) →
     (∀ vs, sArgs R (args3.map fun (o, w, _) => (o, w)) = .ok vs →
@@ -329,18 +329,18 @@ theorem enter_sim {M : XMod} {P : PFunc} {C : List IInfo} {I : IInfo} (hIF : Ins
 /-! ## One step -/
 
 /-- One PIR block visit, continued by `Kp`. -/
-def pVisit (P : PFunc) (ω : Nat → Nat) (t : Nat) (prev : Option Nat) (cur : Nat) (σ : Store)
-    (Kp : Nat → Option Nat → Nat → Store → POut) : POut :=
+def pVisit (P : PFunc) (ω : Nat → Nat) (t : World) (prev : Option Nat) (cur : Nat) (σ : Store)
+    (Kp : World → Option Nat → Nat → Store → POut) : POut :=
   match P.blocks[cur]? with
   | none => .stop
   | some B =>
     (xStmts P ω (σ.setAll (phiUpd σ prev B.phis)) t B.stmts).run fun σ' t' =>
       pTerm σ' (fun j σ'' => Kp t' (some cur) j σ'') B.term
 
-theorem xpRun_succ (P : PFunc) (ω : Nat → Nat) (n t : Nat) (prev : Option Nat) (cur : Nat) (σ : Store) :
+theorem xpRun_succ (P : PFunc) (ω : Nat → Nat) (n : Nat) (t : World) (prev : Option Nat) (cur : Nat) (σ : Store) :
     xpRun P ω (n + 1) t prev cur σ = pVisit P ω t prev cur σ (xpRun P ω n) := rfl
 
-theorem sRunX_succ (M : XMod) (ω : Nat → Nat) (n t : Nat) (st : List Frame) :
+theorem sRunX_succ (M : XMod) (ω : Nat → Nat) (n : Nat) (t : World) (st : List Frame) :
     sRunX M ω (n + 1) t st = (sStep M ω t st).out (fun st' t' => sRunX M ω n t' st') := by
   simp only [sRunX]; cases sStep M ω t st <;> rfl
 
@@ -357,8 +357,8 @@ theorem trArgsX_length {c : Ctx} : ∀ {k : Nat} {args3 : List (Opnd × Nat × N
 
 theorem step_sim {M : XMod} {F : XFunc} {P : PFunc} {C : List IInfo} {ω : Nat → Nat}
     (hVF : ValidFacts M F P C) {st : List Frame} {prevP : Option Nat} {curP : Nat} {σ : Store}
-    (hinv : InvX P C st prevP curP σ) (t : Nat)
-    (K : List Frame → Nat → Out) (Kp : Nat → Option Nat → Nat → Store → POut)
+    (hinv : InvX P C st prevP curP σ) (t : World)
+    (K : List Frame → World → Out) (Kp : World → Option Nat → Nat → Store → POut)
     (hK : ∀ st' t' prevP' curP' σ', InvX P C st' prevP' curP' σ' → OSim (K st' t') (Kp t' prevP' curP' σ')) :
     OSim ((sStep M ω t st).out K) (pVisit P ω t prevP curP σ Kp) := by
   obtain ⟨fr, rest, ι, I, rfl, hI, hfF, hR, hcur, hE, hT⟩ := hinv
@@ -523,7 +523,7 @@ theorem step_sim {M : XMod} {F : XFunc} {P : PFunc} {C : List IInfo} {ω : Nat �
 
 theorem run_simX {M : XMod} {F : XFunc} {P : PFunc} {C : List IInfo} {ω : Nat → Nat}
     (hVF : ValidFacts M F P C) :
-    ∀ (n t : Nat) (st : List Frame) (prevP : Option Nat) (curP : Nat) (σ : Store),
+    ∀ (n : Nat) (t : World) (st : List Frame) (prevP : Option Nat) (curP : Nat) (σ : Store),
     InvX P C st prevP curP σ → OSim (sRunX M ω n t st) (xpRun P ω n t prevP curP σ)
   | 0, _, _, _, _, _, _ => rfl
   | n + 1, t, st, prevP, curP, σ, hinv => by

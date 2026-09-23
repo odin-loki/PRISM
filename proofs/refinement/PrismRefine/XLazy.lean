@@ -16,12 +16,12 @@ open PrismSem
 
 /-! ## One instruction -/
 
-def SLX : Res (SRegs × Nat) → Res (LSt × Nat) → Prop
+def SLX : Res (SRegs × World) → Res (LSt × World) → Prop
   | .ok (R', t'), l => l = .ok (⟨lift R', false⟩, t')
   | .stuck, l => l = .stuck
   | .ub, l => l = .ub ∨ l = .stuck ∨ ∃ S' t', l = .ok (S', t') ∧ S'.c = true
 
-theorem sinst_liftX (ω : Nat → Nat) (R : SRegs) (t : Nat) (i : SInst) :
+theorem sinst_liftX (ω : Nat → Nat) (R : SRegs) (t : World) (i : SInst) :
     SLX (sSInst ω R t i) (lSInst ω ⟨lift R, false⟩ t i) := by
   cases i with
   | i x =>
@@ -52,7 +52,7 @@ theorem sinst_liftX (ω : Nat → Nat) (R : SRegs) (t : Nat) (i : SInst) :
         · rw [h]; simp [Res.bind, SLX]
         · rw [h]; simp [Res.bind, SLX]
 
-theorem lSInst_mono {ω : Nat → Nat} {S S' : LSt} {t t' : Nat} {i : SInst}
+theorem lSInst_mono {ω : Nat → Nat} {S S' : LSt} {t t' : World} {i : SInst}
     (h : lSInst ω S t i = .ok (S', t')) (hc : S.c = true) : S'.c = true := by
   cases i with
   | i x =>
@@ -80,12 +80,12 @@ theorem lSInst_mono {ω : Nat → Nat} {S S' : LSt} {t t' : Nat} {i : SInst}
       | stuck => rw [hl] at h; cases h
 
 /-- Once poison has been created, the rest of a segment stays bad. -/
-def LBadX : Res (LSt × Nat) → Prop
+def LBadX : Res (LSt × World) → Prop
   | .ok (S, _) => S.c = true
   | .ub => True
   | .stuck => True
 
-theorem lSInsts_mono (ω : Nat → Nat) : ∀ (is : List SInst) (S : LSt) (t : Nat), S.c = true →
+theorem lSInsts_mono (ω : Nat → Nat) : ∀ (is : List SInst) (S : LSt) (t : World), S.c = true →
     LBadX (lSInsts ω S t is)
   | [], S, t, hc => hc
   | i :: is, S, t, hc => by
@@ -95,7 +95,7 @@ theorem lSInsts_mono (ω : Nat → Nat) : ∀ (is : List SInst) (S : LSt) (t : N
     | ub => trivial
     | stuck => trivial
 
-theorem sinsts_liftX (ω : Nat → Nat) : ∀ (is : List SInst) (R : SRegs) (t : Nat),
+theorem sinsts_liftX (ω : Nat → Nat) : ∀ (is : List SInst) (R : SRegs) (t : World),
     SLX (sSInsts ω R t is) (lSInsts ω ⟨lift R, false⟩ t is)
   | [], R, t => rfl
   | i :: is, R, t => by
@@ -229,12 +229,12 @@ theorem lift_bindArgs : ∀ (ps : List (String × Nat)) (vs : List Nat),
 def LStep.badish (l : LStep) : Prop :=
   l = .ub ∨ l = .stuck ∨ (∃ st t, l = .next st t true) ∨ ∃ v, l = .ret v true
 
-theorem lRetTo_bad (rest : List LFrame) (v : Option Nat) (t : Nat) : (lRetTo rest v t true).badish := by
+theorem lRetTo_bad (rest : List LFrame) (v : Option Nat) (t : World) : (lRetTo rest v t true).badish := by
   cases rest with
   | nil => exact .inr (.inr (.inr ⟨v, rfl⟩))
   | cons f fs => exact .inr (.inr (.inl ⟨_, t, rfl⟩))
 
-theorem lEnd_mono (M : XMod) (fr : LFrame) (rest : List LFrame) (B : XBlock) (S : LSt) (t : Nat)
+theorem lEnd_mono (M : XMod) (fr : LFrame) (rest : List LFrame) (B : XBlock) (S : LSt) (t : World)
     (hc : S.c = true) : (lEnd M fr rest B S t).badish := by
   unfold lEnd
   split
@@ -266,7 +266,7 @@ theorem lEnd_mono (M : XMod) (fr : LFrame) (rest : List LFrame) (B : XBlock) (S 
     · exact .inl rfl
 
 theorem bad_cont (M : XMod) (ω : Nat → Nat) (fr : LFrame) (rest : List LFrame) (B : XBlock) (S : LSt)
-    (t : Nat) (hc : S.c = true) (is : List SInst) :
+    (t : World) (hc : S.c = true) (is : List SInst) :
     ((lSInsts ω S t is).lstep fun (S', t') => lEnd M fr rest B S' t').badish := by
   have := lSInsts_mono ω is S t hc
   cases h : lSInsts ω S t is with
@@ -280,7 +280,7 @@ theorem bad_cont (M : XMod) (ω : Nat → Nat) (fr : LFrame) (rest : List LFrame
 theorem SLStep.of_badish {s : Step} {l : LStep} (hs : s = .ub) (hl : l.badish) : SLStep s l := by
   subst hs; exact hl
 
-theorem end_lift (M : XMod) (fr : Frame) (rest : List Frame) (B : XBlock) (R : SRegs) (t : Nat) :
+theorem end_lift (M : XMod) (fr : Frame) (rest : List Frame) (B : XBlock) (R : SRegs) (t : World) :
     SLStep (sEnd M fr rest B R t) (lEnd M (liftFr fr) (rest.map liftFr) B ⟨lift R, false⟩ t) := by
   unfold sEnd lEnd
   simp only [liftFr]
@@ -356,7 +356,7 @@ theorem end_lift (M : XMod) (fr : Frame) (rest : List Frame) (B : XBlock) (R : S
           rcases h with h | h <;> simp [Res.step, h, SLStep]
     | unreachable => exact .inl rfl
 
-theorem step_lift (M : XMod) (ω : Nat → Nat) (t : Nat) :
+theorem step_lift (M : XMod) (ω : Nat → Nat) (t : World) :
     ∀ st, SLStep (sStep M ω t st) (lStep M ω t false (st.map liftFr))
   | [] => rfl
   | fr :: rest => by
@@ -397,7 +397,7 @@ theorem step_lift (M : XMod) (ω : Nat → Nat) (t : Nat) :
         · rw [he]; exact .inr (.inl rfl)
         · rw [he]; exact bad_cont M ω _ _ B S t hc _
 
-theorem lStep_mono (M : XMod) (ω : Nat → Nat) (t : Nat) (st : List LFrame) :
+theorem lStep_mono (M : XMod) (ω : Nat → Nat) (t : World) (st : List LFrame) :
     (lStep M ω t true st).badish := by
   cases st with
   | nil => exact .inr (.inl rfl)
@@ -412,7 +412,7 @@ theorem lStep_mono (M : XMod) (ω : Nat → Nat) (t : Nat) (st : List LFrame) :
       | ub => exact .inl rfl
       | stuck => exact .inr (.inl rfl)
 
-theorem lRunX_mono (M : XMod) (ω : Nat → Nat) : ∀ (n t : Nat) (st : List LFrame),
+theorem lRunX_mono (M : XMod) (ω : Nat → Nat) : ∀ (n : Nat) (t : World) (st : List LFrame),
     (lRunX M ω n t true st).bad = true ∨ lRunX M ω n t true st = .stuck
   | 0, _, _ => by simp [lRunX, LOut.bad]
   | n + 1, t, st => by
@@ -423,7 +423,7 @@ theorem lRunX_mono (M : XMod) (ω : Nat → Nat) : ∀ (n t : Nat) (st : List LF
     · exact lRunX_mono M ω n t' st'
     · simp [LOut.bad]
 
-theorem run_liftX (M : XMod) (ω : Nat → Nat) : ∀ (n t : Nat) (st : List Frame),
+theorem run_liftX (M : XMod) (ω : Nat → Nat) : ∀ (n : Nat) (t : World) (st : List Frame),
     OL (sRunX M ω n t st) (lRunX M ω n t false (st.map liftFr))
   | 0, _, _ => rfl
   | n + 1, t, st => by
@@ -445,7 +445,7 @@ theorem run_liftX (M : XMod) (ω : Nat → Nat) : ∀ (n t : Nat) (st : List Fra
 /-- **Strict vs LangRef semantics, extended fragment.** -/
 theorem strict_lazyX (M : XMod) (F : XFunc) (args : List Nat) (ω : Nat → Nat) (n : Nat) :
     OL (sRunXF M F args ω n) (lRunXF M F args ω n) := by
-  have := run_liftX M ω n 0 [initFrame F args]
+  have := run_liftX M ω n World.init [initFrame F args]
   simpa [sRunXF, lRunXF, liftFr, initFrame, lInitFrame, lInit_lift] using this
 
 end PrismRefine

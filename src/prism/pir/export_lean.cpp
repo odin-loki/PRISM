@@ -195,9 +195,22 @@ void pir_side(std::ostream& o, const Function& fn) {
                     o << "P check " << arg(s.args[0]) << " " << word(s.prop) << " " << word(s.cls) << "\n";
                     break;
                 case Stmt::Assume: o << "P assume " << arg(s.args[0]) << "\n"; break;
+                case Stmt::Alloc:
+                    o << "P alloc " << s.dst << " " << arg(s.args[0]) << " " << static_cast<int>(s.mkind) << " "
+                      << s.init << " " << s.align << "\n";
+                    break;
+                case Stmt::Free: o << "P free " << arg(s.args[0]) << "\n"; break;
+                case Stmt::Load:
+                    o << "P load " << s.dst << " " << s.dst2 << " " << s.dst3 << " " << arg(s.args[0]) << " " << s.tag
+                      << "\n";
+                    break;
+                case Stmt::Store:
+                    o << "P store " << arg(s.args[0]) << " " << arg(s.args[1]) << " " << arg(s.args[2]) << " "
+                      << s.tag << "\n";
+                    break;
                 default:
-                    // a memory statement: written so the checker can never equate
-                    // it with anything (it is not in the Lean PIR syntax)
+                    // memcpy/memset/stack save and restore: not in the Lean PIR
+                    // syntax, so the checker can never equate them with anything
                     o << "P memory-statement " << static_cast<int>(s.kind) << "\n";
                     break;
             }

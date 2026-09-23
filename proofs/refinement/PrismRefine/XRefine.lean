@@ -197,12 +197,12 @@ theorem CtxOK.wd {P : PFunc} {c : Ctx} (hc : CtxOK P c) {i w : Nat} (h : c.vars.
 
 /-! ## Statement runs with the oracle -/
 
-def XPRes.then : XPRes → (Store → Nat → XPRes) → XPRes
+def XPRes.then : XPRes → (Store → World → XPRes) → XPRes
   | .ok σ t, f => f σ t
   | .fail, _ => .fail
   | .blocked, _ => .blocked
 
-theorem xStmts_append (P : PFunc) (ω : Nat → Nat) : ∀ (σ : Store) (t : Nat) (xs ys : List PStmt),
+theorem xStmts_append (P : PFunc) (ω : Nat → Nat) : ∀ (σ : Store) (t : World) (xs ys : List PStmt),
     xStmts P ω σ t (xs ++ ys) = (xStmts P ω σ t xs).then (fun σ' t' => xStmts P ω σ' t' ys)
   | σ, t, [], ys => rfl
   | σ, t, .assign d op args :: r, ys => xStmts_append P ω _ t r ys
@@ -216,13 +216,13 @@ theorem xStmts_append (P : PFunc) (ω : Nat → Nat) : ∀ (σ : Store) (t : Nat
     · exact xStmts_append P ω σ t r ys
     · rfl
 
-def PRes.toX : PRes → Nat → XPRes
+def PRes.toX : PRes → World → XPRes
   | .ok σ, t => .ok σ t
   | .fail, _ => .fail
   | .blocked, _ => .blocked
 
 /-- Without `havoc`, the oracle plays no part. -/
-theorem xStmts_noHavoc (P : PFunc) (ω : Nat → Nat) : ∀ (σ : Store) (t : Nat) (l : List PStmt),
+theorem xStmts_noHavoc (P : PFunc) (ω : Nat → Nat) : ∀ (σ : Store) (t : World) (l : List PStmt),
     (∀ d, PStmt.havoc d ∉ l) → xStmts P ω σ t l = (pStmts P σ l).toX t
   | σ, t, [], _ => rfl
   | σ, t, .assign d op args :: r, h => by
@@ -246,7 +246,7 @@ theorem emitAll_noHavoc : ∀ (cs : List Chk) (k d : Nat), PStmt.havoc d ∉ (em
     cases c <;> simp [Chk.emit]
 
 /-- `emit_all` (`Refine.lean`) with the oracle. -/
-theorem emitX_all (P : PFunc) (ω : Nat → Nat) (cs : List Chk) (σ : Store) (k t : Nat)
+theorem emitX_all (P : PFunc) (ω : Nat → Nat) (cs : List Chk) (σ : Store) (k : Nat) (t : World)
     (hT : TempsOK P k (emitAll k cs).2) (hb : ∀ c ∈ cs, c.below k) :
     (cs.any (Chk.bad σ) = true → xStmts P ω σ t (emitAll k cs).1 = .fail) ∧
     (cs.any (Chk.bad σ) = false → ∃ σ', xStmts P ω σ t (emitAll k cs).1 = .ok σ' t ∧
@@ -261,7 +261,7 @@ theorem emitX_all (P : PFunc) (ω : Nat → Nat) (cs : List Chk) (σ : Store) (k
 
 /-- A strict step and a PIR statement run correspond; `σ0` is the store at
 the start of the segment, which the run changes only at or above `lo`. -/
-def SimX (c : Ctx) (σ0 : Store) : Res (SRegs × Nat) → XPRes → Prop
+def SimX (c : Ctx) (σ0 : Store) : Res (SRegs × World) → XPRes → Prop
   | .ok (R', t'), p => ∃ σ', p = .ok σ' t' ∧ RelX c R' σ' ∧ ∀ j, j < c.lo → σ' j = σ0 j
   | .ub, p => p = .fail
   | .stuck, _ => True
@@ -270,8 +270,8 @@ theorem Res.bind_assoc {α β γ : Type} (r : Res α) (f : α → Res β) (g : �
     (r.bind f).bind g = r.bind (fun a => (f a).bind g) := by
   cases r <;> rfl
 
-theorem SimX.bind {c : Ctx} {σ0 : Store} {r : Res (SRegs × Nat)} {p : XPRes} (h : SimX c σ0 r p)
-    {g : SRegs × Nat → Res (SRegs × Nat)} {q : Store → Nat → XPRes}
+theorem SimX.bind {c : Ctx} {σ0 : Store} {r : Res (SRegs × World)} {p : XPRes} (h : SimX c σ0 r p)
+    {g : SRegs × World → Res (SRegs × World)} {q : Store → World → XPRes}
     (hg : ∀ R' t' σ', RelX c R' σ' → (∀ j, j < c.lo → σ' j = σ0 j) → SimX c σ0 (g (R', t')) (q σ' t')) :
     SimX c σ0 (r.bind g) (p.then q) := by
   cases r with
@@ -282,7 +282,7 @@ theorem SimX.bind {c : Ctx} {σ0 : Store} {r : Res (SRegs × Nat)} {p : XPRes} (
   | ub => simp only [SimX] at h; subst h; rfl
   | stuck => trivial
 
-theorem shChecks_pass (P : PFunc) (ω : Nat → Nat) (σ : Store) (t : Nat) {sh : Option Arg}
+theorem shChecks_pass (P : PFunc) (ω : Nat → Nat) (σ : Store) (t : World) {sh : Option Arg}
     (hsh : ∀ a, sh = some a → truthN (a.get σ) = false) (rest : List PStmt) :
     xStmts P ω σ t (shChecks sh ++ rest) = xStmts P ω σ t rest := by
   cases sh with
@@ -290,9 +290,9 @@ theorem shChecks_pass (P : PFunc) (ω : Nat → Nat) (σ : Store) (t : Nat) {sh 
   | some a => simp [shChecks, xStmts, hsh a rfl]
 
 theorem opndX_sim {P : PFunc} {ω : Nat → Nat} {c : Ctx} {R : SRegs} {σ σ0 : Store}
-    (hR : RelX c R σ) {w : Nat} {keep : Bool} {k t : Nat} {o : Opnd} {s : List PStmt}
+    (hR : RelX c R σ) {w : Nat} {keep : Bool} {k : Nat} {t : World} {o : Opnd} {s : List PStmt}
     {tws : List Nat} {A : Arg} (h : trOpndX c w keep k o = .ok (s, tws, A)) (hk : c.hi ≤ k)
-    (f : Nat → Res (SRegs × Nat)) (rest : List PStmt)
+    (f : Nat → Res (SRegs × World)) (rest : List PStmt)
     (hf : ∀ v, sOpnd R w o = .ok v → tws = [] → A.get σ = v → A.below k →
       (keep = false → A.width = w) → SimX c σ0 (f v) (xStmts P ω σ t rest)) :
     SimX c σ0 ((sOpnd R w o).bind f) (xStmts P ω σ t (s ++ rest)) := by
@@ -368,7 +368,7 @@ theorem castVal_lt (k : CastK) (fw tw x : Nat) : castVal k fw tw x < 2 ^ tw := b
   unfold castVal; split <;> exact BitVec.isLt _
 
 theorem sinstX_sim {P : PFunc} {ω : Nat → Nat} {c : Ctx} (hc : CtxOK P c) {R : SRegs}
-    {σ σ0 : Store} (hR : RelX c R σ) (ha0 : ∀ j, j < c.lo → σ j = σ0 j) {k t : Nat} (hk : c.hi ≤ k)
+    {σ σ0 : Store} (hR : RelX c R σ) (ha0 : ∀ j, j < c.lo → σ j = σ0 j) {k : Nat} {t : World} (hk : c.hi ≤ k)
     {i : SInst} {s : List PStmt} {tws : List Nat} (h : trSInstX c k i = .ok (s, tws))
     (hT : TempsOK P k tws) :
     SimX c σ0 (sSInst ω R t i) (xStmts P ω σ t s) := by
@@ -556,7 +556,7 @@ theorem sinstX_sim {P : PFunc} {ω : Nat → Nat} {c : Ctx} (hc : CtxOK P c) {R 
       exact ⟨_, rfl, RelX.set hR hl hu hsh _, agree_set ha0 hlo _⟩
 
 theorem sinstsX_sim {P : PFunc} {ω : Nat → Nat} {c : Ctx} (hc : CtxOK P c) {σ0 : Store} :
-    ∀ (is : List SInst) (R : SRegs) (σ : Store) (k t : Nat) (s : List PStmt) (tws : List Nat),
+    ∀ (is : List SInst) (R : SRegs) (σ : Store) (k : Nat) (t : World) (s : List PStmt) (tws : List Nat),
     RelX c R σ → (∀ j, j < c.lo → σ j = σ0 j) → c.hi ≤ k → trSInstsX c k is = .ok (s, tws) →
     TempsOK P k tws → SimX c σ0 (sSInsts ω R t is) (xStmts P ω σ t s)
   | [], R, σ, k, t, s, tws, hR, ha, _, h, _ => by

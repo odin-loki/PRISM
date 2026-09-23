@@ -43,6 +43,7 @@ passing poison as an argument is a use of it (clang marks C parameters
 `noundef`).
 -/
 import PrismRefine.Llvm
+import PrismRefine.XMem
 
 namespace PrismRefine
 
@@ -114,16 +115,16 @@ def Inst.draws : Inst → Nat
 /-! ## Strict semantics -/
 
 /-- One non-call instruction; `t` is the number of values drawn so far. -/
-def sSInst (ω : Nat → Nat) (R : SRegs) (t : Nat) : SInst → Res (SRegs × Nat)
-  | .i x => (sInst R x).bind fun R' => .ok (R', t + x.draws)
+def sSInst (ω : Nat → Nat) (R : SRegs) (W : World) : SInst → Res (SRegs × World)
+  | .i x => (sInst R x).bind fun R' => .ok (R', W.adv x.draws)
   | .freeze d w a =>
     match a with
-    | .undef => .ok (R.set d (ω t % 2 ^ w), t + 1)
-    | .o o => (sOpnd R w o).bind fun v => .ok (R.set d (v % 2 ^ w), t)
+    | .undef => .ok (R.set d (ω W.t % 2 ^ w), W.adv 1)
+    | .o o => (sOpnd R w o).bind fun v => .ok (R.set d (v % 2 ^ w), W)
 
-def sSInsts (ω : Nat → Nat) : SRegs → Nat → List SInst → Res (SRegs × Nat)
-  | R, t, [] => .ok (R, t)
-  | R, t, i :: is => (sSInst ω R t i).bind fun (R', t') => sSInsts ω R' t' is
+def sSInsts (ω : Nat → Nat) : SRegs → World → List SInst → Res (SRegs × World)
+  | R, W, [] => .ok (R, W)
+  | R, W, i :: is => (sSInst ω R W i).bind fun (R', W') => sSInsts ω R' W' is
 
 /-- Call arguments, left to right (each a use). -/
 def sArgs (R : SRegs) : List (Opnd × Nat) → Res (List Nat)
@@ -145,7 +146,7 @@ structure Frame where
   pend : Option Nat
 
 inductive Step where
-  | next (st : List Frame) (t : Nat)
+  | next (st : List Frame) (W : World)
   | ret (v : Option Nat)
   | ub
   | stuck
@@ -171,11 +172,11 @@ def sEnter (fr : Frame) (B : XBlock) : Res SRegs :=
     | none => .stuck
 
 /-- Return `v` to the caller (or out of the run). -/
-def retTo : List Frame → Option Nat → Nat → Step
+def retTo : List Frame → Option Nat → World → Step
   | [], v, _ => .ret v
   | c :: cs, v, t => .next ({ c with pend := v } :: cs) t
 
-def sEnd (M : XMod) (fr : Frame) (rest : List Frame) (B : XBlock) (R : SRegs) (t : Nat) : Step :=
+def sEnd (M : XMod) (fr : Frame) (rest : List Frame) (B : XBlock) (R : SRegs) (t : World) : Step :=
   match B.segs[fr.seg]? with
   | some (_, c) =>
     (sArgs R c.args).step fun vs =>
@@ -202,7 +203,7 @@ def sEnd (M : XMod) (fr : Frame) (rest : List Frame) (B : XBlock) (R : SRegs) (t
     | .unreachable => .ub
 
 /-- One step: the current segment of the top frame. -/
-def sStep (M : XMod) (ω : Nat → Nat) (t : Nat) : List Frame → Step
+def sStep (M : XMod) (ω : Nat → Nat) (t : World) : List Frame → Step
   | [] => .stuck
   | fr :: rest =>
     match fr.F.blocks[fr.cur]? with
@@ -211,7 +212,7 @@ def sStep (M : XMod) (ω : Nat → Nat) (t : Nat) : List Frame → Step
       (sEnter fr B).step fun R0 =>
         (sSInsts ω R0 t (B.insts fr.seg)).step fun (R, t') => sEnd M fr rest B R t'
 
-def sRunX (M : XMod) (ω : Nat → Nat) : Nat → Nat → List Frame → Out
+def sRunX (M : XMod) (ω : Nat → Nat) : Nat → World → List Frame → Out
   | 0, _, _ => .fuel
   | n + 1, t, st =>
     match sStep M ω t st with
@@ -224,25 +225,25 @@ def initFrame (F : XFunc) (args : List Nat) : Frame :=
   { F := F, prev := none, cur := 0, seg := 0, R := initRegs F.params args, pend := none }
 
 def sRunXF (M : XMod) (F : XFunc) (args : List Nat) (ω : Nat → Nat) (fuel : Nat) : Out :=
-  sRunX M ω fuel 0 [initFrame F args]
+  sRunX M ω fuel World.init [initFrame F args]
 
 /-! ## LangRef semantics (lazy poison) -/
 
-def lSInst (ω : Nat → Nat) (S : LSt) (t : Nat) : SInst → Res (LSt × Nat)
-  | .i x => (lInst S x).bind fun S' => .ok (S', t + x.draws)
+def lSInst (ω : Nat → Nat) (S : LSt) (W : World) : SInst → Res (LSt × World)
+  | .i x => (lInst S x).bind fun S' => .ok (S', W.adv x.draws)
   | .freeze d w a =>
     match a with
-    | .undef => .ok (⟨S.R.set d (.val (ω t % 2 ^ w)), S.c⟩, t + 1)
+    | .undef => .ok (⟨S.R.set d (.val (ω W.t % 2 ^ w)), S.c⟩, W.adv 1)
     | .o o =>
       (lOpnd S.R w o).bind fun (x, cx) =>
         match x with
-        | .val v => .ok (⟨S.R.set d (.val (v % 2 ^ w)), S.c || cx⟩, t)
-        | .poison => .ok (⟨S.R.set d (.val (ω t % 2 ^ w)), S.c || cx⟩, t + 1)
+        | .val v => .ok (⟨S.R.set d (.val (v % 2 ^ w)), S.c || cx⟩, W)
+        | .poison => .ok (⟨S.R.set d (.val (ω W.t % 2 ^ w)), S.c || cx⟩, W.adv 1)
         | .ind => .ub
 
-def lSInsts (ω : Nat → Nat) : LSt → Nat → List SInst → Res (LSt × Nat)
-  | S, t, [] => .ok (S, t)
-  | S, t, i :: is => (lSInst ω S t i).bind fun (S', t') => lSInsts ω S' t' is
+def lSInsts (ω : Nat → Nat) : LSt → World → List SInst → Res (LSt × World)
+  | S, W, [] => .ok (S, W)
+  | S, W, i :: is => (lSInst ω S W i).bind fun (S', W') => lSInsts ω S' W' is
 
 def lArgs (R : LRegs) : List (Opnd × Nat) → Res (List LV × Bool)
   | [] => .ok ([], false)
@@ -261,7 +262,7 @@ structure LFrame where
   pend : Option Nat
 
 inductive LStep where
-  | next (st : List LFrame) (t : Nat) (c : Bool)
+  | next (st : List LFrame) (W : World) (c : Bool)
   | ret (v : Option Nat) (c : Bool)
   | ub
   | stuck
@@ -285,11 +286,11 @@ def lEnter (fr : LFrame) (B : XBlock) (c : Bool) : Res LSt :=
       | none => .ok ⟨fr.R, c⟩
     | none => .stuck
 
-def lRetTo : List LFrame → Option Nat → Nat → Bool → LStep
+def lRetTo : List LFrame → Option Nat → World → Bool → LStep
   | [], v, _, c => .ret v c
   | f :: fs, v, t, c => .next ({ f with pend := v } :: fs) t c
 
-def lEnd (M : XMod) (fr : LFrame) (rest : List LFrame) (B : XBlock) (S : LSt) (t : Nat) : LStep :=
+def lEnd (M : XMod) (fr : LFrame) (rest : List LFrame) (B : XBlock) (S : LSt) (t : World) : LStep :=
   match B.segs[fr.seg]? with
   | some (_, cl) =>
     (lArgs S.R cl.args).lstep fun (vs, ca) =>
@@ -326,7 +327,7 @@ def lEnd (M : XMod) (fr : LFrame) (rest : List LFrame) (B : XBlock) (S : LSt) (t
       | .stuck => .stuck
     | .unreachable => .ub
 
-def lStep (M : XMod) (ω : Nat → Nat) (t : Nat) (c : Bool) : List LFrame → LStep
+def lStep (M : XMod) (ω : Nat → Nat) (t : World) (c : Bool) : List LFrame → LStep
   | [] => .stuck
   | fr :: rest =>
     match fr.F.blocks[fr.cur]? with
@@ -335,7 +336,7 @@ def lStep (M : XMod) (ω : Nat → Nat) (t : Nat) (c : Bool) : List LFrame → L
       (lEnter fr B c).lstep fun S0 =>
         (lSInsts ω S0 t (B.insts fr.seg)).lstep fun (S, t') => lEnd M fr rest B S t'
 
-def lRunX (M : XMod) (ω : Nat → Nat) : Nat → Nat → Bool → List LFrame → LOut
+def lRunX (M : XMod) (ω : Nat → Nat) : Nat → World → Bool → List LFrame → LOut
   | 0, _, c, _ => .fuel c
   | n + 1, t, c, st =>
     match lStep M ω t c st with
@@ -348,6 +349,6 @@ def lInitFrame (F : XFunc) (args : List Nat) : LFrame :=
   { F := F, prev := none, cur := 0, seg := 0, R := lInit F.params args, pend := none }
 
 def lRunXF (M : XMod) (F : XFunc) (args : List Nat) (ω : Nat → Nat) (fuel : Nat) : LOut :=
-  lRunX M ω fuel 0 false [lInitFrame F args]
+  lRunX M ω fuel World.init false [lInitFrame F args]
 
 end PrismRefine
