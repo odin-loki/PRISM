@@ -7,7 +7,7 @@ unsigned add_u(unsigned a, unsigned b)
 
 int idx_u_ok(unsigned i)
 {
-    int a[4];
+    int a[4] = {0};
     if (i >= 4)
         return 0;
     return a[i];

@@ -1,0 +1,6 @@
+format_version: 1
+input_files: array_init_list_true.c
+language: C
+property: no-overflow
+expected:
+  array_init_list_true: true

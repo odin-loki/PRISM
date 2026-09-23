@@ -10,3 +10,5 @@ prism-out*/
 .venv
 venv
 third_party/llama.cpp/models/*.gguf
+**/.lake
+conformance-out

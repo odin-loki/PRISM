@@ -237,6 +237,37 @@ class ReplayTest(unittest.TestCase):
             self.assertEqual(rp["replay"], "not-replayed", rp)
 
 
+class NondetTraceTest(unittest.TestCase):
+    SRC = ("extern int __VERIFIER_nondet_int(void);\n"
+           "unsigned char __VERIFIER_nondet_uchar();\n"
+           "int main(void) {\n"
+           "  int a = __VERIFIER_nondet_int();\n"
+           "  unsigned char k = __VERIFIER_nondet_uchar();\n"
+           "  while (k--) a += __VERIFIER_nondet_int();\n"
+           "  return a;\n}\n")
+
+    def test_trace_from_extra(self) -> None:
+        f = {"function": "main", "extra": {"nondet": "__VERIFIER_nondet_int=-5, __VERIFIER_nondet_uchar=200"}}
+        self.assertEqual(P.nondet_trace(f), [("__VERIFIER_nondet_int", -5), ("__VERIFIER_nondet_uchar", 200)])
+        self.assertEqual(P.nondet_trace({"function": "main", "extra": {"nondet": ""}}), [])
+        # not reported, or not a whole-program trace: no values (no replay)
+        self.assertIsNone(P.nondet_trace({"function": "main", "extra": {}}))
+        self.assertIsNone(P.nondet_trace({"function": "helper", "extra": {"nondet": "x=1"}}))
+        self.assertIsNone(P.nondet_trace({"function": "main", "extra": {"nondet": "f=zz"}}))
+
+    def test_waypoints_stop_at_an_ambiguous_site(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "t.c"
+            src.write_text(self.SRC)
+            wps = P.nondet_waypoints(src, [("__VERIFIER_nondet_uchar", 1), ("__VERIFIER_nondet_int", 3)])
+            # declarations are not call sites; the uchar call is unique
+            self.assertEqual(len(wps), 1)
+            self.assertEqual((wps[0].location.line, wps[0].location.column), (5, 45))
+            self.assertEqual(wps[0].value, 1)
+            # __VERIFIER_nondet_int is called at two sites: no waypoint for it
+            self.assertEqual(P.nondet_waypoints(src, [("__VERIFIER_nondet_int", 3)]), [])
+
+
 class ToolInfoTest(unittest.TestCase):
     def setUp(self) -> None:
         try:

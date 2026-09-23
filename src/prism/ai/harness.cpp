@@ -160,7 +160,8 @@ std::vector<HarnessDraft> build(const FunctionInfo& fn, const Plan& plan, std::s
         for (auto& p : plan.ptrs) {
             auto s = plan.size_of.at(p);
             int n = is_identifier(s) ? k : std::stoi(s);
-            pre += "int " + p + "[" + std::to_string(n) + "];\n";
+            // the caller's object: element values unconstrained but written
+            pre += "int " + p + "[" + std::to_string(n) + "] = __prism_unconstrained;\n";
         }
         if (!lenvar.empty()) pre += "if (!(" + lenvar + " == " + std::to_string(k) + ")) return 0;\n";
         for (auto& [v, r] : plan.range)

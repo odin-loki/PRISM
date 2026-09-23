@@ -50,6 +50,13 @@ def main(argv: list[str] | None = None) -> int:
                    help="run code from the scanned tree (sanitizer/fuzz/diff harnesses, "
                         "perl -c, cargo clippy, eslint, LLM programs) in a sandbox; "
                         "only on code you trust. Without it those steps are NOTRUN")
+    p.add_argument("--certified", action="store_true",
+                   help="pir stage (C++ engine): ask for an LRAT certificate of every verification "
+                        "condition; PROVED-CERTIFIED when all are checked by cake_lpr. Recorded here "
+                        "for parity; the Python engine does not run pir")
+    p.add_argument("--solver-cache", default="", metavar="DIR",
+                   help="solver query cache (C++ engine; default $XDG_CACHE_HOME/prism/solver)")
+    p.add_argument("--timeout", type=float, default=30.0, help="solver seconds per query")
     p.add_argument("--pbsd", default="", metavar="PATH",
                    help="ParanoidBSD tree for the pbsd stage (else PRISM_PBSD; no default). "
                         "Importing its modules also needs --allow-exec")
@@ -100,6 +107,9 @@ def main(argv: list[str] | None = None) -> int:
         resume=args.resume,
         tools=tools,
         allow_exec=args.allow_exec,
+        certified=args.certified,
+        solver_cache=str(Path(args.solver_cache).resolve()) if args.solver_cache else "",
+        timeout=args.timeout,
     )
     if args.pbsd:
         cfg.pbsd_root = Path(args.pbsd).resolve()

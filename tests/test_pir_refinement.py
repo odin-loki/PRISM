@@ -56,12 +56,19 @@ class StaticParity(unittest.TestCase):
 
     def test_every_binop_flag_is_modelled_or_refused(self):
         flags = set(re.findall(r'has_flag\(in, "([a-z]+)"\)', self.cpp))
-        # getelementptr `inbounds` is a memory-model flag (translate_mem.cpp
-        # checks the result stays in its object), not a binop flag
-        for fl in flags - {"inbounds"}:
-            self.assertIn(fl, {"nsw", "nuw", "exact", "disjoint", "nneg"}, msg=fl)
-        self.assertIn('has_flag(in, "inbounds"), line', self.cpp)
         export = _read(ROOT / "src" / "prism" / "pir" / "export_lean.cpp")
+        for fl in flags:
+            if fl == "inbounds":
+                # getelementptr's flag (the memory model). GEP is outside the
+                # proved fragment: the exporter refuses pointer types and any op
+                # it does not list, so no proof is claimed through this flag.
+                self.assertIn('if (t.kind != ir::Type::Int) throw Unsupported{"type " + t.text};', export)
+                self.assertIn("throw Unsupported{op};", export)
+                self.assertNotIn('"getelementptr"', export)
+                continue
+            self.assertIn(fl, {"nsw", "nuw", "exact", "disjoint", "nneg"}, msg=fl)
+        # the exporter's flag allowlist is exactly the modelled set
+        self.assertEqual(set(re.findall(r'fl != "([a-z]+)"', export)), {"nsw", "nuw", "exact", "disjoint", "nneg"})
         # samesign is a poison flag translate.cpp ignores: the exporter must
         # refuse it rather than let the checker claim a proof for it
         self.assertIn('fl != "nneg"', export)

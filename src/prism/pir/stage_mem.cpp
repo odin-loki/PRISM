@@ -176,8 +176,16 @@ void apply_memory_policy(Finding& f, Verdict& v, Function& fn, const ir::Module&
         std::string s;
         for (auto& a : fn.assumptions) s += (s.empty() ? "" : "; ") + a;
         v.extra["assumptions"] = s;
-        if (v.status == laws::PROVED || v.status == laws::PROVED_UNBOUNDED) {
+        if (v.status == laws::PROVED || v.status == laws::PROVED_UNBOUNDED || v.status == laws::PROVED_CERTIFIED) {
             v.extra["verdict_before_assumptions"] = v.status;
+            if (v.status == laws::PROVED_CERTIFIED) {
+                // Every VC was certified, but the claim is conditional on the
+                // assumptions: PROVED-ASSUMING, never PROVED-CERTIFIED (the
+                // certificate_info stays for the record).
+                v.extra.erase(std::string(laws::CERTIFICATE_KEY));
+                v.extra["certify_note"] =
+                    "every VC certified, but under assumptions: the verdict is PROVED-ASSUMING, not PROVED-CERTIFIED";
+            }
             v.status = std::string(laws::PROVED_ASSUMING);
             v.message += " -- assuming: " + s;
         }

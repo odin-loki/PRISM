@@ -40,8 +40,9 @@ follows the verdict laws in [VERDICTS.md](VERDICTS.md).
   `unreach-call` (the `pir` stage checks reachability of `reach_error` /
   `__assert_fail` as a property; `bmc` treats those calls as the end of a
   path, not as a property); none for `valid-memsafety`
-  (no stage encodes `valid-free` or `valid-memtrack`, and the `pir` stage has
-  no memory model yet), so `valid-memsafety` is never `true`.
+  (the `pir` memory model checks dereferences and frees but no stage
+  encodes `valid-memtrack`, memory leaks), so `valid-memsafety` is never
+  `true`.
   `PROVED-ASSUMING` and `BOUNDED` are never `true` (Law 2).
 - **`false(...)`** only when a verdict stage reports `FAILED` of the
   property's class (`INT-SIGNED-OVF` for no-overflow; `FUNC-CONTRACT` with
@@ -84,20 +85,26 @@ validator was run, so these are upper bounds under the official rules.
 
 | property | tasks (true / false) | score | max | correct true | correct false | incorrect | unknown |
 |---|---|---|---|---|---|---|---|
-| no-overflow | 45 (25 / 20) | **22** | 70 | 6 | 10 | **0** | 29 |
-| unreach-call | 20 (16 / 4) | **11** | 36 | 5 | 1 | **0** | 14 |
+| no-overflow | 45 (25 / 20) | **35** | 70 | 10 | 15 | **0** | 20 |
+| unreach-call | 20 (16 / 4) | **9** | 36 | 4 | 1 | **0** | 15 |
 
-Where the points were lost (no-overflow):
+The rerun above is from 2026-09-23, after `bmc` began reporting nondet values
+(item 1 below). It used the binary built from `claude/prism-code-checker-x7538r`
+at that point, on a machine at load ~18. The previous run scored 22 and 11.
 
-- 5 `false` tasks (`jain_1-2`, `jain_2-2`, `jain_4-1`, `jain_6-2`,
-  `jain_7-1`) were refuted by `bmc` with `INT-SIGNED-OVF`, but the programs
-  read `__VERIFIER_nondet_*` input and the engine does not report the nondet
-  values, so the counterexample cannot be replayed and the answer is
-  `unknown` (item 1 below).
+Where the points moved:
+
+- no-overflow: the 5 `jain_*` `false` tasks that were refuted but could not
+  be replayed (`jain_1-2`, `jain_2-2`, `jain_4-1`, `jain_6-2`, `jain_7-1`)
+  now replay on `bmc`'s nondet values and answer `false(no-overflow)`.
+- unreach-call: `gcd_1` and `gcd_2` were `pir: UNKNOWN` or `BOUNDED` across
+  two reruns. That is a solver timeout under load, not a wrong answer, and it
+  accounts for the lower score.
+
+Where the points are still lost (no-overflow):
+
 - `modulus-1` (`false`): `bmc` reports `INT-SHIFT-UB` (on `1 << s`), not
   `INT-SIGNED-OVF`; the mapping only accepts the overflow class for `false`.
-- 5 `true` tasks in `signedintegeroverflow-regression` are `NEEDS-HARNESS`
-  in both stages; `bmc` says `main` calls `printf`, which it does not model.
 - The rest are `BOUNDED` (loops not closed within unwind 8), `UNKNOWN`
   (solver gave up), `NEEDS-HARNESS` (`large_const`), one `bmc` front-end
   `ERROR` (`nested6`: `goto`), one ILP32 task using `sizeof`
@@ -117,15 +124,16 @@ unreach-call). That is all that was checked about them.
 
 ## What is missing for an actual entry
 
-1. **Nondet values in counterexamples.** The `bmc` and `pir` stages do not
-   report the values returned by `__VERIFIER_nondet_*` calls on the violating
-   path; they only report function-parameter assignments, and `main` has
-   none. So every
-   refutation of a program that reads nondet input is `unknown` (5 correct
-   `FAILED` verdicts on the no-overflow subset are lost this way). This needs
-   an engine change: record each havoc's value and the call location in the
-   model, and put them in `extra`. `tools/svcomp/witness.py` and the replay
-   stubs already accept them.
+1. **Nondet values in counterexamples (`pir`).** `bmc` now records every
+   `__VERIFIER_nondet_*` call with the path guard at the call. A refutation
+   of `main` then reports, in `extra["nondet"]`, the values of the calls its
+   path executes, in call order. The wrapper replays those values through
+   the stubs and writes a `function_return` waypoint for each call, up to
+   the first call whose site is ambiguous. The engine reports no source
+   positions, so the waypoint prefix stops at a function called from more
+   than one site. The `pir` stage does not report nondet values yet, so its
+   refutations of programs that read nondet input still answer `unknown`
+   (`byte_add-1`, `id_trans` on unreach-call).
 2. **Witness validation.** SV-COMP only counts answers whose witnesses a
    validator confirms. No validator (CPAchecker, UAutomizer, or the other
    format-2.0 validators) has been run on PRISM's witnesses. Until one has,

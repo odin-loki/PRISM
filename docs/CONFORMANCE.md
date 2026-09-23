@@ -116,6 +116,45 @@ The release gate stays red until that stage reports such rows as
 not-a-proof; the gate must not simply be relaxed). The Python engine has no
 drafted harness and passes (0 wrong proofs, Law 6 6/6).
 
+### Certified mode after the memory model and the Lean bit-blaster
+
+`PRISM_BIN=build/prism python tools/conformance.py --certified`, C++ engine
+with the pir memory model (QF_BV `MemEncoding::Bv`), the Lean-proved
+bit-blaster (`bitblaster=auto`, `prism-bitblast` / `prism-lrat-check` built
+by `lake build` in `proofs/techniques`) and the solver-library wiring; 367
+tasks, 4-core machine shared with other builds. Release gate: **PASS, 0
+wrong proofs on every stage** (`bmc`, `harness`, `pir`, `conc`,
+`pir-certified`), plain run and certified run alike.
+
+| stage | origin | true | false | **wrong proofs** | completeness | detection (replayed cex) | refuted, not replayed | false alarms | BOUNDED | no answer | Law 6 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| pir | in-house | 147 | 147 | **0** | 131/147 (89.1%) | 129/147 (87.8%) | 5 | 0 | 19 | 10 | 6/6 |
+| pir | SV-COMP | 25 | 20 | **0** | 10/25 (40.0%) | 0/20 | 15 | 0 | 11 | 1 | – |
+| pir-certified | in-house | 147 | 147 | **0** | 127/147 (86.4%) | 129/147 (87.8%) | 3 | 0 | 16 | 19 | 6/6 |
+| pir-certified | SV-COMP | 25 | 20 | **0** | 8/25 (32.0%) | 0/20 | 15 | 0 | 10 | 9 | – |
+
+- loop-free `true` functions pir encodes: 125, all proved under `--certified`;
+- **109/125 `PROVED-CERTIFIED`, all 109 with every CNF made by the
+  Lean-proved bit-blaster** and every LRAT proof accepted by both cake_lpr
+  and Lean's checker (0 via the Z3-tactics fallback, 0 mixed);
+- 11/125 have no verification condition at all and stay `PROVED` ("nothing
+  to certify");
+- 5/125 stay `PROVED`: a 32/64-bit multiplication overflow VC whose CaDiCaL
+  LRAT run did not finish within the budget (`fn_macro_true`,
+  `long_mul_true`, `mul_true`, `switch_true`, `widen_mul_true`);
+- 6 of the 30 `true` functions with loops are `PROVED-CERTIFIED` (loops close
+  within the unwind); 0 `PROVED-CERTIFIED` on a `false` function.
+
+Certified mode costs time: every VC runs Z3, the Lean bit-blaster, CaDiCaL
+with LRAT, cake_lpr, Lean's LRAT checker and lrat-check, about 2.4 s per VC
+on the loaded machine. Memory functions with loops have many VCs
+(`mem_uninit_true`: 99, 4 minutes), so 18 tasks exceed the certified run's
+budget (twice `--timeout`) and are scored as no answer (`arr_sum_true`,
+`mem_uninit_true`, `mem_vla_true`, the `uninit_elem_*` regress tasks,
+`nested_loop_*`, six SV-COMP `byte_add*`, `id_trans`, `nested6`). That is
+the whole difference between the `pir` and `pir-certified` rows: no verdict
+changed except `PROVED` → `PROVED-CERTIFIED` or a timeout.
+
 ### NIST Juliet 1.3 (CWE190/191/369/476/680, flow `_01`, 104 files, 410 functions)
 
 Identical in both engines:
@@ -169,8 +208,37 @@ Label self-check: 212 functions ok, 6 skipped (pointer parameters), 0 failed.
 | bmc | all | 131 | 126 | **11** | 55/131 (42.0%) | 55/126 (43.7%) | 15 | 9 | 14 | 96 | 6/6 |
 | harness | all | – | – | **0** | – | – | – | 0 | – | – | 6/6 |
 
-`pir`: not present in `prism --list-stages` yet; the scorer picks it up
-automatically and reports it as its own row when it lands.
+`pir` and certified mode (roadmap 3.2): run of the `pir` stage with the
+solver library wiring and `--certified`, C++ engine at this branch
+(`python tools/conformance.py --stages pir --certified`, 2026-09-23;
+`pir-certified` is the second run with `prism --certified`, twice the time
+budget, a fresh solver cache per suite run):
+
+| stage | origin | true | false | **wrong proofs** | completeness | detection (replayed cex) | refuted, not replayed | false alarms | BOUNDED | no answer | Law 6 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| pir | in-house | 106 | 106 | **0** | 76/106 (71.7%) | 78/106 (73.6%) | 0 | 0 | 13 | 45 | 6/6 |
+| pir | SV-COMP | 25 | 20 | **0** | 3/25 (12.0%) | n/a | 5 | 0 | 7 | 29 | – |
+| pir-certified | in-house | 106 | 106 | **0** | 76/106 (71.7%) | 78/106 (73.6%) | 0 | 0 | 13 | 45 | 6/6 |
+| pir-certified | SV-COMP | 25 | 20 | **0** | 3/25 (12.0%) | n/a | 5 | 0 | 7 | 29 | – |
+
+**Certified mode (roadmap 3 exit criterion), at that time: 74/74 loop-free
+`true` functions that pir encodes were `PROVED-CERTIFIED`** (67 with one
+checked CaDiCaL LRAT proof per VC, 7 then counted vacuously: unsigned-only
+code with no inserted property; such a function now stays `PROVED` with
+`certify_note = "no verification conditions (nothing to certify)"`, see the
+current numbers below), 3 of the 20 `true`
+functions with loops too (loops close within the unwind), and **0**
+`PROVED-CERTIFIED` on a `false` function. Certified mode changed no verdict
+other than `PROVED` → `PROVED-CERTIFIED`. The criterion is met for the
+functions pir encodes; 37 `true` functions are not encoded (pointer
+parameters, arrays, some C++) and so cannot be certified yet.
+
+Two fixes came out of these runs: a certified request that timed out while
+solving again for a certificate turned a cached plain answer into
+`UNKNOWN` (now the plain answer stands, uncertified), and cake_lpr timed
+out on a 59k-step multiplier proof under load (checker budget is now
+`max(60 s, 4 × timeout)`). pir also lowers C23 units that do not compile as
+C17 as C23 (c23 tasks: 8/11 proved and refuted, from 0).
 
 ### Concurrency (`tests/conformance/concurrency`, 22 labels, roadmap 2.6)
 
@@ -248,7 +316,7 @@ the known `bmc` `mem_uninit_false` (being fixed separately).
 Every wrong proof found, reduced to a minimal reproducer. Run any of them
 with `./build/prism FILE --no-llm --stage inventory,classify,bmc`.
 
-**Status: S1–S6, R1, R2, F1–F6 are fixed in both engines** (typed encoder:
+**Status: S1–S7, R1, R2, F1–F6 are fixed in both engines** (typed encoder:
 `src/prism/bmc_encoder.inc`, `prism/bmc.py`; inliner `src/prism/inline.cpp`,
 `prism/inline.py`). Every reproducer below is a regression test
 (`tests/test_bmc_soundness.py`, doctest "bmc soundness: ..." in
@@ -368,6 +436,34 @@ Tasks: `overflow/abs_libc_false`, `macro/fn_macro_false`,
 Fix direction: an unmodelled call or unknown identifier must make the
 function `NEEDS-HARNESS`/`ERROR` (as unencoded libc calls already do), and
 call arguments must be evaluated for UB.
+
+*Fixed (both engines).*
+**S7. Reading a local array element that was never written is not a
+property.** Scalars carried an "uninitialised" flag, arrays did not, so the
+indeterminate value (C11 6.3.2.1p2, 6.7.9p10) of an unwritten element was
+proved safe. The pir stage refuted it; bmc proved it.
+```c
+int f(int i) { int a[4]; a[0] = 1; return a[i & 3]; }     /* PROVED-UNBOUNDED; i=1 reads a[1] */
+int g(int n) { int a[4]; for (int k = 0; k < n && k < 4; k++) a[k] = k; return a[0]; }  /* n=0 */
+```
+Fix: every local array carries a per-element shadow (`uninit["@a"]`, an
+array from index to "maybe unwritten"): all set at the declaration, cleared
+by a store, all clear for an aggregate initialiser (`= {0}`, `= {1, 2}`,
+`= {}`: listed items in order, the rest zero, each item checked for UB) or
+a string literal; merged over paths like any value; a havocked loop may
+clear elements but never sets one (`U' = λx. U[x] ∧ H[x]`). An in-bounds
+read of a maybe-unwritten element is `UNINIT-READ` with a counterexample.
+An array passed to an unmodelled call (`memset`, `memcpy`, ...) gets
+unknown contents and counts as written, but the call already makes the
+function `NEEDS-HARNESS` "UNENCODED: call to ... not modelled" (S6), so it
+is never a proof. Before the fix, aggregate initialisers were a front-end
+`ERROR` and their items were never evaluated. UNINIT-READ counterexamples
+are "refuted, not replayed" in the scorer: the replay sanitizers (UBSan,
+ASan) cannot see an uninitialised read, the tasks are `sanitizer_blind`.
+Tasks: `memory/mem_uninit_false`, `regress/uninit_elem_loop`,
+`regress/uninit_elem_branch`, `regress/uninit_elem_unbounded`,
+`regress/uninit_memset`, `regress/array_init_list`,
+`regress/array_init_zero`.
 
 ### Robustness (no verdict where one was possible)
 

@@ -3257,7 +3257,7 @@ std::optional<Args> heuristic_flip(const FunctionInfo& fn, const Args& args, con
         auto nxt = args;
         int v = i32(args.contains(name) ? args.at(name) : 0);
         for (int64_t cand : {int64_t{0}, int64_t{1}, int64_t{-1}, int64_t{INT_MAX_32},
-                             int64_t{INT_MIN_32}, int64_t{-v}, int64_t{v + 1}, int64_t{v - 1}}) {
+                             int64_t{INT_MIN_32}, -int64_t{v}, int64_t{v} + 1, int64_t{v} - 1}) {
             nxt[name] = i32(cand);
             auto got = eval_cond(fn, nxt, cond);
             if (got && *got == want && args_key(nxt) != args_key(args)) return nxt;
@@ -7220,20 +7220,29 @@ std::vector<Finding> rlef_repair(const Finding& fail, const Config& cfg) {
             checked.output_valid = true;
             checked.checker = "bmc(rlef candidate)";
             checked.checker_result = scored.proved;
-            checked.verdict_effect = scored.proved;
+            // The proof is about the LLM-written patch, not the scanned code:
+            // the finding stays HYPOTHESIS (Law 4), so no verdict changes.
+            checked.verdict_effect = "none";
             ai::audit_model_call(checked, engine.last_prompt, r.text);
             Finding f;
             f.stage = "repair";
-            f.status = scored.proved;
+            f.status = std::string(laws::HYPOTHESIS);
+            f.file = fail.file;
+            f.function = fail.function;
+            f.line = fail.line;
+            f.cls = fail.cls;
             f.extra["ai_audit_id"] = checked.id;
             f.extra["ai_checker"] = checked.checker;
             f.extra["ai_checker_result"] = checked.checker_result;
-            f.message = "RLEF BMC " + scored.proved + " on round " + std::to_string(i + 1) +
-                        " (terminal success)";
-            f.strength = std::string(laws::STRENGTH_PROVES);
+            f.message = "verified fix: BMC " + scored.proved + " on the LLM-written patch, round " +
+                        std::to_string(i + 1) +
+                        " (terminal success; a claim about the patch, not the scanned code)";
+            f.strength = std::string(laws::STRENGTH_READS);
             f.extra["history"] = history.dump();
             f.extra["best"] = best_src.substr(0, 1000);
             f.extra["bmc"] = scored.proved;
+            f.extra["patch_verdict"] = scored.proved;
+            f.extra["fix_label"] = "verified fix";
             return {f};
         }
         if (result.value("ok", false) && bmc_st != laws::FAILED) break;

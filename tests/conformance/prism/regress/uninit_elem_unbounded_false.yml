@@ -1,0 +1,10 @@
+format_version: 1
+input_files: uninit_elem_unbounded_false.c
+language: C
+property: memsafety
+expected:
+  uninit_elem_unbounded_false: false
+witness:
+  uninit_elem_unbounded_false: [0, 0]
+sanitizer_blind:
+  - uninit_elem_unbounded_false
