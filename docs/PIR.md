@@ -55,6 +55,17 @@ PRISM rewrites the `-O0` IR before `opt`:
   the first store is a use of that call (mem2reg would otherwise fold the
   `undef` away). PIR tracks a one-bit "uninit" shadow through phis and checks
   every non-phi use: `UNINIT-READ`.
+
+**`undef` that remains** (hand-written or optimised IR, phi inputs) follows
+the LangRef: every use of `undef`, or of a value computed from it, may see a
+different value. A static may-undef analysis gives each such value a
+one-bit "undef" shadow (through phis, dynamically per path); each non-phi use
+of a value whose shadow is set reads a fresh havoc (per use site and per
+execution), `freeze` picks one value, and a store writes indeterminate
+(uninitialised) bytes. Branching on it, returning it from a `noundef`
+function or passing it as a `noundef` argument is UB (`UB-POISON`, prop
+`undef`); passing it to an inlined callee without `noundef`, or returning it
+from one, is refused (`UNENCODED`), since the callee would use it as one value.
 * **Folded UB to poison.** Clang folds e.g. `7 % 0`, `INT_MIN / -1`,
   `1 << 40` to `poison`; each `iN poison` operand becomes
   `call @__prism.poison.iN()` at that instruction, which PIR turns into a
@@ -536,10 +547,18 @@ public unambiguous bases read from the module's `__si_class_type_info` /
 that landing pad are unwound (their locals end). The landing pad's
 `{ ptr, i32 }` value is a phi over those edges (exception pointer and the
 `llvm.eh.typeid.for` selector of the matching clause). The exception object
-gets a 16-byte PRISM header in front of the thrown object (type id,
-"rethrown" flag): `__cxa_begin_catch`/`__cxa_end_catch` keep a stack of
-handled exceptions, `__cxa_end_catch` runs the thrown type's destructor and
-frees the object unless it was rethrown, `throw;` re-raises the innermost
+gets a 32-byte PRISM header in front of the thrown object (type id, the
+Itanium runtime's handler count, negative while rethrown, and the pointer
+the current handler binds): entering a handler sets that pointer to the
+caught subobject (a base at a non-zero offset of multiple inheritance, read
+from the `__vmi_class_type_info` offset; a base behind a virtual base is not
+modelled: soft stop) or, for a pointer caught by pointer, to the thrown
+pointer's value, and `__cxa_begin_catch` returns it. `__cxa_begin_catch` /
+`__cxa_end_catch` keep a stack of handled exceptions with the runtime's
+counting (a rethrown exception caught again is not pushed twice and stays
+alive until its last handler ends), `__cxa_end_catch` runs the thrown type's
+destructor and frees the object when its count drops to zero unless it was
+rethrown, `throw;` re-raises the innermost
 handled exception (`throw;` with none is CXX-TERMINATE), and `resume` re-throws
 with the type read back from the header. Landing pads are translated after
 the normal blocks of their function, and only when a throw reaches them.
@@ -554,6 +573,13 @@ typeinfo not in the module), handlers nested deeper than 8, landing pad
 code that cannot be translated. Not modelled (`UNENCODED`): dynamic
 exception specifications (`filter`, `__cxa_call_unexpected`),
 `std::exception_ptr`, `std::uncaught_exceptions`. `tests/pir/eh_*.cpp`.
+
+**Runtime typeinfo.** A typeinfo object the module only declares
+(`@_ZTIi = external constant ptr`: fundamental and pointer types, library
+classes) is modelled as the Itanium ABI `std::type_info` layout
+`{ vptr, __name }` with `__name` the mangled type (`"i"`), as libstdc++'s
+`_ZTS` strings, so `typeid(T).name()`, `==`, `before()` and `std::any`'s
+type check read defined bytes; the vptr bytes are arbitrary.
 
 ## Coroutines (roadmap 2.3, 2.6)
 
