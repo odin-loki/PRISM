@@ -6390,14 +6390,22 @@ int m2(int i) { int a[4]; memset(a, 0, 2 * sizeof(int)); return a[i & 3]; }
 // (tests/test_bmc_goto_shift.py has the same cases for the Python engine).
 
 namespace {
+// The sources stay on disk until the program ends: stages may re-read fn.file.
 std::vector<prism::FunctionInfo> fns_of(const std::string& file, const std::string& src) {
-    auto dir = std::filesystem::temp_directory_path() / ("prism_goto_shift_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
-    std::filesystem::create_directories(dir);
-    auto p = dir / file;
+    static struct Dir {
+        std::filesystem::path d = std::filesystem::temp_directory_path() /
+                                  ("prism_goto_shift_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        ~Dir() {
+            std::error_code ec;
+            std::filesystem::remove_all(d, ec);
+        }
+    } dir;
+    static int n = 0;
+    auto sub = dir.d / std::to_string(n++);
+    std::filesystem::create_directories(sub);
+    auto p = sub / file;
     { std::ofstream(p) << src; }
-    auto fns = prism::extract_functions(p, file);
-    std::filesystem::remove_all(dir);
-    return fns;
+    return prism::extract_functions(p, p.string());
 }
 std::string bmc_status(prism::FunctionInfo fn, int std = 0) {
     fn.cxx_std = std;

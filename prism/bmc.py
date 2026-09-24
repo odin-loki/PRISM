@@ -8,8 +8,10 @@ bounded unwind, for-header decls (`for (int i = 0; ...)`), ++/-- (add/sub
 1 with signed overflow), switch/case/break/default (C fallthrough),
 enum { NAME = val }, assert(), sizeof, ternary `?:`, comma operator,
 continue, +, -, *, /, %, <<, >>, comparisons, assignments. Uninitialised
-locals are tracked; a read is UNINIT-READ. `goto` is unencoded ERROR,
-never a proof. A VLA is NEEDS-HARNESS (missing bound), not a closed
+locals are tracked; a read is UNINIT-READ. `goto` is encoded when it
+is structured (a jump out to a later statement of the same or an enclosing
+list; a backward goto whose statements form a loop, unwound like one);
+any other goto is NEEDS-HARNESS, never a proof and never ERROR. A VLA is NEEDS-HARNESS (missing bound), not a closed
 proof. A recursive self-call is NEEDS-HARNESS: an unconstrained
 result is not a proof of the callee, and arithmetic on that havoc
 is not a counterexample of the original. `return buf` of a local
@@ -18,7 +20,7 @@ array is NEEDS-HARNESS (dangling decay), like `return &x`. `alloca`
 malloc. C++ `throw` is NEEDS-HARNESS (missing exception model), never
 a parse ERROR and never a proof. `setjmp`/`longjmp`/`va_list`/`va_start`/`va_arg`
 are NEEDS-HARNESS (missing nonlocal/variadic model), never a parse
-ERROR and never a proof; `goto` stays ERROR and is not that case.
+ERROR and never a proof.
 Designated initializers `{[i]=n}` / `{.f=n}`, `_Alignof`/`alignof`,
 C++ range-for, and C++ lambdas are NEEDS-HARNESS (missing model),
 never ERROR and never a vacuous proof. `_Static_assert` /
@@ -3655,8 +3657,8 @@ def _has_unencoded_libc_effect(fn: FunctionInfo) -> bool:
 def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
     r"""NEEDS-HARNESS message for syntax the encoder does not model.
 
-    Missing model, not a parse ERROR and not a proof. `goto` is not
-    this case. `offsetof` is in `_CALL_KW` so it is not a libc-effect
+    Missing model, not a parse ERROR and not a proof. Plain `goto` is not
+    this case (the encoder models structured gotos). `offsetof` is in `_CALL_KW` so it is not a libc-effect
     call; the expression parser would otherwise havoc it and prove.
     `volatile` / `_Atomic` are a missing memory model, not a race proof.
     Local `const T x` is a missing const model; `const` on a parameter
@@ -3683,7 +3685,7 @@ def unencoded_syntax_reason(fn: FunctionInfo, engine: str) -> str | None:
     `typeof(n) y` / `__typeof__(n) y` are a missing typeof model; `sizeof`
     still encodes. GNU nested `void inner(void) { }` is a missing nested-
     function model.     Computed `goto *p` is a missing computed-goto model;
-    plain `goto label` stays ERROR and is not this case.
+    plain `goto label` is encoded (or "unstructured goto unencoded").
     GNU `&&label` (label address) is a missing label-address model;
     it is not computed `goto *` and not plain `goto`.
     C++ `dynamic_cast` / `typeid` / `reinterpret_cast` are missing RTTI
@@ -10339,7 +10341,7 @@ def _has_unencoded_setjmp(fn: FunctionInfo) -> bool:
     """setjmp/longjmp/va_list are not in the bitvector encoder.
 
     Missing nonlocal-control / variadic model, not a parse ERROR and
-    not a proof. `goto` stays ERROR and is not this case.
+    not a proof. Plain `goto` is not this case.
     """
     return bool(_re_search(
         r"\b(?:setjmp|longjmp|va_list|va_start)\b",
