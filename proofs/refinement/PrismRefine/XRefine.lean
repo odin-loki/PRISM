@@ -640,6 +640,42 @@ theorem unChecks_opOK (uk : UnK) (flag : Bool) (w : Nat) (A : Arg) :
   intro c hc
   cases flag <;> cases uk <;> simp [unChecks, opt] at hc <;> subst hc <;> rfl
 
+theorem World.store_mod (t : World) (p v w : Nat) (init : Bool) :
+    t.store (p % 2 ^ 64) v w init = t.store p v w init := by
+  simp [World.store, Nat.mod_mod]
+
+theorem globStores_run (P : PFunc) (ω : Nat → Nat) (i p : Nat) (hp : p < 2 ^ 64) :
+    ∀ (st : List (Nat × Nat × Nat)) (σ : Store) (t : World) (k : Nat), i < k → σ i = p →
+    TempsOK P k (globStores i k st).2 → (∀ x ∈ st, x.1 < 2 ^ 64) →
+    ∃ σ', xStmts P ω σ t (globStores i k st).1 = .ok σ' (globW p t st) ∧ ∀ j, j < k → σ' j = σ j
+  | [], σ, t, k, _, _, _, _ => ⟨σ, rfl, fun _ _ => rfl⟩
+  | (o, w, v) :: st, σ, t, k, hik, hσ, hT, ho => by
+    have ho' : ∀ x ∈ st, x.1 < 2 ^ 64 := fun x hx => ho x (List.mem_cons_of_mem _ hx)
+    have hol : o < 2 ^ 64 := ho (o, w, v) List.mem_cons_self
+    by_cases h0 : o = 0
+    · subst h0
+      simp only [globStores, ite_true] at hT ⊢
+      obtain ⟨σ', e, ag⟩ := globStores_run P ω i p hp st σ (t.store p v w true) k hik hσ hT ho'
+      refine ⟨σ', ?_, ag⟩
+      simp only [xStmts, Arg.get_v', Arg.get_c', Arg.width_c', hσ, truthN, show (1 : Nat) % 2 = 1 from rfl,
+        beq_self_eq_true]
+      simp only [globW, Nat.add_zero, Nat.mod_eq_of_lt hp]
+      exact e
+    · simp only [globStores, h0, ite_false] at hT ⊢
+      have wk : P.wd k = 64 := by have := hT 0 (by simp); simpa [List.getElem_cons_zero] using this
+      have hT' : TempsOK P (k + 1) (globStores i (k + 1) st).2 := by
+        have := hT.right (a := [64]); simpa using this
+      have hq : (p + o) % 2 ^ 64 < 2 ^ 64 := Nat.mod_lt _ (Nat.two_pow_pos 64)
+      obtain ⟨σ', e, ag⟩ := globStores_run P ω i p hp st (σ.set k ((p + o) % 2 ^ 64))
+        (t.store ((p + o) % 2 ^ 64) v w true) (k + 1) (by omega) (by simp [set_apply, show i ≠ k by omega, hσ])
+        hT' ho'
+      refine ⟨σ', ?_, fun j hj => by rw [ag j (by omega)]; simp [set_apply, show j ≠ k by omega]⟩
+      simp only [xStmts, evalOpM, evalOp, wk, Arg.get_v', Arg.get_c', c64_get, Arg.width_c', hσ, add64,
+        Nat.mod_mod, Nat.mod_eq_of_lt hol, Store.set_same, truthN, show (1 : Nat) % 2 = 1 from rfl,
+        beq_self_eq_true]
+      simp only [globW]
+      exact e
+
 theorem store_simX {P : PFunc} {ω : Nat → Nat} {c : Ctx} (hc : CtxOK P c) {R : SRegs}
     {σ σ0 : Store} (hR : RelX c R σ) (ha0 : ∀ j, j < c.lo → σ j = σ0 j) {k : Nat} {t : World} (hk : c.hi ≤ k)
     {w : Nat} {v : FOpnd} {p : Opnd} {al : Nat} {s : List PStmt} {tws : List Nat}
@@ -1182,6 +1218,33 @@ theorem sinstX_sim {P : PFunc} {ω : Nat → Nat} {c : Ctx} (hc : CtxOK P c) {R 
     subst htp
     simp only [Res.bind, SimX, xStmts, hAp, xStmts_nil, Res.ok_bind]
     exact ⟨σ, rfl, hR, ha0⟩
+  | glob d size al st =>
+    simp only [trSInstX] at h
+    obtain ⟨u1, hu1, h⟩ := Except.bind_ok h
+    obtain ⟨u2, hu2, h⟩ := Except.bind_ok h
+    obtain ⟨di, hdi, h⟩ := Except.bind_ok h
+    obtain ⟨u3, hu3, h⟩ := Except.bind_ok h
+    have hsh := isNone_eq (need_ok hu3)
+    have hoff : ∀ x ∈ st, x.1 < 2 ^ 64 := by
+      have := need_ok hu2
+      simp only [List.all_eq_true, decide_eq_true_eq] at this
+      exact fun x hx => this x hx
+    simp only [pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at h
+    obtain ⟨rfl, rfl⟩ := h
+    have hwd := dstX_wd hc hdi
+    obtain ⟨hl, hlo, hhi, _, hu⟩ := dstX_ok hdi
+    have hp : (t.mem.alloc (size % 2 ^ 64) 4 al 1).2 < 2 ^ 64 := by
+      simp only [Mem.alloc, mkPtr]; exact Nat.mod_lt _ (Nat.two_pow_pos 64)
+    obtain ⟨σ', e, ag⟩ := globStores_run P ω di _ hp st
+      (σ.set di ((t.mem.alloc (size % 2 ^ 64) 4 al 1).2 % 2 ^ 64))
+      { t with mem := (t.mem.alloc (size % 2 ^ 64) 4 al 1).1 } k (by omega)
+      (by simp [set_apply, Nat.mod_eq_of_lt hp]) hT hoff
+    simp only [sSInst, globAlloc, SimX, xStmts, hwd, Arg.get_c']
+    rw [e]
+    refine ⟨σ', rfl, ?_, fun j hj => ?_⟩
+    · refine RelX.agree hc (RelX.set hR hl hu hsh _) (m := k) hk (fun j hj => ?_)
+      rw [ag j hj, Nat.mod_eq_of_lt hp]
+    · rw [ag j (by have := hc.lohi; omega), Store.set_other _ _ (by omega)]; exact ha0 j hj
   | memcpy d s len lw mv =>
     simp only [trSInstX] at h
     obtain ⟨u1, hu1, h⟩ := Except.bind_ok h

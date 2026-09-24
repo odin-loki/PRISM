@@ -410,6 +410,18 @@ def overlapChk (j g : Nat) (D S N : Arg) : List PStmt :=
 
 def overlapT : List Nat := [64, 64, 64, 1, 64, 1, 64, 64, 1, 1, 1, 1]
 
+/-- `MemTr::emit_entry_globals`: the initialiser's stores into the global
+(variable `i`), a pointer addition first for a non-zero offset. -/
+def globStores (i : Nat) : Nat → List (Nat × Nat × Nat) → List PStmt × List Nat
+  | _, [] => ([], [])
+  | k, (o, w, v) :: t =>
+    if o = 0 then
+      let r := globStores i k t
+      (.store (.v i 64) (.c w v) (.c 1 1) :: r.1, r.2)
+    else
+      let r := globStores i (k + 1) t
+      (.assign k (.bin .add) [.v i 64, c64 o] :: .store (.v k 64) (.c w v) (.c 1 1) :: r.1, 64 :: r.2)
+
 /-- The checks `Tr::call` inserts for `llvm.abs` / `ctlz` / `cttz` with the
 poison flag set. -/
 def unChecks (uk : UnK) (flag : Bool) (w : Nat) (A : Arg) : List Chk :=
@@ -506,6 +518,13 @@ def trSInstX (c : Ctx) (k : Nat) : SInst → Except String (List PStmt × List N
   | .lend p => do
     let (sp, tp, P) ← trOpndX c 64 true k p
     pure (sp ++ [.free P], tp)
+  | .glob d size al st => do
+    need (!c.inlined) "outside fragment: global in an inlined function"
+    need (st.all fun (o, _, _) => decide (o < 2 ^ 64)) "outside fragment: initialiser offset"
+    let i ← dstX c d 64
+    need (look c.sh d).isNone "outside fragment: result with a shadow"
+    let (s1, t1) := globStores i k st
+    pure (.alloc i (.c 64 size) 4 1 al :: s1, t1)
   | .memcpy d s len lw mv => do
     need (okW lw) "UNENCODED: width"
     let (sd, td, D) ← trOpndX c 64 true k d
@@ -669,6 +688,7 @@ where
     | .expect d w _ => [(d, w)]
     | .ovf d _ w _ _ => [(pairReg d 0, w), (pairReg d 1, 1)]
     | .xv d w _ _ => [(d, w)]
+    | .glob d _ _ _ => [(d, 64)]
     | .lstart .. | .lend .. | .memcpy .. | .memset .. => []
 
 def xPhisOf (G : XFunc) : List PhiI := G.blocks.flatMap (·.phis)

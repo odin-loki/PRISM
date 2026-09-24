@@ -55,6 +55,30 @@ private:
     unsigned ptr_bytes_ = 8, ptr_align_ = 8;
 };
 
+// One store of a global's initialiser (MemTr::emit_init): `w` bits `bits` at
+// byte offset `off`.
+struct InitStore {
+    uint64_t off = 0;
+    unsigned w = 0;
+    uint64_t bits = 0;
+};
+
+// The stores emit_init pushes for an initialiser made only of numbers,
+// strings and zeros (no pointers, undef or constant expressions); nullopt
+// otherwise.
+std::optional<std::vector<InitStore>> flat_init(const Layout& lay, const ir::Type& ty, const ir::Value& v);
+
+// A read-only global with such an initialiser (not external, not
+// thread-local, not a large table that is havocked): nullptr otherwise.
+const ir::Global* entry_global(const ir::Module& m, const Layout& lay, const std::string& name);
+
+// The entry globals the function names directly as operands, in order of
+// first use. The translator allocates them with the analysed function's own
+// values, before its results, and initialises them first thing in the
+// prologue (docs/PROOFS_REFINEMENT.md "Globals"): the Lean model treats them
+// as instructions at the start of the entry block.
+std::vector<std::string> entry_globals(const ir::Module& m, const Layout& lay, const ir::Function& f);
+
 class MemTr {
 public:
     MemTr(TrApi& t, const ir::Module& m);
@@ -64,6 +88,10 @@ public:
     unsigned value_width(const ir::Type& t, std::string_view what) const;
 
     Arg global(const std::string& name);  // pointer to @name, allocated in the prologue
+    // entry_globals of the analysed function: their variables now, their
+    // allocation and initialisation (emit_entry_globals) when block 0 starts.
+    void preassign_globals(const ir::Function& f);
+    void emit_entry_globals();
     Arg const_gep(int b, const ir::Value& ce, int line);  // constant getelementptr expression
 
     // alloca: dst gets a fresh stack object. count: element count (dynamic
@@ -105,6 +133,7 @@ private:
     TrApi& t_;
     Layout lay_;
     std::map<std::string, Arg> globals_;
+    std::vector<std::string> pending_;  // preassigned, not yet emitted
 
     Arg c64(uint64_t v) const { return Arg::c(64, v); }
     Arg obj(int b, Arg p);

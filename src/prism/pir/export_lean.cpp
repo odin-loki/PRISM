@@ -52,7 +52,9 @@ unsigned width(const ir::Type& t) {
 
 std::string opnd(const ir::Operand& o) {
     switch (o.v.kind) {
-        case ir::Value::Local: return "%" + name(o.v.name);
+        case ir::Value::Local:
+            if (o.v.name.starts_with("@")) throw Unsupported{"register named like a global"};
+            return "%" + name(o.v.name);
         case ir::Value::Int: width(o.ty); return "#" + std::to_string(o.v.bits);
         case ir::Value::Poison: width(o.ty); return "poison";
         case ir::Value::Undef: width(o.ty); return "undef";  // only accepted under freeze
@@ -71,10 +73,19 @@ std::string arg(const Arg& a) {
 
 std::string word(const std::string& s) { return s.empty() ? "-" : s; }
 
-// A pointer operand: a register (an alloca or getelementptr result).
+// The analysed function's read-only globals (pirmem::entry_globals); empty
+// while a callee is written (a global there is outside the fragment).
+thread_local const std::vector<std::string>* g_entry = nullptr;
+
+// A pointer operand: a register (an alloca or getelementptr result), or an
+// entry global, written as the register `%@name` its `L glob` line defines.
 std::string ptr_opnd(const ir::Operand& o) {
+    if (o.ty.kind == ir::Type::Ptr && o.v.kind == ir::Value::Global && g_entry &&
+        std::find(g_entry->begin(), g_entry->end(), o.v.name) != g_entry->end())
+        return "%@" + name(o.v.name);
     if (o.ty.kind != ir::Type::Ptr || o.ty.text != "ptr" || o.v.kind != ir::Value::Local)
         throw Unsupported{"pointer operand " + o.v.text};
+    if (o.v.name.starts_with("@")) throw Unsupported{"register named like a global"};
     return "%" + name(o.v.name);
 }
 
@@ -293,8 +304,25 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
     static const std::set<std::string> bins{"add", "sub", "mul", "udiv", "sdiv", "urem", "srem",
                                             "shl", "lshr", "ashr", "and", "or", "xor"};
     const pirmem::Layout lay(m);
+    const bool top = callees.empty();
+    std::vector<std::string> eg;
+    if (top) eg = pirmem::entry_globals(m, lay, f);
+    g_entry = top ? &eg : nullptr;
+    struct Reset {
+        ~Reset() { g_entry = nullptr; }
+    } reset;
     for (auto& bl : f.blocks) {
         b << "L block " << name(bl.name) << "\n";
+        if (top && &bl == &f.blocks.front())
+            for (auto& gname : eg) {
+                // MemTr::emit_entry_globals: a read-only object, zero-filled, then the stores
+                const auto* g = m.find_global(gname);
+                auto flat = pirmem::flat_init(lay, g->ty, g->init[0].v);
+                b << "L glob %@" << name(gname) << " " << lay.alloc_size(g->ty) << " "
+                  << std::max(g->align, lay.align(g->ty)) << " " << flat->size();
+                for (auto& st : *flat) b << " " << st.off << " " << st.w << " " << st.bits;
+                b << "\n";
+            }
         for (auto& in : bl.insts) {
             if (!in.parsed) throw Unsupported{in.op};
             const std::string& op = in.op;

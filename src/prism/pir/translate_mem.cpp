@@ -232,6 +232,120 @@ Arg MemTr::ptr_add(int b, Arg p, Arg delta, int dst) {
 // havocked instead (see MemTr::global).
 constexpr uint64_t kMaxInitStores = 256;
 
+namespace {
+bool flat_rec(const Layout& lay, uint64_t off, const ir::Type& ty, const ir::Value& v, std::vector<InitStore>& out) {
+    switch (v.kind) {
+        case ir::Value::Int:
+            if (ty.kind != ir::Type::Int || ty.bits == 0 || ty.bits > 64) return false;
+            if (v.bits != 0) out.push_back({off, ty.bits, v.bits});
+            return true;
+        case ir::Value::Fp: {
+            auto w = fp::width_of(ty);
+            if (ty.kind != ir::Type::Float || !w) return false;
+            if (v.bits != 0) out.push_back({off, *w, v.bits});
+            return true;
+        }
+        case ir::Value::Zero:
+        case ir::Value::Null: return true;
+        case ir::Value::Str:
+            for (std::size_t k = 0; k < v.bytes.size(); ++k)
+                if (v.bytes[k] != 0) out.push_back({off + k, 8, static_cast<unsigned char>(v.bytes[k])});
+            return true;
+        case ir::Value::Aggregate: {
+            const auto& rt = lay.resolve(ty);
+            if (rt.kind == ir::Type::Array) {
+                auto esz = lay.alloc_size(rt.elems.at(0));
+                for (std::size_t k = 0; k < v.elems.size(); ++k)
+                    if (!flat_rec(lay, off + k * esz, rt.elems[0], v.elems[k].v, out)) return false;
+                return true;
+            }
+            if (rt.kind == ir::Type::Struct) {
+                for (std::size_t k = 0; k < v.elems.size(); ++k)
+                    if (!flat_rec(lay, off + lay.field_offset(rt, static_cast<unsigned>(k)),
+                                  lay.field_type(rt, static_cast<unsigned>(k)), v.elems[k].v, out))
+                        return false;
+                return true;
+            }
+            return false;
+        }
+        default: return false;
+    }
+}
+}  // namespace
+
+std::optional<std::vector<InitStore>> flat_init(const Layout& lay, const ir::Type& ty, const ir::Value& v) {
+    std::vector<InitStore> out;
+    try {
+        if (!flat_rec(lay, 0, ty, v, out)) return std::nullopt;
+    } catch (const Unenc&) {
+        return std::nullopt;
+    } catch (const std::out_of_range&) {
+        return std::nullopt;
+    }
+    return out;
+}
+
+const ir::Global* entry_global(const ir::Module& m, const Layout& lay, const std::string& name) {
+    const auto* g = m.find_global(name);
+    if (!g || g->thread_local_ || g->external || !g->is_const || g->init.empty()) return nullptr;
+    try {
+        auto size = lay.alloc_size(g->ty);
+        auto flat = flat_init(lay, g->ty, g->init[0].v);
+        if (!flat || (size > 4096 && flat->size() > kMaxInitStores)) return nullptr;
+    } catch (const Unenc&) {
+        return nullptr;
+    }
+    return g;
+}
+
+std::vector<std::string> entry_globals(const ir::Module& m, const Layout& lay, const ir::Function& f) {
+    std::vector<std::string> out;
+    auto see = [&](const ir::Operand& o) {
+        if (o.v.kind == ir::Value::Global && o.ty.kind == ir::Type::Ptr &&
+            std::find(out.begin(), out.end(), o.v.name) == out.end() && entry_global(m, lay, o.v.name))
+            out.push_back(o.v.name);
+    };
+    for (auto& bl : f.blocks)
+        for (auto& in : bl.insts) {
+            for (auto& o : in.ops) see(o);
+            for (auto& [o, _] : in.incoming) see(o);
+        }
+    return out;
+}
+
+void MemTr::preassign_globals(const ir::Function& f) {
+    for (auto& name : entry_globals(t_.module(), lay_, f)) {
+        if (globals_.count(name)) continue;
+        globals_[name] = Arg::v(t_.newvar("@" + name, kPtrW), kPtrW);
+        pending_.push_back(name);
+    }
+}
+
+void MemTr::emit_entry_globals() {
+    for (auto& name : pending_) {
+        const auto* g = t_.module().find_global(name);
+        auto flat = flat_init(lay_, g->ty, g->init[0].v);
+        mark_memory();
+        Stmt s;
+        s.kind = Stmt::Alloc;
+        s.dst = globals_[name].var;
+        s.args = {c64(lay_.alloc_size(g->ty))};
+        s.mkind = MemKind::Const;
+        s.init = 1;
+        s.align = std::max(g->align, lay_.align(g->ty));
+        s.msg = "@" + name;
+        t_.push(-1, s);
+        Arg p = globals_[name];
+        for (auto& st : *flat) {  // as emit_init
+            Stmt w;
+            w.kind = Stmt::Store;
+            w.args = {st.off ? ptr_add(-1, p, c64(st.off)) : p, Arg::c(st.w, st.bits), Arg::c(1, 1)};
+            t_.push(-1, w);
+        }
+    }
+    pending_.clear();
+}
+
 Arg MemTr::global(const std::string& name) {
     if (auto it = globals_.find(name); it != globals_.end()) return it->second;
     const auto& m = t_.module();

@@ -472,6 +472,8 @@ struct Tr final : pirmem::TrApi {
             auto q = fr.prefix + bl.name;
             head[q] = newblock(q);
         }
+        // the analysed function's read-only globals: variables before its results
+        if (!frames.empty() && &fr == frames.front()) mt.preassign_globals(f);
         std::set<std::string> maybe_uninit;
         for (auto& bl : f.blocks) {
             for (auto& in : bl.insts) {
@@ -567,6 +569,7 @@ struct Tr final : pirmem::TrApi {
 
     void run_frame(Frame& fr) {
         const auto& f = *fr.f;
+        if (&fr == frames.front()) mt.emit_entry_globals();  // first thing of block 0 (prologue)
         const auto live = normal_blocks(f);
         for (auto& bl : f.blocks)
             if (live.count(bl.name)) translate_block(fr, bl);
