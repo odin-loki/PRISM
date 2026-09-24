@@ -30,10 +30,10 @@ Proved (for every format with `p ≥ 2`, `ew ≥ 2`):
   exact integer sum, round, encode) decodes to the correctly rounded exact
   sum, with IEEE's zero-sign rule and overflow to infinity.
 
-Not covered: the other rounding modes, NaN payloads, operations other than
-addition/subtraction, and the connection to PRISM's SMT floating-point
-encoding (PRISM does not encode floating point yet: `translate.cpp` refuses
-`fadd` & co. as UNENCODED).
+`add` also defines IEEE's special cases (NaN operands, infinities, `∞ - ∞`
+invalid).  Subtraction, multiplication, division, the exception flags and
+PRISM's floating-point checks are in `FloatOps.lean`.  Not covered: the
+other rounding modes and NaN payloads.
 -/
 import PrismTechniques.FloatRound
 
@@ -267,24 +267,63 @@ theorem decode_encode (f : Fmt) (s : Bool) (r : Nat) (hr : Repr f r) (hle : r �
     congr 1
     rw [Nat.add_sub_cancel' hm_lo, Nat.add_sub_cancel, Nat.div_mul_cancel hdvd]
 
+/-! ### Special data -/
+
+/-- Infinity with sign `s`. -/
+def infD (f : Fmt) (s : Bool) : FP f := ⟨s, 2 ^ f.ew - 1, 0⟩
+/-- The default quiet NaN (IEEE 754 §6.2.1: the leading fraction bit set). -/
+def nanD (f : Fmt) : FP f := ⟨false, 2 ^ f.ew - 1, 2 ^ (f.p - 2)⟩
+/-- Zero with sign `s`. -/
+def zeroD (f : Fmt) (s : Bool) : FP f := ⟨s, 0, 0⟩
+
+/-- The datum for a rounded magnitude: `none` (overflow) is infinity. -/
+def fromRound (f : Fmt) (s : Bool) : Option Nat → FP f
+  | some r => encode f s r
+  | none => infD f s
+
+theorem decode_infD (f : Fmt) (s : Bool) : decode (infD f s) = .inf s := by
+  simp [decode, infD]
+
+theorem decode_nanD (f : Fmt) : decode (nanD f) = .nan := by
+  have := Nat.two_pow_pos (f.p - 2)
+  simp [decode, nanD]
+
+theorem decode_zeroD (f : Fmt) (s : Bool) : decode (zeroD f s) = .fin s 0 := by
+  have := qmax_lt f
+  have h0 : (0 : Nat) ≠ 2 ^ f.ew - 1 := by omega
+  simp [decode, zeroD, h0]
+
+theorem decode_fromRound_some (f : Fmt) (s : Bool) {r : Nat} (h : Repr f r ∧ r ≤ f.maxN) :
+    decode (fromRound f s (some r)) = .fin s r := decode_encode f s r h.1 h.2
+
+theorem decode_fromRound_none (f : Fmt) (s : Bool) : decode (fromRound f s none) = .inf s :=
+  decode_infD f s
+
+theorem round_some (f : Fmt) {N r : Nat} (h : round f N = some r) : Repr f r ∧ r ≤ f.maxN := by
+  refine ⟨((round_correct f N).1 r h).1, ?_⟩
+  unfold round at h; split at h
+  · simp at h; subst h; assumption
+  · simp at h
+
 /-! ### Addition -/
 
 /-- Signed value of a finite magnitude, in units of the smallest subnormal. -/
 def sval (s : Bool) (n : Nat) : Int := if s then -(n : Int) else n
 
-/-- Bit-level addition of two finite data (round to nearest, ties to even):
-exact integer sum, one rounding, encoding.  Non-finite inputs give NaN here
-(their IEEE rules are not modelled). -/
+/-- Bit-level addition (round to nearest, ties to even), IEEE 754 §5.4.1,
+§6: a NaN operand gives NaN; `∞ + (-∞)` is invalid (NaN); `±∞` plus
+anything finite, or two infinities of one sign, give that infinity; finite
+operands: exact integer sum, one rounding, encoding, overflow to infinity. -/
 def add (f : Fmt) (x y : FP f) : FP f :=
   match decode x, decode y with
+  | .nan, _ => nanD f
+  | _, .nan => nanD f
+  | .inf sx, .inf sy => if sx = sy then infD f sx else nanD f
+  | .inf sx, .fin _ _ => infD f sx
+  | .fin _ _, .inf sy => infD f sy
   | .fin sx nx, .fin sy ny =>
     let S := sval sx nx + sval sy ny
-    if S = 0 then ⟨sx && sy, 0, 0⟩
-    else
-      match round f S.natAbs with
-      | some r => encode f (decide (S < 0)) r
-      | none => ⟨decide (S < 0), 2 ^ f.ew - 1, 0⟩
-  | _, _ => ⟨false, 2 ^ f.ew - 1, 1⟩
+    if S = 0 then zeroD f (sx && sy) else fromRound f (decide (S < 0)) (round f S.natAbs)
 
 /-- **Correctly rounded addition.**  For finite `x`, `y` with exact sum `S`
 (in units of the smallest subnormal): the result is `±0` with IEEE's sign
@@ -302,37 +341,23 @@ theorem add_correct (f : Fmt) (x y : FP f) {sx sy : Bool} {nx ny : Nat}
     (S ≠ 0 → round f S.natAbs = none →
       decode (add f x y) = .inf (decide (S < 0)) ∧ f.maxN < S.natAbs) := by
   intro S
-  have hq2 := qmax_lt f
   have hrc := round_correct f S.natAbs
   refine ⟨?_, ?_, ?_⟩
   · intro h0
     simp only [add, hx, hy]
     rw [ite_eq_left h0]
-    have h0' : (0 : Nat) ≠ 2 ^ f.ew - 1 := by omega
-    simp [decode, h0']
+    exact decode_zeroD f _
   · intro r h0 hr
     obtain ⟨hrep, hnear⟩ := hrc.1 r hr
-    have hle : r ≤ f.maxN := by
-      unfold round at hr; split at hr
-      · simp at hr; subst hr; assumption
-      · simp at hr
     refine ⟨?_, hrep, hnear⟩
     simp only [add, hx, hy]
-    rw [ite_eq_right h0]
-    show decode (match round f S.natAbs with
-      | some r => encode f (decide (S < 0)) r
-      | none => ⟨decide (S < 0), 2 ^ f.ew - 1, 0⟩) = _
-    rw [hr]
-    exact decode_encode f _ r hrep hle
+    rw [ite_eq_right h0, hr]
+    exact decode_fromRound_some f _ (round_some f hr)
   · intro h0 hr
     refine ⟨?_, hrc.2 hr⟩
     simp only [add, hx, hy]
-    rw [ite_eq_right h0]
-    show decode (match round f S.natAbs with
-      | some r => encode f (decide (S < 0)) r
-      | none => ⟨decide (S < 0), 2 ^ f.ew - 1, 0⟩) = _
-    rw [hr]
-    simp [decode]
+    rw [ite_eq_right h0, hr]
+    exact decode_fromRound_none f _
 
 /-- Sanity checks on binary32 (evaluated by the kernel). -/
 example : binary32.qmax = 253 := by decide

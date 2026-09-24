@@ -15,6 +15,11 @@ class MainWindow : public QMainWindow {
     Q_OBJECT
 public:
     explicit MainWindow(QWidget *parent = nullptr);
+    // Headless smoke test (QT_QPA_PLATFORM=offscreen): run the pipeline
+    // through this window, and when the report has loaded save the window to
+    // `screenshot` and exit 0 if findings were shown, 3 if none (never a
+    // clean pass on an empty table).
+    void runSmoke(const QString& screenshot);
 
 private slots:
     void onRun();

@@ -7,6 +7,7 @@ import PrismRefine.Lazy
 import PrismRefine.Sound
 import PrismRefine.Check
 import PrismRefine.Float
+import PrismRefine.FloatOps
 import PrismRefine.XMem
 import PrismRefine.XMemSim
 import PrismRefine.XLlvm
