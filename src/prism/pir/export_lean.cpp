@@ -210,6 +210,79 @@ bool inlined_call(const ir::Module& m, const ir::Inst& in, const std::string& to
     return !callee->is_model && (cfile.empty() || top_file.empty() || cfile == top_file);
 }
 
+bool overflow_call(const ir::Inst& in) {
+    if (in.op != "call") return false;
+    for (auto p : {"llvm.sadd.with.overflow.", "llvm.uadd.with.overflow.", "llvm.ssub.with.overflow.",
+                   "llvm.usub.with.overflow.", "llvm.smul.with.overflow.", "llvm.umul.with.overflow."})
+        if (in.callee.starts_with(p)) return true;
+    return false;
+}
+
+// The intrinsics Tr::call translates specially and the Lean fragment models
+// (XLlvm.lean `SInst.mm` ... `memset`); any other intrinsic is outside.
+void intrinsic_line(std::ostream& b, const ir::Inst& in) {
+    const std::string& n = in.callee;
+    auto res = [&] {
+        if (in.result.empty()) throw Unsupported{"call @" + n + " without a result"};
+        return "%" + name(in.result);
+    };
+    auto nops = [&](std::size_t k) {
+        if (in.ops.size() != k) throw Unsupported{"call @" + n + " arity"};
+    };
+    for (auto k : {"smax", "smin", "umax", "umin"})
+        if (n.starts_with(std::string("llvm.") + k + ".")) {
+            nops(2);
+            b << "L mm " << res() << " " << k << " " << width(in.ty) << " " << opnd(in.ops[0]) << " "
+              << opnd(in.ops[1]) << "\n";
+            return;
+        }
+    for (auto k : {"abs", "ctlz", "cttz", "ctpop", "bswap"})
+        if (n.starts_with(std::string("llvm.") + k + ".")) {
+            bool flagged = std::string_view(k) == "abs" || std::string_view(k) == "ctlz" || std::string_view(k) == "cttz";
+            nops(flagged ? 2 : 1);
+            bool flag = flagged && in.ops[1].v.kind == ir::Value::Int && in.ops[1].v.bits != 0;
+            if (flagged && in.ops[1].v.kind != ir::Value::Int) throw Unsupported{"call @" + n + " flag"};
+            b << "L un " << res() << " " << k << " " << width(in.ty) << " " << opnd(in.ops[0]) << " " << flag
+              << "\n";
+            return;
+        }
+    if (n.starts_with("llvm.expect.")) {
+        if (in.ops.empty()) throw Unsupported{"call @" + n + " arity"};
+        b << "L expect " << res() << " " << width(in.ty) << " " << opnd(in.ops[0]) << "\n";
+        return;
+    }
+    if (overflow_call(in)) {
+        nops(2);
+        if (in.ty.kind != ir::Type::Struct || in.ty.elems.size() != 2) throw Unsupported{"call @" + n + " type"};
+        b << "L ovf " << res() << " " << n.substr(5, 4) << " " << width(in.ty.elems[0]) << " " << opnd(in.ops[0])
+          << " " << opnd(in.ops[1]) << "\n";
+        return;
+    }
+    if (n.starts_with("llvm.lifetime.start") || n.starts_with("llvm.lifetime.end")) {
+        nops(2);
+        if (n.starts_with("llvm.lifetime.end")) {
+            b << "L lend " << ptr_opnd(in.ops[1]) << "\n";
+            return;
+        }
+        if (in.ops[0].v.kind != ir::Value::Int) throw Unsupported{"call @" + n + " size"};
+        b << "L lstart " << in.ops[0].v.bits << " " << ptr_opnd(in.ops[1]) << "\n";
+        return;
+    }
+    if (n.starts_with("llvm.memcpy.") || n.starts_with("llvm.memmove.")) {
+        if (in.ops.size() < 3) throw Unsupported{"call @" + n + " arity"};
+        b << "L memcpy " << ptr_opnd(in.ops[0]) << " " << ptr_opnd(in.ops[1]) << " " << opnd(in.ops[2]) << " "
+          << width(in.ops[2].ty) << " " << n.starts_with("llvm.memmove.") << "\n";
+        return;
+    }
+    if (n.starts_with("llvm.memset.")) {
+        if (in.ops.size() < 3 || width(in.ops[1].ty) != 8) throw Unsupported{"call @" + n + " arity"};
+        b << "L memset " << ptr_opnd(in.ops[0]) << " " << opnd(in.ops[1]) << " " << opnd(in.ops[2]) << " "
+          << width(in.ops[2].ty) << "\n";
+        return;
+    }
+    throw Unsupported{"call @" + n};
+}
+
 void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, const TranslateOptions& opt,
                const std::string& top_file, std::vector<std::string>& callees) {
     if (!f.parse_error.empty()) throw Unsupported{"unparsed IR"};
@@ -305,6 +378,16 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
             } else if (op == "freeze") {
                 if (in.result.empty() || in.ops.size() != 1) throw Unsupported{"freeze shape"};
                 b << "L freeze %" << name(in.result) << " " << width(in.ty) << " " << opnd(in.ops[0]) << "\n";
+            } else if (op == "call" && in.callee.starts_with("llvm.") && !in.is_asm) {
+                intrinsic_line(b, in);
+            } else if (op == "extractvalue") {
+                // a field of an overflow intrinsic's { iN, i1 } result
+                const auto* d = in.ops.size() == 1 && in.ops[0].v.kind == ir::Value::Local
+                                    ? def_of(f, in.ops[0].v.name) : nullptr;
+                if (!d || !overflow_call(*d) || in.indices.size() != 1 || in.result.empty())
+                    throw Unsupported{"extractvalue"};
+                b << "L xv %" << name(in.result) << " " << width(in.ty) << " %" << name(in.ops[0].v.name) << " "
+                  << in.indices[0] << "\n";
             } else if (op == "call" && inlined_call(m, in, top_file)) {
                 b << "L call " << (in.result.empty() ? std::string("-") : "%" + name(in.result)) << " "
                   << (in.ty.kind == ir::Type::Void ? 0u : width(in.ty)) << " " << name(in.callee) << " "
@@ -312,6 +395,8 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
                 for (auto& a : in.ops) b << " " << opnd(a) << " " << width(a.ty);
                 b << "\n";
                 if (std::find(callees.begin(), callees.end(), in.callee) == callees.end()) callees.push_back(in.callee);
+            } else if (op == "call") {
+                throw Unsupported{"call @" + (in.callee.empty() ? std::string("<indirect>") : in.callee)};
             } else {
                 throw Unsupported{op};
             }
@@ -361,8 +446,13 @@ void pir_side(std::ostream& o, const Function& fn) {
                     o << "P store " << arg(s.args[0]) << " " << arg(s.args[1]) << " " << arg(s.args[2]) << " "
                       << s.tag << "\n";
                     break;
+                case Stmt::MemCpy:
+                case Stmt::MemSet:
+                    o << "P " << (s.kind == Stmt::MemCpy ? "memcpy " : "memset ") << arg(s.args[0]) << " "
+                      << arg(s.args[1]) << " " << arg(s.args[2]) << "\n";
+                    break;
                 default:
-                    // memcpy/memset/stack save and restore: not in the Lean PIR
+                    // stack save and restore: not in the Lean PIR
                     // syntax, so the checker can never equate them with anything
                     o << "P memory-statement " << static_cast<int>(s.kind) << "\n";
                     break;

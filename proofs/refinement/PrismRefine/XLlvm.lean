@@ -323,12 +323,14 @@ def sLend (R : SRegs) (W : World) (p : Opnd) : Res World :=
   (sOpnd R 64 p).bind fun pv => .ok { W with mem := W.mem.free (pv % 2 ^ 64) }
 
 def sMemcpy (R : SRegs) (W : World) (d s len : Opnd) (lw : Nat) (move : Bool) : Res World :=
-  (sOpnd R 64 d).bind fun dv => (sOpnd R 64 s).bind fun sv => (sOpnd R lw len).bind fun n =>
+  (sOpnd R 64 d).bind fun dv => (sOpnd R 64 s).bind fun sv => (sOpnd R lw len).bind fun n0 =>
+    let n := n0 % 2 ^ lw
     if cpyBad W.mem (dv % 2 ^ 64) (sv % 2 ^ 64) n move then .ub
     else .ok { W with mem := W.mem.copy (dv % 2 ^ 64) (sv % 2 ^ 64) n }
 
 def sMemset (R : SRegs) (W : World) (d b len : Opnd) (lw : Nat) : Res World :=
-  (sOpnd R 64 d).bind fun dv => (sOpnd R 8 b).bind fun bv => (sOpnd R lw len).bind fun n =>
+  (sOpnd R 64 d).bind fun dv => (sOpnd R 8 b).bind fun bv => (sOpnd R lw len).bind fun n0 =>
+    let n := n0 % 2 ^ lw
     if n != 0 && accessBad W.mem (dv % 2 ^ 64) n true 1 then .ub
     else .ok { W with mem := W.mem.fill (dv % 2 ^ 64) (bv % 256) n }
 
