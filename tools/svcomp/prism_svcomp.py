@@ -822,34 +822,368 @@ def correctness_invariants(task: Path, finding: dict[str, Any]) -> tuple[list[An
     []
     """
     extra = finding.get("extra") or {}
-    if extra.get("k_induction") != "closed-invariants" or "invariants" not in extra:
+    if extra.get("k_induction") != "closed-invariants" or not ("invariants" in extra or
+                                                               "invariant_conjuncts" in extra):
         return [], "no loop invariant exported by the proving stage (empty invariant set)"
+    pir = "invariants" not in extra
     try:
-        invs = json.loads(str(extra["invariants"]))
+        if not pir:
+            invs = json.loads(str(extra["invariants"]))
+        else:
+            # pir: structured conjuncts over IR values, rendered in C here
+            pir = pir_invariant_texts(task, finding)
+            if pir is None:
+                return [], "pir invariants not mapped to C (no debug information; empty invariant set)"
+            invs = pir
         loops = json.loads(str(extra.get("invariant_loops", "[]")))
     except ValueError:
         return [], "unreadable invariants (empty invariant set)"
     lines = task.read_text(encoding="utf-8", errors="replace").split("\n")
     out: list[Any] = []
     for j, loop in enumerate(loops if isinstance(loops, list) else []):
-        if j >= len(invs) or not isinstance(loop, dict) or loop.get("kind") not in ("for", "while"):
+        if j >= len(invs) or not isinstance(loop, dict) or loop.get("kind") not in ("for", "while", ""):
             continue
         line, col = int(loop.get("line") or 0), int(loop.get("column") or 0)
         if not (1 <= line <= len(lines)) or col < 1:
             continue
-        kw = str(loop["kind"])
         at = lines[line - 1][col - 1:]
+        kw = str(loop["kind"])
+        if not kw:  # pir: the keyword at the loop's start position (a `do` loop gets none)
+            km = re.match(r"(for|while)\b", at)
+            if not km:
+                continue
+            kw = km.group(1)
         if not re.match(rf"{kw}\b", at) or (col > 1 and re.match(r"\w", lines[line - 1][col - 2])):
             continue
         # a name declared in the for-init is not in scope at the keyword
         decl = re.match(r"for\s*\(\s*(?:[A-Za-z_]\w*\s+)+\**\s*([A-Za-z_]\w*)\s*=", at)
-        kept = exportable_conjuncts([str(e).strip() for e in invs[j]
-                                     if not (decl and re.search(rf"\b{decl.group(1)}\b", str(e)))])
+        mine = [str(e).strip() for e in invs[j] if not (decl and re.search(rf"\b{decl.group(1)}\b", str(e)))]
+        # pir conjuncts are rendered with their C types (_render); bmc's are filtered here
+        kept = mine if pir else exportable_conjuncts(mine)
         if kept:
             out.append(W.Invariant("loop_invariant", W.Location(task.name, line, col, finding.get("function")),
                                    " && ".join(f"({e})" for e in kept)))
     n = sum(len(i.value.split(" && ")) for i in out)
     return out, f"{n} Houdini loop invariant conjunct(s) from {finding.get('stage', 'bmc')}"
+
+
+# --------------------------------------------------------------------------- pir invariants -> C
+#
+# The pir stage exports its proved loop invariants as structured conjuncts
+# over IR value names (extra["invariant_conjuncts"], see
+# src/prism/pir/houdini.inc export_invariants). The C text needs the C
+# variable behind each value at the loop head and its C type: the task is
+# compiled once more with full debug information (-g, otherwise the same
+# front end and passes as the pir stage) and the llvm.dbg.value records
+# give both. A value is exported as variable X only when the mapping is
+# certain at the loop head (see _current_var); a conjunct only when C's
+# meaning of the rendered expression is the proved bit-vector relation
+# (see _render). Anything else is left out: a subset of proved conjuncts is
+# still a proved invariant.
+
+IR_PASSES = "-passes=mem2reg,lowerswitch,loop-simplify,lcssa,instnamer"
+
+
+def _tool(*names: str) -> str | None:
+    for n in names:
+        if shutil.which(n):
+            return shutil.which(n)
+    return None
+
+
+def debug_ir(task: Path) -> str | None:
+    """The task's IR as the pir stage builds it, with full debug information."""
+    cc, opt = _tool("clang-18", "clang"), _tool("opt-18", "opt")
+    if not cc or not opt:
+        return None
+    try:
+        r = subprocess.run([cc, "-x", "c", "-S", "-emit-llvm", "-O0", "-Xclang", "-disable-O0-optnone",
+                            "-fno-discard-value-names", "-g", "-std=c17", "-w", str(task), "-o", "-"],
+                           capture_output=True, text=True, timeout=120)
+        if r.returncode != 0:
+            return None
+        o = subprocess.run([opt, "-S", IR_PASSES], input=r.stdout, capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return o.stdout if o.returncode == 0 else None
+
+
+@dataclass
+class IrFunc:
+    blocks: list[str] = field(default_factory=list)
+    succ: dict[str, list[str]] = field(default_factory=dict)
+    defs: dict[str, str] = field(default_factory=dict)          # value -> block
+    phis: dict[str, set[str]] = field(default_factory=dict)     # block -> its phi values
+    records: list[tuple[str, int, str, str]] = field(default_factory=list)  # (block, index, value, var md)
+    loops: dict[str, list[str]] = field(default_factory=dict)   # llvm.loop md -> branch targets
+
+
+_MD = re.compile(r"^(!\d+) = (?:distinct )?(.*)$")
+
+
+def _md_field(body: str, key: str) -> str | None:
+    m = re.search(rf"\b{key}: (\"[^\"]*\"|[^,)]+)", body)
+    return m.group(1).strip('"') if m else None
+
+
+def parse_debug_ir(ir: str, fn: str) -> tuple[IrFunc | None, dict[str, str]]:
+    """The function's blocks, value definitions, dbg.value records and loop
+    branches, and the module's metadata lines ("!N" -> body)."""
+    md: dict[str, str] = {}
+    for line in ir.splitlines():
+        m = _MD.match(line)
+        if m:
+            md[m.group(1)] = m.group(2)
+    lines = ir.splitlines()
+    start = next((i for i, l in enumerate(lines) if l.startswith("define ") and f"@{fn}(" in l), None)
+    if start is None:
+        return None, md
+    f = IrFunc()
+    cur = "entry"
+    f.blocks.append(cur)
+    idx = 0
+    for m in re.finditer(r"%([\w.]+)", lines[start].split("(", 1)[1] if "(" in lines[start] else ""):
+        f.defs[m.group(1)] = cur
+    for line in lines[start + 1:]:
+        if line.startswith("}"):
+            break
+        lab = re.match(r"^([\w.]+):", line)
+        if lab:
+            cur = lab.group(1)
+            if cur not in f.blocks:
+                f.blocks.append(cur)
+            idx = 0
+            continue
+        t = line.strip()
+        if not t or t.startswith(";"):
+            continue
+        idx += 1
+        d = re.match(r"%([\w.]+) = (\w+)", t)
+        if d:
+            f.defs[d.group(1)] = cur
+            if d.group(2) == "phi":
+                f.phis.setdefault(cur, set()).add(d.group(1))
+        r = re.search(r"@llvm\.dbg\.value\(metadata \S+ (%[\w.]+|[-\w.]+), metadata (!\d+),", t)
+        if r:
+            f.records.append((cur, idx, r.group(1).lstrip("%") if r.group(1).startswith("%") else "#" + r.group(1),
+                              r.group(2)))
+        if t.startswith(("br ", "switch ")):
+            targets = re.findall(r"label %([\w.]+)", t)
+            f.succ.setdefault(cur, []).extend(targets)
+            lm = re.search(r"!llvm\.loop (!\d+)", t)
+            if lm:
+                f.loops.setdefault(lm.group(1), []).extend(targets)
+    return f, md
+
+
+def _scope_chain(md: dict[str, str], ref: str | None) -> list[str]:
+    out: list[str] = []
+    while ref and ref not in out and len(out) < 64:
+        out.append(ref)
+        body = md.get(ref, "")
+        ref = _md_field(body, "scope") if "DILexicalBlock" in body else None
+    return out
+
+
+def _c_type(md: dict[str, str], ref: str | None) -> tuple[bool, int] | None:
+    """(signed, bits) of an integer C type (through typedefs and qualifiers)."""
+    for _ in range(16):
+        body = md.get(ref or "", "")
+        if body.startswith("!DIBasicType("):
+            enc, size = _md_field(body, "encoding") or "", int(_md_field(body, "size") or 0)
+            if enc in ("DW_ATE_signed", "DW_ATE_signed_char"):
+                return True, size
+            if enc in ("DW_ATE_unsigned", "DW_ATE_unsigned_char"):
+                return False, size
+            return None  # _Bool, floating point
+        if body.startswith("!DIDerivedType(") and re.search(r"tag: DW_TAG_(typedef|const_type|volatile_type)", body):
+            ref = _md_field(body, "baseType")
+            continue
+        return None
+    return None
+
+
+def _reach(f: IrFunc, src: str, stop: str) -> set[str]:
+    """Blocks reachable from src's successors without passing through stop."""
+    seen: set[str] = set()
+    work = [s for s in f.succ.get(src, [])]
+    while work:
+        b = work.pop()
+        if b in seen or b == stop:
+            continue
+        seen.add(b)
+        work.extend(f.succ.get(b, []))
+    return seen
+
+
+def _current_var(f: IrFunc, md: dict[str, str], value: str, header: str,
+                 loop_scope: list[str]) -> tuple[str, bool, int] | None:
+    """The C variable whose current value at the loop head (the start of
+    ``header``) is ``value``, with its C type; None unless certain:
+
+    * the value is described by dbg.value records of exactly one variable,
+      whose name no other variable of the function has, and whose scope
+      encloses the loop;
+    * after its record in the defining block D, no other record of that
+      variable lies on a path from D to the header (the header's own phi
+      records included, unless the value is that phi).
+    """
+    recs = [r for r in f.records if r[2] == value]
+    vars_ = {r[3] for r in recs}
+    if len(vars_) != 1:
+        return None
+    var = vars_.pop()
+    body = md.get(var, "")
+    name = _md_field(body, "name")
+    if not name or not re.fullmatch(r"[A-Za-z_]\w*", name):
+        return None
+    all_vars = {r[3] for r in f.records}
+    if sum(1 for v in all_vars if _md_field(md.get(v, ""), "name") == name) != 1:
+        return None
+    if _md_field(body, "scope") not in loop_scope:
+        return None
+    ty = _c_type(md, _md_field(body, "type"))
+    if ty is None:
+        return None
+    d = f.defs.get(value)
+    if d is None:
+        return None
+    mine = [r for r in recs if r[0] == d]
+    if not mine:
+        return None
+    last = max(r[1] for r in mine)
+    if d != header:
+        if any(r[3] == var and r[0] == d and r[1] > last for r in f.records):
+            return None
+        region = _reach(f, d, d) & ({header} | {b for b in f.blocks if header in _reach(f, b, d) or b == header})
+        if any(r[3] == var and r[0] in region for r in f.records):
+            return None
+    elif value not in f.phis.get(header, set()):
+        return None  # defined in the header after the loop head
+    return name, ty[0], ty[1]
+
+
+_REL_C = {"eq": "==", "ne": "!=", "ule": "<=", "ult": "<", "uge": ">=", "ugt": ">",
+          "sle": "<=", "slt": "<", "sge": ">=", "sgt": ">"}
+
+
+def _render(conj: dict[str, Any], term_of: Any) -> str | None:
+    """C text of one proved conjunct, or None when C would mean something
+    else (signedness, promotion, wrap-around).
+
+    >>> t = {"x": ("x", True, 32), "u": ("u", False, 32), "c": ("c", True, 8)}
+    >>> term = lambda j: t[j["v"]] if "v" in j else None
+    >>> _render({"rel": "sle", "a": {"v": "x", "w": 32}, "b": {"c": "4294967295", "w": 32}}, term)
+    'x <= -1'
+    >>> _render({"rel": "ule", "a": {"v": "x", "w": 32}, "b": {"c": "5", "w": 32}}, term) is None
+    True
+    >>> _render({"rel": "ult", "a": {"v": "x", "w": 32}, "b": {"v": "u", "w": 32}}, term)
+    'x < u'
+    >>> _render({"rel": "mask:1", "a": {"v": "u", "w": 32}, "b": {"c": "1", "w": 32}}, term)
+    '(u & 1) == 1'
+    >>> _render({"rel": "eq", "a": {"v": "c", "w": 8}, "b": {"v": "u", "w": 32}}, term) is None
+    True
+    """
+    rel = str(conj.get("rel", ""))
+
+    def side(j: dict[str, Any], signed: bool) -> str | None:
+        if "v" in j:
+            tv = term_of(j)
+            return tv[0] if tv else None
+        w = int(j.get("w", 0))
+        v = int(str(j.get("c")))
+        if signed and v >= 1 << (w - 1):
+            v -= 1 << w
+        return str(v) if (signed or v <= 2**31 - 1) else f"{v}U" if w <= 32 else f"{v}UL"
+
+    a, b = conj.get("a") or {}, conj.get("b") or {}
+    ta = term_of(a) if "v" in a else None
+    if ta is None or int(a.get("w", 0)) != ta[2]:
+        return None
+    tb = term_of(b) if "v" in b else None
+    if "v" in b and (tb is None or int(b.get("w", 0)) != tb[2]):
+        return None
+    w = ta[2]
+    if rel.startswith("mask:"):
+        m = int(rel.split(":", 1)[1])
+        if "c" not in b or m >= 1 << (w - 1):
+            return None
+        return f"({ta[0]} & {m}) == {int(str(b['c'])) & m}"
+    if rel in ("add", "sub"):
+        c = conj.get("c") or {}
+        if tb is None or ta[1] or tb[1] or w < 32 or tb[2] != w or "c" not in c:
+            return None  # only unsigned int/long arithmetic wraps like the bit-vectors
+        return f"{ta[0]} {'+' if rel == 'add' else '-'} {tb[0]} == {side(c, False)}"
+    if rel not in _REL_C:
+        return None
+    if rel in ("eq", "ne"):
+        if tb is not None and w < 32 and ta[1] != tb[1]:
+            return None  # promotion keeps values: bit-equal is not value-equal
+        sb = side(b, ta[1])
+    elif rel[0] == "s":
+        if not ta[1] or (tb is not None and not tb[1]):
+            return None
+        sb = side(b, True)
+    else:
+        if tb is None:
+            if ta[1]:
+                return None
+        elif w < 32 and (ta[1] or tb[1]):
+            return None
+        elif w >= 32 and ta[1] and tb[1]:
+            return None
+        sb = side(b, False)
+    return None if sb is None else f"{ta[0]} {_REL_C[rel]} {sb}"
+
+
+def pir_invariant_texts(task: Path, finding: dict[str, Any]) -> list[list[str]] | None:
+    """C conjuncts per exported loop of a pir PROVED-UNBOUNDED finding
+    (aligned with extra["invariant_loops"]); None when unavailable."""
+    extra = finding.get("extra") or {}
+    try:
+        conj = json.loads(str(extra["invariant_conjuncts"]))
+        loops = json.loads(str(extra["invariant_loops"]))
+    except (KeyError, ValueError):
+        return None
+    ir = debug_ir(task)
+    if ir is None:
+        return None
+    f, md = parse_debug_ir(ir, str(finding.get("function") or "main"))
+    if f is None:
+        return None
+    # loop start (line, col) -> header block (the target of the loop's back edge)
+    headers: dict[tuple[int, int], str] = {}
+    scopes: dict[tuple[int, int], list[str]] = {}
+    for ref, targets in f.loops.items():
+        m = re.search(r"!\{(!\d+), (!\d+)", md.get(ref, ""))
+        if not m or len(set(targets)) != 1:
+            continue
+        loc = md.get(m.group(2), "")
+        if "DILocation" not in loc:
+            continue
+        key = (int(_md_field(loc, "line") or 0), int(_md_field(loc, "column") or 0))
+        headers[key] = targets[0]
+        scopes[key] = _scope_chain(md, _md_field(loc, "scope"))
+    out: list[list[str]] = []
+    for j, loop in enumerate(loops if isinstance(loops, list) else []):
+        key = (int(loop.get("line") or 0), int(loop.get("column") or 0))
+        texts: list[str] = []
+        h = headers.get(key)
+        if h is not None and j < len(conj):
+            cache: dict[str, Any] = {}
+
+            def term_of(t: dict[str, Any], _h: str = h, _k: tuple[int, int] = key) -> Any:
+                v = str(t.get("v"))
+                if v not in cache:
+                    cache[v] = _current_var(f, md, v, _h, scopes[_k])
+                return cache[v]
+
+            for c in conj[j]:
+                txt = _render(c, term_of)
+                if txt and txt not in texts:
+                    texts.append(txt)
+        out.append(texts)
+    return out
 
 
 @dataclass
