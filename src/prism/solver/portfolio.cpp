@@ -264,6 +264,7 @@ std::string subst(const std::string& a, const fs::path& input, const fs::path& p
     return s;
 }
 
+constexpr double kOverrunSlackS = 1.0;
 constexpr const char* kUnreaped = "; the process was not reaped 2 s after SIGKILL (watchdog: left to a reaper)";
 
 // Map a solver's SAT assignment back to names, checking it against the CNF first.
@@ -783,6 +784,7 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
     }
 
     // ---------------------------------------------------------------- run
+    const double t_setup = now_s();  // phase stamps: the overrun record below
     const fs::path work = make_work_dir(opt, res.query_hash);
     const fs::path smt_path = work / "query.smt2";
     const fs::path cnf_path = work / "query.cnf";
@@ -800,6 +802,7 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
         detail::write_file(smt_path, txt);
     }
 
+    const double t_files = now_s();
     auto J = std::make_shared<Jobs>();
     Board& board = J->board;
     std::vector<std::thread> threads;
@@ -1139,8 +1142,10 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
         }
         if (!accepted) fill_slots();
     }
+    const double t_loop = now_s();
     stop_all();
     shutdown();
+    const double t_stopped = now_s();
     // Drain what arrived while stopping (a late certificate-member answer).
     for (Msg msg; board.wait(msg, 0.0);) {
         if (msg.type != Msg::Result) continue;
@@ -1148,20 +1153,6 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
             watchdog.push_back(members[msg.member].name + " (" + msg.detail + ")");
         if (msg.member == cert_member && !cert_msg) cert_msg = msg;
     }
-    if (!watchdog.empty()) {
-        // Recorded, never silent (Law 7): in the note, the result and
-        // <cache_dir>/watchdog.jsonl. The answer (if any) stands: it came
-        // from a member that did finish.
-        res.watchdog = watchdog;
-        for (const auto& w : watchdog) notes.push_back("WATCHDOG: " + w);
-        json line{{"schema", 1}, {"hash", res.query_hash}, {"bucket", res.bucket}, {"events", watchdog},
-                  {"timeout_s", opt.timeout_s}, {"wall_s", now_s() - t0}};
-        std::error_code ec;
-        fs::create_directories(root, ec);
-        std::lock_guard<std::mutex> g(g_history_mu);
-        std::ofstream(root / "watchdog.jsonl", std::ios::app) << line.dump() << "\n";
-    }
-
     // ---------------------------------------------------------------- verdict
     if (accepted) {
         res.kind = accepted->kind;
@@ -1265,6 +1256,37 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
         detail::write_file(root / "solve_times.json", h.dump(1));
         predict::log_query(root, ft, res, res.ran, now_s() - t0);  // training data for tools/prism_ai/predict.py
     }
+    // An overrun (the whole call longer than its timeout plus the watchdog
+    // grace, outside certified mode) is recorded with the time of each
+    // phase, so a stall outside the members (file I/O on a loaded machine)
+    // is found where it happened (docs/SOLVERS.md "Stalls").
+    if (!opt.certified) {
+        const double t_end = now_s();
+        const double budget = opt.timeout_s + std::max(0.0, opt.watchdog_grace_s) + kOverrunSlackS;
+        if (t_end - t0 > budget) {
+            char buf[320];
+            std::snprintf(buf, sizeof buf,
+                          "query took %.1fs against a %.1fs timeout: setup %.1fs, files %.1fs, solving %.1fs, "
+                          "stopping %.1fs, recording %.1fs",
+                          t_end - t0, opt.timeout_s, t_setup - t0, t_files - t_setup, t_loop - t_files,
+                          t_stopped - t_loop, t_end - t_stopped);
+            watchdog.push_back(buf);
+        }
+    }
+    if (!watchdog.empty()) {
+        // Recorded, never silent (Law 7): in the note, the result and
+        // <cache_dir>/watchdog.jsonl. The answer (if any) stands: it came
+        // from a member that did finish.
+        res.watchdog = watchdog;
+        for (const auto& w : watchdog) notes.push_back("WATCHDOG: " + w);
+        json line{{"schema", 1}, {"hash", res.query_hash}, {"bucket", res.bucket}, {"events", watchdog},
+                  {"timeout_s", opt.timeout_s}, {"wall_s", now_s() - t0}};
+        std::error_code ec;
+        fs::create_directories(root, ec);
+        std::lock_guard<std::mutex> g(g_history_mu);
+        std::ofstream(root / "watchdog.jsonl", std::ios::app) << line.dump() << "\n";
+    }
+
     return finish(res);  // the guard removes the work directory
 }
 

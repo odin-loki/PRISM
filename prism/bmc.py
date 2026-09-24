@@ -1414,16 +1414,16 @@ class Parser:
         base = e.snap()
         exits: list[_State] = []
         closed = False
-        frame: tuple[str, list[_State]] = (name, [])
-        self._label_loops.append(frame)
+        loop: tuple[str, list[_State]] = (name, [])
+        self._label_loops.append(loop)
         try:
             for _ in range(max(e.unwind, 1)):
-                frame[1].clear()
+                loop[1].clear()
                 self._stmts(e, region)
                 exits.append(e.snap())
-                live = [_goto_complete(e, b, base) for b in frame[1]
+                live = [_goto_complete(e, b, base) for b in loop[1]
                         if not z3.is_false(b.path)]
-                frame[1].clear()
+                loop[1].clear()
                 if not live:
                     closed = True
                     break
