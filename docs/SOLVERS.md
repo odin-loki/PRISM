@@ -182,7 +182,9 @@ same CaDiCaL, `--unsat`, loaded machine):
 - `long_mul_true` (64-bit `a*a`, `|a| ≤ 3·10⁹`, 13 MB CNF): `a ≥ 0` is
   UNSAT in 2.5 s (and cubes of it on bits 31..28 in 1-2 s each), but
   `a < 0` has no answer in 150 s, and neither do its cubes on bits 31..28
-  (`0100`, `0101`, `1111`: 90 s each, even `a ∈ [-2^28, -1]`). The
+  (`0100`, `0101`, `1111`: 90 s each, even `a ∈ [-2^28, -1]`), nor with
+  `--sat`, `--unsat --congruencexorarity=8` or `--unsat --elim=false` (150 s
+  each, niced on the loaded machine). The
   negative half, the two's-complement multiplier with its high bits set, is
   what CaDiCaL cannot do; splitting on input bits does not help, so no
   cube-and-conquer proof composition was added (it would only be sound
