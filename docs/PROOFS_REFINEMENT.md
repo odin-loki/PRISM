@@ -336,7 +336,14 @@ callee instances, the continuation phi of an inlined `ret`), and from
 `translate_mem.cpp` `alloca`, `load`, `store`, `getelementptr` with
 `MemTr::access_checks` (null, wild, freed, bounds, alignment, read-only),
 `MemTr::gep` (overflow, C array bounds, `inbounds`, leaving the object) and
-the uninitialised-memory read check.
+the uninitialised-memory read check; from `Tr::call` the handlers of
+`llvm.smax`/`smin`/`umax`/`umin`, `abs`, `ctlz`/`cttz`, `ctpop`/`bswap`,
+`expect`, the overflow intrinsics with `extractvalue`, `lifetime.start`/`end`
+and `memcpy`/`memmove`/`memset` (`MemTr::memcpy_`/`memset_` with their
+guarded access checks and the overlap check), and `MemTr::global` for the
+globals the analysed function names. Not covered: `llvm.assume`, traps,
+`stacksave`/`stackrestore`, the floating-point intrinsics, every library
+model.
 
 By function, on the repository's own C/C++ corpus
 (`python tools/pir_lean_check.py tests/pir testdata --bin <build>/prism`:
@@ -352,6 +359,21 @@ extended fragment:
 | `testdata`, before | 2 506 | 915 | — | 2 | 1 589 | **0** |
 | `testdata`, after | 2 506 | 915 | **21** | 4 | 1 566 | **0** |
 | `testdata`, after the merge (one file not exported in that run) | 2 502 | 914 | **21** | 4 | 1 563 | **0** |
+| `tests/pir`, before the intrinsics and globals (this commit's base) | 228 | 46 | 9 | 1 | 172 | **0** |
+| `tests/pir`, with intrinsics, `memcpy`/`memset`, lifetime markers, globals | 228 | 46 | **29** | 1 | 152 | **0** |
+| `testdata`, before the intrinsics and globals | 2 506 | 915 | 21 | 4 | 1 566 | **0** |
+| `testdata`, with intrinsics, `memcpy`/`memset`, lifetime markers, globals | 2 506 | 915 | **32** | 4 | 1 555 | **0** |
+
+The new `agree-ext` functions: array initialisers (`memcpy` from a
+`@__const` global, `memset` of a zeroed array), `memcpy`/`memmove`/`memset`
+with correct and incorrect lengths and an overlapping copy, tables and
+string constants read by index, `llvm.abs`, `llvm.ctlz` with and without
+the zero guard, `__builtin_add_overflow`-style checks, and functions reading
+a mutable global. The fixture `fixtures/intrinsics.pirl` (22 functions, one
+per intrinsic kind, and the IR of the doctest "pir: lean export of
+intrinsics, …") checks as 1 `agree` + 21 `agree-ext`; `dropped_intr_check`
+removes the overlap, INT-CLZ-ZERO, MEM-UAF and signed-overflow checks from
+four of them and must be (and is) 4 mismatches.
 
 `agree-ext` in `tests/pir`: two inlined calls, a C++ template call and a
 `constexpr` call, and four stack-memory functions (a struct on the stack,
@@ -360,11 +382,16 @@ in `testdata`: three inlined calls and 18 stack-memory functions (designated
 initialisers, packed structs, one-sided index checks, an out-of-bounds
 write, a lambda capture, object slicing). The new `agree-reject`s are
 recursive calls, which both translators refuse. What keeps the other
-`testdata` functions outside: a call to a library function or an intrinsic
-(1 340: `llvm.memcpy`/`memset` for array initialisers, `llvm.lifetime.*`,
-libc and C++ runtime calls), a pointer-typed parameter, return, phi, select
-or comparison (209), a global (6), floating point (5), `volatile` (3),
-`undef` outside `freeze` (2).
+`testdata` functions outside (before the intrinsics and globals): a call to
+a library function or an intrinsic (1 340), a pointer-typed parameter,
+return, phi, select or comparison (209), a global (6), floating point (5),
+`volatile` (3), `undef` outside `freeze` (2). After: a call to a library
+function (1 330; the exporter now names the callee: libc and C++ runtime
+models, `__assert_fail`, nondet sources; one `llvm.trap`), pointers (209),
+floating point (5), `volatile` stores (3), a global named only through a
+constant expression or in a callee (3), `undef` (2), `alloca` in an inlined
+callee (2). The intrinsics themselves were rarely the only obstacle: most
+functions that call them also call a library function or take a pointer.
 
 The pir stage has a time budget; on a loaded machine a run can leave a
 few files unexported (two `testdata` files in one of the runs above), so
