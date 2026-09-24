@@ -62,6 +62,10 @@ struct SolveOptions {
     double timeout_s = 30.0;
     bool certified = false;     // roadmap 3.2: try to produce PROVED-CERTIFIED
     double check_timeout_s = 0; // LRAT checker budget; 0: max(60 s, 4 x timeout_s)
+    // certified: seconds from the start of the query the certificate member
+    // (CaDiCaL LRAT) and its bit-blast may run; the answer itself is still
+    // due within timeout_s. 0: max(60 s, 4 x timeout_s).
+    double cert_timeout_s = 0;
     bool portfolio = true;      // false: Z3 only (plus the certificate chain when certified)
     std::string cache_dir;      // empty: $XDG_CACHE_HOME/prism/solver or ~/.cache/prism/solver
     bool use_cache = true;      // the query cache; solve times are always recorded in cache_dir

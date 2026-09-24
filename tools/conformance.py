@@ -105,7 +105,7 @@ PROPERTY_SCOPED = {"sv-comp", "concurrency"}
 CERT_STAGE = "pir-certified"
 # Finding extras kept in results.json (pir: loop count and certificate fields).
 KEEP_EXTRA = ("loops", "properties", "certificate", "certificate_vcs", "certify_note", "certified_mode", "solver",
-             "certificate_bitblast")
+             "certificate_bitblast", "certificate_scope", "certificate_combined")
 
 # SV-COMP property file -> suite property
 SV_PROPERTIES = {"no-overflow.prp": "no-overflow", "valid-memsafety.prp": "memsafety"}
@@ -631,7 +631,11 @@ def run_prism(cmd: list[str], task: Task, stages: list[str], work: Path, timeout
     rep = out / "report.json"
     if not rep.exists():
         return {"error": f"no report.json (exit {rc}): {tail}", "seconds": secs, "argv": argv}
-    data = json.loads(rep.read_text(encoding="utf-8"))
+    try:
+        data = json.loads(rep.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        # a truncated report (killed run, full disk) is no answer, not a crash of the whole suite
+        return {"error": f"unreadable report.json (exit {rc}): {e}", "seconds": secs, "argv": argv}
     per: dict[str, dict[str, list[dict[str, Any]]]] = {}
     stage_status: dict[str, str] = {}
     for st in data.get("stages", []):
@@ -824,6 +828,10 @@ def certified_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     def ex(r: dict[str, Any], key: str) -> str:
         return next((str(f.get("extra", {}).get(key, "")) for f in r["findings"] if f.get("extra", {}).get(key)), "")
 
+    # One certificate for the whole function (certificate_scope = combined)
+    # or one per VC; either certifies every VC of the function.
+    all_cert = [r for r in rows if r["stage"] == CERT_STAGE and "PROVED-CERTIFIED" in st(r)]
+
     # A function with no VC stays PROVED (a certificate that checks nothing is
     # not a certificate): counted apart, not as "proved, not certified".
     no_vcs = [r for r in proved if r not in cert and ex(r, "certificate_vcs") == "0"]
@@ -856,6 +864,9 @@ def certified_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "not_encoded_true": len(unencoded),
         "wrong_certified": len(wrong_cert),
         "proved_not_certified": not_cert,
+        "certified_combined": sum(1 for r in all_cert if ex(r, "certificate_scope") == "combined"),
+        "certified_batched": sum(1 for r in all_cert if ex(r, "certificate_scope") == "batched"),
+        "certified_per_vc": sum(1 for r in all_cert if ex(r, "certificate_scope") not in ("combined", "batched")),
     }
 
 
@@ -896,7 +907,14 @@ def markdown(metrics: dict[str, Any], rows: list[dict[str, Any]], meta: dict[str
                 f"- `true` functions with loops: {cs['looped_true']} "
                 f"({cs['looped_true_certified']} PROVED-CERTIFIED: loops closed within the unwind)",
                 f"- `true` functions pir did not encode (NEEDS-HARNESS etc.): {cs['not_encoded_true']}",
-                f"- PROVED-CERTIFIED on a `false` function (must be 0): **{cs['wrong_certified']}**", ""]
+                f"- PROVED-CERTIFIED on a `false` function (must be 0): **{cs['wrong_certified']}**",
+                f"- PROVED-CERTIFIED functions (all): {cs['certified_combined']} by one combined certificate, "
+                f"{cs['certified_batched']} by certified batches, "
+                f"{cs['certified_per_vc']} by one certificate per VC"]
+        if "run_seconds" in cs:
+            out.append(f"- certified runs: {cs['runs']} tasks, {cs['run_seconds']} s in total; "
+                       f"{len(cs['timeouts'])} timed out" + (f" ({', '.join(cs['timeouts'])})" if cs["timeouts"] else ""))
+        out.append("")
         for x in cs["proved_not_certified"]:
             out.append(f"  - proved, not certified: `{x['task']}` `{x['function']}`: {x['note']}")
         out.append("")
@@ -1375,6 +1393,7 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     res.setdefault("findings", {}).update(cres.get("findings", {}))
                 res["seconds_certified"] = cres.get("seconds")
+                res["certified_error"] = cres.get("error", "")
             return t, res
 
         rows: list[dict[str, Any]] = []
@@ -1396,7 +1415,7 @@ def main(argv: list[str] | None = None) -> int:
                         "task": t.ident, "origin": t.origin, "category": t.category, "function": fn,
                         "expected": exp, "property": t.prop, "stage": stage,
                         "law_task": fn in t.expect_status, "findings": found,
-                        "seconds": res.get("seconds"),
+                        "seconds": res.get("seconds_certified") if stage == CERT_STAGE else res.get("seconds"),
                     }
                     if "error" in res:
                         row["error"] = res["error"]
@@ -1429,6 +1448,12 @@ def main(argv: list[str] | None = None) -> int:
         if cert_on:
             # Wrong proofs above already include the pir-certified rows.
             meta["certified"] = certified_summary(rows)
+            # Cost of the certified runs, once per task (not per function).
+            cert_runs = [res for _, res in results if "seconds_certified" in res]
+            meta["certified"]["run_seconds"] = round(sum(r["seconds_certified"] or 0 for r in cert_runs), 1)
+            meta["certified"]["runs"] = len(cert_runs)
+            meta["certified"]["timeouts"] = sorted(t.ident for t, r in results
+                                                   if str(r.get("certified_error", "")).startswith("TIMEOUT"))
         (args.out / "results.json").write_text(json.dumps(rows, indent=1), encoding="utf-8")
         (args.out / "metrics.json").write_text(json.dumps({"meta": meta, "metrics": metrics}, indent=1),
                                                encoding="utf-8")

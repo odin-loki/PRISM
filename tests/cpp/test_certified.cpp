@@ -135,7 +135,9 @@ TEST_CASE("certified: loop-free safe function is PROVED-CERTIFIED with one certi
     CHECK_FALSE(plain.extra.contains("certificate"));
     CHECK(plain.extra.at("solver").find("VCs") != std::string::npos);
 
-    auto v = prism::pir::check_function(*t.fn, cert_opts(true));
+    auto po = cert_opts(true);
+    po.certify_combined = false;  // the per-VC path (the combined one is tested below)
+    auto v = prism::pir::check_function(*t.fn, po);
     const auto nprops = std::stoul(v.extra.at("properties"));
     REQUIRE(nprops >= 2);
     if (!have_cert_chain()) {
@@ -154,6 +156,8 @@ TEST_CASE("certified: loop-free safe function is PROVED-CERTIFIED with one certi
     CHECK(count_char(shas, ',') + 1 == nprops);
     CHECK(shas.size() == nprops * 64 + (nprops - 1));
     CHECK_FALSE(v.extra.contains("certify_note"));
+    CHECK(v.extra.at("certificate_scope") == "per-vc");
+    CHECK(v.extra.at("certificate_proofs") == std::to_string(nprops));
     // The verdict audit admits it from pir (a solver stage) with the certificate...
     auto admitted = prism::verdict::audit("pir", prism::verdict::Verdict::ProvedCertified, true);
     CHECK_FALSE(admitted.violation);
@@ -165,7 +169,9 @@ TEST_CASE("certified: loop-free safe function is PROVED-CERTIFIED with one certi
 TEST_CASE("certified: a closing loop needs the unwinding assertion certified too") {
     auto t = cert_pir(kThree, "three");
     REQUIRE(t.fn.has_value());
-    auto v = prism::pir::check_function(*t.fn, cert_opts(true));
+    auto po = cert_opts(true);
+    po.certify_combined = false;
+    auto v = prism::pir::check_function(*t.fn, po);
     CHECK(v.extra.at("loops") == "1");
     if (!have_cert_chain()) {
         CHECK(v.status == prism::laws::PROVED);
@@ -176,6 +182,124 @@ TEST_CASE("certified: a closing loop needs the unwinding assertion certified too
     // properties + the unwinding assertion, each with its own CNF
     CHECK(count_char(v.extra.at("cnf_sha256"), ',') + 1 == nprops + 1);
     CHECK(v.extra.at("certificate_info").find("unwind: ") != std::string::npos);
+}
+
+TEST_CASE("certified: one combined certificate covers every VC of a function") {
+    auto t = cert_pir(kSafeDiv, "g");
+    REQUIRE(t.fn.has_value());
+    auto v = prism::pir::check_function(*t.fn, cert_opts(true));
+    const auto nprops = std::stoul(v.extra.at("properties"));
+    REQUIRE(nprops >= 2);
+    if (!have_cert_chain()) {
+        CHECK(v.status == prism::laws::PROVED);
+        CHECK(v.extra.at("certify_note").find("not certified") != std::string::npos);
+        CHECK_FALSE(v.extra.contains("certificate"));
+        return;
+    }
+    CAPTURE(v.extra.count("certificate_combined") ? v.extra.at("certificate_combined") : std::string());
+    REQUIRE(v.status == prism::laws::PROVED_CERTIFIED);
+    CHECK(v.extra.at("certificate") == "checked");
+    CHECK(v.extra.at("certificate_scope") == "combined");
+    CHECK(v.extra.at("certificate_proofs") == "1");
+    // the one certificate says how many VCs it covers, and which
+    CHECK(v.extra.at("certificate_vcs") == std::to_string(nprops));
+    CHECK(count_char(v.extra.at("certificate_covers"), ',') + 1 == nprops);
+    CHECK(v.extra.at("certificate_info").find(std::to_string(nprops) + " VCs, one LRAT proof") == 0);
+    CHECK(v.extra.at("certificate_info").find("cake_lpr") != std::string::npos);
+    CHECK(v.extra.at("cnf_sha256").size() == 64);  // one CNF
+    CHECK(v.extra.at("certificate_bitblast").find("/1 lean-proved") == 1);
+    CHECK_FALSE(v.extra.contains("certify_note"));
+    CHECK(v.extra.at("solver").find("1 VCs") == 0);  // one query answered the function
+
+    // A loop that closes: the unwinding assertion is one of the covered VCs.
+    auto l = cert_pir(kThree, "three");
+    auto vl = prism::pir::check_function(*l.fn, cert_opts(true));
+    REQUIRE(vl.status == prism::laws::PROVED_CERTIFIED);
+    CHECK(vl.extra.at("unwind_closed") == "true");
+    CHECK(vl.extra.at("certificate_covers").find("unwind") != std::string::npos);
+    CHECK(vl.extra.at("certificate_vcs") == std::to_string(std::stoul(vl.extra.at("properties")) + 1));
+}
+
+TEST_CASE("certified: a combined query that is not certified falls back to one certificate per VC") {
+    // SAT: the combined query is violated, the per-VC queries find which
+    // property (and its counterexample); nothing is certified.
+    auto o = cert_pir(kOvf, "f");
+    auto v = prism::pir::check_function(*o.fn, cert_opts(true));
+    CHECK(v.status == prism::laws::FAILED);
+    CHECK_FALSE(v.extra.contains("certificate"));
+    if (std::stoul(v.extra.at("properties")) >= 2) {
+        REQUIRE(v.extra.count("certificate_combined") == 1);
+        CHECK(v.extra.at("certificate_combined").find("not obtained (sat)") != std::string::npos);
+    }
+    // BOUNDED (the loop does not close at unwind 2): the combined query is
+    // SAT through the unwinding assertion; the per-VC path decides BOUNDED.
+    auto t = cert_pir(kThree, "three");
+    auto co = cert_opts(true);
+    co.unwind = 2;
+    auto b = prism::pir::check_function(*t.fn, co);
+    CHECK((b.status == prism::laws::BOUNDED || b.status == prism::laws::PROVED_UNBOUNDED));
+    CHECK_FALSE(b.extra.contains("certificate"));
+    REQUIRE(b.extra.count("certificate_combined") == 1);
+    CHECK(b.extra.at("certificate_combined").find("one certificate per VC instead") != std::string::npos);
+}
+
+TEST_CASE("certified: a combined proof the checker cannot finish is split into certified batches") {
+    prism::solver::SolveOptions so;
+    auto cad = prism::solver::find_tool("cadical", so);
+    auto cake = prism::solver::find_tool("cake_lpr", so);
+    if (!cad || !cake) {
+        MESSAGE("cadical/cake_lpr not installed: skipped");
+        return;
+    }
+    CertTmp tmp;
+    // cake_lpr that runs out of time on its first proof (the combined one)
+    // and is the real checker afterwards.
+    auto cdir = tmp.dir / "tools" / "cadical" / "test" / "bin";
+    auto kdir = tmp.dir / "tools" / "cake_lpr" / "test" / "bin";
+    fs::create_directories(cdir);
+    fs::create_directories(kdir);
+    fs::create_symlink(cad->path, cdir / "cadical");
+    const auto mark = tmp.dir / "first-call-done";
+    {
+        std::ofstream(kdir / "cake_lpr") << "#!/bin/sh\nif [ ! -e '" << mark.string() << "' ]; then touch '"
+                                         << mark.string() << "'; exec sleep 30; fi\nexec '" << cake->path.string()
+                                         << "' \"$@\"\n";
+    }
+    fs::permissions(kdir / "cake_lpr", fs::perms::owner_all);
+    const std::string ir = R"IR(
+define i32 @h(i32 %a, i32 %b) {
+entry:
+  %m = and i32 %b, 7
+  %d = add nsw i32 %m, 1
+  %q = sdiv i32 %a, %d
+  %r = srem i32 %a, %d
+  %x = xor i32 %q, %r
+  ret i32 %x
+}
+)IR";
+    auto t = cert_pir(ir, "h");
+    REQUIRE(t.fn.has_value());
+    auto o = cert_opts(true);
+    o.tool_dirs = {(tmp.dir / "tools").string()};
+    o.search_default_tools = false;
+    o.check_timeout_s = 3;
+    auto v = prism::pir::check_function(*t.fn, o);
+    const auto nvc = std::stoul(v.extra.at("properties"));
+    REQUIRE(nvc >= 4);
+    CAPTURE(v.extra.count("certificate_combined") ? v.extra.at("certificate_combined") : std::string());
+    REQUIRE(v.status == prism::laws::PROVED_CERTIFIED);
+    CHECK(fs::exists(mark));
+    CHECK(v.extra.at("certificate_scope") == "batched");
+    const auto np = std::stoul(v.extra.at("certificate_proofs"));
+    CHECK(np >= 2);
+    CHECK(np < nvc);
+    // the batches cover every VC, each exactly once
+    CHECK(v.extra.at("certificate_vcs") == std::to_string(nvc));
+    const auto& cov = v.extra.at("certificate_covers");
+    CHECK(count_char(cov, '[') == np);
+    CHECK(count_char(cov, ',') + np == nvc);
+    CHECK(count_char(v.extra.at("cnf_sha256"), ',') + 1 == np);
+    CHECK(v.extra.at("certificate_info").find(std::to_string(np) + " LRAT proofs") != std::string::npos);
 }
 
 TEST_CASE("certified: FAILED keeps a replayable counterexample; BOUNDED and PROVED-UNBOUNDED are not certified") {
@@ -225,6 +349,10 @@ TEST_CASE("certified: a checker that rejects leaves PROVED with the reason") {
     CHECK_FALSE(v.extra.contains("certificate"));
     CHECK(v.extra.at("certify_note").find("cake_lpr") != std::string::npos);
     CHECK(v.extra.at("certify_note").find("verdict stays PROVED") != std::string::npos);
+    // the combined certificate was rejected too, and the record says so
+    REQUIRE(v.extra.count("certificate_combined") == 1);
+    CHECK(v.extra.at("certificate_combined").find("cake_lpr") != std::string::npos);
+    CHECK(v.extra.at("certificate_combined").find("one certificate per VC instead") != std::string::npos);
 }
 
 TEST_CASE("certified: the pir stage end to end on tests/pir (skips without clang/opt)") {

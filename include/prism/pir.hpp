@@ -445,11 +445,23 @@ PRISM_API std::vector<Vc> pir_vcs(const Function& fn, int unwind, const EncodeOp
 // also by Lean's verified LRAT checker when the Lean-proved bit-blaster made
 // the CNF: SolveOptions::bitblaster = auto). A function with no VC at all
 // stays PROVED with certify_note: a certificate that checks nothing is not one.
+//
+// Certified mode first tries ONE certificate for the whole function
+// (`certify_combined`, roadmap 3.2 speed-up): the query "some VC is
+// violated" (the disjunction of every property VC and the unwinding
+// assertion under the shared path encoding) is UNSAT exactly when every VC
+// is UNSAT, so one LRAT proof of it, checked like any other, certifies the
+// same claim as one proof per VC. The certificate record lists the VCs it
+// covers (certificate_scope = combined, certificate_covers). If that query
+// is SAT, has no answer, or is not certified, the per-VC path runs as
+// before (nothing from the combined attempt is used but its note).
 struct CheckOptions {
     int unwind = 8;
     double timeout_s = 30.0;    // per verification condition
     bool portfolio = true;      // false: Z3 alone (plus CaDiCaL when certified)
     bool certified = false;     // roadmap 3.2: PROVED-CERTIFIED when every VC is certified
+    bool certify_combined = true;  // certified: one combined certificate first (2+ VCs)
+    double check_timeout_s = 0;    // certified: LRAT checker budget (0: the solver library default)
     bool use_cache = true;
     std::string cache_dir;      // empty: the solver library's default
     unsigned max_parallel = 0;  // solver members at once; 0: hardware threads

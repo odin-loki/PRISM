@@ -38,6 +38,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <thread>
@@ -349,8 +350,17 @@ Certify run_checkers(const SolveOptions& opt, const fs::path& cnf_path, const st
         c.note = "not certified: no LRAT proof file";
         return c;
     }
+    // On the Lean path, Lean's verified checker is required too: it runs
+    // next to cake_lpr (both read the same files, neither writes), so a
+    // large proof costs the slower of the two, not their sum. Both verdicts
+    // are still required, in the same order as before.
+    std::optional<std::thread> lean_job;
+    CheckOutcome ol_dag;
+    if (plan.lean && plan.have_chk)
+        lean_job.emplace([&] { ol_dag = check_lrat_dag(plan.chk, dag_path, cnf_path, lrat, budget); });
     auto o = check_lrat(*cake, cnf_path, lrat, budget);
-    // The CNF the checker read must still be the CNF that was bit-blasted.
+    if (lean_job) lean_job->join();
+    // The CNF the checkers read must still be the CNF that was bit-blasted.
     const auto after = sha256_file(cnf_path);
     if (after != cnf_sha) {
         c.note = "not certified: CNF file changed during checking";
@@ -370,7 +380,7 @@ Certify run_checkers(const SolveOptions& opt, const fs::path& cnf_path, const st
             c.note = "not certified: prism-lrat-check not found (NOTRUN)";
             return c;
         }
-        auto ol = check_lrat_dag(plan.chk, dag_path, cnf_path, lrat, budget);
+        const auto& ol = ol_dag;
         if (!ol.ran || !ol.verified) {
             c.note = "not certified: cake_lpr accepted but Lean's LRAT checker " +
                      (ol.ran ? ol.detail : "did not run: " + ol.detail);
@@ -440,6 +450,14 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
     SolveResult res;
     const double t0 = now_s();
     const double deadline = t0 + std::max(0.01, opt.timeout_s);
+    // Certified requests: the certificate member (CaDiCaL with LRAT) and the
+    // bit-blast feeding it may run until cert_deadline. The answer itself is
+    // still due by `deadline`; only a query already answered UNSAT waits
+    // longer, and only for its certificate (docs/SOLVERS.md).
+    const double cert_deadline =
+        opt.certified ? std::max(deadline, t0 + (opt.cert_timeout_s > 0 ? opt.cert_timeout_s
+                                                                        : std::max(60.0, 4.0 * opt.timeout_s)))
+                      : deadline;
     std::vector<std::string> notes;
     auto finish = [&](SolveResult& r) -> SolveResult {
         if (!r.ran.empty()) notes.push_back("ran: " + join(r.ran));
@@ -656,7 +674,12 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
         }
         if (it != members.end()) {
             it->lrat = true;
-            it->argv = {it->argv[0], "--lrat=true", "--binary=false", "{input}", "{proof}"};
+            // --unsat: CaDiCaL's option preset for unsatisfiable instances
+            // (every certificate is of an UNSAT query). Measured on the
+            // multiplication-overflow VCs: 32-bit 9.1 s -> 7.2 s, 64-bit
+            // widening 194 s -> 76 s, and smaller LRAT proofs (docs/SOLVERS.md).
+            // It only changes the search; the proof is checked as before.
+            it->argv = {it->argv[0], "--lrat=true", "--binary=false", "--unsat", "{input}", "{proof}"};
         } else {
             notes.push_back("not certified: cadical not found (NOTRUN)");
         }
@@ -806,7 +829,7 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
         cnf_state = CnfState::Running;
         ++running;
         if (plan.lean) {
-            const double left = std::max(0.01, deadline - now_s());
+            const double left = std::max(0.01, (want_cert ? cert_deadline : deadline) - now_s());
             spawn([&board, &plan, work, cnf_path, &cnf, &cnf_sha, left, &blast_stop] {
                 Msg m;
                 m.type = Msg::CnfFailed;
@@ -856,7 +879,7 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
         ++running;
         res.ran.push_back(m.name);
         auto* stop = m.stop.get();
-        const double left = std::max(0.01, deadline - now_s());
+        const double left = std::max(0.01, (m.lrat ? cert_deadline : deadline) - now_s());
         switch (m.kind) {
             case MemberKind::Z3: {
                 z3::context& zc = new_ctx();
@@ -988,12 +1011,15 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
                                   return !m.started && !m.finished;
                               });
         if (!any_live) break;
-        double wake = deadline;
+        // Answered UNSAT and only the certificate is outstanding: wait for
+        // it until cert_deadline; otherwise the answer is due by deadline.
+        const double due = accepted ? cert_deadline : deadline;
+        double wake = due;
         for (const auto& m : members)
             if (!m.started && !m.finished && m.not_before > 0) wake = std::min(wake, m.not_before);
         Msg msg;
         if (!board.wait(msg, wake)) {
-            if (now_s() >= deadline) { timed_out = true; break; }
+            if (now_s() >= due) { timed_out = true; break; }
             if (!accepted) fill_slots();
             for (auto& m : members)  // due now: never wait on them again
                 if (m.not_before <= now_s()) m.not_before = 0;
@@ -1075,9 +1101,14 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
 
     if (want_cert && res.kind == Kind::Unsat && cert_member) {
         const Member& cm = members[*cert_member];
+        char budget_note[160];
+        std::snprintf(budget_note, sizeof budget_note,
+                      "not certified: cadical did not finish within the certificate budget (%.0f s)",
+                      cert_deadline - t0);
         if (!cert_msg) {
-            notes.push_back(cnf_state == CnfState::Failed ? "not certified: no CNF"
-                                                          : "not certified: cadical did not finish in time");
+            notes.push_back(cnf_state == CnfState::Failed ? "not certified: no CNF" : budget_note);
+        } else if (timed_out && cert_msg->kind != Kind::Unsat && cert_msg->kind != Kind::Sat) {
+            notes.push_back(budget_note);  // stopped at cert_deadline
         } else if (cert_msg->kind == Kind::Sat) {
             // Validated models were handled above; an unvalidated one means the
             // bit-blast and the formula disagree.

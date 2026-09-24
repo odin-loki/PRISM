@@ -35,17 +35,37 @@ becomes `PROVED-CERTIFIED` only when:
   closes within `--unwind`, shown by the unwinding assertion), **and**
 - it has at least one VC, **and**
 - **every** one of its VCs, each property and the unwinding assertion, came
-  back `certified` by the chain below.
+  back `certified` by the chain below, either
+  - **all at once** (`extra.certificate_scope = "combined"`, tried first when
+    a function has two or more VCs): one query, the disjunction of every VC
+    under the shared path encoding, `base ∧ (viol_1 ∨ … ∨ viol_n ∨ cut)`,
+    came back UNSAT with one checked certificate. A disjunction is
+    unsatisfiable exactly when each disjunct is, so this is the same claim
+    as n per-VC certificates, made with one CNF and one LRAT proof; or
+  - **in batches** (`extra.certificate_scope = "batched"`): the combined
+    query was UNSAT but a checker ran out of time on its proof, so it was
+    split in halves (recursively) and each batch's disjunction came back
+    UNSAT with its own checked certificate. The batches partition the VCs
+    (`extra.certificate_covers` lists each batch), so again every VC is
+    covered by exactly one checked proof; or
+  - **one by one** (`extra.certificate_scope = "per-vc"`): each VC came back
+    certified on its own. This runs whenever the combined query is SAT, has
+    no answer in time, or is not certified; the combined attempt is then
+    discarded (its outcome is recorded in `extra.certificate_combined`) and
+    nothing from it is used.
 
 The finding then carries `extra.certificate = "checked"` (the verdict audit
 admits `PROVED-CERTIFIED` from the `pir` stage only with it),
-`extra.certificate_info` (one entry per VC: bit-blaster, solver build, LRAT
-steps, checker builds, CNF hash), `extra.certificate_bitblast` (`N/M
-lean-proved`: how many of the M CNFs the Lean-proved bit-blaster made),
-`extra.certificate_vcs` (M, the number of checked certificates) and
-`extra.cnf_sha256` (one hash per VC, comma-separated). If any VC is not
-certified, the function stays `PROVED` and `extra.certify_note` names the
-first VC that was not certified and why. `BOUNDED` and `PROVED-UNBOUNDED` are
+`extra.certificate_info` (per VC, or for the one combined proof: bit-blaster,
+solver build, LRAT steps, checker builds, CNF hash), `extra.certificate_bitblast`
+(`N/M lean-proved`: how many of the M CNFs the Lean-proved bit-blaster made),
+`extra.certificate_vcs` (the number of VCs the certificates cover),
+`extra.certificate_proofs` (the number of checked LRAT proofs: 1 when
+combined), `extra.certificate_covers` (combined: the label of every VC the
+one proof covers; batched: one `[…]` group per proof, e.g. `ovf+@4, div0@7, unwind`) and `extra.cnf_sha256`
+(one hash per checked CNF, comma-separated). If any VC is not certified, the
+function stays `PROVED` and `extra.certify_note` names the first VC that was
+not certified and why. `BOUNDED` and `PROVED-UNBOUNDED` are
 never certified: the k-induction step is answered by Z3 in-process, and the
 note says so. A function with no VCs at all (no property was inserted and no
 loop cut is reachable, e.g. unsigned arithmetic only) stays `PROVED` with
@@ -97,9 +117,12 @@ note `not certifiable: <reason>`.
    checks the map against its own layout (input bit `j` is DIMACS variable
    `2j+1`), writes the DIMACS text byte for byte to `query.cnf` and records its
    SHA-256.
-3. **Solve.** CaDiCaL runs on `query.cnf` with `--lrat=true --binary=false` and
-   writes `proof.lrat`. It must report UNSAT. CaDiCaL is **not** trusted.
-4. **Check twice.** Both must accept:
+3. **Solve.** CaDiCaL runs on `query.cnf` with `--lrat=true --binary=false
+   --unsat` (its option preset for unsatisfiable instances; it changes the
+   search only) and writes `proof.lrat`. It must report UNSAT. CaDiCaL is
+   **not** trusted.
+4. **Check twice.** Both must accept (they run at the same time, on the same
+   read-only files; each verdict is required on its own):
    - `cake_lpr query.cnf proof.lrat` prints the exact line `s VERIFIED UNSAT`;
    - `prism-lrat-check --dag query.dag query.cnf proof.lrat` — core Lean's
      verified LRAT checker (`Std.Tactic.BVDecide.LRAT.check`, soundness
@@ -192,7 +215,7 @@ compiler) take their place.
 | T6 | The CNF file on disk between writing and checking | cake_lpr must check the exact CNF | SHA-256 recorded when the CNF is written and verified again after the checker runs. The file sits in a private temp directory. | Same |
 | T7 | PRISM's SHA-256 (`util.cpp`) | Identifies the exact CNF and the cache entries | Tested against the FIPS 180-2 vectors | Same |
 | T8 | The process runner and the verdict-line match (`detail::run`, `check_lrat`) | A wrong parse could accept a rejection | Exact whole-line match on `s VERIFIED UNSAT`. The exit code is ignored for cake_lpr. A test runs a tampered proof. | Same |
-| T9 | `verdict_status`, the pir stage's `certify` step (`src/prism/pir/encode.cpp`) and the verdict audit, which together decide the word printed | Decides the word printed | The status is `laws::PROVED_CERTIFIED`, the verdict module's own spelling. `certified` is set in exactly two places in the solver, both straight after `run_checkers` accepted. The pir stage writes `PROVED-CERTIFIED` only when every VC of the function is certified, and the verdict audit (`laws::audit_report`, proved in `proofs/Prism/Verdict.lean`) demotes any `PROVED-CERTIFIED` without `certificate = "checked"` or from a stage that is not a solver stage. | Verdict module in Lean, compiled into PRISM (5.1) |
+| T9 | `verdict_status`, the pir stage's `certify` step (`src/prism/pir/encode.cpp`) and the verdict audit, which together decide the word printed | Decides the word printed | The status is `laws::PROVED_CERTIFIED`, the verdict module's own spelling. `certified` is set in exactly two places in the solver, both straight after `run_checkers` accepted. The pir stage writes `PROVED-CERTIFIED` only when every VC of the function is certified, one by one or by one certificate for the disjunction of all of them (built by the same encoder from the same VC terms, and listed in `certificate_covers`), and the verdict audit (`laws::audit_report`, proved in `proofs/Prism/Verdict.lean`) demotes any `PROVED-CERTIFIED` without `certificate = "checked"` or from a stage that is not a solver stage. | Verdict module in Lean, compiled into PRISM (5.1) |
 | T10 | The C++ compiler that builds PRISM, the Z3 library build, the hardware and the OS | Everything runs on them | Out of scope. They are listed so the reader knows they are assumed. | Clang and GCC cross-builds, reproducible builds (8.3) |
 
 ### Not trusted (quarantined) on the certified path
