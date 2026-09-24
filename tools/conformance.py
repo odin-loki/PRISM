@@ -621,7 +621,11 @@ def run_prism(cmd: list[str], task: Task, stages: list[str], work: Path, timeout
     rep = out / "report.json"
     if not rep.exists():
         return {"error": f"no report.json (exit {rc}): {tail}", "seconds": secs, "argv": argv}
-    data = json.loads(rep.read_text(encoding="utf-8"))
+    try:
+        data = json.loads(rep.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        # a truncated report (killed run, full disk) is no answer, not a crash of the whole suite
+        return {"error": f"unreadable report.json (exit {rc}): {e}", "seconds": secs, "argv": argv}
     per: dict[str, dict[str, list[dict[str, Any]]]] = {}
     stage_status: dict[str, str] = {}
     for st in data.get("stages", []):
