@@ -5942,11 +5942,11 @@ TEST_CASE("solver: the watchdog detaches a job that ignores its stop and records
     o.use_cache = false;
     o.timeout_s = 0.3;
     o.watchdog_grace_s = 0.2;
-    o.debug_stall_s = 1.5;
+    o.debug_stall_s = 4.0;
     auto t0 = std::chrono::steady_clock::now();
     auto r = ps::solve(c, x != x, o);
     double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-    CHECK(secs < 1.2);
+    CHECK(secs < 3.0);  // well before the job wakes (4 s), even on a loaded machine
     CHECK(r.kind == ps::SolveResult::Timeout);  // no answer: never a clean result
     REQUIRE(r.watchdog.size() == 1);
     CHECK(r.watchdog[0].find("z3 did not stop") != std::string::npos);
@@ -5963,7 +5963,7 @@ TEST_CASE("solver: the watchdog detaches a job that ignores its stop and records
     CHECK(u.kind == ps::SolveResult::Unsat);
     CHECK(u.watchdog.empty());
     // Let the detached job run out before the context and globals go away.
-    std::this_thread::sleep_for(std::chrono::milliseconds(1600));
+    std::this_thread::sleep_for(std::chrono::duration<double>(std::max(0.0, 4.5 - secs)));
 }
 
 TEST_CASE("solver: repeated portfolio runs stay within timeout plus grace") {

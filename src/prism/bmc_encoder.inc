@@ -638,7 +638,24 @@ bool list_has_label(const std::string& text, const std::string& name) {
     return false;
 }
 
-std::string goto_rx(const std::string& name) { return "\\bgoto\\s+" + name + "\\s*;"; }
+// Does text contain the statement `goto name;`? A plain scan: no pattern per
+// label name goes into the shared regex cache.
+bool has_goto_to(const std::string& text, const std::string& name) {
+    auto word = [&](size_t i) {
+        return i < text.size() && (std::isalnum(static_cast<unsigned char>(text[i])) || text[i] == '_');
+    };
+    for (size_t at = text.find("goto"); at != std::string::npos; at = text.find("goto", at + 4)) {
+        if (at > 0 && word(at - 1)) continue;
+        size_t i = at + 4;
+        if (word(i)) continue;
+        while (i < text.size() && std::isspace(static_cast<unsigned char>(text[i]))) ++i;
+        if (text.compare(i, name.size(), name) != 0 || word(i + name.size())) continue;
+        i += name.size();
+        while (i < text.size() && std::isspace(static_cast<unsigned char>(text[i]))) ++i;
+        if (i < text.size() && text[i] == ';') return true;
+    }
+    return false;
+}
 
 struct SwitchArm {
     std::vector<std::optional<TV>> labels;
@@ -1488,10 +1505,8 @@ std::string Parser::if_stmt(Enc& e, std::string text) {
 // state never read still holds its initial symbol (Enc::get).
 State goto_complete(Enc& e, const State& st, const State& cur) {
     State out = st;
-    for (auto& [k, v] : cur.vars) {
-        (void)v;
-        if (!out.vars.count(k)) out.vars.emplace(k, e.ctx.bv_const(k.c_str(), static_cast<unsigned>(e.type_of(k).w)));
-    }
+    for (auto& [k, v] : cur.vars)
+        if (!out.vars.count(k)) out.vars.emplace(k, e.ctx.bv_const(k.c_str(), v.get_sort().bv_size()));
     for (auto& [k, a] : cur.arrays) {
         (void)a;
         if (!out.arrays.count(k)) throw ParseFail("unstructured goto unencoded: array " + k + " declared past the goto");
@@ -1551,12 +1566,12 @@ void Parser::label_stmt(Enc& e, const std::string& name, std::string& text) {
         pending_gotos.erase(it);
         e.load(merge_states(e, states, cur));
     }
-    if (!rx_search(goto_rx(name), text)) return;
+    if (!has_goto_to(text, name)) return;
     // Backward gotos: the region is every statement from the label up to the
     // last one that contains `goto name`; it runs like a loop body whose
     // `goto name` is a continue.
     std::string region, after = text;
-    for (int guard = 0; guard < 100000 && rx_search(goto_rx(name), after); ++guard) {
+    for (int guard = 0; guard < 100000 && has_goto_to(after, name); ++guard) {
         auto [_, rest] = next_labeled_stmt(after);
         if (rest.size() >= after.size()) throw ParseFail("unstructured goto unencoded: goto " + name);
         region += after.substr(0, after.size() - rest.size());

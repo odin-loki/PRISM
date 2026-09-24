@@ -903,9 +903,9 @@ def _goto_complete(e: _Enc, st: _State, cur: _State) -> _State:
     indeterminate on the goto's path: not modelled, never a guess. A scalar
     the goto state never read still holds its initial symbol (_Enc.get)."""
     out = _State(st.path, dict(st.vars), dict(st.arrays), dict(st.uninit))
-    for k in cur.vars:
+    for k, v in cur.vars.items():
         if k not in out.vars:
-            out.vars[k] = z3.BitVec(k, e.type_of(k)[0])
+            out.vars[k] = z3.BitVec(k, v.size())
     for k in cur.arrays:
         if k not in out.arrays:
             raise ParseFail(f"unstructured goto unencoded: array {k} declared past the goto")
