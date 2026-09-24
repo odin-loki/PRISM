@@ -7,12 +7,12 @@ in this repository; nothing here is claimed that the repository does not
 contain. Proof claims are about Lean models unless a row says otherwise; see
 [TRUSTED_BASE.md](TRUSTED_BASE.md) for what each verdict trusts.
 
-Headline numbers (C++ engine, strict `python tools/conformance.py` at `f3790a3fb`; 249 true / 249 false tasks including the ESBMC C++ subset, libc-model contracts and the PIR round 3 tasks):
+Headline numbers (C++ engine, strict `python tools/conformance.py` at `232d5da2a`; 303 true / 317 false tasks: in-house, SV-COMP subset, ESBMC C++ subset, libc-model and C++ library contracts, PIR round 3 and regression tasks):
 
 | stage | wrong proofs | proved (true tasks) | refuted with replayed counterexample (false tasks) |
 |---|---|---|---|
-| bmc (hand encoder) | **0** | 97/249 | 93/249 |
-| pir (Clang/LLVM front end) | **0** | 203/249 | 144/249 |
+| bmc (hand encoder) | **0** | 98/303 | 93/317 |
+| pir (Clang/LLVM front end) | **0** | 251/303 | 161/317 |
 | conc (threads) | **0** (never proves) | BOUNDED 13/13 | 9/9 refuted |
 
 Random programs (`tools/csmith_soundness.py`, in-house scalar and pointer
