@@ -60,7 +60,7 @@ theorem instOK_facts {M : XMod} {P : PFunc} {C : List IInfo} {I : IInfo} (h : in
     InstFacts M P C I := by
   unfold instOK at h
   simp only [Bool.and_eq_true, decide_eq_true_eq, beq_iff_eq, List.all_eq_true, List.mem_range] at h
-  obtain ⟨⟨⟨⟨⟨⟨⟨hlo, henv⟩, hsh⟩, hbl⟩, hks⟩, hkids⟩, htl⟩, hall⟩ := h
+  obtain ⟨⟨⟨⟨⟨hlo, henv⟩, hsh⟩, hbl⟩, htl⟩, hall⟩ := h
   refine ⟨⟨rfl, fun n a hl => allLtB_look henv hl, fun n s hl => allLtB_look hsh hl, hlo⟩, hlo, htl, hbl, ?_, ?_⟩
   · intro b bl s pb hb hs
     have hbb : b < I.fn.blocks.length := by
@@ -69,7 +69,7 @@ theorem instOK_facts {M : XMod} {P : PFunc} {C : List IInfo} {I : IInfo} (h : in
     obtain ⟨B, hB⟩ : ∃ B, I.fn.blocks[b]? = some B := ⟨_, List.getElem?_eq_getElem hbb⟩
     rw [hB] at this
     simp only [Bool.and_eq_true, beq_iff_eq, List.all_eq_true, List.mem_range] at this
-    obtain ⟨⟨⟨h1, _⟩, _⟩, h4⟩ := this
+    obtain ⟨h1, h4⟩ := this
     rw [List.getD_eq_getElem?_getD, hb, Option.getD_some] at h1
     have hsl : s < bl.length := (List.getElem?_eq_some_iff.mp hs).1
     exact ⟨B, hB, h1, by omega, h4 s (by omega)⟩
@@ -78,7 +78,7 @@ theorem instOK_facts {M : XMod} {P : PFunc} {C : List IInfo} {I : IInfo} (h : in
     have := hall b hbb
     rw [hB] at this
     simp only [Bool.and_eq_true, beq_iff_eq, List.all_eq_true, List.mem_range] at this
-    obtain ⟨⟨⟨h1, _⟩, _⟩, _⟩ := this
+    obtain ⟨h1, _⟩ := this
     have hbb' : b < I.blks.length := by rw [hbl]; exact hbb
     refine ⟨I.blks[b], List.getElem?_eq_getElem hbb', ?_⟩
     rw [List.getD_eq_getElem?_getD, List.getElem?_eq_getElem hbb', Option.getD_some] at h1
