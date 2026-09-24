@@ -1145,6 +1145,8 @@ def pir_invariant_texts(task: Path, finding: dict[str, Any]) -> list[list[str]] 
         loops = json.loads(str(extra["invariant_loops"]))
     except (KeyError, ValueError):
         return None
+    if LINE_MARKER.search(task.read_text(encoding="utf-8", errors="replace")):
+        return None  # debug locations would name another file's lines
     ir = debug_ir(task)
     if ir is None:
         return None
