@@ -30,7 +30,7 @@ public:
     typedef _Alloc allocator_type;
 
 protected:
-    typedef _Prism_tree<_Key, _Key, _Identity<_Key>, _Compare, _Alloc, _Multi> _Rep;
+    typedef _Prism_tree<_Key, _Key, _Prism_identity<_Key>, _Compare, _Alloc, _Multi> _Rep;
     _Rep _M_t;
 
 public:
@@ -49,17 +49,11 @@ protected:
     static _Prism_node_base* _S_mut(const_iterator __it) noexcept { return const_cast<_Prism_node_base*>(__it._M_node); }
     // the result of an insertion: an iterator, plus `inserted` for set
     using _Ins = conditional_t<_Multi, iterator, pair<iterator, bool>>;
-    static _Ins _S_ins(pair<typename _Rep::iterator, bool> __r) {
+    _Ins _M_ins(_Prism_node_base* __p) const {
         if constexpr (_Multi)
-            return iterator(__r.first);
+            return iterator(__p);
         else
-            return {iterator(__r.first), __r.second};
-    }
-    static _Ins _S_ins(typename _Rep::iterator __r) {
-        if constexpr (_Multi)
-            return iterator(__r);
-        else
-            return {iterator(__r), true};
+            return {iterator(__p), _M_t._M_inserted};
     }
 
 public:
@@ -84,9 +78,9 @@ public:
     template <typename... _Args>
     _Ins emplace(_Args&&... __args) {
         if constexpr (_Multi)
-            return _S_ins(_M_t._M_emplace_equal(std::forward<_Args>(__args)...));
+            return _M_ins(_M_t._M_emplace_equal(std::forward<_Args>(__args)...));
         else
-            return _S_ins(_M_t._M_emplace_unique(std::forward<_Args>(__args)...));
+            return _M_ins(_M_t._M_emplace_unique(std::forward<_Args>(__args)...));
     }
     template <typename... _Args>
     iterator emplace_hint(const_iterator __pos, _Args&&... __args) {
@@ -97,15 +91,15 @@ public:
     }
     _Ins insert(const value_type& __x) {
         if constexpr (_Multi)
-            return _S_ins(_M_t._M_insert_equal(__x));
+            return _M_ins(_M_t._M_insert_equal(__x));
         else
-            return _S_ins(_M_t._M_insert_unique(__x));
+            return _M_ins(_M_t._M_insert_unique(__x));
     }
     _Ins insert(value_type&& __x) {
         if constexpr (_Multi)
-            return _S_ins(_M_t._M_insert_equal(std::move(__x)));
+            return _M_ins(_M_t._M_insert_equal(std::move(__x)));
         else
-            return _S_ins(_M_t._M_insert_unique(std::move(__x)));
+            return _M_ins(_M_t._M_insert_unique(std::move(__x)));
     }
     iterator insert(const_iterator __position, const value_type& __x) {
         if constexpr (_Multi)

@@ -78,7 +78,10 @@ struct Frame {
     const ir::Function* f = nullptr;
     std::string prefix;
     std::map<std::string, Arg> env;
-    std::map<std::string, std::pair<int, int>> pairs;  // with.overflow result vars
+    // two-field aggregate values kept as two variables: with.overflow
+    // results, { ptr, i32 } exception pairs, and scalar pairs such as the
+    // { ptr, i8 } an ABI returns std::pair<iterator, bool> in (scalar_pair)
+    std::map<std::string, std::pair<int, int>> pairs;
     std::map<int, Arg> shadow;                          // var -> uninit shadow (i1)
     // var -> undef shadow (i1): the value may be (computed from) LLVM undef,
     // so every use may observe a different value (refinement finding 4)
@@ -86,6 +89,7 @@ struct Frame {
     std::map<std::string, std::array<bool, 2>> upair;   // pair fields that may be undef
     int ret_block = -1;
     int ret_var = -1;
+    std::optional<std::pair<int, int>> ret_pair;        // inlined callee returning a scalar pair
     std::map<std::string, const ir::Inst*> defs;        // result name -> defining instruction
     std::vector<Arg> allocas;                           // entry-block stack objects (end at return)
     int site_line = 0;                                  // inside a library model: the call site's line
@@ -259,6 +263,21 @@ struct Tr final : pirmem::TrApi {
     // iN (<= 64) or ptr
     unsigned vwidth(const ir::Type& t, std::string_view what = "type") const { return mt.value_width(t, what); }
 
+    // A first-class struct of two scalar fields (iN <= 64 or ptr), e.g. the
+    // { ptr, i8 } a std::pair<iterator, bool> is returned in: kept as two
+    // variables (Frame::pairs). Returns the field widths.
+    static std::optional<std::pair<unsigned, unsigned>> scalar_pair(const ir::Type& t) {
+        if (t.kind != ir::Type::Struct || t.elems.size() != 2) return std::nullopt;
+        auto w = [](const ir::Type& e) -> unsigned {
+            if (e.kind == ir::Type::Ptr && e.text == "ptr") return kPtrW;
+            if (e.kind == ir::Type::Int && e.bits > 0 && e.bits <= 64) return e.bits;
+            return 0;
+        };
+        unsigned a = w(t.elems[0]), b = w(t.elems[1]);
+        if (!a || !b) return std::nullopt;
+        return std::pair{a, b};
+    }
+
     int var_of(Frame& fr, const std::string& name) {
         auto it = fr.env.find(name);
         if (it == fr.env.end() || it->second.is_const) return -1;
@@ -385,7 +404,8 @@ struct Tr final : pirmem::TrApi {
                             else if (agg.v.kind == ir::Value::Local && fr.upair.count(agg.v.name))
                                 nu = fr.upair[agg.v.name];
                             nu[in.indices[0]] = is_u(in.ops[1]);
-                        } else if (op == "call") {
+                        } else if ((op == "call" || op == "invoke") && (in.callee.empty() || !m.find(in.callee))) {
+                            // (an inlined callee's returned fields are checked at its `ret`)
                             for (auto& o : in.ops)
                                 if (is_u(o) && !noundef(o.attrs)) nu = {true, true};
                         }
@@ -486,7 +506,7 @@ struct Tr final : pirmem::TrApi {
                     }
                     continue;
                 }
-                if ((in.op == "landingpad" || in.op == "insertvalue") && in.ty.kind == ir::Type::Struct &&
+                if (in.op == "landingpad" && in.ty.kind == ir::Type::Struct &&
                     in.ty.elems.size() == 2 && in.ty.elems[0].kind == ir::Type::Ptr &&
                     in.ty.elems[1].kind == ir::Type::Int && in.ty.elems[1].bits == 32) {
                     // { ptr, i32 }: exception pointer and selector (translate_ctl.inc)
@@ -496,6 +516,16 @@ struct Tr final : pirmem::TrApi {
                     fr.defs[in.result] = &in;
                     continue;
                 }
+                if (in.op == "insertvalue" || in.op == "call" || in.op == "invoke" || in.op == "load")
+                    if (auto sp = scalar_pair(in.ty)) {
+                        // two-field aggregate (the { ptr, i32 } exception pair
+                        // rebuilt before `resume`, a returned std::pair ...)
+                        int a = newvar(fr.prefix + in.result + ".0", sp->first);
+                        int s = newvar(fr.prefix + in.result + ".1", sp->second);
+                        fr.pairs[in.result] = {a, s};
+                        fr.defs[in.result] = &in;
+                        continue;
+                    }
                 fr.defs[in.result] = &in;
                 auto ty = in.op == "icmp" || in.op == "fcmp" ? ir::Type{ir::Type::Int, 1, "i1", {}} : in.ty;
                 if (ty.kind == ir::Type::Ptr && ty.text == "ptr") ty = ir::Type{ir::Type::Int, kPtrW, "ptr", {}};
@@ -723,6 +753,45 @@ struct Tr final : pirmem::TrApi {
             out.blocks[static_cast<std::size_t>(cur)].term = t;
             return;
         }
+        if (fr.ret_pair) {
+            // an inlined callee returning a scalar pair: both fields go to the
+            // caller's pair variables through continuation phis
+            if (in.ops.empty() || in.ops[0].v.kind != ir::Value::Local || !fr.pairs.count(in.ops[0].v.name))
+                throw Unenc{"UNENCODED: return of " + (in.ops.empty() ? std::string("?") : in.ops[0].ty.text)};
+            if (auto pu = fr.upair.find(in.ops[0].v.name);
+                pu != fr.upair.end() && (pu->second[0] || pu->second[1]))
+                throw Unenc{"UNENCODED: undef field returned from @" + fr.f->name};
+            auto [a, s] = fr.pairs[in.ops[0].v.name];
+            const std::array<std::pair<int, int>, 2> fields{std::pair{a, fr.ret_pair->first},
+                                                            std::pair{s, fr.ret_pair->second}};
+            for (unsigned k = 0; k < 2; ++k) {
+                const auto [src, dst] = fields[k];
+                Arg v = Arg::v(src, out.vars[static_cast<std::size_t>(src)].width);
+                if (in.ops[0].ty.elems[k].kind == ir::Type::Ptr) mt.stack_escape_check(cur, v, fr.allocas, line);
+            }
+            for (auto& al : fr.allocas) mt.end_lifetime(cur, al);  // callee locals end here
+            Term t;
+            t.kind = Term::Jmp;
+            t.t = fr.ret_block;
+            out.blocks[static_cast<std::size_t>(cur)].term = t;
+            for (const auto& [src, dst] : fields) {
+                Arg v = Arg::v(src, out.vars[static_cast<std::size_t>(src)].width);
+                bool found = false;
+                for (auto& p : pphis)
+                    if (p.block == fr.ret_block && p.dst == dst) {
+                        p.in.emplace_back("", cur, v, 0);
+                        found = true;
+                    }
+                if (!found) {
+                    PPhi p;
+                    p.block = fr.ret_block;
+                    p.dst = dst;
+                    p.in.emplace_back("", cur, v, 0);
+                    pphis.push_back(std::move(p));
+                }
+            }
+            return;
+        }
         // ret (a raw byte copy is not a use: its shadow goes to the caller)
         std::optional<Arg> v;
         bool raw = !in.ops.empty() && in.ops[0].v.kind == ir::Value::Local && fr.env.count(in.ops[0].v.name) &&
@@ -943,24 +1012,27 @@ struct Tr final : pirmem::TrApi {
             return;
         }
         if (op == "insertvalue") {
-            // { ptr, i32 } exception pair (rebuilt by clang before `resume`)
+            // two-field aggregate: { ptr, i32 } exception pair (rebuilt by
+            // clang before `resume`) or a scalar pair (scalar_pair)
             auto it = fr.pairs.find(in.result);
             if (it == fr.pairs.end() || in.indices.size() != 1 || in.indices[0] > 1 || in.ops.size() != 2)
                 throw Unenc{"UNENCODED: insertvalue " + in.ty.text};
+            const unsigned w0 = out.vars[static_cast<std::size_t>(it->second.first)].width;
+            const unsigned w1 = out.vars[static_cast<std::size_t>(it->second.second)].width;
             Arg base0, base1;
             const auto& agg = in.ops[0];
             if (agg.v.kind == ir::Value::Local && fr.pairs.count(agg.v.name)) {
                 auto [a, s] = fr.pairs[agg.v.name];
-                base0 = Arg::v(a, kPtrW);
-                base1 = Arg::v(s, 32);
+                base0 = Arg::v(a, w0);
+                base1 = Arg::v(s, w1);
             } else if (agg.v.kind == ir::Value::Undef || agg.v.kind == ir::Value::Poison) {
-                base0 = havoc(cur, kPtrW, false, false);
-                base1 = havoc(cur, 32, false, false);
+                base0 = havoc(cur, w0, false, false);
+                base1 = havoc(cur, w1, false, false);
             } else {
                 throw Unenc{"UNENCODED: insertvalue into " + agg.v.text};
             }
             Arg v = operand(fr, in.ops[1], cur, line, /*use=*/false);
-            v.width = in.indices[0] == 0 ? kPtrW : 32;
+            v.width = in.indices[0] == 0 ? w0 : w1;
             emit_assign(cur, it->second.first, Op::Copy, {in.indices[0] == 0 ? v : base0});
             emit_assign(cur, it->second.second, Op::Copy, {in.indices[0] == 1 ? v : base1});
             return;
@@ -1258,7 +1330,8 @@ struct Tr final : pirmem::TrApi {
             throw Unenc{"UNENCODED: call depth > " + std::to_string(opt.inline_depth) + " (@" + n + ")"};
         if (!callee->parse_error.empty())
             throw Unenc{"UNENCODED: call @" + n + " (unparsed IR: " + callee->parse_error + ")"};
-        if (callee->ret.kind != ir::Type::Void) vwidth(callee->ret, "call @" + n + " returning");
+        const auto ret_pair = scalar_pair(callee->ret);
+        if (callee->ret.kind != ir::Type::Void && !ret_pair) vwidth(callee->ret, "call @" + n + " returning");
         std::vector<Arg> args;
         std::vector<char> raw_arg;
         for (std::size_t i = 0; i < in.ops.size(); ++i) {
@@ -1293,7 +1366,13 @@ struct Tr final : pirmem::TrApi {
         }
         int cont = newblock(fr.prefix + "call." + n + "." + std::to_string(uniq++));
         cf.ret_block = cont;
-        if (callee->ret.kind != ir::Type::Void) {
+        if (ret_pair) {
+            // a scalar pair (e.g. std::pair<iterator, bool>): two return variables
+            if (auto it = fr.pairs.find(in.result); !in.result.empty() && it != fr.pairs.end())
+                cf.ret_pair = it->second;
+            else
+                cf.ret_pair = std::pair{newvar(tmpname("ret"), ret_pair->first), newvar(tmpname("ret"), ret_pair->second)};
+        } else if (callee->ret.kind != ir::Type::Void) {
             int rv = in.result.empty() ? newvar(tmpname("ret"), vwidth(callee->ret)) : result_var(fr, in);
             cf.ret_var = rv;
             cf.ret_shadow = newvar(tmpname("retu"), (vwidth(callee->ret) + 7) / 8);
@@ -1351,6 +1430,22 @@ struct Tr final : pirmem::TrApi {
     }
 
     // alloca/load/store/getelementptr/ptrtoint/inttoptr/bitcast; false = not a memory instruction
+    // Field k of the scalar pair `ty` stored at p: fn(k, pointer, alignment).
+    template <typename Fn>
+    void pair_fields(int cur, const ir::Type& ty, Arg p, unsigned align, int line, Fn fn) {
+        const auto& lay = mt.layout();
+        const uint64_t off1 = lay.field_offset(ty, 1);
+        const unsigned a0 = align ? align : lay.align(ty);
+        // the second field's alignment: what the struct's alignment and the
+        // field offset guarantee
+        unsigned a1 = a0;
+        while (a1 > 1 && off1 % a1 != 0) a1 /= 2;
+        fn(0, p, a0);
+        int q = newvar(tmpname("pair.f1"), kPtrW);
+        mt.gep(cur, q, p, ty, {Arg::c(32, 0), Arg::c(32, 1)}, true, line, 1);
+        fn(1, Arg::v(q, kPtrW), a1);
+    }
+
     bool mem_inst(Frame& fr, const ir::Inst& in, int cur, int line) {
         const auto& op = in.op;
         if (op == "alloca") {
@@ -1370,6 +1465,30 @@ struct Tr final : pirmem::TrApi {
             mt.alloca_(cur, dst, in.ety, in.align, count, src, in.result, line);
             if (!count && fr.f && !fr.f->blocks.empty() && cur == head[fr.prefix + fr.f->blocks.front().name])
                 fr.allocas.push_back(Arg::v(dst, kPtrW));
+            return true;
+        }
+        if (op == "load" && fr.pairs.count(in.result)) {
+            // a scalar pair: its two fields are loaded one by one (the
+            // padding between them is not read)
+            if (in.ops.empty() || in.ops[0].ty.kind != ir::Type::Ptr || in.ops[0].ty.text != "ptr")
+                throw Unenc{"UNENCODED: load"};
+            Arg p = operand(fr, in.ops[0], cur, line);
+            auto [a, s] = fr.pairs[in.result];
+            pair_fields(cur, in.ty, p, in.align, line, [&](unsigned k, Arg fp, unsigned al) {
+                mt.load(cur, k == 0 ? a : s, in.ty.elems[k], fp, al, line);
+            });
+            return true;
+        }
+        if (op == "store" && in.ops.size() == 2 && in.ops[0].v.kind == ir::Value::Local &&
+            fr.pairs.count(in.ops[0].v.name) && scalar_pair(in.ops[0].ty)) {
+            if (in.ops[1].ty.kind != ir::Type::Ptr || in.ops[1].ty.text != "ptr") throw Unenc{"UNENCODED: store"};
+            auto [a, s] = fr.pairs[in.ops[0].v.name];
+            Arg p = operand(fr, in.ops[1], cur, line);
+            pair_fields(cur, in.ops[0].ty, p, in.align, line, [&](unsigned k, Arg fp, unsigned al) {
+                int v = k == 0 ? a : s;
+                mt.store(cur, fp, Arg::v(v, out.vars[static_cast<std::size_t>(v)].width), Arg::c(1, 1),
+                         in.ops[0].ty.elems[k], al, line);
+            });
             return true;
         }
         if (op == "load") {

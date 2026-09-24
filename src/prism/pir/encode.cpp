@@ -1223,7 +1223,51 @@ Verdict check_function(const Function& fn, int unwind, double timeout_s, const E
     return check_function(fn, o);
 }
 
+namespace {
+
+Verdict check_function_at(const Function& fn, const CheckOptions& opt);
+
+}  // namespace
+
+// The bound tried first (roadmap 9.3 "which unwind is tried first"): the
+// unrolled program grows with the unwind to the power of the loop nesting
+// depth (a lookup loop inside an insertion loop of a std::map model), so a
+// function with loops is first checked at a small unwind. Only two answers
+// are taken from it, both exact at the requested unwind as well: PROVED with
+// every loop closed (no path reaches the unwinding cut, so a larger unwind
+// adds no path) and FAILED (the violating path exists at any larger unwind).
+// PROVED-UNBOUNDED from k-induction is kept as well (its base case is within
+// the first unwind). Anything else (BOUNDED, unknown, a timeout of the
+// shorter first attempt)
+// is decided at the requested unwind, as before. Certified mode keeps the
+// requested unwind (one certificate per function).
 Verdict check_function(const Function& fn, const CheckOptions& opt) {
+    constexpr int kFirstUnwind = 4;
+    if (opt.certified || opt.unwind <= kFirstUnwind + 1) return check_function_at(fn, opt);
+    {
+        auto g = analyze(fn);
+        if (!g.unencoded.empty() || g.loops.empty()) return check_function_at(fn, opt);
+    }
+    CheckOptions first = opt;
+    first.unwind = kFirstUnwind;
+    first.timeout_s = std::min(opt.timeout_s, std::max(5.0, opt.timeout_s / 4));
+    Verdict v = check_function_at(fn, first);
+    auto closed = v.extra.find("unwind_closed");
+    const bool proved = v.status == laws::PROVED && closed != v.extra.end() && closed->second == "true";
+    // PROVED-UNBOUNDED: the k-induction step closed and its base case
+    // (k <= 2 steps) is inside the first unwind
+    if (proved || v.status == laws::FAILED || v.status == laws::PROVED_UNBOUNDED) {
+        v.extra["unwind_requested"] = std::to_string(opt.unwind);
+        return v;
+    }
+    Verdict full = check_function_at(fn, opt);
+    full.extra["unwind_first_tried"] = std::to_string(kFirstUnwind) + " (" + v.status + ")";
+    return full;
+}
+
+namespace {
+
+Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
     const EncodeOptions& eo = opt.encode;
     Verdict v;
     const int unwind = std::max(1, opt.unwind);
@@ -1519,6 +1563,8 @@ Verdict check_function(const Function& fn, const CheckOptions& opt) {
         return v;
     }
 }
+
+}  // namespace
 
 std::vector<Vc> pir_vcs(const Function& fn, int unwind) {
     EncodeOptions eo;

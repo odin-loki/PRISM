@@ -20,7 +20,7 @@ namespace std _GLIBCXX_VISIBILITY(default) {
 
 template <typename _Pair>
 struct _Prism_select1st {
-    const typename _Pair::first_type& operator()(const _Pair& __x) const noexcept { return __x.first; }
+    static const typename _Pair::first_type& _S_get(const _Pair& __x) noexcept { return __x.first; }
 };
 
 template <typename _Key, typename _Tp, typename _Compare = less<_Key>,
@@ -125,63 +125,72 @@ public:
     size_type max_size() const noexcept { return size_type(-1) / sizeof(_Prism_rb_node_layout<value_type>); }
 
     // -- element access ------------------------------------------------------
-    mapped_type& operator[](const key_type& __k) {
-        auto [__p, __found] = _M_t._M_pos_unique(__k);
-        if (!__found)
-            __p = _M_t._M_emplace_at(__p, std::piecewise_construct, std::tuple<const key_type&>(__k), std::tuple<>())._M_node;
+    // (the node's mapped value, without an iterator object)
+    static mapped_type& _S_mapped(_Prism_node_base* __p) noexcept {
         return static_cast<typename _Rep::_Node*>(__p)->_M_valptr()->second;
+    }
+    mapped_type& operator[](const key_type& __k) {
+        _Prism_node_base* __p = _M_t._M_lower(__k);
+        if (!_M_t._M_equiv(__p, __k))
+            __p = _M_t._M_emplace_at(__p, std::piecewise_construct, std::tuple<const key_type&>(__k), std::tuple<>());
+        return _S_mapped(__p);
     }
     mapped_type& operator[](key_type&& __k) {
-        auto [__p, __found] = _M_t._M_pos_unique(__k);
-        if (!__found)
-            __p = _M_t._M_emplace_at(__p, std::piecewise_construct, std::forward_as_tuple(std::move(__k)), std::tuple<>())
-                      ._M_node;
-        return static_cast<typename _Rep::_Node*>(__p)->_M_valptr()->second;
+        _Prism_node_base* __p = _M_t._M_lower(__k);
+        if (!_M_t._M_equiv(__p, __k))
+            __p = _M_t._M_emplace_at(__p, std::piecewise_construct, std::forward_as_tuple(std::move(__k)),
+                                     std::tuple<>());
+        return _S_mapped(__p);
     }
     mapped_type& at(const key_type& __k) {
-        auto [__p, __found] = _M_t._M_pos_unique(__k);
-        if (!__found) __throw_out_of_range(__N("map::at"));
-        return static_cast<typename _Rep::_Node*>(__p)->_M_valptr()->second;
+        _Prism_node_base* __p = _M_t._M_lower(__k);
+        if (!_M_t._M_equiv(__p, __k)) __throw_out_of_range(__N("map::at"));
+        return _S_mapped(__p);
     }
     const mapped_type& at(const key_type& __k) const {
-        auto [__p, __found] = _M_t._M_pos_unique(__k);
-        if (!__found) __throw_out_of_range(__N("map::at"));
-        return static_cast<const typename _Rep::_Node*>(__p)->_M_valptr()->second;
+        _Prism_node_base* __p = _M_t._M_lower(__k);
+        if (!_M_t._M_equiv(__p, __k)) __throw_out_of_range(__N("map::at"));
+        return _S_mapped(__p);
     }
 
     // -- modifiers -----------------------------------------------------------
+    template <typename _A0, typename... _Rest>
+    static const _A0& _S_arg0(const _A0& __a, const _Rest&...) noexcept {
+        return __a;
+    }
     template <typename... _Args>
     pair<iterator, bool> emplace(_Args&&... __args) {
+        // (key, mapped) with a usable key: look up first (as libstdc++ 13)
         if constexpr (sizeof...(_Args) == 2) {
-            auto&& [__a, __v] = pair<_Args&...>(__args...);
-            if constexpr (__usable_key<decltype(__a)>) {
-                const key_type& __k = __a;
-                auto [__p, __found] = _M_t._M_pos_unique(__k);
-                if (__found) return {iterator(__p), false};
-                return {_M_t._M_emplace_at(__p, std::forward<_Args>(__args)...), true};
+            if constexpr (__usable_key<tuple_element_t<0, tuple<_Args...>>>) {
+                const key_type& __k = _S_arg0(__args...);
+                _Prism_node_base* __p = _M_t._M_lower(__k);
+                if (_M_t._M_equiv(__p, __k)) return {iterator(__p), false};
+                return {iterator(_M_t._M_emplace_at(__p, std::forward<_Args>(__args)...)), true};
             }
         }
-        return _M_t._M_emplace_unique(std::forward<_Args>(__args)...);
+        _Prism_node_base* __p = _M_t._M_emplace_unique(std::forward<_Args>(__args)...);
+        return {iterator(__p), _M_t._M_inserted};
     }
     template <typename... _Args>
     iterator emplace_hint(const_iterator __pos, _Args&&... __args) {
-        return _M_t._M_emplace_hint_unique(__pos._M_node, std::forward<_Args>(__args)...);
+        return iterator(_M_t._M_emplace_hint_unique(__pos._M_node, std::forward<_Args>(__args)...));
     }
 
     template <typename... _Args>
     pair<iterator, bool> try_emplace(const key_type& __k, _Args&&... __args) {
-        auto [__p, __found] = _M_t._M_pos_unique(__k);
-        if (__found) return {iterator(__p), false};
-        return {_M_t._M_emplace_at(__p, std::piecewise_construct, std::forward_as_tuple(__k),
-                                   std::forward_as_tuple(std::forward<_Args>(__args)...)),
+        _Prism_node_base* __p = _M_t._M_lower(__k);
+        if (_M_t._M_equiv(__p, __k)) return {iterator(__p), false};
+        return {iterator(_M_t._M_emplace_at(__p, std::piecewise_construct, std::forward_as_tuple(__k),
+                                            std::forward_as_tuple(std::forward<_Args>(__args)...))),
                 true};
     }
     template <typename... _Args>
     pair<iterator, bool> try_emplace(key_type&& __k, _Args&&... __args) {
-        auto [__p, __found] = _M_t._M_pos_unique(__k);
-        if (__found) return {iterator(__p), false};
-        return {_M_t._M_emplace_at(__p, std::piecewise_construct, std::forward_as_tuple(std::move(__k)),
-                                   std::forward_as_tuple(std::forward<_Args>(__args)...)),
+        _Prism_node_base* __p = _M_t._M_lower(__k);
+        if (_M_t._M_equiv(__p, __k)) return {iterator(__p), false};
+        return {iterator(_M_t._M_emplace_at(__p, std::piecewise_construct, std::forward_as_tuple(std::move(__k)),
+                                            std::forward_as_tuple(std::forward<_Args>(__args)...))),
                 true};
     }
     template <typename... _Args>
@@ -195,31 +204,38 @@ public:
         return try_emplace(std::move(__k), std::forward<_Args>(__args)...).first;
     }
 
-    pair<iterator, bool> insert(const value_type& __x) { return _M_t._M_insert_unique(__x); }
-    pair<iterator, bool> insert(value_type&& __x) { return _M_t._M_insert_unique(std::move(__x)); }
+    pair<iterator, bool> insert(const value_type& __x) {
+        _Prism_node_base* __p = _M_t._M_insert_unique(__x);
+        return {iterator(__p), _M_t._M_inserted};
+    }
+    pair<iterator, bool> insert(value_type&& __x) {
+        _Prism_node_base* __p = _M_t._M_insert_unique(std::move(__x));
+        return {iterator(__p), _M_t._M_inserted};
+    }
     template <typename _Pair>
     __enable_if_t<is_constructible<value_type, _Pair>::value, pair<iterator, bool>> insert(_Pair&& __x) {
         using _P2 = remove_reference_t<_Pair>;
         if constexpr (__is_pair<remove_const_t<_P2>>)
             if constexpr (__usable_key<typename _P2::first_type>) {
                 const key_type& __k = __x.first;
-                auto [__p, __found] = _M_t._M_pos_unique(__k);
-                if (__found) return {iterator(__p), false};
-                return {_M_t._M_emplace_at(__p, std::forward<_Pair>(__x)), true};
+                _Prism_node_base* __p = _M_t._M_lower(__k);
+                if (_M_t._M_equiv(__p, __k)) return {iterator(__p), false};
+                return {iterator(_M_t._M_emplace_at(__p, std::forward<_Pair>(__x))), true};
             }
-        return _M_t._M_emplace_unique(std::forward<_Pair>(__x));
+        _Prism_node_base* __p = _M_t._M_emplace_unique(std::forward<_Pair>(__x));
+        return {iterator(__p), _M_t._M_inserted};
     }
     void insert(initializer_list<value_type> __list) { insert(__list.begin(), __list.end()); }
     iterator insert(const_iterator __position, const value_type& __x) {
-        return _M_t._M_insert_unique_hint(__position._M_node, __x);
+        return iterator(_M_t._M_insert_unique_hint(__position._M_node, __x));
     }
     iterator insert(const_iterator __position, value_type&& __x) {
-        return _M_t._M_insert_unique_hint(__position._M_node, std::move(__x));
+        return iterator(_M_t._M_insert_unique_hint(__position._M_node, std::move(__x)));
     }
     template <typename _Pair>
     __enable_if_t<is_constructible<value_type, _Pair>::value, iterator> insert(const_iterator __position,
                                                                                _Pair&& __x) {
-        return _M_t._M_emplace_hint_unique(__position._M_node, std::forward<_Pair>(__x));
+        return iterator(_M_t._M_emplace_hint_unique(__position._M_node, std::forward<_Pair>(__x)));
     }
     template <typename _InputIterator>
     void insert(_InputIterator __first, _InputIterator __last) {
@@ -228,22 +244,22 @@ public:
 
     template <typename _Obj>
     pair<iterator, bool> insert_or_assign(const key_type& __k, _Obj&& __obj) {
-        auto [__p, __found] = _M_t._M_pos_unique(__k);
-        if (!__found)
-            return {_M_t._M_emplace_at(__p, std::piecewise_construct, std::forward_as_tuple(__k),
-                                       std::forward_as_tuple(std::forward<_Obj>(__obj))),
+        _Prism_node_base* __p = _M_t._M_lower(__k);
+        if (!_M_t._M_equiv(__p, __k))
+            return {iterator(_M_t._M_emplace_at(__p, std::piecewise_construct, std::forward_as_tuple(__k),
+                                                std::forward_as_tuple(std::forward<_Obj>(__obj)))),
                     true};
-        static_cast<typename _Rep::_Node*>(__p)->_M_valptr()->second = std::forward<_Obj>(__obj);
+        _S_mapped(__p) = std::forward<_Obj>(__obj);
         return {iterator(__p), false};
     }
     template <typename _Obj>
     pair<iterator, bool> insert_or_assign(key_type&& __k, _Obj&& __obj) {
-        auto [__p, __found] = _M_t._M_pos_unique(__k);
-        if (!__found)
-            return {_M_t._M_emplace_at(__p, std::piecewise_construct, std::forward_as_tuple(std::move(__k)),
-                                       std::forward_as_tuple(std::forward<_Obj>(__obj))),
+        _Prism_node_base* __p = _M_t._M_lower(__k);
+        if (!_M_t._M_equiv(__p, __k))
+            return {iterator(_M_t._M_emplace_at(__p, std::piecewise_construct, std::forward_as_tuple(std::move(__k)),
+                                                std::forward_as_tuple(std::forward<_Obj>(__obj)))),
                     true};
-        static_cast<typename _Rep::_Node*>(__p)->_M_valptr()->second = std::forward<_Obj>(__obj);
+        _S_mapped(__p) = std::forward<_Obj>(__obj);
         return {iterator(__p), false};
     }
     template <typename _Obj>
@@ -435,28 +451,30 @@ public:
 
     template <typename... _Args>
     iterator emplace(_Args&&... __args) {
-        return _M_t._M_emplace_equal(std::forward<_Args>(__args)...);
+        return iterator(_M_t._M_emplace_equal(std::forward<_Args>(__args)...));
     }
     template <typename... _Args>
     iterator emplace_hint(const_iterator __pos, _Args&&... __args) {
-        return _M_t._M_emplace_hint_equal(const_cast<_Prism_node_base*>(__pos._M_node), std::forward<_Args>(__args)...);
+        return iterator(
+            _M_t._M_emplace_hint_equal(const_cast<_Prism_node_base*>(__pos._M_node), std::forward<_Args>(__args)...));
     }
-    iterator insert(const value_type& __x) { return _M_t._M_insert_equal(__x); }
-    iterator insert(value_type&& __x) { return _M_t._M_insert_equal(std::move(__x)); }
+    iterator insert(const value_type& __x) { return iterator(_M_t._M_insert_equal(__x)); }
+    iterator insert(value_type&& __x) { return iterator(_M_t._M_insert_equal(std::move(__x))); }
     template <typename _Pair>
     __enable_if_t<is_constructible<value_type, _Pair>::value, iterator> insert(_Pair&& __x) {
-        return _M_t._M_emplace_equal(std::forward<_Pair>(__x));
+        return iterator(_M_t._M_emplace_equal(std::forward<_Pair>(__x)));
     }
     iterator insert(const_iterator __position, const value_type& __x) {
-        return _M_t._M_insert_equal_hint(const_cast<_Prism_node_base*>(__position._M_node), __x);
+        return iterator(_M_t._M_insert_equal_hint(const_cast<_Prism_node_base*>(__position._M_node), __x));
     }
     iterator insert(const_iterator __position, value_type&& __x) {
-        return _M_t._M_insert_equal_hint(const_cast<_Prism_node_base*>(__position._M_node), std::move(__x));
+        return iterator(_M_t._M_insert_equal_hint(const_cast<_Prism_node_base*>(__position._M_node), std::move(__x)));
     }
     template <typename _Pair>
     __enable_if_t<is_constructible<value_type, _Pair&&>::value, iterator> insert(const_iterator __position,
                                                                                  _Pair&& __x) {
-        return _M_t._M_emplace_hint_equal(const_cast<_Prism_node_base*>(__position._M_node), std::forward<_Pair>(__x));
+        return iterator(
+            _M_t._M_emplace_hint_equal(const_cast<_Prism_node_base*>(__position._M_node), std::forward<_Pair>(__x)));
     }
     template <typename _InputIterator>
     void insert(_InputIterator __first, _InputIterator __last) {

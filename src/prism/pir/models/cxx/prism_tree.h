@@ -196,6 +196,12 @@ struct _Prism_tree_const_iterator {
     }
 };
 
+// Key extraction without a functor object: _S_get is static.
+template <typename _Val>
+struct _Prism_identity {
+    static const _Val& _S_get(const _Val& __x) noexcept { return __x; }
+};
+
 // The container core shared by map, multimap, set and multiset.
 template <typename _Key, typename _Val, typename _KeyOfValue, typename _Compare, typename _Alloc, bool _Multi>
 class _Prism_tree {
@@ -212,6 +218,7 @@ public:
     typedef size_t size_type;
 
     [[no_unique_address]] _Compare _M_cmp;
+    [[no_unique_address]] _Node_alloc _M_na;
     size_type _M_count = 0;
     _Base _M_head;
 
@@ -257,43 +264,75 @@ public:
     }
     _Base* _M_end() noexcept { return &_M_head; }
     const _Base* _M_end() const noexcept { return &_M_head; }
+    // (The code below avoids temporaries whose address is taken -- functor
+    // and allocator objects, std::pair results, lambdas: at -O0 each is a
+    // stack object the PIR memory model tracks.)
     static const _Key& _S_key(const _Base* __n) noexcept {
-        return _KeyOfValue()(*static_cast<const _Node*>(__n)->_M_valptr());
+        return _KeyOfValue::_S_get(*static_cast<const _Node*>(__n)->_M_valptr());
+    }
+    // is __p an element with a key equivalent to __k (__p from _M_lower(__k))
+    template <typename _Kt>
+    bool _M_equiv(const _Base* __p, const _Kt& __k) const {
+        return __p != &_M_head && !_M_cmp(__k, _S_key(__p));
     }
 
+    // std::allocator<_Node> for the node, construct_at/destroy_at for the
+    // value (what std::allocator's construct/destroy do)
     template <typename... _Args>
     _Node* _M_create(_Args&&... __args) {
-        _Node_alloc __na;
-        _Node* __n = _Node_traits::allocate(__na, 1);
+        _Node* __n = _Node_traits::allocate(_M_na, 1);
         ::new (static_cast<void*>(__n)) _Node;
-        _Alloc __va;
         if constexpr (is_nothrow_constructible_v<_Val, _Args&&...>) {
-            allocator_traits<_Alloc>::construct(__va, __n->_M_valptr(), std::forward<_Args>(__args)...);
+            std::construct_at(__n->_M_valptr(), std::forward<_Args>(__args)...);
         } else {
             try {
-                allocator_traits<_Alloc>::construct(__va, __n->_M_valptr(), std::forward<_Args>(__args)...);
+                std::construct_at(__n->_M_valptr(), std::forward<_Args>(__args)...);
             } catch (...) {
-                _Node_traits::deallocate(__na, __n, 1);
+                _Node_traits::deallocate(_M_na, __n, 1);
                 throw;
             }
         }
         return __n;
     }
-    static void _M_drop(_Base* __b) noexcept {
+    void _M_drop(_Base* __b) noexcept {
         _Node* __n = static_cast<_Node*>(__b);
-        _Alloc __va;
-        allocator_traits<_Alloc>::destroy(__va, __n->_M_valptr());
-        _Node_alloc __na;
-        _Node_traits::deallocate(__na, __n, 1);
+        std::destroy_at(__n->_M_valptr());
+        _Node_traits::deallocate(_M_na, __n, 1);
     }
-    // Runs __fn (comparisons), freeing the new node __n if a comparison throws.
-    template <typename _Fn>
-    auto _M_or_drop(_Base* __n, _Fn __fn) -> decltype(__fn()) {
+    // The position a new node's key goes to (_M_lower / _M_upper /
+    // _M_pos_hint_equal), freeing the node if a comparison throws.
+    enum { _S_at_lower, _S_at_upper };
+    template <int _Where>
+    _Base* _M_pos_or_drop(_Node* __n) {
         if constexpr (_S_nothrow_cmp) {
-            return __fn();
+            return _Where == _S_at_lower ? _M_lower(_S_key(__n)) : _M_upper(_S_key(__n));
         } else {
             try {
-                return __fn();
+                return _Where == _S_at_lower ? _M_lower(_S_key(__n)) : _M_upper(_S_key(__n));
+            } catch (...) {
+                _M_drop(__n);
+                throw;
+            }
+        }
+    }
+    bool _M_equiv_or_drop(_Base* __p, _Node* __n) {
+        if constexpr (_S_nothrow_cmp) {
+            return _M_equiv(__p, _S_key(__n));
+        } else {
+            try {
+                return _M_equiv(__p, _S_key(__n));
+            } catch (...) {
+                _M_drop(__n);
+                throw;
+            }
+        }
+    }
+    _Base* _M_hint_pos_or_drop(_Base* __h, _Node* __n) {
+        if constexpr (_S_nothrow_cmp) {
+            return _M_pos_hint_equal(__h, _S_key(__n));
+        } else {
+            try {
+                return _M_pos_hint_equal(__h, _S_key(__n));
             } catch (...) {
                 _M_drop(__n);
                 throw;
@@ -384,7 +423,7 @@ public:
     template <typename _Kt>
     _Base* _M_find(const _Kt& __k) const {
         _Base* __x = _M_lower(__k);
-        return (__x == &_M_head || _M_cmp(__k, _S_key(__x))) ? const_cast<_Base*>(&_M_head) : __x;
+        return _M_equiv(__x, __k) ? __x : const_cast<_Base*>(&_M_head);
     }
     template <typename _Kt>
     size_type _M_count_of(const _Kt& __k) const {
@@ -399,12 +438,6 @@ public:
         _Base* __hi = __lo;
         while (__hi != &_M_head && !_M_cmp(__k, _S_key(__hi))) __hi = __hi->_M_next;
         return {__lo, __hi};
-    }
-    // position of an equivalent key, or nullptr, and where __k goes (unique)
-    template <typename _Kt>
-    pair<_Base*, bool> _M_pos_unique(const _Kt& __k) const {
-        _Base* __p = _M_lower(__k);
-        return {__p, __p != &_M_head && !_M_cmp(__k, _S_key(__p))};
     }
     // libstdc++'s _M_get_insert_hint_equal_pos (+ _M_insert_equal_lower):
     // where a hinted multi insert of __k goes.
@@ -426,61 +459,67 @@ public:
 
     // -- insertion ---------------------------------------------------------------
     // look up first, construct only for a new key (_M_insert_unique)
+    // Unique insertion results are the node (the new one or the existing
+    // equivalent one) and whether it was inserted: _M_inserted is set by
+    // the last insertion (a member, not a pair: see above).
+    bool _M_inserted = false;
+    // look up first, construct only for a new key (_M_insert_unique)
     template <typename _Arg>
-    pair<iterator, bool> _M_insert_unique(_Arg&& __v) {
-        auto [__p, __found] = _M_pos_unique(_KeyOfValue()(__v));
-        if (__found) return {iterator(__p), false};
-        return {iterator(_M_link(__p, _M_create(std::forward<_Arg>(__v)))), true};
+    _Base* _M_insert_unique(_Arg&& __v) {
+        const _Key& __k = _KeyOfValue::_S_get(__v);
+        _Base* __p = _M_lower(__k);
+        _M_inserted = !_M_equiv(__p, __k);
+        if (!_M_inserted) return __p;
+        return _M_link(__p, _M_create(std::forward<_Arg>(__v)));
     }
     template <typename _Arg>
-    iterator _M_insert_unique_hint(const _Base* __h, _Arg&& __v) {
+    _Base* _M_insert_unique_hint(const _Base* __h, _Arg&& __v) {
         _M_check_position(__h);
-        return _M_insert_unique(std::forward<_Arg>(__v)).first;
+        return _M_insert_unique(std::forward<_Arg>(__v));
     }
     // construct first, drop the node if the key exists (_M_emplace_unique)
     template <typename... _Args>
-    pair<iterator, bool> _M_emplace_unique(_Args&&... __args) {
+    _Base* _M_emplace_unique(_Args&&... __args) {
         _Node* __n = _M_create(std::forward<_Args>(__args)...);
-        auto [__p, __found] = _M_or_drop(__n, [&] { return _M_pos_unique(_S_key(__n)); });
-        if (__found) {
+        _Base* __p = _M_pos_or_drop<_S_at_lower>(__n);
+        _M_inserted = !_M_equiv_or_drop(__p, __n);
+        if (!_M_inserted) {
             _M_drop(__n);
-            return {iterator(__p), false};
+            return __p;
         }
-        return {iterator(_M_link(__p, __n)), true};
+        return _M_link(__p, __n);
     }
     template <typename... _Args>
-    iterator _M_emplace_hint_unique(const _Base* __h, _Args&&... __args) {
+    _Base* _M_emplace_hint_unique(const _Base* __h, _Args&&... __args) {
         _M_check_position(__h);
-        return _M_emplace_unique(std::forward<_Args>(__args)...).first;
+        return _M_emplace_unique(std::forward<_Args>(__args)...);
     }
     // construct at __p, known to be where a new key goes (callers looked it up)
     template <typename... _Args>
-    iterator _M_emplace_at(_Base* __p, _Args&&... __args) {
-        return iterator(_M_link(__p, _M_create(std::forward<_Args>(__args)...)));
+    _Base* _M_emplace_at(_Base* __p, _Args&&... __args) {
+        return _M_link(__p, _M_create(std::forward<_Args>(__args)...));
     }
     template <typename _Arg>
-    iterator _M_insert_equal(_Arg&& __v) {
-        _Base* __p = _M_upper(_KeyOfValue()(__v));
-        return iterator(_M_link(__p, _M_create(std::forward<_Arg>(__v))));
+    _Base* _M_insert_equal(_Arg&& __v) {
+        _Base* __p = _M_upper(_KeyOfValue::_S_get(__v));
+        return _M_link(__p, _M_create(std::forward<_Arg>(__v)));
     }
     template <typename _Arg>
-    iterator _M_insert_equal_hint(_Base* __h, _Arg&& __v) {
+    _Base* _M_insert_equal_hint(_Base* __h, _Arg&& __v) {
         _M_check_position(__h);
-        _Base* __p = _M_pos_hint_equal(__h, _KeyOfValue()(__v));
-        return iterator(_M_link(__p, _M_create(std::forward<_Arg>(__v))));
+        _Base* __p = _M_pos_hint_equal(__h, _KeyOfValue::_S_get(__v));
+        return _M_link(__p, _M_create(std::forward<_Arg>(__v)));
     }
     template <typename... _Args>
-    iterator _M_emplace_equal(_Args&&... __args) {
+    _Base* _M_emplace_equal(_Args&&... __args) {
         _Node* __n = _M_create(std::forward<_Args>(__args)...);
-        _Base* __p = _M_or_drop(__n, [&] { return _M_upper(_S_key(__n)); });
-        return iterator(_M_link(__p, __n));
+        return _M_link(_M_pos_or_drop<_S_at_upper>(__n), __n);
     }
     template <typename... _Args>
-    iterator _M_emplace_hint_equal(_Base* __h, _Args&&... __args) {
+    _Base* _M_emplace_hint_equal(_Base* __h, _Args&&... __args) {
         _M_check_position(__h);
         _Node* __n = _M_create(std::forward<_Args>(__args)...);
-        _Base* __p = _M_or_drop(__n, [&] { return _M_pos_hint_equal(__h, _S_key(__n)); });
-        return iterator(_M_link(__p, __n));
+        return _M_link(_M_hint_pos_or_drop(__h, __n), __n);
     }
     template <typename _It>
     void _M_insert_range_unique(_It __first, _It __last) {
@@ -512,10 +551,19 @@ public:
     }
     template <typename _Kt>
     size_type _M_erase_key(const _Kt& __k) {
-        auto [__lo, __hi] = _M_equal_range(__k);
-        const size_type __old = _M_count;
-        _M_erase(__lo, __hi);
-        return __old - _M_count;
+        _Base* __p = _M_lower(__k);
+        if constexpr (!_Multi) {
+            if (!_M_equiv(__p, __k)) return 0;
+            _M_erase(__p);
+            return 1;
+        } else {
+            size_type __n = 0;
+            while (_M_equiv(__p, __k)) {
+                __p = _M_erase(__p);
+                ++__n;
+            }
+            return __n;
+        }
     }
 
     // -- whole-container relations ---------------------------------------------------
