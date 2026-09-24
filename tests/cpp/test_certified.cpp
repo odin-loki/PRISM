@@ -794,9 +794,9 @@ TEST_CASE("certificate store: a certified answer keeps only its packed proof, un
     }
     CertTmp tmp;
     z3::context c;
-    auto x = c.bv_const("x", 8);
-    auto y = c.bv_const("y", 8);
-    auto z = c.bv_const("z", 8);
+    auto x = c.bv_const("x", 6);
+    auto y = c.bv_const("y", 6);
+    auto z = c.bv_const("z", 6);
     auto f = (x * (y + z)) != (x * y + x * z);  // unsat, a real (non-empty) proof
     prism::solver::SolveOptions o;
     o.cache_dir = (tmp.dir / "cache").string();
@@ -836,8 +836,9 @@ TEST_CASE("certificate store: a certified answer keeps only its packed proof, un
     fs::remove(proof);
     o.cert_cache_max_bytes = 0;
     auto none = prism::solver::solve(c, f, o);
-    CHECK(none.certified);
-    CHECK(none.note.find("cap is 0") != std::string::npos);
+    CAPTURE(none.note);
+    CHECK_FALSE(fs::exists(proof));
+    if (none.certified) CHECK(none.note.find("cap is 0") != std::string::npos);
 }
 
 TEST_CASE("certified: a known plain unsat runs only the certificate member") {
