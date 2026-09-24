@@ -766,6 +766,17 @@ struct Parser {
 
     std::unique_ptr<Enc> run() {
         auto e = std::make_unique<Enc>(unwind);
+        // pending_gotos / label_loops hold States whose z3::exprs live in e's
+        // context. e dies when run() returns (nullptr on a parse failure) or,
+        // on success, possibly before this Parser: drop them first, on every
+        // exit (declared after e, so destroyed before it).
+        struct DropGotoStates {
+            Parser& p;
+            ~DropGotoStates() {
+                p.pending_gotos.clear();
+                p.label_loops.clear();
+            }
+        } drop_goto_states{*this};
         e->havoc = havoc;
         e->cxx = cxx;
         e->shift_rules = shift_rules;
