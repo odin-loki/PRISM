@@ -690,9 +690,15 @@ independent; false twins: `v[size()]`, a pointer kept across a reallocation
 (MEM-UAF), pop_back/front on empty, `erase(end())`, wrong contracts). All
 PROVED/refuted (2026-09-24; the vector files take 60–460 s per file on a
 loaded machine, hence their `timeout:` in the task file). `insert` in the
-middle of a vector does not finish within 900 s (the element shift plus the
-symbolic position), so it has no harness in the suite; it is covered only by
-the differential test against libstdc++, `cxx_std_contracts.cpp` checks libstdc++'s
+middle of a vector did not finish within 900 s in the first round (the
+element shift plus the symbolic position); `vector_insert.cpp` (insert at a
+position 0..3 of a 3-element vector, with a reallocation, and its MEM-UAF
+twin) is in the suite now but was not measured on this branch (the unwind
+tried first bounds its loops at 4). `map_contracts.cpp` checks the map/set
+models (insert/operator[]/erase/at/order, multiset counts; false twins: an
+erased element's iterator (MEM-UAF), `*find(absent)`, `--begin()`, a wrong
+order contract); as one file it did not finish within 1200 s on a loaded
+machine (not yet split per function). `cxx_std_contracts.cpp` checks libstdc++'s
 `std::array`, `std::span`, `std::optional`, `std::unique_ptr` and
 `cxx_string_contracts.cpp` `std::string` (`s[size()]` is the terminator,
 `at` throws iff out of range, `c_str()` after destruction is MEM-UAF). Their
@@ -981,7 +987,7 @@ pass; no `-fsanitize` check insertion (Law 8).
 | Classes, inheritance, virtual dispatch | vtable loads are memory reads; indirect calls dispatch over the module's vtable functions (class hierarchy analysis) or address-taken functions; any other target is the havoc fallback (NEEDS-HARNESS) | DONE | `tests/pir/virt_dispatch.cpp`, `conformance/prism/virt` |
 | Exceptions | explicit exception edges, catch matching (typeinfo hierarchy), cleanup, rethrow; escape from `noexcept` (CXX-THROW-NOEXCEPT) or `main` (CXX-UNCAUGHT) is a violation | DONE (dynamic exception specs, `exception_ptr`: UNENCODED) | `tests/pir/eh_*.cpp`, `conformance/prism/eh` |
 | Coroutines | LLVM coroutine passes, then normal encoding (frame = `new` object, resume/destroy = indirect calls) | DONE | `tests/pir/coro_gen.cpp`, `conformance/prism/coro` |
-| Standard library | libc operational models (contract-checked, "Library models verified by PRISM"); `std::vector` model header (`models/cxx/vector`, differential-tested against libstdc++); other libstdc++ code inlined with `_GLIBCXX_ASSERTIONS`; library throws are real exceptions; unmodelled calls NEEDS-HARNESS | PARTIAL (one container modelled; `std::string` out-of-line members, iostreams, associative containers NEEDS-HARNESS; libc++ not modelled) | "Library models", "C++ library models" |
+| Standard library | libc operational models (contract-checked, "Library models verified by PRISM"); C++ model headers `vector`, `map`, `set`, `bits/basic_string.tcc` (`models/cxx/`, differential-tested against libstdc++); other libstdc++ code inlined with `_GLIBCXX_ASSERTIONS`; library throws are real exceptions; unmodelled calls NEEDS-HARNESS | PARTIAL (iostreams, unordered containers, `std::list`/`deque` NEEDS-HARNESS where they recurse or call into `libstdc++.so`; an input-dependent map/set erase followed by a traversal does not finish; libc++ not modelled) | "Library models", "C++ library models" |
 | Floating point | Z3 floating-point theory (RNE) for half/float/double; FLOAT-CAST-OVF; `--fp-checks` | DONE (x86_fp80/fp128/bfloat, fast-math: UNENCODED) | `tests/pir/fp_arith.c`, `conformance/prism/fp` |
 | Threads and atomics | separate `conc` stage (docs/CONCURRENCY.md) | other work (not in this slice) | docs/CONCURRENCY.md |
 | Modules (`import std;`) | handled by Clang; PRISM consumes the IR | NOT TESTED (Clang 18 needs a prebuilt `std` module) | — |
