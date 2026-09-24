@@ -22,6 +22,10 @@ struct Prop {
     std::string cls;
     z3::expr cond;
     int loc;
+    // __VERIFIER_nondet_* calls encoded before this check: the only calls a
+    // violation of it can have executed (encoding order is program order
+    // along every path of the unrolled body).
+    std::size_t nondets_before = 0;
 };
 
 struct CType {
@@ -145,6 +149,7 @@ struct Enc {
         z3::expr guard;
         unsigned w;
         bool u;
+        int line = 0, col = 0;  // call site (tag_nondet_sites), 0 = unknown
     };
     std::vector<Nondet> nondets;
     std::vector<Jump> jumps;
@@ -255,7 +260,7 @@ struct Enc {
     void mark_uninit(const std::string& name) { uninit.insert_or_assign(name, ctx.bool_val(true)); }
 
     void add_prop(std::string name, std::string cls, const z3::expr& viol, int loc) {
-        props.push_back(Prop{std::move(name), std::move(cls), path_true && viol, loc});
+        props.push_back(Prop{std::move(name), std::move(cls), path_true && viol, loc, nondets.size()});
     }
 
     void check_read(const std::string& name) {
@@ -1931,9 +1936,70 @@ std::vector<std::string> expand_macros(const std::vector<std::string>& toks, Enc
     return out;
 }
 
+// Nondet call sites. The bmc front end works on statement text and keeps no
+// positions, so before encoding every `__VERIFIER_nondet_X()` call in a
+// function body is renamed `__VERIFIER_nondet_X__prism_at_L_C` (L:C = the
+// call's source position, from FunctionInfo::body_line/body_col). The tag
+// survives inlining (a callee's calls keep the callee's positions) and
+// loop unrolling; model_call strips it again.
+constexpr std::string_view NONDET_TAG = "__prism_at_";
+
+std::string untag_nondet(const std::string& name, int* line, int* col) {
+    if (!name.starts_with("__VERIFIER_nondet_")) return name;
+    auto k = name.find(NONDET_TAG);
+    if (k == std::string::npos) return name;
+    int l = 0, c = 0;
+    if (std::sscanf(name.c_str() + k + NONDET_TAG.size(), "%d_%d", &l, &c) != 2) return name;
+    *line = l;
+    *col = c;
+    return name.substr(0, k);
+}
+
+FunctionInfo tag_nondet_sites(FunctionInfo fn) {
+    static constexpr std::string_view P = "__VERIFIER_nondet_";
+    if (fn.body_line <= 0 || fn.body_col <= 0 || fn.body.find(P) == std::string::npos) return fn;
+    auto ident = [](char ch) { return std::isalnum(static_cast<unsigned char>(ch)) || ch == '_'; };
+    const std::string& b = fn.body;
+    std::string out;
+    out.reserve(b.size() + 64);
+    int line = fn.body_line, col = fn.body_col;
+    for (std::size_t i = 0; i < b.size();) {
+        if (b.compare(i, P.size(), P) == 0 && (i == 0 || !ident(b[i - 1]))) {
+            std::size_t j = i + P.size();
+            while (j < b.size() && ident(b[j])) ++j;
+            std::size_t k = j;
+            while (k < b.size() && (b[k] == ' ' || b[k] == '	')) ++k;
+            std::size_t m = k < b.size() && b[k] == '(' ? k + 1 : std::string::npos;
+            while (m != std::string::npos && m < b.size() && (b[m] == ' ' || b[m] == '	')) ++m;
+            if (m != std::string::npos && m < b.size() && b[m] == ')' &&
+                std::string_view(b).substr(i, j - i).find(NONDET_TAG) == std::string_view::npos) {
+                out.append(b, i, j - i);
+                out += std::string(NONDET_TAG) + std::to_string(line) + "_" + std::to_string(col);
+                col += static_cast<int>(j - i);
+                i = j;
+                continue;
+            }
+        }
+        out.push_back(b[i]);
+        if (b[i] == '\n') {
+            ++line;
+            col = 1;
+        } else {
+            ++col;
+        }
+        ++i;
+    }
+    fn.body = std::move(out);
+    return fn;
+}
+
 // Calls whose semantics are modelled. Everything else: arguments are
 // checked, the result is unconstrained, and the verdict can never be a proof.
-TV model_call(Enc& e, const std::string& t, std::vector<TV>& args) {
+TV model_call(Enc& e, const std::string& tagged, std::vector<TV>& args) {
+    // A __VERIFIER_nondet_* call site tagged by tag_nondet_sites carries its
+    // source position in the name; the callee is the name without the tag.
+    int site_line = 0, site_col = 0;
+    const std::string t = untag_nondet(tagged, &site_line, &site_col);
     auto nargs = [&](size_t n) {
         if (args.size() != n) throw ParseFail("UNENCODED: call to " + t + " with " + std::to_string(args.size()) + " arguments");
     };
@@ -1963,7 +2029,7 @@ TV model_call(Enc& e, const std::string& t, std::vector<TV>& args) {
         nargs(0);
         auto ct = it->second;
         auto v = e.bv("nondet_" + std::to_string(e.fresh + 1), ct.w);
-        e.nondets.push_back({t, v, e.path_true, static_cast<unsigned>(ct.w), ct.u});
+        e.nondets.push_back({t, v, e.path_true, static_cast<unsigned>(ct.w), ct.u, site_line, site_col});
         return TV{v, ct.w, ct.u};
     }
     if (t == "rand") {
@@ -2427,10 +2493,15 @@ std::string cex(const z3::model& model, Enc& e, const std::vector<std::pair<std:
 
 // The __VERIFIER_nondet_* values the model's path reads, in call order, as
 // "fn=value" pairs (decimal, signed per the function's C type). Calls whose
-// path guard the model makes false did not run and are left out.
-std::string nondet_trace(const z3::model& model, Enc& e) {
+// path guard the model makes false did not run and are left out. `locs`
+// gets each listed call's site as "line:col" (0:0 when the site is unknown).
+// Only the first `limit` calls in encoding order (those before the violated
+// check) are listed: a call after the violation never ran.
+std::string nondet_trace(const z3::model& model, Enc& e, std::size_t limit, std::string* locs = nullptr) {
     std::string out;
-    for (auto& n : e.nondets) {
+    if (locs) locs->clear();
+    for (std::size_t i = 0; i < e.nondets.size() && i < limit; ++i) {
+        auto& n = e.nondets[i];
         if (!model.eval(n.guard, true).is_true()) continue;
         auto d = model.eval(n.v, true);
         uint64_t raw = 0;
@@ -2444,6 +2515,7 @@ std::string nondet_trace(const z3::model& model, Enc& e) {
             val = std::to_string(raw);
         if (!out.empty()) out += ", ";
         out += n.fn + "=" + val;
+        if (locs) *locs += (locs->empty() ? "" : ", ") + std::to_string(n.line) + ":" + std::to_string(n.col);
     }
     return out;
 }
