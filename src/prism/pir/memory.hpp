@@ -105,6 +105,9 @@ public:
     // maybe-uninitialised, never assumed initialised. Liveness, size and
     // kind are unchanged. Returns the number of objects havocked.
     std::size_t havoc_objects(const z3::expr& guard, const std::vector<uint64_t>& ids, bool all, bool keep_init);
+    // The same for the objects the given pointer values point to (symbolic
+    // object ids; loop-cut footprints). Returns the number of pointers.
+    std::size_t havoc_pointed(const z3::expr& guard, const std::vector<z3::expr>& ptrs, bool keep_init);
 
     // Provenance: `e` is known to point into object `obj` on every path
     // without a reported violation (pointer arithmetic is checked to stay in

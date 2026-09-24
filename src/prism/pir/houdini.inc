@@ -123,8 +123,9 @@ std::vector<char> pointer_vars(const Function& fn) {
 
 class Houdini {
 public:
+    // timeout_s: the solver time per query; the whole search gets 4 times that
     Houdini(const Function& fn, const CfgInfo& g, const EncodeOptions& eo, double timeout_s)
-        : fn_(fn), g_(g), eo_(eo), deadline_(timeout_s) {}
+        : fn_(fn), g_(g), eo_(eo), per_query_(timeout_s), deadline_(4 * timeout_s) {}
 
     HoudiniOut run();
 
@@ -132,7 +133,9 @@ private:
     const Function& fn_;
     const CfgInfo& g_;
     EncodeOptions eo_;
+    double per_query_;
     double deadline_;
+    int query_ = 0;
     std::chrono::steady_clock::time_point t0_ = std::chrono::steady_clock::now();
     std::vector<char> ptr_;
     std::vector<const Stmt*> def_;
@@ -184,6 +187,46 @@ private:
         }
     }
     void generate(std::vector<InvCand>& out);
+    // Write footprint of loop L in cut mode: known objects, else the object
+    // of the pointer variable (defined before the loop) the target is
+    // derived from, else every object.
+    int write_base(int L, const WriteInst& w) const {
+        for (int v : w.chain)
+            if (!in_loop(L, is_param(v) ? -1 : g_.def_block[static_cast<std::size_t>(v)]))
+                return scope_var(L, v) ? v : -1;
+        return -1;
+    }
+    Footprint cut_footprint(int L, const std::vector<WriteInst>& writes) const {
+        Footprint fp;
+        for (auto& w : writes) {
+            if (!in_loop(L, w.block)) continue;
+            if (!w.inits) fp.keep_init = false;
+            if (w.obj) {
+                fp.objs.insert(*w.obj);
+                continue;
+            }
+            int b = write_base(L, w);
+            if (b >= 0) fp.base_vars.insert(b);
+            else fp.all = true;
+        }
+        if (fp.all) {
+            fp.objs.clear();
+            fp.base_vars.clear();
+        }
+        return fp;
+    }
+    bool cut_covers(int L, const Footprint& fp, const std::vector<WriteInst>& writes) const {
+        for (auto& w : writes) {
+            if (!in_loop(L, w.block)) continue;
+            if (fp.keep_init && !w.inits) return false;
+            if (fp.all) continue;
+            if (w.obj && fp.objs.count(*w.obj)) continue;
+            int b = w.obj ? -1 : write_base(L, w);
+            if (b >= 0 && fp.base_vars.count(b)) continue;
+            return false;
+        }
+        return true;
+    }
     std::string term_text(const InvTerm& t) const;
     std::string text(const InvCand& c) const;
 };
@@ -454,10 +497,10 @@ HoudiniOut Houdini::run() {
     out.invariants.assign(g_.loops.size(), {});
     out.kept.assign(g_.loops.size(), {});
 
-    // footprints: learnt from a first cut encoding, then re-checked
+    // footprints: learnt from a first cut encoding, then re-checked (the
+    // havoc can change what provenance knows about a write target)
     std::vector<Footprint> fps(g_.loops.size());
-    std::vector<char> learnt(g_.loops.size(), 0);
-    for (int attempt = 0; attempt < 4; ++attempt) {
+    for (int attempt = 0;; ++attempt) {
         z3::context c;
         Encoding e(c, fn_, g_, 1, eo_);
         e.cut_mode = true;
@@ -466,20 +509,27 @@ HoudiniOut Houdini::run() {
         e.build();
         bool ok = true;
         for (std::size_t L = 0; L < g_.loops.size(); ++L) {
-            if (footprint_covers(fps[L], e.writes, g_.loops[L].body)) continue;
+            if (cut_covers(static_cast<int>(L), fps[L], e.writes)) continue;
             ok = false;
-            auto more = footprint_of(e.writes, g_.loops[L].body);
-            if (!learnt[L]) {
-                fps[L] = more;
-                learnt[L] = 1;
+            auto more = cut_footprint(static_cast<int>(L), e.writes);
+            if (attempt < 2) {
+                fps[L].objs.insert(more.objs.begin(), more.objs.end());
+                fps[L].base_vars.insert(more.base_vars.begin(), more.base_vars.end());
+                fps[L].all = fps[L].all || more.all;
+                fps[L].keep_init = fps[L].keep_init && more.keep_init;
+                if (fps[L].all) {
+                    fps[L].objs.clear();
+                    fps[L].base_vars.clear();
+                }
             } else {
                 fps[L].all = true;
                 fps[L].objs.clear();
+                fps[L].base_vars.clear();
                 fps[L].keep_init = fps[L].keep_init && more.keep_init;
             }
         }
         if (ok) break;
-        if (attempt == 3) {
+        if (attempt == 4) {
             out.why = "loop write footprint not stable";
             return out;
         }
@@ -489,7 +539,8 @@ HoudiniOut Houdini::run() {
         for (std::size_t L = 0; L < fps.size(); ++L)
             if (!fps[L].empty())
                 fs.push_back("loop " + std::to_string(L) + ": " +
-                             (fps[L].all ? std::string("every object") : std::to_string(fps[L].objs.size()) + " object(s)"));
+                             (fps[L].all ? std::string("every object")
+                                         : std::to_string(fps[L].objs.size() + fps[L].base_vars.size()) + " object(s)"));
         out.footprint = fs.empty() ? "read-only loops" : join_s(fs, "; ");
     }
 
@@ -500,7 +551,7 @@ HoudiniOut Houdini::run() {
     e.cut_loops.assign(g_.loops.size(), {});
     e.build();
     for (std::size_t L = 0; L < g_.loops.size(); ++L)
-        if (!footprint_covers(fps[L], e.writes, g_.loops[L].body)) {
+        if (!cut_covers(static_cast<int>(L), fps[L], e.writes)) {
             out.why = "loop write footprint not covered";
             return out;
         }
@@ -657,13 +708,10 @@ HoudiniOut Houdini::run() {
     auto check_goal = [&](const std::function<bool(std::size_t)>& before, const z3::expr& at,
                           const std::function<std::optional<z3::expr>(std::size_t)>& goal_of, int L) -> bool {
         // returns true when something was dropped
-        z3::expr_vector gv(c);
         std::vector<std::size_t> who;
         for (std::size_t i = 0; i < cands.size(); ++i) {
             if (!cands[i].alive || cands[i].loop != L) continue;
-            auto gl = goal_of(i);
-            if (!gl) continue;
-            gv.push_back(!*gl);
+            if (!goal_of(i)) continue;
             who.push_back(i);
         }
         if (who.empty()) return false;
@@ -671,26 +719,49 @@ HoudiniOut Houdini::run() {
         for (std::size_t M = 0; M < e.cut_loops.size(); ++M)
             if (e.cut_loops[M].node >= 0 && before(M)) s.add(havoc_assumption(M));
         s.add(at);
-        s.add(z3::mk_or(gv));
         z3::params p(c);
-        p.set("timeout", static_cast<unsigned>(std::max(1.0, std::min(60.0, left())) * 1000));
+        p.set("timeout", static_cast<unsigned>(std::max(1.0, std::min(per_query_, left())) * 1000));
         s.set(p);
-        auto r = s.check();
+        // Drop every goal a model falsifies and ask again for the rest, in
+        // this context (the context may still assume candidates dropped here:
+        // a model of a stronger context is a counterexample for the weaker
+        // one too, so a goal it falsifies is rightly dropped; the outer
+        // rounds re-check the survivors with the final context).
         bool dropped = false;
-        if (r == z3::sat) {
-            auto m = s.get_model();
+        for (;;) {
+            z3::expr_vector rest(c);
+            std::vector<std::size_t> live;
             for (auto i : who)
-                if (!m.eval(*goal_of(i), true).is_true()) {
-                    cands[i].alive = false;
-                    dropped = true;
+                if (cands[i].alive) {
+                    rest.push_back(!*goal_of(i));
+                    live.push_back(i);
                 }
-            if (!dropped) {  // model evaluation disagrees: drop all (never keep an unproved one)
-                for (auto i : who) cands[i].alive = false;
+            if (live.empty()) break;
+            if (std::getenv("PRISM_HOUDINI_DEBUG"))
+                std::fprintf(stderr, "houdini L%d goals=%zu t=%.1f\n", L, live.size(), deadline_ - left());
+            z3::expr act = c.bool_const(("houdini!q" + std::to_string(query_++)).c_str());
+            s.add(z3::implies(act, z3::mk_or(rest)));
+            z3::expr_vector as(c);
+            as.push_back(act);
+            auto r = s.check(as);
+            if (r == z3::unsat) break;
+            if (r == z3::sat) {
+                auto m = s.get_model();
+                bool any = false;
+                for (auto i : live)
+                    if (!m.eval(*goal_of(i), true).is_true()) {
+                        cands[i].alive = false;
+                        any = true;
+                    }
+                if (!any)  // model evaluation disagrees: drop all (never keep an unproved one)
+                    for (auto i : live) cands[i].alive = false;
                 dropped = true;
+                if (left() <= 0) break;
+                continue;
             }
-        } else if (r != z3::unsat) {
-            for (auto i : who) cands[i].alive = false;
+            for (auto i : live) cands[i].alive = false;  // no answer: nothing unproved is kept
             dropped = true;
+            break;
         }
         s.pop();
         return dropped;
@@ -735,7 +806,8 @@ HoudiniOut Houdini::run() {
     for (auto& p : e.props) viols.push_back(p.viol);
     s.add(any_of(c, viols));
     z3::params p(c);
-    p.set("timeout", static_cast<unsigned>(std::max(1.0, std::min(120.0, left())) * 1000));
+    p.set("timeout", static_cast<unsigned>(std::max(per_query_, left()) * 1000));
+    if (std::getenv("PRISM_HOUDINI_DEBUG")) std::fprintf(stderr, "houdini final t=%.1f\n", deadline_ - left());
     s.set(p);
     auto r = s.check();
     s.pop();

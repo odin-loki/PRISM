@@ -148,6 +148,16 @@ std::size_t SymMem::havoc_objects(const z3::expr& guard, const std::vector<uint6
     return todo.size();
 }
 
+std::size_t SymMem::havoc_pointed(const z3::expr& guard, const std::vector<z3::expr>& ptrs, bool keep_init) {
+    for (auto& p : ptrs) {
+        keep_.push_back(p);
+        Entry e{Entry::HavocObj, guard, p, bv(0, 64), p, bv(0, cw_)};
+        e.keep = keep_init;
+        add_entry(std::move(e));
+    }
+    return ptrs.size();
+}
+
 void SymMem::add_entry(Entry e) {
     if (enc_ == MemEncoding::Bv) {
         if (e.kind == Entry::Havoc || e.kind == Entry::HavocObj) {

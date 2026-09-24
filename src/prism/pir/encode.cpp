@@ -248,6 +248,10 @@ struct WriteInst {
     int block;
     std::optional<uint64_t> obj;
     bool inits;
+    // the target pointer's variable and the variables it is derived from by
+    // copies and checked pointer arithmetic (each stays in the object of the
+    // next; loop-cut footprints, houdini.inc)
+    std::vector<int> chain;
 };
 
 // Write footprint of the k-induction loop (docs/PIR.md "k-induction with
@@ -260,7 +264,10 @@ struct Footprint {
     bool all = false;
     std::set<uint64_t> objs;
     bool keep_init = true;
-    bool empty() const { return !all && objs.empty(); }
+    // loop-cut mode only: the objects these pointer variables (defined
+    // before the loop) point to at the header
+    std::set<int> base_vars;
+    bool empty() const { return !all && objs.empty() && base_vars.empty(); }
 };
 
 struct Encoding {
@@ -361,19 +368,19 @@ struct Encoding {
                 auto p = arg(0);
                 auto& in = s.args[2];
                 bool inits = in.is_const && in.bits == wmask(in.width);
-                writes.push_back(WriteInst{nodes[static_cast<std::size_t>(id)].block, M().known(p), inits});
+                writes.push_back(WriteInst{nodes[static_cast<std::size_t>(id)].block, M().known(p), inits, chain_of(s.args[0])});
                 M().store(r, p, arg(1), s.args[1].width, arg(2), s.tag);
                 break;
             }
             case Stmt::MemCpy: {
                 auto p = arg(0);
-                writes.push_back(WriteInst{nodes[static_cast<std::size_t>(id)].block, M().known(p), false});
+                writes.push_back(WriteInst{nodes[static_cast<std::size_t>(id)].block, M().known(p), false, chain_of(s.args[0])});
                 M().copy(r, p, arg(1), arg(2));
                 break;
             }
             case Stmt::MemSet: {
                 auto p = arg(0);
-                writes.push_back(WriteInst{nodes[static_cast<std::size_t>(id)].block, M().known(p), true});
+                writes.push_back(WriteInst{nodes[static_cast<std::size_t>(id)].block, M().known(p), true, chain_of(s.args[0])});
                 M().set(r, p, arg(1), arg(2));
                 break;
             }
@@ -381,6 +388,29 @@ struct Encoding {
             case Stmt::StackRestore: M().stack_restore(r, arg(0)); break;
             default: break;
         }
+    }
+
+    // The pointer variable of a write and the variables it is derived from
+    // by copies and checked pointer arithmetic (not selects).
+    std::vector<const Stmt*> def_stmt;
+    std::vector<int> chain_of(const Arg& a) {
+        std::vector<int> out;
+        if (!cut_mode || a.is_const) return out;
+        if (def_stmt.empty()) {
+            def_stmt.assign(fn.vars.size(), nullptr);
+            for (auto& b : fn.blocks)
+                for (auto& st : b.stmts)
+                    if (st.kind == Stmt::Assign && st.dst >= 0) def_stmt[static_cast<std::size_t>(st.dst)] = &st;
+        }
+        int v = a.var;
+        while (v >= 0 && out.size() < 64) {
+            out.push_back(v);
+            auto* d = def_stmt[static_cast<std::size_t>(v)];
+            if (!d || d->args.empty() || d->args[0].is_const) break;
+            if (!(d->op == Op::Copy || (d->ptr_arith && d->op != Op::Select))) break;
+            v = d->args[0].var;
+        }
+        return out;
     }
 
     // Provenance for pointer arithmetic (memory.hpp SymMem::note).
@@ -880,6 +910,11 @@ struct Encoding {
             if (mem && !fpL.empty()) {
                 std::vector<uint64_t> ids(fpL.objs.begin(), fpL.objs.end());
                 CL.havocked = mem->havoc_objects(reach[static_cast<std::size_t>(id)], ids, fpL.all, fpL.keep_init);
+                if (!fpL.all) {
+                    std::vector<z3::expr> ptrs;
+                    for (int bv : fpL.base_vars) ptrs.push_back(lookup(Arg::v(bv, 64), id));
+                    CL.havocked += mem->havoc_pointed(reach[static_cast<std::size_t>(id)], ptrs, fpL.keep_init);
+                }
             }
             if (mem) CL.havoc_mem = mem->mark();
             for (auto& pv : phi_vals) {
@@ -1547,6 +1582,11 @@ Verdict check_function(const Function& fn, const CheckOptions& opt) {
             r.extra["houdini_candidates"] = std::to_string(h.candidates);
             if (!h.proved) {
                 r.extra["invariants_note"] = "no proof from loop invariants: " + h.why;
+                {  // DEBUG
+                    nlohmann::json inv = nlohmann::json::array();
+                    for (auto& l : h.invariants) inv.push_back(l);
+                    r.extra["debug_invariants"] = inv.dump();
+                }
                 return false;
             }
             std::size_t n = 0;
