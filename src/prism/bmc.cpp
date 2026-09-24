@@ -3697,7 +3697,10 @@ std::vector<Finding> run_bmc(const std::vector<FunctionInfo>& functions, int unw
     // inlining, so a callee's calls keep the callee's positions.
     std::vector<FunctionInfo> tagged;
     tagged.reserve(functions.size());
-    for (auto& fn : functions) tagged.push_back(tag_nondet_sites(fn));
+    const bool vassert = canonical_verifier_assert(functions);
+    for (auto& fn : functions)
+        tagged.push_back(vassert && fn.name != "__VERIFIER_assert" ? rewrite_verifier_assert(tag_nondet_sites(fn))
+                                                                   : tag_nondet_sites(fn));
     for (auto& fn : inline_static(tagged)) {
         // R1: one function the encoder cannot handle (a Z3 sort error, ...)
         // is an ERROR for that function, never a crash of the whole stage.

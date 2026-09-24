@@ -9,6 +9,7 @@ only from a refutation whose counterexample replays, everything else
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import shutil
 import sys
@@ -279,6 +280,44 @@ class WitnessTest(unittest.TestCase):
             # plain k-induction or a bounded-unwind proof: no invariant (empty set)
             for extra in ({"k_induction": "closed"}, {"k_induction": "not-needed", "unwind_closed": "true"}):
                 self.assertEqual(P.correctness_invariants(src, dict(base, extra=extra))[0], [])
+
+    @unittest.skipUnless(shutil.which("clang") and shutil.which("opt"), "clang/opt not on PATH")
+    def test_pir_invariants_in_c(self) -> None:
+        # pir exports conjuncts over IR values; the wrapper names them with the
+        # C variables (debug information) and keeps only what C means the same
+        src_text = ("extern unsigned int __VERIFIER_nondet_uint(void);\n"
+                    "int main(void) {\n"
+                    "  unsigned int y = 1U, n = __VERIFIER_nondet_uint();\n"
+                    "  int k = 0;\n"
+                    "  while (y < n) {\n"
+                    "    y = y + 2U;\n"
+                    "    k = k + 1;\n"
+                    "    for (int j = 0; j < 3; j++) k = k + j;\n"
+                    "  }\n"
+                    "  return 0;\n"
+                    "}\n")
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "t.c"
+            src.write_text(src_text)
+            v = lambda n, w=32: {"v": n, "w": w}  # noqa: E731
+            c = lambda x, w=32: {"c": str(x), "w": w}  # noqa: E731
+            conj = [[{"rel": "mask:1", "a": v("y.0"), "b": c(1)},
+                     {"rel": "ule", "a": v("y.0"), "b": v("call")},
+                     {"rel": "sge", "a": v("k.0"), "b": c(0)},
+                     {"rel": "ule", "a": v("k.0"), "b": c(5)},       # unsigned relation on an int: left out
+                     {"rel": "eq", "a": v("nope"), "b": c(0)}],       # unknown value: left out
+                    [{"rel": "sge", "a": v("k.1"), "b": v("k.0")},     # k.0 is not k's value at the inner loop
+                     {"rel": "sge", "a": v("j.0"), "b": c(0)},
+                     {"rel": "ule", "a": v("y.0"), "b": v("call")},     # y was assigned before this loop
+                     {"rel": "sge", "a": v("k.1"), "b": c(1)}]]
+            f = {"stage": "pir", "function": "main", "status": "PROVED-UNBOUNDED",
+                 "extra": {"k_induction": "closed-invariants", "invariant_conjuncts": json.dumps(conj),
+                           "invariant_loops": json.dumps([{"kind": "", "line": 5, "column": 3},
+                                                          {"kind": "", "line": 8, "column": 5}])}}
+            invs, note = P.correctness_invariants(src, f)
+            got = [(i.location.line, i.location.column, i.value) for i in invs]
+            # j is declared in the for-init: not in scope at the keyword
+            self.assertEqual(got, [(5, 3, "((y & 1) == 1) && (y <= n) && (k >= 0)"), (8, 5, "(k >= 1)")], note)
 
     def test_cex_parsing(self) -> None:
         self.assertEqual(W.parse_assignments("a=1, b=-2"), {"a": 1, "b": -2})

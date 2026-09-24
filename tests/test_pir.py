@@ -43,6 +43,7 @@ EXPECTED: dict[tuple[str, str], str] = {
     ("loops.c", "count4_ok"): laws.PROVED,
     ("loops.c", "loop_ovf_bad"): laws.FAILED,
     ("loops.c", "loop_long_bounded"): laws.BOUNDED,
+    ("loops.c", "loop_long_inv"): laws.PROVED_UNBOUNDED,
     ("loops.c", "nested_ok"): laws.PROVED,
     ("kinduct.c", "kind_closed"): laws.PROVED_UNBOUNDED,
     ("kinduct.c", "kind_countdown"): laws.PROVED_UNBOUNDED,
@@ -424,7 +425,12 @@ class TestPirStage(unittest.TestCase):
         f = got[("loops.c", "loop_long_bounded")]
         self.assertEqual(f["extra"]["unwind_closed"], "false")
         self.assertEqual(f["extra"]["k_induction"], "step-open")
+        self.assertIn("no proof from loop invariants", f["extra"]["invariants_note"])
         self.assertEqual(got[("kinduct.c", "kind_closed")]["extra"]["k_induction"], "closed")
+        # closed by inductive invariants (Houdini: base and step proved), listed in the finding
+        inv = got[("loops.c", "loop_long_inv")]["extra"]
+        self.assertEqual(inv["k_induction"], "closed-invariants")
+        self.assertTrue(json.loads(inv["pir_invariants"])[0])
 
     def test_law9_validation_held_back(self):
         rows = self._pir(self.report)

@@ -148,6 +148,16 @@ std::size_t SymMem::havoc_objects(const z3::expr& guard, const std::vector<uint6
     return todo.size();
 }
 
+std::size_t SymMem::havoc_pointed(const z3::expr& guard, const std::vector<z3::expr>& ptrs, bool keep_init) {
+    for (auto& p : ptrs) {
+        keep_.push_back(p);
+        Entry e{Entry::HavocObj, guard, p, bv(0, 64), p, bv(0, cw_)};
+        e.keep = keep_init;
+        add_entry(std::move(e));
+    }
+    return ptrs.size();
+}
+
 void SymMem::add_entry(Entry e) {
     if (enc_ == MemEncoding::Bv) {
         if (e.kind == Entry::Havoc || e.kind == Entry::HavocObj) {
@@ -188,11 +198,11 @@ z3::expr SymMem::read_cell(const z3::expr& addr) {
     return read_cell_log(addr, log_.size());
 }
 
-z3::expr SymMem::read_cell_log(const z3::expr& addr, std::size_t upto) {
-    auto key = std::make_pair(addr.id(), upto);
+z3::expr SymMem::read_cell_log(const z3::expr& addr, std::size_t upto, bool use_prov) {
+    auto key = std::make_tuple(addr.id(), upto, use_prov);
     if (auto it = memo_.find(key); it != memo_.end()) return it->second;
     keep_.push_back(addr);
-    auto ko = known(addr);
+    auto ko = use_prov ? known(addr) : std::nullopt;
     z3::expr v = bv(0, cw_);  // never written: value 0, not initialised
     for (std::size_t i = 0; i < upto; ++i) {
         auto& e = log_[i];
@@ -205,24 +215,19 @@ z3::expr SymMem::read_cell_log(const z3::expr& addr, std::size_t upto) {
             case Entry::Set: v = z3::ite(e.guard && in_range(addr, e.addr, e.len), e.cell, v); break;
             case Entry::Copy: {
                 auto src = e.src + (addr - e.addr);
-                if (auto ks = known(e.src)) note(src, *ks);
-                v = z3::ite(e.guard && in_range(addr, e.addr, e.len), read_cell_log(src, i), v);
+                if (use_prov)
+                    if (auto ks = known(e.src)) note(src, *ks);
+                v = z3::ite(e.guard && in_range(addr, e.addr, e.len), read_cell_log(src, i, use_prov), v);
                 break;
             }
             case Entry::Havoc: {
-                auto h = c_.bv_const(("mem!h" + std::to_string(fresh_++)).c_str(), 8);
-                auto& reads = havoc_reads_[static_cast<std::size_t>(e.havoc)];
-                for (auto& [a2, h2] : reads) side_.push_back(z3::implies(addr == a2, h == h2));
-                reads.emplace_back(addr, h);
+                auto h = havoc_read(e, addr, 8, "mem!h");
                 v = z3::ite(e.guard && in_range(addr, e.addr, e.len), cell_of(h, bv(1, 1), 0), v);
                 break;
             }
             case Entry::HavocObj: {
                 // one arbitrary cell per address (value, initialised, tag)
-                auto h = c_.bv_const(("mem!ho" + std::to_string(fresh_++)).c_str(), cw_);
-                auto& reads = havoc_reads_[static_cast<std::size_t>(e.havoc)];
-                for (auto& [a2, h2] : reads) side_.push_back(z3::implies(addr == a2, h == h2));
-                reads.emplace_back(addr, h);
+                auto h = havoc_read(e, addr, cw_, "mem!ho");
                 z3::expr cell = h;
                 if (e.keep) cell = h | (v & bv(uint64_t{1} << kCellInit, cw_));
                 v = z3::ite(e.guard && objid(addr) == objid(e.addr), cell, v);
@@ -232,6 +237,20 @@ z3::expr SymMem::read_cell_log(const z3::expr& addr, std::size_t upto) {
     }
     memo_.emplace(key, v);
     return v;
+}
+
+// The arbitrary content of havoc entry e at addr: one value per address.
+z3::expr SymMem::havoc_read(const Entry& e, const z3::expr& addr, unsigned width, const char* base) {
+    // the same address expression reads the same value (no new constraints)
+    auto key = std::make_pair(e.havoc, addr.id());
+    if (auto it = havoc_memo_.find(key); it != havoc_memo_.end()) return it->second;
+    auto h = c_.bv_const((std::string(base) + std::to_string(fresh_++)).c_str(), width);
+    auto& reads = havoc_reads_[static_cast<std::size_t>(e.havoc)];
+    for (auto& [a2, h2] : reads) side_.push_back(z3::implies(addr == a2, h == h2));
+    reads.emplace_back(addr, h);
+    keep_.push_back(addr);
+    havoc_memo_.emplace(key, h);
+    return h;
 }
 
 SymMem::Loaded SymMem::load(const z3::expr& ptr, unsigned width, unsigned tag) {
@@ -257,6 +276,23 @@ SymMem::Loaded SymMem::load(const z3::expr& ptr, unsigned width, unsigned tag) {
     auto v = *val;
     if (8 * n > width) v = v.extract(width - 1, 0);
     return Loaded{v, z3::ite(uninit, bv(1, 1), bv(0, 1)), z3::ite(tagbad, bv(1, 1), bv(0, 1)), *mask};
+}
+
+SymMem::Loaded SymMem::load_exact(const Mark& m, const z3::expr& ptr, unsigned width) {
+    unsigned n = (width + 7) / 8;
+    std::optional<z3::expr> val;
+    z3::expr uninit = c_.bool_val(false);
+    for (unsigned k = 0; k < n; ++k) {
+        auto a = k == 0 ? ptr : ptr + bv(k, 64);
+        auto cell = enc_ == MemEncoding::Array ? z3::select(*m.arr, a) : read_cell_log(a, m.upto, false);
+        auto byte = cell.extract(7, 0);
+        val = val ? z3::concat(byte, *val) : byte;
+        uninit = uninit || cell.extract(kCellInit, kCellInit) == bv(0, 1);
+    }
+    auto v = *val;
+    if (8 * n > width) v = v.extract(width - 1, 0);
+    auto one = z3::ite(uninit, bv(1, 1), bv(0, 1));
+    return Loaded{v, one, bv(0, 1), one};
 }
 
 void SymMem::store(const z3::expr& guard, const z3::expr& ptr, const z3::expr& val, unsigned width,
