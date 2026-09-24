@@ -26,6 +26,7 @@ import PrismRefine.Refine
 import PrismRefine.XPir
 import PrismRefine.XValid
 import PrismRefine.XMemSim
+import PrismRefine.XMemOps
 
 namespace PrismRefine
 
