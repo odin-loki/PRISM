@@ -275,6 +275,11 @@ struct Encoding {
     std::map<std::pair<int, std::vector<int>>, int> ids;
     std::vector<std::vector<std::tuple<int, int, int>>> in_edges;  // (from node, succ idx, to)
     std::vector<z3::expr> reach;
+    // Guard at the end of each node: its reach strengthened by every Assume
+    // in the node. Successor edges start from it, so an assumption restricts
+    // only what executes after it (a check earlier in the same block is not
+    // constrained by a later assume).
+    std::vector<z3::expr> exit_reach;
     std::vector<std::unordered_map<int, z3::expr>> vals;
     std::vector<z3::expr> params;
     std::vector<PropInst> props;
@@ -461,6 +466,7 @@ struct Encoding {
         topo_pos.assign(nodes.size(), 0);
         for (std::size_t i = 0; i < order.size(); ++i) topo_pos[static_cast<std::size_t>(order[i])] = static_cast<int>(i);
         reach.assign(nodes.size(), c.bool_val(false));
+        exit_reach.assign(nodes.size(), c.bool_val(false));
         vals.assign(nodes.size(), {});
         for (int id : order) encode_node(id, out_edges[static_cast<std::size_t>(id)]);
     }
@@ -834,7 +840,9 @@ struct Encoding {
             phi_vals.emplace_back(p.dst, acc ? *acc : fresh_const("phi_dead", w));
         }
         for (auto& [d, e] : phi_vals) m.insert_or_assign(d, e);
-        const auto& r = reach[static_cast<std::size_t>(id)];
+        // The guard of the statement being encoded: the node's reach,
+        // strengthened by each Assume already passed in this node.
+        z3::expr r = reach[static_cast<std::size_t>(id)];
         for (std::size_t si = 0; si < bl.stmts.size(); ++si) {
             const auto& s = bl.stmts[si];
             switch (s.kind) {
@@ -846,10 +854,11 @@ struct Encoding {
                     break;
                 }
                 case Stmt::Check: props.push_back(PropInst{&s, id, r && is1(lookup(s.args[0], id))}); break;
-                case Stmt::Assume: assumptions.push_back(z3::implies(r, is1(lookup(s.args[0], id)))); break;
+                case Stmt::Assume: r = r && is1(lookup(s.args[0], id)); break;
                 default: encode_mem(s, id, r, m); break;
             }
         }
+        exit_reach[static_cast<std::size_t>(id)] = r;
         for (auto& [from, k, to] : outs)
             if (to < 0) cuts.push_back(edge_guard(from, k));
     }
@@ -857,7 +866,7 @@ struct Encoding {
     z3::expr edge_guard(int from, int k) {
         auto& nd = nodes[static_cast<std::size_t>(from)];
         auto& t = fn.blocks[static_cast<std::size_t>(nd.block)].term;
-        const auto& r = reach[static_cast<std::size_t>(from)];
+        const auto& r = exit_reach[static_cast<std::size_t>(from)];
         if (t.kind != Term::Br) return r;
         auto cnd = is1(lookup(t.cond, from));
         return r && (k == 0 ? cnd : !cnd);

@@ -552,6 +552,28 @@ the known `bmc` `mem_uninit_false` (being fixed separately).
 
 ## Known issues
 
+**S9 (fixed): an `assume` constrained checks before it in the same block.**
+The pir encoder added each PIR `assume` as a global axiom
+`reach(node) => cond`. Every check in that node is guarded by the same
+`reach(node)`, so a check that executes *before* the assume was evaluated as
+if the assumption already held. Example:
+`int x = __VERIFIER_nondet_int(); int q = 100 / x; __VERIFIER_assume(x != 0);`
+was PROVED although it divides by zero first. A false `__builtin_assume` /
+`llvm.assume` was also silently assumed (refinement finding 8), so
+`f(int x) { __builtin_assume(x > 0); return 100 / x; }` was PROVED.
+
+The fix:
+- `encode.cpp` threads a running guard through each node. An `assume`
+  strengthens it for later statements and for the node's outgoing edges
+  (`exit_reach`), never for earlier ones.
+- `llvm.assume` is a `FUNC-CONTRACT` check before it is assumed.
+
+Both programs are now refuted. Regression: the doctest "pir: a false
+llvm.assume is a checked violation, not a silent path cut (refinement
+finding 8)", which also checks that an assume placed before the division
+still protects it.
+
+
 Every wrong proof found, reduced to a minimal reproducer. Run any of them
 with `./build/prism FILE --no-llm --stage inventory,classify,bmc`.
 

@@ -492,6 +492,8 @@ struct Tr final : pirmem::TrApi {
             auto q = fr.prefix + bl.name;
             head[q] = newblock(q);
         }
+        // the globals the analysed function names: variables before its results (MemTr::preassign_globals)
+        if (!frames.empty() && &fr == frames.front()) mt.preassign_globals(f);
         std::set<std::string> maybe_uninit;
         for (auto& bl : f.blocks) {
             for (auto& in : bl.insts) {
@@ -597,6 +599,7 @@ struct Tr final : pirmem::TrApi {
 
     void run_frame(Frame& fr) {
         const auto& f = *fr.f;
+        if (&fr == frames.front()) mt.emit_entry_globals();  // first thing of block 0 (prologue)
         const auto live = normal_blocks(f);
         for (auto& bl : f.blocks)
             if (live.count(bl.name)) translate_block(fr, bl);
@@ -1162,7 +1165,16 @@ struct Tr final : pirmem::TrApi {
                 return;
             }
             if (n == "llvm.assume") {
-                assume(cur, arg(0));
+                // A false llvm.assume is undefined behaviour (LangRef), and
+                // clang emits it for __builtin_assume even at -O0. Assuming
+                // it silently would discard exactly the inputs that break the
+                // program's own contract (refinement finding 8), so it is a
+                // checked FUNC-CONTRACT violation first, like a failing
+                // assert(); the path then continues under the assumption.
+                Arg c = arg(0);
+                check(cur, p2(cur, Op::Eq, c, Arg::c(1, 0)), "assume", "FUNC-CONTRACT",
+                      "__builtin_assume / llvm.assume condition can be false (undefined behaviour)", line);
+                assume(cur, c);
                 return;
             }
             if (starts(n, "llvm.memcpy.") || starts(n, "llvm.memmove.")) {

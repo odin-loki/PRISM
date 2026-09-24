@@ -83,6 +83,14 @@ def Mem.alloc (m : Mem) (size kind align init : Nat) : Mem × Nat :=
                     cells := List.replicate size (if init = 1 then some 0 else none) }
   ({ objs := m.objs ++ [o] }, mkPtr (m.objs.length + 1) 0)
 
+/-- An object of `size` bytes, each initialised with an arbitrary value
+(`bytes i`): `ConcMem::alloc` with `init = 2`, which the verifier leaves
+unconstrained. -/
+def Mem.allocArb (m : Mem) (size kind align : Nat) (bytes : Nat → Nat) : Mem × Nat :=
+  let o : MObj := { size := size, live := true, kind := kind, align := max 1 align,
+                    cells := (List.range size).map fun i => some (bytes i % 256) }
+  ({ objs := m.objs ++ [o] }, mkPtr (m.objs.length + 1) 0)
+
 /-- `ConcMem::free`: the object ends its lifetime. -/
 def Mem.free (m : Mem) (p : Nat) : Mem :=
   if ptrObj p = 0 then m
@@ -97,6 +105,15 @@ def Mem.writeN (m : Mem) (p v n : Nat) (init : Bool) : Mem :=
   (List.range n).foldl (fun m k => m.write ((p + k) % 2 ^ 64)
     (if init then some ((v / 2 ^ (8 * k)) % 256) else none)) m
 
+/-- `Stmt::MemCpy` (the interpreter's loop): the `n` cells from `s` are read
+first, then written from `d` (memmove semantics), initialised or not. -/
+def Mem.copy (m : Mem) (d s n : Nat) : Mem :=
+  (List.range n).foldl (fun m' k => m'.write ((d + k) % 2 ^ 64) ((m.readN s n).getD k none)) m
+
+/-- `Stmt::MemSet`: `n` initialised bytes `b` from `d`. -/
+def Mem.fill (m : Mem) (d b n : Nat) : Mem :=
+  (List.range n).foldl (fun m' k => m'.write ((d + k) % 2 ^ 64) (some b)) m
+
 /-- Little-endian value of initialised bytes. -/
 def bytesVal : List Nat → Nat
   | [] => 0
@@ -110,6 +127,19 @@ structure World where
   deriving Inhabited
 
 def World.init : World := { t := 0, mem := { objs := [] } }
+
+/-- `Stmt::Alloc` on the world: `init` 0 uninitialised, 1 zero-filled, 2
+arbitrary initialised bytes, drawn from the oracle in order. -/
+def World.allocW (W : World) (ω : Nat → Nat) (size kind align init : Nat) : World × Nat :=
+  if init = 2 then
+    ({ t := W.t + size, mem := (W.mem.allocArb size kind align (fun i => ω (W.t + i))).1 },
+     (W.mem.allocArb size kind align (fun i => ω (W.t + i))).2)
+  else ({ W with mem := (W.mem.alloc size kind align init).1 }, (W.mem.alloc size kind align init).2)
+
+theorem World.allocW_lt (W : World) (ω : Nat → Nat) (size kind align init : Nat) :
+    (W.allocW ω size kind align init).2 < 2 ^ 64 := by
+  unfold World.allocW Mem.allocArb Mem.alloc mkPtr
+  split <;> exact Nat.mod_lt _ (Nat.two_pow_pos 64)
 
 /-- `n` more values drawn. -/
 def World.adv (W : World) (n : Nat) : World := { W with t := W.t + n }

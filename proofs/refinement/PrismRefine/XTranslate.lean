@@ -356,6 +356,80 @@ def gEnd (k i : Nat) (B : Arg) (inb : Bool) (g : GSt) : List PStmt × List Nat :
   if g.var.isNone && g.cst == 0 then (g.s ++ [.assign i .copy [B]], g.ts)
   else (g.s ++ gFinS i (k + g.ts.length) B delta inb, g.ts ++ gFinT inb)
 
+/-- `MemTr::store` (also `llvm.lifetime.start`, `Tr::call`). -/
+def trStore (c : Ctx) (k w : Nat) (v : FOpnd) (p : Opnd) (al : Nat) : Except String (List PStmt × List Nat) := do
+    need (okW w) "UNENCODED: width"
+    need (alignOK al) "outside fragment: alignment"
+    let (sv, tv, V, I) ← trStoreVal c w k v
+    let (sp, tp, P) ← trOpndX c 64 true (k + tv.length) p
+    let (sa, ta) := accessChecks (k + tv.length + tp.length) P ((w + 7) / 8) true al
+    pure (sv ++ sp ++ sa ++ [.store P (V.setW w) I], tv ++ tp ++ ta)
+
+/-! ### `llvm.memcpy` / `memmove` / `memset` (`MemTr::memcpy_`, `memset_`) -/
+
+/-- A length widened to 64 bits (`Op::ZExt` when narrower). -/
+def zext64 (k : Nat) (L : Arg) : List PStmt × List Nat × Arg :=
+  if L.width < 64 then ([.assign k (.cast .zext) [L]], [64], .v k 64) else ([], [], L)
+
+/-- `MemTr::access_checks` of `n` bytes at `P` with byte alignment under the
+guard `g` (`n ≠ 0`): every check is `and g c`. -/
+def accChkG (k g : Nat) (P N : Arg) (write : Bool) : List PStmt :=
+  let G := Arg.v g 1
+  [.assign k (.bin .lshr) [P, c64 48], .assign (k + 1) (.bin .and) [P, c64 (2 ^ 48 - 1)],
+   .assign (k + 2) .objKind [P], .assign (k + 3) .objLive [P], .assign (k + 4) .objSize [P],
+   .assign (k + 5) (.cmp .eq) [.v k 64, c64 0], .assign (k + 6) (.bin .and) [G, .v (k + 5) 1],
+   .check (.v (k + 6) 1) "null" "PTR-NULL-DEREF",
+   .assign (k + 7) (.cmp .ne) [.v k 64, c64 0], .assign (k + 8) (.cmp .eq) [.v (k + 2) 8, .c 8 0],
+   .assign (k + 9) (.bin .and) [.v (k + 7) 1, .v (k + 8) 1], .assign (k + 10) (.bin .and) [G, .v (k + 9) 1],
+   .check (.v (k + 10) 1) "wild" "PTR-INVALID-DEREF",
+   .assign (k + 11) (.cmp .ne) [.v (k + 2) 8, .c 8 0], .assign (k + 12) (.cmp .eq) [.v (k + 3) 1, .c 1 0],
+   .assign (k + 13) (.bin .and) [.v (k + 11) 1, .v (k + 12) 1], .assign (k + 14) (.bin .and) [G, .v (k + 13) 1],
+   .check (.v (k + 14) 1) "uaf" "MEM-UAF",
+   .assign (k + 15) (.bin .add) [.v (k + 1) 64, N], .assign (k + 16) (.cmp .ugt) [.v (k + 15) 64, .v (k + 4) 64],
+   .assign (k + 17) (.ovf .uadd) [.v (k + 1) 64, N], .assign (k + 18) (.bin .or) [.v (k + 16) 1, .v (k + 17) 1],
+   .assign (k + 19) (.bin .and) [.v (k + 3) 1, .v (k + 18) 1], .assign (k + 20) (.bin .and) [G, .v (k + 19) 1],
+   .check (.v (k + 20) 1) (if write then "oob-write" else "oob-read")
+     (if write then "MEM-OOB-WRITE" else "MEM-OOB-READ")] ++
+  (if write then
+    [.assign (k + 21) (.cmp .eq) [.v (k + 2) 8, .c 8 4], .assign (k + 22) (.bin .and) [.v (k + 3) 1, .v (k + 21) 1],
+     .assign (k + 23) (.bin .and) [G, .v (k + 22) 1], .check (.v (k + 23) 1) "write-const" "MEM-WRITE-CONST"]
+   else [])
+
+def accTG (write : Bool) : List Nat :=
+  [64, 64, 8, 1, 64, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 64, 1, 1, 1, 1, 1] ++ (if write then [1, 1, 1] else [])
+
+/-- The overlap check of `memcpy` (not `memmove`). -/
+def overlapChk (j g : Nat) (D S N : Arg) : List PStmt :=
+  [.assign j (.bin .and) [D, c64 (2 ^ 48 - 1)], .assign (j + 1) (.bin .and) [S, c64 (2 ^ 48 - 1)],
+   .assign (j + 2) (.bin .add) [.v (j + 1) 64, N], .assign (j + 3) (.cmp .ult) [.v j 64, .v (j + 2) 64],
+   .assign (j + 4) (.bin .add) [.v j 64, N], .assign (j + 5) (.cmp .ult) [.v (j + 1) 64, .v (j + 4) 64],
+   .assign (j + 6) (.bin .lshr) [D, c64 48], .assign (j + 7) (.bin .lshr) [S, c64 48],
+   .assign (j + 8) (.cmp .eq) [.v (j + 6) 64, .v (j + 7) 64],
+   .assign (j + 9) (.bin .and) [.v (j + 3) 1, .v (j + 5) 1], .assign (j + 10) (.bin .and) [.v (j + 8) 1, .v (j + 9) 1],
+   .assign (j + 11) (.bin .and) [.v g 1, .v (j + 10) 1], .check (.v (j + 11) 1) "overlap" "MEM-OVERLAP"]
+
+def overlapT : List Nat := [64, 64, 64, 1, 64, 1, 64, 64, 1, 1, 1, 1]
+
+/-- `MemTr::emit_entry_globals`: the initialiser's stores into the global
+(variable `i`), a pointer addition first for a non-zero offset. -/
+def globStores (i : Nat) : Nat → List (Nat × Nat × Nat) → List PStmt × List Nat
+  | _, [] => ([], [])
+  | k, (o, w, v) :: t =>
+    if o = 0 then
+      let r := globStores i k t
+      (.store (.v i 64) (.c w (v % 2 ^ w)) (.c 1 1) :: r.1, r.2)
+    else
+      let r := globStores i (k + 1) t
+      (.assign k (.bin .add) [.v i 64, c64 o] :: .store (.v k 64) (.c w (v % 2 ^ w)) (.c 1 1) :: r.1, 64 :: r.2)
+
+/-- The checks `Tr::call` inserts for `llvm.abs` / `ctlz` / `cttz` with the
+poison flag set. -/
+def unChecks (uk : UnK) (flag : Bool) (w : Nat) (A : Arg) : List Chk :=
+  match uk with
+  | .abs => opt flag (.p (.cmp .eq) A (.c w (2 ^ (w - 1))) "abs" "INT-SIGNED-OVF")
+  | .ctlz | .cttz => opt flag (.p (.cmp .eq) A (.c w 0) "clz0" "INT-CLZ-ZERO")
+  | _ => []
+
 /-- The operands a `getelementptr` reads. -/
 def gepUses (base : Opnd) (ix : List GIdx) : List Opnd := base :: ix.filterMap (fun g => g.opnd.map (·.1))
 
@@ -384,13 +458,7 @@ def trSInstX (c : Ctx) (k : Nat) : SInst → Except String (List PStmt × List N
     let (sa, ta) := accessChecks (k + tp.length) P ((w + 7) / 8) false al
     let u := k + tp.length + ta.length
     pure (sp ++ sa ++ [.load i u P, .check (.v u 1) "uninit" "UNINIT-READ"], tp ++ ta ++ [1])
-  | .store w v p al => do
-    need (okW w) "UNENCODED: width"
-    need (alignOK al) "outside fragment: alignment"
-    let (sv, tv, V, I) ← trStoreVal c w k v
-    let (sp, tp, P) ← trOpndX c 64 true (k + tv.length) p
-    let (sa, ta) := accessChecks (k + tv.length + tp.length) P ((w + 7) / 8) true al
-    pure (sv ++ sp ++ sa ++ [.store P (V.setW w) I], tv ++ tp ++ ta)
+  | .store w v p al => trStore c k w v p al
   | .gep d inb base ix => do
     need ((gepUses base ix).all (· != .reg d)) "outside fragment: getelementptr reads its own result"
     let (sb, tb, B) ← trOpndX c 64 true k base
@@ -401,6 +469,90 @@ def trSInstX (c : Ctx) (k : Nat) : SInst → Except String (List PStmt × List N
     let g ← gLoop k' { s := [], ts := [], cst := 0, var := none } (ix.zip As)
     let (sg, tg) := gEnd k' i B inb g
     pure (sb ++ si ++ sg, tb ++ ti ++ tg)
+  | .mm d mk w a b => do
+    need (okW w) "UNENCODED: width"
+    let (sa, ta, A) ← trOpndX c w false k a
+    let (sb, tb, B) ← trOpndX c w false (k + ta.length) b
+    let i ← dstX c d w
+    need (look c.sh d).isNone "outside fragment: result with a shadow"
+    pure (sa ++ sb ++ [.assign i (.mm mk) [A, B]], ta ++ tb)
+  | .un d uk w a flag => do
+    need (okW w) "UNENCODED: width"
+    need (uk != .bswap || w % 16 == 0) "UNENCODED: call @llvm.bswap"
+    need (!flag || uk == .abs || uk == .ctlz || uk == .cttz) "outside fragment: flag"
+    let (sa, ta, A) ← trOpndX c w false k a
+    let (sc, tc) := emitAll (k + ta.length) (unChecks uk flag w A)
+    let i ← dstX c d w
+    need (look c.sh d).isNone "outside fragment: result with a shadow"
+    pure (sa ++ sc ++ [.assign i (.un uk) [A]], ta ++ tc)
+  | .expect d w a => do
+    need (okW w) "UNENCODED: width"
+    let (sa, ta, A) ← trOpndX c w false k a
+    let i ← dstX c d w
+    need (look c.sh d).isNone "outside fragment: result with a shadow"
+    pure (sa ++ [.assign i .copy [A]], ta)
+  | .ovf d ok w a b => do
+    need (okW w) "UNENCODED: width"
+    let (sa, ta, A) ← trOpndX c w false k a
+    let (sb, tb, B) ← trOpndX c w false (k + ta.length) b
+    let i0 ← dstX c (pairReg d 0) w
+    let i1 ← dstX c (pairReg d 1) 1
+    need ((look c.sh (pairReg d 0)).isNone && (look c.sh (pairReg d 1)).isNone)
+      "outside fragment: result with a shadow"
+    need (A.var? != some i0 && B.var? != some i0) "outside fragment: overflow operand"
+    pure (sa ++ sb ++ [.assign i0 (.bin (ovfBin ok)) [A, B], .assign i1 (.ovf ok) [A, B]], ta ++ tb)
+  | .xv d w src idx => do
+    need (okW w) "UNENCODED: width"
+    need (decide (idx ≤ 1)) "UNENCODED: extractvalue"
+    match look c.env (pairReg src idx) with
+    | some a =>
+      need (a.lt c.hi) "outside fragment: extractvalue reads above its instance"
+      need (look c.sh (pairReg src idx)).isNone "outside fragment: pair with a shadow"
+      let i ← dstX c d w
+      need (look c.sh d).isNone "outside fragment: result with a shadow"
+      pure ([.assign i .copy [a]], [])
+    | none => throw "UNENCODED: extractvalue"
+  | .lstart n p => do
+    need (decide (1 ≤ n ∧ n ≤ 8)) "UNENCODED: call @llvm.lifetime.start (object larger than 8 bytes)"
+    trStore c k (8 * n) .undef p 1
+  | .lend p => do
+    let (sp, tp, P) ← trOpndX c 64 true k p
+    pure (sp ++ [.free P], tp)
+  | .glob d size al kd ini st => do
+    need (!c.inlined) "outside fragment: global in an inlined function"
+    need (st.all fun (o, _, _) => decide (o < 2 ^ 64)) "outside fragment: initialiser offset"
+    let i ← dstX c d 64
+    need (look c.sh d).isNone "outside fragment: result with a shadow"
+    let (s1, t1) := globStores i k st
+    pure (.alloc i (.c 64 size) kd ini al :: s1, t1)
+  | .memcpy d s len lw mv => do
+    need (okW lw) "UNENCODED: width"
+    let (sd, td, D) ← trOpndX c 64 true k d
+    let (ss, ts, S) ← trOpndX c 64 true (k + td.length) s
+    let (sn, tn, L) ← trOpndX c lw true (k + td.length + ts.length) len
+    need (L.width == lw) "outside fragment: length width"
+    let k1 := k + td.length + ts.length + tn.length
+    let (sz, tz, N) := zext64 k1 L
+    let g := k1 + tz.length
+    let a1 := g + 1
+    let a2 := a1 + (accTG true).length
+    let a3 := a2 + (accTG false).length
+    pure (sd ++ ss ++ sn ++ sz ++ [.assign g (.cmp .ne) [N, c64 0]] ++ accChkG a1 g D N true ++
+            accChkG a2 g S N false ++ (if mv then [] else overlapChk a3 g D S N) ++ [.memcpy D S N],
+          td ++ ts ++ tn ++ tz ++ [1] ++ accTG true ++ accTG false ++ (if mv then [] else overlapT))
+  | .memset d b len lw => do
+    need (okW lw) "UNENCODED: width"
+    let (sd, td, D) ← trOpndX c 64 true k d
+    let (sb, tb, B) ← trOpndX c 8 true (k + td.length) b
+    need (B.width == 8) "outside fragment: byte width"
+    let (sn, tn, L) ← trOpndX c lw true (k + td.length + tb.length) len
+    need (L.width == lw) "outside fragment: length width"
+    let k1 := k + td.length + tb.length + tn.length
+    let (sz, tz, N) := zext64 k1 L
+    let g := k1 + tz.length
+    pure (sd ++ sb ++ sn ++ sz ++ [.assign g (.cmp .ne) [N, c64 0]] ++ accChkG (g + 1) g D N true ++
+            [.memset D B N],
+          td ++ tb ++ tn ++ tz ++ [1] ++ accTG true)
 
 def trSInstsX (c : Ctx) : Nat → List SInst → Except String (List PStmt × List Nat)
   | _, [] => .ok ([], [])
@@ -531,6 +683,13 @@ where
     | .load d w _ _ => [(d, w)]
     | .store .. => []
     | .gep d _ _ _ => [(d, 64)]
+    | .mm d _ w _ _ => [(d, w)]
+    | .un d _ w _ _ => [(d, w)]
+    | .expect d w _ => [(d, w)]
+    | .ovf d _ w _ _ => [(pairReg d 0, w), (pairReg d 1, 1)]
+    | .xv d w _ _ => [(d, w)]
+    | .glob d _ _ _ _ _ => [(d, 64)]
+    | .lstart .. | .lend .. | .memcpy .. | .memset .. => []
 
 def xPhisOf (G : XFunc) : List PhiI := G.blocks.flatMap (·.phis)
 

@@ -74,6 +74,10 @@ def pop? (s : String) : Option POp :=
     | "ashr.inexact" => some .lostBitsA
     | "udiv.inexact" => some .inexactU
     | "sdiv.inexact" => some .inexactS
+    | "smax" => some (.mm .smax) | "smin" => some (.mm .smin)
+    | "umax" => some (.mm .umax) | "umin" => some (.mm .umin)
+    | "abs" => some (.un .abs) | "ctlz" => some (.un .ctlz) | "cttz" => some (.un .cttz)
+    | "ctpop" => some (.un .ctpop) | "bswap" => some (.un .bswap)
     | _ => none
 
 def opnd? (s : String) : Except String Opnd :=
@@ -219,6 +223,15 @@ def parsePir (ls : List (List String)) : Except String PFunc := do
       let (ps, ss) ← match cur with | some c => pure c | none => throw "statement outside a block"
       if d3 != "-1" || tag != "0" then throw "PIR load with an effective-type tag"
       cur := some (ps, .load (← nat? d) (← nat? u) (← arg? p) :: ss)
+    | ["free", p] =>
+      let (ps, ss) ← match cur with | some c => pure c | none => throw "statement outside a block"
+      cur := some (ps, .free (← arg? p) :: ss)
+    | ["memcpy", d, sp, n] =>
+      let (ps, ss) ← match cur with | some c => pure c | none => throw "statement outside a block"
+      cur := some (ps, .memcpy (← arg? d) (← arg? sp) (← arg? n) :: ss)
+    | ["memset", d, b, n] =>
+      let (ps, ss) ← match cur with | some c => pure c | none => throw "statement outside a block"
+      cur := some (ps, .memset (← arg? d) (← arg? b) (← arg? n) :: ss)
     | ["store", p, v, init, tag] =>
       let (ps, ss) ← match cur with | some c => pure c | none => throw "statement outside a block"
       if tag != "0" then throw "PIR store with an effective-type tag"
@@ -280,6 +293,20 @@ def diff (a b : PFunc) : String := Id.run do
   return "equal"
 
 /-! ### The extended fragment (`XLlvm.lean`): `freeze`, `undef`, calls -/
+
+def mmK? : String → Except String MMK
+  | "smax" => .ok .smax | "smin" => .ok .smin | "umax" => .ok .umax | "umin" => .ok .umin
+  | k => .error s!"intrinsic {k}"
+
+def unK? : String → Except String UnK
+  | "abs" => .ok .abs | "ctlz" => .ok .ctlz | "cttz" => .ok .cttz
+  | "ctpop" => .ok .ctpop | "bswap" => .ok .bswap
+  | k => .error s!"intrinsic {k}"
+
+def ovfK? : String → Except String OvfOp
+  | "sadd" => .ok .sadd | "uadd" => .ok .uadd | "ssub" => .ok .ssub
+  | "usub" => .ok .usub | "smul" => .ok .smul | "umul" => .ok .umul
+  | k => .error s!"overflow intrinsic {k}"
 
 def fopnd? (s : String) : Except String FOpnd :=
   if s == "undef" then .ok .undef else do pure (.o (← opnd? s))
@@ -372,6 +399,41 @@ def parseXLlvm (name : String) (ls : List (List String)) :
       let (bn, ps, sg, is) ← inBlock
       let ix ← gidx? rest
       f := { f with cur := some (bn, ps, sg, .gep (← reg? d) (inb == "1") (← opnd? base) ix :: is) }
+    | ["mm", d, k, w, a, b] =>
+      let (bn, ps, sg, is) ← inBlock
+      f := { f with cur := some (bn, ps, sg, .mm (← reg? d) (← mmK? k) (← nat? w) (← opnd? a) (← opnd? b) :: is) }
+    | ["un", d, k, w, a, fl] =>
+      let (bn, ps, sg, is) ← inBlock
+      f := { f with cur := some (bn, ps, sg, .un (← reg? d) (← unK? k) (← nat? w) (← opnd? a) (fl == "1") :: is) }
+    | ["expect", d, w, a] =>
+      let (bn, ps, sg, is) ← inBlock
+      f := { f with cur := some (bn, ps, sg, .expect (← reg? d) (← nat? w) (← opnd? a) :: is) }
+    | ["ovf", d, k, w, a, b] =>
+      let (bn, ps, sg, is) ← inBlock
+      f := { f with cur := some (bn, ps, sg, .ovf (← reg? d) (← ovfK? k) (← nat? w) (← opnd? a) (← opnd? b) :: is) }
+    | ["xv", d, w, src, idx] =>
+      let (bn, ps, sg, is) ← inBlock
+      f := { f with cur := some (bn, ps, sg, .xv (← reg? d) (← nat? w) (← reg? src) (← nat? idx) :: is) }
+    | ["lstart", n, p] =>
+      let (bn, ps, sg, is) ← inBlock
+      f := { f with cur := some (bn, ps, sg, .lstart (← nat? n) (← opnd? p) :: is) }
+    | "glob" :: d :: sz :: al :: kd :: ini :: _ :: st =>
+      let (bn, ps, sg, is) ← inBlock
+      let rec triples : List String → Except String (List (Nat × Nat × Nat))
+        | [] => .ok []
+        | o :: w :: v :: t => do pure ((← nat? o, ← nat? w, ← nat? v) :: (← triples t))
+        | _ => .error "bad glob line"
+      f := { f with cur := some (bn, ps, sg, .glob (← reg? d) (← nat? sz) (← nat? al) (← nat? kd) (← nat? ini) (← triples st) :: is) }
+    | ["lend", p] =>
+      let (bn, ps, sg, is) ← inBlock
+      f := { f with cur := some (bn, ps, sg, .lend (← opnd? p) :: is) }
+    | ["memcpy", d, sp, n, lw, mv] =>
+      let (bn, ps, sg, is) ← inBlock
+      f := { f with cur := some (bn, ps, sg,
+        .memcpy (← opnd? d) (← opnd? sp) (← opnd? n) (← nat? lw) (mv == "1") :: is) }
+    | ["memset", d, b, n, lw] =>
+      let (bn, ps, sg, is) ← inBlock
+      f := { f with cur := some (bn, ps, sg, .memset (← opnd? d) (← opnd? b) (← opnd? n) (← nat? lw) :: is) }
     | "call" :: d :: rw :: callee :: _ :: args =>
       let (bn, ps, sg, is) ← inBlock
       let dst ← if d == "-" then pure none else do pure (some (← reg? d))

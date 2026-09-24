@@ -95,6 +95,26 @@ class StaticParity(unittest.TestCase):
             self.assertIn(op, names, msg=op)
             self.assertIn(f'"{names[op]}"', self.check, msg=f"{op} ({names[op]}) not parsed by Check.lean")
 
+    def test_intrinsic_operators_match_op_name(self):
+        # the intrinsics the extended fragment models (XTranslate.lean `mm`, `un`)
+        names = dict(re.findall(r'case Op::(\w+): return "([^"]+)";', self.pir))
+        for op in ("SMax", "SMin", "UMax", "UMin", "Abs", "Ctlz", "Cttz", "Ctpop", "Bswap"):
+            self.assertIn(op, names, msg=op)
+            self.assertIn(f'"{names[op]}"', self.check, msg=f"{op} not parsed by Check.lean")
+        for prefix in ("llvm.smax.", "llvm.abs.", "llvm.ctlz.", "llvm.ctpop.", "llvm.bswap.", "llvm.memcpy.",
+                       "llvm.memmove.", "llvm.memset.", "llvm.lifetime.start", "llvm.lifetime.end"):
+            self.assertIn(prefix, self.cpp, msg=prefix)
+
+    def test_globals_share_one_definition(self):
+        # the variables the translator preassigns for globals and the `L glob`
+        # lines the exporter writes come from the same function
+        mem = _read(ROOT / "src" / "prism" / "pir" / "translate_mem.cpp")
+        export = _read(ROOT / "src" / "prism" / "pir" / "export_lean.cpp")
+        self.assertIn("entry_globals(t_.module(), lay_, f, t_.options().globals_initial)", mem)
+        self.assertIn("pirmem::entry_globals(m, lay, f, opt.globals_initial)", export)
+        self.assertIn("mt.preassign_globals(f)", self.cpp)
+        self.assertIn("mt.emit_entry_globals()", self.cpp)
+
 
 @unittest.skipUnless(CHECKER.is_file(), "NOTRUN: pir_lean_check not built (cd proofs/refinement && lake build)")
 class CheckerFixtures(unittest.TestCase):
@@ -124,7 +144,9 @@ class EndToEnd(unittest.TestCase):
         ext = re.search(r"total: agree=\d+ agree-ext=(\d+)", r.stdout)
         self.assertIsNotNone(ext, msg=r.stdout)
         assert ext is not None
-        self.assertGreaterEqual(int(ext.group(1)), 5)
+        # with the intrinsics, memcpy/memset and globals: 28 functions measured;
+        # the pir stage's time budget can leave files unexported on a loaded machine
+        self.assertGreaterEqual(int(ext.group(1)), 15)
 
 
 if __name__ == "__main__":

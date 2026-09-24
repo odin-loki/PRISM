@@ -5221,6 +5221,98 @@ TEST_CASE("pir: lean export of freeze, undef and direct calls") {
     fs::remove_all(dir);
 }
 
+static const char* kLeanIntrIr = R"IR(
+declare void @llvm.lifetime.start.p0(i64, ptr)
+declare void @llvm.lifetime.end.p0(i64, ptr)
+declare void @llvm.memmove.p0.p0.i64(ptr, ptr, i64, i1)
+declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)
+declare { i32, i1 } @llvm.ssub.with.overflow.i32(i32, i32)
+declare i32 @llvm.abs.i32(i32, i1)
+declare i32 @llvm.umax.i32(i32, i32)
+@k = internal constant [2 x i16] [i16 7, i16 -1], align 2
+define i32 @life(i32 %x) {
+entry:
+  %a = alloca i32, align 4
+  call void @llvm.lifetime.start.p0(i64 4, ptr %a)
+  store i32 %x, ptr %a, align 4
+  %v = load i32, ptr %a, align 4
+  call void @llvm.lifetime.end.p0(i64 4, ptr %a)
+  ret i32 %v
+}
+define i32 @life_bad(i32 %x) {
+entry:
+  %a = alloca i32, align 4
+  call void @llvm.lifetime.start.p0(i64 4, ptr %a)
+  call void @llvm.lifetime.end.p0(i64 4, ptr %a)
+  store i32 %x, ptr %a, align 4
+  ret i32 %x
+}
+define i32 @move(i64 %n) {
+entry:
+  %a = alloca [8 x i8], align 1
+  call void @llvm.memset.p0.i64(ptr %a, i8 1, i64 8, i1 false)
+  %p = getelementptr inbounds [8 x i8], ptr %a, i64 0, i64 1
+  call void @llvm.memmove.p0.p0.i64(ptr %p, ptr %a, i64 %n, i1 false)
+  %q = getelementptr inbounds [8 x i8], ptr %a, i64 0, i64 2
+  %v = load i8, ptr %q, align 1
+  %r = zext i8 %v to i32
+  ret i32 %r
+}
+define i32 @sub_ovf(i32 %a, i32 %b) {
+entry:
+  %s = call { i32, i1 } @llvm.ssub.with.overflow.i32(i32 %a, i32 %b)
+  %v = extractvalue { i32, i1 } %s, 0
+  %o = extractvalue { i32, i1 } %s, 1
+  %r = select i1 %o, i32 0, i32 %v
+  %m = call i32 @llvm.abs.i32(i32 %r, i1 true)
+  %u = call i32 @llvm.umax.i32(i32 %m, i32 3)
+  ret i32 %u
+}
+define i32 @kread(i64 %i) {
+entry:
+  %p = getelementptr inbounds [2 x i16], ptr @k, i64 0, i64 %i
+  %v = load i16, ptr %p, align 2
+  %r = sext i16 %v to i32
+  ret i32 %r
+}
+)IR";
+
+TEST_CASE("pir: lean export of intrinsics, lifetime markers, memory intrinsics and read-only globals") {
+    namespace fs = std::filesystem;
+    auto m = prism::pir::ir::parse_module(kLeanIntrIr);
+    fs::path dir = fs::temp_directory_path() / "prism-lean-export-intr";
+    fs::remove_all(dir);
+    ::setenv("PRISM_PIR_LEAN_EXPORT", dir.string().c_str(), 1);
+    prism::pir::TranslateOptions opt;
+    for (const char* name : {"life", "life_bad", "move", "sub_ovf", "kread"}) {
+        const auto* f = m.find(name);
+        REQUIRE(f != nullptr);
+        auto t = prism::pir::translate(m, *f, opt);
+        CHECK(t.fn.has_value());
+        prism::pir::export_lean_pair(dir, "unit", m, *f, opt, t);
+    }
+    ::unsetenv("PRISM_PIR_LEAN_EXPORT");
+    std::ifstream in(dir / "unit.pirl");
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    MESSAGE(text);
+    CHECK(text.find("L lstart 4 %a\n") != std::string::npos);
+    CHECK(text.find("L lend %a\n") != std::string::npos);
+    CHECK(text.find("L memset %a #1 #8 64\n") != std::string::npos);
+    CHECK(text.find("L memcpy %p %a %n 64 1\n") != std::string::npos);
+    CHECK(text.find("L ovf %s ssub 32 %a %b\n") != std::string::npos);
+    CHECK(text.find("L xv %o 1 %s 1\n") != std::string::npos);
+    CHECK(text.find("L un %m abs 32 %r 1\n") != std::string::npos);
+    CHECK(text.find("L mm %u umax 32 %m #3\n") != std::string::npos);
+    // the read-only global: allocated at the entry, then its non-zero stores
+    // (the parser keeps a negative element's bits sign-extended; the stores write its low bytes)
+    CHECK(text.find("L glob %@k 4 2 4 1 2 0 16 7 2 16 18446744073709551615\n") != std::string::npos);
+    CHECK(text.find("L unsupported") == std::string::npos);
+    CHECK(text.find("P free ") != std::string::npos);
+    CHECK(text.find("P memcpy ") != std::string::npos);
+    CHECK(text.find("P memset ") != std::string::npos);
+    fs::remove_all(dir);
+}
+
 TEST_CASE("pir: unmodelled constructs are named, pointer params are Law 6") {
     auto t = pir_of("define i32 @g(ptr %p) {\nentry:\n  %v = load i32, ptr %p\n  ret i32 %v\n}\n", "g");
     CHECK_FALSE(t.fn.has_value());
@@ -5265,6 +5357,48 @@ TEST_CASE("pir: interpreter semantics and sha256") {
 }
 
 #ifdef PRISM_HAS_Z3
+TEST_CASE("pir: a false llvm.assume is a checked violation, not a silent path cut (refinement finding 8)") {
+    auto verdict = [](const std::string& ir, const std::string& fn) {
+        auto t = pir_of(ir, fn);
+        REQUIRE(t.fn.has_value());
+        return prism::pir::check_function(*t.fn, 8, 30);
+    };
+    // f(x) { __builtin_assume(x > 0); return 100 / x; } at -O0: f(0) is UB
+    auto bad = verdict("define i32 @f(i32 noundef %x) {\nentry:\n  %c = icmp sgt i32 %x, 0\n"
+                       "  call void @llvm.assume(i1 %c)\n  %q = sdiv i32 100, %x\n  ret i32 %q\n}\n"
+                       "declare void @llvm.assume(i1 noundef)\n",
+                       "f");
+    CHECK(bad.status == std::string(prism::laws::FAILED));
+    CHECK(bad.cls == "FUNC-CONTRACT");
+    // an assume that always holds is still proved, and it still constrains
+    // the rest of the path (x | 1 is never 0, so the division is safe)
+    auto ok = verdict("define i32 @g(i32 noundef %x) {\nentry:\n  %o = or i32 %x, 1\n"
+                      "  %c = icmp ne i32 %o, 0\n  call void @llvm.assume(i1 %c)\n"
+                      "  %q = udiv i32 100, %o\n  ret i32 %q\n}\n"
+                      "declare void @llvm.assume(i1 noundef)\n",
+                      "g");
+    CHECK(prism::laws::is_proof(ok.status));
+    // An assume constrains only what executes after it. A division by a
+    // nondet value followed, in the same block, by an assume that excludes
+    // zero divides by zero first: it must be refuted, not proved (the old
+    // encoding made every assume a global axiom of its block, so the check
+    // before it was proved).
+    auto order = verdict("define i32 @h() {\nentry:\n  %x = call i32 @__VERIFIER_nondet_int()\n"
+                         "  %q = sdiv i32 100, %x\n  %c = icmp ne i32 %x, 0\n  %z = zext i1 %c to i32\n"
+                         "  call void @__VERIFIER_assume(i32 %z)\n  ret i32 %q\n}\n"
+                         "declare i32 @__VERIFIER_nondet_int()\ndeclare void @__VERIFIER_assume(i32)\n",
+                         "h");
+    CHECK(order.status == std::string(prism::laws::FAILED));
+    CHECK(order.cls == "INT-DIV-ZERO");
+    // the same assume before the division still protects it
+    auto before = verdict("define i32 @k() {\nentry:\n  %x = call i32 @__VERIFIER_nondet_int()\n"
+                          "  %c = icmp ne i32 %x, 0\n  %z = zext i1 %c to i32\n"
+                          "  call void @__VERIFIER_assume(i32 %z)\n  %q = sdiv i32 100, %x\n  ret i32 %q\n}\n"
+                          "declare i32 @__VERIFIER_nondet_int()\ndeclare void @__VERIFIER_assume(i32)\n",
+                          "k");
+    CHECK(prism::laws::is_proof(before.status));
+}
+
 TEST_CASE("pir: undef is a fresh value at every use, branching on it is UB (refinement finding 4)") {
     // LLVM LangRef: every use of an undef value may observe a different
     // value, and `br i1 undef` / a noundef argument or return of undef is UB.
