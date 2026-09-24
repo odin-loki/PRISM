@@ -747,3 +747,110 @@ done:
     CHECK(v.extra["k_induction"] == "not-attempted (allocation or free in the loop)");
 }
 #endif
+
+// Loop invariants (docs/PIR.md "Loop invariants"; src/prism/pir/houdini.inc):
+// byte loops over heap objects of a symbolic size close with inductive
+// invariants proved by Houdini; their false twins (reading one past the
+// terminator, an off-by-one write, an unterminated string, a write through
+// a pointer read from memory) are still refuted, never proved.
+TEST_CASE("pir: Houdini loop invariants prove symbolic-size byte loops, twins refuted (skips without clang/opt)") {
+    auto fe = pp::find_frontend(prism::default_config());
+    if (!fe.clang || !fe.opt) return;
+    auto cfg = prism::default_config();
+    auto dir = std::filesystem::temp_directory_path() / "prism_pir_houdini";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    std::ofstream(dir / "inv.c") << R"(#include <assert.h>
+#include <stdlib.h>
+#include <string.h>
+#define BIG (1UL << 40)
+static unsigned long my_strlen(const char *s) { unsigned long i = 0; while (s[i]) i++; return i; }
+int inv_strlen_ok(unsigned long n, unsigned long k) {
+    if (n == 0 || n >= BIG || k >= n) return 0;
+    char *s = malloc(n);
+    if (!s) return 0;
+    memset(s, 'a', n);
+    s[k] = 0;
+    unsigned long r = my_strlen(s);
+    assert(r == k);
+    free(s);
+    return 0;
+}
+int inv_unterminated_bad(unsigned long n) {
+    if (n == 0 || n >= BIG) return 0;
+    char *s = malloc(n);
+    if (!s) return 0;
+    memset(s, 'a', n);
+    unsigned long r = my_strlen(s);
+    free(s);
+    return (int)r;
+}
+int inv_past_nul_bad(unsigned long n) {
+    if (n == 0 || n >= BIG) return 0;
+    char *s = malloc(n);
+    if (!s) return 0;
+    memset(s, 'a', n);
+    s[n - 1] = 0;
+    unsigned long i = 0;
+    while (s[i] || s[i + 1]) i++;
+    free(s);
+    return (int)i;
+}
+int inv_copy_ok(unsigned long k, unsigned long j) {
+    if (k >= BIG || j > k) return 0;
+    char *s = malloc(k + 1), *d = malloc(k + 1);
+    if (!s || !d) { free(s); free(d); return 0; }
+    memset(s, 'b', k);
+    s[k] = 0;
+    unsigned long i = 0;
+    while ((d[i] = s[i]) != 0) i++;
+    int r = d[j];
+    free(s);
+    free(d);
+    return r;
+}
+int inv_copy_off_by_one_bad(unsigned long k) {
+    if (k >= BIG) return 0;
+    char *s = malloc(k + 1), *d = malloc(k + 1);
+    if (!s || !d) { free(s); free(d); return 0; }
+    memset(s, 'b', k);
+    s[k] = 0;
+    for (unsigned long i = 0; i <= k + 1; i++) d[i] = i <= k ? s[i] : 0;
+    free(s);
+    free(d);
+    return 0;
+}
+int inv_indirect_write_bad(unsigned long n) {
+    if (n < 2 || n >= BIG) return 0;
+    char *s = malloc(n);
+    char **box = malloc(sizeof(char *));
+    if (!s || !box) { free(s); free(box); return 0; }
+    memset(s, 'a', n);
+    s[n - 1] = 0;
+    *box = s;
+    unsigned long i = 0;
+    while (s[i]) { (*box)[n - 1] = 'z'; i++; } /* removes the terminator through a loaded pointer */
+    free(box);
+    free(s);
+    return (int)i;
+}
+)";
+    cfg.root = dir;
+    cfg.jobs = 1;
+    cfg.solver_cache = dir / "cache";
+    std::map<std::string, prism::Finding> got;
+    for (auto& f : pp::run_pir({dir / "inv.c"}, cfg))
+        if (f.function) got[*f.function] = f;
+    CHECK(got["inv_strlen_ok"].status == prism::laws::PROVED_UNBOUNDED);
+    CHECK(got["inv_strlen_ok"].extra["k_induction"] == "closed-invariants");
+    CHECK(got["inv_copy_ok"].status == prism::laws::PROVED_UNBOUNDED);
+    CHECK(got["inv_copy_ok"].extra["k_induction"] == "closed-invariants");
+    CHECK(got["inv_unterminated_bad"].status == prism::laws::FAILED);
+    CHECK(got["inv_unterminated_bad"].cls == "MEM-OOB-READ");
+    CHECK(got["inv_past_nul_bad"].status == prism::laws::FAILED);
+    CHECK(got["inv_past_nul_bad"].cls == "MEM-OOB-READ");
+    CHECK(got["inv_copy_off_by_one_bad"].status == prism::laws::FAILED);
+    CHECK(got["inv_copy_off_by_one_bad"].cls == "MEM-OOB-WRITE");
+    CHECK(got["inv_indirect_write_bad"].status == prism::laws::FAILED);
+    CHECK(got["inv_indirect_write_bad"].cls == "MEM-OOB-READ");
+}

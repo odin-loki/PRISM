@@ -532,6 +532,72 @@ static std::map<std::string, prism::Finding> bmc_source(const std::string& name,
     return by;
 }
 
+TEST_CASE("bmc: a canonical __VERIFIER_assert call is checked as an assertion (SV-COMP)") {
+    const std::string defs = R"(extern void abort(void);
+void reach_error() { abort(); }
+extern unsigned int __VERIFIER_nondet_uint(void);
+)";
+    // the SV-COMP definition: a false condition ends the run at reach_error()
+    auto ok = bmc_source("vassert_ok.c", defs + R"(void __VERIFIER_assert(int cond) {
+  if (!(cond)) {
+    ERROR: {reach_error();abort();}
+  }
+  return;
+}
+int main(void) {
+  unsigned int x = __VERIFIER_nondet_uint();
+  __VERIFIER_assert (x + 1 != x);
+  return 0;
+}
+)");
+    CHECK(prism::laws::is_proof(ok["main"].status));
+    auto bad = bmc_source("vassert_bad.c", defs + R"(void __VERIFIER_assert(int cond) {
+  if (!(cond)) {
+    ERROR: {reach_error();abort();}
+  }
+  return;
+}
+int main(void) {
+  unsigned int x = __VERIFIER_nondet_uint();
+  __VERIFIER_assert(x != 5);
+  return 0;
+}
+)");
+    CHECK(bad["main"].status == prism::laws::FAILED);
+    CHECK(bad["main"].cls == "FUNC-CONTRACT");
+    // the argument is converted to the parameter type (int) as in the call
+    auto conv = bmc_source("vassert_conv.c", defs + R"(extern unsigned long __VERIFIER_nondet_ulong(void);
+void __VERIFIER_assert(int cond) {
+  if (!(cond)) {
+    ERROR: {reach_error();abort();}
+  }
+  return;
+}
+int main(void) {
+  unsigned long x = __VERIFIER_nondet_ulong();
+  if (x == 0) return 0;
+  __VERIFIER_assert(x);
+  return 0;
+}
+)");
+    CHECK(conv["main"].status == prism::laws::FAILED);
+    // any other definition (here: with an effect) stays unmodelled
+    auto other = bmc_source("vassert_other.c", defs + R"(int hits;
+void __VERIFIER_assert(int cond) {
+  if (!(cond)) {
+    hits++;
+  }
+  return;
+}
+int main(void) {
+  unsigned int x = __VERIFIER_nondet_uint();
+  __VERIFIER_assert(x != 5);
+  return 0;
+}
+)");
+    CHECK(other["main"].status == prism::laws::NEEDS_HARNESS);
+}
+
 TEST_CASE("bmc: a refutation reports the nondet values its path reads, in call order") {
     auto by = bmc_source("nondet_trace.c", R"(extern int __VERIFIER_nondet_int(void);
 extern unsigned char __VERIFIER_nondet_uchar(void);
