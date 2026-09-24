@@ -5428,6 +5428,7 @@ TEST_CASE("pir: clang round trip on tests/pir (skips without clang/opt)") {
 // honest degradation (certified=false, NOTRUN note) instead.
 // ---------------------------------------------------------------------------
 #include "prism/solver.hpp"
+#include "prism/solver_certs.hpp"
 
 #include <cstdio>
 #include <random>
@@ -5703,10 +5704,14 @@ TEST_CASE("solver: a cached plain unsat never satisfies a certified request") {
         CHECK(again.cache_hit);
         CHECK(again.certified);
         CHECK(again.note.find("re-checked by cake_lpr") != std::string::npos);
-        // Corrupt the stored proof: the hit is refused and the query re-solved.
-        auto lrat = std::filesystem::path(o.cache_dir) / "certs" / (again.query_hash + ".lrat");
+        // Corrupt the stored (packed) proof: the hit is refused and the
+        // query re-solved.
+        auto lrat = std::filesystem::path(o.cache_dir) / "certs" / (again.query_hash + ".lratz");
         REQUIRE(std::filesystem::exists(lrat));
-        std::ofstream(lrat, std::ios::trunc) << "1 0 0\n";
+        const auto bogus = std::filesystem::path(o.cache_dir) / "bogus.lrat";
+        std::ofstream(bogus) << "1 0 0\n";
+        std::string why;
+        REQUIRE(prism::solver::certs::pack_lrat(bogus, lrat, &why));
         auto third = ps::solve(c, f, o);
         CHECK_FALSE(third.cache_hit);
         CHECK_MESSAGE(third.note.find("failed re-check") != std::string::npos, third.note);
