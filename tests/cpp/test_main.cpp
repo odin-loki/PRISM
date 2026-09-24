@@ -5437,6 +5437,7 @@ TEST_CASE("pir: clang round trip on tests/pir (skips without clang/opt)") {
 
 #include <cstdio>
 #include <random>
+#include <thread>
 
 namespace {
 
@@ -5928,6 +5929,65 @@ TEST_CASE("solver: timeout is an answer of its own and cancels promptly") {
     }
 }
 
+TEST_CASE("solver: the watchdog detaches a job that ignores its stop and records it") {
+    // docs/SOLVERS.md "Stalls": a member that does not stop when told to (here
+    // fault-injected: the Z3 job sleeps through its stop flag) must not hold
+    // solve() past its timeout plus the watchdog grace.
+    SolverTmp t;
+    z3::context c;
+    auto x = c.bv_const("x", 8);
+    auto o = solver_opts(t);
+    o.search_default_tools = false;
+    o.sls = false;
+    o.use_cache = false;
+    o.timeout_s = 0.3;
+    o.watchdog_grace_s = 0.2;
+    o.debug_stall_s = 1.5;
+    auto t0 = std::chrono::steady_clock::now();
+    auto r = ps::solve(c, x != x, o);
+    double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    CHECK(secs < 1.2);
+    CHECK(r.kind == ps::SolveResult::Timeout);  // no answer: never a clean result
+    REQUIRE(r.watchdog.size() == 1);
+    CHECK(r.watchdog[0].find("z3 did not stop") != std::string::npos);
+    CHECK(r.note.find("WATCHDOG: z3 did not stop") != std::string::npos);
+    auto log = t.dir / "cache" / "watchdog.jsonl";
+    REQUIRE(std::filesystem::exists(log));
+    std::ifstream in(log);
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    CHECK(text.find("z3 did not stop") != std::string::npos);
+    // Without the stall the same query answers and the watchdog stays quiet.
+    o.debug_stall_s = 0;
+    o.timeout_s = 5;
+    auto u = ps::solve(c, x != x, o);
+    CHECK(u.kind == ps::SolveResult::Unsat);
+    CHECK(u.watchdog.empty());
+    // Let the detached job run out before the context and globals go away.
+    std::this_thread::sleep_for(std::chrono::milliseconds(1600));
+}
+
+TEST_CASE("solver: repeated portfolio runs stay within timeout plus grace") {
+    // The stall hunt (docs/SOLVERS.md "Stalls"): many short queries through
+    // every member that is installed; none may take longer than its timeout
+    // plus the watchdog grace (and a margin for a loaded machine).
+    SolverTmp t;
+    z3::context c;
+    auto x = c.bv_const("x", 16), y = c.bv_const("y", 16);
+    auto o = solver_opts(t);
+    o.use_cache = false;
+    o.timeout_s = 2.0;
+    double worst = 0;
+    for (int i = 0; i < 40; ++i) {
+        auto f = (i % 2 ? (x * y == c.bv_val(i * 37 + 1, 16) && z3::ugt(x, c.bv_val(1, 16)))
+                        : (x + y != y + x)) && z3::ult(y, c.bv_val(1000 + i, 16));
+        auto r = ps::solve(c, f, o);
+        worst = std::max(worst, r.wall_s);
+        CHECK(r.watchdog.empty());
+        CHECK(r.kind != ps::SolveResult::Error);
+    }
+    CHECK(worst < o.timeout_s + o.watchdog_grace_s + 3.0);
+}
+
 // Manual benchmark (roadmap 3.1 exit criterion, docs/SOLVERS.md):
 //   ./prism_tests -tc="solver bench*" --no-skip
 TEST_CASE("solver bench: portfolio vs Z3 alone" * doctest::skip()) {
@@ -6348,7 +6408,7 @@ std::string bmc_status(prism::FunctionInfo fn, int std = 0) {
 }  // namespace
 
 TEST_CASE("bmc goto: structured jumps encoded, unstructured NEEDS-HARNESS") {
-    const std::map<std::string, std::set<std::string>> want = {
+    const std::map<std::string, std::set<std::string_view>> want = {
         {"goto_out_ok", {prism::laws::PROVED, prism::laws::PROVED_UNBOUNDED}},
         {"goto_out_bad", {prism::laws::FAILED}},
         {"goto_loop_ok", {prism::laws::PROVED, prism::laws::PROVED_UNBOUNDED}},
@@ -6367,7 +6427,7 @@ TEST_CASE("bmc goto: structured jumps encoded, unstructured NEEDS-HARNESS") {
         REQUIRE_FALSE(r.empty());
         INFO(fn.name << ": " << r[0].message);
         REQUIRE(want.count(fn.name));
-        CHECK(want.at(fn.name).count(r[0].status));
+        CHECK(want.at(fn.name).count(std::string_view(r[0].status)));
         if (r[0].status == prism::laws::NEEDS_HARNESS)
             CHECK(r[0].message.find("unstructured goto unencoded") != std::string::npos);
         if (fn.name == "goto_loop_deep") CHECK(r[0].extra["k_induction"] == "step-open");
