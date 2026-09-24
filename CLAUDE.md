@@ -15,7 +15,8 @@ code base and says honestly what it could not check.
   `PRISM_TOOLS_DIR`, AI: `PRISM_PROVER_SERVER`, `PRISM_PROVER_GGUF`,
   `PRISM_PROOF_CACHE`, `PRISM_EMBED_SERVER`, `PRISM_TRIAGE`,
   `PRISM_SOLVER_MODEL`, `PRISM_SOLVER_PREDICT`, `PRISM_PREDICT_COLLECT`,
-  `PRISM_PREDICT_BUDGET`).
+  `PRISM_PREDICT_BUDGET`; certified mode: `PRISM_CERT_CACHE_MAX`,
+  `PRISM_CHECKER_MEM`, `PRISM_CERTIFY_BUDGET`).
   There are no `HELIX_*` fallbacks.
 - Output directory is `prism-out/` (GUI: `prism-out-gui/`).
 

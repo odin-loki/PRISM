@@ -49,10 +49,14 @@ becomes `PROVED-CERTIFIED` only when:
     (`extra.certificate_covers` lists each batch), so again every VC is
     covered by exactly one checked proof; or
   - **one by one** (`extra.certificate_scope = "per-vc"`): each VC came back
-    certified on its own. This runs whenever the combined query is SAT, has
-    no answer in time, or is not certified; the combined attempt is then
-    discarded (its outcome is recorded in `extra.certificate_combined`) and
-    nothing from it is used.
+    certified on its own. This runs whenever the combined certificate is not
+    obtained; the combined attempt is then discarded (its outcome is
+    recorded in `extra.certificate_combined`) and nothing from it is used.
+
+  Certificates are asked only for a function whose plain answers already
+  made it `PROVED` (certification can only add to that claim); the
+  certificate queries of one function share a budget, and when it is spent
+  the function stays `PROVED` with a `certify_note`.
 
 The finding then carries `extra.certificate = "checked"` (the verdict audit
 admits `PROVED-CERTIFIED` from the `pir` stage only with it),
@@ -169,7 +173,14 @@ checkDag_sound); lrat-check a36874a… agrees; cnf sha256 …`.
 If any step fails, `certified` stays `false` and the note gives the reason,
 for example `not certified: cake_lpr rejected: ...`, `not certified: cake_lpr
 accepted but Lean's LRAT checker rejected: ...`, `cadical not found
-(NOTRUN)` or `cadical did not finish in time`. The plain answer (`PROVED`
+(NOTRUN)`, `cadical did not finish in time` or `cake_lpr ran out of memory
+(CakeML heap exhausted) (heap cap 4096 MB; ...)`. The certificate tools run
+under a memory cap (`PRISM_CHECKER_MEM`, default 4096 MB: cake_lpr's heap,
+and the resident memory of `prism-bitblast` and `prism-lrat-check`, which
+are killed past it); running out is reported as running out, never as a
+rejection or an acceptance. A formula whose Lean DAG is larger than 2 MB is
+bit-blasted by the Z3 path (1.2) and `certificate_info` says why: the Lean
+bit-blaster's memory grows past the cap on such formulas. The plain answer (`PROVED`
 trusts the solver) is still reported. The result is never quietly upgraded
 (roadmap 3.2).
 
@@ -177,7 +188,13 @@ A cached certified result is **not** trusted from disk. On a cache hit, PRISM
 bit-blasts the formula again with the bit-blaster recorded in the entry
 (`"bitblaster": "lean"` or `"z3"`; a request that would use the other one
 solves again), requires the new CNF to hash to the stored `cnf_sha256`, and
-runs the checkers of that path on the stored proof again. A cached plain
+runs the checkers of that path on the stored proof again, against that
+fresh CNF. The store keeps only the proof, packed (a lossless varint
+encoding of the LRAT text, `include/prism/solver_certs.hpp`), and unpacks it
+into the request's private work directory; the packing is not trusted
+either, since a damaged proof can only be rejected by the checkers. The
+store has a size cap and is pruned least-recently-used; a pruned proof
+means solving again. A cached plain
 `Unsat` is never certified: a certified request solves again, and only if
 that gives no answer does the plain `Unsat` stand, uncertified.
 

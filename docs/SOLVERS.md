@@ -34,8 +34,9 @@ every reason certification did not happen. Nothing is dropped quietly
   same key, and the cached model is mapped back to the new names.
 - **Store.** `<cache_dir>/queries/<h[0:2]>/<h>.json` holds the kind, the
   winner, the model in canonical names, `certified`, `certificate_info` and
-  `cnf_sha256`. Certified entries also keep `certs/<h>.cnf` and
-  `certs/<h>.lrat`. The default `cache_dir` is
+  `cnf_sha256`. Certified entries also keep their LRAT proof, packed, in
+  `certs/<h>.lratz` (the CNF is not kept: a hit bit-blasts again). The
+  default `cache_dir` is
   `$XDG_CACHE_HOME/prism/solver`, or `~/.cache/prism/solver` when that is not
   set.
 - **Rules.**
@@ -47,8 +48,29 @@ every reason certification did not happen. Nothing is dropped quietly
   - The LRAT checkers get `check_timeout_s`, default `max(60 s, 4 x
     timeout_s)`: checking a multiplier's proof can take longer than finding it.
   - A certified request needs a certified entry. On that hit the formula is
-    bit-blasted again, its CNF must match `cnf_sha256`, and cake_lpr checks
-    the stored proof again.
+    bit-blasted again, its CNF must match `cnf_sha256`, and the checkers
+    check the stored proof again (unpacked into a private work directory).
+  - **Certificate store cap.** `certs/` is capped at
+    `SolveOptions::cert_cache_max_bytes`, else `$PRISM_CERT_CACHE_MAX` (a
+    size: `2G`, `500M`, `0` keeps no proof), else 2 GiB. After each store it
+    is pruned least-recently-used (file mtime; a re-checked hit touches its
+    proof) down to 80% of the cap. A proof in use by this process is never
+    pruned, and a checker never reads the store (it reads its unpacked copy),
+    so pruning by another process cannot pull a proof from under a check. A
+    proof larger than the cap is not kept and its entry is recorded as a
+    plain unsat (`certificate not cached: ...` in the note). A pruned proof
+    means the next certified request solves again. Packing is a lossless
+    varint encoding of the LRAT text (hint and deleted ids as deltas):
+    2.8x smaller on the 2.09 GB proof of `fn_macro_true` (743 MB, 9 s to
+    pack, 16 s to unpack, byte-identical round trip). Solver work
+    directories (`prism-solve-*` in the temp dir) of processes that no
+    longer exist, left by runs that were killed, are removed by the first
+    certified request of a run (they held 3.7 GB on the shared machine
+    when this was measured).
+  - A certified request whose plain answer is already known (a cached plain
+    unsat, or `SolveOptions::known_unsat` from the pir stage) runs only the
+    certificate member (CaDiCaL with LRAT) until the certificate budget; a
+    formula that cannot be certified then returns the known answer at once.
   - UNKNOWN and TIMEOUT are never cached.
 
 ## Portfolio
