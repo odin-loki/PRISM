@@ -556,13 +556,18 @@ intrinsics themselves are PIR statements whose encoding the harnesses
 exercise but do not verify in isolation.
 
 **C++ library contracts.** The same directory holds C++ contract harnesses
-for the C++ library ("C++ library models" above): `vector_contracts.cpp` and
-`vector_modifiers.cpp` check the `std::vector` model (push_back across
-reallocations, reserve keeps `data()` stable, `at` throws iff out of range,
-erase/insert positions and results, resize value-initialises, copies are
+for the C++ library ("C++ library models" above): `vector_contracts.cpp`,
+`vector_erase.cpp` and `vector_resize.cpp` check the `std::vector` model
+(push_back across two reallocations, reserve keeps `data()` stable, `at`
+throws iff out of range, erase moves the tail down and returns the next
+position, resize value-initialises and keeps the prefix, copies are
 independent; false twins: `v[size()]`, a pointer kept across a reallocation
-(MEM-UAF), pop_back/front on empty, `erase(end())`, insert at a foreign
-iterator, wrong contracts), `cxx_std_contracts.cpp` checks libstdc++'s
+(MEM-UAF), pop_back/front on empty, `erase(end())`, wrong contracts). All
+PROVED/refuted (2026-09-24; the vector files take 60–460 s per file on a
+loaded machine, hence their `timeout:` in the task file). `insert` in the
+middle of a vector does not finish within 900 s (the element shift plus the
+symbolic position), so it has no harness in the suite; it is covered only by
+the differential test against libstdc++, `cxx_std_contracts.cpp` checks libstdc++'s
 `std::array`, `std::span`, `std::optional`, `std::unique_ptr` and
 `cxx_string_contracts.cpp` `std::string` (`s[size()]` is the terminator,
 `at` throws iff out of range, `c_str()` after destruction is MEM-UAF). Their
