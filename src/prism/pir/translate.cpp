@@ -472,7 +472,7 @@ struct Tr final : pirmem::TrApi {
             auto q = fr.prefix + bl.name;
             head[q] = newblock(q);
         }
-        // the analysed function's read-only globals: variables before its results
+        // the globals the analysed function names: variables before its results (MemTr::preassign_globals)
         if (!frames.empty() && &fr == frames.front()) mt.preassign_globals(f);
         std::set<std::string> maybe_uninit;
         for (auto& bl : f.blocks) {

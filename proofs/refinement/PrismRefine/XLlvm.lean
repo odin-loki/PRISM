@@ -25,6 +25,10 @@ deterministic semantics.  This file extends it with
   behaviour PRISM checks for (null, wild, freed, out of bounds, misaligned,
   read-only, uninitialised read; pointer arithmetic that overflows, leaves
   its array or its object).
+* the intrinsics `translate.cpp` translates specially (`llvm.smax` …,
+  `abs`, `ctlz`/`cttz`, `ctpop`, `bswap`, `expect`, `*.with.overflow` with
+  `extractvalue`, `lifetime.start`/`end`, `memcpy`/`memmove`/`memset`) and the
+  globals the analysed function names (`SInst.glob`).
 
 Nondeterminism is an *oracle* `ω : Nat → Nat` read in execution order: the
 `t`-th arbitrary value of a run is `ω t` (masked to the width).  `freeze` of
