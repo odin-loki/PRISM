@@ -28,6 +28,7 @@
 #include "memory.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <deque>
 #include <functional>
@@ -39,6 +40,7 @@
 
 #ifdef PRISM_HAS_Z3
 #  include "prism/solver.hpp"
+#  include <nlohmann/json.hpp>
 #  include <z3++.h>
 #endif
 
@@ -270,6 +272,34 @@ struct Encoding {
     Footprint step_fp;   // ... and these objects' bytes (memory written by the loop)
     std::size_t step_havocked = 0;
     std::vector<WriteInst> writes;
+
+    // Loop-cut mode (houdini.inc, docs/PIR.md "Loop invariants"): unwind 1,
+    // every loop header instance records its entry state, then havocs its
+    // phis and its loop's write footprint (loop_fp) and records that state;
+    // every back edge (an unwinding cut) records the next state. Positions
+    // are counted in encoding (= topological) order: `props_before` is the
+    // number of property instances encoded before the point.
+    bool cut_mode = false;
+    std::vector<Footprint> loop_fp;
+    struct CutLatch {
+        int node = -1;
+        z3::expr guard;
+        std::vector<z3::expr> next;
+        mem::SymMem::Mark mem;
+        std::size_t props_before = 0;
+        int seq = 0;
+    };
+    struct CutLoop {
+        int node = -1;  // header instance (-1: not reached in the unrolling)
+        std::vector<z3::expr> entry, havoc;
+        mem::SymMem::Mark entry_mem, havoc_mem;
+        std::size_t props_before = 0;
+        int seq = 0;
+        std::size_t havocked = 0;
+        std::vector<CutLatch> latches;
+    };
+    std::vector<CutLoop> cut_loops;
+    int seq_counter = 0;
 
     std::vector<Node> nodes;
     std::map<std::pair<int, std::vector<int>>, int> ids;
@@ -796,6 +826,11 @@ struct Encoding {
             for (auto& [gd, _] : guards) gs.push_back(gd);
             reach[static_cast<std::size_t>(id)] = gs.empty() ? c.bool_val(false) : z3::mk_or(gs);
         }
+        int cut_L = -1;
+        if (cut_mode)
+            for (std::size_t L = 0; L < g.loops.size(); ++L)
+                if (g.loops[L].header == nd.block) cut_L = static_cast<int>(L);
+        const int seq = seq_counter++;
         bool havoc_phis = step_loop >= 0 && nd.block == g.loops[static_cast<std::size_t>(step_loop)].header &&
                           !nd.ctx.empty() && nd.ctx.back() == 0;
         if (havoc_phis && mem && !step_fp.empty()) {
@@ -833,6 +868,26 @@ struct Encoding {
             if (acc && prov_ok && prov) mem->note(*acc, *prov);
             phi_vals.emplace_back(p.dst, acc ? *acc : fresh_const("phi_dead", w));
         }
+        if (cut_L >= 0) {
+            // entry state, then the arbitrary state of some later header visit
+            auto& CL = cut_loops[static_cast<std::size_t>(cut_L)];
+            CL.node = id;
+            CL.seq = seq;
+            CL.props_before = props.size();
+            for (auto& pv : phi_vals) CL.entry.push_back(pv.second);
+            if (mem) CL.entry_mem = mem->mark();
+            const auto& fpL = loop_fp[static_cast<std::size_t>(cut_L)];
+            if (mem && !fpL.empty()) {
+                std::vector<uint64_t> ids(fpL.objs.begin(), fpL.objs.end());
+                CL.havocked = mem->havoc_objects(reach[static_cast<std::size_t>(id)], ids, fpL.all, fpL.keep_init);
+            }
+            if (mem) CL.havoc_mem = mem->mark();
+            for (auto& pv : phi_vals) {
+                pv.second = fresh_const("cut_" + fn.vars[static_cast<std::size_t>(pv.first)].name,
+                                        fn.vars[static_cast<std::size_t>(pv.first)].width);
+                CL.havoc.push_back(pv.second);
+            }
+        }
         for (auto& [d, e] : phi_vals) m.insert_or_assign(d, e);
         const auto& r = reach[static_cast<std::size_t>(id)];
         for (std::size_t si = 0; si < bl.stmts.size(); ++si) {
@@ -850,8 +905,29 @@ struct Encoding {
                 default: encode_mem(s, id, r, m); break;
             }
         }
-        for (auto& [from, k, to] : outs)
-            if (to < 0) cuts.push_back(edge_guard(from, k));
+        for (auto& [from, k, to] : outs) {
+            if (to >= 0) continue;
+            cuts.push_back(edge_guard(from, k));
+            if (!cut_mode) continue;
+            // a back edge: the next state of its loop's header
+            const int h = g.succ[static_cast<std::size_t>(nd.block)][static_cast<std::size_t>(k)];
+            int L = -1;
+            for (std::size_t j = 0; j < g.loops.size(); ++j)
+                if (g.loops[j].header == h) L = static_cast<int>(j);
+            if (L < 0) throw EncodeFail{std::string(laws::ERROR), "internal: unwinding cut that is not a back edge"};
+            CutLatch cl{id, cuts.back(), {}, mem ? mem->mark() : mem::SymMem::Mark{}, props.size(), seq};
+            for (auto& p : fn.blocks[static_cast<std::size_t>(h)].phis) {
+                const Arg* src = nullptr;
+                for (auto& [pred, a] : p.in)
+                    if (pred == nd.block) {
+                        src = &a;
+                        break;
+                    }
+                cl.next.push_back(src ? lookup(*src, id)
+                                      : fresh_const("phi_undef", fn.vars[static_cast<std::size_t>(p.dst)].width));
+            }
+            cut_loops[static_cast<std::size_t>(L)].latches.push_back(std::move(cl));
+        }
     }
 
     z3::expr edge_guard(int from, int k) {
@@ -1204,6 +1280,8 @@ bool checker_ran_out(const solver::SolveResult& r) {
     return r.note.find("checker timed out") != std::string::npos;
 }
 
+#include "houdini.inc"
+
 }  // namespace
 
 Verdict check_function(const Function& fn, int unwind, double timeout_s) {
@@ -1444,8 +1522,57 @@ Verdict check_function(const Function& fn, const CheckOptions& opt) {
         if (opt.certified)
             v.extra["certify_note"] =
                 "not certified: certified mode certifies PROVED only (every loop must close within the unwind)";
+        // Loop invariants (houdini.inc): tried when k-induction does not
+        // close. Loops that allocate, free or restore the stack are not
+        // attempted (the havoc of a header state does not cover a change in
+        // the number or liveness of objects).
+        auto loops_allocate = [&]() {
+            for (auto& L : g.loops)
+                for (std::size_t b = 0; b < L.body.size(); ++b) {
+                    if (!L.body[b]) continue;
+                    for (auto& s : fn.blocks[b].stmts)
+                        if (s.kind == Stmt::Alloc || s.kind == Stmt::Free || s.kind == Stmt::StackRestore) return true;
+                }
+            return false;
+        };
+        auto try_invariants = [&](Verdict& r) -> bool {
+            if (g.loops.empty()) return false;
+            if (loops_allocate()) {
+                r.extra["invariants_note"] = "not attempted (allocation or free in a loop)";
+                return false;
+            }
+            Houdini hd(fn, g, eo, timeout_s);
+            auto h = hd.run();
+            r.extra["houdini_rounds"] = std::to_string(h.rounds);
+            r.extra["houdini_candidates"] = std::to_string(h.candidates);
+            if (!h.proved) {
+                r.extra["invariants_note"] = "no proof from loop invariants: " + h.why;
+                return false;
+            }
+            std::size_t n = 0;
+            nlohmann::json inv = nlohmann::json::array();
+            for (auto& l : h.invariants) {
+                n += l.size();
+                inv.push_back(l);
+            }
+            r.status = std::string(laws::PROVED_UNBOUNDED);
+            r.message = "every loop cut by " + std::to_string(n) +
+                        " inductive invariant(s) (Houdini: base and step proved); no property violated in the cut "
+                        "program; not a bounded-only result";
+            r.extra["k_induction"] = "closed-invariants";
+            r.extra["pir_invariants"] = inv.dump();
+            r.extra["invariant_checker"] = "z3: Houdini over PIR templates + loop-cut induction (base and step)";
+            r.extra["invariant_footprint"] = h.footprint;
+            r.extra["unwind_closed"] = "true";
+            export_invariants(fn, g, h, r);
+            if (opt.certified)
+                r.extra["certify_note"] =
+                    "not certified: loop invariants are checked by Z3 alone; PROVED-UNBOUNDED is not certified";
+            return true;
+        };
         if (g.loops.size() != 1) {
             v.extra["k_induction"] = g.loops.empty() ? "not-needed" : "multiple-loops";
+            try_invariants(v);
             return finish(v);
         }
         Footprint fp;
@@ -1500,10 +1627,12 @@ Verdict check_function(const Function& fn, const CheckOptions& opt) {
             }
             if (!closed) {
                 v.extra["k_induction"] = "unknown";
+                try_invariants(v);
                 return finish(v);
             }
         }
         v.extra["k_induction"] = "step-open";
+        try_invariants(v);
         return finish(v);
     } catch (const EncodeFail& f) {
         v.status = f.status;

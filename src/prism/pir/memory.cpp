@@ -188,11 +188,11 @@ z3::expr SymMem::read_cell(const z3::expr& addr) {
     return read_cell_log(addr, log_.size());
 }
 
-z3::expr SymMem::read_cell_log(const z3::expr& addr, std::size_t upto) {
-    auto key = std::make_pair(addr.id(), upto);
+z3::expr SymMem::read_cell_log(const z3::expr& addr, std::size_t upto, bool use_prov) {
+    auto key = std::make_tuple(addr.id(), upto, use_prov);
     if (auto it = memo_.find(key); it != memo_.end()) return it->second;
     keep_.push_back(addr);
-    auto ko = known(addr);
+    auto ko = use_prov ? known(addr) : std::nullopt;
     z3::expr v = bv(0, cw_);  // never written: value 0, not initialised
     for (std::size_t i = 0; i < upto; ++i) {
         auto& e = log_[i];
@@ -205,8 +205,9 @@ z3::expr SymMem::read_cell_log(const z3::expr& addr, std::size_t upto) {
             case Entry::Set: v = z3::ite(e.guard && in_range(addr, e.addr, e.len), e.cell, v); break;
             case Entry::Copy: {
                 auto src = e.src + (addr - e.addr);
-                if (auto ks = known(e.src)) note(src, *ks);
-                v = z3::ite(e.guard && in_range(addr, e.addr, e.len), read_cell_log(src, i), v);
+                if (use_prov)
+                    if (auto ks = known(e.src)) note(src, *ks);
+                v = z3::ite(e.guard && in_range(addr, e.addr, e.len), read_cell_log(src, i, use_prov), v);
                 break;
             }
             case Entry::Havoc: {
@@ -257,6 +258,23 @@ SymMem::Loaded SymMem::load(const z3::expr& ptr, unsigned width, unsigned tag) {
     auto v = *val;
     if (8 * n > width) v = v.extract(width - 1, 0);
     return Loaded{v, z3::ite(uninit, bv(1, 1), bv(0, 1)), z3::ite(tagbad, bv(1, 1), bv(0, 1)), *mask};
+}
+
+SymMem::Loaded SymMem::load_exact(const Mark& m, const z3::expr& ptr, unsigned width) {
+    unsigned n = (width + 7) / 8;
+    std::optional<z3::expr> val;
+    z3::expr uninit = c_.bool_val(false);
+    for (unsigned k = 0; k < n; ++k) {
+        auto a = k == 0 ? ptr : ptr + bv(k, 64);
+        auto cell = enc_ == MemEncoding::Array ? z3::select(*m.arr, a) : read_cell_log(a, m.upto, false);
+        auto byte = cell.extract(7, 0);
+        val = val ? z3::concat(byte, *val) : byte;
+        uninit = uninit || cell.extract(kCellInit, kCellInit) == bv(0, 1);
+    }
+    auto v = *val;
+    if (8 * n > width) v = v.extract(width - 1, 0);
+    auto one = z3::ite(uninit, bv(1, 1), bv(0, 1));
+    return Loaded{v, one, bv(0, 1), one};
 }
 
 void SymMem::store(const z3::expr& guard, const z3::expr& ptr, const z3::expr& val, unsigned width,

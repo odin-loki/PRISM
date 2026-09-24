@@ -29,6 +29,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <vector>
 
@@ -84,6 +85,18 @@ public:
 
     std::size_t objects() const { return objs_.size(); }
 
+    // Invariant evaluation (encode.cpp, Houdini over loop cuts): a snapshot
+    // of the memory state at one point of the encoding, and an *exact* load
+    // from that state. The exact load never uses provenance (known()) to
+    // skip writes, so its value is the byte content of that address in that
+    // state for any pointer value, also one outside every object.
+    struct Mark {
+        std::size_t upto = 0;              // Bv: log entries before the point
+        std::optional<z3::expr> arr;       // Array: the array at the point
+    };
+    Mark mark() const { return Mark{log_.size(), arr_}; }
+    Loaded load_exact(const Mark& m, const z3::expr& ptr, unsigned width);
+
     // k-induction footprint havoc (docs/PIR.md "k-induction with memory"):
     // every byte of each listed object (all = every object allocated so far
     // except `const` ones) gets an arbitrary value and tag. Its initialised
@@ -128,7 +141,7 @@ private:
     // Bv mode
     std::vector<Entry> log_;
     std::vector<std::vector<std::pair<z3::expr, z3::expr>>> havoc_reads_;
-    std::map<std::pair<unsigned, std::size_t>, z3::expr> memo_;
+    std::map<std::tuple<unsigned, std::size_t, bool>, z3::expr> memo_;
     std::unordered_map<unsigned, uint64_t> prov_;
     std::vector<z3::expr> keep_;
 
@@ -139,7 +152,7 @@ private:
     z3::expr in_range(const z3::expr& a, const z3::expr& base, const z3::expr& len);
     z3::expr cell_of(const z3::expr& byte, const z3::expr& init, unsigned tag);
     z3::expr read_cell(const z3::expr& addr);
-    z3::expr read_cell_log(const z3::expr& addr, std::size_t upto);
+    z3::expr read_cell_log(const z3::expr& addr, std::size_t upto, bool use_prov = true);
     void add_entry(Entry e);
     template <class F>
     z3::expr per_obj(const z3::expr& ptr, const z3::expr& dflt, F&& f);
