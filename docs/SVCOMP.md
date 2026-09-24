@@ -112,6 +112,16 @@ entry (format 2.0). It carries only invariants the engine proved:
   comparisons keep every subterm within `int` (the engine proves them over
   wrapping bit-vectors; in C an overflow there would be UB). Dropping a
   conjunct keeps the witness valid, it only helps the validator less.
+- `pir` `PROVED-UNBOUNDED` with `k_induction = closed-invariants`: the
+  surviving Houdini invariants of the function's own loops
+  (`extra["invariant_conjuncts"]`, structured, over IR value names, and
+  `extra["invariant_loops"]`, the loop start from clang's `llvm.loop`
+  metadata). The wrapper compiles the task once more with `-g` and maps a
+  value to a C variable only when certain at the loop head (one variable,
+  unique name, in scope, no other assignment on the way from its definition
+  to the header), and renders a conjunct only where C means the proved
+  bit-vector relation (signedness, promotion, wrap-around). Tasks with line
+  markers get none.
 - every other proof (`pir` PROVED with loops closed within the unwind, loop
   free, plain k-induction of `pir` or `bmc`): neither stage exports a loop
   invariant for these (k-induction proves the step without one), so the
@@ -195,6 +205,23 @@ Where the points are still lost (no-overflow):
 
 unreach-call: `sum02-1` (`false`) is `BOUNDED`; the other 3 `false` tasks
 answer `false(unreach-call)`.
+
+### 2026-09-24: loop invariants (branch `claude/invariants`)
+
+`pir` loop invariants (docs/PIR.md "Loop invariants") and `bmc` checking a
+canonical `__VERIFIER_assert` call as `assert((int)(E))`: no-overflow
+**51**/70 (16 correct true, 19 correct false, 0 incorrect), unreach-call
+**21**/36 (9 / 3 / 0). Newly `true`: `jain_1-1`, `jain_2-1`, `jain_5-2`,
+`nested6` (pir, both properties; their witnesses carry 5, 10, 10 and 15
+invariant conjuncts, e.g. `(y & 1) == 1` and `k == n`) and `num_conversion_1`
+(bmc, no-overflow). Validation of the no-overflow correctness witnesses:
+31 of 32 runs confirmed (CPAchecker 4.2.2 and UAutomizer 0.3.1 confirm the
+four invariant-carrying witnesses except CPAchecker on `nested6`, a
+timeout); the unreach-call validation did not finish before this report.
+`bmc` now reaches `BOUNDED` with Houdini on `jain_5-2`, `half_2` & co.
+(its invariants do not close them). A `bmc` proof is still not used for
+unreach-call (a direct `reach_error()` outside `__VERIFIER_assert` ends the
+path in `bmc` instead of being reported).
 
 ## BenchExec
 
