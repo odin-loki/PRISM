@@ -116,6 +116,77 @@ The release gate stays red until that stage reports such rows as
 not-a-proof; the gate must not simply be relaxed). The Python engine has no
 drafted harness and passes (0 wrong proofs, Law 6 6/6).
 
+### Certified mode: one certificate per function (roadmap 3.2 speed-up)
+
+`PRISM_BIN=build/prism python tools/conformance.py --certified --no-replay -j 2`,
+C++ engine at branch `claude/certified-speed` (2026-09-24), 491 tasks (the
+suite has grown since the run below: C++ ESBMC tasks, libc models,
+coroutines, k-induction memory tasks), Lean bit-blaster built, 4-core
+machine shared with other agents. `--no-replay` because an earlier full run
+lost its results to a full disk in the replay phase; replay does not affect
+the wrong-proof gate. Release gate: **PASS, 0 wrong proofs on every stage**,
+0 `PROVED-CERTIFIED` on a `false` function.
+
+What changed in certified mode (docs/PIR.md "Solving", docs/TRUSTED_BASE.md 1):
+
+- **one combined certificate per function**: the disjunction of all VCs of
+  the function under the shared path encoding, one bit-blast, one CaDiCaL
+  LRAT proof, one round of cake_lpr + Lean's checker. It certifies exactly
+  the per-VC claim (UNSAT of a disjunction is UNSAT of every disjunct);
+  `certificate_scope = combined`, `certificate_covers` lists the VCs. If the
+  combined query is SAT, has no answer or is not certified, every VC is
+  certified on its own as before (`certificate_scope = per-vc`); if only the
+  checker ran out of time on its proof, its halves are certified instead
+  (`batched`);
+- a **certificate budget**: after the answer, CaDiCaL-with-LRAT may run until
+  `max(60 s, 4 x --timeout)` from the start of the query (it was stopped at
+  `--timeout`); CaDiCaL runs with `--unsat`; cake_lpr and Lean's checker run
+  in parallel.
+
+| | before (367-task suite, 2026-09-23) | after (491-task suite) |
+|---|---|---|
+| loop-free `true` functions pir encodes | 125 | 158 |
+| **PROVED-CERTIFIED** | **109/125** | **136/158** |
+| no VC at all (stay `PROVED`) | 11 | 14 |
+| proved, not certified | 5 (wide multiplications) | 7: 4 floating point (not certifiable), 1 `PROVED-ASSUMING`, `fn_macro_true` (cake_lpr ran out of its 120 s), `long_mul_true` (CaDiCaL did not finish in 120 s) |
+| `true` functions with loops certified | 6/30 | 19/61 |
+| certified functions by one combined certificate / per VC / batches | – / 109 / – | 114 / 41 / 0 (all certified functions, loops included) |
+| certified-run timeouts (360 s per task) | 18 | 14 |
+
+Of the 18 tasks that timed out before, 17 now finish: `mem_uninit_true` (99
+VCs) takes 44 s with one certificate instead of 4 minutes,
+`arr_sum_true` (107 VCs) 48 s, `arr_2d_true` (33 VCs) 13 s, the
+`uninit_elem_*` and six `byte_add*` tasks 1–83 s, `nested_loop_*` 346–356 s
+(BOUNDED: the combined query is SAT, so the per-VC path runs as before).
+`nested6` still times out. The 13 other timeouts are tasks the earlier suite
+did not have: 7 ESBMC C++ tasks, `libc-models/stdio_contracts` and
+`string_contracts` (many functions per task) and the four `coro_*` tasks
+(whose plain run already takes 7–40 s). The sum of the certified runs'
+seconds is 11 160 s over 489 tasks (-j 2; the earlier run did not record
+it; a like-for-like baseline run on this suite was lost twice to container
+restarts and a full disk).
+
+Of the five wide multiplications, `mul_true`, `widen_mul_true` and
+`switch_true` are now `PROVED-CERTIFIED` (`--unsat` and the certificate
+budget; `widen_mul_true`'s proof is 862 MB, cake_lpr needs 4.1 GB for it).
+`fn_macro_true` (32-bit `a*a`) was certified when run alone but its cake_lpr
+check ran out of the 120 s budget on the shared machine; `long_mul_true`
+(64-bit `a*a`, 128-bit product in the overflow check) does not finish in
+CaDiCaL (no answer in 184 s CPU alone; docs/SOLVERS.md has the measured
+CaDiCaL options). CaDiCaL 3.0.1 is the newest upstream release, and Kissat
+writes no LRAT. No word-level preprocessing was added: nothing in the chain
+would check it, and certified mode never certifies through an unchecked
+step.
+
+A/B on 30 conformance files (the same binary with and without these
+changes, interleaved, CPU seconds, heavily loaded machine): 16 functions
+certified by one combined certificate, the same 22 certified functions and
+the same verdicts in both; faster on 16 files, equal on 7, slower on 7 (e.g. faster: `arr_global_true` 134 s
+-> 8 s), slower where a combined attempt failed before the batch split
+existed (`arr_2d_true`, `mem_uninit_true`: the checker timed out on the
+combined proof under load) and on multiplications that now use the longer
+certificate budget (`mul_true`, `compound_mul_true`).
+
 ### Certified mode after the memory model and the Lean bit-blaster
 
 `PRISM_BIN=build/prism python tools/conformance.py --certified`, C++ engine
