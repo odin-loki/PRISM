@@ -5,7 +5,8 @@ int cxx_map_erase_uaf_false(int c) {
     std::map<int, int> m;
     m[1] = 10;
     m[2] = 20;
-    auto it = m.find(c ? 1 : 2);  // c != 0: the element erased below
-    m.erase(1);
+    auto it = m.begin();       // key 1
+    if (!c) ++it;              // key 2
+    m.erase(1);                // c != 0: erases the element `it` refers to
     return it->second;
 }
