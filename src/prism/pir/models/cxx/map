@@ -1,0 +1,637 @@
+// PRISM operational model of <map> (roadmap 2.6, docs/PIR.md "C++ library
+// models"): std::map and std::multimap with std::allocator, on the sorted
+// node list of prism_tree.h (which says what is modelled and how it matches
+// libstdc++ 13). The pir stage puts this directory first on the C++ include
+// path, so `#include <map>` reaches this file instead of libstdc++'s.
+// Node handles (extract, insert(node_type), merge) and other allocators
+// (pmr::map) are not declared or rejected: such a unit falls back to
+// libstdc++ and says so in `extra.cxx_models`.
+#ifndef _PRISM_MODEL_MAP
+#define _PRISM_MODEL_MAP 1
+#define _GLIBCXX_MAP 1  // libstdc++'s <map> include guard: never both
+
+#pragma GCC system_header
+
+#include <prism_tree.h>
+
+#define __cpp_lib_map_try_emplace 201411L
+
+namespace std _GLIBCXX_VISIBILITY(default) {
+
+template <typename _Pair>
+struct _Prism_select1st {
+    const typename _Pair::first_type& operator()(const _Pair& __x) const noexcept { return __x.first; }
+};
+
+template <typename _Key, typename _Tp, typename _Compare = less<_Key>,
+          typename _Alloc = allocator<pair<const _Key, _Tp>>>
+class multimap;
+
+template <typename _Key, typename _Tp, typename _Compare = less<_Key>,
+          typename _Alloc = allocator<pair<const _Key, _Tp>>>
+class map {
+public:
+    typedef _Key key_type;
+    typedef _Tp mapped_type;
+    typedef pair<const _Key, _Tp> value_type;
+    typedef _Compare key_compare;
+    typedef _Alloc allocator_type;
+
+private:
+    typedef _Prism_tree<_Key, value_type, _Prism_select1st<value_type>, _Compare, _Alloc, false> _Rep;
+    _Rep _M_t;
+
+    template <typename _Up, typename _Vp = remove_reference_t<_Up>>
+    static constexpr bool __usable_key = __or_v<is_same<const _Vp, const _Key>, __and_<is_scalar<_Vp>, is_scalar<_Key>>>;
+
+public:
+    typedef value_type& reference;
+    typedef const value_type& const_reference;
+    typedef value_type* pointer;
+    typedef const value_type* const_pointer;
+    typedef typename _Rep::iterator iterator;
+    typedef typename _Rep::const_iterator const_iterator;
+    typedef std::reverse_iterator<iterator> reverse_iterator;
+    typedef std::reverse_iterator<const_iterator> const_reverse_iterator;
+    typedef size_t size_type;
+    typedef ptrdiff_t difference_type;
+
+    class value_compare {
+        friend class map<_Key, _Tp, _Compare, _Alloc>;
+
+    protected:
+        _Compare comp;
+        value_compare(_Compare __c) : comp(__c) {}
+
+    public:
+        bool operator()(const value_type& __x, const value_type& __y) const { return comp(__x.first, __y.first); }
+    };
+
+    // -- construct/copy/destroy --------------------------------------------
+    map() = default;
+    explicit map(const _Compare& __comp, const allocator_type& = allocator_type()) : _M_t(__comp) {}
+    map(const map&) = default;
+    map(map&&) = default;
+    map(initializer_list<value_type> __l, const _Compare& __comp = _Compare(), const allocator_type& = allocator_type())
+        : _M_t(__comp) {
+        _M_t._M_insert_range_unique(__l.begin(), __l.end());
+    }
+    explicit map(const allocator_type&) {}
+    map(const map& __m, const __type_identity_t<allocator_type>&) : _M_t(__m._M_t) {}
+    map(map&& __m, const __type_identity_t<allocator_type>&) noexcept : _M_t(std::move(__m._M_t)) {}
+    map(initializer_list<value_type> __l, const allocator_type&) { _M_t._M_insert_range_unique(__l.begin(), __l.end()); }
+    template <typename _InputIterator>
+    map(_InputIterator __first, _InputIterator __last, const allocator_type&) {
+        _M_t._M_insert_range_unique(__first, __last);
+    }
+    template <typename _InputIterator>
+    map(_InputIterator __first, _InputIterator __last) {
+        _M_t._M_insert_range_unique(__first, __last);
+    }
+    template <typename _InputIterator>
+    map(_InputIterator __first, _InputIterator __last, const _Compare& __comp,
+        const allocator_type& = allocator_type())
+        : _M_t(__comp) {
+        _M_t._M_insert_range_unique(__first, __last);
+    }
+    ~map() = default;
+
+    map& operator=(const map&) = default;
+    map& operator=(map&&) = default;
+    map& operator=(initializer_list<value_type> __l) {
+        _M_t._M_clear();
+        _M_t._M_insert_range_unique(__l.begin(), __l.end());
+        return *this;
+    }
+    allocator_type get_allocator() const noexcept { return allocator_type(); }
+
+    // -- iterators -----------------------------------------------------------
+    iterator begin() noexcept { return iterator(_M_t._M_head._M_next); }
+    const_iterator begin() const noexcept { return const_iterator(_M_t._M_head._M_next); }
+    iterator end() noexcept { return iterator(_M_t._M_end()); }
+    const_iterator end() const noexcept { return const_iterator(_M_t._M_end()); }
+    reverse_iterator rbegin() noexcept { return reverse_iterator(end()); }
+    const_reverse_iterator rbegin() const noexcept { return const_reverse_iterator(end()); }
+    reverse_iterator rend() noexcept { return reverse_iterator(begin()); }
+    const_reverse_iterator rend() const noexcept { return const_reverse_iterator(begin()); }
+    const_iterator cbegin() const noexcept { return begin(); }
+    const_iterator cend() const noexcept { return end(); }
+    const_reverse_iterator crbegin() const noexcept { return rbegin(); }
+    const_reverse_iterator crend() const noexcept { return rend(); }
+
+    // -- capacity ------------------------------------------------------------
+    [[__nodiscard__]] bool empty() const noexcept { return _M_t._M_count == 0; }
+    size_type size() const noexcept { return _M_t._M_count; }
+    size_type max_size() const noexcept { return size_type(-1) / sizeof(_Prism_rb_node_layout<value_type>); }
+
+    // -- element access ------------------------------------------------------
+    mapped_type& operator[](const key_type& __k) {
+        auto [__p, __found] = _M_t._M_pos_unique(__k);
+        if (!__found)
+            __p = _M_t._M_emplace_at(__p, std::piecewise_construct, std::tuple<const key_type&>(__k), std::tuple<>())._M_node;
+        return static_cast<typename _Rep::_Node*>(__p)->_M_valptr()->second;
+    }
+    mapped_type& operator[](key_type&& __k) {
+        auto [__p, __found] = _M_t._M_pos_unique(__k);
+        if (!__found)
+            __p = _M_t._M_emplace_at(__p, std::piecewise_construct, std::forward_as_tuple(std::move(__k)), std::tuple<>())
+                      ._M_node;
+        return static_cast<typename _Rep::_Node*>(__p)->_M_valptr()->second;
+    }
+    mapped_type& at(const key_type& __k) {
+        auto [__p, __found] = _M_t._M_pos_unique(__k);
+        if (!__found) __throw_out_of_range(__N("map::at"));
+        return static_cast<typename _Rep::_Node*>(__p)->_M_valptr()->second;
+    }
+    const mapped_type& at(const key_type& __k) const {
+        auto [__p, __found] = _M_t._M_pos_unique(__k);
+        if (!__found) __throw_out_of_range(__N("map::at"));
+        return static_cast<const typename _Rep::_Node*>(__p)->_M_valptr()->second;
+    }
+
+    // -- modifiers -----------------------------------------------------------
+    template <typename... _Args>
+    pair<iterator, bool> emplace(_Args&&... __args) {
+        if constexpr (sizeof...(_Args) == 2) {
+            auto&& [__a, __v] = pair<_Args&...>(__args...);
+            if constexpr (__usable_key<decltype(__a)>) {
+                const key_type& __k = __a;
+                auto [__p, __found] = _M_t._M_pos_unique(__k);
+                if (__found) return {iterator(__p), false};
+                return {_M_t._M_emplace_at(__p, std::forward<_Args>(__args)...), true};
+            }
+        }
+        return _M_t._M_emplace_unique(std::forward<_Args>(__args)...);
+    }
+    template <typename... _Args>
+    iterator emplace_hint(const_iterator __pos, _Args&&... __args) {
+        return _M_t._M_emplace_hint_unique(__pos._M_node, std::forward<_Args>(__args)...);
+    }
+
+    template <typename... _Args>
+    pair<iterator, bool> try_emplace(const key_type& __k, _Args&&... __args) {
+        auto [__p, __found] = _M_t._M_pos_unique(__k);
+        if (__found) return {iterator(__p), false};
+        return {_M_t._M_emplace_at(__p, std::piecewise_construct, std::forward_as_tuple(__k),
+                                   std::forward_as_tuple(std::forward<_Args>(__args)...)),
+                true};
+    }
+    template <typename... _Args>
+    pair<iterator, bool> try_emplace(key_type&& __k, _Args&&... __args) {
+        auto [__p, __found] = _M_t._M_pos_unique(__k);
+        if (__found) return {iterator(__p), false};
+        return {_M_t._M_emplace_at(__p, std::piecewise_construct, std::forward_as_tuple(std::move(__k)),
+                                   std::forward_as_tuple(std::forward<_Args>(__args)...)),
+                true};
+    }
+    template <typename... _Args>
+    iterator try_emplace(const_iterator __hint, const key_type& __k, _Args&&... __args) {
+        _M_t._M_check_position(__hint._M_node);
+        return try_emplace(__k, std::forward<_Args>(__args)...).first;
+    }
+    template <typename... _Args>
+    iterator try_emplace(const_iterator __hint, key_type&& __k, _Args&&... __args) {
+        _M_t._M_check_position(__hint._M_node);
+        return try_emplace(std::move(__k), std::forward<_Args>(__args)...).first;
+    }
+
+    pair<iterator, bool> insert(const value_type& __x) { return _M_t._M_insert_unique(__x); }
+    pair<iterator, bool> insert(value_type&& __x) { return _M_t._M_insert_unique(std::move(__x)); }
+    template <typename _Pair>
+    __enable_if_t<is_constructible<value_type, _Pair>::value, pair<iterator, bool>> insert(_Pair&& __x) {
+        using _P2 = remove_reference_t<_Pair>;
+        if constexpr (__is_pair<remove_const_t<_P2>>)
+            if constexpr (__usable_key<typename _P2::first_type>) {
+                const key_type& __k = __x.first;
+                auto [__p, __found] = _M_t._M_pos_unique(__k);
+                if (__found) return {iterator(__p), false};
+                return {_M_t._M_emplace_at(__p, std::forward<_Pair>(__x)), true};
+            }
+        return _M_t._M_emplace_unique(std::forward<_Pair>(__x));
+    }
+    void insert(initializer_list<value_type> __list) { insert(__list.begin(), __list.end()); }
+    iterator insert(const_iterator __position, const value_type& __x) {
+        return _M_t._M_insert_unique_hint(__position._M_node, __x);
+    }
+    iterator insert(const_iterator __position, value_type&& __x) {
+        return _M_t._M_insert_unique_hint(__position._M_node, std::move(__x));
+    }
+    template <typename _Pair>
+    __enable_if_t<is_constructible<value_type, _Pair>::value, iterator> insert(const_iterator __position,
+                                                                               _Pair&& __x) {
+        return _M_t._M_emplace_hint_unique(__position._M_node, std::forward<_Pair>(__x));
+    }
+    template <typename _InputIterator>
+    void insert(_InputIterator __first, _InputIterator __last) {
+        _M_t._M_insert_range_unique(__first, __last);
+    }
+
+    template <typename _Obj>
+    pair<iterator, bool> insert_or_assign(const key_type& __k, _Obj&& __obj) {
+        auto [__p, __found] = _M_t._M_pos_unique(__k);
+        if (!__found)
+            return {_M_t._M_emplace_at(__p, std::piecewise_construct, std::forward_as_tuple(__k),
+                                       std::forward_as_tuple(std::forward<_Obj>(__obj))),
+                    true};
+        static_cast<typename _Rep::_Node*>(__p)->_M_valptr()->second = std::forward<_Obj>(__obj);
+        return {iterator(__p), false};
+    }
+    template <typename _Obj>
+    pair<iterator, bool> insert_or_assign(key_type&& __k, _Obj&& __obj) {
+        auto [__p, __found] = _M_t._M_pos_unique(__k);
+        if (!__found)
+            return {_M_t._M_emplace_at(__p, std::piecewise_construct, std::forward_as_tuple(std::move(__k)),
+                                       std::forward_as_tuple(std::forward<_Obj>(__obj))),
+                    true};
+        static_cast<typename _Rep::_Node*>(__p)->_M_valptr()->second = std::forward<_Obj>(__obj);
+        return {iterator(__p), false};
+    }
+    template <typename _Obj>
+    iterator insert_or_assign(const_iterator __hint, const key_type& __k, _Obj&& __obj) {
+        _M_t._M_check_position(__hint._M_node);
+        return insert_or_assign(__k, std::forward<_Obj>(__obj)).first;
+    }
+    template <typename _Obj>
+    iterator insert_or_assign(const_iterator __hint, key_type&& __k, _Obj&& __obj) {
+        _M_t._M_check_position(__hint._M_node);
+        return insert_or_assign(std::move(__k), std::forward<_Obj>(__obj)).first;
+    }
+
+    iterator erase(const_iterator __position) { return iterator(_M_t._M_erase(__position._M_node)); }
+    iterator erase(iterator __position) { return iterator(_M_t._M_erase(__position._M_node)); }
+    size_type erase(const key_type& __x) { return _M_t._M_erase_key(__x); }
+    iterator erase(const_iterator __first, const_iterator __last) {
+        return iterator(_M_t._M_erase(__first._M_node, __last._M_node));
+    }
+    void swap(map& __x) noexcept(__is_nothrow_swappable<_Compare>::value) { _M_t._M_swap(__x._M_t); }
+    void clear() noexcept { _M_t._M_clear(); }
+
+    // -- observers -----------------------------------------------------------
+    key_compare key_comp() const { return _M_t._M_cmp; }
+    value_compare value_comp() const { return value_compare(_M_t._M_cmp); }
+
+    // -- lookup ----------------------------------------------------------------
+    iterator find(const key_type& __x) { return iterator(_M_t._M_find(__x)); }
+    const_iterator find(const key_type& __x) const { return const_iterator(_M_t._M_find(__x)); }
+    template <typename _Kt, typename _Req = __has_is_transparent_t<_Compare, _Kt>>
+    auto find(const _Kt& __x) -> decltype(iterator(_M_t._M_find(__x))) {
+        return iterator(_M_t._M_find(__x));
+    }
+    template <typename _Kt, typename _Req = __has_is_transparent_t<_Compare, _Kt>>
+    auto find(const _Kt& __x) const -> decltype(const_iterator(_M_t._M_find(__x))) {
+        return const_iterator(_M_t._M_find(__x));
+    }
+    size_type count(const key_type& __x) const { return _M_t._M_count_of(__x); }
+    template <typename _Kt, typename _Req = __has_is_transparent_t<_Compare, _Kt>>
+    auto count(const _Kt& __x) const -> decltype(_M_t._M_count_of(__x)) {
+        return _M_t._M_count_of(__x);
+    }
+    bool contains(const key_type& __x) const { return _M_t._M_find(__x) != _M_t._M_end(); }
+    template <typename _Kt, typename _Req = __has_is_transparent_t<_Compare, _Kt>>
+    auto contains(const _Kt& __x) const -> decltype(_M_t._M_find(__x), void(), true) {
+        return _M_t._M_find(__x) != _M_t._M_end();
+    }
+    iterator lower_bound(const key_type& __x) { return iterator(_M_t._M_lower(__x)); }
+    const_iterator lower_bound(const key_type& __x) const { return const_iterator(_M_t._M_lower(__x)); }
+    template <typename _Kt, typename _Req = __has_is_transparent_t<_Compare, _Kt>>
+    auto lower_bound(const _Kt& __x) -> decltype(iterator(_M_t._M_lower(__x))) {
+        return iterator(_M_t._M_lower(__x));
+    }
+    template <typename _Kt, typename _Req = __has_is_transparent_t<_Compare, _Kt>>
+    auto lower_bound(const _Kt& __x) const -> decltype(const_iterator(_M_t._M_lower(__x))) {
+        return const_iterator(_M_t._M_lower(__x));
+    }
+    iterator upper_bound(const key_type& __x) { return iterator(_M_t._M_upper(__x)); }
+    const_iterator upper_bound(const key_type& __x) const { return const_iterator(_M_t._M_upper(__x)); }
+    template <typename _Kt, typename _Req = __has_is_transparent_t<_Compare, _Kt>>
+    auto upper_bound(const _Kt& __x) -> decltype(iterator(_M_t._M_upper(__x))) {
+        return iterator(_M_t._M_upper(__x));
+    }
+    template <typename _Kt, typename _Req = __has_is_transparent_t<_Compare, _Kt>>
+    auto upper_bound(const _Kt& __x) const -> decltype(const_iterator(_M_t._M_upper(__x))) {
+        return const_iterator(_M_t._M_upper(__x));
+    }
+    pair<iterator, iterator> equal_range(const key_type& __x) {
+        auto __r = _M_t._M_equal_range(__x);
+        return {iterator(__r.first), iterator(__r.second)};
+    }
+    pair<const_iterator, const_iterator> equal_range(const key_type& __x) const {
+        auto __r = _M_t._M_equal_range(__x);
+        return {const_iterator(__r.first), const_iterator(__r.second)};
+    }
+    template <typename _Kt, typename _Req = __has_is_transparent_t<_Compare, _Kt>>
+    auto equal_range(const _Kt& __x) -> decltype(pair<iterator, iterator>(_M_t._M_equal_range(__x))) {
+        auto __r = _M_t._M_equal_range(__x);
+        return {iterator(__r.first), iterator(__r.second)};
+    }
+    template <typename _Kt, typename _Req = __has_is_transparent_t<_Compare, _Kt>>
+    auto equal_range(const _Kt& __x) const
+        -> decltype(pair<const_iterator, const_iterator>(_M_t._M_equal_range(__x))) {
+        auto __r = _M_t._M_equal_range(__x);
+        return {const_iterator(__r.first), const_iterator(__r.second)};
+    }
+
+    friend bool operator==(const map& __x, const map& __y) {
+        return __x.size() == __y.size() && std::equal(__x.begin(), __x.end(), __y.begin());
+    }
+    friend __detail::__synth3way_t<value_type> operator<=>(const map& __x, const map& __y) {
+        return std::lexicographical_compare_three_way(__x.begin(), __x.end(), __y.begin(), __y.end(),
+                                                      __detail::__synth3way);
+    }
+};
+
+template <typename _Key, typename _Tp, typename _Compare, typename _Alloc>
+class multimap {
+public:
+    typedef _Key key_type;
+    typedef _Tp mapped_type;
+    typedef pair<const _Key, _Tp> value_type;
+    typedef _Compare key_compare;
+    typedef _Alloc allocator_type;
+
+private:
+    typedef _Prism_tree<_Key, value_type, _Prism_select1st<value_type>, _Compare, _Alloc, true> _Rep;
+    _Rep _M_t;
+
+public:
+    typedef value_type& reference;
+    typedef const value_type& const_reference;
+    typedef value_type* pointer;
+    typedef const value_type* const_pointer;
+    typedef typename _Rep::iterator iterator;
+    typedef typename _Rep::const_iterator const_iterator;
+    typedef std::reverse_iterator<iterator> reverse_iterator;
+    typedef std::reverse_iterator<const_iterator> const_reverse_iterator;
+    typedef size_t size_type;
+    typedef ptrdiff_t difference_type;
+
+    class value_compare {
+        friend class multimap<_Key, _Tp, _Compare, _Alloc>;
+
+    protected:
+        _Compare comp;
+        value_compare(_Compare __c) : comp(__c) {}
+
+    public:
+        bool operator()(const value_type& __x, const value_type& __y) const { return comp(__x.first, __y.first); }
+    };
+
+    multimap() = default;
+    explicit multimap(const _Compare& __comp, const allocator_type& = allocator_type()) : _M_t(__comp) {}
+    multimap(const multimap&) = default;
+    multimap(multimap&&) = default;
+    multimap(initializer_list<value_type> __l, const _Compare& __comp = _Compare(),
+             const allocator_type& = allocator_type())
+        : _M_t(__comp) {
+        _M_t._M_insert_range_equal(__l.begin(), __l.end());
+    }
+    explicit multimap(const allocator_type&) {}
+    multimap(const multimap& __m, const __type_identity_t<allocator_type>&) : _M_t(__m._M_t) {}
+    multimap(multimap&& __m, const __type_identity_t<allocator_type>&) noexcept : _M_t(std::move(__m._M_t)) {}
+    multimap(initializer_list<value_type> __l, const allocator_type&) {
+        _M_t._M_insert_range_equal(__l.begin(), __l.end());
+    }
+    template <typename _InputIterator>
+    multimap(_InputIterator __first, _InputIterator __last, const allocator_type&) {
+        _M_t._M_insert_range_equal(__first, __last);
+    }
+    template <typename _InputIterator>
+    multimap(_InputIterator __first, _InputIterator __last) {
+        _M_t._M_insert_range_equal(__first, __last);
+    }
+    template <typename _InputIterator>
+    multimap(_InputIterator __first, _InputIterator __last, const _Compare& __comp,
+             const allocator_type& = allocator_type())
+        : _M_t(__comp) {
+        _M_t._M_insert_range_equal(__first, __last);
+    }
+    ~multimap() = default;
+
+    multimap& operator=(const multimap&) = default;
+    multimap& operator=(multimap&&) = default;
+    multimap& operator=(initializer_list<value_type> __l) {
+        _M_t._M_clear();
+        _M_t._M_insert_range_equal(__l.begin(), __l.end());
+        return *this;
+    }
+    allocator_type get_allocator() const noexcept { return allocator_type(); }
+
+    iterator begin() noexcept { return iterator(_M_t._M_head._M_next); }
+    const_iterator begin() const noexcept { return const_iterator(_M_t._M_head._M_next); }
+    iterator end() noexcept { return iterator(_M_t._M_end()); }
+    const_iterator end() const noexcept { return const_iterator(_M_t._M_end()); }
+    reverse_iterator rbegin() noexcept { return reverse_iterator(end()); }
+    const_reverse_iterator rbegin() const noexcept { return const_reverse_iterator(end()); }
+    reverse_iterator rend() noexcept { return reverse_iterator(begin()); }
+    const_reverse_iterator rend() const noexcept { return const_reverse_iterator(begin()); }
+    const_iterator cbegin() const noexcept { return begin(); }
+    const_iterator cend() const noexcept { return end(); }
+    const_reverse_iterator crbegin() const noexcept { return rbegin(); }
+    const_reverse_iterator crend() const noexcept { return rend(); }
+
+    [[__nodiscard__]] bool empty() const noexcept { return _M_t._M_count == 0; }
+    size_type size() const noexcept { return _M_t._M_count; }
+    size_type max_size() const noexcept { return size_type(-1) / sizeof(_Prism_rb_node_layout<value_type>); }
+
+    template <typename... _Args>
+    iterator emplace(_Args&&... __args) {
+        return _M_t._M_emplace_equal(std::forward<_Args>(__args)...);
+    }
+    template <typename... _Args>
+    iterator emplace_hint(const_iterator __pos, _Args&&... __args) {
+        return _M_t._M_emplace_hint_equal(const_cast<_Prism_node_base*>(__pos._M_node), std::forward<_Args>(__args)...);
+    }
+    iterator insert(const value_type& __x) { return _M_t._M_insert_equal(__x); }
+    iterator insert(value_type&& __x) { return _M_t._M_insert_equal(std::move(__x)); }
+    template <typename _Pair>
+    __enable_if_t<is_constructible<value_type, _Pair>::value, iterator> insert(_Pair&& __x) {
+        return _M_t._M_emplace_equal(std::forward<_Pair>(__x));
+    }
+    iterator insert(const_iterator __position, const value_type& __x) {
+        return _M_t._M_insert_equal_hint(const_cast<_Prism_node_base*>(__position._M_node), __x);
+    }
+    iterator insert(const_iterator __position, value_type&& __x) {
+        return _M_t._M_insert_equal_hint(const_cast<_Prism_node_base*>(__position._M_node), std::move(__x));
+    }
+    template <typename _Pair>
+    __enable_if_t<is_constructible<value_type, _Pair&&>::value, iterator> insert(const_iterator __position,
+                                                                                 _Pair&& __x) {
+        return _M_t._M_emplace_hint_equal(const_cast<_Prism_node_base*>(__position._M_node), std::forward<_Pair>(__x));
+    }
+    template <typename _InputIterator>
+    void insert(_InputIterator __first, _InputIterator __last) {
+        _M_t._M_insert_range_equal(__first, __last);
+    }
+    void insert(initializer_list<value_type> __l) { insert(__l.begin(), __l.end()); }
+
+    iterator erase(const_iterator __position) { return iterator(_M_t._M_erase(__position._M_node)); }
+    iterator erase(iterator __position) { return iterator(_M_t._M_erase(__position._M_node)); }
+    size_type erase(const key_type& __x) { return _M_t._M_erase_key(__x); }
+    iterator erase(const_iterator __first, const_iterator __last) {
+        return iterator(_M_t._M_erase(__first._M_node, __last._M_node));
+    }
+    void swap(multimap& __x) noexcept(__is_nothrow_swappable<_Compare>::value) { _M_t._M_swap(__x._M_t); }
+    void clear() noexcept { _M_t._M_clear(); }
+
+    key_compare key_comp() const { return _M_t._M_cmp; }
+    value_compare value_comp() const { return value_compare(_M_t._M_cmp); }
+
+    iterator find(const key_type& __x) { return iterator(_M_t._M_find(__x)); }
+    const_iterator find(const key_type& __x) const { return const_iterator(_M_t._M_find(__x)); }
+    template <typename _Kt, typename _Req = __has_is_transparent_t<_Compare, _Kt>>
+    auto find(const _Kt& __x) -> decltype(iterator(_M_t._M_find(__x))) {
+        return iterator(_M_t._M_find(__x));
+    }
+    template <typename _Kt, typename _Req = __has_is_transparent_t<_Compare, _Kt>>
+    auto find(const _Kt& __x) const -> decltype(const_iterator(_M_t._M_find(__x))) {
+        return const_iterator(_M_t._M_find(__x));
+    }
+    size_type count(const key_type& __x) const { return _M_t._M_count_of(__x); }
+    template <typename _Kt, typename _Req = __has_is_transparent_t<_Compare, _Kt>>
+    auto count(const _Kt& __x) const -> decltype(_M_t._M_count_of(__x)) {
+        return _M_t._M_count_of(__x);
+    }
+    bool contains(const key_type& __x) const { return _M_t._M_find(__x) != _M_t._M_end(); }
+    template <typename _Kt, typename _Req = __has_is_transparent_t<_Compare, _Kt>>
+    auto contains(const _Kt& __x) const -> decltype(_M_t._M_find(__x), void(), true) {
+        return _M_t._M_find(__x) != _M_t._M_end();
+    }
+    iterator lower_bound(const key_type& __x) { return iterator(_M_t._M_lower(__x)); }
+    const_iterator lower_bound(const key_type& __x) const { return const_iterator(_M_t._M_lower(__x)); }
+    template <typename _Kt, typename _Req = __has_is_transparent_t<_Compare, _Kt>>
+    auto lower_bound(const _Kt& __x) -> decltype(iterator(_M_t._M_lower(__x))) {
+        return iterator(_M_t._M_lower(__x));
+    }
+    template <typename _Kt, typename _Req = __has_is_transparent_t<_Compare, _Kt>>
+    auto lower_bound(const _Kt& __x) const -> decltype(const_iterator(_M_t._M_lower(__x))) {
+        return const_iterator(_M_t._M_lower(__x));
+    }
+    iterator upper_bound(const key_type& __x) { return iterator(_M_t._M_upper(__x)); }
+    const_iterator upper_bound(const key_type& __x) const { return const_iterator(_M_t._M_upper(__x)); }
+    template <typename _Kt, typename _Req = __has_is_transparent_t<_Compare, _Kt>>
+    auto upper_bound(const _Kt& __x) -> decltype(iterator(_M_t._M_upper(__x))) {
+        return iterator(_M_t._M_upper(__x));
+    }
+    template <typename _Kt, typename _Req = __has_is_transparent_t<_Compare, _Kt>>
+    auto upper_bound(const _Kt& __x) const -> decltype(const_iterator(_M_t._M_upper(__x))) {
+        return const_iterator(_M_t._M_upper(__x));
+    }
+    pair<iterator, iterator> equal_range(const key_type& __x) {
+        auto __r = _M_t._M_equal_range(__x);
+        return {iterator(__r.first), iterator(__r.second)};
+    }
+    pair<const_iterator, const_iterator> equal_range(const key_type& __x) const {
+        auto __r = _M_t._M_equal_range(__x);
+        return {const_iterator(__r.first), const_iterator(__r.second)};
+    }
+    template <typename _Kt, typename _Req = __has_is_transparent_t<_Compare, _Kt>>
+    auto equal_range(const _Kt& __x) -> decltype(pair<iterator, iterator>(_M_t._M_equal_range(__x))) {
+        auto __r = _M_t._M_equal_range(__x);
+        return {iterator(__r.first), iterator(__r.second)};
+    }
+    template <typename _Kt, typename _Req = __has_is_transparent_t<_Compare, _Kt>>
+    auto equal_range(const _Kt& __x) const
+        -> decltype(pair<const_iterator, const_iterator>(_M_t._M_equal_range(__x))) {
+        auto __r = _M_t._M_equal_range(__x);
+        return {const_iterator(__r.first), const_iterator(__r.second)};
+    }
+
+    friend bool operator==(const multimap& __x, const multimap& __y) {
+        return __x.size() == __y.size() && std::equal(__x.begin(), __x.end(), __y.begin());
+    }
+    friend __detail::__synth3way_t<value_type> operator<=>(const multimap& __x, const multimap& __y) {
+        return std::lexicographical_compare_three_way(__x.begin(), __x.end(), __y.begin(), __y.end(),
+                                                      __detail::__synth3way);
+    }
+};
+
+// deduction guides (as libstdc++'s)
+template <typename _InputIterator, typename _Compare = less<__iter_key_t<_InputIterator>>,
+          typename _Allocator = allocator<__iter_to_alloc_t<_InputIterator>>,
+          typename = _RequireInputIter<_InputIterator>, typename = _RequireNotAllocator<_Compare>,
+          typename = _RequireAllocator<_Allocator>>
+map(_InputIterator, _InputIterator, _Compare = _Compare(), _Allocator = _Allocator())
+    -> map<__iter_key_t<_InputIterator>, __iter_val_t<_InputIterator>, _Compare, _Allocator>;
+template <typename _Key, typename _Tp, typename _Compare = less<_Key>,
+          typename _Allocator = allocator<pair<const _Key, _Tp>>, typename = _RequireNotAllocator<_Compare>,
+          typename = _RequireAllocator<_Allocator>>
+map(initializer_list<pair<_Key, _Tp>>, _Compare = _Compare(), _Allocator = _Allocator())
+    -> map<_Key, _Tp, _Compare, _Allocator>;
+template <typename _InputIterator, typename _Allocator, typename = _RequireInputIter<_InputIterator>,
+          typename = _RequireAllocator<_Allocator>>
+map(_InputIterator, _InputIterator, _Allocator)
+    -> map<__iter_key_t<_InputIterator>, __iter_val_t<_InputIterator>, less<__iter_key_t<_InputIterator>>, _Allocator>;
+template <typename _Key, typename _Tp, typename _Allocator, typename = _RequireAllocator<_Allocator>>
+map(initializer_list<pair<_Key, _Tp>>, _Allocator) -> map<_Key, _Tp, less<_Key>, _Allocator>;
+
+template <typename _InputIterator, typename _Compare = less<__iter_key_t<_InputIterator>>,
+          typename _Allocator = allocator<__iter_to_alloc_t<_InputIterator>>,
+          typename = _RequireInputIter<_InputIterator>, typename = _RequireNotAllocator<_Compare>,
+          typename = _RequireAllocator<_Allocator>>
+multimap(_InputIterator, _InputIterator, _Compare = _Compare(), _Allocator = _Allocator())
+    -> multimap<__iter_key_t<_InputIterator>, __iter_val_t<_InputIterator>, _Compare, _Allocator>;
+template <typename _Key, typename _Tp, typename _Compare = less<_Key>,
+          typename _Allocator = allocator<pair<const _Key, _Tp>>, typename = _RequireNotAllocator<_Compare>,
+          typename = _RequireAllocator<_Allocator>>
+multimap(initializer_list<pair<_Key, _Tp>>, _Compare = _Compare(), _Allocator = _Allocator())
+    -> multimap<_Key, _Tp, _Compare, _Allocator>;
+template <typename _InputIterator, typename _Allocator, typename = _RequireInputIter<_InputIterator>,
+          typename = _RequireAllocator<_Allocator>>
+multimap(_InputIterator, _InputIterator, _Allocator)
+    -> multimap<__iter_key_t<_InputIterator>, __iter_val_t<_InputIterator>, less<__iter_key_t<_InputIterator>>,
+                _Allocator>;
+template <typename _Key, typename _Tp, typename _Allocator, typename = _RequireAllocator<_Allocator>>
+multimap(initializer_list<pair<_Key, _Tp>>, _Allocator) -> multimap<_Key, _Tp, less<_Key>, _Allocator>;
+
+template <typename _Key, typename _Tp, typename _Compare, typename _Alloc>
+inline void swap(map<_Key, _Tp, _Compare, _Alloc>& __x, map<_Key, _Tp, _Compare, _Alloc>& __y) noexcept(
+    noexcept(__x.swap(__y))) {
+    __x.swap(__y);
+}
+template <typename _Key, typename _Tp, typename _Compare, typename _Alloc>
+inline void swap(multimap<_Key, _Tp, _Compare, _Alloc>& __x, multimap<_Key, _Tp, _Compare, _Alloc>& __y) noexcept(
+    noexcept(__x.swap(__y))) {
+    __x.swap(__y);
+}
+
+template <typename _Key, typename _Tp, typename _Compare, typename _Alloc, typename _Predicate>
+inline typename map<_Key, _Tp, _Compare, _Alloc>::size_type erase_if(map<_Key, _Tp, _Compare, _Alloc>& __cont,
+                                                                     _Predicate __pred) {
+    typename map<_Key, _Tp, _Compare, _Alloc>::size_type __num = 0;
+    for (auto __it = __cont.begin(), __last = __cont.end(); __it != __last;) {
+        if (__pred(*__it)) {
+            __it = __cont.erase(__it);
+            ++__num;
+        } else {
+            ++__it;
+        }
+    }
+    return __num;
+}
+template <typename _Key, typename _Tp, typename _Compare, typename _Alloc, typename _Predicate>
+inline typename multimap<_Key, _Tp, _Compare, _Alloc>::size_type erase_if(
+    multimap<_Key, _Tp, _Compare, _Alloc>& __cont, _Predicate __pred) {
+    typename multimap<_Key, _Tp, _Compare, _Alloc>::size_type __num = 0;
+    for (auto __it = __cont.begin(), __last = __cont.end(); __it != __last;) {
+        if (__pred(*__it)) {
+            __it = __cont.erase(__it);
+            ++__num;
+        } else {
+            ++__it;
+        }
+    }
+    return __num;
+}
+
+namespace pmr {
+// declared for source compatibility; instantiating one is rejected by the
+// model's allocator check, so the unit falls back to libstdc++
+template <typename _Key, typename _Tp, typename _Cmp = std::less<_Key>>
+using map = std::map<_Key, _Tp, _Cmp, polymorphic_allocator<pair<const _Key, _Tp>>>;
+template <typename _Key, typename _Tp, typename _Cmp = std::less<_Key>>
+using multimap = std::multimap<_Key, _Tp, _Cmp, polymorphic_allocator<pair<const _Key, _Tp>>>;
+}  // namespace pmr
+
+}  // namespace std
+
+#endif  // _PRISM_MODEL_MAP
