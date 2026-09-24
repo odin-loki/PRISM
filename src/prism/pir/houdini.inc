@@ -803,13 +803,6 @@ HoudiniOut Houdini::run() {
             k.alive = false;  // a scope value not readable at the header
         }
     }
-    if (std::getenv("PRISM_HOUDINI_DEBUG")) {
-        std::map<int, std::pair<int, int>> cnt;
-        for (auto& k : cands)
-            if (k.alive) (k.ghost() ? cnt[k.loop].second : cnt[k.loop].first)++;
-        for (auto& [L, n] : cnt) std::fprintf(stderr, "houdini loop %d: %d scalar, %d memory candidates\n", L, n.first, n.second);
-        std::fprintf(stderr, "houdini T=%zu props=%zu assumptions=%zu\n", T.size(), e.props.size(), e.assumptions.size());
-    }
     const std::size_t nprops = e.props.size();
     std::vector<std::optional<z3::expr>> noviol_memo(nprops + 1);
     auto noviol = [&](std::size_t n) -> z3::expr {
@@ -894,8 +887,6 @@ HoudiniOut Houdini::run() {
                     dropped = true;
                     return;
                 }
-                if (std::getenv("PRISM_HOUDINI_DEBUG"))
-                    std::fprintf(stderr, "houdini L%d goals=%zu t=%.1f\n", L, live.size(), deadline_ - left());
                 z3::expr act = c.bool_const(("houdini!q" + std::to_string(query_++)).c_str());
                 s.add(z3::implies(act, z3::mk_or(rest)));
                 z3::expr_vector as(c);
@@ -920,10 +911,6 @@ HoudiniOut Houdini::run() {
                         for (auto i : live) cands[i].alive = false;
                     dropped = true;
                     continue;
-                }
-                if (std::getenv("PRISM_HOUDINI_DEBUG")) {
-                    std::fprintf(stderr, "houdini unknown: %s\n", s.reason_unknown().c_str());
-                    for (auto i : live) std::fprintf(stderr, "   goal %s\n", text(cands[i]).c_str());
                 }
                 if (live.size() == 1 || depth > 6) {
                     for (auto i : live) cands[i].alive = false;
@@ -1031,18 +1018,9 @@ HoudiniOut Houdini::run() {
         z3::expr_vector as(c);
         for (auto x : all_sel) as.push_back(x);
         as.push_back(act);
-        if (std::getenv("PRISM_HOUDINI_DEBUG"))
-            std::fprintf(stderr, "houdini final [%zu,%zu) t=%.1f\n", lo, hi, deadline_ - left());
         auto r = s.check(as);
         if (r == z3::unsat) return true;
         if (r == z3::sat) {
-            if (std::getenv("PRISM_HOUDINI_DEBUG")) {
-                auto m = s.get_model();
-                for (std::size_t i = lo; i < hi; ++i)
-                    if (m.eval(e.props[i].viol, true).is_true())
-                        std::fprintf(stderr, "houdini violated %s line %d %s\n", e.props[i].stmt->prop.c_str(),
-                                     e.props[i].stmt->line, e.props[i].stmt->msg.c_str());
-            }
             fail = "a property is not implied by the inductive invariants found";
             return false;
         }

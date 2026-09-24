@@ -1582,11 +1582,9 @@ Verdict check_function(const Function& fn, const CheckOptions& opt) {
             r.extra["houdini_candidates"] = std::to_string(h.candidates);
             if (!h.proved) {
                 r.extra["invariants_note"] = "no proof from loop invariants: " + h.why;
-                {  // DEBUG
-                    nlohmann::json inv = nlohmann::json::array();
-                    for (auto& l : h.invariants) inv.push_back(l);
-                    r.extra["debug_invariants"] = inv.dump();
-                }
+                std::size_t kept = 0;
+                for (auto& l : h.invariants) kept += l.size();
+                if (kept > 0) r.extra["invariants_inductive"] = std::to_string(kept);  // proved, but not enough
                 return false;
             }
             std::size_t n = 0;
