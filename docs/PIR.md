@@ -1192,25 +1192,46 @@ A function is `PROVED-CERTIFIED` only when it is `PROVED`, has at least one
 VC, and **every** VC (each property and the unwinding assertion) is
 certified.
 
-With two or more VCs, certified mode first asks **one combined query**,
+Certified mode answers every VC with **plain** queries first, exactly as
+plain mode does (the query cache, the portfolio, the grouping of many
+properties), and asks for certificates only once the function is `PROVED`.
+A function that is `FAILED`, `BOUNDED`, `UNKNOWN` or `NEEDS-HARNESS` pays
+for no certificate at all: none could make it `PROVED-CERTIFIED`. With two
+or more VCs the first plain query is **one combined query**,
 `assumptions ∧ reach ∧ (viol₁ ∨ … ∨ violₙ ∨ cut₁ ∨ …)`, built from the same
-VC terms. It is UNSAT exactly when every VC is UNSAT, so one checked LRAT
-proof of it certifies the same claim as n per-VC proofs, with one bit-blast,
-one CaDiCaL run and one round of checking instead of n
-(`extra.certificate_scope = "combined"`, `extra.certificate_proofs = "1"`,
-`extra.certificate_vcs = n`, `extra.certificate_covers` lists the labels of
-the n VCs). If the combined query is UNSAT and CaDiCaL wrote its proof but
-a checker ran out of time on it (a large proof), its two halves are tried
-the same way, recursively down to batches of 2-3 VCs; when every batch comes
-back certified the function is certified with one proof per batch
-(`extra.certificate_scope = "batched"`, `extra.certificate_covers` lists
-each batch as `[label, …]`). Only **certified** UNSAT answers are used. If
-the combined query
-is SAT, has no answer, or its certificate is not obtained or rejected, it is
-discarded (its outcome is written to `extra.certificate_combined`) and every
-VC is asked on its own exactly as without it (`certificate_scope =
-"per-vc"`). `CheckOptions::certify_combined = false` switches the combined
-attempt off. Plain mode is unchanged. A certified function then carries `extra.certificate = "checked"` (what the verdict
+VC terms. It is UNSAT exactly when every VC is UNSAT, so UNSAT makes the
+function `PROVED` at once; SAT (a validated model) means some VC is violated
+and the per-VC queries decide the verdict with no certificate attempted
+(`extra.certificate_combined` says so; before, a `BOUNDED` loop such as
+`nested6` paid for a certificate of every UNSAT VC).
+
+Certification of a `PROVED` function then asks the certified query of the
+same combined formula: one checked LRAT proof of it certifies the same claim
+as n per-VC proofs, with one bit-blast, one CaDiCaL run and one round of
+checking instead of n (`extra.certificate_scope = "combined"`,
+`extra.certificate_proofs = "1"`, `extra.certificate_vcs = n`,
+`extra.certificate_covers` lists the labels of the n VCs). If CaDiCaL wrote
+its proof but a checker ran out of time or memory on it (a large proof), its
+two halves are tried the same way, recursively down to batches of 2-3 VCs;
+when every batch comes back certified the function is certified with one
+proof per batch (`extra.certificate_scope = "batched"`,
+`extra.certificate_covers` lists each batch as `[label, …]`). Only
+**certified** UNSAT answers are used. If the combined certificate is not
+obtained or is rejected, it is discarded (its outcome is written to
+`extra.certificate_combined`) and every VC is certified on its own, in
+order, stopping at the first VC that is not (`certificate_scope =
+"per-vc"`). Every certificate query already knows its plain answer
+(`SolveOptions::known_unsat`), so only CaDiCaL-with-LRAT runs for it and it
+may use the whole certificate budget; if no certificate comes back, the plain
+answer stands, uncertified. The certificate queries of one function share a
+**certification budget** (`CheckOptions::certify_budget_s`; the pir stage
+uses `max(240 s, 8 × --timeout)`, or `$PRISM_CERTIFY_BUDGET` seconds, 0 for
+none): once it is spent the function stays `PROVED` with
+`certify_note = "not certified: the certification budget of this function
+(N s) was spent after k/n VCs were certified; verdict stays PROVED"`, and
+each certificate query gets at most what is left. `extra.certificate_solver`
+summarises the certificate queries. `CheckOptions::certify_combined = false`
+switches the combined query off (plain answers and certificates per VC). Plain mode is unchanged. A certified function then carries `extra.certificate = "checked"` (what the verdict
 audit requires of a `PROVED-CERTIFIED` from this stage),
 `extra.certificate_info` (one entry per VC, `<prop>@<line>: bitblast: … ;
 cadical … lrat N steps, checked by cake_lpr …; cnf sha256 …`, or one entry

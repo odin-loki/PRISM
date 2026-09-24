@@ -69,7 +69,23 @@ struct SolveOptions {
     bool portfolio = true;      // false: Z3 only (plus the certificate chain when certified)
     std::string cache_dir;      // empty: $XDG_CACHE_HOME/prism/solver or ~/.cache/prism/solver
     bool use_cache = true;      // the query cache; solve times are always recorded in cache_dir
-    bool cache_certificates = true;  // keep CNF + LRAT so a certified hit is re-checked
+    bool cache_certificates = true;  // keep the (packed) LRAT proof so a certified hit is re-checked
+    // Size cap of <cache_dir>/certs, pruned least-recently-used
+    // (include/prism/solver_certs.hpp). -1: $PRISM_CERT_CACHE_MAX, else 2 GiB.
+    std::int64_t cert_cache_max_bytes = -1;
+    // certified: the caller already has a plain UNSAT answer to this exact
+    // formula from solve() and wants only its certificate. Then only the
+    // certificate member (CaDiCaL with LRAT) runs, until the certificate
+    // budget; without a certificate the result is that plain Unsat,
+    // uncertified (as for a cached plain unsat). A validated model still wins.
+    bool known_unsat = false;
+    // Memory cap in MB of the certificate tools: cake_lpr's heap
+    // (--CML_HEAP_SIZE) and the resident memory of the Lean tools
+    // (prism-bitblast, prism-lrat-check; killed past it). 0:
+    // $PRISM_CHECKER_MEM (a size such as "6G"), else 4096 (cake_lpr's own
+    // default heap). Running out costs the certificate, never the answer,
+    // and the note says "ran out of memory".
+    unsigned checker_mem_mb = 0;
     bool sls = true;            // ProbSAT walker (counterexamples only)
     double sls_budget_s = 0.0;  // 0: max(1 s, 10% of timeout_s); it then frees its core
     bool z3_in_process = true;  // tests switch Z3 off to observe other members alone
@@ -167,8 +183,13 @@ struct CheckOutcome {
     std::string version;
     std::string detail;
 };
+// heap_mb > 0: cake_lpr's heap cap (--CML_HEAP_SIZE, MB); any other checker
+// is killed once its resident memory passes heap_mb MB. A checker that
+// runs out of memory (CakeML heap exhausted, bad_alloc, killed by SIGKILL)
+// is reported as such in `detail` ("ran out of memory ..."), never as a
+// rejection and never as accepted.
 CheckOutcome check_lrat(const ToolInfo& checker, const std::filesystem::path& cnf,
-                        const std::filesystem::path& lrat, double timeout_s);
+                        const std::filesystem::path& lrat, double timeout_s, unsigned heap_mb = 0);
 std::size_t lrat_steps(const std::filesystem::path& lrat);  // addition lines
 
 // ---- the Lean-proved bit-blaster (proofs/techniques; docs/PROOFS_TECHNIQUES.md) ----
@@ -196,14 +217,15 @@ std::optional<bool> eval_lean_dag(const LeanDag& dag, const std::map<std::string
                                   std::string* why = nullptr);
 // Run `prism-bitblast` on the DAG: writes <work>/query.dag and the exact
 // DIMACS text to <work>/query.cnf, returns the CNF with its variable map.
+// mem_cap > 0: resident-memory cap in bytes (the process is killed past it).
 std::optional<Cnf> lean_bitblast(const LeanDag& dag, const ToolInfo& exe, const std::filesystem::path& work,
                                  double timeout_s, std::string* why = nullptr,
-                                 const std::atomic<bool>* stop = nullptr);
+                                 const std::atomic<bool>* stop = nullptr, std::uint64_t mem_cap = 0);
 // `prism-lrat-check --dag DAG CNF LRAT`: Lean's verified LRAT checker on the
 // CNF rebuilt by the proved bit-blaster (and byte-compared with CNF).
 CheckOutcome check_lrat_dag(const ToolInfo& checker, const std::filesystem::path& dag,
                             const std::filesystem::path& cnf, const std::filesystem::path& lrat,
-                            double timeout_s);
+                            double timeout_s, std::uint64_t mem_cap = 0);
 
 #ifdef PRISM_HAS_Z3
 struct Features {
