@@ -27,6 +27,10 @@ struct FunctionInfo {
     // length-preserving copy of the source (comments blanked), so an offset
     // into it maps back to a source position (bmc nondet call sites, loops).
     int body_line = 0, body_col = 0;
+    // C++ standard of the unit (the year of its -std= in compile_commands.json,
+    // 98 -> 3), 0 = not known (the compiler's default is assumed). Set by the
+    // pipeline before bmc (with_cxx_std); not in the JSON form.
+    int cxx_std = 0;
 };
 
 struct Finding {

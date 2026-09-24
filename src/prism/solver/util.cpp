@@ -19,6 +19,7 @@
 #include <poll.h>
 #include <signal.h>
 #include <spawn.h>
+#include <thread>
 #include <sys/wait.h>
 #include <unistd.h>
 extern char** environ;
@@ -244,7 +245,12 @@ Proc run(const std::vector<std::string>& argv, double timeout_s, const std::atom
     }
     int st = 0;
     // The child may have closed stdout but still be running: wait with the
-    // same deadline / stop rules.
+    // same deadline / stop rules. Once killed, it gets kReapGraceS to be
+    // reaped; a process that cannot die in time (uninterruptible sleep) is
+    // left to a detached reaper and the run returns (watchdog, recorded in
+    // Proc::unreaped): the caller's timeout is never exceeded by more.
+    constexpr double kReapGraceS = 2.0;
+    double killed_at = r.timed_out || r.cancelled ? now_s() : -1.0;
     for (;;) {
         pid_t w = waitpid(pid, &st, WNOHANG);
         if (w == pid) break;
@@ -253,6 +259,15 @@ Proc run(const std::vector<std::string>& argv, double timeout_s, const std::atom
         if (timeout_s > 0 && now_s() - t0 > timeout_s && !r.timed_out && !r.cancelled) {
             r.timed_out = true;
             kill_group();
+        }
+        if ((r.timed_out || r.cancelled) && killed_at < 0) killed_at = now_s();
+        if (killed_at >= 0 && now_s() - killed_at > kReapGraceS) {
+            r.unreaped = true;
+            std::thread([pid] {
+                int s2 = 0;
+                while (waitpid(pid, &s2, 0) < 0 && errno == EINTR) {}
+            }).detach();
+            break;
         }
         usleep(2000);
     }

@@ -327,8 +327,10 @@ the rules. What to know about it:
   117 s on a VC Bitwuzla answers in 16 ms (8 s timeout), and once an
   end-to-end model pass did not return within 120 s (the stall above, counted
   as a timeout). Neither reproduced (400 reruns of the second VC, worst
-  0.44 s). At one check the machine had about 1 GB of free memory and no swap.
-  A stall costs time, never an answer.
+  0.44 s; 8,960 more calls in the stall hunt, see "Stalls"). At one check the
+  machine had about 1 GB of free memory and no swap. A stall costs time,
+  never an answer; since the stall hunt a stalled member is detached and
+  recorded by a watchdog, and any overrun is recorded with its phase times.
 - These VCs are small. On hard queries (the generated benchmark above) the
   training data has almost nothing to say; `<cache>/solve_log.jsonl` keeps
   collecting production lines for a retrain.
@@ -361,6 +363,67 @@ python tools/prism_ai/predict.py --solve-log DIR/solve_runs.jsonl --bound-log DI
   --repeat-solve-log REP/solve_runs.jsonl --repeat-bound-log REP/bound_runs.jsonl \
   --end-to-end E2E/e2e.json --out model.json --emit-inc src/prism/solver/predict_default.inc
 ```
+
+## Stalls: hunt and watchdog (2026-09-24)
+
+The two stalls above were hunted and not reproduced; a watchdog now bounds
+the part of a query PRISM controls and records the rest.
+
+**Hunt.** `prism --solve-smt2 VC --timeout 8` (the portfolio with every
+installed member: Z3, Bitwuzla, CaDiCaL, Kissat, ProbSAT; learned
+scheduler on; a fresh solver cache per call, so nothing is a cache hit) on
+640 recorded pir VCs of the end-to-end run (600 sampled, plus the VC of the
+end-to-end stall, `tests/pir/div0.c` `mod_min_bad`, 40 times per pass):
+6 passes with 4 calls in parallel (3,840 calls, worst 0.86 s), then 8 passes
+with 16 in parallel while a `dd ... conv=fdatasync` loop kept 300 MB of
+writes going and the doctest suite and five other agents ran (5,120 calls,
+load average up to 15, worst 7.34 s of which 5.57 s solving: contention,
+not a stall). 8,960 calls, no call above 8 s, no watchdog event.
+
+**What the records say.** The 117 s collection record is `unsat` from
+Bitwuzla alone with an 8 s member timeout. `detail::run` checks the member
+timeout every 20 ms while reading and while reaping, and a run that exceeds
+it is reported `timed out`, never with its answer; and a stall before the
+member starts leaves it a budget of `max(0.01 s, deadline - now)`, again a
+timeout. So those 117 s were spent in `solve()`'s own thread after the
+answer (stopping, the `solve_times.json` rewrite, the `solve_log.jsonl`
+append, removing the work directory), or the process was not scheduled at
+all: file I/O and page reclaim on a machine with 1 GB free and no swap are
+the likely cause, and no timeout can interrupt either. The end-to-end stall
+was the whole `prism --solve-smt2` process (start, solve, exit) not ending
+in 120 s: the same candidates, plus a job thread that did not stop, which
+the old `shutdown()` waited for without a bound.
+
+**Watchdog** (`src/prism/solver/portfolio.cpp`, `util.cpp`):
+
+- Job threads now own their state jointly with `solve()` (`Jobs`: board,
+  private Z3 contexts and the formula in each, CNF, stop flags). A job
+  still running `SolveOptions::watchdog_grace_s` (default 2 s) after it was
+  stopped (answer found or deadline) is detached, and `solve()` returns:
+  the answer (or `TIMEOUT`) stands, and the detached job can only write
+  into its own share of `Jobs`. Before, `shutdown()` repeated Z3
+  interrupts until every thread had left, without a bound.
+- A killed member process that is not reaped 2 s after `SIGKILL`
+  (uninterruptible sleep) is left to a detached reaper thread
+  (`Proc::unreaped`); the run returns.
+- Every such event is recorded, never silent (Law 7):
+  `SolveResult::watchdog`, a `WATCHDOG:` line in the note, and a line in
+  `<cache_dir>/watchdog.jsonl` (hash, bucket, events, timeout, wall).
+- An **overrun**, a plain (not certified) query whose whole call takes
+  longer than its timeout plus the grace plus 1 s, is recorded the same
+  way with the time of each phase (setup: normalisation, cache and history;
+  files: the work directory and the SMT-LIB2 file; solving; stopping;
+  recording), so the next stall says where it happened.
+
+Tests: doctest "solver: the watchdog detaches a job that ignores its stop
+and records it" (a fault-injected Z3 job, `SolveOptions::debug_stall_s`,
+sleeps through its stop for 4 s; `solve()` returns `TIMEOUT` within 3 s
+with the event in the result, the note and `watchdog.jsonl`) and "solver:
+repeated portfolio runs stay within timeout plus grace" (40 queries through
+every installed member, no watchdog event). Reproduce the hunt with
+`prism --solve-smt2 VC --timeout 8 --solver-cache FRESH_DIR` over any VC
+directory (`PRISM_PREDICT_COLLECT` or `tools/prism_ai/sched_e2e.py` write
+them) and read `FRESH_DIR/watchdog.jsonl`.
 
 ## Measurement: portfolio vs Z3 alone (generated queries)
 

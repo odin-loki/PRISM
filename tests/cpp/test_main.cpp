@@ -26,6 +26,7 @@
 #include <stdlib.h>
 #include <filesystem>
 #include <fstream>
+#include <chrono>
 #include <functional>
 #include <iterator>
 #include <map>
@@ -1851,12 +1852,17 @@ TEST_CASE("bmc leftover10 unenc ok still not NEEDS-HARNESS") {
     }
 }
 
-TEST_CASE("bmc leftover10 goto stays ERROR and abs_ok stays PROVED-UNBOUNDED") {
-    auto gt = load_fn("goto_unenc.c", "with_goto");
+TEST_CASE("bmc leftover10 unstructured goto is NEEDS-HARNESS and abs_ok stays PROVED-UNBOUNDED") {
+    // Premise changed with the goto model: plain goto was ERROR, now a
+    // forward goto is encoded and only an unstructured one is NEEDS-HARNESS.
+    auto gt = load_fn("goto_structured.c", "goto_into_block");
     auto gf = prism::run_bmc({gt}, 8);
     REQUIRE_FALSE(gf.empty());
-    CHECK(gf[0].status == std::string(prism::laws::ERROR));
-    CHECK(gf[0].status != std::string(prism::laws::NEEDS_HARNESS));
+    CHECK(gf[0].status == std::string(prism::laws::NEEDS_HARNESS));
+    CHECK(gf[0].status != std::string(prism::laws::ERROR));
+    auto wg = prism::run_bmc({load_fn("goto_unenc.c", "with_goto")}, 8);
+    REQUIRE_FALSE(wg.empty());
+    CHECK(wg[0].status == std::string(prism::laws::PROVED_UNBOUNDED));
 
     auto fn = load_fn("abs_ok.c", "abs_ok");
     auto findings = prism::run_bmc({fn}, 8);
@@ -5565,6 +5571,7 @@ TEST_CASE("pir: clang round trip on tests/pir (skips without clang/opt)") {
 
 #include <cstdio>
 #include <random>
+#include <thread>
 
 namespace {
 
@@ -6056,6 +6063,65 @@ TEST_CASE("solver: timeout is an answer of its own and cancels promptly") {
     }
 }
 
+TEST_CASE("solver: the watchdog detaches a job that ignores its stop and records it") {
+    // docs/SOLVERS.md "Stalls": a member that does not stop when told to (here
+    // fault-injected: the Z3 job sleeps through its stop flag) must not hold
+    // solve() past its timeout plus the watchdog grace.
+    SolverTmp t;
+    z3::context c;
+    auto x = c.bv_const("x", 8);
+    auto o = solver_opts(t);
+    o.search_default_tools = false;
+    o.sls = false;
+    o.use_cache = false;
+    o.timeout_s = 0.3;
+    o.watchdog_grace_s = 0.2;
+    o.debug_stall_s = 4.0;
+    auto t0 = std::chrono::steady_clock::now();
+    auto r = ps::solve(c, x != x, o);
+    double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    CHECK(secs < 3.0);  // well before the job wakes (4 s), even on a loaded machine
+    CHECK(r.kind == ps::SolveResult::Timeout);  // no answer: never a clean result
+    REQUIRE(r.watchdog.size() == 1);
+    CHECK(r.watchdog[0].find("z3 did not stop") != std::string::npos);
+    CHECK(r.note.find("WATCHDOG: z3 did not stop") != std::string::npos);
+    auto log = t.dir / "cache" / "watchdog.jsonl";
+    REQUIRE(std::filesystem::exists(log));
+    std::ifstream in(log);
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    CHECK(text.find("z3 did not stop") != std::string::npos);
+    // Without the stall the same query answers and the watchdog stays quiet.
+    o.debug_stall_s = 0;
+    o.timeout_s = 5;
+    auto u = ps::solve(c, x != x, o);
+    CHECK(u.kind == ps::SolveResult::Unsat);
+    CHECK(u.watchdog.empty());
+    // Let the detached job run out before the context and globals go away.
+    std::this_thread::sleep_for(std::chrono::duration<double>(std::max(0.0, 4.5 - secs)));
+}
+
+TEST_CASE("solver: repeated portfolio runs stay within timeout plus grace") {
+    // The stall hunt (docs/SOLVERS.md "Stalls"): many short queries through
+    // every member that is installed; none may take longer than its timeout
+    // plus the watchdog grace (and a margin for a loaded machine).
+    SolverTmp t;
+    z3::context c;
+    auto x = c.bv_const("x", 16), y = c.bv_const("y", 16);
+    auto o = solver_opts(t);
+    o.use_cache = false;
+    o.timeout_s = 2.0;
+    double worst = 0;
+    for (int i = 0; i < 40; ++i) {
+        auto f = (i % 2 ? (x * y == c.bv_val(i * 37 + 1, 16) && z3::ugt(x, c.bv_val(1, 16)))
+                        : (x + y != y + x)) && z3::ult(y, c.bv_val(1000 + i, 16));
+        auto r = ps::solve(c, f, o);
+        worst = std::max(worst, r.wall_s);
+        CHECK(r.watchdog.empty());
+        CHECK(r.kind != ps::SolveResult::Error);
+    }
+    CHECK(worst < o.timeout_s + o.watchdog_grace_s + 3.0);
+}
+
 // Manual benchmark (roadmap 3.1 exit criterion, docs/SOLVERS.md):
 //   ./prism_tests -tc="solver bench*" --no-skip
 TEST_CASE("solver bench: portfolio vs Z3 alone" * doctest::skip()) {
@@ -6452,3 +6518,142 @@ int m2(int i) { int a[4]; memset(a, 0, 2 * sizeof(int)); return a[i & 3]; }
     }
 }
 #endif
+
+// ---------------------------------------------------------------------------
+// bmc goto model, C++ shift rules by -std, function-try-block extraction
+// (tests/test_bmc_goto_shift.py has the same cases for the Python engine).
+
+namespace {
+// The sources stay on disk until the program ends: stages may re-read fn.file.
+std::vector<prism::FunctionInfo> fns_of(const std::string& file, const std::string& src) {
+    static struct Dir {
+        std::filesystem::path d = std::filesystem::temp_directory_path() /
+                                  ("prism_goto_shift_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        ~Dir() {
+            std::error_code ec;
+            std::filesystem::remove_all(d, ec);
+        }
+    } dir;
+    static int n = 0;
+    auto sub = dir.d / std::to_string(n++);
+    std::filesystem::create_directories(sub);
+    auto p = sub / file;
+    { std::ofstream(p) << src; }
+    return prism::extract_functions(p, p.string());
+}
+std::string bmc_status(prism::FunctionInfo fn, int std = 0) {
+    fn.cxx_std = std;
+    auto r = prism::run_bmc({fn}, 8);
+    REQUIRE_FALSE(r.empty());
+    return r[0].status;
+}
+}  // namespace
+
+TEST_CASE("bmc goto: structured jumps encoded, unstructured NEEDS-HARNESS") {
+    const std::map<std::string, std::set<std::string_view>> want = {
+        {"goto_out_ok", {prism::laws::PROVED, prism::laws::PROVED_UNBOUNDED}},
+        {"goto_out_bad", {prism::laws::FAILED}},
+        {"goto_loop_ok", {prism::laws::PROVED, prism::laws::PROVED_UNBOUNDED}},
+        {"goto_loop_bad", {prism::laws::FAILED}},
+        {"goto_loop_open", {prism::laws::PROVED_UNBOUNDED}},
+        {"goto_into_block", {prism::laws::NEEDS_HARNESS}},
+        {"goto_past_decl", {prism::laws::NEEDS_HARNESS}},
+        {"goto_loop_deep", {prism::laws::BOUNDED}},
+        {"goto_uninit", {prism::laws::FAILED}},
+    };
+    auto td = testdata_root() / "goto_structured.c";
+    auto fns = prism::extract_functions(td, "goto_structured.c");
+    REQUIRE(fns.size() == want.size());
+    for (auto& fn : fns) {
+        auto r = prism::run_bmc({fn}, 8);
+        REQUIRE_FALSE(r.empty());
+        INFO(fn.name << ": " << r[0].message);
+        REQUIRE(want.count(fn.name));
+        CHECK(want.at(fn.name).count(std::string_view(r[0].status)));
+        if (r[0].status == prism::laws::NEEDS_HARNESS)
+            CHECK(r[0].message.find("unstructured goto unencoded") != std::string::npos);
+        if (fn.name == "goto_loop_deep") CHECK(r[0].extra["k_induction"] == "step-open");
+    }
+}
+
+TEST_CASE("bmc goto: backward goto across an inner loop, forward out of a switch") {
+    auto a = fns_of("t.c",
+                    "int f(int x) {\n    int n = 0;\nagain:\n    n++;\n"
+                    "    for (int i = 0; i < 2; i++) {\n        if (n < 3) goto again;\n    }\n"
+                    "    return 100 / (n - 3);\n}\n");
+    REQUIRE(a.size() == 1);
+    auto ra = prism::run_bmc({a[0]}, 8);
+    CHECK(ra[0].status == std::string(prism::laws::FAILED));
+    CHECK(ra[0].cls == "INT-DIV-ZERO");
+    auto b = fns_of("t.c",
+                    "int f(int x) {\n    switch (x) {\n    case 1:\n        goto out;\n"
+                    "    default:\n        x = 0;\n    }\n    return 0;\nout:\n    return 7 / x;\n}\n");
+    auto sb = bmc_status(b[0]);
+    CHECK((sb == prism::laws::PROVED || sb == prism::laws::PROVED_UNBOUNDED));
+    auto c = fns_of("t.c",
+                    "int f(int x) {\n    if (x) {\n        goto l;\n    } else {\n    l:\n"
+                    "        x = 1;\n    }\n    return x;\n}\n");
+    CHECK(bmc_status(c[0]) == prism::laws::NEEDS_HARNESS);
+}
+
+TEST_CASE("bmc shift rules follow the C++ standard of the unit (F7)") {
+    const char* pos = "int f(int s) {\n    if (s < 0 || s > 31) return 0;\n    return 1 << s;\n}\n";
+    const char* neg = "int f(int s) {\n    if (s < 0 || s > 31) return 0;\n    return -1 << s;\n}\n";
+    const char* three = "int f(int s) {\n    if (s < 0 || s > 31) return 0;\n    return 3 << s;\n}\n";
+    const char* count = "int f(int s) {\n    if (s < 0 || s > 32) return 0;\n    return 1 << s;\n}\n";
+    auto proved = [](const std::string& s) {
+        return s == prism::laws::PROVED || s == prism::laws::PROVED_UNBOUNDED;
+    };
+    CHECK(bmc_status(fns_of("t.c", pos)[0]) == prism::laws::FAILED);         // C
+    CHECK(bmc_status(fns_of("t.h", pos)[0]) == prism::laws::FAILED);         // a header may be C
+    CHECK(proved(bmc_status(fns_of("t.cpp", pos)[0])));                      // default gnu++17
+    CHECK(bmc_status(fns_of("t.cpp", neg)[0]) == prism::laws::FAILED);
+    CHECK(bmc_status(fns_of("t.cpp", three)[0]) == prism::laws::FAILED);     // 3 * 2^31
+    CHECK(bmc_status(fns_of("t.cpp", pos)[0], 3) == prism::laws::FAILED);    // C++03
+    CHECK(proved(bmc_status(fns_of("t.cpp", neg)[0], 20)));
+    CHECK(proved(bmc_status(fns_of("t.cpp", three)[0], 23)));
+    CHECK(bmc_status(fns_of("t.cpp", count)[0], 20) == prism::laws::FAILED); // count 32
+    CHECK(prism::cxx_std_year("-std=c++20") == 20);
+    CHECK(prism::cxx_std_year("-std=gnu++2b") == 23);
+    CHECK(prism::cxx_std_year("-std=c++1z") == 17);
+    CHECK(prism::cxx_std_year("-std=c++98") == 3);
+    CHECK(prism::cxx_std_year("-std=c17") == 0);
+}
+
+TEST_CASE("with_cxx_std reads -std from compile_commands.json") {
+    auto dir = std::filesystem::temp_directory_path() / ("prism_cxxstd_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(dir);
+    { std::ofstream(dir / "a.cpp") << "int f(int s) { return s; }\n"; }
+    { std::ofstream(dir / "b.cpp") << "int g(int s) { return s; }\n"; }
+    { std::ofstream(dir / "c.cpp") << "int h(int s) { return s; }\n"; }
+    {
+        std::ofstream(dir / "compile_commands.json")
+            << "[{\"directory\": \"" << dir.string() << "\", \"file\": \"a.cpp\", \"arguments\": [\"c++\", \"-std=c++20\", \"-c\", \"a.cpp\"]},"
+            << " {\"directory\": \"" << dir.string() << "\", \"file\": \"b.cpp\", \"command\": \"c++ -std=c++20 -std=c++14 -c b.cpp\"}]";
+    }
+    std::vector<prism::FunctionInfo> fns;
+    for (auto* f : {"a.cpp", "b.cpp", "c.cpp"})
+        for (auto& fn : prism::extract_functions(dir / f, f)) fns.push_back(fn);
+    auto out = prism::with_cxx_std(fns, dir);
+    std::map<std::string, int> got;
+    for (auto& fn : out) got[fn.name] = fn.cxx_std;
+    CHECK(got["f"] == 20);
+    CHECK(got["g"] == 14);
+    CHECK(got["h"] == 0);
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("cparse extracts a function-try-block with its handlers (F10)") {
+    auto fns = fns_of("t.cpp",
+                      "static void set_ten(int &x) try {\n    x = 10;\n} catch (const int &i) {\n    x = i;\n}"
+                      " catch (...) {\n}\n\nint user(int n) {\n    int v = 0;\n    set_ten(v);\n    return 100 / v;\n}\n");
+    REQUIRE(fns.size() == 2);
+    CHECK(fns[0].name == "set_ten");
+    CHECK(fns[0].body.rfind("try {", 0) == 0);
+    CHECK(fns[0].body.find("catch (...) {\n}") != std::string::npos);
+    CHECK(fns[0].span == std::pair<int, int>{1, 6});
+    CHECK(fns[0].signature.find("try") == std::string::npos);
+    CHECK(fns[0].body_line == 1);
+    CHECK(fns[1].name == "user");
+    for (auto& fn : fns) CHECK(bmc_status(fn) == prism::laws::NEEDS_HARNESS);
+}

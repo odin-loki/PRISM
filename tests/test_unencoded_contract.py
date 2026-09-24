@@ -103,7 +103,9 @@ class TestUnencodedSyntaxContract(unittest.TestCase):
         self.assertIsNotNone(syn_bad)
         self.assertIn("designated init", syn_bad.lower())
 
-    def test_plain_goto_stays_error_not_harness(self):
+    def test_plain_goto_is_encoded_not_a_syntax_gap(self):
+        # A plain forward goto is modelled by the bmc encoder (it was ERROR
+        # before the goto model): not NEEDS-HARNESS via unencoded_syntax_reason.
         goto = _fn("with_goto")
         self.assertIsNone(
             unencoded_syntax_reason(goto, "bitvector BMC"),
@@ -111,12 +113,7 @@ class TestUnencodedSyntaxContract(unittest.TestCase):
         )
         if HAS_Z3:
             r = bmc_function(goto, 8)
-            self.assertEqual(r.status, laws.ERROR, r.message)
-            self.assertNotEqual(r.status, laws.NEEDS_HARNESS, r.message)
-            self.assertNotIn(
-                r.status,
-                {laws.PROVED, laws.PROVED_UNBOUNDED, laws.BOUNDED, laws.CLEAN},
-            )
+            self.assertEqual(r.status, laws.PROVED_UNBOUNDED, r.message)
         computed = _fn("computed_goto_bad")
         syn = unencoded_syntax_reason(computed, "bitvector BMC")
         self.assertIsNotNone(syn)

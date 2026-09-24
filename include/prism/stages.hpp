@@ -57,11 +57,17 @@ PRISM_API Finding prove_with_contract(const FunctionInfo& fn, int unwind, const 
 std::vector<Finding> run_wp(const std::vector<FunctionInfo>& functions, int unwind);
 std::vector<Finding> run_bmc(const std::vector<FunctionInfo>& functions, int unwind,
                              bool allow_local_pointers = false);
+// The year of a `-std=` flag's C++ standard (c++98/03 -> 3, c++0x/11 -> 11,
+// c++2a/20 -> 20, gnu++ alike); 0 for anything else. Same in prism/bmc.py.
+int cxx_std_year(std::string_view std_flag);
+// functions with FunctionInfo::cxx_std set from the -std= of their unit in
+// compile_commands.json (root or root/build), as the lints read it.
+std::vector<FunctionInfo> with_cxx_std(std::vector<FunctionInfo> functions, const std::filesystem::path& root);
 std::vector<Finding> run_harness_bmc(const std::vector<FunctionInfo>& functions, int unwind);
 std::vector<Finding> run_concolic(const std::vector<FunctionInfo>& functions, int budget = 32);
 
 // Python engine prism/bmc.py harness_for_parsefail. Unmapped parsefail is ERROR (nullopt),
-// not a generic NEEDS-HARNESS. Plain goto stays ERROR.
+// not a generic NEEDS-HARNESS. An unstructured goto is NEEDS-HARNESS.
 std::optional<std::string> harness_for_parsefail(std::string_view err, const std::string& engine);
 
 // KLEE Executor::fork: SAT model of the flipped branch, or Unsat to drop that side.

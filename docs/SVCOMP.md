@@ -138,6 +138,43 @@ overflow (`pir` `shift-base`, which also fires for a negative base; `bmc`
 `shift31`), and the replay decides: only UBSan's `shift-base` report "left
 shift of N by M places cannot be represented" counts.
 
+## goto
+
+`loop-invgen/nested6` has a `goto END` out of an `if`, which the `bmc`
+front end used to reject (`ERROR`, "goto unencoded"). Both engines' `bmc`
+now encode structured gotos (`src/prism/bmc_encoder.inc` `goto_stmt` /
+`label_stmt`, `prism/bmc.py` `_goto` / `_label`):
+
+- **Forward, out of blocks:** `goto L` keeps its state until `L:`, which
+  must label a later statement of the goto's own statement list or of an
+  enclosing one (a jump out of nested blocks, loops and switches, as in
+  nested6, or ahead in the same list). The state is merged at the label
+  like a `break` at the end of a loop. A jump past the declaration of a
+  name the label can see is refused (the name is indeterminate there).
+- **Backward, forming a loop:** when `goto L` follows `L:` in the same list
+  (at any depth inside the later statements), the statements from `L:` to
+  the last one containing `goto L` are the body of a loop whose `goto L` is
+  a `continue`: unwound like every other loop (a pass still jumping back
+  after the unwind bound makes the result `BOUNDED`), and havocked in the
+  k-induction step like `Parser::loop_havoc`.
+- **Anything else** (a jump into a block, into an `else` branch, into a
+  later switch arm past a `break`, a label never reached) is `NEEDS-HARNESS`
+  with "unstructured goto unencoded", never `ERROR` and never a guess. A
+  static callee that contains `goto` is not inlined (its labels would be
+  copied per call site).
+
+Tests: `testdata/goto_structured.c` (both engines: forward out of nested
+loops, backward loops that close, an unbounded backward loop proved by
+k-induction, a failure beyond the unwind bound that stays `BOUNDED`, an
+uninitialised read on the goto path, the two unstructured shapes),
+`tests/test_bmc_goto_shift.py`, doctest "bmc goto: ...".
+
+nested6 itself does not change its answer: `bmc` is now `NEEDS-HARNESS`
+(its `main` calls the task's own `__VERIFIER_assert`, which is not
+modelled) instead of `ERROR`, and `pir` is still `BOUNDED`, so both
+properties stay `unknown` (re-run 2026-09-24 with `--only nested6`; the
+subset score is unchanged).
+
 ## Results (local)
 
 Run on 2026-09-24 with the C++ engine built from `claude/svcomp-2`
@@ -186,8 +223,9 @@ Where the points are still lost (no-overflow):
   `jain_5-2`, `num_conversion_1`, `parity`, `sum02-1`, `half_2`, `nested6`
   are `BOUNDED` (loops not closed within unwind 8, `pir` k-induction step
   open at k = 1, 2); `bmc` is `NEEDS-HARNESS` on all of them (the task's own
-  `__VERIFIER_assert` is not modelled), so the Houdini invariants that could
-  close them are never tried; `large_const` is `NEEDS-HARNESS`;
+  `__VERIFIER_assert` is not modelled; nested6 was a front-end `ERROR` on
+  its `goto` before the goto model, see "goto"), so the Houdini invariants
+  that could close them are never tried; `large_const` is `NEEDS-HARNESS`;
   `interleave_bits` is an ILP32 task using `sizeof`.
 - `byte_add-1`, `modulus-2`, `id_trans` (`true`): the `pir` stage stops at a
   reachable `assert`/`abort` failure; a `FAILED` of another property says

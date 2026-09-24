@@ -89,7 +89,7 @@ loaders — the *finding* vocabulary does not care which loader answered.
                  _Alignas, compound literals, memcpy/mkstemp/tmpnam/chroot,
                  char t[] = "…", call-site address-of,
                  _Thread_local, _Complex, typeof, GNU nested functions,
-                 computed goto (plain goto stays ERROR), designated
+                 computed goto (structured goto is encoded), designated
                  initializers, alignof, va_arg, C++ range-for/lambda/
                  const_cast, umask/srand/signal/mktemp,
                  dynamic_cast/typeid/reinterpret_cast, packed, coroutines,

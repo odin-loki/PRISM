@@ -35,6 +35,7 @@
 #include <cstdio>
 #include <condition_variable>
 #include <deque>
+#include <fstream>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -196,7 +197,9 @@ struct Member {
     // runtime
     bool started = false, finished = false;
     z3::context* zctx = nullptr;    // in-process Z3 job: interrupted on stop
-    std::unique_ptr<std::atomic<bool>> stop = std::make_unique<std::atomic<bool>>(false);
+    // Shared with the member's job thread, which may outlive solve() when the
+    // watchdog detaches it.
+    std::shared_ptr<std::atomic<bool>> stop = std::make_shared<std::atomic<bool>>(false);
 };
 
 struct Msg {
@@ -238,6 +241,20 @@ private:
     std::deque<Msg> q_;
 };
 
+// Everything a job thread touches, owned jointly by solve() and every job
+// thread: a thread the watchdog gives up on (detaches) keeps it alive, so it
+// can never write into a finished solve(). Members are destroyed in reverse
+// order: the expressions before their contexts.
+struct Jobs {
+    Board board;
+    std::deque<std::unique_ptr<z3::context>> ctxs;  // private contexts
+    std::deque<z3::expr> exprs;                     // the formula translated into each
+    std::deque<std::atomic<bool>> done;             // one per thread, raised last
+    std::shared_ptr<const Cnf> cnf;
+    std::string cnf_sha;
+    std::atomic<bool> blast_stop{false};            // the prism-bitblast process
+};
+
 std::string subst(const std::string& a, const fs::path& input, const fs::path& proof) {
     std::string s = a;
     for (auto [k, v] : {std::pair<std::string, std::string>{"{input}", input.string()},
@@ -246,6 +263,9 @@ std::string subst(const std::string& a, const fs::path& input, const fs::path& p
     }
     return s;
 }
+
+constexpr double kOverrunSlackS = 1.0;
+constexpr const char* kUnreaped = "; the process was not reaped 2 s after SIGKILL (watchdog: left to a reaper)";
 
 // Map a solver's SAT assignment back to names, checking it against the CNF first.
 Msg dimacs_result(std::size_t idx, const detail::Proc& p, const Cnf& cnf) {
@@ -256,6 +276,11 @@ Msg dimacs_result(std::size_t idx, const detail::Proc& p, const Cnf& cnf) {
                     p.out.rfind("s SATISFIABLE", 0) == 0;
     bool says_unsat = p.rc == 20 || p.out.find("s UNSATISFIABLE") != std::string::npos;
     if (p.failed) { m.kind = Kind::Error; m.detail = p.out; return m; }
+    if (p.unreaped) {
+        m.kind = p.cancelled ? Kind::Unknown : Kind::Timeout;
+        m.detail = std::string(p.cancelled ? "cancelled" : "timed out") + kUnreaped;
+        return m;
+    }
     if (p.cancelled) { m.kind = Kind::Unknown; m.detail = "cancelled"; return m; }
     if (p.timed_out) { m.kind = Kind::Timeout; m.detail = "timed out"; return m; }
     if (says_sat && !says_unsat) {
@@ -281,6 +306,11 @@ Msg smt_result(std::size_t idx, const detail::Proc& p) {
     m.member = idx;
     m.secs = p.secs;
     if (p.failed) { m.kind = Kind::Error; m.detail = p.out; return m; }
+    if (p.unreaped) {
+        m.kind = p.cancelled ? Kind::Unknown : Kind::Timeout;
+        m.detail = std::string(p.cancelled ? "cancelled" : "timed out") + kUnreaped;
+        return m;
+    }
     if (p.cancelled) { m.kind = Kind::Unknown; m.detail = "cancelled"; return m; }
     if (p.timed_out) { m.kind = Kind::Timeout; m.detail = "timed out"; return m; }
     auto a = parse_smt_output(p.out);
@@ -754,6 +784,7 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
     }
 
     // ---------------------------------------------------------------- run
+    const double t_setup = now_s();  // phase stamps: the overrun record below
     const fs::path work = make_work_dir(opt, res.query_hash);
     const fs::path smt_path = work / "query.smt2";
     const fs::path cnf_path = work / "query.cnf";
@@ -771,28 +802,51 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
         detail::write_file(smt_path, txt);
     }
 
-    Board board;
+    const double t_files = now_s();
+    auto J = std::make_shared<Jobs>();
+    Board& board = J->board;
     std::vector<std::thread> threads;
-    std::deque<std::atomic<bool>> done;                 // one per thread
-    std::vector<std::unique_ptr<z3::context>> ctxs;     // private contexts, outlive the threads
-    std::shared_ptr<const Cnf> cnf;
-    std::string cnf_sha;
+    std::vector<std::string> thread_names;              // per thread: its member (or the bit-blast)
+    std::shared_ptr<const Cnf>& cnf = J->cnf;
     enum class CnfState { None, Running, Ready, Failed } cnf_state = CnfState::None;
     z3::context* blast_ctx = nullptr;
-    std::atomic<bool> blast_stop{false};  // the prism-bitblast process
     const unsigned slots = opt.max_parallel ? opt.max_parallel : std::max(2u, std::thread::hardware_concurrency());
     unsigned running = 0;
 
     // Stop every job and wait for it. A Z3 interrupt that lands before
     // check() starts can be lost, so it is repeated until each thread has
     // raised its done flag. Idempotent; also run on unwinding.
+    // Watchdog: a job that has not stopped `watchdog_grace_s` after being
+    // told to (Z3 not honouring an interrupt, a process that cannot be
+    // reaped) is detached and written down: solve() returns on time, the
+    // job keeps only its own share of Jobs alive (docs/SOLVERS.md "Stalls").
+    std::vector<std::string> watchdog;
+    bool shut = false;
     auto shutdown = [&] {
+        if (shut) return;
+        shut = true;
         for (auto& m : members) m.stop->store(true);
-        blast_stop.store(true);
+        J->blast_stop.store(true);
+        const double t_stop = now_s();
+        const double give_up = t_stop + std::max(0.0, opt.watchdog_grace_s);
         for (;;) {
             bool all = true;
-            for (auto& d : done) all = all && d.load();
+            for (auto& d : J->done) all = all && d.load();
             if (all) break;
+            if (now_s() > give_up) {
+                std::size_t k = 0;
+                for (auto& d : J->done) {
+                    if (!d.load() && k < threads.size() && threads[k].joinable()) {
+                        char buf[200];
+                        std::snprintf(buf, sizeof buf, "%s did not stop %.1fs after it was stopped (%.1fs into the query): detached",
+                                      thread_names[k].c_str(), now_s() - t_stop, now_s() - t0);
+                        watchdog.push_back(buf);
+                        threads[k].detach();
+                    }
+                    ++k;
+                }
+                break;
+            }
             for (auto& m : members)
                 if (m.zctx) Z3_interrupt(*m.zctx);
             if (blast_ctx) Z3_interrupt(*blast_ctx);
@@ -813,14 +867,21 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
     }};
 
     auto new_ctx = [&]() -> z3::context& {
-        ctxs.push_back(std::make_unique<z3::context>());
-        return *ctxs.back();
+        J->ctxs.push_back(std::make_unique<z3::context>());
+        return *J->ctxs.back();
+    };
+    // The formula in context zc, kept in Jobs (a job thread only refers to it).
+    auto translated = [&](z3::context& zc) -> const z3::expr& {
+        J->exprs.emplace_back(zc, Z3_translate(c, formula, zc));
+        return J->exprs.back();
     };
     // Every job thread raises its own done flag last, so the join below can
-    // keep interrupting Z3 until each thread has really left.
-    auto spawn = [&](auto&& fn) {
-        auto* d = &done.emplace_back(false);
-        threads.emplace_back([fn = std::forward<decltype(fn)>(fn), d]() mutable {
+    // keep interrupting Z3 until each thread has really left. The thread
+    // holds a share of Jobs (J) for as long as it runs.
+    auto spawn = [&](std::string name, auto&& fn) {
+        auto* d = &J->done.emplace_back(false);
+        thread_names.push_back(std::move(name));
+        threads.emplace_back([fn = std::forward<decltype(fn)>(fn), d, J]() mutable {
             fn();
             d->store(true);
         });
@@ -830,36 +891,37 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
         ++running;
         if (plan.lean) {
             const double left = std::max(0.01, (want_cert ? cert_deadline : deadline) - now_s());
-            spawn([&board, &plan, work, cnf_path, &cnf, &cnf_sha, left, &blast_stop] {
+            auto lp = std::make_shared<const BlastPlan>(plan);
+            spawn("bit-blast", [J = J.get(), lp, work, cnf_path, left] {
                 Msg m;
                 m.type = Msg::CnfFailed;
                 std::string why;
-                auto r = lean_bitblast(plan.dag, plan.bb, work, left, &why, &blast_stop);
+                auto r = lean_bitblast(lp->dag, lp->bb, work, left, &why, &J->blast_stop);
                 if (r) {
-                    cnf_sha = sha256_file(cnf_path);
-                    cnf = std::make_shared<const Cnf>(std::move(*r));
+                    J->cnf_sha = sha256_file(cnf_path);
+                    J->cnf = std::make_shared<const Cnf>(std::move(*r));
                     m.type = Msg::CnfReady;
                 } else {
                     m.detail = "prism-bitblast: " + why;
                 }
-                board.post(std::move(m));
+                J->board.post(std::move(m));
             });
             return;
         }
         z3::context& bc = new_ctx();
         blast_ctx = &bc;
-        z3::expr f2(bc, Z3_translate(c, formula, bc));
-        spawn([&board, &bc, f2, cnf_path, &cnf, &cnf_sha] {
+        const z3::expr* f2 = &translated(bc);
+        spawn("bit-blast", [J = J.get(), &bc, f2, cnf_path] {
             Msg m;
             m.type = Msg::CnfFailed;
             try {
                 std::string why;
-                auto r = detail::bitblast_fresh(bc, f2, &why);
+                auto r = detail::bitblast_fresh(bc, *f2, &why);
                 if (r) {
                     auto txt = to_dimacs(*r);
                     if (detail::write_file(cnf_path, txt)) {
-                        cnf_sha = sha256_hex(txt);
-                        cnf = std::make_shared<const Cnf>(std::move(*r));
+                        J->cnf_sha = sha256_hex(txt);
+                        J->cnf = std::make_shared<const Cnf>(std::move(*r));
                         m.type = Msg::CnfReady;
                     } else {
                         m.detail = "cannot write " + cnf_path.string();
@@ -870,7 +932,7 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
             } catch (const z3::exception& e) {
                 m.detail = std::string("bit-blast: ") + e.msg();
             }
-            board.post(std::move(m));
+            J->board.post(std::move(m));
         });
     };
     auto start = [&](std::size_t i) {
@@ -878,28 +940,32 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
         m.started = true;
         ++running;
         res.ran.push_back(m.name);
-        auto* stop = m.stop.get();
+        auto stop = m.stop;
         const double left = std::max(0.01, (m.lrat ? cert_deadline : deadline) - now_s());
         switch (m.kind) {
             case MemberKind::Z3: {
                 z3::context& zc = new_ctx();
                 m.zctx = &zc;
-                z3::expr f2(zc, Z3_translate(c, formula, zc));
-                spawn([&board, &zc, f2, i, left, stop] {
+                const z3::expr* f2 = &translated(zc);
+                const double stall = opt.debug_stall_s;
+                spawn(m.name, [J = J.get(), &zc, f2, i, left, stop, stall] {
                     Msg msg;
                     msg.member = i;
                     const double s0 = now_s();
+                    // Fault injection for the watchdog test: a job that
+                    // ignores its stop flag for `stall` seconds.
+                    if (stall > 0) std::this_thread::sleep_for(std::chrono::duration<double>(stall));
                     try {
                         z3::solver s(zc);
                         z3::params p(zc);
                         p.set("timeout", static_cast<unsigned>(std::min(left * 1000.0, 4.0e9)));
                         s.set(p);
-                        s.add(f2);
+                        s.add(*f2);
                         auto r = stop->load() ? z3::unknown : s.check();
                         if (r == z3::sat) {
                             msg.kind = Kind::Sat;
                             z3::model md = s.get_model();
-                            for (const auto& k : collect_consts(f2))
+                            for (const auto& k : collect_consts(*f2))
                                 msg.model[const_name(k)] = md.eval(k, true).to_string();
                         } else if (r == z3::unsat) {
                             msg.kind = Kind::Unsat;
@@ -915,15 +981,15 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
                         msg.detail = e.msg();
                     }
                     msg.secs = now_s() - s0;
-                    board.post(std::move(msg));
+                    J->board.post(std::move(msg));
                 });
                 break;
             }
             case MemberKind::Smt2: {
                 std::vector<std::string> argv;
                 for (const auto& a : m.argv) argv.push_back(subst(a, smt_path, lrat_path));
-                spawn([&board, argv, i, left, stop] {
-                    board.post(smt_result(i, detail::run(argv, left, stop)));
+                spawn(m.name, [J = J.get(), argv, i, left, stop] {
+                    J->board.post(smt_result(i, detail::run(argv, left, stop.get())));
                 });
                 break;
             }
@@ -931,8 +997,8 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
                 std::vector<std::string> argv;
                 for (const auto& a : m.argv) argv.push_back(subst(a, cnf_path, lrat_path));
                 auto cp = cnf;
-                spawn([&board, argv, i, left, stop, cp] {
-                    board.post(dimacs_result(i, detail::run(argv, left, stop), *cp));
+                spawn(m.name, [J = J.get(), argv, i, left, stop, cp] {
+                    J->board.post(dimacs_result(i, detail::run(argv, left, stop.get()), *cp));
                 });
                 break;
             }
@@ -943,14 +1009,14 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
                 // structured (Tseitin) CNF: cap it so it gives its core back.
                 const double budget = std::min(
                     left, opt.sls_budget_s > 0 ? opt.sls_budget_s : std::max(1.0, 0.1 * opt.timeout_s));
-                spawn([&board, i, budget, stop, cp, seed] {
+                spawn(m.name, [J = J.get(), i, budget, stop, cp, seed] {
                     Msg msg;
                     msg.member = i;
                     const double s0 = now_s();
                     SlsOptions so;
                     so.seed = seed;
                     so.timeout_s = budget;
-                    so.stop = stop;
+                    so.stop = stop.get();
                     auto r = probsat(*cp, so);
                     msg.secs = now_s() - s0;
                     if (r.found && assignment_satisfies(*cp, r.assignment)) {
@@ -960,7 +1026,7 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
                         msg.kind = Kind::Unknown;  // never evidence of unsat
                         msg.detail = "no assignment after " + std::to_string(r.flips) + " flips";
                     }
-                    board.post(std::move(msg));
+                    J->board.post(std::move(msg));
                 });
                 break;
             }
@@ -990,7 +1056,7 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
             if (members[i].zctx) Z3_interrupt(*members[i].zctx);
         }
         if (!keep && blast_ctx) Z3_interrupt(*blast_ctx);
-        if (!keep) blast_stop.store(true);
+        if (!keep) J->blast_stop.store(true);
     };
 
     std::optional<Msg> accepted;
@@ -1069,18 +1135,24 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
                 stop_all(cert_member);
             }
         } else if (!msg.detail.empty() && msg.detail != "cancelled") {
-            notes.push_back(m.name + ": " + std::string(kind_name(msg.kind)) + " (" + msg.detail + ")");
+            if (msg.detail.find(kUnreaped) != std::string::npos)
+                watchdog.push_back(m.name + " (" + msg.detail + ")");
+            else
+                notes.push_back(m.name + ": " + std::string(kind_name(msg.kind)) + " (" + msg.detail + ")");
         }
         if (!accepted) fill_slots();
     }
+    const double t_loop = now_s();
     stop_all();
     shutdown();
+    const double t_stopped = now_s();
     // Drain what arrived while stopping (a late certificate-member answer).
     for (Msg msg; board.wait(msg, 0.0);) {
         if (msg.type != Msg::Result) continue;
+        if (msg.detail.find(kUnreaped) != std::string::npos)
+            watchdog.push_back(members[msg.member].name + " (" + msg.detail + ")");
         if (msg.member == cert_member && !cert_msg) cert_msg = msg;
     }
-
     // ---------------------------------------------------------------- verdict
     if (accepted) {
         res.kind = accepted->kind;
@@ -1117,13 +1189,13 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
             notes.push_back("not certified: cadical " + std::string(kind_name(cert_msg->kind)) +
                             (cert_msg->detail.empty() ? "" : " (" + cert_msg->detail + ")"));
         } else {
-            auto ck = run_checkers(opt, cnf_path, cnf_sha, lrat_path, "cadical " + cm.version,
+            auto ck = run_checkers(opt, cnf_path, J->cnf_sha, lrat_path, "cadical " + cm.version,
                                    check_budget(opt), cnf && has_empty_clause(*cnf), plan,
                                    work / "query.dag");
             if (ck.certified) {
                 res.certified = true;
                 res.certificate_info = ck.info;
-                res.cnf_sha256 = cnf_sha;
+                res.cnf_sha256 = J->cnf_sha;
                 notes.push_back(plan.lean ? "certified: LRAT proof accepted by cake_lpr and Lean's LRAT checker"
                                           : "certified: LRAT proof accepted by cake_lpr");
             } else {
@@ -1149,7 +1221,7 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
         bool write = true;
         if (res.certified) {
             e["certificate_info"] = res.certificate_info;
-            e["cnf_sha256"] = cnf_sha;
+            e["cnf_sha256"] = J->cnf_sha;
             e["bitblaster"] = plan_name;
             e["cert_solver"] = cert_member ? "cadical " + members[*cert_member].version : "cadical";
             if (opt.cache_certificates) {
@@ -1184,6 +1256,37 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
         detail::write_file(root / "solve_times.json", h.dump(1));
         predict::log_query(root, ft, res, res.ran, now_s() - t0);  // training data for tools/prism_ai/predict.py
     }
+    // An overrun (the whole call longer than its timeout plus the watchdog
+    // grace, outside certified mode) is recorded with the time of each
+    // phase, so a stall outside the members (file I/O on a loaded machine)
+    // is found where it happened (docs/SOLVERS.md "Stalls").
+    if (!opt.certified) {
+        const double t_end = now_s();
+        const double budget = opt.timeout_s + std::max(0.0, opt.watchdog_grace_s) + kOverrunSlackS;
+        if (t_end - t0 > budget) {
+            char buf[320];
+            std::snprintf(buf, sizeof buf,
+                          "query took %.1fs against a %.1fs timeout: setup %.1fs, files %.1fs, solving %.1fs, "
+                          "stopping %.1fs, recording %.1fs",
+                          t_end - t0, opt.timeout_s, t_setup - t0, t_files - t_setup, t_loop - t_files,
+                          t_stopped - t_loop, t_end - t_stopped);
+            watchdog.push_back(buf);
+        }
+    }
+    if (!watchdog.empty()) {
+        // Recorded, never silent (Law 7): in the note, the result and
+        // <cache_dir>/watchdog.jsonl. The answer (if any) stands: it came
+        // from a member that did finish.
+        res.watchdog = watchdog;
+        for (const auto& w : watchdog) notes.push_back("WATCHDOG: " + w);
+        json line{{"schema", 1}, {"hash", res.query_hash}, {"bucket", res.bucket}, {"events", watchdog},
+                  {"timeout_s", opt.timeout_s}, {"wall_s", now_s() - t0}};
+        std::error_code ec;
+        fs::create_directories(root, ec);
+        std::lock_guard<std::mutex> g(g_history_mu);
+        std::ofstream(root / "watchdog.jsonl", std::ios::app) << line.dump() << "\n";
+    }
+
     return finish(res);  // the guard removes the work directory
 }
 

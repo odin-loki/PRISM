@@ -15,6 +15,7 @@ struct Proc {
     bool failed = false;     // could not start
     bool timed_out = false;
     bool cancelled = false;  // stop flag raised
+    bool unreaped = false;   // killed but not reaped within 2 s: left to a detached reaper (watchdog)
     double secs = 0.0;
 };
 

@@ -87,6 +87,8 @@ const std::string FUNC_HEAD_PAT =
     R"((?P<knr>(?:\s*(?:register\s+)?[A-Za-z_][\w \t\n*,\[\]]*;)*))"
     R"((?P<attrs>)" + ATTR + R"())"
     R"(\s*))"
+    // A function-try-block: `void f(int &x) try { ... } catch (...) { ... }`.
+    R"((?P<ftry>try\s*)?)"
     R"(\{)";
 const std::string KNR_PARAMS_PAT = R"(\s*[A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*\s*)";
 
@@ -371,6 +373,40 @@ struct Parser {
         return &found.emplace(brace, std::move(f)).first->second;
     }
 
+    // A function-try-block (`) try {`): the body is the try block and every
+    // handler after it, `try { ... } catch (...) { ... }`, as written.
+    void extend_try(Found& f, int try_pos) {
+        auto n = static_cast<int>(code.size());
+        auto skip_ws = [&](int k) {
+            while (k < n && std::isspace(static_cast<unsigned char>(code[static_cast<std::size_t>(k)]))) ++k;
+            return k;
+        };
+        int close = f.close;
+        for (;;) {
+            int k = skip_ws(close + 1);
+            if (code.compare(static_cast<std::size_t>(k), 5, "catch") != 0) break;
+            k = skip_ws(k + 5);
+            if (k >= n || code[static_cast<std::size_t>(k)] != '(') break;
+            int depth = 0, pc = -1;
+            for (int i = k; i < n; ++i) {
+                char c = code[static_cast<std::size_t>(i)];
+                if (c == '(') ++depth;
+                else if (c == ')' && --depth == 0) { pc = i; break; }
+            }
+            if (pc < 0) break;
+            k = skip_ws(pc + 1);
+            if (k >= n || code[static_cast<std::size_t>(k)] != '{') break;
+            int bc = match_brace(code, k);
+            if (bc < 0) break;
+            close = bc;
+        }
+        f.close = close;
+        f.fn.body = bodies.substr(static_cast<std::size_t>(try_pos), static_cast<std::size_t>(close + 1 - try_pos));
+        f.fn.span.second = line_of(close);
+        f.fn.body_line = line_of(try_pos);
+        f.fn.body_col = try_pos - (f.fn.body_line > 1 ? newlines[static_cast<std::size_t>(f.fn.body_line - 2)] : -1);
+    }
+
     void heads() {
         static Regex head(FUNC_HEAD_PAT, true);
         static Regex knr_params(KNR_PARAMS_PAT);
@@ -414,10 +450,17 @@ struct Parser {
                     code[static_cast<std::size_t>(head_start)] == '\t'))
                 ++head_start;
             int brace = m->spans[0].second - 1;
+            auto ftry = m->named("ftry");
+            int try_pos = ftry.empty() ? -1 : brace - static_cast<int>(ftry.size());
             auto sig = code.substr(static_cast<std::size_t>(head_start),
-                                   static_cast<std::size_t>(brace - head_start));
-            add(head_start, brace, name, kind, sig, std::move(params), trim(trim(stars) + " " + ret),
-                mods.find("static") != std::string::npos);
+                                   static_cast<std::size_t>((try_pos >= 0 ? try_pos : brace) - head_start));
+            auto* hit = add(head_start, brace, name, kind, sig, std::move(params), trim(trim(stars) + " " + ret),
+                            mods.find("static") != std::string::npos);
+            if (hit && try_pos >= 0) {
+                extend_try(*hit, try_pos);
+                pos = static_cast<std::size_t>(hit->close) + 1;
+                continue;
+            }
             pos = static_cast<std::size_t>(m->spans[0].second);
         }
     }

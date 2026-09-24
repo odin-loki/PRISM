@@ -94,8 +94,9 @@ here) the full suite is 291 tasks: C++ `bmc` 0 wrong proofs, completeness
 82/148 (55.4%), detection 84/143 (58.7%), 1 false alarm; Python `bmc` 0 wrong
 proofs, 75/148 (50.7%), 84/143 (58.7%), 1 false alarm.
 
-The one remaining false alarm is F7 (`cxx_shift_cpp20_true`, C semantics of
-`<<` applied to a C++20 file; conservative, not a soundness issue).
+The one false alarm left in that run was F7 (`cxx_shift_cpp20_true`, C
+semantics of `<<` applied to a C++ file); it is fixed since (Known issues,
+F7).
 
 Per category (C++, `bmc`, proved true / refuted false): overflow 31/41,
 36/41; div 10/10, 10/10; shift 11/11, 11/11; unsigned 5/5, 4/5; c23 3/11,
@@ -552,8 +553,8 @@ with `./build/prism FILE --no-llm --stage inventory,classify,bmc`.
 `prism/inline.py`). Every reproducer below is a regression test
 (`tests/test_bmc_soundness.py`, doctest "bmc soundness: ..." in
 `tests/cpp/test_main.cpp`, conformance tasks under
-`tests/conformance/prism/regress/`). F7 remains (a false alarm, not a
-soundness issue). The fix, in one paragraph: every value carries its C type
+`tests/conformance/prism/regress/`). F7 (a false alarm, not a soundness
+issue) is fixed too. The fix, in one paragraph: every value carries its C type
 (width, signedness; LP64), integer promotions and the usual arithmetic
 conversions are applied before every operator, every signed operation is
 checked in both directions, `&&`/`||`/`?:` evaluate their right operand only
@@ -776,9 +777,29 @@ flagged (SV-COMP `NoNegativeIntegerConstant`, true).
 (`macro/limits_true`) and `enum : unsigned char` constants
 (`c23/c23_enum_fixed_true`).
 
-*Open:* C semantics are applied to C++ files (conservative false alarm).
-**F7. C++20 shift semantics.** `1 << 31` is well defined in C++20 but flagged
-(`cxx/cxx_shift_cpp20_true`); `shift31` should be C-only.
+*Fixed:* the shift rules follow the language and standard of the unit.
+**F7. C++20 shift semantics.** `1 << 31` is well defined in C++20 but was
+flagged (`cxx/cxx_shift_cpp20_true`): C rules were applied to C++ files.
+Both engines' bmc now pick the rules for `<<` per unit (`Parser::shift_rules`,
+`prism/bmc.py` `_shift_rules_for`): a C file, a header (it may be C) and a
+C++ unit built as C++98/03 keep the C rules (C11 6.5.7p4: a negative left
+operand, or `E1 × 2^E2` not representable in the type, is undefined); C++11
+to C++17 define `E1 << E2` for `E1 >= 0` when `E1 × 2^E2` fits the
+corresponding *unsigned* type (CWG 1457), so `1 << 31` is defined and
+`3 << 31` and `-1 << 1` are not; C++20 and later define every signed left
+shift whose count is in range (P1236), so only the count check remains.
+The standard is the unit's `-std=` in `compile_commands.json` (the scan
+root or `root/build`, as the Clang-AST lints read it, last `-std=` wins;
+`with_cxx_std` before the bmc stage); without one, the default of the C++
+compilers PRISM runs (clang++ 16–18, g++ 11–14: `gnu++17`), which keeps
+every true refutation of a negative left operand in code built without
+`-std`. Regression tests: `tests/test_bmc_goto_shift.py`, doctest "bmc
+shift rules follow the C++ standard of the unit (F7)" and "with_cxx_std
+reads -std from compile_commands.json". Strict gate after the fix
+(`tools/conformance.py`, C++ engine, 2026-09-24, 303 true / 317 false
+tasks): 0 wrong proofs and 0 false alarms in every stage; bmc proves
+99/303 and refutes 93/317 (`cxx_shift_cpp20_true` is now proved), pir
+232/303 and 158/317.
 
 *Fixed* (ESBMC C++ tasks, full fetched set; none in the committed subset).
 Regression pairs: `prism/regress/global_zero_table_*`, `malloc_abort_*`,
@@ -807,8 +828,8 @@ and `abort()` on any execution where every allocation succeeded.
 **F10. bmc: function-try-block** (`void f(int &x) try { throw 10; } catch
 (const int &i) { x = i; }`, `try_catch/try-catch_tryblock_08`): `assert(v
 == 10)` in `main` was FAILED. The front end does not extract a
-function-try-block (an honest PARSE-GAP row), so `f(v)` was an unmodelled
-call, whose result is quantified but whose effect on `v` was not: a C++
+function-try-block (an honest PARSE-GAP row; it is extracted since, see
+below), so `f(v)` was an unmodelled call, whose result is quantified but whose effect on `v` was not: a C++
 callee may take `v` by non-const reference. Both engines' bmc now treat an
 unmodelled call in a C++ file (anything but `.c`/`.i`) as writing what an
 argument may name: a named scalar or the array of an element gets a value
@@ -816,7 +837,16 @@ quantified like a call result (`escape_scalar`, `escape_array`); an
 argument of any other lvalue shape (`(v)`, `++v`, `*p`, `v = x`, `c ? a :
 b`) lets everything it mentions escape. By-value C calls are unchanged. The
 unmodelled call already ruled out a proof (S6), so this only removes wrong
-refutations; `main` is now NEEDS-HARNESS (pir proves it).
+refutations; `main` is now NEEDS-HARNESS (pir proves it). Since then the
+front end also extracts a function-try-block (`cparse.cpp` `extend_try`,
+`prism/cparse.py` `_extend_try`): the function's body is the try block and
+every handler, `try { ... } catch (...) { ... }`, as written, so no
+PARSE-GAP row is left and every per-function stage sees it. bmc has no
+exception model (`try`/`catch` is "C++ try/catch unencoded",
+NEEDS-HARNESS), and a static callee whose body is a try block inlines as
+exactly that, so the caller is NEEDS-HARNESS as well; try/catch is modelled
+by pir (LLVM `invoke`/landing pads), which proves `fn_try_block_true` and
+refutes `fn_try_block_false`.
 
 *Fixed* (ESBMC C++ tasks, full fetched set; found by the F8–F10 re-run).
 **F11. pir: typeinfo and exceptions of class type with bases.** 8
