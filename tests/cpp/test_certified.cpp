@@ -901,3 +901,54 @@ TEST_CASE("certificate store: work directories of dead solver processes are swep
 }
 #  endif
 #endif
+
+#ifdef PRISM_HAS_Z3
+#  ifndef _WIN32
+TEST_CASE("certified: a checker out of memory is reported as such, never as a verdict") {
+    CertTmp tmp;
+    write_text(tmp.dir / "q.cnf", "p cnf 1 2\n1 0\n-1 0\n");
+    write_text(tmp.dir / "q.lrat", "3 0 1 2 0\n");
+    // cake_lpr's heap cap is passed as --CML_HEAP_SIZE and its exhaustion
+    // is reported as running out of memory
+    const auto cake = tmp.dir / "cake_lpr";
+    const auto argf = tmp.dir / "cake.args";
+    std::ofstream(cake) << "#!/bin/sh\necho \"$@\" > '" << argf.string()
+                        << "'\necho 'CakeML heap space exhausted.'\nexit 1\n";
+    fs::permissions(cake, fs::perms::owner_all);
+    auto o = prism::solver::check_lrat(prism::solver::ToolInfo{"cake_lpr", cake, "test"}, tmp.dir / "q.cnf",
+                                       tmp.dir / "q.lrat", 30, 64);
+    CHECK(o.ran);
+    CHECK_FALSE(o.verified);
+    CHECK(o.detail.find("ran out of memory (CakeML heap exhausted)") == 0);
+    CHECK(o.detail.find("heap cap 64 MB") != std::string::npos);
+    CHECK(slurp(argf).find("--CML_HEAP_SIZE=64 ") == 0);
+    // any other checker is killed once its resident memory passes the cap
+    if (std::system("python3 -c 'pass' > /dev/null 2>&1") == 0) {
+        const auto hog = tmp.dir / "lrat-check";
+        std::ofstream(hog) << "#!/bin/sh\nexec python3 -c 'import time\nx = bytearray(400 << 20)\n"
+                              "for i in range(0, len(x), 4096): x[i] = 1\ntime.sleep(20)'\n";
+        fs::permissions(hog, fs::perms::owner_all);
+        auto h = prism::solver::check_lrat(prism::solver::ToolInfo{"lrat-check", hog, "test"}, tmp.dir / "q.cnf",
+                                           tmp.dir / "q.lrat", 30, 100);
+        CAPTURE(h.detail);
+        CHECK(h.ran);
+        CHECK_FALSE(h.verified);
+        CHECK(h.detail.find("ran out of memory (resident memory passed the cap of 100 MB") == 0);
+    }
+}
+#  endif
+
+TEST_CASE("certified: the certification budget of a function leaves PROVED with a note") {
+    auto t = cert_pir(kSafeDiv, "g");
+    REQUIRE(t.fn.has_value());
+    auto o = cert_opts(true);
+    o.certify_budget_s = 1e-9;  // spent before the first certificate query
+    auto v = prism::pir::check_function(*t.fn, o);
+    CHECK(v.status == prism::laws::PROVED);
+    CHECK_FALSE(v.extra.contains("certificate"));
+    REQUIRE(v.extra.count("certify_note") == 1);
+    CHECK(v.extra.at("certify_note").find("certification budget of this function") != std::string::npos);
+    CHECK(v.extra.at("certify_note").find("verdict stays PROVED") != std::string::npos);
+    CHECK(v.extra.at("certificate_vcs") == v.extra.at("properties"));
+}
+#endif
