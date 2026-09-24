@@ -285,9 +285,9 @@ std::optional<std::vector<InitStore>> flat_init(const Layout& lay, const ir::Typ
     return out;
 }
 
-const ir::Global* entry_global(const ir::Module& m, const Layout& lay, const std::string& name) {
+const ir::Global* entry_global(const ir::Module& m, const Layout& lay, const std::string& name, bool initial) {
     const auto* g = m.find_global(name);
-    if (!g || g->thread_local_ || g->external || !g->is_const || g->init.empty()) return nullptr;
+    if (!g || g->thread_local_ || g->external || !(g->is_const || initial) || g->init.empty()) return nullptr;
     try {
         auto size = lay.alloc_size(g->ty);
         auto flat = flat_init(lay, g->ty, g->init[0].v);
@@ -298,11 +298,11 @@ const ir::Global* entry_global(const ir::Module& m, const Layout& lay, const std
     return g;
 }
 
-std::vector<std::string> entry_globals(const ir::Module& m, const Layout& lay, const ir::Function& f) {
+std::vector<std::string> entry_globals(const ir::Module& m, const Layout& lay, const ir::Function& f, bool initial) {
     std::vector<std::string> out;
     auto see = [&](const ir::Operand& o) {
         if (o.v.kind == ir::Value::Global && o.ty.kind == ir::Type::Ptr &&
-            std::find(out.begin(), out.end(), o.v.name) == out.end() && entry_global(m, lay, o.v.name))
+            std::find(out.begin(), out.end(), o.v.name) == out.end() && entry_global(m, lay, o.v.name, initial))
             out.push_back(o.v.name);
     };
     for (auto& bl : f.blocks)
@@ -314,7 +314,7 @@ std::vector<std::string> entry_globals(const ir::Module& m, const Layout& lay, c
 }
 
 void MemTr::preassign_globals(const ir::Function& f) {
-    for (auto& name : entry_globals(t_.module(), lay_, f)) {
+    for (auto& name : entry_globals(t_.module(), lay_, f, t_.options().globals_initial)) {
         if (globals_.count(name)) continue;
         globals_[name] = Arg::v(t_.newvar("@" + name, kPtrW), kPtrW);
         pending_.push_back(name);
@@ -330,7 +330,8 @@ void MemTr::emit_entry_globals() {
         s.kind = Stmt::Alloc;
         s.dst = globals_[name].var;
         s.args = {c64(lay_.alloc_size(g->ty))};
-        s.mkind = MemKind::Const;
+        s.mkind = g->is_const ? MemKind::Const : MemKind::Static;
+        if (!g->is_const) t_.fn().mutable_globals = true;
         s.init = 1;
         s.align = std::max(g->align, lay_.align(g->ty));
         s.msg = "@" + name;

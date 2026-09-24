@@ -306,7 +306,7 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
     const pirmem::Layout lay(m);
     const bool top = callees.empty();
     std::vector<std::string> eg;
-    if (top) eg = pirmem::entry_globals(m, lay, f);
+    if (top) eg = pirmem::entry_globals(m, lay, f, opt.globals_initial);
     g_entry = top ? &eg : nullptr;
     struct Reset {
         ~Reset() { g_entry = nullptr; }
@@ -319,7 +319,8 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
                 const auto* g = m.find_global(gname);
                 auto flat = pirmem::flat_init(lay, g->ty, g->init[0].v);
                 b << "L glob %@" << name(gname) << " " << lay.alloc_size(g->ty) << " "
-                  << std::max(g->align, lay.align(g->ty)) << " " << flat->size();
+                  << std::max(g->align, lay.align(g->ty)) << " "
+                  << static_cast<int>(g->is_const ? MemKind::Const : MemKind::Static) << " " << flat->size();
                 for (auto& st : *flat) b << " " << st.off << " " << st.w << " " << st.bits;
                 b << "\n";
             }

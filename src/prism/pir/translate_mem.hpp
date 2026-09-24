@@ -68,16 +68,17 @@ struct InitStore {
 // otherwise.
 std::optional<std::vector<InitStore>> flat_init(const Layout& lay, const ir::Type& ty, const ir::Value& v);
 
-// A read-only global with such an initialiser (not external, not
+// A global MemTr::global initialises from such an initialiser (read-only, or
+// any when `initial`: TranslateOptions::globals_initial; not external, not
 // thread-local, not a large table that is havocked): nullptr otherwise.
-const ir::Global* entry_global(const ir::Module& m, const Layout& lay, const std::string& name);
+const ir::Global* entry_global(const ir::Module& m, const Layout& lay, const std::string& name, bool initial);
 
 // The entry globals the function names directly as operands, in order of
 // first use. The translator allocates them with the analysed function's own
 // values, before its results, and initialises them first thing in the
 // prologue (docs/PROOFS_REFINEMENT.md "Globals"): the Lean model treats them
 // as instructions at the start of the entry block.
-std::vector<std::string> entry_globals(const ir::Module& m, const Layout& lay, const ir::Function& f);
+std::vector<std::string> entry_globals(const ir::Module& m, const Layout& lay, const ir::Function& f, bool initial);
 
 class MemTr {
 public:

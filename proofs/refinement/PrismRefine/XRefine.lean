@@ -1218,7 +1218,7 @@ theorem sinstX_sim {P : PFunc} {ω : Nat → Nat} {c : Ctx} (hc : CtxOK P c) {R 
     subst htp
     simp only [Res.bind, SimX, xStmts, hAp, xStmts_nil, Res.ok_bind]
     exact ⟨σ, rfl, hR, ha0⟩
-  | glob d size al st =>
+  | glob d size al kd st =>
     simp only [trSInstX] at h
     obtain ⟨u1, hu1, h⟩ := Except.bind_ok h
     obtain ⟨u2, hu2, h⟩ := Except.bind_ok h
@@ -1233,11 +1233,11 @@ theorem sinstX_sim {P : PFunc} {ω : Nat → Nat} {c : Ctx} (hc : CtxOK P c) {R 
     obtain ⟨rfl, rfl⟩ := h
     have hwd := dstX_wd hc hdi
     obtain ⟨hl, hlo, hhi, _, hu⟩ := dstX_ok hdi
-    have hp : (t.mem.alloc (size % 2 ^ 64) 4 al 1).2 < 2 ^ 64 := by
+    have hp : (t.mem.alloc (size % 2 ^ 64) kd al 1).2 < 2 ^ 64 := by
       simp only [Mem.alloc, mkPtr]; exact Nat.mod_lt _ (Nat.two_pow_pos 64)
     obtain ⟨σ', e, ag⟩ := globStores_run P ω di _ hp st
-      (σ.set di ((t.mem.alloc (size % 2 ^ 64) 4 al 1).2 % 2 ^ 64))
-      { t with mem := (t.mem.alloc (size % 2 ^ 64) 4 al 1).1 } k (by omega)
+      (σ.set di ((t.mem.alloc (size % 2 ^ 64) kd al 1).2 % 2 ^ 64))
+      { t with mem := (t.mem.alloc (size % 2 ^ 64) kd al 1).1 } k (by omega)
       (by simp [set_apply, Nat.mod_eq_of_lt hp]) hT hoff
     simp only [sSInst, globAlloc, SimX, xStmts, hwd, Arg.get_c']
     rw [e]

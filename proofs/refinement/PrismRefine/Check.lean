@@ -417,13 +417,13 @@ def parseXLlvm (name : String) (ls : List (List String)) :
     | ["lstart", n, p] =>
       let (bn, ps, sg, is) ← inBlock
       f := { f with cur := some (bn, ps, sg, .lstart (← nat? n) (← opnd? p) :: is) }
-    | "glob" :: d :: sz :: al :: _ :: st =>
+    | "glob" :: d :: sz :: al :: kd :: _ :: st =>
       let (bn, ps, sg, is) ← inBlock
       let rec triples : List String → Except String (List (Nat × Nat × Nat))
         | [] => .ok []
         | o :: w :: v :: t => do pure ((← nat? o, ← nat? w, ← nat? v) :: (← triples t))
         | _ => .error "bad glob line"
-      f := { f with cur := some (bn, ps, sg, .glob (← reg? d) (← nat? sz) (← nat? al) (← triples st) :: is) }
+      f := { f with cur := some (bn, ps, sg, .glob (← reg? d) (← nat? sz) (← nat? al) (← nat? kd) (← triples st) :: is) }
     | ["lend", p] =>
       let (bn, ps, sg, is) ← inBlock
       f := { f with cur := some (bn, ps, sg, .lend (← opnd? p) :: is) }
