@@ -205,6 +205,28 @@ SUCCESSFUL, 664 FAILED; 240 s per task, 3 jobs):
 | bmc | **0** (was 1, S8) | 64/1253 (5.1%) | 1/664 | 1 (F10) | 0 | 1787 (1735 NEEDS-HARNESS, 52 ERROR) | 64 |
 | pir | **0** (was 3: 1 S8, 2 disputed labels) | 435/1253 (34.7%) | 245/664 (36.9%) | 2 (F8, F9) | 13 | 1150 (1090 NEEDS-HARNESS, 59 ERROR, 3 UNKNOWN) | 62 |
 
+**Re-run after the F8–F10 fixes** (branch `claude/false-alarms-f8-f10`:
+`2caeda6a9` plus the fixes, 2026-09-23; 240 s per task, 2 jobs on a
+machine shared with five other runs). The converter now also skips the 11
+`--error-label` tasks (a reachable `ERROR:` label is ESBMC's violation there
+and PRISM checks no labels; `nec_ex7-ctor-throw` was scored as a pir wrong
+proof for that reason alone, by the base binary too), leaving 1906 tasks
+(1253 SUCCESSFUL, 653 FAILED):
+
+| stage | wrong proofs | proved (true) | refuted (false) | false alarms | BOUNDED | no answer | timeout / killed |
+|---|---|---|---|---|---|---|---|
+| bmc | **0** | 64/1253 | 1/653 | **0** (was 1: F10) | 0 | 1794 (1742 NEEDS-HARNESS, 52 ERROR) | 47 |
+| pir | **0** | 581/1253 (46.4%) | 343/653 (52.5%) | 8 (F8, F9 gone; 8 new, F11) | 13 | 897 (835 NEEDS-HARNESS, 59 ERROR, 3 UNKNOWN) | 45 |
+
+Plus 19 pir FAILED of another class. `1006_aggregate`,
+`github_6464_placement_new_incremental` (pir) and `try-catch_tryblock_08`
+(bmc: now NEEDS-HARNESS; pir proves it) are no longer false alarms; their
+`_fail` twins stay refuted. Most of the pir gain over the table above comes
+from PIR round 3 (exceptions, indirect calls; merged at `cd1336cd1`, after
+that run), not from these fixes. The 8 new pir false alarms (F11) come with
+those round 3 features and are FAILED by the base binary as well (checked
+on the base build, same tasks): see "Known issues".
+
 Plus 4 + 4 pir FAILED of another class (e.g. UNINIT-READ, signed overflow,
 which ESBMC does not check by default). The first run found **4 wrong
 proofs**: S8 (a global's constructor throws before `main`; bmc and pir both
@@ -227,7 +249,7 @@ compile with clang/libstdc++, 33 crash otherwise, 19 FAILED labels run
 clean, 16 SUCCESSFUL labels hit a sanitizer or assert natively). Cross-check
 against the PRISM run: **no PRISM proof on any program whose native run
 hits UB or a failed assert**, and no pir/bmc FAILED on a natively clean
-program except the false alarms F8–F10 above, `cpp/github_1807` (FAILED
+program except the false alarms F8–F10 above (fixed since), `cpp/github_1807` (FAILED
 label, clean natively; refuted by pir) and two FAILED of another class.
 
 **Committed subset** (64 tasks: 32 true, 32 false, deterministic,
@@ -649,6 +671,18 @@ argument of any other lvalue shape (`(v)`, `++v`, `*p`, `v = x`, `c ? a :
 b`) lets everything it mentions escape. By-value C calls are unchanged. The
 unmodelled call already ruled out a proof (S6), so this only removes wrong
 refutations; `main` is now NEEDS-HARNESS (pir proves it).
+
+*Open* (ESBMC C++ tasks, full fetched set; found by the F8–F10 re-run).
+**F11. pir: typeinfo and exceptions of class type with bases.** 8
+SUCCESSFUL tasks are FAILED since PIR round 3 (base binary and this branch
+alike): `typeid(...).name()` / `std::any` read the C++ runtime's typeinfo
+objects, which PRISM does not model (MEM-OOB-READ: `cpp/typeinfo`,
+`cpp/github_6308_typeid_name`, `cpp17/cpp__github_4377_any_ptr`); a thrown
+object caught by a pointer or through a non-first base of multiple
+inheritance, or rethrown from a nested handler, is not adjusted or kept
+alive (`try_catch/catch_base_offset_mi`, `mi_base_subobject_catch`,
+`lower-exceptions_pointer_catch`, `lower-exceptions_nested_rethrow` (MEM-UAF),
+`cpp/irep2_throw_primitive_id`). Not a soundness issue (no proof is affected).
 
 ### Coverage gaps (honest `ERROR` / `NEEDS-HARNESS`, costing completeness)
 
