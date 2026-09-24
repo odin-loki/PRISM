@@ -257,7 +257,13 @@ size-parametric harness is PROVED at N = 16 by `tools/libc_model_bounds.py`)
 except `unbounded_contracts.c` (memcpy/memmove/memset/realloc on objects of
 any size below 2^40). `bmc`: 0 proofs, 2 refutations (`abs(INT_MIN)`,
 `rand() < 100`), NEEDS-HARNESS elsewhere (no preprocessor: the included
-model code is invisible to it). The vector harness files carry a `timeout:`
+model code is invisible to it). In the full release-gate run (all stages,
+`-j2`, heavily loaded machine) the three `unique_ptr` harnesses of
+`cxx_std_contracts.cpp` came back NEEDS-HARNESS (`UNENCODED: call @_Znwm`:
+the operator new model was not linked in that run, most likely because the
+per-run model build timed out under load; the run's work directory was not
+kept, so this is not confirmed): 51/53 PROVED, 70/72 refuted there, still 0
+wrong proofs. The vector harness files carry a `timeout:`
 (900–1200 s per PRISM run) in their task files.
 
 ### C++ library models: before/after (`esbmc-cpp` subset + in-house `prism/cxx`)
