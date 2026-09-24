@@ -153,6 +153,11 @@ class DecideTest(unittest.TestCase):
         self.assertEqual(d.answer, "false(no-overflow)")
         assert d.finding is not None
         self.assertEqual(d.finding["stage"], "pir")
+        # both have call sites: pir first
+        rep["stages"][0]["findings"][0]["extra"]["nondet_loc"] = "3:9"
+        d = P.decide(rep, "no-overflow", replayed)
+        assert d.finding is not None
+        self.assertEqual(d.finding["stage"], "pir")
 
     def test_unreplayed_refutation_blocks_true(self) -> None:
         rep = report(bmc=[{"status": "PROVED", "cls": ""}],

@@ -238,9 +238,10 @@ def decide(report: dict[str, Any], prop: str, replay_fn: Any) -> Decision:
     if not any(per.values()):
         return Decision("unknown", "no verdict stage reported main")
     refutations = [(st, f) for st, rows in per.items() for f in rows if refutes(f, prop)]
-    # Replay first the refutation that also gives the nondet calls' source
-    # positions (pir): its witness can place every function_return waypoint.
-    refutations.sort(key=lambda sf: "nondet_loc" not in (sf[1].get("extra") or {}))
+    # Replay first a refutation that also gives the nondet calls' source
+    # positions (its witness can place every function_return waypoint), pir's
+    # before bmc's (pir's trace stops at the violated check itself).
+    refutations.sort(key=lambda sf: ("nondet_loc" not in (sf[1].get("extra") or {}), sf[0] != "pir"))
     proofs = [(st, f) for st, rows in per.items() for f in rows
               if f.get("status") in PROOF_TRUE and st in PROPERTIES[prop]["prove"]]
     last_replay: dict[str, Any] = {}

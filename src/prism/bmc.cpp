@@ -3212,7 +3212,7 @@ Finding bmc_once(const FunctionInfo& fn, int unwind, bool try_unbounded,
                 // nondet_loc: each call's physical source position (line:col,
                 // 0:0 unknown), not a debug location: no #line mapping.
                 std::string locs;
-                f.extra["nondet"] = nondet_trace(s.get_model(), *enc, &locs);
+                f.extra["nondet"] = nondet_trace(s.get_model(), *enc, prop.nondets_before, &locs);
                 f.extra["nondet_loc"] = locs;
                 f.extra["nondet_loc_kind"] = "physical";
             }

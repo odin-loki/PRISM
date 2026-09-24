@@ -22,6 +22,10 @@ struct Prop {
     std::string cls;
     z3::expr cond;
     int loc;
+    // __VERIFIER_nondet_* calls encoded before this check: the only calls a
+    // violation of it can have executed (encoding order is program order
+    // along every path of the unrolled body).
+    std::size_t nondets_before = 0;
 };
 
 struct CType {
@@ -255,7 +259,7 @@ struct Enc {
     void mark_uninit(const std::string& name) { uninit.insert_or_assign(name, ctx.bool_val(true)); }
 
     void add_prop(std::string name, std::string cls, const z3::expr& viol, int loc) {
-        props.push_back(Prop{std::move(name), std::move(cls), path_true && viol, loc});
+        props.push_back(Prop{std::move(name), std::move(cls), path_true && viol, loc, nondets.size()});
     }
 
     void check_read(const std::string& name) {
@@ -2436,10 +2440,13 @@ std::string cex(const z3::model& model, Enc& e, const std::vector<std::pair<std:
 // "fn=value" pairs (decimal, signed per the function's C type). Calls whose
 // path guard the model makes false did not run and are left out. `locs`
 // gets each listed call's site as "line:col" (0:0 when the site is unknown).
-std::string nondet_trace(const z3::model& model, Enc& e, std::string* locs = nullptr) {
+// Only the first `limit` calls in encoding order (those before the violated
+// check) are listed: a call after the violation never ran.
+std::string nondet_trace(const z3::model& model, Enc& e, std::size_t limit, std::string* locs = nullptr) {
     std::string out;
     if (locs) locs->clear();
-    for (auto& n : e.nondets) {
+    for (std::size_t i = 0; i < e.nondets.size() && i < limit; ++i) {
+        auto& n = e.nondets[i];
         if (!model.eval(n.guard, true).is_true()) continue;
         auto d = model.eval(n.v, true);
         uint64_t raw = 0;

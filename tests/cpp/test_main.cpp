@@ -572,13 +572,14 @@ TEST_CASE("bmc: nondet call sites survive inlining and several calls on a line")
 static int get(void) { return __VERIFIER_nondet_int(); }
 int main(void) {
   int a = get(); int b = __VERIFIER_nondet_int ( );
-  if (a > 2147483000 && b == 7) { int c = a + 1000; return c; }
+  if (a > 2147483000 && b == 7) { int c = a + 1000; int d = __VERIFIER_nondet_int(); return c + d; }
   return 0;
 }
 )");
     REQUIRE(by.count("main"));
     auto& f = by["main"];
     REQUIRE(f.status == std::string(prism::laws::FAILED));
+    // the call after the violated `a + 1000` never ran: not listed
     CHECK(f.extra["nondet"].find("__prism_at_") == std::string::npos);
     // get()'s call keeps get's own position
     CHECK(f.extra["nondet_loc"] == "2:31, 4:26");
