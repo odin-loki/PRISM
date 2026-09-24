@@ -120,6 +120,10 @@ bool inlineable_callee(const FunctionInfo& callee) {
     if (!callee.is_static) return false;
     if (callee.kind != "SCALAR" && callee.kind != "VOID") return false;
     if (has_calls(callee.body)) return false;
+    // A goto's label would be copied once per call site (labels must be
+    // unique in a function for the bmc goto model).
+    static Regex goto_kw("\\bgoto\\b");
+    if (goto_kw.search(callee.body)) return false;
     if (returns_value(callee) && !callee_ret_type(callee)) return false;
     return true;
 }

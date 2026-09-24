@@ -19,9 +19,15 @@ class FunctionInfo:
     static: bool = False
     body: str = ""
     span: tuple[int, int] = (0, 0)
+    # C++ standard of the unit (the year of its -std= in compile_commands.json,
+    # 98 -> 3), 0 = not known. Set by the pipeline before bmc (bmc.with_cxx_std);
+    # not in the JSON form.
+    cxx_std: int = 0
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        d = asdict(self)
+        d.pop("cxx_std", None)
+        return d
 
 
 @dataclass

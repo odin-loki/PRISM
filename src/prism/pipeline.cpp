@@ -379,7 +379,7 @@ RunReport run_pipeline(const Config& cfg) {
     stage("dafny", [&] { return run_dafny(sources, cfg); });
     stage("contracts", [&] { return prove_contracts(functions, cfg.unwind); });
     stage("wp", [&] { return run_wp(functions, cfg.unwind); });
-    auto bmc_rec = stage("bmc", [&] { return run_bmc(inline_static(functions), cfg.unwind); });
+    auto bmc_rec = stage("bmc", [&] { return run_bmc(inline_static(with_cxx_std(functions, cfg.root)), cfg.unwind); });
     stage("pir", [&] { return pir::run_pir(sources, cfg); });
     stage("conc", [&] { return conc::run_conc(sources, cfg); });
     stage("harness", [&] { return run_harness_bmc(functions, cfg.unwind); });

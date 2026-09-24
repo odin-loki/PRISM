@@ -52,7 +52,7 @@ proof. Nested loops stay unencoded BOUNDED.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import functools
 from pathlib import Path
 from typing import Any
@@ -320,6 +320,7 @@ class _Enc:
         self.scopes: list[list[str]] = []
         self.havoc = False  # loops are havocked (unbounded step) instead of unrolled
         self.cxx = False  # C++ source: call arguments may bind references
+        self.shift_rules = 0  # Parser.shift_rules
 
     def retag_unsigned(self) -> None:
         return None
@@ -847,6 +848,87 @@ def _consume_stmt_src_c(text: str) -> tuple[str, str]:
     return _stmt(text)
 
 
+def _label_at(text: str) -> tuple[str, int] | None:
+    """A statement label `name:` at the start of text (not `case`/`default`,
+    not `a::b`): the name and the offset just after the colon."""
+    m = re.match(r"([A-Za-z_]\w*)\s*:(?!:)", text)
+    if m is None or m.group(1) in ("case", "default", "public", "private", "protected"):
+        return None
+    return m.group(1), m.end()
+
+
+def _next_labeled_stmt(text: str) -> tuple[list[str], str]:
+    """One statement of a list, with any labels in front of it: (labels, rest)."""
+    labels: list[str] = []
+    text = text.lstrip()
+    while True:
+        lab = _label_at(text)
+        if lab is None:
+            break
+        labels.append(lab[0])
+        text = text[lab[1]:].lstrip()
+    if not text:
+        return labels, ""
+    _, rest = _consume_stmt_src_c(text)
+    return labels, rest
+
+
+def _list_has_label(text: str, name: str) -> bool:
+    """Is `name` the label of a statement of this list (not a nested one)?"""
+    try:
+        t = text
+        for _ in range(100000):
+            if not t.strip():
+                return False
+            labels, rest = _next_labeled_stmt(t)
+            if name in labels:
+                return True
+            if len(rest) >= len(t):
+                return False
+            t = rest
+    except ParseFail:
+        pass
+    return False
+
+
+def _goto_rx(name: str) -> str:
+    return r"\bgoto\s+" + name + r"\s*;"
+
+
+def _goto_complete(e: _Enc, st: _State, cur: _State) -> _State:
+    """A goto state completed for a merge at its label (`cur`: the state
+    there). A name the label sees that was declared after the goto is
+    indeterminate on the goto's path: not modelled, never a guess. A scalar
+    the goto state never read still holds its initial symbol (_Enc.get)."""
+    out = _State(st.path, dict(st.vars), dict(st.arrays), dict(st.uninit))
+    for k in cur.vars:
+        if k not in out.vars:
+            out.vars[k] = z3.BitVec(k, e.type_of(k)[0])
+    for k in cur.arrays:
+        if k not in out.arrays:
+            raise ParseFail(f"unstructured goto unencoded: array {k} declared past the goto")
+    for k in cur.uninit:
+        if k not in out.uninit:
+            out.uninit[k] = z3.BoolVal(False)
+    return out
+
+
+def _goto_merge_union(e: _Enc, states: list[_State]) -> _State:
+    """Merge states whose visible names may differ (the exits of a goto
+    loop): over the union of their names."""
+    keys = _State(states[0].path, dict(states[0].vars), dict(states[0].arrays),
+                  dict(states[0].uninit))
+    for st in states:
+        for k, v in st.vars.items():
+            keys.vars.setdefault(k, v)
+        for k, a in st.arrays.items():
+            keys.arrays.setdefault(k, a)
+        for k, u in st.uninit.items():
+            keys.uninit.setdefault(k, u)
+    done = [_goto_complete(e, st, keys) for st in states]
+    return _merge_states(e, done, done[0])
+
+
 def _check_sat(e: _Enc, cond: Any) -> Any:
     s = z3.Solver()
     s.set("timeout", 2000)
@@ -874,7 +956,20 @@ class Parser:
         self.macros: dict[str, str] = dict(macros or {})
         self.havoc = havoc
         self.cxx = False  # C++ source (_Enc.cxx)
+        # Shift rules (_apply_binop): 0 = C (and C++98/03), 11 = C++11..17
+        # (CWG 1457: E1 >= 0 and E1 * 2^E2 representable in the unsigned
+        # type), 20 = C++20 and later (P1236: only the count can be undefined).
+        self.shift_rules = 0
         self.err: str | None = None
+        # goto (structured patterns only). A forward goto keeps its state
+        # until its label, which must be a later statement of the goto's own
+        # statement list or of an enclosing one (a jump out of blocks, loops
+        # and switches); a backward goto must lie in the statements from its
+        # label to the end of the label's list: those statements are unwound
+        # like a loop body. Anything else is "unstructured goto unencoded".
+        self._pending_gotos: dict[str, list[tuple[_State, list[list[str]]]]] = {}
+        self._label_loops: list[tuple[str, list[_State]]] = []
+        self._lists: list[list[str]] = []  # [unconsumed text] of each active statement list
 
     def run(self) -> _Enc | None:
         if not HAS_Z3:
@@ -882,6 +977,7 @@ class Parser:
         e = _Enc(self.unwind)
         e.havoc = self.havoc
         e.cxx = self.cxx
+        e.shift_rules = self.shift_rules
         try:
             for typ, name in self.params:
                 if not name:
@@ -894,6 +990,9 @@ class Parser:
             e.push_scope()
             self._stmts(e, self._prep(self.body))
             e.pop_scope()
+            if self._pending_gotos:
+                raise ParseFail(
+                    f"unstructured goto unencoded: label {min(self._pending_gotos)} not reached")
         except ParseFail as ex:
             self.err = str(ex)
             return None
@@ -912,8 +1011,17 @@ class Parser:
         e.pop_scope()
 
     def _stmts(self, e: _Enc, text: str) -> None:
-        text = text.strip()
+        cell = [text.strip()]
+        self._lists.append(cell)
+        try:
+            self._stmts_in(e, cell)
+        finally:
+            self._lists.pop()
+
+    def _stmts_in(self, e: _Enc, cell: list[str]) -> None:
+        text = cell[0]
         while text:
+            cell[0] = text
             text = text.lstrip()
             if not text:
                 break
@@ -1189,7 +1297,19 @@ class Parser:
             if _starts_kw(text, "goto"):
                 if _is_computed_goto(text):
                     raise ParseFail("computed goto unencoded")
-                raise ParseFail("goto unencoded")
+                stmt, text = _stmt(text)
+                gm = re.match(r"goto\s+([A-Za-z_]\w*)\s*;\s*$", stmt)
+                if gm is None:
+                    raise ParseFail(f"unstructured goto unencoded: {stmt.strip()}")
+                cell[0] = text
+                self._goto(e, gm.group(1))
+                continue
+            lab = _label_at(text)
+            if lab is not None:
+                cell[0] = text[lab[1]:]
+                self._label(e, lab[0], cell)
+                text = cell[0]
+                continue
             if _starts_kw(text, "throw"):
                 raise ParseFail("throw unencoded")
             if (_starts_kw(text, "asm") or _starts_kw(text, "__asm__")
@@ -1210,6 +1330,110 @@ class Parser:
                 self._decl(e, stmt)
             else:
                 self._assign_or_expr(e, stmt)
+
+    def _goto(self, e: _Enc, name: str) -> None:
+        # Backward: a goto inside the statements its label heads (innermost first).
+        for lname, backs in reversed(self._label_loops):
+            if lname == name:
+                backs.append(e.snap())
+                e.path_true = z3.BoolVal(False)
+                return
+        # Forward: the label is a later statement of this list or an enclosing one.
+        if not any(_list_has_label(c[0], name) for c in reversed(self._lists)):
+            raise ParseFail(
+                f"unstructured goto unencoded: goto {name} is not a jump out to a later statement")
+        self._pending_gotos.setdefault(name, []).append(
+            (e.snap(), [list(sc) for sc in e.scopes]))
+        e.path_true = z3.BoolVal(False)
+
+    def _label(self, e: _Enc, name: str, cell: list[str]) -> None:
+        pend = self._pending_gotos.pop(name, None)
+        if pend:
+            cur = e.snap()
+            states = [cur]
+            for st, scopes in pend:
+                # The label's list is the goto's or an enclosing one, so its
+                # scopes are a prefix of the goto's: a name added to them since
+                # was declared between the goto and the label.
+                if len(scopes) < len(e.scopes):
+                    raise ParseFail("unstructured goto unencoded: jump into a block")
+                for d, frame in enumerate(e.scopes):
+                    for n in frame:
+                        if n not in scopes[d]:
+                            raise ParseFail(
+                                f"unstructured goto unencoded: goto {name} jumps past "
+                                f"the declaration of {n}")
+                states.append(_goto_complete(e, st, cur))
+            e.load(_merge_states(e, states, cur))
+        text = cell[0]
+        if not re.search(_goto_rx(name), text):
+            return
+        # Backward gotos: the region is every statement from the label up to
+        # the last one that contains `goto name`; it runs like a loop body
+        # whose `goto name` is a continue.
+        region, after = "", text
+        guard = 0
+        while guard < 100000 and re.search(_goto_rx(name), after):
+            guard += 1
+            _, rest = _next_labeled_stmt(after)
+            if len(rest) >= len(after):
+                raise ParseFail(f"unstructured goto unencoded: goto {name}")
+            region += after[:len(after) - len(rest)]
+            after = rest
+        cell[0] = after  # the enclosing list continues after the region
+        if e.havoc:
+            # Unbounded step, as _loop_havoc: every name the region may assign
+            # is arbitrary at the label; one pass is checked from there.
+            for n in sorted(_assigned_names(region)):
+                if n.startswith("@"):
+                    an = e.canonical(n[1:])
+                    arr = e.arrays.get(an)
+                    if arr is not None:
+                        e.fresh += 1
+                        e.arrays[an] = Arr(
+                            z3.Const(f"{an}_hv{e.fresh}", arr.a.sort()), arr.n, arr.w, arr.u,
+                        )
+                        e.havoc_shadow(an, f"{an}_hvu")
+                    continue
+                if n not in e.bits:
+                    continue
+                w, _u = e.type_of(n)
+                e.vars[n] = e.bv(f"{n}_hv{e.fresh + 1}", w)
+                flag = e.uninit.get(n)
+                if flag is not None:
+                    e.fresh += 1
+                    e.uninit[n] = z3.And(flag, z3.Bool(f"{n}_hvu{e.fresh}"))
+            self._label_loops.append((name, []))
+            try:
+                self._stmts(e, region)
+            finally:
+                self._label_loops.pop()  # re-entries are covered by the havoc
+            return
+        base = e.snap()
+        exits: list[_State] = []
+        closed = False
+        frame: tuple[str, list[_State]] = (name, [])
+        self._label_loops.append(frame)
+        try:
+            for _ in range(max(e.unwind, 1)):
+                frame[1].clear()
+                self._stmts(e, region)
+                exits.append(e.snap())
+                live = [_goto_complete(e, b, base) for b in frame[1]
+                        if not z3.is_false(b.path)]
+                frame[1].clear()
+                if not live:
+                    closed = True
+                    break
+                e.load(_merge_states(e, live, base))
+                if _check_sat(e, z3.BoolVal(True)) == z3.unsat:
+                    closed = True
+                    break
+        finally:
+            self._label_loops.pop()
+        if not closed:
+            e.unwind_ok = False  # still jumping back after `unwind` passes: cut
+        e.load(_goto_merge_union(e, exits))
 
     def _decl(self, e: _Enc, stmt: str) -> None:
         stmt = stmt.rstrip(";").strip()
@@ -1878,10 +2102,15 @@ def apply_binop(e: _Enc, a: TV, op: str, b: TV) -> TV:
         e.add_prop("shift", "INT-SHIFT-UB", bad_count, e.pc)
         cnt = e.conv(b, (w, True)).v
         if op == "<<":
-            if not a.u:
-                # Negative left operand, or a * 2^b not representable (6.5.7p4).
+            if not a.u and e.shift_rules < 20:
+                # Negative left operand, or a * 2^b not representable (C11
+                # 6.5.7p4): in the type (C, C++98/03), or in its unsigned
+                # counterpart (C++11..17, CWG 1457: 1 << 31 is defined).
+                # C++20 (P1236) defines every signed left shift whose count
+                # is in range: only `shift` above applies.
                 e.add_prop("shift-neg", "INT-SHIFT-UB", a.v < _bv_zero(w), e.pc)
-                top = z3.LShR(a.v, z3.BitVecVal(w - 1, w) - cnt)
+                keep = w if e.shift_rules >= 11 else w - 1
+                top = z3.LShR(a.v, z3.BitVecVal(keep, w) - cnt)
                 e.add_prop("shift31", "INT-SHIFT-UB",
                            z3.And(z3.Not(bad_count), a.v >= _bv_zero(w), top != _bv_zero(w)), e.pc)
             return TV(a.v << cnt, w, a.u)
@@ -2809,6 +3038,98 @@ def _cxx_source(file: str) -> bool:
     return Path(file or "").suffix.lower() not in (".c", ".i")
 
 
+# The default of the C++ compilers PRISM runs (clang++ 16-18, g++ 11-14: gnu++17).
+_DEFAULT_CXX_STD = 17
+
+_CXX_STD_YEARS = {
+    "98": 3, "03": 3, "0x": 11, "11": 11, "1y": 14, "14": 14, "1z": 17, "17": 17,
+    "2a": 20, "20": 20, "2b": 23, "23": 23, "2c": 26, "26": 26,
+}
+
+
+def cxx_std_year(flag: str) -> int:
+    """The year of a `-std=` flag's C++ standard (c++98/03 -> 3, c++0x/11 ->
+    11, c++2a/20 -> 20, gnu++ alike); 0 for anything else."""
+    if flag.startswith("-std="):
+        flag = flag[5:]
+    if flag.startswith("gnu++"):
+        flag = flag[5:]
+    elif flag.startswith("c++"):
+        flag = flag[3:]
+    else:
+        return 0
+    return _CXX_STD_YEARS.get(flag, 0)
+
+
+def _compile_db_std(root: Path, src: Path) -> int:
+    """The C++ standard year of src's -std= in compile_commands.json (root or
+    root/build), as the C++ engine's lints read it; 0 when none."""
+    import json
+    import shlex
+    base = root if root.is_dir() else root.parent
+    try:
+        want = src.resolve()
+    except OSError:
+        return 0
+    for cand in (base / "compile_commands.json", base / "build" / "compile_commands.json"):
+        if not cand.is_file():
+            continue
+        try:
+            entries = json.loads(cand.read_text(encoding="utf-8", errors="replace"))
+        except (OSError, ValueError):
+            continue
+        for ent in entries if isinstance(entries, list) else []:
+            if not isinstance(ent, dict) or not isinstance(ent.get("file"), str):
+                continue
+            d = Path(ent.get("directory") or "")
+            f = Path(ent["file"])
+            if not f.is_absolute():
+                f = d / f
+            try:
+                if f.resolve() != want:
+                    continue
+            except OSError:
+                continue
+            args = ent.get("arguments")
+            if not isinstance(args, list):
+                cmd = ent.get("command")
+                try:
+                    args = shlex.split(cmd) if isinstance(cmd, str) else []
+                except ValueError:
+                    args = []
+            year = 0
+            for a in args:
+                if isinstance(a, str) and a.startswith("-std="):
+                    year = cxx_std_year(a)  # the last one wins, as in the compiler
+            return year
+    return 0
+
+
+def with_cxx_std(functions: list[FunctionInfo], root: Path) -> list[FunctionInfo]:
+    """functions with cxx_std set from the -std= of their unit in
+    compile_commands.json (root or root/build)."""
+    root = Path(root)
+    seen: dict[str, int] = {}
+    out = []
+    for fn in functions:
+        if fn.file not in seen:
+            seen[fn.file] = _compile_db_std(root, root / fn.file if root.is_dir() else root)
+        out.append(replace(fn, cxx_std=seen[fn.file]))
+    return out
+
+
+def _shift_rules_for(fn: FunctionInfo) -> int:
+    """Signed left-shift rules of fn's unit (Parser.shift_rules). Only a C++
+    source file (not a header, which may be C) gets C++ rules; its standard
+    is its -std= (FunctionInfo.cxx_std) or else the compilers' default."""
+    ext = Path(fn.file or "").suffix
+    cxx = ext == ".C" or ext.lower() in (".cc", ".cpp", ".cxx", ".c++", ".cp", ".ii")
+    if not cxx:
+        return 0
+    std = fn.cxx_std if fn.cxx_std > 0 else _DEFAULT_CXX_STD
+    return 20 if std >= 20 else 11 if std >= 11 else 0
+
+
 def _bmc_once(
     fn: FunctionInfo,
     unwind: int,
@@ -2820,6 +3141,7 @@ def _bmc_once(
 ) -> Finding:
     p = Parser(fn.body, fn.params, unwind, enums=enums, macros=macros, havoc=havoc)
     p.cxx = _cxx_source(fn.file)
+    p.shift_rules = _shift_rules_for(fn)
     enc = p.run()
     if enc is None:
         b = dict(base)
@@ -7172,7 +7494,8 @@ def unencoded_layout_stmt(stmt: str) -> str | None:
 
 
 def harness_for_parsefail(err: str, engine: str) -> str | None:
-    """Map a frontend ParseFail to NEEDS-HARNESS. goto stays ERROR."""
+    """Map a frontend ParseFail to NEEDS-HARNESS. A goto the encoder does not
+    model (unstructured) is NEEDS-HARNESS too; an unmapped failure is ERROR."""
     if err.startswith("UNENCODED: "):
         return f"{err} (not modelled by {engine}): not a proof"
     low = (err or "").lower()
@@ -7219,6 +7542,11 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
         return f"struct/union local unencoded: {engine} is not a layout model"
     if "typedef local unencoded" in low:
         return f"unknown typedef local unencoded: {engine} is not a layout model"
+    if "unstructured goto unencoded" in low:
+        return (
+            f"{err} ({engine} models only a goto out to a later statement and a "
+            "backward goto that forms a loop): not a proof"
+        )
     if "computed goto unencoded" in low:
         return (
             f"computed goto unencoded: {engine} is not a computed-goto model"

@@ -1,5 +1,6 @@
 #include "prism/stages.hpp"
 #include "prism/ai.hpp"
+#include "prism/astlint.hpp"
 #include "prism/cparse.hpp"
 #include "prism/laws.hpp"
 #include "prism/regex.hpp"
@@ -1117,6 +1118,9 @@ if (low.find(R"BMC(typedef local unencoded)BMC") != std::string::npos) {
 }
 if (low.find(R"BMC(computed goto unencoded)BMC") != std::string::npos) {
     return R"BMC(computed goto unencoded: )BMC" + std::string(engine) + R"BMC( is not a computed-goto model)BMC";
+}
+if (low.find(R"BMC(unstructured goto unencoded)BMC") != std::string::npos) {
+    return std::string(err) + " (" + engine + " models only a goto out to a later statement and a backward goto that forms a loop): not a proof";
 }
 if (low.find(R"BMC(label-address unencoded)BMC") != std::string::npos) {
     return R"BMC(label-address unencoded: )BMC" + std::string(engine) + R"BMC( is not a label-address model)BMC";
@@ -3162,6 +3166,21 @@ bool cxx_source(const std::string& file) {
     return ext != ".c" && ext != ".i";
 }
 
+// Signed left-shift rules of fn's unit (Parser::shift_rules). Only a C++
+// source file (not a header, which may be C) gets C++ rules; its standard
+// is its -std= (FunctionInfo::cxx_std) or else the default of the C++
+// compilers PRISM runs (clang++ 16-18, g++ 11-14: gnu++17).
+constexpr int kDefaultCxxStd = 17;
+int shift_rules_for(const FunctionInfo& fn) {
+    auto ext = std::filesystem::path(fn.file).extension().string();
+    bool cxx = ext == ".C";
+    for (auto& ch : ext) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    cxx = cxx || ext == ".cc" || ext == ".cpp" || ext == ".cxx" || ext == ".c++" || ext == ".cp" || ext == ".ii";
+    if (!cxx) return 0;
+    int std = fn.cxx_std > 0 ? fn.cxx_std : kDefaultCxxStd;
+    return std >= 20 ? 20 : std >= 11 ? 11 : 0;
+}
+
 Finding bmc_function(const FunctionInfo& fn, int unwind, bool try_unbounded = true,
                      const std::map<std::string, int>* enums = nullptr,
                      bool allow_local_pointers = false, bool incremental = true);
@@ -3171,6 +3190,7 @@ Finding bmc_once(const FunctionInfo& fn, int unwind, bool try_unbounded,
                  const std::map<std::string, std::string>& macros = {}, bool havoc = false) {
     Parser p(fn.body, fn.params, unwind, enums, macros, havoc);
     p.cxx = cxx_source(fn.file);
+    p.shift_rules = shift_rules_for(fn);
     auto enc = p.run();
     if (!enc) {
         base.strength = std::string(laws::STRENGTH_SOME);
@@ -3429,6 +3449,7 @@ ProgramCheck check_program(const FunctionInfo& fn, const std::string& body, int 
         Parser p(body, fn.params, unwind, enums_from_fn(fn));
         p.ai_hooks = true;
         p.cxx = cxx_source(fn.file);
+        p.shift_rules = shift_rules_for(fn);
         auto enc = p.run();
         if (!enc) {
             out.error = p.err.empty() ? std::string("parse failed") : p.err;
@@ -3636,6 +3657,36 @@ void dynamic_init_before_main(const std::vector<FunctionInfo>& functions, std::v
         f.message = "dynamic initialisation before main unencoded: constructor " + ctor_name +
                     " may run for a global object; bitvector BMC does not model static initialisation";
     }
+}
+
+int cxx_std_year(std::string_view flag) {
+    if (flag.starts_with("-std=")) flag.remove_prefix(5);
+    if (flag.starts_with("gnu++")) flag.remove_prefix(5);
+    else if (flag.starts_with("c++")) flag.remove_prefix(3);
+    else return 0;
+    static const std::map<std::string, int, std::less<>> years = {
+        {"98", 3}, {"03", 3}, {"0x", 11}, {"11", 11}, {"1y", 14}, {"14", 14}, {"1z", 17}, {"17", 17},
+        {"2a", 20}, {"20", 20}, {"2b", 23}, {"23", 23}, {"2c", 26}, {"26", 26}};
+    auto it = years.find(flag);
+    return it == years.end() ? 0 : it->second;
+}
+
+std::vector<FunctionInfo> with_cxx_std(std::vector<FunctionInfo> functions, const std::filesystem::path& root) {
+    std::error_code ec;
+    const bool dir = std::filesystem::is_directory(root, ec);
+    std::map<std::string, int> seen;
+    for (auto& fn : functions) {
+        auto it = seen.find(fn.file);
+        if (it == seen.end()) {
+            int year = 0;
+            auto src = dir ? root / fn.file : root;
+            for (auto& f : astlint::compile_db_flags(root, src))
+                if (f.starts_with("-std=")) year = cxx_std_year(f);  // the last one wins, as in the compiler
+            it = seen.emplace(fn.file, year).first;
+        }
+        fn.cxx_std = it->second;
+    }
+    return functions;
 }
 
 std::vector<Finding> run_bmc(const std::vector<FunctionInfo>& functions, int unwind,
