@@ -356,6 +356,23 @@ def gEnd (k i : Nat) (B : Arg) (inb : Bool) (g : GSt) : List PStmt × List Nat :
   if g.var.isNone && g.cst == 0 then (g.s ++ [.assign i .copy [B]], g.ts)
   else (g.s ++ gFinS i (k + g.ts.length) B delta inb, g.ts ++ gFinT inb)
 
+/-- `MemTr::store` (also `llvm.lifetime.start`, `Tr::call`). -/
+def trStore (c : Ctx) (k w : Nat) (v : FOpnd) (p : Opnd) (al : Nat) : Except String (List PStmt × List Nat) := do
+    need (okW w) "UNENCODED: width"
+    need (alignOK al) "outside fragment: alignment"
+    let (sv, tv, V, I) ← trStoreVal c w k v
+    let (sp, tp, P) ← trOpndX c 64 true (k + tv.length) p
+    let (sa, ta) := accessChecks (k + tv.length + tp.length) P ((w + 7) / 8) true al
+    pure (sv ++ sp ++ sa ++ [.store P (V.setW w) I], tv ++ tp ++ ta)
+
+/-- The checks `Tr::call` inserts for `llvm.abs` / `ctlz` / `cttz` with the
+poison flag set. -/
+def unChecks (uk : UnK) (flag : Bool) (w : Nat) (A : Arg) : List Chk :=
+  match uk with
+  | .abs => opt flag (.p (.cmp .eq) A (.c w (2 ^ (w - 1))) "abs" "INT-SIGNED-OVF")
+  | .ctlz | .cttz => opt flag (.p (.cmp .eq) A (.c w 0) "clz0" "INT-CLZ-ZERO")
+  | _ => []
+
 /-- The operands a `getelementptr` reads. -/
 def gepUses (base : Opnd) (ix : List GIdx) : List Opnd := base :: ix.filterMap (fun g => g.opnd.map (·.1))
 
@@ -384,13 +401,7 @@ def trSInstX (c : Ctx) (k : Nat) : SInst → Except String (List PStmt × List N
     let (sa, ta) := accessChecks (k + tp.length) P ((w + 7) / 8) false al
     let u := k + tp.length + ta.length
     pure (sp ++ sa ++ [.load i u P, .check (.v u 1) "uninit" "UNINIT-READ"], tp ++ ta ++ [1])
-  | .store w v p al => do
-    need (okW w) "UNENCODED: width"
-    need (alignOK al) "outside fragment: alignment"
-    let (sv, tv, V, I) ← trStoreVal c w k v
-    let (sp, tp, P) ← trOpndX c 64 true (k + tv.length) p
-    let (sa, ta) := accessChecks (k + tv.length + tp.length) P ((w + 7) / 8) true al
-    pure (sv ++ sp ++ sa ++ [.store P (V.setW w) I], tv ++ tp ++ ta)
+  | .store w v p al => trStore c k w v p al
   | .gep d inb base ix => do
     need ((gepUses base ix).all (· != .reg d)) "outside fragment: getelementptr reads its own result"
     let (sb, tb, B) ← trOpndX c 64 true k base
@@ -401,6 +412,57 @@ def trSInstX (c : Ctx) (k : Nat) : SInst → Except String (List PStmt × List N
     let g ← gLoop k' { s := [], ts := [], cst := 0, var := none } (ix.zip As)
     let (sg, tg) := gEnd k' i B inb g
     pure (sb ++ si ++ sg, tb ++ ti ++ tg)
+  | .mm d mk w a b => do
+    need (okW w) "UNENCODED: width"
+    let (sa, ta, A) ← trOpndX c w false k a
+    let (sb, tb, B) ← trOpndX c w false (k + ta.length) b
+    let i ← dstX c d w
+    need (look c.sh d).isNone "outside fragment: result with a shadow"
+    pure (sa ++ sb ++ [.assign i (.mm mk) [A, B]], ta ++ tb)
+  | .un d uk w a flag => do
+    need (okW w) "UNENCODED: width"
+    need (uk != .bswap || w % 16 == 0) "UNENCODED: call @llvm.bswap"
+    need (!flag || uk == .abs || uk == .ctlz || uk == .cttz) "outside fragment: flag"
+    let (sa, ta, A) ← trOpndX c w false k a
+    let (sc, tc) := emitAll (k + ta.length) (unChecks uk flag w A)
+    let i ← dstX c d w
+    need (look c.sh d).isNone "outside fragment: result with a shadow"
+    pure (sa ++ sc ++ [.assign i (.un uk) [A]], ta ++ tc)
+  | .expect d w a => do
+    need (okW w) "UNENCODED: width"
+    let (sa, ta, A) ← trOpndX c w false k a
+    let i ← dstX c d w
+    need (look c.sh d).isNone "outside fragment: result with a shadow"
+    pure (sa ++ [.assign i .copy [A]], ta)
+  | .ovf d ok w a b => do
+    need (okW w) "UNENCODED: width"
+    let (sa, ta, A) ← trOpndX c w false k a
+    let (sb, tb, B) ← trOpndX c w false (k + ta.length) b
+    let i0 ← dstX c (pairReg d 0) w
+    let i1 ← dstX c (pairReg d 1) 1
+    need ((look c.sh (pairReg d 0)).isNone && (look c.sh (pairReg d 1)).isNone)
+      "outside fragment: result with a shadow"
+    need (A.var? != some i0 && B.var? != some i0) "outside fragment: overflow operand"
+    pure (sa ++ sb ++ [.assign i0 (.bin (ovfBin ok)) [A, B], .assign i1 (.ovf ok) [A, B]], ta ++ tb)
+  | .xv d w src idx => do
+    need (okW w) "UNENCODED: width"
+    need (decide (idx ≤ 1)) "UNENCODED: extractvalue"
+    match look c.env (pairReg src idx) with
+    | some a =>
+      need (a.lt c.hi) "outside fragment: extractvalue reads above its instance"
+      need (look c.sh (pairReg src idx)).isNone "outside fragment: pair with a shadow"
+      let i ← dstX c d w
+      need (look c.sh d).isNone "outside fragment: result with a shadow"
+      pure ([.assign i .copy [a]], [])
+    | none => throw "UNENCODED: extractvalue"
+  | .lstart n p => do
+    need (decide (1 ≤ n ∧ n ≤ 8)) "UNENCODED: call @llvm.lifetime.start (object larger than 8 bytes)"
+    trStore c k (8 * n) .undef p 1
+  | .lend p => do
+    let (sp, tp, P) ← trOpndX c 64 true k p
+    pure (sp ++ [.free P], tp)
+  | .memcpy .. => throw "outside fragment: llvm.memcpy"
+  | .memset .. => throw "outside fragment: llvm.memset"
 
 def trSInstsX (c : Ctx) : Nat → List SInst → Except String (List PStmt × List Nat)
   | _, [] => .ok ([], [])
@@ -531,6 +593,12 @@ where
     | .load d w _ _ => [(d, w)]
     | .store .. => []
     | .gep d _ _ _ => [(d, 64)]
+    | .mm d _ w _ _ => [(d, w)]
+    | .un d _ w _ _ => [(d, w)]
+    | .expect d w _ => [(d, w)]
+    | .ovf d _ w _ _ => [(pairReg d 0, w), (pairReg d 1, 1)]
+    | .xv d w _ _ => [(d, w)]
+    | .lstart .. | .lend .. | .memcpy .. | .memset .. => []
 
 def xPhisOf (G : XFunc) : List PhiI := G.blocks.flatMap (·.phis)
 

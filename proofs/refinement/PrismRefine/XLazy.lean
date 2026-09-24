@@ -27,6 +27,42 @@ theorem lower_lift (R : SRegs) : lower (lift R) = R := by
   | none => rfl
   | some x => cases x <;> rfl
 
+theorem store_liftX (ω : Nat → Nat) (R : SRegs) (t : World) (w : Nat) (v : FOpnd) (p : Opnd) (al : Nat) :
+    SLX (sStoreR ω R t w v p al) (lStoreR ω ⟨lift R, false⟩ t w v p al) := by
+    have h := opnd_lift R 64 p
+    simp only [sStoreR, lStoreR, lower_lift]
+    cases hv : sStoreVal ω R t w v with
+    | ok a =>
+      obtain ⟨vv, init, W1⟩ := a
+      simp only [Res.bind]
+      cases hs : sOpnd R 64 p with
+      | ok pv =>
+        rw [hs] at h; simp only [OpRel] at h; rw [h]
+        simp only [Res.bind]
+        split
+        · exact .inl rfl
+        · rfl
+      | stuck => rw [hs] at h; simp only [OpRel] at h; rw [h]; rfl
+      | ub =>
+        rw [hs] at h; simp only [OpRel] at h
+        rcases h with h | h <;> rw [h] <;> exact .inl rfl
+    | ub => exact .inl rfl
+    | stuck => rfl
+
+theorem lOne_lift (R : SRegs) (t : World) (d : String) (r : Res Nat) :
+    SLX (r.bind fun v => .ok (R.set d v, t)) (lOne ⟨lift R, false⟩ t d r) := by
+  cases r with
+  | ok v => simp [Res.bind, lOne, SLX, lift_set]
+  | ub => exact .inr (.inr ⟨_, t, rfl, rfl⟩)
+  | stuck => rfl
+
+theorem lMem_lift (R : SRegs) (r : Res World) :
+    SLX (r.bind fun W' => .ok (R, W')) (lMem ⟨lift R, false⟩ r) := by
+  cases r with
+  | ok W' => rfl
+  | ub => exact .inl rfl
+  | stuck => rfl
+
 theorem sinst_liftX (ω : Nat → Nat) (R : SRegs) (t : World) (i : SInst) :
     SLX (sSInst ω R t i) (lSInst ω ⟨lift R, false⟩ t i) := by
   cases i with
@@ -77,26 +113,7 @@ theorem sinst_liftX (ω : Nat → Nat) (R : SRegs) (t : World) (i : SInst) :
     | ub =>
       rw [hs] at h; simp only [OpRel] at h
       rcases h with h | h <;> rw [h] <;> exact .inl rfl
-  | store w v p al =>
-    have h := opnd_lift R 64 p
-    simp only [sSInst, lSInst, lower_lift]
-    cases hv : sStoreVal ω R t w v with
-    | ok a =>
-      obtain ⟨vv, init, W1⟩ := a
-      simp only [Res.bind]
-      cases hs : sOpnd R 64 p with
-      | ok pv =>
-        rw [hs] at h; simp only [OpRel] at h; rw [h]
-        simp only [Res.bind]
-        split
-        · exact .inl rfl
-        · rfl
-      | stuck => rw [hs] at h; simp only [OpRel] at h; rw [h]; rfl
-      | ub =>
-        rw [hs] at h; simp only [OpRel] at h
-        rcases h with h | h <;> rw [h] <;> exact .inl rfl
-    | ub => exact .inl rfl
-    | stuck => rfl
+  | store w v p al => exact store_liftX ω R t w v p al
   | gep d inb base ix =>
     simp only [sSInst, lSInst, lower_lift]
     have e : ((sOpnd R 64 base).bind fun b => (sIdxVals R ix).bind fun vs =>
@@ -111,6 +128,48 @@ theorem sinst_liftX (ω : Nat → Nat) (R : SRegs) (t : World) (i : SInst) :
     | ok r => simp [Res.bind, SLX, lift_set]
     | ub => exact .inr (.inr ⟨_, t, rfl, rfl⟩)
     | stuck => rfl
+  | mm d k w a b => simp only [sSInst, lSInst, lower_lift]; exact lOne_lift R t d _
+  | un d k w a flag => simp only [sSInst, lSInst, lower_lift]; exact lOne_lift R t d _
+  | expect d w a => simp only [sSInst, lSInst, lower_lift]; exact lOne_lift R t d _
+  | xv d w src idx => simp only [sSInst, lSInst, lower_lift]; exact lOne_lift R t d _
+  | ovf d k w a b =>
+    simp only [sSInst, lSInst, lower_lift]
+    cases sOvfV R k w a b with
+    | ok vf => obtain ⟨v, f⟩ := vf; simp [Res.bind, SLX, lift_set]
+    | ub => exact .inr (.inr ⟨_, t, rfl, rfl⟩)
+    | stuck => rfl
+  | lstart n p => exact store_liftX ω R t (8 * n) .undef p 1
+  | lend p => simp only [sSInst, lSInst, lower_lift]; exact lMem_lift R _
+  | memcpy d s len lw mv => simp only [sSInst, lSInst, lower_lift]; exact lMem_lift R _
+  | memset d b len lw => simp only [sSInst, lSInst, lower_lift]; exact lMem_lift R _
+
+theorem lStoreR_mono {ω : Nat → Nat} {S S' : LSt} {t t' : World} {w : Nat} {v : FOpnd} {p : Opnd} {al : Nat}
+    (h : lStoreR ω S t w v p al = .ok (S', t')) (hc : S.c = true) : S'.c = true := by
+    simp only [lStoreR] at h
+    cases hv : sStoreVal ω (lower S.R) t w v with
+    | ok a =>
+      rw [hv] at h; simp only [Res.bind] at h
+      split at h
+      · split at h
+        · cases h
+        · simp only [Res.ok.injEq, Prod.mk.injEq] at h; obtain ⟨rfl, _⟩ := h; exact hc
+      all_goals cases h
+    | ub => rw [hv] at h; cases h
+    | stuck => rw [hv] at h; cases h
+
+theorem lOne_mono {S S' : LSt} {t t' : World} {d : String} {r : Res Nat}
+    (h : lOne S t d r = .ok (S', t')) (hc : S.c = true) : S'.c = true := by
+  cases r with
+  | ok v => simp only [lOne, Res.ok.injEq, Prod.mk.injEq] at h; obtain ⟨rfl, _⟩ := h; exact hc
+  | ub => simp only [lOne, Res.ok.injEq, Prod.mk.injEq] at h; obtain ⟨rfl, _⟩ := h; rfl
+  | stuck => cases h
+
+theorem lMem_mono {S S' : LSt} {t' : World} {r : Res World}
+    (h : lMem S r = .ok (S', t')) (hc : S.c = true) : S'.c = true := by
+  cases r with
+  | ok W => simp only [lMem, Res.ok.injEq, Prod.mk.injEq] at h; obtain ⟨rfl, _⟩ := h; exact hc
+  | ub => cases h
+  | stuck => cases h
 
 theorem lSInst_mono {ω : Nat → Nat} {S S' : LSt} {t t' : World} {i : SInst}
     (h : lSInst ω S t i = .ok (S', t')) (hc : S.c = true) : S'.c = true := by
@@ -146,24 +205,27 @@ theorem lSInst_mono {ω : Nat → Nat} {S S' : LSt} {t t' : World} {i : SInst}
       · cases h
       · simp only [Res.ok.injEq, Prod.mk.injEq] at h; obtain ⟨rfl, _⟩ := h; simp [hc]
     all_goals cases h
-  | store w v p al =>
-    simp only [lSInst] at h
-    cases hv : sStoreVal ω (lower S.R) t w v with
-    | ok a =>
-      rw [hv] at h; simp only [Res.bind] at h
-      split at h
-      · split at h
-        · cases h
-        · simp only [Res.ok.injEq, Prod.mk.injEq] at h; obtain ⟨rfl, _⟩ := h; exact hc
-      all_goals cases h
-    | ub => rw [hv] at h; cases h
-    | stuck => rw [hv] at h; cases h
+  | store w v p al => exact lStoreR_mono h hc
   | gep d inb base ix =>
     simp only [lSInst] at h
     split at h
     · simp only [Res.ok.injEq, Prod.mk.injEq] at h; obtain ⟨rfl, _⟩ := h; exact hc
     · simp only [Res.ok.injEq, Prod.mk.injEq] at h; obtain ⟨rfl, _⟩ := h; rfl
     · cases h
+  | mm d k w a b => exact lOne_mono h hc
+  | un d k w a flag => exact lOne_mono h hc
+  | expect d w a => exact lOne_mono h hc
+  | xv d w src idx => exact lOne_mono h hc
+  | ovf d k w a b =>
+    simp only [lSInst] at h
+    split at h
+    · simp only [Res.ok.injEq, Prod.mk.injEq] at h; obtain ⟨rfl, _⟩ := h; exact hc
+    · simp only [Res.ok.injEq, Prod.mk.injEq] at h; obtain ⟨rfl, _⟩ := h; rfl
+    · cases h
+  | lstart n p => exact lStoreR_mono h hc
+  | lend p => exact lMem_mono h hc
+  | memcpy d s len lw mv => exact lMem_mono h hc
+  | memset d b len lw => exact lMem_mono h hc
 
 /-- Once poison has been created, the rest of a segment stays bad. -/
 def LBadX : Res (LSt × World) → Prop

@@ -94,7 +94,45 @@ inductive SInst where
   | store (w : Nat) (v : FOpnd) (p : Opnd) (al : Nat)
   /-- `%dst = getelementptr [inbounds] T, ptr base, ix…` -/
   | gep (dst : String) (inb : Bool) (base : Opnd) (ix : List GIdx)
+  /-- `%dst = call iw @llvm.smax.iw(a, b)` (`smin`, `umax`, `umin`) -/
+  | mm (dst : String) (k : MMK) (w : Nat) (a b : Opnd)
+  /-- `%dst = call iw @llvm.abs.iw(a, i1 flag)` (`ctlz`, `cttz` with their
+  flag; `ctpop`, `bswap` without) -/
+  | un (dst : String) (k : UnK) (w : Nat) (a : Opnd) (flag : Bool)
+  /-- `%dst = call iw @llvm.expect.iw(a, c)` -/
+  | expect (dst : String) (w : Nat) (a : Opnd)
+  /-- `%dst = call {iw, i1} @llvm.<k>.with.overflow.iw(a, b)`: the two fields
+  are the registers `pairReg dst 0` and `pairReg dst 1` -/
+  | ovf (dst : String) (k : OvfOp) (w : Nat) (a b : Opnd)
+  /-- `%dst = extractvalue {iw, i1} %src, idx` of an overflow pair -/
+  | xv (dst : String) (w : Nat) (src : String) (idx : Nat)
+  /-- `call void @llvm.lifetime.start(i64 n, ptr p)` -/
+  | lstart (n : Nat) (p : Opnd)
+  /-- `call void @llvm.lifetime.end(i64 n, ptr p)` -/
+  | lend (p : Opnd)
+  /-- `call void @llvm.memcpy` / `memmove` (`move`) `(ptr d, ptr s, i<lw> len, i1 volatile)` -/
+  | memcpy (d s len : Opnd) (lw : Nat) (move : Bool)
+  /-- `call void @llvm.memset(ptr d, i8 b, i<lw> len, i1 volatile)` -/
+  | memset (d b len : Opnd) (lw : Nat)
   deriving DecidableEq, Repr, Inhabited
+
+/-- The register of field `i` of an overflow pair (a name no LLVM register
+the exporter writes can have: it contains a blank). -/
+def pairReg (d : String) (i : Nat) : String := d ++ " ." ++ toString i
+
+/-- The arithmetic of an overflow intrinsic. -/
+def ovfBin : OvfOp → BinOp
+  | .sadd | .uadd => .add
+  | .ssub | .usub => .sub
+  | .smul | .umul => .mul
+
+/-- LangRef: `llvm.abs(x, true)` is poison for `INT_MIN`,
+`llvm.ctlz/cttz(x, true)` for `0`. -/
+def unPoison (k : UnK) (flag : Bool) (w x : Nat) : Bool :=
+  flag && match k with
+    | .abs => bv w x == BitVec.intMin w
+    | .ctlz | .cttz => bv w x == 0#w
+    | _ => false
 
 /-- `%dst = call i<rw> @f(a₁ w₁, …)` (`rw = 0`: `void`; `dst = none`: result
 unused).  `wᵢ` is the width of the argument operand. -/
@@ -241,7 +279,58 @@ def sStoreVal (ω : Nat → Nat) (R : SRegs) (W : World) (w : Nat) : FOpnd → R
     | some .ind => .ok (0, false, W)
     | none => .stuck
 
+/-- `llvm.memcpy` of `n` bytes from `s` to `d` is undefined (`n ≠ 0`): either
+access is bad (`accessBad`, byte alignment), or — `memcpy`, not `memmove` —
+the two ranges overlap.  PRISM's rule is C's (C17 7.24.2.1): the LangRef also
+allows `d = s` exactly. -/
+def cpyBad (m : Mem) (d s n : Nat) (move : Bool) : Bool :=
+  n != 0 && (accessBad m d n true 1 || accessBad m s n false 1 ||
+    (!move && ptrObj d == ptrObj s && decide (ptrOff d < ptrOff s + n) && decide (ptrOff s < ptrOff d + n)))
+
 /-! ## Strict semantics -/
+
+/-- The values of the integer intrinsics. -/
+def sUnV (R : SRegs) (k : UnK) (w : Nat) (a : Opnd) (flag : Bool) : Res Nat :=
+  (sOpnd R w a).bind fun x => if unPoison k flag w x then .ub else .ok (unVal k w x % 2 ^ w)
+
+def sMMV (R : SRegs) (k : MMK) (w : Nat) (a b : Opnd) : Res Nat :=
+  (sOpnd R w a).bind fun x => (sOpnd R w b).bind fun y => .ok (mmVal k w x y % 2 ^ w)
+
+def sExpV (R : SRegs) (w : Nat) (a : Opnd) : Res Nat :=
+  (sOpnd R w a).bind fun x => .ok (x % 2 ^ w)
+
+def sXvV (R : SRegs) (w : Nat) (src : String) (idx : Nat) : Res Nat :=
+  match R (pairReg src idx) with
+  | some (.val v) => .ok (v % 2 ^ w)
+  | some .ind => .ub
+  | none => .stuck
+
+def sOvfV (R : SRegs) (k : OvfOp) (w : Nat) (a b : Opnd) : Res (Nat × Nat) :=
+  (sOpnd R w a).bind fun x => (sOpnd R w b).bind fun y =>
+    .ok (binVal (ovfBin k) w x y, (ovfTest k w x y).toNat)
+
+/-- `store` (and `llvm.lifetime.start`: PRISM's model stores `n` uninitialised
+bytes through the pointer, with a write's checks). -/
+def sStoreR (ω : Nat → Nat) (R : SRegs) (W : World) (w : Nat) (v : FOpnd) (p : Opnd) (al : Nat) :
+    Res (SRegs × World) :=
+  (sStoreVal ω R W w v).bind fun (vv, init, W1) =>
+    (sOpnd R 64 p).bind fun pv =>
+      if accessBad W1.mem (pv % 2 ^ 64) ((w + 7) / 8) true al then .ub
+      else .ok (R, W1.store pv vv w init)
+
+/-- `llvm.lifetime.end`: the object's lifetime ends (`Stmt::Free`; no check). -/
+def sLend (R : SRegs) (W : World) (p : Opnd) : Res World :=
+  (sOpnd R 64 p).bind fun pv => .ok { W with mem := W.mem.free (pv % 2 ^ 64) }
+
+def sMemcpy (R : SRegs) (W : World) (d s len : Opnd) (lw : Nat) (move : Bool) : Res World :=
+  (sOpnd R 64 d).bind fun dv => (sOpnd R 64 s).bind fun sv => (sOpnd R lw len).bind fun n =>
+    if cpyBad W.mem (dv % 2 ^ 64) (sv % 2 ^ 64) n move then .ub
+    else .ok { W with mem := W.mem.copy (dv % 2 ^ 64) (sv % 2 ^ 64) n }
+
+def sMemset (R : SRegs) (W : World) (d b len : Opnd) (lw : Nat) : Res World :=
+  (sOpnd R 64 d).bind fun dv => (sOpnd R 8 b).bind fun bv => (sOpnd R lw len).bind fun n =>
+    if n != 0 && accessBad W.mem (dv % 2 ^ 64) n true 1 then .ub
+    else .ok { W with mem := W.mem.fill (dv % 2 ^ 64) (bv % 256) n }
 
 /-- One non-call instruction; `t` is the number of values drawn so far. -/
 def sSInst (ω : Nat → Nat) (R : SRegs) (W : World) : SInst → Res (SRegs × World)
@@ -259,14 +348,20 @@ def sSInst (ω : Nat → Nat) (R : SRegs) (W : World) : SInst → Res (SRegs × 
       -- PRISM's rule: reading uninitialised memory is an error at the load
       else if (loadCells W.mem pv w).any (·.isNone) then .ub
       else .ok (R.set d (bytesVal ((loadCells W.mem pv w).map (·.getD 0)) % 2 ^ w), W)
-  | .store w v p al =>
-    (sStoreVal ω R W w v).bind fun (vv, init, W1) =>
-      (sOpnd R 64 p).bind fun pv =>
-        if accessBad W1.mem (pv % 2 ^ 64) ((w + 7) / 8) true al then .ub
-        else .ok (R, W1.store pv vv w init)
+  | .store w v p al => sStoreR ω R W w v p al
   | .gep d inb base ix =>
     (sOpnd R 64 base).bind fun b => (sIdxVals R ix).bind fun vs =>
       (gepVal W.mem inb b ix vs).bind fun r => .ok (R.set d r, W)
+  | .mm d k w a b => (sMMV R k w a b).bind fun v => .ok (R.set d v, W)
+  | .un d k w a flag => (sUnV R k w a flag).bind fun v => .ok (R.set d v, W)
+  | .expect d w a => (sExpV R w a).bind fun v => .ok (R.set d v, W)
+  | .xv d w src idx => (sXvV R w src idx).bind fun v => .ok (R.set d v, W)
+  | .ovf d k w a b => (sOvfV R k w a b).bind fun (v, f) =>
+    .ok ((R.set (pairReg d 0) v).set (pairReg d 1) f, W)
+  | .lstart n p => sStoreR ω R W (8 * n) .undef p 1
+  | .lend p => (sLend R W p).bind fun W' => .ok (R, W')
+  | .memcpy d s len lw mv => (sMemcpy R W d s len lw mv).bind fun W' => .ok (R, W')
+  | .memset d b len lw => (sMemset R W d b len lw).bind fun W' => .ok (R, W')
 
 def sSInsts (ω : Nat → Nat) : SRegs → World → List SInst → Res (SRegs × World)
   | R, W, [] => .ok (R, W)
@@ -381,6 +476,32 @@ def lower (R : LRegs) : SRegs := fun n => (R n).map fun
   | .val v => .val v
   | _ => .ind
 
+/-- A single-result intrinsic on the LangRef side: an undefined strict value
+(a poison flag condition, a poison or indeterminate operand) is a poison
+result, flagged (poison was created, or was already there). -/
+def lOne (S : LSt) (W : World) (d : String) : Res Nat → Res (LSt × World)
+  | .ok v => .ok (⟨S.R.set d (.val v), S.c⟩, W)
+  | .ub => .ok (⟨S.R.set d .poison, true⟩, W)
+  | .stuck => .stuck
+
+/-- A memory intrinsic on the LangRef side: as the strict side on the
+registers holding numbers (a poison pointer or length is a use of poison). -/
+def lMem (S : LSt) : Res World → Res (LSt × World)
+  | .ok W' => .ok (S, W')
+  | .ub => .ub
+  | .stuck => .stuck
+
+def lStoreR (ω : Nat → Nat) (S : LSt) (W : World) (w : Nat) (v : FOpnd) (p : Opnd) (al : Nat) :
+    Res (LSt × World) :=
+    (sStoreVal ω (lower S.R) W w v).bind fun (vv, init, W1) =>
+      match lOpnd S.R 64 p with
+      | .ok (.val pv, _) =>
+        if accessBad W1.mem (pv % 2 ^ 64) ((w + 7) / 8) true al then .ub
+        else .ok (S, W1.store pv vv w init)
+      | .ok (_, _) => .ub
+      | .ub => .ub
+      | .stuck => .stuck
+
 def lSInst (ω : Nat → Nat) (S : LSt) (W : World) : SInst → Res (LSt × World)
   | .i x => (lInst S x).bind fun S' => .ok (S', W.adv x.draws)
   | .freeze d w a =>
@@ -405,15 +526,7 @@ def lSInst (ω : Nat → Nat) (S : LSt) (W : World) : SInst → Res (LSt × Worl
     | .ok (_, _) => .ub
     | .ub => .ub
     | .stuck => .stuck
-  | .store w v p al =>
-    (sStoreVal ω (lower S.R) W w v).bind fun (vv, init, W1) =>
-      match lOpnd S.R 64 p with
-      | .ok (.val pv, _) =>
-        if accessBad W1.mem (pv % 2 ^ 64) ((w + 7) / 8) true al then .ub
-        else .ok (S, W1.store pv vv w init)
-      | .ok (_, _) => .ub
-      | .ub => .ub
-      | .stuck => .stuck
+  | .store w v p al => lStoreR ω S W w v p al
   | .gep d inb base ix =>
     -- a poison or indeterminate operand, an overflow, a C bound or leaving the
     -- object: the result is poison (LLVM) or C UB; flagged
@@ -422,6 +535,19 @@ def lSInst (ω : Nat → Nat) (S : LSt) (W : World) : SInst → Res (LSt × Worl
     | .ok r => .ok (⟨S.R.set d (.val r), S.c⟩, W)
     | .ub => .ok (⟨S.R.set d (.val 0), true⟩, W)
     | .stuck => .stuck
+  | .mm d k w a b => lOne S W d (sMMV (lower S.R) k w a b)
+  | .un d k w a flag => lOne S W d (sUnV (lower S.R) k w a flag)
+  | .expect d w a => lOne S W d (sExpV (lower S.R) w a)
+  | .xv d w src idx => lOne S W d (sXvV (lower S.R) w src idx)
+  | .ovf d k w a b =>
+    match sOvfV (lower S.R) k w a b with
+    | .ok (v, f) => .ok (⟨(S.R.set (pairReg d 0) (.val v)).set (pairReg d 1) (.val f), S.c⟩, W)
+    | .ub => .ok (⟨(S.R.set (pairReg d 0) .poison).set (pairReg d 1) .poison, true⟩, W)
+    | .stuck => .stuck
+  | .lstart n p => lStoreR ω S W (8 * n) .undef p 1
+  | .lend p => lMem S (sLend (lower S.R) W p)
+  | .memcpy d s len lw mv => lMem S (sMemcpy (lower S.R) W d s len lw mv)
+  | .memset d b len lw => lMem S (sMemset (lower S.R) W d b len lw)
 
 def lSInsts (ω : Nat → Nat) : LSt → World → List SInst → Res (LSt × World)
   | S, W, [] => .ok (S, W)

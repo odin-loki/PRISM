@@ -617,6 +617,79 @@ theorem idxOps_sim {P : PFunc} {ω : Nat → Nat} {c : Ctx} {R : SRegs} {σ σ0 
     exact hf (v :: vs) (by simp [sIdxVals, GIdx.opnd, hv, hvs, Res.bind]) (by simp [ht])
       (.arr (hia v hv hAv hAb (hAw rfl)) hI)
 
+theorem bv_beq (w x : Nat) (y : BitVec w) : (bv w x == y) = decide (x % 2 ^ w = y.toNat) := by
+  rw [Bool.eq_iff_iff]; simp [BitVec.toNat_eq]
+
+theorem unChecks_bad (σ : Store) (uk : UnK) (flag : Bool) (w : Nat) (A : Arg) (hA : A.width = w) :
+    (unChecks uk flag w A).any (Chk.bad σ) = unPoison uk flag w (A.get σ) := by
+  cases flag
+  · cases uk <;> simp [unChecks, opt, unPoison]
+  · cases uk <;> simp only [unChecks, opt, ite_true, List.any_cons, List.any_nil, Bool.or_false, bad_cmp, hA,
+      unPoison, Bool.true_and, pred_eq] <;> (try rw [Bool.eq_iff_iff]) <;>
+      simp [BitVec.toNat_eq, BitVec.toNat_intMin] <;>
+      exact ⟨fun h => of_decide_eq_true h, fun h => decide_eq_true h⟩
+
+theorem unChecks_below {k : Nat} {A : Arg} (hA : A.below k) (uk : UnK) (flag : Bool) (w : Nat) :
+    ∀ c ∈ unChecks uk flag w A, c.below k := by
+  intro c hc
+  cases flag <;> cases uk <;> simp [unChecks, opt] at hc <;> subst hc <;> exact ⟨hA, trivial⟩
+
+theorem unChecks_opOK (uk : UnK) (flag : Bool) (w : Nat) (A : Arg) :
+    ∀ c ∈ unChecks uk flag w A, c.opOK = true := by
+  intro c hc
+  cases flag <;> cases uk <;> simp [unChecks, opt] at hc <;> subst hc <;> rfl
+
+theorem store_simX {P : PFunc} {ω : Nat → Nat} {c : Ctx} (hc : CtxOK P c) {R : SRegs}
+    {σ σ0 : Store} (hR : RelX c R σ) (ha0 : ∀ j, j < c.lo → σ j = σ0 j) {k : Nat} {t : World} (hk : c.hi ≤ k)
+    {w : Nat} {v : FOpnd} {p : Opnd} {al : Nat} {s : List PStmt} {tws : List Nat}
+    (h : trStore c k w v p al = .ok (s, tws)) (hT : TempsOK P k tws) :
+    SimX c σ0 (sStoreR ω R t w v p al) (xStmts P ω σ t s) := by
+    simp only [trStore] at h
+    obtain ⟨u1, hu1, h⟩ := Except.bind_ok h
+    obtain ⟨u2, hu2, h⟩ := Except.bind_ok h
+    obtain ⟨⟨sv, tv, V, I⟩, hv, h⟩ := Except.bind_ok h
+    obtain ⟨⟨sp, tp, A⟩, hp, h⟩ := Except.bind_ok h
+    have hw := need_ok hu1
+    have hal := need_ok hu2
+    simp only [pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at h
+    obtain ⟨rfl, rfl⟩ := h
+    have hn8 : (w + 7) / 8 ≤ 8 := by simp only [okW, Bool.and_eq_true, decide_eq_true_eq] at hw; omega
+    have hsv := storeVal_sim (ω := ω) hR hk hv (hT.left.left) t
+    simp only [sStoreR]
+    cases hs : sStoreVal ω R t w v with
+    | stuck => trivial
+    | ub => exact absurd hs hsv.2
+    | ok r =>
+      obtain ⟨vv, init, W1⟩ := r
+      obtain ⟨σ1, e1, ag1, hVb, hIb, hI, hV⟩ := hsv.1 vv init W1 hs
+      simp only [Res.bind]
+      rw [List.append_assoc, List.append_assoc, xStmts_append, e1, XPRes.then]
+      have hR1 : RelX c R σ1 := RelX.agree hc hR hk ag1
+      have ha1 : ∀ j, j < c.lo → σ1 j = σ0 j := fun j hj => by
+        rw [ag1 j (by have := hc.lohi; omega)]; exact ha0 j hj
+      refine opndX_sim hR1 hp (by omega) _ _ ?_
+      intro pv _ htp hAp hAb _
+      subst htp
+      have hTa : TempsOK P (k + tv.length) (accessChecks (k + tv.length) A ((w + 7) / 8) true al).2 := by
+        have := hT.right; simpa using this
+      simp only [List.length_nil, Nat.add_zero] at hTa ⊢
+      have hac := accessChecks_run P ω σ1 W1 (k + tv.length) A hAb ((w + 7) / 8) hn8 true al hal hTa
+      rw [hAp] at hac
+      rw [xStmts_append]
+      cases hb : accessBad W1.mem (pv % 2 ^ 64) ((w + 7) / 8) true al
+      · obtain ⟨σ2, e2, ag2⟩ := hac.2 hb
+        have hA2 : A.get σ2 = pv := by rw [Arg.get_agree ag2 hAb, hAp]
+        have hV2 : V.get σ2 = V.get σ1 := Arg.get_agree ag2 hVb
+        have hI2 : I.get σ2 = I.get σ1 := Arg.get_agree ag2 hIb
+        simp only [hb, Bool.false_eq_true, ite_false, e2, XPRes.then, xStmts, xStmts_nil, Arg.setW_get,
+          Arg.setW_width, hA2, hV2, hI2, hI, SimX]
+        refine ⟨σ2, ?_, RelX.agree hc hR1 (m := k) hk (fun j hj => ag2 j (by omega)), fun j hj => ?_⟩
+        · cases init
+          · rw [World.store_uninit]
+          · rw [hV rfl]
+        · rw [ag2 j (by have := hc.lohi; omega)]; exact ha1 j hj
+      · simp only [hb, ite_true, SimX, hac.1 hb, XPRes.then]
+
 theorem sinstX_sim {P : PFunc} {ω : Nat → Nat} {c : Ctx} (hc : CtxOK P c) {R : SRegs}
     {σ σ0 : Store} (hR : RelX c R σ) (ha0 : ∀ j, j < c.lo → σ j = σ0 j) {k : Nat} {t : World} (hk : c.hi ≤ k)
     {i : SInst} {s : List PStmt} {tws : List Nat} (h : trSInstX c k i = .ok (s, tws))
@@ -873,50 +946,7 @@ theorem sinstX_sim {P : PFunc} {ω : Nat → Nat} {c : Ctx} (hc : CtxOK P c) {R 
     · simp only [hb, ite_true, SimX, hac.1 hb, XPRes.then]
   | store w v p al =>
     simp only [trSInstX] at h
-    obtain ⟨u1, hu1, h⟩ := Except.bind_ok h
-    obtain ⟨u2, hu2, h⟩ := Except.bind_ok h
-    obtain ⟨⟨sv, tv, V, I⟩, hv, h⟩ := Except.bind_ok h
-    obtain ⟨⟨sp, tp, A⟩, hp, h⟩ := Except.bind_ok h
-    have hw := need_ok hu1
-    have hal := need_ok hu2
-    simp only [pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at h
-    obtain ⟨rfl, rfl⟩ := h
-    have hn8 : (w + 7) / 8 ≤ 8 := by simp only [okW, Bool.and_eq_true, decide_eq_true_eq] at hw; omega
-    have hsv := storeVal_sim (ω := ω) hR hk hv (hT.left.left) t
-    simp only [sSInst]
-    cases hs : sStoreVal ω R t w v with
-    | stuck => trivial
-    | ub => exact absurd hs hsv.2
-    | ok r =>
-      obtain ⟨vv, init, W1⟩ := r
-      obtain ⟨σ1, e1, ag1, hVb, hIb, hI, hV⟩ := hsv.1 vv init W1 hs
-      simp only [Res.bind]
-      rw [List.append_assoc, List.append_assoc, xStmts_append, e1, XPRes.then]
-      have hR1 : RelX c R σ1 := RelX.agree hc hR hk ag1
-      have ha1 : ∀ j, j < c.lo → σ1 j = σ0 j := fun j hj => by
-        rw [ag1 j (by have := hc.lohi; omega)]; exact ha0 j hj
-      refine opndX_sim hR1 hp (by omega) _ _ ?_
-      intro pv _ htp hAp hAb _
-      subst htp
-      have hTa : TempsOK P (k + tv.length) (accessChecks (k + tv.length) A ((w + 7) / 8) true al).2 := by
-        have := hT.right; simpa using this
-      simp only [List.length_nil, Nat.add_zero] at hTa ⊢
-      have hac := accessChecks_run P ω σ1 W1 (k + tv.length) A hAb ((w + 7) / 8) hn8 true al hal hTa
-      rw [hAp] at hac
-      rw [xStmts_append]
-      cases hb : accessBad W1.mem (pv % 2 ^ 64) ((w + 7) / 8) true al
-      · obtain ⟨σ2, e2, ag2⟩ := hac.2 hb
-        have hA2 : A.get σ2 = pv := by rw [Arg.get_agree ag2 hAb, hAp]
-        have hV2 : V.get σ2 = V.get σ1 := Arg.get_agree ag2 hVb
-        have hI2 : I.get σ2 = I.get σ1 := Arg.get_agree ag2 hIb
-        simp only [hb, Bool.false_eq_true, ite_false, e2, XPRes.then, xStmts, xStmts_nil, Arg.setW_get,
-          Arg.setW_width, hA2, hV2, hI2, hI, SimX]
-        refine ⟨σ2, ?_, RelX.agree hc hR1 (m := k) hk (fun j hj => ag2 j (by omega)), fun j hj => ?_⟩
-        · cases init
-          · rw [World.store_uninit]
-          · rw [hV rfl]
-        · rw [ag2 j (by have := hc.lohi; omega)]; exact ha1 j hj
-      · simp only [hb, ite_true, SimX, hac.1 hb, XPRes.then]
+    exact store_simX hc hR ha0 hk h hT
   | gep d inb base ix =>
     simp only [trSInstX] at h
     obtain ⟨u0, hu0, h⟩ := Except.bind_ok h
@@ -990,6 +1020,169 @@ theorem sinstX_sim {P : PFunc} {ω : Nat → Nat} {c : Ctx} (hc : CtxOK P c) {R 
       rw [hle]
       exact xStmts_fail_append hL _
     | stuck => trivial
+  | mm d mk w a b =>
+    simp only [trSInstX] at h
+    obtain ⟨u1, hu1, h⟩ := Except.bind_ok h
+    obtain ⟨⟨sa, ta, A⟩, ha, h⟩ := Except.bind_ok h
+    obtain ⟨⟨sb, tb, B⟩, hb, h⟩ := Except.bind_ok h
+    obtain ⟨di, hdi, h⟩ := Except.bind_ok h
+    obtain ⟨u3, hu3, h⟩ := Except.bind_ok h
+    have hsh := isNone_eq (need_ok hu3)
+    simp only [pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at h
+    obtain ⟨rfl, rfl⟩ := h
+    have hwd := dstX_wd hc hdi
+    simp only [sSInst, sMMV, Res.bind_assoc]
+    rw [List.append_assoc]
+    refine opndX_sim hR ha hk _ _ ?_
+    intro x _ hta hAx _ _
+    subst hta
+    simp only [List.nil_append, List.length_nil, Nat.add_zero] at hb ⊢
+    refine opndX_sim hR hb hk _ _ ?_
+    intro y _ htb hBy _ _
+    subst htb
+    simp only [Res.bind, SimX, xStmts, hwd, evalOpM, evalOp, hAx, hBy, Res.ok_bind, xStmts_nil]
+    refine ⟨_, rfl, ?_, agree_set ha0 (dstX_lo hdi) _⟩
+    have := assignX hR hdi hsh (mmVal mk w x y % 2 ^ w) (Nat.mod_lt _ (Nat.two_pow_pos w))
+    rwa [Nat.mod_mod] at this
+  | un d uk w a flag =>
+    simp only [trSInstX] at h
+    obtain ⟨u1, hu1, h⟩ := Except.bind_ok h
+    obtain ⟨u2, hu2, h⟩ := Except.bind_ok h
+    obtain ⟨u4, hu4, h⟩ := Except.bind_ok h
+    obtain ⟨⟨sa, ta, A⟩, ha, h⟩ := Except.bind_ok h
+    obtain ⟨di, hdi, h⟩ := Except.bind_ok h
+    obtain ⟨u3, hu3, h⟩ := Except.bind_ok h
+    have hsh := isNone_eq (need_ok hu3)
+    simp only [pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at h
+    obtain ⟨rfl, rfl⟩ := h
+    have hwd := dstX_wd hc hdi
+    simp only [sSInst, sUnV, Res.bind_assoc]
+    rw [List.append_assoc]
+    refine opndX_sim hR ha hk _ _ ?_
+    intro x _ hta hAx hAb hAw
+    subst hta
+    simp only [List.nil_append, List.length_nil, Nat.add_zero] at hT ⊢
+    have hbad := unChecks_bad σ uk flag w A (hAw rfl)
+    rw [hAx] at hbad
+    have hem := emitX_all P ω _ σ k t hT (unChecks_below hAb uk flag w) (unChecks_opOK uk flag w A)
+    rw [xStmts_append]
+    cases hcnd : unPoison uk flag w x
+    · rw [hcnd] at hbad
+      obtain ⟨σ', e, hag⟩ := hem.2 hbad
+      simp only [Bool.false_eq_true, ite_false, Res.bind, SimX, e, XPRes.then, xStmts, hwd, evalOpM,
+        evalOp, Res.ok_bind, xStmts_nil]
+      refine ⟨_, rfl, ?_, ?_⟩
+      · rw [Arg.get_agree hag hAb, hAx]
+        have := assignX (RelX.agree hc hR hk hag) hdi hsh (unVal uk w x % 2 ^ w) (Nat.mod_lt _ (Nat.two_pow_pos w))
+        rwa [Nat.mod_mod] at this
+      · exact agree_set (fun j hj => by
+          rw [hag j (by have := dstX_lo hdi; have := dstX_hi hdi; omega)]; exact ha0 j hj)
+          (dstX_lo hdi) _
+    · rw [hcnd] at hbad
+      simp only [ite_true, Res.bind, SimX, hem.1 hbad, XPRes.then]
+  | expect d w a =>
+    simp only [trSInstX] at h
+    obtain ⟨u1, hu1, h⟩ := Except.bind_ok h
+    obtain ⟨⟨sa, ta, A⟩, ha, h⟩ := Except.bind_ok h
+    obtain ⟨di, hdi, h⟩ := Except.bind_ok h
+    obtain ⟨u3, hu3, h⟩ := Except.bind_ok h
+    have hsh := isNone_eq (need_ok hu3)
+    simp only [pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at h
+    obtain ⟨rfl, rfl⟩ := h
+    have hwd := dstX_wd hc hdi
+    obtain ⟨hl, hlo, _, _, hu⟩ := dstX_ok hdi
+    simp only [sSInst, sExpV, Res.bind_assoc]
+    refine opndX_sim hR ha hk _ _ ?_
+    intro v _ hta hAv _ _
+    subst hta
+    simp only [Res.bind, SimX, xStmts, evalOpM, evalOp, hAv, hwd, Res.ok_bind, xStmts_nil]
+    exact ⟨_, rfl, RelX.set hR hl hu hsh _, agree_set ha0 hlo _⟩
+  | xv d w src idx =>
+    simp only [trSInstX] at h
+    obtain ⟨u1, hu1, h⟩ := Except.bind_ok h
+    obtain ⟨u2, hu2, h⟩ := Except.bind_ok h
+    split at h
+    · rename_i a hla
+      obtain ⟨u4, hu4, h⟩ := Except.bind_ok h
+      obtain ⟨u5, hu5, h⟩ := Except.bind_ok h
+      obtain ⟨di, hdi, h⟩ := Except.bind_ok h
+      obtain ⟨u3, hu3, h⟩ := Except.bind_ok h
+      have hsh := isNone_eq (need_ok hu3)
+      have hpsh := isNone_eq (need_ok hu5)
+      simp only [pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at h
+      obtain ⟨rfl, rfl⟩ := h
+      have hwd := dstX_wd hc hdi
+      obtain ⟨hl, hlo, _, _, hu⟩ := dstX_ok hdi
+      simp only [sSInst, sXvV]
+      cases hn : R (pairReg src idx) with
+      | none => trivial
+      | some x =>
+        obtain ⟨a', hl', hx⟩ := hR _ x hn
+        rw [hla] at hl'; cases hl'
+        cases x with
+        | val v =>
+          obtain ⟨hv, _⟩ := hx
+          simp only [Res.bind, SimX, xStmts, evalOpM, evalOp, hv, hwd, xStmts_nil]
+          exact ⟨_, rfl, RelX.set hR hl hu hsh _, agree_set ha0 hlo _⟩
+        | ind =>
+          obtain ⟨s', hs', _⟩ := hx
+          have := Ctx.shOf_some hs'
+          rw [hpsh] at this; cases this
+    · simp [throw, throwThe, MonadExceptOf.throw] at h
+  | ovf d ok w a b =>
+    simp only [trSInstX] at h
+    obtain ⟨u1, hu1, h⟩ := Except.bind_ok h
+    obtain ⟨⟨sa, ta, A⟩, ha, h⟩ := Except.bind_ok h
+    obtain ⟨⟨sb, tb, B⟩, hb, h⟩ := Except.bind_ok h
+    obtain ⟨i0, hi0, h⟩ := Except.bind_ok h
+    obtain ⟨i1, hi1, h⟩ := Except.bind_ok h
+    obtain ⟨u3, hu3, h⟩ := Except.bind_ok h
+    obtain ⟨u4, hu4, h⟩ := Except.bind_ok h
+    have hsh := need_ok hu3
+    have hvv := need_ok hu4
+    simp only [Bool.and_eq_true, Option.isNone_iff_eq_none] at hsh
+    simp only [Bool.and_eq_true, bne_iff_ne, ne_eq] at hvv
+    simp only [pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at h
+    obtain ⟨rfl, rfl⟩ := h
+    have hw0 := dstX_wd hc hi0
+    have hw1 := dstX_wd hc hi1
+    simp only [sSInst, sOvfV, Res.bind_assoc]
+    rw [List.append_assoc]
+    refine opndX_sim hR ha hk _ _ ?_
+    intro x _ hta hAx _ hAw
+    subst hta
+    simp only [List.nil_append, List.length_nil, Nat.add_zero] at hb ⊢
+    refine opndX_sim hR hb hk _ _ ?_
+    intro y _ htb hBy _ hBw
+    subst htb
+    simp only [Res.bind, SimX, xStmts, evalOpM, evalOp, hw0, hw1, Res.ok_bind, xStmts_nil,
+      Arg.get_set_ne _ _ hvv.1, Arg.get_set_ne _ _ hvv.2, hAx, hBy, testVal, hAw rfl, BitVec.toNat_ofBool,
+      Nat.pow_one]
+    refine ⟨_, rfl, ?_, agree_set (agree_set ha0 (dstX_lo hi0) _) (dstX_lo hi1) _⟩
+    have h1 := assignX hR hi0 hsh.1 _ (binVal_lt (ovfBin ok) w x y)
+    have h2 := assignX h1 hi1 hsh.2 (ovfTest ok w x y).toNat (by cases ovfTest ok w x y <;> decide)
+    have hb : ∀ b : Bool, b.toNat % 2 = b.toNat := fun b => by cases b <;> decide
+    rw [Nat.pow_one, hb] at h2
+    rw [hb]
+    exact h2
+  | lstart n p =>
+    simp only [trSInstX] at h
+    obtain ⟨u1, hu1, h⟩ := Except.bind_ok h
+    simp only [sSInst]
+    exact store_simX hc hR ha0 hk h hT
+  | lend p =>
+    simp only [trSInstX] at h
+    obtain ⟨⟨sp, tp, A⟩, hp, h⟩ := Except.bind_ok h
+    simp only [pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at h
+    obtain ⟨rfl, rfl⟩ := h
+    simp only [sSInst, sLend, Res.bind_assoc]
+    refine opndX_sim hR hp hk _ _ ?_
+    intro pv _ htp hAp _ _
+    subst htp
+    simp only [Res.bind, SimX, xStmts, hAp, xStmts_nil, Res.ok_bind]
+    exact ⟨σ, rfl, hR, ha0⟩
+  | memcpy d s len lw mv => simp [trSInstX, throw, throwThe, MonadExceptOf.throw] at h
+  | memset d b len lw => simp [trSInstX, throw, throwThe, MonadExceptOf.throw] at h
 
 theorem sinstsX_sim {P : PFunc} {ω : Nat → Nat} {c : Ctx} (hc : CtxOK P c) {σ0 : Store} :
     ∀ (is : List SInst) (R : SRegs) (σ : Store) (k : Nat) (t : World) (s : List PStmt) (tws : List Nat),
