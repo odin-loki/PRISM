@@ -308,8 +308,10 @@ extended fragment:
 |---|---|---|---|---|---|---|
 | `tests/pir`, before | 226 | 46 | — | 0 | 180 | **0** |
 | `tests/pir`, after | 226 | 46 | **8** | 1 | 171 | **0** |
+| `tests/pir`, after merging the latest mainline (2 more functions) | 228 | 46 | **9** | 1 | 172 | **0** |
 | `testdata`, before | 2 506 | 915 | — | 2 | 1 589 | **0** |
 | `testdata`, after | 2 506 | 915 | **21** | 4 | 1 566 | **0** |
+| `testdata`, after the merge (one file not exported in that run) | 2 502 | 914 | **21** | 4 | 1 563 | **0** |
 
 `agree-ext` in `tests/pir`: two inlined calls, a C++ template call and a
 `constexpr` call, and four stack-memory functions (a struct on the stack,
