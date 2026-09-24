@@ -299,7 +299,7 @@ def cpyBad (m : Mem) (d s n : Nat) (move : Bool) : Bool :=
 /-- The initialiser's stores into the global at `p`. -/
 def globW (p : Nat) : World → List (Nat × Nat × Nat) → World
   | W, [] => W
-  | W, (o, w, v) :: t => globW p (W.store ((p + o) % 2 ^ 64) v w true) t
+  | W, (o, w, v) :: t => globW p (W.store ((p + o) % 2 ^ 64) (v % 2 ^ w) w true) t
 
 /-- A global: allocated (zero-filled), then initialised. -/
 def globAlloc (W : World) (size align kind : Nat) (st : List (Nat × Nat × Nat)) : Nat × World :=

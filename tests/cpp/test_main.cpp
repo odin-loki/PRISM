@@ -5215,6 +5215,98 @@ TEST_CASE("pir: lean export of freeze, undef and direct calls") {
     fs::remove_all(dir);
 }
 
+static const char* kLeanIntrIr = R"IR(
+declare void @llvm.lifetime.start.p0(i64, ptr)
+declare void @llvm.lifetime.end.p0(i64, ptr)
+declare void @llvm.memmove.p0.p0.i64(ptr, ptr, i64, i1)
+declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)
+declare { i32, i1 } @llvm.ssub.with.overflow.i32(i32, i32)
+declare i32 @llvm.abs.i32(i32, i1)
+declare i32 @llvm.umax.i32(i32, i32)
+@k = internal constant [2 x i16] [i16 7, i16 -1], align 2
+define i32 @life(i32 %x) {
+entry:
+  %a = alloca i32, align 4
+  call void @llvm.lifetime.start.p0(i64 4, ptr %a)
+  store i32 %x, ptr %a, align 4
+  %v = load i32, ptr %a, align 4
+  call void @llvm.lifetime.end.p0(i64 4, ptr %a)
+  ret i32 %v
+}
+define i32 @life_bad(i32 %x) {
+entry:
+  %a = alloca i32, align 4
+  call void @llvm.lifetime.start.p0(i64 4, ptr %a)
+  call void @llvm.lifetime.end.p0(i64 4, ptr %a)
+  store i32 %x, ptr %a, align 4
+  ret i32 %x
+}
+define i32 @move(i64 %n) {
+entry:
+  %a = alloca [8 x i8], align 1
+  call void @llvm.memset.p0.i64(ptr %a, i8 1, i64 8, i1 false)
+  %p = getelementptr inbounds [8 x i8], ptr %a, i64 0, i64 1
+  call void @llvm.memmove.p0.p0.i64(ptr %p, ptr %a, i64 %n, i1 false)
+  %q = getelementptr inbounds [8 x i8], ptr %a, i64 0, i64 2
+  %v = load i8, ptr %q, align 1
+  %r = zext i8 %v to i32
+  ret i32 %r
+}
+define i32 @sub_ovf(i32 %a, i32 %b) {
+entry:
+  %s = call { i32, i1 } @llvm.ssub.with.overflow.i32(i32 %a, i32 %b)
+  %v = extractvalue { i32, i1 } %s, 0
+  %o = extractvalue { i32, i1 } %s, 1
+  %r = select i1 %o, i32 0, i32 %v
+  %m = call i32 @llvm.abs.i32(i32 %r, i1 true)
+  %u = call i32 @llvm.umax.i32(i32 %m, i32 3)
+  ret i32 %u
+}
+define i32 @kread(i64 %i) {
+entry:
+  %p = getelementptr inbounds [2 x i16], ptr @k, i64 0, i64 %i
+  %v = load i16, ptr %p, align 2
+  %r = sext i16 %v to i32
+  ret i32 %r
+}
+)IR";
+
+TEST_CASE("pir: lean export of intrinsics, lifetime markers, memory intrinsics and read-only globals") {
+    namespace fs = std::filesystem;
+    auto m = prism::pir::ir::parse_module(kLeanIntrIr);
+    fs::path dir = fs::temp_directory_path() / "prism-lean-export-intr";
+    fs::remove_all(dir);
+    ::setenv("PRISM_PIR_LEAN_EXPORT", dir.string().c_str(), 1);
+    prism::pir::TranslateOptions opt;
+    for (const char* name : {"life", "life_bad", "move", "sub_ovf", "kread"}) {
+        const auto* f = m.find(name);
+        REQUIRE(f != nullptr);
+        auto t = prism::pir::translate(m, *f, opt);
+        CHECK(t.fn.has_value());
+        prism::pir::export_lean_pair(dir, "unit", m, *f, opt, t);
+    }
+    ::unsetenv("PRISM_PIR_LEAN_EXPORT");
+    std::ifstream in(dir / "unit.pirl");
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    MESSAGE(text);
+    CHECK(text.find("L lstart 4 %a\n") != std::string::npos);
+    CHECK(text.find("L lend %a\n") != std::string::npos);
+    CHECK(text.find("L memset %a #1 #8 64\n") != std::string::npos);
+    CHECK(text.find("L memcpy %p %a %n 64 1\n") != std::string::npos);
+    CHECK(text.find("L ovf %s ssub 32 %a %b\n") != std::string::npos);
+    CHECK(text.find("L xv %o 1 %s 1\n") != std::string::npos);
+    CHECK(text.find("L un %m abs 32 %r 1\n") != std::string::npos);
+    CHECK(text.find("L mm %u umax 32 %m #3\n") != std::string::npos);
+    // the read-only global: allocated at the entry, then its non-zero stores
+    // (the parser keeps a negative element's bits sign-extended; the stores write its low bytes)
+    CHECK(text.find("L glob %@k 4 2 4 2 0 16 7 2 16 18446744073709551615\n") != std::string::npos);
+    CHECK(text.find("L unsupported") == std::string::npos);
+    CHECK(text.find("P free ") != std::string::npos);
+    CHECK(text.find("P memcpy ") != std::string::npos);
+    CHECK(text.find("P memset ") != std::string::npos);
+    fs::remove_all(dir);
+}
+
 TEST_CASE("pir: unmodelled constructs are named, pointer params are Law 6") {
     auto t = pir_of("define i32 @g(ptr %p) {\nentry:\n  %v = load i32, ptr %p\n  ret i32 %v\n}\n", "g");
     CHECK_FALSE(t.fn.has_value());

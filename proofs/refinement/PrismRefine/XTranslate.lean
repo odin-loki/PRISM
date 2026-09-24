@@ -417,10 +417,10 @@ def globStores (i : Nat) : Nat → List (Nat × Nat × Nat) → List PStmt × Li
   | k, (o, w, v) :: t =>
     if o = 0 then
       let r := globStores i k t
-      (.store (.v i 64) (.c w v) (.c 1 1) :: r.1, r.2)
+      (.store (.v i 64) (.c w (v % 2 ^ w)) (.c 1 1) :: r.1, r.2)
     else
       let r := globStores i (k + 1) t
-      (.assign k (.bin .add) [.v i 64, c64 o] :: .store (.v k 64) (.c w v) (.c 1 1) :: r.1, 64 :: r.2)
+      (.assign k (.bin .add) [.v i 64, c64 o] :: .store (.v k 64) (.c w (v % 2 ^ w)) (.c 1 1) :: r.1, 64 :: r.2)
 
 /-- The checks `Tr::call` inserts for `llvm.abs` / `ctlz` / `cttz` with the
 poison flag set. -/

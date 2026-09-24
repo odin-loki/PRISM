@@ -655,7 +655,7 @@ theorem globStores_run (P : PFunc) (ω : Nat → Nat) (i p : Nat) (hp : p < 2 ^ 
     by_cases h0 : o = 0
     · subst h0
       simp only [globStores, ite_true] at hT ⊢
-      obtain ⟨σ', e, ag⟩ := globStores_run P ω i p hp st σ (t.store p v w true) k hik hσ hT ho'
+      obtain ⟨σ', e, ag⟩ := globStores_run P ω i p hp st σ (t.store p (v % 2 ^ w) w true) k hik hσ hT ho'
       refine ⟨σ', ?_, ag⟩
       simp only [xStmts, Arg.get_v', Arg.get_c', Arg.width_c', hσ, truthN, show (1 : Nat) % 2 = 1 from rfl,
         beq_self_eq_true]
@@ -667,7 +667,7 @@ theorem globStores_run (P : PFunc) (ω : Nat → Nat) (i p : Nat) (hp : p < 2 ^ 
         have := hT.right (a := [64]); simpa using this
       have hq : (p + o) % 2 ^ 64 < 2 ^ 64 := Nat.mod_lt _ (Nat.two_pow_pos 64)
       obtain ⟨σ', e, ag⟩ := globStores_run P ω i p hp st (σ.set k ((p + o) % 2 ^ 64))
-        (t.store ((p + o) % 2 ^ 64) v w true) (k + 1) (by omega) (by simp [set_apply, show i ≠ k by omega, hσ])
+        (t.store ((p + o) % 2 ^ 64) (v % 2 ^ w) w true) (k + 1) (by omega) (by simp [set_apply, show i ≠ k by omega, hσ])
         hT' ho'
       refine ⟨σ', ?_, fun j hj => by rw [ag j (by omega)]; simp [set_apply, show j ≠ k by omega]⟩
       simp only [xStmts, evalOpM, evalOp, wk, Arg.get_v', Arg.get_c', c64_get, Arg.width_c', hσ, add64,
