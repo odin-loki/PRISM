@@ -116,6 +116,42 @@ The release gate stays red until that stage reports such rows as
 not-a-proof; the gate must not simply be relaxed). The Python engine has no
 drafted harness and passes (0 wrong proofs, Law 6 6/6).
 
+### Certified mode: plain answers first, capped certificate store (roadmap 3.2)
+
+Branch `claude/certified-3` (2026-09-24). Changes (docs/PIR.md "Solving",
+docs/SOLVERS.md "Query cache"): certificates are asked only for a function
+whose plain answers made it `PROVED` (a `FAILED` or `BOUNDED` function pays
+for none); every certificate query knows its plain answer and runs only
+CaDiCaL-with-LRAT; a certification budget per function
+(`max(240 s, 8 x --timeout)`, `PRISM_CERTIFY_BUDGET`); memory caps for the
+certificate tools (`PRISM_CHECKER_MEM`, 4096 MB) reported as "ran out of
+memory"; Lean DAGs over 2 MB go to the Z3 bit-blaster (a coroutine
+function's 15.7 MB DAG drove `prism-bitblast` past 11 GB resident); the
+proof store keeps packed proofs only (no CNF), capped at 2 GB
+(`PRISM_CERT_CACHE_MAX`) with LRU pruning, and dead solver work directories
+are swept.
+
+Measured task by task (plain `pir` run, then the certified run on the same
+cache, as `conformance.py` does; Lean tools on `PATH`; loaded shared
+machine, so seconds are indicative):
+
+| task | before (tip `232d5da2a`) | after |
+|---|---|---|
+| `sv-comp/loop-invgen/nested6` (BOUNDED) | 73 s, 67 MB cache | 1.5 s, 56 KB |
+| `prism/overflow/nested_loop_true` (BOUNDED) | 346-356 s in the last full run | 0.6 s |
+| `prism/coro/coro_gen_false` | timeout (360 s) | 52 s |
+| `prism/coro/coro_gen_true` | timeout (Lean bit-blast of a 15.7 MB DAG) | 61 s, `PROVED-CERTIFIED` (Z3 bit-blast, recorded) |
+| `prism/coro/coro_step_true` | timeout | 68 s |
+| `libc-models/stdio_contracts` | 44 s (Z3 bit-blast) / timeout in the full run | 51 s |
+| `libc-models/string_contracts` | 79 s (Z3 bit-blast) / timeout in the full run | 119-198 s (18 functions certified through the Lean bit-blaster) |
+
+The full-suite `--certified --no-replay -j 2` comparison run was started
+but not finished when this branch was handed back (usage limit); the
+counts in the section below are still the last complete run.
+`fn_macro_true` and `long_mul_true` stay uncertified: docs/SOLVERS.md has
+the measured limits (2.09 GB proof and 163 s of cake_lpr for the 32-bit
+squaring; no CaDiCaL answer for the negative half of the 64-bit one).
+
 ### Certified mode: one certificate per function (roadmap 3.2 speed-up)
 
 `PRISM_BIN=build/prism python tools/conformance.py --certified --no-replay -j 2`,
