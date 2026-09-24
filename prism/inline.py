@@ -91,6 +91,10 @@ def _inlineable_callee(callee: FunctionInfo) -> bool:
         return False
     if _has_calls(callee.body):
         return False
+    # A goto's label would be copied once per call site (labels must be
+    # unique in a function for the bmc goto model).
+    if re.search(r"\bgoto\b", callee.body or ""):
+        return False
     if _returns_value(callee) and _callee_ret_type(callee) is None:
         return False
     return True

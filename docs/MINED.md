@@ -38,7 +38,8 @@ Python engine BMC:
    folded down into `PROVED`/`BOUNDED`. Nested loops are `unencoded`
    and stay `BOUNDED`.
 8. C subset includes `do`/`while`, `continue`, comma operator, `sizeof`,
-   and ternary `?:`. `goto` is unencoded `ERROR`, never a proof.
+   and ternary `?:`. Structured `goto` is encoded (docs/SVCOMP.md "goto"); any
+   other goto is `NEEDS-HARNESS`, never a proof.
    Unsigned parameters use unsigned compares, unsigned index bounds
    (`UGE` not `slt < 0`), and wrap on `+`/`-`/`*` (not `INT-SIGNED-OVF`).
    `long long` / `int64_t` are 64-bit bitvectors; mixing widths sign/zero-extends.
@@ -55,8 +56,7 @@ Python engine BMC:
    `MEM-OOB-WRITE`. C++ `throw` is `NEEDS-HARNESS`, never a parse ERROR
    dressed as a closed proof. `alloca`/`__builtin_alloca` is `NEEDS-HARNESS`
    (unmodeled stack frame). `setjmp`/`longjmp`/`va_list`/`va_start` are
-   `NEEDS-HARNESS`, never a parse ERROR; `goto` stays ERROR and is not
-   that case. Inline `asm`/`__asm__`, `_Generic`, GNU `({`, C++
+   `NEEDS-HARNESS`, never a parse ERROR. Inline `asm`/`__asm__`, `_Generic`, GNU `({`, C++
    `try`/`catch`, and `offsetof` are `NEEDS-HARNESS` (missing model).
    Vacuous void `printf` with no encoded UB properties is `NEEDS-HARNESS`.
    `volatile`/`_Atomic` decls and `pthread_mutex_t`/`mtx_t` objects are
@@ -472,7 +472,7 @@ File:function pointers for the methods above. Call these from `prism/pipeline.py
 - `prism/checkers.py:_api_scandir` / `_api_setxattr` / `_api_sched_affinity` / `_api_aio` / `_api_statx` / `_api_pidfd`
 - `prism/checkers.py:_cxx_out_ptr` / `_cxx_flat_multimap` / `_cxx_spanstream` / `_cxx_barrier` / `_cxx_task` / `_cxx_generator_discard`
 - `prism/checkers.py:_cxx_osyncstream` / `_cxx_packaged_task` / `_cxx_flat_multiset` / `_cxx_syncbuf` / `_cxx_counted_iterator` / `_cxx_promise`
-- `prism/bmc.py:unencoded_syntax_reason` — memcpy/mkstemp/tmpnam/chroot/popen/umask/srand/signal/mktemp/fork/exec/mmap/ioctl/wcscpy/dlopen/accept/chmod/setuid/socket/bind/unlink/mkfifo/listen/connect/pipe/dup/fcntl/wait/select/send/shutdown/kill/getaddrinfo/pthread_join/sem_wait/openat/flock/chown/symlink/opendir/setrlimit/getsockopt/stat/mkdir/getpwuid/clock_gettime/gettimeofday/shm_open/posix_spawn/glob/fseek/sleep/access/getopt/uname/sendfile/memfd_create/prctl/tcgetattr/sysconf/getrusage/nftw/wordexp/getlogin/inet_pton/mlock/splice/inotify/fsync/getrandom/getline/strlcpy/isatty/ptsname/mount/fmemopen/setxattr/aio_read/statx/pidfd, designated init, alignof, va_arg, range-for, lambda, const_cast, dynamic_cast/typeid/reinterpret_cast/bit_cast/launder/start_lifetime_as, packed/#pragma pack, coroutines, GNU &&label/case-range/cleanup/vector_size, wide strings, __int128/_Decimal/_Float16, if constexpr/fold/requires/constexpr, C23 nullptr, restrict, __builtin_clz/choose_expr/atomic, typeof_unqual, std::thread/jthread/async/future/function/optional/variant/span/mdspan/vector/expected/format/mutex, condition_variable/shared_mutex/atomic_ref/generator/[[assume(/std::bind(/any/filesystem/regex/latch/from_chars/visit/initializer_list/source_location/stacktrace/stop_token/flat_map/chrono/function_ref/flat_set/views/inplace_vector/hive/bitset/indirect/polymorphic/stringstream/import-module, <=>; computed goto (plain `goto` stays ERROR)
+- `prism/bmc.py:unencoded_syntax_reason` — memcpy/mkstemp/tmpnam/chroot/popen/umask/srand/signal/mktemp/fork/exec/mmap/ioctl/wcscpy/dlopen/accept/chmod/setuid/socket/bind/unlink/mkfifo/listen/connect/pipe/dup/fcntl/wait/select/send/shutdown/kill/getaddrinfo/pthread_join/sem_wait/openat/flock/chown/symlink/opendir/setrlimit/getsockopt/stat/mkdir/getpwuid/clock_gettime/gettimeofday/shm_open/posix_spawn/glob/fseek/sleep/access/getopt/uname/sendfile/memfd_create/prctl/tcgetattr/sysconf/getrusage/nftw/wordexp/getlogin/inet_pton/mlock/splice/inotify/fsync/getrandom/getline/strlcpy/isatty/ptsname/mount/fmemopen/setxattr/aio_read/statx/pidfd, designated init, alignof, va_arg, range-for, lambda, const_cast, dynamic_cast/typeid/reinterpret_cast/bit_cast/launder/start_lifetime_as, packed/#pragma pack, coroutines, GNU &&label/case-range/cleanup/vector_size, wide strings, __int128/_Decimal/_Float16, if constexpr/fold/requires/constexpr, C23 nullptr, restrict, __builtin_clz/choose_expr/atomic, typeof_unqual, std::thread/jthread/async/future/function/optional/variant/span/mdspan/vector/expected/format/mutex, condition_variable/shared_mutex/atomic_ref/generator/[[assume(/std::bind(/any/filesystem/regex/latch/from_chars/visit/initializer_list/source_location/stacktrace/stop_token/flat_map/chrono/function_ref/flat_set/views/inplace_vector/hive/bitset/indirect/polymorphic/stringstream/import-module, <=>; computed goto (plain `goto` is encoded when structured)
 - `prism/concolic.py:concolic_function` — VLA/float/recursion/C++ view/alloca/setjmp/va_list are NEEDS-HARNESS; goto stays ERROR
 - `prism/bmc.py:_has_self_call` — recursive unconstrained call is NEEDS-HARNESS, never PROVED
 - `prism/bmc.py:k_induction` — havoced step k=1 then k=2; SAT stays BOUNDED

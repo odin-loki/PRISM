@@ -81,6 +81,11 @@ struct SolveOptions {
     bool keep_artifacts = false;
     std::uint64_t seed = 1;
     Bitblaster bitblaster = Bitblaster::Auto;
+    // Watchdog: a member job still running this long after it was stopped
+    // (answer found, or its deadline) is detached and recorded
+    // (SolveResult::watchdog); solve() does not wait for it.
+    double watchdog_grace_s = 2.0;
+    double debug_stall_s = 0.0;  // fault injection (tests): the Z3 job ignores its stop this long
 };
 
 struct SolveResult {
@@ -98,6 +103,7 @@ struct SolveResult {
     std::map<std::string, double> times;       // seconds, members that finished
     std::string bucket;                        // scheduler feature bucket
     double wall_s = 0.0;
+    std::vector<std::string> watchdog;         // jobs the watchdog detached (docs/SOLVERS.md "Stalls")
 };
 
 std::string_view kind_name(SolveResult::Kind k);

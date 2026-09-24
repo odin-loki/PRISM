@@ -21,7 +21,7 @@ from prism.fuse import run_fuse
 from prism.harness import run_harness_bmc
 from prism.interval import run_interval
 from prism.ltl import run_ltl
-from prism.bmc import run_bmc
+from prism.bmc import run_bmc, with_cxx_std
 from prism.inline import inline_static
 from prism.concolic import run_concolic
 from prism.models import Finding, FunctionInfo, RunReport, StageResult
@@ -395,7 +395,7 @@ class Pipeline:
         self._stage("wp", lambda: run_wp(functions, cfg.unwind))
 
         def bmc() -> list[Finding]:
-            return run_bmc(inline_static(functions), cfg.unwind)
+            return run_bmc(inline_static(with_cxx_std(functions, cfg.root)), cfg.unwind)
 
         bmc_rec = self._stage("bmc", bmc)
         self._stage("pir", lambda: run_pir_notrun(cfg))

@@ -156,6 +156,7 @@ struct Enc {
     std::vector<std::vector<std::string>> scopes;
     bool havoc = false;  // loops are havocked (unbounded step) instead of unrolled
     bool cxx = false;    // C++ source: call arguments may bind references
+    int shift_rules = 0; // Parser::shift_rules
 
     explicit Enc(int u)
         : unwind(u), s(ctx), path_true(ctx.bool_val(true)) {
@@ -595,6 +596,67 @@ std::pair<std::string, std::string> consume_stmt_src(std::string text_in) {
     return stmt_split(text);
 }
 
+// A statement label `name:` at the start of text (not `case`/`default`, not
+// `a::b`). Returns the name and the offset just after the colon.
+std::optional<std::pair<std::string, size_t>> label_at(const std::string& text) {
+    auto m = rx_match(R"BMC(\A([A-Za-z_]\w*)\s*:(?!:))BMC", text);
+    if (!m) return std::nullopt;
+    auto name = m->group(1);
+    if (name == "case" || name == "default" || name == "public" || name == "private" ||
+        name == "protected")
+        return std::nullopt;
+    return std::make_pair(name, static_cast<size_t>(m->spans[0].second));
+}
+
+// One statement of a list, with any labels in front of it: (labels, rest).
+std::pair<std::vector<std::string>, std::string> next_labeled_stmt(std::string text) {
+    std::vector<std::string> labels;
+    text = lstrip(text);
+    while (auto lab = label_at(text)) {
+        labels.push_back(lab->first);
+        text = lstrip(text.substr(lab->second));
+    }
+    if (text.empty()) return {labels, ""};
+    auto [_, rest] = consume_stmt_src(text);
+    return {labels, rest};
+}
+
+// Is `name` the label of a statement of this list (not a nested one)?
+bool list_has_label(const std::string& text, const std::string& name) {
+    try {
+        std::string t = text;
+        for (int guard = 0; guard < 100000; ++guard) {
+            if (strip(t).empty()) return false;
+            auto [labels, rest] = next_labeled_stmt(t);
+            for (auto& l : labels)
+                if (l == name) return true;
+            if (rest.size() >= t.size()) return false;
+            t = rest;
+        }
+    } catch (const ParseFail&) {
+    }
+    return false;
+}
+
+// Does text contain the statement `goto name;`? A plain scan: no pattern per
+// label name goes into the shared regex cache.
+bool has_goto_to(const std::string& text, const std::string& name) {
+    auto word = [&](size_t i) {
+        return i < text.size() && (std::isalnum(static_cast<unsigned char>(text[i])) || text[i] == '_');
+    };
+    for (size_t at = text.find("goto"); at != std::string::npos; at = text.find("goto", at + 4)) {
+        if (at > 0 && word(at - 1)) continue;
+        size_t i = at + 4;
+        if (word(i)) continue;
+        while (i < text.size() && std::isspace(static_cast<unsigned char>(text[i]))) ++i;
+        if (text.compare(i, name.size(), name) != 0 || word(i + name.size())) continue;
+        i += name.size();
+        while (i < text.size() && std::isspace(static_cast<unsigned char>(text[i]))) ++i;
+        if (i < text.size() && text[i] == ';') return true;
+    }
+    return false;
+}
+
 struct SwitchArm {
     std::vector<std::optional<TV>> labels;
     std::string code;
@@ -673,6 +735,28 @@ struct Parser {
     // for programs built by prism::ai::check_program, never for user code.
     bool ai_hooks = false;
     bool cxx = false;  // C++ source (Enc::cxx)
+    // Shift rules (apply_binop): 0 = C (and C++98/03), 11 = C++11..17
+    // (CWG 1457: E1 >= 0 and E1 * 2^E2 representable in the unsigned type),
+    // 20 = C++20 and later (P1236: only the count can be undefined).
+    int shift_rules = 0;
+
+    // goto (structured patterns only). A forward goto keeps its state until
+    // its label, which must be a later statement of the goto's own statement
+    // list or of an enclosing one (a jump out of blocks, loops and switches);
+    // a backward goto must lie in the statements from its label to the end
+    // of the label's list: those statements are unwound like a loop body.
+    // Anything else is "unstructured goto unencoded" (NEEDS-HARNESS).
+    struct PendingGoto {
+        State st;
+        std::vector<std::vector<std::string>> scopes;  // Enc::scopes at the goto
+    };
+    std::map<std::string, std::vector<PendingGoto>> pending_gotos;
+    struct LabelLoop {
+        std::string name;
+        std::vector<State> backs;
+    };
+    std::vector<LabelLoop> label_loops;
+    std::vector<const std::string*> lists;  // unconsumed text of each active statement list
 
     Parser(std::string b, std::vector<std::pair<std::string, std::string>> p, int u,
            std::map<std::string, int> en, std::map<std::string, std::string> mac = {},
@@ -684,6 +768,7 @@ struct Parser {
         auto e = std::make_unique<Enc>(unwind);
         e->havoc = havoc;
         e->cxx = cxx;
+        e->shift_rules = shift_rules;
         try {
             for (auto& [typ, name] : params) {
                 if (name.empty()) continue;
@@ -695,6 +780,9 @@ struct Parser {
             e->push_scope();
             stmts(*e, prep(body));
             e->pop_scope();
+            if (!pending_gotos.empty())
+                throw ParseFail("unstructured goto unencoded: label " + pending_gotos.begin()->first +
+                                " not reached");
         } catch (const ParseFail& ex) {
             err = ex.what();
             return nullptr;
@@ -733,6 +821,8 @@ struct Parser {
                     const std::string& body, const std::string& incr);
     void run_body(Enc& e, const std::string& body);
     std::string ai_hook_stmt(Enc& e, std::string text);
+    void goto_stmt(Enc& e, const std::string& name);
+    void label_stmt(Enc& e, const std::string& name, std::string& text);
     TV expr(Enc& e, std::string src) { return parse_expr(e, strip(src), *this); }
     TV binop(Enc& e, const TV& a, const std::string& op, const TV& b, const std::string&) {
         return apply_binop(e, a, op, b);
@@ -741,6 +831,11 @@ struct Parser {
 
 void Parser::stmts(Enc& e, std::string text) {
     text = strip(text);
+    lists.push_back(&text);
+    struct Pop {
+        std::vector<const std::string*>& l;
+        ~Pop() { l.pop_back(); }
+    } pop_list{lists};
     while (!text.empty()) {
         text = lstrip(text);
         if (text.empty()) break;
@@ -1057,7 +1152,17 @@ void Parser::stmts(Enc& e, std::string text) {
         if (is_nested_function(text)) throw ParseFail("nested function unencoded");
         if (starts_kw(text, "goto")) {
             if (is_computed_goto(text)) throw ParseFail("computed goto unencoded");
-            throw ParseFail("goto unencoded");
+            auto [stmt, rest] = stmt_split(text);
+            auto m = rx_match(R"BMC(goto\s+([A-Za-z_]\w*)\s*;\s*$)BMC", stmt);
+            if (!m) throw ParseFail("unstructured goto unencoded: " + strip(stmt));
+            text = rest;
+            goto_stmt(e, m->group(1));
+            continue;
+        }
+        if (auto lab = label_at(text)) {
+            text = text.substr(lab->second);
+            label_stmt(e, lab->first, text);
+            continue;
         }
         if (starts_kw(text, "throw")) throw ParseFail("throw unencoded");
         if (starts_kw(text, "asm") || starts_kw(text, "__asm__") || starts_kw(text, "__asm"))
@@ -1394,6 +1499,135 @@ std::string Parser::if_stmt(Enc& e, std::string text) {
     return rest;
 }
 
+// A goto state completed for a merge at its label (`cur`: the state there).
+// A name the label sees that was declared after the goto is indeterminate on
+// the goto's path: not modelled (unencoded), never a guess. A scalar the goto
+// state never read still holds its initial symbol (Enc::get).
+State goto_complete(Enc& e, const State& st, const State& cur) {
+    State out = st;
+    for (auto& [k, v] : cur.vars)
+        if (!out.vars.count(k)) out.vars.emplace(k, e.ctx.bv_const(k.c_str(), v.get_sort().bv_size()));
+    for (auto& [k, a] : cur.arrays) {
+        (void)a;
+        if (!out.arrays.count(k)) throw ParseFail("unstructured goto unencoded: array " + k + " declared past the goto");
+    }
+    for (auto& [k, u] : cur.uninit) {
+        (void)u;
+        if (!out.uninit.count(k)) out.uninit.emplace(k, e.ctx.bool_val(false));
+    }
+    return out;
+}
+
+// Merge states whose visible names may differ (the exits of a goto loop):
+// over the union of their names.
+State goto_merge_union(Enc& e, std::vector<State> states) {
+    State keys = states.front();
+    for (auto& st : states) {
+        for (auto& [k, v] : st.vars) if (!keys.vars.count(k)) keys.vars.emplace(k, v);
+        for (auto& [k, a] : st.arrays) if (!keys.arrays.count(k)) keys.arrays.emplace(k, a);
+        for (auto& [k, u] : st.uninit) if (!keys.uninit.count(k)) keys.uninit.emplace(k, u);
+    }
+    for (auto& st : states) st = goto_complete(e, st, keys);
+    return merge_states(e, states, states.front());
+}
+
+void Parser::goto_stmt(Enc& e, const std::string& name) {
+    // Backward: a goto inside the statements its label heads (innermost first).
+    for (auto it = label_loops.rbegin(); it != label_loops.rend(); ++it) {
+        if (it->name != name) continue;
+        it->backs.push_back(e.snap());
+        e.path_true = e.ctx.bool_val(false);
+        return;
+    }
+    // Forward: the label is a later statement of this list or an enclosing one.
+    bool found = false;
+    for (auto it = lists.rbegin(); it != lists.rend() && !found; ++it) found = list_has_label(**it, name);
+    if (!found) throw ParseFail("unstructured goto unencoded: goto " + name + " is not a jump out to a later statement");
+    pending_gotos[name].push_back(PendingGoto{e.snap(), e.scopes});
+    e.path_true = e.ctx.bool_val(false);
+}
+
+void Parser::label_stmt(Enc& e, const std::string& name, std::string& text) {
+    if (auto it = pending_gotos.find(name); it != pending_gotos.end()) {
+        auto cur = e.snap();
+        std::vector<State> states{cur};
+        for (auto& pg : it->second) {
+            // The label's list is the goto's or an enclosing one, so its scopes
+            // are a prefix of the goto's: a name added to them since was
+            // declared between the goto and the label.
+            if (pg.scopes.size() < e.scopes.size())
+                throw ParseFail("unstructured goto unencoded: jump into a block");
+            for (size_t d = 0; d < e.scopes.size(); ++d)
+                for (auto& n : e.scopes[d])
+                    if (std::find(pg.scopes[d].begin(), pg.scopes[d].end(), n) == pg.scopes[d].end())
+                        throw ParseFail("unstructured goto unencoded: goto " + name + " jumps past the declaration of " + n);
+            states.push_back(goto_complete(e, pg.st, cur));
+        }
+        pending_gotos.erase(it);
+        e.load(merge_states(e, states, cur));
+    }
+    if (!has_goto_to(text, name)) return;
+    // Backward gotos: the region is every statement from the label up to the
+    // last one that contains `goto name`; it runs like a loop body whose
+    // `goto name` is a continue.
+    std::string region, after = text;
+    for (int guard = 0; guard < 100000 && has_goto_to(after, name); ++guard) {
+        auto [_, rest] = next_labeled_stmt(after);
+        if (rest.size() >= after.size()) throw ParseFail("unstructured goto unencoded: goto " + name);
+        region += after.substr(0, after.size() - rest.size());
+        after = rest;
+    }
+    text = after;  // the enclosing list continues after the region
+    if (e.havoc) {
+        // Unbounded step, as Parser::loop_havoc: every name the region may
+        // assign is arbitrary at the label; one pass is checked from there.
+        auto names = assigned_names(region);
+        for (auto& n : names) {
+            if (n.starts_with("@")) {
+                auto an = e.canonical(n.substr(1));
+                auto ait = e.arrays.find(an);
+                if (ait != e.arrays.end()) {
+                    auto arr = ait->second;
+                    arr.a = e.ctx.constant((an + "_hv" + std::to_string(++e.fresh)).c_str(), arr.a.get_sort());
+                    e.arrays.insert_or_assign(an, arr);
+                    havoc_shadow(e, an, an + "_hvu");
+                }
+                continue;
+            }
+            if (!e.bits.count(n)) continue;
+            auto t = e.type_of(n);
+            e.vars.insert_or_assign(n, e.bv(n + "_hv" + std::to_string(e.fresh + 1), t.w));
+            auto u = e.uninit.find(n);
+            if (u != e.uninit.end())
+                u->second = u->second && e.ctx.bool_const((n + "_hvu" + std::to_string(++e.fresh)).c_str());
+        }
+        label_loops.push_back(LabelLoop{name, {}});
+        stmts(e, region);
+        label_loops.pop_back();  // re-entries are covered by the havoc
+        return;
+    }
+    auto base = e.snap();
+    std::vector<State> exits;
+    bool closed = false;
+    label_loops.push_back(LabelLoop{name, {}});
+    for (int i = 0; i < std::max(e.unwind, 1); ++i) {
+        label_loops.back().backs.clear();
+        stmts(e, region);
+        exits.push_back(e.snap());
+        auto backs = std::move(label_loops.back().backs);
+        label_loops.back().backs.clear();
+        std::vector<State> live;
+        for (auto& b : backs)
+            if (!b.path.is_false()) live.push_back(goto_complete(e, b, base));
+        if (live.empty()) { closed = true; break; }
+        e.load(merge_states(e, live, base));
+        if (check_sat(e, e.ctx.bool_val(true)) == z3::unsat) { closed = true; break; }
+    }
+    label_loops.pop_back();
+    if (!closed) e.unwind_ok = false;  // still jumping back after `unwind` passes: cut
+    e.load(goto_merge_union(e, exits));
+}
+
 // One execution of a loop body; `continue` states rejoin at its end.
 void Parser::run_body(Enc& e, const std::string& body) {
     auto base = e.snap();
@@ -1682,10 +1916,15 @@ TV apply_binop(Enc& e, TV a, const std::string& op, TV b) {
         e.add_prop("shift", "INT-SHIFT-UB", bad_count, e.pc);
         z3::expr cnt = e.conv(b, CType{w, true}).v;
         if (op == "<<") {
-            if (!a.u) {
-                // Negative left operand, or a * 2^b not representable (6.5.7p4).
+            if (!a.u && e.shift_rules < 20) {
+                // Negative left operand, or a * 2^b not representable (C11
+                // 6.5.7p4): in the type (C, C++98/03), or in its unsigned
+                // counterpart (C++11..17, CWG 1457: 1 << 31 is defined).
+                // C++20 (P1236) defines every signed left shift whose count
+                // is in range: only `shift` above applies.
                 e.add_prop("shift-neg", "INT-SHIFT-UB", a.v < e.bv_zero(w), e.pc);
-                auto top = z3::lshr(a.v, e.ctx.bv_val(w - 1, static_cast<unsigned>(w)) - cnt);
+                int keep = e.shift_rules >= 11 ? w : w - 1;
+                auto top = z3::lshr(a.v, e.ctx.bv_val(keep, static_cast<unsigned>(w)) - cnt);
                 e.add_prop("shift31", "INT-SHIFT-UB",
                            !bad_count && (a.v >= e.bv_zero(w)) && (top != e.bv_zero(w)), e.pc);
             }

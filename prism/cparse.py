@@ -102,6 +102,8 @@ FUNC_HEAD = re.compile(
     r"(?P<knr>(?:\s*(?:register\s+)?[A-Za-z_][\w \t\n*,\[\]]*;)*)"
     r"(?P<attrs>" + _ATTR + r")"
     r"\s*)"
+    # A function-try-block: `void f(int &x) try { ... } catch (...) { ... }`.
+    r"(?P<ftry>try\s*)?"
     r"\{",
 )
 _KNR_PARAMS = re.compile(r"\s*[A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*\s*")
@@ -265,6 +267,42 @@ def strip_comments_keep_lines(text: str, *, blank_strings: bool = True) -> str:
 
 
 _BRACE = re.compile(r"[{}]")
+_CATCH = re.compile(r"\s*catch\s*\(")
+
+
+def _extend_try(f: "_Found", try_pos: int, code: str, bodies: str,
+                line_of: Callable[[int], int]) -> "_Found":
+    """A function-try-block (`) try {`): the body is the try block and every
+    handler after it, `try { ... } catch (...) { ... }`, as written."""
+    close = f.close
+    while True:
+        m = _CATCH.match(code, close + 1)
+        if m is None:
+            break
+        depth, pc = 0, -1
+        for i in range(m.end() - 1, len(code)):
+            c = code[i]
+            if c == "(":
+                depth += 1
+            elif c == ")":
+                depth -= 1
+                if depth == 0:
+                    pc = i
+                    break
+        if pc < 0:
+            break
+        k = pc + 1
+        while k < len(code) and code[k].isspace():
+            k += 1
+        if k >= len(code) or code[k] != "{":
+            break
+        bc = _match_brace(code, k)
+        if bc < 0:
+            break
+        close = bc
+    f.fn.body = bodies[try_pos : close + 1]
+    f.fn.span = (f.fn.span[0], line_of(close))
+    return f._replace(close=close)
 
 
 def _match_brace(text: str, open_idx: int) -> int:
@@ -499,6 +537,9 @@ def _parse_text(
         add(m.start("head"), m.end() - 1, name, kind, m.group("head"), params,
             (stars.strip() + " " + ret).strip(), "static" in mods)
         pos = m.end()
+        if m.group("ftry") and m.end() - 1 in found:
+            found[m.end() - 1] = _extend_try(found[m.end() - 1], m.start("ftry"), code, bodies, line_of)
+            pos = found[m.end() - 1].close + 1
 
     gaps = _scope_scan(code, found, add, line_of)
     out = [f.fn for _, f in sorted(found.items(), key=lambda kv: (kv[1].head_start, kv[0]))]
