@@ -574,6 +574,12 @@ declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)
     CHECK(va.status == prism::laws::PROVED);
     REQUIRE(va.extra.count("certify_note") == 1);
     CHECK(va.extra.at("certify_note").find("not certif") != std::string::npos);
+    // an uncertifiable combined query ends certification at once: some VC
+    // cannot be certified, so no per-VC certificate is attempted
+    if (std::stoul(va.extra.at("certificate_vcs")) >= 2) {
+        CHECK(va.extra.at("certify_note").find("a VC is not certifiable") != std::string::npos);
+        CHECK(va.extra.at("certificate_solver").find("0 VCs") == 0);  // no per-VC certificate query
+    }
 
     // An out-of-bounds read is FAILED through the solver library, with a
     // counterexample the PIR interpreter replays.

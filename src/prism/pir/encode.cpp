@@ -37,6 +37,7 @@
 #include <optional>
 #include <set>
 #include <sstream>
+#include <string_view>
 #include <unordered_map>
 
 #ifdef PRISM_HAS_Z3
@@ -1355,7 +1356,7 @@ Verdict check_function(const Function& fn, const CheckOptions& opt) {
             if (opt.certify_combined && all.size() >= 2 &&
                 !(plain_all && *plain_all == solver::SolveResult::Sat)) {
                 std::vector<CertBatch> got;
-                std::string failed;
+                std::string failed, uncertifiable;
                 std::function<bool(std::size_t, std::size_t)> batch = [&](std::size_t lo, std::size_t hi) -> bool {
                     if (left() <= 0) {
                         failed = "certification budget spent";
@@ -1376,6 +1377,10 @@ Verdict check_function(const Function& fn, const CheckOptions& opt) {
                     std::string why = cr.note;
                     if (auto q = why.find("not certif"); q != std::string::npos) why = why.substr(q);
                     if (auto q = why.find("; ran:"); q != std::string::npos) why = why.substr(0, q);
+                    // Not certifiable (floating point, arrays, ...): some VC
+                    // of the batch contains what the chain cannot bit-blast,
+                    // so the function cannot be certified VC by VC either.
+                    if (why.rfind("not certifiable", 0) == 0 && uncertifiable.empty()) uncertifiable = why;
                     failed = "one certificate for " + std::to_string(hi - lo) + " VCs" +
                              (hi - lo == all.size() ? std::string()
                                                     : " (a batch of the " + std::to_string(all.size()) + ")") +
@@ -1387,6 +1392,15 @@ Verdict check_function(const Function& fn, const CheckOptions& opt) {
                     for (auto& bt : got) cbook.add("combined[" + std::to_string(bt.labels.size()) + " VCs]", bt.r);
                     certify_batches(vr, got);
                     vr.extra["certificate_solver"] = cbook.summary();
+                    return;
+                }
+                if (!uncertifiable.empty()) {
+                    vr.extra["certificate_combined"] = failed;
+                    vr.extra["certificate_solver"] = cbook.summary();
+                    vr.extra["certify_note"] = "not certified: a VC is not certifiable (" +
+                                              uncertifiable.substr(std::string_view("not certifiable: ").size()) +
+                                              "); verdict stays PROVED";
+                    vr.extra["certificate_vcs"] = std::to_string(all.size());
                     return;
                 }
                 vr.extra["certificate_combined"] = failed + "; one certificate per VC instead";
