@@ -186,12 +186,31 @@ bool write_file(const fs::path& p, std::string_view data) {
     return true;
 }
 
+#if defined(__linux__)
+namespace {
+// Resident set size of a process in bytes (0 when unreadable).
+std::uint64_t rss_of(pid_t pid) {
+    char path[64];
+    std::snprintf(path, sizeof path, "/proc/%d/statm", static_cast<int>(pid));
+    std::FILE* f = std::fopen(path, "r");
+    if (!f) return 0;
+    unsigned long long size = 0, res = 0;
+    const int n = std::fscanf(f, "%llu %llu", &size, &res);
+    std::fclose(f);
+    if (n != 2) return 0;
+    static const long page = sysconf(_SC_PAGESIZE);
+    return static_cast<std::uint64_t>(res) * static_cast<std::uint64_t>(page > 0 ? page : 4096);
+}
+}  // namespace
+#endif
+
 Proc run(const std::vector<std::string>& argv, double timeout_s, const std::atomic<bool>* stop,
-         std::size_t cap, const std::string& stdin_path, const std::string& stdout_path) {
+         std::size_t cap, const std::string& stdin_path, const std::string& stdout_path, std::uint64_t mem_cap) {
     Proc r;
+    r.mem_cap = mem_cap;
     const double t0 = now_s();
 #ifdef _WIN32
-    (void)argv; (void)timeout_s; (void)stop; (void)cap; (void)stdin_path; (void)stdout_path;
+    (void)argv; (void)timeout_s; (void)stop; (void)cap; (void)stdin_path; (void)stdout_path; (void)mem_cap;
     r.failed = true;
     r.out = "process runner not implemented on Windows";
     return r;
@@ -231,9 +250,28 @@ Proc run(const std::vector<std::string>& argv, double timeout_s, const std::atom
     bool open = true;
     char b[65536];
     auto kill_group = [&] { ::kill(-pid, SIGKILL); ::kill(pid, SIGKILL); };
+    double next_mem = 0;
+    // true when the child passed the memory cap (it is then killed)
+    auto over_mem = [&]() -> bool {
+#if defined(__linux__)
+        if (mem_cap == 0 || r.mem_exceeded) return false;
+        const double t = now_s();
+        if (t < next_mem) return false;
+        next_mem = t + 0.1;
+        const auto rss = rss_of(pid);
+        r.peak_rss = std::max(r.peak_rss, rss);
+        if (rss <= mem_cap) return false;
+        r.mem_exceeded = true;
+        kill_group();
+        return true;
+#else
+        return false;
+#endif
+    };
     while (open) {
         if (stop && stop->load()) { r.cancelled = true; kill_group(); break; }
         if (timeout_s > 0 && now_s() - t0 > timeout_s) { r.timed_out = true; kill_group(); break; }
+        if (over_mem()) break;
         pollfd pf{fds[0], POLLIN, 0};
         int pr = poll(&pf, 1, 20);
         if (pr < 0) { if (errno == EINTR) continue; break; }
@@ -254,6 +292,7 @@ Proc run(const std::vector<std::string>& argv, double timeout_s, const std::atom
             r.timed_out = true;
             kill_group();
         }
+        if (!r.timed_out && !r.cancelled) over_mem();
         usleep(2000);
     }
     close(fds[0]);
@@ -262,6 +301,19 @@ Proc run(const std::vector<std::string>& argv, double timeout_s, const std::atom
     r.secs = now_s() - t0;
     return r;
 #endif
+}
+
+std::optional<std::string> out_of_memory(const Proc& p) {
+    if (p.mem_exceeded)
+        return "ran out of memory (resident memory passed the cap of " + std::to_string(p.mem_cap >> 20) +
+               " MB; PRISM_CHECKER_MEM raises it)";
+    if (p.out.find("heap space exhausted") != std::string::npos) return "ran out of memory (CakeML heap exhausted)";
+    if (p.out.find("stack space exhausted") != std::string::npos) return "ran out of memory (CakeML stack exhausted)";
+    if (p.out.find("std::bad_alloc") != std::string::npos || p.out.find("out of memory") != std::string::npos ||
+        p.out.find("Out of memory") != std::string::npos)
+        return "ran out of memory";
+    if (!p.timed_out && !p.cancelled && p.rc == 128 + 9) return "was killed (SIGKILL; out of memory?)";
+    return std::nullopt;
 }
 
 }  // namespace detail
@@ -390,14 +442,27 @@ std::string tail(std::string_view s, std::size_t n = 400) {
 }  // namespace
 
 CheckOutcome check_lrat(const ToolInfo& checker, const fs::path& cnf, const fs::path& lrat,
-                        double timeout_s) {
+                        double timeout_s, unsigned heap_mb) {
     CheckOutcome o;
     o.checker = checker.name;
     o.version = checker.version;
-    auto p = detail::run({checker.path.string(), cnf.string(), lrat.string()}, timeout_s);
+    std::vector<std::string> argv{checker.path.string()};
+    if (heap_mb > 0 && checker.name == "cake_lpr") argv.push_back("--CML_HEAP_SIZE=" + std::to_string(heap_mb));
+    argv.push_back(cnf.string());
+    argv.push_back(lrat.string());
+    // cake_lpr caps its own heap; any other checker is capped on its
+    // resident memory.
+    const std::uint64_t rss_cap = checker.name == "cake_lpr" ? 0 : std::uint64_t(heap_mb) << 20;
+    auto p = detail::run(argv, timeout_s, nullptr, 64u << 20, {}, {}, rss_cap);
     if (p.failed) { o.detail = p.out; return o; }
     o.ran = true;
     if (p.timed_out) { o.detail = "checker timed out"; return o; }
+    if (auto m = detail::out_of_memory(p)) {
+        o.detail = *m + (heap_mb > 0 && checker.name == "cake_lpr"
+                             ? " (heap cap " + std::to_string(heap_mb) + " MB; PRISM_CHECKER_MEM raises it)"
+                             : std::string());
+        return o;
+    }
     // Both checkers exit 0 on rejection; only their verdict line counts.
     if (checker.name == "cake_lpr" || checker.name == "prism-lrat-check") {
         o.verified = has_line(p.out, "s VERIFIED UNSAT");

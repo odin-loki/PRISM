@@ -34,6 +34,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <condition_variable>
 #include <deque>
 #include <functional>
@@ -304,6 +305,14 @@ double rule_estimate(const std::string& solver, const Features& ft) {
     return 1.5;
 }
 
+// Largest Lean DAG (its text) handed to prism-bitblast. Measured
+// (2026-09-24): 30-120 KB DAGs of the conformance suite blast in 0.2-8 s at
+// 0.06-1.2 GB resident (CNFs of 5-155 MB), while a coroutine function's
+// 15.7 MB DAG passed 11 GB resident in 98 s without finishing. Z3's tactics
+// make a far smaller CNF of such formulas; the certificate then records the
+// unproved bit-blaster (TRUSTED_BASE.md 1.2) and why.
+constexpr std::size_t kLeanDagMaxBytes = 2'000'000;
+
 // Head start of in-process Z3 when the history names no leader.
 constexpr double kZ3FirstS = 0.15;
 
@@ -327,6 +336,18 @@ struct BlastPlan {
 // generous; running out only costs the certificate, never the answer.
 double check_budget(const SolveOptions& o) {
     return o.check_timeout_s > 0 ? o.check_timeout_s : std::max(60.0, 4.0 * o.timeout_s);
+}
+
+// Memory cap (MB) of the certificate tools: the option, else
+// $PRISM_CHECKER_MEM, else 4096 (cake_lpr's own default heap, stated
+// explicitly so a note can name it).
+unsigned checker_mem_mb(const SolveOptions& o) {
+    if (o.checker_mem_mb > 0) return o.checker_mem_mb;
+    if (const char* e = std::getenv("PRISM_CHECKER_MEM"); e && *e) {
+        std::uint64_t v = 0;
+        if (certs::parse_size(e, v) && (v >> 20) >= 64) return static_cast<unsigned>(std::min<std::uint64_t>(v >> 20, 1u << 20));
+    }
+    return 4096;
 }
 
 bool has_empty_clause(const Cnf& cnf) {
@@ -358,8 +379,11 @@ Certify run_checkers(const SolveOptions& opt, const fs::path& cnf_path, const st
     std::optional<std::thread> lean_job;
     CheckOutcome ol_dag;
     if (plan.lean && plan.have_chk)
-        lean_job.emplace([&] { ol_dag = check_lrat_dag(plan.chk, dag_path, cnf_path, lrat, budget); });
-    auto o = check_lrat(*cake, cnf_path, lrat, budget);
+        lean_job.emplace([&] {
+            ol_dag = check_lrat_dag(plan.chk, dag_path, cnf_path, lrat, budget,
+                                    std::uint64_t(checker_mem_mb(opt)) << 20);
+        });
+    auto o = check_lrat(*cake, cnf_path, lrat, budget, checker_mem_mb(opt));
     if (lean_job) lean_job->join();
     // The CNF the checkers read must still be the CNF that was bit-blasted.
     const auto after = sha256_file(cnf_path);
@@ -392,7 +416,7 @@ Certify run_checkers(const SolveOptions& opt, const fs::path& cnf_path, const st
     } else if (empty_clause) {
         lean_part = "; Lean's LRAT checker not applicable (the CNF contains the empty clause)";
     } else if (auto lk = find_tool("prism-lrat-check", opt)) {
-        auto ol = check_lrat(*lk, cnf_path, lrat, budget);
+        auto ol = check_lrat(*lk, cnf_path, lrat, budget, checker_mem_mb(opt));
         if (ol.ran && !ol.verified) {
             c.note = "not certified: cake_lpr accepted but Lean's LRAT checker rejected (" + ol.detail + ")";
             return c;
@@ -403,7 +427,7 @@ Certify run_checkers(const SolveOptions& opt, const fs::path& cnf_path, const st
     if (empty_clause) {
         second = "; lrat-check not applicable (the CNF contains the empty clause)";
     } else if (auto lc = find_tool("lrat-check", opt)) {
-        auto o2 = check_lrat(*lc, cnf_path, lrat, budget);
+        auto o2 = check_lrat(*lc, cnf_path, lrat, budget, checker_mem_mb(opt));
         if (o2.ran && !o2.verified) {
             c.note = "not certified: cake_lpr accepted but lrat-check rejected (" + o2.detail + ")";
             return c;
@@ -509,7 +533,14 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
             auto bb = find_tool("prism-bitblast", opt);
             auto chk = find_tool("prism-lrat-check", opt);
             if (!dag) fallback = "formula outside the proved fragment: " + why;
-            else if (!bb) fallback = "prism-bitblast not found (NOTRUN; build it: lake build in proofs/techniques)";
+            else if (dag->text.size() > kLeanDagMaxBytes) {
+                char buf[200];
+                std::snprintf(buf, sizeof buf,
+                              "formula too large for the Lean bit-blaster (DAG %.1f MB > %.0f MB; its memory grows "
+                              "past the cap on such formulas)",
+                              double(dag->text.size()) / 1e6, double(kLeanDagMaxBytes) / 1e6);
+                fallback = buf;
+            } else if (!bb) fallback = "prism-bitblast not found (NOTRUN; build it: lake build in proofs/techniques)";
             else if (!chk && opt.certified)
                 fallback = "prism-lrat-check not found (NOTRUN; build it: lake build in proofs/techniques)";
             else {
@@ -592,7 +623,8 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
                     const fs::path lp = recheck_dir / "proof.lrat";
                     std::optional<Cnf> cnf;
                     if (plan.lean) {
-                        cnf = lean_bitblast(plan.dag, plan.bb, recheck_dir, std::max(10.0, opt.timeout_s), &why);
+                        cnf = lean_bitblast(plan.dag, plan.bb, recheck_dir, std::max(10.0, opt.timeout_s), &why, nullptr,
+                                            std::uint64_t(checker_mem_mb(opt)) << 20);
                     } else {
                         cnf = bitblast(c, formula, &why);
                         if (cnf && !detail::write_file(cp, to_dimacs(*cnf))) {
@@ -863,11 +895,12 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
         ++running;
         if (plan.lean) {
             const double left = std::max(0.01, (want_cert ? cert_deadline : deadline) - now_s());
-            spawn([&board, &plan, work, cnf_path, &cnf, &cnf_sha, left, &blast_stop] {
+            const std::uint64_t mem_cap = std::uint64_t(checker_mem_mb(opt)) << 20;
+            spawn([&board, &plan, work, cnf_path, &cnf, &cnf_sha, left, &blast_stop, mem_cap] {
                 Msg m;
                 m.type = Msg::CnfFailed;
                 std::string why;
-                auto r = lean_bitblast(plan.dag, plan.bb, work, left, &why, &blast_stop);
+                auto r = lean_bitblast(plan.dag, plan.bb, work, left, &why, &blast_stop, mem_cap);
                 if (r) {
                     cnf_sha = sha256_file(cnf_path);
                     cnf = std::make_shared<const Cnf>(std::move(*r));

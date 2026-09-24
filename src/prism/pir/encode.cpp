@@ -1202,12 +1202,13 @@ void certify_batches(Verdict& v, const std::vector<CertBatch>& batches) {
 }
 
 // The batch query was UNSAT and CaDiCaL wrote a proof, but a checker did
-// not finish checking it in time (a large proof): smaller batches have
-// smaller proofs. Any other reason (no answer, SAT, CaDiCaL itself did not
+// not finish checking it in time or ran out of memory (a large proof):
+// smaller batches have smaller proofs. Any other reason (no answer, SAT, CaDiCaL itself did not
 // finish, a tool missing, a rejected proof) is not helped by splitting.
 bool checker_ran_out(const solver::SolveResult& r) {
     if (r.kind != solver::SolveResult::Unsat || r.certified) return false;
-    return r.note.find("checker timed out") != std::string::npos;
+    return r.note.find("checker timed out") != std::string::npos ||
+           r.note.find("ran out of memory") != std::string::npos || r.note.find("was killed (SIGKILL") != std::string::npos;
 }
 
 }  // namespace

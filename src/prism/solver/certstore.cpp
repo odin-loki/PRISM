@@ -35,7 +35,7 @@ namespace prism::solver::certs {
 
 namespace {
 
-constexpr char kMagic[] = "PRISMLRATZ1\n";
+constexpr char kMagic[] = "PRISMLRATZ2\n";
 constexpr std::size_t kMagicLen = sizeof(kMagic) - 1;
 constexpr const char* kExt = ".lratz";
 
@@ -267,11 +267,13 @@ bool pack_lrat(const fs::path& text_in, const fs::path& packed_out, std::string*
         if (t2.kind == Tok::Del) {
             out.put('d');
             out.uvarint(zig(id - prev));
+            std::int64_t last = id;
             for (;;) {
                 Tok x = lx.next();
                 if (x.kind != Tok::Int) return bad("unterminated deletion");
                 if (x.v == 0) break;
-                out.uvarint(zig(id - x.v) + 1);
+                out.uvarint(zig(x.v - last) + 1);
+                last = x.v;
             }
             out.uvarint(0);
         } else if (t2.kind == Tok::Int) {
@@ -285,11 +287,13 @@ bool pack_lrat(const fs::path& text_in, const fs::path& packed_out, std::string*
                 x = lx.next();
             }
             out.uvarint(0);
+            std::int64_t last = id;
             for (;;) {  // hints
                 x = lx.next();
                 if (x.kind != Tok::Int) return bad("unterminated hints");
                 if (x.v == 0) break;
-                out.uvarint(zig(id - x.v) + 1);
+                out.uvarint(zig(x.v - last) + 1);
+                last = x.v;
             }
             out.uvarint(0);
         } else {
@@ -332,11 +336,13 @@ bool unpack_lrat(const fs::path& packed_in, const fs::path& text_out, std::strin
         out.integer(id);
         if (tag == 'd') {
             out.put(" d");
+            std::int64_t last = id;
             for (;;) {
                 if (!read_uvarint(in, u)) return trunc();
                 if (u == 0) break;
+                last += unzig(u - 1);
                 out.put(' ');
-                out.integer(id - unzig(u - 1));
+                out.integer(last);
             }
             out.put(" 0\n");
         } else {
@@ -347,11 +353,13 @@ bool unpack_lrat(const fs::path& packed_in, const fs::path& text_out, std::strin
                 out.integer(unzig(u));
             }
             out.put(" 0");
+            std::int64_t last = id;
             for (;;) {
                 if (!read_uvarint(in, u)) return trunc();
                 if (u == 0) break;
+                last += unzig(u - 1);
                 out.put(' ');
-                out.integer(id - unzig(u - 1));
+                out.integer(last);
             }
             out.put(" 0\n");
         }
