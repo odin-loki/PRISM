@@ -129,7 +129,8 @@ an unconstrained libm result; "Floating point" below). `to_text` prints PIR; its
 | `llvm.abs(x, true)` | `x == INT_MIN` | INT-SIGNED-OVF |
 | `llvm.ctlz/cttz(x, true)` | `x == 0` | INT-CLZ-ZERO |
 | `unreachable`, `llvm.trap` | reached | CXX-UNREACHABLE |
-| `__assert_fail`, `reach_error`, `__VERIFIER_error`, `abort` | reached | FUNC-CONTRACT |
+| `__assert_fail`, `reach_error`, `__VERIFIER_error` | reached | FUNC-CONTRACT |
+| `abort` | reached on an execution where no library allocation failed (after a failed `malloc`/`calloc`/`realloc` it is out-of-memory handling, CONFORMANCE.md F9) | FUNC-CONTRACT |
 | uninitialised local read | reached with shadow set | UNINIT-READ |
 | clang-folded UB | reached | per warning / UB-POISON |
 | `fptosi`/`fptoui` | value (truncated) outside the integer type, NaN, ±inf (C11 6.3.1.4p1) | FLOAT-CAST-OVF |
@@ -250,7 +251,10 @@ where the value is used.
 **Global state.** Globals referenced by the function are allocated in a
 prologue. `constant` globals hold their initializer; mutable globals hold
 arbitrary initialised bytes, except when the function is `main` (program
-entry: initializers). A `FAILED` that disappears when the mutable globals
+entry: initializers). An initializer is a zero fill (one memory entry, any
+size) plus one store per non-zero scalar; a global larger than 4096 bytes
+whose initializer needs more than 256 such stores holds arbitrary
+initialised bytes instead (an over-approximation; CONFORMANCE.md F8). A `FAILED` that disappears when the mutable globals
 hold their initializers is reported `NEEDS-HARNESS` ("the global state the
 function is called in is an unstated precondition"; `extra.globals`).
 `stdin`/`stdout`/`stderr` point to valid `FILE` objects.
@@ -356,7 +360,7 @@ checks inside a model report the call site's line and name the model
 
 | models | behaviour |
 |---|---|
-| `malloc`, `calloc`, `realloc`, `free` | may fail (NULL); calloc zero-fills and checks `n*size` overflow; `realloc(p, 0)` frees p and returns NULL (glibc) |
+| `malloc`, `calloc`, `realloc`, `free` | may fail (NULL; the failure is recorded, `__prism_alloc_failed`, so a later `abort()` is not reported); calloc zero-fills and checks `n*size` overflow; `realloc(p, 0)` frees p and returns NULL (glibc) |
 | `operator new/new[]/delete/delete[]` (`_Znwm` … `_ZdaPvm`) | never NULL; kinds checked against the matching delete |
 | `strlen`, `strnlen`, `strcpy`, `strncpy`, `strcat`, `strncat`, `strcmp`, `strncmp`, `strchr`, `strrchr`, `strdup` | C loops over the bytes (bounds and termination checked) |
 | `memcpy`, `memmove`, `memset`, `memcmp`, `memchr` | ranges checked; memcpy overlap |

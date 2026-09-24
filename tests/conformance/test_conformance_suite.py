@@ -146,6 +146,9 @@ class EsbmcCpp(unittest.TestCase):
                 ("k", "KNOWNBUG\nmain.cpp\n\n^VERIFICATION FAILED$\n", {"main.cpp": ""}, "KNOWNBUG"),
                 ("o", "CORE\nmain.cpp\n--overflow-check\n^VERIFICATION FAILED$\n", {"main.cpp": ""},
                  "--overflow-check"),
+                # a reachable ERROR: label is the violation there; PRISM checks no labels
+                ("e", "CORE\nmain.cpp\n--unwind 8 --error-label ERROR\n^VERIFICATION FAILED$\n", {"main.cpp": ""},
+                 "--error-label"),
                 ("m", "CORE\nmain.cpp\n\n^VERIFICATION FAILED$\n", {"main.cpp": "", "a.h": ""}, "several"),
                 ("c", "CORE\nmain.cpp\n\n^VERIFICATION FAILED$\n^  String capacity exceeded$\n",
                  {"main.cpp": ""}, "operational model"),

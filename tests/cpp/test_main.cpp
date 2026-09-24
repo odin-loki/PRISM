@@ -609,6 +609,38 @@ int main() { return 0; }
     CHECK(by["main"].message.find("dynamic initialisation before main") != std::string::npos);
 }
 
+TEST_CASE("bmc soundness: an unmodelled C++ callee may write reference arguments (F10)") {
+    // f is a function-try-block (not extracted, not inlined): v may be 10
+    // after f(v), so assert(v == 10) is not refuted; neither is a[1] after
+    // g(a[1]). A violation that holds whatever the callee writes still is.
+    auto by = bmc_source("sound_f10.cpp", R"(#include <cassert>
+void f(int &x) try { throw 10; } catch (const int &i) { x = i; }
+void g(int &x);
+int main() { int v = 0; f(v); assert(v == 10); return 0; }
+int elem(int n) { int a[4] = {0, 0, 0, 0}; g(a[1]); return 100 / a[1] + (n & 1); }
+int paren(int n) { int v = 0; g((v)); return 100 / v + (n & 1); }
+int other(int n) { int v = 0; g(v); int w = 0; return 100 / w + (n & 1); }
+int byval(int n) { int v = 0; g(v + 1); return 100 / v + (n & 1); }
+)");
+    for (auto name : {"main", "elem", "paren"}) {
+        INFO(name);
+        REQUIRE(by.count(name));
+        CHECK(by[name].status == prism::laws::NEEDS_HARNESS);
+    }
+    for (auto name : {"other", "byval"}) {
+        INFO(name);
+        REQUIRE(by.count(name));
+        CHECK(by[name].status == prism::laws::FAILED);
+        CHECK(by[name].cls == "INT-DIV-ZERO");
+    }
+    // C: by-value arguments only, the refutation stands
+    auto c = bmc_source("sound_f10.c", R"(void g(int x);
+int cval(int n) { int v = 0; g(v); return 100 / v + (n & 1); }
+)");
+    REQUIRE(c.count("cval"));
+    CHECK(c["cval"].status == prism::laws::FAILED);
+}
+
 TEST_CASE("bmc soundness: unmodelled constructs are never proofs") {
     auto by = bmc_source("sound_u.c", R"(#define SQ(x) ((x) * (x))
 int b6(int x) { return SQ(x); }

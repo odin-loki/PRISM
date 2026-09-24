@@ -115,6 +115,9 @@ private:
     Arg ptr_add(int b, Arg p, Arg delta, int dst = -1);
     void access_checks(int b, Arg p, Arg n, bool write, unsigned align, int line, std::optional<Arg> guard = {});
     void emit_init(Arg base, uint64_t off, const ir::Type& ty, const ir::Value& v, const std::string& gname);
+    // Stores emit_init would push for this initialiser (zero leaves cost none),
+    // counted up to `cap`.
+    uint64_t init_stores(const ir::Type& ty, const ir::Value& v, uint64_t cap) const;
     void mark_memory() { t_.fn().uses_memory = true; }
     unsigned tag_of(const ir::Type& ty) const;
 };

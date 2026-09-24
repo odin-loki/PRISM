@@ -1,0 +1,6 @@
+format_version: 1
+input_files: global_zero_table_true.c
+language: C
+property: no-div0
+expected:
+  global_zero_table_true: true

@@ -205,6 +205,28 @@ SUCCESSFUL, 664 FAILED; 240 s per task, 3 jobs):
 | bmc | **0** (was 1, S8) | 64/1253 (5.1%) | 1/664 | 1 (F10) | 0 | 1787 (1735 NEEDS-HARNESS, 52 ERROR) | 64 |
 | pir | **0** (was 3: 1 S8, 2 disputed labels) | 435/1253 (34.7%) | 245/664 (36.9%) | 2 (F8, F9) | 13 | 1150 (1090 NEEDS-HARNESS, 59 ERROR, 3 UNKNOWN) | 62 |
 
+**Re-run after the F8–F10 fixes** (branch `claude/false-alarms-f8-f10`:
+`2caeda6a9` plus the fixes, 2026-09-23; 240 s per task, 2 jobs on a
+machine shared with five other runs). The converter now also skips the 11
+`--error-label` tasks (a reachable `ERROR:` label is ESBMC's violation there
+and PRISM checks no labels; `nec_ex7-ctor-throw` was scored as a pir wrong
+proof for that reason alone, by the base binary too), leaving 1906 tasks
+(1253 SUCCESSFUL, 653 FAILED):
+
+| stage | wrong proofs | proved (true) | refuted (false) | false alarms | BOUNDED | no answer | timeout / killed |
+|---|---|---|---|---|---|---|---|
+| bmc | **0** | 64/1253 | 1/653 | **0** (was 1: F10) | 0 | 1794 (1742 NEEDS-HARNESS, 52 ERROR) | 47 |
+| pir | **0** | 581/1253 (46.4%) | 343/653 (52.5%) | 8 (F8, F9 gone; 8 new, F11) | 13 | 897 (835 NEEDS-HARNESS, 59 ERROR, 3 UNKNOWN) | 45 |
+
+Plus 19 pir FAILED of another class. `1006_aggregate`,
+`github_6464_placement_new_incremental` (pir) and `try-catch_tryblock_08`
+(bmc: now NEEDS-HARNESS; pir proves it) are no longer false alarms; their
+`_fail` twins stay refuted. Most of the pir gain over the table above comes
+from PIR round 3 (exceptions, indirect calls; merged at `cd1336cd1`, after
+that run), not from these fixes. The 8 new pir false alarms (F11) come with
+those round 3 features and are FAILED by the base binary as well (checked
+on the base build, same tasks): see "Known issues".
+
 Plus 4 + 4 pir FAILED of another class (e.g. UNINIT-READ, signed overflow,
 which ESBMC does not check by default). The first run found **4 wrong
 proofs**: S8 (a global's constructor throws before `main`; bmc and pir both
@@ -227,7 +249,7 @@ compile with clang/libstdc++, 33 crash otherwise, 19 FAILED labels run
 clean, 16 SUCCESSFUL labels hit a sanitizer or assert natively). Cross-check
 against the PRISM run: **no PRISM proof on any program whose native run
 hits UB or a failed assert**, and no pir/bmc FAILED on a natively clean
-program except the false alarms F8–F10 above, `cpp/github_1807` (FAILED
+program except the false alarms F8–F10 above (fixed since), `cpp/github_1807` (FAILED
 label, clean natively; refuted by pir) and two FAILED of another class.
 
 **Committed subset** (64 tasks: 32 true, 32 false, deterministic,
@@ -612,19 +634,55 @@ flagged (SV-COMP `NoNegativeIntegerConstant`, true).
 **F7. C++20 shift semantics.** `1 << 31` is well defined in C++20 but flagged
 (`cxx/cxx_shift_cpp20_true`); `shift31` should be C-only.
 
-*Open* (ESBMC C++ tasks, full fetched set; none in the committed subset).
+*Fixed* (ESBMC C++ tasks, full fetched set; none in the committed subset).
+Regression pairs: `prism/regress/global_zero_table_*`, `malloc_abort_*`,
+`fn_try_block_*` (each `_true` was a false alarm before the fix).
 **F8. pir: zero-initialised global array of structs with 1024 elements.**
-`struct uint3 a[1024]; assert(a[0].x == 0);` in `main` is FAILED
-(`bug_fixes/1006_aggregate`); the same with 4 elements, or a flat
-`int a[1024]`, is PROVED. A false alarm in the global-initialiser encoding of
-large aggregate arrays, not a soundness issue.
-**F9. pir: `abort()` after a failed `malloc` in a constructor**
-(`cpp/github_6464_placement_new_incremental`): PRISM's `malloc` model may
-return NULL, so `if (!buf) abort();` is reachable; ESBMC's label assumes
-allocation succeeds. A model difference, reported as FUNC-CONTRACT.
+`struct uint3 a[1024]; assert(a[0].x == 0);` in `main` was FAILED
+(`bug_fixes/1006_aggregate`). Cause: every initialised global larger than
+4096 bytes was modelled as arbitrary initialised bytes (a guard against long
+initialiser store chains), although the zero fill itself is one memory entry
+whatever the size. Now only a large global whose initializer needs more than
+256 non-zero stores is havocked (`translate_mem.cpp` `MemTr::init_stores`);
+the over-approximation that remains can only cost proofs, never make one.
+**F9. pir: `abort()` after a failed `malloc`**
+(`cpp/github_6464_placement_new_incremental`). PRISM's `malloc` model may
+return NULL (ESBMC's too: `--force-malloc-success` is off by default), so
+`if (!buf) abort();` is reachable. ESBMC models `abort()` as
+`__ESBMC_assume(0)` (`src/c2goto/library/stdlib.c` at the pinned commit): a
+path that aborts is cut, never an assertion failure. PRISM keeps reporting
+`abort()` as FUNC-CONTRACT ("process crash"), except on an execution where
+a library allocation already failed: there it is the program's
+out-of-memory handling. The malloc/calloc/realloc models record a failure
+(`__prism_alloc_failed`, a hidden flag object zero at function entry) and
+the `abort` check is `flag == 0`. Unchanged: a dereference of an unchecked
+NULL result (PTR-NULL-DEREF), `assert(p)` after `malloc` (FUNC-CONTRACT),
+and `abort()` on any execution where every allocation succeeded.
 **F10. bmc: function-try-block** (`void f(int &x) try { throw 10; } catch
-(const int &i) { x = i; }`, `try_catch/try-catch_tryblock_08`): the handler's
-store is lost and `assert(v == 10)` in `main` is FAILED.
+(const int &i) { x = i; }`, `try_catch/try-catch_tryblock_08`): `assert(v
+== 10)` in `main` was FAILED. The front end does not extract a
+function-try-block (an honest PARSE-GAP row), so `f(v)` was an unmodelled
+call, whose result is quantified but whose effect on `v` was not: a C++
+callee may take `v` by non-const reference. Both engines' bmc now treat an
+unmodelled call in a C++ file (anything but `.c`/`.i`) as writing what an
+argument may name: a named scalar or the array of an element gets a value
+quantified like a call result (`escape_scalar`, `escape_array`); an
+argument of any other lvalue shape (`(v)`, `++v`, `*p`, `v = x`, `c ? a :
+b`) lets everything it mentions escape. By-value C calls are unchanged. The
+unmodelled call already ruled out a proof (S6), so this only removes wrong
+refutations; `main` is now NEEDS-HARNESS (pir proves it).
+
+*Open* (ESBMC C++ tasks, full fetched set; found by the F8–F10 re-run).
+**F11. pir: typeinfo and exceptions of class type with bases.** 8
+SUCCESSFUL tasks are FAILED since PIR round 3 (base binary and this branch
+alike): `typeid(...).name()` / `std::any` read the C++ runtime's typeinfo
+objects, which PRISM does not model (MEM-OOB-READ: `cpp/typeinfo`,
+`cpp/github_6308_typeid_name`, `cpp17/cpp__github_4377_any_ptr`); a thrown
+object caught by a pointer or through a non-first base of multiple
+inheritance, or rethrown from a nested handler, is not adjusted or kept
+alive (`try_catch/catch_base_offset_mi`, `mi_base_subobject_catch`,
+`lower-exceptions_pointer_catch`, `lower-exceptions_nested_rethrow` (MEM-UAF),
+`cpp/irep2_throw_primitive_id`). Not a soundness issue (no proof is affected).
 
 ### Coverage gaps (honest `ERROR` / `NEEDS-HARNESS`, costing completeness)
 

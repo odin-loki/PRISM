@@ -3153,6 +3153,14 @@ std::string join_csv(const std::vector<std::string>& v) {
     return s;
 }
 
+// C++ unless the file is C (.c, .i): a header may be either, so it counts
+// as C++ (call arguments may bind references; Enc::cxx).
+bool cxx_source(const std::string& file) {
+    auto ext = std::filesystem::path(file).extension().string();
+    for (auto& ch : ext) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    return ext != ".c" && ext != ".i";
+}
+
 Finding bmc_function(const FunctionInfo& fn, int unwind, bool try_unbounded = true,
                      const std::map<std::string, int>* enums = nullptr,
                      bool allow_local_pointers = false, bool incremental = true);
@@ -3161,6 +3169,7 @@ Finding bmc_once(const FunctionInfo& fn, int unwind, bool try_unbounded,
                  const std::map<std::string, int>& enums, Finding base,
                  const std::map<std::string, std::string>& macros = {}, bool havoc = false) {
     Parser p(fn.body, fn.params, unwind, enums, macros, havoc);
+    p.cxx = cxx_source(fn.file);
     auto enc = p.run();
     if (!enc) {
         base.strength = std::string(laws::STRENGTH_SOME);
@@ -3411,6 +3420,7 @@ ProgramCheck check_program(const FunctionInfo& fn, const std::string& body, int 
     try {
         Parser p(body, fn.params, unwind, enums_from_fn(fn));
         p.ai_hooks = true;
+        p.cxx = cxx_source(fn.file);
         auto enc = p.run();
         if (!enc) {
             out.error = p.err.empty() ? std::string("parse failed") : p.err;

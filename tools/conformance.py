@@ -167,6 +167,8 @@ ESBMC_SKIP_OPTIONS = (
     "--no-align-check", "--no-pointer-relation-check", "--memory-leak-check", "--overflow-check",
     "--unsigned-overflow-check", "--ub-shift-check", "--nan-check", "--data-races-check",
     "--deadlock-check", "--function", "--cheri", "--struct-fields-check", "--is-instr-modelling",
+    # a reachable `ERROR:` label is a violation: PRISM checks no labels
+    "--error-label",
 )
 # FAILED verdicts that come from a bound of ESBMC's C++ operational model
 # (its fixed-capacity string/stream models), not from the program.
