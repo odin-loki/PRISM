@@ -398,16 +398,17 @@ std::optional<bool> eval_lean_dag(const LeanDag& dag, const std::map<std::string
 
 // ---------------------------------------------------------------- running the Lean tools
 std::optional<Cnf> lean_bitblast(const LeanDag& dag, const ToolInfo& exe, const fs::path& work, double timeout_s,
-                                 std::string* why, const std::atomic<bool>* stop) {
+                                 std::string* why, const std::atomic<bool>* stop, std::uint64_t mem_cap) {
     auto fail = [&](std::string m) -> std::optional<Cnf> {
         if (why) *why = std::move(m);
         return std::nullopt;
     };
     const fs::path dp = work / "query.dag", op = work / "query.bb", cp = work / "query.cnf";
     if (!detail::write_file(dp, dag.text)) return fail("cannot write " + dp.string());
-    auto p = detail::run({exe.path.string()}, timeout_s, stop, 1u << 20, dp.string(), op.string());
+    auto p = detail::run({exe.path.string()}, timeout_s, stop, 1u << 20, dp.string(), op.string(), mem_cap);
     if (p.failed) return fail("prism-bitblast did not start: " + p.out);
     if (p.cancelled) return fail("prism-bitblast cancelled");
+    if (auto m = detail::out_of_memory(p)) return fail("prism-bitblast " + *m);
     if (p.timed_out) return fail("prism-bitblast timed out");
     if (p.rc != 0) return fail("prism-bitblast exit " + std::to_string(p.rc) + ": " + tail_of(p.out));
     std::string txt = detail::read_file(op);
@@ -464,14 +465,16 @@ std::optional<Cnf> lean_bitblast(const LeanDag& dag, const ToolInfo& exe, const 
 }
 
 CheckOutcome check_lrat_dag(const ToolInfo& checker, const fs::path& dag, const fs::path& cnf, const fs::path& lrat,
-                            double timeout_s) {
+                            double timeout_s, std::uint64_t mem_cap) {
     CheckOutcome o;
     o.checker = checker.name;
     o.version = checker.version;
-    auto p = detail::run({checker.path.string(), "--dag", dag.string(), cnf.string(), lrat.string()}, timeout_s);
+    auto p = detail::run({checker.path.string(), "--dag", dag.string(), cnf.string(), lrat.string()}, timeout_s,
+                         nullptr, 64u << 20, {}, {}, mem_cap);
     if (p.failed) { o.detail = p.out; return o; }
     o.ran = true;
     if (p.timed_out) { o.detail = "checker timed out"; return o; }
+    if (auto m = detail::out_of_memory(p)) { o.detail = *m; return o; }
     o.verified = p.rc == 0 && has_line(p.out, "s VERIFIED UNSAT");
     o.detail = o.verified ? "accepted" : "rejected: " + tail_of(p.out);
     return o;

@@ -207,6 +207,7 @@ set(PRISM_SRC
   src/prism/taxonomy.cpp
   src/prism/verdict/verdict.cpp
   # Solver library (roadmap 3.1-3.3): portfolio, query cache, certified mode, SLS.
+  src/prism/solver/certstore.cpp
   src/prism/solver/cnf.cpp
   src/prism/solver/leanbb.cpp
   src/prism/solver/portfolio.cpp

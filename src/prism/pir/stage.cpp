@@ -17,6 +17,7 @@
 #include "stage_mem.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -837,6 +838,17 @@ CheckOptions check_options(const Config& cfg) {
     o.unwind = cfg.unwind;
     o.timeout_s = cfg.timeout;
     o.certified = cfg.certified;
+    // Certification budget per PROVED function (docs/PIR.md "Solving"):
+    // $PRISM_CERTIFY_BUDGET seconds (0: none), else max(240 s, 8 x
+    // timeout), the sum of one query's certificate and checker budgets, so
+    // a single certificate is never cut shorter than before while a chain of
+    // per-VC certificates cannot run away with the run's time.
+    o.certify_budget_s = std::max(240.0, 8.0 * cfg.timeout);
+    if (const char* e = std::getenv("PRISM_CERTIFY_BUDGET"); e && *e) {
+        char* end = nullptr;
+        const double b = std::strtod(e, &end);
+        if (end && *end == '\0' && b >= 0) o.certify_budget_s = b;
+    }
     o.cache_dir = cfg.solver_cache.string();
     const unsigned hw = std::max(2u, std::thread::hardware_concurrency());
     o.max_parallel = std::max(2u, hw / static_cast<unsigned>(std::max(1, cfg.jobs)));

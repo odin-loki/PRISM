@@ -462,6 +462,11 @@ struct CheckOptions {
     bool certified = false;     // roadmap 3.2: PROVED-CERTIFIED when every VC is certified
     bool certify_combined = true;  // certified: one combined certificate first (2+ VCs)
     double check_timeout_s = 0;    // certified: LRAT checker budget (0: the solver library default)
+    // certified: seconds all certificate queries of one PROVED function may
+    // take together (CaDiCaL-with-LRAT and the checkers; the plain answers
+    // are not counted). Spent: the verdict stays PROVED with a certify_note.
+    // 0: no budget beyond each query's own.
+    double certify_budget_s = 0;
     bool use_cache = true;
     std::string cache_dir;      // empty: the solver library's default
     unsigned max_parallel = 0;  // solver members at once; 0: hardware threads

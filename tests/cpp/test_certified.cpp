@@ -220,19 +220,22 @@ TEST_CASE("certified: one combined certificate covers every VC of a function") {
     CHECK(vl.extra.at("certificate_vcs") == std::to_string(std::stoul(vl.extra.at("properties")) + 1));
 }
 
-TEST_CASE("certified: a combined query that is not certified falls back to one certificate per VC") {
-    // SAT: the combined query is violated, the per-VC queries find which
-    // property (and its counterexample); nothing is certified.
+TEST_CASE("certified: a violated combined query costs no certificate; the per-VC queries decide") {
+    // SAT: the combined (plain) query is violated, the per-VC queries find
+    // which property (and its counterexample); no certificate is attempted.
     auto o = cert_pir(kOvf, "f");
     auto v = prism::pir::check_function(*o.fn, cert_opts(true));
     CHECK(v.status == prism::laws::FAILED);
     CHECK_FALSE(v.extra.contains("certificate"));
     if (std::stoul(v.extra.at("properties")) >= 2) {
         REQUIRE(v.extra.count("certificate_combined") == 1);
-        CHECK(v.extra.at("certificate_combined").find("not obtained (sat)") != std::string::npos);
+        CHECK(v.extra.at("certificate_combined").find("not obtained (sat") != std::string::npos);
+        CHECK_FALSE(v.extra.contains("certificate_solver"));  // no certificate query ran
     }
     // BOUNDED (the loop does not close at unwind 2): the combined query is
-    // SAT through the unwinding assertion; the per-VC path decides BOUNDED.
+    // SAT through the unwinding assertion; the per-VC path decides BOUNDED,
+    // and no VC is certified (before, every UNSAT VC paid for a certificate
+    // that could never make the function PROVED-CERTIFIED).
     auto t = cert_pir(kThree, "three");
     auto co = cert_opts(true);
     co.unwind = 2;
@@ -240,7 +243,9 @@ TEST_CASE("certified: a combined query that is not certified falls back to one c
     CHECK((b.status == prism::laws::BOUNDED || b.status == prism::laws::PROVED_UNBOUNDED));
     CHECK_FALSE(b.extra.contains("certificate"));
     REQUIRE(b.extra.count("certificate_combined") == 1);
-    CHECK(b.extra.at("certificate_combined").find("one certificate per VC instead") != std::string::npos);
+    CHECK(b.extra.at("certificate_combined").find("some VC is violated, so no certificate is attempted") !=
+          std::string::npos);
+    CHECK_FALSE(b.extra.contains("certificate_solver"));
 }
 
 TEST_CASE("certified: a combined proof the checker cannot finish is split into certified batches") {
@@ -569,6 +574,12 @@ declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)
     CHECK(va.status == prism::laws::PROVED);
     REQUIRE(va.extra.count("certify_note") == 1);
     CHECK(va.extra.at("certify_note").find("not certif") != std::string::npos);
+    // an uncertifiable combined query ends certification at once: some VC
+    // cannot be certified, so no per-VC certificate is attempted
+    if (std::stoul(va.extra.at("certificate_vcs")) >= 2) {
+        CHECK(va.extra.at("certify_note").find("a VC is not certifiable") != std::string::npos);
+        CHECK(va.extra.at("certificate_solver").find("0 VCs") == 0);  // no per-VC certificate query
+    }
 
     // An out-of-bounds read is FAILED through the solver library, with a
     // counterexample the PIR interpreter replays.
@@ -581,5 +592,370 @@ declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)
     CHECK(vb.cls == "MEM-OOB-READ");
     REQUIRE(!vb.cex_args.empty());
     CHECK(prism::pir::interpret(*tb.fn, vb.cex_args).status == prism::pir::InterpResult::Violation);
+}
+#endif
+
+// ---------------------------------------------------------------------------
+// The certificate store (include/prism/solver_certs.hpp): packed proofs, the
+// size cap with least-recently-used pruning, the orphan work-dir sweep.
+// ---------------------------------------------------------------------------
+#ifdef PRISM_HAS_Z3
+#  include "prism/solver_certs.hpp"
+#  include <chrono>
+#  include <cstdlib>
+#  ifndef _WIN32
+#    include <sys/wait.h>
+#    include <unistd.h>
+#  endif
+
+namespace {
+// Whitespace-normalised token lines of an LRAT file, comments dropped.
+std::vector<std::string> lrat_lines(const std::string& text) {
+    std::vector<std::string> out;
+    std::istringstream in(text);
+    for (std::string line; std::getline(in, line);) {
+        std::istringstream ls(line);
+        std::string tok, norm;
+        while (ls >> tok) norm += (norm.empty() ? "" : " ") + tok;
+        if (norm.empty() || norm[0] == 'c') continue;
+        out.push_back(norm);
+    }
+    return out;
+}
+void write_text(const fs::path& p, const std::string& s) { std::ofstream(p, std::ios::binary) << s; }
+}  // namespace
+
+TEST_CASE("certificate store: sizes and the cap") {
+    namespace certs = prism::solver::certs;
+    std::uint64_t v = 0;
+    CHECK(certs::parse_size("2G", v));
+    CHECK(v == (2ull << 30));
+    CHECK(certs::parse_size("512M", v));
+    CHECK(v == (512ull << 20));
+    CHECK(certs::parse_size("64kib", v));
+    CHECK(v == (64ull << 10));
+    CHECK(certs::parse_size("1000", v));
+    CHECK(v == 1000);
+    CHECK(certs::parse_size("0", v));
+    CHECK(v == 0);
+    CHECK_FALSE(certs::parse_size("", v));
+    CHECK_FALSE(certs::parse_size("G", v));
+    CHECK_FALSE(certs::parse_size("3X", v));
+    std::string why;
+    CHECK(certs::cap_bytes(123, &why) == 123);
+    CHECK(why == "option");
+#  ifndef _WIN32
+    const char* old = std::getenv("PRISM_CERT_CACHE_MAX");
+    const std::string saved = old ? old : "";
+    setenv("PRISM_CERT_CACHE_MAX", "3M", 1);
+    CHECK(certs::cap_bytes(-1, &why) == (3ull << 20));
+    CHECK(why == "PRISM_CERT_CACHE_MAX");
+    setenv("PRISM_CERT_CACHE_MAX", "lots", 1);
+    CHECK(certs::cap_bytes(-1, &why) == certs::kDefaultCapBytes);
+    CHECK(why.find("not a size") != std::string::npos);
+    unsetenv("PRISM_CERT_CACHE_MAX");
+    CHECK(certs::cap_bytes(-1, &why) == certs::kDefaultCapBytes);
+    CHECK(why == "default");
+    if (old) setenv("PRISM_CERT_CACHE_MAX", saved.c_str(), 1);
+#  endif
+}
+
+TEST_CASE("certificate store: packing is lossless and much smaller") {
+    namespace certs = prism::solver::certs;
+    CertTmp tmp;
+    // additions with literals and hints (a negative RAT hint too), deletions,
+    // comments, odd spacing, a final line without newline
+    const std::string text =
+        "c a comment\n"
+        "9 -1 2 0 1 3 5 0\n"
+        "9 d 1 3 0\n"
+        "10  4 -5 6 0 9 -2 7 8 0\n"
+        "12 0 10 9 4 0\n"
+        "12 d 9 10 0";
+    write_text(tmp.dir / "p.lrat", text);
+    std::string why;
+    REQUIRE(certs::pack_lrat(tmp.dir / "p.lrat", tmp.dir / "p.lratz", &why));
+    REQUIRE(certs::unpack_lrat(tmp.dir / "p.lratz", tmp.dir / "back.lrat", &why));
+    CHECK(lrat_lines(slurp(tmp.dir / "back.lrat")) == lrat_lines(text));
+    // malformed input is refused, never half-stored
+    write_text(tmp.dir / "bad.lrat", "7 1 2 0 3 4\n");
+    CHECK_FALSE(certs::pack_lrat(tmp.dir / "bad.lrat", tmp.dir / "bad.lratz", &why));
+    CHECK(why.find("LRAT line 1") != std::string::npos);
+    write_text(tmp.dir / "bad2.lrat", "x 1 0 0\n");
+    CHECK_FALSE(certs::pack_lrat(tmp.dir / "bad2.lrat", tmp.dir / "bad2.lratz", &why));
+    // a truncated packed file is refused
+    auto packed = slurp(tmp.dir / "p.lratz");
+    write_text(tmp.dir / "trunc.lratz", packed.substr(0, packed.size() - 3));
+    CHECK_FALSE(certs::unpack_lrat(tmp.dir / "trunc.lratz", tmp.dir / "t.lrat", &why));
+    write_text(tmp.dir / "nomagic.lratz", "hello");
+    CHECK_FALSE(certs::unpack_lrat(tmp.dir / "nomagic.lratz", tmp.dir / "t.lrat", &why));
+
+    // A real CaDiCaL proof (pigeonhole 6 -> 5): the unpacked copy is the
+    // same proof, cake_lpr accepts it, and the packed file is far smaller.
+    prism::solver::SolveOptions so;
+    auto cad = prism::solver::find_tool("cadical", so);
+    auto cake = prism::solver::find_tool("cake_lpr", so);
+    if (!cad || !cake) {
+        MESSAGE("cadical/cake_lpr not installed: real-proof part skipped");
+        return;
+    }
+    const int P = 6, H = 5;
+    std::ostringstream cnf;
+    std::vector<std::string> cls;
+    auto var = [&](int p, int h) { return p * H + h + 1; };
+    for (int p = 0; p < P; ++p) {
+        std::string c;
+        for (int h = 0; h < H; ++h) c += std::to_string(var(p, h)) + " ";
+        cls.push_back(c + "0");
+    }
+    for (int h = 0; h < H; ++h)
+        for (int p = 0; p < P; ++p)
+            for (int q = p + 1; q < P; ++q)
+                cls.push_back("-" + std::to_string(var(p, h)) + " -" + std::to_string(var(q, h)) + " 0");
+    cnf << "p cnf " << P * H << " " << cls.size() << "\n";
+    for (auto& c : cls) cnf << c << "\n";
+    write_text(tmp.dir / "ph.cnf", cnf.str());
+    const auto cmd = "'" + cad->path.string() + "' -q --lrat=true --binary=false '" + (tmp.dir / "ph.cnf").string() +
+                     "' '" + (tmp.dir / "ph.lrat").string() + "' > /dev/null 2>&1";
+    CHECK(std::system(cmd.c_str()) != -1);
+    REQUIRE(fs::file_size(tmp.dir / "ph.lrat") > 0);
+    REQUIRE(certs::pack_lrat(tmp.dir / "ph.lrat", tmp.dir / "ph.lratz", &why));
+    REQUIRE(certs::unpack_lrat(tmp.dir / "ph.lratz", tmp.dir / "ph2.lrat", &why));
+    CHECK(lrat_lines(slurp(tmp.dir / "ph2.lrat")) == lrat_lines(slurp(tmp.dir / "ph.lrat")));
+    const auto text_sz = fs::file_size(tmp.dir / "ph.lrat"), packed_sz = fs::file_size(tmp.dir / "ph.lratz");
+    CAPTURE(text_sz);
+    CAPTURE(packed_sz);
+    CHECK(packed_sz * 2 < text_sz);
+    auto o = prism::solver::check_lrat(*cake, tmp.dir / "ph.cnf", tmp.dir / "ph2.lrat", 60);
+    CHECK(o.ran);
+    CHECK(o.verified);
+}
+
+TEST_CASE("certificate store: pruning keeps the store under its cap, least recently used first") {
+    namespace certs = prism::solver::certs;
+    CertTmp tmp;
+    const auto dir = tmp.dir / "certs";
+    fs::create_directories(dir);
+    const auto now = fs::file_time_type::clock::now();
+    // five 1000-byte proofs, a is the oldest; b is kept (a proof in use)
+    const std::vector<std::string> names{"a", "b", "c", "d", "e"};
+    for (std::size_t i = 0; i < names.size(); ++i) {
+        write_text(dir / (names[i] + ".lratz"), std::string(1000, 'x'));
+        fs::last_write_time(dir / (names[i] + ".lratz"), now - std::chrono::minutes(60 - 10 * static_cast<int>(i)));
+    }
+    // the previous layout's files count and are pruned like proofs
+    write_text(dir / "old.cnf", std::string(1000, 'x'));
+    fs::last_write_time(dir / "old.cnf", now - std::chrono::hours(5));
+    // a write in progress is never touched; an interrupted one (old) is
+    write_text(dir / "f.lratz.tmp.1.0", std::string(1000, 'x'));
+    write_text(dir / "g.lratz.tmp.1.1", std::string(1000, 'x'));
+    fs::last_write_time(dir / "g.lratz.tmp.1.1", now - std::chrono::hours(3));
+
+    // under the cap: only the interrupted temp file goes
+    auto st = certs::prune(tmp.dir, 100000, {});
+    CHECK(st.removed == 1);
+    CHECK_FALSE(fs::exists(dir / "g.lratz.tmp.1.1"));
+    CHECK(st.bytes_after == 7000);
+
+    // cap 5000: prune to 80% (4000 bytes): old.cnf, a, c go (b is kept)
+    st = certs::prune(tmp.dir, 5000, {"b"});
+    CHECK(st.bytes_before == 7000);
+    CHECK(st.bytes_after == 4000);
+    CHECK_FALSE(fs::exists(dir / "old.cnf"));
+    CHECK_FALSE(fs::exists(dir / "a.lratz"));
+    CHECK(fs::exists(dir / "b.lratz"));
+    CHECK_FALSE(fs::exists(dir / "c.lratz"));
+    CHECK(fs::exists(dir / "d.lratz"));
+    CHECK(fs::exists(dir / "e.lratz"));
+    CHECK(fs::exists(dir / "f.lratz.tmp.1.0"));
+
+    // fetch marks a proof used: after fetching d, e is the least recently used
+    write_text(tmp.dir / "p.lrat", "3 1 0 1 2 0\n");
+    std::string why;
+    REQUIRE(certs::pack_lrat(tmp.dir / "p.lrat", dir / "d.lratz", &why));
+    fs::last_write_time(dir / "d.lratz", now - std::chrono::hours(9));
+    REQUIRE(certs::fetch(tmp.dir, "d", tmp.dir / "d.lrat", &why));
+    CHECK(lrat_lines(slurp(tmp.dir / "d.lrat")) == std::vector<std::string>{"3 1 0 1 2 0"});
+    st = certs::prune(tmp.dir, 2000, {});
+    CHECK(fs::exists(dir / "d.lratz"));
+    CHECK_FALSE(fs::exists(dir / "e.lratz"));
+    CHECK_FALSE(fs::exists(dir / "b.lratz"));
+    // a pruned proof is reported as such
+    CHECK_FALSE(certs::fetch(tmp.dir, "e", tmp.dir / "e.lrat", &why));
+    CHECK(why.find("pruned") != std::string::npos);
+}
+
+TEST_CASE("certificate store: a certified answer keeps only its packed proof, under the cap") {
+    namespace certs = prism::solver::certs;
+    prism::solver::SolveOptions probe;
+    if (!prism::solver::find_tool("cadical", probe) || !prism::solver::find_tool("cake_lpr", probe)) {
+        MESSAGE("cadical/cake_lpr not installed: skipped");
+        return;
+    }
+    CertTmp tmp;
+    z3::context c;
+    auto x = c.bv_const("x", 6);
+    auto y = c.bv_const("y", 6);
+    auto z = c.bv_const("z", 6);
+    auto f = (x * (y + z)) != (x * y + x * z);  // unsat, a real (non-empty) proof
+    prism::solver::SolveOptions o;
+    o.cache_dir = (tmp.dir / "cache").string();
+    o.timeout_s = 30;
+    o.certified = true;
+    auto r = prism::solver::solve(c, f, o);
+    CAPTURE(r.note);
+    REQUIRE(r.kind == prism::solver::SolveResult::Unsat);
+    REQUIRE(r.certified);
+    const auto proof = certs::proof_path(tmp.dir / "cache", r.query_hash);
+    CHECK(fs::exists(proof));
+    CHECK_FALSE(fs::exists(tmp.dir / "cache" / "certs" / (r.query_hash + ".cnf")));
+    CHECK_FALSE(fs::exists(tmp.dir / "cache" / "certs" / (r.query_hash + ".lrat")));
+    // a hit re-checks the stored proof against a freshly bit-blasted CNF
+    auto again = prism::solver::solve(c, f, o);
+    CAPTURE(again.note);
+    CHECK(again.certified);
+    CHECK(again.cache_hit);
+    CHECK(again.note.find("certificate re-checked") != std::string::npos);
+    // the proof is gone (pruned): solve again, still certified, stored again
+    fs::remove(proof);
+    auto third = prism::solver::solve(c, f, o);
+    CAPTURE(third.note);
+    CHECK(third.certified);
+    CHECK_FALSE(third.cache_hit);
+    CHECK(third.note.find("pruned") != std::string::npos);
+    CHECK(fs::exists(proof));
+    // a cap smaller than the proof: nothing is kept, and the entry is plain
+    fs::remove(proof);
+    o.cert_cache_max_bytes = 16;
+    auto small = prism::solver::solve(c, f, o);
+    CAPTURE(small.note);
+    CHECK(small.certified);
+    CHECK(small.note.find("certificate not cached") != std::string::npos);
+    CHECK_FALSE(fs::exists(proof));
+    // cap 0 keeps no proof at all
+    fs::remove(proof);
+    o.cert_cache_max_bytes = 0;
+    auto none = prism::solver::solve(c, f, o);
+    CAPTURE(none.note);
+    CHECK_FALSE(fs::exists(proof));
+    if (none.certified) CHECK(none.note.find("cap is 0") != std::string::npos);
+}
+
+TEST_CASE("certified: a known plain unsat runs only the certificate member") {
+    CertTmp tmp;
+    z3::context c;
+    auto x = c.bv_const("x", 10);
+    auto f = (x * 5) != (x * 4 + x);
+    prism::solver::SolveOptions o;
+    o.use_cache = false;
+    o.cache_dir = (tmp.dir / "cache").string();
+    o.timeout_s = 30;
+    o.certified = true;
+    o.known_unsat = true;
+    auto r = prism::solver::solve(c, f, o);
+    CAPTURE(r.note);
+    CHECK(r.kind == prism::solver::SolveResult::Unsat);
+    CHECK_FALSE(r.cache_hit);
+    prism::solver::SolveOptions probe;
+    if (prism::solver::find_tool("cadical", probe) && prism::solver::find_tool("cake_lpr", probe)) {
+        CHECK(r.certified);
+        CHECK(r.note.find("only the certificate member runs") != std::string::npos);
+        CHECK(r.ran == std::vector<std::string>{"cadical"});
+    } else {
+        CHECK_FALSE(r.certified);
+    }
+    // not certifiable (a real): the caller's answer stands, nothing runs
+    auto rx = c.real_const("rx");
+    auto g = rx * rx < 0;
+    auto rg = prism::solver::solve(c, g, o);
+    CAPTURE(rg.note);
+    CHECK(rg.kind == prism::solver::SolveResult::Unsat);
+    CHECK_FALSE(rg.certified);
+    CHECK(rg.ran.empty());
+    CHECK(rg.note.find("not certifiable") != std::string::npos);
+    // a model outranks the caller's claim: the answer is never taken on trust
+    // when a member runs (here the claim is false: x == 3 satisfies it)
+    auto h = x == 3;
+    auto rh = prism::solver::solve(c, h, o);
+    CAPTURE(rh.note);
+    CHECK_FALSE(rh.certified);
+    if (prism::solver::find_tool("cadical", probe)) CHECK(rh.kind == prism::solver::SolveResult::Sat);
+}
+
+#  ifndef _WIN32
+TEST_CASE("certificate store: work directories of dead solver processes are swept") {
+    namespace certs = prism::solver::certs;
+    const pid_t child = fork();
+    if (child == 0) _exit(0);
+    REQUIRE(child > 0);
+    int st = 0;
+    waitpid(child, &st, 0);
+    const auto base = fs::temp_directory_path();
+    const auto dead = base / ("prism-solve-0123456789ab-" + std::to_string(child) + "-0");
+    const auto live = base / ("prism-solve-0123456789ab-" + std::to_string(getppid()) + "-0");
+    const auto mine = base / ("prism-solve-0123456789ab-" + std::to_string(getpid()) + "-99999");
+    for (auto& d : {dead, live, mine}) {
+        fs::create_directories(d);
+        write_text(d / "proof.lrat", "1 0\n");
+    }
+    certs::sweep_orphan_work_dirs();
+    CHECK_FALSE(fs::exists(dead));
+    CHECK(fs::exists(live));
+    CHECK(fs::exists(mine));
+    std::error_code ec;
+    fs::remove_all(live, ec);
+    fs::remove_all(mine, ec);
+}
+#  endif
+#endif
+
+#ifdef PRISM_HAS_Z3
+#  ifndef _WIN32
+TEST_CASE("certified: a checker out of memory is reported as such, never as a verdict") {
+    CertTmp tmp;
+    write_text(tmp.dir / "q.cnf", "p cnf 1 2\n1 0\n-1 0\n");
+    write_text(tmp.dir / "q.lrat", "3 0 1 2 0\n");
+    // cake_lpr's heap cap is passed as --CML_HEAP_SIZE and its exhaustion
+    // is reported as running out of memory
+    const auto cake = tmp.dir / "cake_lpr";
+    const auto argf = tmp.dir / "cake.args";
+    std::ofstream(cake) << "#!/bin/sh\necho \"$@\" > '" << argf.string()
+                        << "'\necho 'CakeML heap space exhausted.'\nexit 1\n";
+    fs::permissions(cake, fs::perms::owner_all);
+    auto o = prism::solver::check_lrat(prism::solver::ToolInfo{"cake_lpr", cake, "test"}, tmp.dir / "q.cnf",
+                                       tmp.dir / "q.lrat", 30, 64);
+    CHECK(o.ran);
+    CHECK_FALSE(o.verified);
+    CHECK(o.detail.find("ran out of memory (CakeML heap exhausted)") == 0);
+    CHECK(o.detail.find("heap cap 64 MB") != std::string::npos);
+    CHECK(slurp(argf).find("--CML_HEAP_SIZE=64 ") == 0);
+    // any other checker is killed once its resident memory passes the cap
+    if (std::system("python3 -c 'pass' > /dev/null 2>&1") == 0) {
+        const auto hog = tmp.dir / "lrat-check";
+        std::ofstream(hog) << "#!/bin/sh\nexec python3 -c 'import time\nx = bytearray(400 << 20)\n"
+                              "for i in range(0, len(x), 4096): x[i] = 1\ntime.sleep(20)'\n";
+        fs::permissions(hog, fs::perms::owner_all);
+        auto h = prism::solver::check_lrat(prism::solver::ToolInfo{"lrat-check", hog, "test"}, tmp.dir / "q.cnf",
+                                           tmp.dir / "q.lrat", 30, 100);
+        CAPTURE(h.detail);
+        CHECK(h.ran);
+        CHECK_FALSE(h.verified);
+        CHECK(h.detail.find("ran out of memory (resident memory passed the cap of 100 MB") == 0);
+    }
+}
+#  endif
+
+TEST_CASE("certified: the certification budget of a function leaves PROVED with a note") {
+    auto t = cert_pir(kSafeDiv, "g");
+    REQUIRE(t.fn.has_value());
+    auto o = cert_opts(true);
+    o.certify_budget_s = 1e-9;  // spent before the first certificate query
+    auto v = prism::pir::check_function(*t.fn, o);
+    CHECK(v.status == prism::laws::PROVED);
+    CHECK_FALSE(v.extra.contains("certificate"));
+    REQUIRE(v.extra.count("certify_note") == 1);
+    CHECK(v.extra.at("certify_note").find("certification budget of this function") != std::string::npos);
+    CHECK(v.extra.at("certify_note").find("verdict stays PROVED") != std::string::npos);
+    CHECK(v.extra.at("certificate_vcs") == v.extra.at("properties"));
 }
 #endif

@@ -34,8 +34,9 @@ every reason certification did not happen. Nothing is dropped quietly
   same key, and the cached model is mapped back to the new names.
 - **Store.** `<cache_dir>/queries/<h[0:2]>/<h>.json` holds the kind, the
   winner, the model in canonical names, `certified`, `certificate_info` and
-  `cnf_sha256`. Certified entries also keep `certs/<h>.cnf` and
-  `certs/<h>.lrat`. The default `cache_dir` is
+  `cnf_sha256`. Certified entries also keep their LRAT proof, packed, in
+  `certs/<h>.lratz` (the CNF is not kept: a hit bit-blasts again). The
+  default `cache_dir` is
   `$XDG_CACHE_HOME/prism/solver`, or `~/.cache/prism/solver` when that is not
   set.
 - **Rules.**
@@ -47,8 +48,29 @@ every reason certification did not happen. Nothing is dropped quietly
   - The LRAT checkers get `check_timeout_s`, default `max(60 s, 4 x
     timeout_s)`: checking a multiplier's proof can take longer than finding it.
   - A certified request needs a certified entry. On that hit the formula is
-    bit-blasted again, its CNF must match `cnf_sha256`, and cake_lpr checks
-    the stored proof again.
+    bit-blasted again, its CNF must match `cnf_sha256`, and the checkers
+    check the stored proof again (unpacked into a private work directory).
+  - **Certificate store cap.** `certs/` is capped at
+    `SolveOptions::cert_cache_max_bytes`, else `$PRISM_CERT_CACHE_MAX` (a
+    size: `2G`, `500M`, `0` keeps no proof), else 2 GiB. After each store it
+    is pruned least-recently-used (file mtime; a re-checked hit touches its
+    proof) down to 80% of the cap. A proof in use by this process is never
+    pruned, and a checker never reads the store (it reads its unpacked copy),
+    so pruning by another process cannot pull a proof from under a check. A
+    proof larger than the cap is not kept and its entry is recorded as a
+    plain unsat (`certificate not cached: ...` in the note). A pruned proof
+    means the next certified request solves again. Packing is a lossless
+    varint encoding of the LRAT text (hint and deleted ids as deltas):
+    2.8x smaller on the 2.09 GB proof of `fn_macro_true` (743 MB, 9 s to
+    pack, 16 s to unpack, byte-identical round trip). Solver work
+    directories (`prism-solve-*` in the temp dir) of processes that no
+    longer exist, left by runs that were killed, are removed by the first
+    certified request of a run (they held 3.7 GB on the shared machine
+    when this was measured).
+  - A certified request whose plain answer is already known (a cached plain
+    unsat, or `SolveOptions::known_unsat` from the pir stage) runs only the
+    certificate member (CaDiCaL with LRAT) until the certificate budget; a
+    formula that cannot be certified then returns the known answer at once.
   - UNKNOWN and TIMEOUT are never cached.
 
 ## Portfolio
@@ -148,6 +170,26 @@ newest upstream release; user CPU seconds on the shared 4-core machine):
 | `mul_true` (32-bit `smulo`, 101k vars, 169k clauses) | 9.1 s, 160 MB LRAT | **7.2 s, 117 MB** | `--sat` 11.8 s; `--plain`, `--congruence=false`, `--inprocessing=false` no answer in 120 s; `--elim=false`, `--chrono=0`, `--probe=false`, `--vivify=false`, `--factor=false` 8.9–10.1 s; `--sweep=false` 16.7 s |
 | `widen_mul_true` (64-bit `smulo` of sign-extended 32-bit values, 397k vars, 661k clauses) | 194 s | **76 s** | `--unsat --elim=false` 171 s; `--unsat --congruencexorarity=8` 76 s |
 | `long_mul_true` (64-bit `a*a`, `|a| ≤ 3·10⁹`, 398k vars) | – | no answer in 184 s CPU | – |
+
+The two squarings that stay uncertified were measured again (2026-09-24,
+same CaDiCaL, `--unsat`, loaded machine):
+
+- `fn_macro_true` (32-bit `a*a`, `|a| ≤ 46340`, 3.0 MB CNF): CaDiCaL 65 s
+  wall and a **2.09 GB** LRAT proof; cake_lpr accepts it in 163 s when run
+  alone, more than the default 120 s checker budget (`--timeout 60` gives
+  240 s). A case split on the sign bit does not shrink the work: `a ≥ 0` is
+  0.8 s and a 3.5 MB proof, `a < 0` is 65 s and 1.77 GB.
+- `long_mul_true` (64-bit `a*a`, `|a| ≤ 3·10⁹`, 13 MB CNF): `a ≥ 0` is
+  UNSAT in 2.5 s (and cubes of it on bits 31..28 in 1-2 s each), but
+  `a < 0` has no answer in 150 s, and neither do its cubes on bits 31..28
+  (`0100`, `0101`, `1111`: 90 s each, even `a ∈ [-2^28, -1]`), nor with
+  `--sat`, `--unsat --congruencexorarity=8` or `--unsat --elim=false` (150 s
+  each, niced on the loaded machine). The
+  negative half, the two's-complement multiplier with its high bits set, is
+  what CaDiCaL cannot do; splitting on input bits does not help, so no
+  cube-and-conquer proof composition was added (it would only be sound
+  with every cube's proof lifted into one LRAT proof checked against the
+  original CNF, and there is nothing to compose here).
 
 Congruence closure (gate extraction) is what makes the multiplier miters
 tractable at all; `--unsat` is used for every certificate. Checking the
