@@ -227,6 +227,20 @@ that run), not from these fixes. The 8 new pir false alarms (F11) come with
 those round 3 features and are FAILED by the base binary as well (checked
 on the base build, same tasks): see "Known issues".
 
+**Re-run after the F11 fixes** (branch `claude/undef-f11`, pir stage only,
+2026-09-24; 240 s per task, 2 jobs on a shared machine). The fetched set
+used predates the `--error-label` skip, so it has 1917 tasks (1254
+SUCCESSFUL, 663 FAILED) including the 11 `--error-label` ones:
+
+| stage | wrong proofs | proved (true) | refuted (false) | false alarms | BOUNDED | no answer | timeout / killed |
+|---|---|---|---|---|---|---|---|
+| pir | **0** (1 scored: `nec_ex7-ctor-throw`, an `--error-label` task, see above) | 594/1254 (47.4%) | 344/663 (51.9%) | **0** (was 8: F11) | 13 | 906 (841 NEEDS-HARNESS, 59 ERROR, 6 UNKNOWN) | 39 (3 timeout, 36 killed) |
+
+All 8 F11 tasks are now PROVED and their `_fail` twins
+(`catch_base_offset_mi_fail`, `github_6308_typeid_name_fail`,
+`irep2_throw_primitive_id_fail`) stay refuted. Plus 20 pir FAILED of
+another class.
+
 Plus 4 + 4 pir FAILED of another class (e.g. UNINIT-READ, signed overflow,
 which ESBMC does not check by default). The first run found **4 wrong
 proofs**: S8 (a global's constructor throws before `main`; bmc and pir both
@@ -711,7 +725,7 @@ b`) lets everything it mentions escape. By-value C calls are unchanged. The
 unmodelled call already ruled out a proof (S6), so this only removes wrong
 refutations; `main` is now NEEDS-HARNESS (pir proves it).
 
-*Open* (ESBMC C++ tasks, full fetched set; found by the F8–F10 re-run).
+*Fixed* (ESBMC C++ tasks, full fetched set; found by the F8–F10 re-run).
 **F11. pir: typeinfo and exceptions of class type with bases.** 8
 SUCCESSFUL tasks are FAILED since PIR round 3 (base binary and this branch
 alike): `typeid(...).name()` / `std::any` read the C++ runtime's typeinfo
@@ -722,6 +736,21 @@ inheritance, or rethrown from a nested handler, is not adjusted or kept
 alive (`try_catch/catch_base_offset_mi`, `mi_base_subobject_catch`,
 `lower-exceptions_pointer_catch`, `lower-exceptions_nested_rethrow` (MEM-UAF),
 `cpp/irep2_throw_primitive_id`). Not a soundness issue (no proof is affected).
+*Fix:* (1) a typeinfo object the module only declares (`@_ZTIi = external
+constant ptr`) is modelled as the Itanium `std::type_info` `{ vptr, __name }`
+with `__name` the mangled type (`"i"`), vptr bytes arbitrary; (2) the
+exception header (now 32 bytes) holds the pointer the current handler binds,
+set when a throw enters a handler: the caught base subobject (offset from
+the `__vmi_class_type_info` entry; a base behind a virtual base has a
+run-time offset and is a soft stop, never offset 0) or, for a pointer caught
+by pointer, the thrown pointer's value, and `__cxa_begin_catch` returns it;
+(3) `__cxa_begin_catch` / `__cxa_end_catch` / `__cxa_rethrow` follow the
+Itanium runtime's handler count (negative while rethrown; a rethrown
+exception caught again is not pushed twice and is destroyed only when its
+last handler ends). Regression pairs:
+`tests/conformance/prism/regress/{eh_catch_base_offset,eh_catch_pointer,eh_nested_rethrow,typeid_fundamental,eh_catch_virtual_base}_{true,false}.cpp`
+(pir 4/4 proved, 4/4 refuted and replayed; the virtual-base pair is
+NEEDS-HARNESS by design).
 
 ### Coverage gaps (honest `ERROR` / `NEEDS-HARNESS`, costing completeness)
 

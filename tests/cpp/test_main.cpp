@@ -5259,6 +5259,68 @@ TEST_CASE("pir: interpreter semantics and sha256") {
 }
 
 #ifdef PRISM_HAS_Z3
+TEST_CASE("pir: undef is a fresh value at every use, branching on it is UB (refinement finding 4)") {
+    // LLVM LangRef: every use of an undef value may observe a different
+    // value, and `br i1 undef` / a noundef argument or return of undef is UB.
+    // A single havoc per undef made each of these a wrong PROVED.
+    auto verdict = [](const std::string& ir, const std::string& fn) {
+        auto t = pir_of(ir, fn);
+        REQUIRE(t.fn.has_value());
+        return prism::pir::check_function(*t.fn, 8, 30);
+    };
+    // a value derived from undef, used twice: x - x need not be 0
+    auto sub = verdict("define i32 @f() {\nentry:\n  %a = xor i32 undef, 0\n  %x = sub i32 %a, %a\n"
+                       "  %y = add i32 %x, 1\n  %q = sdiv i32 100, %y\n  ret i32 %q\n}\n",
+                       "f");
+    CHECK(!prism::laws::is_proof(sub.status));
+    CHECK(sub.status == prism::laws::FAILED);
+    // an undef phi input, the phi used twice
+    auto phi = verdict("define i32 @g(i1 %c) {\nentry:\n  br i1 %c, label %a, label %b\n"
+                       "a:\n  br label %m\nb:\n  br label %m\n"
+                       "m:\n  %p = phi i32 [ undef, %a ], [ 7, %b ]\n  %x = sub i32 %p, %p\n"
+                       "  %y = add i32 %x, 1\n  %q = sdiv i32 100, %y\n  ret i32 %q\n}\n",
+                       "g");
+    CHECK(phi.status == prism::laws::FAILED);
+    // ... but not on the path where the phi is defined (dynamic shadow)
+    auto phi_ok = verdict("define i32 @g2(i1 %c) {\nentry:\n  br i1 %c, label %a, label %b\n"
+                          "a:\n  br label %m\nb:\n  br label %m\n"
+                          "m:\n  %p = phi i32 [ undef, %a ], [ 7, %b ]\n  br i1 %c, label %r, label %u\n"
+                          "u:\n  %x = sub i32 %p, %p\n  %y = add i32 %x, 1\n  %q = sdiv i32 100, %y\n"
+                          "  ret i32 %q\nr:\n  ret i32 0\n}\n",
+                          "g2");
+    CHECK(phi_ok.status == prism::laws::PROVED);
+    // branching on undef (or on a value computed from it) is UB
+    auto br = verdict("define i32 @h() {\nentry:\n  %c = icmp eq i32 undef, 0\n  br i1 %c, label %a, label %b\n"
+                      "a:\n  ret i32 0\nb:\n  ret i32 0\n}\n",
+                      "h");
+    CHECK(br.status == prism::laws::FAILED);
+    auto br2 = verdict("define i32 @h2() {\nentry:\n  br i1 undef, label %a, label %b\na:\n  ret i32 0\n"
+                       "b:\n  ret i32 0\n}\n",
+                       "h2");
+    CHECK(br2.status == prism::laws::FAILED);
+    // returning undef from a noundef function is UB; without noundef it is not
+    auto ret = verdict("define noundef i32 @r() {\nentry:\n  %a = add i32 undef, 1\n  ret i32 %a\n}\n", "r");
+    CHECK(ret.status == prism::laws::FAILED);
+    auto ret_ok = verdict("define i32 @r2() {\nentry:\n  %a = add i32 undef, 1\n  ret i32 %a\n}\n", "r2");
+    CHECK(ret_ok.status == prism::laws::PROVED);
+    // freeze picks one value: x - x is 0 again
+    auto frz = verdict("define i32 @z() {\nentry:\n  %a = xor i32 undef, 0\n  %f = freeze i32 %a\n"
+                       "  %x = sub i32 %f, %f\n  %y = add i32 %x, 1\n  %q = sdiv i32 100, %y\n  ret i32 %q\n}\n",
+                       "z");
+    CHECK(frz.status == prism::laws::PROVED);
+    // passing undef to a noundef parameter of an inlined callee is UB
+    auto arg = verdict("define internal i32 @id(i32 noundef %v) {\nentry:\n  ret i32 %v\n}\n"
+                       "define i32 @k() {\nentry:\n  %r = call i32 @id(i32 noundef undef)\n  ret i32 %r\n}\n",
+                       "k");
+    CHECK(arg.status == prism::laws::FAILED);
+    // a value stored from undef reads back as uninitialised bytes
+    auto st = verdict("define i32 @s() {\nentry:\n  %p = alloca i32, align 4\n  %a = or i32 undef, 0\n"
+                      "  store i32 %a, ptr %p, align 4\n  %v = load i32, ptr %p, align 4\n"
+                      "  %x = sub i32 %v, %v\n  %y = add i32 %x, 1\n  %q = sdiv i32 100, %y\n  ret i32 %q\n}\n",
+                      "s");
+    CHECK(!prism::laws::is_proof(st.status));
+}
+
 TEST_CASE("pir: encoder verdicts on straight-line code") {
     auto ovf = pir_of("define i32 @f(i32 %a, i32 %b) {\nentry:\n  %s = add nsw i32 %a, %b\n  ret i32 %s\n}\n", "f");
     REQUIRE(ovf.fn.has_value());

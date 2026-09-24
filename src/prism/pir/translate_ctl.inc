@@ -5,8 +5,10 @@
 //
 // Exceptions. Every call is inlined, so the chain of enclosing invokes of a
 // throw is known while translating it (Tr::handlers). A throw becomes an
-// explicit edge: the exception object gets a 16-byte PRISM header (type id,
-// "rethrown" flag) in front of the thrown object, and the throw jumps to the
+// explicit edge: the exception object gets a 32-byte PRISM header (type id,
+// handler count as in the Itanium ABI runtime (negative: rethrown), the
+// pointer the current handler binds) in front of the thrown object, and the
+// throw jumps to the
 // innermost landing pad whose clauses catch its type (exact typeinfo, public
 // base classes from the module's typeinfo, the libstdc++ exception
 // hierarchy, catch (...)) or that has cleanup code; the landingpad's
@@ -161,6 +163,11 @@ Arg Tr::at(int b, Arg p, int64_t off, int line) {
 namespace {
 
 constexpr uint64_t kCatchAllSel = 0x7FFFFFF0;  // selector of catch (...) (never a type id)
+// PRISM exception header in front of the thrown object: [0] type id,
+// [8] handler count (Itanium ABI: negative while rethrown), [16] the pointer
+// the current handler binds (__cxa_begin_catch's result), [24] unused
+constexpr int64_t kEhHeader = 32;
+constexpr int64_t kBindNone = INT64_MIN, kBindPointer = INT64_MIN + 1;
 
 // libstdc++ exception classes (typeinfo symbol -> public base), for throws
 // by std::__throw_* and catch clauses naming them
@@ -278,12 +285,15 @@ const std::vector<std::string>& Tr::thrown_types() {
 }
 
 // Does class typeinfo t have c as a public, unambiguous base (or equal)?
-// 1 yes, 0 no, -1 unknown (hierarchy not visible).
-int Tr::derives(const std::string& t, const std::string& c, int depth) {
+// 1 yes, 0 no, -1 unknown (hierarchy not visible). off (when given) gets
+// the offset of the c subobject in a t object; a match through a virtual
+// base (offset only known at run time) is unknown then.
+int Tr::derives(const std::string& t, const std::string& c, int depth, int64_t* off) {
+    if (off) *off = 0;
     if (t == c) return 1;
     if (depth > 32) return -1;
     if (auto it = std_exception_bases().find(t); it != std_exception_bases().end())
-        return it->second.empty() ? 0 : derives(it->second, c, depth + 1);
+        return it->second.empty() ? 0 : derives(it->second, c, depth + 1, off);  // single inheritance: offset 0
     const auto* g = m.find_global(t);
     if (!g || g->external || g->init.empty() || g->init[0].v.kind != ir::Value::Aggregate) return -1;
     const auto& el = g->init[0].v.elems;
@@ -296,18 +306,27 @@ int Tr::derives(const std::string& t, const std::string& c, int depth) {
     if (vtn.find("__class_type_info") != std::string::npos) return 0;  // no bases
     if (vtn.find("__si_class_type_info") != std::string::npos) {
         if (el.size() < 3 || el[2].v.kind != ir::Value::Global) return -1;
-        return derives(el[2].v.name, c, depth + 1);
+        return derives(el[2].v.name, c, depth + 1, off);  // the single base is at offset 0
     }
     if (vtn.find("__vmi_class_type_info") != std::string::npos) {
         // { vptr, name, flags, count, (base, offset_flags)* }; bit 1 of offset_flags: public
+        // (offset_flags >> 8: the base's offset; bit 0: virtual base)
         int found = 0;
         bool unknown = false;
         for (std::size_t k = 4; k + 1 < el.size(); k += 2) {
             if (el[k].v.kind != ir::Value::Global || el[k + 1].v.kind != ir::Value::Int) return -1;
-            if (!(el[k + 1].v.bits & 2)) continue;  // non-public base: no match through it
-            int r = derives(el[k].v.name, c, depth + 1);
+            const uint64_t of = el[k + 1].v.bits;
+            if (!(of & 2)) continue;  // non-public base: no match through it
+            int64_t sub = 0;
+            int r = derives(el[k].v.name, c, depth + 1, off ? &sub : nullptr);
             if (r < 0) unknown = true;
-            if (r > 0) ++found;
+            if (r > 0) {
+                ++found;
+                if (off) {
+                    if (of & 1) unknown = true;  // virtual base: offset read from the vtable at run time
+                    *off = (static_cast<int64_t>(of) >> 8) + sub;
+                }
+            }
         }
         if (found > 1) return -1;  // ambiguous base: not modelled
         if (found == 1) return unknown ? -1 : 1;
@@ -316,7 +335,8 @@ int Tr::derives(const std::string& t, const std::string& c, int depth) {
     return -1;
 }
 
-int Tr::catches(const std::string& thrown, const ir::Operand& clause) {
+int Tr::catches(const std::string& thrown, const ir::Operand& clause, int64_t* off) {
+    if (off) *off = 0;
     if (clause.v.kind == ir::Value::Null) return 1;  // catch (...)
     if (clause.v.kind != ir::Value::Global) return -1;
     const auto& c = clause.v.name;
@@ -328,16 +348,24 @@ int Tr::catches(const std::string& thrown, const ir::Operand& clause) {
     }
     if (fundamental_ti(c) || fundamental_ti(thrown)) return 0;
     if (!thrown.starts_with("_ZTI")) return -1;  // unknown library throw
-    return derives(thrown, c, 0);
+    return derives(thrown, c, 0, off);
 }
 
-// (1 enters with selector, 0 passes by, -1 unknown)
-std::pair<int, uint64_t> Tr::enters(const ir::Inst& lp, const std::string& t) {
+// (1 enters with selector, 0 passes by, -1 unknown). bind: what
+// __cxa_begin_catch returns for the handler: the offset of the caught
+// subobject, or kBindPointer for a pointer caught by pointer (the handler
+// binds the thrown pointer's value); kBindNone for cleanup code.
+std::pair<int, uint64_t> Tr::enters(const ir::Inst& lp, const std::string& t, int64_t* bind) {
+    if (bind) *bind = kBindNone;
     for (auto& [kind, o] : lp.clauses) {
         if (kind != "catch") return {-1, 0};  // filter (dynamic exception specification)
-        int r = catches(t, o);
+        int64_t off = 0;
+        int r = catches(t, o, &off);
         if (r < 0) return {-1, 0};
-        if (r > 0) return {1, o.v.kind == ir::Value::Null ? kCatchAllSel : type_id(o.v.name)};
+        if (r > 0) {
+            if (bind) *bind = o.v.kind != ir::Value::Null && pointer_ti(t) ? kBindPointer : off;
+            return {1, o.v.kind == ir::Value::Null ? kCatchAllSel : type_id(o.v.name)};
+        }
     }
     bool cleanup = std::find(lp.flags.begin(), lp.flags.end(), "cleanup") != lp.flags.end();
     return {cleanup ? 1 : 0, 0};
@@ -353,12 +381,20 @@ void Tr::dispatch_type(int cur, Arg exn, const std::string& t, int line) {
             soft_stop(cur, "exception path reachable: landing pad " + h.lpad + " not recognised", line);
             return;
         }
-        auto [r, sel] = enters(*lp, t);
+        int64_t bind = kBindNone;
+        auto [r, sel] = enters(*lp, t, &bind);
         if (r < 0) {
             soft_stop(cur, "exception path reachable: whether a handler catches " + shown + " is not modelled", line);
             return;
         }
         if (r == 0) continue;
+        if (bind != kBindNone) {
+            // the pointer this handler binds (Itanium ABI adjustedPtr): the
+            // thrown pointer's value, or the caught base subobject
+            Arg payload = at(cur, exn, kEhHeader, line);
+            Arg adj = bind == kBindPointer ? ld(cur, payload, kPtrW, line) : bind == 0 ? payload : at(cur, payload, bind, line);
+            st(cur, at(cur, exn, 16, line), adj, line);
+        }
         // frames between the throw and the handler are unwound: their locals end
         for (std::size_t k = h.depth; k < frames.size(); ++k)
             for (auto& a : frames[k]->allocas) mt.end_lifetime(cur, a);
@@ -444,15 +480,18 @@ bool Tr::eh_call(Frame& fr, const ir::Inst& in, int& cur, int line, bool& noretu
     if (n == "__cxa_allocate_exception") {
         Arg sz = arg(0);
         if (sz.width < 64) sz = assign(cur, Op::ZExt, 64, {sz});
-        Arg base = mt.alloc(cur, assign(cur, Op::Add, 64, {sz, Arg::c(64, 16)}), MemKind::Extern, 0, "exception object", line);
+        Arg base = mt.alloc(cur, assign(cur, Op::Add, 64, {sz, Arg::c(64, kEhHeader)}), MemKind::Extern, 0,
+                            "exception object", line);
         st(cur, base, Arg::c(64, 0), line);                // type id (set by the throw)
-        st(cur, at(cur, base, 8, line), Arg::c(64, 0), line);  // rethrown flag
-        set_result(at(cur, base, 16, line));
+        st(cur, at(cur, base, 8, line), Arg::c(64, 0), line);  // handler count
+        Arg payload = at(cur, base, kEhHeader, line);
+        st(cur, at(cur, base, 16, line), payload, line);   // bound pointer (set per handler)
+        set_result(payload);
         out.uses_memory = true;
         return true;
     }
     if (n == "__cxa_free_exception") {
-        mt.end_lifetime(cur, at(cur, arg(0), -16, line));
+        mt.end_lifetime(cur, at(cur, arg(0), -kEhHeader, line));
         return true;
     }
     if (n == "__cxa_throw") {
@@ -460,7 +499,7 @@ bool Tr::eh_call(Frame& fr, const ir::Inst& in, int& cur, int line, bool& noretu
             throw Unenc{"UNENCODED: __cxa_throw with a non-constant type"};
         thrown_types();
         const auto& t = in.ops[1].v.name;
-        Arg exn = at(cur, arg(0), -16, line);
+        Arg exn = at(cur, arg(0), -kEhHeader, line);
         st(cur, exn, Arg::c(64, type_id(t)), line);
         raise(cur, exn, t, line);
         noreturn = true;
@@ -473,9 +512,10 @@ bool Tr::eh_call(Frame& fr, const ir::Inst& in, int& cur, int line, bool& noretu
         thrown_types();
         auto t = std_throw_type(n);
         if (t.empty()) t = n;
-        Arg base = mt.alloc(cur, Arg::c(64, 16 + 64), MemKind::Extern, 2, "exception object (" + n + ")", line);
+        Arg base = mt.alloc(cur, Arg::c(64, kEhHeader + 64), MemKind::Extern, 2, "exception object (" + n + ")", line);
         st(cur, base, Arg::c(64, type_id(t)), line);
         st(cur, at(cur, base, 8, line), Arg::c(64, 0), line);
+        st(cur, at(cur, base, 16, line), at(cur, base, kEhHeader, line), line);
         out.uses_memory = true;
         raise(cur, base, t, line);
         noreturn = true;
@@ -484,17 +524,29 @@ bool Tr::eh_call(Frame& fr, const ir::Inst& in, int& cur, int line, bool& noretu
     if (n == "__cxa_begin_catch" || n == "__cxa_get_exception_ptr") {
         Arg exn = arg(0);
         if (n == "__cxa_begin_catch") {
+            // Itanium ABI runtime: handler count c -> (c < 0 ? -c : c) + 1; the
+            // exception is pushed on the caught stack unless it is on top
+            // already (caught again after `throw;`)
             Arg slot = caught_slot();
             Arg d = ld(cur, slot, 64, line);
             soft_guard(assign(cur, Op::Ult, 1, {d, Arg::c(64, 8)}, "c"), "exception handlers nested deeper than 8");
+            Arg cnt_p = at(cur, exn, 8, line);
+            Arg c = ld(cur, cnt_p, 64, line);
+            Arg neg = assign(cur, Op::Slt, 1, {c, Arg::c(64, 0)}, "c");
+            Arg abs = assign(cur, Op::Select, 64, {neg, assign(cur, Op::Sub, 64, {Arg::c(64, 0), c}), c});
+            st(cur, cnt_p, assign(cur, Op::Add, 64, {abs, Arg::c(64, 1)}), line);
+            // slot[d] is the top (slot[0] is the depth itself, never an exception pointer)
+            int te = newvar(tmpname("p"), kPtrW);
+            mt.gep(cur, te, slot, ir::Type{ir::Type::Int, 64, "i64", {}}, {d}, true, line, 1);
+            Arg top = ld(cur, Arg::v(te, kPtrW), kPtrW, line);
+            Arg push = assign(cur, Op::Ne, 1, {top, exn}, "c");
+            Arg nd = assign(cur, Op::Add, 64, {d, assign(cur, Op::ZExt, 64, {push})});
             int e = newvar(tmpname("p"), kPtrW);
-            mt.gep(cur, e, slot, ir::Type{ir::Type::Int, 64, "i64", {}}, {assign(cur, Op::Add, 64, {d, Arg::c(64, 1)})},
-                   true, line, 2);
+            mt.gep(cur, e, slot, ir::Type{ir::Type::Int, 64, "i64", {}}, {nd}, true, line, 2);
             st(cur, Arg::v(e, kPtrW), exn, line);
-            st(cur, slot, assign(cur, Op::Add, 64, {d, Arg::c(64, 1)}), line);
-            st(cur, at(cur, exn, 8, line), Arg::c(64, 0), line);  // not rethrown (yet)
+            st(cur, slot, nd, line);
         }
-        set_result(at(cur, exn, 16, line));
+        set_result(ld(cur, at(cur, exn, 16, line), kPtrW, line));  // the pointer the handler binds
         return true;
     }
     if (n == "__cxa_end_catch" || n == "__cxa_rethrow") {
@@ -508,26 +560,36 @@ bool Tr::eh_call(Frame& fr, const ir::Inst& in, int& cur, int line, bool& noretu
         int e = newvar(tmpname("p"), kPtrW);
         mt.gep(cur, e, slot, ir::Type{ir::Type::Int, 64, "i64", {}}, {d}, true, line, 1);
         Arg exn = ld(cur, Arg::v(e, kPtrW), kPtrW, line);
+        Arg cnt_p = at(cur, exn, 8, line);
+        Arg c = ld(cur, cnt_p, 64, line);
         if (n == "__cxa_rethrow") {
-            st(cur, at(cur, exn, 8, line), Arg::c(64, 1), line);
+            // handler count c -> -c: marked rethrown (the handlers' end_catch keep it alive)
+            st(cur, cnt_p, assign(cur, Op::Sub, 64, {Arg::c(64, 0), c}), line);
             raise(cur, exn, std::nullopt, line);
             noreturn = true;
             return true;
         }
-        st(cur, slot, assign(cur, Op::Sub, 64, {d, Arg::c(64, 1)}), line);
-        // not rethrown: destroy the exception object (its destructor, then the storage)
-        Arg flag = ld(cur, at(cur, exn, 8, line), 64, line);
+        // Itanium ABI runtime: rethrown (c < 0): c + 1, never destroyed here;
+        // otherwise c - 1, destroyed when it reaches 0. At 0 it leaves the
+        // caught stack.
+        Arg neg = assign(cur, Op::Slt, 1, {c, Arg::c(64, 0)}, "c");
+        Arg nc = assign(cur, Op::Select, 64,
+                        {neg, assign(cur, Op::Add, 64, {c, Arg::c(64, 1)}), assign(cur, Op::Sub, 64, {c, Arg::c(64, 1)})});
+        st(cur, cnt_p, nc, line);
+        Arg gone = assign(cur, Op::Eq, 1, {nc, Arg::c(64, 0)}, "c");
+        st(cur, slot, assign(cur, Op::Sub, 64, {d, assign(cur, Op::ZExt, 64, {gone})}), line);
+        // not rethrown and no handler left: destroy the exception object (its destructor, then the storage)
         int destroy = newblock("eh.destroy"), done = newblock("eh.done");
         Term br;
         br.kind = Term::Br;
-        br.cond = assign(cur, Op::Eq, 1, {flag, Arg::c(64, 0)}, "c");
+        br.cond = assign(cur, Op::Eq, 1, {c, Arg::c(64, 1)}, "c");
         br.t = destroy;
         br.f = done;
         out.blocks[static_cast<std::size_t>(cur)].term = br;
         cur = destroy;
         thrown_types();
         Arg tid = ld(cur, exn, 64, line);
-        Arg payload = at(cur, exn, 16, line);
+        Arg payload = at(cur, exn, kEhHeader, line);
         for (auto& [t, dtor] : type_dtor) {
             if (dtor.empty()) continue;
             int yes = newblock("eh.dtor"), no = newblock("eh.dtor.next");

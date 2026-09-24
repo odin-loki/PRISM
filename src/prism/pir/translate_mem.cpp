@@ -245,6 +245,47 @@ Arg MemTr::global(const std::string& name) {
     }
     if (g->thread_local_) throw Unenc{"UNENCODED: thread_local global @" + name};
     auto size = lay_.alloc_size(g->ty);
+    if (g->external && name.starts_with("_ZTI") && name.size() > 4) {
+        // A typeinfo object of the C++ runtime (fundamental and pointer types,
+        // library classes), declared `external constant ptr`: the Itanium ABI
+        // std::type_info layout { vptr, const char* __name } with __name the
+        // mangled type ("i" for @_ZTIi, as the runtime's _ZTS strings), so
+        // typeid(int).name(), == and before() read defined bytes. The vptr is
+        // arbitrary (PRISM does not model the runtime's type_info vtables).
+        mark_memory();
+        Stmt s;
+        s.kind = Stmt::Alloc;
+        s.dst = t_.newvar("@" + name, kPtrW);
+        s.args = {c64(16)};
+        s.mkind = MemKind::Const;
+        s.init = 2;
+        s.align = 8;
+        s.msg = "@" + name + " (C++ runtime type_info)";
+        t_.push(-1, s);
+        Arg p = Arg::v(s.dst, kPtrW);
+        globals_[name] = p;
+        const std::string nm = name.substr(4);
+        Stmt n;
+        n.kind = Stmt::Alloc;
+        n.dst = t_.newvar("@_ZTS" + nm, kPtrW);
+        n.args = {c64(nm.size() + 1)};
+        n.mkind = MemKind::Const;
+        n.init = 1;
+        n.align = 1;
+        n.msg = "@_ZTS" + nm + " (C++ runtime type name)";
+        t_.push(-1, n);
+        Arg np = Arg::v(n.dst, kPtrW);
+        ir::Value str;
+        str.kind = ir::Value::Str;
+        str.bytes = nm;
+        str.bytes.push_back('\0');
+        emit_init(np, 0, ir::Type{ir::Type::Array, 0, "", {ir::Type{ir::Type::Int, 8, "i8", {}}}}, str, "_ZTS" + nm);
+        Stmt st;
+        st.kind = Stmt::Store;
+        st.args = {ptr_add(-1, p, c64(8)), np, Arg::c(1, 1)};
+        t_.push(-1, st);
+        return p;
+    }
     if (g->external && size == 0) {
         // The C++ runtime's typeinfo vtables (referenced from every class's
         // typeinfo, which vtables point to): an object PRISM knows nothing
@@ -350,8 +391,14 @@ void MemTr::emit_init(Arg base, uint64_t offs, const ir::Type& ty, const ir::Val
         case ir::Value::Null: return;
         case ir::Value::Undef:
         case ir::Value::Poison:
-            if (ty.kind == ir::Type::Int || ty.kind == ir::Type::Ptr)
-                put(offs, t_.havoc(-1, value_width(ty, "initializer of"), false, false));
+            if (ty.kind == ir::Type::Int || ty.kind == ir::Type::Ptr) {
+                // undef bytes: every load may read another value, so they are
+                // stored as uninitialised (refinement finding 4), like `store undef`
+                Stmt st;
+                st.kind = Stmt::Store;
+                st.args = {at(offs), t_.havoc(-1, value_width(ty, "initializer of"), false, false), Arg::c(1, 0)};
+                t_.push(-1, st);
+            }
             return;  // aggregate undef: padding
         case ir::Value::Global: put(offs, global(v.name)); return;
         case ir::Value::ConstExpr:

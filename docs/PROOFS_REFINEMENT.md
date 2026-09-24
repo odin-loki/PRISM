@@ -511,7 +511,27 @@ is claimed for them:
    value). The Lean model accepts `undef` only under `freeze` and as a
    stored value, where one arbitrary value is the LangRef semantics; the
    exporter prints `undef` and the checker refuses it elsewhere (2 functions
-   in `testdata`). Not fixed.
+   in `testdata`). **Fixed in `translate.cpp`:** a static may-undef analysis
+   gives every value computed from `undef` (through phis, `select`, casts,
+   arithmetic, non-inlined calls) a one-bit undef shadow, set per path; each
+   non-phi use of such a value reads a fresh havoc (per use site and per
+   execution; `freeze` picks one value), a store of it writes uninitialised
+   bytes (as does an `undef` global initialiser), and `br` on it, a `noundef`
+   return or a `noundef` argument fails a `UB-POISON` check (prop `undef`).
+   An undef argument to an inlined callee without `noundef`, or an undef
+   return from one, is refused (`UNENCODED`). A division, load or store
+   through such a value fails its existing check, since the fresh value
+   ranges over everything. Before the fix, 7 of the adversarial IR cases of
+   the doctest "pir: undef is a fresh value at every use ..." were wrong
+   `PROVED`s (`x - x` of one undef-derived value, of an undef phi, `br` on
+   undef and on `icmp undef`, `ret` from a `noundef` function, a `noundef`
+   argument, and a stored-then-loaded undef); all are now `FAILED`, and the
+   path-sensitive, `freeze` and non-`noundef` return cases stay `PROVED`.
+   The Lean side is unchanged (it still accepts `undef` only under
+   `freeze`/`store`, whose C++ translation did not change), so functions
+   with `undef` elsewhere stay `outside`; `tools/pir_lean_check.py` after
+   the fix: `testdata` 915 `agree` + 21 `agree-ext`, `tests/pir` 46 + 9,
+   0 mismatches.
 5. **`freeze poison` is reported.** `freeze` translates its operand with
    `Tr::operand`, which fails `UB-POISON` on a literal `poison`. In LLVM
    `freeze poison` is defined (an arbitrary value). The extended semantics
@@ -539,8 +559,9 @@ check the C++ interpreter uses Z3's `bvudiv x 0 = ~0`, the Lean model Lean's
   harness objects of `Tr::enter_frame`), pointers stored in memory and
   pointer phis, selects and comparisons, variable-size `alloca`, aggregate
   loads (raw byte copies with per-byte shadows).
-* **Nondeterminism beyond `freeze`.** `undef` elsewhere (finding 4) needs
-  set-valued registers; the oracle semantics covers exactly the places where
+* **Nondeterminism beyond `freeze`.** `undef` elsewhere (finding 4, fixed
+  in the C++ translator by per-use fresh values) needs set-valued registers
+  in the Lean model; the oracle semantics covers exactly the places where
   LLVM makes one arbitrary choice.
 * **Certificates, not a translator theorem.** The extended theorems hold for
   every function whose certificate `validB` accepts, which the checker
@@ -551,5 +572,5 @@ check the C++ interpreter uses Z3's `bvudiv x 0 = ~0`, the Lean model Lean's
   through a proof that the CFG and `PrismSem.Stmt` programs are equivalent.
 * **The C++ encoder.** Relating `pir_vcs` (Z3) to this PIR semantics is the
   encoder row of 8.2 (proofs/semantics proves a model of it).
-* **Fixing findings 2, 4 and 5** in `translate.cpp` (not done here: the
-  translator is outside this work's scope).
+* **Fixing findings 2 and 5** in `translate.cpp` (finding 4 is fixed there;
+  the Lean translator still refuses `undef` outside `freeze`/`store`).

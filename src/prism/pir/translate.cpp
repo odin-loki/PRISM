@@ -16,6 +16,8 @@
 //   __assert_fail          reached                    FUNC-CONTRACT
 //   read of an uninitialised local (instrumented before mem2reg) UNINIT-READ
 //   clang-folded UB (poison constant / UB diagnostic)  per diagnostic
+//   undef: a fresh value at every use; br on it, or passing/returning it
+//          as noundef                                 UB-POISON (prop "undef")
 //   memory (alloca/load/store/getelementptr/memcpy/free ...): translate_mem.cpp
 //   floating point (IEEE, fptosi range FLOAT-CAST-OVF): translate_fp.cpp
 //   exceptions, setjmp/longjmp, indirect calls, inline asm: translate_ctl.inc
@@ -30,6 +32,7 @@
 #include "translate_mem.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <map>
 #include <set>
@@ -77,6 +80,10 @@ struct Frame {
     std::map<std::string, Arg> env;
     std::map<std::string, std::pair<int, int>> pairs;  // with.overflow result vars
     std::map<int, Arg> shadow;                          // var -> uninit shadow (i1)
+    // var -> undef shadow (i1): the value may be (computed from) LLVM undef,
+    // so every use may observe a different value (refinement finding 4)
+    std::map<int, Arg> undef;
+    std::map<std::string, std::array<bool, 2>> upair;   // pair fields that may be undef
     int ret_block = -1;
     int ret_var = -1;
     std::map<std::string, const ir::Inst*> defs;        // result name -> defining instruction
@@ -155,9 +162,9 @@ struct Tr final : pirmem::TrApi {
     static const ir::Inst* landingpad_of(const ir::Function& f, const std::string& lpad);
     uint64_t type_id(const std::string& tinfo);
     const std::vector<std::string>& thrown_types();
-    int derives(const std::string& t, const std::string& c, int depth);
-    int catches(const std::string& thrown, const ir::Operand& clause);
-    std::pair<int, uint64_t> enters(const ir::Inst& lp, const std::string& t);
+    int derives(const std::string& t, const std::string& c, int depth, int64_t* off = nullptr);
+    int catches(const std::string& thrown, const ir::Operand& clause, int64_t* off = nullptr);
+    std::pair<int, uint64_t> enters(const ir::Inst& lp, const std::string& t, int64_t* bind = nullptr);
     void raise(int& cur, Arg exn, const std::optional<std::string>& type, int line);
     void dispatch_type(int cur, Arg exn, const std::string& type, int line);
     Arg caught_slot();
@@ -280,6 +287,13 @@ struct Tr final : pirmem::TrApi {
                                     : "read of an uninitialised local variable",
                               line);
                     }
+                    if (auto u = fr.undef.find(a.var); u != fr.undef.end()) {
+                        // (computed from) undef: this use may observe any value
+                        // (LangRef "Undefined Values"; refinement finding 4)
+                        Arg h = havoc(b, a.width, false, false);
+                        if (u->second.is_const) return h;
+                        return assign(b, Op::Select, a.width, {u->second, h, a}, "u");
+                    }
                 }
                 return a;
             }
@@ -314,6 +328,142 @@ struct Tr final : pirmem::TrApi {
         {
                 throw Unenc{"UNENCODED: operand " + o.ty.text + " " + o.v.text};
         }
+    }
+
+    // The undef shadow of an operand: 1 for a literal undef, the shadow of a
+    // value computed from undef, else 0.
+    Arg ushadow(Frame& fr, const ir::Operand& o) {
+        if (o.v.kind == ir::Value::Undef) return Arg::c(1, 1);
+        if (o.v.kind != ir::Value::Local) return Arg::c(1, 0);
+        int v = var_of(fr, o.v.name);
+        if (v < 0) return Arg::c(1, 0);
+        auto it = fr.undef.find(v);
+        return it == fr.undef.end() ? Arg::c(1, 0) : it->second;
+    }
+    bool may_undef(Frame& fr, const ir::Operand& o) {
+        Arg u = ushadow(fr, o);
+        return !u.is_const || u.bits != 0;
+    }
+    // A use where an undef value is immediate UB (LangRef: branch on undef,
+    // an undef argument or return value with noundef).
+    void undef_ub(Frame& fr, const ir::Operand& o, int b, const std::string& what, int line) {
+        if (!may_undef(fr, o)) return;
+        check(b, ushadow(fr, o), "undef", "UB-POISON", what + " (undefined behaviour)", line);
+    }
+    static bool noundef(const std::string& attrs) { return attrs.find("noundef") != std::string::npos; }
+
+    // Static may-undef analysis of a frame (fixpoint), then one i1 shadow
+    // variable per value that may be computed from undef. Values that
+    // never carry undef: freeze (one arbitrary choice), load (undef bytes in
+    // memory are the uninitialised-byte shadow), alloca, landingpad, and the
+    // result of an inlined call (its return is checked noundef or refused).
+    void undef_analysis(Frame& fr) {
+        const auto& f = *fr.f;
+        std::set<std::string> mu;
+        auto is_u = [&](const ir::Operand& o) {
+            return o.v.kind == ir::Value::Undef || (o.v.kind == ir::Value::Local && mu.count(o.v.name));
+        };
+        bool changed = true;
+        while (changed) {
+            changed = false;
+            auto mark = [&](const std::string& n) {
+                if (mu.insert(n).second) changed = true;
+            };
+            for (auto& bl : f.blocks)
+                for (auto& in : bl.insts) {
+                    if (in.result.empty() || mu.count(in.result)) continue;
+                    const auto& op = in.op;
+                    if (op == "freeze" || op == "load" || op == "alloca" || op == "landingpad") continue;
+                    if (fr.pairs.count(in.result)) {
+                        auto& pu = fr.upair[in.result];
+                        std::array<bool, 2> nu = pu;
+                        if (op == "insertvalue" && in.ops.size() == 2 && in.indices.size() == 1 &&
+                            in.indices[0] <= 1) {
+                            const auto& agg = in.ops[0];
+                            if (agg.v.kind == ir::Value::Undef || agg.v.kind == ir::Value::Poison)
+                                nu = {true, true};
+                            else if (agg.v.kind == ir::Value::Local && fr.upair.count(agg.v.name))
+                                nu = fr.upair[agg.v.name];
+                            nu[in.indices[0]] = is_u(in.ops[1]);
+                        } else if (op == "call") {
+                            for (auto& o : in.ops)
+                                if (is_u(o) && !noundef(o.attrs)) nu = {true, true};
+                        }
+                        if (nu != pu) {
+                            pu = nu;
+                            changed = true;
+                        }
+                        continue;
+                    }
+                    if (op == "phi") {
+                        for (auto& [o, _] : in.incoming)
+                            if (is_u(o)) {
+                                mark(in.result);
+                                break;
+                            }
+                        continue;
+                    }
+                    if (op == "extractvalue") {
+                        if (!in.ops.empty() && in.ops[0].v.kind == ir::Value::Local && in.indices.size() == 1 &&
+                            in.indices[0] <= 1)
+                            if (auto it = fr.upair.find(in.ops[0].v.name);
+                                it != fr.upair.end() && it->second[in.indices[0]])
+                                mark(in.result);
+                        continue;
+                    }
+                    if (op == "call" || op == "invoke") {
+                        // a defined callee is inlined: undef arguments are checked
+                        // (noundef) or refused, its return value is checked
+                        if (in.callee.empty() || m.find(in.callee)) continue;
+                        for (auto& o : in.ops)
+                            if (is_u(o) && !noundef(o.attrs)) {
+                                mark(in.result);
+                                break;
+                            }
+                        continue;
+                    }
+                    for (auto& o : in.ops)
+                        if (is_u(o)) {
+                            mark(in.result);
+                            break;
+                        }
+                }
+        }
+        for (auto& bl : f.blocks)
+            for (auto& in : bl.insts) {
+                if (in.result.empty() || !mu.count(in.result)) continue;
+                int v = var_of(fr, in.result);
+                if (v < 0) continue;
+                // a landing-pad phi's inputs come from throw edges, an
+                // extractvalue reads a pair field: both statically undef
+                if ((in.op == "phi" && landingpad_of(f, bl.name)) || in.op == "extractvalue") {
+                    fr.undef[v] = Arg::c(1, 1);
+                    continue;
+                }
+                fr.undef[v] = Arg::v(newvar(fr.prefix + in.result + ".undef", 1), 1);
+            }
+    }
+
+    // Set the undef shadow of a non-phi instruction's result: the OR of its
+    // operands' shadows (noundef call arguments are checked instead).
+    void undef_def(Frame& fr, const ir::Inst& in, int b) {
+        if (in.result.empty()) return;
+        int v = var_of(fr, in.result);
+        if (v < 0) return;
+        auto it = fr.undef.find(v);
+        if (it == fr.undef.end() || it->second.is_const) return;
+        Arg acc = Arg::c(1, 0);
+        for (auto& o : in.ops) {
+            if ((in.op == "call" || in.op == "invoke") && noundef(o.attrs)) continue;
+            Arg u = ushadow(fr, o);
+            if (u.is_const && u.bits == 0) continue;
+            if (u.is_const || (acc.is_const && acc.bits != 0)) {
+                acc = Arg::c(1, 1);
+                continue;
+            }
+            acc = acc.is_const ? u : assign(b, Op::Or, 1, {acc, u}, "u");
+        }
+        emit_assign(b, it->second.var, Op::Copy, {acc});
     }
 
     void enter_frame(Frame& fr) {
@@ -388,6 +538,7 @@ struct Tr final : pirmem::TrApi {
                     int sv = newvar(fr.prefix + in.result + ".uninit", 1);
                     fr.shadow[v] = Arg::v(sv, 1);
                 }
+        undef_analysis(fr);
     }
 
     // Blocks reachable from the entry along normal edges (br, switch, the
@@ -462,6 +613,11 @@ struct Tr final : pirmem::TrApi {
                         ps.block = cur;
                         ps.dst = sh->second.var;
                     }
+                    PPhi pu;  // undef shadow
+                    if (auto uh = fr.undef.find(dst); uh != fr.undef.end() && !uh->second.is_const) {
+                        pu.block = cur;
+                        pu.dst = uh->second.var;
+                    }
                     for (auto& [o, pred] : in.incoming) {
                         int kind = o.v.kind == ir::Value::Undef ? 1 : o.v.kind == ir::Value::Poison ? 2 : 0;
                         Arg a;
@@ -474,9 +630,12 @@ struct Tr final : pirmem::TrApi {
                                 if (auto it = fr.shadow.find(a.var); it != fr.shadow.end()) s = it->second;
                             ps.in.emplace_back(fr.prefix + pred, -1, s, 0);
                         }
+                        if (pu.dst >= 0)
+                            pu.in.emplace_back(fr.prefix + pred, -1, kind != 0 ? Arg::c(1, 1) : ushadow(fr, o), 0);
                     }
                     pphis.push_back(std::move(p));
                     if (ps.dst >= 0) pphis.push_back(std::move(ps));
+                    if (pu.dst >= 0) pphis.push_back(std::move(pu));
                     continue;
                 }
                 if (in.op == "invoke") {
@@ -528,6 +687,9 @@ struct Tr final : pirmem::TrApi {
             // re-throw after cleanup code: the exception continues to the next handler
             if (in.ops.empty() || in.ops[0].v.kind != ir::Value::Local || !fr.pairs.count(in.ops[0].v.name))
                 throw Unenc{"UNENCODED: resume of " + (in.ops.empty() ? std::string("?") : in.ops[0].ty.text)};
+            if (auto pu = fr.upair.find(in.ops[0].v.name); pu != fr.upair.end() && pu->second[0])
+                check(cur, Arg::c(1, 1), "undef", "UB-POISON", "resume of an undef exception (undefined behaviour)",
+                      line);
             int ev = fr.pairs[in.ops[0].v.name].first;
             raise(cur, Arg::v(ev, kPtrW), std::nullopt, line);
             return;
@@ -553,6 +715,7 @@ struct Tr final : pirmem::TrApi {
                 t.kind = Term::Br;
                 if (in.ops[0].ty.kind != ir::Type::Int || in.ops[0].ty.bits != 1)
                     throw Unenc{"UNENCODED: br on " + in.ops[0].ty.text};
+                undef_ub(fr, in.ops[0], cur, "branch on an undef value", line);
                 t.cond = operand(fr, in.ops[0], cur, line);
                 t.t = tgt(in.targets[0]);
                 t.f = tgt(in.targets[1]);
@@ -564,6 +727,15 @@ struct Tr final : pirmem::TrApi {
         std::optional<Arg> v;
         bool raw = !in.ops.empty() && in.ops[0].v.kind == ir::Value::Local && fr.env.count(in.ops[0].v.name) &&
                    !fr.env[in.ops[0].v.name].is_const && fr.raw.count(fr.env[in.ops[0].v.name].var);
+        if (!in.ops.empty() && may_undef(fr, in.ops[0])) {
+            // LangRef: returning undef from a noundef function is UB. An
+            // inlined callee's value would flow on to several uses in the
+            // caller as one value: refused unless the return is noundef.
+            if (noundef(fr.f->ret_attrs))
+                undef_ub(fr, in.ops[0], cur, "undef value returned from a noundef function", line);
+            else if (fr.ret_block >= 0)
+                throw Unenc{"UNENCODED: undef value returned from @" + fr.f->name + " (no noundef)"};
+        }
         if (!in.ops.empty()) v = operand(fr, in.ops[0], cur, line, !raw);
         if (fr.ret_shadow >= 0 && v) {
             Arg s = Arg::c(out.vars[static_cast<std::size_t>(fr.ret_shadow)].width, 0);
@@ -704,6 +876,7 @@ struct Tr final : pirmem::TrApi {
             for (auto& fl : in.flags) what += " " + fl;
             throw Unenc{"UNENCODED: " + what};
         }
+        undef_def(fr, in, cur);
         if (mem_inst(fr, in, cur, line)) return;
         {
             // floating point (translate_fp.cpp)
@@ -814,6 +987,22 @@ struct Tr final : pirmem::TrApi {
     void call(Frame& fr, const ir::Inst& in, int& cur, ir::DILoc l, bool& noreturn) {
         int line = l.line;
         const auto& n = in.callee;
+        {
+            // undef arguments (refinement finding 4): UB for a noundef
+            // parameter; an inlined callee would use the value as one value,
+            // so without noundef the call is refused
+            const auto* def = n.empty() ? nullptr : m.find(n);
+            for (std::size_t i = 0; i < in.ops.size(); ++i) {
+                const auto& o = in.ops[i];
+                if (!may_undef(fr, o)) continue;
+                if (noundef(o.attrs) || (def && i < def->params.size() && noundef(def->params[i].attrs)))
+                    undef_ub(fr, o, cur, "undef value passed as a noundef argument", line);
+                else if (!in.is_asm && (def || n.empty()))
+                    throw Unenc{"UNENCODED: undef value passed to " + (n.empty() ? std::string("an indirect call") : "@" + n) +
+                                " (no noundef)"};
+            }
+            if (in.callee_op) undef_ub(fr, *in.callee_op, cur, "call through an undef function pointer", line);
+        }
         if (in.is_asm) {
             asm_call(fr, in, cur, line);
             return;
@@ -1251,6 +1440,13 @@ struct Tr final : pirmem::TrApi {
                         else  // per-byte mask of a raw copy: initialised = not uninitialised
                             init = assign(cur, Op::Xor, s.width, {s, Arg::c(s.width, ~uint64_t{0})}, "init");
                     }
+                if (may_undef(fr, vo)) {
+                    // storing (a value computed from) undef writes indeterminate bytes
+                    if (init.width != 1) throw Unenc{"UNENCODED: store of a raw copy computed from undef"};
+                    Arg u = ushadow(fr, vo);
+                    Arg d = u.is_const ? Arg::c(1, 0) : assign(cur, Op::Eq, 1, {u, Arg::c(1, 0)}, "init");
+                    init = init.is_const ? (init.bits != 0 ? d : init) : assign(cur, Op::And, 1, {init, d}, "init");
+                }
             }
             Arg p = operand(fr, in.ops[1], cur, line);
             mt.store(cur, p, v, init, vo.ty, in.align, line);

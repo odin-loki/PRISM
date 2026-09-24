@@ -1,0 +1,8 @@
+format_version: 1
+input_files: eh_catch_virtual_base_true.cpp
+language: C++
+property: no-div0
+expected:
+  eh_catch_virtual_base_true: true
+expect_status:
+  eh_catch_virtual_base_true: NEEDS-HARNESS
