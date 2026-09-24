@@ -1993,6 +1993,105 @@ FunctionInfo tag_nondet_sites(FunctionInfo fn) {
     return fn;
 }
 
+// SV-COMP's `__VERIFIER_assert(int cond)`, when the unit defines it as
+// `if (!cond) { <reach_error() / abort() / __VERIFIER_error() / ERROR:> }`
+// (optionally followed by `return;`): the body has no effect but ending the
+// run on a false condition, so each call statement `__VERIFIER_assert(E);`
+// is checked as `assert((int)(E));` (a FUNC-CONTRACT property, the argument
+// converted to the parameter type as in the call). The rewrite keeps the
+// text length, so source positions computed from body offsets (nondet tags,
+// loop positions of exported invariants) are unchanged. Any other definition
+// leaves the call unmodelled (NEEDS-HARNESS).
+bool canonical_verifier_assert(const std::vector<FunctionInfo>& functions) {
+    const FunctionInfo* def = nullptr;
+    for (auto& f : functions)
+        if (f.name == "__VERIFIER_assert") {
+            if (def) return false;  // several definitions: not certain which one runs
+            def = &f;
+        }
+    if (!def || def->params.size() != 1) return false;
+    auto norm = [](std::string t) {
+        std::string o;
+        for (char ch : t)
+            if (!std::isspace(static_cast<unsigned char>(ch))) o.push_back(ch);
+        return o;
+    };
+    // params are (type, name)
+    if (norm(def->params[0].first) != "int" && norm(def->params[0].first) != "_Bool") return false;
+    const std::string p = def->params[0].second;
+    std::string b = norm(def->body);
+    if (b.size() >= 2 && b.front() == '{' && b.back() == '}') b = b.substr(1, b.size() - 2);
+    std::string head;
+    for (auto h : {"if(!(" + p + "))", "if(!" + p + ")"})
+        if (b.starts_with(h)) head = h;
+    if (head.empty()) return false;
+    b = b.substr(head.size());
+    if (b.empty() || b[0] != '{') return false;
+    int depth = 0;
+    std::size_t close = std::string::npos;
+    for (std::size_t i = 0; i < b.size(); ++i) {
+        if (b[i] == '{') ++depth;
+        if (b[i] == '}' && --depth == 0) {
+            close = i;
+            break;
+        }
+    }
+    if (close == std::string::npos) return false;
+    auto rest = b.substr(close + 1);
+    if (!rest.empty() && rest != "return;") return false;
+    std::string x = b.substr(1, close - 1);
+    bool exits = false;
+    for (std::size_t i = 0; i < x.size();) {
+        bool hit = false;
+        for (std::string tok : {"{", "}", "ERROR:", "reach_error();", "abort();", "__VERIFIER_error();"})
+            if (x.compare(i, tok.size(), tok) == 0) {
+                if (tok.size() > 7) exits = exits || tok != "ERROR:";
+                i += tok.size();
+                hit = true;
+                break;
+            }
+        if (!hit) return false;
+    }
+    return exits;
+}
+
+FunctionInfo rewrite_verifier_assert(FunctionInfo fn) {
+    static constexpr std::string_view C = "__VERIFIER_assert";
+    std::string& b = fn.body;
+    auto ident = [](char ch) { return std::isalnum(static_cast<unsigned char>(ch)) || ch == '_'; };
+    for (std::size_t i = b.find(C); i != std::string::npos; i = b.find(C, i + 1)) {
+        if (i > 0 && ident(b[i - 1])) continue;
+        std::size_t k = i + C.size();
+        while (k < b.size() && (b[k] == ' ' || b[k] == '\t')) ++k;
+        if (k >= b.size() || b[k] != '(') continue;
+        // a call statement: preceded by the start of a statement
+        std::size_t q = i;
+        while (q > 0 && std::isspace(static_cast<unsigned char>(b[q - 1]))) --q;
+        if (q > 0 && b[q - 1] != ';' && b[q - 1] != '{' && b[q - 1] != '}' && b[q - 1] != ':' && b[q - 1] != ')')
+            continue;
+        // the matching `)` followed by `;`
+        int depth = 0;
+        std::size_t close = std::string::npos;
+        for (std::size_t j = k; j < b.size(); ++j) {
+            if (b[j] == '(') ++depth;
+            if (b[j] == ')' && --depth == 0) {
+                close = j;
+                break;
+            }
+        }
+        if (close == std::string::npos) continue;
+        std::size_t semi = close + 1;
+        while (semi < b.size() && std::isspace(static_cast<unsigned char>(b[semi]))) ++semi;
+        if (semi >= b.size() || b[semi] != ';') continue;
+        // `__VERIFIER_assert` + blanks + `(E)`  ->  blanks + `assert((int)(E))`, same length
+        std::string e = b.substr(k + 1, close - k - 1);
+        std::string rep = "assert((int)(" + e + "))";
+        rep.insert(0, close + 1 - i - rep.size(), ' ');
+        b.replace(i, close + 1 - i, rep);
+    }
+    return fn;
+}
+
 // Calls whose semantics are modelled. Everything else: arguments are
 // checked, the result is unconstrained, and the verdict can never be a proof.
 TV model_call(Enc& e, const std::string& tagged, std::vector<TV>& args) {

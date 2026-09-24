@@ -1008,7 +1008,7 @@ HoudiniOut Houdini::run() {
     }
     z3::expr_vector all_sel(c);
     selectors([](std::size_t) { return true; }, all_sel);
-    const double final_budget = std::max(2 * per_query_, left());
+    const double final_budget = std::max(3 * per_query_, left());
     const auto tf = std::chrono::steady_clock::now();
     auto fleft = [&] {
         return final_budget - std::chrono::duration<double>(std::chrono::steady_clock::now() - tf).count();
