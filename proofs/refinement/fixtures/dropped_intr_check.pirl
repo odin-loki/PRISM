@@ -19,7 +19,7 @@ func copy_ok
 L params 1 i 32
 L ret 32
 L block entry
-L glob %@__const.copy_ok.a 16 16 4 4 0 32 5 4 32 6 8 32 7 12 32 8
+L glob %@__const.copy_ok.a 16 16 4 1 4 0 32 5 4 32 6 8 32 7 12 32 8
 L uninit %__prism_uninit.18 32
 L alloca %a 16 16
 L alloca %b 16 16
@@ -245,6 +245,54 @@ P check v170:1 align MEM-MISALIGNED
 P load 10 171 -1 v9:64 0
 P check v171:1 uninit UNINIT-READ
 P ret v10:32
+end
+func bump_bad
+L params 0
+L ret 32
+L block entry
+L glob %@counter 4 4 3 2 0
+L load %i 32 %@counter 4
+L bin %add add nsw 32 %i #1
+L ret %add
+status ok
+P vars 28 64 32 32 64 64 8 1 64 1 1 1 1 1 1 1 64 1 1 1 1 64 64 1 1 1 1 1 1
+P params 0
+P retw 32
+P block
+P alloc 0 c64:4 3 2 4
+P assign 3 lshr 2 v0:64 c64:48
+P assign 4 and 2 v0:64 c64:281474976710655
+P assign 5 obj.kind 1 v0:64
+P assign 6 obj.live 1 v0:64
+P assign 7 obj.size 1 v0:64
+P assign 8 eq 2 v3:64 c64:0
+P check v8:1 null PTR-NULL-DEREF
+P assign 9 ne 2 v3:64 c64:0
+P assign 10 eq 2 v5:8 c8:0
+P assign 11 and 2 v9:1 v10:1
+P check v11:1 wild PTR-INVALID-DEREF
+P assign 12 ne 2 v5:8 c8:0
+P assign 13 eq 2 v6:1 c1:0
+P assign 14 and 2 v12:1 v13:1
+P check v14:1 uaf MEM-UAF
+P assign 15 add 2 v4:64 c64:4
+P assign 16 ugt 2 v15:64 v7:64
+P assign 17 uadd.ovf 2 v4:64 c64:4
+P assign 18 or 2 v16:1 v17:1
+P assign 19 and 2 v6:1 v18:1
+P check v19:1 oob-read MEM-OOB-READ
+P assign 20 and 2 v4:64 c64:3
+P assign 21 obj.align 1 v0:64
+P assign 22 ne 2 v20:64 c64:0
+P assign 23 ult 2 v21:64 c64:4
+P assign 24 or 2 v22:1 v23:1
+P assign 25 and 2 v6:1 v24:1
+P check v25:1 align MEM-MISALIGNED
+P load 1 26 -1 v0:64 0
+P check v26:1 uninit UNINIT-READ
+P assign 27 sadd.ovf 2 v1:32 c32:1
+P assign 2 add 2 v1:32 c32:1
+P ret v2:32
 end
 func life_bad
 L params 1 x 32

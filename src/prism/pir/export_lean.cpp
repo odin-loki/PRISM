@@ -315,13 +315,11 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
         b << "L block " << name(bl.name) << "\n";
         if (top && &bl == &f.blocks.front())
             for (auto& gname : eg) {
-                // MemTr::emit_entry_globals: a read-only object, zero-filled, then the stores
-                const auto* g = m.find_global(gname);
-                auto flat = pirmem::flat_init(lay, g->ty, g->init[0].v);
-                b << "L glob %@" << name(gname) << " " << lay.alloc_size(g->ty) << " "
-                  << std::max(g->align, lay.align(g->ty)) << " "
-                  << static_cast<int>(g->is_const ? MemKind::Const : MemKind::Static) << " " << flat->size();
-                for (auto& st : *flat) b << " " << st.off << " " << st.w << " " << st.bits;
+                // MemTr::emit_entry_globals: the object, then its initialiser's stores
+                auto e = *pirmem::entry_global(m, lay, gname, opt.globals_initial);
+                b << "L glob %@" << name(gname) << " " << e.size << " " << e.align << " "
+                  << static_cast<int>(e.kind) << " " << e.init << " " << e.stores.size();
+                for (auto& st : e.stores) b << " " << st.off << " " << st.w << " " << st.bits;
                 b << "\n";
             }
         for (auto& in : bl.insts) {

@@ -252,7 +252,7 @@ func table_ok
 L params 1 i 32
 L ret 32
 L block entry
-L glob %@tab 16 16 4 4 0 32 1 4 32 2 8 32 3 12 32 4
+L glob %@tab 16 16 4 1 4 0 32 1 4 32 2 8 32 3 12 32 4
 L uninit %__prism_uninit.16 32
 L icmp %cmp sge 32 %i #0
 L cbr %cmp land.lhs.true cond.false
@@ -352,7 +352,7 @@ func table_bad
 L params 1 i 32
 L ret 32
 L block entry
-L glob %@tab 16 16 4 4 0 32 1 4 32 2 8 32 3 12 32 4
+L glob %@tab 16 16 4 1 4 0 32 1 4 32 2 8 32 3 12 32 4
 L uninit %__prism_uninit.17 32
 L bin %and and - 32 %i #7
 L cast %idxprom sext 0 32 64 %and
@@ -432,7 +432,7 @@ func copy_ok
 L params 1 i 32
 L ret 32
 L block entry
-L glob %@__const.copy_ok.a 16 16 4 4 0 32 5 4 32 6 8 32 7 12 32 8
+L glob %@__const.copy_ok.a 16 16 4 1 4 0 32 5 4 32 6 8 32 7 12 32 8
 L uninit %__prism_uninit.18 32
 L alloca %a 16 16
 L alloca %b 16 16
@@ -846,6 +846,151 @@ P check v58:1 uninit UNINIT-READ
 P assign 7 sext 1 v6:8
 P ret v7:32
 end
+func bump_ok
+L params 0
+L ret 32
+L block entry
+L glob %@counter 4 4 3 2 0
+L load %i 32 %@counter 4
+L icmp %cmp slt 32 %i #100
+L cbr %cmp cond.true cond.false
+L block cond.true
+L load %i1 32 %@counter 4
+L bin %add add nsw 32 %i1 #1
+L br cond.end
+L block cond.false
+L br cond.end
+L block cond.end
+L phi %cond 32 2 %add cond.true #0 cond.false
+L ret %cond
+status ok
+P vars 55 64 32 1 32 32 32 64 64 8 1 64 1 1 1 1 1 1 1 64 1 1 1 1 64 64 1 1 1 1 1 64 64 8 1 64 1 1 1 1 1 1 1 64 1 1 1 1 64 64 1 1 1 1 1 1
+P params 0
+P retw 32
+P block
+P alloc 0 c64:4 3 2 4
+P assign 6 lshr 2 v0:64 c64:48
+P assign 7 and 2 v0:64 c64:281474976710655
+P assign 8 obj.kind 1 v0:64
+P assign 9 obj.live 1 v0:64
+P assign 10 obj.size 1 v0:64
+P assign 11 eq 2 v6:64 c64:0
+P check v11:1 null PTR-NULL-DEREF
+P assign 12 ne 2 v6:64 c64:0
+P assign 13 eq 2 v8:8 c8:0
+P assign 14 and 2 v12:1 v13:1
+P check v14:1 wild PTR-INVALID-DEREF
+P assign 15 ne 2 v8:8 c8:0
+P assign 16 eq 2 v9:1 c1:0
+P assign 17 and 2 v15:1 v16:1
+P check v17:1 uaf MEM-UAF
+P assign 18 add 2 v7:64 c64:4
+P assign 19 ugt 2 v18:64 v10:64
+P assign 20 uadd.ovf 2 v7:64 c64:4
+P assign 21 or 2 v19:1 v20:1
+P assign 22 and 2 v9:1 v21:1
+P check v22:1 oob-read MEM-OOB-READ
+P assign 23 and 2 v7:64 c64:3
+P assign 24 obj.align 1 v0:64
+P assign 25 ne 2 v23:64 c64:0
+P assign 26 ult 2 v24:64 c64:4
+P assign 27 or 2 v25:1 v26:1
+P assign 28 and 2 v9:1 v27:1
+P check v28:1 align MEM-MISALIGNED
+P load 1 29 -1 v0:64 0
+P check v29:1 uninit UNINIT-READ
+P assign 2 slt 2 v1:32 c32:100
+P br v2:1 1 2
+P block
+P assign 30 lshr 2 v0:64 c64:48
+P assign 31 and 2 v0:64 c64:281474976710655
+P assign 32 obj.kind 1 v0:64
+P assign 33 obj.live 1 v0:64
+P assign 34 obj.size 1 v0:64
+P assign 35 eq 2 v30:64 c64:0
+P check v35:1 null PTR-NULL-DEREF
+P assign 36 ne 2 v30:64 c64:0
+P assign 37 eq 2 v32:8 c8:0
+P assign 38 and 2 v36:1 v37:1
+P check v38:1 wild PTR-INVALID-DEREF
+P assign 39 ne 2 v32:8 c8:0
+P assign 40 eq 2 v33:1 c1:0
+P assign 41 and 2 v39:1 v40:1
+P check v41:1 uaf MEM-UAF
+P assign 42 add 2 v31:64 c64:4
+P assign 43 ugt 2 v42:64 v34:64
+P assign 44 uadd.ovf 2 v31:64 c64:4
+P assign 45 or 2 v43:1 v44:1
+P assign 46 and 2 v33:1 v45:1
+P check v46:1 oob-read MEM-OOB-READ
+P assign 47 and 2 v31:64 c64:3
+P assign 48 obj.align 1 v0:64
+P assign 49 ne 2 v47:64 c64:0
+P assign 50 ult 2 v48:64 c64:4
+P assign 51 or 2 v49:1 v50:1
+P assign 52 and 2 v33:1 v51:1
+P check v52:1 align MEM-MISALIGNED
+P load 3 53 -1 v0:64 0
+P check v53:1 uninit UNINIT-READ
+P assign 54 sadd.ovf 2 v3:32 c32:1
+P check v54:1 ovf+ INT-SIGNED-OVF
+P assign 4 add 2 v3:32 c32:1
+P jmp 3
+P block
+P jmp 3
+P block
+P phi 5 2 1 v4:32 2 c32:0
+P ret v5:32
+end
+func bump_bad
+L params 0
+L ret 32
+L block entry
+L glob %@counter 4 4 3 2 0
+L load %i 32 %@counter 4
+L bin %add add nsw 32 %i #1
+L ret %add
+status ok
+P vars 28 64 32 32 64 64 8 1 64 1 1 1 1 1 1 1 64 1 1 1 1 64 64 1 1 1 1 1 1
+P params 0
+P retw 32
+P block
+P alloc 0 c64:4 3 2 4
+P assign 3 lshr 2 v0:64 c64:48
+P assign 4 and 2 v0:64 c64:281474976710655
+P assign 5 obj.kind 1 v0:64
+P assign 6 obj.live 1 v0:64
+P assign 7 obj.size 1 v0:64
+P assign 8 eq 2 v3:64 c64:0
+P check v8:1 null PTR-NULL-DEREF
+P assign 9 ne 2 v3:64 c64:0
+P assign 10 eq 2 v5:8 c8:0
+P assign 11 and 2 v9:1 v10:1
+P check v11:1 wild PTR-INVALID-DEREF
+P assign 12 ne 2 v5:8 c8:0
+P assign 13 eq 2 v6:1 c1:0
+P assign 14 and 2 v12:1 v13:1
+P check v14:1 uaf MEM-UAF
+P assign 15 add 2 v4:64 c64:4
+P assign 16 ugt 2 v15:64 v7:64
+P assign 17 uadd.ovf 2 v4:64 c64:4
+P assign 18 or 2 v16:1 v17:1
+P assign 19 and 2 v6:1 v18:1
+P check v19:1 oob-read MEM-OOB-READ
+P assign 20 and 2 v4:64 c64:3
+P assign 21 obj.align 1 v0:64
+P assign 22 ne 2 v20:64 c64:0
+P assign 23 ult 2 v21:64 c64:4
+P assign 24 or 2 v22:1 v23:1
+P assign 25 and 2 v6:1 v24:1
+P check v25:1 align MEM-MISALIGNED
+P load 1 26 -1 v0:64 0
+P check v26:1 uninit UNINIT-READ
+P assign 27 sadd.ovf 2 v1:32 c32:1
+P check v27:1 ovf+ INT-SIGNED-OVF
+P assign 2 add 2 v1:32 c32:1
+P ret v2:32
+end
 func life
 L params 1 x 32
 L ret 32
@@ -1227,7 +1372,7 @@ func kread
 L params 1 i 64
 L ret 32
 L block entry
-L glob %@k 4 2 4 2 0 16 7 2 16 18446744073709551615
+L glob %@k 4 2 4 1 2 0 16 7 2 16 18446744073709551615
 L gep %p 1 %@k 2 f #0 64 4 a %i 64 2 2 1
 L load %v 16 %p 2
 L cast %r sext 0 16 32 %v

@@ -232,6 +232,33 @@ Arg MemTr::ptr_add(int b, Arg p, Arg delta, int dst) {
 // havocked instead (see MemTr::global).
 constexpr uint64_t kMaxInitStores = 256;
 
+// Stores emit_init pushes for an initialiser (zero leaves cost none), up to `cap`.
+uint64_t init_store_count(const Layout& lay, const ir::Type& ty, const ir::Value& v, uint64_t cap) {
+    switch (v.kind) {
+        case ir::Value::Int:
+        case ir::Value::Fp: return v.bits != 0 ? 1 : 0;
+        case ir::Value::Zero:
+        case ir::Value::Null: return 0;
+        case ir::Value::Str: {
+            uint64_t n = 0;
+            for (char ch : v.bytes) n += ch != 0;
+            return n;
+        }
+        case ir::Value::Aggregate: {
+            const auto& rt = lay.resolve(ty);
+            uint64_t n = 0;
+            for (std::size_t k = 0; k < v.elems.size() && n < cap; ++k) {
+                const ir::Type& et = rt.kind == ir::Type::Array    ? rt.elems.at(0)
+                                     : rt.kind == ir::Type::Struct ? lay.field_type(rt, static_cast<unsigned>(k))
+                                                                   : ty;
+                n += init_store_count(lay, et, v.elems[k].v, cap - n);
+            }
+            return n;
+        }
+        default: return 1;  // one store (or an UNENCODED refusal in emit_init)
+    }
+}
+
 namespace {
 bool flat_rec(const Layout& lay, uint64_t off, const ir::Type& ty, const ir::Value& v, std::vector<InitStore>& out) {
     switch (v.kind) {
@@ -285,17 +312,33 @@ std::optional<std::vector<InitStore>> flat_init(const Layout& lay, const ir::Typ
     return out;
 }
 
-const ir::Global* entry_global(const ir::Module& m, const Layout& lay, const std::string& name, bool initial) {
+std::optional<EntryGlobal> entry_global(const ir::Module& m, const Layout& lay, const std::string& name,
+                                        bool initial) {
+    // the choices of MemTr::global, for the cases without special objects
     const auto* g = m.find_global(name);
-    if (!g || g->thread_local_ || g->external || !(g->is_const || initial) || g->init.empty()) return nullptr;
+    if (!g || g->thread_local_) return std::nullopt;
+    if (name == "stdin" || name == "stdout" || name == "stderr" || name.starts_with("_ZT")) return std::nullopt;
+    EntryGlobal e;
+    e.g = g;
     try {
-        auto size = lay.alloc_size(g->ty);
-        auto flat = flat_init(lay, g->ty, g->init[0].v);
-        if (!flat || (size > 4096 && flat->size() > kMaxInitStores)) return nullptr;
+        e.size = lay.alloc_size(g->ty);
+        e.align = std::max(g->align, lay.align(g->ty));
     } catch (const Unenc&) {
-        return nullptr;
+        return std::nullopt;
     }
-    return g;
+    if (g->external && e.size == 0) return std::nullopt;
+    e.kind = g->is_const ? MemKind::Const : MemKind::Static;
+    e.init = !g->external && (g->is_const || initial) ? 1 : 2;
+    if (e.init == 1 && !g->init.empty()) {
+        auto flat = flat_init(lay, g->ty, g->init[0].v);
+        if (e.size > 4096 && init_store_count(lay, g->ty, g->init[0].v, kMaxInitStores + 1) > kMaxInitStores) {
+            e.init = 2;  // a large table: arbitrary bytes (MemTr::global)
+        } else {
+            if (!flat) return std::nullopt;
+            e.stores = std::move(*flat);
+        }
+    }
+    return e;
 }
 
 std::vector<std::string> entry_globals(const ir::Module& m, const Layout& lay, const ir::Function& f, bool initial) {
@@ -323,21 +366,20 @@ void MemTr::preassign_globals(const ir::Function& f) {
 
 void MemTr::emit_entry_globals() {
     for (auto& name : pending_) {
-        const auto* g = t_.module().find_global(name);
-        auto flat = flat_init(lay_, g->ty, g->init[0].v);
+        auto e = *entry_global(t_.module(), lay_, name, t_.options().globals_initial);
         mark_memory();
+        if (!e.g->is_const) t_.fn().mutable_globals = true;
         Stmt s;
         s.kind = Stmt::Alloc;
         s.dst = globals_[name].var;
-        s.args = {c64(lay_.alloc_size(g->ty))};
-        s.mkind = g->is_const ? MemKind::Const : MemKind::Static;
-        if (!g->is_const) t_.fn().mutable_globals = true;
-        s.init = 1;
-        s.align = std::max(g->align, lay_.align(g->ty));
+        s.args = {c64(e.size)};
+        s.mkind = e.kind;
+        s.init = e.init;
+        s.align = e.align;
         s.msg = "@" + name;
         t_.push(-1, s);
         Arg p = globals_[name];
-        for (auto& st : *flat) {  // as emit_init
+        for (auto& st : e.stores) {  // as emit_init
             Stmt w;
             w.kind = Stmt::Store;
             w.args = {st.off ? ptr_add(-1, p, c64(st.off)) : p, Arg::c(st.w, st.bits), Arg::c(1, 1)};
@@ -458,29 +500,7 @@ Arg MemTr::global(const std::string& name) {
 }
 
 uint64_t MemTr::init_stores(const ir::Type& ty, const ir::Value& v, uint64_t cap) const {
-    switch (v.kind) {
-        case ir::Value::Int:
-        case ir::Value::Fp: return v.bits != 0 ? 1 : 0;
-        case ir::Value::Zero:
-        case ir::Value::Null: return 0;
-        case ir::Value::Str: {
-            uint64_t n = 0;
-            for (char ch : v.bytes) n += ch != 0;
-            return n;
-        }
-        case ir::Value::Aggregate: {
-            const auto& rt = lay_.resolve(ty);
-            uint64_t n = 0;
-            for (std::size_t k = 0; k < v.elems.size() && n < cap; ++k) {
-                const ir::Type& et = rt.kind == ir::Type::Array    ? rt.elems.at(0)
-                                     : rt.kind == ir::Type::Struct ? lay_.field_type(rt, static_cast<unsigned>(k))
-                                                                   : ty;
-                n += init_stores(et, v.elems[k].v, cap - n);
-            }
-            return n;
-        }
-        default: return 1;  // one store (or an UNENCODED refusal in emit_init)
-    }
+    return init_store_count(lay_, ty, v, cap);
 }
 
 void MemTr::emit_init(Arg base, uint64_t offs, const ir::Type& ty, const ir::Value& v, const std::string& gname) {

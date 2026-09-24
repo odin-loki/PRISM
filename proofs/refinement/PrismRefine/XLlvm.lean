@@ -116,13 +116,16 @@ inductive SInst where
   | memset (d b len : Opnd) (lw : Nat)
   /-- A read-only global the analysed function names (`%@g`): at the start of
   the entry block, a fresh object of `size` bytes (`kind` 4 read-only, 3 a
-  static the function may write: `main`, whose globals start from their
-  initialisers — `TranslateOptions::globals_initial`), zero-filled, then
-  its initialiser's non-zero stores `(offset, width, bits)`.  The entry block
+  static the function may write), zero-filled (`init = 1`: read-only data, and
+  every global of `main`, which starts from the initialisers —
+  `TranslateOptions::globals_initial`) then
+  its initialiser's non-zero stores `(offset, width, bits)`; or (`init = 2`:
+  a mutable global of any other function, which may run in any program state;
+  an external object; a large table) of arbitrary initialised bytes.  The entry block
   has no predecessors (an LLVM verifier rule), so this runs once, before
   anything reads the global: a run of the function from a program state where
   the global holds its initial value. -/
-  | glob (dst : String) (size align kind : Nat) (st : List (Nat × Nat × Nat))
+  | glob (dst : String) (size align kind init : Nat) (st : List (Nat × Nat × Nat))
   deriving DecidableEq, Repr, Inhabited
 
 /-- The register of field `i` of an overflow pair (a name no LLVM register
@@ -301,11 +304,12 @@ def globW (p : Nat) : World → List (Nat × Nat × Nat) → World
   | W, [] => W
   | W, (o, w, v) :: t => globW p (W.store ((p + o) % 2 ^ 64) (v % 2 ^ w) w true) t
 
-/-- A global: allocated (zero-filled), then initialised. -/
-def globAlloc (W : World) (size align kind : Nat) (st : List (Nat × Nat × Nat)) : Nat × World :=
-  ((W.mem.alloc (size % 2 ^ 64) kind align 1).2,
-   globW (W.mem.alloc (size % 2 ^ 64) kind align 1).2
-     { W with mem := (W.mem.alloc (size % 2 ^ 64) kind align 1).1 } st)
+/-- A global: allocated (zero-filled, `init = 1`, or arbitrary bytes,
+`init = 2`), then initialised. -/
+def globAlloc (ω : Nat → Nat) (W : World) (size align kind init : Nat) (st : List (Nat × Nat × Nat)) :
+    Nat × World :=
+  ((W.allocW ω (size % 2 ^ 64) kind align init).2,
+   globW (W.allocW ω (size % 2 ^ 64) kind align init).2 (W.allocW ω (size % 2 ^ 64) kind align init).1 st)
 
 /-! ## Strict semantics -/
 
@@ -384,7 +388,8 @@ def sSInst (ω : Nat → Nat) (R : SRegs) (W : World) : SInst → Res (SRegs × 
   | .lend p => (sLend R W p).bind fun W' => .ok (R, W')
   | .memcpy d s len lw mv => (sMemcpy R W d s len lw mv).bind fun W' => .ok (R, W')
   | .memset d b len lw => (sMemset R W d b len lw).bind fun W' => .ok (R, W')
-  | .glob d size al kd st => .ok (R.set d (globAlloc W size al kd st).1, (globAlloc W size al kd st).2)
+  | .glob d size al kd ini st =>
+    .ok (R.set d (globAlloc ω W size al kd ini st).1, (globAlloc ω W size al kd ini st).2)
 
 def sSInsts (ω : Nat → Nat) : SRegs → World → List SInst → Res (SRegs × World)
   | R, W, [] => .ok (R, W)
@@ -571,8 +576,8 @@ def lSInst (ω : Nat → Nat) (S : LSt) (W : World) : SInst → Res (LSt × Worl
   | .lend p => lMem S (sLend (lower S.R) W p)
   | .memcpy d s len lw mv => lMem S (sMemcpy (lower S.R) W d s len lw mv)
   | .memset d b len lw => lMem S (sMemset (lower S.R) W d b len lw)
-  | .glob d size al kd st =>
-    .ok (⟨S.R.set d (.val (globAlloc W size al kd st).1), S.c⟩, (globAlloc W size al kd st).2)
+  | .glob d size al kd ini st =>
+    .ok (⟨S.R.set d (.val (globAlloc ω W size al kd ini st).1), S.c⟩, (globAlloc ω W size al kd ini st).2)
 
 def lSInsts (ω : Nat → Nat) : LSt → World → List SInst → Res (LSt × World)
   | S, W, [] => .ok (S, W)

@@ -5299,7 +5299,7 @@ TEST_CASE("pir: lean export of intrinsics, lifetime markers, memory intrinsics a
     CHECK(text.find("L mm %u umax 32 %m #3\n") != std::string::npos);
     // the read-only global: allocated at the entry, then its non-zero stores
     // (the parser keeps a negative element's bits sign-extended; the stores write its low bytes)
-    CHECK(text.find("L glob %@k 4 2 4 2 0 16 7 2 16 18446744073709551615\n") != std::string::npos);
+    CHECK(text.find("L glob %@k 4 2 4 1 2 0 16 7 2 16 18446744073709551615\n") != std::string::npos);
     CHECK(text.find("L unsupported") == std::string::npos);
     CHECK(text.find("P free ") != std::string::npos);
     CHECK(text.find("P memcpy ") != std::string::npos);

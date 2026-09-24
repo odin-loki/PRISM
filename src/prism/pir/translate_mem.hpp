@@ -68,10 +68,22 @@ struct InitStore {
 // otherwise.
 std::optional<std::vector<InitStore>> flat_init(const Layout& lay, const ir::Type& ty, const ir::Value& v);
 
-// A global MemTr::global initialises from such an initialiser (read-only, or
-// any when `initial`: TranslateOptions::globals_initial; not external, not
-// thread-local, not a large table that is havocked): nullptr otherwise.
-const ir::Global* entry_global(const ir::Module& m, const Layout& lay, const std::string& name, bool initial);
+// How MemTr::global allocates @name, when the Lean model covers it: a
+// read-only or (`initial`: TranslateOptions::globals_initial) static object
+// zero-filled then written with its initialiser's stores (init 1), or one of
+// arbitrary initialised bytes (init 2: a mutable global of a function analysed
+// on its own, an external object of known size, a large table). nullopt for
+// the rest (thread-local, the C++ runtime's objects, stdin/stdout/stderr,
+// initialisers with pointers or undef).
+struct EntryGlobal {
+    const ir::Global* g = nullptr;
+    int init = 1;
+    MemKind kind = MemKind::Const;
+    uint64_t size = 0;
+    unsigned align = 1;
+    std::vector<InitStore> stores;  // init 1 only
+};
+std::optional<EntryGlobal> entry_global(const ir::Module& m, const Layout& lay, const std::string& name, bool initial);
 
 // The entry globals the function names directly as operands, in order of
 // first use. The translator allocates them with the analysed function's own
