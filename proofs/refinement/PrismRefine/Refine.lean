@@ -178,6 +178,9 @@ theorem pStmts_append (P : PFunc) : ∀ (σ : Store) (xs ys : List PStmt),
   | σ, .alloc .. :: t, ys => rfl
   | σ, .load .. :: t, ys => rfl
   | σ, .store .. :: t, ys => rfl
+  | σ, .free .. :: t, ys => rfl
+  | σ, .memcpy .. :: t, ys => rfl
+  | σ, .memset .. :: t, ys => rfl
 
 /-! ## Widths of variables -/
 

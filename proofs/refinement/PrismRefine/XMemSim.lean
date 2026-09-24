@@ -33,6 +33,9 @@ theorem xStmts_append (P : PFunc) (ω : Nat → Nat) : ∀ (σ : Store) (t : Wor
   | σ, t, .alloc .. :: r, ys => xStmts_append P ω _ _ r ys
   | σ, t, .load .. :: r, ys => xStmts_append P ω _ _ r ys
   | σ, t, .store .. :: r, ys => xStmts_append P ω _ _ r ys
+  | σ, t, .free .. :: r, ys => xStmts_append P ω _ _ r ys
+  | σ, t, .memcpy .. :: r, ys => xStmts_append P ω _ _ r ys
+  | σ, t, .memset .. :: r, ys => xStmts_append P ω _ _ r ys
 
 theorem bv_mod (w x : Nat) : bv w (x % 2 ^ w) = bv w x := by
   apply BitVec.eq_of_toNat_eq; simp

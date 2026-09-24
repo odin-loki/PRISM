@@ -26,6 +26,58 @@ namespace PrismRefine
 
 open PrismSem
 
+/-- Unary integer intrinsics PRISM translates to one operator
+(`Tr::call`: `Op::Abs`, `Ctlz`, `Cttz`, `Ctpop`, `Bswap`). -/
+inductive UnK where
+  | abs | ctlz | cttz | ctpop | bswap
+  deriving DecidableEq, Repr, Inhabited
+
+/-- `llvm.smax` / `smin` / `umax` / `umin` (`Op::SMax` …). -/
+inductive MMK where
+  | smax | smin | umax | umin
+  deriving DecidableEq, Repr, Inhabited
+
+/-- Leading zeros of the `n`-bit value `x` (LangRef `llvm.ctlz`: `n` for 0). -/
+def clzN : Nat → Nat → Nat
+  | 0, _ => 0
+  | n + 1, x => if x.testBit n then 0 else clzN n x + 1
+
+/-- Trailing zeros of the `n`-bit value `x` (`llvm.cttz`: `n` for 0). -/
+def ctzN : Nat → Nat → Nat
+  | 0, _ => 0
+  | n + 1, x => if x % 2 = 1 then 0 else ctzN n (x / 2) + 1
+
+/-- Set bits among the `n` low bits of `x` (`llvm.ctpop`). -/
+def popN : Nat → Nat → Nat
+  | 0, _ => 0
+  | n + 1, x => x % 2 + popN n (x / 2)
+
+/-- The `n` low bytes of `x` in reverse order (`llvm.bswap`). -/
+def bswapN : Nat → Nat → Nat
+  | 0, _ => 0
+  | n + 1, x => (x % 256) * 256 ^ n + bswapN n (x / 256)
+
+/-- Value of a unary intrinsic on the `w`-bit value `x` (LangRef: `abs`
+returns `INT_MIN` for `INT_MIN` when the flag is clear). -/
+def unVal (k : UnK) (w x : Nat) : Nat :=
+  let a := bv w x
+  match k with
+  | .abs => (if a.toInt < 0 then -a else a).toNat
+  | .ctlz => clzN w a.toNat
+  | .cttz => ctzN w a.toNat
+  | .ctpop => popN w a.toNat
+  | .bswap => bswapN (w / 8) a.toNat
+
+/-- Value of `llvm.smax` … on `w`-bit values. -/
+def mmVal (k : MMK) (w x y : Nat) : Nat :=
+  let a := bv w x
+  let b := bv w y
+  match k with
+  | .smax => if b.toInt ≤ a.toInt then a.toNat else b.toNat
+  | .smin => if a.toInt ≤ b.toInt then a.toNat else b.toNat
+  | .umax => if b.toNat ≤ a.toNat then a.toNat else b.toNat
+  | .umin => if a.toNat ≤ b.toNat then a.toNat else b.toNat
+
 /-- PIR operators (the fragment's subset of `prism::pir::Op`). -/
 inductive POp where
   | bin (op : BinOp)
@@ -40,6 +92,9 @@ inductive POp where
   /-- memory queries (`Op::ObjSize` …): read the memory, so only the
   extended semantics (`XPir.lean`) gives them a value -/
   | objSize | objLive | objKind | objAlign
+  /-- the integer intrinsics (`XTranslate.lean`) -/
+  | un (k : UnK)
+  | mm (k : MMK)
   deriving DecidableEq, Repr, Inhabited
 
 /-- `Arg`: a constant `(width, bits)` (bits already masked) or variable
@@ -66,6 +121,12 @@ inductive PStmt where
   | alloc (d : Nat) (size : Arg) (kind init align : Nat)
   | load (d u : Nat) (p : Arg)
   | store (p v init : Arg)
+  /-- `Stmt::Free`: the object ends its lifetime (`llvm.lifetime.end`) -/
+  | free (p : Arg)
+  /-- `Stmt::MemCpy` (`dst src len`, memmove semantics: reads before writes) and
+  `Stmt::MemSet` (`dst byte len`) -/
+  | memcpy (d s n : Arg)
+  | memset (d b n : Arg)
   deriving DecidableEq, Repr, Inhabited
 
 structure PPhi where
@@ -142,6 +203,8 @@ def evalOp (σ : Store) (op : POp) (w : Nat) (args : List Arg) : Nat :=
   | .select, [c, a, b] => selVal w (c.get σ) (a.get σ) (b.get σ)
   | .cast k, [a] => castVal k a.width w (a.get σ)
   | .copy, [a] => a.get σ
+  | .un k, [a] => unVal k w (a.get σ)
+  | .mm k, [a, b] => mmVal k w (a.get σ) (b.get σ)
   | op, [a, b] => (BitVec.ofBool (testVal op a.width (a.get σ) (b.get σ))).toNat
   | _, _ => 0
 
@@ -163,6 +226,9 @@ def pStmts (P : PFunc) (σ : Store) : List PStmt → PRes
   | .alloc .. :: _ => .blocked
   | .load .. :: _ => .blocked
   | .store .. :: _ => .blocked
+  | .free .. :: _ => .blocked
+  | .memcpy .. :: _ => .blocked
+  | .memset .. :: _ => .blocked
 
 def pickInc (prev : Nat) : List (Nat × Arg) → Option Arg
   | [] => none

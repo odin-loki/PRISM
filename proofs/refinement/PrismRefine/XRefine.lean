@@ -238,6 +238,9 @@ theorem xStmts_pure (P : PFunc) (ω : Nat → Nat) : ∀ (σ : Store) (t : World
   | σ, t, .alloc .. :: r, h => by simp [PStmt.pure] at h
   | σ, t, .load .. :: r, h => by simp [PStmt.pure] at h
   | σ, t, .store .. :: r, h => by simp [PStmt.pure] at h
+  | σ, t, .free .. :: r, h => by simp [PStmt.pure] at h
+  | σ, t, .memcpy .. :: r, h => by simp [PStmt.pure] at h
+  | σ, t, .memset .. :: r, h => by simp [PStmt.pure] at h
 
 /-- A check whose test operator is not a memory query. -/
 def Chk.opOK : Chk → Bool

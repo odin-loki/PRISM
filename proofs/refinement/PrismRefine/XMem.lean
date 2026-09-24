@@ -97,6 +97,15 @@ def Mem.writeN (m : Mem) (p v n : Nat) (init : Bool) : Mem :=
   (List.range n).foldl (fun m k => m.write ((p + k) % 2 ^ 64)
     (if init then some ((v / 2 ^ (8 * k)) % 256) else none)) m
 
+/-- `Stmt::MemCpy` (the interpreter's loop): the `n` cells from `s` are read
+first, then written from `d` (memmove semantics), initialised or not. -/
+def Mem.copy (m : Mem) (d s n : Nat) : Mem :=
+  (List.range n).foldl (fun m' k => m'.write ((d + k) % 2 ^ 64) ((m.readN s n).getD k none)) m
+
+/-- `Stmt::MemSet`: `n` initialised bytes `b` from `d`. -/
+def Mem.fill (m : Mem) (d b n : Nat) : Mem :=
+  (List.range n).foldl (fun m' k => m'.write ((d + k) % 2 ^ 64) (some b)) m
+
 /-- Little-endian value of initialised bytes. -/
 def bytesVal : List Nat → Nat
   | [] => 0
