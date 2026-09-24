@@ -3,9 +3,10 @@
  * copy) have no loop, so their contracts can be checked for objects of a
  * symbolic size n of up to 2^40 bytes (not only up to N bytes as in the
  * other harness files): a PROVED here covers every size in that range. The
- * byte loops of the string models (strlen, strcpy, ...) do not close by
- * k-induction on a symbolic-length object, so they have no harness here
- * (they stay size-bounded, docs/PIR.md "Library models verified by PRISM"). */
+ * byte loops of the string models (strlen, strcpy, ...) are checked on
+ * objects of a symbolic size in unbounded_string_contracts.c, where their
+ * loops close with inductive loop invariants (docs/PIR.md "Loop
+ * invariants"). */
 #include "harness.h"
 #include "../../../src/prism/pir/models/libc/string.c"
 #include "../../../src/prism/pir/models/libc/stdlib.c"

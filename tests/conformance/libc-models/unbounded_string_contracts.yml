@@ -1,0 +1,53 @@
+format_version: 1
+input_files: unbounded_string_contracts.c
+language: C
+property: libc-contract
+timeout: 2400  # every loop is cut by Houdini invariants: several solver queries per function
+expected:
+  strlen_any_true: true
+  strlen_any_earlier_nul_false: false
+  strlen_any_unterminated_false: false
+  strlen_any_past_nul_false: false
+  strnlen_any_true: true
+  strnlen_any_oob_false: false
+  strcpy_any_true: true
+  strcpy_any_short_dest_false: false
+  strcpy_any_off_by_one_false: false
+  strncpy_any_true: true
+  strncpy_any_terminates_false: false
+  strcat_any_true: true
+  strcat_any_overflow_false: false
+  strncat_any_true: true
+  strncat_any_count_false: false
+  strcmp_any_true: true
+  strcmp_any_prefix_true: true
+  strcmp_any_signed_false: false
+  strncmp_any_true: true
+  strncmp_any_ignores_m_false: false
+  strchr_any_true: true
+  strchr_any_nul_false: false
+  strrchr_any_true: true
+  strrchr_any_first_false: false
+  memcmp_any_true: true
+  memcmp_any_nul_false: false
+  memchr_any_true: true
+  memchr_any_oob_false: false
+  strdup_any_true: true
+  strdup_any_past_end_false: false
+expect_class:  # the violation each false harness plants
+  strlen_any_earlier_nul_false: "FUNC-CONTRACT"
+  strlen_any_unterminated_false: "MEM-OOB-READ"
+  strlen_any_past_nul_false: "MEM-OOB-READ"
+  strnlen_any_oob_false: "MEM-OOB-READ"
+  strcpy_any_short_dest_false: "MEM-OOB-WRITE"
+  strcpy_any_off_by_one_false: "MEM-OOB-WRITE"
+  strncpy_any_terminates_false: "FUNC-CONTRACT"
+  strcat_any_overflow_false: "MEM-OOB-WRITE"
+  strncat_any_count_false: "FUNC-CONTRACT"
+  strcmp_any_signed_false: "FUNC-CONTRACT"
+  strncmp_any_ignores_m_false: "FUNC-CONTRACT"
+  strchr_any_nul_false: "FUNC-CONTRACT"
+  strrchr_any_first_false: "FUNC-CONTRACT"
+  memcmp_any_nul_false: "FUNC-CONTRACT"
+  memchr_any_oob_false: "MEM-OOB-READ"
+  strdup_any_past_end_false: "MEM-OOB-READ"
