@@ -1182,8 +1182,77 @@ theorem sinstX_sim {P : PFunc} {ω : Nat → Nat} {c : Ctx} (hc : CtxOK P c) {R 
     subst htp
     simp only [Res.bind, SimX, xStmts, hAp, xStmts_nil, Res.ok_bind]
     exact ⟨σ, rfl, hR, ha0⟩
-  | memcpy d s len lw mv => simp [trSInstX, throw, throwThe, MonadExceptOf.throw] at h
-  | memset d b len lw => simp [trSInstX, throw, throwThe, MonadExceptOf.throw] at h
+  | memcpy d s len lw mv =>
+    simp only [trSInstX] at h
+    obtain ⟨u1, hu1, h⟩ := Except.bind_ok h
+    obtain ⟨⟨sd, td, D⟩, hd, h⟩ := Except.bind_ok h
+    obtain ⟨⟨ss, ts, S⟩, hs, h⟩ := Except.bind_ok h
+    obtain ⟨⟨sn, tn, L⟩, hn, h⟩ := Except.bind_ok h
+    obtain ⟨u2, hu2, h⟩ := Except.bind_ok h
+    have hLw : L.width = lw := by simpa using need_ok hu2
+    have hw := need_ok hu1
+    have hlw : lw ≤ 64 := by simp only [okW, Bool.and_eq_true, decide_eq_true_eq] at hw; omega
+    simp only [pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at h
+    obtain ⟨rfl, rfl⟩ := h
+    simp only [sSInst, sMemcpy, Res.bind_assoc, List.append_assoc]
+    refine opndX_sim hR hd hk _ _ ?_
+    intro dv _ htd hDv hDb _
+    subst htd
+    simp only [List.nil_append, List.length_nil, Nat.add_zero] at hs hn hT ⊢
+    refine opndX_sim hR hs hk _ _ ?_
+    intro sv _ hts hSv hSb _
+    subst hts
+    simp only [List.nil_append, List.length_nil, Nat.add_zero] at hn hT ⊢
+    refine opndX_sim hR hn hk _ _ ?_
+    intro n0 _ htn hLv hLb _
+    subst htn
+    simp only [List.nil_append, List.length_nil, Nat.add_zero] at hT ⊢
+    have hm := memcpy_run P ω σ t k D S L hDb hSb hLb (by omega) mv hT
+    simp only [hDv, hSv, hLv, hLw] at hm
+    cases hb : cpyBad t.mem (dv % 2 ^ 64) (sv % 2 ^ 64) (n0 % 2 ^ lw) mv
+    · obtain ⟨σ', e, ag⟩ := hm.2 hb
+      simp only [Bool.false_eq_true, ite_false, Res.bind]
+      rw [e]
+      exact ⟨σ', rfl, RelX.agree hc hR hk ag, fun j hj => by
+        rw [ag j (by have := hc.lohi; omega)]; exact ha0 j hj⟩
+    · simp only [ite_true, Res.bind, SimX]
+      exact hm.1 hb
+  | memset d b len lw =>
+    simp only [trSInstX] at h
+    obtain ⟨u1, hu1, h⟩ := Except.bind_ok h
+    obtain ⟨⟨sd, td, D⟩, hd, h⟩ := Except.bind_ok h
+    obtain ⟨⟨sb, tb, B⟩, hb, h⟩ := Except.bind_ok h
+    obtain ⟨u3, hu3, h⟩ := Except.bind_ok h
+    obtain ⟨⟨sn, tn, L⟩, hn, h⟩ := Except.bind_ok h
+    obtain ⟨u2, hu2, h⟩ := Except.bind_ok h
+    have hLw : L.width = lw := by simpa using need_ok hu2
+    have hw := need_ok hu1
+    have hlw : lw ≤ 64 := by simp only [okW, Bool.and_eq_true, decide_eq_true_eq] at hw; omega
+    simp only [pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at h
+    obtain ⟨rfl, rfl⟩ := h
+    simp only [sSInst, sMemset, Res.bind_assoc, List.append_assoc]
+    refine opndX_sim hR hd hk _ _ ?_
+    intro dv _ htd hDv hDb _
+    subst htd
+    simp only [List.nil_append, List.length_nil, Nat.add_zero] at hb hn hT ⊢
+    refine opndX_sim hR hb hk _ _ ?_
+    intro bv _ htb hBv hBb _
+    subst htb
+    simp only [List.nil_append, List.length_nil, Nat.add_zero] at hn hT ⊢
+    refine opndX_sim hR hn hk _ _ ?_
+    intro n0 _ htn hLv hLb _
+    subst htn
+    simp only [List.nil_append, List.length_nil, Nat.add_zero] at hT ⊢
+    have hm := memset_run P ω σ t k D B L hDb hBb hLb (by omega) hT
+    simp only [hDv, hBv, hLv, hLw] at hm
+    cases hbad : (n0 % 2 ^ lw != 0 && accessBad t.mem (dv % 2 ^ 64) (n0 % 2 ^ lw) true 1)
+    · obtain ⟨σ', e, ag⟩ := hm.2 hbad
+      simp only [hbad, Bool.false_eq_true, ite_false, Res.bind]
+      rw [e]
+      exact ⟨σ', rfl, RelX.agree hc hR hk ag, fun j hj => by
+        rw [ag j (by have := hc.lohi; omega)]; exact ha0 j hj⟩
+    · simp only [hbad, ite_true, Res.bind, SimX]
+      exact hm.1 hbad
 
 theorem sinstsX_sim {P : PFunc} {ω : Nat → Nat} {c : Ctx} (hc : CtxOK P c) {σ0 : Store} :
     ∀ (is : List SInst) (R : SRegs) (σ : Store) (k : Nat) (t : World) (s : List PStmt) (tws : List Nat),

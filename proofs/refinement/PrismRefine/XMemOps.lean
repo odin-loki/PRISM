@@ -340,3 +340,64 @@ theorem memcpy_run (P : PFunc) (ω : Nat → Nat) (σ : Store) (t : World) (k : 
     exact ⟨fun _ => rfl, fun h => by simp at h⟩
 
 end PrismRefine
+
+namespace PrismRefine
+
+open PrismSem
+
+/-- `MemTr::memset_`'s statements after the operands. -/
+theorem memset_run (P : PFunc) (ω : Nat → Nat) (σ : Store) (t : World) (k : Nat) (D B L : Arg)
+    (hD : D.below k) (hB : B.below k) (hL : L.below k) (hw : L.width ≤ 64)
+    (hT : TempsOK P k ((zext64 k L).2.1 ++ [1] ++ accTG true)) :
+    let g := k + (zext64 k L).2.1.length
+    let N := (zext64 k L).2.2
+    let n := L.get σ % 2 ^ L.width
+    let body := (zext64 k L).1 ++ ([.assign g (.cmp .ne) [N, c64 0]] ++ (accChkG (g + 1) g D N true ++
+      [.memset D B N]))
+    ((n != 0 && accessBad t.mem (D.get σ % 2 ^ 64) n true 1) = true → xStmts P ω σ t body = .fail) ∧
+    ((n != 0 && accessBad t.mem (D.get σ % 2 ^ 64) n true 1) = false →
+      ∃ σ', xStmts P ω σ t body =
+        .ok σ' { t with mem := t.mem.fill (D.get σ % 2 ^ 64) (B.get σ % 256) n } ∧
+        ∀ i, i < k → σ' i = σ i) := by
+  intro g N n body
+  obtain ⟨σ1, e1, ag1, hNb, hNv, hNw⟩ := zext64_run P ω σ t k L hL hw hT.left.left
+  have hNw' : N.width = 64 := hNw
+  have hNv' : N.get σ1 % 2 ^ 64 = n := hNv
+  have hTg : TempsOK P g [1] := by have := hT.left.right; simpa using this
+  have wg : P.wd g = 1 := by simpa using hTg 0 (by decide)
+  have hT1 : TempsOK P (g + 1) (accTG true) := TempsOK.cast hT.right (by simp [g]; omega)
+  have hkg : k ≤ g := Nat.le_add_right _ _
+  let σ2 := σ1.set g ((!decide (N.get σ1 % 2 ^ 64 = 0)).toNat)
+  have e2 : xStmts P ω σ1 t [.assign g (.cmp .ne) [N, c64 0]] = .ok σ2 t := by
+    simp only [xStmts, evalOpM, evalOp, wg, icmpVal_eq', hNw', pred_ne, c64_get, Nat.zero_mod,
+      boolToNat_mod1, xStmts_nil, σ2]
+  have ag2 : ∀ i, i < g → σ2 i = σ1 i := fun i hi => by simp [σ2, set_apply, show i ≠ g by omega]
+  have hNv2 : N.get σ2 % 2 ^ 64 = n := by rw [Arg.get_agree ag2 hNb, hNv']
+  have hg2 : σ2 g = (n != 0).toNat := by
+    show (σ1.set g _) g = _
+    simp only [set_apply, ite_true, hNv']
+    cases h : (n != 0) <;> simp_all
+  have hDg : D.get σ2 = D.get σ := by rw [Arg.get_agree ag2 (Arg.below_mono hkg hD), Arg.get_agree ag1 hD]
+  have hBg : B.get σ2 = B.get σ := by rw [Arg.get_agree ag2 (Arg.below_mono hkg hB), Arg.get_agree ag1 hB]
+  have hb2 : ∀ {A : Arg}, A.below g → A.below (g + 1) := Arg.below_mono (by omega)
+  have c1 := accChkG_run P ω σ2 t (g + 1) g D N (hb2 (Arg.below_mono hkg hD)) (hb2 hNb) (by omega) true hT1
+    hNv2 hg2
+  rw [hDg] at c1
+  simp only [body]
+  rw [xStmts_run_append e1, xStmts_append, e2]
+  simp only [XPRes.then]
+  rw [xStmts_append]
+  cases hb1 : (n != 0 && accessBad t.mem (D.get σ % 2 ^ 64) n true 1)
+  · obtain ⟨σ3, e3, ag3⟩ := c1.2 hb1
+    rw [e3]; simp only [XPRes.then]
+    have ag3' : ∀ i, i < g + 1 → σ3 i = σ2 i := fun i hi => ag3 i hi
+    have h1 : D.get σ3 = D.get σ := by rw [Arg.get_agree ag3' (hb2 (Arg.below_mono hkg hD)), hDg]
+    have h2 : B.get σ3 = B.get σ := by rw [Arg.get_agree ag3' (hb2 (Arg.below_mono hkg hB)), hBg]
+    have h3 : N.get σ3 % 2 ^ 64 = n := by rw [Arg.get_agree ag3' (hb2 hNb), hNv2]
+    refine ⟨fun h => by simp at h, fun _ => ⟨σ3, by simp only [xStmts, h1, h2, h3], ?_⟩⟩
+    intro i hi
+    rw [ag3' i (by omega), ag2 i (by omega), ag1 i hi]
+  · rw [c1.1 hb1]
+    exact ⟨fun _ => rfl, fun h => by simp at h⟩
+
+end PrismRefine
