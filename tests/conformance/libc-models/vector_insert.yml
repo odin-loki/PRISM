@@ -1,0 +1,10 @@
+format_version: 1
+input_files: vector_insert.cpp
+language: C++
+property: libc-contract
+timeout: 900  # std::vector model code: slow on a loaded machine
+expected:
+  vector_insert_true: true
+  vector_insert_foreign_false: false
+expect_class:  # the violation each false harness plants
+  vector_insert_foreign_false: "FUNC-CONTRACT|PTR-COMPARE"

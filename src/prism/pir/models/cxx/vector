@@ -107,6 +107,18 @@ private:
     }
 
     // -- element ranges ----------------------------------------------------
+    // Move-assignment over a range, element by element (std::move /
+    // std::move_backward: libstdc++ uses memmove for trivially copyable
+    // types; the same bytes move, and the encoder closes a short loop much
+    // faster than a ranged copy of symbolic length).
+    static constexpr pointer _S_move_fwd(pointer __first, pointer __last, pointer __d) {
+        for (; __first != __last; ++__first, (void)++__d) *__d = std::move(*__first);
+        return __d;
+    }
+    static constexpr pointer _S_move_bwd(pointer __first, pointer __last, pointer __d_last) {
+        while (__first != __last) *--__d_last = std::move(*--__last);
+        return __d_last;
+    }
     constexpr void _M_destroy(pointer __first, pointer __last) noexcept {
         for (; __first != __last; ++__first) _Traits::destroy(_M_alloc, __first);
     }
@@ -252,7 +264,7 @@ private:
         if (__after > __n) {
             _M_uninit_copy(std::make_move_iterator(_M_finish - __n), std::make_move_iterator(_M_finish), _M_finish);
             _M_finish += __n;
-            std::move_backward(__pos, __old_finish - __n, __old_finish);
+            _S_move_bwd(__pos, __old_finish - __n, __old_finish);
             __fill(__pos, size_type(0), __n, false);
         } else {
             __fill(_M_finish, __after, __n - __after, true);
@@ -669,7 +681,7 @@ public:
                 value_type __tmp(std::forward<_Args>(__args)...);
                 _Traits::construct(_M_alloc, _M_finish, std::move(*(_M_finish - 1)));
                 ++_M_finish;
-                std::move_backward(__pos, _M_finish - 2, _M_finish - 1);
+                _S_move_bwd(__pos, _M_finish - 2, _M_finish - 1);
                 *__pos = std::move(__tmp);
             }
         } else
@@ -688,7 +700,7 @@ public:
             } else {
                 _Traits::construct(_M_alloc, _M_finish, std::move(*(_M_finish - 1)));
                 ++_M_finish;
-                std::move_backward(__pos, _M_finish - 2, _M_finish - 1);
+                _S_move_bwd(__pos, _M_finish - 2, _M_finish - 1);
                 *__pos = std::move(__x);
             }
         } else
@@ -725,7 +737,7 @@ public:
         pointer __pos = const_cast<pointer>(__position.base());
         // [sequence.reqmts]: erase(q) needs a dereferenceable q
         __glibcxx_assert(__pos >= _M_start && __pos < _M_finish);
-        if (__pos + 1 != _M_finish) std::move(__pos + 1, _M_finish, __pos);
+        if (__pos + 1 != _M_finish) _S_move_fwd(__pos + 1, _M_finish, __pos);
         --_M_finish;
         _Traits::destroy(_M_alloc, _M_finish);
         return iterator(__pos);
@@ -735,7 +747,7 @@ public:
         // [sequence.reqmts]: [q1, q2) is a valid range of *this
         __glibcxx_assert(__f >= _M_start && __f <= __l && __l <= _M_finish);
         if (__f != __l) {
-            if (__l != _M_finish) std::move(__l, _M_finish, __f);
+            if (__l != _M_finish) _S_move_fwd(__l, _M_finish, __f);
             pointer __e = __f + (_M_finish - __l);
             _M_destroy(__e, _M_finish);
             _M_finish = __e;

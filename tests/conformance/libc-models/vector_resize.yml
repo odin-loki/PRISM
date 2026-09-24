@@ -1,0 +1,11 @@
+format_version: 1
+input_files: vector_resize.cpp
+language: C++
+property: libc-contract
+timeout: 900  # std::vector model code: slow on a loaded machine
+expected:
+  vector_resize_true: true
+  vector_resize_value_false: false
+  vector_copy_true: true
+expect_class:  # the violation each false harness plants
+  vector_resize_value_false: "FUNC-CONTRACT"
