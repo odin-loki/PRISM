@@ -7501,6 +7501,12 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
     if err.startswith("UNENCODED: "):
         return f"{err} (not modelled by {engine}): not a proof"
     low = (err or "").lower()
+    # First: the message names program identifiers, which must not match a later keyword.
+    if low.startswith("unstructured goto unencoded"):
+        return (
+            f"{err} ({engine} models only a goto out to a later statement and a "
+            "backward goto that forms a loop): not a proof"
+        )
     if "vla" in low:
         if engine == "bitvector BMC":
             return "VLA size is a missing bound, not a closed BMC proof"
@@ -7544,11 +7550,6 @@ def harness_for_parsefail(err: str, engine: str) -> str | None:
         return f"struct/union local unencoded: {engine} is not a layout model"
     if "typedef local unencoded" in low:
         return f"unknown typedef local unencoded: {engine} is not a layout model"
-    if "unstructured goto unencoded" in low:
-        return (
-            f"{err} ({engine} models only a goto out to a later statement and a "
-            "backward goto that forms a loop): not a proof"
-        )
     if "computed goto unencoded" in low:
         return (
             f"computed goto unencoded: {engine} is not a computed-goto model"

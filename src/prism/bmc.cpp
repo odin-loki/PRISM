@@ -1068,6 +1068,9 @@ std::optional<std::string> harness_for_parsefail(std::string_view err, const std
         return std::string(err) + " (not modelled by " + engine + "): not a proof";
     std::string low = std::string(err);
     for (char& c : low) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    // First: the message names program identifiers, which must not match a later keyword.
+    if (low.starts_with("unstructured goto unencoded"))
+        return std::string(err) + " (" + engine + " models only a goto out to a later statement and a backward goto that forms a loop): not a proof";
 if (low.find(R"BMC(vla)BMC") != std::string::npos) {
     if ((engine == R"BMC(bitvector BMC)BMC")) {
         return R"BMC(VLA size is a missing bound, not a closed BMC proof)BMC";
@@ -1118,9 +1121,6 @@ if (low.find(R"BMC(typedef local unencoded)BMC") != std::string::npos) {
 }
 if (low.find(R"BMC(computed goto unencoded)BMC") != std::string::npos) {
     return R"BMC(computed goto unencoded: )BMC" + std::string(engine) + R"BMC( is not a computed-goto model)BMC";
-}
-if (low.find(R"BMC(unstructured goto unencoded)BMC") != std::string::npos) {
-    return std::string(err) + " (" + engine + " models only a goto out to a later statement and a backward goto that forms a loop): not a proof";
 }
 if (low.find(R"BMC(label-address unencoded)BMC") != std::string::npos) {
     return R"BMC(label-address unencoded: )BMC" + std::string(engine) + R"BMC( is not a label-address model)BMC";
