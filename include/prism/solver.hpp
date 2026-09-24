@@ -69,7 +69,16 @@ struct SolveOptions {
     bool portfolio = true;      // false: Z3 only (plus the certificate chain when certified)
     std::string cache_dir;      // empty: $XDG_CACHE_HOME/prism/solver or ~/.cache/prism/solver
     bool use_cache = true;      // the query cache; solve times are always recorded in cache_dir
-    bool cache_certificates = true;  // keep CNF + LRAT so a certified hit is re-checked
+    bool cache_certificates = true;  // keep the (packed) LRAT proof so a certified hit is re-checked
+    // Size cap of <cache_dir>/certs, pruned least-recently-used
+    // (include/prism/solver_certs.hpp). -1: $PRISM_CERT_CACHE_MAX, else 2 GiB.
+    std::int64_t cert_cache_max_bytes = -1;
+    // certified: the caller already has a plain UNSAT answer to this exact
+    // formula from solve() and wants only its certificate. Then only the
+    // certificate member (CaDiCaL with LRAT) runs, until the certificate
+    // budget; without a certificate the result is that plain Unsat,
+    // uncertified (as for a cached plain unsat). A validated model still wins.
+    bool known_unsat = false;
     bool sls = true;            // ProbSAT walker (counterexamples only)
     double sls_budget_s = 0.0;  // 0: max(1 s, 10% of timeout_s); it then frees its core
     bool z3_in_process = true;  // tests switch Z3 off to observe other members alone

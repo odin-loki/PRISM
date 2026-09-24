@@ -28,6 +28,8 @@
 #include "memory.hpp"
 
 #include <algorithm>
+#include <chrono>
+#include <cstdio>
 #include <cmath>
 #include <deque>
 #include <functional>
@@ -1108,6 +1110,10 @@ struct VcBook {
     }
 };
 
+double detail_now_s() {
+    return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
 std::string vc_label(const PropInst& p) {
     return p.stmt->prop + (p.stmt->line ? "@" + std::to_string(p.stmt->line) : std::string());
 }
@@ -1240,7 +1246,10 @@ Verdict check_function(const Function& fn, const CheckOptions& opt) {
     solver::SolveOptions so;
     so.timeout_s = timeout_s;
     so.portfolio = opt.portfolio;
-    so.certified = opt.certified;
+    // Answers come from plain queries; certified mode asks for certificates
+    // only once the function is PROVED (certify_proved below): a function
+    // that is FAILED, BOUNDED, UNKNOWN or NEEDS-HARNESS pays for none.
+    so.certified = false;
     so.use_cache = opt.use_cache;
     so.cache_dir = opt.cache_dir;
     so.max_parallel = opt.max_parallel;
@@ -1285,32 +1294,75 @@ Verdict check_function(const Function& fn, const CheckOptions& opt) {
         std::vector<const PropInst*> hard;
         for (auto& p : e.props)
             if (!soft(p)) hard.push_back(&p);
-        // Certified mode: one certificate for every VC at once (the
-        // disjunction of all property VCs, soft ones included, and the
-        // unwinding assertion). Only a CERTIFIED UNSAT answer is used; any
-        // other outcome falls back to the per-VC queries below, unchanged.
-        if (opt.certified && opt.certify_combined) {
-            std::vector<z3::expr> all;
-            std::vector<std::string> labels;
-            for (auto& p : e.props) {
-                all.push_back(p.viol);
-                labels.push_back(vc_label(p));
+        // Every VC of the function: each property (soft ones included) and
+        // the unwinding assertion. PROVED means every one is UNSAT, and
+        // PROVED-CERTIFIED means every one is covered by a checked proof.
+        std::vector<z3::expr> all;
+        std::vector<std::string> labels;
+        for (auto& p : e.props) {
+            all.push_back(p.viol);
+            labels.push_back(vc_label(p));
+        }
+        if (!e.cuts.empty()) {
+            all.push_back(any_of(c, e.cuts));
+            labels.push_back("unwind");
+        }
+        // Certified mode: certificates for a function whose plain answers
+        // made it PROVED. First one certificate of the disjunction of all
+        // VCs (split into batches while only the checker runs out of time on
+        // a proof), else one per VC. Only certified UNSAT answers count;
+        // every certificate query already knows its plain answer
+        // (known_unsat), so only CaDiCaL-with-LRAT runs for it.
+        std::optional<solver::SolveResult::Kind> plain_all;  // the plain combined query's answer
+        VcBook cbook;                                         // certificate queries
+        double cert_t0 = 0;  // when certification of this function started
+        const double cert_budget = opt.certify_budget_s > 0 ? opt.certify_budget_s : 0.0;
+        auto certify_proved = [&](Verdict& vr) {
+            cert_t0 = detail_now_s();
+            vr.extra["certificate_budget_s"] = cert_budget > 0 ? std::to_string(static_cast<int>(cert_budget)) : "none";
+            if (all.empty()) {
+                certify(vr, cbook);  // "no verification conditions (nothing to certify)"
+                return;
             }
-            if (!e.cuts.empty()) {
-                all.push_back(any_of(c, e.cuts));
-                labels.push_back("unwind");
-            }
-            if (all.size() >= 2) {
-                // Batches: first all VCs at once; while a batch's query is
-                // UNSAT and only the checker ran out of time on its proof,
-                // its two halves are tried instead. Every batch must come
-                // back certified, else nothing from here is used.
+            solver::SolveOptions ko = so;
+            ko.certified = true;
+            ko.known_unsat = true;
+            // Budget: the certificate queries of this function stop once it
+            // is spent; the verdict then stays PROVED with a note. Each query
+            // gets at most what is left (its own certificate budget too).
+            auto left = [&]() { return cert_budget > 0 ? cert_budget - (detail_now_s() - cert_t0) : 1e18; };
+            auto out_of_budget = [&](std::size_t done_vcs) {
+                char buf[240];
+                std::snprintf(buf, sizeof buf,
+                              "not certified: the certification budget of this function (%.0f s) was spent after "
+                              "%zu/%zu VCs were certified; verdict stays PROVED",
+                              cert_budget, done_vcs, all.size());
+                vr.extra["certify_note"] = buf;
+                vr.extra["certificate_vcs"] = std::to_string(all.size());
+            };
+            auto budgeted = [&](solver::SolveOptions o) {
+                if (cert_budget > 0) {
+                    const double l = std::max(1.0, left());
+                    const double cap = o.cert_timeout_s > 0 ? o.cert_timeout_s : std::max(60.0, 4.0 * o.timeout_s);
+                    o.cert_timeout_s = std::min(cap, l);
+                    const double ck = o.check_timeout_s > 0 ? o.check_timeout_s : std::max(60.0, 4.0 * o.timeout_s);
+                    o.check_timeout_s = std::min(ck, l);
+                    o.timeout_s = std::min(o.timeout_s, l);
+                }
+                return o;
+            };
+            if (opt.certify_combined && all.size() >= 2 &&
+                !(plain_all && *plain_all == solver::SolveResult::Sat)) {
                 std::vector<CertBatch> got;
                 std::string failed;
                 std::function<bool(std::size_t, std::size_t)> batch = [&](std::size_t lo, std::size_t hi) -> bool {
+                    if (left() <= 0) {
+                        failed = "certification budget spent";
+                        return false;
+                    }
                     const auto l0 = static_cast<std::ptrdiff_t>(lo), l1 = static_cast<std::ptrdiff_t>(hi);
                     std::vector<z3::expr> part(all.begin() + l0, all.begin() + l1);
-                    auto cr = solver::solve(c, base && any_of(c, part), so);
+                    auto cr = solver::solve(c, base && any_of(c, part), budgeted(ko));
                     if (cr.kind == solver::SolveResult::Unsat && cr.certified) {
                         got.push_back(CertBatch{std::vector<std::string>(labels.begin() + l0, labels.begin() + l1),
                                                 std::move(cr)});
@@ -1331,23 +1383,62 @@ Verdict check_function(const Function& fn, const CheckOptions& opt) {
                     return false;
                 };
                 if (batch(0, all.size())) {
-                    for (auto& bt : got) book.add("combined[" + std::to_string(bt.labels.size()) + " VCs]", bt.r);
-                    v.status = std::string(laws::PROVED);
-                    v.extra["unwind_closed"] = "true";
-                    v.extra["k_induction"] = "not-needed";
-                    v.message = e.cuts.empty() ? (g.loops.empty() ? "encoded properties hold on every path (loop-free)"
-                                                                  : "encoded properties hold; every loop closes within "
-                                                                    "unwind " + std::to_string(unwind))
-                                               : "encoded properties hold; unwinding assertion proved at unwind " +
-                                                     std::to_string(unwind);
-                    certify_batches(v, got);
-                    return finish(v);
+                    for (auto& bt : got) cbook.add("combined[" + std::to_string(bt.labels.size()) + " VCs]", bt.r);
+                    certify_batches(vr, got);
+                    vr.extra["certificate_solver"] = cbook.summary();
+                    return;
                 }
-                v.extra["certificate_combined"] = failed + "; one certificate per VC instead";
+                vr.extra["certificate_combined"] = failed + "; one certificate per VC instead";
             }
+            // One certificate per VC, in order; the first VC that is not
+            // certified ends it (certify() then names it).
+            for (std::size_t i = 0; i < all.size(); ++i) {
+                if (left() <= 0) {
+                    vr.extra["certificate_solver"] = cbook.summary();
+                    out_of_budget(i);
+                    return;
+                }
+                const auto& r = cbook.add(labels[i], solver::solve(c, base && all[i], budgeted(ko)));
+                if (!(r.kind == solver::SolveResult::Unsat && r.certified)) break;
+            }
+            vr.extra["certificate_solver"] = cbook.summary();
+            certify(vr, cbook);
+            vr.extra["certificate_vcs"] = std::to_string(all.size());
+        };
+        auto proved_message = [&] {
+            return e.cuts.empty() ? (g.loops.empty() ? std::string("encoded properties hold on every path (loop-free)")
+                                                     : "encoded properties hold; every loop closes within unwind " +
+                                                           std::to_string(unwind))
+                                  : "encoded properties hold; unwinding assertion proved at unwind " +
+                                        std::to_string(unwind);
+        };
+        // Certified mode, 2+ VCs: one plain query for "some VC is violated"
+        // first. UNSAT: every VC is UNSAT (a disjunction), the function is
+        // PROVED and goes to certification. Otherwise the per-VC queries
+        // below decide the verdict; SAT (a validated model) means some VC is
+        // violated, so the function cannot be PROVED and no combined
+        // certificate is attempted.
+        if (opt.certified && opt.certify_combined && all.size() >= 2) {
+            const auto& pr = book.add("all[" + std::to_string(all.size()) + " VCs]",
+                                      solver::solve(c, base && any_of(c, all), so));
+            plain_all = pr.kind;
+            if (pr.kind == solver::SolveResult::Unsat) {
+                v.status = std::string(laws::PROVED);
+                v.extra["unwind_closed"] = "true";
+                v.extra["k_induction"] = "not-needed";
+                v.message = proved_message();
+                certify_proved(v);
+                return finish(v);
+            }
+            v.extra["certificate_combined"] =
+                "one certificate for " + std::to_string(all.size()) + " VCs not obtained (" +
+                std::string(solver::kind_name(pr.kind)) +
+                (pr.kind == solver::SolveResult::Sat
+                     ? ": some VC is violated, so no certificate is attempted; the per-VC queries decide)"
+                     : "; the per-VC queries decide, and certify only a PROVED verdict)");
         }
         bool all_unsat = false;
-        if (!opt.certified && hard.size() > 16) {
+        if (hard.size() > 16) {
             std::function<int(std::size_t, std::size_t)> group = [&](std::size_t lo, std::size_t hi) -> int {
                 // 1 SAT (hit set), 0 UNSAT, -1 no answer
                 if (hi - lo == 1) {
@@ -1425,7 +1516,7 @@ Verdict check_function(const Function& fn, const CheckOptions& opt) {
                                         : "encoded properties hold; every loop closes within unwind " +
                                               std::to_string(unwind);
             v.extra["k_induction"] = "not-needed";
-            if (opt.certified) certify(v, book);
+            if (opt.certified) certify_proved(v);
             return finish(v);
         }
         const auto& ur = book.add("unwind", solver::solve(c, base && any_of(c, e.cuts), so));
@@ -1434,7 +1525,7 @@ Verdict check_function(const Function& fn, const CheckOptions& opt) {
             v.extra["unwind_closed"] = "true";
             v.message = "encoded properties hold; unwinding assertion proved at unwind " + std::to_string(unwind);
             v.extra["k_induction"] = "not-needed";
-            if (opt.certified) certify(v, book);
+            if (opt.certified) certify_proved(v);
             return finish(v);
         }
         v.status = std::string(laws::BOUNDED);

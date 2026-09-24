@@ -26,6 +26,7 @@
 
 #include "prism/solver.hpp"
 #include "prism/solver_predict.hpp"
+#include "prism/solver_certs.hpp"
 #include "internal.hpp"
 #include "query.hpp"
 
@@ -489,6 +490,12 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
     const bool want_cert = opt.certified && blastable;
     if (opt.certified && !blastable) notes.push_back("not certifiable: " + cert_reason);
     const fs::path root = cache_root(opt);
+    if (opt.certified) {
+        // Work directories of killed solver processes can hold multi-GB
+        // proofs: remove those of processes that no longer exist, once.
+        static std::once_flag swept;
+        std::call_once(swept, [] { certs::sweep_orphan_work_dirs(); });
+    }
 
     // ---------------------------------------------------------------- bit-blaster
     BlastPlan plan;
@@ -530,6 +537,7 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
     // again yields no answer, the plain answer still stands (a plain request
     // would have taken it); certification only ever adds.
     std::optional<std::string> cached_unsat_winner;
+    if (want_cert && opt.known_unsat) cached_unsat_winner = "caller (plain unsat)";
     if (opt.use_cache) {
         if (auto j = cache_load(root, res.query_hash)) {
             const std::string kind = j->value("kind", "");
@@ -560,7 +568,7 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
                 if (opt.certified) notes.push_back("not certified: " + cert_reason);
                 return finish(res);
             } else if (kind == "unsat" && want_cert) {
-                cached_unsat_winner = j->value("winner", "");
+                if (!opt.known_unsat) cached_unsat_winner = j->value("winner", "");
                 if (!j->value("certified", false)) {
                     notes.push_back("cached unsat is uncertified: solving again for a certificate");
                 } else if (j->value("bitblaster", "z3") != plan_name) {
@@ -568,19 +576,11 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
                                     " bit-blaster, this request uses " + plan_name + ": solving again");
                 } else {
                     // Re-derive the CNF and re-check the stored proof: a cache
-                    // file is not a certificate by itself.
+                    // file is not a certificate by itself. The checkers read
+                    // the fresh CNF and a private unpacked copy of the proof
+                    // (certstore.cpp), never the store itself.
                     std::string why;
-                    fs::path recheck_dir;
-                    std::optional<Cnf> cnf;
-                    std::string cnf_txt;
-                    if (plan.lean) {
-                        recheck_dir = make_work_dir(SolveOptions{}, res.query_hash);
-                        cnf = lean_bitblast(plan.dag, plan.bb, recheck_dir, std::max(10.0, opt.timeout_s), &why);
-                        if (cnf) cnf_txt = detail::read_file(recheck_dir / "query.cnf");
-                    } else {
-                        cnf = bitblast(c, formula, &why);
-                        if (cnf) cnf_txt = to_dimacs(*cnf);
-                    }
+                    const fs::path recheck_dir = make_work_dir(SolveOptions{}, res.query_hash);
                     struct Cleanup {
                         fs::path d;
                         ~Cleanup() {
@@ -588,13 +588,26 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
                             if (!d.empty()) fs::remove_all(d, ec);
                         }
                     } cleanup{recheck_dir};
-                    const auto cnf_sha = sha256_hex(cnf_txt);
-                    const fs::path cp = root / "certs" / (res.query_hash + ".cnf");
-                    const fs::path lp = root / "certs" / (res.query_hash + ".lrat");
+                    const fs::path cp = recheck_dir / "query.cnf";
+                    const fs::path lp = recheck_dir / "proof.lrat";
+                    std::optional<Cnf> cnf;
+                    if (plan.lean) {
+                        cnf = lean_bitblast(plan.dag, plan.bb, recheck_dir, std::max(10.0, opt.timeout_s), &why);
+                    } else {
+                        cnf = bitblast(c, formula, &why);
+                        if (cnf && !detail::write_file(cp, to_dimacs(*cnf))) {
+                            cnf.reset();
+                            why = "cannot write " + cp.string();
+                        }
+                    }
+                    const auto cnf_sha = cnf ? sha256_file(cp) : std::string();
+                    std::string fetch_why;
                     if (!cnf) {
                         notes.push_back("cached certificate not re-checked: " + why);
-                    } else if (cnf_sha != j->value("cnf_sha256", "") || sha256_file(cp) != cnf_sha) {
+                    } else if (cnf_sha != j->value("cnf_sha256", "")) {
                         notes.push_back("cached certificate is for a different CNF: solving again");
+                    } else if (!certs::fetch(root, res.query_hash, lp, &fetch_why)) {
+                        notes.push_back("cached certificate not re-checked (" + fetch_why + "): solving again");
                     } else {
                         auto ck = run_checkers(opt, cp, cnf_sha, lp, j->value("cert_solver", "cadical"),
                                                check_budget(opt), has_empty_clause(*cnf), plan,
@@ -684,6 +697,26 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
             notes.push_back("not certified: cadical not found (NOTRUN)");
         }
     }
+    // The answer is already known (a cached plain unsat) and only its
+    // certificate is wanted: the other members could only repeat it and
+    // would compete with CaDiCaL for cores, so only the certificate member
+    // runs, until cert_deadline. If it gives no certificate, the cached plain
+    // answer stands, uncertified (below); a validated model still wins.
+    const bool cert_only = want_cert && cached_unsat_winner &&
+                           std::any_of(members.begin(), members.end(), [](const Member& m) { return m.lrat; });
+    if (cert_only) {
+        members.erase(std::remove_if(members.begin(), members.end(), [](const Member& m) { return !m.lrat; }),
+                      members.end());
+        notes.push_back(opt.known_unsat ? "plain unsat known: only the certificate member runs"
+                                         : "cached plain unsat: only the certificate member runs");
+    }
+    if (opt.certified && opt.known_unsat && !cert_only) {
+        // Nothing can certify it (not certifiable, CaDiCaL missing; the
+        // notes say which): the caller's plain answer stands, uncertified.
+        res.kind = Kind::Unsat;
+        res.winner = "caller (plain unsat)";
+        return finish(res);
+    }
     // Scheduler. Expected time = the bucket's recorded mean for that member
     // when there is one, else the feature rules. The member with the lowest
     // recorded mean that has also won in this bucket before gets a head
@@ -747,7 +780,7 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
         if (cached_unsat_winner) {
             res.kind = Kind::Unsat;
             res.winner = *cached_unsat_winner;
-            res.cache_hit = true;
+            res.cache_hit = !opt.known_unsat;
             notes.push_back("the cached plain unsat stands (not certified)");
         }
         return finish(res);
@@ -1013,7 +1046,7 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
         if (!any_live) break;
         // Answered UNSAT and only the certificate is outstanding: wait for
         // it until cert_deadline; otherwise the answer is due by deadline.
-        const double due = accepted ? cert_deadline : deadline;
+        const double due = accepted || cert_only ? cert_deadline : deadline;
         double wake = due;
         for (const auto& m : members)
             if (!m.started && !m.finished && m.not_before > 0) wake = std::min(wake, m.not_before);
@@ -1092,8 +1125,9 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
     } else if (cached_unsat_winner) {
         res.kind = Kind::Unsat;
         res.winner = *cached_unsat_winner;
-        res.cache_hit = true;
-        notes.push_back("no answer while solving again for a certificate: the cached plain unsat stands");
+        res.cache_hit = !opt.known_unsat;
+        notes.push_back(opt.known_unsat ? "no certificate: the caller's plain unsat stands"
+                                        : "no answer while solving again for a certificate: the cached plain unsat stands");
     } else {
         res.kind = timed_out || now_s() >= deadline ? Kind::Timeout : Kind::Unknown;
     }
@@ -1153,20 +1187,21 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
             e["bitblaster"] = plan_name;
             e["cert_solver"] = cert_member ? "cadical " + members[*cert_member].version : "cadical";
             if (opt.cache_certificates) {
-                std::error_code ec;
-                fs::create_directories(root / "certs", ec);
-                fs::copy_file(cnf_path, root / "certs" / (res.query_hash + ".cnf"),
-                              fs::copy_options::overwrite_existing, ec);
-                if (!ec)
-                    fs::copy_file(lrat_path, root / "certs" / (res.query_hash + ".lrat"),
-                                  fs::copy_options::overwrite_existing, ec);
-                if (ec) e["certified"] = false;  // cannot be re-checked later
+                // The packed proof only; the CNF is bit-blasted again on a
+                // hit. Not kept (cap, I/O): the entry is a plain unsat.
+                std::string why;
+                if (!certs::store(root, res.query_hash, lrat_path, certs::cap_bytes(opt.cert_cache_max_bytes), &why)) {
+                    e["certified"] = false;  // cannot be re-checked later
+                    notes.push_back("certificate not cached: " + why);
+                }
             } else {
                 e["certified"] = false;
             }
         } else if (res.kind == Kind::Unsat) {
-            // Never overwrite a certified entry with a plain one.
-            if (auto old = cache_load(root, res.query_hash); old && old->value("certified", false)) write = false;
+            // Never overwrite a certified entry with a plain one; a plain
+            // answer the caller supplied (known_unsat) is not ours to record.
+            if (opt.known_unsat) write = false;
+            else if (auto old = cache_load(root, res.query_hash); old && old->value("certified", false)) write = false;
         }
         if (write) detail::write_file(entry_path(root, res.query_hash), e.dump(1));
     }
