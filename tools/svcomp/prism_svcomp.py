@@ -935,7 +935,7 @@ def parse_debug_ir(ir: str, fn: str) -> tuple[IrFunc | None, dict[str, str]]:
         if m:
             md[m.group(1)] = m.group(2)
     lines = ir.splitlines()
-    start = next((i for i, l in enumerate(lines) if l.startswith("define ") and f"@{fn}(" in l), None)
+    start = next((i for i, ln in enumerate(lines) if ln.startswith("define ") and f"@{fn}(" in ln), None)
     if start is None:
         return None, md
     f = IrFunc()
