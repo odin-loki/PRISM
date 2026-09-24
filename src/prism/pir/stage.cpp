@@ -442,7 +442,9 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
             const auto ir0 = read_file(o0);
             std::string used;
             for (auto& [name, text] : model_sources())
-                if (name.starts_with("cxx/") && ir0.find((fe.cxx_models / name.substr(4)).string()) != std::string::npos)
+                // (cxx/prism_*.h are the models' internal headers, not a library header)
+                if (name.starts_with("cxx/") && !name.starts_with("cxx/prism_") &&
+                    ir0.find((fe.cxx_models / name.substr(4)).string()) != std::string::npos)
                     used += (used.empty() ? "" : ", ") + name.substr(4);
             if (cxx_models && !used.empty()) *cxx_models = "model: " + used;
             modelled = std::move(rm);
@@ -925,6 +927,13 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
             f.status = tr.status.empty() ? std::string(laws::NEEDS_HARNESS) : tr.status;
             f.strength = std::string(laws::STRENGTH_SOME);
             f.message = tr.reason;
+            if (!models.error.empty() && tr.reason.starts_with("UNENCODED: call @")) {
+                // the callee may be one the library models define: not a
+                // property of the function but a stage that could not run (Law 7)
+                f.status = std::string(laws::NOTRUN);
+                f.message = "library models could not be built (" + models.error + "): " + tr.reason;
+                f.extra["models_error"] = models.error;
+            }
             recs.push_back(std::move(rec));
             continue;
         }
@@ -1036,8 +1045,10 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
         f.extra["install"] = kInstall;
         return {f};
     }
-    // library models: lowered once per run (process phase)
-    auto models = build_models(fe, std::max(10.0, cfg.timeout));
+    // library models: lowered once per run (process phase) and cached across
+    // runs; their own time limit, well above the per-unit one: they are
+    // PRISM's code, and every library call of every unit depends on them
+    auto models = build_models(fe, std::max(120.0, 4 * cfg.timeout));
     // C++ library model headers (docs/PIR.md "C++ library models"): written
     // once per run; without them C++ units use the platform library, and
     // every C++ function says which one it was checked against.

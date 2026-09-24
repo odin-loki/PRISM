@@ -399,6 +399,35 @@ timeout), `cxx_constexpr`/`cxx_if_consteval` (no runtime function; unchanged),
 "no answer" above (iostreams, `std::map`/`std::set`, `std::string`
 out-of-line members: `UNENCODED: call`).
 
+### C++ library models, second round (`std::string`, `std::map`/`std::set`; branch `claude/cxx-models-2`)
+
+Single-task `pir` runs (stages `inventory,classify,pir`, default unwind 8,
+heavily loaded shared machine, 2026-09-24). "Base" is the C++ engine at
+`232d5da2a` (the `<vector>` model only); "new" is this branch (the
+`bits/basic_string.tcc` and `<map>`/`<set>` models, two-field aggregate
+returns in the translator, the unwind tried first).
+
+| task | base | new |
+|---|---|---|
+| `cxx_string_substr_true` | no answer (killed after > 10 min) | PROVED, 1.7 s |
+| `cxx_string_substr_false` | not rerun (timed out at 180 s in the first round) | FAILED CXX-THROW-NOEXCEPT, 28 s |
+| `cxx_map_at_true` / `_false` (new) | `NEEDS-HARNESS` (no model: recursive tree code) | PROVED 14 s / FAILED CXX-THROW-NOEXCEPT 47 s |
+| `cxx_map_erase_uaf_true` / `_false` (new) | `NEEDS-HARNESS` | PROVED 9.6 s / FAILED MEM-UAF 84 s |
+| `cxx_set_erase_uaf_true` / `_false` (new) | `NEEDS-HARNESS` | PROVED 17 s / FAILED MEM-UAF 134 s |
+
+0 wrong proofs among these. Not measured on this branch (the session ran
+out of time): the full `esbmc-cpp` + `prism/cxx` before/after table, the
+new `libc-models/map_contracts.cpp` harness file (one run of the whole file
+did not finish within 1200 s; which function is slow was not isolated) and
+`libc-models/vector_insert.cpp` (insert in the middle; the first round
+measured > 900 s for the old harness shape). Measured limits of the map/set
+model: an erase at a position that depends on the input, followed by a
+traversal (the destructor, `clear()`), does not finish within 240–600 s in
+the default `Bv` memory encoding (`map<int,int>` with two elements); the
+same function without the conditional erase takes 10 s. With
+`MemEncoding::Array` (not the stage default) an unconditional erase took
+0.6 s instead of 17 s, the conditional one still did not finish.
+
 ## Before the fixes (2026-09-23, `24a72d40b`)
 
 Engine: C++ engine built from `claude/prism-code-checker-x7538r` at

@@ -1,0 +1,373 @@
+// PRISM operational model of <set> (roadmap 2.6, docs/PIR.md "C++ library
+// models"): std::set and std::multiset with std::allocator, on the sorted
+// node list of prism_tree.h (which says what is modelled and how it matches
+// libstdc++ 13). The pir stage puts this directory first on the C++ include
+// path, so `#include <set>` reaches this file instead of libstdc++'s.
+// Node handles (extract, insert(node_type), merge) and other allocators
+// (pmr::set) are not declared or rejected: such a unit falls back to
+// libstdc++ and says so in `extra.cxx_models`.
+#ifndef _PRISM_MODEL_SET
+#define _PRISM_MODEL_SET 1
+#define _GLIBCXX_SET 1  // libstdc++'s <set> include guard: never both
+
+#pragma GCC system_header
+
+#include <prism_tree.h>
+
+namespace std _GLIBCXX_VISIBILITY(default) {
+
+template <typename _Key, typename _Compare = less<_Key>, typename _Alloc = allocator<_Key>>
+class multiset;
+
+// set and multiset: one class body, _Multi selects the insertion rules
+template <typename _Key, typename _Compare, typename _Alloc, bool _Multi>
+class _Prism_set_base {
+public:
+    typedef _Key key_type;
+    typedef _Key value_type;
+    typedef _Compare key_compare;
+    typedef _Compare value_compare;
+    typedef _Alloc allocator_type;
+
+protected:
+    typedef _Prism_tree<_Key, _Key, _Prism_identity<_Key>, _Compare, _Alloc, _Multi> _Rep;
+    _Rep _M_t;
+
+public:
+    typedef _Key& reference;
+    typedef const _Key& const_reference;
+    typedef _Key* pointer;
+    typedef const _Key* const_pointer;
+    typedef typename _Rep::const_iterator iterator;
+    typedef typename _Rep::const_iterator const_iterator;
+    typedef std::reverse_iterator<iterator> reverse_iterator;
+    typedef std::reverse_iterator<const_iterator> const_reverse_iterator;
+    typedef size_t size_type;
+    typedef ptrdiff_t difference_type;
+
+protected:
+    static _Prism_node_base* _S_mut(const_iterator __it) noexcept { return const_cast<_Prism_node_base*>(__it._M_node); }
+    // the result of an insertion: an iterator, plus `inserted` for set
+    using _Ins = conditional_t<_Multi, iterator, pair<iterator, bool>>;
+    _Ins _M_ins(_Prism_node_base* __p) const {
+        if constexpr (_Multi)
+            return iterator(__p);
+        else
+            return {iterator(__p), _M_t._M_inserted};
+    }
+
+public:
+    _Prism_set_base() = default;
+    explicit _Prism_set_base(const _Compare& __comp) : _M_t(__comp) {}
+
+    allocator_type get_allocator() const noexcept { return allocator_type(); }
+
+    iterator begin() const noexcept { return iterator(_M_t._M_head._M_next); }
+    iterator end() const noexcept { return iterator(_M_t._M_end()); }
+    reverse_iterator rbegin() const noexcept { return reverse_iterator(end()); }
+    reverse_iterator rend() const noexcept { return reverse_iterator(begin()); }
+    iterator cbegin() const noexcept { return begin(); }
+    iterator cend() const noexcept { return end(); }
+    reverse_iterator crbegin() const noexcept { return rbegin(); }
+    reverse_iterator crend() const noexcept { return rend(); }
+
+    [[__nodiscard__]] bool empty() const noexcept { return _M_t._M_count == 0; }
+    size_type size() const noexcept { return _M_t._M_count; }
+    size_type max_size() const noexcept { return size_type(-1) / sizeof(_Prism_rb_node_layout<_Key>); }
+
+    template <typename... _Args>
+    _Ins emplace(_Args&&... __args) {
+        if constexpr (_Multi)
+            return _M_ins(_M_t._M_emplace_equal(std::forward<_Args>(__args)...));
+        else
+            return _M_ins(_M_t._M_emplace_unique(std::forward<_Args>(__args)...));
+    }
+    template <typename... _Args>
+    iterator emplace_hint(const_iterator __pos, _Args&&... __args) {
+        if constexpr (_Multi)
+            return iterator(_M_t._M_emplace_hint_equal(_S_mut(__pos), std::forward<_Args>(__args)...));
+        else
+            return iterator(_M_t._M_emplace_hint_unique(__pos._M_node, std::forward<_Args>(__args)...));
+    }
+    _Ins insert(const value_type& __x) {
+        if constexpr (_Multi)
+            return _M_ins(_M_t._M_insert_equal(__x));
+        else
+            return _M_ins(_M_t._M_insert_unique(__x));
+    }
+    _Ins insert(value_type&& __x) {
+        if constexpr (_Multi)
+            return _M_ins(_M_t._M_insert_equal(std::move(__x)));
+        else
+            return _M_ins(_M_t._M_insert_unique(std::move(__x)));
+    }
+    iterator insert(const_iterator __position, const value_type& __x) {
+        if constexpr (_Multi)
+            return iterator(_M_t._M_insert_equal_hint(_S_mut(__position), __x));
+        else
+            return iterator(_M_t._M_insert_unique_hint(__position._M_node, __x));
+    }
+    iterator insert(const_iterator __position, value_type&& __x) {
+        if constexpr (_Multi)
+            return iterator(_M_t._M_insert_equal_hint(_S_mut(__position), std::move(__x)));
+        else
+            return iterator(_M_t._M_insert_unique_hint(__position._M_node, std::move(__x)));
+    }
+    template <typename _InputIterator>
+    void insert(_InputIterator __first, _InputIterator __last) {
+        if constexpr (_Multi)
+            _M_t._M_insert_range_equal(__first, __last);
+        else
+            _M_t._M_insert_range_unique(__first, __last);
+    }
+    void insert(initializer_list<value_type> __l) { this->insert(__l.begin(), __l.end()); }
+
+    iterator erase(const_iterator __position) { return iterator(_M_t._M_erase(__position._M_node)); }
+    size_type erase(const key_type& __x) { return _M_t._M_erase_key(__x); }
+    iterator erase(const_iterator __first, const_iterator __last) {
+        return iterator(_M_t._M_erase(__first._M_node, __last._M_node));
+    }
+    void clear() noexcept { _M_t._M_clear(); }
+
+    key_compare key_comp() const { return _M_t._M_cmp; }
+    value_compare value_comp() const { return _M_t._M_cmp; }
+
+    iterator find(const key_type& __x) const { return iterator(_M_t._M_find(__x)); }
+    template <typename _Kt, typename _Req = __has_is_transparent_t<_Compare, _Kt>>
+    auto find(const _Kt& __x) const -> decltype(iterator(_M_t._M_find(__x))) {
+        return iterator(_M_t._M_find(__x));
+    }
+    size_type count(const key_type& __x) const { return _M_t._M_count_of(__x); }
+    template <typename _Kt, typename _Req = __has_is_transparent_t<_Compare, _Kt>>
+    auto count(const _Kt& __x) const -> decltype(_M_t._M_count_of(__x)) {
+        return _M_t._M_count_of(__x);
+    }
+    bool contains(const key_type& __x) const { return _M_t._M_find(__x) != _M_t._M_end(); }
+    template <typename _Kt, typename _Req = __has_is_transparent_t<_Compare, _Kt>>
+    auto contains(const _Kt& __x) const -> decltype(_M_t._M_find(__x), void(), true) {
+        return _M_t._M_find(__x) != _M_t._M_end();
+    }
+    iterator lower_bound(const key_type& __x) const { return iterator(_M_t._M_lower(__x)); }
+    template <typename _Kt, typename _Req = __has_is_transparent_t<_Compare, _Kt>>
+    auto lower_bound(const _Kt& __x) const -> decltype(iterator(_M_t._M_lower(__x))) {
+        return iterator(_M_t._M_lower(__x));
+    }
+    iterator upper_bound(const key_type& __x) const { return iterator(_M_t._M_upper(__x)); }
+    template <typename _Kt, typename _Req = __has_is_transparent_t<_Compare, _Kt>>
+    auto upper_bound(const _Kt& __x) const -> decltype(iterator(_M_t._M_upper(__x))) {
+        return iterator(_M_t._M_upper(__x));
+    }
+    pair<iterator, iterator> equal_range(const key_type& __x) const {
+        auto __r = _M_t._M_equal_range(__x);
+        return {iterator(__r.first), iterator(__r.second)};
+    }
+    template <typename _Kt, typename _Req = __has_is_transparent_t<_Compare, _Kt>>
+    auto equal_range(const _Kt& __x) const -> decltype(pair<iterator, iterator>(_M_t._M_equal_range(__x))) {
+        auto __r = _M_t._M_equal_range(__x);
+        return {iterator(__r.first), iterator(__r.second)};
+    }
+};
+
+template <typename _Key, typename _Compare = less<_Key>, typename _Alloc = allocator<_Key>>
+class set : public _Prism_set_base<_Key, _Compare, _Alloc, false> {
+    typedef _Prism_set_base<_Key, _Compare, _Alloc, false> _Base;
+
+public:
+    using typename _Base::allocator_type;
+    using typename _Base::value_type;
+    using typename _Base::size_type;
+
+    set() = default;
+    explicit set(const _Compare& __comp, const allocator_type& = allocator_type()) : _Base(__comp) {}
+    set(const set&) = default;
+    set(set&&) = default;
+    template <typename _InputIterator>
+    set(_InputIterator __first, _InputIterator __last) {
+        this->_M_t._M_insert_range_unique(__first, __last);
+    }
+    template <typename _InputIterator>
+    set(_InputIterator __first, _InputIterator __last, const _Compare& __comp,
+        const allocator_type& = allocator_type())
+        : _Base(__comp) {
+        this->_M_t._M_insert_range_unique(__first, __last);
+    }
+    set(initializer_list<value_type> __l, const _Compare& __comp = _Compare(), const allocator_type& = allocator_type())
+        : _Base(__comp) {
+        this->_M_t._M_insert_range_unique(__l.begin(), __l.end());
+    }
+    explicit set(const allocator_type&) {}
+    set(const set& __x, const __type_identity_t<allocator_type>&) : _Base(__x) {}
+    set(set&& __x, const __type_identity_t<allocator_type>&) noexcept : _Base(std::move(__x)) {}
+    set(initializer_list<value_type> __l, const allocator_type&) {
+        this->_M_t._M_insert_range_unique(__l.begin(), __l.end());
+    }
+    template <typename _InputIterator>
+    set(_InputIterator __first, _InputIterator __last, const allocator_type&) {
+        this->_M_t._M_insert_range_unique(__first, __last);
+    }
+    ~set() = default;
+
+    set& operator=(const set&) = default;
+    set& operator=(set&&) = default;
+    set& operator=(initializer_list<value_type> __l) {
+        this->_M_t._M_clear();
+        this->_M_t._M_insert_range_unique(__l.begin(), __l.end());
+        return *this;
+    }
+    void swap(set& __x) noexcept(__is_nothrow_swappable<_Compare>::value) { this->_M_t._M_swap(__x._M_t); }
+
+    friend bool operator==(const set& __x, const set& __y) {
+        return __x.size() == __y.size() && std::equal(__x.begin(), __x.end(), __y.begin());
+    }
+    friend __detail::__synth3way_t<_Key> operator<=>(const set& __x, const set& __y) {
+        return std::lexicographical_compare_three_way(__x.begin(), __x.end(), __y.begin(), __y.end(),
+                                                      __detail::__synth3way);
+    }
+};
+
+template <typename _Key, typename _Compare, typename _Alloc>
+class multiset : public _Prism_set_base<_Key, _Compare, _Alloc, true> {
+    typedef _Prism_set_base<_Key, _Compare, _Alloc, true> _Base;
+
+public:
+    using typename _Base::allocator_type;
+    using typename _Base::value_type;
+    using typename _Base::size_type;
+
+    multiset() = default;
+    explicit multiset(const _Compare& __comp, const allocator_type& = allocator_type()) : _Base(__comp) {}
+    multiset(const multiset&) = default;
+    multiset(multiset&&) = default;
+    template <typename _InputIterator>
+    multiset(_InputIterator __first, _InputIterator __last) {
+        this->_M_t._M_insert_range_equal(__first, __last);
+    }
+    template <typename _InputIterator>
+    multiset(_InputIterator __first, _InputIterator __last, const _Compare& __comp,
+             const allocator_type& = allocator_type())
+        : _Base(__comp) {
+        this->_M_t._M_insert_range_equal(__first, __last);
+    }
+    multiset(initializer_list<value_type> __l, const _Compare& __comp = _Compare(),
+             const allocator_type& = allocator_type())
+        : _Base(__comp) {
+        this->_M_t._M_insert_range_equal(__l.begin(), __l.end());
+    }
+    explicit multiset(const allocator_type&) {}
+    multiset(const multiset& __x, const __type_identity_t<allocator_type>&) : _Base(__x) {}
+    multiset(multiset&& __x, const __type_identity_t<allocator_type>&) noexcept : _Base(std::move(__x)) {}
+    multiset(initializer_list<value_type> __l, const allocator_type&) {
+        this->_M_t._M_insert_range_equal(__l.begin(), __l.end());
+    }
+    template <typename _InputIterator>
+    multiset(_InputIterator __first, _InputIterator __last, const allocator_type&) {
+        this->_M_t._M_insert_range_equal(__first, __last);
+    }
+    ~multiset() = default;
+
+    multiset& operator=(const multiset&) = default;
+    multiset& operator=(multiset&&) = default;
+    multiset& operator=(initializer_list<value_type> __l) {
+        this->_M_t._M_clear();
+        this->_M_t._M_insert_range_equal(__l.begin(), __l.end());
+        return *this;
+    }
+    void swap(multiset& __x) noexcept(__is_nothrow_swappable<_Compare>::value) { this->_M_t._M_swap(__x._M_t); }
+
+    friend bool operator==(const multiset& __x, const multiset& __y) {
+        return __x.size() == __y.size() && std::equal(__x.begin(), __x.end(), __y.begin());
+    }
+    friend __detail::__synth3way_t<_Key> operator<=>(const multiset& __x, const multiset& __y) {
+        return std::lexicographical_compare_three_way(__x.begin(), __x.end(), __y.begin(), __y.end(),
+                                                      __detail::__synth3way);
+    }
+};
+
+// deduction guides (as libstdc++'s)
+template <typename _InputIterator, typename _Compare = less<typename iterator_traits<_InputIterator>::value_type>,
+          typename _Allocator = allocator<typename iterator_traits<_InputIterator>::value_type>,
+          typename = _RequireInputIter<_InputIterator>, typename = _RequireNotAllocator<_Compare>,
+          typename = _RequireAllocator<_Allocator>>
+set(_InputIterator, _InputIterator, _Compare = _Compare(), _Allocator = _Allocator())
+    -> set<typename iterator_traits<_InputIterator>::value_type, _Compare, _Allocator>;
+template <typename _Key, typename _Compare = less<_Key>, typename _Allocator = allocator<_Key>,
+          typename = _RequireNotAllocator<_Compare>, typename = _RequireAllocator<_Allocator>>
+set(initializer_list<_Key>, _Compare = _Compare(), _Allocator = _Allocator()) -> set<_Key, _Compare, _Allocator>;
+template <typename _InputIterator, typename _Allocator, typename = _RequireInputIter<_InputIterator>,
+          typename = _RequireAllocator<_Allocator>>
+set(_InputIterator, _InputIterator, _Allocator)
+    -> set<typename iterator_traits<_InputIterator>::value_type,
+           less<typename iterator_traits<_InputIterator>::value_type>, _Allocator>;
+template <typename _Key, typename _Allocator, typename = _RequireAllocator<_Allocator>>
+set(initializer_list<_Key>, _Allocator) -> set<_Key, less<_Key>, _Allocator>;
+
+template <typename _InputIterator, typename _Compare = less<typename iterator_traits<_InputIterator>::value_type>,
+          typename _Allocator = allocator<typename iterator_traits<_InputIterator>::value_type>,
+          typename = _RequireInputIter<_InputIterator>, typename = _RequireNotAllocator<_Compare>,
+          typename = _RequireAllocator<_Allocator>>
+multiset(_InputIterator, _InputIterator, _Compare = _Compare(), _Allocator = _Allocator())
+    -> multiset<typename iterator_traits<_InputIterator>::value_type, _Compare, _Allocator>;
+template <typename _Key, typename _Compare = less<_Key>, typename _Allocator = allocator<_Key>,
+          typename = _RequireNotAllocator<_Compare>, typename = _RequireAllocator<_Allocator>>
+multiset(initializer_list<_Key>, _Compare = _Compare(), _Allocator = _Allocator())
+    -> multiset<_Key, _Compare, _Allocator>;
+template <typename _InputIterator, typename _Allocator, typename = _RequireInputIter<_InputIterator>,
+          typename = _RequireAllocator<_Allocator>>
+multiset(_InputIterator, _InputIterator, _Allocator)
+    -> multiset<typename iterator_traits<_InputIterator>::value_type,
+                less<typename iterator_traits<_InputIterator>::value_type>, _Allocator>;
+template <typename _Key, typename _Allocator, typename = _RequireAllocator<_Allocator>>
+multiset(initializer_list<_Key>, _Allocator) -> multiset<_Key, less<_Key>, _Allocator>;
+
+template <typename _Key, typename _Compare, typename _Alloc>
+inline void swap(set<_Key, _Compare, _Alloc>& __x, set<_Key, _Compare, _Alloc>& __y) noexcept(
+    noexcept(__x.swap(__y))) {
+    __x.swap(__y);
+}
+template <typename _Key, typename _Compare, typename _Alloc>
+inline void swap(multiset<_Key, _Compare, _Alloc>& __x, multiset<_Key, _Compare, _Alloc>& __y) noexcept(
+    noexcept(__x.swap(__y))) {
+    __x.swap(__y);
+}
+
+template <typename _Key, typename _Compare, typename _Alloc, typename _Predicate>
+inline typename set<_Key, _Compare, _Alloc>::size_type erase_if(set<_Key, _Compare, _Alloc>& __cont,
+                                                                _Predicate __pred) {
+    typename set<_Key, _Compare, _Alloc>::size_type __num = 0;
+    for (auto __it = __cont.begin(), __last = __cont.end(); __it != __last;) {
+        if (__pred(*__it)) {
+            __it = __cont.erase(__it);
+            ++__num;
+        } else {
+            ++__it;
+        }
+    }
+    return __num;
+}
+template <typename _Key, typename _Compare, typename _Alloc, typename _Predicate>
+inline typename multiset<_Key, _Compare, _Alloc>::size_type erase_if(multiset<_Key, _Compare, _Alloc>& __cont,
+                                                                     _Predicate __pred) {
+    typename multiset<_Key, _Compare, _Alloc>::size_type __num = 0;
+    for (auto __it = __cont.begin(), __last = __cont.end(); __it != __last;) {
+        if (__pred(*__it)) {
+            __it = __cont.erase(__it);
+            ++__num;
+        } else {
+            ++__it;
+        }
+    }
+    return __num;
+}
+
+namespace pmr {
+// declared for source compatibility; instantiating one is rejected by the
+// model's allocator check, so the unit falls back to libstdc++
+template <typename _Key, typename _Cmp = std::less<_Key>>
+using set = std::set<_Key, _Cmp, polymorphic_allocator<_Key>>;
+template <typename _Key, typename _Cmp = std::less<_Key>>
+using multiset = std::multiset<_Key, _Cmp, polymorphic_allocator<_Key>>;
+}  // namespace pmr
+
+}  // namespace std
+
+#endif  // _PRISM_MODEL_SET

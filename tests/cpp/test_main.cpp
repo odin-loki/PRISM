@@ -5327,6 +5327,43 @@ TEST_CASE("pir: undef is a fresh value at every use, branching on it is UB (refi
     CHECK(!prism::laws::is_proof(st.status));
 }
 
+TEST_CASE("pir: a function with loops is tried at unwind 4 first; only exact answers are kept") {
+    auto loop = [](int n) {
+        return "define i32 @l(i32 %x) {\nentry:\n  br label %h\nh:\n  %i = phi i32 [ 0, %entry ], [ %i1, %b ]\n"
+               "  %c = icmp slt i32 %i, " + std::to_string(n) + "\n  br i1 %c, label %b, label %e\nb:\n"
+               "  %i1 = add nsw i32 %i, 1\n  br label %h\ne:\n  %r = sdiv i32 100, %x\n  ret i32 %i\n}\n";
+    };
+    auto safe = [&](int n) {  // x is not a divisor here: drop the division
+        auto t = loop(n);
+        return t.replace(t.find("  %r = sdiv i32 100, %x\n"), 24, "");
+    };
+    // closes within 4: PROVED at 4, exact at 8 as well
+    auto small = pir_of(safe(3), "l");
+    REQUIRE(small.fn.has_value());
+    auto vs = prism::pir::check_function(*small.fn, 8, 30);
+    CHECK(vs.status == prism::laws::PROVED);
+    CHECK(vs.extra.at("unwind") == "4");
+    CHECK(vs.extra.at("unwind_requested") == "8");
+    // closes at 6 only: the first try is BOUNDED (no k-induction there), the
+    // requested unwind decides: PROVED as before, not PROVED-UNBOUNDED
+    auto six = pir_of(safe(6), "l");
+    REQUIRE(six.fn.has_value());
+    auto v6 = prism::pir::check_function(*six.fn, 8, 30);
+    CHECK(v6.status == prism::laws::PROVED);
+    CHECK(v6.extra.at("unwind") == "8");
+    CHECK(v6.extra.at("unwind_first_tried").rfind("4 (BOUNDED)", 0) == 0);
+    // a violation within 4: FAILED from the first try
+    auto div = pir_of(loop(3), "l");
+    REQUIRE(div.fn.has_value());
+    auto vd = prism::pir::check_function(*div.fn, 8, 30);
+    CHECK(vd.status == prism::laws::FAILED);
+    CHECK(vd.cls == "INT-DIV-ZERO");
+    // requested unwind <= 5: one run at that unwind
+    auto v5 = prism::pir::check_function(*six.fn, 5, 30);
+    CHECK(v5.extra.at("unwind") == "5");
+    CHECK(v5.extra.count("unwind_first_tried") == 0);
+}
+
 TEST_CASE("pir: encoder verdicts on straight-line code") {
     auto ovf = pir_of("define i32 @f(i32 %a, i32 %b) {\nentry:\n  %s = add nsw i32 %a, %b\n  ret i32 %s\n}\n", "f");
     REQUIRE(ovf.fn.has_value());

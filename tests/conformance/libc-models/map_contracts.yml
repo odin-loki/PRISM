@@ -1,0 +1,22 @@
+format_version: 1
+input_files: map_contracts.cpp
+language: C++
+property: libc-contract
+timeout: 900  # several container functions in one run
+expected:
+  map_insert_true: true
+  map_index_true: true
+  map_erase_true: true
+  map_at_true: true
+  map_erase_uaf_false: false
+  map_end_deref_false: false
+  map_order_false: false
+  set_order_true: true
+  multiset_count_true: true
+  multiset_erase_true: true
+  set_decrement_begin_false: false
+expect_class:  # the violation each false harness plants
+  map_erase_uaf_false: "MEM-UAF"
+  map_end_deref_false: "FUNC-CONTRACT"
+  map_order_false: "FUNC-CONTRACT"
+  set_decrement_begin_false: "FUNC-CONTRACT"
