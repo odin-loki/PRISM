@@ -89,6 +89,10 @@ class CxxModelDifferential(unittest.TestCase):
     def test_vector(self) -> None:
         self._same_trace("vector_trace", ["vector"])
 
+    def test_string(self) -> None:
+        # libstdc++'s class with the modelled out-of-line members
+        self._same_trace("string_trace", ["bits/basic_string.tcc"])
+
     def test_map_set(self) -> None:
         self._same_trace("map_set_trace", ["map", "set", "prism_tree.h"])
         # an iterator to an erased element: heap-use-after-free with both

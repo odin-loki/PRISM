@@ -215,14 +215,27 @@ class LibcModels(unittest.TestCase):
         # (CMake list) and exercised by a contract harness and in-house tasks
         cxx = REPO / "src" / "prism" / "pir" / "models" / "cxx"
         cmake = (REPO / "CMakeLists.txt").read_text()
-        headers = [p.name for p in cxx.iterdir() if p.is_file()]
-        self.assertIn("vector", headers)
+        files = [p.relative_to(cxx).as_posix() for p in cxx.rglob("*") if p.is_file()]
+        # public headers; prism_*.h are the models' internal headers and
+        # bits/basic_string.tcc replaces the libstdc++ file <string> includes
+        headers = [f for f in files if "/" not in f and not f.startswith("prism_")]
+        self.assertTrue({"vector", "map", "set"} <= set(headers), headers)
+        self.assertIn("bits/basic_string.tcc", files)
         harnesses = "\n".join(p.read_text() for p in (SUITE / "libc-models").rglob("*.cpp"))
         tasks = "\n".join(p.read_text() for p in (SUITE / "prism" / "cxx").glob("*.cpp"))
-        for h in headers:
-            self.assertIn(f"src/prism/pir/models/cxx/{h}", cmake, h)
-            self.assertIn(f"#include <{h}>", harnesses, h)
-            self.assertIn(f"#include <{h}>", tasks, h)
+        public = {f: f for f in headers}
+        public["bits/basic_string.tcc"] = "string"
+        for f in files:
+            self.assertIn(f"src/prism/pir/models/cxx/{f}", cmake, f)
+            if f in public:
+                self.assertIn(f"#include <{public[f]}>", harnesses, f)
+                self.assertIn(f"#include <{public[f]}>", tasks, f)
+            else:  # an internal header: some public model header includes it
+                self.assertTrue(any(f"#include <{f}>" in (cxx / h).read_text() for h in headers), f)
+        # every model header is compared against libstdc++ (tests/test_cxx_models.py)
+        diff = (REPO / "tests" / "test_cxx_models.py").read_text()
+        for f in files:
+            self.assertIn(f'"{f}"', diff, f)
 
     def test_expect_class(self) -> None:
         t = conf.Task(ident="x.yml", yml=Path("x.yml"), source=Path("x.c"), origin="libc-models", category="c",

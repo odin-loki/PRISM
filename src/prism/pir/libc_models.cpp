@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdlib>
 #include <deque>
 #include <fstream>
 #include <random>
@@ -82,50 +83,115 @@ void refs_of(const ir::Value& v, std::set<std::string>& globals) {
 
 }  // namespace
 
+namespace {
+
+// Where lowered models are kept across runs: $XDG_CACHE_HOME/prism/pir-models
+// or ~/.cache/prism/pir-models ("" when neither is set).
+fs::path model_cache_root() {
+    if (const char* x = std::getenv("XDG_CACHE_HOME"); x && *x) return fs::path(x) / "prism" / "pir-models";
+    if (const char* h = std::getenv("HOME"); h && *h) return fs::path(h) / ".cache" / "prism" / "pir-models";
+    return {};
+}
+
+// One model file through clang -> opt; "" on success, else why not.
+std::string lower_model(const Frontend& fe, const fs::path& dir, const std::string& name, double timeout_s,
+                        std::string& ll) {
+    auto src = dir / ("prism_model_" + name);
+    auto o0 = dir / (name + ".o0.ll"), o1 = dir / (name + ".ll");
+    auto r = detail::run_process({fe.clang->string(), "-S", "-emit-llvm", "-O0", "-Xclang", "-disable-O0-optnone",
+                                  "-fno-builtin", "-ffreestanding", "-fno-discard-value-names", "-gline-tables-only",
+                                  "-std=c17", "-w", "-o", o0.string(), src.string()},
+                                 timeout_s);
+    if (r.timed_out) return "model " + name + ": clang timed out after " + std::to_string(int(timeout_s)) + " s";
+    if (r.failed || r.rc != 0) return "model " + name + ": " + first_error_line(r.text);
+    auto ro = detail::run_process({fe.opt->string(), "-passes=mem2reg,lowerswitch,loop-simplify,lcssa,instnamer", "-S",
+                                   "-o", o1.string(), o0.string()},
+                                  timeout_s);
+    if (ro.timed_out) return "model " + name + " (opt): timed out after " + std::to_string(int(timeout_s)) + " s";
+    if (ro.failed || ro.rc != 0) return "model " + name + " (opt): " + first_error_line(ro.text);
+    ll = slurp(o1);
+    if (ll.empty()) return "model " + name + ": opt wrote no IR";
+    return {};
+}
+
+}  // namespace
+
+// Lowered once per run and reused by every unit. The lowered IR is also kept
+// on disk, keyed by the model sources and the front end, so later runs (and
+// runs on a loaded machine) do not lower the models again. A clang/opt that
+// times out is retried once with twice the time; if the models still cannot
+// be built, lib.error says why and the pir stage records it (never silent).
 ModelLibrary build_models(const Frontend& fe, double timeout_s) {
     ModelLibrary lib;
     if (!fe.clang || !fe.opt) {
         lib.error = "clang/opt not found";
         return lib;
     }
-    static std::atomic<unsigned> seq{0};
-    std::random_device rd;
-    auto dir = fs::temp_directory_path() / ("prism_models_" + std::to_string(rd()) + "_" + std::to_string(seq++));
+    std::string key_text = "prism-pir-models-v1\n" + fe.version + "\n" + fe.clang->string() + "\n" + fe.opt->string();
+    for (auto& [name, text] : model_sources())
+        if (!name.starts_with("cxx/")) key_text += "\n--" + name + "\n" + text;
     std::error_code ec;
-    fs::create_directories(dir, ec);
-    if (ec) {
-        lib.error = "cannot create a temporary directory";
-        return lib;
-    }
-    for (auto& [name, text] : model_sources()) {
-        if (name.starts_with("cxx/")) continue;  // C++ headers: write_cxx_models
-        auto dst = dir / (name.ends_with(".h") ? name : "prism_model_" + name);
-        std::ofstream(dst, std::ios::binary) << text;
-    }
-    for (auto& [name, text] : model_sources()) {
-        if (!name.ends_with(".c")) continue;
-        auto src = dir / ("prism_model_" + name);
-        auto o0 = dir / (name + ".o0.ll"), o1 = dir / (name + ".ll");
-        auto r = detail::run_process({fe.clang->string(), "-S", "-emit-llvm", "-O0", "-Xclang", "-disable-O0-optnone",
-                                      "-fno-builtin", "-ffreestanding", "-fno-discard-value-names",
-                                      "-gline-tables-only", "-std=c17", "-w", "-o", o0.string(), src.string()},
-                                     timeout_s);
-        if (r.failed || r.timed_out || r.rc != 0) {
-            lib.error = "model " + name + ": " + first_error_line(r.text);
-            break;
+    fs::path cache;
+    if (auto root = model_cache_root(); !root.empty()) cache = root / sha256_hex(key_text).substr(0, 24);
+    std::vector<std::pair<std::string, std::string>> lowered;  // model file -> IR
+    if (!cache.empty() && fs::is_directory(cache, ec)) {
+        for (auto& [name, text] : model_sources()) {
+            if (!name.ends_with(".c")) continue;
+            auto ll = slurp(cache / (name + ".ll"));
+            if (ll.empty()) {
+                lowered.clear();
+                break;
+            }
+            lowered.emplace_back(name, std::move(ll));
         }
-        auto ro = detail::run_process({fe.opt->string(), "-passes=mem2reg,lowerswitch,loop-simplify,lcssa,instnamer",
-                                       "-S", "-o", o1.string(), o0.string()},
-                                      timeout_s);
-        if (ro.failed || ro.timed_out || ro.rc != 0) {
-            lib.error = "model " + name + " (opt): " + first_error_line(ro.text);
-            break;
+    }
+    if (lowered.empty()) {
+        static std::atomic<unsigned> seq{0};
+        std::random_device rd;
+        auto dir = fs::temp_directory_path() / ("prism_models_" + std::to_string(rd()) + "_" + std::to_string(seq++));
+        fs::create_directories(dir, ec);
+        if (ec) {
+            lib.error = "cannot create a temporary directory";
+            return lib;
         }
+        for (auto& [name, text] : model_sources()) {
+            if (name.starts_with("cxx/")) continue;  // C++ headers: write_cxx_models
+            auto dst = dir / (name.ends_with(".h") ? name : "prism_model_" + name);
+            std::ofstream(dst, std::ios::binary) << text;
+        }
+        for (auto& [name, text] : model_sources()) {
+            if (!name.ends_with(".c")) continue;
+            std::string ll;
+            auto err = lower_model(fe, dir, name, timeout_s, ll);
+            if (!err.empty() && err.find("timed out") != std::string::npos)
+                err = lower_model(fe, dir, name, 2 * timeout_s, ll);  // a loaded machine: once more
+            if (!err.empty()) {
+                lib.error = err;
+                break;
+            }
+            lowered.emplace_back(name, std::move(ll));
+        }
+        fs::remove_all(dir, ec);
+        if (!lib.error.empty()) return lib;
+        if (!cache.empty()) {
+            // write-then-rename: concurrent runs never read a partial file
+            fs::create_directories(cache, ec);
+            for (auto& [name, ll] : lowered) {
+                auto tmp = cache / (name + ".ll.tmp" + std::to_string(rd()));
+                {
+                    std::ofstream o(tmp, std::ios::binary);
+                    o << ll;
+                    if (!o) continue;
+                }
+                fs::rename(tmp, cache / (name + ".ll"), ec);
+                if (ec) fs::remove(tmp, ec);
+            }
+        }
+    }
+    for (auto& [name, ll] : lowered) {
         auto tag = name.substr(0, name.size() - 2);
-        lib.units.push_back(ir::parse_module(rename_privates(slurp(o1), tag)));
+        lib.units.push_back(ir::parse_module(rename_privates(ll, tag)));
     }
-    fs::remove_all(dir, ec);
-    if (!lib.error.empty()) lib.units.clear();
     return lib;
 }
 
