@@ -74,6 +74,14 @@ open PrismRefine
 #print axioms gFin_run
 #print axioms storeVal_sim
 #print axioms idxOps_sim
+-- intrinsics, lifetime markers, memcpy/memmove/memset, globals (roadmap 8.2, M9)
+#print axioms unChecks_bad
+#print axioms store_simX
+#print axioms accChkG_run
+#print axioms overlapChk_run
+#print axioms memcpy_run
+#print axioms memset_run
+#print axioms globStores_run
 -- Part 8.2 "Floating point" (stretch): IEEE binary formats, correctly rounded addition
 #print axioms PrismRefine.Float.roundU_repr
 #print axioms PrismRefine.Float.roundU_nearest

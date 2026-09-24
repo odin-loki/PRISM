@@ -339,10 +339,11 @@ def Chk.bad (σ : Store) : Chk → Bool
   | .disj a b w => (bv w (a.get σ) &&& bv w (b.get σ)) != 0#w
 
 theorem bad_test (σ : Store) (op : POp) (a b : Arg) (pr cl : String)
-    (h1 : ∀ o, op ≠ .bin o) (h2 : ∀ p, op ≠ .cmp p) (h3 : op ≠ .select) (h4 : ∀ k, op ≠ .cast k) :
+    (h1 : ∀ o, op ≠ .bin o) (h2 : ∀ p, op ≠ .cmp p) (h3 : op ≠ .select) (h4 : ∀ k, op ≠ .cast k)
+    (h5 : ∀ k, op ≠ .mm k) :
     Chk.bad σ (.p op a b pr cl) = testVal op a.width (a.get σ) (b.get σ) := by
   cases op <;> first
-    | (exfalso; first | exact h1 _ rfl | exact h2 _ rfl | exact h3 rfl | exact h4 _ rfl)
+    | (exfalso; first | exact h1 _ rfl | exact h2 _ rfl | exact h3 rfl | exact h4 _ rfl | exact h5 _ rfl)
     | simp [Chk.bad, evalOp]
 
 theorem bad_cmp (σ : Store) (p : Pred) (a b : Arg) (pr cl : String) :
@@ -362,8 +363,8 @@ theorem checks_bad (σ : Store) (op : BinOp) (fl : LFlags) (w : Nat) (A B : Arg)
         binPoison op fl w (A.get σ) (B.get σ)) := by
   obtain ⟨nsw, nuw, ex, dj, cs⟩ := fl
   have hs : ∀ (op : POp) pr cl, (∀ o, op ≠ .bin o) → (∀ p, op ≠ .cmp p) → op ≠ .select →
-      (∀ k, op ≠ .cast k) → Chk.bad σ (.p op A B pr cl) = testVal op w (A.get σ) (B.get σ) := by
-    intro op pr cl h1 h2 h3 h4; rw [bad_test σ op A B pr cl h1 h2 h3 h4, hA]
+      (∀ k, op ≠ .cast k) → (∀ k, op ≠ .mm k) → Chk.bad σ (.p op A B pr cl) = testVal op w (A.get σ) (B.get σ) := by
+    intro op pr cl h1 h2 h3 h4 h5; rw [bad_test σ op A B pr cl h1 h2 h3 h4 h5, hA]
   have hc : ∀ p pr cl, Chk.bad σ (.p (.cmp p) B (.c w 0) pr cl) =
       evalPred p (bv w (B.get σ)) (bv w 0) := by
     intro p pr cl; rw [bad_cmp, hB]; rfl
@@ -373,26 +374,26 @@ theorem checks_bad (σ : Store) (op : BinOp) (fl : LFlags) (w : Nat) (A B : Arg)
   cases op <;> simp only [flagsOk, Bool.and_eq_true, Bool.not_eq_true'] at hf
   · -- add
     simp only [checks, List.any_append, any_opt]
-    rw [hs _ _ _ (by simp) (by simp) (by simp) (by simp), hs _ _ _ (by simp) (by simp) (by simp) (by simp)]
+    rw [hs _ _ _ (by simp) (by simp) (by simp) (by simp) (by simp), hs _ _ _ (by simp) (by simp) (by simp) (by simp) (by simp)]
     simp [testVal, test_sadd, test_uadd, binUB, cUB, binPoison]
   · -- sub
     simp only [checks, List.any_append, any_opt]
-    rw [hs _ _ _ (by simp) (by simp) (by simp) (by simp), hs _ _ _ (by simp) (by simp) (by simp) (by simp)]
+    rw [hs _ _ _ (by simp) (by simp) (by simp) (by simp) (by simp), hs _ _ _ (by simp) (by simp) (by simp) (by simp) (by simp)]
     simp [testVal, test_ssub, test_usub, binUB, cUB, binPoison]
   · -- mul
     simp only [checks, List.any_append, any_opt]
-    rw [hs _ _ _ (by simp) (by simp) (by simp) (by simp), hs _ _ _ (by simp) (by simp) (by simp) (by simp)]
+    rw [hs _ _ _ (by simp) (by simp) (by simp) (by simp) (by simp), hs _ _ _ (by simp) (by simp) (by simp) (by simp) (by simp)]
     simp [testVal, test_smul, test_umul, binUB, cUB, binPoison]
   · -- udiv
     simp only [checks, List.any_append, any_opt, List.any_cons, List.any_nil, Bool.or_false]
-    rw [hs _ _ _ (by simp) (by simp) (by simp) (by simp), hc]
+    rw [hs _ _ _ (by simp) (by simp) (by simp) (by simp) (by simp), hc]
     simp only [bv_zero, evalPred, binUB, cUB, binPoison, Bool.or_false]
     cases ex
     · simp
     · simp only [Bool.true_and, Bool.false_or]; exact test_inexactU w x y
   · -- sdiv
     simp only [checks, List.any_append, any_opt, List.any_cons, List.any_nil, Bool.or_false]
-    rw [hs _ _ _ (by simp) (by simp) (by simp) (by simp), hs _ _ _ (by simp) (by simp) (by simp) (by simp),
+    rw [hs _ _ _ (by simp) (by simp) (by simp) (by simp) (by simp), hs _ _ _ (by simp) (by simp) (by simp) (by simp) (by simp),
       hc]
     simp only [bv_zero, evalPred, binUB, cUB, binPoison, Bool.or_false]
     cases ex
@@ -407,12 +408,12 @@ theorem checks_bad (σ : Store) (op : BinOp) (fl : LFlags) (w : Nat) (A B : Arg)
     simp [bv_zero, evalPred, binUB, cUB, binPoison]
   · -- srem
     simp only [checks, List.any_cons, List.any_nil, Bool.or_false]
-    rw [hs _ _ _ (by simp) (by simp) (by simp) (by simp), hc]
+    rw [hs _ _ _ (by simp) (by simp) (by simp) (by simp) (by simp), hc]
     simp [bv_zero, evalPred, binUB, cUB, binPoison, testVal]
   · -- shl
     simp only [checks, List.any_append, any_opt, List.any_cons, List.any_nil, Bool.or_false]
-    rw [hs _ _ _ (by simp) (by simp) (by simp) (by simp), hs _ _ _ (by simp) (by simp) (by simp) (by simp),
-      hs _ _ _ (by simp) (by simp) (by simp) (by simp), hs _ _ _ (by simp) (by simp) (by simp) (by simp)]
+    rw [hs _ _ _ (by simp) (by simp) (by simp) (by simp) (by simp), hs _ _ _ (by simp) (by simp) (by simp) (by simp) (by simp),
+      hs _ _ _ (by simp) (by simp) (by simp) (by simp) (by simp), hs _ _ _ (by simp) (by simp) (by simp) (by simp) (by simp)]
     rw [test_shlS, test_shlNsw, test_shlNuw]
     simp only [binUB, cUB, binPoison, Bool.false_or, testVal]
     generalize bv w x = a
@@ -424,7 +425,7 @@ theorem checks_bad (σ : Store) (op : BinOp) (fl : LFlags) (w : Nat) (A B : Arg)
       cases cs <;> cases nsw <;> cases nuw <;> simp [Bool.or_assoc]
   · -- lshr
     simp only [checks, List.any_append, any_opt, List.any_cons, List.any_nil, Bool.or_false]
-    rw [hs _ _ _ (by simp) (by simp) (by simp) (by simp), hs _ _ _ (by simp) (by simp) (by simp) (by simp)]
+    rw [hs _ _ _ (by simp) (by simp) (by simp) (by simp) (by simp), hs _ _ _ (by simp) (by simp) (by simp) (by simp) (by simp)]
     rw [test_lostL]
     simp only [binUB, cUB, binPoison, Bool.false_or, testVal]
     generalize bv w x = a
@@ -434,7 +435,7 @@ theorem checks_bad (σ : Store) (op : BinOp) (fl : LFlags) (w : Nat) (A B : Arg)
     · simp only [testVal, h, decide_false, Bool.false_or]
   · -- ashr
     simp only [checks, List.any_append, any_opt, List.any_cons, List.any_nil, Bool.or_false]
-    rw [hs _ _ _ (by simp) (by simp) (by simp) (by simp), hs _ _ _ (by simp) (by simp) (by simp) (by simp)]
+    rw [hs _ _ _ (by simp) (by simp) (by simp) (by simp) (by simp), hs _ _ _ (by simp) (by simp) (by simp) (by simp) (by simp)]
     rw [test_lostA]
     simp only [binUB, cUB, binPoison, Bool.false_or, testVal]
     generalize bv w x = a

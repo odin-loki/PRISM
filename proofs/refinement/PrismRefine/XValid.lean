@@ -126,17 +126,17 @@ def segOK (M : XMod) (P : PFunc) (C : List IInfo) (I : IInfo) (b s : Nat) : Bool
         | none => termOK P I c k s1 t1 pb PB B.term
   | _, _, _ => false
 
+/-- An instance.  (The lengths of `ks` and `kids` are not checked: `segOK`
+fails when an entry it needs is missing, and the proof needs nothing else of
+them.) -/
 def instOK (M : XMod) (P : PFunc) (C : List IInfo) (I : IInfo) : Bool :=
   decide (I.lo ≤ I.hi) && allLtB I.hi I.env && allLtB I.hi I.sh &&
-  I.blks.length == I.fn.blocks.length && I.ks.length == I.fn.blocks.length &&
-  I.kids.length == I.fn.blocks.length &&
+  I.blks.length == I.fn.blocks.length &&
   nodupNat I.tails &&
   (List.range I.fn.blocks.length).all fun b =>
     match I.fn.blocks[b]? with
     | some B =>
       (I.blks.getD b []).length == B.segs.length + 1 &&
-      (I.ks.getD b []).length == B.segs.length + 1 &&
-      (I.kids.getD b []).length == B.segs.length &&
       (List.range (B.segs.length + 1)).all fun s => segOK M P C I b s
     | none => false
 

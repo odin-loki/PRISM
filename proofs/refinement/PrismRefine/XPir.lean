@@ -38,13 +38,18 @@ def xStmts (P : PFunc) (ω : Nat → Nat) : Store → World → List PStmt → X
   | σ, t, .check a _ _ :: r => if truthN (a.get σ) then .fail else xStmts P ω σ t r
   | σ, t, .assume a :: r => if truthN (a.get σ) then xStmts P ω σ t r else .blocked
   | σ, t, .alloc d size kind init align :: r =>
-    xStmts P ω (σ.set d ((t.mem.alloc (size.get σ % 2 ^ 64) kind align init).2 % 2 ^ P.wd d))
-      { t with mem := (t.mem.alloc (size.get σ % 2 ^ 64) kind align init).1 } r
+    xStmts P ω (σ.set d ((t.allocW ω (size.get σ % 2 ^ 64) kind align init).2 % 2 ^ P.wd d))
+      (t.allocW ω (size.get σ % 2 ^ 64) kind align init).1 r
   | σ, t, .load d u p :: r =>
     xStmts P ω ((σ.set d (bytesVal ((loadCells t.mem (p.get σ) (P.wd d)).map (·.getD 0)) % 2 ^ P.wd d)).set u
       ((if (loadCells t.mem (p.get σ) (P.wd d)).any (·.isNone) then 1 else 0) % 2 ^ P.wd u)) t r
   | σ, t, .store p v init :: r =>
     xStmts P ω σ (t.store (p.get σ) (v.get σ) v.width (truthN (init.get σ))) r
+  | σ, t, .free p :: r => xStmts P ω σ { t with mem := t.mem.free (p.get σ % 2 ^ 64) } r
+  | σ, t, .memcpy d s n :: r =>
+    xStmts P ω σ { t with mem := t.mem.copy (d.get σ % 2 ^ 64) (s.get σ % 2 ^ 64) (n.get σ % 2 ^ 64) } r
+  | σ, t, .memset d b n :: r =>
+    xStmts P ω σ { t with mem := t.mem.fill (d.get σ % 2 ^ 64) (b.get σ % 256) (n.get σ % 2 ^ 64) } r
 
 def XPRes.run : XPRes → (Store → World → POut) → POut
   | .ok σ t, f => f σ t
