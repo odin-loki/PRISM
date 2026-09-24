@@ -144,6 +144,8 @@ private:
     // Bv mode
     std::vector<Entry> log_;
     std::vector<std::vector<std::pair<z3::expr, z3::expr>>> havoc_reads_;
+    std::map<std::pair<int, unsigned>, z3::expr> havoc_memo_;  // (entry, address ast) -> its value
+    z3::expr havoc_read(const Entry& e, const z3::expr& addr, unsigned width, const char* base);
     std::map<std::tuple<unsigned, std::size_t, bool>, z3::expr> memo_;
     std::unordered_map<unsigned, uint64_t> prov_;
     std::vector<z3::expr> keep_;

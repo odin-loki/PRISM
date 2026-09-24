@@ -221,19 +221,13 @@ z3::expr SymMem::read_cell_log(const z3::expr& addr, std::size_t upto, bool use_
                 break;
             }
             case Entry::Havoc: {
-                auto h = c_.bv_const(("mem!h" + std::to_string(fresh_++)).c_str(), 8);
-                auto& reads = havoc_reads_[static_cast<std::size_t>(e.havoc)];
-                for (auto& [a2, h2] : reads) side_.push_back(z3::implies(addr == a2, h == h2));
-                reads.emplace_back(addr, h);
+                auto h = havoc_read(e, addr, 8, "mem!h");
                 v = z3::ite(e.guard && in_range(addr, e.addr, e.len), cell_of(h, bv(1, 1), 0), v);
                 break;
             }
             case Entry::HavocObj: {
                 // one arbitrary cell per address (value, initialised, tag)
-                auto h = c_.bv_const(("mem!ho" + std::to_string(fresh_++)).c_str(), cw_);
-                auto& reads = havoc_reads_[static_cast<std::size_t>(e.havoc)];
-                for (auto& [a2, h2] : reads) side_.push_back(z3::implies(addr == a2, h == h2));
-                reads.emplace_back(addr, h);
+                auto h = havoc_read(e, addr, cw_, "mem!ho");
                 z3::expr cell = h;
                 if (e.keep) cell = h | (v & bv(uint64_t{1} << kCellInit, cw_));
                 v = z3::ite(e.guard && objid(addr) == objid(e.addr), cell, v);
@@ -243,6 +237,20 @@ z3::expr SymMem::read_cell_log(const z3::expr& addr, std::size_t upto, bool use_
     }
     memo_.emplace(key, v);
     return v;
+}
+
+// The arbitrary content of havoc entry e at addr: one value per address.
+z3::expr SymMem::havoc_read(const Entry& e, const z3::expr& addr, unsigned width, const char* base) {
+    // the same address expression reads the same value (no new constraints)
+    auto key = std::make_pair(e.havoc, addr.id());
+    if (auto it = havoc_memo_.find(key); it != havoc_memo_.end()) return it->second;
+    auto h = c_.bv_const((std::string(base) + std::to_string(fresh_++)).c_str(), width);
+    auto& reads = havoc_reads_[static_cast<std::size_t>(e.havoc)];
+    for (auto& [a2, h2] : reads) side_.push_back(z3::implies(addr == a2, h == h2));
+    reads.emplace_back(addr, h);
+    keep_.push_back(addr);
+    havoc_memo_.emplace(key, h);
+    return h;
 }
 
 SymMem::Loaded SymMem::load(const z3::expr& ptr, unsigned width, unsigned tag) {

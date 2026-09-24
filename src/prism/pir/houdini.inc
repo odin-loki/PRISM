@@ -54,7 +54,7 @@ struct InvTerm {
 };
 
 struct InvCand {
-    enum Kind { Cmp, Mask, Lin, MemNZ, MemEq, MemNeC, MemInit, MemConst } kind = Cmp;
+    enum Kind { Cmp, Mask, Lin, MemNZ, MemEq, MemNeC, MemInit, MemConst, MemFrame } kind = Cmp;
     int loop = -1;
     Op rel = Op::Eq;       // Cmp
     InvTerm a, b;          // Cmp: a rel b; Mask: (a & mask) == (b & mask); Lin: a -/+ b == ea -/+ eb
@@ -272,6 +272,9 @@ std::string Houdini::text(const InvCand& c) const {
         case InvCand::MemNeC: return "forall " + range + ": " + at(c.p, -1) + " != (i" + std::to_string(8 * c.eb) + ")" + tt(c.v);
         case InvCand::MemInit: return "forall " + range + ": initialised " + at(c.p, c.off);
         case InvCand::MemConst: return "forall " + range + ": " + at(c.p, -1) + " == " + tt(c.v);
+        case InvCand::MemFrame:
+            return "forall x < " + std::string(c.sext ? "sext" : "zext") + "(entry(" + phi(c.ip) + ")): " + at(c.p, -1) +
+                   " == " + at(c.p, -1) + " at loop entry";
     }
     return "?";
 }
@@ -303,6 +306,7 @@ void Houdini::generate(std::vector<InvCand>& out) {
             auto& var = fn_.vars[static_cast<std::size_t>(v)];
             if (var.fp || var.width <= 1 || var.width > 64 || ptr_[static_cast<std::size_t>(v)] || is_param(v)) continue;
             if (!scope_var(L, v)) continue;
+            if (!var.name.empty() && var.name[0] == '_') continue;  // translator temporaries (checks)
             auto* s = def_[static_cast<std::size_t>(v)];
             if (s && s->kind == Stmt::Assign && s->op >= Op::SAddOvf && s->op <= Op::InexactS) continue;
             later.push_back(v);
@@ -462,21 +466,29 @@ void Houdini::generate(std::vector<InvCand>& out) {
                             }
                         }
                         if (lo) continue;
-                        for (int p : bases_w) {
+                        for (int p : all) {
                             t.p = p;
+                            const bool wp = bases_w.count(p) != 0;
                             std::vector<int> os{-1};
-                            os.insert(os.end(), offs.begin(), offs.end());
+                            if (wp) os.insert(os.end(), offs.begin(), offs.end());
                             for (int o : os) {
                                 auto c = t;
                                 c.off = o;
-                                c.kind = InvCand::MemInit;
-                                add(c);
+                                if (wp) {
+                                    c.kind = InvCand::MemInit;
+                                    add(c);
+                                }
                                 for (int q : all) {
-                                    if (q == p) continue;
+                                    if (q == p || (!wp && !bases_w.count(q) && q < p)) continue;
                                     c.kind = InvCand::MemEq;
                                     c.q = q;
                                     add(c);
                                 }
+                            }
+                            if (wp) {  // the bytes below the entry index are the loop entry's
+                                auto c = t;
+                                c.kind = InvCand::MemFrame;
+                                add(c);
                             }
                         }
                     }
@@ -627,7 +639,8 @@ HoudiniOut Houdini::run() {
         }
         // memory templates
         auto idx = ext64((*st.phis)[static_cast<std::size_t>(k.ip)], k.sext);
-        z3::expr in = z3::ult(x, idx);
+        z3::expr in = k.kind == InvCand::MemFrame ? z3::ult(x, ext64(CL.entry[static_cast<std::size_t>(k.ip)], k.sext))
+                                                  : z3::ult(x, idx);
         if (k.lo_entry) in = in && z3::ule(ext64(CL.entry[static_cast<std::size_t>(k.ip)], k.sext), x);
         auto scale = k.eb == 1 ? x : x * e.bv(k.eb, 64);
         auto ptr = [&](int p, int off) {
@@ -642,6 +655,12 @@ HoudiniOut Houdini::run() {
             case InvCand::MemEq: body = ld(k.p, k.off).val == ld(k.q, -1).val; break;
             case InvCand::MemInit: body = ld(k.p, k.off).uninit == e.bv(0, 1); break;
             case InvCand::MemConst: body = ld(k.p, -1).val == e.bv(k.v.c, 8 * k.eb); break;
+            case InvCand::MemFrame: {
+                auto now = ld(k.p, -1);
+                auto was = e.M().load_exact(CL.entry_mem, ptr(k.p, -1), 8 * k.eb);
+                body = now.val == was.val && now.uninit == was.uninit;
+                break;
+            }
             case InvCand::MemNeC: {
                 auto v = e.lookup(Arg::v(k.v.idx, k.v.w), node);
                 unsigned w = 8 * k.eb;
@@ -758,6 +777,10 @@ HoudiniOut Houdini::run() {
                 dropped = true;
                 if (left() <= 0) break;
                 continue;
+            }
+            if (std::getenv("PRISM_HOUDINI_DEBUG")) {
+                std::fprintf(stderr, "houdini unknown: %s\n", s.reason_unknown().c_str());
+                for (auto i : live) std::fprintf(stderr, "   goal %s\n", text(cands[i]).c_str());
             }
             for (auto i : live) cands[i].alive = false;  // no answer: nothing unproved is kept
             dropped = true;
