@@ -1,0 +1,7 @@
+format_version: 1
+input_files: cxx_map_erase_uaf_true.cpp
+language: C++
+property: memsafety
+timeout: 600  # std::map code: slow on a loaded machine
+expected:
+  cxx_map_erase_uaf_true: true

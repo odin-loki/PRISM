@@ -1,0 +1,9 @@
+format_version: 1
+input_files: cxx_map_at_false.cpp
+language: C++
+property: no-uncaught
+timeout: 600  # std::map code: slow on a loaded machine
+expected:
+  cxx_map_at_false: false
+witness:
+  cxx_map_at_false: [2]

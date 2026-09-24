@@ -1,0 +1,9 @@
+format_version: 1
+input_files: cxx_set_erase_uaf_false.cpp
+language: C++
+property: memsafety
+timeout: 600  # std::set code: slow on a loaded machine
+expected:
+  cxx_set_erase_uaf_false: false
+witness:
+  cxx_set_erase_uaf_false: [1]
