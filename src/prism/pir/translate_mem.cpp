@@ -482,6 +482,9 @@ void MemTr::alloca_(int b, int dst, const ir::Type& ety, unsigned al, std::optio
 }
 
 void MemTr::access_checks(int b, Arg p, Arg n, bool write, unsigned al, int line, std::optional<Arg> guard) {
+    // the checks read the object table (a model's __prism_read_range may be
+    // the only memory statement of a function, e.g. putc(c, NULL))
+    mark_memory();
     auto G = [&](Arg c) { return guard ? band(b, *guard, c) : c; };
     Arg o = obj(b, p);
     Arg f = off(b, p);
@@ -771,6 +774,7 @@ void MemTr::stack_escape_check(int b, Arg ret, const std::vector<Arg>& own, int 
 }
 
 Arg MemTr::obj_size_remaining(int b, Arg ptr) {
+    mark_memory();
     Arg size = t_.assign(b, Op::ObjSize, 64, {ptr}, "size");
     Arg f = off(b, ptr);
     Arg rem = t_.assign(b, Op::Sub, 64, {size, f}, "rem");

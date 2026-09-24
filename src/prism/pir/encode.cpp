@@ -465,6 +465,29 @@ struct Encoding {
         for (int id : order) encode_node(id, out_edges[static_cast<std::size_t>(id)]);
     }
 
+    // A use outside the loop of its definition. LLVM's LCSSA form never has
+    // one, but the translator adds some on paths that leave a loop through an
+    // inlined callee (the end of an unwound frame's stack objects at a throw
+    // caught by a cleanup outside the loop). The value is the one of the
+    // iteration the path left from: the implicit LCSSA phi over the node's
+    // incoming edges (memoised in the node's values).
+    z3::expr lcssa_value(const Arg& a, int node) {
+        auto& m = vals[static_cast<std::size_t>(node)];
+        if (auto it = m.find(a.var); it != m.end()) return it->second;
+        const auto& ins = in_edges[static_cast<std::size_t>(node)];
+        if (ins.empty())
+            throw EncodeFail{std::string(laws::NEEDS_HARNESS), "UNENCODED: value used outside its loop (not LCSSA)"};
+        std::optional<z3::expr> acc;
+        for (auto it = ins.rbegin(); it != ins.rend(); ++it) {
+            auto [from, k, to] = *it;
+            (void)to;
+            z3::expr v = lookup(a, from);
+            acc = acc ? z3::ite(edge_guard(from, k), v, *acc) : v;
+        }
+        m.insert_or_assign(a.var, *acc);
+        return *acc;
+    }
+
     z3::expr lookup(const Arg& a, int node) {
         if (a.is_const) return bv(a.bits, a.width);
         for (std::size_t i = 0; i < fn.params.size(); ++i)
@@ -477,8 +500,7 @@ struct Encoding {
             const auto& Ld = g.loops_of[static_cast<std::size_t>(d)];
             const auto& Lb = g.loops_of[static_cast<std::size_t>(nd.block)];
             if (Ld.size() > Lb.size() || !std::equal(Ld.begin(), Ld.end(), Lb.begin()))
-                throw EncodeFail{std::string(laws::NEEDS_HARNESS),
-                                 "UNENCODED: value used outside its loop (not LCSSA)"};
+                return lcssa_value(a, node);
             std::vector<int> ctx(nd.ctx.begin(), nd.ctx.begin() + static_cast<std::ptrdiff_t>(Ld.size()));
             auto it = ids.find({d, ctx});
             if (it == ids.end())

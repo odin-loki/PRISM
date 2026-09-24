@@ -1,0 +1,9 @@
+format_version: 1
+input_files: cxx_string_index_false.cpp
+language: C++
+property: no-oob
+unwind: 40  # the heap string constructor copies up to 37 characters
+expected:
+  cxx_string_index_false: false
+witness:
+  cxx_string_index_false: [27]

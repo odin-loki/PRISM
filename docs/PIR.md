@@ -392,6 +392,65 @@ class or one of its bases catches them. With this, `std::vector`
 libstdc++ (D7, Linux); libc++ would need the same treatment of
 `_LIBCPP_HARDENING_MODE`.
 
+### C++ library models (roadmap 2.6)
+
+Some libstdc++ code is too expensive for the encoder: `std::vector`'s
+`_M_realloc_insert` (relocation through `__relocate_a`, `memmove` of a
+symbolic length, the `_M_check_len` arithmetic, exception guards) makes Z3
+run out of memory after two `push_back`s on an empty vector. For such
+containers PRISM ships **model headers** in `src/prism/pir/models/cxx/`,
+embedded in the binary like the C models (CMake list `PRISM_PIR_MODELS`,
+names `cxx/<header>`), written to a temporary directory once per run and put
+first on the C++ include path (`-isystem`, `lower_to_ir`), so the unit's
+`#include <vector>` reaches the model instead of libstdc++'s header.
+
+A model replaces library code only where it is sound — it must reach every
+behaviour the real library can:
+
+* **`<vector>`** (`std::vector<T, std::allocator<T>>`): a plain three-pointer
+  implementation of the whole C++23 interface with libstdc++ 13's own
+  capacity policy (`reserve`/`assign`/copy allocate exactly; growth is
+  `size + max(size, n)` clamped to `max_size()`), so the same insertions
+  reallocate and `capacity()`/`data()` read the same values; storage from
+  `std::allocator<T>` (the `operator new/delete` models), so a pointer,
+  reference or iterator kept across a reallocation points into a freed
+  object and its use is **MEM-UAF** (iterator invalidation); the same
+  exceptions (`length_error`, `out_of_range` from `at`) with the strong
+  guarantee for throwing element copies; the same element construction and
+  destruction order (relocation for nothrow-movable elements, move-if-noexcept
+  otherwise); the `_GLIBCXX_ASSERTIONS` preconditions with libstdc++'s
+  condition text (`operator[]`: `__n < this->size()` → MEM-OOB-READ;
+  `front`/`back`/`pop_back`: `!this->empty()` → FUNC-CONTRACT) plus the
+  standard's preconditions on `insert`/`erase` positions (an iterator into
+  another vector, `erase(end())` → FUNC-CONTRACT). The model was checked
+  differentially against libstdc++ under ASan/UBSan: a program exercising
+  every member (growth sequence, fill/range/initializer-list insertion,
+  erase, resize, shrink_to_fit, assign, copy/move, comparisons, erase_if,
+  `at` and `reserve` exceptions, a throwing-copy element type, strings,
+  `unique_ptr` elements, deduction guides) prints an identical trace of
+  sizes, capacities, contents and constructor/destructor calls with both.
+* **Not modelled, and why.** `vector<bool>` (a bit container) and allocators
+  other than `std::allocator<T>` (including `pmr::vector`) are left
+  undefined in the model: a unit that uses them does not compile against
+  it, and the pir stage lowers it again with libstdc++'s header — every
+  function's `extra.cxx_models` says which library it was checked against
+  (`"model: vector"`, or `"libstdc++ (fallback: …)"` with the compiler's
+  reason). `std::string` is not replaced: `<string>` is reached from every
+  iostream/exception header and `basic_string<char>` is an explicit
+  instantiation in `libstdc++.so`, so its inline code is checked as it is
+  (with `_GLIBCXX_ASSERTIONS`); out-of-line members it calls stay
+  `NEEDS-HARNESS`. `std::array`, `std::span`, `std::optional` and
+  `std::unique_ptr` are not replaced either: their libstdc++ code is small,
+  loop-free and already checks exactly the standard's preconditions under
+  `_GLIBCXX_ASSERTIONS`, so the library code is its own sound model.
+
+Encoder support added for the model: a use of a loop value outside its loop
+that LLVM's LCSSA form never has, but that the translator creates on an
+exception path leaving a loop through an inlined callee (the end of the
+unwound frames' stack objects), takes the value of the iteration the path
+left from (an implicit LCSSA phi over the node's incoming edges) instead of
+giving up with `UNENCODED: value used outside its loop`.
+
 ### Library models verified by PRISM (roadmap 8.2)
 
 The models are checked by PRISM itself: `tests/conformance/libc-models/`
@@ -413,60 +472,110 @@ unterminated string) that must be refuted for the class they plant
 (`expect_class:` in the task file), so a proof is not vacuous. They run in
 the conformance suite (`python tools/conformance.py`).
 
-**Scope of the proofs.** The objects in the harnesses are small (`N = 4`
-bytes; 8–9 for a `strcat`/`strncat` destination), so the model loops run at
-most N + 1 times and close within `--unwind 8`: the verdict is PROVED (the
-unwinding assertion is proved), but what is proved is the contract **for
-every content, position and length of objects up to that size**, not for
-strings of arbitrary length. That is a size-bounded result; it is not
-claimed as a proof for all sizes.
+**Scope of the proofs.** The objects in the harnesses have `N` bytes
+(`harness.h`, default `N = 4`; `2N`/`2N + 1` for a `strcat`/`strncat`
+destination), so the model loops run at most `2N + 1` times and close within
+the unwinding bound: the verdict is PROVED (the unwinding assertion is
+proved), but what is proved is the contract **for every content, position
+and length of objects up to N bytes**, not for strings of arbitrary length.
+That is a size-bounded result; it is not claimed as a proof for all sizes
+(Law 2). The byte loops of the string models write memory or run to a
+data-dependent NUL, and k-induction (including the memory-writing loops now
+supported) does not close their step case on a symbolic-length object
+(`strlen` over a heap string of symbolic length stays BOUNDED), so no
+size-unbounded proof is claimed for them.
 
-Results (C++ engine, `pir` stage, 2026-09-23):
+`tools/libc_model_bounds.py` re-runs every `_true` harness alone with
+`-DN=4, 8, 16, 32, 64` and `--unwind 2N + 2` and reports the largest N still
+PROVED within the conformance timeout (180 s per run). On 2026-09-23 every
+size-parametric harness was PROVED at N = 4, 8 and 16 (longest run 85 s:
+`calloc` and `realloc` at N = 8/16; the string models 1–8 s); 16 is the
+bound reported below (larger sizes were not part of that sweep).
 
-| model | contract harness | verdict | false twins refuted (planted class) |
+**Size-unbounded contracts.** The ranged models — `memcpy`, `memmove`,
+`memset` (PIR's ranged memory statements) and `realloc`'s copy — have no
+loop, so `unbounded_contracts.c` checks them on heap objects of a symbolic
+size n < 2^40: those PROVED verdicts hold for every size in that range, not
+only up to N.
+
+Results (C++ engine, `pir` stage, 2026-09-24):
+
+| model | contract harness | verdict (largest N proved) | false twins refuted (planted class) |
 |---|---|---|---|
-| `strlen` | first NUL index | PROVED (objects ≤ 4 bytes) | earlier NUL (FUNC-CONTRACT), unterminated (MEM-OOB-READ) |
-| `strnlen` | min(strlen, n), reads ≤ n bytes | PROVED (≤ 4) | n past the object (MEM-OOB-READ) |
-| `strcpy` | copies through the NUL, returns d | PROVED (≤ 4) | short destination (MEM-OOB-WRITE) |
-| `strncpy` | exactly n bytes: string then NULs | PROVED (≤ 4) | "always terminates" (FUNC-CONTRACT) |
-| `strcat` | appends at d's NUL | PROVED (d ≤ 8, s ≤ 4) | overflowing destination (MEM-OOB-WRITE) |
-| `strncat` | appends ≤ n chars + NUL | PROVED (d ≤ 9, s ≤ 4) | "appends n chars" (FUNC-CONTRACT) |
-| `strcmp` | 0 iff equal, antisymmetric, sign of first difference as `unsigned char` | PROVED (≤ 4) | signed-char comparison (FUNC-CONTRACT) |
-| `strncmp` | n = 0 gives 0, equality up to n, antisymmetric | PROVED (≤ 4) | "ignores n" (FUNC-CONTRACT) |
-| `strchr` | first `(char)c`, NUL included | PROVED (≤ 4) | `strchr(s, 0) == NULL` (FUNC-CONTRACT) |
-| `strrchr` | last `(char)c` | PROVED (≤ 4) | "first occurrence" (FUNC-CONTRACT) |
-| `memcpy` (`__prism_memcpy`) | n bytes copied, rest untouched, returns d | PROVED (≤ 4) | overlap (MEM-OVERLAP) |
-| `memmove` | overlapping copy as through a temporary | PROVED (≤ 5) | source too short (MEM-OOB-READ/WRITE) |
-| `memset` (`__prism_memset`) | `(unsigned char)c` into n bytes | PROVED (≤ 4) | "stores the int" (FUNC-CONTRACT) |
-| `memcmp` | sign of first difference as `unsigned char` | PROVED (≤ 4) | "stops at NUL" (FUNC-CONTRACT) |
-| `memchr` | first `(unsigned char)c` in n bytes | PROVED (≤ 4) | n past the object (MEM-OOB-READ) |
-| `strdup` | NULL or a distinct copy | PROVED (≤ 4) | unchecked NULL (PTR-NULL-DEREF) |
-| `malloc` / `free` | NULL or n writable bytes; `free(NULL)` | PROVED | one past the end (MEM-OOB-WRITE), read before write (UNINIT-READ), double free, free of a stack array |
-| `calloc` | zero-filled; `n*size` overflow gives NULL | PROVED | unchecked NULL (PTR-NULL-DEREF) |
-| `realloc` | keeps min(old, new) bytes; old object valid on failure | PROVED (≤ 8) | old pointer after success (MEM-UAF) |
-| `abs`, `labs`, `llabs` | `|x|` for x ≠ MIN | PROVED | `abs(INT_MIN)` (INT-SIGNED-OVF) |
-| `strtol`, `strtoul`, `atoi`, `atol` | `*end` within `[s, s + strlen(s)]`; argument a string | PROVED (≤ 4) | unterminated argument (MEM-OOB-READ) |
+| `strlen` | first NUL index | PROVED (objects ≤ 16 bytes) | earlier NUL (FUNC-CONTRACT), unterminated (MEM-OOB-READ) |
+| `strnlen` | min(strlen, n), reads ≤ n bytes | PROVED (≤ 16) | n past the object (MEM-OOB-READ) |
+| `strcpy` | copies through the NUL, returns d | PROVED (≤ 16) | short destination (MEM-OOB-WRITE) |
+| `strncpy` | exactly n bytes: string then NULs | PROVED (≤ 16) | "always terminates" (FUNC-CONTRACT) |
+| `strcat` | appends at d's NUL | PROVED (d ≤ 32, s ≤ 16) | overflowing destination (MEM-OOB-WRITE) |
+| `strncat` | appends ≤ n chars + NUL | PROVED (d ≤ 33, s ≤ 16) | "appends n chars" (FUNC-CONTRACT) |
+| `strcmp` | 0 iff equal, antisymmetric, sign of first difference as `unsigned char` | PROVED (≤ 16) | signed-char comparison (FUNC-CONTRACT) |
+| `strncmp` | n = 0 gives 0, equality up to n, antisymmetric | PROVED (≤ 16) | "ignores n" (FUNC-CONTRACT) |
+| `strchr` | first `(char)c`, NUL included | PROVED (≤ 16) | `strchr(s, 0) == NULL` (FUNC-CONTRACT) |
+| `strrchr` | last `(char)c` | PROVED (≤ 16) | "first occurrence" (FUNC-CONTRACT) |
+| `memcpy` (`__prism_memcpy`) | n bytes copied, rest untouched, returns d | PROVED (≤ 16); **any size < 2^40** (`memcpy_any_size_true`) | overlap (MEM-OVERLAP), also at any size |
+| `memmove` | overlapping copy as through a temporary | PROVED (≤ 16); any size < 2^40 | source too short (MEM-OOB-READ/WRITE) |
+| `memset` (`__prism_memset`) | `(unsigned char)c` into n bytes | PROVED (≤ 16); any size < 2^40 | "stores the int" (FUNC-CONTRACT), one past a heap object of any size (MEM-OOB-WRITE) |
+| `memcmp` | sign of first difference as `unsigned char` | PROVED (≤ 16) | "stops at NUL" (FUNC-CONTRACT) |
+| `memchr` | first `(unsigned char)c` in n bytes | PROVED (≤ 16) | n past the object (MEM-OOB-READ) |
+| `strdup` | NULL or a distinct copy | PROVED (≤ 16) | unchecked NULL (PTR-NULL-DEREF) |
+| `malloc` / `free` | NULL or n writable bytes; `free(NULL)` | PROVED (≤ 16) | one past the end (MEM-OOB-WRITE), read before write (UNINIT-READ), double free, free of a stack array |
+| `calloc` | zero-filled; `n*size` overflow gives NULL | PROVED (≤ 16) | unchecked NULL (PTR-NULL-DEREF) |
+| `realloc` | keeps min(old, new) bytes; old object valid on failure | PROVED (≤ 16); prefix kept for any sizes < 2^40 | old pointer after success (MEM-UAF), grown tail read (UNINIT-READ, also at any size) |
+| `realloc(NULL, n)` | behaves as malloc(n) | PROVED (≤ 16) | read before write (UNINIT-READ) |
+| `realloc(p, 0)` | frees p, returns NULL (glibc; the model's documented choice) | PROVED | p used after (MEM-UAF), p freed again (MEM-DOUBLE-FREE) |
+| `realloc` shrink / grow | shrink keeps the first m bytes, exactly m; grow keeps all old bytes, tail writable | PROVED (≤ 16) | old size written after a shrink (MEM-OOB-WRITE), grown tail read (UNINIT-READ), realloc of a stack array (MEM-INVALID-FREE), of a freed pointer (MEM-DOUBLE-FREE) |
+| `abs`, `labs`, `llabs` | `|x|` for x ≠ MIN | PROVED | `abs(INT_MIN)`, `labs(LONG_MIN)`, `llabs(LLONG_MIN)` (INT-SIGNED-OVF) |
+| `strtol`, `strtoul`, `atoi`, `atol` | `*end` within `[s, s + strlen(s)]`; argument a string | PROVED (≤ 16) | unterminated argument (MEM-OOB-READ) |
 | `rand`, `srand` | 0 ≤ r | PROVED | "r < 100" (FUNC-CONTRACT) |
 | `getenv` | NULL or a string | **BOUNDED** (the returned string has unknown length; `strlen` over it does not close) | unchecked NULL (PTR-NULL-DEREF) |
-| `fopen`, `fclose`, `fflush` | NULL or an open stream; one close | PROVED | double `fclose` (MEM-DOUBLE-FREE), unchecked NULL |
-| `fgets` | returns buf, NUL within n | PROVED | n larger than the buffer (MEM-OOB-WRITE) |
-| `fread`, `fwrite` | return ≤ nmemb | PROVED | fread past the buffer (MEM-OOB-WRITE) |
+| `fopen`, `fclose`, `fflush` | NULL or an open stream; fflush(NULL/f) and fclose return 0 or EOF | PROVED | double `fclose` (MEM-DOUBLE-FREE), unchecked NULL, `fclose(NULL)` (PTR-NULL-DEREF), fflush of a closed stream (MEM-UAF) |
+| `fgets` | returns buf, NUL within n | PROVED (≤ 16) | n larger than the buffer (MEM-OOB-WRITE) |
+| `fread`, `fwrite` | return ≤ nmemb | PROVED (≤ 16) | fread past the buffer (MEM-OOB-WRITE), fwrite past the buffer (MEM-OOB-READ) |
 | `fgetc`, `getc`, `getchar` | EOF or 0..255 | PROVED | "never EOF" (FUNC-CONTRACT) |
-| `putchar`, `puts` | returns `(unsigned char)c`; puts ≥ 0 | PROVED | unterminated `puts` argument (MEM-OOB-READ) |
+| `fputc`, `putc` | `(unsigned char)c` or EOF | PROVED | "returns c" (FUNC-CONTRACT), write after fclose (MEM-UAF), NULL stream (PTR-NULL-DEREF) |
+| `fputs` | ≥ 0 or EOF; argument a string | PROVED (≤ 16) | unterminated argument (MEM-OOB-READ), "returns the length" (FUNC-CONTRACT) |
+| `putchar`, `puts` | `(unsigned char)c` or EOF; puts ≥ 0 or EOF | PROVED | "never EOF" (FUNC-CONTRACT), unterminated `puts` argument (MEM-OOB-READ) |
 | `operator new[]/new/delete[]/delete` | n usable elements, never NULL | PROVED | `delete` of `new[]` (MEM-MISMATCHED-FREE), one past the end (MEM-OOB-WRITE) |
+| sized `operator delete(p, n)` / `delete[](p, n)` (`_ZdlPvm`, `_ZdaPvm`) | release the matching allocation | PROVED | twice (MEM-DOUBLE-FREE), array form of a single `new` (MEM-MISMATCHED-FREE) |
 
-Totals: 29 of 30 contract harnesses PROVED (size-bounded as above), 1
-BOUNDED (`getenv`), 35 of 35 false twins refuted for the planted class.
-The `bmc` stage has no preprocessor and does not see the models: it answers
-`NEEDS-HARNESS` on 63 of 65 functions (it refutes `abs(INT_MIN)` and the
-`rand` bound through its own built-in models).
+Model change found by the new harnesses: the output functions (`fputc`,
+`putc`, `putchar`, `fputs`, `puts`, `fflush`, `fclose`) never returned EOF,
+so code ignoring a write error was unreachable in the model although the
+real library can fail on any write; they now return EOF on some path, and
+`fclose(NULL)` is a PTR-NULL-DEREF (glibc dereferences it). A model whose
+only memory statement is a range check (`putc(c, NULL)`) crashed the encoder
+("memory statement without memory model"); range checks now mark the
+function as using memory.
 
-Not checked this way: `fputc`, `putc`, `fputs` and `realloc(p, 0)` have no
-harness yet; the printf family is modelled in the translator
+Every function defined in a model file is called by a harness
+(`tests/conformance/test_conformance_suite.py`
+`test_every_model_function_is_called`). The `bmc` stage has no preprocessor
+and does not see the models (NEEDS-HARNESS apart from its own built-in
+`abs`/`rand` models).
+
+Not checked this way: the printf family is modelled in the translator
 (`libc_format.cpp`), not in C, and cannot be run through PRISM as a model
 (its checks are unit-tested in `tests/pir/mem_libc.c`); the `__prism_*`
 intrinsics themselves are PIR statements whose encoding the harnesses
-exercise (memcpy/memset/memmove contracts) but do not verify in isolation.
+exercise but do not verify in isolation.
+
+**C++ library contracts.** The same directory holds C++ contract harnesses
+for the C++ library ("C++ library models" above): `vector_contracts.cpp`,
+`vector_erase.cpp` and `vector_resize.cpp` check the `std::vector` model
+(push_back across two reallocations, reserve keeps `data()` stable, `at`
+throws iff out of range, erase moves the tail down and returns the next
+position, resize value-initialises and keeps the prefix, copies are
+independent; false twins: `v[size()]`, a pointer kept across a reallocation
+(MEM-UAF), pop_back/front on empty, `erase(end())`, wrong contracts). All
+PROVED/refuted (2026-09-24; the vector files take 60–460 s per file on a
+loaded machine, hence their `timeout:` in the task file). `insert` in the
+middle of a vector does not finish within 900 s (the element shift plus the
+symbolic position), so it has no harness in the suite; it is covered only by
+the differential test against libstdc++, `cxx_std_contracts.cpp` checks libstdc++'s
+`std::array`, `std::span`, `std::optional`, `std::unique_ptr` and
+`cxx_string_contracts.cpp` `std::string` (`s[size()]` is the terminator,
+`at` throws iff out of range, `c_str()` after destruction is MEM-UAF). Their
+objects hold at most 4 elements (size-bounded proofs).
 
 ## C features
 
@@ -736,7 +845,7 @@ pass; no `-fsanitize` check insertion (Law 8).
 | Classes, inheritance, virtual dispatch | vtable loads are memory reads; indirect calls dispatch over the module's vtable functions (class hierarchy analysis) or address-taken functions; any other target is the havoc fallback (NEEDS-HARNESS) | DONE | `tests/pir/virt_dispatch.cpp`, `conformance/prism/virt` |
 | Exceptions | explicit exception edges, catch matching (typeinfo hierarchy), cleanup, rethrow; escape from `noexcept` (CXX-THROW-NOEXCEPT) or `main` (CXX-UNCAUGHT) is a violation | DONE (dynamic exception specs, `exception_ptr`: UNENCODED) | `tests/pir/eh_*.cpp`, `conformance/prism/eh` |
 | Coroutines | LLVM coroutine passes, then normal encoding (frame = `new` object, resume/destroy = indirect calls) | DONE | `tests/pir/coro_gen.cpp`, `conformance/prism/coro` |
-| Standard library | libc operational models; libstdc++ inlined with `_GLIBCXX_ASSERTIONS`; library throws are real exceptions; unmodelled calls NEEDS-HARNESS | PARTIAL (no verified libc++ models of containers yet) | "Library models" |
+| Standard library | libc operational models (contract-checked, "Library models verified by PRISM"); `std::vector` model header (`models/cxx/vector`, differential-tested against libstdc++); other libstdc++ code inlined with `_GLIBCXX_ASSERTIONS`; library throws are real exceptions; unmodelled calls NEEDS-HARNESS | PARTIAL (one container modelled; `std::string` out-of-line members, iostreams, associative containers NEEDS-HARNESS; libc++ not modelled) | "Library models", "C++ library models" |
 | Floating point | Z3 floating-point theory (RNE) for half/float/double; FLOAT-CAST-OVF; `--fp-checks` | DONE (x86_fp80/fp128/bfloat, fast-math: UNENCODED) | `tests/pir/fp_arith.c`, `conformance/prism/fp` |
 | Threads and atomics | separate `conc` stage (docs/CONCURRENCY.md) | other work (not in this slice) | docs/CONCURRENCY.md |
 | Modules (`import std;`) | handled by Clang; PRISM consumes the IR | NOT TESTED (Clang 18 needs a prebuilt `std` module) | — |

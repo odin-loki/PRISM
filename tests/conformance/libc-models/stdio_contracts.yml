@@ -14,6 +14,18 @@ expected:
   fgetc_eof_false: false
   putchar_true: true
   puts_unterminated_false: false
+  putchar_never_eof_false: false
+  fputc_true: true
+  fputc_value_false: false
+  fputc_closed_false: false
+  putc_null_false: false
+  fputs_true: true
+  fputs_unterminated_false: false
+  fputs_count_false: false
+  fflush_true: true
+  fflush_closed_false: false
+  fclose_null_false: false
+  fwrite_oob_false: false
 expect_class:  # the violation each false harness plants
   fclose_twice_false: "MEM-DOUBLE-FREE"
   fopen_null_false: "PTR-NULL-DEREF|MEM-NULL-DEREF|NULL-DEREF"
@@ -21,3 +33,12 @@ expect_class:  # the violation each false harness plants
   fread_oob_false: "MEM-OOB-WRITE"
   fgetc_eof_false: "FUNC-CONTRACT"
   puts_unterminated_false: "MEM-OOB-READ"
+  putchar_never_eof_false: "FUNC-CONTRACT"
+  fputc_value_false: "FUNC-CONTRACT"
+  fputc_closed_false: "MEM-UAF"
+  putc_null_false: "PTR-NULL-DEREF|MEM-NULL-DEREF|NULL-DEREF"
+  fputs_unterminated_false: "MEM-OOB-READ"
+  fputs_count_false: "FUNC-CONTRACT"
+  fflush_closed_false: "MEM-UAF"
+  fclose_null_false: "PTR-NULL-DEREF|MEM-NULL-DEREF|NULL-DEREF"
+  fwrite_oob_false: "MEM-OOB-READ"

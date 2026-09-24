@@ -1,0 +1,21 @@
+format_version: 1
+input_files: cxx_std_contracts.cpp
+language: C++
+property: libc-contract
+timeout: 600  # several expensive container functions in one run
+expected:
+  array_index_true: true
+  array_oob_false: false
+  span_index_true: true
+  span_oob_false: false
+  optional_true: true
+  optional_empty_false: false
+  unique_ptr_true: true
+  unique_ptr_null_false: false
+  unique_ptr_uaf_false: false
+expect_class:  # the violation each false harness plants
+  array_oob_false: "MEM-OOB-READ"
+  span_oob_false: "MEM-OOB-READ"
+  optional_empty_false: "CXX-OPTIONAL-NULL"
+  unique_ptr_null_false: "PTR-NULL-DEREF"
+  unique_ptr_uaf_false: "MEM-UAF"

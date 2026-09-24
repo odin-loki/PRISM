@@ -32,6 +32,8 @@ Task format (tests/conformance/prism/**.yml, one sidecar per source file):
     add_false: false
   witness:               # false functions: inputs that trigger the UB
     add_false: [2147483647, 1]
+  timeout: 900           # optional: seconds per PRISM run for this file
+                         # (raises, never lowers, --timeout)
   expect_status:         # optional: the exact status the laws demand
     f: NEEDS-HARNESS     # (pointer parameters, Law 6)
 
@@ -224,6 +226,10 @@ class Task:
     std: str = ""  # whole-program tasks (esbmc-cpp): language standard of the native self-check
     deterministic: bool = False  # whole program whose one run is its only behaviour
     unwind: int = 0  # per-task --unwind (0: the run's default)
+    # per-task time budget in seconds for one PRISM run (0: the run's --timeout);
+    # never lowers the run's budget. For files with many expensive functions
+    # (the C++ container model harnesses).
+    timeout: float = 0.0
     expect_class: dict[str, set[str]] = field(default_factory=dict)  # false fn -> classes that refute it
 
 
@@ -268,6 +274,7 @@ def load_task(yml: Path, root: Path) -> Task | None:
             std=str(data.get("std", "")),
             deterministic=_as_bool(data.get("deterministic", False)),
             unwind=int(data.get("unwind", 0) or 0),
+            timeout=float(data.get("timeout", 0) or 0),
             expect_class={str(k): set(str(v).split("|")) for k, v in (data.get("expect_class") or {}).items()},
         )
     # SV-COMP task-definition format 2.0
@@ -610,6 +617,7 @@ def run_prism(cmd: list[str], task: Task, stages: list[str], work: Path, timeout
     if task.unwind or unwind:
         argv += ["--unwind", str(task.unwind or unwind)]
     argv += extra_args or []
+    timeout = max(timeout, task.timeout)
     t0 = time.monotonic()
     env = dict(os.environ)
     env.setdefault("PYTHONPATH", str(REPO))

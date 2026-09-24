@@ -413,7 +413,7 @@ Frontend find_frontend(const Config& cfg) {
 
 std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, double timeout_s,
                                        std::string& err, std::vector<FoldedUb>* folded,
-                                       std::vector<std::pair<int, int>>* signed_shl) {
+                                       std::vector<std::pair<int, int>>* signed_shl, std::string* cxx_models) {
     const bool cxx = is_cxx(src);
     const auto& cc = cxx ? fe.clangxx : fe.clang;
     if (!cc || !fe.opt) {
@@ -424,9 +424,39 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
     auto o0 = td.path / "o0.ll", o1 = td.path / "o1.ll", o2 = td.path / "o2.ll";
     std::vector<std::string> argv{cc->string()};
     auto fl = base_flags(src);
+    if (cxx_models) cxx_models->clear();
+    // C++ library models (docs/PIR.md "C++ library models"): the model
+    // headers come first on the include path. A unit that does not compile
+    // against them (an API or specialisation the models leave out, e.g.
+    // vector<bool>) is lowered again with the platform library and says so.
+    std::optional<detail::ProcOut> modelled;
+    if (cxx && !fe.cxx_models.empty()) {
+        auto mf = fl;
+        mf.insert(mf.end(), {"-isystem", fe.cxx_models.string()});
+        std::vector<std::string> av{cc->string()};
+        av.insert(av.end(), mf.begin(), mf.end());
+        av.insert(av.end(), {"-o", o0.string(), src.string()});
+        auto rm = detail::run_process(av, timeout_s);
+        if (!rm.failed && !rm.timed_out && rm.rc == 0) {
+            // which model headers the unit's code actually uses (their DIFiles)
+            const auto ir0 = read_file(o0);
+            std::string used;
+            for (auto& [name, text] : model_sources())
+                if (name.starts_with("cxx/") && ir0.find((fe.cxx_models / name.substr(4)).string()) != std::string::npos)
+                    used += (used.empty() ? "" : ", ") + name.substr(4);
+            if (cxx_models && !used.empty()) *cxx_models = "model: " + used;
+            modelled = std::move(rm);
+        } else if (rm.timed_out) {
+            err = "clang timed out";
+            return std::nullopt;
+        } else if (cxx_models) {
+            *cxx_models = "libstdc++ (fallback: the unit does not compile against the PRISM models: " +
+                          first_error(rm.text) + ")";
+        }
+    }
     argv.insert(argv.end(), fl.begin(), fl.end());
     argv.insert(argv.end(), {"-o", o0.string(), src.string()});
-    auto r = detail::run_process(argv, timeout_s);
+    auto r = modelled ? std::move(*modelled) : detail::run_process(argv, timeout_s);
     if (!cxx && !r.timed_out && (r.failed || r.rc != 0)) {
         // C23 code (bool, nullptr, typeof, digit separators ...) does not
         // compile as C17: try once more as C23 before giving up. Only the
@@ -829,6 +859,7 @@ struct Lowered {
     std::string err;
     std::vector<FoldedUb> folded;
     std::vector<std::pair<int, int>> sshl;
+    std::string cxx_models;  // C++ library used (lower_to_ir), "" for C or no modelled header
 };
 
 struct Analyzed {
@@ -1007,11 +1038,24 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
     }
     // library models: lowered once per run (process phase)
     auto models = build_models(fe, std::max(10.0, cfg.timeout));
+    // C++ library model headers (docs/PIR.md "C++ library models"): written
+    // once per run; without them C++ units use the platform library, and
+    // every C++ function says which one it was checked against.
+    std::optional<TmpDir> cxx_dir;
+    std::string cxx_models_error;
+    if (std::any_of(units.begin(), units.end(), [](auto& u) { return is_cxx(u.path); })) {
+        cxx_dir.emplace();
+        if (write_cxx_models(cxx_dir->path / "prism_cxx"))
+            fe.cxx_models = cxx_dir->path / "prism_cxx";
+        else
+            cxx_models_error = "libstdc++ (the PRISM C++ model headers could not be written)";
+    }
     std::vector<Lowered> low(units.size());
     parallel_for(cfg.jobs, units, [&](std::size_t i, const Unit& u) {
         auto& l = low[i];
         try {
-            l.ir = lower_to_ir(fe, u.path, std::max(10.0, cfg.timeout), l.err, &l.folded, &l.sshl);
+            l.ir = lower_to_ir(fe, u.path, std::max(10.0, cfg.timeout), l.err, &l.folded, &l.sshl, &l.cxx_models);
+            if (is_cxx(u.path) && l.cxx_models.empty() && !cxx_models_error.empty()) l.cxx_models = cxx_models_error;
         } catch (const std::exception& ex) {
             l.ir.reset();
             l.err = std::string("internal error: ") + ex.what();
@@ -1036,6 +1080,8 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
         if (low[i].ir && !a.recs.empty()) validate(a.recs, *low[i].ir, fe, cfg);
         per[i] = std::move(a.out);
         for (auto& r : a.recs) per[i].push_back(std::move(r.f));
+        if (!low[i].cxx_models.empty())
+            for (auto& f : per[i]) f.extra["cxx_models"] = low[i].cxx_models;
     });
     std::vector<Finding> out;
     if (!models.error.empty()) {

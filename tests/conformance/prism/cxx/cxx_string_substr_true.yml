@@ -1,0 +1,6 @@
+format_version: 1
+input_files: cxx_string_substr_true.cpp
+language: C++
+property: no-uncaught
+expected:
+  cxx_string_substr_true: true

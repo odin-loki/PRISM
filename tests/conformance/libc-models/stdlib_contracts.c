@@ -87,6 +87,140 @@ int realloc_uaf_false(void) {
     return c;
 }
 
+/* 7.22.3.5p3: realloc(NULL, n) behaves like malloc(n): NULL, or n
+ * writable bytes. */
+int realloc_null_true(int n, int j, int v) {
+    if (n < 1 || n > N || j < 0 || j >= n) return 0;
+    char *q = (char *)realloc(0, (size_t)n);
+    if (!q) return 0;
+    q[j] = (char)v;
+    assert(q[j] == (char)v);
+    free(q);
+    return 0;
+}
+
+/* realloc(NULL, n)'s object is uninitialised, like malloc's. */
+int realloc_null_uninit_false(void) {
+    char *q = (char *)realloc(0, 2);
+    if (!q) return 0;
+    int c = q[1];
+    free(q);
+    return c;
+}
+
+/* realloc(p, 0) frees p and returns NULL: glibc's behaviour and the model's
+ * documented choice (implementation-defined in C17 7.22.3p1, undefined in
+ * C23). The object is released either way, so p is dead afterwards. */
+int realloc_zero_true(void) {
+    char *p = (char *)malloc(N);
+    if (!p) return 0;
+    p[0] = 1;
+    char *q = (char *)realloc(p, 0);
+    assert(q == 0);
+    return 0;
+}
+
+/* p used after realloc(p, 0) released it. */
+int realloc_zero_uaf_false(void) {
+    char *p = (char *)malloc(N);
+    if (!p) return 0;
+    p[0] = 1;
+    (void)realloc(p, 0);
+    return p[0];
+}
+
+/* free(p) after realloc(p, 0) released it. */
+int realloc_zero_double_free_false(void) {
+    char *p = (char *)malloc(N);
+    if (!p) return 0;
+    (void)realloc(p, 0);
+    free(p);
+    return 0;
+}
+
+/* Shrinking keeps the first m bytes, and the new object has exactly m. */
+int realloc_shrink_true(int m, int j) {
+    if (m < 1 || m >= N || j < 0 || j >= m) return 0;
+    char *p = (char *)malloc(N);
+    if (!p) return 0;
+    for (int i = 0; i < N; i++) p[i] = (char)(i + 1);
+    char *q = (char *)realloc(p, (size_t)m);
+    if (!q) {
+        free(p);
+        return 0;
+    }
+    assert(q[j] == (char)(j + 1));
+    assert(q[m - 1] == (char)m);
+    free(q);
+    return 0;
+}
+
+/* Writing the old size after shrinking: past the end of the new object. */
+int realloc_shrink_oob_false(int m) {
+    if (m < 1 || m >= N) return 0;
+    char *p = (char *)malloc(N);
+    if (!p) return 0;
+    char *q = (char *)realloc(p, (size_t)m);
+    if (!q) {
+        free(p);
+        return 0;
+    }
+    q[m] = 0;
+    free(q);
+    return 0;
+}
+
+/* Growing keeps all N old bytes; the new tail is writable. */
+int realloc_grow_true(int m, int j, int v) {
+    if (m <= N || m > 2 * N || j < N || j >= m) return 0;
+    char *p = (char *)malloc(N);
+    if (!p) return 0;
+    for (int i = 0; i < N; i++) p[i] = (char)(i + 1);
+    char *q = (char *)realloc(p, (size_t)m);
+    if (!q) {
+        free(p);
+        return 0;
+    }
+    for (int i = 0; i < N; i++) assert(q[i] == (char)(i + 1));
+    q[j] = (char)v;
+    assert(q[j] == (char)v);
+    free(q);
+    return 0;
+}
+
+/* Wrong contract: the grown tail is not initialised (7.22.3.5p2). */
+int realloc_grow_uninit_false(void) {
+    char *p = (char *)malloc(N);
+    if (!p) return 0;
+    for (int i = 0; i < N; i++) p[i] = 1;
+    char *q = (char *)realloc(p, N + 1);
+    if (!q) {
+        free(p);
+        return 0;
+    }
+    int c = q[N];
+    free(q);
+    return c;
+}
+
+/* realloc of a pointer that did not come from malloc (7.22.3.5p3). */
+int realloc_stack_false(void) {
+    char a[N];
+    a[0] = 0;
+    char *q = (char *)realloc(a, 2 * N);
+    return q ? q[0] : 0;
+}
+
+/* realloc of a pointer already freed (7.22.3.5p3). */
+int realloc_freed_false(void) {
+    char *p = (char *)malloc(N);
+    if (!p) return 0;
+    free(p);
+    char *q = (char *)realloc(p, 2 * N);
+    free(q);
+    return 0;
+}
+
 /* 7.22.3.3: free(NULL) does nothing. */
 int free_null_true(void) {
     free(0);
@@ -119,6 +253,10 @@ int abs_true(int x, long y, long long z) {
 
 /* abs(INT_MIN) is undefined (7.22.6.1p2). */
 int abs_intmin_false(int x) { return abs(x); }
+
+/* labs(LONG_MIN), llabs(LLONG_MIN) are undefined as well. */
+int labs_min_false(long y) { return (int)(labs(y) & 1); }
+int llabs_min_false(long long z) { return (int)(llabs(z) & 1); }
 
 /* 7.22.1.4: strtol stores a pointer into s (at most at its NUL). */
 int strtol_true(int k) {

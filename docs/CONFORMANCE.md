@@ -267,12 +267,51 @@ or refuted within it when the machine is idle).
 
 ### libc model contracts (roadmap 8.2; `tests/conformance/libc-models`)
 
-65 functions (30 contract harnesses, 35 false twins); see docs/PIR.md
-"Library models verified by PRISM". `pir`: 29/30 PROVED (size-bounded
-objects, see there), 1 BOUNDED (`getenv`), 35/35 false twins refuted for the
-planted class, 0 wrong proofs, 0 false alarms. `bmc`: 0 proofs, 2
-refutations (`abs(INT_MIN)`, `rand() < 100`), NEEDS-HARNESS elsewhere (no
-preprocessor: the included model code is invisible to it).
+125 functions (53 contract harnesses, 72 false twins); see docs/PIR.md
+"Library models verified by PRISM". C models: 41 harnesses (every function
+defined in `src/prism/pir/models/libc/*.c` is called by one), 58 false twins;
+C++ library: 12 harnesses, 14 false twins (`std::vector` model;
+libstdc++'s `std::array`, `std::span`, `std::optional`, `std::unique_ptr`,
+`std::string`). `pir` (2026-09-24): 52/53 PROVED, 1 BOUNDED (`getenv`),
+72/72 false twins refuted for the planted class, 0 wrong proofs, 0 false
+alarms. The C proofs are size-bounded (objects up to N bytes; every
+size-parametric harness is PROVED at N = 16 by `tools/libc_model_bounds.py`)
+except `unbounded_contracts.c` (memcpy/memmove/memset/realloc on objects of
+any size below 2^40). `bmc`: 0 proofs, 2 refutations (`abs(INT_MIN)`,
+`rand() < 100`), NEEDS-HARNESS elsewhere (no preprocessor: the included
+model code is invisible to it). In the full release-gate run (all stages,
+`-j2`, heavily loaded machine) the three `unique_ptr` harnesses of
+`cxx_std_contracts.cpp` came back NEEDS-HARNESS (`UNENCODED: call @_Znwm`:
+the operator new model was not linked in that run, most likely because the
+per-run model build timed out under load; the run's work directory was not
+kept, so this is not confirmed): 51/53 PROVED, 70/72 refuted there, still 0
+wrong proofs. The vector harness files carry a `timeout:`
+(900–1200 s per PRISM run) in their task files.
+
+### C++ library models: before/after (`esbmc-cpp` subset + in-house `prism/cxx`)
+
+`pir` only, 180 s per run, `-j2` on a loaded machine (2026-09-24). Before:
+C++ engine at `491089ee3` with this branch's C model changes but without the
+C++ model headers; after: this branch (the `<vector>` model, the
+out-of-loop use fix). The in-house suite gained 11 true/false pairs
+(`cxx_vector_{index,front,pop,invalidate,at}`, `cxx_string_{index,substr,cstr}`,
+`cxx_optional_value`, `cxx_unique_ptr`, `cxx_span`).
+
+| suite | before: proved (true) | before: refuted (false) | after: proved | after: refuted | wrong proofs |
+|---|---|---|---|---|---|
+| esbmc-cpp (32 + 32) | 18/32 | 21/32 (not replayable) | 19/32 | 21/32 | 0 |
+| prism/cxx (25 + 25) | 18/25 | 18/25 | 21/25 | 21/25 | 0 |
+
+What changed: `cpp03_vector/vector_back_reference` (three `push_back`s on an
+empty vector) and `cxx_vector_{front,pop,invalidate}` true and false were
+never answered with libstdc++'s vector (Z3 out of memory or the 180 s
+timeout) and are PROVED/refuted with the model; the reference kept across a
+reallocating `push_back` is MEM-UAF. Still unanswered: `cxx_string_substr`
+(libstdc++'s `substr` constructs through out-of-line `basic_string` members:
+timeout), `cxx_constexpr`/`cxx_if_consteval` (no runtime function; unchanged),
+`cxx_ref_param` (Law 6, unchanged), and the esbmc-cpp tasks listed under
+"no answer" above (iostreams, `std::map`/`std::set`, `std::string`
+out-of-line members: `UNENCODED: call`).
 
 ## Before the fixes (2026-09-23, `24a72d40b`)
 
