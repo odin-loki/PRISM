@@ -1,0 +1,15 @@
+format_version: 1
+input_files: unbounded_contracts.c
+language: C
+property: libc-contract
+expected:
+  memset_any_size_true: true
+  memset_any_size_oob_false: false
+  memcpy_any_size_true: true
+  memcpy_any_size_overlap_false: false
+  realloc_any_size_true: true
+  realloc_any_size_uninit_false: false
+expect_class:  # the violation each false harness plants
+  memset_any_size_oob_false: "MEM-OOB-WRITE"
+  memcpy_any_size_overlap_false: "MEM-OVERLAP"
+  realloc_any_size_uninit_false: "UNINIT-READ"

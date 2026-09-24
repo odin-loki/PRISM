@@ -2,6 +2,7 @@ format_version: 1
 input_files: cxx_std_contracts.cpp
 language: C++
 property: libc-contract
+timeout: 600  # several expensive container functions in one run
 expected:
   array_index_true: true
   array_oob_false: false

@@ -2,6 +2,7 @@ format_version: 1
 input_files: vector_contracts.cpp
 language: C++
 property: libc-contract
+timeout: 1200  # several expensive container functions in one run
 expected:
   vector_push_true: true
   vector_index_oob_false: false

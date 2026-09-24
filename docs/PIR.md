@@ -388,6 +388,65 @@ class or one of its bases catches them. With this, `std::vector`
 libstdc++ (D7, Linux); libc++ would need the same treatment of
 `_LIBCPP_HARDENING_MODE`.
 
+### C++ library models (roadmap 2.6)
+
+Some libstdc++ code is too expensive for the encoder: `std::vector`'s
+`_M_realloc_insert` (relocation through `__relocate_a`, `memmove` of a
+symbolic length, the `_M_check_len` arithmetic, exception guards) makes Z3
+run out of memory after two `push_back`s on an empty vector. For such
+containers PRISM ships **model headers** in `src/prism/pir/models/cxx/`,
+embedded in the binary like the C models (CMake list `PRISM_PIR_MODELS`,
+names `cxx/<header>`), written to a temporary directory once per run and put
+first on the C++ include path (`-isystem`, `lower_to_ir`), so the unit's
+`#include <vector>` reaches the model instead of libstdc++'s header.
+
+A model replaces library code only where it is sound — it must reach every
+behaviour the real library can:
+
+* **`<vector>`** (`std::vector<T, std::allocator<T>>`): a plain three-pointer
+  implementation of the whole C++23 interface with libstdc++ 13's own
+  capacity policy (`reserve`/`assign`/copy allocate exactly; growth is
+  `size + max(size, n)` clamped to `max_size()`), so the same insertions
+  reallocate and `capacity()`/`data()` read the same values; storage from
+  `std::allocator<T>` (the `operator new/delete` models), so a pointer,
+  reference or iterator kept across a reallocation points into a freed
+  object and its use is **MEM-UAF** (iterator invalidation); the same
+  exceptions (`length_error`, `out_of_range` from `at`) with the strong
+  guarantee for throwing element copies; the same element construction and
+  destruction order (relocation for nothrow-movable elements, move-if-noexcept
+  otherwise); the `_GLIBCXX_ASSERTIONS` preconditions with libstdc++'s
+  condition text (`operator[]`: `__n < this->size()` → MEM-OOB-READ;
+  `front`/`back`/`pop_back`: `!this->empty()` → FUNC-CONTRACT) plus the
+  standard's preconditions on `insert`/`erase` positions (an iterator into
+  another vector, `erase(end())` → FUNC-CONTRACT). The model was checked
+  differentially against libstdc++ under ASan/UBSan: a program exercising
+  every member (growth sequence, fill/range/initializer-list insertion,
+  erase, resize, shrink_to_fit, assign, copy/move, comparisons, erase_if,
+  `at` and `reserve` exceptions, a throwing-copy element type, strings,
+  `unique_ptr` elements, deduction guides) prints an identical trace of
+  sizes, capacities, contents and constructor/destructor calls with both.
+* **Not modelled, and why.** `vector<bool>` (a bit container) and allocators
+  other than `std::allocator<T>` (including `pmr::vector`) are left
+  undefined in the model: a unit that uses them does not compile against
+  it, and the pir stage lowers it again with libstdc++'s header — every
+  function's `extra.cxx_models` says which library it was checked against
+  (`"model: vector"`, or `"libstdc++ (fallback: …)"` with the compiler's
+  reason). `std::string` is not replaced: `<string>` is reached from every
+  iostream/exception header and `basic_string<char>` is an explicit
+  instantiation in `libstdc++.so`, so its inline code is checked as it is
+  (with `_GLIBCXX_ASSERTIONS`); out-of-line members it calls stay
+  `NEEDS-HARNESS`. `std::array`, `std::span`, `std::optional` and
+  `std::unique_ptr` are not replaced either: their libstdc++ code is small,
+  loop-free and already checks exactly the standard's preconditions under
+  `_GLIBCXX_ASSERTIONS`, so the library code is its own sound model.
+
+Encoder support added for the model: a use of a loop value outside its loop
+that LLVM's LCSSA form never has, but that the translator creates on an
+exception path leaving a loop through an inlined callee (the end of the
+unwound frames' stack objects), takes the value of the iteration the path
+left from (an implicit LCSSA phi over the node's incoming edges) instead of
+giving up with `UNENCODED: value used outside its loop`.
+
 ### Library models verified by PRISM (roadmap 8.2)
 
 The models are checked by PRISM itself: `tests/conformance/libc-models/`

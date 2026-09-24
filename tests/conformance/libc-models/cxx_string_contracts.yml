@@ -2,6 +2,7 @@ format_version: 1
 input_files: cxx_string_contracts.cpp
 language: C++
 property: libc-contract
+timeout: 900  # several expensive container functions in one run
 unwind: 40  # the heap string's constructor copies 37 characters
 expected:
   string_index_true: true

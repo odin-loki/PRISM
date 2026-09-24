@@ -110,7 +110,7 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             if not re.search(r"\bN\b|MAKE_STR|MAKE_BYTES", body):
                 # no object of size N: the harness has no size bound to raise
-                print(f"{f.name:22} {fn:24} size-independent (objects of fixed size)", flush=True)
+                print(f"{f.name:22} {fn:24} no N in the harness (fixed or symbolic object sizes)", flush=True)
                 results[fn] = {"file": f.name, "largest_proved_N": None, "runs": {}}
                 continue
             jobs.append((f.name, fn, absolutize(prelude) + "\n" + body))
