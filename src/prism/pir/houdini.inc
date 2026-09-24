@@ -54,7 +54,7 @@ struct InvTerm {
 };
 
 struct InvCand {
-    enum Kind { Cmp, Mask, Lin, MemNZ, MemEq, MemNeC, MemInit, MemConst, MemFrame } kind = Cmp;
+    enum Kind { Cmp, Mask, Lin, PtrIn, PtrAt, MemNZ, MemEq, MemNeC, MemInit, MemConst, MemFrame, MemLast } kind = Cmp;
     int loop = -1;
     Op rel = Op::Eq;       // Cmp
     InvTerm a, b;          // Cmp: a rel b; Mask: (a & mask) == (b & mask); Lin: a -/+ b == ea -/+ eb
@@ -66,6 +66,7 @@ struct InvCand {
     bool lo_entry = false; // lo = entry value of the index phi (else 0)
     int p = -1, q = -1;    // pointers (scope variables)
     int off = -1;          // MemEq/MemInit: p + off + x*eb (scope variable, i64)
+    int rp = -1;           // PtrIn/PtrAt/MemLast: a pointer phi r (the last match so far)
     unsigned eb = 1;       // element bytes
     InvTerm v;             // MemNeC: element != trunc(v); MemConst: element == v (const)
     bool alive = true;
@@ -85,7 +86,8 @@ struct HoudiniOut {
 };
 
 // Pointer-valued variables (allocation results, checked pointer arithmetic,
-// copies, selects and phis of those).
+// copies, selects and phis with such an incoming value). A heuristic for
+// choosing templates; no proof relies on it.
 std::vector<char> pointer_vars(const Function& fn) {
     std::vector<char> ptr(fn.vars.size(), 0);
     auto is = [&](const Arg& a) { return !a.is_const && ptr[static_cast<std::size_t>(a.var)]; };
@@ -100,14 +102,11 @@ std::vector<char> pointer_vars(const Function& fn) {
         };
         for (auto& b : fn.blocks) {
             for (auto& p : b.phis) {
-                bool any = false, all = true;
+                // any pointer-valued incoming value (candidate generation only)
                 for (auto& [pb, a] : p.in) {
                     (void)pb;
-                    if (a.is_const) continue;
-                    any = true;
-                    all = all && is(a);
+                    if (!a.is_const && is(a)) set(p.dst);
                 }
-                if (any && all) set(p.dst);
             }
             for (auto& s : b.stmts) {
                 if (s.kind == Stmt::Alloc) set(s.dst);
@@ -123,9 +122,9 @@ std::vector<char> pointer_vars(const Function& fn) {
 
 class Houdini {
 public:
-    // timeout_s: the solver time per query; the whole search gets 4 times that
+    // timeout_s: the solver time per query; the whole search gets 6 times that
     Houdini(const Function& fn, const CfgInfo& g, const EncodeOptions& eo, double timeout_s)
-        : fn_(fn), g_(g), eo_(eo), per_query_(timeout_s), deadline_(4 * timeout_s) {}
+        : fn_(fn), g_(g), eo_(eo), per_query_(timeout_s), deadline_(6 * timeout_s) {}
 
     HoudiniOut run();
 
@@ -139,7 +138,7 @@ private:
     std::chrono::steady_clock::time_point t0_ = std::chrono::steady_clock::now();
     std::vector<char> ptr_;
     std::vector<const Stmt*> def_;
-    std::vector<int> defb_;
+    std::vector<char> signed_use_;
 
     double left() const {
         return deadline_ - std::chrono::duration<double>(std::chrono::steady_clock::now() - t0_).count();
@@ -272,8 +271,15 @@ std::string Houdini::text(const InvCand& c) const {
         case InvCand::MemNeC: return "forall " + range + ": " + at(c.p, -1) + " != (i" + std::to_string(8 * c.eb) + ")" + tt(c.v);
         case InvCand::MemInit: return "forall " + range + ": initialised " + at(c.p, c.off);
         case InvCand::MemConst: return "forall " + range + ": " + at(c.p, -1) + " == " + tt(c.v);
+        case InvCand::PtrIn:
+            return phi(c.rp) + " == 0 || " + phi(c.rp) + " in " + var(c.p) + "[0, " + idx + ")";
+        case InvCand::PtrAt: return phi(c.rp) + " == 0 || *" + phi(c.rp) + " == (i8)" + tt(c.v);
+        case InvCand::MemLast:
+            return "forall " + range + ": " + at(c.p, -1) + " == (i8)" + tt(c.v) + " -> " + phi(c.rp) + " != 0 && x <= " +
+                   phi(c.rp) + " - " + var(c.p);
         case InvCand::MemFrame:
-            return "forall x < " + std::string(c.sext ? "sext" : "zext") + "(entry(" + phi(c.ip) + ")): " + at(c.p, -1) +
+            return "forall x < " + (c.off >= 0 ? var(c.off) + " + " : std::string()) + (c.sext ? "sext" : "zext") +
+                   "(entry(" + phi(c.ip) + ")): " + at(c.p, -1) +
                    " == " + at(c.p, -1) + " at loop entry";
     }
     return "?";
@@ -301,6 +307,21 @@ void Houdini::generate(std::vector<InvCand>& out) {
             if (!ptr_[static_cast<std::size_t>(v)] && !fn_.vars[static_cast<std::size_t>(v)].fp &&
                 fn_.vars[static_cast<std::size_t>(v)].width > 1)
                 scope.push_back(v);
+        // values the loop body uses
+        std::vector<char> used(fn_.vars.size(), 0);
+        for (int b = 0; b < g_.n; ++b) {
+            if (!loop.body[static_cast<std::size_t>(b)]) continue;
+            auto& bl = fn_.blocks[static_cast<std::size_t>(b)];
+            for (auto& p : bl.phis)
+                for (auto& [pb, a] : p.in) {
+                    (void)pb;
+                    if (!a.is_const) used[static_cast<std::size_t>(a.var)] = 1;
+                }
+            for (auto& st : bl.stmts)
+                for (auto& a : st.args)
+                    if (!a.is_const) used[static_cast<std::size_t>(a.var)] = 1;
+            if (bl.term.kind == Term::Br && !bl.term.cond.is_const) used[static_cast<std::size_t>(bl.term.cond.var)] = 1;
+        }
         std::vector<int> later;
         for (int v = static_cast<int>(fn_.vars.size()) - 1; v >= 0; --v) {
             auto& var = fn_.vars[static_cast<std::size_t>(v)];
@@ -309,6 +330,10 @@ void Houdini::generate(std::vector<InvCand>& out) {
             if (!var.name.empty() && var.name[0] == '_') continue;  // translator temporaries (checks)
             auto* s = def_[static_cast<std::size_t>(v)];
             if (s && s->kind == Stmt::Assign && s->op >= Op::SAddOvf && s->op <= Op::InexactS) continue;
+            // used by the loop, a nondet value, or a value merged before the loop
+            const bool merged = !s && g_.def_block[static_cast<std::size_t>(v)] >= 0;
+            const bool nondet = s && s->op == Op::Havoc;
+            if (!used[static_cast<std::size_t>(v)] && !merged && !nondet) continue;
             later.push_back(v);
         }
         for (int v : later)
@@ -387,8 +412,11 @@ void Houdini::generate(std::vector<InvCand>& out) {
                 for (int p : bases_w)
                     if (!bases_r.count(p)) bs.push_back({InvTerm::Size, p, 0, w});
             bs.push_back({InvTerm::Entry, i, 0, w});
+            const bool sgn = signed_use_[static_cast<std::size_t>(phi_var(i))] != 0;
             for (auto& b : bs)
                 for (Op r : kRel) {
+                    // signed relations only for values the program uses as signed
+                    if (!sgn && (r == Op::Sle || r == Op::Slt || r == Op::Sge || r == Op::Sgt)) continue;
                     InvCand c;
                     c.kind = InvCand::Cmp;
                     c.loop = L;
@@ -427,6 +455,37 @@ void Houdini::generate(std::vector<InvCand>& out) {
             out.push_back(std::move(c));
         };
         if (ebs.empty()) continue;
+        // a pointer phi that remembers the last match (strrchr): null or a
+        // pointer below the index into an accessed object, at the value
+        for (int r : phis) {
+            int rv = phi_var(r);
+            if (fn_.vars[static_cast<std::size_t>(rv)].width != 64 || !ptr_[static_cast<std::size_t>(rv)]) continue;
+            for (int i : phis) {
+                int iv = phi_var(i);
+                if (i == r || ptr_[static_cast<std::size_t>(iv)] || fn_.vars[static_cast<std::size_t>(iv)].width < 8) continue;
+                std::set<bool> exts;
+                if (fn_.vars[static_cast<std::size_t>(iv)].width == 64) exts.insert(false);
+                else exts = ext[iv];
+                for (bool sx : exts)
+                    for (int p : bases_r) {
+                        InvCand c;
+                        c.loop = L;
+                        c.rp = r;
+                        c.ip = i;
+                        c.sext = sx;
+                        c.p = p;
+                        c.kind = InvCand::PtrIn;
+                        add(c);
+                        for (int v : nec_vals) {
+                            c.v = {InvTerm::Scope, v, 0, fn_.vars[static_cast<std::size_t>(v)].width};
+                            c.kind = InvCand::PtrAt;
+                            add(c);
+                            c.kind = InvCand::MemLast;
+                            add(c);
+                        }
+                    }
+            }
+        }
         for (int i : phis) {
             int pv = phi_var(i);
             unsigned w = fn_.vars[static_cast<std::size_t>(pv)].width;
@@ -485,11 +544,13 @@ void Houdini::generate(std::vector<InvCand>& out) {
                                     add(c);
                                 }
                             }
-                            if (wp) {  // the bytes below the entry index are the loop entry's
-                                auto c = t;
-                                c.kind = InvCand::MemFrame;
-                                add(c);
-                            }
+                            if (wp)  // the bytes below the entry index (+ offset) are the loop entry's
+                                for (int o : os) {
+                                    auto c = t;
+                                    c.kind = InvCand::MemFrame;
+                                    c.off = o;
+                                    add(c);
+                                }
                         }
                     }
         }
@@ -504,6 +565,20 @@ HoudiniOut Houdini::run() {
     for (auto& b : fn_.blocks)
         for (auto& s : b.stmts)
             if (s.kind == Stmt::Assign && s.dst >= 0) def_[static_cast<std::size_t>(s.dst)] = &s;
+    signed_use_.assign(fn_.vars.size(), 0);
+    for (auto& b : fn_.blocks)
+        for (auto& st : b.stmts) {
+            if (st.kind != Stmt::Assign) continue;
+            switch (st.op) {
+                case Op::Slt: case Op::Sle: case Op::Sgt: case Op::Sge: case Op::SAddOvf: case Op::SSubOvf:
+                case Op::SMulOvf: case Op::SDiv: case Op::SRem: case Op::SDivOvf: case Op::AShr: case Op::SExt:
+                case Op::SMax: case Op::SMin: case Op::ShlSOvf: case Op::ShlNswOvf:
+                    for (auto& a : st.args)
+                        if (!a.is_const) signed_use_[static_cast<std::size_t>(a.var)] = 1;
+                    break;
+                default: break;
+            }
+        }
     generate(out.cands);
     out.candidates = out.cands.size();
     out.invariants.assign(g_.loops.size(), {});
@@ -637,10 +712,27 @@ HoudiniOut Houdini::run() {
             }
             default: break;
         }
+        if (k.kind == InvCand::PtrIn || k.kind == InvCand::PtrAt) {
+            auto r = (*st.phis)[static_cast<std::size_t>(k.rp)];
+            auto null = r == e.bv(0, 64);
+            if (k.kind == InvCand::PtrIn) {
+                auto p = e.lookup(Arg::v(k.p, 64), node);
+                auto idx = ext64((*st.phis)[static_cast<std::size_t>(k.ip)], k.sext);
+                return null || (r.extract(63, kObjShift) == p.extract(63, kObjShift) && z3::uge(r, p) && z3::ult(r - p, idx));
+            }
+            auto v = e.lookup(Arg::v(k.v.idx, k.v.w), node);
+            if (k.v.w > 8) v = v.extract(7, 0);
+            else if (k.v.w < 8) v = z3::zext(v, 8 - k.v.w);
+            return null || e.M().load_exact(*st.mem, r, 8).val == v;
+        }
         // memory templates
         auto idx = ext64((*st.phis)[static_cast<std::size_t>(k.ip)], k.sext);
-        z3::expr in = k.kind == InvCand::MemFrame ? z3::ult(x, ext64(CL.entry[static_cast<std::size_t>(k.ip)], k.sext))
-                                                  : z3::ult(x, idx);
+        z3::expr in = z3::ult(x, idx);
+        if (k.kind == InvCand::MemFrame) {
+            z3::expr hi = ext64(CL.entry[static_cast<std::size_t>(k.ip)], k.sext);
+            if (k.off >= 0) hi = hi + e.lookup(Arg::v(k.off, 64), node);
+            in = z3::ult(x, hi);
+        }
         if (k.lo_entry) in = in && z3::ule(ext64(CL.entry[static_cast<std::size_t>(k.ip)], k.sext), x);
         auto scale = k.eb == 1 ? x : x * e.bv(k.eb, 64);
         auto ptr = [&](int p, int off) {
@@ -659,6 +751,15 @@ HoudiniOut Houdini::run() {
                 auto now = ld(k.p, -1);
                 auto was = e.M().load_exact(CL.entry_mem, ptr(k.p, -1), 8 * k.eb);
                 body = now.val == was.val && now.uninit == was.uninit;
+                break;
+            }
+            case InvCand::MemLast: {
+                auto v = e.lookup(Arg::v(k.v.idx, k.v.w), node);
+                if (k.v.w > 8) v = v.extract(7, 0);
+                else if (k.v.w < 8) v = z3::zext(v, 8 - k.v.w);
+                auto r = (*st.phis)[static_cast<std::size_t>(k.rp)];
+                auto p = e.lookup(Arg::v(k.p, 64), node);
+                body = z3::implies(ld(k.p, -1).val == v, r != e.bv(0, 64) && z3::ule(x, r - p));
                 break;
             }
             case InvCand::MemNeC: {
@@ -691,10 +792,9 @@ HoudiniOut Houdini::run() {
         try {
             State se{&CL.entry, &CL.entry_mem}, sh{&CL.havoc, &CL.havoc_mem};
             ev[i].entry = eval(k, se, x0);
-            if (k.ghost())
-                for (auto& t : T) ev[i].havoc.push_back(eval(k, sh, t));
-            else
-                ev[i].havoc.push_back(eval(k, sh, x0));
+            // at x0 only while searching; the other instances are added for
+            // the final query (fewer reads keep the search queries small)
+            ev[i].havoc.push_back(eval(k, sh, x0));
             for (auto& lt : CL.latches) {
                 State sn{&lt.next, &lt.mem};
                 ev[i].next.push_back(eval(k, sn, x0));
@@ -702,6 +802,13 @@ HoudiniOut Houdini::run() {
         } catch (const EncodeFail&) {
             k.alive = false;  // a scope value not readable at the header
         }
+    }
+    if (std::getenv("PRISM_HOUDINI_DEBUG")) {
+        std::map<int, std::pair<int, int>> cnt;
+        for (auto& k : cands)
+            if (k.alive) (k.ghost() ? cnt[k.loop].second : cnt[k.loop].first)++;
+        for (auto& [L, n] : cnt) std::fprintf(stderr, "houdini loop %d: %d scalar, %d memory candidates\n", L, n.first, n.second);
+        std::fprintf(stderr, "houdini T=%zu props=%zu assumptions=%zu\n", T.size(), e.props.size(), e.assumptions.size());
     }
     const std::size_t nprops = e.props.size();
     std::vector<std::optional<z3::expr>> noviol_memo(nprops + 1);
@@ -712,21 +819,42 @@ HoudiniOut Houdini::run() {
         noviol_memo[n] = v.empty() ? c.bool_val(true) : z3::mk_and(v);
         return *noviol_memo[n];
     };
-    // havoc assumption of loop M with its surviving candidates
-    auto havoc_assumption = [&](std::size_t M) -> z3::expr {
-        auto& CL = e.cut_loops[M];
-        z3::expr_vector v(c);
-        for (std::size_t i = 0; i < cands.size(); ++i)
-            if (cands[i].alive && static_cast<std::size_t>(cands[i].loop) == M)
-                for (auto& h : ev[i].havoc) v.push_back(h);
-        if (v.empty()) return c.bool_val(true);
-        return z3::implies(e.reach[static_cast<std::size_t>(CL.node)] && noviol(CL.props_before), z3::mk_and(v));
-    };
+    // One incremental solver. Candidate i is assumed at its loop's havocked
+    // header through a selector literal sel[i]: sel[i] -> (guard -> H_i),
+    // guard = the header is reached with no property violated before it.
+    // A query passes the selectors of the surviving candidates of the loops
+    // it may assume, a literal for its context and one for its goals.
     z3::solver s(c);
     add_all(s, e.assumptions);
+    std::vector<std::optional<z3::expr>> sel(cands.size());
+    for (std::size_t i = 0; i < cands.size(); ++i) {
+        if (!cands[i].alive) continue;
+        auto& CL = e.cut_loops[static_cast<std::size_t>(cands[i].loop)];
+        sel[i] = c.bool_const(("houdini!s" + std::to_string(i)).c_str());
+        z3::expr_vector hv(c);
+        for (auto& h : ev[i].havoc) hv.push_back(h);
+        s.add(z3::implies(*sel[i], z3::implies(e.reach[static_cast<std::size_t>(CL.node)] && noviol(CL.props_before),
+                                               z3::mk_and(hv))));
+    }
+    auto selectors = [&](const std::function<bool(std::size_t)>& before, z3::expr_vector& as) {
+        for (std::size_t i = 0; i < cands.size(); ++i)
+            if (cands[i].alive && e.cut_loops[static_cast<std::size_t>(cands[i].loop)].node >= 0 &&
+                before(static_cast<std::size_t>(cands[i].loop)))
+                as.push_back(*sel[i]);
+    };
+    std::map<int, z3::expr> ctx_lit;
+    // A query is asked again only when a candidate it assumes or checks was
+    // dropped since it last came back UNSAT with nothing dropped.
+    std::vector<int> version(e.cut_loops.size(), 0);
+    std::map<int, std::vector<int>> proved_at;
     auto check_goal = [&](const std::function<bool(std::size_t)>& before, const z3::expr& at,
-                          const std::function<std::optional<z3::expr>(std::size_t)>& goal_of, int L) -> bool {
+                          const std::function<std::optional<z3::expr>(std::size_t)>& goal_of, int L,
+                          int qid) -> bool {
         // returns true when something was dropped
+        std::vector<int> deps(e.cut_loops.size(), -1);
+        for (std::size_t M = 0; M < e.cut_loops.size(); ++M)
+            if (before(M) || static_cast<int>(M) == L) deps[M] = version[M];
+        if (auto it = proved_at.find(qid); it != proved_at.end() && it->second == deps) return false;
         std::vector<std::size_t> who;
         for (std::size_t i = 0; i < cands.size(); ++i) {
             if (!cands[i].alive || cands[i].loop != L) continue;
@@ -734,61 +862,91 @@ HoudiniOut Houdini::run() {
             who.push_back(i);
         }
         if (who.empty()) return false;
-        s.push();
-        for (std::size_t M = 0; M < e.cut_loops.size(); ++M)
-            if (e.cut_loops[M].node >= 0 && before(M)) s.add(havoc_assumption(M));
-        s.add(at);
-        z3::params p(c);
-        p.set("timeout", static_cast<unsigned>(std::max(1.0, std::min(per_query_, left())) * 1000));
-        s.set(p);
-        // Drop every goal a model falsifies and ask again for the rest, in
-        // this context (the context may still assume candidates dropped here:
-        // a model of a stronger context is a counterexample for the weaker
-        // one too, so a goal it falsifies is rightly dropped; the outer
-        // rounds re-check the survivors with the final context).
-        bool dropped = false;
-        for (;;) {
-            z3::expr_vector rest(c);
-            std::vector<std::size_t> live;
-            for (auto i : who)
-                if (cands[i].alive) {
-                    rest.push_back(!*goal_of(i));
-                    live.push_back(i);
-                }
-            if (live.empty()) break;
-            if (std::getenv("PRISM_HOUDINI_DEBUG"))
-                std::fprintf(stderr, "houdini L%d goals=%zu t=%.1f\n", L, live.size(), deadline_ - left());
-            z3::expr act = c.bool_const(("houdini!q" + std::to_string(query_++)).c_str());
-            s.add(z3::implies(act, z3::mk_or(rest)));
-            z3::expr_vector as(c);
-            as.push_back(act);
-            auto r = s.check(as);
-            if (r == z3::unsat) break;
-            if (r == z3::sat) {
-                auto m = s.get_model();
-                bool any = false;
-                for (auto i : live)
-                    if (!m.eval(*goal_of(i), true).is_true()) {
-                        cands[i].alive = false;
-                        any = true;
-                    }
-                if (!any)  // model evaluation disagrees: drop all (never keep an unproved one)
-                    for (auto i : live) cands[i].alive = false;
-                dropped = true;
-                if (left() <= 0) break;
-                continue;
-            }
-            if (std::getenv("PRISM_HOUDINI_DEBUG")) {
-                std::fprintf(stderr, "houdini unknown: %s\n", s.reason_unknown().c_str());
-                for (auto i : live) std::fprintf(stderr, "   goal %s\n", text(cands[i]).c_str());
-            }
-            for (auto i : live) cands[i].alive = false;  // no answer: nothing unproved is kept
-            dropped = true;
-            break;
+        auto cl = ctx_lit.find(qid);
+        if (cl == ctx_lit.end()) {
+            cl = ctx_lit.emplace(qid, c.bool_const(("houdini!c" + std::to_string(qid)).c_str())).first;
+            s.add(z3::implies(cl->second, at));
         }
-        s.pop();
+        // Drop every goal a model falsifies and ask again for the rest, with
+        // the same assumed set (it may still hold candidates dropped here: a
+        // model of a stronger context is a counterexample for the weaker one
+        // too, so a goal it falsifies is rightly dropped; the outer rounds
+        // re-check the survivors with the final set).
+        z3::expr_vector base(c);
+        base.push_back(cl->second);
+        selectors(before, base);
+        bool dropped = false;
+        // goals: drop what models falsify until the rest is UNSAT; a group
+        // without an answer is split in halves, a single goal without an
+        // answer is dropped (nothing unproved is kept)
+        std::function<void(std::vector<std::size_t>, int)> solve = [&](std::vector<std::size_t> goals, int depth) {
+            for (;;) {
+                z3::expr_vector rest(c);
+                std::vector<std::size_t> live;
+                for (auto i : goals)
+                    if (cands[i].alive) {
+                        rest.push_back(!*goal_of(i));
+                        live.push_back(i);
+                    }
+                if (live.empty()) return;
+                if (left() <= 0) {  // out of time: drop them
+                    for (auto i : live) cands[i].alive = false;
+                    dropped = true;
+                    return;
+                }
+                if (std::getenv("PRISM_HOUDINI_DEBUG"))
+                    std::fprintf(stderr, "houdini L%d goals=%zu t=%.1f\n", L, live.size(), deadline_ - left());
+                z3::expr act = c.bool_const(("houdini!q" + std::to_string(query_++)).c_str());
+                s.add(z3::implies(act, z3::mk_or(rest)));
+                z3::expr_vector as(c);
+                for (auto x : base) as.push_back(x);
+                as.push_back(act);
+                // a group gets a share of the time; a single goal the full query time
+                double t = live.size() > 1 ? std::min(per_query_, std::max(2.0, per_query_ / 3)) : per_query_;
+                z3::params p(c);
+                p.set("timeout", static_cast<unsigned>(std::max(1.0, std::min(t, left())) * 1000));
+                s.set(p);
+                auto r = s.check(as);
+                if (r == z3::unsat) return;
+                if (r == z3::sat) {
+                    auto m = s.get_model();
+                    bool any = false;
+                    for (auto i : live)
+                        if (!m.eval(*goal_of(i), true).is_true()) {
+                            cands[i].alive = false;
+                            any = true;
+                        }
+                    if (!any)  // model evaluation disagrees: drop all (never keep an unproved one)
+                        for (auto i : live) cands[i].alive = false;
+                    dropped = true;
+                    continue;
+                }
+                if (std::getenv("PRISM_HOUDINI_DEBUG")) {
+                    std::fprintf(stderr, "houdini unknown: %s\n", s.reason_unknown().c_str());
+                    for (auto i : live) std::fprintf(stderr, "   goal %s\n", text(cands[i]).c_str());
+                }
+                if (live.size() == 1 || depth > 6) {
+                    for (auto i : live) cands[i].alive = false;
+                    dropped = true;
+                    return;
+                }
+                std::vector<std::size_t> lo(live.begin(), live.begin() + static_cast<std::ptrdiff_t>(live.size() / 2));
+                std::vector<std::size_t> hi(live.begin() + static_cast<std::ptrdiff_t>(live.size() / 2), live.end());
+                solve(lo, depth + 1);
+                solve(hi, depth + 1);
+                return;
+            }
+        };
+        solve(who, 0);
+        if (dropped) ++version[static_cast<std::size_t>(L)];
+        else proved_at[qid] = deps;
         return dropped;
     };
+    // loops in encoding (topological) order: a base query assumes the loops before it
+    std::vector<std::size_t> topo;
+    for (std::size_t L = 0; L < e.cut_loops.size(); ++L) topo.push_back(L);
+    std::sort(topo.begin(), topo.end(),
+              [&](std::size_t a, std::size_t b) { return e.cut_loops[a].seq < e.cut_loops[b].seq; });
     bool changed = true;
     while (changed) {
         if (left() <= 0) {
@@ -797,14 +955,15 @@ HoudiniOut Houdini::run() {
         }
         ++out.rounds;
         changed = false;
-        for (std::size_t L = 0; L < e.cut_loops.size(); ++L) {
+        for (std::size_t L : topo) {
             auto& CL = e.cut_loops[L];
             if (CL.node < 0) continue;
             const int seqL = CL.seq;
             // base: the entry state
             changed |= check_goal([&](std::size_t M) { return e.cut_loops[M].seq < seqL; },
                                   e.reach[static_cast<std::size_t>(CL.node)] && noviol(CL.props_before),
-                                  [&](std::size_t i) { return ev[i].entry; }, static_cast<int>(L));
+                                  [&](std::size_t i) { return ev[i].entry; }, static_cast<int>(L),
+                                  static_cast<int>(L) * 1000);
             // step: the next state of every back edge
             for (std::size_t j = 0; j < CL.latches.size(); ++j) {
                 auto& lt = CL.latches[j];
@@ -812,7 +971,7 @@ HoudiniOut Houdini::run() {
                 changed |= check_goal([&](std::size_t M) { return e.cut_loops[M].seq <= seqT; },
                                       lt.guard && noviol(lt.props_before),
                                       [&](std::size_t i) -> std::optional<z3::expr> { return ev[i].next[j]; },
-                                      static_cast<int>(L));
+                                      static_cast<int>(L), static_cast<int>(L) * 1000 + 1 + static_cast<int>(j));
             }
         }
     }
@@ -821,25 +980,85 @@ HoudiniOut Houdini::run() {
             out.invariants[static_cast<std::size_t>(cands[i].loop)].push_back(text(cands[i]));
             out.kept[static_cast<std::size_t>(cands[i].loop)].push_back(i);
         }
-    // the cut program with every surviving invariant assumed
-    s.push();
-    for (std::size_t M = 0; M < e.cut_loops.size(); ++M)
-        if (e.cut_loops[M].node >= 0) s.add(havoc_assumption(M));
-    std::vector<z3::expr> viols;
-    for (auto& p : e.props) viols.push_back(p.viol);
-    s.add(any_of(c, viols));
-    z3::params p(c);
-    p.set("timeout", static_cast<unsigned>(std::max(per_query_, left()) * 1000));
-    if (std::getenv("PRISM_HOUDINI_DEBUG")) std::fprintf(stderr, "houdini final t=%.1f\n", deadline_ - left());
-    s.set(p);
-    auto r = s.check();
-    s.pop();
-    if (r == z3::unsat) {
+    // The cut program with every surviving invariant assumed: no property
+    // instance is violated. Asked for all properties at once; a group
+    // without an answer is split in halves (a smaller query), a satisfiable
+    // one ends the attempt (the invariants found do not imply it).
+    // the surviving universal invariants at the other index terms
+    {
+        const std::size_t before_n = e.assumptions.size();
+        std::vector<z3::expr> more;
+        for (std::size_t i = 0; i < cands.size(); ++i) {
+            if (!cands[i].alive || !cands[i].ghost()) continue;
+            auto& CL = e.cut_loops[static_cast<std::size_t>(cands[i].loop)];
+            State sh{&CL.havoc, &CL.havoc_mem};
+            z3::expr_vector hv(c);
+            try {
+                for (std::size_t t = 1; t < T.size(); ++t) hv.push_back(eval(cands[i], sh, T[t]));
+            } catch (const EncodeFail&) {
+                continue;  // not assumed at the other terms (only weaker)
+            }
+            if (hv.empty()) continue;
+            more.push_back(z3::implies(
+                *sel[i],
+                z3::implies(e.reach[static_cast<std::size_t>(CL.node)] && noviol(CL.props_before), z3::mk_and(hv))));
+        }
+        for (std::size_t k = before_n; k < e.assumptions.size(); ++k) s.add(e.assumptions[k]);
+        for (auto& m : more) s.add(m);
+    }
+    z3::expr_vector all_sel(c);
+    selectors([](std::size_t) { return true; }, all_sel);
+    const double final_budget = std::max(2 * per_query_, left());
+    const auto tf = std::chrono::steady_clock::now();
+    auto fleft = [&] {
+        return final_budget - std::chrono::duration<double>(std::chrono::steady_clock::now() - tf).count();
+    };
+    std::string fail;
+    std::function<bool(std::size_t, std::size_t)> group = [&](std::size_t lo, std::size_t hi) -> bool {
+        if (lo >= hi) return true;
+        if (fleft() <= 0) {
+            fail = "cut program: out of time";
+            return false;
+        }
+        z3::expr_vector vs(c);
+        for (std::size_t i = lo; i < hi; ++i) vs.push_back(e.props[i].viol);
+        z3::expr act = c.bool_const(("houdini!f" + std::to_string(query_++)).c_str());
+        s.add(z3::implies(act, z3::mk_or(vs)));
+        z3::params p(c);
+        double t = hi - lo == e.props.size() ? std::max(per_query_, fleft() / 2) : std::min(per_query_, fleft());
+        p.set("timeout", static_cast<unsigned>(std::max(1.0, t) * 1000));
+        s.set(p);
+        z3::expr_vector as(c);
+        for (auto x : all_sel) as.push_back(x);
+        as.push_back(act);
+        if (std::getenv("PRISM_HOUDINI_DEBUG"))
+            std::fprintf(stderr, "houdini final [%zu,%zu) t=%.1f\n", lo, hi, deadline_ - left());
+        auto r = s.check(as);
+        if (r == z3::unsat) return true;
+        if (r == z3::sat) {
+            if (std::getenv("PRISM_HOUDINI_DEBUG")) {
+                auto m = s.get_model();
+                for (std::size_t i = lo; i < hi; ++i)
+                    if (m.eval(e.props[i].viol, true).is_true())
+                        std::fprintf(stderr, "houdini violated %s line %d %s\n", e.props[i].stmt->prop.c_str(),
+                                     e.props[i].stmt->line, e.props[i].stmt->msg.c_str());
+            }
+            fail = "a property is not implied by the inductive invariants found";
+            return false;
+        }
+        if (hi - lo == 1) {
+            fail = "cut program: solver unknown";
+            return false;
+        }
+        std::size_t mid = lo + (hi - lo) / 2;
+        return group(lo, mid) && group(mid, hi);
+    };
+    bool ok = group(0, e.props.size());
+    if (ok) {
         out.proved = true;
         return out;
     }
-    out.why = r == z3::sat ? "a property is not implied by the inductive invariants found"
-                           : "cut program: solver " + std::string(r == z3::unknown ? "unknown" : "?");
+    out.why = fail;
     return out;
 }
 
