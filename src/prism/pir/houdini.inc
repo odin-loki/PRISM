@@ -1063,6 +1063,92 @@ HoudiniOut Houdini::run() {
 }
 
 // Source-level export of the surviving invariants (SV-COMP correctness
-// witnesses): filled in by the debug-information mapping; until then only
-// the PIR text is reported.
-void export_invariants(const Function&, const CfgInfo&, const HoudiniOut&, Verdict&) {}
+// witnesses, tools/svcomp). Only proved invariants of the function's own
+// loops (not an inlined callee's) with a source start position, and only
+// the scalar ones whose terms are program values (header phis and values
+// defined before the loop, by their IR names) or constants:
+//   extra["invariant_loops"]      [{"line", "column", "kind": ""}]
+//   extra["invariant_conjuncts"]  per loop, [{"rel", "a", "b"}] with terms
+//       {"v": IR name, "w": width} or {"c": value (unsigned decimal), "w"};
+//       rel is one of eq ne ule ult uge ugt sle slt sge sgt, or
+//       "mask:M" ((a & M) == b) / "add" (a + b == c) / "sub" (a - b == c)
+// The C text is made by the wrapper, which knows the C types of the names
+// (debug information) and exports a conjunct only where C's semantics of the
+// expression is the proved bit-vector relation.
+void export_invariants(const Function& fn, const CfgInfo& g, const HoudiniOut& h, Verdict& v) {
+    nlohmann::json loops = nlohmann::json::array(), conj = nlohmann::json::array();
+    auto exportable_name = [](const std::string& n) {
+        return !n.empty() && n.find('#') == std::string::npos && n[0] != '_' && n.find('.') != 0;
+    };
+    for (std::size_t L = 0; L < g.loops.size() && L < h.kept.size(); ++L) {
+        const int H = g.loops[L].header;
+        auto loc = fn.loop_locs.find(H);
+        if (loc == fn.loop_locs.end() || loc->second.first <= 0) continue;
+        const auto& hb = fn.blocks[static_cast<std::size_t>(H)];
+        // the phi's value on entry, when it is one constant
+        auto entry_const = [&](int i) -> std::optional<uint64_t> {
+            std::optional<uint64_t> k;
+            for (auto& [pb, a] : hb.phis[static_cast<std::size_t>(i)].in) {
+                if (g.loops[L].body[static_cast<std::size_t>(pb)]) continue;
+                if (!a.is_const || (k && *k != a.bits)) return std::nullopt;
+                k = a.bits;
+            }
+            return k;
+        };
+        auto term = [&](const InvTerm& t) -> std::optional<nlohmann::json> {
+            switch (t.kind) {
+                case InvTerm::Phi: {
+                    auto& n = fn.vars[static_cast<std::size_t>(hb.phis[static_cast<std::size_t>(t.idx)].dst)].name;
+                    if (!exportable_name(n)) return std::nullopt;
+                    return nlohmann::json{{"v", n}, {"w", t.w}};
+                }
+                case InvTerm::Scope: {
+                    auto& n = fn.vars[static_cast<std::size_t>(t.idx)].name;
+                    if (!exportable_name(n)) return std::nullopt;
+                    return nlohmann::json{{"v", n}, {"w", t.w}};
+                }
+                case InvTerm::Const: return nlohmann::json{{"c", std::to_string(t.c & wmask(t.w))}, {"w", t.w}};
+                case InvTerm::Entry: {
+                    auto k = entry_const(t.idx);
+                    if (!k) return std::nullopt;
+                    return nlohmann::json{{"c", std::to_string(*k & wmask(t.w))}, {"w", t.w}};
+                }
+                case InvTerm::Size: return std::nullopt;
+            }
+            return std::nullopt;
+        };
+        nlohmann::json cs = nlohmann::json::array();
+        for (auto i : h.kept[L]) {
+            const auto& k = h.cands[i];
+            auto a = term(k.a);
+            if (!a) continue;
+            if (k.kind == InvCand::Cmp) {
+                auto b = term(k.b);
+                if (!b) continue;
+                std::string r = op_name(k.rel);
+                cs.push_back({{"rel", r}, {"a", *a}, {"b", *b}});
+            } else if (k.kind == InvCand::Mask) {
+                auto b = term(k.b);
+                if (!b || !b->contains("c")) continue;
+                uint64_t bits = std::stoull((*b)["c"].get<std::string>()) & k.mask;
+                cs.push_back({{"rel", "mask:" + std::to_string(k.mask)},
+                              {"a", *a},
+                              {"b", {{"c", std::to_string(bits)}, {"w", k.a.w}}}});
+            } else if (k.kind == InvCand::Lin) {
+                auto b = term(k.b);
+                auto ea = entry_const(k.a.idx), eb = entry_const(k.b.idx);
+                if (!b || !ea || !eb) continue;
+                uint64_t cst = (k.sum ? *ea + *eb : *ea - *eb) & wmask(k.a.w);
+                cs.push_back({{"rel", k.sum ? "add" : "sub"},
+                              {"a", *a},
+                              {"b", *b},
+                              {"c", {{"c", std::to_string(cst)}, {"w", k.a.w}}}});
+            }
+        }
+        loops.push_back({{"kind", ""}, {"line", loc->second.first}, {"column", loc->second.second}});
+        conj.push_back(cs);
+    }
+    if (loops.empty()) return;
+    v.extra["invariant_loops"] = loops.dump();
+    v.extra["invariant_conjuncts"] = conj.dump();
+}

@@ -721,6 +721,11 @@ struct Tr final : pirmem::TrApi {
                 t.f = tgt(in.targets[1]);
             }
             out.blocks[static_cast<std::size_t>(cur)].term = t;
+            if (!in.loop_md.empty() && fr.prefix.empty())
+                if (auto ls = m.loop_starts.find(in.loop_md); ls != m.loop_starts.end()) {
+                    out.loop_locs[t.t] = {ls->second.line, ls->second.col};
+                    if (t.kind == Term::Br) out.loop_locs[t.f] = {ls->second.line, ls->second.col};
+                }
             return;
         }
         // ret (a raw byte copy is not a use: its shadow goes to the caller)

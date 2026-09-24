@@ -80,6 +80,7 @@ struct Inst {
     std::vector<std::pair<Operand, std::string>> cases;     // switch
     std::vector<unsigned> indices;     // extractvalue
     std::string dbg;           // "!13" (DILocation ref) or empty
+    std::string loop_md;       // "!15": the !llvm.loop attachment of a back-edge branch
     std::string text;          // original text (messages)
     bool parsed = true;        // false: opcode known, operands not modelled
     // memory instructions (docs/PIR.md "Memory model"):
@@ -151,6 +152,7 @@ struct Module {
     std::vector<std::string> declarations;      // declared symbol names
     std::map<std::string, DILoc> locs;          // "!13" -> line/col
     std::map<std::string, DISub> subprograms;   // "!10" -> source name/line/file
+    std::map<std::string, DILoc> loop_starts;   // "!15" (llvm.loop) -> the loop's start location
     const Function* find(std::string_view name) const;
     const Global* find_global(std::string_view name) const;
 };
@@ -313,6 +315,11 @@ struct Function {
     std::vector<std::string> assumptions;  // PROVED becomes PROVED-ASSUMING when non-empty
     std::vector<std::string> throws;       // library throw calls whose paths end (not modelled)
     std::vector<std::string> libm;         // libm functions whose results are unconstrained
+    // Source start (line, column) of the function's own loops (clang's
+    // llvm.loop metadata on the back-edge branch), by the PIR blocks that
+    // branch targets (one of them is the loop header). Inlined callees'
+    // loops are not listed.
+    std::map<int, std::pair<int, int>> loop_locs;
 };
 
 struct Translation {

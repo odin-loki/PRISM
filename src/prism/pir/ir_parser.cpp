@@ -992,7 +992,7 @@ Inst parse_inst(const std::vector<Tok>& toks, std::string text) {
 
 // Strip trailing ", !kind !N" metadata attachments and "#N" attribute
 // groups. Returns the !dbg reference if present.
-std::string strip_attachments(std::vector<Tok>& toks) {
+std::string strip_attachments(std::vector<Tok>& toks, std::string* loop_md = nullptr) {
     std::string dbg;
     std::vector<Tok> out;
     out.reserve(toks.size());
@@ -1002,6 +1002,7 @@ std::string strip_attachments(std::vector<Tok>& toks) {
         if (t.kind == Tok::Punct && t.text == "," && i + 2 < toks.size() &&
             toks[i + 1].kind == Tok::Meta && toks[i + 2].kind == Tok::Meta) {
             if (toks[i + 1].text == "dbg") dbg = "!" + toks[i + 2].text;
+            if (loop_md && toks[i + 1].text == "llvm.loop") *loop_md = "!" + toks[i + 2].text;
             // skip `, !name !N` (and an inline !{...} tuple)
             std::size_t j = i + 2;
             if (toks[j].text == "{") {
@@ -1125,7 +1126,8 @@ void parse_define(std::string_view header, const std::vector<std::string_view>& 
     auto flush = [&](const std::string& line) {
         auto toks2 = lex(line);
         if (toks2.empty()) return;
-        auto dbg = strip_attachments(toks2);
+        std::string loop_md;
+        auto dbg = strip_attachments(toks2, &loop_md);
         if (!cur) {
             fn.blocks.push_back(Block{"__entry", {}});
             cur = &fn.blocks.back();
@@ -1143,6 +1145,7 @@ void parse_define(std::string_view header, const std::vector<std::string_view>& 
                                              : in.text.substr(0, sp);
         }
         in.dbg = dbg;
+        in.loop_md = loop_md;
         cur->insts.push_back(std::move(in));
     };
     std::string lpad;  // a landingpad whose clauses continue on the next lines
@@ -1277,6 +1280,7 @@ Module parse_module(std::string_view text) {
     }
     std::map<std::string, std::string> files;  // "!1" -> filename
     std::vector<std::pair<std::string, std::string>> subs_raw;
+    std::vector<std::pair<std::string, std::string>> loop_tuples;  // "!N" -> its first location ref
     for (std::size_t i = 0; i < lines.size(); ++i) {
         auto line = lines[i];
         if (line.starts_with("define ")) {
@@ -1352,9 +1356,23 @@ Module parse_module(std::string_view text) {
                 subs_raw.emplace_back(ref, std::string(rhs));
             } else if (rhs.find("!DIFile(") != std::string_view::npos) {
                 files[ref] = md_field(rhs, "filename");
+            } else if (rhs.starts_with("distinct !{")) {
+                // loop metadata: !N = distinct !{!N, !startloc, !endloc, ...}
+                std::vector<std::string> refs;
+                for (std::size_t q = rhs.find('{'); q < rhs.size(); ++q) {
+                    if (rhs[q] != '!' || q + 1 >= rhs.size() || !std::isdigit(static_cast<unsigned char>(rhs[q + 1])))
+                        continue;
+                    std::size_t e = q + 1;
+                    while (e < rhs.size() && std::isdigit(static_cast<unsigned char>(rhs[e]))) ++e;
+                    refs.emplace_back(rhs.substr(q, e - q));
+                    q = e - 1;
+                }
+                if (refs.size() >= 2 && refs[0] == ref) loop_tuples.emplace_back(ref, refs[1]);
             }
         }
     }
+    for (auto& [ref, start] : loop_tuples)
+        if (auto it = m.locs.find(start); it != m.locs.end()) m.loop_starts[ref] = it->second;
     for (auto& [ref, rhs] : subs_raw) {
         DISub s;
         s.name = md_field(rhs, "name");
