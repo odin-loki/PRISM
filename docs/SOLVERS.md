@@ -171,6 +171,24 @@ newest upstream release; user CPU seconds on the shared 4-core machine):
 | `widen_mul_true` (64-bit `smulo` of sign-extended 32-bit values, 397k vars, 661k clauses) | 194 s | **76 s** | `--unsat --elim=false` 171 s; `--unsat --congruencexorarity=8` 76 s |
 | `long_mul_true` (64-bit `a*a`, `|a| ≤ 3·10⁹`, 398k vars) | – | no answer in 184 s CPU | – |
 
+The two squarings that stay uncertified were measured again (2026-09-24,
+same CaDiCaL, `--unsat`, loaded machine):
+
+- `fn_macro_true` (32-bit `a*a`, `|a| ≤ 46340`, 3.0 MB CNF): CaDiCaL 65 s
+  wall and a **2.09 GB** LRAT proof; cake_lpr accepts it in 163 s when run
+  alone, more than the default 120 s checker budget (`--timeout 60` gives
+  240 s). A case split on the sign bit does not shrink the work: `a ≥ 0` is
+  0.8 s and a 3.5 MB proof, `a < 0` is 65 s and 1.77 GB.
+- `long_mul_true` (64-bit `a*a`, `|a| ≤ 3·10⁹`, 13 MB CNF): `a ≥ 0` is
+  UNSAT in 2.5 s (and cubes of it on bits 31..28 in 1-2 s each), but
+  `a < 0` has no answer in 150 s, and neither do its cubes on bits 31..28
+  (`0100`, `0101`, `1111`: 90 s each, even `a ∈ [-2^28, -1]`). The
+  negative half, the two's-complement multiplier with its high bits set, is
+  what CaDiCaL cannot do; splitting on input bits does not help, so no
+  cube-and-conquer proof composition was added (it would only be sound
+  with every cube's proof lifted into one LRAT proof checked against the
+  original CNF, and there is nothing to compose here).
+
 Congruence closure (gate extraction) is what makes the multiplier miters
 tractable at all; `--unsat` is used for every certificate. Checking the
 `widen_mul_true` proof (862 MB LRAT): cake_lpr 64 s at 4.1 GB resident,

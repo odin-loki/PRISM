@@ -93,7 +93,8 @@ formula is inside its fragment and whose two executables are built, and Z3's
 tactics otherwise. A fallback is never silent: the note and the
 `certificate_info` say `bitblast: z3 tactics, unproved (Lean bit-blaster not
 used: <why>)`, where `<why>` is `formula outside the proved fragment:
-operator bvsmod is outside the proved fragment`, `prism-bitblast not found
+operator bvsmod is outside the proved fragment`, `formula too large for the
+Lean bit-blaster (DAG … MB > 2 MB; …)`, `prism-bitblast not found
 (NOTRUN; …)` or `prism-lrat-check not found (NOTRUN; …)`.
 
 Common first step: the formula is quantifier-free bitvector/Boolean, with no
