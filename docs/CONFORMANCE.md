@@ -773,7 +773,11 @@ compilers PRISM runs (clang++ 16–18, g++ 11–14: `gnu++17`), which keeps
 every true refutation of a negative left operand in code built without
 `-std`. Regression tests: `tests/test_bmc_goto_shift.py`, doctest "bmc
 shift rules follow the C++ standard of the unit (F7)" and "with_cxx_std
-reads -std from compile_commands.json".
+reads -std from compile_commands.json". Strict gate after the fix
+(`tools/conformance.py`, C++ engine, 2026-09-24, 303 true / 317 false
+tasks): 0 wrong proofs and 0 false alarms in every stage; bmc proves
+99/303 and refutes 93/317 (`cxx_shift_cpp20_true` is now proved), pir
+232/303 and 158/317.
 
 *Fixed* (ESBMC C++ tasks, full fetched set; none in the committed subset).
 Regression pairs: `prism/regress/global_zero_table_*`, `malloc_abort_*`,
