@@ -5351,6 +5351,48 @@ TEST_CASE("pir: interpreter semantics and sha256") {
 }
 
 #ifdef PRISM_HAS_Z3
+TEST_CASE("pir: a false llvm.assume is a checked violation, not a silent path cut (refinement finding 8)") {
+    auto verdict = [](const std::string& ir, const std::string& fn) {
+        auto t = pir_of(ir, fn);
+        REQUIRE(t.fn.has_value());
+        return prism::pir::check_function(*t.fn, 8, 30);
+    };
+    // f(x) { __builtin_assume(x > 0); return 100 / x; } at -O0: f(0) is UB
+    auto bad = verdict("define i32 @f(i32 noundef %x) {\nentry:\n  %c = icmp sgt i32 %x, 0\n"
+                       "  call void @llvm.assume(i1 %c)\n  %q = sdiv i32 100, %x\n  ret i32 %q\n}\n"
+                       "declare void @llvm.assume(i1 noundef)\n",
+                       "f");
+    CHECK(bad.status == std::string(prism::laws::FAILED));
+    CHECK(bad.cls == "FUNC-CONTRACT");
+    // an assume that always holds is still proved, and it still constrains
+    // the rest of the path (x | 1 is never 0, so the division is safe)
+    auto ok = verdict("define i32 @g(i32 noundef %x) {\nentry:\n  %o = or i32 %x, 1\n"
+                      "  %c = icmp ne i32 %o, 0\n  call void @llvm.assume(i1 %c)\n"
+                      "  %q = udiv i32 100, %o\n  ret i32 %q\n}\n"
+                      "declare void @llvm.assume(i1 noundef)\n",
+                      "g");
+    CHECK(prism::laws::is_proof(ok.status));
+    // An assume constrains only what executes after it. A division by a
+    // nondet value followed, in the same block, by an assume that excludes
+    // zero divides by zero first: it must be refuted, not proved (the old
+    // encoding made every assume a global axiom of its block, so the check
+    // before it was proved).
+    auto order = verdict("define i32 @h() {\nentry:\n  %x = call i32 @__VERIFIER_nondet_int()\n"
+                         "  %q = sdiv i32 100, %x\n  %c = icmp ne i32 %x, 0\n  %z = zext i1 %c to i32\n"
+                         "  call void @__VERIFIER_assume(i32 %z)\n  ret i32 %q\n}\n"
+                         "declare i32 @__VERIFIER_nondet_int()\ndeclare void @__VERIFIER_assume(i32)\n",
+                         "h");
+    CHECK(order.status == std::string(prism::laws::FAILED));
+    CHECK(order.cls == "INT-DIV-ZERO");
+    // the same assume before the division still protects it
+    auto before = verdict("define i32 @k() {\nentry:\n  %x = call i32 @__VERIFIER_nondet_int()\n"
+                          "  %c = icmp ne i32 %x, 0\n  %z = zext i1 %c to i32\n"
+                          "  call void @__VERIFIER_assume(i32 %z)\n  %q = sdiv i32 100, %x\n  ret i32 %q\n}\n"
+                          "declare i32 @__VERIFIER_nondet_int()\ndeclare void @__VERIFIER_assume(i32)\n",
+                          "k");
+    CHECK(prism::laws::is_proof(before.status));
+}
+
 TEST_CASE("pir: undef is a fresh value at every use, branching on it is UB (refinement finding 4)") {
     // LLVM LangRef: every use of an undef value may observe a different
     // value, and `br i1 undef` / a noundef argument or return of undef is UB.

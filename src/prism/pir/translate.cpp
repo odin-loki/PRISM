@@ -1093,7 +1093,16 @@ struct Tr final : pirmem::TrApi {
                 return;
             }
             if (n == "llvm.assume") {
-                assume(cur, arg(0));
+                // A false llvm.assume is undefined behaviour (LangRef), and
+                // clang emits it for __builtin_assume even at -O0. Assuming
+                // it silently would discard exactly the inputs that break the
+                // program's own contract (refinement finding 8), so it is a
+                // checked FUNC-CONTRACT violation first, like a failing
+                // assert(); the path then continues under the assumption.
+                Arg c = arg(0);
+                check(cur, p2(cur, Op::Eq, c, Arg::c(1, 0)), "assume", "FUNC-CONTRACT",
+                      "__builtin_assume / llvm.assume condition can be false (undefined behaviour)", line);
+                assume(cur, c);
                 return;
             }
             if (starts(n, "llvm.memcpy.") || starts(n, "llvm.memmove.")) {

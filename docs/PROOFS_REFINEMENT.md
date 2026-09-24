@@ -620,14 +620,22 @@ is claimed for them:
    rule; a possible false alarm. The pir stage compiles at `-O0`, where clang
    emits no lifetime markers, so this concerns coroutine frames and IR
    given directly.
-8. **A false `llvm.assume` is not reported.** The LangRef makes
-   `llvm.assume(false)` undefined behaviour (so is a false
-   `__builtin_assume` in C); `Tr::call` turns it into a PIR `assume`, which
-   discards the path. The Lean translator refuses `llvm.assume`, so no
-   theorem covers it. Clang at `-O0` drops `[[assume(...)]]` altogether
-   (`testdata/cxx_assume.cpp` has no call), so the pir stage rarely sees it;
-   reporting it (a `check` of the condition before the `assume`) is left to
-   the translator's owners.
+8. **A false `llvm.assume` was not reported (fixed).** The LangRef makes
+   `llvm.assume(false)` undefined behaviour, and so is a false
+   `__builtin_assume` in C. Clang emits `llvm.assume` for `__builtin_assume`
+   even at `-O0`; only `[[assume(...)]]` is dropped there
+   (`testdata/cxx_assume.cpp` has no call). `Tr::call` used to turn it
+   straight into a PIR `assume`, which discards the path, so
+   `f(int x) { __builtin_assume(x > 0); return 100 / x; }` was PROVED
+   although `f(0)` is undefined. It is now a `FUNC-CONTRACT` check of the
+   condition (prop `assume`), then the `assume`.
+   While fixing it, a wider bug in the encoder showed up, soundness bug S9 in
+   `docs/CONFORMANCE.md`: every `assume` was a global axiom of its node, so
+   it also constrained checks *before* it in the same block. A division by a
+   nondet value followed by `__VERIFIER_assume(x != 0)` was PROVED. An
+   `assume` now strengthens only the guard of the statements after it and the
+   node's outgoing edges (`exit_reach` in `encode.cpp`). The Lean translator
+   still refuses `llvm.assume`, so no theorem covers it.
 
 In the Lean model, `Stmt::Alloc` with `init = 2` (arbitrary initialised
 bytes, `ConcMem`) was read as uninitialised memory; it is now arbitrary
