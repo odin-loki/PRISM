@@ -24,3 +24,4 @@ third_party/llama.cpp/models/*.gguf
 # Claude Code agent worktrees
 .claude/worktrees/
 conformance-out/
+soundness-out/
