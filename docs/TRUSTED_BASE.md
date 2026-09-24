@@ -42,6 +42,12 @@ becomes `PROVED-CERTIFIED` only when:
     came back UNSAT with one checked certificate. A disjunction is
     unsatisfiable exactly when each disjunct is, so this is the same claim
     as n per-VC certificates, made with one CNF and one LRAT proof; or
+  - **in batches** (`extra.certificate_scope = "batched"`): the combined
+    query was UNSAT but a checker ran out of time on its proof, so it was
+    split in halves (recursively) and each batch's disjunction came back
+    UNSAT with its own checked certificate. The batches partition the VCs
+    (`extra.certificate_covers` lists each batch), so again every VC is
+    covered by exactly one checked proof; or
   - **one by one** (`extra.certificate_scope = "per-vc"`): each VC came back
     certified on its own. This runs whenever the combined query is SAT, has
     no answer in time, or is not certified; the combined attempt is then
@@ -56,7 +62,7 @@ solver build, LRAT steps, checker builds, CNF hash), `extra.certificate_bitblast
 `extra.certificate_vcs` (the number of VCs the certificates cover),
 `extra.certificate_proofs` (the number of checked LRAT proofs: 1 when
 combined), `extra.certificate_covers` (combined: the label of every VC the
-one proof covers, e.g. `ovf+@4, div0@7, unwind`) and `extra.cnf_sha256`
+one proof covers; batched: one `[…]` group per proof, e.g. `ovf+@4, div0@7, unwind`) and `extra.cnf_sha256`
 (one hash per checked CNF, comma-separated). If any VC is not certified, the
 function stays `PROVED` and `extra.certify_note` names the first VC that was
 not certified and why. `BOUNDED` and `PROVED-UNBOUNDED` are

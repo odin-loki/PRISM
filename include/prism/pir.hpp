@@ -461,6 +461,7 @@ struct CheckOptions {
     bool portfolio = true;      // false: Z3 alone (plus CaDiCaL when certified)
     bool certified = false;     // roadmap 3.2: PROVED-CERTIFIED when every VC is certified
     bool certify_combined = true;  // certified: one combined certificate first (2+ VCs)
+    double check_timeout_s = 0;    // certified: LRAT checker budget (0: the solver library default)
     bool use_cache = true;
     std::string cache_dir;      // empty: the solver library's default
     unsigned max_parallel = 0;  // solver members at once; 0: hardware threads

@@ -826,7 +826,13 @@ proof of it certifies the same claim as n per-VC proofs, with one bit-blast,
 one CaDiCaL run and one round of checking instead of n
 (`extra.certificate_scope = "combined"`, `extra.certificate_proofs = "1"`,
 `extra.certificate_vcs = n`, `extra.certificate_covers` lists the labels of
-the n VCs). Only a **certified** UNSAT answer is used. If the combined query
+the n VCs). If the combined query is UNSAT and CaDiCaL wrote its proof but
+a checker ran out of time on it (a large proof), its two halves are tried
+the same way, recursively down to batches of 2-3 VCs; when every batch comes
+back certified the function is certified with one proof per batch
+(`extra.certificate_scope = "batched"`, `extra.certificate_covers` lists
+each batch as `[label, …]`). Only **certified** UNSAT answers are used. If
+the combined query
 is SAT, has no answer, or its certificate is not obtained or rejected, it is
 discarded (its outcome is written to `extra.certificate_combined`) and every
 VC is asked on its own exactly as without it (`certificate_scope =
@@ -835,7 +841,7 @@ attempt off. Plain mode is unchanged. A certified function then carries `extra.c
 audit requires of a `PROVED-CERTIFIED` from this stage),
 `extra.certificate_info` (one entry per VC, `<prop>@<line>: bitblast: … ;
 cadical … lrat N steps, checked by cake_lpr …; cnf sha256 …`, or one entry
-`combined[<labels>]: …` for the combined proof),
+`combined[<labels>]: …` for each combined or batch proof),
 `extra.certificate_bitblast` (`N/M lean-proved`) and `extra.cnf_sha256` (one
 hash per checked CNF, comma-separated). Otherwise the verdict is unchanged and
 `extra.certify_note` names the first VC that was not certified and why (for

@@ -1131,26 +1131,55 @@ void certify(Verdict& v, const VcBook& book) {
     v.message += "; every VC certified (" + std::to_string(book.done.size()) + " LRAT proofs checked by cake_lpr)";
 }
 
-// Certified mode, one certificate for the whole function: `r` answered
-// base && (viol_1 || ... || viol_n) and its LRAT proof was accepted by the
-// checkers. UNSAT of the disjunction is UNSAT of every disjunct, so this is
-// the claim the per-VC certificates make; the record says which VCs the one
-// proof covers.
-void certify_combined(Verdict& v, const solver::SolveResult& r, const std::vector<std::string>& labels) {
-    const auto n = std::to_string(labels.size());
+// Certified mode, one certificate per batch of VCs: each batch's query
+// base && (viol_i || ...) was answered UNSAT and its LRAT proof accepted by
+// the checkers. UNSAT of a disjunction is UNSAT of every disjunct, and the
+// batches partition the function's VCs, so this is the claim the per-VC
+// certificates make; the record says which VCs each proof covers. One batch
+// (every VC at once) is scope "combined"; several are scope "batched".
+struct CertBatch {
+    std::vector<std::string> labels;
+    solver::SolveResult r;
+};
+
+void certify_batches(Verdict& v, const std::vector<CertBatch>& batches) {
+    std::size_t nvc = 0;
+    int lean = 0;
+    std::vector<std::string> covers, infos, shas;
+    for (auto& bt : batches) {
+        nvc += bt.labels.size();
+        if (bt.r.certificate_info.find("bitblast: lean-proved") != std::string::npos) ++lean;
+        covers.push_back("[" + join_s(bt.labels, ", ") + "]");
+        infos.push_back("combined[" + join_s(bt.labels, ", ") + "]: " + bt.r.certificate_info);
+        shas.push_back(bt.r.cnf_sha256);
+    }
+    const auto n = std::to_string(nvc), np = std::to_string(batches.size());
+    const bool one = batches.size() == 1;
     v.status = std::string(laws::PROVED_CERTIFIED);
     v.extra[std::string(laws::CERTIFICATE_KEY)] = std::string(laws::CERTIFICATE_CHECKED);
     v.extra["certificate_vcs"] = n;
-    v.extra["certificate_scope"] = "combined";
-    v.extra["certificate_proofs"] = "1";
-    v.extra["certificate_covers"] = join_s(labels, ", ");
-    const bool lean = r.certificate_info.find("bitblast: lean-proved") != std::string::npos;
-    v.extra["certificate_bitblast"] = std::string(lean ? "1/1" : "0/1") + " lean-proved (one CNF for " + n + " VCs)";
-    v.extra["certificate_info"] = n + " VCs, one LRAT proof of their disjunction (UNSAT iff every VC is UNSAT) " +
-                                  "checked by cake_lpr: combined[" + join_s(labels, ", ") + "]: " + r.certificate_info;
-    v.extra["cnf_sha256"] = r.cnf_sha256;
-    v.message += "; every VC certified (one LRAT proof of the disjunction of all " + n +
-                 " VCs, checked by cake_lpr)";
+    v.extra["certificate_scope"] = one ? "combined" : "batched";
+    v.extra["certificate_proofs"] = np;
+    v.extra["certificate_covers"] = one ? join_s(batches[0].labels, ", ") : join_s(covers, " ");
+    v.extra["certificate_bitblast"] = std::to_string(lean) + "/" + np + " lean-proved (" + np + " CNF" +
+                                      (one ? "" : "s") + " for " + n + " VCs)";
+    v.extra["certificate_info"] = n + " VCs, " + (one ? std::string("one LRAT proof of their disjunction")
+                                                      : np + " LRAT proofs, each of the disjunction of a batch") +
+                                  " (UNSAT iff every VC in it is UNSAT) checked by cake_lpr: " + join_s(infos, " | ");
+    v.extra["cnf_sha256"] = join_s(shas, ",");
+    v.message += one ? "; every VC certified (one LRAT proof of the disjunction of all " + n +
+                           " VCs, checked by cake_lpr)"
+                     : "; every VC certified (" + np + " LRAT proofs of batches covering all " + n +
+                           " VCs, checked by cake_lpr)";
+}
+
+// The batch query was UNSAT and CaDiCaL wrote a proof, but a checker did
+// not finish checking it in time (a large proof): smaller batches have
+// smaller proofs. Any other reason (no answer, SAT, CaDiCaL itself did not
+// finish, a tool missing, a rejected proof) is not helped by splitting.
+bool checker_ran_out(const solver::SolveResult& r) {
+    if (r.kind != solver::SolveResult::Unsat || r.certified) return false;
+    return r.note.find("checker timed out") != std::string::npos;
 }
 
 }  // namespace
@@ -1195,6 +1224,7 @@ Verdict check_function(const Function& fn, const CheckOptions& opt) {
     so.max_parallel = opt.max_parallel;
     so.tool_dirs = opt.tool_dirs;
     so.search_default_tools = opt.search_default_tools;
+    so.check_timeout_s = opt.check_timeout_s;
     VcBook book;
     auto finish = [&](Verdict& r) -> Verdict {
         r.extra["solver"] = book.summary();
@@ -1249,9 +1279,37 @@ Verdict check_function(const Function& fn, const CheckOptions& opt) {
                 labels.push_back("unwind");
             }
             if (all.size() >= 2) {
-                auto cr = solver::solve(c, base && any_of(c, all), so);
-                if (cr.kind == solver::SolveResult::Unsat && cr.certified) {
-                    book.add("combined[" + std::to_string(all.size()) + " VCs]", cr);
+                // Batches: first all VCs at once; while a batch's query is
+                // UNSAT and only the checker ran out of time on its proof,
+                // its two halves are tried instead. Every batch must come
+                // back certified, else nothing from here is used.
+                std::vector<CertBatch> got;
+                std::string failed;
+                std::function<bool(std::size_t, std::size_t)> batch = [&](std::size_t lo, std::size_t hi) -> bool {
+                    const auto l0 = static_cast<std::ptrdiff_t>(lo), l1 = static_cast<std::ptrdiff_t>(hi);
+                    std::vector<z3::expr> part(all.begin() + l0, all.begin() + l1);
+                    auto cr = solver::solve(c, base && any_of(c, part), so);
+                    if (cr.kind == solver::SolveResult::Unsat && cr.certified) {
+                        got.push_back(CertBatch{std::vector<std::string>(labels.begin() + l0, labels.begin() + l1),
+                                                std::move(cr)});
+                        return true;
+                    }
+                    if (hi - lo >= 4 && checker_ran_out(cr)) {
+                        const std::size_t mid = lo + (hi - lo) / 2;
+                        return batch(lo, mid) && batch(mid, hi);
+                    }
+                    std::string why = cr.note;
+                    if (auto q = why.find("not certif"); q != std::string::npos) why = why.substr(q);
+                    if (auto q = why.find("; ran:"); q != std::string::npos) why = why.substr(0, q);
+                    failed = "one certificate for " + std::to_string(hi - lo) + " VCs" +
+                             (hi - lo == all.size() ? std::string()
+                                                    : " (a batch of the " + std::to_string(all.size()) + ")") +
+                             " not obtained (" + std::string(solver::kind_name(cr.kind)) +
+                             (cr.kind == solver::SolveResult::Unsat ? ", " + why : "") + ")";
+                    return false;
+                };
+                if (batch(0, all.size())) {
+                    for (auto& bt : got) book.add("combined[" + std::to_string(bt.labels.size()) + " VCs]", bt.r);
                     v.status = std::string(laws::PROVED);
                     v.extra["unwind_closed"] = "true";
                     v.extra["k_induction"] = "not-needed";
@@ -1260,16 +1318,10 @@ Verdict check_function(const Function& fn, const CheckOptions& opt) {
                                                                     "unwind " + std::to_string(unwind))
                                                : "encoded properties hold; unwinding assertion proved at unwind " +
                                                      std::to_string(unwind);
-                    certify_combined(v, cr, labels);
+                    certify_batches(v, got);
                     return finish(v);
                 }
-                std::string why = cr.note;
-                if (auto q = why.find("not certif"); q != std::string::npos) why = why.substr(q);
-                if (auto q = why.find("; ran:"); q != std::string::npos) why = why.substr(0, q);
-                v.extra["certificate_combined"] =
-                    "one certificate for " + std::to_string(all.size()) + " VCs not obtained (" +
-                    std::string(solver::kind_name(cr.kind)) + (cr.kind == solver::SolveResult::Unsat ? ", " + why : "") +
-                    "); one certificate per VC instead";
+                v.extra["certificate_combined"] = failed + "; one certificate per VC instead";
             }
         }
         bool all_unsat = false;

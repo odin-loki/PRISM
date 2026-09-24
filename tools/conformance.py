@@ -851,7 +851,8 @@ def certified_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "wrong_certified": len(wrong_cert),
         "proved_not_certified": not_cert,
         "certified_combined": sum(1 for r in all_cert if ex(r, "certificate_scope") == "combined"),
-        "certified_per_vc": sum(1 for r in all_cert if ex(r, "certificate_scope") != "combined"),
+        "certified_batched": sum(1 for r in all_cert if ex(r, "certificate_scope") == "batched"),
+        "certified_per_vc": sum(1 for r in all_cert if ex(r, "certificate_scope") not in ("combined", "batched")),
     }
 
 
@@ -894,6 +895,7 @@ def markdown(metrics: dict[str, Any], rows: list[dict[str, Any]], meta: dict[str
                 f"- `true` functions pir did not encode (NEEDS-HARNESS etc.): {cs['not_encoded_true']}",
                 f"- PROVED-CERTIFIED on a `false` function (must be 0): **{cs['wrong_certified']}**",
                 f"- PROVED-CERTIFIED functions (all): {cs['certified_combined']} by one combined certificate, "
+                f"{cs['certified_batched']} by certified batches, "
                 f"{cs['certified_per_vc']} by one certificate per VC"]
         if "run_seconds" in cs:
             out.append(f"- certified runs: {cs['runs']} tasks, {cs['run_seconds']} s in total; "

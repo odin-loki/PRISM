@@ -243,6 +243,65 @@ TEST_CASE("certified: a combined query that is not certified falls back to one c
     CHECK(b.extra.at("certificate_combined").find("one certificate per VC instead") != std::string::npos);
 }
 
+TEST_CASE("certified: a combined proof the checker cannot finish is split into certified batches") {
+    prism::solver::SolveOptions so;
+    auto cad = prism::solver::find_tool("cadical", so);
+    auto cake = prism::solver::find_tool("cake_lpr", so);
+    if (!cad || !cake) {
+        MESSAGE("cadical/cake_lpr not installed: skipped");
+        return;
+    }
+    CertTmp tmp;
+    // cake_lpr that runs out of time on its first proof (the combined one)
+    // and is the real checker afterwards.
+    auto cdir = tmp.dir / "tools" / "cadical" / "test" / "bin";
+    auto kdir = tmp.dir / "tools" / "cake_lpr" / "test" / "bin";
+    fs::create_directories(cdir);
+    fs::create_directories(kdir);
+    fs::create_symlink(cad->path, cdir / "cadical");
+    const auto mark = tmp.dir / "first-call-done";
+    {
+        std::ofstream(kdir / "cake_lpr") << "#!/bin/sh\nif [ ! -e '" << mark.string() << "' ]; then touch '"
+                                         << mark.string() << "'; exec sleep 30; fi\nexec '" << cake->path.string()
+                                         << "' \"$@\"\n";
+    }
+    fs::permissions(kdir / "cake_lpr", fs::perms::owner_all);
+    const std::string ir = R"IR(
+define i32 @h(i32 %a, i32 %b) {
+entry:
+  %m = and i32 %b, 7
+  %d = add nsw i32 %m, 1
+  %q = sdiv i32 %a, %d
+  %r = srem i32 %a, %d
+  %x = xor i32 %q, %r
+  ret i32 %x
+}
+)IR";
+    auto t = cert_pir(ir, "h");
+    REQUIRE(t.fn.has_value());
+    auto o = cert_opts(true);
+    o.tool_dirs = {(tmp.dir / "tools").string()};
+    o.search_default_tools = false;
+    o.check_timeout_s = 3;
+    auto v = prism::pir::check_function(*t.fn, o);
+    const auto nvc = std::stoul(v.extra.at("properties"));
+    REQUIRE(nvc >= 4);
+    CAPTURE(v.extra.count("certificate_combined") ? v.extra.at("certificate_combined") : std::string());
+    REQUIRE(v.status == prism::laws::PROVED_CERTIFIED);
+    CHECK(fs::exists(mark));
+    CHECK(v.extra.at("certificate_scope") == "batched");
+    const auto np = std::stoul(v.extra.at("certificate_proofs"));
+    CHECK(np >= 2);
+    CHECK(np < nvc);
+    // the batches cover every VC, each exactly once
+    CHECK(v.extra.at("certificate_vcs") == std::to_string(nvc));
+    const auto& cov = v.extra.at("certificate_covers");
+    CHECK(count_char(cov, '[') == np);
+    CHECK(count_char(cov, ',') + np == nvc);
+    CHECK(count_char(v.extra.at("cnf_sha256"), ',') + 1 == np);
+    CHECK(v.extra.at("certificate_info").find(std::to_string(np) + " LRAT proofs") != std::string::npos);
+}
+
 TEST_CASE("certified: FAILED keeps a replayable counterexample; BOUNDED and PROVED-UNBOUNDED are not certified") {
     auto o = cert_pir(kOvf, "f");
     auto v = prism::pir::check_function(*o.fn, cert_opts(true));
