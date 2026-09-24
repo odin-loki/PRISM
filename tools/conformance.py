@@ -105,7 +105,7 @@ PROPERTY_SCOPED = {"sv-comp", "concurrency"}
 CERT_STAGE = "pir-certified"
 # Finding extras kept in results.json (pir: loop count and certificate fields).
 KEEP_EXTRA = ("loops", "properties", "certificate", "certificate_vcs", "certify_note", "certified_mode", "solver",
-             "certificate_bitblast", "certificate_scope", "certificate_combined")
+             "certificate_bitblast", "certificate_scope", "certificate_combined", "k_induction")
 
 # SV-COMP property file -> suite property
 SV_PROPERTIES = {"no-overflow.prp": "no-overflow", "valid-memsafety.prp": "memsafety"}

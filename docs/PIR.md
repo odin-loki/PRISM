@@ -857,6 +857,102 @@ conditional writes and `memcpy`): 49 PROVED-UNBOUNDED, each executed on a
 228-point input grid under ASan+UBSan and again under MSan (which sees
 uninitialised reads): 0 sanitizer reports.
 
+## Loop invariants (roadmap 8.2, M8)
+
+When the unwinding assertion is open and k-induction does not close (or the
+function has several loops, where k-induction is not attempted), the pir
+stage looks for inductive loop invariants (`src/prism/pir/houdini.inc`).
+Only invariants proved inductive are ever used, and only a closed proof
+changes the verdict: BOUNDED stays BOUNDED otherwise (Law 2).
+
+**Cut program.** The function is encoded with every loop cut once
+(`Encoding::cut_mode`, unwind 1). At each loop header the *entry* state is
+recorded (the header phis on the entry edges and the memory there); then the
+phis and the loop's write footprint are havocked (an arbitrary later header
+visit, the *havoc* state); every back edge is an unwinding cut and records
+the *next* state (the phis' incoming values from that latch and the memory
+there). Nested and sequential loops are all cut in the same encoding. The
+write footprint follows "k-induction with memory": objects the provenance
+analysis resolves, else the object of the pointer variable (defined before
+the loop) the target is derived from by copies and checked pointer
+arithmetic (`SymMem::havoc_pointed`, a symbolic object id), else every
+object; it is learnt from the cut encoding and re-checked on it. Loops that
+allocate, free or restore the stack are not attempted
+(`extra.invariants_note`).
+
+**Candidates** (templates over the header phis, *scope values* — parameters
+and values defined before the loop that the loop uses, nondet values and
+merged values — constants of the loop body, and the objects the loop
+accesses):
+
+* comparisons `a rel b` (`== != <=u <u >=u >u`, and the signed ones for a
+  phi the program uses as signed) of a phi with another phi, a scope value,
+  a constant, its own entry value, or the size of an accessed object;
+* `(a & m) == (entry(a) & m)` for m = 1, 3, 7 (parity), and
+  `a ∓ b == entry(a) ∓ entry(b)` for two phis;
+* universally quantified memory facts over the prefix of an index phi `i`
+  (the element size from the loop's accesses, the index sign- or
+  zero-extended as the loop does): `∀x < i: p[x] != 0`, `p[x] == q[x]`,
+  `p[off + x] == q[x]`, `p[x]` initialised, `p[x] == c`,
+  `p[x] != (char)v`, `∀ entry(i) ≤ x < i: p[x] == c`, the frame
+  `∀x < off + entry(i): p[x]` equals its value at loop entry, and for a
+  pointer phi `r` that remembers a match: `r == 0 || r ∈ p[0, i)`,
+  `r == 0 || *r == (char)v`, `∀x < i: p[x] == (char)v → r ≠ 0 && x ≤ r − p`.
+
+**Houdini.** A candidate survives when it holds in the entry state (*base*)
+and in the next state of every back edge (*step*), with the surviving
+candidates of the loop itself assumed in its havocked state. Queries go to
+Z3 in-process (one incremental solver, a selector literal per candidate);
+each satisfiable query drops every candidate its model falsifies; a query
+without an answer is split, and a single candidate without an answer is
+dropped. Only the fixpoint is used: the function is PROVED-UNBOUNDED when,
+with every survivor assumed at every havocked header (the universal ones
+instantiated at the index terms of the encoding: every loop's havocked index
+phis and the parameters), no property instance of the cut program is
+violated (`extra.k_induction = "closed-invariants"`, the survivors in
+`extra.pir_invariants`, `extra.houdini_rounds`, `extra.houdini_candidates`,
+`extra.invariant_footprint`). The whole search gets six times the solver
+timeout (`--timeout`, default 30 s → 180 s) plus at least three for the
+final query; out of time is no proof.
+
+**Why this is sound.** Positions are encoding (topological) order; on the
+one path a model makes reachable they are execution order. Take a run and
+its first violation V (if any). By induction over the header visits before
+V, every survivor holds at each of them: the abstract path from the entry to
+that visit follows the run, choosing every earlier loop's havocked state as
+the run's state at that loop's last header visit (true for its survivors by
+induction; memory outside the footprint is the prefix's, the loop allocates
+and frees nothing); a first visit is a base query, a later one a step query
+from the previous visit. A base or step query assumes only the havoc
+assumptions of loops whose header comes earlier on the path and that no
+property before the checked point is violated (both true before V).
+The same abstract path then reaches V, so V's property query is
+satisfiable. Havoc assumptions are guarded by "no property violated before
+this header", so a path that already violated a property is never cut off.
+The memory templates are checked pointwise at one fresh index x0 (base and
+step valid for every x0, so the universal statement is inductive) and read
+the recorded memory states exactly (`SymMem::load_exact`, no provenance
+shortcut, so a template is about the bytes of that state for any x). Only
+the final query instantiates them at other terms (instances of a proved
+universal statement).
+
+**Exported invariants.** `extra.invariant_loops` (the loop's source start
+line and column, from clang's `llvm.loop` metadata; the function's own
+loops only) and `extra.invariant_conjuncts` (per loop: the surviving
+comparisons, masks and differences whose terms are program values by their
+IR name, or constants) let the SV-COMP wrapper write the invariants into a
+correctness witness (docs/SVCOMP.md). The wrapper maps IR names to C
+variables with full debug information and exports a conjunct only where C's
+meaning of the text is the proved bit-vector relation.
+
+Tasks: `tests/conformance/libc-models/unbounded_string_contracts.c` (below),
+doctest `pir: Houdini loop invariants prove symbolic-size byte loops, twins
+refuted` (strlen and copy loops over heap objects of any size; reading one
+past the terminator, an off-by-one write, an unterminated string and a write
+through a pointer loaded from memory are refuted), `tests/pir/loops.c`
+(`loop_long_inv` closes; `loop_long_bounded`, whose invariant is
+non-linear, stays BOUNDED).
+
 ## Roadmap 2.3 / 2.6 coverage
 
 Normalisation (2.3): `mem2reg`, `lowerswitch`, `loop-simplify`, `lcssa`

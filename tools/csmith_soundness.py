@@ -16,6 +16,12 @@ Generators:
   inhouse-ptr  pointer programs for the pir memory model: stack/heap int
            arrays, masked or reduced indices, pointer walks, memcpy, free
            (a minority reach one past the end or use after free).
+  inhouse-loop  loops for the pir loop invariants (docs/PIR.md "Loop
+           invariants"): heap byte strings and int counters whose loop
+           bounds are parameters (up to 5000), filled, terminated, measured,
+           copied, searched, compared and accumulated; a minority read or
+           write one past an object, drop the terminator, divide by a
+           counter that reaches 0 or overflow an accumulator.
   inhouse  (default) a targeted generator for the C subset PRISM claims to
            model: int/unsigned/short/char/long long parameters, locals,
            + - * / % << >> & | ^ ~ ! unary minus, casts, ternaries, if/else,
@@ -247,6 +253,65 @@ class PtrGen(Gen):
         return f"int {name}({sig}) {{\n" + "\n".join(body) + "\n}\n"
 
 
+class LoopGen(Gen):
+    """Symbolic-bound loops over heap strings and counters (see the module
+    docstring); a function returns early unless 0 <= p0 <= LIMIT, so every
+    run terminates and the loops still have no bound PRISM can unroll."""
+
+    LIMIT = 5000
+
+    def function(self, name: str) -> str:
+        r = self.r
+        body = [f"    if (p0 > {self.LIMIT}u) return 0;", "    unsigned n = p0 + 1;", "    int v = 0;"]
+        bug = r.random() < 0.3
+        kinds = r.sample(["fill", "len", "copy", "search", "sum", "rev", "count", "cmp"], r.randint(1, 3))
+        hazard = r.choice(kinds) if bug else ""
+        body += ["    char *s = malloc(n);", "    if (!s) return 0;"]
+        # fill all bytes non-zero, then terminate
+        end = "n + 1" if hazard == "fill" else "n"
+        body.append(f"    for (unsigned i = 0; i < {end}; i++) s[i] = (char)({r.randint(1, 60)} + (i & 7));")
+        if hazard != "len":
+            body.append("    s[n - 1] = 0;")
+        for k in kinds:
+            if k == "len":
+                body += ["    { unsigned k = 0; while (s[k]) k++; v += (int)(k & 255); }"]
+            elif k == "copy":
+                size = "n - 1" if hazard == "copy" else "n"
+                body += [f"    {{ char *d = malloc({size} == 0 ? 1 : {size}); if (!d) {{ free(s); return 0; }}",
+                         "      unsigned i = 0; while ((d[i] = s[i]) != 0) i++;",
+                         "      v += d[i / 2]; free(d); }"]
+            elif k == "search":
+                read = "v += s[i];" if hazard == "search" else "if (i < n) v += s[i];"
+                body += [f"    {{ unsigned i = 0; for (; i < n && s[i] != (char)p1; i++) ; {read} }}"]
+            elif k == "sum":
+                grow = "acc = acc * 3 + s[i];" if hazard == "sum" else "acc += s[i] & 63;"
+                body += [f"    {{ int acc = 0; for (unsigned i = 0; i < n; i++) {grow} v ^= acc; }}"]
+            elif k == "rev":
+                idx = "s[i]" if hazard == "rev" else "s[i - 1]"
+                body += [f"    {{ for (unsigned i = n; i > 0; i--) v ^= {idx}; }}"]
+            elif k == "count":
+                start = "0u" if hazard == "count" else "1u"
+                body += [f"    {{ unsigned x = {start}; for (unsigned i = 0; i < n; i++) x += 2u * (unsigned)p1;",
+                         "      v += 100 / (int)(x & 1u); }"]
+            elif k == "cmp":
+                off = "n" if hazard == "cmp" else "n - 1"
+                body += ["    { char *t = malloc(n); if (!t) { free(s); return 0; }",
+                         "      for (unsigned i = 0; i < n; i++) t[i] = s[i];",
+                         f"      unsigned i = 0; while (i < {off} && s[i] == t[i]) i++;",
+                         "      v += (int)(i & 7); v += t[i]; free(t); }"]
+        body += ["    free(s);", "    return v;"]
+        return f"int {name}(unsigned p0, int p1) {{\n" + "\n".join(body) + "\n}\n"
+
+
+def gen_inhouse_loop(seed: int, nfuncs: int) -> str:
+    g = LoopGen(random.Random(seed))
+    parts = [f"/* PRISM random soundness program, loop generator, seed {seed} */\n"
+             "#include <stdlib.h>\n#include <string.h>\n"]
+    for k in range(nfuncs):
+        parts.append(g.function(f"rf{seed}_{k}"))
+    return "\n".join(parts)
+
+
 def gen_inhouse_ptr(seed: int, nfuncs: int) -> str:
     g = PtrGen(random.Random(seed))
     parts = [f"/* PRISM random soundness program, pointer generator, seed {seed} */\n"
@@ -339,7 +404,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("-n", "--programs", type=int, default=300)
     ap.add_argument("--funcs", type=int, default=3, help="functions per in-house program")
     ap.add_argument("--seed", type=int, default=1)
-    ap.add_argument("--generator", choices=["inhouse", "inhouse-ptr", "csmith"], default="inhouse")
+    ap.add_argument("--generator", choices=["inhouse", "inhouse-ptr", "inhouse-loop", "csmith"], default="inhouse")
     ap.add_argument("--prism", help="PRISM binary (default: $PRISM_BIN, else python -m prism)")
     ap.add_argument("--out", type=Path, default=Path("soundness-out"))
     ap.add_argument("--jobs", "-j", type=int, default=max(1, (os.cpu_count() or 2)))
@@ -364,8 +429,9 @@ def main(argv: list[str] | None = None) -> int:
         programs: list[tuple[Path, list[str]]] = []
         for k in range(args.programs):
             seed = args.seed + k
-            if args.generator in ("inhouse", "inhouse-ptr"):
-                gen = gen_inhouse if args.generator == "inhouse" else gen_inhouse_ptr
+            if args.generator in ("inhouse", "inhouse-ptr", "inhouse-loop"):
+                gen = {"inhouse": gen_inhouse, "inhouse-ptr": gen_inhouse_ptr,
+                       "inhouse-loop": gen_inhouse_loop}[args.generator]
                 text = gen(seed, args.funcs)
                 fns = re.findall(r"(?m)^int (rf\d+_\d+)\(", text)
             else:
@@ -396,6 +462,8 @@ def main(argv: list[str] | None = None) -> int:
                 tally[key] = tally.get(key, 0) + 1
             if "error" in rec:
                 tally["RUN-ERROR"] = tally.get("RUN-ERROR", 0) + 1
+        closed_inv = sum(1 for rec in analysed for found in rec.get("functions", {}).values()
+                         if any((f.get("extra") or {}).get("k_induction") == "closed-invariants" for f in found))
         bugs, alarms, proofs_checked, fails_replayed, fails = [], [], 0, 0, 0
         for p, c in checks:
             st = set(c["statuses"])
@@ -414,7 +482,8 @@ def main(argv: list[str] | None = None) -> int:
         summary = {
             "engine": engine, "command": cmd, "stages": stages, "generator": args.generator,
             "programs": len(programs), "functions": sum(len(f) for _, f in programs),
-            "verdicts": tally, "proofs_executed": proofs_checked, "wrong_proofs": len(bugs),
+            "verdicts": tally, "closed_by_invariants": closed_inv, "proofs_executed": proofs_checked,
+            "wrong_proofs": len(bugs),
             "failed": fails, "failed_cex_replayed": fails_replayed, "suspected_false_alarms": len(alarms),
             "sandbox": "bwrap" if conf.bwrap_ok() else "none",
         }
