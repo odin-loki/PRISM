@@ -13,9 +13,14 @@
 // answer is still decided and checked by the solver, so a wrong prediction
 // costs time, never soundness.
 //
-// Off by default (roadmap 9.7): the model file must say "enabled": true,
-// which tools/prism_ai/predict.py writes only when the held-out measurement
-// beats the baseline, and PRISM_SOLVER_PREDICT=0 switches it off.
+// Which model: $PRISM_SOLVER_MODEL, else <cache>/predict_model.json, else the
+// built-in one (src/prism/solver/predict_default.inc). A model is used only
+// if it says "enabled": true, which tools/prism_ai/predict.py writes only
+// when the held-out measurement beats the rules and the history by more than
+// the run-to-run noise (roadmap 9.7). The built-in solver model did
+// (docs/SOLVERS.md "Learned scheduler"); it has no unwind model.
+// PRISM_SOLVER_PREDICT=0 switches prediction off: the rules decide.
+// Certified requests always keep the rules (portfolio.cpp).
 
 #include <filesystem>
 #include <optional>

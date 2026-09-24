@@ -1,29 +1,34 @@
-"""Solver and bound prediction: train, measure, export (roadmap 9.1 / 9.3 / 9.7).
+"""Solver and bound prediction: train, measure, export (roadmap 3.1 / 9.1 / 9.3 / 9.7).
 
 Input logs (JSON lines):
 
 * solver runs — ``solve_runs.jsonl`` from the collection doctest
-  (``PRISM_PREDICT_COLLECT=DIR prism_tests -tc="ai-assist predict collect*"``):
-  one line per verification condition of the conformance suite with the
-  wall time of every solver run ALONE (``runs: {z3: {kind, wall_s}, ...}``);
-  or the production ``<cache>/solve_log.jsonl`` written by every portfolio
-  solve (only members that finished have a time; the others are censored
-  and not used as training targets).
+  (``PRISM_PREDICT_COLLECT=DIR prism_tests -tc="ai-assist predict collect*"``,
+  source directories listed in ``DIR/roots.txt``): one line per verification
+  condition with the wall time of every portfolio member run ALONE
+  (``runs: {z3: {kind, wall_s}, ...}``; a timeout is a censored time); or the
+  production ``<cache>/solve_log.jsonl`` written by every portfolio solve
+  (only members that finished have a time; not used as training targets).
 * bound runs — ``bound_runs.jsonl``: per function the verdict and seconds at
   unwind 1, 2, 4, 8, 16.
+* ``--repeat-*-log``: the held-out files collected a second time, for the
+  run-to-run noise a model must beat.
 
 Measurement is on a held-out split (by source file, deterministic hash):
 
-* solver choice: the member the policy would give the head start to, and the
-  seconds that member alone needs; policies: static rules (portfolio.cpp
-  ``rule_estimate``), per-bucket history means (the current scheduler), the
-  GBDT, and the oracle;
+* solver choice (quick metric): the member given the head start, and the
+  seconds that member alone needs;
+* solver replay (the gate, tools/prism_ai/sched.py): the portfolio scheduler
+  replayed on the alone-times with k = 1, 2, 3, 5 cores for the rules, the
+  per-bucket history, GBDT, censored (AFT) GBDT, k-NN and a winner
+  classifier; total time, timeouts, median / p90 latency, bootstrap interval;
 * bound: the unwind tried first; agreement with the verdict at unwind 16,
-  total seconds, and time to first counterexample on FAILED functions.
+  total seconds, BOUNDED / no-verdict counts, time to first counterexample.
 
 The exported model carries ``"enabled": true`` only when it beats the
-baseline on the held-out split (roadmap 9.7); src/prism/solver/predict.cpp
-ignores a model that is not enabled.
+baselines on the held-out split by more than max(5%, run-to-run noise) with
+no more timeouts (roadmap 9.7); src/prism/solver/predict.cpp ignores a model
+that is not enabled.
 """
 
 from __future__ import annotations
@@ -39,6 +44,7 @@ from typing import Any
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from tools.prism_ai import sched  # noqa: E402
 from tools.prism_ai.gbdt import GBDT  # noqa: E402
 
 # Must equal src/prism/solver/predict.cpp (tests/test_ai_assist.py checks).
@@ -90,24 +96,8 @@ def solver_rows(recs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return rows
 
 
-def rule_estimate(member: str, x: list[float]) -> float:
-    """portfolio.cpp rule_estimate, from the logged features."""
-    width = 2 ** x[0] - 1
-    nodes = 10 ** x[1] - 1
-    arrays, fp, uf, arith, quant, muldiv = (x[3] > 0.5, x[4] > 0.5, x[5] > 0.5, x[6] > 0.5, x[7] > 0.5,
-                                            x[8] > 0.5)
-    wide, big = width > 32, nodes > 2000
-    if member == "z3":
-        return 0.5 if (arrays or uf or arith or quant) else 1.2 if (big or wide) else 0.6
-    if member == "bitwuzla":
-        return 0.4 if (fp or wide or muldiv or big) else 0.8
-    if member == "cadical":
-        return 2.0 if (muldiv and wide) else 0.9 if big else 1.1
-    if member == "kissat":
-        return 2.2 if (muldiv and wide) else 0.95 if big else 1.2
-    if member == "sls":
-        return 3.0
-    return 1.5
+# portfolio.cpp rule_estimate (one copy, in sched.py).
+rule_estimate = sched.rule_estimate
 
 
 def measure_solver(rows: list[dict[str, Any]], n_trees: int = 60) -> dict[str, Any]:
@@ -188,16 +178,28 @@ def bound_rows(recs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return rows
 
 
+NON_VERDICTS = ("ERROR", "UNKNOWN", "TIMEOUT")
+
+
 def _policy(rows: list[dict[str, Any]], choose: Any) -> dict[str, Any]:
     agree = 0
     seconds = 0.0
     ttfc = 0.0
     n_failed = 0
+    bounded = 0
+    no_verdict = 0
+    contradictions = 0
     for r in rows:
         u = choose(r)
         run = r["runs"][u]
         seconds += float(run["seconds"])
         agree += run["status"] == r["final"]
+        bounded += run["status"] == "BOUNDED"
+        no_verdict += run["status"] in NON_VERDICTS
+        # A check on the data, not on the policy: a proof at the chosen depth
+        # while unwind 16 finds a counterexample would be a pir bug (every
+        # unwind's verdict must stand on its own).
+        contradictions += str(run["status"]).startswith("PROVED") and r["final"] == "FAILED"
         if r["final"] == "FAILED":
             n_failed += 1
             # time to the first counterexample: try u, else escalate to 16
@@ -205,7 +207,8 @@ def _policy(rows: list[dict[str, Any]], choose: Any) -> dict[str, Any]:
                                              else float(r["runs"][UNWINDS[-1]]["seconds"]))
     n = max(1, len(rows))
     return {"agreement": round(agree / n, 4), "seconds": round(seconds, 3),
-            "time_to_first_cex": round(ttfc, 3), "failed_functions": n_failed}
+            "time_to_first_cex": round(ttfc, 3), "failed_functions": n_failed,
+            "bounded": bounded, "no_verdict": no_verdict, "contradictions": contradictions}
 
 
 def snap(y: float) -> int:
@@ -217,7 +220,24 @@ def snap(y: float) -> int:
     return UNWINDS[-1]
 
 
-def measure_bound(rows: list[dict[str, Any]], n_trees: int = 60) -> dict[str, Any]:
+def knn_bound(train: list[dict[str, Any]], k: int = 9) -> Any:
+    """k nearest training functions (standardised features): the largest
+    label among them (a larger bound is the safe side)."""
+    n = max(1, len(train))
+    dims = len(FUNCTION_FEATURES)
+    mu = [sum(r["x"][i] for r in train) / n for i in range(dims)]
+    sd = [max(1e-6, math.sqrt(sum((r["x"][i] - mu[i]) ** 2 for r in train) / n)) for i in range(dims)]
+    pts = [([(v - mu[i]) / sd[i] for i, v in enumerate(r["x"])], r["label"]) for r in train]
+
+    def choose(r: dict[str, Any]) -> int:
+        z = [(v - mu[i]) / sd[i] for i, v in enumerate(r["x"])]
+        near = sorted(range(len(pts)), key=lambda j: (sum((a - b) ** 2 for a, b in zip(z, pts[j][0])), j))[:k]
+        return max(pts[j][1] for j in near)
+    return choose
+
+
+def measure_bound(rows: list[dict[str, Any]], n_trees: int = 60,
+                  repeat: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     train = [r for r in rows if not held_out(r["key"])]
     test = [r for r in rows if held_out(r["key"])]
     res: dict[str, Any] = {"functions": len(rows), "train": len(train), "test": len(test)}
@@ -228,17 +248,34 @@ def measure_bound(rows: list[dict[str, Any]], n_trees: int = 60) -> dict[str, An
     model = GBDT(n_trees=n_trees).fit([r["x"] for r in train], [math.log2(r["label"]) for r in train])
     res["policies"] = {
         f"fixed-{DEFAULT_UNWIND}": _policy(test, lambda r: DEFAULT_UNWIND),
+        f"fixed-{UNWINDS[-1]}": _policy(test, lambda r: UNWINDS[-1]),
         "gbdt": _policy(test, lambda r: snap(model.predict(r["x"]))),
+        "knn": _policy(test, knn_bound(train)),
         "oracle": _policy(test, lambda r: r["label"]),
     }
+    if repeat:
+        # Run-to-run noise: the same held-out functions timed twice at unwind 8.
+        rep = {(r["key"], r["function"]): r for r in repeat}
+        common = [r for r in test if (r["key"], r["function"]) in rep]
+        a = _policy(common, lambda r: DEFAULT_UNWIND)["seconds"]
+        b = _policy([rep[(r["key"], r["function"])] for r in common], lambda r: DEFAULT_UNWIND)["seconds"]
+        res["noise"] = {"functions": len(common), "run1_s": a, "run2_s": b,
+                        "rel": round(abs(a - b) / max(a, 1e-9), 4)}
     b, g = res["policies"][f"fixed-{DEFAULT_UNWIND}"], res["policies"]["gbdt"]
-    # Never trade verdicts for time: same or better agreement AND less time.
-    res["enabled"] = g["agreement"] >= b["agreement"] and g["seconds"] < 0.95 * b["seconds"]
+    margin = max(0.05, res.get("noise", {}).get("rel", 0.0))
+    # Never trade verdicts for time: same or better agreement, no more BOUNDED
+    # or no-verdict outcomes, AND less time by more than the noise.
+    res["enabled"] = (g["agreement"] >= b["agreement"] and g["bounded"] <= b["bounded"] and
+                      g["no_verdict"] <= b["no_verdict"] and g["seconds"] < (1 - margin) * b["seconds"])
     res["model"] = model.to_json()
     return res
 
 
-def build_model(solver: dict[str, Any] | None, bound: dict[str, Any] | None) -> dict[str, Any]:
+def build_model(solver: dict[str, Any] | None, bound: dict[str, Any] | None,
+                replay: dict[str, Any] | None = None) -> dict[str, Any]:
+    """The model file. With a replay measurement (sched.run_all + decide) the
+    solver part is enabled only when the replay chose a model; its trees are
+    exported (the C++ loader evaluates GBDT / AFT trees alike)."""
     m: dict[str, Any] = {"schema": 1, "kind": "prism-gbdt",
                          "query_features": QUERY_FEATURES, "function_features": FUNCTION_FEATURES,
                          "note": "trained by tools/prism_ai/predict.py; enabled only when the held-out "
@@ -247,8 +284,16 @@ def build_model(solver: dict[str, Any] | None, bound: dict[str, Any] | None) -> 
     metrics: dict[str, Any] = {}
     if solver:
         metrics["solver"] = {k: v for k, v in solver.items() if k != "models"}
-        if solver.get("enabled") and solver.get("models"):
+        if replay is None and solver.get("enabled") and solver.get("models"):
             m["solvers"] = solver["models"]
+            enabled = True
+    if replay is not None:
+        metrics["replay"] = {k: v for k, v in replay.items() if not k.startswith("_")}
+        chosen = replay.get("chosen")
+        if chosen:
+            mdl = replay["_models"][chosen.split("-")[0]]
+            m["solvers"] = {name: g.to_json() for name, g in mdl.models.items()}
+            m["head_start"] = not chosen.endswith("-order")
             enabled = True
     if bound:
         metrics["bound"] = {k: v for k, v in bound.items() if k != "model"}
@@ -270,11 +315,46 @@ def markdown(model: dict[str, Any]) -> str:
     b = met.get("bound", {})
     for name, p in (b.get("policies") or {}).items():
         out.append(f"| unwind ({b.get('test')} functions) | {name} | agreement {p['agreement'] * 100:.1f}%, "
-                   f"{p['seconds']} s, first cex {p['time_to_first_cex']} s |")
+                   f"{p['seconds']} s, first cex {p['time_to_first_cex']} s, BOUNDED {p.get('bounded', '')}, "
+                   f"no verdict {p.get('no_verdict', '')} |")
+    if "noise" in b:
+        out.append(f"| unwind noise | fixed-{DEFAULT_UNWIND} timed twice ({b['noise']['functions']} functions) | "
+                   f"{b['noise']['run1_s']} s vs {b['noise']['run2_s']} s |")
     out.append("")
-    out.append(f"solver model enabled: {s.get('enabled', False)}; bound model enabled: "
+    rp = met.get("replay")
+    if rp:
+        out.append(sched.markdown(rp))
+        out.append(f"replay decision: {rp.get('chosen') or 'none'} ({rp.get('why', '')})")
+        out.append("")
+    out.append(f"solver model enabled: {bool(model.get('solvers'))}; bound model enabled: "
                f"{b.get('enabled', False)}; model file enabled: {model.get('enabled')}")
     return "\n".join(out) + "\n"
+
+
+INC_PART = 12000  # characters per string literal (MSVC caps one literal at 16 KB)
+
+
+def emit_inc(model: dict[str, Any]) -> str:
+    """src/prism/solver/predict_default.inc: the model the C++ engine uses
+    when no model file exists (compact JSON, split into literals)."""
+    txt = json.dumps(model, separators=(",", ":"), sort_keys=True)
+    assert ")JSON\"" not in txt
+    parts = [txt[i:i + INC_PART] for i in range(0, len(txt), INC_PART)]
+    body = ",\n".join(f'    R"JSON({p})JSON"' for p in parts)
+    return ("// Generated by tools/prism_ai/predict.py --emit-inc; do not edit.\n"
+            f"// {'enabled' if model.get('enabled') else 'DISABLED'} model, "
+            f"{len(model.get('solvers', {}))} solver targets; metrics inside.\n"
+            f"static const char* const kDefaultModelParts[] = {{\n{body}}};\n")
+
+
+def parse_inc(text: str) -> dict[str, Any]:
+    """The model JSON embedded in a predict_default.inc (tests)."""
+    import re
+    return dict(json.loads("".join(re.findall(r'R"JSON\((.*?)\)JSON"', text, flags=re.S))))
+
+
+REPLAY_KS = [1, 2, 3, 5]   # cores: sequential, and the portfolio with k members at once
+DECIDE_KS = [2, 3, 5]      # max_parallel is max(2, hardware threads)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -282,16 +362,36 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--solve-log", type=Path, action="append", default=[],
                     help="solve_runs.jsonl or <cache>/solve_log.jsonl (repeatable)")
     ap.add_argument("--bound-log", type=Path, action="append", default=[], help="bound_runs.jsonl (repeatable)")
+    ap.add_argument("--repeat-solve-log", type=Path, action="append", default=[],
+                    help="the held-out files collected a second time (run-to-run noise)")
+    ap.add_argument("--repeat-bound-log", type=Path, action="append", default=[])
     ap.add_argument("--out", type=Path, required=True, help="model JSON (predict_model.json)")
     ap.add_argument("--trees", type=int, default=60)
     ap.add_argument("--markdown", type=Path, help="write the measurement table here")
+    ap.add_argument("--end-to-end", type=Path, action="append", default=[],
+                    help="e2e.json of tools/prism_ai/sched_e2e.py (repeatable): recorded in the metrics")
+    ap.add_argument("--emit-inc", type=Path,
+                    help="also write the model as src/prism/solver/predict_default.inc (the built-in model)")
     a = ap.parse_args(argv)
     srows = [r for p in a.solve_log for r in solver_rows(load_jsonl(p))]
     brows = [r for p in a.bound_log for r in bound_rows(load_jsonl(p))]
     solver = measure_solver(srows, a.trees) if srows else None
-    bound = measure_bound(brows, a.trees) if brows else None
-    model = build_model(solver, bound)
+    replay = None
+    rrows = sched.load(a.solve_log) if a.solve_log else []
+    # The replay needs every member timed alone (the collection format).
+    if rrows and sum(len(r["runs"]) >= 2 for r in rrows) >= 30:
+        rep = sched.load(a.repeat_solve_log) if a.repeat_solve_log else None
+        replay = sched.run_all(rrows, REPLAY_KS, n_trees=a.trees, repeat=rep)
+        replay["chosen"], replay["why"] = sched.decide(replay, DECIDE_KS)
+    brep = [r for p in a.repeat_bound_log for r in bound_rows(load_jsonl(p))]
+    bound = measure_bound(brows, a.trees, repeat=brep or None) if brows else None
+    model = build_model(solver, bound, replay)
+    if a.end_to_end:
+        model["metrics"]["end_to_end"] = {
+            f"run{i + 1}": json.loads(p.read_text(encoding="utf-8"))["summary"] for i, p in enumerate(a.end_to_end)}
     a.out.write_text(json.dumps(model, indent=1), encoding="utf-8")
+    if a.emit_inc:
+        a.emit_inc.write_text(emit_inc(model), encoding="utf-8")
     md = markdown(model)
     if a.markdown:
         a.markdown.write_text(md, encoding="utf-8")

@@ -41,6 +41,61 @@ std::vector<z3::expr> collect_consts(const z3::expr& f) {
 
 std::string const_name(const z3::expr& e) { return e.decl().name().str(); }
 
+z3::expr portable_smt2(const z3::expr& f) {
+    std::unordered_map<unsigned, z3::expr> memo;
+    // Iterative post-order: a deep VC must not overflow the stack.
+    std::vector<std::pair<z3::expr, bool>> stack{{f, false}};
+    while (!stack.empty()) {
+        auto [e, expanded] = stack.back();
+        stack.pop_back();
+        if (memo.count(e.id())) continue;
+        if (!e.is_app() || e.num_args() == 0) {
+            memo.emplace(e.id(), e);
+            continue;
+        }
+        if (!expanded) {
+            stack.push_back({e, true});
+            for (unsigned i = e.num_args(); i-- > 0;)
+                if (!memo.count(e.arg(i).id())) stack.push_back({e.arg(i), false});
+            continue;
+        }
+        z3::expr_vector args(f.ctx());
+        bool changed = false;
+        for (unsigned i = 0; i < e.num_args(); ++i) {
+            const z3::expr& a = memo.at(e.arg(i).id());
+            changed = changed || !z3::eq(a, e.arg(i));
+            args.push_back(a);
+        }
+        const auto k = e.decl().decl_kind();
+        const bool mul_flag =
+            (k == Z3_OP_BSMUL_NO_OVFL || k == Z3_OP_BSMUL_NO_UDFL || k == Z3_OP_BUMUL_NO_OVFL) && args.size() == 2;
+        if ((k == Z3_OP_OR || k == Z3_OP_AND) && args.size() == 1) {
+            memo.emplace(e.id(), args[0]);
+        } else if (mul_flag) {
+            // Z3's bvsmul_noovfl / bvsmul_noudfl / bvumul_noovfl are not
+            // SMT-LIB: the same predicate on the double-width product.
+            const unsigned w = args[0].get_sort().bv_size();
+            const bool sgn = k != Z3_OP_BUMUL_NO_OVFL;
+            const z3::expr a2 = sgn ? z3::sext(args[0], w) : z3::zext(args[0], w);
+            const z3::expr b2 = sgn ? z3::sext(args[1], w) : z3::zext(args[1], w);
+            const z3::expr p = a2 * b2;
+            z3::context& c = f.ctx();
+            if (!sgn) {
+                memo.emplace(e.id(), p.extract(2 * w - 1, w) == c.bv_val(0, w));
+            } else {
+                // p fits in w signed bits iff bits [2w-2 : w-1] all equal the sign bit.
+                const z3::expr neg = p.extract(2 * w - 1, 2 * w - 1) == c.bv_val(1, 1);
+                const z3::expr mid = p.extract(2 * w - 2, w - 1);
+                memo.emplace(e.id(), k == Z3_OP_BSMUL_NO_OVFL ? (neg || mid == c.bv_val(0, w))
+                                                               : (!neg || mid == ~c.bv_val(0, w)));
+            }
+        } else {
+            memo.emplace(e.id(), changed ? e.decl()(args) : e);
+        }
+    }
+    return memo.at(f.id());
+}
+
 }  // namespace detail
 
 using detail::collect_consts;
