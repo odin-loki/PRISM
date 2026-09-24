@@ -13,6 +13,7 @@
 #include "../../src/prism/pir/translate_mem.hpp"
 
 #include <filesystem>
+#include <unistd.h>
 #include <fstream>
 #include <map>
 #include <string>
@@ -500,6 +501,42 @@ declare i64 @strdup_len()
     CHECK(malloc);
     REQUIRE(m.find("strlen"));
     CHECK(m.find("strlen")->is_model);
+}
+
+TEST_CASE("pir mem: lowered models are cached on disk; a failed build says why") {
+    auto fe = pp::find_frontend(prism::default_config());
+    if (!fe.clang || !fe.opt) {
+        MESSAGE("clang/opt not on PATH: model cache check skipped");
+        return;
+    }
+    namespace fs = std::filesystem;
+    const auto dir = fs::temp_directory_path() / ("prism_model_cache_" + std::to_string(::getpid()));
+    fs::remove_all(dir);
+    const char* old = std::getenv("XDG_CACHE_HOME");
+    const std::string saved = old ? old : "";
+    ::setenv("XDG_CACHE_HOME", dir.c_str(), 1);
+    auto first = pp::build_models(fe, 120);
+    REQUIRE_MESSAGE(first.error.empty(), first.error);
+    std::size_t cached = 0;
+    for (auto& e : fs::recursive_directory_iterator(dir / "prism" / "pir-models"))
+        if (e.path().extension() == ".ll") ++cached;
+    CHECK(cached == first.units.size());
+    auto second = pp::build_models(fe, 120);  // from the cache
+    REQUIRE(second.error.empty());
+    REQUIRE(second.units.size() == first.units.size());
+    for (std::size_t i = 0; i < first.units.size(); ++i)
+        CHECK(second.units[i].functions.size() == first.units[i].functions.size());
+    // another front end (a clang that fails): a new key, and the error is recorded
+    auto bad = fe;
+    bad.clang = fs::path("/bin/false");
+    auto broken = pp::build_models(bad, 30);
+    CHECK_FALSE(broken.error.empty());
+    CHECK(broken.units.empty());
+    if (old)
+        ::setenv("XDG_CACHE_HOME", saved.c_str(), 1);
+    else
+        ::unsetenv("XDG_CACHE_HOME");
+    fs::remove_all(dir);
 }
 
 TEST_CASE("pir mem: clang round trip on tests/pir/mem_*.c (skips without clang/opt)") {

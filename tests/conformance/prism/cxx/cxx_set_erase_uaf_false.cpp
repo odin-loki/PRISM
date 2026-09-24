@@ -2,9 +2,11 @@
 // std::set iterator used after its element is erased through another iterator
 #include <set>
 int cxx_set_erase_uaf_false(int c) {
-    std::set<int> s{3, 1, 2};
+    std::set<int> s;
+    s.insert(2);
+    s.insert(1);
     auto it = s.begin();       // 1
-    s.insert(c & 7);           // insertion never invalidates
-    s.erase(s.begin());        // c = 0 inserts a new smallest element: `it` survives
-    return *it;                // otherwise `it` was erased
+    if (!c) ++it;              // 2
+    s.erase(s.begin());        // c != 0: erases *it
+    return *it;
 }

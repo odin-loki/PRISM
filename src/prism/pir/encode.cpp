@@ -1226,6 +1226,9 @@ Verdict check_function(const Function& fn, int unwind, double timeout_s, const E
 namespace {
 
 Verdict check_function_at(const Function& fn, const CheckOptions& opt);
+// set while the first, smaller unwind is tried: a BOUNDED answer there is
+// not refined by k-induction (the requested unwind decides it)
+thread_local bool tl_first_unwind = false;
 
 }  // namespace
 
@@ -1233,12 +1236,10 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt);
 // unrolled program grows with the unwind to the power of the loop nesting
 // depth (a lookup loop inside an insertion loop of a std::map model), so a
 // function with loops is first checked at a small unwind. Only two answers
-// are taken from it, both exact at the requested unwind as well: PROVED with
+// are taken from it (same time limit per query), both exact at the requested unwind as well: PROVED with
 // every loop closed (no path reaches the unwinding cut, so a larger unwind
 // adds no path) and FAILED (the violating path exists at any larger unwind).
-// PROVED-UNBOUNDED from k-induction is kept as well (its base case is within
-// the first unwind). Anything else (BOUNDED, unknown, a timeout of the
-// shorter first attempt)
+// Anything else (BOUNDED, unknown, a timeout of the shorter first attempt)
 // is decided at the requested unwind, as before. Certified mode keeps the
 // requested unwind (one certificate per function).
 Verdict check_function(const Function& fn, const CheckOptions& opt) {
@@ -1250,13 +1251,18 @@ Verdict check_function(const Function& fn, const CheckOptions& opt) {
     }
     CheckOptions first = opt;
     first.unwind = kFirstUnwind;
-    first.timeout_s = std::min(opt.timeout_s, std::max(5.0, opt.timeout_s / 4));
-    Verdict v = check_function_at(fn, first);
+    tl_first_unwind = true;
+    Verdict v;
+    try {
+        v = check_function_at(fn, first);
+    } catch (...) {
+        tl_first_unwind = false;
+        throw;
+    }
+    tl_first_unwind = false;
     auto closed = v.extra.find("unwind_closed");
     const bool proved = v.status == laws::PROVED && closed != v.extra.end() && closed->second == "true";
-    // PROVED-UNBOUNDED: the k-induction step closed and its base case
-    // (k <= 2 steps) is inside the first unwind
-    if (proved || v.status == laws::FAILED || v.status == laws::PROVED_UNBOUNDED) {
+    if (proved || v.status == laws::FAILED) {
         v.extra["unwind_requested"] = std::to_string(opt.unwind);
         return v;
     }
@@ -1488,6 +1494,10 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
         if (opt.certified)
             v.extra["certify_note"] =
                 "not certified: certified mode certifies PROVED only (every loop must close within the unwind)";
+        if (tl_first_unwind) {
+            v.extra["k_induction"] = "not-attempted (first unwind)";
+            return finish(v);
+        }
         if (g.loops.size() != 1) {
             v.extra["k_induction"] = g.loops.empty() ? "not-needed" : "multiple-loops";
             return finish(v);

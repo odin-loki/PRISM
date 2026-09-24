@@ -6,4 +6,4 @@ timeout: 600  # std::map code: slow on a loaded machine
 expected:
   cxx_map_erase_uaf_false: false
 witness:
-  cxx_map_erase_uaf_false: [2]
+  cxx_map_erase_uaf_false: [1]

@@ -13,6 +13,7 @@ expected:
   map_order_false: false
   set_order_true: true
   multiset_count_true: true
+  multiset_erase_true: true
   set_decrement_begin_false: false
 expect_class:  # the violation each false harness plants
   map_erase_uaf_false: "MEM-UAF"

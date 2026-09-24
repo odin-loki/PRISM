@@ -383,8 +383,24 @@ checks inside a model report the call site's line and name the model
 | `printf`, `fprintf`, `dprintf`, `sprintf`, `snprintf` (translator, `libc_format.cpp`) | literal format: argument count and IR types per conversion (FMT-ARGS), `%n` (FMT-PERCENT-N), `%s` arguments must be strings, sprintf/snprintf write up to the maximal output length into the buffer; non-literal format, `v*printf`, `scanf` are UNENCODED |
 
 Unmodelled external calls stay `NEEDS-HARNESS` (`UNENCODED: call @name`).
-If the models cannot be built (no clang), the stage records one ERROR row
-saying so (Law 7).
+
+**Building the models.** The lowered models are built once per run, before
+any unit, with their own time limit (`max(120 s, 4 × --timeout)` per clang
+and opt call, where a unit gets `--timeout`), and a call that times out is
+retried once with twice the time: every library call of every unit depends
+on them, and on a loaded machine the per-unit limit was not always enough
+(the `unique_ptr` contract harnesses once came back `UNENCODED: call @_Znwm`
+because `operator new`'s model was missing from that run). The lowered IR is
+kept on disk (`$XDG_CACHE_HOME/prism/pir-models/<key>/` or
+`~/.cache/prism/pir-models/<key>/`, the key a hash of the model sources, the
+front end's version and paths; written to a temporary name and renamed, so
+concurrent runs never read a partial file), so later runs reuse it without
+running clang. If the models still cannot be built, the stage records one
+ERROR row saying why (Law 7), and every function whose translation stopped
+at an unmodelled call is `NOTRUN` (`library models could not be built
+(<why>): UNENCODED: call @name`, `extra.models_error`) instead of
+`NEEDS-HARNESS`: the call may be one the models define, so the missing
+answer is the stage's, not the function's.
 
 **C++ library.** C++ units are compiled with `-D_GLIBCXX_ASSERTIONS`, which
 turns on libstdc++'s own precondition checks; library code is ordinary IR
@@ -439,21 +455,89 @@ behaviour the real library can:
   erase, resize, shrink_to_fit, assign, copy/move, comparisons, erase_if,
   `at` and `reserve` exceptions, a throwing-copy element type, strings,
   `unique_ptr` elements, deduction guides) prints an identical trace of
-  sizes, capacities, contents and constructor/destructor calls with both.
+  sizes, capacities, contents and constructor/destructor calls with both
+  (`tests/cxx_models/vector_trace.cpp`, run by `tests/test_cxx_models.py`).
+* **`<map>`, `<set>`** (`std::map`, `std::multimap`, `std::set`,
+  `std::multiset` with `std::allocator`; `prism_tree.h` is their shared
+  core). libstdc++'s red-black tree erases and copies recursively, which the
+  translator does not inline (`UNENCODED: recursive call`), so every
+  associative container was `NEEDS-HARNESS`. The model keeps the elements in
+  a sorted, circular, doubly linked list of heap nodes around a sentinel
+  header inside the container object (the `end()` position); lookups are
+  linear. Everything the standard makes observable is libstdc++ 13's: the
+  order (`key_compare`), uniqueness, where an equivalent key goes in a
+  multimap/multiset (after the equivalent keys; a hinted insert with
+  libstdc++'s exact `_M_get_insert_hint_equal_pos` rule); one heap node per
+  element from `std::allocator` (the `operator new/delete` models), so
+  insertion never invalidates and `erase` frees exactly the erased node — an
+  iterator, pointer or reference to an erased element points into a freed
+  object and its use is **MEM-UAF**, as it is undefined behaviour with
+  libstdc++ (`clear()`, the destructor and assignment free every node of the
+  target); when elements are constructed (`emplace`/`emplace_hint`/
+  `insert(P&&)` build the node first and drop it if the key exists;
+  `insert(value_type)`, `try_emplace`, `operator[]`, `insert_or_assign` and
+  `emplace(key, mapped)` look up first); a throwing element copy leaves the
+  container unchanged, except copy assignment, which leaves the target empty
+  as libstdc++'s node-reusing assignment does; `max_size()` from the size of
+  libstdc++'s node; `map::at`'s `out_of_range`. Preconditions are checked as
+  `_GLIBCXX_ASSERTIONS` checks (FUNC-CONTRACT): dereferencing or incrementing
+  `end()`, decrementing `begin()`, `erase(end())`, and an iterator or hint of
+  another container (every node records its container). Not the same, and
+  not observable through the standard: the number and order of comparator
+  calls, and the order in which `clear()`/the destructor destroy elements.
+  Node handles (`extract`, `insert(node_type)`, `merge`) and other allocators
+  (`pmr::map`) are not provided: such a unit falls back to libstdc++.
+  Differential test: `tests/cxx_models/map_set_trace.cpp` (every member,
+  hinted multimap inserts, transparent comparators, deduction guides,
+  `erase_if`, throwing copies, element construction counts) prints the same
+  trace with libstdc++ and with the model under ASan/UBSan, and an iterator
+  to an erased element is a heap-use-after-free with both.
+* **`std::string`** (`bits/basic_string.tcc`). `<string>` is reached from
+  every iostream/exception header, so the class cannot be swapped; but under
+  `_GLIBCXX_ASSERTIONS` libstdc++ disables its explicit-instantiation
+  declarations for `basic_string` (and C++20 code instantiates it
+  implicitly anyway), so its out-of-line members are compiled into the unit
+  and inlined like any code — they were never `NEEDS-HARNESS` for that
+  reason. What made them unanswerable was cost: they copy with
+  `memcpy`/`memmove` of a symbolic length (`traits_type::copy`), which PIR
+  encodes as a ranged copy the solver handles slowly (`cxx_string_substr`
+  timed out at 180 s). libstdc++'s `<string>` includes
+  `<bits/basic_string.tcc>` after the class definition; the model directory
+  has a file of that name, so the include reaches PRISM's definitions of
+  those members (`_M_create`, the three `_M_construct`s, `_M_assign`,
+  `_M_mutate`, `_M_erase`, `_M_append`, `_M_replace`, `_M_replace_aux`,
+  `_M_replace_cold`, `_M_replace_dispatch`, `reserve`, `resize`, `swap`,
+  `copy`, `resize_and_overwrite`, the `find` family) with element loops
+  instead of ranged copies, and the rest of libstdc++ 13's behaviour: the
+  15-character local buffer and `_M_create`'s growth policy (the same
+  capacity after every operation), allocation through `std::allocator`
+  (MEM-UAF for a pointer kept across a reallocation), the same exceptions
+  with the same messages, the same results for arguments that alias the
+  string itself. The class body, its inline members and its assertions stay
+  libstdc++'s. Only the new ABI is modelled (the old copy-on-write string
+  includes libstdc++'s file); `operator>>`/`getline` stay libstdc++'s
+  explicit instantiations (they need iostreams). Differential test:
+  `tests/cxx_models/string_trace.cpp` (constructors, the growth sequence,
+  `reserve`/`shrink_to_fit`/`resize`, every modifier including
+  self-referencing `append`/`replace`/`insert`, the `find` family,
+  `compare`, `substr`, `copy`, concatenation, and every exception with its
+  message) prints the same trace with libstdc++ and with the model.
 * **Not modelled, and why.** `vector<bool>` (a bit container) and allocators
   other than `std::allocator<T>` (including `pmr::vector`) are left
   undefined in the model: a unit that uses them does not compile against
   it, and the pir stage lowers it again with libstdc++'s header — every
   function's `extra.cxx_models` says which library it was checked against
-  (`"model: vector"`, or `"libstdc++ (fallback: …)"` with the compiler's
-  reason). `std::string` is not replaced: `<string>` is reached from every
-  iostream/exception header and `basic_string<char>` is an explicit
-  instantiation in `libstdc++.so`, so its inline code is checked as it is
-  (with `_GLIBCXX_ASSERTIONS`); out-of-line members it calls stay
-  `NEEDS-HARNESS`. `std::array`, `std::span`, `std::optional` and
-  `std::unique_ptr` are not replaced either: their libstdc++ code is small,
+  (`"model: vector"`, `"model: map, set"`, `"model: bits/basic_string.tcc"`,
+  or `"libstdc++ (fallback: …)"` with the compiler's reason). A unit that
+  also includes a libstdc++ header using the tree or the vector internally
+  (`<regex>` includes `bits/stl_map.h` and `bits/stl_vector.h`) falls back
+  the same way. `std::array`, `std::span`, `std::optional` and
+  `std::unique_ptr` are not replaced: their libstdc++ code is small,
   loop-free and already checks exactly the standard's preconditions under
   `_GLIBCXX_ASSERTIONS`, so the library code is its own sound model.
+  `std::unordered_map`/`unordered_set`, `std::list`, `std::deque` and
+  iostreams are libstdc++'s code (`NEEDS-HARNESS` where it recurses or calls
+  into `libstdc++.so`).
 
 Encoder support added for the model: a use of a loop value outside its loop
 that LLVM's LCSSA form never has, but that the translator creates on an
@@ -461,6 +545,32 @@ exception path leaving a loop through an inlined callee (the end of the
 unwound frames' stack objects), takes the value of the iteration the path
 left from (an implicit LCSSA phi over the node's incoming edges) instead of
 giving up with `UNENCODED: value used outside its loop`.
+
+Encoder support added for the map/set models (and user code alike):
+
+* **Two-field aggregates.** A first-class struct of two scalars (`iN ≤ 64`
+  or `ptr`) — the `{ ptr, i8 }` in which the x86-64 ABI returns
+  `std::pair<iterator, bool>` from `insert`/`emplace`, `{ ptr, ptr }` from
+  `equal_range` — is kept as two variables: a call returning one, `load`
+  and `store` of one (field by field, the padding is not read),
+  `insertvalue`/`extractvalue`, and `ret` of one from an inlined callee
+  (continuation phis per field; a pointer field is stack-escape checked
+  like a returned pointer). Before, any such call was `UNENCODED: call @f
+  returning { ptr, i8 }`. Other aggregates stay `UNENCODED`.
+* **The unwind tried first.** The unrolled program grows with the unwind to
+  the power of the loop nesting depth (a lookup loop inside the insertion
+  loop of an initializer-list constructor), so `check_function` first checks
+  a function with loops at unwind 4 (same time limit per query) when
+  the requested unwind is larger. Only answers that are exact at the
+  requested unwind too are taken from it: PROVED with every loop closed (no
+  path reaches the unwinding cut, so a larger unwind adds no path) and
+  FAILED (the violating path exists at any larger unwind); `extra.unwind`
+  then says 4 and `extra.unwind_requested` the requested bound. Anything
+  else (BOUNDED — k-induction is not attempted in the first try —, unknown,
+  a timeout) is decided at the requested unwind exactly as before
+  (`extra.unwind_first_tried` records the first attempt), so a loop that
+  closes between 5 and the requested bound is still PROVED there, never
+  turned into PROVED-UNBOUNDED. Certified mode keeps the requested unwind.
 
 ### Library models verified by PRISM (roadmap 8.2)
 
