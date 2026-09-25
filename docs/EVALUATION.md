@@ -51,7 +51,7 @@ commits were measured on their own, not by a full rerun: `a0b962721` and
 |---|---:|---|
 | jsmn | 27 s | ran; `jsmn_parse` and `jsmn_init` (the whole library) were `PARSE-GAP` (`JSMN_API int jsmn_parse(`), so no lint ever read them |
 | tinyexpr | 277 s | ran; **19 fuzz `CRASH` and 16 `execute` "confirmed" `CRASH` rows on functions of `double`** (`double add(double a, double b) { return a + b; }` reported as signed-int overflow with `a=2147483647`), 22 interval `INT-SIGNED-OVF`/`INT-DIV-ZERO` on `double` arithmetic |
-| cJSON | 964 s | ran; all 78 public `CJSON_PUBLIC(type) name(...)` functions were `PARSE-GAP` (not linted), 325 `ERROR` rows (230 concolic, 47 bmc, 41 pir, 7 inventory), fuzz alone 772 s |
+| cJSON | 964 s | ran; all 92 public `CJSON_PUBLIC(type) name(...)` functions (78 in `cJSON.c`, 14 in `cJSON_Utils.c`) were `PARSE-GAP` (not linted), 325 `ERROR` rows (230 concolic, 47 bmc, 41 pir, 7 inventory), fuzz alone 772 s |
 | cxxopts | 499 s | ran; every unit under `src/` and `test/` pir `ERROR` ("clang front end failed": `cxxopts.hpp` is in `include/`), fuzz 256 s, 2 fuzz + 2 execute `CRASH` on Catch2's `marginComparison(double, double, double)` |
 | zlib | **> 3600 s, no report** | killed by the 1-hour limit inside the pir stage; `optional` (clang-tidy, serial) alone took 218 s. Half the bodies of `deflate.c`, `trees.c` and `crc32.c` were silently dropped by the parser: neither a function nor a `PARSE-GAP` row (a Law 7 hole) |
 
@@ -109,7 +109,7 @@ Errors and gaps that are not code defects:
 | warnings (C++) | a missing header (`'unity.h' file not found`) was `FAILED compiler-error`, and gcc's "No such file or directory" tripped the missing-tool check (`gcc unusable: failed to start`) | `NOTRUN "does not compile standalone: header 'unity.h' not found (include path unknown)"`; units now get their `compile_commands.json` `-I/-D/-std=` (else `-I root`, `-I root/include`) |
 | clang-tidy | the same header errors were `FAILED clang-tidy` rows | `NOTRUN` (both engines) |
 | pir (C++) | no include path at all: every cxxopts unit `ERROR` | `compile_commands.json` flags (never its `-std=`), else `-idirafter root` / `root/include`; a missing header is `NOTRUN` |
-| concolic | `"test issue #22"` read as a preprocessor line (`#` anywhere); `cJSON *root = ...` read as a multiplication ("trailing tokens", 169 rows on cJSON); Catch2's `ResultDisposition::FalseTest` | directive lines only; a pointer-to-typedef local is "unknown typedef local unencoded" (all four front-end copies: bmc, interval, interpreter, Python); a C++ qualified name is `NEEDS-HARNESS` |
+| concolic | `"test issue #22"` read as a preprocessor line (`#` anywhere); `cJSON *root = ...` read as a multiplication ("trailing tokens": concolic `ERROR` rows in cJSON's own tests 36 → 5; Unity's own test suite keeps 194, other forms); Catch2's `ResultDisposition::FalseTest` | directive lines only; a pointer-to-typedef local is "unknown typedef local unencoded" (all four front-end copies: bmc, interval, interpreter, Python); a C++ qualified name is `NEEDS-HARNESS` |
 
 Performance:
 
@@ -217,10 +217,10 @@ standing between PRISM and these bugs.
   Each query is bounded (`--timeout`), but a function has many of them and
   nothing bounds the function. A per-function (or per-run) pir budget that
   reports the rest `TIMEOUT`/`UNKNOWN` is needed; the Houdini run budget in
-  progress on another branch covers only loop invariants. With `--skip pir` zlib finishes: 1365 s
-  (fuzz 763 s before the goal budget, optional 280 s, bmc 260 s); the
-  one-hour run leaves `stages.jsonl` (resumable with `--resume`) but no
-  `report.json`.
+  progress on another branch covers only loop invariants. With `--skip pir`
+  zlib finishes: 1365 s (fuzz 763 s before the goal budget, optional 280 s,
+  bmc 260 s); the one-hour run leaves `stages.jsonl` (resumable with
+  `--resume`) but no `report.json`.
 - tinyexpr `npr` (inlines `ncr` and `fac`, `double` in and out) takes most of
   its 250 s pir time in Houdini and ends `BOUNDED` ("Houdini ran out of
   time"); pir runs the functions of one unit one after another.
