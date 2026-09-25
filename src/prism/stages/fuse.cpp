@@ -913,6 +913,7 @@ Finding fuse_one(const FunctionInfo& fn, const std::vector<Finding>& bmc_finding
         // inputs to the same results, so it adds no check.
         if (r > 0 && seeds == prev_seeds && !sandbox::allowed()) break;
         prev_seeds = seeds;
+        const auto round_t0 = std::chrono::steady_clock::now();
         extra["rounds"] = std::to_string(r + 1);
         try {
             last = fuzz_function(fn, src, budget, iters, seeds.empty() ? nullptr : &seeds);
@@ -1057,8 +1058,18 @@ Finding fuse_one(const FunctionInfo& fn, const std::vector<Finding>& bmc_finding
             }
         }
 #ifdef PRISM_HAS_Z3
+        int goals_skipped = 0;
         for (auto& [lab, cond] : labeled) {
             if (covered.contains(lab)) continue;
+            // The goal BMC runs only while the round's fuzz budget lasts: a
+            // goal is a seed source, never a check (a fuzzer CLEAN is not a
+            // proof, Law 3). zlib: one goal query per branch of every scalar
+            // function took the fuzz stage past 700 s; the bmc stage checks
+            // each function in full on its own.
+            if (std::chrono::duration<double>(std::chrono::steady_clock::now() - round_t0).count() >= budget) {
+                ++goals_skipped;
+                continue;
+            }
             auto cloned = fn;
             cloned.body = "if (!(" + cond + ")) return 0;\n" + fn.body;
             auto g = bmc_one(cloned, 8);
@@ -1085,6 +1096,8 @@ Finding fuse_one(const FunctionInfo& fn, const std::vector<Finding>& bmc_finding
                 covered.insert(lab);
             }
         }
+        if (goals_skipped > 0)
+            extra["bmc_goals_skipped"] = std::to_string(goals_skipped) + " (fuzz budget spent: no seed from them)";
 #endif
     }
     extra["covered_goals"] = nlohmann::json(std::vector<std::string>(covered.begin(), covered.end())).dump();

@@ -513,6 +513,17 @@ TEST_CASE("real-world: a pointer-to-typedef local is unencoded, not ERROR") {
     CHECK(seen);
 }
 
+TEST_CASE("real-world: fuzz goal BMC stops when the fuzz budget is spent, and says so") {
+    auto fns = fns_of_text(
+        "int branches(int a, int b) {\n    if (a > 3) return 1;\n    if (b < -7) return 2;\n    return 0;\n}\n",
+        "prism_rw_goals.c");
+    REQUIRE(fns.size() == 1);
+    auto fz = prism::run_fuse(fns, {}, std::filesystem::temp_directory_path(), 0.0, 4, false);
+    REQUIRE_FALSE(fz.empty());
+    CHECK(fz[0].status != prism::laws::PROVED);
+    CHECK(fz[0].extra["bmc_goals_skipped"].find("fuzz budget spent") != std::string::npos);
+}
+
 TEST_CASE("real-world: concolic reads '#' inside a string as code, not a directive") {
     auto fns = fns_of_text(
         "void test(int (*f)(void), const char *name);\n"
