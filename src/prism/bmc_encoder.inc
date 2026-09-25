@@ -2393,8 +2393,15 @@ TV model_call(Enc& e, const std::string& tagged, std::vector<TV>& args) {
         e.assume(as_bool(args[0]));
         return e.int_val(0);
     }
-    if (t == "abort" || t == "exit" || t == "_Exit" || t == "quick_exit" ||
-        t == "reach_error" || t == "__assert_fail" || t == "__VERIFIER_error") {
+    if (t == "reach_error" || t == "__VERIFIER_error") {
+        // SV-COMP's error function (unreach-call): reaching the call is the
+        // violation, a FUNC-CONTRACT property as in pir (translate.cpp,
+        // "reach_error"). It does not return, so the path ends here.
+        e.add_prop("reach_error", "FUNC-CONTRACT", e.ctx.bool_val(true), e.pc);
+        e.path_true = e.ctx.bool_val(false);
+        return e.int_val(0);
+    }
+    if (t == "abort" || t == "exit" || t == "_Exit" || t == "quick_exit" || t == "__assert_fail") {
         // Does not return: nothing after it runs on this path.
         e.path_true = e.ctx.bool_val(false);
         return e.int_val(0);

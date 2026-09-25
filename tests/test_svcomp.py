@@ -165,11 +165,23 @@ class DecideTest(unittest.TestCase):
                      pir=[{"status": "FAILED", "cls": "INT-SIGNED-OVF"}])
         self.assertEqual(P.decide(rep, "no-overflow", not_replayed).answer, "unknown")
 
-    def test_unreach_call_only_pir_proves(self) -> None:
-        self.assertEqual(P.decide(report(bmc=[{"status": "PROVED", "cls": ""}]), "unreach-call", replayed).answer,
-                         "unknown")
-        self.assertEqual(P.decide(report(pir=[{"status": "PROVED", "cls": ""}]), "unreach-call", replayed).answer,
-                         "true")
+    def test_unreach_call_proofs_and_refutations(self) -> None:
+        # bmc and pir both encode reach_error() as a property: either proof covers it
+        for st in ("bmc", "pir"):
+            self.assertEqual(P.decide(report(**{st: [{"status": "PROVED", "cls": ""}]}), "unreach-call",
+                                      replayed).answer, "true")
+            self.assertEqual(P.decide(report(**{st: [{"status": "BOUNDED", "cls": ""}]}), "unreach-call",
+                                      replayed).answer, "unknown")
+        # bmc names the check in the message prefix
+        rep = report(bmc=[{"status": "FAILED", "cls": "FUNC-CONTRACT", "message": "reach_error: FUNC-CONTRACT"}])
+        self.assertEqual(P.decide(rep, "unreach-call", replayed).answer, "false(unreach-call)")
+        self.assertEqual(P.decide(rep, "unreach-call", not_replayed).answer, "unknown")
+        rep = report(bmc=[{"status": "FAILED", "cls": "FUNC-CONTRACT", "message": "abort: FUNC-CONTRACT"}])
+        self.assertEqual(P.decide(rep, "unreach-call", replayed).answer, "unknown")
+        # an unreplayed bmc refutation blocks pir's proof
+        rep = report(bmc=[{"status": "FAILED", "cls": "FUNC-CONTRACT", "message": "reach_error: FUNC-CONTRACT"}],
+                     pir=[{"status": "PROVED", "cls": ""}])
+        self.assertEqual(P.decide(rep, "unreach-call", not_replayed).answer, "unknown")
         rep = report(pir=[{"status": "FAILED", "cls": "FUNC-CONTRACT", "extra": {"prop": "reach_error"}}])
         self.assertEqual(P.decide(rep, "unreach-call", replayed).answer, "false(unreach-call)")
         rep = report(pir=[{"status": "FAILED", "cls": "FUNC-CONTRACT", "extra": {"prop": "abort"}}])

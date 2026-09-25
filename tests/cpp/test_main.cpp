@@ -789,6 +789,71 @@ int main(void) {
     CHECK(other["main"].status == prism::laws::NEEDS_HARNESS);
 }
 
+TEST_CASE("bmc: a reachable reach_error() call is a FUNC-CONTRACT violation (SV-COMP unreach-call)") {
+    // Mirrored by the Python engine (tests/test_bmc_reach_error.py).
+    const std::string defs = R"(extern void abort(void);
+void reach_error() { abort(); }
+extern int __VERIFIER_nondet_int(void);
+)";
+    auto bad = bmc_source("reach_bad.c", defs + R"(int main(void) {
+  int x = __VERIFIER_nondet_int();
+  if (x > 10 && x < 20) {
+    if (x == 15) reach_error();
+  }
+  return 0;
+}
+)");
+    CHECK(bad["main"].status == prism::laws::FAILED);
+    CHECK(bad["main"].cls == "FUNC-CONTRACT");
+    CHECK(bad["main"].message.starts_with("reach_error:"));
+    CHECK(bad["main"].extra["nondet"].find("15") != std::string::npos);
+    // unreachable: the proof now covers the call
+    auto ok = bmc_source("reach_ok.c", defs + R"(int main(void) {
+  int x = __VERIFIER_nondet_int();
+  int i = 0;
+  if (x > 10 && x < 20) {
+    if (x == 25) reach_error();
+  }
+  while (i < 5) { i = i + 1; }
+  if (i != 5) reach_error();
+  return 0;
+}
+)");
+    CHECK(prism::laws::is_proof(ok["main"].status));
+    // __VERIFIER_error() is the older name of the same property
+    auto old = bmc_source("reach_old.c", R"(extern void __VERIFIER_error(void);
+extern int __VERIFIER_nondet_int(void);
+int main(void) {
+  int x = __VERIFIER_nondet_int();
+  if (x == 3) { __VERIFIER_error(); }
+  return 0;
+}
+)");
+    CHECK(old["main"].status == prism::laws::FAILED);
+    CHECK(old["main"].cls == "FUNC-CONTRACT");
+    // a static definition with no effect is not inlined over the call
+    auto st = bmc_source("reach_static.c", R"(static void reach_error(void) {}
+extern int __VERIFIER_nondet_int(void);
+int main(void) {
+  int x = __VERIFIER_nondet_int();
+  if (x == 3) reach_error();
+  return 0;
+}
+)");
+    CHECK(st["main"].status == prism::laws::FAILED);
+    CHECK(st["main"].cls == "FUNC-CONTRACT");
+    // abort() and __assert_fail() still only end the path
+    auto ab = bmc_source("reach_abort.c", R"(extern void abort(void);
+extern int __VERIFIER_nondet_int(void);
+int main(void) {
+  int x = __VERIFIER_nondet_int();
+  if (x == 3) abort();
+  return 0;
+}
+)");
+    CHECK(ab["main"].status != prism::laws::FAILED);
+}
+
 TEST_CASE("bmc: a refutation reports the nondet values its path reads, in call order") {
     auto by = bmc_source("nondet_trace.c", R"(extern int __VERIFIER_nondet_int(void);
 extern unsigned char __VERIFIER_nondet_uchar(void);

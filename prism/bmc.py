@@ -2337,10 +2337,9 @@ _NONDET: dict[str, tuple[int, bool]] = {
     "__VERIFIER_nondet_size_t": (64, True),
 }
 
-_NORETURN = {
-    "abort", "exit", "_Exit", "quick_exit", "reach_error", "__assert_fail",
-    "__VERIFIER_error",
-}
+_NORETURN = {"abort", "exit", "_Exit", "quick_exit", "__assert_fail"}
+# SV-COMP's error functions (unreach-call): reaching the call is the violation.
+_REACH_ERROR = {"reach_error", "__VERIFIER_error"}
 
 # Juliet support-library output helpers (io.c): print one scalar or a string
 # literal; no undefined behaviour for any argument value.
@@ -2382,6 +2381,12 @@ def _model_call(e: _Enc, t: str, args: list[TV]) -> TV:
         # SV-COMP harness convention: execution continues only if cond != 0.
         nargs(1)
         e.assume(_as_bool(args[0]))
+        return e.int_val(0)
+    if t in _REACH_ERROR:
+        # SV-COMP's error function: reaching the call is the violation, a
+        # FUNC-CONTRACT property as in pir. It does not return.
+        e.add_prop("reach_error", "FUNC-CONTRACT", z3.BoolVal(True), e.pc)
+        e.path_true = z3.BoolVal(False)
         return e.int_val(0)
     if t in _NORETURN:
         # Does not return: nothing after it runs on this path.
@@ -10471,9 +10476,110 @@ def _dynamic_init_before_main(functions: list[FunctionInfo], out: list[Finding])
                      "may run for a global object; bitvector BMC does not model static initialisation")
 
 
+def _canonical_verifier_assert(functions: list[FunctionInfo]) -> bool:
+    """SV-COMP's `__VERIFIER_assert(int cond)`, when the unit defines it once
+    as `if (!cond) { <reach_error() / abort() / __VERIFIER_error() / ERROR:> }`
+    (optionally followed by `return;`): the body has no effect but ending the
+    run on a false condition. Mirrors bmc_encoder.inc canonical_verifier_assert."""
+    defs = [f for f in functions if f.name == "__VERIFIER_assert"]
+    if len(defs) != 1:
+        return False
+    d = defs[0]
+    if len(d.params) != 1:
+        return False
+    ptype, pname = d.params[0]
+
+    def norm(t: str) -> str:
+        return "".join(ch for ch in t if not ch.isspace())
+
+    if norm(ptype) not in ("int", "_Bool"):
+        return False
+    b = norm(d.body or "")
+    if len(b) >= 2 and b[0] == "{" and b[-1] == "}":
+        b = b[1:-1]
+    head = ""
+    for h in (f"if(!({pname}))", f"if(!{pname})"):
+        if b.startswith(h):
+            head = h
+    if not head:
+        return False
+    b = b[len(head):]
+    if not b or b[0] != "{":
+        return False
+    depth, close = 0, -1
+    for i, ch in enumerate(b):
+        if ch == "{":
+            depth += 1
+        if ch == "}":
+            depth -= 1
+            if depth == 0:
+                close = i
+                break
+    if close < 0:
+        return False
+    rest = b[close + 1:]
+    if rest and rest != "return;":
+        return False
+    x = b[1:close]
+    exits = False
+    i = 0
+    while i < len(x):
+        for tok in ("{", "}", "ERROR:", "reach_error();", "abort();", "__VERIFIER_error();"):
+            if x.startswith(tok, i):
+                if len(tok) > 7:
+                    exits = exits or tok != "ERROR:"
+                i += len(tok)
+                break
+        else:
+            return False
+    return exits
+
+
+def _rewrite_verifier_assert(fn: FunctionInfo) -> FunctionInfo:
+    """Each call statement `__VERIFIER_assert(E);` becomes `assert((int)(E));`
+    of the same length (bmc_encoder.inc rewrite_verifier_assert)."""
+    c = "__VERIFIER_assert"
+    b = fn.body or ""
+    i = b.find(c)
+    while i >= 0:
+        k = i + len(c)
+        ok = not (i > 0 and (b[i - 1].isalnum() or b[i - 1] == "_"))
+        while k < len(b) and b[k] in " \t":
+            k += 1
+        ok = ok and k < len(b) and b[k] == "("
+        if ok:
+            q = i
+            while q > 0 and b[q - 1].isspace():
+                q -= 1
+            ok = q == 0 or b[q - 1] in ";{}:)"
+        close = -1
+        if ok:
+            depth = 0
+            for j in range(k, len(b)):
+                if b[j] == "(":
+                    depth += 1
+                if b[j] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        close = j
+                        break
+        if close >= 0:
+            semi = close + 1
+            while semi < len(b) and b[semi].isspace():
+                semi += 1
+            if semi < len(b) and b[semi] == ";":
+                rep = f"assert((int)({b[k + 1:close]}))"
+                rep = " " * (close + 1 - i - len(rep)) + rep
+                b = b[:i] + rep + b[close + 1:]
+        i = b.find(c, i + 1)
+    return replace(fn, body=b)
+
+
 def run_bmc(functions: list[FunctionInfo], unwind: int) -> list[Finding]:
     from prism.inline import inline_static
     out: list[Finding] = []
+    if _canonical_verifier_assert(functions):
+        functions = [fn if fn.name == "__VERIFIER_assert" else _rewrite_verifier_assert(fn) for fn in functions]
     for fn in inline_static(functions):
         # R1: one function the encoder cannot handle (a Z3 sort error, ...)
         # is an ERROR for that function, never a crash of the whole stage.

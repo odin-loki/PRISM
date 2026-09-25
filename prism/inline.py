@@ -87,6 +87,11 @@ def _callee_ret_type(callee: FunctionInfo) -> str | None:
 def _inlineable_callee(callee: FunctionInfo) -> bool:
     if not callee.static:
         return False
+    # The SV-COMP error functions are properties of the call itself (bmc
+    # _model_call): a definition in the unit (`static void reach_error() {}`)
+    # must not replace the call, or the violation would disappear.
+    if callee.name in ("reach_error", "__VERIFIER_error"):
+        return False
     if callee.kind not in ("SCALAR", "VOID"):
         return False
     if _has_calls(callee.body):

@@ -118,6 +118,10 @@ std::optional<std::string> callee_ret_type(const FunctionInfo& callee) {
 
 bool inlineable_callee(const FunctionInfo& callee) {
     if (!callee.is_static) return false;
+    // The SV-COMP error functions are properties of the call itself (bmc
+    // model_call): a definition in the unit (`static void reach_error() {}`)
+    // must not replace the call, or the violation would disappear.
+    if (callee.name == "reach_error" || callee.name == "__VERIFIER_error") return false;
     if (callee.kind != "SCALAR" && callee.kind != "VOID") return false;
     if (has_calls(callee.body)) return false;
     // A goto's label would be copied once per call site (labels must be

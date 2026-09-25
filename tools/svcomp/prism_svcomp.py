@@ -22,7 +22,7 @@ The mapping keeps PRISM's laws (docs/VERDICTS.md):
 
 - ``true`` only from ``PROVED``, ``PROVED-UNBOUNDED`` or ``PROVED-CERTIFIED``
   of ``main`` by a verdict stage that covers the property (``bmc``/``pir``
-  for no-overflow, ``pir`` for unreach-call; nothing covers the whole of
+  for no-overflow and unreach-call; nothing covers the whole of
   valid-memsafety, so it is never ``true``), and only when no verdict stage
   reported a ``FAILED`` of the property's class. ``PROVED-ASSUMING`` and
   ``BOUNDED`` are never ``true`` (Law 2).
@@ -97,7 +97,11 @@ PROPERTIES: dict[str, dict[str, Any]] = {
     # show "left shift of N by M places cannot be represented".
     "no-overflow": {"prove": {"bmc", "pir"}, "classes": {"INT-SIGNED-OVF", "INT-SHIFT-UB"},
                     "refute_props": {"INT-SHIFT-UB": {"shift-base", "shift31"}}},
-    "unreach-call": {"prove": {"pir"}, "classes": {"FUNC-CONTRACT"}, "props": {"reach_error", "assert"}},
+    # Both verdict stages encode a reach_error() / __VERIFIER_error() call as
+    # a FUNC-CONTRACT property "reach_error" (pir translate.cpp, bmc
+    # model_call) and a canonical __VERIFIER_assert as "assert"; a proof of
+    # main by either covers unreach-call.
+    "unreach-call": {"prove": {"bmc", "pir"}, "classes": {"FUNC-CONTRACT"}, "props": {"reach_error", "assert"}},
     # valid-memtrack (leaks) and valid-free are not encoded by any verdict
     # stage: a proof never covers the whole property, so no `true`.
     "valid-memsafety": {"prove": set(), "classes": {"MEM-OOB-READ", "MEM-OOB-WRITE", "PTR-NULL-DEREF"}},
@@ -220,7 +224,7 @@ def refutes(f: dict[str, Any], prop: str) -> bool:
     if f.get("status") != "FAILED" or f.get("cls") not in spec["classes"]:
         return False
     if "props" in spec:
-        return str((f.get("extra") or {}).get("prop", "")) in spec["props"]
+        return finding_prop(f) in spec["props"]
     only = spec.get("refute_props", {}).get(f.get("cls"))
     if only is not None:
         return finding_prop(f) in only
