@@ -95,3 +95,9 @@ int checked(const char *expr) {
     if (err) return -1;
     return (int)r;
 }
+
+/* tinyexpr parse_number: the <ctype.h> argument cast. */
+int isxdigit(int c);
+int hex_prefix(const char *p) {
+    return p[0] == '0' && (p[1] == 'x' || p[1] == 'X') && isxdigit((unsigned char)p[2]);
+}

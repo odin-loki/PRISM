@@ -1502,6 +1502,11 @@ def _unsigned_names(fn) -> set[str]:
     return names
 
 
+_CTYPE_ARG = re.compile(
+    r"\b(?:is(?:alnum|alpha|ascii|blank|cntrl|digit|graph|lower|print|punct|space|upper|xdigit)"
+    r"|to(?:lower|upper))\s*\(\s*$")
+
+
 def _int_trunc(lines, rel, funcs, out) -> None:
     """Wider integer assigned or cast into char/short without a fitting literal."""
     for fn in funcs:
@@ -1534,6 +1539,10 @@ def _int_trunc(lines, rel, funcs, out) -> None:
             for m in _NARROW_CAST.finditer(ln):
                 ident = m.group(1)
                 if ident in _KW:
+                    continue
+                # `isxdigit((unsigned char)p[2])`: the cast a <ctype.h> argument
+                # needs (C17 7.4p1), not a narrowing (tinyexpr parse_number).
+                if _CTYPE_ARG.search(ln[: m.start()]):
                     continue
                 key = (ident, i)
                 if key in seen:

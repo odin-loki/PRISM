@@ -2569,6 +2569,11 @@ void int_trunc(const std::vector<std::string>& lines, std::string_view rel,
             for (auto& m : ncast.finditer(ln)) {
                 auto ident = m.group(1);
                 if (kKw.contains(ident)) continue;
+                // `isxdigit((unsigned char)p[2])`: the cast a <ctype.h> argument
+                // needs (C17 7.4p1), not a narrowing (tinyexpr parse_number).
+                static Regex ctype_arg(
+                    R"(\b(?:is(?:alnum|alpha|ascii|blank|cntrl|digit|graph|lower|print|punct|space|upper|xdigit)|to(?:lower|upper))\s*\(\s*$)");
+                if (ctype_arg.search(ln.substr(0, static_cast<std::size_t>(std::max(0, m.spans[0].first))))) continue;
                 auto key = std::pair{ident, i};
                 if (seen.contains(key)) continue;
                 seen.insert(key);
