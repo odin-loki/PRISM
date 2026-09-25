@@ -175,9 +175,13 @@ struct FormatPlan {
     std::vector<std::pair<std::string, std::string>> violations;  // (class, message), always reached
     std::vector<std::size_t> cstr_args;  // %s arguments (NUL-terminated string required)
 };
-// callee: symbol; fmt: the literal format when known; args: IR types of all call arguments.
+// callee: symbol; fmt: the literal format when known; args: IR types of all call arguments;
+// consts: the value bits of each argument that is an integer literal (else nullopt; may be
+// empty). A literal %d/%i/%u/%x/%o/%c argument contributes its exact rendered length to
+// max_len instead of the type's maximum (`sprintf(v, "%i.%i", 1, 7)` writes 3 characters).
 PRISM_API FormatPlan plan_format(const std::string& callee, const std::optional<std::string>& fmt,
-                                 const std::vector<ir::Type>& args);
+                                 const std::vector<ir::Type>& args,
+                                 const std::vector<std::optional<uint64_t>>& consts = {});
 PRISM_API bool is_format_function(const std::string& callee);
 
 }  // namespace prism::pir::pirmem

@@ -362,7 +362,8 @@ static std::vector<prism::FunctionInfo> fns_of_text(const std::string& src, cons
 TEST_CASE("real-world forms: export macros and TEST() bodies are parsed") {
     auto fp = repo_dir("testdata_fp");
     CHECK(fn_names(fp / "realworld_forms.c") ==
-          std::vector<std::string>{"jsmn_count", "version_string", "is_empty", "fixed_buffers"});
+          std::vector<std::string>{"jsmn_count", "version_string", "is_empty", "fixed_buffers",
+                                   "decimal_point", "same_type"});
     std::map<std::string, std::string> kinds;
     for (auto& f : prism::extract_functions(fp / "realworld_forms.c")) kinds[f.name] = f.kind;
     CHECK(kinds["is_empty"] == "POINTER");
@@ -378,6 +379,9 @@ TEST_CASE("real-world forms: export macros and TEST() bodies are parsed") {
     CHECK(has_hit(hits, 27, "MEM-VLA-SIZE"));
     CHECK(has_hit(hits, 41, "PTR-NULL-DEREF"));
     CHECK(has_hit(hits, 42, "PTR-NULL-DEREF"));
+    CHECK(has_hit(hits, 50, "INT-BOOL-AS-BIT"));
+    CHECK(has_hit(hits, 51, "INT-BOOL-AS-BIT"));
+    CHECK(has_hit(hits, 62, "CTRL-MISSING-RETURN"));
 }
 
 TEST_CASE("real-world: interval, fuzz and replay leave floating point alone") {

@@ -39,7 +39,7 @@ bool is_format_function(const std::string& callee) {
 }
 
 FormatPlan plan_format(const std::string& callee, const std::optional<std::string>& fmt,
-                       const std::vector<ir::Type>& args) {
+                       const std::vector<ir::Type>& args, const std::vector<std::optional<uint64_t>>& consts) {
     FormatPlan p;
     if (!is_format_function(callee)) return p;
     p.handled = true;
@@ -81,7 +81,13 @@ FormatPlan plan_format(const std::string& callee, const std::optional<std::strin
             ++len;
             continue;
         }
-        while (i < f.size() && std::string_view("-+ #0'").find(f[i]) != std::string_view::npos) ++i;
+        bool sign_flag = false, alt_flag = false;
+        while (i < f.size() && std::string_view("-+ #0'").find(f[i]) != std::string_view::npos) {
+            if (f[i] == '+' || f[i] == ' ') sign_flag = true;
+            if (f[i] == '#') alt_flag = true;
+            if (f[i] == '\'') alt_flag = true;  // grouping: separators, no exact length
+            ++i;
+        }
         uint64_t width = 0, prec = 0;
         bool has_prec = false;
         if (i < f.size() && f[i] == '*') {
@@ -113,19 +119,45 @@ FormatPlan plan_format(const std::string& callee, const std::optional<std::strin
         bool wide = lenmod == "l" || lenmod == "ll" || lenmod == "j" || lenmod == "z" || lenmod == "t" || lenmod == "q";
         unsigned ib = wide ? 64 : 32;
         uint64_t m = 0;
+        // The literal integer argument of this conversion, when the call passes one
+        // of the conversion's own width (hh/h/j/... fall back to the type maximum).
+        auto literal = [&]() -> std::optional<uint64_t> {
+            if (alt_flag || (lenmod != "" && !wide)) return std::nullopt;
+            if (next >= args.size() || next >= consts.size() || !consts[next]) return std::nullopt;
+            if (!is_int_ty(args[next], ib)) return std::nullopt;
+            return ib == 64 ? *consts[next] : (*consts[next] & 0xffffffffull);
+        };
+        auto digits = [](uint64_t v, unsigned base) {
+            uint64_t n = 1;
+            while (v >= base) {
+                v /= base;
+                ++n;
+            }
+            return n;
+        };
         switch (c) {
             case 'd':
-            case 'i':
+            case 'i': {
+                auto lit = literal();
                 take(wide ? "a 64-bit integer" : "int", conv, [&](const ir::Type& t) { return is_int_ty(t, ib); });
                 m = wide ? 20 : 11;
+                if (lit) {
+                    int64_t v = ib == 64 ? static_cast<int64_t>(*lit) : static_cast<int32_t>(static_cast<uint32_t>(*lit));
+                    uint64_t mag = v < 0 ? (0 - static_cast<uint64_t>(v)) : static_cast<uint64_t>(v);
+                    m = digits(mag, 10) + ((v < 0 || sign_flag) ? 1 : 0);
+                }
                 break;
+            }
             case 'u':
             case 'o':
             case 'x':
-            case 'X':
+            case 'X': {
+                auto lit = literal();
                 take(wide ? "a 64-bit integer" : "unsigned int", conv, [&](const ir::Type& t) { return is_int_ty(t, ib); });
                 m = c == 'o' ? (wide ? 22 : 11) : c == 'u' ? (wide ? 20 : 10) : (wide ? 16 : 8);
+                if (lit) m = digits(*lit, c == 'o' ? 8 : c == 'u' ? 10 : 16);
                 break;
+            }
             case 'c':
                 take("int", conv, [](const ir::Type& t) { return is_int_ty(t, 32); });
                 m = 1;

@@ -1822,7 +1822,9 @@ bool Tr::format_call(Frame& fr, const ir::Inst& in, int& cur, int line) {
     std::optional<std::string> fmt;
     auto fi = n == "printf" ? 0u : n == "snprintf" ? 2u : 1u;
     if (fi < in.ops.size()) fmt = mt.const_string(in.ops[fi].v);
-    auto plan = pirmem::plan_format(n, fmt, tys);
+    std::vector<std::optional<uint64_t>> lits;
+    for (auto& o : in.ops) lits.push_back(o.v.kind == ir::Value::Int ? std::optional<uint64_t>(o.v.bits) : std::nullopt);
+    auto plan = pirmem::plan_format(n, fmt, tys, lits);
     if (!plan.handled) return false;
     if (!plan.unencoded.empty()) throw Unenc{plan.unencoded};
     std::vector<Arg> args;

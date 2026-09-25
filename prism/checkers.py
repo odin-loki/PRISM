@@ -1875,6 +1875,88 @@ def _binary_bitop_indices(s: str) -> list[int]:
     return out
 
 
+def _bitop_on_comparison(s: str) -> bool:
+    """An operand of a binary & / | on the line is itself a comparison at
+    that operand's nesting level: `a == 1 & b == 2` (comparisons bind
+    tighter), not `(a->type & 0xFF) != (b->type & 0xFF)` (the & is inside the
+    parentheses; `->` is not a comparison)."""
+    n = len(s)
+
+    def at(i: int) -> str:
+        return s[i] if 0 <= i < n else "\0"
+
+    def is_assign(i: int) -> bool:
+        return at(i) == "=" and at(i + 1) != "=" and at(i - 1) not in "=!<>+-*/%&|^"
+
+    def has_cmp(a: int, b: int) -> bool:
+        while a < b and at(a).isspace():
+            a += 1
+        while b > a and at(b - 1).isspace():
+            b -= 1
+        if a < b and at(a) == "(" and at(b - 1) == ")":
+            # `(a < b) | (c < d)`: an operand that is one parenthesised comparison
+            d, close = 0, -1
+            for i in range(a, b):
+                if at(i) == "(":
+                    d += 1
+                elif at(i) == ")":
+                    d -= 1
+                    if d == 0:
+                        close = i
+                        break
+            if close == b - 1:
+                return has_cmp(a + 1, b - 1)
+        depth = 0
+        for i in range(a, b):
+            c = at(i)
+            if c in "([":
+                depth += 1
+            elif c in ")]":
+                depth -= 1
+            if depth != 0:
+                continue
+            if c in "=!" and at(i + 1) == "=":
+                return True
+            if c in "<>":
+                if at(i + 1) == c or at(i - 1) == c:
+                    continue
+                if c == ">" and at(i - 1) == "-":
+                    continue
+                return True
+        return False
+
+    for k in _binary_bitop_indices(s):
+        depth, j = 0, k - 1
+        while j >= 0:
+            c = s[j]
+            if c in ")]":
+                depth += 1
+            elif c in "([":
+                if depth == 0:
+                    break
+                depth -= 1
+            elif depth == 0 and (c in ",;?:{}&|" or is_assign(j)):
+                break
+            j -= 1
+        if has_cmp(j + 1, k):
+            return True
+        depth, e = 0, k + 1
+        while e < n:
+            c = s[e]
+            if c in "([":
+                depth += 1
+            elif c in ")]":
+                if depth == 0:
+                    break
+                depth -= 1
+            elif depth == 0 and (c in ",;?:{}&|" or is_assign(e)):
+                break
+            e += 1
+        if has_cmp(k + 1, e):
+            return True
+    return False
+
+
 def _bool_as_bit(lines, rel, funcs, out) -> None:
     """Bitwise &/| with a comparison operand: a boolean used as a bit.
 
@@ -1891,7 +1973,7 @@ def _bool_as_bit(lines, rel, funcs, out) -> None:
                 continue
             if not _has_comparison(ln):
                 continue
-            if not _binary_bitop_indices(ln):
+            if not _bitop_on_comparison(ln):
                 continue
             if i in seen:
                 continue
@@ -2274,7 +2356,8 @@ def _missing_return_last_chunk(stmt: str) -> str:
 def _last_body_stmt(body_lines: list[str]) -> str | None:
     for ln in reversed(body_lines):
         s = ln.strip()
-        if not s or s in ("{", "}"):
+        # `#endif` after `#else return '.';` is not the last statement.
+        if not s or s in ("{", "}") or s.startswith("#"):
             continue
         s = _unwrap_wrapping_braces(s)
         last = _missing_return_last_chunk(s)

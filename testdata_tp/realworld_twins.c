@@ -44,3 +44,20 @@ int null_then_deref(struct node *n) {
     }
     return 0;
 }
+
+int bool_bits(int a, int b, int c, int d)
+{
+    int r = (a < b) | (c < d);
+    if (a == 1 & b == 2)
+        return r;
+    return 0;
+}
+
+int no_return_in_else(int x)
+{
+#ifdef FAST
+    return x;
+#else
+    x++;
+#endif
+}

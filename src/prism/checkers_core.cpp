@@ -941,7 +941,8 @@ std::string missing_return_last_chunk(std::string_view stmt) {
 std::optional<std::string> last_body_stmt(const std::vector<std::string>& body_lines) {
     for (auto it = body_lines.rbegin(); it != body_lines.rend(); ++it) {
         auto s = strip(*it);
-        if (s.empty() || s == "{" || s == "}") continue;
+        // `#endif` after `#else return '.';` is not the last statement.
+        if (s.empty() || s == "{" || s == "}" || s.starts_with("#")) continue;
         s = unwrap_wrapping_braces(s);
         auto last = missing_return_last_chunk(s);
         return last.empty() ? s : last;
@@ -1095,6 +1096,74 @@ std::vector<int> binary_bitop_indices(std::string_view s) {
         out.push_back(static_cast<int>(i));
     }
     return out;
+}
+
+// True when an operand of a binary & / | on the line is itself a comparison
+// at that operand's own nesting level: `a == 1 & b == 2` (comparisons bind
+// tighter), not `(a->type & 0xFF) != (b->type & 0xFF)` (the & is inside the
+// parentheses; `->` is not a comparison). Python engine _bitop_on_comparison.
+bool bitop_on_comparison(std::string_view s) {
+    auto n = static_cast<int>(s.size());
+    auto at = [&](int i) { return i >= 0 && i < n ? s[static_cast<std::size_t>(i)] : '\0'; };
+    auto is_assign = [&](int i) {
+        return at(i) == '=' && at(i + 1) != '=' && std::string_view("=!<>+-*/%&|^").find(at(i - 1)) == std::string_view::npos;
+    };
+    std::function<bool(int, int)> has_cmp = [&](int a, int b) {  // [a, b), depth-0 comparisons
+        while (a < b && std::isspace(static_cast<unsigned char>(at(a)))) ++a;
+        while (b > a && std::isspace(static_cast<unsigned char>(at(b - 1)))) --b;
+        if (a < b && at(a) == '(' && at(b - 1) == ')') {
+            // `(a < b) | (c < d)`: an operand that is one parenthesised comparison
+            int d = 0, close = -1;
+            for (int i = a; i < b; ++i) {
+                if (at(i) == '(') ++d;
+                else if (at(i) == ')' && --d == 0) {
+                    close = i;
+                    break;
+                }
+            }
+            if (close == b - 1) return has_cmp(a + 1, b - 1);
+        }
+        int depth = 0;
+        for (int i = a; i < b; ++i) {
+            char c = at(i);
+            if (c == '(' || c == '[') ++depth;
+            else if (c == ')' || c == ']') --depth;
+            if (depth != 0) continue;
+            if ((c == '=' || c == '!') && at(i + 1) == '=') return true;
+            if (c == '<' || c == '>') {
+                if (at(i + 1) == c || at(i - 1) == c) continue;  // << >> (and <<= >>=)
+                if (c == '>' && at(i - 1) == '-') continue;     // ->
+                return true;
+            }
+        }
+        return false;
+    };
+    for (int k : binary_bitop_indices(s)) {
+        int depth = 0, j = k - 1;
+        for (; j >= 0; --j) {
+            char c = at(j);
+            if (c == ')' || c == ']') ++depth;
+            else if (c == '(' || c == '[') {
+                if (depth == 0) break;
+                --depth;
+            } else if (depth == 0 && (std::string_view(",;?:{}&|").find(c) != std::string_view::npos || is_assign(j)))
+                break;
+        }
+        if (has_cmp(j + 1, k)) return true;
+        depth = 0;
+        int e = k + 1;
+        for (; e < n; ++e) {
+            char c = at(e);
+            if (c == '(' || c == '[') ++depth;
+            else if (c == ')' || c == ']') {
+                if (depth == 0) break;
+                --depth;
+            } else if (depth == 0 && (std::string_view(",;?:{}&|").find(c) != std::string_view::npos || is_assign(e)))
+                break;
+        }
+        if (has_cmp(k + 1, e)) return true;
+    }
+    return false;
 }
 
 std::optional<std::string> unlock_of(std::string_view name) {
@@ -2412,7 +2481,7 @@ void bool_as_bit(const std::vector<std::string>& lines, std::string_view rel,
         std::unordered_set<int> seen;
         int i = 0;
         for (auto& ln : split_lines(fn.body)) {
-            if (has_comparison(ln) && !binary_bitop_indices(ln).empty() && !seen.contains(i)) {
+            if (has_comparison(ln) && bitop_on_comparison(ln) && !seen.contains(i)) {
                 seen.insert(i);
                 lint_add(out, rel, fn.name, start + i, "INT-BOOL-AS-BIT",
                          "bitwise &/| applied to a comparison (boolean used as a bit)", lines);

@@ -33,3 +33,27 @@ size_t fixed_buffers(FILE *in) {
     name[0] = word[0] = '\0';
     return n + strlen(name) + strlen(word);
 }
+
+/* cJSON get_decimal_point: both preprocessor arms return. */
+unsigned char decimal_point(void)
+{
+#ifdef ENABLE_LOCALES
+    return (unsigned char) ',';
+#else
+    return '.';
+#endif
+}
+
+/* cJSON compare_json: the & is inside the parentheses of each operand. */
+struct item { int type; char *string; };
+
+int same_type(const struct item *a, const struct item *b)
+{
+    if ((a == NULL) || (b == NULL) || ((a->type & 0xFF) != (b->type & 0xFF))) {
+        return 0;
+    }
+    if (!(a->type & 0x200) && (a->string != NULL)) {
+        return 1;
+    }
+    return 2;
+}

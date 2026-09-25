@@ -142,7 +142,8 @@ class TestRealWorldEvaluation(unittest.TestCase):
 
     def test_export_macro_forms_are_parsed(self):
         self.assertEqual(_names(FP / "realworld_forms.c"),
-                         ["jsmn_count", "version_string", "is_empty", "fixed_buffers"])
+                         ["jsmn_count", "version_string", "is_empty", "fixed_buffers",
+                          "decimal_point", "same_type"])
         fns = {f.name: f for f in extract_functions(FP / "realworld_forms.c", "f.c")}
         # A plain C function once the export macro is set aside.
         self.assertEqual(fns["is_empty"].kind, "POINTER")
@@ -160,6 +161,9 @@ class TestRealWorldEvaluation(unittest.TestCase):
         self.assertIn((27, "MEM-VLA-SIZE"), hits)  # buf[LEN], LEN a local
         self.assertIn((41, "PTR-NULL-DEREF"), hits)  # if (!n) return n->type;
         self.assertIn((42, "PTR-NULL-DEREF"), hits)  # braced then-branch
+        self.assertIn((50, "INT-BOOL-AS-BIT"), hits)  # (a < b) | (c < d)
+        self.assertIn((51, "INT-BOOL-AS-BIT"), hits)  # a == 1 & b == 2
+        self.assertIn((62, "CTRL-MISSING-RETURN"), hits)  # #else arm does not return
 
     def test_interval_leaves_floating_point_alone(self):
         from prism.interval import run_interval

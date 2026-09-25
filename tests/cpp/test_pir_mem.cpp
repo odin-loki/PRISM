@@ -463,6 +463,18 @@ TEST_CASE("pir mem: printf family format plans") {
     auto sp = pp::pirmem::plan_format("sprintf", std::string("v=%d"), {ptr, ptr, i32});
     CHECK(sp.buf_arg == 0);
     CHECK(sp.max_len == 13);
+    // Literal arguments render to their exact length (cJSON_Version:
+    // sprintf(version, "%i.%i.%i", 1, 7, 16) into char[15], docs/EVALUATION.md).
+    using L = std::vector<std::optional<uint64_t>>;
+    auto lit = pp::pirmem::plan_format("sprintf", std::string("%i.%i.%i"), {ptr, ptr, i32, i32, i32},
+                                       L{std::nullopt, std::nullopt, 1, 7, 16});
+    CHECK(lit.max_len == 6);
+    auto neg = pp::pirmem::plan_format("sprintf", std::string("%d|%+d|%x"), {ptr, ptr, i32, i32, i32},
+                                       L{std::nullopt, std::nullopt, 0xfffffff6ull, 5, 255});
+    CHECK(neg.max_len == 3 + 1 + 2 + 1 + 2);  // "-10" "|" "+5" "|" "ff"
+    auto mixed = pp::pirmem::plan_format("sprintf", std::string("%d.%d"), {ptr, ptr, i32, i32},
+                                         L{std::nullopt, std::nullopt, 7, std::nullopt});
+    CHECK(mixed.max_len == 1 + 1 + 11);  // a non-literal keeps the type maximum
     CHECK_FALSE(pp::pirmem::plan_format("puts", std::string("x"), {ptr}).handled);
 }
 
