@@ -224,6 +224,11 @@ def run_pbsd(cfg: Config, scope: Path) -> list[Finding]:
 
 _WARN_RE = re.compile(r"^(.+):(\d+):(\d+):\s+(warning|error):\s+(.*)$", re.MULTILINE)
 _C_UNITS = {".c", ".cc", ".cpp", ".cxx"}
+# `fatal error: 'unity.h' file not found` (clang) / `unity.h: No such file or
+# directory` (gcc): the unit's include path is unknown, a gap in what PRISM
+# could compile, not a defect in the code (Law 7).
+_MISSING_HEADER_RE = re.compile(
+    r"fatal error:\s*(?:'([^'\n]+)' file not found|([^:\n]+): No such file or directory)")
 
 
 def _host_compilers() -> list[str]:
@@ -360,6 +365,20 @@ def run_compiler(paths: list[Path], cfg: Config) -> list[Finding]:
             ))
             continue
         text = (r.stderr or "") + (r.stdout or "")
+        mh = _MISSING_HEADER_RE.search(text) if r.returncode != 0 else None
+        if mh:
+            hdr = mh.group(1) or mh.group(2).strip()
+            _add(Finding(
+                stage="warnings", status=laws.NOTRUN, file=rel, function=None,
+                line=None, cls="",
+                message=f"does not compile standalone: header '{hdr}' not found "
+                "(include path unknown: no compile_commands.json entry); "
+                "compiler warnings not checked for this unit",
+                strength=laws.STRENGTH_SOME,
+                extra={"install": "generate compile_commands.json "
+                       "(cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON, bear)"},
+            ))
+            continue
         hits = 0
         for m in _WARN_RE.finditer(text):
             hits += 1

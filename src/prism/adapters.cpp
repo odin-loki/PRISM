@@ -1,4 +1,6 @@
 #include "prism/stages.hpp"
+#include "prism/astlint.hpp"
+#include "prism/threads.hpp"
 #include "prism/laws.hpp"
 #include "prism/regex.hpp"
 #include "prism/config.hpp"
@@ -1793,18 +1795,71 @@ std::vector<Finding> run_compiler(const std::vector<fs::path>& paths, const Conf
         out.push_back(std::move(f));
     };
     static Regex wrn("^(.+):(\\d+):(\\d+):\\s+(warning|error):\\s+(.*)$", true);
+    // `fatal error: 'unity.h' file not found` (clang) / `unity.h: No such
+    // file or directory` (gcc): the unit's include path is unknown, which is
+    // a gap in what PRISM could compile, not a defect in the code (Law 7).
+    static Regex missing_header(
+        R"(fatal error:\s*(?:'([^'\n]+)' file not found|([^:\n]+): No such file or directory))");
+    // Include paths, macros and -std= of the unit's compile_commands.json
+    // entry (root/ or root/build/), when the tree has one.
+    const fs::path db_root = fs::is_directory(cfg.root) ? cfg.root : cfg.root.parent_path();
+    struct Job {
+        fs::path cc, unit;
+        std::vector<std::string> cmd;
+        bool has_db = false;
+    };
+    std::vector<Job> jobs;
     for (const auto& cc : compilers) {
         for (const auto& p : units) {
             auto ext = ext_of(p);
             const char* stdv = (ext == ".cc" || ext == ".cpp" || ext == ".cxx") ? "-std=c++11" : "-std=c11";
-            std::vector<std::string> cmd{cc.string(), stdv, "-Wall", "-Wextra", "-Wconversion",
-                                         "-Wsign-compare", "-Wshift-overflow", "-fsyntax-only", p.string()};
+            auto db = astlint::compile_db_flags(db_root, p);
+            bool db_std = std::any_of(db.begin(), db.end(), [](const std::string& f) { return f.rfind("-std=", 0) == 0; });
+            std::vector<std::string> cmd{cc.string()};
+            if (!db_std) cmd.push_back(stdv);
+            for (auto* w : {"-Wall", "-Wextra", "-Wconversion", "-Wsign-compare", "-Wshift-overflow", "-fsyntax-only"})
+                cmd.push_back(w);
+            if (db.empty()) {
+                // No database: the unit's own directory, the scan root and
+                // root/include, as the Clang-AST lints guess them.
+                std::error_code ec;
+                cmd.push_back("-I" + db_root.string());
+                if (fs::is_directory(db_root / "include", ec)) cmd.push_back("-I" + (db_root / "include").string());
+            }
+            cmd.insert(cmd.end(), db.begin(), db.end());
+            cmd.push_back(p.string());
             for (const auto& flag : cmd) {
                 if (flag == "-w" || flag.rfind("-Wno-", 0) == 0)
                     throw std::runtime_error("refusing to disable a check: " + flag);
             }
-            auto r = run_argv(cmd, 30.0);
+            jobs.push_back({cc, p, std::move(cmd), !db.empty()});
+        }
+    }
+    // Each (compiler, unit) check is independent: run them on cfg.jobs
+    // threads (the Python engine's ordered_map), then build findings in the
+    // serial order so dedup and output order are unchanged.
+    std::vector<ProcResult> results(jobs.size());
+    parallel_for(cfg.jobs, jobs, [&](std::size_t i, const Job& j) { results[i] = run_argv(j.cmd, 30.0); });
+    for (std::size_t ji = 0; ji < jobs.size(); ++ji) {
+        {
+            const auto& cc = jobs[ji].cc;
+            const auto& p = jobs[ji].unit;
+            const auto& r = results[ji];
             const auto rel = rel_to_root(p, cfg);
+            if (!r.failed && !r.timed_out && r.rc != 0) {
+                if (auto mh = missing_header.search_match(r.text)) {
+                    auto hdr = mh->group(1).empty() ? trim_copy(mh->group(2)) : mh->group(1);
+                    auto f = finding("warnings", laws::NOTRUN, rel, "",
+                                     "does not compile standalone: header '" + hdr + "' not found " +
+                                         (jobs[ji].has_db ? "with its compile_commands.json flags (generated or not built yet?)"
+                                                          : "(include path unknown: no compile_commands.json entry)") +
+                                         "; compiler warnings not checked for this unit",
+                                     laws::STRENGTH_SOME);
+                    f.extra["install"] = "generate compile_commands.json (cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON, bear)";
+                    add(std::move(f));
+                    continue;
+                }
+            }
             if (r.timed_out) {
                 add(finding("warnings", laws::TIMEOUT, rel, "",
                             "compiler syntax-check timeout", laws::STRENGTH_SOME));

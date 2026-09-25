@@ -406,6 +406,36 @@ TEST_CASE("real-world: interval, fuzz and replay leave floating point alone") {
     CHECK(ex[0].status == prism::laws::NEEDS_HARNESS);
 }
 
+TEST_CASE("real-world: a missing header is NOTRUN, not a compiler error") {
+    auto td = std::filesystem::temp_directory_path() / "prism_rw_missing_hdr";
+    std::filesystem::create_directories(td);
+    {
+        std::ofstream o(td / "t.c", std::ios::binary);
+        o << "#include \"unity_fixture.h\"\nint f(void) { return 1; }\n";
+    }
+    prism::Config cfg;
+    cfg.root = td;
+    if (!cfg.which({"gcc"}) && !cfg.which({"clang"})) return;
+    auto rows = prism::run_compiler({td / "t.c"}, cfg);
+    std::filesystem::remove_all(td);
+    REQUIRE_FALSE(rows.empty());
+    for (auto& f : rows) {
+        INFO(f.message);
+        CHECK(f.status == prism::laws::NOTRUN);
+        CHECK(f.message.find("unity_fixture.h") != std::string::npos);
+    }
+}
+
+TEST_CASE("real-world: fuzz runs a no-parameter function's one input once") {
+    auto fns = fns_of_text("int answer(void) { int x = 6; return x * 7; }\n", "prism_rw_void.c");
+    REQUIRE(fns.size() == 1);
+    auto fz = prism::run_fuse(fns, {}, std::filesystem::temp_directory_path(), 2.0, 64, false);
+    REQUIRE_FALSE(fz.empty());
+    CHECK(fz[0].status == prism::laws::CLEAN);
+    // deterministic oracle, unchanged seeds: the second round would repeat the first
+    CHECK(fz[0].extra["rounds"] == "1");
+}
+
 TEST_CASE("real-world: concolic reads '#' inside a string as code, not a directive") {
     auto fns = fns_of_text(
         "void test(int (*f)(void), const char *name);\n"

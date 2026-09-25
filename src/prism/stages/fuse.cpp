@@ -144,6 +144,12 @@ Finding fuzz_function(const FunctionInfo& fn, const fs::path& src, double budget
         auto child = queue.front();
         queue.pop_front();
         ++i;
+        // The concrete oracle is deterministic: an input already run (a
+        // no-parameter function has exactly one) gives the same result again.
+        if (seen.contains(coverage_hash(child.data(), child.size()))) {
+            ++stall;
+            continue;
+        }
         auto args = decode_args(fn, child);
         auto rec = execute(fn, args);
         if (!rec.ub.empty()) return crash_from(child, args, rec.ub, i);
@@ -157,6 +163,10 @@ Finding fuzz_function(const FunctionInfo& fn, const fs::path& src, double budget
         auto child = parent;
         havoc(child.data(), child.size(), ++hseed);
         ++i;
+        if (seen.contains(coverage_hash(child.data(), child.size()))) {
+            ++stall;
+            continue;
+        }
         auto args = decode_args(fn, child);
         auto rec = execute(fn, args);
         if (!rec.ub.empty()) return crash_from(child, args, rec.ub, i);
@@ -889,7 +899,13 @@ Finding fuse_one(const FunctionInfo& fn, const std::vector<Finding>& bmc_finding
             extra["fuzz4all_error"] = std::string(ex.what()).substr(0, 200);
         }
     }
+    std::vector<std::vector<uint8_t>> prev_seeds;
     for (int r = 0; r < rounds; ++r) {
+        // Without --allow-exec a round is the deterministic concrete loop
+        // only: with the seeds of the round before it would re-run the same
+        // inputs to the same results, so it adds no check.
+        if (r > 0 && seeds == prev_seeds && !sandbox::allowed()) break;
+        prev_seeds = seeds;
         extra["rounds"] = std::to_string(r + 1);
         try {
             last = fuzz_function(fn, src, budget, iters, seeds.empty() ? nullptr : &seeds);

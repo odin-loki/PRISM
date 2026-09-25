@@ -180,6 +180,20 @@ class TestRealWorldEvaluation(unittest.TestCase):
         self.assertEqual(f.status, laws.NEEDS_HARNESS)
         self.assertIn("float/double unencoded", f.message)
 
+    def test_missing_header_is_notrun_not_a_compiler_error(self):
+        from prism.adapters import _host_compilers, run_compiler
+        from prism.config import Config
+        if not _host_compilers():
+            self.skipTest("no gcc/clang")
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "t.c").write_text('#include "unity_fixture.h"\nint f(void) { return 1; }\n')
+            cfg = Config(root=root)
+            rows = run_compiler([root / "t.c"], cfg)
+        self.assertTrue(rows)
+        self.assertTrue(all(f.status == laws.NOTRUN for f in rows), rows)
+        self.assertIn("unity_fixture.h", rows[0].message)
+
     def test_concrete_prep_keeps_hash_in_strings(self):
         from prism.concrete import _PREP_RE
         body = 'test(t, "issue #22");\n#ifdef X\nx = 1;\n#endif\n'
