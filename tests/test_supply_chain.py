@@ -361,9 +361,8 @@ class TestDocsAndNotices(unittest.TestCase):
         self.assertIn("CC-BY-4.0", notice)
         self.assertIn("Fuzz4All", notice)
         lic = (ROOT / "LICENSE").read_text(encoding="utf-8")
-        self.assertIn("DRAFT", lic.splitlines()[0])
-        self.assertIn("Australian", lic[:400])
-        self.assertIn("Odin Loch / Imortek", lic)
+        self.assertIn("GNU AFFERO GENERAL PUBLIC LICENSE", lic.splitlines()[0])
+        self.assertIn("Version 3, 19 November 2007", lic)
         script = (ROOT / "scripts" / "rewrite_history.sh").read_text(encoding="utf-8")
         for name in MINED:
             self.assertIn(f"third_party/{name}/", script)

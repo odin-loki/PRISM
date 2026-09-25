@@ -96,7 +96,7 @@ def build(manifest_bytes: bytes, prism_version: str) -> dict[str, Any]:
         "component": {
             "type": "application", "bom-ref": "prism", "name": "prism",
             "version": prism_version,
-            "licenses": [{"license": {"name": "PRISM Source-Available Evaluation Licence (DRAFT)"}}],
+            "licenses": [{"license": {"id": "AGPL-3.0-only"}}],
         },
         "properties": [{"name": "prism:manifest_sha256",
                         "value": hashlib.sha256(manifest_bytes).hexdigest()}],

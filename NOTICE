@@ -1,7 +1,8 @@
 PRISM (Performance, Regression, Integration and Security Module)
 Copyright (c) 2026 Odin Loch / Imortek. All rights reserved.
-PRISM's own code is covered by LICENSE (draft source-available evaluation
-licence). This NOTICE lists third-party work PRISM contains or builds on.
+PRISM's own code is covered by the GNU Affero General Public License,
+version 3 (LICENSE). This NOTICE lists third-party work PRISM contains or
+builds on.
 The authoritative list of pinned components is third_party/MANIFEST.toml;
 the CycloneDX SBOM (scripts/sbom.py) is generated from it.
 

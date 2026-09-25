@@ -111,5 +111,5 @@ not in the repo: `python scripts/fetch_deps.py --tool NAME` fetches the pinned
 commit, checks its hash and builds it into `~/.prism/tools/`. Every finding
 records the exact tool build (`extra["tool_sha"]`). Licence firewall, SBOM and
 reproducible signed releases:
-[`docs/SUPPLY_CHAIN.md`](docs/SUPPLY_CHAIN.md). Licence: [`LICENSE`](LICENSE)
-(draft) and [`NOTICE`](NOTICE).
+[`docs/SUPPLY_CHAIN.md`](docs/SUPPLY_CHAIN.md). Licence: GNU AGPL version 3
+([`LICENSE`](LICENSE)) and [`NOTICE`](NOTICE).

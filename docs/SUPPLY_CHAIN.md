@@ -134,9 +134,9 @@ only contains queries.
 
 Before any release, verify these licences against current upstream: AFL++
 (the licence file in the mined copy said AGPL-3.0-or-later, while older
-releases were Apache-2.0) and Strix (AGPL v3 in tree). `LICENSE` (PRISM's own
-draft source-available evaluation licence) and this table must be reviewed
-by an Australian IP lawyer before the first sale.
+releases were Apache-2.0) and Strix (AGPL v3 in tree). PRISM's own code is
+the GNU Affero General Public License, version 3 (`LICENSE`). The third-party
+table still needs review before the first sale.
 
 ## SBOM
 

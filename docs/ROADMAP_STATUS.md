@@ -44,7 +44,7 @@ generators): 0 wrong proofs over every campaign run.
 | 1.2 licence firewall in CI | **DONE** — `scripts/licence_check.py`, `ci.yml` |
 | 1.2 CodeQL adapter removed | **DONE** — both engines |
 | 1.2 every external invocation through one argv path | **DONE** — POSIX `fork`/`execvp`; Windows `CreateProcessW` with a round-trip-tested quoter (no `_popen`) |
-| 1.2 PRISM licence | **PARTIAL** — `LICENSE` is a clearly marked DRAFT source-available evaluation licence; needs an Australian IP lawyer |
+| 1.2 PRISM licence | **DONE** — `LICENSE` is the GNU Affero General Public License, version 3 |
 | 1.3 CycloneDX SBOM in CI | **DONE** — `scripts/sbom.py`, validated against CycloneDX 1.5 |
 | 1.3 signed releases (cosign) | **PARTIAL** — `.github/workflows/release.yml` (keyless cosign, double build + hash compare); runs on the first tag push |
 | 1.3 reproducible build recipe | **DONE** — `Dockerfile` built twice with `--no-cache` at `0423d6c54`: identical `SHA256SUMS` for `prism`, `libprism_native.so` and the SBOM, with `prism_tests` passing in the container (`docs/SUPPLY_CHAIN.md`). This was checked on one machine; a tagged release on the GitHub runners is still the first check on another |
@@ -158,6 +158,6 @@ at run time; the numbers below are for the deterministic halves.
 ## Owner actions that no automation can take
 
 1. Approve and run `scripts/rewrite_history.sh` (rewrites history, force-push).
-2. Legal review of `LICENSE`, the licence table, and export-control questions.
+2. Legal review of the third-party licence table and export-control questions.
 3. Push a `v*` tag to exercise `release.yml` (signing needs the GitHub OIDC token).
 4. Provide the RTX 3090 runner, the Qwen GGUF and a prover model to measure the AI features and the GPU stages.
