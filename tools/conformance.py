@@ -607,6 +607,25 @@ def list_stages(cmd: list[str]) -> list[str]:
     return [s.strip() for s in r.stdout.split() if s.strip()]
 
 
+# Per-task address-space cap for each PRISM run in MB (0: none); --mem-limit-mb.
+MEM_LIMIT_MB = 0
+
+
+def _kill_group(p: subprocess.Popen[str]) -> None:
+    """Kill a timed-out run and everything it started (its own session)."""
+    try:
+        if os.name == "posix":
+            os.killpg(p.pid, 9)
+        else:
+            p.kill()
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+    try:
+        p.communicate(timeout=30)
+    except (subprocess.TimeoutExpired, ValueError, OSError):
+        pass
+
+
 def run_prism(cmd: list[str], task: Task, stages: list[str], work: Path, timeout: float,
               unwind: int | None, extra_args: list[str] | None = None,
               rename: dict[str, str] | None = None, tag: str = "prism") -> dict[str, Any]:
@@ -621,16 +640,33 @@ def run_prism(cmd: list[str], task: Task, stages: list[str], work: Path, timeout
     t0 = time.monotonic()
     env = dict(os.environ)
     env.setdefault("PYTHONPATH", str(REPO))
+    # Own session (so a timeout kills prism's solver/clang/checker children
+    # too) and an address-space cap every child inherits: a task that needs
+    # more memory than the runner has is "no answer", never a lost runner.
+    mem_mb = MEM_LIMIT_MB
+
+    def _limits() -> None:
+        os.setsid()
+        if mem_mb > 0:
+            import resource
+            lim = mem_mb << 20
+            resource.setrlimit(resource.RLIMIT_AS, (lim, lim))
+
+    p = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=REPO, env=env,
+                         preexec_fn=_limits if os.name == "posix" else None)
     try:
-        r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, cwd=REPO, env=env)
-        rc = r.returncode
-        tail = (r.stderr or "")[-400:]
+        _, err = p.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
+        _kill_group(p)
         return {"error": "TIMEOUT", "seconds": timeout, "argv": argv}
+    rc = p.returncode
+    tail = (err or "")[-400:]
     secs = round(time.monotonic() - t0, 2)
     rep = out / "report.json"
     if not rep.exists():
-        return {"error": f"no report.json (exit {rc}): {tail}", "seconds": secs, "argv": argv}
+        why = "memory limit" if mem_mb > 0 and ("bad_alloc" in tail or "out of memory" in tail.lower()
+                                               or rc in (-6, -9, 134, 137)) else f"exit {rc}"
+        return {"error": f"no report.json ({why}): {tail}", "seconds": secs, "argv": argv}
     try:
         data = json.loads(rep.read_text(encoding="utf-8"))
     except (OSError, ValueError) as e:
@@ -1296,6 +1332,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--stages", help="override verdict stages (default: bmc,harness + pir,conc when listed)")
     ap.add_argument("--out", type=Path, default=Path("conformance-out"))
     ap.add_argument("--jobs", "-j", type=int, default=max(1, (os.cpu_count() or 2)))
+    ap.add_argument("--mem-limit-mb", type=int, default=4096,
+                    help="address-space cap per PRISM run in MB, inherited by its children (0: none); "
+                         "a run over it is scored as no answer, never as a proof")
     ap.add_argument("--timeout", type=float, default=180.0, help="seconds per PRISM run")
     ap.add_argument("--unwind", type=int)
     ap.add_argument("--filter", help="regex on task ident")
@@ -1309,6 +1348,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="solver query cache for the pir runs (default: a fresh one in the work dir, "
                          "so no answer comes from an earlier run)")
     args = ap.parse_args(argv)
+    global MEM_LIMIT_MB
+    MEM_LIMIT_MB = max(0, args.mem_limit_mb)
 
     if args.fetch_juliet:
         fetch_juliet(args.fetch_juliet, args.juliet_flows.split(","))

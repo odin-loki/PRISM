@@ -47,7 +47,8 @@ jobs:
       - name: conformance suite with the sanitized binary
         env:
           PRISM_BIN: ${{ github.workspace }}/build-san/prism
-        run: python tools/conformance.py
+        # ASan reserves terabytes of address space: no RLIMIT_AS cap here
+        run: python tools/conformance.py -j 2 --mem-limit-mb 0
       - name: PRISM scans its own tree (report only)
         run: ./build-san/prism . --no-llm --out prism-self || true
       - uses: actions/upload-artifact@v4

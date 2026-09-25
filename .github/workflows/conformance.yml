@@ -72,7 +72,9 @@ jobs:
           PRISM_BIN: ${{ github.workspace }}/build/prism
         run: |
           chmod +x build/prism
-          python tools/conformance.py --out conformance-out
+          # two runs at a time, each (with its solver/clang children) capped
+          # at 4 GB: a task that needs more is "no answer", never a lost runner
+          python tools/conformance.py --out conformance-out -j 2 --mem-limit-mb 4096
       - name: Metrics to job summary
         if: always()
         run: test -f conformance-out/metrics.md && cat conformance-out/metrics.md >> "$GITHUB_STEP_SUMMARY" || true
