@@ -965,6 +965,14 @@ void MemTr::lifetime_start(int b, Arg ptr, std::optional<uint64_t> size, int lin
     s.kind = Stmt::Revive;
     s.args = {ptr};
     t_.push(b, s);
+    if (size && *size >= 1 && *size <= 8) {
+        // small objects: one store of uninitialised bytes (no extra object
+        // in the memory model), with a write's checks
+        auto bytes = static_cast<unsigned>(*size);
+        ir::Type ty{ir::Type::Int, bytes * 8, "i" + std::to_string(bytes * 8), {}};
+        store(b, ptr, t_.havoc(b, bytes * 8, false, false), Arg::c(1, 0), ty, 1, line);
+        return;
+    }
     Arg n = size ? c64(*size) : obj_size_remaining(b, ptr);
     if (size && *size >= kMaxObjSize) throw Unenc{"UNENCODED: llvm.lifetime.start of more than 2^47 bytes"};
     Arg nz = p2(b, Op::Ne, n, c64(0));
