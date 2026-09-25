@@ -1630,6 +1630,34 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
         bool all_unsat = false;
         // properties an UNSAT group query already answered (skipped below)
         std::set<const PropInst*> answered;
+        // The first of hard[lo, hi) whose violation the model makes true
+        // (bit-vector and Boolean constants of the model; a property whose
+        // value the model leaves open is not picked).
+        auto pick_violated = [&](const std::map<std::string, std::string>& model, std::size_t lo,
+                                 std::size_t hi) -> std::optional<std::size_t> {
+            if (model.empty()) return std::nullopt;
+            z3::model m(c);
+            for (auto& [name, lit] : model) {
+                if (lit == "true" || lit == "false") {
+                    auto d = c.function(name.c_str(), 0, nullptr, c.bool_sort());
+                    z3::expr val = c.bool_val(lit == "true");
+                    m.add_const_interp(d, val);
+                    continue;
+                }
+                unsigned w = 0;
+                if (lit.rfind("#x", 0) == 0) w = static_cast<unsigned>(4 * (lit.size() - 2));
+                else if (lit.rfind("#b", 0) == 0) w = static_cast<unsigned>(lit.size() - 2);
+                if (w == 0 || w > 64) continue;
+                auto d = c.function(name.c_str(), 0, nullptr, c.bv_sort(w));
+                z3::expr val = c.bv_val(static_cast<uint64_t>(literal_bits(lit) & wmask(w)), w);
+                m.add_const_interp(d, val);
+            }
+            for (std::size_t i = lo; i < hi; ++i) {
+                auto v = m.eval(hard[i]->viol, false);
+                if (v.is_true()) return i;
+            }
+            return std::nullopt;
+        };
         if (hard.size() > 16) {
             std::function<int(std::size_t, std::size_t)> group = [&](std::size_t lo, std::size_t hi) -> int {
                 // 1 SAT (hit set), 0 UNSAT, -1 no answer
@@ -1651,6 +1679,25 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
                     return 0;
                 }
                 std::size_t mid = lo + (hi - lo) / 2;
+                if (r.kind == solver::SolveResult::Sat) {
+                    // The group's model names a violated property: evaluate
+                    // each one on it and ask the first that is true alone
+                    // (one query instead of a split per level). Only that
+                    // property's own SAT answer is the verdict; anything
+                    // else falls back to the halves below. The properties
+                    // before it are asked as one group first, so the verdict
+                    // is the first violated property, as the halving finds.
+                    if (auto k = pick_violated(r.model, lo, hi)) {
+                        const auto r1 = book.add(vc_label(*hard[*k]), solver::solve(c, base && hard[*k]->viol, so));
+                        if (r1.kind == solver::SolveResult::Sat) {
+                            const int before = *k == lo ? 0 : group(lo, *k);
+                            if (before == 1) return 1;  // an earlier one (hit set there)
+                            hit = hard[*k];
+                            hit_r = r1;
+                            return 1;
+                        }
+                    }
+                }
                 if (r.kind != solver::SolveResult::Sat) {
                     // no answer for the group: its halves are smaller queries
                     // (down to 16 properties; the rest are asked one by one

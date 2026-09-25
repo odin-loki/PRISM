@@ -1264,10 +1264,17 @@ the ProbSAT walker for counterexamples) and the query cache.
 1. One VC per property: `assumptions ∧ reach ∧ violation`. The properties are
    asked in order; the first SAT answer is the `FAILED` verdict. With more
    than 16 properties, one query for "some property is violated" comes
-   first: UNSAT answers all of them, SAT is split in halves until one
-   property is left, and no answer is split in halves too, down to groups
-   of 16 (a smaller query often answers where the whole did not); the
-   properties a group answered UNSAT are not asked again one by one. Its model
+   first: UNSAT answers all of them; on SAT the group's model is evaluated
+   on each property and the first one it violates is asked alone (SAT
+   there, and UNSAT for the group of properties before it, is the verdict:
+   the same first violated property the halving finds, in two or three
+   queries instead of two per halving level); otherwise SAT is split in
+   halves until one property is left. No answer is split in halves too,
+   down to groups of 16 (a smaller query often answers where the whole did
+   not); the properties a group answered UNSAT are not asked again one by
+   one. Measured on a linked-list file (7 functions: remove at an
+   input-dependent position, traversal, free; loaded machine): 378–404 s
+   before, 100–134 s after, the same verdicts. Its model
    was already evaluated on the VC in Z3 by the solver library; the
    counterexample is the model's parameter values (`extra.cex_solver` names
    the member that found it). An answer that is neither SAT nor UNSAT makes
