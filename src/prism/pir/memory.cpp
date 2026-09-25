@@ -52,7 +52,101 @@ std::optional<uint64_t> SymMem::known(const z3::expr& e) const {
     if (e.is_numeral() && e.is_numeral_u64(v)) return obj_of(v);
     auto it = prov_.find(e.id());
     if (it != prov_.end()) return it->second;
+    // every value the term can take is in one object
+    if (auto os = objs_of(e); os && os->size() == 1) return os->front();
     return std::nullopt;
+}
+
+namespace {
+z3::expr and2(const z3::expr& a, const z3::expr& b) {
+    if (a.is_true()) return b;
+    if (b.is_true()) return a;
+    return a && b;
+}
+}  // namespace
+
+const SymMem::Vs* SymMem::vs_of(const z3::expr& e) const {
+    if (!e.is_bv() || e.get_sort().bv_size() > 64) return nullptr;
+    if (auto it = vs_memo_.find(e.id()); it != vs_memo_.end()) return it->second ? &*it->second : nullptr;
+    vs_keep_.push_back(e);  // ids are only stable while the ast lives
+    std::optional<Vs> out;
+    uint64_t v = 0;
+    auto add = [&](Vs& r, const z3::expr& g, uint64_t k) -> bool {
+        for (auto& o : r)
+            if (o.val == k) {
+                o.guard = o.guard || g;
+                return true;
+            }
+        if (r.size() >= kVsMax) return false;
+        r.push_back(VsOpt{g, k});
+        return true;
+    };
+    if (e.is_numeral()) {
+        if (e.is_numeral_u64(v)) out = Vs{VsOpt{c_.bool_val(true), v}};
+    } else if (e.is_app() && e.num_args() > 0) {
+        const auto k = e.decl().decl_kind();
+        if (k == Z3_OP_ITE) {
+            const Vs* a = vs_of(e.arg(1));
+            const Vs* b = a ? vs_of(e.arg(2)) : nullptr;
+            if (a && b) {
+                Vs r;
+                const auto cnd = e.arg(0);
+                bool ok = true;
+                for (auto& o : *a) ok = ok && add(r, and2(cnd, o.guard), o.val);
+                for (auto& o : *b) ok = ok && add(r, and2(!cnd, o.guard), o.val);
+                if (ok) out = std::move(r);
+            }
+        } else {
+            // an operation on value-set operands: every combination, evaluated
+            std::vector<const Vs*> as;
+            std::size_t combos = 1;
+            bool ok = true;
+            for (unsigned i = 0; i < e.num_args() && ok; ++i) {
+                const Vs* a = vs_of(e.arg(i));
+                if (!a) ok = false;
+                else {
+                    as.push_back(a);
+                    combos *= a->size();
+                    if (combos > kVsMax) ok = false;
+                }
+            }
+            if (ok) {
+                Vs r;
+                std::vector<std::size_t> idx(as.size(), 0);
+                const auto f = e.decl();
+                for (std::size_t n = 0; n < combos && ok; ++n) {
+                    z3::expr_vector args(c_);
+                    z3::expr g = c_.bool_val(true);
+                    for (std::size_t i = 0; i < as.size(); ++i) {
+                        const auto& o = (*as[i])[idx[i]];
+                        args.push_back(c_.bv_val(o.val, e.arg(static_cast<unsigned>(i)).get_sort().bv_size()));
+                        g = and2(g, o.guard);
+                    }
+                    auto val = f(args).simplify();
+                    uint64_t kv = 0;
+                    if (!(val.is_numeral() && val.is_numeral_u64(kv))) ok = false;
+                    else ok = add(r, g, kv);
+                    for (std::size_t i = 0; i < idx.size(); ++i) {  // next combination
+                        if (++idx[i] < as[i]->size()) break;
+                        idx[i] = 0;
+                    }
+                }
+                if (ok) out = std::move(r);
+            }
+        }
+    }
+    auto [it, _] = vs_memo_.emplace(e.id(), std::move(out));
+    return it->second ? &*it->second : nullptr;
+}
+
+std::optional<std::vector<uint64_t>> SymMem::objs_of(const z3::expr& p) const {
+    if (!p.is_bv() || p.get_sort().bv_size() != 64) return std::nullopt;
+    const Vs* vs = vs_of(p);
+    if (!vs) return std::nullopt;
+    std::vector<uint64_t> os;
+    for (auto& o : *vs)
+        if (std::find(os.begin(), os.end(), obj_of(o.val)) == os.end()) os.push_back(obj_of(o.val));
+    return os;
 }
 
 std::optional<uint64_t> SymMem::const_obj(const z3::expr& p) { return known(p); }
@@ -62,6 +156,16 @@ z3::expr SymMem::per_obj(const z3::expr& ptr, const z3::expr& dflt, F&& f) {
     if (auto k = const_obj(ptr)) {
         if (*k >= 1 && *k <= objs_.size()) return f(objs_[static_cast<std::size_t>(*k - 1)]);
         return dflt;
+    }
+    if (const Vs* vs = vs_of(ptr)) {
+        // one term per possible object, under the guards of its values
+        auto at = [&](uint64_t v) -> z3::expr {
+            const uint64_t k = obj_of(v);
+            return k >= 1 && k <= objs_.size() ? f(objs_[static_cast<std::size_t>(k - 1)]) : dflt;
+        };
+        z3::expr r = at(vs->back().val);
+        for (std::size_t i = vs->size() - 1; i-- > 0;) r = z3::ite((*vs)[i].guard, at((*vs)[i].val), r);
+        return r;
     }
     z3::expr r = dflt;
     auto id = objid(ptr);
@@ -99,6 +203,15 @@ void SymMem::free(const z3::expr& guard, const z3::expr& ptr) {
         if (*k >= 1 && *k <= objs_.size()) {
             auto& o = objs_[static_cast<std::size_t>(*k - 1)];
             o.alive = o.alive && !guard;
+        }
+        return;
+    }
+    if (const Vs* vs = vs_of(ptr)) {
+        for (auto& o : objs_) {
+            std::optional<z3::expr> hit;
+            for (auto& opt : *vs)
+                if (obj_of(opt.val) == o.id) hit = hit ? *hit || opt.guard : opt.guard;
+            if (hit) o.alive = o.alive && !(guard && *hit);
         }
         return;
     }
@@ -211,10 +324,43 @@ z3::expr SymMem::read_cell(const z3::expr& addr) {
     return read_cell_log(addr, log_.size());
 }
 
-z3::expr SymMem::read_cell_log(const z3::expr& addr, std::size_t upto, bool use_prov) {
-    auto key = std::make_tuple(addr.id(), upto, use_prov);
+z3::expr SymMem::read_cell_log(const z3::expr& addr_in, std::size_t upto, bool use_prov) {
+    auto key = std::make_tuple(addr_in.id(), upto, use_prov);
     if (auto it = memo_.find(key); it != memo_.end()) return it->second;
-    keep_.push_back(addr);
+    keep_.push_back(addr_in);
+    // Value sets: an address with several possible constants reads each of
+    // them (under its guard); one constant is read as that numeral, so the
+    // comparisons with other constant or value-set addresses are decided
+    // here instead of by the solver.
+    z3::expr addr = addr_in;
+    std::optional<uint64_t> caddr;
+    if (const Vs* av = vs_of(addr_in)) {
+        if (av->size() > 1) {
+            z3::expr v = read_cell_log(bv(av->back().val, 64), upto, use_prov);
+            for (std::size_t i = av->size() - 1; i-- > 0;)
+                v = z3::ite((*av)[i].guard, read_cell_log(bv((*av)[i].val, 64), upto, use_prov), v);
+            memo_.emplace(key, v);
+            return v;
+        }
+        caddr = av->front().val;
+        addr = bv(*caddr, 64);
+    }
+    // the condition "entry address == addr", decided when both are known
+    auto same = [&](const z3::expr& ea) -> std::optional<z3::expr> {
+        if (!caddr) return addr == ea;
+        const Vs* ev = vs_of(ea);
+        if (!ev) return addr == ea;
+        std::optional<z3::expr> hit;
+        for (auto& o : *ev)
+            if (o.val == *caddr) hit = hit ? *hit || o.guard : o.guard;
+        return hit;  // nullopt: never equal
+    };
+    // false when the entry's object is known and differs from addr's
+    auto other_obj = [&](const z3::expr& ea) {
+        if (!caddr) return false;
+        auto os = objs_of(ea);
+        return os && std::find(os->begin(), os->end(), obj_of(*caddr)) == os->end();
+    };
     auto ko = use_prov ? known(addr) : std::nullopt;
     z3::expr v = bv(0, cw_);  // never written: value 0, not initialised
     for (std::size_t i = 0; i < upto; ++i) {
@@ -223,8 +369,14 @@ z3::expr SymMem::read_cell_log(const z3::expr& addr, std::size_t upto, bool use_
             auto kb = known(e.addr);
             if (kb && *kb != *ko) continue;
         }
+        if (e.kind != Entry::Byte && other_obj(e.addr)) continue;
         switch (e.kind) {
-            case Entry::Byte: v = z3::ite(e.guard && addr == e.addr, e.cell, v); break;
+            case Entry::Byte: {
+                auto eq = same(e.addr);
+                if (!eq) break;
+                v = z3::ite(and2(e.guard, *eq), e.cell, v);
+                break;
+            }
             case Entry::Set: v = z3::ite(e.guard && in_range(addr, e.addr, e.len), e.cell, v); break;
             case Entry::Copy: {
                 auto src = e.src + (addr - e.addr);
@@ -259,15 +411,69 @@ z3::expr SymMem::havoc_read(const Entry& e, const z3::expr& addr, unsigned width
     if (auto it = havoc_memo_.find(key); it != havoc_memo_.end()) return it->second;
     auto h = c_.bv_const((std::string(base) + std::to_string(fresh_++)).c_str(), width);
     auto& reads = havoc_reads_[static_cast<std::size_t>(e.havoc)];
-    for (auto& [a2, h2] : reads) side_.push_back(z3::implies(addr == a2, h == h2));
+    uint64_t x1 = 0, x2 = 0;
+    const bool n1 = addr.is_numeral() && addr.is_numeral_u64(x1);
+    for (auto& [a2, h2] : reads) {
+        if (n1 && a2.is_numeral() && a2.is_numeral_u64(x2) && x1 != x2) continue;  // never the same address
+        side_.push_back(z3::implies(addr == a2, h == h2));
+    }
     reads.emplace_back(addr, h);
     keep_.push_back(addr);
     havoc_memo_.emplace(key, h);
     return h;
 }
 
+// The n bytes at constant address a as one value, when every write before
+// `upto` that may reach them is a whole n-byte store at a (else nullopt):
+// ite(cond_j, value_j, ...) over those stores, latest first, 0 when none
+// wrote them. Byte for byte this is the read-over-write chain: an entry
+// skipped here writes none of the bytes (a different address or object,
+// decided on constants, or provenance as in read_cell_log).
+std::optional<z3::expr> SymMem::word_at(uint64_t a, unsigned n, std::size_t upto) {
+    const uint64_t ko = obj_of(a);
+    z3::expr v = bv(0, 8 * n);
+    for (std::size_t i = 0; i < upto; ++i) {
+        auto& e = log_[i];
+        if (auto kb = known(e.addr); kb && *kb != ko) continue;
+        if (e.kind != Entry::Byte) {
+            auto os = objs_of(e.addr);
+            if (os && std::find(os->begin(), os->end(), ko) == os->end()) continue;
+            return std::nullopt;  // a ranged write into a's object
+        }
+        const Vs* ev = vs_of(e.addr);
+        if (!ev) return std::nullopt;  // an address without a value set
+        std::optional<z3::expr> full;
+        for (auto& o : *ev) {
+            if (o.val < a || o.val - a >= n) continue;  // this byte is not in [a, a + n)
+            // in range: only a whole n-byte store starting at a
+            if (e.grp < 0 || stores_[static_cast<std::size_t>(e.grp)].n != n || o.val - e.grp_k != a) return std::nullopt;
+            full = full ? *full || o.guard : o.guard;
+        }
+        if (!full || e.grp_k != 0) continue;  // the store's value is taken at its first byte
+        v = z3::ite(and2(e.guard, *full), stores_[static_cast<std::size_t>(e.grp)].val, v);
+    }
+    return v;
+}
+
 SymMem::Loaded SymMem::load(const z3::expr& ptr, unsigned width, unsigned tag) {
     unsigned n = (width + 7) / 8;
+    // word level (Bv, value sets): the value as an ite over whole stores
+    std::optional<z3::expr> word;
+    if (enc_ == MemEncoding::Bv && (n == 2 || n == 4 || n == 8))
+        if (const Vs* av = vs_of(ptr)) {
+            std::vector<z3::expr> ws;
+            for (auto& o : *av) {
+                auto w = word_at(o.val, n, log_.size());
+                if (!w) break;
+                ws.push_back(*w);
+            }
+            if (ws.size() == av->size()) {
+                z3::expr r = ws.back();
+                for (std::size_t i = ws.size() - 1; i-- > 0;) r = z3::ite((*av)[i].guard, ws[i], r);
+                if (8 * n > width) r = r.extract(width - 1, 0);
+                word = r;
+            }
+        }
     auto ko = known(ptr);
     std::optional<z3::expr> val, mask;
     z3::expr uninit = c_.bool_val(false);
@@ -288,6 +494,7 @@ SymMem::Loaded SymMem::load(const z3::expr& ptr, unsigned width, unsigned tag) {
     }
     auto v = *val;
     if (8 * n > width) v = v.extract(width - 1, 0);
+    if (word) v = *word;
     return Loaded{v, z3::ite(uninit, bv(1, 1), bv(0, 1)), z3::ite(tagbad, bv(1, 1), bv(0, 1)), *mask};
 }
 
@@ -324,10 +531,15 @@ void SymMem::store(const z3::expr& guard, const z3::expr& ptr, const z3::expr& v
         arr_ = z3::ite(guard, A, *arr_);
         return;
     }
+    const int grp = static_cast<int>(stores_.size());
+    stores_.push_back(StoreRec{wide, n});
     for (unsigned k = 0; k < n; ++k) {
         auto a = k == 0 ? ptr : ptr + bv(k, 64);
         if (ko) note(a, *ko);
-        add_entry(Entry{Entry::Byte, guard, a, bv(1, 64), a, cell_of(wide.extract(8 * k + 7, 8 * k), init_k(k), tag)});
+        Entry e{Entry::Byte, guard, a, bv(1, 64), a, cell_of(wide.extract(8 * k + 7, 8 * k), init_k(k), tag)};
+        e.grp = grp;
+        e.grp_k = k;
+        add_entry(std::move(e));
     }
 }
 

@@ -843,8 +843,25 @@ std::string span_text(const std::vector<std::string>& lines, const std::vector<i
 // Solver settings of the run: the portfolio and the query cache always
 // (docs/SOLVERS.md), a certificate per VC with --certified. The members of
 // one query share the cores left to this worker.
-CheckOptions check_options(const Config& cfg) {
+// The run's Houdini budget (docs/PIR.md "Loop invariants"): seconds the
+// loop-invariant search may take over the whole run, summed over the
+// workers. $PRISM_HOUDINI_BUDGET seconds (0: none), else max(3600 s,
+// 120 x timeout). A function that finds it spent stays BOUNDED with an
+// invariants_note (Law 7: it says what was not tried).
+std::shared_ptr<HoudiniBudget> houdini_budget(const Config& cfg) {
+    double b = std::max(3600.0, 120.0 * cfg.timeout);
+    if (const char* e = std::getenv("PRISM_HOUDINI_BUDGET"); e && *e) {
+        char* end = nullptr;
+        const double x = std::strtod(e, &end);
+        if (end && *end == '\0' && x >= 0) b = x;
+    }
+    if (b <= 0) return nullptr;
+    return std::make_shared<HoudiniBudget>(b);
+}
+
+CheckOptions check_options(const Config& cfg, std::shared_ptr<HoudiniBudget> budget = nullptr) {
     CheckOptions o;
+    o.houdini_budget = std::move(budget);
     o.unwind = cfg.unwind;
     o.timeout_s = cfg.timeout;
     o.certified = cfg.certified;
@@ -893,7 +910,7 @@ struct Analyzed {
 };
 
 Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lowered& low,
-                  const ModelLibrary& models) {
+                  const ModelLibrary& models, const std::shared_ptr<HoudiniBudget>& budget) {
     Analyzed res;
     auto& out = res.out;
     auto& recs = res.recs;
@@ -1003,7 +1020,7 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
             for (auto& n : fn.inlined) s += (s.empty() ? "" : ",") + n;
             f.extra["inlined"] = s;
         }
-        auto v = check_function(fn, check_options(cfg));
+        auto v = check_function(fn, check_options(cfg, budget));
         pirmem::apply_memory_policy(f, v, fn, mod, irf, fopt, cfg);
         f.status = v.status;
         f.message = v.message;
@@ -1119,9 +1136,10 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
         }
     });
     std::vector<Analyzed> an(units.size());
+    const auto budget = houdini_budget(cfg);
     parallel_for(cfg.jobs, units, [&](std::size_t i, const Unit& u) {
         try {
-            an[i] = run_unit(u, fe, cfg, low[i], models);
+            an[i] = run_unit(u, fe, cfg, low[i], models, budget);
         } catch (const std::exception& ex) {
             auto f = base_finding(u);
             f.status = std::string(laws::ERROR);

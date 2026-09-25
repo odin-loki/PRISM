@@ -32,12 +32,15 @@
 #include <cstdio>
 #include <cmath>
 #include <deque>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <map>
 #include <optional>
 #include <set>
 #include <sstream>
 #include <string_view>
+#include <thread>
 #include <unordered_map>
 
 #ifdef PRISM_HAS_Z3
@@ -1746,10 +1749,38 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
                 r.extra["invariants_note"] = "not attempted (allocation or free in a loop)";
                 return false;
             }
-            Houdini hd(fn, g, eo, timeout_s);
+            // The run's Houdini budget (CheckOptions::houdini_budget): spent,
+            // the function is not attempted; less left than the search's own
+            // limit, the search gets what is left.
+            double search_s = -1;
+            if (opt.houdini_budget) {
+                const double left = opt.houdini_budget->left();
+                if (left <= 0) {
+                    r.extra["invariants_note"] =
+                        "not attempted (the run's Houdini budget of " +
+                        std::to_string(static_cast<long>(opt.houdini_budget->total_s)) +
+                        " s is spent; PRISM_HOUDINI_BUDGET)";
+                    return false;
+                }
+                search_s = left;
+            }
+            HoudiniEnv henv;
+            if (opt.use_cache)
+                henv.cache_dir = opt.cache_dir.empty() ? solver::default_cache_dir() : opt.cache_dir;
+            const auto th = std::chrono::steady_clock::now();
+            Houdini hd(fn, g, eo, timeout_s, search_s, henv);
             auto h = hd.run();
+            const double hs = std::chrono::duration<double>(std::chrono::steady_clock::now() - th).count();
+            if (opt.houdini_budget) opt.houdini_budget->spend(hs);
+            {
+                char buf[32];
+                std::snprintf(buf, sizeof buf, "%.2f", hs);
+                r.extra["houdini_seconds"] = buf;
+            }
             r.extra["houdini_rounds"] = std::to_string(h.rounds);
             r.extra["houdini_candidates"] = std::to_string(h.candidates);
+            if (h.prechecks > 0) r.extra["houdini_prechecks"] = std::to_string(h.prechecks);
+            if (!h.cache.empty()) r.extra["houdini_cache"] = h.cache;
             if (!h.proved) {
                 r.extra["invariants_note"] = "no proof from loop invariants: " + h.why;
                 std::size_t kept = 0;

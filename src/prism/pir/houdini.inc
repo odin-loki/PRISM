@@ -83,6 +83,15 @@ struct HoudiniOut {
     std::vector<std::vector<std::size_t>> kept;  // per loop, indices into cands
     std::vector<InvCand> cands;
     std::string footprint;
+    int prechecks = 0;      // optimistic final queries (all candidates alive assumed)
+    std::string cache;      // "", "hit (proof re-checked)", "hit (no proof)", "stored"
+    bool undecided = false; // some answer came from the time limit or an unknown
+};
+
+// Where Houdini's outcome is cached (per function text, docs/PIR.md "Loop
+// invariants"): dir empty = no cache.
+struct HoudiniEnv {
+    std::string cache_dir;
 };
 
 // Pointer-valued variables (allocation results, checked pointer arithmetic,
@@ -123,8 +132,11 @@ std::vector<char> pointer_vars(const Function& fn) {
 class Houdini {
 public:
     // timeout_s: the solver time per query; the whole search gets 6 times that
-    Houdini(const Function& fn, const CfgInfo& g, const EncodeOptions& eo, double timeout_s)
-        : fn_(fn), g_(g), eo_(eo), per_query_(timeout_s), deadline_(6 * timeout_s) {}
+    // (search_s < 6 * timeout_s when the run's budget has less left)
+    Houdini(const Function& fn, const CfgInfo& g, const EncodeOptions& eo, double timeout_s, double search_s = -1,
+            HoudiniEnv env = {})
+        : fn_(fn), g_(g), eo_(eo), per_query_(timeout_s),
+          deadline_(search_s >= 0 ? std::min(search_s, 6 * timeout_s) : 6 * timeout_s), env_(std::move(env)) {}
 
     HoudiniOut run();
 
@@ -134,6 +146,10 @@ private:
     EncodeOptions eo_;
     double per_query_;
     double deadline_;
+    HoudiniEnv env_;
+    std::string cache_file_;   // "" : no cache
+    bool from_cache_ = false;  // candidates restricted to a cached proof's survivors
+    std::vector<std::string> cands_for_key_;
     int query_ = 0;
     std::chrono::steady_clock::time_point t0_ = std::chrono::steady_clock::now();
     std::vector<char> ptr_;
@@ -228,7 +244,68 @@ private:
     }
     std::string term_text(const InvTerm& t) const;
     std::string text(const InvCand& c) const;
+    std::optional<nlohmann::json> load_cache();
+    void store_cache(HoudiniOut& out);
 };
+
+// Cache of Houdini outcomes: <cache_dir>/houdini/<key>.json, key = sha256 of
+// the function's PIR text, the memory encoding, the per-query time limit
+// and every candidate's text (so a change to the templates or the function
+// is a different key).
+std::optional<nlohmann::json> Houdini::load_cache() {
+    namespace fs = std::filesystem;
+    if (env_.cache_dir.empty()) return std::nullopt;
+    std::string k = "houdini-cache-v1\n" + to_text(fn_) + "\nmemory=" +
+                    (eo_.memory == MemEncoding::Array ? "array" : "bv") + "\ntimeout=" + std::to_string(per_query_) +
+                    "\nloops=" + std::to_string(g_.loops.size()) + "\n";
+    // generate() has run: the candidates are the ones this search starts from
+    for (auto& c : cands_for_key_) k += c + "\n";
+    const auto h = sha256_hex(k);
+    cache_file_ = (fs::path(env_.cache_dir) / "houdini" / (h + ".json")).string();
+    std::error_code ec;
+    if (!fs::exists(cache_file_, ec)) return std::nullopt;
+    try {
+        std::ifstream in(cache_file_);
+        auto j = nlohmann::json::parse(in);
+        if (!j.is_object() || !j.contains("proved")) return std::nullopt;
+        if (j.value("proved", false) && !(j.contains("survivors") && j["survivors"].is_array())) return std::nullopt;
+        return j;
+    } catch (...) {
+        return std::nullopt;  // unreadable entry: searched again
+    }
+}
+
+void Houdini::store_cache(HoudiniOut& out) {
+    namespace fs = std::filesystem;
+    if (from_cache_) {
+        out.cache = out.proved ? "hit (proof re-checked)" : "hit (cached proof not re-established)";
+        return;
+    }
+    if (cache_file_.empty()) return;
+    // a "no proof" that a time limit or an unknown answer decided is not kept
+    if (!out.proved && out.undecided) return;
+    nlohmann::json j;
+    j["proved"] = out.proved;
+    if (out.proved) {
+        nlohmann::json sv = nlohmann::json::array();
+        for (auto& k : out.cands)
+            if (k.alive) sv.push_back(text(k));
+        j["survivors"] = sv;
+    } else {
+        j["why"] = out.why;
+    }
+    std::error_code ec;
+    fs::create_directories(fs::path(cache_file_).parent_path(), ec);
+    const auto tmp = cache_file_ + ".tmp" + std::to_string(std::hash<std::thread::id>{}(std::this_thread::get_id()));
+    {
+        std::ofstream o(tmp);
+        if (!o) return;
+        o << j.dump();
+    }
+    fs::rename(tmp, cache_file_, ec);
+    if (ec) fs::remove(tmp, ec);
+    else out.cache = "stored";
+}
 
 std::string Houdini::term_text(const InvTerm& t) const {
     auto name = [&](int v) { return "%" + fn_.vars[static_cast<std::size_t>(v)].name; };
@@ -583,6 +660,23 @@ HoudiniOut Houdini::run() {
     out.candidates = out.cands.size();
     out.invariants.assign(g_.loops.size(), {});
     out.kept.assign(g_.loops.size(), {});
+    // An earlier run's outcome for the same function text, encoding, time
+    // limit and candidates: "no proof" (decided without a time limit or an
+    // unknown answer) is taken as it is; a proof restricts the candidates to
+    // its survivors, which are then checked again from scratch (base, step
+    // and the final query: a cached proof is never taken on trust).
+    for (auto& k : out.cands) cands_for_key_.push_back(text(k));
+    if (auto hit = load_cache()) {
+        if (!hit->value("proved", false)) {
+            out.why = "no proof (outcome of an earlier run, cached: " + hit->value("why", std::string("?")) + ")";
+            out.cache = "hit (no proof)";
+            return out;
+        }
+        std::set<std::string> keep;
+        for (auto& x : (*hit)["survivors"]) keep.insert(x.get<std::string>());
+        for (auto& k : out.cands) k.alive = keep.count(text(k)) != 0;
+        from_cache_ = true;
+    }
 
     // footprints: learnt from a first cut encoding, then re-checked (the
     // havoc can change what provenance knows about a write target)
@@ -885,6 +979,7 @@ HoudiniOut Houdini::run() {
                 if (left() <= 0) {  // out of time: drop them
                     for (auto i : live) cands[i].alive = false;
                     dropped = true;
+                    out.undecided = true;
                     return;
                 }
                 z3::expr act = c.bool_const(("houdini!q" + std::to_string(query_++)).c_str());
@@ -907,14 +1002,17 @@ HoudiniOut Houdini::run() {
                             cands[i].alive = false;
                             any = true;
                         }
-                    if (!any)  // model evaluation disagrees: drop all (never keep an unproved one)
+                    if (!any) {  // model evaluation disagrees: drop all (never keep an unproved one)
                         for (auto i : live) cands[i].alive = false;
+                        out.undecided = true;
+                    }
                     dropped = true;
                     continue;
                 }
                 if (live.size() == 1 || depth > 6) {
                     for (auto i : live) cands[i].alive = false;
                     dropped = true;
+                    out.undecided = true;
                     return;
                 }
                 std::vector<std::size_t> lo(live.begin(), live.begin() + static_cast<std::ptrdiff_t>(live.size() / 2));
@@ -929,28 +1027,152 @@ HoudiniOut Houdini::run() {
         else proved_at[qid] = deps;
         return dropped;
     };
+    // The final query: the cut program with the given candidates assumed at
+    // every havocked header (the universal ones also at the other index
+    // terms, under the literal `fin`, so the search queries stay small).
+    // Asked for all properties at once; a group without an answer is split
+    // in halves (a smaller query). 1: some property is violated (SAT),
+    // 0: none (UNSAT), -1: no answer.
+    const z3::expr fin = c.bool_const("houdini!fin");
+    std::vector<char> inst_added(cands.size(), 0);
+    auto add_instances = [&]() {
+        const std::size_t before_n = e.assumptions.size();
+        for (std::size_t i = 0; i < cands.size(); ++i) {
+            if (!cands[i].alive || !cands[i].ghost() || inst_added[i]) continue;
+            inst_added[i] = 1;
+            auto& CL = e.cut_loops[static_cast<std::size_t>(cands[i].loop)];
+            State sh{&CL.havoc, &CL.havoc_mem};
+            z3::expr_vector hv(c);
+            try {
+                for (std::size_t t = 1; t < T.size(); ++t) hv.push_back(eval(cands[i], sh, T[t]));
+            } catch (const EncodeFail&) {
+                continue;  // not assumed at the other terms (only weaker)
+            }
+            if (hv.empty()) continue;
+            s.add(z3::implies(fin && *sel[i],
+                              z3::implies(e.reach[static_cast<std::size_t>(CL.node)] && noviol(CL.props_before),
+                                          z3::mk_and(hv))));
+        }
+        // side constraints of the new reads (Ackermann constraints of havoc
+        // reads): facts of the encoding, true in every query
+        for (std::size_t k = before_n; k < e.assumptions.size(); ++k) s.add(e.assumptions[k]);
+    };
+    std::string fail;
+    auto final_query = [&](double budget, bool split) -> int {
+        add_instances();
+        z3::expr_vector all_sel(c);
+        selectors([](std::size_t) { return true; }, all_sel);
+        all_sel.push_back(fin);
+        const auto tf = std::chrono::steady_clock::now();
+        auto fleft = [&] {
+            return budget - std::chrono::duration<double>(std::chrono::steady_clock::now() - tf).count();
+        };
+        std::function<int(std::size_t, std::size_t)> group = [&](std::size_t lo, std::size_t hi) -> int {
+            if (lo >= hi) return 0;
+            if (fleft() <= 0) {
+                fail = "cut program: out of time";
+                return -1;
+            }
+            z3::expr_vector vs(c);
+            for (std::size_t i = lo; i < hi; ++i) vs.push_back(e.props[i].viol);
+            z3::expr act = c.bool_const(("houdini!f" + std::to_string(query_++)).c_str());
+            s.add(z3::implies(act, z3::mk_or(vs)));
+            z3::params p(c);
+            double t = !split ? fleft()
+                       : hi - lo == e.props.size() ? std::max(per_query_, fleft() / 2)
+                                                   : std::min(per_query_, fleft());
+            p.set("timeout", static_cast<unsigned>(std::max(1.0, t) * 1000));
+            s.set(p);
+            z3::expr_vector as(c);
+            for (auto x : all_sel) as.push_back(x);
+            as.push_back(act);
+            auto r = s.check(as);
+            if (r == z3::unsat) return 0;
+            if (r == z3::sat) {
+                fail = "a property is not implied by the inductive invariants found";
+                return 1;
+            }
+            if (!split || hi - lo == 1) {
+                fail = "cut program: solver unknown";
+                return -1;
+            }
+            std::size_t mid = lo + (hi - lo) / 2;
+            int a = group(lo, mid);
+            if (a != 0) return a;
+            return group(mid, hi);
+        };
+        return group(0, e.props.size());
+    };
+    auto alive_set = [&]() {
+        std::vector<char> a(cands.size(), 0);
+        for (std::size_t i = 0; i < cands.size(); ++i) a[i] = cands[i].alive ? 1 : 0;
+        return a;
+    };
+    // Optimistic final query: the cut program with every candidate still
+    // alive assumed (a superset of the survivors Houdini can end with).
+    // Assuming fewer candidates only allows more runs, so a property that
+    // is violated here is violated with the fixpoint too: no proof can come
+    // out of this search, and it stops (only an early "no proof"; a proof
+    // is only ever read off the final query at the fixpoint). UNSAT is
+    // remembered: when nothing is dropped afterwards it is the final query.
+    std::optional<std::vector<char>> unsat_with;
+    auto precheck = [&]() -> bool {  // true: stop, no proof possible
+        if (left() <= 0) return false;
+        ++out.prechecks;
+        const double t = std::min(left(), std::min(per_query_, std::max(2.0, per_query_ / 3)));
+        auto snapshot = alive_set();
+        const int r = final_query(t, false);
+        if (r == 1) {
+            fail = "a property is violated even with every candidate that holds on loop entry assumed";
+            return true;
+        }
+        if (r == 0) unsat_with = std::move(snapshot);
+        fail.clear();
+        return false;
+    };
     // loops in encoding (topological) order: a base query assumes the loops before it
     std::vector<std::size_t> topo;
     for (std::size_t L = 0; L < e.cut_loops.size(); ++L) topo.push_back(L);
     std::sort(topo.begin(), topo.end(),
               [&](std::size_t a, std::size_t b) { return e.cut_loops[a].seq < e.cut_loops[b].seq; });
+    auto base_of_loop = [&](std::size_t L) {
+        auto& CL = e.cut_loops[L];
+        const int seqL = CL.seq;
+        return check_goal([&](std::size_t M) { return e.cut_loops[M].seq < seqL; },
+                          e.reach[static_cast<std::size_t>(CL.node)] && noviol(CL.props_before),
+                          [&](std::size_t i) { return ev[i].entry; }, static_cast<int>(L), static_cast<int>(L) * 1000);
+    };
+    auto finish_out = [&](bool proved) {
+        for (std::size_t i = 0; i < cands.size(); ++i)
+            if (cands[i].alive) {
+                out.invariants[static_cast<std::size_t>(cands[i].loop)].push_back(text(cands[i]));
+                out.kept[static_cast<std::size_t>(cands[i].loop)].push_back(i);
+            }
+        out.proved = proved;
+        if (!proved) out.why = fail;
+        store_cache(out);
+        return out;
+    };
+    // The base queries first (they are cheap and drop every candidate that
+    // does not even hold on loop entry, e.g. one of `i == 0` / `i != 0`),
+    // then the optimistic query.
+    for (std::size_t L : topo)
+        if (e.cut_loops[L].node >= 0) base_of_loop(L);
+    if (precheck()) return finish_out(false);
     bool changed = true;
     while (changed) {
         if (left() <= 0) {
-            out.why = "Houdini ran out of time";
-            return out;
+            out.undecided = true;
+            fail = "Houdini ran out of time";
+            return finish_out(false);
         }
         ++out.rounds;
         changed = false;
         for (std::size_t L : topo) {
             auto& CL = e.cut_loops[L];
             if (CL.node < 0) continue;
-            const int seqL = CL.seq;
             // base: the entry state
-            changed |= check_goal([&](std::size_t M) { return e.cut_loops[M].seq < seqL; },
-                                  e.reach[static_cast<std::size_t>(CL.node)] && noviol(CL.props_before),
-                                  [&](std::size_t i) { return ev[i].entry; }, static_cast<int>(L),
-                                  static_cast<int>(L) * 1000);
+            changed |= base_of_loop(L);
             // step: the next state of every back edge
             for (std::size_t j = 0; j < CL.latches.size(); ++j) {
                 auto& lt = CL.latches[j];
@@ -961,83 +1183,16 @@ HoudiniOut Houdini::run() {
                                       static_cast<int>(L), static_cast<int>(L) * 1000 + 1 + static_cast<int>(j));
             }
         }
+        if (changed && precheck()) return finish_out(false);
     }
-    for (std::size_t i = 0; i < cands.size(); ++i)
-        if (cands[i].alive) {
-            out.invariants[static_cast<std::size_t>(cands[i].loop)].push_back(text(cands[i]));
-            out.kept[static_cast<std::size_t>(cands[i].loop)].push_back(i);
-        }
-    // The cut program with every surviving invariant assumed: no property
-    // instance is violated. Asked for all properties at once; a group
-    // without an answer is split in halves (a smaller query), a satisfiable
-    // one ends the attempt (the invariants found do not imply it).
-    // the surviving universal invariants at the other index terms
-    {
-        const std::size_t before_n = e.assumptions.size();
-        std::vector<z3::expr> more;
-        for (std::size_t i = 0; i < cands.size(); ++i) {
-            if (!cands[i].alive || !cands[i].ghost()) continue;
-            auto& CL = e.cut_loops[static_cast<std::size_t>(cands[i].loop)];
-            State sh{&CL.havoc, &CL.havoc_mem};
-            z3::expr_vector hv(c);
-            try {
-                for (std::size_t t = 1; t < T.size(); ++t) hv.push_back(eval(cands[i], sh, T[t]));
-            } catch (const EncodeFail&) {
-                continue;  // not assumed at the other terms (only weaker)
-            }
-            if (hv.empty()) continue;
-            more.push_back(z3::implies(
-                *sel[i],
-                z3::implies(e.reach[static_cast<std::size_t>(CL.node)] && noviol(CL.props_before), z3::mk_and(hv))));
-        }
-        for (std::size_t k = before_n; k < e.assumptions.size(); ++k) s.add(e.assumptions[k]);
-        for (auto& m : more) s.add(m);
-    }
-    z3::expr_vector all_sel(c);
-    selectors([](std::size_t) { return true; }, all_sel);
+    // The fixpoint: every survivor is inductive. The function is proved when
+    // the cut program with them assumed violates no property (already known
+    // when the last optimistic query had exactly these candidates alive).
+    if (unsat_with && *unsat_with == alive_set()) return finish_out(true);
     const double final_budget = std::max(3 * per_query_, left());
-    const auto tf = std::chrono::steady_clock::now();
-    auto fleft = [&] {
-        return final_budget - std::chrono::duration<double>(std::chrono::steady_clock::now() - tf).count();
-    };
-    std::string fail;
-    std::function<bool(std::size_t, std::size_t)> group = [&](std::size_t lo, std::size_t hi) -> bool {
-        if (lo >= hi) return true;
-        if (fleft() <= 0) {
-            fail = "cut program: out of time";
-            return false;
-        }
-        z3::expr_vector vs(c);
-        for (std::size_t i = lo; i < hi; ++i) vs.push_back(e.props[i].viol);
-        z3::expr act = c.bool_const(("houdini!f" + std::to_string(query_++)).c_str());
-        s.add(z3::implies(act, z3::mk_or(vs)));
-        z3::params p(c);
-        double t = hi - lo == e.props.size() ? std::max(per_query_, fleft() / 2) : std::min(per_query_, fleft());
-        p.set("timeout", static_cast<unsigned>(std::max(1.0, t) * 1000));
-        s.set(p);
-        z3::expr_vector as(c);
-        for (auto x : all_sel) as.push_back(x);
-        as.push_back(act);
-        auto r = s.check(as);
-        if (r == z3::unsat) return true;
-        if (r == z3::sat) {
-            fail = "a property is not implied by the inductive invariants found";
-            return false;
-        }
-        if (hi - lo == 1) {
-            fail = "cut program: solver unknown";
-            return false;
-        }
-        std::size_t mid = lo + (hi - lo) / 2;
-        return group(lo, mid) && group(mid, hi);
-    };
-    bool ok = group(0, e.props.size());
-    if (ok) {
-        out.proved = true;
-        return out;
-    }
-    out.why = fail;
-    return out;
+    const int r = final_query(final_budget, true);
+    if (r == -1) out.undecided = true;
+    return finish_out(r == 0);
 }
 
 // Source-level export of the surviving invariants (SV-COMP correctness

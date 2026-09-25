@@ -16,9 +16,11 @@
 #include "prism/export.hpp"
 #include "prism/models.hpp"
 
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -465,6 +467,19 @@ PRISM_API std::vector<Vc> pir_vcs(const Function& fn, int unwind, const EncodeOp
 // covers (certificate_scope = combined, certificate_covers). If that query
 // is SAT, has no answer, or is not certified, the per-VC path runs as
 // before (nothing from the combined attempt is used but its note).
+// Seconds the Houdini loop-invariant search (docs/PIR.md "Loop invariants")
+// may take over a whole run, shared by the pir stage's workers. A function
+// that finds it spent is not attempted (invariants_note; BOUNDED stays
+// BOUNDED); one that starts with less left than its own limit gets what is
+// left for its search (its final query keeps its own minimum).
+struct HoudiniBudget {
+    explicit HoudiniBudget(double total) : total_s(total) {}
+    double total_s;
+    std::atomic<int64_t> spent_ms{0};
+    double left() const { return total_s - static_cast<double>(spent_ms.load()) / 1000.0; }
+    void spend(double s) { spent_ms.fetch_add(static_cast<int64_t>(s * 1000.0)); }
+};
+
 struct CheckOptions {
     int unwind = 8;
     double timeout_s = 30.0;    // per verification condition
@@ -483,6 +498,10 @@ struct CheckOptions {
     std::vector<std::string> tool_dirs;  // searched first (tests); see SolveOptions
     bool search_default_tools = true;
     EncodeOptions encode;       // memory encoding (Bv: QF_BV, certifiable)
+    // Houdini: the run's shared budget (null: none, each function keeps its
+    // own limit), and whether its outcome is cached under cache_dir/houdini
+    // (use_cache; a cached proof is re-checked, docs/PIR.md "Loop invariants")
+    std::shared_ptr<HoudiniBudget> houdini_budget;
 };
 PRISM_API Verdict check_function(const Function& fn, const CheckOptions& opt);
 // The portfolio without the query cache (library callers and tests).

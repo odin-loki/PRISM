@@ -119,6 +119,25 @@ public:
     }
     std::optional<uint64_t> known(const z3::expr& e) const;
 
+    // Value sets (docs/PIR.md "Memory model", "Value sets"): a bit-vector
+    // term that equals one of at most kVsMax constants, each under a guard;
+    // the guards are exhaustive (their disjunction is valid), so the term is
+    // exactly ite(g1, k1, ite(g2, k2, ... kn)). Derived from the term's
+    // structure: numerals, ite, and operations whose operands all have value
+    // sets (evaluated per combination). A load from an address with a value
+    // set reads each constant address; a load of n bytes at a constant
+    // address, where every write that may reach it is a whole n-byte store
+    // at that address, is the ite over those stores' values (word level), so
+    // a pointer stored in memory and loaded again keeps its value set.
+    // Everything is an equality of terms, never an assumption.
+    struct VsOpt {
+        z3::expr guard;
+        uint64_t val;
+    };
+    using Vs = std::vector<VsOpt>;
+    static constexpr std::size_t kVsMax = 16;
+    const Vs* vs_of(const z3::expr& e) const;
+
 private:
     struct Obj {
         uint64_t id;
@@ -132,7 +151,14 @@ private:
         z3::expr guard, addr, len, src, cell;
         int havoc = -1;
         bool keep = false;  // HavocObj: initialised flag = old | fresh
+        int grp = -1;       // Byte: the store it belongs to (stores_), byte grp_k of it
+        unsigned grp_k = 0;
     };
+    struct StoreRec {
+        z3::expr val;  // the stored bytes as one value (8 * n bits)
+        unsigned n;
+    };
+    std::vector<StoreRec> stores_;
     z3::context& c_;
     MemEncoding enc_;
     bool tags_;
@@ -150,6 +176,11 @@ private:
     std::map<std::tuple<unsigned, std::size_t, bool>, z3::expr> memo_;
     std::unordered_map<unsigned, uint64_t> prov_;
     std::vector<z3::expr> keep_;
+    mutable std::unordered_map<unsigned, std::optional<Vs>> vs_memo_;
+    mutable std::vector<z3::expr> vs_keep_;
+    std::optional<z3::expr> word_at(uint64_t a, unsigned n, std::size_t upto);
+    // the objects a pointer may point into, when its value set says so
+    std::optional<std::vector<uint64_t>> objs_of(const z3::expr& p) const;
 
     z3::expr bv(uint64_t v, unsigned w) { return c_.bv_val(v, w); }
     z3::expr objid(const z3::expr& p) { return p.extract(63, kObjShift); }
