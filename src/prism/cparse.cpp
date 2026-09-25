@@ -67,6 +67,10 @@ const std::string OPERATOR =
     R"(operator\s*(?:\(\s*\)|\[\s*\]|new(?:\s*\[\s*\])?|delete(?:\s*\[\s*\])?)"
     R"(|[^\s\w(){};]{1,3}))";
 
+// Words that are a type or qualifier themselves, never a storage macro.
+const std::string C_TYPE_WORDS =
+    R"((?:int|char|short|long|float|double|void|signed|unsigned|struct|union|enum)"
+    R"(|const|volatile|bool|_Bool|static|inline|extern|return|else|case|goto|typedef))";
 const std::string FUNC_HEAD_PAT =
     R"((?m)^[ \t]*)"
     R"((?P<head>)"
@@ -76,7 +80,11 @@ const std::string FUNC_HEAD_PAT =
     R"(_Noreturn|__inline|__inline__|__forceinline|thread_local|)"
     R"(__extension__)\s+|)" + PRE_ATTR + R"([ \t]*)"
     // A leading export macro before a lowercase type: `JSMN_API int f(`.
-    R"(|[A-Z_][A-Z0-9_]*[ \t]+(?=[a-z]))*))"
+    R"(|[A-Z_][A-Z0-9_]*[ \t]+(?=[a-z]))"
+    // A lowercase storage macro before a lowercase type and the name:
+    // zlib's `local block_state deflate_stored(` (#define local static).
+    R"(|(?!)" + C_TYPE_WORDS + R"(\b)[a-z_]\w*[ \t]+)"
+    R"((?=(?:[a-z_]\w*[ \t*]+)+[A-Za-z_]\w*[ \t]*\())*))"
     R"((?P<ret>(?:(?:struct|enum|union|class|typename)\s+)?)"
     R"((?:long\s+long|long\s+(?:int|double)\b|short\s+int\b)"
     R"(|[A-Za-z_]\w*(?:\s*)" + TMPL + R"()?)"
@@ -86,7 +94,8 @@ const std::string FUNC_HEAD_PAT =
     R"((?P<cc>(?:[A-Z_][A-Z0-9_]*|__\w+)[ \t]+)?)"
     R"((?P<name>)" + QUAL + R"((?:)" + OPERATOR + R"(|[A-Za-z_]\w*))\s*)"
     R"(\((?P<params>)" + PARAMS + R"()\))"
-    R"((?P<knr>(?:\s*(?:register\s+)?[A-Za-z_][\w \t\n*,\[\]]*;)*))"
+    // K&R parameter declarations, a function pointer too: `void (*init)(void);`.
+    R"((?P<knr>(?:\s*(?:register\s+)?[A-Za-z_][\w \t\n*,\[\]()]*;)*))"
     R"((?P<attrs>)" + ATTR + R"())"
     R"(\s*))"
     // A function-try-block: `void f(int &x) try { ... } catch (...) { ... }`.
@@ -541,6 +550,7 @@ struct Parser {
         std::vector<std::pair<int, std::string>> gaps;
         std::vector<std::pair<bool, std::string>> stack;  // (is_class, qualified class name)
         std::size_t head_start = 0;
+        std::size_t decl_start = 0;  // after the last `{` / `}` at this level (`;` does not move it)
         std::size_t pos = 0;
         while (pos < text.size()) {
             auto k = text.find_first_of("{};", pos);
@@ -554,11 +564,12 @@ struct Parser {
             }
             if (c == '}') {
                 if (!stack.empty()) stack.pop_back();
-                head_start = pos;
+                head_start = decl_start = pos;
                 continue;
             }
             bool in_class = !stack.empty() && stack.back().first;
             std::string qual = stack.empty() ? std::string() : stack.back().second;
+            const bool after_semicolon = head_start > decl_start && text[head_start - 1] == ';';
             std::string head = text.substr(head_start, k - head_start);
             if (auto lab = match_at_start(access_label, head))
                 head = head.substr(static_cast<std::size_t>(lab->spans[0].second));
@@ -577,12 +588,13 @@ struct Parser {
                         hit->fn.name = qual + "::" + hit->fn.name;
                     hit->fn.kind = "OTHER";
                 }
-                pos = head_start = static_cast<std::size_t>(hit->close) + 1;
+                pos = head_start = decl_start = static_cast<std::size_t>(hit->close) + 1;
                 continue;
             }
             if (match_at_start(extern_head, head) ||
                 (namespace_head.search(head) && head.find('(') == std::string::npos)) {
                 stack.emplace_back(false, qual);
+                decl_start = pos;
                 continue;
             }
             auto tm = match_at_start(type_head, head);
@@ -594,17 +606,44 @@ struct Parser {
                 std::string cname = cm ? cm->named("name") : std::string();
                 if (!cname.empty() && !qual.empty()) cname = qual + "::" + cname;
                 stack.emplace_back(true, cname);
+                decl_start = pos;
                 continue;
             }
             if (!is_type && shape.find('(') != std::string::npos && shape.find('=') == std::string::npos) {
                 auto t = trim(head);
                 auto first = trim(t.substr(0, t.find('\n')));
                 gaps.emplace_back(line_of(start), first.substr(0, 80));
+            } else if (!is_type && shape.find('(') == std::string::npos && shape.find('=') == std::string::npos &&
+                       after_semicolon) {
+                // `local void once(state, init) once_t *state; void (*init)(void); {`:
+                // a K&R head the patterns did not read ends at a `;`, so the text
+                // right before `{` has no `(`. The definition starts at the last
+                // `;`-segment since the previous `{`/`}` that has one: a gap, never
+                // a body skipped without a word (Law 7).
+                std::vector<std::pair<std::size_t, std::string>> segs;  // (offset, text)
+                std::size_t s0 = decl_start;
+                for (std::size_t q = decl_start; q <= k; ++q) {
+                    if (q == k || text[q] == ';') {
+                        segs.emplace_back(s0, text.substr(s0, q - s0));
+                        s0 = q + 1;
+                    }
+                }
+                for (auto it = segs.rbegin(); it != segs.rend(); ++it) {
+                    if (it->second.find('(') == std::string::npos ||
+                        head_shape(it->second).find('=') != std::string::npos)
+                        continue;
+                    std::size_t lw = 0;
+                    while (lw < it->second.size() && std::isspace(static_cast<unsigned char>(it->second[lw]))) ++lw;
+                    auto t = trim(it->second);
+                    auto first = trim(t.substr(0, t.find('\n')));
+                    gaps.emplace_back(line_of(static_cast<int>(it->first + lw)), first.substr(0, 80));
+                    break;
+                }
             }
             // Initializer, enum or brace-init body, or a gap: skip it whole.
             int close = match_brace(text, brace);
             if (close < 0) break;
-            pos = head_start = static_cast<std::size_t>(close) + 1;
+            pos = head_start = decl_start = static_cast<std::size_t>(close) + 1;
         }
         return gaps;
     }
@@ -629,11 +668,64 @@ std::string unwrap_export_macros(std::string text) {
     return text;
 }
 
+// Unbalanced #elif / #else arms as spaces (newlines kept), for discovery
+// only (Python engine _blank_else_branches). zlib trees.c opens one `{` in
+// each arm of `#ifdef FORCE_STORED if (..) { #else if (..) { #endif`:
+// counting both unbalances every brace after it and the function (and the
+// rest of the file) was lost without a gap. When an arm of a conditional
+// does not balance its own braces, only the first arm is kept (the ctags
+// rule); balanced conditionals are left as they are. Bodies still hold
+// every arm for the lints.
+std::string blank_else_branches(std::string text) {
+    if (text.find('#') == std::string::npos) return text;
+    static Regex cond(R"(^[ \t]*#[ \t]*(if|ifdef|ifndef|elif|else|endif)\b)");
+    std::vector<std::pair<std::size_t, std::size_t>> lines;  // [start, end) of each line
+    for (std::size_t pos = 0;;) {
+        auto nl = text.find('\n', pos);
+        lines.emplace_back(pos, nl == std::string::npos ? text.size() : nl);
+        if (nl == std::string::npos) break;
+        pos = nl + 1;
+    }
+    auto delta = [&](std::size_t k) {
+        long d = 0;
+        for (auto i = lines[k].first; i < lines[k].second; ++i) d += text[i] == '{' ? 1 : text[i] == '}' ? -1 : 0;
+        return d;
+    };
+    std::vector<std::vector<std::size_t>> stack;  // per open #if: the start line of each arm
+    for (std::size_t i = 0; i < lines.size(); ++i) {
+        std::string_view ln(text.data() + lines[i].first, lines[i].second - lines[i].first);
+        auto m = match_at_start(cond, ln);
+        if (!m) continue;
+        auto d = m->group(1);
+        if (d.starts_with("if")) {
+            stack.push_back({i});
+        } else if ((d == "elif" || d == "else") && !stack.empty()) {
+            stack.back().push_back(i);
+        } else if (d == "endif" && !stack.empty()) {
+            auto arms = std::move(stack.back());
+            stack.pop_back();
+            if (arms.size() < 2) continue;
+            arms.push_back(i);
+            bool unbalanced = false;
+            for (std::size_t a = 0; a + 1 < arms.size(); ++a) {
+                long sum = 0;
+                for (auto k = arms[a] + 1; k < arms[a + 1]; ++k) sum += delta(k);
+                if (sum != 0) unbalanced = true;
+            }
+            if (!unbalanced) continue;
+            for (std::size_t a = 1; a + 1 < arms.size(); ++a)
+                for (auto k = arms[a] + 1; k < arms[a + 1]; ++k)
+                    for (auto c = lines[k].first; c < lines[k].second; ++c) text[c] = ' ';
+        }
+    }
+    return text;
+}
+
 std::pair<std::vector<FunctionInfo>, std::vector<std::pair<int, std::string>>> parse_text(
     std::string_view text, const std::string& rel) {
     Parser p;
     p.rel = rel;
-    p.code = unwrap_export_macros(blank_char_literals(strip_comments_keep_lines(text, true)));
+    p.code = blank_else_branches(unwrap_export_macros(blank_char_literals(strip_comments_keep_lines(text, true))));
     p.bodies = strip_comments_keep_lines(text, false);
     for (std::size_t i = 0; i < p.code.size(); ++i)
         if (p.code[i] == '\n') p.newlines.push_back(static_cast<int>(i));

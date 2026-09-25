@@ -149,6 +149,18 @@ class TestRealWorldEvaluation(unittest.TestCase):
         self.assertEqual(fns["is_empty"].kind, "POINTER")
         self.assertEqual(fns["version_string"].kind, "VOID")
 
+    def test_zlib_knr_forms_are_parsed(self):
+        # Before: none of these five bodies was a function or a gap (Law 7).
+        self.assertEqual(_names(FP / "realworld_knr.c"),
+                         ["fill_window", "deflate_stored", "once", "flush_block",
+                          "after_ifdef"])
+
+    def test_unreadable_knr_head_is_a_gap_not_silent(self):
+        path = TP / "knr_gap.c"
+        self.assertEqual(parse_gaps(path),
+                         [(7, "char ZLIB_INTERNAL *strwinerror(error)")])
+        self.assertEqual(_names(path), ["after_gap"])
+
     def test_macro_defined_test_body_is_parsed_and_linted(self):
         fns = {f.name: f for f in extract_functions(TP / "realworld_twins.c", "t.c")}
         self.assertEqual(fns["TEST_alloc"].kind, "OTHER")

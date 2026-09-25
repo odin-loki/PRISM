@@ -82,6 +82,11 @@ _OPERATOR = (
     r"|[^\s\w(){};]{1,3})"
 )
 
+# Words that are a type or qualifier themselves, never a storage macro.
+_C_TYPE_WORDS = (
+    r"(?:int|char|short|long|float|double|void|signed|unsigned|struct|union|enum"
+    r"|const|volatile|bool|_Bool|static|inline|extern|return|else|case|goto|typedef)"
+)
 FUNC_HEAD = re.compile(
     r"(?m)^[ \t]*"
     r"(?P<head>"
@@ -91,7 +96,11 @@ FUNC_HEAD = re.compile(
     r"_Noreturn|__inline|__inline__|__forceinline|thread_local|"
     r"__extension__)\s+|" + _PRE_ATTR + r"[ \t]*"
     # A leading export macro before a lowercase type: `JSMN_API int f(`.
-    r"|[A-Z_][A-Z0-9_]*[ \t]+(?=[a-z]))*)"
+    r"|[A-Z_][A-Z0-9_]*[ \t]+(?=[a-z])"
+    # A lowercase storage macro before a lowercase type and the name:
+    # zlib's `local block_state deflate_stored(` (#define local static).
+    r"|(?!" + _C_TYPE_WORDS + r"\b)[a-z_]\w*[ \t]+"
+    r"(?=(?:[a-z_]\w*[ \t*]+)+[A-Za-z_]\w*[ \t]*\())*)"
     r"(?P<ret>(?:(?:struct|enum|union|class|typename)\s+)?"
     r"(?:long\s+long|long\s+(?:int|double)\b|short\s+int\b"
     r"|[A-Za-z_]\w*(?:\s*" + _TMPL + r")?"
@@ -101,7 +110,8 @@ FUNC_HEAD = re.compile(
     r"(?P<cc>(?:[A-Z_][A-Z0-9_]*|__\w+)[ \t]+)?"
     r"(?P<name>" + _QUAL + r"(?:" + _OPERATOR + r"|[A-Za-z_]\w*))\s*"
     r"\((?P<params>" + _PARAMS + r")\)"
-    r"(?P<knr>(?:\s*(?:register\s+)?[A-Za-z_][\w \t\n*,\[\]]*;)*)"
+    # K&R parameter declarations, a function pointer too: `void (*init)(void);`.
+    r"(?P<knr>(?:\s*(?:register\s+)?[A-Za-z_][\w \t\n*,\[\]()]*;)*)"
     r"(?P<attrs>" + _ATTR + r")"
     r"\s*)"
     # A function-try-block: `void f(int &x) try { ... } catch (...) { ... }`.
@@ -472,7 +482,7 @@ def _parse_text(
         stripped = strip_comments_keep_lines(text)
     bodies = strip_comments_keep_lines(text, blank_strings=False)
     # Character literals blanked too: `'}'` must not close a body.
-    code = _unwrap_export_macros(_blank_char_literals(stripped))
+    code = _blank_else_branches(_unwrap_export_macros(_blank_char_literals(stripped)))
     found: dict[int, _Found] = {}  # keyed by the body's `{`
     newlines = [m.start() for m in _NEWLINE.finditer(code)]
 
@@ -606,6 +616,48 @@ _EXPORT_MACRO = re.compile(
 )
 
 
+_PP_COND = re.compile(r"^[ \t]*#[ \t]*(if|ifdef|ifndef|elif|else|endif)\b")
+
+
+def _blank_else_branches(text: str) -> str:
+    """Unbalanced #elif / #else arms as spaces (newlines kept), for discovery.
+
+    zlib trees.c opens one `{` in each arm of `#ifdef FORCE_STORED if (..) {
+    #else if (..) { #endif`: counting both unbalances every brace after it
+    and the function (and the rest of the file) was lost without a gap.
+    When an arm of a conditional does not balance its own braces, only the
+    first arm is kept (the ctags rule); balanced conditionals are left as
+    they are. Bodies still hold every arm for the lints.
+    """
+    if "#" not in text:
+        return text
+    lines = text.split("\n")
+    # per open #if: the start line of each arm
+    stack: list[list[int]] = []
+    for i, ln in enumerate(lines):
+        m = _PP_COND.match(ln)
+        if not m:
+            continue
+        d = m.group(1)
+        if d.startswith("if"):
+            stack.append([i])
+        elif d in ("elif", "else") and stack:
+            stack[-1].append(i)
+        elif d == "endif" and stack:
+            arms = stack.pop()
+            bounds = list(zip(arms, arms[1:] + [i]))
+            if len(bounds) < 2:
+                continue
+            if any(
+                sum(lines[k].count("{") - lines[k].count("}") for k in range(a + 1, b))
+                for a, b in bounds
+            ):
+                for a, b in bounds[1:]:
+                    for k in range(a + 1, b):
+                        lines[k] = " " * len(lines[k])
+    return "\n".join(lines)
+
+
 def _unwrap_export_macros(text: str) -> str:
     if "(" not in text:
         return text
@@ -634,6 +686,7 @@ def _scope_scan(
     # Open containers: (is_class, qualified class name or "").
     stack: list[tuple[bool, str]] = []
     head_start = 0
+    decl_start = 0  # after the last `{` / `}` at this level (`;` does not move it)
     pos = 0
     while True:
         m = _SCOPE_TOKEN.search(text, pos)
@@ -648,9 +701,10 @@ def _scope_scan(
         if c == "}":
             if stack:
                 stack.pop()
-            head_start = pos
+            head_start = decl_start = pos
             continue
         in_class, qual = stack[-1] if stack else (False, "")
+        after_semicolon = head_start > decl_start and text[head_start - 1] == ";"
         head = text[head_start:brace]
         lab = _ACCESS_LABEL.match(head)
         if lab:
@@ -667,12 +721,13 @@ def _scope_scan(
                 if qual and "::" not in hit.fn.name:
                     hit.fn.name = f"{qual}::{hit.fn.name}"
                 hit.fn.kind = "OTHER"
-            pos = head_start = hit.close + 1
+            pos = head_start = decl_start = hit.close + 1
             continue
         if _EXTERN_HEAD.match(head) or (
             _NAMESPACE_HEAD.search(head) and "(" not in head
         ):
             stack.append((False, qual))
+            decl_start = pos
             continue
         tm = _TYPE_HEAD.match(head)
         is_type = tm is not None and "=" not in shape and (
@@ -684,15 +739,32 @@ def _scope_scan(
             if cname and qual:
                 cname = f"{qual}::{cname}"
             stack.append((True, cname))
+            decl_start = pos
             continue
         if not is_type and "(" in shape and "=" not in shape:
             line = line_of(start)
             gaps.append((line, head.strip().split("\n", 1)[0].strip()[:80]))
+        elif not is_type and "(" not in shape and "=" not in shape and after_semicolon:
+            # `local void once(state, init) once_t *state; void (*init)(void); {`:
+            # a K&R head the patterns did not read ends at a `;`, so the text
+            # right before `{` has no `(`. The definition starts at the last
+            # `;`-segment since the previous `{`/`}` that has one: a gap, never
+            # a body skipped without a word (Law 7).
+            region = text[decl_start:brace]
+            segs = region.split(";")
+            for si in range(len(segs) - 1, -1, -1):
+                if "(" in segs[si] and "=" not in _head_shape(segs[si]):
+                    off = decl_start + sum(len(x) + 1 for x in segs[:si])
+                    seg = segs[si]
+                    lead_ws = len(seg) - len(seg.lstrip())
+                    gaps.append((line_of(off + lead_ws),
+                                 seg.strip().split("\n", 1)[0].strip()[:80]))
+                    break
         # Initializer, enum or brace-init body, or a gap: skip it whole.
         close = _match_brace(text, brace)
         if close < 0:
             break
-        pos = head_start = close + 1
+        pos = head_start = decl_start = close + 1
     return gaps
 
 

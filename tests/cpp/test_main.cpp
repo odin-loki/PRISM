@@ -384,6 +384,18 @@ TEST_CASE("real-world forms: export macros and TEST() bodies are parsed") {
     CHECK(has_hit(hits, 62, "CTRL-MISSING-RETURN"));
 }
 
+TEST_CASE("real-world: zlib K&R forms parse; an unreadable K&R head is a gap") {
+    auto fp = repo_dir("testdata_fp");
+    CHECK(fn_names(fp / "realworld_knr.c") ==
+          std::vector<std::string>{"fill_window", "deflate_stored", "once", "flush_block", "after_ifdef"});
+    auto gap = repo_dir("testdata_tp") / "knr_gap.c";
+    auto gaps = prism::parse_gaps(gap);
+    REQUIRE(gaps.size() == 1);
+    CHECK(gaps[0].first == 7);
+    CHECK(gaps[0].second == "char ZLIB_INTERNAL *strwinerror(error)");
+    CHECK(fn_names(gap) == std::vector<std::string>{"after_gap"});
+}
+
 TEST_CASE("real-world: interval, fuzz and replay leave floating point alone") {
     auto fns = fns_of_text(
         "double add(double a, double b) { return a + b; }\n"
