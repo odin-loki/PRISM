@@ -594,8 +594,17 @@ struct Parser {
             } catch (...) {
                 throw ParseFail("nud " + t);
             }
+            // Integer suffix (the tokenizer splits `16U` / `5ULL`): U makes the
+            // literal unsigned; L / LL is a 64-bit literal outside this 32-bit
+            // domain (`state * 6364136223846793005ULL` is not a signed overflow).
+            bool uns = false;
+            if (auto sfx = peek(); !sfx.empty() && sfx.find_first_not_of("uUlL") == std::string::npos) {
+                if (sfx.find_first_of("lL") != std::string::npos) throw ParseFail("64-bit literal unencoded");
+                uns = true;
+                eat();
+            }
             if (n > kIntMax) n -= (int64_t{1} << kWidth);
-            return R{n, n, false};
+            return R{n, n, uns};
         }
         if (t.size() >= 3 && t.front() == '\'' && t.back() == '\'') {
             int n = char_lit_value(t);
@@ -734,7 +743,10 @@ void decl(Engine& e, std::string stmt_s) {
             if (!fullmatch(digits, inner)) throw ParseFail("VLA unencoded");
         }
         if (stmt_s.find('[') != std::string::npos) throw ParseFail("array decl");
-        return;
+        // `unsigned long int un = ..., ur, i;`: a local of a type (or a
+        // declarator list) the engine does not model. Untracked, its uses
+        // would read a signed full range and alarm falsely (tinyexpr ncr).
+        throw ParseFail("unmodelled declaration");
     }
     std::string name = m->group(1);
     std::string init = m->group(2);

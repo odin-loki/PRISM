@@ -318,7 +318,10 @@ def _decl(e: _Engine, stmt: str) -> None:
             raise ParseFail("VLA unencoded")
         if "[" in stmt:
             raise ParseFail("array decl")
-        return
+        # `unsigned long int un = ..., ur, i;`: a local of a type (or a
+        # declarator list) the engine does not model. Untracked, its uses
+        # would read a signed full range and alarm falsely (tinyexpr ncr).
+        raise ParseFail("unmodelled declaration")
     name, init = m.group(1), m.group(2)
     if _type_is_unsigned(stmt[: m.start(1)]):
         e.unsigned.add(name)
@@ -637,9 +640,19 @@ def _eval(e: _Engine, src: str) -> R:
             return nxt
         if t.isdigit() or t.startswith("0x"):
             n = int(t, 0)
+            # Integer suffix (the tokenizer splits `16U` / `5ULL`): U makes the
+            # literal unsigned; L / LL is a 64-bit literal outside this 32-bit
+            # domain (`state * 6364136223846793005ULL` is not a signed overflow).
+            uns = False
+            sfx = peek()
+            if sfx and not sfx.strip("uUlL"):
+                if any(ch in "lL" for ch in sfx):
+                    raise ParseFail("64-bit literal unencoded")
+                uns = True
+                eat()
             if n > INT_MAX:
                 n -= 1 << WIDTH
-            return R(n, n)
+            return R(n, n, uns)
         if len(t) >= 3 and t.startswith("'") and t.endswith("'"):
             return R(_char_lit_value(t), _char_lit_value(t))
         if _is_ident(t):

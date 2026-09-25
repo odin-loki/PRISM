@@ -388,9 +388,14 @@ TEST_CASE("real-world: interval, fuzz and replay leave floating point alone") {
     auto fns = fns_of_text(
         "double add(double a, double b) { return a + b; }\n"
         "double scale(int n) { double x = n; return x * x + 1; }\n"
-        "int iadd(int a, int b) { return a + b; }\n",
+        "int iadd(int a, int b) { return a + b; }\n"
+        // tinyexpr: a multi-word unsigned local and a ULL literal
+        "int ncr(int n, int r) { unsigned long int un = n, ur = r, i = 1; return (int)(un - ur + i); }\n"
+        "static unsigned long long st = 1;\n"
+        "unsigned rnd(unsigned m) { st = st * 6364136223846793005ULL + 1ULL; return m; }\n"
+        "unsigned umul(unsigned a) { return a * 16U; }\n",
         "prism_rw_float.c");
-    REQUIRE(fns.size() == 3);
+    REQUIRE(fns.size() == 6);
     std::map<std::string, std::string> got;
     for (auto& f : prism::run_interval(fns))
         if (f.status == prism::laws::FAILED) got[*f.function] = f.cls;

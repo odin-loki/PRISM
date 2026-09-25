@@ -171,6 +171,12 @@ class TestRealWorldEvaluation(unittest.TestCase):
             "double add(double a, double b) { return a + b; }\n"
             "double scale(int n) { double x = n; return x * x + 1; }\n"
             "int iadd(int a, int b) { return a + b; }\n"
+            # tinyexpr: a multi-word unsigned local and a ULL literal
+            "int ncr(int n, int r) { unsigned long int un = n, ur = r, i = 1;"
+            " return (int)(un - ur + i); }\n"
+            "static unsigned long long st = 1;\n"
+            "unsigned rnd(unsigned m) { st = st * 6364136223846793005ULL + 1ULL; return m; }\n"
+            "unsigned umul(unsigned a) { return a * 16U; }\n"
         )
         fns = extract_functions_from_text(src, "f.c")
         got = {f.function: f.cls for f in run_interval(fns) if f.status == laws.FAILED}
