@@ -28,7 +28,16 @@ The short version:
   `expect`, the six `*.with.overflow` with `extractvalue`,
   `lifetime.start`/`end`, `memcpy`/`memmove`/`memset` with constant or
   variable lengths) and globals (read-only data, the globals of `main`, and
-  mutable or external globals of arbitrary contents). It is proved for every
+  mutable or external globals of arbitrary contents); **pointers** (pointer
+  values in phis, selects, loads, stores, calls and returns; relational
+  comparisons with their PTR-COMPARE check; a returned pointer with the
+  MEM-STACK-ESCAPE check; pointer parameters bound to harness objects —
+  `byval`/`sret` and constant-size contracts — while unbound ones are refused
+  by both translators, Law 6); and the **heap of the libc models**
+  (`malloc`/`calloc`/`free`, `operator new`/`delete`: the model code inlined,
+  its `__prism_alloc`/`__prism_free` with the null/invalid/mismatched/double
+  free checks, `__VERIFIER_nondet_*` values and `__VERIFIER_assume` /
+  `__prism_assume`). It is proved for every
   function whose translation carries a certificate the checker validates
   (`agree-ext`), for every choice of the values LLVM leaves open.
 * Each run can check that the C++ translator's output **is** the proved
@@ -53,7 +62,7 @@ What is *not* proved, and the gaps this work found in
 | Dependencies | `proofs/semantics` (PIR expression semantics: `PrismSem.evalBin`, `evalPred`, `ubBin`) and `proofs/techniques` (`PrismTechniques.FloatRound.rne`), both as Lake *path* dependencies: imported, not copied |
 | Build | `cd proofs/refinement && lake build` |
 | Audit | `./check.sh`: build with no warning, no escape hatch in any source (`sorry`, `admit`, `native_decide`, `bv_decide`, `implemented_by`, `extern`, `axiom`, `unsafe`), every theorem in `Audit.lean` within `propext` / `Classical.choice` / `Quot.sound`, checker fixtures |
-| Size | about 11 700 lines of Lean, 89 audited theorems |
+| Size | about 12 700 lines of Lean, 96 audited theorems |
 
 | File | Contents |
 |---|---|
@@ -69,6 +78,8 @@ What is *not* proved, and the gaps this work found in
 | `PrismRefine/XTranslate.lean`, `XValid.lean` | The translator with inlining and `MemTr` mirrored, its certificate, the executable check `validB` |
 | `PrismRefine/XMemSim.lean` | The memory checks and `getelementptr` arithmetic compute the semantics' conditions |
 | `PrismRefine/XMemOps.lean` | `llvm.memcpy`/`memmove`/`memset`: the guarded access checks and the overlap check compute `cpyBad` for every length |
+| `PrismRefine/XHeap.lean` | The libc models' release (`__prism_free`): `MemTr::dealloc`'s checks compute `freeBad` |
+| `PrismRefine/XEscape.lean` | A returned pointer: `MemTr::stack_escape_check` computes the stack-escape rule |
 | `PrismRefine/XRefine.lean`, `XStep.lean`, `XRun.lean`, `XValidSpec.lean` | Simulation: `translateX_exact` |
 | `PrismRefine/XLazy.lean`, `XSound.lean` | Strict vs LangRef side (`strict_lazyX`); headline theorems `pir_sound_x` … |
 | `PrismRefine/Check.lean`, `CheckMain.lean` | `pir_lean_check`: the correspondence checker |
@@ -185,7 +196,7 @@ module `M`, function `F`, PIR function `P` and certificate `C` with
 |---|---|---|
 | `freeze` | of any fragment operand, of `poison`, of `undef` | the operand's value; `freeze undef` and `freeze poison` draw one arbitrary value from the oracle (reading the literal `poison` still counts as creating poison, see finding 5) |
 | `undef` | **only** as the operand of `freeze` or of `store` | anywhere else it is refused (finding 4) |
-| `call @f(…)` | direct calls to a function defined in the same file that `Tr::call` hands to `Tr::inline_call` (not a model, not an intrinsic, not `__prism.*` / `__cxa_*`), up to the translator's inline depth, non-recursive | a new frame; parameters bound to the argument values; `ret` resumes the caller after the call |
+| `call @f(…)` | direct calls to a function defined in the module that `Tr::call` hands to `Tr::inline_call` (not an intrinsic, not `__prism.*` / `__cxa_*`; library models and functions of other files included — no `shl` there is a C signed shift, since `Tr` gives their instructions the call site's line with column 0), up to the translator's inline depth, non-recursive; not a by-value aggregate parameter of a callee (copied: outside) | a new frame; parameters bound to the argument values; `ret` resumes the caller after the call |
 | `alloca` | constant size below 2^47 bytes, in the analysed function (not in an inlined callee) | a new live stack object, every byte uninitialised |
 | `load iN` / `store iN` | `N ≤ 64`, alignment none or a power of two below 2^32, pointer a register; not an integer load of a whole aggregate | UB through null, a pointer to no object, a freed object, out of bounds, misaligned (address or object), or (store) into a read-only object; reading an uninitialised byte is UB in the strict semantics (PRISM's rule) and *flagged* on the LangRef side, like poison creation; storing `undef`, `poison` or an indeterminate register writes uninitialised bytes |
 | `getelementptr [inbounds]` | constant struct field indices, integer (≤ 64-bit) first and array indices | the offset is accumulated in signed 64 bits, each scaling and addition overflow-checked (C17 6.5.6p8); an array index must stay within its array (one past the end for an address that is not dereferenced; also in nested arrays); arithmetic on null, `inbounds` leaving the object or its address range, any other move to another object: UB (strict) / poison (LangRef side) |
@@ -196,6 +207,15 @@ module `M`, function `F`, PIR function `P` and certificate `C` with
 | `llvm.lifetime.start(n, p)` | `1 ≤ n ≤ 8` (the translator refuses larger objects) | PRISM's model: a store of `n` uninitialised bytes through `p`, with a write's checks (so an object whose lifetime ended stays dead: see finding 7) |
 | `llvm.lifetime.end(n, p)` | | the object's lifetime ends (`Stmt::Free`, no check) |
 | `llvm.memcpy` / `memmove` / `memset` | pointer registers or entry globals; length a register or constant of ≤ 64 bits; the `memset` byte `i8` | with a non-zero length: UB if either access is bad (null, wild, freed, out of bounds, read-only destination; byte alignment) or — `memcpy` — the ranges overlap (C17 7.24.2.1; see finding 6); then the bytes (initialised or not) are copied, reads before writes, or `n` initialised bytes are written; a zero length does nothing |
+| pointer values | `ptr` (opaque pointers) in `phi`, `select`, `load`/`store` (8 bytes), `icmp eq`/`ne`, call arguments and returns, the uninitialised-local marker; `null` | the 64-bit pointer (object id in bits 63..48): phis, selects, loads and stores copy it; `eq`/`ne` compare it (PRISM's model: distinct objects never compare equal); `null` is 0 |
+| `icmp ult`… `sge` on pointers | | UB (C17 6.5.8p5, PRISM's rule) unless both point into the same object (`obj(a) != obj(b)`, PTR-COMPARE); then the comparison of the two 64-bit pointers; the translator's unsigned predicate for a signed one equals it there (`pcmp_val`: both have the object id's top bit) |
+| `ret ptr` of the analysed function | | UB (C17 6.2.4p2, PRISM's rule) if the returned pointer is not null and points into one of the function's own stack objects — the `alloca`s of the entry block before its first call, `Frame::allocas` (MEM-STACK-ESCAPE) |
+| pointer parameters of the analysed function | `byval`/`byref`/`sret`, or a contract with a constant element count | the object the harness provides, allocated on entry before the globals (`translate()`'s prologue): a stack copy of arbitrary bytes (`byval`), an uninitialised return slot (`sret`), an `Extern`/`Const` object of arbitrary bytes (contract, Law 6); the parameter register holds its pointer. A pointer parameter no harness binds is refused by both translators (`agree-reject`, NEEDS-HARNESS); a contract whose size is another parameter (assumptions on it) is outside |
+| `__prism_alloc(n, kind, init)` (in the libc models) | `n` a 64-bit register, or a constant below 2^47; `kind`, `init` constants | a fresh object of `n` bytes of that kind (heap, `new`, `new[]`), alignment 16, uninitialised / zero / arbitrary bytes; a size of 2^47 or more is not modelled (the semantics is stuck; PIR assumes the size below 2^47, the models test it first) |
+| `__prism_free(p, kind)`, `__prism_free_check(p, kind)` | not `FILE` | UB unless `p` is null or the start of a live object of that kind (`freeBad`: MEM-INVALID-FREE, MEM-MISMATCHED-FREE, MEM-DOUBLE-FREE); `__prism_free` then ends its lifetime |
+| `__prism_alloc_failed()` | | a store of 1 into the hidden "an allocation failed" flag object (one zero byte, allocated on entry after the globals when the function can reach this call; the export passes its pointer to the inlined models as an extra argument) |
+| `__VERIFIER_nondet_*()`, `nondet_*()` | not defined in the module; the result used | an arbitrary value drawn from the oracle (PIR `havoc`) |
+| `__VERIFIER_assume(c)`, `__prism_assume(c)` | | an execution where `c` is 0 is not considered (the LLVM semantics is stuck: no claim; PIR `assume`) |
 | a global `@g` named by the analysed function | not thread-local; not the C++ runtime's objects or `stdin`/`stdout`/`stderr`; an initialiser of numbers, strings and zeros | a fresh object allocated at the start of the entry block (which has no predecessors): read-only data (kind 4) and every global of `main` zero-filled then written with the initialiser's non-zero stores; any other mutable global, an external object and a large table: arbitrary initialised bytes drawn from the oracle (`MemTr::global`'s choices) |
 
 **Nondeterminism.** Both semantics take an oracle `ω : Nat → Nat` and read it
@@ -246,6 +266,9 @@ counter as one `World`.
 | `memcpy_run`, `memset_run` | the statements of `MemTr::memcpy_` / `memset_` after the operands (the widened length, the guard, the checks, the copy or fill) fail exactly on `cpyBad` and otherwise produce the LLVM memory |
 | `store_simX`, `globStores_run` | a store (and `llvm.lifetime.start`); a global's allocation and initialiser stores |
 | `sinstX_sim`, `phisX_sim`, `enter_sim`, `step_sim`, `run_simX` | one instruction, the phis, a call, one segment, a run |
+| `pcmp_val`, `pcmp_run` | the object check and unsigned comparison `MemTr::icmp` emits for a relational pointer comparison fail exactly on pointers into different objects and otherwise compute LLVM's (signed or unsigned) predicate |
+| `escLoop_run`, `escChk_run`, `escHit_ok` | the statements of `MemTr::stack_escape_check` fail exactly when the returned pointer is not null and its object is one of the function's own stack objects, which is the LLVM-side rule on the related registers |
+| `freeChk_run` | the 25 statements of `MemTr::dealloc` fail exactly on `freeBad` (null excepted: not an allocated object, not its start, another kind, lifetime ended) |
 
 What this does **not** say: the memory model is PRISM's, shared by both
 sides, so the theorem is "PIR agrees with LLVM *in this memory model*", not a
@@ -341,9 +364,17 @@ the uninitialised-memory read check; from `Tr::call` the handlers of
 `expect`, the overflow intrinsics with `extractvalue`, `lifetime.start`/`end`
 and `memcpy`/`memmove`/`memset` (`MemTr::memcpy_`/`memset_` with their
 guarded access checks and the overlap check), and `MemTr::global` for the
-globals the analysed function names. Not covered: `llvm.assume`, traps,
-`stacksave`/`stackrestore`, the floating-point intrinsics, every library
-model.
+globals the analysed function names; with pointers and the heap also
+`MemTr::icmp` (relational pointer comparisons), `MemTr::stack_escape_check`,
+the pointer-parameter bindings of `translate()` (`byval`/`sret`,
+`bind_contract` with a constant count), and from `Tr::model_intrinsic`
+`__prism_alloc` (`MemTr::alloc`), `__prism_free`/`__prism_free_check`
+(`MemTr::dealloc` except its `FILE` branch), `__prism_assume` and
+`__prism_alloc_failed`, and from `Tr::call` the nondet sources and
+`__VERIFIER_assume`. Not covered: `llvm.assume`, traps,
+`stacksave`/`stackrestore`, the floating-point intrinsics, the other model
+intrinsics (`__prism_obj_size`, `__prism_memcpy`, `__prism_check`, …), the
+format family.
 
 By function, on the repository's own C/C++ corpus
 (`python tools/pir_lean_check.py tests/pir testdata --bin <build>/prism`:
@@ -365,6 +396,41 @@ extended fragment:
 | `testdata`, with intrinsics, `memcpy`/`memset`, lifetime markers, globals | 2 506 | 915 | **32** | 4 | 1 555 | **0** |
 | `tests/pir`, findings 2, 5–7 fixed (2 new functions; `mem_str.c` `memcpy_ok`, `memcpy_bad`, `overlap_bad` call C `memcpy`, now the library model: outside) | 231 | 47 | **26** | 1 | 157 | **0** |
 | `testdata`, findings 2, 5–7 fixed (mainline has 9 more functions) | 2 515 | 924 | **32** | 4 | 1 555 | **0** |
+| `tests/pir`, before pointers and the heap (2026-09-25, this branch's base) | 229 | 47 | 29 | 1 | 152 | **0** |
+| `tests/pir`, with pointer values, comparisons, returns, harness parameters | 229 | 47 | **46** | 16 | 120 | **0** |
+| `tests/pir`, … and the libc models' heap, nondet values, assumptions, library callees | 229 | 47 | **68** | 20 | 94 | **0** |
+| `testdata`, before pointers and the heap | 2 515 | 924 | 32 | 4 | 1 555 | **0** |
+| `testdata`, with pointer values, comparisons, returns, harness parameters | 2 515 | 927 | **49** | 36 | 1 500 | **0** |
+| `testdata`, … and the libc models' heap, nondet values, assumptions, library callees | 2 515 | 927 | **78** | 52 | 1 458 | **0** |
+
+Pointers and the heap (2026-09-25): 85 more `agree-ext` functions over both
+trees (61 → 146), 0 mismatches. Among them 24 of the pointer fixture
+`fixtures/pointers.pirl` (`tests/pir/mem_ptr.c`, `mem_contract.c`,
+`testdata/stack_escape.c`: relational comparisons in and across objects,
+pointer phis and selects, null dereferences, all seven stack-escape
+variants, contract-bound parameters incl. a write to a read-only one) and 42
+functions with heap objects: `malloc`/`calloc`/`free` and `new`/`delete`
+(`tests/pir/mem_heap.c`, `mem_cxx.cpp`; `testdata` double free, use after
+free, invalid and offset free, mismatched `new[]`/`delete`, unchecked
+`malloc` results, flexible array members, leaks). `fixtures/heap.pirl` checks
+as 15 `agree-ext` (+ 2 `realloc` functions outside: `__prism_obj_size` and
+`__prism_memcpy` are not in the fragment); `dropped_ptr_check` and
+`dropped_heap_check` remove a PTR-COMPARE, a MEM-STACK-ESCAPE, a
+MEM-DOUBLE-FREE and a MEM-MISMATCHED-FREE check and are (as they must be)
+4 mismatches. The new `agree-reject`s (5 → 72) are pointer parameters no
+harness binds: the C++ translator refuses them (NEEDS-HARNESS, Law 6) and so
+does the Lean one; before, the exporter could not write them and they were
+`outside`. Two translator-side changes made this exact: a contract's
+element size is now one function (`pirmem::contract_elem_bytes`) shared by
+the translator and the export, and the hidden "an allocation failed" flag
+object of the malloc models is allocated up front — its variable after the
+entry globals', its object after theirs in the prologue — whenever the
+analysed function can reach `__prism_alloc_failed` through direct calls
+(`pirmem::reaches_alloc_failed`, also shared), instead of at the first call
+the translator happened to meet. Before, an `abort()` translated before the
+first allocation site saw no flag and was always reported; it now reads the
+flag (a report only when no allocation failed before it, the documented F9
+rule), so the change can only remove a false alarm.
 
 The new `agree-ext` functions: array initialisers (`memcpy` from a
 `@__const` global, `memset` of a zeroed array), `memcpy`/`memmove`/`memset`
@@ -681,22 +747,33 @@ check the C++ interpreter uses Z3's `bvudiv x 0 = ~0`, the Lean model Lean's
 ## What remains
 
 * **Library calls.** Most `testdata` functions outside the fragment call a
-  function PRISM models rather than inlines (1 329 of 1 560): libc and C++
-  runtime models, `__assert_fail`, `exit`, nondet sources, traps, the
+  function PRISM does not inline or model in the fragment (1 421 of 1 458
+  after the heap): the C++ exception runtime (`__cxa_*`), `printf` and the
+  rest of the format family (modelled in the translator, `libc_format.cpp`),
+  threads, unmodelled POSIX calls (`system`, `fork`, `mmap`, … — the C++
+  translator refuses them too), `__assert_fail`, `exit`, `abort`, traps, the
   `__prism.folded` / `__prism.poison` markers; also `llvm.assume`
   (finding 8) and the intrinsics `translate.cpp` refuses (`fshl`/`fshr`, …:
-  both translators refuse them). Each model needs its semantics stated in
-  Lean; the libc models also take pointer parameters (next item).
+  both translators refuse them). The libc models written in C are inlined
+  and in the fragment as far as their code is (`malloc`, `calloc`, `free`,
+  `new`, `delete`, `strlen`, `atoi`, …).
 * **More memory.** In the proved fragment: stack objects of constant size,
-  integer loads and stores, `getelementptr`, `llvm.memcpy`/`memmove`/
-  `memset`, `llvm.lifetime.*`, globals the analysed function names. Not yet:
-  the heap (`malloc`/`free`, `new`/`delete`), pointer-typed parameters (the
-  harness objects of `Tr::enter_frame`), pointers stored in memory and
-  pointer phis, selects and comparisons (the largest group after library
-  calls: 209 `testdata` functions), globals whose initialiser holds
-  pointers, globals named only in an inlined callee or through a constant
-  expression, variable-size `alloca`, aggregate loads (raw byte copies with
-  per-byte shadows), `llvm.stacksave`/`stackrestore`.
+  integer and pointer loads and stores, `getelementptr`,
+  `llvm.memcpy`/`memmove`/`memset`, `llvm.lifetime.*`, globals the analysed
+  function names, pointer phis/selects/comparisons/returns, harness-bound
+  pointer parameters (`byval`, `sret`, constant-size contracts), and the
+  heap of the libc models through `__prism_alloc`/`__prism_free`. Not yet:
+  `realloc` (`__prism_obj_size`, `__prism_memcpy`), `FILE` objects
+  (`fopen`/`fclose`), `abort()` (it reads the allocation-failed flag and
+  ends the block), `exit`, contracts whose size is another parameter (the
+  harness assumes a range on it: a theorem conditional on that assumption),
+  `ptrtoint`/`inttoptr`, globals whose initialiser holds pointers, globals
+  named only in an inlined callee or through a constant expression,
+  variable-size `alloca`, aggregate loads (raw byte copies with per-byte
+  shadows), `llvm.stacksave`/`stackrestore`, a by-value aggregate parameter
+  of an inlined callee (copied). The memory model is PRISM's (distinct
+  objects never compare equal, object ids are not addresses): the theorems
+  say PIR agrees with LLVM in that model.
 * **Nondeterminism beyond `freeze`.** `undef` elsewhere (finding 4, fixed
   in the C++ translator by per-use fresh values) needs set-valued registers
   in the Lean model; the oracle semantics covers exactly the places where
