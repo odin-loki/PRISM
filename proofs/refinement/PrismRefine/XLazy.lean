@@ -143,6 +143,7 @@ theorem sinst_liftX (ω : Nat → Nat) (R : SRegs) (t : World) (i : SInst) :
   | memcpy d s len lw mv => simp only [sSInst, lSInst, lower_lift]; exact lMem_lift R _
   | memset d b len lw => simp only [sSInst, lSInst, lower_lift]; exact lMem_lift R _
   | glob d size al kd ini st => simp [sSInst, lSInst, SLX, lift_set]
+  | pcmp d p a b => simp only [sSInst, lSInst, lower_lift]; exact lOne_lift R t d _
 
 theorem lStoreR_mono {ω : Nat → Nat} {S S' : LSt} {t t' : World} {w : Nat} {v : FOpnd} {p : Opnd} {al : Nat}
     (h : lStoreR ω S t w v p al = .ok (S', t')) (hc : S.c = true) : S'.c = true := by
@@ -229,6 +230,7 @@ theorem lSInst_mono {ω : Nat → Nat} {S S' : LSt} {t t' : World} {i : SInst}
   | memset d b len lw => exact lMem_mono h hc
   | glob d size al kd ini st =>
     simp only [lSInst, Res.ok.injEq, Prod.mk.injEq] at h; obtain ⟨rfl, _⟩ := h; exact hc
+  | pcmp d p a b => exact lOne_mono h hc
 
 /-- Once poison has been created, the rest of a segment stays bad. -/
 def LBadX : Res (LSt × World) → Prop

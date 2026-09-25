@@ -130,6 +130,11 @@ inductive SInst where
   anything reads the global: a run of the function from a program state where
   the global holds its initial value. -/
   | glob (dst : String) (size align kind init : Nat) (st : List (Nat × Nat × Nat))
+  /-- `%dst = icmp <p> ptr a, b` with a relational predicate (`ult` … `sge`):
+  PRISM's rule is C's (C17 6.5.8p5), the two pointers must point into the same
+  object; the value is the comparison of the 64-bit pointers (as LLVM compares
+  addresses).  Pointer `eq`/`ne` is the integer `icmp` at width 64. -/
+  | pcmp (dst : String) (p : Pred) (a b : Opnd)
   deriving DecidableEq, Repr, Inhabited
 
 /-- The register of field `i` of an overflow pair (a name no LLVM register
@@ -174,6 +179,11 @@ structure XFunc where
   params : List (String × Nat)
   retw : Nat
   blocks : List XBlock
+  /-- pointer parameters of the analysed function that no harness object
+  binds (no `byval`/`sret`, no contract): the translator refuses the
+  function (Law 6, NEEDS-HARNESS); they have no semantics here.  A bound one
+  is not a parameter but an object allocated on entry (`SInst.glob`). -/
+  ptrParams : List String := []
   deriving DecidableEq, Repr, Inhabited
 
 /-- A module: the functions calls can reach (first match by name). -/
@@ -320,6 +330,12 @@ def globAlloc (ω : Nat → Nat) (W : World) (size align kind init : Nat) (st : 
   ((W.allocW ω (size % 2 ^ 64) kind align init).2,
    globW (W.allocW ω (size % 2 ^ 64) kind align init).2 (W.allocW ω (size % 2 ^ 64) kind align init).1 st)
 
+/-- A relational pointer comparison: UB (C17 6.5.8p5) unless both pointers
+point into the same object, else the predicate on the 64-bit values. -/
+def sPcmpV (R : SRegs) (p : Pred) (a b : Opnd) : Res Nat :=
+  (sOpnd R 64 a).bind fun x => (sOpnd R 64 b).bind fun y =>
+    if ptrObj (x % 2 ^ 64) = ptrObj (y % 2 ^ 64) then .ok (icmpVal p 64 x y) else .ub
+
 /-! ## Strict semantics -/
 
 /-- The values of the integer intrinsics. -/
@@ -402,6 +418,7 @@ def sSInst (ω : Nat → Nat) (R : SRegs) (W : World) : SInst → Res (SRegs × 
   | .memset d b len lw => (sMemset R W d b len lw).bind fun W' => .ok (R, W')
   | .glob d size al kd ini st =>
     .ok (R.set d (globAlloc ω W size al kd ini st).1, (globAlloc ω W size al kd ini st).2)
+  | .pcmp d p a b => (sPcmpV R p a b).bind fun v => .ok (R.set d v, W)
 
 def sSInsts (ω : Nat → Nat) : SRegs → World → List SInst → Res (SRegs × World)
   | R, W, [] => .ok (R, W)
@@ -590,6 +607,8 @@ def lSInst (ω : Nat → Nat) (S : LSt) (W : World) : SInst → Res (LSt × Worl
   | .memset d b len lw => lMem S (sMemset (lower S.R) W d b len lw)
   | .glob d size al kd ini st =>
     .ok (⟨S.R.set d (.val (globAlloc ω W size al kd ini st).1), S.c⟩, (globAlloc ω W size al kd ini st).2)
+  -- pointers into different objects: C UB (not LLVM poison), flagged like a C array bound
+  | .pcmp d p a b => lOne S W d (sPcmpV (lower S.R) p a b)
 
 def lSInsts (ω : Nat → Nat) : LSt → World → List SInst → Res (LSt × World)
   | S, W, [] => .ok (S, W)

@@ -335,10 +335,12 @@ structure XPF where
   retw : Nat := 0
   blocks : List XBlock := []
   cur : Option (String × List PhiI × List (List SInst × CallI) × List SInst) := none
+  ptrParams : List String := []
 
 def XPF.close (f : XPF) : Except String XFunc := do
   if f.cur.isSome then throw s!"{f.name}: last block has no terminator"
-  pure { name := f.name, params := f.params, retw := f.retw, blocks := f.blocks.reverse }
+  pure { name := f.name, params := f.params, retw := f.retw, blocks := f.blocks.reverse,
+         ptrParams := f.ptrParams.reverse }
 
 /-- Parse the `L ...` lines of a record in the extended syntax: the analysed
 function, then an `L fn NAME` section per function its calls reach. -/
@@ -433,6 +435,11 @@ def parseXLlvm (name : String) (ls : List (List String)) :
     | ["lend", p] =>
       let (bn, ps, sg, is) ← inBlock
       f := { f with cur := some (bn, ps, sg, .lend (← opnd? p) :: is) }
+    | ["pcmp", d, p, a, b] =>
+      let (bn, ps, sg, is) ← inBlock
+      let q ← match pred? p with | some q => pure q | none => throw s!"icmp {p}"
+      f := { f with cur := some (bn, ps, sg, .pcmp (← reg? d) q (← opnd? a) (← opnd? b) :: is) }
+    | ["ptrparam", d] => f := { f with ptrParams := (← reg? d) :: f.ptrParams }
     | ["memcpy", d, sp, n, lw, mv] =>
       let (bn, ps, sg, is) ← inBlock
       f := { f with cur := some (bn, ps, sg,

@@ -434,6 +434,11 @@ def unChecks (uk : UnK) (flag : Bool) (w : Nat) (A : Arg) : List Chk :=
   | .ctlz | .cttz => opt flag (.p (.cmp .eq) A (.c w 0) "clz0" "INT-CLZ-ZERO")
   | _ => []
 
+/-- `MemTr::icmp`: a signed predicate on pointers is its unsigned one. -/
+def uPred : Pred → Pred
+  | .sgt => .ugt | .sge => .uge | .slt => .ult | .sle => .ule
+  | p => p
+
 /-- The operands a `getelementptr` reads. -/
 def gepUses (base : Opnd) (ix : List GIdx) : List Opnd := base :: ix.filterMap (fun g => g.opnd.map (·.1))
 
@@ -545,6 +550,18 @@ def trSInstX (c : Ctx) (k : Nat) : SInst → Except String (List PStmt × List N
     pure (sd ++ ss ++ sn ++ sz ++ [.assign g (.cmp .ne) [N, c64 0]] ++ accChkG a1 g D N true ++
             accChkG a2 g S N false ++ (if mv then [] else overlapChk a3 g D S N) ++ [.memcpy D S N],
           td ++ ts ++ tn ++ tz ++ [1] ++ accTG true ++ accTG false ++ (if mv then [] else overlapT))
+  | .pcmp d p a b => do
+    need (p != .eq && p != .ne) "outside fragment: pointer equality is an icmp"
+    let (sa, ta, A) ← trOpndX c 64 false k a
+    let (sb, tb, B) ← trOpndX c 64 false (k + ta.length) b
+    let i ← dstX c d 1
+    need (look c.sh d).isNone "outside fragment: result with a shadow"
+    let j := k + ta.length + tb.length
+    -- the object check (`obj(x) != obj(y)`, PTR-COMPARE), then the unsigned comparison
+    pure (sa ++ sb ++ [.assign j (.bin .lshr) [A, c64 48], .assign (j + 1) (.bin .lshr) [B, c64 48],
+            .assign (j + 2) (.cmp .ne) [.v j 64, .v (j + 1) 64], .check (.v (j + 2) 1) "ptr-cmp" "PTR-COMPARE",
+            .assign i (.cmp (uPred p)) [A, B]],
+          ta ++ tb ++ [64, 64, 1])
   | .memset d b len lw => do
     need (okW lw) "UNENCODED: width"
     let (sd, td, D) ← trOpndX c 64 true k d
@@ -694,6 +711,7 @@ where
     | .ovf d _ w _ _ => [(pairReg d 0, w), (pairReg d 1, 1)]
     | .xv d w _ _ => [(d, w)]
     | .glob d _ _ _ _ _ => [(d, 64)]
+    | .pcmp d _ _ _ => [(d, 1)]
     | .lstart .. | .lend .. | .memcpy .. | .memset .. => []
 
 def xPhisOf (G : XFunc) : List PhiI := G.blocks.flatMap (·.phis)
@@ -896,6 +914,8 @@ def translateX (M : XMod) (depth : Nat) (F : XFunc) : Except String (PFunc × Li
   need (F.params.all (fun p => okW p.2)) "UNENCODED: parameter type"
   need (F.retw == 0 || okW F.retw) "UNENCODED: return type"
   need (!F.blocks.isEmpty) "UNENCODED: empty function body"
+  need F.ptrParams.isEmpty
+    "pointer parameter: unguarded model checking reports missing preconditions, not defects (Law 6)"
   let np := F.params.length
   let go : TM Unit := do
     let mut penv : List (String × Arg) := []

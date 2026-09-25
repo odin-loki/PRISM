@@ -82,6 +82,10 @@ open PrismRefine
 #print axioms memcpy_run
 #print axioms memset_run
 #print axioms globStores_run
+-- pointer values: relational comparison in one object (roadmap 8.2, M9)
+#print axioms msb_of_obj
+#print axioms pcmp_val
+#print axioms pcmp_run
 -- Part 8.2 "Floating point" (stretch): IEEE binary formats, correctly rounded addition
 #print axioms PrismRefine.Float.roundU_repr
 #print axioms PrismRefine.Float.roundU_nearest

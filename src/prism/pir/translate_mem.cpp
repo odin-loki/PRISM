@@ -356,6 +356,24 @@ std::vector<std::string> entry_globals(const ir::Module& m, const Layout& lay, c
     return out;
 }
 
+uint64_t contract_elem_bytes(const Layout& lay, const ir::Function& f, const ir::Param& p, const PtrContract& c) {
+    uint64_t esz = c.elem_bytes;
+    if (esz) return esz;
+    // element type from the first access through p
+    for (auto& bl : f.blocks) {
+        for (auto& in : bl.insts) {
+            auto is_p = [&](std::size_t i) {
+                return i < in.ops.size() && in.ops[i].v.kind == ir::Value::Local && in.ops[i].v.name == p.name;
+            };
+            if (in.op == "load" && is_p(0)) esz = lay.store_size(in.ty);
+            else if (in.op == "store" && is_p(1)) esz = lay.store_size(in.ops[0].ty);
+            else if (in.op == "getelementptr" && is_p(0)) esz = lay.alloc_size(in.ety);
+            if (esz) return esz;
+        }
+    }
+    return 0;
+}
+
 void MemTr::preassign_globals(const ir::Function& f) {
     for (auto& name : entry_globals(t_.module(), lay_, f, t_.options().globals_initial)) {
         if (globals_.count(name)) continue;

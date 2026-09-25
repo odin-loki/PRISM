@@ -92,6 +92,12 @@ std::optional<EntryGlobal> entry_global(const ir::Module& m, const Layout& lay, 
 // as instructions at the start of the entry block.
 std::vector<std::string> entry_globals(const ir::Module& m, const Layout& lay, const ir::Function& f, bool initial);
 
+// Element size of pointer parameter `p` bound to contract `c`
+// (translate.cpp bind_contract): the contract's own, else the size the first
+// load, store or getelementptr through `p` accesses; 0 when unknown. Shared
+// with the Lean export (export_lean.cpp), which writes the contract object.
+uint64_t contract_elem_bytes(const Layout& lay, const ir::Function& f, const ir::Param& p, const PtrContract& c);
+
 class MemTr {
 public:
     MemTr(TrApi& t, const ir::Module& m);

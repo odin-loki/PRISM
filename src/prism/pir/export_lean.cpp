@@ -50,14 +50,36 @@ unsigned width(const ir::Type& t) {
     return t.bits;
 }
 
+// The width of a value: an integer's, or 64 for a pointer (translate.cpp
+// keeps a pointer as one 64-bit value, object id in bits 63..48).
+unsigned vw(const ir::Type& t) {
+    if (t.kind == ir::Type::Ptr && t.text == "ptr") return 64;
+    return width(t);
+}
+
+// The analysed function's entry globals (pirmem::entry_globals); null while
+// a callee is written (a global there is outside the fragment).
+thread_local const std::vector<std::string>* g_entry = nullptr;
+
 std::string opnd(const ir::Operand& o) {
     switch (o.v.kind) {
         case ir::Value::Local:
             if (o.v.name.starts_with("@")) throw Unsupported{"register named like a global"};
             return "%" + name(o.v.name);
         case ir::Value::Int: width(o.ty); return "#" + std::to_string(o.v.bits);
-        case ir::Value::Poison: width(o.ty); return "poison";
-        case ir::Value::Undef: width(o.ty); return "undef";  // only accepted under freeze
+        case ir::Value::Poison: vw(o.ty); return "poison";
+        case ir::Value::Undef: vw(o.ty); return "undef";  // only accepted under freeze
+        case ir::Value::Null:
+        case ir::Value::Zero:
+            // Tr::operand: a null pointer is the constant 0
+            if (o.ty.kind == ir::Type::Ptr && o.ty.text == "ptr") return "#0";
+            throw Unsupported{"operand " + o.ty.text + " " + o.v.text};
+        case ir::Value::Global:
+            // Tr::operand -> MemTr::global: an entry global is the register its `L glob` line defines
+            if (o.ty.kind == ir::Type::Ptr && g_entry &&
+                std::find(g_entry->begin(), g_entry->end(), o.v.name) != g_entry->end())
+                return "%@" + name(o.v.name);
+            throw Unsupported{"pointer operand " + o.v.text};
         default: throw Unsupported{"operand " + o.ty.text + " " + o.v.text};
     }
 }
@@ -72,10 +94,6 @@ std::string arg(const Arg& a) {
 }
 
 std::string word(const std::string& s) { return s.empty() ? "-" : s; }
-
-// The analysed function's read-only globals (pirmem::entry_globals); empty
-// while a callee is written (a global there is outside the fragment).
-thread_local const std::vector<std::string>* g_entry = nullptr;
 
 // A pointer operand: a register (an alloca or getelementptr result), or an
 // entry global, written as the register `%@name` its `L glob` line defines.
@@ -298,13 +316,87 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
                const std::string& top_file, std::vector<std::string>& callees) {
     if (!f.parse_error.empty()) throw Unsupported{"unparsed IR"};
     std::ostringstream b;
-    b << "L params " << f.params.size();
-    for (auto& p : f.params) b << " " << name(p.name) << " " << width(p.ty);
-    b << "\nL ret " << (f.ret.kind == ir::Type::Void ? 0u : width(f.ret)) << "\n";
     static const std::set<std::string> bins{"add", "sub", "mul", "udiv", "sdiv", "urem", "srem",
                                             "shl", "lshr", "ashr", "and", "or", "xor"};
     const pirmem::Layout lay(m);
     const bool top = callees.empty();
+    // Pointer parameters. Of an inlined callee: ordinary 64-bit values bound
+    // to the caller's arguments (a by-value aggregate is copied first:
+    // outside). Of the analysed function (translate()): a by-value aggregate
+    // or return slot is a fresh stack object, a parameter with a
+    // constant-size contract a fresh object of arbitrary bytes (Law 6
+    // harness), written as an `L glob` line at the start of the entry block
+    // (in parameter order, before the entry globals, as the prologue has
+    // them) and not as a parameter; one without a contract is `L ptrparam`
+    // (the Lean translator refuses it, as translate() does: NEEDS-HARNESS).
+    std::ostringstream harness;
+    std::vector<const ir::Param*> ints;
+    for (auto& p : f.params) {
+        if (p.ty.kind != ir::Type::Ptr) {
+            ints.push_back(&p);
+            continue;
+        }
+        if (p.ty.text != "ptr") throw Unsupported{"type " + p.ty.text};
+        // translate(): refused unless an object the language provides (byval,
+        // sret) or a contract binds it; then Tr::byval_type (byval or byref)
+        // or the sret type is allocated, else the contract object
+        const bool own = p.attrs.find("byval(") != std::string::npos || p.attrs.find("sret(") != std::string::npos;
+        const bool bt = p.attrs.find("byval(") != std::string::npos || p.attrs.find("byref(") != std::string::npos;
+        const auto sret = p.attrs.find("sret(");
+        if (!top) {
+            if (bt) throw Unsupported{"by-value parameter of an inlined callee (copied)"};
+            ints.push_back(&p);
+            continue;
+        }
+        const PtrContract* c = nullptr;
+        for (auto& k : opt.contracts)
+            if (k.param == p.name) c = &k;
+        if (!own && !c) {
+            harness << "L ptrparam %" << name(p.name) << "\n";
+            continue;
+        }
+        if (bt || sret != std::string::npos) {
+            std::optional<ir::Type> ty;
+            for (auto* key : {"byval(", "byref(", "sret("}) {
+                auto a = p.attrs.find(key);
+                if (a == std::string::npos) continue;
+                a += std::string_view(key).size();
+                int depth = 1;
+                auto e = a;
+                while (e < p.attrs.size() && depth > 0) {
+                    if (p.attrs[e] == '(') ++depth;
+                    if (p.attrs[e] == ')') --depth;
+                    if (depth > 0) ++e;
+                }
+                ty = ir::parse_type(p.attrs.substr(a, e - a));
+                break;
+            }
+            uint64_t sz = 0;
+            try {
+                sz = lay.alloc_size(*ty);
+            } catch (const pirmem::Unenc& u) {
+                throw Unsupported{"parameter object: " + u.reason};
+            }
+            if (sz >= kMaxObjSize) throw Unsupported{"parameter object larger than 2^47 bytes"};
+            harness << "L glob %" << name(p.name) << " " << sz << " 16 1 " << (bt ? 2 : 0) << " 0\n";
+            continue;
+        }
+        if (c->count < 0) throw Unsupported{"pointer parameter with a symbolic-size contract (assumptions on the size)"};
+        const uint64_t esz = pirmem::contract_elem_bytes(lay, f, p, *c);
+        if (!esz || static_cast<uint64_t>(c->count) > kMaxObjSize / esz ||
+            static_cast<uint64_t>(c->count) * esz >= kMaxObjSize)
+            throw Unsupported{"contract object of unknown or too large size"};
+        harness << "L glob %" << name(p.name) << " " << static_cast<uint64_t>(c->count) * esz << " 16 "
+                << (c->read_only ? 4 : 7) << " 2 0\n";
+    }
+    b << "L params " << ints.size();
+    for (auto* p : ints) b << " " << name(p->name) << " " << vw(p->ty);
+    b << "\nL ret " << (f.ret.kind == ir::Type::Void ? 0u : vw(f.ret)) << "\n";
+    if (top && f.ret.kind == ir::Type::Ptr && !f.blocks.empty())
+        for (auto& in : f.blocks.front().insts)
+            if (in.op == "alloca" && in.ops.empty())
+                // translate.cpp's return: MemTr::stack_escape_check against the entry-block allocas
+                throw Unsupported{"pointer return from a function with stack objects (stack-escape check)"};
     std::vector<std::string> eg;
     if (top) eg = pirmem::entry_globals(m, lay, f, opt.globals_initial);
     g_entry = top ? &eg : nullptr;
@@ -313,6 +405,7 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
     } reset;
     for (auto& bl : f.blocks) {
         b << "L block " << name(bl.name) << "\n";
+        if (top && &bl == &f.blocks.front()) b << harness.str();
         if (top && &bl == &f.blocks.front())
             for (auto& gname : eg) {
                 // MemTr::emit_entry_globals: the object, then its initialiser's stores
@@ -337,7 +430,7 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
                 if (fl != "nsw" && fl != "nuw" && fl != "exact" && fl != "disjoint" && fl != "nneg")
                     throw Unsupported{in.op + " " + fl};
             if (op == "phi") {
-                b << "L phi %" << name(in.result) << " " << width(in.ty) << " " << in.incoming.size();
+                b << "L phi %" << name(in.result) << " " << vw(in.ty) << " " << in.incoming.size();
                 for (auto& [v, pred] : in.incoming) b << " " << opnd(v) << " " << name(pred);
                 b << "\n";
             } else if (bins.count(op)) {
@@ -357,12 +450,19 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
                   << opnd(in.ops[0]) << " " << opnd(in.ops[1]) << "\n";
             } else if (op == "icmp") {
                 if (in.result.empty() || in.ops.size() != 2) throw Unsupported{"icmp shape"};
-                b << "L icmp %" << name(in.result) << " " << in.pred << " " << width(in.ty) << " "
-                  << opnd(in.ops[0]) << " " << opnd(in.ops[1]) << "\n";
+                if (in.ty.kind == ir::Type::Ptr && in.pred != "eq" && in.pred != "ne") {
+                    // MemTr::icmp: a relational comparison of pointers checks they share an object
+                    if (in.ty.text != "ptr") throw Unsupported{"icmp on " + in.ty.text};
+                    b << "L pcmp %" << name(in.result) << " " << in.pred << " " << opnd(in.ops[0]) << " "
+                      << opnd(in.ops[1]) << "\n";
+                } else {
+                    b << "L icmp %" << name(in.result) << " " << in.pred << " " << vw(in.ty) << " "
+                      << opnd(in.ops[0]) << " " << opnd(in.ops[1]) << "\n";
+                }
             } else if (op == "select") {
                 if (in.result.empty() || in.ops.size() != 3 || width(in.ops[0].ty) != 1)
                     throw Unsupported{"select shape"};
-                b << "L select %" << name(in.result) << " " << width(in.ty) << " " << opnd(in.ops[0]) << " "
+                b << "L select %" << name(in.result) << " " << vw(in.ty) << " " << opnd(in.ops[0]) << " "
                   << opnd(in.ops[1]) << " " << opnd(in.ops[2]) << "\n";
             } else if (op == "zext" || op == "sext" || op == "trunc") {
                 if (in.result.empty() || in.ops.size() != 1) throw Unsupported{op + " shape"};
@@ -384,7 +484,7 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
                 b << "L unreachable\n";
             } else if (op == "call" && in.callee.starts_with("__prism.uninit.") && !in.result.empty()) {
                 // stage.cpp's marker for a scalar local: an indeterminate value
-                b << "L uninit %" << name(in.result) << " " << width(in.ty) << "\n";
+                b << "L uninit %" << name(in.result) << " " << vw(in.ty) << "\n";
             } else if (op == "alloca") {
                 if (in.result.empty() || !in.ops.empty()) throw Unsupported{"alloca with a count"};
                 try {
@@ -397,14 +497,14 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
                 if (in.result.empty() || in.ops.size() != 1) throw Unsupported{"load shape"};
                 std::string p = ptr_opnd(in.ops[0]);
                 if (aggregate_load(lay, f, in)) throw Unsupported{"integer load of an aggregate (raw byte copy)"};
-                b << "L load %" << name(in.result) << " " << width(in.ty) << " " << p << " " << in.align << "\n";
+                b << "L load %" << name(in.result) << " " << vw(in.ty) << " " << p << " " << in.align << "\n";
             } else if (op == "store") {
                 if (in.ops.size() != 2) throw Unsupported{"store shape"};
-                b << "L store " << width(in.ops[0].ty) << " " << opnd(in.ops[0]) << " " << ptr_opnd(in.ops[1]) << " "
+                b << "L store " << vw(in.ops[0].ty) << " " << opnd(in.ops[0]) << " " << ptr_opnd(in.ops[1]) << " "
                   << in.align << "\n";
             } else if (op == "freeze") {
                 if (in.result.empty() || in.ops.size() != 1) throw Unsupported{"freeze shape"};
-                b << "L freeze %" << name(in.result) << " " << width(in.ty) << " " << opnd(in.ops[0]) << "\n";
+                b << "L freeze %" << name(in.result) << " " << vw(in.ty) << " " << opnd(in.ops[0]) << "\n";
             } else if (op == "call" && in.callee.starts_with("llvm.") && !in.is_asm) {
                 intrinsic_line(b, in);
             } else if (op == "extractvalue") {
@@ -417,9 +517,9 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
                   << in.indices[0] << "\n";
             } else if (op == "call" && inlined_call(m, in, top_file)) {
                 b << "L call " << (in.result.empty() ? std::string("-") : "%" + name(in.result)) << " "
-                  << (in.ty.kind == ir::Type::Void ? 0u : width(in.ty)) << " " << name(in.callee) << " "
+                  << (in.ty.kind == ir::Type::Void ? 0u : vw(in.ty)) << " " << name(in.callee) << " "
                   << in.ops.size();
-                for (auto& a : in.ops) b << " " << opnd(a) << " " << width(a.ty);
+                for (auto& a : in.ops) b << " " << opnd(a) << " " << vw(a.ty);
                 b << "\n";
                 if (std::find(callees.begin(), callees.end(), in.callee) == callees.end()) callees.push_back(in.callee);
             } else if (op == "call") {

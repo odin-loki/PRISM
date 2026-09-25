@@ -1897,23 +1897,7 @@ bool Tr::format_call(Frame& fr, const ir::Inst& in, int& cur, int line) {
 
 // Pointer parameter bound to a contract object (Law 6 relaxation, docs/PIR.md).
 void bind_contract(Tr& tr, const ir::Function& f, const ir::Param& p, const PtrContract& c, Frame& top) {
-    const auto& lay = tr.mt.layout();
-    uint64_t esz = c.elem_bytes;
-    if (!esz) {
-        // element type from the first access through p
-        for (auto& bl : f.blocks) {
-            for (auto& in : bl.insts) {
-                auto is_p = [&](std::size_t i) {
-                    return i < in.ops.size() && in.ops[i].v.kind == ir::Value::Local && in.ops[i].v.name == p.name;
-                };
-                if (in.op == "load" && is_p(0)) esz = lay.store_size(in.ty);
-                else if (in.op == "store" && is_p(1)) esz = lay.store_size(in.ops[0].ty);
-                else if (in.op == "getelementptr" && is_p(0)) esz = lay.alloc_size(in.ety);
-                if (esz) break;
-            }
-            if (esz) break;
-        }
-    }
+    uint64_t esz = pirmem::contract_elem_bytes(tr.mt.layout(), f, p, c);
     if (!esz)
         throw Unenc{"UNENCODED: element size of pointer parameter " + p.name + " unknown (contract " + c.text + ")"};
     Arg size;
