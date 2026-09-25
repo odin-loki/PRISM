@@ -84,6 +84,25 @@ except ImportError:  # pragma: no cover - CI installs PyYAML
 REPO = Path(__file__).resolve().parents[1]
 SUITE = REPO / "tests" / "conformance"
 
+
+def _load_proctree() -> Any:
+    # by path: the scorer is also imported by tests, without tools/ on sys.path
+    import importlib.util
+    name = "prism_tools_proctree"
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.spec_from_file_location(name, Path(__file__).resolve().parent / "proctree.py")
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+# PRISM and the programs it starts (solvers, checkers, compilers) run in a
+# session of their own; a timeout or Ctrl-C kills all of them (tools/proctree.py)
+proctree = _load_proctree()
+
 PROOF = {"PROVED", "PROVED-UNBOUNDED", "PROVED-ASSUMING", "PROVED-CERTIFIED"}
 BASE_STAGES = ["inventory", "classify", "bmc", "harness"]
 VERDICT_STAGES = ["bmc", "harness", "pir", "conc"]
@@ -495,7 +514,7 @@ def run_sanitized(task: Task, fn: str, params: list[tuple[str, str]], rows: list
                "--unshare-all", "--die-with-parent", "--new-session", *cmd]
     env = dict(os.environ, **SAN_ENV)
     try:
-        r = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=timeout, env=env)
+        r = proctree.run(cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=timeout, env=env)
     except subprocess.TimeoutExpired:
         return Exec("timeout", f">{timeout}s")
     err = r.stderr or ""
@@ -601,7 +620,7 @@ def prism_command(args: argparse.Namespace) -> tuple[list[str], str]:
 
 def list_stages(cmd: list[str]) -> list[str]:
     try:
-        r = subprocess.run(cmd + ["--list-stages"], capture_output=True, text=True, timeout=60, cwd=REPO)
+        r = proctree.run(cmd + ["--list-stages"], capture_output=True, text=True, timeout=60, cwd=REPO)
     except (OSError, subprocess.TimeoutExpired):
         return []
     return [s.strip() for s in r.stdout.split() if s.strip()]
@@ -609,21 +628,6 @@ def list_stages(cmd: list[str]) -> list[str]:
 
 # Per-task address-space cap for each PRISM run in MB (0: none); --mem-limit-mb.
 MEM_LIMIT_MB = 0
-
-
-def _kill_group(p: subprocess.Popen[str]) -> None:
-    """Kill a timed-out run and everything it started (its own session)."""
-    try:
-        if os.name == "posix":
-            os.killpg(p.pid, 9)
-        else:
-            p.kill()
-    except (ProcessLookupError, PermissionError, OSError):
-        pass
-    try:
-        p.communicate(timeout=30)
-    except (subprocess.TimeoutExpired, ValueError, OSError):
-        pass
 
 
 def run_prism(cmd: list[str], task: Task, stages: list[str], work: Path, timeout: float,
@@ -645,22 +649,23 @@ def run_prism(cmd: list[str], task: Task, stages: list[str], work: Path, timeout
     # more memory than the runner has is "no answer", never a lost runner.
     mem_mb = MEM_LIMIT_MB
 
+    # The session itself comes from proctree.run: on a timeout or Ctrl-C it
+    # kills every process of the session, including the solvers and
+    # checkers PRISM runs in process groups of their own (killing PRISM's
+    # process group alone would leave those running).
     def _limits() -> None:
-        os.setsid()
         if mem_mb > 0:
             import resource
             lim = mem_mb << 20
             resource.setrlimit(resource.RLIMIT_AS, (lim, lim))
 
-    p = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=REPO, env=env,
-                         preexec_fn=_limits if os.name == "posix" else None)
     try:
-        _, err = p.communicate(timeout=timeout)
+        r = proctree.run(argv, capture_output=True, text=True, timeout=timeout, cwd=REPO, env=env,
+                         preexec_fn=_limits if os.name == "posix" and mem_mb > 0 else None)
     except subprocess.TimeoutExpired:
-        _kill_group(p)
         return {"error": "TIMEOUT", "seconds": timeout, "argv": argv}
-    rc = p.returncode
-    tail = (err or "")[-400:]
+    rc = r.returncode
+    tail = (r.stderr or "")[-400:]
     secs = round(time.monotonic() - t0, 2)
     rep = out / "report.json"
     if not rep.exists():
@@ -1297,7 +1302,7 @@ def run_program(task: Task, work: Path, timeout: float = 60.0) -> Exec:
         run = ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp",
                "--ro-bind", str(work), str(work), "--unshare-all", "--die-with-parent", "--new-session", *run]
     try:
-        r = subprocess.run(run, capture_output=True, encoding="utf-8", errors="replace", timeout=timeout, stdin=subprocess.DEVNULL,
+        r = proctree.run(run, capture_output=True, encoding="utf-8", errors="replace", timeout=timeout, stdin=subprocess.DEVNULL,
                            env=dict(os.environ, **SAN_ENV))
     except subprocess.TimeoutExpired:
         return Exec("timeout", f">{timeout}s")

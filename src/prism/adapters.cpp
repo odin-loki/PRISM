@@ -11,6 +11,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cstdio>
@@ -296,6 +297,7 @@ ProcResult run_argv(const std::vector<std::string>& args, double timeout_s, cons
         ::_exit(127);
     }
     ::setpgid(pid, pid);
+    detail::ChildGroup tracked(pid);  // killed with PRISM on SIGINT/SIGTERM (proc.hpp)
     ::close(out_p[1]);
     out_p[1] = -1;
     int flags = ::fcntl(out_p[0], F_GETFL, 0);
@@ -2430,6 +2432,64 @@ detail::ProcOut detail::run_process(const std::vector<std::string>& args, double
                                     const fs::path& cwd) {
     auto r = run_argv(args, timeout_s, cwd);
     return {std::move(r.text), r.rc, r.timed_out, r.failed};
+}
+
+namespace {
+// Registered child process groups (proc.hpp). A fixed array of atomics: the
+// signal handler reads it without locks or allocation. More children than
+// slots only means the extra ones are not killed by the handler (their own
+// runner still kills them on timeout).
+constexpr int kChildSlots = 512;
+std::atomic<int> g_child_groups[kChildSlots];
+}  // namespace
+
+void detail::track_child_group(int pgid) noexcept {
+    if (pgid <= 0) return;
+    for (auto& slot : g_child_groups) {
+        int z = 0;
+        if (slot.compare_exchange_strong(z, pgid)) return;
+    }
+}
+
+void detail::untrack_child_group(int pgid) noexcept {
+    if (pgid <= 0) return;
+    for (auto& slot : g_child_groups) {
+        int v = pgid;
+        if (slot.compare_exchange_strong(v, 0)) return;
+    }
+}
+
+void detail::kill_child_groups() noexcept {
+#ifndef _WIN32
+    for (auto& slot : g_child_groups) {
+        const int g = slot.load();
+        if (g > 0) ::kill(-g, SIGKILL);
+    }
+#endif
+}
+
+#ifndef _WIN32
+extern "C" void prism_child_cleanup_handler(int sig) {
+    const int saved = errno;
+    detail::kill_child_groups();
+    ::signal(sig, SIG_DFL);
+    ::raise(sig);
+    errno = saved;
+}
+#endif
+
+void detail::install_child_cleanup() noexcept {
+#ifndef _WIN32
+    for (int sig : {SIGINT, SIGTERM, SIGHUP}) {
+        struct sigaction old {};
+        if (::sigaction(sig, nullptr, &old) != 0 || old.sa_handler == SIG_IGN) continue;
+        struct sigaction sa {};
+        sa.sa_handler = prism_child_cleanup_handler;
+        sigemptyset(&sa.sa_mask);
+        sa.sa_flags = SA_RESTART;
+        ::sigaction(sig, &sa, nullptr);
+    }
+#endif
 }
 
 }  // namespace prism

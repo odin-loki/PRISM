@@ -3,6 +3,7 @@
 // engine and src/prism/ai use (ai::http_request_raw).
 #include "common.hpp"
 #include "../ai/ai_internal.hpp"
+#include "../proc.hpp"
 
 #ifdef _WIN32
 #  ifndef NOMINMAX
@@ -202,6 +203,9 @@ ProcRun run_argv(const std::vector<std::string>& args, const std::string& input,
         return r;
     }
     if (pid == 0) {
+        // a process group of its own: a timeout kills the child's own children
+        // too (a compiler driver's cc1/ld, a solver's workers), not just the child
+        ::setpgid(0, 0);
         sandbox::apply_child_limits(limits);
         ::dup2(in_p[0], STDIN_FILENO);
         ::dup2(out_p[1], STDOUT_FILENO);
@@ -215,6 +219,11 @@ ProcRun run_argv(const std::vector<std::string>& args, const std::string& input,
         ::execvp(argv[0], argv.data());
         ::_exit(127);
     }
+    ::setpgid(pid, pid);
+    prism::detail::ChildGroup tracked(pid);  // killed with PRISM on SIGINT/SIGTERM (proc.hpp)
+    auto kill_tree = [pid] {
+        if (::killpg(pid, SIGKILL) != 0) ::kill(pid, SIGKILL);
+    };
     ::close(in_p[0]);
     ::close(out_p[1]);
     ::close(err_p[1]);
@@ -279,7 +288,7 @@ ProcRun run_argv(const std::vector<std::string>& args, const std::string& input,
         }
         auto now = std::chrono::steady_clock::now();
         if (now >= deadline) {
-            ::kill(pid, SIGKILL);
+            kill_tree();
             r.timeout = true;
             while (::waitpid(pid, &st, 0) < 0 && errno == EINTR) {
             }
@@ -287,7 +296,7 @@ ProcRun run_argv(const std::vector<std::string>& args, const std::string& input,
             break;
         }
         if (w < 0 && errno != EINTR) {
-            ::kill(pid, SIGKILL);
+            kill_tree();
             r.timeout = true;
             while (::waitpid(pid, &st, 0) < 0 && errno == EINTR) {
             }
@@ -313,7 +322,7 @@ ProcRun run_argv(const std::vector<std::string>& args, const std::string& input,
         (void)pr;
     }
     if (!reaped) {
-        ::kill(pid, SIGKILL);
+        kill_tree();
         r.timeout = true;
         while (::waitpid(pid, &st, 0) < 0 && errno == EINTR) {
         }

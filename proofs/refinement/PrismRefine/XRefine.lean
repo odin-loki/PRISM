@@ -1203,10 +1203,9 @@ theorem sinstX_sim {P : PFunc} {ω : Nat → Nat} {c : Ctx} (hc : CtxOK P c) {R 
     rw [hb]
     exact h2
   | lstart n p =>
+    -- refused (outside the fragment)
     simp only [trSInstX] at h
-    obtain ⟨u1, hu1, h⟩ := Except.bind_ok h
-    simp only [sSInst]
-    exact store_simX hc hR ha0 hk h hT
+    cases h
   | lend p =>
     simp only [trSInstX] at h
     obtain ⟨⟨sp, tp, A⟩, hp, h⟩ := Except.bind_ok h

@@ -297,11 +297,16 @@ def sStoreVal (ω : Nat → Nat) (R : SRegs) (W : World) (w : Nat) : FOpnd → R
 
 /-- `llvm.memcpy` of `n` bytes from `s` to `d` is undefined (`n ≠ 0`): either
 access is bad (`accessBad`, byte alignment), or — `memcpy`, not `memmove` —
-the two ranges overlap.  PRISM's rule is C's (C17 7.24.2.1): the LangRef also
-allows `d = s` exactly. -/
+the two ranges overlap and are not the same range: the LangRef allows an
+exact self-copy (`d = s`: same object, same offset), which clang emits for a
+struct assignment `*p = *q` that may be a self-assignment.  (C's `memcpy`
+function forbids `d = s` too, C17 7.24.2.1; the pir stage compiles with
+`-fno-builtin-memcpy`, so a C `memcpy` call reaches its library model, not
+this intrinsic.) -/
 def cpyBad (m : Mem) (d s n : Nat) (move : Bool) : Bool :=
   n != 0 && (accessBad m d n true 1 || accessBad m s n false 1 ||
-    (!move && ptrObj d == ptrObj s && decide (ptrOff d < ptrOff s + n) && decide (ptrOff s < ptrOff d + n)))
+    (!move && ptrOff d != ptrOff s && ptrObj d == ptrObj s && decide (ptrOff d < ptrOff s + n) &&
+      decide (ptrOff s < ptrOff d + n)))
 
 /-- The initialiser's stores into the global at `p`. -/
 def globW (p : Nat) : World → List (Nat × Nat × Nat) → World
@@ -337,8 +342,11 @@ def sOvfV (R : SRegs) (k : OvfOp) (w : Nat) (a b : Opnd) : Res (Nat × Nat) :=
   (sOpnd R w a).bind fun x => (sOpnd R w b).bind fun y =>
     .ok (binVal (ovfBin k) w x y, (ovfTest k w x y).toNat)
 
-/-- `store` (and `llvm.lifetime.start`: PRISM's model stores `n` uninitialised
-bytes through the pointer, with a write's checks). -/
+/-- `store` (and `llvm.lifetime.start`, as PRISM's model once was: `n`
+uninitialised bytes stored through the pointer, with a write's checks.  The
+LangRef starts a new lifetime there, which `translate.cpp` now does
+(`Stmt::Revive`); the Lean translator refuses `lifetime.start`, so no theorem
+uses this clause). -/
 def sStoreR (ω : Nat → Nat) (R : SRegs) (W : World) (w : Nat) (v : FOpnd) (p : Opnd) (al : Nat) :
     Res (SRegs × World) :=
   (sStoreVal ω R W w v).bind fun (vv, init, W1) =>

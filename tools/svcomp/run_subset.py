@@ -50,6 +50,22 @@ except ImportError:  # pragma: no cover
     yaml = None
 
 
+def _load_proctree() -> Any:
+    # by path (tools/proctree.py), not through sys.path
+    name = "prism_tools_proctree"
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.spec_from_file_location(name, HERE.parent / "proctree.py")
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+PROCTREE = _load_proctree()
+
+
 def load_tool() -> Any | None:
     """The tool-info module's Tool, or None when BenchExec is not installed."""
     try:
@@ -131,7 +147,8 @@ def run_one(tool: Any | None, prism: str, t: dict[str, Any], work: Path, timeout
     t0 = time.monotonic()
     timed_out = False
     try:
-        r = subprocess.run([sys.executable, *cmd], capture_output=True, text=True, timeout=timeout, cwd=REPO)
+        # a session of its own: a timeout kills the wrapper, PRISM and PRISM's solvers
+        r = PROCTREE.run([sys.executable, *cmd], capture_output=True, text=True, timeout=timeout, cwd=REPO)
         lines, rc = r.stdout.splitlines(), r.returncode
     except subprocess.TimeoutExpired as e:
         raw = e.stdout or ""

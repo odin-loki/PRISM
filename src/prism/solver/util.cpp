@@ -2,6 +2,7 @@
 
 #include "prism/solver.hpp"
 #include "internal.hpp"
+#include "../proc.hpp"
 
 #include <algorithm>
 #include <array>
@@ -248,6 +249,8 @@ Proc run(const std::vector<std::string>& argv, double timeout_s, const std::atom
         r.out = std::string("cannot start ") + argv[0] + ": " + std::strerror(rc);
         return r;
     }
+    // registered so that a SIGINT/SIGTERM to PRISM kills this group too (proc.hpp)
+    prism::detail::ChildGroup tracked(pid);
     bool open = true;
     char b[65536];
     auto kill_group = [&] { ::kill(-pid, SIGKILL); ::kill(pid, SIGKILL); };

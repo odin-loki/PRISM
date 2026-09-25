@@ -3,6 +3,7 @@
 #include "prism/config.hpp"
 #include "prism/pipeline.hpp"
 #include "prism/pir.hpp"
+#include "proc.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -195,6 +196,9 @@ static int launch_gui(int argc, char** argv) {
 
 int main(int argc, char** argv) {
     using namespace prism;
+    // Ctrl-C / SIGTERM (a scorer's timeout) also kills the solvers, checkers
+    // and compilers PRISM started: they run in process groups of their own
+    detail::install_child_cleanup();
     // Roadmap 9.2: `prism prove FILE.lean THEOREM` (Lean proof search).
     if (argc > 1 && std::string_view(argv[1]) == "prove") return ai::prove_main(argc - 1, argv + 1);
     // Report-level subcommands (roadmap 9.3 / 9.4): they read report.json and

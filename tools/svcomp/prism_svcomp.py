@@ -52,6 +52,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -555,9 +556,72 @@ def find_prism(explicit: str | None) -> str | None:
     return shutil.which("prism")
 
 
+def _session_members(sid: int) -> list[int]:
+    """PIDs whose session id is ``sid`` (Linux ``/proc``; empty elsewhere)."""
+    out: list[int] = []
+    try:
+        names = os.listdir("/proc")
+    except OSError:
+        return out
+    for n in names:
+        if not n.isdigit():
+            continue
+        try:
+            with open(f"/proc/{n}/stat", "rb") as fh:
+                stat = fh.read().decode("latin-1")
+        except OSError:
+            continue
+        rest = stat[stat.rfind(")") + 2:].split()  # state ppid pgrp session ...
+        if len(rest) > 3 and rest[3] == str(sid):
+            out.append(int(n))
+    return out
+
+
+def _kill_session(proc: subprocess.Popen[Any]) -> None:
+    """SIGKILL every process of the session ``proc`` leads (PRISM puts its
+    solver and checker children in process groups of their own, so killing
+    PRISM's group alone would leave them running)."""
+    if os.name != "posix":
+        proc.kill()
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+    for _ in range(3):
+        left = [p for p in _session_members(proc.pid) if p != os.getpid()]
+        if not left:
+            break
+        for p in left:
+            try:
+                os.kill(p, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+    try:
+        proc.kill()
+    except ProcessLookupError:
+        pass
+
+
+def run_tree(argv: list[str], timeout: float | None) -> int:
+    """Run ``argv`` in a session of its own (output discarded); on a timeout,
+    Ctrl-C or any other exception kill the whole session, then re-raise."""
+    proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            start_new_session=os.name == "posix")
+    try:
+        return proc.wait(timeout=timeout)
+    except BaseException:
+        _kill_session(proc)
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        raise
+
+
 def run_prism(prism: str, task_c: Path, out: Path, timeout: float | None) -> dict[str, Any]:
     argv = [prism, str(task_c), "--no-llm", "--stage", STAGES, "--out", str(out)]
-    subprocess.run(argv, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
+    run_tree(argv, timeout)
     rep = out / "report.json"
     if not rep.exists():
         raise RuntimeError(f"prism wrote no report.json ({' '.join(argv)})")

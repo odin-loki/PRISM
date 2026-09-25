@@ -104,9 +104,11 @@ namespace PrismRefine
 
 open PrismSem
 
-/-- The overlap test of `memcpy`: ranges `[fd, fd+n)` and `[fs, fs+n)` in one object. -/
+/-- The overlap test of `memcpy`: ranges `[fd, fd+n)` and `[fs, fs+n)` in one
+object, other than the same range (`fd = fs`). -/
 def ovlB (d s n : Nat) : Bool :=
-  ptrObj d == ptrObj s && decide (ptrOff d < ptrOff s + n) && decide (ptrOff s < ptrOff d + n)
+  ptrOff d != ptrOff s &&
+    (ptrObj d == ptrObj s && decide (ptrOff d < ptrOff s + n) && decide (ptrOff s < ptrOff d + n))
 
 theorem overlapChk_run (P : PFunc) (ω : Nat → Nat) (σ : Store) (t : World) (j g : Nat) (D S N : Arg)
     (hD : D.below j) (hS : S.below j) (hN : N.below j) (hg : g < j) (hT : TempsOK P j overlapT)
@@ -138,10 +140,10 @@ theorem overlapChk_run (P : PFunc) (ω : Nat → Nat) (σ : Store) (t : World) (
   simp (config := { decide := true }) only [overlapChk, overlapT, xStmts_assign, xStmts_check,
     w0, hw 1 (by decide), hw 2 (by decide), hw 3 (by decide), hw 4 (by decide), hw 5 (by decide),
     hw 6 (by decide), hw 7 (by decide), hw 8 (by decide), hw 9 (by decide), hw 10 (by decide),
-    hw 11 (by decide), List.getElem_cons_succ, List.getElem_cons_zero,
+    hw 11 (by decide), hw 12 (by decide), hw 13 (by decide), List.getElem_cons_succ, List.getElem_cons_zero,
     evalOpM, evalOp, Arg.get_v', Arg.get_c', c64_get, set_apply, hkk, hk0, hk1, hgk, hgk',
     Arg.width_v', Arg.width_c', c64_width, hDs, hSs, hNs, Nat.le_add_right, Nat.le_refl,
-    lshr48, mask48, hdq, hsq, ptrOff_mod, icmpVal_eq', pred_eq, pred_ult,
+    lshr48, mask48, hdq, hsq, ptrOff_mod, icmpVal_eq', pred_eq, pred_ne, pred_ult,
     boolToNat_mod1, ite_toNat, and1, add64, hadd, hn', hgv, Nat.mod_mod, hdo, hso,
     truthN_boolToNat, xStmts_nil, ↓reduceIte, -Nat.reducePow]
   by_cases h0 : n = 0
@@ -158,11 +160,11 @@ theorem overlapChk_run (P : PFunc) (ω : Nat → Nat) (σ : Store) (t : World) (
     have h0' : (n != 0) = true := by simpa using h0
     simp only [e1, e2, e3, e4, h0', Bool.true_and, ovlB]
     refine ⟨fun hb => ?_, fun hb => ?_⟩
-    · simp only [Bool.and_eq_true, beq_iff_eq, decide_eq_true_eq] at hb
+    · simp only [Bool.and_eq_true, beq_iff_eq, bne_iff_ne, ne_eq, decide_eq_true_eq] at hb
       simp [hb]
-    · have hb' : (decide (ptrObj dq = ptrObj sq) && (decide (ptrOff dq < ptrOff sq + n) &&
-          decide (ptrOff sq < ptrOff dq + n))) = false := by
-        rw [← hb]; simp only [Bool.and_assoc]; congr 1
+    · have hb' : (!decide (ptrOff dq = ptrOff sq) && (decide (ptrObj dq = ptrObj sq) &&
+          (decide (ptrOff dq < ptrOff sq + n) && decide (ptrOff sq < ptrOff dq + n)))) = false := by
+        by_cases a : ptrOff dq = ptrOff sq <;> by_cases b : ptrObj dq = ptrObj sq <;> simp_all
       simp only [hb', Bool.false_eq_true, ite_false]
       refine ⟨_, rfl, fun i hi => ?_⟩
       have hne : ∀ c, i ≠ j + c := fun c => by omega

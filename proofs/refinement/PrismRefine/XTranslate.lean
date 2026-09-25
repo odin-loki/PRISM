@@ -398,7 +398,9 @@ def accChkG (k g : Nat) (P N : Arg) (write : Bool) : List PStmt :=
 def accTG (write : Bool) : List Nat :=
   [64, 64, 8, 1, 64, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 64, 1, 1, 1, 1, 1] ++ (if write then [1, 1, 1] else [])
 
-/-- The overlap check of `memcpy` (not `memmove`). -/
+/-- The overlap check of `llvm.memcpy` (not `memmove`): the ranges overlap and
+the offsets differ (an exact self-copy, `d = s`, is defined; refinement
+finding 6). -/
 def overlapChk (j g : Nat) (D S N : Arg) : List PStmt :=
   [.assign j (.bin .and) [D, c64 (2 ^ 48 - 1)], .assign (j + 1) (.bin .and) [S, c64 (2 ^ 48 - 1)],
    .assign (j + 2) (.bin .add) [.v (j + 1) 64, N], .assign (j + 3) (.cmp .ult) [.v j 64, .v (j + 2) 64],
@@ -406,9 +408,11 @@ def overlapChk (j g : Nat) (D S N : Arg) : List PStmt :=
    .assign (j + 6) (.bin .lshr) [D, c64 48], .assign (j + 7) (.bin .lshr) [S, c64 48],
    .assign (j + 8) (.cmp .eq) [.v (j + 6) 64, .v (j + 7) 64],
    .assign (j + 9) (.bin .and) [.v (j + 3) 1, .v (j + 5) 1], .assign (j + 10) (.bin .and) [.v (j + 8) 1, .v (j + 9) 1],
-   .assign (j + 11) (.bin .and) [.v g 1, .v (j + 10) 1], .check (.v (j + 11) 1) "overlap" "MEM-OVERLAP"]
+   .assign (j + 11) (.cmp .ne) [.v j 64, .v (j + 1) 64],
+   .assign (j + 12) (.bin .and) [.v (j + 11) 1, .v (j + 10) 1],
+   .assign (j + 13) (.bin .and) [.v g 1, .v (j + 12) 1], .check (.v (j + 13) 1) "overlap" "MEM-OVERLAP"]
 
-def overlapT : List Nat := [64, 64, 64, 1, 64, 1, 64, 64, 1, 1, 1, 1]
+def overlapT : List Nat := [64, 64, 64, 1, 64, 1, 64, 64, 1, 1, 1, 1, 1, 1]
 
 /-- `MemTr::emit_entry_globals`: the initialiser's stores into the global
 (variable `i`), a pointer addition first for a non-zero offset. -/
@@ -512,9 +516,10 @@ def trSInstX (c : Ctx) (k : Nat) : SInst → Except String (List PStmt × List N
       need (look c.sh d).isNone "outside fragment: result with a shadow"
       pure ([.assign i .copy [a]], [])
     | none => throw "UNENCODED: extractvalue"
-  | .lstart n p => do
-    need (decide (1 ≤ n ∧ n ≤ 8)) "UNENCODED: call @llvm.lifetime.start (object larger than 8 bytes)"
-    trStore c k (8 * n) .undef p 1
+  | .lstart _ _ =>
+    -- `translate.cpp` starts a new lifetime (`Stmt::Revive`, refinement
+    -- finding 7), which the Lean PIR has no statement for
+    throw "outside fragment: llvm.lifetime.start (a new lifetime; not in the Lean PIR)"
   | .lend p => do
     let (sp, tp, P) ← trOpndX c 64 true k p
     pure (sp ++ [.free P], tp)

@@ -308,8 +308,14 @@ def ovfK? : String → Except String OvfOp
   | "usub" => .ok .usub | "smul" => .ok .smul | "umul" => .ok .umul
   | k => .error s!"overflow intrinsic {k}"
 
+/-- The operand of `freeze` or the value of `store`.  A literal `poison` there
+is read as `undef`: the LangRef defines `freeze poison` exactly as `freeze
+undef` (one arbitrary, fixed value), and a stored `poison` or `undef` both
+write uninitialised bytes (`sStoreVal`, `trStoreVal`).  `translate.cpp`
+translates `freeze poison` as `freeze undef` (a `havoc`, no check;
+refinement finding 5). -/
 def fopnd? (s : String) : Except String FOpnd :=
-  if s == "undef" then .ok .undef else do pure (.o (← opnd? s))
+  if s == "undef" || s == "poison" then .ok .undef else do pure (.o (← opnd? s))
 
 /-- `getelementptr` indices: `f OPND W SCALE`, `s OFF`, `a OPND W SCALE N USE`. -/
 def gidx? : List String → Except String (List GIdx)
