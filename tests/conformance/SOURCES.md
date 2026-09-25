@@ -36,15 +36,24 @@ Licence: same as this repository.
 - Upstream: <https://gitlab.com/sosy-lab/benchmarking/sv-benchmarks>
 - Commit: `07b00127ac57f773f9de6eee95821b6947948dbe` (2026-09-11, `main`)
 - Files copied unmodified (`.c`/`.i` input plus the task-definition `.yml`),
-  45 tasks, all with a `no-overflow.prp` verdict (the property PRISM checks):
+  174 tasks: every task of the directories below that has an
+  `expected_verdict` for `no-overflow.prp` (117: 75 true, 42 false) or
+  `unreach-call.prp` (127: 98 true, 29 false), the two properties
+  `tools/svcomp/` scores (docs/SVCOMP.md). Whole directories were taken, not
+  a selection by PRISM's results. The first round (45 no-overflow tasks)
+  was enlarged on 2026-09-25 at the same commit.
 
-| directory | tasks | licence |
+| directory | tasks (no-overflow t/f, unreach-call t/f) | licence |
 |---|---|---|
-| `c/signedintegeroverflow-regression` | 15 (all tasks with a `no-overflow` verdict) | BSD-style, University of Freiburg (`signedintegeroverflow-regression/LICENSE.txt`) |
-| `c/bitvector` | 23 (`byte_add*`, `gcd_1/2`, `interleave_bits`, `jain_*`, `modulus-1/2`, `num_conversion_1`, `parity`, `sum02-1`) | Apache-2.0 (SPDX headers, `bitvector/README.md`) |
-| `c/loop-simple` | 3 (`nested_1`, `nested_1b`, `nested_2`) | Apache-2.0 (SPDX headers) |
-| `c/loop-invgen` | 4 (`half_2`, `large_const`, `nested6`, `id_trans`) | Apache-2.0 (upstream `LICENSE.txt` links to `LICENSE.Apache-2.0.txt`) |
+| `c/signedintegeroverflow-regression` | 15 (5/10, –) | BSD-style, University of Freiburg (`signedintegeroverflow-regression/LICENSE.txt`) |
+| `c/bitvector` | 68 (36/32, 30/6) | Apache-2.0 (SPDX headers, `bitvector/README.md`) |
+| `c/loop-simple` | 8 (6/0, 6/2) | Apache-2.0 (SPDX headers, `loop-simple/README.md`) |
+| `c/loop-invgen` | 29 (16/0, 28/1), including the `*-reducer` variants | Apache-2.0 (upstream `LICENSE.txt` links to `LICENSE.Apache-2.0.txt`; copied as is) |
+| `c/loop-new` | 11 (4/0, 11/0), including the `*-reducer` variants | Apache-2.0 (upstream `LICENSE.txt` links to `LICENSE.Apache-2.0.txt`; copied as is) |
+| `c/loop-acceleration` | 43 (8/0, 23/20) | BSD-2-Clause, Matt Lewis 2014 (`loop-acceleration/LICENSE`, copied with the upstream `README`) |
 
+Each directory also holds the upstream `README`/`LICENSE` files as they are
+at the commit. Every licence above is permissive.
 `LICENSE.Apache-2.0.txt` is the upstream Apache-2.0 text; `UPSTREAM-README.md`
 is the upstream README (licensing and attribution rules).
 `properties/` holds `no-overflow.prp`, `unreach-call.prp` and
