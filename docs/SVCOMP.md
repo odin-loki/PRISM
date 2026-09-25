@@ -297,11 +297,113 @@ invariant conjuncts, e.g. `(y & 1) == 1` and `k == n`) and `num_conversion_1`
 (bmc, no-overflow). Validation of the no-overflow correctness witnesses:
 31 of 32 runs confirmed (CPAchecker 4.2.2 and UAutomizer 0.3.1 confirm the
 four invariant-carrying witnesses except CPAchecker on `nested6`, a
-timeout); the unreach-call validation did not finish before this report.
+timeout); the unreach-call validation did not finish before that report
+and was completed on 2026-09-25 (table below).
 `bmc` now reaches `BOUNDED` with Houdini on `jain_5-2`, `half_2` & co.
-(its invariants do not close them). A `bmc` proof is still not used for
-unreach-call (a direct `reach_error()` outside `__VERIFIER_assert` ends the
-path in `bmc` instead of being reported).
+(its invariants do not close them). A `bmc` proof was then still not used
+for unreach-call (see "bmc and unreach-call" for the change that followed).
+
+Unreach-call witnesses of that run (all 12 answers: 9 `true`, 3 `false`),
+each given to both validators as in "Witness validation" (900 s limit;
+UAutomizer killed after 1020 s wall):
+
+| task | answer | witness | CPAchecker 4.2.2 | UAutomizer 0.3.1 |
+|---|---|---|---|---|
+| bitvector/byte_add_1-1 | true | empty invariant set | confirmed (30 s) | timeout |
+| bitvector/byte_add_2-2 | true | empty invariant set | confirmed (16 s) | timeout |
+| bitvector/gcd_1 | true | empty invariant set | confirmed (19 s) | confirmed (688 s) |
+| bitvector/jain_1-1 | true | pir invariants | confirmed (7 s) | confirmed (31 s) |
+| bitvector/jain_2-1 | true | pir invariants | confirmed (7 s) | confirmed (38 s) |
+| bitvector/jain_5-2 | true | pir invariants | confirmed (9 s) | confirmed (18 s) |
+| loop-invgen/nested6 | true | pir invariants | timeout | confirmed (23 s) |
+| loop-simple/nested_1 | true | empty invariant set | confirmed (6 s) | confirmed (10 s) |
+| loop-simple/nested_2 | true | empty invariant set | confirmed (31 s) | confirmed (13 s) |
+| bitvector/byte_add-1 | false | 2 function_return + target | confirmed (13 s) | rejected (function_return not matched) |
+| loop-invgen/id_trans | false | 3 function_return + target | confirmed (12 s) | rejected (function_return not matched) |
+| loop-simple/nested_1b | false | target | confirmed (11 s) | confirmed (22 s) |
+
+CPAchecker confirmed 11 of 12 (nested6: timeout), UAutomizer 8 of 12 (two
+timeouts on empty invariant sets, the two known `function_return`
+rejections, see "Witness validation"); every answer has at least one
+confirming validator. No witness was refuted with a counterexample or
+"invalid invariant".
+
+### 2026-09-25: bmc covers unreach-call; subset enlarged to 174 tasks
+
+The pinned subset now holds every task of `c/bitvector`, `c/loop-simple`,
+`c/loop-invgen`, `c/loop-new`, `c/loop-acceleration` and
+`c/signedintegeroverflow-regression` at the pinned commit that has a
+verdict for no-overflow or unreach-call (tests/conformance/SOURCES.md; whole
+directories, not a selection by PRISM's results): 117 no-overflow tasks
+(75 `true`, 42 `false`) and 127 unreach-call tasks (98 / 29). `bmc` proofs
+now count for unreach-call ("bmc and unreach-call"), and `pir` passes
+`-fbracket-depth=4096` to clang (four `*-reducer` tasks nest parentheses
+deeper than clang's default 256 and failed in the front end; they now
+reach the encoder, without changing an answer). Binary SHA-256 prefix
+`c59b5e977165`, clang 18.1.3, BenchExec 3.35 installed:
+
+| property | tasks (true / false) | score | max | correct true | correct false | incorrect | unknown |
+|---|---|---|---|---|---|---|---|
+| no-overflow | 117 (75 / 42) | **88** | 192 | 35 | 18 | **0** | 64 |
+| unreach-call | 127 (98 / 29) | **117** | 225 | 54 | 9 | **0** | 64 |
+
+By directory (points / max; correct true, correct false, unknown):
+
+| directory | no-overflow | unreach-call |
+|---|---|---|
+| bitvector | 28 / 104 (10, 8, 50) | 21 / 66 (10, 1, 25) |
+| loop-acceleration | 4 / 16 (2, 0, 6) | 42 / 66 (18, 6, 19) |
+| loop-invgen | 20 / 32 (10, 0, 6) | 35 / 57 (17, 1, 11) |
+| loop-new | 6 / 8 (3, 0, 1) | 8 / 22 (4, 0, 7) |
+| loop-simple | 10 / 12 (5, 0, 1) | 11 / 14 (5, 1, 2) |
+| signedintegeroverflow-regression | 20 / 20 (5, 10, 0) | – |
+
+On the 45 / 20 tasks of the earlier rounds: no-overflow 51 → 48,
+unreach-call 21 → 23. For comparison, the invariants round's binary
+(`a573b2ab1`) with that round's wrapper, on the whole enlarged set:
+no-overflow 91, unreach-call 105, also 0 incorrect.
+
+Where the points moved:
+
+- unreach-call **+12**: `bitvector/num_conversion_1`, `num_conversion_2`,
+  `loop-acceleration/simple_2-1_abstracted`, `simple_4-2_abstracted`,
+  `loop-simple/nested_4`, `nested_5` answer `true` from a `bmc`
+  `PROVED-UNBOUNDED` (`pir` is `BOUNDED`, `UNKNOWN`, or stops at a
+  reachable `abort()`, which `pir` reports and SV-COMP does not count).
+- no-overflow −2: `loop-simple/nested_1b` (see "bmc and unreach-call").
+- no-overflow −1: `bitvector/byte_add-2` (`false`) is `unknown`: `pir` now
+  reports the reachable `__VERIFIER_assert` failure first instead of the
+  `shift-base` overflow. This comes from the `pir` changes merged since the
+  invariants round (certified mode, C++ models), not from this branch: the
+  invariants binary still reports `shift-base`, and this branch does not
+  touch `pir` apart from the clang flag above (the same flag-less `pir`
+  run gives the same `assert` finding).
+
+Where the points are still lost:
+
+- **ILP32 tasks with width-dependent types: 64 of the 128 `unknown`
+  answers** (41 no-overflow, 23 unreach-call: every `s3_*` and
+  `soft_float_*` task of `bitvector`, plus `gcd_4`, `sum02-2`,
+  `interleave_bits`). PRISM's encoders are LP64 (`pir` hard-codes 64-bit
+  pointers), so the wrapper answers `unknown` for these (see "What is
+  missing" item 4). This is the largest single gap.
+- `BOUNDED` without a closing invariant: most of the rest (`gcd_2/3`,
+  `jain_7-2`, `parity`, `sum02-1`, `half_2`, `nest-if3`, `seq-3`,
+  `fragtest_simple`, `count_by_k`, `gauss_sum`, `half`, `nested-1`, and the
+  `loop-acceleration` `false` tasks whose violation needs more iterations
+  than the unwind bound: `array_1-1`, `array_2-1`, `const_1-2`,
+  `diamond_1-2`, `nested_1-2`, `phases_1-2`, `simple_1-1`, `simple_4-1`,
+  `array_3-2`).
+- `NEEDS-HARNESS`: `large_const`, `heapsort`, the `id_build`/
+  `apache-get-tag`/`gauss_sum` `p+`-reducers (`bmc`: the reducers'
+  `__return_main` global and pointer code; `pir`: `BOUNDED`,
+  `NEEDS-HARNESS`, or an uninitialised read in `apache-get-tag.i.p+sep`);
+  `MADWiFi-encode_ie_ok` is a `bmc` `ERROR` (as before this branch) and
+  `pir` `BOUNDED`.
+- `loop-simple/nested_6` (unreach-call): timeout (see "BenchExec").
+- A `pir` `FAILED` of another property stops `pir` before a proof:
+  `byte_add-1`, `modulus-2`, `id_trans` (no-overflow, a reachable
+  assertion failure) and `modulus-2` (unreach-call, a reachable `abort()`).
 
 ## BenchExec
 
@@ -348,8 +450,9 @@ own use); re-run alone in BenchExec it answers `true` for both properties
 `loop-simple/nested_6` (unreach-call, expected `true`): BenchExec killed it
 at its wall-time limit (931 s wall, 281 s CPU on the loaded machine); its
 six nested constant loops make `bmc` unroll 6^6 iterations with a solver
-call each (`pir` stops at its 6000-block budget with `UNKNOWN`), so it is a
-timeout at any load. Apart from `nested_6` the most CPU time was 181.6 s
+call each (`pir` stops at its 6000-block budget with `UNKNOWN`); run alone,
+outside BenchExec, `bmc` did not finish within 300 s wall either, so it is
+most likely a timeout under the 15 min CPU limit too (not measured). Apart from `nested_6` the most CPU time was 181.6 s
 (`loop-invgen/SpamAssassin-loop.i.v+cfa-reducer`, no-overflow) and the
 most memory 682 MB (`bitvector/gcd_2`); the 244 runs took 1528 s of CPU
 time together.
@@ -532,7 +635,10 @@ vendored code). Re-running needs Java 21 and the two archives above.
    `unknown`.
 4. **ILP32.** The encoders are LP64. ILP32 tasks that use width-dependent
    types are `unknown` instead of being analysed with 32-bit `long` and
-   pointers.
+   pointers: 64 of the 128 `unknown` answers of the 174-task subset
+   (2026-09-25). `pir` would need a 32-bit target (`clang -m32` IR) and a
+   memory model with 4-byte pointers (it hard-codes 64-bit ones); the
+   replay would need a 32-bit C runtime, which this environment lacks.
 5. **Archive and registration.** A competition entry needs, per the current
    rules: a self-contained archive of the tool runnable on the competition
    machines (PRISM binary, the clang/opt it calls for the `pir` stage, the
