@@ -85,7 +85,8 @@ class PropertyTest(unittest.TestCase):
         for t in RUN.tasks():
             self.assertTrue(t["property_file"].exists(), t["id"])
             self.assertTrue(t["input"].exists(), t["id"])
-        self.assertEqual(len(RUN.tasks()), 45)
+        self.assertEqual(len(RUN.tasks()), 117)
+        self.assertEqual(len(RUN.tasks("unreach-call.prp")), 127)
 
     def test_width_dependent_code(self) -> None:
         self.assertTrue(P.width_dependent_code("int main(){ long x = 1; return 0; }"))

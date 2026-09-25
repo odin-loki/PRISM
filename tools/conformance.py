@@ -296,8 +296,12 @@ def load_task(yml: Path, root: Path) -> Task | None:
             timeout=float(data.get("timeout", 0) or 0),
             expect_class={str(k): set(str(v).split("|")) for k, v in (data.get("expect_class") or {}).items()},
         )
-    # SV-COMP task-definition format 2.0
+    # SV-COMP task-definition format 2.0; a task with verdicts for several
+    # suite properties is scored for the first in SV_PROPERTIES order
+    # (no-overflow, the property the sv-comp subset is pinned for).
     props = data.get("properties") or []
+    rank = {name: i for i, name in enumerate(SV_PROPERTIES)}
+    props = sorted(props, key=lambda p: rank.get(Path(str(p.get("property_file", ""))).name, len(rank)))
     for p in props:
         pf = Path(str(p.get("property_file", ""))).name
         if pf in SV_PROPERTIES and "expected_verdict" in p:

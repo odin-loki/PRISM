@@ -391,6 +391,9 @@ std::vector<std::string> base_flags(const fs::path& src) {
     // function compiles (C89 rule) instead of failing the whole unit. The
     // call itself is an unknown external and becomes "UNENCODED: call @f".
     if (!is_cxx(src)) f.push_back("-Wno-error=implicit-function-declaration");
+    // Front-end limit, not a check: generated code (SV-COMP's reducer
+    // tasks) nests parentheses deeper than clang's default of 256.
+    f.push_back("-fbracket-depth=4096");
     // Turns ON the C++ library's precondition checks (operator[] bounds,
     // optional/unique_ptr dereference, ...): PIR reports a reachable
     // __glibcxx_assert_fail as a violation (docs/PIR.md "C++ library").
