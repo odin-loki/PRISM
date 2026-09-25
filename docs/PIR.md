@@ -220,7 +220,8 @@ initialised (1 bit) and, with `--strict-aliasing`, an effective-type tag.
 zero, or initialised with arbitrary bytes), `free` (end of lifetime),
 `load` (value + "some byte uninitialised" + "effective-type mismatch"),
 `store`, `memcpy` (memmove semantics), `memset`, `stacksave`,
-`stackrestore`; queries `obj.size`, `obj.live`, `obj.kind`, `obj.align`
+`stackrestore`, `revive` (`llvm.lifetime.start`: a stack object is live
+again); queries `obj.size`, `obj.live`, `obj.kind`, `obj.align`
 usable in any expression. The translator (`translate_mem.cpp`) turns every
 property into ordinary `check`s over these (Law 8):
 
@@ -238,7 +239,7 @@ property into ordinary `check`s over these (Law 8):
 | `getelementptr inbounds` on null with offset ≠ 0, or result outside `[0, size]` | invalid pointer arithmetic | MEM-PTR-ARITH |
 | `getelementptr` index into a nested array `[N x T]` (not the last struct field): `≥ N` when dereferenced, `> N` otherwise | sub-array bounds (`a[1][7]` in `int a[4][5]`, C17 J.2) | MEM-PTR-ARITH |
 | `icmp ult/ule/…` on pointers, `ptrtoint`-`sub` | pointers into different objects | PTR-COMPARE |
-| `llvm.memcpy` (not memmove) | overlapping ranges | MEM-OVERLAP |
+| `llvm.memcpy` (not memmove) | overlapping ranges, other than an exact self-copy (`d = s`, defined by the LangRef: a struct self-assignment); a C `memcpy` call reaches its library model (`-fno-builtin-memcpy`), where `d = s` is an overlap too (C17 7.24.2.1) | MEM-OVERLAP |
 | `free`/`delete`/`delete[]`/`fclose` | not an object, not its start, not heap memory | MEM-INVALID-FREE |
 | same | allocated by another allocator (malloc/new/new[]) | MEM-MISMATCHED-FREE |
 | same | already released | MEM-DOUBLE-FREE |
@@ -246,7 +247,9 @@ property into ordinary `check`s over these (Law 8):
 | `ret` of a pointer | into the function's own stack object | MEM-STACK-ESCAPE |
 
 Lifetimes: `alloca`s of an inlined callee end at its `ret`; VLAs end at
-`llvm.stackrestore` (objects allocated after the matching `stacksave`).
+`llvm.stackrestore` (objects allocated after the matching `stacksave`);
+`llvm.lifetime.end` ends the object's lifetime and `llvm.lifetime.start`
+starts a stack object's lifetime again (LangRef), its bytes indeterminate.
 Struct layout, field offsets, sizes and alignments come from the module's
 `target datalayout` (`Layout`, x86-64 defaults). A `byval` parameter is a
 fresh copy for the callee; `sret` is a fresh uninitialised return slot.
@@ -838,8 +841,9 @@ pointers ("Indirect calls"), the frame is a `new` object of the memory
 model (use after `destroy()` and double destroy of the frame are
 memory-model properties), and `llvm.lifetime.end` of a frame temporary
 ends its lifetime (`llvm.lifetime.start` makes its bytes indeterminate
-again; an object already ended stays dead, so a later access is reported,
-never assumed valid). `tests/pir/coro_gen.cpp`.
+again and starts a new lifetime of a stack object; a heap object, such as
+the frame, already ended stays dead, so a later access is reported, never
+assumed valid). `tests/pir/coro_gen.cpp`.
 
 ## setjmp/longjmp (roadmap 2.6)
 

@@ -557,10 +557,15 @@ is claimed for them:
    (doctest "pir: poison flowing into a phi is a checked violation"). The
    Lean translator still refuses poison phi inputs, so such functions stay
    `outside` the proved fragment until it is extended to match.
-2. **`icmp samesign` is ignored.** Newer LLVM (the flag was added after
-   LLVM 18) makes `icmp samesign` poison when the operands' signs differ;
-   `translate.cpp` drops the flag. Clang 18 (the pinned front end) does not
-   emit it; the exporter refuses it so the checker cannot claim a proof.
+2. **`icmp samesign` was ignored (fixed).** Newer LLVM (the flag was added
+   after LLVM 18) makes `icmp samesign` poison when the operands' signs
+   differ; `translate.cpp` dropped the flag, so `icmp samesign ult i32 %a, %b`
+   with `a = -1`, `b = 1` was PROVED. It now fails a `UB-POISON` check (prop
+   `samesign`) where the poison is created, like `nneg` (finding 3); on
+   pointers it is `UNENCODED`. Clang 18 (the pinned front end) does not emit
+   it. The Lean model has no such flag: the exporter still refuses it, so
+   such functions stay `outside` (doctest "pir: LangRef-defined IR is not
+   reported, samesign poison is ...").
 3. **Checks at creation over-approximate.** PRISM fails a check where
    poison is *created* (`add nsw` that wraps), even if the value is never
    used. For C this is the C semantics (signed overflow is UB at the
@@ -599,27 +604,51 @@ is claimed for them:
    with `undef` elsewhere stay `outside`; `tools/pir_lean_check.py` after
    the fix: `testdata` 915 `agree` + 21 `agree-ext`, `tests/pir` 46 + 9,
    0 mismatches.
-5. **`freeze poison` is reported.** `freeze` translates its operand with
-   `Tr::operand`, which fails `UB-POISON` on a literal `poison`. In LLVM
-   `freeze poison` is defined (an arbitrary value). The extended semantics
-   counts reading the literal as creating poison (the same over-approximation
-   as finding 3), so the theorems cover it; it is a possible false alarm,
-   not a missed error. Clang does not emit `freeze poison` for C.
-6. **`llvm.memcpy` with the same source and destination is reported.** The
-   LangRef lets `llvm.memcpy` copy an object onto itself exactly (clang
-   emits it for a struct assignment `*p = *q` that may be a
-   self-assignment); `MemTr::memcpy_` reports every overlap, `d = s`
-   included, which is C's rule for the `memcpy` function (C17 7.24.2.1) —
-   and a C `memcpy` call is lowered to the same intrinsic, so the translator
-   cannot tell the two apart. The Lean model states PRISM's rule (`cpyBad`);
-   a possible false alarm, not a missed error.
-7. **`llvm.lifetime.start` on an object whose lifetime ended is reported.**
-   In the LangRef it begins a new lifetime; PRISM stores uninitialised bytes
-   with a write's checks, so the object stays dead and MEM-UAF fails (and
-   objects larger than 8 bytes are UNENCODED). The Lean model states PRISM's
-   rule; a possible false alarm. The pir stage compiles at `-O0`, where clang
-   emits no lifetime markers, so this concerns coroutine frames and IR
-   given directly.
+5. **`freeze poison` was reported (fixed).** `freeze` translated its operand
+   with `Tr::operand`, which fails `UB-POISON` on a literal `poison`; in LLVM
+   `freeze poison` is defined (an arbitrary, fixed value). `translate.cpp`
+   now translates `freeze poison` exactly as `freeze undef`: one `havoc`, no
+   check. The Lean checker reads a literal `poison` operand of `freeze` (and
+   the value of a `store`) as `undef` (`Check.lean` `fopnd?`): the LangRef
+   defines `freeze poison` as `freeze undef`, and a stored `poison` or `undef`
+   both write uninitialised bytes in both semantics (`sStoreVal`,
+   `trStoreVal`), so no theorem changed; the fixture function `frz_poison`
+   (`calls_freeze.pirl`) is `agree-ext`. Clang does not emit `freeze poison`
+   for C.
+6. **`llvm.memcpy` with the same source and destination was reported
+   (fixed).** The LangRef lets `llvm.memcpy` copy an object onto itself
+   exactly (clang emits it for a struct assignment `*p = *q` that may be a
+   self-assignment); `MemTr::memcpy_` reported every overlap, `d = s`
+   included, which is C's rule for the `memcpy` *function* (C17 7.24.2.1),
+   and a C `memcpy` call was lowered to the same intrinsic. The pir stage now
+   compiles with `-fno-builtin-memcpy`, so a C `memcpy` call stays a call and
+   reaches its library model (`__prism_memcpy`, C's rule: any overlap,
+   `d = s` included, is `MEM-OVERLAP`), while the intrinsic follows the
+   LangRef: its overlap check also requires the offsets to differ
+   (`tests/pir/mem_str.c` `struct_self_assign_ok` PROVED, was a false
+   `MEM-OVERLAP`; `memcpy_self_bad` still FAILED). `__builtin_memcpy` in C is
+   still the intrinsic, so `__builtin_memcpy(p, p, n)` is no longer reported.
+   The Lean side changed with it: `cpyBad` (`XLlvm.lean`) excludes
+   `ptrOff d = ptrOff s` in one object, `overlapChk` (`XTranslate.lean`) has
+   the two extra statements the C++ emits, and `overlapChk_run` / `cpyBad_eq`
+   (`XMemOps.lean`) are re-proved; no `sorry`, same three axioms.
+7. **`llvm.lifetime.start` on an object whose lifetime ended was reported
+   (fixed in the C++ translator).** In the LangRef it begins a new lifetime;
+   PRISM stored uninitialised bytes with a write's checks, so the object
+   stayed dead and MEM-UAF failed (and objects larger than 8 bytes were
+   UNENCODED). A new PIR statement `revive` (`Stmt::Revive`) makes a *stack*
+   object live again (other objects keep their liveness, as the LangRef says
+   for non-stack objects), then the `size` bytes (`-1`: to the end of the
+   object) are copied from a fresh uninitialised object, with a write's
+   checks; any size is encoded. The loop invariant and k-induction paths
+   treat `revive` like `free`. The Lean PIR has no such statement, so the
+   Lean translator now refuses `llvm.lifetime.start` (`outside fragment`):
+   functions with it left the extended fragment (in `fixtures/intrinsics.pirl`
+   `life` and `life_bad`, now `agree-reject`). The pir stage compiles at
+   `-O0`, where clang emits no lifetime markers, so this concerns coroutine
+   code and IR given directly. Still open: `llvm.lifetime.end` on a pointer
+   into a non-stack object (a coroutine frame) ends that whole object, where
+   the LangRef only makes its bytes poison.
 8. **A false `llvm.assume` was not reported (fixed).** The LangRef makes
    `llvm.assume(false)` undefined behaviour, and so is a false
    `__builtin_assume` in C. Clang emits `llvm.assume` for `__builtin_assume`
@@ -687,5 +716,7 @@ check the C++ interpreter uses Z3's `bvudiv x 0 = ~0`, the Lean model Lean's
   through a proof that the CFG and `PrismSem.Stmt` programs are equivalent.
 * **The C++ encoder.** Relating `pir_vcs` (Z3) to this PIR semantics is the
   encoder row of 8.2 (proofs/semantics proves a model of it).
-* **Fixing findings 2 and 5–8** in `translate.cpp` (finding 4 is fixed there;
-  the Lean translator still refuses `undef` outside `freeze`/`store`).
+* **Modelling what the C++ fixes added**: `icmp samesign` (finding 2) and the
+  `revive` statement of `llvm.lifetime.start` (finding 7) in the Lean model,
+  so those functions come back into the fragment; `undef` outside
+  `freeze`/`store` (finding 4); `llvm.assume` (finding 8).
