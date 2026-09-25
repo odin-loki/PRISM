@@ -1,0 +1,3538 @@
+From 465dac1c73f6de46db90c0b25e8a5653548c3a99 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 25 Sep 2026 00:45:25 +0000
+Subject: [PATCH 1/9] WIP: kill whole process trees on timeout; Lean: memcpy
+ self-copy, freeze poison, lifetime.start refused
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PNtqaD75q6kS9GMoczxQVx
+---
+ proofs/refinement/PrismRefine/Check.lean      |   8 +-
+ proofs/refinement/PrismRefine/XLlvm.lean      |  18 ++-
+ proofs/refinement/PrismRefine/XMemOps.lean    |  18 +--
+ proofs/refinement/PrismRefine/XRefine.lean    |   5 +-
+ proofs/refinement/PrismRefine/XTranslate.lean |  17 ++-
+ src/prism/adapters.cpp                        |  60 +++++++++
+ src/prism/main.cpp                            |   4 +
+ src/prism/proc.hpp                            |  25 ++++
+ src/prism/solver/util.cpp                     |   3 +
+ src/prism/stages/platform.cpp                 |  15 ++-
+ tools/conformance.py                          |  55 ++++----
+ tools/proctree.py                             | 121 ++++++++++++++++++
+ tools/svcomp/prism_svcomp.py                  |  66 +++++++++-
+ tools/svcomp/run_subset.py                    |  19 ++-
+ 14 files changed, 381 insertions(+), 53 deletions(-)
+ create mode 100644 tools/proctree.py
+
+diff --git a/proofs/refinement/PrismRefine/Check.lean b/proofs/refinement/PrismRefine/Check.lean
+index a9d1e4932..c8a89a564 100644
+--- a/proofs/refinement/PrismRefine/Check.lean
++++ b/proofs/refinement/PrismRefine/Check.lean
+@@ -308,8 +308,14 @@ def ovfK? : String → Except String OvfOp
+   | "usub" => .ok .usub | "smul" => .ok .smul | "umul" => .ok .umul
+   | k => .error s!"overflow intrinsic {k}"
+ 
++/-- The operand of `freeze` or the value of `store`.  A literal `poison` there
++is read as `undef`: the LangRef defines `freeze poison` exactly as `freeze
++undef` (one arbitrary, fixed value), and a stored `poison` or `undef` both
++write uninitialised bytes (`sStoreVal`, `trStoreVal`).  `translate.cpp`
++translates `freeze poison` as `freeze undef` (a `havoc`, no check;
++refinement finding 5). -/
+ def fopnd? (s : String) : Except String FOpnd :=
+-  if s == "undef" then .ok .undef else do pure (.o (← opnd? s))
++  if s == "undef" || s == "poison" then .ok .undef else do pure (.o (← opnd? s))
+ 
+ /-- `getelementptr` indices: `f OPND W SCALE`, `s OFF`, `a OPND W SCALE N USE`. -/
+ def gidx? : List String → Except String (List GIdx)
+diff --git a/proofs/refinement/PrismRefine/XLlvm.lean b/proofs/refinement/PrismRefine/XLlvm.lean
+index e875fc8e5..941fc77a7 100644
+--- a/proofs/refinement/PrismRefine/XLlvm.lean
++++ b/proofs/refinement/PrismRefine/XLlvm.lean
+@@ -297,11 +297,16 @@ def sStoreVal (ω : Nat → Nat) (R : SRegs) (W : World) (w : Nat) : FOpnd → R
+ 
+ /-- `llvm.memcpy` of `n` bytes from `s` to `d` is undefined (`n ≠ 0`): either
+ access is bad (`accessBad`, byte alignment), or — `memcpy`, not `memmove` —
+-the two ranges overlap.  PRISM's rule is C's (C17 7.24.2.1): the LangRef also
+-allows `d = s` exactly. -/
++the two ranges overlap and are not the same range: the LangRef allows an
++exact self-copy (`d = s`: same object, same offset), which clang emits for a
++struct assignment `*p = *q` that may be a self-assignment.  (C's `memcpy`
++function forbids `d = s` too, C17 7.24.2.1; the pir stage compiles with
++`-fno-builtin-memcpy`, so a C `memcpy` call reaches its library model, not
++this intrinsic.) -/
+ def cpyBad (m : Mem) (d s n : Nat) (move : Bool) : Bool :=
+   n != 0 && (accessBad m d n true 1 || accessBad m s n false 1 ||
+-    (!move && ptrObj d == ptrObj s && decide (ptrOff d < ptrOff s + n) && decide (ptrOff s < ptrOff d + n)))
++    (!move && ptrOff d != ptrOff s && ptrObj d == ptrObj s && decide (ptrOff d < ptrOff s + n) &&
++      decide (ptrOff s < ptrOff d + n)))
+ 
+ /-- The initialiser's stores into the global at `p`. -/
+ def globW (p : Nat) : World → List (Nat × Nat × Nat) → World
+@@ -337,8 +342,11 @@ def sOvfV (R : SRegs) (k : OvfOp) (w : Nat) (a b : Opnd) : Res (Nat × Nat) :=
+   (sOpnd R w a).bind fun x => (sOpnd R w b).bind fun y =>
+     .ok (binVal (ovfBin k) w x y, (ovfTest k w x y).toNat)
+ 
+-/-- `store` (and `llvm.lifetime.start`: PRISM's model stores `n` uninitialised
+-bytes through the pointer, with a write's checks). -/
++/-- `store` (and `llvm.lifetime.start`, as PRISM's model once was: `n`
++uninitialised bytes stored through the pointer, with a write's checks.  The
++LangRef starts a new lifetime there, which `translate.cpp` now does
++(`Stmt::Revive`); the Lean translator refuses `lifetime.start`, so no theorem
++uses this clause). -/
+ def sStoreR (ω : Nat → Nat) (R : SRegs) (W : World) (w : Nat) (v : FOpnd) (p : Opnd) (al : Nat) :
+     Res (SRegs × World) :=
+   (sStoreVal ω R W w v).bind fun (vv, init, W1) =>
+diff --git a/proofs/refinement/PrismRefine/XMemOps.lean b/proofs/refinement/PrismRefine/XMemOps.lean
+index 6f218dbef..dec5a7609 100644
+--- a/proofs/refinement/PrismRefine/XMemOps.lean
++++ b/proofs/refinement/PrismRefine/XMemOps.lean
+@@ -104,9 +104,11 @@ namespace PrismRefine
+ 
+ open PrismSem
+ 
+-/-- The overlap test of `memcpy`: ranges `[fd, fd+n)` and `[fs, fs+n)` in one object. -/
++/-- The overlap test of `memcpy`: ranges `[fd, fd+n)` and `[fs, fs+n)` in one
++object, other than the same range (`fd = fs`). -/
+ def ovlB (d s n : Nat) : Bool :=
+-  ptrObj d == ptrObj s && decide (ptrOff d < ptrOff s + n) && decide (ptrOff s < ptrOff d + n)
++  ptrOff d != ptrOff s &&
++    (ptrObj d == ptrObj s && decide (ptrOff d < ptrOff s + n) && decide (ptrOff s < ptrOff d + n))
+ 
+ theorem overlapChk_run (P : PFunc) (ω : Nat → Nat) (σ : Store) (t : World) (j g : Nat) (D S N : Arg)
+     (hD : D.below j) (hS : S.below j) (hN : N.below j) (hg : g < j) (hT : TempsOK P j overlapT)
+@@ -138,10 +140,10 @@ theorem overlapChk_run (P : PFunc) (ω : Nat → Nat) (σ : Store) (t : World) (
+   simp (config := { decide := true }) only [overlapChk, overlapT, xStmts_assign, xStmts_check,
+     w0, hw 1 (by decide), hw 2 (by decide), hw 3 (by decide), hw 4 (by decide), hw 5 (by decide),
+     hw 6 (by decide), hw 7 (by decide), hw 8 (by decide), hw 9 (by decide), hw 10 (by decide),
+-    hw 11 (by decide), List.getElem_cons_succ, List.getElem_cons_zero,
++    hw 11 (by decide), hw 12 (by decide), hw 13 (by decide), List.getElem_cons_succ, List.getElem_cons_zero,
+     evalOpM, evalOp, Arg.get_v', Arg.get_c', c64_get, set_apply, hkk, hk0, hk1, hgk, hgk',
+     Arg.width_v', Arg.width_c', c64_width, hDs, hSs, hNs, Nat.le_add_right, Nat.le_refl,
+-    lshr48, mask48, hdq, hsq, ptrOff_mod, icmpVal_eq', pred_eq, pred_ult,
++    lshr48, mask48, hdq, hsq, ptrOff_mod, icmpVal_eq', pred_eq, pred_ne, pred_ult,
+     boolToNat_mod1, ite_toNat, and1, add64, hadd, hn', hgv, Nat.mod_mod, hdo, hso,
+     truthN_boolToNat, xStmts_nil, ↓reduceIte, -Nat.reducePow]
+   by_cases h0 : n = 0
+@@ -158,11 +160,11 @@ theorem overlapChk_run (P : PFunc) (ω : Nat → Nat) (σ : Store) (t : World) (
+     have h0' : (n != 0) = true := by simpa using h0
+     simp only [e1, e2, e3, e4, h0', Bool.true_and, ovlB]
+     refine ⟨fun hb => ?_, fun hb => ?_⟩
+-    · simp only [Bool.and_eq_true, beq_iff_eq, decide_eq_true_eq] at hb
++    · simp only [Bool.and_eq_true, beq_iff_eq, bne_iff_ne, ne_eq, decide_eq_true_eq] at hb
+       simp [hb]
+-    · have hb' : (decide (ptrObj dq = ptrObj sq) && (decide (ptrOff dq < ptrOff sq + n) &&
+-          decide (ptrOff sq < ptrOff dq + n))) = false := by
+-        rw [← hb]; simp only [Bool.and_assoc]; congr 1
++    · have hb' : (!decide (ptrOff dq = ptrOff sq) && (decide (ptrObj dq = ptrObj sq) &&
++          (decide (ptrOff dq < ptrOff sq + n) && decide (ptrOff sq < ptrOff dq + n)))) = false := by
++        by_cases a : ptrOff dq = ptrOff sq <;> by_cases b : ptrObj dq = ptrObj sq <;> simp_all
+       simp only [hb', Bool.false_eq_true, ite_false]
+       refine ⟨_, rfl, fun i hi => ?_⟩
+       have hne : ∀ c, i ≠ j + c := fun c => by omega
+diff --git a/proofs/refinement/PrismRefine/XRefine.lean b/proofs/refinement/PrismRefine/XRefine.lean
+index a5de3442f..c3784f69c 100644
+--- a/proofs/refinement/PrismRefine/XRefine.lean
++++ b/proofs/refinement/PrismRefine/XRefine.lean
+@@ -1203,10 +1203,9 @@ theorem sinstX_sim {P : PFunc} {ω : Nat → Nat} {c : Ctx} (hc : CtxOK P c) {R
+     rw [hb]
+     exact h2
+   | lstart n p =>
++    -- refused (outside the fragment)
+     simp only [trSInstX] at h
+-    obtain ⟨u1, hu1, h⟩ := Except.bind_ok h
+-    simp only [sSInst]
+-    exact store_simX hc hR ha0 hk h hT
++    cases h
+   | lend p =>
+     simp only [trSInstX] at h
+     obtain ⟨⟨sp, tp, A⟩, hp, h⟩ := Except.bind_ok h
+diff --git a/proofs/refinement/PrismRefine/XTranslate.lean b/proofs/refinement/PrismRefine/XTranslate.lean
+index 13e57d6dc..3da326d59 100644
+--- a/proofs/refinement/PrismRefine/XTranslate.lean
++++ b/proofs/refinement/PrismRefine/XTranslate.lean
+@@ -398,7 +398,9 @@ def accChkG (k g : Nat) (P N : Arg) (write : Bool) : List PStmt :=
+ def accTG (write : Bool) : List Nat :=
+   [64, 64, 8, 1, 64, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 64, 1, 1, 1, 1, 1] ++ (if write then [1, 1, 1] else [])
+ 
+-/-- The overlap check of `memcpy` (not `memmove`). -/
++/-- The overlap check of `llvm.memcpy` (not `memmove`): the ranges overlap and
++the offsets differ (an exact self-copy, `d = s`, is defined; refinement
++finding 6). -/
+ def overlapChk (j g : Nat) (D S N : Arg) : List PStmt :=
+   [.assign j (.bin .and) [D, c64 (2 ^ 48 - 1)], .assign (j + 1) (.bin .and) [S, c64 (2 ^ 48 - 1)],
+    .assign (j + 2) (.bin .add) [.v (j + 1) 64, N], .assign (j + 3) (.cmp .ult) [.v j 64, .v (j + 2) 64],
+@@ -406,9 +408,11 @@ def overlapChk (j g : Nat) (D S N : Arg) : List PStmt :=
+    .assign (j + 6) (.bin .lshr) [D, c64 48], .assign (j + 7) (.bin .lshr) [S, c64 48],
+    .assign (j + 8) (.cmp .eq) [.v (j + 6) 64, .v (j + 7) 64],
+    .assign (j + 9) (.bin .and) [.v (j + 3) 1, .v (j + 5) 1], .assign (j + 10) (.bin .and) [.v (j + 8) 1, .v (j + 9) 1],
+-   .assign (j + 11) (.bin .and) [.v g 1, .v (j + 10) 1], .check (.v (j + 11) 1) "overlap" "MEM-OVERLAP"]
++   .assign (j + 11) (.cmp .ne) [.v j 64, .v (j + 1) 64],
++   .assign (j + 12) (.bin .and) [.v (j + 11) 1, .v (j + 10) 1],
++   .assign (j + 13) (.bin .and) [.v g 1, .v (j + 12) 1], .check (.v (j + 13) 1) "overlap" "MEM-OVERLAP"]
+ 
+-def overlapT : List Nat := [64, 64, 64, 1, 64, 1, 64, 64, 1, 1, 1, 1]
++def overlapT : List Nat := [64, 64, 64, 1, 64, 1, 64, 64, 1, 1, 1, 1, 1, 1]
+ 
+ /-- `MemTr::emit_entry_globals`: the initialiser's stores into the global
+ (variable `i`), a pointer addition first for a non-zero offset. -/
+@@ -512,9 +516,10 @@ def trSInstX (c : Ctx) (k : Nat) : SInst → Except String (List PStmt × List N
+       need (look c.sh d).isNone "outside fragment: result with a shadow"
+       pure ([.assign i .copy [a]], [])
+     | none => throw "UNENCODED: extractvalue"
+-  | .lstart n p => do
+-    need (decide (1 ≤ n ∧ n ≤ 8)) "UNENCODED: call @llvm.lifetime.start (object larger than 8 bytes)"
+-    trStore c k (8 * n) .undef p 1
++  | .lstart _ _ =>
++    -- `translate.cpp` starts a new lifetime (`Stmt::Revive`, refinement
++    -- finding 7), which the Lean PIR has no statement for
++    throw "outside fragment: llvm.lifetime.start (a new lifetime; not in the Lean PIR)"
+   | .lend p => do
+     let (sp, tp, P) ← trOpndX c 64 true k p
+     pure (sp ++ [.free P], tp)
+diff --git a/src/prism/adapters.cpp b/src/prism/adapters.cpp
+index 78ae608f0..4d6cbe1ac 100644
+--- a/src/prism/adapters.cpp
++++ b/src/prism/adapters.cpp
+@@ -9,6 +9,7 @@
+ #include <nlohmann/json.hpp>
+ 
+ #include <algorithm>
++#include <atomic>
+ #include <cctype>
+ #include <chrono>
+ #include <cstdio>
+@@ -294,6 +295,7 @@ ProcResult run_argv(const std::vector<std::string>& args, double timeout_s, cons
+         ::_exit(127);
+     }
+     ::setpgid(pid, pid);
++    detail::ChildGroup tracked(pid);  // killed with PRISM on SIGINT/SIGTERM (proc.hpp)
+     ::close(out_p[1]);
+     out_p[1] = -1;
+     int flags = ::fcntl(out_p[0], F_GETFL, 0);
+@@ -2356,4 +2358,62 @@ detail::ProcOut detail::run_process(const std::vector<std::string>& args, double
+     return {std::move(r.text), r.rc, r.timed_out, r.failed};
+ }
+ 
++namespace {
++// Registered child process groups (proc.hpp). A fixed array of atomics: the
++// signal handler reads it without locks or allocation. More children than
++// slots only means the extra ones are not killed by the handler (their own
++// runner still kills them on timeout).
++constexpr int kChildSlots = 512;
++std::atomic<int> g_child_groups[kChildSlots];
++}  // namespace
++
++void detail::track_child_group(int pgid) noexcept {
++    if (pgid <= 0) return;
++    for (auto& slot : g_child_groups) {
++        int z = 0;
++        if (slot.compare_exchange_strong(z, pgid)) return;
++    }
++}
++
++void detail::untrack_child_group(int pgid) noexcept {
++    if (pgid <= 0) return;
++    for (auto& slot : g_child_groups) {
++        int v = pgid;
++        if (slot.compare_exchange_strong(v, 0)) return;
++    }
++}
++
++void detail::kill_child_groups() noexcept {
++#ifndef _WIN32
++    for (auto& slot : g_child_groups) {
++        const int g = slot.load();
++        if (g > 0) ::kill(-g, SIGKILL);
++    }
++#endif
++}
++
++#ifndef _WIN32
++extern "C" void prism_child_cleanup_handler(int sig) {
++    const int saved = errno;
++    detail::kill_child_groups();
++    ::signal(sig, SIG_DFL);
++    ::raise(sig);
++    errno = saved;
++}
++#endif
++
++void detail::install_child_cleanup() noexcept {
++#ifndef _WIN32
++    for (int sig : {SIGINT, SIGTERM, SIGHUP}) {
++        struct sigaction old {};
++        if (::sigaction(sig, nullptr, &old) != 0 || old.sa_handler == SIG_IGN) continue;
++        struct sigaction sa {};
++        sa.sa_handler = prism_child_cleanup_handler;
++        sigemptyset(&sa.sa_mask);
++        sa.sa_flags = SA_RESTART;
++        ::sigaction(sig, &sa, nullptr);
++    }
++#endif
++}
++
+ }  // namespace prism
+diff --git a/src/prism/main.cpp b/src/prism/main.cpp
+index 5e36a3081..9b9d0b791 100644
+--- a/src/prism/main.cpp
++++ b/src/prism/main.cpp
+@@ -3,6 +3,7 @@
+ #include "prism/config.hpp"
+ #include "prism/pipeline.hpp"
+ #include "prism/pir.hpp"
++#include "proc.hpp"
+ 
+ #include <algorithm>
+ #include <cstdlib>
+@@ -195,6 +196,9 @@ static int launch_gui(int argc, char** argv) {
+ 
+ int main(int argc, char** argv) {
+     using namespace prism;
++    // Ctrl-C / SIGTERM (a scorer's timeout) also kills the solvers, checkers
++    // and compilers PRISM started: they run in process groups of their own
++    detail::install_child_cleanup();
+     // Roadmap 9.2: `prism prove FILE.lean THEOREM` (Lean proof search).
+     if (argc > 1 && std::string_view(argv[1]) == "prove") return ai::prove_main(argc - 1, argv + 1);
+     // Report-level subcommands (roadmap 9.3 / 9.4): they read report.json and
+diff --git a/src/prism/proc.hpp b/src/prism/proc.hpp
+index c1d77f0f2..6809dc068 100644
+--- a/src/prism/proc.hpp
++++ b/src/prism/proc.hpp
+@@ -19,4 +19,29 @@ struct ProcOut {
+ ProcOut run_process(const std::vector<std::string>& args, double timeout_s,
+                     const std::filesystem::path& cwd = {});
+ 
++// Child process groups (POSIX). Every runner that starts a child in a process
++// group of its own (run_process, stages run_argv, solver::detail::run)
++// registers the group while the child runs, so that a SIGINT / SIGTERM /
++// SIGHUP to PRISM (Ctrl-C, a scorer's timeout) kills those groups too: they
++// are not in PRISM's own process group and would otherwise keep running
++// (CaDiCaL, cake_lpr, clang, the LRAT checkers). Async-signal-safe, lock-free;
++// no-ops on Windows.
++void track_child_group(int pgid) noexcept;
++void untrack_child_group(int pgid) noexcept;
++// SIGKILL every registered group (what the signal handler does first).
++void kill_child_groups() noexcept;
++// Installs the SIGINT/SIGTERM/SIGHUP handler: kill the registered groups, then
++// die of the same signal (default action). A signal the process ignores stays
++// ignored. Called once by the prism CLI's main().
++void install_child_cleanup() noexcept;
++
++// RAII registration of a child process group.
++struct ChildGroup {
++    int pgid;
++    explicit ChildGroup(int g) noexcept : pgid(g) { track_child_group(g); }
++    ~ChildGroup() { untrack_child_group(pgid); }
++    ChildGroup(const ChildGroup&) = delete;
++    ChildGroup& operator=(const ChildGroup&) = delete;
++};
++
+ }  // namespace prism::detail
+diff --git a/src/prism/solver/util.cpp b/src/prism/solver/util.cpp
+index 2cbd1db6c..99dcc19a7 100644
+--- a/src/prism/solver/util.cpp
++++ b/src/prism/solver/util.cpp
+@@ -2,6 +2,7 @@
+ 
+ #include "prism/solver.hpp"
+ #include "internal.hpp"
++#include "../proc.hpp"
+ 
+ #include <algorithm>
+ #include <array>
+@@ -248,6 +249,8 @@ Proc run(const std::vector<std::string>& argv, double timeout_s, const std::atom
+         r.out = std::string("cannot start ") + argv[0] + ": " + std::strerror(rc);
+         return r;
+     }
++    // registered so that a SIGINT/SIGTERM to PRISM kills this group too (proc.hpp)
++    prism::detail::ChildGroup tracked(pid);
+     bool open = true;
+     char b[65536];
+     auto kill_group = [&] { ::kill(-pid, SIGKILL); ::kill(pid, SIGKILL); };
+diff --git a/src/prism/stages/platform.cpp b/src/prism/stages/platform.cpp
+index 32cfd7065..43ed32d6f 100644
+--- a/src/prism/stages/platform.cpp
++++ b/src/prism/stages/platform.cpp
+@@ -3,6 +3,7 @@
+ // engine and src/prism/ai use (ai::http_request_raw).
+ #include "common.hpp"
+ #include "../ai/ai_internal.hpp"
++#include "../proc.hpp"
+ 
+ #ifdef _WIN32
+ #  ifndef NOMINMAX
+@@ -202,6 +203,9 @@ ProcRun run_argv(const std::vector<std::string>& args, const std::string& input,
+         return r;
+     }
+     if (pid == 0) {
++        // a process group of its own: a timeout kills the child's own children
++        // too (a compiler driver's cc1/ld, a solver's workers), not just the child
++        ::setpgid(0, 0);
+         sandbox::apply_child_limits(limits);
+         ::dup2(in_p[0], STDIN_FILENO);
+         ::dup2(out_p[1], STDOUT_FILENO);
+@@ -215,6 +219,11 @@ ProcRun run_argv(const std::vector<std::string>& args, const std::string& input,
+         ::execvp(argv[0], argv.data());
+         ::_exit(127);
+     }
++    ::setpgid(pid, pid);
++    prism::detail::ChildGroup tracked(pid);  // killed with PRISM on SIGINT/SIGTERM (proc.hpp)
++    auto kill_tree = [pid] {
++        if (::killpg(pid, SIGKILL) != 0) ::kill(pid, SIGKILL);
++    };
+     ::close(in_p[0]);
+     ::close(out_p[1]);
+     ::close(err_p[1]);
+@@ -279,7 +288,7 @@ ProcRun run_argv(const std::vector<std::string>& args, const std::string& input,
+         }
+         auto now = std::chrono::steady_clock::now();
+         if (now >= deadline) {
+-            ::kill(pid, SIGKILL);
++            kill_tree();
+             r.timeout = true;
+             while (::waitpid(pid, &st, 0) < 0 && errno == EINTR) {
+             }
+@@ -287,7 +296,7 @@ ProcRun run_argv(const std::vector<std::string>& args, const std::string& input,
+             break;
+         }
+         if (w < 0 && errno != EINTR) {
+-            ::kill(pid, SIGKILL);
++            kill_tree();
+             r.timeout = true;
+             while (::waitpid(pid, &st, 0) < 0 && errno == EINTR) {
+             }
+@@ -313,7 +322,7 @@ ProcRun run_argv(const std::vector<std::string>& args, const std::string& input,
+         (void)pr;
+     }
+     if (!reaped) {
+-        ::kill(pid, SIGKILL);
++        kill_tree();
+         r.timeout = true;
+         while (::waitpid(pid, &st, 0) < 0 && errno == EINTR) {
+         }
+diff --git a/tools/conformance.py b/tools/conformance.py
+index 8e343dbf2..4a7bfbcfb 100644
+--- a/tools/conformance.py
++++ b/tools/conformance.py
+@@ -84,6 +84,25 @@ except ImportError:  # pragma: no cover - CI installs PyYAML
+ REPO = Path(__file__).resolve().parents[1]
+ SUITE = REPO / "tests" / "conformance"
+ 
++
++def _load_proctree() -> Any:
++    # by path: the scorer is also imported by tests, without tools/ on sys.path
++    import importlib.util
++    name = "prism_tools_proctree"
++    if name in sys.modules:
++        return sys.modules[name]
++    spec = importlib.util.spec_from_file_location(name, Path(__file__).resolve().parent / "proctree.py")
++    assert spec is not None and spec.loader is not None
++    mod = importlib.util.module_from_spec(spec)
++    sys.modules[name] = mod
++    spec.loader.exec_module(mod)
++    return mod
++
++
++# PRISM and the programs it starts (solvers, checkers, compilers) run in a
++# session of their own; a timeout or Ctrl-C kills all of them (tools/proctree.py)
++proctree = _load_proctree()
++
+ PROOF = {"PROVED", "PROVED-UNBOUNDED", "PROVED-ASSUMING", "PROVED-CERTIFIED"}
+ BASE_STAGES = ["inventory", "classify", "bmc", "harness"]
+ VERDICT_STAGES = ["bmc", "harness", "pir", "conc"]
+@@ -495,7 +514,7 @@ def run_sanitized(task: Task, fn: str, params: list[tuple[str, str]], rows: list
+                "--unshare-all", "--die-with-parent", "--new-session", *cmd]
+     env = dict(os.environ, **SAN_ENV)
+     try:
+-        r = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=timeout, env=env)
++        r = proctree.run(cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=timeout, env=env)
+     except subprocess.TimeoutExpired:
+         return Exec("timeout", f">{timeout}s")
+     err = r.stderr or ""
+@@ -601,7 +620,7 @@ def prism_command(args: argparse.Namespace) -> tuple[list[str], str]:
+ 
+ def list_stages(cmd: list[str]) -> list[str]:
+     try:
+-        r = subprocess.run(cmd + ["--list-stages"], capture_output=True, text=True, timeout=60, cwd=REPO)
++        r = proctree.run(cmd + ["--list-stages"], capture_output=True, text=True, timeout=60, cwd=REPO)
+     except (OSError, subprocess.TimeoutExpired):
+         return []
+     return [s.strip() for s in r.stdout.split() if s.strip()]
+@@ -611,21 +630,6 @@ def list_stages(cmd: list[str]) -> list[str]:
+ MEM_LIMIT_MB = 0
+ 
+ 
+-def _kill_group(p: subprocess.Popen[str]) -> None:
+-    """Kill a timed-out run and everything it started (its own session)."""
+-    try:
+-        if os.name == "posix":
+-            os.killpg(p.pid, 9)
+-        else:
+-            p.kill()
+-    except (ProcessLookupError, PermissionError, OSError):
+-        pass
+-    try:
+-        p.communicate(timeout=30)
+-    except (subprocess.TimeoutExpired, ValueError, OSError):
+-        pass
+-
+-
+ def run_prism(cmd: list[str], task: Task, stages: list[str], work: Path, timeout: float,
+               unwind: int | None, extra_args: list[str] | None = None,
+               rename: dict[str, str] | None = None, tag: str = "prism") -> dict[str, Any]:
+@@ -645,22 +649,23 @@ def run_prism(cmd: list[str], task: Task, stages: list[str], work: Path, timeout
+     # more memory than the runner has is "no answer", never a lost runner.
+     mem_mb = MEM_LIMIT_MB
+ 
++    # The session itself comes from proctree.run: on a timeout or Ctrl-C it
++    # kills every process of the session, including the solvers and
++    # checkers PRISM runs in process groups of their own (killing PRISM's
++    # process group alone would leave those running).
+     def _limits() -> None:
+-        os.setsid()
+         if mem_mb > 0:
+             import resource
+             lim = mem_mb << 20
+             resource.setrlimit(resource.RLIMIT_AS, (lim, lim))
+ 
+-    p = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=REPO, env=env,
+-                         preexec_fn=_limits if os.name == "posix" else None)
+     try:
+-        _, err = p.communicate(timeout=timeout)
++        r = proctree.run(argv, capture_output=True, text=True, timeout=timeout, cwd=REPO, env=env,
++                         preexec_fn=_limits if os.name == "posix" and mem_mb > 0 else None)
+     except subprocess.TimeoutExpired:
+-        _kill_group(p)
+         return {"error": "TIMEOUT", "seconds": timeout, "argv": argv}
+-    rc = p.returncode
+-    tail = (err or "")[-400:]
++    rc = r.returncode
++    tail = (r.stderr or "")[-400:]
+     secs = round(time.monotonic() - t0, 2)
+     rep = out / "report.json"
+     if not rep.exists():
+@@ -1297,7 +1302,7 @@ def run_program(task: Task, work: Path, timeout: float = 60.0) -> Exec:
+         run = ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp",
+                "--ro-bind", str(work), str(work), "--unshare-all", "--die-with-parent", "--new-session", *run]
+     try:
+-        r = subprocess.run(run, capture_output=True, encoding="utf-8", errors="replace", timeout=timeout, stdin=subprocess.DEVNULL,
++        r = proctree.run(run, capture_output=True, encoding="utf-8", errors="replace", timeout=timeout, stdin=subprocess.DEVNULL,
+                            env=dict(os.environ, **SAN_ENV))
+     except subprocess.TimeoutExpired:
+         return Exec("timeout", f">{timeout}s")
+diff --git a/tools/proctree.py b/tools/proctree.py
+new file mode 100644
+index 000000000..cd8ec0783
+--- /dev/null
++++ b/tools/proctree.py
+@@ -0,0 +1,121 @@
++"""Run a command so that a timeout or Ctrl-C kills its whole process tree.
++
++``subprocess.run(..., timeout=...)`` kills only the direct child. PRISM
++starts solvers, proof checkers and compilers (CaDiCaL, cake_lpr, clang, the
++LRAT checkers), each in a process group of its own so that PRISM can kill
++it; killing PRISM alone leaves them running, still using CPU and memory,
++after the scorer has moved on.
++
++``run`` starts the command in a new session (``setsid``). Every descendant
++stays in that session unless it calls ``setsid`` itself (``setpgid`` changes
++only the process group), so on a timeout, on Ctrl-C (``KeyboardInterrupt``)
++or on any other exception ``kill_tree`` sends ``SIGKILL`` to the session's
++process group and, on Linux, to every process whose session id is the
++command's (``/proc/<pid>/stat``). Processes that leave the session
++(``bwrap --new-session``) are expected to use ``--die-with-parent``.
++
++The scorers load this file by path (``load()``), not through ``sys.path``.
++"""
++
++from __future__ import annotations
++
++import os
++import signal
++import subprocess
++from typing import Any
++
++_POSIX = os.name == "posix"
++
++
++def session_members(sid: int) -> list[int]:
++    """PIDs whose session id is ``sid`` (Linux ``/proc``; empty elsewhere)."""
++    out: list[int] = []
++    try:
++        names = os.listdir("/proc")
++    except OSError:
++        return out
++    for n in names:
++        if not n.isdigit():
++            continue
++        try:
++            with open(f"/proc/{n}/stat", "rb") as fh:
++                stat = fh.read().decode("latin-1")
++        except OSError:
++            continue
++        # comm (field 2) may contain blanks and ')': split after the last ')'
++        rest = stat[stat.rfind(")") + 2:].split()
++        # rest[0] state, [1] ppid, [2] pgrp, [3] session
++        if len(rest) > 3 and rest[3] == str(sid):
++            out.append(int(n))
++    return out
++
++
++def kill_tree(proc: subprocess.Popen[Any]) -> None:
++    """SIGKILL the session ``proc`` leads: its process group, then every other member."""
++    if not _POSIX:
++        proc.kill()
++        return
++    sid = proc.pid
++    try:
++        os.killpg(sid, signal.SIGKILL)
++    except (ProcessLookupError, PermissionError):
++        pass
++    # members that moved to process groups of their own (PRISM's solver children)
++    for _ in range(3):
++        left = [p for p in session_members(sid) if p != os.getpid()]
++        if not left:
++            break
++        for p in left:
++            try:
++                os.kill(p, signal.SIGKILL)
++            except (ProcessLookupError, PermissionError):
++                pass
++    try:
++        proc.kill()
++    except ProcessLookupError:
++        pass
++
++
++def run(argv: list[str], *, timeout: float | None = None, input: Any = None,
++        capture_output: bool = False, **kw: Any) -> subprocess.CompletedProcess[Any]:
++    """``subprocess.run`` with the same arguments, killing the whole tree on timeout or interrupt.
++
++    Raises ``subprocess.TimeoutExpired`` like ``subprocess.run``.
++    """
++    if capture_output:
++        kw.setdefault("stdout", subprocess.PIPE)
++        kw.setdefault("stderr", subprocess.PIPE)
++    if input is not None:
++        kw["stdin"] = subprocess.PIPE
++    if _POSIX:
++        kw["start_new_session"] = True
++    proc = subprocess.Popen(argv, **kw)
++    try:
++        out, err = proc.communicate(input, timeout=timeout)
++    except subprocess.TimeoutExpired:
++        kill_tree(proc)
++        out, err = _drain(proc)
++        raise subprocess.TimeoutExpired(argv, timeout or 0.0, output=out, stderr=err) from None
++    except BaseException:  # KeyboardInterrupt, SystemExit, ...
++        kill_tree(proc)
++        _drain(proc)
++        raise
++    return subprocess.CompletedProcess(argv, proc.returncode, out, err)
++
++
++def _drain(proc: subprocess.Popen[Any]) -> tuple[Any, Any]:
++    # a descendant outside the session could still hold a pipe open: bounded wait
++    try:
++        return proc.communicate(timeout=5)
++    except subprocess.TimeoutExpired:
++        for f in (proc.stdout, proc.stderr, proc.stdin):
++            if f is not None:
++                try:
++                    f.close()
++                except OSError:
++                    pass
++        try:
++            proc.wait(timeout=5)
++        except subprocess.TimeoutExpired:
++            pass
++        return None, None
+diff --git a/tools/svcomp/prism_svcomp.py b/tools/svcomp/prism_svcomp.py
+index 2a18bf754..cd4f62082 100755
+--- a/tools/svcomp/prism_svcomp.py
++++ b/tools/svcomp/prism_svcomp.py
+@@ -52,6 +52,7 @@ import json
+ import os
+ import re
+ import shutil
++import signal
+ import subprocess
+ import sys
+ import tempfile
+@@ -555,9 +556,72 @@ def find_prism(explicit: str | None) -> str | None:
+     return shutil.which("prism")
+ 
+ 
++def _session_members(sid: int) -> list[int]:
++    """PIDs whose session id is ``sid`` (Linux ``/proc``; empty elsewhere)."""
++    out: list[int] = []
++    try:
++        names = os.listdir("/proc")
++    except OSError:
++        return out
++    for n in names:
++        if not n.isdigit():
++            continue
++        try:
++            with open(f"/proc/{n}/stat", "rb") as fh:
++                stat = fh.read().decode("latin-1")
++        except OSError:
++            continue
++        rest = stat[stat.rfind(")") + 2:].split()  # state ppid pgrp session ...
++        if len(rest) > 3 and rest[3] == str(sid):
++            out.append(int(n))
++    return out
++
++
++def _kill_session(proc: subprocess.Popen[Any]) -> None:
++    """SIGKILL every process of the session ``proc`` leads (PRISM puts its
++    solver and checker children in process groups of their own, so killing
++    PRISM's group alone would leave them running)."""
++    if os.name != "posix":
++        proc.kill()
++        return
++    try:
++        os.killpg(proc.pid, signal.SIGKILL)
++    except (ProcessLookupError, PermissionError):
++        pass
++    for _ in range(3):
++        left = [p for p in _session_members(proc.pid) if p != os.getpid()]
++        if not left:
++            break
++        for p in left:
++            try:
++                os.kill(p, signal.SIGKILL)
++            except (ProcessLookupError, PermissionError):
++                pass
++    try:
++        proc.kill()
++    except ProcessLookupError:
++        pass
++
++
++def run_tree(argv: list[str], timeout: float | None) -> int:
++    """Run ``argv`` in a session of its own (output discarded); on a timeout,
++    Ctrl-C or any other exception kill the whole session, then re-raise."""
++    proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
++                            start_new_session=os.name == "posix")
++    try:
++        return proc.wait(timeout=timeout)
++    except BaseException:
++        _kill_session(proc)
++        try:
++            proc.wait(timeout=5)
++        except subprocess.TimeoutExpired:
++            pass
++        raise
++
++
+ def run_prism(prism: str, task_c: Path, out: Path, timeout: float | None) -> dict[str, Any]:
+     argv = [prism, str(task_c), "--no-llm", "--stage", STAGES, "--out", str(out)]
+-    subprocess.run(argv, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
++    run_tree(argv, timeout)
+     rep = out / "report.json"
+     if not rep.exists():
+         raise RuntimeError(f"prism wrote no report.json ({' '.join(argv)})")
+diff --git a/tools/svcomp/run_subset.py b/tools/svcomp/run_subset.py
+index d4e28780e..ad1cff939 100644
+--- a/tools/svcomp/run_subset.py
++++ b/tools/svcomp/run_subset.py
+@@ -50,6 +50,22 @@ except ImportError:  # pragma: no cover
+     yaml = None
+ 
+ 
++def _load_proctree() -> Any:
++    # by path (tools/proctree.py), not through sys.path
++    name = "prism_tools_proctree"
++    if name in sys.modules:
++        return sys.modules[name]
++    spec = importlib.util.spec_from_file_location(name, HERE.parent / "proctree.py")
++    assert spec is not None and spec.loader is not None
++    mod = importlib.util.module_from_spec(spec)
++    sys.modules[name] = mod
++    spec.loader.exec_module(mod)
++    return mod
++
++
++PROCTREE = _load_proctree()
++
++
+ def load_tool() -> Any | None:
+     """The tool-info module's Tool, or None when BenchExec is not installed."""
+     try:
+@@ -131,7 +147,8 @@ def run_one(tool: Any | None, prism: str, t: dict[str, Any], work: Path, timeout
+     t0 = time.monotonic()
+     timed_out = False
+     try:
+-        r = subprocess.run([sys.executable, *cmd], capture_output=True, text=True, timeout=timeout, cwd=REPO)
++        # a session of its own: a timeout kills the wrapper, PRISM and PRISM's solvers
++        r = PROCTREE.run([sys.executable, *cmd], capture_output=True, text=True, timeout=timeout, cwd=REPO)
+         lines, rc = r.stdout.splitlines(), r.returncode
+     except subprocess.TimeoutExpired as e:
+         raw = e.stdout or ""
+-- 
+2.43.0
+
+
+From 31ab976fb02e3556d928902581068eacd6593f77 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 25 Sep 2026 00:55:36 +0000
+Subject: [PATCH 2/9] WIP: pir findings 2, 5, 6, 7 in translate (samesign,
+ freeze poison, memcpy self-copy, lifetime.start revive) + tests
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PNtqaD75q6kS9GMoczxQVx
+---
+ include/prism/pir.hpp           |   5 +-
+ src/prism/pir/encode.cpp        |   7 ++-
+ src/prism/pir/memory.cpp        |  20 ++++++
+ src/prism/pir/memory.hpp        |   2 +
+ src/prism/pir/pir.cpp           |   2 +
+ src/prism/pir/stage.cpp         |   6 ++
+ src/prism/pir/translate.cpp     |  33 +++++++---
+ src/prism/pir/translate_mem.cpp |  41 +++++++++++-
+ src/prism/pir/translate_mem.hpp |   7 ++-
+ tests/cpp/test_main.cpp         | 106 ++++++++++++++++++++++++++++++++
+ tests/pir/mem_str.c             |  21 +++++++
+ tests/test_pir.py               |   2 +
+ tests/test_pir_refinement.py    |  11 +++-
+ tools/svcomp/prism_svcomp.py    |   3 +-
+ 14 files changed, 245 insertions(+), 21 deletions(-)
+
+diff --git a/include/prism/pir.hpp b/include/prism/pir.hpp
+index ca5ee2b31..213ec3135 100644
+--- a/include/prism/pir.hpp
++++ b/include/prism/pir.hpp
+@@ -250,7 +250,10 @@ struct Stmt {
+     //   MemSet       args [dst, byte i8, len i64]
+     //   StackRestore args [token i64]      stack objects with id > token end
+     //   StackSave    dst := token (i64)
+-    enum Kind { Assign, Check, Assume, Alloc, Free, Load, Store, MemCpy, MemSet, StackSave, StackRestore };
++    //   Revive       args [ptr]            a stack object's lifetime starts again
++    //                (llvm.lifetime.start; other objects: no effect; its bytes
++    //                are set separately, checks are separate)
++    enum Kind { Assign, Check, Assume, Alloc, Free, Load, Store, MemCpy, MemSet, StackSave, StackRestore, Revive };
+     Kind kind = Assign;
+     int dst = -1;              // Assign
+     Op op = Op::Copy;
+diff --git a/src/prism/pir/encode.cpp b/src/prism/pir/encode.cpp
+index cc509c86a..7e63ccf04 100644
+--- a/src/prism/pir/encode.cpp
++++ b/src/prism/pir/encode.cpp
+@@ -362,6 +362,7 @@ struct Encoding {
+         switch (s.kind) {
+             case Stmt::Alloc: m.insert_or_assign(s.dst, M().alloc(r, arg(0), s.mkind, s.align, s.init)); break;
+             case Stmt::Free: M().free(r, arg(0)); break;
++            case Stmt::Revive: M().revive(r, arg(0)); break;
+             case Stmt::Load: {
+                 auto ptr = arg(0);
+                 auto ld = M().load(ptr, fn.vars[static_cast<std::size_t>(s.dst)].width, s.tag);
+@@ -1734,7 +1735,8 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
+                 for (std::size_t b = 0; b < L.body.size(); ++b) {
+                     if (!L.body[b]) continue;
+                     for (auto& s : fn.blocks[b].stmts)
+-                        if (s.kind == Stmt::Alloc || s.kind == Stmt::Free || s.kind == Stmt::StackRestore) return true;
++                        if (s.kind == Stmt::Alloc || s.kind == Stmt::Free || s.kind == Stmt::StackRestore ||
++                            s.kind == Stmt::Revive) return true;
+                 }
+             return false;
+         };
+@@ -1793,7 +1795,8 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
+             for (std::size_t b = 0; b < body.size() && !allocs; ++b) {
+                 if (!body[b]) continue;
+                 for (auto& s : fn.blocks[b].stmts)
+-                    if (s.kind == Stmt::Alloc || s.kind == Stmt::Free || s.kind == Stmt::StackRestore) allocs = true;
++                    if (s.kind == Stmt::Alloc || s.kind == Stmt::Free || s.kind == Stmt::StackRestore ||
++                            s.kind == Stmt::Revive) allocs = true;
+             }
+             if (allocs) {
+                 v.extra["k_induction"] = "not-attempted (allocation or free in the loop)";
+diff --git a/src/prism/pir/memory.cpp b/src/prism/pir/memory.cpp
+index 47e5b4d9b..41a37846f 100644
+--- a/src/prism/pir/memory.cpp
++++ b/src/prism/pir/memory.cpp
+@@ -106,6 +106,19 @@ void SymMem::free(const z3::expr& guard, const z3::expr& ptr) {
+     for (auto& o : objs_) o.alive = o.alive && !(guard && id == bv(o.id, 64 - kObjShift));
+ }
+ 
++void SymMem::revive(const z3::expr& guard, const z3::expr& ptr) {
++    if (auto k = const_obj(ptr)) {
++        if (*k >= 1 && *k <= objs_.size()) {
++            auto& o = objs_[static_cast<std::size_t>(*k - 1)];
++            if (o.kind == MemKind::Stack) o.alive = o.alive || guard;
++        }
++        return;
++    }
++    auto id = objid(ptr);
++    for (auto& o : objs_)
++        if (o.kind == MemKind::Stack) o.alive = o.alive || (guard && id == bv(o.id, 64 - kObjShift));
++}
++
+ z3::expr SymMem::stack_save() { return bv(objs_.size(), 64); }
+ 
+ void SymMem::stack_restore(const z3::expr& guard, const z3::expr& token) {
+@@ -363,6 +376,13 @@ void ConcMem::free(uint64_t ptr) {
+     objs[static_cast<std::size_t>(id - 1)].live = false;
+ }
+ 
++void ConcMem::revive(uint64_t ptr) {
++    auto id = obj_of(ptr);
++    if (id == 0 || id > objs.size()) return;
++    auto& o = objs[static_cast<std::size_t>(id - 1)];
++    if (o.kind == MemKind::Stack) o.live = true;
++}
++
+ void ConcMem::stack_restore(uint64_t token) {
+     for (std::size_t i = 0; i < objs.size(); ++i)
+         if (objs[i].kind == MemKind::Stack && token < i + 1) objs[i].live = false;
+diff --git a/src/prism/pir/memory.hpp b/src/prism/pir/memory.hpp
+index 0b10855e7..1e61402a3 100644
+--- a/src/prism/pir/memory.hpp
++++ b/src/prism/pir/memory.hpp
+@@ -63,6 +63,7 @@ public:
+ 
+     z3::expr alloc(const z3::expr& guard, const z3::expr& size, MemKind k, unsigned align, int init);
+     void free(const z3::expr& guard, const z3::expr& ptr);
++    void revive(const z3::expr& guard, const z3::expr& ptr);  // stack objects only (Stmt::Revive)
+     z3::expr stack_save();  // i64 token: number of objects so far
+     void stack_restore(const z3::expr& guard, const z3::expr& token);
+ 
+@@ -188,6 +189,7 @@ public:
+     // Returns the pointer; fails (nullopt) when the size is too large to run.
+     std::optional<uint64_t> alloc(uint64_t size, MemKind k, unsigned align, int init);
+     void free(uint64_t ptr);
++    void revive(uint64_t ptr);  // stack objects only (Stmt::Revive)
+     uint64_t token() const { return objs.size(); }
+     void stack_restore(uint64_t token);
+     const Obj* obj(uint64_t ptr) const;
+diff --git a/src/prism/pir/pir.cpp b/src/prism/pir/pir.cpp
+index 9600a924b..e77d91ea5 100644
+--- a/src/prism/pir/pir.cpp
++++ b/src/prism/pir/pir.cpp
+@@ -152,6 +152,7 @@ std::string mem_stmt_text(const Function& fn, const Stmt& s) {
+         case Stmt::MemSet: return "memset " + args;
+         case Stmt::StackSave: return var_text(fn, s.dst) + " = stacksave";
+         case Stmt::StackRestore: return "stackrestore " + args;
++        case Stmt::Revive: return "revive " + args;
+         default: return "?";
+     }
+ }
+@@ -517,6 +518,7 @@ InterpResult interpret(const Function& fn, const std::vector<uint64_t>& args, ui
+                         break;
+                     }
+                     case Stmt::Free: M.free(A(0)); break;
++                    case Stmt::Revive: M.revive(A(0)); break;
+                     case Stmt::Load: {
+                         unsigned w = fn.vars[static_cast<std::size_t>(s.dst)].width;
+                         unsigned n = (w + 7) / 8;
+diff --git a/src/prism/pir/stage.cpp b/src/prism/pir/stage.cpp
+index 50451c706..b6309890d 100644
+--- a/src/prism/pir/stage.cpp
++++ b/src/prism/pir/stage.cpp
+@@ -374,6 +374,12 @@ std::vector<std::string> base_flags(const fs::path& src) {
+     std::vector<std::string> f{"-S", "-emit-llvm", "-O0", "-Xclang", "-disable-O0-optnone",
+                                "-fno-discard-value-names", "-gline-tables-only"};
+     f.push_back(is_cxx(src) ? "-std=c++23" : "-std=c17");
++    // A C/C++ memcpy call stays a call to memcpy (its library model checks
++    // C's rule: no overlap at all, C17 7.24.2.1) instead of becoming the
++    // llvm.memcpy intrinsic, which the LangRef lets copy an object exactly
++    // onto itself (struct assignment; refinement finding 6). Not a disabled
++    // check: the call is checked by the model.
++    f.push_back("-fno-builtin-memcpy");
+     // Keep the UB-folding diagnostics on (they are how folded UB is found).
+     for (auto* w : {"-Wshift-sign-overflow", "-Winteger-overflow", "-Wshift-overflow",
+                     "-Wshift-negative-value", "-Wshift-count-overflow", "-Wshift-count-negative",
+diff --git a/src/prism/pir/translate.cpp b/src/prism/pir/translate.cpp
+index 5aa61c49f..ccab57603 100644
+--- a/src/prism/pir/translate.cpp
++++ b/src/prism/pir/translate.cpp
+@@ -970,6 +970,7 @@ struct Tr final : pirmem::TrApi {
+         if (op == "icmp") {
+             if (in.ty.kind == ir::Type::Ptr) {
+                 if (in.ty.text != "ptr") throw Unenc{"UNENCODED: icmp on " + in.ty.text};
++                if (has_flag(in, "samesign")) throw Unenc{"UNENCODED: icmp samesign ptr"};
+                 Arg a = operand(fr, in.ops[0], cur, line);
+                 Arg b = operand(fr, in.ops[1], cur, line);
+                 mt.icmp(cur, result_var(fr, in), in.pred, a, b, line);
+@@ -984,6 +985,15 @@ struct Tr final : pirmem::TrApi {
+                 {"ule", Op::Ule}, {"sgt", Op::Sgt}, {"sge", Op::Sge}, {"slt", Op::Slt}, {"sle", Op::Sle}};
+             auto it = preds.find(in.pred);
+             if (it == preds.end()) throw Unenc{"UNENCODED: icmp " + in.pred};
++            if (has_flag(in, "samesign")) {
++                // LLVM 19+: the result is poison when the operands' signs
++                // differ (refinement finding 2); checked where it is created,
++                // like the other poison flags (finding 3)
++                Arg na = p2(cur, Op::Slt, a, Arg::c(w, 0));
++                Arg nb = p2(cur, Op::Slt, b, Arg::c(w, 0));
++                check(cur, p2(cur, Op::Ne, na, nb), "samesign", "UB-POISON",
++                      "icmp samesign of operands with different signs (poison)", line);
++            }
+             emit_assign(cur, result_var(fr, in), it->second, {a, b});
+             return;
+         }
+@@ -1014,7 +1024,10 @@ struct Tr final : pirmem::TrApi {
+         }
+         if (op == "freeze") {
+             unsigned w = vwidth(in.ty, "freeze type");
+-            Arg a = operand(fr, in.ops[0], cur, line);
++            // `freeze poison` is defined (LangRef: an arbitrary, fixed value,
++            // like `freeze undef`), not a use of poison (refinement finding 5)
++            Arg a = in.ops[0].v.kind == ir::Value::Poison ? havoc(cur, w, false, false)
++                                                          : operand(fr, in.ops[0], cur, line);
+             a.width = w;
+             emit_assign(cur, result_var(fr, in), Op::Copy, {a});
+             return;
+@@ -1183,7 +1196,9 @@ struct Tr final : pirmem::TrApi {
+                 return;
+             }
+             if (starts(n, "llvm.memcpy.") || starts(n, "llvm.memmove.")) {
+-                mt.memcpy_(cur, arg(0), arg(1), arg(2), starts(n, "llvm.memmove."), line);
++                // the intrinsic allows an exact self-copy (a C memcpy call is
++                // not lowered to it: the stage compiles with -fno-builtin-memcpy)
++                mt.memcpy_(cur, arg(0), arg(1), arg(2), starts(n, "llvm.memmove."), line, true);
+                 return;
+             }
+             if (starts(n, "llvm.memset.")) {
+@@ -1197,19 +1212,17 @@ struct Tr final : pirmem::TrApi {
+             }
+             if (starts(n, "llvm.lifetime.start") || starts(n, "llvm.lifetime.end")) {
+                 // (coroutine frames, docs/PIR.md "Coroutines") end: the object's
+-                // lifetime ends; start: its bytes become indeterminate again
+-                // (an object already ended stays dead: later accesses are reported)
++                // lifetime ends; start: a stack object's lifetime starts again
++                // (also after an end) and its bytes become indeterminate
+                 Arg p = arg(1);
+                 if (starts(n, "llvm.lifetime.end")) {
+                     mt.end_lifetime(cur, p);
+                     return;
+                 }
+-                if (in.ops.empty() || in.ops[0].v.kind != ir::Value::Int || in.ops[0].v.bits == 0 ||
+-                    in.ops[0].v.bits > 8)
+-                    throw Unenc{"UNENCODED: call @" + n + " (object larger than 8 bytes)"};
+-                auto bytes = static_cast<unsigned>(in.ops[0].v.bits);
+-                ir::Type ty{ir::Type::Int, bytes * 8, "i" + std::to_string(bytes * 8), {}};
+-                mt.store(cur, p, havoc(cur, bytes * 8, false, false), Arg::c(1, 0), ty, 1, line);
++                if (in.ops.empty() || in.ops[0].v.kind != ir::Value::Int)
++                    throw Unenc{"UNENCODED: call @" + n + " (size not a constant)"};
++                const uint64_t sz = in.ops[0].v.bits;  // -1: the whole object
++                mt.lifetime_start(cur, p, sz == ~uint64_t{0} ? std::nullopt : std::optional<uint64_t>(sz), line);
+                 return;
+             }
+             if (starts(n, "llvm.stackrestore")) {
+diff --git a/src/prism/pir/translate_mem.cpp b/src/prism/pir/translate_mem.cpp
+index 7a761f1fb..a756276b9 100644
+--- a/src/prism/pir/translate_mem.cpp
++++ b/src/prism/pir/translate_mem.cpp
+@@ -855,7 +855,7 @@ void MemTr::ptr_sub_check(int b, Arg x, Arg y, int line) {
+              "subtraction of pointers into different objects (C17 6.5.6p9)", line);
+ }
+ 
+-void MemTr::memcpy_(int b, Arg dst, Arg src, Arg len, bool move, int line) {
++void MemTr::memcpy_(int b, Arg dst, Arg src, Arg len, bool move, int line, bool self_ok) {
+     mark_memory();
+     Arg n = len.width < 64 ? t_.assign(b, Op::ZExt, 64, {len}, "len") : len;
+     Arg nz = p2(b, Op::Ne, n, c64(0));
+@@ -866,8 +866,19 @@ void MemTr::memcpy_(int b, Arg dst, Arg src, Arg len, bool move, int line) {
+         Arg a = p2(b, Op::Ult, fd, t_.assign(b, Op::Add, 64, {fs, n}, "e"));
+         Arg c = p2(b, Op::Ult, fs, t_.assign(b, Op::Add, 64, {fd, n}, "e"));
+         Arg same = p2(b, Op::Eq, obj(b, dst), obj(b, src));
+-        t_.check(b, band(b, nz, band(b, same, band(b, a, c))), "overlap", "MEM-OVERLAP",
+-                 "memcpy with overlapping source and destination (use memmove)", line);
++        Arg ov = band(b, same, band(b, a, c));
++        if (self_ok) {
++            // llvm.memcpy may copy an object exactly onto itself (LangRef;
++            // clang emits it for a struct assignment `*p = *q` that may be a
++            // self-assignment). Refinement finding 6; the Lean mirror is
++            // XTranslate.lean overlapChk.
++            Arg differ = p2(b, Op::Ne, fd, fs);
++            ov = band(b, differ, ov);
++        }
++        t_.check(b, band(b, nz, ov), "overlap", "MEM-OVERLAP",
++                 self_ok ? "memcpy with overlapping, different source and destination ranges (use memmove)"
++                         : "memcpy with overlapping source and destination (use memmove)",
++                 line);
+     }
+     Stmt s;
+     s.kind = Stmt::MemCpy;
+@@ -943,6 +954,30 @@ void MemTr::end_lifetime(int b, Arg ptr) {
+     t_.push(b, s);
+ }
+ 
++void MemTr::lifetime_start(int b, Arg ptr, std::optional<uint64_t> size, int line) {
++    // LangRef: after llvm.lifetime.start the stack object is alive and its
++    // bytes are uninitialised, also when an earlier lifetime.end ended it
++    // (refinement finding 7: it used to stay dead, a false MEM-UAF). Other
++    // objects keep their liveness; their bytes still become uninitialised,
++    // with a write's checks (a freed heap object stays a MEM-UAF).
++    mark_memory();
++    Stmt s;
++    s.kind = Stmt::Revive;
++    s.args = {ptr};
++    t_.push(b, s);
++    Arg n = size ? c64(*size) : obj_size_remaining(b, ptr);
++    if (size && *size >= kMaxObjSize) throw Unenc{"UNENCODED: llvm.lifetime.start of more than 2^47 bytes"};
++    Arg nz = p2(b, Op::Ne, n, c64(0));
++    access_checks(b, ptr, n, true, 1, line, nz);
++    // the bytes: copied from a fresh uninitialised object of the same size
++    Arg tmp = alloc(b, n, MemKind::Extern, 0, "indeterminate bytes (lifetime start)", line);
++    Stmt c;
++    c.kind = Stmt::MemCpy;
++    c.args = {ptr, tmp, n};
++    t_.push(b, c);
++    end_lifetime(b, tmp);
++}
++
+ void MemTr::stack_escape_check(int b, Arg ret, const std::vector<Arg>& own, int line) {
+     if (own.empty()) return;
+     Arg ro = obj(b, ret);
+diff --git a/src/prism/pir/translate_mem.hpp b/src/prism/pir/translate_mem.hpp
+index 73ce42303..3afc7fa06 100644
+--- a/src/prism/pir/translate_mem.hpp
++++ b/src/prism/pir/translate_mem.hpp
+@@ -126,12 +126,17 @@ public:
+              int use = 3, bool base_last_field = false);
+     void icmp(int b, int dst, const std::string& pred, Arg x, Arg y, int line);
+     void ptr_sub_check(int b, Arg x, Arg y, int line);
+-    void memcpy_(int b, Arg dst, Arg src, Arg len, bool move, int line);
++    // self_ok: an exact self-copy (dst == src) is not an overlap: llvm.memcpy
++    // (LangRef), not the C memcpy function (its model passes false)
++    void memcpy_(int b, Arg dst, Arg src, Arg len, bool move, int line, bool self_ok = false);
+     void memset_(int b, Arg dst, Arg byte, Arg len, int line);
+     // heap / new / FILE: returns the pointer (never null here; the models decide failure)
+     Arg alloc(int b, Arg size, MemKind k, int init, const std::string& what, int line, int dst = -1);
+     void dealloc(int b, Arg ptr, MemKind expected, const std::string& what, int line, bool kill = true);
+     void end_lifetime(int b, Arg ptr);  // stack object of an inlined callee at its return
++    // llvm.lifetime.start: a stack object's lifetime starts (again), its
++    // `size` bytes (nullopt: to the end of the object) become uninitialised
++    void lifetime_start(int b, Arg ptr, std::optional<uint64_t> size, int line);
+     void stack_escape_check(int b, Arg ret, const std::vector<Arg>& own, int line);
+     Arg obj_size_remaining(int b, Arg ptr);  // size - offset (0 when out of range)
+     void read_range(int b, Arg ptr, Arg len, int line);  // range access checks (read)
+diff --git a/tests/cpp/test_main.cpp b/tests/cpp/test_main.cpp
+index a33753560..d69adf7b1 100644
+--- a/tests/cpp/test_main.cpp
++++ b/tests/cpp/test_main.cpp
+@@ -5465,6 +5465,112 @@ TEST_CASE("pir: a false llvm.assume is a checked violation, not a silent path cu
+     CHECK(prism::laws::is_proof(before.status));
+ }
+ 
++TEST_CASE("pir: LangRef-defined IR is not reported, samesign poison is (refinement findings 2, 5, 6, 7)") {
++    auto verdict = [](const std::string& ir, const std::string& fn) {
++        auto t = pir_of(ir, fn);
++        REQUIRE_MESSAGE(t.fn.has_value(), t.reason);
++        return prism::pir::check_function(*t.fn, 8, 30);
++    };
++    const std::string decls =
++        "declare void @llvm.lifetime.start.p0(i64, ptr)\ndeclare void @llvm.lifetime.end.p0(i64, ptr)\n"
++        "declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)\n"
++        "declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)\n";
++    // finding 5: `freeze poison` is an arbitrary value, not a use of poison
++    auto frz = verdict("define i32 @fp(i32 %x) {\nentry:\n  %f = freeze i32 poison\n  %z = and i32 %f, 0\n"
++                       "  %d = or i32 %z, 1\n  %q = sdiv i32 100, %d\n  ret i32 %q\n}\n",
++                       "fp");
++    CHECK(frz.status == prism::laws::PROVED);
++    // ... and truly arbitrary: it may be 0
++    auto frz0 = verdict("define i32 @fp0() {\nentry:\n  %f = freeze i32 poison\n  %q = sdiv i32 100, %f\n"
++                        "  ret i32 %q\n}\n",
++                        "fp0");
++    CHECK(frz0.status == prism::laws::FAILED);
++    CHECK(frz0.cls == "INT-DIV-ZERO");
++    // poison outside freeze is still a use of poison
++    auto pois = verdict("define i32 @pu(i32 %x) {\nentry:\n  %y = add i32 poison, %x\n  ret i32 %y\n}\n", "pu");
++    CHECK(pois.status == prism::laws::FAILED);
++    CHECK(pois.cls == "UB-POISON");
++    // finding 2: icmp samesign is poison when the operands' signs differ
++    auto ss = verdict("define i32 @ss(i32 %a, i32 %b) {\nentry:\n  %c = icmp samesign ult i32 %a, %b\n"
++                      "  %r = zext i1 %c to i32\n  ret i32 %r\n}\n",
++                      "ss");
++    CHECK(ss.status == prism::laws::FAILED);
++    CHECK(ss.cls == "UB-POISON");
++    auto ss_ok = verdict("define i32 @ss2(i32 %a, i32 %b) {\nentry:\n  %a2 = and i32 %a, 255\n"
++                         "  %b2 = and i32 %b, 255\n  %c = icmp samesign ult i32 %a2, %b2\n"
++                         "  %r = zext i1 %c to i32\n  ret i32 %r\n}\n",
++                         "ss2");
++    CHECK(ss_ok.status == prism::laws::PROVED);
++    // finding 6: llvm.memcpy may copy an object exactly onto itself ...
++    auto self = verdict(decls + "define i32 @cs(i1 %c) {\nentry:\n  %a = alloca [4 x i8], align 1\n"
++                                "  %b = alloca [4 x i8], align 1\n"
++                                "  call void @llvm.memset.p0.i64(ptr %a, i8 7, i64 4, i1 false)\n"
++                                "  %p = select i1 %c, ptr %a, ptr %b\n"
++                                "  call void @llvm.memcpy.p0.p0.i64(ptr %a, ptr %p, i64 4, i1 false)\n"
++                                "  ret i32 0\n}\n",
++                        "cs");
++    CHECK(self.status == prism::laws::PROVED);
++    // ... but not onto an overlapping, different range
++    auto part = verdict(decls + "define i32 @cp(i1 %c) {\nentry:\n  %a = alloca [8 x i8], align 1\n"
++                                "  call void @llvm.memset.p0.i64(ptr %a, i8 7, i64 8, i1 false)\n"
++                                "  %d = getelementptr inbounds i8, ptr %a, i64 1\n"
++                                "  %p = select i1 %c, ptr %a, ptr %d\n"
++                                "  call void @llvm.memcpy.p0.p0.i64(ptr %a, ptr %p, i64 4, i1 false)\n"
++                                "  ret i32 0\n}\n",
++                        "cp");
++    CHECK(part.status == prism::laws::FAILED);
++    CHECK(part.cls == "MEM-OVERLAP");
++    // finding 7: lifetime.start after lifetime.end starts a new lifetime
++    auto again = verdict(decls + "define i32 @la(i32 %x) {\nentry:\n  %a = alloca i32, align 4\n"
++                                 "  call void @llvm.lifetime.start.p0(i64 4, ptr %a)\n"
++                                 "  store i32 %x, ptr %a, align 4\n"
++                                 "  call void @llvm.lifetime.end.p0(i64 4, ptr %a)\n"
++                                 "  call void @llvm.lifetime.start.p0(i64 4, ptr %a)\n"
++                                 "  store i32 5, ptr %a, align 4\n  %v = load i32, ptr %a, align 4\n"
++                                 "  call void @llvm.lifetime.end.p0(i64 4, ptr %a)\n  ret i32 %v\n}\n",
++                         "la");
++    CHECK(again.status == prism::laws::PROVED);
++    // ... whose bytes are indeterminate
++    auto fresh = verdict(decls + "define i32 @lu(i32 %x) {\nentry:\n  %a = alloca i32, align 4\n"
++                                 "  store i32 %x, ptr %a, align 4\n"
++                                 "  call void @llvm.lifetime.end.p0(i64 4, ptr %a)\n"
++                                 "  call void @llvm.lifetime.start.p0(i64 4, ptr %a)\n"
++                                 "  %v = load i32, ptr %a, align 4\n  ret i32 %v\n}\n",
++                         "lu");
++    CHECK(fresh.status == prism::laws::FAILED);
++    CHECK(fresh.cls == "UNINIT-READ");
++    // an access after the end, before a new start, is still reported
++    auto dead = verdict(decls + "define i32 @ld(i32 %x) {\nentry:\n  %a = alloca i32, align 4\n"
++                                "  call void @llvm.lifetime.start.p0(i64 4, ptr %a)\n"
++                                "  call void @llvm.lifetime.end.p0(i64 4, ptr %a)\n"
++                                "  store i32 %x, ptr %a, align 4\n"
++                                "  call void @llvm.lifetime.start.p0(i64 4, ptr %a)\n  ret i32 %x\n}\n",
++                        "ld");
++    CHECK(dead.status == prism::laws::FAILED);
++    CHECK(dead.cls == "MEM-UAF");
++    // objects larger than 8 bytes, and size -1 (the whole object), are encoded now
++    auto big = verdict(decls + "define i32 @lb(i64 %i) {\nentry:\n  %a = alloca [16 x i32], align 4\n"
++                               "  call void @llvm.lifetime.start.p0(i64 64, ptr %a)\n"
++                               "  call void @llvm.memset.p0.i64(ptr %a, i8 0, i64 64, i1 false)\n"
++                               "  call void @llvm.lifetime.end.p0(i64 64, ptr %a)\n"
++                               "  call void @llvm.lifetime.start.p0(i64 -1, ptr %a)\n"
++                               "  call void @llvm.memset.p0.i64(ptr %a, i8 0, i64 64, i1 false)\n"
++                               "  %j = and i64 %i, 15\n"
++                               "  %p = getelementptr inbounds [16 x i32], ptr %a, i64 0, i64 %j\n"
++                               "  %v = load i32, ptr %p, align 4\n  ret i32 %v\n}\n",
++                       "lb");
++    CHECK(big.status == prism::laws::PROVED);
++    auto big_u = verdict(decls + "define i32 @lbu(i64 %i) {\nentry:\n  %a = alloca [16 x i32], align 4\n"
++                                 "  call void @llvm.memset.p0.i64(ptr %a, i8 0, i64 64, i1 false)\n"
++                                 "  call void @llvm.lifetime.start.p0(i64 -1, ptr %a)\n"
++                                 "  %j = and i64 %i, 15\n"
++                                 "  %p = getelementptr inbounds [16 x i32], ptr %a, i64 0, i64 %j\n"
++                                 "  %v = load i32, ptr %p, align 4\n  ret i32 %v\n}\n",
++                         "lbu");
++    CHECK(big_u.status == prism::laws::FAILED);
++    CHECK(big_u.cls == "UNINIT-READ");
++}
++
+ TEST_CASE("pir: undef is a fresh value at every use, branching on it is UB (refinement finding 4)") {
+     // LLVM LangRef: every use of an undef value may observe a different
+     // value, and `br i1 undef` / a noundef argument or return of undef is UB.
+diff --git a/tests/pir/mem_str.c b/tests/pir/mem_str.c
+index b100d1280..a6f84302d 100644
+--- a/tests/pir/mem_str.c
++++ b/tests/pir/mem_str.c
+@@ -63,3 +63,24 @@ int strcat_bad(void) {
+     strcat(d, "def"); /* needs 7 bytes */
+     return d[0];
+ }
++
++/* C's memcpy function forbids any overlap, an exact self-copy included
++ * (C17 7.24.2.1): the call reaches the memcpy model (-fno-builtin-memcpy). */
++int memcpy_self_bad(void) {
++    char a[4] = "abc";
++    memcpy(a, a, 4);
++    return a[0];
++}
++
++/* A struct assignment that may be a self-assignment: clang emits
++ * llvm.memcpy(p, q) with p == q, which the LangRef defines (refinement
++ * finding 6; it used to be a false MEM-OVERLAP). */
++struct quad { int v[4]; };
++
++int struct_self_assign_ok(int c) {
++    struct quad s = {{1, 2, 3, 4}}, t = {{5, 6, 7, 8}};
++    struct quad *p = &s;
++    struct quad *q = c ? &s : &t;
++    *p = *q;
++    return s.v[0];
++}
+diff --git a/tests/test_pir.py b/tests/test_pir.py
+index 9953f5970..e8647dca0 100644
+--- a/tests/test_pir.py
++++ b/tests/test_pir.py
+@@ -133,6 +133,8 @@ MEM_EXPECTED: dict[tuple[str, str], tuple[str, str]] = {
+     ("mem_str.c", "memcpy_bad"): (laws.FAILED, "MEM-OOB-WRITE"),
+     ("mem_str.c", "overlap_bad"): (laws.FAILED, "MEM-OVERLAP"),
+     ("mem_str.c", "memmove_ok"): (laws.PROVED, ""),
++    ("mem_str.c", "memcpy_self_bad"): (laws.FAILED, "MEM-OVERLAP"),
++    ("mem_str.c", "struct_self_assign_ok"): (laws.PROVED, ""),
+     ("mem_str.c", "memset_bad"): (laws.FAILED, "MEM-OOB-WRITE"),
+     ("mem_str.c", "strcat_bad"): (laws.FAILED, "MEM-OOB-WRITE"),
+     ("mem_libc.c", "abs_bad"): (laws.FAILED, "INT-SIGNED-OVF"),
+diff --git a/tests/test_pir_refinement.py b/tests/test_pir_refinement.py
+index cefc1eefe..9fdd5678a 100644
+--- a/tests/test_pir_refinement.py
++++ b/tests/test_pir_refinement.py
+@@ -78,13 +78,18 @@ class StaticParity(unittest.TestCase):
+                 self.assertIn('if (fl != "inbounds") throw Unsupported{"getelementptr " + fl};', export)
+                 self.assertIn("if inb then", _read(REFINE / "PrismRefine" / "XTranslate.lean"))
+                 continue
++            if fl == "samesign":
++                # icmp samesign (refinement finding 2): translate.cpp checks it
++                # (UB-POISON when the signs differ), the Lean model has no such
++                # flag, so the exporter must keep refusing it (not in its
++                # allowlist below): the checker never claims a proof for it
++                self.assertIn('check(cur, p2(cur, Op::Ne, na, nb), "samesign", "UB-POISON"', self.cpp)
++                continue
+             self.assertIn(fl, {"nsw", "nuw", "exact", "disjoint", "nneg"}, msg=fl)
+         # the exporter's flag allowlist for the other instructions is exactly the modelled set
+         self.assertEqual(set(re.findall(r'fl != "([a-z]+)"', export)) - {"inbounds"},
+                          {"nsw", "nuw", "exact", "disjoint", "nneg"})
+-        # samesign is a poison flag translate.cpp ignores: the exporter must
+-        # refuse it rather than let the checker claim a proof for it
+-        self.assertIn('fl != "nneg"', export)
++        self.assertNotIn('fl != "samesign"', export)
+ 
+     def test_fragment_operator_names_match_op_name(self):
+         names = dict(re.findall(r'case Op::(\w+): return "([^"]+)";', self.pir))
+diff --git a/tools/svcomp/prism_svcomp.py b/tools/svcomp/prism_svcomp.py
+index cd4f62082..880f705a3 100755
+--- a/tools/svcomp/prism_svcomp.py
++++ b/tools/svcomp/prism_svcomp.py
+@@ -962,7 +962,8 @@ def debug_ir(task: Path) -> str | None:
+         return None
+     try:
+         r = subprocess.run([cc, "-x", "c", "-S", "-emit-llvm", "-O0", "-Xclang", "-disable-O0-optnone",
+-                            "-fno-discard-value-names", "-g", "-std=c17", "-w", str(task), "-o", "-"],
++                            "-fno-discard-value-names", "-fno-builtin-memcpy", "-g", "-std=c17", "-w", str(task),
++                            "-o", "-"],
+                            capture_output=True, text=True, timeout=120)
+         if r.returncode != 0:
+             return None
+-- 
+2.43.0
+
+
+From 8bef99794cb3afe4b98e46f56a987efcbb128cbe Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 25 Sep 2026 00:59:36 +0000
+Subject: [PATCH 3/9] WIP: Lean fixtures regenerated for findings 5, 6, 7
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PNtqaD75q6kS9GMoczxQVx
+---
+ proofs/refinement/fixtures/calls_freeze.pirl  |  12 +-
+ .../fixtures/dropped_intr_check.expected      |   2 +-
+ .../fixtures/dropped_intr_check.pirl          | 364 ++++++------
+ .../refinement/fixtures/intrinsics.expected   |   2 +-
+ proofs/refinement/fixtures/intrinsics.pirl    | 536 +++++++++---------
+ 5 files changed, 475 insertions(+), 441 deletions(-)
+
+diff --git a/proofs/refinement/fixtures/calls_freeze.pirl b/proofs/refinement/fixtures/calls_freeze.pirl
+index 086851321..64b4a2a0a 100644
+--- a/proofs/refinement/fixtures/calls_freeze.pirl
++++ b/proofs/refinement/fixtures/calls_freeze.pirl
+@@ -108,7 +108,6 @@ P vars 4 32 32 32 32
+ P params 1 0
+ P retw 32
+ P block
+-P check c1:1 poison UB-POISON
+ P havoc 3
+ P assign 1 copy 1 v3:32
+ P assign 2 add 2 v1:32 v0:32
+@@ -121,13 +120,16 @@ L block entry
+ L bin %y add - 32 %x undef
+ L ret %y
+ status ok
+-P vars 3 32 32 32
++P vars 6 32 32 1 32 32 32
+ P params 1 0
+ P retw 32
+ P block
+-P havoc 2
+-P assign 1 add 2 v0:32 v2:32
+-P ret v1:32
++P assign 2 copy 1 c1:1
++P havoc 3
++P assign 1 add 2 v0:32 v3:32
++P havoc 4
++P assign 5 select 3 v2:1 v4:32 v1:32
++P ret v5:32
+ end
+ func twice
+ L depth 4
+diff --git a/proofs/refinement/fixtures/dropped_intr_check.expected b/proofs/refinement/fixtures/dropped_intr_check.expected
+index f5963fd03..0d83d2fba 100644
+--- a/proofs/refinement/fixtures/dropped_intr_check.expected
++++ b/proofs/refinement/fixtures/dropped_intr_check.expected
+@@ -1 +1 @@
+-summary agree=0 agree-ext=0 agree-reject=0 outside=0 mismatch=4
++summary agree=0 agree-ext=0 agree-reject=1 outside=0 mismatch=3
+diff --git a/proofs/refinement/fixtures/dropped_intr_check.pirl b/proofs/refinement/fixtures/dropped_intr_check.pirl
+index d9f047bbb..dc97e24ac 100644
+--- a/proofs/refinement/fixtures/dropped_intr_check.pirl
++++ b/proofs/refinement/fixtures/dropped_intr_check.pirl
+@@ -20,7 +20,7 @@ L params 1 i 32
+ L ret 32
+ L block entry
+ L glob %@__const.copy_ok.a 16 16 4 1 4 0 32 5 4 32 6 8 32 7 12 32 8
+-L uninit %__prism_uninit.18 32
++L uninit %__prism_uninit.0 32
+ L alloca %a 16 16
+ L alloca %b 16 16
+ L memcpy %a %@__const.copy_ok.a #16 64 0
+@@ -33,7 +33,7 @@ L gep %arrayidx 1 %b 2 f #0 64 16 a %idxprom 64 4 4 1
+ L load %i1 32 %arrayidx 4
+ L ret %i1
+ status ok
+-P vars 172 32 64 32 64 64 64 64 32 64 64 32 64 64 64 1 64 64 8 1 64 1 1 1 1 1 1 1 1 1 1 64 1 1 1 1 1 1 1 1 64 64 8 1 64 1 1 1 1 1 1 1 1 1 1 64 1 1 1 1 1 64 64 64 1 64 1 64 64 1 1 1 1 1 1 1 64 64 8 1 64 1 1 1 1 1 1 1 1 1 1 64 1 1 1 1 1 1 1 1 64 64 8 1 64 1 1 1 1 1 1 1 1 1 1 64 1 1 1 1 1 64 64 64 1 64 1 64 64 1 1 1 1 1 1 64 64 64 1 1 1 8 64 1 64 1 1 1 1 64 64 8 1 64 1 1 1 1 1 1 1 64 1 1 1 1 64 64 1 1 1 1 1
++P vars 176 32 64 32 64 64 64 64 32 64 64 32 64 64 64 1 64 64 8 1 64 1 1 1 1 1 1 1 1 1 1 64 1 1 1 1 1 1 1 1 64 64 8 1 64 1 1 1 1 1 1 1 1 1 1 64 1 1 1 1 1 64 64 64 1 64 1 64 64 1 1 1 1 1 1 1 1 1 64 64 8 1 64 1 1 1 1 1 1 1 1 1 1 64 1 1 1 1 1 1 1 1 64 64 8 1 64 1 1 1 1 1 1 1 1 1 1 64 1 1 1 1 1 64 64 64 1 64 1 64 64 1 1 1 1 1 1 1 1 64 64 64 1 1 1 8 64 1 64 1 1 1 1 64 64 8 1 64 1 1 1 1 1 1 1 64 1 1 1 1 64 64 1 1 1 1 1
+ P params 1 0
+ P retw 32
+ P block
+@@ -114,136 +114,140 @@ P assign 67 lshr 2 v1:64 c64:48
+ P assign 68 eq 2 v66:64 v67:64
+ P assign 69 and 2 v63:1 v65:1
+ P assign 70 and 2 v68:1 v69:1
+-P assign 71 and 2 v14:1 v70:1
++P assign 71 ne 2 v60:64 v61:64
++P assign 72 and 2 v71:1 v70:1
++P assign 73 and 2 v14:1 v72:1
++P check v73:1 overlap MEM-OVERLAP
+ P memcpy v3:64 v1:64 c64:16
+-P assign 72 ugt 2 c64:0 c64:4
+-P check v72:1 ptr-arith MEM-PTR-ARITH
++P assign 74 ugt 2 c64:0 c64:4
++P check v74:1 ptr-arith MEM-PTR-ARITH
+ P assign 5 copy 1 v4:64
+-P assign 73 ugt 2 c64:0 c64:4
+-P check v73:1 ptr-arith MEM-PTR-ARITH
++P assign 75 ugt 2 c64:0 c64:4
++P check v75:1 ptr-arith MEM-PTR-ARITH
+ P assign 6 copy 1 v3:64
+-P assign 74 ne 2 c64:16 c64:0
+-P assign 75 lshr 2 v5:64 c64:48
+-P assign 76 and 2 v5:64 c64:281474976710655
+-P assign 77 obj.kind 1 v5:64
+-P assign 78 obj.live 1 v5:64
+-P assign 79 obj.size 1 v5:64
+-P assign 80 eq 2 v75:64 c64:0
+-P assign 81 and 2 v74:1 v80:1
+-P check v81:1 null PTR-NULL-DEREF
+-P assign 82 ne 2 v75:64 c64:0
+-P assign 83 eq 2 v77:8 c8:0
+-P assign 84 and 2 v82:1 v83:1
+-P assign 85 and 2 v74:1 v84:1
+-P check v85:1 wild PTR-INVALID-DEREF
+-P assign 86 ne 2 v77:8 c8:0
+-P assign 87 eq 2 v78:1 c1:0
+-P assign 88 and 2 v86:1 v87:1
+-P assign 89 and 2 v74:1 v88:1
+-P check v89:1 uaf MEM-UAF
+-P assign 90 add 2 v76:64 c64:16
+-P assign 91 ugt 2 v90:64 v79:64
+-P assign 92 uadd.ovf 2 v76:64 c64:16
+-P assign 93 or 2 v91:1 v92:1
+-P assign 94 and 2 v78:1 v93:1
+-P assign 95 and 2 v74:1 v94:1
+-P check v95:1 oob-write MEM-OOB-WRITE
+-P assign 96 eq 2 v77:8 c8:4
+-P assign 97 and 2 v78:1 v96:1
+-P assign 98 and 2 v74:1 v97:1
+-P check v98:1 write-const MEM-WRITE-CONST
+-P assign 99 lshr 2 v6:64 c64:48
+-P assign 100 and 2 v6:64 c64:281474976710655
+-P assign 101 obj.kind 1 v6:64
+-P assign 102 obj.live 1 v6:64
+-P assign 103 obj.size 1 v6:64
+-P assign 104 eq 2 v99:64 c64:0
+-P assign 105 and 2 v74:1 v104:1
+-P check v105:1 null PTR-NULL-DEREF
+-P assign 106 ne 2 v99:64 c64:0
+-P assign 107 eq 2 v101:8 c8:0
+-P assign 108 and 2 v106:1 v107:1
+-P assign 109 and 2 v74:1 v108:1
+-P check v109:1 wild PTR-INVALID-DEREF
+-P assign 110 ne 2 v101:8 c8:0
+-P assign 111 eq 2 v102:1 c1:0
+-P assign 112 and 2 v110:1 v111:1
+-P assign 113 and 2 v74:1 v112:1
+-P check v113:1 uaf MEM-UAF
+-P assign 114 add 2 v100:64 c64:16
+-P assign 115 ugt 2 v114:64 v103:64
+-P assign 116 uadd.ovf 2 v100:64 c64:16
+-P assign 117 or 2 v115:1 v116:1
+-P assign 118 and 2 v102:1 v117:1
+-P assign 119 and 2 v74:1 v118:1
+-P check v119:1 oob-read MEM-OOB-READ
+-P assign 120 and 2 v5:64 c64:281474976710655
+-P assign 121 and 2 v6:64 c64:281474976710655
+-P assign 122 add 2 v121:64 c64:16
+-P assign 123 ult 2 v120:64 v122:64
+-P assign 124 add 2 v120:64 c64:16
+-P assign 125 ult 2 v121:64 v124:64
+-P assign 126 lshr 2 v5:64 c64:48
+-P assign 127 lshr 2 v6:64 c64:48
+-P assign 128 eq 2 v126:64 v127:64
+-P assign 129 and 2 v123:1 v125:1
+-P assign 130 and 2 v128:1 v129:1
+-P assign 131 and 2 v74:1 v130:1
+-P check v131:1 overlap MEM-OVERLAP
++P assign 76 ne 2 c64:16 c64:0
++P assign 77 lshr 2 v5:64 c64:48
++P assign 78 and 2 v5:64 c64:281474976710655
++P assign 79 obj.kind 1 v5:64
++P assign 80 obj.live 1 v5:64
++P assign 81 obj.size 1 v5:64
++P assign 82 eq 2 v77:64 c64:0
++P assign 83 and 2 v76:1 v82:1
++P check v83:1 null PTR-NULL-DEREF
++P assign 84 ne 2 v77:64 c64:0
++P assign 85 eq 2 v79:8 c8:0
++P assign 86 and 2 v84:1 v85:1
++P assign 87 and 2 v76:1 v86:1
++P check v87:1 wild PTR-INVALID-DEREF
++P assign 88 ne 2 v79:8 c8:0
++P assign 89 eq 2 v80:1 c1:0
++P assign 90 and 2 v88:1 v89:1
++P assign 91 and 2 v76:1 v90:1
++P check v91:1 uaf MEM-UAF
++P assign 92 add 2 v78:64 c64:16
++P assign 93 ugt 2 v92:64 v81:64
++P assign 94 uadd.ovf 2 v78:64 c64:16
++P assign 95 or 2 v93:1 v94:1
++P assign 96 and 2 v80:1 v95:1
++P assign 97 and 2 v76:1 v96:1
++P check v97:1 oob-write MEM-OOB-WRITE
++P assign 98 eq 2 v79:8 c8:4
++P assign 99 and 2 v80:1 v98:1
++P assign 100 and 2 v76:1 v99:1
++P check v100:1 write-const MEM-WRITE-CONST
++P assign 101 lshr 2 v6:64 c64:48
++P assign 102 and 2 v6:64 c64:281474976710655
++P assign 103 obj.kind 1 v6:64
++P assign 104 obj.live 1 v6:64
++P assign 105 obj.size 1 v6:64
++P assign 106 eq 2 v101:64 c64:0
++P assign 107 and 2 v76:1 v106:1
++P check v107:1 null PTR-NULL-DEREF
++P assign 108 ne 2 v101:64 c64:0
++P assign 109 eq 2 v103:8 c8:0
++P assign 110 and 2 v108:1 v109:1
++P assign 111 and 2 v76:1 v110:1
++P check v111:1 wild PTR-INVALID-DEREF
++P assign 112 ne 2 v103:8 c8:0
++P assign 113 eq 2 v104:1 c1:0
++P assign 114 and 2 v112:1 v113:1
++P assign 115 and 2 v76:1 v114:1
++P check v115:1 uaf MEM-UAF
++P assign 116 add 2 v102:64 c64:16
++P assign 117 ugt 2 v116:64 v105:64
++P assign 118 uadd.ovf 2 v102:64 c64:16
++P assign 119 or 2 v117:1 v118:1
++P assign 120 and 2 v104:1 v119:1
++P assign 121 and 2 v76:1 v120:1
++P check v121:1 oob-read MEM-OOB-READ
++P assign 122 and 2 v5:64 c64:281474976710655
++P assign 123 and 2 v6:64 c64:281474976710655
++P assign 124 add 2 v123:64 c64:16
++P assign 125 ult 2 v122:64 v124:64
++P assign 126 add 2 v122:64 c64:16
++P assign 127 ult 2 v123:64 v126:64
++P assign 128 lshr 2 v5:64 c64:48
++P assign 129 lshr 2 v6:64 c64:48
++P assign 130 eq 2 v128:64 v129:64
++P assign 131 and 2 v125:1 v127:1
++P assign 132 and 2 v130:1 v131:1
++P assign 133 ne 2 v122:64 v123:64
++P assign 134 and 2 v133:1 v132:1
++P assign 135 and 2 v76:1 v134:1
+ P memcpy v5:64 v6:64 c64:16
+ P assign 7 and 2 v0:32 c32:3
+ P assign 8 sext 1 v7:32
+-P assign 132 uge 2 v8:64 c64:4
+-P check v132:1 oob-read MEM-OOB-READ
+-P assign 133 smul.ovf 2 v8:64 c64:4
+-P check v133:1 ptr-arith MEM-PTR-ARITH
+-P assign 134 mul 2 v8:64 c64:4
+-P assign 9 add 2 v4:64 v134:64
+-P assign 135 lshr 2 v4:64 c64:48
+-P assign 136 lshr 2 v9:64 c64:48
+-P assign 137 eq 2 v135:64 c64:0
+-P assign 138 ne 2 v134:64 c64:0
+-P assign 139 and 2 v137:1 v138:1
+-P check v139:1 ptr-arith MEM-PTR-ARITH
+-P assign 140 obj.kind 1 v4:64
+-P assign 141 obj.size 1 v4:64
+-P assign 142 ne 2 v136:64 v135:64
+-P assign 143 and 2 v9:64 c64:281474976710655
+-P assign 144 ugt 2 v143:64 v141:64
+-P assign 145 or 2 v142:1 v144:1
+-P assign 146 ne 2 v140:8 c8:0
+-P assign 147 and 2 v146:1 v145:1
+-P check v147:1 ptr-arith MEM-PTR-ARITH
+-P assign 148 lshr 2 v9:64 c64:48
+-P assign 149 and 2 v9:64 c64:281474976710655
+-P assign 150 obj.kind 1 v9:64
+-P assign 151 obj.live 1 v9:64
+-P assign 152 obj.size 1 v9:64
+-P assign 153 eq 2 v148:64 c64:0
+-P check v153:1 null PTR-NULL-DEREF
+-P assign 154 ne 2 v148:64 c64:0
+-P assign 155 eq 2 v150:8 c8:0
+-P assign 156 and 2 v154:1 v155:1
+-P check v156:1 wild PTR-INVALID-DEREF
+-P assign 157 ne 2 v150:8 c8:0
+-P assign 158 eq 2 v151:1 c1:0
+-P assign 159 and 2 v157:1 v158:1
+-P check v159:1 uaf MEM-UAF
+-P assign 160 add 2 v149:64 c64:4
+-P assign 161 ugt 2 v160:64 v152:64
+-P assign 162 uadd.ovf 2 v149:64 c64:4
+-P assign 163 or 2 v161:1 v162:1
+-P assign 164 and 2 v151:1 v163:1
+-P check v164:1 oob-read MEM-OOB-READ
+-P assign 165 and 2 v149:64 c64:3
+-P assign 166 obj.align 1 v9:64
+-P assign 167 ne 2 v165:64 c64:0
+-P assign 168 ult 2 v166:64 c64:4
+-P assign 169 or 2 v167:1 v168:1
+-P assign 170 and 2 v151:1 v169:1
+-P check v170:1 align MEM-MISALIGNED
+-P load 10 171 -1 v9:64 0
+-P check v171:1 uninit UNINIT-READ
++P assign 136 uge 2 v8:64 c64:4
++P check v136:1 oob-read MEM-OOB-READ
++P assign 137 smul.ovf 2 v8:64 c64:4
++P check v137:1 ptr-arith MEM-PTR-ARITH
++P assign 138 mul 2 v8:64 c64:4
++P assign 9 add 2 v4:64 v138:64
++P assign 139 lshr 2 v4:64 c64:48
++P assign 140 lshr 2 v9:64 c64:48
++P assign 141 eq 2 v139:64 c64:0
++P assign 142 ne 2 v138:64 c64:0
++P assign 143 and 2 v141:1 v142:1
++P check v143:1 ptr-arith MEM-PTR-ARITH
++P assign 144 obj.kind 1 v4:64
++P assign 145 obj.size 1 v4:64
++P assign 146 ne 2 v140:64 v139:64
++P assign 147 and 2 v9:64 c64:281474976710655
++P assign 148 ugt 2 v147:64 v145:64
++P assign 149 or 2 v146:1 v148:1
++P assign 150 ne 2 v144:8 c8:0
++P assign 151 and 2 v150:1 v149:1
++P check v151:1 ptr-arith MEM-PTR-ARITH
++P assign 152 lshr 2 v9:64 c64:48
++P assign 153 and 2 v9:64 c64:281474976710655
++P assign 154 obj.kind 1 v9:64
++P assign 155 obj.live 1 v9:64
++P assign 156 obj.size 1 v9:64
++P assign 157 eq 2 v152:64 c64:0
++P check v157:1 null PTR-NULL-DEREF
++P assign 158 ne 2 v152:64 c64:0
++P assign 159 eq 2 v154:8 c8:0
++P assign 160 and 2 v158:1 v159:1
++P check v160:1 wild PTR-INVALID-DEREF
++P assign 161 ne 2 v154:8 c8:0
++P assign 162 eq 2 v155:1 c1:0
++P assign 163 and 2 v161:1 v162:1
++P check v163:1 uaf MEM-UAF
++P assign 164 add 2 v153:64 c64:4
++P assign 165 ugt 2 v164:64 v156:64
++P assign 166 uadd.ovf 2 v153:64 c64:4
++P assign 167 or 2 v165:1 v166:1
++P assign 168 and 2 v155:1 v167:1
++P check v168:1 oob-read MEM-OOB-READ
++P assign 169 and 2 v153:64 c64:3
++P assign 170 obj.align 1 v9:64
++P assign 171 ne 2 v169:64 c64:0
++P assign 172 ult 2 v170:64 c64:4
++P assign 173 or 2 v171:1 v172:1
++P assign 174 and 2 v155:1 v173:1
++P check v174:1 align MEM-MISALIGNED
++P load 10 175 -1 v9:64 0
++P check v175:1 uninit UNINIT-READ
+ P ret v10:32
+ end
+ func bump_bad
+@@ -304,68 +308,76 @@ L lend %a
+ L store 32 %x %a 4
+ L ret %x
+ status ok
+-P vars 47 32 64 32 64 64 8 1 64 1 1 1 1 1 1 1 64 1 1 1 1 1 1 64 64 8 1 64 1 1 1 1 1 1 1 64 1 1 1 1 64 64 1 1 1 1 1 1
++P vars 53 32 64 1 64 64 8 1 64 1 1 1 1 1 1 1 1 1 1 64 1 1 1 1 1 1 1 1 64 64 64 8 1 64 1 1 1 1 1 1 1 64 1 1 1 1 64 64 1 1 1 1 1 1
+ P params 1 0
+ P retw 32
+ P block
+ P alloc 1 c64:4 1 0 4
+-P havoc 2
++P memory-statement 11
++P assign 2 ne 2 c64:4 c64:0
+ P assign 3 lshr 2 v1:64 c64:48
+ P assign 4 and 2 v1:64 c64:281474976710655
+ P assign 5 obj.kind 1 v1:64
+ P assign 6 obj.live 1 v1:64
+ P assign 7 obj.size 1 v1:64
+ P assign 8 eq 2 v3:64 c64:0
+-P check v8:1 null PTR-NULL-DEREF
+-P assign 9 ne 2 v3:64 c64:0
+-P assign 10 eq 2 v5:8 c8:0
+-P assign 11 and 2 v9:1 v10:1
+-P check v11:1 wild PTR-INVALID-DEREF
+-P assign 12 ne 2 v5:8 c8:0
+-P assign 13 eq 2 v6:1 c1:0
+-P assign 14 and 2 v12:1 v13:1
+-P assign 15 add 2 v4:64 c64:4
+-P assign 16 ugt 2 v15:64 v7:64
+-P assign 17 uadd.ovf 2 v4:64 c64:4
+-P assign 18 or 2 v16:1 v17:1
+-P assign 19 and 2 v6:1 v18:1
+-P check v19:1 oob-write MEM-OOB-WRITE
+-P assign 20 eq 2 v5:8 c8:4
+-P assign 21 and 2 v6:1 v20:1
+-P check v21:1 write-const MEM-WRITE-CONST
+-P store v1:64 v2:32 c1:0 0
++P assign 9 and 2 v2:1 v8:1
++P check v9:1 null PTR-NULL-DEREF
++P assign 10 ne 2 v3:64 c64:0
++P assign 11 eq 2 v5:8 c8:0
++P assign 12 and 2 v10:1 v11:1
++P assign 13 and 2 v2:1 v12:1
++P check v13:1 wild PTR-INVALID-DEREF
++P assign 14 ne 2 v5:8 c8:0
++P assign 15 eq 2 v6:1 c1:0
++P assign 16 and 2 v14:1 v15:1
++P assign 17 and 2 v2:1 v16:1
++P check v17:1 uaf MEM-UAF
++P assign 18 add 2 v4:64 c64:4
++P assign 19 ugt 2 v18:64 v7:64
++P assign 20 uadd.ovf 2 v4:64 c64:4
++P assign 21 or 2 v19:1 v20:1
++P assign 22 and 2 v6:1 v21:1
++P assign 23 and 2 v2:1 v22:1
++P check v23:1 oob-write MEM-OOB-WRITE
++P assign 24 eq 2 v5:8 c8:4
++P assign 25 and 2 v6:1 v24:1
++P assign 26 and 2 v2:1 v25:1
++P check v26:1 write-const MEM-WRITE-CONST
++P alloc 27 c64:4 7 0 16
++P memcpy v1:64 v27:64 c64:4
++P free v27:64
+ P free v1:64
+-P assign 22 lshr 2 v1:64 c64:48
+-P assign 23 and 2 v1:64 c64:281474976710655
+-P assign 24 obj.kind 1 v1:64
+-P assign 25 obj.live 1 v1:64
+-P assign 26 obj.size 1 v1:64
+-P assign 27 eq 2 v22:64 c64:0
+-P check v27:1 null PTR-NULL-DEREF
+-P assign 28 ne 2 v22:64 c64:0
+-P assign 29 eq 2 v24:8 c8:0
+-P assign 30 and 2 v28:1 v29:1
+-P check v30:1 wild PTR-INVALID-DEREF
+-P assign 31 ne 2 v24:8 c8:0
+-P assign 32 eq 2 v25:1 c1:0
+-P assign 33 and 2 v31:1 v32:1
+-P check v33:1 uaf MEM-UAF
+-P assign 34 add 2 v23:64 c64:4
+-P assign 35 ugt 2 v34:64 v26:64
+-P assign 36 uadd.ovf 2 v23:64 c64:4
+-P assign 37 or 2 v35:1 v36:1
+-P assign 38 and 2 v25:1 v37:1
+-P check v38:1 oob-write MEM-OOB-WRITE
+-P assign 39 and 2 v23:64 c64:3
+-P assign 40 obj.align 1 v1:64
+-P assign 41 ne 2 v39:64 c64:0
+-P assign 42 ult 2 v40:64 c64:4
++P assign 28 lshr 2 v1:64 c64:48
++P assign 29 and 2 v1:64 c64:281474976710655
++P assign 30 obj.kind 1 v1:64
++P assign 31 obj.live 1 v1:64
++P assign 32 obj.size 1 v1:64
++P assign 33 eq 2 v28:64 c64:0
++P check v33:1 null PTR-NULL-DEREF
++P assign 34 ne 2 v28:64 c64:0
++P assign 35 eq 2 v30:8 c8:0
++P assign 36 and 2 v34:1 v35:1
++P check v36:1 wild PTR-INVALID-DEREF
++P assign 37 ne 2 v30:8 c8:0
++P assign 38 eq 2 v31:1 c1:0
++P assign 39 and 2 v37:1 v38:1
++P assign 40 add 2 v29:64 c64:4
++P assign 41 ugt 2 v40:64 v32:64
++P assign 42 uadd.ovf 2 v29:64 c64:4
+ P assign 43 or 2 v41:1 v42:1
+-P assign 44 and 2 v25:1 v43:1
+-P check v44:1 align MEM-MISALIGNED
+-P assign 45 eq 2 v24:8 c8:4
+-P assign 46 and 2 v25:1 v45:1
+-P check v46:1 write-const MEM-WRITE-CONST
++P assign 44 and 2 v31:1 v43:1
++P check v44:1 oob-write MEM-OOB-WRITE
++P assign 45 and 2 v29:64 c64:3
++P assign 46 obj.align 1 v1:64
++P assign 47 ne 2 v45:64 c64:0
++P assign 48 ult 2 v46:64 c64:4
++P assign 49 or 2 v47:1 v48:1
++P assign 50 and 2 v31:1 v49:1
++P check v50:1 align MEM-MISALIGNED
++P assign 51 eq 2 v30:8 c8:4
++P assign 52 and 2 v31:1 v51:1
++P check v52:1 write-const MEM-WRITE-CONST
+ P store v1:64 v0:32 c1:1 0
+ P ret v0:32
+ end
+diff --git a/proofs/refinement/fixtures/intrinsics.expected b/proofs/refinement/fixtures/intrinsics.expected
+index 0ed07b0f9..c80db3c8f 100644
+--- a/proofs/refinement/fixtures/intrinsics.expected
++++ b/proofs/refinement/fixtures/intrinsics.expected
+@@ -1 +1 @@
+-summary agree=1 agree-ext=21 agree-reject=0 outside=0 mismatch=0
++summary agree=1 agree-ext=19 agree-reject=2 outside=0 mismatch=0
+diff --git a/proofs/refinement/fixtures/intrinsics.pirl b/proofs/refinement/fixtures/intrinsics.pirl
+index b494bfcae..76a8cce62 100644
+--- a/proofs/refinement/fixtures/intrinsics.pirl
++++ b/proofs/refinement/fixtures/intrinsics.pirl
+@@ -433,7 +433,7 @@ L params 1 i 32
+ L ret 32
+ L block entry
+ L glob %@__const.copy_ok.a 16 16 4 1 4 0 32 5 4 32 6 8 32 7 12 32 8
+-L uninit %__prism_uninit.18 32
++L uninit %__prism_uninit.0 32
+ L alloca %a 16 16
+ L alloca %b 16 16
+ L memcpy %a %@__const.copy_ok.a #16 64 0
+@@ -446,7 +446,7 @@ L gep %arrayidx 1 %b 2 f #0 64 16 a %idxprom 64 4 4 1
+ L load %i1 32 %arrayidx 4
+ L ret %i1
+ status ok
+-P vars 172 32 64 32 64 64 64 64 32 64 64 32 64 64 64 1 64 64 8 1 64 1 1 1 1 1 1 1 1 1 1 64 1 1 1 1 1 1 1 1 64 64 8 1 64 1 1 1 1 1 1 1 1 1 1 64 1 1 1 1 1 64 64 64 1 64 1 64 64 1 1 1 1 1 1 1 64 64 8 1 64 1 1 1 1 1 1 1 1 1 1 64 1 1 1 1 1 1 1 1 64 64 8 1 64 1 1 1 1 1 1 1 1 1 1 64 1 1 1 1 1 64 64 64 1 64 1 64 64 1 1 1 1 1 1 64 64 64 1 1 1 8 64 1 64 1 1 1 1 64 64 8 1 64 1 1 1 1 1 1 1 64 1 1 1 1 64 64 1 1 1 1 1
++P vars 176 32 64 32 64 64 64 64 32 64 64 32 64 64 64 1 64 64 8 1 64 1 1 1 1 1 1 1 1 1 1 64 1 1 1 1 1 1 1 1 64 64 8 1 64 1 1 1 1 1 1 1 1 1 1 64 1 1 1 1 1 64 64 64 1 64 1 64 64 1 1 1 1 1 1 1 1 1 64 64 8 1 64 1 1 1 1 1 1 1 1 1 1 64 1 1 1 1 1 1 1 1 64 64 8 1 64 1 1 1 1 1 1 1 1 1 1 64 1 1 1 1 1 64 64 64 1 64 1 64 64 1 1 1 1 1 1 1 1 64 64 64 1 1 1 8 64 1 64 1 1 1 1 64 64 8 1 64 1 1 1 1 1 1 1 64 1 1 1 1 64 64 1 1 1 1 1
+ P params 1 0
+ P retw 32
+ P block
+@@ -527,137 +527,141 @@ P assign 67 lshr 2 v1:64 c64:48
+ P assign 68 eq 2 v66:64 v67:64
+ P assign 69 and 2 v63:1 v65:1
+ P assign 70 and 2 v68:1 v69:1
+-P assign 71 and 2 v14:1 v70:1
+-P check v71:1 overlap MEM-OVERLAP
++P assign 71 ne 2 v60:64 v61:64
++P assign 72 and 2 v71:1 v70:1
++P assign 73 and 2 v14:1 v72:1
++P check v73:1 overlap MEM-OVERLAP
+ P memcpy v3:64 v1:64 c64:16
+-P assign 72 ugt 2 c64:0 c64:4
+-P check v72:1 ptr-arith MEM-PTR-ARITH
++P assign 74 ugt 2 c64:0 c64:4
++P check v74:1 ptr-arith MEM-PTR-ARITH
+ P assign 5 copy 1 v4:64
+-P assign 73 ugt 2 c64:0 c64:4
+-P check v73:1 ptr-arith MEM-PTR-ARITH
++P assign 75 ugt 2 c64:0 c64:4
++P check v75:1 ptr-arith MEM-PTR-ARITH
+ P assign 6 copy 1 v3:64
+-P assign 74 ne 2 c64:16 c64:0
+-P assign 75 lshr 2 v5:64 c64:48
+-P assign 76 and 2 v5:64 c64:281474976710655
+-P assign 77 obj.kind 1 v5:64
+-P assign 78 obj.live 1 v5:64
+-P assign 79 obj.size 1 v5:64
+-P assign 80 eq 2 v75:64 c64:0
+-P assign 81 and 2 v74:1 v80:1
+-P check v81:1 null PTR-NULL-DEREF
+-P assign 82 ne 2 v75:64 c64:0
+-P assign 83 eq 2 v77:8 c8:0
+-P assign 84 and 2 v82:1 v83:1
+-P assign 85 and 2 v74:1 v84:1
+-P check v85:1 wild PTR-INVALID-DEREF
+-P assign 86 ne 2 v77:8 c8:0
+-P assign 87 eq 2 v78:1 c1:0
+-P assign 88 and 2 v86:1 v87:1
+-P assign 89 and 2 v74:1 v88:1
+-P check v89:1 uaf MEM-UAF
+-P assign 90 add 2 v76:64 c64:16
+-P assign 91 ugt 2 v90:64 v79:64
+-P assign 92 uadd.ovf 2 v76:64 c64:16
+-P assign 93 or 2 v91:1 v92:1
+-P assign 94 and 2 v78:1 v93:1
+-P assign 95 and 2 v74:1 v94:1
+-P check v95:1 oob-write MEM-OOB-WRITE
+-P assign 96 eq 2 v77:8 c8:4
+-P assign 97 and 2 v78:1 v96:1
+-P assign 98 and 2 v74:1 v97:1
+-P check v98:1 write-const MEM-WRITE-CONST
+-P assign 99 lshr 2 v6:64 c64:48
+-P assign 100 and 2 v6:64 c64:281474976710655
+-P assign 101 obj.kind 1 v6:64
+-P assign 102 obj.live 1 v6:64
+-P assign 103 obj.size 1 v6:64
+-P assign 104 eq 2 v99:64 c64:0
+-P assign 105 and 2 v74:1 v104:1
+-P check v105:1 null PTR-NULL-DEREF
+-P assign 106 ne 2 v99:64 c64:0
+-P assign 107 eq 2 v101:8 c8:0
+-P assign 108 and 2 v106:1 v107:1
+-P assign 109 and 2 v74:1 v108:1
+-P check v109:1 wild PTR-INVALID-DEREF
+-P assign 110 ne 2 v101:8 c8:0
+-P assign 111 eq 2 v102:1 c1:0
+-P assign 112 and 2 v110:1 v111:1
+-P assign 113 and 2 v74:1 v112:1
+-P check v113:1 uaf MEM-UAF
+-P assign 114 add 2 v100:64 c64:16
+-P assign 115 ugt 2 v114:64 v103:64
+-P assign 116 uadd.ovf 2 v100:64 c64:16
+-P assign 117 or 2 v115:1 v116:1
+-P assign 118 and 2 v102:1 v117:1
+-P assign 119 and 2 v74:1 v118:1
+-P check v119:1 oob-read MEM-OOB-READ
+-P assign 120 and 2 v5:64 c64:281474976710655
+-P assign 121 and 2 v6:64 c64:281474976710655
+-P assign 122 add 2 v121:64 c64:16
+-P assign 123 ult 2 v120:64 v122:64
+-P assign 124 add 2 v120:64 c64:16
+-P assign 125 ult 2 v121:64 v124:64
+-P assign 126 lshr 2 v5:64 c64:48
+-P assign 127 lshr 2 v6:64 c64:48
+-P assign 128 eq 2 v126:64 v127:64
+-P assign 129 and 2 v123:1 v125:1
+-P assign 130 and 2 v128:1 v129:1
+-P assign 131 and 2 v74:1 v130:1
+-P check v131:1 overlap MEM-OVERLAP
++P assign 76 ne 2 c64:16 c64:0
++P assign 77 lshr 2 v5:64 c64:48
++P assign 78 and 2 v5:64 c64:281474976710655
++P assign 79 obj.kind 1 v5:64
++P assign 80 obj.live 1 v5:64
++P assign 81 obj.size 1 v5:64
++P assign 82 eq 2 v77:64 c64:0
++P assign 83 and 2 v76:1 v82:1
++P check v83:1 null PTR-NULL-DEREF
++P assign 84 ne 2 v77:64 c64:0
++P assign 85 eq 2 v79:8 c8:0
++P assign 86 and 2 v84:1 v85:1
++P assign 87 and 2 v76:1 v86:1
++P check v87:1 wild PTR-INVALID-DEREF
++P assign 88 ne 2 v79:8 c8:0
++P assign 89 eq 2 v80:1 c1:0
++P assign 90 and 2 v88:1 v89:1
++P assign 91 and 2 v76:1 v90:1
++P check v91:1 uaf MEM-UAF
++P assign 92 add 2 v78:64 c64:16
++P assign 93 ugt 2 v92:64 v81:64
++P assign 94 uadd.ovf 2 v78:64 c64:16
++P assign 95 or 2 v93:1 v94:1
++P assign 96 and 2 v80:1 v95:1
++P assign 97 and 2 v76:1 v96:1
++P check v97:1 oob-write MEM-OOB-WRITE
++P assign 98 eq 2 v79:8 c8:4
++P assign 99 and 2 v80:1 v98:1
++P assign 100 and 2 v76:1 v99:1
++P check v100:1 write-const MEM-WRITE-CONST
++P assign 101 lshr 2 v6:64 c64:48
++P assign 102 and 2 v6:64 c64:281474976710655
++P assign 103 obj.kind 1 v6:64
++P assign 104 obj.live 1 v6:64
++P assign 105 obj.size 1 v6:64
++P assign 106 eq 2 v101:64 c64:0
++P assign 107 and 2 v76:1 v106:1
++P check v107:1 null PTR-NULL-DEREF
++P assign 108 ne 2 v101:64 c64:0
++P assign 109 eq 2 v103:8 c8:0
++P assign 110 and 2 v108:1 v109:1
++P assign 111 and 2 v76:1 v110:1
++P check v111:1 wild PTR-INVALID-DEREF
++P assign 112 ne 2 v103:8 c8:0
++P assign 113 eq 2 v104:1 c1:0
++P assign 114 and 2 v112:1 v113:1
++P assign 115 and 2 v76:1 v114:1
++P check v115:1 uaf MEM-UAF
++P assign 116 add 2 v102:64 c64:16
++P assign 117 ugt 2 v116:64 v105:64
++P assign 118 uadd.ovf 2 v102:64 c64:16
++P assign 119 or 2 v117:1 v118:1
++P assign 120 and 2 v104:1 v119:1
++P assign 121 and 2 v76:1 v120:1
++P check v121:1 oob-read MEM-OOB-READ
++P assign 122 and 2 v5:64 c64:281474976710655
++P assign 123 and 2 v6:64 c64:281474976710655
++P assign 124 add 2 v123:64 c64:16
++P assign 125 ult 2 v122:64 v124:64
++P assign 126 add 2 v122:64 c64:16
++P assign 127 ult 2 v123:64 v126:64
++P assign 128 lshr 2 v5:64 c64:48
++P assign 129 lshr 2 v6:64 c64:48
++P assign 130 eq 2 v128:64 v129:64
++P assign 131 and 2 v125:1 v127:1
++P assign 132 and 2 v130:1 v131:1
++P assign 133 ne 2 v122:64 v123:64
++P assign 134 and 2 v133:1 v132:1
++P assign 135 and 2 v76:1 v134:1
++P check v135:1 overlap MEM-OVERLAP
+ P memcpy v5:64 v6:64 c64:16
+ P assign 7 and 2 v0:32 c32:3
+ P assign 8 sext 1 v7:32
+-P assign 132 uge 2 v8:64 c64:4
+-P check v132:1 oob-read MEM-OOB-READ
+-P assign 133 smul.ovf 2 v8:64 c64:4
+-P check v133:1 ptr-arith MEM-PTR-ARITH
+-P assign 134 mul 2 v8:64 c64:4
+-P assign 9 add 2 v4:64 v134:64
+-P assign 135 lshr 2 v4:64 c64:48
+-P assign 136 lshr 2 v9:64 c64:48
+-P assign 137 eq 2 v135:64 c64:0
+-P assign 138 ne 2 v134:64 c64:0
+-P assign 139 and 2 v137:1 v138:1
+-P check v139:1 ptr-arith MEM-PTR-ARITH
+-P assign 140 obj.kind 1 v4:64
+-P assign 141 obj.size 1 v4:64
+-P assign 142 ne 2 v136:64 v135:64
+-P assign 143 and 2 v9:64 c64:281474976710655
+-P assign 144 ugt 2 v143:64 v141:64
+-P assign 145 or 2 v142:1 v144:1
+-P assign 146 ne 2 v140:8 c8:0
+-P assign 147 and 2 v146:1 v145:1
+-P check v147:1 ptr-arith MEM-PTR-ARITH
+-P assign 148 lshr 2 v9:64 c64:48
+-P assign 149 and 2 v9:64 c64:281474976710655
+-P assign 150 obj.kind 1 v9:64
+-P assign 151 obj.live 1 v9:64
+-P assign 152 obj.size 1 v9:64
+-P assign 153 eq 2 v148:64 c64:0
+-P check v153:1 null PTR-NULL-DEREF
+-P assign 154 ne 2 v148:64 c64:0
+-P assign 155 eq 2 v150:8 c8:0
+-P assign 156 and 2 v154:1 v155:1
+-P check v156:1 wild PTR-INVALID-DEREF
+-P assign 157 ne 2 v150:8 c8:0
+-P assign 158 eq 2 v151:1 c1:0
+-P assign 159 and 2 v157:1 v158:1
+-P check v159:1 uaf MEM-UAF
+-P assign 160 add 2 v149:64 c64:4
+-P assign 161 ugt 2 v160:64 v152:64
+-P assign 162 uadd.ovf 2 v149:64 c64:4
+-P assign 163 or 2 v161:1 v162:1
+-P assign 164 and 2 v151:1 v163:1
+-P check v164:1 oob-read MEM-OOB-READ
+-P assign 165 and 2 v149:64 c64:3
+-P assign 166 obj.align 1 v9:64
+-P assign 167 ne 2 v165:64 c64:0
+-P assign 168 ult 2 v166:64 c64:4
+-P assign 169 or 2 v167:1 v168:1
+-P assign 170 and 2 v151:1 v169:1
+-P check v170:1 align MEM-MISALIGNED
+-P load 10 171 -1 v9:64 0
+-P check v171:1 uninit UNINIT-READ
++P assign 136 uge 2 v8:64 c64:4
++P check v136:1 oob-read MEM-OOB-READ
++P assign 137 smul.ovf 2 v8:64 c64:4
++P check v137:1 ptr-arith MEM-PTR-ARITH
++P assign 138 mul 2 v8:64 c64:4
++P assign 9 add 2 v4:64 v138:64
++P assign 139 lshr 2 v4:64 c64:48
++P assign 140 lshr 2 v9:64 c64:48
++P assign 141 eq 2 v139:64 c64:0
++P assign 142 ne 2 v138:64 c64:0
++P assign 143 and 2 v141:1 v142:1
++P check v143:1 ptr-arith MEM-PTR-ARITH
++P assign 144 obj.kind 1 v4:64
++P assign 145 obj.size 1 v4:64
++P assign 146 ne 2 v140:64 v139:64
++P assign 147 and 2 v9:64 c64:281474976710655
++P assign 148 ugt 2 v147:64 v145:64
++P assign 149 or 2 v146:1 v148:1
++P assign 150 ne 2 v144:8 c8:0
++P assign 151 and 2 v150:1 v149:1
++P check v151:1 ptr-arith MEM-PTR-ARITH
++P assign 152 lshr 2 v9:64 c64:48
++P assign 153 and 2 v9:64 c64:281474976710655
++P assign 154 obj.kind 1 v9:64
++P assign 155 obj.live 1 v9:64
++P assign 156 obj.size 1 v9:64
++P assign 157 eq 2 v152:64 c64:0
++P check v157:1 null PTR-NULL-DEREF
++P assign 158 ne 2 v152:64 c64:0
++P assign 159 eq 2 v154:8 c8:0
++P assign 160 and 2 v158:1 v159:1
++P check v160:1 wild PTR-INVALID-DEREF
++P assign 161 ne 2 v154:8 c8:0
++P assign 162 eq 2 v155:1 c1:0
++P assign 163 and 2 v161:1 v162:1
++P check v163:1 uaf MEM-UAF
++P assign 164 add 2 v153:64 c64:4
++P assign 165 ugt 2 v164:64 v156:64
++P assign 166 uadd.ovf 2 v153:64 c64:4
++P assign 167 or 2 v165:1 v166:1
++P assign 168 and 2 v155:1 v167:1
++P check v168:1 oob-read MEM-OOB-READ
++P assign 169 and 2 v153:64 c64:3
++P assign 170 obj.align 1 v9:64
++P assign 171 ne 2 v169:64 c64:0
++P assign 172 ult 2 v170:64 c64:4
++P assign 173 or 2 v171:1 v172:1
++P assign 174 and 2 v155:1 v173:1
++P check v174:1 align MEM-MISALIGNED
++P load 10 175 -1 v9:64 0
++P check v175:1 uninit UNINIT-READ
+ P ret v10:32
+ end
+ func zero_ok
+@@ -1002,99 +1006,107 @@ L load %v 32 %a 4
+ L lend %a
+ L ret %v
+ status ok
+-P vars 72 32 64 32 32 64 64 8 1 64 1 1 1 1 1 1 1 64 1 1 1 1 1 1 64 64 8 1 64 1 1 1 1 1 1 1 64 1 1 1 1 64 64 1 1 1 1 1 1 64 64 8 1 64 1 1 1 1 1 1 1 64 1 1 1 1 64 64 1 1 1 1 1
++P vars 78 32 64 32 1 64 64 8 1 64 1 1 1 1 1 1 1 1 1 1 64 1 1 1 1 1 1 1 1 64 64 64 8 1 64 1 1 1 1 1 1 1 64 1 1 1 1 64 64 1 1 1 1 1 1 64 64 8 1 64 1 1 1 1 1 1 1 64 1 1 1 1 64 64 1 1 1 1 1
+ P params 1 0
+ P retw 32
+ P block
+ P alloc 1 c64:4 1 0 4
+-P havoc 3
++P memory-statement 11
++P assign 3 ne 2 c64:4 c64:0
+ P assign 4 lshr 2 v1:64 c64:48
+ P assign 5 and 2 v1:64 c64:281474976710655
+ P assign 6 obj.kind 1 v1:64
+ P assign 7 obj.live 1 v1:64
+ P assign 8 obj.size 1 v1:64
+ P assign 9 eq 2 v4:64 c64:0
+-P check v9:1 null PTR-NULL-DEREF
+-P assign 10 ne 2 v4:64 c64:0
+-P assign 11 eq 2 v6:8 c8:0
+-P assign 12 and 2 v10:1 v11:1
+-P check v12:1 wild PTR-INVALID-DEREF
+-P assign 13 ne 2 v6:8 c8:0
+-P assign 14 eq 2 v7:1 c1:0
+-P assign 15 and 2 v13:1 v14:1
+-P check v15:1 uaf MEM-UAF
+-P assign 16 add 2 v5:64 c64:4
+-P assign 17 ugt 2 v16:64 v8:64
+-P assign 18 uadd.ovf 2 v5:64 c64:4
+-P assign 19 or 2 v17:1 v18:1
+-P assign 20 and 2 v7:1 v19:1
+-P check v20:1 oob-write MEM-OOB-WRITE
+-P assign 21 eq 2 v6:8 c8:4
+-P assign 22 and 2 v7:1 v21:1
+-P check v22:1 write-const MEM-WRITE-CONST
+-P store v1:64 v3:32 c1:0 0
+-P assign 23 lshr 2 v1:64 c64:48
+-P assign 24 and 2 v1:64 c64:281474976710655
+-P assign 25 obj.kind 1 v1:64
+-P assign 26 obj.live 1 v1:64
+-P assign 27 obj.size 1 v1:64
+-P assign 28 eq 2 v23:64 c64:0
+-P check v28:1 null PTR-NULL-DEREF
+-P assign 29 ne 2 v23:64 c64:0
+-P assign 30 eq 2 v25:8 c8:0
+-P assign 31 and 2 v29:1 v30:1
+-P check v31:1 wild PTR-INVALID-DEREF
+-P assign 32 ne 2 v25:8 c8:0
+-P assign 33 eq 2 v26:1 c1:0
+-P assign 34 and 2 v32:1 v33:1
+-P check v34:1 uaf MEM-UAF
+-P assign 35 add 2 v24:64 c64:4
+-P assign 36 ugt 2 v35:64 v27:64
+-P assign 37 uadd.ovf 2 v24:64 c64:4
+-P assign 38 or 2 v36:1 v37:1
+-P assign 39 and 2 v26:1 v38:1
+-P check v39:1 oob-write MEM-OOB-WRITE
+-P assign 40 and 2 v24:64 c64:3
+-P assign 41 obj.align 1 v1:64
+-P assign 42 ne 2 v40:64 c64:0
+-P assign 43 ult 2 v41:64 c64:4
++P assign 10 and 2 v3:1 v9:1
++P check v10:1 null PTR-NULL-DEREF
++P assign 11 ne 2 v4:64 c64:0
++P assign 12 eq 2 v6:8 c8:0
++P assign 13 and 2 v11:1 v12:1
++P assign 14 and 2 v3:1 v13:1
++P check v14:1 wild PTR-INVALID-DEREF
++P assign 15 ne 2 v6:8 c8:0
++P assign 16 eq 2 v7:1 c1:0
++P assign 17 and 2 v15:1 v16:1
++P assign 18 and 2 v3:1 v17:1
++P check v18:1 uaf MEM-UAF
++P assign 19 add 2 v5:64 c64:4
++P assign 20 ugt 2 v19:64 v8:64
++P assign 21 uadd.ovf 2 v5:64 c64:4
++P assign 22 or 2 v20:1 v21:1
++P assign 23 and 2 v7:1 v22:1
++P assign 24 and 2 v3:1 v23:1
++P check v24:1 oob-write MEM-OOB-WRITE
++P assign 25 eq 2 v6:8 c8:4
++P assign 26 and 2 v7:1 v25:1
++P assign 27 and 2 v3:1 v26:1
++P check v27:1 write-const MEM-WRITE-CONST
++P alloc 28 c64:4 7 0 16
++P memcpy v1:64 v28:64 c64:4
++P free v28:64
++P assign 29 lshr 2 v1:64 c64:48
++P assign 30 and 2 v1:64 c64:281474976710655
++P assign 31 obj.kind 1 v1:64
++P assign 32 obj.live 1 v1:64
++P assign 33 obj.size 1 v1:64
++P assign 34 eq 2 v29:64 c64:0
++P check v34:1 null PTR-NULL-DEREF
++P assign 35 ne 2 v29:64 c64:0
++P assign 36 eq 2 v31:8 c8:0
++P assign 37 and 2 v35:1 v36:1
++P check v37:1 wild PTR-INVALID-DEREF
++P assign 38 ne 2 v31:8 c8:0
++P assign 39 eq 2 v32:1 c1:0
++P assign 40 and 2 v38:1 v39:1
++P check v40:1 uaf MEM-UAF
++P assign 41 add 2 v30:64 c64:4
++P assign 42 ugt 2 v41:64 v33:64
++P assign 43 uadd.ovf 2 v30:64 c64:4
+ P assign 44 or 2 v42:1 v43:1
+-P assign 45 and 2 v26:1 v44:1
+-P check v45:1 align MEM-MISALIGNED
+-P assign 46 eq 2 v25:8 c8:4
+-P assign 47 and 2 v26:1 v46:1
+-P check v47:1 write-const MEM-WRITE-CONST
++P assign 45 and 2 v32:1 v44:1
++P check v45:1 oob-write MEM-OOB-WRITE
++P assign 46 and 2 v30:64 c64:3
++P assign 47 obj.align 1 v1:64
++P assign 48 ne 2 v46:64 c64:0
++P assign 49 ult 2 v47:64 c64:4
++P assign 50 or 2 v48:1 v49:1
++P assign 51 and 2 v32:1 v50:1
++P check v51:1 align MEM-MISALIGNED
++P assign 52 eq 2 v31:8 c8:4
++P assign 53 and 2 v32:1 v52:1
++P check v53:1 write-const MEM-WRITE-CONST
+ P store v1:64 v0:32 c1:1 0
+-P assign 48 lshr 2 v1:64 c64:48
+-P assign 49 and 2 v1:64 c64:281474976710655
+-P assign 50 obj.kind 1 v1:64
+-P assign 51 obj.live 1 v1:64
+-P assign 52 obj.size 1 v1:64
+-P assign 53 eq 2 v48:64 c64:0
+-P check v53:1 null PTR-NULL-DEREF
+-P assign 54 ne 2 v48:64 c64:0
+-P assign 55 eq 2 v50:8 c8:0
+-P assign 56 and 2 v54:1 v55:1
+-P check v56:1 wild PTR-INVALID-DEREF
+-P assign 57 ne 2 v50:8 c8:0
+-P assign 58 eq 2 v51:1 c1:0
+-P assign 59 and 2 v57:1 v58:1
+-P check v59:1 uaf MEM-UAF
+-P assign 60 add 2 v49:64 c64:4
+-P assign 61 ugt 2 v60:64 v52:64
+-P assign 62 uadd.ovf 2 v49:64 c64:4
+-P assign 63 or 2 v61:1 v62:1
+-P assign 64 and 2 v51:1 v63:1
+-P check v64:1 oob-read MEM-OOB-READ
+-P assign 65 and 2 v49:64 c64:3
+-P assign 66 obj.align 1 v1:64
+-P assign 67 ne 2 v65:64 c64:0
+-P assign 68 ult 2 v66:64 c64:4
++P assign 54 lshr 2 v1:64 c64:48
++P assign 55 and 2 v1:64 c64:281474976710655
++P assign 56 obj.kind 1 v1:64
++P assign 57 obj.live 1 v1:64
++P assign 58 obj.size 1 v1:64
++P assign 59 eq 2 v54:64 c64:0
++P check v59:1 null PTR-NULL-DEREF
++P assign 60 ne 2 v54:64 c64:0
++P assign 61 eq 2 v56:8 c8:0
++P assign 62 and 2 v60:1 v61:1
++P check v62:1 wild PTR-INVALID-DEREF
++P assign 63 ne 2 v56:8 c8:0
++P assign 64 eq 2 v57:1 c1:0
++P assign 65 and 2 v63:1 v64:1
++P check v65:1 uaf MEM-UAF
++P assign 66 add 2 v55:64 c64:4
++P assign 67 ugt 2 v66:64 v58:64
++P assign 68 uadd.ovf 2 v55:64 c64:4
+ P assign 69 or 2 v67:1 v68:1
+-P assign 70 and 2 v51:1 v69:1
+-P check v70:1 align MEM-MISALIGNED
+-P load 2 71 -1 v1:64 0
+-P check v71:1 uninit UNINIT-READ
++P assign 70 and 2 v57:1 v69:1
++P check v70:1 oob-read MEM-OOB-READ
++P assign 71 and 2 v55:64 c64:3
++P assign 72 obj.align 1 v1:64
++P assign 73 ne 2 v71:64 c64:0
++P assign 74 ult 2 v72:64 c64:4
++P assign 75 or 2 v73:1 v74:1
++P assign 76 and 2 v57:1 v75:1
++P check v76:1 align MEM-MISALIGNED
++P load 2 77 -1 v1:64 0
++P check v77:1 uninit UNINIT-READ
+ P free v1:64
+ P ret v2:32
+ end
+@@ -1108,69 +1120,77 @@ L lend %a
+ L store 32 %x %a 4
+ L ret %x
+ status ok
+-P vars 47 32 64 32 64 64 8 1 64 1 1 1 1 1 1 1 64 1 1 1 1 1 1 64 64 8 1 64 1 1 1 1 1 1 1 64 1 1 1 1 64 64 1 1 1 1 1 1
++P vars 53 32 64 1 64 64 8 1 64 1 1 1 1 1 1 1 1 1 1 64 1 1 1 1 1 1 1 1 64 64 64 8 1 64 1 1 1 1 1 1 1 64 1 1 1 1 64 64 1 1 1 1 1 1
+ P params 1 0
+ P retw 32
+ P block
+ P alloc 1 c64:4 1 0 4
+-P havoc 2
++P memory-statement 11
++P assign 2 ne 2 c64:4 c64:0
+ P assign 3 lshr 2 v1:64 c64:48
+ P assign 4 and 2 v1:64 c64:281474976710655
+ P assign 5 obj.kind 1 v1:64
+ P assign 6 obj.live 1 v1:64
+ P assign 7 obj.size 1 v1:64
+ P assign 8 eq 2 v3:64 c64:0
+-P check v8:1 null PTR-NULL-DEREF
+-P assign 9 ne 2 v3:64 c64:0
+-P assign 10 eq 2 v5:8 c8:0
+-P assign 11 and 2 v9:1 v10:1
+-P check v11:1 wild PTR-INVALID-DEREF
+-P assign 12 ne 2 v5:8 c8:0
+-P assign 13 eq 2 v6:1 c1:0
+-P assign 14 and 2 v12:1 v13:1
+-P check v14:1 uaf MEM-UAF
+-P assign 15 add 2 v4:64 c64:4
+-P assign 16 ugt 2 v15:64 v7:64
+-P assign 17 uadd.ovf 2 v4:64 c64:4
+-P assign 18 or 2 v16:1 v17:1
+-P assign 19 and 2 v6:1 v18:1
+-P check v19:1 oob-write MEM-OOB-WRITE
+-P assign 20 eq 2 v5:8 c8:4
+-P assign 21 and 2 v6:1 v20:1
+-P check v21:1 write-const MEM-WRITE-CONST
+-P store v1:64 v2:32 c1:0 0
++P assign 9 and 2 v2:1 v8:1
++P check v9:1 null PTR-NULL-DEREF
++P assign 10 ne 2 v3:64 c64:0
++P assign 11 eq 2 v5:8 c8:0
++P assign 12 and 2 v10:1 v11:1
++P assign 13 and 2 v2:1 v12:1
++P check v13:1 wild PTR-INVALID-DEREF
++P assign 14 ne 2 v5:8 c8:0
++P assign 15 eq 2 v6:1 c1:0
++P assign 16 and 2 v14:1 v15:1
++P assign 17 and 2 v2:1 v16:1
++P check v17:1 uaf MEM-UAF
++P assign 18 add 2 v4:64 c64:4
++P assign 19 ugt 2 v18:64 v7:64
++P assign 20 uadd.ovf 2 v4:64 c64:4
++P assign 21 or 2 v19:1 v20:1
++P assign 22 and 2 v6:1 v21:1
++P assign 23 and 2 v2:1 v22:1
++P check v23:1 oob-write MEM-OOB-WRITE
++P assign 24 eq 2 v5:8 c8:4
++P assign 25 and 2 v6:1 v24:1
++P assign 26 and 2 v2:1 v25:1
++P check v26:1 write-const MEM-WRITE-CONST
++P alloc 27 c64:4 7 0 16
++P memcpy v1:64 v27:64 c64:4
++P free v27:64
+ P free v1:64
+-P assign 22 lshr 2 v1:64 c64:48
+-P assign 23 and 2 v1:64 c64:281474976710655
+-P assign 24 obj.kind 1 v1:64
+-P assign 25 obj.live 1 v1:64
+-P assign 26 obj.size 1 v1:64
+-P assign 27 eq 2 v22:64 c64:0
+-P check v27:1 null PTR-NULL-DEREF
+-P assign 28 ne 2 v22:64 c64:0
+-P assign 29 eq 2 v24:8 c8:0
+-P assign 30 and 2 v28:1 v29:1
+-P check v30:1 wild PTR-INVALID-DEREF
+-P assign 31 ne 2 v24:8 c8:0
+-P assign 32 eq 2 v25:1 c1:0
+-P assign 33 and 2 v31:1 v32:1
+-P check v33:1 uaf MEM-UAF
+-P assign 34 add 2 v23:64 c64:4
+-P assign 35 ugt 2 v34:64 v26:64
+-P assign 36 uadd.ovf 2 v23:64 c64:4
+-P assign 37 or 2 v35:1 v36:1
+-P assign 38 and 2 v25:1 v37:1
+-P check v38:1 oob-write MEM-OOB-WRITE
+-P assign 39 and 2 v23:64 c64:3
+-P assign 40 obj.align 1 v1:64
+-P assign 41 ne 2 v39:64 c64:0
+-P assign 42 ult 2 v40:64 c64:4
++P assign 28 lshr 2 v1:64 c64:48
++P assign 29 and 2 v1:64 c64:281474976710655
++P assign 30 obj.kind 1 v1:64
++P assign 31 obj.live 1 v1:64
++P assign 32 obj.size 1 v1:64
++P assign 33 eq 2 v28:64 c64:0
++P check v33:1 null PTR-NULL-DEREF
++P assign 34 ne 2 v28:64 c64:0
++P assign 35 eq 2 v30:8 c8:0
++P assign 36 and 2 v34:1 v35:1
++P check v36:1 wild PTR-INVALID-DEREF
++P assign 37 ne 2 v30:8 c8:0
++P assign 38 eq 2 v31:1 c1:0
++P assign 39 and 2 v37:1 v38:1
++P check v39:1 uaf MEM-UAF
++P assign 40 add 2 v29:64 c64:4
++P assign 41 ugt 2 v40:64 v32:64
++P assign 42 uadd.ovf 2 v29:64 c64:4
+ P assign 43 or 2 v41:1 v42:1
+-P assign 44 and 2 v25:1 v43:1
+-P check v44:1 align MEM-MISALIGNED
+-P assign 45 eq 2 v24:8 c8:4
+-P assign 46 and 2 v25:1 v45:1
+-P check v46:1 write-const MEM-WRITE-CONST
++P assign 44 and 2 v31:1 v43:1
++P check v44:1 oob-write MEM-OOB-WRITE
++P assign 45 and 2 v29:64 c64:3
++P assign 46 obj.align 1 v1:64
++P assign 47 ne 2 v45:64 c64:0
++P assign 48 ult 2 v46:64 c64:4
++P assign 49 or 2 v47:1 v48:1
++P assign 50 and 2 v31:1 v49:1
++P check v50:1 align MEM-MISALIGNED
++P assign 51 eq 2 v30:8 c8:4
++P assign 52 and 2 v31:1 v51:1
++P check v52:1 write-const MEM-WRITE-CONST
+ P store v1:64 v0:32 c1:1 0
+ P ret v0:32
+ end
+-- 
+2.43.0
+
+
+From 22ab4f9ce039e8e4677d49d83b072a4f938417bb Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 25 Sep 2026 01:13:59 +0000
+Subject: [PATCH 4/9] WIP: tests for process-tree kill (C++ runners, SIGTERM
+ handler, proctree, scorers)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PNtqaD75q6kS9GMoczxQVx
+---
+ tests/cpp/test_main.cpp |  81 ++++++++++++++++++++
+ tests/test_proctree.py  | 161 ++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 242 insertions(+)
+ create mode 100644 tests/test_proctree.py
+
+diff --git a/tests/cpp/test_main.cpp b/tests/cpp/test_main.cpp
+index d69adf7b1..de10eab73 100644
+--- a/tests/cpp/test_main.cpp
++++ b/tests/cpp/test_main.cpp
+@@ -6871,3 +6871,84 @@ TEST_CASE("cparse extracts a function-try-block with its handlers (F10)") {
+     CHECK(fns[1].name == "user");
+     for (auto& fn : fns) CHECK(bmc_status(fn) == prism::laws::NEEDS_HARNESS);
+ }
++
++// ---- process trees: a timeout or a signal to PRISM kills the children's
++// children too (a solver's workers, a compiler driver's cc1/ld), not just the
++// direct child (tools/proctree.py does the same for the scorers).
++#ifndef _WIN32
++#include "../../src/prism/proc.hpp"
++#include "../../src/prism/stages/common.hpp"
++
++#include <csignal>
++#include <sys/wait.h>
++#include <unistd.h>
++
++namespace {
++// true once `pid` has exited (gone, or a zombie waiting for its reaper)
++bool proc_gone(long pid) {
++    for (int i = 0; i < 200; ++i) {
++        if (::kill(static_cast<pid_t>(pid), 0) != 0 && errno == ESRCH) return true;
++        std::ifstream st("/proc/" + std::to_string(pid) + "/stat");
++        std::string s((std::istreambuf_iterator<char>(st)), std::istreambuf_iterator<char>());
++        auto rp = s.rfind(')');
++        if (rp != std::string::npos && rp + 2 < s.size() && s[rp + 2] == 'Z') return true;
++        ::usleep(20000);
++    }
++    return false;
++}
++}  // namespace
++
++TEST_CASE("process runners kill the child's whole process tree on timeout") {
++    // the child starts a background grandchild that holds the output pipe
++    const auto t0 = std::chrono::steady_clock::now();
++    auto r = prism::stages_detail::run_argv({"sh", "-c", "sleep 30 & echo $!; wait"}, "", 1.0);
++    const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
++    CHECK(r.timeout);
++    CHECK(secs < 15.0);  // before: blocked on the pipe until the grandchild's sleep ended
++    long gc = std::atol(r.out.c_str());
++    REQUIRE(gc > 1);
++    CHECK(proc_gone(gc));
++    // the adapter runner (clang, opt, ...) as well
++    auto a = prism::detail::run_process({"sh", "-c", "sleep 30 & echo $!; wait"}, 1.0);
++    CHECK(a.timed_out);
++    long gc2 = std::atol(a.text.c_str());
++    REQUIRE(gc2 > 1);
++    CHECK(proc_gone(gc2));
++}
++
++TEST_CASE("a SIGTERM to PRISM kills the child process groups it started") {
++    int pfd[2];
++    REQUIRE(::pipe(pfd) == 0);
++    pid_t p = ::fork();
++    REQUIRE(p >= 0);
++    if (p == 0) {
++        // stands in for PRISM: the handler main() installs, one tracked child
++        // group (a solver in a process group of its own), then wait for a signal
++        ::close(pfd[0]);
++        prism::detail::install_child_cleanup();
++        pid_t g = ::fork();
++        if (g == 0) {
++            ::setpgid(0, 0);
++            ::execlp("sleep", "sleep", "30", static_cast<char*>(nullptr));
++            ::_exit(127);
++        }
++        ::setpgid(g, g);
++        prism::detail::track_child_group(g);
++        long v = g;
++        if (::write(pfd[1], &v, sizeof v) != static_cast<ssize_t>(sizeof v)) ::_exit(3);
++        for (;;) ::pause();
++    }
++    ::close(pfd[1]);
++    long g = 0;
++    REQUIRE(::read(pfd[0], &g, sizeof g) == static_cast<ssize_t>(sizeof g));
++    ::close(pfd[0]);
++    REQUIRE(g > 1);
++    CHECK(::kill(static_cast<pid_t>(g), 0) == 0);  // running before the signal
++    ::kill(p, SIGTERM);
++    int st = 0;
++    REQUIRE(::waitpid(p, &st, 0) == p);
++    CHECK(WIFSIGNALED(st));
++    CHECK(WTERMSIG(st) == SIGTERM);  // it still dies of the signal
++    CHECK(proc_gone(g));             // and its child group died with it
++}
++#endif
+diff --git a/tests/test_proctree.py b/tests/test_proctree.py
+new file mode 100644
+index 000000000..a6bb4d69a
+--- /dev/null
++++ b/tests/test_proctree.py
+@@ -0,0 +1,161 @@
++"""The scorers kill PRISM's whole process tree on a timeout or Ctrl-C.
++
++PRISM runs its solvers and proof checkers (CaDiCaL, cake_lpr, the LRAT
++checkers) and compilers each in a process group of its own. Killing only
++PRISM, or only PRISM's process group, left them running after the scorer had
++moved on. `tools/proctree.py` (used by `tools/conformance.py` and
++`tools/svcomp/run_subset.py`) and `run_tree` in `tools/svcomp/prism_svcomp.py`
++(shipped on its own, so it has its own copy) kill every process of the
++session instead.
++"""
++
++from __future__ import annotations
++
++import importlib.util
++import os
++import shutil
++import signal
++import subprocess
++import sys
++import tempfile
++import time
++import unittest
++from pathlib import Path
++from typing import Any
++
++REPO = Path(__file__).resolve().parents[1]
++
++
++def _load(name: str, path: Path) -> Any:
++    if name in sys.modules:
++        return sys.modules[name]
++    spec = importlib.util.spec_from_file_location(name, path)
++    assert spec is not None and spec.loader is not None
++    mod = importlib.util.module_from_spec(spec)
++    sys.modules[name] = mod
++    spec.loader.exec_module(mod)
++    return mod
++
++
++PT = _load("prism_tools_proctree", REPO / "tools" / "proctree.py")
++
++# A stand-in for PRISM: starts a "solver" in a process group of its own (as
++# src/prism/solver/util.cpp does), writes the solver's pid to a file, then
++# waits for it.
++FAKE_PRISM = r"""
++import os, subprocess, sys, time
++p = subprocess.Popen(["sleep", "60"], process_group=0) if sys.version_info >= (3, 11) else \
++    subprocess.Popen(["sleep", "60"], preexec_fn=lambda: os.setpgid(0, 0))
++with open(sys.argv[1], "w") as fh:
++    fh.write(str(p.pid))
++time.sleep(60)
++"""
++
++
++def _gone(pid: int, wait: float = 5.0) -> bool:
++    """The process exited (absent, or a zombie waiting for its reaper)."""
++    end = time.monotonic() + wait
++    while time.monotonic() < end:
++        try:
++            with open(f"/proc/{pid}/stat", encoding="latin-1") as fh:
++                stat = fh.read()
++        except OSError:
++            return True
++        if stat[stat.rfind(")") + 2:].startswith("Z"):
++            return True
++        time.sleep(0.05)
++    return False
++
++
++def _solver_pid(path: Path, wait: float = 10.0) -> int:
++    end = time.monotonic() + wait
++    while time.monotonic() < end:
++        try:
++            text = path.read_text().strip()
++            if text:
++                return int(text)
++        except OSError:
++            pass
++        time.sleep(0.05)
++    raise AssertionError("fake prism did not start its solver")
++
++
++@unittest.skipUnless(sys.platform.startswith("linux"), "Linux /proc and sessions")
++class ProcTreeTest(unittest.TestCase):
++    def setUp(self) -> None:
++        self.tmp = Path(tempfile.mkdtemp(prefix="prism-proctree-"))
++        self.script = self.tmp / "fake_prism.py"
++        self.script.write_text(FAKE_PRISM, encoding="utf-8")
++        self.pidfile = self.tmp / "solver.pid"
++
++    def tearDown(self) -> None:
++        try:
++            pid = int(self.pidfile.read_text().strip())
++        except (OSError, ValueError):
++            pid = 0
++        if pid > 1:
++            try:
++                os.kill(pid, signal.SIGKILL)
++            except OSError:
++                pass
++        shutil.rmtree(self.tmp, ignore_errors=True)
++
++    def test_session_members_sees_other_process_groups(self) -> None:
++        proc = subprocess.Popen([sys.executable, str(self.script), str(self.pidfile)], start_new_session=True)
++        try:
++            solver = _solver_pid(self.pidfile)
++            self.assertNotEqual(os.getpgid(solver), proc.pid)  # its own group ...
++            self.assertIn(solver, PT.session_members(proc.pid))  # ... in the same session
++        finally:
++            PT.kill_tree(proc)
++            proc.wait()
++        self.assertTrue(_gone(solver))
++
++    def test_timeout_kills_the_solver_in_its_own_group(self) -> None:
++        t0 = time.monotonic()
++        with self.assertRaises(subprocess.TimeoutExpired):
++            PT.run([sys.executable, str(self.script), str(self.pidfile)], capture_output=True, timeout=2)
++        self.assertLess(time.monotonic() - t0, 30)
++        self.assertTrue(_gone(_solver_pid(self.pidfile)))
++
++    def test_interrupt_kills_the_tree(self) -> None:
++        # Ctrl-C while waiting: KeyboardInterrupt inside communicate()
++        def boom(_sig: int, _frm: Any) -> None:
++            raise KeyboardInterrupt
++
++        old = signal.signal(signal.SIGALRM, boom)
++        try:
++            signal.setitimer(signal.ITIMER_REAL, 2.0)
++            with self.assertRaises(KeyboardInterrupt):
++                PT.run([sys.executable, str(self.script), str(self.pidfile)], capture_output=True, timeout=60)
++        finally:
++            signal.setitimer(signal.ITIMER_REAL, 0)
++            signal.signal(signal.SIGALRM, old)
++        self.assertTrue(_gone(_solver_pid(self.pidfile)))
++
++    def test_normal_exit_returns_output(self) -> None:
++        r = PT.run([sys.executable, "-c", "print('ok')"], capture_output=True, text=True, timeout=30)
++        self.assertEqual(r.returncode, 0)
++        self.assertEqual(r.stdout.strip(), "ok")
++
++    def test_conformance_run_prism_timeout(self) -> None:
++        conf = _load("prism_conformance_under_test", REPO / "tools" / "conformance.py")
++        src = self.tmp / "t.c"
++        src.write_text("int f(int x) { return x; }\n", encoding="utf-8")
++        task = conf.Task(ident="t", yml=src, source=src, origin="prism", category="x", lang="C", prop="p",
++                         expected={"f": True})
++        # the fake prism ignores PRISM's arguments after its first
++        res = conf.run_prism([sys.executable, str(self.script), str(self.pidfile)], task, ["pir"],
++                             self.tmp / "work", 2.0, None)
++        self.assertEqual(res.get("error"), "TIMEOUT")
++        self.assertTrue(_gone(_solver_pid(self.pidfile)))
++
++    def test_svcomp_wrapper_timeout(self) -> None:
++        wrapper = _load("prism_svcomp_wrapper_proctree", REPO / "tools" / "svcomp" / "prism_svcomp.py")
++        with self.assertRaises(subprocess.TimeoutExpired):
++            wrapper.run_tree([sys.executable, str(self.script), str(self.pidfile)], 2.0)
++        self.assertTrue(_gone(_solver_pid(self.pidfile)))
++
++
++if __name__ == "__main__":
++    unittest.main()
+-- 
+2.43.0
+
+
+From 6abb3efc86717cd9f53376ae586f4b03daba642a Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 25 Sep 2026 02:40:02 +0000
+Subject: [PATCH 5/9] WIP: conformance pair for finding 6 (struct self-copy),
+ docs
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PNtqaD75q6kS9GMoczxQVx
+---
+ docs/PIR.md                                   | 14 +--
+ docs/PROOFS_REFINEMENT.md                     | 85 +++++++++++++------
+ docs/ROADMAP_STATUS.md                        |  2 +-
+ .../prism/memory/mem_struct_self_copy_false.c | 11 +++
+ .../memory/mem_struct_self_copy_false.yml     | 12 +++
+ .../prism/memory/mem_struct_self_copy_true.c  | 12 +++
+ .../memory/mem_struct_self_copy_true.yml      |  6 ++
+ 7 files changed, 109 insertions(+), 33 deletions(-)
+ create mode 100644 tests/conformance/prism/memory/mem_struct_self_copy_false.c
+ create mode 100644 tests/conformance/prism/memory/mem_struct_self_copy_false.yml
+ create mode 100644 tests/conformance/prism/memory/mem_struct_self_copy_true.c
+ create mode 100644 tests/conformance/prism/memory/mem_struct_self_copy_true.yml
+
+diff --git a/docs/PIR.md b/docs/PIR.md
+index 3a058b76b..886205379 100644
+--- a/docs/PIR.md
++++ b/docs/PIR.md
+@@ -220,7 +220,8 @@ initialised (1 bit) and, with `--strict-aliasing`, an effective-type tag.
+ zero, or initialised with arbitrary bytes), `free` (end of lifetime),
+ `load` (value + "some byte uninitialised" + "effective-type mismatch"),
+ `store`, `memcpy` (memmove semantics), `memset`, `stacksave`,
+-`stackrestore`; queries `obj.size`, `obj.live`, `obj.kind`, `obj.align`
++`stackrestore`, `revive` (`llvm.lifetime.start`: a stack object is live
++again); queries `obj.size`, `obj.live`, `obj.kind`, `obj.align`
+ usable in any expression. The translator (`translate_mem.cpp`) turns every
+ property into ordinary `check`s over these (Law 8):
+ 
+@@ -238,7 +239,7 @@ property into ordinary `check`s over these (Law 8):
+ | `getelementptr inbounds` on null with offset ≠ 0, or result outside `[0, size]` | invalid pointer arithmetic | MEM-PTR-ARITH |
+ | `getelementptr` index into a nested array `[N x T]` (not the last struct field): `≥ N` when dereferenced, `> N` otherwise | sub-array bounds (`a[1][7]` in `int a[4][5]`, C17 J.2) | MEM-PTR-ARITH |
+ | `icmp ult/ule/…` on pointers, `ptrtoint`-`sub` | pointers into different objects | PTR-COMPARE |
+-| `llvm.memcpy` (not memmove) | overlapping ranges | MEM-OVERLAP |
++| `llvm.memcpy` (not memmove) | overlapping ranges, other than an exact self-copy (`d = s`, defined by the LangRef: a struct self-assignment); a C `memcpy` call reaches its library model (`-fno-builtin-memcpy`), where `d = s` is an overlap too (C17 7.24.2.1) | MEM-OVERLAP |
+ | `free`/`delete`/`delete[]`/`fclose` | not an object, not its start, not heap memory | MEM-INVALID-FREE |
+ | same | allocated by another allocator (malloc/new/new[]) | MEM-MISMATCHED-FREE |
+ | same | already released | MEM-DOUBLE-FREE |
+@@ -246,7 +247,9 @@ property into ordinary `check`s over these (Law 8):
+ | `ret` of a pointer | into the function's own stack object | MEM-STACK-ESCAPE |
+ 
+ Lifetimes: `alloca`s of an inlined callee end at its `ret`; VLAs end at
+-`llvm.stackrestore` (objects allocated after the matching `stacksave`).
++`llvm.stackrestore` (objects allocated after the matching `stacksave`);
++`llvm.lifetime.end` ends the object's lifetime and `llvm.lifetime.start`
++starts a stack object's lifetime again (LangRef), its bytes indeterminate.
+ Struct layout, field offsets, sizes and alignments come from the module's
+ `target datalayout` (`Layout`, x86-64 defaults). A `byval` parameter is a
+ fresh copy for the callee; `sret` is a fresh uninitialised return slot.
+@@ -838,8 +841,9 @@ pointers ("Indirect calls"), the frame is a `new` object of the memory
+ model (use after `destroy()` and double destroy of the frame are
+ memory-model properties), and `llvm.lifetime.end` of a frame temporary
+ ends its lifetime (`llvm.lifetime.start` makes its bytes indeterminate
+-again; an object already ended stays dead, so a later access is reported,
+-never assumed valid). `tests/pir/coro_gen.cpp`.
++again and starts a new lifetime of a stack object; a heap object, such as
++the frame, already ended stays dead, so a later access is reported, never
++assumed valid). `tests/pir/coro_gen.cpp`.
+ 
+ ## setjmp/longjmp (roadmap 2.6)
+ 
+diff --git a/docs/PROOFS_REFINEMENT.md b/docs/PROOFS_REFINEMENT.md
+index b6ee83b0d..da669ea32 100644
+--- a/docs/PROOFS_REFINEMENT.md
++++ b/docs/PROOFS_REFINEMENT.md
+@@ -557,10 +557,15 @@ is claimed for them:
+    (doctest "pir: poison flowing into a phi is a checked violation"). The
+    Lean translator still refuses poison phi inputs, so such functions stay
+    `outside` the proved fragment until it is extended to match.
+-2. **`icmp samesign` is ignored.** Newer LLVM (the flag was added after
+-   LLVM 18) makes `icmp samesign` poison when the operands' signs differ;
+-   `translate.cpp` drops the flag. Clang 18 (the pinned front end) does not
+-   emit it; the exporter refuses it so the checker cannot claim a proof.
++2. **`icmp samesign` was ignored (fixed).** Newer LLVM (the flag was added
++   after LLVM 18) makes `icmp samesign` poison when the operands' signs
++   differ; `translate.cpp` dropped the flag, so `icmp samesign ult i32 %a, %b`
++   with `a = -1`, `b = 1` was PROVED. It now fails a `UB-POISON` check (prop
++   `samesign`) where the poison is created, like `nneg` (finding 3); on
++   pointers it is `UNENCODED`. Clang 18 (the pinned front end) does not emit
++   it. The Lean model has no such flag: the exporter still refuses it, so
++   such functions stay `outside` (doctest "pir: LangRef-defined IR is not
++   reported, samesign poison is ...").
+ 3. **Checks at creation over-approximate.** PRISM fails a check where
+    poison is *created* (`add nsw` that wraps), even if the value is never
+    used. For C this is the C semantics (signed overflow is UB at the
+@@ -599,27 +604,51 @@ is claimed for them:
+    with `undef` elsewhere stay `outside`; `tools/pir_lean_check.py` after
+    the fix: `testdata` 915 `agree` + 21 `agree-ext`, `tests/pir` 46 + 9,
+    0 mismatches.
+-5. **`freeze poison` is reported.** `freeze` translates its operand with
+-   `Tr::operand`, which fails `UB-POISON` on a literal `poison`. In LLVM
+-   `freeze poison` is defined (an arbitrary value). The extended semantics
+-   counts reading the literal as creating poison (the same over-approximation
+-   as finding 3), so the theorems cover it; it is a possible false alarm,
+-   not a missed error. Clang does not emit `freeze poison` for C.
+-6. **`llvm.memcpy` with the same source and destination is reported.** The
+-   LangRef lets `llvm.memcpy` copy an object onto itself exactly (clang
+-   emits it for a struct assignment `*p = *q` that may be a
+-   self-assignment); `MemTr::memcpy_` reports every overlap, `d = s`
+-   included, which is C's rule for the `memcpy` function (C17 7.24.2.1) —
+-   and a C `memcpy` call is lowered to the same intrinsic, so the translator
+-   cannot tell the two apart. The Lean model states PRISM's rule (`cpyBad`);
+-   a possible false alarm, not a missed error.
+-7. **`llvm.lifetime.start` on an object whose lifetime ended is reported.**
+-   In the LangRef it begins a new lifetime; PRISM stores uninitialised bytes
+-   with a write's checks, so the object stays dead and MEM-UAF fails (and
+-   objects larger than 8 bytes are UNENCODED). The Lean model states PRISM's
+-   rule; a possible false alarm. The pir stage compiles at `-O0`, where clang
+-   emits no lifetime markers, so this concerns coroutine frames and IR
+-   given directly.
++5. **`freeze poison` was reported (fixed).** `freeze` translated its operand
++   with `Tr::operand`, which fails `UB-POISON` on a literal `poison`; in LLVM
++   `freeze poison` is defined (an arbitrary, fixed value). `translate.cpp`
++   now translates `freeze poison` exactly as `freeze undef`: one `havoc`, no
++   check. The Lean checker reads a literal `poison` operand of `freeze` (and
++   the value of a `store`) as `undef` (`Check.lean` `fopnd?`): the LangRef
++   defines `freeze poison` as `freeze undef`, and a stored `poison` or `undef`
++   both write uninitialised bytes in both semantics (`sStoreVal`,
++   `trStoreVal`), so no theorem changed; the fixture function `frz_poison`
++   (`calls_freeze.pirl`) is `agree-ext`. Clang does not emit `freeze poison`
++   for C.
++6. **`llvm.memcpy` with the same source and destination was reported
++   (fixed).** The LangRef lets `llvm.memcpy` copy an object onto itself
++   exactly (clang emits it for a struct assignment `*p = *q` that may be a
++   self-assignment); `MemTr::memcpy_` reported every overlap, `d = s`
++   included, which is C's rule for the `memcpy` *function* (C17 7.24.2.1),
++   and a C `memcpy` call was lowered to the same intrinsic. The pir stage now
++   compiles with `-fno-builtin-memcpy`, so a C `memcpy` call stays a call and
++   reaches its library model (`__prism_memcpy`, C's rule: any overlap,
++   `d = s` included, is `MEM-OVERLAP`), while the intrinsic follows the
++   LangRef: its overlap check also requires the offsets to differ
++   (`tests/pir/mem_str.c` `struct_self_assign_ok` PROVED, was a false
++   `MEM-OVERLAP`; `memcpy_self_bad` still FAILED). `__builtin_memcpy` in C is
++   still the intrinsic, so `__builtin_memcpy(p, p, n)` is no longer reported.
++   The Lean side changed with it: `cpyBad` (`XLlvm.lean`) excludes
++   `ptrOff d = ptrOff s` in one object, `overlapChk` (`XTranslate.lean`) has
++   the two extra statements the C++ emits, and `overlapChk_run` / `cpyBad_eq`
++   (`XMemOps.lean`) are re-proved; no `sorry`, same three axioms.
++7. **`llvm.lifetime.start` on an object whose lifetime ended was reported
++   (fixed in the C++ translator).** In the LangRef it begins a new lifetime;
++   PRISM stored uninitialised bytes with a write's checks, so the object
++   stayed dead and MEM-UAF failed (and objects larger than 8 bytes were
++   UNENCODED). A new PIR statement `revive` (`Stmt::Revive`) makes a *stack*
++   object live again (other objects keep their liveness, as the LangRef says
++   for non-stack objects), then the `size` bytes (`-1`: to the end of the
++   object) are copied from a fresh uninitialised object, with a write's
++   checks; any size is encoded. The loop invariant and k-induction paths
++   treat `revive` like `free`. The Lean PIR has no such statement, so the
++   Lean translator now refuses `llvm.lifetime.start` (`outside fragment`):
++   functions with it left the extended fragment (in `fixtures/intrinsics.pirl`
++   `life` and `life_bad`, now `agree-reject`). The pir stage compiles at
++   `-O0`, where clang emits no lifetime markers, so this concerns coroutine
++   code and IR given directly. Still open: `llvm.lifetime.end` on a pointer
++   into a non-stack object (a coroutine frame) ends that whole object, where
++   the LangRef only makes its bytes poison.
+ 8. **A false `llvm.assume` was not reported (fixed).** The LangRef makes
+    `llvm.assume(false)` undefined behaviour, and so is a false
+    `__builtin_assume` in C. Clang emits `llvm.assume` for `__builtin_assume`
+@@ -687,5 +716,7 @@ check the C++ interpreter uses Z3's `bvudiv x 0 = ~0`, the Lean model Lean's
+   through a proof that the CFG and `PrismSem.Stmt` programs are equivalent.
+ * **The C++ encoder.** Relating `pir_vcs` (Z3) to this PIR semantics is the
+   encoder row of 8.2 (proofs/semantics proves a model of it).
+-* **Fixing findings 2 and 5–8** in `translate.cpp` (finding 4 is fixed there;
+-  the Lean translator still refuses `undef` outside `freeze`/`store`).
++* **Modelling what the C++ fixes added**: `icmp samesign` (finding 2) and the
++  `revive` statement of `llvm.lifetime.start` (finding 7) in the Lean model,
++  so those functions come back into the fragment; `undef` outside
++  `freeze`/`store` (finding 4); `llvm.assume` (finding 8).
+diff --git a/docs/ROADMAP_STATUS.md b/docs/ROADMAP_STATUS.md
+index 63aa5c8dc..07fc35002 100644
+--- a/docs/ROADMAP_STATUS.md
++++ b/docs/ROADMAP_STATUS.md
+@@ -119,7 +119,7 @@ at run time; the numbers below are for the deterministic halves.
+ | 5.4 bit-blaster correctness | **DONE** — `proofs/techniques` (`toCNF_equisat` incl. division, shifts, overflow predicates) and it is the code that runs in certified mode |
+ | 5.5 front-end validation | **DONE** — translation validation, differential testing, random programs |
+ | 8.2 k-induction, Houdini, contracts | **DONE** — `proofs/techniques` |
+-| 8.2 LLVM IR → PIR refinement | **PARTIAL** — proved for the integer fragment (`proofs/refinement`), and, per function under a certificate the checker validates, for an extended fragment: `freeze`, `undef` under `freeze`/`store`, direct calls to same-file functions (inlined as `translate.cpp` does), stack memory (`alloca`, integer `load`/`store`, `getelementptr`, with the translator's null/wild/freed/bounds/alignment/read-only/uninitialised-read and pointer-arithmetic checks, on PRISM's object/offset memory model shared by both sides), the intrinsics `translate.cpp` translates specially (`smax`/`smin`/`umax`/`umin`, `abs`, `ctlz`/`cttz`, `ctpop`, `bswap`, `expect`, `*.with.overflow` + `extractvalue`, `lifetime.start`/`end`, `memcpy`/`memmove`/`memset` with constant or variable lengths) and globals the analysed function names (read-only data, `main`'s globals from their initialisers, other mutable/external globals as arbitrary bytes; the translator now allocates their variables before the function's results); per-run checker: `testdata` 915 `agree` + 32 `agree-ext` of 2 506 functions (was 21), `tests/pir` 46 + 29 of 228 (was 9), 0 mismatches. No theorem that `translateX` always yields a valid certificate (a proof about the stateful mirror; not attempted; `validB` shrunk where unused). Not in the fragment: library calls (1 330 `testdata` functions), `llvm.assume` (a false one is not reported: finding 8), heap, pointer parameters/phis/stored pointers, `undef` elsewhere. Findings 6–7: `memcpy(p, p)` and `lifetime.start` after `lifetime.end` are reported (possible false alarms). Refinement finding 4 fixed in the C++ translator: `undef` (and values computed from it) is a fresh value at every use, `br`/`noundef` on it is UB-POISON |
++| 8.2 LLVM IR → PIR refinement | **PARTIAL** — proved for the integer fragment (`proofs/refinement`), and, per function under a certificate the checker validates, for an extended fragment: `freeze`, `undef` under `freeze`/`store`, direct calls to same-file functions (inlined as `translate.cpp` does), stack memory (`alloca`, integer `load`/`store`, `getelementptr`, with the translator's null/wild/freed/bounds/alignment/read-only/uninitialised-read and pointer-arithmetic checks, on PRISM's object/offset memory model shared by both sides), the intrinsics `translate.cpp` translates specially (`smax`/`smin`/`umax`/`umin`, `abs`, `ctlz`/`cttz`, `ctpop`, `bswap`, `expect`, `*.with.overflow` + `extractvalue`, `lifetime.start`/`end`, `memcpy`/`memmove`/`memset` with constant or variable lengths) and globals the analysed function names (read-only data, `main`'s globals from their initialisers, other mutable/external globals as arbitrary bytes; the translator now allocates their variables before the function's results); per-run checker: `testdata` 915 `agree` + 32 `agree-ext` of 2 506 functions (was 21), `tests/pir` 46 + 29 of 228 (was 9), 0 mismatches. No theorem that `translateX` always yields a valid certificate (a proof about the stateful mirror; not attempted; `validB` shrunk where unused). Not in the fragment: library calls (1 330 `testdata` functions), `llvm.assume` (a false one is not reported: finding 8), heap, pointer parameters/phis/stored pointers, `undef` elsewhere. Findings 2, 5, 6, 7 fixed in the C++ translator (branch `claude/w6-falar`): `icmp samesign` is checked (UB-POISON), `freeze poison` is an arbitrary value (no report), `llvm.memcpy` may copy an object exactly onto itself (a C `memcpy` call keeps C's rule through its model: the pir stage compiles with `-fno-builtin-memcpy`), `llvm.lifetime.start` starts a stack object's lifetime again (PIR `revive`; any size); Lean: `cpyBad`/`overlapChk` changed and re-proved, `freeze poison` read as `freeze undef`, `lifetime.start` and `samesign` refused (outside), checker LEANCHECK_NUMBERS. Refinement finding 4 fixed in the C++ translator: `undef` (and values computed from it) is a fresh value at every use, `br`/`noundef` on it is UB-POISON |
+ | 8.2 property instrumentation | **DONE for the fragment** — `checks_bad`, `instr_fail_ub_iff` |
+ | 8.2 floating point | **PARTIAL** — Lean (`proofs/refinement`, `Float.lean`, `FloatOps.lean`): correctly rounded `+ − × ÷` for any binary format (round to nearest even) with ±0, ±∞, NaN and the IEEE invalid / divide-by-zero / overflow flags. PRISM's conditions, mirrored from the C++ and locked to its text (`tests/test_proofs_float_conc.py`): FLOAT-CAST-OVF **equals** C11's out-of-range condition (any format, any `iK`, unrepresentable bounds included); FLOAT-OVERFLOW **equals** IEEE overflow; FLOAT-INVALID **equals** IEEE invalid on quiet operands (signalling NaNs not reported); FLOAT-DIV-ZERO is IEEE divide-by-zero **plus** `0/0` and `±∞/0` (wider than IEEE, proved). Not proved: other rounding modes, `frem`/`sqrt`/`fma`/libm, Z3's FP theory itself (trusted). Found and fixed: the `fptrunc` overflow check never fired (`checks` got no operands); it now checks finite-operand/infinite-result directly |
+ | 8.2 concurrency | **PARTIAL** — `LazySeqN.lean`: the `conc` schedule (`K` rounds of `N` threads plus the harness's final slot, locked to `lazy.cpp`), threads with any control flow including bounded loops, SC. Proved: sound (every run is a real interleaving); covers every schedule of round-robin shape — every interleaving with ≤ `K−1` switches for any `N`, ≤ `2K` for two threads; and that a per-thread switch bound is **not** enough for `N ≥ 3` (counterexample proved). Not proved: the Z3 slot encoding, the race/deadlock monitors, unbounded rounds, relaxed memory |
+diff --git a/tests/conformance/prism/memory/mem_struct_self_copy_false.c b/tests/conformance/prism/memory/mem_struct_self_copy_false.c
+new file mode 100644
+index 000000000..c08236379
+--- /dev/null
++++ b/tests/conformance/prism/memory/mem_struct_self_copy_false.c
+@@ -0,0 +1,11 @@
++// PRISM conformance task memory/mem_struct_self_copy_false.c: expected false (memsafety)
++// regression: refinement finding 6: C's memcpy function forbids an exact
++// self-copy (C17 7.24.2.1), unlike the llvm.memcpy of a struct assignment
++#include <string.h>
++
++int mem_struct_self_copy_false(int c) {
++    int s[4] = {1, 2, 3, 4}, t[4] = {5, 6, 7, 8};
++    int *q = c ? s : t;
++    memcpy(s, q, sizeof s);
++    return s[0];
++}
+diff --git a/tests/conformance/prism/memory/mem_struct_self_copy_false.yml b/tests/conformance/prism/memory/mem_struct_self_copy_false.yml
+new file mode 100644
+index 000000000..c12c59e85
+--- /dev/null
++++ b/tests/conformance/prism/memory/mem_struct_self_copy_false.yml
+@@ -0,0 +1,12 @@
++format_version: 1
++input_files: mem_struct_self_copy_false.c
++language: C
++property: memsafety
++expected:
++  mem_struct_self_copy_false: false
++witness:
++  mem_struct_self_copy_false: [1]
++# ASan does not report memcpy(p, p, n) (it skips the overlap check when
++# dst == src, for struct self-assignment); C17 7.24.2.1 still makes it UB
++sanitizer_blind:
++  - mem_struct_self_copy_false
+diff --git a/tests/conformance/prism/memory/mem_struct_self_copy_true.c b/tests/conformance/prism/memory/mem_struct_self_copy_true.c
+new file mode 100644
+index 000000000..0d2fd4da9
+--- /dev/null
++++ b/tests/conformance/prism/memory/mem_struct_self_copy_true.c
+@@ -0,0 +1,12 @@
++// PRISM conformance task memory/mem_struct_self_copy_true.c: expected true (memsafety)
++// regression: refinement finding 6: a struct assignment that may be a
++// self-assignment is llvm.memcpy(p, p), which LLVM defines (was MEM-OVERLAP)
++struct quad { int v[4]; };
++
++int mem_struct_self_copy_true(int c) {
++    struct quad s = {{1, 2, 3, 4}}, t = {{5, 6, 7, 8}};
++    struct quad *p = &s;
++    struct quad *q = c ? &s : &t;
++    *p = *q;
++    return s.v[0];
++}
+diff --git a/tests/conformance/prism/memory/mem_struct_self_copy_true.yml b/tests/conformance/prism/memory/mem_struct_self_copy_true.yml
+new file mode 100644
+index 000000000..a62ff3f0f
+--- /dev/null
++++ b/tests/conformance/prism/memory/mem_struct_self_copy_true.yml
+@@ -0,0 +1,6 @@
++format_version: 1
++input_files: mem_struct_self_copy_true.c
++language: C
++property: memsafety
++expected:
++  mem_struct_self_copy_true: true
+-- 
+2.43.0
+
+
+From 1e1485044931d68ec7dbba76470b617dfc1b3e21 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 25 Sep 2026 02:47:01 +0000
+Subject: [PATCH 6/9] WIP: docs numbers
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PNtqaD75q6kS9GMoczxQVx
+---
+ docs/CONFORMANCE.md       | 19 +++++++++++++++++++
+ docs/PROOFS_REFINEMENT.md |  2 ++
+ docs/ROADMAP_STATUS.md    |  2 +-
+ 3 files changed, 22 insertions(+), 1 deletion(-)
+
+diff --git a/docs/CONFORMANCE.md b/docs/CONFORMANCE.md
+index 78493ac4f..c9df6b8f5 100644
+--- a/docs/CONFORMANCE.md
++++ b/docs/CONFORMANCE.md
+@@ -940,6 +940,25 @@ last handler ends). Regression pairs:
+ (pir 4/4 proved, 4/4 refuted and replayed; the virtual-base pair is
+ NEEDS-HARNESS by design).
+ 
++*Fixed* (refinement findings, `docs/PROOFS_REFINEMENT.md` 2, 5, 6, 7).
++**F12. pir: IR the LangRef defines was reported.** `freeze poison`
++(UB-POISON), `llvm.memcpy(p, p, n)` (MEM-OVERLAP; clang emits it for a
++struct assignment `*p = *q` that may be a self-assignment) and
++`llvm.lifetime.start` after `llvm.lifetime.end` (MEM-UAF; objects over 8
++bytes were UNENCODED); `icmp samesign` was ignored (a missed poison, LLVM 19+
++IR only). Of these only the struct self-copy occurs in C compiled at `-O0`.
++*Fix:* `translate.cpp` / `translate_mem.cpp` (see the refinement document);
++the pir stage compiles with `-fno-builtin-memcpy` so a C `memcpy` call keeps
++C's rule (any overlap, `d = s` included) through its library model.
++Regression pair `prism/memory/mem_struct_self_copy_{true,false}.c`
++(`--stages pir`, base binary → this branch: the `true` task FAILED
++MEM-OVERLAP → PROVED, 1 → 0 false alarms; the `false` task, a C
++`memcpy(s, s)`, FAILED in both; ASan skips the overlap check when
++`dst == src`, so it is `sanitizer_blind`). Before the fix, the whole suite
++(`--stages pir`, 328 true and 341 false functions) had 0 false alarms: none of its tasks contained
++these constructs. Doctest "pir: LangRef-defined IR is not reported, samesign
++poison is (refinement findings 2, 5, 6, 7)".
++
+ ### Coverage gaps (honest `ERROR` / `NEEDS-HARNESS`, costing completeness)
+ 
+ - G1. Local arrays with initialisers (`int a[4] = {0};`), 2-D arrays and
+diff --git a/docs/PROOFS_REFINEMENT.md b/docs/PROOFS_REFINEMENT.md
+index da669ea32..b3477616c 100644
+--- a/docs/PROOFS_REFINEMENT.md
++++ b/docs/PROOFS_REFINEMENT.md
+@@ -363,6 +363,8 @@ extended fragment:
+ | `tests/pir`, with intrinsics, `memcpy`/`memset`, lifetime markers, globals | 228 | 46 | **29** | 1 | 152 | **0** |
+ | `testdata`, before the intrinsics and globals | 2 506 | 915 | 21 | 4 | 1 566 | **0** |
+ | `testdata`, with intrinsics, `memcpy`/`memset`, lifetime markers, globals | 2 506 | 915 | **32** | 4 | 1 555 | **0** |
++| `tests/pir`, findings 2, 5–7 fixed (2 new functions; `mem_str.c` `memcpy_ok`, `memcpy_bad`, `overlap_bad` call C `memcpy`, now the library model: outside) | 231 | 47 | **26** | 1 | 157 | **0** |
++| `testdata`, findings 2, 5–7 fixed (mainline has 9 more functions) | 2 515 | 924 | **32** | 4 | 1 555 | **0** |
+ 
+ The new `agree-ext` functions: array initialisers (`memcpy` from a
+ `@__const` global, `memset` of a zeroed array), `memcpy`/`memmove`/`memset`
+diff --git a/docs/ROADMAP_STATUS.md b/docs/ROADMAP_STATUS.md
+index 07fc35002..f422a2de5 100644
+--- a/docs/ROADMAP_STATUS.md
++++ b/docs/ROADMAP_STATUS.md
+@@ -119,7 +119,7 @@ at run time; the numbers below are for the deterministic halves.
+ | 5.4 bit-blaster correctness | **DONE** — `proofs/techniques` (`toCNF_equisat` incl. division, shifts, overflow predicates) and it is the code that runs in certified mode |
+ | 5.5 front-end validation | **DONE** — translation validation, differential testing, random programs |
+ | 8.2 k-induction, Houdini, contracts | **DONE** — `proofs/techniques` |
+-| 8.2 LLVM IR → PIR refinement | **PARTIAL** — proved for the integer fragment (`proofs/refinement`), and, per function under a certificate the checker validates, for an extended fragment: `freeze`, `undef` under `freeze`/`store`, direct calls to same-file functions (inlined as `translate.cpp` does), stack memory (`alloca`, integer `load`/`store`, `getelementptr`, with the translator's null/wild/freed/bounds/alignment/read-only/uninitialised-read and pointer-arithmetic checks, on PRISM's object/offset memory model shared by both sides), the intrinsics `translate.cpp` translates specially (`smax`/`smin`/`umax`/`umin`, `abs`, `ctlz`/`cttz`, `ctpop`, `bswap`, `expect`, `*.with.overflow` + `extractvalue`, `lifetime.start`/`end`, `memcpy`/`memmove`/`memset` with constant or variable lengths) and globals the analysed function names (read-only data, `main`'s globals from their initialisers, other mutable/external globals as arbitrary bytes; the translator now allocates their variables before the function's results); per-run checker: `testdata` 915 `agree` + 32 `agree-ext` of 2 506 functions (was 21), `tests/pir` 46 + 29 of 228 (was 9), 0 mismatches. No theorem that `translateX` always yields a valid certificate (a proof about the stateful mirror; not attempted; `validB` shrunk where unused). Not in the fragment: library calls (1 330 `testdata` functions), `llvm.assume` (a false one is not reported: finding 8), heap, pointer parameters/phis/stored pointers, `undef` elsewhere. Findings 2, 5, 6, 7 fixed in the C++ translator (branch `claude/w6-falar`): `icmp samesign` is checked (UB-POISON), `freeze poison` is an arbitrary value (no report), `llvm.memcpy` may copy an object exactly onto itself (a C `memcpy` call keeps C's rule through its model: the pir stage compiles with `-fno-builtin-memcpy`), `llvm.lifetime.start` starts a stack object's lifetime again (PIR `revive`; any size); Lean: `cpyBad`/`overlapChk` changed and re-proved, `freeze poison` read as `freeze undef`, `lifetime.start` and `samesign` refused (outside), checker LEANCHECK_NUMBERS. Refinement finding 4 fixed in the C++ translator: `undef` (and values computed from it) is a fresh value at every use, `br`/`noundef` on it is UB-POISON |
++| 8.2 LLVM IR → PIR refinement | **PARTIAL** — proved for the integer fragment (`proofs/refinement`), and, per function under a certificate the checker validates, for an extended fragment: `freeze`, `undef` under `freeze`/`store`, direct calls to same-file functions (inlined as `translate.cpp` does), stack memory (`alloca`, integer `load`/`store`, `getelementptr`, with the translator's null/wild/freed/bounds/alignment/read-only/uninitialised-read and pointer-arithmetic checks, on PRISM's object/offset memory model shared by both sides), the intrinsics `translate.cpp` translates specially (`smax`/`smin`/`umax`/`umin`, `abs`, `ctlz`/`cttz`, `ctpop`, `bswap`, `expect`, `*.with.overflow` + `extractvalue`, `lifetime.start`/`end`, `memcpy`/`memmove`/`memset` with constant or variable lengths) and globals the analysed function names (read-only data, `main`'s globals from their initialisers, other mutable/external globals as arbitrary bytes; the translator now allocates their variables before the function's results); per-run checker: `testdata` 915 `agree` + 32 `agree-ext` of 2 506 functions (was 21), `tests/pir` 46 + 29 of 228 (was 9), 0 mismatches. No theorem that `translateX` always yields a valid certificate (a proof about the stateful mirror; not attempted; `validB` shrunk where unused). Not in the fragment: library calls (1 330 `testdata` functions), `llvm.assume` (a false one is not reported: finding 8), heap, pointer parameters/phis/stored pointers, `undef` elsewhere. Findings 2, 5, 6, 7 fixed in the C++ translator (branch `claude/w6-falar`): `icmp samesign` is checked (UB-POISON), `freeze poison` is an arbitrary value (no report), `llvm.memcpy` may copy an object exactly onto itself (a C `memcpy` call keeps C's rule through its model: the pir stage compiles with `-fno-builtin-memcpy`), `llvm.lifetime.start` starts a stack object's lifetime again (PIR `revive`; any size); Lean: `cpyBad`/`overlapChk` changed and re-proved, `freeze poison` read as `freeze undef`, `lifetime.start` and `samesign` refused (outside), checker `testdata` 924 `agree` + 32 `agree-ext` of 2 515, `tests/pir` 47 + 26 of 231 (was 46 + 29 of 228: `mem_str.c` `memcpy_ok`, `memcpy_bad`, `overlap_bad` call C `memcpy`, which now reaches the library model, outside the fragment), 0 mismatches; `proofs/refinement/check.sh` OK (no `sorry`, three axioms). Refinement finding 4 fixed in the C++ translator: `undef` (and values computed from it) is a fresh value at every use, `br`/`noundef` on it is UB-POISON |
+ | 8.2 property instrumentation | **DONE for the fragment** — `checks_bad`, `instr_fail_ub_iff` |
+ | 8.2 floating point | **PARTIAL** — Lean (`proofs/refinement`, `Float.lean`, `FloatOps.lean`): correctly rounded `+ − × ÷` for any binary format (round to nearest even) with ±0, ±∞, NaN and the IEEE invalid / divide-by-zero / overflow flags. PRISM's conditions, mirrored from the C++ and locked to its text (`tests/test_proofs_float_conc.py`): FLOAT-CAST-OVF **equals** C11's out-of-range condition (any format, any `iK`, unrepresentable bounds included); FLOAT-OVERFLOW **equals** IEEE overflow; FLOAT-INVALID **equals** IEEE invalid on quiet operands (signalling NaNs not reported); FLOAT-DIV-ZERO is IEEE divide-by-zero **plus** `0/0` and `±∞/0` (wider than IEEE, proved). Not proved: other rounding modes, `frem`/`sqrt`/`fma`/libm, Z3's FP theory itself (trusted). Found and fixed: the `fptrunc` overflow check never fired (`checks` got no operands); it now checks finite-operand/infinite-result directly |
+ | 8.2 concurrency | **PARTIAL** — `LazySeqN.lean`: the `conc` schedule (`K` rounds of `N` threads plus the harness's final slot, locked to `lazy.cpp`), threads with any control flow including bounded loops, SC. Proved: sound (every run is a real interleaving); covers every schedule of round-robin shape — every interleaving with ≤ `K−1` switches for any `N`, ≤ `2K` for two threads; and that a per-thread switch bound is **not** enough for `N ≥ 3` (counterexample proved). Not proved: the Z3 slot encoding, the race/deadlock monitors, unbounded rounds, relaxed memory |
+-- 
+2.43.0
+
+
+From 37772f77392bc9f69758540169b1db9dfebe84bc Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 25 Sep 2026 04:38:44 +0000
+Subject: [PATCH 7/9] WIP: lifetime.start of 1-8 bytes stays one uninitialised
+ store (no extra object)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PNtqaD75q6kS9GMoczxQVx
+---
+ src/prism/pir/translate_mem.cpp | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/src/prism/pir/translate_mem.cpp b/src/prism/pir/translate_mem.cpp
+index a756276b9..c9499e136 100644
+--- a/src/prism/pir/translate_mem.cpp
++++ b/src/prism/pir/translate_mem.cpp
+@@ -965,6 +965,14 @@ void MemTr::lifetime_start(int b, Arg ptr, std::optional<uint64_t> size, int lin
+     s.kind = Stmt::Revive;
+     s.args = {ptr};
+     t_.push(b, s);
++    if (size && *size >= 1 && *size <= 8) {
++        // small objects: one store of uninitialised bytes (no extra object
++        // in the memory model), with a write's checks
++        auto bytes = static_cast<unsigned>(*size);
++        ir::Type ty{ir::Type::Int, bytes * 8, "i" + std::to_string(bytes * 8), {}};
++        store(b, ptr, t_.havoc(b, bytes * 8, false, false), Arg::c(1, 0), ty, 1, line);
++        return;
++    }
+     Arg n = size ? c64(*size) : obj_size_remaining(b, ptr);
+     if (size && *size >= kMaxObjSize) throw Unenc{"UNENCODED: llvm.lifetime.start of more than 2^47 bytes"};
+     Arg nz = p2(b, Op::Ne, n, c64(0));
+-- 
+2.43.0
+
+
+From 8999913a75eadc23754c9b02d259de488428b1f7 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 25 Sep 2026 05:54:53 +0000
+Subject: [PATCH 8/9] WIP: docs
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PNtqaD75q6kS9GMoczxQVx
+---
+ docs/PROOFS_REFINEMENT.md | 7 ++++---
+ 1 file changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/docs/PROOFS_REFINEMENT.md b/docs/PROOFS_REFINEMENT.md
+index b3477616c..65bea9d33 100644
+--- a/docs/PROOFS_REFINEMENT.md
++++ b/docs/PROOFS_REFINEMENT.md
+@@ -640,9 +640,10 @@ is claimed for them:
+    stayed dead and MEM-UAF failed (and objects larger than 8 bytes were
+    UNENCODED). A new PIR statement `revive` (`Stmt::Revive`) makes a *stack*
+    object live again (other objects keep their liveness, as the LangRef says
+-   for non-stack objects), then the `size` bytes (`-1`: to the end of the
+-   object) are copied from a fresh uninitialised object, with a write's
+-   checks; any size is encoded. The loop invariant and k-induction paths
++   for non-stack objects), then the `size` bytes become uninitialised with a
++   write's checks: one store of an uninitialised value for 1 to 8 bytes, as
++   before, otherwise (`-1`: to the end of the object) a copy from a fresh
++   uninitialised object; any size is encoded. The loop invariant and k-induction paths
+    treat `revive` like `free`. The Lean PIR has no such statement, so the
+    Lean translator now refuses `llvm.lifetime.start` (`outside fragment`):
+    functions with it left the extended fragment (in `fixtures/intrinsics.pirl`
+-- 
+2.43.0
+
+
+From 6a642fa7a30623a3b6a8fdd81a6432309d3d54f8 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 25 Sep 2026 05:55:14 +0000
+Subject: [PATCH 9/9] WIP: fixtures for the small lifetime.start path
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PNtqaD75q6kS9GMoczxQVx
+---
+ .../fixtures/dropped_intr_check.pirl          | 107 ++++---
+ proofs/refinement/fixtures/intrinsics.pirl    | 276 +++++++++---------
+ 2 files changed, 181 insertions(+), 202 deletions(-)
+
+diff --git a/proofs/refinement/fixtures/dropped_intr_check.pirl b/proofs/refinement/fixtures/dropped_intr_check.pirl
+index dc97e24ac..03ce8f2d9 100644
+--- a/proofs/refinement/fixtures/dropped_intr_check.pirl
++++ b/proofs/refinement/fixtures/dropped_intr_check.pirl
+@@ -308,76 +308,69 @@ L lend %a
+ L store 32 %x %a 4
+ L ret %x
+ status ok
+-P vars 53 32 64 1 64 64 8 1 64 1 1 1 1 1 1 1 1 1 1 64 1 1 1 1 1 1 1 1 64 64 64 8 1 64 1 1 1 1 1 1 1 64 1 1 1 1 64 64 1 1 1 1 1 1
++P vars 47 32 64 32 64 64 8 1 64 1 1 1 1 1 1 1 64 1 1 1 1 1 1 64 64 8 1 64 1 1 1 1 1 1 1 64 1 1 1 1 64 64 1 1 1 1 1 1
+ P params 1 0
+ P retw 32
+ P block
+ P alloc 1 c64:4 1 0 4
+ P memory-statement 11
+-P assign 2 ne 2 c64:4 c64:0
++P havoc 2
+ P assign 3 lshr 2 v1:64 c64:48
+ P assign 4 and 2 v1:64 c64:281474976710655
+ P assign 5 obj.kind 1 v1:64
+ P assign 6 obj.live 1 v1:64
+ P assign 7 obj.size 1 v1:64
+ P assign 8 eq 2 v3:64 c64:0
+-P assign 9 and 2 v2:1 v8:1
+-P check v9:1 null PTR-NULL-DEREF
+-P assign 10 ne 2 v3:64 c64:0
+-P assign 11 eq 2 v5:8 c8:0
+-P assign 12 and 2 v10:1 v11:1
+-P assign 13 and 2 v2:1 v12:1
+-P check v13:1 wild PTR-INVALID-DEREF
+-P assign 14 ne 2 v5:8 c8:0
+-P assign 15 eq 2 v6:1 c1:0
+-P assign 16 and 2 v14:1 v15:1
+-P assign 17 and 2 v2:1 v16:1
+-P check v17:1 uaf MEM-UAF
+-P assign 18 add 2 v4:64 c64:4
+-P assign 19 ugt 2 v18:64 v7:64
+-P assign 20 uadd.ovf 2 v4:64 c64:4
+-P assign 21 or 2 v19:1 v20:1
+-P assign 22 and 2 v6:1 v21:1
+-P assign 23 and 2 v2:1 v22:1
+-P check v23:1 oob-write MEM-OOB-WRITE
+-P assign 24 eq 2 v5:8 c8:4
+-P assign 25 and 2 v6:1 v24:1
+-P assign 26 and 2 v2:1 v25:1
+-P check v26:1 write-const MEM-WRITE-CONST
+-P alloc 27 c64:4 7 0 16
+-P memcpy v1:64 v27:64 c64:4
+-P free v27:64
++P check v8:1 null PTR-NULL-DEREF
++P assign 9 ne 2 v3:64 c64:0
++P assign 10 eq 2 v5:8 c8:0
++P assign 11 and 2 v9:1 v10:1
++P check v11:1 wild PTR-INVALID-DEREF
++P assign 12 ne 2 v5:8 c8:0
++P assign 13 eq 2 v6:1 c1:0
++P assign 14 and 2 v12:1 v13:1
++P check v14:1 uaf MEM-UAF
++P assign 15 add 2 v4:64 c64:4
++P assign 16 ugt 2 v15:64 v7:64
++P assign 17 uadd.ovf 2 v4:64 c64:4
++P assign 18 or 2 v16:1 v17:1
++P assign 19 and 2 v6:1 v18:1
++P check v19:1 oob-write MEM-OOB-WRITE
++P assign 20 eq 2 v5:8 c8:4
++P assign 21 and 2 v6:1 v20:1
++P check v21:1 write-const MEM-WRITE-CONST
++P store v1:64 v2:32 c1:0 0
+ P free v1:64
+-P assign 28 lshr 2 v1:64 c64:48
+-P assign 29 and 2 v1:64 c64:281474976710655
+-P assign 30 obj.kind 1 v1:64
+-P assign 31 obj.live 1 v1:64
+-P assign 32 obj.size 1 v1:64
+-P assign 33 eq 2 v28:64 c64:0
+-P check v33:1 null PTR-NULL-DEREF
+-P assign 34 ne 2 v28:64 c64:0
+-P assign 35 eq 2 v30:8 c8:0
+-P assign 36 and 2 v34:1 v35:1
+-P check v36:1 wild PTR-INVALID-DEREF
+-P assign 37 ne 2 v30:8 c8:0
+-P assign 38 eq 2 v31:1 c1:0
+-P assign 39 and 2 v37:1 v38:1
+-P assign 40 add 2 v29:64 c64:4
+-P assign 41 ugt 2 v40:64 v32:64
+-P assign 42 uadd.ovf 2 v29:64 c64:4
++P assign 22 lshr 2 v1:64 c64:48
++P assign 23 and 2 v1:64 c64:281474976710655
++P assign 24 obj.kind 1 v1:64
++P assign 25 obj.live 1 v1:64
++P assign 26 obj.size 1 v1:64
++P assign 27 eq 2 v22:64 c64:0
++P check v27:1 null PTR-NULL-DEREF
++P assign 28 ne 2 v22:64 c64:0
++P assign 29 eq 2 v24:8 c8:0
++P assign 30 and 2 v28:1 v29:1
++P check v30:1 wild PTR-INVALID-DEREF
++P assign 31 ne 2 v24:8 c8:0
++P assign 32 eq 2 v25:1 c1:0
++P assign 33 and 2 v31:1 v32:1
++P assign 34 add 2 v23:64 c64:4
++P assign 35 ugt 2 v34:64 v26:64
++P assign 36 uadd.ovf 2 v23:64 c64:4
++P assign 37 or 2 v35:1 v36:1
++P assign 38 and 2 v25:1 v37:1
++P check v38:1 oob-write MEM-OOB-WRITE
++P assign 39 and 2 v23:64 c64:3
++P assign 40 obj.align 1 v1:64
++P assign 41 ne 2 v39:64 c64:0
++P assign 42 ult 2 v40:64 c64:4
+ P assign 43 or 2 v41:1 v42:1
+-P assign 44 and 2 v31:1 v43:1
+-P check v44:1 oob-write MEM-OOB-WRITE
+-P assign 45 and 2 v29:64 c64:3
+-P assign 46 obj.align 1 v1:64
+-P assign 47 ne 2 v45:64 c64:0
+-P assign 48 ult 2 v46:64 c64:4
+-P assign 49 or 2 v47:1 v48:1
+-P assign 50 and 2 v31:1 v49:1
+-P check v50:1 align MEM-MISALIGNED
+-P assign 51 eq 2 v30:8 c8:4
+-P assign 52 and 2 v31:1 v51:1
+-P check v52:1 write-const MEM-WRITE-CONST
++P assign 44 and 2 v25:1 v43:1
++P check v44:1 align MEM-MISALIGNED
++P assign 45 eq 2 v24:8 c8:4
++P assign 46 and 2 v25:1 v45:1
++P check v46:1 write-const MEM-WRITE-CONST
+ P store v1:64 v0:32 c1:1 0
+ P ret v0:32
+ end
+diff --git a/proofs/refinement/fixtures/intrinsics.pirl b/proofs/refinement/fixtures/intrinsics.pirl
+index 76a8cce62..31906533c 100644
+--- a/proofs/refinement/fixtures/intrinsics.pirl
++++ b/proofs/refinement/fixtures/intrinsics.pirl
+@@ -1006,107 +1006,100 @@ L load %v 32 %a 4
+ L lend %a
+ L ret %v
+ status ok
+-P vars 78 32 64 32 1 64 64 8 1 64 1 1 1 1 1 1 1 1 1 1 64 1 1 1 1 1 1 1 1 64 64 64 8 1 64 1 1 1 1 1 1 1 64 1 1 1 1 64 64 1 1 1 1 1 1 64 64 8 1 64 1 1 1 1 1 1 1 64 1 1 1 1 64 64 1 1 1 1 1
++P vars 72 32 64 32 32 64 64 8 1 64 1 1 1 1 1 1 1 64 1 1 1 1 1 1 64 64 8 1 64 1 1 1 1 1 1 1 64 1 1 1 1 64 64 1 1 1 1 1 1 64 64 8 1 64 1 1 1 1 1 1 1 64 1 1 1 1 64 64 1 1 1 1 1
+ P params 1 0
+ P retw 32
+ P block
+ P alloc 1 c64:4 1 0 4
+ P memory-statement 11
+-P assign 3 ne 2 c64:4 c64:0
++P havoc 3
+ P assign 4 lshr 2 v1:64 c64:48
+ P assign 5 and 2 v1:64 c64:281474976710655
+ P assign 6 obj.kind 1 v1:64
+ P assign 7 obj.live 1 v1:64
+ P assign 8 obj.size 1 v1:64
+ P assign 9 eq 2 v4:64 c64:0
+-P assign 10 and 2 v3:1 v9:1
+-P check v10:1 null PTR-NULL-DEREF
+-P assign 11 ne 2 v4:64 c64:0
+-P assign 12 eq 2 v6:8 c8:0
+-P assign 13 and 2 v11:1 v12:1
+-P assign 14 and 2 v3:1 v13:1
+-P check v14:1 wild PTR-INVALID-DEREF
+-P assign 15 ne 2 v6:8 c8:0
+-P assign 16 eq 2 v7:1 c1:0
+-P assign 17 and 2 v15:1 v16:1
+-P assign 18 and 2 v3:1 v17:1
+-P check v18:1 uaf MEM-UAF
+-P assign 19 add 2 v5:64 c64:4
+-P assign 20 ugt 2 v19:64 v8:64
+-P assign 21 uadd.ovf 2 v5:64 c64:4
+-P assign 22 or 2 v20:1 v21:1
+-P assign 23 and 2 v7:1 v22:1
+-P assign 24 and 2 v3:1 v23:1
+-P check v24:1 oob-write MEM-OOB-WRITE
+-P assign 25 eq 2 v6:8 c8:4
+-P assign 26 and 2 v7:1 v25:1
+-P assign 27 and 2 v3:1 v26:1
+-P check v27:1 write-const MEM-WRITE-CONST
+-P alloc 28 c64:4 7 0 16
+-P memcpy v1:64 v28:64 c64:4
+-P free v28:64
+-P assign 29 lshr 2 v1:64 c64:48
+-P assign 30 and 2 v1:64 c64:281474976710655
+-P assign 31 obj.kind 1 v1:64
+-P assign 32 obj.live 1 v1:64
+-P assign 33 obj.size 1 v1:64
+-P assign 34 eq 2 v29:64 c64:0
+-P check v34:1 null PTR-NULL-DEREF
+-P assign 35 ne 2 v29:64 c64:0
+-P assign 36 eq 2 v31:8 c8:0
+-P assign 37 and 2 v35:1 v36:1
+-P check v37:1 wild PTR-INVALID-DEREF
+-P assign 38 ne 2 v31:8 c8:0
+-P assign 39 eq 2 v32:1 c1:0
+-P assign 40 and 2 v38:1 v39:1
+-P check v40:1 uaf MEM-UAF
+-P assign 41 add 2 v30:64 c64:4
+-P assign 42 ugt 2 v41:64 v33:64
+-P assign 43 uadd.ovf 2 v30:64 c64:4
++P check v9:1 null PTR-NULL-DEREF
++P assign 10 ne 2 v4:64 c64:0
++P assign 11 eq 2 v6:8 c8:0
++P assign 12 and 2 v10:1 v11:1
++P check v12:1 wild PTR-INVALID-DEREF
++P assign 13 ne 2 v6:8 c8:0
++P assign 14 eq 2 v7:1 c1:0
++P assign 15 and 2 v13:1 v14:1
++P check v15:1 uaf MEM-UAF
++P assign 16 add 2 v5:64 c64:4
++P assign 17 ugt 2 v16:64 v8:64
++P assign 18 uadd.ovf 2 v5:64 c64:4
++P assign 19 or 2 v17:1 v18:1
++P assign 20 and 2 v7:1 v19:1
++P check v20:1 oob-write MEM-OOB-WRITE
++P assign 21 eq 2 v6:8 c8:4
++P assign 22 and 2 v7:1 v21:1
++P check v22:1 write-const MEM-WRITE-CONST
++P store v1:64 v3:32 c1:0 0
++P assign 23 lshr 2 v1:64 c64:48
++P assign 24 and 2 v1:64 c64:281474976710655
++P assign 25 obj.kind 1 v1:64
++P assign 26 obj.live 1 v1:64
++P assign 27 obj.size 1 v1:64
++P assign 28 eq 2 v23:64 c64:0
++P check v28:1 null PTR-NULL-DEREF
++P assign 29 ne 2 v23:64 c64:0
++P assign 30 eq 2 v25:8 c8:0
++P assign 31 and 2 v29:1 v30:1
++P check v31:1 wild PTR-INVALID-DEREF
++P assign 32 ne 2 v25:8 c8:0
++P assign 33 eq 2 v26:1 c1:0
++P assign 34 and 2 v32:1 v33:1
++P check v34:1 uaf MEM-UAF
++P assign 35 add 2 v24:64 c64:4
++P assign 36 ugt 2 v35:64 v27:64
++P assign 37 uadd.ovf 2 v24:64 c64:4
++P assign 38 or 2 v36:1 v37:1
++P assign 39 and 2 v26:1 v38:1
++P check v39:1 oob-write MEM-OOB-WRITE
++P assign 40 and 2 v24:64 c64:3
++P assign 41 obj.align 1 v1:64
++P assign 42 ne 2 v40:64 c64:0
++P assign 43 ult 2 v41:64 c64:4
+ P assign 44 or 2 v42:1 v43:1
+-P assign 45 and 2 v32:1 v44:1
+-P check v45:1 oob-write MEM-OOB-WRITE
+-P assign 46 and 2 v30:64 c64:3
+-P assign 47 obj.align 1 v1:64
+-P assign 48 ne 2 v46:64 c64:0
+-P assign 49 ult 2 v47:64 c64:4
+-P assign 50 or 2 v48:1 v49:1
+-P assign 51 and 2 v32:1 v50:1
+-P check v51:1 align MEM-MISALIGNED
+-P assign 52 eq 2 v31:8 c8:4
+-P assign 53 and 2 v32:1 v52:1
+-P check v53:1 write-const MEM-WRITE-CONST
++P assign 45 and 2 v26:1 v44:1
++P check v45:1 align MEM-MISALIGNED
++P assign 46 eq 2 v25:8 c8:4
++P assign 47 and 2 v26:1 v46:1
++P check v47:1 write-const MEM-WRITE-CONST
+ P store v1:64 v0:32 c1:1 0
+-P assign 54 lshr 2 v1:64 c64:48
+-P assign 55 and 2 v1:64 c64:281474976710655
+-P assign 56 obj.kind 1 v1:64
+-P assign 57 obj.live 1 v1:64
+-P assign 58 obj.size 1 v1:64
+-P assign 59 eq 2 v54:64 c64:0
+-P check v59:1 null PTR-NULL-DEREF
+-P assign 60 ne 2 v54:64 c64:0
+-P assign 61 eq 2 v56:8 c8:0
+-P assign 62 and 2 v60:1 v61:1
+-P check v62:1 wild PTR-INVALID-DEREF
+-P assign 63 ne 2 v56:8 c8:0
+-P assign 64 eq 2 v57:1 c1:0
+-P assign 65 and 2 v63:1 v64:1
+-P check v65:1 uaf MEM-UAF
+-P assign 66 add 2 v55:64 c64:4
+-P assign 67 ugt 2 v66:64 v58:64
+-P assign 68 uadd.ovf 2 v55:64 c64:4
++P assign 48 lshr 2 v1:64 c64:48
++P assign 49 and 2 v1:64 c64:281474976710655
++P assign 50 obj.kind 1 v1:64
++P assign 51 obj.live 1 v1:64
++P assign 52 obj.size 1 v1:64
++P assign 53 eq 2 v48:64 c64:0
++P check v53:1 null PTR-NULL-DEREF
++P assign 54 ne 2 v48:64 c64:0
++P assign 55 eq 2 v50:8 c8:0
++P assign 56 and 2 v54:1 v55:1
++P check v56:1 wild PTR-INVALID-DEREF
++P assign 57 ne 2 v50:8 c8:0
++P assign 58 eq 2 v51:1 c1:0
++P assign 59 and 2 v57:1 v58:1
++P check v59:1 uaf MEM-UAF
++P assign 60 add 2 v49:64 c64:4
++P assign 61 ugt 2 v60:64 v52:64
++P assign 62 uadd.ovf 2 v49:64 c64:4
++P assign 63 or 2 v61:1 v62:1
++P assign 64 and 2 v51:1 v63:1
++P check v64:1 oob-read MEM-OOB-READ
++P assign 65 and 2 v49:64 c64:3
++P assign 66 obj.align 1 v1:64
++P assign 67 ne 2 v65:64 c64:0
++P assign 68 ult 2 v66:64 c64:4
+ P assign 69 or 2 v67:1 v68:1
+-P assign 70 and 2 v57:1 v69:1
+-P check v70:1 oob-read MEM-OOB-READ
+-P assign 71 and 2 v55:64 c64:3
+-P assign 72 obj.align 1 v1:64
+-P assign 73 ne 2 v71:64 c64:0
+-P assign 74 ult 2 v72:64 c64:4
+-P assign 75 or 2 v73:1 v74:1
+-P assign 76 and 2 v57:1 v75:1
+-P check v76:1 align MEM-MISALIGNED
+-P load 2 77 -1 v1:64 0
+-P check v77:1 uninit UNINIT-READ
++P assign 70 and 2 v51:1 v69:1
++P check v70:1 align MEM-MISALIGNED
++P load 2 71 -1 v1:64 0
++P check v71:1 uninit UNINIT-READ
+ P free v1:64
+ P ret v2:32
+ end
+@@ -1120,77 +1113,70 @@ L lend %a
+ L store 32 %x %a 4
+ L ret %x
+ status ok
+-P vars 53 32 64 1 64 64 8 1 64 1 1 1 1 1 1 1 1 1 1 64 1 1 1 1 1 1 1 1 64 64 64 8 1 64 1 1 1 1 1 1 1 64 1 1 1 1 64 64 1 1 1 1 1 1
++P vars 47 32 64 32 64 64 8 1 64 1 1 1 1 1 1 1 64 1 1 1 1 1 1 64 64 8 1 64 1 1 1 1 1 1 1 64 1 1 1 1 64 64 1 1 1 1 1 1
+ P params 1 0
+ P retw 32
+ P block
+ P alloc 1 c64:4 1 0 4
+ P memory-statement 11
+-P assign 2 ne 2 c64:4 c64:0
++P havoc 2
+ P assign 3 lshr 2 v1:64 c64:48
+ P assign 4 and 2 v1:64 c64:281474976710655
+ P assign 5 obj.kind 1 v1:64
+ P assign 6 obj.live 1 v1:64
+ P assign 7 obj.size 1 v1:64
+ P assign 8 eq 2 v3:64 c64:0
+-P assign 9 and 2 v2:1 v8:1
+-P check v9:1 null PTR-NULL-DEREF
+-P assign 10 ne 2 v3:64 c64:0
+-P assign 11 eq 2 v5:8 c8:0
+-P assign 12 and 2 v10:1 v11:1
+-P assign 13 and 2 v2:1 v12:1
+-P check v13:1 wild PTR-INVALID-DEREF
+-P assign 14 ne 2 v5:8 c8:0
+-P assign 15 eq 2 v6:1 c1:0
+-P assign 16 and 2 v14:1 v15:1
+-P assign 17 and 2 v2:1 v16:1
+-P check v17:1 uaf MEM-UAF
+-P assign 18 add 2 v4:64 c64:4
+-P assign 19 ugt 2 v18:64 v7:64
+-P assign 20 uadd.ovf 2 v4:64 c64:4
+-P assign 21 or 2 v19:1 v20:1
+-P assign 22 and 2 v6:1 v21:1
+-P assign 23 and 2 v2:1 v22:1
+-P check v23:1 oob-write MEM-OOB-WRITE
+-P assign 24 eq 2 v5:8 c8:4
+-P assign 25 and 2 v6:1 v24:1
+-P assign 26 and 2 v2:1 v25:1
+-P check v26:1 write-const MEM-WRITE-CONST
+-P alloc 27 c64:4 7 0 16
+-P memcpy v1:64 v27:64 c64:4
+-P free v27:64
++P check v8:1 null PTR-NULL-DEREF
++P assign 9 ne 2 v3:64 c64:0
++P assign 10 eq 2 v5:8 c8:0
++P assign 11 and 2 v9:1 v10:1
++P check v11:1 wild PTR-INVALID-DEREF
++P assign 12 ne 2 v5:8 c8:0
++P assign 13 eq 2 v6:1 c1:0
++P assign 14 and 2 v12:1 v13:1
++P check v14:1 uaf MEM-UAF
++P assign 15 add 2 v4:64 c64:4
++P assign 16 ugt 2 v15:64 v7:64
++P assign 17 uadd.ovf 2 v4:64 c64:4
++P assign 18 or 2 v16:1 v17:1
++P assign 19 and 2 v6:1 v18:1
++P check v19:1 oob-write MEM-OOB-WRITE
++P assign 20 eq 2 v5:8 c8:4
++P assign 21 and 2 v6:1 v20:1
++P check v21:1 write-const MEM-WRITE-CONST
++P store v1:64 v2:32 c1:0 0
+ P free v1:64
+-P assign 28 lshr 2 v1:64 c64:48
+-P assign 29 and 2 v1:64 c64:281474976710655
+-P assign 30 obj.kind 1 v1:64
+-P assign 31 obj.live 1 v1:64
+-P assign 32 obj.size 1 v1:64
+-P assign 33 eq 2 v28:64 c64:0
+-P check v33:1 null PTR-NULL-DEREF
+-P assign 34 ne 2 v28:64 c64:0
+-P assign 35 eq 2 v30:8 c8:0
+-P assign 36 and 2 v34:1 v35:1
+-P check v36:1 wild PTR-INVALID-DEREF
+-P assign 37 ne 2 v30:8 c8:0
+-P assign 38 eq 2 v31:1 c1:0
+-P assign 39 and 2 v37:1 v38:1
+-P check v39:1 uaf MEM-UAF
+-P assign 40 add 2 v29:64 c64:4
+-P assign 41 ugt 2 v40:64 v32:64
+-P assign 42 uadd.ovf 2 v29:64 c64:4
++P assign 22 lshr 2 v1:64 c64:48
++P assign 23 and 2 v1:64 c64:281474976710655
++P assign 24 obj.kind 1 v1:64
++P assign 25 obj.live 1 v1:64
++P assign 26 obj.size 1 v1:64
++P assign 27 eq 2 v22:64 c64:0
++P check v27:1 null PTR-NULL-DEREF
++P assign 28 ne 2 v22:64 c64:0
++P assign 29 eq 2 v24:8 c8:0
++P assign 30 and 2 v28:1 v29:1
++P check v30:1 wild PTR-INVALID-DEREF
++P assign 31 ne 2 v24:8 c8:0
++P assign 32 eq 2 v25:1 c1:0
++P assign 33 and 2 v31:1 v32:1
++P check v33:1 uaf MEM-UAF
++P assign 34 add 2 v23:64 c64:4
++P assign 35 ugt 2 v34:64 v26:64
++P assign 36 uadd.ovf 2 v23:64 c64:4
++P assign 37 or 2 v35:1 v36:1
++P assign 38 and 2 v25:1 v37:1
++P check v38:1 oob-write MEM-OOB-WRITE
++P assign 39 and 2 v23:64 c64:3
++P assign 40 obj.align 1 v1:64
++P assign 41 ne 2 v39:64 c64:0
++P assign 42 ult 2 v40:64 c64:4
+ P assign 43 or 2 v41:1 v42:1
+-P assign 44 and 2 v31:1 v43:1
+-P check v44:1 oob-write MEM-OOB-WRITE
+-P assign 45 and 2 v29:64 c64:3
+-P assign 46 obj.align 1 v1:64
+-P assign 47 ne 2 v45:64 c64:0
+-P assign 48 ult 2 v46:64 c64:4
+-P assign 49 or 2 v47:1 v48:1
+-P assign 50 and 2 v31:1 v49:1
+-P check v50:1 align MEM-MISALIGNED
+-P assign 51 eq 2 v30:8 c8:4
+-P assign 52 and 2 v31:1 v51:1
+-P check v52:1 write-const MEM-WRITE-CONST
++P assign 44 and 2 v25:1 v43:1
++P check v44:1 align MEM-MISALIGNED
++P assign 45 eq 2 v24:8 c8:4
++P assign 46 and 2 v25:1 v45:1
++P check v46:1 write-const MEM-WRITE-CONST
+ P store v1:64 v0:32 c1:1 0
+ P ret v0:32
+ end
+-- 
+2.43.0
+
