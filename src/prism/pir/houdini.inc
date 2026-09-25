@@ -913,15 +913,18 @@ HoudiniOut Houdini::run() {
     // it may assume, a literal for its context and one for its goals.
     z3::solver s(c);
     add_all(s, e.assumptions);
+    const std::size_t search_assumptions = e.assumptions.size();
     std::vector<std::optional<z3::expr>> sel(cands.size());
+    std::vector<z3::expr> sel_impl;  // the selector implications (also given to the final solver)
     for (std::size_t i = 0; i < cands.size(); ++i) {
         if (!cands[i].alive) continue;
         auto& CL = e.cut_loops[static_cast<std::size_t>(cands[i].loop)];
         sel[i] = c.bool_const(("houdini!s" + std::to_string(i)).c_str());
         z3::expr_vector hv(c);
         for (auto& h : ev[i].havoc) hv.push_back(h);
-        s.add(z3::implies(*sel[i], z3::implies(e.reach[static_cast<std::size_t>(CL.node)] && noviol(CL.props_before),
-                                               z3::mk_and(hv))));
+        sel_impl.push_back(z3::implies(
+            *sel[i], z3::implies(e.reach[static_cast<std::size_t>(CL.node)] && noviol(CL.props_before), z3::mk_and(hv))));
+        s.add(sel_impl.back());
     }
     auto selectors = [&](const std::function<bool(std::size_t)>& before, z3::expr_vector& as) {
         for (std::size_t i = 0; i < cands.size(); ++i)
@@ -1029,14 +1032,25 @@ HoudiniOut Houdini::run() {
     };
     // The final query: the cut program with the given candidates assumed at
     // every havocked header (the universal ones also at the other index
-    // terms, under the literal `fin`, so the search queries stay small).
+    // terms).
     // Asked for all properties at once; a group without an answer is split
     // in halves (a smaller query). 1: some property is violated (SAT),
     // 0: none (UNSAT), -1: no answer.
-    const z3::expr fin = c.bool_const("houdini!fin");
+    // The final (and optimistic) queries go to their own solver: the
+    // instances at the other index terms and the side constraints of their
+    // reads never reach the search solver, whose queries stay as small as
+    // before.
+    std::optional<z3::solver> sfin;
+    std::size_t fin_assumptions = 0;
     std::vector<char> inst_added(cands.size(), 0);
     auto add_instances = [&]() {
-        const std::size_t before_n = e.assumptions.size();
+        if (!sfin) {
+            sfin.emplace(c);
+            for (std::size_t k = 0; k < search_assumptions; ++k) sfin->add(e.assumptions[k]);
+            for (auto& x : sel_impl) sfin->add(x);
+            fin_assumptions = search_assumptions;
+        }
+        auto& sf = *sfin;
         for (std::size_t i = 0; i < cands.size(); ++i) {
             if (!cands[i].alive || !cands[i].ghost() || inst_added[i]) continue;
             inst_added[i] = 1;
@@ -1049,20 +1063,20 @@ HoudiniOut Houdini::run() {
                 continue;  // not assumed at the other terms (only weaker)
             }
             if (hv.empty()) continue;
-            s.add(z3::implies(fin && *sel[i],
-                              z3::implies(e.reach[static_cast<std::size_t>(CL.node)] && noviol(CL.props_before),
-                                          z3::mk_and(hv))));
+            sf.add(z3::implies(*sel[i], z3::implies(e.reach[static_cast<std::size_t>(CL.node)] && noviol(CL.props_before),
+                                                    z3::mk_and(hv))));
         }
         // side constraints of the new reads (Ackermann constraints of havoc
         // reads): facts of the encoding, true in every query
-        for (std::size_t k = before_n; k < e.assumptions.size(); ++k) s.add(e.assumptions[k]);
+        for (std::size_t k = fin_assumptions; k < e.assumptions.size(); ++k) sf.add(e.assumptions[k]);
+        fin_assumptions = e.assumptions.size();
     };
     std::string fail;
     auto final_query = [&](double budget, bool split) -> int {
         add_instances();
+        auto& sf = *sfin;
         z3::expr_vector all_sel(c);
         selectors([](std::size_t) { return true; }, all_sel);
-        all_sel.push_back(fin);
         const auto tf = std::chrono::steady_clock::now();
         auto fleft = [&] {
             return budget - std::chrono::duration<double>(std::chrono::steady_clock::now() - tf).count();
@@ -1076,17 +1090,17 @@ HoudiniOut Houdini::run() {
             z3::expr_vector vs(c);
             for (std::size_t i = lo; i < hi; ++i) vs.push_back(e.props[i].viol);
             z3::expr act = c.bool_const(("houdini!f" + std::to_string(query_++)).c_str());
-            s.add(z3::implies(act, z3::mk_or(vs)));
+            sf.add(z3::implies(act, z3::mk_or(vs)));
             z3::params p(c);
             double t = !split ? fleft()
                        : hi - lo == e.props.size() ? std::max(per_query_, fleft() / 2)
                                                    : std::min(per_query_, fleft());
             p.set("timeout", static_cast<unsigned>(std::max(1.0, t) * 1000));
-            s.set(p);
+            sf.set(p);
             z3::expr_vector as(c);
             for (auto x : all_sel) as.push_back(x);
             as.push_back(act);
-            auto r = s.check(as);
+            auto r = sf.check(as);
             if (r == z3::unsat) return 0;
             if (r == z3::sat) {
                 fail = "a property is not implied by the inductive invariants found";
