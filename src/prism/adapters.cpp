@@ -844,10 +844,31 @@ std::vector<Finding> run_clang_tidy(const std::string& exe, const std::vector<fs
         return {f};
     }
     std::vector<Finding> out;
-    for (const auto& p : files) {
+    // One clang-tidy process per file on cfg.jobs threads (the Python
+    // engine's ordered_map); findings are built in file order below.
+    std::vector<ProcResult> results(files.size());
+    parallel_for(cfg.jobs, files, [&](std::size_t i, const fs::path& p) {
         auto ext = ext_of(p);
         const char* stdv = (ext == ".cc" || ext == ".cpp" || ext == ".cxx") ? "-std=c++11" : "-std=c11";
-        auto r = run_argv({exe, p.string(), "--", stdv}, std::min(60.0, cfg.timeout + 15));
+        results[i] = run_argv({exe, p.string(), "--", stdv}, std::min(60.0, cfg.timeout + 15));
+    });
+    static Regex missing_header(
+        R"(fatal error:\s*(?:'([^'\n]+)' file not found|([^:\n]+): No such file or directory))");
+    for (std::size_t fi = 0; fi < files.size(); ++fi) {
+        const auto& p = files[fi];
+        const auto& r = results[fi];
+        if (!r.failed && !r.timed_out && !is_fake_adapter(r.text)) {
+            // The unit does not compile standalone (include path unknown):
+            // a gap, not a clang-tidy finding (warnings stage, Law 7).
+            if (auto mh = missing_header.search_match(r.text)) {
+                auto hdr = mh->group(1).empty() ? trim_copy(mh->group(2)) : mh->group(1);
+                out.push_back(finding("clang-tidy", laws::NOTRUN, p.string(), "",
+                                      "clang-tidy could not compile this unit: header '" + hdr +
+                                          "' not found (include path unknown)",
+                                      laws::STRENGTH_FINDS));
+                continue;
+            }
+        }
         if (r.timed_out) {
             out.push_back(finding("clang-tidy", laws::TIMEOUT, p.string(), "", "clang-tidy timeout",
                                   laws::STRENGTH_FINDS));

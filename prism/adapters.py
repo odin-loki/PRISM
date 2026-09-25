@@ -8,7 +8,7 @@ import shutil
 import subprocess
 
 from prism import laws
-from prism.adapters_extra import _is_fake_adapter
+from prism.adapters_extra import _MISSING_HEADER_RE, _is_fake_adapter
 from prism.config import Config, adapter_install, ordered_map, resolve_adapter, stamps_tool
 from prism.models import Finding
 from prism.pbsd import C_EXTS, run_pbsd_lints
@@ -224,11 +224,6 @@ def run_pbsd(cfg: Config, scope: Path) -> list[Finding]:
 
 _WARN_RE = re.compile(r"^(.+):(\d+):(\d+):\s+(warning|error):\s+(.*)$", re.MULTILINE)
 _C_UNITS = {".c", ".cc", ".cpp", ".cxx"}
-# `fatal error: 'unity.h' file not found` (clang) / `unity.h: No such file or
-# directory` (gcc): the unit's include path is unknown, a gap in what PRISM
-# could compile, not a defect in the code (Law 7).
-_MISSING_HEADER_RE = re.compile(
-    r"fatal error:\s*(?:'([^'\n]+)' file not found|([^:\n]+): No such file or directory)")
 
 
 def _host_compilers() -> list[str]:

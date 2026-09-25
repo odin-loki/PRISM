@@ -25,6 +25,12 @@ from prism import laws, sandbox
 from prism.config import Config, adapter_install, ordered_map, resolve_adapter, stamp_tool_sha
 from prism.models import Finding, FunctionInfo
 
+# `fatal error: 'unity.h' file not found` (clang) / `unity.h: No such file or
+# directory` (gcc): the unit's include path is unknown, a gap in what PRISM
+# could compile, not a defect in the code (Law 7).
+_MISSING_HEADER_RE = re.compile(
+    r"fatal error:\s*(?:'([^'\n]+)' file not found|([^:\n]+): No such file or directory)")
+
 # (stage, PATH names). Install hint is adapter_install(stage) → fetch_deps.
 # No CodeQL: its engine terms restrict commercial use (roadmap 1.2).
 OPTIONAL_TOOLS: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -158,6 +164,19 @@ def _run_clang_tidy(exe: str, paths: list[Path], cfg: Config) -> list[Finding]:
             ))
             continue
         text = (r.stdout or "") + (r.stderr or "")
+        mh = None if _is_fake_adapter(text) else _MISSING_HEADER_RE.search(text)
+        if mh:
+            # The unit does not compile standalone (include path unknown):
+            # a gap, not a clang-tidy finding (warnings stage, Law 7).
+            hdr = mh.group(1) or mh.group(2).strip()
+            out.append(Finding(
+                stage="clang-tidy", status=laws.NOTRUN, file=str(p), function=None,
+                line=None, cls="",
+                message=f"clang-tidy could not compile this unit: header '{hdr}' "
+                "not found (include path unknown)",
+                strength=laws.STRENGTH_FINDS,
+            ))
+            continue
         if _is_fake_adapter(text) or _probe_looks_missing(text, r.returncode):
             out.append(Finding(
                 stage="clang-tidy", status=laws.NOTRUN, file=str(p), function=None,
