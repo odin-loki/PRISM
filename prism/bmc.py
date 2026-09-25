@@ -7484,8 +7484,9 @@ def unencoded_layout_stmt(stmt: str) -> str | None:
         if _re_match(r"enum\s+[A-Za-z_]\w*\s+[A-Za-z_]\w*", s):
             return "struct unencoded"
         return None
+    # `T name`, and `T *name` / `T * const name` (a pointer to a typedef type).
     m = _re_match(
-        r"([A-Za-z_]\w*)\s+[A-Za-z_]\w*\s*(?:[=;\[]|$)",
+        r"([A-Za-z_]\w*)(?:\s+|\s*\*+\s*(?:const\s+)?)[A-Za-z_]\w*\s*(?:[=;\[]|$)",
         s,
     )
     if not m:

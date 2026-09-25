@@ -1051,7 +1051,8 @@ if (starts_kw(s, R"BMC(enum)BMC")) {
     }
     return std::nullopt;
 }
-auto m = rx_match(R"BMC(([A-Za-z_]\w*)\s+[A-Za-z_]\w*\s*(?:[=;\[]|$))BMC", s);
+// `T name`, and `T *name` / `T * const name` (a pointer to a typedef type).
+auto m = rx_match(R"BMC(([A-Za-z_]\w*)(?:\s+|\s*\*+\s*(?:const\s+)?)[A-Za-z_]\w*\s*(?:[=;\[]|$))BMC", s);
 if (!(m)) {
     return std::nullopt;
 }

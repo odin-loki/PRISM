@@ -1085,7 +1085,8 @@ std::optional<std::string> unencoded_layout_stmt(std::string_view stmt_s) {
         if (match_at(var, s)) return "struct unencoded";
         return std::nullopt;
     }
-    static Regex td(R"(([A-Za-z_]\w*)\s+[A-Za-z_]\w*\s*(?:[=;\[]|$))");
+    // `T name`, and `T *name` / `T * const name` (a pointer to a typedef type).
+    static Regex td(R"(([A-Za-z_]\w*)(?:\s+|\s*\*+\s*(?:const\s+)?)[A-Za-z_]\w*\s*(?:[=;\[]|$))");
     auto m = match_at(td, s);
     if (!m) return std::nullopt;
     if (kStmtStartWords.contains(m->group(1))) return std::nullopt;

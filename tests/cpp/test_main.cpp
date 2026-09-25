@@ -436,6 +436,21 @@ TEST_CASE("real-world: fuzz runs a no-parameter function's one input once") {
     CHECK(fz[0].extra["rounds"] == "1");
 }
 
+TEST_CASE("real-world: a pointer-to-typedef local is unencoded, not ERROR") {
+    auto fns = fns_of_text(
+        "typedef struct cJSON cJSON;\ncJSON *make(void);\nvoid use(cJSON *p);\n"
+        "void t4(void) {\n    cJSON *root = make();\n    use(root);\n}\n",
+        "prism_rw_tdptr.c");
+    bool seen = false;
+    for (auto& f : prism::run_concolic(fns, 4)) {
+        if (f.function != std::optional<std::string>("t4")) continue;
+        seen = true;
+        CHECK(f.status == prism::laws::NEEDS_HARNESS);
+        CHECK(f.message.find("typedef local unencoded") != std::string::npos);
+    }
+    CHECK(seen);
+}
+
 TEST_CASE("real-world: concolic reads '#' inside a string as code, not a directive") {
     auto fns = fns_of_text(
         "void test(int (*f)(void), const char *name);\n"

@@ -194,6 +194,17 @@ class TestRealWorldEvaluation(unittest.TestCase):
         self.assertTrue(all(f.status == laws.NOTRUN for f in rows), rows)
         self.assertIn("unity_fixture.h", rows[0].message)
 
+    def test_typedef_pointer_local_is_unencoded_not_error(self):
+        # cJSON tests: `cJSON *root = cJSON_CreateObject();` in a no-parameter
+        # test function was concolic ERROR "trailing tokens".
+        from prism.concolic import run_concolic
+        fns = extract_functions_from_text(
+            "typedef struct cJSON cJSON;\ncJSON *make(void);\nvoid use(cJSON *p);\n"
+            "void t4(void) {\n    cJSON *root = make();\n    use(root);\n}\n", "t.c")
+        rows = [f for f in run_concolic(fns) if f.function == "t4"]
+        self.assertEqual([f.status for f in rows], [laws.NEEDS_HARNESS])
+        self.assertIn("typedef local unencoded", rows[0].message)
+
     def test_concrete_prep_keeps_hash_in_strings(self):
         from prism.concrete import _PREP_RE
         body = 'test(t, "issue #22");\n#ifdef X\nx = 1;\n#endif\n'
