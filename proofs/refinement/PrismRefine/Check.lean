@@ -258,6 +258,9 @@ def parseFile (text : String) : List Record := Id.run do
   let mut pl : List (List String) := []
   let mut status : Option String := none
   for raw in text.splitOn "\n" do
+    -- A Windows checkout stores the fixtures as CRLF. A trailing CR would
+    -- stick to the last token and the record would parse as empty.
+    let raw := raw.replace "\r" ""
     let w := words raw
     match w with
     | "func" :: n :: _ => name := n; ll := []; pl := []; status := none
