@@ -452,8 +452,14 @@ TEST_CASE("reports ship the trusted base and link every verdict to its definitio
     }
     CHECK(prism::verdict_anchor("ok").empty());
     // the embedded copies are byte-identical to docs/
-    CHECK(prism::trusted_base_text() == slurp(repo_root() / "docs" / "TRUSTED_BASE.md"));
-    CHECK(verdicts == slurp(repo_root() / "docs" / "VERDICTS.md"));
+    // Git on Windows checks these out with CRLF. CMake's file(READ) stores LF
+    // in the binary, which is what CI compares. Drop CR before the compare.
+    auto lf = [](std::string s) {
+        s.erase(std::remove(s.begin(), s.end(), '\r'), s.end());
+        return s;
+    };
+    CHECK(lf(std::string(prism::trusted_base_text())) == lf(slurp(repo_root() / "docs" / "TRUSTED_BASE.md")));
+    CHECK(lf(std::string(verdicts)) == lf(slurp(repo_root() / "docs" / "VERDICTS.md")));
 
     prism::RunReport r;
     r.root = tmp.dir.string();

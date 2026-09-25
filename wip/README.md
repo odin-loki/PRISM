@@ -23,5 +23,8 @@ Resolutions while applying:
 | `sv3cm.mbox` | 5 | bmc reports reachable `reach_error()` and covers unreach-call; enlarged pinned SV-COMP subset (most of the 1.6 MB); `run_subset.py` kills process groups. Last WIP commit is untested. |
 
 Measured numbers claimed inside these series are the agents' own. The
-independent Lean recheck of `proofs/refinement/fixtures/pointers.pirl`
-reported 3 mismatches against an expected line of 0.
+pointer fixture was exported before the memcpy self-copy guard (finding 6:
+the offsets must differ) landed in the translator, so the Lean recheck
+reported 3 mismatches. It has been regenerated from `tests/pir/mem_ptr.c`,
+`tests/pir/mem_contract.c` and `testdata/stack_escape.c`. `pir_lean_check`
+now reports `agree=0 agree-ext=24 agree-reject=4 outside=5 mismatch=0`.

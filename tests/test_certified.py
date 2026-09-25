@@ -162,7 +162,7 @@ class TestPythonCliParity(unittest.TestCase):
         main = (ROOT / "src" / "prism" / "main.cpp").read_text(encoding="utf-8")
         self.assertIn('a == "--certified") cfg.certified = true', main)
         self.assertIn('a == "--solver-cache"', main)
-        self.assertIn("check_function(fn, check_options(cfg))",
+        self.assertIn("check_function(fn, check_options(cfg, budget))",
                       (ROOT / "src" / "prism" / "pir" / "stage.cpp").read_text(encoding="utf-8"))
 
 

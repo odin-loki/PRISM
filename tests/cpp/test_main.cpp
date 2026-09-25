@@ -4478,6 +4478,7 @@ std::string manifest_commit(const std::string& name) {
     std::string line;
     bool inside = false;
     while (std::getline(in, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
         if (line.rfind("[[", 0) == 0) inside = false;
         if (line == "name = \"" + name + "\"") inside = true;
         if (inside && line.rfind("commit = \"", 0) == 0) return line.substr(10, 40);
@@ -6131,6 +6132,58 @@ TEST_CASE("solver: ProbSAT finds assignments and never claims unsat") {
     empty_clause.clauses = {{}};
     CHECK_FALSE(ps::probsat(empty_clause, so).found);
 }
+
+#ifdef PRISM_HAS_CUDA
+// Roadmap 3.3: the CUDA walker was type-checked only. This plants a satisfying
+// 3-CNF and checks the GPU assignment, then records wall time against one CPU walker.
+TEST_CASE("solver: GPU ProbSAT finds a planted assignment") {
+    constexpr int nv = 800;
+    constexpr int nc = 3200;
+    ps::Cnf cnf;
+    cnf.num_vars = nv;
+    std::mt19937_64 rng(0xC0FFEEULL);
+    std::vector<int> plant(nv + 1);
+    for (int v = 1; v <= nv; ++v) plant[v] = (rng() & 1) ? 1 : -1;
+    cnf.clauses.reserve(nc);
+    for (int i = 0; i < nc; ++i) {
+        int vs[3];
+        vs[0] = int(rng() % nv) + 1;
+        do { vs[1] = int(rng() % nv) + 1; } while (vs[1] == vs[0]);
+        do { vs[2] = int(rng() % nv) + 1; } while (vs[2] == vs[0] || vs[2] == vs[1]);
+        const int keep = int(rng() % 3);
+        std::vector<int> clause;
+        for (int j = 0; j < 3; ++j) {
+            int lit = vs[j] * plant[vs[j]];
+            if (j != keep && (rng() & 1)) lit = -lit;
+            clause.push_back(lit);
+        }
+        cnf.clauses.push_back(std::move(clause));
+    }
+    auto wall = [](auto&& fn) {
+        const auto t0 = std::chrono::steady_clock::now();
+        const bool ok = fn();
+        const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        return std::pair<bool, double>{ok, s};
+    };
+    std::vector<std::int8_t> gpu;
+    auto [gpu_ok, gpu_s] = wall([&] {
+        return ps::cuda_probsat(cnf, 1, 200000, 1024, gpu);
+    });
+    REQUIRE(gpu_ok);
+    CHECK(ps::assignment_satisfies(cnf, gpu));
+    ps::SlsOptions so;
+    so.seed = 1;
+    so.max_flips = 200000;
+    auto [cpu_ok, cpu_s] = wall([&] {
+        auto r = ps::probsat(cnf, so);
+        return r.found && ps::assignment_satisfies(cnf, r.assignment);
+    });
+    MESSAGE("gpu_probsat " << gpu_s << "s walkers=1024 flips=200000 cpu_one_walker " << cpu_s
+                           << "s found=" << cpu_ok);
+    std::ofstream out("/tmp/prism-gpu-probsat.txt");
+    out << "gpu_s " << gpu_s << "\ncpu_s " << cpu_s << "\ncpu_found " << cpu_ok << "\n";
+}
+#endif
 
 // The portfolio's process runner is POSIX (posix_spawn); roadmap D7.
 #if defined(PRISM_HAS_Z3) && !defined(_WIN32)

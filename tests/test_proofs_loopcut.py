@@ -74,8 +74,11 @@ class EncoderParity(unittest.TestCase):
 
     def test_havoc_assumption_guarded_by_no_violation_before(self):
         # Part 2: sel[i] -> (reach(header) && noviol(props before it) -> invariant at the havoc)
-        guarded = re.findall(r"z3::implies\(\s*\*sel\[i\],\s*z3::implies\(e\.reach\[static_cast<std::size_t>\(CL\.node\)\]"
-                             r" && noviol\(CL\.props_before\)", self.hou)
+        guarded = re.findall(
+            r"z3::implies\(\s*\*sel\[i\],\s*z3::implies\(e\.reach\[static_cast<std::size_t>\(CL\.node\)\]"
+            r"\s*&&\s*noviol\(CL\.props_before\)",
+            self.hou,
+        )
         self.assertGreaterEqual(len(guarded), 2, msg="search and final assumptions both guarded")
 
     def test_queries_assume_the_loops_before_their_point(self):
