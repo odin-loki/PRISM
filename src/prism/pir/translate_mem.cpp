@@ -22,6 +22,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <set>
 
 namespace prism::pir::pirmem {
 
@@ -354,6 +355,23 @@ std::vector<std::string> entry_globals(const ir::Module& m, const Layout& lay, c
             for (auto& [o, _] : in.incoming) see(o);
         }
     return out;
+}
+
+bool reaches_alloc_failed(const ir::Module& m, const ir::Function& f) {
+    std::set<const ir::Function*> seen;
+    std::vector<const ir::Function*> todo{&f};
+    while (!todo.empty()) {
+        const auto* g = todo.back();
+        todo.pop_back();
+        if (!seen.insert(g).second) continue;
+        for (auto& bl : g->blocks)
+            for (auto& in : bl.insts) {
+                if (in.op != "call" || in.callee.empty()) continue;
+                if (in.callee == "__prism_alloc_failed") return true;
+                if (const auto* h = m.find(in.callee)) todo.push_back(h);
+            }
+    }
+    return false;
 }
 
 uint64_t contract_elem_bytes(const Layout& lay, const ir::Function& f, const ir::Param& p, const PtrContract& c) {

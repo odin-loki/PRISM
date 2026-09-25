@@ -90,6 +90,8 @@ open PrismRefine
 #print axioms escLoop_run
 #print axioms escChk_run
 #print axioms escHit_ok
+-- the libc models' heap: __prism_alloc / __prism_free, nondet values, assumptions
+#print axioms freeChk_run
 -- Part 8.2 "Floating point" (stretch): IEEE binary formats, correctly rounded addition
 #print axioms PrismRefine.Float.roundU_repr
 #print axioms PrismRefine.Float.roundU_nearest

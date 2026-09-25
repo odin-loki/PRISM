@@ -155,6 +155,7 @@ struct Tr final : pirmem::TrApi {
     std::optional<std::vector<std::string>> thrown_;  // every type the module throws
     std::optional<Arg> caught_;                       // hidden object: stack of caught exceptions
     std::optional<Arg> oom_;                          // hidden object: an allocation failed (F9)
+    bool oom_pending_ = false;                        // oom_ preassigned, its object not yet emitted
 
     Arg fn_addr(const std::string& name) override;
     Snap snap();
@@ -493,7 +494,15 @@ struct Tr final : pirmem::TrApi {
             head[q] = newblock(q);
         }
         // the globals the analysed function names: variables before its results (MemTr::preassign_globals)
-        if (!frames.empty() && &fr == frames.front()) mt.preassign_globals(f);
+        if (!frames.empty() && &fr == frames.front()) {
+            mt.preassign_globals(f);
+            // the hidden allocation-failed flag, when a model can set it: its
+            // variable after the globals', its object after theirs (run_frame)
+            if (pirmem::reaches_alloc_failed(m, f)) {
+                oom_ = Arg::v(newvar("_oom", kPtrW), kPtrW);
+                oom_pending_ = true;
+            }
+        }
         std::set<std::string> maybe_uninit;
         for (auto& bl : f.blocks) {
             for (auto& in : bl.insts) {
@@ -599,7 +608,13 @@ struct Tr final : pirmem::TrApi {
 
     void run_frame(Frame& fr) {
         const auto& f = *fr.f;
-        if (&fr == frames.front()) mt.emit_entry_globals();  // first thing of block 0 (prologue)
+        if (&fr == frames.front()) {
+            mt.emit_entry_globals();  // first thing of block 0 (prologue)
+            if (oom_pending_) {
+                mt.alloc(-1, Arg::c(64, 1), MemKind::Static, 1, "allocation failed (PRISM)", 0, oom_->var);
+                oom_pending_ = false;
+            }
+        }
         const auto live = normal_blocks(f);
         for (auto& bl : f.blocks)
             if (live.count(bl.name)) translate_block(fr, bl);

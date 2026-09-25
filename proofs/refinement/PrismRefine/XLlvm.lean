@@ -135,6 +135,25 @@ inductive SInst where
   object; the value is the comparison of the 64-bit pointers (as LLVM compares
   addresses).  Pointer `eq`/`ne` is the integer `icmp` at width 64. -/
   | pcmp (dst : String) (p : Pred) (a b : Opnd)
+  /-- `%dst = call iw @__VERIFIER_nondet_*()` (or `nondet_*`, not defined in
+  the module): an arbitrary value, drawn from the oracle. -/
+  | nondet (dst : String) (w : Nat)
+  /-- `call @__VERIFIER_assume(iw a)`, or the libc models' `__prism_assume`:
+  an execution where `a` is 0 is not considered (the semantics is stuck: no
+  claim is made about it). -/
+  | vassume (a : Opnd) (w : Nat)
+  /-- `[%dst =] call ptr @__prism_alloc(i64 n, kind, init)`, the allocator of
+  the libc models (`malloc`, `calloc`, `realloc`, `operator new`): a fresh
+  object of `n` bytes of that kind (2 heap, 5 `new`, 6 `new[]`), alignment 16,
+  uninitialised / zero / arbitrary bytes (`init` 0 / 1 / 2).  PRISM's model
+  has no object of `2^47` bytes or more: such a call is not modelled (stuck;
+  the models test the size first). -/
+  | halloc (dst : Option String) (n : Opnd) (kind init : Nat)
+  /-- `call @__prism_free(ptr p, kind)` (`kill`) / `__prism_free_check`, the
+  release of the libc models (`free`, `realloc`, `operator delete`):
+  undefined unless `p` is null or points to the start of a live object of
+  that kind (`freeBad`); `__prism_free` then ends the object's lifetime. -/
+  | hfree (p : Opnd) (kind : Nat) (kill : Bool)
   deriving DecidableEq, Repr, Inhabited
 
 /-- The register of field `i` of an overflow pair (a name no LLVM register
@@ -358,6 +377,36 @@ def escHit (R : SRegs) (v : Nat) : List String → Res Bool
   | a :: t => (sOpnd R 64 (.reg a)).bind fun pa => (escHit R v t).bind fun h =>
       .ok ((ptrObj (v % 2 ^ 64) == ptrObj (pa % 2 ^ 64)) || h)
 
+/-- Releasing `p` as an object of kind `k` is undefined (`MemTr::dealloc`):
+`p` is not null and does not point to an allocated object
+(MEM-INVALID-FREE), is not the start of its object (MEM-INVALID-FREE), points
+to an object of another kind (MEM-MISMATCHED-FREE / MEM-INVALID-FREE) or to
+one whose lifetime ended (MEM-DOUBLE-FREE). -/
+def freeBad (m : Mem) (p k : Nat) : Bool :=
+  ptrObj p != 0 && (m.kind p == 0 || ptrOff p != 0 || m.kind p != k || !m.live p)
+
+/-- Write register `d`, if the result is used. -/
+def SRegs.setOpt (R : SRegs) : Option String → Nat → SRegs
+  | some d, v => R.set d v
+  | none, _ => R
+
+/-- `__VERIFIER_assume` / `__prism_assume`: stuck when the value is 0. -/
+def sVassume (R : SRegs) (w : Nat) (a : Opnd) : Res Unit :=
+  (sOpnd R w a).bind fun v => if v % 2 ^ w != 0 then .ok () else .stuck
+
+/-- `__prism_alloc`: the new object's pointer and the world. -/
+def sHallocW (ω : Nat → Nat) (R : SRegs) (W : World) (n : Opnd) (kd ini : Nat) : Res (Nat × World) :=
+  (sOpnd R 64 n).bind fun v =>
+    if v % 2 ^ 64 < 2 ^ 47 then
+      .ok ((W.allocW ω (v % 2 ^ 64) kd 16 ini).2, (W.allocW ω (v % 2 ^ 64) kd 16 ini).1)
+    else .stuck
+
+/-- `__prism_free` (`kill`) / `__prism_free_check`. -/
+def sFree (R : SRegs) (W : World) (p : Opnd) (kd : Nat) (kill : Bool) : Res World :=
+  (sOpnd R 64 p).bind fun pv =>
+    if freeBad W.mem (pv % 2 ^ 64) kd then .ub
+    else .ok (if kill then { W with mem := W.mem.free (pv % 2 ^ 64) } else W)
+
 /-! ## Strict semantics -/
 
 /-- The values of the integer intrinsics. -/
@@ -441,6 +490,10 @@ def sSInst (ω : Nat → Nat) (R : SRegs) (W : World) : SInst → Res (SRegs × 
   | .glob d size al kd ini st =>
     .ok (R.set d (globAlloc ω W size al kd ini st).1, (globAlloc ω W size al kd ini st).2)
   | .pcmp d p a b => (sPcmpV R p a b).bind fun v => .ok (R.set d v, W)
+  | .nondet d w => .ok (R.set d (ω W.t % 2 ^ w), W.adv 1)
+  | .vassume a w => (sVassume R w a).bind fun _ => .ok (R, W)
+  | .halloc d n kd ini => (sHallocW ω R W n kd ini).bind fun (p, W') => .ok (R.setOpt d p, W')
+  | .hfree p kd kill => (sFree R W p kd kill).bind fun W' => .ok (R, W')
 
 def sSInsts (ω : Nat → Nat) : SRegs → World → List SInst → Res (SRegs × World)
   | R, W, [] => .ok (R, W)
@@ -637,6 +690,19 @@ def lSInst (ω : Nat → Nat) (S : LSt) (W : World) : SInst → Res (LSt × Worl
     .ok (⟨S.R.set d (.val (globAlloc ω W size al kd ini st).1), S.c⟩, (globAlloc ω W size al kd ini st).2)
   -- pointers into different objects: C UB (not LLVM poison), flagged like a C array bound
   | .pcmp d p a b => lOne S W d (sPcmpV (lower S.R) p a b)
+  | .nondet d w => .ok (⟨S.R.set d (.val (ω W.t % 2 ^ w)), S.c⟩, W.adv 1)
+  -- a poison or indeterminate argument of these calls is a use of it: UB
+  | .vassume a w =>
+    match sVassume (lower S.R) w a with
+    | .ok _ => .ok (S, W)
+    | .ub => .ub
+    | .stuck => .stuck
+  | .halloc d n kd ini =>
+    match sHallocW ω (lower S.R) W n kd ini with
+    | .ok (p, W') => .ok (⟨(match d with | some d => S.R.set d (.val p) | none => S.R), S.c⟩, W')
+    | .ub => .ub
+    | .stuck => .stuck
+  | .hfree p kd kill => lMem S (sFree (lower S.R) W p kd kill)
 
 def lSInsts (ω : Nat → Nat) : LSt → World → List SInst → Res (LSt × World)
   | S, W, [] => .ok (S, W)

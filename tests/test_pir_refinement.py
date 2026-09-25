@@ -120,6 +120,35 @@ class StaticParity(unittest.TestCase):
         self.assertIn("mt.preassign_globals(f)", self.cpp)
         self.assertIn("mt.emit_entry_globals()", self.cpp)
 
+    def test_pointer_harness_and_heap_share_definitions(self):
+        # a contract-bound pointer parameter's object size, and whether the
+        # hidden allocation-failed flag exists, are computed by the same
+        # functions for the translator and for the Lean export
+        mem = _read(ROOT / "src" / "prism" / "pir" / "translate_mem.cpp")
+        export = _read(ROOT / "src" / "prism" / "pir" / "export_lean.cpp")
+        self.assertIn("uint64_t contract_elem_bytes(", mem)
+        self.assertIn("pirmem::contract_elem_bytes(tr.mt.layout(), f, p, c)", self.cpp)
+        self.assertIn("pirmem::contract_elem_bytes(lay, f, p, *c)", export)
+        self.assertIn("bool reaches_alloc_failed(", mem)
+        self.assertIn("pirmem::reaches_alloc_failed(m, f)", self.cpp)
+        self.assertIn("pirmem::reaches_alloc_failed(m, f)", export)
+
+    def test_pointer_and_heap_checks_are_modelled(self):
+        # the pointer comparison, stack-escape and release checks of
+        # translate_mem.cpp are in the Lean translator, with the kinds the
+        # models use (heap 2, new 5, new[] 6)
+        xlean = _read(REFINE / "PrismRefine" / "XTranslate.lean")
+        mem = _read(ROOT / "src" / "prism" / "pir" / "translate_mem.cpp")
+        for prop, cls in (("ptr-cmp", "PTR-COMPARE"), ("stack-escape", "MEM-STACK-ESCAPE"),
+                          ("free-invalid", "MEM-INVALID-FREE"), ("free-mismatch", "MEM-MISMATCHED-FREE"),
+                          ("double-free", "MEM-DOUBLE-FREE")):
+            self.assertIn(f'"{prop}" "{cls}"', xlean, msg=prop)
+            self.assertIn(f'"{prop}", "{cls}"', mem, msg=prop)
+        enum = _read(ROOT / "include" / "prism" / "pir.hpp")
+        self.assertIn("Heap = 2", enum)
+        self.assertIn("New = 5, NewArr = 6", enum)
+        self.assertIn(".c 8 2], .assign (j + 12) (.cmp .eq) [.v (j + 2) 8, .c 8 5]", xlean)
+
 
 @unittest.skipUnless(CHECKER.is_file(), "NOTRUN: pir_lean_check not built (cd proofs/refinement && lake build)")
 class CheckerFixtures(unittest.TestCase):

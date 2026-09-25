@@ -439,6 +439,39 @@ def uPred : Pred → Pred
   | .sgt => .ugt | .sge => .uge | .slt => .ult | .sle => .ule
   | p => p
 
+/-- `MemTr::dealloc` of `P` as an object of kind `kd` (temporaries from `j`):
+null / not allocated, not the start, another allocator, not dynamically
+allocated, released already. -/
+def freeChk (j : Nat) (P : Arg) (kd : Nat) : List PStmt :=
+  [.assign j (.bin .lshr) [P, c64 48], .assign (j + 1) (.cmp .ne) [.v j 64, c64 0],
+   .assign (j + 2) .objKind [P], .assign (j + 3) .objLive [P],
+   .assign (j + 4) (.cmp .eq) [.v (j + 2) 8, .c 8 0], .assign (j + 5) (.bin .and) [.v (j + 1) 1, .v (j + 4) 1],
+   .check (.v (j + 5) 1) "free-invalid" "MEM-INVALID-FREE",
+   .assign (j + 6) (.cmp .ne) [.v (j + 2) 8, .c 8 0], .assign (j + 7) (.bin .and) [.v (j + 1) 1, .v (j + 6) 1],
+   .assign (j + 8) (.bin .and) [P, c64 (2 ^ 48 - 1)], .assign (j + 9) (.cmp .ne) [.v (j + 8) 64, c64 0],
+   .assign (j + 10) (.bin .and) [.v (j + 7) 1, .v (j + 9) 1],
+   .check (.v (j + 10) 1) "free-invalid" "MEM-INVALID-FREE",
+   .assign (j + 11) (.cmp .eq) [.v (j + 2) 8, .c 8 2], .assign (j + 12) (.cmp .eq) [.v (j + 2) 8, .c 8 5],
+   .assign (j + 13) (.cmp .eq) [.v (j + 2) 8, .c 8 6], .assign (j + 14) (.bin .or) [.v (j + 12) 1, .v (j + 13) 1],
+   .assign (j + 15) (.bin .or) [.v (j + 11) 1, .v (j + 14) 1],
+   .assign (j + 16) (.cmp .ne) [.v (j + 2) 8, .c 8 kd], .assign (j + 17) (.bin .and) [.v (j + 7) 1, .v (j + 16) 1],
+   .assign (j + 18) (.bin .and) [.v (j + 17) 1, .v (j + 15) 1],
+   .check (.v (j + 18) 1) "free-mismatch" "MEM-MISMATCHED-FREE",
+   .assign (j + 19) (.cmp .eq) [.v (j + 15) 1, .c 1 0], .assign (j + 20) (.bin .and) [.v (j + 17) 1, .v (j + 19) 1],
+   .check (.v (j + 20) 1) "free-invalid" "MEM-INVALID-FREE",
+   .assign (j + 21) (.cmp .eq) [.v (j + 2) 8, .c 8 kd], .assign (j + 22) (.cmp .eq) [.v (j + 3) 1, .c 1 0],
+   .assign (j + 23) (.bin .and) [.v (j + 21) 1, .v (j + 22) 1],
+   .assign (j + 24) (.bin .and) [.v (j + 7) 1, .v (j + 23) 1],
+   .check (.v (j + 24) 1) "double-free" "MEM-DOUBLE-FREE"]
+
+def freeT : List Nat := [64, 1, 8, 1, 1, 1, 1, 1, 64, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+
+/-- The size check of `MemTr::alloc`: a variable size below `2^47` is
+assumed (a constant one is checked by the translator). -/
+def hallocSz (k1 : Nat) : Arg → List PStmt × List Nat
+  | .c _ _ => ([], [])
+  | N => ([.assign k1 (.cmp .ult) [N, c64 (2 ^ 47)], .assume (.v k1 1)], [1])
+
 /-- The operands a `getelementptr` reads. -/
 def gepUses (base : Opnd) (ix : List GIdx) : List Opnd := base :: ix.filterMap (fun g => g.opnd.map (·.1))
 
@@ -562,6 +595,33 @@ def trSInstX (c : Ctx) (k : Nat) : SInst → Except String (List PStmt × List N
             .assign (j + 2) (.cmp .ne) [.v j 64, .v (j + 1) 64], .check (.v (j + 2) 1) "ptr-cmp" "PTR-COMPARE",
             .assign i (.cmp (uPred p)) [A, B]],
           ta ++ tb ++ [64, 64, 1])
+  | .nondet d w => do
+    need (okW w) "UNENCODED: width"
+    let i ← dstX c d w
+    need (look c.sh d).isNone "outside fragment: result with a shadow"
+    pure ([.havoc i], [])
+  | .vassume a w => do
+    need (okW w) "UNENCODED: width"
+    let (sa, ta, A) ← trOpndX c w true k a
+    need (A.width == w) "outside fragment: assume operand width"
+    let j := k + ta.length
+    pure (sa ++ [.assign j (.cmp .ne) [A, .c w 0], .assume (.v j 1)], ta ++ [1])
+  | .halloc d n kd ini => do
+    need (decide (kd < 256) && decide (ini ≤ 2)) "outside fragment: allocation kind"
+    let (sn, tn, N) ← trOpndX c 64 true k n
+    need (N.width == 64 && (match N with | .c _ b => decide (b < 2 ^ 47) | .v _ _ => true))
+      "UNENCODED: allocation larger than 2^47 bytes"
+    let r := hallocSz (k + tn.length) N
+    match d with
+    | some d => do
+      let i ← dstX c d 64
+      need (look c.sh d).isNone "outside fragment: result with a shadow"
+      pure (sn ++ r.1 ++ [.alloc i N kd ini 16], tn ++ r.2)
+    | none => pure (sn ++ r.1 ++ [.alloc (k + tn.length + r.2.length) N kd ini 16], tn ++ r.2 ++ [64])
+  | .hfree p kd kill => do
+    need (kd != 8 && decide (kd < 256)) "outside fragment: release kind"
+    let (sp, tp, P) ← trOpndX c 64 true k p
+    pure (sp ++ freeChk (k + tp.length) P kd ++ (if kill then [.free P] else []), tp ++ freeT)
   | .memset d b len lw => do
     need (okW lw) "UNENCODED: width"
     let (sd, td, D) ← trOpndX c 64 true k d
@@ -756,6 +816,9 @@ where
     | .xv d w _ _ => [(d, w)]
     | .glob d _ _ _ _ _ => [(d, 64)]
     | .pcmp d _ _ _ => [(d, 1)]
+    | .nondet d w => [(d, w)]
+    | .halloc (some d) _ _ _ => [(d, 64)]
+    | .halloc none _ _ _ | .vassume .. | .hfree .. => []
     | .lstart .. | .lend .. | .memcpy .. | .memset .. => []
 
 def xPhisOf (G : XFunc) : List PhiI := G.blocks.flatMap (·.phis)

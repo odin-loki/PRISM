@@ -3,7 +3,8 @@
 This document covers the Lean project `proofs/techniques/`. It proves that the
 *algorithms and designs* behind several PRISM verdicts are sound. These are
 roadmap 5.4 (bit-blaster) and the 8.2 rows "k-induction", "Houdini invariant
-filter", "Contracts and PROVED-ASSUMING", "Bit-blaster", "Concurrency (lazy
+filter" (with the pir stage's loop-cut encoding and the sequential `assume`
+guard of soundness fix S9), "Contracts and PROVED-ASSUMING", "Bit-blaster", "Concurrency (lazy
 sequentialisation)" and, in part, "Floating point" (the rounding kernel; the
 IEEE operations, exception flags and PRISM's floating-point checks are in
 `proofs/refinement`, [PROOFS_REFINEMENT.md](PROOFS_REFINEMENT.md)).
@@ -57,6 +58,17 @@ Houdini.houdini_inductive                  [propext, Quot.sound]
 Houdini.houdini_sound                      [propext, Quot.sound]
 Houdini.houdini_maximal                    [propext, Quot.sound]
 Houdini.houdini_then_kinduction            [propext, Quot.sound]
+LoopCut.encViol_iff                        [propext, Classical.choice, Quot.sound]
+LoopCut.encExit_iff                        [propext, Classical.choice, Quot.sound]
+LoopCut.old_viol_imp                       [propext, Classical.choice, Quot.sound]
+LoopCut.s9_old_encoding_misses             [propext, Classical.choice, Quot.sound]
+LoopCut.exec_cut                           [propext, Classical.choice, Quot.sound]
+LoopCut.exec_err_cut                       [propext, Classical.choice, Quot.sound]
+LoopCut.grun_complete                      [propext, Classical.choice, Quot.sound]
+LoopCut.cexec_grun                         [propext, Classical.choice, Quot.sound]
+LoopCut.loopcut_sound                      [propext, Classical.choice, Quot.sound]
+LoopCut.loopcut_sound_seq                  [propext, Classical.choice, Quot.sound]
+LoopCut.houdini_loopcut_sound              [propext, Classical.choice, Quot.sound]
 Contracts.modular_sound                    [propext]
 Contracts.compose_layer                    [propext]
 Contracts.contract_violation_breaks_modularity []
@@ -184,6 +196,72 @@ A wrong "no", a timeout or an "unknown" only removes more candidates.
 | `houdini_sound` | `InitSound O I → PresSound O T → ∀ c ∈ houdini O.init O.pres cands, ∀ s, Reach I T s → O.holds c s`, for **any** `cands`, including ones proposed by an AI model |
 | `houdini_maximal` | Assumes complete oracles (`InitComplete`, `PresComplete`). Then every `A ⊆ cands` with `Inductive O I T A` satisfies `A ⊆ houdini …`, so the result is the largest inductive subset. |
 | `houdini_then_kinduction` | The survivors feed `kinduction_rel_sound`: `Base I T P k → StepRel T (Conj O survivors) P k → ∀ s, Reach I T s → P s` |
+
+## 2b. The pir loop cut and the sequential `assume` guard (`PrismTechniques/LoopCut.lean`)
+
+The pir stage proves loops with invariants (docs/PIR.md "Loop invariants",
+`src/prism/pir/houdini.inc`): it encodes the function with **every loop cut
+once**, havocs each loop's header state, assumes the loop's surviving
+candidates there, and checks that they hold at the header's entry (*base*)
+and at every back edge (*step*); the function is PROVED-UNBOUNDED when, with
+all survivors assumed, no property of the cut program is violated. Until
+now that argument was prose. `LoopCut.lean` proves it, together with the
+encoder's per-statement guard that the S9 fix introduced.
+
+**Programs.** Structured programs over an abstract state `S`: blocks of
+statements (`upd R` — an assignment or a havoc, any relation; `check c`;
+`assume c`), sequencing, branches, and loops `loop L body` with any number of
+exits (`brk`) and latches (falling off the body, `cont`), plus `ret`. Loops
+nest and follow each other freely; invariants `Inv L e s` (entry state `e`,
+header state `s`) and havoc relations `Hav L e s` are per loop. The
+*sequential semantics* `Exec` is the uncut program: a failed check ends the
+run with `err`, a false `assume` blocks it; `Exec P s .err` is inductive, so
+it covers every violating execution through any finite number of iterations
+of any nesting.
+
+**Part 1 — S9: an `assume` constrains only later statements.** encode.cpp
+gives each statement of a block the guard `r` = the node's reach, strengthened
+by every `assume` already passed (`r := r && cond`); a check's instance is
+`r ∧ ¬cond`; the block's exit guard (`exit_reach`) is the final `r`.
+
+| Theorem | Statement |
+|---|---|
+| `encViol_iff` | Some property instance of a block is violated under its own running guard (`EncViol`: a state sequence consistent with the statements before instance `n`, `guard b ss n`, the check false) **iff** the block, run sequentially, fails a check (`BExec b s0 none`) |
+| `encExit_iff` | The exit guard holds with no violated instance, ending in `t`, **iff** the block runs sequentially to `t` |
+| `old_viol_imp` | The pre-fix encoding (every `assume` an axiom of the whole node, `OldViol`) only lost alarms: each alarm it gave, the fixed encoding gives |
+| `s9_old_encoding_misses` | The S9 program `100 / x; assume(x != 0)` with `x = 0`: the sequential semantics and the fixed encoding report the division, the old encoding reports nothing |
+
+**Part 2 — the loop cut.** `CExec` is the cut program run sequentially: at
+the header of `L` with entry state `e`, the base goal `Inv L e e`, then the
+havoc to any `s` with `Hav L e s` and the assumption `Inv L e s`, then the
+body once; a latch is a cut whose step goal is `Inv L e t`. `GRun` is the Z3
+encoding as a path semantics: a path does not stop at a violated instance
+(`v` records one), a base or step goal that fails where no property was
+violated before sets `q`, and a header's invariant assumption is active only
+while neither flag is set — the guard `reach(header) ∧ noviol(props_before)`
+of `houdini.inc`, and each query assuming only the loops before its point
+(base: `seq < seqL`; step: `seq ≤ seqT`). A complete `GRun` path from the
+entry ending with `v ∨ q` is a model of one of Houdini's queries (the first
+flag set says which), so "every query UNSAT at the fixpoint" is the premise
+of:
+
+| Theorem | Statement |
+|---|---|
+| `exec_cut` | Every execution of the uncut program is matched by a run of the cut program with the same outcome, or the cut program fails (a property, a base or a step goal). Induction over the execution, i.e. over the header visits, with the loop's entry state fixed; needs `FrameOK Hav P` |
+| `cexec_grun` | A failing run of the cut program is a complete encoding path with `v ∨ q`; any other run is an unflagged path with the same outcome (uses `grun_complete`) |
+| `grun_complete` | After a violation or a failed goal the encoding path can always be completed: nothing after it is assumed — this is what the guard "no violation before this header" is for (with totality of assignments/havocs) |
+| **`loopcut_sound`** | `FrameOK Hav P → Total P → (∀ o v q, GRun Inv Hav P s0 False False o v q → ¬v ∧ ¬q) → ¬ Exec P s0 .err`: if no complete path of the cut encoding violates a property or fails a base/step goal, **no execution of the uncut program**, through any number of iterations of any of its (nested, sequential, multi-exit) loops, violates a property |
+| `loopcut_sound_seq` | The same from the sequential cut program alone (`¬ CExec … .err`), no totality needed |
+| `houdini_loopcut_sound` | `loopcut_sound` with `Inv` the conjunction of per-loop survivor lists (`survivorsInv`) |
+
+Premises, named: `FrameOK` — each loop's havoc covers its header states
+(`Hav L e e`, and a body iteration that ends at a latch without a violation
+from a state in `Hav L e` stays in `Hav L e`; for PIR: the header phis are
+havocked and every byte a violation-free iteration writes is in the loop's
+footprint, the loop allocates and frees nothing); `Total` — every `upd` is
+total (a Z3 assignment defines its value; a havoc is a fresh constant).
+
+---
 
 ## 3. Contracts and `PROVED-ASSUMING` (`PrismTechniques/Contracts.lean`)
 
@@ -512,18 +590,29 @@ loop body). The theorem needs three facts that were not established here.
 If the C++ step query asserts `P` in every copy instead of assuming it in the
 first `k`, the check is stronger and still sound.
 
-### Houdini
+### Houdini and the loop cut
 
-There is no Houdini implementation in the C++ engine yet (roadmap 4.2). The
-Lean `houdini` function is the reference.
+The C++ engine's Houdini is `src/prism/pir/houdini.inc` (pir stage, docs/PIR.md
+"Loop invariants"). It keeps a candidate only when every query that checks
+it came back UNSAT with the final survivor set assumed (`PresSound`/`InitSound`
+in the abstract model), and drops it on SAT, a timeout or "unknown".
+`LoopCut.lean` proves the loop-cut argument for a structured-program model of
+that encoding. What is modelled, not proved of the C++:
 
-- An implementation must match `loop`/`round` exactly.
-- It may drop candidates on any non-`true` solver answer.
-- It must not keep a candidate unless the solver returned UNSAT for its
-  preservation query (`PresSound`).
-
-A differential test against `#eval houdini …` on small candidate sets would
-tie the two together.
+- The encoder's DAG and Z3 formula are represented by the path semantics
+  `GRun` (on the one path a model makes reachable, topological order is
+  execution order); PIR is a CFG, the model a structured program with
+  multi-exit, multi-latch loops (`while`/`for`/`do` with `break`,
+  `continue` and `return`); a `goto` into a loop body or other
+  irreducible control flow is outside the model.
+- `FrameOK` (the footprint covers every write of a violation-free
+  iteration) rests on the provenance analysis of `SymMem`, not proved here
+  (the same gap as `kinduction_frame_sound`).
+- That each Z3 query is exactly the `GRun` condition for its point is the
+  encoder correspondence; `tests/test_proofs_loopcut.py` locks the three
+  encoder facts the model relies on (the running `assume` guard and
+  `exit_reach`, the `noviol(props_before)` guard of the havoc assumptions,
+  the `seq` order of the queries' assumed loops) to the C++ text.
 
 ### Contracts and `PROVED-ASSUMING`
 

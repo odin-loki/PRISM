@@ -623,7 +623,10 @@ The fix:
 Both programs are now refuted. Regression: the doctest "pir: a false
 llvm.assume is a checked violation, not a silent path cut (refinement
 finding 8)", which also checks that an assume placed before the division
-still protects it.
+still protects it. The fixed guard is proved equal to the sequential
+semantics in Lean (`proofs/techniques/PrismTechniques/LoopCut.lean`:
+`encViol_iff`, `encExit_iff`; `s9_old_encoding_misses` is this program under
+the old encoding).
 
 
 Every wrong proof found, reduced to a minimal reproducer. Run any of them

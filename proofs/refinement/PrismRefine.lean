@@ -17,6 +17,7 @@ import PrismRefine.XValid
 import PrismRefine.XRefine
 import PrismRefine.XValidSpec
 import PrismRefine.XStep
+import PrismRefine.XHeap
 import PrismRefine.XEscape
 import PrismRefine.XRun
 import PrismRefine.XLazy

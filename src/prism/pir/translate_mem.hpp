@@ -98,6 +98,13 @@ std::vector<std::string> entry_globals(const ir::Module& m, const Layout& lay, c
 // with the Lean export (export_lean.cpp), which writes the contract object.
 uint64_t contract_elem_bytes(const Layout& lay, const ir::Function& f, const ir::Param& p, const PtrContract& c);
 
+// Whether `f` can reach a call of __prism_alloc_failed through direct calls
+// of module functions (the malloc/calloc/realloc models). The translator then
+// allocates the hidden "an allocation failed" flag object in the prologue,
+// right after the entry globals, with its variable after theirs; the Lean
+// export writes it as an `L glob` line there (docs/PROOFS_REFINEMENT.md).
+bool reaches_alloc_failed(const ir::Module& m, const ir::Function& f);
+
 class MemTr {
 public:
     MemTr(TrApi& t, const ir::Module& m);

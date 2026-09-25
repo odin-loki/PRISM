@@ -1174,6 +1174,17 @@ shortcut, so a template is about the bytes of that state for any x). Only
 the final query instantiates them at other terms (instances of a proved
 universal statement).
 
+This argument is proved in Lean for a structured-program model of the
+encoding (`proofs/techniques/PrismTechniques/LoopCut.lean`,
+`LoopCut.loopcut_sound`, docs/PROOFS_TECHNIQUES.md "2b"): nested,
+sequential and multi-exit loops, havoc assumptions guarded by "no
+violation before this header", each query assuming only the loops before
+its point; the premises are that the havoc covers every header state a
+violation-free iteration reaches (the footprint) and that assignments are
+total. The same file proves that the per-statement `assume` guard (S9) is
+the sequential semantics (`LoopCut.encViol_iff`). The encoder facts the
+model relies on are locked to the C++ text by `tests/test_proofs_loopcut.py`.
+
 **Exported invariants.** `extra.invariant_loops` (the loop's source start
 line and column, from clang's `llvm.loop` metadata; the function's own
 loops only) and `extra.invariant_conjuncts` (per loop: the surviving

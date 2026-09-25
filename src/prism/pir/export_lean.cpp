@@ -224,20 +224,38 @@ void gep_line(std::ostream& b, const pirmem::Layout& lay, const ir::Function& f,
 }
 
 // A call translate.cpp inlines (Tr::call -> Tr::inline_call): a function
-// defined in the module that no earlier handler of Tr::call claims. Library
-// code (a model, or a function from another file: its checks are reported at
-// the call site) is left out.
-bool inlined_call(const ir::Module& m, const ir::Inst& in, const std::string& top_file) {
+// defined in the module that no earlier handler of Tr::call claims (library
+// models included: malloc, free, operator new, ... are C code linked into the
+// module).
+bool inlined_call(const ir::Module& m, const ir::Inst& in) {
     const auto& n = in.callee;
     if (in.is_asm || n.empty() || n.starts_with("llvm.") || n.starts_with("__prism") || n.starts_with("__cxa_") ||
         n == "__clang_call_terminate" || n == "_ZSt9terminatev")
         return false;
+    return m.find(n) != nullptr;
+}
+
+// Tr::inline_call's `foreign`: library code (a model, or a function from
+// another file). Inside it every instruction's location is the call site's
+// line with column 0 (Frame::site_line), so no `shl` there is a C signed
+// shift (their locations have a column).
+bool foreign_callee(const ir::Module& m, const std::string& n, const std::string& top_file) {
     const auto* callee = m.find(n);
     if (!callee) return false;
     std::string cfile;
     if (auto it = m.subprograms.find(callee->dbg); it != m.subprograms.end()) cfile = it->second.file;
-    return !callee->is_model && (cfile.empty() || top_file.empty() || cfile == top_file);
+    return callee->is_model || (!cfile.empty() && !top_file.empty() && cfile != top_file);
 }
+
+// A function the export writes: its name and whether it is inlined as library code.
+struct Callee {
+    std::string name;
+    bool foreign = false;
+};
+
+// The register of the hidden allocation-failed flag object (a name no LLVM
+// local the exporter writes has: it contains a dot and the reserved prefix).
+constexpr const char* kOom = "__prism.oom";
 
 bool overflow_call(const ir::Inst& in) {
     if (in.op != "call") return false;
@@ -312,14 +330,58 @@ void intrinsic_line(std::ostream& b, const ir::Inst& in) {
     throw Unsupported{"call @" + n};
 }
 
+// The model intrinsics of Tr::model_intrinsic the extended fragment covers
+// (the libc models' malloc/free/new/delete use only these).
+void model_line(std::ostream& b, const ir::Module& m, const ir::Inst& in) {
+    (void)m;
+    const std::string& n = in.callee;
+    auto cint = [&](std::size_t i) -> uint64_t {
+        if (i >= in.ops.size() || in.ops[i].v.kind != ir::Value::Int)
+            throw Unsupported{"call @" + n + " with a non-constant argument"};
+        return in.ops[i].v.bits;
+    };
+    if (n == "__prism_alloc") {
+        // MemTr::alloc(size, kind, init): the object; the size below 2^47 is assumed
+        if (in.ops.size() != 3 || vw(in.ops[0].ty) != 64) throw Unsupported{"call @" + n + " arity"};
+        const uint64_t k = cint(1), init = cint(2);
+        if (init > 2 || k > 255) throw Unsupported{"call @" + n + " kind"};
+        b << "L halloc " << (in.result.empty() ? std::string("-") : "%" + name(in.result)) << " "
+          << opnd(in.ops[0]) << " " << k << " " << init << "\n";
+        return;
+    }
+    if (n == "__prism_free" || n == "__prism_free_check") {
+        // MemTr::dealloc: the free checks, then (free) the lifetime ends
+        if (in.ops.size() != 2) throw Unsupported{"call @" + n + " arity"};
+        const uint64_t k = cint(1);
+        if (k == static_cast<uint64_t>(MemKind::File) || k > 255) throw Unsupported{"call @" + n + " kind"};
+        b << "L hfree " << opnd(in.ops[0]) << " " << k << " " << (n == "__prism_free" ? 1 : 0) << "\n";
+        return;
+    }
+    if (n == "__prism_assume") {
+        if (in.ops.size() != 1) throw Unsupported{"call @" + n + " arity"};
+        b << "L vassume " << opnd(in.ops[0]) << " " << vw(in.ops[0].ty) << "\n";
+        return;
+    }
+    if (n == "__prism_alloc_failed") {
+        // Tr::st(oom, i8 1): a store of one byte, alignment 8, into the flag object
+        b << "L store 8 #1 %" << kOom << " 8\n";
+        return;
+    }
+    throw Unsupported{"call @" + n};
+}
+
 void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, const TranslateOptions& opt,
-               const std::string& top_file, std::vector<std::string>& callees) {
+               const std::string& top_file, std::vector<Callee>& callees, bool top, bool foreign) {
     if (!f.parse_error.empty()) throw Unsupported{"unparsed IR"};
     std::ostringstream b;
     static const std::set<std::string> bins{"add", "sub", "mul", "udiv", "sdiv", "urem", "srem",
                                             "shl", "lshr", "ashr", "and", "or", "xor"};
     const pirmem::Layout lay(m);
-    const bool top = callees.empty();
+    // the hidden allocation-failed flag (translate.cpp: preassigned when the
+    // analysed function can reach __prism_alloc_failed): an object after the
+    // entry globals, passed to every inlined function that can reach it as an
+    // extra last parameter (the translator refers to its variable directly)
+    const bool oom = pirmem::reaches_alloc_failed(m, f);
     // Pointer parameters. Of an inlined callee: ordinary 64-bit values bound
     // to the caller's arguments (a by-value aggregate is copied first:
     // outside). Of the analysed function (translate()): a by-value aggregate
@@ -389,8 +451,9 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
         harness << "L glob %" << name(p.name) << " " << static_cast<uint64_t>(c->count) * esz << " 16 "
                 << (c->read_only ? 4 : 7) << " 2 0\n";
     }
-    b << "L params " << ints.size();
+    b << "L params " << ints.size() + (oom && !top ? 1 : 0);
     for (auto* p : ints) b << " " << name(p->name) << " " << vw(p->ty);
+    if (oom && !top) b << " " << kOom << " 64";
     b << "\nL ret " << (f.ret.kind == ir::Type::Void ? 0u : vw(f.ret)) << "\n";
     // translate.cpp's return of a pointer: MemTr::stack_escape_check against
     // the analysed function's own stack objects (the Lean XFunc.escNames)
@@ -413,6 +476,9 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
                 for (auto& st : e.stores) b << " " << st.off << " " << st.w << " " << st.bits;
                 b << "\n";
             }
+        if (top && oom && &bl == &f.blocks.front())
+            // MemTr::alloc(-1, c64(1), Static, init 1): one zero byte
+            b << "L glob %" << kOom << " 1 16 3 1 0\n";
         for (auto& in : bl.insts) {
             if (!in.parsed) throw Unsupported{in.op};
             const std::string& op = in.op;
@@ -439,9 +505,14 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
                     ir::DILoc l;
                     if (!in.dbg.empty())
                         if (auto it = m.locs.find(in.dbg); it != m.locs.end()) l = it->second;
-                    if (std::find(opt.signed_shl.begin(), opt.signed_shl.end(), std::make_pair(l.line, l.col)) !=
-                        opt.signed_shl.end())
+                    if (foreign) {
+                        // Frame::site_line: (call-site line, column 0)
+                        for (auto& [sl, sc] : opt.signed_shl)
+                            if (sc == 0) throw Unsupported{"signed shift location without a column"};
+                    } else if (std::find(opt.signed_shl.begin(), opt.signed_shl.end(),
+                                         std::make_pair(l.line, l.col)) != opt.signed_shl.end()) {
                         fl += (fl.empty() ? "" : ",") + std::string("csigned");
+                    }
                 }
                 if (in.result.empty() || in.ops.size() != 2) throw Unsupported{op + " shape"};
                 b << "L bin %" << name(in.result) << " " << op << " " << word(fl) << " " << width(in.ty) << " "
@@ -513,13 +584,29 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
                     throw Unsupported{"extractvalue"};
                 b << "L xv %" << name(in.result) << " " << width(in.ty) << " %" << name(in.ops[0].v.name) << " "
                   << in.indices[0] << "\n";
-            } else if (op == "call" && inlined_call(m, in, top_file)) {
+            } else if (op == "call" && !in.is_asm && in.callee.starts_with("__prism_")) {
+                model_line(b, m, in);
+            } else if (op == "call" && !in.is_asm && !m.find(in.callee) &&
+                       (in.callee.starts_with("__VERIFIER_nondet_") || in.callee.starts_with("nondet_"))) {
+                // Tr::call: an arbitrary value (a havoc); an unused result is UNENCODED there
+                if (in.result.empty() || in.ty.kind == ir::Type::Void) throw Unsupported{"call @" + in.callee};
+                b << "L nondet %" << name(in.result) << " " << vw(in.ty) << "\n";
+            } else if (op == "call" && !in.is_asm && !m.find(in.callee) && in.callee == "__VERIFIER_assume") {
+                if (in.ops.size() != 1) throw Unsupported{"call @" + in.callee + " arity"};
+                b << "L vassume " << opnd(in.ops[0]) << " " << vw(in.ops[0].ty) << "\n";
+            } else if (op == "call" && inlined_call(m, in)) {
+                const bool cforeign = foreign || foreign_callee(m, in.callee, top_file);
+                const bool coom = pirmem::reaches_alloc_failed(m, *m.find(in.callee));
                 b << "L call " << (in.result.empty() ? std::string("-") : "%" + name(in.result)) << " "
                   << (in.ty.kind == ir::Type::Void ? 0u : vw(in.ty)) << " " << name(in.callee) << " "
-                  << in.ops.size();
+                  << in.ops.size() + (coom ? 1 : 0);
                 for (auto& a : in.ops) b << " " << opnd(a) << " " << vw(a.ty);
+                if (coom) b << " %" << kOom << " 64";
                 b << "\n";
-                if (std::find(callees.begin(), callees.end(), in.callee) == callees.end()) callees.push_back(in.callee);
+                auto it = std::find_if(callees.begin(), callees.end(), [&](const Callee& c) { return c.name == in.callee; });
+                if (it == callees.end()) callees.push_back({in.callee, cforeign});
+                else if (it->foreign != cforeign)
+                    throw Unsupported{"@" + in.callee + " inlined both as library and as user code"};
             } else if (op == "call") {
                 throw Unsupported{"call @" + (in.callee.empty() ? std::string("<indirect>") : in.callee)};
             } else {
@@ -606,12 +693,13 @@ void export_lean_pair(const std::filesystem::path& out_root, const std::string& 
         std::ostringstream l;
         std::string top_file;
         if (auto it = m.subprograms.find(f.dbg); it != m.subprograms.end()) top_file = it->second.file;
-        std::vector<std::string> callees;
-        llvm_side(l, m, f, opt, top_file, callees);
+        std::vector<Callee> callees;
+        llvm_side(l, m, f, opt, top_file, callees, true, false);
         // every function the calls reach, once, in order of first call
         for (std::size_t i = 0; i < callees.size(); ++i) {
-            l << "L fn " << name(callees[i]) << "\n";
-            llvm_side(l, m, *m.find(callees[i]), opt, top_file, callees);
+            const Callee c = callees[i];
+            l << "L fn " << name(c.name) << "\n";
+            llvm_side(l, m, *m.find(c.name), opt, top_file, callees, false, c.foreign);
         }
         if (!callees.empty()) o << "L depth " << opt.inline_depth << "\n";
         o << l.str();

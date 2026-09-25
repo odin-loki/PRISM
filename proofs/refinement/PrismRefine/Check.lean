@@ -441,6 +441,19 @@ def parseXLlvm (name : String) (ls : List (List String)) :
       let q ← match pred? p with | some q => pure q | none => throw s!"icmp {p}"
       f := { f with cur := some (bn, ps, sg, .pcmp (← reg? d) q (← opnd? a) (← opnd? b) :: is) }
     | ["ptrparam", d] => f := { f with ptrParams := (← reg? d) :: f.ptrParams }
+    | ["nondet", d, w] =>
+      let (bn, ps, sg, is) ← inBlock
+      f := { f with cur := some (bn, ps, sg, .nondet (← reg? d) (← nat? w) :: is) }
+    | ["vassume", a, w] =>
+      let (bn, ps, sg, is) ← inBlock
+      f := { f with cur := some (bn, ps, sg, .vassume (← opnd? a) (← nat? w) :: is) }
+    | ["halloc", d, n, kd, ini] =>
+      let (bn, ps, sg, is) ← inBlock
+      let dst ← if d == "-" then pure none else do pure (some (← reg? d))
+      f := { f with cur := some (bn, ps, sg, .halloc dst (← opnd? n) (← nat? kd) (← nat? ini) :: is) }
+    | ["hfree", p, kd, kill] =>
+      let (bn, ps, sg, is) ← inBlock
+      f := { f with cur := some (bn, ps, sg, .hfree (← opnd? p) (← nat? kd) (kill == "1") :: is) }
     | ["retptr"] => f := { f with retPtr := true }
     | ["memcpy", d, sp, n, lw, mv] =>
       let (bn, ps, sg, is) ← inBlock
