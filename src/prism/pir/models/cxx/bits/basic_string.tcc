@@ -178,7 +178,11 @@ _GLIBCXX20_CONSTEXPR void basic_string<_CharT, _Traits, _Alloc>::_M_construct(_F
     } else {
         _M_init_local_buf();
     }
-    if constexpr (is_pointer<_FwdIterator>::value) {
+    if constexpr (is_pointer<_FwdIterator>::value &&
+                  is_same<typename remove_cv<typename remove_pointer<_FwdIterator>::type>::type, _CharT>::value) {
+        // a pointer range of this string's own character type; any other
+        // element type (e.g. const char* into basic_string<wchar_t>) takes the
+        // converting element loop below, as libstdc++ does
         __prism_str_copy<_CharT, _Traits>(_M_data(), __beg, __n);
     } else if constexpr (noexcept(++__beg) && noexcept(*__beg) && noexcept(__beg != __end)) {
         pointer __p = _M_data();
@@ -426,6 +430,33 @@ constexpr void basic_string<_CharT, _Traits, _Alloc>::resize_and_overwrite(const
         throw;
     }
     _M_set_length(__r);
+}
+#endif
+
+#if defined(_GLIBCXX_RELEASE) && _GLIBCXX_RELEASE >= 14
+// libstdc++ 14 declares the non-standard __resize_and_overwrite for C++11 and
+// later (std::to_string uses it) and defines it in this file.
+template <typename _CharT, typename _Traits, typename _Alloc>
+template <typename _Operation>
+_GLIBCXX20_CONSTEXPR void basic_string<_CharT, _Traits, _Alloc>::__resize_and_overwrite(const size_type __n,
+                                                                                        _Operation __op) {
+#if __cplusplus > 202002L
+    resize_and_overwrite<_Operation&>(__n, __op);
+#else
+    reserve(__n);
+    _CharT* const __p = _M_data();
+    size_type __r = 0;
+    try {
+        auto __res = std::move(__op)(__p + 0, __n + 0);
+        // libstdc++: a result outside [0, n] is __builtin_unreachable()
+        __glibcxx_assert(__res >= 0 && size_type(__res) <= __n);
+        __r = size_type(__res);
+    } catch (...) {
+        _M_set_length(0);
+        throw;
+    }
+    _M_set_length(__r);
+#endif
 }
 #endif
 
