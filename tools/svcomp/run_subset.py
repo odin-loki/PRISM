@@ -146,8 +146,9 @@ def run_one(tool: Any | None, prism: str, t: dict[str, Any], work: Path, timeout
     cmd = command(tool, prism, t, out)
     t0 = time.monotonic()
     timed_out = False
+    # Own process group: on a timeout the wrapper's prism (and its solver
+    # and clang children) are killed too, not left running as orphans.
     try:
-        # a session of its own: a timeout kills the wrapper, PRISM and PRISM's solvers
         r = PROCTREE.run([sys.executable, *cmd], capture_output=True, text=True, timeout=timeout, cwd=REPO)
         lines, rc = r.stdout.splitlines(), r.returncode
     except subprocess.TimeoutExpired as e:

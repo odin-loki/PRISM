@@ -3,9 +3,10 @@
 Roadmap 6.3: "Enter SV-COMP once the Clang pipeline is stable." PRISM has
 **not** entered SV-COMP. This file describes the pieces built so far, the
 local score they give on the pinned SV-COMP subset in this repository, and
-what is still missing for a real entry. The score below is computed by this
-repository's own scripts on 45 (no-overflow) and 20 (unreach-call) tasks; it
-is not an SV-COMP result. PRISM's violation and correctness witnesses for
+what is still missing for a real entry. The scores below are computed by this
+repository's own scripts, first on 45 (no-overflow) and 20 (unreach-call)
+tasks, since 2026-09-25 on 117 and 127 tasks (174 task files, see
+"2026-09-25" below); they are not SV-COMP results. PRISM's violation and correctness witnesses for
 that subset have been run through two format-2.0 validators, CPAchecker
 4.2.2 and UAutomizer 0.3.1 (see "Witness validation" below), and the subset
 has been run in BenchExec with the competition's resource limits (see
@@ -41,10 +42,11 @@ follows the verdict laws in [VERDICTS.md](VERDICTS.md).
 - **`true`** only when a verdict stage that covers the property reports
   `PROVED`, `PROVED-UNBOUNDED` or `PROVED-CERTIFIED` for `main`, and no
   verdict stage reports a `FAILED` of the property's class for `main`.
-  Covering stages: `bmc` and `pir` for `no-overflow`; only `pir` for
-  `unreach-call` (the `pir` stage checks reachability of `reach_error` /
-  `__assert_fail` as a property; `bmc` treats those calls as the end of a
-  path, not as a property); none for `valid-memsafety`
+  Covering stages: `bmc` and `pir` for `no-overflow` and for
+  `unreach-call` (both stages check a reachable `reach_error()` /
+  `__VERIFIER_error()` call as a `FUNC-CONTRACT` property named
+  `reach_error`, and a canonical `__VERIFIER_assert` as `assert`; see
+  "bmc and unreach-call"); none for `valid-memsafety`
   (the `pir` memory model checks dereferences and frees but no stage
   encodes `valid-memtrack`, memory leaks), so `valid-memsafety` is never
   `true`.
@@ -52,8 +54,9 @@ follows the verdict laws in [VERDICTS.md](VERDICTS.md).
 - **`false(...)`** only when a verdict stage reports `FAILED` of the
   property's class (`INT-SIGNED-OVF`, or an `INT-SHIFT-UB` whose check is a
   signed left shift overflow — `pir` `shift-base`, `bmc` `shift31` — for
-  no-overflow, see "Shifts and no-overflow"; `FUNC-CONTRACT` with
-  `prop` `reach_error`/`assert` for unreach-call; `MEM-OOB-*` /
+  no-overflow, see "Shifts and no-overflow"; `FUNC-CONTRACT` whose check
+  is `reach_error`/`assert` for unreach-call (`pir`: `extra["prop"]`,
+  `bmc`: the message prefix `reach_error:`); `MEM-OOB-*` /
   `PTR-NULL-DEREF` for valid-memsafety) **and the counterexample replays**:
   the task is compiled with clang or gcc
   (`-fsanitize=signed-integer-overflow,shift-base` for no-overflow, where
@@ -185,6 +188,45 @@ modelled) instead of `ERROR`, and `pir` is still `BOUNDED`, so both
 properties stay `unknown` (re-run 2026-09-24 with `--only nested6`; the
 subset score is unchanged).
 
+## bmc and unreach-call
+
+Until 2026-09-25 `bmc` treated `reach_error()` and `__VERIFIER_error()` like
+`abort()`: the path ended there and nothing was reported, so a `bmc` proof
+said nothing about unreach-call. `loop-simple/deep-nested` (expected
+`false`) shows why that mattered: the old `bmc` reported
+`PROVED-UNBOUNDED` for it, which the mapping correctly ignored for
+unreach-call.
+
+Now both engines' `bmc` encode such a call as a property (`bmc_encoder.inc`
+`model_call`, `prism/bmc.py` `_model_call`): reaching it is a violation, a
+`FAILED` `FUNC-CONTRACT` with the check name `reach_error` (message
+`reach_error: FUNC-CONTRACT`), as in `pir`; the path still ends there.
+A static definition of the error function in the unit is never inlined over
+the call (`inline.cpp` / `prism/inline.py` `inlineable_callee`), so an empty
+`static void reach_error(void) {}` cannot make the violation disappear.
+`abort()`, `exit()` and `__assert_fail()` still only end the path (SV-COMP's
+unreach-call is about `reach_error` alone). The Python engine also gained
+the canonical `__VERIFIER_assert` rewrite the C++ `bmc` got in the
+invariants round (`_canonical_verifier_assert`, `_rewrite_verifier_assert`),
+so both engines give the same verdicts (`tests/test_bmc_reach_error.py`,
+doctest "bmc: a reachable reach_error() call ...").
+
+A `bmc` proof of `main` now covers unreach-call: every call of the error
+function reachable from `main` is either encoded (inlined static callees,
+the canonical `__VERIFIER_assert`) or sits in an unmodelled callee, which
+already makes the verdict "not a proof". A `bmc` refutation counts when it
+replays like any other (`reach_error()` must be called in the replay). On
+`deep-nested` the new `bmc` reports `BOUNDED` (the call is reachable only
+after about 2^32 iterations, far beyond the unwind bound, and the
+k-induction step, which closed before, is now open on the `reach_error`
+property), so the answer stays `unknown`.
+
+The cost is on no-overflow: a task whose `reach_error()` is reachable now
+gets `FAILED` (of `FUNC-CONTRACT`) from `bmc` instead of a proof of the
+other properties, exactly as `pir` already did. In the subset that is
+`loop-simple/nested_1b` (expected `true` for no-overflow, `false` for
+unreach-call): no-overflow `true` → `unknown` (−2), unreach-call unchanged.
+
 ## Results (local)
 
 Run on 2026-09-24 with the C++ engine built from `claude/svcomp-2`
@@ -291,6 +333,26 @@ limit: the most CPU time was 52.6 s (`gcd_1`, unreach-call), the most
 memory 661 MB; the 65 runs took 151 s of CPU time together. The validators
 were not run under BenchExec (they ran as below, with their own time
 limits).
+
+**2026-09-25, enlarged subset (244 runs: 117 no-overflow, 127
+unreach-call), same limits and command line**, binary of this branch
+(SHA-256 prefix `c59b5e977165`), on a machine shared with other jobs (load
+average 13–20 on 4 cores): BenchExec score **203** of 417, 88 correct
+`true`, 27 correct `false`, 0 incorrect, 129 `unknown`. That is the
+`run_subset.py` result (88 + 117 = 205) task for task except
+`loop-invgen/apache-escape-absolute.i.v+cfa-reducer` (no-overflow), which
+BenchExec ended as `OUT OF MEMORY` at a measured peak of 280 MB, far below
+the 12 GB limit (host memory pressure from the other jobs, not the run's
+own use); re-run alone in BenchExec it answers `true` for both properties
+(35 s and 26 s CPU). The only other limit reached was
+`loop-simple/nested_6` (unreach-call, expected `true`): BenchExec killed it
+at its wall-time limit (931 s wall, 281 s CPU on the loaded machine); its
+six nested constant loops make `bmc` unroll 6^6 iterations with a solver
+call each (`pir` stops at its 6000-block budget with `UNKNOWN`), so it is a
+timeout at any load. Apart from `nested_6` the most CPU time was 181.6 s
+(`loop-invgen/SpamAssassin-loop.i.v+cfa-reducer`, no-overflow) and the
+most memory 682 MB (`bitvector/gcd_2`); the 244 runs took 1528 s of CPU
+time together.
 
 ## Witness validation
 
