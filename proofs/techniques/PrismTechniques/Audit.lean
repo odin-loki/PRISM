@@ -9,6 +9,7 @@ anything beyond Lean's three standard axioms (`propext`, `Classical.choice`,
 import Lean
 import PrismTechniques.KInduction
 import PrismTechniques.Houdini
+import PrismTechniques.LoopCut
 import PrismTechniques.Contracts
 import PrismTechniques.BitblastEncode
 import PrismTechniques.LazySeq
@@ -45,6 +46,19 @@ namespace PrismTechniques
 #assert_axioms Houdini.houdini_sound
 #assert_axioms Houdini.houdini_maximal
 #assert_axioms Houdini.houdini_then_kinduction
+
+-- The pir loop cut with Houdini invariants and the sequential assume guard (roadmap 8.2, M8)
+#assert_axioms LoopCut.encViol_iff
+#assert_axioms LoopCut.encExit_iff
+#assert_axioms LoopCut.old_viol_imp
+#assert_axioms LoopCut.s9_old_encoding_misses
+#assert_axioms LoopCut.exec_cut
+#assert_axioms LoopCut.exec_err_cut
+#assert_axioms LoopCut.grun_complete
+#assert_axioms LoopCut.cexec_grun
+#assert_axioms LoopCut.loopcut_sound
+#assert_axioms LoopCut.loopcut_sound_seq
+#assert_axioms LoopCut.houdini_loopcut_sound
 
 -- Contracts and PROVED-ASSUMING (roadmap 8.2)
 #assert_axioms Contracts.modular_sound

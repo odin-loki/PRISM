@@ -1,5 +1,6 @@
 import PrismTechniques.KInduction
 import PrismTechniques.Houdini
+import PrismTechniques.LoopCut
 import PrismTechniques.Contracts
 import PrismTechniques.Bitblast
 import PrismTechniques.BitblastOps
