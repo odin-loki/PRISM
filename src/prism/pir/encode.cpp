@@ -1630,6 +1630,8 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
                      : "; the per-VC queries decide, and certify only a PROVED verdict)");
         }
         bool all_unsat = false;
+        // properties an UNSAT group query already answered (skipped below)
+        std::set<const PropInst*> answered;
         if (hard.size() > 16) {
             std::function<int(std::size_t, std::size_t)> group = [&](std::size_t lo, std::size_t hi) -> int {
                 // 1 SAT (hit set), 0 UNSAT, -1 no answer
@@ -1646,21 +1648,38 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
                 for (std::size_t i = lo; i < hi; ++i) vs.push_back(hard[i]->viol);
                 const auto& r = book.add("properties[" + std::to_string(lo) + "," + std::to_string(hi) + ")",
                                          solver::solve(c, base && any_of(c, vs), so));
-                if (r.kind == solver::SolveResult::Unsat) return 0;
-                if (r.kind != solver::SolveResult::Sat) return -1;
+                if (r.kind == solver::SolveResult::Unsat) {
+                    for (std::size_t i = lo; i < hi; ++i) answered.insert(hard[i]);
+                    return 0;
+                }
                 std::size_t mid = lo + (hi - lo) / 2;
+                if (r.kind != solver::SolveResult::Sat) {
+                    // no answer for the group: its halves are smaller queries
+                    // (down to 16 properties; the rest are asked one by one
+                    // below, skipping the ones a group answered UNSAT)
+                    if (hi - lo <= 16) return -1;
+                    int a = group(lo, mid);
+                    if (a == 1) return 1;
+                    int b = group(mid, hi);
+                    if (b == 1) return 1;
+                    return a == 0 && b == 0 ? 0 : -1;
+                }
                 int a = group(lo, mid);
                 if (a == 1) return 1;
                 int b = group(mid, hi);
+                if (b == 1) return 1;
                 // SAT group whose halves are both UNSAT: the answers disagree;
-                // never read that as "all UNSAT" (fall back to per-property VCs)
-                return b == 1 ? 1 : -1;
+                // never read that as "all UNSAT" (fall back to per-property
+                // VCs, every one of the group asked again)
+                if (a == 0 && b == 0)
+                    for (std::size_t i = lo; i < hi; ++i) answered.erase(hard[i]);
+                return -1;
             };
             int g = group(0, hard.size());
             all_unsat = g != -1;  // 0: every property UNSAT; 1: hit found (loop below is skipped)
         }
         for (auto& p : e.props) {
-            if (soft(p) || all_unsat) continue;
+            if (soft(p) || all_unsat || answered.count(&p)) continue;
             const auto& r = book.add(vc_label(p), solver::solve(c, base && p.viol, so));
             if (r.kind == solver::SolveResult::Sat) {
                 hit = &p;

@@ -294,6 +294,48 @@ per path and gets the next constant object id (the Lean `next` counter).
   are fresh variables with pairwise Ackermann constraints
   (`a = a' → h = h'`). The VCs are QF_BV.
 
+**Value sets (Bv).** Pointers loaded from memory made the read-over-write
+chains of linked structures expensive: every load of `node->next` was a
+symbolic address compared against every earlier write, and a map/set erase
+at an input-dependent position followed by a traversal (the destructor,
+`clear()`) did not finish within 240–900 s. `SymMem` now computes, from a
+term's structure alone, a *value set*: at most 32 constants, each under a
+guard, the guards exhaustive and pairwise exclusive, so the term *equals*
+`ite(g1, k1, ite(g2, k2, … kn))` (numerals; `ite`; an extract pushed
+through an `ite` or into the `concat` operands it covers; any other
+bit-vector operation whose operands have value sets, evaluated per
+combination, or position by position when the operands share one guard
+list, e.g. the eight bytes of one chain). Nothing is assumed; each fact is
+an equality of terms. Uses:
+
+* a load or byte read from an address with a value set reads each constant
+  address under its guard; at a constant address a write to a constant (or
+  value-set) address is decided without the solver (equal: the write's
+  guard and the value's guard; different: skipped), a ranged write into
+  another object is skipped, and `size`/`live`/`kind`/`free` of such a
+  pointer are the few objects it can point to;
+* word-level loads: the n bytes at a constant address are built from whole
+  writes (`SymMem::word_at`): a store at least as wide that contains them,
+  a `memset`/`memcpy`/havoc of constant length that contains them, a
+  whole-object havoc; a narrower write splits the word into halves
+  (`word_split`). The value is `ite(cond_j, value_j, …)` over those writes,
+  byte for byte the chain `read_cell_log` builds, so a pointer stored and
+  loaded again keeps its value set. The uninitialised and type-tag bits
+  still come from the byte cells. Any other write that may reach the bytes
+  (a symbolic address or length) keeps the byte-level value;
+* `known()` (provenance) is also "every value is in one object".
+
+Measured (single `pir` runs, loaded shared machine, 2026-09-25):
+`map<int,int>` with two elements, `erase(k)` at an input-dependent key, then
+the destructor: did not finish in 900 s, now PROVED in 1.5 s; its MEM-UAF
+twin (an iterator to the erased element) and a wrong-sum twin are FAILED in
+seconds (doctest `pir: value sets: map erase at an input-dependent
+position`). `tests/conformance/libc-models/map_contracts.cpp`: 11/11 in
+13.5 s as one file (per harness 0.4–2.4 s of solving;
+before: `map_insert_true` alone did not finish in 600 s). Where an address
+depends on a symbolic index (`vector::insert` at a symbolic position), the
+byte-level chain stays, and so does the cost.
+
 `tests/cpp/test_pir_mem.cpp` checks that both encodings give the same verdict
 and class on every property (true and false variants) and that the PIR
 interpreter (`interpret`, concrete memory `ConcMem`) reproduces each
@@ -1053,6 +1095,46 @@ violated (`extra.k_induction = "closed-invariants"`, the survivors in
 timeout (`--timeout`, default 30 s → 180 s) plus at least three for the
 final query; out of time is no proof.
 
+**Cost.** A BOUNDED function could spend 4.5 minutes here (180 s search +
+90 s final query) and a large code base has many. Four things keep it
+cheap without changing what can be proved:
+
+* *Optimistic final query.* After the base queries (cheap: they drop every
+  candidate that fails on loop entry, e.g. one of `i == 0` / `i != 0`) and
+  after every round that dropped something, the final query is asked with
+  every candidate still alive assumed (at most a third of the query time).
+  Houdini only drops candidates and assuming fewer allows more runs, so a
+  property violated here is violated with the fixpoint too: the search
+  stops with "no proof" (`invariants_note: a property is violated even with
+  every candidate that holds on loop entry assumed`). UNSAT is remembered:
+  when nothing is dropped afterwards it *is* the final query. A proof is
+  only ever read off the final query at the fixpoint.
+* *Outcome cache* (`<solver cache>/houdini/<sha256>.json`, keyed by the
+  function's PIR text, memory encoding, time limit and every candidate's
+  text; off with the solver cache). A proof stores its survivors; the next
+  run starts Houdini from them and checks base, step and the final query
+  again (never taken on trust; `extra.houdini_cache = "hit (proof
+  re-checked)"`). A "no proof" is stored only when no time limit or unknown
+  answer decided it, and is then taken as it is (`"hit (no proof)"`).
+* *Run budget.* All functions of a run share `PRISM_HOUDINI_BUDGET` seconds
+  of Houdini (default max(3600 s, 120 × `--timeout`); 0: none). A function
+  that finds it spent stays BOUNDED with `invariants_note: not attempted
+  (the run's Houdini budget of N s is spent; PRISM_HOUDINI_BUDGET)`; one
+  that starts with less left than its search limit gets what is left.
+* `extra.houdini_seconds` records the time each attempt took.
+
+Measured (C++ engine, loaded shared machine, 2026-09-25): `testdata/`
+(1,069 checked functions): 9 reach Houdini, 7 of them end with "no proof";
+before, each of those ran the full final query ("not implied"), now the
+optimistic query decides them; Houdini total 7.5 s, the same verdicts (971
+PROVED, 14 PROVED-UNBOUNDED, 7 BOUNDED). The pir stage there is dominated
+by the Clang front end, not by Houdini. `strcat`/`strncat` of
+`unbounded_string_contracts.c` (4 loops each): BOUNDED before and after at
+the default 30 s (search out of time, 181 s each); with `--timeout 100`
+the search reaches its fixpoint and the optimistic query is SAT for both
+(after 293 s / 489 s): the templates do not contain the invariant these
+two need, so more time would not prove them.
+
 **Why this is sound.** Positions are encoding (topological) order; on the
 one path a model makes reachable they are execution order. Take a run and
 its first violation V (if any). By induction over the header visits before
@@ -1166,7 +1248,12 @@ in-process, CaDiCaL / Kissat on the bit-blasted CNF, Bitwuzla when present,
 the ProbSAT walker for counterexamples) and the query cache.
 
 1. One VC per property: `assumptions ∧ reach ∧ violation`. The properties are
-   asked in order; the first SAT answer is the `FAILED` verdict. Its model
+   asked in order; the first SAT answer is the `FAILED` verdict. With more
+   than 16 properties, one query for "some property is violated" comes
+   first: UNSAT answers all of them, SAT is split in halves until one
+   property is left, and no answer is split in halves too, down to groups
+   of 16 (a smaller query often answers where the whole did not); the
+   properties a group answered UNSAT are not asked again one by one. Its model
    was already evaluated on the VC in Z3 by the solver library; the
    counterexample is the model's parameter values (`extra.cex_solver` names
    the member that found it). An answer that is neither SAT nor UNSAT makes

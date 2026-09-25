@@ -1126,8 +1126,11 @@ HoudiniOut Houdini::run() {
     // is only ever read off the final query at the fixpoint). UNSAT is
     // remembered: when nothing is dropped afterwards it is the final query.
     std::optional<std::vector<char>> unsat_with;
+    int precheck_unknown = 0;
     auto precheck = [&]() -> bool {  // true: stop, no proof possible
-        if (left() <= 0) return false;
+        // two without an answer: this function's cut program is too hard
+        // for the short query, later ones would only take time
+        if (left() <= 0 || precheck_unknown >= 2) return false;
         ++out.prechecks;
         const double t = std::min(left(), std::min(per_query_, std::max(2.0, per_query_ / 3)));
         auto snapshot = alive_set();
@@ -1137,6 +1140,7 @@ HoudiniOut Houdini::run() {
             return true;
         }
         if (r == 0) unsat_with = std::move(snapshot);
+        if (r == -1) ++precheck_unknown;
         fail.clear();
         return false;
     };
