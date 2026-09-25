@@ -640,9 +640,10 @@ is claimed for them:
    stayed dead and MEM-UAF failed (and objects larger than 8 bytes were
    UNENCODED). A new PIR statement `revive` (`Stmt::Revive`) makes a *stack*
    object live again (other objects keep their liveness, as the LangRef says
-   for non-stack objects), then the `size` bytes (`-1`: to the end of the
-   object) are copied from a fresh uninitialised object, with a write's
-   checks; any size is encoded. The loop invariant and k-induction paths
+   for non-stack objects), then the `size` bytes become uninitialised with a
+   write's checks: one store of an uninitialised value for 1 to 8 bytes, as
+   before, otherwise (`-1`: to the end of the object) a copy from a fresh
+   uninitialised object; any size is encoded. The loop invariant and k-induction paths
    treat `revive` like `free`. The Lean PIR has no such statement, so the
    Lean translator now refuses `llvm.lifetime.start` (`outside fragment`):
    functions with it left the extended fragment (in `fixtures/intrinsics.pirl`
