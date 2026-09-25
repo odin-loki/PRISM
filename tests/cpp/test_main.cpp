@@ -7061,3 +7061,84 @@ TEST_CASE("cparse extracts a function-try-block with its handlers (F10)") {
     CHECK(fns[1].name == "user");
     for (auto& fn : fns) CHECK(bmc_status(fn) == prism::laws::NEEDS_HARNESS);
 }
+
+// ---- process trees: a timeout or a signal to PRISM kills the children's
+// children too (a solver's workers, a compiler driver's cc1/ld), not just the
+// direct child (tools/proctree.py does the same for the scorers).
+#ifndef _WIN32
+#include "../../src/prism/proc.hpp"
+#include "../../src/prism/stages/common.hpp"
+
+#include <csignal>
+#include <sys/wait.h>
+#include <unistd.h>
+
+namespace {
+// true once `pid` has exited (gone, or a zombie waiting for its reaper)
+bool proc_gone(long pid) {
+    for (int i = 0; i < 200; ++i) {
+        if (::kill(static_cast<pid_t>(pid), 0) != 0 && errno == ESRCH) return true;
+        std::ifstream st("/proc/" + std::to_string(pid) + "/stat");
+        std::string s((std::istreambuf_iterator<char>(st)), std::istreambuf_iterator<char>());
+        auto rp = s.rfind(')');
+        if (rp != std::string::npos && rp + 2 < s.size() && s[rp + 2] == 'Z') return true;
+        ::usleep(20000);
+    }
+    return false;
+}
+}  // namespace
+
+TEST_CASE("process runners kill the child's whole process tree on timeout") {
+    // the child starts a background grandchild that holds the output pipe
+    const auto t0 = std::chrono::steady_clock::now();
+    auto r = prism::stages_detail::run_argv({"sh", "-c", "sleep 30 & echo $!; wait"}, "", 1.0);
+    const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    CHECK(r.timeout);
+    CHECK(secs < 15.0);  // before: blocked on the pipe until the grandchild's sleep ended
+    long gc = std::atol(r.out.c_str());
+    REQUIRE(gc > 1);
+    CHECK(proc_gone(gc));
+    // the adapter runner (clang, opt, ...) as well
+    auto a = prism::detail::run_process({"sh", "-c", "sleep 30 & echo $!; wait"}, 1.0);
+    CHECK(a.timed_out);
+    long gc2 = std::atol(a.text.c_str());
+    REQUIRE(gc2 > 1);
+    CHECK(proc_gone(gc2));
+}
+
+TEST_CASE("a SIGTERM to PRISM kills the child process groups it started") {
+    int pfd[2];
+    REQUIRE(::pipe(pfd) == 0);
+    pid_t p = ::fork();
+    REQUIRE(p >= 0);
+    if (p == 0) {
+        // stands in for PRISM: the handler main() installs, one tracked child
+        // group (a solver in a process group of its own), then wait for a signal
+        ::close(pfd[0]);
+        prism::detail::install_child_cleanup();
+        pid_t g = ::fork();
+        if (g == 0) {
+            ::setpgid(0, 0);
+            ::execlp("sleep", "sleep", "30", static_cast<char*>(nullptr));
+            ::_exit(127);
+        }
+        ::setpgid(g, g);
+        prism::detail::track_child_group(g);
+        long v = g;
+        if (::write(pfd[1], &v, sizeof v) != static_cast<ssize_t>(sizeof v)) ::_exit(3);
+        for (;;) ::pause();
+    }
+    ::close(pfd[1]);
+    long g = 0;
+    REQUIRE(::read(pfd[0], &g, sizeof g) == static_cast<ssize_t>(sizeof g));
+    ::close(pfd[0]);
+    REQUIRE(g > 1);
+    CHECK(::kill(static_cast<pid_t>(g), 0) == 0);  // running before the signal
+    ::kill(p, SIGTERM);
+    int st = 0;
+    REQUIRE(::waitpid(p, &st, 0) == p);
+    CHECK(WIFSIGNALED(st));
+    CHECK(WTERMSIG(st) == SIGTERM);  // it still dies of the signal
+    CHECK(proc_gone(g));             // and its child group died with it
+}
+#endif
