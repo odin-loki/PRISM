@@ -137,6 +137,13 @@ Finding fuzz_function(const FunctionInfo& fn, const fs::path& src, double budget
         f.extra["oracle"] = "concrete";
         return f;
     };
+    // Inputs already executed. A function without parameters ignores the
+    // (one padding) input byte: every input is the same run (zlib, cJSON and
+    // Catch2 test functions were run up to 256 times each).
+    std::set<std::vector<uint8_t>> ran;  // exact inputs (no hash collisions)
+    auto input_key = [&](const std::vector<uint8_t>& child) {
+        return fn.params.empty() ? std::vector<uint8_t>{} : child;
+    };
     std::deque<std::vector<uint8_t>> queue(corpus.begin(), corpus.end());
     while (!queue.empty()) {
         auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
@@ -146,7 +153,7 @@ Finding fuzz_function(const FunctionInfo& fn, const fs::path& src, double budget
         ++i;
         // The concrete oracle is deterministic: an input already run (a
         // no-parameter function has exactly one) gives the same result again.
-        if (seen.contains(coverage_hash(child.data(), child.size()))) {
+        if (!ran.insert(input_key(child)).second) {
             ++stall;
             continue;
         }
@@ -163,7 +170,7 @@ Finding fuzz_function(const FunctionInfo& fn, const fs::path& src, double budget
         auto child = parent;
         havoc(child.data(), child.size(), ++hseed);
         ++i;
-        if (seen.contains(coverage_hash(child.data(), child.size()))) {
+        if (!ran.insert(input_key(child)).second) {
             ++stall;
             continue;
         }

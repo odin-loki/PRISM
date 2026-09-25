@@ -493,6 +493,9 @@ TEST_CASE("real-world: fuzz runs a no-parameter function's one input once") {
     CHECK(fz[0].status == prism::laws::CLEAN);
     // deterministic oracle, unchanged seeds: the second round would repeat the first
     CHECK(fz[0].extra["rounds"] == "1");
+    // no parameters: the padding input byte is ignored, so one input was run
+    // (zlib/cJSON/Catch2 test functions were run up to 256 times each)
+    CHECK(fz[0].extra["new_cov"] == "1");
 }
 
 TEST_CASE("real-world: a pointer-to-typedef local is unencoded, not ERROR") {
