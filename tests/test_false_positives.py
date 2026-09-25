@@ -177,6 +177,7 @@ class TestRealWorldEvaluation(unittest.TestCase):
         self.assertIn((51, "INT-BOOL-AS-BIT"), hits)  # a == 1 & b == 2
         self.assertIn((62, "CTRL-MISSING-RETURN"), hits)  # #else arm does not return
         self.assertIn((72, "STR-NULL-ARG"), hits)  # CVE-2024-31755 shape
+        self.assertIn((78, "UNINIT-BRANCH"), hits)  # err never assigned
 
     def test_interval_leaves_floating_point_alone(self):
         from prism.interval import run_interval

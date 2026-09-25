@@ -64,7 +64,10 @@ MASKED_SWITCH = re.compile(
     r"switch\s*\(\s*([^)]*?&\s*(?:\([^)]+\)|0x[0-9a-fA-F]+|\d+))\s*\)",
     re.S,
 )
-LOCK_CALL = re.compile(r"\b([A-Za-z_]\w*lock[A-Za-z0-9_]*)\s*\(([^)]*)\)\s*;")
+# `clock()` / `read_block()` are not locks (tinyexpr benchmark.c: clock()
+# "acquired twice without a release").
+LOCK_CALL = re.compile(
+    r"\b(?![cC]lock\w*\s*\(|\w*[bB]lock\w*\s*\()([A-Za-z_]\w*lock[A-Za-z0-9_]*)\s*\(([^)]*)\)\s*;")
 _ALLOC_VAR = (
     r"(?P<var>[A-Za-z_]\w*(?:\s*(?:->|\.)\s*[A-Za-z_]\w*|\s*\[[^\]]*\])*)"
 )
@@ -1968,7 +1971,9 @@ def _bool_as_bit(lines, rel, funcs, out) -> None:
             continue
         start = fn.span[0]
         seen: set[int] = set()
-        for i, ln in enumerate(fn.body.splitlines()):
+        # `case '&': if (s->next++[0] == '&')` (tinyexpr): a char literal is no operator.
+        body = _CHAR_LITERAL.sub(lambda m: " " * len(m.group()), fn.body)
+        for i, ln in enumerate(body.splitlines()):
             if "&" not in ln and "|" not in ln:
                 continue
             if not _has_comparison(ln):
@@ -2718,6 +2723,9 @@ def _uninit_branch(lines, rel, funcs, out) -> None:
                 continue
             prior = "\n".join(chunk[:i])
             if re.search(rf"\b{re.escape(var)}\s*=(?!=)", prior):
+                continue
+            # `te_interp(expr, &err); if (err)`: assigned through its address.
+            if re.search(rf"(?<![&\w])&\s*{re.escape(var)}\b", prior):
                 continue
             key = (var, i)
             if key in seen:

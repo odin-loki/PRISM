@@ -71,3 +71,10 @@ unsigned long set_value_unchecked(struct node *object, const char *valuestring)
     }
     return strlen(valuestring);
 }
+
+int flag_unset(int k) {
+    int err;
+    if (k > 0) k--;
+    if (err) return -1;
+    return k;
+}

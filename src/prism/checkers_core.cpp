@@ -2042,7 +2042,7 @@ void null_branch(const std::vector<std::string>& lines, std::string_view rel,
 
 void lock_balance(const std::vector<std::string>& lines, std::string_view rel,
                   const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
-    static Regex call(R"(\b([A-Za-z_]\w*lock[A-Za-z0-9_]*)\s*\(([^)]*)\)\s*;)");
+    static Regex call(R"(\b(?![cC]lock\w*\s*\(|\w*[bB]lock\w*\s*\()([A-Za-z_]\w*lock[A-Za-z0-9_]*)\s*\(([^)]*)\)\s*;)");
     static Regex unlk(R"((?i)unlock)");
     static Regex ret(R"(^\s*return\b)");
     for (auto& fn : funcs) {
@@ -2084,7 +2084,7 @@ void lock_balance(const std::vector<std::string>& lines, std::string_view rel,
 
 void lock_double_unlock(const std::vector<std::string>& lines, std::string_view rel,
                         const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
-    static Regex call(R"(\b([A-Za-z_]\w*lock[A-Za-z0-9_]*)\s*\(([^)]*)\)\s*;)");
+    static Regex call(R"(\b(?![cC]lock\w*\s*\(|\w*[bB]lock\w*\s*\()([A-Za-z_]\w*lock[A-Za-z0-9_]*)\s*\(([^)]*)\)\s*;)");
     static Regex unlk(R"((?i)unlock)");
     // An unlock inside a block that leaves (exit_blocks) does not reach the
     // code after the block.
@@ -2131,7 +2131,7 @@ void lock_double_unlock(const std::vector<std::string>& lines, std::string_view 
 
 void lock_double_lock(const std::vector<std::string>& lines, std::string_view rel,
                       const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
-    static Regex call(R"(\b([A-Za-z_]\w*lock[A-Za-z0-9_]*)\s*\(([^)]*)\)\s*;)");
+    static Regex call(R"(\b(?![cC]lock\w*\s*\(|\w*[bB]lock\w*\s*\()([A-Za-z_]\w*lock[A-Za-z0-9_]*)\s*\(([^)]*)\)\s*;)");
     static Regex unlk(R"((?i)unlock)");
     for (auto& fn : funcs) {
         std::map<std::pair<std::string, std::string>, std::optional<bool>> held;
@@ -2485,7 +2485,8 @@ void bool_as_bit(const std::vector<std::string>& lines, std::string_view rel,
         int start = fn.span.first;
         std::unordered_set<int> seen;
         int i = 0;
-        for (auto& ln : split_lines(fn.body)) {
+        // `case '&': if (s->next++[0] == '&')` (tinyexpr): a char literal is no operator.
+        for (auto& ln : split_lines(blank_char_literals_full(fn.body))) {
             if (has_comparison(ln) && bitop_on_comparison(ln) && !seen.contains(i)) {
                 seen.insert(i);
                 lint_add(out, rel, fn.name, start + i, "INT-BOOL-AS-BIT",
@@ -2876,6 +2877,8 @@ void uninit_branch(const std::vector<std::string>& lines, std::string_view rel,
             if (!uninit.contains(var)) continue;
             auto prior = join_range(chunk, 0, static_cast<std::size_t>(i));
             if (Regex("\\b" + re_escape(var) + "\\s*=(?!=)").search(prior)) continue;
+            // `te_interp(expr, &err); if (err)`: assigned through its address.
+            if (Regex("(?<![&\\w])&\\s*" + re_escape(var) + "\\b").search(prior)) continue;
             auto key = std::pair{var, i};
             if (seen.contains(key)) continue;
             seen.insert(key);

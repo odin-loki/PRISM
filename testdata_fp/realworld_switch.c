@@ -62,3 +62,36 @@ int last_arm_leaves(int k) {
     }
     return r;
 }
+
+/* tinyexpr: clock() is no lock, a char-literal '&' is no operator, and a
+ * local assigned through its address is not read uninitialised. */
+long clock(void);
+double te_interp(const char *expr, int *error);
+
+long timed(void) {
+    long start = clock();
+    long stop = clock();
+    return stop - start;
+}
+
+int infix(const char *next) {
+    int t = 0;
+    switch (next[0]) {
+    case '&':
+        if (next[1] == '&') t = 1;
+        break;
+    case '|':
+        if (next[1] == '|') t = 2;
+        break;
+    default:
+        break;
+    }
+    return t;
+}
+
+int checked(const char *expr) {
+    int err;
+    double r = te_interp(expr, &err);
+    if (err) return -1;
+    return (int)r;
+}
