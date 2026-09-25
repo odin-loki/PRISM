@@ -37,7 +37,9 @@ extend-exclude = [
 ]
 
 [tool.ruff.lint]
-# Default rule set (E4, E7, E9, F). Do not loosen it.
+# The historical ruff default (E4, E7, E9, F). Newer ruff releases enable
+# every rule unless this is set. Do not loosen it.
+select = ["E4", "E7", "E9", "F"]
 
 [tool.mypy]
 python_version = "3.11"
