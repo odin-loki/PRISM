@@ -11,6 +11,7 @@ from dataclasses import replace
 from pathlib import Path
 import os
 import re
+import time
 
 from prism import laws
 from prism.afl import afl_available, run_afl_fuzz
@@ -170,7 +171,10 @@ def run_fuse(
     root = Path(root)
     out: list[Finding] = []
     rounds = 2
-    slice_budget = max(0.05, float(budget) / rounds)
+    # A zero budget is already spent: do not lift it to the 0.05 s floor.
+    # Goal BMC runs only while that budget lasts; a positive budget still
+    # gets a floor so a short round does some concrete fuzzing.
+    slice_budget = max(0.05, float(budget) / rounds) if budget > 0 else 0.0
     slice_iters = max(1, int(iters) // rounds)
     for fn in functions:
         out.append(_fuse_one(
@@ -344,6 +348,7 @@ def _fuse_one(
 
     for r in range(rounds):
         extra["rounds"] = r + 1
+        round_t0 = time.perf_counter()
         try:
             last = fuzz_function(fn, src, budget=budget, iters=iters, seeds=seeds or None)
         except Exception as ex:
@@ -466,8 +471,15 @@ def _fuse_one(
 
         if not HAS_Z3:
             continue
+        goals_skipped = 0
         for lab, cond in labeled:
             if lab in covered_goals:
+                continue
+            # The goal BMC runs only while the round's fuzz budget lasts: a
+            # goal is a seed source, never a check (a fuzzer CLEAN is not a
+            # proof, Law 3).
+            if time.perf_counter() - round_t0 >= budget:
+                goals_skipped += 1
                 continue
             # FuSeBMC esbmc-wrapper: --error-label GOAL_N as a BMC assumption.
             g = bmc_toward_goal(fn, cond, unwind=8)
@@ -483,6 +495,10 @@ def _fuse_one(
             elif g.status in {laws.PROVED, laws.PROVED_UNBOUNDED, laws.BOUNDED}:
                 # BMC closed that branch for the encoded UB; not a fuse proof.
                 covered_goals.add(lab)
+        if goals_skipped:
+            extra["bmc_goals_skipped"] = (
+                f"{goals_skipped} (fuzz budget spent: no seed from them)"
+            )
 
     extra["covered_goals"] = sorted(covered_goals)
     extra["seeds"] = len(seeds)

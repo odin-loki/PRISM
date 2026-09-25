@@ -16,6 +16,7 @@ from prism.ai import (
     pick_best_prompt,
     score_prompt_seeds,
 )
+from prism.bmc import HAS_Z3
 from prism.cparse import extract_functions
 from prism.fuse import branch_goals, numbered_goals, run_fuse
 from prism.models import Finding
@@ -64,6 +65,27 @@ class TestFuseGoals(unittest.TestCase):
         self.assertEqual(len(ids), len(goals))
         self.assertEqual(gmap["GOAL_1"], goals[0])
         self.assertIn("not a proof", recs[0].message)
+
+    def test_zero_budget_skips_goal_bmc(self):
+        if not HAS_Z3:
+            self.skipTest("z3 not installed")
+        f, p = fn("fuse_goals")
+        clean = Finding(
+            stage="fuzz", status=laws.CLEAN, file=f.file, function=f.name,
+            line=f.line, cls="", message="no crash (not a proof)",
+            strength=laws.STRENGTH_FINDS,
+            extra={"new_cov": 0, "iters": 1, "corpus": 1},
+        )
+
+        def boom(*_a, **_k):
+            raise AssertionError("goal BMC ran after the fuzz budget was spent")
+
+        with patch("prism.fuse.fuzz_function", return_value=clean):
+            with patch("prism.fuse.bmc_toward_goal", side_effect=boom):
+                recs = run_fuse([f], [], p.parent, budget=0.0, iters=4, engine=None)
+        skipped = recs[0].extra.get("bmc_goals_skipped", "")
+        self.assertIn("fuzz budget spent", skipped)
+        self.assertNotEqual(recs[0].status, laws.PROVED)
 
     def test_saturate_else_polarity(self):
         f, _ = fn("saturate")

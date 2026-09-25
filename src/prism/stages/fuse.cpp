@@ -1323,7 +1323,10 @@ std::vector<Finding> run_fuse(const std::vector<FunctionInfo>& functions, const 
                               const fs::path& src_root, double budget, int iters, bool llm) {
     std::vector<Finding> out;
     int rounds = 2;
-    double slice_budget = std::max(0.05, budget / rounds);
+    // A zero budget is already spent: do not lift it to the 0.05 s floor.
+    // Goal BMC (below) runs only while that budget lasts, and a positive
+    // budget still gets a floor so a short round does some concrete fuzzing.
+    double slice_budget = budget > 0.0 ? std::max(0.05, budget / rounds) : 0.0;
     int slice_iters = std::max(1, iters / rounds);
     std::optional<LlamaEngine> eng;
     if (llm) eng.emplace(Config{});
