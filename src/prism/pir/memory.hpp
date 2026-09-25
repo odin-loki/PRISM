@@ -135,8 +135,10 @@ public:
         uint64_t val;
     };
     using Vs = std::vector<VsOpt>;
-    static constexpr std::size_t kVsMax = 16;
-    const Vs* vs_of(const z3::expr& e) const;
+    static constexpr std::size_t kVsMax = 32;     // options of one term
+    static constexpr std::size_t kVsCombos = 16;  // combinations evaluated for one operation
+    const Vs* vs_of(const z3::expr& e) const;     // equal values merged
+    const Vs* vs_raw(const z3::expr& e) const;    // options kept apart (see memory.cpp)
 
 private:
     struct Obj {
@@ -176,9 +178,12 @@ private:
     std::map<std::tuple<unsigned, std::size_t, bool>, z3::expr> memo_;
     std::unordered_map<unsigned, uint64_t> prov_;
     std::vector<z3::expr> keep_;
-    mutable std::unordered_map<unsigned, std::optional<Vs>> vs_memo_;
+    mutable std::unordered_map<unsigned, std::optional<Vs>> vs_memo_, vs_merged_;
+    std::optional<Vs> copy_vs(const Vs* v) const;
     mutable std::vector<z3::expr> vs_keep_;
     std::optional<z3::expr> word_at(uint64_t a, unsigned n, std::size_t upto);
+    std::optional<z3::expr> word_split(uint64_t a, unsigned n, std::size_t upto);
+    std::map<std::tuple<uint64_t, unsigned, std::size_t>, std::optional<z3::expr>> word_memo_;
     // the objects a pointer may point into, when its value set says so
     std::optional<std::vector<uint64_t>> objs_of(const z3::expr& p) const;
 

@@ -1221,6 +1221,8 @@ struct VcBook {
     int cache_hits = 0;
 
     const solver::SolveResult& add(std::string label, solver::SolveResult r) {
+        if (std::getenv("PRISM_PIR_TRACE"))
+            std::fprintf(stderr, "pirvc %s -> %s %s %.2fs\n", label.c_str(), solver::kind_name(r.kind).data(), r.winner.c_str(), r.wall_s);
         if (!r.winner.empty()) ++winners[r.winner + (r.cache_hit ? " (cache)" : "")];
         if (r.cache_hit) ++cache_hits;
         done.push_back(VcAnswer{std::move(label), std::move(r)});

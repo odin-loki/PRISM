@@ -992,7 +992,12 @@ HoudiniOut Houdini::run() {
                 z3::params p(c);
                 p.set("timeout", static_cast<unsigned>(std::max(1.0, std::min(t, left())) * 1000));
                 s.set(p);
+                const auto tq = std::chrono::steady_clock::now();
                 auto r = s.check(as);
+                if (std::getenv("PRISM_HOUDINI_TRACE"))
+                    std::fprintf(stderr, "houdini %s q%d L%d goals=%zu depth=%d -> %s %.2fs (left %.1f)\n", fn_.name.c_str(), qid, L,
+                                 live.size(), depth, r == z3::unsat ? "unsat" : r == z3::sat ? "sat" : "unknown",
+                                 std::chrono::duration<double>(std::chrono::steady_clock::now() - tq).count(), left());
                 if (r == z3::unsat) return;
                 if (r == z3::sat) {
                     auto m = s.get_model();
@@ -1086,7 +1091,12 @@ HoudiniOut Houdini::run() {
             z3::expr_vector as(c);
             for (auto x : all_sel) as.push_back(x);
             as.push_back(act);
+            const auto tq = std::chrono::steady_clock::now();
             auto r = s.check(as);
+            if (std::getenv("PRISM_HOUDINI_TRACE"))
+                std::fprintf(stderr, "houdini %s final[%zu,%zu) split=%d -> %s %.2fs\n", fn_.name.c_str(), lo, hi, split ? 1 : 0,
+                             r == z3::unsat ? "unsat" : r == z3::sat ? "sat" : "unknown",
+                             std::chrono::duration<double>(std::chrono::steady_clock::now() - tq).count());
             if (r == z3::unsat) return 0;
             if (r == z3::sat) {
                 fail = "a property is not implied by the inductive invariants found";

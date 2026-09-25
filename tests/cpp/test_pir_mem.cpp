@@ -12,6 +12,7 @@
 
 #include "../../src/prism/pir/translate_mem.hpp"
 
+#include <cstdlib>
 #include <filesystem>
 #include <unistd.h>
 #include <fstream>
@@ -902,4 +903,112 @@ int inv_indirect_write_bad(unsigned long n) {
     CHECK(got["inv_copy_off_by_one_bad"].cls == "MEM-OOB-WRITE");
     CHECK(got["inv_indirect_write_bad"].status == prism::laws::FAILED);
     CHECK(got["inv_indirect_write_bad"].cls == "MEM-OOB-READ");
+}
+
+TEST_CASE("pir: Houdini outcome cache and run budget (skips without clang/opt)") {
+    auto fe = pp::find_frontend(prism::default_config());
+    if (!fe.clang || !fe.opt) return;
+    auto dir = std::filesystem::temp_directory_path() / "prism_pir_houdini_cache";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    std::ofstream(dir / "l.c") << R"(int loop_long_inv(int n) {
+    int s = 0;
+    for (int i = 0; i < 100; i++)
+        s += 1;
+    return s + (n & 1);
+}
+int loop_long_bounded(int n) {
+    int s = 0;
+    for (int i = 0; i < 100; i++)
+        s += i;
+    return s + (n & 1);
+}
+)";
+    auto run = [&](const std::string& cache) {
+        auto cfg = prism::default_config();
+        cfg.root = dir;
+        cfg.jobs = 1;
+        cfg.solver_cache = dir / cache;
+        std::map<std::string, prism::Finding> got;
+        for (auto& f : pp::run_pir({dir / "l.c"}, cfg))
+            if (f.function) got[*f.function] = f;
+        return got;
+    };
+    // first run: both outcomes are stored (the no-proof one was decided, not timed out)
+    auto a = run("cache");
+    CHECK(a["loop_long_inv"].status == prism::laws::PROVED_UNBOUNDED);
+    CHECK(a["loop_long_inv"].extra["houdini_cache"] == "stored");
+    CHECK(a["loop_long_bounded"].status == prism::laws::BOUNDED);
+    CHECK(a["loop_long_bounded"].extra["houdini_cache"] == "stored");
+    // second run: the proof is re-checked from its survivors, the no-proof is taken
+    auto b = run("cache");
+    CHECK(b["loop_long_inv"].status == prism::laws::PROVED_UNBOUNDED);
+    CHECK(b["loop_long_inv"].extra["houdini_cache"] == "hit (proof re-checked)");
+    CHECK(b["loop_long_inv"].extra["pir_invariants"] == a["loop_long_inv"].extra["pir_invariants"]);
+    CHECK(b["loop_long_bounded"].status == prism::laws::BOUNDED);
+    CHECK(b["loop_long_bounded"].extra["houdini_cache"] == "hit (no proof)");
+    // a spent run budget: no proof, and a function that finds it spent says so
+    ::setenv("PRISM_HOUDINI_BUDGET", "0.000001", 1);
+    auto c = run("cache2");
+    ::unsetenv("PRISM_HOUDINI_BUDGET");
+    CHECK(c["loop_long_inv"].status == prism::laws::BOUNDED);
+    CHECK(c["loop_long_bounded"].status == prism::laws::BOUNDED);
+    int spent = 0;
+    for (auto* f : {&c["loop_long_inv"], &c["loop_long_bounded"]})
+        if (f->extra["invariants_note"].find("Houdini budget") != std::string::npos) ++spent;
+    CHECK(spent >= 1);
+}
+
+TEST_CASE("pir: value sets: map erase at an input-dependent position, then a traversal (skips without clang++/opt)") {
+    auto fe = pp::find_frontend(prism::default_config());
+    if (!fe.clang || !fe.clangxx || !fe.opt) return;
+    auto cfg = prism::default_config();
+    auto dir = std::filesystem::temp_directory_path() / "prism_pir_valueset_map";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    // Before value sets this did not finish within 900 s (Bv memory): every
+    // node pointer loaded in the destructor's traversal was a symbolic address.
+    std::ofstream(dir / "m.cpp") << R"(#include <cassert>
+#include <map>
+int map_cond_erase_uaf_bad(int k) {
+    std::map<int, int> m;
+    m[1] = 10;
+    m[2] = 20;
+    auto it = m.find(1);
+    m.erase(k);
+    return it->second;
+}
+int map_cond_erase_sum_ok(int k) {
+    std::map<int, int> m;
+    m[1] = 10;
+    m[2] = 20;
+    m.erase(k);
+    assert(m.size() == ((k == 1 || k == 2) ? 1u : 2u));
+    int s = 0;
+    for (auto& p : m) s += p.second;
+    assert(s == 30 - (k == 1 ? 10 : 0) - (k == 2 ? 20 : 0));
+    return s;
+}
+int map_cond_erase_sum_bad(int k) {
+    std::map<int, int> m;
+    m[1] = 10;
+    m[2] = 20;
+    m.erase(k);
+    int s = 0;
+    for (auto& p : m) s += p.second;
+    assert(s != 20);
+    return s;
+}
+)";
+    cfg.root = dir;
+    cfg.jobs = 1;
+    cfg.solver_cache = dir / "cache";
+    std::map<std::string, prism::Finding> got;
+    for (auto& f : pp::run_pir({dir / "m.cpp"}, cfg))
+        if (f.function) got[*f.function] = f;
+    CHECK(got["map_cond_erase_sum_ok"].status == prism::laws::PROVED);
+    CHECK(got["map_cond_erase_uaf_bad"].status == prism::laws::FAILED);
+    CHECK(got["map_cond_erase_uaf_bad"].cls == "MEM-UAF");
+    CHECK(got["map_cond_erase_sum_bad"].status == prism::laws::FAILED);
+    CHECK(got["map_cond_erase_sum_bad"].cls == "FUNC-CONTRACT");
 }
