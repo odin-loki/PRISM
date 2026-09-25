@@ -2101,7 +2101,7 @@ struct Walker {
             auto t = std::string(cx.text(b, e));
             std::string low;
             for (char ch : t) low += static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-            static const std::regex ann(R"(fall[ \t-]*thr(ough|u)|no\s*break)");
+            static const std::regex ann(R"(falls?[ \t-]*thr(ough|u)|no\s*break)");
             if (std::regex_search(low, ann)) continue;
             // Reported at the arm's first statement, as the regex lint does
             // (one row per arm, on the line after its label).

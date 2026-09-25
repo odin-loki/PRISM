@@ -55,6 +55,10 @@ struct ExecResult {
 ExecResult execute(const FunctionInfo& fn, const std::map<std::string, int>& args,
                    std::optional<std::map<std::string, int>> enums = std::nullopt);
 
+// float/double in the signature or body: the concrete interpreter models
+// integers only, so it must not run (or replay) such a function.
+bool float_unencoded(const FunctionInfo& fn);
+
 std::optional<bool> eval_cond(const FunctionInfo& fn, const Args& args, const std::string& cond);
 
 }  // namespace prism::stages_detail

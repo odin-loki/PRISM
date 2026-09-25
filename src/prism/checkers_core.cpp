@@ -1007,7 +1007,8 @@ bool arm_falls_through(std::string_view arm) {
     bool has_stmt = false;
     for (auto& ln : split_lines(arm)) {
         auto s = strip(ln);
-        if (s.empty()) continue;
+        // A preprocessor line (`#endif` between stacked labels) is not a statement.
+        if (s.empty() || s.starts_with("#")) continue;
         if (label.search(s)) continue;
         has_stmt = true;
         if (stop.search(s)) return false;
@@ -1898,6 +1899,46 @@ void masked_switch(const std::vector<std::string>& lines, std::string_view rel,
     }
 }
 
+// The then-branch of the `if (...)` whose condition ends at
+// lines[i][cond_end], and the index of the first line after it (Python
+// engine _then_branch). `if (!n) return;` is a one-line branch (the next
+// line is not in it); a braced branch ends at its own `}`, so
+// `} else { n->x }` is not in it.
+std::pair<std::string, int> then_branch(const std::vector<std::string>& lines, int i, int cond_end) {
+    auto n = static_cast<int>(lines.size());
+    auto blank = [](const std::string& s) { return s.find_first_not_of(" \t\r\f\v") == std::string::npos; };
+    auto starts_brace = [](const std::string& s) {
+        auto k = s.find_first_not_of(" \t\r\f\v");
+        return k != std::string::npos && s[k] == '{';
+    };
+    const auto& cur = lines[static_cast<std::size_t>(i)];
+    std::string rest = cur.substr(std::min(cur.size(), static_cast<std::size_t>(std::max(0, cond_end))));
+    if (!blank(rest) && !starts_brace(rest)) return {rest, i + 1};
+    int k = i;
+    while (blank(rest) && k + 1 < n) {
+        ++k;
+        rest = lines[static_cast<std::size_t>(k)];
+    }
+    if (!starts_brace(rest)) return {k > i ? rest : std::string(), k + 1};
+    int depth = 0;
+    std::string buf;
+    int line_k = k;
+    std::string text = rest;
+    for (;;) {
+        for (char c : text) {
+            if (c == '{') {
+                if (++depth == 1) continue;
+            } else if (c == '}') {
+                if (--depth == 0) return {buf, line_k + 1};
+            }
+            buf.push_back(c);
+        }
+        buf.push_back('\n');
+        if (++line_k >= n) return {buf, line_k};
+        text = lines[static_cast<std::size_t>(line_k)];
+    }
+}
+
 void null_branch(const std::vector<std::string>& lines, std::string_view rel,
                  const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     static Regex null_test(
@@ -1911,31 +1952,7 @@ void null_branch(const std::vector<std::string>& lines, std::string_view rel,
         }
         auto p = m->named("p1");
         if (p.empty()) p = m->named("p2");
-        std::vector<std::string> block;
-        int j = i + 1;
-        auto cur = lines[static_cast<std::size_t>(i)];
-        auto nxt = j < static_cast<int>(lines.size()) ? lines[static_cast<std::size_t>(j)] : std::string();
-        if (j < static_cast<int>(lines.size()) && (cur + nxt).find('{') != std::string::npos) {
-            int depth = static_cast<int>(std::count(cur.begin(), cur.end(), '{') -
-                                         std::count(cur.begin(), cur.end(), '}'));
-            if (depth <= 0 && j < static_cast<int>(lines.size())) {
-                depth += static_cast<int>(std::count(nxt.begin(), nxt.end(), '{') -
-                                          std::count(nxt.begin(), nxt.end(), '}'));
-                block.push_back(nxt);
-                ++j;
-            }
-            while (j < static_cast<int>(lines.size()) && depth > 0) {
-                auto& ln = lines[static_cast<std::size_t>(j)];
-                depth += static_cast<int>(std::count(ln.begin(), ln.end(), '{') -
-                                          std::count(ln.begin(), ln.end(), '}'));
-                block.push_back(ln);
-                ++j;
-            }
-        } else if (j < static_cast<int>(lines.size())) {
-            block.push_back(lines[static_cast<std::size_t>(j)]);
-            ++j;
-        }
-        auto body = join_all(block);
+        auto [body, j] = then_branch(lines, i, m->spans[0].second);
         if (Regex("\\b" + re_escape(p) + "\\s*=").search(body)) {
             i = j;
             continue;
@@ -2642,21 +2659,32 @@ void missing_return(const std::vector<std::string>& lines, std::string_view rel,
     }
 }
 
-void fallthrough(const std::vector<std::string>& lines, std::string_view rel,
-                 const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
+void fallthrough(const std::vector<std::string>& lines, const std::vector<std::string>& orig_lines,
+                 std::string_view rel, const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     static Regex case_label(R"(\b(?:case\b[^:]*:|default\s*:))");
+    // GCC -Wimplicit-fallthrough comment forms (`/* Falls through. */`,
+    // `// FALLTHRU`, `/* no break */`): the author annotated the intent.
+    static Regex comment_annot(R"((?i)(?://|/\*).*?(?:\bfalls?[ \t-]*thr(?:ough|u)|\bno\s*break))");
     for (auto& fn : funcs) {
         int start = fn.span.first;
         std::unordered_set<int> seen;
-        for (auto& [body, line_off] : switch_bodies(fn.body)) {
+        // `case '}':` / `case ':':` - a char literal is neither a brace nor a label end.
+        for (auto& [body, line_off] : switch_bodies(blank_char_literals_full(fn.body))) {
             auto cases = case_label.finditer(body);
-            for (std::size_t idx = 0; idx < cases.size(); ++idx) {
-                int arm_end = idx + 1 < cases.size() ? cases[idx + 1].spans[0].first
-                                                     : static_cast<int>(body.size());
+            // The last arm runs out of the switch, not into a label.
+            for (std::size_t idx = 0; idx + 1 < cases.size(); ++idx) {
+                int arm_end = cases[idx + 1].spans[0].first;
                 auto arm = body.substr(static_cast<std::size_t>(cases[idx].spans[0].second),
                                        static_cast<std::size_t>(std::max(0, arm_end - cases[idx].spans[0].second)));
                 if (!arm_falls_through(arm)) continue;
                 int rel_off = count_nl(body.substr(0, static_cast<std::size_t>(std::max(0, cases[idx].spans[0].first))));
+                int next_off = count_nl(body.substr(0, static_cast<std::size_t>(std::max(0, arm_end))));
+                bool annotated = false;
+                for (int ln = start + line_off + rel_off; ln <= std::max(start + line_off + rel_off, start + line_off + next_off - 1); ++ln)
+                    if (ln > 0 && ln <= static_cast<int>(orig_lines.size()) &&
+                        comment_annot.search(orig_lines[static_cast<std::size_t>(ln - 1)]))
+                        annotated = true;
+                if (annotated) continue;
                 if (seen.contains(rel_off)) continue;
                 seen.insert(rel_off);
                 lint_add(out, rel, fn.name, start + line_off + rel_off + 1, "CTRL-FALLTHROUGH",
@@ -3254,6 +3282,57 @@ void float_ub(const std::vector<std::string>& lines, std::string_view rel,
     }
 }
 
+// `buf[BUFSIZ]`, `buf[MAX_LEN * 2 + 1]`, `buf[sizeof(struct s)]`: a bound made
+// of literals, sizeof and ALL_CAPS names (the macro / enum-constant
+// convention) that the function never assigns or takes as a parameter is a
+// constant expression, not a VLA. Any lowercase name keeps the finding.
+bool constant_bound(std::string_view size, const FunctionInfo& fn,
+                    const std::unordered_set<std::string>& params) {
+    std::string s(size);
+    // Drop sizeof operands: `sizeof(x)` / `sizeof x` is constant for non-VLA x.
+    for (auto k = s.find("sizeof"); k != std::string::npos; k = s.find("sizeof", k)) {
+        std::size_t e = k + 6;
+        while (e < s.size() && std::isspace(static_cast<unsigned char>(s[e]))) ++e;
+        if (e < s.size() && s[e] == '(') {
+            int depth = 0;
+            for (; e < s.size(); ++e) {
+                if (s[e] == '(') ++depth;
+                else if (s[e] == ')' && --depth == 0) break;
+            }
+            if (e >= s.size()) return false;
+            ++e;
+        } else {
+            while (e < s.size() && (std::isalnum(static_cast<unsigned char>(s[e])) || s[e] == '_')) ++e;
+        }
+        s.replace(k, e - k, std::string(e - k, ' '));
+    }
+    for (std::size_t i = 0; i < s.size();) {
+        char c = s[i];
+        if (std::isdigit(static_cast<unsigned char>(c))) {
+            while (i < s.size() && (std::isalnum(static_cast<unsigned char>(s[i])) || s[i] == '.')) ++i;
+            continue;
+        }
+        if (std::isalpha(static_cast<unsigned char>(c)) || c == '_') {
+            std::size_t j = i;
+            bool caps = true, letter = false;
+            while (j < s.size() && (std::isalnum(static_cast<unsigned char>(s[j])) || s[j] == '_')) {
+                if (std::islower(static_cast<unsigned char>(s[j]))) caps = false;
+                if (std::isalpha(static_cast<unsigned char>(s[j]))) letter = true;
+                ++j;
+            }
+            std::string name = s.substr(i, j - i);
+            if (!caps || !letter || params.contains(name)) return false;
+            Regex assigned(R"(\b)" + name + R"(\s*(?:=[^=]|\+\+|--|[-+*/%&|^]=))");
+            if (assigned.search(fn.body)) return false;
+            i = j;
+            continue;
+        }
+        if (std::string_view("+-*/%()<> \t\n|&^~").find(c) == std::string_view::npos) return false;
+        ++i;
+    }
+    return true;
+}
+
 void vla_size(const std::vector<std::string>& lines, std::string_view rel,
               const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     static Regex re(
@@ -3270,7 +3349,7 @@ void vla_size(const std::vector<std::string>& lines, std::string_view rel,
             auto name = m.named("name");
             if (params.contains(name) || kKw.contains(name)) continue;
             auto size = strip(m.named("size"));
-            if (parse_int_literal(size)) continue;
+            if (parse_int_literal(size) || constant_bound(size, fn, params)) continue;
             int rel_off = count_nl(fn.body.substr(0, static_cast<std::size_t>(std::max(0, m.spans[0].first))));
             auto key = std::pair{name, rel_off};
             if (seen.contains(key)) continue;
@@ -4060,7 +4139,7 @@ void checkers_core(const std::vector<std::string>& lines, std::string_view rel,
     unbounded_copy(lines, rel, funcs, out);
     str_sprintf(lines, rel, funcs, out);
     missing_return(lines, rel, funcs, out);
-    fallthrough(lines, rel, funcs, out);
+    fallthrough(lines, orig_lines, rel, funcs, out);
     dead_guard(lines, rel, funcs, out);
     empty_infinite(lines, rel, funcs, out);
     uninit_return(lines, rel, funcs, out);

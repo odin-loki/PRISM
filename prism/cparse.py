@@ -89,7 +89,9 @@ FUNC_HEAD = re.compile(
     r"(?P<mods>(?:(?:static|inline|extern|constexpr|consteval|virtual|"
     r"explicit|friend|unsigned|signed|const|volatile|restrict|"
     r"_Noreturn|__inline|__inline__|__forceinline|thread_local|"
-    r"__extension__)\s+|" + _PRE_ATTR + r"[ \t]*)*)"
+    r"__extension__)\s+|" + _PRE_ATTR + r"[ \t]*"
+    # A leading export macro before a lowercase type: `JSMN_API int f(`.
+    r"|[A-Z_][A-Z0-9_]*[ \t]+(?=[a-z]))*)"
     r"(?P<ret>(?:(?:struct|enum|union|class|typename)\s+)?"
     r"(?:long\s+long|long\s+(?:int|double)\b|short\s+int\b"
     r"|[A-Za-z_]\w*(?:\s*" + _TMPL + r")?"
@@ -470,7 +472,7 @@ def _parse_text(
         stripped = strip_comments_keep_lines(text)
     bodies = strip_comments_keep_lines(text, blank_strings=False)
     # Character literals blanked too: `'}'` must not close a body.
-    code = _blank_char_literals(stripped)
+    code = _unwrap_export_macros(_blank_char_literals(stripped))
     found: dict[int, _Found] = {}  # keyed by the body's `{`
     newlines = [m.start() for m in _NEWLINE.finditer(code)]
 
@@ -593,6 +595,24 @@ _NEWLINE = re.compile(r"\n")
 _CHAR_LITERAL = re.compile(r"'(?:\\.|[^'\\\n])*'")
 
 
+# `CJSON_PUBLIC(cJSON *) cJSON_Parse(const char *v) {`: an ALL_CAPS
+# function-like export macro wrapping the return type (cJSON, libpng,
+# zlib-style APIs). Discovery reads it as `cJSON * cJSON_Parse(...)`; the
+# macro name and its parentheses become spaces, so offsets and lines hold.
+_EXPORT_MACRO = re.compile(
+    r"(?m)^([ \t]*(?:(?:static|extern|inline)[ \t]+)*)"
+    r"([A-Z_][A-Z0-9_]*[ \t]*\()([^();{}\n]*)\)"
+    r"(?=[ \t]*\**[ \t]*[A-Za-z_]\w*[ \t]*\()"
+)
+
+
+def _unwrap_export_macros(text: str) -> str:
+    if "(" not in text:
+        return text
+    return _EXPORT_MACRO.sub(
+        lambda m: m.group(1) + " " * len(m.group(2)) + m.group(3) + " ", text)
+
+
 def _blank_char_literals(text: str) -> str:
     """Character literal interiors as spaces, quotes kept (`'}'` -> `' '`)."""
     if "'" not in text:
@@ -706,7 +726,21 @@ def _scan_definition(
                 head, _split_params(m.group("params")),
                 _collapse(m.group("ret") or ""), False)
             return found.get(brace)
+    # `TEST(Suite, Name) {` (Unity fixture, GoogleTest) and other ALL_CAPS
+    # macros that define a function: the body is code, checked by the
+    # lints; OTHER, so no stage models it as a plain C function.
+    m = _MACRO_DEF.match(head)
+    if m and not in_class:
+        name = "_".join(
+            [m.group("mac")] + [a for a in re.split(r"[^A-Za-z0-9_]+", m.group("args")) if a])
+        add(start, brace, name, "OTHER", head, [], "void", False)
+        return found.get(brace)
     return None
+
+
+_MACRO_DEF = re.compile(r"\s*(?P<mac>[A-Z_][A-Z0-9_]*)\s*\((?P<args>[^()]*)\)\s*\Z")
+
+
 def iter_sources(root: Path) -> list[Path]:
     files: list[Path] = []
     if root.is_file():

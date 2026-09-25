@@ -74,7 +74,9 @@ const std::string FUNC_HEAD_PAT =
     R"((?P<mods>(?:(?:static|inline|extern|constexpr|consteval|virtual|)"
     R"(explicit|friend|unsigned|signed|const|volatile|restrict|)"
     R"(_Noreturn|__inline|__inline__|__forceinline|thread_local|)"
-    R"(__extension__)\s+|)" + PRE_ATTR + R"([ \t]*)*))"
+    R"(__extension__)\s+|)" + PRE_ATTR + R"([ \t]*)"
+    // A leading export macro before a lowercase type: `JSMN_API int f(`.
+    R"(|[A-Z_][A-Z0-9_]*[ \t]+(?=[a-z]))*))"
     R"((?P<ret>(?:(?:struct|enum|union|class|typename)\s+)?)"
     R"((?:long\s+long|long\s+(?:int|double)\b|short\s+int\b)"
     R"(|[A-Za-z_]\w*(?:\s*)" + TMPL + R"()?)"
@@ -498,6 +500,24 @@ struct Parser {
                 return add(start, brace, qual.empty() ? name : qual + "::" + name, "OTHER", head,
                            split_params(m->named("params")), collapse_ws(m->named("ret")), false);
             }
+            return nullptr;
+        }
+        // `TEST(Suite, Name) {` (Unity fixture, GoogleTest) and other ALL_CAPS
+        // macros that define a function: the body is code, checked by the
+        // lints; OTHER, so no stage models it as a plain C function.
+        static Regex macro_def(R"(\s*(?P<mac>[A-Z_][A-Z0-9_]*)\s*\((?P<args>[^()]*)\)\s*\Z)");
+        if (auto m = match_at_start(macro_def, head)) {
+            std::string name = m->named("mac"), word;
+            auto args = m->named("args") + " ";
+            for (char c : args) {
+                if (std::isalnum(static_cast<unsigned char>(c)) || c == '_') {
+                    word.push_back(c);
+                } else if (!word.empty()) {
+                    name += "_" + word;
+                    word.clear();
+                }
+            }
+            return add(start, brace, name, "OTHER", head, {}, "void", false);
         }
         return nullptr;
     }
@@ -590,11 +610,30 @@ struct Parser {
     }
 };
 
+// `CJSON_PUBLIC(cJSON *) cJSON_Parse(const char *v) {`: an ALL_CAPS
+// function-like export macro wrapping the return type (cJSON, libpng,
+// zlib-style APIs). Discovery reads it as `cJSON * cJSON_Parse(...)`; the
+// macro name and its parentheses become spaces, so offsets and lines hold.
+std::string unwrap_export_macros(std::string text) {
+    static Regex re(
+        R"(^([ \t]*(?:(?:static|extern|inline)[ \t]+)*)([A-Z_][A-Z0-9_]*[ \t]*\()([^();{}\n]*)\))"
+        R"((?=[ \t]*\**[ \t]*[A-Za-z_]\w*[ \t]*\())",
+        true);
+    if (text.find('(') == std::string::npos) return text;
+    for (auto& m : re.finditer(text)) {
+        auto [a, b] = m.spans[2];
+        for (int k = a; k < b; ++k) text[static_cast<std::size_t>(k)] = ' ';
+        // the closing `)` right after the wrapped type
+        text[static_cast<std::size_t>(m.spans[0].second - 1)] = ' ';
+    }
+    return text;
+}
+
 std::pair<std::vector<FunctionInfo>, std::vector<std::pair<int, std::string>>> parse_text(
     std::string_view text, const std::string& rel) {
     Parser p;
     p.rel = rel;
-    p.code = blank_char_literals(strip_comments_keep_lines(text, true));
+    p.code = unwrap_export_macros(blank_char_literals(strip_comments_keep_lines(text, true)));
     p.bodies = strip_comments_keep_lines(text, false);
     for (std::size_t i = 0; i < p.code.size(); ++i)
         if (p.code[i] == '\n') p.newlines.push_back(static_cast<int>(i));

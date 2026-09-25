@@ -128,12 +128,44 @@ def _sizeof_interval(inner: list[str]) -> int:
     return WIDTH // 8
 
 
+_FLOAT_TYPE = re.compile(r"\b(?:float|double|_Float\d+|__float128)\b")
+_FLOAT_DECL = re.compile(r"\b(?:float|double|_Float\d+|__float128)\b([^;(){}]*);")
+_DECL_NAME = re.compile(r"^\s*\**\s*([A-Za-z_]\w*)")
+
+
+def _float_locals(body: str) -> set[str]:
+    """`double a = 1, *b, c[4];`: the first identifier of each comma segment."""
+    out: set[str] = set()
+    for m in _FLOAT_DECL.finditer(body):
+        depth = 0
+        seg = ""
+        for c in m.group(1) + ",":
+            if c in "[(":
+                depth += 1
+            elif c in "])":
+                depth -= 1
+            if c == "," and depth == 0:
+                nm = _DECL_NAME.search(seg)
+                if nm:
+                    out.add(nm.group(1))
+                seg = ""
+            else:
+                seg += c
+    return out
+
+
 class _Engine:
     def __init__(self, params: list[tuple[str, str]]) -> None:
         self.st: dict[str, R] = {}
         self.unsigned: set[str] = set()
+        # A float/double parameter or local is outside the integer domain:
+        # an expression that reads one is unencoded, never an overflow alarm.
+        self.floats: set[str] = set()
         for typ, name in params:
             if not name:
+                continue
+            if _FLOAT_TYPE.search(typ):
+                self.floats.add(name)
                 continue
             u = _type_is_unsigned(typ)
             if u:
@@ -142,6 +174,8 @@ class _Engine:
         self.live = True
 
     def get(self, name: str) -> R:
+        if name in self.floats:
+            raise ParseFail("floating-point unencoded")
         cur = self.st.get(name, TOP)
         if name in self.unsigned:
             return R(cur.lo, cur.hi, True)
@@ -157,6 +191,7 @@ def _fork(e: _Engine) -> _Engine:
     n = _Engine([])
     n.st = _copy(e.st)
     n.unsigned = set(e.unsigned)
+    n.floats = set(e.floats)
     n.live = e.live
     return n
 
@@ -175,6 +210,7 @@ def interval_function(fn: FunctionInfo) -> Finding | None:
     # gate only for an alarm, or for an unexpected error (where the gate
     # used to run first and may have skipped the function).
     eng = _Engine(fn.params)
+    eng.floats |= _float_locals(fn.body or "")
     try:
         _stmts(eng, fn.body or "")
     except _Alarm as a:

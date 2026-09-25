@@ -323,14 +323,52 @@ State join_state(const State& a, const State& b) {
     return out;
 }
 
+// A float/double parameter or local: outside the integer domain. An
+// expression that reads one is unencoded (ParseFail), never an integer
+// overflow alarm on `double add(double a, double b) { return a + b; }`.
+bool is_float_type(std::string_view typ) {
+    static Regex re(R"(\b(?:float|double|_Float\d+|__float128)\b)");
+    return re.search(typ);
+}
+
+std::unordered_set<std::string> float_locals(std::string_view body) {
+    static Regex decl(R"(\b(?:float|double|_Float\d+|__float128)\b([^;(){}]*);)");
+    static Regex name(R"(^\s*\**\s*([A-Za-z_]\w*))");
+    std::unordered_set<std::string> out;
+    for (auto& m : decl.finditer(body)) {
+        // `double a = 1, *b, c[4];`: the first identifier of each top-level
+        // comma segment.
+        auto list = m.group(1);
+        int depth = 0;
+        std::string seg;
+        for (std::size_t i = 0; i <= list.size(); ++i) {
+            char c = i < list.size() ? list[i] : ',';
+            if (c == '[' || c == '(') ++depth;
+            else if (c == ']' || c == ')') --depth;
+            if (c == ',' && depth == 0) {
+                if (auto nm = name.search_match(seg)) out.insert(nm->group(1));
+                seg.clear();
+            } else {
+                seg.push_back(c);
+            }
+        }
+    }
+    return out;
+}
+
 struct Engine {
     State st;
     std::unordered_set<std::string> unsigned_names;
+    std::unordered_set<std::string> float_names;
     bool live = true;
 
     explicit Engine(const std::vector<std::pair<std::string, std::string>>& params) {
         for (auto& [typ, name] : params) {
             if (name.empty()) continue;
+            if (is_float_type(typ)) {
+                float_names.insert(name);
+                continue;
+            }
             bool u = type_is_unsigned(typ);
             if (u) unsigned_names.insert(name);
             st[name] = R{kIntMin, kIntMax, u};
@@ -338,6 +376,7 @@ struct Engine {
     }
 
     R get(const std::string& name) const {
+        if (float_names.contains(name)) throw ParseFail("floating-point unencoded");
         auto it = st.find(name);
         R cur = it == st.end() ? kTop : it->second;
         if (unsigned_names.contains(name)) return R{cur.lo, cur.hi, true};
@@ -353,6 +392,7 @@ Engine fork_engine(const Engine& e) {
     Engine n({});
     n.st = copy_state(e.st);
     n.unsigned_names = e.unsigned_names;
+    n.float_names = e.float_names;
     n.live = e.live;
     return n;
 }
@@ -1059,6 +1099,7 @@ std::optional<Finding> interval_function(const FunctionInfo& fn) {
     if (body_needs_pointer_harness(fn.body)) return std::nullopt;
     if (unencoded_syntax_reason(fn, "interval")) return std::nullopt;
     Engine eng(fn.params);
+    for (auto& n : float_locals(fn.body)) eng.float_names.insert(n);
     try {
         stmts(eng, fn.body);
     } catch (const Alarm& a) {

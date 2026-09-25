@@ -131,7 +131,59 @@ class TestTruePositives(unittest.TestCase):
                          ("inventory", laws.NOTRUN, "PARSE-GAP", 8))
         self.assertIn("line 8", rec.message)
         # The macro-bodied definition does not swallow the next function.
+        # (An ALL_CAPS `TEST(alloc) {` is parsed as a function now, see
+        # TestRealWorldEvaluation; a lowercase macro head stays a gap.)
         self.assertEqual(_names(path), ["after_macro"])
+
+
+class TestRealWorldEvaluation(unittest.TestCase):
+    """Reduced reproducers of the false alarms and parser gaps measured on
+    jsmn, tinyexpr and cJSON (docs/EVALUATION.md), and their buggy twins."""
+
+    def test_export_macro_forms_are_parsed(self):
+        self.assertEqual(_names(FP / "realworld_forms.c"),
+                         ["jsmn_count", "version_string", "is_empty", "fixed_buffers"])
+        fns = {f.name: f for f in extract_functions(FP / "realworld_forms.c", "f.c")}
+        # A plain C function once the export macro is set aside.
+        self.assertEqual(fns["is_empty"].kind, "POINTER")
+        self.assertEqual(fns["version_string"].kind, "VOID")
+
+    def test_macro_defined_test_body_is_parsed_and_linted(self):
+        fns = {f.name: f for f in extract_functions(TP / "realworld_twins.c", "t.c")}
+        self.assertEqual(fns["TEST_alloc"].kind, "OTHER")
+        self.assertIn((35, "MEM-UAF"), _hits("realworld_twins.c"))
+
+    def test_twins_still_fire(self):
+        hits = _hits("realworld_twins.c")
+        self.assertIn((11, "CTRL-FALLTHROUGH"), hits)  # unannotated, not the last arm
+        self.assertIn((19, "MEM-VLA-SIZE"), hits)  # buf[n]
+        self.assertIn((27, "MEM-VLA-SIZE"), hits)  # buf[LEN], LEN a local
+        self.assertIn((41, "PTR-NULL-DEREF"), hits)  # if (!n) return n->type;
+        self.assertIn((42, "PTR-NULL-DEREF"), hits)  # braced then-branch
+
+    def test_interval_leaves_floating_point_alone(self):
+        from prism.interval import run_interval
+        src = (
+            "double add(double a, double b) { return a + b; }\n"
+            "double scale(int n) { double x = n; return x * x + 1; }\n"
+            "int iadd(int a, int b) { return a + b; }\n"
+        )
+        fns = extract_functions_from_text(src, "f.c")
+        got = {f.function: f.cls for f in run_interval(fns) if f.status == laws.FAILED}
+        self.assertEqual(got, {"iadd": "INT-SIGNED-OVF"})
+
+    def test_fuzz_and_replay_do_not_run_doubles_as_ints(self):
+        from prism.fuse import _fuse_one
+        fn = extract_functions_from_text(
+            "double sum1(double a) { return a * 2; }\n", "f.c")[0]
+        f = _fuse_one(fn, [], ROOT, budget=0.2, iters=4, rounds=1)
+        self.assertEqual(f.status, laws.NEEDS_HARNESS)
+        self.assertIn("float/double unencoded", f.message)
+
+    def test_concrete_prep_keeps_hash_in_strings(self):
+        from prism.concrete import _PREP_RE
+        body = 'test(t, "issue #22");\n#ifdef X\nx = 1;\n#endif\n'
+        self.assertEqual(_PREP_RE.sub(" ", body), 'test(t, "issue #22");\n \nx = 1;\n \n')
 
 
 class TestParserForms(unittest.TestCase):

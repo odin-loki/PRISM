@@ -817,6 +817,7 @@ Finding fuse_one(const FunctionInfo& fn, const std::vector<Finding>& bmc_finding
     if (fn.kind == "POINTER")
         return nh("POINTER: FuSeBMC harness would invent a buffer or pass NULL");
     if (fn.kind == "OTHER") return nh("OTHER signature, not harnessed");
+    if (float_unencoded(fn)) return nh("float/double unencoded: FuSeBMC concrete oracle is not an IEEE model");
     if (auto syn = unencoded_syntax_reason(fn, "FuSeBMC")) return nh(*syn);
     if (body_needs_pointer_harness(fn.body))
         return nh("local pointer or heap object: FuSeBMC harness would invent a buffer");

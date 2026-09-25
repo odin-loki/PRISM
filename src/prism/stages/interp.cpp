@@ -752,6 +752,15 @@ int64_t eval_tree(const Node& t, St& st) {
 }  // namespace
 
 namespace stages_detail {
+bool float_unencoded(const FunctionInfo& fn) {
+    static Regex fl("(?i)\\bfloat\\b|\\bdouble\\b");
+    static Regex body_fl("\\d+\\.\\d+[fFlL]?|\\b(?:float|double)\\b");
+    if (fl.search(fn.return_type)) return true;
+    for (auto& [t, n] : fn.params)
+        if (fl.search(t)) return true;
+    return body_fl.search(fn.body);
+}
+
 int64_t eval_src(St& st, const std::string& src) {
     EParser p{st, tok(strip(src)), 0};
     auto tree = p.parse(0);
@@ -771,7 +780,8 @@ struct CParser {
     CParser(std::string b, St& s) : body(std::move(b)), st(s) {}
     void run() { stmts(prep(body)); }
     static std::string prep(std::string b) {
-        static Regex re("#.*");
+        // Directive lines only: `"test issue #22"` in a string is not one.
+        static Regex re("^[ \\t]*#.*", true);
         std::string out;
         std::size_t i = 0;
         for (auto& m : re.finditer(b)) {

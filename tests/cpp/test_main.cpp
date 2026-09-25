@@ -346,6 +346,78 @@ TEST_CASE("parser forms and PARSE-GAP") {
     CHECK(fns[7].span == std::pair<int, int>{16, 18});  // `'}'` does not end the body
 }
 
+// Reduced reproducers from docs/EVALUATION.md (jsmn, tinyexpr, cJSON). Same
+// corpus and expectations as tests/test_false_positives.py::TestRealWorldEvaluation.
+static std::vector<prism::FunctionInfo> fns_of_text(const std::string& src, const char* name) {
+    auto tmp = std::filesystem::temp_directory_path() / name;
+    {
+        std::ofstream o(tmp, std::ios::binary);
+        o << src;
+    }
+    auto fns = prism::extract_functions(tmp, name);
+    std::filesystem::remove(tmp);
+    return fns;
+}
+
+TEST_CASE("real-world forms: export macros and TEST() bodies are parsed") {
+    auto fp = repo_dir("testdata_fp");
+    CHECK(fn_names(fp / "realworld_forms.c") ==
+          std::vector<std::string>{"jsmn_count", "version_string", "is_empty", "fixed_buffers"});
+    std::map<std::string, std::string> kinds;
+    for (auto& f : prism::extract_functions(fp / "realworld_forms.c")) kinds[f.name] = f.kind;
+    CHECK(kinds["is_empty"] == "POINTER");
+    CHECK(kinds["version_string"] == "VOID");
+    auto tp = repo_dir("testdata_tp");
+    std::map<std::string, std::string> tk;
+    for (auto& f : prism::extract_functions(tp / "realworld_twins.c")) tk[f.name] = f.kind;
+    CHECK(tk["TEST_alloc"] == "OTHER");
+    auto hits = prism::run_lints({tp / "realworld_twins.c"}, tp);
+    CHECK(has_hit(hits, 35, "MEM-UAF"));
+    CHECK(has_hit(hits, 11, "CTRL-FALLTHROUGH"));
+    CHECK(has_hit(hits, 19, "MEM-VLA-SIZE"));
+    CHECK(has_hit(hits, 27, "MEM-VLA-SIZE"));
+    CHECK(has_hit(hits, 41, "PTR-NULL-DEREF"));
+    CHECK(has_hit(hits, 42, "PTR-NULL-DEREF"));
+}
+
+TEST_CASE("real-world: interval, fuzz and replay leave floating point alone") {
+    auto fns = fns_of_text(
+        "double add(double a, double b) { return a + b; }\n"
+        "double scale(int n) { double x = n; return x * x + 1; }\n"
+        "int iadd(int a, int b) { return a + b; }\n",
+        "prism_rw_float.c");
+    REQUIRE(fns.size() == 3);
+    std::map<std::string, std::string> got;
+    for (auto& f : prism::run_interval(fns))
+        if (f.status == prism::laws::FAILED) got[*f.function] = f.cls;
+    CHECK(got == std::map<std::string, std::string>{{"iadd", "INT-SIGNED-OVF"}});
+    auto fz = prism::run_fuse({fns[0]}, {}, std::filesystem::temp_directory_path(), 0.2, 4, false);
+    REQUIRE_FALSE(fz.empty());
+    CHECK(fz[0].status == prism::laws::NEEDS_HARNESS);
+    CHECK(fz[0].message.find("float/double unencoded") != std::string::npos);
+    prism::Finding crash;
+    crash.stage = "fuse";
+    crash.status = prism::laws::CRASH;
+    crash.file = fns[0].file;
+    crash.function = fns[0].name;
+    crash.counterexample = "a=2147483647, b=2147483647";
+    auto ex = prism::execute_cex({crash}, fns, prism::Config{});
+    REQUIRE_FALSE(ex.empty());
+    CHECK(ex[0].status == prism::laws::NEEDS_HARNESS);
+}
+
+TEST_CASE("real-world: concolic reads '#' inside a string as code, not a directive") {
+    auto fns = fns_of_text(
+        "void test(int (*f)(void), const char *name);\n"
+        "int t1(void) { return 0; }\n"
+        "int run_all(int k) {\n    test(t1, \"test issue #22\");\n    return k;\n}\n",
+        "prism_rw_hash.c");
+    for (auto& f : prism::run_concolic(fns, 4)) {
+        INFO(f.function.value_or("") << " " << f.message);
+        CHECK(f.status != prism::laws::ERROR);
+    }
+}
+
 TEST_CASE("interval shift_wide is INT-SHIFT-UB") {
     auto fn = load_fn("interval_ops.c", "shift_wide");
     auto findings = prism::run_interval({fn});

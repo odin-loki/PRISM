@@ -2,10 +2,10 @@
  * instead of skipping it quietly. */
 #include <stdlib.h>
 
-#define TEST(name) void test_##name(void)
+#define test_case(name) void test_##name(void)
 #define BODY { return 7; }
 
-TEST(alloc) {
+test_case(alloc) {
     char *p = malloc(4);
     free(p);
     p[0] = 1;

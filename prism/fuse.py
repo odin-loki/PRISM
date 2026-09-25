@@ -15,7 +15,7 @@ import re
 from prism import laws
 from prism.afl import afl_available, run_afl_fuzz
 from prism.ai import LLM_INSTALL, LLM_SKIP_FUSE_MSG, create_prompt_from_source
-from prism.bmc import HAS_Z3, bmc_function
+from prism.bmc import HAS_Z3, _has_unencoded_float, bmc_function
 from prism.config import adapter_install
 from prism.cparse import body_needs_pointer_harness
 from prism.fuzz import (
@@ -265,6 +265,11 @@ def _fuse_one(
         )
     if fn.kind == "OTHER":
         return Finding(**base, status=laws.NEEDS_HARNESS, message="OTHER signature, not harnessed")
+    if _has_unencoded_float(fn):
+        return Finding(
+            **base, status=laws.NEEDS_HARNESS,
+            message="float/double unencoded: FuSeBMC concrete oracle is not an IEEE model",
+        )
     syn = unencoded_syntax_reason(fn, "FuSeBMC")
     if syn:
         return Finding(**base, status=laws.NEEDS_HARNESS, message=syn)

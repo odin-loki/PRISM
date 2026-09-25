@@ -31,6 +31,7 @@ from prism.ai import (
     parse_hex_seeds,
     pick_best_prompt,
 )
+from prism.bmc import _has_unencoded_float
 from prism.models import Finding, FunctionInfo
 
 
@@ -629,6 +630,15 @@ def execute_cex(
                 stage="execute", status=laws.NEEDS_HARNESS, file=fn.file,
                 function=fn.name, line=fn.line, cls="",
                 message=f"{fn.kind}: cex replay would invent a buffer or object",
+                strength=laws.STRENGTH_FINDS,
+                extra={"oracle": "concrete-replay"},
+            ))
+            continue
+        if _has_unencoded_float(fn):
+            out.append(Finding(
+                stage="execute", status=laws.NEEDS_HARNESS, file=fn.file,
+                function=fn.name, line=fn.line, cls="",
+                message="float/double unencoded: cex replay oracle is not an IEEE model",
                 strength=laws.STRENGTH_FINDS,
                 extra={"oracle": "concrete-replay"},
             ))

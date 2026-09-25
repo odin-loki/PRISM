@@ -194,7 +194,7 @@ def _findings_for_file(path: Path, rel: str) -> list[Finding]:
     _unbounded_copy(lines, rel, funcs, out)
     _str_sprintf(lines, rel, funcs, out)
     _missing_return(lines, rel, funcs, out)
-    _fallthrough(lines, rel, funcs, out)
+    _fallthrough(lines, text.splitlines(), rel, funcs, out)
     _dead_guard(lines, rel, funcs, out)
     _empty_infinite(lines, rel, funcs, out)
     _uninit_return(lines, rel, funcs, out)
@@ -2407,7 +2407,8 @@ def _arm_falls_through(arm: str) -> bool:
     has_stmt = False
     for ln in arm.splitlines():
         s = ln.strip()
-        if not s:
+        # A preprocessor line (`#endif` between stacked labels) is not a statement.
+        if not s or s.startswith("#"):
             continue
         if _CASE_LABEL.search(s):
             continue
@@ -2417,20 +2418,35 @@ def _arm_falls_through(arm: str) -> bool:
     return has_stmt
 
 
-def _fallthrough(lines, rel, funcs, out) -> None:
+# GCC -Wimplicit-fallthrough comment forms (`/* Falls through. */`,
+# `// FALLTHRU`, `/* no break */`): the author annotated the intent.
+_FALLTHROUGH_COMMENT = re.compile(
+    r"(?://|/\*).*?(?:\bfalls?[ \t-]*thr(?:ough|u)|\bno\s*break)", re.I)
+
+
+def _fallthrough(lines, orig_lines, rel, funcs, out) -> None:
     """Switch case reaches the next arm without break or annotation."""
     for fn in funcs:
         start = fn.span[0]
         seen: set[int] = set()
-        for body, line_off in _switch_bodies(fn.body):
+        # `case '}':` / `case ':':` - a char literal is neither a brace nor a label end.
+        text = _CHAR_LITERAL.sub(lambda m: " " * len(m.group()), fn.body)
+        for body, line_off in _switch_bodies(text):
             cases = list(_lit_finditer(_CASE_LABEL, body))
-            for idx, cm in enumerate(cases):
-                arm = body[cm.end() : (
-                    cases[idx + 1].start() if idx + 1 < len(cases) else len(body)
-                )]
+            # The last arm runs out of the switch, not into a label.
+            for idx, cm in enumerate(cases[:-1]):
+                arm_end = cases[idx + 1].start()
+                arm = body[cm.end() : arm_end]
                 if not _arm_falls_through(arm):
                     continue
                 rel_off = body[: cm.start()].count("\n")
+                next_off = body[:arm_end].count("\n")
+                first = start + line_off + rel_off
+                last = max(first, start + line_off + next_off - 1)
+                if any(0 < ln <= len(orig_lines)
+                       and _FALLTHROUGH_COMMENT.search(orig_lines[ln - 1])
+                       for ln in range(first, last + 1)):
+                    continue
                 key = rel_off
                 if key in seen:
                     continue
@@ -2894,6 +2910,43 @@ def _div_zero_const(lines, rel, func_of, out) -> None:
             ))
 
 
+def _then_branch(lines: list[str], i: int, cond_end: int) -> tuple[str, int]:
+    """The then-branch of the `if (...)` whose condition ends at
+    lines[i][cond_end], and the index of the first line after it.
+
+    `if (!n) return;` is a one-line branch (the next line is not in it);
+    a braced branch ends at its own `}`, so `} else { n->x }` is not in it.
+    """
+    rest = lines[i][cond_end:]
+    if rest.strip() and not rest.lstrip().startswith("{"):
+        return rest, i + 1
+    k = i
+    while not rest.strip() and k + 1 < len(lines):
+        k += 1
+        rest = lines[k]
+    if not rest.lstrip().startswith("{"):
+        return (rest if k > i else ""), k + 1
+    depth = 0
+    buf: list[str] = []
+    line_k, text = k, rest
+    while True:
+        for c in text:
+            if c == "{":
+                depth += 1
+                if depth == 1:
+                    continue
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    return "".join(buf), line_k + 1
+            buf.append(c)
+        buf.append("\n")
+        line_k += 1
+        if line_k >= len(lines):
+            return "".join(buf), line_k
+        text = lines[line_k]
+
+
 def _null_branch(lines, rel, func_of, out) -> None:
     """Pointer used inside the branch that proved it NULL."""
     i = 0
@@ -2903,24 +2956,7 @@ def _null_branch(lines, rel, func_of, out) -> None:
             i += 1
             continue
         p = m.group("p1") or m.group("p2")
-        # take the following block
-        block = []
-        j = i + 1
-        if j < len(lines) and "{" in lines[i] + (lines[j] if j < len(lines) else ""):
-            depth = lines[i].count("{") - lines[i].count("}")
-            if depth <= 0 and j < len(lines):
-                depth += lines[j].count("{") - lines[j].count("}")
-                block.append(lines[j])
-                j += 1
-            while j < len(lines) and depth > 0:
-                depth += lines[j].count("{") - lines[j].count("}")
-                block.append(lines[j])
-                j += 1
-        else:
-            if j < len(lines):
-                block.append(lines[j])
-                j += 1
-        body = "\n".join(block)
+        body, j = _then_branch(lines, i, m.end())
         if re.search(rf"\b{re.escape(p)}\s*=", body):
             i = j
             continue
@@ -21805,6 +21841,63 @@ def _crypto_misuse(lines, rel, funcs, out) -> None:
                 break
 
 
+def _constant_bound(size: str, fn, params: set[str]) -> bool:
+    """`buf[BUFSIZ]`, `buf[MAX_LEN * 2 + 1]`, `buf[sizeof(struct s)]`.
+
+    A bound made of literals, sizeof and ALL_CAPS names (the macro /
+    enum-constant convention) that the function never assigns or takes as a
+    parameter is a constant expression, not a VLA. Any lowercase name keeps
+    the finding.
+    """
+    s = size
+    k = s.find("sizeof")
+    while k >= 0:
+        e = k + 6
+        while e < len(s) and s[e].isspace():
+            e += 1
+        if e < len(s) and s[e] == "(":
+            depth = 0
+            while e < len(s):
+                if s[e] == "(":
+                    depth += 1
+                elif s[e] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                e += 1
+            if e >= len(s):
+                return False
+            e += 1
+        else:
+            while e < len(s) and (s[e].isalnum() or s[e] == "_"):
+                e += 1
+        s = s[:k] + " " * (e - k) + s[e:]
+        k = s.find("sizeof", k)
+    i = 0
+    while i < len(s):
+        c = s[i]
+        if c.isdigit():
+            while i < len(s) and (s[i].isalnum() or s[i] == "."):
+                i += 1
+            continue
+        if c.isalpha() or c == "_":
+            j = i
+            while j < len(s) and (s[j].isalnum() or s[j] == "_"):
+                j += 1
+            name = s[i:j]
+            if (any(ch.islower() for ch in name) or not any(ch.isalpha() for ch in name)
+                    or name in params):
+                return False
+            if re.search(r"\b" + re.escape(name) + r"\s*(?:=[^=]|\+\+|--|[-+*/%&|^]=)", fn.body):
+                return False
+            i = j
+            continue
+        if c not in "+-*/%()<> \t\n|&^~":
+            return False
+        i += 1
+    return True
+
+
 def _vla_size(lines, rel, funcs, out) -> None:
     """Local array bound is not an integer literal (VLA)."""
     for fn in funcs:
@@ -21818,7 +21911,7 @@ def _vla_size(lines, rel, funcs, out) -> None:
             if name in params or name in _KW:
                 continue
             size = m.group("size").strip()
-            if _parse_int_literal(size) is not None:
+            if _parse_int_literal(size) is not None or _constant_bound(size, fn, params):
                 continue
             rel_off = fn.body[: m.start()].count("\n")
             key = (name, rel_off)

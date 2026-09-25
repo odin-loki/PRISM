@@ -81,7 +81,8 @@ def _enums_from_text(text: str) -> dict[str, int]:
     return extract_enums(text)
 
 
-_PREP_RE = re.compile(r"#.*")
+# Directive lines only: `"test issue #22"` in a string is not one.
+_PREP_RE = re.compile(r"(?m)^[ \t]*#.*")
 _DECL_RE = re.compile(
     r"(?:int|unsigned(?:\s+int)?|long|short|char|uint32_t|int32_t|size_t)"
     r"\s+([A-Za-z_]\w*)(?:\s*\[(\d+)\])?(?:\s*=\s*(.*))?$"
