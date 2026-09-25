@@ -1036,45 +1036,68 @@ HoudiniOut Houdini::run() {
     // Asked for all properties at once; a group without an answer is split
     // in halves (a smaller query). 1: some property is violated (SAT),
     // 0: none (UNSAT), -1: no answer.
-    // The final (and optimistic) queries go to their own solver: the
-    // instances at the other index terms and the side constraints of their
-    // reads never reach the search solver, whose queries stay as small as
-    // before.
-    std::optional<z3::solver> sfin;
-    std::size_t fin_assumptions = 0;
-    std::vector<char> inst_added(cands.size(), 0);
-    auto add_instances = [&]() {
-        if (!sfin) {
-            sfin.emplace(c);
-            for (std::size_t k = 0; k < search_assumptions; ++k) sfin->add(e.assumptions[k]);
-            for (auto& x : sel_impl) sfin->add(x);
-            fin_assumptions = search_assumptions;
+    // Instances at the other index terms, built once per candidate, with
+    // the side constraints their reads added (Ackermann constraints of
+    // havoc reads: facts of the encoding, true in every query).
+    struct Inst {
+        bool built = false;
+        std::optional<z3::expr> fact;
+        std::size_t side_lo = 0, side_hi = 0;  // e.assumptions[side_lo, side_hi)
+    };
+    std::vector<Inst> inst(cands.size());
+    auto instance = [&](std::size_t i) -> const Inst& {
+        auto& in = inst[i];
+        if (in.built) return in;
+        in.built = true;
+        in.side_lo = e.assumptions.size();
+        auto& CL = e.cut_loops[static_cast<std::size_t>(cands[i].loop)];
+        State sh{&CL.havoc, &CL.havoc_mem};
+        z3::expr_vector hv(c);
+        bool ok = true;
+        try {
+            for (std::size_t t = 1; t < T.size(); ++t) hv.push_back(eval(cands[i], sh, T[t]));
+        } catch (const EncodeFail&) {
+            ok = false;  // not assumed at the other terms (only weaker)
         }
-        auto& sf = *sfin;
+        in.side_hi = e.assumptions.size();
+        if (ok && !hv.empty())
+            in.fact = z3::implies(*sel[i], z3::implies(e.reach[static_cast<std::size_t>(CL.node)] &&
+                                                           noviol(CL.props_before),
+                                                       z3::mk_and(hv)));
+        return in;
+    };
+    // The universal candidates alive now, instantiated in solver `to`
+    // (each candidate once per solver).
+    auto add_instances = [&](z3::solver& to, std::vector<char>& added) {
         for (std::size_t i = 0; i < cands.size(); ++i) {
-            if (!cands[i].alive || !cands[i].ghost() || inst_added[i]) continue;
-            inst_added[i] = 1;
-            auto& CL = e.cut_loops[static_cast<std::size_t>(cands[i].loop)];
-            State sh{&CL.havoc, &CL.havoc_mem};
-            z3::expr_vector hv(c);
-            try {
-                for (std::size_t t = 1; t < T.size(); ++t) hv.push_back(eval(cands[i], sh, T[t]));
-            } catch (const EncodeFail&) {
-                continue;  // not assumed at the other terms (only weaker)
-            }
-            if (hv.empty()) continue;
-            sf.add(z3::implies(*sel[i], z3::implies(e.reach[static_cast<std::size_t>(CL.node)] && noviol(CL.props_before),
-                                                    z3::mk_and(hv))));
+            if (!cands[i].alive || !cands[i].ghost() || added[i]) continue;
+            added[i] = 1;
+            const auto& in = instance(i);
+            for (std::size_t k = in.side_lo; k < in.side_hi; ++k) to.add(e.assumptions[k]);
+            if (in.fact) to.add(*in.fact);
         }
-        // side constraints of the new reads (Ackermann constraints of havoc
-        // reads): facts of the encoding, true in every query
-        for (std::size_t k = fin_assumptions; k < e.assumptions.size(); ++k) sf.add(e.assumptions[k]);
-        fin_assumptions = e.assumptions.size();
+    };
+    // The optimistic queries go to their own solver, so the instances of
+    // candidates that are dropped later never reach the search solver; the
+    // final query at the fixpoint is asked in the search solver (which has
+    // learnt from the base and step queries) with the survivors' instances
+    // only, as before.
+    std::optional<z3::solver> sopt;
+    std::vector<char> added_opt(cands.size(), 0), added_final(cands.size(), 0);
+    auto opt_solver = [&]() -> z3::solver& {
+        if (!sopt) {
+            sopt.emplace(c);
+            for (std::size_t k = 0; k < search_assumptions; ++k) sopt->add(e.assumptions[k]);
+            for (auto& x : sel_impl) sopt->add(x);
+        }
+        add_instances(*sopt, added_opt);
+        return *sopt;
     };
     std::string fail;
     auto final_query = [&](double budget, bool split) -> int {
-        add_instances();
-        auto& sf = *sfin;
+        // split: the final query (search solver); else an optimistic one
+        z3::solver& sf = split ? s : opt_solver();
+        if (split) add_instances(s, added_final);
         z3::expr_vector all_sel(c);
         selectors([](std::size_t) { return true; }, all_sel);
         const auto tf = std::chrono::steady_clock::now();
