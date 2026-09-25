@@ -471,7 +471,16 @@ the counts are per exported file; the mismatch count was 0 in every run.
 for `<out>/pir-lean/`, or a directory), the pir stage appends, per
 function, the LLVM function in fragment syntax and the PIR `translate()`
 produced (or its UNENCODED reason) to `<unit>.pirl`. Anything outside the
-fragment is written as `L unsupported <why>`.
+fragment is written as `L unsupported <why>`. Pointer values are written with width 64 (as
+`translate.cpp` keeps them); `L pcmp` is a relational pointer comparison,
+`L retptr` marks the analysed function as returning a pointer (the
+stack-escape check), a harness-bound pointer parameter is an `L glob` line
+at the start of the entry block and an unbound one `L ptrparam`; the model
+intrinsics are `L halloc`, `L hfree`, `L vassume` and `L nondet`, and
+`__prism_alloc_failed()` is written as the one-byte store it is into the flag
+object `%__prism.oom` (an `L glob` after the entry globals, passed to the
+inlined functions that can reach it as an extra last argument — the
+translator refers to its variable directly, so the PIR is the same).
 
 `pir_lean_check FILE.pirl…` (proofs/refinement) re-translates the LLVM side
 with the proved translator and demands the C++ PIR be *exactly* its output
