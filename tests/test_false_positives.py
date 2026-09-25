@@ -143,7 +143,7 @@ class TestRealWorldEvaluation(unittest.TestCase):
     def test_export_macro_forms_are_parsed(self):
         self.assertEqual(_names(FP / "realworld_forms.c"),
                          ["jsmn_count", "version_string", "is_empty", "fixed_buffers",
-                          "decimal_point", "same_type"])
+                          "decimal_point", "same_type", "set_value"])
         fns = {f.name: f for f in extract_functions(FP / "realworld_forms.c", "f.c")}
         # A plain C function once the export macro is set aside.
         self.assertEqual(fns["is_empty"].kind, "POINTER")
@@ -176,6 +176,7 @@ class TestRealWorldEvaluation(unittest.TestCase):
         self.assertIn((50, "INT-BOOL-AS-BIT"), hits)  # (a < b) | (c < d)
         self.assertIn((51, "INT-BOOL-AS-BIT"), hits)  # a == 1 & b == 2
         self.assertIn((62, "CTRL-MISSING-RETURN"), hits)  # #else arm does not return
+        self.assertIn((72, "STR-NULL-ARG"), hits)  # CVE-2024-31755 shape
 
     def test_interval_leaves_floating_point_alone(self):
         from prism.interval import run_interval
@@ -226,6 +227,16 @@ class TestRealWorldEvaluation(unittest.TestCase):
         rows = [f for f in run_concolic(fns) if f.function == "t4"]
         self.assertEqual([f.status for f in rows], [laws.NEEDS_HARNESS])
         self.assertIn("typedef local unencoded", rows[0].message)
+
+    def test_cxx_qualified_name_is_unencoded_not_error(self):
+        # Catch2 isFalseTest: `flags & ResultDisposition::FalseTest` was
+        # concolic ERROR "expected ) got :".
+        from prism.concolic import run_concolic
+        fns = extract_functions_from_text(
+            "namespace RD { enum Flags { FalseTest = 4 }; }\n"
+            "bool is_false(int flags) { return (flags & RD::FalseTest) != 0; }\n", "t.cpp")
+        rows = [f for f in run_concolic(fns) if f.function == "is_false"]
+        self.assertEqual([f.status for f in rows], [laws.NEEDS_HARNESS])
 
     def test_concrete_prep_keeps_hash_in_strings(self):
         from prism.concrete import _PREP_RE

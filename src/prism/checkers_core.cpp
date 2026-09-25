@@ -1554,6 +1554,11 @@ bool param_null_tested(std::string_view name, std::string_view body) {
         "\\bif\\s*\\(\\s*" + v + "\\s*!=\\s*(?:NULL|nullptr|0)\\b",
         "\\bif\\s*\\(\\s*(?:NULL|nullptr|0)\\s*!=\\s*" + v + "\\b",
         "\\bif\\s*\\(\\s*!\\s*" + v + "\\b",
+        // A test inside a larger condition (cJSON 1.7.18 cJSON_SetValuestring:
+        // `if (object->valuestring == NULL || valuestring == NULL)`).
+        "(?:\\|\\||&&|\\()\\s*\\(?\\s*" + v + "\\s*[!=]=\\s*(?:NULL|nullptr|0)\\b",
+        "(?:\\|\\||&&|\\()\\s*\\(?\\s*(?:NULL|nullptr|0)\\s*[!=]=\\s*" + v + "\\b",
+        "(?:\\|\\||&&|\\()\\s*!\\s*" + v + "\\b(?!\\s*(?:->|\\.|\\[|\\())",
     };
     for (auto& p : tests)
         if (Regex(p).search(body)) return true;

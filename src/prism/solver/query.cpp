@@ -182,7 +182,19 @@ std::string normalized_query(z3::context& src, const z3::expr& f0, std::vector<s
     // the same text on one Z3 version.
     z3::context c;
     z3::expr f(c, Z3_translate(src, f0, c));
-    z3::expr s = f.simplify();
+    // The rewriter honours only the context timeout, and nothing else bounded
+    // it: on zlib crc32.c one normalisation ran for over 15 minutes, past
+    // every --timeout. Past kNormalizeMs the formula keys the cache as it
+    // was given (still one text per formula; a slower machine only misses
+    // the cache, it never shares an entry between two formulas).
+    constexpr unsigned kNormalizeMs = 10000;
+    c.set("timeout", static_cast<int>(kNormalizeMs));
+    z3::expr s = f;
+    try {
+        s = f.simplify();
+    } catch (const z3::exception&) {
+        s = f;
+    }
     auto order = collect_consts(s);
     std::unordered_set<unsigned> have;
     for (const auto& e : order) have.insert(e.id());

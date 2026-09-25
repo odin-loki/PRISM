@@ -13362,6 +13362,11 @@ def _param_null_tested(name: str, body: str) -> bool:
             rf"\bif\s*\(\s*{v}\s*!=\s*(?:NULL|nullptr|0)\b",
             rf"\bif\s*\(\s*(?:NULL|nullptr|0)\s*!=\s*{v}\b",
             rf"\bif\s*\(\s*!\s*{v}\b",
+            # A test inside a larger condition (cJSON 1.7.18 cJSON_SetValuestring:
+            # `if (object->valuestring == NULL || valuestring == NULL)`).
+            rf"(?:\|\||&&|\()\s*\(?\s*{v}\s*[!=]=\s*(?:NULL|nullptr|0)\b",
+            rf"(?:\|\||&&|\()\s*\(?\s*(?:NULL|nullptr|0)\s*[!=]=\s*{v}\b",
+            rf"(?:\|\||&&|\()\s*!\s*{v}\b(?!\s*(?:->|\.|\[|\())",
         )
         # One alternation matches somewhere iff one of the tests does.
         pat = re.compile("|".join(f"(?:{t})" for t in tests))

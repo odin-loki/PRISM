@@ -57,3 +57,13 @@ int same_type(const struct item *a, const struct item *b)
     }
     return 2;
 }
+
+/* cJSON 1.7.18 cJSON_SetValuestring: the NULL test sits inside a larger
+ * condition (the fix of CVE-2024-31755). */
+size_t set_value(struct item *object, const char *valuestring)
+{
+    if (object->string == NULL || valuestring == NULL) {
+        return 0;
+    }
+    return strlen(valuestring);
+}

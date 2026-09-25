@@ -61,3 +61,13 @@ int no_return_in_else(int x)
     x++;
 #endif
 }
+
+/* cJSON 1.7.16/1.7.17 cJSON_SetValuestring (CVE-2024-31755): valuestring
+ * reaches strlen() unchecked. */
+unsigned long set_value_unchecked(struct node *object, const char *valuestring)
+{
+    if (object->type == 0 || object->type == 3) {
+        return 0;
+    }
+    return strlen(valuestring);
+}

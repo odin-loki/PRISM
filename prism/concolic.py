@@ -108,6 +108,14 @@ def concolic_function(fn: FunctionInfo, budget: int = 32) -> Finding:
             status=laws.NEEDS_HARNESS,
             message="C++ view/span unencoded: concolic engine is not a lifetime model",
         )
+    # `flags & ResultDisposition::FalseTest` (Catch2): a C++ qualified name
+    # the C interpreter cannot read (was ERROR "expected ) got :").
+    if re.search(r"[A-Za-z_]\w*\s*::\s*[A-Za-z_~]", fn.body or ""):
+        return Finding(
+            **base,
+            status=laws.NEEDS_HARNESS,
+            message="C++ qualified name unencoded: concolic engine is not a C++ model",
+        )
     if _has_unencoded_throw(fn):
         return Finding(
             **base,

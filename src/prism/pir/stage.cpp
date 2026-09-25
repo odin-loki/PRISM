@@ -5,7 +5,9 @@
 // translation-validated: the PIR interpreter and `lli` (sandboxed) run the
 // same concrete inputs and must agree wherever PIR reports no UB.
 
+#include "prism/astlint.hpp"
 #include "prism/laws.hpp"
+#include "prism/regex.hpp"
 #include "prism/pipeline.hpp"
 #include "prism/pir.hpp"
 #include "prism/sandbox.hpp"
@@ -414,7 +416,8 @@ Frontend find_frontend(const Config& cfg) {
 
 std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, double timeout_s,
                                        std::string& err, std::vector<FoldedUb>* folded,
-                                       std::vector<std::pair<int, int>>* signed_shl, std::string* cxx_models) {
+                                       std::vector<std::pair<int, int>>* signed_shl, std::string* cxx_models,
+                                       const std::vector<std::string>& include_flags) {
     const bool cxx = is_cxx(src);
     const auto& cc = cxx ? fe.clangxx : fe.clang;
     if (!cc || !fe.opt) {
@@ -425,6 +428,7 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
     auto o0 = td.path / "o0.ll", o1 = td.path / "o1.ll", o2 = td.path / "o2.ll";
     std::vector<std::string> argv{cc->string()};
     auto fl = base_flags(src);
+    fl.insert(fl.end(), include_flags.begin(), include_flags.end());
     if (cxx_models) cxx_models->clear();
     // C++ library models (docs/PIR.md "C++ library models"): the model
     // headers come first on the include path. A unit that does not compile
@@ -896,6 +900,17 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
         f.strength = std::string(laws::STRENGTH_SOME);
         f.message = "clang front end failed: " + low.err;
         f.extra["frontend"] = fe.version;
+        // A header the unit's include path does not have (no
+        // compile_commands.json entry, or a generated header not built yet)
+        // is a gap in what could be compiled, not an internal error (Law 7).
+        static const Regex missing_header(
+            R"(fatal error:\s*(?:'([^'\n]+)' file not found|([^:\n]+): No such file or directory))");
+        if (auto mh = missing_header.search_match(low.err)) {
+            f.status = std::string(laws::NOTRUN);
+            f.message = "does not compile standalone: header '" + (mh->group(1).empty() ? mh->group(2) : mh->group(1)) +
+                        "' not found (include path unknown); not checked";
+            f.extra["install"] = "generate compile_commands.json (cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON, bear)";
+        }
         out.push_back(std::move(f));
         return res;
     }
@@ -1077,7 +1092,20 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
     parallel_for(cfg.jobs, units, [&](std::size_t i, const Unit& u) {
         auto& l = low[i];
         try {
-            l.ir = lower_to_ir(fe, u.path, std::max(10.0, cfg.timeout), l.err, &l.folded, &l.sshl, &l.cxx_models);
+            // The unit's include path: its compile_commands.json entry (without
+            // -std=, PRISM's language level stays), else the scan root and
+            // root/include searched after the system headers (-idirafter never
+            // shadows a system header), as the Clang-AST lints guess it.
+            std::vector<std::string> inc;
+            const fs::path root = fs::is_directory(cfg.root) ? cfg.root : cfg.root.parent_path();
+            for (auto& f : astlint::compile_db_flags(root, u.path))
+                if (!f.starts_with("-std=")) inc.push_back(f);
+            if (inc.empty() && !root.empty()) {
+                std::error_code ec;
+                inc = {"-idirafter", root.string()};
+                if (fs::is_directory(root / "include", ec)) inc.insert(inc.end(), {"-idirafter", (root / "include").string()});
+            }
+            l.ir = lower_to_ir(fe, u.path, std::max(10.0, cfg.timeout), l.err, &l.folded, &l.sshl, &l.cxx_models, inc);
             if (is_cxx(u.path) && l.cxx_models.empty() && !cxx_models_error.empty()) l.cxx_models = cxx_models_error;
         } catch (const std::exception& ex) {
             l.ir.reset();

@@ -11,6 +11,7 @@
 #include "prism/stages.hpp"
 #include "prism/journal.hpp"
 #include "prism/pipeline.hpp"
+#include "prism/pir.hpp"
 #include "prism/sandbox.hpp"
 #include "prism/scope.hpp"
 #include "prism/taxonomy.hpp"
@@ -363,7 +364,7 @@ TEST_CASE("real-world forms: export macros and TEST() bodies are parsed") {
     auto fp = repo_dir("testdata_fp");
     CHECK(fn_names(fp / "realworld_forms.c") ==
           std::vector<std::string>{"jsmn_count", "version_string", "is_empty", "fixed_buffers",
-                                   "decimal_point", "same_type"});
+                                   "decimal_point", "same_type", "set_value"});
     std::map<std::string, std::string> kinds;
     for (auto& f : prism::extract_functions(fp / "realworld_forms.c")) kinds[f.name] = f.kind;
     CHECK(kinds["is_empty"] == "POINTER");
@@ -382,6 +383,7 @@ TEST_CASE("real-world forms: export macros and TEST() bodies are parsed") {
     CHECK(has_hit(hits, 50, "INT-BOOL-AS-BIT"));
     CHECK(has_hit(hits, 51, "INT-BOOL-AS-BIT"));
     CHECK(has_hit(hits, 62, "CTRL-MISSING-RETURN"));
+    CHECK(has_hit(hits, 72, "STR-NULL-ARG"));  // CVE-2024-31755 shape
 }
 
 TEST_CASE("real-world: zlib K&R forms parse; an unreadable K&R head is a gap") {
@@ -445,6 +447,41 @@ TEST_CASE("real-world: a missing header is NOTRUN, not a compiler error") {
         CHECK(f.status == prism::laws::NOTRUN);
         CHECK(f.message.find("unity_fixture.h") != std::string::npos);
     }
+}
+
+TEST_CASE("real-world: pir finds root/include headers; a missing header is NOTRUN") {
+    // cxxopts: every unit under src/ and test/ includes "cxxopts.hpp" from
+    // include/ and was pir ERROR "clang front end failed".
+    prism::Config cfg;
+    auto fe = prism::pir::find_frontend(cfg);
+    if (!fe.clang || !fe.opt) return;
+    auto td = std::filesystem::temp_directory_path() / "prism_rw_pir_inc";
+    std::filesystem::remove_all(td);
+    std::filesystem::create_directories(td / "include");
+    std::filesystem::create_directories(td / "src");
+    {
+        std::ofstream(td / "include" / "rw_lib.h", std::ios::binary) << "static inline int twice(int x) { return x * 2; }\n";
+        std::ofstream(td / "src" / "a.c", std::ios::binary)
+            << "#include \"rw_lib.h\"\nint four(void) { return twice(2); }\n";
+        std::ofstream(td / "src" / "b.c", std::ios::binary)
+            << "#include \"not_there.h\"\nint one(void) { return 1; }\n";
+    }
+    cfg.root = td;
+    cfg.out = td / "out";
+    cfg.solver_cache = td / "cache";
+    auto rows = prism::pir::run_pir({td / "src" / "a.c", td / "src" / "b.c"}, cfg);
+    std::filesystem::remove_all(td);
+    bool four = false, missing = false;
+    for (auto& f : rows) {
+        INFO(f.file << " " << f.status << " " << f.message);
+        CHECK(f.status != prism::laws::ERROR);
+        if (f.function == std::optional<std::string>("four")) four = true;
+        if (f.file.find("b.c") != std::string::npos && f.status == prism::laws::NOTRUN &&
+            f.message.find("not_there.h") != std::string::npos)
+            missing = true;
+    }
+    CHECK(four);
+    CHECK(missing);
 }
 
 TEST_CASE("real-world: fuzz runs a no-parameter function's one input once") {

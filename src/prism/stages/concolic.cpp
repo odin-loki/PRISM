@@ -240,6 +240,10 @@ Finding concolic_function(const FunctionInfo& fn, int budget) {
         return base_nh("float/double unencoded: concrete oracle is not an IEEE model");
     if (has_unencoded_cxx(fn))
         return base_nh("C++ view/span unencoded: concolic engine is not a lifetime model");
+    // `flags & ResultDisposition::FalseTest` (Catch2): a C++ qualified name
+    // the C interpreter cannot read (was ERROR "expected ) got :").
+    if (re_search("[A-Za-z_]\\w*\\s*::\\s*[A-Za-z_~]", fn.body))
+        return base_nh("C++ qualified name unencoded: concolic engine is not a C++ model");
     if (has_unencoded_throw(fn))
         return base_nh("C++ throw unencoded: concolic engine is not an exception model");
     if (has_unencoded_setjmp(fn))

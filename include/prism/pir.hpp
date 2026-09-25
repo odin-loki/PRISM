@@ -509,7 +509,10 @@ PRISM_API std::optional<std::string> lower_to_ir(const Frontend& fe,
                                                  double timeout_s, std::string& err,
                                                  std::vector<FoldedUb>* folded = nullptr,
                                                  std::vector<std::pair<int, int>>* signed_shl = nullptr,
-                                                 std::string* cxx_models = nullptr);
+                                                 std::string* cxx_models = nullptr,
+                                                 const std::vector<std::string>& include_flags = {});
+// include_flags: the unit's -I/-D/... from compile_commands.json (never -std=,
+// which stays PRISM's own), or a search path guess; appended to every clang run.
 // cxx_models receives which C++ library the unit was lowered with when
 // fe.cxx_models is set: "" (the unit uses no modelled header), "model: vector"
 // or "libstdc++ (fallback: <why>)" when the unit does not compile against the
