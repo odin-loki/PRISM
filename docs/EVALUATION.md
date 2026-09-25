@@ -40,9 +40,10 @@ seconds because it stopped repeating work), not as benchmarks. The solver
 query cache (`~/.cache/prism/solver`) was shared by all runs, so pir times
 also depend on what earlier runs had cached.
 
-"Before" is the branch base `c28ae3faf`; "after" is `1cad5e4ee` (the last
-lint commit on the branch, `a0b962721`+, was verified on the reproducers and a
-lints-only rerun, not by a full rerun).
+"Before" is the branch base `c28ae3faf`; "after" is `1cad5e4ee`. Four later
+commits were measured on their own, not by a full rerun: `a0b962721` and
+`d1d16394e` (lints, on the reproducers and a lints-only rerun of tinyexpr),
+`0f775f3a3` and `9bd128f94` (fuzz, back to back on zlib).
 
 ## Before: what broke
 
@@ -114,14 +115,51 @@ Performance:
 
 | stage | cause | fix |
 |---|---|---|
-| fuzz (772 s on cJSON, 256 s on cxxopts) | the FuSeBMC concrete loop re-ran identical inputs: a no-parameter Unity/Catch2 test function has one input and was run for every seed and havoc step, and the second round repeated the first | an input already run is not run again (the oracle is deterministic); without `--allow-exec` a round with unchanged seeds is skipped. cJSON: 772 s → see below |
+| fuzz (772 s on cJSON, 256 s on cxxopts) | the FuSeBMC concrete loop re-ran identical inputs: a no-parameter Unity/Catch2 test function has one input (padded to one byte, so up to 256 "different" ones) and was run for every seed and havoc step, and the second round repeated the first | an input already run is not run again (the oracle is deterministic; inputs are compared exactly, and a no-parameter function has one); without `--allow-exec` a round with unchanged seeds is skipped |
+| fuzz on zlib (746 s for 12 fuzzable functions) | the FuSeBMC goal loop ran one BMC query per uncovered branch regardless of the fuzz budget | goals run while the round's budget lasts; the rest are counted in `extra.bmc_goals_skipped` (a goal only makes seeds; the bmc stage checks the function in full) |
 | warnings (C++) | one compiler process at a time | `--jobs` threads (the Python engine already did this) |
 | optional / clang-tidy (218 s on zlib, 94 s on cJSON) | one clang-tidy at a time | `--jobs` threads (the Python engine already did this) |
 | pir on zlib `crc32.c` | the solver cache key normalisation ran Z3's simplifier with no time bound (one call > 15 min, past every `--timeout`) | 10 s bound; past it the unsimplified formula keys the cache |
 
 ## After
 
-AFTER_TABLE
+Full runs with the "after" binary (`1cad5e4ee`), same command, same
+machine, run one after another. Counts are rows in `report.json`.
+
+| project | wall before → after | ERROR | CRASH | NOTRUN | PARSE-GAP | functions found | lint FAILED |
+|---|---|---|---|---|---|---|---|
+| jsmn | 27 s → 86 s ¹ | 1 → 0 | 0 → 0 | 22 → 20 | 2 → 0 | 30 → 32 | 10 → 7 |
+| tinyexpr | 277 s → 300 s ² | 1 → 1 | **35 → 0** | 19 → 19 | 0 → 0 | 95 → 95 | 48 → 36 (30 at `d1d16394e`) |
+| cJSON | 964 s → 1763 s ³ | **325 → 251** | 0 → 0 | 262 → 141 | **160 → 0** | 1010 → 1170 | 88 → 51 |
+| cxxopts | 499 s → 421 s | 12 → 3 | **4 → 0** | 99 → 46 | 76 → 26 | 1510 → 1561 | 108 → 55 |
+| zlib | > 3600 s → > 3600 s ⁴ | 2 → 3 | 0 → 0 | 147 → 26 (before pir) | **120 → 2** | 423 → 604 | 272 → 175 |
+
+¹ pir 16 s → 63 s with the same verdicts on the same 32 functions: load
+(a pytest run of this repository ran beside it). ² pir 253 s in both
+(`npr`, below). ³ pir 73 s → 1313 s: 38 more cJSON/Unity units now compile
+and are checked (pir `ERROR` 41 → 3), and the machine was swapping
+(1.6 GB available of 16 GB, other agents' runs); fuzz 772 s → 99 s. ⁴ Killed
+by the one-hour limit inside pir both times. Before pir the run took 580 s
+(optional 272 s, bmc 249 s: bmc now sees the 180 functions the parser used
+to drop; before, it took 0.3 s because it saw almost nothing).
+
+Back-to-back stage timings (same load, base binary then new binary, only
+`inventory,classify` and the named stages):
+
+| project, stages | before | after |
+|---|---:|---:|
+| cJSON fuzz | 1378 s | **94 s** |
+| cJSON warnings / optional | 15 s / 283 s | 13 s / 244 s |
+| zlib fuzz (after the goal budget, `9bd128f94`) | 10 s (on the 10 functions it could parse) | 255 s (on 12 fuzzable of 604; 746 s before the goal budget) |
+| zlib warnings / optional | 11 s / 269 s | 10 s / 254 s |
+
+The parallel clang-tidy barely shows under this load (the run has two
+`--jobs` on four cores that were each already four times oversubscribed);
+the fuzz fixes are structural (inputs no longer re-run) and show at any
+load. The remaining ERROR rows on cJSON are Unity's own test suite
+(194 of 201 concolic rows: `int p[] = {..}`, `ULL` literals, struct member
+calls such as `global_hooks.allocate(size)` that the concrete interpreter
+does not read) and bmc front-end gaps (47).
 
 ## Findings: true and false positives (sample)
 
@@ -150,6 +188,7 @@ CI files are not classified.
 | cJSON | pir `tests/unity/src/unity.c:184` `UnityPrintNumber` INT-SIGNED-OVF `-number_to_print` with `INT64_MIN` | **TP** (Unity's own comment says "including MIN negative"; the negation is UB) |
 | cJSON | pir `cJSON.c` `cJSON_CreateNumber` PTR-NULL-DEREF "call through a null function pointer", "FAILED also with the globals' initial values" | FP, **open**: `global_hooks = { malloc, free, realloc }`; a 3-member hooks struct reached through `const internal_hooks * const hooks` plus a `memset` of the new item reproduces it (a 2-member struct does not); handed to the pir false-alarm work |
 | cJSON | pir `cJSON_Version` MEM-OOB-WRITE | FP — **fixed** (sprintf model) |
+| cJSON | lints `unity_fixture_Test.c:496..540` MEM-UAF ×6 (new: `TEST()` bodies are parsed now): `free(m); TEST_ASSERT_NOT_NULL(m);` | pedantic TP: the freed pointer's value is read, never dereferenced (indeterminate after `free`, C17 6.2.4p2); harmless in practice |
 | cJSON | INT-BOOL-AS-BIT ×40, CTRL-MISSING-RETURN `get_decimal_point` | FP — **fixed** |
 | zlib | interval `gzlib.c:627 gz_intmax` INT-SIGNED-OVF (`unsigned p, q;`) | FP — **fixed** |
 | zlib | pbsd `examples/zran.c:110` MEM-CAPACITY-FIRST (`index->gzip <<= 1` before `realloc`, but the failure arm frees the whole index) | FP, **open** |
@@ -178,7 +217,10 @@ standing between PRISM and these bugs.
   Each query is bounded (`--timeout`), but a function has many of them and
   nothing bounds the function. A per-function (or per-run) pir budget that
   reports the rest `TIMEOUT`/`UNKNOWN` is needed; the Houdini run budget in
-  progress on another branch covers only loop invariants. ZLIB_NOPIR
+  progress on another branch covers only loop invariants. With `--skip pir` zlib finishes: 1365 s
+  (fuzz 763 s before the goal budget, optional 280 s, bmc 260 s); the
+  one-hour run leaves `stages.jsonl` (resumable with `--resume`) but no
+  `report.json`.
 - tinyexpr `npr` (inlines `ncr` and `fac`, `double` in and out) takes most of
   its 250 s pir time in Houdini and ends `BOUNDED` ("Houdini ran out of
   time"); pir runs the functions of one unit one after another.
