@@ -1122,7 +1122,11 @@ cheap without changing what can be proved:
   stops with "no proof" (`invariants_note: a property is violated even with
   every candidate that holds on loop entry assumed`). UNSAT is remembered:
   when nothing is dropped afterwards it *is* the final query. A proof is
-  only ever read off the final query at the fixpoint.
+  only ever read off the final query at the fixpoint. These queries run in
+  a solver of their own (the instances of candidates dropped later never
+  reach the search solver); after two without an answer no more are asked;
+  the final query at the fixpoint is asked, as before, in the search solver
+  with the survivors' instances only.
 * *Outcome cache* (`<solver cache>/houdini/<sha256>.json`, keyed by the
   function's PIR text, memory encoding, time limit and every candidate's
   text; off with the solver cache). A proof stores its survivors; the next
