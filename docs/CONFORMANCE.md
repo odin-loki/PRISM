@@ -940,6 +940,25 @@ last handler ends). Regression pairs:
 (pir 4/4 proved, 4/4 refuted and replayed; the virtual-base pair is
 NEEDS-HARNESS by design).
 
+*Fixed* (refinement findings, `docs/PROOFS_REFINEMENT.md` 2, 5, 6, 7).
+**F12. pir: IR the LangRef defines was reported.** `freeze poison`
+(UB-POISON), `llvm.memcpy(p, p, n)` (MEM-OVERLAP; clang emits it for a
+struct assignment `*p = *q` that may be a self-assignment) and
+`llvm.lifetime.start` after `llvm.lifetime.end` (MEM-UAF; objects over 8
+bytes were UNENCODED); `icmp samesign` was ignored (a missed poison, LLVM 19+
+IR only). Of these only the struct self-copy occurs in C compiled at `-O0`.
+*Fix:* `translate.cpp` / `translate_mem.cpp` (see the refinement document);
+the pir stage compiles with `-fno-builtin-memcpy` so a C `memcpy` call keeps
+C's rule (any overlap, `d = s` included) through its library model.
+Regression pair `prism/memory/mem_struct_self_copy_{true,false}.c`
+(`--stages pir`, base binary → this branch: the `true` task FAILED
+MEM-OVERLAP → PROVED, 1 → 0 false alarms; the `false` task, a C
+`memcpy(s, s)`, FAILED in both; ASan skips the overlap check when
+`dst == src`, so it is `sanitizer_blind`). Before the fix, the whole suite
+(`--stages pir`, 328 true and 341 false functions) had 0 false alarms: none of its tasks contained
+these constructs. Doctest "pir: LangRef-defined IR is not reported, samesign
+poison is (refinement findings 2, 5, 6, 7)".
+
 ### Coverage gaps (honest `ERROR` / `NEEDS-HARNESS`, costing completeness)
 
 - G1. Local arrays with initialisers (`int a[4] = {0};`), 2-D arrays and

@@ -363,6 +363,8 @@ extended fragment:
 | `tests/pir`, with intrinsics, `memcpy`/`memset`, lifetime markers, globals | 228 | 46 | **29** | 1 | 152 | **0** |
 | `testdata`, before the intrinsics and globals | 2 506 | 915 | 21 | 4 | 1 566 | **0** |
 | `testdata`, with intrinsics, `memcpy`/`memset`, lifetime markers, globals | 2 506 | 915 | **32** | 4 | 1 555 | **0** |
+| `tests/pir`, findings 2, 5–7 fixed (2 new functions; `mem_str.c` `memcpy_ok`, `memcpy_bad`, `overlap_bad` call C `memcpy`, now the library model: outside) | 231 | 47 | **26** | 1 | 157 | **0** |
+| `testdata`, findings 2, 5–7 fixed (mainline has 9 more functions) | 2 515 | 924 | **32** | 4 | 1 555 | **0** |
 
 The new `agree-ext` functions: array initialisers (`memcpy` from a
 `@__const` global, `memset` of a zeroed array), `memcpy`/`memmove`/`memset`
