@@ -138,6 +138,7 @@ at run time; the numbers below are for the deterministic halves.
 | 6.4 documentation | **DONE** — `VERDICTS.md`, `TRUSTED_BASE.md`, `CONFORMANCE.md`, `USER_GUIDE.md`; every report finding links its verdict definition |
 | 6.5 assurance packaging | **DONE as mappings** — `docs/assurance/` (DO-333, DO-330, Def Stan 00-055, ISM); no qualification is claimed |
 | 6.6 SARIF | **DONE** |
+| 6.7 real-world evaluation | **PARTIAL** — `docs/EVALUATION.md` (2026-09-25, claude/w6-realw): zlib 1.2.12, cJSON 1.7.16, jsmn, tinyexpr, cxxopts with `--no-llm`. Fixed: 7 parser forms (export macros, `TEST()` bodies, zlib K&R/`local`, unbalanced `#if` arms; zlib `deflate.c` 15 → 29 of 30 bodies, and a body the parser cannot read is now a `PARSE-GAP`, never silent), 13 false-alarm causes (tinyexpr: 35 `CRASH` and 22 interval rows on `double` code → 0; cJSON: 40 `INT-BOOL-AS-BIT` → 0), missing headers `NOTRUN` instead of `FAILED`/`ERROR`, pir include paths from `compile_commands.json`, and the fuzz stage re-running identical inputs (cJSON fuzz 1378 s → 94 s back to back under the same load). Known CVEs: 1 of 4 found (CVE-2024-31755, by a lint, only after the parser fix); the others sit behind pointer-parameter `NEEDS-HARNESS` (Law 6). Open: zlib does not finish in an hour (pir on `crc32.c`: many 64-bit VCs, no per-function budget) |
 
 ## Part 7 / 10 — milestones
 
