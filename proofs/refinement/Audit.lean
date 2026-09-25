@@ -86,6 +86,10 @@ open PrismRefine
 #print axioms msb_of_obj
 #print axioms pcmp_val
 #print axioms pcmp_run
+-- returning a pointer: the stack-escape check (MEM-STACK-ESCAPE)
+#print axioms escLoop_run
+#print axioms escChk_run
+#print axioms escHit_ok
 -- Part 8.2 "Floating point" (stretch): IEEE binary formats, correctly rounded addition
 #print axioms PrismRefine.Float.roundU_repr
 #print axioms PrismRefine.Float.roundU_nearest

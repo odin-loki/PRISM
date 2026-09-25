@@ -3,6 +3,7 @@ PRISM refinement, extended fragment — one machine step is one PIR block,
 and the translation is exact (`translateX_exact`).
 -/
 import PrismRefine.XStep
+import PrismRefine.XEscape
 
 namespace PrismRefine
 
@@ -418,7 +419,7 @@ theorem step_sim {M : XMod} {F : XFunc} {P : PFunc} {C : List IInfo} {ω : Nat �
       have hseq : fr.seg = B.segs.length := by
         have := List.getElem?_eq_none_iff.mp hsg; omega
       have hcurT : I.tails[fr.cur]? = some curP := tails_of hbl hlen (by rw [← hseq]; exact hs')
-      obtain ⟨s2, t2, T, A?, htr, _, hst, hterm', hretA⟩ := termOK_spec (hterm hsg)
+      obtain ⟨s2, t2, T, A?, htr, hT2, hst, hterm', hretA⟩ := termOK_spec (hterm hsg)
       rw [hst, xStmts_append, XPRes.then_run, hterm', hBi]
       rw [hBi] at hins
       refine SimX.out (sinstsX_sim hctx B.last R0 _ k t s1 t1 hR0 ha0 hhk hins hT1) ?_
@@ -488,24 +489,66 @@ theorem step_sim {M : XMod} {F : XFunc} {P : PFunc} {C : List IInfo} {ω : Nat �
           simp only [trTermX] at htr
           obtain ⟨_, _, htr⟩ := Except.bind_ok htr
           obtain ⟨⟨so, tw, A⟩, ho, htr⟩ := Except.bind_ok htr
+          obtain ⟨⟨se, te⟩, hse, htr⟩ := Except.bind_ok htr
           simp only [pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at htr
           obtain ⟨rfl, rfl, rfl, rfl⟩ := htr
           simp only [Res.step_out, hfF]
-          rw [← List.append_nil so]
-          refine opndX_osim hR' ho (Nat.le_trans hhk (Nat.le_add_right k t1.length)) t' [] _ _ ?_
-          intro v _ _ hAv _
-          simp only [xStmts, XPRes.run]
+          have hk2 : I.hi ≤ k + t1.length := Nat.le_trans hhk (Nat.le_add_right k t1.length)
+          refine opndX_osim hR' ho hk2 t' se _ _ ?_
+          intro v _ htw hAv hAb
+          subst htw
           cases rest with
           | nil =>
             simp only [TailX] at hT; subst hT
             obtain ⟨I0, hC0, _, hr0, _⟩ := hVF.top
             rw [hC0] at hI; cases hI
-            simp only [hr0, pTerm, retTo, Step.out, hAv]
-            rfl
+            simp only [escStmts, hr0, Option.isNone_none, Bool.true_and, List.isEmpty_nil,
+              List.length_nil, Nat.add_zero] at hse ⊢
+            cases hp : I.fn.retPtr with
+            | false =>
+              rw [hp] at hse
+              simp only [Bool.false_eq_true, ite_false, Except.ok.injEq, Prod.mk.injEq] at hse
+              obtain ⟨rfl, rfl⟩ := hse
+              simp only [xStmts, XPRes.run, hr0, pTerm, retTo, Step.out, hAv]
+              rfl
+            | true =>
+              rw [hp] at hse
+              simp only [ite_true] at hse
+              obtain ⟨As, hAs⟩ : ∃ As, escArgsX (I.ctx P.vars) I.fn.escNames = .ok As := by
+                cases h : escArgsX (I.ctx P.vars) I.fn.escNames with
+                | error e => rw [h] at hse; cases hse
+                | ok As => exact ⟨As, rfl⟩
+              rw [hAs] at hse
+              simp only [Except.map, Except.ok.injEq] at hse
+              have hAsb : ∀ a ∈ As, a.below (k + t1.length) := by
+                intro a ha
+                exact Arg.below_mono hk2 (escArgsX_below hAs a ha)
+              have hTe : TempsOK P (k + t1.length) (escChk (k + t1.length) A As).2 := by
+                rw [hse]; simpa using hT2
+              have hrun := escChk_run P ω σ' t' (k + t1.length) A As hAsb hTe
+              rw [hse] at hrun
+              rcases escHit_ok hR' v I.fn.escNames As hAs with hst | hok
+              · rw [hst]; trivial
+              · rw [hok]
+                simp only [Res.out]
+                rw [hAv] at hrun
+                cases hb : (As.any (fun a => ptrObj (v % 2 ^ 64) == ptrObj (a.get σ' % 2 ^ 64)) &&
+                    ptrObj (v % 2 ^ 64) != 0) with
+                | true =>
+                  simp only [Res.step, hb, ite_true, Step.out, XPRes.run, hrun.1 hb, OSim]
+                | false =>
+                  obtain ⟨σ'', e, hag⟩ := hrun.2 hb
+                  simp only [Res.step, ite_true, hb, Bool.false_eq_true, ite_false, e, XPRes.run, hr0, pTerm, retTo,
+                    Step.out]
+                  rw [Arg.get_agree hag hAb, hAv]; rfl
           | cons c cs =>
             obtain ⟨ι', I', hI', hcF, hcs, _, _, ⟨cb, hcb, hret⟩, hcR, hhi', hT'⟩ := hT
+            simp only [escStmts, hret I hI, Option.isNone_some, Bool.false_and, Bool.false_eq_true, ite_false,
+              Except.ok.injEq, Prod.mk.injEq] at hse
+            obtain ⟨rfl, rfl⟩ := hse
             obtain ⟨CB, pu, pr, u, hCB, hph, hpa, hpu⟩ := hretA cb A (hret I hI) rfl
-            simp only [hret I hI, pTerm, retTo, Step.out]
+            simp only [List.isEmpty_cons, Bool.false_and, Bool.false_eq_true, ite_false, xStmts, XPRes.run,
+              hret I hI, pTerm, retTo, Step.out]
             apply hK
             refine ⟨_, cs, ι', I', rfl, hI', hcF, ?_, hcb,
               ⟨fun h => by simp at h; omega, fun _ v' hv' => ?_⟩,

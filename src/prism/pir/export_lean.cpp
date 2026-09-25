@@ -392,11 +392,9 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
     b << "L params " << ints.size();
     for (auto* p : ints) b << " " << name(p->name) << " " << vw(p->ty);
     b << "\nL ret " << (f.ret.kind == ir::Type::Void ? 0u : vw(f.ret)) << "\n";
-    if (top && f.ret.kind == ir::Type::Ptr && !f.blocks.empty())
-        for (auto& in : f.blocks.front().insts)
-            if (in.op == "alloca" && in.ops.empty())
-                // translate.cpp's return: MemTr::stack_escape_check against the entry-block allocas
-                throw Unsupported{"pointer return from a function with stack objects (stack-escape check)"};
+    // translate.cpp's return of a pointer: MemTr::stack_escape_check against
+    // the analysed function's own stack objects (the Lean XFunc.escNames)
+    if (top && f.ret.kind == ir::Type::Ptr) b << "L retptr\n";
     std::vector<std::string> eg;
     if (top) eg = pirmem::entry_globals(m, lay, f, opt.globals_initial);
     g_entry = top ? &eg : nullptr;

@@ -387,6 +387,12 @@ theorem lRetTo_bad (rest : List LFrame) (v : Option Nat) (t : World) : (lRetTo r
   | nil => exact .inr (.inr (.inr ⟨v, rfl⟩))
   | cons f fs => exact .inr (.inr (.inl ⟨_, t, rfl⟩))
 
+theorem lstep_bad {α : Type} (r : Res α) (f : α → LStep) (hf : ∀ a, (f a).badish) : (r.lstep f).badish := by
+  cases r with
+  | ok a => exact hf a
+  | ub => exact .inl rfl
+  | stuck => exact .inr (.inl rfl)
+
 theorem lEnd_mono (M : XMod) (fr : LFrame) (rest : List LFrame) (B : XBlock) (S : LSt) (t : World)
     (hc : S.c = true) : (lEnd M fr rest B S t).badish := by
   unfold lEnd
@@ -414,7 +420,13 @@ theorem lEnd_mono (M : XMod) (fr : LFrame) (rest : List LFrame) (B : XBlock) (S 
       all_goals first | exact .inl rfl | exact .inr (.inl rfl)
     · rw [hc]; exact lRetTo_bad _ _ _
     · split
-      · simp only [hc, Bool.true_or]; exact lRetTo_bad _ _ _
+      · simp only [hc, Bool.true_or]
+        split
+        · exact lstep_bad _ _ (fun hit => by
+            split
+            · exact .inl rfl
+            · exact lRetTo_bad _ _ _)
+        · exact lRetTo_bad _ _ _
       all_goals first | exact .inl rfl | exact .inr (.inl rfl)
     · exact .inl rfl
 
@@ -501,7 +513,18 @@ theorem end_lift (M : XMod) (fr : Frame) (rest : List Frame) (B : XBlock) (R : S
           rw [hs] at h; simp only [OpRel] at h
           simp only [Res.step, h, Bool.or_false]
           cases rest with
-          | nil => rfl
+          | nil =>
+            simp only [List.map_nil, lower_lift, List.isEmpty_nil, Bool.true_and]
+            cases hcnd : fr.F.retPtr with
+            | true =>
+              cases escHit R v fr.F.escNames with
+              | ok hit =>
+                cases hb : (hit && ptrObj (v % 2 ^ 64) != 0) with
+                | true => simp only [Res.step, Res.lstep, hb]; exact .inl rfl
+                | false => simp only [Res.step, Res.lstep, hb]; rfl
+              | ub => exact .inl rfl
+              | stuck => rfl
+            | false => rfl
           | cons c cs => simp [retTo, lRetTo, SLStep, liftFr]
         | stuck => rw [hs] at h; simp only [OpRel] at h; simp [Res.step, h, SLStep]
         | ub =>

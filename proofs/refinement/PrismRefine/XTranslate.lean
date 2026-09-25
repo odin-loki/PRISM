@@ -666,6 +666,49 @@ def targetX (G : XFunc) (heads : List Nat) (t : String) : Except String Nat :=
     | none => .error s!"UNENCODED: branch to unknown block {t}"
   | none => .error s!"UNENCODED: branch to unknown block {t}"
 
+/-- The variables of the function's own stack objects (`Frame::allocas`). -/
+def escArgsX (c : Ctx) : List String → Except String (List Arg)
+  | [] => .ok []
+  | a :: t => do
+    match look c.env a with
+    | some x =>
+      need (x.lt c.hi) "outside fragment: stack object above its instance"
+      need (look c.sh a).isNone "outside fragment: stack object with a shadow"
+      let r ← escArgsX c t
+      pure (x :: r)
+    | none => throw s!"UNENCODED: value %{a}"
+
+/-- `MemTr::stack_escape_check`, the loop over the objects: `obj(a)`, `ro ==
+obj(a)`, and the running `or` (temporaries from `j`). -/
+def escLoop (ro : Arg) : Nat → Option Arg → List Arg → List PStmt × List Nat × Option Arg
+  | _, hit, [] => ([], [], hit)
+  | j, none, a :: t =>
+    let r := escLoop ro (j + 2) (some (.v (j + 1) 1)) t
+    ([.assign j (.bin .lshr) [a, c64 48], .assign (j + 1) (.cmp .eq) [ro, .v j 64]] ++ r.1, [64, 1] ++ r.2.1,
+     r.2.2)
+  | j, some h, a :: t =>
+    let r := escLoop ro (j + 3) (some (.v (j + 2) 1)) t
+    ([.assign j (.bin .lshr) [a, c64 48], .assign (j + 1) (.cmp .eq) [ro, .v j 64],
+      .assign (j + 2) (.bin .or) [h, .v (j + 1) 1]] ++ r.1, [64, 1, 1] ++ r.2.1, r.2.2)
+
+/-- `MemTr::stack_escape_check` of the returned pointer `RET` against the
+objects `As` (nothing when there are none; temporaries from `j`). -/
+def escChk (j : Nat) (RET : Arg) : List Arg → List PStmt × List Nat
+  | [] => ([], [])
+  | a :: t =>
+    let r := escLoop (.v j 64) (j + 1) none (a :: t)
+    let m := j + 1 + r.2.1.length
+    ([.assign j (.bin .lshr) [RET, c64 48]] ++ r.1 ++
+      [.assign m (.cmp .ne) [.v j 64, c64 0], .assign (m + 1) (.bin .and) [r.2.2.getD (.c 1 0), .v m 1],
+       .check (.v (m + 1) 1) "stack-escape" "MEM-STACK-ESCAPE"],
+     [64] ++ r.2.1 ++ [1, 1])
+
+/-- The stack-escape check of a returned pointer: only the analysed
+function's (`retTo = none`) own objects. -/
+def escStmts (G : XFunc) (c : Ctx) (retTo : Option Nat) (j : Nat) (A : Arg) :
+    Except String (List PStmt × List Nat) :=
+  if retTo.isNone && G.retPtr then (escArgsX c G.escNames).map (fun As => escChk j A As) else .ok ([], [])
+
 /-- The terminator; `retTo` is the continuation block of an inlined
 instance (its `ret` jumps there), `none` for the analysed function.  Also
 returns the `Arg` of a returned value (the continuation phi's entry). -/
@@ -685,7 +728,8 @@ def trTermX (G : XFunc) (c : Ctx) (heads : List Nat) (retTo : Option Nat) (k : N
   | .ret (some o) => do
     need (G.retw != 0) "outside fragment: ret value in a void function"
     let (s, tw, A) ← trOpndX c G.retw true k o
-    pure (s, tw, (match retTo with | some cb => .jmp cb | none => .ret (some A)), some A)
+    let (se, te) ← escStmts G c retTo (k + tw.length) A
+    pure (s ++ se, tw ++ te, (match retTo with | some cb => .jmp cb | none => .ret (some A)), some A)
   | .unreachable => .ok ([.check (.c 1 1) "unreachable" "CXX-UNREACHABLE"], [], .stop, none)
 
 /-! ## Instances and certificates -/

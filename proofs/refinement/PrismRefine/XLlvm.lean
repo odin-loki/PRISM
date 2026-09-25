@@ -184,6 +184,9 @@ structure XFunc where
   function (Law 6, NEEDS-HARNESS); they have no semantics here.  A bound one
   is not a parameter but an object allocated on entry (`SInst.glob`). -/
   ptrParams : List String := []
+  /-- the analysed function returns a pointer (checked for pointing into its
+  own stack objects, `MemTr::stack_escape_check`) -/
+  retPtr : Bool := false
   deriving DecidableEq, Repr, Inhabited
 
 /-- A module: the functions calls can reach (first match by name). -/
@@ -196,6 +199,18 @@ def XBlock.insts (B : XBlock) (s : Nat) : List SInst :=
   match B.segs[s]? with
   | some (is, _) => is
   | none => B.last
+
+def SInst.allocaDst? : SInst → Option String
+  | .alloca d _ _ => some d
+  | _ => none
+
+/-- The function's own stack objects: the registers of the `alloca`s of the
+entry block before its first call (`Tr::mem_inst` records exactly those in
+`Frame::allocas`). -/
+def XFunc.escNames (G : XFunc) : List String :=
+  match G.blocks with
+  | B :: _ => (B.insts 0).filterMap SInst.allocaDst?
+  | [] => []
 
 /-- The block names of `G`, as an `LFunc` (for `lookupBlock` / `phiPick`). -/
 def XFunc.shape (G : XFunc) : LFunc :=
@@ -335,6 +350,13 @@ point into the same object, else the predicate on the 64-bit values. -/
 def sPcmpV (R : SRegs) (p : Pred) (a b : Opnd) : Res Nat :=
   (sOpnd R 64 a).bind fun x => (sOpnd R 64 b).bind fun y =>
     if ptrObj (x % 2 ^ 64) = ptrObj (y % 2 ^ 64) then .ok (icmpVal p 64 x y) else .ub
+
+/-- Whether pointer `v` points into the object of one of the registers `ns`
+(each a use; a missing register: stuck). -/
+def escHit (R : SRegs) (v : Nat) : List String → Res Bool
+  | [] => .ok false
+  | a :: t => (sOpnd R 64 (.reg a)).bind fun pa => (escHit R v t).bind fun h =>
+      .ok ((ptrObj (v % 2 ^ 64) == ptrObj (pa % 2 ^ 64)) || h)
 
 /-! ## Strict semantics -/
 
@@ -497,7 +519,13 @@ def sEnd (M : XMod) (fr : Frame) (rest : List Frame) (B : XBlock) (R : SRegs) (t
         | some j => .next ({ fr with prev := some fr.cur, cur := j, seg := 0, R := R, pend := none } :: rest) t
         | none => .stuck
     | .ret none => retTo rest none t
-    | .ret (some o) => (sOpnd R fr.F.retw o).step fun v => retTo rest (some v) t
+    | .ret (some o) => (sOpnd R fr.F.retw o).step fun v =>
+      -- PRISM's rule (C17 6.2.4p2): the analysed function returning a pointer
+      -- into one of its own stack objects returns a dangling pointer
+      if rest.isEmpty && fr.F.retPtr then
+        (escHit R v fr.F.escNames).step fun hit =>
+          if hit && ptrObj (v % 2 ^ 64) != 0 then .ub else retTo rest (some v) t
+      else retTo rest (some v) t
     | .unreachable => .ub
 
 /-- One step: the current segment of the top frame. -/
@@ -689,7 +717,11 @@ def lEnd (M : XMod) (fr : LFrame) (rest : List LFrame) (B : XBlock) (S : LSt) (t
     | .ret none => lRetTo rest none t S.c
     | .ret (some o) =>
       match lOpnd S.R fr.F.retw o with
-      | .ok (.val v, cv) => lRetTo rest (some v) t (S.c || cv)
+      | .ok (.val v, cv) =>
+        if rest.isEmpty && fr.F.retPtr then
+          (escHit (lower S.R) v fr.F.escNames).lstep fun hit =>
+            if hit && ptrObj (v % 2 ^ 64) != 0 then .ub else lRetTo rest (some v) t (S.c || cv)
+        else lRetTo rest (some v) t (S.c || cv)
       | .ok (.poison, _) => .ub
       | .ok (.ind, _) => .ub
       | .ub => .ub
