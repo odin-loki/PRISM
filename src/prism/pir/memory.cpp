@@ -8,8 +8,6 @@
 #include "prism/laws.hpp"
 
 #include <algorithm>
-#include <cstdio>
-#include <cstdlib>
 
 namespace prism::pir {
 
@@ -60,38 +58,6 @@ std::optional<uint64_t> SymMem::known(const z3::expr& e) const {
 }
 
 namespace {
-bool vs_trace() {
-    static const bool on = std::getenv("PRISM_VS_TRACE") != nullptr;
-    return on;
-}
-std::string short_str(const z3::expr& e) {
-    auto t = e.to_string();
-    if (t.size() > 6000) t = t.substr(0, 6000) + "...";
-    for (auto& ch : t)
-        if (ch == '\n') ch = ' ';
-    return t;
-}
-// debugging (PRISM_VS_TRACE): the innermost subterm that has no value set
-std::string vs_blame(const prism::pir::mem::SymMem& m, const z3::expr& e, int depth = 0) {
-    if (depth > 200) return "deep";
-    if (!e.is_app() || e.num_args() == 0) return "leaf " + e.to_string().substr(0, 80);
-    const auto k = e.decl().decl_kind();
-    if (k == Z3_OP_ITE) {
-        for (unsigned i : {1u, 2u})
-            if (!m.vs_of(e.arg(i))) return vs_blame(m, e.arg(i), depth + 1);
-        return "ite: too many values";
-    }
-    std::size_t combos = 1;
-    for (unsigned i = 0; i < e.num_args(); ++i) {
-        auto* a = e.arg(i).is_bv() ? m.vs_of(e.arg(i)) : nullptr;
-        if (!a) {
-            if (!e.arg(i).is_bv()) return "non-bv operand of " + e.decl().name().str();
-            return vs_blame(m, e.arg(i), depth + 1);
-        }
-        combos *= a->size();
-    }
-    return "combination " + e.decl().name().str() + " x" + std::to_string(combos);
-}
 z3::expr and2(const z3::expr& a, const z3::expr& b) {
     if (a.is_true()) return b;
     if (b.is_true()) return a;
@@ -138,8 +104,16 @@ std::optional<uint64_t> eval_const(const z3::expr& e, const std::vector<uint64_t
 const SymMem::Vs* SymMem::vs_raw(const z3::expr& e) const {
     if (!e.is_bv() || e.get_sort().bv_size() > 64) return nullptr;
     if (auto it = vs_memo_.find(e.id()); it != vs_memo_.end()) return it->second ? &*it->second : nullptr;
+    // a long read-over-write chain of a symbolic address nests one ite per
+    // write: past this depth the term has no value set (the worker thread's
+    // stack stays small; only precision is lost)
+    if (vs_depth_ > kVsDepth) return nullptr;
+    struct Depth {
+        int& d;
+        explicit Depth(int& x) : d(x) { ++d; }
+        ~Depth() { --d; }
+    } depth(vs_depth_);
     vs_keep_.push_back(e);  // ids are only stable while the ast lives
-    // placeholder against cycles (none in a DAG, but keeps a deep recursion bounded)
     vs_memo_.emplace(e.id(), std::nullopt);
     std::optional<Vs> out;
     uint64_t v = 0;
@@ -590,26 +564,19 @@ z3::expr SymMem::havoc_read(const Entry& e, const z3::expr& addr, unsigned width
 std::optional<z3::expr> SymMem::word_at(uint64_t a, unsigned n, std::size_t upto) {
     const uint64_t ko = obj_of(a);
     z3::expr v = bv(0, 8 * n);
-    auto trace = [&](const char* why) {
-        if (vs_trace()) std::fprintf(stderr, "vs: word_at: %s\n", why);
-        return std::nullopt;
-    };
     for (std::size_t i = 0; i < upto; ++i) {
         auto& e = log_[i];
         if (auto kb = known(e.addr); kb && *kb != ko) continue;
         const Vs* ev = vs_of(e.addr);
         if (e.kind == Entry::Byte) {
-            if (!ev) {
-                if (vs_trace()) std::fprintf(stderr, "vs: word_at entry addr without vs: %s\n", vs_blame(*this, e.addr).c_str());
-                return std::nullopt;
-            }
+            if (!ev) return std::nullopt;  // an address without a value set
             for (auto& o : *ev) {
                 if (o.val < a || o.val - a >= n) continue;  // this byte is not in [a, a + n)
                 // in range: only a store that contains [a, a + n)
-                if (e.grp < 0) return trace("byte entry outside a store");
+                if (e.grp < 0) return std::nullopt;  // byte entry outside a store
                 const auto& st = stores_[static_cast<std::size_t>(e.grp)];
                 const uint64_t b = o.val - e.grp_k;  // the store's first byte
-                if (b > a || a - b + n > st.n) return trace("partial overlap");
+                if (b > a || a - b + n > st.n) return std::nullopt;  // partial overlap
                 if (o.val != a) continue;  // taken at the store's byte at a
                 const unsigned lo = static_cast<unsigned>(8 * (a - b));
                 auto x = st.n == n ? st.val : st.val.extract(lo + 8 * n - 1, lo);
@@ -621,7 +588,7 @@ std::optional<z3::expr> SymMem::word_at(uint64_t a, unsigned n, std::size_t upto
         if (e.kind == Entry::HavocObj) {
             auto os = objs_of(e.addr);
             if (os && std::find(os->begin(), os->end(), ko) == os->end()) continue;
-            if (!os || os->size() != 1) return trace("whole-object havoc of an unknown object");
+            if (!os || os->size() != 1) return std::nullopt;  // whole-object havoc of an unknown object
             std::optional<z3::expr> val;
             for (unsigned k = 0; k < n; ++k) {
                 auto h = havoc_read(e, bv(a + k, 64), cw_, "mem!ho").extract(7, 0);
@@ -634,13 +601,13 @@ std::optional<z3::expr> SymMem::word_at(uint64_t a, unsigned n, std::size_t upto
         if (!ev || !(e.len.is_numeral() && e.len.is_numeral_u64(len)) || len >= (uint64_t{1} << 47)) {
             auto os = objs_of(e.addr);
             if (os && std::find(os->begin(), os->end(), ko) == os->end()) continue;
-            return trace("ranged entry of a symbolic address or length");
+            return std::nullopt;  // ranged entry of a symbolic address or length
         }
         for (auto& o : *ev) {
             if (obj_of(o.val) != ko) continue;
             // [o.val, o.val + len) against [a, a + n)
             if (o.val + len <= a || o.val >= a + n) continue;
-            if (!(o.val <= a && a + n <= o.val + len)) return trace("ranged entry covers part of the word");
+            if (!(o.val <= a && a + n <= o.val + len)) return std::nullopt;  // ranged entry covers part of the word
             z3::expr x = bv(0, 8 * n);
             if (e.kind == Entry::Set) {
                 auto byte = e.cell.extract(7, 0);
@@ -656,7 +623,7 @@ std::optional<z3::expr> SymMem::word_at(uint64_t a, unsigned n, std::size_t upto
                 x = *val;
             } else {  // Copy: the source bytes at the time of the copy
                 const Vs* sv = vs_of(e.src);
-                if (!sv) return trace("copy from a source without a value set");
+                if (!sv) return std::nullopt;  // copy from a source without a value set
                 std::vector<std::pair<z3::expr, z3::expr>> alts;
                 for (auto& so : *sv) {
                     auto w = word_split(so.val + (a - o.val), n, i);
@@ -692,8 +659,6 @@ SymMem::Loaded SymMem::load(const z3::expr& ptr, unsigned width, unsigned tag) {
     unsigned n = (width + 7) / 8;
     // word level (Bv, value sets): the value as an ite over whole stores
     std::optional<z3::expr> word;
-    if (enc_ == MemEncoding::Bv && (n == 2 || n == 4 || n == 8) && vs_trace() && !vs_of(ptr))
-        std::fprintf(stderr, "vs: load w%u address without vs: %s\n", width, vs_blame(*this, ptr).c_str());
     if (enc_ == MemEncoding::Bv && (n == 2 || n == 4 || n == 8))
         if (const Vs* av = vs_of(ptr)) {
             std::vector<z3::expr> ws;

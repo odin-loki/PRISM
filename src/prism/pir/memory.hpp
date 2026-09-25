@@ -180,6 +180,8 @@ private:
     std::vector<z3::expr> keep_;
     mutable std::unordered_map<unsigned, std::optional<Vs>> vs_memo_, vs_merged_;
     std::optional<Vs> copy_vs(const Vs* v) const;
+    static constexpr int kVsDepth = 400;
+    mutable int vs_depth_ = 0;
     mutable std::vector<z3::expr> vs_keep_;
     std::optional<z3::expr> word_at(uint64_t a, unsigned n, std::size_t upto);
     std::optional<z3::expr> word_split(uint64_t a, unsigned n, std::size_t upto);

@@ -1020,11 +1020,7 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
             for (auto& n : fn.inlined) s += (s.empty() ? "" : ",") + n;
             f.extra["inlined"] = s;
         }
-        const auto t_fn = std::chrono::steady_clock::now();
         auto v = check_function(fn, check_options(cfg, budget));
-        if (std::getenv("PRISM_PIR_TRACE"))
-            std::fprintf(stderr, "pirtime %s %s %.3f %s\n", u.rel.c_str(), fn.name.c_str(),
-                         std::chrono::duration<double>(std::chrono::steady_clock::now() - t_fn).count(), v.status.c_str());
         pirmem::apply_memory_policy(f, v, fn, mod, irf, fopt, cfg);
         f.status = v.status;
         f.message = v.message;
