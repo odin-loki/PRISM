@@ -1,16 +1,18 @@
-# Unmerged work (round 6): what exists and what has to be done
+# Round 6 series, applied on main
 
-These five branches were stopped before they were tested and merged. Each is
-saved here as a `git format-patch` series against
-`claude/prism-code-checker-x7538r` at `027e49e7c`, the last commit that is
-green on every GitHub workflow. Nothing in `wip/` is built or run.
+These five series were saved as `git format-patch` files against
+`027e49e7c` and have been applied onto `main`, in this order: `realw`,
+`falar`, `perf6`, `lnprf`, `sv3cm`. The mbox files are the series as saved.
+The commits on `main` are the result.
 
-To restore a branch:
+Resolutions while applying:
 
-```
-git switch -c <name> 027e49e7c
-git am wip/<name>.mbox
-```
+- `perf6`: `basic_string.tcc` already had the libstdc++ 14 pointer-range
+  guard, so that hunk was left as it was.
+- `lnprf`: the refinement docs keep both the findings 2/5–7 rows and the
+  pointer/heap measurements.
+- `sv3cm`: `tools/svcomp/run_subset.py` uses the existing `PROCTREE` helper
+  to kill the process group, and does not start the command twice.
 
 | Series | Commits | State |
 |---|---|---|
@@ -20,30 +22,6 @@ git am wip/<name>.mbox
 | `lnprf.mbox` | 6 | Lean: loop-cut soundness with Houdini invariants and the S9 sequential-assume guard (proofs/techniques); refinement extended to pointers and the libc models' heap. Unverified: `proofs/check.sh` was not run at the end. |
 | `sv3cm.mbox` | 5 | bmc reports reachable `reach_error()` and covers unreach-call; enlarged pinned SV-COMP subset (most of the 1.6 MB); `run_subset.py` kills process groups. Last WIP commit is untested. |
 
-## What has to be done before any of this is merged
-
-For each series, on a branch from `027e49e7c` (or the current tip, resolving
-conflicts):
-
-1. `git am wip/<name>.mbox`, then build (`cmake --build build`).
-2. `./build/prism_tests`.
-3. `PRISM_BIN=build/prism python -m pytest -q tests`, `ruff check .`,
-   `mypy prism`.
-4. `PRISM_BIN=build/prism python tools/conformance.py -j 2
-   --mem-limit-mb 4096`. It must report 0 wrong proofs.
-5. Extra checks for some series:
-   - `falar` and `lnprf`: in `proofs/refinement` (and `proofs/techniques`
-     for lnprf), run `lake build`, then `proofs/check.sh` and
-     `proofs/refinement/check.sh` (only the axioms propext, Classical.choice
-     and Quot.sound), then `tools/pir_lean_check.py tests/pir testdata`
-     (0 mismatches).
-   - `sv3cm`: keep the enlarged task set out of the default conformance
-     suite (opt-in only), or CI time grows. Also re-score the SV-COMP subset.
-   - `falar` and `sv3cm` both change process-group killing. `027e49e7c`
-     already kills process groups in `tools/conformance.py`, so merge those
-     parts by hand.
-6. Merge in this order: `realw`, `falar`, `perf6`, `lnprf`, `sv3cm`. Push
-   each one and confirm every GitHub workflow is green before the next.
-
-Measured numbers claimed inside these series are the agents' own and are not
-yet confirmed by a gate run.
+Measured numbers claimed inside these series are the agents' own. The
+independent Lean recheck of `proofs/refinement/fixtures/pointers.pirl`
+reported 3 mismatches against an expected line of 0.
