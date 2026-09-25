@@ -106,6 +106,19 @@ void SymMem::free(const z3::expr& guard, const z3::expr& ptr) {
     for (auto& o : objs_) o.alive = o.alive && !(guard && id == bv(o.id, 64 - kObjShift));
 }
 
+void SymMem::revive(const z3::expr& guard, const z3::expr& ptr) {
+    if (auto k = const_obj(ptr)) {
+        if (*k >= 1 && *k <= objs_.size()) {
+            auto& o = objs_[static_cast<std::size_t>(*k - 1)];
+            if (o.kind == MemKind::Stack) o.alive = o.alive || guard;
+        }
+        return;
+    }
+    auto id = objid(ptr);
+    for (auto& o : objs_)
+        if (o.kind == MemKind::Stack) o.alive = o.alive || (guard && id == bv(o.id, 64 - kObjShift));
+}
+
 z3::expr SymMem::stack_save() { return bv(objs_.size(), 64); }
 
 void SymMem::stack_restore(const z3::expr& guard, const z3::expr& token) {
@@ -361,6 +374,13 @@ void ConcMem::free(uint64_t ptr) {
     auto id = obj_of(ptr);
     if (id == 0 || id > objs.size()) return;
     objs[static_cast<std::size_t>(id - 1)].live = false;
+}
+
+void ConcMem::revive(uint64_t ptr) {
+    auto id = obj_of(ptr);
+    if (id == 0 || id > objs.size()) return;
+    auto& o = objs[static_cast<std::size_t>(id - 1)];
+    if (o.kind == MemKind::Stack) o.live = true;
 }
 
 void ConcMem::stack_restore(uint64_t token) {

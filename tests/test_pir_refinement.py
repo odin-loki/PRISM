@@ -78,13 +78,18 @@ class StaticParity(unittest.TestCase):
                 self.assertIn('if (fl != "inbounds") throw Unsupported{"getelementptr " + fl};', export)
                 self.assertIn("if inb then", _read(REFINE / "PrismRefine" / "XTranslate.lean"))
                 continue
+            if fl == "samesign":
+                # icmp samesign (refinement finding 2): translate.cpp checks it
+                # (UB-POISON when the signs differ), the Lean model has no such
+                # flag, so the exporter must keep refusing it (not in its
+                # allowlist below): the checker never claims a proof for it
+                self.assertIn('check(cur, p2(cur, Op::Ne, na, nb), "samesign", "UB-POISON"', self.cpp)
+                continue
             self.assertIn(fl, {"nsw", "nuw", "exact", "disjoint", "nneg"}, msg=fl)
         # the exporter's flag allowlist for the other instructions is exactly the modelled set
         self.assertEqual(set(re.findall(r'fl != "([a-z]+)"', export)) - {"inbounds"},
                          {"nsw", "nuw", "exact", "disjoint", "nneg"})
-        # samesign is a poison flag translate.cpp ignores: the exporter must
-        # refuse it rather than let the checker claim a proof for it
-        self.assertIn('fl != "nneg"', export)
+        self.assertNotIn('fl != "samesign"', export)
 
     def test_fragment_operator_names_match_op_name(self):
         names = dict(re.findall(r'case Op::(\w+): return "([^"]+)";', self.pir))

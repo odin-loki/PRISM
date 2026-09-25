@@ -250,7 +250,10 @@ struct Stmt {
     //   MemSet       args [dst, byte i8, len i64]
     //   StackRestore args [token i64]      stack objects with id > token end
     //   StackSave    dst := token (i64)
-    enum Kind { Assign, Check, Assume, Alloc, Free, Load, Store, MemCpy, MemSet, StackSave, StackRestore };
+    //   Revive       args [ptr]            a stack object's lifetime starts again
+    //                (llvm.lifetime.start; other objects: no effect; its bytes
+    //                are set separately, checks are separate)
+    enum Kind { Assign, Check, Assume, Alloc, Free, Load, Store, MemCpy, MemSet, StackSave, StackRestore, Revive };
     Kind kind = Assign;
     int dst = -1;              // Assign
     Op op = Op::Copy;

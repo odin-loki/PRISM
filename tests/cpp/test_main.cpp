@@ -5655,6 +5655,112 @@ TEST_CASE("pir: a false llvm.assume is a checked violation, not a silent path cu
     CHECK(prism::laws::is_proof(before.status));
 }
 
+TEST_CASE("pir: LangRef-defined IR is not reported, samesign poison is (refinement findings 2, 5, 6, 7)") {
+    auto verdict = [](const std::string& ir, const std::string& fn) {
+        auto t = pir_of(ir, fn);
+        REQUIRE_MESSAGE(t.fn.has_value(), t.reason);
+        return prism::pir::check_function(*t.fn, 8, 30);
+    };
+    const std::string decls =
+        "declare void @llvm.lifetime.start.p0(i64, ptr)\ndeclare void @llvm.lifetime.end.p0(i64, ptr)\n"
+        "declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)\n"
+        "declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)\n";
+    // finding 5: `freeze poison` is an arbitrary value, not a use of poison
+    auto frz = verdict("define i32 @fp(i32 %x) {\nentry:\n  %f = freeze i32 poison\n  %z = and i32 %f, 0\n"
+                       "  %d = or i32 %z, 1\n  %q = sdiv i32 100, %d\n  ret i32 %q\n}\n",
+                       "fp");
+    CHECK(frz.status == prism::laws::PROVED);
+    // ... and truly arbitrary: it may be 0
+    auto frz0 = verdict("define i32 @fp0() {\nentry:\n  %f = freeze i32 poison\n  %q = sdiv i32 100, %f\n"
+                        "  ret i32 %q\n}\n",
+                        "fp0");
+    CHECK(frz0.status == prism::laws::FAILED);
+    CHECK(frz0.cls == "INT-DIV-ZERO");
+    // poison outside freeze is still a use of poison
+    auto pois = verdict("define i32 @pu(i32 %x) {\nentry:\n  %y = add i32 poison, %x\n  ret i32 %y\n}\n", "pu");
+    CHECK(pois.status == prism::laws::FAILED);
+    CHECK(pois.cls == "UB-POISON");
+    // finding 2: icmp samesign is poison when the operands' signs differ
+    auto ss = verdict("define i32 @ss(i32 %a, i32 %b) {\nentry:\n  %c = icmp samesign ult i32 %a, %b\n"
+                      "  %r = zext i1 %c to i32\n  ret i32 %r\n}\n",
+                      "ss");
+    CHECK(ss.status == prism::laws::FAILED);
+    CHECK(ss.cls == "UB-POISON");
+    auto ss_ok = verdict("define i32 @ss2(i32 %a, i32 %b) {\nentry:\n  %a2 = and i32 %a, 255\n"
+                         "  %b2 = and i32 %b, 255\n  %c = icmp samesign ult i32 %a2, %b2\n"
+                         "  %r = zext i1 %c to i32\n  ret i32 %r\n}\n",
+                         "ss2");
+    CHECK(ss_ok.status == prism::laws::PROVED);
+    // finding 6: llvm.memcpy may copy an object exactly onto itself ...
+    auto self = verdict(decls + "define i32 @cs(i1 %c) {\nentry:\n  %a = alloca [4 x i8], align 1\n"
+                                "  %b = alloca [4 x i8], align 1\n"
+                                "  call void @llvm.memset.p0.i64(ptr %a, i8 7, i64 4, i1 false)\n"
+                                "  %p = select i1 %c, ptr %a, ptr %b\n"
+                                "  call void @llvm.memcpy.p0.p0.i64(ptr %a, ptr %p, i64 4, i1 false)\n"
+                                "  ret i32 0\n}\n",
+                        "cs");
+    CHECK(self.status == prism::laws::PROVED);
+    // ... but not onto an overlapping, different range
+    auto part = verdict(decls + "define i32 @cp(i1 %c) {\nentry:\n  %a = alloca [8 x i8], align 1\n"
+                                "  call void @llvm.memset.p0.i64(ptr %a, i8 7, i64 8, i1 false)\n"
+                                "  %d = getelementptr inbounds i8, ptr %a, i64 1\n"
+                                "  %p = select i1 %c, ptr %a, ptr %d\n"
+                                "  call void @llvm.memcpy.p0.p0.i64(ptr %a, ptr %p, i64 4, i1 false)\n"
+                                "  ret i32 0\n}\n",
+                        "cp");
+    CHECK(part.status == prism::laws::FAILED);
+    CHECK(part.cls == "MEM-OVERLAP");
+    // finding 7: lifetime.start after lifetime.end starts a new lifetime
+    auto again = verdict(decls + "define i32 @la(i32 %x) {\nentry:\n  %a = alloca i32, align 4\n"
+                                 "  call void @llvm.lifetime.start.p0(i64 4, ptr %a)\n"
+                                 "  store i32 %x, ptr %a, align 4\n"
+                                 "  call void @llvm.lifetime.end.p0(i64 4, ptr %a)\n"
+                                 "  call void @llvm.lifetime.start.p0(i64 4, ptr %a)\n"
+                                 "  store i32 5, ptr %a, align 4\n  %v = load i32, ptr %a, align 4\n"
+                                 "  call void @llvm.lifetime.end.p0(i64 4, ptr %a)\n  ret i32 %v\n}\n",
+                         "la");
+    CHECK(again.status == prism::laws::PROVED);
+    // ... whose bytes are indeterminate
+    auto fresh = verdict(decls + "define i32 @lu(i32 %x) {\nentry:\n  %a = alloca i32, align 4\n"
+                                 "  store i32 %x, ptr %a, align 4\n"
+                                 "  call void @llvm.lifetime.end.p0(i64 4, ptr %a)\n"
+                                 "  call void @llvm.lifetime.start.p0(i64 4, ptr %a)\n"
+                                 "  %v = load i32, ptr %a, align 4\n  ret i32 %v\n}\n",
+                         "lu");
+    CHECK(fresh.status == prism::laws::FAILED);
+    CHECK(fresh.cls == "UNINIT-READ");
+    // an access after the end, before a new start, is still reported
+    auto dead = verdict(decls + "define i32 @ld(i32 %x) {\nentry:\n  %a = alloca i32, align 4\n"
+                                "  call void @llvm.lifetime.start.p0(i64 4, ptr %a)\n"
+                                "  call void @llvm.lifetime.end.p0(i64 4, ptr %a)\n"
+                                "  store i32 %x, ptr %a, align 4\n"
+                                "  call void @llvm.lifetime.start.p0(i64 4, ptr %a)\n  ret i32 %x\n}\n",
+                        "ld");
+    CHECK(dead.status == prism::laws::FAILED);
+    CHECK(dead.cls == "MEM-UAF");
+    // objects larger than 8 bytes, and size -1 (the whole object), are encoded now
+    auto big = verdict(decls + "define i32 @lb(i64 %i) {\nentry:\n  %a = alloca [16 x i32], align 4\n"
+                               "  call void @llvm.lifetime.start.p0(i64 64, ptr %a)\n"
+                               "  call void @llvm.memset.p0.i64(ptr %a, i8 0, i64 64, i1 false)\n"
+                               "  call void @llvm.lifetime.end.p0(i64 64, ptr %a)\n"
+                               "  call void @llvm.lifetime.start.p0(i64 -1, ptr %a)\n"
+                               "  call void @llvm.memset.p0.i64(ptr %a, i8 0, i64 64, i1 false)\n"
+                               "  %j = and i64 %i, 15\n"
+                               "  %p = getelementptr inbounds [16 x i32], ptr %a, i64 0, i64 %j\n"
+                               "  %v = load i32, ptr %p, align 4\n  ret i32 %v\n}\n",
+                       "lb");
+    CHECK(big.status == prism::laws::PROVED);
+    auto big_u = verdict(decls + "define i32 @lbu(i64 %i) {\nentry:\n  %a = alloca [16 x i32], align 4\n"
+                                 "  call void @llvm.memset.p0.i64(ptr %a, i8 0, i64 64, i1 false)\n"
+                                 "  call void @llvm.lifetime.start.p0(i64 -1, ptr %a)\n"
+                                 "  %j = and i64 %i, 15\n"
+                                 "  %p = getelementptr inbounds [16 x i32], ptr %a, i64 0, i64 %j\n"
+                                 "  %v = load i32, ptr %p, align 4\n  ret i32 %v\n}\n",
+                         "lbu");
+    CHECK(big_u.status == prism::laws::FAILED);
+    CHECK(big_u.cls == "UNINIT-READ");
+}
+
 TEST_CASE("pir: undef is a fresh value at every use, branching on it is UB (refinement finding 4)") {
     // LLVM LangRef: every use of an undef value may observe a different
     // value, and `br i1 undef` / a noundef argument or return of undef is UB.

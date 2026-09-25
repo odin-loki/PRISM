@@ -152,6 +152,7 @@ std::string mem_stmt_text(const Function& fn, const Stmt& s) {
         case Stmt::MemSet: return "memset " + args;
         case Stmt::StackSave: return var_text(fn, s.dst) + " = stacksave";
         case Stmt::StackRestore: return "stackrestore " + args;
+        case Stmt::Revive: return "revive " + args;
         default: return "?";
     }
 }
@@ -517,6 +518,7 @@ InterpResult interpret(const Function& fn, const std::vector<uint64_t>& args, ui
                         break;
                     }
                     case Stmt::Free: M.free(A(0)); break;
+                    case Stmt::Revive: M.revive(A(0)); break;
                     case Stmt::Load: {
                         unsigned w = fn.vars[static_cast<std::size_t>(s.dst)].width;
                         unsigned n = (w + 7) / 8;

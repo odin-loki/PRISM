@@ -126,12 +126,17 @@ public:
              int use = 3, bool base_last_field = false);
     void icmp(int b, int dst, const std::string& pred, Arg x, Arg y, int line);
     void ptr_sub_check(int b, Arg x, Arg y, int line);
-    void memcpy_(int b, Arg dst, Arg src, Arg len, bool move, int line);
+    // self_ok: an exact self-copy (dst == src) is not an overlap: llvm.memcpy
+    // (LangRef), not the C memcpy function (its model passes false)
+    void memcpy_(int b, Arg dst, Arg src, Arg len, bool move, int line, bool self_ok = false);
     void memset_(int b, Arg dst, Arg byte, Arg len, int line);
     // heap / new / FILE: returns the pointer (never null here; the models decide failure)
     Arg alloc(int b, Arg size, MemKind k, int init, const std::string& what, int line, int dst = -1);
     void dealloc(int b, Arg ptr, MemKind expected, const std::string& what, int line, bool kill = true);
     void end_lifetime(int b, Arg ptr);  // stack object of an inlined callee at its return
+    // llvm.lifetime.start: a stack object's lifetime starts (again), its
+    // `size` bytes (nullopt: to the end of the object) become uninitialised
+    void lifetime_start(int b, Arg ptr, std::optional<uint64_t> size, int line);
     void stack_escape_check(int b, Arg ret, const std::vector<Arg>& own, int line);
     Arg obj_size_remaining(int b, Arg ptr);  // size - offset (0 when out of range)
     void read_range(int b, Arg ptr, Arg len, int line);  // range access checks (read)

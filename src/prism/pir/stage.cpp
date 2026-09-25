@@ -376,6 +376,12 @@ std::vector<std::string> base_flags(const fs::path& src) {
     std::vector<std::string> f{"-S", "-emit-llvm", "-O0", "-Xclang", "-disable-O0-optnone",
                                "-fno-discard-value-names", "-gline-tables-only"};
     f.push_back(is_cxx(src) ? "-std=c++23" : "-std=c17");
+    // A C/C++ memcpy call stays a call to memcpy (its library model checks
+    // C's rule: no overlap at all, C17 7.24.2.1) instead of becoming the
+    // llvm.memcpy intrinsic, which the LangRef lets copy an object exactly
+    // onto itself (struct assignment; refinement finding 6). Not a disabled
+    // check: the call is checked by the model.
+    f.push_back("-fno-builtin-memcpy");
     // Keep the UB-folding diagnostics on (they are how folded UB is found).
     for (auto* w : {"-Wshift-sign-overflow", "-Winteger-overflow", "-Wshift-overflow",
                     "-Wshift-negative-value", "-Wshift-count-overflow", "-Wshift-count-negative",

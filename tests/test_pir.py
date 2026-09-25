@@ -133,6 +133,8 @@ MEM_EXPECTED: dict[tuple[str, str], tuple[str, str]] = {
     ("mem_str.c", "memcpy_bad"): (laws.FAILED, "MEM-OOB-WRITE"),
     ("mem_str.c", "overlap_bad"): (laws.FAILED, "MEM-OVERLAP"),
     ("mem_str.c", "memmove_ok"): (laws.PROVED, ""),
+    ("mem_str.c", "memcpy_self_bad"): (laws.FAILED, "MEM-OVERLAP"),
+    ("mem_str.c", "struct_self_assign_ok"): (laws.PROVED, ""),
     ("mem_str.c", "memset_bad"): (laws.FAILED, "MEM-OOB-WRITE"),
     ("mem_str.c", "strcat_bad"): (laws.FAILED, "MEM-OOB-WRITE"),
     ("mem_libc.c", "abs_bad"): (laws.FAILED, "INT-SIGNED-OVF"),

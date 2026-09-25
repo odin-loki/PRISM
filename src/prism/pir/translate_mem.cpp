@@ -855,7 +855,7 @@ void MemTr::ptr_sub_check(int b, Arg x, Arg y, int line) {
              "subtraction of pointers into different objects (C17 6.5.6p9)", line);
 }
 
-void MemTr::memcpy_(int b, Arg dst, Arg src, Arg len, bool move, int line) {
+void MemTr::memcpy_(int b, Arg dst, Arg src, Arg len, bool move, int line, bool self_ok) {
     mark_memory();
     Arg n = len.width < 64 ? t_.assign(b, Op::ZExt, 64, {len}, "len") : len;
     Arg nz = p2(b, Op::Ne, n, c64(0));
@@ -866,8 +866,19 @@ void MemTr::memcpy_(int b, Arg dst, Arg src, Arg len, bool move, int line) {
         Arg a = p2(b, Op::Ult, fd, t_.assign(b, Op::Add, 64, {fs, n}, "e"));
         Arg c = p2(b, Op::Ult, fs, t_.assign(b, Op::Add, 64, {fd, n}, "e"));
         Arg same = p2(b, Op::Eq, obj(b, dst), obj(b, src));
-        t_.check(b, band(b, nz, band(b, same, band(b, a, c))), "overlap", "MEM-OVERLAP",
-                 "memcpy with overlapping source and destination (use memmove)", line);
+        Arg ov = band(b, same, band(b, a, c));
+        if (self_ok) {
+            // llvm.memcpy may copy an object exactly onto itself (LangRef;
+            // clang emits it for a struct assignment `*p = *q` that may be a
+            // self-assignment). Refinement finding 6; the Lean mirror is
+            // XTranslate.lean overlapChk.
+            Arg differ = p2(b, Op::Ne, fd, fs);
+            ov = band(b, differ, ov);
+        }
+        t_.check(b, band(b, nz, ov), "overlap", "MEM-OVERLAP",
+                 self_ok ? "memcpy with overlapping, different source and destination ranges (use memmove)"
+                         : "memcpy with overlapping source and destination (use memmove)",
+                 line);
     }
     Stmt s;
     s.kind = Stmt::MemCpy;
@@ -941,6 +952,30 @@ void MemTr::end_lifetime(int b, Arg ptr) {
     s.kind = Stmt::Free;
     s.args = {ptr};
     t_.push(b, s);
+}
+
+void MemTr::lifetime_start(int b, Arg ptr, std::optional<uint64_t> size, int line) {
+    // LangRef: after llvm.lifetime.start the stack object is alive and its
+    // bytes are uninitialised, also when an earlier lifetime.end ended it
+    // (refinement finding 7: it used to stay dead, a false MEM-UAF). Other
+    // objects keep their liveness; their bytes still become uninitialised,
+    // with a write's checks (a freed heap object stays a MEM-UAF).
+    mark_memory();
+    Stmt s;
+    s.kind = Stmt::Revive;
+    s.args = {ptr};
+    t_.push(b, s);
+    Arg n = size ? c64(*size) : obj_size_remaining(b, ptr);
+    if (size && *size >= kMaxObjSize) throw Unenc{"UNENCODED: llvm.lifetime.start of more than 2^47 bytes"};
+    Arg nz = p2(b, Op::Ne, n, c64(0));
+    access_checks(b, ptr, n, true, 1, line, nz);
+    // the bytes: copied from a fresh uninitialised object of the same size
+    Arg tmp = alloc(b, n, MemKind::Extern, 0, "indeterminate bytes (lifetime start)", line);
+    Stmt c;
+    c.kind = Stmt::MemCpy;
+    c.args = {ptr, tmp, n};
+    t_.push(b, c);
+    end_lifetime(b, tmp);
 }
 
 void MemTr::stack_escape_check(int b, Arg ret, const std::vector<Arg>& own, int line) {

@@ -970,6 +970,7 @@ struct Tr final : pirmem::TrApi {
         if (op == "icmp") {
             if (in.ty.kind == ir::Type::Ptr) {
                 if (in.ty.text != "ptr") throw Unenc{"UNENCODED: icmp on " + in.ty.text};
+                if (has_flag(in, "samesign")) throw Unenc{"UNENCODED: icmp samesign ptr"};
                 Arg a = operand(fr, in.ops[0], cur, line);
                 Arg b = operand(fr, in.ops[1], cur, line);
                 mt.icmp(cur, result_var(fr, in), in.pred, a, b, line);
@@ -984,6 +985,15 @@ struct Tr final : pirmem::TrApi {
                 {"ule", Op::Ule}, {"sgt", Op::Sgt}, {"sge", Op::Sge}, {"slt", Op::Slt}, {"sle", Op::Sle}};
             auto it = preds.find(in.pred);
             if (it == preds.end()) throw Unenc{"UNENCODED: icmp " + in.pred};
+            if (has_flag(in, "samesign")) {
+                // LLVM 19+: the result is poison when the operands' signs
+                // differ (refinement finding 2); checked where it is created,
+                // like the other poison flags (finding 3)
+                Arg na = p2(cur, Op::Slt, a, Arg::c(w, 0));
+                Arg nb = p2(cur, Op::Slt, b, Arg::c(w, 0));
+                check(cur, p2(cur, Op::Ne, na, nb), "samesign", "UB-POISON",
+                      "icmp samesign of operands with different signs (poison)", line);
+            }
             emit_assign(cur, result_var(fr, in), it->second, {a, b});
             return;
         }
@@ -1014,7 +1024,10 @@ struct Tr final : pirmem::TrApi {
         }
         if (op == "freeze") {
             unsigned w = vwidth(in.ty, "freeze type");
-            Arg a = operand(fr, in.ops[0], cur, line);
+            // `freeze poison` is defined (LangRef: an arbitrary, fixed value,
+            // like `freeze undef`), not a use of poison (refinement finding 5)
+            Arg a = in.ops[0].v.kind == ir::Value::Poison ? havoc(cur, w, false, false)
+                                                          : operand(fr, in.ops[0], cur, line);
             a.width = w;
             emit_assign(cur, result_var(fr, in), Op::Copy, {a});
             return;
@@ -1183,7 +1196,9 @@ struct Tr final : pirmem::TrApi {
                 return;
             }
             if (starts(n, "llvm.memcpy.") || starts(n, "llvm.memmove.")) {
-                mt.memcpy_(cur, arg(0), arg(1), arg(2), starts(n, "llvm.memmove."), line);
+                // the intrinsic allows an exact self-copy (a C memcpy call is
+                // not lowered to it: the stage compiles with -fno-builtin-memcpy)
+                mt.memcpy_(cur, arg(0), arg(1), arg(2), starts(n, "llvm.memmove."), line, true);
                 return;
             }
             if (starts(n, "llvm.memset.")) {
@@ -1197,19 +1212,17 @@ struct Tr final : pirmem::TrApi {
             }
             if (starts(n, "llvm.lifetime.start") || starts(n, "llvm.lifetime.end")) {
                 // (coroutine frames, docs/PIR.md "Coroutines") end: the object's
-                // lifetime ends; start: its bytes become indeterminate again
-                // (an object already ended stays dead: later accesses are reported)
+                // lifetime ends; start: a stack object's lifetime starts again
+                // (also after an end) and its bytes become indeterminate
                 Arg p = arg(1);
                 if (starts(n, "llvm.lifetime.end")) {
                     mt.end_lifetime(cur, p);
                     return;
                 }
-                if (in.ops.empty() || in.ops[0].v.kind != ir::Value::Int || in.ops[0].v.bits == 0 ||
-                    in.ops[0].v.bits > 8)
-                    throw Unenc{"UNENCODED: call @" + n + " (object larger than 8 bytes)"};
-                auto bytes = static_cast<unsigned>(in.ops[0].v.bits);
-                ir::Type ty{ir::Type::Int, bytes * 8, "i" + std::to_string(bytes * 8), {}};
-                mt.store(cur, p, havoc(cur, bytes * 8, false, false), Arg::c(1, 0), ty, 1, line);
+                if (in.ops.empty() || in.ops[0].v.kind != ir::Value::Int)
+                    throw Unenc{"UNENCODED: call @" + n + " (size not a constant)"};
+                const uint64_t sz = in.ops[0].v.bits;  // -1: the whole object
+                mt.lifetime_start(cur, p, sz == ~uint64_t{0} ? std::nullopt : std::optional<uint64_t>(sz), line);
                 return;
             }
             if (starts(n, "llvm.stackrestore")) {

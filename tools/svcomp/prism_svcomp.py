@@ -962,7 +962,8 @@ def debug_ir(task: Path) -> str | None:
         return None
     try:
         r = subprocess.run([cc, "-x", "c", "-S", "-emit-llvm", "-O0", "-Xclang", "-disable-O0-optnone",
-                            "-fno-discard-value-names", "-g", "-std=c17", "-w", str(task), "-o", "-"],
+                            "-fno-discard-value-names", "-fno-builtin-memcpy", "-g", "-std=c17", "-w", str(task),
+                            "-o", "-"],
                            capture_output=True, text=True, timeout=120)
         if r.returncode != 0:
             return None

@@ -362,6 +362,7 @@ struct Encoding {
         switch (s.kind) {
             case Stmt::Alloc: m.insert_or_assign(s.dst, M().alloc(r, arg(0), s.mkind, s.align, s.init)); break;
             case Stmt::Free: M().free(r, arg(0)); break;
+            case Stmt::Revive: M().revive(r, arg(0)); break;
             case Stmt::Load: {
                 auto ptr = arg(0);
                 auto ld = M().load(ptr, fn.vars[static_cast<std::size_t>(s.dst)].width, s.tag);
@@ -1734,7 +1735,8 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
                 for (std::size_t b = 0; b < L.body.size(); ++b) {
                     if (!L.body[b]) continue;
                     for (auto& s : fn.blocks[b].stmts)
-                        if (s.kind == Stmt::Alloc || s.kind == Stmt::Free || s.kind == Stmt::StackRestore) return true;
+                        if (s.kind == Stmt::Alloc || s.kind == Stmt::Free || s.kind == Stmt::StackRestore ||
+                            s.kind == Stmt::Revive) return true;
                 }
             return false;
         };
@@ -1793,7 +1795,8 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
             for (std::size_t b = 0; b < body.size() && !allocs; ++b) {
                 if (!body[b]) continue;
                 for (auto& s : fn.blocks[b].stmts)
-                    if (s.kind == Stmt::Alloc || s.kind == Stmt::Free || s.kind == Stmt::StackRestore) allocs = true;
+                    if (s.kind == Stmt::Alloc || s.kind == Stmt::Free || s.kind == Stmt::StackRestore ||
+                            s.kind == Stmt::Revive) allocs = true;
             }
             if (allocs) {
                 v.extra["k_induction"] = "not-attempted (allocation or free in the loop)";

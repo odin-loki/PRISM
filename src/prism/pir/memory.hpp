@@ -63,6 +63,7 @@ public:
 
     z3::expr alloc(const z3::expr& guard, const z3::expr& size, MemKind k, unsigned align, int init);
     void free(const z3::expr& guard, const z3::expr& ptr);
+    void revive(const z3::expr& guard, const z3::expr& ptr);  // stack objects only (Stmt::Revive)
     z3::expr stack_save();  // i64 token: number of objects so far
     void stack_restore(const z3::expr& guard, const z3::expr& token);
 
@@ -188,6 +189,7 @@ public:
     // Returns the pointer; fails (nullopt) when the size is too large to run.
     std::optional<uint64_t> alloc(uint64_t size, MemKind k, unsigned align, int init);
     void free(uint64_t ptr);
+    void revive(uint64_t ptr);  // stack objects only (Stmt::Revive)
     uint64_t token() const { return objs.size(); }
     void stack_restore(uint64_t token);
     const Obj* obj(uint64_t ptr) const;
