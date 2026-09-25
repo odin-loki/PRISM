@@ -755,12 +755,26 @@ loaded machine, hence their `timeout:` in the task file). `insert` in the
 middle of a vector did not finish within 900 s in the first round (the
 element shift plus the symbolic position); `vector_insert.cpp` (insert at a
 position 0..3 of a 3-element vector, with a reallocation, and its MEM-UAF
-twin) is in the suite now but was not measured on this branch (the unwind
-tried first bounds its loops at 4). `map_contracts.cpp` checks the map/set
+twin) is in the suite now; measured 2026-09-25 per harness on a loaded
+machine: `vector_insert_uaf_false` FAILED MEM-UAF in 146 s,
+`vector_insert_true` did not finish within 1800 s (the insert position is a
+symbolic index, so the element addresses have no value set and the
+byte-level read-over-write chains stay; its properties are UNSAT one by one
+in 1–10 s each but there are ~1,750 of them at unwind 8, and the grouped
+queries time out under load). `map_contracts.cpp` checks the map/set
 models (insert/operator[]/erase/at/order, multiset counts; false twins: an
 erased element's iterator (MEM-UAF), `*find(absent)`, `--begin()`, a wrong
-order contract); as one file it did not finish within 1200 s on a loaded
-machine (not yet split per function). `cxx_std_contracts.cpp` checks libstdc++'s
+order contract). It did not finish within 1200 s before value sets
+(`map_insert_true` alone: no answer in 600 s, every one of its 1,295
+property VCs timing out); with value sets ("Memory model", "Encodings")
+all 11 harnesses answer in 13–18 s as one file (7/7 PROVED, 4/4 refuted
+with the planted class; 0.4–2.4 s of solving per harness). On this branch
+the file first failed to compile against the model headers at all
+(libstdc++ 14's `<stdexcept>` builds a `wstring` from a `const char*`
+range, which `basic_string.tcc`'s pointer fast path did not accept, so the
+unit silently fell back to libstdc++ and every harness was NEEDS-HARNESS);
+the fast path is now taken only for pointers to the string's own character
+type. `cxx_std_contracts.cpp` checks libstdc++'s
 `std::array`, `std::span`, `std::optional`, `std::unique_ptr` and
 `cxx_string_contracts.cpp` `std::string` (`s[size()]` is the terminator,
 `at` throws iff out of range, `c_str()` after destruction is MEM-UAF). Their
@@ -1187,7 +1201,7 @@ pass; no `-fsanitize` check insertion (Law 8).
 | Classes, inheritance, virtual dispatch | vtable loads are memory reads; indirect calls dispatch over the module's vtable functions (class hierarchy analysis) or address-taken functions; any other target is the havoc fallback (NEEDS-HARNESS) | DONE | `tests/pir/virt_dispatch.cpp`, `conformance/prism/virt` |
 | Exceptions | explicit exception edges, catch matching (typeinfo hierarchy), cleanup, rethrow; escape from `noexcept` (CXX-THROW-NOEXCEPT) or `main` (CXX-UNCAUGHT) is a violation | DONE (dynamic exception specs, `exception_ptr`: UNENCODED) | `tests/pir/eh_*.cpp`, `conformance/prism/eh` |
 | Coroutines | LLVM coroutine passes, then normal encoding (frame = `new` object, resume/destroy = indirect calls) | DONE | `tests/pir/coro_gen.cpp`, `conformance/prism/coro` |
-| Standard library | libc operational models (contract-checked, "Library models verified by PRISM"); C++ model headers `vector`, `map`, `set`, `bits/basic_string.tcc` (`models/cxx/`, differential-tested against libstdc++); other libstdc++ code inlined with `_GLIBCXX_ASSERTIONS`; library throws are real exceptions; unmodelled calls NEEDS-HARNESS | PARTIAL (iostreams, unordered containers, `std::list`/`deque` NEEDS-HARNESS where they recurse or call into `libstdc++.so`; an input-dependent map/set erase followed by a traversal does not finish; libc++ not modelled) | "Library models", "C++ library models" |
+| Standard library | libc operational models (contract-checked, "Library models verified by PRISM"); C++ model headers `vector`, `map`, `set`, `bits/basic_string.tcc` (`models/cxx/`, differential-tested against libstdc++); other libstdc++ code inlined with `_GLIBCXX_ASSERTIONS`; library throws are real exceptions; unmodelled calls NEEDS-HARNESS | PARTIAL (iostreams, unordered containers, `std::list`/`deque` NEEDS-HARNESS where they recurse or call into `libstdc++.so`; `vector::insert` at a symbolic position does not finish within 1800 s; libc++ not modelled) | "Library models", "C++ library models" |
 | Floating point | Z3 floating-point theory (RNE) for half/float/double; FLOAT-CAST-OVF; `--fp-checks` | DONE (x86_fp80/fp128/bfloat, fast-math: UNENCODED) | `tests/pir/fp_arith.c`, `conformance/prism/fp` |
 | Threads and atomics | separate `conc` stage (docs/CONCURRENCY.md) | other work (not in this slice) | docs/CONCURRENCY.md |
 | Modules (`import std;`) | handled by Clang; PRISM consumes the IR | NOT TESTED (Clang 18 needs a prebuilt `std` module) | — |
