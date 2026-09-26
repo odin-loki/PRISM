@@ -27,5 +27,6 @@ third_party/llama.cpp/models/*.gguf
 conformance-out/
 conformance-out-*/
 prism-self-ci/
+prism-self-san/
 svcomp-out/
 soundness-out/

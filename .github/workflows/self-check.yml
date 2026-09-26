@@ -50,10 +50,14 @@ jobs:
         # ASan reserves terabytes of address space: no RLIMIT_AS cap here
         run: python tools/conformance.py -j 2 --mem-limit-mb 0
       - name: PRISM scans its own tree (report only)
-        run: ./build-san/prism . --no-llm --out prism-self || true
+        # inventory + lints + polyglot only: a full pipeline scan of this tree
+        # exceeds the 300-minute job limit (run 36211384015 timed out in wp).
+        run: ./build-san/prism . --no-llm --stage inventory,lints,polyglot --out prism-self || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: prism-self-sanitized
-          path: prism-self/
+          path: |
+            prism-self/report.md
+            prism-self/report.sarif
           retention-days: 14

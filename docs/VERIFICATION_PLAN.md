@@ -31,7 +31,10 @@ gate failed once (missing `pyyaml`, fixed in `c4fc65e9d`); the re-run passes
   workflow), or wait for the 03:17 UTC schedule. Up to about 5 hours.
 - It builds with `-DPRISM_SANITIZE=ON`, runs `prism_tests`, pytest and
   `tools/conformance.py -j 2 --mem-limit-mb 0` against that build, and then
-  `prism . --no-llm --out prism-self`.
+  `prism . --no-llm --stage inventory,lints,polyglot --out prism-self` (same
+  stage limit as `ci.yml` selfcheck; a full pipeline scan exceeds the 300-minute
+  job limit — run [36211384015](https://github.com/odin-loki/PRISM/actions/runs/36211384015)
+  timed out in `wp` with no `report.sarif`).
 - Pass: every step green (no ASan or UBSan report, conformance 0 wrong
   proofs).
 - On failure: every sanitizer report is a real bug in PRISM. Reduce it to a
@@ -77,9 +80,8 @@ the document.
   the commit and the date.
 - Fill in the results table below.
 - `wip/` (round-6 mbox archive) was removed 2026-09-26 after Step 2; the
-  commits on `main` are the record. Step 1 sanitized self-scan triage remains
-  open until run [36211384015](https://github.com/odin-loki/PRISM/actions/runs/36211384015)
-  finishes and the `prism-self-sanitized` artifact is triaged.
+  commits on `main` are the record. Step 1 sanitized self-scan triage is
+  recorded below after a green re-run with the limited self-scan stages.
 
 ## Owner actions (not in this plan's scope)
 
@@ -91,9 +93,9 @@ release, and GPU/LoRA work on the owner's hardware.
 
 | step | commit | date | result |
 |---|---|---|---|
-| 1 sanitizers | `c4fc65e9d` | 2026-09-26 | **PASS (gate)** — run [36211384015](https://github.com/odin-loki/PRISM/actions/runs/36211384015): `prism_tests`, pytest and conformance under ASan+UBSan green (0 wrong proofs); full-tree `prism .` self-scan still running at last check (300 min job limit) |
+| 1 sanitizers | `c4fc65e9d` | 2026-09-26 | **PASS (gate)** — run [36211384015](https://github.com/odin-loki/PRISM/actions/runs/36211384015): `prism_tests`, pytest and conformance under ASan+UBSan green (0 wrong proofs); full-tree self-scan hit 300 min job limit (no SARIF) |
 | 1 self-scan triage — ci selfcheck (`prism-self-report`, lints+polyglot) | `c4fc65e9d` | 2026-09-26 | **0 / 3221 / 1** — 3,222 FAILED SARIF rows: 0 real bugs; 3,221 false alarms (testdata/tests/regex lints on engine without AST); 1 out of scope (`third_party/` inventory skip) |
-| 1 self-scan triage — sanitized (`prism-self-sanitized`) | `c4fc65e9d` | 2026-09-26 | pending (self-scan step of [36211384015](https://github.com/odin-loki/PRISM/actions/runs/36211384015) not finished) |
+| 1 self-scan triage — sanitized (`prism-self-sanitized`) | pending | — | pending re-run after self-scan stage limit fix (same stages as ci selfcheck) |
 | 2 headline table | `02d7da9be` | 2026-09-26 | **PASS** — CI `conformance-metrics` on `main`: 0 wrong proofs; pir 302/379 proved, 165/364 refuted (≥ table); bmc 107/379 proved, 93/364 refuted (≥ table); local cold-cache rerun: 0 wrong proofs in 2111 s |
 | 2 SV-COMP subset | `02d7da9be` | 2026-09-26 | **PASS** — `run_subset.py -j 2`: no-overflow score 88 (35+18 correct, 0 incorrect); unreach-call score 115 (53+9 correct, 0 incorrect); combined **203**/417 |
 | 2 real-world rerun | `02d7da9be` | 2026-09-26 | **PASS** — pinned commits, `--no-llm`: jsmn/tinyexpr/cJSON/cxxopts/zlib all PARSE-GAP 0, CRASH 0, ERROR 0; zlib wall 698 s (finishes; pir still heavy) |

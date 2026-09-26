@@ -287,6 +287,14 @@ class TestLicenceFirewall(unittest.TestCase):
         self.assertTrue(pip_lines, "self-check.yml has no pip install line")
         self.assertTrue(any("pyyaml" in ln.lower() for ln in pip_lines))
 
+    def test_self_check_workflow_limits_selfscan_stages(self):
+        wf = (ROOT / ".github" / "workflows" / "self-check.yml").read_text(encoding="utf-8")
+        self.assertIn(
+            "--stage inventory,lints,polyglot",
+            wf,
+            "self-check self-scan must match ci.yml stage limit (full tree exceeds job timeout)",
+        )
+
 
 class TestSbom(unittest.TestCase):
     def test_cyclonedx_1_5_from_manifest(self):
