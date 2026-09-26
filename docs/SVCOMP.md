@@ -653,12 +653,13 @@ vendored code). Re-running needs Java 21 and the two archives above.
    tool-info module merged into BenchExec, a benchmark definition (a local
    one for the subset is `tools/svcomp/prism-subset.xml`), and the
    registration the rules ask for (the fm-tools metadata and an archived
-   release). **Partial (2026-09-26):** `tools/svcomp/package_archive.py`
+   release).    **Partial (2026-09-26):** `tools/svcomp/package_archive.py`
    builds `prism-svcomp.tar.gz` (binary, wrapper, witness writer, tool-info,
-   `LICENSE`, `README.md`, `MANIFEST.json`); `tools/svcomp/fm-tools.yml` is a
-   registration draft. Still missing: clang/opt bundling or a pinned dependency
-   story, merging `prism.py` into upstream BenchExec, an archived release URL,
-   and fm-tools upload.
+   `LICENSE`, `README.md`, `MANIFEST.json`, `dependencies.json` with the
+   host clang/opt lines seen at pack time); `tools/svcomp/fm-tools.yml` is a
+   registration draft. Still missing: clang/opt bundling (only recorded, not
+   vendored), merging `prism.py` into upstream BenchExec, an archived release
+   URL, and fm-tools upload.
 6. **A version string.** `prism --version` reports `prism 0.1.0 (C++ engine)`
    (same semver as the Python engine's `__version__`); `prism_svcomp.py`
    uses that for witness `producer.version`, falling back to
@@ -682,6 +683,8 @@ vendored code). Re-running needs Java 21 and the two archives above.
   tells them apart by the check name (`shift-base` / `shift31`) and the
   UBSan replay. `pir`'s `shift-base` check also fires for a negative base,
   which the replay then rejects.
-- `bmc` is `NEEDS-HARNESS` on most SV-COMP `main`s because the task's own
-  `__VERIFIER_assert` definition is not inlined (it is not `static`) and
-  not modelled, so its Houdini invariants never reach those tasks.
+- `bmc` is `NEEDS-HARNESS` on some SV-COMP `main`s when `__VERIFIER_assert`
+  is defined with a non-canonical body in the unit. Call sites with no
+  definition (extern only) are rewritten like the canonical SV-COMP shape;
+  a non-`static` definition in the same file is still not inlined, so
+  Houdini invariants on `main` may not see it.

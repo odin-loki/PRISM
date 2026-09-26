@@ -47,6 +47,31 @@ def _git_head() -> str | None:
     return r.stdout.strip() if r.returncode == 0 else None
 
 
+def _tool_line(cmd: list[str]) -> str | None:
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=15, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if r.returncode != 0:
+        return None
+    text = (r.stdout or r.stderr or "").strip()
+    return text.splitlines()[0] if text else None
+
+
+def _dependencies() -> dict:
+    return {
+        "python": f">= {sys.version_info.major}.{sys.version_info.minor}",
+        "clang": _tool_line(["clang", "--version"]),
+        "opt": _tool_line(["opt", "--version"]),
+        "bubblewrap": shutil.which("bwrap") is not None,
+        "prism_env": {
+            "PRISM_FUNCTION_BUDGET": "optional per-function pir wall seconds (0: none)",
+            "PRISM_HOUDINI_BUDGET": "optional run-wide Houdini loop-invariant seconds",
+            "PRISM_CERTIFY_BUDGET": "optional per-function certification seconds (certified mode)",
+        },
+    }
+
+
 def package(prism: Path, out: Path) -> dict:
     if not prism.is_file():
         raise SystemExit(f"prism binary not found: {prism}")
@@ -84,9 +109,14 @@ def package(prism: Path, out: Path) -> dict:
         for src, name in static:
             shutil.copy2(src, root / name)
             manifest["files"].append(name)
+        deps = _dependencies()
+        (root / "dependencies.json").write_text(json.dumps(deps, indent=2) + "\n", encoding="utf-8")
+        manifest["dependencies"] = deps
         manifest["files"].sort()
         (root / "MANIFEST.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+        manifest["files"].append("dependencies.json")
         manifest["files"].append("MANIFEST.json")
+        manifest["files"].sort()
 
         with tarfile.open(out, "w:gz") as tar:
             for path in sorted(root.iterdir()):

@@ -10535,6 +10535,29 @@ def _canonical_verifier_assert(functions: list[FunctionInfo]) -> bool:
     return exits
 
 
+def _body_calls_verifier_assert(body: str) -> bool:
+    c = "__VERIFIER_assert"
+    b = body or ""
+    i = b.find(c)
+    while i >= 0:
+        ok = not (i > 0 and (b[i - 1].isalnum() or b[i - 1] == "_"))
+        k = i + len(c)
+        while k < len(b) and b[k] in " \t":
+            k += 1
+        if ok and k < len(b) and b[k] == "(":
+            return True
+        i = b.find(c, i + 1)
+    return False
+
+
+def _verifier_assert_rewrite_enabled(functions: list[FunctionInfo]) -> bool:
+    if _canonical_verifier_assert(functions):
+        return True
+    has_def = any(f.name == "__VERIFIER_assert" for f in functions)
+    has_calls = any(f.name != "__VERIFIER_assert" and _body_calls_verifier_assert(f.body or "") for f in functions)
+    return not has_def and has_calls
+
+
 def _rewrite_verifier_assert(fn: FunctionInfo) -> FunctionInfo:
     """Each call statement `__VERIFIER_assert(E);` becomes `assert((int)(E));`
     of the same length (bmc_encoder.inc rewrite_verifier_assert)."""
@@ -10578,7 +10601,7 @@ def _rewrite_verifier_assert(fn: FunctionInfo) -> FunctionInfo:
 def run_bmc(functions: list[FunctionInfo], unwind: int) -> list[Finding]:
     from prism.inline import inline_static
     out: list[Finding] = []
-    if _canonical_verifier_assert(functions):
+    if _verifier_assert_rewrite_enabled(functions):
         functions = [fn if fn.name == "__VERIFIER_assert" else _rewrite_verifier_assert(fn) for fn in functions]
     for fn in inline_static(functions):
         # R1: one function the encoder cannot handle (a Z3 sort error, ...)

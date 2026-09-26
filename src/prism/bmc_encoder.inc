@@ -2305,6 +2305,30 @@ bool canonical_verifier_assert(const std::vector<FunctionInfo>& functions) {
     return exits;
 }
 
+bool body_calls_verifier_assert(const std::string& body) {
+    static constexpr std::string_view C = "__VERIFIER_assert";
+    auto ident = [](char ch) { return std::isalnum(static_cast<unsigned char>(ch)) || ch == '_'; };
+    for (std::size_t i = body.find(C); i != std::string::npos; i = body.find(C, i + 1)) {
+        if (i > 0 && ident(body[i - 1])) continue;
+        std::size_t k = i + C.size();
+        while (k < body.size() && (body[k] == ' ' || body[k] == '\t')) ++k;
+        if (k < body.size() && body[k] == '(') return true;
+    }
+    return false;
+}
+
+// Canonical definition, or no definition but call sites only (SV-COMP extern).
+bool verifier_assert_rewrite_enabled(const std::vector<FunctionInfo>& functions) {
+    if (canonical_verifier_assert(functions)) return true;
+    bool has_def = false;
+    bool has_calls = false;
+    for (auto& f : functions) {
+        if (f.name == "__VERIFIER_assert") has_def = true;
+        else if (body_calls_verifier_assert(f.body)) has_calls = true;
+    }
+    return !has_def && has_calls;
+}
+
 FunctionInfo rewrite_verifier_assert(FunctionInfo fn) {
     static constexpr std::string_view C = "__VERIFIER_assert";
     std::string& b = fn.body;

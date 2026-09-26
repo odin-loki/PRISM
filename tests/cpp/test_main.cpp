@@ -793,6 +793,15 @@ int main(void) {
 }
 )");
     CHECK(other["main"].status == prism::laws::NEEDS_HARNESS);
+    // no definition in the unit: assume SV-COMP semantics at call sites
+    auto ext = bmc_source("vassert_extern.c", defs + R"(extern void __VERIFIER_assert(int cond);
+int main(void) {
+  unsigned int x = __VERIFIER_nondet_uint();
+  __VERIFIER_assert(x == x);
+  return 0;
+}
+)");
+    CHECK(prism::laws::is_proof(ext["main"].status));
 }
 
 TEST_CASE("bmc: a reachable reach_error() call is a FUNC-CONTRACT violation (SV-COMP unreach-call)") {

@@ -43,7 +43,12 @@ prism/
   README.md
   LICENSE
   MANIFEST.json
+  dependencies.json
 ```
+
+`dependencies.json` records the clang/opt versions seen when the archive was
+built (not bundled) and optional `PRISM_*` environment knobs documented for
+competition runs.
 
 ## BenchExec
 

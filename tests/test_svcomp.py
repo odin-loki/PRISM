@@ -493,8 +493,14 @@ class PackageArchiveTest(unittest.TestCase):
                 "prism/LICENSE",
                 "prism/README.md",
                 "prism/MANIFEST.json",
+                "prism/dependencies.json",
             ):
                 self.assertIn(want, names)
+            import json
+
+            dep = json.loads(tarfile.open(out).extractfile("prism/dependencies.json").read())
+            self.assertIn("clang", dep)
+            self.assertIn("prism_env", dep)
 
 
 class VersionStringTest(unittest.TestCase):

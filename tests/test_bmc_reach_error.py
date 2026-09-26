@@ -6,7 +6,8 @@
   static definition of the error function is never inlined over the call.
   `abort()` and `__assert_fail()` still only end the path.
 - A canonical `__VERIFIER_assert(int cond)` (`if (!cond) { reach_error(); }`)
-  is checked as `assert((int)(E))` at each call statement; any other
+  is checked as `assert((int)(E))` at each call statement; call sites with
+  no definition in the unit (extern only) use the same rewrite; any other
   definition stays unmodelled.
 
 Both engines: the Python engine directly, the C++ engine through PRISM_BIN
@@ -56,6 +57,9 @@ CASES: dict[str, tuple[str, set[str], str]] = {
     "vassert_other": (DEFS + "int hits;\nvoid __VERIFIER_assert(int cond) {\n  if (!(cond)) {\n    hits++;\n"
                       "  }\n  return;\n}\nint main(void) {\n  int x = __VERIFIER_nondet_int();\n"
                       "  __VERIFIER_assert(x != 5);\n  return 0;\n}\n", {laws.NEEDS_HARNESS}, ""),
+    "vassert_extern": (DEFS + "extern void __VERIFIER_assert(int cond);\nint main(void) {\n"
+                       "  int x = __VERIFIER_nondet_int();\n  __VERIFIER_assert(x == x);\n  return 0;\n}\n",
+                       {laws.PROVED, laws.PROVED_UNBOUNDED}, ""),
 }
 
 

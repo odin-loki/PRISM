@@ -18,3 +18,5 @@ participation:
     notes: >
       LP64 only today; ILP32 tasks with width-dependent types answer unknown.
       valid-memsafety refutations only; no true memsafety proofs yet.
+      Pinned subset (2026-09-26): 203/417 on no-overflow + unreach-call, 0 incorrect.
+      Archive: tools/svcomp/package_archive.py (dependencies.json lists host clang/opt).
