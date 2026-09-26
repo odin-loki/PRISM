@@ -388,6 +388,7 @@ const std::vector<TaxonomyClass>& taxonomy_classes() {
         {"MEM-FLEX-ARRAY", "flexible-array struct allocated at header size only", {131, 119}, {{"lints", "FINDS"}}},
         {"MEM-LEAK", "heap allocation freed on some returns only", {401}, {{"lints", "FINDS"}}},
         {"STR-NULL-ARG", "string API called on unchecked pointer parameter", {476}, {{"lints", "FINDS"}}},
+        {"STR-NULL-MEMBER", "string API called on unchecked pointer member", {476}, {{"lints", "FINDS"}}},
         {"CXX-USE-AFTER-MOVE", "value used after std::move", {672}, {{"lints", "FINDS"}}},
         {"CXX-DANGLING-REF", "view or span borrows local storage", {416}, {{"lints", "FINDS"}}},
         {"CXX-ITERATOR-INVALID", "iterator used after container mutation", {119}, {{"lints", "FINDS"}}},

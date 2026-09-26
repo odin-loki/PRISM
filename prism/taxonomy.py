@@ -772,6 +772,8 @@ CLASSES: list[dict] = [
          seen={"lints": FINDS}),
     dict(id="STR-NULL-ARG", name="string API called on unchecked pointer parameter", cwe=[476],
          seen={"lints": FINDS}),
+    dict(id="STR-NULL-MEMBER", name="string API called on unchecked pointer member", cwe=[476],
+         seen={"lints": FINDS}),
     dict(id="CXX-USE-AFTER-MOVE", name="value used after std::move", cwe=[672],
          seen={"lints": FINDS}),
     dict(id="CXX-DANGLING-REF", name="view or span borrows local storage", cwe=[416],

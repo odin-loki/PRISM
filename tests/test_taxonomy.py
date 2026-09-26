@@ -108,7 +108,7 @@ class TestCoverageFromReport(unittest.TestCase):
                     "UNINIT-RETURN", "PTR-UNINIT", "UNINIT-BRANCH",
                     "STR-OFF-BY-ONE",
                     "CTRL-SIBLING-ASYMMETRY", "API-IGNORED-ERROR",
-                    "RES-FD-LEAK", "MEM-VLA-SIZE", "MEM-LEAK", "STR-NULL-ARG",
+                    "RES-FD-LEAK", "MEM-VLA-SIZE", "MEM-LEAK", "STR-NULL-ARG", "STR-NULL-MEMBER",
                     "CXX-USE-AFTER-MOVE", "CXX-DANGLING-REF", "CXX-ITERATOR-INVALID",
                     "CXX-SELF-ASSIGN", "MEM-MISMATCHED-FREE",
                     "MEM-PTR-ARITH", "FLOAT-UB",

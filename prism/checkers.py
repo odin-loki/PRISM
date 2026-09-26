@@ -523,6 +523,7 @@ def _findings_for_file(path: Path, rel: str) -> list[Finding]:
     _mem_leak(lines, rel, funcs, out)
     _mismatched_free(lines, rel, funcs, out)
     _str_null_arg(lines, rel, funcs, out)
+    _str_null_member(lines, rel, funcs, out)
     _ptr_arith(lines, rel, funcs, out)
     _float_ub(lines, rel, funcs, out)
     _vla_size(lines, rel, funcs, out)
@@ -13609,6 +13610,87 @@ def _str_null_arg(lines, rel, funcs, out) -> None:
                         function=fn.name, line=line, cls="STR-NULL-ARG",
                         message=f"{callee}() called with unchecked pointer "
                         f"parameter {arg}",
+                        strength=laws.STRENGTH_FINDS,
+                        evidence=lines[line - 1].strip()
+                        if 0 < line <= len(lines) else "",
+                    ))
+                    reported = True
+                    break
+                if reported:
+                    break
+
+
+_MEMBER_NULL_TEST: dict[tuple[str, str], re.Pattern[str]] = {}
+
+
+def _parse_member_arg(arg: str) -> tuple[str, str] | None:
+    arg = arg.strip()
+    m = _rx(r"^(\w+)->(\w+)$").match(arg)
+    if m:
+        return m.group(1), m.group(2)
+    m = _rx(r"^(\w+)\.(\w+)$").match(arg)
+    if m:
+        return m.group(1), m.group(2)
+    return None
+
+
+def _member_null_tested(param: str, member: str, body: str) -> bool:
+    access = f"{param}->{member}"
+    if access not in body and f"{param}.{member}" not in body:
+        return False
+    key = (param, member)
+    pat = _MEMBER_NULL_TEST.get(key)
+    if pat is None:
+        v, m = re.escape(param), re.escape(member)
+        arrow = rf"{v}\s*->\s*{m}"
+        dot = rf"{v}\s*\.\s*{m}"
+        acc = rf"(?:{arrow}|{dot})"
+        tests = (
+            rf"\bif\s*\(\s*{acc}\s*==\s*(?:NULL|nullptr|0)\b",
+            rf"\bif\s*\(\s*(?:NULL|nullptr|0)\s*==\s*{acc}\b",
+            rf"\bif\s*\(\s*{acc}\s*!=\s*(?:NULL|nullptr|0)\b",
+            rf"\bif\s*\(\s*(?:NULL|nullptr|0)\s*!=\s*{acc}\b",
+            rf"\bif\s*\(\s*!\s*{acc}\b",
+            rf"(?:\|\||&&|\()\s*\(?\s*{acc}\s*[!=]=\s*(?:NULL|nullptr|0)\b",
+            rf"(?:\|\||&&|\()\s*\(?\s*(?:NULL|nullptr|0)\s*[!=]=\s*{acc}\b",
+            rf"(?:\|\||&&|\()\s*!\s*{acc}\b",
+        )
+        pat = re.compile("|".join(f"(?:{t})" for t in tests))
+        _MEMBER_NULL_TEST[key] = pat
+    return bool(pat.search(body))
+
+
+def _str_null_member(lines, rel, funcs, out) -> None:
+    for fn in funcs:
+        if fn.kind != "POINTER":
+            continue
+        ptr_params = set(_pointer_param_names(fn))
+        if not ptr_params:
+            continue
+        start = fn.span[0]
+        reported = False
+        for i, ln in enumerate(fn.body.splitlines()):
+            if reported:
+                break
+            for callee, arg_idxs in _STR_NULL_FN.items():
+                args = _find_call_args(ln, callee)
+                if args is None:
+                    continue
+                for idx in arg_idxs:
+                    if idx >= len(args):
+                        continue
+                    parsed = _parse_member_arg(args[idx])
+                    if parsed is None:
+                        continue
+                    param, member = parsed
+                    if param not in ptr_params or _member_null_tested(param, member, fn.body):
+                        continue
+                    line = start + i
+                    out.append(Finding(
+                        stage="lints", status=laws.FAILED, file=rel,
+                        function=fn.name, line=line, cls="STR-NULL-MEMBER",
+                        message=f"{callee}() called with unchecked member "
+                        f"{param}->{member}",
                         strength=laws.STRENGTH_FINDS,
                         evidence=lines[line - 1].strip()
                         if 0 < line <= len(lines) else "",

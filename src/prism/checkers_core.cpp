@@ -1565,6 +1565,35 @@ bool param_null_tested(std::string_view name, std::string_view body) {
     return false;
 }
 
+bool member_null_tested(std::string_view param, std::string_view member, std::string_view body) {
+    auto v = re_escape(param), m = re_escape(member);
+    auto acc = "(?:" + v + "\\s*->\\s*" + m + "|" + v + "\\s*\\.\\s*" + m + ")";
+    std::vector<std::string> tests = {
+        "\\bif\\s*\\(\\s*" + acc + "\\s*==\\s*(?:NULL|nullptr|0)\\b",
+        "\\bif\\s*\\(\\s*(?:NULL|nullptr|0)\\s*==\\s*" + acc + "\\b",
+        "\\bif\\s*\\(\\s*" + acc + "\\s*!=\\s*(?:NULL|nullptr|0)\\b",
+        "\\bif\\s*\\(\\s*(?:NULL|nullptr|0)\\s*!=\\s*" + acc + "\\b",
+        "\\bif\\s*\\(\\s*!" + acc + "\\b",
+        "(?:\\|\\||&&|\\()\\s*\\(?\\s*" + acc + "\\s*[!=]=\\s*(?:NULL|nullptr|0)\\b",
+        "(?:\\|\\||&&|\\()\\s*\\(?\\s*(?:NULL|nullptr|0)\\s*[!=]=\\s*" + acc + "\\b",
+        "(?:\\|\\||&&|\\()\\s*!" + acc + "\\b",
+    };
+    for (auto& p : tests)
+        if (Regex(p).search(body)) return true;
+    return false;
+}
+
+std::optional<std::pair<std::string, std::string>> parse_member_arg(std::string_view arg) {
+    auto s = strip(arg);
+    Regex arrow("^(?P<param>[A-Za-z_]\\w*)\\s*->\\s*(?P<member>[A-Za-z_]\\w*)$");
+    if (auto m = arrow.search_match(s))
+        return std::pair{m->named("param"), m->named("member")};
+    Regex dot("^(?P<param>[A-Za-z_]\\w*)\\s*\\.\\s*(?P<member>[A-Za-z_]\\w*)$");
+    if (auto m = dot.search_match(s))
+        return std::pair{m->named("param"), m->named("member")};
+    return std::nullopt;
+}
+
 bool param_if_guard(std::string_view name, std::string_view body) {
     auto v = re_escape(name);
     if (Regex("\\bif\\s*\\(\\s*!\\s*" + v + "\\b").search(body)) return true;
@@ -3314,6 +3343,41 @@ void str_null_arg(const std::vector<std::string>& lines, std::string_view rel,
     }
 }
 
+void str_null_member(const std::vector<std::string>& lines, std::string_view rel,
+                     const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
+    for (auto& fn : funcs) {
+        if (fn.kind != "POINTER") continue;
+        auto ptr_params = pointer_param_names(fn);
+        if (ptr_params.empty()) continue;
+        std::unordered_set<std::string> params(ptr_params.begin(), ptr_params.end());
+        int start = fn.span.first;
+        bool reported = false;
+        int i = 0;
+        for (auto& ln : split_lines(fn.body)) {
+            if (reported) break;
+            for (auto& [callee, arg_idxs] : kStrNullFn) {
+                auto args = find_call_args(ln, callee);
+                if (!args) continue;
+                for (int idx : arg_idxs) {
+                    if (idx >= static_cast<int>(args->size())) continue;
+                    auto parsed = parse_member_arg((*args)[static_cast<std::size_t>(idx)]);
+                    if (!parsed || !params.contains(parsed->first) ||
+                        member_null_tested(parsed->first, parsed->second, fn.body))
+                        continue;
+                    lint_add(out, rel, fn.name, start + i, "STR-NULL-MEMBER",
+                             callee + "() called with unchecked member " + parsed->first + "->" +
+                                 parsed->second,
+                             lines);
+                    reported = true;
+                    break;
+                }
+                if (reported) break;
+            }
+            ++i;
+        }
+    }
+}
+
 void ptr_arith(const std::vector<std::string>& lines, std::string_view rel,
                const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     for (auto& fn : funcs) {
@@ -4258,6 +4322,7 @@ void checkers_core(const std::vector<std::string>& lines, std::string_view rel,
     mem_leak(lines, rel, funcs, out);
     mismatched_free(lines, rel, funcs, out);
     str_null_arg(lines, rel, funcs, out);
+    str_null_member(lines, rel, funcs, out);
     ptr_arith(lines, rel, funcs, out);
     float_ub(lines, rel, funcs, out);
     vla_size(lines, rel, funcs, out);

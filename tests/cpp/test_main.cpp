@@ -384,6 +384,8 @@ TEST_CASE("real-world forms: export macros and TEST() bodies are parsed") {
     CHECK(has_hit(hits, 51, "INT-BOOL-AS-BIT"));
     CHECK(has_hit(hits, 62, "CTRL-MISSING-RETURN"));
     CHECK(has_hit(hits, 72, "STR-NULL-ARG"));  // CVE-2024-31755 shape
+    CHECK(has_hit(hits, 79, "STR-NULL-MEMBER"));  // CVE-2023-50472 shape
+    CHECK(!has_hit(hits, 88, "STR-NULL-MEMBER"));
     CHECK(has_hit(hits, 78, "UNINIT-BRANCH"));
 }
 

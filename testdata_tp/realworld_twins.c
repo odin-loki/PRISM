@@ -35,7 +35,7 @@ TEST(alloc) {
     p[0] = 1;
 }
 
-struct node { int type; };
+struct node { int type; char *valuestring; };
 
 int null_then_deref(struct node *n) {
     if (!n) return n->type;
@@ -70,6 +70,22 @@ unsigned long set_value_unchecked(struct node *object, const char *valuestring)
         return 0;
     }
     return strlen(valuestring);
+}
+
+/* cJSON 1.7.16 CVE-2023-50472 shape: member field reaches strlen unchecked. */
+unsigned long set_value_member(struct node *object, const char *valuestring)
+{
+    (void)valuestring;
+    return strlen(object->valuestring);
+}
+
+unsigned long set_value_member_ok(struct node *object, const char *valuestring)
+{
+    (void)valuestring;
+    if (object->valuestring == NULL) {
+        return 0;
+    }
+    return strlen(object->valuestring);
 }
 
 int flag_unset(int k) {

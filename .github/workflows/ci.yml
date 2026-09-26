@@ -52,6 +52,8 @@ jobs:
         run: cmake --build build
       - name: prism_tests
         run: ./build/prism_tests
+      - name: SV-COMP archive packager smoke
+        run: python3 tools/svcomp/package_archive.py --prism build/prism --out /tmp/prism-svcomp.tar.gz
       - name: GUI smoke (headless Qt, real pipeline run through the window)
         run: |
           mkdir -p gui-smoke/src
