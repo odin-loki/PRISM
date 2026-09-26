@@ -1,5 +1,9 @@
 # Verification plan after round 6
 
+**Status (2026-09-26): complete.** Every row in the results table below is
+**PASS**. Step 1 gate: run [36226637147](https://github.com/odin-loki/PRISM/actions/runs/36226637147)
+on `e9c73aadc`; docs and triage helper on `6e7fdc4e7`.
+
 Round 6 (`realw`, `falar`, `perf6`, `lnprf`, `sv3cm`) is merged on `main`. On `015b39c8c` every gating workflow was green: PRISM CI,
 the conformance release gate, proofs, the independent Lean recheck and docs.
 Run [36203977754](https://github.com/odin-loki/PRISM/actions/runs/36203977754) on `02d7da9be` failed at pytest (missing `pyyaml`, fixed in `c4fc65e9d`). Re-run [36211384015](https://github.com/odin-loki/PRISM/actions/runs/36211384015) on `c4fc65e9d` passed the sanitizer gate but the full-tree self-scan hit the 300-minute job limit. Run [36226637147](https://github.com/odin-loki/PRISM/actions/runs/36226637147) on `e9c73aadc` is green end-to-end (see results table).
