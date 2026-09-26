@@ -18,6 +18,8 @@ CLASSES: list[dict] = [
          seen={"bmc": PROVES, "esbmc": PROVES, "fuzz": FINDS, "concolic": FINDS, "cppcheck": FINDS, "lints": SOME}),
     dict(id="MEM-OOB-WRITE", name="out-of-bounds write", cwe=[787],
          seen={"bmc": PROVES, "esbmc": PROVES, "fuzz": FINDS, "concolic": FINDS, "cppcheck": FINDS}),
+    dict(id="PTR-CHAIN-NULL", name="chained pointer dereference without intermediate null check", cwe=[476],
+         seen={"lints": FINDS}),
     dict(id="PTR-NULL-DEREF", name="null pointer dereference", cwe=[476],
          seen={"bmc": PROVES, "lints": SOME, "cppcheck": FINDS, "fuzz": FINDS}),
     dict(id="PTR-UNCHECKED-ALLOC", name="unchecked allocation", cwe=[690],

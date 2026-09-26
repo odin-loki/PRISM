@@ -3343,6 +3343,40 @@ void str_null_arg(const std::vector<std::string>& lines, std::string_view rel,
     }
 }
 
+void ptr_chain_null(const std::vector<std::string>& lines, std::string_view rel,
+                    const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
+    static Regex chain(R"(\b(\w+)->(\w+)->)");
+    for (auto& fn : funcs) {
+        auto body_lines = split_lines(fn.body);
+        int start = fn.span.first;
+        std::set<std::tuple<int, std::string, std::string>> seen;
+        for (int i = 0; i < static_cast<int>(body_lines.size()); ++i) {
+            auto& ln = body_lines[static_cast<std::size_t>(i)];
+            std::string prior;
+            for (int j = 0; j < i; ++j) {
+                if (!prior.empty()) prior += "\n";
+                prior += body_lines[static_cast<std::size_t>(j)];
+            }
+            for (auto& match : chain.finditer(ln)) {
+                auto param = match.group(1);
+                auto member = match.group(2);
+                int line = start + i;
+                auto key = std::tuple{line, param, member};
+                if (seen.contains(key)) continue;
+                std::string before = prior;
+                if (!before.empty()) before += "\n";
+                before += ln.substr(0, match.spans[0].first);
+                if (member_null_tested(param, member, before)) continue;
+                seen.insert(key);
+                lint_add(out, rel, fn.name, line, "PTR-CHAIN-NULL",
+                         "chained dereference " + param + "->" + member + "->... without a null check on " +
+                             param + "->" + member,
+                         lines);
+            }
+        }
+    }
+}
+
 void str_null_member(const std::vector<std::string>& lines, std::string_view rel,
                      const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     for (auto& fn : funcs) {
@@ -4323,6 +4357,7 @@ void checkers_core(const std::vector<std::string>& lines, std::string_view rel,
     mismatched_free(lines, rel, funcs, out);
     str_null_arg(lines, rel, funcs, out);
     str_null_member(lines, rel, funcs, out);
+    ptr_chain_null(lines, rel, funcs, out);
     ptr_arith(lines, rel, funcs, out);
     float_ub(lines, rel, funcs, out);
     vla_size(lines, rel, funcs, out);

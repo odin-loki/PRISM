@@ -378,14 +378,16 @@ TEST_CASE("real-world forms: export macros and TEST() bodies are parsed") {
     CHECK(has_hit(hits, 11, "CTRL-FALLTHROUGH"));
     CHECK(has_hit(hits, 19, "MEM-VLA-SIZE"));
     CHECK(has_hit(hits, 27, "MEM-VLA-SIZE"));
-    CHECK(has_hit(hits, 41, "PTR-NULL-DEREF"));
     CHECK(has_hit(hits, 42, "PTR-NULL-DEREF"));
-    CHECK(has_hit(hits, 50, "INT-BOOL-AS-BIT"));
+    CHECK(has_hit(hits, 43, "PTR-NULL-DEREF"));
     CHECK(has_hit(hits, 51, "INT-BOOL-AS-BIT"));
-    CHECK(has_hit(hits, 62, "CTRL-MISSING-RETURN"));
-    CHECK(has_hit(hits, 72, "STR-NULL-ARG"));  // CVE-2024-31755 shape
-    CHECK(has_hit(hits, 79, "STR-NULL-MEMBER"));  // CVE-2023-50472 shape
-    CHECK(!has_hit(hits, 88, "STR-NULL-MEMBER"));
+    CHECK(has_hit(hits, 52, "INT-BOOL-AS-BIT"));
+    CHECK(has_hit(hits, 63, "CTRL-MISSING-RETURN"));
+    CHECK(has_hit(hits, 73, "STR-NULL-ARG"));  // CVE-2024-31755 shape
+    CHECK(has_hit(hits, 80, "STR-NULL-MEMBER"));  // CVE-2023-50472 shape
+    CHECK(!has_hit(hits, 89, "STR-NULL-MEMBER"));
+    CHECK(has_hit(hits, 96, "PTR-CHAIN-NULL"));  // CVE-2023-50471 shape
+    CHECK(!has_hit(hits, 105, "PTR-CHAIN-NULL"));
     CHECK(has_hit(hits, 78, "UNINIT-BRANCH"));
 }
 

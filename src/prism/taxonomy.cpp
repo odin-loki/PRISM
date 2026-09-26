@@ -11,6 +11,8 @@ const std::vector<TaxonomyClass>& taxonomy_classes() {
     static const std::vector<TaxonomyClass> C = {
         {"MEM-OOB-READ", "out-of-bounds read", {125}, {{"bmc", "PROVES"}, {"esbmc", "PROVES"}, {"fuzz", "FINDS"}, {"concolic", "FINDS"}, {"cppcheck", "FINDS"}, {"lints", "SOME"}}},
         {"MEM-OOB-WRITE", "out-of-bounds write", {787}, {{"bmc", "PROVES"}, {"esbmc", "PROVES"}, {"fuzz", "FINDS"}, {"concolic", "FINDS"}, {"cppcheck", "FINDS"}}},
+        {"PTR-CHAIN-NULL", "chained pointer dereference without intermediate null check", {476},
+         {{"lints", "FINDS"}}},
         {"PTR-NULL-DEREF", "null pointer dereference", {476}, {{"bmc", "PROVES"}, {"lints", "SOME"}, {"cppcheck", "FINDS"}, {"fuzz", "FINDS"}}},
         {"PTR-UNCHECKED-ALLOC", "unchecked allocation", {690}, {{"lints", "FINDS"}, {"cppcheck", "FINDS"}}},
         {"MEM-UAF", "use after free", {416}, {{"lints", "FINDS"}, {"cppcheck", "FINDS"}, {"infer", "FINDS"}}},

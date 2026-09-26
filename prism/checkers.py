@@ -524,6 +524,7 @@ def _findings_for_file(path: Path, rel: str) -> list[Finding]:
     _mismatched_free(lines, rel, funcs, out)
     _str_null_arg(lines, rel, funcs, out)
     _str_null_member(lines, rel, funcs, out)
+    _ptr_chain_null(lines, rel, funcs, out)
     _ptr_arith(lines, rel, funcs, out)
     _float_ub(lines, rel, funcs, out)
     _vla_size(lines, rel, funcs, out)
@@ -13699,6 +13700,37 @@ def _str_null_member(lines, rel, funcs, out) -> None:
                     break
                 if reported:
                     break
+
+
+_CHAIN_DEREF = _rx(r"\b(\w+)->(\w+)->")
+
+
+def _ptr_chain_null(lines, rel, funcs, out) -> None:
+    for fn in funcs:
+        body_lines = fn.body.splitlines()
+        start = fn.span[0]
+        seen: set[tuple[int, str, str]] = set()
+        for i, ln in enumerate(body_lines):
+            prior = "\n".join(body_lines[:i])
+            for m in _CHAIN_DEREF.finditer(ln):
+                param, member = m.group(1), m.group(2)
+                line = start + i
+                key = (line, param, member)
+                if key in seen:
+                    continue
+                before = (prior + "\n" + ln[:m.start()]) if prior else ln[:m.start()]
+                if _member_null_tested(param, member, before):
+                    continue
+                seen.add(key)
+                out.append(Finding(
+                    stage="lints", status=laws.FAILED, file=rel,
+                    function=fn.name, line=line, cls="PTR-CHAIN-NULL",
+                    message=f"chained dereference {param}->{member}->... without "
+                    f"a null check on {param}->{member}",
+                    strength=laws.STRENGTH_FINDS,
+                    evidence=lines[line - 1].strip()
+                    if 0 < line <= len(lines) else "",
+                ))
 
 
 def _move_use_after(name: str, ln: str) -> bool:

@@ -36,6 +36,7 @@ TEST(alloc) {
 }
 
 struct node { int type; char *valuestring; };
+struct link { struct link *prev; struct link *next; };
 
 int null_then_deref(struct node *n) {
     if (!n) return n->type;
@@ -86,6 +87,22 @@ unsigned long set_value_member_ok(struct node *object, const char *valuestring)
         return 0;
     }
     return strlen(object->valuestring);
+}
+
+/* cJSON 1.7.16 CVE-2023-50471 shape: chained dereference without a null check. */
+void insert_list_bad(struct link *after, struct link *newitem)
+{
+    newitem->prev = after->prev;
+    newitem->prev->next = newitem;
+}
+
+void insert_list_ok(struct link *after, struct link *newitem)
+{
+    newitem->prev = after->prev;
+    if (newitem->prev == NULL) {
+        return;
+    }
+    newitem->prev->next = newitem;
 }
 
 int flag_unset(int k) {

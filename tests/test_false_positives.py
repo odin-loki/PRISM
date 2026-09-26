@@ -171,15 +171,17 @@ class TestRealWorldEvaluation(unittest.TestCase):
         self.assertIn((11, "CTRL-FALLTHROUGH"), hits)  # unannotated, not the last arm
         self.assertIn((19, "MEM-VLA-SIZE"), hits)  # buf[n]
         self.assertIn((27, "MEM-VLA-SIZE"), hits)  # buf[LEN], LEN a local
-        self.assertIn((41, "PTR-NULL-DEREF"), hits)  # if (!n) return n->type;
-        self.assertIn((42, "PTR-NULL-DEREF"), hits)  # braced then-branch
-        self.assertIn((50, "INT-BOOL-AS-BIT"), hits)  # (a < b) | (c < d)
-        self.assertIn((51, "INT-BOOL-AS-BIT"), hits)  # a == 1 & b == 2
-        self.assertIn((62, "CTRL-MISSING-RETURN"), hits)  # #else arm does not return
-        self.assertIn((72, "STR-NULL-ARG"), hits)  # CVE-2024-31755 shape
-        self.assertIn((79, "STR-NULL-MEMBER"), hits)  # CVE-2023-50472 shape
-        self.assertNotIn((88, "STR-NULL-MEMBER"), hits)  # member null-checked
-        self.assertIn((94, "UNINIT-BRANCH"), hits)  # err never assigned
+        self.assertIn((42, "PTR-NULL-DEREF"), hits)  # if (!n) return n->type;
+        self.assertIn((43, "PTR-NULL-DEREF"), hits)  # braced then-branch
+        self.assertIn((51, "INT-BOOL-AS-BIT"), hits)  # (a < b) | (c < d)
+        self.assertIn((52, "INT-BOOL-AS-BIT"), hits)  # a == 1 & b == 2
+        self.assertIn((63, "CTRL-MISSING-RETURN"), hits)  # #else arm does not return
+        self.assertIn((73, "STR-NULL-ARG"), hits)  # CVE-2024-31755 shape
+        self.assertIn((80, "STR-NULL-MEMBER"), hits)  # CVE-2023-50472 shape
+        self.assertNotIn((89, "STR-NULL-MEMBER"), hits)  # member null-checked
+        self.assertIn((96, "PTR-CHAIN-NULL"), hits)  # CVE-2023-50471 shape
+        self.assertNotIn((105, "PTR-CHAIN-NULL"), hits)  # intermediate null-checked
+        self.assertIn((111, "UNINIT-BRANCH"), hits)  # err never assigned
 
     def test_interval_leaves_floating_point_alone(self):
         from prism.interval import run_interval

@@ -207,14 +207,16 @@ CI files are not classified.
 |---|---|---|---|
 | CVE-2024-31755 | cJSON `cJSON_SetValuestring`: `strlen(valuestring)` with `valuestring == NULL` | 1.7.18 | **yes, after the parser fix only**: `STR-NULL-ARG strlen() called with unchecked pointer parameter valuestring` (`cJSON.c:408`) on 1.7.16; not reported on 1.7.18, where the fix added `valuestring == NULL` to a larger condition (that the lint did not see this test was itself a false alarm, fixed). Before, the function was a `PARSE-GAP` and nothing read it. It is a lint (FINDS), not a proof: the model checker gives `NEEDS-HARNESS` to every pointer-parameter function (Law 6) |
 | CVE-2023-50472 | cJSON `cJSON_SetValuestring`: `strlen(object->valuestring)` with a NULL member | 1.7.17 | **lint after 2026-09-26**: `STR-NULL-MEMBER` on `strlen(object->valuestring)` when `object->valuestring` is not null-checked (`testdata_tp/realworld_twins.c` twin); still not a pir proof (Law 6 on the pointer parameter) |
-| CVE-2023-50471 | cJSON `cJSON_InsertItemInArray`: `newitem->prev->next` with `after_inserted->prev == NULL` on a corrupted list | 1.7.17 | **no** (same reason) |
+| CVE-2023-50471 | cJSON `cJSON_InsertItemInArray`: `newitem->prev->next` with `after_inserted->prev == NULL` on a corrupted list | 1.7.17 | **lint after 2026-09-26**: `PTR-CHAIN-NULL` on `newitem->prev->next` without a null check on `newitem->prev` (`testdata_tp/realworld_twins.c` twin); not a pir proof |
 | CVE-2022-37434 | zlib `inflate()`: heap overflow copying the gzip header extra field when `len > extra_max` | 1.2.12.1 (`eff308af`) | **no**: `inflate(z_streamp strm, int flush)` is a pointer-parameter function (pir `NEEDS-HARNESS`, Law 6), and no lint models the `state->head->extra + len` arithmetic. Finding it needs a harness that builds a `z_stream` and a gzip header (`--allow-exec` + a fuzz harness, or a written pir contract) |
 
-So on this sample PRISM found one of four CVEs, and only because the parser
-fix let a lint read the function. The model-checking stages cannot reach
-library APIs that take pointers without a harness; they say so on every
-such function (`NEEDS-HARNESS`), which is honest but is the main thing
-standing between PRISM and these bugs.
+So on this sample PRISM's lints now flag three of the four CVE shapes
+(CVE-2024-31755, CVE-2023-50472, CVE-2023-50471) in `testdata_tp/realworld_twins.c`;
+CVE-2022-37434 still needs a zlib harness (Law 6). The findings are FINDS
+lints, not pir proofs. The model-checking stages cannot reach library APIs
+that take pointers without a harness; they say so on every such function
+(`NEEDS-HARNESS`), which is honest but is the main thing standing between
+PRISM and that last bug class.
 
 ## What is still open
 
