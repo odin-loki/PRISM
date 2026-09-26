@@ -654,8 +654,10 @@ vendored code). Re-running needs Java 21 and the two archives above.
    one for the subset is `tools/svcomp/prism-subset.xml`), and the
    registration the rules ask for (the fm-tools metadata and an archived
    release). None of these exist yet.
-6. **A version string.** `prism` has no `--version`; the wrapper reports
-   `0.1.0+sha256.<first 12 hex digits of the binary>` instead.
+6. **A version string.** `prism --version` reports `prism 0.1.0 (C++ engine)`
+   (same semver as the Python engine's `__version__`); `prism_svcomp.py`
+   uses that for witness `producer.version`, falling back to
+   `0.1.0+sha256.<first 12 hex digits>` only when the binary cannot be run.
 7. **Scale.** Only the pinned subset (45 no-overflow and 20 unreach-call
    tasks) has been run, in BenchExec with the competition's CPU-time and
    core limits and 12 GB of memory (see "BenchExec"); the largest run used

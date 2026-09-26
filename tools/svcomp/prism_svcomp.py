@@ -1327,9 +1327,24 @@ def solve(task: Path, prop_file: Path, *, prism: str | None, allow_exec: bool, d
     return oc
 
 
+def prism_engine_version(prism: str) -> str | None:
+    """Parse ``prism --version`` (``prism 0.1.0 (C++ engine)``)."""
+    try:
+        r = subprocess.run([prism, "--version"], capture_output=True, text=True, timeout=10, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if r.returncode != 0:
+        return None
+    m = re.match(r"prism\s+(\S+)\s+\(C\+\+\s+engine\)", (r.stdout or "").strip())
+    return m.group(1) if m else None
+
+
 def version_string(prism: str | None) -> str:
     if not prism:
         return WRAPPER_VERSION
+    ver = prism_engine_version(prism)
+    if ver:
+        return ver
     h = hashlib.sha256(Path(prism).read_bytes()).hexdigest()[:12]
     return f"{WRAPPER_VERSION}+sha256.{h}"
 

@@ -471,6 +471,30 @@ class NondetTraceTest(unittest.TestCase):
             self.assertEqual(res.failed, 0, mod.__name__)
 
 
+class VersionStringTest(unittest.TestCase):
+    def test_uses_prism_version(self) -> None:
+        with tempfile.NamedTemporaryFile("w", suffix="", delete=False, encoding="utf-8") as fh:
+            fh.write("#!/bin/sh\nprintf 'prism 0.1.0 (C++ engine)\\n'\n")
+            path = fh.name
+        os.chmod(path, 0o755)
+        try:
+            self.assertEqual(P.version_string(path), "0.1.0")
+        finally:
+            os.unlink(path)
+
+    def test_sha256_fallback(self) -> None:
+        with tempfile.NamedTemporaryFile("wb", suffix="", delete=False) as fh:
+            fh.write(b"not a prism binary")
+            path = fh.name
+        try:
+            self.assertRegex(P.version_string(path), r"^0\.1\.0\+sha256\.[0-9a-f]{12}$")
+        finally:
+            os.unlink(path)
+
+    def test_no_binary_returns_wrapper_version(self) -> None:
+        self.assertEqual(P.version_string(None), P.WRAPPER_VERSION)
+
+
 class ToolInfoTest(unittest.TestCase):
     def setUp(self) -> None:
         try:
