@@ -471,6 +471,32 @@ class NondetTraceTest(unittest.TestCase):
             self.assertEqual(res.failed, 0, mod.__name__)
 
 
+class PackageArchiveTest(unittest.TestCase):
+    def test_builds_tarball(self) -> None:
+        pack = _load("prism_svcomp_package_under_test", SV / "package_archive.py")
+        with tempfile.TemporaryDirectory() as d:
+            prism = Path(d) / "prism"
+            prism.write_bytes(b"#!/bin/sh\necho 'prism 0.1.0 (C++ engine)'\n")
+            os.chmod(prism, 0o755)
+            out = Path(d) / "prism-svcomp.tar.gz"
+            manifest = pack.package(prism, out)
+            self.assertTrue(out.is_file())
+            self.assertEqual(manifest["prism_version"], "0.1.0")
+            import tarfile
+
+            names = tarfile.open(out).getnames()
+            for want in (
+                "prism/prism",
+                "prism/prism_svcomp.py",
+                "prism/witness.py",
+                "prism/prism.py",
+                "prism/LICENSE",
+                "prism/README.md",
+                "prism/MANIFEST.json",
+            ):
+                self.assertIn(want, names)
+
+
 class VersionStringTest(unittest.TestCase):
     def test_uses_prism_version(self) -> None:
         with tempfile.NamedTemporaryFile("w", suffix="", delete=False, encoding="utf-8") as fh:

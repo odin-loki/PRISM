@@ -653,7 +653,12 @@ vendored code). Re-running needs Java 21 and the two archives above.
    tool-info module merged into BenchExec, a benchmark definition (a local
    one for the subset is `tools/svcomp/prism-subset.xml`), and the
    registration the rules ask for (the fm-tools metadata and an archived
-   release). None of these exist yet.
+   release). **Partial (2026-09-26):** `tools/svcomp/package_archive.py`
+   builds `prism-svcomp.tar.gz` (binary, wrapper, witness writer, tool-info,
+   `LICENSE`, `README.md`, `MANIFEST.json`); `tools/svcomp/fm-tools.yml` is a
+   registration draft. Still missing: clang/opt bundling or a pinned dependency
+   story, merging `prism.py` into upstream BenchExec, an archived release URL,
+   and fm-tools upload.
 6. **A version string.** `prism --version` reports `prism 0.1.0 (C++ engine)`
    (same semver as the Python engine's `__version__`); `prism_svcomp.py`
    uses that for witness `producer.version`, falling back to
@@ -666,10 +671,9 @@ vendored code). Re-running needs Java 21 and the two archives above.
 
 ## Findings for the engines (not fixed here)
 
-- The `pir` stage takes only `.c`/`.cpp` units (`is_unit` in
-  `src/prism/pir/stage.cpp`). On a `.i` file it reports status `ok` with no
-  finding at all, which reads as "nothing to say" rather than "not run"
-  (Law 7). The wrapper works around it by copying `.i` to `.c`.
+- The wrapper copies a preprocessed `.i` task to `.c` before running PRISM so
+  clang names the unit consistently (`prism_svcomp.py`). The `pir` stage accepts
+  `.i` units (`is_unit` in `src/prism/pir/stage.cpp`).
 - A `FAILED` counterexample for a function without parameters is just
   `<prop>=sat` (for example `ovf+=sat`); the nondet inputs of such a
   refutation are in `extra["nondet"]` instead (item 1).

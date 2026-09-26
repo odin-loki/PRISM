@@ -1,0 +1,20 @@
+# SV-COMP fm-tools registration draft (roadmap 6.3).
+# Upload via https://fm-tools.org/ after filling version and archive URL.
+
+name: PRISM
+description: >
+  Performance, Regression, Integration and Security Module — hybrid C/C++
+  verifier with BMC, Clang/LLVM PIR front end, and SV-COMP witness export.
+project_url: https://github.com/odin-loki/PRISM
+repository: https://github.com/odin-loki/PRISM
+license: AGPL-3.0-only
+version: "0.1.0"
+participation:
+  - name: SV-COMP
+    status: preparation
+    properties:
+      - no-overflow
+      - unreach-call
+    notes: >
+      LP64 only today; ILP32 tasks with width-dependent types answer unknown.
+      valid-memsafety refutations only; no true memsafety proofs yet.

@@ -1277,7 +1277,7 @@ def solve(task: Path, prop_file: Path, *, prism: str | None, allow_exec: bool, d
     if exe is None:
         return Outcome(Decision("error", "prism binary not found (--prism, PRISM_BIN, next to this script, PATH)"))
     out.mkdir(parents=True, exist_ok=True)
-    # The pir stage takes .c/.cpp units only; a preprocessed .i task is C.
+    # Preprocessed .i tasks are C; copy to .c so clang names the unit consistently.
     task_c = out / (task.stem + ".c")
     shutil.copyfile(task, task_c)
     try:
