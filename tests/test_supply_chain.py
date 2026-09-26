@@ -301,6 +301,10 @@ class TestLicenceFirewall(unittest.TestCase):
         ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
         self.assertIn("package_archive.py", ci)
 
+    def test_pir_stage_reads_function_budget_env(self):
+        stage = (ROOT / "src" / "prism" / "pir" / "stage.cpp").read_text(encoding="utf-8")
+        self.assertIn("PRISM_FUNCTION_BUDGET", stage)
+
 
 class TestSbom(unittest.TestCase):
     def test_cyclonedx_1_5_from_manifest(self):

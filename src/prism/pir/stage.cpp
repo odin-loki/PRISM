@@ -879,6 +879,13 @@ CheckOptions check_options(const Config& cfg, std::shared_ptr<HoudiniBudget> bud
         const double b = std::strtod(e, &end);
         if (end && *end == '\0' && b >= 0) o.certify_budget_s = b;
     }
+    // Per-function pir budget (docs/PIR.md "Solving"): $PRISM_FUNCTION_BUDGET
+    // seconds (0: none). Spent: TIMEOUT with a budget_note.
+    if (const char* e = std::getenv("PRISM_FUNCTION_BUDGET"); e && *e) {
+        char* end = nullptr;
+        const double b = std::strtod(e, &end);
+        if (end && *end == '\0' && b >= 0) o.function_budget_s = b;
+    }
     o.cache_dir = cfg.solver_cache.string();
     const unsigned hw = std::max(2u, std::thread::hardware_concurrency());
     o.max_parallel = std::max(2u, hw / static_cast<unsigned>(std::max(1, cfg.jobs)));

@@ -1358,7 +1358,19 @@ none): once it is spent the function stays `PROVED` with
 (N s) was spent after k/n VCs were certified; verdict stays PROVED"`, and
 each certificate query gets at most what is left. `extra.certificate_solver`
 summarises the certificate queries. `CheckOptions::certify_combined = false`
-switches the combined query off (plain answers and certificates per VC). Plain mode is unchanged. A certified function then carries `extra.certificate = "checked"` (what the verdict
+switches the combined query off (plain answers and certificates per VC). Plain mode is unchanged.
+
+The plain property queries, the unwinding assertion, k-induction and Houdini
+of one function share a **function budget** (`CheckOptions::function_budget_s`;
+the pir stage reads `$PRISM_FUNCTION_BUDGET` seconds, 0 for none): once it is
+spent before every VC is answered the function is `TIMEOUT` with
+`message = "pir function budget of N s spent before <label>
+(PRISM_FUNCTION_BUDGET)"` and `extra.function_budget_s = N` (Law 7: it says
+what was not tried). Each VC query also gets at most what is left of the
+function budget as its per-query timeout. Certification queries are not counted
+(they use the certification budget above).
+
+A certified function then carries `extra.certificate = "checked"` (what the verdict
 audit requires of a `PROVED-CERTIFIED` from this stage),
 `extra.certificate_info` (one entry per VC, `<prop>@<line>: bitblast: … ;
 cadical … lrat N steps, checked by cake_lpr …; cnf sha256 …`, or one entry

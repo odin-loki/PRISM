@@ -1238,6 +1238,14 @@ double detail_now_s() {
     return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
+struct FunctionBudget {
+    double total_s;
+    double t0;
+    explicit FunctionBudget(double t) : total_s(t), t0(detail_now_s()) {}
+    double left() const { return total_s - (detail_now_s() - t0); }
+    bool exhausted() const { return left() <= 0; }
+};
+
 std::string vc_label(const PropInst& p) {
     return p.stmt->prop + (p.stmt->line ? "@" + std::to_string(p.stmt->line) : std::string());
 }
@@ -1412,6 +1420,20 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
     const int unwind = std::max(1, opt.unwind);
     const double timeout_s = std::max(1.0, opt.timeout_s);
     const auto timeout_ms = static_cast<unsigned>(timeout_s * 1000.0);
+    std::optional<FunctionBudget> fn_budget;
+    if (opt.function_budget_s > 0) fn_budget = FunctionBudget{opt.function_budget_s};
+    std::string fn_budget_at;
+    const auto fn_budget_timeout = [&](Verdict& vr) {
+        vr.status = std::string(laws::TIMEOUT);
+        vr.message = "pir function budget of " + std::to_string(static_cast<long>(opt.function_budget_s)) + " s spent" +
+                      (fn_budget_at.empty() ? "" : " before " + fn_budget_at) + " (PRISM_FUNCTION_BUDGET)";
+        vr.extra["function_budget_s"] = std::to_string(static_cast<int>(opt.function_budget_s));
+    };
+    bool fn_budget_spent = false;
+    const auto cap_timeout = [&](solver::SolveOptions& o) {
+        if (!fn_budget) return;
+        o.timeout_s = std::min(timeout_s, std::max(0.1, fn_budget->left()));
+    };
     v.extra["unwind"] = std::to_string(unwind);
     auto g = analyze(fn);
     if (!g.unencoded.empty()) {
@@ -1441,6 +1463,16 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
     };
     try {
         z3::context c;
+        const auto solve_vc = [&](VcBook& bk, const std::string& label, z3::expr vc, solver::SolveOptions& o)
+            -> const solver::SolveResult* {
+            if (fn_budget && fn_budget->exhausted()) {
+                fn_budget_at = label;
+                fn_budget_spent = true;
+                return nullptr;
+            }
+            cap_timeout(o);
+            return &bk.add(label, solver::solve(c, vc, o));
+        };
         Encoding e(c, fn, g, unwind, eo);
         e.build();
         if (fn.uses_memory) {
@@ -1609,8 +1641,13 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
         // violated, so the function cannot be PROVED and no combined
         // certificate is attempted.
         if (opt.certified && opt.certify_combined && all.size() >= 2) {
-            const auto& pr = book.add("all[" + std::to_string(all.size()) + " VCs]",
-                                      solver::solve(c, base && any_of(c, all), so));
+            const std::string all_label = "all[" + std::to_string(all.size()) + " VCs]";
+            const auto* prp = solve_vc(book, all_label, base && any_of(c, all), so);
+            if (!prp) {
+                fn_budget_timeout(v);
+                return finish(v);
+            }
+            const auto& pr = *prp;
             plain_all = pr.kind;
             if (pr.kind == solver::SolveResult::Unsat) {
                 v.status = std::string(laws::PROVED);
@@ -1662,7 +1699,9 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
             std::function<int(std::size_t, std::size_t)> group = [&](std::size_t lo, std::size_t hi) -> int {
                 // 1 SAT (hit set), 0 UNSAT, -1 no answer
                 if (hi - lo == 1) {
-                    const auto& r = book.add(vc_label(*hard[lo]), solver::solve(c, base && hard[lo]->viol, so));
+                    const auto* rp = solve_vc(book, vc_label(*hard[lo]), base && hard[lo]->viol, so);
+                    if (!rp) return -1;
+                    const auto& r = *rp;
                     if (r.kind == solver::SolveResult::Sat) {
                         hit = hard[lo];
                         hit_r = r;
@@ -1672,8 +1711,10 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
                 }
                 std::vector<z3::expr> vs;
                 for (std::size_t i = lo; i < hi; ++i) vs.push_back(hard[i]->viol);
-                const auto& r = book.add("properties[" + std::to_string(lo) + "," + std::to_string(hi) + ")",
-                                         solver::solve(c, base && any_of(c, vs), so));
+                const auto* rp = solve_vc(book, "properties[" + std::to_string(lo) + "," + std::to_string(hi) + "]",
+                                          base && any_of(c, vs), so);
+                if (!rp) return -1;
+                const auto& r = *rp;
                 if (r.kind == solver::SolveResult::Unsat) {
                     for (std::size_t i = lo; i < hi; ++i) answered.insert(hard[i]);
                     return 0;
@@ -1688,7 +1729,9 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
                     // before it are asked as one group first, so the verdict
                     // is the first violated property, as the halving finds.
                     if (auto k = pick_violated(r.model, lo, hi)) {
-                        const auto r1 = book.add(vc_label(*hard[*k]), solver::solve(c, base && hard[*k]->viol, so));
+                        const auto* r1p = solve_vc(book, vc_label(*hard[*k]), base && hard[*k]->viol, so);
+                        if (!r1p) return -1;
+                        const auto& r1 = *r1p;
                         if (r1.kind == solver::SolveResult::Sat) {
                             const int before = *k == lo ? 0 : group(lo, *k);
                             if (before == 1) return 1;  // an earlier one (hit set there)
@@ -1721,11 +1764,20 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
                 return -1;
             };
             int g = group(0, hard.size());
+            if (fn_budget_spent) {
+                fn_budget_timeout(v);
+                return finish(v);
+            }
             all_unsat = g != -1;  // 0: every property UNSAT; 1: hit found (loop below is skipped)
         }
         for (auto& p : e.props) {
             if (soft(p) || all_unsat || answered.count(&p)) continue;
-            const auto& r = book.add(vc_label(p), solver::solve(c, base && p.viol, so));
+            const auto* rp = solve_vc(book, vc_label(p), base && p.viol, so);
+            if (!rp) {
+                fn_budget_timeout(v);
+                return finish(v);
+            }
+            const auto& r = *rp;
             if (r.kind == solver::SolveResult::Sat) {
                 hit = &p;
                 hit_r = r;
@@ -1759,7 +1811,12 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
         }
         for (auto& p : e.props) {
             if (!soft(p)) continue;
-            const auto& r = book.add(vc_label(p), solver::solve(c, base && p.viol, so));
+            const auto* rp = solve_vc(book, vc_label(p), base && p.viol, so);
+            if (!rp) {
+                fn_budget_timeout(v);
+                return finish(v);
+            }
+            const auto& r = *rp;
             if (r.kind == solver::SolveResult::Unsat) continue;
             v.status = std::string(r.kind == solver::SolveResult::Sat ? laws::NEEDS_HARNESS : laws::UNKNOWN);
             v.message = "UNENCODED: " + (p.stmt->msg.empty() ? std::string("exception path") : p.stmt->msg);
@@ -1775,7 +1832,12 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
             if (opt.certified) certify_proved(v);
             return finish(v);
         }
-        const auto& ur = book.add("unwind", solver::solve(c, base && any_of(c, e.cuts), so));
+        const auto* urp = solve_vc(book, "unwind", base && any_of(c, e.cuts), so);
+        if (!urp) {
+            fn_budget_timeout(v);
+            return finish(v);
+        }
+        const auto& ur = *urp;
         if (ur.kind == solver::SolveResult::Unsat) {
             v.status = std::string(laws::PROVED);
             v.extra["unwind_closed"] = "true";
@@ -1815,10 +1877,15 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
                 r.extra["invariants_note"] = "not attempted (allocation or free in a loop)";
                 return false;
             }
+            if (fn_budget && fn_budget->exhausted()) {
+                fn_budget_timeout(r);
+                return false;
+            }
             // The run's Houdini budget (CheckOptions::houdini_budget): spent,
             // the function is not attempted; less left than the search's own
             // limit, the search gets what is left.
             double search_s = -1;
+            if (fn_budget) search_s = fn_budget->left();
             if (opt.houdini_budget) {
                 const double left = opt.houdini_budget->left();
                 if (left <= 0) {
@@ -1828,7 +1895,7 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
                         " s is spent; PRISM_HOUDINI_BUDGET)";
                     return false;
                 }
-                search_s = left;
+                search_s = search_s < 0 ? left : std::min(search_s, left);
             }
             HoudiniEnv henv;
             if (opt.use_cache)
@@ -1904,6 +1971,10 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
         }
         // The k-induction step is not a property VC: Z3 answers it in-process,
         // and PROVED-UNBOUNDED is never certified (docs/PIR.md "Solving").
+        if (fn_budget && fn_budget->exhausted()) {
+            fn_budget_timeout(v);
+            return finish(v);
+        }
         std::vector<std::string> tried;
         for (int k : {1, 2}) {
             if (k > unwind) break;

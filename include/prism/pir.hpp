@@ -492,6 +492,10 @@ struct CheckOptions {
     // are not counted). Spent: the verdict stays PROVED with a certify_note.
     // 0: no budget beyond each query's own.
     double certify_budget_s = 0;
+    // Seconds all solver work of one function may take together (property VCs,
+    // unwind, certification and Houdini). 0: no cap beyond each VC timeout.
+    // Spent: TIMEOUT with a budget_note (Law 7).
+    double function_budget_s = 0;
     bool use_cache = true;
     std::string cache_dir;      // empty: the solver library's default
     unsigned max_parallel = 0;  // solver members at once; 0: hardware threads

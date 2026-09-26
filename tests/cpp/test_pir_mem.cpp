@@ -1012,3 +1012,27 @@ int map_cond_erase_sum_bad(int k) {
     CHECK(got["map_cond_erase_sum_bad"].status == prism::laws::FAILED);
     CHECK(got["map_cond_erase_sum_bad"].cls == "FUNC-CONTRACT");
 }
+
+TEST_CASE("pir: per-function budget returns TIMEOUT when spent") {
+#ifdef PRISM_HAS_Z3
+    const char* ir = R"IR(
+define i32 @g(i32 %a, i32 %b) {
+entry:
+  %m = and i32 %b, 7
+  %d = add nsw i32 %m, 1
+  %q = sdiv i32 %a, %d
+  ret i32 %q
+}
+)IR";
+    auto tr = mem_tr(ir, "g");
+    REQUIRE(tr.fn.has_value());
+    pp::CheckOptions o;
+    o.function_budget_s = 1e-9;
+    o.timeout_s = 30;
+    o.unwind = 8;
+    auto v = pp::check_function(*tr.fn, o);
+    CHECK(v.status == prism::laws::TIMEOUT);
+    CHECK(v.message.find("PRISM_FUNCTION_BUDGET") != std::string::npos);
+    REQUIRE(v.extra.count("function_budget_s") == 1);
+#endif
+}

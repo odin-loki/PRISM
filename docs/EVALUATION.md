@@ -225,10 +225,10 @@ PRISM and pir proofs on those entry points.
   killed past 3600 s inside pir. After the normalisation bound, pir on
   `crc32.c` alone still dominated time (stack samples: Z3's simplifier and
   solver on the braided-CRC verification conditions, 64-bit, unwind 8).
-  Each query is bounded (`--timeout`), but a function has many of them and
-  nothing bounds the function. A per-function (or per-run) pir budget that
-  reports the rest `TIMEOUT`/`UNKNOWN` is still needed; the Houdini run
-  budget covers only loop invariants. With `--skip pir` zlib finishes in
+  Each query is bounded (`--timeout`), but a function has many of them.
+  `$PRISM_FUNCTION_BUDGET` caps plain pir work per function (spent:
+  `TIMEOUT` with a budget note; Houdini has its own run budget). With
+  `--skip pir` zlib finishes in
   ~1365 s (fuzz 763 s before the goal budget, optional 280 s, bmc 260 s).
 - tinyexpr `npr` (inlines `ncr` and `fac`, `double` in and out) takes most of
   its 250 s pir time in Houdini and ends `BOUNDED` ("Houdini ran out of
