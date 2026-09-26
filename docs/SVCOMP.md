@@ -436,6 +436,13 @@ memory 661 MB; the 65 runs took 151 s of CPU time together. The validators
 were not run under BenchExec (they ran as below, with their own time
 limits).
 
+**2026-09-26, verified on merged `main` (`02d7da9be`)** with
+`PRISM_BIN=build/prism python tools/svcomp/run_subset.py -j 2` on a loaded
+WSL host: no-overflow score **88** (35 correct `true`, 18 correct `false`, 0
+incorrect); unreach-call score **115** (53 correct `true`, 9 correct `false`,
+0 incorrect); combined **203** of 417. Matches the 2026-09-25 enlarged-subset
+run below.
+
 **2026-09-25, enlarged subset (244 runs: 117 no-overflow, 127
 unreach-call), same limits and command line**, binary of this branch
 (SHA-256 prefix `c59b5e977165`), on a machine shared with other jobs (load

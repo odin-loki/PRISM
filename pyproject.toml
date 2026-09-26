@@ -17,6 +17,7 @@ name = "prism"
 dynamic = ["version"]
 description = "PRISM code checker (Python reference engine)"
 requires-python = ">=3.11"
+dependencies = ["pyyaml"]
 
 [tool.setuptools]
 packages = ["prism"]

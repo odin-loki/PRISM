@@ -6,6 +6,13 @@ C++ engine (`prism PATH --no-llm`) was run on five small, real open-source
 C/C++ projects, what broke, what was fixed (branch `claude/w6-realw`), and
 what it still misses. All numbers below were measured; nothing is estimated.
 
+**Verification rerun (2026-09-26, `main` at `02d7da9be`).** The five pinned
+commits below were re-scanned with `--no-llm` on a loaded WSL host. The
+"after" structural outcomes hold on every project: PARSE-GAP 0, CRASH 0, ERROR
+0 (stage-status rows, not lint `FAILED`). zlib now finishes in 698 s wall
+(previously killed past 3600 s before parser fixes; pir is still the slow
+stage). cJSON wall 233 s; jsmn 21 s; tinyexpr 252 s; cxxopts 149 s.
+
 ## Setup
 
 | project | commit (tag) | C/C++ lines | units | compile_commands.json |
@@ -211,16 +218,16 @@ standing between PRISM and these bugs.
 
 ## What is still open
 
-- **zlib does not finish in an hour.** After the normalisation bound, pir on
-  `crc32.c` alone still ran past 25 minutes (stack samples: Z3's simplifier
-  and solver on the braided-CRC verification conditions, 64-bit, unwind 8).
+- **zlib pir is still slow.** On `main` (2026-09-26) the full scan finishes
+  in 698 s wall and writes `report.json`; before the parser fixes it was
+  killed past 3600 s inside pir. After the normalisation bound, pir on
+  `crc32.c` alone still dominated time (stack samples: Z3's simplifier and
+  solver on the braided-CRC verification conditions, 64-bit, unwind 8).
   Each query is bounded (`--timeout`), but a function has many of them and
   nothing bounds the function. A per-function (or per-run) pir budget that
-  reports the rest `TIMEOUT`/`UNKNOWN` is needed; the Houdini run budget in
-  progress on another branch covers only loop invariants. With `--skip pir`
-  zlib finishes: 1365 s (fuzz 763 s before the goal budget, optional 280 s,
-  bmc 260 s); the one-hour run leaves `stages.jsonl` (resumable with
-  `--resume`) but no `report.json`.
+  reports the rest `TIMEOUT`/`UNKNOWN` is still needed; the Houdini run
+  budget covers only loop invariants. With `--skip pir` zlib finishes in
+  ~1365 s (fuzz 763 s before the goal budget, optional 280 s, bmc 260 s).
 - tinyexpr `npr` (inlines `ncr` and `fac`, `double` in and out) takes most of
   its 250 s pir time in Houdini and ends `BOUNDED` ("Houdini ran out of
   time"); pir runs the functions of one unit one after another.

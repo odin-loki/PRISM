@@ -253,10 +253,9 @@ class Task:
 
 
 def _load_yaml(path: Path) -> Any:
-    text = path.read_text(encoding="utf-8")
-    if yaml is not None:
-        return yaml.safe_load(text)
-    return json.loads(text)  # JSON is YAML; lets the loader run without PyYAML
+    if yaml is None:
+        raise SystemExit("PyYAML required to load conformance tasks; pip install pyyaml")
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
 def _as_bool(v: Any) -> bool:

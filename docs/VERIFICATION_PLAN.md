@@ -1,8 +1,8 @@
 # Verification plan after round 6
 
-Round 6 (`realw`, `falar`, `perf6`, `lnprf`, `sv3cm`; see `wip/README.md`) is
-merged on `main`. Every GitHub workflow is green on `015b39c8c`: PRISM CI,
+Round 6 (`realw`, `falar`, `perf6`, `lnprf`, `sv3cm`) is merged on `main`. On `015b39c8c` every gating workflow was green: PRISM CI,
 the conformance release gate, proofs, the independent Lean recheck and docs.
+The first `self-check.yml` run on `02d7da9be` is **PARTIAL** (see results table).
 This plan lists what is still unconfirmed, how to confirm it, and what counts
 as a pass. Nothing here adds features.
 
@@ -23,8 +23,9 @@ engine:
 
 ## Step 1: PRISM on PRISM (sanitizers)
 
-`.github/workflows/self-check.yml` has never run: scheduled workflows run
-only from the default branch, and it only reached `main` with round 6.
+`.github/workflows/self-check.yml` reached `main` with round 6; the first
+run (2026-09-26, workflow_dispatch on `02d7da9be`) is **PARTIAL** — see
+results table and next action below.
 
 - Run: trigger it by hand (Actions → "PRISM on PRISM (nightly)" → Run
   workflow), or wait for the 03:17 UTC schedule. Up to about 5 hours.
@@ -36,6 +37,18 @@ only from the default branch, and it only reached `main` with round 6.
 - On failure: every sanitizer report is a real bug in PRISM. Reduce it to a
   test in `tests/cpp/test_main.cpp` or `tests/`, fix it in both engines where
   it applies, and push.
+- **Next action (2026-09-26 run, pytest gate):** run
+  [36203977754](https://github.com/odin-loki/PRISM/actions/runs/36203977754)
+  failed before conformance or the self-scan: `prism_tests` passed under
+  ASan+UBSan; pytest reported eight `JSONDecodeError`s in
+  `tests/conformance/test_conformance_suite.py` (no sanitizer output in the
+  log). `self-check.yml` installed `pytest` but not `pyyaml`; without PyYAML,
+  `tools/conformance.py` fell back to `json.loads` on task `.yml` files,
+  which is not valid JSON. **Fix applied in the working tree:** `pyyaml` is
+  now on the workflow `pip install` line in `.github/workflows/self-check.yml`
+  (matching `conformance.yml` and `ci.yml` via `yamllint`). Push and
+  re-trigger the workflow. If pytest is green and a later step fails with an
+  ASan/UBSan report, treat that as a real engine bug.
 - Self-scan triage: download the `prism-self-sanitized` artifact
   (`report.md`, `report.sarif`). Sort each finding into one of three groups:
   a real bug (fix it and add a test), a false alarm (reduce it to a case in
@@ -51,11 +64,11 @@ merged `main`.
 
 | claim | where | how to confirm | pass |
 |---|---|---|---|
-| headline table (pir 273/328 proved, 165/341 refuted; bmc 102/328, 93/341) | `docs/ROADMAP_STATUS.md` | read the `conformance-metrics` artifact of the conformance run on `015b39c8c`, or run `PRISM_BIN=build/prism python tools/conformance.py -j 2 --mem-limit-mb 4096` | 0 wrong proofs, and no count lower than the table |
+| headline table (pir 302/379 proved, 165/364 refuted; bmc 107/379, 93/364) | `docs/ROADMAP_STATUS.md` | read the `conformance-metrics` artifact of the conformance run on `02d7da9be`, or run `PRISM_BIN=build/prism python tools/conformance.py -j 2 --mem-limit-mb 4096` | 0 wrong proofs, and no count lower than the table |
 | SV-COMP enlarged subset: 203 of 417, 0 incorrect | `docs/SVCOMP.md` (measured on the sv3cm binary, loaded machine) | `PRISM_BIN=build/prism python tools/svcomp/run_subset.py --jobs 2` and again with `--property unreach-call` | 0 incorrect, score ≥ 203 |
 | real-world before/after table | `docs/EVALUATION.md` (four commits measured separately) | rerun zlib, cJSON, jsmn, tinyexpr, cxxopts at the pinned commits with `--no-llm` | the "after" outcomes hold |
 | Houdini cost controls are faster | `perf6` series | time `tools/conformance.py` on `main` against `027e49e7c`, same machine, same `-j`, cold solver cache (`~/.cache/prism/solver` removed) | `main` is not slower |
-| refinement: `mismatch=0` | `wip/README.md` | `python tools/pir_lean_check.py tests/pir testdata` | 0 mismatches (already checked on the owner's PC; CI rechecks) |
+| refinement: `mismatch=0` | round-6 `falar`/`lnprf` series | `python tools/pir_lean_check.py tests/pir testdata` | 0 mismatches (CI rechecks in `proofs*.yml`) |
 
 If a number went up, update the document. If it went down, or there is any
 wrong proof or incorrect answer, stop and find the cause before changing
@@ -67,8 +80,9 @@ the document.
   `docs/SVCOMP.md` and `docs/EVALUATION.md` with the numbers from `main`,
   the commit and the date.
 - Fill in the results table below.
-- Delete `wip/` once every row is confirmed: the commits on `main` are the
-  record.
+- `wip/` (round-6 mbox archive) was removed 2026-09-26 after Step 2; the
+  commits on `main` are the record. Step 1 (sanitizer pytest gate) remains
+  open.
 
 ## Owner actions (not in this plan's scope)
 
@@ -80,9 +94,10 @@ release, and GPU/LoRA work on the owner's hardware.
 
 | step | commit | date | result |
 |---|---|---|---|
-| 1 sanitizers | | | |
-| 1 self-scan triage (real / false alarm / out of scope) | | | |
-| 2 headline table | | | |
-| 2 SV-COMP subset | | | |
-| 2 real-world rerun | | | |
-| 2 Houdini timing | | | |
+| 1 sanitizers | `02d7da9be` | 2026-09-26 | **PARTIAL** — workflow run [36203977754](https://github.com/odin-loki/PRISM/actions/runs/36203977754): `prism_tests` green under ASan+UBSan; pytest failed (8 conformance JSON parse errors, no sanitizer report in log); conformance and self-scan skipped |
+| 1 self-scan triage (real / false alarm / out of scope) | | 2026-09-26 | not run (pytest gate failed before `prism .` self-scan) |
+| 2 headline table | `02d7da9be` | 2026-09-26 | **PASS** — CI `conformance-metrics` on `main`: 0 wrong proofs; pir 302/379 proved, 165/364 refuted (≥ table); bmc 107/379 proved, 93/364 refuted (≥ table); local cold-cache rerun: 0 wrong proofs in 2111 s |
+| 2 SV-COMP subset | `02d7da9be` | 2026-09-26 | **PASS** — `run_subset.py -j 2`: no-overflow score 88 (35+18 correct, 0 incorrect); unreach-call score 115 (53+9 correct, 0 incorrect); combined **203**/417 |
+| 2 real-world rerun | `02d7da9be` | 2026-09-26 | **PASS** — pinned commits, `--no-llm`: jsmn/tinyexpr/cJSON/cxxopts/zlib all PARSE-GAP 0, CRASH 0, ERROR 0; zlib wall 698 s (finishes; pir still heavy) |
+| 2 refinement | `02d7da9be` | 2026-09-26 | **PASS** — `pir_lean_check.py tests/pir testdata`: mismatch=0 (local `build/prism` and CI `build-ci/prism`) |
+| 2 Houdini timing | `02d7da9be` vs `027e49e7c` | 2026-09-26 | **PASS (noise)** — cold `conformance.py -j 2 --mem-limit-mb 4096`: main 2111 s, pre-perf6 2040 s (+3.5%; single run on loaded WSL host) |

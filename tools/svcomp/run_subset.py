@@ -50,6 +50,11 @@ except ImportError:  # pragma: no cover
     yaml = None
 
 
+def _require_yaml() -> None:
+    if yaml is None:
+        raise SystemExit("PyYAML required to load SV-COMP tasks; pip install pyyaml")
+
+
 def _load_proctree() -> Any:
     # by path (tools/proctree.py), not through sys.path
     name = "prism_tools_proctree"
@@ -80,9 +85,10 @@ def load_tool() -> Any | None:
 
 
 def tasks(prop_name: str = PROPERTY) -> list[dict[str, Any]]:
+    _require_yaml()
     out = []
     for yml in sorted(SUITE.rglob("*.yml")):
-        data = yaml.safe_load(yml.read_text(encoding="utf-8")) if yaml else json.loads(yml.read_text())
+        data = yaml.safe_load(yml.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             continue
         for p in data.get("properties") or []:

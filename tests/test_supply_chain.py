@@ -281,6 +281,12 @@ class TestLicenceFirewall(unittest.TestCase):
         self.assertIn("sigstore/cosign-installer", rel)
         self.assertIn("SOURCE_DATE_EPOCH", rel)
 
+    def test_self_check_workflow_installs_pyyaml(self):
+        wf = (ROOT / ".github" / "workflows" / "self-check.yml").read_text(encoding="utf-8")
+        pip_lines = [ln for ln in wf.splitlines() if "pip install" in ln]
+        self.assertTrue(pip_lines, "self-check.yml has no pip install line")
+        self.assertTrue(any("pyyaml" in ln.lower() for ln in pip_lines))
+
 
 class TestSbom(unittest.TestCase):
     def test_cyclonedx_1_5_from_manifest(self):

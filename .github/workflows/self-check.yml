@@ -30,7 +30,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ninja-build clang-18 llvm-18 libclang-rt-18-dev libclang-18-dev bubblewrap
-          python -m pip install pytest z3-solver ruff mypy
+          python -m pip install pytest pyyaml z3-solver ruff mypy
       - name: Configure (ASan + UBSan)
         run: >
           cmake -B build-san -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo

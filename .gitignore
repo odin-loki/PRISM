@@ -1,6 +1,7 @@
 prism-out/
 prism-out-*/
 build/
+build-*/
 build_cxx/
 build_wsl/
 __pycache__/
@@ -24,4 +25,6 @@ third_party/llama.cpp/models/*.gguf
 # Claude Code agent worktrees
 .claude/worktrees/
 conformance-out/
+conformance-out-*/
+svcomp-out/
 soundness-out/
