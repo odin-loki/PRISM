@@ -2,7 +2,7 @@
 
 Round 6 (`realw`, `falar`, `perf6`, `lnprf`, `sv3cm`) is merged on `main`. On `015b39c8c` every gating workflow was green: PRISM CI,
 the conformance release gate, proofs, the independent Lean recheck and docs.
-Run [36203977754](https://github.com/odin-loki/PRISM/actions/runs/36203977754) on `02d7da9be` failed at pytest (missing `pyyaml`, fixed in `c4fc65e9d`). Re-run [36211384015](https://github.com/odin-loki/PRISM/actions/runs/36211384015) on `c4fc65e9d`: `prism_tests`, pytest and conformance under sanitizers are green; full-tree self-scan was still running at last check (see results table).
+Run [36203977754](https://github.com/odin-loki/PRISM/actions/runs/36203977754) on `02d7da9be` failed at pytest (missing `pyyaml`, fixed in `c4fc65e9d`). Re-run [36211384015](https://github.com/odin-loki/PRISM/actions/runs/36211384015) on `c4fc65e9d` passed the sanitizer gate but the full-tree self-scan hit the 300-minute job limit. Run [36226637147](https://github.com/odin-loki/PRISM/actions/runs/36226637147) on `e9c73aadc` is green end-to-end (see results table).
 This plan lists what is still unconfirmed, how to confirm it, and what counts
 as a pass. Nothing here adds features.
 
@@ -93,9 +93,9 @@ release, and GPU/LoRA work on the owner's hardware.
 
 | step | commit | date | result |
 |---|---|---|---|
-| 1 sanitizers | `c4fc65e9d` | 2026-09-26 | **PASS (gate)** — run [36211384015](https://github.com/odin-loki/PRISM/actions/runs/36211384015): `prism_tests`, pytest and conformance under ASan+UBSan green (0 wrong proofs); full-tree self-scan hit 300 min job limit (no SARIF) |
+| 1 sanitizers | `e9c73aadc` | 2026-09-26 | **PASS** — run [36226637147](https://github.com/odin-loki/PRISM/actions/runs/36226637147): `prism_tests`, pytest, conformance under ASan+UBSan (0 wrong proofs), and limited self-scan green |
 | 1 self-scan triage — ci selfcheck (`prism-self-report`, lints+polyglot) | `c4fc65e9d` | 2026-09-26 | **0 / 3221 / 1** — 3,222 FAILED SARIF rows: 0 real bugs; 3,221 false alarms (testdata/tests/regex lints on engine without AST); 1 out of scope (`third_party/` inventory skip) |
-| 1 self-scan triage — sanitized (`prism-self-sanitized`) | pending | — | pending re-run after self-scan stage limit fix (same stages as ci selfcheck) |
+| 1 self-scan triage — sanitized (`prism-self-sanitized`) | `e9c73aadc` | 2026-09-26 | **0 / 3223 / 0** — 3,223 FAILED SARIF rows on ASan build (inventory+lints+polyglot): 0 real; 3,223 false alarms (same buckets as ci selfcheck; no `third_party/` inventory skip this run) |
 | 2 headline table | `02d7da9be` | 2026-09-26 | **PASS** — CI `conformance-metrics` on `main`: 0 wrong proofs; pir 302/379 proved, 165/364 refuted (≥ table); bmc 107/379 proved, 93/364 refuted (≥ table); local cold-cache rerun: 0 wrong proofs in 2111 s |
 | 2 SV-COMP subset | `02d7da9be` | 2026-09-26 | **PASS** — `run_subset.py -j 2`: no-overflow score 88 (35+18 correct, 0 incorrect); unreach-call score 115 (53+9 correct, 0 incorrect); combined **203**/417 |
 | 2 real-world rerun | `02d7da9be` | 2026-09-26 | **PASS** — pinned commits, `--no-llm`: jsmn/tinyexpr/cJSON/cxxopts/zlib all PARSE-GAP 0, CRASH 0, ERROR 0; zlib wall 698 s (finishes; pir still heavy) |
