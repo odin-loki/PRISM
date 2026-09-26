@@ -1,8 +1,10 @@
 # Verification plan after round 6
 
 **Status (2026-09-26): complete.** Every row in the results table below is
-**PASS**. Step 1 gate: run [36226637147](https://github.com/odin-loki/PRISM/actions/runs/36226637147)
-on `e9c73aadc`; docs and triage helper on `6e7fdc4e7`.
+**PASS**. Record commit `c65da2f9d` (triage test + this banner). Step 1 gate:
+manual run [36226637147](https://github.com/odin-loki/PRISM/actions/runs/36226637147)
+and scheduled run [36230272810](https://github.com/odin-loki/PRISM/actions/runs/36230272810)
+on `e9c73aadc`.
 
 Round 6 (`realw`, `falar`, `perf6`, `lnprf`, `sv3cm`) is merged on `main`. On `015b39c8c` every gating workflow was green: PRISM CI,
 the conformance release gate, proofs, the independent Lean recheck and docs.
@@ -32,7 +34,8 @@ gate failed once (missing `pyyaml`, fixed in `c4fc65e9d`); the re-run passes
 `prism_tests`, pytest and conformance under ASan+UBSan (see results table).
 
 - Run: trigger it by hand (Actions → "PRISM on PRISM (nightly)" → Run
-  workflow), or wait for the 03:17 UTC schedule. Up to about 5 hours.
+  workflow), or wait for the 03:17 UTC schedule. About 2 hours (build +
+  conformance + limited self-scan).
 - It builds with `-DPRISM_SANITIZE=ON`, runs `prism_tests`, pytest and
   `tools/conformance.py -j 2 --mem-limit-mb 0` against that build, and then
   `prism . --no-llm --stage inventory,lints,polyglot --out prism-self` (same
@@ -53,10 +56,10 @@ gate failed once (missing `pyyaml`, fixed in `c4fc65e9d`); the re-run passes
   pytest green. If a later step reports ASan/UBSan, treat it as a real engine
   bug.
 - Self-scan triage: download the `prism-self-sanitized` artifact
-  (`report.md`, `report.sarif`). Sort each finding into one of three groups:
-  a real bug (fix it and add a test), a false alarm (reduce it to a case in
-  `testdata/` and fix the check), or out of scope (for example code under
-  `third_party/`). Record the counts at the end of this file.
+  (`report.md`, `report.sarif`) and run `python tools/triage_selfscan.py OUT/`
+  for the real / false_alarm / out_of_scope summary (`tests/test_triage_selfscan.py`
+  guards the buckets). Sort any unexpected `real` row into: fix + test, reduce
+  to `testdata/` and fix the check, or out of scope (`third_party/`).
 - The non-gating `selfcheck` job in `ci.yml` (`prism-self-report` artifact,
   inventory + lints + polyglot) gets the same triage once.
 
@@ -84,8 +87,7 @@ the document.
   the commit and the date.
 - Fill in the results table below.
 - `wip/` (round-6 mbox archive) was removed 2026-09-26 after Step 2; the
-  commits on `main` are the record. Step 1 sanitized self-scan triage is
-  recorded below after a green re-run with the limited self-scan stages.
+  commits on `main` are the record.
 
 ## Owner actions (not in this plan's scope)
 
@@ -97,7 +99,7 @@ release, and GPU/LoRA work on the owner's hardware.
 
 | step | commit | date | result |
 |---|---|---|---|
-| 1 sanitizers | `e9c73aadc` | 2026-09-26 | **PASS** — run [36226637147](https://github.com/odin-loki/PRISM/actions/runs/36226637147): `prism_tests`, pytest, conformance under ASan+UBSan (0 wrong proofs), and limited self-scan green |
+| 1 sanitizers | `e9c73aadc` | 2026-09-26 | **PASS** — runs [36226637147](https://github.com/odin-loki/PRISM/actions/runs/36226637147) (manual) and [36230272810](https://github.com/odin-loki/PRISM/actions/runs/36230272810) (schedule): `prism_tests`, pytest, conformance under ASan+UBSan (0 wrong proofs), limited self-scan green |
 | 1 self-scan triage — ci selfcheck (`prism-self-report`, lints+polyglot) | `c4fc65e9d` | 2026-09-26 | **0 / 3221 / 1** — 3,222 FAILED SARIF rows: 0 real bugs; 3,221 false alarms (testdata/tests/regex lints on engine without AST); 1 out of scope (`third_party/` inventory skip) |
 | 1 self-scan triage — sanitized (`prism-self-sanitized`) | `e9c73aadc` | 2026-09-26 | **0 / 3223 / 0** — 3,223 FAILED SARIF rows on ASan build (inventory+lints+polyglot): 0 real; 3,223 false alarms (same buckets as ci selfcheck; no `third_party/` inventory skip this run) |
 | 2 headline table | `02d7da9be` | 2026-09-26 | **PASS** — CI `conformance-metrics` on `main`: 0 wrong proofs; pir 302/379 proved, 165/364 refuted (≥ table); bmc 107/379 proved, 93/364 refuted (≥ table); local cold-cache rerun: 0 wrong proofs in 2111 s |
