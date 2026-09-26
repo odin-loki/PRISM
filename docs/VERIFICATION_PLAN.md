@@ -2,7 +2,7 @@
 
 Round 6 (`realw`, `falar`, `perf6`, `lnprf`, `sv3cm`) is merged on `main`. On `015b39c8c` every gating workflow was green: PRISM CI,
 the conformance release gate, proofs, the independent Lean recheck and docs.
-The first `self-check.yml` run on `02d7da9be` is **PARTIAL** (see results table).
+Run [36203977754](https://github.com/odin-loki/PRISM/actions/runs/36203977754) on `02d7da9be` failed at pytest (missing `pyyaml`, fixed in `c4fc65e9d`). Re-run [36211384015](https://github.com/odin-loki/PRISM/actions/runs/36211384015) on `c4fc65e9d`: `prism_tests`, pytest and conformance under sanitizers are green; full-tree self-scan was still running at last check (see results table).
 This plan lists what is still unconfirmed, how to confirm it, and what counts
 as a pass. Nothing here adds features.
 
@@ -23,9 +23,9 @@ engine:
 
 ## Step 1: PRISM on PRISM (sanitizers)
 
-`.github/workflows/self-check.yml` reached `main` with round 6; the first
-run (2026-09-26, workflow_dispatch on `02d7da9be`) is **PARTIAL** — see
-results table and next action below.
+`.github/workflows/self-check.yml` reached `main` with round 6. The pytest
+gate failed once (missing `pyyaml`, fixed in `c4fc65e9d`); the re-run passes
+`prism_tests`, pytest and conformance under ASan+UBSan (see results table).
 
 - Run: trigger it by hand (Actions → "PRISM on PRISM (nightly)" → Run
   workflow), or wait for the 03:17 UTC schedule. Up to about 5 hours.
@@ -37,18 +37,14 @@ results table and next action below.
 - On failure: every sanitizer report is a real bug in PRISM. Reduce it to a
   test in `tests/cpp/test_main.cpp` or `tests/`, fix it in both engines where
   it applies, and push.
-- **Next action (2026-09-26 run, pytest gate):** run
+- **PyYAML gate (fixed in `c4fc65e9d`):** the first run
   [36203977754](https://github.com/odin-loki/PRISM/actions/runs/36203977754)
-  failed before conformance or the self-scan: `prism_tests` passed under
-  ASan+UBSan; pytest reported eight `JSONDecodeError`s in
-  `tests/conformance/test_conformance_suite.py` (no sanitizer output in the
-  log). `self-check.yml` installed `pytest` but not `pyyaml`; without PyYAML,
-  `tools/conformance.py` fell back to `json.loads` on task `.yml` files,
-  which is not valid JSON. **Fix applied in the working tree:** `pyyaml` is
-  now on the workflow `pip install` line in `.github/workflows/self-check.yml`
-  (matching `conformance.yml` and `ci.yml` via `yamllint`). Push and
-  re-trigger the workflow. If pytest is green and a later step fails with an
-  ASan/UBSan report, treat that as a real engine bug.
+  failed at pytest because `self-check.yml` did not install `pyyaml`.
+  `tools/conformance.py` now requires PyYAML (no `json.loads` fallback); the
+  workflow installs it; `tests/test_supply_chain.py` guards the install line.
+  Re-run [36211384015](https://github.com/odin-loki/PRISM/actions/runs/36211384015):
+  pytest green. If a later step reports ASan/UBSan, treat it as a real engine
+  bug.
 - Self-scan triage: download the `prism-self-sanitized` artifact
   (`report.md`, `report.sarif`). Sort each finding into one of three groups:
   a real bug (fix it and add a test), a false alarm (reduce it to a case in
@@ -81,8 +77,9 @@ the document.
   the commit and the date.
 - Fill in the results table below.
 - `wip/` (round-6 mbox archive) was removed 2026-09-26 after Step 2; the
-  commits on `main` are the record. Step 1 (sanitizer pytest gate) remains
-  open.
+  commits on `main` are the record. Step 1 sanitized self-scan triage remains
+  open until run [36211384015](https://github.com/odin-loki/PRISM/actions/runs/36211384015)
+  finishes and the `prism-self-sanitized` artifact is triaged.
 
 ## Owner actions (not in this plan's scope)
 
@@ -94,8 +91,9 @@ release, and GPU/LoRA work on the owner's hardware.
 
 | step | commit | date | result |
 |---|---|---|---|
-| 1 sanitizers | `02d7da9be` | 2026-09-26 | **PARTIAL** — workflow run [36203977754](https://github.com/odin-loki/PRISM/actions/runs/36203977754): `prism_tests` green under ASan+UBSan; pytest failed (8 conformance JSON parse errors, no sanitizer report in log); conformance and self-scan skipped |
-| 1 self-scan triage (real / false alarm / out of scope) | | 2026-09-26 | not run (pytest gate failed before `prism .` self-scan) |
+| 1 sanitizers | `c4fc65e9d` | 2026-09-26 | **PASS (gate)** — run [36211384015](https://github.com/odin-loki/PRISM/actions/runs/36211384015): `prism_tests`, pytest and conformance under ASan+UBSan green (0 wrong proofs); full-tree `prism .` self-scan still running at last check (300 min job limit) |
+| 1 self-scan triage — ci selfcheck (`prism-self-report`, lints+polyglot) | `c4fc65e9d` | 2026-09-26 | **0 / 3221 / 1** — 3,222 FAILED SARIF rows: 0 real bugs; 3,221 false alarms (testdata/tests/regex lints on engine without AST); 1 out of scope (`third_party/` inventory skip) |
+| 1 self-scan triage — sanitized (`prism-self-sanitized`) | `c4fc65e9d` | 2026-09-26 | pending (self-scan step of [36211384015](https://github.com/odin-loki/PRISM/actions/runs/36211384015) not finished) |
 | 2 headline table | `02d7da9be` | 2026-09-26 | **PASS** — CI `conformance-metrics` on `main`: 0 wrong proofs; pir 302/379 proved, 165/364 refuted (≥ table); bmc 107/379 proved, 93/364 refuted (≥ table); local cold-cache rerun: 0 wrong proofs in 2111 s |
 | 2 SV-COMP subset | `02d7da9be` | 2026-09-26 | **PASS** — `run_subset.py -j 2`: no-overflow score 88 (35+18 correct, 0 incorrect); unreach-call score 115 (53+9 correct, 0 incorrect); combined **203**/417 |
 | 2 real-world rerun | `02d7da9be` | 2026-09-26 | **PASS** — pinned commits, `--no-llm`: jsmn/tinyexpr/cJSON/cxxopts/zlib all PARSE-GAP 0, CRASH 0, ERROR 0; zlib wall 698 s (finishes; pir still heavy) |

@@ -26,5 +26,6 @@ third_party/llama.cpp/models/*.gguf
 .claude/worktrees/
 conformance-out/
 conformance-out-*/
+prism-self-ci/
 svcomp-out/
 soundness-out/
