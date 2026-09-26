@@ -213,10 +213,10 @@ CI files are not classified.
 So on this sample PRISM's lints now flag all four CVE shapes in
 `testdata_tp/realworld_twins.c` (CVE-2024-31755, CVE-2023-50472,
 CVE-2023-50471, CVE-2022-37434). The findings are FINDS
-lints, not pir proofs. The model-checking stages cannot reach library APIs
-that take pointers without a harness; they say so on every such function
+lints, not pir proofs. The model-checking stages still cannot reach library
+APIs that take pointers without a harness; they say so on every such function
 (`NEEDS-HARNESS`), which is honest but is the main thing standing between
-PRISM and that last bug class.
+PRISM and pir proofs on those entry points.
 
 ## What is still open
 

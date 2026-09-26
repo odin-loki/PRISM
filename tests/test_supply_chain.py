@@ -295,6 +295,12 @@ class TestLicenceFirewall(unittest.TestCase):
             "self-check self-scan must match ci.yml stage limit (full tree exceeds job timeout)",
         )
 
+    def test_ci_smokes_svcomp_package_archive(self):
+        pack = ROOT / "tools" / "svcomp" / "package_archive.py"
+        self.assertTrue(pack.is_file(), "SV-COMP submission packager must exist")
+        ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        self.assertIn("package_archive.py", ci)
+
 
 class TestSbom(unittest.TestCase):
     def test_cyclonedx_1_5_from_manifest(self):
