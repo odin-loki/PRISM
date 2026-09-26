@@ -1,6 +1,7 @@
 /* True-positive twins of testdata_fp/realworld_switch.c and
  * realworld_forms.c (docs/EVALUATION.md): each must still fire. */
 #include <stdlib.h>
+#include <string.h>
 
 #define TEST(name) void test_##name(void)
 
@@ -37,6 +38,8 @@ TEST(alloc) {
 
 struct node { int type; char *valuestring; };
 struct link { struct link *prev; struct link *next; };
+struct gzhead { unsigned char *extra; unsigned extra_max; };
+struct zstate { struct gzhead *head; unsigned char *input; };
 
 int null_then_deref(struct node *n) {
     if (!n) return n->type;
@@ -103,6 +106,20 @@ void insert_list_ok(struct link *after, struct link *newitem)
         return;
     }
     newitem->prev->next = newitem;
+}
+
+/* zlib 1.2.12 CVE-2022-37434 shape: memcpy length not checked against extra_max. */
+void inflate_extra_bad(struct zstate *state, unsigned len)
+{
+    memcpy(state->head->extra, state->input, len);
+}
+
+void inflate_extra_ok(struct zstate *state, unsigned len)
+{
+    if (len > state->head->extra_max) {
+        return;
+    }
+    memcpy(state->head->extra, state->input, len);
 }
 
 int flag_unset(int k) {

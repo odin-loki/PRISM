@@ -3343,6 +3343,55 @@ void str_null_arg(const std::vector<std::string>& lines, std::string_view rel,
     }
 }
 
+bool copy_len_guarded(std::string_view size, std::string_view prior,
+                      const std::unordered_set<std::string>& max_names) {
+    auto se = re_escape(size);
+    for (auto& m : max_names) {
+        auto me = re_escape(m);
+        if (Regex("\\b" + se + "\\s*(?:<=|>=|>|<)\\s*[\\w\\->.]*" + me + "\\b").search(prior)) return true;
+        if (Regex("\\b[\\w\\->.]*" + me + "\\s*(?:<=|>=|>|<)\\s*" + se + "\\b").search(prior)) return true;
+    }
+    return false;
+}
+
+void mem_copy_len(const std::vector<std::string>& lines, std::string_view rel,
+                  const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
+    static Regex max_field(R"(\b(\w+_max)\b)");
+    std::unordered_set<std::string> file_max;
+    for (auto& ln : lines)
+        for (auto& m : max_field.finditer(ln)) file_max.insert(m.group(1));
+    for (auto& fn : funcs) {
+        std::unordered_set<std::string> max_names = file_max;
+        for (auto& m : max_field.finditer(fn.body)) max_names.insert(m.group(1));
+        if (max_names.empty()) continue;
+        auto body_lines = split_lines(fn.body);
+        int start = fn.span.first;
+        std::set<std::pair<int, std::string>> seen;
+        for (int i = 0; i < static_cast<int>(body_lines.size()); ++i) {
+            std::string prior;
+            for (int j = 0; j < i; ++j) {
+                if (!prior.empty()) prior += "\n";
+                prior += body_lines[static_cast<std::size_t>(j)];
+            }
+            for (auto callee : {"memcpy", "memmove"}) {
+                auto args = find_call_args(body_lines[static_cast<std::size_t>(i)], callee);
+                if (!args || args->size() < 3) continue;
+                auto size = strip((*args)[2]);
+                if (!is_ident(size)) continue;
+                if (copy_len_guarded(size, prior, max_names)) continue;
+                int line = start + i;
+                auto key = std::pair{line, size};
+                if (seen.contains(key)) continue;
+                seen.insert(key);
+                lint_add(out, rel, fn.name, line, "MEM-COPY-LEN",
+                         std::string(callee) + "() length " + size +
+                             " not checked against a *_max bound in this function",
+                         lines);
+            }
+        }
+    }
+}
+
 void ptr_chain_null(const std::vector<std::string>& lines, std::string_view rel,
                     const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     static Regex chain(R"(\b(\w+)->(\w+)->)");
@@ -4358,6 +4407,7 @@ void checkers_core(const std::vector<std::string>& lines, std::string_view rel,
     str_null_arg(lines, rel, funcs, out);
     str_null_member(lines, rel, funcs, out);
     ptr_chain_null(lines, rel, funcs, out);
+    mem_copy_len(lines, rel, funcs, out);
     ptr_arith(lines, rel, funcs, out);
     float_ub(lines, rel, funcs, out);
     vla_size(lines, rel, funcs, out);

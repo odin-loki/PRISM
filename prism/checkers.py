@@ -525,6 +525,7 @@ def _findings_for_file(path: Path, rel: str) -> list[Finding]:
     _str_null_arg(lines, rel, funcs, out)
     _str_null_member(lines, rel, funcs, out)
     _ptr_chain_null(lines, rel, funcs, out)
+    _mem_copy_len(lines, rel, funcs, out)
     _ptr_arith(lines, rel, funcs, out)
     _float_ub(lines, rel, funcs, out)
     _vla_size(lines, rel, funcs, out)
@@ -13727,6 +13728,56 @@ def _ptr_chain_null(lines, rel, funcs, out) -> None:
                     function=fn.name, line=line, cls="PTR-CHAIN-NULL",
                     message=f"chained dereference {param}->{member}->... without "
                     f"a null check on {param}->{member}",
+                    strength=laws.STRENGTH_FINDS,
+                    evidence=lines[line - 1].strip()
+                    if 0 < line <= len(lines) else "",
+                ))
+
+
+_MAX_FIELD = _rx(r"\b(\w+_max)\b")
+
+
+def _copy_len_guarded(size: str, prior: str, max_names: set[str]) -> bool:
+    size_esc = re.escape(size)
+    for m in max_names:
+        m_esc = re.escape(m)
+        if _rx(rf"\b{size_esc}\s*(?:<=|>=|>|<)\s*[\w\->.]*{m_esc}\b").search(prior):
+            return True
+        if _rx(rf"\b[\w\->.]*{m_esc}\s*(?:<=|>=|>|<)\s*{size_esc}\b").search(prior):
+            return True
+    return False
+
+
+def _mem_copy_len(lines, rel, funcs, out) -> None:
+    file_max = set(_MAX_FIELD.findall("\n".join(lines)))
+    for fn in funcs:
+        max_names = set(_MAX_FIELD.findall(fn.body)) | file_max
+        if not max_names:
+            continue
+        body_lines = fn.body.splitlines()
+        start = fn.span[0]
+        seen: set[tuple[int, str]] = set()
+        for i, ln in enumerate(body_lines):
+            for callee in ("memcpy", "memmove"):
+                args = _find_call_args(ln, callee)
+                if args is None or len(args) < 3:
+                    continue
+                size = args[2].strip()
+                if not _rx(r"^\w+$").match(size):
+                    continue
+                prior = "\n".join(body_lines[:i])
+                if _copy_len_guarded(size, prior, max_names):
+                    continue
+                line = start + i
+                key = (line, size)
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append(Finding(
+                    stage="lints", status=laws.FAILED, file=rel,
+                    function=fn.name, line=line, cls="MEM-COPY-LEN",
+                    message=f"{callee}() length {size} not checked against a "
+                    f"*_max bound in this function",
                     strength=laws.STRENGTH_FINDS,
                     evidence=lines[line - 1].strip()
                     if 0 < line <= len(lines) else "",

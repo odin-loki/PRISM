@@ -164,24 +164,26 @@ class TestRealWorldEvaluation(unittest.TestCase):
     def test_macro_defined_test_body_is_parsed_and_linted(self):
         fns = {f.name: f for f in extract_functions(TP / "realworld_twins.c", "t.c")}
         self.assertEqual(fns["TEST_alloc"].kind, "OTHER")
-        self.assertIn((35, "MEM-UAF"), _hits("realworld_twins.c"))
+        self.assertIn((36, "MEM-UAF"), _hits("realworld_twins.c"))
 
     def test_twins_still_fire(self):
         hits = _hits("realworld_twins.c")
-        self.assertIn((11, "CTRL-FALLTHROUGH"), hits)  # unannotated, not the last arm
-        self.assertIn((19, "MEM-VLA-SIZE"), hits)  # buf[n]
-        self.assertIn((27, "MEM-VLA-SIZE"), hits)  # buf[LEN], LEN a local
-        self.assertIn((42, "PTR-NULL-DEREF"), hits)  # if (!n) return n->type;
-        self.assertIn((43, "PTR-NULL-DEREF"), hits)  # braced then-branch
-        self.assertIn((51, "INT-BOOL-AS-BIT"), hits)  # (a < b) | (c < d)
-        self.assertIn((52, "INT-BOOL-AS-BIT"), hits)  # a == 1 & b == 2
-        self.assertIn((63, "CTRL-MISSING-RETURN"), hits)  # #else arm does not return
-        self.assertIn((73, "STR-NULL-ARG"), hits)  # CVE-2024-31755 shape
-        self.assertIn((80, "STR-NULL-MEMBER"), hits)  # CVE-2023-50472 shape
-        self.assertNotIn((89, "STR-NULL-MEMBER"), hits)  # member null-checked
-        self.assertIn((96, "PTR-CHAIN-NULL"), hits)  # CVE-2023-50471 shape
-        self.assertNotIn((105, "PTR-CHAIN-NULL"), hits)  # intermediate null-checked
-        self.assertIn((111, "UNINIT-BRANCH"), hits)  # err never assigned
+        self.assertIn((12, "CTRL-FALLTHROUGH"), hits)  # unannotated, not the last arm
+        self.assertIn((20, "MEM-VLA-SIZE"), hits)  # buf[n]
+        self.assertIn((28, "MEM-VLA-SIZE"), hits)  # buf[LEN], LEN a local
+        self.assertIn((45, "PTR-NULL-DEREF"), hits)  # if (!n) return n->type;
+        self.assertIn((46, "PTR-NULL-DEREF"), hits)  # braced then-branch
+        self.assertIn((54, "INT-BOOL-AS-BIT"), hits)  # (a < b) | (c < d)
+        self.assertIn((55, "INT-BOOL-AS-BIT"), hits)  # a == 1 & b == 2
+        self.assertIn((66, "CTRL-MISSING-RETURN"), hits)  # #else arm does not return
+        self.assertIn((76, "STR-NULL-ARG"), hits)  # CVE-2024-31755 shape
+        self.assertIn((83, "STR-NULL-MEMBER"), hits)  # CVE-2023-50472 shape
+        self.assertNotIn((92, "STR-NULL-MEMBER"), hits)  # member null-checked
+        self.assertIn((99, "PTR-CHAIN-NULL"), hits)  # CVE-2023-50471 shape
+        self.assertNotIn((108, "PTR-CHAIN-NULL"), hits)  # intermediate null-checked
+        self.assertIn((114, "MEM-COPY-LEN"), hits)  # CVE-2022-37434 shape
+        self.assertNotIn((122, "MEM-COPY-LEN"), hits)  # len checked against extra_max
+        self.assertIn((128, "UNINIT-BRANCH"), hits)  # err never assigned
 
     def test_interval_leaves_floating_point_alone(self):
         from prism.interval import run_interval

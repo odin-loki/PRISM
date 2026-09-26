@@ -772,6 +772,8 @@ CLASSES: list[dict] = [
          seen={"lints": FINDS}),
     dict(id="MEM-LEAK", name="heap allocation freed on some returns only", cwe=[401],
          seen={"lints": FINDS}),
+    dict(id="MEM-COPY-LEN", name="memcpy/memmove length not checked against a *_max bound", cwe=[787],
+         seen={"lints": FINDS}),
     dict(id="STR-NULL-ARG", name="string API called on unchecked pointer parameter", cwe=[476],
          seen={"lints": FINDS}),
     dict(id="STR-NULL-MEMBER", name="string API called on unchecked pointer member", cwe=[476],

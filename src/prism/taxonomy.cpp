@@ -389,6 +389,7 @@ const std::vector<TaxonomyClass>& taxonomy_classes() {
         {"MEM-ALLOCA", "alloca size is not a constant", {770, 1325}, {{"lints", "FINDS"}}},
         {"MEM-FLEX-ARRAY", "flexible-array struct allocated at header size only", {131, 119}, {{"lints", "FINDS"}}},
         {"MEM-LEAK", "heap allocation freed on some returns only", {401}, {{"lints", "FINDS"}}},
+        {"MEM-COPY-LEN", "memcpy/memmove length not checked against a *_max bound", {787}, {{"lints", "FINDS"}}},
         {"STR-NULL-ARG", "string API called on unchecked pointer parameter", {476}, {{"lints", "FINDS"}}},
         {"STR-NULL-MEMBER", "string API called on unchecked pointer member", {476}, {{"lints", "FINDS"}}},
         {"CXX-USE-AFTER-MOVE", "value used after std::move", {672}, {{"lints", "FINDS"}}},

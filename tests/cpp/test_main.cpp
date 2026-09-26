@@ -374,21 +374,23 @@ TEST_CASE("real-world forms: export macros and TEST() bodies are parsed") {
     for (auto& f : prism::extract_functions(tp / "realworld_twins.c")) tk[f.name] = f.kind;
     CHECK(tk["TEST_alloc"] == "OTHER");
     auto hits = prism::run_lints({tp / "realworld_twins.c"}, tp);
-    CHECK(has_hit(hits, 35, "MEM-UAF"));
-    CHECK(has_hit(hits, 11, "CTRL-FALLTHROUGH"));
-    CHECK(has_hit(hits, 19, "MEM-VLA-SIZE"));
-    CHECK(has_hit(hits, 27, "MEM-VLA-SIZE"));
-    CHECK(has_hit(hits, 42, "PTR-NULL-DEREF"));
-    CHECK(has_hit(hits, 43, "PTR-NULL-DEREF"));
-    CHECK(has_hit(hits, 51, "INT-BOOL-AS-BIT"));
-    CHECK(has_hit(hits, 52, "INT-BOOL-AS-BIT"));
-    CHECK(has_hit(hits, 63, "CTRL-MISSING-RETURN"));
-    CHECK(has_hit(hits, 73, "STR-NULL-ARG"));  // CVE-2024-31755 shape
-    CHECK(has_hit(hits, 80, "STR-NULL-MEMBER"));  // CVE-2023-50472 shape
-    CHECK(!has_hit(hits, 89, "STR-NULL-MEMBER"));
-    CHECK(has_hit(hits, 96, "PTR-CHAIN-NULL"));  // CVE-2023-50471 shape
-    CHECK(!has_hit(hits, 105, "PTR-CHAIN-NULL"));
-    CHECK(has_hit(hits, 78, "UNINIT-BRANCH"));
+    CHECK(has_hit(hits, 36, "MEM-UAF"));
+    CHECK(has_hit(hits, 12, "CTRL-FALLTHROUGH"));
+    CHECK(has_hit(hits, 20, "MEM-VLA-SIZE"));
+    CHECK(has_hit(hits, 28, "MEM-VLA-SIZE"));
+    CHECK(has_hit(hits, 45, "PTR-NULL-DEREF"));
+    CHECK(has_hit(hits, 46, "PTR-NULL-DEREF"));
+    CHECK(has_hit(hits, 54, "INT-BOOL-AS-BIT"));
+    CHECK(has_hit(hits, 55, "INT-BOOL-AS-BIT"));
+    CHECK(has_hit(hits, 66, "CTRL-MISSING-RETURN"));
+    CHECK(has_hit(hits, 76, "STR-NULL-ARG"));  // CVE-2024-31755 shape
+    CHECK(has_hit(hits, 83, "STR-NULL-MEMBER"));  // CVE-2023-50472 shape
+    CHECK(!has_hit(hits, 92, "STR-NULL-MEMBER"));
+    CHECK(has_hit(hits, 99, "PTR-CHAIN-NULL"));  // CVE-2023-50471 shape
+    CHECK(!has_hit(hits, 108, "PTR-CHAIN-NULL"));
+    CHECK(has_hit(hits, 114, "MEM-COPY-LEN"));  // CVE-2022-37434 shape
+    CHECK(!has_hit(hits, 122, "MEM-COPY-LEN"));
+    CHECK(has_hit(hits, 128, "UNINIT-BRANCH"));
 }
 
 TEST_CASE("real-world: zlib K&R forms parse; an unreadable K&R head is a gap") {
