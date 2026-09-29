@@ -669,6 +669,12 @@ RegressResult generate_regression_tests(const RunReport& report, const RegressOp
             argv.push_back((bin / t.name).string());
             if (!cxx) argv.push_back("-lm");
             auto b = detail::run_process(argv, 180.0);
+            if (!b.failed && b.rc != 0 && b.text.find("libclang_rt.") != std::string::npos) {
+                // The compiler is there but its sanitizer runtime is not: a missing tool (Law 1).
+                t.status = "NOTRUN";
+                t.detail = "sanitizer runtime not installed for " + cc + " (" + t.flags + ")";
+                continue;
+            }
             if (b.failed || b.rc != 0) {
                 t.status = "compile-error";
                 t.detail = b.failed ? cc + " not found" : b.text.substr(b.text.size() > 600 ? b.text.size() - 600 : 0);

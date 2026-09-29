@@ -891,10 +891,15 @@ TEST_CASE("ai-assist regress: uninitialised reads get a MemorySanitizer build an
     CHECK(slurp(opt.out_dir / "u_uninit_bad.c").find("if (uninit_bad((int)0LL)) prism_regress_sink_ = 1;") !=
           std::string::npos);
     CHECK(slurp(opt.out_dir / "CMakeLists.txt").find("PRIVATE ${PRISM_MSAN_FLAGS}") != std::string::npos);
-    if (std::system("clang -fsanitize=memory -x c /dev/null -c -o /dev/null >/dev/null 2>&1") == 0) {
-        opt.run = true;
-        opt.allow_exec = true;
-        auto ran = prism::ai::generate_regression_tests(r, opt);
+    opt.run = true;
+    opt.allow_exec = true;
+    auto ran = prism::ai::generate_regression_tests(r, opt);
+    // Link, not just compile: the MSan runtime is a separate package.
+    if (std::system("printf 'int main(void){return 0;}' | clang -fsanitize=memory -x c - -o /dev/null "
+                    ">/dev/null 2>&1") == 0) {
         CHECK_MESSAGE(ran.tests[0].status == "reproduces", ran.tests[0].detail);
+    } else if (std::system("clang --version >/dev/null 2>&1") == 0) {
+        // No runtime: NOTRUN (Law 1), never a compile error or a clean result.
+        CHECK_MESSAGE(ran.tests[0].status == "NOTRUN", ran.tests[0].detail);
     }
 }
