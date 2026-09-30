@@ -43,10 +43,17 @@ ENV CC=/usr/bin/clang-18 \
 WORKDIR /src
 COPY . /src
 
-# Fail closed before compiling anything: licence firewall + in-tree linked
-# libraries must match the manifest (version marker and tree digest).
-RUN python3 scripts/licence_check.py \
- && python3 scripts/fetch_deps.py --linked
+# Fail closed before compiling anything from third_party/: licence firewall +
+# in-tree linked libraries must match the manifest (version marker and tree
+# digest). prism-deps is built first from the standard library alone; it
+# links no third_party/ code (PRISM_DEPS_ONLY configures only that target).
+RUN cmake -S /src -B /build-deps -G Ninja \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_C_COMPILER=${CC} -DCMAKE_CXX_COMPILER=${CXX} \
+      -DPRISM_DEPS_ONLY=ON \
+ && cmake --build /build-deps --target prism-deps \
+ && /build-deps/prism-deps licence-check \
+ && /build-deps/prism-deps linked
 
 # -ffile-prefix-map strips /src and the build dir from debug info, __FILE__
 # and assertions; -Wl,--build-id=sha1 makes the build id a content hash;
@@ -67,7 +74,7 @@ RUN cmake -S /src -B /build -G Ninja \
  && (cd /src && /build/prism_tests) \
  && mkdir -p /out \
  && cp /build/prism /build/libprism_native.so /out/ \
- && python3 scripts/sbom.py --version "${PRISM_VERSION}" -o /out/prism.cdx.json \
+ && /build-deps/prism-deps sbom --version "${PRISM_VERSION}" -o /out/prism.cdx.json \
  && touch -d "@${SOURCE_DATE_EPOCH}" /out/* \
  && (cd /out && sha256sum prism libprism_native.so prism.cdx.json > SHA256SUMS)
 

@@ -486,7 +486,9 @@ if(PRISM_TESTS)
     # Planted-bug lint corpus (every testdata/ plant, table-driven).
     tests/cpp/test_lint_corpus.cpp
     # checkers_cxx.cpp branches and guards (bad / good twins).
-    tests/cpp/test_checkers_cxx.cpp)
+    tests/cpp/test_checkers_cxx.cpp
+    # Supply chain: prism-deps, MANIFEST.toml, licence firewall, SBOM.
+    tests/cpp/test_deps.cpp)
   target_include_directories(prism_tests PRIVATE
     "${PRISM_ROOT}/include"
     "${PRISM_ROOT}/third_party")

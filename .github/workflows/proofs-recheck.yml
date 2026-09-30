@@ -12,7 +12,7 @@ name: Proofs — independent recheck (Lean)
 #      replays every declaration of the .olean files into a kernel environment;
 #   5. nanoda: an independent Lean kernel written in Rust type-checks the
 #      lean4export NDJSON export of each project and all its dependencies
-#      (both pinned in third_party/MANIFEST.toml, built by scripts/fetch_deps.py).
+#      (both pinned in third_party/MANIFEST.toml, built by `prism-deps tool`).
 #
 # The per-project axiom lists are uploaded as an artifact on every run and
 # attached to the GitHub release when a release is published.
@@ -23,13 +23,13 @@ on:
     paths:
       - "proofs/**"
       - "third_party/MANIFEST.toml"
-      - "scripts/fetch_deps.py"
+      - "src/tools/prism_deps/**"
       - ".github/workflows/proofs-recheck.yml"
   pull_request:
     paths:
       - "proofs/**"
       - "third_party/MANIFEST.toml"
-      - "scripts/fetch_deps.py"
+      - "src/tools/prism_deps/**"
       - ".github/workflows/proofs-recheck.yml"
   release:
     types: [published]
@@ -74,10 +74,15 @@ jobs:
           key: recheck-${{ matrix.project.name }}-${{ hashFiles('proofs/**/lean-toolchain', 'third_party/MANIFEST.toml') }}-${{ hashFiles('proofs/**/*.lean', 'proofs/**/lakefile.toml') }}
           restore-keys: recheck-${{ matrix.project.name }}-${{ hashFiles('proofs/**/lean-toolchain', 'third_party/MANIFEST.toml') }}-
 
-      - name: Fetch and build the pinned re-checkers (lean4export, nanoda)
+      - name: Build prism-deps (standard library only)
         run: |
-          python3 scripts/fetch_deps.py --tool lean4export
-          python3 scripts/fetch_deps.py --tool nanoda
+          sudo apt-get update && sudo apt-get install -y ninja-build clang-18
+          cmake -B "$RUNNER_TEMP/deps" -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=clang-18 -DCMAKE_CXX_COMPILER=clang++-18 -DPRISM_DEPS_ONLY=ON
+          cmake --build "$RUNNER_TEMP/deps" --target prism-deps
+
+      - name: Fetch and build the pinned re-checkers (lean4export, nanoda)
+        run: $RUNNER_TEMP/deps/prism-deps tool lean4export nanoda
 
       - name: Build axiom_report (proofs/refinement)
         working-directory: proofs/refinement
