@@ -397,7 +397,7 @@ libstdc++'s `std::array`, `std::span`, `std::optional`, `std::unique_ptr`,
 `std::string`). `pir` (2026-09-24): 52/53 PROVED, 1 BOUNDED (`getenv`),
 72/72 false twins refuted for the planted class, 0 wrong proofs, 0 false
 alarms. The C proofs are size-bounded (objects up to N bytes; every
-size-parametric harness is PROVED at N = 16 by `tools/libc_model_bounds.py`)
+size-parametric harness is PROVED at N = 16 by `prism-qa libc-bounds`)
 except `unbounded_contracts.c` (memcpy/memmove/memset/realloc on objects of
 any size below 2^40). `bmc`: 0 proofs, 2 refutations (`abs(INT_MIN)`,
 `rand() < 100`), NEEDS-HARNESS elsewhere (no preprocessor: the included

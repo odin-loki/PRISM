@@ -3,7 +3,8 @@
 Every artefact the assurance documents cite, with what it shows and, as
 importantly, what it does not. Identifiers (E01...) are used by
 [ASSURANCE_CASE.md](ASSURANCE_CASE.md) and the framework mappings.
-`tools/assurance_check.py` verifies every path, test name, anchor and
+`prism_docs_check assurance-check` (`src/tools/qa/docscan.cpp`) verifies
+every path, test name, anchor and
 theorem name below exists. "CI" means a workflow defined in this
 repository; this package does not include CI run results.
 
@@ -199,7 +200,8 @@ each project's `lean-toolchain`): `proofs/check.sh` passed all four steps
 
 ### E11 Differential testing between engines and encoders
 
-- Artefacts: `tests/test_sarif.py::TestEngineParity`, `tools/pir_vs_bmc.py`,
+- Artefacts: `tests/test_sarif.py::TestEngineParity`,
+  `src/tools/qa/pir_vs_bmc.cpp` (`prism-qa pir-vs-bmc`),
   `docs/PIR.md#differential-oracle-vs-the-old-encoder-roadmap-28`,
   `tests/test_stage_order.py`.
 - Shows: the C++ engine and the frozen Python engine (roadmap D8) agree on
@@ -309,8 +311,12 @@ each project's `lean-toolchain`): `proofs/check.sh` passed all four steps
 
 ### E21 User documentation and report formats
 
-- Artefacts: `docs/USER_GUIDE.md`, `tests/test_docs_cli.py` (every CLI flag
-  of both engines documented, every verdict anchor resolves),
+- Artefacts: `docs/USER_GUIDE.md`,
+  `tests/cpp/test_qa.cpp::docs: every --help flag of prism and prism prove is in docs/USER_GUIDE.md`,
+  `tests/cpp/test_qa.cpp::docs: every Markdown anchor link resolves`,
+  `tests/cpp/test_qa.cpp::docs: every verdict has the VERDICTS.md anchor reports link to`
+  (every CLI flag of the C++ engine documented, every anchor and verdict
+  anchor resolves),
   `src/prism/sarif.cpp`, `prism/sarif.py`, `docs/USER_GUIDE.md#8-ci-integration`.
 - Does not show: that users read it.
 

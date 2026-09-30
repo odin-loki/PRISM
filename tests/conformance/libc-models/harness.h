@@ -29,7 +29,7 @@ void __VERIFIER_assume(int cond);
  * (2N + 1 for a strcat/strncat destination), so with N = 4 they close within
  * the default --unwind 8 and a verdict is PROVED only when the unwinding
  * assertion is closed as well (never folded from BOUNDED, Law 2). N can be
- * raised with -DN=8 (tools/libc_model_bounds.py, with --unwind 2N + 2): the
+ * raised with -DN=8 (prism-qa libc-bounds, with --unwind 2N + 2): the
  * result is still a proof for objects up to N bytes only, not for all sizes. */
 #ifndef N
 #define N 4

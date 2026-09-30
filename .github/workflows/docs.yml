@@ -1,9 +1,11 @@
 name: docs
 
-# Roadmap 6.4 / 6.5: the user guide documents every CLI flag and anchor,
-# and every artefact the assurance package cites (paths, tests, anchors,
-# Lean theorem names) exists. Fast, no build needed; the C++ half of
-# tests/test_docs_cli.py runs in ci.yml's python job when PRISM_BIN is set.
+# Roadmap 6.4 / 6.5: every artefact the assurance package cites exists
+# (paths, doctest and test names, anchors, Lean theorem names) and every
+# Markdown anchor link resolves. prism_docs_check needs neither the engine
+# nor Z3, so this job builds only that target. The check that the user guide
+# documents every CLI flag needs the engine's --help and runs in prism_tests
+# (tests/cpp/test_qa.cpp) in ci.yml.
 
 on:
   push:
@@ -17,12 +19,16 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - name: Install test deps
-        run: python -m pip install pytest pyyaml
+      - name: Install toolchain
+        run: sudo apt-get update && sudo apt-get install -y ninja-build clang
+      - name: Configure (no Z3, no engine tests)
+        run: >
+          cmake -B build -G Ninja
+          -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+          -DPRISM_CUDA=OFF -DPRISM_LLAMA=OFF -DPRISM_QT=OFF -DPRISM_Z3=OFF -DPRISM_TESTS=OFF
+      - name: Build prism_docs_check
+        run: cmake --build build --target prism_docs_check
       - name: Assurance package cites only existing artefacts
-        run: python tools/assurance_check.py
-      - name: User guide covers every CLI flag; every anchor resolves
-        run: python -m pytest -q tests/test_docs_cli.py
+        run: ./build/prism_docs_check assurance-check
+      - name: Every Markdown anchor resolves
+        run: ./build/prism_docs_check anchors

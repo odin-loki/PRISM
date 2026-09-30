@@ -32,7 +32,8 @@ repository to four frameworks a defence or aerospace buyer is likely to use:
 1. Every claim cites a concrete artefact: a file path, a test
    (`<path>::<name>`), a Lean theorem (`thm:<Name>`), a workflow or a doc
    section (`docs/<X>.md#<anchor>`).
-2. `tools/assurance_check.py` verifies that every cited path exists, every
+2. `prism_docs_check assurance-check` (`src/tools/qa/docscan.cpp`) verifies
+   that every cited path exists, every
    `<path>::<name>` is found in its file, every anchor resolves and every
    `thm:<Name>` is declared as a `theorem` or `lemma` in the Lean sources
    under `proofs/`.

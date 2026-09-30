@@ -612,7 +612,7 @@ PRISM_API std::vector<PtrContract> parse_contracts(const std::vector<std::string
 PRISM_API std::vector<Finding> run_pir(const std::vector<std::filesystem::path>& sources,
                                        const Config& cfg);
 
-// Tooling (tools/solver_bench.py; src/prism/pir/bench.cpp). JSON on return.
+// Tooling (prism-qa solver-bench; src/prism/pir/bench.cpp). JSON on return.
 // Every VC of every encodable function of `src`, written as SMT-LIB2 files
 // under out_dir; functions that are not encoded are listed with their status.
 PRISM_API std::string unit_vcs_json(const std::filesystem::path& src, const Config& cfg,

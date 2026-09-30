@@ -3,7 +3,8 @@
 A Goal Structuring Notation (GSN) style argument, written as Markdown. It
 argues about **PRISM itself**: when may a user rely on a PRISM verdict? The
 leaves are evidence items from [EVIDENCE.md](EVIDENCE.md). Every leaf names
-an artefact that exists (checked by `tools/assurance_check.py`); a leaf that
+an artefact that exists (checked by `src/tools/qa/docscan.cpp`,
+`prism_docs_check assurance-check`); a leaf that
 has no evidence yet is marked **UNDEVELOPED** and says what is missing.
 
 Notation: **G** goal, **C** context, **A** assumption, **J** justification,
@@ -68,7 +69,8 @@ several goals are undeveloped.
           - **Sn6** E10: random programs, every proof executed under UBSan,
             `tools/csmith_soundness.py`.
           - **Sn7** E11: engine and encoder differential testing,
-            `tests/test_sarif.py::TestEngineParity`, `tools/pir_vs_bmc.py`.
+            `tests/test_sarif.py::TestEngineParity`, `src/tools/qa/pir_vs_bmc.cpp`
+            (`prism-qa pir-vs-bmc`).
         - **G3.3** The front end presents the program PRISM analyses
           faithfully.
           - **Sn8** E12: translation validation against `lli`,
@@ -101,7 +103,8 @@ several goals are undeveloped.
         `tests/test_sarif.py::TestSarifShape`, taxonomy `GAP` rows;
         Law 1 theorem `thm:notrun_never_becomes_clean`.
       - **Sn13** E21: every CLI option documented and every verdict anchor
-        resolves, `tests/test_docs_cli.py`.
+        resolves, `tests/cpp/test_qa.cpp::docs: every --help flag of prism and prism prove is in docs/USER_GUIDE.md`,
+        `tests/cpp/test_qa.cpp::docs: every verdict has the VERDICTS.md anchor reports link to`.
       - **Sn14** Known limitations are published with reproducers (E23).
     - **G5** (d) The delivered tool is the reviewed one and is safe to run
       on untrusted code.

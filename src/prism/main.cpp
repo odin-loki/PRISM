@@ -232,7 +232,7 @@ int main(int argc, char** argv) {
     auto cfg = default_config();
     std::string path = "testdata";
     std::string fail_on = "never";
-    // Tooling for tools/solver_bench.py (not a scan; JSON on stdout).
+    // Tooling for prism-qa solver-bench (not a scan; JSON on stdout).
     std::string pir_vcs_src, solve_smt2;
     bool z3_only = false;
     for (int i = 1; i < argc; ++i) {

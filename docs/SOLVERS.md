@@ -245,7 +245,8 @@ listed in `TRUSTED_BASE.md` §4 and `third_party/MANIFEST.toml`.
 ## Measurement: the conformance suite's pir VCs (roadmap 3.1 exit criterion)
 
 The exit criterion is "the portfolio beats Z3 alone on total time over the
-conformance suite's VCs". `tools/solver_bench.py` measures exactly that:
+conformance suite's VCs". `prism-qa solver-bench` (`src/tools/qa/solver_bench.cpp`)
+measures exactly that:
 `prism --pir-vcs` writes every VC of every encodable function of the 263
 conformance tasks (`tests/conformance/prism` and `sv-comp`, unwind 8), and
 `prism --solve-smt2` answers each VC three times back to back: Z3 alone
@@ -255,7 +256,7 @@ the portfolio scheduling from the history it built on the VCs before
 VC, solver wall time summed (process start-up excluded), one VC at a time.
 
 ```
-python tools/solver_bench.py --prism build/prism --out solver-bench-out
+build/prism-qa solver-bench --prism build/prism --out solver-bench-out
 ```
 
 Result (2026-09-23, 4 cores shared with other agents' builds, load

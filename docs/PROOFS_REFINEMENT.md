@@ -83,7 +83,7 @@ What is *not* proved, and the gaps this work found in
 | `PrismRefine/XRefine.lean`, `XStep.lean`, `XRun.lean`, `XValidSpec.lean` | Simulation: `translateX_exact` |
 | `PrismRefine/XLazy.lean`, `XSound.lean` | Strict vs LangRef side (`strict_lazyX`); headline theorems `pir_sound_x` … |
 | `PrismRefine/Check.lean`, `CheckMain.lean` | `pir_lean_check`: the correspondence checker |
-| `EvalMain.lean` | `llvm_eval`: runs the three semantics on concrete inputs (for `tools/llvm_sem_vs_lli.py`) |
+| `EvalMain.lean` | `llvm_eval`: runs the three semantics on concrete inputs (for `prism-qa llvm-sem-vs-lli`) |
 | `AxiomReport.lean` | `axiom_report`: axioms of every declaration of a project (8.5) |
 | `PrismRefine/Float.lean` | IEEE 754 binary formats, correctly rounded addition with special values |
 | `PrismRefine/FloatOps.lean` | Correctly rounded subtraction, multiplication, division; IEEE exception flags; PRISM's FLOAT-* conditions against IEEE 754 and C11 |
@@ -377,7 +377,7 @@ intrinsics (`__prism_obj_size`, `__prism_memcpy`, `__prism_check`, …), the
 format family.
 
 By function, on the repository's own C/C++ corpus
-(`python tools/pir_lean_check.py tests/pir testdata --bin <build>/prism`:
+(`prism-qa pir-lean-check tests/pir testdata --bin <build>/prism`:
 the real pir stage with its uninitialised-local and folded-UB
 instrumentation and C signed-shift locations), before and after the
 extended fragment:
@@ -489,10 +489,12 @@ widths, check names and classes, terminators). Verdicts: `agree` (the
 theorems hold of the PIR PRISM verified), `agree-ext` (the function is in the
 extended fragment, its PIR is exactly `translateX`'s and the certificate
 checks: the `_x` theorems hold of it), `agree-reject`, `outside`,
-`MISMATCH` (exit 1). `tools/pir_lean_check.py [TREE…] --bin build/prism`
-drives it end to end; `tests/test_pir_refinement.py` runs it when
-`PRISM_BIN` is set and locks the check-name / operator-name parity between
-`translate.cpp` and the Lean files without Lean. `check.sh` runs the
+`MISMATCH` (exit 1). `prism-qa pir-lean-check [TREE…] --bin build/prism`
+(`src/tools/qa/pir_lean_check.cpp`) drives it end to end; `prism_tests`
+runs it and the fixtures when the checker is built (`tests/cpp/test_qa.cpp`,
+NOTRUN otherwise), and `tests/test_pir_refinement.py` locks the check-name /
+operator-name parity between `translate.cpp` and the Lean files without
+Lean. `check.sh` runs the
 checker on `fixtures/` (real C++ output for `tests/pir`, plus a hand-made
 dropped-check pair that must be reported as a mismatch; for the extended
 fragment `calls_freeze.pirl` and `memory.pirl`, and `dropped_call_check`,
@@ -501,10 +503,12 @@ check and a bounds check removed).
 
 ## Testing the formal semantics against `lli` (8.3)
 
-`tools/llvm_sem_vs_lli.py` runs every fragment function of the given C
-files on edge-case and random inputs with `llvm_eval` (LangRef, strict and
-PIR semantics), executes each input the LangRef semantics says is defined
-with `lli` on the same IR, and compares the printed result. It also checks
+`prism-qa llvm-sem-vs-lli` (`src/tools/qa/llvm_sem_vs_lli.cpp`) runs every
+fragment function of the given C files on edge-case and random inputs with
+`llvm_eval` (LangRef, strict and PIR semantics), executes each input the
+LangRef semantics says is defined with `lli` on the IR the pir stage
+verifies (`pir::lower_to_ir`; its instrumentation markers get stub
+definitions), and compares the printed result. It also checks
 the three Lean semantics agree as proved. On `tests/pir` through the `prism` binary: 417 runs, 378
 compared with `lli`, **0 disagreements** (39 inputs have UB or poison and
 are not executed). On `testdata/*.c` (6 inputs per function): 3 603
@@ -678,7 +682,7 @@ is claimed for them:
    path-sensitive, `freeze` and non-`noundef` return cases stay `PROVED`.
    The Lean side is unchanged (it still accepts `undef` only under
    `freeze`/`store`, whose C++ translation did not change), so functions
-   with `undef` elsewhere stay `outside`; `tools/pir_lean_check.py` after
+   with `undef` elsewhere stay `outside`; `pir-lean-check` after
    the fix: `testdata` 915 `agree` + 21 `agree-ext`, `tests/pir` 46 + 9,
    0 mismatches.
 5. **`freeze poison` was reported (fixed).** `freeze` translated its operand

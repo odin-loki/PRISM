@@ -5,7 +5,7 @@
 // is appended to <dir>/<unit>.pirl: the LLVM function in the fragment syntax
 // of proofs/refinement/PrismRefine/Llvm.lean, and what translate() produced
 // (the PIR, or the UNENCODED reason). `pir_lean_check` (proofs/refinement,
-// driven by tools/pir_lean_check.py) re-translates the LLVM side with the
+// driven by prism-qa pir-lean-check) re-translates the LLVM side with the
 // Lean translator -- the one the refinement theorems are proved about -- and
 // checks the C++ output is exactly that. Anything outside the fragment is
 // written as `L unsupported <why>` and reported, never compared silently.

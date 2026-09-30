@@ -18,7 +18,7 @@ models `src/prism/pir/{libc_models,libc_format}.cpp` + `src/prism/pir/models/lib
 Tests: `tests/pir/*` (true and false variants; `mem_*.c` for the memory
 model; `fp_*`, `eh_*`, `coro_*`, `sjlj_*`, `virt_*`, `asm_*` for roadmap 2.6), `tests/test_pir.py`,
 doctests `pir: …` in `tests/cpp/test_main.cpp`, `pir mem: …` in `tests/cpp/test_pir_mem.cpp`
-and `pir3 …` in `tests/cpp/test_pir3.cpp`. Differential oracle: `tools/pir_vs_bmc.py`.
+and `pir3 …` in `tests/cpp/test_pir3.cpp`. Differential oracle: `prism-qa pir-vs-bmc`.
 
 ## Front end
 
@@ -649,7 +649,7 @@ That is a size-bounded result; it is not claimed as a proof for all sizes
 close the byte loops of the string models on a symbolic-length object; loop
 invariants do (next paragraph but one, "Size-unbounded string contracts").
 
-`tools/libc_model_bounds.py` re-runs every `_true` harness alone with
+`prism-qa libc-bounds` re-runs every `_true` harness alone with
 `-DN=4, 8, 16, 32, 64` and `--unwind 2N + 2` and reports the largest N still
 PROVED within the conformance timeout (180 s per run). On 2026-09-23 every
 size-parametric harness was PROVED at N = 4, 8 and 16 (longest run 85 s:
@@ -1403,7 +1403,7 @@ and drops the certificate. What a certificate still trusts is in
 
 `prism --pir-vcs FILE --out DIR` writes the VCs of every function of one unit
 as SMT-LIB2 files, and `prism --solve-smt2 VC [--z3-only]` answers one; both
-print JSON and exist for `tools/solver_bench.py`.
+print JSON and exist for `prism-qa solver-bench`.
 
 ## Translation validation (roadmap 2.4)
 
@@ -1429,7 +1429,7 @@ function on the remaining inputs is appended to the lowered module
 
 ## Differential oracle vs the old encoder (roadmap 2.8)
 
-`python tools/pir_vs_bmc.py testdata --bin build/prism` runs
+`build/prism-qa pir-vs-bmc testdata --bin build/prism` runs
 `prism testdata --no-llm --stage inventory,classify,bmc,pir` and prints the
 per-function matrix (rows = bmc, columns = pir):
 
