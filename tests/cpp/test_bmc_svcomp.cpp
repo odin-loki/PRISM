@@ -141,4 +141,37 @@ int h(void) { return main(0, 0); }
 )");
     CHECK(called["main"].status == kFailed);
 }
+
+TEST_CASE("bmc: printf, puts and putchar are modelled for literal formats and scalar arguments") {
+    auto by = bmc_run("printf.c", R"(extern int printf(const char *fmt, ...);
+extern int puts(const char *s);
+extern int putchar(int c);
+int p_ovf(int x) { printf("%d\n", x + 1); return 0; }
+int p_only(int x) { printf("%d\n", x); return 0; }
+int p_ok(int x) { if (x > 100) return 0; printf("x=%d %s %-5lx%%\n", x + 1, "ok", (long)x); puts("done"); putchar(x); return 0; }
+int p_n(int x) { printf("%d%n\n", x, x); return 0; }
+int p_var(int x) { char s[3] = "%d"; printf(s, x); return 0; }
+int p_count(int x) { printf("%d %d\n", x); return 0; }
+int p_width(int x) { printf("%ld\n", x); return 0; }
+int p_star(int x) { printf("%*d\n", x, x); return 0; }
+int p_esc(int x) { printf("\045n", x); return 0; }
+int p_result(int x) { int r = printf("hi\n"); if (r == 1000) return x / 0; return 0; }
+)");
+    CHECK(by["p_ovf"].status == kFailed);
+    CHECK(by["p_ovf"].cls == "INT-SIGNED-OVF");
+    // No property besides the call: a modelled printf is not a libc effect
+    // that blocks the proof.
+    CHECK(by["p_only"].status == kProved);
+    INFO(by["p_ok"].message);
+    CHECK(by["p_ok"].status == kProved);
+    for (auto* name : {"p_n", "p_var", "p_count", "p_width", "p_star", "p_esc"}) {
+        INFO(name << ": " << by[name].message);
+        CHECK(by[name].status == kHarness);
+        CHECK(by[name].message.find("printf") != std::string::npos);
+    }
+    // The result is any value: a violation that needs one is neither a
+    // refutation nor excluded.
+    INFO(by["p_result"].message);
+    CHECK(by["p_result"].status == kHarness);
+}
 #endif

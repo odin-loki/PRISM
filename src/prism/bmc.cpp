@@ -904,8 +904,12 @@ bool has_unencoded_cstr(const FunctionInfo& fn) {
     return false;
 }
 bool has_unencoded_libc_effect(const FunctionInfo& fn) {
+    // printf/puts/putchar: the encoder models the safe forms
+    // (model_output_call) and reports every other form as an unmodelled
+    // call, which already rules out a proof.
+    static const std::unordered_set<std::string> modelled = {"printf", "puts", "putchar"};
     for (auto& n : call_names(fn.body))
-        if (UNENCODED_LIBC_EFFECT.contains(n)) return true;
+        if (UNENCODED_LIBC_EFFECT.contains(n) && !modelled.contains(n)) return true;
     return false;
 }
 bool has_unencoded_cxx(const FunctionInfo& fn) {
@@ -3206,22 +3210,30 @@ Finding bmc_once(const FunctionInfo& fn, int unwind, bool try_unbounded,
         base.message = "BMC frontend: " + err;
         return base;
     }
+    // Properties whose violation needs a call result to be some particular
+    // value: neither refuted nor proved.
+    std::vector<std::string> undecided;
     for (auto& prop : enc->props) {
         z3::solver s(enc->ctx);
         s.set("timeout", 8000u);
         s.add(prop.cond);
         auto r = s.check();
-        if (!enc->call_vars.empty() && r != z3::unsat) {
-            // A violation that needs an unmodelled call to return some
-            // particular value is not a refutation (the callee may never
-            // return it): it must hold for every value the calls return.
+        if ((!enc->call_vars.empty() || !enc->io_results.empty()) && r != z3::unsat) {
+            // A violation that needs an unmodelled call (or an output call)
+            // to return some particular value is not a refutation (the
+            // callee may never return it): it must hold for every value the
+            // calls return.
             z3::expr_vector cv(enc->ctx);
             for (auto& c : enc->call_vars) cv.push_back(c);
+            for (auto& c : enc->io_results) cv.push_back(c);
             s.reset();
             s.set("timeout", 8000u);
             s.add(z3::forall(cv, prop.cond));
             r = s.check();
-            if (r != z3::sat) continue;
+            if (r != z3::sat) {
+                undecided.push_back(prop.name);
+                continue;
+            }
         }
         if (r == z3::sat) {
             auto c = cex(s.get_model(), *enc, fn.params);
@@ -3263,6 +3275,16 @@ Finding bmc_once(const FunctionInfo& fn, int unwind, bool try_unbounded,
         base.status = std::string(laws::NEEDS_HARNESS);
         base.message = "UNENCODED: call to " + join_csv(enc->unmodelled) +
                        " not modelled (arguments checked, result unconstrained): not a proof";
+        return base;
+    }
+    if (!undecided.empty()) {
+        // Only output calls (io_results) are left: the call is modelled, but
+        // its result is any value, so a violation that needs one particular
+        // result is possible in the model and cannot be excluded.
+        base.strength = std::string(laws::STRENGTH_SOME);
+        base.status = std::string(laws::NEEDS_HARNESS);
+        base.message = "UNENCODED: " + join_csv(undecided) +
+                       " depends on the result of an output call (not modelled): not a proof";
         return base;
     }
     if (enc->props.empty() && has_unencoded_libc_effect(fn)) {
