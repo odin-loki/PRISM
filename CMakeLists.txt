@@ -712,6 +712,10 @@ if(PRISM_TESTS)
   endif()
   target_include_directories(prism_tests PRIVATE "${_pins_dir}")
   add_dependencies(prism_tests prism_generated prism prism-qa prism_docs_check)
+  # A checker that hogs memory, for the certified-mode memory-cap doctest.
+  add_executable(prism_test_hog tests/cpp/hog.cpp)
+  add_dependencies(prism_tests prism_test_hog)
+  target_compile_definitions(prism_tests PRIVATE PRISM_TEST_HOG="$<TARGET_FILE:prism_test_hog>")
   if(UNIX)
     # test_qa_conformance (in the shared list) finds fake_prism beside prism_tests.
     add_executable(fake_prism tests/cpp/fake_prism.cpp)
