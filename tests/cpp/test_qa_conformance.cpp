@@ -844,9 +844,8 @@ TEST_CASE("qa conformance: the self-check input grid is the one it always was") 
 
 TEST_CASE("qa conformance: a sample of the label self-check passes") {
     // the workflow runs all of it (prism-qa conformance --self-check)
-    auto [cc, cxx] = qa::sanitizer_compilers();
-    if (qa::which(cc).empty()) {
-        WARN_MESSAGE(false, "no sanitizer-capable C compiler: label self-check sample NOTRUN");
+    if (!qa::sanitizers_usable()) {
+        WARN_MESSAGE(false, "no compiler links UBSan+ASan: label self-check sample NOTRUN");
         return;
     }
     std::vector<qa::Task> tasks;

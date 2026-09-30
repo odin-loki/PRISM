@@ -50,9 +50,10 @@ gate failed once (missing `pyyaml`, fixed in `c4fc65e9d`); the re-run passes
 - **PyYAML gate (fixed in `c4fc65e9d`):** the first run
   [36203977754](https://github.com/odin-loki/PRISM/actions/runs/36203977754)
   failed at pytest because `self-check.yml` did not install `pyyaml`.
-  `src/tools/qa/conformance.cpp` then required PyYAML (no `json.loads` fallback; the
+  The Python scorer then required PyYAML (no `json.loads` fallback; the
   scorer is now `prism-qa conformance`, with its own YAML-subset reader); the
-  workflow installs it for the remaining pytest suite; `tests/test_supply_chain.py` guards the install line.
+  workflow still installs it for the remaining pytest suite;
+  `tests/test_supply_chain.py` guards the install line.
   Re-run [36211384015](https://github.com/odin-loki/PRISM/actions/runs/36211384015):
   pytest green. If a later step reports ASan/UBSan, treat it as a real engine
   bug.

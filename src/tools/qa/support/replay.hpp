@@ -40,6 +40,8 @@ bool bwrap_ok();
 // (C compiler, C++ compiler) that can link UBSan+ASan: clang, else gcc
 // ($CC_SAN / $CXX_SAN override both)
 std::pair<std::string, std::string> sanitizer_compilers();
+// a compiler linked the UBSan+ASan probe (or $CC_SAN / $CXX_SAN are set)
+bool sanitizers_usable();
 std::vector<std::string> compiler_for(const std::string& lang);
 
 struct Exec {

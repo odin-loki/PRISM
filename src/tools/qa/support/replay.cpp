@@ -305,6 +305,10 @@ bool bwrap_ok() {
     return ok;
 }
 
+namespace {
+bool g_san_usable = false;
+}  // namespace
+
 std::pair<std::string, std::string> sanitizer_compilers() {
     static std::once_flag once;
     static std::pair<std::string, std::string> cc;
@@ -313,6 +317,7 @@ std::pair<std::string, std::string> sanitizer_compilers() {
         const char* e2 = std::getenv("CXX_SAN");
         if (e1 && *e1 && e2 && *e2) {
             cc = {e1, e2};
+            g_san_usable = true;
             return;
         }
         cc = {"clang", "clang++"};
@@ -333,11 +338,17 @@ std::pair<std::string, std::string> sanitizer_compilers() {
             fs::remove_all(d, ec);
             if (!r.start_failed && !r.timed_out && r.rc == 0) {
                 cc = {c, cxx};
+                g_san_usable = true;
                 break;
             }
         }
     });
     return cc;
+}
+
+bool sanitizers_usable() {
+    sanitizer_compilers();
+    return g_san_usable;
 }
 
 std::vector<std::string> compiler_for(const std::string& lang) {
