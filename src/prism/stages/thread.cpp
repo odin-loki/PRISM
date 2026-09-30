@@ -56,16 +56,14 @@ std::vector<Finding> run_thread(const std::vector<FunctionInfo>& functions) {
         "\\b(?:pthread_create|std::jthread|std::thread|CreateThread|thrd_create)\\b");
     static Regex mutex_re("\\b(?:mtx_lock|mtx_timedlock|pthread_mutex)\\b");
     for (auto& [rel, fns] : by_file) {
-        // The first function whose source file can be found and read gives
-        // the text of the translation unit; failing that, the bodies alone.
+        // Every function of the group shares fn.file, so one lookup gives the
+        // text of the translation unit (its file-scope globals); failing
+        // that, the bodies alone, which hold no file-scope declarations.
         std::string file_text;
         bool have_text = false;
-        for (auto& fn : fns) {
-            auto p = locate_source(fn);
-            if (!p || !std::ifstream(*p)) continue;
+        if (auto p = locate_source(fns.front()); p && std::ifstream(*p)) {
             file_text = strip_comments_keep_lines(read_text_file(*p));
             have_text = true;
-            break;
         }
         if (!have_text) {
             for (auto& fn : fns) {
@@ -78,6 +76,14 @@ std::vector<Finding> run_thread(const std::vector<FunctionInfo>& functions) {
             for (auto& fn : fns)
                 if (thread_api.search(fn.body)) has_api = true;
         if (!has_api) continue;
+        if (!have_text) {
+            // Without the file its globals are unknown, so a race cannot be
+            // ruled out: say so rather than report nothing (Law 7).
+            auto f = nr("thread", "source of " + rel +
+                                      " not found: file-scope globals unknown, shared-write races not checked");
+            f.file = rel;
+            out.push_back(std::move(f));
+        }
         auto globals = file_globals(file_text);
         if (globals.empty()) continue;
         std::map<std::string, std::vector<FunctionInfo>> writers;

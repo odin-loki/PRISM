@@ -22,7 +22,7 @@
 namespace {
 
 std::filesystem::path td() {
-    return std::filesystem::path(__FILE__).parent_path().parent_path().parent_path() / "testdata";
+    return std::filesystem::path(PRISM_SOURCE_DIR) / "testdata";
 }
 
 std::vector<prism::Finding> with_cls(const std::vector<prism::Finding>& hits, const std::string& cls) {
@@ -44,9 +44,25 @@ bool contains(const std::vector<std::string>& v, const std::string& s) {
     return std::find(v.begin(), v.end(), s) != v.end();
 }
 
+// The cwd for one scope (a relative fn.file resolves against it).
+struct ScopedCwd {
+    std::filesystem::path prev = std::filesystem::current_path();
+    explicit ScopedCwd(const std::filesystem::path& to) { std::filesystem::current_path(to); }
+    ~ScopedCwd() {
+        std::error_code ec;
+        std::filesystem::current_path(prev, ec);
+    }
+};
+
+// With absolute=false fn.file is the bare file name, as a scan from the repo
+// root records it; the cwd is the repo root for that call, so the result does
+// not depend on where prism_tests is run from.
 std::vector<prism::Finding> thread_on(const char* stem, bool absolute = false) {
     auto p = td() / stem;
-    return prism::run_thread(prism::extract_functions(p, absolute ? p.string() : std::string(stem)));
+    auto fns = prism::extract_functions(p, absolute ? p.string() : std::string(stem));
+    if (absolute) return prism::run_thread(fns);
+    ScopedCwd cwd(std::filesystem::path(PRISM_SOURCE_DIR));
+    return prism::run_thread(fns);
 }
 
 }  // namespace
@@ -69,6 +85,29 @@ TEST_CASE("thread: unsynchronised global writers are RACE-SHARED (FINDS, not a p
 TEST_CASE("thread: a relative file path still finds the race; no thread API is silent") {
     CHECK_FALSE(with_cls(thread_on("race_global.c"), "RACE-SHARED").empty());
     CHECK(thread_on("taint_sink.c", true).empty());
+}
+
+TEST_CASE("thread: a threaded file whose source cannot be found is NOTRUN, not silent") {
+    auto p = td() / "race_global.c";
+    auto fns = prism::extract_functions(p, p.string());
+    REQUIRE(fns.size() >= 3);
+    for (auto& fn : fns) fn.file = "no/such/dir/prism_missing_race.c";
+    auto hits = prism::run_thread(fns);
+    std::vector<prism::Finding> notrun;
+    for (auto& f : hits)
+        if (f.status == prism::laws::NOTRUN) notrun.push_back(f);
+    REQUIRE(notrun.size() == 1);
+    CHECK(notrun[0].stage == "thread");
+    CHECK(notrun[0].file == "no/such/dir/prism_missing_race.c");
+    CHECK(notrun[0].message.find("not checked") != std::string::npos);
+    for (auto& f : hits) {
+        CHECK(f.status != prism::laws::CLEAN);
+        CHECK_FALSE(prism::laws::is_proof(f.status));
+    }
+    // The same functions with their real file find the race and no NOTRUN.
+    auto ok = prism::run_thread(prism::extract_functions(p, p.string()));
+    CHECK_FALSE(with_cls(ok, "RACE-SHARED").empty());
+    CHECK(std::none_of(ok.begin(), ok.end(), [](auto& f) { return f.status == prism::laws::NOTRUN; }));
 }
 
 TEST_CASE("thread: never CLEAN or PROVED") {
@@ -94,7 +133,7 @@ TEST_CASE("thread: a single unsynchronised writer is not a race") {
     CHECK(with_cls(thread_on("iso_thread_one_writer.c"), "RACE-SHARED").empty());
     auto p = td() / "iso_thread_race.c";
     std::vector<prism::FunctionInfo> one;
-    for (auto& fn : prism::extract_functions(p, "iso_thread_race.c"))
+    for (auto& fn : prism::extract_functions(p, p.string()))
         if (fn.name != "iso_thrd_t2") one.push_back(fn);
     CHECK(std::any_of(one.begin(), one.end(), [](auto& fn) { return fn.name == "iso_thrd_t1"; }));
     CHECK(with_cls(prism::run_thread(one), "RACE-SHARED").empty());
@@ -102,7 +141,7 @@ TEST_CASE("thread: a single unsynchronised writer is not a race") {
 
 TEST_CASE("thread: mtx_lock writers are not a race") {
     auto p = td() / "iso_thread_one_writer.c";
-    auto fns = prism::extract_functions(p, "iso_thread_one_writer.c");
+    auto fns = prism::extract_functions(p, p.string());
     std::vector<std::string> names;
     for (auto& fn : fns) names.push_back(fn.name);
     CHECK(contains(names, "iso_thrd_locked_a"));
@@ -112,7 +151,7 @@ TEST_CASE("thread: mtx_lock writers are not a race") {
 
 TEST_CASE("thread: mtx_timedlock writers are not a race") {
     auto p = td() / "iso_thread_timedlock.c";
-    auto fns = prism::extract_functions(p, "iso_thread_timedlock.c");
+    auto fns = prism::extract_functions(p, p.string());
     std::vector<std::string> names;
     bool creates = false;
     for (auto& fn : fns) {
