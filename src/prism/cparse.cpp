@@ -740,6 +740,23 @@ std::pair<std::vector<FunctionInfo>, std::vector<std::pair<int, std::string>>> p
     for (auto& [_, fn] : order) out.push_back(std::move(*fn));
     // Columns of body offsets are columns of the stripped text; keep the
     // dropped comment delimiters on the body's lines to map them back.
+    // Every `main` token of the unit (comments and strings blanked) beyond
+    // one per definition head of main is a mention bmc must see.
+    {
+        static Regex main_word("\\bmain\\b");
+        auto plain = strip_comments_keep_lines(text, true);
+        std::size_t mentions = main_word.finditer(plain).size();
+        std::size_t defs = 0;
+        for (auto& fn : out) defs += fn.name == "main";
+        if (mentions > defs)
+            for (auto& fn : out) fn.unit_names_main = true;
+    }
+    {
+        // Strings kept: `_Pragma("weak f")` spells the pragma in one.
+        static Regex weak_word("\\b(?:__)?(?:weak|weakref|alias)(?:__)?\\b");
+        if (weak_word.search(strip_comments_keep_lines(text, false)))
+            for (auto& fn : out) fn.unit_has_weak = true;
+    }
     auto shifts = comment_col_shifts(text);
     if (!shifts.empty())
         for (auto& fn : out)

@@ -40,6 +40,16 @@ struct FunctionInfo {
     // `main`'s first parameter is argc, nonnegative (C11 5.1.2.2.1p2). Set by
     // the bmc stage (program_main); not in the JSON form.
     bool argc_nonneg = false;
+    // The unit names `main` somewhere other than the head of a definition of
+    // main (a prototype, `&main`, `(main)(...)`, a file-scope initialiser, a
+    // macro). Set by extract_functions for every function of the unit; not in
+    // the JSON form. bmc then assumes nothing about main's arguments.
+    bool unit_names_main = false;
+    // The unit makes some name weak or an alias (`#pragma weak`, `_Pragma`,
+    // a weak or alias attribute on any declaration), so a definition in it
+    // may be replaced at link time without its own signature saying so. Set
+    // by extract_functions; not in the JSON form.
+    bool unit_has_weak = false;
 };
 
 // Source column of a (line, column) of the stripped body text.

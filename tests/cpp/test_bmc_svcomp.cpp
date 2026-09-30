@@ -275,6 +275,32 @@ int g(void) { return 0; }
 int h(void) { return main(0, 0); }
 )");
     CHECK(called["main"].status == kFailed);
+    // A parenthesised call, a function pointer (file scope or local) and
+    // `&main` name main without `main(`: still no premise.
+    auto paren = bmc_run("main_paren.c", R"(int main(int argc, char *argv[]) { int k = argc - 1; return k; }
+int h(void) { return (main)(-2147483647 - 1, 0); }
+)");
+    CHECK(paren["main"].status == kFailed);
+    CHECK(paren["main"].cls == "INT-SIGNED-OVF");
+    auto fptr = bmc_run("main_fptr.c", R"(int main(int argc, char *argv[]);
+int (*entry)(int, char **) = main;
+int main(int argc, char *argv[]) { int k = argc - 1; return k; }
+)");
+    CHECK(fptr["main"].status == kFailed);
+    auto fptr_def = bmc_run("main_fptr_def.c", R"(int main(int argc, char *argv[]) { int k = argc - 1; return k; }
+int (*entry)(int, char **) = &main;
+)");
+    CHECK(fptr_def["main"].status == kFailed);
+    auto local_ptr = bmc_run("main_local_ptr.c", R"(int main(int argc, char *argv[]) { int k = argc - 1; return k; }
+int g(void) { int (*p)(int, char **) = main; return p(-2147483647 - 1, 0); }
+)");
+    CHECK(local_ptr["main"].status == kFailed);
+    // `main` only in a comment or a file-scope string is not a mention.
+    auto quiet = bmc_run("main_quiet.c", R"(/* main is the entry */
+const char *who = "main";
+int main(int argc, char *argv[]) { int k = argc - 1; return k; }
+)");
+    CHECK(quiet["main"].status == kProved);
 }
 
 TEST_CASE("bmc: printf, puts and putchar are modelled for literal formats and scalar arguments") {

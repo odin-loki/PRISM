@@ -3720,8 +3720,8 @@ std::vector<FunctionInfo> with_cxx_std(std::vector<FunctionInfo> functions, cons
 // use them. When neither argv nor envp occurs in the body or in a macro the
 // encoder may expand, main is checked with argc alone, which is nonnegative
 // (the same paragraph). Any use of argv keeps NEEDS-HARNESS. argc >= 0 is
-// assumed only when nothing in the tree calls main (C allows a call to main
-// with any argument).
+// assumed only when nothing in the tree names main outside its definition
+// head (tree_calls_main; C allows a call to main with any argument).
 FunctionInfo program_main(FunctionInfo fn, bool main_called) {
     if (fn.name != "main" || fn.kind != "POINTER") return fn;
     if (fn.params.size() != 2 && fn.params.size() != 3) return fn;
@@ -3759,10 +3759,14 @@ FunctionInfo program_main(FunctionInfo fn, bool main_called) {
     return fn;
 }
 
+// Any mention of main may reach a call of it with any argument: `main(...)`,
+// `(main)(...)`, `&main`, a function pointer initialised from main, a macro
+// that expands to main. So every body (main's own included, for recursion)
+// and every unit that names main outside a definition head counts as a call.
 bool tree_calls_main(const std::vector<FunctionInfo>& functions) {
-    static Regex call("\\bmain\\s*\\(");
+    static Regex word("\\bmain\\b");
     for (auto& f : functions)
-        if (call.search(f.body)) return true;
+        if (f.unit_names_main || word.search(f.body)) return true;
     return false;
 }
 
