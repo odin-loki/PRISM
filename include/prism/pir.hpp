@@ -17,8 +17,10 @@
 #include "prism/models.hpp"
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -480,6 +482,20 @@ struct HoudiniBudget {
     void spend(double s) { spent_ms.fetch_add(static_cast<int64_t>(s * 1000.0)); }
 };
 
+// The solver time one function may take (CheckOptions::function_budget_s,
+// $PRISM_FUNCTION_BUDGET; docs/PIR.md "Solving"): a clock started once and
+// shared by everything checked for that function (both unwind attempts of
+// check_function, and the pir stage's re-checks of the same row).
+struct FunctionBudget {
+    explicit FunctionBudget(double total) : total_s(total) {}
+    double total_s;
+    std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+    double left() const {
+        return total_s - std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    }
+    bool exhausted() const { return left() <= 0; }
+};
+
 struct CheckOptions {
     int unwind = 8;
     double timeout_s = 30.0;    // per verification condition
@@ -492,10 +508,24 @@ struct CheckOptions {
     // are not counted). Spent: the verdict stays PROVED with a certify_note.
     // 0: no budget beyond each query's own.
     double certify_budget_s = 0;
-    // Seconds all solver work of one function may take together (property VCs,
-    // unwind, certification and Houdini). 0: no cap beyond each VC timeout.
-    // Spent: TIMEOUT with a budget_note (Law 7).
+    // Seconds all plain solver work of one function may take together
+    // (property VCs, the unwinding assertion, k-induction and Houdini; not
+    // certification, which has certify_budget_s). 0: no cap beyond each VC
+    // timeout. Spent before every VC is answered: TIMEOUT with message
+    // "pir function budget of N s spent ... (PRISM_FUNCTION_BUDGET)" and
+    // extra.function_budget_s (Law 7). Spent after that: the verdict stands
+    // (a BOUNDED stays BOUNDED, a validated violation stays FAILED) and a note
+    // says what was not attempted.
     double function_budget_s = 0;
+    // The clock of that budget; null: check_function starts one (shared by
+    // its two unwind attempts). The pir stage sets it to share one budget
+    // with its re-checks of the same function.
+    std::shared_ptr<FunctionBudget> function_budget;
+    // Fault injection (tests): called before each plain solver query of the
+    // function (the VC label, "k-induction@k" or "houdini"), after the budget
+    // check and the query's timeout are set, so a delay here stands for a
+    // slow query.
+    std::function<void(const std::string&)> debug_before_query;
     bool use_cache = true;
     std::string cache_dir;      // empty: the solver library's default
     unsigned max_parallel = 0;  // solver members at once; 0: hardware threads

@@ -132,11 +132,18 @@ std::vector<char> pointer_vars(const Function& fn) {
 class Houdini {
 public:
     // timeout_s: the solver time per query; the whole search gets 6 times that
-    // (search_s < 6 * timeout_s when the run's budget has less left)
+    // (search_s < 6 * timeout_s when the run's budget has less left).
+    // hard_s >= 0: a hard cap (what is left of the function budget) that no
+    // query passes, the final query and the per-query minimums included; the
+    // run's Houdini budget (search_s alone) leaves the final query its own
+    // minimum.
     Houdini(const Function& fn, const CfgInfo& g, const EncodeOptions& eo, double timeout_s, double search_s = -1,
-            HoudiniEnv env = {})
+            HoudiniEnv env = {}, double hard_s = -1)
         : fn_(fn), g_(g), eo_(eo), per_query_(timeout_s),
-          deadline_(search_s >= 0 ? std::min(search_s, 6 * timeout_s) : 6 * timeout_s), env_(std::move(env)) {}
+          deadline_(search_s >= 0 ? std::min(search_s, 6 * timeout_s) : 6 * timeout_s), hard_s_(hard_s),
+          env_(std::move(env)) {
+        if (hard_s_ >= 0) deadline_ = std::min(deadline_, hard_s_);
+    }
 
     HoudiniOut run();
 
@@ -146,6 +153,7 @@ private:
     EncodeOptions eo_;
     double per_query_;
     double deadline_;
+    double hard_s_;
     HoudiniEnv env_;
     std::string cache_file_;   // "" : no cache
     bool from_cache_ = false;  // candidates restricted to a cached proof's survivors
@@ -159,6 +167,13 @@ private:
     double left() const {
         return deadline_ - std::chrono::duration<double>(std::chrono::steady_clock::now() - t0_).count();
     }
+    // what is left of the hard cap (no cap: effectively unbounded)
+    double hard_left() const {
+        if (hard_s_ < 0) return 1e18;
+        return hard_s_ - std::chrono::duration<double>(std::chrono::steady_clock::now() - t0_).count();
+    }
+    // a query's Z3 timeout in ms: t seconds, never past the hard cap (1 ms at least)
+    unsigned query_ms(double t) const { return static_cast<unsigned>(std::max(0.001, std::min(t, hard_left())) * 1000); }
     bool in_loop(int L, int b) const {
         return b >= 0 && g_.loops[static_cast<std::size_t>(L)].body[static_cast<std::size_t>(b)];
     }
@@ -993,7 +1008,7 @@ HoudiniOut Houdini::run() {
                 // a group gets a share of the time; a single goal the full query time
                 double t = live.size() > 1 ? std::min(per_query_, std::max(2.0, per_query_ / 3)) : per_query_;
                 z3::params p(c);
-                p.set("timeout", static_cast<unsigned>(std::max(1.0, std::min(t, left())) * 1000));
+                p.set("timeout", query_ms(std::max(1.0, std::min(t, left()))));
                 s.set(p);
                 auto r = s.check(as);
                 if (r == z3::unsat) return;
@@ -1118,7 +1133,7 @@ HoudiniOut Houdini::run() {
             double t = !split ? fleft()
                        : hi - lo == e.props.size() ? std::max(per_query_, fleft() / 2)
                                                    : std::min(per_query_, fleft());
-            p.set("timeout", static_cast<unsigned>(std::max(1.0, t) * 1000));
+            p.set("timeout", query_ms(std::max(1.0, t)));
             sf.set(p);
             z3::expr_vector as(c);
             for (auto x : all_sel) as.push_back(x);
@@ -1230,7 +1245,9 @@ HoudiniOut Houdini::run() {
     // the cut program with them assumed violates no property (already known
     // when the last optimistic query had exactly these candidates alive).
     if (unsat_with && *unsat_with == alive_set()) return finish_out(true);
-    const double final_budget = std::max(3 * per_query_, left());
+    // the final query keeps a minimum of its own (the run's Houdini budget
+    // does not cut it), but never runs past the function budget
+    const double final_budget = std::min(std::max(3 * per_query_, left()), hard_left());
     const int r = final_query(final_budget, true);
     if (r == -1) out.undecided = true;
     return finish_out(r == 0);

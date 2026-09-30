@@ -1167,7 +1167,7 @@ void nondet_trace(Encoding& e, const PropInst& hit, const z3::expr& base, const 
     auto& c = e.c;
     z3::solver s(c);
     z3::params p(c);
-    p.set("timeout", static_cast<unsigned>(std::min(30.0, std::max(1.0, timeout_s)) * 1000));
+    p.set("timeout", static_cast<unsigned>(std::min(30.0, std::max(0.001, timeout_s)) * 1000));
     s.set(p);
     s.add(base && hit.viol);
     auto pin = [&](const z3::expr& x) {
@@ -1238,13 +1238,13 @@ double detail_now_s() {
     return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
-struct FunctionBudget {
-    double total_s;
-    double t0;
-    explicit FunctionBudget(double t) : total_s(t), t0(detail_now_s()) {}
-    double left() const { return total_s - (detail_now_s() - t0); }
-    bool exhausted() const { return left() <= 0; }
-};
+// A budget's seconds as written in messages and extra.function_budget_s
+// ("0.5", "20"; a fraction is not truncated to 0).
+std::string budget_seconds(double s) {
+    char buf[32];
+    std::snprintf(buf, sizeof buf, "%g", s);
+    return buf;
+}
 
 std::string vc_label(const PropInst& p) {
     return p.stmt->prop + (p.stmt->line ? "@" + std::to_string(p.stmt->line) : std::string());
@@ -1383,8 +1383,14 @@ thread_local bool tl_first_unwind = false;
 // Anything else (BOUNDED, unknown, a timeout of the shorter first attempt)
 // is decided at the requested unwind, as before. Certified mode keeps the
 // requested unwind (one certificate per function).
-Verdict check_function(const Function& fn, const CheckOptions& opt) {
+// Both attempts share one function budget (the clock starts here unless the
+// caller passed one): the second attempt gets what the first left, never a
+// fresh budget.
+Verdict check_function(const Function& fn, const CheckOptions& opt_in) {
     constexpr int kFirstUnwind = 4;
+    CheckOptions opt = opt_in;
+    if (opt.function_budget_s > 0 && !opt.function_budget)
+        opt.function_budget = std::make_shared<FunctionBudget>(opt.function_budget_s);
     if (opt.certified || opt.unwind <= kFirstUnwind + 1) return check_function_at(fn, opt);
     {
         auto g = analyze(fn);
@@ -1408,6 +1414,18 @@ Verdict check_function(const Function& fn, const CheckOptions& opt) {
         return v;
     }
     Verdict full = check_function_at(fn, opt);
+    // The budget ran out before the requested unwind answered every VC: the
+    // first attempt's BOUNDED (no violation within its unwind, every VC
+    // answered) stands, with the reason the requested unwind was not decided
+    // (Law 7). It is never promoted (Law 2).
+    if (v.status == laws::BOUNDED && full.status == laws::TIMEOUT && full.extra.count("function_budget_s")) {
+        v.extra["unwind_requested"] = std::to_string(opt.unwind);
+        v.extra["unwind_requested_note"] = "not decided: " + full.message;
+        v.extra["function_budget_s"] = full.extra["function_budget_s"];
+        v.extra["k_induction"] = "not attempted (function budget of " + full.extra["function_budget_s"] +
+                                 " s spent; PRISM_FUNCTION_BUDGET)";
+        return v;
+    }
     full.extra["unwind_first_tried"] = std::to_string(kFirstUnwind) + " (" + v.status + ")";
     return full;
 }
@@ -1420,20 +1438,30 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
     const int unwind = std::max(1, opt.unwind);
     const double timeout_s = std::max(1.0, opt.timeout_s);
     const auto timeout_ms = static_cast<unsigned>(timeout_s * 1000.0);
-    std::optional<FunctionBudget> fn_budget;
-    if (opt.function_budget_s > 0) fn_budget = FunctionBudget{opt.function_budget_s};
-    std::string fn_budget_at;
+    std::shared_ptr<FunctionBudget> fn_budget = opt.function_budget;
+    if (!fn_budget && opt.function_budget_s > 0) fn_budget = std::make_shared<FunctionBudget>(opt.function_budget_s);
+    const std::string fn_budget_n = fn_budget ? budget_seconds(fn_budget->total_s) : std::string();
+    std::string fn_budget_at;  // the VC the budget stopped (before it, or during it)
+    // VCs whose answer the budget cut short (their timeout was what was left
+    // of it, and no answer came)
+    std::vector<std::string> fn_budget_cut;
+    bool fn_budget_during = false;
     const auto fn_budget_timeout = [&](Verdict& vr) {
         vr.status = std::string(laws::TIMEOUT);
-        vr.message = "pir function budget of " + std::to_string(static_cast<long>(opt.function_budget_s)) + " s spent" +
-                      (fn_budget_at.empty() ? "" : " before " + fn_budget_at) + " (PRISM_FUNCTION_BUDGET)";
-        vr.extra["function_budget_s"] = std::to_string(static_cast<int>(opt.function_budget_s));
+        vr.message = "pir function budget of " + fn_budget_n + " s spent" +
+                     (fn_budget_at.empty() ? "" : (fn_budget_during ? " during " : " before ") + fn_budget_at) +
+                     (!fn_budget_during && !fn_budget_cut.empty() ? "; cut short: " + join_s(fn_budget_cut, ",")
+                                                                   : std::string()) +
+                     " (PRISM_FUNCTION_BUDGET)";
+        vr.extra["function_budget_s"] = fn_budget_n;
+    };
+    // After every VC is answered the verdict stands; what the spent budget
+    // stopped is a note (Law 7).
+    const auto fn_budget_note = [&](Verdict& vr) {
+        vr.extra["function_budget_s"] = fn_budget_n;
+        return "not attempted (function budget of " + fn_budget_n + " s spent; PRISM_FUNCTION_BUDGET)";
     };
     bool fn_budget_spent = false;
-    const auto cap_timeout = [&](solver::SolveOptions& o) {
-        if (!fn_budget) return;
-        o.timeout_s = std::min(timeout_s, std::max(0.1, fn_budget->left()));
-    };
     v.extra["unwind"] = std::to_string(unwind);
     auto g = analyze(fn);
     if (!g.unencoded.empty()) {
@@ -1463,15 +1491,37 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
     };
     try {
         z3::context c;
-        const auto solve_vc = [&](VcBook& bk, const std::string& label, z3::expr vc, solver::SolveOptions& o)
+        // The shared options `so` are never changed: each query gets its own
+        // copy, its timeout capped by what is left of the function budget
+        // (certification copies `so`, so its timeouts do not depend on it).
+        const auto solve_vc = [&](VcBook& bk, const std::string& label, z3::expr vc, const solver::SolveOptions& o0)
             -> const solver::SolveResult* {
             if (fn_budget && fn_budget->exhausted()) {
                 fn_budget_at = label;
+                fn_budget_during = false;
                 fn_budget_spent = true;
                 return nullptr;
             }
-            cap_timeout(o);
-            return &bk.add(label, solver::solve(c, vc, o));
+            solver::SolveOptions o = o0;
+            bool capped = false;
+            if (fn_budget) {
+                const double left = std::max(0.001, fn_budget->left());
+                capped = left < o.timeout_s;
+                o.timeout_s = std::min(o.timeout_s, left);
+            }
+            // (after the cap: a test's delay here stands for a slow query)
+            if (opt.debug_before_query) opt.debug_before_query(label);
+            const auto& r = bk.add(label, solver::solve(c, vc, o));
+            if (capped && r.kind != solver::SolveResult::Sat && r.kind != solver::SolveResult::Unsat &&
+                fn_budget->exhausted()) {
+                fn_budget_cut.push_back(label);
+                v.extra["function_budget_capped"] = join_s(fn_budget_cut, ",");
+                v.extra["function_budget_s"] = fn_budget_n;
+            }
+            return &r;
+        };
+        const auto cut_by_budget = [&](const std::string& label) {
+            return std::find(fn_budget_cut.begin(), fn_budget_cut.end(), label) != fn_budget_cut.end();
         };
         Encoding e(c, fn, g, unwind, eo);
         e.build();
@@ -1492,6 +1542,7 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
         const PropInst* hit = nullptr;
         std::optional<solver::SolveResult> hit_r;
         std::string no_answer;
+        std::string no_answer_label;  // set when that VC's answer was cut by the function budget
         // Many properties (memory checks of inlined library, exception and
         // coroutine code): outside certified mode, one query for "some hard
         // property is violated" first. UNSAT there means every per-property
@@ -1665,6 +1716,9 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
                      : "; the per-VC queries decide, and certify only a PROVED verdict)");
         }
         bool all_unsat = false;
+        // the group search found a violation but not whether an earlier
+        // property is violated too (no answer for that group)
+        bool hit_earlier_undecided = false;
         // properties an UNSAT group query already answered (skipped below)
         std::set<const PropInst*> answered;
         // The first of hard[lo, hi) whose violation the model makes true
@@ -1735,6 +1789,10 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
                         if (r1.kind == solver::SolveResult::Sat) {
                             const int before = *k == lo ? 0 : group(lo, *k);
                             if (before == 1) return 1;  // an earlier one (hit set there)
+                            // hard[*k] is violated (its own validated model),
+                            // whether or not the earlier ones were decided
+                            // (the budget may have stopped that search)
+                            if (before == -1) hit_earlier_undecided = true;
                             hit = hard[*k];
                             hit_r = r1;
                             return 1;
@@ -1764,7 +1822,9 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
                 return -1;
             };
             int g = group(0, hard.size());
-            if (fn_budget_spent) {
+            // A validated violation is FAILED even when the budget ran out
+            // while earlier properties were searched: TIMEOUT only without one.
+            if (fn_budget_spent && !hit) {
                 fn_budget_timeout(v);
                 return finish(v);
             }
@@ -1783,9 +1843,11 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
                 hit_r = r;
                 break;
             }
-            if (r.kind != solver::SolveResult::Unsat && no_answer.empty())
+            if (r.kind != solver::SolveResult::Unsat && no_answer.empty()) {
                 no_answer = "VC " + vc_label(p) + ": solver " + std::string(solver::kind_name(r.kind)) +
                             (r.note.empty() ? std::string() : " (" + r.note + ")");
+                if (cut_by_budget(vc_label(p))) no_answer_label = vc_label(p);
+            }
         }
         if (hit) {
             v.status = std::string(laws::FAILED);
@@ -1801,10 +1863,33 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
                 v.cex[fn.vars[static_cast<std::size_t>(fn.params[i])].name] = v.cex_args[i];
             v.message = hit->stmt->prop + ": " + hit->stmt->cls + " (" + hit->stmt->msg + ")";
             v.extra["cex_solver"] = hit_r->winner + (hit_r->cache_hit ? " (cache, re-validated)" : "");
-            nondet_trace(e, *hit, base, *hit_r, timeout_s, v);
+            if (hit_earlier_undecided)
+                v.extra["earlier_properties"] =
+                    "not decided (" + std::string(fn_budget_spent ? "function budget spent" : "no solver answer") +
+                    "); this violation is validated, an earlier one may exist";
+            if (fn_budget_spent || (fn_budget && fn_budget->exhausted())) v.extra["function_budget_s"] = fn_budget_n;
+            // The nondet trace re-query is solver work of this function too:
+            // it gets what is left of the budget.
+            if (fn_budget && fn_budget->exhausted()) {
+                if (!e.nondets.empty())
+                    v.extra["nondet_note"] = "nondet values not reported: the function budget of " + fn_budget_n +
+                                             " s is spent (PRISM_FUNCTION_BUDGET)";
+            } else {
+                nondet_trace(e, *hit, base, *hit_r, fn_budget ? std::min(timeout_s, fn_budget->left()) : timeout_s,
+                             v);
+            }
             return finish(v);
         }
         if (!no_answer.empty()) {
+            // no answer because the budget cut that VC's query short: the
+            // budget is why (TIMEOUT with its message), not the solver
+            if (!no_answer_label.empty()) {
+                fn_budget_at = no_answer_label;
+                fn_budget_during = true;
+                fn_budget_timeout(v);
+                v.extra["solver_answer"] = no_answer;
+                return finish(v);
+            }
             v.status = std::string(laws::UNKNOWN);
             v.message = no_answer;
             return finish(v);
@@ -1818,6 +1903,12 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
             }
             const auto& r = *rp;
             if (r.kind == solver::SolveResult::Unsat) continue;
+            if (r.kind != solver::SolveResult::Sat && cut_by_budget(vc_label(p))) {
+                fn_budget_at = vc_label(p);
+                fn_budget_during = true;
+                fn_budget_timeout(v);
+                return finish(v);
+            }
             v.status = std::string(r.kind == solver::SolveResult::Sat ? laws::NEEDS_HARNESS : laws::UNKNOWN);
             v.message = "UNENCODED: " + (p.stmt->msg.empty() ? std::string("exception path") : p.stmt->msg);
             return finish(v);
@@ -1849,7 +1940,11 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
         v.status = std::string(laws::BOUNDED);
         v.extra["unwind_closed"] = "false";
         v.message = "no violation within unwind " + std::to_string(unwind) +
-                    (ur.kind == solver::SolveResult::Sat ? "; loops did not close" : "; unwinding assertion unknown");
+                    (ur.kind == solver::SolveResult::Sat ? std::string("; loops did not close")
+                     : cut_by_budget("unwind")
+                         ? "; unwinding assertion unknown (pir function budget of " + fn_budget_n +
+                               " s spent; PRISM_FUNCTION_BUDGET)"
+                         : std::string("; unwinding assertion unknown"));
         if (opt.certified)
             v.extra["certify_note"] =
                 "not certified: certified mode certifies PROVED only (every loop must close within the unwind)";
@@ -1877,15 +1972,16 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
                 r.extra["invariants_note"] = "not attempted (allocation or free in a loop)";
                 return false;
             }
+            // Every VC is answered (the verdict is BOUNDED): a spent function
+            // budget leaves it BOUNDED and says what was not tried.
             if (fn_budget && fn_budget->exhausted()) {
-                fn_budget_timeout(r);
+                r.extra["invariants_note"] = fn_budget_note(r);
                 return false;
             }
             // The run's Houdini budget (CheckOptions::houdini_budget): spent,
             // the function is not attempted; less left than the search's own
             // limit, the search gets what is left.
             double search_s = -1;
-            if (fn_budget) search_s = fn_budget->left();
             if (opt.houdini_budget) {
                 const double left = opt.houdini_budget->left();
                 if (left <= 0) {
@@ -1900,8 +1996,13 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
             HoudiniEnv henv;
             if (opt.use_cache)
                 henv.cache_dir = opt.cache_dir.empty() ? solver::default_cache_dir() : opt.cache_dir;
+            if (opt.debug_before_query) opt.debug_before_query("houdini");
+            // the function budget is a hard cap: no query of the search, its
+            // final query included, runs past it (docs/PIR.md "Solving")
+            const double hard_s = fn_budget ? std::max(0.0, fn_budget->left()) : -1;
+            if (fn_budget) search_s = search_s < 0 ? hard_s : std::min(search_s, hard_s);
             const auto th = std::chrono::steady_clock::now();
-            Houdini hd(fn, g, eo, timeout_s, search_s, henv);
+            Houdini hd(fn, g, eo, timeout_s, search_s, henv, hard_s);
             auto h = hd.run();
             const double hs = std::chrono::duration<double>(std::chrono::steady_clock::now() - th).count();
             if (opt.houdini_budget) opt.houdini_budget->spend(hs);
@@ -1916,6 +2017,9 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
             if (!h.cache.empty()) r.extra["houdini_cache"] = h.cache;
             if (!h.proved) {
                 r.extra["invariants_note"] = "no proof from loop invariants: " + h.why;
+                if (fn_budget && fn_budget->exhausted())
+                    r.extra["invariants_note"] += " (pir function budget of " + fn_budget_n +
+                                                  " s spent; PRISM_FUNCTION_BUDGET)";
                 std::size_t kept = 0;
                 for (auto& l : h.invariants) kept += l.size();
                 if (kept > 0) r.extra["invariants_inductive"] = std::to_string(kept);  // proved, but not enough
@@ -1971,15 +2075,24 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
         }
         // The k-induction step is not a property VC: Z3 answers it in-process,
         // and PROVED-UNBOUNDED is never certified (docs/PIR.md "Solving").
-        if (fn_budget && fn_budget->exhausted()) {
-            fn_budget_timeout(v);
-            return finish(v);
-        }
+        // Every VC is answered (BOUNDED): a spent function budget leaves it
+        // BOUNDED; each step query gets at most what is left of it.
         std::vector<std::string> tried;
         for (int k : {1, 2}) {
             if (k > unwind) break;
+            if (fn_budget && fn_budget->exhausted()) {
+                v.extra["k_induction"] =
+                    (tried.empty() ? std::string() : "step-open at k=" + join_s(tried, ",") + "; k=" + std::to_string(k) + " ") +
+                    fn_budget_note(v);
+                return finish(v);
+            }
             tried.push_back(std::to_string(k));
-            auto ans = kinduction_step(fn, g, k, timeout_ms, fp, eo);
+            unsigned step_ms = timeout_ms;
+            if (fn_budget)
+                step_ms = static_cast<unsigned>(
+                    std::clamp(fn_budget->left() * 1000.0, 1.0, static_cast<double>(timeout_ms)));
+            if (opt.debug_before_query) opt.debug_before_query("k-induction@" + std::to_string(k));
+            auto ans = kinduction_step(fn, g, k, step_ms, fp, eo);
             auto& closed = ans.closed;
             v.extra["k_induction_tried"] = join_s(tried, ",");
             if (!ans.fp.empty()) {
@@ -2004,6 +2117,8 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
             }
             if (!closed) {
                 v.extra["k_induction"] = "unknown";
+                if (fn_budget && fn_budget->exhausted())
+                    v.extra["k_induction"] += " (pir function budget of " + fn_budget_n + " s spent; PRISM_FUNCTION_BUDGET)";
                 try_invariants(v);
                 return finish(v);
             }
