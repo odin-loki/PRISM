@@ -8,8 +8,9 @@
 //   0  cparse: prism::extract_functions on a C/C++ source file
 //   1  pir:    prism::pir::ir::parse_module on LLVM IR text
 //   2  report: prism::RunReport::load on report.json, then
-//              prism::journal_read_stages / journal_read_functions on the same
-//              bytes as stages.jsonl / functions.json
+//              prism::journal_read_stages / journal_completed_ok /
+//              journal_read_functions on the same bytes as stages.jsonl /
+//              functions.json
 //
 // The contract under test: arbitrary bytes never crash, hang or corrupt
 // memory. A parser may reject input by returning empty/nullopt or by throwing
@@ -84,6 +85,7 @@ void fuzz_report(std::string_view data) {
     auto r = prism::RunReport::load(dir / "report.json");
     if (r) (void)r->stages.size();
     (void)prism::journal_read_stages(dir);
+    (void)prism::journal_completed_ok(dir);
     (void)prism::journal_read_functions(dir);
 }
 

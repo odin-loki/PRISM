@@ -12,8 +12,7 @@ engine code was out of scope for the change that added the harnesses.
 
 | harness | engine | parsers under test | contract checked |
 |---|---|---|---|
-| `tests/fuzz/fuzz_cparse.cpp` (libFuzzer, ASan + UBSan) | C++ | `prism::extract_functions` and `parse_gaps` (C/C++ sources), `prism::pir::ir::parse_module` (LLVM IR text), `prism::RunReport::load`, `journal_read_stages`, `journal_read_functions` | no sanitizer report, no abort, no uncaught exception (`parse_module` may reject input by throwing `std::exception`), no input slower than the timeout |
-| `tools/fuzz_self/fuzz_py.py` (mutation fuzzer) | Python | `prism.cparse.extract_functions(_from_text)`, `prism.models.RunReport.load`, `prism.journal.read_stages` / `read_functions` / `completed_ok`, `prism.config.load_manifest` | returns its documented type (`list`, `RunReport` or `None`, `dict`) and never raises; no input slower than 5 s |
+| `tests/fuzz/fuzz_cparse.cpp` (libFuzzer, ASan + UBSan) | C++ | `prism::extract_functions` and `parse_gaps` (C/C++ sources), `prism::pir::ir::parse_module` (LLVM IR text), `prism::RunReport::load`, `journal_read_stages`, `journal_completed_ok`, `journal_read_functions` | no sanitizer report, no abort, no uncaught exception (`parse_module` may reject input by throwing `std::exception`), no input slower than the timeout |
 
 Seeds (`tools/fuzz_self/make_corpus.py`): the C/C++ files of `testdata/` and
 `tests/conformance/prism/`, their LLVM IR compiled the way the `pir` stage
@@ -27,7 +26,6 @@ compiles it (`clang -S -emit-llvm -O0 -Xclang -disable-O0-optnone`, then
 
 ```
 python tools/fuzz_self/make_corpus.py /tmp/fuzz-seeds            # seeds (PRISM_BIN for the report seeds)
-python tools/fuzz_self/fuzz_py.py /tmp/fuzz-seeds --seconds 300  # Python engine, 300 s per target
 tools/fuzz_self/run_cpp.sh /tmp/prism-fuzz-build 600             # C++: configure -DPRISM_FUZZ=ON, build, run
 PRISM_FUZZ_TARGET=pir /tmp/prism-fuzz-build/prism_fuzz_self -max_total_time=600 corpus/   # one parser only
 ```
@@ -37,6 +35,9 @@ with any other compiler CMake prints that `prism_fuzz_self` is NOTRUN. The
 target is built from the parser sources only (no Z3).
 
 ## Campaigns run (2026-09-23, 4-core machine shared with other jobs)
+
+The Python rows ran a mutation fuzzer over the Python reference engine's
+parsers; it was deleted with that engine, so they are historical.
 
 | campaign | duration | executions | result |
 |---|---|---|---|

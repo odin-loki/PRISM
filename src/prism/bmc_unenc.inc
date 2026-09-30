@@ -2,7 +2,7 @@ static std::optional<std::string> unencoded_syntax_reason(const FunctionInfo& fn
     const std::string& body = fn.body;
     if (body.empty()) return std::nullopt;
     std::string blob = fn.signature + "\n" + body;
-    // generated 575 gates from prism/bmc.py
+    // 575 gates, hand-maintained (first lifted from the frozen reference engine)
     if (prism::re_search("\\{\\s*(?:\\[[^\\]]+\\]|\\.[A-Za-z_]\\w*)\\s*=", body)) {
         return std::format("designated init unencoded: {} is not a designated-init model", engine);
     }

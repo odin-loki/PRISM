@@ -67,9 +67,7 @@ class TestCoverageFromReport(unittest.TestCase):
     def test_cpp_taxonomy_does_not_promote_reads_to_finds(self):
         root = Path(__file__).resolve().parents[1]
         cpp = (root / "src" / "prism" / "taxonomy.cpp").read_text(encoding="utf-8")
-        gen = (root / "tools" / "gen_prism.py").read_text(encoding="utf-8")
         self.assertNotIn("if (st == READS) st = FINDS", cpp)
-        self.assertNotIn("if (st == READS) st = FINDS", gen)
         self.assertIn('cls.empty() && (s.name == "wp" || s.name == "contracts")', cpp)
 
     def test_wp_assuming_covers_contract(self):
