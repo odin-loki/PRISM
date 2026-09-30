@@ -1147,49 +1147,7 @@ TEST_CASE("wp unencodable ACSL is ERROR") {
 }
 #endif
 
-static void require_decreases_unencoded(const prism::Finding& r) {
-    CHECK(r.status == std::string(prism::laws::ERROR));
-    CHECK(r.status != std::string(prism::laws::PROVED));
-    CHECK(r.status != std::string(prism::laws::PROVED_UNBOUNDED));
-    CHECK(r.status != std::string(prism::laws::PROVED_ASSUMING));
-    auto it = r.extra.find("decreases_unencoded");
-    REQUIRE(it != r.extra.end());
-    CHECK(it->second == "true");
-}
-
-static prism::FunctionInfo load_contract_fn(const char* file, const char* name) {
-    auto fn = load_fn(file, name);
-    fn.file = (testdata_root() / file).string();
-    return fn;
-}
-
-TEST_CASE("compound decreases is ERROR not proved-assuming") {
-    auto fn = load_contract_fn("decreases_complex.c", "countdown_complex");
-    auto findings = prism::prove_contracts({fn}, 8);
-    REQUIRE(findings.size() == 1);
-    require_decreases_unencoded(findings[0]);
-    CHECK(findings[0].message.find("n - i") != std::string::npos);
-
-    auto star = prism::prove_contracts({load_contract_fn("decreases_complex.c", "countdown_star")}, 8);
-    REQUIRE(star.size() == 1);
-    require_decreases_unencoded(star[0]);
-
-    auto absfn = prism::prove_contracts({load_contract_fn("decreases_complex.c", "countdown_abs")}, 8);
-    REQUIRE(absfn.size() == 1);
-    require_decreases_unencoded(absfn[0]);
-}
-
-#ifdef PRISM_HAS_Z3
-TEST_CASE("identifier decreases is allowed") {
-    auto fn = load_contract_fn("decreases_loop.c", "countdown");
-    auto findings = prism::prove_contracts({fn}, 8);
-    REQUIRE(findings.size() == 1);
-    auto it = findings[0].extra.find("decreases_unencoded");
-    CHECK((it == findings[0].extra.end() || it->second.empty() || it->second == "false"));
-    CHECK(findings[0].status != std::string(prism::laws::PROVED));
-    CHECK(findings[0].status != std::string(prism::laws::PROVED_UNBOUNDED));
-}
-#endif
+// Contracts and decreases doctests live in test_contracts.cpp.
 
 #ifdef PRISM_HAS_Z3
 TEST_CASE("concolic z3 negated branch finds crash not proof") {

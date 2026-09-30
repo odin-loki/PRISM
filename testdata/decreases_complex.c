@@ -1,5 +1,6 @@
-/* Dafny-shaped decreases that PRISM will not encode.
-   Compound measures are ERROR, never PROVED-ASSUMING. */
+/* Dafny-shaped decreases. `*` and calls are not encoded: ERROR, never
+   PROVED-ASSUMING. A linear measure is checked: countdown_complex claims
+   `n - i`, which grows as i counts down, so it is FAILED. */
 int countdown_complex(int n) {
     // requires: n >= 0
     // requires: n < 8

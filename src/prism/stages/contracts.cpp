@@ -19,10 +19,14 @@ std::pair<std::string, std::string> take_block_keep_braces(std::string text) {
 bool has_loop(const std::string& body) { return re_search("\\b(while|for)\\b", body); }
 
 bool encode_decreases(const std::string& expr) {
-    // Simple identifier only. Compound measures (n - i, n - 1, *, tuples)
-    // are ERROR, never PROVED-ASSUMING: Python engine does not decide their
-    // well-foundedness the way Dafny's VC generator does.
-    static Regex re("^[A-Za-z_]\\w*$");
+    // A linear integer measure: identifiers and decimal constants joined by
+    // binary + / - (`i`, `n - i`, `hi - lo + 1`). wrap_loop_dec only adds
+    // asserts (measure >= 0 at entry, strictly smaller after the body), and
+    // the BMC checks signed overflow in evaluating it, so an overflowing or
+    // non-decreasing measure is FAILED, never assumed; accepting a measure
+    // can refute, it cannot prove anything. `*`, calls, products, unary
+    // minus and tuples stay ERROR (decreases_unencoded).
+    static Regex re("^(?:[A-Za-z_]\\w*|0|[1-9]\\d{0,8})(?:[+-](?:[A-Za-z_]\\w*|0|[1-9]\\d{0,8}))*$");
     std::string compact;
     for (char c : expr)
         if (!std::isspace(static_cast<unsigned char>(c))) compact.push_back(c);
@@ -315,6 +319,12 @@ std::vector<Finding> prove_contracts(const std::vector<FunctionInfo>& functions,
             }
         }
         if (rec.status != laws::ERROR && decreases && has_loop(fn.body)) {
+            // Baseline = the same check minus only the decreases clause; the
+            // invariant stays (the Python engine dropped both). With an
+            // invariant the baseline is at best PROVED-ASSUMING, so
+            // closed_without is false and decreases_assumed follows the
+            // proof. That is the conservative reading: the flag can only
+            // lower a status, never raise one.
             auto baseline = bmc_with_assume(fn, unwind, requires_, ensures, std::nullopt, invariant);
             bool closed_without = baseline.status == laws::PROVED_UNBOUNDED;
             auto orig = rec.extra.contains("original_status") ? rec.extra["original_status"] : rec.status;
