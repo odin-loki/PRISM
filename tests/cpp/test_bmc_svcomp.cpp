@@ -104,4 +104,41 @@ TEST_CASE("bmc: a loop after a block comment keeps its source column in invarian
     REQUIRE(r.extra.count("invariant_loops"));
     CHECK(r.extra["invariant_loops"] == R"([{"column":13,"kind":"while","line":7}])");
 }
+
+TEST_CASE("bmc: main(argc, argv) with argv unused is checked with argc >= 0") {
+    auto unused = bmc_run("argv_unused.c", R"(extern int __VERIFIER_nondet_int(void);
+int main(int argc, char *argv[]) {
+    int x = __VERIFIER_nondet_int();
+    if (x > 2147483000) return x + 1000;
+    return 0;
+}
+)");
+    CHECK(unused["main"].status == kFailed);
+    CHECK(unused["main"].cls == "INT-SIGNED-OVF");
+    auto clean = bmc_run("argv_clean.c", "int main(int argc, char **argv) { return 0; }\n");
+    CHECK(clean["main"].status == kProved);
+    // argc - 1 cannot overflow for argc >= 0; argc + 1 can (argc = INT_MAX).
+    auto dec = bmc_run("argc_dec.c", "int main(int argc, char *argv[]) { int k = argc - 1; return k; }\n");
+    CHECK(dec["main"].status == kProved);
+    auto inc = bmc_run("argc_inc.c", "int main(int argc, char *argv[]) { return argc + 1; }\n");
+    CHECK(inc["main"].status == kFailed);
+    // Any use of argv or envp keeps Law 6.
+    auto used = bmc_run("argv_used.c", "int main(int argc, char *argv[]) { return argv[0][0]; }\n");
+    CHECK(used["main"].status == kHarness);
+    CHECK(used["main"].message.find("pointer parameter") != std::string::npos);
+    auto envp = bmc_run("envp_used.c",
+                        "int main(int argc, char **argv, char **envp) { return envp != 0; }\n");
+    CHECK(envp["main"].status == kHarness);
+    auto macro = bmc_run("argv_macro.c", "#define FIRST argv[0]\nint main(int argc, char **argv) { return FIRST != 0; }\n");
+    CHECK(macro["main"].status == kHarness);
+    // Not main: an ordinary pointer parameter.
+    auto notmain = bmc_run("argv_notmain.c", "int f(int argc, char **argv) { return 0; }\n");
+    CHECK(notmain["f"].status == kHarness);
+    // A tree that calls main may pass a negative argc: no premise.
+    auto called = bmc_run("main_called.c", R"(int main(int argc, char *argv[]) { int k = argc - 1; return k; }
+int g(void) { return 0; }
+int h(void) { return main(0, 0); }
+)");
+    CHECK(called["main"].status == kFailed);
+}
 #endif

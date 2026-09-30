@@ -734,6 +734,8 @@ struct Parser {
     // AI hook statements (__prism_assume/assert/havoc/step) are only parsed
     // for programs built by prism::ai::check_program, never for user code.
     bool ai_hooks = false;
+    // The first parameter is `main`'s argc: nonnegative (C11 5.1.2.2.1p2).
+    bool argc_nonneg = false;
     bool cxx = false;  // C++ source (Enc::cxx)
     // Shift rules (apply_binop): 0 = C (and C++98/03), 11 = C++11..17
     // (CWG 1457: E1 >= 0 and E1 * 2^E2 representable in the unsigned type),
@@ -787,6 +789,10 @@ struct Parser {
                 if (!t) throw ParseFail("UNENCODED: parameter type '" + strip(typ) + "' of " + name);
                 e->declare(name, *t);
                 e->get(name);
+            }
+            if (argc_nonneg && !params.empty() && !params[0].second.empty()) {
+                auto argc = e->get(params[0].second);
+                e->assume(argc.v >= e->bv_zero(argc.w));
             }
             e->push_scope();
             stmts(*e, prep(body));
