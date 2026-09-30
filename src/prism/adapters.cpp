@@ -8,6 +8,7 @@
 #include "prism/sandbox.hpp"
 #include "proc.hpp"
 #include "sanitize_detail.hpp"
+#include "adapters_internal.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -98,23 +99,7 @@ std::string tail(const std::string& s, std::size_t n) {
     return s.substr(s.size() - n);
 }
 
-#ifdef _WIN32
-std::wstring widen_utf8(const std::string& s) {
-    if (s.empty()) return {};
-    int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()), nullptr, 0);
-    std::wstring w(static_cast<std::size_t>(n > 0 ? n : 0), L'\0');
-    if (n > 0)
-        MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()), w.data(), n);
-    return w;
-}
-#endif
-
-void refuse_disabled_checks(const std::vector<std::string>& cmd) {
-    for (const auto& flag : cmd) {
-        if (flag.starts_with("--no-") && flag.ends_with("-check"))
-            throw std::runtime_error("refusing to disable a check: " + flag);
-    }
-}
+void refuse_disabled_checks(const std::vector<std::string>& cmd) { detail::refuse_disabled_checks(cmd); }
 
 Finding finding(std::string stage, std::string_view status, std::string file, std::string cls,
                 std::string message, std::string_view strength) {
@@ -174,207 +159,25 @@ struct TempDir {
     TempDir& operator=(const TempDir&) = delete;
 };
 
-// limits: rlimits applied in the forked child (Law 9 sandbox for built
-// binaries; the caller wraps argv with sandbox::wrap_argv). Default: none.
+// The adapters' view of detail::run (proc.cpp): stdout and stderr merged,
+// empty stdin. limits: rlimits applied in the forked child (Law 9 sandbox for
+// built binaries; the caller wraps argv with sandbox::wrap_argv).
 ProcResult run_argv(const std::vector<std::string>& args, double timeout_s, const fs::path& cwd = {},
                     const sandbox::Limits& limits = sandbox::Limits()) {
     refuse_disabled_checks(args);
-    ProcResult r;
-#ifdef _WIN32
-    // No cmd.exe in between (the old _popen path let a file name such as
-    // `a&calc&.c` or `%PATH%.c` reach cmd.exe's parser). CreateProcessW gets
-    // one command line quoted for CommandLineToArgvW; a .bat/.cmd target
-    // (which Windows runs through cmd.exe anyway) is quoted for cmd.exe or
-    // refused. stdout and stderr share one pipe, like the POSIX branch.
-    (void)limits;  // Windows has no rlimits; the sandbox kind is "none".
-    if (args.empty()) {
-        r.failed = true;
-        return r;
-    }
-    std::string cl;
-    if (sandbox::is_batch_file(args[0])) {
-        auto bl = sandbox::batch_command_line(args);
-        if (!bl) {
-            r.failed = true;
-            return r;
-        }
-        cl = *bl;
-    } else {
-        cl = sandbox::windows_command_line(args);
-    }
-    std::wstring wcl = widen_utf8(cl);
-    std::vector<wchar_t> clbuf(wcl.begin(), wcl.end());
-    clbuf.push_back(L'\0');
-    SECURITY_ATTRIBUTES sa{};
-    sa.nLength = sizeof sa;
-    sa.bInheritHandle = TRUE;
-    HANDLE out_r = nullptr;
-    HANDLE out_w = nullptr;
-    if (!CreatePipe(&out_r, &out_w, &sa, 0)) {
-        r.failed = true;
-        return r;
-    }
-    SetHandleInformation(out_r, HANDLE_FLAG_INHERIT, 0);
-    HANDLE nul_in = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa,
-                                OPEN_EXISTING, 0, nullptr);
-    STARTUPINFOW si{};
-    si.cb = sizeof si;
-    si.dwFlags = STARTF_USESTDHANDLES;
-    si.hStdInput = nul_in != INVALID_HANDLE_VALUE ? nul_in : nullptr;
-    si.hStdOutput = out_w;
-    si.hStdError = out_w;
-    PROCESS_INFORMATION pi{};
-    const std::wstring wcwd = cwd.empty() ? std::wstring() : cwd.wstring();
-    BOOL ok = CreateProcessW(nullptr, clbuf.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW,
-                             nullptr, wcwd.empty() ? nullptr : wcwd.c_str(), &si, &pi);
-    CloseHandle(out_w);
-    if (nul_in != INVALID_HANDLE_VALUE) CloseHandle(nul_in);
-    if (!ok) {
-        CloseHandle(out_r);
-        r.failed = true;
-        return r;
-    }
-    const auto deadline =
-        std::chrono::steady_clock::now() + std::chrono::duration<double>(std::max(0.1, timeout_s));
-    char buf[4096];
-    auto drain = [&]() {
-        for (;;) {
-            DWORD avail = 0;
-            if (!PeekNamedPipe(out_r, nullptr, 0, nullptr, &avail, nullptr) || avail == 0) return;
-            DWORD got = 0;
-            const DWORD want = avail < static_cast<DWORD>(sizeof buf) ? avail
-                                                                      : static_cast<DWORD>(sizeof buf);
-            if (!ReadFile(out_r, buf, want, &got, nullptr) || got == 0) return;
-            r.text.append(buf, got);
-        }
-    };
-    for (;;) {
-        drain();
-        if (WaitForSingleObject(pi.hProcess, 20) == WAIT_OBJECT_0) break;
-        if (std::chrono::steady_clock::now() >= deadline) {
-            TerminateProcess(pi.hProcess, 1);
-            WaitForSingleObject(pi.hProcess, 2000);
-            r.timed_out = true;
-            break;
-        }
-    }
-    drain();
-    DWORD code = 1;
-    GetExitCodeProcess(pi.hProcess, &code);
-    r.rc = r.timed_out ? -1 : static_cast<int>(code);
-    CloseHandle(out_r);
-    CloseHandle(pi.hThread);
-    CloseHandle(pi.hProcess);
-#else
-    if (args.empty()) {
-        r.failed = true;
-        return r;
-    }
-    int out_p[2] = {-1, -1};
-    // Close-on-exec: runs started from several threads at once must not
-    // inherit each other's pipe (dup2 onto 1/2 clears the flag on the copies).
-#  if defined(__linux__)
-    if (::pipe2(out_p, O_CLOEXEC) != 0) {
-#  else
-    if (::pipe(out_p) != 0) {
-#  endif
-        r.failed = true;
-        return r;
-    }
-    std::vector<char*> argv;
-    argv.reserve(args.size() + 1);
-    for (const auto& a : args) argv.push_back(const_cast<char*>(a.c_str()));
-    argv.push_back(nullptr);
-    pid_t pid = ::fork();
-    if (pid < 0) {
-        ::close(out_p[0]);
-        ::close(out_p[1]);
-        r.failed = true;
-        return r;
-    }
-    if (pid == 0) {
-        ::setpgid(0, 0);
-        if (!cwd.empty() && ::chdir(cwd.c_str()) != 0) ::_exit(127);
-        sandbox::apply_child_limits(limits);
-        ::dup2(out_p[1], STDOUT_FILENO);
-        ::dup2(out_p[1], STDERR_FILENO);
-        ::close(out_p[0]);
-        ::close(out_p[1]);
-        ::execvp(argv[0], argv.data());
-        ::_exit(127);
-    }
-    ::setpgid(pid, pid);
-    detail::ChildGroup tracked(pid);  // killed with PRISM on SIGINT/SIGTERM (proc.hpp)
-    ::close(out_p[1]);
-    out_p[1] = -1;
-    int flags = ::fcntl(out_p[0], F_GETFL, 0);
-    if (flags >= 0) ::fcntl(out_p[0], F_SETFL, flags | O_NONBLOCK);
-    const auto deadline =
-        std::chrono::steady_clock::now() + std::chrono::duration<double>(std::max(0.1, timeout_s));
-    char buf[4096];
-    int st = 0;
-    bool reaped = false;
-    auto slurp = [&]() {
-        for (;;) {
-            const ssize_t n = ::read(out_p[0], buf, sizeof buf);
-            if (n > 0) {
-                r.text.append(buf, static_cast<std::size_t>(n));
-                continue;
-            }
-            if (n == 0) break;
-            if (errno == EINTR) continue;
-            break;
-        }
-    };
-    auto kill_group = [pid]() {
-        if (::killpg(pid, SIGKILL) != 0) ::kill(pid, SIGKILL);
-    };
-    for (;;) {
-        slurp();
-        pid_t w = ::waitpid(pid, &st, WNOHANG);
-        if (w == pid) {
-            reaped = true;
-            break;
-        }
-        auto now = std::chrono::steady_clock::now();
-        if (now >= deadline) {
-            kill_group();
-            r.timed_out = true;
-            while (::waitpid(pid, &st, 0) < 0 && errno == EINTR) {
-            }
-            reaped = true;
-            break;
-        }
-        if (w < 0 && errno != EINTR) {
-            kill_group();
-            r.timed_out = true;
-            while (::waitpid(pid, &st, 0) < 0 && errno == EINTR) {
-            }
-            reaped = true;
-            break;
-        }
-        const auto remain_ms =
-            std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count();
-        pollfd pfd{};
-        pfd.fd = out_p[0];
-        pfd.events = POLLIN;
-        int pr = ::poll(&pfd, 1, static_cast<int>(std::max<long long>(1, remain_ms)));
-        (void)pr;
-    }
-    if (!reaped) {
-        kill_group();
-        r.timed_out = true;
-        while (::waitpid(pid, &st, 0) < 0 && errno == EINTR) {
-        }
-    }
-    if (flags >= 0) ::fcntl(out_p[0], F_SETFL, flags);
-    slurp();
-    ::close(out_p[0]);
-    if (WIFEXITED(st)) r.rc = WEXITSTATUS(st);
-    else if (WIFSIGNALED(st)) r.rc = -WTERMSIG(st);
-    else r.rc = st;
-#endif
-    return r;
+    detail::RunSpec spec;
+    spec.argv = args;
+    spec.timeout_s = timeout_s;
+    spec.cwd = cwd;
+    spec.limits = limits;
+    spec.merge_stderr = true;
+    auto r = detail::run(spec);
+    ProcResult out;
+    out.text = std::move(r.out);
+    out.rc = r.rc;
+    out.timed_out = r.timed_out;
+    out.failed = r.failed;
+    return out;
 }
 
 bool is_fake_adapter(const std::string& text) {
@@ -438,10 +241,12 @@ bool adapter_start_or_fake_missing(const ProcResult& r) {
     return probe_looks_missing(r);
 }
 
-std::optional<ProcResult> probe_exe(const std::string& exe) {
+// Each flag gets 12 s, or less when the run's per-check timeout is shorter.
+std::optional<ProcResult> probe_exe(const std::string& exe, double check_timeout) {
+    const double per_flag = std::clamp(check_timeout, 1.0, 12.0);
     const char* flags[] = {"--help", "-h", "--version", "-version"};
     for (const char* fl : flags) {
-        auto r = run_argv({exe, fl}, 12.0);
+        auto r = run_argv({exe, fl}, per_flag);
         if (r.timed_out || r.failed) continue;
         if (probe_looks_missing(r)) continue;
         if (!trim_copy(r.text).empty() || r.rc == 0 || r.rc == 1) return r;
@@ -1011,7 +816,9 @@ Finding libfuzzer_probe(const Config& cfg) {
     auto clang = cfg.which({"clang"});
     const char* install = "clang -fsanitize=fuzzer is a system tool: apt install clang-18 (see third_party/MANIFEST.toml)";
     if (!clang) {
+        // clang is a system tool looked up on PATH only (no pinned build).
         auto f = notrun("libfuzzer", "clang", install);
+        f.message = "clang not on PATH";
         return f;
     }
 #ifdef _WIN32
@@ -1105,9 +912,24 @@ std::vector<fs::path> cocci_rules(const std::vector<fs::path>& paths, const Conf
     std::error_code ec;
     consider(fs::current_path(ec));
     consider(cfg.root);
+    // The shipped rules next to the binary, whatever the cwd: a build tree
+    // (<repo>/build/prism -> <repo>/prism/cocci) or an installed layout
+    // (<prefix>/bin/prism -> <prefix>/share/prism/cocci).
+    fs::path self;
 #ifdef _WIN32
     char buf[MAX_PATH]{};
-    if (GetModuleFileNameA(nullptr, buf, MAX_PATH)) consider(fs::path(buf).parent_path());
+    if (GetModuleFileNameA(nullptr, buf, MAX_PATH)) self = fs::path(buf);
+#else
+    self = fs::read_symlink("/proc/self/exe", ec);
+    if (ec) self.clear();
+#endif
+    if (!self.empty()) {
+        pkg.push_back(self.parent_path().parent_path() / "share" / "prism" / "cocci");
+        consider(self.parent_path());
+    }
+#ifdef PRISM_SOURCE_COCCI_DIR
+    // An out-of-tree build: the rules of the tree it was built from.
+    pkg.push_back(fs::path(PRISM_SOURCE_COCCI_DIR));
 #endif
     for (const auto& d : pkg) add_dir(d);
     for (const auto& root : source_roots(paths)) add_dir(root);
@@ -1242,22 +1064,25 @@ std::vector<Finding> run_spatch(const std::string& exe, const std::vector<fs::pa
             }
         }
     }
-    out.insert(out.begin(), held.begin(), held.end());
-    if (any_hit) return out;
-    if (out.size() > held.size()) {
-        bool only_bad = true;
-        for (const auto& f : out)
-            if (f.status != laws::TIMEOUT && f.status != laws::ERROR && f.status != laws::NOTRUN)
-                only_bad = false;
-        if (only_bad) return out;
+    // Law 7: the rules held back for --allow-exec stay written down whatever
+    // the rules that ran found (the Python engine returns held + ...).
+    const bool only_bad = !out.empty() && std::all_of(out.begin(), out.end(), [](const Finding& f) {
+        return f.status == laws::TIMEOUT || f.status == laws::ERROR || f.status == laws::NOTRUN;
+    });
+    if (!any_hit && !only_bad) {
+        auto f = finding("spatch", laws::UNKNOWN, "", "", "spatch ran; no matches (not a proof)",
+                         laws::STRENGTH_FINDS);
+        f.extra["exe"] = exe;
+        out = {f};
     }
-    auto f = finding("spatch", laws::UNKNOWN, "", "", "spatch ran; no matches (not a proof)",
-                     laws::STRENGTH_FINDS);
-    f.extra["exe"] = exe;
-    return {f};
+    out.insert(out.begin(), held.begin(), held.end());
+    return out;
 }
 
 std::string extract_json_object(const std::string& text) {
+    // Whitespace-only output is a silent success ("{}": no matches), not a
+    // parse failure.
+    if (trim_copy(text).empty()) return "{}";
     auto first = text.find('{');
     auto last = text.rfind('}');
     if (first != std::string::npos && last != std::string::npos && last > first)
@@ -1715,6 +1540,35 @@ struct OptionalTool {
 
 }  // namespace
 
+// adapters_internal.hpp: qualified calls reach the unnamed namespace above.
+namespace adapters_detail {
+void refuse_disabled_checks(const std::vector<std::string>& cmd) { prism::refuse_disabled_checks(cmd); }
+bool is_fake_adapter(const std::string& text) { return prism::is_fake_adapter(text); }
+bool tool_unusable(const std::string& text, int rc) { return prism::tool_unusable(text, rc); }
+bool probe_looks_missing(const std::string& text, int rc) {
+    ProcResult r;
+    r.text = text;
+    r.rc = rc;
+    return prism::probe_looks_missing(r);
+}
+std::vector<fs::path> cocci_rules(const std::vector<fs::path>& paths, const Config& cfg) {
+    return prism::cocci_rules(paths, cfg);
+}
+bool cocci_has_script(const fs::path& rule) { return prism::cocci_has_script(rule); }
+std::string extract_json_object(const std::string& text) { return prism::extract_json_object(text); }
+std::vector<Finding> run_cbmc(const std::string& exe, const std::vector<fs::path>& paths, const Config& cfg) {
+    return prism::run_cbmc(exe, paths, cfg);
+}
+std::vector<Finding> run_spatch(const std::string& exe, const std::vector<fs::path>& paths,
+                                const Config& cfg) {
+    return prism::run_spatch(exe, paths, cfg);
+}
+std::vector<Finding> run_semgrep(const std::string& exe, const std::vector<fs::path>& paths,
+                                 const Config& cfg) {
+    return prism::run_semgrep(exe, paths, cfg);
+}
+}  // namespace adapters_detail
+
 std::string compiler_key(const fs::path& p) {
     std::error_code ec;
     fs::path r = fs::canonical(p, ec);
@@ -2006,7 +1860,9 @@ static std::vector<Finding> run_cppcheck_unstamped(const std::vector<fs::path>& 
     }
     if (out.empty() && (tool_unusable(r.text, r.rc) || r.failed)) {
         auto f = finding("cppcheck", laws::NOTRUN, "", "",
-                         "cppcheck at PATH is not cppcheck (not a proof)", laws::STRENGTH_FINDS);
+                         r.failed ? "cppcheck unusable: failed to start " + exe->string()
+                                  : "cppcheck at " + exe->string() + " is not cppcheck (not a proof)",
+                         laws::STRENGTH_FINDS);
         f.extra["exe"] = exe->string();
         f.extra["install"] = adapter_install("cppcheck");
         return {f};
@@ -2232,7 +2088,7 @@ std::vector<Finding> run_optional_tools(const std::vector<fs::path>& paths, cons
         }
         std::optional<ProcResult> probed;
         try {
-            probed = probe_exe(exe->string());
+            probed = probe_exe(exe->string(), cfg.timeout);
         } catch (const std::exception& ex) {
             auto f = notrun(tool.stage, first_name, install);
             f.message = std::string(tool.stage) + " probe failed: " + ex.what();
@@ -2484,70 +2340,6 @@ std::vector<Finding> run_pbsd_lints(const std::vector<fs::path>& paths, const Co
         f.extra["ported"] = ported;
     }
     return out;
-}
-
-detail::ProcOut detail::run_process(const std::vector<std::string>& args, double timeout_s,
-                                    const fs::path& cwd) {
-    auto r = run_argv(args, timeout_s, cwd);
-    return {std::move(r.text), r.rc, r.timed_out, r.failed};
-}
-
-namespace {
-// Registered child process groups (proc.hpp). A fixed array of atomics: the
-// signal handler reads it without locks or allocation. More children than
-// slots only means the extra ones are not killed by the handler (their own
-// runner still kills them on timeout).
-constexpr int kChildSlots = 512;
-std::atomic<int> g_child_groups[kChildSlots];
-}  // namespace
-
-void detail::track_child_group(int pgid) noexcept {
-    if (pgid <= 0) return;
-    for (auto& slot : g_child_groups) {
-        int z = 0;
-        if (slot.compare_exchange_strong(z, pgid)) return;
-    }
-}
-
-void detail::untrack_child_group(int pgid) noexcept {
-    if (pgid <= 0) return;
-    for (auto& slot : g_child_groups) {
-        int v = pgid;
-        if (slot.compare_exchange_strong(v, 0)) return;
-    }
-}
-
-void detail::kill_child_groups() noexcept {
-#ifndef _WIN32
-    for (auto& slot : g_child_groups) {
-        const int g = slot.load();
-        if (g > 0) ::kill(-g, SIGKILL);
-    }
-#endif
-}
-
-#ifndef _WIN32
-extern "C" void prism_child_cleanup_handler(int sig) {
-    const int saved = errno;
-    detail::kill_child_groups();
-    ::signal(sig, SIG_DFL);
-    ::raise(sig);
-    errno = saved;
-}
-#endif
-
-void detail::install_child_cleanup() noexcept {
-#ifndef _WIN32
-    for (int sig : {SIGINT, SIGTERM, SIGHUP}) {
-        struct sigaction old {};
-        if (::sigaction(sig, nullptr, &old) != 0 || old.sa_handler == SIG_IGN) continue;
-        struct sigaction sa {};
-        sa.sa_handler = prism_child_cleanup_handler;
-        sigemptyset(&sa.sa_mask);
-        sa.sa_flags = SA_RESTART;
-        ::sigaction(sig, &sa, nullptr);
-    }
-#endif
 }
 
 }  // namespace prism

@@ -128,6 +128,11 @@ std::vector<Finding> run_fuse(const std::vector<FunctionInfo>& functions,
                               const std::vector<Finding>& bmc_findings,
                               const std::filesystem::path& src_root,
                               double budget, int iters, bool llm);
+// cfg: where afl-fuzz is looked up (--tool, the pinned build, PATH).
+std::vector<Finding> run_fuse(const std::vector<FunctionInfo>& functions,
+                              const std::vector<Finding>& bmc_findings,
+                              const std::filesystem::path& src_root,
+                              double budget, int iters, bool llm, const Config& cfg);
 std::vector<Finding> run_diff(const std::vector<FunctionInfo>& functions,
                               const std::filesystem::path& root);
 std::vector<Finding> run_rapid(const std::vector<FunctionInfo>& functions, int trials = 64);

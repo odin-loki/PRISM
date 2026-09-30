@@ -130,6 +130,7 @@ endif()
 # Explicit source list (no file(GLOB)).
 set(PRISM_SRC
   src/prism/adapters.cpp
+  src/prism/proc.cpp
   src/prism/astlint.cpp
   src/prism/astlint_checks.cpp
   src/prism/astlint_libclang.cpp
@@ -261,6 +262,11 @@ target_compile_definitions(prism_core PRIVATE PRISM_EXPORTS)
 # back to Z3's bit-blast tactics and says so (NOTRUN, never silent).
 target_compile_definitions(prism_core PRIVATE
   PRISM_LEAN_BIN_DIR="${PRISM_ROOT}/proofs/techniques/.lake/build/bin")
+# The shipped Coccinelle rules of this source tree: found when the build dir
+# is outside the source tree (cmake -B /elsewhere), where neither the cwd nor
+# the binary's location leads back to prism/cocci. adapters.cpp only.
+set_source_files_properties(src/prism/adapters.cpp PROPERTIES
+  COMPILE_DEFINITIONS PRISM_SOURCE_COCCI_DIR="${PRISM_ROOT}/prism/cocci")
 target_link_libraries(prism_core PUBLIC xsimd nlohmann_json)
 # pcre2-8 is the 8-bit library target from the vendored tree
 if(TARGET pcre2-8-static)
@@ -334,6 +340,13 @@ target_link_libraries(prism PRIVATE prism_core)
 if(UNIX)
   set_target_properties(prism PROPERTIES BUILD_RPATH "$ORIGIN" INSTALL_RPATH "$ORIGIN")
 endif()
+
+# Installed layout: <prefix>/bin/prism finds the shipped Coccinelle rules in
+# <prefix>/share/prism/cocci (adapters.cpp cocci_rules), whatever the cwd.
+include(GNUInstallDirs)
+install(TARGETS prism RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+install(DIRECTORY "${PRISM_ROOT}/prism/cocci/" DESTINATION "${CMAKE_INSTALL_DATADIR}/prism/cocci"
+  FILES_MATCHING PATTERN "*.cocci")
 
 # C ABI for coverage hash / havoc
 add_library(prism_native SHARED src/prism/capi.cpp src/prism/hash.cpp src/prism/havoc.cpp)
@@ -499,7 +512,9 @@ if(PRISM_TESTS)
     # Interval stage (src/prism/interval.cpp).
     tests/cpp/test_interval.cpp
     # Sanitize stage (src/prism/adapters.cpp run_sanitize).
-    tests/cpp/test_sanitize.cpp)
+    tests/cpp/test_sanitize.cpp
+    # External tool adapters, AFL, the process runner and tool lookup.
+    tests/cpp/test_adapters.cpp)
   target_include_directories(prism_tests PRIVATE
     "${PRISM_ROOT}/include"
     "${PRISM_ROOT}/third_party")

@@ -529,8 +529,10 @@ struct CheckOptions {
     bool use_cache = true;
     std::string cache_dir;      // empty: the solver library's default
     unsigned max_parallel = 0;  // solver members at once; 0: hardware threads
+    std::map<std::string, std::string> tool_paths;  // --tool NAME=PATH; see SolveOptions
     std::vector<std::string> tool_dirs;  // searched first (tests); see SolveOptions
     bool search_default_tools = true;
+    std::string refuse_tools_under;  // Law 9; see SolveOptions
     EncodeOptions encode;       // memory encoding (Bv: QF_BV, certifiable)
     // Houdini: the run's shared budget (null: none, each function keeps its
     // own limit), and whether its outcome is cached under cache_dir/houdini

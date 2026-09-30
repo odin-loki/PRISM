@@ -21,6 +21,8 @@
 #  ifdef ERROR
 #    undef ERROR
 #  endif
+#else
+#  include <unistd.h>
 #endif
 
 namespace prism {
@@ -93,10 +95,13 @@ std::optional<fs::path> Config::which(std::initializer_list<std::string_view> na
         dirs.push_back(p.substr(i, j - i));
         i = j + 1;
     }
+    // Like shutil.which: a directory or a file without execute permission of
+    // the right name is not the tool.
     for (auto n : names) {
         for (auto& d : dirs) {
-            fs::path cand = fs::path(d) / std::string(n);
-            if (fs::exists(cand)) return cand;
+            fs::path cand = fs::path(d.empty() ? "." : d) / std::string(n);
+            std::error_code ec;
+            if (fs::is_regular_file(cand, ec) && ::access(cand.c_str(), X_OK) == 0) return cand;
         }
     }
 #endif
@@ -125,6 +130,7 @@ static const char* vendor_dir_for(std::string_view stage) {
         {"cadical", "cadical"},
         {"kissat", "kissat"},
         {"cake_lpr", "cake_lpr"},
+        {"bitwuzla", "bitwuzla"},
     };
     for (auto& m : kMap)
         if (stage == m.stage) return m.dir;
@@ -146,6 +152,19 @@ std::optional<std::string> pinned_commit(std::string_view component) {
     for (const auto& pin : kManifestPins)
         if (component == pin.name) return std::string(pin.commit);
     return std::nullopt;
+}
+
+fs::path expand_user(const fs::path& p) {
+    const auto s = p.string();
+    if (s.empty() || s[0] != '~' || (s.size() > 1 && s[1] != '/' && s[1] != '\\')) return p;
+    fs::path home;
+#ifdef _WIN32
+    if (const char* u = std::getenv("USERPROFILE")) home = u;
+#else
+    if (const char* u = std::getenv("HOME")) home = u;
+#endif
+    if (home.empty()) return p;
+    return s.size() <= 2 ? home : home / s.substr(2);
 }
 
 fs::path tools_home() {
@@ -376,8 +395,9 @@ std::optional<fs::path> Config::which_adapter(std::string_view stage,
     auto lookup = [&](const std::string& key) -> std::optional<fs::path> {
         auto it = tools.find(key);
         if (it == tools.end()) return std::nullopt;
+        auto p = expand_user(it->second);  // --tool klee=~/bin/klee
         std::error_code ec;
-        if (fs::is_regular_file(it->second, ec) && !ec) return it->second;
+        if (fs::is_regular_file(p, ec) && !ec) return p;
         return std::nullopt;
     };
     if (auto hit = lookup(std::string(stage))) return hit;

@@ -411,7 +411,7 @@ RunReport run_pipeline(const Config& cfg) {
     stage("fuzz", [&] {
         return exec_gate_note(
             "fuzz",
-            run_fuse(functions, bmc_rec.findings, src_root, cfg.fuzz_budget, cfg.fuzz_iters, cfg.llm),
+            run_fuse(functions, bmc_rec.findings, src_root, cfg.fuzz_budget, cfg.fuzz_iters, cfg.llm, cfg),
             "fuzz (compiled harness, AFL++, libFuzzer)");
     });
     stage("diff", [&] { return run_diff(functions, src_root); });

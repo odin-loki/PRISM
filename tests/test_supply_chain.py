@@ -155,6 +155,8 @@ class TestManifest(unittest.TestCase):
         cpp = (ROOT / "src" / "prism" / "config.cpp").read_text(encoding="utf-8")
         body = cpp[cpp.index("static const char* vendor_dir_for("):cpp.index("std::string adapter_install(")]
         pairs = dict(re.findall(r'\{"([^"]+)", "([^"]+)"\}', body))
+        # C++ also maps bitwuzla (a pinned portfolio solver) to its manifest row.
+        self.assertEqual(pairs.pop("bitwuzla"), "bitwuzla")
         self.assertEqual(pairs, VENDOR_DIR)
         for stage, comp in VENDOR_DIR.items():
             self.assertEqual(pinned_commit(comp), self.rows[comp]["commit"], msg=stage)

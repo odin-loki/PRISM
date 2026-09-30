@@ -303,8 +303,20 @@ Finding fuzz_function(const FunctionInfo& fn, const fs::path& src, double budget
     if (!cc || !fs::exists(src)) return no_crash();
     auto harness = afl_harness_source(fn, src.filename().string());
     const char* path_env = std::getenv("PATH");
-    std::string key = cc->string() + '\0' + (path_env ? path_env : "") + '\0' + src.filename().string() + '\0' +
-                      fn.name + '\0' + harness + '\0' + src_text;
+    // The compiler is identified by its file too (resolved path, size,
+    // mtime): a compiler replaced under the same name builds a new binary.
+    std::string cc_id;
+    {
+        std::error_code ec;
+        auto real = fs::canonical(*cc, ec);
+        if (ec) real = *cc;
+        auto sz = fs::file_size(real, ec);
+        cc_id = real.string() + '\0' + (ec ? std::string("?") : std::to_string(sz));
+        auto mt = fs::last_write_time(real, ec);
+        cc_id += '\0' + (ec ? std::string("?") : std::to_string(mt.time_since_epoch().count()));
+    }
+    std::string key = cc->string() + '\0' + cc_id + '\0' + (path_env ? path_env : "") + '\0' +
+                      src.filename().string() + '\0' + fn.name + '\0' + harness + '\0' + src_text;
     auto& cache = exe_cache();
     std::optional<std::string> cached;
     {
@@ -553,18 +565,26 @@ bool env_flag_is_one(const char* key) {
     return v != nullptr && std::string_view(v) == "1";
 }
 
-void env_setdefault(const char* key, const char* val) {
-    const char* cur = std::getenv(key);
-    if (cur && *cur) return;
-#ifdef _WIN32
-    SetEnvironmentVariableA(key, val);
-#else
-    ::setenv(key, val, 0);
-#endif
+// AFL_* defaults for the afl-fuzz child only (the Python engine copies
+// os.environ and setdefaults these). A value the user exported wins.
+std::vector<std::pair<std::string, std::string>> afl_env() {
+    std::vector<std::pair<std::string, std::string>> env;
+    for (const char* key : {"AFL_NO_UI", "AFL_SKIP_CPUFREQ", "AFL_NO_AFFINITY"}) {
+        const char* cur = std::getenv(key);
+        if (!cur || !*cur) env.emplace_back(key, "1");
+    }
+    return env;
 }
 
-std::optional<fs::path> afl_fuzz_which() {
-    return Config{}.which({"afl-fuzz", "afl-fuzz.exe"});
+}  // namespace
+
+namespace stages_detail {
+
+// --tool afl-fuzz=PATH, then the pinned build under
+// <tools_home>/aflplusplus/<commit>/bin (refused inside the scanned tree
+// without --allow-exec), then PATH: the lookup every pinned adapter uses.
+std::optional<fs::path> afl_fuzz_which(const Config& cfg) {
+    return cfg.which_adapter("afl-fuzz", {"afl-fuzz", "afl-fuzz.exe"});
 }
 
 std::string afl_harness_source(const FunctionInfo& fn, std::string src_rel) {
@@ -639,12 +659,16 @@ std::pair<bool, std::string> compile_afl_harness(const fs::path& harness, const 
 }
 
 // Bounded AFL++ campaign on a SCALAR stdin harness. CLEAN is not a proof.
-std::optional<Finding> run_afl_fuzz(const FunctionInfo& fn, const fs::path& src, double timeout = 2.0) {
-    auto afl = afl_fuzz_which();
+std::optional<Finding> run_afl_fuzz(const FunctionInfo& fn, const fs::path& src, const Config& cfg,
+                                    double timeout, const fs::path& work) {
+    auto afl = afl_fuzz_which(cfg);
     if (!afl || fn.kind != "SCALAR") return std::nullopt;
     auto afl_base = [&](std::string_view st, std::string cls, std::string msg) {
         auto f = make_find("fuse", st, fn, std::move(cls), std::move(msg), laws::STRENGTH_FINDS);
-        if (st != laws::NOTRUN) f.extra["engine"] = "afl";
+        if (st != laws::NOTRUN) {
+            f.extra["engine"] = "afl";
+            f.extra["sandbox"] = sandbox::kind();
+        }
         return f;
     };
     if (!sandbox::allowed()) {
@@ -661,15 +685,18 @@ std::optional<Finding> run_afl_fuzz(const FunctionInfo& fn, const fs::path& src,
         f.extra["install"] = "install gcc or clang";
         return f;
     }
-    auto td = fs::temp_directory_path() / ("prism_afl_" + std::to_string(std::random_device{}()));
+    // work: the caller's scratch dir (kept), else a temp dir removed after.
+    const bool own = work.empty();
+    auto td = own ? fs::temp_directory_path() / ("prism_afl_" + std::to_string(std::random_device{}()))
+                  : work;
     fs::create_directories(td);
     struct Guard {
         fs::path p;
         ~Guard() {
             std::error_code ec;
-            fs::remove_all(p, ec);
+            if (!p.empty()) fs::remove_all(p, ec);
         }
-    } guard{td};
+    } guard{own ? td : fs::path()};
     auto src_copy = td / src.filename();
     if (!fs::exists(src_copy)) {
         std::ofstream out(src_copy);
@@ -704,14 +731,16 @@ std::optional<Finding> run_afl_fuzz(const FunctionInfo& fn, const fs::path& src,
         std::vector<char> zeros(static_cast<std::size_t>(std::max(1, nbytes)), 0);
         seed.write(zeros.data(), static_cast<std::streamsize>(zeros.size()));
     }
-    env_setdefault("AFL_NO_UI", "1");
-    env_setdefault("AFL_SKIP_CPUFREQ", "1");
-    env_setdefault("AFL_NO_AFFINITY", "1");
     int vsec = std::max(1, static_cast<int>(timeout));
-    run_argv(sandbox::wrap_argv({afl->string(), "-i", in_dir.string(), "-o", out_dir.string(), "-V",
-                                 std::to_string(vsec), "--", exe.string()},
-                                td),
-             {}, timeout + 10.0, sandbox::limits_for(timeout + 10.0, /*limit_as=*/false));
+    detail::RunSpec spec;
+    spec.argv = sandbox::wrap_argv({afl->string(), "-i", in_dir.string(), "-o", out_dir.string(), "-V",
+                                    std::to_string(vsec), "--", exe.string()},
+                                   td);
+    spec.env = afl_env();  // the child's environment only, never PRISM's
+    spec.cwd = td;
+    spec.timeout_s = timeout + 10.0;
+    spec.limits = sandbox::limits_for(timeout + 10.0, /*limit_as=*/false);
+    run_spec(spec);
     std::vector<fs::path> crash_dirs{out_dir / "crashes", out_dir / "default" / "crashes"};
     for (auto& cdir : crash_dirs) {
         std::error_code ec;
@@ -734,6 +763,10 @@ std::optional<Finding> run_afl_fuzz(const FunctionInfo& fn, const fs::path& src,
     }
     return afl_base(laws::CLEAN, "", "no AFL crash in " + std::to_string(vsec) + "s (not a proof)");
 }
+
+}  // namespace stages_detail
+
+namespace {
 
 const char* kLibfuzzerInstall = "clang -fsanitize=fuzzer is a system tool: apt install clang-18 (see third_party/MANIFEST.toml)";
 
@@ -882,6 +915,11 @@ Finding run_libfuzzer(const FunctionInfo& fn, const fs::path& src, double timeou
                                           "-artifact_prefix=" + (td / "").string()},
                                          td),
                       {}, timeout + 10.0, sandbox::limits_for(timeout + 10.0, /*limit_as=*/false));
+    // Rows from a run say which sandbox it had (the Python engine's extra).
+    const auto run_extra = [&](Finding& f) {
+        f.extra["exe"] = clang->string();
+        f.extra["sandbox"] = sandbox::kind();
+    };
     std::vector<fs::path> crashes;
     std::error_code ec;
     for (auto it = fs::recursive_directory_iterator(td, ec); it != fs::recursive_directory_iterator();
@@ -897,7 +935,7 @@ Finding run_libfuzzer(const FunctionInfo& fn, const fs::path& src, double timeou
         if (raw.size() > 16) raw.resize(16);
         auto f = lf_base(laws::CRASH, "LIBFUZZER-CRASH", "libFuzzer crash on " + bytes_to_hex(raw));
         f.counterexample = bytes_to_hex(std::vector<uint8_t>(data.begin(), data.end()));
-        f.extra["exe"] = clang->string();
+        run_extra(f);
         f.extra["libfuzzer_crashes"] = std::to_string(crashes.size());
         return f;
     }
@@ -905,16 +943,16 @@ Finding run_libfuzzer(const FunctionInfo& fn, const fs::path& src, double timeou
     if (text.find("addresssanitizer") != std::string::npos ||
         text.find("undefinedbehaviorsanitizer") != std::string::npos) {
         auto f = lf_base(laws::CRASH, "LIBFUZZER-CRASH", "libFuzzer sanitizer crash");
-        f.extra["exe"] = clang->string();
+        run_extra(f);
         return f;
     }
     auto f = lf_base(laws::CLEAN, "", "no libFuzzer crash in " + std::to_string(vsec) + "s (not a proof)");
-    f.extra["exe"] = clang->string();
+    run_extra(f);
     return f;
 }
 
 Finding fuse_one(const FunctionInfo& fn, const std::vector<Finding>& bmc_findings, const fs::path& root,
-                 double budget, int iters, int rounds, LlamaEngine* engine) {
+                 double budget, int iters, int rounds, LlamaEngine* engine, const Config& cfg) {
     auto nh = [&](std::string msg) {
         return make_find("fuse", laws::NEEDS_HARNESS, fn, "", std::move(msg), laws::STRENGTH_FINDS);
     };
@@ -926,7 +964,7 @@ Finding fuse_one(const FunctionInfo& fn, const std::vector<Finding>& bmc_finding
     if (auto syn = unencoded_syntax_reason_cached(fn, "FuSeBMC")) return nh(*syn);
     if (body_needs_pointer_harness(fn.body))
         return nh("local pointer or heap object: FuSeBMC harness would invent a buffer");
-    bool afl_on_path = afl_fuzz_which().has_value();
+    bool afl_on_path = afl_fuzz_which(cfg).has_value();
     bool opted_afl = env_flag_is_one("PRISM_AFL");
     bool use_afl = opted_afl && afl_on_path;
     bool opted_libfuzzer = env_flag_is_one("PRISM_LIBFUZZER");
@@ -1020,13 +1058,19 @@ Finding fuse_one(const FunctionInfo& fn, const std::vector<Finding>& bmc_finding
             extra["binary"] = std::string(laws::NOTRUN);
             extra["exec"] = std::string(laws::NOTRUN);
         }
+        if (auto bin = last.extra.find("binary"); bin != last.extra.end() && bin->second == "compile-failed") {
+            // Law 7: the compiled-harness half could not be built, so the
+            // CLEAN is the concrete oracle's alone; the row says so.
+            extra["binary"] = bin->second;
+            extra["oracle"] = "concrete";
+        }
         if (last.status == laws::CRASH || last.status == laws::ERROR || last.status == laws::NEEDS_HARNESS) {
             for (auto& [k, v] : extra) last.extra[k] = v;
             return last;
         }
         if (use_afl && fn.kind == "SCALAR" && !afl_tried) {
             afl_tried = true;
-            auto afl_last = run_afl_fuzz(fn, src, 2.0);
+            auto afl_last = run_afl_fuzz(fn, src, cfg, 2.0);
             if (afl_last) {
                 if (afl_last->status == laws::NOTRUN) {
                     extra["afl"] = "NOTRUN";
@@ -1456,6 +1500,11 @@ std::vector<std::vector<uint8_t>> chatfuzz_mutants(LlamaEngine& engine, const Fu
 
 std::vector<Finding> run_fuse(const std::vector<FunctionInfo>& functions, const std::vector<Finding>& bmc_findings,
                               const fs::path& src_root, double budget, int iters, bool llm) {
+    return run_fuse(functions, bmc_findings, src_root, budget, iters, llm, default_config());
+}
+
+std::vector<Finding> run_fuse(const std::vector<FunctionInfo>& functions, const std::vector<Finding>& bmc_findings,
+                              const fs::path& src_root, double budget, int iters, bool llm, const Config& cfg) {
     std::vector<Finding> out;
     int rounds = 2;
     // A zero budget is already spent: do not lift it to the 0.05 s floor.
@@ -1467,7 +1516,7 @@ std::vector<Finding> run_fuse(const std::vector<FunctionInfo>& functions, const 
     if (llm) eng.emplace(ai::session_config() ? *ai::session_config() : default_config());
     LlamaEngine* ep = eng ? &*eng : nullptr;
     for (auto& fn : functions)
-        out.push_back(fuse_one(fn, bmc_findings, src_root, slice_budget, slice_iters, rounds, ep));
+        out.push_back(fuse_one(fn, bmc_findings, src_root, slice_budget, slice_iters, rounds, ep, cfg));
     if (ep && !ep->available() && !functions.empty()) {
         Finding f;
         f.stage = "fuse";
