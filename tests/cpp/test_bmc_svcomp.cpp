@@ -81,6 +81,45 @@ int other(int a) { int b = add1(a); return b; }
     CHECK(body["other"].find("add1(") != std::string::npos);
 }
 
+TEST_CASE("inline: a helper made weak outside its signature, or in another unit, is not inlined") {
+    auto body_of_main = [](const std::vector<prism::FunctionInfo>& fns) {
+        for (auto& f : prism::inline_static(fns))
+            if (f.name == "main") return f.body;
+        return std::string();
+    };
+    // `#pragma weak`, its _Pragma spelling and a weak prototype make the
+    // definition replaceable at link time.
+    for (auto* src : {"#pragma weak add1\nint add1(int x) { return x + 1; }\nint main(void) { return add1(5); }\n",
+                      "_Pragma(\"weak add1\")\nint add1(int x) { return x + 1; }\nint main(void) { return add1(5); }\n",
+                      "int add1(int x) __attribute__((weak));\nint add1(int x) { return x + 1; }\n"
+                      "int main(void) { return add1(5); }\n",
+                      "#pragma weak alt = add1\nint add1(int x) { return x + 1; }\nint main(void) { return add1(5); }\n"}) {
+        INFO(src);
+        auto fns = parse_source("inl_weak.c", src);
+        REQUIRE(fns.size() == 2);
+        CHECK(fns[0].unit_has_weak);
+        CHECK(body_of_main(fns).find("add1(") != std::string::npos);
+    }
+    auto plain = parse_source("inl_strong.c", "int add1(int x) { return x + 1; }\nint main(void) { return add1(5); }\n");
+    CHECK_FALSE(plain[0].unit_has_weak);
+    CHECK(body_of_main(plain).find("add1(") == std::string::npos);
+    // A same-named file in another directory is another unit: its helpers
+    // are not the caller's, static or not.
+    auto a = parse_source("inl_main_a.c", "int main(void) { return add1(5) + twice(1); }\n");
+    auto dir = std::filesystem::temp_directory_path() / "prism_bmc_svcomp" / "other";
+    std::filesystem::create_directories(dir);
+    {
+        std::ofstream out(dir / "inl_main_a.c", std::ios::binary);
+        out << "int add1(int x) { return x + 1; }\nstatic int twice(int x) { return 2 * x; }\n";
+    }
+    auto b = prism::extract_functions(dir / "inl_main_a.c", (dir / "inl_main_a.c").string());
+    REQUIRE(b.size() == 2);
+    a.insert(a.end(), b.begin(), b.end());
+    auto main_body = body_of_main(a);
+    CHECK(main_body.find("add1(") != std::string::npos);
+    CHECK(main_body.find("twice(") != std::string::npos);
+}
+
 TEST_CASE("inline: calls in if, else and loop bodies are inlined, each site with its prefix") {
     auto fns = parse_source("inl_nested.c", R"(static int inc(int x) { return x + 1; }
 int f(int a) {
