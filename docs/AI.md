@@ -147,7 +147,11 @@ grammars/*.gbnf is embedded verbatim").
 Backends: llama-server (`PRISM_LLAMA_SERVER`, grammar) and Ollama
 (`OLLAMA_HOST`, JSON-schema format). The in-process GGUF path
 (`-DPRISM_LLAMA=ON`) has no grammar sampler wired, so AI features do not use
-it and say so in the `NOTRUN` reason.
+it and say so in the `NOTRUN` reason. The stages' plain chats (hypotheses,
+Fuzz4All, repair) do use it: `PRISM_GGUF` must name a model file of more than
+1 MB, the context is 8192 tokens (the reply may use what the prompt leaves),
+and `PRISM_N_GPU_LAYERS` sets the layers offloaded to the GPU (default -1,
+all; 0 on Windows without MSVC's `cl`; ignored by a CPU-only build).
 
 ## Prompt-injection safety (9.6)
 
