@@ -662,7 +662,9 @@ if(PRISM_TESTS)
     # the ASan runtime is on PATH (the clang-cl CI jobs add its DLL dir); the
     # sanitizers_usable() probe otherwise reports NOTRUN.
     tests/cpp/test_qa_conformance.cpp
-    tests/cpp/test_pir_e2e.cpp)
+    tests/cpp/test_pir_e2e.cpp
+    # Repository tooling that used to be scripts (plan-done smoke, generated tables).
+    tests/cpp/test_repo_tools.cpp)
   if(PRISM_HAS_Z3)
     list(APPEND _prism_test_sources tests/cpp/test_leanbb.cpp
       tests/cpp/test_pir_budget.cpp tests/cpp/test_certified.cpp)
