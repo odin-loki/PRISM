@@ -478,8 +478,8 @@ if(PRISM_TESTS)
     tests/cpp/test_astlint.cpp
     # Roadmap 9.1/9.3/9.4 AI assistant features (regress, triage, ask, draft, predict).
     tests/cpp/test_ai_assist.cpp
-    # ltl stage.
-    tests/cpp/test_ltl.cpp)
+    # ltl and contracts stages.
+    tests/cpp/test_ltl.cpp tests/cpp/test_contracts.cpp)
   target_include_directories(prism_tests PRIVATE
     "${PRISM_ROOT}/include"
     "${PRISM_ROOT}/third_party")
