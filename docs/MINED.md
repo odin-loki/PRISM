@@ -384,7 +384,7 @@ skipped into an empty function list. Remaining ISO C11 `thrd_sleep`/`thrd_yield`
 | AFL++/libFuzzer | PATH/clang -fsanitize=fuzzer probe; NOTRUN if absent |
 | KLEE | in-process concolic in prism/concolic.py; missing binary is NOTRUN; adapter with no error path is UNKNOWN, never a proof |
 | Semgrep | PATH adapter; real scan when present; UNKNOWN if empty |
-| Coccinelle | `spatch` + `prism/cocci/`; missing is NOTRUN |
+| Coccinelle | `spatch` + `rules/cocci/` (installed as `share/prism/cocci/`); missing is NOTRUN |
 | Infer/CodeQL | adapters; in-process taint; CodeQL with no `codeql-db` is UNKNOWN; missing binary is NOTRUN |
 | Frama-C | EVA adapter: 0 alarms UNKNOWN; in-tree WP (`prism/wp.py`); ACSL in contracts.py. Missing `frama-c` binary is NOTRUN |
 | clang-tidy | adapter; no diagnostics UNKNOWN; missing is NOTRUN (not vendored) |
@@ -484,7 +484,7 @@ File:function pointers for the methods above. Call these from `prism/pipeline.py
 - `prism/adapters_extra.py:_run_cbmc` — `VERIFICATION SUCCESSFUL` is BOUNDED, never PROVED
 - `prism/adapters_extra.py:_run_klee` — no error path is UNKNOWN; missing binary is NOTRUN (in-process concolic is `prism/concolic.py`)
 - `prism/adapters_extra.py:_run_spatch` — Coccinelle; missing `spatch` is NOTRUN
-- `prism/cocci/` — shipped rules `memcpy_self`, `realloc_self`, `shift_bit31`, `getenv_null`, `strcpy_self`, `sprintf_unbounded`, `strcat_self`, `strncpy_self`; `_cocci_rules` loads these first, then `*.cocci` under source roots
+- `rules/cocci/` (was `prism/cocci/`, kept there as a link for the Python engine) — shipped rules `memcpy_self`, `realloc_self`, `shift_bit31`, `getenv_null`, `strcpy_self`, `sprintf_unbounded`, `strcat_self`, `strncpy_self`; `_cocci_rules` loads these first, then `*.cocci` under source roots
 - `prism/ltl.py:synthesize_missing` — Strix-shaped missing `G (p -> X q)` edges are HYPOTHESIS
 - `prism/contracts.py:_instrument_invariant` — Dafny `invariant:` around loops; PROVED-ASSUMING
 - `prism/adapters.py:run_compiler` — gcc+clang -Wall union; missing NOTRUN; no C files UNKNOWN not silence; unmatched compiler exit FAILED; empty-scope confidence is 0 not n/a (`prism/confidence.py`)

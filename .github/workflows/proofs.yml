@@ -22,6 +22,7 @@ jobs:
           sparse-checkout: |
             proofs
             tests/data
+            src/tools
           sparse-checkout-cone-mode: true
 
       - name: Install elan

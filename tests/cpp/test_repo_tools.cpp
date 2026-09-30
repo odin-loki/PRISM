@@ -9,14 +9,20 @@
 #include "prism/config.hpp"
 #include "prism/laws.hpp"
 #include "prism/pipeline.hpp"
+#include "prism/stages.hpp"
 #include "prism/taxonomy.hpp"
 
 #define PRISM_GEN_DISCARD_NO_MAIN
 #include "../../src/tools/gen_astlint_discard.cpp"
+#define LEAN_AUDIT_NO_MAIN
+#include "../../src/tools/lean_audit.cpp"
 
 #include <algorithm>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <set>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -166,4 +172,132 @@ void rules() {
     CHECK(text.find(R"(    {"foo", {"API-FOO", false}},)") != std::string::npos);  // the first rule wins
     CHECK(text.find(R"(    {"bar", {"API-BAR", true}},)") != std::string::npos);
     CHECK(text.find("\"bar\"") < text.find("\"foo\""));  // sorted
+}
+
+// ------------------------------------------------------------------ Coccinelle rules
+TEST_CASE("cocci rules: shipped rules/cocci found from the tree and from an install; tree-local rules too") {
+    prism::Config cfg = prism::default_config();
+    cfg.root = repo_root() / "testdata";
+    std::set<std::string> names;
+    std::size_t n = 0;
+    for (const auto& r : prism::cocci_rules({}, cfg)) {
+        names.insert(r.filename().string());
+        ++n;
+    }
+    CHECK(n == names.size());  // each rule once
+    for (const char* need : {"memcpy_self.cocci", "realloc_self.cocci", "shift_bit31.cocci", "getenv_null.cocci",
+                             "strcpy_self.cocci", "sprintf_unbounded.cocci", "strcat_self.cocci",
+                             "strncpy_self.cocci"}) {
+        CAPTURE(need);
+        CHECK(names.count(need) == 1);
+        CHECK(fs::is_regular_file(repo_root() / "rules" / "cocci" / need));
+    }
+    const auto rules = repo_root() / "rules" / "cocci";
+    std::ifstream g(rules / "getenv_null.cocci"), sp(rules / "sprintf_unbounded.cocci");
+    std::string gt((std::istreambuf_iterator<char>(g)), {}), st((std::istreambuf_iterator<char>(sp)), {});
+    CHECK(gt.find("getenv") != std::string::npos);
+    CHECK(gt.find('@') != std::string::npos);
+    CHECK(st.find("sprintf") != std::string::npos);
+    CHECK(st.find("snprintf") == std::string::npos);
+
+    // An installed layout (<prefix>/share/prism/cocci above the scanned tree)
+    // and a rule inside the scanned root.
+    auto tmp = tools_tmp("cocci");
+    fs::create_directories(tmp / "share" / "prism" / "cocci");
+    std::ofstream(tmp / "share" / "prism" / "cocci" / "installed_rule.cocci") << "@r@\nexpression E;\n@@\n- E\n";
+    fs::create_directories(tmp / "src" / "sub");
+    std::ofstream(tmp / "src" / "sub" / "local.cocci") << "@r@\nexpression E;\n@@\n- E\n";
+    std::ofstream(tmp / "src" / "sub" / "a.c") << "int f(void) { return 0; }\n";
+    cfg.root = tmp / "src" / "sub";
+    std::set<std::string> got;
+    for (const auto& r : prism::cocci_rules({tmp / "src" / "sub" / "a.c"}, cfg)) got.insert(r.filename().string());
+    CHECK(got.count("installed_rule.cocci") == 1);
+    CHECK(got.count("local.cocci") == 1);
+}
+
+// ------------------------------------------------------------------ lean_audit
+TEST_CASE("lean_audit: comments are stripped the Lean way; hits are whole words or line-start keywords") {
+    using lean_audit::find_hits;
+    using lean_audit::strip_comments;
+    const std::vector<std::string> words{"sorry", "native_decide"}, top{"axiom", "unsafe"};
+    auto hits = [&](const std::string& src) {
+        std::vector<std::string> out;
+        for (auto& h : find_hits(strip_comments(src), words, top)) out.push_back(h.word);
+        return out;
+    };
+    using V = std::vector<std::string>;
+    CHECK(hits("theorem t : True := by sorry\n") == V{"sorry"});
+    CHECK(hits("-- sorry\ntheorem t : True := trivial\n").empty());
+    CHECK(hits("/- sorry -/ theorem t : True := trivial\n").empty());
+    CHECK(hits("/-- doc: sorry -/\n/-! module doc native_decide -/\n").empty());
+    // Block comments nest: the whole thing is a comment.
+    CHECK(hits("/- outer /- inner -/ sorry -/\n").empty());
+    // ... and code after a nested comment is scanned.
+    CHECK(hits("/- a /- b -/ c -/ example := by native_decide\n") == V{"native_decide"});
+    // A comment marker inside a string does not hide code; string text is scanned.
+    CHECK(hits("def s := \"--\" ++ toString sorry\n") == V{"sorry"});
+    CHECK(hits("def s := \"a sorry b\"\n") == V{"sorry"});
+    // Whole words only.
+    CHECK(hits("theorem mysorry_ok : True := trivial\ndef sorry_count := 0\n").empty());
+    CHECK(hits("theorem t := sorry'\n") == V{"sorry"});
+    // Keywords count at the start of a line only (after spaces), also after a
+    // comment on the lines before.
+    CHECK(hits("axiom bad : False\n") == V{"axiom"});
+    CHECK(hits("  unsafe def f := 0\n") == V{"unsafe"});
+    CHECK(hits("theorem axiom_free : True := trivial\n").empty());
+    CHECK(hits("/- a\nb -/\naxiom x : False\n") == V{"axiom"});
+    CHECK(hits("def f := 1 -- axiom\n").empty());
+    // A block comment keeps its newlines, so what follows it can start a line.
+    CHECK(hits("def f := 1 /- c\n-/ axiom x : False\n") == V{"axiom"});
+    CHECK(hits("def f := 1 /- c\n-/\naxiom x : False\n") == V{"axiom"});
+}
+
+TEST_CASE("lean_audit: scan walks directories, skips .lake, reports path: word; axioms audit") {
+    auto tmp = tools_tmp("lean-audit");
+    fs::create_directories(tmp / "P" / "Sub");
+    fs::create_directories(tmp / ".lake" / "packages");
+    std::ofstream(tmp / "P" / "Good.lean") << "-- sorry is fine in a comment\ntheorem a : True := trivial\n";
+    std::ofstream(tmp / "P" / "Sub" / "Bad.lean") << "theorem b : True := by\n  sorry\n";
+    std::ofstream(tmp / ".lake" / "packages" / "Dep.lean") << "theorem c : True := sorry\n";
+    std::ofstream(tmp / "notes.txt") << "sorry\n";
+    const std::string dir = tmp.string();
+    {
+        std::vector<std::string> args{"lean_audit", "scan", "--words", "sorry,native_decide", "--toplevel",
+                                      "axiom,unsafe", dir};
+        std::vector<char*> argv;
+        for (auto& a : args) argv.push_back(a.data());
+        std::ostringstream out, err;
+        CHECK(lean_audit::run(static_cast<int>(argv.size()), argv.data(), out, err) == 1);
+        CHECK(out.str() == (tmp / "P" / "Sub" / "Bad.lean").generic_string() + ": sorry\n");
+    }
+    {
+        std::vector<std::string> args{"lean_audit", "scan", "--words", "sorry", (tmp / "P" / "Good.lean").string()};
+        std::vector<char*> argv;
+        for (auto& a : args) argv.push_back(a.data());
+        std::ostringstream out, err;
+        CHECK(lean_audit::run(static_cast<int>(argv.size()), argv.data(), out, err) == 0);
+        CHECK(out.str() == "ok\n");
+    }
+    {  // a missing path is an error, never "ok"
+        std::vector<std::string> args{"lean_audit", "scan", "--words", "sorry", (tmp / "missing").string()};
+        std::vector<char*> argv;
+        for (auto& a : args) argv.push_back(a.data());
+        std::ostringstream out, err;
+        CHECK(lean_audit::run(static_cast<int>(argv.size()), argv.data(), out, err) == 2);
+        CHECK(out.str().empty());
+    }
+    const std::set<std::string> std_axioms{"propext", "Classical.choice", "Quot.sound"};
+    CHECK(lean_audit::axiom_offenders("'Prism.a' depends on axioms: [propext, Quot.sound]\n"
+                                      "'Prism.b' does not depend on any axioms\n",
+                                      std_axioms)
+              .empty());
+    CHECK(lean_audit::axiom_offenders("'Prism.c' depends on axioms: [propext, sorryAx, Lean.ofReduceBool]\r\n",
+                                      std_axioms) == std::vector<std::string>{"Prism.c: ['Lean.ofReduceBool', 'sorryAx']"});
+    std::ofstream(tmp / "axioms.txt") << "'x' depends on axioms: [Classical.choice]\n";
+    std::vector<std::string> args{"lean_audit", "axioms", (tmp / "axioms.txt").string()};
+    std::vector<char*> argv;
+    for (auto& a : args) argv.push_back(a.data());
+    std::ostringstream out, err;
+    CHECK(lean_audit::run(static_cast<int>(argv.size()), argv.data(), out, err) == 0);
+    CHECK(out.str() == "ok: only propext / Classical.choice / Quot.sound\n");
 }

@@ -1045,6 +1045,13 @@ fs::path resolved(const fs::path& p) {
     return ec ? fs::absolute(p) : r;
 }
 
+}  // namespace
+
+// PRISM's shipped Coccinelle rules live in rules/cocci/ of the source tree and
+// in share/prism/cocci/ of an install (CMake install()). Both are searched
+// below the working directory, the scan root and the executable's directory
+// (up to 8 ancestors), then *.cocci in the scanned roots. A missing rule
+// directory is never silent: run_spatch says "no .cocci rules".
 std::vector<fs::path> cocci_rules(const std::vector<fs::path>& paths, const Config& cfg) {
     std::vector<fs::path> rules;
     std::set<fs::path> seen;
@@ -1057,7 +1064,8 @@ std::vector<fs::path> cocci_rules(const std::vector<fs::path>& paths, const Conf
     std::vector<fs::path> pkg;
     auto consider = [&](fs::path base) {
         for (int i = 0; i < 8 && !base.empty(); ++i) {
-            pkg.push_back(base / "prism" / "cocci");
+            pkg.push_back(base / "rules" / "cocci");
+            pkg.push_back(base / "share" / "prism" / "cocci");
             if (base.parent_path() == base) break;
             base = base.parent_path();
         }
@@ -1068,11 +1076,15 @@ std::vector<fs::path> cocci_rules(const std::vector<fs::path>& paths, const Conf
 #ifdef _WIN32
     char buf[MAX_PATH]{};
     if (GetModuleFileNameA(nullptr, buf, MAX_PATH)) consider(fs::path(buf).parent_path());
+#else
+    if (auto exe = fs::read_symlink("/proc/self/exe", ec); !ec) consider(exe.parent_path());
 #endif
     for (const auto& d : pkg) add_dir(d);
     for (const auto& root : source_roots(paths)) add_dir(root);
     return rules;
 }
+
+namespace {
 
 struct SpatchHit {
     std::string path;

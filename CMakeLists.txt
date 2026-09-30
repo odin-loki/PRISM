@@ -372,6 +372,12 @@ if(UNIX)
   set_target_properties(prism PROPERTIES BUILD_RPATH "$ORIGIN" INSTALL_RPATH "$ORIGIN")
 endif()
 
+# Install: the CLI and PRISM's shipped Coccinelle rules (the spatch stage
+# finds them in share/prism/cocci/ next to bin/; src/prism/adapters.cpp cocci_rules).
+include(GNUInstallDirs)
+install(TARGETS prism RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(DIRECTORY rules/cocci/ DESTINATION ${CMAKE_INSTALL_DATADIR}/prism/cocci FILES_MATCHING PATTERN "*.cocci")
+
 # C ABI for coverage hash / havoc
 add_library(prism_native SHARED src/prism/capi.cpp src/prism/hash.cpp src/prism/havoc.cpp)
 target_include_directories(prism_native PUBLIC "${PRISM_ROOT}/include")

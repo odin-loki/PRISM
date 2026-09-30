@@ -103,4 +103,10 @@ struct ConcreteRec {
 ConcreteRec concrete_execute(const FunctionInfo& fn,
                              const std::map<std::string, int>& args);
 
+// The spatch stage's Coccinelle rules: PRISM's shipped rules (rules/cocci/ in
+// the source tree, share/prism/cocci/ when installed) first, then *.cocci in
+// the scanned roots; each file once.
+PRISM_API std::vector<std::filesystem::path> cocci_rules(const std::vector<std::filesystem::path>& paths,
+                                                         const Config& cfg);
+
 }  // namespace prism

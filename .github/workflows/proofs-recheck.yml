@@ -24,12 +24,14 @@ on:
       - "proofs/**"
       - "third_party/MANIFEST.toml"
       - "scripts/fetch_deps.py"
+      - "src/tools/lean_audit.cpp"
       - ".github/workflows/proofs-recheck.yml"
   pull_request:
     paths:
       - "proofs/**"
       - "third_party/MANIFEST.toml"
       - "scripts/fetch_deps.py"
+      - "src/tools/lean_audit.cpp"
       - ".github/workflows/proofs-recheck.yml"
   release:
     types: [published]

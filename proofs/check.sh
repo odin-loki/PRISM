@@ -17,20 +17,19 @@ repo="$(dirname "$here")"
 tables="$repo/tests/data/verdict_tables.json"
 cd "$here"
 fail() { echo "proofs: FAIL: $*" >&2; exit 1; }
+# lean_audit (src/tools/lean_audit.cpp): the comment-aware source scan and the
+# axiom-log audit, a standard-library-only C++23 file built on first use.
+lean_audit() {
+  local src="$repo/src/tools/lean_audit.cpp" bin="$repo/proofs/.lake/lean_audit"
+  if [ ! -x "$bin" ] || [ "$src" -nt "$bin" ]; then
+    mkdir -p "$(dirname "$bin")"
+    "${CXX:-c++}" -std=c++23 -O2 -o "$bin.tmp.$$" "$src" && mv -f "$bin.tmp.$$" "$bin" || return 2
+  fi
+  "$bin" "$@"
+}
 
 echo "== 1. no sorry in sources"
-python3 - <<'PY' || fail "sorry/native_decide in a Lean source"
-import pathlib, re, sys
-bad = []
-for p in pathlib.Path(".").rglob("*.lean"):
-    if ".lake" in p.parts:
-        continue
-    text = re.sub(r"--[^\n]*|/-.*?-/", "", p.read_text(encoding="utf-8"), flags=re.S)
-    for m in re.finditer(r"\b(sorry|native_decide)\b", text):
-        bad.append(f"{p}: {m.group(1)}")
-print("\n".join(bad) or "ok")
-sys.exit(1 if bad else 0)
-PY
+lean_audit scan --words sorry,native_decide . || fail "sorry/native_decide in a Lean source"
 
 echo "== 2. lake build"
 log="$(mktemp)"
@@ -47,19 +46,7 @@ cat "$log"
 expected=$(grep -c '^#print axioms' Prism/Axioms.lean)
 seen=$(grep -Ec "depends on axioms|does not depend on any axioms" "$log")
 [ "$seen" -eq "$expected" ] || fail "expected $expected axiom reports, saw $seen"
-python3 - "$log" <<'PY' || fail "a theorem uses an axiom outside the allowed set"
-import re, sys
-allowed = {"propext", "Classical.choice", "Quot.sound"}
-bad = []
-for line in open(sys.argv[1], encoding="utf-8"):
-    m = re.search(r"'([^']+)' depends on axioms: \[(.*)\]", line)
-    if m:
-        extra = {a.strip() for a in m.group(2).split(",")} - allowed
-        if extra:
-            bad.append(f"{m.group(1)}: {sorted(extra)}")
-print("\n".join(bad) or "ok: only propext / Classical.choice / Quot.sound")
-sys.exit(1 if bad else 0)
-PY
+lean_audit axioms "$log" || fail "a theorem uses an axiom outside the allowed set"
 
 echo "== 4. truth tables"
 out="$(mktemp)"

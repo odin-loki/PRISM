@@ -23,6 +23,17 @@
 # (python scripts/fetch_deps.py --tool lean4export / --tool nanoda).
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
+repo="$(cd "$here/../.." && pwd)"
+# lean_audit (src/tools/lean_audit.cpp): the comment-aware source scan and the
+# axiom-log audit, a standard-library-only C++23 file built on first use.
+lean_audit() {
+  local src="$repo/src/tools/lean_audit.cpp" bin="$repo/proofs/.lake/lean_audit"
+  if [ ! -x "$bin" ] || [ "$src" -nt "$bin" ]; then
+    mkdir -p "$(dirname "$bin")"
+    "${CXX:-c++}" -std=c++23 -O2 -o "$bin.tmp.$$" "$src" && mv -f "$bin.tmp.$$" "$bin" || return 2
+  fi
+  "$bin" "$@"
+}
 proj="$(cd "$1" && pwd)"; shift
 roots=("$@")
 [ ${#roots[@]} -gt 0 ] || { echo "usage: $0 PROJECT_DIR ROOT_MODULE..." >&2; exit 2; }
@@ -49,19 +60,7 @@ if grep -q "declaration uses 'sorry'" "$proj/.lake/recheck-build.log"; then say 
 say "ok"
 
 say "== 2. source scan"
-python3 - "$proj" <<'PY' | tee -a "$report"
-import pathlib, re, sys
-bad = []
-for p in sorted(pathlib.Path(sys.argv[1]).rglob("*.lean")):
-    if ".lake" in p.parts:
-        continue
-    text = re.sub(r"/-.*?-/", "", p.read_text(encoding="utf-8"), flags=re.S)
-    text = re.sub(r"--[^\n]*", "", text)
-    for m in re.finditer(r"\b(sorry|native_decide|bv_decide)\b|^\s*(axiom|unsafe)\b", text, flags=re.M):
-        bad.append(f"{p}: {m.group(0).strip()}")
-print("\n".join(bad) or "ok")
-sys.exit(1 if bad else 0)
-PY
+lean_audit scan --words sorry,native_decide,bv_decide --toplevel axiom,unsafe "$proj" | tee -a "$report"
 
 say "== 3. axiom audit (every declaration)"
 ar="$here/.lake/build/bin/axiom_report"

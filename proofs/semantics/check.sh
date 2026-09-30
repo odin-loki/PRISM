@@ -6,6 +6,17 @@
 # than Lean's standard propext, Classical.choice and Quot.sound.
 set -euo pipefail
 cd "$(dirname "$0")"
+repo="$(cd ../.. && pwd)"
+# lean_audit (src/tools/lean_audit.cpp): the comment-aware source scan and the
+# axiom-log audit, a standard-library-only C++23 file built on first use.
+lean_audit() {
+  local src="$repo/src/tools/lean_audit.cpp" bin="$repo/proofs/.lake/lean_audit"
+  if [ ! -x "$bin" ] || [ "$src" -nt "$bin" ]; then
+    mkdir -p "$(dirname "$bin")"
+    "${CXX:-c++}" -std=c++23 -O2 -o "$bin.tmp.$$" "$src" && mv -f "$bin.tmp.$$" "$bin" || return 2
+  fi
+  "$bin" "$@"
+}
 
 echo "== lake build"
 lake build 2>&1 | tee build.log
@@ -15,24 +26,9 @@ if grep -q "declaration uses 'sorry'" build.log || grep -q 'declaration uses `so
 fi
 
 echo "== escape-hatch scan"
-# Comments are allowed to mention the words; code is not.  Strip line
-# comments and block comments before scanning.
-bad=0
-for f in PrismSem.lean PrismSem/*.lean Audit.lean; do
-  code=$(python3 - "$f" <<'PY'
-import re, sys
-s = open(sys.argv[1], encoding="utf-8").read()
-s = re.sub(r"/-.*?-/", "", s, flags=re.S)
-s = re.sub(r"--[^\n]*", "", s)
-print(s)
-PY
-)
-  if echo "$code" | grep -nE '\b(sorry|admit|native_decide|bv_decide|implemented_by|extern)\b|^\s*(axiom|unsafe)\b' ; then
-    echo "FAIL: escape hatch in $f" >&2
-    bad=1
-  fi
-done
-[ "$bad" = 0 ] || exit 1
+# Comments may mention the words; code may not (lean_audit strips comments).
+lean_audit scan --words sorry,admit,native_decide,bv_decide,implemented_by,extern --toplevel axiom,unsafe \
+  PrismSem.lean PrismSem/*.lean Audit.lean || { echo "FAIL: escape hatch (listed above)" >&2; exit 1; }
 
 echo "== axiom audit"
 lake env lean Audit.lean 2>&1 | tee axioms.txt
