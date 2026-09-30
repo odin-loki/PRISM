@@ -27,8 +27,9 @@ const char* kScalarTypes =
 
 using Index = std::map<std::pair<std::string, std::string>, const FunctionInfo*>;
 
-// The tree the inliner sees: definitions by (file basename, name), and how
-// many definitions each name has across the tree.
+// The tree the inliner sees: definitions by (file path, name), so a callee
+// is looked up in the caller's own unit only, and how many definitions each
+// name has across the tree.
 struct Tree {
     Index index;
     std::map<std::string, int> defs;
@@ -60,10 +61,6 @@ std::string squeeze_ws(std::string_view typ) {
         }
     }
     return out;
-}
-
-std::string basename_of(const std::string& file) {
-    return std::filesystem::path(file).filename().string();
 }
 
 bool is_ident(std::string_view name) {
@@ -142,6 +139,9 @@ bool sole_external_definition(const FunctionInfo& callee, const std::map<std::st
     if (ext != ".c" && ext != ".i") return false;
     auto it = defs.find(callee.name);
     if (it == defs.end() || it->second != 1) return false;
+    // `#pragma weak f` or a weak prototype elsewhere in the unit makes the
+    // definition weak without its signature showing it.
+    if (callee.unit_has_weak) return false;
     static Regex bad("\\b(?:inline|__inline|__inline__|weak|__weak__|weakref|alias)\\b");
     return !bad.search(callee.signature);
 }
@@ -173,7 +173,7 @@ bool inlineable_callee(const FunctionInfo& callee, const FunctionInfo& caller,
 }
 
 const FunctionInfo* lookup(const Index& index, const std::string& file, const std::string& name) {
-    auto it = index.find({basename_of(file), name});
+    auto it = index.find({file, name});
     return it == index.end() ? nullptr : it->second;
 }
 
@@ -617,7 +617,7 @@ FunctionInfo inline_function(FunctionInfo fn, const Tree& tree) {
 std::vector<FunctionInfo> inline_static(const std::vector<FunctionInfo>& functions) {
     Tree tree;
     for (auto& f : functions) {
-        tree.index[{basename_of(f.file), f.name}] = &f;
+        tree.index[{f.file, f.name}] = &f;
         ++tree.defs[f.name];
     }
     std::vector<FunctionInfo> out;
