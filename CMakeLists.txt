@@ -477,7 +477,9 @@ if(PRISM_TESTS)
     # Roadmap 2.8 Clang-AST lints.
     tests/cpp/test_astlint.cpp
     # Roadmap 9.1/9.3/9.4 AI assistant features (regress, triage, ask, draft, predict).
-    tests/cpp/test_ai_assist.cpp)
+    tests/cpp/test_ai_assist.cpp
+    # bmc front end on SV-COMP shapes (docs/SVCOMP.md).
+    tests/cpp/test_bmc_svcomp.cpp)
   target_include_directories(prism_tests PRIVATE
     "${PRISM_ROOT}/include"
     "${PRISM_ROOT}/third_party")

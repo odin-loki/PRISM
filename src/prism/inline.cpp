@@ -27,6 +27,14 @@ const char* kScalarTypes =
 
 using Index = std::map<std::pair<std::string, std::string>, const FunctionInfo*>;
 
+// The tree the inliner sees: definitions by (file path, name), so a callee
+// is looked up in the caller's own unit only, and how many definitions each
+// name has across the tree.
+struct Tree {
+    Index index;
+    std::map<std::string, int> defs;
+};
+
 std::string strip(std::string s) {
     std::size_t a = 0, b = s.size();
     while (a < b && std::isspace(static_cast<unsigned char>(s[a]))) ++a;
@@ -55,10 +63,6 @@ std::string squeeze_ws(std::string_view typ) {
     return out;
 }
 
-std::string basename_of(const std::string& file) {
-    return std::filesystem::path(file).filename().string();
-}
-
 bool is_ident(std::string_view name) {
     static Regex re("[A-Za-z_]\\w*");
     auto m = re.search_match(name, 0);
@@ -72,7 +76,13 @@ const std::unordered_set<std::string> kModelledCalls = {
     "abs", "labs", "llabs", "__builtin_expect", "rand", "__VERIFIER_assume",
     "assume_abort_if_not", "abort", "exit", "_Exit", "quick_exit", "reach_error",
     "__assert_fail", "__VERIFIER_error", "printLine", "printWLine", "printIntLine", "printShortLine",
-    "printLongLine", "printLongLongLine", "printSizeTLine", "printHexCharLine", "printUnsignedLine", "printHexUnsignedCharLine"};
+    "printLongLine", "printLongLongLine", "printSizeTLine", "printHexCharLine", "printUnsignedLine", "printHexUnsignedCharLine",
+    // A call statement `__VERIFIER_assert(E);` is rewritten to `assert(...)`
+    // before inlining (bmc_encoder.inc rewrite_verifier_assert); an assert
+    // is a checked property. Output calls are modelled for literal formats
+    // and scalar arguments only (model_output_call); any other form stays
+    // unmodelled in the caller, so inlining never hides it.
+    "assert", "__VERIFIER_assert", "printf", "puts", "putchar"};
 
 bool has_calls(std::string_view body) {
     static Regex re("\\b([A-Za-z_]\\w*)\\s*\\(");
@@ -116,14 +126,44 @@ std::optional<std::string> callee_ret_type(const FunctionInfo& callee) {
     return head;
 }
 
-bool inlineable_callee(const FunctionInfo& callee) {
-    if (!callee.is_static) return false;
+// A definition that is certain to be the one a call from `main` runs, though
+// it is not static: the tree defines the name once in a C unit, and it is
+// neither weak (a strong one elsewhere replaces it at link time) nor
+// `inline` (C99 6.7.4p7: an inline definition that is not also external
+// may be bypassed for an external definition in another unit; GNU89
+// `extern inline` is not an external definition).
+// C units only: in C++ a call may resolve to an overload, a member or a
+// template the front end does not tell apart by name.
+bool sole_external_definition(const FunctionInfo& callee, const std::map<std::string, int>& defs) {
+    auto ext = std::filesystem::path(callee.file).extension().string();
+    if (ext != ".c" && ext != ".i") return false;
+    auto it = defs.find(callee.name);
+    if (it == defs.end() || it->second != 1) return false;
+    // `#pragma weak f` or a weak prototype elsewhere in the unit makes the
+    // definition weak without its signature showing it.
+    if (callee.unit_has_weak) return false;
+    static Regex bad("\\b(?:inline|__inline|__inline__|weak|__weak__|weakref|alias)\\b");
+    return !bad.search(callee.signature);
+}
+
+bool free_names_unshadowed(const FunctionInfo& callee, const FunctionInfo& caller);
+
+bool inlineable_callee(const FunctionInfo& callee, const FunctionInfo& caller,
+                       const std::map<std::string, int>& defs) {
+    // A non-static callee only into `main`: the unit then is the program,
+    // and its own definition of the callee is the one that runs.
+    if (!callee.is_static && !(caller.name == "main" && sole_external_definition(callee, defs))) return false;
     // The SV-COMP error functions are properties of the call itself (bmc
     // model_call): a definition in the unit (`static void reach_error() {}`)
     // must not replace the call, or the violation would disappear.
     if (callee.name == "reach_error" || callee.name == "__VERIFIER_error") return false;
+    // A non-static name the encoder models by name (the SV-COMP harness
+    // functions, assume, exit, ...) keeps its model, as before.
+    if (!callee.is_static && (kModelledCalls.contains(callee.name) || callee.name.starts_with("__VERIFIER_")))
+        return false;
     if (callee.kind != "SCALAR" && callee.kind != "VOID") return false;
     if (has_calls(callee.body)) return false;
+    if (!free_names_unshadowed(callee, caller)) return false;
     // A goto's label would be copied once per call site (labels must be
     // unique in a function for the bmc goto model).
     static Regex goto_kw("\\bgoto\\b");
@@ -133,7 +173,7 @@ bool inlineable_callee(const FunctionInfo& callee) {
 }
 
 const FunctionInfo* lookup(const Index& index, const std::string& file, const std::string& name) {
-    auto it = index.find({basename_of(file), name});
+    auto it = index.find({file, name});
     return it == index.end() ? nullptr : it->second;
 }
 
@@ -195,20 +235,6 @@ std::optional<std::pair<std::string, std::string>> match_balanced(const std::str
         }
     }
     return std::nullopt;
-}
-
-std::pair<std::string, std::string> take_stmt(const std::string& text) {
-    int depth = 0;
-    for (std::size_t i = 0; i < text.size(); ++i) {
-        char ch = text[i];
-        if (ch == '(') ++depth;
-        else if (ch == ')') --depth;
-        else if (ch == '{' && depth == 0) break;
-        else if (ch == ';' && depth == 0) {
-            return {text.substr(0, i + 1), text.substr(i + 1)};
-        }
-    }
-    return {text, {}};
 }
 
 std::string regex_sub(const Regex& re, const std::string& src, const std::string& repl) {
@@ -301,6 +327,70 @@ void add_callee_locals(const std::string& body, const std::string& prefix,
     }
 }
 
+// The identifiers of code (not in string or character literals, not
+// numbers, not member names after `.`/`->`), each with whether a `(`
+// follows it (a call).
+std::vector<std::pair<std::string, bool>> code_idents(std::string_view b) {
+    std::vector<std::pair<std::string, bool>> out;
+    auto word = [](char ch) { return std::isalnum(static_cast<unsigned char>(ch)) || ch == '_'; };
+    for (std::size_t i = 0; i < b.size();) {
+        char ch = b[i];
+        if (ch == '"' || ch == '\'') {
+            for (++i; i < b.size() && b[i] != ch; ++i)
+                if (b[i] == '\\') ++i;
+            ++i;
+            continue;
+        }
+        if (std::isdigit(static_cast<unsigned char>(ch))) {
+            while (i < b.size() && (word(b[i]) || b[i] == '.')) ++i;
+            continue;
+        }
+        if (!word(ch)) {
+            ++i;
+            continue;
+        }
+        std::size_t j = i;
+        while (j < b.size() && word(b[j])) ++j;
+        std::size_t p = i;
+        while (p > 0 && std::isspace(static_cast<unsigned char>(b[p - 1]))) --p;
+        bool member = (p > 0 && b[p - 1] == '.') || (p > 1 && b[p - 1] == '>' && b[p - 2] == '-');
+        std::size_t k = j;
+        while (k < b.size() && std::isspace(static_cast<unsigned char>(b[k]))) ++k;
+        if (!member) out.emplace_back(std::string(b.substr(i, j - i)), k < b.size() && b[k] == '(');
+        i = j;
+    }
+    return out;
+}
+
+// A name the callee uses but does not declare (a global, an enumerator, a
+// macro) must mean the same after inlining: if the caller declares or
+// uses the same name, the inlined text would bind it to the caller's
+// variable instead (a global the callee writes would become the caller's
+// local). Such a callee is not inlined.
+bool free_names_unshadowed(const FunctionInfo& callee, const FunctionInfo& caller) {
+    static const std::unordered_set<std::string> words = {
+        "auto", "break", "case", "char", "const", "continue", "default", "do", "double", "else", "enum",
+        "extern", "float", "for", "goto", "if", "inline", "int", "long", "register", "restrict", "return",
+        "short", "signed", "sizeof", "static", "struct", "switch", "typedef", "union", "unsigned", "void",
+        "volatile", "while", "_Bool", "bool", "true", "false", "size_t", "ssize_t", "ptrdiff_t", "intptr_t",
+        "uintptr_t", "intmax_t", "uintmax_t", "int8_t", "int16_t", "int32_t", "int64_t", "uint8_t",
+        "uint16_t", "uint32_t", "uint64_t"};
+    std::unordered_set<std::string> bound;
+    for (auto& [_, n] : callee.params) bound.insert(n);
+    std::map<std::string, std::string> locals;
+    add_callee_locals(callee.body, "", locals);
+    for (auto& [n, _] : locals) bound.insert(n);
+    std::unordered_set<std::string> caller_names;
+    for (auto& [_, n] : caller.params) caller_names.insert(n);
+    for (auto& [n, call] : code_idents(caller.body))
+        if (!call) caller_names.insert(n);
+    for (auto& [n, call] : code_idents(callee.body)) {
+        if (call || bound.contains(n) || words.contains(n)) continue;
+        if (caller_names.contains(n)) return false;
+    }
+    return true;
+}
+
 std::string param_type(const std::string& typ) {
     auto t = squeeze_ws(typ.empty() ? "int" : typ);
     return t.empty() ? "int" : t;
@@ -344,7 +434,7 @@ std::optional<std::string> build_inline_block(const FunctionInfo& callee,
     return "{\n" + inner + "\n}";
 }
 
-std::string try_inline_stmt(const std::string& stmt, const FunctionInfo& fn, const Index& index,
+std::string try_inline_stmt(const std::string& stmt, const FunctionInfo& fn, const Tree& tree,
                             int site) {
     const std::string& raw = stmt;
     std::string s = strip(stmt);
@@ -362,8 +452,8 @@ std::string try_inline_stmt(const std::string& stmt, const FunctionInfo& fn, con
         std::size_t k = 0;
         while (k < rest_src.size() && std::isspace(static_cast<unsigned char>(rest_src[k]))) ++k;
         if (!rest_src.substr(k).starts_with(name)) return raw;
-        auto* callee = lookup(index, fn.file, name);
-        if (!callee || callee->name == fn.name || !inlineable_callee(*callee)) return raw;
+        auto* callee = lookup(tree.index, fn.file, name);
+        if (!callee || callee->name == fn.name || !inlineable_callee(*callee, fn, tree.defs)) return raw;
         if (strip(s.substr(call_end)) != ";") return raw;
         auto args = split_args(args_src);
         std::string tail = "return " + std::string(returns_value(*callee) ? prefix + "_ret" : "0");
@@ -378,8 +468,8 @@ std::string try_inline_stmt(const std::string& stmt, const FunctionInfo& fn, con
         auto call = parse_call(s, end);
         if (!call) return raw;
         auto [name, args_src, call_end] = *call;
-        auto* callee = lookup(index, fn.file, name);
-        if (!callee || callee->name == fn.name || !inlineable_callee(*callee)) return raw;
+        auto* callee = lookup(tree.index, fn.file, name);
+        if (!callee || callee->name == fn.name || !inlineable_callee(*callee, fn, tree.defs)) return raw;
         if (!returns_value(*callee)) return raw;
         if (strip(s.substr(call_end)) != ";") return raw;
         auto args = split_args(args_src);
@@ -395,8 +485,8 @@ std::string try_inline_stmt(const std::string& stmt, const FunctionInfo& fn, con
         auto call = parse_call(s, end);
         if (!call) return raw;
         auto [name, args_src, call_end] = *call;
-        auto* callee = lookup(index, fn.file, name);
-        if (!callee || callee->name == fn.name || !inlineable_callee(*callee)) return raw;
+        auto* callee = lookup(tree.index, fn.file, name);
+        if (!callee || callee->name == fn.name || !inlineable_callee(*callee, fn, tree.defs)) return raw;
         if (!returns_value(*callee)) return raw;
         if (strip(s.substr(call_end)) != ";") return raw;
         auto args = split_args(args_src);
@@ -409,60 +499,130 @@ std::string try_inline_stmt(const std::string& stmt, const FunctionInfo& fn, con
     if (!call) return raw;
     auto [name, args_src, call_end] = *call;
     if (strip(s.substr(call_end)) != ";") return raw;
-    auto* callee = lookup(index, fn.file, name);
-    if (!callee || callee->name == fn.name || !inlineable_callee(*callee)) return raw;
+    auto* callee = lookup(tree.index, fn.file, name);
+    if (!callee || callee->name == fn.name || !inlineable_callee(*callee, fn, tree.defs)) return raw;
     if (returns_value(*callee)) return raw;
     auto args = split_args(args_src);
     auto block = build_inline_block(*callee, args, prefix, "");
     return block ? *block : raw;
 }
 
-std::string transform_body(std::string text, const FunctionInfo& fn, const Index& index, int& counter) {
-    std::string out;
-    while (!text.empty()) {
-        text = lstrip_copy(std::move(text));
-        if (text.empty()) break;
-        if (text.front() == '{') {
-            auto matched = match_balanced(text, '{', '}');
-            if (!matched) {
-                out += text;
-                break;
-            }
-            out += '{';
-            out += transform_body(matched->first, fn, index, counter);
-            out += '}';
-            text = matched->second;
+// One statement from the start of text, up to its `;` at depth 0 (string
+// and character literals skipped): (statement, rest). A brace at depth 0
+// before the `;` (an initialiser list, a labelled block) is part of it.
+std::pair<std::string, std::string> take_stmt(const std::string& text) {
+    int depth = 0;
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        char ch = text[i];
+        if (ch == '"' || ch == '\'') {
+            for (++i; i < text.size() && text[i] != ch; ++i)
+                if (text[i] == '\\') ++i;
             continue;
         }
-        auto [stmt, rest] = take_stmt(text);
+        if (ch == '(' || ch == '[' || ch == '{') ++depth;
+        else if (ch == ')' || ch == ']' || ch == '}') --depth;
+        else if (ch == ';' && depth == 0) return {text.substr(0, i + 1), text.substr(i + 1)};
+    }
+    return {text, {}};
+}
+
+// `kw` as a whole word at the start of text.
+bool starts_word(const std::string& text, std::string_view kw) {
+    if (!text.starts_with(kw)) return false;
+    return text.size() == kw.size() ||
+           !(std::isalnum(static_cast<unsigned char>(text[kw.size()])) || text[kw.size()] == '_');
+}
+
+std::string transform_body(std::string text, const FunctionInfo& fn, const Tree& tree, int& counter);
+
+// One statement, recursing into the bodies of if/else/while/for/do/switch
+// (a call in a branch or loop body is inlined like one at the top level;
+// each site keeps its own prefix). A changed statement that is not a block
+// becomes one, so it stays a single statement under `if (c)`.
+std::string transform_stmt(std::string& text, const FunctionInfo& fn, const Tree& tree, int& counter) {
+    text = lstrip_copy(std::move(text));
+    if (text.empty()) return {};
+    if (text.front() == '{') {
+        auto matched = match_balanced(text, '{', '}');
+        if (!matched) {
+            std::string all = std::move(text);
+            text.clear();
+            return all;
+        }
+        text = matched->second;
+        return "{" + transform_body(matched->first, fn, tree, counter) + "}";
+    }
+    auto sub = [&](const std::string& head) {
+        int before = counter;
+        auto body = transform_stmt(text, fn, tree, counter);
+        if (counter != before && !body.starts_with("{")) body = "{" + body + "}";
+        return head + " " + body;
+    };
+    for (std::string_view kw : {"if", "while", "for", "switch"}) {
+        if (!starts_word(text, kw)) continue;
+        auto after = lstrip_copy(text.substr(kw.size()));
+        auto cond = match_balanced(after, '(', ')');
+        if (!cond) break;  // not a statement shape this pass knows: taken as is below
+        text = cond->second;
+        auto out = sub(std::string(kw) + " (" + cond->first + ")");
+        if (kw == "if") {
+            auto rest = lstrip_copy(text);
+            if (starts_word(rest, "else")) {
+                text = rest.substr(4);
+                out += " " + sub("else");
+            }
+        }
+        return out;
+    }
+    if (starts_word(text, "do")) {
+        text = text.substr(2);
+        auto out = sub("do");
+        auto [tail, rest] = take_stmt(lstrip_copy(text));  // while (...);
         text = rest;
-        if (strip(stmt).empty()) continue;
-        auto new_stmt = try_inline_stmt(stmt, fn, index, counter);
-        if (new_stmt != stmt) ++counter;
-        out += new_stmt;
+        return out + " " + tail;
+    }
+    auto [stmt, rest] = take_stmt(text);
+    text = rest;
+    if (strip(stmt).empty()) return stmt;
+    auto new_stmt = try_inline_stmt(stmt, fn, tree, counter);
+    if (new_stmt != stmt) ++counter;
+    return new_stmt;
+}
+
+std::string transform_body(std::string text, const FunctionInfo& fn, const Tree& tree, int& counter) {
+    std::string out;
+    while (!(text = lstrip_copy(std::move(text))).empty()) {
+        std::size_t before = text.size();
+        out += transform_stmt(text, fn, tree, counter);
+        out += '\n';
+        if (text.size() >= before) break;  // no progress: never loop
     }
     return out;
 }
 
-FunctionInfo inline_function(FunctionInfo fn, const Index& index) {
+FunctionInfo inline_function(FunctionInfo fn, const Tree& tree) {
     if (fn.kind == "POINTER") return fn;
     int counter = 0;
-    auto new_body = transform_body(fn.body, fn, index, counter);
+    auto new_body = transform_body(fn.body, fn, tree, counter);
     if (counter == 0) return fn;
     fn.body = std::move(new_body);
     // The inlined body no longer maps offset for offset onto the source.
     fn.body_line = fn.body_col = 0;
+    fn.col_shifts.clear();
     return fn;
 }
 
 }  // namespace
 
 std::vector<FunctionInfo> inline_static(const std::vector<FunctionInfo>& functions) {
-    Index index;
-    for (auto& f : functions) index[{basename_of(f.file), f.name}] = &f;
+    Tree tree;
+    for (auto& f : functions) {
+        tree.index[{f.file, f.name}] = &f;
+        ++tree.defs[f.name];
+    }
     std::vector<FunctionInfo> out;
     out.reserve(functions.size());
-    for (auto& fn : functions) out.push_back(inline_function(fn, index));
+    for (auto& fn : functions) out.push_back(inline_function(fn, tree));
     return out;
 }
 

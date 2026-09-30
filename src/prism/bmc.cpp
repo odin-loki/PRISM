@@ -904,8 +904,12 @@ bool has_unencoded_cstr(const FunctionInfo& fn) {
     return false;
 }
 bool has_unencoded_libc_effect(const FunctionInfo& fn) {
+    // printf/puts/putchar: the encoder models the safe forms
+    // (model_output_call) and reports every other form as an unmodelled
+    // call, which already rules out a proof.
+    static const std::unordered_set<std::string> modelled = {"printf", "puts", "putchar"};
     for (auto& n : call_names(fn.body))
-        if (UNENCODED_LIBC_EFFECT.contains(n)) return true;
+        if (UNENCODED_LIBC_EFFECT.contains(n) && !modelled.contains(n)) return true;
     return false;
 }
 bool has_unencoded_cxx(const FunctionInfo& fn) {
@@ -3190,6 +3194,7 @@ Finding bmc_once(const FunctionInfo& fn, int unwind, bool try_unbounded,
                  const std::map<std::string, int>& enums, Finding base,
                  const std::map<std::string, std::string>& macros = {}, bool havoc = false) {
     Parser p(fn.body, fn.params, unwind, enums, macros, havoc);
+    p.argc_nonneg = fn.argc_nonneg;
     p.cxx = cxx_source(fn.file);
     p.shift_rules = shift_rules_for(fn);
     auto enc = p.run();
@@ -3205,22 +3210,30 @@ Finding bmc_once(const FunctionInfo& fn, int unwind, bool try_unbounded,
         base.message = "BMC frontend: " + err;
         return base;
     }
+    // Properties whose violation needs a call result to be some particular
+    // value: neither refuted nor proved.
+    std::vector<std::string> undecided;
     for (auto& prop : enc->props) {
         z3::solver s(enc->ctx);
         s.set("timeout", 8000u);
         s.add(prop.cond);
         auto r = s.check();
-        if (!enc->call_vars.empty() && r != z3::unsat) {
-            // A violation that needs an unmodelled call to return some
-            // particular value is not a refutation (the callee may never
-            // return it): it must hold for every value the calls return.
+        if ((!enc->call_vars.empty() || !enc->io_results.empty()) && r != z3::unsat) {
+            // A violation that needs an unmodelled call (or an output call)
+            // to return some particular value is not a refutation (the
+            // callee may never return it): it must hold for every value the
+            // calls return.
             z3::expr_vector cv(enc->ctx);
             for (auto& c : enc->call_vars) cv.push_back(c);
+            for (auto& c : enc->io_results) cv.push_back(c);
             s.reset();
             s.set("timeout", 8000u);
             s.add(z3::forall(cv, prop.cond));
             r = s.check();
-            if (r != z3::sat) continue;
+            if (r != z3::sat) {
+                undecided.push_back(prop.name);
+                continue;
+            }
         }
         if (r == z3::sat) {
             auto c = cex(s.get_model(), *enc, fn.params);
@@ -3262,6 +3275,16 @@ Finding bmc_once(const FunctionInfo& fn, int unwind, bool try_unbounded,
         base.status = std::string(laws::NEEDS_HARNESS);
         base.message = "UNENCODED: call to " + join_csv(enc->unmodelled) +
                        " not modelled (arguments checked, result unconstrained): not a proof";
+        return base;
+    }
+    if (!undecided.empty()) {
+        // Only output calls (io_results) are left: the call is modelled, but
+        // its result is any value, so a violation that needs one particular
+        // result is possible in the model and cannot be excluded.
+        base.strength = std::string(laws::STRENGTH_SOME);
+        base.status = std::string(laws::NEEDS_HARNESS);
+        base.message = "UNENCODED: " + join_csv(undecided) +
+                       " depends on the result of an output call (not modelled): not a proof";
         return base;
     }
     if (enc->props.empty() && has_unencoded_libc_effect(fn)) {
@@ -3449,6 +3472,7 @@ ProgramCheck check_program(const FunctionInfo& fn, const std::string& body, int 
     try {
         Parser p(body, fn.params, unwind, enums_from_fn(fn));
         p.ai_hooks = true;
+        p.argc_nonneg = fn.argc_nonneg;
         p.cxx = cxx_source(fn.file);
         p.shift_rules = shift_rules_for(fn);
         auto enc = p.run();
@@ -3690,6 +3714,62 @@ std::vector<FunctionInfo> with_cxx_std(std::vector<FunctionInfo> functions, cons
     return functions;
 }
 
+// `int main(int argc, char *argv[])` (and a third `char **envp`): the
+// pointer parameters are what makes main NEEDS-HARNESS (Law 6), but C11
+// 5.1.2.2.1p2 supplies their guard, and a body that never names them cannot
+// use them. When neither argv nor envp occurs in the body or in a macro the
+// encoder may expand, main is checked with argc alone, which is nonnegative
+// (the same paragraph). Any use of argv keeps NEEDS-HARNESS. argc >= 0 is
+// assumed only when nothing in the tree names main outside its definition
+// head (tree_calls_main; C allows a call to main with any argument).
+FunctionInfo program_main(FunctionInfo fn, bool main_called) {
+    if (fn.name != "main" || fn.kind != "POINTER") return fn;
+    if (fn.params.size() != 2 && fn.params.size() != 3) return fn;
+    if (rx_sub("\\s+", "", fn.params[0].first) != "int") return fn;
+    static Regex word("[A-Za-z_]\\w*");
+    std::vector<std::string> unused;
+    for (size_t i = 1; i < fn.params.size(); ++i) {
+        auto full = fn.params[i].first + " " + fn.params[i].second;
+        std::string punct, name;
+        bool has_char = false;
+        for (auto& m : word.finditer(full)) {
+            if (m.text == "char") has_char = true;
+            else if (m.text == "const") continue;
+            else if (name.empty()) name = m.text;
+            else return fn;  // a second name: not a char pointer array
+        }
+        for (char ch : full)
+            if (!std::isspace(static_cast<unsigned char>(ch)) && !std::isalnum(static_cast<unsigned char>(ch)) &&
+                ch != '_')
+                punct.push_back(ch);
+        if (!has_char || (punct != "**" && punct != "*[]")) return fn;
+        if (!name.empty()) unused.push_back(name);
+    }
+    auto names_in = [&](const std::string& text) {
+        for (auto& m : word.finditer(text))
+            if (std::find(unused.begin(), unused.end(), m.text) != unused.end()) return true;
+        return false;
+    };
+    if (names_in(fn.body)) return fn;
+    for (auto& [k, v] : macros_from_fn(fn))
+        if (names_in(k) || names_in(v)) return fn;
+    fn.params.resize(1);
+    fn.kind = "SCALAR";
+    fn.argc_nonneg = !main_called && !fn.params[0].second.empty();
+    return fn;
+}
+
+// Any mention of main may reach a call of it with any argument: `main(...)`,
+// `(main)(...)`, `&main`, a function pointer initialised from main, a macro
+// that expands to main. So every body (main's own included, for recursion)
+// and every unit that names main outside a definition head counts as a call.
+bool tree_calls_main(const std::vector<FunctionInfo>& functions) {
+    static Regex word("\\bmain\\b");
+    for (auto& f : functions)
+        if (f.unit_names_main || word.search(f.body)) return true;
+    return false;
+}
+
 std::vector<Finding> run_bmc(const std::vector<FunctionInfo>& functions, int unwind,
                              bool allow_local_pointers) {
 #ifdef PRISM_HAS_Z3
@@ -3700,9 +3780,12 @@ std::vector<Finding> run_bmc(const std::vector<FunctionInfo>& functions, int unw
     tagged.reserve(functions.size());
     const bool vassert = verifier_assert_rewrite_enabled(functions);
     AssumeModelScope assume_scope(assume_model_ok(functions));
-    for (auto& fn : functions)
+    const bool main_called = tree_calls_main(functions);
+    for (auto& fn0 : functions) {
+        auto fn = program_main(fn0, main_called);
         tagged.push_back(vassert && fn.name != "__VERIFIER_assert" ? rewrite_verifier_assert(tag_nondet_sites(fn))
                                                                    : tag_nondet_sites(fn));
+    }
     for (auto& fn : inline_static(tagged)) {
         // R1: one function the encoder cannot handle (a Z3 sort error, ...)
         // is an ERROR for that function, never a crash of the whole stage.

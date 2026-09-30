@@ -7180,7 +7180,11 @@ TEST_CASE("bmc goto: backward goto across an inner loop, forward out of a switch
     auto c = fns_of("t.c",
                     "int f(int x) {\n    if (x) {\n        goto l;\n    } else {\n    l:\n"
                     "        x = 1;\n    }\n    return x;\n}\n");
-    CHECK(bmc_status(c[0]) == prism::laws::NEEDS_HARNESS);
+    // A jump from the then branch to the start of the else branch joins the
+    // else branch's entry state (tests/cpp/test_bmc_svcomp.cpp has the
+    // refuting twin): x is 1 on both paths.
+    auto sc = bmc_status(c[0]);
+    CHECK((sc == prism::laws::PROVED || sc == prism::laws::PROVED_UNBOUNDED));
 }
 
 TEST_CASE("bmc shift rules follow the C++ standard of the unit (F7)") {
