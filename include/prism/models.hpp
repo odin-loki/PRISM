@@ -23,7 +23,7 @@ struct FunctionInfo {
     std::string body;
     std::pair<int, int> span{0, 0};
     // Source position (1-based line and byte column) of body[0], the character
-    // after the opening brace; 0 when unknown (not in the JSON form). body is a
+    // after the opening brace; 0 when unknown. body is a
     // length-preserving copy of the source (comments blanked), so an offset
     // into it maps back to a source position (bmc nondet call sites, loops).
     int body_line = 0, body_col = 0;

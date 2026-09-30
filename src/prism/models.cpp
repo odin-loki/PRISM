@@ -1,23 +1,93 @@
 #include "prism/models.hpp"
+#include "prism/models_json.hpp"
 
 #include <nlohmann/json.hpp>
 
-#include <chrono>
+#include <charconv>
+#include <cmath>
 #include <fstream>
+#include <limits>
 #include <sstream>
 
 namespace prism {
 namespace {
 
-nlohmann::json finding_to_json(const Finding& f) {
-    nlohmann::json extra = nlohmann::json::object();
+using json = nlohmann::json;
+
+const json* field(const json& j, const char* key) {
+    if (!j.is_object()) return nullptr;
+    auto it = j.find(key);
+    if (it == j.end() || it->is_null()) return nullptr;
+    return &*it;
+}
+
+// A string field: a number or bool is kept as its JSON text.
+std::string get_str(const json& j, const char* key, const std::string& def = {}) {
+    auto* v = field(j, key);
+    if (!v) return def;
+    if (v->is_string()) return v->get<std::string>();
+    return v->dump(-1, ' ', false, json::error_handler_t::replace);
+}
+
+std::optional<double> as_double(const json& v) {
+    if (v.is_number()) return v.get<double>();
+    if (v.is_boolean()) return v.get<bool>() ? 1.0 : 0.0;
+    if (v.is_string()) {
+        auto s = v.get<std::string>();
+        double d = 0;
+        auto b = s.data(), e = s.data() + s.size();
+        while (b < e && *b == ' ') ++b;
+        auto [p, ec] = std::from_chars(b, e, d);
+        if (ec == std::errc() && p != b && std::isfinite(d)) return d;
+    }
+    return std::nullopt;
+}
+
+std::optional<int> as_int(const json& v) {
+    auto d = as_double(v);
+    if (!d || *d < std::numeric_limits<int>::min() || *d > std::numeric_limits<int>::max())
+        return std::nullopt;
+    return static_cast<int>(*d);
+}
+
+double get_double(const json& j, const char* key) {
+    auto* v = field(j, key);
+    return v ? as_double(*v).value_or(0.0) : 0.0;
+}
+
+int get_int(const json& j, const char* key, int def = 0) {
+    auto* v = field(j, key);
+    return v ? as_int(*v).value_or(def) : def;
+}
+
+bool get_bool(const json& j, const char* key) {
+    auto* v = field(j, key);
+    if (!v) return false;
+    if (v->is_boolean()) return v->get<bool>();
+    if (v->is_number()) return v->get<double>() != 0;
+    if (v->is_string()) return !v->get<std::string>().empty();
+    return !v->empty();
+}
+
+std::string text_of(const json& v) {
+    return v.is_string() ? v.get<std::string>() : v.dump(-1, ' ', false, json::error_handler_t::replace);
+}
+
+}  // namespace
+
+std::string dump_json(const nlohmann::json& j, int indent) {
+    return j.dump(indent, ' ', false, nlohmann::json::error_handler_t::replace);
+}
+
+void to_json(nlohmann::json& j, const Finding& f) {
+    json extra = json::object();
     for (auto& [k, v] : f.extra) extra[k] = v;
-    return {
+    j = {
         {"stage", f.stage},
         {"status", f.status},
         {"file", f.file},
-        {"function", f.function ? nlohmann::json(*f.function) : nlohmann::json(nullptr)},
-        {"line", f.line ? nlohmann::json(*f.line) : nlohmann::json(nullptr)},
+        {"function", f.function ? json(*f.function) : json(nullptr)},
+        {"line", f.line ? json(*f.line) : json(nullptr)},
         {"cls", f.cls},
         {"message", f.message},
         {"strength", f.strength},
@@ -27,33 +97,33 @@ nlohmann::json finding_to_json(const Finding& f) {
     };
 }
 
-Finding finding_from_json(const nlohmann::json& j) {
-    Finding f;
-    f.stage = j.value("stage", "");
-    f.status = j.value("status", "");
-    f.file = j.value("file", "");
-    if (j.contains("function") && !j["function"].is_null())
-        f.function = j["function"].get<std::string>();
-    if (j.contains("line") && !j["line"].is_null())
-        f.line = j["line"].get<int>();
-    f.cls = j.value("cls", "");
-    f.message = j.value("message", "");
-    f.strength = j.value("strength", "");
-    f.evidence = j.value("evidence", "");
-    f.counterexample = j.value("counterexample", "");
-    if (j.contains("extra") && j["extra"].is_object()) {
-        for (auto it = j["extra"].begin(); it != j["extra"].end(); ++it) {
-            if (it.value().is_string()) f.extra[it.key()] = it.value().get<std::string>();
-            else f.extra[it.key()] = it.value().dump();
+void from_json(const nlohmann::json& j, Finding& f) {
+    f = Finding{};
+    f.stage = get_str(j, "stage");
+    f.status = get_str(j, "status");
+    f.file = get_str(j, "file");
+    if (auto* v = field(j, "function")) {
+        // A list is its first element (the Python engine's Finding coercion).
+        if (v->is_array()) {
+            if (!v->empty() && !(*v)[0].is_null()) f.function = text_of((*v)[0]);
+        } else {
+            f.function = text_of(*v);
         }
     }
-    return f;
+    if (auto* v = field(j, "line")) f.line = as_int(*v);
+    f.cls = get_str(j, "cls");
+    f.message = get_str(j, "message");
+    f.strength = get_str(j, "strength");
+    f.evidence = get_str(j, "evidence");
+    f.counterexample = get_str(j, "counterexample");
+    if (auto* v = field(j, "extra"); v && v->is_object())
+        for (auto it = v->begin(); it != v->end(); ++it) f.extra[it.key()] = text_of(it.value());
 }
 
-nlohmann::json stage_to_json(const StageResult& s) {
-    nlohmann::json findings = nlohmann::json::array();
-    for (auto& f : s.findings) findings.push_back(finding_to_json(f));
-    return {
+void to_json(nlohmann::json& j, const StageResult& s) {
+    json findings = json::array();
+    for (auto& f : s.findings) findings.push_back(f);
+    j = {
         {"name", s.name},
         {"status", s.status},
         {"detail", s.detail},
@@ -65,26 +135,25 @@ nlohmann::json stage_to_json(const StageResult& s) {
     };
 }
 
-StageResult stage_from_json(const nlohmann::json& j) {
-    StageResult s;
-    s.name = j.value("name", "");
-    s.status = j.value("status", "");
-    s.detail = j.value("detail", "");
-    s.started = j.value("started", 0.0);
-    s.elapsed = j.value("elapsed", 0.0);
-    s.records = j.value("records", 0);
-    s.install = j.value("install", "");
-    if (j.contains("findings") && j["findings"].is_array()) {
-        for (auto& fj : j["findings"]) s.findings.push_back(finding_from_json(fj));
-        if (!s.records) s.records = static_cast<int>(s.findings.size());
-    }
-    return s;
+void from_json(const nlohmann::json& j, StageResult& s) {
+    s = StageResult{};
+    s.name = get_str(j, "name");
+    s.status = get_str(j, "status");
+    s.detail = get_str(j, "detail");
+    s.started = get_double(j, "started");
+    s.elapsed = get_double(j, "elapsed");
+    s.install = get_str(j, "install");
+    if (auto* v = field(j, "findings"); v && v->is_array())
+        for (auto& fj : *v)
+            if (fj.is_object()) s.findings.push_back(fj.get<Finding>());
+    s.records = get_int(j, "records");
+    if (!s.records) s.records = static_cast<int>(s.findings.size());
 }
 
-nlohmann::json fn_to_json(const FunctionInfo& f) {
-    nlohmann::json params = nlohmann::json::array();
-    for (auto& [t, n] : f.params) params.push_back(nlohmann::json::array({t, n}));
-    return {
+void to_json(nlohmann::json& j, const FunctionInfo& f) {
+    json params = json::array();
+    for (auto& [t, n] : f.params) params.push_back(json::array({t, n}));
+    j = {
         {"file", f.file},
         {"name", f.name},
         {"kind", f.kind},
@@ -94,50 +163,69 @@ nlohmann::json fn_to_json(const FunctionInfo& f) {
         {"return_type", f.return_type},
         {"static", f.is_static},
         {"body", f.body},
-        {"span", nlohmann::json::array({f.span.first, f.span.second})},
+        {"span", json::array({f.span.first, f.span.second})},
+        {"body_line", f.body_line},
+        {"body_col", f.body_col},
     };
 }
 
-FunctionInfo fn_from_json(const nlohmann::json& j) {
-    FunctionInfo f;
-    f.file = j.value("file", "");
-    f.name = j.value("name", "");
-    f.kind = j.value("kind", "OTHER");
-    f.line = j.value("line", 0);
-    f.signature = j.value("signature", "");
-    f.return_type = j.value("return_type", "int");
-    f.is_static = j.value("static", false);
-    f.body = j.value("body", "");
-    if (j.contains("span") && j["span"].is_array() && j["span"].size() == 2)
-        f.span = {j["span"][0].get<int>(), j["span"][1].get<int>()};
-    if (j.contains("params") && j["params"].is_array()) {
-        for (auto& p : j["params"]) {
-            if (p.is_array() && p.size() >= 2)
-                f.params.emplace_back(p[0].get<std::string>(), p[1].get<std::string>());
-        }
-    }
-    return f;
+void from_json(const nlohmann::json& j, FunctionInfo& f) {
+    f = FunctionInfo{};
+    f.file = get_str(j, "file");
+    f.name = get_str(j, "name");
+    f.kind = get_str(j, "kind", "OTHER");
+    f.line = get_int(j, "line");
+    f.signature = get_str(j, "signature");
+    f.return_type = get_str(j, "return_type", "int");
+    f.is_static = get_bool(j, "static");
+    f.body = get_str(j, "body");
+    if (auto* v = field(j, "span"); v && v->is_array() && v->size() == 2)
+        f.span = {as_int((*v)[0]).value_or(0), as_int((*v)[1]).value_or(0)};
+    f.body_line = get_int(j, "body_line");
+    f.body_col = get_int(j, "body_col");
+    if (auto* v = field(j, "params"); v && v->is_array())
+        for (auto& p : *v)
+            if (p.is_array() && p.size() >= 2) f.params.emplace_back(text_of(p[0]), text_of(p[1]));
 }
 
-}  // namespace
-
-std::string RunReport::dumps() const {
-    nlohmann::json stages = nlohmann::json::array();
-    for (auto& s : this->stages) stages.push_back(stage_to_json(s));
-    nlohmann::json functions = nlohmann::json::array();
-    for (auto& f : this->functions) functions.push_back(fn_to_json(f));
-    nlohmann::json j = {
-        {"root", root},
-        {"started", started},
-        {"visibility", visibility},
-        {"answer", answer},
-        {"resolution", resolution},
-        {"confidence", confidence},
-        {"notes", notes},
+void to_json(nlohmann::json& j, const RunReport& r) {
+    json stages = json::array();
+    for (auto& s : r.stages) stages.push_back(s);
+    json functions = json::array();
+    for (auto& f : r.functions) functions.push_back(f);
+    j = {
+        {"root", r.root},
+        {"started", r.started},
+        {"visibility", r.visibility},
+        {"answer", r.answer},
+        {"resolution", r.resolution},
+        {"confidence", r.confidence},
+        {"notes", r.notes},
         {"functions", functions},
         {"stages", stages},
     };
-    return j.dump(2);
+}
+
+void from_json(const nlohmann::json& j, RunReport& r) {
+    r = RunReport{};
+    r.root = get_str(j, "root");
+    r.started = get_double(j, "started");
+    r.visibility = get_double(j, "visibility");
+    r.answer = get_double(j, "answer");
+    r.resolution = get_double(j, "resolution");
+    r.confidence = get_double(j, "confidence");
+    if (auto* v = field(j, "notes"); v && v->is_array())
+        for (auto& n : *v) r.notes.push_back(text_of(n));
+    if (auto* v = field(j, "functions"); v && v->is_array())
+        for (auto& fj : *v)
+            if (fj.is_object()) r.functions.push_back(fj.get<FunctionInfo>());
+    if (auto* v = field(j, "stages"); v && v->is_array())
+        for (auto& sj : *v)
+            if (sj.is_object()) r.stages.push_back(sj.get<StageResult>());
+}
+
+std::string RunReport::dumps() const {
+    return dump_json(json(*this), 2);
 }
 
 void RunReport::save(const std::filesystem::path& path) const {
@@ -150,36 +238,24 @@ std::optional<RunReport> RunReport::load(const std::filesystem::path& path) {
     std::ifstream in(path, std::ios::binary);
     if (!in) return std::nullopt;
     try {
-        auto j = nlohmann::json::parse(in);
-        RunReport r;
-        r.root = j.value("root", "");
-        r.started = j.value("started", 0.0);
-        r.visibility = j.value("visibility", 0.0);
-        r.answer = j.value("answer", 0.0);
-        r.resolution = j.value("resolution", 0.0);
-        r.confidence = j.value("confidence", 0.0);
-        if (j.contains("notes") && j["notes"].is_array())
-            r.notes = j["notes"].get<std::vector<std::string>>();
-        if (j.contains("functions"))
-            for (auto& fj : j["functions"]) r.functions.push_back(fn_from_json(fj));
-        if (j.contains("stages"))
-            for (auto& sj : j["stages"]) r.stages.push_back(stage_from_json(sj));
-        return r;
+        auto j = json::parse(in);
+        if (!j.is_object()) return std::nullopt;
+        return j.get<RunReport>();
     } catch (...) {
         return std::nullopt;
     }
 }
 
 Finding finding_from_json_object(const std::string& json_object) {
-    return finding_from_json(nlohmann::json::parse(json_object));
+    return json::parse(json_object).get<Finding>();
 }
 
 StageResult stage_from_json_object(const std::string& json_object) {
-    return stage_from_json(nlohmann::json::parse(json_object));
+    return json::parse(json_object).get<StageResult>();
 }
 
 FunctionInfo function_from_json_object(const std::string& json_object) {
-    return fn_from_json(nlohmann::json::parse(json_object));
+    return json::parse(json_object).get<FunctionInfo>();
 }
 
 }  // namespace prism

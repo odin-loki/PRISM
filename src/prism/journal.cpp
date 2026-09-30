@@ -1,4 +1,5 @@
 #include "prism/journal.hpp"
+#include "prism/models_json.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -17,16 +18,7 @@ void journal_reset(const std::filesystem::path& out) {
 
 void journal_append_stage(const std::filesystem::path& out, const StageResult& rec) {
     std::filesystem::create_directories(out);
-    auto reportish = RunReport{};
-    reportish.stages.push_back(rec);
-    // serialize just this stage via dumps of a one-stage report is wasteful;
-    // reconstruct from rec through JSON by saving a tiny object.
-    nlohmann::json extra_findings = nlohmann::json::array();
-    // Use the public JSON of a dummy report containing this stage.
-    RunReport tmp;
-    tmp.stages.push_back(rec);
-    auto full = nlohmann::json::parse(tmp.dumps());
-    auto line = full["stages"][0].dump();
+    auto line = dump_json(nlohmann::json(rec));
     {
         std::ofstream f(out / "stages.jsonl", std::ios::app | std::ios::binary);
         f << line << "\n";
@@ -38,7 +30,7 @@ void journal_append_stage(const std::filesystem::path& out, const StageResult& r
         {"elapsed", rec.elapsed},
     };
     std::ofstream p(out / "progress.json", std::ios::binary);
-    p << progress.dump(2);
+    p << dump_json(progress, 2);
 }
 
 std::vector<StageResult> journal_read_stages(const std::filesystem::path& out) {
@@ -74,11 +66,10 @@ std::map<std::string, StageResult> journal_completed_ok(const std::filesystem::p
 void journal_write_functions(const std::filesystem::path& out,
                              const std::vector<FunctionInfo>& functions) {
     std::filesystem::create_directories(out);
-    RunReport tmp;
-    tmp.functions = functions;
-    auto j = nlohmann::json::parse(tmp.dumps());
+    nlohmann::json fns = nlohmann::json::array();
+    for (auto& fn : functions) fns.push_back(fn);
     std::ofstream f(out / "functions.json", std::ios::binary);
-    f << j.value("functions", nlohmann::json::array()).dump();
+    f << dump_json(fns);
 }
 
 std::vector<FunctionInfo> journal_read_functions(const std::filesystem::path& out) {
@@ -88,7 +79,8 @@ std::vector<FunctionInfo> journal_read_functions(const std::filesystem::path& ou
         auto j = nlohmann::json::parse(in);
         if (!j.is_array()) return {};
         std::vector<FunctionInfo> fns;
-        for (auto& fj : j) fns.push_back(function_from_json_object(fj.dump()));
+        for (auto& fj : j)
+            if (fj.is_object()) fns.push_back(fj.get<FunctionInfo>());
         return fns;
     } catch (...) {
         return {};

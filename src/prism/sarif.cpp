@@ -3,6 +3,7 @@
 
 #include "prism/pipeline.hpp"
 #include "prism/laws.hpp"
+#include "prism/models_json.hpp"
 #include "prism/shipdocs.hpp"
 
 #include <nlohmann/json.hpp>
@@ -164,7 +165,7 @@ std::string to_sarif(const RunReport& report) {
     ojson doc = {{"$schema", "https://json.schemastore.org/sarif-2.1.0.json"},
                  {"version", "2.1.0"},
                  {"runs", ojson::array({run})}};
-    return doc.dump(2);
+    return dump_json(doc, 2);
 }
 
 void write_sarif(const RunReport& report, const fs::path& path) {
