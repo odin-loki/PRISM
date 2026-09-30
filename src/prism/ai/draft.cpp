@@ -31,7 +31,6 @@ namespace prism::ai {
 namespace fs = std::filesystem;
 
 namespace {
-#include "grammars_assist.inc"
 
 std::string lower(std::string s) {
     for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
@@ -418,7 +417,7 @@ Draft draft_with_model(const RunReport& report, const std::string& kind, const s
     ModelRequest req;
     req.feature = "draft";
     req.grammar = "draft";
-    req.grammar_text = GBNF_DRAFT;
+    req.grammar_text = grammar_text("draft");
     req.system = system_prompt(
         "Task: rewrite these report claims as clear prose sentences for a reviewer. Keep each claim's links "
         "exactly as given; never add a claim without links; never say proved or certified unless a linked "

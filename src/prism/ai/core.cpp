@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <map>
 #include <mutex>
 #include <sstream>
 
@@ -149,22 +150,21 @@ std::string sha256_file(const fs::path& path) {
 }
 
 // ------------------------------------------------------------------ grammars
-// Embedded copies of grammars/*.gbnf (src/prism/ai/grammars.inc, locked to
-// the files by tests/test_ai.py).
+// Embedded copies of grammars/*.gbnf, generated at configure time by
+// CMakeLists.txt (<build>/generated/prism/ai/grammars.inc), so they cannot
+// drift from the files.
 namespace {
-#include "grammars.inc"
+#include "prism/ai/grammars.inc"
 }
 
 const std::string& grammar_text(const std::string& name) {
-    static const std::string inv(GBNF_INVARIANTS), har(GBNF_HARNESS), con(GBNF_CONTRACT),
-        exp(GBNF_EXPLAIN), lean(GBNF_LEAN_PROOF), aud(GBNF_ASSUMPTION_AUDIT), none;
-    if (name == "invariants") return inv;
-    if (name == "harness") return har;
-    if (name == "contract") return con;
-    if (name == "explain") return exp;
-    if (name == "lean_proof") return lean;
-    if (name == "assumption_audit") return aud;
-    return none;
+    static const std::map<std::string, std::string> k{
+        {"invariants", GBNF_INVARIANTS}, {"harness", GBNF_HARNESS},       {"contract", GBNF_CONTRACT},
+        {"explain", GBNF_EXPLAIN},       {"lean_proof", GBNF_LEAN_PROOF}, {"assumption_audit", GBNF_ASSUMPTION_AUDIT},
+        {"ask", GBNF_ASK},               {"draft", GBNF_DRAFT}};
+    static const std::string none;
+    auto it = k.find(name);
+    return it == k.end() ? none : it->second;
 }
 
 std::string grammar_for(const std::string& name, const std::vector<std::string>& names) {

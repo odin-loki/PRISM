@@ -155,6 +155,58 @@ bool have_clang_sanitizers(const fs::path& dir) {
 
 }  // namespace
 
+// ------------------------------------------------------------------ grammars
+namespace {
+fs::path grammar_file(const std::string& name) {
+    return fs::path(__FILE__).parent_path().parent_path().parent_path() / "grammars" / (name + ".gbnf");
+}
+std::string grammar_line(const std::string& text, const std::string& prefix) {
+    std::istringstream in(text);
+    for (std::string l; std::getline(in, l);)
+        if (l.rfind(prefix, 0) == 0) return l;
+    return "";
+}
+}  // namespace
+
+TEST_CASE("ai-assist grammars: every grammars/*.gbnf is embedded verbatim") {
+    for (const char* name :
+         {"invariants", "harness", "contract", "explain", "lean_proof", "assumption_audit", "ask", "draft"}) {
+        CAPTURE(name);
+        const auto text = slurp(grammar_file(name));
+        REQUIRE(!text.empty());
+        CHECK(text.find("root") != std::string::npos);
+        CHECK(prism::ai::grammar_text(name) == text);
+    }
+    CHECK(prism::ai::grammar_text("no-such-grammar").empty());
+}
+
+TEST_CASE("ai-assist grammars: the ask grammar's statuses are the vocabulary") {
+    const auto line = grammar_line(slurp(grammar_file("ask")), "status ");
+    REQUIRE(!line.empty());
+    // Each alternative is written "\"STATUS\"" in GBNF: collect what sits
+    // between the escaped quotes.
+    const std::string q = R"(\")";
+    std::vector<std::string> found;
+    for (std::size_t p = 0; (p = line.find(q, p)) != std::string::npos;) {
+        auto e = line.find(q, p + q.size());
+        if (e == std::string::npos) break;
+        found.push_back(line.substr(p + q.size(), e - p - q.size()));
+        p = e + q.size();
+    }
+    CHECK(found.size() == 16);
+    for (const auto& st : found) {
+        CAPTURE(st);
+        CHECK(prism::laws::is_status(st));
+    }
+}
+
+TEST_CASE("ai-assist grammars: the draft grammar forces links on every claim") {
+    const auto text = slurp(grammar_file("draft"));
+    CHECK(grammar_line(text, "claim").find(R"("\"links\"")") != std::string::npos);
+    // At least one link: an empty list cannot be decoded.
+    CHECK(grammar_line(text, "links").find("link (") != std::string::npos);
+}
+
 // ------------------------------------------------------------------ regress
 TEST_CASE("ai-assist regress: counterexample parsing and C literals") {
     auto v = prism::ai::parse_counterexample("x=#x7fffffff, y=-5, flag=true, z = 0x10, bad=zz");

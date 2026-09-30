@@ -46,33 +46,6 @@ def _cpp_prism() -> Path | None:
     return None
 
 
-class TestAssistGrammars(unittest.TestCase):
-    def test_embedded_verbatim(self):
-        inc = (ROOT / "src" / "prism" / "ai" / "grammars_assist.inc").read_text(encoding="utf-8")
-        for name in ("ask", "draft"):
-            text = (ROOT / "grammars" / f"{name}.gbnf").read_text(encoding="utf-8")
-            self.assertIn("root", text)
-            self.assertIn(f'GBNF_{name.upper()} = R"GBNF({text})GBNF"', inc,
-                          f"grammars/{name}.gbnf drifted: run tools/gen_ai_grammars.py")
-
-    def test_ask_grammar_statuses_are_the_vocabulary(self):
-        from prism import laws
-        text = (ROOT / "grammars" / "ask.gbnf").read_text(encoding="utf-8")
-        line = next(ln for ln in text.splitlines() if ln.startswith("status "))
-        vocab = {v for k, v in vars(laws).items() if k.isupper() and isinstance(v, str)}
-        found = re.findall(r'\\"([A-Z-]+)\\"', line)
-        self.assertEqual(len(found), 16)
-        for st in found:
-            self.assertIn(st, vocab)
-
-    def test_draft_grammar_forces_links(self):
-        text = (ROOT / "grammars" / "draft.gbnf").read_text(encoding="utf-8")
-        claim = next(ln for ln in text.splitlines() if ln.startswith("claim"))
-        self.assertIn('"\\"links\\""', claim)
-        links = next(ln for ln in text.splitlines() if ln.startswith("links"))
-        self.assertIn("link (", links)  # at least one link: an empty list cannot be decoded
-
-
 class TestGbdt(unittest.TestCase):
     def test_fits_a_step_and_an_interaction(self):
         xs = [[float(a), float(b)] for a in range(10) for b in range(4)]

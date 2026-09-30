@@ -59,14 +59,13 @@ def _lake() -> str | None:
 
 class TestParity(unittest.TestCase):
     def test_grammars_embedded_verbatim(self):
-        inc = (ROOT / "src" / "prism" / "ai" / "grammars.inc").read_text(encoding="utf-8")
+        # Embedded by CMake at configure time (verbatim lock: the doctest
+        # "ai-assist grammars: every grammars/*.gbnf is embedded verbatim").
+        cm = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+        line = next(ln for ln in cm.splitlines() if ln.startswith("foreach(_g "))
         for name in NEW_GRAMMARS:
-            text = (ROOT / "grammars" / f"{name}.gbnf").read_text(encoding="utf-8")
-            self.assertIn(f'GBNF_{name.upper()} = R"GBNF({text})GBNF"', inc,
-                          f"grammars/{name}.gbnf drifted: run tools/gen_ai_grammars.py")
-        gen = (ROOT / "tools" / "gen_ai_grammars.py").read_text(encoding="utf-8")
-        for name in NEW_GRAMMARS:
-            self.assertIn(f'"{name}"', gen)
+            self.assertTrue((ROOT / "grammars" / f"{name}.gbnf").is_file())
+            self.assertIn(f" {name}", line)
 
     def test_contract_grammar_has_trace_links(self):
         text = (ROOT / "grammars" / "contract.gbnf").read_text(encoding="utf-8")

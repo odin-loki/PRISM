@@ -139,8 +139,10 @@ At run time the `ident` rule is narrowed to the names in scope, so the
 sampler cannot even spell an unknown variable. The decoded text is validated
 again (`validate_*`): anything that does not match is rejected, logged
 (`output_valid: false`, `checker: grammar-validator`) and never used. The
-files are embedded verbatim in `src/prism/ai/grammars.inc`
-(`tools/gen_ai_grammars.py`; `tests/test_ai.py` fails on drift).
+files are embedded verbatim at configure time: CMake writes
+`<build>/generated/prism/ai/grammars.inc` from `grammars/*.gbnf`, so the
+embedded copy cannot drift (doctest "ai-assist grammars: every
+grammars/*.gbnf is embedded verbatim").
 
 Backends: llama-server (`PRISM_LLAMA_SERVER`, grammar) and Ollama
 (`OLLAMA_HOST`, JSON-schema format). The in-process GGUF path
