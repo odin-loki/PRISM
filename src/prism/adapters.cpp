@@ -7,6 +7,7 @@
 #include "prism/cparse.hpp"
 #include "prism/sandbox.hpp"
 #include "proc.hpp"
+#include "adapters_internal.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -244,10 +245,12 @@ bool adapter_start_or_fake_missing(const ProcResult& r) {
     return probe_looks_missing(r);
 }
 
-std::optional<ProcResult> probe_exe(const std::string& exe) {
+// Each flag gets 12 s, or less when the run's per-check timeout is shorter.
+std::optional<ProcResult> probe_exe(const std::string& exe, double check_timeout) {
+    const double per_flag = std::clamp(check_timeout, 1.0, 12.0);
     const char* flags[] = {"--help", "-h", "--version", "-version"};
     for (const char* fl : flags) {
-        auto r = run_argv({exe, fl}, 12.0);
+        auto r = run_argv({exe, fl}, per_flag);
         if (r.timed_out || r.failed) continue;
         if (probe_looks_missing(r)) continue;
         if (!trim_copy(r.text).empty() || r.rc == 0 || r.rc == 1) return r;
@@ -784,7 +787,9 @@ Finding libfuzzer_probe(const Config& cfg) {
     auto clang = cfg.which({"clang"});
     const char* install = "clang -fsanitize=fuzzer is a system tool: apt install clang-18 (see third_party/MANIFEST.toml)";
     if (!clang) {
+        // clang is a system tool looked up on PATH only (no pinned build).
         auto f = notrun("libfuzzer", "clang", install);
+        f.message = "clang not on PATH";
         return f;
     }
 #ifdef _WIN32
@@ -878,10 +883,21 @@ std::vector<fs::path> cocci_rules(const std::vector<fs::path>& paths, const Conf
     std::error_code ec;
     consider(fs::current_path(ec));
     consider(cfg.root);
+    // The shipped rules next to the binary, whatever the cwd: a build tree
+    // (<repo>/build/prism -> <repo>/prism/cocci) or an installed layout
+    // (<prefix>/bin/prism -> <prefix>/share/prism/cocci).
+    fs::path self;
 #ifdef _WIN32
     char buf[MAX_PATH]{};
-    if (GetModuleFileNameA(nullptr, buf, MAX_PATH)) consider(fs::path(buf).parent_path());
+    if (GetModuleFileNameA(nullptr, buf, MAX_PATH)) self = fs::path(buf);
+#else
+    self = fs::read_symlink("/proc/self/exe", ec);
+    if (ec) self.clear();
 #endif
+    if (!self.empty()) {
+        pkg.push_back(self.parent_path().parent_path() / "share" / "prism" / "cocci");
+        consider(self.parent_path());
+    }
     for (const auto& d : pkg) add_dir(d);
     for (const auto& root : source_roots(paths)) add_dir(root);
     return rules;
@@ -1015,22 +1031,25 @@ std::vector<Finding> run_spatch(const std::string& exe, const std::vector<fs::pa
             }
         }
     }
-    out.insert(out.begin(), held.begin(), held.end());
-    if (any_hit) return out;
-    if (out.size() > held.size()) {
-        bool only_bad = true;
-        for (const auto& f : out)
-            if (f.status != laws::TIMEOUT && f.status != laws::ERROR && f.status != laws::NOTRUN)
-                only_bad = false;
-        if (only_bad) return out;
+    // Law 7: the rules held back for --allow-exec stay written down whatever
+    // the rules that ran found (the Python engine returns held + ...).
+    const bool only_bad = !out.empty() && std::all_of(out.begin(), out.end(), [](const Finding& f) {
+        return f.status == laws::TIMEOUT || f.status == laws::ERROR || f.status == laws::NOTRUN;
+    });
+    if (!any_hit && !only_bad) {
+        auto f = finding("spatch", laws::UNKNOWN, "", "", "spatch ran; no matches (not a proof)",
+                         laws::STRENGTH_FINDS);
+        f.extra["exe"] = exe;
+        out = {f};
     }
-    auto f = finding("spatch", laws::UNKNOWN, "", "", "spatch ran; no matches (not a proof)",
-                     laws::STRENGTH_FINDS);
-    f.extra["exe"] = exe;
-    return {f};
+    out.insert(out.begin(), held.begin(), held.end());
+    return out;
 }
 
 std::string extract_json_object(const std::string& text) {
+    // Whitespace-only output is a silent success ("{}": no matches), not a
+    // parse failure.
+    if (trim_copy(text).empty()) return "{}";
     auto first = text.find('{');
     auto last = text.rfind('}');
     if (first != std::string::npos && last != std::string::npos && last > first)
@@ -1488,6 +1507,35 @@ struct OptionalTool {
 
 }  // namespace
 
+// adapters_internal.hpp: qualified calls reach the unnamed namespace above.
+namespace adapters_detail {
+void refuse_disabled_checks(const std::vector<std::string>& cmd) { prism::refuse_disabled_checks(cmd); }
+bool is_fake_adapter(const std::string& text) { return prism::is_fake_adapter(text); }
+bool tool_unusable(const std::string& text, int rc) { return prism::tool_unusable(text, rc); }
+bool probe_looks_missing(const std::string& text, int rc) {
+    ProcResult r;
+    r.text = text;
+    r.rc = rc;
+    return prism::probe_looks_missing(r);
+}
+std::vector<fs::path> cocci_rules(const std::vector<fs::path>& paths, const Config& cfg) {
+    return prism::cocci_rules(paths, cfg);
+}
+bool cocci_has_script(const fs::path& rule) { return prism::cocci_has_script(rule); }
+std::string extract_json_object(const std::string& text) { return prism::extract_json_object(text); }
+std::vector<Finding> run_cbmc(const std::string& exe, const std::vector<fs::path>& paths, const Config& cfg) {
+    return prism::run_cbmc(exe, paths, cfg);
+}
+std::vector<Finding> run_spatch(const std::string& exe, const std::vector<fs::path>& paths,
+                                const Config& cfg) {
+    return prism::run_spatch(exe, paths, cfg);
+}
+std::vector<Finding> run_semgrep(const std::string& exe, const std::vector<fs::path>& paths,
+                                 const Config& cfg) {
+    return prism::run_semgrep(exe, paths, cfg);
+}
+}  // namespace adapters_detail
+
 std::string compiler_key(const fs::path& p) {
     std::error_code ec;
     fs::path r = fs::canonical(p, ec);
@@ -1779,7 +1827,9 @@ static std::vector<Finding> run_cppcheck_unstamped(const std::vector<fs::path>& 
     }
     if (out.empty() && (tool_unusable(r.text, r.rc) || r.failed)) {
         auto f = finding("cppcheck", laws::NOTRUN, "", "",
-                         "cppcheck at PATH is not cppcheck (not a proof)", laws::STRENGTH_FINDS);
+                         r.failed ? "cppcheck unusable: failed to start " + exe->string()
+                                  : "cppcheck at PATH is not cppcheck (not a proof)",
+                         laws::STRENGTH_FINDS);
         f.extra["exe"] = exe->string();
         f.extra["install"] = adapter_install("cppcheck");
         return {f};
@@ -1987,7 +2037,7 @@ std::vector<Finding> run_optional_tools(const std::vector<fs::path>& paths, cons
         }
         std::optional<ProcResult> probed;
         try {
-            probed = probe_exe(exe->string());
+            probed = probe_exe(exe->string(), cfg.timeout);
         } catch (const std::exception& ex) {
             auto f = notrun(tool.stage, first_name, install);
             f.message = std::string(tool.stage) + " probe failed: " + ex.what();
