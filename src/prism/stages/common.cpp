@@ -245,43 +245,50 @@ std::vector<std::vector<uint8_t>> interesting_seeds(const FunctionInfo& fn) {
     std::vector<std::vector<uint8_t>> out;
     std::set<std::vector<uint8_t>> seen;
     auto add = [&](std::vector<uint8_t> b) {
-        if (static_cast<int>(b.size()) > n) b.resize(static_cast<std::size_t>(n));
-        while (static_cast<int>(b.size()) < n) b.push_back(0);
+        b.resize(static_cast<std::size_t>(n), 0);
         if (seen.insert(b).second) out.push_back(std::move(b));
     };
-    auto pack_i = [](int32_t v) {
-        uint32_t u = static_cast<uint32_t>(v);
-        return std::vector<uint8_t>{static_cast<uint8_t>(u), static_cast<uint8_t>(u >> 8),
-                                    static_cast<uint8_t>(u >> 16), static_cast<uint8_t>(u >> 24)};
+    // Each value is packed at its parameter's own width (the decode_args
+    // layout), so a 64-bit parameter gets the whole value.
+    auto pack = [](int64_t v, int sz) {
+        std::vector<uint8_t> b;
+        for (int k = 0; k < sz; ++k) b.push_back(static_cast<uint8_t>(static_cast<uint64_t>(v) >> (8 * k)));
+        return b;
     };
-    add(std::vector<uint8_t>(static_cast<std::size_t>(n), 0));
-    add(std::vector<uint8_t>(static_cast<std::size_t>(n), 0xFF));
-    std::vector<std::string> slots;
-    for (auto& [t, name] : fn.params)
-        if (!name.empty()) slots.push_back(name);
-    if (slots.empty()) slots.emplace_back("_");
-    for (auto v : values) {
+    std::vector<int> sizes;
+    for (auto& [t, name] : fn.params) {
+        if (name.empty()) continue;
+        auto key = ctype_key(t);
+        sizes.push_back(kCTypeSize.contains(key) ? kCTypeSize.at(key) : 4);
+    }
+    if (sizes.empty()) sizes.push_back(4);
+    auto row = [&](const std::vector<int64_t>& per_slot) {
         std::vector<uint8_t> blob;
-        for (std::size_t i = 0; i < slots.size(); ++i) {
-            auto p = pack_i(i32(v));
+        for (std::size_t i = 0; i < sizes.size(); ++i) {
+            auto p = pack(per_slot[i], sizes[i]);
             blob.insert(blob.end(), p.begin(), p.end());
         }
         add(std::move(blob));
+    };
+    add(std::vector<uint8_t>(static_cast<std::size_t>(n), 0));
+    add(std::vector<uint8_t>(static_cast<std::size_t>(n), 0xFF));
+    for (auto v : values) row(std::vector<int64_t>(sizes.size(), i32(v)));
+    // 64-bit extremes for the 8-byte parameters (long, long long, size_t)
+    if (std::find(sizes.begin(), sizes.end(), 8) != sizes.end()) {
+        for (int64_t v : {INT64_MAX_V, INT64_MIN_V, INT64_MAX_V - 100}) {
+            std::vector<int64_t> per;
+            for (auto sz : sizes) per.push_back(sz == 8 ? v : 0);
+            row(per);
+        }
     }
-    if (slots.size() >= 2) {
-        auto imax = pack_i(static_cast<int32_t>(INT_MAX_32));
-        auto z = pack_i(0);
-        std::vector<uint8_t> a = imax;
-        for (std::size_t i = 1; i < slots.size(); ++i) a.insert(a.end(), z.begin(), z.end());
-        add(std::move(a));
-        std::vector<uint8_t> b = z;
-        b.insert(b.end(), imax.begin(), imax.end());
-        for (std::size_t i = 2; i < slots.size(); ++i) b.insert(b.end(), z.begin(), z.end());
-        add(std::move(b));
-        auto one = pack_i(1);
-        std::vector<uint8_t> c = one;
-        for (std::size_t i = 1; i < slots.size(); ++i) c.insert(c.end(), z.begin(), z.end());
-        add(std::move(c));
+    if (sizes.size() >= 2) {
+        std::vector<int64_t> a(sizes.size(), 0), b(sizes.size(), 0), c(sizes.size(), 0);
+        a[0] = INT_MAX_32;
+        b[1] = INT_MAX_32;
+        c[0] = 1;
+        row(a);
+        row(b);
+        row(c);
     }
     return out;
 }
