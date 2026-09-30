@@ -130,6 +130,7 @@ endif()
 # Explicit source list (no file(GLOB)).
 set(PRISM_SRC
   src/prism/adapters.cpp
+  src/prism/proc_session.cpp
   src/prism/astlint.cpp
   src/prism/astlint_checks.cpp
   src/prism/astlint_libclang.cpp

@@ -2466,6 +2466,7 @@ void detail::kill_child_groups() noexcept {
         if (g > 0) ::kill(-g, SIGKILL);
     }
 #endif
+    kill_child_sessions();  // run_session children and their whole sessions
 }
 
 #ifndef _WIN32
