@@ -20,7 +20,7 @@ Spec spec_comments_rapid(const FunctionInfo& fn) {
     int start = std::max(0, (fn.line ? fn.line : 1) - 2);
     int end = (fn.span.second ? fn.span.second : (fn.line ? fn.line : 1) + 20);
     end = std::min(static_cast<int>(lines.size()), end);
-    static Regex clause("(?://|/\\*|\\*)\\s*(requires|ensures|invariant|decreases|diff)\\s*:\\s*(.+?)(?:\\*/)?\\s*$");
+    static Regex clause("(?i)(?://|/\\*|\\*)\\s*(requires|ensures|invariant|decreases|diff)\\s*:\\s*(.+?)(?:\\*/)?\\s*$");
     for (int i = start; i < end; ++i) {
         auto m = clause.search_match(lines[static_cast<std::size_t>(i)]);
         if (!m) continue;

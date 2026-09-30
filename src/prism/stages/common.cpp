@@ -301,7 +301,7 @@ void parse_acsl_body(std::string body, Spec& spec) {
     }
     std::istringstream ss(body);
     std::string part;
-    static Regex kw("^(requires|ensures|invariant|decreases|assigns)\\s+(.+)$");
+    static Regex kw("(?i)^(requires|ensures|invariant|decreases|assigns)\\s+(.+)$");
     while (std::getline(ss, part, ';')) {
         part = strip(part);
         if (part.empty()) continue;
@@ -394,7 +394,8 @@ Spec parse_comments(const FunctionInfo& fn) {
         region_body += lines[static_cast<std::size_t>(i)];
     }
     for (auto& b : extract_acsl_blocks(region_body)) parse_acsl_body(b, spec);
-    static Regex clause("(?://|/\\*|\\*)\\s*(requires|ensures|invariant|decreases|diff)\\s*:\\s*(.+?)(?:\\*/)?\\s*$");
+    // `// Ensures:` and `/*@ Requires ... */` are clauses too: keywords are caseless.
+    static Regex clause("(?i)(?://|/\\*|\\*)\\s*(requires|ensures|invariant|decreases|diff)\\s*:\\s*(.+?)(?:\\*/)?\\s*$");
     for (int i = start; i < end; ++i) {
         auto ln = lines[static_cast<std::size_t>(i)];
         auto stripped = strip(ln);

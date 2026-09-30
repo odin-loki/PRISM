@@ -314,7 +314,9 @@ std::string check_callers_requires(const FunctionInfo& caller, const FunctionInf
 namespace {
 
 bool has_spec(const FunctionInfo& fn) {
-    static const std::regex spec(R"((//|/\*|\*|@)\s*(requires|ensures|invariant|decreases)\b)");
+    // Clause keywords are case-insensitive, as in parse_comments.
+    static const std::regex spec(R"((//|/\*|\*|@)\s*(requires|ensures|invariant|decreases)\b)",
+                                 std::regex::icase);
     return std::regex_search(function_source(fn), spec);
 }
 
