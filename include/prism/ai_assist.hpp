@@ -130,6 +130,10 @@ PRISM_API std::string triage_markdown(const TriageResult& t, const RunReport& re
 // Writes <out>/triage.json and appends the "## Clusters" section to <out>/report.md.
 PRISM_API void write_triage(const RunReport& report, const std::filesystem::path& out,
                             const TriageOptions& opt = {});
+// `prism triage [OUT|OUT/report.json] [--threshold X] [--no-embed]`: rewrites
+// OUT/triage.json from the saved report (never report.json) and prints the
+// clusters. Exit 2 when the report cannot be read.
+PRISM_API int triage_main(int argc, char** argv);
 
 // ---------------------------------------------------------------- questions over findings (9.4)
 struct Query {

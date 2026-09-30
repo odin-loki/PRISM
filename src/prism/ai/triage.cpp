@@ -23,6 +23,7 @@
 #include "ai_internal.hpp"
 
 #include "prism/ai_assist.hpp"
+#include "prism/cli.hpp"
 #include "prism/laws.hpp"
 #include "prism/pipeline.hpp"
 
@@ -33,9 +34,11 @@
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
+#include <iostream>
 #include <map>
 #include <mutex>
 #include <numeric>
+#include <span>
 #include <set>
 #include <sstream>
 #include <unordered_map>
@@ -552,6 +555,28 @@ void write_triage(const RunReport& report, const fs::path& out, const TriageOpti
     fs::create_directories(out, ec);
     std::ofstream(out / "triage.json", std::ios::binary) << triage_json(t);
     std::ofstream(out / "report.md", std::ios::binary | std::ios::app) << triage_markdown(t, report);
+}
+
+int triage_main(int argc, char** argv) {
+    auto parsed = parse_triage_cli(std::span<const char* const>(argv, static_cast<std::size_t>(argc)));
+    if (!parsed) {
+        std::cerr << "prism triage: error: " << parsed.error() << "\n";
+        return 2;
+    }
+    fs::path rp = parsed->report_dir;
+    TriageOptions topt;
+    if (parsed->threshold >= 0) topt.threshold = parsed->threshold;
+    topt.use_embedder = parsed->use_embedder;
+    if (fs::is_regular_file(rp)) rp = rp.parent_path();
+    auto rep = RunReport::load(rp / "report.json");
+    if (!rep) {
+        std::cerr << "ERROR triage: cannot read " << (rp / "report.json").string() << "\n";
+        return 2;
+    }
+    auto t = triage(*rep, topt);
+    std::ofstream(rp / "triage.json", std::ios::binary) << triage_json(t);
+    std::cout << triage_markdown(t, *rep);
+    return 0;
 }
 
 }  // namespace prism::ai

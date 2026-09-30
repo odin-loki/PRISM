@@ -201,27 +201,7 @@ int main(int argc, char** argv) {
         if (sub == "draft") return ai::draft_main(argc - 2, argv + 2);
         // Roadmap 6.3: PRISM as an SV-COMP verifier (docs/SVCOMP.md).
         if (sub == "svcomp") return svcomp::svcomp_main(argc - 2, argv + 2);
-        if (sub == "triage") {
-            auto parsed = parse_triage_cli(std::span<const char* const>(argv + 2, argc - 2));
-            if (!parsed) {
-                std::cerr << "prism triage: error: " << parsed.error() << "\n";
-                return 2;
-            }
-            std::filesystem::path rp = parsed->report_dir;
-            ai::TriageOptions topt;
-            if (parsed->threshold >= 0) topt.threshold = parsed->threshold;
-            topt.use_embedder = parsed->use_embedder;
-            if (std::filesystem::is_regular_file(rp)) rp = rp.parent_path();
-            auto rep = RunReport::load(rp / "report.json");
-            if (!rep) {
-                std::cerr << "ERROR triage: cannot read " << (rp / "report.json").string() << "\n";
-                return 2;
-            }
-            auto t = ai::triage(*rep, topt);
-            std::ofstream(rp / "triage.json", std::ios::binary) << ai::triage_json(t);
-            std::cout << ai::triage_markdown(t, *rep);
-            return 0;
-        }
+        if (sub == "triage") return ai::triage_main(argc - 2, argv + 2);
     }
     // --gui: prism_gui parses its own flags (e.g. --smoke-screenshot); hand
     // every argument over before the scan parser rejects the ones it does not know.
