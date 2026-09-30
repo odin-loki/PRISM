@@ -140,6 +140,10 @@ struct Enc {
     std::map<std::string, int> bits;  // declared (visible) scalars -> width
     std::vector<std::string> unmodelled;  // calls whose callee is not modelled
     std::vector<z3::expr> call_vars;      // their unconstrained results
+    // Results of modelled output calls (printf, puts, putchar): any value
+    // (a count or a negative error). A refutation must hold for all of them,
+    // as for call_vars, but they do not make the call unmodelled.
+    std::vector<z3::expr> io_results;
     // __VERIFIER_nondet_* results in encoding order, each with the path guard
     // at the call: the calls a model's path executes are those whose guard it
     // makes true, in this order (the SV-COMP replay and witness input).
@@ -2504,6 +2508,92 @@ TV model_call(Enc& e, const std::string& tagged, std::vector<TV>& args) {
     return TV{r, 32, false};
 }
 
+// printf / puts / putchar (C11 7.21.6.3, 7.21.7.9, 7.21.7.8). bmc has no
+// globals and no heap, so the output cannot change modelled state: the call
+// is its arguments (already evaluated, their UB checked) and a result that
+// may be any value. Only when every argument is fully known to be safe for
+// the call: the format (printf) or string (puts) is one string literal with
+// plain escapes; each conversion is an integer conversion (d i o u x X c)
+// whose argument is a scalar of the width its length modifier names, or %s
+// with a string literal; no %n, no `*` width or precision, no other
+// conversion; as many arguments as conversions. Anything else: nullopt, and
+// the call stays unmodelled (never a proof).
+std::optional<TV> model_output_call(Enc& e, const std::string& t, const std::vector<std::string>& tok,
+                                    const std::vector<std::pair<size_t, size_t>>& spans,
+                                    const std::vector<TV>& args, bool arrays_used) {
+    if (t != "printf" && t != "puts" && t != "putchar") return std::nullopt;
+    if (arrays_used || spans.size() != args.size()) return std::nullopt;
+    auto literal = [&](size_t k) -> std::optional<std::string> {
+        auto [from, to] = spans[k];
+        if (to != from + 1) return std::nullopt;
+        const auto& x = tok[from];
+        if (x.size() < 2 || x.front() != '"' || x.back() != '"') return std::nullopt;
+        std::string body;
+        for (size_t i = 1; i + 1 < x.size(); ++i) {
+            if (x[i] != '\\') {
+                body.push_back(x[i]);
+                continue;
+            }
+            if (++i + 1 >= x.size()) return std::nullopt;
+            // octal and hex escapes could spell `%` (or end the string)
+            if (std::string_view("ntr\\\"'abfv?").find(x[i]) == std::string_view::npos) return std::nullopt;
+            body.push_back(' ');
+        }
+        return body;
+    };
+    auto result = [&]() {
+        auto r = e.bv("io_" + t + "_" + std::to_string(e.fresh + 1), 32);
+        e.io_results.push_back(r);
+        return TV{r, 32, false};
+    };
+    if (t == "putchar") {
+        if (args.size() != 1 || literal(0) || args[0].w > 32) return std::nullopt;
+        return result();
+    }
+    if (t == "puts") {
+        if (args.size() != 1 || !literal(0)) return std::nullopt;
+        return result();
+    }
+    if (args.empty()) return std::nullopt;
+    auto fmt = literal(0);
+    if (!fmt) return std::nullopt;
+    size_t next = 1;
+    const std::string& f = *fmt;
+    for (size_t i = 0; i < f.size(); ++i) {
+        if (f[i] != '%') continue;
+        if (++i >= f.size()) return std::nullopt;
+        if (f[i] == '%') continue;
+        while (i < f.size() && std::string_view("-+ #0").find(f[i]) != std::string_view::npos) ++i;
+        while (i < f.size() && std::isdigit(static_cast<unsigned char>(f[i]))) ++i;
+        if (i < f.size() && f[i] == '.') {
+            ++i;
+            while (i < f.size() && std::isdigit(static_cast<unsigned char>(f[i]))) ++i;
+        }
+        std::string len;
+        while (i < f.size() && std::string_view("hljzt").find(f[i]) != std::string_view::npos) len.push_back(f[i++]);
+        if (i >= f.size()) return std::nullopt;
+        char conv = f[i];
+        if (next >= args.size()) return std::nullopt;
+        size_t k = next++;
+        if (conv == 's') {
+            if (!len.empty() || !literal(k)) return std::nullopt;
+            continue;
+        }
+        if (std::string_view("diouxXc").find(conv) == std::string_view::npos) return std::nullopt;
+        if (literal(k)) return std::nullopt;
+        if (conv == 'c' && !len.empty()) return std::nullopt;
+        if (len.empty() || len == "h" || len == "hh") {
+            if (args[k].w > 32) return std::nullopt;
+        } else if (len == "l" || len == "ll" || len == "j" || len == "z" || len == "t") {
+            if (args[k].w != 64) return std::nullopt;
+        } else {
+            return std::nullopt;
+        }
+    }
+    if (next != args.size()) return std::nullopt;
+    return result();
+}
+
 int sizeof_type(const std::vector<std::string>& inner, Enc& e) {
     for (auto& t : inner)
         if (t == "*") return 8;
@@ -2817,6 +2907,10 @@ TV parse_expr(Enc& e, std::string src, Parser& parser) {
                         eat(")");
                         break;
                     }
+                }
+                if (auto io = model_output_call(e, t, tokens, spans, args, e.value_arrays.size() > n_values)) {
+                    e.value_arrays.resize(n_values);
+                    return *io;
                 }
                 size_t n_calls = e.call_vars.size();
                 auto res = model_call(e, t, args);
