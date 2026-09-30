@@ -182,6 +182,7 @@ set(PRISM_SRC
   src/prism/pir/translate_fp.cpp
   src/prism/pir/translate_mem.cpp
   src/prism/polyglot.cpp
+  src/prism/proc_session.cpp
   src/prism/regex.cpp
   src/prism/sandbox.cpp
   src/prism/sarif.cpp
@@ -204,6 +205,7 @@ set(PRISM_SRC
   src/prism/stages/taint.cpp
   src/prism/stages/thread.cpp
   src/prism/stages/wp.cpp
+  src/prism/taskdef.cpp
   src/prism/taxonomy.cpp
   src/prism/verdict/verdict.cpp
   # Solver library (roadmap 3.1-3.3): portfolio, query cache, certified mode, SLS.

@@ -35,6 +35,26 @@ void kill_child_groups() noexcept;
 // ignored. Called once by the prism CLI's main().
 void install_child_cleanup() noexcept;
 
+// Run argv in a session of its own (setsid; POSIX), stdin /dev/null,
+// stdout captured, stderr discarded. On the timeout (seconds; <= 0: none)
+// the whole session is killed: its process group, then every process whose
+// session id is the child's (Linux /proc), so solver and compiler children
+// that PRISM put in process groups of their own die too. A descendant that
+// leaves the session (bwrap --new-session) must use --die-with-parent.
+// The scorers (`prism svcomp score`) run one task per session.
+struct SessionOut {
+    std::string out;   // stdout
+    int rc = -1;       // exit status, -signal when killed by a signal
+    bool timed_out = false;
+    bool failed = false;  // could not start
+};
+SessionOut run_session(const std::vector<std::string>& args, double timeout_s,
+                       const std::filesystem::path& cwd = {});
+// PIDs whose session id is sid (Linux /proc; empty elsewhere).
+std::vector<int> session_members(int sid);
+// SIGKILL the session sid leads: its process group, then every other member.
+void kill_session(int sid) noexcept;
+
 // RAII registration of a child process group.
 struct ChildGroup {
     int pgid;
