@@ -5,6 +5,7 @@
 #include "prism/regex.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <fstream>
 #include <map>
@@ -737,6 +738,13 @@ std::pair<std::vector<FunctionInfo>, std::vector<std::pair<int, std::string>>> p
     std::vector<FunctionInfo> out;
     out.reserve(order.size());
     for (auto& [_, fn] : order) out.push_back(std::move(*fn));
+    // Columns of body offsets are columns of the stripped text; keep the
+    // dropped comment delimiters on the body's lines to map them back.
+    auto shifts = comment_col_shifts(text);
+    if (!shifts.empty())
+        for (auto& fn : out)
+            for (auto& sh : shifts)
+                if (sh[0] >= fn.body_line && sh[0] <= fn.span.second) fn.col_shifts.push_back(sh);
     return {std::move(out), std::move(gaps)};
 }
 
@@ -756,14 +764,37 @@ bool is_tu_ext(std::string_view ext) {
     return false;
 }
 
-std::string strip_comments_keep_lines(std::string_view text, bool blank_strings) {
+namespace {
+
+// strip_comments_keep_lines, and optionally where it dropped the `/*` and `*/`
+// delimiters: (line, column in the output of the next kept character, number
+// of characters dropped there).
+std::string strip_comments_impl(std::string_view text, bool blank_strings,
+                                std::vector<std::array<int, 3>>* shifts) {
     std::string out;
     out.reserve(text.size());
     std::size_t i = 0, n = text.size();
     bool in_block = false;
+    int out_line = 1;
+    std::size_t line_start = 0, scanned = 0;  // out offsets: current line, newlines counted
+    auto drop2 = [&] {
+        if (!shifts) return;
+        for (std::size_t k = scanned; k < out.size(); ++k)
+            if (out[k] == '\n') {
+                ++out_line;
+                line_start = k + 1;
+            }
+        scanned = out.size();
+        int col = static_cast<int>(out.size() - line_start) + 1;
+        if (!shifts->empty() && (*shifts).back()[0] == out_line && (*shifts).back()[1] == col)
+            (*shifts).back()[2] += 2;
+        else
+            shifts->push_back({out_line, col, 2});
+    };
     while (i < n) {
         if (in_block) {
             if (i + 1 < n && text[i] == '*' && text[i + 1] == '/') {
+                drop2();
                 in_block = false;
                 i += 2;
             } else {
@@ -773,6 +804,7 @@ std::string strip_comments_keep_lines(std::string_view text, bool blank_strings)
             continue;
         }
         if (i + 1 < n && text[i] == '/' && text[i + 1] == '*') {
+            drop2();
             in_block = true;
             i += 2;
             continue;
@@ -842,6 +874,18 @@ std::string strip_comments_keep_lines(std::string_view text, bool blank_strings)
         ++i;
     }
     return out;
+}
+
+}  // namespace
+
+std::string strip_comments_keep_lines(std::string_view text, bool blank_strings) {
+    return strip_comments_impl(text, blank_strings, nullptr);
+}
+
+std::vector<std::array<int, 3>> comment_col_shifts(std::string_view text) {
+    std::vector<std::array<int, 3>> shifts;
+    strip_comments_impl(text, false, &shifts);
+    return shifts;
 }
 
 int match_brace(std::string_view text, int open_idx) {

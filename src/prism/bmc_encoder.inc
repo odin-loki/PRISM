@@ -2185,7 +2185,8 @@ std::vector<std::string> expand_macros(const std::vector<std::string>& toks, Enc
 // Nondet call sites. The bmc front end works on statement text and keeps no
 // positions, so before encoding every `__VERIFIER_nondet_X()` call in a
 // function body is renamed `__VERIFIER_nondet_X__prism_at_L_C` (L:C = the
-// call's source position, from FunctionInfo::body_line/body_col). The tag
+// call's source position, from FunctionInfo::body_line/body_col, the
+// column mapped past dropped comment delimiters by source_col). The tag
 // survives inlining (a callee's calls keep the callee's positions) and
 // loop unrolling; model_call strips it again.
 constexpr std::string_view NONDET_TAG = "__prism_at_";
@@ -2220,7 +2221,7 @@ FunctionInfo tag_nondet_sites(FunctionInfo fn) {
             if (m != std::string::npos && m < b.size() && b[m] == ')' &&
                 std::string_view(b).substr(i, j - i).find(NONDET_TAG) == std::string_view::npos) {
                 out.append(b, i, j - i);
-                out += std::string(NONDET_TAG) + std::to_string(line) + "_" + std::to_string(col);
+                out += std::string(NONDET_TAG) + std::to_string(line) + "_" + std::to_string(source_col(fn, line, col));
                 col += static_cast<int>(j - i);
                 i = j;
                 continue;

@@ -2,6 +2,7 @@
 
 #include "prism/export.hpp"
 
+#include <array>
 #include <filesystem>
 #include <map>
 #include <optional>
@@ -27,11 +28,24 @@ struct FunctionInfo {
     // length-preserving copy of the source (comments blanked), so an offset
     // into it maps back to a source position (bmc nondet call sites, loops).
     int body_line = 0, body_col = 0;
+    // The stripped text drops the `/*` and `*/` delimiters (4 characters per
+    // comment), so a column after a block comment on the same line is left of
+    // its source column: (line, stripped column, characters dropped there),
+    // from comment_col_shifts, for the body's lines. Not in the JSON form.
+    std::vector<std::array<int, 3>> col_shifts;
     // C++ standard of the unit (the year of its -std= in compile_commands.json,
     // 98 -> 3), 0 = not known (the compiler's default is assumed). Set by the
     // pipeline before bmc (with_cxx_std); not in the JSON form.
     int cxx_std = 0;
 };
+
+// Source column of a (line, column) of the stripped body text.
+inline int source_col(const FunctionInfo& fn, int line, int col) {
+    int out = col;
+    for (auto& sh : fn.col_shifts)
+        if (sh[0] == line && sh[1] <= col) out += sh[2];
+    return out;
+}
 
 struct Finding {
     std::string stage;
