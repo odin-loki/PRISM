@@ -88,15 +88,24 @@ lands with a doctest.
   CXX-VECTOR-INDEX misses `const std::vector<T>&`. A non-UTF-8 source can
   crash the JSON dump; decode with replacement.
 - **ltl**: `extract_fsm` is not ported (a correctness gap in the primary
-  engine).
+  engine). Done in C++, and deliberately stricter than `prism/ltl.py`: arms
+  are split at bracket depth 0 only, an arm (or `default:`) that can leave
+  without writing state keeps it, and a write the reader cannot name
+  refuses the machine (NOTRUN). Python PROVES `G (s == IDLE -> X (s == RUN))`
+  on a nested `switch (ev)` that C++ FAILS; do not freeze the Python verdict.
 - **contracts**: ACSL/comment parsing is case-sensitive in C++ and
-  caseless in Python. Add a caseless `prism::Regex` flag.
+  caseless in Python. Add a caseless `prism::Regex` flag. Done (`(?i)`).
+  Intentional divergence (D126): C++ encodes linear decreases measures, so
+  `countdown_complex` (`n - i`) is FAILED in C++ and ERROR in Python.
 - **rapid / muttest**: the gcc fallback is Python-only. Port it through the
   sandbox (Law 9), or drop it and correct `EXEC_STAGES`.
 - **adapters_extra**: spatch drops rows and semgrep mishandles whitespace.
   Both are regressions in the C++ port.
 - **fuzz**: `bytes_from_cex` overflow and `decode_args` narrowing. Also
-  add the memo, the build cache and parallel runs.
+  add the memo, the build cache and parallel runs. Intentional divergence:
+  C++ `bytes_from_cex` decodes the solver's `#x` / `#b` literals, so
+  `seeds_from_bmc` yields seeds where Python yields none; golden files
+  must pin the C++ seeds.
 - **afl / sandbox**: one process runner with environment overrides. The
   AFL environment is currently passed with `setenv`.
 - **pbsd**: the ParanoidBSD verify-script import path is Python by nature.
@@ -573,7 +582,7 @@ wrong proof first, then by size.
 | D123 | bmc front end (both engines) gives ERROR on 2-D arrays with initialisers | M | docs/CONFORMANCE.md:983-985 (G1) |
 | D124 | Self-fuzzing covers only cparse, the IR parser and the report/journal readers, and is not run in CI | M | docs/FUZZ_SELF.md:145-151 ('Not covered yet') |
 | D125 | fetch_deps has no build recipe for most pinned tools (cppcheck, cbmc, esbmc, aflplusplus, klee, ...): the NOTRUN install hint only fetches source | M | scripts/fetch_deps.py:284-357,428-433; third_party/MANIFEST.toml build_hint rows |
-| D126 | Compound decreases measures (n - i, abs(n)) are ERROR in both engines; only a bare identifier is encoded | M | src/prism/stages/contracts.cpp:20-29; prism/contracts.py:339-341; … |
+| D126 | Compound decreases measures (n - i, abs(n)) are ERROR in both engines; only a bare identifier is encoded. C++ now encodes linear measures (identifiers and constants joined by + / -): countdown_complex is FAILED in C++, still ERROR in Python (intentional; do not freeze the Python verdict). `*`, calls and abs stay ERROR | M | src/prism/stages/contracts.cpp:20-29; prism/contracts.py:339-341; … |
 | D127 | Proof store re-checks pir artefacts with the legacy textual engines and hides proof-rank drops as 'reused' | M | docs/AI.md:345-371; src/prism/ai/proof_repair.cpp:170-225 (recheck_artefact), 353-356 … |
 | D128 | GUI parity: the C++ GUI has no stage table or NOTRUN list; the Python GUI has no finding ids or double-click explain and writes to prism-out instead of prism-out-gui | M | CLAUDE.md 'Output directory is prism-out/ (GUI: prism-out-gui/)'; docs/AI.md:490-494; … |
 | D129 | Template harness draft refuses non-int element buffers even when pir, which has a byte-level memory model, consumes it | M | docs/AI.md:104-107 and 211 (45 of the 67 uncleared NEEDS-HARNESS are char/void/typedef … |

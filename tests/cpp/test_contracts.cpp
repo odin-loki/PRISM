@@ -7,6 +7,7 @@
 #  undef ERROR
 #endif
 
+#include "prism/ai_proof.hpp"
 #include "prism/config.hpp"
 #include "prism/cparse.hpp"
 #include "prism/laws.hpp"
@@ -116,6 +117,29 @@ TEST_CASE("contracts clause keywords are case-insensitive in // and ACSL") {
     CHECK(any_has(acsl.ensures, "result>=0"));
 }
 
+TEST_CASE("contracts capitalised clauses count as a spec for drafting and for rapid") {
+    // Drafting skips a function that already has a spec, in any case.
+    CHECK(prism::ai::has_spec(tfn("contract_case.c", "inc_caps")));
+    CHECK(prism::ai::has_spec(tfn("contract_case.c", "inc_caps_bad")));
+    CHECK(prism::ai::has_spec(tfn("contract_case.c", "abs_caps")));
+    CHECK_FALSE(prism::ai::has_spec(tfn("fsm_recur.c", "fsm_recur")));
+    // A plain comment block above is not a spec.
+    CHECK_FALSE(prism::ai::has_spec(tfn("fsm_recur.c", "fsm_settle")));
+    // rapid reads `// Requires:` / `// ENSURES:` as its property; with no
+    // clause there is nothing to sample.
+    auto ok = prism::run_rapid({tfn("contract_case.c", "inc_caps")}, 16);
+    REQUIRE(ok.size() == 1);
+    CHECK(ok[0].status == std::string(laws::CLEAN));
+    CHECK(ok[0].extra.at("ensures") == R"(["result == x + 1"])");
+    CHECK(ok[0].extra.at("requires") == R"(["x < 100"])");
+    auto bad = prism::run_rapid({tfn("contract_case.c", "inc_caps_bad")}, 16);
+    REQUIRE(bad.size() == 1);
+    CHECK(bad[0].status == std::string(laws::FAILED));
+    CHECK(bad[0].cls == "FUNC-CONTRACT");
+    CHECK(has(bad[0].message, "ensures (result == x) failed"));
+    CHECK(prism::run_rapid({tfn("fsm_recur.c", "fsm_recur")}, 16).empty());
+}
+
 // ---- PROVED-ASSUMING, never PROVED ----
 
 #ifdef PRISM_HAS_Z3
@@ -209,6 +233,13 @@ TEST_CASE("contracts compound decreases n - i that grows is FAILED, not assumed"
     CHECK(xget(r, "decreases_unencoded") != "true");
     CHECK(xget(r, "decreases") == "n - i");
     CHECK(xget(r, "decreases_encoded") == "true");
+    // The refutation is the ranking assert, not the ensures or an overflow:
+    // the same requires / ensures without the decreases clause proves.
+    CHECK(r.cls == "FUNC-CONTRACT");
+    CHECK(has(r.message, "FUNC-CONTRACT"));
+    CHECK(xget(r, "decreases_assumed") == "false");
+    auto without = sd::bmc_with_assume(fn, 8, xget(r, "requires"), xget(r, "ensures"), std::nullopt, std::nullopt);
+    CHECK(without.status == std::string(laws::PROVED_ASSUMING));
 }
 
 TEST_CASE("contracts valid linear decreases are PROVED-ASSUMING; overflowing measure is FAILED") {
@@ -219,9 +250,19 @@ TEST_CASE("contracts valid linear decreases are PROVED-ASSUMING; overflowing mea
         CHECK(r.status != std::string(laws::PROVED_UNBOUNDED));
         CHECK(xget(r, "decreases_encoded") == "true");
     }
-    auto ovf = prove1(tfn("decreases_linear.c", "countdown_ovf"));
+    auto ovf_fn = tfn("decreases_linear.c", "countdown_ovf");
+    auto ovf = prove1(ovf_fn);
     CHECK(ovf.status == std::string(laws::FAILED));
     require_not_proof(ovf);
+    // The failure is signed overflow in the measure itself: the same
+    // function proves without the clause and with a measure that fits.
+    CHECK(ovf.cls == "INT-SIGNED-OVF");
+    CHECK(has(ovf.message, "INT-SIGNED-OVF"));
+    auto req = xget(ovf, "requires"), ens = xget(ovf, "ensures");
+    CHECK(sd::bmc_with_assume(ovf_fn, 8, req, ens, std::nullopt, std::nullopt).status ==
+          std::string(laws::PROVED_ASSUMING));
+    CHECK(sd::bmc_with_assume(ovf_fn, 8, req, ens, std::string("i - 0"), std::nullopt).status ==
+          std::string(laws::PROVED_ASSUMING));
 }
 #endif
 
