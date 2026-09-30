@@ -1,5 +1,6 @@
 /* The real CVE code, reduced, that the synthetic twins in
  * realworld_twins.c did not cover. */
+#include <assert.h>
 #include <stddef.h>
 #include <string.h>
 
@@ -66,4 +67,11 @@ int chain_many(struct link *a)
     s += a->next->v;
     s += a->next->v;
     return s;
+}
+
+/* A value assert dereferences a->next itself; it is not a null test. */
+int chain_value_assert(struct link *a)
+{
+    assert(a->next->v == 1);
+    return a->next->v;
 }

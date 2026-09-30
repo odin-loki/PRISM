@@ -32,3 +32,19 @@ int arity_no_default(int a, int b)
         return 0;
     }
 }
+
+int arity_conditional(int a, int b, int c)
+{
+    switch (a) {
+    case 1:
+        if (b)
+            switch (c) {
+            case 0: return 1;
+            default: return 2;
+            }
+    case 2:
+        return 3;
+    default:
+        return 0;
+    }
+}

@@ -1621,8 +1621,11 @@ bool param_null_tested(std::string_view name, std::string_view body) {
 
 // One pattern for every null test of param->member (or param.member):
 // `== NULL` / `!= 0` / `== Z_NULL` in either order, `!acc`, `acc` as a truth
-// value in if / while / && / ?:, and an assert-style macro whose argument starts
-// with acc (`TEST_ASSERT_NOT_NULL(item->child->next)` dereferences it).
+// value in if / while / && / ?:, an assert whose whole argument is acc
+// (`assert(p->m)`; `assert(p->m != NULL)` is the first form), and a *NOT_NULL
+// macro whose argument is acc or starts with `acc->`
+// (`TEST_ASSERT_NOT_NULL(item->child->next)` dereferences it). A value assert
+// such as `assert(p->m->v == 1)` is not a test of p->m: it dereferences it.
 // `acc || ...` is not a guard: the right side runs when acc is null.
 // Compiled once per (param, member) per thread: the lints ask for the same
 // access on every line.
@@ -1639,7 +1642,8 @@ const Regex& member_test_re(std::string_view param, std::string_view member) {
                       "|!\\s*\\(?\\s*" + acc + "(?!\\s*(?:->|\\.|\\[|\\())" +
                       "|(?:\\b(?:if|while)\\s*\\(|&&)\\s*" + acc + "\\s*(?:\\)|&&|\\?)" +
                       "|" + acc + "\\s*(?:&&|\\?)" +
-                      "|\\b\\w*(?:assert|ASSERT)\\w*\\s*\\(\\s*" + acc + ")";
+                      "|\\b\\w*(?:assert|ASSERT)\\w*\\s*\\(\\s*" + acc + "\\s*\\)" +
+                      "|\\b\\w*NOT_?NULL\\w*\\s*\\(\\s*" + acc + "\\s*(?:\\)|,|->))";
     auto [it, _] = cache.emplace(std::move(key), std::make_unique<Regex>(pat));
     return *it->second;
 }
@@ -2857,7 +2861,8 @@ bool nested_switch_leaves(const std::string& inner);
 
 // `body` with each nested switch statement blanked (newlines kept, so line
 // offsets hold). Its labels no longer split the outer arms. A nested switch
-// that leaves (above) becomes `return`, so the outer arm is terminated.
+// that leaves (above) and starts its own statement becomes `return`, so the
+// outer arm is terminated.
 std::string mask_nested_switches(const std::string& body) {
     static Regex sw(R"(\bswitch\s*\([^)]*\))");
     std::string out = body;
@@ -2879,7 +2884,12 @@ std::string mask_nested_switches(const std::string& body) {
             }
         }
         if (end == std::string::npos) break;
-        bool leaves = nested_switch_leaves(out.substr(brace + 1, end - brace - 1));
+        // Only a switch that starts its statement always runs: under
+        // `if (a) switch ...` or `else switch ...` the arm can go on past it.
+        std::size_t prev = kw;
+        while (prev > 0 && std::isspace(static_cast<unsigned char>(out[prev - 1]))) --prev;
+        bool starts_stmt = prev == 0 || std::string_view(";{}:").find(out[prev - 1]) != std::string_view::npos;
+        bool leaves = starts_stmt && nested_switch_leaves(out.substr(brace + 1, end - brace - 1));
         // Keep a statement in the arm: `return` when the nested switch
         // leaves, the keyword itself (not a stop) when it does not.
         for (std::size_t k = kw + 6; k <= end; ++k)
@@ -3135,7 +3145,8 @@ void off_by_one(const std::vector<std::string>& lines, std::string_view rel,
 
 // A store of 0 / '\0' into the array `base` on a later line of the body
 // (tinyexpr smoke.c: memcpy(expr + j*4, "sin ", 4) in a loop, then
-// `expr[j*4] = 0;`): the terminator is written, just not by the copy.
+// `expr[j*4] = 0;`) before anything reads it: the terminator is written,
+// just not by the copy.
 bool later_nul_store(std::string_view base, const std::vector<std::string>& body_lines, std::size_t from) {
     std::string b;
     for (char c : base)
@@ -3154,8 +3165,27 @@ bool later_nul_store(std::string_view base, const std::vector<std::string>& body
     std::string zero = R"((?:0|'\\0'|'\\x0+'|\(\s*char\s*\)\s*0)\s*;)";
     Regex store("(?<![\\w.])(?<!->)" + be + "\\s*\\[[^;]*\\]\\s*=\\s*" + zero + "|\\*\\s*\\(\\s*" + be +
                 "\\b[^;]*\\)\\s*=\\s*" + zero);
-    for (std::size_t k = from; k < body_lines.size(); ++k)
-        if (store.search(body_lines[k])) return true;
+    // The scan stops at the first read of the base: a store after the string
+    // was used (`puts(buf); buf[0] = 0;`) comes too late. A mention that is
+    // an element store or the destination of another mem* copy is a write.
+    Regex mention("(?<![\\w.])(?<!->)" + be + "\\b");
+    Regex write_after(R"(^\s*\[[^;\]]*\]\s*=(?!=))");
+    Regex write_before(R"(\b(?:memcpy|memmove|memset)\s*\(\s*&?\s*\(*\s*$)");
+    for (std::size_t k = from; k < body_lines.size(); ++k) {
+        auto& ln = body_lines[k];
+        auto st = store.search_match(ln);
+        auto st_at = st ? static_cast<std::size_t>(st->spans[0].first) : ln.size();
+        for (auto& m : mention.finditer(ln)) {
+            auto b0 = static_cast<std::size_t>(m.spans[0].first);
+            auto e0 = static_cast<std::size_t>(m.spans[0].second);
+            if (b0 >= st_at) break;
+            if (write_after.search(std::string_view(ln).substr(e0)) ||
+                write_before.search(std::string_view(ln).substr(0, b0)))
+                continue;
+            return false;
+        }
+        if (st) return true;
+    }
     return false;
 }
 

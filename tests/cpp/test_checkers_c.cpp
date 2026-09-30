@@ -13,6 +13,7 @@
 #include "prism/laws.hpp"
 #include "prism/pir.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <filesystem>
@@ -335,7 +336,7 @@ TEST_CASE("MEM-COPY-LEN: zlib 1.2.12 zmemcpy with extra_max - len (CVE-2022-3743
     auto tp = lint_tp("cve_shapes.c");
     auto r = rows(tp, "MEM-COPY-LEN");
     CHECK(r == std::set<std::pair<int, std::string>>{
-                   {50, "zmemcpy() length uses extra_max - len with no len < extra_max test before it (it can wrap)"}});
+                   {51, "zmemcpy() length uses extra_max - len with no len < extra_max test before it (it can wrap)"}});
     // The 1.2.12.1 fix `(len = ...) < extra_max`, a plain `len < extra_max`
     // and a literal length stay silent.
     CHECK(failed_count(lint_fp("copy_len_forms.c")) == 0);
@@ -345,7 +346,7 @@ TEST_CASE("MEM-COPY-LEN: zlib 1.2.12 zmemcpy with extra_max - len (CVE-2022-3743
 
 TEST_CASE("STR-NULL-MEMBER: a test after the use does not protect it (CVE-2023-50472)") {
     auto tp = lint_tp("cve_shapes.c");
-    CHECK(lines_of(tp, "STR-NULL-MEMBER") == std::set<int>{33, 59});
+    CHECK(lines_of(tp, "STR-NULL-MEMBER") == std::set<int>{34, 60});
     auto td = lint_td("null_member.c");
     std::set<std::string> fns;
     for (auto& f : td)
@@ -371,7 +372,9 @@ TEST_CASE("PTR-CHAIN-NULL: guarded idioms are silent, one row per access") {
     CHECK(failed_count(lint_fp("chain_guards.c")) == 0);
     auto tp = lint_tp("cve_shapes.c");
     // chain_many: three uses of a->next->v, one row at the first.
-    CHECK(lines_of(tp, "PTR-CHAIN-NULL") == std::set<int>{65});
+    // chain_value_assert: `assert(a->next->v == 1)` dereferences a->next, so
+    // it is the first unchecked use, not a guard.
+    CHECK(lines_of(tp, "PTR-CHAIN-NULL") == std::set<int>{66, 75});
     auto td = lint_td("chain_null.c");
     std::set<std::string> fns;
     for (auto& f : td)
@@ -385,25 +388,45 @@ TEST_CASE("PTR-CHAIN-NULL: guarded idioms are silent, one row per access") {
               "    return v;\n"
               "}\n");
     CHECK(lines_of(s.lint(), "PTR-CHAIN-NULL") == std::set<int>{3});
+    // Only an assert that null-tests the access is a guard.
+    Snippet a("asserts.c",
+              "#include <assert.h>\n"
+              "struct l { struct l *next; int v; };\n"
+              "int ok1(struct l *a) { assert(a->next); return a->next->v; }\n"
+              "int ok2(struct l *a) { assert(a->next != 0); return a->next->v; }\n"
+              "int ok3(struct l *a) { ASSERT_NOT_NULL(a->next); return a->next->v; }\n"
+              "int bad1(struct l *a) { assert(a->next->v == 1); return a->next->v; }\n"
+              "int bad2(struct l *a) { assert(a->next->v); return a->next->v; }\n"
+              "int bad3(struct l *a) { assert(a->next == a->next->next); return a->next->v; }\n");
+    CHECK(lines_of(a.lint(), "PTR-CHAIN-NULL") == std::set<int>{6, 7, 8});
 }
 
 TEST_CASE("PTR-CHAIN-NULL and MEM-COPY-LEN stay linear on a long function") {
-    std::string text = "#include <string.h>\nstruct c { int c; };\nstruct b { struct c *b0; unsigned n_max; };\n"
-                       "void big(struct b *a, char *d, const char *s, unsigned n) {\n";
-    constexpr int kLines = 5000;
-    for (int i = 0; i < kLines; ++i) {
-        text += "    a->b" + std::to_string(i % 50) + "->c = " + std::to_string(i) + ";\n";
-        if (i % 100 == 0) text += "    memcpy(d, s, n);\n";
-    }
-    text += "}\n";
-    Snippet s("big.c", text);
-    auto t0 = std::chrono::steady_clock::now();
-    auto out = s.lint();
-    auto secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-    CHECK(secs < 10.0);
+    auto make = [](int n_lines) {
+        std::string text = "#include <string.h>\nstruct c { int c; };\nstruct b { struct c *b0; unsigned n_max; };\n"
+                           "void big(struct b *a, char *d, const char *s, unsigned n) {\n";
+        for (int i = 0; i < n_lines; ++i) {
+            text += "    a->b" + std::to_string(i % 50) + "->c = " + std::to_string(i) + ";\n";
+            if (i % 100 == 0) text += "    memcpy(d, s, n);\n";
+        }
+        return text + "}\n";
+    };
+    // Scaling, not absolute speed: doubling the function must not come close
+    // to quadrupling the time (it did when each line rescanned the body).
+    auto timed = [](const Snippet& s, std::vector<prism::Finding>& out) {
+        auto t0 = std::chrono::steady_clock::now();
+        out = s.lint();
+        return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    };
+    Snippet half("half.c", make(2500)), full("full.c", make(5000));
+    std::vector<prism::Finding> out_half, out;
+    double t_half = timed(half, out_half);
+    double t_full = timed(full, out);
+    CHECK(t_full < 3.0 * std::max(t_half, 0.05));
     // One row per distinct unchecked access, not one per line.
     CHECK(lines_of(out, "PTR-CHAIN-NULL").size() == 50);  // a->b0 .. a->b49
     CHECK(lines_of(out, "MEM-COPY-LEN").size() == 50);
+    CHECK(lines_of(out_half, "MEM-COPY-LEN").size() == 25);
 }
 
 // --- real-code false alarms and their twins -----------------------------------
@@ -429,12 +452,32 @@ TEST_CASE("PTR-UNCHECKED-ALLOC: a same-file macro that null-tests its argument i
 TEST_CASE("CTRL-FALLTHROUGH: a nested switch that returns on every arm ends the case") {
     CHECK(failed_count(lint_fp("nested_switch.c")) == 0);
     // An inner break, or no default, leaves the outer arm running on.
-    CHECK(lines_of(lint_tp("nested_switch.c"), "CTRL-FALLTHROUGH") == std::set<int>{8, 25});
+    CHECK(lines_of(lint_tp("nested_switch.c"), "CTRL-FALLTHROUGH") == std::set<int>{8, 25, 40});
 }
 
 TEST_CASE("STR-MISSING-NUL: a later NUL store into the same array terminates it") {
     CHECK(failed_count(lint_fp("later_nul.c")) == 0);
-    CHECK(lines_of(lint_tp("later_nul.c"), "STR-MISSING-NUL") == std::set<int>{9});
+    // The twin stores into another array; read_then_reset reads the string
+    // before the store.
+    CHECK(lines_of(lint_tp("later_nul.c"), "STR-MISSING-NUL") == std::set<int>{10, 17});
+    // A second copy into the same array is a write, not a read.
+    Snippet s("two_copies.c",
+              "#include <string.h>\n"
+              "void f(char *name) {\n"
+              "    memcpy(name, \"ab\", 2);\n"
+              "    memcpy(name + 2, \"cd\", 2);\n"
+              "    name[4] = '\\0';\n"
+              "}\n");
+    CHECK(lines_of(s.lint(), "STR-MISSING-NUL").empty());
+    // A read earlier on the same line as the store still comes first.
+    Snippet r("same_line.c",
+              "#include <stdio.h>\n"
+              "#include <string.h>\n"
+              "void f(char *buf) {\n"
+              "    memcpy(buf, \"abc\", 3);\n"
+              "    puts(buf); buf[0] = 0;\n"
+              "}\n");
+    CHECK(lines_of(r.lint(), "STR-MISSING-NUL") == std::set<int>{4});
 }
 
 TEST_CASE("MEM-CAPACITY-FIRST: a failure arm that frees the owner and leaves") {
@@ -465,5 +508,5 @@ TEST_CASE("CTRL-FALLTHROUGH (Clang AST): SwitchStmt terminates only with a defau
         return out;
     };
     CHECK(ast_rows("testdata_fp", "nested_switch.c").empty());
-    CHECK(ast_rows("testdata_tp", "nested_switch.c") == std::set<int>{8, 25});
+    CHECK(ast_rows("testdata_tp", "nested_switch.c") == std::set<int>{8, 25, 40});
 }
