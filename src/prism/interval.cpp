@@ -226,9 +226,14 @@ std::pair<std::string, std::string> take_block(std::string text) {
 
 std::vector<std::string> tok(const std::string& src) {
     static Regex rx(
-        R"(0x[0-9a-fA-F]+|\d+|'(?:\\.|[^\\'])'|"(?:\\.|[^\\"])*"|[A-Za-z_]\w*|&&|\|\||==|!=|<=|>=|<<|>>|\+\+|--|[+\-*/%<>=!&|^~()[\],?:])");
+        R"(0x[0-9a-fA-F]+(?:'[0-9a-fA-F]+)*|\d+(?:'\d+)*|'(?:\\.|[^\\'])'|"(?:\\.|[^\\"])*"|[A-Za-z_]\w*|&&|\|\||==|!=|<=|>=|<<|>>|\+\+|--|[+\-*/%<>=!&|^~()[\],?:])");
     std::vector<std::string> out;
-    for (auto& m : rx.finditer(src)) out.push_back(m.text);
+    for (auto& m : rx.finditer(src)) {
+        out.push_back(m.text);
+        // Digit separators (`1'000`) are not part of the value.
+        if (std::isdigit(static_cast<unsigned char>(m.text[0])) && m.text.find('\'') != std::string::npos)
+            std::erase(out.back(), '\'');
+    }
     return out;
 }
 

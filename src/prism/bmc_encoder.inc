@@ -2141,14 +2141,21 @@ const std::map<std::string, std::string>& builtin_macros() {
     return M;
 }
 
+// A number may carry C23 / C++14 digit separators (`1'000`, `0xFF'FF`); the
+// token is the number without them, so `'` never opens a character literal
+// inside a number.
 std::vector<std::string> ctok(const std::string& src) {
     static Regex rx(
-        "(0[xX][0-9a-fA-F]+[uUlL]*)|(0[bB][01]+[uUlL]*)|(\\d+[uUlL]*)|"
+        "(0[xX][0-9a-fA-F]+(?:'[0-9a-fA-F]+)*[uUlL]*)|(0[bB][01]+(?:'[01]+)*[uUlL]*)|(\\d+(?:'\\d+)*[uUlL]*)|"
         "('(?:\\\\.|[^\\\\'])+')|(\"(?:\\\\.|[^\\\\\"])*\")|"
         "([A-Za-z_]\\w*)|(::|->|&&|\\|\\||==|!=|<=|>=|<<|>>|\\+\\+|--)|"
         "([+\\-*/%<>=!&|^~()[\\],?:.;{}])|(\\S)");
     std::vector<std::string> out;
-    for (auto& m : rx.finditer(src)) out.push_back(m.text);
+    for (auto& m : rx.finditer(src)) {
+        out.push_back(m.text);
+        if (std::isdigit(static_cast<unsigned char>(m.text[0])) && m.text.find('\'') != std::string::npos)
+            std::erase(out.back(), '\'');
+    }
     return out;
 }
 
