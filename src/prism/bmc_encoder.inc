@@ -104,6 +104,10 @@ struct Arr {
     int n;
     int w = WIDTH;
     bool u = false;
+    // `T a[N][M]...`: the dimensions, flattened row-major into n = N*M*...
+    // elements (each subscript is checked against its own dimension,
+    // flat_index). Empty: a one-dimensional array of n elements.
+    std::vector<int> dims = {};
 };
 
 struct State {
@@ -374,6 +378,53 @@ z3::expr oob(Enc& e, const TV& i0, int n) {
 
 z3::expr index32(Enc& e, const TV& i) {
     return e.conv(e.promote(i), CType{WIDTH, false}).v;
+}
+
+// Element a[s0][s1]... of a multi-dimensional array: every subscript is
+// checked against its own dimension (C11 6.5.2.1p3, J.2: a[0][M] on
+// `T a[N][M]` is undefined although it stays inside the object), then the
+// row-major flat index. With any subscript out of bounds the flat index is
+// n, outside the object, so no element is read or written through it (the
+// OOB property already reports the access).
+TV flat_index(Enc& e, const Arr& arr, const std::vector<TV>& subs, const std::string& prop,
+              const std::string& cls) {
+    z3::expr inb = e.ctx.bool_val(true);
+    z3::expr flat = e.ctx.bv_val(0, WIDTH);
+    for (size_t k = 0; k < subs.size(); ++k) {
+        auto bad = oob(e, subs[k], arr.dims[k]);
+        e.add_prop(prop, cls, bad, e.pc);
+        inb = inb && !bad;
+        flat = flat * e.ctx.bv_val(arr.dims[k], WIDTH) + index32(e, subs[k]);
+    }
+    return TV{z3::ite(inb, flat, e.ctx.bv_val(arr.n, WIDTH)), WIDTH, true};
+}
+
+// "i][j" (the text between the outer brackets of a[i][j]) -> {"i", "j"}.
+std::vector<std::string> split_subscripts(const std::string& src) {
+    std::vector<std::string> out;
+    std::string cur;
+    int depth = 0;
+    for (size_t i = 0; i < src.size(); ++i) {
+        char ch = src[i];
+        if (ch == '[' || ch == '(') ++depth;
+        if ((ch == ']' || ch == ')') && depth > 0) {
+            --depth;
+            cur.push_back(ch);
+            continue;
+        }
+        if (ch == ']' && depth == 0) {
+            size_t k = i + 1;
+            while (k < src.size() && std::isspace(static_cast<unsigned char>(src[k]))) ++k;
+            if (k >= src.size() || src[k] != '[') throw ParseFail("UNENCODED: subscript " + src);
+            out.push_back(cur);
+            cur.clear();
+            i = k;
+            continue;
+        }
+        cur.push_back(ch);
+    }
+    out.push_back(cur);
+    return out;
 }
 
 // Per-element initialisation of local arrays (prism/bmc.py: _Enc.shadow_init
@@ -875,6 +926,8 @@ struct Parser {
     }
     void decl(Enc& e, std::string stmt);
     void decl_one(Enc& e, const std::string& stmt);
+    void decl_multi(Enc& e, const std::string& typ, const std::string& name, const std::string& dims_src,
+                    std::string init);
     void assign_or_expr(Enc& e, std::string stmt);
     void astore(Enc& e, const std::string& name, const std::string& idx, const std::string& rhs);
     std::string assert_stmt(Enc& e, std::string text);
@@ -1281,11 +1334,24 @@ void Parser::decl_one(Enc& e, const std::string& stmt) {
                 throw ParseFail("uninitialised pointer decl: " + stmt.substr(0, 80));
             auto src = strip(*m->groups[2]);
             if (is_ident(src) && e.is_array(src)) {
+                if (!e.arrays.at(e.canonical(src)).dims.empty())
+                    throw ParseFail("UNENCODED: pointer into multi-dimensional array " + src);
                 shadow(name);
                 e.declare_alias(name, src);
                 return;
             }
             throw ParseFail("pointer decl must alias an array: " + stmt.substr(0, 80));
+        }
+    }
+    {
+        // `T a[N][M]...` (two or more dimensions, each a decimal constant).
+        static Regex mdim(std::string("(") + CDECL_TYPE +
+                          ")\\s+([A-Za-z_]\\w*)\\s*((?:\\[[^\\]]+\\]\\s*){2,})(?:=\\s*(.*))?$");
+        if (auto m = mdim.search_match(stmt); m && m->spans.size() > 1 && m->spans[0].first == 0 &&
+            static_cast<size_t>(m->spans[0].second) == stmt.size()) {
+            decl_multi(e, m->group(1), m->group(2), m->group(3),
+                       m->groups.size() > 4 && m->groups[4] ? strip(*m->groups[4]) : std::string{});
+            return;
         }
     }
     {
@@ -1371,6 +1437,80 @@ void Parser::decl_one(Enc& e, const std::string& stmt) {
     }
 }
 
+// `T name[d0][d1]... (= init)`. The array is one flat Arr of d0*d1*...
+// elements with its dimensions kept (flat_index). A brace initialiser lists
+// either one braced initialiser per row (recursively) or plain values that
+// fill the elements of that subobject in order (brace elision, C11
+// 6.7.9p20); every element not listed is zero (p21). Mixed or designated
+// lists, excess items and string initialisers are unencoded.
+void Parser::decl_multi(Enc& e, const std::string& typ, const std::string& name, const std::string& dims_src,
+                        std::string init) {
+    std::vector<int> dims;
+    long long total = 1;
+    for (auto& m : rx_finditer("\\[([^\\]]*)\\]", dims_src)) {
+        auto d = strip(m.group(1));
+        if (!rx_fullmatch("\\d+", d)) throw ParseFail("VLA unencoded");
+        if (d.size() > 7) throw ParseFail("UNENCODED: array size of " + name);
+        int n = std::stoi(d);
+        if (n <= 0) throw ParseFail("UNENCODED: array size of " + name);
+        dims.push_back(n);
+        total *= n;
+        if (total > (1 << 24)) throw ParseFail("UNENCODED: array size of " + name);
+    }
+    auto ct = ctype_parse(typ);
+    if (!ct) throw ParseFail("UNENCODED: element type of " + name);
+    if (e.declared(name)) throw ParseFail("UNENCODED: shadowed declaration of " + name);
+    const int n = static_cast<int>(total);
+    if (!init.empty() && rx_search("\\{\\s*(?:\\[[^\\]]+\\]|\\.[A-Za-z_]\\w*)\\s*=", init))
+        throw ParseFail("designated init unencoded");
+    if (init.size() >= 2 && init.front() == '{' && init.back() == '}') {
+        // (flat index, source) of every listed value, in source order.
+        std::vector<std::pair<int, std::string>> items;
+        std::function<void(const std::string&, size_t, int)> fill = [&](const std::string& inner, size_t level,
+                                                                         int base) {
+            std::vector<std::string> xs;
+            for (auto& x : split_comma(inner)) xs.push_back(strip(x));
+            if (!xs.empty() && xs.back().empty()) xs.pop_back();  // trailing comma, or {}
+            int size = 1;  // elements of this subobject
+            for (size_t k = level; k < dims.size(); ++k) size *= dims[k];
+            size_t braced = 0;
+            for (auto& x : xs) {
+                if (x.empty()) throw ParseFail("UNENCODED: initialiser of " + name);
+                if (x.front() == '{') ++braced;
+            }
+            if (braced == 0) {
+                if (static_cast<int>(xs.size()) > size) throw ParseFail("UNENCODED: excess initialisers of " + name);
+                for (size_t k = 0; k < xs.size(); ++k) items.emplace_back(base + static_cast<int>(k), xs[k]);
+                return;
+            }
+            if (braced != xs.size() || level + 1 >= dims.size())
+                throw ParseFail("UNENCODED: nested initialiser of " + name);
+            if (static_cast<int>(xs.size()) > dims[level]) throw ParseFail("UNENCODED: excess initialisers of " + name);
+            int stride = size / dims[level];
+            for (size_t k = 0; k < xs.size(); ++k) {
+                if (xs[k].back() != '}') throw ParseFail("UNENCODED: nested initialiser of " + name);
+                fill(xs[k].substr(1, xs[k].size() - 2), level + 1, base + static_cast<int>(k) * stride);
+            }
+        };
+        fill(init.substr(1, init.size() - 2), 0, 0);
+        // The items are evaluated (their UB is checked) before the name is in scope.
+        std::vector<TV> vals;
+        for (auto& [_, x] : items) vals.push_back(expr(e, x));
+        auto arr = z3::const_array(e.ctx.bv_sort(WIDTH), e.bv_zero(ct->w));
+        for (size_t k = 0; k < vals.size(); ++k)
+            arr = z3::store(arr, e.ctx.bv_val(items[k].first, WIDTH), e.conv(vals[k], *ct).v);
+        e.declare_array(name, Arr{arr, n, ct->w, ct->u, dims});
+        shadow_init(e, name, true);
+        return;
+    }
+    if (!init.empty() && init != "__prism_unconstrained") throw ParseFail("UNENCODED: initialiser of " + name);
+    // No initialiser: contents arbitrary, every element unwritten.
+    auto arr = e.ctx.constant((name + "_arr" + std::to_string(++e.fresh)).c_str(),
+        e.ctx.array_sort(e.ctx.bv_sort(WIDTH), e.ctx.bv_sort(static_cast<unsigned>(ct->w))));
+    e.declare_array(name, Arr{arr, n, ct->w, ct->u, dims});
+    shadow_init(e, name, !init.empty());
+}
+
 void Parser::assign_or_expr(Enc& e, std::string stmt) {
     while (!stmt.empty() && stmt.back() == ';') stmt.pop_back();
     stmt = strip(stmt);
@@ -1424,6 +1564,21 @@ void Parser::assign_or_expr(Enc& e, std::string stmt) {
 void Parser::astore(Enc& e, const std::string& name0, const std::string& idx, const std::string& rhs) {
     auto name = e.canonical(name0);
     if (!e.arrays.count(name)) throw ParseFail("UNENCODED: store to unknown array " + name0);
+    auto subs_src = split_subscripts(idx);
+    if (!e.arrays.at(name).dims.empty()) {
+        auto arr = e.arrays.at(name);
+        if (subs_src.size() != arr.dims.size())
+            throw ParseFail("UNENCODED: store to a row of multi-dimensional array " + name0);
+        std::vector<TV> subs;
+        for (auto& x : subs_src) subs.push_back(expr(e, x));
+        auto v = expr(e, rhs);
+        auto flat = flat_index(e, arr, subs, "oob-write", "MEM-OOB-WRITE");
+        arr.a = z3::store(arr.a, index32(e, flat), e.conv(v, CType{arr.w, arr.u}).v);
+        e.arrays.insert_or_assign(name, arr);
+        mark_elem_init(e, name, index32(e, flat));
+        return;
+    }
+    if (subs_src.size() != 1) throw ParseFail("UNENCODED: store through an element of " + name0);
     auto i = expr(e, idx);
     auto v = expr(e, rhs);
     auto arr = e.arrays.at(name);
@@ -2686,6 +2841,7 @@ int sizeof_type(const std::vector<std::string>& inner, Enc& e) {
     if (auto ct = ctype_parse(joined)) return std::max(1, ct->w / 8);
     if (inner.size() == 4 && e.is_array(inner[0]) && inner[1] == "[" && inner[3] == "]") {
         auto& a = e.arrays.at(e.canonical(inner[0]));
+        if (!a.dims.empty()) throw ParseFail("UNENCODED: sizeof a row of " + inner[0]);
         return std::max(1, a.w / 8);
     }
     throw ParseFail("UNENCODED: sizeof " + joined);
@@ -2791,6 +2947,7 @@ TV parse_expr(Enc& e, std::string src, Parser& parser) {
                 throw ParseFail("deref of '" + name + "'");
             eat();
             auto arr = e.arrays.at(e.canonical(name));
+            if (!arr.dims.empty()) throw ParseFail("UNENCODED: row of multi-dimensional array " + name);
             auto idx = e.int_val(0);
             e.add_prop("oob-read", "MEM-OOB-READ", oob(e, idx, arr.n), e.pc);
             check_elem(e, e.canonical(name), idx, arr.n);
@@ -2960,7 +3117,18 @@ TV parse_expr(Enc& e, std::string src, Parser& parser) {
                 eat("]");
                 if (!e.is_array(t)) throw ParseFail("UNENCODED: index into unknown array " + t);
                 auto arr = e.arrays.at(e.canonical(t));
-                e.add_prop("oob-read", "MEM-OOB-READ", oob(e, idx, arr.n), e.pc);
+                if (!arr.dims.empty()) {
+                    std::vector<TV> subs{idx};
+                    while (subs.size() < arr.dims.size()) {
+                        if (peek() != "[") throw ParseFail("UNENCODED: row of multi-dimensional array " + t);
+                        eat("[");
+                        subs.push_back(parse(0));
+                        eat("]");
+                    }
+                    idx = flat_index(e, arr, subs, "oob-read", "MEM-OOB-READ");
+                } else {
+                    e.add_prop("oob-read", "MEM-OOB-READ", oob(e, idx, arr.n), e.pc);
+                }
                 check_elem(e, e.canonical(t), idx, arr.n);
                 return TV{z3::select(arr.a, index32(e, idx)), arr.w, arr.u};
             }
