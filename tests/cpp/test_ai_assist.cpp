@@ -505,7 +505,7 @@ TEST_CASE("ai-assist draft: theorem index from proofs/") {
                            "trivial\nend Verdict\nsection S\nprivate theorem c : True := trivial\nend S\nend Prism\n");
     auto t = prism::ai::lean_theorems(root);
     CHECK(t == std::vector<std::string>{"Prism.Verdict.b", "Prism.a", "Prism.c"});
-    auto proofs = fs::path(__FILE__).parent_path().parent_path().parent_path() / "proofs";
+    auto proofs = fs::path(PRISM_SOURCE_DIR) / "proofs";
     auto real = prism::ai::lean_theorems(proofs);
     CHECK(std::find(real.begin(), real.end(), "Prism.proved_bounded_never_merge") != real.end());
 }
@@ -513,7 +513,7 @@ TEST_CASE("ai-assist draft: theorem index from proofs/") {
 TEST_CASE("ai-assist draft: template claims all link; unlinked or unsupported claims are rejected") {
     auto root = assist_tmp("draft");
     auto report = sample_report(root / "src");
-    auto proofs = fs::path(__FILE__).parent_path().parent_path().parent_path() / "proofs";
+    auto proofs = fs::path(PRISM_SOURCE_DIR) / "proofs";
     auto thms = prism::ai::lean_theorems(proofs);
     for (std::string kind : {"report", "assurance"}) {
         auto d = prism::ai::draft_template(report, kind, thms);
@@ -731,7 +731,7 @@ TEST_CASE("ai-assist predict collect conformance logs") {
     if (!outp || !*outp) return;
     fs::path out = outp;
     fs::create_directories(out);
-    const auto repo = fs::path(__FILE__).parent_path().parent_path().parent_path();
+    const auto repo = fs::path(PRISM_SOURCE_DIR);
     std::vector<fs::path> roots;
     for (const auto& l : lines_of(out / "roots.txt")) roots.push_back(repo / l);
     if (roots.empty()) roots.push_back(repo / "tests" / "conformance");

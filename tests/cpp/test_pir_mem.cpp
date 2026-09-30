@@ -559,7 +559,7 @@ TEST_CASE("pir mem: clang round trip on tests/pir/mem_*.c (skips without clang/o
         MESSAGE("clang/opt not on PATH: pir memory round trip skipped");
         return;
     }
-    auto dir = std::filesystem::path(__FILE__).parent_path().parent_path() / "pir";
+    auto dir = std::filesystem::path(PRISM_SOURCE_DIR) / "tests" / "pir";
     cfg.root = dir;
     cfg.jobs = 2;
     auto out = pp::run_pir({dir / "mem_array.c", dir / "mem_heap.c", dir / "mem_contract.c"}, cfg);

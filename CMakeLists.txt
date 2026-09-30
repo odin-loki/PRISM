@@ -486,6 +486,11 @@ if(PRISM_TESTS)
     "${PRISM_ROOT}/include"
     "${PRISM_ROOT}/third_party")
   target_link_libraries(prism_tests PRIVATE prism_core)
+  # The tests find testdata/, proofs/ and tests/data/ from the source dir,
+  # not from __FILE__: Ninja passes sources relative to the build dir
+  # ("../tests/cpp/..."), which resolves only when run from build/, and CI
+  # runs ./build/prism_tests from the repo root.
+  target_compile_definitions(prism_tests PRIVATE PRISM_SOURCE_DIR="${PRISM_ROOT}")
   if(UNIX)
     set_target_properties(prism_tests PROPERTIES BUILD_RPATH "$ORIGIN" INSTALL_RPATH "$ORIGIN")
   endif()

@@ -87,7 +87,7 @@ const PrivateTmp g_private_tmp;
 // testdata lives at <repo>/testdata. Walk from this file so a space in
 // "Code Analysis" is never split the way an env var / argv path would be.
 static std::filesystem::path testdata_root() {
-    return std::filesystem::path(__FILE__).parent_path().parent_path().parent_path()
+    return std::filesystem::path(PRISM_SOURCE_DIR)
            / "testdata";
 }
 
@@ -227,7 +227,7 @@ TEST_CASE("one-line return is not missing-return") {
 // testdata_tp/ (the buggy twins) sit beside testdata/. Same corpus and
 // expectations as tests/test_false_positives.py.
 static std::filesystem::path repo_dir(const char* name) {
-    return std::filesystem::path(__FILE__).parent_path().parent_path().parent_path() / name;
+    return std::filesystem::path(PRISM_SOURCE_DIR) / name;
 }
 
 static std::vector<std::string> fn_names(const std::filesystem::path& p) {
@@ -6822,7 +6822,7 @@ TEST_CASE("solver bench: portfolio vs Z3 alone" * doctest::skip()) {
 namespace {
 
 nlohmann::json verdict_tables() {
-    auto p = std::filesystem::path(__FILE__).parent_path().parent_path() / "data" / "verdict_tables.json";
+    auto p = std::filesystem::path(PRISM_SOURCE_DIR) / "tests" / "data" / "verdict_tables.json";
     std::ifstream in(p);
     REQUIRE(in.good());
     return nlohmann::json::parse(in);

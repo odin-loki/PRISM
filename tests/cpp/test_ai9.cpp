@@ -183,7 +183,7 @@ TEST_CASE("ai9 lean: best-first search rejects a wrong proof with the real kerne
     }
     auto dir = tmp("lean-search");
     auto proj = dir / "proj";
-    auto repo_toolchain = fs::path(__FILE__).parent_path().parent_path().parent_path() / "proofs" / "lean-toolchain";
+    auto repo_toolchain = fs::path(PRISM_SOURCE_DIR) / "proofs" / "lean-toolchain";
     write(proj / "lean-toolchain", slurp(repo_toolchain));
     write(proj / "lakefile.toml", "name = \"t\"\nversion = \"0.1.0\"\ndefaultTargets = [\"T\"]\n\n[[lean_lib]]\nname = \"T\"\n");
     write(proj / "T.lean",

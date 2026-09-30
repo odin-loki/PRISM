@@ -59,7 +59,7 @@ std::string slurp(const fs::path& p) {
     return ss.str();
 }
 
-fs::path repo_root() { return fs::path(__FILE__).parent_path().parent_path().parent_path(); }
+fs::path repo_root() { return fs::path(PRISM_SOURCE_DIR); }
 
 prism::pir::Translation cert_pir(const std::string& ir, const std::string& fn) {
     auto m = prism::pir::ir::parse_module(ir);

@@ -15,7 +15,7 @@
 namespace {
 
 std::filesystem::path conc_dir() {
-    return std::filesystem::path(__FILE__).parent_path().parent_path() / "conc";
+    return std::filesystem::path(PRISM_SOURCE_DIR) / "tests" / "conc";
 }
 
 bool have_frontend() {
