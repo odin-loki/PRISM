@@ -38,7 +38,7 @@ class AssuranceCheck(unittest.TestCase):
                 "`thm:no_such_theorem_anywhere` `thm:proved_bounded_never_merge` "
                 "`thm:Houdini.houdini_sound` `thm:Houdini.bmc_sound`\n"
                 "`docs/NO_SUCH.md` `docs/VERDICTS.md#no-such-anchor` `docs/VERDICTS.md#verdict-proved`\n"
-                "`tests/test_verdict.py::NoSuchClass` `tests/test_verdict.py::TestAudit`\n"
+                "`tests/cpp/test_main.cpp::NoSuchClass` `tests/cpp/test_main.cpp::verdict audit demotes`\n"
                 "`thm:<Name>` is a placeholder\n",
                 encoding="utf-8")
             errors, counts = AC.scan(Path(d))
