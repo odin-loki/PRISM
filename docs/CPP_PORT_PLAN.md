@@ -84,6 +84,34 @@ lands with a doctest.
     that were never ported.
   - Decide the intended behaviour for each difference: take the stricter
     guard unless it hides a real bug.
+  - Decisions taken (the C++ engine differs from `prism/checkers.py` on
+    purpose; each is locked in `tests/cpp/test_checkers_cxx.cpp`, so the
+    golden-file freeze must not flag them):
+    - CXX-SET-FIND, CXX-MULTIMAP-FIND, CXX-MULTISET-FIND and CXX-MAP-AT do
+      not skip a function that also names a flat_*/unordered_*/multi*
+      container. The declaration regexes are word-bounded, so a flagged
+      find()/at() is on a real std::set/map; the Python skip only hid bugs.
+    - CXX-VIRTUAL-IN-CTOR reads comment- and string-blanked text: a
+      "virtual" in a comment or literal declares nothing (Python reads raw
+      text and reported 28 such calls in `astlint_checks.cpp`).
+    - CXX-SYSTEM-ERROR needs the word `system_error`: a
+      `filesystem_error` catch is not one (Python gates on the substring).
+      A mention inside a string or raw-string literal is blanked first and
+      does not count (both engines agree on that).
+    - MEM-COPY-LEN reports only a variable length: a literal length such as
+      `memcpy(code, classbits, 32)` is fixed at compile time and is not the
+      unchecked length this rule is about. A literal length larger than a
+      local destination is reported by the warnings stage
+      (`-Wfortify-source`: "'memcpy' will always overflow"; NOTRUN without
+      a compiler).
+    - CXX-UNINIT-MEMBER: a constructor-body `mem = x` initialises the
+      member, `mem == x` does not (Python matches `mem\s*=` and so also
+      accepts a comparison). Python keeps the old regex until phase 5.
+    - STR-STRNCPY-NUL / STR-SNPRINTF: the regex rules in `checkers_core`
+      run on C sources only, as in Python. The Clang-AST lint
+      (`astlint_checks.cpp`) still reports STR-STRNCPY-NUL on C++ files:
+      it sees the real local array and the missing NUL store, which is the
+      same bug in C++.
 - **cparse**: `split_params` rejoins qualified types with spaces, so
   CXX-VECTOR-INDEX misses `const std::vector<T>&`. A non-UTF-8 source can
   crash the JSON dump; decode with replacement.
@@ -394,7 +422,7 @@ record.
 | `tests/test_journal.py` | python-engine-behaviour | S | tests/cpp/test_main.cpp journal section: add pipeline-resume cases against run_pipeline |
 | `tests/test_klee_adapter.py` | python-engine-behaviour | M | tests/cpp/test_adapters.cpp with a fake klee script writing .err/.ktest into klee-out |
 | `tests/test_libfuzzer.py` | mixed | M | tests/cpp/test_adapters.cpp: prism::libfuzzer_probe(Config) (adapters.cpp:970) with PATH pointed at fake clang stubs; campaign cases via the fuzz stage with --allow-exec off/on |
-| `tests/test_lints_fastpath.py` | python-engine-behaviour | S | hash-seed and _required_literal cases deleted (Python-only); add doctest fuzz of prism::strip_comments_keep_lines/match_brace (cparse.cpp:759/847) vs reference loop and interval vaarg_unenc_bad/ok … |
+| `tests/test_lints_fastpath.py` | python-engine-behaviour | S | strip/match_brace fuzz, sorted names and the interval va_arg gate are in tests/cpp/test_lint_corpus.cpp ("lint fastpath: ..."). The _required_literal and PYTHONHASHSEED cases test only the Python engine: they stay until phase 5 and are deleted with prism/checkers.py |
 | `tests/test_llm.py` | python-engine-behaviour | M | tests/cpp/test_llm.cpp against src/prism/stages/llm.cpp + hypothesize.cpp with a fake local HTTP server (or engine seam) for error/timeout cases |
 | `tests/test_ltl.py` | mixed | S | tests/cpp/test_main.cpp ltl section (or split tests/cpp/test_ltl.cpp): add the FSM-extraction and comments_only.ltl cases; drop source-read test |
 | `tests/test_mined.py` | python-engine-behaviour | S | tests/cpp/test_contracts.cpp + tests/cpp/test_ltl.cpp for the gaps (ACSL no-leak, seeds from cex, branch goals in stages/concolic.cpp); rest delete as duplicated |
