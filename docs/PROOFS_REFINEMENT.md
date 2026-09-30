@@ -599,7 +599,7 @@ the `fptrunc` condition is the same shape, but it is not yet a Lean theorem.
 
 `lean4export` (v4.34.0) and `nanoda` (0.4.19) are pinned in
 `third_party/MANIFEST.toml` as external tools and built by
-`python scripts/fetch_deps.py --tool lean4export` / `--tool nanoda`
+`prism-deps tool lean4export nanoda`
 (recipes `lake` and `cargo`). A missing checker is NOTRUN (exit 3), never a
 pass. `.github/workflows/proofs-recheck.yml` runs the recheck for
 `proofs/`, `proofs/semantics`, `proofs/techniques` and `proofs/refinement`

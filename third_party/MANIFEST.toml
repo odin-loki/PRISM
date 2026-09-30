@@ -1,15 +1,15 @@
 # PRISM third-party manifest (roadmap Part 1.1).
 #
-# One [[component]] per dependency. Read by scripts/fetch_deps.py,
-# scripts/sbom.py, scripts/licence_check.py, prism/config.py and (at CMake
-# configure time) CMakeLists.txt, which bakes name -> commit into the C++
-# engine so `prism` knows which ~/.prism/tools/<name>/<commit>/ to trust.
+# One [[component]] per dependency. Read by prism-deps (src/tools/prism_deps:
+# linked, tool, licence-check, sbom), prism/config.py and, at build time,
+# `prism-deps pins`, which bakes name -> commit into the C++ engine so
+# `prism` knows which ~/.prism/tools/<name>/<commit>/ to trust.
 #
 # kind:
 #   linked    compiled into PRISM from the source copy under `path`. Must carry a
-#             permissive SPDX licence (scripts/licence_check.py fails otherwise).
+#             permissive SPDX licence (prism-deps licence-check fails otherwise).
 #   external  run as a separate, unmodified process. Never linked. Fetched by
-#             `python scripts/fetch_deps.py --tool NAME` into
+#             `prism-deps tool NAME` into
 #             ~/.prism/tools/<name>/<commit>/ (bin/ holds the executables).
 #   system    taken from the host (package manager / PATH). Not pinned by SHA;
 #             PRISM still records "path:<abs>;sha256:<file hash>" as tool_sha.
@@ -25,10 +25,10 @@
 #                 machine that pinned these, and their gzip bytes are not a
 #                 stable contract; the git-archive tar is.)
 # tree_sha256     (linked) SHA-256 over sorted "<relpath>\0<sha256(file)>\n" lines of
-#                 the in-tree copy; `fetch_deps.py --tree-digest DIR` prints it.
+#                 the in-tree copy; `prism-deps tree-digest DIR` prints it.
 # drift           (linked) files where the in-tree copy differs from the pinned
 #                 upstream tree: "D path" upstream only, "M path" content differs,
-#                 "A path" in-tree only. `fetch_deps.py --linked --refetch` checks it.
+#                 "A path" in-tree only. `prism-deps linked --refetch` checks it.
 # spdx            read from the licence file in the source tree (licence_file),
 #                 before the mined copies were deleted from this repository.
 #

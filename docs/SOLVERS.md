@@ -234,7 +234,7 @@ The solvers are built from source under `~/.prism/tools/<name>/<commit>/bin/`:
 - cake_lpr: `make`, which assembles the shipped CakeML `cake_lpr.S` with gcc
 - drat-trim: `make`, which gives `drat-trim` and `lrat-check`
 
-- Bitwuzla 0.9.1: `python scripts/fetch_deps.py --tool bitwuzla` (meson +
+- Bitwuzla 0.9.1: `prism-deps tool bitwuzla` (meson +
   ninja, needs the GMP and MPFR development packages). The recipe clones its
   CaDiCaL subproject by pinned commit, because the meson wrap's GitHub archive
   download is refused by some proxies.
@@ -358,7 +358,7 @@ the rules. What to know about it:
   it was faster in training (Z3 won 60 of the 781 end-to-end VCs), but a
   reader should not expect more from it than that.
 - **Without Bitwuzla** (a machine that has not run
-  `fetch_deps.py --tool bitwuzla`) the model is within noise of the rules:
+  `prism-deps tool bitwuzla`) the model is within noise of the rules:
   replay k = 2 18.98 s vs 18.60 s (+2%), k = 1 identical.
 - **Ordering alone does nothing** on these VCs: every "-order" variant equals
   the rules, because Z3's 0.15 s head start already answers most of them.

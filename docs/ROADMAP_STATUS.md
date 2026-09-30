@@ -26,7 +26,7 @@ generators): 0 wrong proofs over every campaign run.
 
 | # | Decision | Status |
 |---|---|---|
-| D1 | pinned external tools, link only permissive libs | **DONE** — `third_party/MANIFEST.toml`, `scripts/licence_check.py` in CI |
+| D1 | pinned external tools, link only permissive libs | **DONE** — `third_party/MANIFEST.toml`, `prism-deps licence-check` in CI |
 | D2 | Clang front end → PIR | **PARTIAL** — `src/prism/pir/` is a working Clang → LLVM IR → PIR → Z3 stage; Clang runs as a process, not linked as a library; `cparse.cpp` + `bmc.cpp` still run as the differential oracle |
 | D3 | Z3 + Bitwuzla + CaDiCaL + Kissat; LRAT certified mode | **DONE** — `src/prism/solver/`; certified mode checks CaDiCaL LRAT with cake_lpr and Lean's verified checker |
 | D4 | GPU for batched queries / SLS / preprocessing / fuzzing | **PARTIAL** — CPU ProbSAT walker in the portfolio; CUDA kernel `src/cuda/probsat.cu` type-checked only (no GPU in this environment) |
@@ -40,16 +40,16 @@ generators): 0 wrong proofs over every campaign run.
 
 | Item | Status |
 |---|---|
-| 1.1 manifest with SHAs, archive sha256, SPDX, kind | **DONE** — `third_party/MANIFEST.toml`; `scripts/fetch_deps.py` fails closed on hash mismatch (`tests/test_supply_chain.py`) |
+| 1.1 manifest with SHAs, archive sha256, SPDX, kind | **DONE** — `third_party/MANIFEST.toml`; `prism-deps` fails closed on hash mismatch (`tests/cpp/test_deps.cpp`) |
 | 1.1 delete the fifteen mined trees | **DONE** — tracked tree 981 MB → ~140 MB |
 | 1.1 tool SHA in every finding | **DONE** — `extra.tool_sha` from every external-tool adapter, both engines |
 | 1.1 history rewrite + force-push | **NOT DONE (owner action)** — `scripts/rewrite_history.sh` is ready and tested on a mirror; a force-push rewrites the default branch and needs the owner's explicit approval |
 | 1.1 repository under 50 MB | **PARTIAL** — ~140 MB tracked; llama.cpp (88.6 MB) is vendored because it is linked |
-| 1.2 licence firewall in CI | **DONE** — `scripts/licence_check.py`, `ci.yml` |
+| 1.2 licence firewall in CI | **DONE** — `prism-deps licence-check`, `ci.yml` |
 | 1.2 CodeQL adapter removed | **DONE** — both engines |
 | 1.2 every external invocation through one argv path | **DONE** — POSIX `fork`/`execvp`; Windows `CreateProcessW` with a round-trip-tested quoter (no `_popen`) |
 | 1.2 PRISM licence | **DONE** — `LICENSE` is the GNU Affero General Public License, version 3 |
-| 1.3 CycloneDX SBOM in CI | **DONE** — `scripts/sbom.py`, validated against CycloneDX 1.5 |
+| 1.3 CycloneDX SBOM in CI | **DONE** — `prism-deps sbom`, validated against CycloneDX 1.5 |
 | 1.3 signed releases (cosign) | **PARTIAL** — `.github/workflows/release.yml` (keyless cosign, double build + hash compare); runs on the first tag push |
 | 1.3 reproducible build recipe | **DONE** — `Dockerfile` built twice with `--no-cache` at `0423d6c54`: identical `SHA256SUMS` for `prism`, `libprism_native.so` and the SBOM, with `prism_tests` passing in the container (`docs/SUPPLY_CHAIN.md`). This was checked on one machine; a tagged release on the GitHub runners is still the first check on another |
 | 1.4 remove `*_tmp.py` and `/mnt/c` workarounds | **DONE** |

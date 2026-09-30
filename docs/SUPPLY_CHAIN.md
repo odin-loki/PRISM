@@ -65,30 +65,45 @@ commit hashes, because the trees were shallow clones with `.git` removed.
   cppcheck 2.21.99, KLEE 3.3-pre), which cannot be reproduced. Each is pinned
   to the upstream release at or just below that version.
 
-## scripts/fetch_deps.py
+## prism-deps
 
-Standard library plus the `git` CLI. Fails closed: any commit, hash or version
-mismatch exits non-zero (3 for a hash mismatch) and installs nothing.
+A C++23 tool (`src/tools/prism_deps/`, header `include/prism/deps.hpp`) built
+from the standard library alone: SHA-256/SHA-1, a fail-closed reader for the
+TOML subset the manifest uses, and a tar reader are in tree. It links no
+`third_party/` code, so CI and the Docker build compile it and run the checks
+below before anything from `third_party/` is compiled. At run time it needs
+the `git` CLI. Fails closed: any commit, hash or version mismatch exits
+non-zero (1 for a failed check, 2 for a bad manifest or usage, 3 for a hash
+mismatch) and installs nothing.
 
 ```
-python scripts/fetch_deps.py --list
-python scripts/fetch_deps.py --linked              # offline: version marker + tree digest
-python scripts/fetch_deps.py --linked --refetch    # + fetch each pinned archive, verify sha256, diff vs tree
-python scripts/fetch_deps.py --tool cadical --tool kissat --tool cake_lpr
-python scripts/fetch_deps.py --tool esbmc --no-build
+cmake -B build-deps -G Ninja -DPRISM_DEPS_ONLY=ON   # only this target: no Z3, no PCRE2
+cmake --build build-deps --target prism-deps        # (also built by the full build)
+build-deps/prism-deps list
+build-deps/prism-deps linked              # offline: version marker + tree digest
+build-deps/prism-deps linked --refetch    # + fetch each pinned archive, verify sha256, diff vs tree
+build-deps/prism-deps tool cadical kissat cake_lpr
+build-deps/prism-deps tool esbmc --no-build
+build-deps/prism-deps tree-digest third_party/z3
 ```
 
-`--tool NAME` fetches the pinned commit, verifies `archive_sha256`, and
+It finds `third_party/MANIFEST.toml` above the current directory (or above
+the binary); `--manifest PATH` names another one. `tree_version_regex`
+values are Python `re` patterns read with `re.S`; prism-deps translates
+them for `std::regex` and refuses syntax the two would read differently.
+
+`tool NAME` fetches the pinned commit, verifies `archive_sha256`, and
 installs into `~/.prism/tools/<name>/<commit>/` (override the root with
 `PRISM_TOOLS_DIR`): `src/` (verified source), `bin/` (executables) and
 `PRISM-TOOL.json`. Everything is staged in a temporary sibling directory and
 renamed into place only after every step passed. Build recipes exist for
 CaDiCaL and Kissat (`./configure && make`) and cake_lpr (compile the shipped,
-CakeML-verified `cake_lpr.S` with its C FFI shim). For the other tools the
-script verifies and unpacks the source, prints the build hint from the
+CakeML-verified `cake_lpr.S` with its C FFI shim). For the other tools
+prism-deps verifies and unpacks the source, prints the build hint from the
 manifest, and tells you where to put the binary.
 
-Checked on 2026-09-23: `--tool cadical --tool kissat --tool cake_lpr` built
+Checked on 2026-09-23 (with the Python predecessor of prism-deps, which
+wrote byte-identical stamps and sources): `cadical kissat cake_lpr` built
 CaDiCaL 3.0.1 and Kissat 4.0.4, and
 `cadical --lrat u.cnf u.lrat && cake_lpr u.cnf u.lrat` printed
 `s VERIFIED UNSAT`.
@@ -100,13 +115,15 @@ Search order in both engines (`prism/config.py`, `src/prism/config.cpp`):
 1. `--tool NAME=PATH` / `Config.tools`
 2. `~/.prism/tools/<component>/<pinned commit>/bin/<exe>`: only the commit
    the manifest pins. The Python engine reads `MANIFEST.toml` with `tomllib`.
-   The C++ engine reads it at CMake configure time into the generated
-   `prism/manifest_pins.hpp`, so a binary trusts the builds its own manifest
-   named.
+   The C++ engine has the pins baked in: the build runs `prism-deps pins`,
+   which writes the generated `prism/manifest_pins.hpp` with the same
+   fail-closed manifest reader, so a binary trusts the builds its own
+   manifest named.
 3. `PATH`
 
 A missing tool is `NOTRUN` with the hint
-`python scripts/fetch_deps.py --tool <component> (pinned in third_party/MANIFEST.toml)`.
+`prism-deps tool <component> (pinned in third_party/MANIFEST.toml)` (the
+Python engine still prints its old `python scripts/fetch_deps.py` hint).
 Law 9: a tools directory (or, in the Python engine, a manifest) inside the
 scanned tree is ignored unless `--allow-exec` is given.
 
@@ -120,10 +137,11 @@ in both engines.
 
 ## Licence firewall
 
-`scripts/licence_check.py` (run in CI and in the Docker build) fails when a
+`prism-deps licence-check` (run in CI and in the Docker build) fails when a
 `linked` component carries a copyleft SPDX id: GPL, LGPL, AGPL, SSPL, EUPL,
 OSL and similar, and also weak copyleft (MPL, EPL, CDDL) unless the component
-is added to `ALLOW_WEAK_COPYLEFT` after review. It also fails on a missing or
+is added to `kAllowWeakCopyleft` (`src/tools/prism_deps/licence.cpp`) after
+review. It also fails on a missing or
 NOASSERTION licence, or a missing licence file. External and system tools may
 carry any licence because PRISM only runs them as separate, unmodified
 processes.
@@ -140,8 +158,10 @@ table still needs review before the first sale.
 
 ## SBOM
 
-`python scripts/sbom.py --version vX.Y.Z -o prism.cdx.json` writes a
-CycloneDX 1.5 JSON SBOM from the manifest, using only the standard library.
+`prism-deps sbom --version vX.Y.Z -o prism.cdx.json` writes a CycloneDX 1.5
+JSON SBOM from the manifest. The bytes are those the earlier Python
+generator wrote for the same manifest and version (same key order,
+`json.dumps(indent=2)` layout, same `prism-sbom` tool entry).
 Linked libraries are `library`/`required`, external and system tools are
 `application`/`optional`. Each entry carries its purl
 (`pkg:github/<owner>/<repo>@<commit>`), SHA-256 and licence, plus `prism:*`
@@ -163,8 +183,10 @@ every push.
 - `SOURCE_DATE_EPOCH` (build arg, the tagged commit's time),
   `-ffile-prefix-map=/src=.`, `-ffile-prefix-map=/build=build`,
   `-Wl,--build-id=sha1`, and deterministic `llvm-ar`.
-- `licence_check.py` and `fetch_deps.py --linked` run before compiling;
-  `prism_tests` runs after.
+- `prism-deps` is built first (`-DPRISM_DEPS_ONLY=ON`, standard library
+  only); `prism-deps licence-check` and `prism-deps linked` run before
+  anything from `third_party/` is compiled; `prism_tests` runs after the
+  full build, and `prism-deps sbom` writes `prism.cdx.json`.
 - The `artefacts` stage exports `prism`, `libprism_native.so`,
   `prism.cdx.json` and `SHA256SUMS`.
 
@@ -190,8 +212,9 @@ docker build --no-cache --build-arg SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
 diff rebuild/SHA256SUMS SHA256SUMS        # must be empty
 
 # 3. dependencies
-python3 scripts/fetch_deps.py --linked --refetch   # in-tree libs == pinned upstream archives
-python3 scripts/licence_check.py
+cmake -B build-deps -G Ninja -DPRISM_DEPS_ONLY=ON && cmake --build build-deps --target prism-deps
+build-deps/prism-deps linked --refetch   # in-tree libs == pinned upstream archives
+build-deps/prism-deps licence-check
 ```
 
 Verified 2026-09-23 at commit `0423d6c54` (`SOURCE_DATE_EPOCH` = that

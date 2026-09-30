@@ -8,7 +8,7 @@ forced on the encoding.
 > file is the record of what was taken from each. Paths such as
 > `third_party/klee/...` below refer to the upstream projects, now pinned by
 > commit in `third_party/MANIFEST.toml` and fetched on demand with
-> `scripts/fetch_deps.py`. The CodeQL adapter described below was removed
+> `prism-deps tool NAME`. The CodeQL adapter described below was removed
 > (roadmap 1.2: the CodeQL engine's terms restrict commercial use).
 
 ## ESBMC — bounded model checking + k-induction
@@ -75,7 +75,7 @@ Python engine BMC:
 10. No Z3 → `NOTRUN`.
 
 When `resolve_adapter` finds `esbmc` (`--tool`, the pinned build under
-`~/.prism/tools/esbmc/<commit>/bin/` from `scripts/fetch_deps.py`, or PATH)
+`~/.prism/tools/esbmc/<commit>/bin/` from `prism-deps tool esbmc`, or PATH)
 the adapter runs it too.
 Disagreement is the point. The two verdicts are never merged. A
 missing binary is `NOTRUN`. Vendored *source* is not a proof; Python engine
@@ -333,11 +333,11 @@ Search order (`prism/config.py:resolve_adapter`):
 
 1. `Config.tools` / `--tool NAME=PATH` (stage name or binary name).
 2. The pinned build `~/.prism/tools/<component>/<commit>/bin/<exe>` made by
-   `scripts/fetch_deps.py` (commit from `third_party/MANIFEST.toml`).
+   `prism-deps tool` (commit from `third_party/MANIFEST.toml`).
    Never compile during resolve. Source trees are not proofs.
 3. PATH.
 
-Missing is `NOTRUN` with an install hint (`scripts/fetch_deps.py --tool NAME`).
+Missing is `NOTRUN` with an install hint (`prism-deps tool NAME`).
 ESBMC / CBMC / KLEE binaries, if found, are adapters — their
 silence is not in-tree BMC and not a vendored proof.
 

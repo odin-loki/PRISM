@@ -285,8 +285,8 @@ each project's `lean-toolchain`): `proofs/check.sh` passed all four steps
 
 ### E19 Pinned dependencies, licence firewall, SBOM
 
-- Artefacts: `third_party/MANIFEST.toml`, `scripts/fetch_deps.py`,
-  `scripts/licence_check.py`, `scripts/sbom.py`, `docs/SUPPLY_CHAIN.md`,
+- Artefacts: `third_party/MANIFEST.toml`, `prism-deps` (`src/tools/prism_deps/`:
+  `linked`, `tool`, `licence-check`, `sbom`), `docs/SUPPLY_CHAIN.md`,
   `tests/test_supply_chain.py::TestManifest`,
   `tests/test_supply_chain.py::TestLicenceFirewall`,
   `tests/test_supply_chain.py::TestSbom`, the `supply-chain` job in

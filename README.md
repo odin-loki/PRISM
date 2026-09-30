@@ -19,7 +19,7 @@ bounded proofs, then fuzzing, then an LLM (Qwen 3.5 9B) that may only
 | C / C++ | ~600-class defect taxonomy: pattern lints, taint, threads, interval ranges, compiler warnings, cppcheck, sanitizers (ASan/UBSan/TSan), Z3 bounded model checking + k-induction, Dafny/ACSL contracts, Frama-C-style WP, harness BMC, concolic, greybox fuzzing (FuSeBMC loop, AFL++/libFuzzer when present), differential + property + mutation testing, LTL on state machines |
 | Every other language | `polyglot` stage: Python/JSON/TOML syntax, ruff or pyflakes, mypy, `node --check`, tsc, eslint, `bash -n`, shellcheck, gofmt, cargo clippy, `ruby -wc`, `php -l`, `perl -c`, `luac -p`, yamllint |
 | Any text file | merge-conflict markers; leaked credentials (private keys, AWS, GitHub, Slack, Google, Stripe) — every text file in scope, whatever its name (`id_rsa`, `key.pem`, `.npmrc`, `Dockerfile`) |
-| External analyzers | ESBMC, CBMC, Infer, Semgrep, Coccinelle, KLEE, Frama-C, clang-tidy, Strix — run when installed (`python scripts/fetch_deps.py --tool NAME` builds the pinned version) |
+| External analyzers | ESBMC, CBMC, Infer, Semgrep, Coccinelle, KLEE, Frama-C, clang-tidy, Strix — run when installed (`prism-deps tool NAME` builds the pinned version) |
 
 ## Run
 
@@ -107,7 +107,7 @@ GPU mutation is CUDA. SMT is vendored Z3. Regex is vendored PCRE2.
 nlohmann/json, doctest, llama.cpp), about 140 MB of source. They are unmodified
 upstream copies, each pinned by commit and SHA-256 in
 [`third_party/MANIFEST.toml`](third_party/MANIFEST.toml). External tools are
-not in the repo: `python scripts/fetch_deps.py --tool NAME` fetches the pinned
+not in the repo: `prism-deps tool NAME` fetches the pinned
 commit, checks its hash and builds it into `~/.prism/tools/`. Every finding
 records the exact tool build (`extra["tool_sha"]`). Licence firewall, SBOM and
 reproducible signed releases:

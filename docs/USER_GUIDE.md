@@ -395,7 +395,7 @@ function `PROVED-CERTIFIED`, with `extra.certificate = "checked"`,
 Lean-proved bit-blaster made) and `extra.cnf_sha256` (one hash per VC).
 
 ```
-python scripts/fetch_deps.py --tool cadical --tool cake_lpr   # once
+build/prism-deps tool cadical cake_lpr   # once
 (cd proofs/techniques && lake build)                          # optional: Lean bit-blaster
 ./build/prism src/ --stage inventory,classify,pir --certified
 ```
