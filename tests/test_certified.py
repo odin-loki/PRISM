@@ -60,11 +60,16 @@ def _cpp_prism() -> Path | None:
 
 def _tool(name: str) -> bool:
     home = Path(os.environ.get("PRISM_TOOLS_DIR", Path.home() / ".prism" / "tools")) / name
-    # The C++ solver lookup takes only the build of the pinned commit.
+    # The C++ solver lookup (solver/util.cpp in_root) takes only the build of
+    # the pinned commit, in <commit>/bin, <commit>/build or <commit> itself.
     commit = pinned_commit(name)
-    if commit and (home / commit / "bin" / name).is_file():
+
+    def built(d: Path) -> bool:
+        return any(os.access(p, os.X_OK) and p.is_file() for p in (d / "bin" / name, d / "build" / name, d / name))
+
+    if commit and built(home / commit):
         return True
-    if not commit and home.is_dir() and any(home.glob(f"*/bin/{name}")):
+    if not commit and home.is_dir() and any(built(d) for d in home.iterdir() if d.is_dir()):
         return True
     return shutil.which(name) is not None
 

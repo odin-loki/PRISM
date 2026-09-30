@@ -113,6 +113,25 @@ lands with a doctest.
   syntax (`SYNTAX_HELPER`, `polyglot.cpp:78`). Replace it with
   `nlohmann::json::parse` and a C++ TOML reader.
 
+**Intentional C++-only divergences.** Phase 1 fixes gaps in C++ only
+(`prism/*.py` is frozen until phase 5 deletes it), so these behaviours differ
+from the Python engine on purpose. A parity test that trips on them should
+lock the C++ behaviour, not restore the old one:
+
+- afl-fuzz is found through `Config::which_adapter` (`--tool`, then the
+  pinned `aflplusplus` build, then PATH; D60). `prism/afl.py afl_available`
+  still looks on PATH only.
+- `bitwuzla` has a `vendor_dir_for` entry in `src/prism/config.cpp` (D61) but
+  no `VENDOR_DIR` entry in `prism/config.py`; `tests/test_supply_chain.py`
+  allows exactly that row.
+- `solver::find_tool` takes `--tool`, then the pinned build under
+  `PRISM_TOOLS_DIR` (never another commit), then PATH.
+- `binary=compile-failed` from `fuzz_function` is kept on the `fuse` row, so a
+  CLEAN that only the concrete oracle produced says so (Law 7).
+- The process runner reports an argv[0] it cannot execute as "could not
+  start" (`failed`), refuses `--no-*-check` for every caller (Law 8), and the
+  AFL environment is an overlay on the child, not `setenv` on PRISM.
+
 ### Phase 2: port the tests
 
 96 files: 44 test Python-engine behaviour, 34 are mixed, 10 read C++
