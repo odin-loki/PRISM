@@ -22,6 +22,7 @@
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
+#include <tuple>
 #include <utility>
 #include <vector>
 #include <filesystem>
@@ -2753,6 +2754,9 @@ std::optional<std::string> unencoded_syntax_reason_cached(const FunctionInfo& fn
     static constexpr std::string_view kEngine = "\x01" "engine" "\x01";
     static std::mutex mu;
     static std::unordered_map<std::string, std::optional<std::string>> memo;
+    // path -> (size, mtime, text hash): a large file is re-read only when it
+    // changes, not once per function.
+    static std::unordered_map<std::string, std::tuple<std::uintmax_t, long long, std::size_t>> file_hash;
     std::string key = fn.file;
     key += '\0';
     key += fn.signature;
@@ -2763,10 +2767,26 @@ std::optional<std::string> unencoded_syntax_reason_cached(const FunctionInfo& fn
         std::error_code ec;
         auto sz = std::filesystem::file_size(fn.file, ec);
         if (!ec && sz > 0 && sz < 1000000) {
-            std::ifstream in(fn.file, std::ios::binary);
-            std::ostringstream ss;
-            ss << in.rdbuf();
-            key += std::to_string(std::hash<std::string>{}(ss.str()));
+            auto mt = static_cast<long long>(std::filesystem::last_write_time(fn.file, ec).time_since_epoch().count());
+            std::optional<std::size_t> h;
+            {
+                std::lock_guard<std::mutex> lk(mu);
+                if (auto it = file_hash.find(fn.file);
+                    !ec && it != file_hash.end() && std::get<0>(it->second) == sz && std::get<1>(it->second) == mt)
+                    h = std::get<2>(it->second);
+            }
+            if (!h) {
+                std::ifstream in(fn.file, std::ios::binary);
+                std::ostringstream ss;
+                ss << in.rdbuf();
+                h = std::hash<std::string>{}(ss.str());
+                if (!ec) {
+                    std::lock_guard<std::mutex> lk(mu);
+                    if (file_hash.size() >= 4096) file_hash.clear();
+                    file_hash[fn.file] = {sz, mt, *h};
+                }
+            }
+            key += std::to_string(*h);
         }
     }
     std::optional<std::string> hit;
