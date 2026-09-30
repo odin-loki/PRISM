@@ -182,6 +182,7 @@ set(PRISM_SRC
   src/prism/pir/translate_fp.cpp
   src/prism/pir/translate_mem.cpp
   src/prism/polyglot.cpp
+  src/prism/toml_syntax.cpp
   src/prism/regex.cpp
   src/prism/sandbox.cpp
   src/prism/sarif.cpp
@@ -477,7 +478,9 @@ if(PRISM_TESTS)
     # Roadmap 2.8 Clang-AST lints.
     tests/cpp/test_astlint.cpp
     # Roadmap 9.1/9.3/9.4 AI assistant features (regress, triage, ask, draft, predict).
-    tests/cpp/test_ai_assist.cpp)
+    tests/cpp/test_ai_assist.cpp
+    # Polyglot stage table, parsers and the built-in JSON/TOML syntax checkers.
+    tests/cpp/test_polyglot.cpp)
   target_include_directories(prism_tests PRIVATE
     "${PRISM_ROOT}/include"
     "${PRISM_ROOT}/third_party")
