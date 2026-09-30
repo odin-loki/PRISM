@@ -27,8 +27,17 @@
 namespace {
 namespace fs = std::filesystem;
 
+// __FILE__ is relative to the build directory under Ninja; also accept a
+// run from the repository root (./build/prism_tests).
 fs::path corpus_root() {
-    return fs::path(__FILE__).parent_path().parent_path().parent_path() / "testdata";
+    const fs::path from_file = fs::path(__FILE__).parent_path().parent_path().parent_path() / "testdata";
+    if (fs::is_directory(from_file)) return from_file;
+    for (fs::path d = fs::current_path(); !d.empty(); d = d.parent_path()) {
+        if (fs::is_directory(d / "testdata") && fs::exists(d / "tests" / "cpp" / "test_lint_corpus.cpp"))
+            return d / "testdata";
+        if (d == d.parent_path()) break;
+    }
+    return from_file;
 }
 
 enum class Expect { Hits, None, Any };
