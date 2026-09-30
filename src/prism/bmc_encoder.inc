@@ -104,6 +104,10 @@ struct Arr {
     int n;
     int w = WIDTH;
     bool u = false;
+    // `T a[N][M]...`: the dimensions, flattened row-major into n = N*M*...
+    // elements (each subscript is checked against its own dimension,
+    // flat_index). Empty: a one-dimensional array of n elements.
+    std::vector<int> dims = {};
 };
 
 struct State {
@@ -140,6 +144,10 @@ struct Enc {
     std::map<std::string, int> bits;  // declared (visible) scalars -> width
     std::vector<std::string> unmodelled;  // calls whose callee is not modelled
     std::vector<z3::expr> call_vars;      // their unconstrained results
+    // Results of modelled output calls (printf, puts, putchar): any value
+    // (a count or a negative error). A refutation must hold for all of them,
+    // as for call_vars, but they do not make the call unmodelled.
+    std::vector<z3::expr> io_results;
     // __VERIFIER_nondet_* results in encoding order, each with the path guard
     // at the call: the calls a model's path executes are those whose guard it
     // makes true, in this order (the SV-COMP replay and witness input).
@@ -370,6 +378,53 @@ z3::expr oob(Enc& e, const TV& i0, int n) {
 
 z3::expr index32(Enc& e, const TV& i) {
     return e.conv(e.promote(i), CType{WIDTH, false}).v;
+}
+
+// Element a[s0][s1]... of a multi-dimensional array: every subscript is
+// checked against its own dimension (C11 6.5.2.1p3, J.2: a[0][M] on
+// `T a[N][M]` is undefined although it stays inside the object), then the
+// row-major flat index. With any subscript out of bounds the flat index is
+// n, outside the object, so no element is read or written through it (the
+// OOB property already reports the access).
+TV flat_index(Enc& e, const Arr& arr, const std::vector<TV>& subs, const std::string& prop,
+              const std::string& cls) {
+    z3::expr inb = e.ctx.bool_val(true);
+    z3::expr flat = e.ctx.bv_val(0, WIDTH);
+    for (size_t k = 0; k < subs.size(); ++k) {
+        auto bad = oob(e, subs[k], arr.dims[k]);
+        e.add_prop(prop, cls, bad, e.pc);
+        inb = inb && !bad;
+        flat = flat * e.ctx.bv_val(arr.dims[k], WIDTH) + index32(e, subs[k]);
+    }
+    return TV{z3::ite(inb, flat, e.ctx.bv_val(arr.n, WIDTH)), WIDTH, true};
+}
+
+// "i][j" (the text between the outer brackets of a[i][j]) -> {"i", "j"}.
+std::vector<std::string> split_subscripts(const std::string& src) {
+    std::vector<std::string> out;
+    std::string cur;
+    int depth = 0;
+    for (size_t i = 0; i < src.size(); ++i) {
+        char ch = src[i];
+        if (ch == '[' || ch == '(') ++depth;
+        if ((ch == ']' || ch == ')') && depth > 0) {
+            --depth;
+            cur.push_back(ch);
+            continue;
+        }
+        if (ch == ']' && depth == 0) {
+            size_t k = i + 1;
+            while (k < src.size() && std::isspace(static_cast<unsigned char>(src[k]))) ++k;
+            if (k >= src.size() || src[k] != '[') throw ParseFail("UNENCODED: subscript " + src);
+            out.push_back(cur);
+            cur.clear();
+            i = k;
+            continue;
+        }
+        cur.push_back(ch);
+    }
+    out.push_back(cur);
+    return out;
 }
 
 // Per-element initialisation of local arrays (prism/bmc.py: _Enc.shadow_init
@@ -657,6 +712,49 @@ bool has_goto_to(const std::string& text, const std::string& name) {
     return false;
 }
 
+// Labels whose statement is exactly `goto` to itself (`STUCK: goto STUCK;`).
+// Control that reaches one never leaves it and does nothing there, so for
+// the safety properties bmc checks the path simply ends (termination is not
+// a covered property). Only a label at a statement start (after `;`, `{`,
+// `}`, `)`, `:`, `else` or `do`), outside string and character literals.
+std::set<std::string> self_loop_labels(const std::string& body) {
+    std::vector<bool> lit(body.size(), false);
+    for (size_t i = 0; i < body.size(); ++i) {
+        char q = body[i];
+        if (q != '"' && q != '\'') continue;
+        size_t j = i + 1;
+        while (j < body.size() && body[j] != q) j += body[j] == '\\' ? 2 : 1;
+        for (size_t k = i; k <= j && k < body.size(); ++k) lit[k] = true;
+        i = j;
+    }
+    std::set<std::string> out;
+    for (auto& m : rx_finditer(R"BMC(\b([A-Za-z_]\w*)\s*:\s*goto\s+([A-Za-z_]\w*)\s*;)BMC", body)) {
+        auto at = static_cast<size_t>(m.spans[0].first);
+        if (m.group(1) != m.group(2) || lit[at]) continue;
+        size_t q = at;
+        while (q > 0 && std::isspace(static_cast<unsigned char>(body[q - 1]))) --q;
+        bool start = q == 0 || std::string_view(";{}):").find(body[q - 1]) != std::string_view::npos;
+        if (!start) {
+            size_t w = q;
+            while (w > 0 && (std::isalnum(static_cast<unsigned char>(body[w - 1])) || body[w - 1] == '_')) --w;
+            auto word = body.substr(w, q - w);
+            start = word == "else" || word == "do";
+        }
+        if (start) out.insert(m.group(1));
+    }
+    return out;
+}
+
+// Is `name` among the labels of the first statement of text?
+bool first_stmt_has_label(const std::string& text, const std::string& name) {
+    std::string t = lstrip(text);
+    while (auto lab = label_at(t)) {
+        if (lab->first == name) return true;
+        t = lstrip(t.substr(lab->second));
+    }
+    return false;
+}
+
 struct SwitchArm {
     std::vector<std::optional<TV>> labels;
     std::string code;
@@ -734,6 +832,8 @@ struct Parser {
     // AI hook statements (__prism_assume/assert/havoc/step) are only parsed
     // for programs built by prism::ai::check_program, never for user code.
     bool ai_hooks = false;
+    // The first parameter is `main`'s argc: nonnegative (C11 5.1.2.2.1p2).
+    bool argc_nonneg = false;
     bool cxx = false;  // C++ source (Enc::cxx)
     // Shift rules (apply_binop): 0 = C (and C++98/03), 11 = C++11..17
     // (CWG 1457: E1 >= 0 and E1 * 2^E2 representable in the unsigned type),
@@ -757,6 +857,11 @@ struct Parser {
     };
     std::vector<LabelLoop> label_loops;
     std::vector<const std::string*> lists;  // unconsumed text of each active statement list
+    // The else branch of each enclosing if whose then branch is being
+    // parsed: a goto there may enter the else branch at its first statement.
+    std::vector<const std::string*> else_heads;
+    // Labels of a statement that is exactly `goto` itself (`L: goto L;`).
+    std::set<std::string> stuck_labels;
 
     Parser(std::string b, std::vector<std::pair<std::string, std::string>> p, int u,
            std::map<std::string, int> en, std::map<std::string, std::string> mac = {},
@@ -788,6 +893,11 @@ struct Parser {
                 e->declare(name, *t);
                 e->get(name);
             }
+            if (argc_nonneg && !params.empty() && !params[0].second.empty()) {
+                auto argc = e->get(params[0].second);
+                e->assume(argc.v >= e->bv_zero(argc.w));
+            }
+            stuck_labels = self_loop_labels(body);
             e->push_scope();
             stmts(*e, prep(body));
             e->pop_scope();
@@ -804,8 +914,11 @@ struct Parser {
         return e;
     }
 
+    // Drops preprocessor directive lines. A directive starts its line
+    // (C11 6.10p2); a `#` inside a string or character literal (a printf
+    // flag, '#') is code and stays.
     static std::string prep(std::string body) {
-        return rx_sub("#.*", " ", body);
+        return rx_sub("^[ \\t]*#.*", " ", body, true);
     }
 
     void stmts(Enc& e, std::string text);
@@ -816,6 +929,8 @@ struct Parser {
     }
     void decl(Enc& e, std::string stmt);
     void decl_one(Enc& e, const std::string& stmt);
+    void decl_multi(Enc& e, const std::string& typ, const std::string& name, const std::string& dims_src,
+                    std::string init);
     void assign_or_expr(Enc& e, std::string stmt);
     void astore(Enc& e, const std::string& name, const std::string& idx, const std::string& rhs);
     std::string assert_stmt(Enc& e, std::string text);
@@ -1222,11 +1337,24 @@ void Parser::decl_one(Enc& e, const std::string& stmt) {
                 throw ParseFail("uninitialised pointer decl: " + stmt.substr(0, 80));
             auto src = strip(*m->groups[2]);
             if (is_ident(src) && e.is_array(src)) {
+                if (!e.arrays.at(e.canonical(src)).dims.empty())
+                    throw ParseFail("UNENCODED: pointer into multi-dimensional array " + src);
                 shadow(name);
                 e.declare_alias(name, src);
                 return;
             }
             throw ParseFail("pointer decl must alias an array: " + stmt.substr(0, 80));
+        }
+    }
+    {
+        // `T a[N][M]...` (two or more dimensions, each a decimal constant).
+        static Regex mdim(std::string("(") + CDECL_TYPE +
+                          ")\\s+([A-Za-z_]\\w*)\\s*((?:\\[[^\\]]+\\]\\s*){2,})(?:=\\s*(.*))?$");
+        if (auto m = mdim.search_match(stmt); m && m->spans.size() > 1 && m->spans[0].first == 0 &&
+            static_cast<size_t>(m->spans[0].second) == stmt.size()) {
+            decl_multi(e, m->group(1), m->group(2), m->group(3),
+                       m->groups.size() > 4 && m->groups[4] ? strip(*m->groups[4]) : std::string{});
+            return;
         }
     }
     {
@@ -1312,6 +1440,82 @@ void Parser::decl_one(Enc& e, const std::string& stmt) {
     }
 }
 
+// `T name[d0][d1]... (= init)`. The array is one flat Arr of d0*d1*...
+// elements with its dimensions kept (flat_index). A brace initialiser lists
+// either one braced initialiser per row (recursively) or plain values that
+// fill the elements of that subobject in order (brace elision, C11
+// 6.7.9p20); every element not listed is zero (p21). Mixed or designated
+// lists, excess items and string initialisers are unencoded.
+void Parser::decl_multi(Enc& e, const std::string& typ, const std::string& name, const std::string& dims_src,
+                        std::string init) {
+    std::vector<int> dims;
+    long long total = 1;
+    for (auto& m : rx_finditer("\\[([^\\]]*)\\]", dims_src)) {
+        auto d = strip(m.group(1));
+        if (!rx_fullmatch("\\d+", d)) throw ParseFail("VLA unencoded");
+        if (d.size() > 7) throw ParseFail("UNENCODED: array size of " + name);
+        int n = std::stoi(d);
+        if (n <= 0) throw ParseFail("UNENCODED: array size of " + name);
+        dims.push_back(n);
+        total *= n;
+        if (total > (1 << 24)) throw ParseFail("UNENCODED: array size of " + name);
+    }
+    auto ct = ctype_parse(typ);
+    if (!ct) throw ParseFail("UNENCODED: element type of " + name);
+    if (e.declared(name)) throw ParseFail("UNENCODED: shadowed declaration of " + name);
+    const int n = static_cast<int>(total);
+    if (!init.empty() && rx_search("\\{\\s*(?:\\[[^\\]]+\\]|\\.[A-Za-z_]\\w*)\\s*=", init))
+        throw ParseFail("designated init unencoded");
+    if (init.size() >= 2 && init.front() == '{' && init.back() == '}') {
+        // (flat index, source) of every listed value, in source order.
+        std::vector<std::pair<int, std::string>> items;
+        std::function<void(const std::string&, size_t, int)> fill = [&](const std::string& inner, size_t level,
+                                                                         int base) {
+            std::vector<std::string> xs;
+            for (auto& x : split_comma(inner)) xs.push_back(strip(x));
+            if (!xs.empty() && xs.back().empty()) xs.pop_back();  // trailing comma, or {}
+            int size = 1;  // elements of this subobject
+            for (size_t k = level; k < dims.size(); ++k) size *= dims[k];
+            size_t braced = 0;
+            for (auto& x : xs) {
+                // A string literal initialises a whole row (6.7.9p14): not
+                // one element.
+                if (x.empty() || x.find('"') != std::string::npos) throw ParseFail("UNENCODED: initialiser of " + name);
+                if (x.front() == '{') ++braced;
+            }
+            if (braced == 0) {
+                if (static_cast<int>(xs.size()) > size) throw ParseFail("UNENCODED: excess initialisers of " + name);
+                for (size_t k = 0; k < xs.size(); ++k) items.emplace_back(base + static_cast<int>(k), xs[k]);
+                return;
+            }
+            if (braced != xs.size() || level + 1 >= dims.size())
+                throw ParseFail("UNENCODED: nested initialiser of " + name);
+            if (static_cast<int>(xs.size()) > dims[level]) throw ParseFail("UNENCODED: excess initialisers of " + name);
+            int stride = size / dims[level];
+            for (size_t k = 0; k < xs.size(); ++k) {
+                if (xs[k].back() != '}') throw ParseFail("UNENCODED: nested initialiser of " + name);
+                fill(xs[k].substr(1, xs[k].size() - 2), level + 1, base + static_cast<int>(k) * stride);
+            }
+        };
+        fill(init.substr(1, init.size() - 2), 0, 0);
+        // The items are evaluated (their UB is checked) before the name is in scope.
+        std::vector<TV> vals;
+        for (auto& [_, x] : items) vals.push_back(expr(e, x));
+        auto arr = z3::const_array(e.ctx.bv_sort(WIDTH), e.bv_zero(ct->w));
+        for (size_t k = 0; k < vals.size(); ++k)
+            arr = z3::store(arr, e.ctx.bv_val(items[k].first, WIDTH), e.conv(vals[k], *ct).v);
+        e.declare_array(name, Arr{arr, n, ct->w, ct->u, dims});
+        shadow_init(e, name, true);
+        return;
+    }
+    if (!init.empty() && init != "__prism_unconstrained") throw ParseFail("UNENCODED: initialiser of " + name);
+    // No initialiser: contents arbitrary, every element unwritten.
+    auto arr = e.ctx.constant((name + "_arr" + std::to_string(++e.fresh)).c_str(),
+        e.ctx.array_sort(e.ctx.bv_sort(WIDTH), e.ctx.bv_sort(static_cast<unsigned>(ct->w))));
+    e.declare_array(name, Arr{arr, n, ct->w, ct->u, dims});
+    shadow_init(e, name, !init.empty());
+}
+
 void Parser::assign_or_expr(Enc& e, std::string stmt) {
     while (!stmt.empty() && stmt.back() == ';') stmt.pop_back();
     stmt = strip(stmt);
@@ -1365,6 +1569,21 @@ void Parser::assign_or_expr(Enc& e, std::string stmt) {
 void Parser::astore(Enc& e, const std::string& name0, const std::string& idx, const std::string& rhs) {
     auto name = e.canonical(name0);
     if (!e.arrays.count(name)) throw ParseFail("UNENCODED: store to unknown array " + name0);
+    auto subs_src = split_subscripts(idx);
+    if (!e.arrays.at(name).dims.empty()) {
+        auto arr = e.arrays.at(name);
+        if (subs_src.size() != arr.dims.size())
+            throw ParseFail("UNENCODED: store to a row of multi-dimensional array " + name0);
+        std::vector<TV> subs;
+        for (auto& x : subs_src) subs.push_back(expr(e, x));
+        auto v = expr(e, rhs);
+        auto flat = flat_index(e, arr, subs, "oob-write", "MEM-OOB-WRITE");
+        arr.a = z3::store(arr.a, index32(e, flat), e.conv(v, CType{arr.w, arr.u}).v);
+        e.arrays.insert_or_assign(name, arr);
+        mark_elem_init(e, name, index32(e, flat));
+        return;
+    }
+    if (subs_src.size() != 1) throw ParseFail("UNENCODED: store through an element of " + name0);
     auto i = expr(e, idx);
     auto v = expr(e, rhs);
     auto arr = e.arrays.at(name);
@@ -1496,7 +1715,17 @@ std::string Parser::if_stmt(Enc& e, std::string text) {
     auto cond = as_bool(expr(e, cond_src));
     auto base = e.snap();
     e.path_true = base.path && cond;
-    block(e, then_src);
+    {
+        struct ElseHead {
+            std::vector<const std::string*>& v;
+            bool on;
+            ~ElseHead() {
+                if (on) v.pop_back();
+            }
+        } head{else_heads, else_src.has_value()};
+        if (else_src) else_heads.push_back(&*else_src);
+        block(e, then_src);
+    }
     auto then_st = e.snap();
     e.load(base);
     e.path_true = base.path && !cond;
@@ -1539,6 +1768,11 @@ State goto_merge_union(Enc& e, std::vector<State> states) {
 }
 
 void Parser::goto_stmt(Enc& e, const std::string& name) {
+    if (stuck_labels.count(name)) {
+        // `name: goto name;` (self_loop_labels): the path never continues.
+        e.path_true = e.ctx.bool_val(false);
+        return;
+    }
     // Backward: a goto inside the statements its label heads (innermost first).
     for (auto it = label_loops.rbegin(); it != label_loops.rend(); ++it) {
         if (it->name != name) continue;
@@ -1549,6 +1783,12 @@ void Parser::goto_stmt(Enc& e, const std::string& name) {
     // Forward: the label is a later statement of this list or an enclosing one.
     bool found = false;
     for (auto it = lists.rbegin(); it != lists.rend() && !found; ++it) found = list_has_label(**it, name);
+    // Into the else branch of an enclosing if, at its first statement, from
+    // its then branch: the state joins the else branch's entry state at the
+    // label (label_stmt; the if's condition is not evaluated again). The
+    // declaration checks at the label still apply.
+    for (auto it = else_heads.rbegin(); it != else_heads.rend() && !found; ++it)
+        found = first_stmt_has_label(**it, name);
     if (!found) throw ParseFail("unstructured goto unencoded: goto " + name + " is not a jump out to a later statement");
     pending_gotos[name].push_back(PendingGoto{e.snap(), e.scopes});
     e.path_true = e.ctx.bool_val(false);
@@ -1573,6 +1813,8 @@ void Parser::label_stmt(Enc& e, const std::string& name, std::string& text) {
         pending_gotos.erase(it);
         e.load(merge_states(e, states, cur));
     }
+    // A self-loop label: its `goto` (the next statement) ends the path.
+    if (stuck_labels.count(name)) return;
     if (!has_goto_to(text, name)) return;
     // Backward gotos: the region is every statement from the label up to the
     // last one that contains `goto name`; it runs like a loop body whose
@@ -2185,7 +2427,8 @@ std::vector<std::string> expand_macros(const std::vector<std::string>& toks, Enc
 // Nondet call sites. The bmc front end works on statement text and keeps no
 // positions, so before encoding every `__VERIFIER_nondet_X()` call in a
 // function body is renamed `__VERIFIER_nondet_X__prism_at_L_C` (L:C = the
-// call's source position, from FunctionInfo::body_line/body_col). The tag
+// call's source position, from FunctionInfo::body_line/body_col, the
+// column mapped past dropped comment delimiters by source_col). The tag
 // survives inlining (a callee's calls keep the callee's positions) and
 // loop unrolling; model_call strips it again.
 constexpr std::string_view NONDET_TAG = "__prism_at_";
@@ -2220,7 +2463,7 @@ FunctionInfo tag_nondet_sites(FunctionInfo fn) {
             if (m != std::string::npos && m < b.size() && b[m] == ')' &&
                 std::string_view(b).substr(i, j - i).find(NONDET_TAG) == std::string_view::npos) {
                 out.append(b, i, j - i);
-                out += std::string(NONDET_TAG) + std::to_string(line) + "_" + std::to_string(col);
+                out += std::string(NONDET_TAG) + std::to_string(line) + "_" + std::to_string(source_col(fn, line, col));
                 col += static_cast<int>(j - i);
                 i = j;
                 continue;
@@ -2497,6 +2740,115 @@ TV model_call(Enc& e, const std::string& tagged, std::vector<TV>& args) {
     return TV{r, 32, false};
 }
 
+// printf / puts / putchar (C11 7.21.6.3, 7.21.7.9, 7.21.7.8). bmc has no
+// globals and no heap, so the output cannot change modelled state: the call
+// is its arguments (already evaluated, their UB checked) and a result that
+// may be any value. Only when every argument is fully known to be safe for
+// the call: the format (printf) or string (puts) is one string literal with
+// plain escapes; each conversion is an integer conversion (d i o u x X c)
+// whose argument is a scalar of the width its length modifier names and of
+// the signedness the conversion takes, or %s with a string literal; flags
+// and precision only where 7.21.6.1 defines them; no %n, no `*` width or
+// precision, no other conversion; as many arguments as conversions. Anything else: nullopt, and
+// the call stays unmodelled (never a proof).
+std::optional<TV> model_output_call(Enc& e, const std::string& t, const std::vector<std::string>& tok,
+                                    const std::vector<std::pair<size_t, size_t>>& spans,
+                                    const std::vector<TV>& args, bool arrays_used) {
+    if (t != "printf" && t != "puts" && t != "putchar") return std::nullopt;
+    if (arrays_used || spans.size() != args.size()) return std::nullopt;
+    auto literal = [&](size_t k) -> std::optional<std::string> {
+        auto [from, to] = spans[k];
+        if (to != from + 1) return std::nullopt;
+        const auto& x = tok[from];
+        if (x.size() < 2 || x.front() != '"' || x.back() != '"') return std::nullopt;
+        std::string body;
+        for (size_t i = 1; i + 1 < x.size(); ++i) {
+            if (x[i] != '\\') {
+                body.push_back(x[i]);
+                continue;
+            }
+            if (++i + 1 >= x.size()) return std::nullopt;
+            // octal and hex escapes could spell `%` (or end the string)
+            if (std::string_view("ntr\\\"'abfv?").find(x[i]) == std::string_view::npos) return std::nullopt;
+            body.push_back(' ');
+        }
+        return body;
+    };
+    auto result = [&]() {
+        auto r = e.bv("io_" + t + "_" + std::to_string(e.fresh + 1), 32);
+        e.io_results.push_back(r);
+        return TV{r, 32, false};
+    };
+    if (t == "putchar") {
+        if (args.size() != 1 || literal(0) || args[0].w > 32) return std::nullopt;
+        return result();
+    }
+    if (t == "puts") {
+        if (args.size() != 1 || !literal(0)) return std::nullopt;
+        return result();
+    }
+    if (args.empty()) return std::nullopt;
+    auto fmt = literal(0);
+    if (!fmt) return std::nullopt;
+    size_t next = 1;
+    const std::string& f = *fmt;
+    for (size_t i = 0; i < f.size(); ++i) {
+        if (f[i] != '%') continue;
+        if (++i >= f.size()) return std::nullopt;
+        if (f[i] == '%') continue;
+        std::string flags;
+        while (i < f.size() && std::string_view("-+ #0").find(f[i]) != std::string_view::npos) flags.push_back(f[i++]);
+        while (i < f.size() && std::isdigit(static_cast<unsigned char>(f[i]))) ++i;
+        bool precision = false;
+        if (i < f.size() && f[i] == '.') {
+            precision = true;
+            ++i;
+            while (i < f.size() && std::isdigit(static_cast<unsigned char>(f[i]))) ++i;
+        }
+        std::string len;
+        while (i < f.size() && std::string_view("hljzt").find(f[i]) != std::string_view::npos) len.push_back(f[i++]);
+        if (i >= f.size()) return std::nullopt;
+        char conv = f[i];
+        // 7.21.6.1p6: `#` is defined only for o x X (and floating
+        // conversions, not modelled), `0` not for c or s; p4: no precision
+        // on c.
+        if (flags.find('#') != std::string::npos && std::string_view("oxX").find(conv) == std::string_view::npos)
+            return std::nullopt;
+        if (flags.find('0') != std::string::npos && (conv == 'c' || conv == 's')) return std::nullopt;
+        if (precision && conv == 'c') return std::nullopt;
+        if (next >= args.size()) return std::nullopt;
+        size_t k = next++;
+        if (conv == 's') {
+            if (!len.empty() || !literal(k)) return std::nullopt;
+            continue;
+        }
+        if (std::string_view("diouxXc").find(conv) == std::string_view::npos) return std::nullopt;
+        if (literal(k)) return std::nullopt;
+        if (conv == 'c' && !len.empty()) return std::nullopt;
+        if (len.empty() || len == "h" || len == "hh") {
+            if (args[k].w > 32) return std::nullopt;
+        } else if (len == "l" || len == "ll" || len == "j" || len == "z" || len == "t") {
+            if (args[k].w != 64) return std::nullopt;
+        } else {
+            return std::nullopt;
+        }
+        // 7.21.6.1p8-9 with 7.16.1.1p2: d i c take a signed argument, o u x X
+        // an unsigned one. A narrower argument is promoted to int (6.5.2.2p6);
+        // under h or hh its value is converted before printing, so either
+        // sign is fine there. Otherwise the argument's own signedness must
+        // match: a mismatch is defined only for a value both types hold,
+        // which is not checked here, so it stays unmodelled.
+        bool want_unsigned = std::string_view("ouxX").find(conv) != std::string_view::npos;
+        bool narrow = args[k].w < 32;
+        if (!(narrow && (len == "h" || len == "hh"))) {
+            bool is_unsigned = narrow ? false : args[k].u;
+            if (is_unsigned != want_unsigned) return std::nullopt;
+        }
+    }
+    if (next != args.size()) return std::nullopt;
+    return result();
+}
+
 int sizeof_type(const std::vector<std::string>& inner, Enc& e) {
     for (auto& t : inner)
         if (t == "*") return 8;
@@ -2517,6 +2869,7 @@ int sizeof_type(const std::vector<std::string>& inner, Enc& e) {
     if (auto ct = ctype_parse(joined)) return std::max(1, ct->w / 8);
     if (inner.size() == 4 && e.is_array(inner[0]) && inner[1] == "[" && inner[3] == "]") {
         auto& a = e.arrays.at(e.canonical(inner[0]));
+        if (!a.dims.empty()) throw ParseFail("UNENCODED: sizeof a row of " + inner[0]);
         return std::max(1, a.w / 8);
     }
     throw ParseFail("UNENCODED: sizeof " + joined);
@@ -2622,6 +2975,7 @@ TV parse_expr(Enc& e, std::string src, Parser& parser) {
                 throw ParseFail("deref of '" + name + "'");
             eat();
             auto arr = e.arrays.at(e.canonical(name));
+            if (!arr.dims.empty()) throw ParseFail("UNENCODED: row of multi-dimensional array " + name);
             auto idx = e.int_val(0);
             e.add_prop("oob-read", "MEM-OOB-READ", oob(e, idx, arr.n), e.pc);
             check_elem(e, e.canonical(name), idx, arr.n);
@@ -2791,7 +3145,18 @@ TV parse_expr(Enc& e, std::string src, Parser& parser) {
                 eat("]");
                 if (!e.is_array(t)) throw ParseFail("UNENCODED: index into unknown array " + t);
                 auto arr = e.arrays.at(e.canonical(t));
-                e.add_prop("oob-read", "MEM-OOB-READ", oob(e, idx, arr.n), e.pc);
+                if (!arr.dims.empty()) {
+                    std::vector<TV> subs{idx};
+                    while (subs.size() < arr.dims.size()) {
+                        if (peek() != "[") throw ParseFail("UNENCODED: row of multi-dimensional array " + t);
+                        eat("[");
+                        subs.push_back(parse(0));
+                        eat("]");
+                    }
+                    idx = flat_index(e, arr, subs, "oob-read", "MEM-OOB-READ");
+                } else {
+                    e.add_prop("oob-read", "MEM-OOB-READ", oob(e, idx, arr.n), e.pc);
+                }
                 check_elem(e, e.canonical(t), idx, arr.n);
                 return TV{z3::select(arr.a, index32(e, idx)), arr.w, arr.u};
             }
@@ -2810,6 +3175,10 @@ TV parse_expr(Enc& e, std::string src, Parser& parser) {
                         eat(")");
                         break;
                     }
+                }
+                if (auto io = model_output_call(e, t, tokens, spans, args, e.value_arrays.size() > n_values)) {
+                    e.value_arrays.resize(n_values);
+                    return *io;
                 }
                 size_t n_calls = e.call_vars.size();
                 auto res = model_call(e, t, args);

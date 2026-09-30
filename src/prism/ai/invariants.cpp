@@ -754,7 +754,7 @@ std::pair<int, int> body_source_pos(const FunctionInfo& fn, std::size_t off) {
         }
         ++i;
     }
-    return {line, col};
+    return {line, source_col(fn, line, col)};
 }
 
 // Where each cut loop starts in the source: [{"kind", "line", "column"}],
