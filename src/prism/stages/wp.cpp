@@ -228,6 +228,8 @@ bool wp_is_tautology(const std::string& pred) {
 
 }  // namespace
 
+std::optional<std::string> encode_wp_predicate(const std::string& raw) { return wp_encode_predicate(raw); }
+
 std::vector<Finding> run_wp(const std::vector<FunctionInfo>& functions, int unwind) {
     std::vector<Finding> out;
     static Regex ret_re("\\breturn\\s+([^;]+);");
@@ -292,8 +294,10 @@ std::vector<Finding> run_wp(const std::vector<FunctionInfo>& functions, int unwi
         std::vector<std::string> returns;
         nlohmann::json rets = nlohmann::json::array();
         for (auto& m : ret_re.finditer(fn.body)) {
+            // An empty return expression is kept (as the Python engine does):
+            // its VC "()" is never a tautology, so no return path is dropped
+            // from the proof obligation.
             auto g = strip(m.group(1));
-            if (g.empty()) continue;
             returns.push_back(g);
             rets.push_back(g);
             if (returns.size() >= 8) break;

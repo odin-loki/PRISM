@@ -137,6 +137,8 @@ std::optional<FunctionInfo> materialize(const FunctionInfo& fn) {
 
 }  // namespace
 
+std::optional<FunctionInfo> materialize_harness(const FunctionInfo& fn) { return materialize(fn); }
+
 std::vector<Finding> run_harness_bmc(const std::vector<FunctionInfo>& functions, int unwind) {
     std::vector<Finding> out;
     for (auto& fn : functions) {

@@ -55,6 +55,10 @@ std::vector<Finding> prove_contracts(const std::vector<FunctionInfo>& functions,
 PRISM_API Finding prove_with_contract(const FunctionInfo& fn, int unwind, const std::optional<std::string>& requires_,
                                       const std::optional<std::string>& ensures);
 std::vector<Finding> run_wp(const std::vector<FunctionInfo>& functions, int unwind);
+// The wp stage's predicate encoder: the scalar C form of an ACSL/comment
+// predicate, or nullopt when it is not encodable (\valid, \old, quantifiers,
+// ->, calls, ...), which makes the wp record ERROR.
+std::optional<std::string> encode_wp_predicate(const std::string& raw);
 std::vector<Finding> run_bmc(const std::vector<FunctionInfo>& functions, int unwind,
                              bool allow_local_pointers = false);
 // The year of a `-std=` flag's C++ standard (c++98/03 -> 3, c++0x/11 -> 11,
@@ -64,6 +68,11 @@ int cxx_std_year(std::string_view std_flag);
 // compile_commands.json (root or root/build), as the lints read it.
 std::vector<FunctionInfo> with_cxx_std(std::vector<FunctionInfo> functions, const std::filesystem::path& root);
 std::vector<Finding> run_harness_bmc(const std::vector<FunctionInfo>& functions, int unwind);
+// The harness stage's materialization of a POINTER function: each pointer
+// parameter becomes a local buffer of its pointee type, sized by an honest
+// `requires`, and the requires guard the body. nullopt when the function is
+// not POINTER or has no requires that sizes every buffer (NEEDS-HARNESS).
+std::optional<FunctionInfo> materialize_harness(const FunctionInfo& fn);
 std::vector<Finding> run_concolic(const std::vector<FunctionInfo>& functions, int budget = 32);
 
 // Python engine prism/bmc.py harness_for_parsefail. Unmapped parsefail is ERROR (nullopt),
