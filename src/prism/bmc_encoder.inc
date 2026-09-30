@@ -661,6 +661,49 @@ bool has_goto_to(const std::string& text, const std::string& name) {
     return false;
 }
 
+// Labels whose statement is exactly `goto` to itself (`STUCK: goto STUCK;`).
+// Control that reaches one never leaves it and does nothing there, so for
+// the safety properties bmc checks the path simply ends (termination is not
+// a covered property). Only a label at a statement start (after `;`, `{`,
+// `}`, `)`, `:`, `else` or `do`), outside string and character literals.
+std::set<std::string> self_loop_labels(const std::string& body) {
+    std::vector<bool> lit(body.size(), false);
+    for (size_t i = 0; i < body.size(); ++i) {
+        char q = body[i];
+        if (q != '"' && q != '\'') continue;
+        size_t j = i + 1;
+        while (j < body.size() && body[j] != q) j += body[j] == '\\' ? 2 : 1;
+        for (size_t k = i; k <= j && k < body.size(); ++k) lit[k] = true;
+        i = j;
+    }
+    std::set<std::string> out;
+    for (auto& m : rx_finditer(R"BMC(\b([A-Za-z_]\w*)\s*:\s*goto\s+([A-Za-z_]\w*)\s*;)BMC", body)) {
+        auto at = static_cast<size_t>(m.spans[0].first);
+        if (m.group(1) != m.group(2) || lit[at]) continue;
+        size_t q = at;
+        while (q > 0 && std::isspace(static_cast<unsigned char>(body[q - 1]))) --q;
+        bool start = q == 0 || std::string_view(";{}):").find(body[q - 1]) != std::string_view::npos;
+        if (!start) {
+            size_t w = q;
+            while (w > 0 && (std::isalnum(static_cast<unsigned char>(body[w - 1])) || body[w - 1] == '_')) --w;
+            auto word = body.substr(w, q - w);
+            start = word == "else" || word == "do";
+        }
+        if (start) out.insert(m.group(1));
+    }
+    return out;
+}
+
+// Is `name` among the labels of the first statement of text?
+bool first_stmt_has_label(const std::string& text, const std::string& name) {
+    std::string t = lstrip(text);
+    while (auto lab = label_at(t)) {
+        if (lab->first == name) return true;
+        t = lstrip(t.substr(lab->second));
+    }
+    return false;
+}
+
 struct SwitchArm {
     std::vector<std::optional<TV>> labels;
     std::string code;
@@ -763,6 +806,11 @@ struct Parser {
     };
     std::vector<LabelLoop> label_loops;
     std::vector<const std::string*> lists;  // unconsumed text of each active statement list
+    // The else branch of each enclosing if whose then branch is being
+    // parsed: a goto there may enter the else branch at its first statement.
+    std::vector<const std::string*> else_heads;
+    // Labels of a statement that is exactly `goto` itself (`L: goto L;`).
+    std::set<std::string> stuck_labels;
 
     Parser(std::string b, std::vector<std::pair<std::string, std::string>> p, int u,
            std::map<std::string, int> en, std::map<std::string, std::string> mac = {},
@@ -798,6 +846,7 @@ struct Parser {
                 auto argc = e->get(params[0].second);
                 e->assume(argc.v >= e->bv_zero(argc.w));
             }
+            stuck_labels = self_loop_labels(body);
             e->push_scope();
             stmts(*e, prep(body));
             e->pop_scope();
@@ -1506,7 +1555,17 @@ std::string Parser::if_stmt(Enc& e, std::string text) {
     auto cond = as_bool(expr(e, cond_src));
     auto base = e.snap();
     e.path_true = base.path && cond;
-    block(e, then_src);
+    {
+        struct ElseHead {
+            std::vector<const std::string*>& v;
+            bool on;
+            ~ElseHead() {
+                if (on) v.pop_back();
+            }
+        } head{else_heads, else_src.has_value()};
+        if (else_src) else_heads.push_back(&*else_src);
+        block(e, then_src);
+    }
     auto then_st = e.snap();
     e.load(base);
     e.path_true = base.path && !cond;
@@ -1549,6 +1608,11 @@ State goto_merge_union(Enc& e, std::vector<State> states) {
 }
 
 void Parser::goto_stmt(Enc& e, const std::string& name) {
+    if (stuck_labels.count(name)) {
+        // `name: goto name;` (self_loop_labels): the path never continues.
+        e.path_true = e.ctx.bool_val(false);
+        return;
+    }
     // Backward: a goto inside the statements its label heads (innermost first).
     for (auto it = label_loops.rbegin(); it != label_loops.rend(); ++it) {
         if (it->name != name) continue;
@@ -1559,6 +1623,12 @@ void Parser::goto_stmt(Enc& e, const std::string& name) {
     // Forward: the label is a later statement of this list or an enclosing one.
     bool found = false;
     for (auto it = lists.rbegin(); it != lists.rend() && !found; ++it) found = list_has_label(**it, name);
+    // Into the else branch of an enclosing if, at its first statement, from
+    // its then branch: the state joins the else branch's entry state at the
+    // label (label_stmt; the if's condition is not evaluated again). The
+    // declaration checks at the label still apply.
+    for (auto it = else_heads.rbegin(); it != else_heads.rend() && !found; ++it)
+        found = first_stmt_has_label(**it, name);
     if (!found) throw ParseFail("unstructured goto unencoded: goto " + name + " is not a jump out to a later statement");
     pending_gotos[name].push_back(PendingGoto{e.snap(), e.scopes});
     e.path_true = e.ctx.bool_val(false);
@@ -1583,6 +1653,8 @@ void Parser::label_stmt(Enc& e, const std::string& name, std::string& text) {
         pending_gotos.erase(it);
         e.load(merge_states(e, states, cur));
     }
+    // A self-loop label: its `goto` (the next statement) ends the path.
+    if (stuck_labels.count(name)) return;
     if (!has_goto_to(text, name)) return;
     // Backward gotos: the region is every statement from the label up to the
     // last one that contains `goto name`; it runs like a loop body whose

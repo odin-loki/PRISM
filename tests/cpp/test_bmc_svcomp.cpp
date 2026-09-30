@@ -290,4 +290,55 @@ int p_result(int x) { int r = printf("hi\n"); if (r == 1000) return x / 0; retur
     INFO(by["p_result"].message);
     CHECK(by["p_result"].status == kHarness);
 }
+
+TEST_CASE("bmc goto: into the start of an else branch, and self-loop labels end the path") {
+    auto td = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path() / "testdata" /
+              "goto_else_stuck.c";
+    auto fns = prism::extract_functions(td, "goto_else_stuck.c");
+    REQUIRE(fns.size() == 4);
+    std::map<std::string, prism::Finding> by;
+    for (auto& f : prism::run_bmc(fns, 8))
+        if (f.function) by[*f.function] = f;
+    CHECK(by["goto_else_bad"].status == kFailed);
+    CHECK(by["goto_else_bad"].cls == "INT-DIV-ZERO");
+    CHECK(by["goto_else_ok"].status == kProved);
+    CHECK(by["goto_stuck_ok"].status == kProved);
+    CHECK(by["goto_stuck_bad"].status == kFailed);
+    CHECK(by["goto_stuck_bad"].cls == "INT-SIGNED-OVF");
+    // A label whose statement is more than the goto is an ordinary label.
+    auto loop = bmc_run("stuck_not.c", R"(int f(int i) {
+    if (i >= 100) { L: i = i + 1; goto L; }
+    return 0;
+}
+)");
+    CHECK(loop["f"].status != kProved);
+    // A goto into the middle of an else branch stays unencoded.
+    auto mid = bmc_run("else_mid.c", R"(int f(int x) {
+    if (x) {
+        goto l;
+    } else {
+        x = 2;
+    l:
+        x = 1;
+    }
+    return x;
+}
+)");
+    CHECK(mid["f"].status == kHarness);
+    CHECK(mid["f"].message.find("unstructured goto unencoded") != std::string::npos);
+    // Names the then branch declared are out of scope at the label.
+    auto decl = bmc_run("else_decl.c", R"(int f(int x) {
+    if (x) {
+        int t = 5;
+        if (t > x) goto l;
+        x = t;
+    } else {
+    l:
+        x = 1;
+    }
+    return 10 / x;
+}
+)");
+    CHECK(decl["f"].status == kProved);
+}
 #endif
