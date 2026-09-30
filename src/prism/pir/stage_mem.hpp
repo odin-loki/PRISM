@@ -52,8 +52,12 @@ std::vector<PtrContract> contracts_from_draft(const std::vector<std::string>& as
 //    static-initialisation functions are proved too and the proof holds
 //    for arbitrary globals; else NEEDS-HARNESS;
 //  * memory-model notes (encoding, strict aliasing off, library models).
+// Every re-check runs with `copt` (the options of the function's own check:
+// its function budget clock, the run's Houdini budget, the solver cache and
+// the worker's core share), never certified: a replaced verdict carries no
+// certificate.
 void apply_memory_policy(Finding& f, Verdict& v, Function& fn, const ir::Module& mod, const ir::Function& irf,
-                         const TranslateOptions& topt, const Config& cfg);
+                         const TranslateOptions& topt, const Config& cfg, const CheckOptions& copt);
 
 // Why translation validation cannot replay this function (empty: it can).
 std::string tv_exclusion(const Function& fn);

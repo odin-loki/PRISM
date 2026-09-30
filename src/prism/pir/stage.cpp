@@ -851,13 +851,35 @@ std::string span_text(const std::vector<std::string>& lines, const std::vector<i
 // workers. $PRISM_HOUDINI_BUDGET seconds (0: none), else max(3600 s,
 // 120 x timeout). A function that finds it spent stays BOUNDED with an
 // invariants_note (Law 7: it says what was not tried).
+// A budget in seconds from the environment: unset or empty leaves `out`
+// alone; a value that is not a number >= 0 is rejected (returned as a note,
+// Law 7: a typo must not run unbudgeted without saying so).
+std::optional<std::string> env_seconds(const char* name, double& out) {
+    const char* e = std::getenv(name);
+    if (!e || !*e) return std::nullopt;
+    char* end = nullptr;
+    const double x = std::strtod(e, &end);
+    if (end && *end == '\0' && x >= 0 && std::isfinite(x)) {
+        out = x;
+        return std::nullopt;
+    }
+    return std::string(name) + "='" + e + "' is not a number of seconds >= 0; ignored";
+}
+
+// The budget variables whose value was rejected (one note, "; "-joined;
+// empty: none). Every checked pir row carries it as extra.env_rejected.
+std::string rejected_budget_env() {
+    std::string out;
+    for (const char* name : {"PRISM_FUNCTION_BUDGET", "PRISM_HOUDINI_BUDGET", "PRISM_CERTIFY_BUDGET"}) {
+        double ignored = 0;
+        if (auto why = env_seconds(name, ignored)) out += (out.empty() ? "" : "; ") + *why;
+    }
+    return out;
+}
+
 std::shared_ptr<HoudiniBudget> houdini_budget(const Config& cfg) {
     double b = std::max(3600.0, 120.0 * cfg.timeout);
-    if (const char* e = std::getenv("PRISM_HOUDINI_BUDGET"); e && *e) {
-        char* end = nullptr;
-        const double x = std::strtod(e, &end);
-        if (end && *end == '\0' && x >= 0) b = x;
-    }
+    (void)env_seconds("PRISM_HOUDINI_BUDGET", b);  // a rejected value: rejected_budget_env
     if (b <= 0) return nullptr;
     return std::make_shared<HoudiniBudget>(b);
 }
@@ -874,18 +896,11 @@ CheckOptions check_options(const Config& cfg, std::shared_ptr<HoudiniBudget> bud
     // a single certificate is never cut shorter than before while a chain of
     // per-VC certificates cannot run away with the run's time.
     o.certify_budget_s = std::max(240.0, 8.0 * cfg.timeout);
-    if (const char* e = std::getenv("PRISM_CERTIFY_BUDGET"); e && *e) {
-        char* end = nullptr;
-        const double b = std::strtod(e, &end);
-        if (end && *end == '\0' && b >= 0) o.certify_budget_s = b;
-    }
+    (void)env_seconds("PRISM_CERTIFY_BUDGET", o.certify_budget_s);
     // Per-function pir budget (docs/PIR.md "Solving"): $PRISM_FUNCTION_BUDGET
-    // seconds (0: none). Spent: TIMEOUT with a budget_note.
-    if (const char* e = std::getenv("PRISM_FUNCTION_BUDGET"); e && *e) {
-        char* end = nullptr;
-        const double b = std::strtod(e, &end);
-        if (end && *end == '\0' && b >= 0) o.function_budget_s = b;
-    }
+    // seconds (0: none). Spent before every VC is answered: TIMEOUT with the
+    // budget message and extra.function_budget_s (CheckOptions).
+    (void)env_seconds("PRISM_FUNCTION_BUDGET", o.function_budget_s);
     o.cache_dir = cfg.solver_cache.string();
     const unsigned hw = std::max(2u, std::thread::hardware_concurrency());
     o.max_parallel = std::max(2u, hw / static_cast<unsigned>(std::max(1, cfg.jobs)));
@@ -1030,8 +1045,12 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
             for (auto& n : fn.inlined) s += (s.empty() ? "" : ",") + n;
             f.extra["inlined"] = s;
         }
-        auto v = check_function(fn, check_options(cfg, budget));
-        pirmem::apply_memory_policy(f, v, fn, mod, irf, fopt, cfg);
+        // one function budget for the check and the policy's re-checks of this row
+        auto copt = check_options(cfg, budget);
+        if (copt.function_budget_s > 0) copt.function_budget = std::make_shared<FunctionBudget>(copt.function_budget_s);
+        auto v = check_function(fn, copt);
+        pirmem::apply_memory_policy(f, v, fn, mod, irf, fopt, cfg, copt);
+        if (auto rej = rejected_budget_env(); !rej.empty()) f.extra["env_rejected"] = rej;
         f.status = v.status;
         f.message = v.message;
         f.cls = v.cls;

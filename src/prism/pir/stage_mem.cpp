@@ -157,7 +157,24 @@ TranslateOptions function_options(const TranslateOptions& base, const ir::Functi
 }
 
 void apply_memory_policy(Finding& f, Verdict& v, Function& fn, const ir::Module& mod, const ir::Function& irf,
-                         const TranslateOptions& topt, const Config& cfg) {
+                         const TranslateOptions& topt, const Config& cfg, const CheckOptions& copt) {
+    // Re-checks share the function's budget, cache and core share; plain
+    // answers only (certified mode certifies the function's own check).
+    CheckOptions ro = copt;
+    ro.certified = false;
+    // f.extra.policy_rechecks: each re-check, its verdict and solver summary
+    const auto recheck = [&](const Function& g, const std::string& what) {
+        auto r = check_function(g, ro);
+        auto sv = r.extra.find("solver");
+        auto& log = f.extra["policy_rechecks"];
+        log += (log.empty() ? "" : "; ") + what + ": " + r.status +
+               (sv == r.extra.end() ? std::string() : " (" + sv->second + ")");
+        return r;
+    };
+    // "TIMEOUT (pir function budget ...)": a re-check the budget stopped says why
+    const auto status_of = [](const Verdict& r) {
+        return r.status == laws::TIMEOUT ? r.status + " (" + r.message + ")" : r.status;
+    };
     if (fn.uses_memory) {
         f.extra["strict_aliasing"] = cfg.strict_aliasing ? "checked" : "off (--strict-aliasing checks effective types)";
     }
@@ -191,7 +208,7 @@ void apply_memory_policy(Finding& f, Verdict& v, Function& fn, const ir::Module&
             auto* ctor = mod.find(name);
             if (!ctor) continue;
             auto tr = translate(mod, *ctor, o);
-            std::string st = tr.fn ? check_function(*tr.fn, cfg.unwind, cfg.timeout).status
+            std::string st = tr.fn ? status_of(recheck(*tr.fn, "static init " + name))
                                    : (tr.status.empty() ? std::string(laws::NEEDS_HARNESS) : tr.status);
             if (st == laws::PROVED || st == laws::PROVED_UNBOUNDED) continue;
             f.extra["verdict_before_static_init"] = v.status;
@@ -205,19 +222,20 @@ void apply_memory_policy(Finding& f, Verdict& v, Function& fn, const ir::Module&
         }
         v.extra["static_init"] = "proved";
     }
+    // (a TIMEOUT is no verdict to re-check: the function budget is spent)
     if (topt.globals_initial && fn.mutable_globals && has_dynamic_init(mod) && v.status != laws::NEEDS_HARNESS &&
-        v.status != laws::ERROR) {
+        v.status != laws::ERROR && v.status != laws::TIMEOUT) {
         auto o = topt;
         o.globals_initial = false;
         auto tr = translate(mod, irf, o);
         std::optional<Verdict> v2;
-        if (tr.fn) v2 = check_function(*tr.fn, cfg.unwind, cfg.timeout);
+        if (tr.fn) v2 = recheck(*tr.fn, "arbitrary globals");
         if (v2 && (v2->status == laws::PROVED || v2->status == laws::PROVED_UNBOUNDED)) {
             v2->extra["globals"] = "arbitrary (dynamic initialisation not modelled): " + v2->status;
             v = std::move(*v2);
         } else {
             f.extra["verdict_before_globals"] = v.status;
-            v.extra["globals"] = "initial values: " + v.status + "; arbitrary: " + (v2 ? v2->status : "UNENCODED");
+            v.extra["globals"] = "initial values: " + v.status + "; arbitrary: " + (v2 ? status_of(*v2) : "UNENCODED");
             v.status = std::string(laws::NEEDS_HARNESS);
             v.message = "main runs after the unit's dynamic initialisation (constructors of globals), which is not "
                         "modelled; the verdict with the globals' static initializers (" + v.extra["globals"] +
@@ -234,13 +252,22 @@ void apply_memory_policy(Finding& f, Verdict& v, Function& fn, const ir::Module&
         o.globals_initial = true;
         auto tr = translate(mod, irf, o);
         if (tr.fn) {
-            auto v2 = check_function(*tr.fn, cfg.unwind, cfg.timeout);
+            auto v2 = recheck(*tr.fn, "initial globals");
             if (v2.status != laws::FAILED) {
+                // decided (no violation with the initial values), or not
+                // decided (no answer, the budget spent): either way the
+                // violation is not shown for the state the function starts in
+                const bool decided = v2.status == laws::PROVED || v2.status == laws::PROVED_UNBOUNDED ||
+                                     v2.status == laws::BOUNDED;
                 f.extra["verdict_before_globals"] = v.status;
                 v.status = std::string(laws::NEEDS_HARNESS);
-                v.message = "violation needs values of mutable globals other than their initializers (" + v.message +
-                            "); the global state the function is called in is an unstated precondition";
-                v.extra["globals"] = "arbitrary: FAILED; initial values: " + v2.status;
+                v.message = decided ? "violation needs values of mutable globals other than their initializers (" +
+                                          v.message +
+                                          "); the global state the function is called in is an unstated precondition"
+                                    : "violation with arbitrary values of mutable globals (" + v.message +
+                                          "); with their initializers not decided (" + status_of(v2) +
+                                          "); the global state the function is called in is an unstated precondition";
+                v.extra["globals"] = "arbitrary: FAILED; initial values: " + status_of(v2);
                 v.cex.clear();
                 v.cex_args.clear();
                 return;

@@ -1362,13 +1362,27 @@ switches the combined query off (plain answers and certificates per VC). Plain m
 
 The plain property queries, the unwinding assertion, k-induction and Houdini
 of one function share a **function budget** (`CheckOptions::function_budget_s`;
-the pir stage reads `$PRISM_FUNCTION_BUDGET` seconds, 0 for none): once it is
-spent before every VC is answered the function is `TIMEOUT` with
+the pir stage reads `$PRISM_FUNCTION_BUDGET` seconds, 0 for none). One clock
+covers both unwind attempts of `check_function` and the stage's memory-policy
+re-checks of the same function (static initialisation, arbitrary or initial
+globals), which also use the run's solver cache, Houdini budget and core share.
+Once it is spent before every VC is answered the function is `TIMEOUT` with
 `message = "pir function budget of N s spent before <label>
-(PRISM_FUNCTION_BUDGET)"` and `extra.function_budget_s = N` (Law 7: it says
-what was not tried). Each VC query also gets at most what is left of the
-function budget as its per-query timeout. Certification queries are not counted
-(they use the certification budget above).
+(PRISM_FUNCTION_BUDGET)"` (or `during <label>` when that VC's query was cut
+short; `extra.function_budget_capped` lists such VCs) and
+`extra.function_budget_s = N` (N as given, e.g. `0.5`; Law 7: it says what was
+not tried). Once every VC is answered the verdict stands: a validated violation
+stays `FAILED` (`extra.earlier_properties` notes when the budget stopped the
+search for an earlier one), and a `BOUNDED` stays `BOUNDED` with
+`extra.k_induction` / `extra.invariants_note` = "not attempted (function budget
+of N s spent; PRISM_FUNCTION_BUDGET)" (a BOUNDED at the first unwind is kept
+the same way, `extra.unwind_requested_note`). Each VC query, k-induction step
+and Houdini query (its final query and per-query minimums included) gets at
+most what is left of the function budget. Certification queries are not
+counted (they use the certification budget above). A value of
+`$PRISM_FUNCTION_BUDGET`, `$PRISM_HOUDINI_BUDGET` or `$PRISM_CERTIFY_BUDGET`
+that is not a number of seconds >= 0 is ignored, and every checked pir row says
+so in `extra.env_rejected`.
 
 A certified function then carries `extra.certificate = "checked"` (what the verdict
 audit requires of a `PROVED-CERTIFIED` from this stage),
