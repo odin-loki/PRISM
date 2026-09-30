@@ -69,6 +69,25 @@ void set_chat_backend_for_testing(ChatBackend backend) {
 
 namespace {
 #ifdef PRISM_HAS_LLAMA
+// Layers offloaded to the GPU: PRISM_N_GPU_LAYERS (default -1, all of them;
+// a CPU-only build ignores it). On Windows a CUDA build needs MSVC's cl, so
+// without it the model stays on the CPU instead of pretending CUDA works.
+int native_gpu_layers() {
+#ifdef _WIN32
+    if (!Config{}.which({"cl"})) return 0;
+#endif
+    if (const char* e = std::getenv("PRISM_N_GPU_LAYERS"); e && *e) {
+        try {
+            return std::stoi(e);
+        } catch (...) {
+        }
+    }
+    return -1;
+}
+
+// Context of the linked model: prompt and reply together (the servers use 8192 too).
+constexpr int kNativeCtx = 8192;
+
 struct NativeLlama {
     std::mutex mu;
     llama_model* model = nullptr;
@@ -98,7 +117,7 @@ struct NativeLlama {
             model = nullptr;
         }
         auto params = llama_model_default_params();
-        params.n_gpu_layers = 0;
+        params.n_gpu_layers = native_gpu_layers();
         model = llama_model_load_from_file(s.c_str(), params);
         if (!model) {
             err = "failed to load GGUF " + s;
@@ -113,7 +132,8 @@ static NativeLlama g_native_llama;
 
 static ChatResult native_llama_complete(const Config& cfg,
                                         const std::vector<std::pair<std::string, std::string>>& messages) {
-    if (cfg.gguf.empty() || !fs::exists(cfg.gguf)) {
+    std::error_code gec;
+    if (cfg.gguf.empty() || !fs::is_regular_file(cfg.gguf, gec) || fs::file_size(cfg.gguf, gec) <= 1'000'000) {
         return {"", "llama.cpp", "missing GGUF (set PRISM_GGUF)"};
     }
     std::string err;
@@ -122,8 +142,8 @@ static ChatResult native_llama_complete(const Config& cfg,
 
     const llama_vocab* vocab = llama_model_get_vocab(model);
     llama_context_params ctx_params = llama_context_default_params();
-    ctx_params.n_ctx = 2048;
-    ctx_params.n_batch = 2048;
+    ctx_params.n_ctx = kNativeCtx;
+    ctx_params.n_batch = kNativeCtx;
     llama_context* ctx = llama_init_from_model(model, ctx_params);
     if (!ctx) return {"", "llama.cpp", "failed to create llama_context"};
 
@@ -171,8 +191,15 @@ static ChatResult native_llama_complete(const Config& cfg,
 
     llama_batch batch = llama_batch_get_one(prompt_tokens.data(), static_cast<int32_t>(prompt_tokens.size()));
     std::string text;
-    constexpr int kMaxNew = 256;
-    for (int i = 0; i < kMaxNew; ++i) {
+    // The reply may use the rest of the context (a repaired C file is long);
+    // generation stops at end of generation or when the context is full.
+    const int max_new = static_cast<int>(llama_n_ctx(ctx)) - n_prompt;
+    if (max_new <= 0) {
+        llama_sampler_free(smpl);
+        llama_free(ctx);
+        return {"", "llama.cpp", "prompt longer than the context (" + std::to_string(n_prompt) + " tokens)"};
+    }
+    for (int i = 0; i < max_new; ++i) {
         if (llama_decode(ctx, batch) != 0) {
             llama_sampler_free(smpl);
             llama_free(ctx);
