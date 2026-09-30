@@ -1,4 +1,4 @@
-"""The scorers kill PRISM's whole process tree on a timeout or Ctrl-C.
+"""The Python scorers kill PRISM's whole process tree on a timeout or Ctrl-C.
 
 PRISM runs its solvers and proof checkers (CaDiCaL, cake_lpr, the LRAT
 checkers) and compilers each in a process group of its own. Killing only
@@ -6,7 +6,10 @@ PRISM, or only PRISM's process group, left them running after the scorer had
 moved on. `tools/proctree.py` (used by `tools/conformance.py` and
 `tools/svcomp/run_subset.py`) and `run_tree` in `tools/svcomp/prism_svcomp.py`
 (shipped on its own, so it has its own copy) kill every process of the
-session instead.
+session instead. The session runner itself (session members, timeout,
+interrupt, normal exit) is locked for its C++ port, detail::run_session, in
+tests/cpp/test_qa.cpp; what stays here are the two Python tools still using
+it.
 """
 
 from __future__ import annotations
@@ -99,44 +102,6 @@ class ProcTreeTest(unittest.TestCase):
             except OSError:
                 pass
         shutil.rmtree(self.tmp, ignore_errors=True)
-
-    def test_session_members_sees_other_process_groups(self) -> None:
-        proc = subprocess.Popen([sys.executable, str(self.script), str(self.pidfile)], start_new_session=True)
-        try:
-            solver = _solver_pid(self.pidfile)
-            self.assertNotEqual(os.getpgid(solver), proc.pid)  # its own group ...
-            self.assertIn(solver, PT.session_members(proc.pid))  # ... in the same session
-        finally:
-            PT.kill_tree(proc)
-            proc.wait()
-        self.assertTrue(_gone(solver))
-
-    def test_timeout_kills_the_solver_in_its_own_group(self) -> None:
-        t0 = time.monotonic()
-        with self.assertRaises(subprocess.TimeoutExpired):
-            PT.run([sys.executable, str(self.script), str(self.pidfile)], capture_output=True, timeout=2)
-        self.assertLess(time.monotonic() - t0, 30)
-        self.assertTrue(_gone(_solver_pid(self.pidfile)))
-
-    def test_interrupt_kills_the_tree(self) -> None:
-        # Ctrl-C while waiting: KeyboardInterrupt inside communicate()
-        def boom(_sig: int, _frm: Any) -> None:
-            raise KeyboardInterrupt
-
-        old = signal.signal(signal.SIGALRM, boom)
-        try:
-            signal.setitimer(signal.ITIMER_REAL, 2.0)
-            with self.assertRaises(KeyboardInterrupt):
-                PT.run([sys.executable, str(self.script), str(self.pidfile)], capture_output=True, timeout=60)
-        finally:
-            signal.setitimer(signal.ITIMER_REAL, 0)
-            signal.signal(signal.SIGALRM, old)
-        self.assertTrue(_gone(_solver_pid(self.pidfile)))
-
-    def test_normal_exit_returns_output(self) -> None:
-        r = PT.run([sys.executable, "-c", "print('ok')"], capture_output=True, text=True, timeout=30)
-        self.assertEqual(r.returncode, 0)
-        self.assertEqual(r.stdout.strip(), "ok")
 
     def test_conformance_run_prism_timeout(self) -> None:
         conf = _load("prism_conformance_under_test", REPO / "tools" / "conformance.py")

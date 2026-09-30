@@ -336,6 +336,44 @@ if(UNIX)
   set_target_properties(prism PROPERTIES BUILD_RPATH "$ORIGIN" INSTALL_RPATH "$ORIGIN")
 endif()
 
+# --- prism-qa: developer QA tools (src/tools/qa; built by default, not shipped) ---
+# pir-vs-bmc, pir-lean-check, llvm-sem-vs-lli, libc-bounds, solver-bench,
+# triage-selfscan, assurance-check, docs-check. The commands live in the
+# prism_qa library so that prism_tests drives them too.
+add_library(prism_qa STATIC
+  src/tools/qa/common.cpp
+  src/tools/qa/docscan.cpp
+  src/tools/qa/docs_check.cpp
+  src/tools/qa/triage_selfscan.cpp
+  src/tools/qa/pir_vs_bmc.cpp
+  src/tools/qa/pir_lean_check.cpp
+  src/tools/qa/llvm_sem_vs_lli.cpp
+  src/tools/qa/libc_bounds.cpp
+  src/tools/qa/solver_bench.cpp)
+target_link_libraries(prism_qa PUBLIC prism_core nlohmann_json)
+target_compile_definitions(prism_qa PRIVATE PRISM_SOURCE_DIR="${PRISM_ROOT}")
+add_executable(prism-qa src/tools/qa/main.cpp)
+target_link_libraries(prism-qa PRIVATE prism_qa)
+if(UNIX)
+  set_target_properties(prism-qa PROPERTIES BUILD_RPATH "$ORIGIN")
+endif()
+
+# prism_docs_check: the documentation checks without the engine or Z3
+# (assurance-check, anchors), for the fast docs CI job
+# (cmake --build build --target prism_docs_check). PCRE2 for Unicode \w.
+add_executable(prism_docs_check
+  src/tools/qa/docs_main.cpp
+  src/tools/qa/docscan.cpp
+  src/prism/regex.cpp)
+target_include_directories(prism_docs_check PRIVATE "${PRISM_ROOT}/include")
+target_compile_definitions(prism_docs_check PRIVATE PRISM_SOURCE_DIR="${PRISM_ROOT}")
+if(TARGET pcre2-8-static)
+  target_link_libraries(prism_docs_check PRIVATE pcre2-8-static)
+  target_compile_definitions(prism_docs_check PRIVATE PCRE2_STATIC)
+elseif(TARGET pcre2-8)
+  target_link_libraries(prism_docs_check PRIVATE pcre2-8)
+endif()
+
 # C ABI for coverage hash / havoc
 add_library(prism_native SHARED src/prism/capi.cpp src/prism/hash.cpp src/prism/havoc.cpp)
 target_include_directories(prism_native PUBLIC "${PRISM_ROOT}/include")
@@ -486,11 +524,15 @@ if(PRISM_TESTS)
     # Planted-bug lint corpus (every testdata/ plant, table-driven).
     tests/cpp/test_lint_corpus.cpp
     # checkers_cxx.cpp branches and guards (bad / good twins).
-    tests/cpp/test_checkers_cxx.cpp)
+    tests/cpp/test_checkers_cxx.cpp
+    # prism-qa tools, the session runner and the documentation checks.
+    tests/cpp/test_qa.cpp)
   target_include_directories(prism_tests PRIVATE
     "${PRISM_ROOT}/include"
     "${PRISM_ROOT}/third_party")
-  target_link_libraries(prism_tests PRIVATE prism_core)
+  target_link_libraries(prism_tests PRIVATE prism_core prism_qa)
+  # test_qa.cpp runs these next to prism_tests (--help flags, the QA commands)
+  add_dependencies(prism_tests prism prism-qa prism_docs_check)
   if(UNIX)
     set_target_properties(prism_tests PROPERTIES BUILD_RPATH "$ORIGIN" INSTALL_RPATH "$ORIGIN")
   endif()
