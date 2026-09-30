@@ -156,6 +156,9 @@ std::optional<LtlFsm> extract_ltl_fsm(const std::string& body);
 // approximations on one machine; nullopt when the formula is outside that
 // fragment or a predicate cannot be evaluated.
 std::optional<Finding> check_ltl_safety(const std::string& formula, const LtlFsm& fsm);
+// Dafny-style contracts proposed by the model for SCALAR/VOID functions
+// (contracts stage, with --llm): HYPOTHESIS / READS rows, NOTRUN without a model.
+std::vector<Finding> dafny_specs(const std::vector<FunctionInfo>& functions, int budget, const Config& cfg);
 std::vector<Finding> hypothesize(const std::vector<FunctionInfo>& functions, int budget,
                                  const Config& cfg);
 std::vector<Finding> execute_cex(const std::vector<Finding>& fails,

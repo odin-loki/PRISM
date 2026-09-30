@@ -165,8 +165,10 @@ std::pair<bool, std::string> compile_afl_harness(const std::filesystem::path& ha
 std::optional<Finding> run_afl_fuzz(const FunctionInfo& fn, const std::filesystem::path& src,
                                     const Config& cfg, double timeout = 2.0,
                                     const std::filesystem::path& work = {});
+// nullopt on any failure; *error (when given) says why: "HTTP <code>: <first
+// 400 bytes of the body>" for a non-2xx answer, else "HTTP error: ...".
 std::optional<std::string> http_request(const std::string& method, const std::string& url, const std::string& body,
-                                        int timeout_ms);
+                                        int timeout_ms, std::string* error = nullptr);
 bool http_ok(const std::string& url, int timeout_ms = 1500);
 
 }  // namespace prism::stages_detail

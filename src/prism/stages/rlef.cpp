@@ -1,4 +1,5 @@
 // Stage repair: RLEF repair loop (LLM candidate, sandbox run, BMC reward).
+#include "agent.hpp"
 #include "llm.hpp"
 
 namespace prism {
@@ -11,10 +12,9 @@ const char* SYSTEM_REPAIR =
     "a full corrected C file only, no markdown fences unless the file itself "
     "needs them. Preserve function names.";
 
-struct RlefScore {
-    int score = 0;
-    std::string proved;
-};
+}  // namespace
+
+namespace stages_detail {
 
 RlefScore rlef_reward(const nlohmann::json& result, std::string_view bmc_status) {
     RlefScore s;
@@ -30,7 +30,7 @@ RlefScore rlef_reward(const nlohmann::json& result, std::string_view bmc_status)
     return s;
 }
 
-std::string bmc_status_of_source(const std::string& source, int unwind = 2) {
+std::string bmc_status_of_source(const std::string& source, int unwind) {
     auto src = strip(source);
     if (src.empty()) return {};
     auto td = fs::temp_directory_path() / ("prism_rlef_bmc_" + std::to_string(std::random_device{}()));
@@ -59,9 +59,7 @@ std::string bmc_status_of_source(const std::string& source, int unwind = 2) {
     return st;
 }
 
-}  // namespace
-
-std::vector<Finding> rlef_repair(const Finding& fail, const Config& cfg) {
+std::vector<Finding> rlef_repair_with(const Finding& fail, const Config& cfg, const BmcOracle& oracle) {
     LlamaEngine engine(cfg);
     if (!engine.available()) {
         auto f = nr("repair", LLM_UNAVAILABLE_MSG);
@@ -140,7 +138,13 @@ std::vector<Finding> rlef_repair(const Finding& fail, const Config& cfg) {
             return {f};
         }
         std::string bmc_st;
-        if (err != "compile" && err != "compile-timeout") bmc_st = bmc_status_of_source(src, 2);
+        if (err != "compile" && err != "compile-timeout") {
+            try {
+                bmc_st = oracle ? oracle(src) : bmc_status_of_source(src, 2);
+            } catch (const std::exception&) {
+                bmc_st.clear();  // no BMC answer is no reward, never a proof
+            }
+        }
         auto scored = rlef_reward(result, bmc_st);
         history.push_back({{"round", i + 1},
                            {"score", scored.score},
@@ -201,5 +205,9 @@ std::vector<Finding> rlef_repair(const Finding& fail, const Config& cfg) {
     f.extra["best"] = best_src.substr(0, 1000);
     return {f};
 }
+
+}  // namespace stages_detail
+
+std::vector<Finding> rlef_repair(const Finding& fail, const Config& cfg) { return rlef_repair_with(fail, cfg, {}); }
 
 }  // namespace prism

@@ -714,7 +714,9 @@ if(PRISM_TESTS)
     # The offline AI analytics (prism_ai, the GBDT trainer, the built-in model).
     tests/cpp/test_prism_ai.cpp
     # The assistant subcommands end to end, with a fake llama-server.
-    tests/cpp/test_ai_assist_cli.cpp)
+    tests/cpp/test_ai_assist_cli.cpp
+    # The model-driven stage pieces: chat engine, reply parsing, sandbox and repair loops.
+    tests/cpp/test_agent.cpp)
   if(PRISM_HAS_Z3)
     list(APPEND _prism_test_sources tests/cpp/test_leanbb.cpp
       tests/cpp/test_pir_budget.cpp tests/cpp/test_certified.cpp)
