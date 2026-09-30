@@ -89,7 +89,7 @@ several goals are undeveloped.
             trusts Z3 (E08).
         - **G3.5** A refutation (`FAILED`) is real.
           - **Sn10** E13: counterexample replay under sanitizers in
-            `tools/conformance.py` and `tools/svcomp/prism_svcomp.py`.
+            `tools/conformance.py` and `src/prism/svcomp/replay.cpp`.
         - **G3.6** Pointer-parameter functions are never proved without a
           precondition (Law 6), and model-drafted preconditions never give a
           proof.

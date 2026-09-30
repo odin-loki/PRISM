@@ -1,16 +1,22 @@
 # This file is part of PRISM (roadmap 6.3): a BenchExec tool-info module.
 #
-# BenchExec loads it as ``tools.svcomp.prism`` from this repository, or as
-# ``benchexec.tools.prism`` once copied into BenchExec's tool directory. It is
-# self-contained on purpose (BenchExec and the standard library only).
+# External interface, not PRISM code: BenchExec loads tool-info modules as
+# Python classes (``benchexec.tools.<name>.Tool``), so this is the one file
+# of PRISM that stays Python. It moves upstream into BenchExec
+# (``benchexec/tools/prism.py``) for SV-COMP. BenchExec loads it as
+# ``tools.svcomp.prism`` from this repository, or as ``benchexec.tools.prism``
+# once copied into BenchExec's tool directory. It only builds command lines
+# and reads result lines; PRISM never runs it.
 """BenchExec tool-info module for PRISM (SV-COMP).
 
-The executable is ``prism_svcomp.py`` (next to this file), which runs::
+The executable is the PRISM binary ``prism``; BenchExec runs::
 
-    prism TASK.c --no-llm --stage inventory,classify,bmc,pir --out DIR
+    prism svcomp [OPTIONS] --prop PROPERTY.prp [--data-model ILP32|LP64] TASK.c
 
-maps report.json to an SV-COMP answer and writes ``witness.yml`` (format
-2.0: a violation witness for ``false``, a correctness witness for ``true``). See docs/SVCOMP.md for the mapping rules.
+which runs the stages inventory, classify, bmc and pir on the task, maps
+the report to an SV-COMP answer and writes ``witness.yml`` (format 2.0: a
+violation witness for ``false``, a correctness witness for ``true``). See
+docs/SVCOMP.md for the mapping rules.
 
 Benchmark definitions should pass ``<option name="--allow-exec"/>``: a
 ``false`` answer needs the counterexample to replay, and replay compiles and
@@ -37,22 +43,24 @@ _ANSWERS = {
 class Tool(benchexec.tools.template.BaseTool2):
     """PRISM (Performance, Regression, Integration and Security Module)."""
 
-    REQUIRED_PATHS = ["prism_svcomp.py", "witness.py", "prism"]
+    REQUIRED_PATHS = ["prism"]
 
     def executable(self, tool_locator):
-        return tool_locator.find_executable("prism_svcomp.py")
+        return tool_locator.find_executable("prism")
 
     def name(self):
         return "PRISM"
 
     def project_url(self):
-        return None
+        return "https://github.com/odin-loki/PRISM"
 
     def version(self, executable):
-        return self._version_from_tool(executable, arg="--version")
+        # `prism --version` prints "prism 0.1.0 (C++ engine)"
+        line = self._version_from_tool(executable, line_prefix="prism ")
+        return line.split(" ")[0] if line else line
 
     def cmdline(self, executable, options, task, rlimits):
-        cmd = [executable, *options]
+        cmd = [executable, "svcomp", *options]
         if task.property_file:
             cmd += ["--prop", task.property_file]
         data_model = (task.options or {}).get("data_model") if isinstance(task.options, dict) else None

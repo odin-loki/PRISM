@@ -71,7 +71,7 @@ merged `main`.
 | claim | where | how to confirm | pass |
 |---|---|---|---|
 | headline table (pir 302/379 proved, 165/364 refuted; bmc 107/379, 93/364) | `docs/ROADMAP_STATUS.md` | read the `conformance-metrics` artifact of the conformance run on `02d7da9be`, or run `PRISM_BIN=build/prism python tools/conformance.py -j 2 --mem-limit-mb 4096` | 0 wrong proofs, and no count lower than the table |
-| SV-COMP enlarged subset: 203 of 417, 0 incorrect | `docs/SVCOMP.md` (measured on the sv3cm binary, loaded machine) | `PRISM_BIN=build/prism python tools/svcomp/run_subset.py --jobs 2` and again with `--property unreach-call` | 0 incorrect, score ≥ 203 |
+| SV-COMP enlarged subset: 203 of 417, 0 incorrect | `docs/SVCOMP.md` (measured on the sv3cm binary, loaded machine) | `build/prism svcomp score --jobs 2` and again with `--property unreach-call` | 0 incorrect, score ≥ 203 |
 | real-world before/after table | `docs/EVALUATION.md` (four commits measured separately) | rerun zlib, cJSON, jsmn, tinyexpr, cxxopts at the pinned commits with `--no-llm` | the "after" outcomes hold |
 | Houdini cost controls are faster | `perf6` series | time `tools/conformance.py` on `main` against `027e49e7c`, same machine, same `-j`, cold solver cache (`~/.cache/prism/solver` removed) | `main` is not slower |
 | refinement: `mismatch=0` | round-6 `falar`/`lnprf` series | `python tools/pir_lean_check.py tests/pir testdata` | 0 mismatches (CI rechecks in `proofs*.yml`) |

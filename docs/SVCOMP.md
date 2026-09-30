@@ -16,21 +16,28 @@ has been run in BenchExec with the competition's resource limits (see
 
 | file | what it is |
 |---|---|
-| `tools/svcomp/prism.py` | BenchExec tool-info module (`BaseTool2`). Loads as `benchexec.tools.prism` once copied into BenchExec, or from this directory (`PYTHONPATH=tools/svcomp python -m benchexec.test_tool_info .prism --tool-directory tools/svcomp --no-container` passes BenchExec's own tool-info check). |
-| `tools/svcomp/prism_svcomp.py` | the executable the module runs: runs PRISM on one task, maps `report.json` to an answer, replays the counterexample, writes the witness |
-| `tools/svcomp/witness.py` | violation and correctness witnesses in the SV-COMP witness format 2.0 (YAML) |
+| `tools/svcomp/prism.py` | BenchExec tool-info module (`BaseTool2`), the only Python file of the entry (BenchExec's plugin interface; it moves upstream into BenchExec). Loads as `benchexec.tools.prism` once copied into BenchExec, or from this directory (`PYTHONPATH=tools/svcomp python -m benchexec.test_tool_info .prism --tool-directory build --no-container`, run outside the repository root, passes BenchExec's own tool-info check; CI runs it). |
+| `prism svcomp` (`src/prism/cli_svcomp.cpp`, `src/prism/svcomp/`) | the executable the module runs (called "the wrapper" below): runs PRISM on one task in-process, maps the report to an answer, replays the counterexample, writes the witness (format 2.0 YAML, `src/prism/svcomp/witness.cpp`) |
 | `tools/svcomp/prism-subset.xml` | BenchExec benchmark definition for the subset (SV-COMP limits: 15 min CPU, 15 GB, 4 cores) |
-| `tools/svcomp/run_subset.py` | runs the pinned subset through the module's `cmdline` / `determine_result` and scores it |
+| `prism svcomp score` | runs `prism svcomp` on every task of the pinned subset (one process session per task) and scores it |
+| `prism svcomp pack` | builds the submission archive |
 | `tests/conformance/sv-comp/properties/` | the upstream property files (`no-overflow.prp`, `unreach-call.prp`, `valid-memsafety.prp`) at the pinned sv-benchmarks commit |
-| `tests/test_svcomp.py` | mapping, scoring, witness shape, replay, tool-info and end-to-end tests |
+| `tests/cpp/test_svcomp.cpp` | mapping, scoring, witness shape, replay, waypoints, invariants, task-definition reader, archive and end-to-end doctests |
 
 ## What PRISM runs
+
+```
+prism svcomp --prop PROPERTY.prp [--data-model ILP32|LP64] [--allow-exec] TASK.c
+```
+
+runs the pipeline in its own process exactly as
 
 ```
 prism TASK.c --no-llm --stage inventory,classify,bmc,pir --out DIR
 ```
 
-A `.i` task is copied to `.c` first, because the `pir` stage only takes
+would (no LLM, no execution of task code: `--allow-exec` only enables the
+replay below). A `.i` task is copied to `.c` first, because the `pir` stage only takes
 `.c`/`.cpp` units (see "Findings" below). The data model comes from the task
 (`--data-model`); PRISM's encoders are LP64.
 
@@ -235,9 +242,14 @@ BenchExec 3.35 installed (so the answers went through the tool-info
 module's `determine_result`), on a shared machine:
 
 ```
-PRISM_BIN=build/prism python tools/svcomp/run_subset.py --jobs 2
-PRISM_BIN=build/prism python tools/svcomp/run_subset.py --property unreach-call --jobs 2
+build/prism svcomp score --jobs 2
+build/prism svcomp score --property unreach-call --jobs 2
 ```
+
+(The runs before 2026-09-30 used the former Python runner
+`tools/svcomp/run_subset.py` with the same scoring; `prism svcomp score`
+replaced it and gave the same answers, task for task, on the whole
+enlarged subset.)
 
 Scoring as in SV-COMP: correct `true` +2, correct `false` +1, incorrect
 `true` −32, incorrect `false` −16, `unknown` 0. SV-COMP awards the points
@@ -419,7 +431,7 @@ PYTHONPATH=tools/svcomp benchexec tools/svcomp/prism-subset.xml --tool-directory
     --read-only-dir / --overlay-dir /tmp --overlay-dir /home -M 12GB
 ```
 
-(DIR holds `prism_svcomp.py`, `witness.py` and the `prism` binary.) Limits:
+(DIR holds the `prism` binary; the runs above used the former Python wrapper scripts next to it.) Limits:
 15 min CPU time and 4 cores as in SV-COMP; memory 12 GB instead of 15 GB,
 because this container's cgroup allows only 14.3 GB and BenchExec refuses
 a larger limit (the benchmark definition asks for 15 GB). BenchExec needs
@@ -653,17 +665,18 @@ vendored code). Re-running needs Java 21 and the two archives above.
    tool-info module merged into BenchExec, a benchmark definition (a local
    one for the subset is `tools/svcomp/prism-subset.xml`), and the
    registration the rules ask for (the fm-tools metadata and an archived
-   release).    **Partial (2026-09-26):** `tools/svcomp/package_archive.py`
-   builds `prism-svcomp.tar.gz` (binary, wrapper, witness writer, tool-info,
-   `LICENSE`, `README.md`, `MANIFEST.json`, `dependencies.json` with the
-   host clang/opt lines seen at pack time); `tools/svcomp/fm-tools.yml` is a
+   release).    **Partial (2026-09-30):** `prism svcomp pack`
+   builds `prism-svcomp.tar.gz` (the binary, which is also the wrapper and
+   witness writer, the tool-info module, `LICENSE`, `README.md`,
+   `fm-tools.yml`, `MANIFEST.json` listing every file, `dependencies.json`
+   with the host clang/opt lines seen at pack time); `tools/svcomp/fm-tools.yml` is a
    registration draft. Still missing: clang/opt bundling (only recorded, not
    vendored), merging `prism.py` into upstream BenchExec, an archived release
    URL, and fm-tools upload.
 6. **A version string.** `prism --version` reports `prism 0.1.0 (C++ engine)`
-   (same semver as the Python engine's `__version__`); `prism_svcomp.py`
-   uses that for witness `producer.version`, falling back to
-   `0.1.0+sha256.<first 12 hex digits>` only when the binary cannot be run.
+   (same semver as the Python engine's `__version__`); `prism svcomp` puts
+   the same version into witness `producer.version` (it is that binary, so
+   there is no fallback).
 7. **Scale.** Only the pinned subset (45 no-overflow and 20 unreach-call
    tasks) has been run, in BenchExec with the competition's CPU-time and
    core limits and 12 GB of memory (see "BenchExec"); the largest run used
@@ -673,7 +686,7 @@ vendored code). Re-running needs Java 21 and the two archives above.
 ## Findings for the engines (not fixed here)
 
 - The wrapper copies a preprocessed `.i` task to `.c` before running PRISM so
-  clang names the unit consistently (`prism_svcomp.py`). The `pir` stage accepts
+  clang names the unit consistently (`src/prism/cli_svcomp.cpp`). The `pir` stage accepts
   `.i` units (`is_unit` in `src/prism/pir/stage.cpp`).
 - A `FAILED` counterexample for a function without parameters is just
   `<prop>=sat` (for example `ovf+=sat`); the nondet inputs of such a

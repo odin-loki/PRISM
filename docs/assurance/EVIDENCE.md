@@ -222,7 +222,7 @@ each project's `lean-toolchain`): `proofs/check.sh` passed all four steps
 ### E13 Counterexample replay
 
 - Artefacts: `replay` in `tools/conformance.py`, `replay` in
-  `tools/svcomp/prism_svcomp.py`, `tests/test_svcomp.py::ReplayTest`.
+  `src/prism/svcomp/replay.cpp`, `tests/cpp/test_svcomp.cpp::svcomp replay`.
 - Shows: a `FAILED` verdict is counted as a detection only when the
   counterexample, compiled with sanitizers and executed, triggers the
   violation.
@@ -317,8 +317,8 @@ each project's `lean-toolchain`): `proofs/check.sh` passed all four steps
 ### E22 SV-COMP readiness
 
 - Artefacts: `tools/svcomp/prism.py` (BenchExec tool-info module),
-  `tools/svcomp/prism_svcomp.py`, `tools/svcomp/witness.py`,
-  `tools/svcomp/run_subset.py`, `tests/test_svcomp.py`, results in
+  `src/prism/cli_svcomp.cpp` (`prism svcomp`, `svcomp score`, `svcomp pack`),
+  `src/prism/svcomp/witness.cpp`, `tests/cpp/test_svcomp.cpp`, results in
   `docs/SVCOMP.md`.
 - Shows: a local, unvalidated score on the 45-task pinned no-overflow
   subset.

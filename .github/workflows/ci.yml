@@ -53,7 +53,14 @@ jobs:
       - name: prism_tests
         run: ./build/prism_tests
       - name: SV-COMP archive packager smoke
-        run: python3 tools/svcomp/package_archive.py --prism build/prism --out /tmp/prism-svcomp.tar.gz
+        run: ./build/prism svcomp pack --out /tmp/prism-svcomp.tar.gz && tar tzf /tmp/prism-svcomp.tar.gz
+      # BenchExec loads tool-info modules as Python classes: tools/svcomp/prism.py
+      # is BenchExec's plugin interface (moving upstream), not PRISM code.
+      - name: SV-COMP BenchExec tool-info smoke
+        run: |
+          python3 -m venv /tmp/benchexec && /tmp/benchexec/bin/pip install benchexec
+          cd /tmp && PYTHONPATH="$GITHUB_WORKSPACE/tools/svcomp" \
+            /tmp/benchexec/bin/python -m benchexec.test_tool_info .prism --tool-directory "$GITHUB_WORKSPACE/build" --no-container
       - name: GUI smoke (headless Qt, real pipeline run through the window)
         run: |
           mkdir -p gui-smoke/src
