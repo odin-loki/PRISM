@@ -2,6 +2,8 @@
 // execute, eval_src, eval_cond and the public concrete_execute.
 #include "interp.hpp"
 
+#include <charconv>
+
 namespace prism {
 namespace fs = std::filesystem;
 using namespace stages_detail;
@@ -10,11 +12,14 @@ namespace {
 const std::unordered_set<std::string> kCastWords = {
     "char", "short", "int", "long", "unsigned", "signed", "const", "volatile", "void",
     "_Bool", "bool", "uint32_t", "int32_t", "uint64_t", "int64_t", "size_t",
+    "int8_t", "uint8_t", "int16_t", "uint16_t", "ssize_t", "ptrdiff_t", "intptr_t",
+    "uintptr_t", "intmax_t", "uintmax_t",
 };
 
+// Type words that start a declaration the interpreter models.
 const std::unordered_set<std::string> kDeclKws = {
-    "int", "unsigned", "long", "short", "char", "uint32_t", "int32_t", "uint64_t", "int64_t",
-    "size_t",
+    "int", "unsigned", "signed", "long", "short", "char", "uint32_t", "int32_t", "uint64_t", "int64_t",
+    "size_t", "ssize_t", "ptrdiff_t", "intptr_t", "uintptr_t", "intmax_t", "uintmax_t",
 };
 
 const std::unordered_set<std::string> kStmtStartWords = {
@@ -24,16 +29,8 @@ const std::unordered_set<std::string> kStmtStartWords = {
     "typedef","static",     "extern",   "auto",     "register", "int",      "unsigned",
     "signed", "long",       "short",    "char",     "uint32_t", "int32_t",  "uint64_t",
     "int64_t","size_t",     "void",     "float",    "double",   "_Bool",    "bool",
-    "const",  "volatile",   "_Atomic",  "struct",   "union",    "enum",
-};
-
-const std::map<std::string, int> kTypeSize = {
-    {"char", 1}, {"signed char", 1}, {"unsigned char", 1},
-    {"short", 2}, {"short int", 2}, {"signed short", 2}, {"unsigned short", 2},
-    {"int", 4}, {"signed", 4}, {"signed int", 4}, {"unsigned", 4}, {"unsigned int", 4},
-    {"long", 4}, {"long int", 4}, {"unsigned long", 4},
-    {"long long", 8}, {"long long int", 8}, {"unsigned long long", 8},
-    {"uint32_t", 4}, {"int32_t", 4}, {"size_t", 4}, {"_Bool", 1}, {"bool", 1},
+    "const",  "volatile",   "_Atomic",  "struct",   "union",    "enum",     "ssize_t",
+    "ptrdiff_t", "intptr_t", "uintptr_t", "intmax_t", "uintmax_t",
 };
 
 struct UB : std::runtime_error {
@@ -83,16 +80,72 @@ bool type_is_unsigned(std::string_view typ) {
 }
 
 int type_width(std::string_view typ) {
+    // LP64, as the bmc encoder: long, long long, size_t and the 64-bit
+    // typedefs are 64 bits wide.
     std::string t = lower_copy(std::string(typ));
-    if (t.find("long long") != std::string::npos || re_search("\\b[iu]nt64_t\\b", t)) return 64;
+    if (re_search("\\blong\\b|\\b[iu]nt64_t\\b|\\bs?size_t\\b|\\bu?intptr_t\\b|\\bu?intmax_t\\b|\\bptrdiff_t\\b", t))
+        return 64;
     return WIDTH;
+}
+
+std::optional<CT> scalar_ctype(std::string_view typ) {
+    std::string t(typ);
+    if (t.find_first_of("*[&(") != std::string::npos) return std::nullopt;
+    static const std::unordered_set<std::string> kQual = {
+        "const", "volatile", "register", "auto", "static", "extern", "inline", "restrict", "__restrict",
+        "__restrict__",
+    };
+    std::vector<std::string> words;
+    {
+        std::istringstream ss(t);
+        std::string wd;
+        while (ss >> wd)
+            if (!kQual.contains(wd)) words.push_back(wd);
+    }
+    if (words.empty()) return std::nullopt;
+    static const std::map<std::string, CT> kNamed = {
+        {"_Bool", {1, true}},     {"bool", {1, true}},       {"int8_t", {8, false}},
+        {"uint8_t", {8, true}},   {"int16_t", {16, false}},  {"uint16_t", {16, true}},
+        {"int32_t", {32, false}}, {"uint32_t", {32, true}},  {"int64_t", {64, false}},
+        {"uint64_t", {64, true}}, {"size_t", {64, true}},    {"ssize_t", {64, false}},
+        {"ptrdiff_t", {64, false}}, {"intptr_t", {64, false}}, {"uintptr_t", {64, true}},
+        {"intmax_t", {64, false}}, {"uintmax_t", {64, true}},
+    };
+    if (words.size() == 1) {
+        auto it = kNamed.find(words[0]);
+        if (it != kNamed.end()) return it->second;
+    }
+    bool is_u = false, is_s = false;
+    int n_long = 0, n_short = 0, n_char = 0, n_int = 0;
+    for (auto& wd : words) {
+        if (wd == "unsigned") is_u = true;
+        else if (wd == "signed") is_s = true;
+        else if (wd == "long") ++n_long;
+        else if (wd == "short") ++n_short;
+        else if (wd == "char") ++n_char;
+        else if (wd == "int") ++n_int;
+        else return std::nullopt;
+    }
+    if ((is_u && is_s) || n_long > 2 || n_short > 1 || n_char > 1 || n_int > 1) return std::nullopt;
+    if (n_char && (n_long || n_short || n_int)) return std::nullopt;
+    if (n_short && n_long) return std::nullopt;
+    if (n_char) return CT{8, is_u};
+    if (n_short) return CT{16, is_u};
+    if (n_long) return CT{64, is_u};
+    return CT{32, is_u};
+}
+
+int64_t norm(int64_t v, CT t) {
+    if (t.w == 1) return v != 0;
+    if (t.w >= 64) return v;
+    auto bits = static_cast<uint64_t>(v) & ((uint64_t{1} << t.w) - 1);
+    if (!t.u && (bits >> (t.w - 1)) & 1) return static_cast<int64_t>(bits) - (int64_t{1} << t.w);
+    return static_cast<int64_t>(bits);
 }
 
 }  // namespace stages_detail
 
 namespace {
-uint32_t u32(int64_t x) { return static_cast<uint32_t>(static_cast<uint64_t>(x) & 0xFFFFFFFFu); }
-
 std::vector<std::string> split_semi(const std::string& s) {
     std::vector<std::string> parts;
     int depth = 0;
@@ -129,9 +182,23 @@ std::pair<std::string, std::string> upto_colon(const std::string& text) {
 
 std::vector<std::string> tok(const std::string& src) {
     static Regex rx(
-        R"(0x[0-9a-fA-F]+|\d+|'(?:\\.|[^\\'])'|"(?:\\.|[^\\"])*"|[A-Za-z_]\w*|&&|\|\||==|!=|<=|>=|<<|>>|\+\+|--|[+\-*/%<>=!&|^~()[\],?:])");
+        R"(0[xX][0-9a-fA-F](?:'?[0-9a-fA-F])*[uUlL]*|0[bB][01](?:'?[01])*[uUlL]*|\d(?:'?\d)*[uUlL]*|'(?:\\.|[^\\'])'|"(?:\\.|[^\\"])*"|[A-Za-z_]\w*|&&|\|\||==|!=|<=|>=|<<|>>|\+\+|--|[+\-*/%<>=!&|^~()[\],?:{}])");
     std::vector<std::string> out;
-    for (auto& m : rx.finditer(src)) out.push_back(m.text);
+    std::size_t at = 0;
+    // Text between tokens must be blank: an unknown character (a float's
+    // '.', '->', '@') is a parse failure, not something to skip.
+    auto gap = [&](std::size_t to) {
+        for (; at < to; ++at)
+            if (!std::isspace(static_cast<unsigned char>(src[at])))
+                throw ParseFail(std::string("unexpected character '") + src[at] + "'");
+    };
+    for (auto& m : rx.finditer(src)) {
+        if (m.spans.empty() || m.spans[0].first < 0) continue;
+        gap(static_cast<std::size_t>(m.spans[0].first));
+        at = static_cast<std::size_t>(m.spans[0].second);
+        out.push_back(m.text);
+    }
+    gap(src.size());
     return out;
 }
 
@@ -190,7 +257,7 @@ std::optional<std::string> unencoded_layout_prefix(std::string_view text) {
     static Regex tl(R"((?:_Thread_local|thread_local)\b)");
     static Regex cx(R"((?:_Complex|_Imaginary)\b)");
     static Regex cl(
-        R"((?:int|unsigned(?:\\s+int)?|long|short|char|uint32_t|int32_t|size_t)\\s+\\w+\\s*=\\s*\\([^)]*\\)\\s*\\{)");
+        R"((?:(?:unsigned|signed|long|short|int|char|uint32_t|int32_t|uint64_t|int64_t|size_t)\s+)+\w+\s*=\s*\([^)]*\)\s*\{)");
     if (match_at(su, s)) return "struct unencoded";
     if (match_at(en, s)) return "anon enum unencoded";
     if (match_at(se, s)) return "storage-duration unencoded";
@@ -300,22 +367,75 @@ std::map<std::string, int> enums_for(const FunctionInfo& fn) {
     }
 }
 
-int sizeof_concrete(const std::vector<std::string>& inner, const std::map<std::string, std::vector<int64_t>>& arrays) {
-    if (inner.empty()) return WIDTH / 8;
-    for (auto& t : inner)
-        if (t == "*") return WIDTH / 8;
-    std::string joined = join_sv(inner, " ");
-    auto it = kTypeSize.find(joined);
-    if (it != kTypeSize.end()) return it->second;
-    if (inner.size() == 1 && is_ident(inner[0])) {
-        auto a = arrays.find(inner[0]);
-        if (a != arrays.end()) return static_cast<int>(a->second.size()) * (WIDTH / 8);
-        return WIDTH / 8;
-    }
-    return WIDTH / 8;
+// The promoted type of an operand (C11 6.3.1.1): narrower than int is int.
+CT promote(CT t) { return t.w < 32 ? kInt : t; }
+
+// The usual arithmetic conversions (C11 6.3.1.8) of two promoted types.
+CT common_type(CT a, CT b) {
+    a = promote(a);
+    b = promote(b);
+    if (a.w != b.w) return a.w > b.w ? a : b;
+    return CT{a.w, a.u || b.u};
 }
 
-enum class Nk { Num, Id, Idx, Un, Pre, Post, Str, Call, Tern, Comma, Bin };
+int64_t type_min(CT t) { return t.u ? 0 : (t.w >= 64 ? INT64_MIN_V : -(int64_t{1} << (t.w - 1))); }
+
+int64_t type_max(CT t) { return t.w >= 64 ? INT64_MAX_V : (t.u ? (int64_t{1} << t.w) - 1 : (int64_t{1} << (t.w - 1)) - 1); }
+
+// An integer constant and its type (C11 6.4.4.1, LP64): digit separators
+// ('), 0x / 0b / leading-0 octal, and the u / l / ll suffixes.
+std::pair<int64_t, CT> int_literal(const std::string& tok0) {
+    std::string t;
+    for (char c : tok0)
+        if (c != '\'') t.push_back(c);
+    bool has_u = false;
+    int n_l = 0;
+    while (!t.empty()) {
+        char c = t.back();
+        if (c == 'u' || c == 'U') has_u = true;
+        else if (c == 'l' || c == 'L') ++n_l;
+        else break;
+        t.pop_back();
+    }
+    int base = 10;
+    std::string digits = t;
+    if (t.size() > 2 && t[0] == '0' && (t[1] == 'x' || t[1] == 'X')) {
+        base = 16;
+        digits = t.substr(2);
+    } else if (t.size() > 2 && t[0] == '0' && (t[1] == 'b' || t[1] == 'B')) {
+        base = 2;
+        digits = t.substr(2);
+    } else if (t.size() > 1 && t[0] == '0') {
+        base = 8;
+        digits = t.substr(1);
+    }
+    if (digits.empty()) throw ParseFail("bad num " + tok0);
+    uint64_t v = 0;
+    auto [ptr, ec] = std::from_chars(digits.data(), digits.data() + digits.size(), v, base);
+    if (ec == std::errc::result_out_of_range) throw ParseFail("literal overflow " + tok0);
+    if (ec != std::errc{} || ptr != digits.data() + digits.size()) throw ParseFail("bad num " + tok0);
+    const bool dec = base == 10;
+    // The first type of the list that can represent the value.
+    std::vector<CT> order;
+    if (!has_u && n_l == 0) {
+        order = dec ? std::vector<CT>{{32, false}, {64, false}}
+                    : std::vector<CT>{{32, false}, {32, true}, {64, false}, {64, true}};
+    } else if (has_u && n_l == 0) {
+        order = {{32, true}, {64, true}};
+    } else if (!has_u) {
+        order = dec ? std::vector<CT>{{64, false}} : std::vector<CT>{{64, false}, {64, true}};
+    } else {
+        order = {{64, true}};
+    }
+    for (auto ct : order) {
+        if (ct.u && ct.w >= 64) return {static_cast<int64_t>(v), ct};
+        if (v <= static_cast<uint64_t>(type_max(ct))) return {static_cast<int64_t>(v), ct};
+    }
+    // A decimal constant above LLONG_MAX has no type (C11 6.4.4.1p6).
+    throw ParseFail("64-bit literal unencoded " + tok0);
+}
+
+enum class Nk { Num, Id, Idx, Un, Pre, Post, Str, Call, Tern, Comma, Bin, Cast };
 
 struct Node {
     Nk k{};
@@ -323,15 +443,28 @@ struct Node {
     int64_t n = 0;
     std::string s;
     std::vector<Node> ch;
+    CT t{};  // Num and Cast: the type
 };
 
-int64_t binop(int64_t a, const std::string& op, int64_t b, bool uns, int width);
+CT tree_type(const Node& t, const St& st);
 
-int64_t eval_tree(const Node& t, St& st);
-
-bool tree_unsigned(const Node& t, const St& st);
-
-int tree_width(const Node& t, const St& st);
+int sizeof_concrete(const std::vector<std::string>& inner, const St& st) {
+    if (inner.empty()) return 4;
+    for (auto& t : inner)
+        if (t == "*") return 8;  // LP64 pointer
+    if (inner.size() == 1 && is_ident(inner[0])) {
+        auto a = st.arrays.find(inner[0]);
+        if (a != st.arrays.end()) {
+            auto et = st.arr_t.find(inner[0]);
+            int esz = et == st.arr_t.end() ? 4 : std::max(1, et->second.w / 8);
+            return static_cast<int>(a->second.size()) * esz;
+        }
+        auto v = st.types.find(inner[0]);
+        if (v != st.types.end()) return std::max(1, v->second.w / 8);
+    }
+    if (auto ct = scalar_ctype(join_sv(inner, " "))) return std::max(1, ct->w / 8);
+    return 4;
+}
 
 struct EParser {
     St& st;
@@ -351,9 +484,15 @@ struct EParser {
         return got;
     }
     std::string eat_s(std::string t) { return eat(&t); }
+    Node num(int64_t v, CT t) {
+        Node n{Nk::Num, {}, v};
+        n.t = t;
+        return n;
+    }
     Node nud() {
         auto t = eat();
         if (t == "sizeof") {
+            // sizeof yields a size_t (unsigned long in LP64).
             if (peek() == "(") {
                 eat_s("(");
                 std::vector<std::string> inner;
@@ -370,20 +509,36 @@ struct EParser {
                         inner.push_back(ntok);
                     }
                 }
-                return Node{Nk::Num, {}, sizeof_concrete(inner, st.arrays)};
+                return num(sizeof_concrete(inner, st), CT{64, true});
             }
             auto name = eat();
-            return Node{Nk::Num, {}, sizeof_concrete({name}, st.arrays)};
+            return num(sizeof_concrete({name}, st), CT{64, true});
         }
         if (t == "(") {
             if (peek() == "{") throw ParseFail("statement-expr unencoded");
             if (kCastWords.contains(peek())) {
+                std::vector<std::string> words;
+                bool ptr = false;
                 while (!peek().empty() && peek() != ")") {
                     if (!kCastWords.contains(peek()) && peek() != "*") break;
-                    eat();
+                    if (peek() == "*") ptr = true;
+                    words.push_back(eat());
                 }
                 eat_s(")");
-                return parse(110);
+                auto operand = parse(110);
+                auto joined = join_sv(words, " ");
+                auto ct = ptr ? std::nullopt : scalar_ctype(joined);
+                if (!ct) {
+                    // (void)x evaluates x for its effects; a pointer cast
+                    // keeps the operand's value.
+                    if (!ptr && joined != "void" && !joined.ends_with(" void") && !joined.starts_with("void "))
+                        throw ParseFail("cast unencoded (" + joined + ")");
+                    return operand;
+                }
+                Node n{Nk::Cast};
+                n.t = *ct;
+                n.ch.push_back(std::move(operand));
+                return n;
             }
             auto v = parse(0);
             eat_s(")");
@@ -394,21 +549,18 @@ struct EParser {
             n.ch.push_back(parse(110));
             return n;
         }
+        if (t == "+") return parse(110);
         if (t == "++" || t == "--") {
             auto name = eat();
             if (!is_ident(name)) throw ParseFail("bad token " + name);
             return Node{Nk::Pre, t, 0, name};
         }
-        if (t.size() >= 3 && t.front() == '\'' && t.back() == '\'')
-            return Node{Nk::Num, {}, char_lit_value(t)};
+        if (t.size() >= 3 && t.front() == '\'' && t.back() == '\'') return num(char_lit_value(t), kInt);
         if (t.size() >= 2 && t.front() == '"' && t.back() == '"')
             return Node{Nk::Str, {}, 0, string_lit_value(t)};
-        if (std::isdigit(static_cast<unsigned char>(t[0])) || t.starts_with("0x") || t.starts_with("0X")) {
-            try {
-                return Node{Nk::Num, {}, std::stoll(t, nullptr, 0)};
-            } catch (...) {
-                throw ParseFail("bad num " + t);
-            }
+        if (std::isdigit(static_cast<unsigned char>(t[0]))) {
+            auto [v, ct] = int_literal(t);
+            return num(v, ct);
         }
         if (is_ident(t)) {
             if (t == "_Generic" || t == "offsetof") throw ParseFail(t + " unencoded");
@@ -474,159 +626,94 @@ struct EParser {
     }
 };
 
-bool tree_unsigned(const Node& t, const St& st) {
-    if (t.k == Nk::Id) return st.uns.contains(t.a);
-    if (t.k == Nk::Bin) return tree_unsigned(t.ch[0], st) || tree_unsigned(t.ch[1], st);
-    if (t.k == Nk::Un) return tree_unsigned(t.ch[0], st);
-    if (t.k == Nk::Tern) return tree_unsigned(t.ch[1], st) || tree_unsigned(t.ch[2], st);
-    if (t.k == Nk::Comma) return tree_unsigned(t.ch[1], st);
-    return false;
+bool is_compare(const std::string& op) {
+    return op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">=" || op == "&&" ||
+           op == "||";
 }
 
-int tree_width(const Node& t, const St& st) {
-    if (t.k == Nk::Id) {
-        auto it = st.bits.find(t.a);
-        return it == st.bits.end() ? WIDTH : it->second;
-    }
-    if (t.k == Nk::Post || t.k == Nk::Pre) {
-        auto it = st.bits.find(t.s);
-        return it == st.bits.end() ? WIDTH : it->second;
-    }
-    if (t.k == Nk::Bin) return std::max(tree_width(t.ch[0], st), tree_width(t.ch[1], st));
-    if (t.k == Nk::Un) return tree_width(t.ch[0], st);
-    if (t.k == Nk::Tern) return std::max(tree_width(t.ch[1], st), tree_width(t.ch[2], st));
-    if (t.k == Nk::Comma) return tree_width(t.ch[1], st);
-    return WIDTH;
+CT var_type(const St& st, const std::string& name) {
+    auto it = st.types.find(name);
+    return it == st.types.end() ? kInt : it->second;
 }
 
-int64_t binop(int64_t a, const std::string& op, int64_t b, bool uns, int width) {
-    if (uns) {
-        uint32_t ua = u32(a), ub = u32(b);
-        if (op == "+") return i32(static_cast<int64_t>(ua) + ub);
-        if (op == "-") return i32(static_cast<int64_t>(ua) - ub);
-        if (op == "*") return i32(static_cast<int64_t>(ua) * ub);
-        if (op == "/") {
-            if (ub == 0) throw UB("INT-DIV-ZERO");
-            return i32(ua / ub);
-        }
-        if (op == "%") {
-            if (ub == 0) throw UB("INT-DIV-ZERO");
-            return i32(ua % ub);
-        }
-        if (op == "<<") {
-            if (ub >= static_cast<uint32_t>(WIDTH)) throw UB("INT-SHIFT-UB");
-            return i32(static_cast<int64_t>(ua) << ub);
-        }
-        if (op == ">>") {
-            if (ub >= static_cast<uint32_t>(WIDTH)) throw UB("INT-SHIFT-UB");
-            return i32(ua >> ub);
-        }
-        if (op == "&") return i32(ua & ub);
-        if (op == "|") return i32(ua | ub);
-        if (op == "^") return i32(ua ^ ub);
-        if (op == "==") return ua == ub;
-        if (op == "!=") return ua != ub;
-        if (op == "<") return ua < ub;
-        if (op == ">") return ua > ub;
-        if (op == "<=") return ua <= ub;
-        if (op == ">=") return ua >= ub;
-        throw ParseFail("op " + op);
+CT tree_type(const Node& t, const St& st) {
+    switch (t.k) {
+    case Nk::Num:
+    case Nk::Cast: return t.t;
+    case Nk::Id: return var_type(st, t.a);
+    case Nk::Idx: {
+        auto it = st.arr_t.find(t.a);
+        return it == st.arr_t.end() ? kInt : it->second;
     }
-    if (width >= 64) {
-        if (op == "+") {
-            auto r = a + b;
-            if (r < INT64_MIN_V || r > INT64_MAX_V) throw UB("INT-SIGNED-OVF");
-            return r;
-        }
-        if (op == "-") {
-            auto r = a - b;
-            if (r < INT64_MIN_V || r > INT64_MAX_V) throw UB("INT-SIGNED-OVF");
-            return r;
-        }
-        if (op == "*") {
-            auto r = a * b;
-            if (r < INT64_MIN_V || r > INT64_MAX_V) throw UB("INT-SIGNED-OVF");
-            return r;
-        }
-        if (op == "/") {
-            if (b == 0) throw UB("INT-DIV-ZERO");
-            if (a == INT64_MIN_V && b == -1) throw UB("INT-SIGNED-OVF");
-            return a / b;
-        }
-        if (op == "%") {
-            if (b == 0) throw UB("INT-DIV-ZERO");
-            if (a == INT64_MIN_V && b == -1) throw UB("INT-SIGNED-OVF");  // C11 6.5.5p6
-            return a - (a / b) * b;
-        }
-        if (op == "<<") {
-            if (b < 0 || b >= 64) throw UB("INT-SHIFT-UB");
+    case Nk::Un: return t.a == "!" ? kInt : promote(tree_type(t.ch[0], st));
+    case Nk::Pre:
+    case Nk::Post: return var_type(st, t.s);
+    case Nk::Str:
+    case Nk::Call: return kInt;
+    case Nk::Tern: return common_type(tree_type(t.ch[1], st), tree_type(t.ch[2], st));
+    case Nk::Comma: return tree_type(t.ch[1], st);
+    case Nk::Bin:
+        if (is_compare(t.a)) return kInt;
+        if (t.a == "<<" || t.a == ">>") return promote(tree_type(t.ch[0], st));
+        return common_type(tree_type(t.ch[0], st), tree_type(t.ch[1], st));
+    }
+    return kInt;
+}
+
+// a op b for a shift: T is the promoted type of the left operand, b the
+// count's value (an unsigned 64-bit count held as its bit pattern reads as
+// negative, i.e. out of range).
+int64_t shift(int64_t a, const std::string& op, int64_t b, CT t) {
+    if (b < 0 || b >= t.w) throw UB("INT-SHIFT-UB");
+    if (op == "<<") {
+        if (!t.u) {
             // Negative operand or unrepresentable result (C11 6.5.7p4).
-            if (a < 0 || a > (INT64_MAX_V >> b)) throw UB("INT-SHIFT-UB");
+            if (a < 0 || a > (type_max(t) >> b)) throw UB("INT-SHIFT-UB");
             return a << b;
         }
-        if (op == ">>") {
-            if (b < 0 || b >= 64) throw UB("INT-SHIFT-UB");
-            return a >> b;
-        }
-        if (op == "&") return a & b;
-        if (op == "|") return a | b;
-        if (op == "^") return a ^ b;
-        if (op == "==") return a == b;
-        if (op == "!=") return a != b;
-        if (op == "<") return a < b;
-        if (op == ">") return a > b;
-        if (op == "<=") return a <= b;
-        if (op == ">=") return a >= b;
-        throw ParseFail("op " + op);
+        return norm(static_cast<int64_t>(static_cast<uint64_t>(a) << b), t);
     }
-    a = i32(a);
-    b = i32(b);
-    if (op == "+") {
-        auto r = a + b;
-        if (r < INT_MIN_32 || r > INT_MAX_32) throw UB("INT-SIGNED-OVF");
-        return r;
-    }
-    if (op == "-") {
-        auto r = a - b;
-        if (r < INT_MIN_32 || r > INT_MAX_32) throw UB("INT-SIGNED-OVF");
-        return r;
-    }
-    if (op == "*") {
-        auto r = a * b;
-        if (r < INT_MIN_32 || r > INT_MAX_32) throw UB("INT-SIGNED-OVF");
-        return r;
-    }
-    if (op == "/") {
-        if (b == 0) throw UB("INT-DIV-ZERO");
-        if (a == INT_MIN_32 && b == -1) throw UB("INT-SIGNED-OVF");
-        return a / b;
-    }
-    if (op == "%") {
-        if (b == 0) throw UB("INT-DIV-ZERO");
-        if (a == INT_MIN_32 && b == -1) throw UB("INT-SIGNED-OVF");  // C11 6.5.5p6
-        return a - (a / b) * b;
-    }
-    if (op == "<<") {
-        if (b < 0 || b >= WIDTH) throw UB("INT-SHIFT-UB");
-        // Negative operand or unrepresentable result (C11 6.5.7p4).
-        if (a < 0 || a > (INT_MAX_32 >> b)) throw UB("INT-SHIFT-UB");
-        return i32(a << b);
-    }
-    if (op == ">>") {
-        if (b < 0 || b >= WIDTH) throw UB("INT-SHIFT-UB");
-        return i32(a >> b);
-    }
-    if (op == "&") return i32(a & b);
-    if (op == "|") return i32(a | b);
-    if (op == "^") return i32(a ^ b);
+    if (t.u && t.w >= 64) return static_cast<int64_t>(static_cast<uint64_t>(a) >> b);
+    return a >> b;
+}
+
+// a op b in type T (both already converted to T, T promoted).
+int64_t binop(int64_t a, const std::string& op, int64_t b, CT t) {
+    if (op == "<<" || op == ">>") return shift(a, op, b, t);
+    const bool u64 = t.u && t.w >= 64;
+    auto ua = static_cast<uint64_t>(a), ub = static_cast<uint64_t>(b);
     if (op == "==") return a == b;
     if (op == "!=") return a != b;
-    if (op == "<") return a < b;
-    if (op == ">") return a > b;
-    if (op == "<=") return a <= b;
-    if (op == ">=") return a >= b;
-    throw ParseFail("op " + op);
+    if (op == "<") return u64 ? ua < ub : a < b;
+    if (op == ">") return u64 ? ua > ub : a > b;
+    if (op == "<=") return u64 ? ua <= ub : a <= b;
+    if (op == ">=") return u64 ? ua >= ub : a >= b;
+    if (op == "&") return norm(a & b, t);
+    if (op == "|") return norm(a | b, t);
+    if (op == "^") return norm(a ^ b, t);
+    if (op == "/" || op == "%") {
+        if (b == 0) throw UB("INT-DIV-ZERO");
+        if (u64) return static_cast<int64_t>(op == "/" ? ua / ub : ua % ub);
+        // INT_MIN / -1 and INT_MIN % -1 (C11 6.5.5p6).
+        if (!t.u && a == type_min(t) && b == -1) throw UB("INT-SIGNED-OVF");
+        return op == "/" ? a / b : a % b;
+    }
+    if (t.u) {
+        uint64_t r = op == "+" ? ua + ub : op == "-" ? ua - ub : op == "*" ? ua * ub : 0;
+        if (op != "+" && op != "-" && op != "*") throw ParseFail("op " + op);
+        return norm(static_cast<int64_t>(r), t);
+    }
+    int64_t r = 0;
+    bool ovf = false;
+    if (op == "+") ovf = __builtin_add_overflow(a, b, &r);
+    else if (op == "-") ovf = __builtin_sub_overflow(a, b, &r);
+    else if (op == "*") ovf = __builtin_mul_overflow(a, b, &r);
+    else throw ParseFail("op " + op);
+    if (ovf || r < type_min(t) || r > type_max(t)) throw UB("INT-SIGNED-OVF");
+    return r;
 }
+
+int64_t eval_tree(const Node& t, St& st);
 
 void eval_cstr_copy(St& st, const Node& dest, const Node& src, std::optional<int> n, bool cat) {
     if (dest.k != Nk::Id) {
@@ -666,16 +753,21 @@ void eval_cstr_copy(St& st, const Node& dest, const Node& src, std::optional<int
     }
 }
 
+// The element of `arr` at index value i (of type it): a negative index, or
+// an unsigned 64-bit index held as a negative bit pattern, is out of bounds.
+std::size_t checked_index(int64_t i, std::size_t size, const char* cls) {
+    if (i < 0 || static_cast<uint64_t>(i) >= size) throw UB(cls);
+    return static_cast<std::size_t>(i);
+}
+
 int64_t eval_tree(const Node& t, St& st) {
     switch (t.k) {
-    case Nk::Num: return i32(t.n);
+    case Nk::Num: return t.n;
+    case Nk::Cast: return norm(eval_tree(t.ch[0], st), t.t);
     case Nk::Id: {
         auto it = st.vars.find(t.a);
-        if (it != st.vars.end()) {
-            int w = st.bits.contains(t.a) ? st.bits[t.a] : WIDTH;
-            return w <= 32 ? i32(it->second) : it->second;
-        }
-        if (st.enums.contains(t.a)) return i32(st.enums[t.a]);
+        if (it != st.vars.end()) return norm(it->second, var_type(st, t.a));
+        if (st.enums.contains(t.a)) return st.enums[t.a];
         st.vars[t.a] = 0;
         return 0;
     }
@@ -683,34 +775,28 @@ int64_t eval_tree(const Node& t, St& st) {
         auto it = st.arrays.find(t.a);
         if (it == st.arrays.end()) throw ParseFail("unknown array " + t.a);
         auto idx = eval_tree(t.ch[0], st);
-        auto& arr = it->second;
-        if (tree_unsigned(t.ch[0], st)) {
-            auto ui = u32(idx);
-            if (ui >= arr.size()) throw UB("MEM-OOB-READ");
-            return i32(arr[ui]);
-        }
-        if (idx < 0 || static_cast<std::size_t>(idx) >= arr.size()) throw UB("MEM-OOB-READ");
-        return i32(arr[static_cast<std::size_t>(idx)]);
+        auto& arr = st.arrays.at(t.a);
+        return norm(arr[checked_index(idx, arr.size(), "MEM-OOB-READ")], tree_type(t, st));
     }
     case Nk::Un: {
-        auto v = eval_tree(t.ch[0], st);
+        if (t.a == "!") return eval_tree(t.ch[0], st) == 0 ? 1 : 0;
+        CT ty = promote(tree_type(t.ch[0], st));
+        auto v = norm(eval_tree(t.ch[0], st), ty);
         if (t.a == "-") {
-            if (!tree_unsigned(t.ch[0], st) && v == INT_MIN_32) throw UB("INT-SIGNED-OVF");
-            return i32(-v);
+            if (!ty.u && v == type_min(ty)) throw UB("INT-SIGNED-OVF");
+            return norm(static_cast<int64_t>(0 - static_cast<uint64_t>(v)), ty);
         }
-        if (t.a == "!") return truth(v) ? 0 : 1;
-        if (t.a == "~") return i32(~(v & 0xFFFFFFFF));
+        if (t.a == "~") return norm(~v, ty);
         throw ParseFail("unop " + t.a);
     }
     case Nk::Post:
     case Nk::Pre: {
-        auto cur = st.vars.contains(t.s) ? st.vars[t.s] : 0;
-        int w = st.bits.contains(t.s) ? st.bits[t.s] : WIDTH;
-        bool u = st.uns.contains(t.s);
-        auto nw = binop(cur, t.a == "++" ? "+" : "-", 1, u, w);
+        CT vt = var_type(st, t.s);
+        CT pt = promote(vt);
+        auto cur = norm(st.vars.contains(t.s) ? st.vars[t.s] : 0, vt);
+        auto nw = norm(binop(norm(cur, pt), t.a == "++" ? "+" : "-", 1, pt), vt);
         st.vars[t.s] = nw;
-        auto v = t.k == Nk::Post ? cur : nw;
-        return w <= 32 ? i32(v) : v;
+        return t.k == Nk::Post ? cur : nw;
     }
     case Nk::Str: return 1;
     case Nk::Call: {
@@ -720,14 +806,16 @@ int64_t eval_tree(const Node& t, St& st) {
         }
         if (t.a == "strncpy" && t.ch.size() >= 3) {
             auto n = eval_tree(t.ch[2], st);
-            eval_cstr_copy(st, t.ch[0], t.ch[1], static_cast<int>(std::max<int64_t>(0, n)), false);
+            eval_cstr_copy(st, t.ch[0], t.ch[1], static_cast<int>(std::clamp<int64_t>(n, 0, INT_MAX_32)), false);
             return 0;
         }
         for (auto& a : t.ch) eval_tree(a, st);
         return 0;
     }
-    case Nk::Tern:
-        return truth(eval_tree(t.ch[0], st)) ? eval_tree(t.ch[1], st) : eval_tree(t.ch[2], st);
+    case Nk::Tern: {
+        CT ty = tree_type(t, st);
+        return norm(truth(eval_tree(t.ch[0], st)) ? eval_tree(t.ch[1], st) : eval_tree(t.ch[2], st), ty);
+    }
     case Nk::Comma:
         eval_tree(t.ch[0], st);
         return eval_tree(t.ch[1], st);
@@ -740,14 +828,27 @@ int64_t eval_tree(const Node& t, St& st) {
             if (truth(eval_tree(t.ch[0], st))) return 1;
             return truth(eval_tree(t.ch[1], st)) ? 1 : 0;
         }
+        CT lt = tree_type(t.ch[0], st), rt = tree_type(t.ch[1], st);
         auto a = eval_tree(t.ch[0], st);
         auto b = eval_tree(t.ch[1], st);
-        bool u = tree_unsigned(t.ch[0], st) || tree_unsigned(t.ch[1], st);
-        int w = std::max(tree_width(t.ch[0], st), tree_width(t.ch[1], st));
-        return binop(a, t.a, b, u, w);
+        if (t.a == "<<" || t.a == ">>") {
+            CT pl = promote(lt);
+            return shift(norm(a, pl), t.a, norm(b, promote(rt)), pl);
+        }
+        CT ct = common_type(lt, rt);
+        return binop(norm(a, ct), t.a, norm(b, ct), ct);
     }
     }
     throw ParseFail("bad tree");
+}
+
+// The value of `src` and its type.
+std::pair<int64_t, CT> eval_typed(St& st, const std::string& src) {
+    EParser p{st, tok(strip(src)), 0};
+    auto tree = p.parse(0);
+    if (p.pos != p.tokens.size()) throw ParseFail("trailing tokens");
+    auto ty = tree_type(tree, st);
+    return {norm(eval_tree(tree, st), ty), ty};
 }
 
 }  // namespace
@@ -762,13 +863,7 @@ bool float_unencoded(const FunctionInfo& fn) {
     return body_fl.search(fn.body);
 }
 
-int64_t eval_src(St& st, const std::string& src) {
-    EParser p{st, tok(strip(src)), 0};
-    auto tree = p.parse(0);
-    if (p.pos != p.tokens.size()) throw ParseFail("trailing tokens");
-    auto v = eval_tree(tree, st);
-    return tree_width(tree, st) >= 64 ? v : i32(v);
-}
+int64_t eval_src(St& st, const std::string& src) { return eval_typed(st, src).first; }
 
 }  // namespace stages_detail
 
@@ -818,44 +913,165 @@ struct CParser {
     }
 };
 
+// Top-level pieces of `s` split at `sep`, outside (), [] and {} and quotes.
+std::vector<std::string> split_top(const std::string& s, char sep) {
+    std::vector<std::string> parts;
+    int depth = 0;
+    std::string cur;
+    char quote = 0;
+    for (std::size_t i = 0; i < s.size(); ++i) {
+        char ch = s[i];
+        if (quote) {
+            cur.push_back(ch);
+            if (ch == '\\' && i + 1 < s.size()) cur.push_back(s[++i]);
+            else if (ch == quote) quote = 0;
+            continue;
+        }
+        // A ' after a digit or letter is a digit separator (1'000), not a quote.
+        if (ch == '"' || (ch == '\'' && !(i && std::isalnum(static_cast<unsigned char>(s[i - 1]))))) quote = ch;
+        else if (ch == '(' || ch == '[' || ch == '{') ++depth;
+        else if (ch == ')' || ch == ']' || ch == '}') --depth;
+        if (ch == sep && depth == 0) {
+            parts.push_back(cur);
+            cur.clear();
+        } else {
+            cur.push_back(ch);
+        }
+    }
+    parts.push_back(cur);
+    return parts;
+}
+
+// One statement that may carry a brace initialiser (`int p[] = {1, 2};`):
+// up to the first `;` outside (), {} and quotes.
+std::pair<std::string, std::string> decl_stmt(const std::string& text) {
+    int depth = 0;
+    char quote = 0;
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        char ch = text[i];
+        if (quote) {
+            if (ch == '\\') ++i;
+            else if (ch == quote) quote = 0;
+            continue;
+        }
+        // A ' after a digit or letter is a digit separator (1'000), not a quote.
+        if (ch == '"' || (ch == '\'' && !(i && std::isalnum(static_cast<unsigned char>(text[i - 1]))))) quote = ch;
+        else if (ch == '(' || ch == '{') ++depth;
+        else if (ch == ')' || ch == '}') --depth;
+        else if (ch == ';' && depth == 0) return {text.substr(0, i + 1), text.substr(i + 1)};
+    }
+    throw ParseFail("no semicolon in " + text.substr(0, std::min<std::size_t>(80, text.size())));
+}
+
+// The length of a constant array dimension: an integer literal or an enum
+// constant. Anything else is a variable-length array.
+std::size_t array_dim(St& st, const std::string& dim) {
+    auto d = strip(dim);
+    int64_t n = -1;
+    if (!d.empty() && std::isdigit(static_cast<unsigned char>(d[0]))) {
+        try {
+            n = int_literal(d).first;
+        } catch (const ParseFail&) {
+            throw ParseFail("VLA unencoded");
+        }
+    } else if (is_ident(d) && st.enums.contains(d)) {
+        n = st.enums.at(d);
+    } else {
+        throw ParseFail("VLA unencoded");
+    }
+    if (n <= 0 || n > (1 << 20)) throw ParseFail("UNENCODED: array of " + d + " elements");
+    return static_cast<std::size_t>(n);
+}
+
 void CParser::decl(std::string s) {
     s = strip(s);
     while (!s.empty() && s.back() == ';') s.pop_back();
     s = strip(s);
-    static Regex re(
-        "(?:int|unsigned(?:\\s+int)?|long|short|char|uint32_t|int32_t|size_t)"
-        "\\s+([A-Za-z_]\\w*)(?:\\s*\\[(\\d+)\\])?(?:\\s*=\\s*(.*))?$");
-    auto m = match_at(re, s);
-    if (!m) {
-        if (re_search("\\[[^\\]]+\\]", s)) throw ParseFail("VLA unencoded");
-        throw ParseFail("unparsed decl: " + s.substr(0, 80));
+    // Leading type words, then the declarators.
+    std::vector<std::string> words;
+    std::size_t pos = 0;
+    while (true) {
+        std::size_t e = pos;
+        while (e < s.size() && (std::isalnum(static_cast<unsigned char>(s[e])) || s[e] == '_')) ++e;
+        auto w = s.substr(pos, e - pos);
+        if (w.empty() || !kDeclKws.contains(w)) break;
+        words.push_back(w);
+        pos = e;
+        while (pos < s.size() && std::isspace(static_cast<unsigned char>(s[pos]))) ++pos;
     }
-    auto name = m->group(1);
-    auto dim = m->group(2);
-    auto init = m->group(3);
-    if (!dim.empty()) {
-        st.arrays[name] = std::vector<int64_t>(static_cast<std::size_t>(std::stoi(dim)), 0);
-        return;
+    auto ct = words.empty() ? std::nullopt : scalar_ctype(join_sv(words, " "));
+    if (!ct) throw ParseFail("unparsed decl: " + s.substr(0, 80));
+    auto rest = s.substr(pos);
+    static Regex one(R"(([A-Za-z_]\w*)\s*((?:\[[^\]]*\]\s*)*)(?:=\s*([\s\S]*))?$)");
+    for (auto& part : split_top(rest, ',')) {
+        auto d = strip(part);
+        auto m = match_at(one, d);
+        if (!m || static_cast<std::size_t>(m->spans[0].second) != d.size())
+            throw ParseFail("unparsed decl: " + s.substr(0, 80));
+        auto name = m->group(1);
+        auto dims = strip(m->group(2));
+        auto init = strip(m->group(3));
+        bool has_init = m->spans.size() > 3 && m->spans[3].first >= 0;
+        if (dims.empty()) {
+            if (has_init && init.empty()) throw ParseFail("unparsed decl: " + s.substr(0, 80));
+            st.types[name] = *ct;
+            st.vars[name] = has_init ? norm(eval_typed(st, init).first, *ct) : 0;
+            continue;
+        }
+        // Exactly one dimension: a 2-D array is not modelled.
+        auto close = dims.find(']');
+        if (!strip(dims.substr(close + 1)).empty())
+            throw ParseFail("UNENCODED: multi-dimensional array " + name);
+        auto dim_src = dims.substr(1, close - 1);
+        std::vector<int64_t> vals;
+        bool str_init = false;
+        if (has_init && init.starts_with("{")) {
+            if (!init.ends_with("}")) throw ParseFail("unparsed decl: " + s.substr(0, 80));
+            auto inner = strip(init.substr(1, init.size() - 2));
+            if (!inner.empty()) {
+                auto elems = split_top(inner, ',');
+                if (strip(elems.back()).empty()) elems.pop_back();  // trailing comma
+                for (auto& e0 : elems) {
+                    auto e = strip(e0);
+                    if (e.starts_with("{")) throw ParseFail("UNENCODED: nested initialiser " + name);
+                    if (e.starts_with("[") || e.starts_with("."))
+                        throw ParseFail("UNENCODED: designated initialiser " + name);
+                    vals.push_back(norm(eval_typed(st, e).first, *ct));
+                }
+            }
+        } else if (has_init && init.starts_with("\"") && ct->w == 8) {
+            auto toks = tok(init);
+            if (toks.size() != 1) throw ParseFail("unparsed decl: " + s.substr(0, 80));
+            for (unsigned char c : string_lit_value(toks[0])) vals.push_back(norm(c, *ct));
+            vals.push_back(0);
+            str_init = true;
+        } else if (has_init) {
+            throw ParseFail("unparsed decl: " + s.substr(0, 80));
+        }
+        std::size_t n = 0;
+        if (strip(dim_src).empty()) {
+            if (!has_init) throw ParseFail("unparsed decl: " + s.substr(0, 80));
+            n = vals.size();
+            if (!n) throw ParseFail("UNENCODED: zero-length array " + name);
+        } else {
+            n = array_dim(st, dim_src);
+            // char s[3] = "abc": the terminating NUL is dropped (C11 6.7.9p14).
+            if (str_init && vals.size() == n + 1) vals.pop_back();
+            if (vals.size() > n) throw ParseFail("excess initialisers for " + name);
+        }
+        vals.resize(n, 0);
+        st.arrays[name] = std::move(vals);
+        st.arr_t[name] = *ct;
     }
-    auto start1 = m->spans.size() > 1 ? m->spans[1].first : 0;
-    if (type_is_unsigned(s.substr(0, static_cast<std::size_t>(std::max(0, start1))))) st.uns.insert(name);
-    st.vars[name] = init.empty() ? 0 : i32(eval_src(st, init));
 }
 
 void CParser::astore(const std::string& name, const std::string& idx, const std::string& rhs) {
-    auto it = st.arrays.find(name);
-    if (it == st.arrays.end()) throw ParseFail("unknown array " + name);
+    if (!st.arrays.contains(name)) throw ParseFail("unknown array " + name);
     auto i = eval_src(st, idx);
     auto v = eval_src(st, rhs);
-    bool uidx = is_ident(strip(idx)) && st.uns.contains(strip(idx));
-    if (uidx) {
-        auto ui = u32(i);
-        if (ui >= it->second.size()) throw UB("MEM-OOB-WRITE");
-        it->second[ui] = i32(v);
-        return;
-    }
-    if (i < 0 || static_cast<std::size_t>(i) >= it->second.size()) throw UB("MEM-OOB-WRITE");
-    it->second[static_cast<std::size_t>(i)] = i32(v);
+    auto& arr = st.arrays.at(name);
+    auto et = st.arr_t.contains(name) ? st.arr_t.at(name) : kInt;
+    arr[checked_index(i, arr.size(), "MEM-OOB-WRITE")] = norm(v, et);
 }
 
 void CParser::assign_or_expr(std::string s) {
@@ -876,18 +1092,27 @@ void CParser::assign_or_expr(std::string s) {
         astore(m->group(1), m->group(2), m->group(3));
         return;
     }
-    static Regex asg("([A-Za-z_]\\w*)\\s*([+\\-*/%|&^]?=)\\s*(.+)$");
+    static Regex asg("([A-Za-z_]\\w*)\\s*(<<=|>>=|[+\\-*/%|&^]?=)\\s*(.+)$");
     if (auto m = match_at(asg, s)) {
         auto name = m->group(1);
         auto op = m->group(2);
-        auto val = eval_src(st, m->group(3));
-        int w = st.bits.contains(name) ? st.bits[name] : WIDTH;
+        auto [val, rt] = eval_typed(st, m->group(3));
+        CT vt = var_type(st, name);
         if (op == "=") {
-            st.vars[name] = w <= 32 ? i32(val) : val;
+            st.vars[name] = norm(val, vt);
         } else {
-            auto cur = st.vars.contains(name) ? st.vars[name] : 0;
-            auto r = binop(cur, op.substr(0, 1), val, st.uns.contains(name), w);
-            st.vars[name] = w <= 32 ? i32(r) : r;
+            // E1 op= E2 is E1 = E1 op E2 with E1 evaluated once (C11 6.5.16.2).
+            auto cur = norm(st.vars.contains(name) ? st.vars[name] : 0, vt);
+            auto bop = op.substr(0, op.size() - 1);
+            int64_t r = 0;
+            if (bop == "<<" || bop == ">>") {
+                CT pl = promote(vt);
+                r = shift(norm(cur, pl), bop, norm(val, promote(rt)), pl);
+            } else {
+                CT ct = common_type(vt, rt);
+                r = binop(norm(cur, ct), bop, norm(val, ct), ct);
+            }
+            st.vars[name] = norm(r, vt);
         }
         return;
     }
@@ -965,7 +1190,8 @@ std::string CParser::do_for(const std::string& text) {
     if (!init.empty()) {
         auto init_stmt = init.ends_with(";") ? init : init + ";";
         if (auto miss = unencoded_layout_stmt(init_stmt)) throw ParseFail(*miss);
-        assign_or_expr(init_stmt);
+        if (looks_like_decl(init_stmt)) decl(init_stmt);
+        else assign_or_expr(init_stmt);
     }
     std::string body;
     std::tie(body, after) = take_block(after);
@@ -984,7 +1210,9 @@ struct SwitchArm {
     bool stops = false;
 };
 
-std::vector<SwitchArm> parse_switch_arms(CParser& p, std::string text) {
+// Case labels are converted to the promoted type of the controlling
+// expression (C11 6.8.4.2p5).
+std::vector<SwitchArm> parse_switch_arms(CParser& p, std::string text, CT scrut_t) {
     std::vector<SwitchArm> arms;
     std::vector<std::optional<int64_t>> labels;
     std::vector<std::string> chunks;
@@ -1003,7 +1231,7 @@ std::vector<SwitchArm> parse_switch_arms(CParser& p, std::string text) {
             if (!chunks.empty() || stops) flush();
             auto rest = lstrip(text.substr(4));
             auto [src, nxt] = upto_colon(rest);
-            labels.push_back(eval_src(p.st, src));
+            labels.push_back(norm(eval_src(p.st, src), scrut_t));
             text = nxt;
             continue;
         }
@@ -1066,7 +1294,7 @@ std::pair<std::string, std::string> consume_stmt_src(std::string raw) {
         }
         return taken(rest);
     }
-    auto [st, rest] = stmt(text);
+    auto [st, rest] = looks_like_decl(text) ? decl_stmt(text) : stmt(text);
     return taken(rest);
 }
 
@@ -1075,8 +1303,10 @@ std::string CParser::do_switch(const std::string& text) {
     auto [cond, after] = paren(rest);
     std::string body;
     std::tie(body, after) = take_block(after);
-    auto scrut = eval_src(st, cond);
-    auto arms = parse_switch_arms(*this, body);
+    auto [scrut0, scrut_t0] = eval_typed(st, cond);
+    CT scrut_t = promote(scrut_t0);
+    auto scrut = norm(scrut0, scrut_t);
+    auto arms = parse_switch_arms(*this, body, scrut_t);
     if (arms.empty()) return after;
     int idx = -1, def = -1;
     for (int i = 0; i < static_cast<int>(arms.size()); ++i) {
@@ -1146,7 +1376,10 @@ void CParser::stmts(std::string text) {
             if (!restv.empty() && restv.back() == ';') restv.pop_back();
             restv = strip(restv);
             std::optional<int64_t> val;
-            if (!restv.empty()) val = eval_src(st, restv);
+            if (!restv.empty()) {
+                val = eval_src(st, restv);
+                if (!st.ret_void) val = norm(*val, st.ret);
+            }
             throw ReturnEx(val);
         }
         if (starts_kw(text, "break")) {
@@ -1168,12 +1401,11 @@ void CParser::stmts(std::string text) {
         if (starts_kw(text, "try") || starts_kw(text, "catch")) throw ParseFail("try unencoded");
         if (starts_kw(text, "case") || starts_kw(text, "default")) throw ParseFail("case/default outside switch");
         if (auto miss = unencoded_layout_prefix(text)) throw ParseFail(*miss);
-        auto [stt, rest] = stmt(text);
+        const bool is_decl = looks_like_decl(text);
+        auto [stt, rest] = is_decl ? decl_stmt(text) : stmt(text);
         text = rest;
         if (auto miss = unencoded_layout_stmt(stt)) throw ParseFail(*miss);
-        if (stt.starts_with("int ") || stt.starts_with("unsigned ") || stt.starts_with("long ") ||
-            stt.starts_with("short ") || stt.starts_with("char ") || stt.starts_with("uint32_t ") ||
-            stt.starts_with("int32_t ") || stt.starts_with("size_t "))
+        if (is_decl)
             decl(stt);
         else
             assign_or_expr(stt);
@@ -1183,17 +1415,19 @@ void CParser::stmts(std::string text) {
 }  // namespace
 
 namespace stages_detail {
-ExecResult execute(const FunctionInfo& fn, const std::map<std::string, int>& args,
+ExecResult execute(const FunctionInfo& fn, const Args& args,
                    std::optional<std::map<std::string, int>> enums) {
     if (fn.kind == "POINTER") return {"", std::nullopt, "skip-pointer", 0};
     auto en = enums ? *enums : enums_for(fn);
     St st(fn.params, args, std::move(en));
+    if (re_search("^\\s*(?:(?:static|inline|extern)\\s+)*void\\s*$", fn.return_type)) st.ret_void = true;
+    else if (auto rt = scalar_ctype(fn.return_type)) st.ret = *rt;
     try {
         CParser(fn.body, st).run();
     } catch (const UB& u) {
         return {u.cls, std::nullopt, "", st.steps};
     } catch (const ReturnEx& r) {
-        return {"", r.value ? std::optional<int64_t>(i32(*r.value)) : std::nullopt, "", st.steps};
+        return {"", r.value, "", st.steps};
     } catch (const ParseFail& ex) {
         return {"", std::nullopt, ex.what(), st.steps};
     } catch (const BreakEx&) {
@@ -1218,7 +1452,7 @@ std::optional<bool> eval_cond(const FunctionInfo& fn, const Args& args, const st
 }  // namespace stages_detail
 
 ConcreteRec concrete_execute(const FunctionInfo& fn, const std::map<std::string, int>& args) {
-    auto rec = execute(fn, args);
+    auto rec = execute(fn, Args(args.begin(), args.end()));
     ConcreteRec out;
     out.ub = rec.ub;
     out.rc = rec.value ? static_cast<int>(*rec.value) : 0;

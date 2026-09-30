@@ -59,7 +59,7 @@ int32_t i32(int64_t x) {
     return static_cast<int32_t>(u);
 }
 
-bool truth(int64_t v) { return i32(v) != 0; }
+bool truth(int64_t v) { return v != 0; }
 
 Finding make_find(std::string stage, std::string_view status, const FunctionInfo& fn, std::string cls,
                   std::string msg, std::string_view strength) {
@@ -192,38 +192,47 @@ std::optional<fs::path> which_cc() {
     return cfg.which({"gcc", "clang", "cl"});
 }
 
+std::string ctype_key(std::string_view typ) {
+    std::string key;
+    bool sp = false;
+    for (char c : typ) {
+        if (c == '*' || std::isspace(static_cast<unsigned char>(c))) {
+            sp = !key.empty();
+            continue;
+        }
+        if (sp) key.push_back(' ');
+        sp = false;
+        key.push_back(c);
+    }
+    return key;
+}
+
 int param_nbytes(const std::vector<std::pair<std::string, std::string>>& params) {
     int n = 0;
     for (auto& [typ, _] : params) {
-        std::string key;
-        for (char c : typ)
-            if (c != '*') key.push_back(c);
-        key = strip(key);
-        auto it = kCTypeSize.find(key);
+        auto it = kCTypeSize.find(ctype_key(typ));
         n += it == kCTypeSize.end() ? 4 : it->second;
     }
     return n ? n : 1;
 }
 
-std::map<std::string, int> decode_args(const FunctionInfo& fn, const std::vector<uint8_t>& data) {
-    std::map<std::string, int> args;
+Args decode_args(const FunctionInfo& fn, const std::vector<uint8_t>& data) {
+    Args args;
     std::size_t off = 0;
     for (auto& [typ, name] : fn.params) {
         if (name.empty()) continue;
-        std::string key;
-        for (char c : typ)
-            if (c != '*') key.push_back(c);
-        key = strip(key);
+        auto key = ctype_key(typ);
         int sz = kCTypeSize.contains(key) ? kCTypeSize.at(key) : 4;
         std::vector<uint8_t> chunk(static_cast<std::size_t>(sz), 0);
         for (int i = 0; i < sz && off + static_cast<std::size_t>(i) < data.size(); ++i)
             chunk[static_cast<std::size_t>(i)] = data[off + static_cast<std::size_t>(i)];
         bool uns = key.starts_with("uint") || key.starts_with("unsigned") || key == "size_t" || key == "uintptr_t";
-        int64_t raw = 0;
-        for (int i = sz - 1; i >= 0; --i) raw = (raw << 8) | chunk[static_cast<std::size_t>(i)];
-        if (!uns && sz <= 4 && (raw & (int64_t{1} << (sz * 8 - 1))))
-            raw -= int64_t{1} << (sz * 8);
-        args[name] = sz >= 8 ? static_cast<int>(raw) : i32(raw);
+        uint64_t bits = 0;
+        for (int i = sz - 1; i >= 0; --i) bits = (bits << 8) | chunk[static_cast<std::size_t>(i)];
+        int64_t raw = static_cast<int64_t>(bits);
+        if (!uns && sz < 8 && (raw & (int64_t{1} << (sz * 8 - 1)))) raw -= int64_t{1} << (sz * 8);
+        // 8-byte values are kept whole (an unsigned one as its bit pattern).
+        args[name] = sz >= 8 ? raw : i32(raw);
         off += static_cast<std::size_t>(sz);
     }
     return args;

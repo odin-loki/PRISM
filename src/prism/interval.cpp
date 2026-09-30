@@ -399,7 +399,6 @@ Engine fork_engine(const Engine& e) {
 
 std::optional<std::string> unencoded_layout_prefix(std::string_view text);
 std::optional<std::string> unencoded_layout_stmt(std::string_view stmt_s);
-std::optional<std::string> unencoded_syntax_reason(const FunctionInfo& fn, std::string_view engine);
 
 R eval_expr(Engine& e, const std::string& src);
 R binop(Engine& e, const R& a, const std::string& op, const R& b);
@@ -1105,12 +1104,11 @@ std::optional<std::string> unencoded_layout_stmt(std::string_view stmt_s) {
     return "typedef local unencoded";
 }
 
-#include "bmc_unenc.inc"
 
 std::optional<Finding> interval_function(const FunctionInfo& fn) {
     if (fn.kind == "POINTER" || fn.kind == "OTHER") return std::nullopt;
     if (body_needs_pointer_harness(fn.body)) return std::nullopt;
-    if (unencoded_syntax_reason(fn, "interval")) return std::nullopt;
+    if (unencoded_syntax_reason_cached(fn, "interval")) return std::nullopt;
     Engine eng(fn.params);
     for (auto& n : float_locals(fn.body)) eng.float_names.insert(n);
     try {

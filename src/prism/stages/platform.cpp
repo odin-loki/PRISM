@@ -152,6 +152,24 @@ ProcRun win_create_process(const std::vector<std::string>& args, const std::stri
 
 }  // namespace
 
+#ifndef _WIN32
+namespace {
+// A pipe whose ends are not inherited by other children: runs started
+// from several threads at once must not hold each other's stdin open (the
+// dup2 onto 0/1/2 in the child clears the flag on the copies it uses).
+bool cloexec_pipe(int fds[2]) {
+#  if defined(__linux__)
+    return ::pipe2(fds, O_CLOEXEC) == 0;
+#  else
+    if (::pipe(fds) != 0) return false;
+    ::fcntl(fds[0], F_SETFD, FD_CLOEXEC);
+    ::fcntl(fds[1], F_SETFD, FD_CLOEXEC);
+    return true;
+#  endif
+}
+}  // namespace
+#endif
+
 namespace stages_detail {
 // limits: rlimits applied in the forked child (Law 9 sandbox for built
 // binaries; the caller wraps argv with sandbox::wrap_argv). Default: none.
@@ -169,17 +187,17 @@ ProcRun run_argv(const std::vector<std::string>& args, const std::string& input,
     int in_p[2] = {-1, -1};
     int out_p[2] = {-1, -1};
     int err_p[2] = {-1, -1};
-    if (::pipe(in_p) != 0) {
+    if (!cloexec_pipe(in_p)) {
         r.err = "pipe";
         return r;
     }
-    if (::pipe(out_p) != 0) {
+    if (!cloexec_pipe(out_p)) {
         ::close(in_p[0]);
         ::close(in_p[1]);
         r.err = "pipe";
         return r;
     }
-    if (::pipe(err_p) != 0) {
+    if (!cloexec_pipe(err_p)) {
         ::close(in_p[0]);
         ::close(in_p[1]);
         ::close(out_p[0]);
