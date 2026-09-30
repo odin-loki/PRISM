@@ -90,8 +90,15 @@ struct SolveOptions {
     double sls_budget_s = 0.0;  // 0: max(1 s, 10% of timeout_s); it then frees its core
     bool z3_in_process = true;  // tests switch Z3 off to observe other members alone
     unsigned max_parallel = 0;  // 0: std::thread::hardware_concurrency()
-    std::vector<std::string> tool_dirs;  // searched first: <dir>/<name>/<sha>/{bin/,}<exe>
-    bool search_default_tools = true;    // then ~/.prism/tools and PATH
+    // --tool NAME=PATH (Config::tools): that binary, before anything else.
+    std::map<std::string, std::string> tool_paths;
+    std::vector<std::string> tool_dirs;  // searched next: <dir>/<name>/<sha>/{bin/,}<exe>
+    // Then the pinned build <tools_home>/<name>/<manifest commit>/ (prism::tools_home():
+    // $PRISM_TOOLS_DIR or ~/.prism/tools) and PATH.
+    bool search_default_tools = true;
+    // Law 9: tools_home is not searched when it lies inside this tree (the
+    // scanned root without --allow-exec). Empty: no such check.
+    std::string refuse_tools_under;
     std::vector<ExternalSolver> extra_solvers;
     std::string work_dir;       // CNF / LRAT / SMT2 files; empty: fresh temp dir
     bool keep_artifacts = false;
@@ -134,7 +141,7 @@ std::string default_cache_dir();
 struct ToolInfo {
     std::string name;
     std::filesystem::path path;
-    std::string version;  // the <sha> directory under ~/.prism/tools, or "PATH"
+    std::string version;  // the <sha> directory under the tools root, "config" or "PATH"
 };
 std::optional<ToolInfo> find_tool(std::string_view name, const SolveOptions& opt);
 

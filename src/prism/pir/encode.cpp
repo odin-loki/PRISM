@@ -1452,8 +1452,10 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
     so.use_cache = opt.use_cache;
     so.cache_dir = opt.cache_dir;
     so.max_parallel = opt.max_parallel;
+    so.tool_paths = opt.tool_paths;
     so.tool_dirs = opt.tool_dirs;
     so.search_default_tools = opt.search_default_tools;
+    so.refuse_tools_under = opt.refuse_tools_under;
     so.check_timeout_s = opt.check_timeout_s;
     VcBook book;
     auto finish = [&](Verdict& r) -> Verdict {

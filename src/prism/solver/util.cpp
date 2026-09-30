@@ -1,6 +1,7 @@
 // Solver library plumbing: SHA-256, process runner, tool lookup, LRAT checking.
 
 #include "prism/solver.hpp"
+#include "prism/config.hpp"
 #include "internal.hpp"
 #include "../proc.hpp"
 
@@ -351,15 +352,29 @@ std::vector<std::pair<std::string, std::string>> tool_homes(std::string_view exe
     return {{std::string(exe), std::string(exe)}};
 }
 
-std::optional<ToolInfo> in_root(const fs::path& root, std::string_view exe) {
+bool is_exe(const fs::path& p) {
+    std::error_code ec;
+    if (!fs::is_regular_file(p, ec)) return false;
+#ifndef _WIN32
+    if (access(p.c_str(), X_OK) != 0) return false;
+#endif
+    return true;
+}
+
+// pinned: a component that third_party/MANIFEST.toml pins is taken only from
+// its pinned commit directory (the supply-chain rule of the adapters); an
+// unpinned one (drat-trim) and any explicit tool_dirs root take the newest build.
+std::optional<ToolInfo> in_root(const fs::path& root, std::string_view exe, bool pinned = false) {
     std::error_code ec;
     std::optional<ToolInfo> best;
     fs::file_time_type best_t{};
     for (const auto& [dir, bin] : tool_homes(exe)) {
         fs::path home = root / dir;
         if (!fs::is_directory(home, ec)) continue;
+        const auto pin = pinned ? prism::pinned_commit(dir) : std::nullopt;
         for (const auto& e : fs::directory_iterator(home, ec)) {
             if (!e.is_directory(ec)) continue;
+            if (pin && e.path().filename().string() != *pin) continue;
             for (const char* sub : {"bin", "build", ""}) {
                 fs::path cand = sub[0] ? e.path() / sub / bin : e.path() / bin;
                 if (!fs::is_regular_file(cand, ec)) continue;
@@ -399,10 +414,18 @@ std::optional<ToolInfo> lean_build_tool(std::string_view name) {
 }  // namespace
 
 std::optional<ToolInfo> find_tool(std::string_view name, const SolveOptions& opt) {
+    if (auto it = opt.tool_paths.find(std::string(name)); it != opt.tool_paths.end()) {
+        auto p = prism::expand_user(it->second);
+        if (is_exe(p)) return ToolInfo{std::string(name), p, "config"};
+    }
     for (const auto& d : opt.tool_dirs)
         if (auto t = in_root(d, name)) return t;
     if (!opt.search_default_tools) return std::nullopt;
-    if (auto t = in_root(fs::path(detail::home_dir()) / ".prism" / "tools", name)) return t;
+    // The fetch_deps install root, honouring $PRISM_TOOLS_DIR like the
+    // adapters, and only the manifest's pinned build of a pinned solver.
+    const auto home = prism::tools_home();
+    if (opt.refuse_tools_under.empty() || !prism::path_within(home, opt.refuse_tools_under))
+        if (auto t = in_root(home, name, /*pinned=*/true)) return t;
     const char* path = std::getenv("PATH");
     if (!path) return lean_build_tool(name);
     std::string p = path;

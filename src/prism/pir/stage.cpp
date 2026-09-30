@@ -887,6 +887,11 @@ CheckOptions check_options(const Config& cfg, std::shared_ptr<HoudiniBudget> bud
         if (end && *end == '\0' && b >= 0) o.function_budget_s = b;
     }
     o.cache_dir = cfg.solver_cache.string();
+    // Solver and checker binaries: --tool NAME=PATH first, then the pinned
+    // build under tools_home() (not inside the scanned tree without
+    // --allow-exec, Law 9), then PATH (solver::find_tool).
+    for (const auto& [name, path] : cfg.tools) o.tool_paths[name] = path.string();
+    if (!cfg.allow_exec) o.refuse_tools_under = cfg.root.string();
     const unsigned hw = std::max(2u, std::thread::hardware_concurrency());
     o.max_parallel = std::max(2u, hw / static_cast<unsigned>(std::max(1, cfg.jobs)));
     return o;
