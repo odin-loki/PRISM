@@ -24,6 +24,7 @@ from prism.__main__ import main as py_main
 
 ROOT = Path(__file__).resolve().parents[1]
 MAIN_CPP = ROOT / "src" / "prism" / "main.cpp"
+CLI_CPP = ROOT / "src" / "prism" / "cli.cpp"  # argument parsing and --help
 CONFIG_HPP = ROOT / "include" / "prism" / "config.hpp"
 PRISM_MAIN = ROOT / "prism" / "__main__.py"
 GUI_WINDOW = ROOT / "src" / "gui" / "MainWindow.cpp"
@@ -51,14 +52,13 @@ def _strip_comments(src: str) -> str:
     return re.sub(r"//.*?$", "", src, flags=re.M)
 
 
-def _help_block(main_cpp: str) -> str:
-    start = main_cpp.find('a == "-h" || a == "--help"')
-    if start < 0:
-        start = main_cpp.find("--help")
+def _help_block(src: str) -> str:
+    """The text of cli_usage() in src/prism/cli.cpp (what `prism --help` prints)."""
+    start = src.find("std::string cli_usage()")
     if start < 0:
         return ""
-    end = main_cpp.find("return 0", start)
-    return main_cpp[start:] if end < 0 else main_cpp[start:end]
+    end = src.find("\n}\n", start)
+    return src[start:] if end < 0 else src[start:end]
 
 
 def _fn(src: str, name: str) -> str:
@@ -87,13 +87,14 @@ class TestPrismGuiCliContract(unittest.TestCase):
         cls.code = _strip_comments(cls.src)
 
     def test_parses_gui_flag(self):
-        self.assertIn('a == "--gui"', self.src)
-        self.assertIn("cfg.gui = true", self.src)
+        cli = _read(CLI_CPP)
+        self.assertIn('a == "--gui"', cli)
+        self.assertIn("cfg.gui = true", cli)
         cfg = _read(CONFIG_HPP)
         self.assertIn("bool gui = false", cfg)
 
     def test_help_documents_gui_flag(self):
-        help_text = _help_block(self.src)
+        help_text = _help_block(_read(CLI_CPP))
         self.assertIn("--gui", help_text)
         buf = io.StringIO()
         with patch("sys.stdout", buf), self.assertRaises(SystemExit) as cm:
@@ -120,8 +121,9 @@ class TestPrismGuiCliContract(unittest.TestCase):
         helpers = self.code.split("int main(", 1)[0]
         self.assertNotIn("run_pipeline", helpers)
         main = self.code.split("int main(", 1)[1]
-        self.assertIn("if (cfg.gui) return launch_gui(argc, argv);", main)
-        gui_ret = main.find("if (cfg.gui) return launch_gui")
+        # --gui is handed to prism_gui before the scan parser sees the arguments.
+        self.assertIn('if (std::strcmp(argv[i], "--gui") == 0) return launch_gui(argc, argv);', main)
+        gui_ret = main.find("return launch_gui(argc, argv)")
         pipe = main.find("run_pipeline")
         self.assertGreaterEqual(gui_ret, 0)
         self.assertGreater(pipe, gui_ret)

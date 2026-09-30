@@ -31,8 +31,11 @@ PRISM_API const std::map<std::string, std::string>& exec_stages();
 PRISM_API std::vector<Finding> exec_gate_note(const std::string& stage, std::vector<Finding> findings,
                                               std::string_view what);
 
-// Same version string as the Python engine (prism/__init__.py __version__).
-inline constexpr const char* PRISM_VERSION = "0.1.0";
+// From CMake project(prism VERSION ...) (target prism_core, PUBLIC).
+#ifndef PRISM_VERSION_STRING
+#  error "PRISM_VERSION_STRING is set by CMakeLists.txt (link prism_core)"
+#endif
+inline constexpr const char* PRISM_VERSION = PRISM_VERSION_STRING;
 
 // SARIF 2.1.0 (src/prism/sarif.cpp, prism/sarif.py). Only FAILED/CRASH/SANFAIL
 // become results; HYPOTHESIS is a note; NOTRUN/failed stages are

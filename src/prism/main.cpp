@@ -1,5 +1,6 @@
 #include "prism/ai_proof.hpp"
 #include "prism/ai_assist.hpp"
+#include "prism/cli.hpp"
 #include "prism/config.hpp"
 #include "prism/pipeline.hpp"
 #include "prism/pir.hpp"
@@ -11,6 +12,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <span>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -25,18 +27,6 @@
 #  include <cerrno>
 #  include <unistd.h>
 #endif
-
-static std::vector<std::string> split_csv(const std::string& s) {
-    std::vector<std::string> out;
-    std::stringstream ss(s);
-    std::string t;
-    while (std::getline(ss, t, ',')) {
-        while (!t.empty() && t.front() == ' ') t.erase(t.begin());
-        while (!t.empty() && t.back() == ' ') t.pop_back();
-        if (!t.empty()) out.push_back(t);
-    }
-    return out;
-}
 
 static bool file_is_exe(const std::filesystem::path& p) {
     std::error_code ec;
@@ -209,14 +199,15 @@ int main(int argc, char** argv) {
         if (sub == "ask") return ai::ask_main(argc - 2, argv + 2);
         if (sub == "draft") return ai::draft_main(argc - 2, argv + 2);
         if (sub == "triage") {
-            std::filesystem::path rp = "prism-out";
-            ai::TriageOptions topt;
-            for (int i = 2; i < argc; ++i) {
-                std::string a = argv[i];
-                if (a == "--threshold" && i + 1 < argc) topt.threshold = std::stod(argv[++i]);
-                else if (a == "--no-embed") topt.use_embedder = false;
-                else rp = a;
+            auto parsed = parse_triage_cli(std::span<const char* const>(argv + 2, argc - 2));
+            if (!parsed) {
+                std::cerr << "prism triage: error: " << parsed.error() << "\n";
+                return 2;
             }
+            std::filesystem::path rp = parsed->report_dir;
+            ai::TriageOptions topt;
+            if (parsed->threshold >= 0) topt.threshold = parsed->threshold;
+            topt.use_embedder = parsed->use_embedder;
             if (std::filesystem::is_regular_file(rp)) rp = rp.parent_path();
             auto rep = RunReport::load(rp / "report.json");
             if (!rep) {
@@ -229,119 +220,34 @@ int main(int argc, char** argv) {
             return 0;
         }
     }
-    auto cfg = default_config();
-    std::string path = "testdata";
-    std::string fail_on = "never";
-    // Tooling for tools/solver_bench.py (not a scan; JSON on stdout).
-    std::string pir_vcs_src, solve_smt2;
-    bool z3_only = false;
-    for (int i = 1; i < argc; ++i) {
-        std::string a = argv[i];
-        auto next = [&]() -> std::string {
-            if (i + 1 < argc) return argv[++i];
-            return {};
-        };
-        if (a == "--no-llm") cfg.llm = false;
-        else if (a == "--gui") cfg.gui = true;
-        else if (a == "--resume") cfg.resume = true;
-        else if (a == "--allow-exec") cfg.allow_exec = true;
-        else if (a == "--strict-aliasing") cfg.strict_aliasing = true;
-        else if (a == "--pir-drafts") cfg.pir_drafts = true;
-        else if (a == "--fp-checks") cfg.fp_checks = true;
-        else if (a == "--version" || a == "-V") {
-            std::cout << "prism " << PRISM_VERSION << " (C++ engine)\n";
-            return 0;
-        }
-        else if (a == "--certified") cfg.certified = true;
-        else if (a == "--solver-cache") cfg.solver_cache = std::filesystem::absolute(next());
-        else if (a == "--timeout") cfg.timeout = std::stod(next());
-        else if (a == "--pir-vcs") pir_vcs_src = next();
-        else if (a == "--solve-smt2") solve_smt2 = next();
-        else if (a == "--z3-only") z3_only = true;
-        else if (a == "--list-stages") {
-            for (auto* p = STAGE_ORDER; *p; ++p) std::cout << *p << "\n";
-            return 0;
-        } else if (a == "--out") cfg.out = next();
-        else if (a == "--pbsd") cfg.pbsd_root = std::filesystem::absolute(next());
-        else if (a == "--stage") cfg.stages = split_csv(next());
-        else if (a == "--skip") cfg.skip = split_csv(next());
-        else if (a == "--unwind") cfg.unwind = std::stoi(next());
-        else if (a == "--fuzz-budget") cfg.fuzz_budget = std::stod(next());
-        else if (a == "--fuzz-iters") cfg.fuzz_iters = std::stoi(next());
-        else if (a == "--repair-rounds") cfg.repair_rounds = std::stoi(next());
-        else if (a == "--jobs" || a == "-j") cfg.jobs = std::stoi(next());
-        else if (a == "--requirements") cfg.requirements.push_back(std::filesystem::absolute(next()));
-        else if (a == "--contracts-approved") cfg.contracts_approved = std::filesystem::absolute(next());
-        else if (a == "--fail-on") {
-            fail_on = next();
-            if (fail_on != "never" && fail_on != "defect" && fail_on != "gap") {
-                std::cerr << "--fail-on expects never|defect|gap\n";
-                return 2;
-            }
-        }
-        else if (a == "--tool") {
-            auto spec = next();
-            auto eq = spec.find('=');
-            if (eq != std::string::npos && eq > 0 && eq + 1 < spec.size())
-                cfg.tools[spec.substr(0, eq)] = spec.substr(eq + 1);
-        }
-        else if (a == "-h" || a == "--help") {
-            std::cout <<
-                "prism PATH [--gui] [--no-llm] [--jobs N] [--tool NAME=PATH] [--pbsd PATH]\n"
-                "           [--stage a,b] [--skip a,b] [--out DIR] [--resume] [--unwind N]\n"
-                "           [--fuzz-budget N] [--fuzz-iters N] [--repair-rounds N]\n"
-                "           [--list-stages] [--version] [--fail-on never|defect|gap] [--allow-exec]\n"
-                "           [--requirements PATH] [--contracts-approved PATH]\n"
-                "           [--strict-aliasing] [--pir-drafts] [--fp-checks]\n"
-                "           [--certified] [--solver-cache DIR] [--timeout S]\n"
-                "prism prove FILE.lean THEOREM [--write] [--allow-exec] (Lean proof search; prove --help)\n"
-                "PRISM = Performance, Regression, Integration and Security Module\n"
-                "Checks any codebase (PATH: file or directory, any language): deep C/C++\n"
-                "analysis (lints, compiler warnings, BMC, fuzzing, contracts) plus every other\n"
-                "language through the polyglot stage (syntax, linters, type checkers) and a\n"
-                "secrets/conflict-marker scan of every text file. What could not be checked\n"
-                "is reported as NOTRUN, never as clean.\n"
-                "Adapter search: --tool, then ~/.prism/tools/<name>/<commit>/bin (fetch_deps), then PATH.\n"
-                "--resume reuses ok/NOTRUN stages from --out/stages.jsonl (report.json fallback).\n"
-                "--fail-on: exit 1 on defect (FAILED/CRASH/SANFAIL, except findings with\n"
-                "  extra.severity warning/note/style) or gap (defect, or anything\n"
-                "  NOTRUN/ERROR/TIMEOUT). A crashed stage is exit 2.\n"
-                "--allow-exec: run code from the scanned tree (sanitizer/fuzz/diff harnesses,\n"
-                "  perl -c, cargo clippy, eslint, LLM programs) in a sandbox; only on code you\n"
-                "  trust. Without it those steps are NOTRUN (Law 9).\n"
-                "--strict-aliasing: the pir stage also checks effective types (C11 6.5p7);\n"
-                "  off by default because real code often breaks strict aliasing on purpose.\n"
-                "--pir-drafts: pir takes pointer sizes from the template harness draft when no\n"
-                "  requires clause gives them (PROVED-ASSUMING at best; off: NEEDS-HARNESS).\n"
-                "--fp-checks: pir also reports floating-point division by zero, invalid\n"
-                "  operations (NaN) and overflow to infinity (defined by IEEE/Annex F).\n"
-                "--certified: the pir stage asks for an LRAT certificate of every verification\n"
-                "  condition (CaDiCaL proof checked by cake_lpr, and by Lean's LRAT checker when\n"
-                "  the Lean-proved bit-blaster made the CNF); a function whose VCs are all\n"
-                "  certified is PROVED-CERTIFIED, otherwise it stays PROVED with a certify_note.\n"
-                "--solver-cache DIR: solver query cache (default $XDG_CACHE_HOME/prism/solver).\n"
-                "--timeout S: solver seconds per query (default 30).\n"
-                "Every run writes TRUSTED_BASE.md and VERDICTS.md next to the reports.\n"
-                "--pbsd PATH: ParanoidBSD tree for the pbsd stage (else PRISM_PBSD; no default).\n"
-                "  Importing its modules also needs --allow-exec.\n"
-                "--requirements PATH: markdown/text requirement documents (file or directory,\n"
-                "  repeatable); the review stage drafts contracts traced to their sentences.\n"
-                "--contracts-approved PATH: approvals of drafted contracts (default\n"
-                "  <root>/contracts.approved.json); only approved clauses give PROVED-ASSUMING.\n"
-                "Writes report.json, report.md and report.sarif (SARIF 2.1.0) under --out, plus\n"
-                "triage.json (root-cause clusters; ordering only, never a status change).\n"
-                "Subcommands over a finished report (see docs/AI.md):\n"
-                "  prism regress [--report OUT/report.json] [--write-tests DIR] [--run --allow-exec]\n"
-                "  prism ask \"<question>\" [--report OUT/report.json] [--json] [--no-llm]\n"
-                "  prism draft [--report OUT/report.json] [--kind report|assurance]\n"
-                "  prism triage [OUT] [--threshold T] [--no-embed]\n";
-            return 0;
-        } else if (!a.starts_with("-")) {
-            path = a;
-        }
-    }
+    // --gui: prism_gui parses its own flags (e.g. --smoke-screenshot); hand
+    // every argument over before the scan parser rejects the ones it does not know.
+    for (int i = 1; i < argc; ++i)
+        if (std::strcmp(argv[i], "--gui") == 0) return launch_gui(argc, argv);
 
-    if (cfg.gui) return launch_gui(argc, argv);
+    auto parsed = parse_cli(std::span<const char* const>(argv + 1, argc - 1));
+    if (!parsed) {
+        std::cerr << "prism: error: " << parsed.error() << "\n(prism --help lists the options)\n";
+        return 2;
+    }
+    if (parsed->help) {
+        std::cout << cli_usage();
+        return 0;
+    }
+    if (parsed->version) {
+        std::cout << "prism " << PRISM_VERSION << " (C++ engine)\n";
+        return 0;
+    }
+    if (parsed->list_stages) {
+        for (auto* p = STAGE_ORDER; *p; ++p) std::cout << *p << "\n";
+        return 0;
+    }
+    auto& cfg = parsed->cfg;
+    const auto& fail_on = parsed->fail_on;
+    const auto& pir_vcs_src = parsed->pir_vcs_src;
+    const auto& solve_smt2 = parsed->solve_smt2;
+    const bool z3_only = parsed->z3_only;
+
     if (!pir_vcs_src.empty()) {
         std::cout << prism::pir::unit_vcs_json(std::filesystem::absolute(pir_vcs_src), cfg,
                                                std::filesystem::absolute(cfg.out))
@@ -360,8 +266,13 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    cfg.root = std::filesystem::absolute(path);
+    cfg.root = std::filesystem::absolute(parsed->path);
     cfg.out = std::filesystem::absolute(cfg.out);
+    // A mistyped PATH is not an empty, clean tree (Laws 1 and 7).
+    if (std::error_code ec; !std::filesystem::exists(cfg.root, ec)) {
+        std::cerr << "prism: error: PATH does not exist: " << cfg.root.string() << "\n";
+        return 2;
+    }
 
     auto report = run_pipeline(cfg);
     std::cout << "confidence " << report.confidence

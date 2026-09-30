@@ -159,8 +159,8 @@ class TestPythonCliParity(unittest.TestCase):
         self.assertNotIn("certified_mode", run_pir_notrun(Config())[0].extra)
 
     def test_cpp_cli_has_the_flags(self) -> None:
-        main = (ROOT / "src" / "prism" / "main.cpp").read_text(encoding="utf-8")
-        self.assertIn('a == "--certified") cfg.certified = true', main)
+        main = (ROOT / "src" / "prism" / "cli.cpp").read_text(encoding="utf-8")
+        self.assertIn('a == "--certified") { ok = in.flag(); cfg.certified = true; }', main)
         self.assertIn('a == "--solver-cache"', main)
         self.assertIn("check_function(fn, check_options(cfg, budget))",
                       (ROOT / "src" / "prism" / "pir" / "stage.cpp").read_text(encoding="utf-8"))

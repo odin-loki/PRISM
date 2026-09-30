@@ -493,6 +493,10 @@ int draft_main(int argc, char** argv) {
                          "theorem (proofs/**/*.lean) or checked certificate; unlinked claims are rejected.\n"
                          "Writes FILE (default <report dir>/draft_<kind>.md) and the claims as .json.\n";
             return 0;
+        } else {
+            // An option this command does not know is an error, never ignored.
+            std::cerr << "prism draft: error: unrecognized arguments: " << a << "\n";
+            return 2;
         }
     }
     if (kind != "report" && kind != "assurance") {

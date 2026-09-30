@@ -123,7 +123,7 @@ class TestPbsdExplicitOnly(unittest.TestCase):
         main_py = (ROOT / "prism" / "__main__.py").read_text(encoding="utf-8")
         self.assertIn('"--pbsd"', main_py)
         self.assertIn("cfg.pbsd_root = Path(args.pbsd)", main_py)
-        main_cpp = (ROOT / "src" / "prism" / "main.cpp").read_text(encoding="utf-8")
+        main_cpp = (ROOT / "src" / "prism" / "cli.cpp").read_text(encoding="utf-8")
         self.assertIn('a == "--pbsd"', main_cpp)
         self.assertIn("cfg.pbsd_root = ", main_cpp)
         cpp = _CPP_PBSD.read_text(encoding="utf-8")

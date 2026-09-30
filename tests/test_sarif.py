@@ -117,8 +117,8 @@ class TestExitCode(unittest.TestCase):
     def test_help_describes_any_codebase_in_both_clis(self):
         r = subprocess.run([sys.executable, "-m", "prism", "--help"], cwd=ROOT,
                            capture_output=True, text=True, timeout=60)
-        cpp = (ROOT / "src" / "prism" / "main.cpp").read_text(encoding="utf-8")
-        cpp_help = cpp[cpp.index('a == "--help"'):cpp.index("return 0;", cpp.index('a == "--help"'))]
+        cpp = (ROOT / "src" / "prism" / "cli.cpp").read_text(encoding="utf-8")
+        cpp_help = cpp[cpp.index("std::string cli_usage()"):]
         for text in (" ".join(r.stdout.split()), cpp_help):
             self.assertNotIn("Qwen", text)
             self.assertNotIn("Hybrid code-testing", text)
@@ -203,6 +203,17 @@ class TestEngineParity(unittest.TestCase):
                                 "--out", str(out)], cwd=ROOT, capture_output=True,
                                text=True, timeout=600)
                 outs[name] = self._norm(json.loads((out / "report.sarif").read_text("utf-8")))
+            # JSON syntax is checked in process by C++ (prism-json) and by the
+            # Python engine's helper (prism-syntax): same rows, other wording.
+            syntax = ("prism-syntax: ", "prism-json: ", "python: ")
+            for name in outs:
+                keep = []
+                for r in outs[name]["results"]:
+                    if any(t in r[2] for t in syntax):
+                        self.assertIn(r[3], {"bad.json", "bad.py"}, r)
+                        continue
+                    keep.append(r)
+                outs[name]["results"] = keep
             self.assertEqual(outs["py"], outs["cpp"])
             self.assertTrue(outs["py"]["results"])
             uris = {r[3] for r in outs["py"]["results"]}

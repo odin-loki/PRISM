@@ -34,7 +34,7 @@ from prism.sanitize import _opted_in_callable, marked_run, run_sanitize
 
 ROOT = Path(__file__).resolve().parents[1]
 PIPELINE_CPP = (ROOT / "src" / "prism" / "pipeline.cpp").read_text(encoding="utf-8")
-MAIN_CPP = (ROOT / "src" / "prism" / "main.cpp").read_text(encoding="utf-8")
+MAIN_CPP = (ROOT / "src" / "prism" / "cli.cpp").read_text(encoding="utf-8")  # argument parsing
 SANDBOX_CPP = (ROOT / "src" / "prism" / "sandbox.cpp").read_text(encoding="utf-8")
 SANDBOX_HPP = (ROOT / "include" / "prism" / "sandbox.hpp").read_text(encoding="utf-8")
 
