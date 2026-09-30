@@ -74,20 +74,29 @@ void run_cases(const std::vector<Case>& cases) {
 }  // namespace
 
 TEST_CASE("checkers: STR-STRNCPY-NUL and STR-SNPRINTF run on C sources only") {
-    const char* ncpy = "void f(char *d, const char *s) {\n    strncpy(d, s, sizeof d);\n    puts(d);\n}\n";
+    // The planted C sources (testdata/strncpy_nul.c, testdata/snprintf_buf.c):
+    // a local char array filled by strncpy with no NUL store, and snprintf
+    // with a size larger than the local array. The regex rules fire on the
+    // .c copy and stay silent on every C++ suffix. (This gate covers the
+    // regex rules in checkers_core only; the Clang-AST lint reports
+    // STR-STRNCPY-NUL on any C-family file, because it sees the real array.)
+    const char* ncpy =
+        "char *strncpy(char *d, const char *s, unsigned n);\n\n"
+        "void strncpy_nul_bad(const char *s) {\n    char b[4];\n    strncpy(b, s, 4);\n}\n";
     const char* snp =
-        "int f(char *d, int n, const char *s) {\n    int k = snprintf(d, n, \"%s\", s);\n    return d[k];\n}\n";
+        "int snprintf(char *s, unsigned n, const char *fmt, ...);\n\n"
+        "void snprintf_bad(void) {\n    char b[4];\n    snprintf(b, 64, \"%s\", \"x\");\n}\n";
+    auto c_ncpy = Snippet("a.c", ncpy).of("STR-STRNCPY-NUL");
+    REQUIRE_FALSE(c_ncpy.empty());
+    CHECK(c_ncpy[0].function.value_or("") == "strncpy_nul_bad");
+    auto c_snp = Snippet("a.c", snp).of("STR-SNPRINTF");
+    REQUIRE_FALSE(c_snp.empty());
+    CHECK(c_snp[0].function.value_or("") == "snprintf_bad");
     for (const char* ext : {".cpp", ".cc", ".cxx", ".ii"}) {
         INFO(ext);
         CHECK(Snippet(std::string("a") + ext, ncpy).of("STR-STRNCPY-NUL").empty());
         CHECK(Snippet(std::string("a") + ext, snp).of("STR-SNPRINTF").empty());
     }
-    // The same code in a .c file keeps whatever the C check says; the C++
-    // gate must not change the C result.
-    auto c_ncpy = Snippet("a.c", ncpy).of("STR-STRNCPY-NUL");
-    auto c_snp = Snippet("a.c", snp).of("STR-SNPRINTF");
-    CHECK(c_ncpy.size() == Snippet("b.c", ncpy).of("STR-STRNCPY-NUL").size());
-    CHECK(c_snp.size() == Snippet("b.c", snp).of("STR-SNPRINTF").size());
 }
 
 TEST_CASE("checkers: MEM-COPY-LEN names a variable length, not a constant") {
@@ -278,14 +287,23 @@ TEST_CASE("checkers: guards that keep correct code silent") {
          "int f(int* t) {\n    if (std::endian::native == std::endian::big) return 1;\n"
          "    return t[(int)std::endian::native];\n}\n",
          nullptr, nullptr},
+        {"endian unranged", "a.cpp", "CXX-ENDIAN", "int f(int* t) {\n    return t[(int)std::endian::native];\n}\n",
+         "std::endian used as an array index without a range check", "f"},
         {"pack pragma member copied with memcpy", "a.cpp", "CXX-PACK-PRAGMA",
          "#pragma pack(1)\nstruct P { char c; int v; };\n#pragma pack()\n"
-         "void f(P* p, int* o) {\n    memcpy(o, &p->v, sizeof(int));\n}\n",
+         "void f(int* o) {\n    P s;\n    int* q = &s.v; memcpy(o, q, sizeof(int));\n}\n",
          nullptr, nullptr},
+        {"pack pragma member address taken", "a.cpp", "CXX-PACK-PRAGMA",
+         "#pragma pack(1)\nstruct P { char c; int v; };\n#pragma pack()\n"
+         "void f(int* o) {\n    P s;\n    int* q = &s.v;\n    *o = *q;\n}\n",
+         "address of a non-char member of a #pragma pack(1) struct", "f"},
         {"views pipeline over a materialized copy", "a.cpp", "CXX-RANGES-DANGLE",
-         "int f() {\n    std::vector<int> v(make().begin(), make().end());\n"
-         "    auto r = make() | std::views::take(2);\n    return 0;\n}\n",
+         "int f() {\n    auto r = std::string(\"hi\") | std::views::take(1);\n"
+         "    std::string out(r.begin(), r.end());\n    return (int)out.size();\n}\n",
          nullptr, nullptr},
+        {"views pipeline over a temporary", "a.cpp", "CXX-RANGES-DANGLE",
+         "int f() {\n    auto r = std::string(\"hi\") | std::views::take(1);\n    return *r.begin();\n}\n",
+         "views pipeline over a temporary range", "f"},
         {"text_encoding from utf8()", "a.cpp", "CXX-TEXT-ENCODING",
          "void f() {\n    std::text_encoding e(utf8());\n}\n", nullptr, nullptr},
         {"text_encoding from a variable", "a.cpp", "CXX-TEXT-ENCODING",
@@ -315,6 +333,14 @@ TEST_CASE("checkers: guards that keep correct code silent") {
          "int f() {\n    try { g(); } catch (const std::filesystem::filesystem_error& e) {\n"
          "        log(e.what());\n    }\n    return 0;\n}\n",
          nullptr, nullptr},
+        {"system_error only inside string and raw-string literals", "a.cpp", "CXX-SYSTEM-ERROR",
+         "int f() {\n    static const Regex w(R\"re(\n  catch (std::system_error& e)\n)re\");\n"
+         "    log(\"system_error seen\");\n    return 0;\n}\n",
+         nullptr, nullptr},
+        {"system_error caught without a code check", "a.cpp", "CXX-SYSTEM-ERROR",
+         "int f() {\n    try { g(); } catch (const std::system_error& e) {\n"
+         "        log(e.what());\n    }\n    return 0;\n}\n",
+         "std::system_error used without a .code() check", "f"},
         {"system_error thrown without a code check", "a.cpp", "CXX-SYSTEM-ERROR",
          "void f(int e) {\n    throw std::system_error(e, std::generic_category());\n}\n",
          "std::system_error used without a .code() check", "f"},
@@ -415,6 +441,9 @@ TEST_CASE("checkers: guards that keep correct code silent") {
         {"member assigned in the constructor body", "a.cpp", "CXX-UNINIT-MEMBER",
          "struct R {\n    int n;\n    R() {\n        n = 0;\n    }\n};\nint f() {\n    R r;\n    return r.n;\n}\n",
          nullptr, nullptr},
+        {"member compared, not assigned, in the constructor body", "a.cpp", "CXX-UNINIT-MEMBER",
+         "struct R {\n    int n;\n    R() {\n        if (n == 0) log(1);\n    }\n};\nint f() {\n    R r;\n    return r.n;\n}\n",
+         "R() leaves scalar member n uninitialised", "f"},
         {"member left uninitialised", "a.cpp", "CXX-UNINIT-MEMBER",
          "struct R {\n    int n;\n    R() {\n    }\n};\nint f() {\n    R r;\n    return r.n;\n}\n",
          "R() leaves scalar member n uninitialised", "f"},
@@ -472,5 +501,59 @@ TEST_CASE("checkers: messages of the reworded C++ rules") {
         {"notify_all_at_thread_exit", "a.cpp", "CXX-NOTIFY-THREAD-EXIT",
          "void f() {\n    std::notify_all_at_thread_exit(cv, std::move(lk));\n}\n",
          "notify_all_at_thread_exit without a waiting condition_variable", "f"},
+    });
+}
+
+TEST_CASE("checkers: std::map/set/multimap/multiset rules still fire next to their flat/unordered kin") {
+    // Decision (docs/CPP_PORT_PLAN.md, phase 1 checkers): prism/checkers.py
+    // skips the whole function when a sibling container name (flat_*,
+    // unordered_*, multi*) appears in it. The declaration regexes are
+    // word-bounded (`\bset\s*<` does not match unordered_set<), so the find()
+    // or at() they flag is on a real std::set/map; the skip only hid bugs.
+    run_cases({
+        {"map at", "a.cpp", "CXX-MAP-AT", "int f(int k) {\n    std::map<int, int> m;\n    return m.at(k);\n}\n",
+         "m.at() without count()/find()/contains()", "f"},
+        {"map at guarded by contains", "a.cpp", "CXX-MAP-AT",
+         "int f(int k) {\n    std::map<int, int> m;\n    if (!m.contains(k)) return 0;\n    return m.at(k);\n}\n",
+         nullptr, nullptr},
+        {"map at next to an unordered_map", "a.cpp", "CXX-MAP-AT",
+         "int f(int k) {\n    std::map<int, int> m;\n    std::unordered_map<int, int> u;\n    return m.at(k);\n}\n",
+         "m.at() without count()/find()/contains()", "f"},
+        {"map at next to a flat_map", "a.cpp", "CXX-MAP-AT",
+         "int f(int k) {\n    std::map<int, int> m;\n    std::flat_map<int, int> u;\n    return m.at(k);\n}\n",
+         "m.at() without count()/find()/contains()", "f"},
+        {"only a flat_map's at()", "a.cpp", "CXX-MAP-AT",
+         "int f(int k) {\n    std::flat_map<int, int> u;\n    return u.at(k);\n}\n", nullptr, nullptr},
+        {"set find", "a.cpp", "CXX-SET-FIND", "int f(int k) {\n    std::set<int> s;\n    return *s.find(k);\n}\n",
+         "s.find() dereferenced without != end()", "f"},
+        {"set find tested against end()", "a.cpp", "CXX-SET-FIND",
+         "int f(int k) {\n    std::set<int> s;\n    auto it = s.find(k);\n    return it != s.end() ? *it : 0;\n}\n",
+         nullptr, nullptr},
+        {"set find next to an unordered_set", "a.cpp", "CXX-SET-FIND",
+         "int f(int k) {\n    std::set<int> s;\n    std::unordered_set<int> u;\n    return *s.find(k);\n}\n",
+         "s.find() dereferenced without != end()", "f"},
+        {"set find next to a multiset", "a.cpp", "CXX-SET-FIND",
+         "int f(int k) {\n    std::set<int> s;\n    std::multiset<int> u;\n    return *s.find(k);\n}\n",
+         "s.find() dereferenced without != end()", "f"},
+        {"only an unordered_set's find()", "a.cpp", "CXX-SET-FIND",
+         "int f(int k) {\n    std::unordered_set<int> u;\n    return *u.find(k);\n}\n", nullptr, nullptr},
+        {"multimap find", "a.cpp", "CXX-MULTIMAP-FIND",
+         "int f(int k) {\n    std::multimap<int, int> m;\n    return m.find(k)->second;\n}\n",
+         "m.find() dereferenced without != end()", "f"},
+        {"multimap find next to a flat_multimap", "a.cpp", "CXX-MULTIMAP-FIND",
+         "int f(int k) {\n    std::multimap<int, int> m;\n    std::flat_multimap<int, int> u;\n"
+         "    return m.find(k)->second;\n}\n",
+         "m.find() dereferenced without != end()", "f"},
+        {"only a flat_multimap's find()", "a.cpp", "CXX-MULTIMAP-FIND",
+         "int f(int k) {\n    std::flat_multimap<int, int> u;\n    return u.find(k)->second;\n}\n", nullptr,
+         nullptr},
+        {"multiset find", "a.cpp", "CXX-MULTISET-FIND",
+         "int f(int k) {\n    std::multiset<int> s;\n    return *s.find(k);\n}\n",
+         "s.find() dereferenced without != end()", "f"},
+        {"multiset find next to a flat_multiset", "a.cpp", "CXX-MULTISET-FIND",
+         "int f(int k) {\n    std::multiset<int> s;\n    std::flat_multiset<int> u;\n    return *s.find(k);\n}\n",
+         "s.find() dereferenced without != end()", "f"},
+        {"only a flat_multiset's find()", "a.cpp", "CXX-MULTISET-FIND",
+         "int f(int k) {\n    std::flat_multiset<int> u;\n    return *u.find(k);\n}\n", nullptr, nullptr},
     });
 }

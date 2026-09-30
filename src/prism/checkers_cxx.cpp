@@ -2401,7 +2401,8 @@ void _cxx_uninit_member(std::string_view stripped, const std::vector<std::string
                                           static_cast<std::size_t>(ctor_close - ctor_brace - 1))
                             : std::string();
         std::erase_if(missing, [&](const std::string& mem) {
-            return re_search("\\b" + re_escape(mem) + "\\s*=", ctor_body);
+            // `mem == 0` reads the member; only an assignment initialises it.
+            return re_search("\\b" + re_escape(mem) + "\\s*=(?!=)", ctor_body);
         });
         if (missing.empty()) continue;
         std::string mems;
