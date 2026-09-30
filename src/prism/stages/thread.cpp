@@ -31,8 +31,18 @@ std::set<std::string> file_globals(const std::string& text) {
     return g;
 }
 
+std::string re_escape(std::string_view s) {
+    static constexpr std::string_view spec = ".^$*+?()[]{}\\|-";
+    std::string o;
+    for (char c : s) {
+        if (spec.find(c) != std::string_view::npos) o.push_back('\\');
+        o.push_back(c);
+    }
+    return o;
+}
+
 bool writes_global(const std::string& body, const std::string& name) {
-    return re_search("\\b" + name + "\\s*(?:[\\[\\(]|(?:[+\\-*/%&|^]?=))", body);
+    return re_search("\\b" + re_escape(name) + "\\s*(?:[\\[\\(]|(?:[+\\-*/%&|^]?=))", body);
 }
 
 }  // namespace
@@ -46,10 +56,18 @@ std::vector<Finding> run_thread(const std::vector<FunctionInfo>& functions) {
         "\\b(?:pthread_create|std::jthread|std::thread|CreateThread|thrd_create)\\b");
     static Regex mutex_re("\\b(?:mtx_lock|mtx_timedlock|pthread_mutex)\\b");
     for (auto& [rel, fns] : by_file) {
+        // The first function whose source file can be found and read gives
+        // the text of the translation unit; failing that, the bodies alone.
         std::string file_text;
-        auto p = locate_source(fns.front());
-        if (p) file_text = strip_comments_keep_lines(read_text_file(*p));
-        else {
+        bool have_text = false;
+        for (auto& fn : fns) {
+            auto p = locate_source(fn);
+            if (!p || !std::ifstream(*p)) continue;
+            file_text = strip_comments_keep_lines(read_text_file(*p));
+            have_text = true;
+            break;
+        }
+        if (!have_text) {
             for (auto& fn : fns) {
                 if (!file_text.empty()) file_text += '\n';
                 file_text += fn.body;
