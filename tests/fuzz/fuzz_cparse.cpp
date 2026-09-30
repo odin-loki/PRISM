@@ -19,7 +19,8 @@
 // a non-std exception, a timeout -- is a finding for docs/FUZZ_SELF.md.
 //
 // Build: cmake -DPRISM_FUZZ=ON ... && cmake --build <dir> --target prism_fuzz_self
-// Run:   <dir>/prism_fuzz_self -max_total_time=300 corpus/   (tools/fuzz_self/run_cpp.sh)
+// Run:   cmake --build <dir> --target fuzz-self-run   (seeds from prism_fuzz_corpus;
+//        tools/fuzz_self/run_cpp.sh configures and runs it)
 #include "prism/cparse.hpp"
 #include "prism/journal.hpp"
 #include "prism/models.hpp"
