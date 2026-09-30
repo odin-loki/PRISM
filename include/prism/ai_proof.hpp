@@ -192,6 +192,9 @@ PRISM_API std::string check_callers_requires(const FunctionInfo& caller, const F
 // contracts engine; HYPOTHESIS unless every clause is approved. One NOTRUN
 // row without a model.
 PRISM_API std::vector<Finding> draft_contracts(const std::vector<FunctionInfo>& functions, const Config& cfg);
+// True when fn already carries a requires / ensures / invariant / decreases
+// clause (any case, // or ACSL): drafting skips it.
+PRISM_API bool has_spec(const FunctionInfo& fn);
 
 // =================================================================== assumption audit (9.3)
 // Deterministic: is the conjunction of `clauses` (C expressions over fn's

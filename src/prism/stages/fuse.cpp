@@ -35,7 +35,7 @@ namespace {
 
 std::optional<std::vector<uint8_t>> bytes_from_cex(const std::string& cex, int nbytes) {
     if (cex.empty()) return std::nullopt;
-    std::vector<int> vals;
+    std::vector<long long> vals;
     std::string tmp = cex;
     std::istringstream ss(tmp);
     std::string part;
@@ -43,15 +43,23 @@ std::optional<std::vector<uint8_t>> bytes_from_cex(const std::string& cex, int n
         auto eq = part.find('=');
         if (eq == std::string::npos) continue;
         auto v = strip(part.substr(eq + 1));
+        // The BMC prints solver bit-vector literals (`#x7fffff9c`, `#b101`);
+        // plain C literals (`5`, `-1`, `0x10`) are accepted too. Before this,
+        // every BMC counterexample failed to parse and no seed was made.
         try {
-            vals.push_back(std::stoi(v, nullptr, 0));
+            if (v.starts_with("#x"))
+                vals.push_back(static_cast<long long>(std::stoull(v.substr(2), nullptr, 16)));
+            else if (v.starts_with("#b"))
+                vals.push_back(static_cast<long long>(std::stoull(v.substr(2), nullptr, 2)));
+            else
+                vals.push_back(std::stoll(v, nullptr, 0));
         } catch (...) {
             return std::nullopt;
         }
     }
     std::vector<uint8_t> raw;
-    for (int v : vals) {
-        uint32_t u = static_cast<uint32_t>(v);
+    for (long long v : vals) {
+        uint32_t u = static_cast<uint32_t>(static_cast<unsigned long long>(v) & 0xFFFFFFFFull);
         raw.push_back(static_cast<uint8_t>(u));
         raw.push_back(static_cast<uint8_t>(u >> 8));
         raw.push_back(static_cast<uint8_t>(u >> 16));
@@ -361,6 +369,9 @@ void add_goal(std::vector<std::string>& seen, std::string cond) {
         seen.push_back(std::move(cond));
 }
 
+}  // namespace
+
+namespace stages_detail {
 std::vector<std::string> branch_goals(const FunctionInfo& fn) {
     // FuSeBMC MyVisitor::check / checkStmt: then, implicit else, loop-exit, switch cases.
     static Regex if_re("\\bif\\s*\\(([^)]+)\\)");
@@ -410,6 +421,10 @@ std::vector<std::string> branch_goals(const FunctionInfo& fn) {
     return seen;
 }
 
+}  // namespace stages_detail
+
+namespace {
+
 std::vector<std::pair<std::string, std::string>> numbered_goals(const FunctionInfo& fn) {
     // FuSeBMC GoalCounter::GetNewGoalForFunc: ++counter, "GOAL_" + counter.
     auto conds = branch_goals(fn);
@@ -422,6 +437,9 @@ std::vector<std::pair<std::string, std::string>> numbered_goals(const FunctionIn
     return out;
 }
 
+}  // namespace
+
+namespace stages_detail {
 std::vector<std::vector<uint8_t>> seeds_from_bmc(const FunctionInfo& fn, const std::vector<Finding>& bmc_findings) {
     int n = param_nbytes(fn.params);
     std::vector<std::vector<uint8_t>> out;
@@ -433,6 +451,10 @@ std::vector<std::vector<uint8_t>> seeds_from_bmc(const FunctionInfo& fn, const s
     }
     return out;
 }
+
+}  // namespace stages_detail
+
+namespace {
 
 bool llama_engine_up(LlamaEngine* e);
 

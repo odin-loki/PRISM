@@ -313,11 +313,6 @@ std::string check_callers_requires(const FunctionInfo& caller, const FunctionInf
 // ------------------------------------------------------------------ drafting
 namespace {
 
-bool has_spec(const FunctionInfo& fn) {
-    static const std::regex spec(R"((//|/\*|\*|@)\s*(requires|ensures|invariant|decreases)\b)");
-    return std::regex_search(function_source(fn), spec);
-}
-
 struct Clause {
     std::string kind, expr, c, trace, hash;
 };
@@ -377,6 +372,45 @@ std::string callers_json(const std::vector<FunctionInfo>& functions, const Funct
 }
 
 }  // namespace
+
+namespace {
+// The `/* ... */` block directly above the definition (an ACSL `/*@ requires
+// ... */` contract): function_source carries only the `//` lines above it.
+std::string block_comment_above(const FunctionInfo& fn) {
+    std::vector<fs::path> cands{fs::path(fn.file)};
+    if (auto* c = session_config()) cands.push_back(c->root / fn.file);
+    for (auto& p : cands) {
+        std::error_code ec;
+        if (!fs::is_regular_file(p, ec)) continue;
+        std::ifstream in(p, std::ios::binary);
+        std::vector<std::string> lines;
+        std::string l;
+        while (std::getline(in, l)) lines.push_back(l);
+        int a = std::max(1, fn.span.first > 0 ? fn.span.first : fn.line);
+        int i = std::min<int>(a - 1, static_cast<int>(lines.size()));  // 1-based line above
+        while (i >= 1) {
+            auto t = trim(lines[static_cast<std::size_t>(i - 1)]);
+            if (!t.empty() && t.rfind("//", 0) != 0) break;
+            --i;
+        }
+        if (i < 1 || !trim(lines[static_cast<std::size_t>(i - 1)]).ends_with("*/")) return {};
+        std::string out;
+        for (int k = i; k >= 1; --k) {
+            out = lines[static_cast<std::size_t>(k - 1)] + "\n" + out;
+            if (lines[static_cast<std::size_t>(k - 1)].find("/*") != std::string::npos) return out;
+        }
+        return {};
+    }
+    return {};
+}
+}  // namespace
+
+bool has_spec(const FunctionInfo& fn) {
+    // Clause keywords are case-insensitive, as in parse_comments.
+    static const std::regex spec(R"((//|/\*|\*|@)\s*(requires|ensures|invariant|decreases)\b)",
+                                 std::regex::icase);
+    return std::regex_search(function_source(fn), spec) || std::regex_search(block_comment_above(fn), spec);
+}
 
 std::vector<Finding> draft_contracts(const std::vector<FunctionInfo>& functions, const Config& cfg) {
     std::vector<Finding> out;
