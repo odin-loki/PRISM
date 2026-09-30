@@ -33,6 +33,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
+#include <iostream>
 #include <map>
 #include <mutex>
 #include <numeric>
@@ -552,6 +553,27 @@ void write_triage(const RunReport& report, const fs::path& out, const TriageOpti
     fs::create_directories(out, ec);
     std::ofstream(out / "triage.json", std::ios::binary) << triage_json(t);
     std::ofstream(out / "report.md", std::ios::binary | std::ios::app) << triage_markdown(t, report);
+}
+
+int triage_main(int argc, char** argv) {
+    fs::path rp = "prism-out";
+    TriageOptions topt;
+    for (int i = 0; i < argc; ++i) {
+        std::string a = argv[i];
+        if (a == "--threshold" && i + 1 < argc) topt.threshold = std::stod(argv[++i]);
+        else if (a == "--no-embed") topt.use_embedder = false;
+        else rp = a;
+    }
+    if (fs::is_regular_file(rp)) rp = rp.parent_path();
+    auto rep = RunReport::load(rp / "report.json");
+    if (!rep) {
+        std::cerr << "ERROR triage: cannot read " << (rp / "report.json").string() << "\n";
+        return 2;
+    }
+    auto t = triage(*rep, topt);
+    std::ofstream(rp / "triage.json", std::ios::binary) << triage_json(t);
+    std::cout << triage_markdown(t, *rep);
+    return 0;
 }
 
 }  // namespace prism::ai

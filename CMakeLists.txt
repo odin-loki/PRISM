@@ -578,7 +578,9 @@ if(PRISM_TESTS)
     # Repository tooling that used to be scripts (plan-done smoke, generated tables).
     tests/cpp/test_repo_tools.cpp
     # The offline AI analytics (prism_ai, the GBDT trainer, the built-in model).
-    tests/cpp/test_prism_ai.cpp)
+    tests/cpp/test_prism_ai.cpp
+    # The assistant subcommands end to end, with a fake llama-server.
+    tests/cpp/test_ai_assist_cli.cpp)
   target_include_directories(prism_tests PRIVATE
     "${PRISM_ROOT}/include"
     "${PRISM_ROOT}/third_party")

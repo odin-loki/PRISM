@@ -208,26 +208,7 @@ int main(int argc, char** argv) {
         if (sub == "regress") return ai::regress_main(argc - 2, argv + 2);
         if (sub == "ask") return ai::ask_main(argc - 2, argv + 2);
         if (sub == "draft") return ai::draft_main(argc - 2, argv + 2);
-        if (sub == "triage") {
-            std::filesystem::path rp = "prism-out";
-            ai::TriageOptions topt;
-            for (int i = 2; i < argc; ++i) {
-                std::string a = argv[i];
-                if (a == "--threshold" && i + 1 < argc) topt.threshold = std::stod(argv[++i]);
-                else if (a == "--no-embed") topt.use_embedder = false;
-                else rp = a;
-            }
-            if (std::filesystem::is_regular_file(rp)) rp = rp.parent_path();
-            auto rep = RunReport::load(rp / "report.json");
-            if (!rep) {
-                std::cerr << "ERROR triage: cannot read " << (rp / "report.json").string() << "\n";
-                return 2;
-            }
-            auto t = ai::triage(*rep, topt);
-            std::ofstream(rp / "triage.json", std::ios::binary) << ai::triage_json(t);
-            std::cout << ai::triage_markdown(t, *rep);
-            return 0;
-        }
+        if (sub == "triage") return ai::triage_main(argc - 2, argv + 2);
     }
     auto cfg = default_config();
     std::string path = "testdata";
