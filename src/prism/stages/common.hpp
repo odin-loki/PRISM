@@ -103,6 +103,9 @@ std::string read_fn_source(const FunctionInfo& fn);
 std::optional<std::filesystem::path> which_cc();
 
 // ---- common.cpp: argument encoding and seeds
+// A type with its whitespace runs collapsed to one space and trimmed
+// ("unsigned   char *" -> "unsigned char *").
+std::string collapse_ws(const std::string& typ);
 // The kCTypeSize key of a parameter type: `*` dropped, whitespace runs
 // collapsed ("unsigned   char *" -> "unsigned char").
 std::string c_type_key(const std::string& typ);

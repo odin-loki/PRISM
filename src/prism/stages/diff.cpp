@@ -6,18 +6,6 @@ namespace fs = std::filesystem;
 using namespace stages_detail;
 
 namespace {
-// A parameter type with its whitespace runs collapsed to one space
-// ("unsigned   int" -> "unsigned int"), the key of kCTypeSize.
-std::string type_key(const std::string& typ) {
-    std::istringstream ss(typ);
-    std::string w, out;
-    while (ss >> w) {
-        if (!out.empty()) out += ' ';
-        out += w;
-    }
-    return out;
-}
-
 int c_type_nbytes_key(const std::string& key) {
     auto it = kCTypeSize.find(key);
     return it == kCTypeSize.end() ? 4 : it->second;
@@ -82,7 +70,10 @@ std::string emit_diff_program(const FunctionInfo& a, const FunctionInfo& b) {
     std::string decls, reads;
     int off = 0;
     for (auto& [typ, name] : a.params) {
-        auto key = type_key(typ);
+        // The harness declares the parameter with its own type, so `*` is
+        // kept here (collapse_ws, not c_type_key); only SCALAR pairs reach
+        // this, and their keys are kCTypeSize keys.
+        auto key = collapse_ws(typ);
         if (key.empty()) key = "int";
         int sz = c_type_nbytes_key(key);
         decls += "    " + key + " " + name + ";\n";

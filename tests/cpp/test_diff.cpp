@@ -30,7 +30,7 @@ namespace {
 
 namespace fs = std::filesystem;
 
-fs::path td() { return fs::path(__FILE__).parent_path().parent_path().parent_path() / "testdata"; }
+fs::path td() { return fs::path(PRISM_SOURCE_DIR) / "testdata"; }
 
 std::vector<prism::FunctionInfo> pair_ab() {
     std::vector<prism::FunctionInfo> out;
@@ -61,6 +61,17 @@ std::string lower(std::string s) {
 bool has(const std::string& s, std::string_view needle) { return s.find(needle) != std::string::npos; }
 
 bool have_cc() { return prism::Config{}.which({"gcc", "clang"}).has_value(); }
+
+// The behavioural cases build real harnesses. Without gcc/clang they say so
+// in the test output rather than passing silently (the NOTRUN path itself
+// is covered by the "no gcc/clang" case, which always runs).
+#define PRISM_DIFF_NEED_CC()                                                   \
+    do {                                                                       \
+        if (!have_cc()) {                                                      \
+            MESSAGE("SKIP: no gcc/clang on PATH; this diff case asserts nothing"); \
+            return;                                                            \
+        }                                                                      \
+    } while (0)
 
 #ifndef _WIN32
 // PATH replaced for the scope of one case (POSIX; the stage reads PATH).
@@ -128,7 +139,7 @@ TEST_CASE("diff: MSVC cl alone is not gcc/clang and stays NOTRUN") {
 #endif
 
 TEST_CASE("diff: agreement is CLEAN, never a proof") {
-    if (!have_cc()) return;
+    PRISM_DIFF_NEED_CC();
     prism::sandbox::Policy policy(true);
     auto recs = prism::run_diff({scalar("same_a", "    return x + 1;"), scalar("same_b", "    return 1 + x;")}, td());
     REQUIRE(recs.size() == 1);
@@ -143,7 +154,7 @@ TEST_CASE("diff: agreement is CLEAN, never a proof") {
 }
 
 TEST_CASE("diff: files paired by *_a/*_b stem that disagree are FAILED") {
-    if (!have_cc()) return;
+    PRISM_DIFF_NEED_CC();
     prism::sandbox::Policy policy(true);
     auto recs = prism::run_diff(pair_ab(), td());
     REQUIRE(recs.size() == 1);
@@ -162,7 +173,7 @@ TEST_CASE("diff: files paired by *_a/*_b stem that disagree are FAILED") {
 }
 
 TEST_CASE("diff: name_a/name_b pairing that disagrees is FAILED") {
-    if (!have_cc()) return;
+    PRISM_DIFF_NEED_CC();
     prism::sandbox::Policy policy(true);
     auto recs = prism::run_diff({scalar("foo_a", "    return x;"), scalar("foo_b", "    return x ^ 1;")}, td());
     REQUIRE(recs.size() == 1);
@@ -175,7 +186,7 @@ TEST_CASE("diff: name_a/name_b pairing that disagrees is FAILED") {
 }
 
 TEST_CASE("diff: a `// diff:` comment pairs two functions; disagreement is FAILED") {
-    if (!have_cc()) return;
+    PRISM_DIFF_NEED_CC();
     prism::sandbox::Policy policy(true);
     auto dir = fs::temp_directory_path() / "prism_diff_comment";
     fs::create_directories(dir);
@@ -197,7 +208,7 @@ TEST_CASE("diff: a `// diff:` comment pairs two functions; disagreement is FAILE
 }
 
 TEST_CASE("diff: a harness that does not compile is ERROR, not CLEAN") {
-    if (!have_cc()) return;
+    PRISM_DIFF_NEED_CC();
     prism::sandbox::Policy policy(true);
     auto recs = prism::run_diff({scalar("bad_a", "    return x +;"), scalar("bad_b", "    return x;")}, td());
     REQUIRE(recs.size() == 1);
@@ -209,7 +220,7 @@ TEST_CASE("diff: a harness that does not compile is ERROR, not CLEAN") {
 }
 
 TEST_CASE("diff: a timeout is not agreement") {
-    if (!have_cc()) return;
+    PRISM_DIFF_NEED_CC();
     prism::sandbox::Policy policy(true);
     // Only input 42 loops; every other input agrees.
     auto recs = prism::run_diff(
@@ -223,7 +234,7 @@ TEST_CASE("diff: a timeout is not agreement") {
 }
 
 TEST_CASE("diff: a crash is not agreement") {
-    if (!have_cc()) return;
+    PRISM_DIFF_NEED_CC();
     prism::sandbox::Policy policy(true);
     auto recs = prism::run_diff({scalar("seg_a", "    if (x == 42) { volatile int *p = 0; return *p; }\n    return x;"),
                                  scalar("seg_b", "    return x;")},
@@ -236,7 +247,7 @@ TEST_CASE("diff: a crash is not agreement") {
 }
 
 TEST_CASE("diff: parameter types with inner whitespace keep their C size") {
-    if (!have_cc()) return;
+    PRISM_DIFF_NEED_CC();
     prism::sandbox::Policy policy(true);
     // "unsigned   char" is one byte: each input is one byte, the harness reads
     // it into x, so the byte 0x2a reaches both functions as 42.

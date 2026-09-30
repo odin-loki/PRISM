@@ -192,16 +192,20 @@ std::optional<fs::path> which_cc() {
     return cfg.which({"gcc", "clang", "cl"});
 }
 
+std::string collapse_ws(const std::string& typ) {
+    std::istringstream ss(typ);
+    std::string w, out;
+    while (ss >> w) {
+        if (!out.empty()) out += ' ';
+        out += w;
+    }
+    return out;
+}
+
 std::string c_type_key(const std::string& typ) {
     std::string spaced = typ;
     std::replace(spaced.begin(), spaced.end(), '*', ' ');
-    std::istringstream ss(spaced);
-    std::string w, key;
-    while (ss >> w) {
-        if (!key.empty()) key += ' ';
-        key += w;
-    }
-    return key;
+    return collapse_ws(spaced);
 }
 
 int param_nbytes(const std::vector<std::pair<std::string, std::string>>& params) {
