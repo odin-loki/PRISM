@@ -6,11 +6,24 @@ namespace fs = std::filesystem;
 using namespace stages_detail;
 
 namespace {
-int c_type_nbytes_key(std::string typ) {
-    typ = strip(typ);
-    auto it = kCTypeSize.find(typ);
+// A parameter type with its whitespace runs collapsed to one space
+// ("unsigned   int" -> "unsigned int"), the key of kCTypeSize.
+std::string type_key(const std::string& typ) {
+    std::istringstream ss(typ);
+    std::string w, out;
+    while (ss >> w) {
+        if (!out.empty()) out += ' ';
+        out += w;
+    }
+    return out;
+}
+
+int c_type_nbytes_key(const std::string& key) {
+    auto it = kCTypeSize.find(key);
     return it == kCTypeSize.end() ? 4 : it->second;
 }
+
+std::string tail(const std::string& s, std::size_t n) { return s.size() > n ? s.substr(s.size() - n) : s; }
 
 std::string stem_of(const FunctionInfo& fn) {
     return fs::path(fn.file).stem().string();
@@ -69,7 +82,7 @@ std::string emit_diff_program(const FunctionInfo& a, const FunctionInfo& b) {
     std::string decls, reads;
     int off = 0;
     for (auto& [typ, name] : a.params) {
-        auto key = strip(typ);
+        auto key = type_key(typ);
         if (key.empty()) key = "int";
         int sz = c_type_nbytes_key(key);
         decls += "    " + key + " " + name + ";\n";
@@ -160,7 +173,9 @@ Finding diff_pair(const FunctionInfo& a, const FunctionInfo& b, const fs::path&)
     if (cr.timeout || cr.rc != 0) {
         fs::remove_all(td);
         base.status = std::string(laws::ERROR);
-        auto err = cr.err.empty() ? cr.out : cr.err;
+        // The end of the compiler output holds the error; at most 400
+        // characters of its last 1500 go in the message.
+        auto err = cr.timeout ? std::string("compile timeout") : tail(cr.err.empty() ? cr.out : cr.err, 1500);
         if (err.size() > 400) err.resize(400);
         base.message = "diff compile: " + err;
         return base;
@@ -170,13 +185,19 @@ Finding diff_pair(const FunctionInfo& a, const FunctionInfo& b, const fs::path&)
     for (auto& data : diff_inputs(nbytes)) {
         std::string in(data.begin(), data.end());
         auto rr = run_argv(sandbox::wrap_argv({exe.string()}, td), in, 1.0, sandbox::limits_for(1.0));
+        // A run killed at the deadline has a negative rc too: it is a
+        // timeout (not agreement), never a crash of the code under test.
+        if (rr.timeout) {
+            timed_out = true;
+            continue;
+        }
         bool disagree = rr.rc == 2 || rr.err.starts_with("DIFF");
         if (disagree) {
             fs::remove_all(td);
             base.status = std::string(laws::FAILED);
             base.cls = "FUNC-CONTRACT";
             base.message = a.name + " and " + b.name + " disagree";
-            base.evidence = rr.err.substr(0, 800);
+            base.evidence = tail(rr.err, 800);
             std::string hex;
             for (auto b : data) {
                 char buf[8];
@@ -186,6 +207,7 @@ Finding diff_pair(const FunctionInfo& a, const FunctionInfo& b, const fs::path&)
             base.counterexample = hex;
             base.extra["a"] = a.file;
             base.extra["b"] = b.file;
+            base.extra["sandbox"] = sandbox::kind();
             return base;
         }
         if (rr.crashed || rr.rc < 0) {
@@ -209,7 +231,6 @@ Finding diff_pair(const FunctionInfo& a, const FunctionInfo& b, const fs::path&)
             base.counterexample = full;
             return base;
         }
-        if (rr.timeout) timed_out = true;
     }
     fs::remove_all(td);
     if (timed_out) {

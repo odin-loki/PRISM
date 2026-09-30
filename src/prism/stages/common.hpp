@@ -103,6 +103,9 @@ std::string read_fn_source(const FunctionInfo& fn);
 std::optional<std::filesystem::path> which_cc();
 
 // ---- common.cpp: argument encoding and seeds
+// The kCTypeSize key of a parameter type: `*` dropped, whitespace runs
+// collapsed ("unsigned   char *" -> "unsigned char").
+std::string c_type_key(const std::string& typ);
 int param_nbytes(const std::vector<std::pair<std::string, std::string>>& params);
 std::map<std::string, int> decode_args(const FunctionInfo& fn, const std::vector<uint8_t>& data);
 std::vector<std::vector<uint8_t>> interesting_seeds(const FunctionInfo& fn);
