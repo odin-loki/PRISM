@@ -936,10 +936,11 @@ TEST_CASE("certified: a checker out of memory is reported as such, never as a ve
     CHECK(o.detail.find("heap cap 64 MB") != std::string::npos);
     CHECK(slurp(argf).find("--CML_HEAP_SIZE=64 ") == 0);
     // any other checker is killed once its resident memory passes the cap
-    if (std::system("python3 -c 'pass' > /dev/null 2>&1") == 0) {
+    {
+        // prism_test_hog (tests/cpp/hog.cpp): 400 MB resident, then 20 s asleep.
+        REQUIRE(fs::is_regular_file(PRISM_TEST_HOG));
         const auto hog = tmp.dir / "lrat-check";
-        std::ofstream(hog) << "#!/bin/sh\nexec python3 -c 'import time\nx = bytearray(400 << 20)\n"
-                              "for i in range(0, len(x), 4096): x[i] = 1\ntime.sleep(20)'\n";
+        std::ofstream(hog) << "#!/bin/sh\nexec '" << PRISM_TEST_HOG << "' 400 20\n";
         fs::permissions(hog, fs::perms::owner_all);
         auto h = prism::solver::check_lrat(prism::solver::ToolInfo{"lrat-check", hog, "test"}, tmp.dir / "q.cnf",
                                            tmp.dir / "q.lrat", 30, 100);

@@ -532,6 +532,10 @@ if(PRISM_TESTS)
   # The generated tables (astlint_discard.inc) are checked by doctests.
   target_include_directories(prism_tests PRIVATE "${_pins_dir}")
   add_dependencies(prism_tests prism_generated)
+  # A checker that hogs memory, for the certified-mode memory-cap doctest.
+  add_executable(prism_test_hog tests/cpp/hog.cpp)
+  add_dependencies(prism_tests prism_test_hog)
+  target_compile_definitions(prism_tests PRIVATE PRISM_TEST_HOG="$<TARGET_FILE:prism_test_hog>")
   if(UNIX)
     set_target_properties(prism_tests PROPERTIES BUILD_RPATH "$ORIGIN" INSTALL_RPATH "$ORIGIN")
   endif()
