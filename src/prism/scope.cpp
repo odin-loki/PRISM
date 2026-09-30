@@ -1,5 +1,5 @@
 // What is in scope: one skip-directory list for every stage.
-// Port of the Python engine prism/scope.py — same table, same walk.
+// One table, one walk: every stage asks skip_dir().
 
 #include "prism/scope.hpp"
 
@@ -24,7 +24,8 @@ bool skip_dir(std::string_view name) {
 
 bool skipped_path(const fs::path& p, const fs::path& root) {
     auto rel = p.lexically_relative(root);
-    if (rel.empty() || rel.native().starts_with(fs::path("..").native())) return false;
+    // Outside root: the first component is "..". A child named "..foo" is inside.
+    if (rel.empty() || *rel.begin() == fs::path("..")) return false;
     auto parent = rel.parent_path();
     for (auto& part : parent)
         if (skip_dir(part.string())) return true;
@@ -40,12 +41,14 @@ std::size_t count_sources(const fs::path& d,
     for (auto it = fs::recursive_directory_iterator(
              d, fs::directory_options::skip_permission_denied, ec);
          !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
+        // Directories (and links to them) are not files; a link to a file
+        // counts like the file, as in an os.walk file list.
         std::error_code e2;
-        if (it->is_symlink(e2)) {
-            if (it->is_directory(e2)) it.disable_recursion_pending();
+        if (it->is_directory(e2)) {
+            if (it->is_symlink(e2)) it.disable_recursion_pending();
             continue;
         }
-        if (it->is_regular_file(e2) && is_source(it->path())) ++n;
+        if (is_source(it->path())) ++n;
     }
     return n;
 }
