@@ -476,6 +476,8 @@ if(PRISM_TESTS)
     tests/cpp/test_leanbb.cpp tests/cpp/test_pir_mem.cpp tests/cpp/test_certified.cpp tests/cpp/test_pir3.cpp
     # Roadmap 2.8 Clang-AST lints.
     tests/cpp/test_astlint.cpp
+    # C lint checks: API branches, dispatch, real-code false alarms, CVE shapes.
+    tests/cpp/test_checkers_c.cpp
     # Roadmap 9.1/9.3/9.4 AI assistant features (regress, triage, ask, draft, predict).
     tests/cpp/test_ai_assist.cpp)
   target_include_directories(prism_tests PRIVATE

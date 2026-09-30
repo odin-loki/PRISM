@@ -6,6 +6,7 @@
 #include <cctype>
 #include <functional>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <sstream>
@@ -848,7 +849,8 @@ bool null_test_for(std::string_view var, std::string_view text) {
     Regex a("\\bif\\s*\\(\\s*(?:" + v + "\\s*==\\s*(?:NULL|0|nullptr)|!\\s*" + v + "\\b|" + v +
             "\\s*\\))");
     if (a.search(text)) return true;
-    Regex b("\\(\\s*" + v + "\\s*=(?!=)[^;)]*?\\)\\s*==\\s*(?:NULL|nullptr|0)\\b");
+    // `(p = f(x)) == NULL`: the call inside the assignment has its own parentheses.
+    Regex b("\\(\\s*" + v + "\\s*=(?!=)(?:[^;()]|\\([^;()]*\\))*?\\)\\s*==\\s*(?:NULL|nullptr|0)\\b");
     return b.search(text);
 }
 
@@ -880,11 +882,62 @@ std::optional<int> first_ptr_use(std::string_view var, const std::vector<std::st
     return std::nullopt;
 }
 
+// Function-like macros defined in the same file whose body null-tests one of
+// their parameters (tinyexpr: `#define CHECK_NULL(ptr, ...) if ((ptr) ==
+// NULL) { __VA_ARGS__; return NULL; }`): macro name -> tested parameter
+// indices. A macro that does not test its parameter is not a check.
+using NullMacros = std::map<std::string, std::vector<std::size_t>>;
+
+NullMacros null_check_macros(const std::vector<std::string>& lines) {
+    static Regex def(R"(^\s*#\s*define\s+([A-Za-z_]\w*)\(([^)]*)\)(.*)$)");
+    NullMacros out;
+    for (std::size_t i = 0; i < lines.size(); ++i) {
+        if (lines[i].find("define") == std::string::npos) continue;
+        auto m = def.search_match(lines[i]);
+        if (!m) continue;
+        auto body = m->group(3);
+        for (std::size_t j = i + 1; !body.empty() && body.back() == '\\' && j < lines.size(); ++j) {
+            body.pop_back();
+            body += " " + lines[j];
+        }
+        auto params = split_call_args(m->group(2));
+        for (std::size_t k = 0; k < params.size(); ++k) {
+            auto p = strip(params[k]);
+            if (p.empty() || p == "..." || !is_ident(p)) continue;
+            auto v = "(?:\\(\\s*" + re_escape(p) + "\\s*\\)|\\b" + re_escape(p) + "\\b)";
+            Regex t("\\bif\\s*\\(\\s*(?:" + v + "\\s*==\\s*(?:NULL|nullptr|0)\\b|(?:NULL|nullptr|0)\\s*==\\s*" +
+                    v + "|!\\s*" + v + ")");
+            if (t.search(body)) out[m->group(1)].push_back(k);
+        }
+    }
+    return out;
+}
+
+// `var` passed, in a tested position, to one of the null-check macros.
+bool macro_null_checked(std::string_view var, std::string_view text, const NullMacros& macros) {
+    for (auto& [name, idxs] : macros) {
+        std::size_t from = 0;
+        while (true) {
+            auto p = text.find(name, from);
+            if (p == std::string_view::npos) break;
+            from = p + 1;
+            if (p > 0 && (std::isalnum(static_cast<unsigned char>(text[p - 1])) || text[p - 1] == '_'))
+                continue;
+            auto args = find_call_args(text.substr(p), name);
+            if (!args) continue;
+            for (auto k : idxs)
+                if (k < args->size() && strip_ws((*args)[k]) == var) return true;
+        }
+    }
+    return false;
+}
+
 std::optional<std::pair<std::string, int>> unchecked_alloc_site(const std::vector<std::string>& chunk,
                                                                 int i, std::string var,
                                                                 std::string_view fn,
                                                                 bool require_nowait,
-                                                                std::size_t match_end) {
+                                                                std::size_t match_end,
+                                                                const NullMacros& macros) {
     var = strip_ws(var);
     auto& line = chunk[static_cast<std::size_t>(i)];
     if (fn == "realloc") {
@@ -907,6 +960,7 @@ std::optional<std::pair<std::string, int>> unchecked_alloc_site(const std::vecto
         between = join_range(chunk, static_cast<std::size_t>(i), static_cast<std::size_t>(*use_j + 1));
     }
     if (null_test_for(var, between)) return std::nullopt;
+    if (!macros.empty() && macro_null_checked(var, between, macros)) return std::nullopt;
     std::string stmt;
     for (int x = i; x < i + 4 && x < static_cast<int>(chunk.size()); ++x) {
         if (!stmt.empty()) stmt.push_back(' ');
@@ -1565,22 +1619,40 @@ bool param_null_tested(std::string_view name, std::string_view body) {
     return false;
 }
 
-bool member_null_tested(std::string_view param, std::string_view member, std::string_view body) {
+// One pattern for every null test of param->member (or param.member):
+// `== NULL` / `!= 0` / `== Z_NULL` in either order, `!acc`, `acc` as a truth
+// value in if / while / && / ?:, and an assert-style macro whose argument starts
+// with acc (`TEST_ASSERT_NOT_NULL(item->child->next)` dereferences it).
+// `acc || ...` is not a guard: the right side runs when acc is null.
+// Compiled once per (param, member) per thread: the lints ask for the same
+// access on every line.
+const Regex& member_test_re(std::string_view param, std::string_view member) {
+    thread_local std::unordered_map<std::string, std::unique_ptr<Regex>> cache;
+    std::string key = std::string(param) + "\x1f" + std::string(member);
+    if (auto it = cache.find(key); it != cache.end()) return *it->second;
+    if (cache.size() > 4096) cache.clear();
     auto v = re_escape(param), m = re_escape(member);
-    auto acc = "(?:" + v + "\\s*->\\s*" + m + "|" + v + "\\s*\\.\\s*" + m + ")";
-    std::vector<std::string> tests = {
-        "\\bif\\s*\\(\\s*" + acc + "\\s*==\\s*(?:NULL|nullptr|0)\\b",
-        "\\bif\\s*\\(\\s*(?:NULL|nullptr|0)\\s*==\\s*" + acc + "\\b",
-        "\\bif\\s*\\(\\s*" + acc + "\\s*!=\\s*(?:NULL|nullptr|0)\\b",
-        "\\bif\\s*\\(\\s*(?:NULL|nullptr|0)\\s*!=\\s*" + acc + "\\b",
-        "\\bif\\s*\\(\\s*!" + acc + "\\b",
-        "(?:\\|\\||&&|\\()\\s*\\(?\\s*" + acc + "\\s*[!=]=\\s*(?:NULL|nullptr|0)\\b",
-        "(?:\\|\\||&&|\\()\\s*\\(?\\s*(?:NULL|nullptr|0)\\s*[!=]=\\s*" + acc + "\\b",
-        "(?:\\|\\||&&|\\()\\s*!" + acc + "\\b",
-    };
-    for (auto& p : tests)
-        if (Regex(p).search(body)) return true;
-    return false;
+    auto acc = "(?<![\\w.])(?<!->)(?:" + v + "\\s*->\\s*" + m + "|" + v + "\\s*\\.\\s*" + m + ")\\b";
+    std::string nul = "(?:NULL|nullptr|0|[A-Za-z_]\\w*_NULL)\\b";
+    std::string pat = "(?:" + acc + "\\s*[!=]=\\s*" + nul +
+                      "|\\b" + nul + "\\s*[!=]=\\s*" + acc +
+                      "|!\\s*\\(?\\s*" + acc + "(?!\\s*(?:->|\\.|\\[|\\())" +
+                      "|(?:\\b(?:if|while)\\s*\\(|&&)\\s*" + acc + "\\s*(?:\\)|&&|\\?)" +
+                      "|" + acc + "\\s*(?:&&|\\?)" +
+                      "|\\b\\w*(?:assert|ASSERT)\\w*\\s*\\(\\s*" + acc + ")";
+    auto [it, _] = cache.emplace(std::move(key), std::make_unique<Regex>(pat));
+    return *it->second;
+}
+
+// Offset in `body` of the first null test of param->member, or npos.
+std::size_t member_test_pos(std::string_view param, std::string_view member, std::string_view body) {
+    auto m = member_test_re(param, member).search_match(body);
+    if (!m || m->spans.empty() || m->spans[0].first < 0) return std::string_view::npos;
+    return static_cast<std::size_t>(m->spans[0].first);
+}
+
+bool member_null_tested(std::string_view param, std::string_view member, std::string_view body) {
+    return member_test_pos(param, member, body) != std::string_view::npos;
 }
 
 std::optional<std::pair<std::string, std::string>> parse_member_arg(std::string_view arg) {
@@ -2306,6 +2378,14 @@ void capacity_first(const std::vector<std::string>& lines, std::string_view rel,
         if (!arm) continue;
         if (cap_dead.search(*arm)) continue;
         if (cap_norm(*arm).find(var) != std::string::npos) continue;
+        // The failure arm releases the object that owns the field and
+        // leaves (zlib examples/zran.c: `free_index(index); return NULL;`):
+        // the grown size dies with it.
+        if (auto dot = var.find_first_of(".-"); dot != std::string::npos) {
+            auto base = var.substr(0, dot);
+            Regex release("\\b\\w*(?:free|destroy)\\w*\\s*\\(\\s*" + re_escape(base) + "\\s*\\)");
+            if (release.search(*arm) && cap_leave.search(*arm)) continue;
+        }
         lint_add(out, rel, func_of_line(funcs, i + 1), i + 1, "MEM-CAPACITY-FIRST",
                  var + " grown before the allocation that is supposed to earn it", lines);
     }
@@ -2334,6 +2414,7 @@ void unchecked_alloc(const std::vector<std::string>& lines, std::string_view rel
                      const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     static Regex re(
         R"((?P<var>[A-Za-z_]\w*(?:\s*(?:->|\.)\s*[A-Za-z_]\w*|\s*\[[^\]]*\])*)\s*=\s*(?:\([^)]*\)\s*)?(?P<fn>malloc|calloc|realloc)\s*\()");
+    const auto macros = null_check_macros(lines);
     for (auto& fn : funcs) {
         auto chunk = chunk_of(lines, fn);
         int start = fn.span.first;
@@ -2348,7 +2429,7 @@ void unchecked_alloc(const std::vector<std::string>& lines, std::string_view rel
             }
             if (stmt.find("M_NOWAIT") != std::string::npos) continue;
             auto hit = unchecked_alloc_site(chunk, i, m->named("var"), m->named("fn"), false,
-                                            static_cast<std::size_t>(m->spans[0].second));
+                                            static_cast<std::size_t>(m->spans[0].second), macros);
             if (!hit) continue;
             auto key = std::pair{hit->first, i};
             if (seen.contains(key)) continue;
@@ -2364,6 +2445,7 @@ void nowait_alloc(const std::vector<std::string>& lines, std::string_view rel,
                   const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     static Regex re(
         R"((?P<var>[A-Za-z_]\w*(?:\s*(?:->|\.)\s*[A-Za-z_]\w*|\s*\[[^\]]*\])*)\s*=\s*(?:\([^)]*\)\s*)?(?P<fn>malloc|realloc)\s*\([^)]*M_NOWAIT)");
+    const auto macros = null_check_macros(lines);
     for (auto& fn : funcs) {
         auto chunk = chunk_of(lines, fn);
         int start = fn.span.first;
@@ -2372,7 +2454,7 @@ void nowait_alloc(const std::vector<std::string>& lines, std::string_view rel,
             auto m = re.search_match(chunk[static_cast<std::size_t>(i)]);
             if (!m) continue;
             auto hit = unchecked_alloc_site(chunk, i, m->named("var"), m->named("fn"), true,
-                                            static_cast<std::size_t>(m->spans[0].second));
+                                            static_cast<std::size_t>(m->spans[0].second), macros);
             if (!hit) continue;
             auto key = std::pair{hit->first, i};
             if (seen.contains(key)) continue;
@@ -2768,6 +2850,71 @@ void missing_return(const std::vector<std::string>& lines, std::string_view rel,
     }
 }
 
+// A nested switch leaves the enclosing case arm only when it has a default
+// and every arm that has statements ends in return / goto / a noreturn call.
+// A `break` anywhere leaves just the inner switch, so the outer arm runs on.
+bool nested_switch_leaves(const std::string& inner);
+
+// `body` with each nested switch statement blanked (newlines kept, so line
+// offsets hold). Its labels no longer split the outer arms. A nested switch
+// that leaves (above) becomes `return`, so the outer arm is terminated.
+std::string mask_nested_switches(const std::string& body) {
+    static Regex sw(R"(\bswitch\s*\([^)]*\))");
+    std::string out = body;
+    std::size_t from = 0;
+    while (from < out.size()) {
+        auto m = sw.search_match(out, from);
+        if (!m) break;
+        auto kw = static_cast<std::size_t>(m->spans[0].first);
+        auto brace = out.find('{', static_cast<std::size_t>(m->spans[0].second));
+        if (brace == std::string::npos) break;
+        int depth = 0;
+        std::size_t end = std::string::npos;
+        for (std::size_t k = brace; k < out.size(); ++k) {
+            if (out[k] == '{') {
+                ++depth;
+            } else if (out[k] == '}' && --depth == 0) {
+                end = k;
+                break;
+            }
+        }
+        if (end == std::string::npos) break;
+        bool leaves = nested_switch_leaves(out.substr(brace + 1, end - brace - 1));
+        // Keep a statement in the arm: `return` when the nested switch
+        // leaves, the keyword itself (not a stop) when it does not.
+        for (std::size_t k = kw + 6; k <= end; ++k)
+            if (out[k] != '\n') out[k] = ' ';
+        if (leaves) out.replace(kw, 6, "return");
+        from = end + 1;
+    }
+    return out;
+}
+
+bool nested_switch_leaves(const std::string& inner) {
+    static Regex label(R"(\b(?:case\b[^:]*:|default\s*:))");
+    static Regex dflt(R"(\bdefault\s*:)");
+    static Regex brk(R"(\bbreak\b)");
+    static Regex leave(
+        R"(^\s*(?:return\b|goto\b|(?:\(\s*void\s*\)\s*)?(?:abort|exit|_exit|__builtin_unreachable|longjmp)\s*\())");
+    auto body = mask_nested_switches(inner);
+    auto labels = label.finditer(body);
+    if (labels.empty() || !dflt.search(body) || brk.search(body)) return false;
+    for (std::size_t idx = 0; idx < labels.size(); ++idx) {
+        auto b = static_cast<std::size_t>(labels[idx].spans[0].second);
+        auto e = idx + 1 < labels.size() ? static_cast<std::size_t>(labels[idx + 1].spans[0].first)
+                                         : body.size();
+        auto arm = body.substr(b, e > b ? e - b : 0);
+        auto last = last_body_stmt(split_lines(arm));
+        bool is_last = idx + 1 == labels.size();
+        if (!last || strip(*last).empty()) {
+            if (is_last) return false;
+            continue;  // stacked labels run into the next arm
+        }
+        if (!leave.search(*last)) return false;
+    }
+    return true;
+}
+
 void fallthrough(const std::vector<std::string>& lines, const std::vector<std::string>& orig_lines,
                  std::string_view rel, const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     static Regex case_label(R"(\b(?:case\b[^:]*:|default\s*:))");
@@ -2778,7 +2925,9 @@ void fallthrough(const std::vector<std::string>& lines, const std::vector<std::s
         int start = fn.span.first;
         std::unordered_set<int> seen;
         // `case '}':` / `case ':':` - a char literal is neither a brace nor a label end.
-        for (auto& [body, line_off] : switch_bodies(blank_char_literals_full(fn.body))) {
+        for (auto& [raw_body, line_off] : switch_bodies(blank_char_literals_full(fn.body))) {
+            // Labels of a nested switch belong to it, not to this switch's arms.
+            auto body = mask_nested_switches(raw_body);
             auto cases = case_label.finditer(body);
             // The last arm runs out of the switch, not into a label.
             for (std::size_t idx = 0; idx + 1 < cases.size(); ++idx) {
@@ -2984,25 +3133,55 @@ void off_by_one(const std::vector<std::string>& lines, std::string_view rel,
     }
 }
 
+// A store of 0 / '\0' into the array `base` on a later line of the body
+// (tinyexpr smoke.c: memcpy(expr + j*4, "sin ", 4) in a loop, then
+// `expr[j*4] = 0;`): the terminator is written, just not by the copy.
+bool later_nul_store(std::string_view base, const std::vector<std::string>& body_lines, std::size_t from) {
+    std::string b;
+    for (char c : base)
+        if (!std::isspace(static_cast<unsigned char>(c))) b += c;
+    std::string be;
+    for (std::size_t k = 0; k < b.size(); ++k) {
+        if (b.compare(k, 2, "->") == 0) {
+            be += "\\s*->\\s*";
+            ++k;
+        } else if (b[k] == '.') {
+            be += "\\s*\\.\\s*";
+        } else {
+            be += re_escape(std::string(1, b[k]));
+        }
+    }
+    std::string zero = R"((?:0|'\\0'|'\\x0+'|\(\s*char\s*\)\s*0)\s*;)";
+    Regex store("(?<![\\w.])(?<!->)" + be + "\\s*\\[[^;]*\\]\\s*=\\s*" + zero + "|\\*\\s*\\(\\s*" + be +
+                "\\b[^;]*\\)\\s*=\\s*" + zero);
+    for (std::size_t k = from; k < body_lines.size(); ++k)
+        if (store.search(body_lines[k])) return true;
+    return false;
+}
+
 void str_missing_nul(const std::vector<std::string>& lines, std::string_view rel,
                      const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
+    static Regex dst_base(R"(^\s*&?\s*\(*\s*([A-Za-z_]\w*(?:\s*(?:->|\.)\s*[A-Za-z_]\w*)*))");
     for (auto& fn : funcs) {
         int start = fn.span.first;
         std::unordered_set<int> seen;
-        int i = 0;
-        for (auto& ln : split_lines(fn.body)) {
+        auto body_lines = split_lines(fn.body);
+        for (int i = 0; i < static_cast<int>(body_lines.size()); ++i) {
+            auto& ln = body_lines[static_cast<std::size_t>(i)];
             auto args = find_call_args(ln, "memcpy");
             if (args && args->size() >= 3) {
                 auto lit_len = string_lit_len((*args)[1]);
                 auto n = lit_len ? parse_int_literal((*args)[2]) : std::nullopt;
                 if (lit_len && n && *n == *lit_len && !seen.contains(i)) {
+                    if (auto bm = dst_base.search_match((*args)[0]);
+                        bm && later_nul_store(bm->group(1), body_lines, static_cast<std::size_t>(i) + 1))
+                        continue;
                     seen.insert(i);
                     lint_add(out, rel, fn.name, start + i, "STR-MISSING-NUL",
                              "memcpy(…, string, " + std::to_string(*n) + ") omits the terminator",
                              lines);
                 }
             }
-            ++i;
         }
     }
 }
@@ -3343,20 +3522,72 @@ void str_null_arg(const std::vector<std::string>& lines, std::string_view rel,
     }
 }
 
+// `size` compared with a *_max bound somewhere in `prior`. The patterns are
+// compiled once per (size, bound) per thread.
 bool copy_len_guarded(std::string_view size, std::string_view prior,
                       const std::unordered_set<std::string>& max_names) {
+    thread_local std::unordered_map<std::string, std::unique_ptr<Regex>> cache;
+    if (cache.size() > 4096) cache.clear();
     auto se = re_escape(size);
     for (auto& m : max_names) {
-        auto me = re_escape(m);
-        if (Regex("\\b" + se + "\\s*(?:<=|>=|>|<)\\s*[\\w\\->.]*" + me + "\\b").search(prior)) return true;
-        if (Regex("\\b[\\w\\->.]*" + me + "\\s*(?:<=|>=|>|<)\\s*" + se + "\\b").search(prior)) return true;
+        std::string key = std::string(size) + "\x1f" + m;
+        auto it = cache.find(key);
+        if (it == cache.end()) {
+            auto me = re_escape(m);
+            std::string pat = "\\b" + se + "\\s*(?:<=|>=|>|<)\\s*[\\w\\->.]*" + me + "\\b|\\b[\\w\\->.]*" +
+                              me + "\\s*(?:<=|>=|>|<)\\s*" + se + "\\b";
+            it = cache.emplace(std::move(key), std::make_unique<Regex>(pat)).first;
+        }
+        if (it->second->search(prior)) return true;
     }
     return false;
 }
 
+// `v` tested below the bound `max` before the copy: `v < X_max`,
+// `v <= X_max`, `X_max > v`, `X_max >= v`, or the zlib 1.2.12.1 fix form
+// `(v = ...) < X_max`.
+bool below_max_tested(std::string_view v, std::string_view max, std::string_view prior) {
+    auto ve = re_escape(v), me = re_escape(max);
+    Regex re("\\b" + ve + "\\s*<=?\\s*[\\w\\->.]*\\b" + me + "\\b|\\b[\\w\\->.]*" + me +
+             "\\s*>=?\\s*" + ve + "\\b|\\(\\s*" + ve + "\\s*=(?!=)[^;]*\\)\\s*<=?\\s*[\\w\\->.]*\\b" +
+             me + "\\b");
+    return re.search(prior);
+}
+
+// The call text from line `i` on until its parentheses balance (a copy whose
+// arguments span lines, as zlib writes them), at most 8 lines.
+std::string call_text(const std::vector<std::string>& body_lines, std::size_t i) {
+    std::string text;
+    int depth = 0;
+    bool opened = false;
+    for (std::size_t j = i; j < body_lines.size() && j < i + 8; ++j) {
+        if (!text.empty()) text += ' ';
+        text += body_lines[j];
+        for (char c : body_lines[j]) {
+            if (c == '(') {
+                ++depth;
+                opened = true;
+            } else if (c == ')') {
+                --depth;
+            }
+        }
+        if (opened && depth <= 0) break;
+    }
+    return text;
+}
+
+// MEM-COPY-LEN, in a function that sees a *_max bound: a memcpy/memmove
+// whose length is an identifier never compared with a *_max bound before
+// the copy, or a copy (also a wrapper named *memcpy / *memmove, zlib's
+// zmemcpy) whose length or destination offset is `X_max - v` with no
+// earlier `v < X_max` test (CVE-2022-37434: `extra_max - len` wraps when
+// len > extra_max). A literal length is a constant, not an unchecked input:
+// it is not reported.
 void mem_copy_len(const std::vector<std::string>& lines, std::string_view rel,
                   const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     static Regex max_field(R"(\b(\w+_max)\b)");
+    static Regex copy_call(R"(\b(\w*(?:memcpy|memmove))\s*\()");
+    static Regex max_minus(R"(\b(\w+_max)\s*-\s*([A-Za-z_]\w*)\b(?!\s*(?:->|\.|\[|\()))");
     std::unordered_set<std::string> file_max;
     for (auto& ln : lines)
         for (auto& m : max_field.finditer(ln)) file_max.insert(m.group(1));
@@ -3367,65 +3598,110 @@ void mem_copy_len(const std::vector<std::string>& lines, std::string_view rel,
         auto body_lines = split_lines(fn.body);
         int start = fn.span.first;
         std::set<std::pair<int, std::string>> seen;
-        for (int i = 0; i < static_cast<int>(body_lines.size()); ++i) {
-            std::string prior;
-            for (int j = 0; j < i; ++j) {
-                if (!prior.empty()) prior += "\n";
-                prior += body_lines[static_cast<std::size_t>(j)];
-            }
-            for (auto callee : {"memcpy", "memmove"}) {
-                auto args = find_call_args(body_lines[static_cast<std::size_t>(i)], callee);
-                if (!args || args->size() < 3) continue;
-                auto size = strip((*args)[2]);
-                if (!is_ident(size)) continue;
-                if (copy_len_guarded(size, prior, max_names)) continue;
-                int line = start + i;
-                auto key = std::pair{line, size};
-                if (seen.contains(key)) continue;
-                seen.insert(key);
-                lint_add(out, rel, fn.name, line, "MEM-COPY-LEN",
-                         std::string(callee) + "() length " + size +
-                             " not checked against a *_max bound in this function",
-                         lines);
-            }
-        }
-    }
-}
-
-void ptr_chain_null(const std::vector<std::string>& lines, std::string_view rel,
-                    const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
-    static Regex chain(R"(\b(\w+)->(\w+)->)");
-    for (auto& fn : funcs) {
-        auto body_lines = split_lines(fn.body);
-        int start = fn.span.first;
-        std::set<std::tuple<int, std::string, std::string>> seen;
+        std::size_t line_off = 0;
         for (int i = 0; i < static_cast<int>(body_lines.size()); ++i) {
             auto& ln = body_lines[static_cast<std::size_t>(i)];
-            std::string prior;
-            for (int j = 0; j < i; ++j) {
-                if (!prior.empty()) prior += "\n";
-                prior += body_lines[static_cast<std::size_t>(j)];
-            }
-            for (auto& match : chain.finditer(ln)) {
-                auto param = match.group(1);
-                auto member = match.group(2);
-                int line = start + i;
-                auto key = std::tuple{line, param, member};
+            auto here = line_off;
+            line_off += ln.size() + 1;
+            auto calls = copy_call.finditer(ln);
+            if (calls.empty()) continue;
+            std::string_view prior(fn.body.data(), std::min(here, fn.body.size()));
+            int line = start + i;
+            std::string text;
+            for (auto& c : calls) {
+                auto callee = c.group(1);
+                auto key = std::pair{line, callee};
                 if (seen.contains(key)) continue;
-                std::string before = prior;
-                if (!before.empty()) before += "\n";
-                before += ln.substr(0, match.spans[0].first);
-                if (member_null_tested(param, member, before)) continue;
+                auto args = find_call_args(ln, callee);
+                if (!args) {
+                    if (text.empty()) text = call_text(body_lines, static_cast<std::size_t>(i));
+                    args = find_call_args(text, callee);
+                }
+                if (!args || args->size() < 3) continue;
+                auto size = strip((*args)[2]);
+                std::optional<std::string> msg;
+                // The bare-length rule stays on memcpy/memmove: a wrapper
+                // (zlib's zmemcpy of window sizes) is not the CVE shape.
+                bool plain = callee == "memcpy" || callee == "memmove";
+                if (is_ident(size)) {
+                    if (plain && !copy_len_guarded(size, prior, max_names))
+                        msg = callee + "() length " + size +
+                              " not checked against a *_max bound in this function";
+                } else {
+                    for (std::size_t a : {std::size_t{2}, std::size_t{0}}) {
+                        auto mm = max_minus.search_match((*args)[a]);
+                        if (!mm) continue;
+                        auto mx = mm->group(1), v = mm->group(2);
+                        if (below_max_tested(v, mx, prior)) continue;
+                        msg = callee + "() " + (a == 2 ? "length" : "destination") + " uses " + mx +
+                              " - " + v + " with no " + v + " < " + mx + " test before it (it can wrap)";
+                        break;
+                    }
+                }
+                if (!msg) continue;
                 seen.insert(key);
-                lint_add(out, rel, fn.name, line, "PTR-CHAIN-NULL",
-                         "chained dereference " + param + "->" + member + "->... without a null check on " +
-                             param + "->" + member,
-                         lines);
+                lint_add(out, rel, fn.name, line, "MEM-COPY-LEN", *msg, lines);
             }
         }
     }
 }
 
+// PTR-CHAIN-NULL: p->m->... where p->m is not null-tested earlier in the
+// function. One row per (p, m) per function, at the first unguarded use:
+// every later use of the same access is the same missing test. Linear in
+// the body: one scan for chains, one test search per distinct access.
+void ptr_chain_null(const std::vector<std::string>& lines, std::string_view rel,
+                    const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
+    static Regex chain(R"(\b(\w+)\s*->\s*(\w+)\s*->)");
+    for (auto& fn : funcs) {
+        const std::string& body = fn.body;
+        int start = fn.span.first;
+        std::map<std::pair<std::string, std::string>, std::size_t> test_at;
+        std::set<std::pair<std::string, std::string>> done;
+        std::size_t nl_pos = 0;
+        int nl_count = 0;
+        for (auto& match : chain.finditer(body)) {
+            auto key = std::pair{match.group(1), match.group(2)};
+            if (done.contains(key)) continue;
+            done.insert(key);
+            auto pos = static_cast<std::size_t>(std::max(0, match.spans[0].first));
+            auto it = test_at.find(key);
+            if (it == test_at.end())
+                it = test_at.emplace(key, member_test_pos(key.first, key.second, body)).first;
+            if (it->second < pos) continue;
+            for (; nl_pos < pos; ++nl_pos)
+                if (body[nl_pos] == '\n') ++nl_count;
+            lint_add(out, rel, fn.name, start + nl_count, "PTR-CHAIN-NULL",
+                     "chained dereference " + key.first + "->" + key.second +
+                         "->... without a null check on " + key.first + "->" + key.second,
+                     lines);
+        }
+    }
+}
+
+// Every call of `callee` on the line, with its offset and arguments.
+std::vector<std::pair<std::size_t, std::vector<std::string>>> calls_on_line(std::string_view ln,
+                                                                            std::string_view callee) {
+    std::vector<std::pair<std::size_t, std::vector<std::string>>> res;
+    std::size_t from = 0;
+    while (true) {
+        auto p = ln.find(callee, from);
+        if (p == std::string_view::npos) break;
+        from = p + 1;
+        if (p > 0 && (std::isalnum(static_cast<unsigned char>(ln[p - 1])) || ln[p - 1] == '_'))
+            continue;
+        auto q = p + callee.size();
+        if (q < ln.size() && (std::isalnum(static_cast<unsigned char>(ln[q])) || ln[q] == '_'))
+            continue;
+        if (auto args = find_call_args(ln.substr(p), callee)) res.emplace_back(p, std::move(*args));
+    }
+    return res;
+}
+
+// STR-NULL-MEMBER: a string function gets param->m that was not null-tested
+// before the call. A test after the use does not protect it (cJSON 1.7.16
+// cJSON_SetValuestring: strlen(object->valuestring) first, the != NULL test
+// ten lines later).
 void str_null_member(const std::vector<std::string>& lines, std::string_view rel,
                      const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     for (auto& fn : funcs) {
@@ -3436,26 +3712,29 @@ void str_null_member(const std::vector<std::string>& lines, std::string_view rel
         int start = fn.span.first;
         bool reported = false;
         int i = 0;
+        std::size_t line_off = 0;
         for (auto& ln : split_lines(fn.body)) {
             if (reported) break;
             for (auto& [callee, arg_idxs] : kStrNullFn) {
-                auto args = find_call_args(ln, callee);
-                if (!args) continue;
-                for (int idx : arg_idxs) {
-                    if (idx >= static_cast<int>(args->size())) continue;
-                    auto parsed = parse_member_arg((*args)[static_cast<std::size_t>(idx)]);
-                    if (!parsed || !params.contains(parsed->first) ||
-                        member_null_tested(parsed->first, parsed->second, fn.body))
-                        continue;
-                    lint_add(out, rel, fn.name, start + i, "STR-NULL-MEMBER",
-                             callee + "() called with unchecked member " + parsed->first + "->" +
-                                 parsed->second,
-                             lines);
-                    reported = true;
-                    break;
+                for (auto& [pos, args] : calls_on_line(ln, callee)) {
+                    for (int idx : arg_idxs) {
+                        if (idx >= static_cast<int>(args.size())) continue;
+                        auto parsed = parse_member_arg(args[static_cast<std::size_t>(idx)]);
+                        if (!parsed || !params.contains(parsed->first)) continue;
+                        if (member_test_pos(parsed->first, parsed->second, fn.body) < line_off + pos)
+                            continue;
+                        lint_add(out, rel, fn.name, start + i, "STR-NULL-MEMBER",
+                                 callee + "() called with unchecked member " + parsed->first + "->" +
+                                     parsed->second,
+                                 lines);
+                        reported = true;
+                        break;
+                    }
+                    if (reported) break;
                 }
                 if (reported) break;
             }
+            line_off += ln.size() + 1;
             ++i;
         }
     }
@@ -4395,9 +4674,10 @@ void checkers_core(const std::vector<std::string>& lines, std::string_view rel,
         wcs_unbounded(lines, rel, funcs, out);
         int_clz_zero(lines, rel, funcs, out);
         mem_bcopy(lines, rel, funcs, out);
+        // C only: std::string/std::format code takes neither lint's shape.
+        str_strncpy_nul(lines, rel, funcs, out);
+        str_snprintf(lines, rel, funcs, out);
     }
-    str_strncpy_nul(lines, rel, funcs, out);
-    str_snprintf(lines, rel, funcs, out);
     int_atoi(lines, rel, funcs, out);
     enum_hole(lines, rel, funcs, out);
     fd_leak(lines, rel, funcs, out);
