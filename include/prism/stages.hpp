@@ -87,8 +87,24 @@ std::vector<Finding> run_diff(const std::vector<FunctionInfo>& functions,
                               const std::filesystem::path& root);
 std::vector<Finding> run_rapid(const std::vector<FunctionInfo>& functions, int trials = 64);
 std::vector<Finding> run_muttest(const std::vector<FunctionInfo>& functions, int trials = 32);
+// cfg only locates a strix binary (tools[], pinned build, PATH) to record it;
+// strix output is never a verdict.
 std::vector<Finding> run_ltl(const std::vector<FunctionInfo>& functions,
-                             const std::vector<std::filesystem::path>& specs);
+                             const std::vector<std::filesystem::path>& specs,
+                             const Config& cfg = Config{});
+
+// The finite machine of a `switch (state)` body (ltl stage).
+struct LtlFsm {
+    std::vector<std::string> states, cases, assigns;
+    std::vector<std::pair<std::string, std::string>> transitions;
+};
+// nullopt unless the body has a `switch (state)` / `switch (p->state)` /
+// `switch (obj.state)` with at least one case and two states.
+std::optional<LtlFsm> extract_ltl_fsm(const std::string& body);
+// G p, G (p -> X q), G (req -> F_k ack) and the GF / FG / U / F safety
+// approximations on one machine; nullopt when the formula is outside that
+// fragment or a predicate cannot be evaluated.
+std::optional<Finding> check_ltl_safety(const std::string& formula, const LtlFsm& fsm);
 std::vector<Finding> hypothesize(const std::vector<FunctionInfo>& functions, int budget,
                                  const Config& cfg);
 std::vector<Finding> execute_cex(const std::vector<Finding>& fails,

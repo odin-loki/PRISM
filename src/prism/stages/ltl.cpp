@@ -118,60 +118,165 @@ bool eval_pred(std::string pred, const std::string& state) {
     throw PredFail(pred);
 }
 
-struct Fsm {
-    std::vector<std::string> states, cases, assigns;
-    std::vector<std::pair<std::string, std::string>> transitions;
+// A finite machine from `switch (state)` / `switch (p->state)` /
+// `switch (obj.state)` bodies only. Other switches (`switch (ev)`) are not
+// the plant even when the function assigns `state`: extracting them would
+// check the formula against a machine the code does not have.
+const Regex& switch_state_re() {
+    static Regex re("\\bswitch\\s*\\(\\s*(?:[A-Za-z_]\\w*\\s*(?:->|\\.)\\s*)*state\\s*\\)");
+    return re;
+}
+
+// `state = DEST` / `state = (DEST)`; not `state ==` / `state !=` / `state +=`.
+const Regex& state_asg_re() {
+    static Regex re("\\bstate\\s*(?<![<>=!])=(?!=)\\s*\\(?\\s*([A-Za-z_]\\w*|\\d+)\\s*\\)?");
+    return re;
+}
+
+std::vector<std::string> switch_state_bodies(const std::string& body) {
+    std::vector<std::string> out;
+    for (auto& m : switch_state_re().finditer(body)) {
+        if (m.spans.empty() || m.spans[0].second < 0) continue;
+        auto after = static_cast<std::size_t>(m.spans[0].second);
+        auto brace_at = body.find('{', after);
+        if (brace_at == std::string::npos) continue;
+        if (body.substr(after, brace_at - after).find(';') != std::string::npos) continue;
+        int depth = 0;
+        std::optional<std::size_t> end;
+        for (std::size_t k = brace_at; k < body.size(); ++k) {
+            if (body[k] == '{') ++depth;
+            else if (body[k] == '}') {
+                --depth;
+                if (depth == 0) {
+                    end = k;
+                    break;
+                }
+            }
+        }
+        if (!end) continue;
+        out.push_back(body.substr(brace_at + 1, *end - brace_at - 1));
+    }
+    return out;
+}
+
+// One arm: its labels (nullopt = `default:`) and the text up to the next label.
+struct SwitchArm {
+    std::vector<std::optional<std::string>> labels;
+    std::string content;
 };
 
-std::optional<Fsm> extract_fsm(const std::string& body) {
-    if (body.find("switch") == std::string::npos || body.find("state") == std::string::npos) return std::nullopt;
-    static Regex case_re("case\\s+([A-Za-z_]\\w*|\\d+)\\s*:");
-    static Regex asg_re("\\bstate\\s*=\\s*([A-Za-z_]\\w*|\\d+)");
-    std::vector<std::string> cases;
-    for (auto& m : case_re.finditer(body)) cases.push_back(m.group(1));
-    std::vector<std::string> assigns;
-    for (auto& m : asg_re.finditer(body)) assigns.push_back(m.group(1));
-    if (cases.size() < 2) return std::nullopt;
-    std::vector<std::pair<std::string, std::string>> trans;
-    static Regex split_re("\\bcase\\s+([A-Za-z_]\\w*|\\d+)\\s*:");
-    std::vector<std::pair<std::string, std::string>> chunks;
-    std::size_t last = 0;
-    std::string last_lab;
-    bool have = false;
-    for (auto& m : split_re.finditer(body)) {
-        if (have) chunks.push_back({last_lab, body.substr(last, static_cast<std::size_t>(m.spans[0].first) - last)});
-        last_lab = m.group(1);
-        last = static_cast<std::size_t>(m.spans[0].second);
-        have = true;
-    }
-    if (have) chunks.push_back({last_lab, body.substr(last)});
-    for (auto& [lab, content0] : chunks) {
-        auto content = content0;
-        auto def = content.find("default");
-        static Regex defre("\\bdefault\\s*:");
-        if (auto dm = defre.search_match(content))
-            content = content.substr(0, static_cast<std::size_t>(dm->spans[0].first));
-        std::vector<std::string> dests;
-        for (auto& m : asg_re.finditer(content)) dests.push_back(m.group(1));
-        if (dests.empty()) trans.emplace_back(lab, lab);
-        else {
-            for (auto& d : dests) trans.emplace_back(lab, d);
-            if (re_search("\\bif\\b", content) && !re_search("\\belse\\b", content)) trans.emplace_back(lab, lab);
+const Regex& arm_stop_re() {
+    static Regex re("\\b(?:break|return|goto|continue)\\b");
+    return re;
+}
+
+std::vector<SwitchArm> parse_switch_arms(const std::string& sw) {
+    static Regex lab_re("\\b(?:case\\s+([A-Za-z_]\\w*|\\d+)|default)\\s*:");
+    auto marks = lab_re.finditer(sw);
+    std::vector<SwitchArm> arms;
+    for (std::size_t i = 0; i < marks.size(); ++i) {
+        auto& m = marks[i];
+        // The case alternative always captures at least one character.
+        auto g = m.group(1);
+        std::optional<std::string> lab = g.empty() ? std::nullopt : std::optional<std::string>(g);
+        auto start = static_cast<std::size_t>(m.spans[0].second);
+        auto stop = i + 1 < marks.size() ? static_cast<std::size_t>(marks[i + 1].spans[0].first) : sw.size();
+        auto content = sw.substr(start, stop - start);
+        if (!arms.empty() && strip(arms.back().content).empty() && !arm_stop_re().search(arms.back().content)) {
+            // `case A: case B:` - the extra label joins the open arm.
+            arms.back().labels.push_back(lab);
+            arms.back().content += content;
+        } else {
+            arms.push_back({{lab}, content});
         }
     }
+    return arms;
+}
+
+struct ArmDests {
+    std::vector<std::string> dests;
+    bool stops = false;
+    bool stay = false;
+};
+
+ArmDests arm_dests(const std::string& content) {
+    ArmDests a;
+    for (auto& m : state_asg_re().finditer(content)) a.dests.push_back(m.group(1));
+    a.stops = static_cast<bool>(arm_stop_re().search(content));
+    a.stay = re_search("\\bif\\b", content) && !re_search("\\belse\\b", content);
+    return a;
+}
+
+// Destinations of arm i, following fall-through until break/return/goto/continue.
+std::pair<std::vector<std::string>, bool> resolved_dests(const std::vector<SwitchArm>& arms, std::size_t i) {
+    auto a = arm_dests(arms[i].content);
+    auto dests = a.dests;
+    bool stay = a.stay;
+    bool stops = a.stops;
+    std::size_t j = i;
+    while (!stops && j + 1 < arms.size()) {
+        ++j;
+        auto b = arm_dests(arms[j].content);
+        for (auto& d : b.dests)
+            if (std::find(dests.begin(), dests.end(), d) == dests.end()) dests.push_back(d);
+        stay = stay || b.stay;
+        stops = b.stops;
+    }
+    return {dests, stay};
+}
+
+}  // namespace
+
+std::optional<LtlFsm> extract_ltl_fsm(const std::string& body) {
+    auto switches = switch_state_bodies(body);
+    if (switches.empty()) return std::nullopt;
+    std::vector<std::string> cases, assigns;
+    std::vector<std::pair<std::string, std::string>> trans;
+    std::optional<std::vector<std::string>> default_dests;
+    for (auto& sw : switches) {
+        auto arms = parse_switch_arms(sw);
+        for (auto& m : state_asg_re().finditer(sw)) assigns.push_back(m.group(1));
+        for (std::size_t i = 0; i < arms.size(); ++i) {
+            auto [dests, stay] = resolved_dests(arms, i);
+            for (auto& lab : arms[i].labels) {
+                if (!lab) {
+                    default_dests = dests;
+                    continue;
+                }
+                cases.push_back(*lab);
+                if (!dests.empty()) {
+                    for (auto& d : dests) trans.emplace_back(*lab, d);
+                    if (stay) trans.emplace_back(*lab, *lab);
+                } else {
+                    trans.emplace_back(*lab, *lab);
+                }
+            }
+        }
+    }
+    if (cases.empty()) return std::nullopt;
     std::set<std::string> stset(cases.begin(), cases.end());
-    for (auto& a : assigns) stset.insert(a);
+    stset.insert(assigns.begin(), assigns.end());
     for (auto& [a, b] : trans) {
         stset.insert(a);
         stset.insert(b);
     }
+    if (stset.size() < 2) return std::nullopt;
     std::set<std::string> has_out;
     for (auto& [s, _] : trans) has_out.insert(s);
     std::vector<std::string> states(stset.begin(), stset.end());
-    for (auto& s : states)
-        if (!has_out.contains(s)) trans.emplace_back(s, s);
-    return Fsm{states, cases, assigns, trans};
+    for (auto& s : states) {
+        if (has_out.contains(s)) continue;
+        if (default_dests && !default_dests->empty()) {
+            for (auto& d : *default_dests) trans.emplace_back(s, d);
+        } else {
+            // An unmatched enumerator (or `default: break;`) keeps the state.
+            trans.emplace_back(s, s);
+        }
+    }
+    return LtlFsm{states, cases, assigns, trans};
 }
+
+namespace {
 
 enum class LtlKind {
     Invariant, Next, BoundedF, Nonsafety, GfApprox, FgApprox, UntilApprox, FApprox
@@ -325,7 +430,7 @@ Finding ltl_finding(std::string_view status, const std::string& formula, const s
     return f;
 }
 
-Finding check_g(const std::string& pred, const Fsm& fsm, const std::string& formula) {
+Finding check_g(const std::string& pred, const LtlFsm& fsm, const std::string& formula) {
     std::vector<std::string> bad;
     for (auto& s : fsm.states)
         if (!eval_pred(pred, s)) bad.push_back(s);
@@ -348,13 +453,14 @@ Finding check_g(const std::string& pred, const Fsm& fsm, const std::string& form
             }
             std::string msg = errst ? "formula " + formula + " violated: FSM assigns an error state"
                                     : "formula " + formula + " violated on states " + join_sv(live_bad, ", ");
-            return ltl_finding(laws::FAILED, formula, msg, {});
+            nlohmann::json shape{{"states", fsm.states}, {"cases", fsm.cases}, {"assigns", fsm.assigns}};
+            return ltl_finding(laws::FAILED, formula, msg, {{"fsm", shape.dump()}});
         }
     }
     return ltl_finding(laws::PROVED, formula, "safety " + formula + " holds on extracted FSM", {});
 }
 
-std::optional<Finding> synthesize_missing(const Fsm& fsm, const std::string& formula) {
+std::optional<Finding> synthesize_missing(const LtlFsm& fsm, const std::string& formula) {
     auto cl = classify_ltl(formula);
     if (cl.kind != LtlKind::Next) return std::nullopt;
     try {
@@ -395,7 +501,7 @@ std::optional<Finding> synthesize_missing(const Fsm& fsm, const std::string& for
     }
 }
 
-Finding check_next(const std::string& p, const std::string& q, const Fsm& fsm, const std::string& formula) {
+Finding check_next(const std::string& p, const std::string& q, const LtlFsm& fsm, const std::string& formula) {
     std::vector<std::pair<std::string, std::string>> viol;
     for (auto& [s, sp] : fsm.transitions)
         if (eval_pred(p, s) && !eval_pred(q, sp)) viol.emplace_back(s, sp);
@@ -447,7 +553,7 @@ bool avoids_ack(const std::string& start, const std::string& ack,
     return false;
 }
 
-Finding check_bounded_f(const std::string& req, const std::string& ack, int k, const Fsm& fsm,
+Finding check_bounded_f(const std::string& req, const std::string& ack, int k, const LtlFsm& fsm,
                         const std::string& formula) {
     std::map<std::string, std::vector<std::string>> succ;
     for (auto& [s, sp] : fsm.transitions) succ[s].push_back(sp);
@@ -468,7 +574,7 @@ Finding check_bounded_f(const std::string& req, const std::string& ack, int k, c
                        {{"k", std::to_string(k)}});
 }
 
-std::map<std::string, std::vector<std::string>> ltl_succ_map(const Fsm& fsm) {
+std::map<std::string, std::vector<std::string>> ltl_succ_map(const LtlFsm& fsm) {
     std::map<std::string, std::vector<std::string>> succ;
     for (auto& [s, sp] : fsm.transitions) succ[s].push_back(sp);
     for (auto& s : fsm.states)
@@ -540,7 +646,7 @@ Finding approx_finding(Finding f, const std::string& original, const std::string
     return f;
 }
 
-Finding check_fg_approx(const std::string& pred, int k, const Fsm& fsm, const std::string& formula) {
+Finding check_fg_approx(const std::string& pred, int k, const LtlFsm& fsm, const std::string& formula) {
     auto succ = ltl_succ_map(fsm);
     std::set<std::string> good;
     for (auto& s : fsm.states)
@@ -599,7 +705,7 @@ std::string until_from(const std::string& start, const std::string& p, const std
     return saw_bound ? "bound" : "ok";
 }
 
-Finding check_until_approx(const std::string& p, const std::string& q, int k, const Fsm& fsm,
+Finding check_until_approx(const std::string& p, const std::string& q, int k, const LtlFsm& fsm,
                            const std::string& formula) {
     auto succ = ltl_succ_map(fsm);
     std::vector<std::string> real, bound;
@@ -633,7 +739,7 @@ Finding check_until_approx(const std::string& p, const std::string& q, int k, co
                        extra);
 }
 
-std::optional<Finding> check_safety(const std::string& formula, const Fsm& fsm) {
+std::optional<Finding> check_safety(const std::string& formula, const LtlFsm& fsm) {
     auto cl = classify_ltl(formula);
     try {
         if (cl.kind == LtlKind::Invariant) return check_g(cl.a, fsm, formula);
@@ -672,7 +778,12 @@ std::vector<std::string> parse_ltl_file(const fs::path& path) {
 
 }  // namespace
 
-std::vector<Finding> run_ltl(const std::vector<FunctionInfo>& functions, const std::vector<fs::path>& specs) {
+std::optional<Finding> check_ltl_safety(const std::string& formula, const LtlFsm& fsm) {
+    return check_safety(formula, fsm);
+}
+
+std::vector<Finding> run_ltl(const std::vector<FunctionInfo>& functions, const std::vector<fs::path>& specs,
+                             const Config& cfg) {
     std::vector<std::string> formulas;
     for (auto& p : specs)
         for (auto& f : parse_ltl_file(p)) formulas.push_back(f);
@@ -686,11 +797,12 @@ std::vector<Finding> run_ltl(const std::vector<FunctionInfo>& functions, const s
         f.extra["install"] = "add a file with G (...)";
         return {f};
     }
-    std::vector<std::pair<FunctionInfo, Fsm>> fsms;
+    std::vector<std::pair<FunctionInfo, LtlFsm>> fsms;
     for (auto& fn : functions)
-        if (auto fsm = extract_fsm(fn.body)) fsms.emplace_back(fn, *fsm);
-    Config cfg;
-    auto strix = cfg.which({"strix"});
+        if (auto fsm = extract_ltl_fsm(fn.body)) fsms.emplace_back(fn, *fsm);
+    // Configured tool path, then the pinned fetch_deps build, then PATH. The
+    // path is only recorded: strix output is never a verdict here.
+    auto strix = cfg.which_adapter("strix", {"strix", "strix.exe"});
     std::vector<Finding> out;
     for (auto& formula : formulas) {
         bool decided = false;

@@ -408,7 +408,7 @@ RunReport run_pipeline(const Config& cfg) {
             }
         }
         std::sort(specs.begin(), specs.end());
-        return run_ltl(functions, specs);
+        return run_ltl(functions, specs, cfg);
     });
     stage("llm", [&] {
         if (!cfg.llm) {
