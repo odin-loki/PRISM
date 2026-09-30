@@ -152,6 +152,7 @@ set(PRISM_SRC
   src/prism/checkers_core.cpp
   src/prism/checkers_cxx.cpp
   src/prism/checkers_dispatch.cpp
+  src/prism/cli_svcomp.cpp
   src/prism/conc/extract.cpp
   src/prism/conc/lazy.cpp
   src/prism/conc/stage.cpp
@@ -205,6 +206,15 @@ set(PRISM_SRC
   src/prism/stages/taint.cpp
   src/prism/stages/thread.cpp
   src/prism/stages/wp.cpp
+  # `prism svcomp` (roadmap 6.3): SV-COMP answers, replay, witness 2.0.
+  src/prism/svcomp/debug_ir.cpp
+  src/prism/svcomp/decide.cpp
+  src/prism/svcomp/invariants.cpp
+  src/prism/svcomp/property.cpp
+  src/prism/svcomp/replay.cpp
+  src/prism/svcomp/util.cpp
+  src/prism/svcomp/waypoints.cpp
+  src/prism/svcomp/witness.cpp
   src/prism/taskdef.cpp
   src/prism/taxonomy.cpp
   src/prism/verdict/verdict.cpp
@@ -487,7 +497,9 @@ if(PRISM_TESTS)
     # Planted-bug lint corpus (every testdata/ plant, table-driven).
     tests/cpp/test_lint_corpus.cpp
     # checkers_cxx.cpp branches and guards (bad / good twins).
-    tests/cpp/test_checkers_cxx.cpp)
+    tests/cpp/test_checkers_cxx.cpp
+    # `prism svcomp`: answer mapping, replay, waypoints, witness 2.0, scorer, archive.
+    tests/cpp/test_svcomp.cpp)
   target_include_directories(prism_tests PRIVATE
     "${PRISM_ROOT}/include"
     "${PRISM_ROOT}/third_party")

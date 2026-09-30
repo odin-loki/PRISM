@@ -3,6 +3,7 @@
 #include "prism/config.hpp"
 #include "prism/pipeline.hpp"
 #include "prism/pir.hpp"
+#include "prism/svcomp.hpp"
 #include "proc.hpp"
 
 #include <algorithm>
@@ -208,6 +209,8 @@ int main(int argc, char** argv) {
         if (sub == "regress") return ai::regress_main(argc - 2, argv + 2);
         if (sub == "ask") return ai::ask_main(argc - 2, argv + 2);
         if (sub == "draft") return ai::draft_main(argc - 2, argv + 2);
+        // Roadmap 6.3: PRISM as an SV-COMP verifier (docs/SVCOMP.md).
+        if (sub == "svcomp") return svcomp::svcomp_main(argc - 2, argv + 2);
         if (sub == "triage") {
             std::filesystem::path rp = "prism-out";
             ai::TriageOptions topt;
@@ -334,7 +337,8 @@ int main(int argc, char** argv) {
                 "  prism regress [--report OUT/report.json] [--write-tests DIR] [--run --allow-exec]\n"
                 "  prism ask \"<question>\" [--report OUT/report.json] [--json] [--no-llm]\n"
                 "  prism draft [--report OUT/report.json] [--kind report|assurance]\n"
-                "  prism triage [OUT] [--threshold T] [--no-embed]\n";
+                "  prism triage [OUT] [--threshold T] [--no-embed]\n"
+                "SV-COMP (docs/SVCOMP.md): prism svcomp --prop P.prp TASK.c | svcomp score | svcomp pack\n";
             return 0;
         } else if (!a.starts_with("-")) {
             path = a;
