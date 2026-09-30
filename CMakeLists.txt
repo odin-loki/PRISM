@@ -481,7 +481,9 @@ if(PRISM_TESTS)
     # Concrete interpreter and fuzzer (src/prism/stages/interp.cpp, fuse.cpp).
     tests/cpp/test_concrete.cpp
     # Interval stage (src/prism/interval.cpp).
-    tests/cpp/test_interval.cpp)
+    tests/cpp/test_interval.cpp
+    # Sanitize stage (src/prism/adapters.cpp run_sanitize).
+    tests/cpp/test_sanitize.cpp)
   target_include_directories(prism_tests PRIVATE
     "${PRISM_ROOT}/include"
     "${PRISM_ROOT}/third_party")
