@@ -80,6 +80,8 @@ PRISM_API Config default_config();
 PRISM_API bool path_within(const std::filesystem::path& p, const std::filesystem::path& root);
 // "python scripts/fetch_deps.py --tool <component> ..." or a system-tool hint.
 PRISM_API std::string adapter_install(std::string_view stage);
+// A leading ~ or ~/ replaced by the home directory (Path.expanduser).
+PRISM_API std::filesystem::path expand_user(const std::filesystem::path& p);
 // $PRISM_TOOLS_DIR or ~/.prism/tools (scripts/fetch_deps.py install root).
 PRISM_API std::filesystem::path tools_home();
 // Commit that third_party/MANIFEST.toml pins for an external component.
