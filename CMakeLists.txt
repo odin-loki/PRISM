@@ -335,6 +335,32 @@ if(UNIX)
   set_target_properties(prism PROPERTIES BUILD_RPATH "$ORIGIN" INSTALL_RPATH "$ORIGIN")
 endif()
 
+# prism-qa: the conformance scorer / release gate and the random-program
+# soundness campaign (docs/CONFORMANCE.md). A QA tool, not part of the release
+# archive: it grades any engine binary (--prism / $PRISM_BIN). The library is
+# shared with prism_tests, which drives the scorer in process.
+if(UNIX)
+  add_library(prism_qa_lib STATIC
+    src/tools/qa/support/yaml_subset.cpp
+    src/tools/qa/support/proctree.cpp
+    src/tools/qa/support/task.cpp
+    src/tools/qa/support/replay.cpp
+    src/tools/qa/support/report.cpp
+    src/tools/qa/support/engine.cpp
+    src/tools/qa/support/fetch.cpp
+    src/tools/qa/support/cli.cpp
+    src/tools/qa/conformance.cpp
+    src/tools/qa/gen_random.cpp
+    src/tools/qa/soundness.cpp)
+  target_include_directories(prism_qa_lib PUBLIC "${PRISM_ROOT}/src/tools/qa")
+  target_link_libraries(prism_qa_lib PUBLIC prism_core)
+  # default suite when prism-qa runs outside the repository
+  target_compile_definitions(prism_qa_lib PRIVATE PRISM_QA_SOURCE_DIR="${PRISM_ROOT}")
+  add_executable(prism-qa src/tools/qa/main.cpp)
+  target_link_libraries(prism-qa PRIVATE prism_qa_lib)
+  set_target_properties(prism-qa PROPERTIES BUILD_RPATH "$ORIGIN" INSTALL_RPATH "$ORIGIN")
+endif()
+
 # C ABI for coverage hash / havoc
 add_library(prism_native SHARED src/prism/capi.cpp src/prism/hash.cpp src/prism/havoc.cpp)
 target_include_directories(prism_native PUBLIC "${PRISM_ROOT}/include")
@@ -490,6 +516,14 @@ if(PRISM_TESTS)
     "${PRISM_ROOT}/include"
     "${PRISM_ROOT}/third_party")
   target_link_libraries(prism_tests PRIVATE prism_core)
+  if(UNIX)
+    # prism-qa conformance / soundness (scorer rules, suite shape, release gate);
+    # fake_prism is the stand-in engine the gate test grades.
+    target_sources(prism_tests PRIVATE tests/cpp/test_qa_conformance.cpp)
+    target_link_libraries(prism_tests PRIVATE prism_qa_lib)
+    add_executable(fake_prism tests/cpp/fake_prism.cpp)
+    add_dependencies(prism_tests fake_prism)
+  endif()
   if(UNIX)
     set_target_properties(prism_tests PROPERTIES BUILD_RPATH "$ORIGIN" INSTALL_RPATH "$ORIGIN")
   endif()
