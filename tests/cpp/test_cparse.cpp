@@ -32,7 +32,7 @@ namespace fs = std::filesystem;
 using Params = std::vector<std::pair<std::string, std::string>>;
 
 fs::path repo_dir(const char* name) {
-    return fs::path(__FILE__).parent_path().parent_path().parent_path() / name;
+    return fs::path(PRISM_SOURCE_DIR) / name;
 }
 
 std::vector<std::string> names_of(const std::vector<prism::FunctionInfo>& fns) {

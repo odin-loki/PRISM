@@ -92,7 +92,7 @@ const pg::Tool& tool_named(const std::string& name, const pg::Check** check = nu
 
 // Canned output: "/r/" is the scan root (testdata here, as the parsers only
 // make names relative to it).
-fs::path testdata() { return fs::path(__FILE__).parent_path().parent_path().parent_path() / "testdata"; }
+fs::path testdata() { return fs::path(PRISM_SOURCE_DIR) / "testdata"; }
 
 std::vector<prism::Finding> parse(const std::string& name, std::string text) {
     const pg::Check* c = nullptr;

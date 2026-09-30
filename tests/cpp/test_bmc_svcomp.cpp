@@ -391,7 +391,7 @@ int p_c_uns(unsigned u) { printf("%c", u); return 0; }
 }
 
 TEST_CASE("bmc goto: into the start of an else branch, and self-loop labels end the path") {
-    auto td = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path() / "testdata" /
+    auto td = std::filesystem::path(PRISM_SOURCE_DIR) / "testdata" /
               "goto_else_stuck.c";
     auto fns = prism::extract_functions(td, "goto_else_stuck.c");
     REQUIRE(fns.size() == 4);

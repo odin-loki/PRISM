@@ -28,7 +28,7 @@ namespace laws = prism::laws;
 namespace sd = prism::stages_detail;
 
 fs::path td_root() {
-    return fs::path(__FILE__).parent_path().parent_path().parent_path() / "testdata";
+    return fs::path(PRISM_SOURCE_DIR) / "testdata";
 }
 
 prism::FunctionInfo tfn(const char* file, const char* name) {

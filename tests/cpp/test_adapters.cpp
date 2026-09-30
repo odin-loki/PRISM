@@ -54,11 +54,7 @@ namespace sd = prism::stages_detail;
 
 namespace {
 
-#ifdef PRISM_SOURCE_DIR
 fs::path repo_root() { return fs::path(PRISM_SOURCE_DIR); }
-#else
-fs::path repo_root() { return fs::absolute(fs::path(__FILE__)).parent_path().parent_path().parent_path(); }
-#endif
 fs::path testdata() { return repo_root() / "testdata"; }
 
 std::string slurp(const fs::path& p) {

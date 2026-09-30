@@ -33,7 +33,7 @@ constexpr int64_t kIntMax = std::numeric_limits<int32_t>::max();
 constexpr int64_t kIntMin = std::numeric_limits<int32_t>::min();
 constexpr int64_t kI64Max = std::numeric_limits<int64_t>::max();
 
-fs::path repo() { return fs::path(__FILE__).parent_path().parent_path().parent_path(); }
+fs::path repo() { return fs::path(PRISM_SOURCE_DIR); }
 
 fs::path td() { return repo() / "testdata"; }
 

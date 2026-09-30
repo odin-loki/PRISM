@@ -21,7 +21,7 @@ namespace fs = std::filesystem;
 using prism::Finding;
 using prism::FunctionInfo;
 
-fs::path repo() { return fs::path(__FILE__).parent_path().parent_path().parent_path(); }
+fs::path repo() { return fs::path(PRISM_SOURCE_DIR); }
 
 FunctionInfo in_file(const fs::path& p, const std::string& name) {
     for (auto& f : prism::extract_functions(p, p.filename().string()))

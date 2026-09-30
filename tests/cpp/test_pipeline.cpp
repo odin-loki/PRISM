@@ -28,7 +28,7 @@ namespace fs = std::filesystem;
 
 namespace {
 
-fs::path testdata() { return fs::path(__FILE__).parent_path().parent_path().parent_path() / "testdata"; }
+fs::path testdata() { return fs::path(PRISM_SOURCE_DIR) / "testdata"; }
 
 struct Work {
     fs::path dir;
