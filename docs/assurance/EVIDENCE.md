@@ -201,7 +201,7 @@ each project's `lean-toolchain`): `proofs/check.sh` passed all four steps
 
 - Artefacts: `tests/test_sarif.py::TestEngineParity`, `tools/pir_vs_bmc.py`,
   `docs/PIR.md#differential-oracle-vs-the-old-encoder-roadmap-28`,
-  `tests/test_stage_order.py`.
+  `tests/cpp/test_cli.cpp` (every `STAGE_ORDER` stage runs, in order).
 - Shows: the C++ engine and the frozen Python engine (roadmap D8) agree on
   report shape and verdicts on shared inputs; the `pir` stage is compared
   with the older `bmc` encoder and every hard conflict was investigated.

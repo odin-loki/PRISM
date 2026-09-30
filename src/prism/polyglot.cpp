@@ -1,6 +1,5 @@
 // Polyglot stage: every language in the tree, not just C/C++.
-// Port of the Python engine prism/polyglot.py — same tables, same statuses.
-// tests/test_polyglot.py locks the two tables together.
+// Tables and parsers: prism/polyglot.hpp; tests/cpp/test_polyglot.cpp pins them.
 //
 //   diagnostic            -> FAILED   (strength FINDS; extra.severity/rule/tool)
 //   tool ran, silent      -> UNKNOWN  ("no diagnostics (not a proof)")
@@ -11,20 +10,28 @@
 //   tool missing          -> NOTRUN   (extra.install)
 //   tool executes code    -> NOTRUN   without --allow-exec (Law 9; PgTool::executes)
 //
+// JSON and TOML syntax are checked in process (Tool::native); Python syntax
+// by the scanned project's own python3 (compile() only), NOTRUN without it.
+//
 // Built-in scans read every text file in scope (id_rsa, key.pem, .npmrc,
 // Dockerfile, ...); language tools go by extension.
 
 #include "prism/stages.hpp"
 #include "prism/laws.hpp"
+#include "prism/polyglot.hpp"
+#include "prism/threads.hpp"
 #include "prism/regex.hpp"
 #include "prism/sandbox.hpp"
 #include "prism/scope.hpp"
 #include "proc.hpp"
 
+#include <nlohmann/json.hpp>
+
 #include <algorithm>
 #include <cctype>
-#include <chrono>
+#include <cstdlib>
 #include <fstream>
+#include <iterator>
 #include <future>
 #include <map>
 #include <set>
@@ -65,9 +72,6 @@ const std::set<std::string> kTextOnlyExts = {".env", ".ini", ".cfg", ".conf", ".
 
 // Skipped directories: one list for every stage (prism/scope.hpp).
 
-constexpr std::uintmax_t MAX_FILE_BYTES = 2'000'000;
-constexpr std::size_t SNIFF_BYTES = 8192;
-constexpr std::size_t MAX_FILES_PER_TOOL = 2000;
 constexpr std::size_t BATCH = 200;
 #ifdef _WIN32
 const char* const DEVNULL = "nul";
@@ -75,83 +79,57 @@ const char* const DEVNULL = "nul";
 const char* const DEVNULL = "/dev/null";
 #endif
 
-// Byte-for-byte the Python engine SYNTAX_HELPER.
-const char* const SYNTAX_HELPER = R"PRISMPY(
-import json, re, sys
-try:
-    import tomllib
-except ImportError:
-    tomllib = None
-for path in sys.argv[1:]:
-    try:
-        with open(path, "rb") as fh:
-            data = fh.read()
-    except OSError as ex:
-        print("PRISM-SYNTAX\t%s\t0\t0\tunreadable: %s" % (path, ex))
-        continue
-    low = path.lower()
-    try:
-        if low.endswith((".py", ".pyi")):
-            compile(data, path, "exec", dont_inherit=True)
-        elif low.endswith(".json"):
-            json.loads(data.decode("utf-8-sig"))
-        elif low.endswith(".toml"):
-            if tomllib is None:
-                print("PRISM-NOTOML\t%s" % path)
-                continue
-            tomllib.loads(data.decode("utf-8"))
-    except SyntaxError as ex:
-        msg = "%s: %s" % (type(ex).__name__, ex.msg)
-        print("PRISM-SYNTAX\t%s\t%d\t%d\t%s" % (path, ex.lineno or 0, ex.offset or 0, msg))
-    except json.JSONDecodeError as ex:
-        print("PRISM-SYNTAX\t%s\t%d\t%d\tJSON: %s" % (path, ex.lineno, ex.colno, ex.msg))
-    except ValueError as ex:
-        m = re.search(r"line (\d+), column (\d+)", str(ex))
-        ln, col = (int(m.group(1)), int(m.group(2))) if m else (0, 0)
-        print("PRISM-SYNTAX\t%s\t%d\t%d\t%s: %s" % (path, ln, col, type(ex).__name__, ex))
-    else:
-        print("PRISM-OK\t%s" % path)
-)PRISMPY";
+// python-syntax: compile() every file, never run it. -I: isolated mode, so
+// neither the environment nor the working directory (maybe the scanned
+// tree) is on sys.path. Output is one PRISM-SYNTAX or PRISM-OK line per file.
+const char* const PY_COMPILE =
+    "import sys\n"
+    "for p in sys.argv[1:]:\n"
+    "    try:\n"
+    "        with open(p, 'rb') as fh:\n"
+    "            compile(fh.read(), p, 'exec', dont_inherit=True)\n"
+    "    except SyntaxError as ex:\n"
+    "        print('PRISM-SYNTAX\\t%s\\t%d\\t%d\\t%s: %s' % (p, ex.lineno or 0, ex.offset or 0,"
+    " type(ex).__name__, ex.msg))\n"
+    "    except (OSError, ValueError) as ex:\n"
+    "        print('PRISM-SYNTAX\\t%s\\t0\\t0\\t%s: %s' % (p, type(ex).__name__, ex))\n"
+    "    else:\n"
+    "        print('PRISM-OK\\t%s' % p)\n";
 
-struct PgTool {
-    std::string name;
-    std::vector<std::string> exes;
-    std::vector<std::string> argv;  // {exe} {helper} {files} {file}
-    std::string pattern;
-    bool per_file = false;
-    std::vector<int> ok_rcs{0, 1};
-    double timeout = 120.0;
-    std::string cwd_marker{};
-    std::string unconfigured{};
-    // Runs code from the scanned tree while "checking" it (perl -c BEGIN
-    // blocks, cargo build.rs / proc macros, eslint.config.js). Law 9:
-    // NOTRUN without --allow-exec. prism/polyglot.py Tool.executes.
-    bool executes = false;
-    // Output lines (full match, stripped) meaning "ran fine, nothing to
-    // report". Other output with no parsed diagnostic is ERROR "output not
-    // understood", never a quiet UNKNOWN. prism/polyglot.py Tool.benign.
-    std::vector<std::string> benign{};
-};
-
-struct PgCheck {
-    std::string group;
-    std::vector<std::string> languages;
-    std::string kind;  // syntax | lint | type
-    std::vector<PgTool> tools;
-    std::string install;
-};
+using PgTool = polyglot::Tool;
+using PgCheck = polyglot::Check;
+using polyglot::BuiltinScan;
+using polyglot::ALLOW_MARKER;
+using polyglot::MAX_FILE_BYTES;
+using polyglot::MAX_FILES_PER_TOOL;
+using polyglot::SNIFF_BYTES;
 
 const char* const GCC_PATTERN =
     R"(^(?P<file>[^\s:][^:]*?):(?P<line>\d+):(?:(?P<col>\d+):)?\s*(?:(?P<sev>error|warning|note|info|style|fatal)\s*:\s*)?(?P<msg>.+)$)";
 
-const std::vector<PgCheck>& checks() {
-    static const std::vector<PgCheck> C = {
-        {"python-syntax", {"python", "json", "toml"}, "syntax",
-         {{"prism-syntax", {"python3", "python"}, {"{exe}", "{helper}", "{files}"},
+}  // namespace
+
+namespace polyglot {
+
+// The syntax rows come first: a file they find broken is kept away from the
+// whole-program type checkers (run_polyglot).
+const std::vector<Check>& checks() {
+    static const std::vector<Check> C = {
+        {"python-syntax", {"python"}, "syntax",
+         {{"python", {"python3", "python"}, {"{exe}", "-I", "-c", PY_COMPILE, "{files}"},
            R"(^PRISM-SYNTAX\t(?P<file>[^\t]+)\t(?P<line>\d+)\t(?P<col>\d+)\t(?P<msg>.+)$)",
            false, {0}, 120.0, "", "", /*executes=*/false,
-           /*benign=*/{R"(PRISM-OK\t.+)", R"(PRISM-NOTOML\t.+)"}}},
-         "install Python 3.11+ (python3 on PATH)"},
+           /*benign=*/{R"(PRISM-OK\t.+)"}}},
+         "install Python 3 (python3 on PATH)"},
+        // Built in: always present, never NOTRUN.
+        {"json-syntax", {"json"}, "syntax",
+         {{"prism-json", {}, {}, "", false, {0}, 120.0, "", "", /*executes=*/false,
+           /*benign=*/{}, /*native=*/json_syntax}},
+         "built in"},
+        {"toml-syntax", {"toml"}, "syntax",
+         {{"prism-toml", {}, {}, "", false, {0}, 120.0, "", "", /*executes=*/false,
+           /*benign=*/{}, /*native=*/toml_syntax}},
+         "built in"},
         {"python-lint", {"python"}, "lint",
          {{"ruff", {"ruff"},
            {"{exe}", "check", "--output-format=concise", "--no-cache", "--quiet", "{files}"},
@@ -233,15 +211,9 @@ const std::vector<PgCheck>& checks() {
     return C;
 }
 
-// A line carrying this marker is a deliberate fixture (e.g. a fake key in a
-// test); the built-in scan skips it. Same marker as prism/polyglot.py.
-const char* const ALLOW_MARKER = "prism:allow";
+}  // namespace polyglot
 
-struct BuiltinScan {
-    const char* cls;
-    const char* pattern;
-    const char* message;
-};
+namespace {
 
 const BuiltinScan kBuiltinScans[] = {
     {"VCS-CONFLICT-MARKER", R"(^(?:<{7}|>{7})(?: |$))", "unresolved merge conflict marker"},
@@ -385,7 +357,12 @@ std::vector<fs::path> iter_text_files(const fs::path& root) {
     return out;
 }
 
-namespace {
+namespace polyglot {
+
+std::span<const BuiltinScan> builtin_scans() { return kBuiltinScans; }
+const std::map<std::string, std::string>& lang_exts() { return kLangExts; }
+const std::set<std::string>& c_family_exts() { return kCFamilyExts; }
+const std::set<std::string>& text_only_exts() { return kTextOnlyExts; }
 
 std::vector<Finding> builtin_scan(const std::vector<fs::path>& files, const fs::path& root) {
     static const std::vector<std::pair<const BuiltinScan*, Regex>> rx = [] {
@@ -423,26 +400,45 @@ std::vector<Finding> builtin_scan(const std::vector<fs::path>& files, const fs::
 }
 
 std::optional<fs::path> resolve(const PgTool& tool, const Config& cfg) {
+    // --tool NAME=~/bin/x: the shell did not expand the ~ after '='.
+    auto expand_user = [](const fs::path& p) -> fs::path {
+        auto s = p.generic_string();
+        if (s != "~" && !s.starts_with("~/")) return p;
+#ifdef _WIN32
+        const char* home = std::getenv("USERPROFILE");
+#else
+        const char* home = std::getenv("HOME");
+#endif
+        if (!home || !*home) return p;
+        return s == "~" ? fs::path(home) : fs::path(home) / s.substr(2);
+    };
     auto lookup = [&](const std::string& key) -> std::optional<fs::path> {
         auto it = cfg.tools.find(key);
+        if (it == cfg.tools.end()) return std::nullopt;
+        auto p = expand_user(it->second);
         std::error_code ec;
-        if (it != cfg.tools.end() && fs::is_regular_file(it->second, ec)) return it->second;
+        if (fs::is_regular_file(p, ec)) return p;
         return std::nullopt;
     };
+    if (tool.native) return std::nullopt;
     if (auto hit = lookup(tool.name)) return hit;
     for (auto& n : tool.exes)
         if (auto hit = lookup(n)) return hit;
+    // The pinned ~/.prism/tools build (when the tool has a manifest row), then PATH.
     for (auto& n : tool.exes)
-        if (auto hit = cfg.which({std::string_view(n)})) return hit;
+        if (auto hit = cfg.which_adapter(tool.name, {std::string_view(n)})) return hit;
     return std::nullopt;
 }
 
+}  // namespace polyglot
+
+namespace {
+
 std::vector<std::string> expand(const PgTool& tool, const std::string& exe,
-                                const std::vector<std::string>& files, const std::string& helper) {
+                                const std::vector<std::string>& files) {
     std::vector<std::string> cmd;
     for (auto& a : tool.argv) {
         if (a == "{exe}") cmd.push_back(exe);
-        else if (a == "{helper}") cmd.push_back(helper);
         else if (a == "{files}" || a == "{file}") cmd.insert(cmd.end(), files.begin(), files.end());
         else if (auto k = a.find("{devnull}"); k != std::string::npos)
             cmd.push_back(a.substr(0, k) + DEVNULL + a.substr(k + 9));
@@ -450,6 +446,10 @@ std::vector<std::string> expand(const PgTool& tool, const std::string& exe,
     }
     return cmd;
 }
+
+}  // namespace
+
+namespace polyglot {
 
 std::vector<Finding> parse_output(const PgTool& tool, const std::string& text, const fs::path& root,
                                   const fs::path& cwd, const PgCheck& check) {
@@ -523,6 +523,69 @@ std::string unexplained_output(const PgTool& tool, const std::string& raw) {
     return rest;
 }
 
+namespace {
+
+// nlohmann reports "parse error at line L, column C: <what>"; keep L, C and <what>.
+struct JsonSax {
+    std::string_view text;
+    std::optional<SyntaxIssue> issue;
+    bool null() { return true; }
+    bool boolean(bool) { return true; }
+    bool number_integer(nlohmann::json::number_integer_t) { return true; }
+    bool number_unsigned(nlohmann::json::number_unsigned_t) { return true; }
+    bool number_float(nlohmann::json::number_float_t, const std::string&) { return true; }
+    bool string(std::string&) { return true; }
+    bool binary(nlohmann::json::binary_t&) { return true; }
+    bool start_object(std::size_t) { return true; }
+    bool key(std::string&) { return true; }
+    bool end_object() { return true; }
+    bool start_array(std::size_t) { return true; }
+    bool end_array() { return true; }
+    bool parse_error(std::size_t pos, const std::string&, const nlohmann::detail::exception& ex) {
+        std::string what = ex.what();
+        SyntaxIssue out;
+        static const Regex at(R"(at line (\d+), column (\d+): (.*)$)");
+        if (auto m = at.search_match(what)) {
+            out.line = std::stoi(m->group(1));
+            out.col = std::stoi(m->group(2));
+            what = m->group(3);
+        } else {
+            // No position in the text (e.g. empty input): count lines up to the
+            // bytes read.
+            if (auto k = what.find("] "); k != std::string::npos) what = what.substr(k + 2);
+            if (auto k = what.find(": "); what.starts_with("parse error") && k != std::string::npos)
+                what = what.substr(k + 2);
+            out.line = 1;
+            out.col = 1;
+            for (std::size_t k = 0; k + 1 < pos && k < text.size(); ++k) {
+                if (text[k] == '\n') {
+                    ++out.line;
+                    out.col = 1;
+                } else {
+                    ++out.col;
+                }
+            }
+        }
+        out.msg = "JSON: " + what;
+        issue = std::move(out);
+        return false;
+    }
+};
+
+}  // namespace
+
+std::optional<SyntaxIssue> json_syntax(std::string_view text) {
+    JsonSax sax;
+    sax.text = text;
+    // A leading UTF-8 byte order mark is skipped by the parser; strings must be UTF-8.
+    nlohmann::json::sax_parse(text.begin(), text.end(), &sax);
+    return sax.issue;
+}
+
+}  // namespace polyglot
+
+namespace {
+
 struct Call {
     std::vector<std::string> files;
     fs::path cwd;
@@ -558,30 +621,48 @@ std::vector<Call> invocations(const PgTool& tool, const std::vector<fs::path>& f
     return calls;
 }
 
-struct HelperFile {
-    fs::path dir;
-    fs::path path;
-    HelperFile() {
-        auto ticks = std::chrono::high_resolution_clock::now().time_since_epoch().count();
-        dir = fs::temp_directory_path() / ("prism_polyglot_" + std::to_string(ticks));
-        std::error_code ec;
-        fs::create_directories(dir, ec);
-        path = dir / "prism_syntax.py";
-        std::ofstream(path, std::ios::binary) << SYNTAX_HELPER;
+// A built-in syntax checker over every file (no process, no batch limit).
+std::vector<Finding> run_native(const PgCheck& check, const PgTool& tool,
+                                const std::vector<fs::path>& files, const fs::path& root) {
+    std::vector<Finding> out;
+    const auto langs = join(check.languages, "/");
+    for (auto& p : files) {
+        std::ifstream in(p, std::ios::binary);
+        if (!in) {
+            out.push_back(pg_finding(laws::ERROR, rel(p, root), std::nullopt, "",
+                                     tool.name + ": cannot read the file",
+                                     {{"tool", tool.name}, {"check", check.group}}));
+            continue;
+        }
+        std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        auto issue = tool.native(text);
+        if (!issue) continue;
+        std::optional<int> line;
+        if (issue->line > 0) line = issue->line;
+        out.push_back(pg_finding(laws::FAILED, rel(p, root), line, "SYNTAX-ERROR",
+                                 tool.name + ": " + issue->msg,
+                                 {{"tool", tool.name},
+                                  {"language", langs},
+                                  {"check", check.group},
+                                  {"col", issue->col > 0 ? std::to_string(issue->col) : ""}}));
     }
-    ~HelperFile() {
-        std::error_code ec;
-        fs::remove_all(dir, ec);
-    }
-};
+    if (out.empty())
+        out.push_back(pg_finding(laws::UNKNOWN, "", std::nullopt, "",
+                                 tool.name + ": " + std::to_string(files.size()) + " " + langs +
+                                     " file(s), no diagnostics (not a proof)",
+                                 {{"tool", tool.name}, {"check", check.group}}));
+    return out;
+}
 
 std::vector<Finding> run_check(const PgCheck& check, std::vector<fs::path> files,
                                const fs::path& root, const Config& cfg) {
     const PgTool* tool = nullptr;
     const PgTool* held = nullptr;  // present, but executes scanned code (Law 9)
     std::optional<fs::path> exe;
+    for (auto& t : check.tools)
+        if (t.native) return run_native(check, t, files, root);
     for (auto& t : check.tools) {
-        auto found = resolve(t, cfg);
+        auto found = polyglot::resolve(t, cfg);
         if (!found) continue;
         if (t.executes && !cfg.allow_exec) {
             if (!held) held = &t;
@@ -621,12 +702,10 @@ std::vector<Finding> run_check(const PgCheck& check, std::vector<fs::path> files
                                langs + " file(s); not checked",
                            {{"install", check.install}, {"check", check.group}})};
 
-    HelperFile helper;
     const Regex unconfigured(tool->unconfigured.empty() ? std::string{}
                                                         : "(?i)" + tool->unconfigured);
-    static const Regex notoml(R"(^PRISM-NOTOML\t(.+)$)", /*multiline=*/true);
     auto one = [&](const Call& call) -> std::vector<Finding> {
-        auto r = detail::run_process(expand(*tool, exe->string(), call.files, helper.path.string()),
+        auto r = detail::run_process(expand(*tool, exe->string(), call.files),
                                      tool->timeout, call.cwd);
         if (r.timed_out)
             return {pg_finding(laws::TIMEOUT, "", std::nullopt, "",
@@ -638,12 +717,7 @@ std::vector<Finding> run_check(const PgCheck& check, std::vector<fs::path> files
                                tool->name + " present but the project has no config for it",
                                {{"install", check.install}, {"tool", tool->name},
                                 {"check", check.group}})};
-        auto hits = parse_output(*tool, r.text, root, call.cwd, check);
-        for (auto& m : notoml.finditer(r.text))
-            hits.push_back(pg_finding(laws::NOTRUN, rel(m.group(1), root), std::nullopt, "",
-                                      "toml not checked: interpreter has no tomllib (Python < 3.11)",
-                                      {{"install", check.install}, {"tool", tool->name},
-                                       {"check", check.group}}));
+        auto hits = polyglot::parse_output(*tool, r.text, root, call.cwd, check);
         if (!hits.empty()) return hits;
         bool ok_rc = std::find(tool->ok_rcs.begin(), tool->ok_rcs.end(), r.rc) != tool->ok_rcs.end();
         if (r.failed || r.rc == 127 || (!ok_rc && !tool->per_file)) {
@@ -661,7 +735,7 @@ std::vector<Finding> run_check(const PgCheck& check, std::vector<fs::path> files
                                tool->name + " exit " + std::to_string(r.rc) + ": " + t,
                                {{"tool", tool->name}, {"check", check.group}})};
         }
-        if (auto rest = unexplained_output(*tool, r.text); !rest.empty()) {
+        if (auto rest = polyglot::unexplained_output(*tool, r.text); !rest.empty()) {
             if (rest.size() > 400) rest = rest.substr(rest.size() - 400);
             return {pg_finding(laws::ERROR, "", std::nullopt, "",
                                tool->name + ": output not understood: " + rest,
@@ -671,7 +745,8 @@ std::vector<Finding> run_check(const PgCheck& check, std::vector<fs::path> files
     };
 
     std::vector<Finding> results;
-    std::size_t jobs = static_cast<std::size_t>(std::max(1, cfg.jobs));
+    // --jobs 0 is "half the cores" here as everywhere (threads.hpp).
+    std::size_t jobs = static_cast<std::size_t>(clamp_jobs(cfg.jobs));
     for (std::size_t i = 0; i < calls.size(); i += jobs) {
         std::vector<std::future<std::vector<Finding>>> futs;
         for (std::size_t k = i; k < std::min(calls.size(), i + jobs); ++k)
@@ -698,7 +773,7 @@ std::vector<Finding> run_polyglot(const fs::path& root, const Config& cfg) {
         return {pg_finding(laws::UNKNOWN, "", std::nullopt, "", "no source files in scope")};
     // Built-in scans read every text file (builtin_scan sniffs); language
     // tools only files with their extension.
-    auto out = builtin_scan(all_files, root);
+    auto out = polyglot::builtin_scan(all_files, root);
     std::vector<fs::path> files;
     for (auto& p : all_files)
         if (is_known_source(p)) files.push_back(p);
@@ -709,7 +784,7 @@ std::vector<Finding> run_polyglot(const fs::path& root, const Config& cfg) {
     // abort and hide every other file's errors. It already has its
     // SYNTAX-ERROR; keep it away from the type checkers.
     std::set<std::string> broken;
-    for (auto& check : checks()) {
+    for (auto& check : polyglot::checks()) {
         std::vector<fs::path> mine;
         for (auto& lang : check.languages)
             if (auto it = by_lang.find(lang); it != by_lang.end())

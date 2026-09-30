@@ -750,6 +750,10 @@ int regress_main(int argc, char** argv) {
             fs::path p(a);
             report_path = fs::is_directory(p) ? p / "report.json" : p;
             report_given = true;
+        } else {
+            // An option this command does not know is an error, never ignored.
+            std::cerr << "prism regress: error: unrecognized arguments: " << a << "\n";
+            return 2;
         }
     }
     auto report = RunReport::load(report_path);

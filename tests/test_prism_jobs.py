@@ -16,7 +16,7 @@ from unittest.mock import patch
 from prism.checkers import run_lints
 
 ROOT = Path(__file__).resolve().parents[1]
-MAIN_CPP = ROOT / "src" / "prism" / "main.cpp"
+MAIN_CPP = ROOT / "src" / "prism" / "cli.cpp"  # argument parsing and --help
 THREADS_HPP = ROOT / "include" / "prism" / "threads.hpp"
 CHECKERS_HPP = ROOT / "include" / "prism" / "checkers.hpp"
 STAGES_HPP = ROOT / "include" / "prism" / "stages.hpp"
@@ -33,14 +33,13 @@ def _strip_comments(src: str) -> str:
     return re.sub(r"//.*?$", "", src, flags=re.M)
 
 
-def _help_block(main_cpp: str) -> str:
-    start = main_cpp.find('a == "-h" || a == "--help"')
-    if start < 0:
-        start = main_cpp.find("--help")
+def _help_block(src: str) -> str:
+    """The text of cli_usage() in src/prism/cli.cpp (what `prism --help` prints)."""
+    start = src.find("std::string cli_usage()")
     if start < 0:
         return ""
-    end = main_cpp.find("return 0", start)
-    return main_cpp[start:] if end < 0 else main_cpp[start:end]
+    end = src.find("\n}\n", start)
+    return src[start:] if end < 0 else src[start:end]
 
 
 class TestPrismJobsContract(unittest.TestCase):

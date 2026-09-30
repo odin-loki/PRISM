@@ -271,6 +271,13 @@ RunReport run_pipeline(const Config& cfg) {
     }
     auto sources = iter_sources(cfg.root);
     std::vector<FunctionInfo> functions = report.functions;
+    // inventory and classify read the same files: parse each once.
+    std::map<std::filesystem::path, std::vector<FunctionInfo>> parsed;
+    auto functions_of = [&](const std::filesystem::path& p, const std::string& rel) {
+        auto it = parsed.find(p);
+        if (it == parsed.end()) it = parsed.emplace(p, extract_functions(p, rel)).first;
+        return it->second;
+    };
 
     auto emit = [&](StageResult rec) -> StageResult {
         report.stages.push_back(rec);
@@ -293,6 +300,11 @@ RunReport run_pipeline(const Config& cfg) {
             findings = fn();
         } catch (const std::exception& ex) {
             return emit(StageResult{name, "failed", ex.what(), t0, now_secs() - t0});
+        } catch (...) {
+            // Anything else a stage throws is still written down (Law 7), not a
+            // terminate with no report.
+            return emit(StageResult{name, "failed", "stage threw a non-standard exception", t0,
+                                    now_secs() - t0});
         }
         std::string status = "ok", install, detail;
         if (!findings.empty()) {
@@ -328,9 +340,17 @@ RunReport run_pipeline(const Config& cfg) {
 
     stage("inventory", [&] {
         std::vector<Finding> out;
+        // A mistyped root is not an empty, clean tree (Laws 1 and 7). The CLI
+        // refuses it; library and GUI callers get this row.
+        if (std::error_code ec; !std::filesystem::exists(cfg.root, ec)) {
+            out.push_back(Finding{"inventory", std::string(laws::ERROR), "", std::nullopt,
+                                  std::nullopt, "", "scan root does not exist: " + cfg.root.string(),
+                                  std::string(laws::STRENGTH_FINDS)});
+            return out;
+        }
         for (auto& p : sources) {
             auto rel = rel_of(p, cfg.root);
-            auto fns = extract_functions(p, rel);
+            auto fns = functions_of(p, rel);
             auto gaps = parse_gap_findings(p, rel);
             out.insert(out.end(), gaps.begin(), gaps.end());
             if (fns.empty()) {
@@ -363,7 +383,7 @@ RunReport run_pipeline(const Config& cfg) {
         std::vector<Finding> out;
         for (auto& p : sources) {
             auto rel = rel_of(p, cfg.root);
-            auto fns = extract_functions(p, rel);
+            auto fns = functions_of(p, rel);
             functions.insert(functions.end(), fns.begin(), fns.end());
             for (auto& fn : fns) {
                 Finding f;
@@ -422,11 +442,19 @@ RunReport run_pipeline(const Config& cfg) {
         return exec_gate_note("muttest", run_muttest(functions, 32), "muttest (gcc fallback harness)");
     });
     stage("ltl", [&] {
+        // Unreadable directories are passed over, not a failed stage; the
+        // skipped vendor/build directories are skipped here as everywhere.
         std::vector<std::filesystem::path> specs;
-        if (std::filesystem::exists(src_root)) {
-            for (auto& p : std::filesystem::recursive_directory_iterator(src_root)) {
-                if (p.path().extension() == ".ltl") specs.push_back(p.path());
+        std::error_code ec;
+        for (auto it = std::filesystem::recursive_directory_iterator(
+                 src_root, std::filesystem::directory_options::skip_permission_denied, ec);
+             !ec && it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
+            std::error_code e2;
+            if (it->is_directory(e2)) {
+                if (scope::skip_dir(it->path().filename().string())) it.disable_recursion_pending();
+                continue;
             }
+            if (it->path().extension() == ".ltl") specs.push_back(it->path());
         }
         std::sort(specs.begin(), specs.end());
         return run_ltl(functions, specs, cfg);

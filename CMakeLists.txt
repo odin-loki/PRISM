@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(prism LANGUAGES C CXX)
+project(prism VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -182,7 +182,9 @@ set(PRISM_SRC
   src/prism/pir/translate.cpp
   src/prism/pir/translate_fp.cpp
   src/prism/pir/translate_mem.cpp
+  src/prism/cli.cpp
   src/prism/polyglot.cpp
+  src/prism/toml_syntax.cpp
   src/prism/regex.cpp
   src/prism/sandbox.cpp
   src/prism/sarif.cpp
@@ -256,6 +258,8 @@ target_include_directories(prism_core PUBLIC
 )
 target_include_directories(prism_core PRIVATE "${_pins_dir}")
 target_compile_definitions(prism_core PRIVATE PRISM_EXPORTS)
+# The one version string (prism --version, SARIF driver.version): project() above.
+target_compile_definitions(prism_core PUBLIC PRISM_VERSION_STRING="${PROJECT_VERSION}")
 # Certified mode's Lean-proved bit-blaster and LRAT checker (roadmap 3.2 / 5.4):
 # `lake build` in proofs/techniques puts prism-bitblast / prism-lrat-check here.
 # They are searched after ~/.prism/tools and PATH; absent, certified mode falls
@@ -514,7 +518,11 @@ if(PRISM_TESTS)
     # Sanitize stage (src/prism/adapters.cpp run_sanitize).
     tests/cpp/test_sanitize.cpp
     # External tool adapters, AFL, the process runner and tool lookup.
-    tests/cpp/test_adapters.cpp)
+    tests/cpp/test_adapters.cpp
+    # Polyglot stage table, parsers and the built-in JSON/TOML syntax checkers.
+    tests/cpp/test_polyglot.cpp
+    # The command line and run_pipeline end to end.
+    tests/cpp/test_cli.cpp tests/cpp/test_pipeline.cpp)
   target_include_directories(prism_tests PRIVATE
     "${PRISM_ROOT}/include"
     "${PRISM_ROOT}/third_party")
@@ -561,6 +569,7 @@ if(PRISM_FUZZ)
     target_compile_options(prism_fuzz_self PRIVATE ${_prism_fuzz_flags})
     target_link_options(prism_fuzz_self PRIVATE ${_prism_fuzz_flags})
     target_link_libraries(prism_fuzz_self PRIVATE nlohmann_json)
+    target_compile_definitions(prism_fuzz_self PRIVATE PRISM_VERSION_STRING="${PROJECT_VERSION}")
     if(TARGET pcre2-8-static)
       target_link_libraries(prism_fuzz_self PRIVATE pcre2-8-static)
       target_compile_definitions(prism_fuzz_self PRIVATE PCRE2_STATIC)

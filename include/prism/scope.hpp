@@ -1,7 +1,7 @@
 #pragma once
 
-// What is in scope: one skip-directory list for every stage. Port of the
-// Python engine prism/scope.py (tests/test_polyglot.py locks the tables).
+// What is in scope: one skip-directory list for every stage
+// (tests/cpp/test_main.cpp "scope:" cases lock the table).
 // The inventory stage records each skipped directory that holds source
 // files as UNKNOWN, so nothing is skipped silently (Law 7).
 

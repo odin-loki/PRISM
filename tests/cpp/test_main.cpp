@@ -4435,7 +4435,7 @@ TEST_CASE("config: manifest pins, install hints and tool identity") {
 
 // ---- scope: one skip list; skipped sources are written down (Law 7) --------
 
-TEST_CASE("scope: skip_dir, skipped_path and skipped_dirs match prism/scope.py") {
+TEST_CASE("scope: skip_dir, skipped_path and skipped_dirs") {
     for (auto* n : {"node_modules", "third_party", ".git", "build", "build-release",
                     "prism-out-gui", ".venv", "target"})
         CHECK_MESSAGE(prism::scope::skip_dir(n), n);
@@ -4444,6 +4444,10 @@ TEST_CASE("scope: skip_dir, skipped_path and skipped_dirs match prism/scope.py")
     CHECK_FALSE(prism::scope::skipped_path(root / "src" / "a.c", root));
     CHECK(prism::scope::skipped_path(root / "node_modules" / "x" / "a.js", root));
     CHECK_FALSE(prism::scope::skipped_path(root / "build.c", root));
+    // Outside root is never "skipped"; a child named "..x" is inside root.
+    CHECK_FALSE(prism::scope::skipped_path("/work/other/node_modules/a.js", root));
+    CHECK(prism::scope::skipped_path(root / "..x" / "node_modules" / "a.js", root));
+    CHECK_FALSE(prism::scope::skipped_path(root / "..x" / "a.js", root));
 
     PolyTree t;
     t.put("a.c", "int f(void) { return 0; }\n");
@@ -4452,12 +4456,35 @@ TEST_CASE("scope: skip_dir, skipped_path and skipped_dirs match prism/scope.py")
     t.put("node_modules/m/README", "no source extension\n");
     t.put("sub/build-rel/gen.c", "int g(void) { return 1; }\n");
     t.put(".git/HEAD", "ref\n");
+    t.put("third_party/lib/z.h", "int z;\n");
+    t.put("__pycache__/m.pyc", std::string("\0\0", 2));
     auto got = prism::scope::skipped_dirs(t.dir, prism::is_known_source);
-    REQUIRE(got.size() == 2);
+    REQUIRE(got.size() == 3);
     CHECK(got[0].dir == "node_modules");
     CHECK(got[0].files == 2);
     CHECK(got[1].dir == "sub/build-rel");
     CHECK(got[1].files == 1);
+    CHECK(got[2].dir == "third_party");
+    CHECK(got[2].files == 1);
+    std::vector<std::string> walked;
+    for (auto& p : prism::iter_polyglot_sources(t.dir))
+        walked.push_back(p.lexically_relative(t.dir).generic_string());
+    CHECK(walked == std::vector<std::string>{"a.c"});
+#ifndef _WIN32
+    {
+        // A link to a source file counts like the file; a link to a directory
+        // is not followed.
+        PolyTree l;
+        l.put("real/x.js", "x\n");
+        l.put("node_modules/y.js", "y\n");
+        std::error_code ec;
+        std::filesystem::create_symlink(l.dir / "real" / "x.js", l.dir / "node_modules" / "link.js", ec);
+        std::filesystem::create_directory_symlink(l.dir / "real", l.dir / "node_modules" / "dirlink", ec);
+        auto counted = prism::scope::skipped_dirs(l.dir, prism::is_known_source);
+        REQUIRE(counted.size() == 1);
+        CHECK(counted[0].files == 2);
+    }
+#endif
     CHECK(prism::scope::skipped_message("node_modules", 2) ==
           "skipped node_modules/ (2 source files): vendor/build directory");
 
@@ -4474,7 +4501,17 @@ TEST_CASE("scope: skip_dir, skipped_path and skipped_dirs match prism/scope.py")
                 if (f.status == prism::laws::UNKNOWN) msgs.push_back(f.message);
     CHECK(msgs == std::vector<std::string>{
                       "skipped node_modules/ (2 source files): vendor/build directory",
-                      "skipped sub/build-rel/ (1 source files): vendor/build directory"});
+                      "skipped sub/build-rel/ (1 source files): vendor/build directory",
+                      "skipped third_party/ (1 source files): vendor/build directory"});
+    for (auto& s : report.stages)
+        if (s.name == "inventory")
+            for (auto& f : s.findings)
+                if (f.status == prism::laws::UNKNOWN && f.extra.at("skipped") == "node_modules")
+                    CHECK(f.extra == std::map<std::string, std::string>{{"skipped", "node_modules"},
+                                                                        {"files", "2"}});
+    std::ifstream md(cfg.out / "report.md");
+    std::string text((std::istreambuf_iterator<char>(md)), std::istreambuf_iterator<char>());
+    CHECK(text.find("skipped node_modules/ (2 source files)") != std::string::npos);
 }
 
 // ---- polyglot: every text file for secrets; unparsed output is ERROR -------
