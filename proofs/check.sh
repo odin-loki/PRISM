@@ -8,7 +8,7 @@
 #   3. every main theorem's axioms are within {propext, Classical.choice,
 #      Quot.sound} (Prism/Axioms.lean; sorryAx or anything else fails);
 #   4. the exported truth tables equal tests/data/verdict_tables.json, which
-#      the C++ doctest and tests/test_verdict.py check the code against.
+#      the C++ doctests (tests/cpp/test_main.cpp) check the code against.
 #
 # --write regenerates tests/data/verdict_tables.json instead of step 4's diff.
 set -euo pipefail

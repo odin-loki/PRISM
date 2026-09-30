@@ -13,7 +13,7 @@ that proves it.
 | `proofs/Prism/Verdict.lean` | The Lean 4 model and the proved laws |
 | `proofs/Prism/Export.lean`, `proofs/Main.lean` | `lake exe verdict_tables`: every function over its whole domain as JSON |
 | `tests/data/verdict_tables.json` | That JSON, committed |
-| `tests/cpp/test_main.cpp` ("verdict module equals the Lean model"), `tests/test_verdict.py` | The code checked against the table entry by entry |
+| `tests/cpp/test_main.cpp` ("verdict module equals the Lean model"), `tests/cpp/test_verdict_repo.cpp` | The C++ code checked against the table entry by entry; the repo checks (no `sorry`, pinned toolchain) |
 | `proofs/check.sh`, `.github/workflows/proofs.yml` | Build, no-`sorry`, axiom and table checks in CI |
 
 ## The lattice
@@ -191,10 +191,11 @@ into PRISM. PRISM does not do that. Instead:
    252 `(origin, status, certificate)` admissions, 1,044
    `(stage, status, certificate)` audits. The output is committed as
    `tests/data/verdict_tables.json`.
-2. The C++ doctest and `tests/test_verdict.py` compare `src/prism/verdict/`,
-   the `laws.hpp` string API and `prism/laws.py` with that file entry by
-   entry. They also check that the table's stage list is `STAGE_ORDER` plus
-   `other`, and that the Python and C++ vocabularies are identical.
+2. The C++ doctest compares `src/prism/verdict/` and the `laws.hpp` string
+   API with that file entry by entry, and checks that the table's stage
+   list is `STAGE_ORDER` plus `other`. `prism/laws.py` (the frozen Python
+   engine) is no longer checked against the table; see
+   `docs/CPP_PORT_PLAN.md`.
 3. CI (`proofs.yml`) rebuilds the model and fails if the regenerated table
    differs from the committed one.
 

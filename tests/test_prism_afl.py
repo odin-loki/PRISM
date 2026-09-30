@@ -3,7 +3,7 @@
 Python engine prism/fuse.py + prism/afl.py is law. After C++ fuse AFL lands,
 src/prism/stages/fuse.cpp fuse_one must match: PRISM_AFL opt-in,
 extra afl_available, CLEAN is not a proof, POINTER stays NEEDS-HARNESS
-(same as tests/test_fuse.py). Missing AFL in C++ fails these checks.
+(same as the fuse doctests in tests/cpp/test_fuse.cpp). Missing AFL in C++ fails these checks.
 """
 
 from __future__ import annotations
@@ -323,7 +323,7 @@ class TestPRISMAflContractCppMustMatch(unittest.TestCase):
         self.assertNotEqual(rec.status, laws.PROVED)
 
     def test_pointer_needs_harness_not_error_python(self):
-        """Same contract as tests.test_fuse.TestFuseLlm.test_pointer_needs_harness_not_error."""
+        """Same contract as the doctest 'fuse: a POINTER function is NEEDS-HARNESS, not ERROR'."""
         f, p = fn("null_branch")
         self.assertEqual(f.kind, "POINTER")
         recs = run_fuse([f], [], p.parent, budget=0.1, iters=1, engine=None)
