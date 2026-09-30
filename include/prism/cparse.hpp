@@ -3,6 +3,7 @@
 #include "prism/export.hpp"
 #include "prism/models.hpp"
 
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -22,6 +23,9 @@ PRISM_API bool is_tu_ext(std::string_view ext);
 
 PRISM_API std::string strip_comments_keep_lines(std::string_view text,
                                                 bool blank_strings = true);
+// Where strip_comments_keep_lines drops block-comment delimiters: (line,
+// output column of the next kept character, characters dropped there).
+PRISM_API std::vector<std::array<int, 3>> comment_col_shifts(std::string_view text);
 PRISM_API int match_brace(std::string_view text, int open_idx);
 PRISM_API bool body_returns_local_array(std::string_view body);
 PRISM_API bool body_needs_pointer_harness(std::string_view body);
