@@ -35,10 +35,19 @@ struct RunOut {
     std::string err;  // stderr, or why the child could not start
     int rc = -1;      // exit code; -signal on POSIX
     bool timed_out = false;
-    bool failed = false;   // could not start (pipe/fork/CreateProcess)
+    bool failed = false;   // could not start (pipe/fork/exec/CreateProcess)
     bool crashed = false;  // killed by a signal / NTSTATUS exception, not by the timeout
 };
 
+// Law 8: throws std::runtime_error on a --no-*-check flag. detail::run calls
+// it first, so no caller (adapters, stages, the polyglot table, pir, the AI
+// tools) can start a child with a check silently disabled.
+void refuse_disabled_checks(const std::vector<std::string>& argv);
+
+// Throws on a --no-*-check flag (refuse_disabled_checks). An argv[0] that
+// cannot be executed (missing, no execute bit) or a cwd that cannot be entered
+// is failed = true, rc = 127, err = why (the same as CreateProcess failing on
+// Windows), not an exit code of the tool.
 RunOut run(const RunSpec& spec);
 
 struct ProcOut {

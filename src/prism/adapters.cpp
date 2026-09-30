@@ -98,12 +98,7 @@ std::string tail(const std::string& s, std::size_t n) {
     return s.substr(s.size() - n);
 }
 
-void refuse_disabled_checks(const std::vector<std::string>& cmd) {
-    for (const auto& flag : cmd) {
-        if (flag.starts_with("--no-") && flag.ends_with("-check"))
-            throw std::runtime_error("refusing to disable a check: " + flag);
-    }
-}
+void refuse_disabled_checks(const std::vector<std::string>& cmd) { detail::refuse_disabled_checks(cmd); }
 
 Finding finding(std::string stage, std::string_view status, std::string file, std::string cls,
                 std::string message, std::string_view strength) {
@@ -1828,7 +1823,7 @@ static std::vector<Finding> run_cppcheck_unstamped(const std::vector<fs::path>& 
     if (out.empty() && (tool_unusable(r.text, r.rc) || r.failed)) {
         auto f = finding("cppcheck", laws::NOTRUN, "", "",
                          r.failed ? "cppcheck unusable: failed to start " + exe->string()
-                                  : "cppcheck at PATH is not cppcheck (not a proof)",
+                                  : "cppcheck at " + exe->string() + " is not cppcheck (not a proof)",
                          laws::STRENGTH_FINDS);
         f.extra["exe"] = exe->string();
         f.extra["install"] = adapter_install("cppcheck");

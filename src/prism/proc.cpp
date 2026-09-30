@@ -9,7 +9,9 @@
 #include <cctype>
 #include <chrono>
 #include <cstring>
+#include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 #ifdef _WIN32
@@ -33,6 +35,7 @@
 #  include <csignal>
 #  include <fcntl.h>
 #  include <poll.h>
+#  include <pthread.h>
 #  include <signal.h>
 #  include <sys/wait.h>
 #  include <unistd.h>
@@ -41,6 +44,13 @@ extern char** environ;
 
 namespace prism::detail {
 namespace fs = std::filesystem;
+
+void refuse_disabled_checks(const std::vector<std::string>& argv) {
+    for (const auto& flag : argv) {
+        if (flag.starts_with("--no-") && flag.ends_with("-check"))
+            throw std::runtime_error("refusing to disable a check: " + flag);
+    }
+}
 
 #ifdef _WIN32
 namespace {
@@ -92,6 +102,7 @@ std::vector<wchar_t> env_block(const std::vector<std::pair<std::string, std::str
 }  // namespace
 
 RunOut run(const RunSpec& spec) {
+    refuse_disabled_checks(spec.argv);
     RunOut r;
     const auto& args = spec.argv;
     if (args.empty()) {
@@ -162,11 +173,26 @@ RunOut run(const RunSpec& spec) {
         r.err = "CreateProcess failed";
         return r;
     }
+    // Stdin is written from a thread of its own: a WriteFile larger than the
+    // pipe buffer blocks until the child reads, and the child may be blocked
+    // on a full stdout pipe that only the loop below drains. The writer ends
+    // when the input is written or the child is gone (broken pipe).
+    std::thread writer;
     if (!spec.input.empty()) {
-        DWORD wr = 0;
-        WriteFile(in_w, spec.input.data(), static_cast<DWORD>(spec.input.size()), &wr, nullptr);
+        writer = std::thread([h = in_w, &input = spec.input] {
+            std::size_t off = 0;
+            while (off < input.size()) {
+                DWORD wr = 0;
+                const DWORD want = static_cast<DWORD>(std::min<std::size_t>(input.size() - off, 1u << 16));
+                if (!WriteFile(h, input.data() + off, want, &wr, nullptr) || wr == 0) break;
+                off += wr;
+            }
+            CloseHandle(h);
+        });
+        in_w = nullptr;  // owned by the writer
+    } else {
+        close_h(in_w);
     }
-    close_h(in_w);
     auto drain = [](HANDLE h, std::string& into) {
         if (!h) return;
         char buf[4096];
@@ -194,6 +220,9 @@ RunOut run(const RunSpec& spec) {
     }
     drain(out_r, r.out);
     drain(err_r, r.err);
+    // The child has exited or been terminated, so its end of stdin is closed
+    // and a pending WriteFile fails: the join cannot hang.
+    if (writer.joinable()) writer.join();
     DWORD code = 1;
     GetExitCodeProcess(pi.hProcess, &code);
     r.rc = r.timed_out ? -1 : static_cast<int>(code);
@@ -208,6 +237,7 @@ RunOut run(const RunSpec& spec) {
 #else
 
 RunOut run(const RunSpec& spec) {
+    refuse_disabled_checks(spec.argv);
     RunOut r;
     const auto& args = spec.argv;
     if (args.empty()) {
@@ -226,7 +256,25 @@ RunOut run(const RunSpec& spec) {
         close_fd(in_p[0]), close_fd(in_p[1]), close_fd(out_p[0]), close_fd(out_p[1]);
         close_fd(err_p[0]), close_fd(err_p[1]);
     };
-    if (::pipe(in_p) != 0 || ::pipe(out_p) != 0 || (!spec.merge_stderr && ::pipe(err_p) != 0)) {
+    // exec_p reports why the child could not start: the child writes errno
+    // and the stage ("chdir" or "exec") before _exit(127); CLOEXEC closes it
+    // on a successful exec, so the parent reads EOF. It is created CLOEXEC
+    // atomically where the OS can: a child forked meanwhile by another --jobs
+    // thread must not keep the write end open (the read would wait for it).
+    int exec_p[2] = {-1, -1};
+    auto cloexec_pipe = [](int fds[2]) {
+#if defined(__APPLE__)
+        if (::pipe(fds) != 0) return false;
+        ::fcntl(fds[0], F_SETFD, FD_CLOEXEC);
+        ::fcntl(fds[1], F_SETFD, FD_CLOEXEC);
+        return true;
+#else
+        return ::pipe2(fds, O_CLOEXEC) == 0;
+#endif
+    };
+    if (::pipe(in_p) != 0 || ::pipe(out_p) != 0 || (!spec.merge_stderr && ::pipe(err_p) != 0) ||
+        !cloexec_pipe(exec_p)) {
+        close_fd(exec_p[0]), close_fd(exec_p[1]);
         close_all();
         r.failed = true;
         r.err = "pipe";
@@ -258,6 +306,7 @@ RunOut run(const RunSpec& spec) {
     const std::string cwd = spec.cwd.string();
     pid_t pid = ::fork();
     if (pid < 0) {
+        close_fd(exec_p[0]), close_fd(exec_p[1]);
         close_all();
         r.failed = true;
         r.err = "fork failed";
@@ -267,16 +316,40 @@ RunOut run(const RunSpec& spec) {
         // a process group of its own: a timeout kills the child's own children
         // too (a compiler driver's cc1/ld, a solver's workers), not just the child
         ::setpgid(0, 0);
-        if (!cwd.empty() && ::chdir(cwd.c_str()) != 0) ::_exit(127);
+        // async-signal-safe only: a raw write of {stage, errno}
+        auto die = [&](int stage) {
+            int msg[2] = {stage, errno};
+            (void)!::write(exec_p[1], msg, sizeof msg);
+            ::_exit(127);
+        };
+        if (!cwd.empty() && ::chdir(cwd.c_str()) != 0) die(1);
         sandbox::apply_child_limits(spec.limits);
         ::dup2(in_p[0], STDIN_FILENO);
         ::dup2(out_p[1], STDOUT_FILENO);
         ::dup2(spec.merge_stderr ? out_p[1] : err_p[1], STDERR_FILENO);
-        for (int fd : {in_p[0], in_p[1], out_p[0], out_p[1], err_p[0], err_p[1]})
+        for (int fd : {in_p[0], in_p[1], out_p[0], out_p[1], err_p[0], err_p[1], exec_p[0]})
             if (fd > STDERR_FILENO) ::close(fd);
         if (!envp.empty()) environ = envp.data();
         ::execvp(argv[0], argv.data());
-        ::_exit(127);
+        die(2);
+    }
+    close_fd(exec_p[1]);
+    int start_err[2] = {0, 0};
+    ssize_t got = 0;
+    do {
+        got = ::read(exec_p[0], start_err, sizeof start_err);
+    } while (got < 0 && errno == EINTR);
+    close_fd(exec_p[0]);
+    if (got == static_cast<ssize_t>(sizeof start_err)) {
+        int st = 0;
+        while (::waitpid(pid, &st, 0) < 0 && errno == EINTR) {
+        }
+        close_all();
+        r.failed = true;
+        r.rc = 127;
+        r.err = (start_err[0] == 1 ? "cannot enter " + cwd : "cannot execute " + args[0]) + ": " +
+                std::strerror(start_err[1]);
+        return r;
     }
     ::setpgid(pid, pid);
     ChildGroup tracked(pid);  // killed with PRISM on SIGINT/SIGTERM
@@ -299,6 +372,19 @@ RunOut run(const RunSpec& spec) {
     auto pump = [&]() {
         char buf[4096];
         if (in_p[1] >= 0) {
+            // A child that exits without reading its stdin makes the write
+            // raise SIGPIPE, whose default action would kill PRISM. SIGPIPE is
+            // blocked on this thread for the write (not ignored process-wide:
+            // children would inherit SIG_IGN), so the write fails with EPIPE
+            // instead; a SIGPIPE this write left pending is consumed.
+            sigset_t pipe_set, old_mask, pending;
+            sigemptyset(&pipe_set);
+            sigaddset(&pipe_set, SIGPIPE);
+            ::pthread_sigmask(SIG_BLOCK, &pipe_set, &old_mask);
+            sigemptyset(&pending);
+            ::sigpending(&pending);
+            const bool was_pending = sigismember(&pending, SIGPIPE) == 1;
+            bool broke = false;
             while (in_off < input.size()) {
                 ssize_t n = ::write(in_p[1], input.data() + in_off, input.size() - in_off);
                 if (n > 0) {
@@ -306,9 +392,19 @@ RunOut run(const RunSpec& spec) {
                     continue;
                 }
                 if (n < 0 && errno == EINTR) continue;
-                if (n < 0 && errno == EPIPE) in_off = input.size();  // child closed stdin
+                if (n < 0 && errno == EPIPE) {
+                    in_off = input.size();  // child closed stdin
+                    broke = true;
+                }
                 break;
             }
+            if (broke && !was_pending) {
+                const timespec zero{0, 0};
+                sigemptyset(&pending);
+                ::sigpending(&pending);
+                if (sigismember(&pending, SIGPIPE) == 1) (void)::sigtimedwait(&pipe_set, nullptr, &zero);
+            }
+            ::pthread_sigmask(SIG_SETMASK, &old_mask, nullptr);
             if (in_off >= input.size()) close_fd(in_p[1]);
         }
         // EOF closes our end, so poll() does not spin on a hung-up pipe.
