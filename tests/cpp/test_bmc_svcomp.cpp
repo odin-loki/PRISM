@@ -309,7 +309,7 @@ extern int puts(const char *s);
 extern int putchar(int c);
 int p_ovf(int x) { printf("%d\n", x + 1); return 0; }
 int p_only(int x) { printf("%d\n", x); return 0; }
-int p_ok(int x) { if (x > 100) return 0; printf("x=%d %s %-5lx%%\n", x + 1, "ok", (long)x); puts("done"); putchar(x); return 0; }
+int p_ok(int x) { if (x > 100) return 0; printf("x=%d %s %-5lx%%\n", x + 1, "ok", (unsigned long)x); puts("done"); putchar(x); return 0; }
 int p_n(int x) { printf("%d%n\n", x, x); return 0; }
 int p_var(int x) { char s[3] = "%d"; printf(s, x); return 0; }
 int p_count(int x) { printf("%d %d\n", x); return 0; }
@@ -317,6 +317,15 @@ int p_width(int x) { printf("%ld\n", x); return 0; }
 int p_star(int x) { printf("%*d\n", x, x); return 0; }
 int p_esc(int x) { printf("\045n", x); return 0; }
 int p_result(int x) { int r = printf("hi\n"); if (r == 1000) return x / 0; return 0; }
+int p_flags(unsigned u, int x, char ch) { printf("%#x %#o %08u %-3c %+d %.3d\n", u, u, u, ch, x, x); return 0; }
+int p_prec_c(int x) { printf("%.2c", x); return 0; }
+int p_hash_d(int x) { printf("%#d", x); return 0; }
+int p_zero_c(int x) { printf("%05c", x); return 0; }
+int p_zero_s(int x) { printf("%05s", "ab"); return 0; }
+int p_u_int(int x) { printf("%u", x); return 0; }
+int p_x_long(long x) { printf("%lx", x); return 0; }
+int p_d_uns(unsigned u) { printf("%d", u); return 0; }
+int p_c_uns(unsigned u) { printf("%c", u); return 0; }
 )");
     CHECK(by["p_ovf"].status == kFailed);
     CHECK(by["p_ovf"].cls == "INT-SIGNED-OVF");
@@ -325,7 +334,13 @@ int p_result(int x) { int r = printf("hi\n"); if (r == 1000) return x / 0; retur
     CHECK(by["p_only"].status == kProved);
     INFO(by["p_ok"].message);
     CHECK(by["p_ok"].status == kProved);
-    for (auto* name : {"p_n", "p_var", "p_count", "p_width", "p_star", "p_esc"}) {
+    // Flags and precision where C11 7.21.6.1 defines them, signedness matched.
+    INFO(by["p_flags"].message);
+    CHECK(by["p_flags"].status == kProved);
+    // Undefined flag or precision (p4, p6) and a signedness mismatch
+    // (7.16.1.1p2, not range-checked) stay unmodelled.
+    for (auto* name : {"p_n", "p_var", "p_count", "p_width", "p_star", "p_esc", "p_prec_c", "p_hash_d",
+                       "p_zero_c", "p_zero_s", "p_u_int", "p_x_long", "p_d_uns", "p_c_uns"}) {
         INFO(name << ": " << by[name].message);
         CHECK(by[name].status == kHarness);
         CHECK(by[name].message.find("printf") != std::string::npos);

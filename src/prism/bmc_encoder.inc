@@ -914,8 +914,11 @@ struct Parser {
         return e;
     }
 
+    // Drops preprocessor directive lines. A directive starts its line
+    // (C11 6.10p2); a `#` inside a string or character literal (a printf
+    // flag, '#') is code and stays.
     static std::string prep(std::string body) {
-        return rx_sub("#.*", " ", body);
+        return rx_sub("^[ \\t]*#.*", " ", body, true);
     }
 
     void stmts(Enc& e, std::string text);
@@ -2743,9 +2746,10 @@ TV model_call(Enc& e, const std::string& tagged, std::vector<TV>& args) {
 // may be any value. Only when every argument is fully known to be safe for
 // the call: the format (printf) or string (puts) is one string literal with
 // plain escapes; each conversion is an integer conversion (d i o u x X c)
-// whose argument is a scalar of the width its length modifier names, or %s
-// with a string literal; no %n, no `*` width or precision, no other
-// conversion; as many arguments as conversions. Anything else: nullopt, and
+// whose argument is a scalar of the width its length modifier names and of
+// the signedness the conversion takes, or %s with a string literal; flags
+// and precision only where 7.21.6.1 defines them; no %n, no `*` width or
+// precision, no other conversion; as many arguments as conversions. Anything else: nullopt, and
 // the call stays unmodelled (never a proof).
 std::optional<TV> model_output_call(Enc& e, const std::string& t, const std::vector<std::string>& tok,
                                     const std::vector<std::pair<size_t, size_t>>& spans,
@@ -2792,9 +2796,12 @@ std::optional<TV> model_output_call(Enc& e, const std::string& t, const std::vec
         if (f[i] != '%') continue;
         if (++i >= f.size()) return std::nullopt;
         if (f[i] == '%') continue;
-        while (i < f.size() && std::string_view("-+ #0").find(f[i]) != std::string_view::npos) ++i;
+        std::string flags;
+        while (i < f.size() && std::string_view("-+ #0").find(f[i]) != std::string_view::npos) flags.push_back(f[i++]);
         while (i < f.size() && std::isdigit(static_cast<unsigned char>(f[i]))) ++i;
+        bool precision = false;
         if (i < f.size() && f[i] == '.') {
+            precision = true;
             ++i;
             while (i < f.size() && std::isdigit(static_cast<unsigned char>(f[i]))) ++i;
         }
@@ -2802,6 +2809,13 @@ std::optional<TV> model_output_call(Enc& e, const std::string& t, const std::vec
         while (i < f.size() && std::string_view("hljzt").find(f[i]) != std::string_view::npos) len.push_back(f[i++]);
         if (i >= f.size()) return std::nullopt;
         char conv = f[i];
+        // 7.21.6.1p6: `#` is defined only for o x X (and floating
+        // conversions, not modelled), `0` not for c or s; p4: no precision
+        // on c.
+        if (flags.find('#') != std::string::npos && std::string_view("oxX").find(conv) == std::string_view::npos)
+            return std::nullopt;
+        if (flags.find('0') != std::string::npos && (conv == 'c' || conv == 's')) return std::nullopt;
+        if (precision && conv == 'c') return std::nullopt;
         if (next >= args.size()) return std::nullopt;
         size_t k = next++;
         if (conv == 's') {
@@ -2817,6 +2831,18 @@ std::optional<TV> model_output_call(Enc& e, const std::string& t, const std::vec
             if (args[k].w != 64) return std::nullopt;
         } else {
             return std::nullopt;
+        }
+        // 7.21.6.1p8-9 with 7.16.1.1p2: d i c take a signed argument, o u x X
+        // an unsigned one. A narrower argument is promoted to int (6.5.2.2p6);
+        // under h or hh its value is converted before printing, so either
+        // sign is fine there. Otherwise the argument's own signedness must
+        // match: a mismatch is defined only for a value both types hold,
+        // which is not checked here, so it stays unmodelled.
+        bool want_unsigned = std::string_view("ouxX").find(conv) != std::string_view::npos;
+        bool narrow = args[k].w < 32;
+        if (!(narrow && (len == "h" || len == "hh"))) {
+            bool is_unsigned = narrow ? false : args[k].u;
+            if (is_unsigned != want_unsigned) return std::nullopt;
         }
     }
     if (next != args.size()) return std::nullopt;
