@@ -2,6 +2,7 @@
 #include "prism/laws.hpp"
 #include "prism/regex.hpp"
 #include "prism/cparse.hpp"
+#include "stages/interp.hpp"
 
 #include <algorithm>
 #include <fstream>
@@ -9,6 +10,7 @@
 #include <cctype>
 #include <cstdint>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <optional>
 #include <sstream>
@@ -28,13 +30,22 @@ constexpr int kWidth = 32;
 constexpr int64_t kIntMin = -(int64_t{1} << (kWidth - 1));
 constexpr int64_t kIntMax = (int64_t{1} << (kWidth - 1)) - 1;
 
+// A range of values of a type of width w (32, or 64 for long, long long,
+// size_t and the 64-bit typedefs: LP64, as the bmc encoder). An unsigned
+// range is kept in the signed range of its width (the domain never alarms on
+// unsigned wrap).
 struct R {
     int64_t lo = 0;
     int64_t hi = 0;
     bool unsigned_ = false;
+    int w = kWidth;
     bool empty() const { return lo > hi; }
     bool contains(int64_t v) const { return lo <= v && v <= hi; }
 };
+
+int64_t tmin(int w) { return w >= 64 ? std::numeric_limits<int64_t>::min() : kIntMin; }
+int64_t tmax(int w) { return w >= 64 ? std::numeric_limits<int64_t>::max() : kIntMax; }
+R top(int w, bool u = false) { return R{tmin(w), tmax(w), u, w}; }
 
 const R kTop{kIntMin, kIntMax, false};
 const R kBot{1, 0, false};
@@ -71,11 +82,18 @@ const std::unordered_map<std::string, int> kTypeSize = {
     {"char", 1}, {"signed char", 1}, {"unsigned char", 1},
     {"short", 2}, {"short int", 2}, {"signed short", 2}, {"unsigned short", 2},
     {"int", 4}, {"signed", 4}, {"signed int", 4}, {"unsigned", 4}, {"unsigned int", 4},
-    {"long", 4}, {"long int", 4}, {"unsigned long", 4},
+    {"long", 8}, {"long int", 8}, {"unsigned long", 8},
     {"long long", 8}, {"long long int", 8}, {"unsigned long long", 8},
-    {"uint32_t", 4}, {"int32_t", 4}, {"size_t", 4},
+    {"uint32_t", 4}, {"int32_t", 4}, {"uint64_t", 8}, {"int64_t", 8}, {"size_t", 8},
     {"_Bool", 1}, {"bool", 1},
 };
+
+// The width of a scalar type in this domain: 64 for a 64-bit type (LP64),
+// 32 for every narrower integer type (read as int).
+int type_bits(std::string_view typ) {
+    auto ct = stages_detail::scalar_ctype(typ);
+    return ct && ct->w >= 64 ? 64 : kWidth;
+}
 
 const char* kCmp[] = {"==", "!=", "<=", ">=", "<", ">"};
 
@@ -276,7 +294,7 @@ int char_lit_value(const std::string& tok_s) {
 int sizeof_interval(const std::vector<std::string>& inner) {
     if (inner.empty()) return kWidth / 8;
     for (auto& t : inner) {
-        if (t == "*") return kWidth / 8;
+        if (t == "*") return 8;
     }
     std::string joined;
     for (std::size_t i = 0; i < inner.size(); ++i) {
@@ -288,28 +306,25 @@ int sizeof_interval(const std::vector<std::string>& inner) {
     return kWidth / 8;
 }
 
-R clip(int64_t lo, int64_t hi, bool uns = false) {
-    return R{std::max(lo, kIntMin), std::min(hi, kIntMax), uns};
+R clip(__int128 lo, __int128 hi, bool uns = false, int w = kWidth) {
+    return R{static_cast<int64_t>(std::max<__int128>(lo, tmin(w))),
+             static_cast<int64_t>(std::min<__int128>(hi, tmax(w))), uns, w};
 }
 
 R join_r(const R& a, const R& b) {
     if (a.empty()) return b;
     if (b.empty()) return a;
-    return R{std::min(a.lo, b.lo), std::max(a.hi, b.hi), a.unsigned_ && b.unsigned_};
+    return R{std::min(a.lo, b.lo), std::max(a.hi, b.hi), a.unsigned_ && b.unsigned_, std::max(a.w, b.w)};
 }
 
 R meet_r(const R& a, const R& b) {
     if (a.empty() || b.empty()) return kBot;
-    return R{std::max(a.lo, b.lo), std::min(a.hi, b.hi), a.unsigned_ || b.unsigned_};
+    return R{std::max(a.lo, b.lo), std::min(a.hi, b.hi), a.unsigned_ || b.unsigned_, std::max(a.w, b.w)};
 }
 
 using State = std::map<std::string, R>;
 
-State copy_state(const State& st) {
-    State out;
-    for (auto& [k, v] : st) out.emplace(k, R{v.lo, v.hi, v.unsigned_});
-    return out;
-}
+State copy_state(const State& st) { return st; }
 
 State join_state(const State& a, const State& b) {
     State out = copy_state(a);
@@ -318,7 +333,7 @@ State join_state(const State& a, const State& b) {
         out[k] = (it != out.end()) ? join_r(it->second, v) : v;
     }
     for (auto& [k, v] : a) {
-        if (!b.contains(k)) out[k] = join_r(v, kTop);
+        if (!b.contains(k)) out[k] = join_r(v, top(v.w));
     }
     return out;
 }
@@ -359,6 +374,7 @@ std::unordered_set<std::string> float_locals(std::string_view body) {
 struct Engine {
     State st;
     std::unordered_set<std::string> unsigned_names;
+    std::unordered_set<std::string> wide_names;  // declared with a 64-bit type
     std::unordered_set<std::string> float_names;
     bool live = true;
 
@@ -371,19 +387,29 @@ struct Engine {
             }
             bool u = type_is_unsigned(typ);
             if (u) unsigned_names.insert(name);
-            st[name] = R{kIntMin, kIntMax, u};
+            int w = type_bits(typ);
+            if (w >= 64) wide_names.insert(name);
+            st[name] = top(w, u);
         }
     }
+
+    int width_of(const std::string& name) const { return wide_names.contains(name) ? 64 : kWidth; }
 
     R get(const std::string& name) const {
         if (float_names.contains(name)) throw ParseFail("floating-point unencoded");
         auto it = st.find(name);
-        R cur = it == st.end() ? kTop : it->second;
-        if (unsigned_names.contains(name)) return R{cur.lo, cur.hi, true};
+        R cur = it == st.end() ? top(width_of(name)) : it->second;
+        cur.w = width_of(name);
+        if (unsigned_names.contains(name)) cur.unsigned_ = true;
         return cur;
     }
+    // Store r converted to the variable's type: a value of a wider type
+    // that may not fit is the whole range of the narrower one.
     void set(const std::string& name, R r) {
-        if (unsigned_names.contains(name)) r = R{r.lo, r.hi, true};
+        int w = width_of(name);
+        if (!r.empty() && r.w > w && (r.lo < tmin(w) || r.hi > tmax(w))) r = top(w, r.unsigned_);
+        r.w = w;
+        if (unsigned_names.contains(name)) r.unsigned_ = true;
         st[name] = r;
     }
 };
@@ -392,6 +418,7 @@ Engine fork_engine(const Engine& e) {
     Engine n({});
     n.st = copy_state(e.st);
     n.unsigned_names = e.unsigned_names;
+    n.wide_names = e.wide_names;
     n.float_names = e.float_names;
     n.live = e.live;
     return n;
@@ -411,14 +438,9 @@ std::string while_stmt(Engine& e, const std::string& text, int bound);
 std::string for_stmt(Engine& e, const std::string& text, int bound);
 std::string do_stmt(Engine& e, const std::string& text, int bound);
 
-bool ovf_add(int64_t a, int64_t b) {
-    auto s = a + b;
-    return s < kIntMin || s > kIntMax;
-}
-bool ovf_sub(int64_t a, int64_t b) {
-    auto s = a - b;
-    return s < kIntMin || s > kIntMax;
-}
+bool out_of(__int128 v, int w) { return v < tmin(w) || v > tmax(w); }
+bool ovf_add(int64_t a, int64_t b, int w = kWidth) { return out_of(static_cast<__int128>(a) + b, w); }
+bool ovf_sub(int64_t a, int64_t b, int w = kWidth) { return out_of(static_cast<__int128>(a) - b, w); }
 
 int64_t py_floordiv(int64_t a, int64_t b) {
     int64_t q = a / b;
@@ -429,69 +451,90 @@ int64_t py_floordiv(int64_t a, int64_t b) {
 int64_t py_mod(int64_t a, int64_t b) { return a - py_floordiv(a, b) * b; }
 
 R uneg(Engine&, const R& v) {
-    if (!v.unsigned_ && v.contains(kIntMin)) throw Alarm("INT-SIGNED-OVF", "negation of INT_MIN");
-    return R{-v.hi, -v.lo, v.unsigned_};
+    if (v.empty()) return v;
+    if (v.contains(tmin(v.w))) {
+        if (!v.unsigned_) throw Alarm("INT-SIGNED-OVF", v.w >= 64 ? "negation of LLONG_MIN" : "negation of INT_MIN");
+        return top(v.w, true);
+    }
+    return R{-v.hi, -v.lo, v.unsigned_, v.w};
 }
 
 R binop(Engine&, const R& a, const std::string& op, const R& b) {
     if (a.empty() || b.empty()) return kBot;
     bool u = a.unsigned_ || b.unsigned_;
+    // the usual arithmetic conversions: the wider operand's width
+    const int w = std::max(a.w, b.w);
     if (op == "+") {
-        if (!u && (ovf_add(a.lo, b.lo) || ovf_add(a.lo, b.hi) || ovf_add(a.hi, b.lo) || ovf_add(a.hi, b.hi)))
-            throw Alarm("INT-SIGNED-OVF", "signed + may overflow");
-        if (u && (ovf_add(a.lo, b.lo) || ovf_add(a.lo, b.hi) || ovf_add(a.hi, b.lo) || ovf_add(a.hi, b.hi)))
-            return R{kIntMin, kIntMax, true};
-        return clip(a.lo + b.lo, a.hi + b.hi, u);
+        bool ovf = ovf_add(a.lo, b.lo, w) || ovf_add(a.lo, b.hi, w) || ovf_add(a.hi, b.lo, w) || ovf_add(a.hi, b.hi, w);
+        if (!u && ovf) throw Alarm("INT-SIGNED-OVF", "signed + may overflow");
+        if (u && ovf) return top(w, true);
+        return clip(static_cast<__int128>(a.lo) + b.lo, static_cast<__int128>(a.hi) + b.hi, u, w);
     }
     if (op == "-") {
-        if (!u && (ovf_sub(a.lo, b.lo) || ovf_sub(a.lo, b.hi) || ovf_sub(a.hi, b.lo) || ovf_sub(a.hi, b.hi)))
-            throw Alarm("INT-SIGNED-OVF", "signed - may overflow");
-        if (u && (ovf_sub(a.lo, b.lo) || ovf_sub(a.lo, b.hi) || ovf_sub(a.hi, b.lo) || ovf_sub(a.hi, b.hi)))
-            return R{kIntMin, kIntMax, true};
-        return clip(a.lo - b.hi, a.hi - b.lo, u);
+        bool ovf = ovf_sub(a.lo, b.lo, w) || ovf_sub(a.lo, b.hi, w) || ovf_sub(a.hi, b.lo, w) || ovf_sub(a.hi, b.hi, w);
+        if (!u && ovf) throw Alarm("INT-SIGNED-OVF", "signed - may overflow");
+        if (u && ovf) return top(w, true);
+        return clip(static_cast<__int128>(a.lo) - b.hi, static_cast<__int128>(a.hi) - b.lo, u, w);
     }
     if (op == "*") {
-        int64_t corners[4] = {a.lo * b.lo, a.lo * b.hi, a.hi * b.lo, a.hi * b.hi};
+        __int128 corners[4] = {static_cast<__int128>(a.lo) * b.lo, static_cast<__int128>(a.lo) * b.hi,
+                               static_cast<__int128>(a.hi) * b.lo, static_cast<__int128>(a.hi) * b.hi};
         for (auto c : corners) {
-            if (c < kIntMin || c > kIntMax) {
-                if (u) return R{kIntMin, kIntMax, true};
+            if (out_of(c, w)) {
+                if (u) return top(w, true);
                 throw Alarm("INT-SIGNED-OVF", "signed * may overflow");
             }
         }
         return clip(*std::min_element(std::begin(corners), std::end(corners)),
-                    *std::max_element(std::begin(corners), std::end(corners)), u);
+                    *std::max_element(std::begin(corners), std::end(corners)), u, w);
     }
     if (op == "/" || op == "%") {
         if (b.contains(0)) throw Alarm("INT-DIV-ZERO", "divisor range includes 0");
-        if (!u && a.contains(kIntMin) && b.contains(-1))
-            throw Alarm("INT-SIGNED-OVF", "INT_MIN / -1");
+        if (!u && a.contains(tmin(w)) && b.contains(-1))
+            throw Alarm("INT-SIGNED-OVF", w >= 64 ? "LLONG_MIN / -1" : "INT_MIN / -1");
         if (b.lo == b.hi) {
             if (op == "/") {
                 int64_t lo = py_floordiv(a.lo, b.lo), hi = py_floordiv(a.hi, b.lo);
-                return R{std::min(lo, hi), std::max(lo, hi), u};
+                return R{std::min(lo, hi), std::max(lo, hi), u, w};
             }
             int64_t lo = py_mod(a.lo, b.lo), hi = py_mod(a.hi, b.lo);
-            return R{std::min(lo, hi), std::max(lo, hi), u};
+            return R{std::min(lo, hi), std::max(lo, hi), u, w};
         }
-        return R{kIntMin, kIntMax, u};
+        return top(w, u);
     }
     if (op == "<<" || op == ">>") {
+        // the result has the (promoted) type of the left operand
+        const int lw = a.w;
+        const std::string range = lw >= 64 ? "shift amount out of 0..63" : "shift amount out of 0..31";
         if (u) {
-            if (b.hi >= kWidth) throw Alarm("INT-SHIFT-UB", "shift amount out of 0..31");
-        } else if (b.lo < 0 || b.hi >= kWidth) {
-            throw Alarm("INT-SHIFT-UB", "shift amount out of 0..31");
+            if (b.hi >= lw) throw Alarm("INT-SHIFT-UB", range);
+        } else if (b.lo < 0 || b.hi >= lw) {
+            throw Alarm("INT-SHIFT-UB", range);
         }
-        if (!u && op == "<<" && a.contains(1) && b.hi >= kWidth - 1)
-            throw Alarm("INT-SHIFT-UB", "1<<31 is undefined for signed int");
-        if (a.lo == a.hi && b.lo == b.hi) {
-            int64_t v = (op == "<<") ? (a.lo << b.lo) : (a.lo >> b.lo);
-            return R{v, v, u};
+        if (!u && op == "<<" && a.contains(1) && b.hi >= lw - 1)
+            throw Alarm("INT-SHIFT-UB", lw >= 64 ? "1<<63 is undefined for signed long" : "1<<31 is undefined for signed int");
+        if (a.lo == a.hi && b.lo == b.hi && b.lo >= 0 && b.lo < lw) {
+            __int128 v = op == "<<" ? static_cast<__int128>(a.lo) << b.lo : static_cast<__int128>(a.lo >> b.lo);
+            if (!out_of(v, lw)) return R{static_cast<int64_t>(v), static_cast<int64_t>(v), u, lw};
         }
-        return R{kIntMin, kIntMax, u};
+        return top(lw, u);
     }
-    if (op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">=")
+    if (op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">=") {
+        if (a.lo == a.hi && b.lo == b.hi) {
+            // two constants: compare in the common type
+            auto x = static_cast<__int128>(a.lo), y = static_cast<__int128>(b.lo);
+            if (u) {
+                const __int128 m = static_cast<__int128>(1) << w;
+                if (x < 0) x += m;
+                if (y < 0) y += m;
+            }
+            bool r = op == "==" ? x == y : op == "!=" ? x != y : op == "<" ? x < y : op == ">" ? x > y
+                   : op == "<=" ? x <= y : x >= y;
+            return R{r, r, false};
+        }
         return R{0, 1, false};
-    if (op == "&" || op == "|" || op == "^") return R{kIntMin, kIntMax, u};
+    }
+    if (op == "&" || op == "|" || op == "^") return top(w, u);
     throw ParseFail("op " + op);
 }
 
@@ -545,22 +588,34 @@ struct Parser {
                         inner.push_back(ntok);
                     }
                 }
+                // sizeof is a size_t (unsigned long, LP64)
                 int n = sizeof_interval(inner);
-                return R{n, n, false};
+                return R{n, n, true, 64};
             }
             auto name = eat();
             int n = sizeof_interval({name});
-            return R{n, n, false};
+            return R{n, n, true, 64};
         }
         if (t == "(") {
             if (peek() == "{") throw ParseFail("statement-expr unencoded");
             if (kCastWords.contains(peek())) {
+                std::string words;
+                bool ptr = false;
                 while (!peek().empty() && peek() != ")") {
                     if (!kCastWords.contains(peek()) && peek() != "*") break;
-                    eat();
+                    if (peek() == "*") ptr = true;
+                    words += (words.empty() ? "" : " ") + eat();
                 }
                 eat_s(")");
-                return parse(90);
+                auto v = parse(90);
+                auto ct = ptr ? std::nullopt : stages_detail::scalar_ctype(words);
+                if (!ct || v.empty()) return v;
+                // (T)v: the value converted to T (a narrowing cast of a value
+                // that may not fit is the whole range of T).
+                int cw = ct->w >= 64 ? 64 : kWidth;
+                if (ct->w < 32 || (cw < v.w && (v.lo < tmin(cw) || v.hi > tmax(cw)))) return top(cw, ct->u);
+                if (ct->u && !v.unsigned_ && v.lo < 0) return top(cw, true);
+                return R{v.lo, v.hi, ct->u, cw};
             }
             auto v = parse(0);
             eat_s(")");
@@ -576,8 +631,8 @@ struct Parser {
         }
         if (t == "~") {
             auto v = parse(90);
-            if (v.lo == v.hi) return R{~v.lo, ~v.lo, false};
-            return kTop;
+            if (v.lo == v.hi) return R{~v.lo, ~v.lo, v.unsigned_, v.w};
+            return top(v.w, v.unsigned_);
         }
         if (t == "++" || t == "--") {
             auto name = eat();
@@ -587,23 +642,40 @@ struct Parser {
             return nxt;
         }
         if (is_digit_tok(t) || t.starts_with("0x")) {
-            int64_t n = 0;
+            uint64_t v = 0;
             try {
-                n = static_cast<int64_t>(std::stoll(t, nullptr, 0));
+                std::size_t used = 0;
+                v = std::stoull(t, &used, 0);
+                if (used != t.size()) throw ParseFail("nud " + t);
+            } catch (const ParseFail&) {
+                throw;
             } catch (...) {
-                throw ParseFail("nud " + t);
+                throw ParseFail("64-bit literal unencoded");
             }
             // Integer suffix (the tokenizer splits `16U` / `5ULL`): U makes the
-            // literal unsigned; L / LL is a 64-bit literal outside this 32-bit
-            // domain (`state * 6364136223846793005ULL` is not a signed overflow).
-            bool uns = false;
+            // literal unsigned, L / LL makes it 64-bit (LP64). Without a
+            // suffix a decimal constant above INT_MAX is a long; a hex or
+            // octal one up to UINT_MAX is an unsigned int.
+            bool uns = false, wide = false;
             if (auto sfx = peek(); !sfx.empty() && sfx.find_first_not_of("uUlL") == std::string::npos) {
-                if (sfx.find_first_of("lL") != std::string::npos) throw ParseFail("64-bit literal unencoded");
-                uns = true;
+                wide = sfx.find_first_of("lL") != std::string::npos;
+                uns = sfx.find_first_of("uU") != std::string::npos;
                 eat();
             }
-            if (n > kIntMax) n -= (int64_t{1} << kWidth);
-            return R{n, n, uns};
+            const bool dec = !(t.size() > 1 && t[0] == '0');
+            if (v > static_cast<uint64_t>(kIntMax) && !wide) {
+                if (!dec && v <= 0xFFFFFFFFull) {
+                    uns = true;
+                } else {
+                    wide = true;
+                }
+            }
+            // A value above LLONG_MAX (an unsigned long long) is outside the
+            // signed range this domain keeps for 64-bit values.
+            if (v > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) throw ParseFail("64-bit literal unencoded");
+            int64_t n = static_cast<int64_t>(v);
+            if (!wide && n > kIntMax) n -= (int64_t{1} << kWidth);  // an unsigned int, kept in the signed range
+            return R{n, n, uns, wide ? 64 : kWidth};
         }
         if (t.size() >= 3 && t.front() == '\'' && t.back() == '\'') {
             int n = char_lit_value(t);
@@ -714,10 +786,15 @@ void refine(Engine& e, const std::string& cond, bool truth) {
         else if (op == "==") op = "!=";
         else if (op == "!=") op = "==";
     }
-    if (op == "<") e.set(name, meet_r(cur, R{kIntMin, c - 1, false}));
-    else if (op == "<=") e.set(name, meet_r(cur, R{kIntMin, c, false}));
-    else if (op == ">") e.set(name, meet_r(cur, R{c + 1, kIntMax, false}));
-    else if (op == ">=") e.set(name, meet_r(cur, R{c, kIntMax, false}));
+    const int64_t lo = tmin(cur.w), hi = tmax(cur.w);
+    if ((op == "<" && c == lo) || (op == ">" && c == hi)) {
+        e.set(name, kBot);
+        return;
+    }
+    if (op == "<") e.set(name, meet_r(cur, R{lo, c - 1, false}));
+    else if (op == "<=") e.set(name, meet_r(cur, R{lo, c, false}));
+    else if (op == ">") e.set(name, meet_r(cur, R{c + 1, hi, false}));
+    else if (op == ">=") e.set(name, meet_r(cur, R{c, hi, false}));
     else if (op == "==") e.set(name, meet_r(cur, R{c, c, false}));
     else if (op == "!=") {
         if (cur.lo == c && cur.hi > c) e.set(name, R{c + 1, cur.hi, cur.unsigned_});
@@ -731,10 +808,11 @@ void decl(Engine& e, std::string stmt_s) {
     while (!stmt_s.empty() && stmt_s.back() == ';') stmt_s.pop_back();
     stmt_s = strip(std::move(stmt_s));
     static Regex re(
-        "(?:int|unsigned(?:\\s+int)?|long|short|char|uint32_t|int32_t|size_t)"
-        "(?:\\s+const)?\\s+([A-Za-z_]\\w*)(?:\\s*=\\s*(.*))?$");
+        "((?:(?:unsigned|signed|long|short|int|char|uint32_t|int32_t|uint64_t|int64_t|size_t)\\s+)+)"
+        "(?:const\\s+)?([A-Za-z_]\\w*)(?:\\s*=\\s*(.*))?$");
     auto m = match_at(re, stmt_s);
-    if (!m) {
+    auto ct = m ? stages_detail::scalar_ctype(m->group(1)) : std::nullopt;
+    if (!m || !ct) {
         static Regex arr("\\[([^\\]]+)\\]");
         static Regex digits("\\d+");
         if (auto am = arr.search_match(stmt_s); am) {
@@ -747,12 +825,14 @@ void decl(Engine& e, std::string stmt_s) {
         // would read a signed full range and alarm falsely (tinyexpr ncr).
         throw ParseFail("unmodelled declaration");
     }
-    std::string name = m->group(1);
-    std::string init = m->group(2);
-    auto start1 = m->spans.size() > 1 ? m->spans[1].first : 0;
-    if (type_is_unsigned(stmt_s.substr(0, static_cast<std::size_t>(std::max(0, start1)))))
-        e.unsigned_names.insert(name);
-    e.set(name, init.empty() ? kTop : eval_expr(e, init));
+    std::string name = m->group(2);
+    std::string init = m->group(3);
+    const bool has_init = m->spans.size() > 3 && m->spans[3].first >= 0;
+    if (ct->u) e.unsigned_names.insert(name);
+    if (ct->w >= 64) e.wide_names.insert(name);
+    else e.wide_names.erase(name);
+    // `int x =` with nothing after it reads as 0, like any empty expression.
+    e.set(name, has_init ? eval_expr(e, init) : top(e.width_of(name)));
 }
 
 void assign(Engine& e, std::string stmt_s) {
@@ -837,12 +917,23 @@ std::string if_stmt(Engine& e, const std::string& text, int bound) {
     Engine else_e = fork_engine(e);
     refine(else_e, cond, false);
     bool then_dead = false, else_dead = false;
+    // A constant condition (`sizeof(long) == 4`) leaves one branch dead.
     try {
-        stmts(then_e, then_src, bound);
-    } catch (const ReturnEx&) {
-        then_dead = true;
+        Engine probe = fork_engine(e);
+        auto cv = eval_expr(probe, cond);
+        if (!cv.empty() && cv.lo == 0 && cv.hi == 0) then_dead = true;
+        else if (!cv.empty() && !cv.contains(0)) else_dead = true;
+    } catch (const ParseFail&) {
+    } catch (const Alarm&) {
     }
-    if (else_src) {
+    if (!then_dead) {
+        try {
+            stmts(then_e, then_src, bound);
+        } catch (const ReturnEx&) {
+            then_dead = true;
+        }
+    }
+    if (else_src && !else_dead) {
         try {
             stmts(else_e, *else_src, bound);
         } catch (const ReturnEx&) {
@@ -856,11 +947,13 @@ std::string if_stmt(Engine& e, const std::string& text, int bound) {
     if (then_dead) {
         e.st = else_e.st;
         e.unsigned_names = else_e.unsigned_names;
+        e.wide_names = else_e.wide_names;
         return after;
     }
     if (else_dead) {
         e.st = then_e.st;
         e.unsigned_names = then_e.unsigned_names;
+        e.wide_names = then_e.wide_names;
         return after;
     }
     e.st = join_state(then_e.st, else_e.st);
@@ -883,6 +976,7 @@ std::string do_stmt(Engine& e, const std::string& text, int bound) {
     } catch (const ReturnEx&) {
         e.st = body_e.st;
         e.unsigned_names = body_e.unsigned_names;
+        e.wide_names = body_e.wide_names;
         return after;
     }
     e.st = join_state(e.st, body_e.st);
