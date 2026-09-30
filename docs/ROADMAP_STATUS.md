@@ -33,7 +33,7 @@ generators): 0 wrong proofs over every campaign run.
 | D5 | LLM proposes, prover decides | **DONE** — `src/prism/ai/`, audit log, verdict audit |
 | D6 | Lean 4 | **DONE** — `proofs/`, `proofs/semantics`, `proofs/techniques`, `proofs/refinement` (core Lean, no Mathlib) |
 | D7 | Linux primary, WSL for Windows | **DONE** — MinGW rejected in CMake; Windows command-line quoting kept correct |
-| D8 | Python engine frozen as oracle | **DONE** — new stages run in C++ only; the Python engine lists them and records one `NOTRUN` row; correctness fixes still land in both |
+| D8 | Python engine frozen as oracle | **SUPERSEDED (2026-09-30)** — the owner's goal is now C++23 only, no Python; see [CPP_PORT_PLAN.md](CPP_PORT_PLAN.md). Until phase 5 of that plan: new stages run in C++ only; the Python engine lists them and records one `NOTRUN` row; correctness fixes still land in both |
 | PROVED-CERTIFIED | new verdict, never merged | **DONE** — both engines, Lean lattice (`proofs/Prism/Verdict.lean`), audit gate |
 
 ## Part 1 — Repository, supply chain, licences
