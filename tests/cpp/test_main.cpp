@@ -729,6 +729,56 @@ static std::map<std::string, prism::Finding> bmc_source(const std::string& name,
     return by;
 }
 
+TEST_CASE("bmc: assume_abort_if_not is an assumption only when its definition stops the run") {
+    const std::string main_src = R"(extern int __VERIFIER_nondet_int(void);
+int main(void) {
+  int x = __VERIFIER_nondet_int();
+  assume_abort_if_not(x > 0 && x < 100);
+  int y = x + 2147483000;
+  return y;
+}
+)";
+    const std::string decl = "extern void abort(void);\n";
+    // extern only (SV-COMP): the name model applies and the add cannot overflow
+    auto ext = bmc_source("assume_ext.c", decl + "void assume_abort_if_not(int cond);\n" + main_src);
+    CHECK(prism::laws::is_proof(ext["main"].status));
+    // canonical definitions: same
+    for (std::string def : {"void assume_abort_if_not(int cond) {\n  if (!cond) {abort();}\n}\n",
+                            "void assume_abort_if_not(int cond) {\n  if (!(cond)) abort();\n  return;\n}\n",
+                            "void assume_abort_if_not(int cond) {\n  if (!cond) { exit(0); }\n}\n"}) {
+        auto can = bmc_source("assume_canon.c", decl + "extern void exit(int);\n" + def + main_src);
+        CHECK_MESSAGE(prism::laws::is_proof(can["main"].status), def);
+    }
+    // a body that does not stop the run: never a proof (x = INT_MAX overflows)
+    for (std::string def : {"void assume_abort_if_not(int cond) {}\n",
+                            "int hits;\nvoid assume_abort_if_not(int cond) {\n  if (!cond) { hits++; }\n}\n"}) {
+        auto bad = bmc_source("assume_noop.c", decl + def + main_src);
+        CHECK_MESSAGE(!prism::laws::is_proof(bad["main"].status), def, " -> ", bad["main"].status);
+    }
+}
+
+TEST_CASE("bmc: two asserts in one block parse, and the second is checked") {
+    const std::string pre = "#include <assert.h>\nextern int __VERIFIER_nondet_int(void);\n";
+    auto bad = bmc_source("two_asserts_bad.c", pre + R"(int main(void) {
+  int x = __VERIFIER_nondet_int();
+  if (x < 0 || x > 10) return 0;
+  assert(x >= 0);
+  assert(x < 5);
+  return 0;
+}
+)");
+    CHECK(bad["main"].status == std::string(prism::laws::FAILED));
+    auto ok = bmc_source("two_asserts_ok.c", pre + R"(int main(void) {
+  int x = __VERIFIER_nondet_int();
+  if (x < 0 || x > 4) return 0;
+  assert(x >= 0);
+  assert(x < 5);
+  return 0;
+}
+)");
+    CHECK(prism::laws::is_proof(ok["main"].status));
+}
+
 TEST_CASE("bmc: a canonical __VERIFIER_assert call is checked as an assertion (SV-COMP)") {
     const std::string defs = R"(extern void abort(void);
 void reach_error() { abort(); }

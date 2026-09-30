@@ -1375,12 +1375,8 @@ void Parser::astore(Enc& e, const std::string& name0, const std::string& idx, co
 }
 
 std::string Parser::assert_stmt(Enc& e, std::string text) {
-    static Regex as("assert\\s*\\((.*)\\)\\s*;", false, true);
-    if (auto m = as.search_match(text); m && m->spans[0].first == 0) {
-        auto cond = expr(e, m->group(1));
-        e.add_prop("assert", "FUNC-CONTRACT", !as_bool(cond), e.pc);
-        return text.substr(static_cast<size_t>(m->spans[0].second));
-    }
+    // Balanced parentheses, never a greedy regex: with two asserts in one
+    // block, `assert\((.*)\);` ran to the last `);` and the block was an ERROR.
     auto p = text.find('(');
     if (p == std::string::npos) throw ParseFail("assert");
     auto [inner, rest] = paren_stmt(text.substr(p));
@@ -2305,6 +2301,56 @@ bool canonical_verifier_assert(const std::vector<FunctionInfo>& functions) {
     return exits;
 }
 
+// `assume_abort_if_not(c)` / `__VERIFIER_assume(c)` are modelled by name as
+// "the run continues only if c". That is right when the unit does not
+// define the function (SV-COMP extern) or defines it canonically:
+// `if (!c) { abort(); }` / `exit(N);`, with an optional trailing `return;`.
+// Any other definition (an empty body, a counter) does not stop the run, so
+// run_bmc turns the name model off for the unit and the call stays
+// unmodelled (NEEDS-HARNESS).
+namespace {
+thread_local bool g_assume_model = true;
+}
+bool assume_model_enabled() { return g_assume_model; }
+
+bool canonical_assume_def(const FunctionInfo& def) {
+    if (def.params.size() != 1) return false;
+    auto norm = [](const std::string& t) {
+        std::string o;
+        for (char ch : t)
+            if (!std::isspace(static_cast<unsigned char>(ch))) o.push_back(ch);
+        return o;
+    };
+    const std::string p = def.params[0].second;
+    std::string b = norm(def.body);
+    if (b.size() >= 2 && b.front() == '{' && b.back() == '}') b = b.substr(1, b.size() - 2);
+    std::string head;
+    for (auto h : {"if(!(" + p + "))", "if(!" + p + ")"})
+        if (b.starts_with(h)) head = h;
+    if (head.empty() || p.empty()) return false;
+    b = b.substr(head.size());
+    if (b.ends_with("return;")) b.resize(b.size() - 7);
+    if (b.size() >= 2 && b.front() == '{' && b.back() == '}') b = b.substr(1, b.size() - 2);
+    if (b == "abort();") return true;
+    static Regex ex("^exit\\(-?\\d+\\);$");
+    return ex.search_match(b).has_value();
+}
+
+bool assume_model_ok(const std::vector<FunctionInfo>& functions) {
+    for (auto& f : functions)
+        if ((f.name == "assume_abort_if_not" || f.name == "__VERIFIER_assume") && !canonical_assume_def(f))
+            return false;
+    return true;
+}
+
+struct AssumeModelScope {
+    bool saved = g_assume_model;
+    explicit AssumeModelScope(bool on) { g_assume_model = on; }
+    ~AssumeModelScope() { g_assume_model = saved; }
+    AssumeModelScope(const AssumeModelScope&) = delete;
+    AssumeModelScope& operator=(const AssumeModelScope&) = delete;
+};
+
 bool body_calls_verifier_assert(const std::string& body) {
     static constexpr std::string_view C = "__VERIFIER_assert";
     auto ident = [](char ch) { return std::isalnum(static_cast<unsigned char>(ch)) || ch == '_'; };
@@ -2411,8 +2457,11 @@ TV model_call(Enc& e, const std::string& tagged, std::vector<TV>& args) {
         e.assume(v >= e.bv_zero(32));
         return TV{v, 32, false};
     }
-    if (t == "__VERIFIER_assume" || t == "assume_abort_if_not") {
+    if ((t == "__VERIFIER_assume" || t == "assume_abort_if_not") && assume_model_enabled()) {
         // SV-COMP harness convention: execution continues only if cond != 0.
+        // Only when the unit does not define the function with some other
+        // body (assume_model_enabled): a definition that does not stop the
+        // run must not become an assumption, or bmc proves unsound results.
         nargs(1);
         e.assume(as_bool(args[0]));
         return e.int_val(0);

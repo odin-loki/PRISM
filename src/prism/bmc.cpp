@@ -3699,6 +3699,7 @@ std::vector<Finding> run_bmc(const std::vector<FunctionInfo>& functions, int unw
     std::vector<FunctionInfo> tagged;
     tagged.reserve(functions.size());
     const bool vassert = verifier_assert_rewrite_enabled(functions);
+    AssumeModelScope assume_scope(assume_model_ok(functions));
     for (auto& fn : functions)
         tagged.push_back(vassert && fn.name != "__VERIFIER_assert" ? rewrite_verifier_assert(tag_nondet_sites(fn))
                                                                    : tag_nondet_sites(fn));
