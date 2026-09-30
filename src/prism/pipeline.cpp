@@ -20,9 +20,11 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <charconv>
 #include <chrono>
 #include <cstdlib>
 #include <cmath>
+#include <format>
 #include <fstream>
 #include <iomanip>
 #include <map>
@@ -85,18 +87,12 @@ std::vector<Finding> exec_gate_note(const std::string& stage, std::vector<Findin
     return findings;
 }
 
-void apply_confidence(RunReport& report) {
+verdict::Score confidence_score(const RunReport& report) {
     auto n_fun = report.functions.size();
-    if (n_fun == 0) {
-        report.visibility = report.answer = report.resolution = report.confidence = 0;
-        static const char* kEmpty = "confidence 0: no functions parsed (no data, not clean)";
-        if (std::find(report.notes.begin(), report.notes.end(), kEmpty) == report.notes.end())
-            report.notes.push_back(kEmpty);
-        return;
-    }
-    // The instruments that answer per function: pir counts like bmc
-    // (confidence.py FORMAL_STAGES). One record per function per stage: the
-    // first one that stage wrote for it.
+    // Empty scope: the product is 0, never n/a or skipped.
+    if (n_fun == 0) return {0, 0, 0, 0};
+    // The instruments that answer per function: pir counts like bmc. One
+    // record per function per stage: the first one that stage wrote for it.
     static const std::set<std::string> kFormalStages{"bmc", "pir"};
     bool any_formal = false;
     std::map<std::string, std::vector<const Finding*>> by_fn;
@@ -111,23 +107,26 @@ void apply_confidence(RunReport& report) {
     }
     // Every parsed function is classified: visibility is n_fun / n_fun.
     int answered = 0, resolved = 0, attempted = 0;
-    auto resolves = [](const Finding* f) {
+    auto nonempty = [](const Finding* f, const char* key) {
+        auto it = f->extra.find(key);
+        return it != f->extra.end() && !it->second.empty();
+    };
+    auto resolves = [&](const Finding* f) {
         if (laws::is_proof(f->status) || f->status == laws::BOUNDED) return true;
-        // A counterexample is the instrument's answer; a failure without one needs a person.
+        // A counterexample is the instrument's answer; a failure without one
+        // needs a person. An empty oracle/read value is no answer.
         return f->status == laws::FAILED &&
-               (!f->counterexample.empty() || f->extra.contains("oracle") || f->extra.contains("read"));
+               (!f->counterexample.empty() || nonempty(f, "oracle") || nonempty(f, "read"));
     };
     if (any_formal) {
-        std::vector<const FunctionInfo*> scalar;
-        for (auto& fn : report.functions)
-            if (fn.kind == "SCALAR" || fn.kind == "VOID") scalar.push_back(&fn);
-        auto& consider = scalar.empty() ? report.functions : [&]() -> const std::vector<FunctionInfo>& {
-            return report.functions;
-        }();
-        for (auto& fn : consider) {
-            if (fn.kind != "SCALAR" && fn.kind != "VOID" && !scalar.empty()) continue;
+        bool any_scalar = std::any_of(report.functions.begin(), report.functions.end(),
+                                      [](const FunctionInfo& fn) { return fn.kind == "SCALAR" || fn.kind == "VOID"; });
+        for (auto& fn : report.functions) {
+            if (any_scalar && fn.kind != "SCALAR" && fn.kind != "VOID") continue;
             auto key = fn.file + "::" + fn.name;
             auto it = by_fn.find(key);
+            // All NEEDS-HARNESS is the absence of a precondition, like POINTER,
+            // not a missing answer.
             if (it != by_fn.end() && !it->second.empty() &&
                 std::all_of(it->second.begin(), it->second.end(),
                             [](const Finding* f) { return f->status == laws::NEEDS_HARNESS; }))
@@ -146,11 +145,29 @@ void apply_confidence(RunReport& report) {
     }
     // Law 5 through the verdict module (proofs/Prism/Verdict.lean `score`).
     auto n = static_cast<long>(n_fun);
-    auto sc = verdict::score_counts(n, n, attempted, answered, resolved);
-    report.visibility = std::round(sc.visibility * 10000.0) / 10000.0;
-    report.answer = std::round(sc.answer * 10000.0) / 10000.0;
-    report.resolution = std::round(sc.resolution * 10000.0) / 10000.0;
-    report.confidence = std::round(sc.confidence * 10000.0) / 10000.0;
+    return verdict::score_counts(n, n, attempted, answered, resolved);
+}
+
+double round4(double x) {
+    // The exact binary value rounded to 4 decimals, ties to even: the
+    // correctly rounded decimal form, read back.
+    auto s = std::format("{:.4f}", x);
+    double out = 0;
+    std::from_chars(s.data(), s.data() + s.size(), out);
+    return out;
+}
+
+void apply_confidence(RunReport& report) {
+    auto sc = confidence_score(report);
+    report.visibility = round4(sc.visibility);
+    report.answer = round4(sc.answer);
+    report.resolution = round4(sc.resolution);
+    report.confidence = round4(sc.confidence);
+    if (report.functions.empty()) {
+        static const char* kEmpty = "confidence 0: no functions parsed (no data, not clean)";
+        if (std::find(report.notes.begin(), report.notes.end(), kEmpty) == report.notes.end())
+            report.notes.push_back(kEmpty);
+    }
 }
 
 std::vector<Finding> llm_forced_reads(std::vector<Finding> findings) {

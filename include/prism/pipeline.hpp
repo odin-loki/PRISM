@@ -3,6 +3,7 @@
 #include "prism/config.hpp"
 #include "prism/export.hpp"
 #include "prism/models.hpp"
+#include "prism/verdict.hpp"
 
 #include <filesystem>
 #include <map>
@@ -20,7 +21,14 @@ inline constexpr const char* STAGE_ORDER[] = {
 
 PRISM_API RunReport run_pipeline(const Config& cfg);
 PRISM_API void write_report_md(const RunReport& report, const std::filesystem::path& path);
+// Law 5: (visibility, answer, resolution, confidence) of a report, without
+// changing it. No parsed functions scores 0 on every factor.
+PRISM_API verdict::Score confidence_score(const RunReport& report);
+// Writes confidence_score rounded to 4 decimals into the report, and the
+// "no functions parsed" note once when the scope is empty.
 PRISM_API void apply_confidence(RunReport& report);
+// x rounded to 4 decimals, ties to even (the report's number format).
+PRISM_API double round4(double x);
 // llm stage is READS. A lying backend cannot COVER or prove.
 PRISM_API std::vector<Finding> llm_forced_reads(std::vector<Finding> findings);
 // Law 9: stage -> "whole" | "part" (prism/pipeline.py EXEC_STAGES). Stages

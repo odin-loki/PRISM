@@ -480,7 +480,7 @@ if(PRISM_TESTS)
     tests/cpp/test_ai_assist.cpp
     # Stage tests ported from the Python suite.
     tests/cpp/test_thread_taint.cpp tests/cpp/test_wp_harness.cpp
-    tests/cpp/test_diff.cpp)
+    tests/cpp/test_diff.cpp tests/cpp/test_journal_confidence.cpp)
   target_include_directories(prism_tests PRIVATE
     "${PRISM_ROOT}/include"
     "${PRISM_ROOT}/third_party")
