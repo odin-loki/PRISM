@@ -845,6 +845,9 @@ std::string strip_comments_keep_lines(std::string_view text, bool blank_strings)
 }
 
 int match_brace(std::string_view text, int open_idx) {
+    // A negative start is not a position in the text (it used to index
+    // before text.data()).
+    if (open_idx < 0) return -1;
     int depth = 0;
     int n = static_cast<int>(text.size());
     for (int i = open_idx; i < n; ++i) {
