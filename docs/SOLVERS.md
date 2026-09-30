@@ -110,7 +110,7 @@ and the note says `DISAGREEMENT`.
   The CaDiCaL-with-LRAT member of certified mode is never delayed.
 - **Learned scheduler (on by default).** A GBDT per member predicts its
   seconds from the query features (`src/prism/solver/predict.cpp`, the
-  built-in model `predict_default.inc`, or `$PRISM_SOLVER_MODEL` /
+  built-in model `predict_default.json`, or `$PRISM_SOLVER_MODEL` /
   `<cache_dir>/predict_model.json`, which replace it). The predictions
   replace the estimates, and the member predicted fastest leads by
   `min(3 × predicted + 0.2 s, 30 % of timeout)`, instead of the history
@@ -313,7 +313,7 @@ No VC is in both halves.
 machine had 4 cores shared with five other agents (load average 12–29), so
 every number below is inflated and noisy.
 
-**Replay** (`tools/prism_ai/sched.py`). The portfolio scheduler of
+**Replay** (`prism_ai replay`, `src/tools/prism_ai/sched.cpp`). The portfolio scheduler of
 `portfolio.cpp` replayed on the alone-times: expected-time order, the leader's
 head start (else Z3's 0.15 s), `k` cores, first answer wins, 8 s timeout. It
 assumes no contention between cores and a bit-blast per DIMACS member.
@@ -347,7 +347,7 @@ model: Bitwuzla 720, Z3 60, CaDiCaL 1.
 held-out files at every core count, by more than the run-to-run noise
 (replay: −25% vs rules, −18% vs history at k = 2, noise ≤ 15.7%; end-to-end
 run 2: −17% / −14% with 0.5% noise), with no more timeouts. It is exported
-as `src/prism/solver/predict_default.inc` (`predict.py --emit-inc`), is
+as `src/prism/solver/predict_default.json` (`prism_ai predict --out`; CMake embeds it), is
 deterministic (fixed trees, no randomness), only sets order and head start,
 never applies to certified requests, and `PRISM_SOLVER_PREDICT=0` restores
 the rules. What to know about it:
@@ -400,10 +400,10 @@ Reproduce (REP: the same collection with `files_done.txt` pre-filled with
 the training files, so only held-out files are timed again):
 
 ```
-python tools/prism_ai/sched_e2e.py --prism build/prism --solve-log DIR/solve_runs.jsonl --out E2E
-python tools/prism_ai/predict.py --solve-log DIR/solve_runs.jsonl --bound-log DIR/bound_runs.jsonl \
+build/prism_ai e2e --prism build/prism --solve-log DIR/solve_runs.jsonl --out E2E
+build/prism_ai predict --solve-log DIR/solve_runs.jsonl --bound-log DIR/bound_runs.jsonl \
   --repeat-solve-log REP/solve_runs.jsonl --repeat-bound-log REP/bound_runs.jsonl \
-  --end-to-end E2E/e2e.json --out model.json --emit-inc src/prism/solver/predict_default.inc
+  --end-to-end E2E/e2e.json --out src/prism/solver/predict_default.json
 ```
 
 ## Stalls: hunt and watchdog (2026-09-24)
@@ -464,7 +464,7 @@ with the event in the result, the note and `watchdog.jsonl`) and "solver:
 repeated portfolio runs stay within timeout plus grace" (40 queries through
 every installed member, no watchdog event). Reproduce the hunt with
 `prism --solve-smt2 VC --timeout 8 --solver-cache FRESH_DIR` over any VC
-directory (`PRISM_PREDICT_COLLECT` or `tools/prism_ai/sched_e2e.py` write
+directory (`PRISM_PREDICT_COLLECT` or `prism_ai e2e` write
 them) and read `FRESH_DIR/watchdog.jsonl`.
 
 ## Measurement: portfolio vs Z3 alone (generated queries)

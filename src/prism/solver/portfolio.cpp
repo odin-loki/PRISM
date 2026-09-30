@@ -1322,7 +1322,7 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
             if (name == res.winner) s["wins"] = s.value("wins", 0) + 1;
         }
         detail::write_file(root / "solve_times.json", h.dump(1));
-        predict::log_query(root, ft, res, res.ran, now_s() - t0);  // training data for tools/prism_ai/predict.py
+        predict::log_query(root, ft, res, res.ran, now_s() - t0);  // training data for `prism_ai predict`
     }
     // An overrun (the whole call longer than its timeout plus the watchdog
     // grace, outside certified mode) is recorded with the time of each

@@ -3,8 +3,8 @@
 // Solver and bound prediction (roadmap 9.1 "small gradient-boosted model
 // trained on PRISM's own logs", 9.3 "solver and bound prediction").
 //
-// The model is a tiny GBDT (depth-3 regression trees) trained offline by
-// tools/prism_ai/predict.py on:
+// The model is a tiny GBDT (depth-3 regression trees, prism/solver_gbdt.hpp)
+// trained offline by `prism_ai predict` (src/tools/prism_ai/) on:
 //   * <cache>/solve_log.jsonl — one line per solver query: the query's
 //     features and the seconds each member needed (log_query below);
 //   * bound logs — per function: features and the verdict at each unwind.
@@ -14,9 +14,9 @@
 // costs time, never soundness.
 //
 // Which model: $PRISM_SOLVER_MODEL, else <cache>/predict_model.json, else the
-// built-in one (src/prism/solver/predict_default.inc). A model is used only
-// if it says "enabled": true, which tools/prism_ai/predict.py writes only
-// when the held-out measurement beats the rules and the history by more than
+// built-in one (src/prism/solver/predict_default.json, embedded by CMake). A
+// model is used only if it says "enabled": true, which `prism_ai predict`
+// writes only when the held-out measurement beats the rules and the history by more than
 // the run-to-run noise (roadmap 9.7). The built-in solver model did
 // (docs/SOLVERS.md "Learned scheduler"); it has no unwind model.
 // PRISM_SOLVER_PREDICT=0 switches prediction off: the rules decide.

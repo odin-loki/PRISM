@@ -623,7 +623,7 @@ TEST_CASE("ai-assist draft: model rewording is validated like any draft") {
 }
 
 // ------------------------------------------------------------------ predict
-// The built-in model (src/prism/solver/predict_default.inc) is on by default
+// The built-in model (src/prism/solver/predict_default.json) is on by default
 // since it beat the rules on held-out files (docs/SOLVERS.md "Learned
 // scheduler"); a model file replaces it, even a disabled one, and
 // PRISM_SOLVER_PREDICT=0 switches prediction off (the rules decide).
@@ -767,7 +767,7 @@ TEST_CASE("solver: the SMT-LIB2 copy for Bitwuzla is portable and equivalent") {
     }
 }
 
-// Data collection for tools/prism_ai/predict.py (roadmap 3.1 / 9.3 measurement).
+// Data collection for `prism_ai predict` (roadmap 3.1 / 9.3 measurement).
 // PRISM_PREDICT_COLLECT=<dir> ./prism_tests -tc="ai-assist predict collect*"
 // Sources: the directories listed one per line in <dir>/roots.txt (relative
 // to the repository root), else the conformance suite. Every .c/.cpp/.i file
