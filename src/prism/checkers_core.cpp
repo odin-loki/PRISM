@@ -4395,9 +4395,10 @@ void checkers_core(const std::vector<std::string>& lines, std::string_view rel,
         wcs_unbounded(lines, rel, funcs, out);
         int_clz_zero(lines, rel, funcs, out);
         mem_bcopy(lines, rel, funcs, out);
+        // C sources only, the same gate as prism/checkers.py.
+        str_strncpy_nul(lines, rel, funcs, out);
+        str_snprintf(lines, rel, funcs, out);
     }
-    str_strncpy_nul(lines, rel, funcs, out);
-    str_snprintf(lines, rel, funcs, out);
     int_atoi(lines, rel, funcs, out);
     enum_hole(lines, rel, funcs, out);
     fd_leak(lines, rel, funcs, out);
