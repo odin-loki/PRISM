@@ -37,6 +37,9 @@ struct FunctionInfo {
     // 98 -> 3), 0 = not known (the compiler's default is assumed). Set by the
     // pipeline before bmc (with_cxx_std); not in the JSON form.
     int cxx_std = 0;
+    // `main`'s first parameter is argc, nonnegative (C11 5.1.2.2.1p2). Set by
+    // the bmc stage (program_main); not in the JSON form.
+    bool argc_nonneg = false;
 };
 
 // Source column of a (line, column) of the stripped body text.

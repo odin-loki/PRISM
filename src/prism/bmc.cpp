@@ -3190,6 +3190,7 @@ Finding bmc_once(const FunctionInfo& fn, int unwind, bool try_unbounded,
                  const std::map<std::string, int>& enums, Finding base,
                  const std::map<std::string, std::string>& macros = {}, bool havoc = false) {
     Parser p(fn.body, fn.params, unwind, enums, macros, havoc);
+    p.argc_nonneg = fn.argc_nonneg;
     p.cxx = cxx_source(fn.file);
     p.shift_rules = shift_rules_for(fn);
     auto enc = p.run();
@@ -3449,6 +3450,7 @@ ProgramCheck check_program(const FunctionInfo& fn, const std::string& body, int 
     try {
         Parser p(body, fn.params, unwind, enums_from_fn(fn));
         p.ai_hooks = true;
+        p.argc_nonneg = fn.argc_nonneg;
         p.cxx = cxx_source(fn.file);
         p.shift_rules = shift_rules_for(fn);
         auto enc = p.run();
@@ -3690,6 +3692,58 @@ std::vector<FunctionInfo> with_cxx_std(std::vector<FunctionInfo> functions, cons
     return functions;
 }
 
+// `int main(int argc, char *argv[])` (and a third `char **envp`): the
+// pointer parameters are what makes main NEEDS-HARNESS (Law 6), but C11
+// 5.1.2.2.1p2 supplies their guard, and a body that never names them cannot
+// use them. When neither argv nor envp occurs in the body or in a macro the
+// encoder may expand, main is checked with argc alone, which is nonnegative
+// (the same paragraph). Any use of argv keeps NEEDS-HARNESS. argc >= 0 is
+// assumed only when nothing in the tree calls main (C allows a call to main
+// with any argument).
+FunctionInfo program_main(FunctionInfo fn, bool main_called) {
+    if (fn.name != "main" || fn.kind != "POINTER") return fn;
+    if (fn.params.size() != 2 && fn.params.size() != 3) return fn;
+    if (rx_sub("\\s+", "", fn.params[0].first) != "int") return fn;
+    static Regex word("[A-Za-z_]\\w*");
+    std::vector<std::string> unused;
+    for (size_t i = 1; i < fn.params.size(); ++i) {
+        auto full = fn.params[i].first + " " + fn.params[i].second;
+        std::string punct, name;
+        bool has_char = false;
+        for (auto& m : word.finditer(full)) {
+            if (m.text == "char") has_char = true;
+            else if (m.text == "const") continue;
+            else if (name.empty()) name = m.text;
+            else return fn;  // a second name: not a char pointer array
+        }
+        for (char ch : full)
+            if (!std::isspace(static_cast<unsigned char>(ch)) && !std::isalnum(static_cast<unsigned char>(ch)) &&
+                ch != '_')
+                punct.push_back(ch);
+        if (!has_char || (punct != "**" && punct != "*[]")) return fn;
+        if (!name.empty()) unused.push_back(name);
+    }
+    auto names_in = [&](const std::string& text) {
+        for (auto& m : word.finditer(text))
+            if (std::find(unused.begin(), unused.end(), m.text) != unused.end()) return true;
+        return false;
+    };
+    if (names_in(fn.body)) return fn;
+    for (auto& [k, v] : macros_from_fn(fn))
+        if (names_in(k) || names_in(v)) return fn;
+    fn.params.resize(1);
+    fn.kind = "SCALAR";
+    fn.argc_nonneg = !main_called && !fn.params[0].second.empty();
+    return fn;
+}
+
+bool tree_calls_main(const std::vector<FunctionInfo>& functions) {
+    static Regex call("\\bmain\\s*\\(");
+    for (auto& f : functions)
+        if (call.search(f.body)) return true;
+    return false;
+}
+
 std::vector<Finding> run_bmc(const std::vector<FunctionInfo>& functions, int unwind,
                              bool allow_local_pointers) {
 #ifdef PRISM_HAS_Z3
@@ -3700,9 +3754,12 @@ std::vector<Finding> run_bmc(const std::vector<FunctionInfo>& functions, int unw
     tagged.reserve(functions.size());
     const bool vassert = verifier_assert_rewrite_enabled(functions);
     AssumeModelScope assume_scope(assume_model_ok(functions));
-    for (auto& fn : functions)
+    const bool main_called = tree_calls_main(functions);
+    for (auto& fn0 : functions) {
+        auto fn = program_main(fn0, main_called);
         tagged.push_back(vassert && fn.name != "__VERIFIER_assert" ? rewrite_verifier_assert(tag_nondet_sites(fn))
                                                                    : tag_nondet_sites(fn));
+    }
     for (auto& fn : inline_static(tagged)) {
         // R1: one function the encoder cannot handle (a Z3 sort error, ...)
         // is an ERROR for that function, never a crash of the whole stage.
