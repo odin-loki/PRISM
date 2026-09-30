@@ -341,7 +341,8 @@ std::string cli_usage() {
         "  prism regress [--report OUT/report.json] [--write-tests DIR] [--run --allow-exec]\n"
         "  prism ask \"<question>\" [--report OUT/report.json] [--json] [--no-llm]\n"
         "  prism draft [--report OUT/report.json] [--kind report|assurance]\n"
-        "  prism triage [OUT] [--threshold T] [--no-embed]\n";
+        "  prism triage [OUT] [--threshold T] [--no-embed]\n"
+        "SV-COMP (docs/SVCOMP.md): prism svcomp --prop P.prp TASK.c | svcomp score | svcomp pack\n";
 }
 
 }  // namespace prism
