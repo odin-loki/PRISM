@@ -180,7 +180,20 @@ std::pair<std::string, std::string> upto_colon(const std::string& text) {
     throw ParseFail("expected :");
 }
 
+std::vector<std::string> tok_uncached(const std::string& src);
+
+// Loop conditions and bodies are re-read on every iteration: the tokens of a
+// source text are cached per thread (a pure function of the text).
 std::vector<std::string> tok(const std::string& src) {
+    thread_local std::unordered_map<std::string, std::vector<std::string>> cache;
+    if (auto it = cache.find(src); it != cache.end()) return it->second;
+    auto toks = tok_uncached(src);
+    if (cache.size() >= 8192) cache.clear();
+    cache.emplace(src, toks);
+    return toks;
+}
+
+std::vector<std::string> tok_uncached(const std::string& src) {
     static Regex rx(
         R"(0[xX][0-9a-fA-F](?:'?[0-9a-fA-F])*[uUlL]*|0[bB][01](?:'?[01])*[uUlL]*|\d(?:'?\d)*[uUlL]*|'(?:\\.|[^\\'])'|"(?:\\.|[^\\"])*"|[A-Za-z_]\w*|&&|\|\||==|!=|<=|>=|<<|>>|\+\+|--|[+\-*/%<>=!&|^~()[\],?:{}])");
     std::vector<std::string> out;
