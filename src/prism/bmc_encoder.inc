@@ -1475,7 +1475,9 @@ void Parser::decl_multi(Enc& e, const std::string& typ, const std::string& name,
             for (size_t k = level; k < dims.size(); ++k) size *= dims[k];
             size_t braced = 0;
             for (auto& x : xs) {
-                if (x.empty()) throw ParseFail("UNENCODED: initialiser of " + name);
+                // A string literal initialises a whole row (6.7.9p14): not
+                // one element.
+                if (x.empty() || x.find('"') != std::string::npos) throw ParseFail("UNENCODED: initialiser of " + name);
                 if (x.front() == '{') ++braced;
             }
             if (braced == 0) {

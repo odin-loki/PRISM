@@ -408,6 +408,10 @@ int g_row(int i) {
     int *p = m[0];
     return p[0];
 }
+int g_str(int i) {
+    char s[2][4] = {"abc", "def"};
+    return s[1][0];
+}
 int g_3d(int i) {
     int m[2][2][2] = {{{1, 2}, {3, 4}}, {{5, 6}, {7, 8}}};
     if (i < 0 || i > 1) return 0;
@@ -430,5 +434,7 @@ int g_3d(int i) {
     CHECK(by["g_row"].status != kProved);
     CHECK(by["g_row"].status != kFailed);
     CHECK(by["g_3d"].status == kProved);
+    // string rows are not modelled (never a wrong element value)
+    CHECK(by["g_str"].status == kHarness);
 }
 #endif
