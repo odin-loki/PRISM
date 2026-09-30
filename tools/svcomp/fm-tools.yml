@@ -19,4 +19,6 @@ participation:
       LP64 only today; ILP32 tasks with width-dependent types answer unknown.
       valid-memsafety refutations only; no true memsafety proofs yet.
       Pinned subset (2026-09-26): 203/417 on no-overflow + unreach-call, 0 incorrect.
-      Archive: tools/svcomp/package_archive.py (dependencies.json lists host clang/opt).
+      Archive: `prism svcomp pack` (dependencies.json lists host clang/opt).
+      Tool-info module: benchexec.tools.prism (tools/svcomp/prism.py, to be upstreamed).
+      Runtime packages: clang and llvm (opt) 18, bubblewrap; no Python for the verifier.

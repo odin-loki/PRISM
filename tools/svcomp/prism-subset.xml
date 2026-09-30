@@ -4,14 +4,14 @@
   PRISM on the pinned SV-COMP subset (roadmap 6.3), with the SV-COMP
   verification resource limits (15 min CPU time, 15 GB memory, 4 cores).
   The tool-info module is tools/svcomp/prism.py, loaded as ".prism"; the
-  tool directory holds prism_svcomp.py, witness.py and the prism binary.
+  tool directory holds the prism binary (BenchExec runs `prism svcomp`).
   The command line is in docs/SVCOMP.md ("BenchExec"). The option
   allow-exec is PRISM Law 9's opt-in: replaying a counterexample compiles
   and runs the task.
 -->
 <benchmark tool=".prism" timelimit="15 min" memlimit="15 GB" cpuCores="4">
   <option name="--allow-exec"/>
-  <!-- the wrapper writes witness.yml into the run's working directory -->
+  <!-- `prism svcomp` writes witness.yml into the run's working directory -->
   <resultfiles>witness.yml</resultfiles>
 
   <rundefinition name="no-overflow">

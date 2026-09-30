@@ -298,10 +298,12 @@ class TestLicenceFirewall(unittest.TestCase):
         )
 
     def test_ci_smokes_svcomp_package_archive(self):
-        pack = ROOT / "tools" / "svcomp" / "package_archive.py"
+        # the SV-COMP submission packager is `prism svcomp pack` (src/prism/cli_svcomp.cpp)
+        pack = ROOT / "src" / "prism" / "cli_svcomp.cpp"
         self.assertTrue(pack.is_file(), "SV-COMP submission packager must exist")
+        self.assertIn("int pack_main(", pack.read_text(encoding="utf-8"))
         ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-        self.assertIn("package_archive.py", ci)
+        self.assertIn("prism svcomp pack", ci)
 
     def test_pir_stage_reads_function_budget_env(self):
         stage = (ROOT / "src" / "prism" / "pir" / "stage.cpp").read_text(encoding="utf-8")
