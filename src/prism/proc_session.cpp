@@ -132,6 +132,21 @@ std::string resolve_exe(const std::string& name) {
     return name;  // execve fails: rc 127
 }
 
+// Close-on-exec: a child another thread starts at the same time must not
+// inherit these pipes (it would hold the write end open, and this runner
+// would wait for that child instead of its own). dup2 onto 0/1/2 in our own
+// child clears the flag there.
+bool cloexec_pipe(int p[2]) {
+#ifdef __linux__
+    return ::pipe2(p, O_CLOEXEC) == 0;
+#else
+    if (::pipe(p) != 0) return false;
+    ::fcntl(p[0], F_SETFD, FD_CLOEXEC);
+    ::fcntl(p[1], F_SETFD, FD_CLOEXEC);
+    return true;
+#endif
+}
+
 void set_nonblock(int fd) {
     const int fl = ::fcntl(fd, F_GETFL, 0);
     if (fl >= 0) ::fcntl(fd, F_SETFL, fl | O_NONBLOCK);
@@ -243,7 +258,7 @@ SessionResult run_session(const std::vector<std::string>& args, const SessionOpt
                     p[i] = -1;
                 }
     };
-    if (::pipe(out_p) != 0 || ::pipe(err_p) != 0 || (opt.input && ::pipe(in_p) != 0)) {
+    if (!cloexec_pipe(out_p) || !cloexec_pipe(err_p) || (opt.input && !cloexec_pipe(in_p))) {
         close_all();
         r.failed = true;
         return r;
