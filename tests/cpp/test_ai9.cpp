@@ -16,6 +16,8 @@
 #include "prism/pipeline.hpp"
 #include "prism/stages.hpp"
 
+#include "../../src/tools/qa/docscan.hpp"
+
 #include <nlohmann/json.hpp>
 
 #include <filesystem>
@@ -280,6 +282,53 @@ TEST_CASE("ai9 lean: no prover model is NOTRUN, never a proof") {
     CHECK(r.status == std::string(laws::NOTRUN));
     CHECK_FALSE(r.reason.empty());
     CHECK(r.proof.empty());
+}
+
+TEST_CASE("ai9 prove --all: finds sorry theorems in source order, ignoring comments") {
+    auto dir = tmp("prove-all");
+    write(dir / "X.lean",
+          "-- theorem ghost : True := sorry\n"
+          "/- theorem ghost2 : True := sorry -/\n"
+          "lemma z (n : Nat) : n = n := by\n  sorry\n"
+          "theorem a (n : Nat) : n = n := by\n  sorry\n"
+          "theorem b (n : Nat) : n = n := rfl\n"
+          "private theorem c : True := sorry\n");
+    // theorems and lemmas mixed, in the order they are declared
+    CHECK(ai::lean_sorry_theorems(dir / "X.lean") == std::vector<std::string>{"z", "a", "c"});
+    write(dir / "sub" / "Y.lean", "theorem y : True := sorry\n");
+    write(dir / ".lake" / "pkg" / "Z.lean", "theorem vendored : True := sorry\n");  // .lake is skipped
+    // overlapping roots name each file once
+    auto targets = ai::lean_sorry_targets({dir, dir / "sub"});
+    std::vector<std::string> names;
+    for (auto& [f, t] : targets) names.push_back(f.filename().string() + ":" + t);
+    CHECK(names == std::vector<std::string>{"X.lean:z", "X.lean:a", "X.lean:c", "Y.lean:y"});
+
+    // without --allow-exec every theorem is NOTRUN (Law 9): exit 3, summary written
+    const auto out = dir / "out";
+    std::vector<std::string> argv_s{"prove", "--all", dir.string(), "--out", out.string()};
+    std::vector<char*> argv;
+    for (auto& s : argv_s) argv.push_back(s.data());
+    CHECK(ai::prove_main(static_cast<int>(argv.size()), argv.data()) == 3);
+    std::ifstream in(out / "prove" / "summary.json");
+    auto j = nlohmann::json::parse(in);
+    REQUIRE(j.size() == 4);
+    for (auto& r : j) CHECK(r["status"] == std::string(laws::NOTRUN));
+    CHECK(j[0]["theorem"] == "z");
+    // --list only lists
+    std::vector<std::string> list_s{"prove", "--all", dir.string(), "--list"};
+    std::vector<char*> largv;
+    for (auto& s : list_s) largv.push_back(s.data());
+    CHECK(ai::prove_main(static_cast<int>(largv.size()), largv.data()) == 0);
+}
+
+TEST_CASE("ai9 prove --all: the repository's proofs have no sorry") {
+    // proofs/check.sh forbids sorry; the driver agrees there is nothing to search
+    const auto root = prism::qa::repo_root();
+    auto targets = ai::lean_sorry_targets({root / "proofs", root / "proofs" / "semantics", root / "proofs" / "techniques"});
+    std::string found;
+    for (auto& [f, t] : targets) found += f.string() + ":" + t + "\n";
+    CHECK_MESSAGE(targets.empty(), found);
+    CHECK(fs::is_directory(root / "proofs"));
 }
 
 // ============================================================ assumption audit

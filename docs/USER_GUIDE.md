@@ -186,6 +186,7 @@ code: 0 proved, 1 not proved, 3 `NOTRUN`, 2 error.
 |---|---|
 | `FILE.lean THEOREM` | the Lean file and the theorem to prove |
 | `--list` | print the theorems in `FILE.lean` that still contain a `sorry` |
+| `--all [ROOTS...]` | every theorem with a `sorry` in the `.lean` files under `ROOTS` (default `proofs`, `proofs/semantics`, `proofs/techniques`; `.lake` skipped), one status line each, then `proved N/M`; with `--list`, only list them. Writes `<out>/prove/summary.json`; exit 0 when every one is proved, 3 when every one is `NOTRUN` |
 | `--write` | write the proof back into the file and add it to the lemma library (default `proofs/lemmas.jsonl`) |
 | `--allow-exec` | allow Lean elaboration (required) |
 | `--project DIR` | the Lake project to elaborate in (default: the nearest parent directory with a lakefile) |

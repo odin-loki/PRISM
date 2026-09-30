@@ -101,34 +101,6 @@ class TestParity(unittest.TestCase):
             self.assertIn(f'{{"{cls}"', cpp)
 
 
-class TestProveDriver(unittest.TestCase):
-    def _driver(self):
-        import importlib.util
-
-        spec = importlib.util.spec_from_file_location("prism_prove", ROOT / "tools" / "prism_prove.py")
-        assert spec and spec.loader
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        return mod
-
-    def test_finds_sorry_theorems_ignoring_comments(self):
-        mod = self._driver()
-        with tempfile.TemporaryDirectory() as t:
-            p = Path(t) / "X.lean"
-            p.write_text(
-                "-- theorem ghost : True := sorry\n"
-                "/- theorem ghost2 : True := sorry -/\n"
-                "theorem a (n : Nat) : n = n := by\n  sorry\n"
-                "theorem b (n : Nat) : n = n := rfl\n"
-                "private theorem c : True := sorry\n", encoding="utf-8")
-            self.assertEqual(mod.sorry_theorems(p), ["a", "c"])
-
-    def test_repository_proofs_have_no_sorry(self):
-        # proofs/check.sh forbids sorry; the driver agrees there is nothing to search.
-        mod = self._driver()
-        self.assertEqual([t for p in mod.lean_files(list(mod.DEFAULT_ROOTS)) for t in mod.sorry_theorems(p)], [])
-
-
 class _FakeServer(http.server.BaseHTTPRequestHandler):
     """llama-server double: /health, /completion with a scripted reply queue."""
 
