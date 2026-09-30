@@ -128,6 +128,10 @@ std::pair<std::string, std::string> upto_colon(const std::string& text) {
 }
 
 std::vector<std::string> tok(const std::string& src) {
+    // A scrubbed byte (cparse.hpp) is not the source's value; the regex
+    // below would drop it outside a literal and read it inside one.
+    if (src.find(SCRUBBED_BYTE) != std::string::npos)
+        throw ParseFail("UNENCODED: byte that is not UTF-8 text (read as 0x7F)");
     static Regex rx(
         R"(0x[0-9a-fA-F]+(?:'[0-9a-fA-F]+)*|\d+(?:'\d+)*|'(?:\\.|[^\\'])'|"(?:\\.|[^\\"])*"|[A-Za-z_]\w*|&&|\|\||==|!=|<=|>=|<<|>>|\+\+|--|[+\-*/%<>=!&|^~()[\],?:])");
     std::vector<std::string> out;

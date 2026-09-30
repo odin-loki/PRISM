@@ -253,6 +253,12 @@ std::vector<Finding> run_wp(const std::vector<FunctionInfo>& functions, int unwi
             out.push_back(std::move(f));
             continue;
         }
+        if (auto syn = scrubbed_byte_reason(fn.body, "WP")) {
+            auto f = make_find("wp", laws::NEEDS_HARNESS, fn, "FUNC-CONTRACT", *syn, laws::STRENGTH_PROVES);
+            mark(f);
+            out.push_back(std::move(f));
+            continue;
+        }
 
         std::vector<std::string> encoded_req;
         std::optional<std::string> bad;

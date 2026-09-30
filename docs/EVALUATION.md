@@ -66,8 +66,11 @@ commits were measured on their own, not by a full rerun: `a0b962721` and
 
 Reproducers are in `testdata_fp/realworld_*.c` (correct code that must give
 no `FAILED` lint and no parse gap, both engines) and
-`testdata_tp/realworld_twins.c`, `testdata_tp/knr_gap.c` (the buggy twins,
-which must still fire). They are a few lines each, reduced from jsmn (MIT),
+`testdata_tp/realworld_twins.c`, `testdata_tp/knr_gap_unread.c` (the buggy
+twins, which must still fire; `knr_gap_unread.c` is a K&R head no pattern
+reads, which must stay a `PARSE-GAP`). `testdata_tp/knr_gap.c`, the ALL_CAPS
+zlib shape, was a gap too; the C++ engine now parses it as a function (the
+Python engine still reports the gap). They are a few lines each, reduced from jsmn (MIT),
 tinyexpr (zlib licence), cJSON (MIT) and zlib (zlib licence); each file names
 its source. Tests: the `real-world:` cases in `tests/cpp/test_main.cpp` and
 `tests/cpp/test_cparse.cpp`.

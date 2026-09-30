@@ -220,17 +220,17 @@ TEST_CASE("cparse: digit separators are not character literals") {
 }
 
 TEST_CASE("cparse: invalid UTF-8 is scrubbed, byte for byte") {
-    CHECK(prism::scrub_utf8("caf\xe9") == "caf?");
+    CHECK(prism::scrub_utf8("caf\xe9") == "caf\x7f");
     CHECK(prism::scrub_utf8("caf\xc3\xa9") == "caf\xc3\xa9");      // valid, kept
-    CHECK(prism::scrub_utf8("\xed\xa0\x80") == "???");              // a surrogate
-    CHECK(prism::scrub_utf8("\xc0\xaf") == "??");                   // overlong
+    CHECK(prism::scrub_utf8("\xed\xa0\x80") == "\x7f\x7f\x7f");              // a surrogate
+    CHECK(prism::scrub_utf8("\xc0\xaf") == "\x7f\x7f");                   // overlong
     CHECK(prism::scrub_utf8("\xf0\x9f\x98\x80 ok") == "\xf0\x9f\x98\x80 ok");
     auto p = scratch_file("latin1.c",
                           "/* caf\xe9 */\nint f(int x) {\n    const char *s = \"na\xefve\";\n"
                           "    return x + s[0];\n}\n");
     auto fns = prism::extract_functions(p, "latin1.c");
     REQUIRE(fns.size() == 1);
-    CHECK(fns[0].body.find("na?ve") != std::string::npos);
+    CHECK(fns[0].body.find("na\x7fve") != std::string::npos);
     // The report writer never throws on a stray byte in a message either.
     prism::RunReport rep;
     rep.root = "r";
@@ -246,7 +246,57 @@ TEST_CASE("cparse: invalid UTF-8 is scrubbed, byte for byte") {
     REQUIRE_NOTHROW(out = rep.dumps());
     auto j = nlohmann::json::parse(out);
     CHECK(j["stages"][0]["findings"][0]["message"] == "snippet: na\xef\xbf\xbdve");
-    CHECK(j["functions"][0]["body"].get<std::string>().find("na?ve") != std::string::npos);
+    CHECK(j["functions"][0]["body"].get<std::string>().find("na\x7fve") != std::string::npos);
+}
+
+// The scrub changes the program: a Latin-1 'é' (0xE9) in a character
+// literal is -23 as signed char, its replacement 0x7F is 127. So no engine
+// may model a body that holds one. Twin: the same function spelled with the
+// escape '\xE9' (valid text, same value) is still refuted by bmc.
+TEST_CASE("cparse: a scrubbed byte is never modelled (no wrong proof)") {
+    const std::string raw = "int f(void) {\n    signed char c = '\xe9';\n    return 100 / (c + 23);\n}\n";
+    auto p = scratch_file("latin1_div.c", raw);
+    auto fns = prism::extract_functions(p, p.string());
+    REQUIRE(fns.size() == 1);
+    CHECK(fns[0].body.find(prism::SCRUBBED_BYTE) != std::string::npos);
+    CHECK(prism::scrubbed_byte_reason(fns[0].body, "x").has_value());
+    CHECK_FALSE(prism::scrubbed_byte_reason("return 'a';", "x").has_value());
+    for (auto& r : prism::run_bmc(fns, 4)) {
+        INFO(r.status << " " << r.message);
+        CHECK(r.status == prism::laws::NEEDS_HARNESS);
+        CHECK(r.message.find("UNENCODED: byte that is not UTF-8 text") != std::string::npos);
+    }
+    CHECK(prism::run_interval(fns).empty());
+    for (auto& r : prism::run_concolic(fns, 8)) {
+        INFO(r.status << " " << r.message);
+        CHECK(r.status == prism::laws::NEEDS_HARNESS);
+    }
+    for (auto& r : prism::run_rapid(fns, 8)) CHECK(r.status == prism::laws::NEEDS_HARNESS);
+    // Inlined into a caller the byte still stops the model.
+    auto both = prism::extract_functions_from_text(
+        "static int g(void) { signed char c = '\xe9'; return c; }\n"
+        "int h(void) { return 100 / (g() + 23); }\n", "both.c");
+    REQUIRE(both.size() == 2);
+    for (auto& r : prism::run_bmc(both, 4)) {
+        INFO(r.function.value_or("") << " " << r.status << " " << r.message);
+        CHECK_FALSE(prism::laws::is_proof(r.status));
+        CHECK(r.status != prism::laws::FAILED);
+    }
+    // A comment's byte is only blanked text: the function is modelled.
+    auto cmt = prism::extract_functions_from_text("int k(int n) { /* caf\xe9 */ return 100 / n; }\n", "c.c");
+    REQUIRE(cmt.size() == 1);
+    CHECK(cmt[0].body.find(prism::SCRUBBED_BYTE) == std::string::npos);
+    // False twin: the escape spelling is modelled and refuted.
+    auto twin = prism::extract_functions_from_text(
+        "int f(void) {\n    signed char c = '\\xE9';\n    return 100 / (c + 23);\n}\n", "twin.c");
+    REQUIRE(twin.size() == 1);
+    bool div0 = false;
+    for (auto& r : prism::run_bmc(twin, 4)) {
+        INFO(r.status << " " << r.message);
+        CHECK_FALSE(prism::laws::is_proof(r.status));
+        if (r.status == prism::laws::FAILED && r.cls == "INT-DIV-ZERO") div0 = true;
+    }
+    CHECK(div0);
 }
 
 // ---------------------------------------------------------------- report JSON
@@ -316,6 +366,13 @@ TEST_CASE("models: records round-trip through their JSON form") {
     CHECK(back.body_line == 2);
     CHECK(back.body_col == 14);
     CHECK(back.cxx_std == 0);
+    // report.json: the function shape without the body position.
+    prism::RunReport rr;
+    rr.functions = {fn};
+    auto rj = nlohmann::json::parse(rr.dumps());
+    CHECK(rj["functions"][0]["name"] == "f");
+    CHECK_FALSE(rj["functions"][0].contains("body_line"));
+    CHECK_FALSE(rj["functions"][0].contains("body_col"));
 
     prism::Finding f;
     f.stage = "bmc";
@@ -467,6 +524,32 @@ TEST_CASE("false positives: parser forms in the corpus") {
     auto gap = repo_dir("testdata_tp") / "knr_gap.c";
     CHECK(prism::parse_gaps(gap).empty());
     CHECK(names_in(gap) == std::vector<std::string>{"strwinerror", "after_gap"});
+    // Its unreadable twin stays a gap on disk too.
+    auto unread = repo_dir("testdata_tp") / "knr_gap_unread.c";
+    CHECK(prism::parse_gaps(unread) ==
+          std::vector<std::pair<int, std::string>>{{8, "char zlib_internal *strwinerror(error)"}});
+    CHECK(names_in(unread) == std::vector<std::string>{"after_gap"});
+}
+
+TEST_CASE("cparse: gap decisions after a macro line or a declaration") {
+    // Macro lines cut to a paren-less head that reads as nothing: the uncut
+    // head decides, a gap (it was one before the cut existed).
+    CHECK(prism::parse_gaps_from_text("DEFINE_X(a)\nWITH_LOCK {\n    x = 1;\n}\n") ==
+          std::vector<std::pair<int, std::string>>{{1, "DEFINE_X(a)"}});
+    // A paren-less head after `;` (a macro-bodied definition) is still the
+    // K&R fallback: the last `(`-segment is the gap.
+    CHECK(prism::parse_gaps_from_text("void g(int);\nint x;\nBEGIN_FN {\n    x = 1;\n}\n") ==
+          std::vector<std::pair<int, std::string>>{{1, "void g(int)"}});
+    // A brace initializer after a declaration is not a gap: a member's
+    // default, or a variable at file scope.
+    CHECK(prism::parse_gaps_from_text("struct S {\n    void f(int);\n    std::vector<int> m{};\n"
+                                      "    int n{3};\n};\n")
+              .empty());
+    CHECK(prism::parse_gaps_from_text("void f(int);\nstatic std::atomic<int> counter{0};\n").empty());
+    // The macro-line cut still reads a declaration after it.
+    auto cx = "CXXOPTS_DIAGNOSTIC_PUSH\nCXXOPTS_IGNORE_WARNING(\"-Wx\")\nclass A {\n    int g() { return 1; }\n};\n";
+    CHECK(prism::parse_gaps_from_text(cx).empty());
+    CHECK(names_of(prism::extract_functions_from_text(cx, "a.cpp")) == std::vector<std::string>{"A::g"});
 }
 
 TEST_CASE("false positives: the whole lints stage, AST layer too, is silent on the corpus") {

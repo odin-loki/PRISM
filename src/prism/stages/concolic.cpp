@@ -249,6 +249,7 @@ Finding concolic_function(const FunctionInfo& fn, int budget) {
     if (has_unencoded_setjmp(fn))
         return base_nh(
             "setjmp/longjmp/va_list unencoded: concolic engine is not a nonlocal-control model");
+    if (auto syn = scrubbed_byte_reason(fn.body, "concolic engine")) return base_nh(*syn);
     if (auto syn = unencoded_syntax_reason(fn, "concolic engine")) return base_nh(*syn);
     auto queue = initial_seeds(fn);
     std::set<ArgsKey> seen;

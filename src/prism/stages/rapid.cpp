@@ -446,6 +446,10 @@ std::optional<Finding> contract_kind_finding(const FunctionInfo& fn, const std::
 std::vector<Finding> run_rapid(const std::vector<FunctionInfo>& functions, int trials) {
     std::vector<Finding> out;
     for (auto& fn : functions) {
+        if (auto syn = scrubbed_byte_reason(fn.body, "the compiled harness")) {
+            out.push_back(make_find("rapid", laws::NEEDS_HARNESS, fn, "", *syn, laws::STRENGTH_SOME));
+            continue;
+        }
         if (auto kind = contract_kind_finding(fn, "rapid")) {
             out.push_back(*kind);
             continue;
@@ -473,6 +477,10 @@ std::vector<Finding> run_muttest(const std::vector<FunctionInfo>& functions, int
     };
     std::vector<Finding> out;
     for (auto& fn : functions) {
+        if (auto syn = scrubbed_byte_reason(fn.body, "the compiled harness")) {
+            out.push_back(make_find("muttest", laws::NEEDS_HARNESS, fn, "", *syn, laws::STRENGTH_SOME));
+            continue;
+        }
         if (auto kind = contract_kind_finding(fn, "muttest")) {
             out.push_back(*kind);
             continue;

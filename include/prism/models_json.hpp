@@ -20,7 +20,9 @@ PRISM_API void to_json(nlohmann::json& j, const Finding& f);
 PRISM_API void from_json(const nlohmann::json& j, Finding& f);
 PRISM_API void to_json(nlohmann::json& j, const StageResult& s);
 PRISM_API void from_json(const nlohmann::json& j, StageResult& s);
-// `body_line` / `body_col` are written; `cxx_std` is not (set per run).
+// `body_line` / `body_col` are written (functions.json), except inside a
+// RunReport (report.json keeps the Python engine's function shape);
+// `cxx_std` is not (set per run).
 PRISM_API void to_json(nlohmann::json& j, const FunctionInfo& f);
 PRISM_API void from_json(const nlohmann::json& j, FunctionInfo& f);
 PRISM_API void to_json(nlohmann::json& j, const RunReport& r);

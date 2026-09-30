@@ -796,7 +796,11 @@ struct Parser {
             std::string head = text.substr(head_start, k - head_start);
             if (auto lab = match_at_start(access_label, head))
                 head = head.substr(static_cast<std::size_t>(lab->spans[0].second));
-            if (auto cut = macro_line_prefix(head)) head = head.substr(cut);
+            // The head before macro lines are cut: the gap decision falls back
+            // to it when the cut head is neither a definition nor a type.
+            const std::string full_head = head;
+            const std::size_t macro_cut = macro_line_prefix(head);
+            if (macro_cut) head = head.substr(macro_cut);
             std::size_t lead = 0;
             while (lead < head.size() && std::isspace(static_cast<unsigned char>(head[lead]))) ++lead;
             int start = brace - static_cast<int>(head.size()) + static_cast<int>(lead);
@@ -840,18 +844,35 @@ struct Parser {
                 decl_start = pos;
                 continue;
             }
-            if (!is_type && shape.find('(') != std::string::npos && shape.find('=') == std::string::npos) {
-                auto t = trim(head);
+            // `std::vector<int> m{...}` / `static int n{0}`: a type, then the
+            // declared name, then a brace initializer (a member's default or
+            // a variable's), not a function head.
+            static Regex braced_init(R"(\s*[A-Za-z_][\w:<>,*&\s]*[\s*&>][A-Za-z_]\w*\s*)");
+            const bool var_init = !is_type && full_match(braced_init, head);
+            std::string gap_head = head;
+            int gap_start = start;
+            if (macro_cut && !is_type && !var_init && shape.find('(') == std::string::npos) {
+                // `DEFINE_X(a)\nWITH_LOCK {`: cut to a paren-less head that is
+                // nothing it reads, so the uncut head decides (Law 7).
+                gap_head = full_head;
+                std::size_t fl = 0;
+                while (fl < gap_head.size() && std::isspace(static_cast<unsigned char>(gap_head[fl]))) ++fl;
+                gap_start = brace - static_cast<int>(gap_head.size()) + static_cast<int>(fl);
+            }
+            const auto gap_shape = gap_head.size() == head.size() ? shape : head_shape(gap_head);
+            if (!is_type && !var_init && gap_shape.find('(') != std::string::npos &&
+                gap_shape.find('=') == std::string::npos) {
+                auto t = trim(gap_head);
                 auto first = trim(t.substr(0, t.find('\n')));
-                gaps.emplace_back(line_of(start), first.substr(0, 80));
-            } else if (!is_type && shape.find('(') == std::string::npos && shape.find('=') == std::string::npos &&
-                       after_semicolon && trim(head).empty()) {
+                gaps.emplace_back(line_of(gap_start), first.substr(0, 80));
+            } else if (!is_type && !var_init && shape.find('(') == std::string::npos &&
+                       shape.find('=') == std::string::npos && after_semicolon) {
                 // `local void once(state, init) once_t *state; void (*init)(void); {`:
-                // a K&R head the patterns did not read ends at a `;`, so only
-                // whitespace sits between it and `{` (`std::vector<int> m{};`
-                // after a declaration is a member initializer, not this). The definition starts at the last
-                // `;`-segment since the previous `{`/`}` that has one: a gap, never
-                // a body skipped without a word (Law 7).
+                // a K&R head the patterns did not read ends at a `;`. The
+                // definition starts at the last `;`-segment since the previous
+                // `{`/`}` that has one: a gap, never a body skipped without a
+                // word (Law 7). A brace initializer after a declaration
+                // (var_init) is not this.
                 std::vector<std::pair<std::size_t, std::string>> segs;  // (offset, text)
                 std::size_t s0 = decl_start;
                 for (std::size_t q = decl_start; q <= k; ++q) {
@@ -1178,12 +1199,18 @@ std::string scrub_utf8(std::string_view text) {
             len = ok ? 4 : 0;
         }
         if (len == 0) {
-            out[i++] = '?';
+            out[i++] = SCRUBBED_BYTE;
             continue;
         }
         i += len;
     }
     return out;
+}
+
+std::optional<std::string> scrubbed_byte_reason(std::string_view body, std::string_view engine) {
+    if (body.find(SCRUBBED_BYTE) == std::string_view::npos) return std::nullopt;
+    return "UNENCODED: byte that is not UTF-8 text in body (read as 0x7F; not modelled by " +
+           std::string(engine) + "): not a proof";
 }
 
 std::vector<Finding> parse_gap_findings(const std::filesystem::path& path, const std::string& rel) {

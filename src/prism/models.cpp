@@ -192,7 +192,14 @@ void to_json(nlohmann::json& j, const RunReport& r) {
     json stages = json::array();
     for (auto& s : r.stages) stages.push_back(s);
     json functions = json::array();
-    for (auto& f : r.functions) functions.push_back(f);
+    for (auto& f : r.functions) {
+        // report.json keeps the Python engine's function shape while both
+        // engines exist; the body position lives in functions.json only.
+        json fj = f;
+        fj.erase("body_line");
+        fj.erase("body_col");
+        functions.push_back(std::move(fj));
+    }
     j = {
         {"root", r.root},
         {"started", r.started},

@@ -781,6 +781,10 @@ struct Parser {
         e->cxx = cxx;
         e->shift_rules = shift_rules;
         try {
+            // Every engine entry (bmc, contracts, harness, AI programs) comes
+            // through here: a scrubbed byte changed the program's text.
+            if (body.find(SCRUBBED_BYTE) != std::string::npos)
+                throw ParseFail("UNENCODED: byte that is not UTF-8 text in body (read as 0x7F)");
             for (auto& [typ, name] : params) {
                 if (name.empty()) continue;
                 auto t = ctype_parse(typ);
@@ -2145,6 +2149,9 @@ const std::map<std::string, std::string>& builtin_macros() {
 // token is the number without them, so `'` never opens a character literal
 // inside a number.
 std::vector<std::string> ctok(const std::string& src) {
+    // A scrubbed byte (cparse.hpp) in a body or a macro is not the source's value.
+    if (src.find(SCRUBBED_BYTE) != std::string::npos)
+        throw ParseFail("UNENCODED: byte that is not UTF-8 text (read as 0x7F)");
     static Regex rx(
         "(0[xX][0-9a-fA-F]+(?:'[0-9a-fA-F]+)*[uUlL]*)|(0[bB][01]+(?:'[01]+)*[uUlL]*)|(\\d+(?:'\\d+)*[uUlL]*)|"
         "('(?:\\\\.|[^\\\\'])+')|(\"(?:\\\\.|[^\\\\\"])*\")|"

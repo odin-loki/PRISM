@@ -225,6 +225,10 @@ std::pair<std::string, std::string> take_block(std::string text) {
 }
 
 std::vector<std::string> tok(const std::string& src) {
+    // A scrubbed byte (cparse.hpp) is not the source's value; the regex
+    // below would drop it outside a literal and read it inside one.
+    if (src.find(SCRUBBED_BYTE) != std::string::npos)
+        throw ParseFail("UNENCODED: byte that is not UTF-8 text (read as 0x7F)");
     static Regex rx(
         R"(0x[0-9a-fA-F]+(?:'[0-9a-fA-F]+)*|\d+(?:'\d+)*|'(?:\\.|[^\\'])'|"(?:\\.|[^\\"])*"|[A-Za-z_]\w*|&&|\|\||==|!=|<=|>=|<<|>>|\+\+|--|[+\-*/%<>=!&|^~()[\],?:])");
     std::vector<std::string> out;
@@ -1115,6 +1119,7 @@ std::optional<std::string> unencoded_layout_stmt(std::string_view stmt_s) {
 std::optional<Finding> interval_function(const FunctionInfo& fn) {
     if (fn.kind == "POINTER" || fn.kind == "OTHER") return std::nullopt;
     if (body_needs_pointer_harness(fn.body)) return std::nullopt;
+    if (scrubbed_byte_reason(fn.body, "interval")) return std::nullopt;
     if (unencoded_syntax_reason(fn, "interval")) return std::nullopt;
     Engine eng(fn.params);
     for (auto& n : float_locals(fn.body)) eng.float_names.insert(n);
