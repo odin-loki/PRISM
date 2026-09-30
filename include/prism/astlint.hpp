@@ -40,7 +40,8 @@ inline constexpr std::string_view LAYER_KEY = "layer";
 
 // Classes the AST layer reports (all also in taxonomy.cpp / taxonomy.py),
 // besides the regex "<fn>() return is discarded" family it ports as one check
-// (src/prism/astlint_discard.inc, generated from checkers_*.cpp).
+// (prism/astlint_discard.inc, generated at build time from checkers_*.cpp by
+// src/tools/gen_astlint_discard.cpp).
 inline constexpr const char* CLASSES[] = {
     // first layer
     "CTRL-ASSIGN-COND", "MEM-SIZEOF-PTR", "INT-SIGN-CONV", "INT-ENUM-HOLE", "CTRL-SELF-ASSIGN",

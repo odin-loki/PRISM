@@ -268,6 +268,24 @@ file(CONFIGURE OUTPUT "${_pir_models_cpp}" CONTENT "${_pir_models_txt}" @ONLY)
 list(APPEND PRISM_SRC "${_pir_models_cpp}")
 
 add_library(prism_core STATIC ${PRISM_SRC})
+
+# --- src/prism/checkers_*.cpp -> prism/astlint_discard.inc (build time) ---
+# The Clang-AST layer's "<fn>() return is discarded" table is read out of
+# the regex lints' lint_discarded* rules by a small host tool, so the two
+# cannot drift (src/tools/gen_astlint_discard.cpp).
+add_executable(prism_gen_astlint_discard src/tools/gen_astlint_discard.cpp)
+set(_prism_checkers_src ${PRISM_SRC})
+list(FILTER _prism_checkers_src INCLUDE REGEX "^src/prism/checkers_[a-z_]+\\.cpp$")
+list(SORT _prism_checkers_src)
+set(_prism_discard_inc "${_pins_dir}/prism/astlint_discard.inc")
+add_custom_command(OUTPUT "${_prism_discard_inc}"
+  COMMAND prism_gen_astlint_discard "${_prism_discard_inc}" ${_prism_checkers_src}
+  DEPENDS prism_gen_astlint_discard ${_prism_checkers_src}
+  WORKING_DIRECTORY "${PRISM_ROOT}"
+  COMMENT "Generating prism/astlint_discard.inc from the lint_discarded* rules"
+  VERBATIM)
+add_custom_target(prism_generated DEPENDS "${_prism_discard_inc}")
+add_dependencies(prism_core prism_generated)
 target_include_directories(prism_core PUBLIC
   "${PRISM_ROOT}/include"
   "${PRISM_ROOT}/third_party"
@@ -511,6 +529,9 @@ if(PRISM_TESTS)
     "${PRISM_ROOT}/include"
     "${PRISM_ROOT}/third_party")
   target_link_libraries(prism_tests PRIVATE prism_core)
+  # The generated tables (astlint_discard.inc) are checked by doctests.
+  target_include_directories(prism_tests PRIVATE "${_pins_dir}")
+  add_dependencies(prism_tests prism_generated)
   if(UNIX)
     set_target_properties(prism_tests PROPERTIES BUILD_RPATH "$ORIGIN" INSTALL_RPATH "$ORIGIN")
   endif()
