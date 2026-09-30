@@ -3,6 +3,7 @@
 #include "prism/export.hpp"
 #include "prism/models.hpp"
 
+#include <cstddef>
 #include <filesystem>
 #include <map>
 #include <string>
@@ -24,6 +25,11 @@ PRISM_API bool journal_stages_present(const std::filesystem::path& out);
 PRISM_API std::map<std::string, StageResult> journal_completed_ok(const std::filesystem::path& out);
 PRISM_API void journal_write_functions(const std::filesystem::path& out,
                                        const std::vector<FunctionInfo>& functions);
-PRISM_API std::vector<FunctionInfo> journal_read_functions(const std::filesystem::path& out);
+// The parsed functions, or {} when the file is missing, unreadable, or has
+// any malformed entry (then *malformed, if given, is the count): a partial
+// list is never returned, so --resume reruns classify instead of dropping
+// functions.
+PRISM_API std::vector<FunctionInfo> journal_read_functions(const std::filesystem::path& out,
+                                                           std::size_t* malformed = nullptr);
 
 }  // namespace prism

@@ -248,7 +248,11 @@ RunReport run_pipeline(const Config& cfg) {
         // ok/NOTRUN rows from a previous complete report.json.
         const bool jsonl_present = journal_stages_present(cfg.out);
         if (jsonl_present) resume = journal_completed_ok(cfg.out);
-        auto fns = journal_read_functions(cfg.out);
+        std::size_t malformed = 0;
+        auto fns = journal_read_functions(cfg.out, &malformed);
+        if (malformed)
+            report.notes.push_back(std::string(FUNCTIONS_JSON) + ": " + std::to_string(malformed) +
+                                   " malformed entries; classify rerun");
         if (auto old = RunReport::load(cfg.out / "report.json")) {
             // Python engine pipeline.py: report.json stages AND functions are fallbacks
             // only when stages.jsonl is absent. A present jsonl with no
@@ -256,7 +260,7 @@ RunReport run_pipeline(const Config& cfg) {
             if (!jsonl_present) {
                 for (auto& s : old->stages)
                     if (s.status == "ok" || s.status == "NOTRUN") resume[s.name] = s;
-                if (fns.empty()) fns = old->functions;
+                if (fns.empty() && !malformed) fns = old->functions;
             }
         }
         if (!fns.empty()) report.functions = fns;

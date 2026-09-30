@@ -75,7 +75,9 @@ void journal_write_functions(const std::filesystem::path& out,
     f << j.value("functions", nlohmann::json::array()).dump();
 }
 
-std::vector<FunctionInfo> journal_read_functions(const std::filesystem::path& out) {
+std::vector<FunctionInfo> journal_read_functions(const std::filesystem::path& out,
+                                                 std::size_t* malformed) {
+    if (malformed) *malformed = 0;
     std::ifstream in(out / FUNCTIONS_JSON, std::ios::binary);
     if (!in) return {};
     nlohmann::json j;
@@ -86,15 +88,23 @@ std::vector<FunctionInfo> journal_read_functions(const std::filesystem::path& ou
     }
     if (!j.is_array()) return {};
     std::vector<FunctionInfo> fns;
-    // One bad element is skipped on its own; it does not discard the rest.
+    std::size_t bad = 0;
     for (auto& fj : j) {
-        if (!fj.is_object()) continue;
+        if (!fj.is_object()) {
+            ++bad;
+            continue;
+        }
         try {
             fns.push_back(function_from_json_object(fj.dump()));
         } catch (...) {
-            continue;
+            ++bad;
         }
     }
+    if (malformed) *malformed = bad;
+    // All or nothing: a partial list would let --resume skip classify and
+    // never analyse the dropped functions (Law 7). An empty list makes the
+    // pipeline rerun classify.
+    if (bad) return {};
     return fns;
 }
 

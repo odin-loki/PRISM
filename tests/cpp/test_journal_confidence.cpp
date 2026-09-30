@@ -15,6 +15,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cstddef>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -107,19 +108,50 @@ TEST_CASE("journal: a corrupt line is skipped, the rest is read") {
     CHECK(recs[0].records == 1);
 }
 
-TEST_CASE("journal: one malformed function entry does not discard the others") {
+TEST_CASE("journal: one malformed function entry discards the list, never a partial one") {
     auto out = fresh_dir("badfn");
     std::ofstream(out / prism::FUNCTIONS_JSON, std::ios::binary)
         << "[\"not an object\", {\"file\":\"a.c\",\"name\":\"bad\",\"line\":\"x\"},"
            " {\"file\":\"a.c\",\"name\":\"add\",\"kind\":\"SCALAR\",\"line\":1,"
            "\"params\":[[\"int\",\"x\"]],\"body\":\"return x;\"}]";
-    auto fns = prism::journal_read_functions(out);
+    std::size_t malformed = 0;
+    // A partial list would let --resume skip classify and drop functions.
+    CHECK(prism::journal_read_functions(out, &malformed).empty());
+    CHECK(malformed == 2);
+    // A well-formed list comes back whole.
+    std::ofstream(out / prism::FUNCTIONS_JSON, std::ios::binary)
+        << "[{\"file\":\"a.c\",\"name\":\"add\",\"kind\":\"SCALAR\",\"line\":1,"
+           "\"params\":[[\"int\",\"x\"]],\"body\":\"return x;\"}]";
+    auto fns = prism::journal_read_functions(out, &malformed);
+    CHECK(malformed == 0);
     REQUIRE(fns.size() == 1);
     CHECK(fns[0].name == "add");
     CHECK(fns[0].body == "return x;");
     // A file that is not a list at all is no functions.
     std::ofstream(out / prism::FUNCTIONS_JSON, std::ios::binary) << "{\"name\":\"add\"}";
     CHECK(prism::journal_read_functions(out).empty());
+}
+
+TEST_CASE("journal: a malformed functions.json entry reruns classify on resume, with a note") {
+    Tree t("resume_badfn");
+    std::ofstream(t.root / "sub.c", std::ios::binary) << "int sub(int x) { return -x; }\n";
+    auto first = prism::run_pipeline(t.cfg({"inventory", "classify"}));
+    REQUIRE(has_fn(first, "add"));
+    REQUIRE(has_fn(first, "sub"));
+    // Corrupt one entry, as a functions.json from another version might.
+    auto j = nlohmann::json::parse(slurp(t.out / prism::FUNCTIONS_JSON));
+    REQUIRE(j.is_array());
+    REQUIRE(j.size() == 2);
+    j[0]["line"] = "not a number";
+    std::ofstream(t.out / prism::FUNCTIONS_JSON, std::ios::binary) << j.dump();
+
+    auto second = prism::run_pipeline(t.cfg({"inventory", "classify"}, true));
+    CHECK(note_has(second, "1 malformed entries; classify rerun"));
+    CHECK(has_fn(second, "add"));
+    CHECK(has_fn(second, "sub"));
+    auto& cls = stage_of(second, "classify");
+    CHECK(cls.status == "ok");
+    CHECK(cls.records == stage_of(first, "classify").records);
 }
 
 TEST_CASE("journal: progress.json is one line naming the last stage") {
