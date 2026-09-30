@@ -585,8 +585,33 @@ if(PRISM_FUZZ)
     elseif(TARGET pcre2-8)
       target_link_libraries(prism_fuzz_self PRIVATE pcre2-8)
     endif()
+    # Seed corpus (src/tools/fuzz_corpus.cpp; libFuzzer owns prism_fuzz_self's
+    # main, so the corpus maker is its own small tool) and one campaign:
+    #   cmake --build <dir> --target fuzz-self-run   (-DPRISM_FUZZ_SECONDS=N)
+    # Fork mode keeps going after timeouts and crashes so one finding does not
+    # hide the next; artifacts land in <dir>/fuzz-artifacts/.
+    add_executable(prism_fuzz_corpus src/tools/fuzz_corpus.cpp)
+    target_compile_definitions(prism_fuzz_corpus PRIVATE PRISM_REPO_DIR="${PRISM_ROOT}")
+    set(PRISM_FUZZ_SECONDS 300 CACHE STRING "Seconds of one fuzz-self-run campaign")
+    add_custom_target(fuzz-self-run
+      COMMAND prism_fuzz_corpus "${CMAKE_BINARY_DIR}/fuzz-seeds"
+      COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/fuzz-corpus" "${CMAKE_BINARY_DIR}/fuzz-artifacts"
+      COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_BINARY_DIR}/fuzz-seeds/libfuzzer" "${CMAKE_BINARY_DIR}/fuzz-corpus"
+      COMMAND prism_fuzz_self -fork=1 -ignore_timeouts=1 -ignore_ooms=1 -ignore_crashes=1
+              -max_total_time=${PRISM_FUZZ_SECONDS} -timeout=25 -rss_limit_mb=2048 -max_len=65536
+              "-artifact_prefix=${CMAKE_BINARY_DIR}/fuzz-artifacts/" "${CMAKE_BINARY_DIR}/fuzz-corpus"
+      COMMAND ${CMAKE_COMMAND} -E echo "fuzz-self-run: artifacts in ${CMAKE_BINARY_DIR}/fuzz-artifacts/"
+      DEPENDS prism_fuzz_self prism_fuzz_corpus
+      WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+      USES_TERMINAL
+      VERBATIM)
   else()
     message(WARNING "PRISM_FUZZ=ON but ${CMAKE_CXX_COMPILER_ID} does not accept -fsanitize=fuzzer: "
                     "prism_fuzz_self is NOTRUN (use clang).")
+    # The campaign target exists and fails loudly: NOTRUN, never a quiet pass.
+    add_custom_target(fuzz-self-run
+      COMMAND ${CMAKE_COMMAND} -E echo "fuzz-self-run: NOTRUN (${CMAKE_CXX_COMPILER_ID} has no -fsanitize=fuzzer; use clang)"
+      COMMAND ${CMAKE_COMMAND} -E false
+      VERBATIM)
   endif()
 endif()

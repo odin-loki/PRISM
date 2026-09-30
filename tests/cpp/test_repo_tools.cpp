@@ -16,6 +16,8 @@
 #include "../../src/tools/gen_astlint_discard.cpp"
 #define LEAN_AUDIT_NO_MAIN
 #include "../../src/tools/lean_audit.cpp"
+#define PRISM_FUZZ_CORPUS_NO_MAIN
+#include "../../src/tools/fuzz_corpus.cpp"
 
 #include <algorithm>
 #include <filesystem>
@@ -300,4 +302,58 @@ TEST_CASE("lean_audit: scan walks directories, skips .lake, reports path: word; 
     std::ostringstream out, err;
     CHECK(lean_audit::run(static_cast<int>(argv.size()), argv.data(), out, err) == 0);
     CHECK(out.str() == "ok: only propext / Classical.choice / Quot.sound\n");
+}
+
+// ------------------------------------------------------------------ prism_fuzz_corpus
+TEST_CASE("fuzz corpus: seeds are small sources in path order; selector bytes; a missing prism is said") {
+    namespace fz = prism_fuzz_corpus;
+    CHECK(fz::seed_name("") == "cbf29ce484222325");  // FNV-1a offset basis
+    CHECK(fz::seed_name("a") != fz::seed_name("b"));
+    CHECK(fz::seed_name("abc").size() == 16);
+
+    auto repo = tools_tmp("fuzz-repo");
+    fs::create_directories(repo / "testdata" / "sub");
+    fs::create_directories(repo / "tests" / "conformance" / "prism");
+    std::ofstream(repo / "testdata" / "b.c") << "int b(void) { return 1; }\n";
+    std::ofstream(repo / "testdata" / "sub" / "a.cpp") << "int a() { return 0; }\n";
+    std::ofstream(repo / "testdata" / "notes.txt") << "not a seed\n";
+    std::ofstream(repo / "testdata" / "big.c") << std::string(70 * 1024, ' ');
+    std::ofstream(repo / "tests" / "conformance" / "prism" / "c.c") << "int c(void) { return 2; }\n";
+    auto s = fz::seeds({{repo / "testdata", {".c", ".cpp", ".h"}}, {repo / "tests" / "conformance" / "prism", {".c"}}},
+                       10);
+    REQUIRE(s.size() == 3);
+    CHECK(s[0].filename() == "b.c");
+    CHECK(s[1].filename() == "a.cpp");
+    CHECK(s[2].filename() == "c.c");
+    CHECK(fz::seeds({{repo / "testdata", {".c", ".cpp"}}}, 1).size() == 1);
+
+    fz::Options o;
+    o.repo = repo;
+    o.out = repo / "out";
+    o.prism = repo / "no-such-prism";
+    std::ostringstream log;
+    REQUIRE(fz::make_corpus(o, repo, log) == 0);
+    CAPTURE(log.str());
+    CHECK(log.str().find("report seeds from a PRISM run: ERROR") != std::string::npos);
+    std::size_t c = 0, lf = 0, rep = 0;
+    bool c_prefixed = false;
+    for (const auto& e : fs::directory_iterator(o.out / "c")) (void)e, ++c;
+    for (const auto& e : fs::directory_iterator(o.out / "report")) (void)e, ++rep;
+    for (const auto& e : fs::directory_iterator(o.out / "libfuzzer")) {
+        ++lf;
+        std::ifstream in(e.path(), std::ios::binary);
+        std::string d((std::istreambuf_iterator<char>(in)), {});
+        if (!d.empty() && d[0] == '\0' && d.find("int b(void)") == 1) c_prefixed = true;
+    }
+    CHECK(c == 3);
+    CHECK(rep == fz::edge_json().size());
+    CHECK(c_prefixed);
+    CHECK(lf >= c + rep);
+    CHECK_FALSE(fs::exists(o.out / "toml"));  // no manifest in this fake repo
+
+    std::ostringstream log2;
+    fz::Options empty;
+    empty.repo = repo / "nowhere";
+    empty.out = repo / "out2";
+    CHECK(fz::make_corpus(empty, repo, log2) == 1);  // no seeds: an error, not an empty corpus
 }

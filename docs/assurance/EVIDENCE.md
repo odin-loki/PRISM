@@ -239,9 +239,9 @@ each project's `lean-toolchain`): `proofs/check.sh` passed all four steps
 
 ### E15 Fuzzing PRISM's own input handling
 
-- Artefacts: `tools/fuzz_self/make_corpus.py`,
-  `tools/fuzz_self/run_cpp.sh`, `tests/fuzz/fuzz_cparse.cpp` (CMake option
-  `PRISM_FUZZ`), findings in `docs/FUZZ_SELF.md`.
+- Artefacts: `src/tools/fuzz_corpus.cpp` (`prism_fuzz_corpus`), the CMake
+  target `fuzz-self-run`, `tools/fuzz_self/run_cpp.sh`, `tests/fuzz/fuzz_cparse.cpp`
+  (CMake option `PRISM_FUZZ`), findings in `docs/FUZZ_SELF.md`.
 - Shows: short campaigns against the C parser, the IR parser and the
   report/journal/manifest readers, with the findings (open, not fixed)
   recorded with reproducers.

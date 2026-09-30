@@ -14,19 +14,21 @@ engine code was out of scope for the change that added the harnesses.
 |---|---|---|---|
 | `tests/fuzz/fuzz_cparse.cpp` (libFuzzer, ASan + UBSan) | C++ | `prism::extract_functions` and `parse_gaps` (C/C++ sources), `prism::pir::ir::parse_module` (LLVM IR text), `prism::RunReport::load`, `journal_read_stages`, `journal_completed_ok`, `journal_read_functions` | no sanitizer report, no abort, no uncaught exception (`parse_module` may reject input by throwing `std::exception`), no input slower than the timeout |
 
-Seeds (`tools/fuzz_self/make_corpus.py`): the C/C++ files of `testdata/` and
-`tests/conformance/prism/`, their LLVM IR compiled the way the `pir` stage
-compiles it (`clang -S -emit-llvm -O0 -Xclang -disable-O0-optnone`, then
-`opt -passes=mem2reg,lowerswitch,loop-simplify,lcssa,instnamer`), the
+Seeds (`prism_fuzz_corpus`, `src/tools/fuzz_corpus.cpp`): the C/C++ files of
+`testdata/` and `tests/conformance/prism/`, their LLVM IR compiled the way the
+`pir` stage compiles it (`clang -S -emit-llvm -O0 -Xclang -disable-O0-optnone`,
+then `opt -passes=mem2reg,lowerswitch,loop-simplify,lcssa,instnamer`), the
 `report.json` / `stages.jsonl` / `functions.json` of a PRISM run on
 `testdata/`, hand-written JSON edge cases, `third_party/MANIFEST.toml` and
-`pyproject.toml`.
+`proofs/lakefile.toml`. A missing clang, opt or prism binary is printed as
+NOTRUN for that part.
 
 ## How to run
 
 ```
-python tools/fuzz_self/make_corpus.py /tmp/fuzz-seeds            # seeds (PRISM_BIN for the report seeds)
-tools/fuzz_self/run_cpp.sh /tmp/prism-fuzz-build 600             # C++: configure -DPRISM_FUZZ=ON, build, run
+tools/fuzz_self/run_cpp.sh /tmp/prism-fuzz-build 600             # configure -DPRISM_FUZZ=ON, seeds, one campaign
+cmake --build /tmp/prism-fuzz-build --target fuzz-self-run        # the same, in a configured tree (-DPRISM_FUZZ_SECONDS=N)
+/tmp/prism-fuzz-build/prism_fuzz_corpus /tmp/fuzz-seeds --prism build/prism   # seeds only
 PRISM_FUZZ_TARGET=pir /tmp/prism-fuzz-build/prism_fuzz_self -max_total_time=600 corpus/   # one parser only
 ```
 
