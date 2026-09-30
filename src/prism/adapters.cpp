@@ -947,7 +947,7 @@ std::vector<Finding> run_cbmc(const std::string& exe, const std::vector<fs::path
             f.status = std::string(laws::NOTRUN);
             f.message = "cbmc at PATH is not CBMC (not a proof)";
             f.extra["exe"] = exe;
-            f.extra["install"] = adapter_install("cbmc");  // fetch_deps.py --tool cbmc
+            f.extra["install"] = adapter_install("cbmc");  // prism-deps tool cbmc
         } else if (upper.find("VERIFICATION SUCCESSFUL") != std::string::npos) {
             f.status = std::string(laws::BOUNDED);
             f.message = "CBMC: BOUNDED (unwind limited; not a proof)";

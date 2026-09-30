@@ -4516,7 +4516,7 @@ TEST_CASE("pipeline: hostile tree runs nothing without --allow-exec") {
 #endif
 
 namespace {
-// Scoped PRISM_TOOLS_DIR (the scripts/fetch_deps.py install root).
+// Scoped PRISM_TOOLS_DIR (the `prism-deps tool` install root).
 struct ToolsDirGuard {
     std::string was;
     bool had = false;
@@ -4588,7 +4588,7 @@ TEST_CASE("config: pinned adapters are never taken from inside the scanned tree"
 }
 
 TEST_CASE("config: manifest pins, install hints and tool identity") {
-    // CMake bakes third_party/MANIFEST.toml into manifest_pins.hpp.
+    // `prism-deps pins` bakes third_party/MANIFEST.toml into manifest_pins.hpp.
     for (const char* name : {"esbmc", "cppcheck", "cadical", "kissat", "cake_lpr"}) {
         auto pin = prism::pinned_commit(name);
         REQUIRE_MESSAGE(pin.has_value(), name);
@@ -4597,8 +4597,8 @@ TEST_CASE("config: manifest pins, install hints and tool identity") {
     CHECK_FALSE(prism::pinned_commit("z3").has_value());  // linked, not a tool
     CHECK_FALSE(prism::pinned_commit("clang-tidy").has_value());
     CHECK(prism::adapter_install("esbmc") ==
-          "python scripts/fetch_deps.py --tool esbmc (pinned in third_party/MANIFEST.toml)");
-    CHECK(prism::adapter_install("afl-fuzz").find("--tool aflplusplus") != std::string::npos);
+          "prism-deps tool esbmc (pinned in third_party/MANIFEST.toml)");
+    CHECK(prism::adapter_install("afl-fuzz") == "prism-deps tool aflplusplus (pinned in third_party/MANIFEST.toml)");
     CHECK(prism::adapter_install("clang-tidy").find("system tool") != std::string::npos);
     // FIPS 180-4 test vectors.
     CHECK(prism::sha256_hex("abc") ==
