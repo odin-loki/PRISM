@@ -17,6 +17,8 @@
 #    define NOMINMAX
 #  endif
 #  include <windows.h>
+#  include <cwchar>
+#  include <cwctype>
 #  ifdef min
 #    undef min
 #  endif
