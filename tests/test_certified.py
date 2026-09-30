@@ -22,7 +22,7 @@ import unittest
 from pathlib import Path
 
 from prism import laws, shipdocs
-from prism.config import Config
+from prism.config import Config, pinned_commit
 from prism.models import Finding, FunctionInfo, RunReport, StageResult
 from prism.pipeline import _write_md, run_pir_notrun
 from prism.sarif import to_sarif
@@ -60,7 +60,11 @@ def _cpp_prism() -> Path | None:
 
 def _tool(name: str) -> bool:
     home = Path(os.environ.get("PRISM_TOOLS_DIR", Path.home() / ".prism" / "tools")) / name
-    if home.is_dir() and any(home.glob(f"*/bin/{name}")):
+    # The C++ solver lookup takes only the build of the pinned commit.
+    commit = pinned_commit(name)
+    if commit and (home / commit / "bin" / name).is_file():
+        return True
+    if not commit and home.is_dir() and any(home.glob(f"*/bin/{name}")):
         return True
     return shutil.which(name) is not None
 
