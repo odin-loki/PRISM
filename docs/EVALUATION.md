@@ -69,9 +69,8 @@ no `FAILED` lint and no parse gap, both engines) and
 `testdata_tp/realworld_twins.c`, `testdata_tp/knr_gap.c` (the buggy twins,
 which must still fire). They are a few lines each, reduced from jsmn (MIT),
 tinyexpr (zlib licence), cJSON (MIT) and zlib (zlib licence); each file names
-its source. Tests: `tests/test_false_positives.py::TestRealWorldEvaluation`
-and the `real-world:` cases in `tests/cpp/test_main.cpp`; the lint parity
-test runs both engines on the new files.
+its source. Tests: the `real-world:` cases in `tests/cpp/test_main.cpp` and
+`tests/cpp/test_cparse.cpp`.
 
 Parser (both engines; identical inventory/classify rows on all five projects
 and on `testdata/`, which is unchanged):
@@ -88,6 +87,14 @@ and on `testdata/`, which is unchanged):
    (the ctags rule) when an arm is unbalanced; bodies keep every arm.
 7. A top-level `{` whose head is K&R text the patterns cannot read is now a
    `PARSE-GAP` at the head's line instead of a silently skipped body.
+8. (C++ engine) ALL_CAPS macros between the return type, `*` and the name
+   (`const z_crc_t FAR * ZEXPORT get_crc_table()`, `char ZLIB_INTERNAL
+   *gz_strwinerror(error)`), and the cxxopts/Catch2 shapes: statement-like
+   macro lines before a class, braced base initializers in a constructor's
+   initializer list, `operator "" _sr`, parenthesised names `int (min)()`,
+   `extern "C" int` with the name on the next line, default member brace
+   initializers, and `decltype` in a partial specialisation's head
+   (`tests/cpp/test_cparse.cpp`).
 
 zlib, parser only: `deflate.c` 15 → 29 of 30 bodies found, `trees.c` 6 → 23,
 `crc32.c` 9 → 22 (+1 honest gap: `const z_crc_t FAR * ZEXPORT get_crc_table()`).

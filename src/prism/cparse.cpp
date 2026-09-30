@@ -63,8 +63,10 @@ const std::string PRE_ATTR =
     R"((?:__attribute__\s*\(\s*\()" + PARAMS + R"(\)\s*\))"
     R"(|\[\[[^\];{}]*\]\])"
     R"(|__declspec\s*\([^;{}()]*\)))";
+// `operator "" _sr` is a user-defined literal (the `""` stays: strings are
+// blanked inside, their quotes kept).
 const std::string OPERATOR =
-    R"(operator\s*(?:\(\s*\)|\[\s*\]|new(?:\s*\[\s*\])?|delete(?:\s*\[\s*\])?)"
+    R"(operator\s*(?:""\s*[A-Za-z_]\w*|\(\s*\)|\[\s*\]|new(?:\s*\[\s*\])?|delete(?:\s*\[\s*\])?)"
     R"(|[^\s\w(){};]{1,3}))";
 
 // Words that are a type or qualifier themselves, never a storage macro.
@@ -79,6 +81,8 @@ const std::string FUNC_HEAD_PAT =
     R"(explicit|friend|unsigned|signed|const|volatile|restrict|)"
     R"(_Noreturn|__inline|__inline__|__forceinline|thread_local|)"
     R"(__extension__)\s+|)" + PRE_ATTR + R"([ \t]*)"
+    // A language linkage: `extern "C" int` (the name may be on the next line).
+    R"(|extern[ \t]*"[^"\n]*"\s+)"
     // A leading export macro before a lowercase type: `JSMN_API int f(`.
     R"(|[A-Z_][A-Z0-9_]*[ \t]+(?=[a-z]))"
     // A lowercase storage macro before a lowercase type and the name:
@@ -90,9 +94,14 @@ const std::string FUNC_HEAD_PAT =
     R"(|[A-Za-z_]\w*(?:\s*)" + TMPL + R"()?)"
     R"((?:\s*::\s*[A-Za-z_]\w*(?:\s*)" + TMPL + R"()?)*)))"
     R"((?P<stars>(?:\s*(?:[*&]|\b(?:const|volatile)\b))+\s*|\s+))"
-    // A calling-convention / export macro: `Z3_ast Z3_API Z3_mk_add(`.
-    R"((?P<cc>(?:[A-Z_][A-Z0-9_]*|__\w+)[ \t]+)?)"
-    R"((?P<name>)" + QUAL + R"((?:)" + OPERATOR + R"(|[A-Za-z_]\w*))\s*)"
+    // Calling-convention / export / pointer-size macros, with the `*` that
+    // may sit between them and the name: `Z3_ast Z3_API Z3_mk_add(`, zlib's
+    // `const z_crc_t FAR * ZEXPORT get_crc_table(` and
+    // `char ZLIB_INTERNAL *gz_strwinerror(`.
+    // Two characters at least: a template parameter `T&` is a type.
+    R"((?P<cc>(?:(?:[A-Z_][A-Z0-9_]+|__\w+)[ \t*&]+)*))"
+    // A parenthesised name keeps a function-like macro off it: `int (min)()`.
+    R"((?P<name>)" + QUAL + R"((?:)" + OPERATOR + R"(|[A-Za-z_]\w*|\([ \t]*[A-Za-z_]\w*[ \t]*\)))\s*)"
     R"(\((?P<params>)" + PARAMS + R"()\))"
     // K&R parameter declarations, a function pointer too: `void (*init)(void);`.
     R"((?P<knr>(?:\s*(?:register\s+)?[A-Za-z_][\w \t\n*,\[\]()]*;)*))"
@@ -128,7 +137,7 @@ const std::string MEMBER_DECL_PAT =
     R"((?P<ret>[A-Za-z_][\w:<>,\s*&]*?[\s*&])??)"
     R"((?P<name>operator\s+(?:(?:const|volatile)\s+)*[A-Za-z_][\w:<>]*)"
     R"((?:\s*(?:[*&]|\b(?:const|volatile)\b))*)"
-    R"(|~?[A-Za-z_]\w*|)" + OPERATOR + R"()\s*)"
+    R"(|~?[A-Za-z_]\w*|\([ \t]*[A-Za-z_]\w*[ \t]*\)|)" + OPERATOR + R"()\s*)"
     R"(\((?P<params>)" + PARAMS + R"()\))" + ATTR +
     R"((?:\s*:(?!:)[^;{}]*)?\s*\Z)";
 
@@ -136,12 +145,27 @@ bool is_pointer_type(std::string_view typ) {
     return typ.find('*') != std::string_view::npos || typ.find('[') != std::string_view::npos;
 }
 
+// C23 / C++14 digit separator: a `'` inside a pp-number (`1'000`,
+// `0xFF'FF`), not the start of a character literal. The token before it
+// starts with a digit (or `.digit`) and a digit or letter follows it;
+// `u8'a'`, `L'a'` and `c=='0'` stay character literals.
+bool is_digit_separator(std::string_view text, std::size_t i) {
+    if (i == 0 || i + 1 >= text.size() || text[i] != '\'') return false;
+    auto alnum = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) != 0; };
+    if (!alnum(text[i - 1]) || !alnum(text[i + 1])) return false;
+    std::size_t j = i;
+    while (j > 0 && (alnum(text[j - 1]) || text[j - 1] == '_' || text[j - 1] == '.' || text[j - 1] == '\''))
+        --j;
+    if (std::isdigit(static_cast<unsigned char>(text[j]))) return true;
+    return text[j] == '.' && j + 1 < i && std::isdigit(static_cast<unsigned char>(text[j + 1]));
+}
+
 std::string read_file(const std::filesystem::path& path) {
     std::ifstream in(path, std::ios::binary);
     if (!in) return {};
     std::ostringstream ss;
     ss << in.rdbuf();
-    return ss.str();
+    return scrub_utf8(ss.str());
 }
 
 std::string to_lower(std::string s) {
@@ -149,57 +173,111 @@ std::string to_lower(std::string s) {
     return s;
 }
 
-std::vector<std::pair<std::string, std::string>> split_params(std::string params) {
-    while (!params.empty() && std::isspace(static_cast<unsigned char>(params.front()))) params.erase(params.begin());
-    while (!params.empty() && std::isspace(static_cast<unsigned char>(params.back()))) params.pop_back();
-    if (params.empty() || params == "void") return {};
-    std::vector<std::pair<std::string, std::string>> out;
-    std::string raw;
-    std::stringstream ss(params);
-    while (std::getline(ss, raw, ',')) {
-        while (!raw.empty() && std::isspace(static_cast<unsigned char>(raw.front()))) raw.erase(raw.begin());
-        while (!raw.empty() && std::isspace(static_cast<unsigned char>(raw.back()))) raw.pop_back();
-        if (raw.empty() || raw == "...") continue;
-        if (auto eq = raw.find('='); eq != std::string::npos) {
-            raw = raw.substr(0, eq);  // C++ default argument
-            while (!raw.empty() && std::isspace(static_cast<unsigned char>(raw.back()))) raw.pop_back();
-        }
-        raw = Regex("\\b(const|volatile|restrict|register)\\b").search(raw)
-                  ? [&] {
-                        std::string r;
-                        std::size_t i = 0;
-                        Regex re("\\b(const|volatile|restrict|register)\\b");
-                        auto tmp = raw;
-                        // simple word strip
-                        std::string acc;
-                        std::string word;
-                        for (char c : (raw + " ")) {
-                            if (std::isalnum(static_cast<unsigned char>(c)) || c == '_') word.push_back(c);
-                            else {
-                                if (word != "const" && word != "volatile" && word != "restrict" && word != "register") {
-                                    if (!acc.empty() && !word.empty()) acc.push_back(' ');
-                                    acc += word;
-                                }
-                                word.clear();
-                                if (!std::isspace(static_cast<unsigned char>(c))) acc.push_back(c);
-                            }
-                        }
-                        return acc;
-                    }()
-                  : raw;
-        std::string spaced = raw;
-        for (char& c : spaced)
-            if (c == '*') { /* keep */ }
-        auto m = re_search_match("([A-Za-z_]\\w*)\\s*$", spaced);
-        if (!m) {
-            out.emplace_back(raw, "");
+bool is_word_char(char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; }
+
+std::string trim(std::string_view s);
+
+// The one spelling of a parameter type every consumer reads: const,
+// volatile, restrict and register dropped as words; no whitespace except one
+// space between two words and one before a run of `*`/`&` (`const char*s`
+// -> `char *`, `std::vector< int > &v` -> `std::vector<int> &`,
+// `unsigned  long` -> `unsigned long`). Template spelling stays whole, so a
+// lint's `\bvector\s*<\w` still reads `vector<int>`.
+std::string canonical_type(std::string_view raw) {
+    std::string out;
+    std::size_t i = 0, n = raw.size();
+    char prev = 0;  // last token emitted: 'w' word, 'p' `*`/`&`, 'o' other
+    while (i < n) {
+        char c = raw[i];
+        if (std::isspace(static_cast<unsigned char>(c))) {
+            ++i;
             continue;
         }
-        std::string name = m->group(1);
-        std::string typ = spaced.substr(0, static_cast<std::size_t>(std::max(0, m->spans[1].first)));
-        while (!typ.empty() && std::isspace(static_cast<unsigned char>(typ.back()))) typ.pop_back();
-        if (typ.empty()) typ = raw;
-        out.emplace_back(typ, name);
+        if (is_word_char(c)) {
+            std::size_t j = i;
+            while (j < n && is_word_char(raw[j])) ++j;
+            std::string_view w = raw.substr(i, j - i);
+            i = j;
+            if (w == "const" || w == "volatile" || w == "restrict" || w == "register" ||
+                w == "__restrict" || w == "__restrict__")
+                continue;
+            if (prev == 'w') out.push_back(' ');
+            out.append(w);
+            prev = 'w';
+            continue;
+        }
+        if (c == '*' || c == '&') {
+            if (prev == 'w' || (prev == 'o' && (out.back() == '>' || out.back() == ')' || out.back() == ']')))
+                out.push_back(' ');
+            out.push_back(c);
+            prev = 'p';
+            ++i;
+            continue;
+        }
+        out.push_back(c);
+        prev = 'o';
+        ++i;
+    }
+    return out;
+}
+
+// Split at top-level commas: a comma inside <>, (), [] or {} belongs to one
+// parameter (`std::map<int, int> m`, `void (*cb)(int, int)`). After a
+// default argument's `=`, `<` and `>` are operators (`int n = a < b`).
+std::vector<std::string> split_top_level(std::string_view params) {
+    std::vector<std::string> out;
+    int angle = 0, other = 0;
+    bool in_default = false;
+    std::size_t start = 0;
+    for (std::size_t i = 0; i < params.size(); ++i) {
+        char c = params[i];
+        if (c == '(' || c == '[' || c == '{') ++other;
+        else if ((c == ')' || c == ']' || c == '}') && other > 0) --other;
+        else if (c == '<' && !in_default) ++angle;
+        else if (c == '>' && !in_default && angle > 0) --angle;
+        else if (c == '=' && angle == 0 && other == 0) in_default = true;
+        else if (c == ',' && other == 0 && (angle == 0 || in_default)) {
+            out.emplace_back(params.substr(start, i - start));
+            start = i + 1;
+            angle = 0;
+            in_default = false;
+        }
+    }
+    out.emplace_back(params.substr(start));
+    return out;
+}
+
+std::vector<std::pair<std::string, std::string>> split_params(std::string_view params_in) {
+    auto params = trim(params_in);
+    if (params.empty() || params == "void") return {};
+    std::vector<std::pair<std::string, std::string>> out;
+    for (auto& piece : split_top_level(params)) {
+        auto raw = trim(piece);
+        if (raw.empty() || raw == "...") continue;
+        // C++ default argument: the first `=` outside brackets.
+        int depth = 0;
+        for (std::size_t i = 0; i < raw.size(); ++i) {
+            char c = raw[i];
+            if (c == '(' || c == '[' || c == '{' || c == '<') ++depth;
+            else if ((c == ')' || c == ']' || c == '}' || c == '>') && depth > 0) --depth;
+            else if (c == '=' && depth == 0) {
+                raw = trim(std::string_view(raw).substr(0, i));
+                break;
+            }
+        }
+        auto canon = canonical_type(raw);
+        // The name is the last word. Text that ends in a bracket or a paren
+        // (`int a[4]`, `void (*cb)(int)`) has none. A lone word keeps the
+        // old reading, name and type both the word: a K&R identifier list
+        // (`f(s, flush)`) names its parameters that way.
+        std::size_t b = canon.size();
+        while (b > 0 && is_word_char(canon[b - 1])) --b;
+        if (b == canon.size() || std::isdigit(static_cast<unsigned char>(canon[b]))) {
+            out.emplace_back(canon, "");
+            continue;
+        }
+        auto typ = trim(std::string_view(canon).substr(0, b));
+        out.emplace_back(typ.empty() ? canon : typ, canon.substr(b));
     }
     return out;
 }
@@ -210,8 +288,6 @@ std::string kind_of(const std::string& ret, const std::string& stars,
     (void)stars;
     if (params.empty()) return "VOID";
     auto param_ok = [](std::string t) -> std::string {
-        for (char& c : t)
-            if (c == '\t') c = ' ';
         if (is_pointer_type(t)) return "POINTER";
         std::vector<std::string> words;
         std::string w;
@@ -222,13 +298,11 @@ std::string kind_of(const std::string& ret, const std::string& stars,
                 w.clear();
             }
         }
+        // Qualifiers are words, not substrings: `constant_t` stays a word.
+        std::erase_if(words, [](const std::string& word) { return word == "const" || word == "volatile"; });
         if (words.empty()) return "OTHER";
-        for (auto& word : words) {
-            if (!SCALAR_WORDS.contains(word)) {
-                if (word == "struct" || word == "union") return "OTHER";
-                return "OTHER";
-            }
-        }
+        for (auto& word : words)
+            if (!SCALAR_WORDS.contains(word)) return "OTHER";  // struct by value, unknown typedef
         return "SCALAR";
     };
     bool pointer = false, other = false;
@@ -290,19 +364,33 @@ std::optional<Match> match_at_start(const Regex& re, std::string_view s) {
 }
 
 // `W :: go` -> `W::go`, `operator <<` -> `operator<<`; `operator bool` kept.
+// `(min)` -> `min`, `operator "" _sr` -> `operator""_sr`.
 std::string norm_name(std::string_view s) {
     static Regex colons(R"(\s*::\s*)");
     static Regex op(R"(\boperator\s+(?=[^\w\s]))");
-    return regex_sub(op, "operator", regex_sub(colons, "::", collapse_ws(s)));
+    static Regex udl(R"(""\s+)");
+    static Regex paren_name(R"(\(\s*([A-Za-z_]\w*)\s*\)$)");
+    auto out = regex_sub(op, "operator", regex_sub(colons, "::", collapse_ws(s)));
+    if (out.find("\"\"") != std::string::npos) out = regex_sub(udl, "\"\"", out);
+    if (!out.empty() && out.back() == ')')
+        if (auto m = paren_name.search_match(out))
+            out = out.substr(0, static_cast<std::size_t>(m->spans[0].first)) + m->group(1);
+    return out;
 }
 
 // Character literal interiors as spaces, quotes kept (`'}'` -> `' '`).
+// A digit separator (`1'000`) is not a literal.
 std::string blank_char_literals(std::string text) {
     if (text.find('\'') == std::string::npos) return text;
-    static Regex lit(R"('(?:\\.|[^'\\\n])*')");
-    for (auto& m : lit.finditer(text))
-        for (int k = m.spans[0].first + 1; k < m.spans[0].second - 1; ++k)
-            text[static_cast<std::size_t>(k)] = ' ';
+    const auto n = text.size();
+    for (std::size_t i = 0; i < n; ++i) {
+        if (text[i] != '\'' || is_digit_separator(text, i)) continue;
+        std::size_t k = i + 1;
+        while (k < n && text[k] != '\'' && text[k] != '\n') k += text[k] == '\\' && k + 1 < n && text[k + 1] != '\n' ? 2 : 1;
+        if (k >= n || text[k] != '\'') continue;  // unterminated on its line: left as it is
+        for (auto q = i + 1; q < k; ++q) text[q] = ' ';
+        i = k;
+    }
     return text;
 }
 
@@ -332,6 +420,127 @@ std::string head_shape(const std::string& head) {
         if (c != ')') out.push_back(c);
     if (head.find('(') != std::string::npos) out.push_back('(');
     return out;
+}
+
+// Leading lines that are a whole ALL_CAPS macro use with no `;`
+// (`CXXOPTS_DIAGNOSTIC_PUSH`, `CXXOPTS_IGNORE_WARNING("...")`) before a
+// declaration on the lines after: the length of that prefix. A macro line
+// with nothing after it (`TEST(a, b)` right before `{`) is the head itself.
+std::size_t macro_line_prefix(std::string_view head) {
+    static Regex line(R"([ \t]*[A-Z_][A-Z0-9_]*[ \t]*(?:\([^()\n]*\))?[ \t]*)");
+    std::size_t cut = 0;
+    for (;;) {
+        std::size_t p = cut;
+        while (p < head.size() && std::isspace(static_cast<unsigned char>(head[p]))) {
+            if (head[p] == '\n') cut = p + 1;
+            ++p;
+        }
+        auto nl = head.find('\n', p);
+        if (nl == std::string_view::npos) return cut;
+        auto ln = head.substr(cut, nl - cut);
+        if (!full_match(line, ln)) return cut;
+        auto rest = head.substr(nl + 1);
+        if (rest.find_first_not_of(" \t\r\n") == std::string_view::npos) return cut;
+        cut = nl + 1;
+    }
+}
+
+// `decltype(...)`, `sizeof(...)`, `alignof(...)`, `noexcept(...)` groups
+// removed: a class head's base or template argument, not a parameter list
+// (`struct is_range<T, decltype(begin(x))> : std::true_type {`).
+std::string drop_type_operators(std::string head) {
+    static Regex op(R"(\b(?:decltype|sizeof|alignof|noexcept)\s*\()");
+    for (;;) {
+        auto m = op.search_match(head);
+        if (!m) return head;
+        auto a = static_cast<std::size_t>(m->spans[0].first);
+        auto k = static_cast<std::size_t>(m->spans[0].second) - 1;  // the `(`
+        int depth = 0;
+        std::size_t e = head.size();
+        for (auto i = k; i < head.size(); ++i) {
+            if (head[i] == '(') ++depth;
+            else if (head[i] == ')' && --depth == 0) {
+                e = i + 1;
+                break;
+            }
+        }
+        head.replace(a, e - a, " ");
+    }
+}
+
+// `Bin(int r) : Base{ true, r }, m_lhs(r) {}`: the `{` after a
+// mem-initializer's name is its braced initializer, not the body. When the
+// head ends in such a name (a `:` initializer list after the parameters,
+// its last item with no parentheses), the body is the first `{` after the
+// remaining initializers; `brace` itself otherwise, and whenever the list
+// does not read cleanly.
+int ctor_body_brace(std::string_view text, std::string_view head, int brace) {
+    int depth = 0;
+    bool seen_close = false;
+    std::size_t colon = std::string_view::npos;
+    for (std::size_t i = 0; i < head.size(); ++i) {
+        char c = head[i];
+        if (c == '(') ++depth;
+        else if (c == ')') {
+            if (--depth == 0) seen_close = true;
+        } else if (c == ':' && depth == 0 && seen_close) {
+            bool dbl = (i + 1 < head.size() && head[i + 1] == ':') || (i > 0 && head[i - 1] == ':');
+            if (!dbl) {
+                colon = i;
+                break;
+            }
+        }
+    }
+    if (colon == std::string_view::npos) return brace;
+    auto init = head.substr(colon + 1);
+    int d = 0;
+    std::size_t last = 0;
+    for (std::size_t i = 0; i < init.size(); ++i) {
+        char c = init[i];
+        if (c == '(' || c == '<' || c == '[') ++d;
+        else if ((c == ')' || c == '>' || c == ']') && d > 0) --d;
+        else if (c == ',' && d == 0) last = i + 1;
+    }
+    static Regex item(R"(\s*(?:[A-Za-z_]\w*\s*(?:<[^(){};]*>)?\s*::\s*)*[A-Za-z_]\w*\s*(?:<[^(){};]*>)?\s*)");
+    if (!full_match(item, init.substr(last))) return brace;
+    const auto n = static_cast<int>(text.size());
+    auto skip_ws = [&](int k) {
+        while (k < n && std::isspace(static_cast<unsigned char>(text[static_cast<std::size_t>(k)]))) ++k;
+        return k;
+    };
+    int close = match_brace(text, brace);
+    for (int guard = 0; close >= 0 && guard < 256; ++guard) {
+        int k = skip_ws(close + 1);
+        if (k >= n) return brace;
+        char c = text[static_cast<std::size_t>(k)];
+        if (c == '{') return k;
+        if (c != ',') return brace;
+        // The next initializer: a (qualified, templated) name, then `(` or `{`.
+        int ad = 0;
+        for (++k; k < n; ++k) {
+            char q = text[static_cast<std::size_t>(k)];
+            if (q == '<') ++ad;
+            else if (q == '>' && ad > 0) --ad;
+            else if (ad == 0 && (q == '(' || q == '{')) break;
+            else if (q == ';' || q == '}' || q == ')') return brace;
+        }
+        if (k >= n) return brace;
+        if (text[static_cast<std::size_t>(k)] == '{') {
+            close = match_brace(text, k);
+        } else {
+            int pd = 0;
+            close = -1;
+            for (int i = k; i < n; ++i) {
+                char q = text[static_cast<std::size_t>(i)];
+                if (q == '(') ++pd;
+                else if (q == ')' && --pd == 0) {
+                    close = i;
+                    break;
+                }
+            }
+        }
+    }
+    return brace;
 }
 
 // `virtual ~W() {` / `explicit W(int) {` in a class: the scope scan names
@@ -418,6 +627,17 @@ struct Parser {
         f.fn.body_col = try_pos - (f.fn.body_line > 1 ? newlines[static_cast<std::size_t>(f.fn.body_line - 2)] : -1);
     }
 
+    // `template <typename T>` alone on the line(s) before `pos`.
+    bool template_line_before(int pos) const {
+        static Regex tmpl(R"(\btemplate\s*<[^;{}]*>\s*\Z)");
+        int k = pos;
+        while (k > 0 && std::isspace(static_cast<unsigned char>(code[static_cast<std::size_t>(k - 1)]))) --k;
+        if (k == 0 || code[static_cast<std::size_t>(k - 1)] != '>') return false;
+        auto from = code.find_last_of(";{}", static_cast<std::size_t>(k - 1));
+        from = from == std::string::npos ? 0 : from + 1;
+        return tmpl.search(std::string_view(code).substr(from, static_cast<std::size_t>(k) - from));
+    }
+
     void heads() {
         static Regex head(FUNC_HEAD_PAT, true);
         static Regex knr_params(KNR_PARAMS_PAT);
@@ -443,6 +663,8 @@ struct Parser {
             }
             auto params = split_params(params_text);
             auto stars = m->named("stars");
+            for (char c : m->named("cc"))
+                if (c == '*' || c == '&') stars.push_back(c);
             auto mods = m->named("mods");
             auto attrs = m->named("attrs");
             auto kind = kind_of(ret, stars, params);
@@ -460,6 +682,7 @@ struct Parser {
                    (code[static_cast<std::size_t>(head_start)] == ' ' ||
                     code[static_cast<std::size_t>(head_start)] == '\t'))
                 ++head_start;
+            if (kind != "OTHER" && template_line_before(head_start)) kind = "OTHER";  // a template
             int brace = m->spans[0].second - 1;
             auto ftry = m->named("ftry");
             int try_pos = ftry.empty() ? -1 : brace - static_cast<int>(ftry.size());
@@ -573,6 +796,7 @@ struct Parser {
             std::string head = text.substr(head_start, k - head_start);
             if (auto lab = match_at_start(access_label, head))
                 head = head.substr(static_cast<std::size_t>(lab->spans[0].second));
+            if (auto cut = macro_line_prefix(head)) head = head.substr(cut);
             std::size_t lead = 0;
             while (lead < head.size() && std::isspace(static_cast<unsigned char>(head[lead]))) ++lead;
             int start = brace - static_cast<int>(head.size()) + static_cast<int>(lead);
@@ -580,8 +804,15 @@ struct Parser {
             auto shape = head_shape(head);
             Found* hit = nullptr;
             if (auto it = found.find(brace); it != found.end()) hit = &it->second;
-            else if (shape.find('(') != std::string::npos && shape.find('=') == std::string::npos)
-                hit = scan_definition(head, start, brace, qual, in_class);
+            else if (shape.find('(') != std::string::npos && shape.find('=') == std::string::npos) {
+                int body = ctor_body_brace(text, head, brace);
+                if (body != brace) {
+                    if (auto it = found.find(body); it != found.end()) hit = &it->second;
+                    else hit = scan_definition(head, start, body, qual, in_class);
+                } else {
+                    hit = scan_definition(head, start, brace, qual, in_class);
+                }
+            }
             if (hit) {
                 if (in_class) {
                     if (!qual.empty() && hit->fn.name.find("::") == std::string::npos)
@@ -600,7 +831,7 @@ struct Parser {
             auto tm = match_at_start(type_head, head);
             bool is_type = tm && shape.find('=') == std::string::npos &&
                            (!tm->named("enum").empty() ||
-                            regex_sub(pre_attr, "", head).find('(') == std::string::npos);
+                            drop_type_operators(regex_sub(pre_attr, "", head)).find('(') == std::string::npos);
             if (is_type && tm->named("enum").empty()) {
                 auto cm = match_at_start(class_name, head);
                 std::string cname = cm ? cm->named("name") : std::string();
@@ -614,10 +845,11 @@ struct Parser {
                 auto first = trim(t.substr(0, t.find('\n')));
                 gaps.emplace_back(line_of(start), first.substr(0, 80));
             } else if (!is_type && shape.find('(') == std::string::npos && shape.find('=') == std::string::npos &&
-                       after_semicolon) {
+                       after_semicolon && trim(head).empty()) {
                 // `local void once(state, init) once_t *state; void (*init)(void); {`:
-                // a K&R head the patterns did not read ends at a `;`, so the text
-                // right before `{` has no `(`. The definition starts at the last
+                // a K&R head the patterns did not read ends at a `;`, so only
+                // whitespace sits between it and `{` (`std::vector<int> m{};`
+                // after a declaration is a member initializer, not this). The definition starts at the last
                 // `;`-segment since the previous `{`/`}` that has one: a gap, never
                 // a body skipped without a word (Law 7).
                 std::vector<std::pair<std::size_t, std::string>> segs;  // (offset, text)
@@ -765,6 +997,7 @@ std::string strip_comments_keep_lines(std::string_view text, bool blank_strings)
         if (in_block) {
             if (i + 1 < n && text[i] == '*' && text[i + 1] == '/') {
                 in_block = false;
+                out.append("  ");  // a comment is whitespace: `int/**/x` is not `intx`
                 i += 2;
             } else {
                 out.push_back(text[i] == '\n' ? '\n' : ' ');
@@ -774,6 +1007,7 @@ std::string strip_comments_keep_lines(std::string_view text, bool blank_strings)
         }
         if (i + 1 < n && text[i] == '/' && text[i + 1] == '*') {
             in_block = true;
+            out.append("  ");  // length-preserving: columns after the comment hold
             i += 2;
             continue;
         }
@@ -785,6 +1019,11 @@ std::string strip_comments_keep_lines(std::string_view text, bool blank_strings)
             continue;
         }
         char c = text[i];
+        if (c == '\'' && is_digit_separator(text, i)) {
+            out.push_back(c);
+            ++i;
+            continue;
+        }
         if (c == '\'') {
             out.push_back(c);
             ++i;
@@ -845,6 +1084,7 @@ std::string strip_comments_keep_lines(std::string_view text, bool blank_strings)
 }
 
 int match_brace(std::string_view text, int open_idx) {
+    if (open_idx < 0) return -1;
     int depth = 0;
     int n = static_cast<int>(text.size());
     for (int i = open_idx; i < n; ++i) {
@@ -900,9 +1140,50 @@ std::vector<FunctionInfo> extract_functions(const std::filesystem::path& path, s
     return parse_text(text, rel).first;
 }
 
+std::vector<FunctionInfo> extract_functions_from_text(std::string_view text, const std::string& rel) {
+    return parse_text(scrub_utf8(text), rel).first;
+}
+
 std::vector<std::pair<int, std::string>> parse_gaps(const std::filesystem::path& path) {
     auto text = read_file(path);
     return parse_text(text, path.string()).second;
+}
+
+std::vector<std::pair<int, std::string>> parse_gaps_from_text(std::string_view text) {
+    return parse_text(scrub_utf8(text), "").second;
+}
+
+std::string scrub_utf8(std::string_view text) {
+    std::string out(text);
+    const auto n = out.size();
+    auto cont = [&](std::size_t k) {
+        return k < n && (static_cast<unsigned char>(out[k]) & 0xC0) == 0x80;
+    };
+    for (std::size_t i = 0; i < n;) {
+        auto c = static_cast<unsigned char>(out[i]);
+        std::size_t len = 0;
+        if (c < 0x80) {
+            len = 1;
+        } else if (c >= 0xC2 && c <= 0xDF) {
+            len = cont(i + 1) ? 2 : 0;
+        } else if (c >= 0xE0 && c <= 0xEF) {
+            auto c1 = i + 1 < n ? static_cast<unsigned char>(out[i + 1]) : 0;
+            bool ok = cont(i + 1) && cont(i + 2) && !(c == 0xE0 && c1 < 0xA0)  // overlong
+                      && !(c == 0xED && c1 >= 0xA0);                            // surrogate
+            len = ok ? 3 : 0;
+        } else if (c >= 0xF0 && c <= 0xF4) {
+            auto c1 = i + 1 < n ? static_cast<unsigned char>(out[i + 1]) : 0;
+            bool ok = cont(i + 1) && cont(i + 2) && cont(i + 3) && !(c == 0xF0 && c1 < 0x90) &&
+                      !(c == 0xF4 && c1 >= 0x90);  // overlong, above U+10FFFF
+            len = ok ? 4 : 0;
+        }
+        if (len == 0) {
+            out[i++] = '?';
+            continue;
+        }
+        i += len;
+    }
+    return out;
 }
 
 std::vector<Finding> parse_gap_findings(const std::filesystem::path& path, const std::string& rel) {

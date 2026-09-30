@@ -225,7 +225,7 @@ TEST_CASE("one-line return is not missing-return") {
 
 // testdata_fp/ (correct code in the idioms the lints used to misread) and
 // testdata_tp/ (the buggy twins) sit beside testdata/. Same corpus and
-// expectations as tests/test_false_positives.py.
+// expectations as the former tests/test_false_positives.py (rest: test_cparse.cpp).
 static std::filesystem::path repo_dir(const char* name) {
     return std::filesystem::path(__FILE__).parent_path().parent_path().parent_path() / name;
 }
@@ -323,7 +323,7 @@ TEST_CASE("parser forms and PARSE-GAP") {
     // The macro-bodied definition does not swallow the next function.
     CHECK(fn_names(gap) == std::vector<std::string>{"after_macro"});
 
-    // Same source as tests/test_false_positives.py::test_head_shapes.
+    // The head shapes of the former tests/test_false_positives.py.
     auto tmp = std::filesystem::temp_directory_path() / "prism_head_shapes.cpp";
     {
         std::ofstream o(tmp, std::ios::binary);
@@ -348,7 +348,7 @@ TEST_CASE("parser forms and PARSE-GAP") {
 }
 
 // Reduced reproducers from docs/EVALUATION.md (jsmn, tinyexpr, cJSON). Same
-// corpus and expectations as tests/test_false_positives.py::TestRealWorldEvaluation.
+// corpus and expectations as the former Python TestRealWorldEvaluation.
 static std::vector<prism::FunctionInfo> fns_of_text(const std::string& src, const char* name) {
     auto tmp = std::filesystem::temp_directory_path() / name;
     {
@@ -393,16 +393,11 @@ TEST_CASE("real-world forms: export macros and TEST() bodies are parsed") {
     CHECK(has_hit(hits, 128, "UNINIT-BRANCH"));
 }
 
-TEST_CASE("real-world: zlib K&R forms parse; an unreadable K&R head is a gap") {
+TEST_CASE("real-world: zlib K&R forms parse") {
     auto fp = repo_dir("testdata_fp");
     CHECK(fn_names(fp / "realworld_knr.c") ==
           std::vector<std::string>{"fill_window", "deflate_stored", "once", "flush_block", "after_ifdef"});
-    auto gap = repo_dir("testdata_tp") / "knr_gap.c";
-    auto gaps = prism::parse_gaps(gap);
-    REQUIRE(gaps.size() == 1);
-    CHECK(gaps[0].first == 7);
-    CHECK(gaps[0].second == "char ZLIB_INTERNAL *strwinerror(error)");
-    CHECK(fn_names(gap) == std::vector<std::string>{"after_gap"});
+    // An unreadable K&R head stays a gap: test_cparse.cpp "C++ shapes".
 }
 
 TEST_CASE("real-world: interval, fuzz and replay leave floating point alone") {

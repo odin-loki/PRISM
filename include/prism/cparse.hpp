@@ -27,10 +27,17 @@ PRISM_API bool body_returns_local_array(std::string_view body);
 PRISM_API bool body_needs_pointer_harness(std::string_view body);
 PRISM_API std::vector<FunctionInfo> extract_functions(const std::filesystem::path& path,
                                                       std::string rel = {});
+// extract_functions on source text already read (`rel` names its file).
+PRISM_API std::vector<FunctionInfo> extract_functions_from_text(std::string_view text, const std::string& rel);
+// Each byte of an invalid UTF-8 sequence as `?`. Every source is read
+// through this: bodies reach the JSON reports, whose writer takes UTF-8
+// only, and `?` keeps byte offsets (columns) where they were.
+PRISM_API std::string scrub_utf8(std::string_view text);
 PRISM_API std::vector<std::filesystem::path> iter_sources(const std::filesystem::path& root);
 // Top-level brace-delimited code no parsed function owns (Law 7): (line,
 // first line of the text before its `{`). Nothing checks that code.
 PRISM_API std::vector<std::pair<int, std::string>> parse_gaps(const std::filesystem::path& path);
+PRISM_API std::vector<std::pair<int, std::string>> parse_gaps_from_text(std::string_view text);
 // parse_gaps as inventory records: NOTRUN, cls PARSE-GAP, one per gap.
 PRISM_API std::vector<Finding> parse_gap_findings(const std::filesystem::path& path,
                                                   const std::string& rel);
