@@ -127,6 +127,13 @@ Finding diff_pair(const FunctionInfo& a, const FunctionInfo& b, const fs::path&)
                        "; POINTER/OTHER would invent a buffer or object";
         return base;
     }
+    for (auto* f : {&a, &b}) {
+        if (auto syn = scrubbed_byte_reason(f->body, "differential testing")) {
+            base.status = std::string(laws::NEEDS_HARNESS);
+            base.message = f->name + ": " + *syn;
+            return base;
+        }
+    }
     if (a.params != b.params) {
         base.status = std::string(laws::ERROR);
         base.message = "parameter lists differ; same bytes would not mean the same arguments";

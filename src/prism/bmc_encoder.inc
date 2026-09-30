@@ -886,6 +886,10 @@ struct Parser {
         e->cxx = cxx;
         e->shift_rules = shift_rules;
         try {
+            // Every engine entry (bmc, contracts, harness, AI programs) comes
+            // through here: a scrubbed byte changed the program's text.
+            if (body.find(SCRUBBED_BYTE) != std::string::npos)
+                throw ParseFail("UNENCODED: byte that is not UTF-8 text in body (read as 0x7F)");
             for (auto& [typ, name] : params) {
                 if (name.empty()) continue;
                 auto t = ctype_parse(typ);
@@ -2383,14 +2387,24 @@ const std::map<std::string, std::string>& builtin_macros() {
     return M;
 }
 
+// A number may carry C23 / C++14 digit separators (`1'000`, `0xFF'FF`); the
+// token is the number without them, so `'` never opens a character literal
+// inside a number.
 std::vector<std::string> ctok(const std::string& src) {
+    // A scrubbed byte (cparse.hpp) in a body or a macro is not the source's value.
+    if (src.find(SCRUBBED_BYTE) != std::string::npos)
+        throw ParseFail("UNENCODED: byte that is not UTF-8 text (read as 0x7F)");
     static Regex rx(
-        "(0[xX][0-9a-fA-F]+[uUlL]*)|(0[bB][01]+[uUlL]*)|(\\d+[uUlL]*)|"
+        "(0[xX][0-9a-fA-F]+(?:'[0-9a-fA-F]+)*[uUlL]*)|(0[bB][01]+(?:'[01]+)*[uUlL]*)|(\\d+(?:'\\d+)*[uUlL]*)|"
         "('(?:\\\\.|[^\\\\'])+')|(\"(?:\\\\.|[^\\\\\"])*\")|"
         "([A-Za-z_]\\w*)|(::|->|&&|\\|\\||==|!=|<=|>=|<<|>>|\\+\\+|--)|"
         "([+\\-*/%<>=!&|^~()[\\],?:.;{}])|(\\S)");
     std::vector<std::string> out;
-    for (auto& m : rx.finditer(src)) out.push_back(m.text);
+    for (auto& m : rx.finditer(src)) {
+        out.push_back(m.text);
+        if (std::isdigit(static_cast<unsigned char>(m.text[0])) && m.text.find('\'') != std::string::npos)
+            std::erase(out.back(), '\'');
+    }
     return out;
 }
 
@@ -2427,8 +2441,8 @@ std::vector<std::string> expand_macros(const std::vector<std::string>& toks, Enc
 // Nondet call sites. The bmc front end works on statement text and keeps no
 // positions, so before encoding every `__VERIFIER_nondet_X()` call in a
 // function body is renamed `__VERIFIER_nondet_X__prism_at_L_C` (L:C = the
-// call's source position, from FunctionInfo::body_line/body_col, the
-// column mapped past dropped comment delimiters by source_col). The tag
+// call's source position, from FunctionInfo::body_line/body_col; the body
+// is length-preserving, and source_col maps any recorded col_shifts). The tag
 // survives inlining (a callee's calls keep the callee's positions) and
 // loop unrolling; model_call strips it again.
 constexpr std::string_view NONDET_TAG = "__prism_at_";

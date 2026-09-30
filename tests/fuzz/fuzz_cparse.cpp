@@ -64,6 +64,7 @@ void fuzz_cparse(std::string_view data) {
         (void)f.body.size();
     }
     (void)prism::parse_gaps(p);
+    (void)prism::extract_functions_from_text(data, "input.c");
 }
 
 void fuzz_pir(std::string_view data) {

@@ -24,14 +24,14 @@ struct FunctionInfo {
     std::string body;
     std::pair<int, int> span{0, 0};
     // Source position (1-based line and byte column) of body[0], the character
-    // after the opening brace; 0 when unknown (not in the JSON form). body is a
+    // after the opening brace; 0 when unknown. body is a
     // length-preserving copy of the source (comments blanked), so an offset
     // into it maps back to a source position (bmc nondet call sites, loops).
     int body_line = 0, body_col = 0;
-    // The stripped text drops the `/*` and `*/` delimiters (4 characters per
-    // comment), so a column after a block comment on the same line is left of
-    // its source column: (line, stripped column, characters dropped there),
-    // from comment_col_shifts, for the body's lines. Not in the JSON form.
+    // (line, stripped column, characters dropped there) for a body built from
+    // text that drops the `/*` and `*/` delimiters (comment_col_shifts).
+    // extract_functions strips length-preservingly and leaves this empty, so
+    // source_col is the identity there. Not in the JSON form.
     std::vector<std::array<int, 3>> col_shifts;
     // C++ standard of the unit (the year of its -std= in compile_commands.json,
     // 98 -> 3), 0 = not known (the compiler's default is assumed). Set by the

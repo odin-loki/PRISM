@@ -144,6 +144,12 @@ std::vector<Finding> execute_cex(const std::vector<Finding>& fails, const std::v
             out.push_back(std::move(f));
             continue;
         }
+        if (auto syn = scrubbed_byte_reason(fn->body, "cex replay")) {
+            auto f = make_find("execute", laws::NEEDS_HARNESS, *fn, "", *syn, laws::STRENGTH_FINDS);
+            f.extra["oracle"] = "concrete-replay";
+            out.push_back(std::move(f));
+            continue;
+        }
         if (float_unencoded(*fn)) {
             auto f = make_find("execute", laws::NEEDS_HARNESS, *fn, "",
                                "float/double unencoded: cex replay oracle is not an IEEE model",

@@ -75,6 +75,8 @@ Finding fuzz_function(const FunctionInfo& fn, const fs::path& src, double budget
     if (fn.kind == "OTHER")
         return make_find("fuzz", laws::NEEDS_HARNESS, fn, "", "OTHER signature, not harnessed",
                          laws::STRENGTH_FINDS);
+    if (auto syn = scrubbed_byte_reason(fn.body, "fuzzer"))
+        return make_find("fuzz", laws::NEEDS_HARNESS, fn, "", *syn, laws::STRENGTH_FINDS);
     if (auto syn = unencoded_syntax_reason(fn, "fuzzer"))
         return make_find("fuzz", laws::NEEDS_HARNESS, fn, "", *syn, laws::STRENGTH_FINDS);
     if (body_needs_pointer_harness(fn.body))
@@ -720,6 +722,8 @@ Finding run_libfuzzer(const FunctionInfo& fn, const fs::path& src, double timeou
                        "POINTER: libFuzzer harness would invent a buffer or pass NULL");
     if (fn.kind == "OTHER")
         return lf_base(laws::NEEDS_HARNESS, "", "OTHER signature, not harnessed");
+    if (auto syn = scrubbed_byte_reason(fn.body, "libFuzzer"))
+        return lf_base(laws::NEEDS_HARNESS, "", *syn);
     if (auto syn = unencoded_syntax_reason(fn, "libFuzzer"))
         return lf_base(laws::NEEDS_HARNESS, "", *syn);
     if (body_needs_pointer_harness(fn.body))
@@ -835,6 +839,7 @@ Finding fuse_one(const FunctionInfo& fn, const std::vector<Finding>& bmc_finding
         return nh("POINTER: FuSeBMC harness would invent a buffer or pass NULL");
     if (fn.kind == "OTHER") return nh("OTHER signature, not harnessed");
     if (float_unencoded(fn)) return nh("float/double unencoded: FuSeBMC concrete oracle is not an IEEE model");
+    if (auto syn = scrubbed_byte_reason(fn.body, "FuSeBMC")) return nh(*syn);
     if (auto syn = unencoded_syntax_reason(fn, "FuSeBMC")) return nh(*syn);
     if (body_needs_pointer_harness(fn.body))
         return nh("local pointer or heap object: FuSeBMC harness would invent a buffer");

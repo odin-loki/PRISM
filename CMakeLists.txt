@@ -478,6 +478,8 @@ if(PRISM_TESTS)
     tests/cpp/test_astlint.cpp
     # C lint checks: API branches, dispatch, real-code false alarms, CVE shapes.
     tests/cpp/test_checkers_c.cpp
+    # Front end, report JSON form, static inliner.
+    tests/cpp/test_cparse.cpp
     # Roadmap 9.1/9.3/9.4 AI assistant features (regress, triage, ask, draft, predict).
     tests/cpp/test_ai_assist.cpp
     # bmc front end on SV-COMP shapes (docs/SVCOMP.md).

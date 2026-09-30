@@ -2930,7 +2930,9 @@ std::string read_fn_file(const FunctionInfo& fn) {
         if (!in) return {};
         std::ostringstream ss;
         ss << in.rdbuf();
-        return ss.str();
+        // As the function was read (a macro holding a scrubbed byte is
+        // refused by ctok).
+        return scrub_utf8(ss.str());
     } catch (...) {
         return {};
     }
@@ -3331,6 +3333,12 @@ Finding bmc_function(const FunctionInfo& fn, int unwind, bool try_unbounded,
         base.strength = std::string(laws::STRENGTH_SOME);
         base.status = std::string(laws::NEEDS_HARNESS);
         base.message = "non-scalar parameter: unguarded BMC reports missing preconditions, not defects";
+        return base;
+    }
+    if (auto syn = scrubbed_byte_reason(fn.body, "bitvector BMC")) {
+        base.strength = std::string(laws::STRENGTH_SOME);
+        base.status = std::string(laws::NEEDS_HARNESS);
+        base.message = *syn;
         return base;
     }
     if (auto syn = unencoded_syntax_reason(fn, "bitvector BMC")) {

@@ -260,6 +260,7 @@ std::string ref_strip(std::string_view text, bool blank_strings) {
         if (in_block) {
             if (starts(i, "*/")) {
                 in_block = false;
+                out += "  ";  // length-preserving: a delimiter is two blanks
                 i += 2;
             } else {
                 out += text[i] == '\n' ? '\n' : ' ';
@@ -269,6 +270,7 @@ std::string ref_strip(std::string_view text, bool blank_strings) {
         }
         if (starts(i, "/*")) {
             in_block = true;
+            out += "  ";
             i += 2;
             continue;
         }
@@ -280,6 +282,20 @@ std::string ref_strip(std::string_view text, bool blank_strings) {
             continue;
         }
         const char c = text[i];
+        if (c == '\'' && i > 0 && i + 1 < n && std::isalnum(static_cast<unsigned char>(text[i - 1])) &&
+            std::isalnum(static_cast<unsigned char>(text[i + 1]))) {
+            // A C23 digit separator (1'000, 0x10'00, .5'0) opens no literal.
+            std::size_t j = i;
+            while (j > 0 && (std::isalnum(static_cast<unsigned char>(text[j - 1])) || text[j - 1] == '_' ||
+                             text[j - 1] == '.' || text[j - 1] == '\''))
+                --j;
+            if (std::isdigit(static_cast<unsigned char>(text[j])) ||
+                (text[j] == '.' && j + 1 < i && std::isdigit(static_cast<unsigned char>(text[j + 1])))) {
+                out += c;
+                ++i;
+                continue;
+            }
+        }
         if (c == '\'') {
             out += c;
             ++i;
@@ -344,7 +360,7 @@ std::string read_file(const fs::path& p) {
 
 TEST_CASE("lint fastpath: strip_comments_keep_lines equals the reference loop on fuzz") {
     std::mt19937 rng(7);
-    const std::string_view alphabet = "/*'\"\\\n{}ab ;";
+    const std::string_view alphabet = "/*'\"\\\n{}ab1 ;";
     int bad = 0;
     for (int k = 0; k < 20000; ++k) {
         std::string s(static_cast<std::size_t>(rng() % 25), ' ');
@@ -378,13 +394,13 @@ TEST_CASE("lint fastpath: strip_comments_keep_lines equals the reference loop on
 }
 
 TEST_CASE("lint fastpath: strip_comments_keep_lines edge cases") {
-    // Delimiters vanish, the interior keeps its newlines.
-    CHECK(prism::strip_comments_keep_lines("a/*x\ny*/b") == "a \n b");
+    // Delimiters are blanks (length-preserving), the interior keeps its newlines.
+    CHECK(prism::strip_comments_keep_lines("a/*x\ny*/b") == "a   \n   b");
     CHECK(prism::strip_comments_keep_lines("s = \"a\\\"b\";") == "s = \"    \";");
     // Escaped newline in a string is two spaces.
     CHECK(prism::strip_comments_keep_lines("\"\\\nx\"") == "\"   \"");
     CHECK(prism::strip_comments_keep_lines("c = '\"'; // q") == "c = '\"';     ");
-    CHECK(prism::strip_comments_keep_lines("x /* open") == "x      ");
+    CHECK(prism::strip_comments_keep_lines("x /* open") == "x        ");
 }
 
 TEST_CASE("lint fastpath: match_brace equals the reference loop") {
