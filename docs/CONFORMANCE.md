@@ -9,7 +9,7 @@ are defined in [VERDICTS.md](VERDICTS.md).
 
 Every task names functions and, for each, whether the property holds
 (`true`: no undefined behaviour for any input) or not (`false`: a violation
-exists). The scorer (`tools/conformance.py`) runs PRISM with
+exists). The scorer (`src/tools/qa/conformance.cpp`) runs PRISM with
 `--stage inventory,classify,bmc,harness` (plus `pir` whenever `prism
 --list-stages` lists it) and scores each verdict stage separately.
 
@@ -35,7 +35,7 @@ Rules that keep the numbers honest:
   alarm or a detection. SV-COMP and Juliet counterexamples are not replayed
   (their inputs come from `__VERIFIER_nondet_*` / `rand()`/`stdin`).
 - The suite's own labels are validated without PRISM:
-  `python tools/conformance.py --self-check` requires every `false` witness to
+  `build/prism-qa conformance --self-check` requires every `false` witness to
   trip a sanitizer and every `true` function to survive an edge-value grid
   plus 2000 random inputs (it caught one mislabelled task while the suite was
   written).
@@ -46,14 +46,22 @@ Rules that keep the numbers honest:
 ## How to run
 
 ```
-python tools/conformance.py --self-check                    # labels (needs clang or gcc with sanitizer runtimes)
-PRISM_BIN=build/prism python tools/conformance.py           # C++ engine; exit 1 on any wrong proof
-python tools/conformance.py                                 # Python engine (frozen oracle)
-python tools/conformance.py --fetch-juliet /tmp/juliet      # NIST Juliet 1.3, sha256-checked
-PRISM_BIN=build/prism python tools/conformance.py --suite /tmp/juliet/juliet
-PRISM_BIN=build/prism python tools/csmith_soundness.py -n 300             # random programs
-PRISM_BIN=build/prism python tools/csmith_soundness.py --generator csmith -n 100
+build/prism-qa conformance --self-check                 # labels (needs clang or gcc with sanitizer runtimes)
+build/prism-qa conformance                              # engine: --prism, $PRISM_BIN, else build/prism; exit 1 on any wrong proof
+build/prism-qa conformance --fetch-juliet /tmp/juliet   # NIST Juliet 1.3 (curl, sha256-checked, unzip)
+build/prism-qa conformance --suite /tmp/juliet/juliet
+build/prism-qa soundness -n 300                         # random programs
+build/prism-qa soundness --generator csmith -n 100
 ```
+
+`prism-qa` (`src/tools/qa/`) is built with the engine (`cmake --build
+build`) but is not part of the release archive: it grades whichever engine
+binary it is given. It reads the task files with its own YAML-subset reader
+(block maps and sequences, flow lists of scalars, quoted scalars, comments;
+anything else is an error naming the file and line). The random programs and
+the self-check input grids come from a Python-compatible Mersenne Twister
+drawn in the original order, so the seeds quoted below still name the same
+programs they named when the scorers were Python scripts.
 
 Outputs: `conformance-out/metrics.json`, `metrics.md`, `results.json` (every
 function, stage, verdict, counterexample and replay). `.github/workflows/conformance.yml`
@@ -133,7 +141,7 @@ proof store keeps packed proofs only (no CNF), capped at 2 GB
 are swept.
 
 Measured task by task (plain `pir` run, then the certified run on the same
-cache, as `conformance.py` does; Lean tools on `PATH`; loaded shared
+cache, as `prism-qa conformance` does; Lean tools on `PATH`; loaded shared
 machine, so seconds are indicative):
 
 | task | before (tip `232d5da2a`) | after |
@@ -155,7 +163,7 @@ squaring; no CaDiCaL answer for the negative half of the 64-bit one).
 
 ### Certified mode: one certificate per function (roadmap 3.2 speed-up)
 
-`PRISM_BIN=build/prism python tools/conformance.py --certified --no-replay -j 2`,
+`build/prism-qa conformance --certified --no-replay -j 2`,
 C++ engine at branch `claude/certified-speed` (2026-09-24), 491 tasks (the
 suite has grown since the run below: C++ ESBMC tasks, libc models,
 coroutines, k-induction memory tasks), Lean bit-blaster built, 4-core
@@ -226,7 +234,7 @@ certificate budget (`mul_true`, `compound_mul_true`).
 
 ### Certified mode after the memory model and the Lean bit-blaster
 
-`PRISM_BIN=build/prism python tools/conformance.py --certified`, C++ engine
+`build/prism-qa conformance --certified`, C++ engine
 with the pir memory model (QF_BV `MemEncoding::Bv`), the Lean-proved
 bit-blaster (`bitblaster=auto`, `prism-bitblast` / `prism-lrat-check` built
 by `lake build` in `proofs/techniques`) and the solver-library wiring; 367
@@ -280,7 +288,7 @@ call to X"); the `_good()` wrappers that call a helper using `RAND32()`,
 bulk of the 261 (100 unmodelled calls, 20 address-of, 18 heap, 22 sockets,
 10 VLA).
 
-### Random programs (`tools/csmith_soundness.py`, in-house generator, 300 programs, 900 functions)
+### Random programs (`prism-qa soundness`, in-house generator, 300 programs, 900 functions)
 
 | | before | after (C++) | after (Python) |
 |---|---|---|---|
@@ -357,7 +365,7 @@ C++ standard — `cpp/github_6199_fail` (`std::string(nullptr, 0)`: an empty
 range is valid) and `cpp/github_6588_multidim_fail` (`new int[2][3]()`
 value-initialises to zero); a native sanitizer run of both deterministic
 programs is clean. PRISM's proofs are right there; the two tasks are skipped
-at conversion with the reason (`ESBMC_DISPUTED` in `tools/conformance.py`),
+at conversion with the reason (`ESBMC_DISPUTED` in `src/tools/qa/support/fetch.cpp`),
 not relabelled. S8 also turned one pir false alarm into NEEDS-HARNESS
 (`cpp11/constructors/Constructor9-1`). The fixed build was re-run on the
 whole set: 0 wrong proofs in both stages. The 62–64 tasks without an answer
@@ -375,7 +383,7 @@ program except the false alarms F8–F10 above (fixed since), `cpp/github_1807` 
 label, clean natively; refuted by pir) and two FAILED of another class.
 
 **Committed subset** (64 tasks: 32 true, 32 false, deterministic,
-labels confirmed by one native sanitizer run), in `python tools/conformance.py`:
+labels confirmed by one native sanitizer run), in `build/prism-qa conformance`:
 
 | stage | wrong proofs | proved (true) | refuted (false) | false alarms | no answer |
 |---|---|---|---|---|---|
@@ -501,7 +509,7 @@ Label self-check: 212 functions ok, 6 skipped (pointer parameters), 0 failed.
 
 `pir` and certified mode (roadmap 3.2): run of the `pir` stage with the
 solver library wiring and `--certified`, C++ engine at this branch
-(`python tools/conformance.py --stages pir --certified`, 2026-09-23;
+(`build/prism-qa conformance --stages pir --certified`, 2026-09-23;
 `pir-certified` is the second run with `prism --certified`, twice the time
 budget, a fresh solver cache per suite run):
 
@@ -563,7 +571,7 @@ By CWE (false functions): CWE190 10 refuted / 35 no answer; CWE191 6 refuted,
 **2 wrong proofs**; CWE369 **4 wrong proofs**, 8 no answer; CWE476 1 refuted;
 CWE680 0 refuted.
 
-#### Random programs (`tools/csmith_soundness.py`)
+#### Random programs (`prism-qa soundness`)
 
 In-house generator, 300 programs, 900 functions, seeds 1–300:
 
@@ -880,7 +888,7 @@ every true refutation of a negative left operand in code built without
 `-std`. Regression tests: `tests/test_bmc_goto_shift.py`, doctest "bmc
 shift rules follow the C++ standard of the unit (F7)" and "with_cxx_std
 reads -std from compile_commands.json". Strict gate after the fix
-(`tools/conformance.py`, C++ engine, 2026-09-24, 303 true / 317 false
+(`src/tools/qa/conformance.cpp`, C++ engine, 2026-09-24, 303 true / 317 false
 tasks): 0 wrong proofs and 0 false alarms in every stage; bmc proves
 99/303 and refutes 93/317 (`cxx_shift_cpp20_true` is now proved), pir
 232/303 and 158/317.
@@ -995,7 +1003,7 @@ poison is (refinement findings 2, 5, 6, 7)".
 
 ## Release gate
 
-`tools/conformance.py` exits 1 while any wrong proof exists, and
+`src/tools/qa/conformance.cpp` exits 1 while any wrong proof exists, and
 `.github/workflows/conformance.yml` runs it on every push. The encoder's
 wrong proofs are gone (was: 11 in the suite, 6 in Juliet, 57 in the random
 campaign; now 0/0/0 in both engines). **The gate is still red on the C++

@@ -25,7 +25,7 @@ engine:
   (`proofs/`, `tools/pir_lean_check.py`);
 - SV-COMP witnesses validated by other tools (CPAchecker, UAutomizer);
 - random-program campaigns compared against compiled execution
-  (`tools/csmith_soundness.py`).
+  (`src/tools/qa/soundness.cpp`).
 
 ## Step 1: PRISM on PRISM (sanitizers)
 
@@ -37,7 +37,7 @@ gate failed once (missing `pyyaml`, fixed in `c4fc65e9d`); the re-run passes
   workflow), or wait for the 03:17 UTC schedule. About 2 hours (build +
   conformance + limited self-scan).
 - It builds with `-DPRISM_SANITIZE=ON`, runs `prism_tests`, pytest and
-  `tools/conformance.py -j 2 --mem-limit-mb 0` against that build, and then
+  `prism-qa conformance -j 2 --mem-limit-mb 0` against that build, and then
   `prism . --no-llm --stage inventory,lints,polyglot --out prism-self` (same
   stage limit as `ci.yml` selfcheck; a full pipeline scan exceeds the 300-minute
   job limit — run [36211384015](https://github.com/odin-loki/PRISM/actions/runs/36211384015)
@@ -50,8 +50,9 @@ gate failed once (missing `pyyaml`, fixed in `c4fc65e9d`); the re-run passes
 - **PyYAML gate (fixed in `c4fc65e9d`):** the first run
   [36203977754](https://github.com/odin-loki/PRISM/actions/runs/36203977754)
   failed at pytest because `self-check.yml` did not install `pyyaml`.
-  `tools/conformance.py` now requires PyYAML (no `json.loads` fallback); the
-  workflow installs it; `tests/test_supply_chain.py` guards the install line.
+  `src/tools/qa/conformance.cpp` then required PyYAML (no `json.loads` fallback; the
+  scorer is now `prism-qa conformance`, with its own YAML-subset reader); the
+  workflow installs it for the remaining pytest suite; `tests/test_supply_chain.py` guards the install line.
   Re-run [36211384015](https://github.com/odin-loki/PRISM/actions/runs/36211384015):
   pytest green. If a later step reports ASan/UBSan, treat it as a real engine
   bug.
@@ -70,10 +71,10 @@ merged `main`.
 
 | claim | where | how to confirm | pass |
 |---|---|---|---|
-| headline table (pir 302/379 proved, 165/364 refuted; bmc 107/379, 93/364) | `docs/ROADMAP_STATUS.md` | read the `conformance-metrics` artifact of the conformance run on `02d7da9be`, or run `PRISM_BIN=build/prism python tools/conformance.py -j 2 --mem-limit-mb 4096` | 0 wrong proofs, and no count lower than the table |
+| headline table (pir 302/379 proved, 165/364 refuted; bmc 107/379, 93/364) | `docs/ROADMAP_STATUS.md` | read the `conformance-metrics` artifact of the conformance run on `02d7da9be`, or run `build/prism-qa conformance -j 2 --mem-limit-mb 4096` | 0 wrong proofs, and no count lower than the table |
 | SV-COMP enlarged subset: 203 of 417, 0 incorrect | `docs/SVCOMP.md` (measured on the sv3cm binary, loaded machine) | `PRISM_BIN=build/prism python tools/svcomp/run_subset.py --jobs 2` and again with `--property unreach-call` | 0 incorrect, score ≥ 203 |
 | real-world before/after table | `docs/EVALUATION.md` (four commits measured separately) | rerun zlib, cJSON, jsmn, tinyexpr, cxxopts at the pinned commits with `--no-llm` | the "after" outcomes hold |
-| Houdini cost controls are faster | `perf6` series | time `tools/conformance.py` on `main` against `027e49e7c`, same machine, same `-j`, cold solver cache (`~/.cache/prism/solver` removed) | `main` is not slower |
+| Houdini cost controls are faster | `perf6` series | time `src/tools/qa/conformance.cpp` on `main` against `027e49e7c`, same machine, same `-j`, cold solver cache (`~/.cache/prism/solver` removed) | `main` is not slower |
 | refinement: `mismatch=0` | round-6 `falar`/`lnprf` series | `python tools/pir_lean_check.py tests/pir testdata` | 0 mismatches (CI rechecks in `proofs*.yml`) |
 
 If a number went up, update the document. If it went down, or there is any
@@ -106,4 +107,4 @@ release, and GPU/LoRA work on the owner's hardware.
 | 2 SV-COMP subset | `02d7da9be` | 2026-09-26 | **PASS** — `run_subset.py -j 2`: no-overflow score 88 (35+18 correct, 0 incorrect); unreach-call score 115 (53+9 correct, 0 incorrect); combined **203**/417 |
 | 2 real-world rerun | `02d7da9be` | 2026-09-26 | **PASS** — pinned commits, `--no-llm`: jsmn/tinyexpr/cJSON/cxxopts/zlib all PARSE-GAP 0, CRASH 0, ERROR 0; zlib wall 698 s (finishes; pir still heavy) |
 | 2 refinement | `02d7da9be` | 2026-09-26 | **PASS** — `pir_lean_check.py tests/pir testdata`: mismatch=0 (local `build/prism` and CI `build-ci/prism`) |
-| 2 Houdini timing | `02d7da9be` vs `027e49e7c` | 2026-09-26 | **PASS (noise)** — cold `conformance.py -j 2 --mem-limit-mb 4096`: main 2111 s, pre-perf6 2040 s (+3.5%; single run on loaded WSL host) |
+| 2 Houdini timing | `02d7da9be` vs `027e49e7c` | 2026-09-26 | **PASS (noise)** — cold `prism-qa conformance -j 2 --mem-limit-mb 4096`: main 2111 s, pre-perf6 2040 s (+3.5%; single run on loaded WSL host) |

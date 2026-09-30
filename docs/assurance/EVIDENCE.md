@@ -167,9 +167,10 @@ each project's `lean-toolchain`): `proofs/check.sh` passed all four steps
 
 ### E09 Conformance suite and release gate
 
-- Artefacts: `tools/conformance.py`, `tests/conformance/SOURCES.md`, the
+- Artefacts: `src/tools/qa/conformance.cpp`, `tests/conformance/SOURCES.md`, the
   tasks under `tests/conformance/prism/` and `tests/conformance/sv-comp/`,
-  scorer tests `tests/conformance/test_conformance_suite.py`, CI
+  scorer tests `tests/cpp/test_qa_conformance.cpp` (the gate itself:
+  `tests/cpp/test_qa_conformance.cpp::qa conformance: a wrong proof fails the release gate`), CI
   `.github/workflows/conformance.yml`, metrics and history in
   `docs/CONFORMANCE.md`.
 - Shows: soundness (wrong proofs), completeness, detection with replayed
@@ -180,7 +181,7 @@ each project's `lean-toolchain`): `proofs/check.sh` passed all four steps
   the time it was written; commit `7ff59c5` ("harness: drafted assumptions
   never yield a proof class") addresses that row. Re-measured locally on
   2026-09-23 with the C++ engine built from this branch (engine sources as
-  at `9135d97`; `PRISM_BIN=... python tools/conformance.py`, stages
+  at `9135d97`; `prism-qa conformance --prism ...`, stages
   `inventory,classify,bmc,pir,harness`, 297 tasks): **release gate PASS,
   0 wrong proofs** in every stage; `bmc` completeness 82/148, detection with
   replayed counterexample 84/143, 1 false alarm; `pir` completeness 90/148,
@@ -189,9 +190,9 @@ each project's `lean-toolchain`): `proofs/check.sh` passed all four steps
 
 ### E10 Random-program soundness testing
 
-- Artefacts: `tools/csmith_soundness.py`, the `random-programs` job in
+- Artefacts: `src/tools/qa/soundness.cpp`, `src/tools/qa/gen_random.cpp`, the `random-programs` job in
   `.github/workflows/conformance.yml`,
-  `docs/CONFORMANCE.md#random-programs-toolscsmith_soundnesspy-in-house-generator-300-programs-900-functions`.
+  `docs/CONFORMANCE.md#random-programs-prism-qa-soundness-in-house-generator-300-programs-900-functions`.
 - Shows: every `PROVED*` verdict on generated programs is executed under
   UBSan on inputs; any sanitizer report is a wrong proof.
 - Does not show: absence of wrong proofs for program shapes the generators
@@ -221,7 +222,7 @@ each project's `lean-toolchain`): `proofs/check.sh` passed all four steps
 
 ### E13 Counterexample replay
 
-- Artefacts: `replay` in `tools/conformance.py`, `replay` in
+- Artefacts: `replay` in `src/tools/qa/support/replay.cpp`, `replay` in
   `tools/svcomp/prism_svcomp.py`, `tests/test_svcomp.py::ReplayTest`.
 - Shows: a `FAILED` verdict is counted as a detection only when the
   counterexample, compiled with sanitizers and executed, triggers the

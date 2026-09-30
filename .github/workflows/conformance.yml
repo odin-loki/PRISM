@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
     inputs:
       random_programs:
-        description: "programs for tools/csmith_soundness.py"
+        description: "programs for prism-qa soundness"
         default: "300"
 
 permissions:
@@ -38,11 +38,13 @@ jobs:
           -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           -DPRISM_CUDA=OFF -DPRISM_LLAMA=OFF -DPRISM_QT=OFF -DPRISM_Z3=ON
       - name: Build
-        run: cmake --build build --target prism
+        run: cmake --build build --target prism prism-qa
       - uses: actions/upload-artifact@v4
         with:
           name: prism-conformance-bin
-          path: build/prism
+          path: |
+            build/prism
+            build/prism-qa
           retention-days: 7
 
   conformance:
@@ -51,30 +53,27 @@ jobs:
     needs: build
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - name: Install sanitizer runtimes, bwrap, PyYAML
+      - name: Install sanitizer runtimes, bwrap
         run: |
           sudo apt-get update
           sudo apt-get install -y clang libclang-rt-18-dev bubblewrap
-          python -m pip install pyyaml pytest
       - uses: actions/download-artifact@v4
         with:
           name: prism-conformance-bin
           path: build
+      # The scorer's own tests (tests/cpp/test_qa_conformance.cpp) run with
+      # prism_tests in ci.yml.
       - name: Suite labels (sanitizer self-check)
-        run: python tools/conformance.py --self-check --out conformance-out
-      - name: Scorer unit tests
-        run: python -m pytest -q tests/conformance
+        run: |
+          chmod +x build/prism build/prism-qa
+          build/prism-qa conformance --self-check --out conformance-out
       - name: Conformance run (fails on any wrong proof)
         env:
           PRISM_BIN: ${{ github.workspace }}/build/prism
         run: |
-          chmod +x build/prism
           # two runs at a time, each (with its solver/clang children) capped
           # at 4 GB: a task that needs more is "no answer", never a lost runner
-          python tools/conformance.py --out conformance-out -j 2 --mem-limit-mb 4096
+          build/prism-qa conformance --out conformance-out -j 2 --mem-limit-mb 4096
       - name: Metrics to job summary
         if: always()
         run: test -f conformance-out/metrics.md && cat conformance-out/metrics.md >> "$GITHUB_STEP_SUMMARY" || true
@@ -92,14 +91,10 @@ jobs:
     needs: build
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
       - name: Install sanitizer runtimes, bwrap, csmith
         run: |
           sudo apt-get update
           sudo apt-get install -y clang libclang-rt-18-dev bubblewrap csmith
-          python -m pip install pyyaml
       - uses: actions/download-artifact@v4
         with:
           name: prism-conformance-bin
@@ -108,14 +103,14 @@ jobs:
         env:
           PRISM_BIN: ${{ github.workspace }}/build/prism
         run: |
-          chmod +x build/prism
-          python tools/csmith_soundness.py -n "${{ github.event.inputs.random_programs || '300' }}" \
+          chmod +x build/prism build/prism-qa
+          build/prism-qa soundness -n "${{ github.event.inputs.random_programs || '300' }}" \
             --seed "${{ github.run_number }}" --out soundness-out/inhouse
       - name: Csmith (scalar-only configuration)
         if: always()
         env:
           PRISM_BIN: ${{ github.workspace }}/build/prism
-        run: python tools/csmith_soundness.py --generator csmith -n 100 --seed "${{ github.run_number }}" --out soundness-out/csmith
+        run: build/prism-qa soundness --generator csmith -n 100 --seed "${{ github.run_number }}" --out soundness-out/csmith
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -130,26 +125,22 @@ jobs:
     needs: build
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - run: python -m pip install pyyaml
       - uses: actions/cache@v4
         with:
           path: juliet-cache/juliet-c-cplusplus-v1.3.zip
           key: juliet-1.3-ada9d7e1c323d283446df3f55bdee0d00bda1fed786785fe98764d58688f38eb
-      - name: Fetch (sha256-checked) and extract
-        run: python tools/conformance.py --fetch-juliet juliet-cache
       - uses: actions/download-artifact@v4
         with:
           name: prism-conformance-bin
           path: build
+      - name: Fetch (curl, sha256-checked) and extract (unzip)
+        run: |
+          chmod +x build/prism build/prism-qa
+          build/prism-qa conformance --fetch-juliet juliet-cache
       - name: Juliet run (fails on any wrong proof)
         env:
           PRISM_BIN: ${{ github.workspace }}/build/prism
-        run: |
-          chmod +x build/prism
-          python tools/conformance.py --suite juliet-cache/juliet --out juliet-out
+        run: build/prism-qa conformance --suite juliet-cache/juliet --out juliet-out
       - uses: actions/upload-artifact@v4
         if: always()
         with:

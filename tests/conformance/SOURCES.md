@@ -1,6 +1,6 @@
 # Conformance suite sources
 
-Roadmap Part 2.7. Run with `python tools/conformance.py` (see
+Roadmap Part 2.7. Run with `build/prism-qa conformance` (see
 `docs/CONFORMANCE.md` for the metric definitions and current numbers).
 
 ## `prism/` — in-house tasks (this repository)
@@ -24,7 +24,7 @@ Roadmap Part 2.7. Run with `python tools/conformance.py` (see
 
 Every feature has a `_true` variant (no undefined behaviour for any input)
 and a `_false` variant (a violation exists). `false` tasks carry a `witness`
-(concrete arguments that trigger the UB); `python tools/conformance.py
+(concrete arguments that trigger the UB); `build/prism-qa conformance
 --self-check` compiles every task with `-fsanitize=undefined,address`,
 requires each witness to trip the sanitizer and each `true` function to
 survive an edge-value grid plus 2000 random inputs.
@@ -82,7 +82,7 @@ replayed".
   BSD-4-clause), `esbmc-cpp/gcc-template-tests` (GCC testsuite, GPL),
   `esbmc-cpp/qt`, `esbmc-cpp/esbmc-systemc`, and any file mentioning a
   copyright, licence, a textbook listing ("Fig. N", Deitel/Pearson), LLBMC,
-  GCC or `dg-` directives (`ESBMC_FOREIGN_TEXT` in `tools/conformance.py`).
+  GCC or `dg-` directives (`ESBMC_FOREIGN_TEXT` in `src/tools/qa/support/fetch.cpp`).
 - Files: the test's single source file, renamed
   `<dir>__<test>.cpp` (unmodified content), plus a generated `.yml` sidecar
   recording `upstream: esbmc@653926f91580 regression/<path>`, ESBMC's
@@ -91,10 +91,10 @@ replayed".
 Fetch and convert the whole set (not in git):
 
 ```
-python tools/conformance.py --fetch-esbmc /tmp/esbmc     # sparse, blob-filtered fetch of the pinned commit
-PRISM_BIN=build/prism python tools/conformance.py --esbmc /tmp/esbmc --suite /tmp/none
-python tools/conformance.py --self-check --suite /tmp/esbmc/esbmc-cpp   # native label check
-python tools/conformance.py --curate-esbmc /tmp/esbmc    # regenerate esbmc-cpp/ (the committed subset)
+build/prism-qa conformance --fetch-esbmc /tmp/esbmc     # sparse, blob-filtered fetch of the pinned commit
+build/prism-qa conformance --esbmc /tmp/esbmc --suite /tmp/none
+build/prism-qa conformance --self-check --suite /tmp/esbmc/esbmc-cpp   # native label check
+build/prism-qa conformance --curate-esbmc /tmp/esbmc    # regenerate esbmc-cpp/ (the committed subset)
 ```
 
 GitHub archive downloads are not used (some proxies refuse them): the
@@ -150,8 +150,8 @@ this repository.
 NIST SARD Juliet C/C++ test suite 1.3, fetched on demand:
 
 ```
-python tools/conformance.py --fetch-juliet /tmp/juliet     # download + verify + extract
-PRISM_BIN=build/prism python tools/conformance.py --juliet /tmp/juliet
+build/prism-qa conformance --fetch-juliet /tmp/juliet     # download + verify + extract
+build/prism-qa conformance --juliet /tmp/juliet
 ```
 
 - URL: <https://samate.nist.gov/SARD/downloads/test-suites/2017-10-01-juliet-test-suite-for-c-cplusplus-v1-3.zip>

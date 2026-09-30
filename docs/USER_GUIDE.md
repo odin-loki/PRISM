@@ -369,9 +369,9 @@ C/C++ tasks with known answers, a pinned subset of SV-COMP and, nightly, the
 NIST Juliet CWE190/191/369/476/680 tests. Any wrong proof blocks a release.
 
 ```
-PRISM_BIN=build/prism python tools/conformance.py          # metrics + gate
-python tools/conformance.py --self-check                   # validate the task labels
-PRISM_BIN=build/prism python tools/csmith_soundness.py -n 300   # random programs
+build/prism-qa conformance                  # metrics + gate (engine: --prism, $PRISM_BIN, else build/prism)
+build/prism-qa conformance --self-check     # validate the task labels
+build/prism-qa soundness -n 300             # random programs
 ```
 
 The metric definitions, the current numbers and every known wrong proof with
@@ -409,5 +409,5 @@ certificate that checks nothing is not labelled certified. `BOUNDED` and
 `// requires:` assumptions is `PROVED-ASSUMING`. A certificate is about the
 CNF: what it still trusts (Clang, the PIR encoder and memory model, and the
 bit-blaster when it is Z3's) is listed in the `TRUSTED_BASE.md` that every
-run writes next to the report. `python tools/conformance.py --certified`
+run writes next to the report. `build/prism-qa conformance --certified`
 measures how many loop-free functions of the suite become `PROVED-CERTIFIED`.

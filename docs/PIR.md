@@ -636,7 +636,7 @@ the model is checked by the memory model on the way. Each `_true` harness
 has `_false` twins (a wrong contract, or a precondition violation such as an
 unterminated string) that must be refuted for the class they plant
 (`expect_class:` in the task file), so a proof is not vacuous. They run in
-the conformance suite (`python tools/conformance.py`).
+the conformance suite (`build/prism-qa conformance`).
 
 **Scope of the proofs.** The objects in the harnesses have `N` bytes
 (`harness.h`, default `N = 4`; `2N`/`2N + 1` for a `strcat`/`strncat`
@@ -731,8 +731,8 @@ only memory statement is a range check (`putc(c, NULL)`) crashed the encoder
 function as using memory.
 
 Every function defined in a model file is called by a harness
-(`tests/conformance/test_conformance_suite.py`
-`test_every_model_function_is_called`). The `bmc` stage has no preprocessor
+(`tests/cpp/test_qa_conformance.cpp`
+"qa conformance: every libc model function is called by a harness"). The `bmc` stage has no preprocessor
 and does not see the models (NEEDS-HARNESS apart from its own built-in
 `abs`/`rand` models).
 
@@ -1042,7 +1042,7 @@ object-granular overwrite, a havocked pointer walk). On the rest of the
 conformance suite two BOUNDED true tasks become PROVED-UNBOUNDED
 (`array/arr_loop_true`, `regress/uninit_elem_unbounded_true`), in
 `tests/pir` one (`kind_mem.c`); the strict gate has 0 wrong proofs and
-`tools/csmith_soundness.py` (`--generator inhouse-ptr -n 80`, `--generator
+`src/tools/qa/soundness.cpp` (`--generator inhouse-ptr -n 80`, `--generator
 inhouse -n 60`) finds 0 wrong proofs. Those generators produce few
 single-loop functions that write memory, so a targeted run was added (an
 ad-hoc generator of 300 single-loop functions writing partly initialised

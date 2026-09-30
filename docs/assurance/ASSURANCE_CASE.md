@@ -63,10 +63,10 @@ several goals are undeveloped.
             (`docs/PROOFS_SEMANTICS.md#the-gap-between-this-model-and-the-c-encoder`).
             Interim evidence only:
           - **Sn5** E09: conformance suite and release gate (wrong proofs
-            must be 0), `tools/conformance.py`,
+            must be 0), `src/tools/qa/conformance.cpp`,
             `.github/workflows/conformance.yml`.
           - **Sn6** E10: random programs, every proof executed under UBSan,
-            `tools/csmith_soundness.py`.
+            `src/tools/qa/soundness.cpp`.
           - **Sn7** E11: engine and encoder differential testing,
             `tests/test_sarif.py::TestEngineParity`, `tools/pir_vs_bmc.py`.
         - **G3.3** The front end presents the program PRISM analyses
@@ -89,7 +89,7 @@ several goals are undeveloped.
             trusts Z3 (E08).
         - **G3.5** A refutation (`FAILED`) is real.
           - **Sn10** E13: counterexample replay under sanitizers in
-            `tools/conformance.py` and `tools/svcomp/prism_svcomp.py`.
+            `src/tools/qa/support/replay.cpp` and `tools/svcomp/prism_svcomp.py`.
         - **G3.6** Pointer-parameter functions are never proved without a
           precondition (Law 6), and model-drafted preconditions never give a
           proof.
