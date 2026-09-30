@@ -123,10 +123,16 @@ TEST_CASE("ltl fsm: switch on p->state and obj.state is the plant, braces bound 
     // A later switch (ev) outside the switch (state) braces adds no cases.
     auto scoped = prism::extract_ltl_fsm(
         "switch (state) { case A: state = B; break; case B: state = A; break; }\n"
-        "switch (ev) { case X: state = C; break; }");
+        "switch (ev) { case X: log_ev(ev); break; }");
     REQUIRE(scoped.has_value());
     CHECK(std::find(scoped->cases.begin(), scoped->cases.end(), "X") == scoped->cases.end());
     for (auto& [s, d] : scoped->transitions) CHECK(s != "X");
+    // If that switch (ev) writes state, the step does more than the
+    // switch (state) shows: no machine rather than a wrong one.
+    CHECK_FALSE(prism::extract_ltl_fsm(
+                    "switch (state) { case A: state = B; break; case B: state = A; break; }\n"
+                    "switch (ev) { case X: state = C; break; }")
+                    .has_value());
     // No brace after switch (state) (a `;` first): nothing to extract.
     CHECK_FALSE(prism::extract_ltl_fsm("switch (state); { case A: state = B; }").has_value());
     // One state only is not a machine.
@@ -153,7 +159,8 @@ TEST_CASE("ltl fsm: fall-through without break collects the next arm's dests") {
     auto t = trans_set(*fsm);
     CHECK(t.contains({"A", "B"}));
     CHECK(t.contains({"A", "C"}));
-    CHECK(t.contains({"A", "A"}));  // `if` without `else` may keep the state
+    // Both ev paths reach `state = C` in the next arm: A never stays A.
+    CHECK_FALSE(t.contains({"A", "A"}));
     CHECK(t.contains({"B", "C"}));
     CHECK_FALSE(t.contains({"B", "B"}));
     CHECK(t.contains({"C", "C"}));
@@ -171,14 +178,22 @@ TEST_CASE("ltl fsm: parenthesised destination is a transition, not a self-loop")
     CHECK(bad.status == std::string(laws::FAILED));
 }
 
-TEST_CASE("ltl fsm: comparisons and compound assignment are not destinations") {
+TEST_CASE("ltl fsm: comparisons are not destinations; compound assignment refuses the machine") {
     auto fsm = prism::extract_ltl_fsm(
-        "switch (state) { case A: if (state == C) {} state = B; break; case B: state += 1; break; }");
+        "switch (state) { case A: if (state == C) {} state = B; break; case B: if (state != A) {} break; }");
     REQUIRE(fsm.has_value());
     CHECK(std::find(fsm->states.begin(), fsm->states.end(), "C") == fsm->states.end());
     auto t = trans_set(*fsm);
     CHECK(t.contains({"A", "B"}));
     CHECK(t.contains({"B", "B"}));
+    // `state += 1` / `state++` move to a state the reader cannot name: a
+    // B->B self-loop would be a machine the code does not have.
+    CHECK_FALSE(prism::extract_ltl_fsm(
+                    "switch (state) { case A: state = B; break; case B: state += 1; break; }")
+                    .has_value());
+    CHECK_FALSE(prism::extract_ltl_fsm(
+                    "switch (state) { case A: state = B; break; case B: state++; break; }")
+                    .has_value());
 }
 
 TEST_CASE("ltl fsm: one named case plus default is a machine; default feeds unmatched states") {
@@ -191,6 +206,121 @@ TEST_CASE("ltl fsm: one named case plus default is a machine; default feeds unma
     CHECK(f.status == std::string(laws::PROVED));
     auto bad = check("G (state == LIVE_ACK -> X (state == LIVE_ACK))", fsm);
     CHECK(bad.status == std::string(laws::FAILED));
+}
+
+TEST_CASE("ltl fsm: a nested switch (ev) in an arm keeps the state; its labels are not states") {
+    const char* src =
+        "switch (state) {\n"
+        "case IDLE:\n"
+        "    switch (ev) { case GO: state = RUN; break; case STOP: break; }\n"
+        "    break;\n"
+        "case RUN: state = IDLE; break;\n"
+        "}";
+    auto fsm = prism::extract_ltl_fsm(src);
+    REQUIRE(fsm.has_value());
+    auto t = trans_set(*fsm);
+    CHECK(t.contains({"IDLE", "RUN"}));
+    CHECK(t.contains({"IDLE", "IDLE"}));  // STOP, or an unmatched ev
+    CHECK(t.contains({"RUN", "IDLE"}));
+    for (const char* bogus : {"GO", "STOP"})
+        CHECK(std::find(fsm->states.begin(), fsm->states.end(), bogus) == fsm->states.end());
+    // The X claim is false: IDLE can stay IDLE.
+    auto bad = check("G (state == IDLE -> X (state == RUN))", *fsm);
+    CHECK(bad.status == std::string(laws::FAILED));
+    // Its true twin still proves.
+    auto ok = check("G (state == IDLE -> X (state == RUN || state == IDLE))", *fsm);
+    CHECK(ok.status == std::string(laws::PROVED));
+    // A loop body may run zero times: its write is not certain.
+    auto loop = prism::extract_ltl_fsm(
+        "switch (state) { case A: while (more()) { state = B; } break; case B: state = A; break; }");
+    REQUIRE(loop.has_value());
+    CHECK(trans_set(*loop).contains({"A", "A"}));
+}
+
+TEST_CASE("ltl fsm: a default with `if` and no `else` keeps unmatched states") {
+    auto fsm = prism::extract_ltl_fsm(
+        "switch (state) { case A: state = B; break; default: if (go) state = A; break; }");
+    REQUIRE(fsm.has_value());
+    auto t = trans_set(*fsm);
+    CHECK(t.contains({"A", "B"}));
+    CHECK(t.contains({"B", "A"}));
+    CHECK(t.contains({"B", "B"}));
+    CHECK(check("G (state == B -> X (state == A))", *fsm).status == std::string(laws::FAILED));
+    // True twin: an unconditional default write does not keep the state.
+    auto sure = prism::extract_ltl_fsm(
+        "switch (state) { case A: state = B; break; default: state = A; break; }");
+    REQUIRE(sure.has_value());
+    CHECK_FALSE(trans_set(*sure).contains({"B", "B"}));
+    CHECK(check("G (state == B -> X (state == A))", *sure).status == std::string(laws::PROVED));
+}
+
+TEST_CASE("ltl fsm: only an unconditional top-level stop ends an arm") {
+    // A conditional break leaves A in A; the fall-through still reaches C.
+    auto cond = prism::extract_ltl_fsm(
+        "switch (state) { case A: if (x) break; state = B; case B: state = C; break; case C: break; }");
+    REQUIRE(cond.has_value());
+    auto t = trans_set(*cond);
+    CHECK(t.contains({"A", "A"}));
+    CHECK(t.contains({"A", "C"}));
+    CHECK(check("G (state == A -> X (state == C))", *cond).status == std::string(laws::FAILED));
+    // A break inside a nested loop does not end the arm: A falls into B.
+    auto loop = prism::extract_ltl_fsm(
+        "switch (state) { case A: state = B; for (;;) { break; } case B: state = C; break; case C: break; }");
+    REQUIRE(loop.has_value());
+    auto lt = trans_set(*loop);
+    CHECK(lt.contains({"A", "C"}));
+    CHECK_FALSE(lt.contains({"A", "A"}));
+    // A conditional return before the write keeps the state.
+    auto ret = prism::extract_ltl_fsm(
+        "switch (state) { case A: if (err) { return -1; } state = B; break; case B: state = A; break; }");
+    REQUIRE(ret.has_value());
+    CHECK(trans_set(*ret).contains({"A", "A"}));
+    CHECK(check("G (state == A -> X (state == B))", *ret).status == std::string(laws::FAILED));
+    // if / else that both write: no self-loop, and the X claim proves.
+    auto both = prism::extract_ltl_fsm(
+        "switch (state) { case A: if (x) state = B; else state = C; break; case B: state = A; break;"
+        " case C: state = A; break; }");
+    REQUIRE(both.has_value());
+    CHECK_FALSE(trans_set(*both).contains({"A", "A"}));
+    CHECK(check("G (state == A -> X (state == B || state == C))", *both).status ==
+          std::string(laws::PROVED));
+}
+
+TEST_CASE("ltl fsm: a write the reader cannot name refuses the machine (NOTRUN, not a proof)") {
+    for (const char* src : {
+             "switch (state) { case A: state = (c) ? C : D; break; case B: state = A; break; }",
+             "switch (state) { case A: state = next(s); break; case B: state = A; break; }",
+             "switch (state) { case A: state = B + 1; break; case B: state = A; break; }",
+             // A write outside the switch is a step the switch does not show.
+             "if (err) state = BAD;\n"
+             "switch (state) { case A: state = B; break; case B: state = A; break; }",
+             "switch (state) { case A: state = B; break; case B: state = A; break; }\nstate = A;",
+             // A qualified case label is not a plain name.
+             "switch (state) { case S::A: state = B; break; case B: state = A; break; }",
+         })
+        CHECK_MESSAGE(!prism::extract_ltl_fsm(src).has_value(), src);
+    // An initialiser is the start state, not a step.
+    auto init = prism::extract_ltl_fsm(
+        "int state = A;\nswitch (state) { case A: state = B; break; case B: state = A; break; }");
+    REQUIRE(init.has_value());
+    CHECK(trans_set(*init) == std::set<Trans>{{"A", "B"}, {"B", "A"}});
+    // The same machine through run_ltl: a refused machine is NOTRUN.
+    prism::FunctionInfo fn;
+    fn.name = "tern";
+    fn.body = "switch (state) { case A: state = (c) ? C : D; break; case B: state = A; break; }";
+    auto recs = run_spec(fn, "G (state == A -> X (state == B))\n");
+    REQUIRE_FALSE(recs.empty());
+    for (auto& r : recs) require_not_proof(r);
+}
+
+TEST_CASE("ltl fsm: labels and writes inside comments and strings are not code") {
+    auto fsm = prism::extract_ltl_fsm(
+        "switch (state) {\n"
+        "case A: /* case Z: state = Z; */ state = B; break; // state = Y;\n"
+        "case B: puts(\"state = W; case V:\"); state = A; break;\n"
+        "}");
+    REQUIRE(fsm.has_value());
+    CHECK(trans_set(*fsm) == std::set<Trans>{{"A", "B"}, {"B", "A"}});
 }
 
 // ---- safety fragment on fsm_step (ST_IDLE / ST_WORK / ST_BAD) ----
@@ -252,6 +382,16 @@ TEST_CASE("ltl unbounded G (req -> F ack) is the F approximation, BOUNDED never 
     require_not_proof(f);
     CHECK(xget(f, "approx_kind") == "F");
     CHECK(xget(f, "safety_approx") == "G ((state == ST_IDLE) -> F_8 (state == ST_IDLE))");
+    CHECK_THROWS(laws::refuse_merge(f.status, laws::PROVED));
+    // Into a sink the approximation is refuted.
+    auto bad = check("G (state == ST_WORK -> F (state == ST_IDLE))", fsm_of("fsm_step"));
+    CHECK(bad.status == std::string(laws::FAILED));
+    CHECK(xget(bad, "approx_kind") == "F");
+    require_not_proof(bad);
+    // The explicit bound is the fragment itself: PROVED, no approximation.
+    auto exact = check("G (state == LIVE_IDLE -> F_8 (state == LIVE_ACK))", fsm_of("fsm_recur"));
+    CHECK(exact.status == std::string(laws::PROVED));
+    CHECK_FALSE(exact.extra.contains("approx_kind"));
 }
 
 // ---- liveness approximations on fsm_recur / fsm_settle / fsm_step ----
@@ -265,6 +405,16 @@ TEST_CASE("ltl GF approx holds: BOUNDED with approx extras, never PROVED") {
     CHECK(xget(f, "strix_not_proved") == "true");
     CHECK(has(xget(f, "strix_note"), "safety fragment"));
     CHECK(has(f.message, "not a proof"));
+    CHECK_THROWS(laws::refuse_merge(laws::PROVED, f.status));
+    CHECK_THROWS(laws::refuse_merge(laws::PROVED, laws::BOUNDED));
+    // The same spec from testdata/gf_recur.ltl through run_ltl.
+    auto recs = prism::run_ltl({plant("fsm_recur")}, {td_root() / "gf_recur.ltl"});
+    REQUIRE_FALSE(recs.empty());
+    CHECK(recs[0].status == std::string(laws::BOUNDED));
+    CHECK(xget(recs[0], "approx_kind") == "GF");
+    CHECK(xget(recs[0], "strix_not_proved") == "true");
+    CHECK(recs[0].extra.contains("safety_approx"));
+    require_not_proof(recs[0]);
 }
 
 TEST_CASE("ltl G F p and G (F p) are the same GF approximation") {
@@ -311,6 +461,7 @@ TEST_CASE("ltl top-level until: holds is BOUNDED, a real violation is FAILED") {
     auto bad = check("state == ST_WORK U state == ST_IDLE", fsm_of("fsm_step"));
     CHECK(bad.status == std::string(laws::FAILED));
     CHECK(has(bad.message, "\xC2\xACp \xE2\x88\xA7 \xC2\xACq"));
+    CHECK(has(bad.message, "before q"));
 }
 
 TEST_CASE("ltl G (p U q), nested GF-until and nested until stay NOTRUN") {

@@ -122,39 +122,131 @@ bool eval_pred(std::string pred, const std::string& state) {
 // `switch (obj.state)` bodies only. Other switches (`switch (ev)`) are not
 // the plant even when the function assigns `state`: extracting them would
 // check the formula against a machine the code does not have.
+//
+// Soundness: the transitions must be a superset of what the code can do, or
+// an X / F_k / G claim could be PROVED on a machine the code does not have.
+// So every arm that can leave the switch without assigning `state` keeps its
+// state (a self-loop), and any write to `state` this reader cannot name
+// (`state += 1`, `state = f(s)`, `state = c ? A : B`, a write outside the
+// switch) refuses extraction, which leaves the formula NOTRUN.
 const Regex& switch_state_re() {
     static Regex re("\\bswitch\\s*\\(\\s*(?:[A-Za-z_]\\w*\\s*(?:->|\\.)\\s*)*state\\s*\\)");
     return re;
 }
 
-// `state = DEST` / `state = (DEST)`; not `state ==` / `state !=` / `state +=`.
-const Regex& state_asg_re() {
-    static Regex re("\\bstate\\s*(?<![<>=!])=(?!=)\\s*\\(?\\s*([A-Za-z_]\\w*|\\d+)\\s*\\)?");
+// Any plain write `state = ...`; not `state ==` / `state !=` / `state <=`.
+const Regex& state_write_re() {
+    static Regex re("\\bstate\\s*(?<![<>=!])=(?!=)");
     return re;
 }
 
-std::vector<std::string> switch_state_bodies(const std::string& body) {
-    std::vector<std::string> out;
+// A write this reader can name: `state = DEST` / `state = (DEST)`, ending the
+// expression (`;`, `,` or `)`).
+const Regex& state_asg_re() {
+    static Regex re(
+        "\\bstate\\s*(?<![<>=!])=(?!=)\\s*(?:\\(\\s*([A-Za-z_]\\w*|\\d+)\\s*\\)|([A-Za-z_]\\w*|\\d+))\\s*(?=[;,)])");
+    return re;
+}
+
+// `state += 1`, `state++`, `--state`, ...: a change to an unknown state.
+const Regex& state_compound_re() {
+    static Regex re(
+        "\\bstate\\s*(?:\\+\\+|--|(?:[-+*/%&|^]|<<|>>)=)|(?:\\+\\+|--)\\s*(?:[A-Za-z_]\\w*\\s*(?:->|\\.)\\s*)*state\\b");
+    return re;
+}
+
+std::string asg_dest(const Match& m) {
+    auto d = m.group(1);
+    return d.empty() ? m.group(2) : d;
+}
+
+bool fsm_word_char(char c) {
+    return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
+}
+
+bool word_at(const std::string& s, std::size_t p, std::string_view w) {
+    if (p + w.size() > s.size() || s.compare(p, w.size(), w) != 0) return false;
+    if (p > 0 && fsm_word_char(s[p - 1])) return false;
+    return p + w.size() == s.size() || !fsm_word_char(s[p + w.size()]);
+}
+
+std::size_t skip_ws(const std::string& s, std::size_t p) {
+    while (p < s.size() && std::isspace(static_cast<unsigned char>(s[p]))) ++p;
+    return p;
+}
+
+// Comments, string and character literals blanked (newlines kept), so a
+// `case X:` or `state = X` inside them is not read as code.
+std::string blank_non_code(const std::string& s) {
+    std::string out = s;
+    const std::size_t n = s.size();
+    auto blank = [&](std::size_t a, std::size_t b) {
+        for (auto k = a; k < b && k < n; ++k)
+            if (out[k] != '\n') out[k] = ' ';
+    };
+    std::size_t i = 0;
+    while (i < n) {
+        char c = s[i];
+        if (c == '/' && i + 1 < n && s[i + 1] == '/') {
+            auto e = s.find('\n', i);
+            if (e == std::string::npos) e = n;
+            blank(i, e);
+            i = e;
+        } else if (c == '/' && i + 1 < n && s[i + 1] == '*') {
+            auto e = s.find("*/", i + 2);
+            e = e == std::string::npos ? n : e + 2;
+            blank(i, e);
+            i = e;
+        } else if (c == '"' || (c == '\'' && !(i > 0 && fsm_word_char(s[i - 1])))) {
+            auto k = i + 1;
+            while (k < n && s[k] != c && s[k] != '\n') k += s[k] == '\\' ? 2 : 1;
+            k = std::min(k + 1, n);
+            blank(i, k);
+            i = k;
+        } else {
+            ++i;
+        }
+    }
+    return out;
+}
+
+// Index of the bracket closing the one at `open`, or npos.
+std::size_t match_close(const std::string& s, std::size_t open) {
+    int depth = 0;
+    for (std::size_t k = open; k < s.size(); ++k) {
+        char c = s[k];
+        if (c == '(' || c == '{' || c == '[') ++depth;
+        else if (c == ')' || c == '}' || c == ']') {
+            if (--depth == 0) return k;
+        }
+    }
+    return std::string::npos;
+}
+
+// The `;` ending a simple statement (at bracket depth 0), or the end.
+std::size_t stmt_end(const std::string& s, std::size_t p) {
+    int depth = 0;
+    for (std::size_t k = p; k < s.size(); ++k) {
+        char c = s[k];
+        if (c == '(' || c == '{' || c == '[') ++depth;
+        else if (c == ')' || c == '}' || c == ']') --depth;
+        else if (c == ';' && depth <= 0) return k;
+    }
+    return s.size();
+}
+
+// [start, end) of each brace-matched `switch (state)` body.
+std::vector<std::pair<std::size_t, std::size_t>> switch_state_spans(const std::string& body) {
+    std::vector<std::pair<std::size_t, std::size_t>> out;
     for (auto& m : switch_state_re().finditer(body)) {
         if (m.spans.empty() || m.spans[0].second < 0) continue;
         auto after = static_cast<std::size_t>(m.spans[0].second);
         auto brace_at = body.find('{', after);
         if (brace_at == std::string::npos) continue;
         if (body.substr(after, brace_at - after).find(';') != std::string::npos) continue;
-        int depth = 0;
-        std::optional<std::size_t> end;
-        for (std::size_t k = brace_at; k < body.size(); ++k) {
-            if (body[k] == '{') ++depth;
-            else if (body[k] == '}') {
-                --depth;
-                if (depth == 0) {
-                    end = k;
-                    break;
-                }
-            }
-        }
-        if (!end) continue;
-        out.push_back(body.substr(brace_at + 1, *end - brace_at - 1));
+        auto end = match_close(body, brace_at);
+        if (end == std::string::npos) continue;
+        out.emplace_back(brace_at + 1, end);
     }
     return out;
 }
@@ -165,91 +257,249 @@ struct SwitchArm {
     std::string content;
 };
 
-const Regex& arm_stop_re() {
-    static Regex re("\\b(?:break|return|goto|continue)\\b");
-    return re;
-}
-
-std::vector<SwitchArm> parse_switch_arms(const std::string& sw) {
-    static Regex lab_re("\\b(?:case\\s+([A-Za-z_]\\w*|\\d+)|default)\\s*:");
-    auto marks = lab_re.finditer(sw);
+// Arms of one switch body, split on labels at bracket depth 0 only: the
+// labels of a nested `switch (ev) { case GO: ... }` belong to that switch.
+// nullopt when a top-level `case` label is not a plain name or number.
+std::optional<std::vector<SwitchArm>> parse_switch_arms(const std::string& sw) {
+    static const Regex case_re("^case\\s+([A-Za-z_]\\w*|\\d+)\\s*:(?!:)");
+    static const Regex default_re("^default\\s*:(?!:)");
+    struct Mark {
+        std::size_t at, body;
+        std::optional<std::string> lab;
+    };
+    std::vector<Mark> marks;
+    int depth = 0;
+    for (std::size_t k = 0; k < sw.size(); ++k) {
+        char c = sw[k];
+        if (c == '(' || c == '{' || c == '[') ++depth;
+        else if (c == ')' || c == '}' || c == ']') --depth;
+        else if (depth == 0 && word_at(sw, k, "case")) {
+            auto m = case_re.match_prefix(std::string_view(sw).substr(k));
+            if (!m) return std::nullopt;
+            marks.push_back({k, k + static_cast<std::size_t>(m->spans[0].second), m->group(1)});
+            k = marks.back().body - 1;
+        } else if (depth == 0 && word_at(sw, k, "default")) {
+            auto m = default_re.match_prefix(std::string_view(sw).substr(k));
+            if (!m) return std::nullopt;
+            marks.push_back({k, k + static_cast<std::size_t>(m->spans[0].second), std::nullopt});
+            k = marks.back().body - 1;
+        }
+    }
     std::vector<SwitchArm> arms;
     for (std::size_t i = 0; i < marks.size(); ++i) {
-        auto& m = marks[i];
-        // The case alternative always captures at least one character.
-        auto g = m.group(1);
-        std::optional<std::string> lab = g.empty() ? std::nullopt : std::optional<std::string>(g);
-        auto start = static_cast<std::size_t>(m.spans[0].second);
-        auto stop = i + 1 < marks.size() ? static_cast<std::size_t>(marks[i + 1].spans[0].first) : sw.size();
-        auto content = sw.substr(start, stop - start);
-        if (!arms.empty() && strip(arms.back().content).empty() && !arm_stop_re().search(arms.back().content)) {
+        auto stop = i + 1 < marks.size() ? marks[i + 1].at : sw.size();
+        auto content = sw.substr(marks[i].body, stop - marks[i].body);
+        if (!arms.empty() && strip(arms.back().content).empty()) {
             // `case A: case B:` - the extra label joins the open arm.
-            arms.back().labels.push_back(lab);
+            arms.back().labels.push_back(marks[i].lab);
             arms.back().content += content;
         } else {
-            arms.push_back({{lab}, content});
+            arms.push_back({{marks[i].lab}, content});
         }
     }
     return arms;
 }
 
-struct ArmDests {
+// Control flow of arm text with respect to `state`.
+struct Flow {
+    bool leak = false;      // some path leaves the switch without assigning state
+    bool falls = true;      // some path reaches the end of the text
+    bool assigned = false;  // every path reaching the end has assigned state
+    bool label = false;     // the statement was a label (code reachable again)
+};
+
+std::size_t flow_stmt(const std::string& s, std::size_t p, bool in, Flow& out);
+
+Flow flow_seq(const std::string& s, bool in) {
+    Flow r{false, true, in, false};
+    bool reachable = true;
+    std::size_t p = 0;
+    while (true) {
+        p = skip_ws(s, p);
+        if (p >= s.size()) break;
+        Flow st;
+        auto next = flow_stmt(s, p, r.assigned, st);
+        p = std::max(next, p + 1);
+        if (st.label) {
+            // A label (a nested `case`, a goto target) is entered from
+            // elsewhere: nothing is known to be assigned there.
+            reachable = true;
+            r.assigned = false;
+            continue;
+        }
+        if (!reachable) continue;
+        r.leak = r.leak || st.leak;
+        if (!st.falls) {
+            reachable = false;
+            continue;
+        }
+        r.assigned = st.assigned;
+    }
+    r.falls = reachable;
+    return r;
+}
+
+// One statement at p; returns the index just past it. Anything this reader
+// does not model assigns nothing and, if it can leave, leaks.
+std::size_t flow_stmt(const std::string& s, std::size_t p, bool in, Flow& out) {
+    static const Regex label_re("^(?:case\\b[^;{}]*?|default\\s*|[A-Za-z_]\\w*\\s*):(?!:)");
+    static const Regex exit_re("\\b(?:break|continue|return|goto)\\b");
+    static const Regex simple_asg_re(
+        "^(?:[A-Za-z_]\\w*\\s*(?:->|\\.)\\s*)*state\\s*=(?!=)\\s*(?:\\(\\s*(?:[A-Za-z_]\\w*|\\d+)\\s*\\)|"
+        "[A-Za-z_]\\w*|\\d+)\\s*$");
+    out = Flow{false, true, in, false};
+    if (s[p] == '{') {
+        auto e = match_close(s, p);
+        if (e == std::string::npos) e = s.size();
+        out = flow_seq(s.substr(p + 1, e - p - 1), in);
+        out.label = false;
+        return e + 1;
+    }
+    if (s[p] == ';') return p + 1;
+    if (word_at(s, p, "if")) {
+        auto q = skip_ws(s, p + 2);
+        if (q < s.size() && s[q] == '(') {
+            auto c = match_close(s, q);
+            if (c == std::string::npos) return s.size();
+            Flow a;
+            auto e = flow_stmt(s, skip_ws(s, c + 1), in, a);
+            Flow b{false, true, in, false};
+            auto q2 = skip_ws(s, e);
+            if (word_at(s, q2, "else")) e = flow_stmt(s, skip_ws(s, q2 + 4), in, b);
+            out.leak = a.leak || b.leak;
+            out.falls = a.falls || b.falls;
+            out.assigned = out.falls && (!a.falls || a.assigned) && (!b.falls || b.assigned);
+            return e;
+        }
+    }
+    for (std::string_view kw : {"for", "while", "switch"}) {
+        if (!word_at(s, p, kw)) continue;
+        auto q = skip_ws(s, p + kw.size());
+        if (q >= s.size() || s[q] != '(') break;
+        auto c = match_close(s, q);
+        if (c == std::string::npos) return s.size();
+        // The body may run zero times, so it assigns nothing for sure; a
+        // break / continue inside it is counted as leaving (conservative:
+        // at worst an extra self-loop).
+        Flow b;
+        auto e = flow_stmt(s, skip_ws(s, c + 1), in, b);
+        out.leak = b.leak;
+        return e;
+    }
+    if (word_at(s, p, "do")) {
+        Flow b;
+        auto e = flow_stmt(s, skip_ws(s, p + 2), in, b);
+        out.leak = b.leak;
+        e = skip_ws(s, e);
+        if (word_at(s, e, "while")) e = stmt_end(s, e) + 1;
+        return e;
+    }
+    for (std::string_view kw : {"break", "continue", "return", "goto"}) {
+        if (!word_at(s, p, kw)) continue;
+        out.leak = !in;
+        out.falls = false;
+        return stmt_end(s, p) + 1;
+    }
+    if (!word_at(s, p, "else")) {
+        if (auto m = label_re.match_prefix(std::string_view(s).substr(p))) {
+            out.label = true;
+            return p + static_cast<std::size_t>(m->spans[0].second);
+        }
+    }
+    auto e = stmt_end(s, p);
+    auto text = strip(s.substr(p, e - p));
+    if (fullmatch(simple_asg_re, text)) out.assigned = true;
+    else if (exit_re.search(text)) out.leak = !in;  // an exit this reader did not parse
+    return e + 1;
+}
+
+struct ArmOut {
     std::vector<std::string> dests;
-    bool stops = false;
     bool stay = false;
 };
 
-ArmDests arm_dests(const std::string& content) {
-    ArmDests a;
-    for (auto& m : state_asg_re().finditer(content)) a.dests.push_back(m.group(1));
-    a.stops = static_cast<bool>(arm_stop_re().search(content));
-    a.stay = re_search("\\bif\\b", content) && !re_search("\\belse\\b", content);
-    return a;
+void add_dests(const std::string& text, std::vector<std::string>& dests) {
+    for (auto& m : state_asg_re().finditer(text)) {
+        auto d = asg_dest(m);
+        if (std::find(dests.begin(), dests.end(), d) == dests.end()) dests.push_back(d);
+    }
 }
 
-// Destinations of arm i, following fall-through until break/return/goto/continue.
-std::pair<std::vector<std::string>, bool> resolved_dests(const std::vector<SwitchArm>& arms, std::size_t i) {
-    auto a = arm_dests(arms[i].content);
-    auto dests = a.dests;
-    bool stay = a.stay;
-    bool stops = a.stops;
-    std::size_t j = i;
-    while (!stops && j + 1 < arms.size()) {
-        ++j;
-        auto b = arm_dests(arms[j].content);
-        for (auto& d : b.dests)
-            if (std::find(dests.begin(), dests.end(), d) == dests.end()) dests.push_back(d);
-        stay = stay || b.stay;
-        stops = b.stops;
+// Destinations of arm i, following fall-through into later arms; `stay`
+// when some path leaves the switch without assigning state.
+ArmOut resolved_dests(const std::vector<SwitchArm>& arms, std::size_t i) {
+    ArmOut r;
+    bool assigned = false;
+    for (std::size_t j = i; j < arms.size(); ++j) {
+        add_dests(arms[j].content, r.dests);
+        auto f = flow_seq(arms[j].content, assigned);
+        r.stay = r.stay || f.leak;
+        if (!f.falls) return r;
+        assigned = f.assigned;
     }
-    return {dests, stay};
+    // Falls off the end of the switch.
+    r.stay = r.stay || !assigned;
+    return r;
+}
+
+// A write to state outside the switch (state) bodies that is not a
+// declaration's initialiser: the step does more than the switch shows.
+bool writes_state_outside(const std::string& body,
+                          const std::vector<std::pair<std::size_t, std::size_t>>& spans) {
+    std::string outside = body;
+    for (auto& [a, b] : spans)
+        for (auto k = a; k < b; ++k)
+            if (outside[k] != '\n') outside[k] = ' ';
+    if (state_compound_re().search(outside)) return true;
+    for (auto& m : state_write_re().finditer(outside)) {
+        auto k = static_cast<std::size_t>(m.spans[0].first);
+        while (k > 0 && std::isspace(static_cast<unsigned char>(outside[k - 1]))) --k;
+        if (k == 0) return true;
+        if (outside[k - 1] == '*') continue;  // `T *state = ...`
+        if (!fsm_word_char(outside[k - 1])) return true;
+        auto w_end = k;
+        while (k > 0 && fsm_word_char(outside[k - 1])) --k;
+        auto word = outside.substr(k, w_end - k);
+        if (word == "return" || word == "else" || word == "do" || word == "case" || word == "goto")
+            return true;
+        // `int state = X` / `enum st state = X`: the initial state, not a step.
+    }
+    return false;
 }
 
 }  // namespace
 
-std::optional<LtlFsm> extract_ltl_fsm(const std::string& body) {
-    auto switches = switch_state_bodies(body);
-    if (switches.empty()) return std::nullopt;
+std::optional<LtlFsm> extract_ltl_fsm(const std::string& raw_body) {
+    auto body = blank_non_code(raw_body);
+    auto spans = switch_state_spans(body);
+    if (spans.empty()) return std::nullopt;
+    if (writes_state_outside(body, spans)) return std::nullopt;
     std::vector<std::string> cases, assigns;
     std::vector<std::pair<std::string, std::string>> trans;
-    std::optional<std::vector<std::string>> default_dests;
-    for (auto& sw : switches) {
+    std::optional<ArmOut> dflt;
+    for (auto& [a, b] : spans) {
+        auto sw = body.substr(a, b - a);
+        // Every write must be one this reader can name.
+        if (state_compound_re().search(sw)) return std::nullopt;
+        if (state_write_re().finditer(sw).size() != state_asg_re().finditer(sw).size()) return std::nullopt;
         auto arms = parse_switch_arms(sw);
-        for (auto& m : state_asg_re().finditer(sw)) assigns.push_back(m.group(1));
-        for (std::size_t i = 0; i < arms.size(); ++i) {
-            auto [dests, stay] = resolved_dests(arms, i);
-            for (auto& lab : arms[i].labels) {
+        if (!arms) return std::nullopt;
+        for (auto& m : state_asg_re().finditer(sw)) assigns.push_back(asg_dest(m));
+        for (std::size_t i = 0; i < arms->size(); ++i) {
+            auto r = resolved_dests(*arms, i);
+            for (auto& lab : (*arms)[i].labels) {
                 if (!lab) {
-                    default_dests = dests;
+                    if (!dflt) {
+                        dflt = r;
+                    } else {
+                        dflt->dests.insert(dflt->dests.end(), r.dests.begin(), r.dests.end());
+                        dflt->stay = dflt->stay || r.stay;
+                    }
                     continue;
                 }
                 cases.push_back(*lab);
-                if (!dests.empty()) {
-                    for (auto& d : dests) trans.emplace_back(*lab, d);
-                    if (stay) trans.emplace_back(*lab, *lab);
-                } else {
-                    trans.emplace_back(*lab, *lab);
-                }
+                for (auto& d : r.dests) trans.emplace_back(*lab, d);
+                if (r.stay || r.dests.empty()) trans.emplace_back(*lab, *lab);
             }
         }
     }
@@ -266,10 +516,13 @@ std::optional<LtlFsm> extract_ltl_fsm(const std::string& body) {
     std::vector<std::string> states(stset.begin(), stset.end());
     for (auto& s : states) {
         if (has_out.contains(s)) continue;
-        if (default_dests && !default_dests->empty()) {
-            for (auto& d : *default_dests) trans.emplace_back(s, d);
+        if (dflt) {
+            for (auto& d : dflt->dests) trans.emplace_back(s, d);
+            // A `default:` that can leave without a write (an `if` with no
+            // `else`, `default: break;`) keeps the state.
+            if (dflt->stay || dflt->dests.empty()) trans.emplace_back(s, s);
         } else {
-            // An unmatched enumerator (or `default: break;`) keeps the state.
+            // An unmatched enumerator keeps the state.
             trans.emplace_back(s, s);
         }
     }
