@@ -4,6 +4,7 @@
 #include "prism/export.hpp"
 #include "prism/models.hpp"
 
+#include <cstdint>
 #include <filesystem>
 #include <map>
 #include <optional>
@@ -88,6 +89,36 @@ struct ForkFlipResult {
 PRISM_API ForkFlipResult solve_fork_flip(const FunctionInfo& fn,
                                          const std::map<std::string, int>& seed,
                                          const std::string& cond, bool want);
+// FuSeBMC goals of a function: each if/while/for condition and its negation
+// (then, implicit else, loop exit) and each switch case, whitespace
+// normalised, first occurrence kept.
+std::vector<std::string> branch_goals(const FunctionInfo& fn);
+// The same goals labelled GOAL_1, GOAL_2, ... in order (FuSeBMC numbering).
+std::vector<std::pair<std::string, std::string>> numbered_goals(const FunctionInfo& fn);
+
+// Fuzz4All prompt scoring: unique non-empty seeds padded/cut to nbytes.
+int score_prompt_seeds(const std::vector<std::vector<uint8_t>>& seeds, int nbytes);
+struct PromptPick {
+    std::string prompt;
+    std::vector<std::vector<uint8_t>> seeds;
+    int score = 0;
+};
+// The candidate with the highest score (ties: the first); empty for none.
+PromptPick pick_best_prompt(const std::vector<std::pair<std::string, std::vector<std::vector<uint8_t>>>>& candidates,
+                            int nbytes);
+// Fuzz4All update_strategy: 0 generate, 1 mutate, 2 semantic, 3 combine
+// (with prev_hex; mutate without it).
+std::string fuzz4all_update_strategy(const std::string& new_hex, const std::string& prev_hex, int strategy);
+// Documentation comments of a translation unit (no ACSL blocks, no contract
+// lines), at most 8, one per line.
+std::string documentation_from_comments(const std::string& source);
+struct FuzzPrompt {
+    std::string docstring, example_code, hw_prompt, target_api;
+};
+// Fuzz4All prompt ingredients of one function (a distilled prompt is a
+// HYPOTHESIS, never a check).
+FuzzPrompt create_prompt_from_source(const std::string& name, const std::string& body, const std::string& source);
+
 std::vector<Finding> run_fuse(const std::vector<FunctionInfo>& functions,
                               const std::vector<Finding>& bmc_findings,
                               const std::filesystem::path& src_root,
