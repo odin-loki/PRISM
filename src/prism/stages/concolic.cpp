@@ -6,7 +6,6 @@ namespace fs = std::filesystem;
 using namespace stages_detail;
 
 namespace {
-#include "../bmc_unenc.inc"
 
 const std::unordered_set<std::string> kCallKw = {
     "if", "for", "while", "switch", "return", "sizeof", "typeof", "__typeof__", "else", "do",
@@ -217,9 +216,12 @@ std::tuple<std::optional<Args>, bool, bool> neighbor_for_cond(const FunctionInfo
     auto cur = eval_cond(fn, args, cond);
     if (!cur) return {std::nullopt, false, false};
     bool want = !*cur;
-    auto solved = solve_fork_flip(fn, args, cond, want);
+    // The concolic seeds are 32-bit (args_key reads each value with i32).
+    std::map<std::string, int> seed;
+    for (auto& [k, v] : args) seed[k] = i32(v);
+    auto solved = solve_fork_flip(fn, seed, cond, want);
     if (solved.kind == ForkFlipKind::Unsat) return {std::nullopt, false, true};
-    if (solved.kind == ForkFlipKind::Model) return {solved.args, true, false};
+    if (solved.kind == ForkFlipKind::Model) return {Args(solved.args.begin(), solved.args.end()), true, false};
     auto nxt = heuristic_flip(fn, args, cond, want);
     return {nxt, false, false};
 }
@@ -250,7 +252,7 @@ Finding concolic_function(const FunctionInfo& fn, int budget) {
         return base_nh(
             "setjmp/longjmp/va_list unencoded: concolic engine is not a nonlocal-control model");
     if (auto syn = scrubbed_byte_reason(fn.body, "concolic engine")) return base_nh(*syn);
-    if (auto syn = unencoded_syntax_reason(fn, "concolic engine")) return base_nh(*syn);
+    if (auto syn = unencoded_syntax_reason_cached(fn, "concolic engine")) return base_nh(*syn);
     auto queue = initial_seeds(fn);
     std::set<ArgsKey> seen;
     std::set<ArgsKey> z3_keys;

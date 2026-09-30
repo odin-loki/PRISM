@@ -493,7 +493,13 @@ if(PRISM_TESTS)
     # Stage tests ported from the Python suite.
     tests/cpp/test_thread_taint.cpp tests/cpp/test_wp_harness.cpp
     tests/cpp/test_diff.cpp tests/cpp/test_journal_confidence.cpp
-    tests/cpp/test_verdict_repo.cpp tests/cpp/test_fuse.cpp)
+    tests/cpp/test_verdict_repo.cpp tests/cpp/test_fuse.cpp
+    # Concrete interpreter and fuzzer (src/prism/stages/interp.cpp, fuse.cpp).
+    tests/cpp/test_concrete.cpp
+    # Interval stage (src/prism/interval.cpp).
+    tests/cpp/test_interval.cpp
+    # Sanitize stage (src/prism/adapters.cpp run_sanitize).
+    tests/cpp/test_sanitize.cpp)
   target_include_directories(prism_tests PRIVATE
     "${PRISM_ROOT}/include"
     "${PRISM_ROOT}/third_party")

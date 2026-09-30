@@ -724,6 +724,35 @@ static std::map<std::string, prism::Finding> bmc_source(const std::string& name,
     return by;
 }
 
+TEST_CASE("bmc: unsized array initialisers have exactly as many elements as items") {
+    auto by = bmc_source("unsized.c",
+                         "int u_true(int i) { int a[] = {1, 2, 3, 4}; if (i < 0 || i >= 4) return 0; return a[i]; }\n"
+                         "int u_false(int i) { int a[] = {1, 2, 3, 4}; if (i < 0 || i > 4) return 0; return a[i]; }\n"
+                         "int u_ovf(int x) { int a[] = {x + 1, 2}; return a[1]; }\n"
+                         "int u_zero(int i) { int a[] = {}; return 0; }\n");
+    CHECK(prism::laws::is_proof(by["u_true"].status));
+    CHECK(by["u_false"].status == prism::laws::FAILED);
+    CHECK(by["u_false"].cls == "MEM-OOB-READ");
+    CHECK(by["u_ovf"].status == prism::laws::FAILED);
+    CHECK(by["u_ovf"].cls == "INT-SIGNED-OVF");
+    CHECK_FALSE(prism::laws::is_proof(by["u_zero"].status));
+}
+
+TEST_CASE("bmc: C23 digit separators are one literal; a 2-D array is encoded") {
+    auto by = bmc_source("digitsep.c",
+                         "int d_true(int a) { if (a < 0 || a > 1'000) return 0; return a * 1'000'000; }\n"
+                         "int d_false(int a) { if (a < 0 || a > 10'000) return 0; return a * 1'000'000; }\n"
+                         "int d_hex(int a) { return a & 0xFF'FF; }\n"
+                         "int m2(int i) { int m[2][2] = {{1, 2}, {3, 4}}; return m[0][0]; }\n");
+    CHECK(prism::laws::is_proof(by["d_true"].status));
+    CHECK(by["d_false"].status == prism::laws::FAILED);
+    CHECK(by["d_false"].cls == "INT-SIGNED-OVF");
+    CHECK(prism::laws::is_proof(by["d_hex"].status));
+    // bmc encodes multi-dimensional arrays with per-dimension bounds
+    // (port/bmc-svcomp); m[0][0] of a constant 2x2 array is in bounds.
+    CHECK(prism::laws::is_proof(by["m2"].status));
+}
+
 TEST_CASE("bmc: assume_abort_if_not is an assumption only when its definition stops the run") {
     const std::string main_src = R"(extern int __VERIFIER_nondet_int(void);
 int main(void) {

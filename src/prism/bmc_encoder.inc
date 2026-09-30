@@ -1362,7 +1362,7 @@ void Parser::decl_one(Enc& e, const std::string& stmt) {
         }
     }
     {
-        static Regex marr(std::string("(") + CDECL_TYPE + ")\\s+([A-Za-z_]\\w*)\\s*\\[([^\\]]+)\\](?:\\s*=\\s*(.*))?$");
+        static Regex marr(std::string("(") + CDECL_TYPE + ")\\s+([A-Za-z_]\\w*)\\s*\\[([^\\]]*)\\](?:\\s*=\\s*(.*))?$");
         if (auto m = marr.search_match(stmt); m && m->spans.size() > 1 && m->spans[0].first == 0 &&
             static_cast<size_t>(m->spans[0].second) == stmt.size()) {
             auto typ = m->group(1);
@@ -1371,12 +1371,17 @@ void Parser::decl_one(Enc& e, const std::string& stmt) {
             auto init = m->groups.size() > 4 && m->groups[4] ? *m->groups[4] : std::string{};
             if (!init.empty() && rx_search("\\{\\s*(?:\\[[^\\]]+\\]|\\.[A-Za-z_]\\w*)\\s*=", init))
                 throw ParseFail("designated init unencoded");
-            if (!rx_fullmatch("\\d+", dim)) throw ParseFail("VLA unencoded");
+            init = strip(init);
+            // `T a[] = {x, y, z}`: the length is the number of items
+            // (C11 6.7.9p22); any other unsized form is not modelled.
+            const bool unsized = dim.empty();
+            if (unsized && !(init.size() >= 2 && init.front() == '{' && init.back() == '}'))
+                throw ParseFail("UNENCODED: unsized array " + name);
+            if (!unsized && !rx_fullmatch("\\d+", dim)) throw ParseFail("VLA unencoded");
             auto ct = ctype_parse(typ);
             if (!ct) throw ParseFail("UNENCODED: element type of " + name);
             shadow(name);
-            int n = std::stoi(dim);
-            init = strip(init);
+            int n = unsized ? 0 : std::stoi(dim);
             if (init.size() >= 2 && init.front() == '{' && init.back() == '}') {
                 // Aggregate initialiser (C11 6.7.9p21): the listed elements in
                 // order, every other element zero. The items are evaluated
@@ -1387,6 +1392,10 @@ void Parser::decl_one(Enc& e, const std::string& stmt) {
                 for (auto& x : items)
                     if (x.empty() || x.front() == '{')
                         throw ParseFail("UNENCODED: nested initialiser of " + name);
+                if (unsized) {
+                    if (items.empty()) throw ParseFail("UNENCODED: zero-length array " + name);
+                    n = static_cast<int>(items.size());
+                }
                 if (static_cast<int>(items.size()) > n)
                     throw ParseFail("UNENCODED: excess initialisers of " + name);
                 std::vector<TV> vals;
@@ -2296,7 +2305,10 @@ int char_lit_value(const std::string& tok) {
 
 // Integer constant with its C type (C11 6.4.4.1p5, LP64).
 TV int_literal(Enc& e, const std::string& tok) {
-    std::string digits = tok;
+    // C23 digit separators: 1'000 is 1000.
+    std::string digits;
+    for (char c : tok)
+        if (c != '\'') digits.push_back(c);
     std::string suf;
     while (!digits.empty() && std::strchr("uUlL", digits.back())) {
         suf.insert(suf.begin(), digits.back());

@@ -102,7 +102,7 @@ class TestCppSanitizeSourceContract(unittest.TestCase):
     def test_compile_failed_to_start_is_notrun_never_error(self):
         run = _brace_body(self.src, "std::tuple<std::string, std::string, std::string> compile_and_run_san(")
         self.assertIn("sanitizer compile failed to start", run)
-        start = run.find("if (comp.failed)")
+        start = run.find("if (comp.failed")
         self.assertGreaterEqual(start, 0)
         end = run.find("if (comp.rc != 0)", start)
         self.assertGreater(end, start)

@@ -4,6 +4,9 @@
 #include <pcre2.h>
 
 #include <cstdint>
+#include <memory>
+#include <string>
+#include <unordered_map>
 
 namespace prism {
 
@@ -138,14 +141,26 @@ bool Regex::match_line(std::string_view s) const {
     return m && !m->spans.empty() && m->spans[0].first == 0;
 }
 
+// The compiled pattern for re_search / re_search_match. Callers pass the
+// same few hundred literal patterns over and over (the unencoded-syntax
+// gates run per function per stage), so each thread keeps its compiled
+// copies; a thread that sees many distinct patterns starts over.
+static const Regex& cached_regex(std::string_view pattern, bool multiline) {
+    thread_local std::unordered_map<std::string, std::unique_ptr<Regex>> cache;
+    std::string key(pattern);
+    key.push_back(multiline ? '\1' : '\0');
+    if (auto it = cache.find(key); it != cache.end()) return *it->second;
+    if (cache.size() >= 4096) cache.clear();
+    auto re = std::make_unique<Regex>(std::string(pattern), multiline);
+    return *cache.emplace(std::move(key), std::move(re)).first->second;
+}
+
 bool re_search(std::string_view pattern, std::string_view s, bool multiline) {
-    Regex re{std::string(pattern), multiline};
-    return re.search(s);
+    return cached_regex(pattern, multiline).search(s);
 }
 
 std::optional<Match> re_search_match(std::string_view pattern, std::string_view s) {
-    Regex re{std::string(pattern)};
-    return re.search_match(s);
+    return cached_regex(pattern, false).search_match(s);
 }
 
 }  // namespace prism

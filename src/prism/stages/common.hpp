@@ -74,7 +74,10 @@ struct ParseFail : std::runtime_error {
     using std::runtime_error::runtime_error;
 };
 
-using Args = std::map<std::string, int>;
+// Concrete argument values by parameter name. 64-bit parameters (long long,
+// size_t, int64_t) keep their full value; unsigned 64-bit values are held as
+// their bit pattern.
+using Args = std::map<std::string, int64_t>;
 
 // ---- common.cpp: text helpers
 std::string strip(std::string s);
@@ -106,11 +109,11 @@ std::optional<std::filesystem::path> which_cc();
 // A type with its whitespace runs collapsed to one space and trimmed
 // ("unsigned   char *" -> "unsigned char *").
 std::string collapse_ws(const std::string& typ);
-// The kCTypeSize key of a parameter type: `*` dropped, whitespace runs
-// collapsed ("unsigned   char *" -> "unsigned char").
-std::string c_type_key(const std::string& typ);
+// The kCTypeSize key of a parameter type: `*` dropped, whitespace collapsed
+// ("unsigned   long" and "unsigned long" are one key).
+std::string ctype_key(std::string_view typ);
 int param_nbytes(const std::vector<std::pair<std::string, std::string>>& params);
-std::map<std::string, int> decode_args(const FunctionInfo& fn, const std::vector<uint8_t>& data);
+Args decode_args(const FunctionInfo& fn, const std::vector<uint8_t>& data);
 std::vector<std::vector<uint8_t>> interesting_seeds(const FunctionInfo& fn);
 
 // ---- common.cpp: BMC of one function; ACSL / comment contracts

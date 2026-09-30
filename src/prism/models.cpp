@@ -8,6 +8,7 @@
 #include <fstream>
 #include <limits>
 #include <sstream>
+#include <stdexcept>
 
 namespace prism {
 namespace {
@@ -241,12 +242,42 @@ void RunReport::save(const std::filesystem::path& path) const {
     out << dumps();
 }
 
+namespace {
+
+// A record list is absent, null, or an array of objects. Fields inside a
+// record are read tolerantly; a list or an entry of the wrong shape is not
+// a report (the Python engine's load returns None there too, F2).
+bool record_list_ok(const json& j, const char* key) {
+    auto it = j.find(key);
+    if (it == j.end() || it->is_null()) return true;
+    if (!it->is_array()) return false;
+    for (auto& e : *it)
+        if (!e.is_object()) return false;
+    return true;
+}
+
+bool report_shape_ok(const json& j) {
+    if (!j.is_object() || !record_list_ok(j, "functions") || !record_list_ok(j, "stages")) return false;
+    if (auto it = j.find("stages"); it != j.end() && it->is_array())
+        for (auto& st : *it)
+            if (!record_list_ok(st, "findings")) return false;
+    return true;
+}
+
+json parse_object(const std::string& text) {
+    auto j = json::parse(text);
+    if (!j.is_object()) throw std::invalid_argument("JSON record is not an object");
+    return j;
+}
+
+}  // namespace
+
 std::optional<RunReport> RunReport::load(const std::filesystem::path& path) {
     std::ifstream in(path, std::ios::binary);
     if (!in) return std::nullopt;
     try {
         auto j = json::parse(in);
-        if (!j.is_object()) return std::nullopt;
+        if (!report_shape_ok(j)) return std::nullopt;
         return j.get<RunReport>();
     } catch (...) {
         return std::nullopt;
@@ -254,15 +285,15 @@ std::optional<RunReport> RunReport::load(const std::filesystem::path& path) {
 }
 
 Finding finding_from_json_object(const std::string& json_object) {
-    return json::parse(json_object).get<Finding>();
+    return parse_object(json_object).get<Finding>();
 }
 
 StageResult stage_from_json_object(const std::string& json_object) {
-    return json::parse(json_object).get<StageResult>();
+    return parse_object(json_object).get<StageResult>();
 }
 
 FunctionInfo function_from_json_object(const std::string& json_object) {
-    return json::parse(json_object).get<FunctionInfo>();
+    return parse_object(json_object).get<FunctionInfo>();
 }
 
 }  // namespace prism

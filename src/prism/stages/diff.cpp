@@ -71,7 +71,7 @@ std::string emit_diff_program(const FunctionInfo& a, const FunctionInfo& b) {
     int off = 0;
     for (auto& [typ, name] : a.params) {
         // The harness declares the parameter with its own type, so `*` is
-        // kept here (collapse_ws, not c_type_key); only SCALAR pairs reach
+        // kept here (collapse_ws, not ctype_key); only SCALAR pairs reach
         // this, and their keys are kCTypeSize keys.
         auto key = collapse_ws(typ);
         if (key.empty()) key = "int";

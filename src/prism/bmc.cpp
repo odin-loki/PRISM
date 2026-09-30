@@ -13,6 +13,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <sstream>
@@ -21,6 +22,7 @@
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
+#include <tuple>
 #include <utility>
 #include <vector>
 #include <filesystem>
@@ -2745,6 +2747,76 @@ namespace {
 
 #include "bmc_unenc.inc"
 
+}  // namespace
+
+// unencoded_syntax_reason is a few hundred regex gates, and bmc, concolic,
+// fuzz, libFuzzer, FuSeBMC and interval each ask it about the same function.
+// The answer depends on the signature, the body and (for `#pragma pack`) the
+// text of fn.file, so the key holds all three; the engine name is filled in
+// on the way out.
+std::optional<std::string> unencoded_syntax_reason_cached(const FunctionInfo& fn, std::string_view engine) {
+    static constexpr std::string_view kEngine = "\x01" "engine" "\x01";
+    static std::mutex mu;
+    static std::unordered_map<std::string, std::optional<std::string>> memo;
+    // path -> (size, mtime, text hash): a large file is re-read only when it
+    // changes, not once per function.
+    static std::unordered_map<std::string, std::tuple<std::uintmax_t, long long, std::size_t>> file_hash;
+    std::string key = fn.file;
+    key += '\0';
+    key += fn.signature;
+    key += '\0';
+    key += fn.body;
+    key += '\0';
+    if (!fn.file.empty()) {
+        std::error_code ec;
+        auto sz = std::filesystem::file_size(fn.file, ec);
+        if (!ec && sz > 0 && sz < 1000000) {
+            auto mt = static_cast<long long>(std::filesystem::last_write_time(fn.file, ec).time_since_epoch().count());
+            std::optional<std::size_t> h;
+            {
+                std::lock_guard<std::mutex> lk(mu);
+                if (auto it = file_hash.find(fn.file);
+                    !ec && it != file_hash.end() && std::get<0>(it->second) == sz && std::get<1>(it->second) == mt)
+                    h = std::get<2>(it->second);
+            }
+            if (!h) {
+                std::ifstream in(fn.file, std::ios::binary);
+                std::ostringstream ss;
+                ss << in.rdbuf();
+                h = std::hash<std::string>{}(ss.str());
+                if (!ec) {
+                    std::lock_guard<std::mutex> lk(mu);
+                    if (file_hash.size() >= 4096) file_hash.clear();
+                    file_hash[fn.file] = {sz, mt, *h};
+                }
+            }
+            key += std::to_string(*h);
+        }
+    }
+    std::optional<std::string> hit;
+    bool found = false;
+    {
+        std::lock_guard<std::mutex> lk(mu);
+        if (auto it = memo.find(key); it != memo.end()) {
+            hit = it->second;
+            found = true;
+        }
+    }
+    if (!found) {
+        hit = unencoded_syntax_reason(fn, kEngine);
+        std::lock_guard<std::mutex> lk(mu);
+        if (memo.size() >= 4096) memo.clear();
+        memo.emplace(std::move(key), hit);
+    }
+    if (!hit) return std::nullopt;
+    std::string out = *hit;
+    for (std::size_t p = out.find(kEngine); p != std::string::npos; p = out.find(kEngine, p + engine.size()))
+        out.replace(p, kEngine.size(), engine);
+    return out;
+}
+
+namespace {
+
 // Encoder, parser, k-induction, and run_bmc internals. Concatenated into bmc.cpp.
 
 struct ParseFail : std::runtime_error {
@@ -3341,7 +3413,7 @@ Finding bmc_function(const FunctionInfo& fn, int unwind, bool try_unbounded,
         base.message = *syn;
         return base;
     }
-    if (auto syn = unencoded_syntax_reason(fn, "bitvector BMC")) {
+    if (auto syn = unencoded_syntax_reason_cached(fn, "bitvector BMC")) {
         base.strength = std::string(laws::STRENGTH_SOME);
         base.status = std::string(laws::NEEDS_HARNESS);
         base.message = *syn;

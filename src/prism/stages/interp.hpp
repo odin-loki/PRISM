@@ -16,25 +16,46 @@ struct ReturnEx : std::exception {
 bool type_is_unsigned(std::string_view typ);
 int type_width(std::string_view typ);
 
+// A C integer type as the concrete interpreter models it: width in bits
+// (1 = _Bool, 8, 16, 32, 64) and signedness. Widths follow LP64, the same
+// data model as the bmc encoder: long, size_t, ptrdiff_t and pointers are 64
+// bits.
+struct CT {
+    int w = WIDTH;
+    bool u = false;
+    bool operator==(const CT&) const = default;
+};
+inline constexpr CT kInt{32, false};
+
+// The scalar type named by `typ` (qualifiers and storage words dropped), or
+// nullopt for a pointer, array, struct or unknown typedef.
+std::optional<CT> scalar_ctype(std::string_view typ);
+
+// v converted to t (C11 6.3.1.3): the value modulo 2^w, read as t. Values
+// are kept as the mathematical value of their type, except unsigned 64-bit
+// values, which are held as their bit pattern.
+int64_t norm(int64_t v, CT t);
+
 struct St {
     std::map<std::string, int64_t> vars;
     std::map<std::string, std::vector<int64_t>> arrays;
+    std::map<std::string, CT> arr_t;  // element type of each array
     std::map<std::string, int> enums;
-    std::unordered_set<std::string> uns;
-    std::map<std::string, int> bits;
+    std::map<std::string, CT> types;  // declared type of each scalar
+    CT ret = kInt;
+    bool ret_void = false;
     int steps = 0;
-    St(const std::vector<std::pair<std::string, std::string>>& params, const std::map<std::string, int>& args,
+    St(const std::vector<std::pair<std::string, std::string>>& params, const Args& args,
        std::map<std::string, int> en)
         : enums(std::move(en)) {
         for (auto& [typ, name] : params) {
             if (name.empty()) continue;
-            if (type_is_unsigned(typ)) uns.insert(name);
-            int w = type_width(typ);
-            bits[name] = w;
-            int raw = 0;
+            CT t = scalar_ctype(typ).value_or(CT{type_width(typ), type_is_unsigned(typ)});
+            types[name] = t;
+            int64_t raw = 0;
             auto it = args.find(name);
             if (it != args.end()) raw = it->second;
-            vars[name] = w <= 32 ? i32(raw) : raw;
+            vars[name] = norm(raw, t);
         }
     }
     void tick() {
@@ -52,7 +73,7 @@ struct ExecResult {
     int steps = 0;
 };
 
-ExecResult execute(const FunctionInfo& fn, const std::map<std::string, int>& args,
+ExecResult execute(const FunctionInfo& fn, const Args& args,
                    std::optional<std::map<std::string, int>> enums = std::nullopt);
 
 // float/double in the signature or body: the concrete interpreter models

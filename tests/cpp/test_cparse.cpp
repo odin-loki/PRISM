@@ -305,7 +305,7 @@ TEST_CASE("models: load is per field and tolerant") {
     auto p = scratch_file("report.json", R"({
         "root": "r", "started": null, "visibility": "0.5", "notes": ["a", 3],
         "functions": [{"name": "f", "line": "7", "span": [1, "2"], "static": 1,
-                       "params": [["int", "x"]], "body_line": 3, "body_col": 9}, 5],
+                       "params": [["int", "x"]], "body_line": 3, "body_col": 9}],
         "stages": [{"name": "bmc", "status": "ok", "records": null, "findings": [
             {"stage": "bmc", "status": "FAILED", "line": "3", "function": ["g", "h"],
              "cls": "INT-DIV-ZERO", "extra": {"unwind": 8, "flag": true, "s": "t"}},
@@ -342,6 +342,10 @@ TEST_CASE("models: load is per field and tolerant") {
     // Not JSON, or not an object: no report.
     CHECK_FALSE(prism::RunReport::load(scratch_file("bad.json", "{")));
     CHECK_FALSE(prism::RunReport::load(scratch_file("arr.json", "[1]")));
+    // A record list holding a non-record is the wrong shape (F2), not a
+    // report with that entry dropped; a mistyped field inside a record is
+    // still read tolerantly (above).
+    CHECK_FALSE(prism::RunReport::load(scratch_file("fn5.json", R"({"functions": [{"name": "f"}, 5]})")));
 }
 
 TEST_CASE("models: records round-trip through their JSON form") {

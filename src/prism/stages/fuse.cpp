@@ -1,8 +1,12 @@
 // Stage fuse: concrete and binary fuzzing (fuzz_function), AFL++ and
 // libFuzzer engines, Fuzz4All / ChatFuzz LLM seeds and mutants (run_fuse).
-#include "interp.hpp"
+#include "fuse.hpp"
 #include "llm.hpp"
 #include "prism/simd.hpp"
+
+#include <charconv>
+#include <future>
+#include <thread>
 
 #ifdef _WIN32
 #  ifndef NOMINMAX
@@ -31,48 +35,121 @@ namespace fs = std::filesystem;
 using namespace stages_detail;
 
 namespace {
-#include "../bmc_unenc.inc"
-
-std::optional<std::vector<uint8_t>> bytes_from_cex(const std::string& cex, int nbytes) {
-    if (cex.empty()) return std::nullopt;
-    std::vector<long long> vals;
-    std::string tmp = cex;
-    std::istringstream ss(tmp);
-    std::string part;
-    while (std::getline(ss, part, ',')) {
-        auto eq = part.find('=');
-        if (eq == std::string::npos) continue;
-        auto v = strip(part.substr(eq + 1));
-        // The BMC prints solver bit-vector literals (`#x7fffff9c`, `#b101`);
-        // plain C literals (`5`, `-1`, `0x10`) are accepted too. Before this,
-        // every BMC counterexample failed to parse and no seed was made.
-        try {
-            if (v.starts_with("#x"))
-                vals.push_back(static_cast<long long>(std::stoull(v.substr(2), nullptr, 16)));
-            else if (v.starts_with("#b"))
-                vals.push_back(static_cast<long long>(std::stoull(v.substr(2), nullptr, 2)));
-            else
-                vals.push_back(std::stoll(v, nullptr, 0));
-        } catch (...) {
-            return std::nullopt;
-        }
-    }
-    std::vector<uint8_t> raw;
-    for (long long v : vals) {
-        uint32_t u = static_cast<uint32_t>(static_cast<unsigned long long>(v) & 0xFFFFFFFFull);
-        raw.push_back(static_cast<uint8_t>(u));
-        raw.push_back(static_cast<uint8_t>(u >> 8));
-        raw.push_back(static_cast<uint8_t>(u >> 16));
-        raw.push_back(static_cast<uint8_t>(u >> 24));
-    }
-    if (static_cast<int>(raw.size()) > nbytes) raw.resize(static_cast<std::size_t>(nbytes));
-    while (static_cast<int>(raw.size()) < nbytes) raw.push_back(0);
-    return raw;
-}
 
 std::string afl_harness_source(const FunctionInfo& fn, std::string src_rel);
 
 std::pair<bool, std::string> compile_afl_harness(const fs::path& harness, const fs::path& exe);
+
+std::string hex_of(const std::vector<uint8_t>& b, std::size_t limit = std::string::npos) {
+    std::string hex;
+    for (std::size_t k = 0; k < b.size() && k < limit; ++k) {
+        char buf[8];
+        std::snprintf(buf, sizeof buf, "%02x", b[k]);
+        hex += buf;
+    }
+    return hex;
+}
+
+std::string args_text(const Args& args) {
+    std::string out;
+    for (auto& [k, v] : args) {
+        if (!out.empty()) out += ", ";
+        out += k + "=" + std::to_string(v);
+    }
+    return out;
+}
+
+// Compiled fuzz harnesses of this process. The binary is a pure function of
+// the compiler, PATH, the harness text and the source text, so a second fuzz
+// of one function (FuSeBMC runs two rounds) reuses the first build. Each
+// build has its own directory, removed when the process exits.
+struct ExeCache {
+    std::mutex mu;
+    std::map<std::string, std::string> exe;  // key -> exe path; "" = compile failed
+    fs::path dir;
+    unsigned next = 0;
+    ~ExeCache() {
+        std::error_code ec;
+        if (!dir.empty()) fs::remove_all(dir, ec);
+    }
+    fs::path new_dir() {
+        std::lock_guard<std::mutex> lk(mu);
+        if (dir.empty())
+            dir = fs::temp_directory_path() / ("prism_fuzzbin_" + std::to_string(std::random_device{}()));
+        auto d = dir / std::to_string(next++);
+        fs::create_directories(d);
+        return d;
+    }
+};
+
+ExeCache& exe_cache() {
+    static ExeCache c;
+    return c;
+}
+
+// Concurrent harness runs: each is an independent process (~10 ms of
+// sanitizer start-up), results are taken in input order.
+int run_width() {
+    return static_cast<int>(std::max(1u, std::min(4u, std::thread::hardware_concurrency())));
+}
+
+}  // namespace
+
+namespace stages_detail {
+
+std::optional<uint64_t> cex_value(std::string v) {
+    v = strip(v);
+    if (v.empty()) return std::nullopt;
+    bool neg = false;
+    if (v[0] == '-' || v[0] == '+') {
+        neg = v[0] == '-';
+        v = v.substr(1);
+    }
+    int base = 10;
+    if (v.starts_with("0x") || v.starts_with("0X") || v.starts_with("#x")) {
+        base = 16;
+        v = v.substr(2);
+    } else if (v.starts_with("0b") || v.starts_with("0B") || v.starts_with("#b")) {
+        base = 2;
+        v = v.substr(2);
+    } else if (v.size() > 1 && v[0] == '0') {
+        return std::nullopt;
+    }
+    if (v.empty()) return std::nullopt;
+    uint64_t out = 0;
+    auto [ptr, ec] = std::from_chars(v.data(), v.data() + v.size(), out, base);
+    if (ec != std::errc{} || ptr != v.data() + v.size()) return std::nullopt;
+    return neg ? 0 - out : out;
+}
+
+std::optional<std::vector<uint8_t>> bytes_from_cex(const std::string& cex, const FunctionInfo& fn) {
+    if (cex.empty()) return std::nullopt;
+    std::vector<std::pair<std::string, uint64_t>> vals;
+    std::istringstream ss(cex);
+    std::string part;
+    while (std::getline(ss, part, ',')) {
+        auto eq = part.find('=');
+        if (eq == std::string::npos) continue;
+        auto v = cex_value(part.substr(eq + 1));
+        if (!v) return std::nullopt;
+        vals.emplace_back(strip(part.substr(0, eq)), *v);
+    }
+    if (vals.empty()) return std::nullopt;
+    std::map<std::string, uint64_t> by_name(vals.begin(), vals.end());
+    std::vector<uint8_t> raw;
+    std::size_t i = 0;
+    for (auto& [typ, name] : fn.params) {
+        auto key = ctype_key(typ);
+        int sz = kCTypeSize.contains(key) ? kCTypeSize.at(key) : 4;
+        uint64_t v = 0;
+        if (auto it = by_name.find(name); !name.empty() && it != by_name.end()) v = it->second;
+        else if (i < vals.size()) v = vals[i].second;
+        ++i;
+        for (int k = 0; k < sz; ++k) raw.push_back(static_cast<uint8_t>(v >> (8 * k)));
+    }
+    raw.resize(static_cast<std::size_t>(param_nbytes(fn.params)), 0);
+    return raw;
+}
 
 Finding fuzz_function(const FunctionInfo& fn, const fs::path& src, double budget, int iters,
                       const std::vector<std::vector<uint8_t>>* seeds) {
@@ -85,7 +162,7 @@ Finding fuzz_function(const FunctionInfo& fn, const fs::path& src, double budget
                          laws::STRENGTH_FINDS);
     if (auto syn = scrubbed_byte_reason(fn.body, "fuzzer"))
         return make_find("fuzz", laws::NEEDS_HARNESS, fn, "", *syn, laws::STRENGTH_FINDS);
-    if (auto syn = unencoded_syntax_reason(fn, "fuzzer"))
+    if (auto syn = unencoded_syntax_reason_cached(fn, "fuzzer"))
         return make_find("fuzz", laws::NEEDS_HARNESS, fn, "", *syn, laws::STRENGTH_FINDS);
     if (body_needs_pointer_harness(fn.body))
         return make_find("fuzz", laws::NEEDS_HARNESS, fn, "",
@@ -94,14 +171,12 @@ Finding fuzz_function(const FunctionInfo& fn, const fs::path& src, double budget
     std::vector<std::vector<uint8_t>> corpus;
     for (auto& s : interesting_seeds(fn)) {
         auto b = s;
-        if (static_cast<int>(b.size()) > nbytes) b.resize(static_cast<std::size_t>(nbytes));
-        while (static_cast<int>(b.size()) < nbytes) b.push_back(0);
+        b.resize(static_cast<std::size_t>(nbytes), 0);
         corpus.push_back(std::move(b));
     }
     if (seeds)
         for (auto s : *seeds) {
-            if (static_cast<int>(s.size()) > nbytes) s.resize(static_cast<std::size_t>(nbytes));
-            while (static_cast<int>(s.size()) < nbytes) s.push_back(0);
+            s.resize(static_cast<std::size_t>(nbytes), 0);
             corpus.push_back(std::move(s));
         }
     if (corpus.empty()) {
@@ -114,6 +189,9 @@ Finding fuzz_function(const FunctionInfo& fn, const fs::path& src, double budget
     auto t0 = std::chrono::steady_clock::now();
     std::set<uint64_t> seen;
     int new_cov = 0, stall = 0, i = 0;
+    // The interpreter's reason when it could not run the function (a parse
+    // failure): no input was interpreted, so the result is not CLEAN.
+    std::string interp_err;
     auto note_cov = [&](const std::vector<uint8_t>& child) {
         auto h = coverage_hash(child.data(), child.size());
         if (!seen.contains(h)) {
@@ -125,26 +203,21 @@ Finding fuzz_function(const FunctionInfo& fn, const fs::path& src, double budget
             ++stall;
         }
     };
-    auto crash_from = [&](const std::vector<uint8_t>& child, const std::map<std::string, int>& args,
-                          const std::string& cls, int ii) {
-        std::string argstr;
-        for (auto& [k, v] : args) {
-            if (!argstr.empty()) argstr += ", ";
-            argstr += k + "=" + std::to_string(v);
-        }
-        std::string hex;
-        for (std::size_t k = 0; k < child.size() && k < 16; ++k) {
-            char buf[8];
-            std::snprintf(buf, sizeof buf, "%02x", child[k]);
-            hex += buf;
-        }
-        auto f = make_find("fuzz", laws::CRASH, fn, cls, cls + " on " + hex + " " + argstr, laws::STRENGTH_FINDS);
-        f.counterexample = hex + " " + argstr;
-        f.extra["iters"] = std::to_string(ii);
+    auto fill = [&](Finding& f, const std::string& oracle) {
+        f.extra["iters"] = std::to_string(i);
         f.extra["corpus"] = std::to_string(corpus.size());
         f.extra["new_cov"] = std::to_string(new_cov);
         f.extra["noseed"] = noseed ? "true" : "false";
-        f.extra["oracle"] = "concrete";
+        f.extra["stall"] = std::to_string(stall);
+        f.extra["oracle"] = oracle;
+    };
+    auto crash_from = [&](const std::vector<uint8_t>& child, const Args& args, const std::string& cls) {
+        auto hex = hex_of(child, 16);
+        auto argstr = args_text(args);
+        auto f = make_find("fuzz", laws::CRASH, fn, cls, cls + " on " + hex + " " + argstr, laws::STRENGTH_FINDS);
+        f.counterexample = hex + " " + argstr;
+        fill(f, "concrete");
+        f.extra["args"] = argstr;
         return f;
     };
     // Inputs already executed. A function without parameters ignores the
@@ -154,196 +227,192 @@ Finding fuzz_function(const FunctionInfo& fn, const fs::path& src, double budget
     auto input_key = [&](const std::vector<uint8_t>& child) {
         return fn.params.empty() ? std::vector<uint8_t>{} : child;
     };
+    // One concrete run: a crash finding, or nullopt (the input joins the
+    // corpus, or the interpreter could not run it: interp_err is set).
+    auto concrete = [&](const std::vector<uint8_t>& child) -> std::optional<Finding> {
+        if (!ran.insert(input_key(child)).second) {
+            ++stall;
+            return std::nullopt;
+        }
+        auto args = decode_args(fn, child);
+        auto rec = execute(fn, args);
+        if (!rec.ub.empty()) return crash_from(child, args, rec.ub);
+        if (!rec.error.empty()) {
+            interp_err = rec.error;
+            return std::nullopt;
+        }
+        note_cov(child);
+        return std::nullopt;
+    };
     std::deque<std::vector<uint8_t>> queue(corpus.begin(), corpus.end());
-    while (!queue.empty()) {
+    while (!queue.empty() && interp_err.empty()) {
         auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
         if (elapsed >= std::max(budget, 1.0)) break;
         auto child = queue.front();
         queue.pop_front();
         ++i;
-        // The concrete oracle is deterministic: an input already run (a
-        // no-parameter function has exactly one) gives the same result again.
-        if (!ran.insert(input_key(child)).second) {
-            ++stall;
-            continue;
-        }
-        auto args = decode_args(fn, child);
-        auto rec = execute(fn, args);
-        if (!rec.ub.empty()) return crash_from(child, args, rec.ub, i);
-        note_cov(child);
+        if (auto crash = concrete(child)) return *crash;
     }
     uint64_t hseed = 1;
-    while (i < iters) {
+    while (i < iters && interp_err.empty()) {
         auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
         if (elapsed >= budget) break;
-        auto parent = corpus[static_cast<std::size_t>(i) % corpus.size()];
-        auto child = parent;
+        auto child = corpus[static_cast<std::size_t>(i) % corpus.size()];
         havoc(child.data(), child.size(), ++hseed);
         ++i;
-        if (!ran.insert(input_key(child)).second) {
-            ++stall;
-            continue;
-        }
-        auto args = decode_args(fn, child);
-        auto rec = execute(fn, args);
-        if (!rec.ub.empty()) return crash_from(child, args, rec.ub, i);
-        note_cov(child);
+        if (auto crash = concrete(child)) return *crash;
     }
-    auto extra_iters = std::to_string(i);
-    auto extra_corpus = std::to_string(corpus.size());
-    auto extra_cov = std::to_string(new_cov);
-    auto extra_noseed = noseed ? "true" : "false";
-    auto extra_stall = std::to_string(stall);
+    // The finding when neither oracle crashed.
+    auto no_crash = [&]() {
+        if (!interp_err.empty()) {
+            // Law 7: the concrete oracle did not interpret this function.
+            auto msg = harness_for_parsefail(interp_err, "fuzzer");
+            auto f = make_find("fuzz", msg ? laws::NEEDS_HARNESS : laws::ERROR, fn, "",
+                               msg ? *msg : "concrete interpreter: " + interp_err, laws::STRENGTH_FINDS);
+            fill(f, "concrete");
+            f.extra["concrete"] = interp_err;
+            return f;
+        }
+        auto f = make_find("fuzz", laws::CLEAN, fn, "",
+                           "no crash in " + std::to_string(i) + " iters / " + std::format("{:.1f}", budget) +
+                               "s (not a proof)",
+                           laws::STRENGTH_FINDS);
+        fill(f, "concrete");
+        return f;
+    };
     auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     double remain = std::max(0.05, budget - elapsed);
     int bin_iters = std::min(32, std::max(1, iters));
     // Law 9: the compiled harness runs the scanned function; without
     // --allow-exec only the concrete oracle above ran.
-    const bool exec_ok = sandbox::allowed();
-    auto cc = exec_ok ? Config{}.which({"gcc", "clang"}) : std::nullopt;
+    if (!sandbox::allowed()) {
+        auto f = no_crash();
+        f.extra["binary"] = std::string(laws::NOTRUN);
+        f.extra["exec"] = std::string(laws::NOTRUN);
+        return f;
+    }
+    auto cc = Config{}.which({"gcc", "clang"});
+    std::string src_text;
     if (cc && fs::exists(src)) {
-        auto td = fs::temp_directory_path() / ("prism_fuzzbin_" + std::to_string(std::random_device{}()));
-        fs::create_directories(td);
-        struct Guard {
-            fs::path p;
-            ~Guard() {
-                std::error_code ec;
-                fs::remove_all(p, ec);
-            }
-        } guard{td};
-        auto src_copy = td / src.filename();
         try {
-            std::ofstream out(src_copy);
-            out << read_text_file(src);
+            src_text = read_text_file(src);
         } catch (...) {
             cc.reset();
         }
-        if (cc) {
-            auto hpath = td / ("harness_" + fn.name + ".c");
-            {
-                std::ofstream out(hpath);
-                out << afl_harness_source(fn, src.filename().string());
-            }
-            auto exe = td / ("harness_" + fn.name + ".exe");
-            auto [ok, err] = compile_afl_harness(hpath, exe);
-            if (!ok) {
-                (void)err;
-                auto f = make_find("fuzz", laws::CLEAN, fn, "",
-                                   "no crash in " + extra_iters + " iters / " +
-                                       std::format("{:.1f}", budget) + "s (not a proof)",
-                                   laws::STRENGTH_FINDS);
-                f.extra["iters"] = extra_iters;
-                f.extra["corpus"] = extra_corpus;
-                f.extra["new_cov"] = extra_cov;
-                f.extra["noseed"] = extra_noseed;
-                f.extra["stall"] = extra_stall;
-                f.extra["oracle"] = "concrete";
-                f.extra["binary"] = "compile-failed";
-                return f;
-            }
-            auto bin_crash = [&](const std::vector<uint8_t>& child, const std::string& detail, int n) {
-                auto args = decode_args(fn, child);
-                std::string hex;
-                for (std::size_t k = 0; k < child.size() && k < 16; ++k) {
-                    char buf[8];
-                    std::snprintf(buf, sizeof buf, "%02x", child[k]);
-                    hex += buf;
-                }
-                auto f = make_find("fuzz", laws::CRASH, fn, "FUZZ-CRASH", "crash on " + hex + "…",
-                                   laws::STRENGTH_FINDS);
-                f.extra["sandbox"] = sandbox::kind();
-                std::string full;
-                for (auto b : child) {
-                    char buf[8];
-                    std::snprintf(buf, sizeof buf, "%02x", b);
-                    full += buf;
-                }
-                f.counterexample = full;
-                f.evidence = detail.substr(0, 800);
-                f.extra["iters"] = extra_iters;
-                f.extra["corpus"] = extra_corpus;
-                f.extra["new_cov"] = extra_cov;
-                f.extra["noseed"] = extra_noseed;
-                f.extra["stall"] = extra_stall;
-                f.extra["oracle"] = "binary";
-                f.extra["binary_iters"] = std::to_string(n);
-                std::string argstr;
-                for (auto& [k, v] : args) {
-                    if (!argstr.empty()) argstr += ", ";
-                    argstr += k + "=" + std::to_string(v);
-                }
-                f.extra["args"] = argstr;
-                return f;
-            };
-            auto is_bin_crash = [&](const ProcRun& rr) {
-                if (rr.timeout) return false;
-                if (rr.crashed || rr.rc < 0) return true;
-                auto low = lower_copy(rr.err);
-                return low.find("runtime error") != std::string::npos ||
-                       low.find("undefinedbehaviorsanitizer") != std::string::npos ||
-                       low.find("addresssanitizer") != std::string::npos ||
-                       low.find("heap-buffer-overflow") != std::string::npos ||
-                       low.find("heap-use-after-free") != std::string::npos;
-            };
-            auto tbin = std::chrono::steady_clock::now();
-            int n = 0;
-            int take = std::max(1, std::min(bin_iters, static_cast<int>(corpus.size())));
-            for (int k = 0; k < take; ++k) {
-                auto elapsed_bin =
-                    std::chrono::duration<double>(std::chrono::steady_clock::now() - tbin).count();
-                if (elapsed_bin > remain) break;
-                ++n;
-                std::string in(corpus[static_cast<std::size_t>(k)].begin(),
-                               corpus[static_cast<std::size_t>(k)].end());
-                auto rr = run_argv(sandbox::wrap_argv({exe.string()}, td), in, 1.0,
-                                   sandbox::limits_for(1.0, /*limit_as=*/false));
-                if (is_bin_crash(rr))
-                    return bin_crash(corpus[static_cast<std::size_t>(k)], rr.err, n);
-            }
-            uint64_t hbin = 91;
-            while (n < bin_iters) {
-                auto elapsed_bin =
-                    std::chrono::duration<double>(std::chrono::steady_clock::now() - tbin).count();
-                if (elapsed_bin >= remain) break;
-                auto child = corpus[static_cast<std::size_t>(n) % corpus.size()];
-                havoc(child.data(), child.size(), ++hbin);
-                ++n;
-                std::string in(child.begin(), child.end());
-                auto rr = run_argv(sandbox::wrap_argv({exe.string()}, td), in, 1.0,
-                                   sandbox::limits_for(1.0, /*limit_as=*/false));
-                if (is_bin_crash(rr)) return bin_crash(child, rr.err, n);
-            }
-            auto f = make_find("fuzz", laws::CLEAN, fn, "",
-                               "no crash in " + extra_iters + " iters / " +
-                                   std::format("{:.1f}", budget) + "s (not a proof)",
-                               laws::STRENGTH_FINDS);
-            f.extra["iters"] = extra_iters;
-            f.extra["corpus"] = extra_corpus;
-            f.extra["new_cov"] = extra_cov;
-            f.extra["noseed"] = extra_noseed;
-            f.extra["stall"] = extra_stall;
-            f.extra["oracle"] = "concrete";
-            f.extra["binary_iters"] = std::to_string(n);
-            f.extra["sandbox"] = sandbox::kind();
-            return f;
+    }
+    if (!cc || !fs::exists(src)) return no_crash();
+    auto harness = afl_harness_source(fn, src.filename().string());
+    const char* path_env = std::getenv("PATH");
+    std::string key = cc->string() + '\0' + (path_env ? path_env : "") + '\0' + src.filename().string() + '\0' +
+                      fn.name + '\0' + harness + '\0' + src_text;
+    auto& cache = exe_cache();
+    std::optional<std::string> cached;
+    {
+        std::lock_guard<std::mutex> lk(cache.mu);
+        if (auto it = cache.exe.find(key); it != cache.exe.end() && (it->second.empty() || fs::exists(it->second)))
+            cached = it->second;
+    }
+    fs::path exe;
+    if (cached) {
+        exe = *cached;
+    } else {
+        auto td = cache.new_dir();
+        {
+            std::ofstream out(td / src.filename(), std::ios::binary);
+            out << src_text;
+        }
+        auto hpath = td / ("harness_" + fn.name + ".c");
+        {
+            std::ofstream out(hpath, std::ios::binary);
+            out << harness;
+        }
+        auto built = td / ("harness_" + fn.name + ".exe");
+        auto [ok, err] = compile_afl_harness(hpath, built);
+        if (ok) exe = built;
+        // A compile timeout may pass next time: not cached.
+        if (err != "compile timeout") {
+            std::lock_guard<std::mutex> lk(cache.mu);
+            if (cache.exe.size() >= 512) cache.exe.clear();
+            cache.exe[key] = ok ? built.string() : std::string{};
         }
     }
-    auto f = make_find("fuzz", laws::CLEAN, fn, "",
-                       "no crash in " + extra_iters + " iters / " +
-                           std::format("{:.1f}", budget) + "s (not a proof)",
-                       laws::STRENGTH_FINDS);
-    f.extra["iters"] = extra_iters;
-    f.extra["corpus"] = extra_corpus;
-    f.extra["new_cov"] = extra_cov;
-    f.extra["noseed"] = extra_noseed;
-    f.extra["stall"] = extra_stall;
-    f.extra["oracle"] = "concrete";
-    if (!exec_ok) {
-        f.extra["binary"] = std::string(laws::NOTRUN);
-        f.extra["exec"] = std::string(laws::NOTRUN);
+    if (exe.empty()) {
+        auto f = no_crash();
+        f.extra["binary"] = "compile-failed";
+        return f;
     }
+    const auto workdir = exe.parent_path();
+    auto bin_crash = [&](const std::vector<uint8_t>& child, const std::string& detail, int n) {
+        auto f = make_find("fuzz", laws::CRASH, fn, "FUZZ-CRASH", "crash on " + hex_of(child, 16) + "…",
+                           laws::STRENGTH_FINDS);
+        fill(f, "binary");
+        f.extra["sandbox"] = sandbox::kind();
+        f.counterexample = hex_of(child);
+        f.evidence = detail.substr(0, 800);
+        f.extra["binary_iters"] = std::to_string(n);
+        f.extra["args"] = args_text(decode_args(fn, child));
+        return f;
+    };
+    auto is_bin_crash = [&](const ProcRun& rr) {
+        if (rr.timeout) return false;
+        if (rr.crashed || rr.rc < 0) return true;
+        auto low = lower_copy(rr.err);
+        return low.find("runtime error") != std::string::npos ||
+               low.find("undefinedbehaviorsanitizer") != std::string::npos ||
+               low.find("addresssanitizer") != std::string::npos ||
+               low.find("heap-buffer-overflow") != std::string::npos ||
+               low.find("heap-use-after-free") != std::string::npos;
+    };
+    auto run_one = [&](const std::vector<uint8_t>& child) {
+        std::string in(child.begin(), child.end());
+        return run_argv(sandbox::wrap_argv({exe.string()}, workdir), in, 1.0,
+                        sandbox::limits_for(1.0, /*limit_as=*/false));
+    };
+    // A window of inputs runs at once; the first crash in input order wins,
+    // so the reported input and binary_iters match a one-at-a-time run.
+    const int width = std::max(1, std::min(run_width(), bin_iters));
+    auto run_window = [&](const std::vector<std::vector<uint8_t>>& window, int& n) -> std::optional<Finding> {
+        std::vector<std::future<ProcRun>> runs;
+        for (auto& child : window) runs.push_back(std::async(std::launch::async, run_one, std::cref(child)));
+        std::optional<Finding> hit;
+        for (std::size_t k = 0; k < window.size(); ++k) {
+            auto rr = runs[k].get();
+            if (hit) continue;
+            ++n;
+            if (is_bin_crash(rr)) hit = bin_crash(window[k], rr.err, n);
+        }
+        return hit;
+    };
+    auto tbin = std::chrono::steady_clock::now();
+    auto bin_elapsed = [&] { return std::chrono::duration<double>(std::chrono::steady_clock::now() - tbin).count(); };
+    int n = 0;
+    int take = std::max(1, std::min(bin_iters, static_cast<int>(corpus.size())));
+    for (int k = 0; k < take;) {
+        if (bin_elapsed() > remain) break;
+        std::vector<std::vector<uint8_t>> window;
+        for (int j = 0; j < width && k < take; ++j, ++k) window.push_back(corpus[static_cast<std::size_t>(k)]);
+        if (auto hit = run_window(window, n)) return *hit;
+    }
+    uint64_t hbin = 91;
+    while (n < bin_iters) {
+        if (bin_elapsed() >= remain) break;
+        std::vector<std::vector<uint8_t>> window;
+        for (int j = 0; j < width && n + j < bin_iters; ++j) {
+            auto child = corpus[static_cast<std::size_t>(n + j) % corpus.size()];
+            havoc(child.data(), child.size(), ++hbin);
+            window.push_back(std::move(child));
+        }
+        if (auto hit = run_window(window, n)) return *hit;
+    }
+    auto f = no_crash();
+    f.extra["binary_iters"] = std::to_string(n);
+    f.extra["sandbox"] = sandbox::kind();
     return f;
 }
+
+}  // namespace stages_detail
+
+namespace {
 
 std::string norm_ws(std::string_view s) {
     std::string n;
@@ -434,12 +503,11 @@ std::vector<std::pair<std::string, std::string>> numbered_goals(const FunctionIn
 
 namespace stages_detail {
 std::vector<std::vector<uint8_t>> seeds_from_bmc(const FunctionInfo& fn, const std::vector<Finding>& bmc_findings) {
-    int n = param_nbytes(fn.params);
     std::vector<std::vector<uint8_t>> out;
     for (auto& f : bmc_findings) {
         if (!f.function || *f.function != fn.name) continue;
         if (f.status != laws::FAILED) continue;
-        auto b = bytes_from_cex(f.counterexample, n);
+        auto b = bytes_from_cex(f.counterexample, fn);
         if (b) out.push_back(*b);
     }
     return out;
@@ -739,7 +807,7 @@ Finding run_libfuzzer(const FunctionInfo& fn, const fs::path& src, double timeou
         return lf_base(laws::NEEDS_HARNESS, "", "OTHER signature, not harnessed");
     if (auto syn = scrubbed_byte_reason(fn.body, "libFuzzer"))
         return lf_base(laws::NEEDS_HARNESS, "", *syn);
-    if (auto syn = unencoded_syntax_reason(fn, "libFuzzer"))
+    if (auto syn = unencoded_syntax_reason_cached(fn, "libFuzzer"))
         return lf_base(laws::NEEDS_HARNESS, "", *syn);
     if (body_needs_pointer_harness(fn.body))
         return lf_base(laws::NEEDS_HARNESS, "",
@@ -855,7 +923,7 @@ Finding fuse_one(const FunctionInfo& fn, const std::vector<Finding>& bmc_finding
     if (fn.kind == "OTHER") return nh("OTHER signature, not harnessed");
     if (float_unencoded(fn)) return nh("float/double unencoded: FuSeBMC concrete oracle is not an IEEE model");
     if (auto syn = scrubbed_byte_reason(fn.body, "FuSeBMC")) return nh(*syn);
-    if (auto syn = unencoded_syntax_reason(fn, "FuSeBMC")) return nh(*syn);
+    if (auto syn = unencoded_syntax_reason_cached(fn, "FuSeBMC")) return nh(*syn);
     if (body_needs_pointer_harness(fn.body))
         return nh("local pointer or heap object: FuSeBMC harness would invent a buffer");
     bool afl_on_path = afl_fuzz_which().has_value();
@@ -1105,8 +1173,7 @@ Finding fuse_one(const FunctionInfo& fn, const std::vector<Finding>& bmc_finding
                 }
                 ids.push_back(lab);
                 extra["bmc_goals"] = ids.dump();
-                int n = param_nbytes(fn.params);
-                auto b = bytes_from_cex(g.counterexample, n);
+                auto b = bytes_from_cex(g.counterexample, fn);
                 if (b && std::find(seeds.begin(), seeds.end(), *b) == seeds.end()) {
                     seeds.push_back(*b);
                     extra["new_bmc_seeds"] = std::to_string(std::stoi(extra["new_bmc_seeds"]) + 1);

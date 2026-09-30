@@ -80,6 +80,11 @@ std::vector<Finding> run_concolic(const std::vector<FunctionInfo>& functions, in
 // not a generic NEEDS-HARNESS. An unstructured goto is NEEDS-HARNESS.
 std::optional<std::string> harness_for_parsefail(std::string_view err, const std::string& engine);
 
+// Syntax the encoders and the concrete interpreter do not model, as a
+// NEEDS-HARNESS reason naming `engine` (nullopt: none). Memoized: every
+// stage asks about the same functions.
+std::optional<std::string> unencoded_syntax_reason_cached(const FunctionInfo& fn, std::string_view engine);
+
 // KLEE Executor::fork: SAT model of the flipped branch, or Unsat to drop that side.
 enum class ForkFlipKind { Model, Unsat, Unknown };
 struct ForkFlipResult {

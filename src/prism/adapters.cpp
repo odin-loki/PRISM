@@ -7,6 +7,7 @@
 #include "prism/cparse.hpp"
 #include "prism/sandbox.hpp"
 #include "proc.hpp"
+#include "sanitize_detail.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -270,7 +271,13 @@ ProcResult run_argv(const std::vector<std::string>& args, double timeout_s, cons
         return r;
     }
     int out_p[2] = {-1, -1};
+    // Close-on-exec: runs started from several threads at once must not
+    // inherit each other's pipe (dup2 onto 1/2 clears the flag on the copies).
+#  if defined(__linux__)
+    if (::pipe2(out_p, O_CLOEXEC) != 0) {
+#  else
     if (::pipe(out_p) != 0) {
+#  endif
         r.failed = true;
         return r;
     }
@@ -750,8 +757,9 @@ std::tuple<std::string, std::string, std::string> compile_and_run_san(
         auto comp = run_argv(cmd, cap);
         if (comp.timed_out)
             return {std::string(laws::TIMEOUT), "sanitizer compile/run timeout", ""};
-        if (comp.failed)
-            return {std::string(laws::NOTRUN), "sanitizer compile failed to start", ""};
+        // exit 127 with no output: the compiler did not start (exec failed)
+        if (comp.failed || (comp.rc == 127 && trim_copy(comp.text).empty()))
+            return {std::string(laws::NOTRUN), "sanitizer compile failed to start: " + cc, ""};
         if (comp.rc != 0) {
             auto text = comp.text;
             return {std::string(laws::ERROR),
@@ -785,15 +793,49 @@ std::tuple<std::string, std::string, std::string> compile_and_run_san(
     }
 }
 
-std::vector<Finding> run_sanitizer_on_paths(const std::string& cc, const std::vector<fs::path>& paths,
-                                            const std::vector<std::string>& flags,
-                                            const std::string& sanitizer, const Config& cfg) {
+}  // namespace
+
+namespace sanitize_detail {
+bool is_mingw_cc(const std::string& cc) { return is_mingw(cc); }
+bool has_runtime_lib(const std::string& cc, const std::vector<std::string>& flags) {
+    return has_sanitizer_lib(cc, flags);
+}
+bool probe(const std::string& cc, const std::vector<std::string>& flags) { return probe_sanitizer(cc, flags); }
+bool hit(const std::string& text, int rc) { return sanitizer_hit(text, rc); }
+bool runtime_unusable(const std::string& text) { return sanitizer_runtime_unusable(text); }
+std::tuple<std::string, std::string, std::string> compile_and_run(const std::string& cc, const fs::path& source,
+                                                                  const std::vector<std::string>& flags,
+                                                                  double timeout,
+                                                                  const std::optional<std::string>& call) {
+    return compile_and_run_san(cc, source, flags, timeout, call);
+}
+}  // namespace sanitize_detail
+
+namespace {
+
+// The .c files of `paths` and, for each, its opted-in function (parsed once
+// for all three sanitizers).
+struct SanTargets {
     std::vector<fs::path> c_files;
+    std::vector<std::pair<fs::path, std::string>> targets;
+};
+
+SanTargets sanitize_targets(const std::vector<fs::path>& paths) {
+    SanTargets t;
     for (const auto& p : paths) {
         std::error_code ec;
-        if (ext_of(p) == ".c" && fs::is_regular_file(p, ec)) c_files.push_back(p);
+        if (ext_of(p) == ".c" && fs::is_regular_file(p, ec)) t.c_files.push_back(p);
     }
-    if (c_files.empty()) {
+    for (const auto& p : t.c_files)
+        if (auto fn = opted_in_callable(p)) t.targets.emplace_back(p, *fn);
+    return t;
+}
+
+// The rows of one supported sanitizer: `runs` holds compile_and_run_san of
+// each target, in target order.
+std::vector<Finding> sanitizer_rows(const std::string& cc, const SanTargets& t, const std::string& sanitizer,
+                                    const std::vector<std::tuple<std::string, std::string, std::string>>& runs) {
+    if (t.c_files.empty()) {
         auto f = finding("sanitize", laws::UNKNOWN, "", sanitizer,
                          sanitizer + " supported by " + cc + "; no .c files in scope",
                          laws::STRENGTH_FINDS);
@@ -801,19 +843,17 @@ std::vector<Finding> run_sanitizer_on_paths(const std::string& cc, const std::ve
         f.extra["sanitizer"] = sanitizer;
         return {f};
     }
-    std::vector<std::pair<fs::path, std::string>> targets;
-    for (const auto& p : c_files)
-        if (auto fn = opted_in_callable(p)) targets.emplace_back(p, *fn);
-    if (targets.empty()) {
+    if (t.targets.empty()) {
         auto f = finding("sanitize", laws::NOTRUN, "", sanitizer,
-                         no_opt_in_message(c_files.size()), laws::STRENGTH_FINDS);
+                         no_opt_in_message(t.c_files.size()), laws::STRENGTH_FINDS);
         f.extra["install"] = kOptInHint;
         f.extra["sanitizer"] = sanitizer;
         return {f};
     }
     std::vector<Finding> out;
-    for (const auto& [p, fn] : targets) {
-        auto [st, msg, evidence] = compile_and_run_san(cc, p, flags, cfg.timeout, fn);
+    for (std::size_t i = 0; i < t.targets.size(); ++i) {
+        const auto& [p, fn] = t.targets[i];
+        const auto& [st, msg, evidence] = runs[i];
         auto f = finding("sanitize", st, p.string(), sanitizer, msg, laws::STRENGTH_FINDS);
         f.function = fn;
         f.evidence = tail(evidence, 1500);
@@ -2114,27 +2154,45 @@ std::vector<Finding> run_sanitize(const std::vector<fs::path>& paths, const Conf
         missing.status = laws::NOTRUN;
         return {missing};
     }
-    const std::vector<std::string> as_flags{"-fsanitize=address", "-fno-sanitize-recover=address", "-O0"};
-    const std::vector<std::string> ub_flags{"-fsanitize=undefined", "-fno-sanitize-recover=undefined", "-O0"};
-    const std::vector<std::string> ts_flags{"-fsanitize=thread", "-O0"};
+    struct San {
+        const char* name;
+        std::vector<std::string> flags;
+        const char* missing;
+        bool supported = false;
+    };
+    std::vector<San> sans = {
+        {"asan", {"-fsanitize=address", "-fno-sanitize-recover=address", "-O0"}, "compiler has no ASan"},
+        {"ubsan", {"-fsanitize=undefined", "-fno-sanitize-recover=undefined", "-O0"}, "compiler has no UBSan"},
+        {"tsan", {"-fsanitize=thread", "-O0"}, "compiler has no TSan"},
+    };
+    bool any = false;
+    for (auto& sn : sans) any = (sn.supported = probe_sanitizer(cc->string(), sn.flags)) || any;
+    SanTargets t;
+    if (any) t = sanitize_targets(paths);
+    // Every (sanitizer, file) compile-and-run is independent: they run on
+    // cfg.jobs threads and the rows keep the one-at-a-time order.
+    std::vector<std::pair<std::size_t, std::size_t>> jobs;  // (sanitizer, target)
+    for (std::size_t si = 0; si < sans.size(); ++si)
+        if (sans[si].supported)
+            for (std::size_t ti = 0; ti < t.targets.size(); ++ti) jobs.emplace_back(si, ti);
+    std::vector<std::tuple<std::string, std::string, std::string>> runs(jobs.size());
+    parallel_for(cfg.jobs, jobs, [&](std::size_t i, const std::pair<std::size_t, std::size_t>& job) {
+        const auto& [p, fn] = t.targets[job.second];
+        runs[i] = compile_and_run_san(cc->string(), p, sans[job.first].flags, cfg.timeout, fn);
+    });
     std::vector<Finding> out;
-    if (!probe_sanitizer(cc->string(), as_flags)) {
-        out.push_back(sanitizer_notrun("compiler has no ASan", "asan"));
-    } else {
-        auto asan = run_sanitizer_on_paths(cc->string(), paths, as_flags, "asan", cfg);
-        out.insert(out.end(), asan.begin(), asan.end());
-    }
-    if (!probe_sanitizer(cc->string(), ub_flags)) {
-        out.push_back(sanitizer_notrun("compiler has no UBSan", "ubsan"));
-    } else {
-        auto ub = run_sanitizer_on_paths(cc->string(), paths, ub_flags, "ubsan", cfg);
-        out.insert(out.end(), ub.begin(), ub.end());
-    }
-    if (!probe_sanitizer(cc->string(), ts_flags)) {
-        out.push_back(sanitizer_notrun("compiler has no TSan", "tsan"));
-    } else {
-        auto ts = run_sanitizer_on_paths(cc->string(), paths, ts_flags, "tsan", cfg);
-        out.insert(out.end(), ts.begin(), ts.end());
+    std::size_t k = 0;
+    for (auto& sn : sans) {
+        if (!sn.supported) {
+            out.push_back(sanitizer_notrun(sn.missing, sn.name));
+            continue;
+        }
+        std::vector<std::tuple<std::string, std::string, std::string>> mine(
+            runs.begin() + static_cast<std::ptrdiff_t>(k),
+            runs.begin() + static_cast<std::ptrdiff_t>(k + t.targets.size()));
+        k += t.targets.size();
+        auto rows = sanitizer_rows(cc->string(), t, sn.name, mine);
+        out.insert(out.end(), rows.begin(), rows.end());
     }
     return out;
 }

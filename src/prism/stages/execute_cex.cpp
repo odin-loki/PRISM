@@ -1,6 +1,6 @@
 // Stage execute: concrete replay of FAILED/CRASH counterexamples and the
 // LLM interpreter loop (execute_cex).
-#include "interp.hpp"
+#include "fuse.hpp"
 #include "llm.hpp"
 
 namespace prism {
@@ -173,10 +173,8 @@ std::vector<Finding> execute_cex(const std::vector<Finding>& fails, const std::v
             auto v = strip(part.substr(eq + 1));
             auto sp2 = v.find(' ');
             if (sp2 != std::string::npos) v = v.substr(0, sp2);
-            try {
-                args[k] = std::stoi(v, nullptr, 0);
-            } catch (...) {
-            }
+            // A value above INT_MAX (an unsigned counterexample) is kept.
+            if (auto x = cex_value(v)) args[k] = static_cast<int64_t>(*x);
         }
         if (args.empty()) continue;
         ++n;
