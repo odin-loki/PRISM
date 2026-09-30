@@ -119,6 +119,10 @@ struct Spec {
 };
 Spec parse_comments(const FunctionInfo& fn);
 
+// ---- fuse.cpp: FuSeBMC branch goals and BMC counterexample seeds
+std::vector<std::string> branch_goals(const FunctionInfo& fn);
+std::vector<std::vector<uint8_t>> seeds_from_bmc(const FunctionInfo& fn, const std::vector<Finding>& bmc_findings);
+
 // ---- contracts.cpp
 Finding bmc_with_assume(const FunctionInfo& fn, int unwind, const std::optional<std::string>& requires_,
                         const std::optional<std::string>& ensures, const std::optional<std::string>& decreases,
