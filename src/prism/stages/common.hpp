@@ -139,6 +139,19 @@ ProcRun run_argv(const std::vector<std::string>& args, const std::string& input,
                  const sandbox::Limits& limits = sandbox::Limits());
 // The full spec: an environment overlay for the child only, a working directory.
 ProcRun run_spec(const detail::RunSpec& spec);
+
+// ---- fuse.cpp: the optional AFL++ half of FuSeBMC (PRISM_AFL=1)
+// afl-fuzz through Config::which_adapter (--tool, pinned build, PATH).
+std::optional<std::filesystem::path> afl_fuzz_which(const Config& cfg);
+std::string afl_harness_source(const FunctionInfo& fn, std::string src_rel);
+std::pair<bool, std::string> compile_afl_harness(const std::filesystem::path& harness,
+                                                 const std::filesystem::path& exe);
+// nullopt when afl-fuzz is missing or fn is not SCALAR; NOTRUN without
+// --allow-exec or a C compiler; else CRASH / ERROR / CLEAN (never a proof).
+// work: scratch dir to use and keep (empty: a temp dir removed after).
+std::optional<Finding> run_afl_fuzz(const FunctionInfo& fn, const std::filesystem::path& src,
+                                    const Config& cfg, double timeout = 2.0,
+                                    const std::filesystem::path& work = {});
 std::optional<std::string> http_request(const std::string& method, const std::string& url, const std::string& body,
                                         int timeout_ms);
 bool http_ok(const std::string& url, int timeout_ms = 1500);
