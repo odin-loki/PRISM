@@ -37,11 +37,21 @@ ROOT = Path(__file__).resolve().parents[1]
 FP = ROOT / "testdata_fp"
 TP = ROOT / "testdata_tp"
 
+# Files for real-code false alarms and CVE shapes fixed in the C++ engine
+# only (the Python engine is frozen and is deleted in the port). The Python
+# engine still reports on them, so they are left out of its corpus checks
+# and of the engine comparison; tests/cpp/test_checkers_c.cpp holds the C++
+# expectations for every one.
+CPP_ONLY = {
+    "check_null_macro.c", "nested_switch.c", "later_nul.c", "free_owner.c",
+    "chain_guards.c", "copy_len_forms.c", "cve_shapes.c",
+}
+
 
 def _failed(root: Path) -> list[tuple[str, int, str]]:
     return sorted(
         (f.file, f.line or 0, f.cls)
-        for f in run_lints(iter_sources(root), root)
+        for f in run_lints([p for p in iter_sources(root) if p.name not in CPP_ONLY], root)
         if f.status == laws.FAILED
     )
 
@@ -320,6 +330,7 @@ def _engine_rows(cmd: list[str], root: Path, out: Path,
                    cwd=ROOT, capture_output=True, text=True, timeout=600)
     rep = json.loads((out / "report.json").read_text(encoding="utf-8"))
     rows = []
+    chain_first: dict = {}
     for st in rep["stages"]:
         if st["name"] != "lints":
             continue
@@ -332,6 +343,18 @@ def _engine_rows(cmd: list[str], root: Path, out: Path,
                 if ast_only is not None:
                     ast_only.append(row)
                 continue
+            if Path(f["file"]).name in CPP_ONLY:
+                continue
+            # The C++ engine reports PTR-CHAIN-NULL once per unchecked access
+            # (its first use); the Python engine once per line. Compare the
+            # first row per access (the message names p->m).
+            if f["cls"] == "PTR-CHAIN-NULL":
+                key = (f["file"], f.get("function"), f.get("message"))
+                if key in chain_first and chain_first[key][1] <= row[1]:
+                    continue
+                if key in chain_first:
+                    rows.remove(chain_first[key])
+                chain_first[key] = row
             rows.append(row)
     return sorted(rows)
 

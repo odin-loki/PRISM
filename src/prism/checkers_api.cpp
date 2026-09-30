@@ -335,7 +335,8 @@ bool null_test_for(std::string_view var, std::string_view text) {
     Regex a("\\bif\\s*\\(\\s*(?:" + v + "\\s*==\\s*(?:NULL|0|nullptr)|!\\s*" + v + "\\b|" + v +
             "\\s*\\))");
     if (a.search(text)) return true;
-    Regex b("\\(\\s*" + v + "\\s*=(?!=)[^;)]*?\\)\\s*==\\s*(?:NULL|nullptr|0)\\b");
+    // `(p = f(x)) == NULL`: the call inside the assignment has its own parentheses.
+    Regex b("\\(\\s*" + v + "\\s*=(?!=)(?:[^;()]|\\([^;()]*\\))*?\\)\\s*==\\s*(?:NULL|nullptr|0)\\b");
     return b.search(text);
 }
 
@@ -488,11 +489,12 @@ std::string pick_fname(std::string_view ln, std::initializer_list<std::string_vi
 }
 
 enum class UseKind { Ptr, PtrOrArg, PtrOrGetenv, PtrOrArgOrGetenv, Fd, FdOrVoidCast };
-enum class GuardKind { Null, LtZero, MapFailed, Mq };
+enum class GuardKind { Null, NullCheck, LtZero, MapFailed, Mq };
 
 bool has_guard(std::string_view var, std::string_view text, GuardKind g) {
     switch (g) {
-        case GuardKind::Null: return null_test_for(var, text);
+        case GuardKind::Null:
+        case GuardKind::NullCheck: return null_test_for(var, text);
         case GuardKind::LtZero: return lt_zero_test_for(var, text);
         case GuardKind::MapFailed: return map_failed_test_for(var, text);
         case GuardKind::Mq: return mq_error_test_for(var, text);
@@ -505,6 +507,8 @@ std::string unguarded_msg(std::string_view var, std::string_view fname, GuardKin
     switch (g) {
         case GuardKind::Null:
             return std::string(var) + " from " + f + "() used without a NULL test";
+        case GuardKind::NullCheck:
+            return std::string(var) + " from " + f + "() used without a NULL check";
         case GuardKind::LtZero:
             return std::string(var) + " from " + f + "() used without a < 0 test";
         case GuardKind::MapFailed:
@@ -891,12 +895,129 @@ void api_memfd_secret(const std::vector<std::string>& lines, std::string_view re
                          {"memfd_secret"}, UseKind::Fd, GuardKind::LtZero);
 }
 
+bool fork_pid_tested(std::string_view var, std::string_view text) {
+    auto v = re_escape(var);
+    if (Regex(v + R"(\s*(?:==|!=|<|>|<=|>=)\s*-?\d+)").search(text)) return true;
+    if (Regex("!\\s*" + v + "\\b").search(text)) return true;
+    return Regex("\\bif\\s*\\(\\s*" + v + "\\s*\\)").search(text);
+}
+
+// fork()/vfork() assigned to a pid that is never compared to 0/-1 in the
+// rest of the function.
+void api_fork_assign(const std::vector<std::string>& lines, std::string_view rel,
+                     const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
+    static const Regex call(R"((?<![A-Za-z0-9_])(?:vfork|fork)\s*\()");
+    static const Regex cmp_after(R"((?:vfork|fork)\s*\([^;]*\)\s*(?:==|!=|<|>|<=|>=))");
+    static const Regex cmp_before(R"((?:==|!=|<|>|<=|>=)\s*(?:vfork|fork)\s*\()");
+    static const Regex discarded(R"(^\s*(?:vfork|fork)\s*\([^;]*\)\s*;\s*$)");
+    static const Regex assign(
+        R"(\b(?P<var>[A-Za-z_]\w*)\s*=\s*(?:\([^)]*\)\s*)?(?:vfork|fork)\s*\()");
+    for (auto& fn : funcs) {
+        auto chunk = chunk_of(lines, fn);
+        int start = fn.span.first;
+        for (int i = 0; i < static_cast<int>(chunk.size()); ++i) {
+            auto& ln = chunk[static_cast<std::size_t>(i)];
+            if (!call.search(ln)) continue;
+            if (cmp_after.search(ln) || cmp_before.search(ln)) continue;
+            if (discarded.match_line(ln)) continue;
+            auto m = assign.search_match(ln);
+            if (!m) continue;
+            auto var = m->named("var");
+            auto rest = join_range(chunk, static_cast<std::size_t>(i), chunk.size());
+            if (fork_pid_tested(var, rest)) continue;
+            lint_add(out, rel, fn.name, start + i, "API-FORK",
+                     "fork()/vfork() result unused (not compared to 0/-1)", lines);
+        }
+    }
+}
+
+bool getaddrinfo_zero_test(std::string_view var, std::string_view text) {
+    static const Regex call_cmp(R"(getaddrinfo\s*\([^;]*\)\s*\)*\s*(?:==|!=)\s*0\b)");
+    static const Regex cmp_call(
+        R"((?:==|!=)\s*0\b[^=\n]*getaddrinfo\s*\(|0\s*(?:==|!=)\s*getaddrinfo\s*\()");
+    if (call_cmp.search(text) || cmp_call.search(text)) return true;
+    if (var.empty()) return false;
+    auto v = re_escape(var);
+    if (Regex(v + R"(\s*(?:==|!=)\s*0\b)").search(text)) return true;
+    if (Regex(R"(0\s*(?:==|!=)\s*)" + v + "\\b").search(text)) return true;
+    return Regex("\\bif\\s*\\(\\s*" + v + "\\s*\\)").search(text);
+}
+
+// getaddrinfo() status stored in a variable that is never tested against 0.
+void api_getaddrinfo_assign(const std::vector<std::string>& lines, std::string_view rel,
+                            const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
+    static const Regex discarded(R"(^\s*getaddrinfo\s*\([^;]*\)\s*;\s*$)");
+    static const Regex assign(
+        R"(\b(?P<var>[A-Za-z_]\w*)\s*=\s*(?:\([^)]*\)\s*)?getaddrinfo\s*\()");
+    for (auto& fn : funcs) {
+        auto chunk = chunk_of(lines, fn);
+        int start = fn.span.first;
+        for (int i = 0; i < static_cast<int>(chunk.size()); ++i) {
+            auto& ln = chunk[static_cast<std::size_t>(i)];
+            if (discarded.match_line(ln)) continue;
+            auto m = assign.search_match(ln);
+            if (!m) continue;
+            auto var = m->named("var");
+            if (getaddrinfo_zero_test(var, ln)) continue;
+            auto rest = join_range(chunk, static_cast<std::size_t>(i), chunk.size());
+            if (getaddrinfo_zero_test(var, rest)) continue;
+            lint_add(out, rel, fn.name, start + i, "API-GETADDRINFO",
+                     var + " from getaddrinfo() used without a == 0 test", lines);
+        }
+    }
+}
+
+void api_kqueue(const std::vector<std::string>& lines, std::string_view rel,
+                const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
+    static Regex assign(R"(\b(?P<var>[A-Za-z_]\w*)\s*=\s*(?:\([^)]*\)\s*)?kqueue\s*\()");
+    api_assign_unguarded(lines, rel, funcs, out, assign, "API-KQUEUE", {"kqueue"}, {"kqueue"},
+                         UseKind::Fd, GuardKind::LtZero);
+}
+void api_shmget(const std::vector<std::string>& lines, std::string_view rel,
+                const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
+    static Regex assign(R"(\b(?P<var>[A-Za-z_]\w*)\s*=\s*(?:\([^)]*\)\s*)?\bshmget\s*\()");
+    api_assign_unguarded(lines, rel, funcs, out, assign, "API-SHMGET", {"shmget"}, {"shmget"},
+                         UseKind::Fd, GuardKind::LtZero);
+}
+void api_semget(const std::vector<std::string>& lines, std::string_view rel,
+                const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
+    static Regex assign(R"(\b(?P<var>[A-Za-z_]\w*)\s*=\s*(?:\([^)]*\)\s*)?\bsemget\s*\()");
+    api_assign_unguarded(lines, rel, funcs, out, assign, "API-SEMGET", {"semget"}, {"semget"},
+                         UseKind::Fd, GuardKind::LtZero);
+}
+void api_msgget(const std::vector<std::string>& lines, std::string_view rel,
+                const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
+    static Regex assign(R"(\b(?P<var>[A-Za-z_]\w*)\s*=\s*(?:\([^)]*\)\s*)?\bmsgget\s*\()");
+    api_assign_unguarded(lines, rel, funcs, out, assign, "API-MSGGET", {"msgget"}, {"msgget"},
+                         UseKind::Fd, GuardKind::LtZero);
+}
+void api_reallocarray(const std::vector<std::string>& lines, std::string_view rel,
+                      const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
+    static Regex assign(
+        R"(\b(?P<var>[A-Za-z_]\w*)\s*=\s*(?:\([^)]*\)\s*)?\breallocarray\s*\()");
+    api_assign_unguarded(lines, rel, funcs, out, assign, "API-REALLOCARRAY", {"reallocarray"},
+                         {"reallocarray"}, UseKind::PtrOrArg, GuardKind::NullCheck);
+}
+void api_reallocf(const std::vector<std::string>& lines, std::string_view rel,
+                  const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
+    static Regex assign(R"(\b(?P<var>[A-Za-z_]\w*)\s*=\s*(?:\([^)]*\)\s*)?\breallocf\s*\()");
+    api_assign_unguarded(lines, rel, funcs, out, assign, "API-REALLOCF", {"reallocf"},
+                         {"reallocf"}, UseKind::PtrOrArg, GuardKind::NullCheck);
+}
+void api_valloc(const std::vector<std::string>& lines, std::string_view rel,
+                const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
+    static Regex assign(R"(\b(?P<var>[A-Za-z_]\w*)\s*=\s*(?:\([^)]*\)\s*)?\bvalloc\s*\()");
+    api_assign_unguarded(lines, rel, funcs, out, assign, "API-VALLOC", {"valloc"}, {"valloc"},
+                         UseKind::PtrOrArg, GuardKind::NullCheck);
+}
+
 }  // namespace
 
 void checkers_api(const std::vector<std::string>& lines, std::string_view rel,
                   const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     static const Regex fork_discarded(R"(^\s*(?:vfork|fork)\s*\([^;]*\)\s*;\s*$)");
     lint_discarded(funcs, lines, rel, fork_discarded, "API-FORK", "fork()/vfork() result unused (not compared to 0/-1)", out);
+    api_fork_assign(lines, rel, funcs, out);
     api_exec(lines, rel, funcs, out);
     api_mmap(lines, rel, funcs, out);
     api_getcwd(lines, rel, funcs, out);
@@ -931,6 +1052,7 @@ void checkers_api(const std::vector<std::string>& lines, std::string_view rel,
     lint_discarded_which(funcs, lines, rel, kill_discarded, "API-KILL", {"kill", "raise"}, out);
     static const Regex getaddrinfo_discarded(R"(^\s*getaddrinfo\s*\([^;]*\)\s*;\s*$)");
     lint_discarded(funcs, lines, rel, getaddrinfo_discarded, "API-GETADDRINFO", "getaddrinfo() result used without a == 0 test", out);
+    api_getaddrinfo_assign(lines, rel, funcs, out);
     static const Regex pthread_join_discarded(R"(^\s*(?:pthread_join|pthread_detach)\s*\([^;]*\)\s*;\s*$)");
     lint_discarded_which(funcs, lines, rel, pthread_join_discarded, "API-PTHREAD-JOIN", {"pthread_join", "pthread_detach"}, out);
     static const Regex thrd_join_discarded(R"(^\s*(?:thrd_join|thrd_detach)\s*\([^;]*\)\s*;\s*$)");
@@ -1078,6 +1200,7 @@ void checkers_api(const std::vector<std::string>& lines, std::string_view rel,
     api_mq_open(lines, rel, funcs, out);
     static const Regex shmget_discarded(R"(^\s*shmget\s*\([^;]*\)\s*;\s*$)");
     lint_discarded(funcs, lines, rel, shmget_discarded, "API-SHMGET", "shmget() return is discarded", out);
+    api_shmget(lines, rel, funcs, out);
     static const Regex reboot_discarded(R"(^\s*reboot\s*\([^;]*\)\s*;\s*$)");
     lint_discarded(funcs, lines, rel, reboot_discarded, "API-REBOOT", "reboot() return is discarded", out);
     static const Regex adjtimex_discarded(R"(^\s*\badjtimex\s*\([^;]*\)\s*;\s*$)");
@@ -1098,8 +1221,10 @@ void checkers_api(const std::vector<std::string>& lines, std::string_view rel,
     lint_discarded(funcs, lines, rel, timer_create_discarded, "API-TIMER-CREATE", "timer_create() return is discarded", out);
     static const Regex semget_discarded(R"(^\s*\bsemget\s*\([^;]*\)\s*;\s*$)");
     lint_discarded(funcs, lines, rel, semget_discarded, "API-SEMGET", "semget() return is discarded", out);
+    api_semget(lines, rel, funcs, out);
     static const Regex msgget_discarded(R"(^\s*\bmsgget\s*\([^;]*\)\s*;\s*$)");
     lint_discarded(funcs, lines, rel, msgget_discarded, "API-MSGGET", "msgget() return is discarded", out);
+    api_msgget(lines, rel, funcs, out);
     static const Regex klogctl_discarded(R"(^\s*\bklogctl\s*\([^;]*\)\s*;\s*$)");
     lint_discarded(funcs, lines, rel, klogctl_discarded, "API-KLOGCTL", "klogctl() return is discarded", out);
     static const Regex mount_setattr_discarded(R"(^\s*\bmount_setattr\s*\([^;]*\)\s*;\s*$)");
@@ -1279,6 +1404,7 @@ void checkers_api(const std::vector<std::string>& lines, std::string_view rel,
     lint_discarded_fn(funcs, lines, rel, sysctl_discarded, "API-SYSCTL", out);
     static const Regex kqueue_discarded(R"(^\s*\bkqueue\s*\([^;]*\)\s*;\s*$)");
     lint_discarded(funcs, lines, rel, kqueue_discarded, "API-KQUEUE", "kqueue() return is discarded", out);
+    api_kqueue(lines, rel, funcs, out);
     static const Regex kevent_discarded(R"(^\s*\bkevent\s*\([^;]*\)\s*;\s*$)");
     lint_discarded(funcs, lines, rel, kevent_discarded, "API-KEVENT", "kevent() return is discarded", out);
     static const Regex pause_discarded(R"(^\s*\bpause\s*\([^;]*\)\s*;\s*$)");
@@ -1337,6 +1463,7 @@ void checkers_api(const std::vector<std::string>& lines, std::string_view rel,
     lint_discarded(funcs, lines, rel, strtonum_discarded, "API-STRTONUM", "strtonum() return is discarded", out);
     static const Regex reallocarray_discarded(R"(^\s*\breallocarray\s*\([^;]*\)\s*;\s*$)");
     lint_discarded(funcs, lines, rel, reallocarray_discarded, "API-REALLOCARRAY", "reallocarray() return is discarded", out);
+    api_reallocarray(lines, rel, funcs, out);
     static const Regex timingsafe_discarded(R"(^\s*\b(?P<fn>timingsafe_(?:bcmp|memcmp))\s*\([^;]*\)\s*;\s*$)");
     lint_discarded_fn(funcs, lines, rel, timingsafe_discarded, "API-TIMINGSAFE", out);
     static const Regex getprogname_discarded(R"(^\s*\b(?P<fn>(?:get|set)progname)\s*\([^;]*\)\s*;\s*$)");
@@ -1359,6 +1486,7 @@ void checkers_api(const std::vector<std::string>& lines, std::string_view rel,
     lint_discarded_fn(funcs, lines, rel, kvm_discarded, "API-KVM", out);
     static const Regex reallocf_discarded(R"(^\s*\breallocf\s*\([^;]*\)\s*;\s*$)");
     lint_discarded(funcs, lines, rel, reallocf_discarded, "API-REALLOCF", "reallocf() return is discarded", out);
+    api_reallocf(lines, rel, funcs, out);
     static const Regex uuidgen_discarded(R"(^\s*\buuidgen\s*\([^;]*\)\s*;\s*$)");
     lint_discarded(funcs, lines, rel, uuidgen_discarded, "API-UUIDGEN", "uuidgen() return is discarded", out);
     static const Regex setfib_discarded(R"(^\s*\bsetfib\s*\([^;]*\)\s*;\s*$)");
@@ -1437,6 +1565,7 @@ void checkers_api(const std::vector<std::string>& lines, std::string_view rel,
     lint_discarded_fn(funcs, lines, rel, fhlink_discarded, "API-FHLINK", out);
     static const Regex valloc_discarded(R"(^\s*\bvalloc\s*\([^;]*\)\s*;\s*$)");
     lint_discarded(funcs, lines, rel, valloc_discarded, "API-VALLOC", "valloc() return is discarded", out);
+    api_valloc(lines, rel, funcs, out);
     static const Regex getdomainname_discarded(R"(^\s*\bgetdomainname\s*\([^;]*\)\s*;\s*$)");
     lint_discarded(funcs, lines, rel, getdomainname_discarded, "API-GETDOMAINNAME", "getdomainname() return is discarded", out);
     static const Regex unlink_discarded(R"(^\s*(?:unlink|remove)\s*\([^;]*\)\s*;\s*$)");

@@ -2025,22 +2025,25 @@ struct Walker {
     }
 
     // CTRL-FALLTHROUGH: a case body that runs into the next label.
-    bool terminates(const json& s) {
+    // `break_leaves` is false inside a nested switch: there break and
+    // continue end only the inner statement, not the enclosing arm.
+    bool terminates(const json& s, bool break_leaves = true) {
         const auto& k = kind(s);
-        if (one_of(k, {"BreakStmt", "ReturnStmt", "ContinueStmt", "GotoStmt", "IndirectGotoStmt", "CXXThrowExpr"}))
-            return true;
-        if (k == "CompoundStmt") return n_children(s) && terminates(last_child(s));
+        if (one_of(k, {"ReturnStmt", "GotoStmt", "IndirectGotoStmt", "CXXThrowExpr"})) return true;
+        if (one_of(k, {"BreakStmt", "ContinueStmt"})) return break_leaves;
+        if (k == "CompoundStmt") return n_children(s) && terminates(last_child(s), break_leaves);
         if (k == "AttributedStmt") {
             for (auto& c : inner(s))
-                if (kind(c) == "FallThroughAttr") return true;
-            return n_children(s) && terminates(last_child(s));
+                if (kind(c) == "FallThroughAttr") return break_leaves;
+            return n_children(s) && terminates(last_child(s), break_leaves);
         }
-        if (k == "LabelStmt") return n_children(s) && terminates(last_child(s));
+        if (k == "LabelStmt") return n_children(s) && terminates(last_child(s), break_leaves);
         if (k == "IfStmt") {
             std::size_t cond = (flag(s, "hasInit") ? 1 : 0) + (flag(s, "hasVar") ? 1 : 0);
             if (n_children(s) < cond + 3) return false;
-            return terminates(child(s, cond + 1)) && terminates(child(s, cond + 2));
+            return terminates(child(s, cond + 1), break_leaves) && terminates(child(s, cond + 2), break_leaves);
         }
+        if (k == "SwitchStmt") return switch_leaves(s);
         if (k == "DoStmt" || k == "WhileStmt" || k == "ForStmt") {
             // while (1) { ... } without break
             return false;
@@ -2053,6 +2056,37 @@ struct Walker {
             if (!(f && f->user) && is_noreturn_name(callee_name(core))) return true;
         }
         return false;
+    }
+
+    static bool has_break(const json& s) {
+        if (kind(s) == "BreakStmt") return true;
+        for (auto& c : inner(s))
+            if (has_break(c)) return true;
+        return false;
+    }
+
+    // A nested switch ends the enclosing case arm when it has a default,
+    // holds no break (a break leaves only the inner switch) and its last
+    // statement ends in return / goto / throw / a noreturn call. With no
+    // break, every group either leaves or runs into the next one, so all
+    // paths reach that last statement.
+    bool switch_leaves(const json& sw) {
+        std::size_t ci = (flag(sw, "hasInit") ? 1 : 0) + (flag(sw, "hasVar") ? 1 : 0);
+        if (n_children(sw) < ci + 2) return false;
+        const auto& body = child(sw, ci + 1);
+        if (kind(body) != "CompoundStmt" || has_break(body)) return false;
+        bool has_default = false;
+        const json* last_stmt = nullptr;
+        for (auto& item : inner(body)) {
+            const json* p = &item;
+            while ((kind(*p) == "CaseStmt" || kind(*p) == "DefaultStmt") && n_children(*p)) {
+                if (kind(*p) == "DefaultStmt") has_default = true;
+                p = &last_child(*p);
+            }
+            if (kind(*p) == "DefaultStmt") has_default = true;
+            if (kind(*p) != "CaseStmt" && kind(*p) != "DefaultStmt") last_stmt = p;
+        }
+        return has_default && last_stmt && terminates(*last_stmt, false);
     }
 
     const json& last_simple(const json& s) {
