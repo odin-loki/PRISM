@@ -476,6 +476,8 @@ if(PRISM_TESTS)
     tests/cpp/test_leanbb.cpp tests/cpp/test_pir_mem.cpp tests/cpp/test_certified.cpp tests/cpp/test_pir3.cpp
     # Roadmap 2.8 Clang-AST lints.
     tests/cpp/test_astlint.cpp
+    # Front end, report JSON form, static inliner.
+    tests/cpp/test_cparse.cpp
     # Roadmap 9.1/9.3/9.4 AI assistant features (regress, triage, ask, draft, predict).
     tests/cpp/test_ai_assist.cpp)
   target_include_directories(prism_tests PRIVATE
