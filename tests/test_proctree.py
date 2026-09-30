@@ -3,10 +3,10 @@
 PRISM runs its solvers and proof checkers (CaDiCaL, cake_lpr, the LRAT
 checkers) and compilers each in a process group of its own. Killing only
 PRISM, or only PRISM's process group, left them running after the scorer had
-moved on. `tools/proctree.py` (used by `tools/conformance.py` and
-`tools/svcomp/run_subset.py`) and `run_tree` in `tools/svcomp/prism_svcomp.py`
+moved on. `tools/proctree.py` (used by `tools/svcomp/run_subset.py`) and `run_tree` in `tools/svcomp/prism_svcomp.py`
 (shipped on its own, so it has its own copy) kill every process of the
-session instead.
+session instead. The C++ scorer (`prism-qa conformance`) has its own runner,
+tested in tests/cpp/test_qa_conformance.cpp.
 """
 
 from __future__ import annotations
@@ -137,18 +137,6 @@ class ProcTreeTest(unittest.TestCase):
         r = PT.run([sys.executable, "-c", "print('ok')"], capture_output=True, text=True, timeout=30)
         self.assertEqual(r.returncode, 0)
         self.assertEqual(r.stdout.strip(), "ok")
-
-    def test_conformance_run_prism_timeout(self) -> None:
-        conf = _load("prism_conformance_under_test", REPO / "tools" / "conformance.py")
-        src = self.tmp / "t.c"
-        src.write_text("int f(int x) { return x; }\n", encoding="utf-8")
-        task = conf.Task(ident="t", yml=src, source=src, origin="prism", category="x", lang="C", prop="p",
-                         expected={"f": True})
-        # the fake prism ignores PRISM's arguments after its first
-        res = conf.run_prism([sys.executable, str(self.script), str(self.pidfile)], task, ["pir"],
-                             self.tmp / "work", 2.0, None)
-        self.assertEqual(res.get("error"), "TIMEOUT")
-        self.assertTrue(_gone(_solver_pid(self.pidfile)))
 
     def test_svcomp_wrapper_timeout(self) -> None:
         wrapper = _load("prism_svcomp_wrapper_proctree", REPO / "tools" / "svcomp" / "prism_svcomp.py")
