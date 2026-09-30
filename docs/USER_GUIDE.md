@@ -46,7 +46,19 @@ QT_QPA_PLATFORM=offscreen ./build/prism_gui SRC --no-llm --out OUT \
 When the run finishes, the report loads into the window and the window is
 saved to `gui.png`. The exit code is 0 only when the findings table is
 non-empty and the screenshot was written. It is 3 for an empty table and 2
-when the `prism` binary is not found. CI runs this on every push.
+when the `prism` binary is not found. CI runs this on every push, and
+`./build/prism_gui_tests` (built with `-DPRISM_QT=ON`) tests the window
+offscreen.
+
+The window runs the `prism` CLI into `prism-out-gui/` (or `--out DIR`). Its
+stage table follows the run live from `stages.jsonl`; when the run ends the
+log shows the confidence line and the stages that were NOTRUN, and a run that
+crashes or exits with an error raises a dialog. Window runs use short budgets
+(`--fuzz-budget 4 --fuzz-iters 256 --repair-rounds 1`); a budget flag given at
+launch wins. Every scan flag given at launch (`prism_gui SRC --pir-drafts
+--unwind 4 ...`, or `prism SRC --gui ...`) is passed on to the CLI. Without a
+display (and without `QT_QPA_PLATFORM=offscreen`) `prism_gui` prints
+`NOTRUN gui: no display` and exits 0; it never opens a fake window.
 
 ### Python engine (reference)
 

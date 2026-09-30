@@ -5,214 +5,165 @@
 #include "prism/ai.hpp"
 #include "prism/ai_assist.hpp"
 #include "prism/config.hpp"
+#include "prism/journal.hpp"
 #include "prism/models.hpp"
-#include "prism/taxonomy.hpp"
 
-#include <QHBoxLayout>
-#include <QVBoxLayout>
-#include <QFileDialog>
-#include <QLabel>
-#include <QWidget>
-#include <QHeaderView>
+#include <QBrush>
+#include <QColor>
 #include <QCoreApplication>
 #include <QDir>
-#include <QFile>
+#include <QFileDialog>
 #include <QFileInfo>
-#include <QJsonArray>
-#include <QJsonDocument>
-#include <QJsonObject>
-#include <QColor>
-#include <QBrush>
-#include <QStringList>
+#include <QFont>
+#include <QHBoxLayout>
+#include <QHeaderView>
+#include <QMessageBox>
+#include <QSplitter>
+#include <QVBoxLayout>
+#include <QWidget>
 
+#include <chrono>
 #include <filesystem>
+#include <optional>
 
 namespace {
 
-bool takes_value(const QString& a) {
-    return a == QLatin1String("--out") || a == QLatin1String("--stage") ||
-           a == QLatin1String("--skip") || a == QLatin1String("--unwind") ||
-           a == QLatin1String("--fuzz-budget") || a == QLatin1String("--fuzz-iters") ||
-           a == QLatin1String("--repair-rounds") || a == QLatin1String("--jobs") ||
-           a == QLatin1String("-j") || a == QLatin1String("--tool");
+namespace pg = prism::gui;
+
+QString qs(std::string_view s) {
+    return QString::fromUtf8(s.data(), static_cast<qsizetype>(s.size()));
 }
 
-struct CliLaunch {
-    QString path;
-    QString out;
-    bool no_llm = false;
-    bool skip_fuzz = false;
-    bool skip_repair = false;
-    bool allow_exec = false;
-    QStringList extra_skip;
-    QStringList extra;
-    bool from_cli = false;
-};
-
-CliLaunch parse_cli_launch() {
-    CliLaunch c;
-    const QStringList argv = QCoreApplication::arguments();
-    for (int i = 1; i < argv.size(); ++i) {
-        const QString a = argv[i];
-        auto next = [&]() -> QString {
-            if (i + 1 < argv.size()) return argv[++i];
-            return {};
-        };
-        if (a == QLatin1String("--gui")) {
-            c.from_cli = true;
-            continue;
-        }
-        if (a == QLatin1String("--no-llm")) {
-            c.no_llm = true;
-            c.from_cli = true;
-            continue;
-        }
-        if (a == QLatin1String("--out")) {
-            c.out = next();
-            c.from_cli = true;
-            continue;
-        }
-        if (a == QLatin1String("--skip")) {
-            c.from_cli = true;
-            for (const auto& part : next().split(QLatin1Char(','))) {
-                const QString t = part.trimmed();
-                if (t == QLatin1String("fuzz")) c.skip_fuzz = true;
-                else if (t == QLatin1String("repair")) c.skip_repair = true;
-                else if (!t.isEmpty()) c.extra_skip << t;
-            }
-            continue;
-        }
-        if (takes_value(a)) {
-            c.extra << a << next();
-            c.from_cli = true;
-            continue;
-        }
-        if (a == QLatin1String("--allow-exec")) {
-            c.allow_exec = true;
-            c.from_cli = true;
-            continue;
-        }
-        if (a == QLatin1String("--resume")) {
-            c.extra << a;
-            c.from_cli = true;
-            continue;
-        }
-        if (!a.startsWith(QLatin1Char('-'))) {
-            if (c.path.isEmpty()) c.path = a;
-            c.from_cli = true;
-            continue;
-        }
-        if (a.startsWith(QLatin1String("-"))) continue;
-    }
-    return c;
+std::filesystem::path fs_path(const QString& s) {
+    return std::filesystem::path(s.toStdU16String());
 }
 
-QColor findingStatusBg(const QString& status) {
-    // Same palette as prism/gui.py. CLEAN is blue, never proof-green.
-    if (status == QLatin1String("PROVED-UNBOUNDED")) return QColor(0x1f, 0x6f, 0x3a);
-    if (status == QLatin1String("PROVED")) return QColor(0x2a, 0x81, 0x48);
-    if (status == QLatin1String("PROVED-ASSUMING")) return QColor(0x3a, 0x7a, 0x4a);
-    if (status == QLatin1String("BOUNDED")) return QColor(0x6b, 0x6b, 0x2a);
-    if (status == QLatin1String("FAILED")) return QColor(0x8b, 0x2e, 0x2e);
-    if (status == QLatin1String("CRASH")) return QColor(0xaa, 0x11, 0x11);
-    if (status == QLatin1String("CLEAN")) return QColor(0x2a, 0x4a, 0x6b);
-    if (status == QLatin1String("HYPOTHESIS")) return QColor(0x5a, 0x3a, 0x7a);
-    if (status == QLatin1String("NOTRUN")) return QColor(0x6b, 0x5a, 0x2a);
-    if (status == QLatin1String("ERROR")) return QColor(0x5a, 0x5a, 0x5a);
-    if (status == QLatin1String("NEEDS-HARNESS")) return QColor(0x5a, 0x4a, 0x2a);
-    if (status == QLatin1String("TIMEOUT") || status == QLatin1String("UNKNOWN"))
-        return QColor(0x4a, 0x4a, 0x4a);
-    return QColor();
+double now_secs() {
+    using clock = std::chrono::system_clock;
+    return std::chrono::duration<double>(clock::now().time_since_epoch()).count();
 }
 
-QColor taxonomyVerdictBg(const QString& verdict) {
-    // COVERED is a class hit (PROVED green). GAP is NOTRUN brown.
-    // CLEAN is never COVERED and never a proof.
-    if (verdict == QLatin1String("COVERED")) return QColor(0x2a, 0x81, 0x48);
-    if (verdict == QLatin1String("GAP")) return QColor(0x6b, 0x5a, 0x2a);
-    if (verdict == QLatin1String("PARTIAL")) return QColor(0x6b, 0x6b, 0x2a);
-    if (verdict == QLatin1String("CLEAN")) return QColor(0x2a, 0x4a, 0x6b);
-    return QColor();
+QStringList header(const auto& columns) {
+    QStringList h;
+    for (auto c : columns) h << qs(c);
+    return h;
 }
 
-void fillTaxonomyTable(QTableWidget* tax, const QJsonArray& arr) {
-    tax->setRowCount(0);
-    for (const auto& v : arr) {
-        const auto o = v.toObject();
-        QString verdict = o.value(QStringLiteral("verdict")).toString();
-        if (verdict == QLatin1String("CLEAN"))
-            verdict = QStringLiteral("GAP");
-        const int row = tax->rowCount();
-        tax->insertRow(row);
-        tax->setItem(row, 0, new QTableWidgetItem(o.value(QStringLiteral("id")).toString()));
-        tax->setItem(row, 1, new QTableWidgetItem(verdict));
-        tax->setItem(row, 2, new QTableWidgetItem(o.value(QStringLiteral("best")).toString()));
-        const auto bg = taxonomyVerdictBg(verdict);
-        if (bg.isValid())
-            if (auto *it = tax->item(row, 1)) it->setBackground(QBrush(bg));
-    }
+QTableWidget* table(const char* name, const QStringList& columns) {
+    auto *t = new QTableWidget(0, static_cast<int>(columns.size()));
+    t->setObjectName(QLatin1String(name));
+    t->setHorizontalHeaderLabels(columns);
+    t->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    return t;
+}
+
+void setRow(QTableWidget* t, int row, const std::vector<std::string>& cells) {
+    for (int c = 0; c < static_cast<int>(cells.size()); ++c)
+        t->setItem(row, c, new QTableWidgetItem(qs(cells[c])));
+}
+
+void paint(QTableWidget* t, int row, int col, const std::string& hex) {
+    if (hex.empty()) return;
+    if (auto *it = t->item(row, col)) it->setBackground(QBrush(QColor(qs(hex))));
 }
 
 }  // namespace
 
 namespace prism {
 
-MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
-    setWindowTitle(QStringLiteral("PRISM"));
+MainWindow::MainWindow(const QStringList& launch, QWidget *parent) : QMainWindow(parent) {
+    std::vector<std::string> args;
+    for (const auto& a : launch) args.push_back(a.toStdString());
+    launch_ = pg::parse_launch(args);
+
+    setWindowTitle(qs(pg::WINDOW_TITLE));
     resize(1280, 800);
     auto *root = new QWidget(this);
     setCentralWidget(root);
     auto *v = new QVBoxLayout(root);
-    auto *h = new QHBoxLayout();
+
+    auto *bar = new QHBoxLayout();
     path_ = new QLineEdit(QStringLiteral("testdata"));
+    path_->setObjectName(QStringLiteral("path"));
     auto *browse = new QPushButton(QStringLiteral("Open…"));
-    run_ = new QPushButton(QStringLiteral("Run pipeline"));
-    no_llm_ = new QCheckBox(QStringLiteral("--no-llm"));
-    no_llm_->setChecked(true);
-    skip_fuzz_ = new QCheckBox(QStringLiteral("skip fuzz"));
-    skip_repair_ = new QCheckBox(QStringLiteral("skip repair"));
+    // The LLM stage is on by default: its output is HYPOTHESIS/READS and
+    // never covers a class (Law 4); without a model it is NOTRUN.
+    llm_ = new QCheckBox(QStringLiteral("LLM hypotheses"));
+    llm_->setObjectName(QStringLiteral("llm"));
+    llm_->setChecked(true);
+    resume_ = new QCheckBox(QStringLiteral("Resume last report"));
+    resume_->setObjectName(QStringLiteral("resume"));
     allow_exec_ = new QCheckBox(QStringLiteral("Allow executing scanned code"));
+    allow_exec_->setObjectName(QStringLiteral("allow_exec"));
     allow_exec_->setChecked(false);
     allow_exec_->setToolTip(QStringLiteral(
         "--allow-exec: sanitizer/fuzz/diff harnesses, perl -c, cargo clippy, eslint, "
         "ParanoidBSD modules, LLM programs. Only on code you trust; off = NOTRUN."));
-    h->addWidget(new QLabel(QStringLiteral("Path")));
-    h->addWidget(path_, 1);
-    h->addWidget(browse);
-    h->addWidget(no_llm_);
-    h->addWidget(skip_fuzz_);
-    h->addWidget(skip_repair_);
-    h->addWidget(allow_exec_);
-    h->addWidget(run_);
-    v->addLayout(h);
+    run_ = new QPushButton(QStringLiteral("Run pipeline"));
+    run_->setObjectName(QStringLiteral("run"));
+    bar->addWidget(new QLabel(QStringLiteral("Path")));
+    bar->addWidget(path_, 1);
+    bar->addWidget(browse);
+    bar->addWidget(llm_);
+    bar->addWidget(resume_);
+    bar->addWidget(allow_exec_);
+    bar->addWidget(run_);
+    v->addLayout(bar);
+
+    auto *skipBar = new QHBoxLayout();
+    skipBar->addWidget(new QLabel(QStringLiteral("Skip:")));
+    skip_fuzz_ = new QCheckBox(QStringLiteral("fuzz"));
+    skip_fuzz_->setObjectName(QStringLiteral("skip_fuzz"));
+    skip_repair_ = new QCheckBox(QStringLiteral("repair"));
+    skip_repair_->setObjectName(QStringLiteral("skip_repair"));
+    skip_optional_ = new QCheckBox(QStringLiteral("optional"));
+    skip_optional_->setObjectName(QStringLiteral("skip_optional"));
+    skipBar->addWidget(skip_fuzz_);
+    skipBar->addWidget(skip_repair_);
+    skipBar->addWidget(skip_optional_);
+    skipBar->addStretch(1);
+    v->addLayout(skipBar);
+
     auto *stats = new QHBoxLayout();
-    vis_ = new QLabel(QStringLiteral("visibility 0"));
-    ans_ = new QLabel(QStringLiteral("answer 0"));
-    res_ = new QLabel(QStringLiteral("resolution 0"));
-    conf_ = new QLabel(QStringLiteral("confidence 0  (vis 0 x ans 0 x res 0)"));
-    stats->addWidget(vis_);
-    stats->addWidget(ans_);
-    stats->addWidget(res_);
-    stats->addWidget(conf_, 1);
+    stats->setSpacing(24);
+    vis_ = new QLabel;
+    ans_ = new QLabel;
+    res_ = new QLabel;
+    conf_ = new QLabel;
+    vis_->setObjectName(QStringLiteral("s_vis"));
+    ans_->setObjectName(QStringLiteral("s_ans"));
+    res_->setObjectName(QStringLiteral("s_res"));
+    conf_->setObjectName(QStringLiteral("s_conf"));
+    QFont bold = font();
+    bold.setPointSize(11);
+    bold.setBold(true);
+    for (auto *l : {vis_, ans_, res_, conf_}) {
+        l->setFont(bold);
+        stats->addWidget(l, l == conf_ ? 1 : 0);
+    }
     v->addLayout(stats);
+
+    stages_ = table("stages", header(pg::STAGE_COLUMNS));
+    findings_ = table("findings", header(pg::FINDING_COLUMNS));
+    tax_ = table("taxonomy", {QStringLiteral("class"), QStringLiteral("verdict"),
+                              QStringLiteral("best")});
+    auto *split = new QSplitter(Qt::Vertical);
+    split->addWidget(stages_);
+    split->addWidget(findings_);
+    split->addWidget(tax_);
+    split->setStretchFactor(1, 2);
+    v->addWidget(split, 3);
+
     log_ = new QPlainTextEdit;
+    log_->setObjectName(QStringLiteral("log"));
     log_->setReadOnly(true);
-    findings_ = new QTableWidget(0, 7);
-    findings_->setHorizontalHeaderLabels({
-        QStringLiteral("status"), QStringLiteral("stage"), QStringLiteral("cls"),
-        QStringLiteral("file"), QStringLiteral("line"), QStringLiteral("function"),
-        QStringLiteral("message")});
-    findings_->horizontalHeader()->setStretchLastSection(true);
-    tax_ = new QTableWidget(0, 3);
-    tax_->setHorizontalHeaderLabels({QStringLiteral("class"), QStringLiteral("verdict"), QStringLiteral("best")});
-    tax_->horizontalHeader()->setStretchLastSection(true);
-    v->addWidget(log_, 2);
-    v->addWidget(findings_, 2);
-    v->addWidget(tax_, 1);
+    v->addWidget(log_, 1);
+
     // Assistant (roadmap 9.4): "unproved memory safety in module net",
     // "explain bmc#3", "trusted base". Double-click a finding to explain it.
     auto *chatRow = new QHBoxLayout();
     ask_ = new QLineEdit;
+    ask_->setObjectName(QStringLiteral("ask"));
     ask_->setPlaceholderText(QStringLiteral("Ask about findings, or: explain <id> / trusted base"));
     ask_btn_ = new QPushButton(QStringLiteral("Ask"));
     chatRow->addWidget(new QLabel(QStringLiteral("Assistant")));
@@ -220,6 +171,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     chatRow->addWidget(ask_btn_);
     v->addLayout(chatRow);
     chat_ = new QPlainTextEdit;
+    chat_->setObjectName(QStringLiteral("chat"));
     chat_->setReadOnly(true);
     v->addWidget(chat_, 1);
     connect(ask_btn_, &QPushButton::clicked, this, &MainWindow::onAsk);
@@ -230,7 +182,11 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
             onAsk();
         }
     });
+
     proc_ = new QProcess(this);
+    poll_ = new QTimer(this);
+    poll_->setInterval(pg::POLL_MS);
+    connect(poll_, &QTimer::timeout, this, &MainWindow::pollJournal);
     connect(browse, &QPushButton::clicked, this, [this] {
         auto d = QFileDialog::getExistingDirectory(this, QStringLiteral("Code"), path_->text());
         if (!d.isEmpty()) path_->setText(d);
@@ -244,22 +200,25 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     connect(proc_, &QProcess::readyReadStandardError, this, [this] {
         log_->appendPlainText(QString::fromUtf8(proc_->readAllStandardError()));
     });
-    out_dir_ = QDir::current().absoluteFilePath(QStringLiteral("prism-out-gui"));
-    const auto cli = parse_cli_launch();
-    if (!cli.path.isEmpty())
-        path_->setText(QFileInfo(cli.path).absoluteFilePath());
-    if (!cli.out.isEmpty())
-        out_dir_ = QDir::current().absoluteFilePath(cli.out);
-    if (cli.from_cli)
-        no_llm_->setChecked(cli.no_llm);
-    if (cli.skip_fuzz) skip_fuzz_->setChecked(true);
-    if (cli.skip_repair) skip_repair_->setChecked(true);
-    if (cli.allow_exec) allow_exec_->setChecked(true);
-    if (QFileInfo::exists(out_dir_ + QStringLiteral("/report.json")))
-        loadSameReport(out_dir_);
+
+    // Launch flags set their boxes; the rest ride along to the CLI.
+    if (!launch_.path.empty())
+        path_->setText(QFileInfo(qs(launch_.path)).absoluteFilePath());
+    if (launch_.no_llm) llm_->setChecked(false);
+    resume_->setChecked(launch_.resume);
+    allow_exec_->setChecked(launch_.allow_exec);
+    skip_fuzz_->setChecked(launch_.skip_fuzz);
+    skip_repair_->setChecked(launch_.skip_repair);
+    skip_optional_->setChecked(launch_.skip_optional);
+    for (const auto& ig : launch_.ignored)
+        log_->appendPlainText(QStringLiteral("ignored launch flag (not a scan): ") + qs(ig));
+    out_dir_ = QDir::current().absoluteFilePath(
+        qs(launch_.out.empty() ? std::string(pg::DEFAULT_OUT) : launch_.out));
+    loadReport(out_dir_);
 }
 
 QString MainWindow::prismBinary() const {
+    if (!program_.isEmpty()) return program_;
     const QString dir = QCoreApplication::applicationDirPath();
     QString cand = dir + QStringLiteral("/prism");
 #ifdef Q_OS_WIN
@@ -269,140 +228,127 @@ QString MainWindow::prismBinary() const {
     return QStringLiteral("prism");
 }
 
+QStringList MainWindow::runArguments() const {
+    pg::RunOptions o;
+    o.path = path_->text().toStdString();
+    o.out = out_dir_.toStdString();
+    o.llm = llm_->isChecked();
+    o.resume = resume_->isChecked();
+    o.allow_exec = allow_exec_->isChecked();
+    o.skip_fuzz = skip_fuzz_->isChecked();
+    o.skip_repair = skip_repair_->isChecked();
+    o.skip_optional = skip_optional_->isChecked();
+    o.extra_skip = launch_.extra_skip;
+    o.extra = launch_.extra;
+    QStringList args;
+    for (const auto& a : pg::gui_run_args(o)) args << qs(a);
+    return args;
+}
+
 void MainWindow::onRun() {
     run_->setEnabled(false);
-    const auto cli = parse_cli_launch();
-    if (!cli.out.isEmpty())
-        out_dir_ = QDir::current().absoluteFilePath(cli.out);
-    else
-        out_dir_ = QDir::current().absoluteFilePath(QStringLiteral("prism-out-gui"));
-    log_->appendPlainText(QStringLiteral("running prism …"));
+    const QStringList args = runArguments();
+    log_->appendPlainText(QStringLiteral("running prism ") + args.join(QLatin1Char(' ')));
+    run_started_ = now_secs();
+    run_resume_ = resume_->isChecked();
+    progress_.reset();
+    stages_->setRowCount(0);
     proc_->setProgram(prismBinary());
-    QStringList args{path_->text(), QStringLiteral("--out"), out_dir_};
-    if (no_llm_->isChecked()) args << QStringLiteral("--no-llm");
-    if (allow_exec_->isChecked()) args << QStringLiteral("--allow-exec");
-    QStringList skip;
-    if (skip_fuzz_->isChecked()) skip << QStringLiteral("fuzz");
-    if (skip_repair_->isChecked()) skip << QStringLiteral("repair");
-    skip << cli.extra_skip;
-    if (!skip.isEmpty()) args << QStringLiteral("--skip") << skip.join(QLatin1Char(','));
-    args << cli.extra;
     proc_->setArguments(args);
     proc_->start();
     if (!proc_->waitForStarted(4000)) {
         run_->setEnabled(true);
         log_->appendPlainText(QStringLiteral("NOTRUN gui: prism binary not found — not a clean window"));
         log_->appendPlainText(QStringLiteral("  install: build prism with WSL clang++ (never MinGW)"));
+        return;
+    }
+    poll_->start();
+}
+
+void MainWindow::fillStages(const std::vector<StageResult>& stages) {
+    stages_->setRowCount(0);
+    for (const auto& r : pg::stage_rows(stages)) {
+        const int row = stages_->rowCount();
+        stages_->insertRow(row);
+        setRow(stages_, row, {r.stage, r.status, r.records, r.seconds, r.note});
+        paint(stages_, row, 1, pg::status_background(r.status));
     }
 }
 
-void MainWindow::loadSameReport(const QString& outDir) {
-    QJsonArray taxArr;
-    QFile reportFile(outDir + QStringLiteral("/report.json"));
-    if (reportFile.open(QIODevice::ReadOnly)) {
-        const auto doc = QJsonDocument::fromJson(reportFile.readAll());
-        const auto obj = doc.object();
-        const double vis = obj.value(QStringLiteral("visibility")).toDouble();
-        const double ans = obj.value(QStringLiteral("answer")).toDouble();
-        const double res = obj.value(QStringLiteral("resolution")).toDouble();
-        const double conf = obj.value(QStringLiteral("confidence")).toDouble();
-        vis_->setText(QStringLiteral("visibility %1").arg(vis));
-        ans_->setText(QStringLiteral("answer %1").arg(ans));
-        res_->setText(QStringLiteral("resolution %1").arg(res));
-        conf_->setText(QStringLiteral("confidence %1  (vis %2 x ans %3 x res %4)")
-                           .arg(conf).arg(vis).arg(ans).arg(res));
-        findings_->setRowCount(0);
-        const auto stages = obj.value(QStringLiteral("stages")).toArray();
-        for (const auto& sVal : stages) {
-            const auto s = sVal.toObject();
-            const auto name = s.value(QStringLiteral("name")).toString();
-            const auto recs = s.value(QStringLiteral("findings")).toArray();
-            int idx = -1;  // finding id "<stage>#<index>" (prism::ai::enumerate_findings)
-            for (const auto& fVal : recs) {
-                ++idx;
-                const auto f = fVal.toObject();
-                const auto status = f.value(QStringLiteral("status")).toString();
-                if ((status == QLatin1String("NOTRUN") || status == QLatin1String("CLEAN")) &&
-                    (name == QLatin1String("inventory") || name == QLatin1String("classify") ||
-                     name == QLatin1String("unify")))
-                    continue;
-                const int row = findings_->rowCount();
-                findings_->insertRow(row);
-                const QStringList cols{
-                    status,
-                    f.value(QStringLiteral("stage")).toString(name),
-                    f.value(QStringLiteral("cls")).toString(),
-                    f.value(QStringLiteral("file")).toString(),
-                    f.value(QStringLiteral("line")).isNull()
-                        ? QString()
-                        : QString::number(f.value(QStringLiteral("line")).toInt()),
-                    f.value(QStringLiteral("function")).toString(),
-                    f.value(QStringLiteral("message")).toString().left(200),
-                };
-                for (int c = 0; c < cols.size(); ++c) {
-                    auto *item = new QTableWidgetItem(cols[c]);
-                    if (c == 0) {
-                        const auto bg = findingStatusBg(status);
-                        if (bg.isValid()) item->setBackground(QBrush(bg));
-                        item->setData(Qt::UserRole, name + QStringLiteral("#") + QString::number(idx));
-                    }
-                    findings_->setItem(row, c, item);
-                }
-            }
-        }
-        taxArr = obj.value(QStringLiteral("taxonomy")).toArray();
-        // Python engine recomputes COVERED/GAP from report.json findings. report.json
-        // has no taxonomy key; a CLEAN unify line is never COVERED.
-        const auto loaded = prism::RunReport::load(
-            std::filesystem::path(outDir.toStdString()) / "report.json");
-        if (loaded) {
-            taxArr = QJsonArray();
-            for (const auto& r : prism::coverage_from_report(*loaded)) {
-                QJsonObject row;
-                row.insert(QStringLiteral("id"), QString::fromStdString(r.id));
-                std::string verdict_s = r.verdict;
-                if (verdict_s == "CLEAN" ||
-                    (verdict_s != "COVERED" && verdict_s != "PARTIAL" && verdict_s != "GAP"))
-                    verdict_s = "GAP";
-                verdict_s = prism::refuse_llm_cover(*loaded, r.id, verdict_s, r.best);
-                row.insert(QStringLiteral("verdict"), QString::fromStdString(verdict_s));
-                row.insert(QStringLiteral("best"), QString::fromStdString(r.best));
-                taxArr.append(row);
-            }
-        }
-    } else {
+void MainWindow::pollJournal() {
+    const auto rows = pg::live_stages(prism::journal_read_stages(fs_path(out_dir_)),
+                                      run_started_, run_resume_);
+    if (rows.empty()) return;
+    fillStages(rows);
+    if (auto line = progress_.update(rows)) log_->appendPlainText(qs(*line));
+}
+
+void MainWindow::loadReport(const QString& outDir, double notBefore) {
+    findings_->setRowCount(0);
+    tax_->setRowCount(0);
+    const QString file = outDir + QStringLiteral("/report.json");
+    std::optional<RunReport> report;
+    // A report.json older than this run is the previous run's result: the
+    // window must not present it as this run's verdict.
+    const QFileInfo info(file);
+    const bool stale = notBefore > 0 && info.exists() &&
+                       info.lastModified().toMSecsSinceEpoch() / 1000.0 < notBefore - 1.0;
+    if (stale)
+        log_->appendPlainText(QStringLiteral("report.json predates this run; not shown"));
+    else
+        report = RunReport::load(fs_path(file));
+    if (!report) {
+        // Empty scope is 0, never n/a, never a proof, never CLEAN.
         vis_->setText(QStringLiteral("visibility 0"));
         ans_->setText(QStringLiteral("answer 0"));
         res_->setText(QStringLiteral("resolution 0"));
-        conf_->setText(QStringLiteral("confidence 0  (vis 0 x ans 0 x res 0) — report.json missing; not a proof"));
+        conf_->setText(qs(pg::MISSING_REPORT_LABEL));
+        return;
     }
-
-    // Do not fall back to a stale taxonomy.json (COVERED can linger after
-    // findings were recomputed as GAP).
-    if (!taxArr.isEmpty())
-        fillTaxonomyTable(tax_, taxArr);
-    else
-        tax_->setRowCount(0);
+    const auto c = pg::confidence_product(*report);
+    vis_->setText(QStringLiteral("visibility ") + qs(pg::format_number(c.visibility)));
+    ans_->setText(QStringLiteral("answer ") + qs(pg::format_number(c.answer)));
+    res_->setText(QStringLiteral("resolution ") + qs(pg::format_number(c.resolution)));
+    conf_->setText(qs(pg::confidence_label(c)));
+    fillStages(report->stages);
+    for (const auto& f : pg::finding_rows(*report)) {
+        const int row = findings_->rowCount();
+        findings_->insertRow(row);
+        std::vector<std::string> cells;
+        for (auto col : pg::FINDING_COLUMNS) cells.push_back(f.column(col));
+        setRow(findings_, row, cells);
+        // Status is copied verbatim from report.json; the colour follows it.
+        paint(findings_, row, 0, pg::status_background(f.status));
+        findings_->item(row, 0)->setData(Qt::UserRole, qs(f.id));
+    }
+    // COVERED / PARTIAL / GAP recomputed from the findings, never a stale
+    // taxonomy.json; the LLM cannot cover a class.
+    for (const auto& t : pg::taxonomy_rows(*report)) {
+        const int row = tax_->rowCount();
+        tax_->insertRow(row);
+        setRow(tax_, row, {t.id, t.verdict, t.best});
+        paint(tax_, row, 1, pg::taxonomy_background(t.verdict));
+    }
 }
 
 void MainWindow::onAsk() {
     const QString q = ask_->text().trimmed();
     if (q.isEmpty()) return;
     chat_->appendPlainText(QStringLiteral("> ") + q);
-    const auto path = std::filesystem::path(out_dir_.toStdString()) / "report.json";
+    const auto path = fs_path(out_dir_) / "report.json";
     const auto report = prism::RunReport::load(path);
     if (!report) {
         chat_->appendPlainText(QStringLiteral("NOTRUN assistant: no report.json in ") + out_dir_ +
                                QStringLiteral(" (run the pipeline first)"));
         return;
     }
-    // A session so a model (when reachable and --no-llm is off) can translate
+    // A session so a model (when reachable and the LLM box is on) can translate
     // the question; it appends to ai_audit.jsonl and never truncates it.
     prism::Config cfg = prism::default_config();
-    cfg.out = std::filesystem::path(out_dir_.toStdString());
+    cfg.out = fs_path(out_dir_);
     cfg.root = report->root;
     cfg.resume = true;
-    cfg.llm = !no_llm_->isChecked();
+    cfg.llm = llm_->isChecked();
     prism::ai::Session session(cfg);
     const auto reply = prism::ai::assistant_reply(*report, q.toStdString(), cfg.llm);
     chat_->appendPlainText(QString::fromStdString(reply));
@@ -422,10 +368,28 @@ void MainWindow::runSmoke(const QString& screenshot) {
     if (proc_->state() == QProcess::NotRunning) QCoreApplication::exit(2);  // prism not found: NOTRUN
 }
 
-void MainWindow::onDone(int exitCode, QProcess::ExitStatus) {
+void MainWindow::onDone(int exitCode, QProcess::ExitStatus st) {
+    poll_->stop();
+    pollJournal();
     run_->setEnabled(true);
-    log_->appendPlainText(QStringLiteral("exit %1").arg(exitCode));
-    if (!out_dir_.isEmpty()) loadSameReport(out_dir_);
+    loadReport(out_dir_, run_started_);
+    const auto report = RunReport::load(fs_path(out_dir_) / "report.json");
+    const bool crashed = st == QProcess::CrashExit;
+    if (auto why = pg::run_failure(exitCode, crashed)) {
+        log_->appendPlainText(qs(*why));
+        // Not modal-blocking: the window stays live (and testable offscreen).
+        auto *box = new QMessageBox(QMessageBox::Critical, QStringLiteral("PRISM"), qs(*why),
+                                    QMessageBox::Ok, this);
+        box->setObjectName(QStringLiteral("run_failure"));
+        box->setAttribute(Qt::WA_DeleteOnClose);
+        box->open();
+        return;
+    }
+    if (!report || conf_->text() == qs(pg::MISSING_REPORT_LABEL)) {
+        log_->appendPlainText(QStringLiteral("done. ") + qs(pg::MISSING_REPORT_LABEL));
+        return;
+    }
+    log_->appendPlainText(qs(pg::done_summary(pg::confidence_product(*report), report->stages)));
 }
 
 }  // namespace prism

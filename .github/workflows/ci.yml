@@ -52,6 +52,8 @@ jobs:
         run: cmake --build build
       - name: prism_tests
         run: ./build/prism_tests
+      - name: prism_gui_tests (the Qt window, offscreen)
+        run: QT_QPA_PLATFORM=offscreen ./build/prism_gui_tests
       - name: SV-COMP archive packager smoke
         run: python3 tools/svcomp/package_archive.py --prism build/prism --out /tmp/prism-svcomp.tar.gz
       - name: GUI smoke (headless Qt, real pipeline run through the window)

@@ -1,6 +1,7 @@
 #include "prism/ai_proof.hpp"
 #include "prism/ai_assist.hpp"
 #include "prism/config.hpp"
+#include "prism/gui_model.hpp"
 #include "prism/pipeline.hpp"
 #include "prism/pir.hpp"
 #include "proc.hpp"
@@ -38,19 +39,6 @@ static std::vector<std::string> split_csv(const std::string& s) {
     return out;
 }
 
-static bool file_is_exe(const std::filesystem::path& p) {
-    std::error_code ec;
-    return std::filesystem::is_regular_file(p, ec) && !ec;
-}
-
-static std::filesystem::path gui_name() {
-#ifdef _WIN32
-    return "prism_gui.exe";
-#else
-    return "prism_gui";
-#endif
-}
-
 static void add_dir(std::vector<std::filesystem::path>& dirs, std::filesystem::path d) {
     if (d.empty()) return;
     std::error_code ec;
@@ -83,45 +71,20 @@ static std::vector<std::filesystem::path> self_dirs(const char* argv0) {
     return dirs;
 }
 
-static std::filesystem::path search_path_gui() {
-    const auto name = gui_name();
-#ifdef _WIN32
-    char found[32768]{};
-    DWORD n = SearchPathA(nullptr, "prism_gui.exe", nullptr,
-                          static_cast<DWORD>(sizeof found), found, nullptr);
-    if (n && n < sizeof found) return found;
-#else
-    const char* path = std::getenv("PATH");
-    if (!path) return {};
-    std::stringstream ss(path);
-    std::string dir;
-    while (std::getline(ss, dir, ':')) {
-        if (dir.empty()) continue;
-        auto cand = std::filesystem::path(dir) / name;
-        if (file_is_exe(cand)) return cand;
-    }
-#endif
-    return {};
-}
-
+// prism_gui beside this binary, else on PATH (prism::gui::find_prism_gui).
 static std::filesystem::path find_prism_gui(const char* argv0) {
-    const auto name = gui_name();
-    for (const auto& dir : self_dirs(argv0)) {
-        auto cand = dir / name;
-        if (file_is_exe(cand)) return cand;
-    }
-    return search_path_gui();
+    const char* path = std::getenv("PATH");
+    return prism::gui::find_prism_gui(self_dirs(argv0), path ? path : "");
 }
 
+// Missing prism_gui is NOTRUN (exit 0): never a clean window, never a scan.
 static int notrun_missing_gui() {
-    std::cout << "NOTRUN gui: prism_gui not found — not a clean window\n";
-    std::cout << "  install: build prism_gui with WSL clang++ Qt6 Widgets (never MinGW)\n";
+    std::cout << prism::gui::notrun_missing_gui_text();
     return 0;
 }
 
 static int error_spawn_gui(const std::string& detail) {
-    std::cout << "ERROR gui: failed to spawn prism_gui — not a clean window\n";
-    if (!detail.empty()) std::cout << "  " << detail << "\n";
+    std::cout << prism::gui::error_spawn_gui_text(detail);
     return 2;
 }
 
@@ -148,12 +111,8 @@ static std::string quote_win(const std::string& a) {
 #endif
 
 static int spawn_prism_gui(const std::filesystem::path& gui, int argc, char** argv) {
-    std::vector<std::string> args;
-    args.push_back(gui.string());
-    for (int i = 1; i < argc; ++i) {
-        if (std::strcmp(argv[i], "--gui") == 0) continue;
-        args.push_back(argv[i]);
-    }
+    // Every user argument is forwarded in order; only --gui is dropped.
+    auto args = prism::gui::gui_forward_args(gui, std::vector<std::string>(argv + 1, argv + argc));
 
 #ifdef _WIN32
     std::string cl;

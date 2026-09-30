@@ -161,6 +161,7 @@ set(PRISM_SRC
   src/prism/havoc.cpp
   src/prism/inline.cpp
   src/prism/interval.cpp
+  src/prism/gui_model.cpp
   src/prism/journal.cpp
   src/prism/laws.cpp
   src/prism/models.cpp
@@ -454,14 +455,17 @@ endif()
 if(PRISM_QT)
   find_package(Qt6 COMPONENTS Widgets QUIET)
   if(Qt6Widgets_FOUND AND TARGET Qt6::Widgets)
-    add_executable(prism_gui
-      src/gui/main.cpp
+    # The window as a library: prism_gui and the offscreen window tests
+    # (prism_gui_tests) link the same code.
+    add_library(prism_gui_window STATIC
       src/gui/MainWindow.cpp
       src/gui/MainWindow.h
     )
-    set_target_properties(prism_gui PROPERTIES AUTOMOC ON)
-    target_include_directories(prism_gui PRIVATE "${PRISM_ROOT}/include" src/gui)
-    target_link_libraries(prism_gui PRIVATE Qt6::Widgets prism_core)
+    set_target_properties(prism_gui_window PROPERTIES AUTOMOC ON)
+    target_include_directories(prism_gui_window PUBLIC "${PRISM_ROOT}/include" src/gui)
+    target_link_libraries(prism_gui_window PUBLIC Qt6::Widgets prism_core)
+    add_executable(prism_gui src/gui/main.cpp)
+    target_link_libraries(prism_gui PRIVATE prism_gui_window)
     message(STATUS "Qt6 Widgets found — building prism_gui (no display required to compile)")
     if(_prism_cuda_lang)
       set_target_properties(prism_gui PROPERTIES BUILD_RPATH "$ORIGIN" INSTALL_RPATH "$ORIGIN")
@@ -485,7 +489,9 @@ if(PRISM_TESTS)
     # Planted-bug lint corpus (every testdata/ plant, table-driven).
     tests/cpp/test_lint_corpus.cpp
     # checkers_cxx.cpp branches and guards (bad / good twins).
-    tests/cpp/test_checkers_cxx.cpp)
+    tests/cpp/test_checkers_cxx.cpp
+    # Qt-free window model and the `prism --gui` launcher (headless).
+    tests/cpp/test_gui_model.cpp)
   target_include_directories(prism_tests PRIVATE
     "${PRISM_ROOT}/include"
     "${PRISM_ROOT}/third_party")
@@ -495,6 +501,13 @@ if(PRISM_TESTS)
   endif()
   enable_testing()
   add_test(NAME prism_tests COMMAND prism_tests)
+  # The window itself, offscreen (QT_QPA_PLATFORM=offscreen); PRISM_QT only.
+  if(TARGET prism_gui_window)
+    add_executable(prism_gui_tests tests/cpp/test_gui.cpp)
+    target_include_directories(prism_gui_tests PRIVATE "${PRISM_ROOT}/third_party")
+    target_link_libraries(prism_gui_tests PRIVATE prism_gui_window)
+    add_test(NAME prism_gui_tests COMMAND prism_gui_tests)
+  endif()
 endif()
 
 # --- self-fuzzing (roadmap 6.2): libFuzzer target for PRISM's own parsers ---
