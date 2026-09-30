@@ -1,5 +1,5 @@
-// OS plumbing of the stages: run_argv (CreateProcess / fork+execvp with
-// sandbox rlimits) and the plain-HTTP client (WinHTTP / sockets) that the LLM
+// OS plumbing of the stages: run_argv (over detail::run in proc.cpp:
+// CreateProcess / fork+execvp with sandbox rlimits) and the plain-HTTP client (WinHTTP / sockets) that the LLM
 // engine and src/prism/ai use (ai::http_request_raw).
 #include "common.hpp"
 #include "../ai/ai_internal.hpp"
@@ -56,299 +56,31 @@ std::wstring wide_utf8(const std::string& s) {
     return w;
 }
 
-ProcRun win_create_process(const std::vector<std::string>& args, const std::string& input, double timeout_s) {
-    ProcRun r;
-    if (args.empty()) {
-        r.err = "no argv";
-        return r;
-    }
-    // CommandLineToArgvW quoting (sandbox::windows_command_line); a .bat/.cmd
-    // target runs through cmd.exe, so it gets cmd quoting or is refused.
-    std::string cl;
-    if (sandbox::is_batch_file(args[0])) {
-        auto bl = sandbox::batch_command_line(args);
-        if (!bl) {
-            r.err = "refusing to pass %, !, \" or a newline to a batch file";
-            return r;
-        }
-        cl = *bl;
-    } else {
-        cl = sandbox::windows_command_line(args);
-    }
-    SECURITY_ATTRIBUTES sa{};
-    sa.nLength = sizeof sa;
-    sa.bInheritHandle = TRUE;
-    HANDLE in_r = nullptr, in_w = nullptr, out_r = nullptr, out_w = nullptr, err_r = nullptr, err_w = nullptr;
-    if (!CreatePipe(&in_r, &in_w, &sa, 0) || !CreatePipe(&out_r, &out_w, &sa, 0) ||
-        !CreatePipe(&err_r, &err_w, &sa, 0)) {
-        r.err = "pipe";
-        return r;
-    }
-    SetHandleInformation(in_w, HANDLE_FLAG_INHERIT, 0);
-    SetHandleInformation(out_r, HANDLE_FLAG_INHERIT, 0);
-    SetHandleInformation(err_r, HANDLE_FLAG_INHERIT, 0);
-    STARTUPINFOW si{};
-    si.cb = sizeof si;
-    si.dwFlags = STARTF_USESTDHANDLES;
-    si.hStdInput = in_r;
-    si.hStdOutput = out_w;
-    si.hStdError = err_w;
-    PROCESS_INFORMATION pi{};
-    std::wstring wcl = wide_utf8(cl);
-    std::vector<wchar_t> buf(wcl.begin(), wcl.end());
-    buf.push_back(0);
-    BOOL ok = CreateProcessW(nullptr, buf.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &si,
-                             &pi);
-    CloseHandle(in_r);
-    CloseHandle(out_w);
-    CloseHandle(err_w);
-    if (!ok) {
-        CloseHandle(in_w);
-        CloseHandle(out_r);
-        CloseHandle(err_r);
-        r.err = "CreateProcess failed";
-        return r;
-    }
-    if (!input.empty()) {
-        DWORD wr = 0;
-        WriteFile(in_w, input.data(), static_cast<DWORD>(input.size()), &wr, nullptr);
-    }
-    CloseHandle(in_w);
-    DWORD ms = static_cast<DWORD>(std::max(100.0, timeout_s * 1000.0));
-    DWORD w = WaitForSingleObject(pi.hProcess, ms);
-    auto slurp = [](HANDLE h) {
-        std::string s;
-        char buf[4096];
-        DWORD n = 0;
-        for (;;) {
-            DWORD avail = 0;
-            if (!PeekNamedPipe(h, nullptr, 0, nullptr, &avail, nullptr) || avail == 0) break;
-            DWORD got = 0;
-            if (!ReadFile(h, buf, static_cast<DWORD>(std::min<std::size_t>(sizeof buf, avail)), &got, nullptr) ||
-                got == 0)
-                break;
-            s.append(buf, got);
-        }
-        return s;
-    };
-    if (w == WAIT_TIMEOUT) {
-        TerminateProcess(pi.hProcess, 1);
-        r.timeout = true;
-        WaitForSingleObject(pi.hProcess, 2000);
-    }
-    r.out = slurp(out_r);
-    r.err = slurp(err_r);
-    DWORD code = 1;
-    GetExitCodeProcess(pi.hProcess, &code);
-    r.rc = static_cast<int>(code);
-    if (code >= 0xC0000000u) r.crashed = true;
-    CloseHandle(out_r);
-    CloseHandle(err_r);
-    CloseHandle(pi.hThread);
-    CloseHandle(pi.hProcess);
-    return r;
-}
 #endif
 
 }  // namespace
 
 namespace stages_detail {
-// limits: rlimits applied in the forked child (Law 9 sandbox for built
-// binaries; the caller wraps argv with sandbox::wrap_argv). Default: none.
+// The stages' view of detail::run (proc.cpp): stdin, split stdout/stderr.
 ProcRun run_argv(const std::vector<std::string>& args, const std::string& input, double timeout_s,
                  const sandbox::Limits& limits) {
-#ifdef _WIN32
-    (void)limits;  // no rlimits on Windows (sandbox kind "none")
-    return win_create_process(args, input, timeout_s);
-#else
-    ProcRun r;
-    if (args.empty()) {
-        r.err = "no argv";
-        return r;
-    }
-    int in_p[2] = {-1, -1};
-    int out_p[2] = {-1, -1};
-    int err_p[2] = {-1, -1};
-    if (::pipe(in_p) != 0) {
-        r.err = "pipe";
-        return r;
-    }
-    if (::pipe(out_p) != 0) {
-        ::close(in_p[0]);
-        ::close(in_p[1]);
-        r.err = "pipe";
-        return r;
-    }
-    if (::pipe(err_p) != 0) {
-        ::close(in_p[0]);
-        ::close(in_p[1]);
-        ::close(out_p[0]);
-        ::close(out_p[1]);
-        r.err = "pipe";
-        return r;
-    }
-    std::vector<char*> argv;
-    argv.reserve(args.size() + 1);
-    for (const auto& a : args) argv.push_back(const_cast<char*>(a.c_str()));
-    argv.push_back(nullptr);
-    pid_t pid = ::fork();
-    if (pid < 0) {
-        ::close(in_p[0]);
-        ::close(in_p[1]);
-        ::close(out_p[0]);
-        ::close(out_p[1]);
-        ::close(err_p[0]);
-        ::close(err_p[1]);
-        r.err = "fork failed";
-        return r;
-    }
-    if (pid == 0) {
-        // a process group of its own: a timeout kills the child's own children
-        // too (a compiler driver's cc1/ld, a solver's workers), not just the child
-        ::setpgid(0, 0);
-        sandbox::apply_child_limits(limits);
-        ::dup2(in_p[0], STDIN_FILENO);
-        ::dup2(out_p[1], STDOUT_FILENO);
-        ::dup2(err_p[1], STDERR_FILENO);
-        ::close(in_p[0]);
-        ::close(in_p[1]);
-        ::close(out_p[0]);
-        ::close(out_p[1]);
-        ::close(err_p[0]);
-        ::close(err_p[1]);
-        ::execvp(argv[0], argv.data());
-        ::_exit(127);
-    }
-    ::setpgid(pid, pid);
-    prism::detail::ChildGroup tracked(pid);  // killed with PRISM on SIGINT/SIGTERM (proc.hpp)
-    auto kill_tree = [pid] {
-        if (::killpg(pid, SIGKILL) != 0) ::kill(pid, SIGKILL);
-    };
-    ::close(in_p[0]);
-    ::close(out_p[1]);
-    ::close(err_p[1]);
-    auto set_nb = [](int fd) {
-        int flags = ::fcntl(fd, F_GETFL, 0);
-        if (flags >= 0) ::fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-    };
-    set_nb(in_p[1]);
-    set_nb(out_p[0]);
-    set_nb(err_p[0]);
-    std::size_t in_off = 0;
-    bool in_closed = false;
-    auto pump = [&]() {
-        char buf[4096];
-        if (!in_closed) {
-            while (in_off < input.size()) {
-                ssize_t n = ::write(in_p[1], input.data() + in_off, input.size() - in_off);
-                if (n > 0) {
-                    in_off += static_cast<std::size_t>(n);
-                    continue;
-                }
-                if (n < 0 && errno == EINTR) continue;
-                break;
-            }
-            if (in_off >= input.size()) {
-                ::close(in_p[1]);
-                in_p[1] = -1;
-                in_closed = true;
-            }
-        }
-        for (;;) {
-            ssize_t n = ::read(out_p[0], buf, sizeof buf);
-            if (n > 0) {
-                r.out.append(buf, static_cast<std::size_t>(n));
-                continue;
-            }
-            if (n == 0) break;
-            if (errno == EINTR) continue;
-            break;
-        }
-        for (;;) {
-            ssize_t n = ::read(err_p[0], buf, sizeof buf);
-            if (n > 0) {
-                r.err.append(buf, static_cast<std::size_t>(n));
-                continue;
-            }
-            if (n == 0) break;
-            if (errno == EINTR) continue;
-            break;
-        }
-    };
-    const auto deadline = std::chrono::steady_clock::now() +
-                          std::chrono::duration<double>(std::max(0.1, timeout_s));
-    int st = 0;
-    bool reaped = false;
-    for (;;) {
-        pump();
-        pid_t w = ::waitpid(pid, &st, WNOHANG);
-        if (w == pid) {
-            reaped = true;
-            break;
-        }
-        auto now = std::chrono::steady_clock::now();
-        if (now >= deadline) {
-            kill_tree();
-            r.timeout = true;
-            while (::waitpid(pid, &st, 0) < 0 && errno == EINTR) {
-            }
-            reaped = true;
-            break;
-        }
-        if (w < 0 && errno != EINTR) {
-            kill_tree();
-            r.timeout = true;
-            while (::waitpid(pid, &st, 0) < 0 && errno == EINTR) {
-            }
-            reaped = true;
-            break;
-        }
-        const auto remain_ms =
-            std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count();
-        pollfd pfds[3]{};
-        nfds_t nfd = 0;
-        if (!in_closed) {
-            pfds[nfd].fd = in_p[1];
-            pfds[nfd].events = POLLOUT;
-            ++nfd;
-        }
-        pfds[nfd].fd = out_p[0];
-        pfds[nfd].events = POLLIN;
-        ++nfd;
-        pfds[nfd].fd = err_p[0];
-        pfds[nfd].events = POLLIN;
-        ++nfd;
-        int pr = ::poll(pfds, nfd, static_cast<int>(std::max<long long>(1, remain_ms)));
-        (void)pr;
-    }
-    if (!reaped) {
-        kill_tree();
-        r.timeout = true;
-        while (::waitpid(pid, &st, 0) < 0 && errno == EINTR) {
-        }
-    }
-    if (!in_closed) {
-        ::close(in_p[1]);
-        in_p[1] = -1;
-        in_closed = true;
-    }
-    int out_flags = ::fcntl(out_p[0], F_GETFL, 0);
-    int err_flags = ::fcntl(err_p[0], F_GETFL, 0);
-    if (out_flags >= 0) ::fcntl(out_p[0], F_SETFL, out_flags & ~O_NONBLOCK);
-    if (err_flags >= 0) ::fcntl(err_p[0], F_SETFL, err_flags & ~O_NONBLOCK);
-    pump();
-    ::close(out_p[0]);
-    ::close(err_p[0]);
-    if (WIFEXITED(st)) {
-        r.rc = WEXITSTATUS(st);
-    } else if (WIFSIGNALED(st)) {
-        r.rc = -WTERMSIG(st);
-        if (!r.timeout) r.crashed = true;
-    } else {
-        r.rc = st;
-    }
-    return r;
-#endif
+    detail::RunSpec spec;
+    spec.argv = args;
+    spec.input = input;
+    spec.timeout_s = timeout_s;
+    spec.limits = limits;
+    return run_spec(spec);
+}
+
+ProcRun run_spec(const detail::RunSpec& spec) {
+    auto r = detail::run(spec);
+    ProcRun out;
+    out.rc = r.rc;
+    out.out = std::move(r.out);
+    out.err = std::move(r.err);
+    out.timeout = r.timed_out;
+    out.crashed = r.crashed;
+    return out;
 }
 
 std::optional<std::string> http_request(const std::string& method, const std::string& url, const std::string& body,

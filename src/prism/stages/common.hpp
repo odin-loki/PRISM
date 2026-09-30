@@ -19,6 +19,7 @@
 #include "prism/models.hpp"
 #include "prism/regex.hpp"
 #include "prism/sandbox.hpp"
+#include "../proc.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -136,6 +137,8 @@ struct ProcRun {
 // binaries; the caller wraps argv with sandbox::wrap_argv). Default: none.
 ProcRun run_argv(const std::vector<std::string>& args, const std::string& input, double timeout_s,
                  const sandbox::Limits& limits = sandbox::Limits());
+// The full spec: an environment overlay for the child only, a working directory.
+ProcRun run_spec(const detail::RunSpec& spec);
 std::optional<std::string> http_request(const std::string& method, const std::string& url, const std::string& body,
                                         int timeout_ms);
 bool http_ok(const std::string& url, int timeout_ms = 1500);

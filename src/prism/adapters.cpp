@@ -97,17 +97,6 @@ std::string tail(const std::string& s, std::size_t n) {
     return s.substr(s.size() - n);
 }
 
-#ifdef _WIN32
-std::wstring widen_utf8(const std::string& s) {
-    if (s.empty()) return {};
-    int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()), nullptr, 0);
-    std::wstring w(static_cast<std::size_t>(n > 0 ? n : 0), L'\0');
-    if (n > 0)
-        MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()), w.data(), n);
-    return w;
-}
-#endif
-
 void refuse_disabled_checks(const std::vector<std::string>& cmd) {
     for (const auto& flag : cmd) {
         if (flag.starts_with("--no-") && flag.ends_with("-check"))
@@ -173,201 +162,25 @@ struct TempDir {
     TempDir& operator=(const TempDir&) = delete;
 };
 
-// limits: rlimits applied in the forked child (Law 9 sandbox for built
-// binaries; the caller wraps argv with sandbox::wrap_argv). Default: none.
+// The adapters' view of detail::run (proc.cpp): stdout and stderr merged,
+// empty stdin. limits: rlimits applied in the forked child (Law 9 sandbox for
+// built binaries; the caller wraps argv with sandbox::wrap_argv).
 ProcResult run_argv(const std::vector<std::string>& args, double timeout_s, const fs::path& cwd = {},
                     const sandbox::Limits& limits = sandbox::Limits()) {
     refuse_disabled_checks(args);
-    ProcResult r;
-#ifdef _WIN32
-    // No cmd.exe in between (the old _popen path let a file name such as
-    // `a&calc&.c` or `%PATH%.c` reach cmd.exe's parser). CreateProcessW gets
-    // one command line quoted for CommandLineToArgvW; a .bat/.cmd target
-    // (which Windows runs through cmd.exe anyway) is quoted for cmd.exe or
-    // refused. stdout and stderr share one pipe, like the POSIX branch.
-    (void)limits;  // Windows has no rlimits; the sandbox kind is "none".
-    if (args.empty()) {
-        r.failed = true;
-        return r;
-    }
-    std::string cl;
-    if (sandbox::is_batch_file(args[0])) {
-        auto bl = sandbox::batch_command_line(args);
-        if (!bl) {
-            r.failed = true;
-            return r;
-        }
-        cl = *bl;
-    } else {
-        cl = sandbox::windows_command_line(args);
-    }
-    std::wstring wcl = widen_utf8(cl);
-    std::vector<wchar_t> clbuf(wcl.begin(), wcl.end());
-    clbuf.push_back(L'\0');
-    SECURITY_ATTRIBUTES sa{};
-    sa.nLength = sizeof sa;
-    sa.bInheritHandle = TRUE;
-    HANDLE out_r = nullptr;
-    HANDLE out_w = nullptr;
-    if (!CreatePipe(&out_r, &out_w, &sa, 0)) {
-        r.failed = true;
-        return r;
-    }
-    SetHandleInformation(out_r, HANDLE_FLAG_INHERIT, 0);
-    HANDLE nul_in = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa,
-                                OPEN_EXISTING, 0, nullptr);
-    STARTUPINFOW si{};
-    si.cb = sizeof si;
-    si.dwFlags = STARTF_USESTDHANDLES;
-    si.hStdInput = nul_in != INVALID_HANDLE_VALUE ? nul_in : nullptr;
-    si.hStdOutput = out_w;
-    si.hStdError = out_w;
-    PROCESS_INFORMATION pi{};
-    const std::wstring wcwd = cwd.empty() ? std::wstring() : cwd.wstring();
-    BOOL ok = CreateProcessW(nullptr, clbuf.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW,
-                             nullptr, wcwd.empty() ? nullptr : wcwd.c_str(), &si, &pi);
-    CloseHandle(out_w);
-    if (nul_in != INVALID_HANDLE_VALUE) CloseHandle(nul_in);
-    if (!ok) {
-        CloseHandle(out_r);
-        r.failed = true;
-        return r;
-    }
-    const auto deadline =
-        std::chrono::steady_clock::now() + std::chrono::duration<double>(std::max(0.1, timeout_s));
-    char buf[4096];
-    auto drain = [&]() {
-        for (;;) {
-            DWORD avail = 0;
-            if (!PeekNamedPipe(out_r, nullptr, 0, nullptr, &avail, nullptr) || avail == 0) return;
-            DWORD got = 0;
-            const DWORD want = avail < static_cast<DWORD>(sizeof buf) ? avail
-                                                                      : static_cast<DWORD>(sizeof buf);
-            if (!ReadFile(out_r, buf, want, &got, nullptr) || got == 0) return;
-            r.text.append(buf, got);
-        }
-    };
-    for (;;) {
-        drain();
-        if (WaitForSingleObject(pi.hProcess, 20) == WAIT_OBJECT_0) break;
-        if (std::chrono::steady_clock::now() >= deadline) {
-            TerminateProcess(pi.hProcess, 1);
-            WaitForSingleObject(pi.hProcess, 2000);
-            r.timed_out = true;
-            break;
-        }
-    }
-    drain();
-    DWORD code = 1;
-    GetExitCodeProcess(pi.hProcess, &code);
-    r.rc = r.timed_out ? -1 : static_cast<int>(code);
-    CloseHandle(out_r);
-    CloseHandle(pi.hThread);
-    CloseHandle(pi.hProcess);
-#else
-    if (args.empty()) {
-        r.failed = true;
-        return r;
-    }
-    int out_p[2] = {-1, -1};
-    if (::pipe(out_p) != 0) {
-        r.failed = true;
-        return r;
-    }
-    std::vector<char*> argv;
-    argv.reserve(args.size() + 1);
-    for (const auto& a : args) argv.push_back(const_cast<char*>(a.c_str()));
-    argv.push_back(nullptr);
-    pid_t pid = ::fork();
-    if (pid < 0) {
-        ::close(out_p[0]);
-        ::close(out_p[1]);
-        r.failed = true;
-        return r;
-    }
-    if (pid == 0) {
-        ::setpgid(0, 0);
-        if (!cwd.empty() && ::chdir(cwd.c_str()) != 0) ::_exit(127);
-        sandbox::apply_child_limits(limits);
-        ::dup2(out_p[1], STDOUT_FILENO);
-        ::dup2(out_p[1], STDERR_FILENO);
-        ::close(out_p[0]);
-        ::close(out_p[1]);
-        ::execvp(argv[0], argv.data());
-        ::_exit(127);
-    }
-    ::setpgid(pid, pid);
-    detail::ChildGroup tracked(pid);  // killed with PRISM on SIGINT/SIGTERM (proc.hpp)
-    ::close(out_p[1]);
-    out_p[1] = -1;
-    int flags = ::fcntl(out_p[0], F_GETFL, 0);
-    if (flags >= 0) ::fcntl(out_p[0], F_SETFL, flags | O_NONBLOCK);
-    const auto deadline =
-        std::chrono::steady_clock::now() + std::chrono::duration<double>(std::max(0.1, timeout_s));
-    char buf[4096];
-    int st = 0;
-    bool reaped = false;
-    auto slurp = [&]() {
-        for (;;) {
-            const ssize_t n = ::read(out_p[0], buf, sizeof buf);
-            if (n > 0) {
-                r.text.append(buf, static_cast<std::size_t>(n));
-                continue;
-            }
-            if (n == 0) break;
-            if (errno == EINTR) continue;
-            break;
-        }
-    };
-    auto kill_group = [pid]() {
-        if (::killpg(pid, SIGKILL) != 0) ::kill(pid, SIGKILL);
-    };
-    for (;;) {
-        slurp();
-        pid_t w = ::waitpid(pid, &st, WNOHANG);
-        if (w == pid) {
-            reaped = true;
-            break;
-        }
-        auto now = std::chrono::steady_clock::now();
-        if (now >= deadline) {
-            kill_group();
-            r.timed_out = true;
-            while (::waitpid(pid, &st, 0) < 0 && errno == EINTR) {
-            }
-            reaped = true;
-            break;
-        }
-        if (w < 0 && errno != EINTR) {
-            kill_group();
-            r.timed_out = true;
-            while (::waitpid(pid, &st, 0) < 0 && errno == EINTR) {
-            }
-            reaped = true;
-            break;
-        }
-        const auto remain_ms =
-            std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count();
-        pollfd pfd{};
-        pfd.fd = out_p[0];
-        pfd.events = POLLIN;
-        int pr = ::poll(&pfd, 1, static_cast<int>(std::max<long long>(1, remain_ms)));
-        (void)pr;
-    }
-    if (!reaped) {
-        kill_group();
-        r.timed_out = true;
-        while (::waitpid(pid, &st, 0) < 0 && errno == EINTR) {
-        }
-    }
-    if (flags >= 0) ::fcntl(out_p[0], F_SETFL, flags);
-    slurp();
-    ::close(out_p[0]);
-    if (WIFEXITED(st)) r.rc = WEXITSTATUS(st);
-    else if (WIFSIGNALED(st)) r.rc = -WTERMSIG(st);
-    else r.rc = st;
-#endif
-    return r;
+    detail::RunSpec spec;
+    spec.argv = args;
+    spec.timeout_s = timeout_s;
+    spec.cwd = cwd;
+    spec.limits = limits;
+    spec.merge_stderr = true;
+    auto r = detail::run(spec);
+    ProcResult out;
+    out.text = std::move(r.out);
+    out.rc = r.rc;
+    out.timed_out = r.timed_out;
+    out.failed = r.failed;
+    return out;
 }
 
 bool is_fake_adapter(const std::string& text) {
@@ -2426,70 +2239,6 @@ std::vector<Finding> run_pbsd_lints(const std::vector<fs::path>& paths, const Co
         f.extra["ported"] = ported;
     }
     return out;
-}
-
-detail::ProcOut detail::run_process(const std::vector<std::string>& args, double timeout_s,
-                                    const fs::path& cwd) {
-    auto r = run_argv(args, timeout_s, cwd);
-    return {std::move(r.text), r.rc, r.timed_out, r.failed};
-}
-
-namespace {
-// Registered child process groups (proc.hpp). A fixed array of atomics: the
-// signal handler reads it without locks or allocation. More children than
-// slots only means the extra ones are not killed by the handler (their own
-// runner still kills them on timeout).
-constexpr int kChildSlots = 512;
-std::atomic<int> g_child_groups[kChildSlots];
-}  // namespace
-
-void detail::track_child_group(int pgid) noexcept {
-    if (pgid <= 0) return;
-    for (auto& slot : g_child_groups) {
-        int z = 0;
-        if (slot.compare_exchange_strong(z, pgid)) return;
-    }
-}
-
-void detail::untrack_child_group(int pgid) noexcept {
-    if (pgid <= 0) return;
-    for (auto& slot : g_child_groups) {
-        int v = pgid;
-        if (slot.compare_exchange_strong(v, 0)) return;
-    }
-}
-
-void detail::kill_child_groups() noexcept {
-#ifndef _WIN32
-    for (auto& slot : g_child_groups) {
-        const int g = slot.load();
-        if (g > 0) ::kill(-g, SIGKILL);
-    }
-#endif
-}
-
-#ifndef _WIN32
-extern "C" void prism_child_cleanup_handler(int sig) {
-    const int saved = errno;
-    detail::kill_child_groups();
-    ::signal(sig, SIG_DFL);
-    ::raise(sig);
-    errno = saved;
-}
-#endif
-
-void detail::install_child_cleanup() noexcept {
-#ifndef _WIN32
-    for (int sig : {SIGINT, SIGTERM, SIGHUP}) {
-        struct sigaction old {};
-        if (::sigaction(sig, nullptr, &old) != 0 || old.sa_handler == SIG_IGN) continue;
-        struct sigaction sa {};
-        sa.sa_handler = prism_child_cleanup_handler;
-        sigemptyset(&sa.sa_mask);
-        sa.sa_flags = SA_RESTART;
-        ::sigaction(sig, &sa, nullptr);
-    }
-#endif
 }
 
 }  // namespace prism

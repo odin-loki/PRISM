@@ -1,13 +1,45 @@
 #pragma once
 
-// Internal to prism_core: the adapter process runner (src/prism/adapters.cpp)
-// for stages that live in other translation units.
+// Internal to prism_core: the one process runner (src/prism/proc.cpp). The
+// adapters (adapters.cpp run_argv) and the stages (stages/platform.cpp
+// run_argv) are thin wrappers over detail::run, so stdin, an environment
+// overlay, a working directory, rlimits and merged or split output are
+// available to every caller the same way (the Python engine's run_binary).
+
+#include "prism/sandbox.hpp"
 
 #include <filesystem>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace prism::detail {
+
+struct RunSpec {
+    std::vector<std::string> argv;
+    std::string input;  // written to the child's stdin, which is then closed
+    // Set on the child only, never on PRISM's own environment (other --jobs
+    // threads and later children must not see it). Replaces a variable of
+    // the same name.
+    std::vector<std::pair<std::string, std::string>> env;
+    std::filesystem::path cwd;  // empty: PRISM's cwd
+    double timeout_s = 60.0;
+    // rlimits applied in the forked child (Law 9 sandbox for built binaries;
+    // the caller wraps argv with sandbox::wrap_argv). Default: none.
+    sandbox::Limits limits;
+    bool merge_stderr = false;  // one pipe for stdout and stderr (order kept)
+};
+
+struct RunOut {
+    std::string out;  // stdout (and stderr when merge_stderr)
+    std::string err;  // stderr, or why the child could not start
+    int rc = -1;      // exit code; -signal on POSIX
+    bool timed_out = false;
+    bool failed = false;   // could not start (pipe/fork/CreateProcess)
+    bool crashed = false;  // killed by a signal / NTSTATUS exception, not by the timeout
+};
+
+RunOut run(const RunSpec& spec);
 
 struct ProcOut {
     std::string text;  // stdout and stderr, merged
@@ -20,8 +52,8 @@ ProcOut run_process(const std::vector<std::string>& args, double timeout_s,
                     const std::filesystem::path& cwd = {});
 
 // Child process groups (POSIX). Every runner that starts a child in a process
-// group of its own (run_process, stages run_argv, solver::detail::run)
-// registers the group while the child runs, so that a SIGINT / SIGTERM /
+// group of its own (detail::run, solver::detail::run) registers the group
+// while the child runs, so that a SIGINT / SIGTERM /
 // SIGHUP to PRISM (Ctrl-C, a scorer's timeout) kills those groups too: they
 // are not in PRISM's own process group and would otherwise keep running
 // (CaDiCaL, cake_lpr, clang, the LRAT checkers). Async-signal-safe, lock-free;
