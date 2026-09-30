@@ -377,7 +377,18 @@ RunReport run_pipeline(const Config& cfg) {
     stage("polyglot", [&] { return run_polyglot(cfg.root, cfg); });
     stage("esbmc", [&] { return run_esbmc(sources, cfg); });
     stage("dafny", [&] { return run_dafny(sources, cfg); });
-    stage("contracts", [&] { return prove_contracts(functions, cfg.unwind); });
+    stage("contracts", [&] {
+        auto out = prove_contracts(functions, cfg.unwind);
+        if (cfg.llm) {
+            // Model-proposed Dafny-style specs: hypotheses beside the proofs.
+            std::vector<FunctionInfo> fns;
+            for (const auto& f : functions)
+                if (f.kind == "SCALAR" || f.kind == "VOID") fns.push_back(f);
+            auto specs = dafny_specs(fns, 3, cfg);
+            out.insert(out.end(), specs.begin(), specs.end());
+        }
+        return out;
+    });
     stage("wp", [&] { return run_wp(functions, cfg.unwind); });
     auto bmc_rec = stage("bmc", [&] { return run_bmc(inline_static(with_cxx_std(functions, cfg.root)), cfg.unwind); });
     stage("pir", [&] { return pir::run_pir(sources, cfg); });
@@ -390,7 +401,7 @@ RunReport run_pipeline(const Config& cfg) {
     stage("fuzz", [&] {
         return exec_gate_note(
             "fuzz",
-            run_fuse(functions, bmc_rec.findings, src_root, cfg.fuzz_budget, cfg.fuzz_iters, cfg.llm),
+            run_fuse(functions, bmc_rec.findings, src_root, cfg.fuzz_budget, cfg.fuzz_iters, cfg.llm, &cfg),
             "fuzz (compiled harness, AFL++, libFuzzer)");
     });
     stage("diff", [&] { return run_diff(functions, src_root); });

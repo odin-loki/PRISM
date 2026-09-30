@@ -580,7 +580,9 @@ if(PRISM_TESTS)
     # The offline AI analytics (prism_ai, the GBDT trainer, the built-in model).
     tests/cpp/test_prism_ai.cpp
     # The assistant subcommands end to end, with a fake llama-server.
-    tests/cpp/test_ai_assist_cli.cpp)
+    tests/cpp/test_ai_assist_cli.cpp
+    # The model-driven stage pieces: chat engine, reply parsing, sandbox and repair loops.
+    tests/cpp/test_agent.cpp)
   target_include_directories(prism_tests PRIVATE
     "${PRISM_ROOT}/include"
     "${PRISM_ROOT}/third_party")

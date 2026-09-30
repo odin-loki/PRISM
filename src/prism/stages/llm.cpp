@@ -51,6 +51,20 @@ nlohmann::json extract_json(std::string text) {
     return nullptr;
 }
 
+namespace {
+std::mutex g_chat_mu;
+ChatBackend g_chat_backend;
+ChatBackend chat_backend() {
+    std::lock_guard<std::mutex> g(g_chat_mu);
+    return g_chat_backend;
+}
+}  // namespace
+
+void set_chat_backend_for_testing(ChatBackend backend) {
+    std::lock_guard<std::mutex> g(g_chat_mu);
+    g_chat_backend = std::move(backend);
+}
+
 }  // namespace stages_detail
 
 namespace {
@@ -183,6 +197,10 @@ static ChatResult native_llama_complete(const Config& cfg,
 namespace stages_detail {
 LlamaEngine::LlamaEngine(Config c) : cfg(std::move(c)) { bind(); }
 void LlamaEngine::bind() {
+    if (chat_backend()) {
+        backend = "test-double";
+        return;
+    }
     if (http_ok(cfg.llama_server + "/health") || http_ok(cfg.llama_server + "/v1/models")) {
         backend = "llama-server";
         return;
@@ -192,7 +210,9 @@ void LlamaEngine::bind() {
         return;
     }
 #ifdef PRISM_HAS_LLAMA
-    if (!cfg.gguf.empty() && fs::exists(cfg.gguf)) {
+    // A real GGUF, not a placeholder: more than 1 MB.
+    std::error_code ec;
+    if (!cfg.gguf.empty() && fs::is_regular_file(cfg.gguf, ec) && fs::file_size(cfg.gguf, ec) > 1'000'000 && !ec) {
         backend = "llama.cpp";
         return;
     }
@@ -231,6 +251,10 @@ ChatResult LlamaEngine::complete(const std::vector<std::pair<std::string, std::s
 ChatResult LlamaEngine::complete_raw(const std::vector<std::pair<std::string, std::string>>& messages, double timeout) {
     if (backend == "none")
         return {"", "none", "llama.cpp not loaded and Ollama not reachable"};
+    if (backend == "test-double") {
+        if (auto fn = chat_backend()) return fn(messages, timeout);
+        return {"", "test-double", "test chat backend cleared"};
+    }
 #ifdef PRISM_HAS_LLAMA
     if (backend == "llama.cpp") return native_llama_complete(cfg, messages);
 #endif
@@ -239,14 +263,18 @@ ChatResult LlamaEngine::complete_raw(const std::vector<std::pair<std::string, st
     int ms = static_cast<int>(timeout * 1000);
     if (backend == "llama-server") {
         nlohmann::json body{{"model", cfg.model}, {"messages", msgs}, {"temperature", 0.2}};
-        auto resp = http_request("POST", cfg.llama_server + "/v1/chat/completions", body.dump(), ms);
-        if (!resp) return {"", "llama-server", "HTTP error"};
+        std::string herr;
+        auto resp = http_request("POST", cfg.llama_server + "/v1/chat/completions", body.dump(), ms, &herr);
+        if (!resp) return {"", "llama-server", herr.empty() ? "HTTP error" : herr};
         try {
             auto raw = nlohmann::json::parse(*resp);
-            std::string text = raw.value("choices", nlohmann::json::array()).empty()
-                                   ? ""
-                                   : raw["choices"][0]["message"].value("content", "");
-            return {text, "llama-server", ""};
+            std::string text;
+            if (raw.contains("choices") && raw["choices"].is_array() && !raw["choices"].empty() &&
+                raw["choices"][0].is_object() && raw["choices"][0].contains("message") &&
+                raw["choices"][0]["message"].is_object() && raw["choices"][0]["message"].contains("content") &&
+                raw["choices"][0]["message"]["content"].is_string())
+                text = raw["choices"][0]["message"]["content"].get<std::string>();
+            return {text, "llama-server", "", raw};
         } catch (const std::exception& ex) {
             return {"", "llama-server", ex.what()};
         }
@@ -256,12 +284,18 @@ ChatResult LlamaEngine::complete_raw(const std::vector<std::pair<std::string, st
                         {"stream", false},
                         {"think", false},
                         {"options", {{"temperature", 0.2}, {"num_ctx", 8192}}}};
-    auto resp = http_request("POST", cfg.ollama_host + "/api/chat", body.dump(), ms);
-    if (!resp) return {"", "ollama-llamacpp", "HTTP error"};
+    std::string herr;
+    auto host = cfg.ollama_host;
+    while (!host.empty() && host.back() == '/') host.pop_back();
+    auto resp = http_request("POST", host + "/api/chat", body.dump(), ms, &herr);
+    if (!resp) return {"", "ollama-llamacpp", herr.empty() ? "HTTP error" : herr};
     try {
         auto raw = nlohmann::json::parse(*resp);
-        std::string text = raw.value("message", nlohmann::json::object()).value("content", "");
-        return {text, "ollama-llamacpp", ""};
+        std::string text;
+        if (raw.contains("message") && raw["message"].is_object() && raw["message"].contains("content") &&
+            raw["message"]["content"].is_string())
+            text = raw["message"]["content"].get<std::string>();
+        return {text, "ollama-llamacpp", "", raw};
     } catch (const std::exception& ex) {
         return {"", "ollama-llamacpp", ex.what()};
     }
@@ -269,6 +303,13 @@ ChatResult LlamaEngine::complete_raw(const std::vector<std::pair<std::string, st
 
 // Law 9: the program is LLM-written; it runs only with --allow-exec and then
 // inside the sandbox (bubblewrap when available, rlimits always).
+std::string tail(const std::string& s, std::size_t n) {
+    if (s.size() <= n) return s;
+    std::size_t b = s.size() - n;
+    while (b < s.size() && (static_cast<unsigned char>(s[b]) & 0xC0) == 0x80) ++b;  // no split character
+    return s.substr(b);
+}
+
 nlohmann::json sandbox_run(const std::string& source, double timeout, bool allow_exec) {
     if (!allow_exec)
         return {{"ok", false}, {"error", "exec-disabled"}, {"stdout", ""}, {"stderr", ""}, {"code", nullptr}};
@@ -299,9 +340,14 @@ nlohmann::json sandbox_run(const std::string& source, double timeout, bool allow
     if (cr.rc != 0)
         return {{"ok", false},
                 {"error", "compile"},
-                {"stdout", cr.out.substr(0, 2000)},
-                {"stderr", cr.err.substr(0, 2000)},
+                {"stdout", tail(cr.out, 2000)},
+                {"stderr", tail(cr.err, 2000)},
                 {"code", cr.rc}};
+#ifdef _WIN32
+    // A crashing child must not hang on a Windows error dialog (inherited by
+    // the child): SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX.
+    SetErrorMode(0x0001 | 0x0002 | 0x8000);
+#endif
     auto rr = run_argv(sandbox::wrap_argv({exe.string()}, td), {}, timeout, sandbox::limits_for(timeout));
     bool ok = rr.rc == 0 && !rr.timeout;
     bool crashed = rr.crashed || rr.rc < 0 || static_cast<unsigned>(rr.rc) >= 0xC0000000u ||
@@ -314,8 +360,8 @@ nlohmann::json sandbox_run(const std::string& source, double timeout, bool allow
     }
     return {{"ok", ok},
             {"error", err},
-            {"stdout", rr.out.substr(0, 2000)},
-            {"stderr", rr.err.substr(0, 2000)},
+            {"stdout", tail(rr.out, 2000)},
+            {"stderr", tail(rr.err, 2000)},
             {"code", rr.timeout ? nlohmann::json(nullptr) : nlohmann::json(rr.rc)},
             {"sandbox", sandbox::kind()}};
 }
@@ -329,15 +375,27 @@ std::string sandbox_err(const nlohmann::json& result) {
 std::string c_from_llm(std::string src) {
     src = strip(src);
     if (src.empty()) return {};
-    auto fence = src.find("```");
-    if (fence != std::string::npos) {
-        src = src.substr(fence + 3);
-        auto nl = src.find('\n');
-        if (nl != std::string::npos) src = src.substr(nl + 1);
-        auto end = src.rfind("```");
-        if (end != std::string::npos) src = src.substr(0, end);
+    auto after_newline = [](const std::string& t) -> std::string {
+        auto nl = t.find('\n');
+        return nl == std::string::npos ? std::string() : t.substr(nl + 1);
+    };
+    if (src.starts_with("```")) {
+        // The whole reply is fenced: drop the fence line (a fence with no
+        // newline holds no file) and everything from the last closing fence.
+        std::size_t a = 0, b = src.size();
+        while (a < b && src[a] == '`') ++a;
+        while (b > a && src[b - 1] == '`') --b;
+        auto body = after_newline(src.substr(a, b - a));
+        if (auto end = body.rfind("```"); end != std::string::npos) body = body.substr(0, end);
+        return strip(body);
     }
-    return strip(src);
+    if (auto fence = src.find("```"); fence != std::string::npos) {
+        auto body = src.substr(fence + 3);
+        if (body.find('\n') != std::string::npos) body = after_newline(body);
+        if (auto end = body.rfind("```"); end != std::string::npos) body = body.substr(0, end);
+        return strip(body);
+    }
+    return src;
 }
 
 }  // namespace stages_detail

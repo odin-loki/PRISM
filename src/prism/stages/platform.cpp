@@ -352,7 +352,8 @@ ProcRun run_argv(const std::vector<std::string>& args, const std::string& input,
 }
 
 std::optional<std::string> http_request(const std::string& method, const std::string& url, const std::string& body,
-                                        int timeout_ms) {
+                                        int timeout_ms, std::string* error) {
+    if (error) *error = "HTTP error: no response from " + url;
 #ifdef _WIN32
     std::string rest = url;
     bool https = false;
@@ -420,7 +421,10 @@ std::optional<std::string> http_request(const std::string& method, const std::st
     WinHttpCloseHandle(req);
     WinHttpCloseHandle(conn);
     WinHttpCloseHandle(sess);
-    if (status < 200 || status >= 300) return std::nullopt;
+    if (status < 200 || status >= 300) {
+        if (error) *error = "HTTP " + std::to_string(status) + ": " + resp.substr(0, 400);
+        return std::nullopt;
+    }
     return resp;
 #else
     if (url.starts_with("https://")) return std::nullopt;
@@ -604,7 +608,13 @@ std::optional<std::string> http_request(const std::string& method, const std::st
     } catch (...) {
         return std::nullopt;
     }
-    if (status < 200 || status >= 300) return std::nullopt;
+    // A non-2xx answer is a failure; its body is read for the error text.
+    const bool bad_status = status < 200 || status >= 300;
+    auto finish = [&](std::string b) -> std::optional<std::string> {
+        if (!bad_status) return b;
+        if (error) *error = "HTTP " + std::to_string(status) + ": " + b.substr(0, 400);
+        return std::nullopt;
+    };
 
     std::string hlow = headers;
     for (char& c : hlow) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
@@ -634,17 +644,17 @@ std::optional<std::string> http_request(const std::string& method, const std::st
     if (has_len) {
         if (content_length > kMaxBody) return std::nullopt;
         while (raw.size() < body_off + content_length) {
-            if (read_some() <= 0) return std::nullopt;
+            if (read_some() <= 0) return bad_status ? finish(raw.substr(body_off)) : std::nullopt;
         }
-        return raw.substr(body_off, content_length);
+        return finish(raw.substr(body_off, content_length));
     }
     for (;;) {
         const int g = read_some();
-        if (g < 0) return std::nullopt;
+        if (g < 0) return bad_status ? finish(raw.substr(body_off)) : std::nullopt;
         if (g == 0) break;
         if (raw.size() > kMaxBody) return std::nullopt;
     }
-    return raw.substr(body_off);
+    return finish(raw.substr(body_off));
 #endif
 }
 

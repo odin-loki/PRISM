@@ -12,7 +12,53 @@ const char* SYSTEM_AUDITOR =
     "fuzzer, or a human. Reply with JSON only: "
     "{\"hypotheses\":[{\"function\":\"...\",\"line\":0,\"cls\":\"INT-SIGNED-OVF\",\"why\":\"...\"}]}";
 
+const char* SYSTEM_DAFNY =
+    "Propose Dafny-style contracts for a C function. JSON: "
+    "{\"requires\":[\"...\"],\"ensures\":[\"...\"],\"invariant\":[\"...\"],\"decreases\":[\"...\"]}. "
+    "These are hypotheses.";
+
 }  // namespace
+
+std::vector<Finding> dafny_specs(const std::vector<FunctionInfo>& functions, int budget, const Config& cfg) {
+    // Model-proposed contracts are HYPOTHESIS / READS (Law 4): they never
+    // prove or cover FUNC-CONTRACT; a missing model is NOTRUN.
+    LlamaEngine engine(cfg);
+    if (!engine.available()) {
+        Finding f;
+        f.stage = "contracts";
+        f.status = std::string(laws::NOTRUN);
+        f.cls = "FUNC-CONTRACT";
+        f.message = LLM_UNAVAILABLE_MSG;
+        f.strength = std::string(laws::STRENGTH_READS);
+        return {f};
+    }
+    std::vector<Finding> out;
+    const int n = std::min(budget, static_cast<int>(functions.size()));
+    for (int i = 0; i < n; ++i) {
+        const auto& fn = functions[static_cast<std::size_t>(i)];
+        auto r = engine.complete({{"system", SYSTEM_DAFNY}, {"user", fn.signature + "\n{" + fn.body + "\n}"}});
+        if (!r.error.empty()) {
+            if (llm_httpish(r.error)) {
+                auto f = make_find("contracts", laws::NOTRUN, fn, "FUNC-CONTRACT", r.error, laws::STRENGTH_READS);
+                f.extra["install"] = LLM_INSTALL;
+                f.extra["backend"] = r.backend;
+                out.push_back(std::move(f));
+            } else {
+                auto f = make_find("contracts", laws::ERROR, fn, "FUNC-CONTRACT", r.error, laws::STRENGTH_READS);
+                f.extra["backend"] = r.backend;
+                out.push_back(std::move(f));
+            }
+            continue;
+        }
+        auto f = make_find("contracts", laws::HYPOTHESIS, fn, "FUNC-CONTRACT",
+                           "Dafny-style spec (hypothesis, not proved)", laws::STRENGTH_READS);
+        f.extra["spec"] = extract_json(r.text).dump();
+        f.extra["raw"] = r.text.substr(0, 800);
+        f.extra["backend"] = r.backend;
+        out.push_back(std::move(f));
+    }
+    return out;
+}
 
 std::vector<Finding> hypothesize(const std::vector<FunctionInfo>& functions, int budget, const Config& cfg) {
     // Missing GGUF/Ollama is NOTRUN, never CLEAN. Model text is HYPOTHESIS/READS.

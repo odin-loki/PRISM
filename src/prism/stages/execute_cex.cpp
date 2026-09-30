@@ -1,7 +1,10 @@
 // Stage execute: concrete replay of FAILED/CRASH counterexamples and the
 // LLM interpreter loop (execute_cex).
+#include "agent.hpp"
 #include "interp.hpp"
 #include "llm.hpp"
+
+#include <climits>
 
 namespace prism {
 namespace fs = std::filesystem;
@@ -11,6 +14,71 @@ namespace {
 const char* SYSTEM_HARNESS =
     "Write a complete C file that includes the target as a string in comments "
     "and a main() that tests the stated property. No markdown.";
+
+// A counterexample value the way the reference engine reads it (Python's
+// int(v, 0)): optional sign, 0x / 0o / 0b prefixes, single underscores
+// between digits; a decimal with a leading zero ("010") is refused, not read
+// as octal. nullopt when refused or beyond 64 bits.
+std::optional<long long> parse_cex_int(std::string v) {
+    v = strip(v);
+    if (v.empty()) return std::nullopt;
+    bool neg = false;
+    std::size_t i = 0;
+    if (v[i] == '+' || v[i] == '-') neg = v[i++] == '-';
+    int base = 10;
+    if (i + 1 < v.size() && v[i] == '0') {
+        const char p = static_cast<char>(std::tolower(static_cast<unsigned char>(v[i + 1])));
+        if (p == 'x') base = 16;
+        else if (p == 'o') base = 8;
+        else if (p == 'b') base = 2;
+        if (base != 10) {
+            i += 2;
+            if (i < v.size() && v[i] == '_') ++i;  // 0x_1f
+        }
+    }
+    const std::size_t start = i;
+    if (start >= v.size()) return std::nullopt;
+    unsigned long long acc = 0;
+    bool any = false, prev_us = false, nonzero = false;
+    for (; i < v.size(); ++i) {
+        const char c = v[i];
+        if (c == '_') {
+            if (!any || prev_us) return std::nullopt;
+            prev_us = true;
+            continue;
+        }
+        int d;
+        if (c >= '0' && c <= '9') d = c - '0';
+        else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;
+        else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;
+        else return std::nullopt;
+        if (d >= base) return std::nullopt;
+        if (acc > (ULLONG_MAX - static_cast<unsigned>(d)) / static_cast<unsigned>(base)) return std::nullopt;
+        acc = acc * static_cast<unsigned>(base) + static_cast<unsigned>(d);
+        nonzero = nonzero || d != 0;
+        any = true;
+        prev_us = false;
+    }
+    if (!any || prev_us) return std::nullopt;
+    if (base == 10 && v[start] == '0' && nonzero) return std::nullopt;  // "010"
+    if (neg) {
+        if (acc > static_cast<unsigned long long>(LLONG_MAX) + 1) return std::nullopt;
+        return acc == static_cast<unsigned long long>(LLONG_MAX) + 1 ? LLONG_MIN : -static_cast<long long>(acc);
+    }
+    if (acc > static_cast<unsigned long long>(LLONG_MAX)) return std::nullopt;
+    return static_cast<long long>(acc);
+}
+
+std::vector<std::string> split_ws(const std::string& s) {
+    std::vector<std::string> out;
+    std::istringstream in(s);
+    for (std::string t; in >> t;) out.push_back(t);
+    return out;
+}
+
+}  // namespace
+
+namespace stages_detail {
 
 std::string sandbox_verdict(const nlohmann::json& result) {
     auto err = sandbox_err(result);
@@ -70,8 +138,9 @@ std::vector<Finding> interpreter_loop(LlamaEngine& engine, const std::string& pr
             f.status = std::string(laws::CLEAN);
             f.message = "interpreter harness passed on round " + std::to_string(i + 1) + " (not a proof)";
             f.strength = std::string(laws::STRENGTH_FINDS);
-            f.extra["stdout"] = result.value("stdout", std::string{}).substr(0, 400);
+            f.extra["stdout"] = tail(result.value("stdout", std::string{}), 400);
             f.extra["rounds"] = std::to_string(i + 1);
+            f.extra["sandbox"] = result.value("sandbox", std::string{});
             return {f};
         }
         if (verdict == laws::CRASH) {
@@ -80,8 +149,10 @@ std::vector<Finding> interpreter_loop(LlamaEngine& engine, const std::string& pr
             f.status = std::string(laws::CRASH);
             f.message = "sandbox crash on round " + std::to_string(i + 1) + " (not a proof)";
             f.strength = std::string(laws::STRENGTH_FINDS);
-            f.extra["stderr"] = result.value("stderr", std::string{}).substr(0, 400);
+            f.extra["stderr"] = tail(result.value("stderr", std::string{}), 400);
             f.extra["rounds"] = std::to_string(i + 1);
+            f.extra["code"] = result.contains("code") ? result["code"].dump() : "null";
+            f.extra["sandbox"] = result.value("sandbox", std::string{});
             return {f};
         }
         messages.push_back({"assistant", r.text});
@@ -104,7 +175,7 @@ std::vector<Finding> interpreter_loop(LlamaEngine& engine, const std::string& pr
     return {f};
 }
 
-}  // namespace
+}  // namespace stages_detail
 
 std::vector<Finding> execute_cex(const std::vector<Finding>& fails, const std::vector<FunctionInfo>& functions,
                                  const Config& cfg) {
@@ -161,16 +232,13 @@ std::vector<Finding> execute_cex(const std::vector<Finding>& fails, const std::v
         while (std::getline(ss, part, ',')) {
             auto eq = part.find('=');
             if (eq == std::string::npos) continue;
-            auto k = strip(part.substr(0, eq));
-            auto sp = k.find_last_of(" \t");
-            if (sp != std::string::npos) k = k.substr(sp + 1);
-            auto v = strip(part.substr(eq + 1));
-            auto sp2 = v.find(' ');
-            if (sp2 != std::string::npos) v = v.substr(0, sp2);
-            try {
-                args[k] = std::stoi(v, nullptr, 0);
-            } catch (...) {
-            }
+            const auto kt = split_ws(part.substr(0, eq)), vt = split_ws(part.substr(eq + 1));
+            if (kt.empty() || vt.empty()) continue;
+            // The interpreter's arguments are 32-bit: a value that is no
+            // 32-bit bit pattern (signed or unsigned) is not replayed.
+            auto v = parse_cex_int(vt[0]);
+            if (!v || *v < INT_MIN || *v > static_cast<long long>(UINT_MAX)) continue;
+            args[kt.back()] = static_cast<int>(static_cast<std::uint32_t>(*v));
         }
         if (args.empty()) continue;
         ++n;

@@ -187,9 +187,11 @@ std::string read_fn_source(const FunctionInfo& fn) {
     }
 }
 
+// gcc or clang: the callers pass gcc-style flags (-std=c11 -O0 -o), so MSVC's
+// cl is not a compiler for them; without gcc/clang their step is NOTRUN.
 std::optional<fs::path> which_cc() {
     Config cfg;
-    return cfg.which({"gcc", "clang", "cl"});
+    return cfg.which({"gcc", "clang"});
 }
 
 int param_nbytes(const std::vector<std::pair<std::string, std::string>>& params) {

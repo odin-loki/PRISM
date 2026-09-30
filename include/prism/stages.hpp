@@ -82,13 +82,17 @@ PRISM_API ForkFlipResult solve_fork_flip(const FunctionInfo& fn,
 std::vector<Finding> run_fuse(const std::vector<FunctionInfo>& functions,
                               const std::vector<Finding>& bmc_findings,
                               const std::filesystem::path& src_root,
-                              double budget, int iters, bool llm);
+                              double budget, int iters, bool llm,
+                              const Config* cfg = nullptr);  // model settings; nullptr: default_config()
 std::vector<Finding> run_diff(const std::vector<FunctionInfo>& functions,
                               const std::filesystem::path& root);
 std::vector<Finding> run_rapid(const std::vector<FunctionInfo>& functions, int trials = 64);
 std::vector<Finding> run_muttest(const std::vector<FunctionInfo>& functions, int trials = 32);
 std::vector<Finding> run_ltl(const std::vector<FunctionInfo>& functions,
                              const std::vector<std::filesystem::path>& specs);
+// Dafny-style contracts proposed by the model for SCALAR/VOID functions
+// (contracts stage, with --llm): HYPOTHESIS / READS rows, NOTRUN without a model.
+std::vector<Finding> dafny_specs(const std::vector<FunctionInfo>& functions, int budget, const Config& cfg);
 std::vector<Finding> hypothesize(const std::vector<FunctionInfo>& functions, int budget,
                                  const Config& cfg);
 std::vector<Finding> execute_cex(const std::vector<Finding>& fails,

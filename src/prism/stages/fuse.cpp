@@ -1,6 +1,7 @@
 // Stage fuse: concrete and binary fuzzing (fuzz_function), AFL++ and
 // libFuzzer engines, Fuzz4All / ChatFuzz LLM seeds and mutants (run_fuse).
 #include "interp.hpp"
+#include "agent.hpp"
 #include "llm.hpp"
 #include "prism/simd.hpp"
 
@@ -1152,22 +1153,35 @@ const char* LLM_SKIP_FUSE_MSG = "llama.cpp/Ollama not reachable; stall mutants /
 
 bool llama_engine_up(LlamaEngine* e) { return e && e->available(); }
 
+}  // namespace
+
+namespace stages_detail {
+
+// An LLM hex blob, read like the reference engine (bytes.fromhex after
+// dropping every "0x"/"0X"): whitespace may separate bytes, never split one.
 std::optional<std::vector<uint8_t>> parse_hex_bytes(std::string h) {
     h = strip(h);
-    if (h.size() >= 2 && h[0] == '0' && (h[1] == 'x' || h[1] == 'X')) h = h.substr(2);
-    if (h.size() % 2 != 0) return std::nullopt;
+    for (const char* pre : {"0x", "0X"})
+        for (auto p = h.find(pre); p != std::string::npos; p = h.find(pre)) h.erase(p, 2);
     auto nibble = [](char c) -> int {
         if (c >= '0' && c <= '9') return c - '0';
         if (c >= 'a' && c <= 'f') return c - 'a' + 10;
         if (c >= 'A' && c <= 'F') return c - 'A' + 10;
         return -1;
     };
+    auto space = [](char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v'; };
     std::vector<uint8_t> out;
     out.reserve(h.size() / 2);
-    for (std::size_t i = 0; i < h.size(); i += 2) {
-        int a = nibble(h[i]), b = nibble(h[i + 1]);
+    for (std::size_t i = 0; i < h.size();) {
+        if (space(h[i])) {
+            ++i;
+            continue;
+        }
+        if (i + 1 >= h.size()) return std::nullopt;
+        const int a = nibble(h[i]), b = nibble(h[i + 1]);
         if (a < 0 || b < 0) return std::nullopt;
         out.push_back(static_cast<uint8_t>((a << 4) | b));
+        i += 2;
     }
     return out;
 }
@@ -1188,7 +1202,8 @@ std::vector<std::vector<uint8_t>> json_hex_list(const nlohmann::json& data, cons
     std::vector<std::vector<uint8_t>> out;
     if (!data.is_object() || !data.contains(key) || !data[key].is_array()) return out;
     for (auto& h : data[key]) {
-        auto raw = parse_hex_bytes(h.is_string() ? h.get<std::string>() : std::string{});
+        // str(h): a number the model wrote without quotes is read as its digits.
+        auto raw = parse_hex_bytes(h.is_string() ? h.get<std::string>() : h.is_number() ? h.dump() : std::string{});
         if (raw && !raw->empty()) out.push_back(std::move(*raw));
     }
     return out;
@@ -1196,10 +1211,10 @@ std::vector<std::vector<uint8_t>> json_hex_list(const nlohmann::json& data, cons
 
 std::string documentation_from_comments(const std::string& source) {
     std::vector<std::string> parts;
+    // A contract comment is not documentation: \b(requires|ensures|invariant|decreases|diff)\s*:
     auto is_contract = [](const std::string& s) {
-        auto l = lower_copy(s);
-        return l.find("requires:") != std::string::npos || l.find("ensures:") != std::string::npos ||
-               l.find("invariant:") != std::string::npos || l.find("decreases:") != std::string::npos;
+        static const Regex re(R"((?i)\b(requires|ensures|invariant|decreases|diff)\s*:)");
+        return re.search(s);
     };
     for (std::size_t i = 0; i < source.size();) {
         if (i + 1 < source.size() && source[i] == '/' && source[i + 1] == '*') {
@@ -1212,16 +1227,21 @@ std::string documentation_from_comments(const std::string& source) {
             if (end == std::string::npos) break;
             auto inner = source.substr(i + 2, end - (i + 2));
             i = end + 2;
-            std::string blob;
+            // Each line without its leading '*'s, joined, whitespace collapsed.
+            std::string joined;
             std::istringstream ss(inner);
             std::string ln;
+            bool first = true;
             while (std::getline(ss, ln)) {
                 ln = strip(ln);
-                while (!ln.empty() && ln.front() == '*') ln = strip(ln.substr(1));
-                if (!blob.empty() && !ln.empty()) blob.push_back(' ');
-                blob += ln;
+                std::size_t k = 0;
+                while (k < ln.size() && ln[k] == '*') ++k;
+                joined += (first ? "" : " ") + strip(ln.substr(k));
+                first = false;
             }
-            blob = strip(blob);
+            std::string blob;
+            std::istringstream words(joined);
+            for (std::string w; words >> w;) blob += (blob.empty() ? "" : " ") + w;
             if (!blob.empty() && !is_contract(blob)) parts.push_back(blob);
             continue;
         }
@@ -1241,6 +1261,10 @@ std::string documentation_from_comments(const std::string& source) {
     }
     return out;
 }
+
+}  // namespace stages_detail
+
+namespace {
 
 std::string fuzz4all_autoprompt_text(LlamaEngine& engine, const FunctionInfo& fn) {
     if (!engine.available()) return {};
@@ -1307,20 +1331,13 @@ std::vector<std::vector<uint8_t>> chatfuzz_mutants(LlamaEngine& engine, const Fu
                               {"user", "seed=" + seed_hex + "\n" + fn.signature + "\n{" + fn.body + "\n}"}},
                              90.0);
     if (!r.error.empty()) return {};
-    auto data = extract_json(r.text);
-    std::vector<std::vector<uint8_t>> out;
-    if (!data.is_object() || !data.contains("mutants") || !data["mutants"].is_array()) return out;
-    for (auto& h : data["mutants"]) {
-        auto raw = parse_hex_bytes(h.is_string() ? h.get<std::string>() : std::string{});
-        if (raw) out.push_back(std::move(*raw));
-    }
-    return out;
+    return json_hex_list(extract_json(r.text), "mutants");
 }
 
 }  // namespace
 
 std::vector<Finding> run_fuse(const std::vector<FunctionInfo>& functions, const std::vector<Finding>& bmc_findings,
-                              const fs::path& src_root, double budget, int iters, bool llm) {
+                              const fs::path& src_root, double budget, int iters, bool llm, const Config* cfg) {
     std::vector<Finding> out;
     int rounds = 2;
     // A zero budget is already spent: do not lift it to the 0.05 s floor.
@@ -1329,7 +1346,9 @@ std::vector<Finding> run_fuse(const std::vector<FunctionInfo>& functions, const 
     double slice_budget = budget > 0.0 ? std::max(0.05, budget / rounds) : 0.0;
     int slice_iters = std::max(1, iters / rounds);
     std::optional<LlamaEngine> eng;
-    if (llm) eng.emplace(Config{});
+    // The run's model settings (PRISM_MODEL, PRISM_LLAMA_SERVER, OLLAMA_HOST,
+    // PRISM_GGUF, and its output directory for the audit log).
+    if (llm) eng.emplace(cfg ? *cfg : default_config());
     LlamaEngine* ep = eng ? &*eng : nullptr;
     for (auto& fn : functions)
         out.push_back(fuse_one(fn, bmc_findings, src_root, slice_budget, slice_iters, rounds, ep));
