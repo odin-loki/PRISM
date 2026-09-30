@@ -79,7 +79,12 @@ lands with a doctest.
     ERROR-CODE (34 C++-only hits in `src/`), THIS-THREAD, CONTRACTS,
     ENDIAN, and the flat_*/unordered container exclusions.
   - Dispatch: STR-STRNCPY-NUL and STR-SNPRINTF run on C++ files.
-  - MEM-COPY-LEN: numeric sizes are rejected.
+  - MEM-COPY-LEN: numeric sizes are rejected. Decided: superseded, C++
+    stays identifiers only. A literal length (`memcpy(code, classbits, 32)`)
+    is a constant, not an unchecked length, and the real-code audit (the
+    zlib false alarms) asked for identifiers only. The frozen Python engine
+    still accepts literals; no corpus file shows the difference. Locked by
+    `tests/cpp/test_checkers_c.cpp` "MEM-COPY-LEN: identifier lengths only".
   - Wording drift in messages. 32 regex globals are declared for branches
     that were never ported.
   - Decide the intended behaviour for each difference: take the stricter
@@ -380,7 +385,7 @@ record.
 | `tests/test_exec_safety.py` | mixed | M | parity text checks deleted; add to test_main.cpp 'sandbox:' cases: real bwrap jail write-outside-scratch and rlimit enforcement (skip without bwrap), planted manifest refusal, mypy-plugin sentinel, … |
 | `tests/test_execute_compile.py` | python-engine-behaviour | M | tests/cpp/test_main.cpp execute/rlef section (or new test_execute.cpp) against prism::sandbox_run (stages/llm.cpp:272), interpreter_loop (stages/execute_cex.cpp:23), rlef_repair (stages/rlef.cpp:64) … |
 | `tests/test_execute_posix.py` | reads-cpp-source | S | delete (source greps; behaviour already in test_main.cpp); add a behavioural binary-fuzz-ordering case to test_concrete.cpp if wanted |
-| `tests/test_false_positives.py` | mixed | S | tests/cpp/test_main.cpp false-positive section; add cparse head-shape/kind tables to a tests/cpp/test_cparse.cpp; delete test_same_findings (parity with deleted engine) |
+| `tests/test_false_positives.py` | mixed | S | tests/cpp/test_main.cpp false-positive section; add cparse head-shape/kind tables to a tests/cpp/test_cparse.cpp; delete test_same_findings (parity with deleted engine). Relaxed on purpose until deletion: the C++-only fixed files (`CPP_ONLY`) are left out of the Python corpus checks and the engine comparison, and PTR-CHAIN-NULL is compared on the first row per access (C++ reports one row per access, Python one per line); tests/cpp/test_checkers_c.cpp and the test_main false-positive corpus test hold the C++ expectations |
 | `tests/test_framac.py` | mixed | S | tests/cpp/test_adapters.cpp: prism::run_frama_c (adapters.cpp:1418) with fake-exe stubs |
 | `tests/test_fuse.py` | mixed | L | tests/cpp/test_fuse.cpp calling branch_goals/run_fuse from src/prism/stages/fuse.cpp and the autoprompt helpers in src/prism/stages/llm.cpp (need exposing in an internal header); mock LLM via a fake … |
 | `tests/test_fuzz_findings.py` | python-engine-behaviour | S | tests/cpp/test_main.cpp: F2 via prism::RunReport::load (used in pipeline.cpp:235) on the five bad texts, F3 via journal_read_stages; F4 delete (C++ has no runtime manifest loader: pins are baked in … |

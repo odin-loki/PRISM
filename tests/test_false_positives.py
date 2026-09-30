@@ -347,9 +347,9 @@ def _engine_rows(cmd: list[str], root: Path, out: Path,
                 continue
             # The C++ engine reports PTR-CHAIN-NULL once per unchecked access
             # (its first use); the Python engine once per line. Compare the
-            # first row per function only.
+            # first row per access (the message names p->m).
             if f["cls"] == "PTR-CHAIN-NULL":
-                key = (f["file"], f.get("function"))
+                key = (f["file"], f.get("function"), f.get("message"))
                 if key in chain_first and chain_first[key][1] <= row[1]:
                     continue
                 if key in chain_first:
