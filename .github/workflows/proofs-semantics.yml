@@ -11,10 +11,12 @@ on:
   push:
     paths:
       - 'proofs/semantics/**'
+      - 'src/tools/lean_audit.cpp'
       - '.github/workflows/proofs-semantics.yml'
   pull_request:
     paths:
       - 'proofs/semantics/**'
+      - 'src/tools/lean_audit.cpp'
       - '.github/workflows/proofs-semantics.yml'
   workflow_dispatch:
 
