@@ -336,6 +336,13 @@ if(UNIX)
   set_target_properties(prism PROPERTIES BUILD_RPATH "$ORIGIN" INSTALL_RPATH "$ORIGIN")
 endif()
 
+# Installed layout: <prefix>/bin/prism finds the shipped Coccinelle rules in
+# <prefix>/share/prism/cocci (adapters.cpp cocci_rules), whatever the cwd.
+include(GNUInstallDirs)
+install(TARGETS prism RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+install(DIRECTORY "${PRISM_ROOT}/prism/cocci/" DESTINATION "${CMAKE_INSTALL_DATADIR}/prism/cocci"
+  FILES_MATCHING PATTERN "*.cocci")
+
 # C ABI for coverage hash / havoc
 add_library(prism_native SHARED src/prism/capi.cpp src/prism/hash.cpp src/prism/havoc.cpp)
 target_include_directories(prism_native PUBLIC "${PRISM_ROOT}/include")
@@ -485,6 +492,9 @@ if(PRISM_TESTS)
     "${PRISM_ROOT}/include"
     "${PRISM_ROOT}/third_party")
   target_link_libraries(prism_tests PRIVATE prism_core)
+  # The repo root as an absolute path: __FILE__ is relative under Ninja, so a
+  # test that locates testdata/ from it depends on the cwd it runs from.
+  target_compile_definitions(prism_tests PRIVATE PRISM_SOURCE_DIR="${PRISM_ROOT}")
   if(UNIX)
     set_target_properties(prism_tests PROPERTIES BUILD_RPATH "$ORIGIN" INSTALL_RPATH "$ORIGIN")
   endif()
