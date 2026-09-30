@@ -954,6 +954,12 @@ Finding fuse_one(const FunctionInfo& fn, const std::vector<Finding>& bmc_finding
             extra["binary"] = std::string(laws::NOTRUN);
             extra["exec"] = std::string(laws::NOTRUN);
         }
+        if (auto bin = last.extra.find("binary"); bin != last.extra.end() && bin->second == "compile-failed") {
+            // Law 7: the compiled-harness half could not be built, so the
+            // CLEAN is the concrete oracle's alone; the row says so.
+            extra["binary"] = bin->second;
+            extra["oracle"] = "concrete";
+        }
         if (last.status == laws::CRASH || last.status == laws::ERROR || last.status == laws::NEEDS_HARNESS) {
             for (auto& [k, v] : extra) last.extra[k] = v;
             return last;
