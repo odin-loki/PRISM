@@ -174,6 +174,25 @@ destination of each file is in appendix C.
 - Repo lints (`test_naming.py`: no retired project name; no tracked file over 10 MB)
   become a doctest over `git ls-files`.
 
+Python-engine gaps left by ported tests (the Python engine is frozen and
+goes in phase 5, so these are recorded, not fixed there):
+
+- `prism/journal.py` `read_functions` skips a malformed `functions.json`
+  entry and returns the rest, so `--resume` skips classify and never
+  analyses the dropped function. C++ returns no functions and a note
+  (`functions.json: N malformed entries; classify rerun`) and reruns classify.
+- `prism/contracts.py` and `prism/wp.py` match returns with
+  `\breturn\s+([^;]+);`, which misses `return(x);` and `return;`. Those
+  paths get no ensures assert, so a contract they break is PROVED-ASSUMING.
+  C++ matches every return, and an empty return in a value-returning
+  function is ERROR (doctests "wp and contracts: `return(expr);` is
+  checked" and "contracts: an empty return ... is ERROR").
+- `tests/test_verdict.py` was deleted; nothing now checks `prism/laws.py`
+  against `proofs/verdict_tables.json` or against the C++ vocabulary. The
+  doctests check `include/prism/laws.hpp` only.
+- `report.md` writes a confidence scope with no data as `**0**` in C++ and
+  `**0.0**` in Python. The doctest locks the C++ form.
+
 ### Phase 3: port the tools
 
 | today | C++23 home |

@@ -371,7 +371,6 @@ void add_goal(std::vector<std::string>& seen, std::string cond) {
 
 }  // namespace
 
-namespace stages_detail {
 std::vector<std::string> branch_goals(const FunctionInfo& fn) {
     // FuSeBMC MyVisitor::check / checkStmt: then, implicit else, loop-exit, switch cases.
     static Regex if_re("\\bif\\s*\\(([^)]+)\\)");
@@ -421,10 +420,6 @@ std::vector<std::string> branch_goals(const FunctionInfo& fn) {
     return seen;
 }
 
-}  // namespace stages_detail
-
-namespace {
-
 std::vector<std::pair<std::string, std::string>> numbered_goals(const FunctionInfo& fn) {
     // FuSeBMC GoalCounter::GetNewGoalForFunc: ++counter, "GOAL_" + counter.
     auto conds = branch_goals(fn);
@@ -436,8 +431,6 @@ std::vector<std::pair<std::string, std::string>> numbered_goals(const FunctionIn
     }
     return out;
 }
-
-}  // namespace
 
 namespace stages_detail {
 std::vector<std::vector<uint8_t>> seeds_from_bmc(const FunctionInfo& fn, const std::vector<Finding>& bmc_findings) {
@@ -1175,6 +1168,19 @@ const char* SYSTEM_CHATFUZZ =
     "Coverage has stalled. Given the function and a hex seed, reply JSON: "
     "{\"mutants\":[\"hex\", \"...\"]} semantically valid argument encodings. No prose.";
 
+std::string fn_source_text(const FunctionInfo& fn, const fs::path& root) {
+    std::vector<fs::path> cands;
+    if (!fn.file.empty()) {
+        cands = {fs::path(fn.file), root / fn.file, root / fs::path(fn.file).filename()};
+    }
+    std::error_code ec;
+    if (fs::is_regular_file(root, ec)) cands.push_back(root);
+    for (auto& c : cands)
+        if (fs::is_regular_file(c, ec)) return read_text_file(c);
+    if (auto t = read_fn_source(fn); !t.empty()) return t;
+    return fn.signature + "\n{" + fn.body + "\n}";
+}
+
 const char* LLM_SKIP_FUSE_MSG = "llama.cpp/Ollama not reachable; stall mutants / autoprompt skipped";
 
 bool llama_engine_up(LlamaEngine* e) { return e && e->available(); }
@@ -1199,6 +1205,8 @@ std::optional<std::vector<uint8_t>> parse_hex_bytes(std::string h) {
     return out;
 }
 
+}  // namespace
+
 int score_prompt_seeds(const std::vector<std::vector<uint8_t>>& seeds, int nbytes) {
     int n = nbytes > 0 ? nbytes : 1;
     std::set<std::vector<uint8_t>> uniq;
@@ -1211,6 +1219,24 @@ int score_prompt_seeds(const std::vector<std::vector<uint8_t>>& seeds, int nbyte
     return static_cast<int>(uniq.size());
 }
 
+PromptPick pick_best_prompt(const std::vector<std::pair<std::string, std::vector<std::vector<uint8_t>>>>& candidates,
+                            int nbytes) {
+    // Fuzz4All Target.validate_prompt: the highest score wins, ties keep the first.
+    PromptPick best;
+    int best_sc = -1;
+    for (auto& [prompt, seeds] : candidates) {
+        int sc = score_prompt_seeds(seeds, nbytes);
+        if (sc > best_sc) {
+            best = {prompt, seeds, sc};
+            best_sc = sc;
+        }
+    }
+    if (best_sc < 0) return {};
+    return best;
+}
+
+namespace {
+
 std::vector<std::vector<uint8_t>> json_hex_list(const nlohmann::json& data, const char* key) {
     std::vector<std::vector<uint8_t>> out;
     if (!data.is_object() || !data.contains(key) || !data[key].is_array()) return out;
@@ -1220,6 +1246,8 @@ std::vector<std::vector<uint8_t>> json_hex_list(const nlohmann::json& data, cons
     }
     return out;
 }
+
+}  // namespace
 
 std::string documentation_from_comments(const std::string& source) {
     std::vector<std::string> parts;
@@ -1269,6 +1297,17 @@ std::string documentation_from_comments(const std::string& source) {
     return out;
 }
 
+FuzzPrompt create_prompt_from_source(const std::string& name, const std::string& body, const std::string& source) {
+    FuzzPrompt p;
+    p.docstring = documentation_from_comments(source);
+    p.example_code = body.substr(0, std::min<std::size_t>(body.size(), 800));
+    p.hw_prompt = p.docstring.substr(0, p.docstring.find('\n'));
+    p.target_api = name;
+    return p;
+}
+
+namespace {
+
 std::string fuzz4all_autoprompt_text(LlamaEngine& engine, const FunctionInfo& fn) {
     if (!engine.available()) return {};
     auto src_file = read_fn_source(fn);
@@ -1282,6 +1321,8 @@ std::string fuzz4all_autoprompt_text(LlamaEngine& engine, const FunctionInfo& fn
     return t;
 }
 
+}  // namespace
+
 std::string fuzz4all_update_strategy(const std::string& new_hex, const std::string& prev_hex, int strategy) {
     if (strategy == 0) return "seed=" + new_hex + "\ngenerate a new encoding";
     if (strategy == 1) return "seed=" + new_hex + "\nmutate the previous generation";
@@ -1291,23 +1332,23 @@ std::string fuzz4all_update_strategy(const std::string& new_hex, const std::stri
     return "seed=" + new_hex + "\nmutate the previous generation";
 }
 
+namespace {
+
 std::vector<std::vector<uint8_t>> fuzz4all_seeds(LlamaEngine& engine, const FunctionInfo& fn, int nbytes) {
     if (!engine.available()) return {};
     auto user = "nbytes=" + std::to_string(nbytes) + "\n" + fn.signature + "\n{" + fn.body + "\n}";
     auto r = engine.complete({{"system", SYSTEM_FUZZ4ALL}, {"user", user}}, 90.0);
     auto data = r.error.empty() ? extract_json(r.text) : nlohmann::json(nullptr);
-    auto seeds_a = json_hex_list(data, "seeds");
-    int best_sc = score_prompt_seeds(seeds_a, nbytes);
-    auto best = seeds_a;
+    std::vector<std::pair<std::string, std::vector<std::vector<uint8_t>>>> candidates{
+        {SYSTEM_FUZZ4ALL, json_hex_list(data, "seeds")}};
     auto distilled = fuzz4all_autoprompt_text(engine, fn);
     if (!distilled.empty()) {
-        auto r2 = engine.complete(
-            {{"system", std::string(SYSTEM_FUZZ4ALL) + "\n" + distilled}, {"user", user}}, 90.0);
+        auto sys = std::string(SYSTEM_FUZZ4ALL) + "\n" + distilled;
+        auto r2 = engine.complete({{"system", sys}, {"user", user}}, 90.0);
         auto data2 = r2.error.empty() ? extract_json(r2.text) : nlohmann::json(nullptr);
-        auto seeds_b = json_hex_list(data2, "seeds");
-        if (score_prompt_seeds(seeds_b, nbytes) > best_sc) best = std::move(seeds_b);
+        candidates.emplace_back(sys, json_hex_list(data2, "seeds"));
     }
-    return best;
+    return pick_best_prompt(candidates, nbytes).seeds;
 }
 
 std::vector<std::vector<uint8_t>> fuzz4all_mutate_interesting(LlamaEngine& engine, const FunctionInfo& fn,
@@ -1356,7 +1397,7 @@ std::vector<Finding> run_fuse(const std::vector<FunctionInfo>& functions, const 
     double slice_budget = budget > 0.0 ? std::max(0.05, budget / rounds) : 0.0;
     int slice_iters = std::max(1, iters / rounds);
     std::optional<LlamaEngine> eng;
-    if (llm) eng.emplace(Config{});
+    if (llm) eng.emplace(ai::session_config() ? *ai::session_config() : default_config());
     LlamaEngine* ep = eng ? &*eng : nullptr;
     for (auto& fn : functions)
         out.push_back(fuse_one(fn, bmc_findings, src_root, slice_budget, slice_iters, rounds, ep));
@@ -1372,11 +1413,13 @@ std::vector<Finding> run_fuse(const std::vector<FunctionInfo>& functions, const 
         f.extra["install"] = LLM_INSTALL;
         f.extra["autoprompt"] = "NOTRUN";
         f.extra["chatfuzz"] = "NOTRUN";
-        f.extra["docstring"] = documentation_from_comments(read_fn_source(functions[0]));
+        f.extra["docstring"] =
+            create_prompt_from_source(functions[0].name, functions[0].body, fn_source_text(functions[0], src_root))
+                .docstring;
         out.push_back(std::move(f));
     } else if (ep && ep->available()) {
         for (auto& fn : functions) {
-            auto docs = documentation_from_comments(read_fn_source(fn));
+            auto docs = create_prompt_from_source(fn.name, fn.body, fn_source_text(fn, src_root)).docstring;
             std::string distilled = docs;
             try {
                 auto t = fuzz4all_autoprompt_text(*ep, fn);

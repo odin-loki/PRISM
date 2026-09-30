@@ -57,7 +57,6 @@ each project's `lean-toolchain`): `proofs/check.sh` passed all four steps
 
 - Artefacts: `tests/data/verdict_tables.json` (the model evaluated over its
   whole finite domain by `proofs/Prism/Export.lean`),
-  `tests/test_verdict.py::TestLeanTables`,
   `tests/cpp/test_main.cpp::verdict module equals the Lean model`,
   explanation in `docs/VERDICTS.md#connecting-the-proof-to-the-code`.
 - Shows: `src/prism/verdict/verdict.cpp`, the `laws.hpp` string API and
@@ -71,7 +70,8 @@ each project's `lean-toolchain`): `proofs/check.sh` passed all four steps
 ### E04 The verdict audit runs on every report
 
 - Artefacts: the audit call in `src/prism/pipeline.cpp`,
-  `docs/VERDICTS.md#the-verdict-audit`, `tests/test_verdict.py::TestAudit`.
+  `docs/VERDICTS.md#the-verdict-audit`,
+  `tests/cpp/test_main.cpp::verdict audit demotes a non-proving stage`.
 - Shows: a formal verdict from a stage that may not prove is demoted to
   `UNKNOWN` with a recorded violation before the report is written.
 - Does not show: that a proving stage's proof is correct.

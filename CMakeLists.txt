@@ -489,11 +489,20 @@ if(PRISM_TESTS)
     # checkers_cxx.cpp branches and guards (bad / good twins).
     tests/cpp/test_checkers_cxx.cpp
     # ltl and contracts stages.
-    tests/cpp/test_ltl.cpp tests/cpp/test_contracts.cpp)
+    tests/cpp/test_ltl.cpp tests/cpp/test_contracts.cpp
+    # Stage tests ported from the Python suite.
+    tests/cpp/test_thread_taint.cpp tests/cpp/test_wp_harness.cpp
+    tests/cpp/test_diff.cpp tests/cpp/test_journal_confidence.cpp
+    tests/cpp/test_verdict_repo.cpp tests/cpp/test_fuse.cpp)
   target_include_directories(prism_tests PRIVATE
     "${PRISM_ROOT}/include"
     "${PRISM_ROOT}/third_party")
   target_link_libraries(prism_tests PRIVATE prism_core)
+  # The tests find testdata/, proofs/ and tests/data/ from the source dir,
+  # not from __FILE__: Ninja passes sources relative to the build dir
+  # ("../tests/cpp/..."), which resolves only when run from build/, and CI
+  # runs ./build/prism_tests from the repo root.
+  target_compile_definitions(prism_tests PRIVATE PRISM_SOURCE_DIR="${PRISM_ROOT}")
   if(UNIX)
     set_target_properties(prism_tests PROPERTIES BUILD_RPATH "$ORIGIN" INSTALL_RPATH "$ORIGIN")
   endif()

@@ -192,13 +192,26 @@ std::optional<fs::path> which_cc() {
     return cfg.which({"gcc", "clang", "cl"});
 }
 
+std::string collapse_ws(const std::string& typ) {
+    std::istringstream ss(typ);
+    std::string w, out;
+    while (ss >> w) {
+        if (!out.empty()) out += ' ';
+        out += w;
+    }
+    return out;
+}
+
+std::string c_type_key(const std::string& typ) {
+    std::string spaced = typ;
+    std::replace(spaced.begin(), spaced.end(), '*', ' ');
+    return collapse_ws(spaced);
+}
+
 int param_nbytes(const std::vector<std::pair<std::string, std::string>>& params) {
     int n = 0;
     for (auto& [typ, _] : params) {
-        std::string key;
-        for (char c : typ)
-            if (c != '*') key.push_back(c);
-        key = strip(key);
+        auto key = c_type_key(typ);
         auto it = kCTypeSize.find(key);
         n += it == kCTypeSize.end() ? 4 : it->second;
     }
@@ -210,10 +223,7 @@ std::map<std::string, int> decode_args(const FunctionInfo& fn, const std::vector
     std::size_t off = 0;
     for (auto& [typ, name] : fn.params) {
         if (name.empty()) continue;
-        std::string key;
-        for (char c : typ)
-            if (c != '*') key.push_back(c);
-        key = strip(key);
+        auto key = c_type_key(typ);
         int sz = kCTypeSize.contains(key) ? kCTypeSize.at(key) : 4;
         std::vector<uint8_t> chunk(static_cast<std::size_t>(sz), 0);
         for (int i = 0; i < sz && off + static_cast<std::size_t>(i) < data.size(); ++i)

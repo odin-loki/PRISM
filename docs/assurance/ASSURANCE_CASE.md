@@ -43,11 +43,10 @@ several goals are undeveloped.
           - **J1** Finite domains: agreement on every input is equality
             (`docs/VERDICTS.md#connecting-the-proof-to-the-code`).
           - **Sn2** E03: `tests/data/verdict_tables.json`,
-            `tests/test_verdict.py::TestLeanTables`,
             `tests/cpp/test_main.cpp::verdict module equals the Lean model`.
         - **G2.3** Every report is audited before it is written.
           - **Sn3** E04: `src/prism/pipeline.cpp`,
-            `tests/test_verdict.py::TestAudit`.
+            `tests/cpp/test_main.cpp::verdict audit demotes a non-proving stage`.
     - **G3** (b) When a proving stage prints `PROVED`, `PROVED-UNBOUNDED`
       or `PROVED-ASSUMING`, the encoded properties hold.
       - **S3** Argue over the design (proved), the implementation

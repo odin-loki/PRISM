@@ -163,8 +163,22 @@ std::pair<std::string, bool> instrument_decreases(const std::string& body, const
     return {ok ? out : body, ok};
 }
 
+// Every `return` is matched, including `return(x);` and `return;`: a return
+// the regex missed would leave its path without the ensures assert, and the
+// BMC would prove a contract that path breaks.
+const Regex& return_stmt_re() {
+    static Regex re("\\breturn\\b\\s*([^;]*);");
+    return re;
+}
+
+bool has_empty_return(const std::string& body) {
+    for (auto& m : return_stmt_re().finditer(body))
+        if (strip(m.group(1)).empty()) return true;
+    return false;
+}
+
 std::string rewrite_returns(const std::string& body, const std::string& ensures) {
-    static Regex re("\\breturn\\s+([^;]+);");
+    auto& re = return_stmt_re();
     std::string out;
     std::size_t i = 0;
     for (auto& m : re.finditer(body)) {
@@ -174,6 +188,8 @@ std::string rewrite_returns(const std::string& body, const std::string& ensures)
         if (a < i) continue;
         out.append(body, i, a - i);
         auto expr = strip(m.group(1));
+        // An empty return is refused before this (bmc_with_assume); kept
+        // verbatim only so the text stays well-formed.
         if (expr.empty()) out.append(body, a, b - a);
         else
             out += "{ int result = " + expr + "; assert(" + ensures + "); return result; }";
@@ -237,6 +253,13 @@ Finding bmc_with_assume(const FunctionInfo& fn, int unwind, const std::optional<
                             {{"decreases", *decreases}, {"decreases_unencoded", "true"}});
         }
     }
+    // Only SCALAR functions (a value is returned) reach here. A bare `return;`
+    // returns an indeterminate value, so an ensures about the result cannot
+    // hold on that path: never a proof.
+    if (ensures && has_empty_return(core))
+        return fail("return without a value in a function returning a value; the ensures (" + *ensures +
+                        ") cannot be checked on that path; not a proof",
+                    {{"empty_return", "true"}});
     auto cloned = fn;
     cloned.body = instrument_body(core, requires_, ensures);
     auto r = bmc_one(cloned, unwind);

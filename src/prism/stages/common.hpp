@@ -103,6 +103,12 @@ std::string read_fn_source(const FunctionInfo& fn);
 std::optional<std::filesystem::path> which_cc();
 
 // ---- common.cpp: argument encoding and seeds
+// A type with its whitespace runs collapsed to one space and trimmed
+// ("unsigned   char *" -> "unsigned char *").
+std::string collapse_ws(const std::string& typ);
+// The kCTypeSize key of a parameter type: `*` dropped, whitespace runs
+// collapsed ("unsigned   char *" -> "unsigned char").
+std::string c_type_key(const std::string& typ);
 int param_nbytes(const std::vector<std::pair<std::string, std::string>>& params);
 std::map<std::string, int> decode_args(const FunctionInfo& fn, const std::vector<uint8_t>& data);
 std::vector<std::vector<uint8_t>> interesting_seeds(const FunctionInfo& fn);
@@ -120,7 +126,7 @@ struct Spec {
 Spec parse_comments(const FunctionInfo& fn);
 
 // ---- fuse.cpp: FuSeBMC branch goals and BMC counterexample seeds
-std::vector<std::string> branch_goals(const FunctionInfo& fn);
+using ::prism::branch_goals;  // public: include/prism/stages.hpp
 std::vector<std::vector<uint8_t>> seeds_from_bmc(const FunctionInfo& fn, const std::vector<Finding>& bmc_findings);
 
 // ---- contracts.cpp
