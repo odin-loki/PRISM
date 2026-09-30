@@ -341,4 +341,75 @@ TEST_CASE("bmc goto: into the start of an else branch, and self-loop labels end 
 )");
     CHECK(decl["f"].status == kProved);
 }
+
+TEST_CASE("bmc: two-dimensional arrays with per-dimension bounds and nested initialisers") {
+    auto by = bmc_run("arr2d.c", R"(int g_in(int i, int j) {
+    int m[2][2] = {{1, 2}, {3, 4}};
+    if (i < 0 || i > 1 || j < 0 || j > 1) return 0;
+    return m[i][j];
+}
+int g_inner_oob(int i) {
+    int m[2][4] = {{1, 2, 3, 4}, {5, 6, 7, 8}};
+    if (i < 0 || i > 1) return 0;
+    return m[0][i + 3];
+}
+int g_outer_oob(int i) {
+    int m[2][4];
+    if (i < 0 || i > 2) return 0;
+    m[i][0] = 1;
+    return 0;
+}
+int g_partial(int i) {
+    int m[3][3] = {{1}, {2, 3}};
+    return 10 / (m[2][2] + 1) + 10 / m[1][1] + m[0][2];
+}
+int g_partial_zero(int i) {
+    int m[3][3] = {{1}, {2, 3}};
+    return 10 / m[2][2];
+}
+int g_elided(int i) {
+    int m[2][3] = {1, 2, 3, 4};
+    return 10 / m[1][0] + 10 / (m[1][1] + 1);
+}
+int g_store(int i, int j) {
+    int m[3][2];
+    for (int a = 0; a < 3; a++)
+        for (int b = 0; b < 2; b++)
+            m[a][b] = a + b;
+    if (i < 0 || i > 2 || j < 0 || j > 1) return 0;
+    return m[i][j] + 1;
+}
+int g_uninit(int i) {
+    int m[2][2];
+    m[0][0] = 1;
+    return m[1][1];
+}
+int g_row(int i) {
+    int m[2][2] = {{1, 2}, {3, 4}};
+    int *p = m[0];
+    return p[0];
+}
+int g_3d(int i) {
+    int m[2][2][2] = {{{1, 2}, {3, 4}}, {{5, 6}, {7, 8}}};
+    if (i < 0 || i > 1) return 0;
+    return m[i][1][i] / m[1][i][0];
+}
+)");
+    CHECK(by["g_in"].status == kProved);
+    // m[0][4] stays inside the 8-element object but is out of its row.
+    CHECK(by["g_inner_oob"].status == kFailed);
+    CHECK(by["g_inner_oob"].cls == "MEM-OOB-READ");
+    CHECK(by["g_outer_oob"].status == kFailed);
+    CHECK(by["g_outer_oob"].cls == "MEM-OOB-WRITE");
+    CHECK(by["g_partial"].status == kProved);
+    CHECK(by["g_partial_zero"].status == kFailed);
+    CHECK(by["g_partial_zero"].cls == "INT-DIV-ZERO");
+    CHECK(by["g_elided"].status == kProved);
+    CHECK(by["g_store"].status == kProved);
+    CHECK(by["g_uninit"].status == kFailed);
+    CHECK(by["g_uninit"].cls == "UNINIT-READ");
+    CHECK(by["g_row"].status != kProved);
+    CHECK(by["g_row"].status != kFailed);
+    CHECK(by["g_3d"].status == kProved);
+}
 #endif
