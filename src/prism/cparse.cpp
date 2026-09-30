@@ -165,32 +165,30 @@ std::vector<std::pair<std::string, std::string>> split_params(std::string params
             raw = raw.substr(0, eq);  // C++ default argument
             while (!raw.empty() && std::isspace(static_cast<unsigned char>(raw.back()))) raw.pop_back();
         }
-        raw = Regex("\\b(const|volatile|restrict|register)\\b").search(raw)
-                  ? [&] {
-                        std::string r;
-                        std::size_t i = 0;
-                        Regex re("\\b(const|volatile|restrict|register)\\b");
-                        auto tmp = raw;
-                        // simple word strip
-                        std::string acc;
-                        std::string word;
-                        for (char c : (raw + " ")) {
-                            if (std::isalnum(static_cast<unsigned char>(c)) || c == '_') word.push_back(c);
-                            else {
-                                if (word != "const" && word != "volatile" && word != "restrict" && word != "register") {
-                                    if (!acc.empty() && !word.empty()) acc.push_back(' ');
-                                    acc += word;
-                                }
-                                word.clear();
-                                if (!std::isspace(static_cast<unsigned char>(c))) acc.push_back(c);
-                            }
-                        }
-                        return acc;
-                    }()
-                  : raw;
-        std::string spaced = raw;
-        for (char& c : spaced)
-            if (c == '*') { /* keep */ }
+        // Drop cv/storage qualifiers and collapse whitespace; the rest of the
+        // type keeps its spelling (`const std::vector<int>& v` has type
+        // `std::vector<int>&`, not a re-spaced `std:: vector< int>&`).
+        {
+            static const Regex quals("\\b(?:const|volatile|restrict|register)\\b");
+            std::string dropped;
+            std::size_t at = 0;
+            for (auto& qm : quals.finditer(raw)) {
+                dropped.append(raw, at, static_cast<std::size_t>(qm.spans[0].first) - at);
+                at = static_cast<std::size_t>(qm.spans[0].second);
+            }
+            dropped.append(raw, at, std::string::npos);
+            std::string collapsed;
+            for (char c : dropped) {
+                if (std::isspace(static_cast<unsigned char>(c))) {
+                    if (!collapsed.empty() && collapsed.back() != ' ') collapsed.push_back(' ');
+                } else {
+                    collapsed.push_back(c);
+                }
+            }
+            while (!collapsed.empty() && collapsed.back() == ' ') collapsed.pop_back();
+            raw = collapsed;
+        }
+        const std::string& spaced = raw;
         auto m = re_search_match("([A-Za-z_]\\w*)\\s*$", spaced);
         if (!m) {
             out.emplace_back(raw, "");
@@ -906,6 +904,9 @@ std::vector<std::array<int, 3>> comment_col_shifts(std::string_view text) {
 }
 
 int match_brace(std::string_view text, int open_idx) {
+    // A negative start is not a position in the text (it used to index
+    // before text.data()).
+    if (open_idx < 0) return -1;
     int depth = 0;
     int n = static_cast<int>(text.size());
     for (int i = open_idx; i < n; ++i) {
