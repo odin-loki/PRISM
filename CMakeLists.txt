@@ -473,7 +473,7 @@ endif()
 
 if(PRISM_TESTS)
   add_executable(prism_tests tests/cpp/test_main.cpp tests/cpp/test_ai9.cpp tests/cpp/test_conc.cpp
-    tests/cpp/test_leanbb.cpp tests/cpp/test_pir_mem.cpp tests/cpp/test_certified.cpp tests/cpp/test_pir3.cpp
+    tests/cpp/test_leanbb.cpp tests/cpp/test_pir_mem.cpp tests/cpp/test_pir_budget.cpp tests/cpp/test_certified.cpp tests/cpp/test_pir3.cpp
     # Roadmap 2.8 Clang-AST lints.
     tests/cpp/test_astlint.cpp
     # Roadmap 9.1/9.3/9.4 AI assistant features (regress, triage, ask, draft, predict).
