@@ -167,7 +167,7 @@ class TestCppAdapterHonestySourceContract(unittest.TestCase):
         )
         self.assertIn("sanitizer compile failed to start", body)
         self.assertIn("sanitizer run failed to start", body)
-        start = body.find("if (comp.failed)")
+        start = body.find("if (comp.failed")
         self.assertGreaterEqual(start, 0)
         slice_ = body[start : body.find("if (comp.rc != 0)", start)]
         self.assertIn("NOTRUN", slice_)
