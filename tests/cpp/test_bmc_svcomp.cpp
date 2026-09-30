@@ -172,6 +172,25 @@ int main(void) { int a = __VERIFIER_nondet_int(); int b = add1(a); return b; }
         if (f.function && *f.function == "main") CHECK(f.status == kHarness);
 }
 
+TEST_CASE("bmc: a helper whose free names the caller rebinds is not inlined") {
+    // set() writes the global g; inlined into main it would write main's
+    // local g instead, and 10 / g (g == 0 in main) would look safe.
+    for (auto* head : {"", "static "}) {
+        std::string src = std::string("int g;\n") + head + "void set(void) { g = 1; }\n" +
+                          "int main(void) { int g = 0; set(); return 10 / g; }\n";
+        auto by = bmc_run("free_name.c", src);
+        INFO(head);
+        CHECK(by["main"].status != kProved);
+        CHECK(by["main"].status != std::string(prism::laws::PROVED));
+    }
+    // A callee that only uses its parameters and locals is inlined.
+    auto ok = bmc_run("free_name_ok.c", R"(int twice(int v) { int t = v; return t + t; }
+int main(void) { int t = 3; int v = twice(t); return 10 / (v - 6); }
+)");
+    CHECK(ok["main"].status == kFailed);
+    CHECK(ok["main"].cls == "INT-DIV-ZERO");
+}
+
 TEST_CASE("bmc: calls inside if and while bodies of main are inlined and checked") {
     auto in_if = bmc_run("inl_if.c", R"(extern int __VERIFIER_nondet_int(void);
 int add1(int x) { return x + 1; }

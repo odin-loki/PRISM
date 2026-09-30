@@ -146,6 +146,8 @@ bool sole_external_definition(const FunctionInfo& callee, const std::map<std::st
     return !bad.search(callee.signature);
 }
 
+bool free_names_unshadowed(const FunctionInfo& callee, const FunctionInfo& caller);
+
 bool inlineable_callee(const FunctionInfo& callee, const FunctionInfo& caller,
                        const std::map<std::string, int>& defs) {
     // A non-static callee only into `main`: the unit then is the program,
@@ -161,6 +163,7 @@ bool inlineable_callee(const FunctionInfo& callee, const FunctionInfo& caller,
         return false;
     if (callee.kind != "SCALAR" && callee.kind != "VOID") return false;
     if (has_calls(callee.body)) return false;
+    if (!free_names_unshadowed(callee, caller)) return false;
     // A goto's label would be copied once per call site (labels must be
     // unique in a function for the bmc goto model).
     static Regex goto_kw("\\bgoto\\b");
@@ -322,6 +325,70 @@ void add_callee_locals(const std::string& body, const std::string& prefix,
         if (type_words.contains(name) || rename.count(name)) continue;
         rename[name] = prefix + "_l_" + name;
     }
+}
+
+// The identifiers of code (not in string or character literals, not
+// numbers, not member names after `.`/`->`), each with whether a `(`
+// follows it (a call).
+std::vector<std::pair<std::string, bool>> code_idents(std::string_view b) {
+    std::vector<std::pair<std::string, bool>> out;
+    auto word = [](char ch) { return std::isalnum(static_cast<unsigned char>(ch)) || ch == '_'; };
+    for (std::size_t i = 0; i < b.size();) {
+        char ch = b[i];
+        if (ch == '"' || ch == '\'') {
+            for (++i; i < b.size() && b[i] != ch; ++i)
+                if (b[i] == '\\') ++i;
+            ++i;
+            continue;
+        }
+        if (std::isdigit(static_cast<unsigned char>(ch))) {
+            while (i < b.size() && (word(b[i]) || b[i] == '.')) ++i;
+            continue;
+        }
+        if (!word(ch)) {
+            ++i;
+            continue;
+        }
+        std::size_t j = i;
+        while (j < b.size() && word(b[j])) ++j;
+        std::size_t p = i;
+        while (p > 0 && std::isspace(static_cast<unsigned char>(b[p - 1]))) --p;
+        bool member = (p > 0 && b[p - 1] == '.') || (p > 1 && b[p - 1] == '>' && b[p - 2] == '-');
+        std::size_t k = j;
+        while (k < b.size() && std::isspace(static_cast<unsigned char>(b[k]))) ++k;
+        if (!member) out.emplace_back(std::string(b.substr(i, j - i)), k < b.size() && b[k] == '(');
+        i = j;
+    }
+    return out;
+}
+
+// A name the callee uses but does not declare (a global, an enumerator, a
+// macro) must mean the same after inlining: if the caller declares or
+// uses the same name, the inlined text would bind it to the caller's
+// variable instead (a global the callee writes would become the caller's
+// local). Such a callee is not inlined.
+bool free_names_unshadowed(const FunctionInfo& callee, const FunctionInfo& caller) {
+    static const std::unordered_set<std::string> words = {
+        "auto", "break", "case", "char", "const", "continue", "default", "do", "double", "else", "enum",
+        "extern", "float", "for", "goto", "if", "inline", "int", "long", "register", "restrict", "return",
+        "short", "signed", "sizeof", "static", "struct", "switch", "typedef", "union", "unsigned", "void",
+        "volatile", "while", "_Bool", "bool", "true", "false", "size_t", "ssize_t", "ptrdiff_t", "intptr_t",
+        "uintptr_t", "intmax_t", "uintmax_t", "int8_t", "int16_t", "int32_t", "int64_t", "uint8_t",
+        "uint16_t", "uint32_t", "uint64_t"};
+    std::unordered_set<std::string> bound;
+    for (auto& [_, n] : callee.params) bound.insert(n);
+    std::map<std::string, std::string> locals;
+    add_callee_locals(callee.body, "", locals);
+    for (auto& [n, _] : locals) bound.insert(n);
+    std::unordered_set<std::string> caller_names;
+    for (auto& [_, n] : caller.params) caller_names.insert(n);
+    for (auto& [n, call] : code_idents(caller.body))
+        if (!call) caller_names.insert(n);
+    for (auto& [n, call] : code_idents(callee.body)) {
+        if (call || bound.contains(n) || words.contains(n)) continue;
+        if (caller_names.contains(n)) return false;
+    }
+    return true;
 }
 
 std::string param_type(const std::string& typ) {
