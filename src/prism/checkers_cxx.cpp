@@ -270,7 +270,6 @@ void report(std::vector<Finding>& out, std::string_view rel, std::string_view fn
     lint_add(out, rel, std::string(fn), line, cls, msg, lines);
 }
 
-const Regex ONESIDED(R"re(\bif\s*\(\s*(?P<i>[A-Za-z_]\w*)\s*(?:>|>=)\s*(?P<n>[A-Za-z_]\w*)\s*\))re");
 const Regex _ADDRESSOF_BIND(R"re(\b(?P<name>[A-Za-z_]\w*)\s*=\s*(?:std\s*::\s*)?\baddressof\s*\(\s*(?P<src>[A-Za-z_]\w*))re");
 const Regex _ADDRESSOF_INLINE_RET(R"re(\breturn\s+(?:std\s*::\s*)?\baddressof\s*\()re");
 const Regex _ADDRESSOF_IN_INDEX(R"re(\[\s*\*\s*(?:std\s*::\s*)?\baddressof\s*\()re");
@@ -285,7 +284,6 @@ const Regex _AS_CONST_CAST_WRITE(R"re(const_cast\s*<[^>]+>\s*\(\s*(?P<name>[A-Za
 const Regex _AUTO_PTR_USE(R"re(\b(?:std::)?auto_ptr\s*<)re");
 const Regex _BCITER_BIND(R"re(\b(?P<name>[A-Za-z_]\w*)\s*=\s*(?:std\s*::\s*)?basic_const_iterator\b)re");
 const Regex _BCITER_DECL(R"re((?:std\s*::\s*)?basic_const_iterator\s*<[^>]+>\s+(?P<name>[A-Za-z_]\w*))re");
-const Regex _BIND_DISCARDED(R"re(^\s*bind\s*\([^;]*\)\s*;\s*$)re");
 const Regex _BIND_TMP_LOCAL(R"re(const\s+(?:std\s*::\s*)?[A-Za-z_]\w*(?:\s*<[^>]*>)?\s*&\s*(?P<name>[A-Za-z_]\w*)\s*=\s*(?:std\s*::\s*)?[A-Za-z_]\w*\s*[\({])re");
 const Regex _BITCEIL_ASSIGN(R"re(\b(?P<var>[A-Za-z_]\w*)\s*=\s*(?:std\s*::\s*)?(?:bit_ceil|bit_floor|has_single_bit|popcount)\s*\()re");
 const Regex _BITCEIL_IN_INDEX(R"re(\[\s*(?:\(int\))?\s*(?:std\s*::\s*)?(?:bit_ceil|bit_floor|has_single_bit|popcount)\s*\()re");
@@ -553,7 +551,6 @@ const Regex _GCD_IN_INDEX(R"re(\[\s*(?:\(\s*int\s*\))?\s*std\s*::\s*gcd\s*\()re"
 const Regex _GET_TERM_BIND(R"re(\b(?P<name>[A-Za-z_]\w*)\s*=\s*(?:std\s*::\s*)?get_terminate\s*\()re");
 const Regex _HAZARD_DECL(R"re((?:std\s*::\s*)?\bhazard_pointer\b)re");
 const Regex _INIT_LIST_TMP_BEGIN(R"re((?:std\s*::\s*)?initializer_list\s*<[^>]+>\s*\{[^;]*\}\s*\.\s*begin\s*\()re");
-const Regex _INIT_MODULE_DISCARDED(R"re(^\s*\b(?:init_module|finit_module|delete_module)\s*\([^;]*\)\s*;\s*$)re");
 const Regex _INSCAN_CALL(R"re(\binclusive_scan\s*\(\s*(?P<src>[A-Za-z_]\w*)\s*,[^,]+,\s*(?P<dst>[A-Za-z_]\w*))re");
 const Regex _KILLDEP_ASSIGN(R"re(\b(?P<var>[A-Za-z_]\w*)\s*=\s*(?:std\s*::\s*)?kill_dependency\s*\()re");
 const Regex _KILLDEP_IN_INDEX(R"re(\[\s*(?:std\s*::\s*)?kill_dependency\s*\()re");
@@ -563,12 +560,7 @@ const Regex _LERP_ASSIGN(R"re(\b(?P<var>[A-Za-z_]\w*)\s*=\s*(?:\(\s*int\s*\))?\s
 const Regex _LERP_IN_INDEX(R"re(\[\s*(?:\(\s*int\s*\))?\s*(?:std\s*::\s*)?lerp\s*\()re");
 const Regex _LINALG_MATRIX_DECL(R"re((?:std\s*::\s*)?linalg\s*::\s*matrix\s*<[^>]+>\s+(?P<name>[A-Za-z_]\w*))re");
 const Regex _LINALG_SCALED(R"re((?:std\s*::\s*)?linalg\s*::\s*(?:scaled|copied)\s*\()re");
-const Regex _LOCAL_CHAR_ARRAY(R"re(^\s*(?P<static>static\s+)?(?:const\s+)?char\s+(?P<name>[A-Za-z_]\w*)\s*\[\s*(?P<size>\d+)\s*\]\s*;)re", true, false);
 const Regex _LOCAL_DECL(R"re(^\s*(?P<static>static\s+)?(?:const\s+|volatile\s+)?(?:struct\s+\w+|union\s+\w+|enum\s+\w+|(?:unsigned\s+)?(?:char|short|int|long|float|double)|size_t|ssize_t|ptrdiff_t|int\d+_t|uint\d+_t|wchar_t)\s+(?P<name>[A-Za-z_]\w*)(?P<array>\s*\[[^\]]+\])?\s*;)re", true, false);
-const Regex _LOCAL_PTR_UNINIT(R"re(^\s*(?:static\s+)?(?:const\s+|volatile\s+)?(?:struct\s+\w+|union\s+\w+|enum\s+\w+|(?:unsigned\s+)?(?:char|short|int|long|float|double)|void|size_t|ssize_t|ptrdiff_t|int\d+_t|uint\d+_t)\s*\*\s*([A-Za-z_]\w*)\s*;)re", true, false);
-const Regex _LOCAL_STRUCT_DECL(R"re(^\s*(?P<static>static\s+)?struct\s+\w+\s+(?P<name>[A-Za-z_]\w*)\s*(?P<zero>=\s*\{0\})?\s*;)re", true, false);
-const Regex _LOCAL_UNINIT(R"re(^\s*(?:const\s+|volatile\s+)?(?:struct\s+\w+|union\s+\w+|enum\s+\w+|(?:unsigned\s+)?(?:char|short|int|long|float|double)|size_t|ssize_t|ptrdiff_t|int\d+_t|uint\d+_t)\s+([A-Za-z_]\w*)\s*;)re", true, false);
-const Regex _LOCAL_WCHAR_ARRAY(R"re(^\s*(?P<static>static\s+)?(?:const\s+)?wchar_t\s+(?P<name>[A-Za-z_]\w*)\s*\[\s*(?P<size>\d+)\s*\]\s*;)re", true, false);
 const Regex _MAKE_EPTR_BIND(R"re(\b(?P<name>[A-Za-z_]\w*)\s*=\s*(?:std\s*::\s*)?make_exception_ptr\s*\()re");
 const Regex _MAKE_EPTR_INLINE(R"re(\brethrow_exception\s*\(\s*(?:std\s*::\s*)?make_exception_ptr\s*\()re");
 const Regex _MIDPOINT_ASSIGN(R"re(\b(?P<var>[A-Za-z_]\w*)\s*=\s*(?:\(\s*int\s*\))?\s*(?:std\s*::\s*)?midpoint\s*\()re");
@@ -594,7 +586,6 @@ const Regex _REDUCE_IN_INDEX(R"re(\[\s*(?:\(\s*int\s*\))?\s*std\s*::\s*reduce\s*
 const Regex _REF_RET_FN(R"re((?m)^[ \t]*(?:(?:static|inline|constexpr|extern|const)\s+)*(?:const\s+)?(?:std\s*::\s*)?[A-Za-z_]\w*(?:\s*<[^>]*>)?\s*&(?!&)\s*(?P<name>[A-Za-z_]\w*)\s*\((?P<params>[^;{}]*?)\)[^{]*\{)re", true, false);
 const Regex _REGEX_CTOR(R"re((?:std\s*::\s*)?\bregex\s+(?P<name>[A-Za-z_]\w*)\s*[\({]\s*(?P<pat>[^)}]+))re");
 const Regex _REINTERPRET_CAST(R"re(reinterpret_cast\s*<\s*(?P<target>[^>]+?)\s*>\s*\(\s*(?P<src>[^)]+?)\s*\))re");
-const Regex _RETURN_ADDR(R"re(\breturn\s*\(*\s*&\s*\(*\s*([A-Za-z_]\w*)\s*\)*\s*;)re");
 const Regex _RETURN_CTOR(R"re(\breturn\s+(?:std\s*::\s*)?[A-Za-z_]\w*(?:\s*<[^>]*>)?\s*[\({])re");
 const Regex _RETURN_VAR(R"re(\breturn\s+\(?\s*(?!\*&)([A-Za-z_]\w*)\s*\)?\s*;)re");
 const Regex _ROTL_ASSIGN(R"re(\b(?P<var>[A-Za-z_]\w*)\s*=\s*(?:std\s*::\s*)?rot[lr]\s*\()re");
@@ -613,8 +604,6 @@ const Regex _STD_MOVE(R"re(std\s*::\s*move\s*\(\s*(?P<name>[A-Za-z_]\w*)\s*\))re
 const Regex _STR_CSTR_GET(R"re((?P<raw>[A-Za-z_]\w*)\s*=\s*(?P<s>[A-Za-z_]\w*)\s*\.\s*(?:c_str|data)\s*\(\s*\))re");
 const Regex _STR_MUTATE(R"re((?P<s>[A-Za-z_]\w*)\s*(?:\+=|\.\s*(?:clear|append|assign)\s*\())re");
 const Regex _STR_OWN_DECL(R"re(\b(?:std::)?string\s+(?P<name>[A-Za-z_]\w*)\b)re");
-const Regex _SYNCFS_DISCARDED(R"re(^\s*\bsyncfs\s*\([^;]*\)\s*;\s*$)re");
-const Regex _SYNC_FILE_RANGE_DISCARDED(R"re(^\s*\bsync_file_range\s*\([^;]*\)\s*;\s*$)re");
 const Regex _SYNC_WAIT_DISCARDED(R"re(^\s*(?:std\s*::\s*(?:execution\s*::\s*)?)?sync_wait\s*\([^;]*\)\s*;\s*$)re");
 const Regex _TEXT_ENC_CTOR(R"re((?:std\s*::\s*)?\btext_encoding\s+(?P<name>[A-Za-z_]\w*)\s*[\({]\s*(?P<arg>[^)}]+))re");
 const Regex _THROW_IDENT(R"re(\bthrow\s+(?P<ident>[A-Za-z_]\w*)\s*;)re");
@@ -715,7 +704,11 @@ bool move_use_after(std::string_view name, std::string_view ln) {
 void cxx_index_token_scan(const std::vector<std::string>& lines, std::string_view rel,
                           const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out,
                           const Regex& token_re, const Regex& in_index_re, const Regex& assign_re,
-                          std::string_view cls, std::string_view message) {
+                          std::string_view cls, std::string_view message,
+                          std::string_view idx_what = {}) {
+    // idx_what names the token in the `c[i] indexes with ...` message; the
+    // generic form names the rule (prism/checkers.py _cxx_index_token_scan).
+    if (idx_what.empty()) idx_what = cls;
     for (auto& fn : funcs) {
         if (!token_re.search(fn.body)) continue;
         std::set<std::string> assigned;
@@ -733,7 +726,7 @@ void cxx_index_token_scan(const std::vector<std::string>& lines, std::string_vie
                 if (!assigned.count(idx)) continue;
                 if (byteswap_idx_guarded(idx, fn.body)) continue;
                 report(out, rel, fn.name, start + i, cls,
-                       m.named("cont") + "[" + idx + "] indexes with " + std::string(cls)
+                       m.named("cont") + "[" + idx + "] indexes with " + std::string(idx_what)
                            + " without a range check",
                        lines);
                 return;
@@ -855,6 +848,74 @@ void cxx_token_unless(const std::vector<std::string>& lines, std::string_view re
             return;
         }
     }
+}
+
+// Report the first body line of `fn` that `token` matches; true if one did.
+bool report_first_line(const std::vector<std::string>& lines, std::string_view rel, const FunctionInfo& fn,
+                       const Regex& token, std::string_view cls, std::string_view message,
+                       std::vector<Finding>& out) {
+    auto body_lines = split_lines(fn.body);
+    for (int i = 0; i < static_cast<int>(body_lines.size()); ++i) {
+        if (!token.search(body_lines[static_cast<std::size_t>(i)])) continue;
+        report(out, rel, fn.name, fn.span.first + i, cls, std::string(message), lines);
+        return true;
+    }
+    return false;
+}
+
+// A raw pointer (from get()/c_str()) read on this line: `*raw` (not its
+// own `T *raw =` declaration), `raw->`, `raw[`, or passed in a call. A
+// fresh `raw = up.get()` re-binds it and is no use.
+bool raw_ptr_used(const std::string& raw, std::string_view ln) {
+    auto v = re_escape(raw);
+    if (_UNIQUE_RAW_GET.search(ln)) return false;
+    if (re_search("(?<!\\w)\\*\\s*" + v + "\\b", ln)) {
+        return !re_search("^\\s*(?:const\\s+)?(?:unsigned\\s+)?"
+                          "(?:int|char|void|auto|short|long|float|double|size_t|std::\\w+)\\s+\\*\\s*"
+                              + v + "\\s*=",
+                          ln);
+    }
+    if (re_search("\\b" + v + "\\s*->", ln)) return true;
+    if (re_search("\\b" + v + "\\s*\\[", ln)) return true;
+    return re_search("\\([^)]*\\b" + v + "\\b[^)]*\\)", ln);
+}
+
+// Locals (declared before the lambda) that a capture list takes by
+// reference: all of them for `[&]` / `[&, x]` less the by-value names, the
+// named ones for `[&x]` / `[.., &x]`; none for `[=]`.
+std::set<std::string> lambda_ref_locals(const std::string& capture, const std::set<std::string>& locals_before) {
+    std::string cap;
+    for (char c : capture)
+        if (!std::isspace(static_cast<unsigned char>(c))) cap.push_back(c);
+    if (cap.find('&') == std::string::npos) return {};
+    if (cap[0] == '=' && cap.find('&', 1) == std::string::npos) return {};
+    if (cap[0] == '&') {
+        if (cap == "&" || cap.starts_with("&,")) {
+            std::set<std::string> val_only;
+            if (cap.starts_with("&,")) {
+                std::string rest = cap.substr(2);
+                std::size_t at = 0;
+                while (at <= rest.size()) {
+                    auto comma = rest.find(',', at);
+                    std::string part = rest.substr(at, comma == std::string::npos ? std::string::npos : comma - at);
+                    if (!part.empty() && part[0] != '&') val_only.insert(part.substr(0, part.find_first_of("=:")));
+                    if (comma == std::string::npos) break;
+                    at = comma + 1;
+                }
+            }
+            std::set<std::string> refs;
+            for (auto& l : locals_before)
+                if (!val_only.count(l)) refs.insert(l);
+            return refs;
+        }
+        if (auto m = re_search_match(R"(^&([A-Za-z_]\w*))", cap); m && locals_before.count(m->group(1)))
+            return {m->group(1)};
+    }
+    std::set<std::string> refs;
+    static const Regex named_ref(R"(,&([A-Za-z_]\w*))");
+    for (auto& m : named_ref.finditer(cap))
+        if (locals_before.count(m.group(1))) refs.insert(m.group(1));
+    return refs;
 }
 
 void cxx_sub_no_size(const std::vector<std::string>& lines, std::string_view rel,
@@ -1531,8 +1592,8 @@ void _cxx_missing_virtual_dtor(std::string_view stripped, const std::vector<std:
 
 void _cxx_auto_ptr(const std::vector<std::string>& lines, std::string_view rel,
                    const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
-    cxx_first_token(lines, rel, funcs, out, _AUTO_PTR_USE, "CXX-AUTO-PTR",
-                    "std::auto_ptr is deprecated; use unique_ptr");
+    for (auto& fn : funcs) report_first_line(lines, rel, fn, _AUTO_PTR_USE, "CXX-AUTO-PTR",
+                                             "std::auto_ptr is deprecated; use unique_ptr", out);
 }
 
 void _cxx_throw_new(const std::vector<std::string>& lines, std::string_view rel,
@@ -1804,16 +1865,18 @@ void _cxx_std_async(const std::vector<std::string>& lines, std::string_view rel,
 
 void _cxx_std_bind(const std::vector<std::string>& lines, std::string_view rel,
                    const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
-    cxx_first_token(lines, rel, funcs, out, _STD_BIND_CALL, "CXX-STD-BIND", "std::bind(); prefer a lambda");
+    for (auto& fn : funcs) report_first_line(lines, rel, fn, _STD_BIND_CALL, "CXX-STD-BIND",
+                                             "std::bind(); prefer a lambda", out);
 }
 
+// [[assume(false)]] / [[assume(0)]] in a function that still returns.
 void _cxx_assume(const std::vector<std::string>& lines, std::string_view rel,
                  const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     for (auto& fn : funcs) {
         if (!re_search(R"(\breturn\b)", fn.body)) continue;
-        cxx_first_token(lines, rel, funcs, out, _CXX_ASSUME_FALSE, "CXX-ASSUME",
-                        "[[assume(false)]] / [[assume(0)]] is an unreachable lie");
-        break;
+        if (report_first_line(lines, rel, fn, _CXX_ASSUME_FALSE, "CXX-ASSUME",
+                              "[[assume(false)]] / [[assume(0)]] is an unreachable lie", out))
+            return;
     }
 }
 
@@ -1849,10 +1912,23 @@ void _cxx_regex(const std::vector<std::string>& lines, std::string_view rel,
     }
 }
 
+// shared_from_this() without enable_shared_from_this in the function; once
+// per function.
 void _cxx_enable_shared(const std::vector<std::string>& lines, std::string_view rel,
                         const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
-    cxx_token_unless(lines, rel, funcs, out, _SHARED_FROM_THIS, R"(\benable_shared_from_this\b)",
-                     "CXX-ENABLE-SHARED", "shared_from_this() without enable_shared_from_this");
+    for (auto& fn : funcs) {
+        if (!_SHARED_FROM_THIS.search(fn.body)) continue;
+        if (_ENABLE_SHARED_FROM.search(fn.body)) continue;
+        auto bl = split_lines(fn.body);
+        int hit_i = 0;
+        for (int i = 0; i < static_cast<int>(bl.size()); ++i)
+            if (_SHARED_FROM_THIS.search(bl[static_cast<std::size_t>(i)])) {
+                hit_i = i;
+                break;
+            }
+        report(out, rel, fn.name, fn.span.first + hit_i, "CXX-ENABLE-SHARED",
+               "shared_from_this() without enable_shared_from_this", lines);
+    }
 }
 
 void _cxx_move_const(const std::vector<std::string>& lines, std::string_view rel,
@@ -1963,6 +2039,8 @@ void _cxx_std_format(const std::vector<std::string>& lines, std::string_view rel
     }
 }
 
+// Return of a lambda that captures a local by reference (a local declared
+// before the lambda; parameters and `this` members do not dangle here).
 void _cxx_lambda_dangle(const std::vector<std::string>& lines, std::string_view rel,
                         const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     for (auto& fn : funcs) {
@@ -1972,25 +2050,22 @@ void _cxx_lambda_dangle(const std::vector<std::string>& lines, std::string_view 
         auto body_lines = split_lines(fn.body);
         auto start = fn.span.first;
         std::set<std::string> locals_so_far;
-        std::map<std::string, std::set<std::string>> returned_lambdas;
+        std::set<std::string> returned_lambdas;
         for (int i = 0; i < static_cast<int>(body_lines.size()); ++i) {
             auto& ln = body_lines[static_cast<std::size_t>(i)];
             if (auto m = match_at_start_line(_CXX_LOCAL_LINE, ln)) {
                 auto name = m->named("name");
                 if (!params.count(name) && !KW.count(name)) locals_so_far.insert(name);
             }
-            if (auto m = _CXX_AUTO_LAMBDA.search_match(ln)) {
-                auto cap = re_sub_pat(R"(\s+)", "", m->named("capture"));
-                if (cap.find('&') != std::string::npos) returned_lambdas[m->named("name")] = {"ref"};
-            }
-            if (auto m = _CXX_RETURN_LAMBDA.search_match(ln)) {
-                auto cap = re_sub_pat(R"(\s+)", "", m->named("capture"));
-                if (cap.find('&') != std::string::npos) {
+            if (auto m = _CXX_AUTO_LAMBDA.search_match(ln))
+                if (!lambda_ref_locals(m->named("capture"), locals_so_far).empty())
+                    returned_lambdas.insert(m->named("name"));
+            if (auto m = _CXX_RETURN_LAMBDA.search_match(ln))
+                if (!lambda_ref_locals(m->named("capture"), locals_so_far).empty()) {
                     report(out, rel, fn.name, start + i, "CXX-LAMBDA-DANGLE",
                            "returned lambda captures local by reference", lines);
                     break;
                 }
-            }
             if (auto m = _CXX_RETURN_NAME.search_match(ln); m && returned_lambdas.count(m->named("name"))) {
                 report(out, rel, fn.name, start + i, "CXX-LAMBDA-DANGLE",
                        "returned lambda captures local by reference", lines);
@@ -2000,19 +2075,20 @@ void _cxx_lambda_dangle(const std::vector<std::string>& lines, std::string_view 
     }
 }
 
+// Use of raw pointer from unique_ptr::get after reset/null assignment.
 void _cxx_unique_reset(const std::vector<std::string>& lines, std::string_view rel,
                        const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     for (auto& fn : funcs) {
         auto body_lines = split_lines(fn.body);
         auto start = fn.span.first;
         std::set<std::string> unique_ptrs;
-        std::map<std::string, std::string> raw_owner;
+        OrderedBinds raw_owner;
         std::map<std::string, int> reset_at;
         for (int i = 0; i < static_cast<int>(body_lines.size()); ++i) {
             auto& ln = body_lines[static_cast<std::size_t>(i)];
             for (auto& m : _UNIQUE_PTR_DECL.finditer(ln)) unique_ptrs.insert(m.named("name"));
             if (auto m = _UNIQUE_RAW_GET.search_match(ln); m && unique_ptrs.count(m->named("up")))
-                raw_owner[m->named("raw")] = m->named("up");
+                bind_set(raw_owner, m->named("raw"), m->named("up"));
             for (auto& m : _UNIQUE_RESET.finditer(ln))
                 if (unique_ptrs.count(m.named("up"))) reset_at.emplace(m.named("up"), i);
             if (auto m = _UNIQUE_NULL.search_match(ln); m && unique_ptrs.count(m->named("up")))
@@ -2020,11 +2096,7 @@ void _cxx_unique_reset(const std::vector<std::string>& lines, std::string_view r
             for (auto& [raw, up] : raw_owner) {
                 auto it = reset_at.find(up);
                 if (it == reset_at.end() || i <= it->second) continue;
-                if (_UNIQUE_RAW_GET.search(ln)) continue;
-                auto v = re_escape(raw);
-                if (!(re_search("(?<!\\w)\\*\\s*" + v + "\\b", ln) || re_search("\\b" + v + "\\s*->", ln)
-                      || re_search("\\b" + v + "\\s*\\[", ln) || re_search("\\([^)]*\\b" + v + "\\b[^)]*\\)", ln)))
-                    continue;
+                if (!raw_ptr_used(raw, ln)) continue;
                 report(out, rel, fn.name, start + i, "CXX-UNIQUE-RESET",
                        raw + " from " + up + ".get() used after reset", lines);
                 return;
@@ -2033,19 +2105,22 @@ void _cxx_unique_reset(const std::vector<std::string>& lines, std::string_view r
     }
 }
 
+// Raw pointer from shared_ptr::get used after reset/null assignment; once
+// per function.
 void _cxx_shared_get(const std::vector<std::string>& lines, std::string_view rel,
                      const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     for (auto& fn : funcs) {
         auto body_lines = split_lines(fn.body);
         auto start = fn.span.first;
         std::set<std::string> shared_ptrs;
-        std::map<std::string, std::string> raw_owner;
+        OrderedBinds raw_owner;
         std::map<std::string, int> reset_at;
-        for (int i = 0; i < static_cast<int>(body_lines.size()); ++i) {
+        bool hit = false;
+        for (int i = 0; i < static_cast<int>(body_lines.size()) && !hit; ++i) {
             auto& ln = body_lines[static_cast<std::size_t>(i)];
             for (auto& m : _SHARED_PTR_DECL.finditer(ln)) shared_ptrs.insert(m.named("name"));
             if (auto m = _UNIQUE_RAW_GET.search_match(ln); m && shared_ptrs.count(m->named("up")))
-                raw_owner[m->named("raw")] = m->named("up");
+                bind_set(raw_owner, m->named("raw"), m->named("up"));
             for (auto& m : _UNIQUE_RESET.finditer(ln))
                 if (shared_ptrs.count(m.named("up"))) reset_at.emplace(m.named("up"), i);
             if (auto m = _UNIQUE_NULL.search_match(ln); m && shared_ptrs.count(m->named("up")))
@@ -2053,61 +2128,69 @@ void _cxx_shared_get(const std::vector<std::string>& lines, std::string_view rel
             for (auto& [raw, up] : raw_owner) {
                 auto it = reset_at.find(up);
                 if (it == reset_at.end() || i <= it->second) continue;
-                auto v = re_escape(raw);
-                if (!(re_search("(?<!\\w)\\*\\s*" + v + "\\b", ln) || re_search("\\b" + v + "\\s*->", ln)
-                      || re_search("\\b" + v + "\\s*\\[", ln)))
-                    continue;
+                if (!raw_ptr_used(raw, ln)) continue;
                 report(out, rel, fn.name, start + i, "CXX-SHARED-PTR-GET",
                        raw + " from " + up + ".get() used after reset", lines);
-                return;
+                hit = true;
+                break;
             }
         }
     }
 }
 
+// Pointer from string c_str()/data() used after clear/+=/append/assign;
+// once per function.
 void _cxx_string_data(const std::vector<std::string>& lines, std::string_view rel,
                       const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     for (auto& fn : funcs) {
         auto body_lines = split_lines(fn.body);
         auto start = fn.span.first;
         std::set<std::string> strings;
-        std::map<std::string, std::string> raw_owner;
+        OrderedBinds raw_owner;
         std::map<std::string, int> mutate_at;
-        for (int i = 0; i < static_cast<int>(body_lines.size()); ++i) {
+        bool hit = false;
+        for (int i = 0; i < static_cast<int>(body_lines.size()) && !hit; ++i) {
             auto& ln = body_lines[static_cast<std::size_t>(i)];
             for (auto& m : _STR_OWN_DECL.finditer(ln)) strings.insert(m.named("name"));
             if (auto m = _STR_CSTR_GET.search_match(ln); m && strings.count(m->named("s")))
-                raw_owner[m->named("raw")] = m->named("s");
+                bind_set(raw_owner, m->named("raw"), m->named("s"));
             for (auto& m : _STR_MUTATE.finditer(ln))
                 if (strings.count(m.named("s"))) mutate_at.emplace(m.named("s"), i);
             for (auto& [raw, s] : raw_owner) {
                 auto it = mutate_at.find(s);
                 if (it == mutate_at.end() || i <= it->second) continue;
-                auto v = re_escape(raw);
-                if (!(re_search("(?<!\\w)\\*\\s*" + v + "\\b", ln) || re_search("\\b" + v + "\\s*\\[", ln)))
-                    continue;
+                if (!raw_ptr_used(raw, ln)) continue;
                 report(out, rel, fn.name, start + i, "CXX-STRING-DATA",
                        raw + " from " + s + ".c_str()/data() used after mutation", lines);
-                return;
+                hit = true;
+                break;
             }
         }
     }
 }
 
+// unique_ptr.get() on a line after its release(); reset() is
+// CXX-UNIQUE-RESET.
 void _cxx_unique_release(const std::vector<std::string>& lines, std::string_view rel,
                          const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     for (auto& fn : funcs) {
-        auto ups = names_of(_UNIQUE_PTR_DECL, fn.body);
-        if (ups.empty()) continue;
-        auto start = fn.span.first;
         auto body_lines = split_lines(fn.body);
-        for (auto& up : ups) {
-            if (!re_search("\\b" + re_escape(up) + "\\s*\\.\\s*release\\s*\\(", fn.body)) continue;
-            for (int i = 0; i < static_cast<int>(body_lines.size()); ++i) {
-                if (!re_search("\\b" + re_escape(up) + "\\s*\\.\\s*get\\s*\\(", body_lines[static_cast<std::size_t>(i)]))
-                    continue;
-                report(out, rel, fn.name, start + i, "CXX-UNIQUE-RELEASE",
-                       up + ".get() used after release()", lines);
+        auto start = fn.span.first;
+        std::set<std::string> unique_ptrs;
+        std::vector<std::pair<std::string, int>> released_at;  // first release line, in order
+        for (int i = 0; i < static_cast<int>(body_lines.size()); ++i) {
+            auto& ln = body_lines[static_cast<std::size_t>(i)];
+            for (auto& m : _UNIQUE_PTR_DECL.finditer(ln)) unique_ptrs.insert(m.named("name"));
+            for (auto& m : _UNIQUE_RELEASE.finditer(ln)) {
+                auto up = m.named("up");
+                if (!unique_ptrs.count(up)) continue;
+                if (std::none_of(released_at.begin(), released_at.end(), [&](auto& p) { return p.first == up; }))
+                    released_at.emplace_back(up, i);
+            }
+            for (auto& [up, rline] : released_at) {
+                if (i <= rline) continue;
+                if (!re_search("\\b" + re_escape(up) + "\\s*\\.\\s*get\\s*\\(", ln)) continue;
+                report(out, rel, fn.name, start + i, "CXX-UNIQUE-RELEASE", up + ".get() used after release()", lines);
                 return;
             }
         }
@@ -2137,20 +2220,42 @@ void _cxx_fwd_ref(const std::vector<std::string>& lines, std::string_view rel,
     }
 }
 
+// bit_cast between object pointers, or between a pointer and an integer.
+// A char/void/byte pointer on either side is not a type pun.
 void _cxx_bit_cast(const std::vector<std::string>& lines, std::string_view rel,
                    const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     for (auto& fn : funcs) {
+        std::map<std::string, std::string> ptr_decls;
+        for (auto& [typ, name] : fn.params)
+            if (!name.empty() && typ.find('*') != std::string::npos) ptr_decls[name] = typ;
+        for (auto& m : _CXX_PTR_DECL_LINE.finditer(fn.body)) ptr_decls[m.named("name")] = strip(m.named("typ"));
+        for (auto& m : _CXX_PTR_DECL_ANY.finditer(fn.body)) ptr_decls.emplace(m.named("name"), strip(m.named("typ")));
+        // The source is an object pointer: `&x` / `p + 1` of unknown or object
+        // type, or a name declared as one.
+        auto src_is_obj_ptr = [&](std::string src) {
+            src = strip(src);
+            if (src.find('*') != std::string::npos || (!src.empty() && src[0] == '&')) {
+                // `&x`: no scalar table here, so the address's type is unknown.
+                std::optional<std::string> src_typ;
+                if (!re_search(R"(^&\s*[A-Za-z_]\w*)", src))
+                    if (auto nm = re_search_match(R"(^([A-Za-z_]\w*))", src))
+                        if (auto it = ptr_decls.find(nm->group(1)); it != ptr_decls.end()) src_typ = it->second;
+                return !src_typ || !allowed_reinterp_pointee(*src_typ);
+            }
+            auto nm = re_search_match(R"(^([A-Za-z_]\w*))", src);
+            if (!nm) return false;
+            auto it = ptr_decls.find(nm->group(1));
+            if (it == ptr_decls.end()) return false;
+            return !allowed_reinterp_pointee(it->second);
+        };
         auto start = fn.span.first;
         auto body_lines = split_lines(fn.body);
         for (int i = 0; i < static_cast<int>(body_lines.size()); ++i) {
             for (auto& m : _BIT_CAST.finditer(body_lines[static_cast<std::size_t>(i)])) {
                 auto tgt = strip(m.named("tgt"));
-                bool tgt_obj = tgt.find('*') != std::string::npos && !allowed_reinterp_pointee(tgt);
-                if (!tgt_obj && m.named("src").find('*') == std::string::npos
-                    && m.named("src").find('&') == std::string::npos)
-                    continue;
-                report(out, rel, fn.name, start + i, "CXX-BIT-CAST",
-                       "bit_cast type-puns an object pointer", lines);
+                const bool tgt_obj_ptr = tgt.find('*') != std::string::npos && !allowed_reinterp_pointee(tgt);
+                if (!tgt_obj_ptr && !src_is_obj_ptr(m.named("src"))) continue;
+                report(out, rel, fn.name, start + i, "CXX-BIT-CAST", "bit_cast type-puns an object pointer", lines);
                 return;
             }
         }
@@ -2287,6 +2392,17 @@ void _cxx_uninit_member(std::string_view stripped, const std::vector<std::string
         std::vector<std::string> missing;
         for (auto& mem : members)
             if (!re_search("\\b" + re_escape(mem) + "\\s*\\(", init)) missing.push_back(mem);
+        if (missing.empty()) continue;
+        // A member assigned in the constructor body is initialised too.
+        const int ctor_brace = ctor->spans[0].second - 1;
+        const int ctor_close = match_brace(body, ctor_brace);
+        const std::string ctor_body =
+            ctor_close >= 0 ? body.substr(static_cast<std::size_t>(ctor_brace) + 1,
+                                          static_cast<std::size_t>(ctor_close - ctor_brace - 1))
+                            : std::string();
+        std::erase_if(missing, [&](const std::string& mem) {
+            return re_search("\\b" + re_escape(mem) + "\\s*=", ctor_body);
+        });
         if (missing.empty()) continue;
         std::string mems;
         for (std::size_t i = 0; i < missing.size(); ++i) {
@@ -2860,16 +2976,23 @@ void _cxx_stacktrace(const std::vector<std::string>& lines, std::string_view rel
     }
 }
 
+// #pragma pack(1) plus the address of a non-char packed-struct member. A
+// memcpy line copies the bytes and is not a misaligned access.
 void _cxx_pack_pragma(const std::vector<std::string>& lines, std::string_view rel,
                       const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     std::string blob;
-    for (auto& ln : lines) { if (!blob.empty()) blob += '\n'; blob += ln; }
+    for (std::size_t k = 0; k < lines.size(); ++k) {
+        if (k) blob += '\n';
+        blob += lines[k];
+    }
     if (!_PACK_PRAGMA_1.search(blob)) return;
     for (auto& fn : funcs) {
         auto start = fn.span.first;
         auto bl = split_lines(fn.body);
         for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
-            if (!_PACK_INT_MEMBER_ADDR.search(bl[static_cast<std::size_t>(i)])) continue;
+            auto& ln = bl[static_cast<std::size_t>(i)];
+            if (re_search(R"(\bmemcpy\s*\()", ln)) continue;
+            if (!_PACK_INT_MEMBER_ADDR.search(ln)) continue;
             report(out, rel, fn.name, start + i, "CXX-PACK-PRAGMA",
                    "address of a non-char member of a #pragma pack(1) struct", lines);
             return;
@@ -2877,20 +3000,18 @@ void _cxx_pack_pragma(const std::vector<std::string>& lines, std::string_view re
     }
 }
 
+// function_ref bound to a temporary lambda/call, or returned (CWE-416/562).
+// A named function or named lvalue lambda is fine.
 void _cxx_function_ref(const std::vector<std::string>& lines, std::string_view rel,
                        const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     for (auto& fn : funcs) {
-        if (_CXX_FN_REF_RETURN.search(fn.body) || _CXX_FN_REF_TMP.search(fn.body)) {
-            auto start = fn.span.first;
-            auto bl = split_lines(fn.body);
-            for (int i = 0; i < static_cast<int>(bl.size()); ++i)
-                if (_CXX_FN_REF_RETURN.search(bl[static_cast<std::size_t>(i)])
-                    || _CXX_FN_REF_TMP.search(bl[static_cast<std::size_t>(i)])) {
-                    report(out, rel, fn.name, start + i, "CXX-FUNCTION-REF",
-                           "function_ref bound to a temporary then returned", lines);
-                    return;
-                }
-        }
+        if (_CXX_FN_REF_RETURN.search(fn.body)
+            && report_first_line(lines, rel, fn, _CXX_FN_REF_RETURN, "CXX-FUNCTION-REF",
+                                 "function_ref bound to a temporary then returned", out))
+            return;
+        if (report_first_line(lines, rel, fn, _CXX_FN_REF_TMP, "CXX-FUNCTION-REF",
+                              "function_ref bound to a temporary lambda or call", out))
+            return;
     }
 }
 
@@ -2913,28 +3034,45 @@ void _cxx_move_only_function(const std::vector<std::string>& lines, std::string_
     }
 }
 
+// A views pipeline whose first range is a temporary string/vector
+// (CWE-416). A function that materializes the range into a named
+// vector/string from .begin() first is spared.
 void _cxx_ranges_dangle(const std::vector<std::string>& lines, std::string_view rel,
                         const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
-    cxx_first_token(lines, rel, funcs, out, _RANGES_TMP_PIPE, "CXX-RANGES-DANGLE",
-                    "views pipeline over a temporary range");
+    static const Regex pipe(R"(\|\s*(?:std\s*::\s*)?(?:ranges\s*::\s*)?views\s*::)");
+    for (auto& fn : funcs) {
+        if (!_RANGES_TMP_PIPE.search(fn.body)) continue;
+        if (_RANGES_MATERIALIZE.search(fn.body)) continue;
+        auto start = fn.span.first;
+        auto bl = split_lines(fn.body);
+        for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
+            auto& ln = bl[static_cast<std::size_t>(i)];
+            if (!(_RANGES_TMP_PIPE.search(ln) || pipe.search(ln))) continue;
+            report(out, rel, fn.name, start + i, "CXX-RANGES-DANGLE", "views pipeline over a temporary range", lines);
+            return;
+        }
+    }
 }
 
+// inplace_vector push_back/emplace_back without a capacity guard (CWE-787).
 void _cxx_inplace_vector(const std::vector<std::string>& lines, std::string_view rel,
                          const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     for (auto& fn : funcs) {
         auto names = names_of(_CXX_INPLACE_DECL, fn.body);
+        if (names.empty()) continue;
         auto start = fn.span.first;
         auto bl = split_lines(fn.body);
         for (auto& name : names) {
             auto n = re_escape(name);
-            if (re_search("\\b" + n + "\\s*\\.\\s*(?:size|capacity|try_push_back)\\s*\\(", fn.body))
-                continue;
-            for (int i = 0; i < static_cast<int>(bl.size()); ++i)
-                if (re_search("\\b" + n + "\\s*\\.\\s*push_back\\s*\\(", bl[static_cast<std::size_t>(i)])) {
-                    report(out, rel, fn.name, start + i, "CXX-INPLACE-VECTOR",
-                           name + ".push_back without size()/capacity()/try_push_back", lines);
-                    return;
-                }
+            if (re_search("\\b" + n + "\\s*\\.\\s*(?:size|capacity|try_push_back)\\s*\\(", fn.body)) continue;
+            for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
+                if (!re_search("\\b" + n + "\\s*\\.\\s*(?:push_back|emplace_back)\\s*\\(",
+                               bl[static_cast<std::size_t>(i)]))
+                    continue;
+                report(out, rel, fn.name, start + i, "CXX-INPLACE-VECTOR",
+                       name + ".push_back without size()/capacity()/try_push_back()", lines);
+                return;
+            }
         }
     }
 }
@@ -2989,32 +3127,47 @@ void _cxx_hive(const std::vector<std::string>& lines, std::string_view rel,
     }
 }
 
+// bitset .test(n) / [n] with n a parameter and no n < N / size() guard
+// (CWE-125).
 void _cxx_bitset_index(const std::vector<std::string>& lines, std::string_view rel,
                        const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
+    auto guarded = [](const std::string& idx, const std::string& nlit, const std::string& name,
+                      std::string_view body) {
+        auto i = re_escape(strip(idx)), lit = re_escape(strip(nlit)), b = re_escape(name);
+        return re_search("\\bif\\s*\\(\\s*" + i + "\\s*<\\s*" + lit + "\\b", body)
+            || re_search("\\bif\\s*\\(\\s*" + i + "\\s*>=\\s*" + lit + "\\b", body)
+            || re_search("\\bif\\s*\\(\\s*" + i + "\\s*<\\s*" + b + "\\s*\\.\\s*size\\s*\\(\\s*\\)", body)
+            || re_search("\\bif\\s*\\(\\s*" + i + "\\s*>=\\s*" + b + "\\s*\\.\\s*size\\s*\\(\\s*\\)", body)
+            || re_search("\\bif\\s*\\(\\s*" + b + "\\s*\\.\\s*size\\s*\\(\\s*\\)\\s*>\\s*" + i, body);
+    };
     for (auto& fn : funcs) {
-        auto names = names_of(_CXX_BITSET_DECL, fn.body);
+        auto decls = _CXX_BITSET_DECL.finditer(fn.body);
+        if (decls.empty()) continue;
+        std::set<std::string> params;
+        for (auto& [typ, name] : fn.params)
+            if (!name.empty()) params.insert(name);
         auto start = fn.span.first;
         auto bl = split_lines(fn.body);
         for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
             auto& ln = bl[static_cast<std::size_t>(i)];
-            if (auto m = _CXX_BITSET_TEST.search_match(ln); m && names.count(m->named("name"))) {
-                auto idx = m->named("idx");
-                if (byteswap_idx_guarded(idx, fn.body)) continue;
+            std::vector<std::pair<std::string, std::string>> hits;  // (bitset, index)
+            for (auto& m : _CXX_BITSET_TEST.finditer(ln)) hits.emplace_back(m.named("name"), m.named("idx"));
+            for (auto& m : _CXX_SUBSCRIPT.finditer(ln)) hits.emplace_back(m.named("cont"), m.named("idx"));
+            for (auto& [name, idx] : hits) {
+                auto decl = std::find_if(decls.begin(), decls.end(), [&](auto& d) { return d.named("name") == name; });
+                if (decl == decls.end()) continue;
+                if (!params.count(strip(idx))) continue;
+                if (guarded(idx, decl->named("n"), name, fn.body)) continue;
                 report(out, rel, fn.name, start + i, "CXX-BITSET-INDEX",
-                       m->named("name") + ".test/" + m->named("name") + "[" + idx + "] without a size guard",
-                       lines);
+                       name + ".test/" + name + "[" + strip(idx) + "] without a size()/N guard", lines);
                 return;
             }
-            for (auto& m : _CXX_SUBSCRIPT.finditer(ln))
-                if (names.count(m.named("cont")) && toarr_idx_bad(strip(m.named("idx")), std::nullopt, fn.body)) {
-                    report(out, rel, fn.name, start + i, "CXX-BITSET-INDEX",
-                           m.named("cont") + "[" + strip(m.named("idx")) + "] without a size guard", lines);
-                    return;
-                }
         }
     }
 }
 
+// string_view / c_str of stringstream::str() past the full-expression.
+// Distinct from CXX-STRING-DATA (mutation after c_str on a string).
 void _cxx_sstream_view(const std::vector<std::string>& lines, std::string_view rel,
                        const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     for (auto& fn : funcs) {
@@ -3026,7 +3179,7 @@ void _cxx_sstream_view(const std::vector<std::string>& lines, std::string_view r
             auto& ln = bl[static_cast<std::size_t>(i)];
             if (auto m = _CXX_SSTREAM_VIEW.search_match(ln); m && names.count(m->named("ss"))) {
                 report(out, rel, fn.name, start + i, "CXX-SSTREAM-VIEW",
-                       "string_view of " + m->named("ss") + ".str() dangles", lines);
+                       "string_view of " + m->named("ss") + ".str() temporary", lines);
                 return;
             }
             if (auto m = _CXX_SSTREAM_CSTR_TMP.search_match(ln); m && names.count(m->named("ss"))) {
@@ -3076,6 +3229,8 @@ void _cxx_hazard_pointer(const std::vector<std::string>& lines, std::string_view
     }
 }
 
+// text_encoding constructed from a non-literal name (CWE-176); a utf8()
+// helper call names a fixed encoding.
 void _cxx_text_encoding(const std::vector<std::string>& lines, std::string_view rel,
                         const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     for (auto& fn : funcs) {
@@ -3083,7 +3238,10 @@ void _cxx_text_encoding(const std::vector<std::string>& lines, std::string_view 
         auto bl = split_lines(fn.body);
         for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
             auto m = _TEXT_ENC_CTOR.search_match(bl[static_cast<std::size_t>(i)]);
-            if (!m || is_string_literal(m->named("arg"))) continue;
+            if (!m) continue;
+            auto arg = strip(m->named("arg"));
+            if (is_string_literal(arg)) continue;
+            if (re_search(R"(\butf8\s*\()", arg)) continue;
             report(out, rel, fn.name, start + i, "CXX-TEXT-ENCODING",
                    "std::text_encoding name is not a string literal", lines);
             return;
@@ -3091,38 +3249,53 @@ void _cxx_text_encoding(const std::vector<std::string>& lines, std::string_view 
     }
 }
 
+// expected.error() without a prior !e / !e.has_value() / has_value()==false
+// test (CWE-390). Distinct from CXX-EXPECTED-NULL (operator* / operator->).
 void _cxx_expected_error(const std::vector<std::string>& lines, std::string_view rel,
                          const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
+    auto guarded = [](const std::string& name, std::string_view body) {
+        auto n = re_escape(name);
+        return re_search("\\bif\\s*\\(\\s*!\\s*" + n + "\\b", body)
+            || re_search(n + "\\s*\\.\\s*has_value\\s*\\(\\s*\\)\\s*==\\s*false", body);
+    };
     for (auto& fn : funcs) {
         auto names = names_of(_CXX_EXPECTED_DECL, fn.body);
+        if (names.empty()) continue;
         auto start = fn.span.first;
         auto bl = split_lines(fn.body);
-        for (auto& name : names) {
-            if (re_search("\\bif\\s*\\(\\s*!\\s*" + re_escape(name) + "\\b", fn.body)) continue;
-            for (int i = 0; i < static_cast<int>(bl.size()); ++i)
-                if (re_search("\\b" + re_escape(name) + "\\s*\\.\\s*error\\s*\\(", bl[static_cast<std::size_t>(i)])) {
-                    report(out, rel, fn.name, start + i, "CXX-EXPECTED-ERROR",
-                           name + ".error() without a prior !" + name + " check", lines);
-                    return;
-                }
+        for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
+            for (auto& m : _EXPECTED_ERROR_CALL.finditer(bl[static_cast<std::size_t>(i)])) {
+                auto name = m.named("name");
+                if (!names.count(name)) continue;
+                if (guarded(name, fn.body)) continue;
+                report(out, rel, fn.name, start + i, "CXX-EXPECTED-ERROR",
+                       name + ".error() without a prior !" + name + " check", lines);
+                return;
+            }
         }
     }
 }
 
+// std::get / get_if / .index() after emplace without a valueless check.
+// Distinct from CXX-VARIANT-GET (get without holds_alternative). A
+// holds_alternative elsewhere in the function does not cover `.index()` or
+// a get of another alternative, so it is no exemption.
 void _cxx_variant_valueless(const std::vector<std::string>& lines, std::string_view rel,
                             const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
+    static const Regex get_re(R"((?:std\s*::\s*)?\bget(?:_if)?\s*<)");
+    static const Regex index_re(R"(\.\s*index\s*\()");
     for (auto& fn : funcs) {
         if (!re_search(R"(\bemplace\s*<)", fn.body)) continue;
         if (re_search(R"(\bvalueless_by_exception\s*\()", fn.body)) continue;
-        if (re_search(R"(\bholds_alternative\s*<)", fn.body)) continue;
         auto start = fn.span.first;
         auto bl = split_lines(fn.body);
-        for (int i = 0; i < static_cast<int>(bl.size()); ++i)
-            if (_CXX_VARIANT_GET.search(bl[static_cast<std::size_t>(i)])) {
-                report(out, rel, fn.name, start + i, "CXX-VARIANT-VALUELSS",
-                       "std::get after emplace without valueless_by_exception", lines);
-                return;
-            }
+        for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
+            auto& ln = bl[static_cast<std::size_t>(i)];
+            if (!(get_re.search(ln) || index_re.search(ln))) continue;
+            report(out, rel, fn.name, start + i, "CXX-VARIANT-VALUELSS",
+                   "std::get after emplace without valueless_by_exception()", lines);
+            return;
+        }
     }
 }
 
@@ -3205,23 +3378,50 @@ void _cxx_sync_wait(const std::vector<std::string>& lines, std::string_view rel,
     }
 }
 
+// #embed of a non-literal token, or a pointer into embed storage returned
+// without a size.
 void _cxx_embed(const std::vector<std::string>& lines, std::string_view rel,
                 const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
-    for (int i = 0; i < static_cast<int>(lines.size()); ++i) {
-        auto m = _EMBED_DIR.search_match(lines[static_cast<std::size_t>(i)]);
-        if (!m) continue;
-        if (is_string_literal(m->named("arg"))) continue;
-        std::optional<std::string> fn;
-        for (auto& f : funcs)
-            if (f.span.first <= i + 1 && i + 1 <= f.span.second) fn = f.name;
-        lint_add(out, rel, fn, i + 1, "CXX-EMBED", "#embed path is not a string literal", lines);
+    // The argument, less a trailing comment and `;`, starts with `"` or `<`.
+    auto arg_is_literal = [](std::string arg) {
+        arg = re_sub_pat(R"(//.*)", "", arg);
+        auto rest = strip(arg);
+        while (!rest.empty() && rest.back() == ';') rest.pop_back();
+        rest = strip(rest);
+        return !rest.empty() && (rest[0] == '"' || rest[0] == '<');
+    };
+    for (auto& fn : funcs) {
+        if (!re_search(R"(#\s*embed\b)", fn.body)) continue;
+        auto start = fn.span.first;
+        auto bl = split_lines(fn.body);
+        for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
+            auto m = _EMBED_DIR.search_match(bl[static_cast<std::size_t>(i)]);
+            if (!m) continue;
+            if (arg_is_literal(m->named("arg"))) continue;
+            report(out, rel, fn.name, start + i, "CXX-EMBED", "#embed path is not a string literal", lines);
+            return;
+        }
+        if (re_search(R"(\bsizeof\s*\()", fn.body)) continue;
+        if (fn.return_type.find('*') == std::string::npos && !re_search(R"(\bchar\s*\*)", fn.body)) continue;
+        for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
+            if (!re_search(R"(\breturn\s+[A-Za-z_]\w*\s*;)", bl[static_cast<std::size_t>(i)])) continue;
+            report(out, rel, fn.name, start + i, "CXX-EMBED", "#embed storage returned as a pointer without a size",
+                   lines);
+            return;
+        }
     }
 }
 
+// contract_assert(false) / pre(false) in a function that still returns.
+// Distinct from CXX-ASSUME (`[[assume(false)]]`).
 void _cxx_contracts(const std::vector<std::string>& lines, std::string_view rel,
                     const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
-    cxx_first_token(lines, rel, funcs, out, _CXX_CONTRACT_FALSE, "CXX-CONTRACTS",
-                    "contract_assert(false)/pre(false) is an unreachable lie");
+    for (auto& fn : funcs) {
+        if (!re_search(R"(\breturn\b)", fn.body)) continue;
+        if (report_first_line(lines, rel, fn, _CXX_CONTRACT_FALSE, "CXX-CONTRACTS",
+                              "contract_assert(false)/pre(false) is an unreachable lie", out))
+            return;
+    }
 }
 
 // ^^ / std::meta:: with define_aggregate/define_class and no namespace.
@@ -3338,30 +3538,42 @@ void _cxx_task(const std::vector<std::string>& lines, std::string_view rel,
                      "CXX-TASK", "std::task started without sync_wait/co_await");
 }
 
+// std::generator that yields a local array, or generator<T&> in the return
+// type or body. Reported once per function.
 void _cxx_generator(const std::vector<std::string>& lines, std::string_view rel,
                     const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
+    static const Regex gen(R"(\b(?:std\s*::\s*)?generator\b)");
+    static const Regex gen_ref(R"(\b(?:std\s*::\s*)?generator\s*<[^>]*&)");
+    static const Regex yield_re(R"(\bco_yield\b)");
     for (auto& fn : funcs) {
-        if (!re_search(R"(\bgenerator\s*<)", fn.body) && !re_search(R"(\bco_yield\b)", fn.body)) continue;
+        const std::string blob = fn.return_type + "\n" + fn.body;
+        if (!gen.search(blob)) continue;
+        const bool ref_yield = gen_ref.search(blob);
         auto [sc, arrays] = locals_in_fn(fn);
-        if (arrays.empty() && !re_search(R"(generator\s*<[^>]*&)", fn.body)) continue;
-        auto start = fn.span.first;
+        const bool local_yield = !arrays.empty() && yield_re.search(fn.body);
+        if (!ref_yield && !local_yield) continue;
         auto bl = split_lines(fn.body);
-        for (int i = 0; i < static_cast<int>(bl.size()); ++i)
-            if (re_search(R"(\bco_yield\b)", bl[static_cast<std::size_t>(i)])) {
-                report(out, rel, fn.name, start + i, "CXX-GENERATOR",
-                       "std::generator yields a pointer/reference to a local", lines);
-                return;
+        int hit_i = 0;
+        for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
+            auto& ln = bl[static_cast<std::size_t>(i)];
+            if (yield_re.search(ln) || gen_ref.search(ln)) {
+                hit_i = i;
+                break;
             }
+        }
+        report(out, rel, fn.name, fn.span.first + hit_i, "CXX-GENERATOR",
+               "std::generator yields a pointer/reference to a local", lines);
     }
 }
 
+// std::generator constructed from a call and never iterated (CWE-252).
 void _cxx_generator_discard(const std::vector<std::string>& lines, std::string_view rel,
                             const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     for (auto& fn : funcs) {
         if (re_search(R"(\bfor\s*\()", fn.body)) continue;
-        cxx_first_token(lines, rel, funcs, out, _CXX_GENERATOR_ASSIGN, "CXX-GENERATOR-DISCARD",
-                        "std::generator constructed and not iterated");
-        break;
+        if (report_first_line(lines, rel, fn, _CXX_GENERATOR_ASSIGN, "CXX-GENERATOR-DISCARD",
+                              "std::generator constructed and not iterated", out))
+            return;
     }
 }
 
@@ -3416,17 +3628,32 @@ void _cxx_packaged_task(const std::vector<std::string>& lines, std::string_view 
     }
 }
 
+// counted_iterator(p, n) / (c.begin(), n) without a guard on n (CWE-125).
 void _cxx_counted_iterator(const std::vector<std::string>& lines, std::string_view rel,
                            const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
+    static const Regex ident(R"([A-Za-z_]\w*)");
+    // n compared with 0/1 or with some container's size().
+    auto count_guarded = [](const std::string& n, std::string_view body) {
+        auto ne = re_escape(n);
+        return re_search("\\b" + ne + "\\s*(?:<=|<|>=|>)\\s*0\\b", body)
+            || re_search("\\b" + ne + "\\s*(?:<=|<)\\s*1\\b", body)
+            || re_search("\\b0\\s*(?:>=|>|<|<=)\\s*" + ne + "\\b", body)
+            || re_search("\\b" + ne + "\\s*[<>]=?\\s*\\w+\\s*\\.\\s*(?:size|ssize)\\s*\\(", body);
+    };
     for (auto& fn : funcs) {
         auto start = fn.span.first;
         auto bl = split_lines(fn.body);
         for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
             auto m = _CXX_COUNTED_ITER_CTOR.search_match(bl[static_cast<std::size_t>(i)]);
             if (!m) continue;
-            if (byteswap_idx_guarded(m->named("n"), fn.body)) continue;
+            auto src = strip(m->named("src"));
+            auto im = ident.match_prefix(src);
+            const bool plain = im && im->spans[0].second == static_cast<int>(src.size());
+            if (!(plain || re_search(R"(\.\s*begin\s*\()", src))) continue;
+            auto n = m->named("n");
+            if (count_guarded(n, fn.body)) continue;
             report(out, rel, fn.name, start + i, "CXX-COUNTED-ITERATOR",
-                   "counted_iterator count " + m->named("n") + " has no remaining-size guard", lines);
+                   "counted_iterator count " + n + " has no remaining-size guard", lines);
             return;
         }
     }
@@ -3453,23 +3680,33 @@ void _cxx_promise(const std::vector<std::string>& lines, std::string_view rel,
     }
 }
 
+// weak_ptr.lock() used without expired() or a truth test (CWE-416).
+// Requires a weak_ptr declaration so shared_ptr plants stay silent. Any
+// `w.lock(` outside an `if (` line counts; `p = w.lock()` is fine when p is
+// tested.
 void _cxx_weak_ptr(const std::vector<std::string>& lines, std::string_view rel,
                    const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     for (auto& fn : funcs) {
         auto names = names_of(_CXX_WEAK_PTR_DECL, fn.body);
+        if (names.empty()) continue;
+        if (re_search(R"(\bexpired\s*\()", fn.body)) continue;
         auto start = fn.span.first;
         auto bl = split_lines(fn.body);
         for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
-            auto m = _CXX_WEAK_LOCK.search_match(bl[static_cast<std::size_t>(i)]);
-            if (!m || !names.count(m->named("weak"))) continue;
-            if (re_search("\\b" + re_escape(m->named("weak")) + "\\s*\\.\\s*expired\\s*\\(", fn.body)
-                || optional_has_guard(m->named("locked"), fn.body))
-                continue;
-            report(out, rel, fn.name, start + i, "CXX-WEAK-PTR",
-                   m->named("name").empty() ? (m->named("locked") + ".lock() used without expired() or a truth test")
-                                            : (m->named("locked") + ".lock() used without expired() or a truth test"),
-                   lines);
-            return;
+            auto& ln = bl[static_cast<std::size_t>(i)];
+            for (auto& name : names) {
+                if (!re_search("\\b" + re_escape(name) + "\\s*\\.\\s*lock\\s*\\(", ln)) continue;
+                if (re_search(R"(\bif\s*\()", ln)) continue;
+                auto m = _CXX_WEAK_LOCK.search_match(ln);
+                if (m && m->named("weak") == name) {
+                    auto locked = m->named("locked");
+                    if (!locked.empty() && (param_if_guard(locked, fn.body) || param_null_tested(locked, fn.body)))
+                        continue;
+                }
+                report(out, rel, fn.name, start + i, "CXX-WEAK-PTR",
+                       name + ".lock() used without expired() or a truth test", lines);
+                return;
+            }
         }
     }
 }
@@ -3516,33 +3753,52 @@ void _cxx_valarray(const std::vector<std::string>& lines, std::string_view rel,
                     " without a size() guard");
 }
 
+// to_underlying(e) with e never compared (== / !=) in the function
+// (CWE-704). Requires to_underlying so static_cast plants stay silent.
 void _cxx_to_underlying(const std::vector<std::string>& lines, std::string_view rel,
                         const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
+    auto range_guarded = [](const std::string& arg, std::string_view body) {
+        auto a = re_escape(arg);
+        return re_search("\\b" + a + "\\s*(?:==|!=)", body) || re_search("(?:==|!=)\\s*" + a + "\\b", body);
+    };
     for (auto& fn : funcs) {
+        if (!re_search(R"(\bto_underlying\s*\()", fn.body)) continue;
         auto start = fn.span.first;
         auto bl = split_lines(fn.body);
         for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
             auto m = _CXX_TO_UNDERLYING.search_match(bl[static_cast<std::size_t>(i)]);
             if (!m) continue;
-            if (re_search(R"(\bstatic_cast\s*<)", fn.body) && re_search(R"(\benum\b)", fn.body)) continue;
+            if (range_guarded(m->named("arg"), fn.body)) continue;
             report(out, rel, fn.name, start + i, "CXX-TO-UNDERLYING",
-                   "to_underlying(" + m->named("arg") + ") without an enum range check", lines);
+                   "to_underlying(" + m->named("arg") + ") without an enum-range guard", lines);
             return;
         }
     }
 }
 
+// std::unexpected<T> constructed and never used again (CWE-252). Matches
+// `unexpected<` only, not the removed exception API `unexpected(`.
+// Functions that test has_value / read error() / declare expected< are
+// handled by CXX-EXPECTED-ERROR / CXX-EXPECTED-NULL.
 void _cxx_unexpected(const std::vector<std::string>& lines, std::string_view rel,
                      const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     for (auto& fn : funcs) {
+        if (re_search(R"(\bhas_value\s*\()", fn.body)) continue;
+        if (re_search(R"(\.\s*error\s*\()", fn.body)) continue;
+        if (re_search(R"((?:std\s*::\s*)?\bexpected\s*<)", fn.body)) continue;
         auto start = fn.span.first;
         auto bl = split_lines(fn.body);
         for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
             auto m = _CXX_UNEXPECTED_DECL.search_match(bl[static_cast<std::size_t>(i)]);
             if (!m) continue;
-            if (re_search("\\breturn\\s+" + re_escape(m->named("name")), fn.body)) continue;
-            report(out, rel, fn.name, start + i, "CXX-UNEXPECTED",
-                   m->named("name") + " unexpected< constructed and discarded", lines);
+            auto name = m->named("name");
+            auto ne = "\\b" + re_escape(name) + "\\b";
+            bool used_later = false;
+            for (std::size_t k = static_cast<std::size_t>(i) + 1; k < bl.size() && !used_later; ++k)
+                used_later = re_search(ne, bl[k]);
+            if (used_later) continue;
+            report(out, rel, fn.name, start + i, "CXX-UNEXPECTED", name + " unexpected< constructed and discarded",
+                   lines);
             return;
         }
     }
@@ -3576,10 +3832,37 @@ void _cxx_deque_index(const std::vector<std::string>& lines, std::string_view re
     cxx_sub_no_size(lines, rel, funcs, out, _CXX_DEQUE_DECL, "CXX-DEQUE-INDEX",
                     " without a size() guard");
 }
+// std::array operator[] without a size()/N guard (CWE-125). A test of the
+// index against the container's size() or the declared N is a guard; a
+// bare `a.size()` elsewhere is not (it can be the `<=` off-by-one).
 void _cxx_array_index(const std::vector<std::string>& lines, std::string_view rel,
                       const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
-    cxx_sub_no_size(lines, rel, funcs, out, _CXX_ARRAY_DECL, "CXX-ARRAY-INDEX",
-                    " without a size() guard");
+    for (auto& fn : funcs) {
+        if (!re_search(R"(\b(?:std\s*::\s*)?array\s*<)", fn.body)) continue;
+        OrderedBinds sizes;  // name -> N
+        for (auto& d : _CXX_ARRAY_DECL.finditer(fn.body)) bind_set(sizes, d.named("name"), d.named("n"));
+        if (sizes.empty()) continue;
+        auto start = fn.span.first;
+        auto bl = split_lines(fn.body);
+        for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
+            for (auto& m : _CXX_SUBSCRIPT.finditer(bl[static_cast<std::size_t>(i)])) {
+                auto cont = m.named("cont");
+                auto* n = bind_get(sizes, cont);
+                if (!n) continue;
+                auto idx = strip(m.named("idx"));
+                auto c = re_escape(cont), iv = re_escape(idx), lit = re_escape(strip(*n));
+                if (re_search("\\bif\\s*\\(\\s*" + iv + "\\s*<\\s*" + c + "\\s*\\.\\s*(?:size|length)\\s*\\(\\s*\\)", fn.body))
+                    continue;
+                if (re_search("\\bif\\s*\\(\\s*" + c + "\\s*\\.\\s*(?:size|length)\\s*\\(\\s*\\)\\s*>\\s*" + iv, fn.body))
+                    continue;
+                if (!lit.empty() && re_search("\\b" + iv + "\\s*(?:<|>=|>|<=)\\s*" + lit + "\\b", fn.body)) continue;
+                if (!lit.empty() && re_search("\\b" + lit + "\\s*(?:>|>=|<|<=)\\s*" + iv + "\\b", fn.body)) continue;
+                report(out, rel, fn.name, start + i, "CXX-ARRAY-INDEX", cont + "[" + idx + "] without a size()/N guard",
+                       lines);
+                return;
+            }
+        }
+    }
 }
 void _cxx_forward_list(const std::vector<std::string>& lines, std::string_view rel,
                        const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
@@ -3687,44 +3970,53 @@ void _cxx_u8string_view(const std::vector<std::string>& lines, std::string_view 
                          "CXX-U8STRING-VIEW", "return borrows local u8string ");
 }
 
+// binary_semaphore(0).acquire() with no try_acquire()/release() in the
+// function (CWE-667). Distinct from CXX-SEMAPHORE (counting_semaphore).
 void _cxx_binary_semaphore(const std::vector<std::string>& lines, std::string_view rel,
                            const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     for (auto& fn : funcs) {
+        if (fn.body.find("binary_semaphore") == std::string::npos) continue;
+        if (fn.body.find("counting_semaphore") != std::string::npos) continue;
+        auto names = names_of(_CXX_BINSEM_ZERO, fn.body);
+        if (names.empty()) continue;
+        if (re_search(R"(\.\s*try_acquire\s*\()", fn.body)) continue;
+        if (re_search(R"(\.\s*release\s*\()", fn.body)) continue;
         auto start = fn.span.first;
         auto bl = split_lines(fn.body);
-        for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
-            auto m = _CXX_BINSEM_ZERO.search_match(bl[static_cast<std::size_t>(i)]);
-            if (!m) continue;
-            auto n = re_escape(m->named("name"));
-            if (re_search("\\b" + n + "\\s*\\.\\s*release\\s*\\(", fn.body)) continue;
-            for (int j = 0; j < static_cast<int>(bl.size()); ++j)
-                if (re_search("\\b" + n + "\\s*\\.\\s*acquire\\s*\\(", bl[static_cast<std::size_t>(j)])) {
-                    report(out, rel, fn.name, start + j, "CXX-BINARY-SEMAPHORE",
-                           m->named("name") + ".acquire() on binary_semaphore(0) without release()",
-                           lines);
-                    return;
-                }
+        for (auto& name : names) {
+            auto n = re_escape(name);
+            for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
+                if (!re_search("\\b" + n + "\\s*\\.\\s*acquire\\s*\\(", bl[static_cast<std::size_t>(i)])) continue;
+                report(out, rel, fn.name, start + i, "CXX-BINARY-SEMAPHORE",
+                       name + ".acquire() on binary_semaphore(0) without try_acquire()/release()", lines);
+                return;
+            }
         }
     }
 }
 
+// std::error_code read (`ec.`) without if(ec) or .value() (CWE-252).
+// Passing `ec` to a call that fills it is not a read.
 void _cxx_error_code(const std::vector<std::string>& lines, std::string_view rel,
                      const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     for (auto& fn : funcs) {
+        if (fn.body.find("error_code") == std::string::npos) continue;
         auto names = names_of(_CXX_ERROR_CODE_DECL, fn.body);
+        if (names.empty()) continue;
         auto start = fn.span.first;
         auto bl = split_lines(fn.body);
         for (auto& name : names) {
-            if (optional_has_guard(name, fn.body)
-                || re_search("\\b" + re_escape(name) + "\\s*\\.\\s*value\\s*\\(", fn.body))
-                continue;
-            for (int i = 0; i < static_cast<int>(bl.size()); ++i)
-                if (re_search("\\b" + re_escape(name) + "\\b", bl[static_cast<std::size_t>(i)])
-                    && !_CXX_ERROR_CODE_DECL.search(bl[static_cast<std::size_t>(i)])) {
-                    report(out, rel, fn.name, start + i, "CXX-ERROR-CODE",
-                           name + " used without if(" + name + ") or .value()", lines);
-                    return;
-                }
+            if (param_if_guard(name, fn.body)) continue;
+            auto n = re_escape(name);
+            if (re_search("\\b" + n + "\\s*\\.\\s*value\\s*\\(", fn.body)) continue;
+            for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
+                auto& ln = bl[static_cast<std::size_t>(i)];
+                if (!re_search("\\b" + n + "\\s*\\.", ln)) continue;
+                if (re_search("error_code\\s+" + n + "\\b", ln)) continue;
+                report(out, rel, fn.name, start + i, "CXX-ERROR-CODE",
+                       name + " used without if(" + name + ") or .value()", lines);
+                return;
+            }
         }
     }
 }
@@ -3828,21 +4120,28 @@ void _cxx_recursive_mutex(const std::vector<std::string>& lines, std::string_vie
         }
     }
 }
+// timed_mutex try_lock discarded, or lock() without unlock (CWE-667).
+// `\btimed_mutex\b` does not match recursive_timed_mutex /
+// shared_timed_mutex. A try_lock tested by if/while, returned or assigned
+// is not discarded.
 void _cxx_timed_mutex(const std::vector<std::string>& lines, std::string_view rel,
                       const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
+    static const Regex used(R"(\bif\s*\(|\bwhile\s*\(|\breturn\b|=)");
     for (auto& fn : funcs) {
+        if (!re_search(R"(\btimed_mutex\b)", fn.body)) continue;
         auto names = names_of(_CXX_TIMED_MUTEX_DECL, fn.body);
+        if (names.empty()) continue;
+        const bool has_raii = _CXX_LOCK_RAII.search(fn.body);
         auto start = fn.span.first;
         auto bl = split_lines(fn.body);
         for (auto& name : names) {
             auto n = re_escape(name);
-            bool unlocked = re_search("\\b" + n + "\\s*\\.\\s*unlock", fn.body) || _CXX_LOCK_RAII.search(fn.body);
+            const bool unlocked = re_search("\\b" + n + "\\s*\\.\\s*unlock\\s*\\(", fn.body);
             for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
                 auto& ln = bl[static_cast<std::size_t>(i)];
-                bool try_disc = re_search("\\b" + n + "\\s*\\.\\s*try_lock", ln)
-                    && !re_search(R"(\bif\s*\()", ln);
-                bool lock_bare = re_search("\\b" + n + "\\s*\\.\\s*lock\\s*\\(", ln) && !unlocked;
-                if (!try_disc && !lock_bare) continue;
+                const bool discarded_try = re_search("\\b" + n + "\\s*\\.\\s*try_lock\\s*\\(", ln) && !used.search(ln);
+                const bool bare_lock = re_search("\\b" + n + "\\s*\\.\\s*lock\\s*\\(", ln) && !unlocked && !has_raii;
+                if (!discarded_try && !bare_lock) continue;
                 report(out, rel, fn.name, start + i, "CXX-TIMED-MUTEX",
                        name + " try_lock/lock discarded or lock without unlock", lines);
                 return;
@@ -3877,35 +4176,46 @@ void _cxx_fstream(const std::vector<std::string>& lines, std::string_view rel,
     }
 }
 
+// this_thread::sleep_for as the only sync around a store to a file-scope or
+// static int. Requires `this_thread` so std::thread / jthread plants stay
+// silent; any lock, atomic, condition variable, latch or barrier in the
+// function is real synchronisation.
 void _cxx_this_thread(const std::vector<std::string>& lines, std::string_view rel,
                       const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
+    static const Regex sleep(R"(this_thread\s*::\s*sleep_for\s*\()");
+    static const Regex sync(
+        R"(\b(?:mutex|lock_guard|unique_lock|scoped_lock|atomic|condition_variable|latch|barrier)\b)");
+    static const Regex static_int(R"(\bstatic\s+int\s+([A-Za-z_]\w*)\b)");
+    const auto globals = file_int_globals(lines);
     for (auto& fn : funcs) {
-        if (!re_search(R"(\bthis_thread\s*::\s*sleep_for\s*\()", fn.body)) continue;
-        if (re_search(R"(\b(?:mutex|condition_variable|atomic|latch|barrier)\b)", fn.body)) continue;
-        auto start = fn.span.first;
-        auto bl = split_lines(fn.body);
-        for (int i = 0; i < static_cast<int>(bl.size()); ++i)
-            if (re_search(R"(\bsleep_for\s*\()", bl[static_cast<std::size_t>(i)])) {
-                report(out, rel, fn.name, start + i, "CXX-THIS-THREAD",
-                       "this_thread::sleep_for used as the only sync", lines);
-                return;
+        if (fn.body.find("this_thread") == std::string::npos) continue;
+        if (!sleep.search(fn.body)) continue;
+        if (sync.search(fn.body)) continue;
+        std::set<std::string> stores = globals;
+        for (auto& m : static_int.finditer(fn.body)) stores.insert(m.group(1));
+        bool shared_store = false;
+        for (auto& g : stores)
+            if (re_search("\\b" + re_escape(g) + "\\s*=", fn.body)) {
+                shared_store = true;
+                break;
             }
+        if (!shared_store) continue;
+        if (report_first_line(lines, rel, fn, sleep, "CXX-THIS-THREAD",
+                              "this_thread::sleep_for used as the only sync around a shared store", out))
+            return;
     }
 }
 
+// std::call_once with no once_flag object in the function (CWE-662).
 void _cxx_call_once(const std::vector<std::string>& lines, std::string_view rel,
                     const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
+    static const Regex call(R"(\bcall_once\s*\()");
     for (auto& fn : funcs) {
-        if (!re_search(R"(\bcall_once\s*\()", fn.body)) continue;
+        if (!call.search(fn.body)) continue;
         if (re_search(R"(\bonce_flag\b)", fn.body)) continue;
-        auto start = fn.span.first;
-        auto bl = split_lines(fn.body);
-        for (int i = 0; i < static_cast<int>(bl.size()); ++i)
-            if (re_search(R"(\bcall_once\s*\()", bl[static_cast<std::size_t>(i)])) {
-                report(out, rel, fn.name, start + i, "CXX-CALL-ONCE",
-                       "std::call_once invoked without an once_flag", lines);
-                return;
-            }
+        if (report_first_line(lines, rel, fn, call, "CXX-CALL-ONCE",
+                              "std::call_once invoked without an once_flag object in scope", out))
+            return;
     }
 }
 
@@ -3948,20 +4258,34 @@ void _cxx_recursive_timed_mutex(const std::vector<std::string>& lines, std::stri
     }
 }
 
+// std::system_error used without .code() (CWE-252). Requires the word
+// system_error, so filesystem_error and error_code / errc plants stay
+// silent. A use is a system_error line, a throw of one, or `e.` on a
+// declared or caught system_error.
 void _cxx_system_error(const std::vector<std::string>& lines, std::string_view rel,
                        const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
+    static const Regex word(R"(\bsystem_error\b)");
     for (auto& fn : funcs) {
-        if (!_CXX_SYSTEM_ERROR_DECL.search(fn.body) && !_CXX_SYSTEM_ERROR_CATCH.search(fn.body)) continue;
+        if (!word.search(fn.body)) continue;
         if (re_search(R"(\.code\s*\()", fn.body)) continue;
+        auto names = names_of(_CXX_SYSTEM_ERROR_DECL, fn.body);
+        for (auto& n : names_of(_CXX_SYSTEM_ERROR_CATCH, fn.body)) names.insert(n);
         auto start = fn.span.first;
         auto bl = split_lines(fn.body);
-        for (int i = 0; i < static_cast<int>(bl.size()); ++i)
-            if (_CXX_SYSTEM_ERROR_DECL.search(bl[static_cast<std::size_t>(i)])
-                || _CXX_SYSTEM_ERROR_CATCH.search(bl[static_cast<std::size_t>(i)])) {
-                report(out, rel, fn.name, start + i, "CXX-SYSTEM-ERROR",
-                       "std::system_error used without a .code() check", lines);
-                return;
-            }
+        for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
+            auto& ln = bl[static_cast<std::size_t>(i)];
+            bool used = word.search(ln);
+            if (!names.empty() && !used)
+                for (auto& n : names)
+                    if (re_search("\\b" + re_escape(n) + "\\s*\\.", ln)) {
+                        used = true;
+                        break;
+                    }
+            if (!used) continue;
+            report(out, rel, fn.name, start + i, "CXX-SYSTEM-ERROR",
+                   "std::system_error used without a .code() check", lines);
+            return;
+        }
     }
 }
 
@@ -4025,19 +4349,25 @@ void _cxx_ranges_join(const std::vector<std::string>& lines, std::string_view re
     }
 }
 
+// format_to into a raw char[] without a size (CWE-120). format_to_n does
+// not match `\bformat_to\s*\(`; a back_inserter destination grows.
 void _cxx_format_to(const std::vector<std::string>& lines, std::string_view rel,
                     const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     for (auto& fn : funcs) {
+        if (!re_search(R"(\bformat_to\s*\()", fn.body)) continue;
         auto bufs = names_of(_CXX_CHAR_BUF, fn.body);
+        if (bufs.empty()) continue;
+        if (re_search(R"(\bformat_to_n\s*\()", fn.body)) continue;
         auto start = fn.span.first;
         auto bl = split_lines(fn.body);
         for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
-            auto m = _CXX_FORMAT_TO.search_match(bl[static_cast<std::size_t>(i)]);
+            auto& ln = bl[static_cast<std::size_t>(i)];
+            auto m = _CXX_FORMAT_TO.search_match(ln);
             if (!m) continue;
             if (!bufs.count(m->named("dst"))) continue;
-            if (re_search(R"(\bformat_to_n\s*\()", fn.body)) continue;
+            if (re_search(R"(\bback_inserter\b)", ln)) continue;
             report(out, rel, fn.name, start + i, "CXX-FORMAT-TO",
-                   "format_to into a raw char buffer without format_to_n", lines);
+                   "format_to into a raw char buffer without size / format_to_n", lines);
             return;
         }
     }
@@ -4061,11 +4391,20 @@ void _cxx_error_category(const std::vector<std::string>& lines, std::string_view
     }
 }
 
+// throw_with_nested / nested_exception outside a try/catch (CWE-705).
+// Requires nested_exception, throw_with_nested or rethrow_if_nested so
+// exception_ptr plants stay silent. A function with try and catch, or that
+// reads current_exception(), is inside a handler.
 void _cxx_nested_exception(const std::vector<std::string>& lines, std::string_view rel,
                            const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
-    cxx_token_unless(lines, rel, funcs, out, _CXX_NESTED_EXC, R"(\bcurrent_exception\s*\()",
-                     "CXX-NESTED-EXCEPTION",
-                     "throw_with_nested / nested_exception without current_exception");
+    for (auto& fn : funcs) {
+        if (!_CXX_NESTED_EXC.search(fn.body)) continue;
+        if (re_search(R"(\btry\b)", fn.body) && re_search(R"(\bcatch\b)", fn.body)) continue;
+        if (re_search(R"(\bcurrent_exception\s*\()", fn.body)) continue;
+        if (report_first_line(lines, rel, fn, _CXX_NESTED_EXC, "CXX-NESTED-EXCEPTION",
+                              "throw_with_nested / nested_exception without a try/catch", out))
+            return;
+    }
 }
 
 // atomic_*_fence without memory_order, or as only sync (CWE-362).
@@ -4094,11 +4433,12 @@ void _cxx_atomic_fence(const std::vector<std::string>& lines, std::string_view r
     }
 }
 
+// notify_all_at_thread_exit with no wait()/wait_for()/wait_until() in the
+// function (CWE-662).
 void _cxx_notify_thread_exit(const std::vector<std::string>& lines, std::string_view rel,
                              const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
-    cxx_token_unless(lines, rel, funcs, out, _CXX_NOTIFY_EXIT, R"(\bwait(?:_for|_until)?\s*\()",
-                     "CXX-NOTIFY-THREAD-EXIT",
-                     "notify_all_at_thread_exit without a waiting thread");
+    cxx_token_unless(lines, rel, funcs, out, _CXX_NOTIFY_EXIT, _CXX_CV_WAITER.pattern(),
+                     "CXX-NOTIFY-THREAD-EXIT", "notify_all_at_thread_exit without a waiting condition_variable");
 }
 
 // wstring_convert without .converted() / .empty() (CWE-416/252).
@@ -4137,17 +4477,24 @@ void _cxx_invoke(const std::vector<std::string>& lines, std::string_view rel,
     }
 }
 
+// std::apply on a nullable callable or tuple without a guard (CWE-476).
+// Requires std::apply so std::invoke plants stay silent; tuple_size, an
+// if/null test or has_value() on the argument is a guard.
 void _cxx_apply(const std::vector<std::string>& lines, std::string_view rel,
                 const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     for (auto& fn : funcs) {
+        if (!re_search(R"(\bstd\s*::\s*apply\s*\()", fn.body)) continue;
+        if (re_search(R"(\btuple_size\b)", fn.body)) continue;
         auto start = fn.span.first;
         auto bl = split_lines(fn.body);
         for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
             auto m = _CXX_APPLY.search_match(bl[static_cast<std::size_t>(i)]);
             if (!m) continue;
-            if (optional_has_guard(m->named("arg"), fn.body)) continue;
+            auto arg = m->named("arg");
+            if (param_if_guard(arg, fn.body) || param_null_tested(arg, fn.body) || optional_has_guard(arg, fn.body))
+                continue;
             report(out, rel, fn.name, start + i, "CXX-APPLY",
-                   "std::apply on a nullable callable or tuple without a guard", lines);
+                   "std::apply on a nullable callable or tuple without a size/tuple_size guard", lines);
             return;
         }
     }
@@ -4185,39 +4532,119 @@ void _cxx_reference_wrapper(const std::vector<std::string>& lines, std::string_v
     }
 }
 
+// std::endian used as an index without a little/big range check (CWE-125).
+// Requires std::endian so byteswap plants stay silent.
 void _cxx_endian(const std::vector<std::string>& lines, std::string_view rel,
                  const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
-    cxx_index_token_scan(lines, rel, funcs, out, _CXX_ENDIAN, _ENDIAN_IN_INDEX, _ENDIAN_ASSIGN,
-                         "CXX-ENDIAN", "std::endian used as an array index without a range check");
+    for (auto& fn : funcs) {
+        if (!_CXX_ENDIAN.search(fn.body)) continue;
+        const bool ranged = re_search(R"(\bstd\s*::\s*endian\s*::\s*(?:little|big)\b)", fn.body);
+        std::set<std::string> assigned;
+        for (auto& m : _ENDIAN_ASSIGN.finditer(fn.body)) assigned.insert(m.named("var"));
+        auto start = fn.span.first;
+        auto bl = split_lines(fn.body);
+        for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
+            auto& ln = bl[static_cast<std::size_t>(i)];
+            if (_ENDIAN_IN_INDEX.search(ln)) {
+                if (ranged) continue;
+                report(out, rel, fn.name, start + i, "CXX-ENDIAN",
+                       "std::endian used as an array index without a range check", lines);
+                return;
+            }
+            for (auto& m : _CXX_SUBSCRIPT.finditer(ln)) {
+                auto idx = strip(m.named("idx"));
+                if (!assigned.count(idx)) continue;
+                if (ranged || byteswap_idx_guarded(idx, fn.body)) continue;
+                report(out, rel, fn.name, start + i, "CXX-ENDIAN",
+                       m.named("cont") + "[" + idx + "] indexes with std::endian without a range check", lines);
+                return;
+            }
+        }
+    }
 }
 
+// bit_ceil/bit_floor/popcount as an index, or bit_ceil(0) (CWE-125).
+// Requires those tokens so byteswap / __builtin_clz plants stay silent.
 void _cxx_bit_ceil(const std::vector<std::string>& lines, std::string_view rel,
                    const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
-    cxx_index_token_scan(lines, rel, funcs, out, _CXX_BITCEIL_TOKEN, _BITCEIL_IN_INDEX, _BITCEIL_ASSIGN,
-                         "CXX-BIT-CEIL",
-                         "bit_ceil/bit_floor/popcount used as an index without a range check");
+    for (auto& fn : funcs) {
+        if (!_CXX_BITCEIL_TOKEN.search(fn.body)) continue;
+        std::set<std::string> assigned;
+        auto start = fn.span.first;
+        auto bl = split_lines(fn.body);
+        for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
+            auto& ln = bl[static_cast<std::size_t>(i)];
+            for (auto& m : _BITCEIL_ASSIGN.finditer(ln)) assigned.insert(m.named("var"));
+            if (_BITCEIL_ZERO.search(ln) || _BITCEIL_IN_INDEX.search(ln)) {
+                report(out, rel, fn.name, start + i, "CXX-BIT-CEIL",
+                       "bit_ceil/bit_floor/popcount used as an index without a range check, or bit_ceil(0)",
+                       lines);
+                return;
+            }
+            for (auto& m : _CXX_SUBSCRIPT.finditer(ln)) {
+                auto idx = strip(m.named("idx"));
+                if (!assigned.count(idx)) continue;
+                if (byteswap_idx_guarded(idx, fn.body)) continue;
+                report(out, rel, fn.name, start + i, "CXX-BIT-CEIL",
+                       m.named("cont") + "[" + idx + "] indexes with bit_ceil/popcount without a range check",
+                       lines);
+                return;
+            }
+        }
+    }
 }
 
+// uncaught_exceptions() as a boolean destructor-safety check (CWE-705);
+// the classic anti-pattern is if (std::uncaught_exceptions()) throw. Once
+// per function.
 void _cxx_uncaught_exceptions(const std::vector<std::string>& lines, std::string_view rel,
                               const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     for (auto& fn : funcs) {
         if (!_CXX_UNCAUGHT.search(fn.body)) continue;
         if (_UNCAUGHT_SAVED.search(fn.body)) continue;
-        auto start = fn.span.first;
-        auto bl = split_lines(fn.body);
-        for (int i = 0; i < static_cast<int>(bl.size()); ++i)
-            if (_UNCAUGHT_BOOL_IF.search(bl[static_cast<std::size_t>(i)])) {
-                report(out, rel, fn.name, start + i, "CXX-UNCAUGHT-EXCEPTIONS",
-                       "std::uncaught_exceptions() used as a boolean", lines);
-                break;  // one per function
-            }
+        report_first_line(lines, rel, fn, _UNCAUGHT_BOOL_IF, "CXX-UNCAUGHT-EXCEPTIONS",
+                          "std::uncaught_exceptions() used as a boolean destructor-safety check without a saved count",
+                          out);
     }
 }
 
+// quick_exit without at_quick_exit, or from a destructor (CWE-670).
+// Requires quick_exit so exit/abort/system plants stay silent. A destructor
+// is reported even when it registers at_quick_exit; destructors the parser
+// did not return as functions are found by their `~T(...) {` head.
 void _cxx_quick_exit(const std::vector<std::string>& lines, std::string_view rel,
                      const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
-    cxx_token_unless(lines, rel, funcs, out, _CXX_QUICK_EXIT, R"(\bat_quick_exit\s*\()",
-                     "CXX-QUICK-EXIT", "std::quick_exit without a prior at_quick_exit");
+    static const std::string msg =
+        "std::quick_exit without a prior at_quick_exit handler, or quick_exit from a destructor";
+    for (auto& fn : funcs) {
+        if (!_CXX_QUICK_EXIT.search(fn.body)) continue;
+        const bool is_dtor = !fn.name.empty() && fn.name[0] == '~';
+        if (_CXX_AT_QUICK_EXIT.search(fn.body) && !is_dtor) continue;
+        auto start = fn.span.first;
+        auto bl = split_lines(fn.body);
+        for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
+            if (!_CXX_QUICK_EXIT.search(bl[static_cast<std::size_t>(i)])) continue;
+            report(out, rel, fn.name, start + i, "CXX-QUICK-EXIT", msg, lines);
+            return;
+        }
+    }
+    std::string text;
+    for (std::size_t k = 0; k < lines.size(); ++k) {
+        if (k) text += '\n';
+        text += lines[k];
+    }
+    for (auto& m : _DTOR_HEAD.finditer(text)) {
+        const int brace = m.spans[0].second - 1;
+        const int close = match_brace(text, brace);
+        if (close < 0) continue;
+        std::string_view body(text.data() + brace + 1, static_cast<std::size_t>(close - brace - 1));
+        auto tm = _CXX_QUICK_EXIT.search_match(body);
+        if (!tm) continue;
+        const int line =
+            1 + static_cast<int>(std::count(text.begin(), text.begin() + brace + 1 + tm->spans[0].first, '\n'));
+        report(out, rel, "~" + m.named("name"), line, "CXX-QUICK-EXIT", msg, lines);
+        return;
+    }
 }
 
 // to_array result OOB-indexed, or source mutated while used (CWE-125/416).
@@ -4286,32 +4713,83 @@ void _cxx_zoned_time(const std::vector<std::string>& lines, std::string_view rel
     }
 }
 
+// kill_dependency as only sync, or as an unguarded index (CWE-362/125).
+// Requires kill_dependency so POSIX kill / atomic_flag / fence plants stay
+// silent. "Only sync": a plain store to a file-scope or static int with no
+// atomic, mutex, fence or memory_order anywhere in the function.
 void _cxx_kill_dependency(const std::vector<std::string>& lines, std::string_view rel,
                           const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
-    cxx_index_token_scan(lines, rel, funcs, out, _CXX_KILLDEP, _KILLDEP_IN_INDEX, _KILLDEP_ASSIGN,
-                         "CXX-KILL-DEPENDENCY",
-                         "std::kill_dependency used as only sync or as an unguarded index");
+    const auto globals = file_int_globals(lines);
+    static const Regex static_int(R"(\bstatic\s+int\s+([A-Za-z_]\w*)\b)");
+    static const Regex real_sync(R"(\b(?:atomic\s*<|mutex|atomic_thread_fence|atomic_signal_fence|memory_order)\b)");
+    for (auto& fn : funcs) {
+        if (!_CXX_KILLDEP.search(fn.body)) continue;
+        std::set<std::string> stores = globals;
+        for (auto& m : static_int.finditer(fn.body)) stores.insert(m.group(1));
+        bool has_plain_store = false;
+        for (auto& g : stores)
+            if (re_search("\\b" + re_escape(g) + "\\s*=", fn.body)) {
+                has_plain_store = true;
+                break;
+            }
+        const bool only_sync = has_plain_store && !real_sync.search(fn.body);
+        std::set<std::string> assigned;
+        auto start = fn.span.first;
+        auto bl = split_lines(fn.body);
+        for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
+            auto& ln = bl[static_cast<std::size_t>(i)];
+            for (auto& m : _KILLDEP_ASSIGN.finditer(ln)) assigned.insert(m.named("var"));
+            bool hit = only_sync && _CXX_KILLDEP.search(ln);
+            if (_KILLDEP_IN_INDEX.search(ln)) hit = true;
+            if (!hit)
+                for (auto& m : _CXX_SUBSCRIPT.finditer(ln)) {
+                    auto idx = strip(m.named("idx"));
+                    if (!assigned.count(idx)) continue;
+                    if (byteswap_idx_guarded(idx, fn.body)) continue;
+                    hit = true;
+                    break;
+                }
+            if (!hit) continue;
+            report(out, rel, fn.name, start + i, "CXX-KILL-DEPENDENCY",
+                   "std::kill_dependency used as only sync or as an index without a range check", lines);
+            return;
+        }
+    }
 }
 
 void _cxx_rotl(const std::vector<std::string>& lines, std::string_view rel,
                const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     cxx_index_token_scan(lines, rel, funcs, out, _CXX_ROTL_TOKEN, _ROTL_IN_INDEX, _ROTL_ASSIGN,
-                         "CXX-ROTL", "std::rotl/rotr result used as an array index without a range check");
+                         "CXX-ROTL", "std::rotl/rotr result used as an array index without a range check",
+                         "std::rotl/rotr");
 }
 
+// std::current_exception() rethrown without a nullptr test (CWE-476).
+// Requires current_exception and rethrow_exception; rethrow_if_nested is
+// not rethrow_exception.
 void _cxx_current_exception(const std::vector<std::string>& lines, std::string_view rel,
                             const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     for (auto& fn : funcs) {
         if (!_CXX_CURRENT_EXC.search(fn.body)) continue;
-        if (re_search(R"(\bif\s*\()", fn.body) && re_search(R"(\bnullptr\b)", fn.body)) continue;
+        if (!_CXX_RETHROW_EXC.search(fn.body)) continue;
+        auto bound = names_of(_CUR_EXC_BIND, fn.body);
         auto start = fn.span.first;
         auto bl = split_lines(fn.body);
-        for (int i = 0; i < static_cast<int>(bl.size()); ++i)
-            if (_CUR_EXC_INLINE.search(bl[static_cast<std::size_t>(i)]) || _CXX_RETHROW_EXC.search(bl[static_cast<std::size_t>(i)])) {
+        for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
+            auto& ln = bl[static_cast<std::size_t>(i)];
+            if (_CUR_EXC_INLINE.search(ln)) {
                 report(out, rel, fn.name, start + i, "CXX-CURRENT-EXCEPTION",
                        "std::current_exception() rethrown without a nullptr test", lines);
                 return;
             }
+            for (auto& name : bound) {
+                if (param_if_guard(name, fn.body) || param_null_tested(name, fn.body)) continue;
+                if (!re_search("(?:std\\s*::\\s*)?rethrow_exception\\s*\\(\\s*" + re_escape(name) + "\\b", ln)) continue;
+                report(out, rel, fn.name, start + i, "CXX-CURRENT-EXCEPTION",
+                       "rethrow_exception(" + name + ") from current_exception without a nullptr test", lines);
+                return;
+            }
+        }
     }
 }
 
@@ -4365,11 +4843,42 @@ void _cxx_midpoint(const std::vector<std::string>& lines, std::string_view rel,
                          "std::midpoint result used as an array index without a range check");
 }
 
+// cmp_less/in_range as an index, or in_range ignored before a subscript
+// (CWE-125). Requires cmp_less or in_range so ordinary < stays silent.
 void _cxx_cmp_less(const std::vector<std::string>& lines, std::string_view rel,
                    const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
-    cxx_index_token_scan(lines, rel, funcs, out, _CXX_CMPLESS_TOKEN, _CMPLESS_IN_INDEX, _CMPLESS_ASSIGN,
-                         "CXX-CMP-LESS",
-                         "std::cmp_less/in_range result used as an array index without a range check");
+    static const Regex in_range(R"(\bin_range\s*(?:<[^>;]*>)?\s*\()");
+    for (auto& fn : funcs) {
+        if (!_CXX_CMPLESS_TOKEN.search(fn.body)) continue;
+        std::set<std::string> assigned;
+        auto start = fn.span.first;
+        auto bl = split_lines(fn.body);
+        for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
+            auto& ln = bl[static_cast<std::size_t>(i)];
+            for (auto& m : _CMPLESS_ASSIGN.finditer(ln)) assigned.insert(m.named("var"));
+            if (_CMPLESS_IN_INDEX.search(ln)) {
+                report(out, rel, fn.name, start + i, "CXX-CMP-LESS",
+                       "std::cmp_less/in_range result used as an array index", lines);
+                return;
+            }
+            for (auto& m : _CXX_SUBSCRIPT.finditer(ln)) {
+                auto idx = strip(m.named("idx"));
+                if (!assigned.count(idx)) continue;
+                if (byteswap_idx_guarded(idx, fn.body)) continue;
+                report(out, rel, fn.name, start + i, "CXX-CMP-LESS",
+                       m.named("cont") + "[" + idx + "] indexes with cmp_less/in_range without a range check",
+                       lines);
+                return;
+            }
+        }
+        if (_CXX_IN_RANGE_IF.search(fn.body)) continue;
+        if (!in_range.search(fn.body)) continue;
+        for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
+            if (!_CXX_SUBSCRIPT.search(bl[static_cast<std::size_t>(i)])) continue;
+            report(out, rel, fn.name, start + i, "CXX-CMP-LESS", "std::in_range ignored before a subscript", lines);
+            return;
+        }
+    }
 }
 
 void _cxx_countl_zero(const std::vector<std::string>& lines, std::string_view rel,
@@ -4379,14 +4888,22 @@ void _cxx_countl_zero(const std::vector<std::string>& lines, std::string_view re
                          "std::countl_zero/countr result used as an array index without a range check");
 }
 
+// std::unreachable() used as a recoverable path (CWE-670). Requires
+// std::unreachable so __builtin_unreachable / [[assume]] stay silent; the
+// function must also subscript or return.
 void _cxx_unreachable(const std::vector<std::string>& lines, std::string_view rel,
                       const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     for (auto& fn : funcs) {
         if (!_CXX_STD_UNREACHABLE.search(fn.body)) continue;
-        if (!re_search(R"(\breturn\b)", fn.body)) continue;
-        cxx_first_token(lines, rel, funcs, out, _CXX_STD_UNREACHABLE, "CXX-UNREACHABLE",
-                        "std::unreachable() used as a recoverable path");
-        break;
+        if (!(_CXX_SUBSCRIPT.search(fn.body) || re_search(R"(\breturn\b)", fn.body))) continue;
+        auto start = fn.span.first;
+        auto bl = split_lines(fn.body);
+        for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
+            if (!_CXX_STD_UNREACHABLE.search(bl[static_cast<std::size_t>(i)])) continue;
+            report(out, rel, fn.name, start + i, "CXX-UNREACHABLE",
+                   "std::unreachable() used as a recoverable path or in a function that also returns", lines);
+            return;
+        }
     }
 }
 
@@ -4443,16 +4960,59 @@ void _cxx_transform_reduce(const std::vector<std::string>& lines, std::string_vi
                          "CXX-TRANSFORM-REDUCE",
                          "std::transform_reduce result used as an array index without a range check");
 }
+// std::reduce result used as an array index (CWE-125). A function that
+// calls transform_reduce is left to CXX-TRANSFORM-REDUCE.
 void _cxx_reduce(const std::vector<std::string>& lines, std::string_view rel,
                  const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
-    cxx_index_token_scan(lines, rel, funcs, out, _CXX_REDUCE_TOKEN, _REDUCE_IN_INDEX, _REDUCE_ASSIGN,
+    std::vector<FunctionInfo> scoped;
+    for (auto& fn : funcs) {
+        if (!_CXX_REDUCE_TOKEN.search(fn.body)) continue;
+        if (_CXX_TRANSFORM_REDUCE.search(fn.body)) continue;
+        scoped.push_back(fn);
+    }
+    cxx_index_token_scan(lines, rel, scoped, out, _CXX_REDUCE_TOKEN, _REDUCE_IN_INDEX, _REDUCE_ASSIGN,
                          "CXX-REDUCE", "std::reduce result used as an array index without a range check");
 }
+// forward_like result used as an unguarded index, or its source reused
+// (CWE-672). Requires forward_like so std::forward / std::move plants stay
+// silent.
 void _cxx_forward_like(const std::vector<std::string>& lines, std::string_view rel,
                        const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
-    cxx_index_token_scan(lines, rel, funcs, out, _CXX_FWDLIKE_TOKEN, _FWDLIKE_IN_INDEX, _FWDLIKE_ASSIGN,
-                         "CXX-FORWARD-LIKE",
-                         "std::forward_like result used as an array index without a range check");
+    for (auto& fn : funcs) {
+        if (!_CXX_FWDLIKE_TOKEN.search(fn.body)) continue;
+        std::set<std::string> assigned, sources;
+        auto start = fn.span.first;
+        auto bl = split_lines(fn.body);
+        for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
+            auto& ln = bl[static_cast<std::size_t>(i)];
+            for (auto& m : _FWDLIKE_ASSIGN.finditer(ln)) assigned.insert(m.named("var"));
+            for (auto& m : _FWDLIKE_SRC.finditer(ln)) sources.insert(m.named("src"));
+            if (_FWDLIKE_IN_INDEX.search(ln)) {
+                report(out, rel, fn.name, start + i, "CXX-FORWARD-LIKE",
+                       "std::forward_like result used as an array index without a range check", lines);
+                return;
+            }
+            if (_CXX_FWDLIKE_TOKEN.search(ln)) continue;
+            for (auto& m : _CXX_SUBSCRIPT.finditer(ln)) {
+                auto idx = strip(m.named("idx"));
+                if (!assigned.count(idx) && !sources.count(idx)) continue;
+                if (byteswap_idx_guarded(idx, fn.body)) continue;
+                report(out, rel, fn.name, start + i, "CXX-FORWARD-LIKE",
+                       m.named("cont") + "[" + idx + "] indexes with std::forward_like without a range check",
+                       lines);
+                return;
+            }
+            for (auto& src : sources) {
+                if (byteswap_idx_guarded(src, fn.body)) continue;
+                auto v = re_escape(src);
+                if (!re_search("\\b" + v + "\\b", ln)) continue;
+                if (re_search("\\b(?:int|auto|auto\\s*&&?)\\s+" + v + "\\b", ln)) continue;
+                report(out, rel, fn.name, start + i, "CXX-FORWARD-LIKE", src + " used after std::forward_like",
+                       lines);
+                return;
+            }
+        }
+    }
 }
 void _cxx_add_sat(const std::vector<std::string>& lines, std::string_view rel,
                   const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
@@ -4527,10 +5087,53 @@ void _cxx_is_constant_evaluated(const std::vector<std::string>& lines, std::stri
         }
     }
 }
+// addressof result used as an index, or stored then the object dies.
+// Requires `addressof` (word-bounded) so to_address plants stay silent.
 void _cxx_addressof(const std::vector<std::string>& lines, std::string_view rel,
                     const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
-    cxx_token_subscript_unguarded(lines, rel, funcs, out, _CXX_ADDRESSOF, "CXX-ADDRESSOF",
-                                  "std::addressof result used as an array index without a bound");
+    static const Regex star_re(R"(\*\s*([A-Za-z_]\w*))");
+    // `*p` compared with a constant somewhere in the body.
+    auto deref_guarded = [](const std::string& var, std::string_view body) {
+        auto v = re_escape(var);
+        return re_search("\\*\\s*" + v + "\\s*(?:>=|>|<|<=)\\s*\\d+", body)
+            || re_search("\\d+\\s*(?:>=|>|<|<=)\\s*\\*\\s*" + v + "\\b", body);
+    };
+    for (auto& fn : funcs) {
+        if (!_CXX_ADDRESSOF.search(fn.body)) continue;
+        OrderedBinds binds;
+        for (auto& m : _ADDRESSOF_BIND.finditer(fn.body)) bind_set(binds, m.named("name"), m.named("src"));
+        auto start = fn.span.first;
+        auto bl = split_lines(fn.body);
+        for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
+            auto& ln = bl[static_cast<std::size_t>(i)];
+            if (_ADDRESSOF_IN_INDEX.search(ln) || _ADDRESSOF_INLINE_RET.search(ln)) {
+                report(out, rel, fn.name, start + i, "CXX-ADDRESSOF",
+                       "std::addressof result used as an array index or stored then the object dies", lines);
+                return;
+            }
+            for (auto& m : _CXX_SUBSCRIPT.finditer(ln)) {
+                auto idx = strip(m.named("idx"));
+                auto star = star_re.match_prefix(idx);
+                if (star && star->spans[0].second == static_cast<int>(idx.size()) && bind_get(binds, star->group(1))) {
+                    if (deref_guarded(star->group(1), fn.body)) continue;
+                    report(out, rel, fn.name, start + i, "CXX-ADDRESSOF",
+                           "std::addressof result used as an array index without a bound", lines);
+                    return;
+                }
+                if (bind_get(binds, idx) && !byteswap_idx_guarded(idx, fn.body)) {
+                    report(out, rel, fn.name, start + i, "CXX-ADDRESSOF",
+                           "std::addressof result used as an array index without a bound", lines);
+                    return;
+                }
+            }
+            for (auto& [name, src] : binds) {
+                if (!re_search("\\breturn\\s+" + re_escape(name) + "\\b", ln)) continue;
+                report(out, rel, fn.name, start + i, "CXX-ADDRESSOF",
+                       name + " from addressof(" + src + ") returned after the object dies", lines);
+                return;
+            }
+        }
+    }
 }
 // assume_aligned result indexed without a bound (CWE-125).
 void _cxx_assume_aligned(const std::vector<std::string>& lines, std::string_view rel,
@@ -4558,18 +5161,40 @@ void _cxx_assume_aligned(const std::vector<std::string>& lines, std::string_view
         }
     }
 }
+// as_const then const_cast write, or a dangling as_const view (CWE-119/416).
+// Requires as_const so const_cast / cv-write plants stay silent.
 void _cxx_as_const(const std::vector<std::string>& lines, std::string_view rel,
                    const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
+    static const Regex ret_as_const(R"(\breturn\s+(?:std\s*::\s*)?\bas_const\s*\()");
     for (auto& fn : funcs) {
         if (!_CXX_AS_CONST.search(fn.body)) continue;
+        OrderedBinds binds;
+        for (auto& m : _AS_CONST_BIND.finditer(fn.body)) bind_set(binds, m.named("name"), m.named("src"));
+        const bool ref_ret = fn.return_type.find('*') != std::string::npos
+                          || fn.return_type.find('&') != std::string::npos;
         auto start = fn.span.first;
         auto bl = split_lines(fn.body);
-        for (int i = 0; i < static_cast<int>(bl.size()); ++i)
-            if (_AS_CONST_CAST_WRITE.search(bl[static_cast<std::size_t>(i)])) {
+        for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
+            auto& ln = bl[static_cast<std::size_t>(i)];
+            auto cm = _AS_CONST_CAST_WRITE.search_match(ln);
+            if (cm && (binds.empty() || bind_get(binds, cm->named("name")))) {
                 report(out, rel, fn.name, start + i, "CXX-AS-CONST",
                        "const_cast write through std::as_const view", lines);
                 return;
             }
+            if (!ref_ret) continue;
+            if (ret_as_const.search(ln)) {
+                report(out, rel, fn.name, start + i, "CXX-AS-CONST",
+                       "as_const view of a local returned after the local dies", lines);
+                return;
+            }
+            for (auto& [name, src] : binds) {
+                if (!re_search("\\breturn\\s+" + re_escape(name) + "\\b", ln)) continue;
+                report(out, rel, fn.name, start + i, "CXX-AS-CONST",
+                       "as_const view " + name + " of " + src + " returned after the local dies", lines);
+                return;
+            }
+        }
     }
 }
 
@@ -4710,11 +5335,32 @@ void _cxx_make_exception_ptr(const std::vector<std::string>& lines, std::string_
         }
     }
 }
+// set_terminate without saving the previous handler, or a handler that
+// throws. Requires set_terminate or get_terminate so unreachable / assume /
+// uncaught plants stay silent.
 void _cxx_set_terminate(const std::vector<std::string>& lines, std::string_view rel,
                         const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
-    cxx_token_unless(lines, rel, funcs, out, _CXX_SET_TERMINATE, R"(\bget_terminate\s*\()",
-                     "CXX-SET-TERMINATE",
-                     "set_terminate/get_terminate without storing the previous handler");
+    for (auto& fn : funcs) {
+        if (!_CXX_SET_TERMINATE.search(fn.body)) continue;
+        const bool stored = _GET_TERM_BIND.search(fn.body);
+        const bool throws = re_search(R"(\bthrow\b)", fn.body);
+        const bool has_set = _SET_TERM_CALL.search(fn.body);
+        if (has_set) {
+            if (!throws && stored) continue;
+        } else if (stored) {
+            continue;
+        }
+        const Regex& tok = has_set ? _SET_TERM_CALL : _CXX_SET_TERMINATE;
+        auto start = fn.span.first;
+        auto bl = split_lines(fn.body);
+        for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
+            if (!tok.search(bl[static_cast<std::size_t>(i)])) continue;
+            report(out, rel, fn.name, start + i, "CXX-SET-TERMINATE",
+                   "set_terminate/get_terminate without storing the previous handler, or terminate handler throws",
+                   lines);
+            return;
+        }
+    }
 }
 
 // destroy_at then use, or construct_at dest indexed OOB (CWE-416/125).
@@ -4752,19 +5398,24 @@ void _cxx_construct_at(const std::vector<std::string>& lines, std::string_view r
     }
 }
 
+// uninitialized_fill / uninitialized_default_construct destination indexed
+// out of bounds (CWE-125). Only the destinations of those calls count.
 void _cxx_uninitialized_fill(const std::vector<std::string>& lines, std::string_view rel,
                              const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     for (auto& fn : funcs) {
         if (!_CXX_UNINITIALIZED_FILL.search(fn.body)) continue;
-        if (re_search(R"(\.size\s*\()", fn.body)) continue;
+        auto dests = names_of(_UIFILL_CALL, fn.body, "dst");
         auto start = fn.span.first;
         auto bl = split_lines(fn.body);
-        for (int i = 0; i < static_cast<int>(bl.size()); ++i)
-            if (_CXX_SUBSCRIPT.search(bl[static_cast<std::size_t>(i)])) {
+        for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
+            for (auto& m : _CXX_SUBSCRIPT.finditer(bl[static_cast<std::size_t>(i)])) {
+                if (!dests.count(m.named("cont"))) continue;
+                if (!toarr_idx_bad(strip(m.named("idx")), std::nullopt, fn.body)) continue;
                 report(out, rel, fn.name, start + i, "CXX-UNINITIALIZED-FILL",
                        "uninitialized_fill dest indexed without a size guard", lines);
                 return;
             }
+        }
     }
 }
 
@@ -4831,7 +5482,7 @@ void _cxx_type_identity(const std::vector<std::string>& lines, std::string_view 
 void _cxx_nontype(const std::vector<std::string>& lines, std::string_view rel,
                   const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     cxx_token_subscript_unguarded(lines, rel, funcs, out, _CXX_NONTYPE, "CXX-NONTYPE",
-                                  "std::nontype used as an unguarded index");
+                                  "std::nontype used as an unguarded index or to bypass a bound");
 }
 void _cxx_layout_compatible(const std::vector<std::string>& lines, std::string_view rel,
                             const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
@@ -4863,20 +5514,61 @@ void _cxx_uninitialized_value(const std::vector<std::string>& lines, std::string
         }
     }
 }
+// basic_const_iterator written through or indexed out of bounds
+// (CWE-125/664). Requires basic_const_iterator so iterator-invalid /
+// counted_iterator plants stay silent.
 void _cxx_const_iterator(const std::vector<std::string>& lines, std::string_view rel,
                          const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
-    cxx_token_subscript_unguarded(lines, rel, funcs, out, _CXX_BASIC_CONST_ITER, "CXX-CONST-ITERATOR",
-                                  "basic_const_iterator indexed without a size guard");
+    for (auto& fn : funcs) {
+        if (!_CXX_BASIC_CONST_ITER.search(fn.body)) continue;
+        auto names = names_of(_BCITER_DECL, fn.body);
+        for (auto& n : names_of(_BCITER_BIND, fn.body)) names.insert(n);
+        auto start = fn.span.first;
+        auto bl = split_lines(fn.body);
+        for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
+            auto& ln = bl[static_cast<std::size_t>(i)];
+            for (auto& m : _CXX_SUBSCRIPT.finditer(ln)) {
+                if (!names.empty() && !names.count(m.named("cont"))) continue;
+                if (!toarr_idx_bad(strip(m.named("idx")), std::nullopt, fn.body)) continue;
+                report(out, rel, fn.name, start + i, "CXX-CONST-ITERATOR",
+                       "basic_const_iterator indexed without a size guard", lines);
+                return;
+            }
+            for (auto& name : names) {
+                auto v = re_escape(name);
+                if (!re_search("(?:\\*\\s*" + v + "\\b|" + v + "\\s*->)\\s*=", ln)) continue;
+                report(out, rel, fn.name, start + i, "CXX-CONST-ITERATOR",
+                       name + " written through a basic_const_iterator", lines);
+                return;
+            }
+        }
+    }
 }
 void _cxx_corresponding_member(const std::vector<std::string>& lines, std::string_view rel,
                                const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     cxx_token_subscript_unguarded(lines, rel, funcs, out, _CXX_CORR_MEMBER, "CXX-CORRESPONDING-MEMBER",
                                   "is_corresponding_member recast pointer indexed without a size guard");
 }
+// ranges::to container indexed without a size guard (CWE-125). Only
+// containers bound from ranges::to count.
 void _cxx_ranges_to(const std::vector<std::string>& lines, std::string_view rel,
                     const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
-    cxx_token_subscript_unguarded(lines, rel, funcs, out, _CXX_RANGES_TO, "CXX-RANGES-TO",
-                                  "ranges::to container indexed without a size guard");
+    for (auto& fn : funcs) {
+        if (!_CXX_RANGES_TO.search(fn.body)) continue;
+        auto dests = names_of(_RANGES_TO_BIND, fn.body);
+        if (dests.empty()) continue;
+        auto start = fn.span.first;
+        auto bl = split_lines(fn.body);
+        for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
+            for (auto& m : _CXX_SUBSCRIPT.finditer(bl[static_cast<std::size_t>(i)])) {
+                if (!dests.count(m.named("cont"))) continue;
+                if (!toarr_idx_bad(strip(m.named("idx")), std::nullopt, fn.body)) continue;
+                report(out, rel, fn.name, start + i, "CXX-RANGES-TO",
+                       "ranges::to container indexed without a size guard", lines);
+                return;
+            }
+        }
+    }
 }
 
 void _cxx_enumerate(const std::vector<std::string>& lines, std::string_view rel,
