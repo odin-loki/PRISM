@@ -110,7 +110,7 @@ class TestExecuteCexHonestyContract(unittest.TestCase):
         self.assertIn("laws::NOTRUN", nr_fn)
         self.assertNotIn("laws::CLEAN", nr_fn)
         self.assertNotIn("laws::PROVED", nr_fn)
-        repair = _brace_body(_read(RLEF), "std::vector<Finding> rlef_repair(")
+        repair = _brace_body(_read(RLEF), "std::vector<Finding> rlef_repair_with(")
         head = repair.split("which_cc()", 1)[0]
         self.assertIn("engine.available()", head)
         self.assertIn('nr("repair"', head)
@@ -119,7 +119,7 @@ class TestExecuteCexHonestyContract(unittest.TestCase):
         self.assertNotIn("laws::CLEAN", head)
 
     def test_rlef_repair_httpish_notrun_on_best_score_not_history_size(self):
-        repair = _brace_body(_read(RLEF), "std::vector<Finding> rlef_repair(")
+        repair = _brace_body(_read(RLEF), "std::vector<Finding> rlef_repair_with(")
         self.assertIn("llm_httpish(r.error) && best_score < 0", repair)
         self.assertNotIn("history.size() == 1", repair)
 
