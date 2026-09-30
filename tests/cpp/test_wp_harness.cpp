@@ -12,6 +12,8 @@
 #include "prism/pipeline.hpp"
 #include "prism/stages.hpp"
 
+#include <nlohmann/json.hpp>
+
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
@@ -22,7 +24,7 @@
 namespace {
 
 std::filesystem::path td() {
-    return std::filesystem::path(__FILE__).parent_path().parent_path().parent_path() / "testdata";
+    return std::filesystem::path(PRISM_SOURCE_DIR) / "testdata";
 }
 
 prism::FunctionInfo fn_in(const char* file, const char* name) {
@@ -127,6 +129,91 @@ TEST_CASE("wp: the false twin of a tautological VC is FAILED, not a proof") {
     CHECK(r.status != prism::laws::PROVED_ASSUMING);
     CHECK(r.status != prism::laws::CLEAN);
     CHECK_FALSE(truthy(r, "wp_qed"));
+}
+
+TEST_CASE("wp: a whitespace-only return is kept in the obligation, not dropped") {
+    // Dropping the empty return would leave only `return x + 1;`, a
+    // tautological VC, and a PROVED-ASSUMING for a path that returns nothing.
+    for (auto* ret : {"return  ;", "return;"}) {
+        INFO(ret);
+        auto f = fn_from("wp_empty_return.c",
+                         std::string("int er(int x) {\n    // requires: x < 100\n    // ensures: result == x+1\n"
+                                     "    if (x > 0) ") +
+                             ret + "\n    return x + 1;\n}\n",
+                         "er");
+        REQUIRE(f.kind == "SCALAR");
+        auto recs = prism::run_wp({f}, 8);
+        REQUIRE(recs.size() == 1);
+        auto& r = recs[0];
+        INFO(r.status << ": " << r.message);
+        CHECK_FALSE(truthy(r, "wp_qed"));
+        CHECK(r.status == prism::laws::ERROR);
+        CHECK_FALSE(prism::laws::is_proof(r.status));
+        auto rets = nlohmann::json::parse(extra_or(r, "wp_returns"));
+        REQUIRE(rets.is_array());
+        REQUIRE(rets.size() == 2);
+        CHECK(rets[0] == "");
+        CHECK(rets[1] == "x + 1");
+    }
+    // The true twin without the empty return is closed by substitution.
+    auto twin = fn_from("wp_empty_return_twin.c",
+                        "int er2(int x) {\n    // requires: x < 100\n    // ensures: result == x+1\n"
+                        "    return x + 1;\n}\n",
+                        "er2");
+    auto t = prism::run_wp({twin}, 8);
+    REQUIRE(t.size() == 1);
+    CHECK(t[0].status == prism::laws::PROVED_ASSUMING);
+    CHECK(truthy(t[0], "wp_qed"));
+}
+
+TEST_CASE("wp and contracts: `return(expr);` is checked, not skipped") {
+    // return(x) with ensures result == x+1 is false; return(x + 1) is true.
+    auto bad = fn_from("ret_paren_bad.c",
+                       "int rp(int x) {\n    // requires: x < 100\n    // ensures: result == x+1\n"
+                       "    return(x);\n}\n",
+                       "rp");
+    auto good = fn_from("ret_paren_good.c",
+                        "int rq(int x) {\n    // requires: x < 100\n    // ensures: result == x+1\n"
+                        "    return(x + 1);\n}\n",
+                        "rq");
+    REQUIRE(bad.kind == "SCALAR");
+    REQUIRE(good.kind == "SCALAR");
+    for (auto& r : prism::run_wp({bad}, 8)) {
+        INFO("wp " << r.status << ": " << r.message);
+        CHECK(r.status == prism::laws::FAILED);
+        CHECK_FALSE(truthy(r, "wp_qed"));
+    }
+    for (auto& r : prism::prove_contracts({bad}, 8)) {
+        INFO("contracts " << r.status << ": " << r.message);
+        CHECK(r.status == prism::laws::FAILED);
+    }
+    auto w = prism::run_wp({good}, 8);
+    REQUIRE(w.size() == 1);
+    CHECK(w[0].status == prism::laws::PROVED_ASSUMING);
+    auto c = prism::prove_contracts({good}, 8);
+    REQUIRE(c.size() == 1);
+    CHECK(c[0].status == prism::laws::PROVED_ASSUMING);
+}
+
+TEST_CASE("contracts: an empty return in a value-returning function is ERROR, not a proof") {
+    auto f = fn_from("contract_empty_return.c",
+                     "int ce(int x) {\n    // requires: x < 100\n    // ensures: result == x+1\n"
+                     "    if (x > 0) return;\n    return x + 1;\n}\n",
+                     "ce");
+    REQUIRE(f.kind == "SCALAR");
+    auto recs = prism::prove_contracts({f}, 8);
+    REQUIRE(recs.size() == 1);
+    INFO(recs[0].status << ": " << recs[0].message);
+    CHECK(recs[0].status == prism::laws::ERROR);
+    CHECK(extra_or(recs[0], "empty_return") == "true");
+    // The same function without the bare return is proved under requires.
+    auto twin = fn_from("contract_empty_return_twin.c",
+                        "int cf(int x) {\n    // requires: x < 100\n    // ensures: result == x+1\n"
+                        "    if (x > 0) return x + 1;\n    return x + 1;\n}\n",
+                        "cf");
+    auto t = prism::prove_contracts({twin}, 8);
+    REQUIRE(t.size() == 1);
+    CHECK(t[0].status == prism::laws::PROVED_ASSUMING);
 }
 
 TEST_CASE("wp: VOID and OTHER functions with ensures are NEEDS-HARNESS") {
