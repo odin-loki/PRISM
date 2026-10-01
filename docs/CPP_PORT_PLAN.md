@@ -5,7 +5,23 @@ engine (`prism/*.py`) is deleted, and every tool, script, test and CI step
 that uses Python is ported to C++23 (CMake already builds with
 `CMAKE_CXX_STANDARD 23`).
 
-**Status:** planned. The per-file map in the appendix comes from a code audit
+**Status (2026-10-01): in progress.**
+
+- Done and merged: phase 1 gaps for C lints, C++ lints, cparse, ltl,
+  contracts, adapters, fuzz/interpreter, polyglot (no more `python3`
+  helper), CLI (`parse_cli`), pir function budget, bmc SV-COMP front end.
+  Phase 2 test ports for those areas plus thread, taint, wp, diff,
+  harness, fuse, journal, confidence and verdict. Phase 3: `prism svcomp`
+  (the Python wrapper, witness writer, scorer and packager are deleted; the
+  BenchExec tool-info module calls the C++ executable). The conformance gate
+  (0 wrong proofs) held at each merge: bmc proved 120/382 (was 107/379),
+  pir proved 302/382 and refuted 168/367.
+- Implemented on branches, **not merged** because the adversarial review
+  found unported test assertions (major) that are not fixed yet:
+  `port/prism-deps`, `port/prism-qa`, `port/conformance`, `port/gui`.
+  `port/ai-gen-tools` is implemented but not reviewed.
+- Not started: the remaining test ports (bmc, lints/adapters, exec,
+  misc), phases 4–6. The per-file map in the appendix comes from a code audit
 of `911b9f94f` (16 auditors: engine, tools/CI, tests, plus a completeness
 critic). It was checked against both engines' sources, not against the docs.
 

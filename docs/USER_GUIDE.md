@@ -172,6 +172,7 @@ These read a finished `report.json` and never change a verdict ([AI.md](AI.md)).
 | `prism ask "<question>"` | `--report ...`; `--json` prints the structured query and answer as JSON; `--no-llm` uses only the deterministic grammar |
 | `prism draft` | `--report ...`; `--kind report\|assurance`; `--proofs DIR` where Lean theorems are looked up. Every claim links to a finding, verdict, certificate or theorem |
 | `prism triage [OUT]` | `--threshold T` cosine threshold for clustering (default 0.7); `--no-embed` skips the optional embedding model |
+| `prism svcomp` | SV-COMP verifier ([SVCOMP.md](SVCOMP.md)): `prism svcomp --prop P.prp TASK.c` prints the verdict and writes a witness 2.0 file; `svcomp score` scores the pinned subset; `svcomp pack` builds the tool archive |
 
 ### `prism prove` (C++ engine only)
 
