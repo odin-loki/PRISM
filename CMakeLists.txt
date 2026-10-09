@@ -647,6 +647,8 @@ if(PRISM_TESTS)
     tests/cpp/test_polyglot.cpp
     # The command line and run_pipeline end to end.
     tests/cpp/test_cli.cpp tests/cpp/test_pipeline.cpp tests/cpp/test_sarif.cpp
+    tests/cpp/test_havoc.cpp tests/cpp/test_repolint.cpp tests/cpp/test_taxonomy.cpp
+    tests/cpp/test_cxx_models.cpp tests/cpp/test_repair.cpp
     # `prism svcomp`: answer mapping, replay, waypoints, witness 2.0, scorer, archive.
     tests/cpp/test_svcomp.cpp
     # Qt-free window model and the `prism --gui` launcher (headless).
@@ -654,8 +656,6 @@ if(PRISM_TESTS)
     # prism-qa tools, the session runner and the documentation checks.
     tests/cpp/test_qa.cpp
     tests/cpp/test_gen_tables.cpp
-    tests/cpp/test_havoc.cpp tests/cpp/test_taxonomy.cpp tests/cpp/test_repolint.cpp
-    tests/cpp/test_cxx_models.cpp
     tests/cpp/test_naming.cpp)
   target_include_directories(prism_tests PRIVATE
     "${PRISM_ROOT}/include"

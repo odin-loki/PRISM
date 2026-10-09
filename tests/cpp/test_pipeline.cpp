@@ -11,6 +11,7 @@
 #include "prism/pipeline.hpp"
 #include "prism/taxonomy.hpp"
 
+
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -94,6 +95,18 @@ struct EnvGuard {
 #endif
 
 }  // namespace
+
+TEST_CASE("pipeline: pir follows bmc; pir is a part-exec stage (Law 9)") {
+    const char* const* p = prism::STAGE_ORDER;
+    std::vector<std::string> order;
+    for (; p && *p; ++p) order.push_back(*p);
+    auto bmc = std::find(order.begin(), order.end(), "bmc");
+    auto pir = std::find(order.begin(), order.end(), "pir");
+    REQUIRE(bmc != order.end());
+    REQUIRE(pir != order.end());
+    CHECK(pir == bmc + 1);
+    CHECK(prism::exec_stages().at("pir") == "part");
+}
 
 TEST_CASE("pipeline: an empty translation unit is ERROR EMPTY-TU, a parsed one is CLEAN") {
     Work w;

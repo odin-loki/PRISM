@@ -1,5 +1,5 @@
 // Differential trace of std::map / std::multimap / std::set / std::multiset
-// (tests/test_cxx_models.py): compiled once against libstdc++ and once with
+// (tests/cpp/test_cxx_models.cpp): compiled once against libstdc++ and once with
 // PRISM's model headers (src/prism/pir/models/cxx) first on the include
 // path, both under ASan/UBSan with _GLIBCXX_ASSERTIONS; the two traces must
 // be identical. Element construction/destruction is traced as counts (the

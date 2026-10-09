@@ -1,15 +1,9 @@
-// Differential tests of PRISM C++ library model headers (ports tests/test_cxx_models.py).
-// POSIX + clang++ with ASan/UBSan only.
+// Differential tests of PRISM C++ library model headers (roadmap 2.6).
+// Port of tests/test_cxx_models.py; data stays in tests/cxx_models/.
 
 #include <doctest/doctest.h>
-#ifdef ERROR
-#  undef ERROR
-#endif
 
-#ifndef _WIN32
-
-#include "../../src/prism/proc.hpp"
-
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -18,128 +12,187 @@
 #include <string>
 #include <vector>
 
-namespace {
+#ifndef _WIN32
+#  include <spawn.h>
+#  include <sys/wait.h>
+#  include <unistd.h>
+#endif
 
 namespace fs = std::filesystem;
 
+namespace {
+
 fs::path repo() { return fs::path(PRISM_SOURCE_DIR); }
 
-struct Tmp {
-    fs::path dir;
-    Tmp() {
-        static int n = 0;
-        dir = fs::temp_directory_path() / ("prism-cxxmodels-" + std::to_string(++n));
-        std::error_code ec;
-        fs::remove_all(dir, ec);
-        fs::create_directories(dir);
-    }
-    ~Tmp() {
-        std::error_code ec;
-        fs::remove_all(dir, ec);
-    }
+std::string slurp(const fs::path& p) {
+    std::ifstream in(p, std::ios::binary);
+    return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+}
+
+struct CxxModelsCtx {
+    fs::path tmp;
+    std::string cxx;
+    bool ok = false;
 };
 
-prism::detail::RunOut run_env(const std::vector<std::string>& argv, const fs::path& cwd) {
-    prism::detail::RunSpec spec;
-    spec.argv = argv;
-    spec.cwd = cwd;
-    spec.env = {{"ASAN_OPTIONS", "detect_leaks=0:halt_on_error=1"}, {"UBSAN_OPTIONS", "halt_on_error=1"}};
-    spec.merge_stderr = true;
-    return prism::detail::run(spec);
+CxxModelsCtx& ctx() {
+    static CxxModelsCtx c;
+    return c;
 }
 
-std::string which_cxx() {
-    for (const char* c : {"clang++-18", "clang++"}) {
-        auto r = prism::detail::run_process({"which", c}, 30, repo());
-        if (r.rc == 0 && !r.text.empty()) {
-            std::string p = r.text;
-            while (!p.empty() && (p.back() == '\n' || p.back() == '\r')) p.pop_back();
-            return p;
+bool run_cmd(const std::vector<std::string>& argv, std::string* out = nullptr, std::string* err = nullptr) {
+#ifndef _WIN32
+    std::vector<char*> args;
+    for (auto& a : argv) args.push_back(const_cast<char*>(a.c_str()));
+    args.push_back(nullptr);
+    int pipe_out[2]{-1, -1};
+    if (out && pipe(pipe_out) != 0) return false;
+    pid_t pid = 0;
+    if (posix_spawnp(&pid, argv[0].c_str(), nullptr, nullptr, args.data(), environ) != 0) {
+        if (out) {
+            close(pipe_out[0]);
+            close(pipe_out[1]);
         }
+        return false;
     }
-    return {};
+    if (out) {
+        close(pipe_out[1]);
+        out->assign(std::istreambuf_iterator<char>(pipe_out[0]), {});
+        close(pipe_out[0]);
+    }
+    int st = 0;
+    if (waitpid(pid, &st, 0) < 0) return false;
+    return WIFEXITED(st) && WEXITSTATUS(st) == 0;
+#else
+    return false;
+#endif
 }
 
-bool sanitizer_ok(const std::string& cxx, const fs::path& tmp) {
+bool probe_clang_asan(const std::string& cxx, const fs::path& tmp) {
     auto probe = tmp / "probe.cpp";
     std::ofstream(probe) << "#include <vector>\nint main() { std::vector<int> v{1}; return v[0] - 1; }\n";
-    auto out = tmp / "probe";
-    const std::vector<std::string> flags = {"-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-fsanitize=address,undefined",
-                                            "-fno-sanitize-recover=all", "-g", "-O1", "-w"};
-    std::vector<std::string> build = {cxx};
+    const std::vector<std::string> flags{"-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-fsanitize=address,undefined",
+                                         "-fno-sanitize-recover=all", "-g", "-O1", "-w"};
+    std::vector<std::string> build{cxx};
     build.insert(build.end(), flags.begin(), flags.end());
     build.push_back(probe.string());
     build.push_back("-o");
-    build.push_back(out.string());
-    if (prism::detail::run_process(build, 600, tmp).rc != 0) return false;
-    return run_env({out.string()}, tmp).rc == 0;
+    build.push_back((tmp / "probe").string());
+    if (!run_cmd(build)) return false;
+    return run_cmd({(tmp / "probe").string()});
 }
 
-std::string run_capture(const std::vector<std::string>& argv, const fs::path& cwd) {
-    return run_env(argv, cwd).out;
-}
-
-fs::path build_prog(const std::string& cxx, const fs::path& tmp, const std::string& prog, bool models) {
-    auto out = tmp / (prog + (models ? ".model" : ".lib"));
-    std::vector<std::string> argv = {cxx, "-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-fsanitize=address,undefined",
-                                     "-fno-sanitize-recover=all", "-g", "-O1", "-w"};
-    if (models) {
+fs::path build_prog(const std::string& cxx, const fs::path& tmp, const std::string& prog, bool with_models) {
+    const fs::path models = repo() / "src" / "prism" / "pir" / "models" / "cxx";
+    const std::vector<std::string> flags{"-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-fsanitize=address,undefined",
+                                         "-fno-sanitize-recover=all", "-g", "-O1", "-w"};
+    fs::path out = tmp / (prog + (with_models ? ".model" : ".lib"));
+    std::vector<std::string> argv{cxx};
+    argv.insert(argv.end(), flags.begin(), flags.end());
+    if (with_models) {
         argv.push_back("-isystem");
-        argv.push_back((repo() / "src" / "prism" / "pir" / "models" / "cxx").string());
+        argv.push_back(models.string());
     }
     argv.push_back((repo() / "tests" / "cxx_models" / (prog + ".cpp")).string());
     argv.push_back("-o");
     argv.push_back(out.string());
-    REQUIRE(prism::detail::run_process(argv, 600, tmp).rc == 0);
+    REQUIRE(run_cmd(argv));
     return out;
 }
 
-void same_trace(const std::string& cxx, Tmp& tmp, const std::string& prog, const std::vector<std::string>& model_hdrs) {
-    auto deps_argv = std::vector<std::string>{cxx, "-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-fsanitize=address,undefined",
-                                              "-fno-sanitize-recover=all", "-g", "-O1", "-w", "-isystem",
-                                              (repo() / "src" / "prism" / "pir" / "models" / "cxx").string(),
-                                              "-M",
-                                              (repo() / "tests" / "cxx_models" / (prog + ".cpp")).string()};
-    auto dep_out = prism::detail::run_process(deps_argv, 300, tmp.dir).text;
-    for (const auto& h : model_hdrs) {
-        auto want = (repo() / "src" / "prism" / "pir" / "models" / "cxx" / h).string();
-        CHECK(dep_out.find(want) != std::string::npos);
-    }
-    auto lib = build_prog(cxx, tmp.dir, prog, false);
-    auto mod = build_prog(cxx, tmp.dir, prog, true);
-    auto a = run_capture({lib.string()}, tmp.dir);
-    auto b = run_capture({mod.string()}, tmp.dir);
-    std::vector<std::string> la, lb;
-    std::istringstream ia(a), ib(b);
+std::vector<std::string> run_lines(const fs::path& exe, const std::string& arg = {}) {
+    std::vector<std::string> argv{exe.string()};
+    if (!arg.empty()) argv.push_back(arg);
+    std::string stdout_text;
+    REQUIRE(run_cmd(argv, &stdout_text));
+    std::vector<std::string> lines;
+    std::istringstream in(stdout_text);
     std::string line;
-    while (std::getline(ia, line)) la.push_back(line);
-    while (std::getline(ib, line)) lb.push_back(line);
-    CHECK(la.size() > 20);
-    CHECK(la == lb);
+    while (std::getline(in, line)) lines.push_back(line);
+    return lines;
+}
+
+std::string headers(const std::string& cxx, const std::string& prog) {
+    const fs::path models = repo() / "src" / "prism" / "pir" / "models" / "cxx";
+    const std::vector<std::string> flags{"-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-fsanitize=address,undefined",
+                                         "-fno-sanitize-recover=all", "-g", "-O1", "-w"};
+    std::vector<std::string> argv{cxx};
+    argv.insert(argv.end(), flags.begin(), flags.end());
+    argv.push_back("-isystem");
+    argv.push_back(models.string());
+    argv.push_back("-M");
+    argv.push_back((repo() / "tests" / "cxx_models" / (prog + ".cpp")).string());
+    std::string out;
+    REQUIRE(run_cmd(argv, &out));
+    return out;
+}
+
+void same_trace(const std::string& prog, const std::vector<const char*>& model_headers) {
+    auto& c = ctx();
+    REQUIRE(c.ok);
+    const fs::path models = repo() / "src" / "prism" / "pir" / "models" / "cxx";
+    auto deps = headers(c.cxx, prog);
+    for (const char* m : model_headers) CHECK(deps.find((models / m).string()) != std::string::npos);
+    auto lib = build_prog(c.cxx, c.tmp, prog, false);
+    auto mod = build_prog(c.cxx, c.tmp, prog, true);
+    auto a = run_lines(lib);
+    auto b = run_lines(mod);
+    CHECK(a.size() > 20);
+    CHECK(a == b);
 }
 
 }  // namespace
 
-TEST_CASE("cxx_models: vector/string/map differential traces") {
-    const auto cxx = which_cxx();
-    if (cxx.empty()) {
-        MESSAGE("NOTRUN: clang++ not found");
-        return;
+TEST_CASE("cxx models: setup clang++ with ASan/UBSan") {
+    auto& c = ctx();
+    if (c.tmp.empty()) {
+        c.tmp = fs::temp_directory_path() / "prism-cxxmodels-doctest";
+        fs::remove_all(c.tmp);
+        fs::create_directories(c.tmp);
+        for (const char* name : {"clang++-18", "clang++"}) {
+            if (run_cmd({name, "--version"})) {
+                c.cxx = name;
+                break;
+            }
+        }
+        if (!c.cxx.empty()) c.ok = probe_clang_asan(c.cxx, c.tmp);
     }
-    Tmp tmp;
-    if (!sanitizer_ok(cxx, tmp.dir)) {
-        MESSAGE("NOTRUN: clang++ ASan/UBSan runtimes not usable");
-        return;
-    }
-    same_trace(cxx, tmp, "vector_trace", {"vector"});
-    same_trace(cxx, tmp, "string_trace", {"bits/basic_string.tcc"});
-    same_trace(cxx, tmp, "map_set_trace", {"map", "set", "prism_tree.h"});
-    for (bool models : {false, true}) {
-        auto exe = build_prog(cxx, tmp.dir, "map_set_trace", models);
-        auto r = run_env({exe.string(), "uaf"}, tmp.dir);
-        CHECK(r.rc != 0);
-        CHECK(r.out.find("heap-use-after-free") != std::string::npos);
-    }
+    if (!c.ok) MESSAGE("NOTRUN: clang++ with ASan/UBSan not usable here");
 }
 
+TEST_CASE("cxx models: vector trace matches libstdc++") {
+    if (!ctx().ok) return;
+    same_trace("vector_trace", {"vector"});
+}
+
+TEST_CASE("cxx models: string trace matches libstdc++") {
+    if (!ctx().ok) return;
+    same_trace("string_trace", {"bits/basic_string.tcc"});
+}
+
+#ifndef _WIN32
+int run_capture(const fs::path& exe, const std::string& arg, std::string* combined) {
+    std::string cmd = exe.string() + " " + arg + " 2>&1";
+    FILE* fp = popen(cmd.c_str(), "r");
+    if (!fp) return -1;
+    combined->clear();
+    char buf[4096];
+    while (fgets(buf, sizeof buf, fp)) *combined += buf;
+    return pclose(fp);
+}
 #endif
+
+TEST_CASE("cxx models: map/set trace matches libstdc++ and UAF on erase") {
+    if (!ctx().ok) return;
+    same_trace("map_set_trace", {"map", "set", "prism_tree.h"});
+#ifndef _WIN32
+    auto& c = ctx();
+    for (bool models : {false, true}) {
+        auto exe = c.tmp / ("map_set_trace" + std::string(models ? ".model" : ".lib"));
+        std::string out;
+        int rc = run_capture(exe, "uaf", &out);
+        CHECK(rc != 0);
+        CHECK(out.find("heap-use-after-free") != std::string::npos);
+    }
+#endif
+}

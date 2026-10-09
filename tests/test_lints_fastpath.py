@@ -1,12 +1,8 @@
-"""Fast paths of the Python engine's lints that have no C++ counterpart.
+"""PYTHONHASHSEED independence for the Python engine lints (phase 5).
 
-- _required_literal only names text every match contains.
-- Findings do not depend on the string hash seed (set iteration order).
-
-The rest of this file (strip/brace fast paths, the interval gate) moved to
-tests/cpp/test_lint_corpus.cpp. These two stay until the Python engine is
-deleted: _required_literal exists only in prism/checkers.py, and
-PYTHONHASHSEED only affects the Python engine.
+Strip/brace fast paths and the interval va_arg gate live in
+tests/cpp/test_lint_corpus.cpp. _required_literal tests are deleted with
+prism/checkers.py in phase 5.
 
 python -m pytest tests/test_lints_fastpath.py
 """
@@ -21,39 +17,7 @@ import textwrap
 import unittest
 from pathlib import Path
 
-from prism import checkers
-from prism.cparse import strip_comments_keep_lines
-
 ROOT = Path(__file__).resolve().parents[1]
-TD = ROOT / "testdata"
-
-
-class TestRequiredLiteral(unittest.TestCase):
-    def test_cases(self):
-        lit = checkers._required_literal
-        self.assertEqual(lit(re.compile(r"\bgetdirentries\s*\(")), "getdirentries")
-        self.assertEqual(lit(re.compile(r"(?:foo)+bar")), "foo")
-        self.assertIsNone(lit(re.compile(r"memcpy", re.I)))
-        self.assertIsNone(lit(re.compile(r"(?i:memcpy)")))
-        self.assertIsNone(lit(re.compile(r"(?:malloc|calloc)")))
-        self.assertIsNone(lit(re.compile(r"(?:abc)?x")))
-
-    def test_every_match_contains_the_literal(self):
-        pats = [p for p in vars(checkers).values() if isinstance(p, re.Pattern)]
-        text = "\n".join(
-            strip_comments_keep_lines(p.read_text(encoding="utf-8", errors="replace"))
-            for p in sorted(TD.glob("*.c*"))
-        )
-        checked = 0
-        for pat in pats:
-            want = checkers._required_literal(pat)
-            if want is None:
-                continue
-            for m in pat.finditer(text):
-                self.assertIn(want, m.group(0), pat.pattern)
-                checked += 1
-        self.assertGreater(checked, 100)
-
 
 _SEED_PROBE = textwrap.dedent("""
     import json, sys
@@ -111,9 +75,7 @@ class TestHashSeedIndependent(unittest.TestCase):
             outs = {self._run(tmp, seed) for seed in ("0", "1", "2", "3", "4", "5")}
             self.assertEqual(len(outs), 1, outs)
             out = outs.pop()
-        # The C++ engine keeps these names in a std::set: sorted order.
         self.assertIn("alpha dereferenced without has_value()", out)
-        # One finding per (writer, global): t1's four, then t2's four.
         atom = re.findall(r"global '(\w+)' incremented", out)
         want = ["alpha", "beta", "delta", "gamma_"]
         self.assertEqual(atom, want + want)

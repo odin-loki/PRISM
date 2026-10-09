@@ -951,6 +951,83 @@ TEST_CASE("certified: a checker out of memory is reported as such, never as a ve
 }
 #  endif
 
+TEST_CASE("certified: run_pipeline pir with --certified (skips without clang/opt)") {
+    auto fe = prism::pir::find_frontend(prism::default_config());
+    if (!fe.clang || !fe.opt) {
+        MESSAGE("clang/opt not on PATH: skipped");
+        return;
+    }
+    CertTmp tmp;
+    auto src = tmp.dir / "src";
+    fs::create_directories(src);
+    std::ofstream(src / "cert.c") << R"(int div_ok(int a, int b) {
+    int d = (b & 7) + 1;
+    return a / d;
+}
+int add_bad(int a, int b) {
+    return a + b;
+}
+int sum3(int x) {
+    int acc = 0;
+    for (int i = 0; i < 3; ++i) acc += x & 15;
+    return acc;
+}
+)";
+    prism::Config cfg = prism::default_config();
+    cfg.root = src;
+    cfg.out = tmp.dir / "out";
+    cfg.llm = false;
+    cfg.certified = true;
+    cfg.solver_cache = tmp.dir / "cache";
+    cfg.stages = std::vector<std::string>{"inventory", "classify", "pir"};
+    auto rep = prism::run_pipeline(cfg);
+    const prism::StageResult* pir = nullptr;
+    for (auto& s : rep.stages)
+        if (s.name == "pir") pir = &s;
+    REQUIRE(pir);
+    std::map<std::string, const prism::Finding*> by;
+    for (auto& f : pir->findings)
+        if (f.function) by[*f.function] = &f;
+    REQUIRE(by.contains("add_bad"));
+    CHECK(by["add_bad"]->status == prism::laws::FAILED);
+    CHECK_FALSE(by["add_bad"]->counterexample.empty());
+    for (auto* name : {"div_ok", "sum3"}) {
+        REQUIRE(by.contains(name));
+        CHECK(by[name]->extra.at("certified_mode") == "on");
+        if (have_cert_chain())
+            CHECK(by[name]->status == prism::laws::PROVED_CERTIFIED);
+        else
+            CHECK(by[name]->status == prism::laws::PROVED);
+    }
+    CHECK(fs::exists(tmp.dir / "out" / "TRUSTED_BASE.md"));
+    CHECK(fs::exists(tmp.dir / "out" / "VERDICTS.md"));
+    CHECK(fs::exists(tmp.dir / "cache" / "solve_times.json"));
+}
+
+TEST_CASE("certified: plain run_pipeline never certifies") {
+    auto fe = prism::pir::find_frontend(prism::default_config());
+    if (!fe.clang || !fe.opt) return;
+    CertTmp tmp;
+    auto src = tmp.dir / "src";
+    fs::create_directories(src);
+    std::ofstream(src / "cert.c") << "int div_ok(int a, int b) { int d = (b & 7) + 1; return a / d; }\n";
+    prism::Config cfg = prism::default_config();
+    cfg.root = src;
+    cfg.out = tmp.dir / "out";
+    cfg.llm = false;
+    cfg.certified = false;
+    cfg.stages = std::vector<std::string>{"inventory", "classify", "pir"};
+    auto rep = prism::run_pipeline(cfg);
+    for (auto& s : rep.stages)
+        if (s.name == "pir")
+            for (auto& f : s.findings)
+                if (f.function && *f.function == "div_ok") {
+                    CHECK(f.status == prism::laws::PROVED);
+                    CHECK(f.extra.at("certified_mode") == "off");
+                    CHECK(f.extra.count("certificate") == 0);
+                }
+}
+
 TEST_CASE("certified: the certification budget of a function leaves PROVED with a note") {
     auto t = cert_pir(kSafeDiv, "g");
     REQUIRE(t.fn.has_value());

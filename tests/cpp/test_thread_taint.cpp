@@ -182,6 +182,32 @@ TEST_CASE("thread: FreeBSD thr_* and joined thrd are not an ISO thrd race") {
     }
 }
 
+// tests/test_thrd_unenc.py: remaining ISO thrd_* plants are syntax gaps, not races or proofs.
+TEST_CASE("thread: remaining thrd_* calls are unencoded syntax") {
+    auto p = td() / "thrd_unenc.c";
+    auto fns = prism::extract_functions(p, p.string());
+    const char* rest[] = {"thrd_sleep_unenc_bad", "thrd_yield_unenc_bad", "thrd_current_unenc_bad",
+                          "thrd_equal_unenc_bad",  "thrd_exit_unenc_bad",  "thrd_join_unenc_bad",
+                          "thrd_detach_unenc_bad"};
+    for (auto* name : rest) {
+        INFO(name);
+        prism::FunctionInfo* fn = nullptr;
+        for (auto& f : fns)
+            if (f.name == name) fn = &f;
+        REQUIRE(fn);
+        auto syn = prism::unencoded_syntax_reason_cached(*fn, "bitvector BMC");
+        REQUIRE(syn.has_value());
+        std::string low = *syn;
+        for (auto& c : low) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        CHECK(low.find("thrd") != std::string::npos);
+        CHECK(low.find("pthread") == std::string::npos);
+        CHECK(with_cls(prism::run_thread({*fn}), "RACE-SHARED").empty());
+    }
+    for (auto& f : fns)
+        if (f.name == "thrd_unenc_ok")
+            CHECK_FALSE(prism::unencoded_syntax_reason_cached(f, "bitvector BMC"));
+}
+
 TEST_CASE("taint: getenv reaching system is TAINT-SINK in run") {
     auto p = td() / "taint_sink.c";
     auto bad = with_cls(prism::run_taint(prism::extract_functions(p, "taint_sink.c")), "TAINT-SINK");

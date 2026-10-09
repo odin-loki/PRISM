@@ -123,8 +123,9 @@ TEST_CASE("repolint: float checks mirror FloatOps.lean") {
         check_contains_norm(lean, d);
     }
     const auto bin_map = body_between(cpp, "static const std::map<std::string, Op> bin{", "};");
-    for (auto [op, cop] : {std::pair{"fadd", "FAdd"}, {"fsub", "FSub"}, {"fmul", "FMul"}, {"fdiv", "FDiv"}})
-        CHECK(bin_map.find(std::string("{\"") + op + "\", Op::" + cop + "}") != std::string::npos);
+    for (const auto& pair : std::vector<std::pair<const char*, const char*>>{{"fadd", "FAdd"}, {"fsub", "FSub"},
+                                                                            {"fmul", "FMul"}, {"fdiv", "FDiv"}})
+        CHECK(bin_map.find(std::string("{\"") + pair.first + "\", Op::" + pair.second + "}") != std::string::npos);
     CHECK(cpp.find("checks(cur, it->second, w, {a, b}, r, c.line);") != std::string::npos);
     const auto audit = slurp(repo() / "proofs" / "refinement" / "Audit.lean");
     for (const char* thm :

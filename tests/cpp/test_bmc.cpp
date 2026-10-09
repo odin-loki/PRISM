@@ -172,3 +172,56 @@ TEST_CASE("run_bmc never silent-empty on a function list") {
     CHECK(empty.empty());
 }
 #endif
+
+// tests/test_unencoded_contract.py: strcpy/strcat stay BMC-only; designated init gate.
+TEST_CASE("bmc unencoded: strcpy and strcat are not syntax gaps") {
+    prism::FunctionInfo scalar;
+    scalar.file = "x.c";
+    scalar.name = "f";
+    scalar.kind = "SCALAR";
+    scalar.line = 1;
+    scalar.signature = "int f(int n)";
+    scalar.params = {{"int", "n"}};
+    for (auto [name, body] : std::vector<std::pair<const char*, const char*>>{
+             {"strcpy_only", "strcpy(d, s); return n;"},
+             {"strcat_only", "strcat(d, s); return n;"},
+             {"sprintf_only", "sprintf(d, \"%d\", n); return n;"},
+         }) {
+        scalar.name = name;
+        scalar.body = body;
+        CHECK_FALSE(prism::unencoded_syntax_reason_cached(scalar, "bitvector BMC"));
+    }
+    auto copy = load_fn("unbounded_copy.c", "copy_bad");
+    CHECK(copy.body.find("strcpy") != std::string::npos);
+    CHECK_FALSE(prism::unencoded_syntax_reason_cached(copy, "bitvector BMC"));
+    auto cat = load_fn("unbounded_copy.c", "cat_bad");
+    CHECK(cat.body.find("strcat") != std::string::npos);
+    CHECK_FALSE(prism::unencoded_syntax_reason_cached(cat, "bitvector BMC"));
+}
+
+TEST_CASE("bmc unencoded: strlcpy is named; plain goto is encoded") {
+    prism::FunctionInfo scalar;
+    scalar.file = "x.c";
+    scalar.name = "sl";
+    scalar.kind = "SCALAR";
+    scalar.line = 1;
+    scalar.signature = "int sl(int n)";
+    scalar.params = {{"int", "n"}};
+    scalar.body = "strlcpy(d, s, 4); return n;";
+    auto syn = prism::unencoded_syntax_reason_cached(scalar, "bitvector BMC");
+    REQUIRE(syn.has_value());
+    CHECK(syn->find("strlcpy") != std::string::npos);
+    CHECK(syn->find("strcpy") == std::string::npos);
+    auto desig_ok = load_fn("designated_init.c", "desig_assign_ok");
+    CHECK_FALSE(prism::unencoded_syntax_reason_cached(desig_ok, "bitvector BMC"));
+    auto desig_bad = load_fn("designated_init.c", "desig_init_bad");
+    auto bad_syn = prism::unencoded_syntax_reason_cached(desig_bad, "bitvector BMC");
+    REQUIRE(bad_syn.has_value());
+    CHECK(bad_syn->find("designated init") != std::string::npos);
+    auto goto_fn = load_fn("goto_unenc.c", "with_goto");
+    CHECK_FALSE(prism::unencoded_syntax_reason_cached(goto_fn, "bitvector BMC"));
+    auto computed = load_fn("computed_goto.c", "computed_goto_bad");
+    auto cg = prism::unencoded_syntax_reason_cached(computed, "bitvector BMC");
+    REQUIRE(cg.has_value());
+    CHECK(cg->find("computed goto") != std::string::npos);
+}

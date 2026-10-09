@@ -809,6 +809,21 @@ TEST_CASE("prism_gui smoke: an empty findings table is a failure (exit 3), never
 }
 #endif
 
+TEST_CASE("prism main: --gui returns before run_pipeline (source contract)") {
+    const auto main_cpp = slurp(repo_root() / "src" / "prism" / "main.cpp");
+    CHECK(main_cpp.find("if (std::strcmp(argv[i], \"--gui\") == 0) return launch_gui(argc, argv);") !=
+          std::string::npos);
+    auto helpers = main_cpp.substr(0, main_cpp.find("int main("));
+    CHECK(helpers.find("run_pipeline") == std::string::npos);
+    const auto launch = main_cpp.substr(main_cpp.find("launch_gui"));
+    CHECK(launch.find("notrun_missing_gui") != std::string::npos);
+    CHECK(launch.find("spawn_prism_gui") != std::string::npos);
+    CHECK(launch.find("run_pipeline") == std::string::npos);
+    const auto cli = slurp(repo_root() / "src" / "prism" / "cli.cpp");
+    CHECK(cli.find("a == \"--gui\"") != std::string::npos);
+    CHECK(cli.find("cfg.gui = true") != std::string::npos);
+}
+
 TEST_CASE("CI runs the headless window smoke") {
     const auto ci = slurp(repo_root() / ".github" / "workflows" / "ci.yml");
     REQUIRE_FALSE(ci.empty());

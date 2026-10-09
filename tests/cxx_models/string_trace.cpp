@@ -1,4 +1,4 @@
-// Differential trace of std::string (tests/test_cxx_models.py): compiled once
+// Differential trace of std::string (tests/cpp/test_cxx_models.cpp): compiled once
 // against libstdc++ and once with PRISM's model headers
 // (src/prism/pir/models/cxx) first on the include path, both under
 // ASan/UBSan with _GLIBCXX_ASSERTIONS; the two traces must be identical
