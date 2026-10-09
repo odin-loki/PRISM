@@ -1024,7 +1024,7 @@ TEST_CASE("warnings: gcc and clang agree once; same path is not run twice") {
     auto log = nt.t.dir / "cc-once.log";
     fake(nt.bin, "gcc", "echo \"$@\" >> '" + log.string() + "'\nexit 0\n");
     fs::remove(nt.bin / "clang");
-    fs::copy_file(nt.bin / "gcc", nt.bin / "clang", fs::copy_options::overwrite_existing);
+    fs::create_symlink(nt.bin / "gcc", nt.bin / "clang");
     prism::run_compiler({unit}, cfg);
     CHECK(lines_of(log).size() == 1);
 }
