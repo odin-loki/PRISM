@@ -139,6 +139,15 @@ releases were Apache-2.0) and Strix (AGPL v3 in tree). PRISM's own code is
 the GNU Affero General Public License, version 3 (`LICENSE`). The third-party
 table still needs review before the first sale.
 
+## Phase-5 Python allow-list (C++ port)
+
+Until `prism/*.py` and the pytest suite are deleted, `prism_tests` runs
+`deps: tracked .py files match the phase-5 allow-list` in
+`tests/cpp/test_deps.cpp`. The constexpr `k_python_engine_deleted` selects the
+rules: `false` while the Python engine remains (allow `prism/`, `tests/`,
+`scripts/`, `tools/` prefixes outside `third_party/`), `true` after phase 5
+(only `tools/svcomp/prism.py` may remain). See [CPP_PORT_PLAN.md](CPP_PORT_PLAN.md).
+
 ## SBOM
 
 `prism-deps sbom --version vX.Y.Z -o prism.cdx.json` writes a

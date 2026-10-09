@@ -57,6 +57,7 @@ jobs:
           -DPRISM_CUDA=OFF -DPRISM_LLAMA=OFF -DPRISM_QT=ON -DPRISM_Z3=ON
       - name: Build
         run: cmake --build build
+      # Phase-5 Python allow-list gate: tests/cpp/test_deps.cpp (no extra Python step).
       - name: prism_tests
         run: ./build/prism_tests
       - name: prism_gui_tests (the window, offscreen)

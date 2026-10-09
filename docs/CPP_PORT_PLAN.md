@@ -48,8 +48,17 @@ that uses Python is ported to C++23 (CMake already builds with
    ends call `find_package(Python3)`, so CMake forces
    `GGML_OPENCL`/`GGML_WEBGPU` OFF. Z3 is handled in phase 6.
 
-A CI gate (phase 5) fails on any tracked `.py` file or `python` call other
-than these.
+The phase-5 gate is enforced in C++ doctest
+(`tests/cpp/test_deps.cpp`, case `deps: tracked .py files match the phase-5
+allow-list`), which runs with every `prism_tests` invocation (including CI).
+No separate Python job is required for this check. While the Python engine and
+pytest suite still exist, `k_python_engine_deleted` in that test stays `false`:
+tracked `.py` under `prism/`, `tests/`, `scripts/`, and `tools/` (plus all of
+`third_party/`) are allowed. After phase 5 deletes those trees, flip
+`k_python_engine_deleted` to `true`; the test then requires
+`git ls-files '*.py'` outside `third_party/` to be exactly
+`tools/svcomp/prism.py`. A tracked `.py` or `python` call in CI workflows
+other than the BenchExec smoke (below) should still fail review.
 
 ## What we give up, and what replaces it
 
@@ -264,7 +273,9 @@ goes in phase 5, so these are recorded, not fixed there):
   `prism/simdmut.py`) and every Python `__pycache__`.
 - `CLAUDE.md`: "one product, two engines" becomes one engine. Laws and
   "Adding a check" point at C++ files only. The parity rules are removed.
-- Add the no-Python gate (see the exceptions above).
+- Flip `k_python_engine_deleted` to `true` in
+  `tests/cpp/test_deps.cpp` (see the gate description at the top of this
+  document).
 
 ### Phase 6: build without Python (vendored Z3)
 
