@@ -709,7 +709,7 @@ wrong proof first, then by size.
 | D30 | STR-NULL-MEMBER misses the real CVE-2023-50472 code: a member null test after the call suppresses it | S | docs/EVALUATION.md:209 (claims STR-NULL-MEMBER finds CVE-2023-50472); … |
 | D31 | The three new CVE lints drift between the engines (whitespace in `! acc` and `a -> b`, literal memcpy lengths) | S | CLAUDE.md engine parity; prism/checkers.py:13628-13663, 13740-13786 vs … |
 | D32 | PTR-CHAIN-NULL and MEM-COPY-LEN take time quadratic in function length (re-joined prefix text, C++ recompiles 8 regexes on each match) | S | docs/FUZZ_SELF.md F1 (a crafted input must not make a run take minutes); … |
-| D33 | The three new lints have only the one twin pair as tests: no testdata/ planted pair, no test_core unit test, no testdata_fp negatives | S | CLAUDE.md 'Adding a check' / testdata planted-bug corpus; tests/test_core.py:333 … |
+| D33 | The three new lints have only the one twin pair as tests: no testdata/ planted pair, no test_core unit test, no testdata_fp negatives | S | CLAUDE.md 'Adding a check' / testdata planted-bug corpus; `tests/cpp/test_main.cpp` lint corpus … |
 | D34 | SARIF rules carry only the class id: no taxonomy name or CWE (new lints included) | S | prism/sarif.py:69-70; src/prism/sarif.cpp:103-104 |
 | D35 | Open false alarm: MEM-CAPACITY-FIRST when the realloc failure arm frees the whole object (lints and pbsd, both engines) | S | docs/EVALUATION.md:201 (zlib examples/zran.c:110, FP open) |
 | D36 | Fuzz reports CLEAN for functions the concrete interpreter cannot parse (ExecResult.error ignored; Law 7) | S | docs/EVALUATION.md:236-240 (interpreter front-end gaps surface as ERROR, not silent); … |

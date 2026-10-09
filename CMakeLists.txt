@@ -607,7 +607,8 @@ endif()
 
 if(PRISM_TESTS)
   add_executable(prism_tests tests/cpp/test_main.cpp tests/cpp/test_ai9.cpp tests/cpp/test_conc.cpp
-    tests/cpp/test_leanbb.cpp tests/cpp/test_pir_mem.cpp tests/cpp/test_pir_budget.cpp tests/cpp/test_certified.cpp tests/cpp/test_pir3.cpp
+    tests/cpp/test_leanbb.cpp tests/cpp/test_pir_mem.cpp tests/cpp/test_pir_budget.cpp tests/cpp/test_certified.cpp
+    tests/cpp/test_pir3.cpp tests/cpp/test_pir_e2e.cpp tests/cpp/test_pir_refinement.cpp tests/cpp/test_pbsd.cpp
     # Roadmap 2.8 Clang-AST lints.
     tests/cpp/test_astlint.cpp
     # C lint checks: API branches, dispatch, real-code false alarms, CVE shapes.
@@ -618,7 +619,7 @@ if(PRISM_TESTS)
     tests/cpp/test_ai_assist.cpp
     # bmc front end on SV-COMP shapes (docs/SVCOMP.md).
     tests/cpp/test_bmc_svcomp.cpp
-    # Table-driven run_bmc on testdata/ (tests/test_bmc.py TestBMC).
+    # Table-driven run_bmc on testdata/ (tools/gen_test_bmc_cpp.py).
     tests/cpp/test_bmc.cpp
     # Table-driven run_concolic on testdata/ (tests/test_concolic.py).
     tests/cpp/test_concolic.cpp
@@ -653,6 +654,8 @@ if(PRISM_TESTS)
     # prism-qa tools, the session runner and the documentation checks.
     tests/cpp/test_qa.cpp
     tests/cpp/test_gen_tables.cpp
+    tests/cpp/test_havoc.cpp tests/cpp/test_taxonomy.cpp tests/cpp/test_repolint.cpp
+    tests/cpp/test_cxx_models.cpp
     tests/cpp/test_naming.cpp)
   target_include_directories(prism_tests PRIVATE
     "${PRISM_ROOT}/include"
