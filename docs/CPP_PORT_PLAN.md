@@ -5,23 +5,119 @@ engine (`prism/*.py`) is deleted, and every tool, script, test and CI step
 that uses Python is ported to C++23 (CMake already builds with
 `CMAKE_CXX_STANDARD 23`).
 
-**Status (2026-10-09): major port landed on `main` (integration commit pending).**
+**Status (2026-10-09): C++ integration on `main`; phase-5 gate next.**
 
 - **Merged on tree:** `prism-deps` (replaces `scripts/fetch_deps.py`,
   `licence_check.py`, `sbom.py`), unified **`prism-qa`** (`conformance`,
   `soundness`, dev QA commands), **`prism_docs_check`**, Qt GUI parity
   (`gui_model`, stages table, journal poll), native JSON/TOML in polyglot,
-  `prism svcomp` in C++, and most phase-2 doctest ports (`tests/cpp/*`).
+  `prism svcomp` in C++, table-driven **`tests/cpp/test_bmc.cpp`** and
+  **`tests/cpp/test_concolic.cpp`** (maintained by `tools/gen_test_concolic_cpp.py`),
+  and the bulk of phase-2 doctest ports (`tests/cpp/*`).
 - **`tests/test_core.py`:** deleted — `TestLaws` / `TestBMC` / `TestLints` were
   already doctest-only; the last `TestClassify` cparse cases now live in
   `tests/cpp/test_main.cpp` (`cparse: testdata function kinds`).
+- **Pytest:** **30** tracked files under `tests/test_*.py` (AI, SARIF, PIR
+  refinement, naming, supply-chain parity helpers, etc.); the phase-5 allow-list
+  is enforced in **`tests/cpp/test_deps.cpp`** (`deps: tracked .py files match
+  the phase-5 allow-list`) on every `prism_tests` run.
 - **CI:** `conformance.yml` / `self-check.yml` call `prism-qa`; supply-chain
   job builds `prism-deps`; `docs.yml` uses `prism_docs_check`.
-- **Still open:** phase 4–5 (delete `prism/*.py` and remaining pytest), phase 6
-  (Z3 without Python), `port/ai-gen-tools`, large `test_bmc.cpp` /
-  `test_concolic.cpp` tables, owner-only items in `ROADMAP_STATUS.md`.
+- **Still open:** phase 5 (delete `prism/*.py` and the remaining pytest suite),
+  phase 6 (Z3 without Python), `port/ai-gen-tools`, owner-only items in
+  `ROADMAP_STATUS.md`.
 - Appendix map is from audit `911b9f94f`; many rows are now **DONE** on C++
   even where the table still says partial — treat this status block as current.
+
+## `prism/*.py` delete checklist (grep vs `src/prism`, 2026-10-09)
+
+**Gate today:** `k_python_engine_deleted = false` in `tests/cpp/test_deps.cpp`.
+**Pytest:** 29–30 files under `tests/test_*.py` still import `prism` (SARIF
+moving to `tests/cpp/test_sarif.cpp`; not phase-5 minimal). **Do not delete
+`prism/` yet.**
+
+Legend: **C++** = runtime owner exists under `src/prism/` or `src/gui/`;
+**partial** = C++ runs the stage but appendix gaps or pytest still pins Python;
+**obsolete** = C++ is the reference (Python only ctypes/tests).
+
+| `prism/*.py` | C++ owner (primary) | Ready to delete? |
+|---|---|---|
+| `__init__.py` | `capi.cpp`, `models.hpp`, `pipeline.hpp` | yes (API surface only) |
+| `__main__.py` | `main.cpp`, `cli.cpp` | partial — CLI flag/exit parity |
+| `adapters.py` | `adapters.cpp`, `config.cpp` | yes |
+| `adapters_extra.py` | `adapters.cpp`, `stages/fuse.cpp` | partial — spatch/semgrep/cocci path bugs |
+| `afl.py` | `stages/fuse.cpp` | partial — AFL env/cwd/sandbox extras |
+| `agent.py` | `stages/hypothesize.cpp`, `fuse.cpp`, `execute_cex.cpp` | partial — `dafny_specs`, interpreter extras |
+| `ai.py` | `stages/llm.cpp`, `ai/*.cpp` | partial — bindings/GGUF limits; pytest `test_llm.py` |
+| `bmc.py` | `bmc.cpp`, `bmc_*.inc` | yes — `tools/gen_prism.py` still reads `.py` until removed |
+| `checkers.py` | `checkers_*.cpp` | partial — branch/guard drift (phase 1) |
+| `concolic.py` | `stages/concolic.cpp`, `bmc.cpp` | yes |
+| `concrete.py` | `stages/interp.cpp`, `common.cpp` | partial — i64 args, `pack_args` test helper |
+| `confidence.py` | `pipeline.cpp`, `verdict/verdict.cpp` | partial — no exported `score()` for tests |
+| `config.py` | `config.cpp`, `threads.hpp` | yes |
+| `contracts.py` | `stages/contracts.cpp` | partial — ACSL case-folding |
+| `cparse.py` | `cparse.cpp` | yes |
+| `diff.py` | `stages/diff.cpp` | yes |
+| `fuse.py` | `stages/fuse.cpp` | yes |
+| `fuzz.py` | `stages/fuse.cpp`, `common.cpp`, `interp.cpp` | partial — caches/parallel fuzz runs |
+| `gui.py` | `src/gui/*`, `gui_model.cpp` | partial — Qt GUI missing journal/stages table |
+| `harness.py` | `stages/harness_bmc.cpp`, `ai/harness.cpp` | yes |
+| `inline.py` | `inline.cpp` | yes |
+| `interval.py` | `interval.cpp` | yes |
+| `journal.py` | `journal.cpp` | yes |
+| `laws.py` | `laws.cpp`, `verdict.hpp` | yes — keep doctest parity for sets |
+| `ltl.py` | `stages/ltl.cpp` | partial — FSM extraction algorithm |
+| `models.py` | `models.cpp`, `journal.cpp` | partial — `extra` typed as strings in C++ |
+| `muttest.py` | `stages/rapid.cpp` | partial — Law-9 / gcc scoring paths |
+| `pbsd.py` | `adapters.cpp` (`run_pbsd_lints`) | partial — ParanoidBSD Python scanners |
+| `pipeline.py` | `pipeline.cpp` | partial — LLM Dafny hooks, classify cache |
+| `polyglot.py` | `polyglot.cpp`, `scope.cpp` | partial — **still runs embedded Python** for json-syntax |
+| `rapid.py` | `stages/rapid.cpp` | partial — gcc fallback / tiny interpreter |
+| `sandbox.py` | `sandbox.cpp` | yes — doctest ports of `test_exec_safety.py` open |
+| `sanitize.py` | `adapters.cpp` | partial — parallel compile, triple parse |
+| `sarif.py` | `sarif.cpp` | yes — engine module only; SARIF tests → `tests/cpp/test_sarif.cpp` |
+| `scope.py` | `scope.cpp` | yes |
+| `shipdocs.py` | `shipdocs.cpp` | yes |
+| `simdmut.py` | `havoc.cpp`, `hash.cpp`, `simd.hpp` | **obsolete** — delete with `prism_native` C ABI |
+| `taint.py` | `stages/taint.cpp` | yes |
+| `taxonomy.py` | `taxonomy.cpp` | yes |
+| `thread.py` | `stages/thread.cpp` | yes |
+| `wp.py` | `stages/wp.cpp` | yes |
+
+**Bundled data (not a `.py` row but blocks tree delete):** `prism/cocci/*.cocci`
+— C++ `cocci_rules()` still resolves `prism/cocci` or `share/prism/cocci`;
+move to `rules/cocci/` (or embed) before phase 5.
+
+### Deletion blockers (summary)
+
+1. **Pytest surface:** ~29 `tests/test_*.py` files (engine parity, GUI, PIR,
+   fuzz, certified, …) — target end state is naming + SARIF golden (+ thin AI
+   stubs if any), not reached.
+2. **Runtime Python:** `polyglot.cpp` json-syntax check via `SYNTAX_HELPER`
+   Python embed (phase 4).
+3. **Partial stages:** checkers, ltl, pbsd, rapid, agent/ai/contracts/gui,
+   polyglot resolve (`~` / pinned tools).
+4. **Co-packaged rules:** `prism/cocci/` path hard-coded in adapters + tests.
+5. **Generators:** `tools/gen_prism.py` / taxonomy bootstrap still mention
+   `prism/bmc.py` until generators are deleted or repointed.
+6. **Gate:** flip `k_python_engine_deleted` only after (1)–(5) and CI green
+   without `python -m pytest` on the engine.
+
+### Follow-up commit plan (execute only when blockers cleared)
+
+Single integration commit (or stacked PR) on green `prism_tests` + CI:
+
+1. Relocate `prism/cocci/` → installed `share/prism/cocci` (or CMake embed);
+   update `adapters.cpp` search paths and doctest.
+2. Native json/tomL syntax in `polyglot.cpp`; remove `SYNTAX_HELPER` exec.
+3. Port or drop remaining pytest: parity → golden in `tests/cpp/`; delete
+   engine-oracle tests; keep `test_naming.py` logic as doctest until `.py` gone.
+4. `git rm -r prism/` `tests/**/*.py` `pyproject.toml` `requirements.txt`;
+   remove `prism_native` / `simdmut` ctypes paths; delete obsolete `tools/gen_*.py`.
+5. `tests/cpp/test_deps.cpp`: `k_python_engine_deleted = true`.
+6. `CLAUDE.md` / workflows: one engine, no `python -m prism`, pytest job removed.
+
+**This run:** pytest is not minimal; **no `prism/` delete executed.**
 
 ## Size
 
@@ -187,7 +283,7 @@ lock the C++ behaviour, not restore the old one:
   pinned `aflplusplus` build, then PATH; D60). `prism/afl.py afl_available`
   still looks on PATH only.
 - `bitwuzla` has a `vendor_dir_for` entry in `src/prism/config.cpp` (D61) but
-  no `VENDOR_DIR` entry in `prism/config.py`; `tests/test_supply_chain.py`
+  no `VENDOR_DIR` entry in `prism/config.py`; `tests/cpp/test_deps.cpp`
   allows exactly that row.
 - `solver::find_tool` takes `--tool`, then the pinned build under
   `PRISM_TOOLS_DIR` (never another commit), then PATH.
