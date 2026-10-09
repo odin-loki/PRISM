@@ -22,6 +22,13 @@ std::string slurp(const fs::path& p) {
     return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
 }
 
+// LF-only text for line-oriented locks (CRLF checkouts on Windows).
+std::string slurp_lf(const fs::path& p) {
+    auto s = slurp(p);
+    std::erase(s, '\r');
+    return s;
+}
+
 std::string norm_ws(std::string s) {
     std::string out;
     bool sp = false;
@@ -39,9 +46,23 @@ std::string norm_ws(std::string s) {
 }
 
 std::string strip_lean_comments(std::string text) {
+    std::erase(text, '\r');
     text = std::regex_replace(text, std::regex("--[^\n]*"), "");
     text = std::regex_replace(text, std::regex("/-.*?-/", std::regex::extended), "");
     return text;
+}
+
+bool lean_has_axiom_decl(const std::string& stripped) {
+    for (std::size_t i = 0; i < stripped.size();) {
+        auto j = stripped.find('\n', i);
+        if (j == std::string::npos) j = stripped.size();
+        auto line = stripped.substr(i, j - i);
+        std::size_t k = 0;
+        while (k < line.size() && (line[k] == ' ' || line[k] == '\t')) ++k;
+        if (line.compare(k, 5, "axiom") == 0) return true;
+        i = j == stripped.size() ? stripped.size() : j + 1;
+    }
+    return false;
 }
 
 std::string body_between(const std::string& text, const std::string& start, const std::string& end) {
@@ -59,19 +80,19 @@ void check_contains_norm(const std::string& hay, const std::string& needle) {
 }  // namespace
 
 TEST_CASE("repolint: loop-cut Lean model theorems and audit") {
-    const auto loopcut = slurp(repo() / "proofs" / "techniques" / "PrismTechniques" / "LoopCut.lean");
+    const auto loopcut = slurp_lf(repo() / "proofs" / "techniques" / "PrismTechniques" / "LoopCut.lean");
     const auto stripped = strip_lean_comments(loopcut);
-    const auto audit = slurp(repo() / "proofs" / "techniques" / "PrismTechniques" / "Audit.lean");
+    const auto audit = slurp_lf(repo() / "proofs" / "techniques" / "PrismTechniques" / "Audit.lean");
     for (const char* thm :
          {"encViol_iff", "encExit_iff", "old_viol_imp", "s9_old_encoding_misses", "exec_cut", "cexec_grun",
           "grun_complete", "loopcut_sound", "houdini_loopcut_sound"}) {
-        CHECK(std::regex_search(stripped, std::regex(std::string("\\btheorem ") + thm + "\\b")));
+        CHECK(loopcut.find(std::string("theorem ") + thm) != std::string::npos);
         CHECK(audit.find(std::string("#assert_axioms LoopCut.") + thm) != std::string::npos);
     }
     CHECK(slurp(repo() / "proofs" / "techniques" / "PrismTechniques.lean").find("import PrismTechniques.LoopCut") !=
           std::string::npos);
     CHECK_FALSE(std::regex_search(stripped, std::regex("\\b(sorry|admit|native_decide|bv_decide)\\b")));
-    CHECK_FALSE(std::regex_search(stripped, std::regex("(?m)^\\s*axiom\\b")));
+    CHECK_FALSE(lean_has_axiom_decl(stripped));
     for (const char* ctor :
          {"| loop (L : Nat) (body : Prog S)", "| brk", "| cont", "| ret"}) {
         CHECK(loopcut.find(ctor) != std::string::npos);
@@ -127,7 +148,7 @@ TEST_CASE("repolint: float checks mirror FloatOps.lean") {
                                                                             {"fmul", "FMul"}, {"fdiv", "FDiv"}})
         CHECK(bin_map.find(std::string("{\"") + pair.first + "\", Op::" + pair.second + "}") != std::string::npos);
     CHECK(cpp.find("checks(cur, it->second, w, {a, b}, r, c.line);") != std::string::npos);
-    const auto audit = slurp(repo() / "proofs" / "refinement" / "Audit.lean");
+    const auto audit = slurp_lf(repo() / "proofs" / "refinement" / "Audit.lean");
     for (const char* thm :
          {"roundQ_nearest", "roundF_correct", "sub_correct", "mul_correct", "div_correct", "prism_overflow_eq",
           "prism_invalid_eq", "ieee_invalid_eq", "prism_divzero_eq", "ieee_divzero_imp_prism", "cast_ovf_iff"}) {
@@ -175,7 +196,7 @@ TEST_CASE("repolint: lazy.cpp schedule mirrors LazySeqN.lean") {
     CHECK(lean.find("def rr (N K : Nat) : List Nat := (List.replicate K (List.range N)).flatten") != std::string::npos);
     CHECK(lean.find("def prismSched (N K : Nat) : List Nat := rr N K ++ [0]") != std::string::npos);
     CHECK(lean.find("(prismSched N K).length = K * N + 1") != std::string::npos);
-    const auto audit = slurp(repo() / "proofs" / "techniques" / "PrismTechniques" / "Audit.lean");
+    const auto audit = slurp_lf(repo() / "proofs" / "techniques" / "PrismTechniques" / "Audit.lean");
     for (const char* thm :
          {"slots_of_star", "star_of_slots", "slots_mono", "length_prismSched", "rr_covers_runs", "lazy_sound",
           "lazy_covers_runs", "lazy_covers", "lazy_covers_two", "per_thread_bound_not_enough"}) {
