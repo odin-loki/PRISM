@@ -17,7 +17,7 @@ from prism import laws  # noqa: E402
 
 PY = ROOT / "tests" / "test_pir.py"
 OUT = ROOT / "tests" / "cpp" / "test_pir_e2e.cpp"
-PIR_PY_REV = "HEAD:tests/test_pir.py"
+PIR_PY_REV = "8e68a4a^:tests/test_pir.py"
 
 
 def pir_py_source() -> str:
