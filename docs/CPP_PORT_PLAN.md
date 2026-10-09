@@ -12,6 +12,9 @@ that uses Python is ported to C++23 (CMake already builds with
   `soundness`, dev QA commands), **`prism_docs_check`**, Qt GUI parity
   (`gui_model`, stages table, journal poll), native JSON/TOML in polyglot,
   `prism svcomp` in C++, and most phase-2 doctest ports (`tests/cpp/*`).
+- **`tests/test_core.py`:** deleted — `TestLaws` / `TestBMC` / `TestLints` were
+  already doctest-only; the last `TestClassify` cparse cases now live in
+  `tests/cpp/test_main.cpp` (`cparse: testdata function kinds`).
 - **CI:** `conformance.yml` / `self-check.yml` call `prism-qa`; supply-chain
   job builds `prism-deps`; `docs.yml` uses `prism_docs_check`.
 - **Still open:** phase 4–5 (delete `prism/*.py` and remaining pytest), phase 6

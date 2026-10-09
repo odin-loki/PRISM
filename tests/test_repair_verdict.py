@@ -7,7 +7,7 @@ wrote an ERROR row. Now the finding is HYPOTHESIS / READS with
 extra.patch_verdict = PROVED and the "verified fix" label, so the audit has
 nothing to flag. End to end with the C++ binary and a fake llama-server
 (the same HTTP path a real one takes). The Python engine's unit test is
-tests/test_execute_compile.py::test_bmc_proved_is_terminal_success.
+tests/cpp/test_main.cpp (repair verified-fix HYPOTHESIS row).
 """
 
 from __future__ import annotations

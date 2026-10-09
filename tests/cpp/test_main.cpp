@@ -347,6 +347,19 @@ TEST_CASE("parser forms and PARSE-GAP") {
     CHECK(fns[7].span == std::pair<int, int>{16, 18});  // `'}'` does not end the body
 }
 
+TEST_CASE("cparse: testdata function kinds") {
+    CHECK(load_fn("add_overflow.c", "add_overflow").kind == "SCALAR");
+    CHECK(load_fn("null_branch.c", "null_branch").kind == "POINTER");
+    CHECK(load_fn("shift_ub.c", "shift_ub").kind == "SCALAR");
+    auto dead = load_fn("noreturn_fatal.c", "dead_attr");
+    CHECK(dead.kind == "SCALAR");
+    REQUIRE(dead.params.size() == 1);
+    CHECK(dead.params[0].second == "c");
+    auto trunc = load_fn("trunc.c", "trunc_ok");
+    CHECK(trunc.body.find("'A'") != std::string::npos);
+    CHECK(load_fn("unchecked_alloc.c", "unchecked_alloc").kind == "VOID");
+}
+
 // Reduced reproducers from docs/EVALUATION.md (jsmn, tinyexpr, cJSON). Same
 // corpus and expectations as the former Python TestRealWorldEvaluation.
 static std::vector<prism::FunctionInfo> fns_of_text(const std::string& src, const char* name) {
@@ -1586,6 +1599,26 @@ TEST_CASE("muttest never emits PROVED or PROVED-UNBOUNDED") {
             CHECK_FALSE(prism::laws::is_proof(r.status));
         }
     }
+}
+
+TEST_CASE("muttest survived mutant is FAILED not proof") {
+    auto fn = load_fn("contract_add.c", "loose_add");
+    auto recs = prism::run_muttest({fn}, 32);
+    REQUIRE_FALSE(recs.empty());
+    bool survived = false;
+    for (auto& r : recs) {
+        CHECK(r.stage == "muttest");
+        if (r.status != std::string(prism::laws::FAILED)) continue;
+        survived = true;
+        CHECK_FALSE(prism::laws::is_proof(r.status));
+        CHECK(r.status != std::string(prism::laws::CLEAN));
+        auto msg = r.message;
+        for (char& c : msg)
+            if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+        CHECK(msg.find("mutant survived") != std::string::npos);
+        CHECK(msg.find("not a proof") != std::string::npos);
+    }
+    CHECK(survived);
 }
 
 TEST_CASE("muttest eval error probes gcc clang NOTRUN never CLEAN") {

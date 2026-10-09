@@ -1567,6 +1567,19 @@ std::vector<Finding> run_semgrep(const std::string& exe, const std::vector<fs::p
                                  const Config& cfg) {
     return prism::run_semgrep(exe, paths, cfg);
 }
+std::vector<Finding> run_clang_tidy(const std::string& exe, const std::vector<fs::path>& paths,
+                                    const Config& cfg) {
+    return prism::run_clang_tidy(exe, paths, cfg);
+}
+std::vector<Finding> run_klee(const std::string& exe, const std::vector<fs::path>& paths, const Config& cfg) {
+    return prism::run_klee(exe, paths, cfg);
+}
+std::vector<Finding> run_strix(const std::string& exe, const std::vector<fs::path>& paths, const Config& cfg) {
+    ProcResult probed;
+    probed.text = "strix --help";
+    probed.rc = 0;
+    return prism::run_strix(exe, paths, cfg, probed);
+}
 }  // namespace adapters_detail
 
 std::string compiler_key(const fs::path& p) {

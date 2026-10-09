@@ -36,5 +36,11 @@ std::vector<Finding> run_spatch(const std::string& exe, const std::vector<std::f
                                 const Config& cfg);
 std::vector<Finding> run_semgrep(const std::string& exe, const std::vector<std::filesystem::path>& paths,
                                  const Config& cfg);
+std::vector<Finding> run_clang_tidy(const std::string& exe, const std::vector<std::filesystem::path>& paths,
+                                    const Config& cfg);
+std::vector<Finding> run_klee(const std::string& exe, const std::vector<std::filesystem::path>& paths,
+                              const Config& cfg);
+std::vector<Finding> run_strix(const std::string& exe, const std::vector<std::filesystem::path>& paths,
+                               const Config& cfg);
 
 }  // namespace prism::adapters_detail

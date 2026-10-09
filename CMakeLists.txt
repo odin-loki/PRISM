@@ -612,6 +612,8 @@ if(PRISM_TESTS)
     tests/cpp/test_bmc_svcomp.cpp
     # Table-driven run_bmc on testdata/ (tests/test_bmc.py TestBMC).
     tests/cpp/test_bmc.cpp
+    # Table-driven run_concolic on testdata/ (tests/test_concolic.py).
+    tests/cpp/test_concolic.cpp
     # Planted-bug lint corpus (every testdata/ plant, table-driven).
     tests/cpp/test_lint_corpus.cpp
     # checkers_cxx.cpp branches and guards (bad / good twins).

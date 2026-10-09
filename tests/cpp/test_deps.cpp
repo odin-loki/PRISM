@@ -1064,3 +1064,58 @@ TEST_CASE("deps: notice, licence and history-rewrite script") {
     CHECK(contains(script, "I UNDERSTAND"));
     CHECK(fs::is_regular_file(root / "docs" / "SUPPLY_CHAIN.md"));
 }
+
+// docs/CPP_PORT_PLAN.md phase 5: tracked .py outside vendored third_party/ must
+// stay on the allow-list until the Python engine and pytest suite are deleted.
+TEST_CASE("deps: tracked .py files match the phase-5 allow-list") {
+    // When true, only tools/svcomp/prism.py may appear outside third_party/.
+    constexpr bool k_python_engine_deleted = false;
+
+    auto norm_rel = [](std::string rel) {
+        for (char& c : rel)
+            if (c == '\\') c = '/';
+        return rel;
+    };
+    auto allowed = [&](std::string_view rel) -> bool {
+        if (rel.starts_with("third_party/")) return true;
+        if (rel == "tools/svcomp/prism.py") return true;
+        if (!k_python_engine_deleted) {
+            for (const char* pre : {"prism/", "tests/", "scripts/", "tools/"})
+                if (rel.starts_with(pre)) return true;
+        }
+        return false;
+    };
+
+    const auto root = repo_root();
+    if (!deps::which("git")) {
+        MESSAGE("NOTRUN: git not on PATH");
+        return;
+    }
+    auto r = deps::run_process({"git", "ls-files", "--", "*.py"}, root);
+    REQUIRE(r.code == 0);
+
+    std::vector<std::string> forbidden;
+    std::istringstream lines(r.out);
+    std::string line;
+    while (std::getline(lines, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.empty()) continue;
+        const std::string rel = norm_rel(std::move(line));
+        if (!allowed(rel)) forbidden.push_back(rel);
+    }
+    std::sort(forbidden.begin(), forbidden.end());
+    for (const auto& path : forbidden) CHECK_MESSAGE(false, "tracked .py outside allow-list: " << path);
+
+    if (k_python_engine_deleted) {
+        std::vector<std::string> tracked_outside_vendor;
+        std::istringstream again(r.out);
+        while (std::getline(again, line)) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            if (line.empty()) continue;
+            const std::string rel = norm_rel(line);
+            if (!rel.starts_with("third_party/")) tracked_outside_vendor.push_back(rel);
+        }
+        std::sort(tracked_outside_vendor.begin(), tracked_outside_vendor.end());
+        CHECK(tracked_outside_vendor == std::vector<std::string>{"tools/svcomp/prism.py"});
+    }
+}

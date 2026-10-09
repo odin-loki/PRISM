@@ -348,6 +348,27 @@ TEST_CASE("execute_cex replays concretely (not a proof); rlef_repair without a m
     CHECK(has(rep[0].message, sd::LLM_UNAVAILABLE_MSG));
 }
 
+TEST_CASE("codeql: adapter removed; MANIFEST records why; no optional-tool row") {
+    auto manifest = slurp(repo_root() / "third_party" / "MANIFEST.toml");
+    CHECK(has(manifest, "name = \"codeql\""));
+    CHECK(has(manifest, "restricted commercial use"));
+    CHECK(has(manifest, "adapter was removed"));
+    for (const char* file : {"adapters.cpp", "config.cpp", "taxonomy.cpp", "polyglot.cpp"}) {
+        auto raw = slurp(repo_root() / "src" / "prism" / file);
+        std::string code;
+        for (std::size_t i = 0; i < raw.size();) {
+            if (raw[i] == '/' && i + 1 < raw.size() && raw[i + 1] == '/') {
+                while (i < raw.size() && raw[i] != '\n') ++i;
+                continue;
+            }
+            code.push_back(raw[i++]);
+        }
+        CHECK(lower(code).find("codeql") == std::string::npos);
+    }
+    auto out = prism::run_optional_tools({}, prism::default_config());
+    for (const auto& f : out) CHECK(f.stage != "codeql");
+}
+
 TEST_CASE("harness_for_parsefail maps what the BMC cannot model and nothing else") {
     auto t = prism::harness_for_parsefail("throw unencoded", "bitvector BMC");
     REQUIRE(t.has_value());
@@ -693,6 +714,169 @@ TEST_CASE("cocci: the shipped rules are found from any cwd") {
     CHECK(rules.contains("getenv_null.cocci"));
     CHECK(rules.contains("realloc_self.cocci"));
     CHECK(rules.size() >= 8);
+    for (const char* need :
+         {"memcpy_self.cocci", "realloc_self.cocci", "shift_bit31.cocci", "getenv_null.cocci",
+          "strcpy_self.cocci", "sprintf_unbounded.cocci", "strcat_self.cocci", "strncpy_self.cocci"})
+        CHECK(rules.contains(need));
+}
+
+TEST_CASE("klee: .err dumps and KLEE ERROR are FAILED; a quiet run is UNKNOWN") {
+    NoTools nt;
+    auto cfile = testdata() / "abs_ok.c";
+    fake(nt.bin, "clang",
+         "OUT=\nwhile [ $# -gt 0 ]; do case \"$1\" in -o) OUT=\"$2\"; shift 2;; *) shift;; esac; "
+         "done\n[ -n \"$OUT\" ] && printf 'BC' > \"$OUT\"\nexit 0\n");
+    auto cfg = nt.cfg;
+    cfg.allow_exec = true;
+    auto mk_klee = [&](const std::string& body) {
+        return fake(nt.t.dir / "t", "klee", help_then("KLEE --help", body));
+    };
+    cfg.tools["klee"] = mk_klee(
+        "mkdir -p klee-out/klee-last\n"
+        "echo x > klee-out/klee-last/test000001.ptr.err\n"
+        "echo 'KLEE: done'\n");
+    auto out = ad::run_klee(cfg.tools["klee"].string(), {cfile}, cfg);
+    REQUIRE_FALSE(out.empty());
+    CHECK(out[0].status == laws::FAILED);
+    never_clean_or_proof(out[0]);
+
+    cfg.tools["klee"] = mk_klee("echo 'KLEE: ERROR: invalid pointer' >&2; exit 1");
+    out = ad::run_klee(cfg.tools["klee"].string(), {cfile}, cfg);
+    REQUIRE_FALSE(out.empty());
+    CHECK(out[0].status == laws::FAILED);
+    never_clean_or_proof(out[0]);
+
+    cfg.tools["klee"] = mk_klee("echo 'KLEE: done: generated tests = 2'");
+    out = ad::run_klee(cfg.tools["klee"].string(), {cfile}, cfg);
+    REQUIRE_FALSE(out.empty());
+    CHECK(out[0].status == laws::UNKNOWN);
+    never_clean_or_proof(out[0]);
+    CHECK(has(lower(out[0].message), "not a proof"));
+
+    cfg.tools["klee"] = mk_klee(
+        "echo '[doctest] doctest version is 2.4.11' >&2; echo 'Unknown option: --max-time' >&2; exit 1");
+    out = ad::run_klee(cfg.tools["klee"].string(), {cfile}, cfg);
+    REQUIRE_FALSE(out.empty());
+    CHECK(out[0].status == laws::NOTRUN);
+    never_clean_or_proof(out[0]);
+    CHECK(has(lower(out[0].message), "not klee"));
+}
+
+TEST_CASE("clang-tidy: no TUs is UNKNOWN; silence is not a proof; warnings are FAILED") {
+    NoTools nt;
+    auto cfg = nt.cfg;
+    auto cfile = testdata() / "abs_ok.c";
+    auto log = nt.t.dir / "argv.log";
+    auto tidy = fake(nt.t.dir / "t", "clang-tidy",
+                     "echo \"$@\" >> '" + log.string() +
+                         "'\n"
+                         "case \"$1\" in *.cpp|*.cc|*.cxx) exit 0;; esac\n"
+                         "printf '%s:3:5: warning: use after free [clang-analyzer-unix.Malloc]\\n' \"$1\"\n");
+    auto none = ad::run_clang_tidy(tidy.string(), {}, cfg);
+    REQUIRE_FALSE(none.empty());
+    CHECK(none[0].status == laws::UNKNOWN);
+    never_clean_or_proof(none[0]);
+    CHECK(has(none[0].message, "no C/C++ translation units"));
+
+    auto hdr = ad::run_clang_tidy(tidy.string(), {fs::path("n.h")}, cfg);
+    REQUIRE_FALSE(hdr.empty());
+    CHECK(hdr[0].status == laws::UNKNOWN);
+
+    auto quiet = fake(nt.t.dir / "t", "clang-tidy-q", "true");
+    auto silent = ad::run_clang_tidy(quiet.string(), {cfile}, cfg);
+    REQUIRE_FALSE(silent.empty());
+    CHECK(silent[0].status == laws::UNKNOWN);
+    CHECK(has(silent[0].message, "no diagnostics (not a proof)"));
+    never_clean_or_proof(silent[0]);
+
+    auto warned = ad::run_clang_tidy(tidy.string(), {cfile}, cfg);
+    REQUIRE_FALSE(warned.empty());
+    CHECK(warned[0].status == laws::FAILED);
+    CHECK(has(warned[0].message, ": warning:"));
+    never_clean_or_proof(warned[0]);
+
+    auto cxx = nt.t.put("unit.cpp", "int f(void){return 0;}\n");
+    log = nt.t.dir / "cxx.log";
+    auto tidycxx = fake(nt.t.dir / "t", "clang-tidy-cxx", "echo \"$@\" >> '" + log.string() + "'\nexit 0\n");
+    ad::run_clang_tidy(tidycxx.string(), {cxx}, cfg);
+    auto args = slurp(log);
+    CHECK(has(args, "-std=c++11"));
+    CHECK(!has(args, "-std=c11"));
+
+    auto doctest = fake(nt.t.dir / "t", "clang-tidy-fake",
+                        "printf '[doctest] doctest version is 2.4.11\\nUnknown option: --timeout\\n'; exit 1");
+    auto fake_out = ad::run_clang_tidy(doctest.string(), {cfile}, cfg);
+    REQUIRE_FALSE(fake_out.empty());
+    CHECK(fake_out[0].status == laws::NOTRUN);
+    CHECK(has(lower(fake_out[0].message), "not clang-tidy"));
+    never_clean_or_proof(fake_out[0]);
+}
+
+TEST_CASE("strix: help-only is UNKNOWN; counterexample FAILED; doctest is NOTRUN") {
+    NoTools nt;
+    auto cfg = nt.cfg;
+    auto src = nt.t.put("unit.c", "int main(void){return 0;}\n");
+    auto strix = fake(nt.t.dir / "t", "strix", help_then("strix --help", ""));
+    auto probe = ad::run_strix(strix.string(), {src}, cfg);
+    REQUIRE_FALSE(probe.empty());
+    CHECK(probe[0].status == laws::UNKNOWN);
+    CHECK(has(lower(probe[0].message), "not a code verdict"));
+    never_clean_or_proof(probe[0]);
+
+    auto spec = nt.t.put("bad.ltl", "G p\n");
+    cfg.tools["strix"] = fake(nt.t.dir / "t", "strix-ce",
+                              help_then("strix --help", "printf 'counterexample found\\n'; exit 1"));
+    auto fail = stage_row(prism::run_optional_tools({spec}, cfg), "strix");
+    CHECK(fail.status == laws::FAILED);
+    CHECK(fail.cls == "strix");
+    never_clean_or_proof(fail);
+
+    cfg.tools["strix"] = fake(nt.t.dir / "t", "strix-ok", help_then("strix --help", "printf 'REALIZABLE\\n'"));
+    auto unk = stage_row(prism::run_optional_tools({spec}, cfg), "strix");
+    CHECK(unk.status == laws::UNKNOWN);
+    CHECK(has(lower(unk.message), "not a proof"));
+    never_clean_or_proof(unk);
+
+    cfg.tools["strix"] = fake(nt.t.dir / "t", "strix-fake",
+                              help_then("strix --help", "printf '[doctest] doctest version is 2.4.11\\n'; exit 0"));
+    auto nr = stage_row(prism::run_optional_tools({spec}, cfg), "strix");
+    CHECK(nr.status == laws::NOTRUN);
+    CHECK(has(lower(nr.message), "not strix"));
+    never_clean_or_proof(nr);
+}
+
+TEST_CASE("warnings: fake compilers parse output, dedupe, and never emit proof") {
+    NoTools nt;
+    auto cfg = nt.cfg;
+    cfg.root = nt.t.dir;
+    auto unit = nt.t.put("planted.c", "int main(void){return 0;}\n");
+    const std::string warn = "planted.c:3:5: warning: overflow [-Woverflow]\n";
+    fake(nt.bin, "gcc", "printf '" + warn + "' >&2\nexit 0\n");
+    auto clang = nt.bin / "clang";
+    fs::copy_file(nt.bin / "gcc", clang, fs::copy_options::overwrite_existing);
+    auto out = prism::run_compiler({unit}, cfg);
+    REQUIRE(out.size() == 1);
+    CHECK(out[0].status == laws::FAILED);
+    CHECK(out[0].cls == "compiler-warning");
+    CHECK(out[0].line == 3);
+    never_clean_or_proof(out[0]);
+
+    fake(nt.bin, "gcc", "echo 'fatal: cannot exec cc1' >&2\nexit 1\n");
+    fs::copy_file(nt.bin / "gcc", clang, fs::copy_options::overwrite_existing);
+    auto bad = prism::run_compiler({unit}, cfg);
+    REQUIRE_FALSE(bad.empty());
+    CHECK(bad[0].status == laws::FAILED);
+    CHECK(bad[0].cls == "compiler-error");
+    never_clean_or_proof(bad[0]);
+
+    auto log = nt.t.dir / "cc.log";
+    fake(nt.bin, "gcc", "echo \"$@\" >> '" + log.string() + "'\nexit 0\n");
+    fs::remove(clang);
+    fake(nt.bin, "clang", "echo \"$@\" >> '" + log.string() + "'\nexit 0\n");
+    auto cxx = nt.t.put("unit.cpp", "int f(void){return 0;}\n");
+    prism::run_compiler({cxx}, cfg);
+    CHECK(has(slurp(log), "-std=c++11"));
+    CHECK(!has(slurp(log), "-std=c11"));
 }
 
 TEST_CASE("spatch: a match is FAILED; silence is UNKNOWN; held script rules stay written down") {
