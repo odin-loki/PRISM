@@ -1540,6 +1540,13 @@ struct OptionalTool {
 
 }  // namespace
 
+Finding libfuzzer_probe(const Config& cfg) { return libfuzzer_probe_impl(cfg); }
+
+std::vector<Finding> run_frama_c(const std::string& exe, const std::vector<fs::path>& paths,
+                                 const Config& cfg) {
+    return run_frama_c_impl(exe, paths, cfg);
+}
+
 // adapters_internal.hpp: qualified calls reach the unnamed namespace above.
 namespace adapters_detail {
 void refuse_disabled_checks(const std::vector<std::string>& cmd) { prism::refuse_disabled_checks(cmd); }
@@ -1585,13 +1592,6 @@ std::vector<Finding> run_strix(const std::string& exe, const std::vector<fs::pat
     return prism::run_strix(exe, paths, cfg, probed);
 }
 }  // namespace adapters_detail
-
-Finding libfuzzer_probe(const Config& cfg) { return libfuzzer_probe_impl(cfg); }
-
-std::vector<Finding> run_frama_c(const std::string& exe, const std::vector<fs::path>& paths,
-                                 const Config& cfg) {
-    return run_frama_c_impl(exe, paths, cfg);
-}
 
 std::string compiler_key(const fs::path& p) {
     std::error_code ec;
