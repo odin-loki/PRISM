@@ -225,6 +225,17 @@ date.
 Rebuilds are expected to match only on x86-64 with AVX2, the configured
 target (`-mavx2`).
 
+## Phase 5: tracked Python (until the engine is deleted)
+
+`tests/cpp/test_deps.cpp` runs `git ls-files '*.py'` and fails on any tracked
+`.py` outside the allow-list (`deps: tracked .py files match the phase-5
+allow-list`). While `prism/*.py` and the remaining pytest suite exist, paths
+under `prism/`, `tests/`, `scripts/`, and `tools/` are permitted; vendored
+`third_party/**` is ignored; `tools/svcomp/prism.py` stays allow-listed as the
+BenchExec tool-info plugin. When the Python engine is removed, flip
+`k_python_engine_deleted` in that doctest to `true` so only
+`tools/svcomp/prism.py` may appear outside `third_party/`.
+
 ## History rewrite (owner action)
 
 Deleting the trees does not shrink `.git`: the mined files are still in the

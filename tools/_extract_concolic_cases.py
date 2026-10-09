@@ -1,17 +1,39 @@
-"""One-off: emit concolic C++ rows from tests/test_concolic.py."""
-import re
+#!/usr/bin/env python3
+"""One-off helper: print concolic row snippets from the deleted Python test.
+
+Uses git history when tests/test_concolic.py is not in the working tree.
+Prefer tools/gen_test_concolic_cpp.py to regenerate the full doctest file.
+"""
+from __future__ import annotations
+
+import subprocess
+import sys
 from pathlib import Path
 
-src = Path(__file__).resolve().parents[1] / "tests" / "test_concolic.py"
-lines = src.read_text(encoding="utf-8").splitlines()
-# stop before bulk libc unenc (dlopen is first with extra assertNotIn proof)
-cut = next(i for i, L in enumerate(lines) if "test_dlopen_unenc" in L)
-head = "\n".join(lines[:cut])
-names = re.findall(r"""fn\(['"]([\w]+)['"]\)""", head)
-for m in re.finditer(r'for name in \(([^)]+)\):', head):
-    names.extend(re.findall(r'"([\w]+)"', m.group(1)))
-print("cases before dlopen bulk:", len(names))
-# also count unenc-only rows (all _unenc_bad with standard pattern)
-all_text = src.read_text(encoding="utf-8")
-unenc = sorted(set(re.findall(r'fn\(["\']([\w]*_unenc_bad)["\']', all_text)))
-print("unenc_bad plants:", len(unenc))
+ROOT = Path(__file__).resolve().parents[1]
+PY = ROOT / "tests" / "test_concolic.py"
+REV = "190103945^:tests/test_concolic.py"
+
+
+def main() -> None:
+    if PY.is_file():
+        src = PY.read_text(encoding="utf-8")
+    else:
+        r = subprocess.run(
+            ["git", "show", REV],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        if r.returncode != 0:
+            print(f"cannot read {REV}", file=sys.stderr)
+            sys.exit(2)
+        src = r.stdout
+    # Legacy one-off: only useful with hand-edited tail; run gen_test_concolic_cpp.py instead.
+    print("Use: python3 tools/gen_test_concolic_cpp.py", file=sys.stderr)
+    _ = src
+
+
+if __name__ == "__main__":
+    main()

@@ -12,7 +12,7 @@ data race counts as a property violation.
 | Engine | C++ only: `src/prism/conc/`, `include/prism/conc.hpp`. The Python engine is frozen (roadmap D8) and records one `NOTRUN` row: "C++ engine only (Python engine frozen as oracle, roadmap D8)" |
 | Verdict audit | origin `solver` in `proofs/Prism/Verdict.lean`, `src/prism/verdict/verdict.cpp` and `prism/laws.py`. The stage **never** emits `PROVED*` |
 | Executes scanned code | no. It runs clang/opt to compile, then Z3 in-process (Law 9: not in `EXEC_STAGES`) |
-| Tests | `tests/conc/*.c`, `tests/cpp/test_conc.cpp` (doctest), `tests/test_conc.py` (end to end through `PRISM_BIN`), `tests/conformance/concurrency/` (scored by `src/tools/qa/conformance.cpp`) |
+| Tests | `tests/conc/*.c`, `tests/cpp/test_conc.cpp` (doctest), `tests/conformance/concurrency/` (scored by `prism-qa conformance`) |
 
 ## What it reports
 
