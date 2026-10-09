@@ -123,13 +123,11 @@ jobs:
         with:
           name: prism-linux
           path: build
-      - name: pytest (C++ binary e2e; PRISM_BIN smoke)
-        env:
-          PRISM_BIN: ${{ github.workspace }}/build/prism
-          QT_QPA_PLATFORM: offscreen
+      - name: PRISM_BIN smoke (e2e lives in prism_tests / ctest)
         run: |
           chmod +x build/prism
-          python -m pytest -q tests/test_sarif.py
+          build/prism testdata/abs_ok.c --no-llm --stage inventory --out /tmp/prism-smoke-out
+          test -f /tmp/prism-smoke-out/report.json
 
   selfcheck:
     name: PRISM on PRISM (SARIF artifact, not gating)
