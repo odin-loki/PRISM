@@ -377,7 +377,12 @@ goes in phase 5, so these are recorded, not fixed there):
 
 ### Phase 6: build without Python (vendored Z3)
 
-**Status (2026-10-09):** PRISM already forces a minimal in-tree Z3 build
+**Status (2026-10-09):** **Done.** `cmake/z3.cmake` bootstraps `src/tools/z3gen/main.cpp`
+as `Python3_EXECUTABLE`, copies pre-generated outputs from `cmake/z3-generated/`
+(keyed by `tree_sha256` matching `MANIFEST.toml` linked:z3), and keeps upstream
+`third_party/z3/CMakeLists.txt` unchanged. Refresh after a z3 pin bump:
+`python3 tools/sync_z3_generated.py <build-dir>` (reference build with Python),
+then commit `cmake/z3-generated/`. Previously PRISM already forced a minimal in-tree Z3 build
 (`CMakeLists.txt`: static `libz3`, no `z3` binary, no tests/examples, all API
 bindings and Z3 doc install off). That removes z3py / JNI / .NET work, but
 **does not** make configure or compile Python-free: vendored
@@ -412,9 +417,8 @@ description of the pinned tree (`linked:z3` digest
 - (b) a small C++ generator (`src/tools/z3gen.cpp` or similar) that reproduces
   the scripts above.
 
-Until that lands, C++ CI/Docker still need a Python 3 interpreter on PATH for
-Z3 alone (Ubuntu images usually provide `python3` via other packages; do not
-assume it is absent until phase 6 completes).
+C++ CI/Docker no longer need Python for Z3 configure or `libz3` codegen (other
+jobs may still use Python until phase 5).
 
 ## Done when
 
