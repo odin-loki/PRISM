@@ -83,7 +83,7 @@ TEST_CASE("sarif: defects are results; CLEAN/PROVED/BOUNDED are omitted") {
         sample_f(prism::laws::PROVED, {{"stage", "bmc"}, {"cls", ""}}),
         sample_f(prism::laws::BOUNDED, {{"stage", "bmc"}, {"cls", ""}}),
         sample_f(prism::laws::HYPOTHESIS,
-                 {{"stage", "llm"}, {"cls", "INTENT"}, {"strength", prism::laws::STRENGTH_READS}}),
+                 {{"stage", "llm"}, {"cls", "INTENT"}, {"strength", "READS"}}),
     };
     auto doc = parse_sarif(report_with({lints}));
     CHECK(doc["version"] == "2.1.0");
@@ -117,8 +117,9 @@ TEST_CASE("sarif: warning severity and STRENGTH_SOME map to warning level") {
     s.name = "polyglot";
     s.status = "ok";
     s.findings = {sample_f(prism::laws::FAILED, {{"severity", "warning"}}),
-                  sample_f(prism::laws::FAILED, {{"strength", prism::laws::STRENGTH_SOME}})};
-    auto& res = parse_sarif(report_with({s}))["runs"][0]["results"];
+                  sample_f(prism::laws::FAILED, {{"strength", "SOME"}})};
+    auto doc = parse_sarif(report_with({s}));
+    auto& res = doc["runs"][0]["results"];
     REQUIRE(res.size() == 2);
     CHECK(res[0]["level"] == "warning");
     CHECK(res[1]["level"] == "warning");
@@ -137,7 +138,8 @@ TEST_CASE("sarif: NOTRUN and failed stages become tool execution notifications")
     prism::StageResult lints;
     lints.name = "lints";
     lints.status = "ok";
-    auto& inv = parse_sarif(report_with({esbmc, bmc, lints}))["runs"][0]["invocations"][0];
+    auto doc = parse_sarif(report_with({esbmc, bmc, lints}));
+    auto& inv = doc["runs"][0]["invocations"][0];
     CHECK(inv["executionSuccessful"] == false);
     auto& notes = inv["toolExecutionNotifications"];
     REQUIRE(notes.size() == 2);

@@ -136,8 +136,8 @@ TEST_CASE("repair: verified fix is HYPOTHESIS with patch_verdict, audit clean") 
     REQUIRE(fix != nullptr);
     CHECK(fix->status == std::string(prism::laws::HYPOTHESIS));
     CHECK(fix->strength == std::string(prism::laws::STRENGTH_READS));
-    CHECK(prism::laws::is_proof(fix->extra["patch_verdict"]));
-    CHECK(fix->extra["fix_label"] == "verified fix");
+    CHECK(prism::laws::is_proof(fix->extra.at("patch_verdict")));
+    CHECK(fix->extra.at("fix_label") == "verified fix");
     CHECK(fix->message.find("not the scanned code") != std::string::npos);
     for (auto& f : rows) CHECK_FALSE(prism::laws::is_proof(f.status));
     std::filesystem::remove_all(td);

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "prism/checkers.hpp"
 #include "prism/config.hpp"
 #include "prism/export.hpp"
 #include "prism/models.hpp"
@@ -16,8 +17,6 @@ namespace prism {
 
 std::vector<FunctionInfo> inline_static(const std::vector<FunctionInfo>& functions);
 
-std::vector<Finding> run_lints(const std::vector<std::filesystem::path>& paths,
-                               const std::filesystem::path& root, int jobs = 0);
 std::vector<Finding> run_taint(const std::vector<FunctionInfo>& functions);
 std::vector<Finding> run_thread(const std::vector<FunctionInfo>& functions);
 std::vector<Finding> run_interval(const std::vector<FunctionInfo>& functions);

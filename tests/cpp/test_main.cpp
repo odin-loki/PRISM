@@ -5200,7 +5200,11 @@ TEST_CASE("repair: verified fix is HYPOTHESIS with patch_verdict not audit demot
     CHECK(prism::laws::is_proof(fix->extra.at("patch_verdict")));
     CHECK(fix->extra.at("fix_label") == "verified fix");
     CHECK(fix->message.find("not the scanned code") != std::string::npos);
-    for (auto& f : rows) CHECK(f.extra.count("audit") == 0 || f.extra.at("audit") != "verdict");
+    for (auto& f : rows) {
+        const bool no_verdict_audit =
+            f.extra.count("audit") == 0 || f.extra.at("audit") != "verdict";
+        CHECK(no_verdict_audit);
+    }
     for (auto& f : rows) CHECK_FALSE(prism::laws::is_proof(f.status));
 }
 

@@ -16,6 +16,7 @@
 #include <map>
 #include <random>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -46,17 +47,17 @@ prism::StageResult stage(const std::string& name, const std::string& status,
     return s;
 }
 
-prism::Finding f(const std::string& stg, const char* status, const char* cls, const char* strength,
+prism::Finding f(const std::string& stg, std::string_view status, const char* cls, std::string_view strength,
                  const char* stg_name_override = nullptr) {
     prism::Finding x;
     x.stage = stg_name_override ? stg_name_override : stg;
-    x.status = status;
+    x.status = std::string(status);
     x.file = "a.c";
     x.function = "fn";
     x.line = 1;
     x.cls = cls;
     x.message = "m";
-    x.strength = strength;
+    x.strength = std::string(strength);
     return x;
 }
 
@@ -190,7 +191,7 @@ TEST_CASE("taxonomy: unify stage end-to-end carries not_a_proof") {
     REQUIRE_FALSE(uni->findings.empty());
     CHECK(uni->findings[0].message.find("not a proof") != std::string::npos);
     CHECK(uni->findings[0].status == std::string(prism::laws::CLEAN));
-    CHECK(uni->findings[0].extra["not_a_proof"] == "true");
+    CHECK(uni->findings[0].extra.at("not_a_proof") == "true");
     std::error_code ec;
     fs::remove_all(dir, ec);
 }

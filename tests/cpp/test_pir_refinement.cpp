@@ -37,7 +37,7 @@ std::string binop_body(const std::string& cpp) {
 TEST_CASE("pir refinement: every Lean check property appears in translate.cpp") {
     const auto lean = slurp(repo() / "proofs" / "refinement" / "PrismRefine" / "Translate.lean");
     const auto cpp = slurp(repo() / "src" / "prism" / "pir" / "translate.cpp");
-    std::regex pair_re(R"("([a-z0-9+*\-]+)" "([A-Z][A-Z\-]+)")");
+    std::regex pair_re(R"re("([a-z0-9+*\-]+)" "([A-Z][A-Z\-]+)")re");
     std::set<std::pair<std::string, std::string>> pairs;
     for (std::sregex_iterator it(lean.begin(), lean.end(), pair_re), end; it != end; ++it)
         pairs.insert({(*it)[1].str(), (*it)[2].str()});
@@ -52,8 +52,8 @@ TEST_CASE("pir refinement: memory checks in XTranslate.lean appear in translate_
     const auto xlean = slurp(repo() / "proofs" / "refinement" / "PrismRefine" / "XTranslate.lean");
     const auto mem = slurp(repo() / "src" / "prism" / "pir" / "translate_mem.cpp") +
                      slurp(repo() / "src" / "prism" / "pir" / "translate.cpp");
-    std::regex pair_re(R"("([a-z0-9+*\-]+)" "([A-Z][A-Z\-]+)")");
-    std::regex tuple_re(R"(\("([a-z0-9\-]+)", "([A-Z][A-Z\-]+)"\))");
+    std::regex pair_re(R"re("([a-z0-9+*\-]+)" "([A-Z][A-Z\-]+)")re");
+    std::regex tuple_re(R"re(\("([a-z0-9\-]+)", "([A-Z][A-Z\-]+)"\))re");
     std::set<std::pair<std::string, std::string>> pairs;
     for (std::sregex_iterator it(xlean.begin(), xlean.end(), pair_re), end; it != end; ++it)
         pairs.insert({(*it)[1].str(), (*it)[2].str()});
@@ -69,7 +69,7 @@ TEST_CASE("pir refinement: memory checks in XTranslate.lean appear in translate_
 TEST_CASE("pir refinement: translate.cpp binop properties are modelled in Translate.lean") {
     const auto lean = slurp(repo() / "proofs" / "refinement" / "PrismRefine" / "Translate.lean");
     const auto body = binop_body(slurp(repo() / "src" / "prism" / "pir" / "translate.cpp"));
-    std::regex prop_re(R"("([a-z0-9+*\-]+)",\s*"(?:INT|UB)-[A-Z\-]+")");
+    std::regex prop_re(R"re("([a-z0-9+*\-]+)",\s*"(?:INT|UB)-[A-Z\-]+")re");
     std::set<std::string> props;
     for (std::sregex_iterator it(body.begin(), body.end(), prop_re), end; it != end; ++it)
         props.insert((*it)[1].str());
@@ -83,7 +83,7 @@ TEST_CASE("pir refinement: binop flags are modelled or explicitly refused") {
     const auto cpp = slurp(repo() / "src" / "prism" / "pir" / "translate.cpp");
     const auto export_cpp = slurp(repo() / "src" / "prism" / "pir" / "export_lean.cpp");
     const auto xlean = slurp(repo() / "proofs" / "refinement" / "PrismRefine" / "XTranslate.lean");
-    std::regex flag_re(R"has_flag\(in, "([a-z]+)"\)");
+    std::regex flag_re(R"re(has_flag\(in, "([a-z]+)"\))re");
     std::set<std::string> flags;
     for (std::sregex_iterator it(cpp.begin(), cpp.end(), flag_re), end; it != end; ++it)
         flags.insert((*it)[1].str());
@@ -101,7 +101,7 @@ TEST_CASE("pir refinement: binop flags are modelled or explicitly refused") {
         }
         CHECK((fl == "nsw" || fl == "nuw" || fl == "exact" || fl == "disjoint" || fl == "nneg"));
     }
-    std::regex allow_re(R"(fl != "([a-z]+)")");
+    std::regex allow_re(R"re(fl != "([a-z]+)")re");
     std::set<std::string> allow;
     for (std::sregex_iterator it(export_cpp.begin(), export_cpp.end(), allow_re), end; it != end; ++it)
         allow.insert((*it)[1].str());
@@ -114,7 +114,7 @@ TEST_CASE("pir refinement: Op names in translate.cpp match Check.lean") {
     const auto pir = slurp(repo() / "src" / "prism" / "pir" / "pir.cpp");
     const auto check = slurp(repo() / "proofs" / "refinement" / "PrismRefine" / "Check.lean");
     const auto body = binop_body(slurp(repo() / "src" / "prism" / "pir" / "translate.cpp"));
-    std::regex name_re(R"(case Op::(\w+): return "([^"]+)";)");
+    std::regex name_re(R"re(case Op::(\w+): return "([^"]+)";)re");
     std::map<std::string, std::string> names;
     for (std::sregex_iterator it(pir.begin(), pir.end(), name_re), end; it != end; ++it)
         names[(*it)[1].str()] = (*it)[2].str();

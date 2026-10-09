@@ -9,6 +9,7 @@
 #include "prism/checkers.hpp"
 #include "prism/config.hpp"
 #include "prism/laws.hpp"
+#include "prism/pipeline.hpp"
 #include "prism/stages.hpp"
 
 #include <filesystem>

@@ -57,7 +57,10 @@ bool run_cmd(const std::vector<std::string>& argv, std::string* out = nullptr, s
     }
     if (out) {
         close(pipe_out[1]);
-        out->assign(std::istreambuf_iterator<char>(pipe_out[0]), {});
+        out->clear();
+        char buf[8192];
+        ssize_t n = 0;
+        while ((n = ::read(pipe_out[0], buf, sizeof buf)) > 0) out->append(buf, static_cast<size_t>(n));
         close(pipe_out[0]);
     }
     int st = 0;
