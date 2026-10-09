@@ -5,25 +5,20 @@ engine (`prism/*.py`) is deleted, and every tool, script, test and CI step
 that uses Python is ported to C++23 (CMake already builds with
 `CMAKE_CXX_STANDARD 23`).
 
-**Status (2026-10-01): in progress.**
+**Status (2026-10-09): major port landed on `main` (integration commit pending).**
 
-- Done and merged: phase 1 gaps for C lints, C++ lints, cparse, ltl,
-  contracts, adapters, fuzz/interpreter, polyglot (no more `python3`
-  helper), CLI (`parse_cli`), pir function budget, bmc SV-COMP front end.
-  Phase 2 test ports for those areas plus thread, taint, wp, diff,
-  harness, fuse, journal, confidence and verdict. Phase 3: `prism svcomp`
-  (the Python wrapper, witness writer, scorer and packager are deleted; the
-  BenchExec tool-info module calls the C++ executable). The conformance gate
-  (0 wrong proofs) held at each merge: bmc proved 120/382 (was 107/379),
-  pir proved 302/382 and refuted 168/367.
-- Implemented on branches, **not merged** because the adversarial review
-  found unported test assertions (major) that are not fixed yet:
-  `port/prism-deps`, `port/prism-qa`, `port/conformance`, `port/gui`.
-  `port/ai-gen-tools` is implemented but not reviewed.
-- Not started: the remaining test ports (bmc, lints/adapters, exec,
-  misc), phases 4–6. The per-file map in the appendix comes from a code audit
-of `911b9f94f` (16 auditors: engine, tools/CI, tests, plus a completeness
-critic). It was checked against both engines' sources, not against the docs.
+- **Merged on tree:** `prism-deps` (replaces `scripts/fetch_deps.py`,
+  `licence_check.py`, `sbom.py`), unified **`prism-qa`** (`conformance`,
+  `soundness`, dev QA commands), **`prism_docs_check`**, Qt GUI parity
+  (`gui_model`, stages table, journal poll), native JSON/TOML in polyglot,
+  `prism svcomp` in C++, and most phase-2 doctest ports (`tests/cpp/*`).
+- **CI:** `conformance.yml` / `self-check.yml` call `prism-qa`; supply-chain
+  job builds `prism-deps`; `docs.yml` uses `prism_docs_check`.
+- **Still open:** phase 4–5 (delete `prism/*.py` and remaining pytest), phase 6
+  (Z3 without Python), `port/ai-gen-tools`, large `test_bmc.cpp` /
+  `test_concolic.cpp` tables, owner-only items in `ROADMAP_STATUS.md`.
+- Appendix map is from audit `911b9f94f`; many rows are now **DONE** on C++
+  even where the table still says partial — treat this status block as current.
 
 ## Size
 

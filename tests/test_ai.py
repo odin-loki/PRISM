@@ -68,12 +68,15 @@ def _cpp_prism() -> Path | None:
 
 class TestGrammarsShipped(unittest.TestCase):
     def test_every_grammar_is_embedded_verbatim(self):
-        inc = (ROOT / "src" / "prism" / "ai" / "grammars.inc").read_text(encoding="utf-8")
+        # CMake embeds grammars/*.gbnf at configure time; the doctest
+        # "ai-assist grammars: every grammars/*.gbnf is embedded verbatim"
+        # compares the embedded text with the files.
+        cm = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+        line = next(ln for ln in cm.splitlines() if ln.startswith("foreach(_g "))
         for name in GRAMMARS:
             text = (ROOT / "grammars" / f"{name}.gbnf").read_text(encoding="utf-8")
             self.assertIn("root", text)
-            self.assertIn(f'GBNF_{name.upper()} = R"GBNF({text})GBNF"', inc,
-                          f"grammars/{name}.gbnf drifted: run tools/gen_ai_grammars.py")
+            self.assertIn(f" {name}", line)
 
     def test_grammar_constrains_to_names(self):
         text = (ROOT / "grammars" / "invariants.gbnf").read_text(encoding="utf-8")

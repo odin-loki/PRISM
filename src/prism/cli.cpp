@@ -308,7 +308,7 @@ std::string cli_usage() {
         "  --repair-rounds 3, --timeout 30, --fail-on never.\n"
         "--stage a,b runs only those stages, --skip a,b leaves them out (--list-stages\n"
         "  prints the names; an empty --stage runs every stage).\n"
-        "Adapter search: --tool, then ~/.prism/tools/<name>/<commit>/bin (fetch_deps), then PATH.\n"
+        "Adapter search: --tool, then ~/.prism/tools/<name>/<commit>/bin (prism-deps tool), then PATH.\n"
         "--resume reuses ok/NOTRUN stages from --out/stages.jsonl (report.json fallback).\n"
         "--fail-on: exit 1 on defect (FAILED/CRASH/SANFAIL, except findings with\n"
         "  extra.severity warning/note/style) or gap (defect, or anything\n"

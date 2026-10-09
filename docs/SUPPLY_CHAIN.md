@@ -65,20 +65,21 @@ commit hashes, because the trees were shallow clones with `.git` removed.
   cppcheck 2.21.99, KLEE 3.3-pre), which cannot be reproduced. Each is pinned
   to the upstream release at or just below that version.
 
-## scripts/fetch_deps.py
+## prism-deps
 
-Standard library plus the `git` CLI. Fails closed: any commit, hash or version
-mismatch exits non-zero (3 for a hash mismatch) and installs nothing.
+Std-only C++ binary (`src/tools/prism_deps/`, build target `prism-deps`). Uses
+the `git` CLI for fetches. Fails closed: any commit, hash or version mismatch
+exits non-zero (3 for a hash mismatch) and installs nothing.
 
 ```
-python scripts/fetch_deps.py --list
-python scripts/fetch_deps.py --linked              # offline: version marker + tree digest
-python scripts/fetch_deps.py --linked --refetch    # + fetch each pinned archive, verify sha256, diff vs tree
-python scripts/fetch_deps.py --tool cadical --tool kissat --tool cake_lpr
-python scripts/fetch_deps.py --tool esbmc --no-build
+build/prism-deps list
+build/prism-deps linked              # offline: version marker + tree digest
+build/prism-deps linked --refetch    # + fetch each pinned archive, verify sha256, diff vs tree
+build/prism-deps tool cadical kissat cake_lpr
+build/prism-deps tool esbmc --no-build
 ```
 
-`--tool NAME` fetches the pinned commit, verifies `archive_sha256`, and
+`tool NAME` fetches the pinned commit, verifies `archive_sha256`, and
 installs into `~/.prism/tools/<name>/<commit>/` (override the root with
 `PRISM_TOOLS_DIR`): `src/` (verified source), `bin/` (executables) and
 `PRISM-TOOL.json`. Everything is staged in a temporary sibling directory and
@@ -88,7 +89,7 @@ CakeML-verified `cake_lpr.S` with its C FFI shim). For the other tools the
 script verifies and unpacks the source, prints the build hint from the
 manifest, and tells you where to put the binary.
 
-Checked on 2026-09-23: `--tool cadical --tool kissat --tool cake_lpr` built
+Checked on 2026-09-23: `tool cadical kissat cake_lpr` built
 CaDiCaL 3.0.1 and Kissat 4.0.4, and
 `cadical --lrat u.cnf u.lrat && cake_lpr u.cnf u.lrat` printed
 `s VERIFIED UNSAT`.
@@ -106,7 +107,7 @@ Search order in both engines (`prism/config.py`, `src/prism/config.cpp`):
 3. `PATH`
 
 A missing tool is `NOTRUN` with the hint
-`python scripts/fetch_deps.py --tool <component> (pinned in third_party/MANIFEST.toml)`.
+`prism-deps tool <component> (pinned in third_party/MANIFEST.toml)`.
 Law 9: a tools directory (or, in the Python engine, a manifest) inside the
 scanned tree is ignored unless `--allow-exec` is given.
 
@@ -120,7 +121,7 @@ in both engines.
 
 ## Licence firewall
 
-`scripts/licence_check.py` (run in CI and in the Docker build) fails when a
+`prism-deps licence-check` (run in CI and in the Docker build) fails when a
 `linked` component carries a copyleft SPDX id: GPL, LGPL, AGPL, SSPL, EUPL,
 OSL and similar, and also weak copyleft (MPL, EPL, CDDL) unless the component
 is added to `ALLOW_WEAK_COPYLEFT` after review. It also fails on a missing or
@@ -140,7 +141,7 @@ table still needs review before the first sale.
 
 ## SBOM
 
-`python scripts/sbom.py --version vX.Y.Z -o prism.cdx.json` writes a
+`prism-deps sbom --version vX.Y.Z -o prism.cdx.json` writes a
 CycloneDX 1.5 JSON SBOM from the manifest, using only the standard library.
 Linked libraries are `library`/`required`, external and system tools are
 `application`/`optional`. Each entry carries its purl
@@ -163,7 +164,7 @@ every push.
 - `SOURCE_DATE_EPOCH` (build arg, the tagged commit's time),
   `-ffile-prefix-map=/src=.`, `-ffile-prefix-map=/build=build`,
   `-Wl,--build-id=sha1`, and deterministic `llvm-ar`.
-- `licence_check.py` and `fetch_deps.py --linked` run before compiling;
+- `prism-deps licence-check` and `prism-deps linked` run before compiling;
   `prism_tests` runs after.
 - The `artefacts` stage exports `prism`, `libprism_native.so`,
   `prism.cdx.json` and `SHA256SUMS`.
@@ -190,8 +191,8 @@ docker build --no-cache --build-arg SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
 diff rebuild/SHA256SUMS SHA256SUMS        # must be empty
 
 # 3. dependencies
-python3 scripts/fetch_deps.py --linked --refetch   # in-tree libs == pinned upstream archives
-python3 scripts/licence_check.py
+build/prism-deps linked --refetch   # in-tree libs == pinned upstream archives
+build/prism-deps licence-check
 ```
 
 Verified 2026-09-23 at commit `0423d6c54` (`SOURCE_DATE_EPOCH` = that

@@ -82,11 +82,11 @@ PRISM_BIN=build/prism python -m pytest tests   # ~10 minutes; PRISM_BIN enables 
 
 `third_party/` holds only the six linked libraries (z3, pcre2, xsimd,
 nlohmann, doctest, llama.cpp; ~140 MB), pinned in `third_party/MANIFEST.toml`.
-Never edit them (`fetch_deps.py --linked` checks their tree digest), never
+Never edit them (`prism-deps linked` checks their tree digest), never
 glob them from CMake. External tools are not vendored:
-`python scripts/fetch_deps.py --tool NAME` builds the pinned commit into
+`prism-deps tool NAME` builds the pinned commit into
 `~/.prism/tools/<name>/<commit>/`, which adapters search before PATH. Linked
-components must stay permissive (`scripts/licence_check.py`, in CI). New tool:
+components must stay permissive (`prism-deps licence-check`, in CI). New tool:
 add a manifest row, and a `VENDOR_DIR` entry in `prism/config.py` plus the same
 entry in `src/prism/config.cpp`. See `docs/SUPPLY_CHAIN.md`.
 
@@ -100,7 +100,7 @@ entry in `src/prism/config.cpp`. See `docs/SUPPLY_CHAIN.md`.
 - `testdata/` planted-bug corpus both engines run on
 - `docs/PLAN.md` pipeline design; `docs/MINED.md` what was mined from each tool
   (the mined source trees were deleted); `docs/SUPPLY_CHAIN.md` pins, SBOM, releases
-- `tools/` one-shot generators; `scripts/` local build/smoke helpers,
-  `fetch_deps.py`, `licence_check.py`, `sbom.py`, `rewrite_history.sh`
+- `src/tools/prism_deps/` (`prism-deps`); `src/tools/qa/` (`prism-qa conformance`, …);
+  `tools/` one-shot generators; `scripts/` local build/smoke helpers, `rewrite_history.sh`
 - `.github/workflows/ci.yml` builds the C++ engine, runs both suites, and
   uploads a SARIF self-check of this repo

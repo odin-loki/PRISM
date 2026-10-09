@@ -511,7 +511,7 @@ TEST_CASE("fuse: PRISM_AFL=1 without afl-fuzz is NOTRUN with the fetch hint, not
     CHECK(r.status == prism::laws::CLEAN);
     CHECK(extra_or(r, "afl") == "NOTRUN");
     CHECK(extra_or(r, "engine") != "afl");
-    CHECK(extra_or(r, "install").find("fetch_deps.py --tool aflplusplus") != std::string::npos);
+    CHECK(extra_or(r, "install").find("prism-deps tool aflplusplus") != std::string::npos);
     CHECK(lower(r.message).find("not a proof") != std::string::npos);
     CHECK_FALSE(prism::laws::is_proof(r.status));
 }

@@ -67,9 +67,9 @@ struct Config {
     PRISM_API bool want(std::string_view name) const;
     PRISM_API std::optional<std::filesystem::path> which(
         std::initializer_list<std::string_view> names) const;
-    // (1) tools[], (2) the pinned scripts/fetch_deps.py build
+    // (1) tools[], (2) the pinned `prism-deps tool` build
     // <tools_home>/<component>/<commit>/bin/ (commit from third_party/MANIFEST.toml,
-    // baked in at configure time), (3) PATH.
+    // baked in at build time), (3) PATH.
     PRISM_API std::optional<std::filesystem::path> which_adapter(
         std::string_view stage, std::initializer_list<std::string_view> names) const;
 };
@@ -78,11 +78,11 @@ PRISM_API Config default_config();
 // True when p is root or lies below it. Law 9: pinned adapter binaries are
 // never taken from inside the scanned tree without --allow-exec.
 PRISM_API bool path_within(const std::filesystem::path& p, const std::filesystem::path& root);
-// "python scripts/fetch_deps.py --tool <component> ..." or a system-tool hint.
+// "prism-deps tool <component> ..." or a system-tool hint.
 PRISM_API std::string adapter_install(std::string_view stage);
 // A leading ~ or ~/ replaced by the home directory (Path.expanduser).
 PRISM_API std::filesystem::path expand_user(const std::filesystem::path& p);
-// $PRISM_TOOLS_DIR or ~/.prism/tools (scripts/fetch_deps.py install root).
+// $PRISM_TOOLS_DIR or ~/.prism/tools (the `prism-deps tool` install root).
 PRISM_API std::filesystem::path tools_home();
 // Commit that third_party/MANIFEST.toml pins for an external component.
 PRISM_API std::optional<std::string> pinned_commit(std::string_view component);

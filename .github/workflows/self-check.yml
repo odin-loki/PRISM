@@ -48,7 +48,7 @@ jobs:
         env:
           PRISM_BIN: ${{ github.workspace }}/build-san/prism
         # ASan reserves terabytes of address space: no RLIMIT_AS cap here
-        run: python tools/conformance.py -j 2 --mem-limit-mb 0
+        run: build-san/prism-qa conformance -j 2 --mem-limit-mb 0
       - name: PRISM scans its own tree (report only)
         # inventory + lints + polyglot only: a full pipeline scan of this tree
         # exceeds the 300-minute job limit (run 36211384015 timed out in wp).

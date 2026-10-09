@@ -234,7 +234,7 @@ The solvers are built from source under `~/.prism/tools/<name>/<commit>/bin/`:
 - cake_lpr: `make`, which assembles the shipped CakeML `cake_lpr.S` with gcc
 - drat-trim: `make`, which gives `drat-trim` and `lrat-check`
 
-- Bitwuzla 0.9.1: `python scripts/fetch_deps.py --tool bitwuzla` (meson +
+- Bitwuzla 0.9.1: `build/prism-deps tool bitwuzla` (meson +
   ninja, needs the GMP and MPFR development packages). The recipe clones its
   CaDiCaL subproject by pinned commit, because the meson wrap's GitHub archive
   download is refused by some proxies.
@@ -245,7 +245,8 @@ listed in `TRUSTED_BASE.md` §4 and `third_party/MANIFEST.toml`.
 ## Measurement: the conformance suite's pir VCs (roadmap 3.1 exit criterion)
 
 The exit criterion is "the portfolio beats Z3 alone on total time over the
-conformance suite's VCs". `tools/solver_bench.py` measures exactly that:
+conformance suite's VCs". `prism-qa solver-bench` (`src/tools/qa/solver_bench.cpp`)
+measures exactly that:
 `prism --pir-vcs` writes every VC of every encodable function of the 263
 conformance tasks (`tests/conformance/prism` and `sv-comp`, unwind 8), and
 `prism --solve-smt2` answers each VC three times back to back: Z3 alone
@@ -255,7 +256,7 @@ the portfolio scheduling from the history it built on the VCs before
 VC, solver wall time summed (process start-up excluded), one VC at a time.
 
 ```
-python tools/solver_bench.py --prism build/prism --out solver-bench-out
+build/prism-qa solver-bench --prism build/prism --out solver-bench-out
 ```
 
 Result (2026-09-23, 4 cores shared with other agents' builds, load
@@ -358,7 +359,7 @@ the rules. What to know about it:
   it was faster in training (Z3 won 60 of the 781 end-to-end VCs), but a
   reader should not expect more from it than that.
 - **Without Bitwuzla** (a machine that has not run
-  `fetch_deps.py --tool bitwuzla`) the model is within noise of the rules:
+  `prism-deps tool bitwuzla`) the model is within noise of the rules:
   replay k = 2 18.98 s vs 18.60 s (+2%), k = 1 identical.
 - **Ordering alone does nothing** on these VCs: every "-order" variant equals
   the rules, because Z3's 0.15 s head start already answers most of them.

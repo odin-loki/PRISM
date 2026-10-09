@@ -225,7 +225,7 @@ compiler) take their place.
 
 | # | Component | Why it is trusted | Mitigation today | Roadmap target |
 |---|---|---|---|---|
-| T1 | The formula: Clang, the LLVM→PIR translation, property instrumentation and the PIR encoder that produce the Z3 bitvector VC (Parts 2 and 5.3; the `pir` stage, `src/prism/pir/`). A certificate says "this CNF is unsatisfiable", never "this CNF means the C function is safe". | If the VC does not mean "the property is violated", nothing downstream can notice | The pir stage (docs/PIR.md): named `UNENCODED` constructs are `NEEDS-HARNESS`, never proved; with `--allow-exec` every verdict is translation-validated against `lli` on 64 inputs; the conformance suite (`tools/conformance.py`, 0 wrong proofs required) and the differential oracle against the bmc stage. This library only checks SAT models against the VC. | Encoder soundness proved in Lean (5.3), LLVM→PIR refinement proof (8.2), per-run translation validation (2.4) |
+| T1 | The formula: Clang, the LLVM→PIR translation, property instrumentation and the PIR encoder that produce the Z3 bitvector VC (Parts 2 and 5.3; the `pir` stage, `src/prism/pir/`). A certificate says "this CNF is unsatisfiable", never "this CNF means the C function is safe". | If the VC does not mean "the property is violated", nothing downstream can notice | The pir stage (docs/PIR.md): named `UNENCODED` constructs are `NEEDS-HARNESS`, never proved; with `--allow-exec` every verdict is translation-validated against `lli` on 64 inputs; the conformance suite (`src/tools/qa/conformance.cpp`, 0 wrong proofs required) and the differential oracle against the bmc stage. This library only checks SAT models against the VC. | Encoder soundness proved in Lean (5.3), LLVM→PIR refinement proof (8.2), per-run translation validation (2.4) |
 | T2 | `Z3_translate` into the fresh context | Copies the term. A bug would change the formula. | Z3 is widely used. SAT answers are validated on the **original** term in the caller's context. | Replaced by the Lean-proved bit-blaster (1.1) for formulas in its fragment |
 | T3 | **Z3's `simplify`, `bit-blast` and `tseitin-cnf` tactics** (Z3 4.13.4 vendored in `third_party/z3`) | These are the bit-blaster on this path. If they produce a CNF that is UNSAT while the formula is SAT, cake_lpr will correctly certify the wrong CNF. **This is the largest unproved part of this path.** | (a) Every SAT model found on the CNF, by CaDiCaL, Kissat or ProbSAT, is mapped back through the variable map and evaluated on the original formula in Z3, so a bad bit-blast shows up as a rejected model. (b) In certified mode, CaDiCaL's run on the CNF is always waited for, even when Z3 answered UNSAT first. If CaDiCaL then finds a model that validates, the counterexample wins and the note says `DISAGREEMENT:`. If its model does not validate, the result is not certified. (c) The doctest suite checks the variable map on known models. None of these is a proof. | The Lean-proved bit-blaster (1.1), which reuses `bv_decide`'s lemmas, already replaces it for formulas in the proved fragment |
 | T4 | PRISM's clause reader and DIMACS writer (`bitblast_fresh`, `to_dimacs`, about 80 lines) | A dropped or changed clause would change the CNF | Unit tests: DIMACS round trip, and the kept CNF equals a fresh bit-blast. The reader accepts only `Or` of literals over Boolean constants and refuses anything else. | Emitted by the Lean bit-blaster (1.1) |
@@ -298,7 +298,7 @@ Components that are unproved today but are meant to be **proved** (roadmap
 ## 4. Solver builds used when this was written
 
 Built under `~/.prism/tools/<name>/<commit>/bin/` (the layout
-`scripts/fetch_deps.py` uses). The solver library looks there first, then on
+`prism-deps tool` uses). The solver library looks there first, then on
 `PATH`:
 
 | Tool | Commit | Role |
@@ -308,5 +308,5 @@ Built under `~/.prism/tools/<name>/<commit>/bin/` (the layout
 | cake_lpr | `2e3b2dc0ecf938addbd779d42877b6ed69d9a985` | Verified LRAT checker (decides certification) |
 | drat-trim (`lrat-check`) | `a36874a8b750b43fe4b385b8ddbf5b033e46a3fa` | Further LRAT checker (veto only) |
 | `prism-bitblast`, `prism-lrat-check` | built from `proofs/techniques` (`lake build`, Lean 4.34.0) | The proved bit-blaster and Lean's verified LRAT checker (1.1). Found under `~/.prism/tools`, on `PATH`, or in `proofs/techniques/.lake/build/bin` of the source tree PRISM was built from |
-| Bitwuzla | 0.9.1 (`8d1eb01093ae`), `fetch_deps.py --tool bitwuzla` | Portfolio member when present on `PATH` or under `~/.prism/tools/bitwuzla/` |
+| Bitwuzla | 0.9.1 (`8d1eb01093ae`), `prism-deps tool bitwuzla` | Portfolio member when present on `PATH` or under `~/.prism/tools/bitwuzla/` |
 | Z3 | 4.13.4 (vendored `third_party/z3`) | In-process member, bit-blaster, model validation |

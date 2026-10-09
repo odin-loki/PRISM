@@ -402,13 +402,14 @@ TEST_CASE("config: --tool beats the pinned build, which beats PATH; PATH is last
     CHECK(prism::expand_user("/abs/p") == fs::path("/abs/p"));
 }
 
-TEST_CASE("config: every pinned external stage has a fetch_deps hint (bitwuzla too)") {
+TEST_CASE("config: every pinned external stage has a prism-deps hint (bitwuzla too)") {
     // [[component]] rows of kind "external": each of their stages maps to the
-    // component, so adapter_install names its fetch_deps command.
+    // component, so adapter_install names its prism-deps command.
     std::ifstream in(repo_root() / "third_party" / "MANIFEST.toml");
     std::string line, name, kind;
     int checked = 0;
     while (std::getline(in, line)) {
+        if (line.ends_with('\r')) line.pop_back();  // autocrlf checkouts
         if (line.starts_with("[[")) name.clear(), kind.clear();
         auto val = [&](const char* key) -> std::optional<std::string> {
             std::string k = std::string(key) + " = ";
@@ -425,15 +426,15 @@ TEST_CASE("config: every pinned external stage has a fetch_deps hint (bitwuzla t
             auto stage = rest.substr(q + 1, e - q - 1);
             q = e + 1;
             auto hint = prism::adapter_install(stage);
-            CHECK_MESSAGE(has(hint, "fetch_deps.py --tool " + name + " "), stage << " -> " << hint);
+            CHECK_MESSAGE(has(hint, "prism-deps tool " + name), stage << " -> " << hint);
             CHECK_MESSAGE(prism::pinned_commit(name).has_value(), name);
             ++checked;
         }
     }
     CHECK(checked >= 15);
-    CHECK(has(prism::adapter_install("bitwuzla"), "fetch_deps.py --tool bitwuzla"));
+    CHECK(has(prism::adapter_install("bitwuzla"), "prism-deps tool bitwuzla"));
     auto esbmc = prism::adapter_install("esbmc");
-    CHECK(has(esbmc, "python scripts/fetch_deps.py --tool esbmc"));
+    CHECK(has(esbmc, "prism-deps tool esbmc"));
     CHECK(has(esbmc, "third_party/MANIFEST.toml"));
     CHECK_FALSE(has(esbmc, "SOURCES.md"));
     CHECK_FALSE(has(esbmc, "apt install"));
@@ -495,7 +496,7 @@ TEST_CASE("optional tools: every missing tool is NOTRUN with its install hint") 
             auto install = xget(f, "install");
             CHECK(has(install, "third_party/MANIFEST.toml"));
             if (f.stage != "clang-tidy" && f.stage != "libfuzzer")
-                CHECK(has(install, "scripts/fetch_deps.py --tool"));
+                CHECK(has(install, "prism-deps tool"));
             if (f.stage == "libfuzzer") {
                 CHECK(f.message == "clang not on PATH");
             } else {
@@ -503,9 +504,9 @@ TEST_CASE("optional tools: every missing tool is NOTRUN with its install hint") 
                 CHECK(has(f.message, "not found"));
             }
         }
-        CHECK(has(xget(stage_row(out, "afl-fuzz"), "install"), "fetch_deps.py --tool aflplusplus"));
-        CHECK(has(xget(stage_row(out, "infer"), "install"), "fetch_deps.py --tool infer"));
-        CHECK(has(xget(stage_row(out, "frama-c"), "install"), "fetch_deps.py --tool frama-c"));
+        CHECK(has(xget(stage_row(out, "afl-fuzz"), "install"), "prism-deps tool aflplusplus"));
+        CHECK(has(xget(stage_row(out, "infer"), "install"), "prism-deps tool infer"));
+        CHECK(has(xget(stage_row(out, "frama-c"), "install"), "prism-deps tool frama-c"));
         // frama-c (the EVA adapter) is not the wp stage.
         for (const auto& f : out) CHECK(f.stage != "wp");
     }

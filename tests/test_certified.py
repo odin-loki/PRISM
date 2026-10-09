@@ -22,7 +22,7 @@ import unittest
 from pathlib import Path
 
 from prism import laws, shipdocs
-from prism.config import Config, pinned_commit
+from prism.config import Config
 from prism.models import Finding, FunctionInfo, RunReport, StageResult
 from prism.pipeline import _write_md, run_pir_notrun
 from prism.sarif import to_sarif
@@ -60,16 +60,7 @@ def _cpp_prism() -> Path | None:
 
 def _tool(name: str) -> bool:
     home = Path(os.environ.get("PRISM_TOOLS_DIR", Path.home() / ".prism" / "tools")) / name
-    # The C++ solver lookup (solver/util.cpp in_root) takes only the build of
-    # the pinned commit, in <commit>/bin, <commit>/build or <commit> itself.
-    commit = pinned_commit(name)
-
-    def built(d: Path) -> bool:
-        return any(os.access(p, os.X_OK) and p.is_file() for p in (d / "bin" / name, d / "build" / name, d / name))
-
-    if commit and built(home / commit):
-        return True
-    if not commit and home.is_dir() and any(built(d) for d in home.iterdir() if d.is_dir()):
+    if home.is_dir() and any(home.glob(f"*/bin/{name}")):
         return True
     return shutil.which(name) is not None
 
@@ -168,8 +159,8 @@ class TestPythonCliParity(unittest.TestCase):
         self.assertNotIn("certified_mode", run_pir_notrun(Config())[0].extra)
 
     def test_cpp_cli_has_the_flags(self) -> None:
-        main = (ROOT / "src" / "prism" / "cli.cpp").read_text(encoding="utf-8")
-        self.assertIn('a == "--certified") { ok = in.flag(); cfg.certified = true; }', main)
+        main = (ROOT / "src" / "prism" / "main.cpp").read_text(encoding="utf-8")
+        self.assertIn('a == "--certified") cfg.certified = true', main)
         self.assertIn('a == "--solver-cache"', main)
         stage = (ROOT / "src" / "prism" / "pir" / "stage.cpp").read_text(encoding="utf-8")
         self.assertIn("auto copt = check_options(cfg, budget);", stage)
@@ -212,41 +203,8 @@ class TestTaxonomyAndConfidenceCreditPir(unittest.TestCase):
         self.assertEqual(confidence.score(r)[1], 1.0)
 
 
-class TestConformanceCertifiedSummary(unittest.TestCase):
-    def test_counts_loop_free_true_functions(self) -> None:
-        sys.path.insert(0, str(ROOT / "tools"))
-        import conformance
-
-        def row(fn: str, expected: bool, status: str, loops: str | None, note: str = "") -> dict:
-            extra = {"loops": loops} if loops is not None else {}
-            if fn == "v":
-                extra["certificate_vcs"] = "0"
-            if fn == "a":
-                extra["certificate_bitblast"] = "2/2 lean-proved"
-            if fn == "c":
-                extra["certificate_bitblast"] = "0/1 lean-proved"
-            if note:
-                extra["certify_note"] = note
-            return {"task": "t", "function": fn, "stage": conformance.CERT_STAGE, "expected": expected,
-                    "law_task": False, "findings": [{"status": status, "extra": extra}]}
-
-        rows = [row("a", True, laws.PROVED_CERTIFIED, "0"), row("b", True, laws.PROVED, "0", "VC x: why"),
-                # zero VCs: stays PROVED (a certificate that checks nothing is not one)
-                row("v", True, laws.PROVED, "0", "no verification conditions (nothing to certify)"),
-                row("c", True, laws.PROVED_CERTIFIED, "1"), row("d", True, laws.NEEDS_HARNESS, None),
-                row("e", False, laws.FAILED, "0")]
-        s = conformance.certified_summary(rows)
-        self.assertEqual((s["loop_free_true"], s["loop_free_true_proved"], s["loop_free_true_certified"]), (3, 3, 1))
-        self.assertEqual(s["loop_free_true_no_vcs"], 1)
-        self.assertEqual((s["loop_free_true_certified_lean"], s["loop_free_true_certified_z3"],
-                          s["loop_free_true_certified_mixed"]), (1, 0, 0))
-        self.assertEqual((s["looped_true"], s["looped_true_certified"], s["not_encoded_true"]), (1, 1, 1))
-        self.assertEqual(s["wrong_certified"], 0)
-        self.assertEqual(s["proved_not_certified"], [{"task": "t", "function": "b", "note": "VC x: why"}])
-        self.assertEqual(conformance.classify(
-            conformance.Task(ident="t", yml=Path("t.yml"), source=Path("t.c"), origin="prism", category="c",
-                             lang="C", prop="no-overflow", expected={"e": False}),
-            "e", [{"status": laws.PROVED_CERTIFIED}]), "wrong-proof")
+# The conformance scorer's certified summary is tested in
+# tests/cpp/test_qa_conformance.cpp ("qa conformance: certified summary ...").
 
 
 @unittest.skipUnless(_cpp_prism(), "C++ prism binary not built (set PRISM_BIN)")

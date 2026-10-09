@@ -11,7 +11,7 @@ where `lazy` is the LangRef semantics `lRunF`, `strict` the strict one and
 `pir` the PIR semantics of the Lean translation (`translate`).  Outcomes:
 `ret V`, `ret-void`, `ret-poison-created V`, `ub`, `fail`, `stuck`, `fuel`,
 `stop`, `blocked`, or `outside: <why>` for a function not in the fragment.
-`tools/llvm_sem_vs_lli.py` compares the `lazy` values with `lli`.
+`prism-qa llvm-sem-vs-lli` compares the `lazy` values with `lli`.
 -/
 import PrismRefine.Check
 import PrismRefine.Refine

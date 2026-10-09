@@ -69,7 +69,13 @@ ProcOut run_process(const std::vector<std::string>& args, double timeout_s,
 // no-ops on Windows.
 void track_child_group(int pgid) noexcept;
 void untrack_child_group(int pgid) noexcept;
-// SIGKILL every registered group (what the signal handler does first).
+// Sessions started by run_session, killed whole (every member) by the handler.
+void track_child_session(int sid) noexcept;
+void untrack_child_session(int sid) noexcept;
+// SIGKILL the session sid leads, members in other groups included.
+// Async-signal-safe (raw /proc scan on Linux).
+void kill_session_now(int sid) noexcept;
+// SIGKILL every registered group and session (what the signal handler does first).
 void kill_child_groups() noexcept;
 // Installs the SIGINT/SIGTERM/SIGHUP handler: kill the registered groups, then
 // die of the same signal (default action). A signal the process ignores stays
@@ -83,12 +89,24 @@ void install_child_cleanup() noexcept;
 // that PRISM put in process groups of their own die too. A descendant that
 // leaves the session (bwrap --new-session) must use --die-with-parent.
 // The scorers (`prism svcomp score`) run one task per session.
+struct SessionOptions {
+    double timeout_s = 0;  // 0: no timeout
+    std::filesystem::path cwd;
+    std::vector<std::pair<std::string, std::string>> env;  // overlay on the child only
+    std::string input;                                    // written to stdin, then closed
+    long rlimit_as_mb = 0;  // RLIMIT_AS for the child (POSIX); 0: none
+};
+
 struct SessionOut {
     std::string out;   // stdout
+    std::string err;   // stderr (when captured) or start failure text
     int rc = -1;       // exit status, -signal when killed by a signal
     bool timed_out = false;
     bool failed = false;  // could not start
+    double seconds = 0;   // wall time until the child exited or timed out
 };
+
+SessionOut run_session(const std::vector<std::string>& args, const SessionOptions& opt = {});
 SessionOut run_session(const std::vector<std::string>& args, double timeout_s,
                        const std::filesystem::path& cwd = {});
 // PIDs whose session id is sid (Linux /proc; empty elsewhere).
@@ -103,6 +121,15 @@ struct ChildGroup {
     ~ChildGroup() { untrack_child_group(pgid); }
     ChildGroup(const ChildGroup&) = delete;
     ChildGroup& operator=(const ChildGroup&) = delete;
+};
+
+// RAII registration of a child session.
+struct ChildSession {
+    int sid;
+    explicit ChildSession(int s) noexcept : sid(s) { track_child_session(s); }
+    ~ChildSession() { untrack_child_session(sid); }
+    ChildSession(const ChildSession&) = delete;
+    ChildSession& operator=(const ChildSession&) = delete;
 };
 
 }  // namespace prism::detail

@@ -13,17 +13,24 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
+      - name: Install toolchain
+        run: sudo apt-get update && sudo apt-get install -y ninja-build clang-18
+      # prism-deps links the standard library only: nothing from third_party/
+      # is compiled before the checks below pass. PRISM_DEPS_ONLY configures
+      # that one target (no Z3, no PCRE2).
+      - name: Build prism-deps
+        run: |
+          cmake -B build-deps -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=clang-18 -DCMAKE_CXX_COMPILER=clang++-18 -DPRISM_DEPS_ONLY=ON
+          cmake --build build-deps --target prism-deps
       - name: Licence firewall (no copyleft in linked components)
-        run: python scripts/licence_check.py
+        run: build-deps/prism-deps licence-check
       - name: Linked libraries match third_party/MANIFEST.toml
-        run: python scripts/fetch_deps.py --linked
+        run: build-deps/prism-deps linked
       - name: Linked libraries match the pinned upstream archives (sha256)
-        run: python scripts/fetch_deps.py --linked --refetch
+        run: build-deps/prism-deps linked --refetch
       - name: CycloneDX SBOM
-        run: python scripts/sbom.py --version "${GITHUB_SHA::12}" -o prism.cdx.json
+        run: build-deps/prism-deps sbom --version "${GITHUB_SHA::12}" -o prism.cdx.json
       - uses: actions/upload-artifact@v4
         with:
           name: prism-sbom
@@ -52,6 +59,8 @@ jobs:
         run: cmake --build build
       - name: prism_tests
         run: ./build/prism_tests
+      - name: prism_gui_tests (the window, offscreen)
+        run: QT_QPA_PLATFORM=offscreen ./build/prism_gui_tests
       - name: SV-COMP archive packager smoke
         run: ./build/prism svcomp pack --out /tmp/prism-svcomp.tar.gz && tar tzf /tmp/prism-svcomp.tar.gz
       # BenchExec loads tool-info modules as Python classes: tools/svcomp/prism.py

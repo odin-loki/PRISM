@@ -1997,7 +1997,7 @@ struct Walker {
         auto name = callee_name(core);
         if (k == "CallExpr" && !name.empty() && !user) {
             static const std::map<std::string, std::pair<const char*, bool>, std::less<>> kApi = {
-#include "astlint_discard.inc"
+#include "prism/astlint_discard.inc"
             };
             auto it = kApi.find(name);
             if (it == kApi.end()) {

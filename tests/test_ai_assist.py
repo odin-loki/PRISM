@@ -48,12 +48,12 @@ def _cpp_prism() -> Path | None:
 
 class TestAssistGrammars(unittest.TestCase):
     def test_embedded_verbatim(self):
-        inc = (ROOT / "src" / "prism" / "ai" / "grammars_assist.inc").read_text(encoding="utf-8")
+        cm = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+        line = next(ln for ln in cm.splitlines() if ln.startswith("foreach(_g "))
         for name in ("ask", "draft"):
             text = (ROOT / "grammars" / f"{name}.gbnf").read_text(encoding="utf-8")
             self.assertIn("root", text)
-            self.assertIn(f'GBNF_{name.upper()} = R"GBNF({text})GBNF"', inc,
-                          f"grammars/{name}.gbnf drifted: run tools/gen_ai_grammars.py")
+            self.assertIn(f" {name}", line)
 
     def test_ask_grammar_statuses_are_the_vocabulary(self):
         from prism import laws

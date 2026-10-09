@@ -31,7 +31,6 @@ namespace prism::ai {
 namespace fs = std::filesystem;
 
 namespace {
-#include "grammars_assist.inc"
 
 std::string lower(std::string s) {
     for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
@@ -527,7 +526,7 @@ std::string answer_text(const AskResult& r) {
 
 std::string ask_grammar() {
     // Narrow the stage rule to the pipeline's stage names.
-    std::string g = GBNF_ASK;
+    std::string g = grammar_text("ask");
     std::string alts;
     for (auto& s : stage_names()) alts += (alts.empty() ? "" : " | ") + std::string("\"\\\"") + s + "\\\"\"";
     auto p = g.find("stage    ::= ");

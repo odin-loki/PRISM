@@ -1,6 +1,6 @@
 """Cross-cutting optional-adapter honesty.
 
-Search order: config → pinned fetch_deps build
+Search order: config → pinned prism-deps build
 (~/.prism/tools/<component>/<manifest commit>/bin) → PATH → NOTRUN.
 Source trees are never executables. clang-tidy is a system tool (not pinned).
 python -m unittest tests.test_optional_honesty
@@ -54,7 +54,7 @@ def _manifest() -> dict[str, dict]:
 
 
 class TestOptionalSearchAndVendor(unittest.TestCase):
-    def test_install_hints_name_fetch_deps_except_clang_tidy(self):
+    def test_install_hints_name_prism_deps_except_clang_tidy(self):
         for stage in _LISTED:
             hint = adapter_install(stage)
             self.assertIn("third_party/MANIFEST.toml", hint, msg=stage)
@@ -64,7 +64,7 @@ class TestOptionalSearchAndVendor(unittest.TestCase):
                 self.assertNotIn(stage, VENDOR_DIR)
                 continue
             self.assertIn(stage, VENDOR_DIR)
-            self.assertIn(f"python scripts/fetch_deps.py --tool {VENDOR_DIR[stage]}", hint)
+            self.assertIn(f"prism-deps tool {VENDOR_DIR[stage]}", hint)
 
     def test_every_stage_maps_to_a_pinned_external_component(self):
         rows = _manifest()

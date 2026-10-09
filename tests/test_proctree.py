@@ -3,10 +3,10 @@
 PRISM runs its solvers and proof checkers (CaDiCaL, cake_lpr, the LRAT
 checkers) and compilers each in a process group of its own. Killing only
 PRISM, or only PRISM's process group, left them running after the scorer had
-moved on. `tools/proctree.py` (used by `tools/conformance.py`) kills every
-process of the session instead. The SV-COMP scorer `prism svcomp score` does
-the same in C++ (`run_session`, src/prism/proc_session.cpp; doctest
-"run_session: a timeout kills the whole session ..." in tests/cpp/test_svcomp.cpp).
+moved on. `tools/proctree.py` (used by `tools/svcomp/run_subset.py`) and `run_tree` in `tools/svcomp/prism_svcomp.py`
+(shipped on its own, so it has its own copy) kill every process of the
+session instead. The C++ scorer (`prism-qa conformance`) has its own runner,
+tested in tests/cpp/test_qa_conformance.cpp.
 """
 
 from __future__ import annotations
@@ -138,16 +138,10 @@ class ProcTreeTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0)
         self.assertEqual(r.stdout.strip(), "ok")
 
-    def test_conformance_run_prism_timeout(self) -> None:
-        conf = _load("prism_conformance_under_test", REPO / "tools" / "conformance.py")
-        src = self.tmp / "t.c"
-        src.write_text("int f(int x) { return x; }\n", encoding="utf-8")
-        task = conf.Task(ident="t", yml=src, source=src, origin="prism", category="x", lang="C", prop="p",
-                         expected={"f": True})
-        # the fake prism ignores PRISM's arguments after its first
-        res = conf.run_prism([sys.executable, str(self.script), str(self.pidfile)], task, ["pir"],
-                             self.tmp / "work", 2.0, None)
-        self.assertEqual(res.get("error"), "TIMEOUT")
+    def test_svcomp_wrapper_timeout(self) -> None:
+        wrapper = _load("prism_svcomp_wrapper_proctree", REPO / "tools" / "svcomp" / "prism_svcomp.py")
+        with self.assertRaises(subprocess.TimeoutExpired):
+            wrapper.run_tree([sys.executable, str(self.script), str(self.pidfile)], 2.0)
         self.assertTrue(_gone(_solver_pid(self.pidfile)))
 
 

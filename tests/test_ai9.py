@@ -59,14 +59,13 @@ def _lake() -> str | None:
 
 class TestParity(unittest.TestCase):
     def test_grammars_embedded_verbatim(self):
-        inc = (ROOT / "src" / "prism" / "ai" / "grammars.inc").read_text(encoding="utf-8")
+        # Embedded by CMake at configure time (verbatim lock: the doctest
+        # "ai-assist grammars: every grammars/*.gbnf is embedded verbatim").
+        cm = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+        line = next(ln for ln in cm.splitlines() if ln.startswith("foreach(_g "))
         for name in NEW_GRAMMARS:
-            text = (ROOT / "grammars" / f"{name}.gbnf").read_text(encoding="utf-8")
-            self.assertIn(f'GBNF_{name.upper()} = R"GBNF({text})GBNF"', inc,
-                          f"grammars/{name}.gbnf drifted: run tools/gen_ai_grammars.py")
-        gen = (ROOT / "tools" / "gen_ai_grammars.py").read_text(encoding="utf-8")
-        for name in NEW_GRAMMARS:
-            self.assertIn(f'"{name}"', gen)
+            self.assertTrue((ROOT / "grammars" / f"{name}.gbnf").is_file())
+            self.assertIn(f" {name}", line)
 
     def test_contract_grammar_has_trace_links(self):
         text = (ROOT / "grammars" / "contract.gbnf").read_text(encoding="utf-8")
@@ -99,34 +98,6 @@ class TestParity(unittest.TestCase):
         for cls in ("VACUOUS-ASSUMPTION", "PROOF-REGRESSION"):
             self.assertIn(cls, ids)
             self.assertIn(f'{{"{cls}"', cpp)
-
-
-class TestProveDriver(unittest.TestCase):
-    def _driver(self):
-        import importlib.util
-
-        spec = importlib.util.spec_from_file_location("prism_prove", ROOT / "tools" / "prism_prove.py")
-        assert spec and spec.loader
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        return mod
-
-    def test_finds_sorry_theorems_ignoring_comments(self):
-        mod = self._driver()
-        with tempfile.TemporaryDirectory() as t:
-            p = Path(t) / "X.lean"
-            p.write_text(
-                "-- theorem ghost : True := sorry\n"
-                "/- theorem ghost2 : True := sorry -/\n"
-                "theorem a (n : Nat) : n = n := by\n  sorry\n"
-                "theorem b (n : Nat) : n = n := rfl\n"
-                "private theorem c : True := sorry\n", encoding="utf-8")
-            self.assertEqual(mod.sorry_theorems(p), ["a", "c"])
-
-    def test_repository_proofs_have_no_sorry(self):
-        # proofs/check.sh forbids sorry; the driver agrees there is nothing to search.
-        mod = self._driver()
-        self.assertEqual([t for p in mod.lean_files(list(mod.DEFAULT_ROOTS)) for t in mod.sorry_theorems(p)], [])
 
 
 class _FakeServer(http.server.BaseHTTPRequestHandler):

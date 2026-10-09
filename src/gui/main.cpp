@@ -1,24 +1,23 @@
 #include "MainWindow.h"
 
+#include "prism/gui_model.hpp"
+
 #include <QApplication>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
 int main(int argc, char **argv) {
-#ifndef Q_OS_WIN
-    const char* display = std::getenv("DISPLAY");
-    const char* wayland = std::getenv("WAYLAND_DISPLAY");
-    const char* platform = std::getenv("QT_QPA_PLATFORM");
-    bool offscreen = platform && std::strcmp(platform, "offscreen") == 0;
-    if (!offscreen && (!display || !display[0]) && (!wayland || !wayland[0])) {
-        std::fprintf(stderr, "NOTRUN gui: no display (not a clean window)\n");
-        std::fprintf(stderr, "  install: set DISPLAY or QT_QPA_PLATFORM=offscreen\n");
-        return 2;
+    // No display (and not QT_QPA_PLATFORM=offscreen) is NOTRUN, exit 0, as
+    // `prism --gui` without prism_gui: a missing window is never a clean
+    // result and never a fake window.
+    if (!prism::gui::display_available(std::getenv("DISPLAY"), std::getenv("WAYLAND_DISPLAY"),
+                                       std::getenv("QT_QPA_PLATFORM"))) {
+        std::fputs(prism::gui::notrun_display_text().c_str(), stdout);
+        return 0;
     }
-#endif
     // --smoke-screenshot FILE: headless smoke test (see MainWindow::runSmoke).
-    // Removed from argv so the window's own CLI parsing never sees it.
+    // Removed from argv so the window's own launch parsing never sees it.
     QString smoke;
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--smoke-screenshot") == 0 && i + 1 < argc) {
@@ -29,7 +28,9 @@ int main(int argc, char **argv) {
         }
     }
     QApplication app(argc, argv);
-    prism::MainWindow w;
+    QStringList launch = QCoreApplication::arguments();
+    if (!launch.isEmpty()) launch.removeFirst();
+    prism::MainWindow w(launch);
     w.show();
     if (!smoke.isEmpty()) w.runSmoke(smoke);
     return app.exec();

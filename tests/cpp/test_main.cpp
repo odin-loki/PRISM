@@ -4319,7 +4319,7 @@ TEST_CASE("pipeline: hostile tree runs nothing without --allow-exec") {
 #endif
 
 namespace {
-// Scoped PRISM_TOOLS_DIR (the scripts/fetch_deps.py install root).
+// Scoped PRISM_TOOLS_DIR (the `prism-deps tool` install root).
 struct ToolsDirGuard {
     std::string was;
     bool had = false;
@@ -4391,7 +4391,7 @@ TEST_CASE("config: pinned adapters are never taken from inside the scanned tree"
 }
 
 TEST_CASE("config: manifest pins, install hints and tool identity") {
-    // CMake bakes third_party/MANIFEST.toml into manifest_pins.hpp.
+    // `prism-deps pins` bakes third_party/MANIFEST.toml into manifest_pins.hpp.
     for (const char* name : {"esbmc", "cppcheck", "cadical", "kissat", "cake_lpr"}) {
         auto pin = prism::pinned_commit(name);
         REQUIRE_MESSAGE(pin.has_value(), name);
@@ -4400,8 +4400,8 @@ TEST_CASE("config: manifest pins, install hints and tool identity") {
     CHECK_FALSE(prism::pinned_commit("z3").has_value());  // linked, not a tool
     CHECK_FALSE(prism::pinned_commit("clang-tidy").has_value());
     CHECK(prism::adapter_install("esbmc") ==
-          "python scripts/fetch_deps.py --tool esbmc (pinned in third_party/MANIFEST.toml)");
-    CHECK(prism::adapter_install("afl-fuzz").find("--tool aflplusplus") != std::string::npos);
+          "prism-deps tool esbmc (pinned in third_party/MANIFEST.toml)");
+    CHECK(prism::adapter_install("afl-fuzz") == "prism-deps tool aflplusplus (pinned in third_party/MANIFEST.toml)");
     CHECK(prism::adapter_install("clang-tidy").find("system tool") != std::string::npos);
     // FIPS 180-4 test vectors.
     CHECK(prism::sha256_hex("abc") ==
@@ -7105,8 +7105,13 @@ namespace {
 bool proc_gone(long pid) {
     for (int i = 0; i < 200; ++i) {
         if (::kill(static_cast<pid_t>(pid), 0) != 0 && errno == ESRCH) return true;
-        std::ifstream st("/proc/" + std::to_string(pid) + "/stat");
-        std::string s((std::istreambuf_iterator<char>(st)), std::istreambuf_iterator<char>());
+        std::string s;
+        try {
+            std::ifstream st("/proc/" + std::to_string(pid) + "/stat");
+            s.assign(std::istreambuf_iterator<char>(st), std::istreambuf_iterator<char>());
+        } catch (const std::exception&) {
+            return true;  // ESRCH mid-read: the process went away
+        }
         auto rp = s.rfind(')');
         if (rp != std::string::npos && rp + 2 < s.size() && s[rp + 2] == 'Z') return true;
         ::usleep(20000);

@@ -1314,14 +1314,17 @@ std::vector<std::filesystem::path> iter_sources(const std::filesystem::path& roo
     std::vector<std::filesystem::path> files;
     if (std::filesystem::is_regular_file(root)) return {root};
     if (!std::filesystem::exists(root)) return files;
-    for (auto it = std::filesystem::recursive_directory_iterator(root);
-         it != std::filesystem::recursive_directory_iterator(); ++it) {
-        if (it->is_directory() && scope::skip_dir(it->path().filename().string())) {
+    std::error_code ec;
+    for (auto it = std::filesystem::recursive_directory_iterator(
+             root, std::filesystem::directory_options::skip_permission_denied, ec);
+         !ec && it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
+        std::error_code e2;
+        if (it->is_directory(e2) && scope::skip_dir(it->path().filename().string())) {
             it.disable_recursion_pending();
             continue;
         }
         if (scope::skipped_path(it->path(), root)) continue;
-        if (it->is_regular_file() && is_c_ext(it->path().extension().string()))
+        if (it->is_regular_file(e2) && is_c_ext(it->path().extension().string()))
             files.push_back(it->path());
     }
     std::sort(files.begin(), files.end());

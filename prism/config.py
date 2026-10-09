@@ -88,9 +88,8 @@ def pinned_commit(component: str, root: Path | None = None) -> str | None:
 def adapter_install(stage: str) -> str:
     comp = VENDOR_DIR.get(stage)
     if comp:
-        return (f"python scripts/fetch_deps.py --tool {comp} "
-                f"(pinned in third_party/MANIFEST.toml)")
-    return f"{stage} is a system tool, not pinned by fetch_deps (see third_party/MANIFEST.toml)"
+        return f"prism-deps tool {comp} (pinned in third_party/MANIFEST.toml)"
+    return f"{stage} is a system tool, not pinned by prism-deps (see third_party/MANIFEST.toml)"
 
 
 def _is_built_exe(path: Path) -> bool:

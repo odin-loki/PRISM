@@ -3,7 +3,8 @@
 A Goal Structuring Notation (GSN) style argument, written as Markdown. It
 argues about **PRISM itself**: when may a user rely on a PRISM verdict? The
 leaves are evidence items from [EVIDENCE.md](EVIDENCE.md). Every leaf names
-an artefact that exists (checked by `tools/assurance_check.py`); a leaf that
+an artefact that exists (checked by `src/tools/qa/docscan.cpp`,
+`prism_docs_check assurance-check`); a leaf that
 has no evidence yet is marked **UNDEVELOPED** and says what is missing.
 
 Notation: **G** goal, **C** context, **A** assumption, **J** justification,
@@ -62,12 +63,13 @@ several goals are undeveloped.
             (`docs/PROOFS_SEMANTICS.md#the-gap-between-this-model-and-the-c-encoder`).
             Interim evidence only:
           - **Sn5** E09: conformance suite and release gate (wrong proofs
-            must be 0), `tools/conformance.py`,
+            must be 0), `src/tools/qa/conformance.cpp`,
             `.github/workflows/conformance.yml`.
           - **Sn6** E10: random programs, every proof executed under UBSan,
-            `tools/csmith_soundness.py`.
+            `src/tools/qa/soundness.cpp`.
           - **Sn7** E11: engine and encoder differential testing,
-            `tests/test_sarif.py::TestEngineParity`, `tools/pir_vs_bmc.py`.
+            `tests/test_sarif.py::TestEngineParity`, `src/tools/qa/pir_vs_bmc.cpp`
+            (`prism-qa pir-vs-bmc`).
         - **G3.3** The front end presents the program PRISM analyses
           faithfully.
           - **Sn8** E12: translation validation against `lli`,
@@ -88,7 +90,7 @@ several goals are undeveloped.
             trusts Z3 (E08).
         - **G3.5** A refutation (`FAILED`) is real.
           - **Sn10** E13: counterexample replay under sanitizers in
-            `tools/conformance.py` and `src/prism/svcomp/replay.cpp`.
+            `src/tools/qa/support/replay.cpp` and `src/prism/svcomp/replay.cpp`.
         - **G3.6** Pointer-parameter functions are never proved without a
           precondition (Law 6), and model-drafted preconditions never give a
           proof.
@@ -100,12 +102,13 @@ several goals are undeveloped.
         `tests/test_sarif.py::TestSarifShape`, taxonomy `GAP` rows;
         Law 1 theorem `thm:notrun_never_becomes_clean`.
       - **Sn13** E21: every CLI option documented and every verdict anchor
-        resolves, `tests/test_docs_cli.py`.
+        resolves, `tests/cpp/test_qa.cpp::docs: every --help flag of prism and prism prove is in docs/USER_GUIDE.md`,
+        `tests/cpp/test_qa.cpp::docs: every verdict has the VERDICTS.md anchor reports link to`.
       - **Sn14** Known limitations are published with reproducers (E23).
     - **G5** (d) The delivered tool is the reviewed one and is safe to run
       on untrusted code.
       - **Sn15** E19: pinned, checked dependencies and SBOM,
-        `third_party/MANIFEST.toml`, `tests/test_supply_chain.py::TestManifest`.
+        `third_party/MANIFEST.toml`, `tests/cpp/test_deps.cpp::every manifest component is well formed`.
       - **Sn16** E20: reproducible, signed releases,
         `.github/workflows/release.yml`.
       - **Sn17** E16: no execution of analysed code without `--allow-exec`,

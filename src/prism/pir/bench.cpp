@@ -1,4 +1,4 @@
-// Tooling for tools/solver_bench.py (roadmap 3.1 exit criterion, docs/SOLVERS.md):
+// Tooling for prism-qa solver-bench (roadmap 3.1 exit criterion, docs/SOLVERS.md):
 //   prism --pir-vcs FILE.c --out DIR   write every pir VC of FILE as SMT-LIB2
 //   prism --solve-smt2 FILE.smt2        answer one VC with the solver library
 // Neither is a pipeline stage: they print JSON and never write a report.

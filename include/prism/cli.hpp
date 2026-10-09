@@ -42,7 +42,7 @@ struct CliOptions {
     bool help = false;         // -h / --help: print cli_usage()
     bool version = false;      // -V / --version
     bool list_stages = false;  // --list-stages
-    // Hidden, for tools/solver_bench.py (not a scan; JSON on stdout).
+    // Hidden, for prism-qa solver-bench (not a scan; JSON on stdout).
     std::string pir_vcs_src;
     std::string solve_smt2;
     bool z3_only = false;

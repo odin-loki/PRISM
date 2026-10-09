@@ -40,6 +40,7 @@
 #include <set>
 #include <sstream>
 #include <thread>
+#include <utility>
 
 #ifndef _WIN32
 #  include <csignal>
@@ -253,7 +254,8 @@ std::optional<LeanTarget> find_lean_target(const fs::path& file, const std::stri
 }
 
 std::vector<std::string> lean_sorry_theorems(const fs::path& file) {
-    std::vector<std::string> out;
+    // (offset, name): declarations in source order, theorems and lemmas mixed
+    std::vector<std::pair<std::size_t, std::string>> hits;
     auto text = read_text(file);
     auto m = mask_lean(text);
     for (auto* kw : {"theorem", "lemma"}) {
@@ -263,9 +265,33 @@ std::vector<std::string> lean_sorry_theorems(const fs::path& file) {
             auto q = p;
             while (q < m.size() && ident_char(m[q])) ++q;
             if (q == p) continue;
-            if (!word_hits(m, "sorry", q, decl_end(m, q)).empty()) out.push_back(text.substr(p, q - p));
+            if (!word_hits(m, "sorry", q, decl_end(m, q)).empty()) hits.emplace_back(kp, text.substr(p, q - p));
         }
     }
+    std::sort(hits.begin(), hits.end());
+    std::vector<std::string> out;
+    for (auto& h : hits) out.push_back(std::move(h.second));
+    return out;
+}
+
+std::vector<std::pair<fs::path, std::string>> lean_sorry_targets(const std::vector<fs::path>& roots) {
+    std::set<fs::path> files;
+    std::error_code ec;
+    for (const auto& r : roots) {
+        const auto base = fs::weakly_canonical(fs::absolute(r, ec), ec);
+        if (!fs::is_directory(base, ec)) continue;
+        for (auto it = fs::recursive_directory_iterator(base, ec); !ec && it != fs::recursive_directory_iterator();
+             it.increment(ec)) {
+            if (it->is_directory(ec) && it->path().filename() == ".lake") {
+                it.disable_recursion_pending();
+                continue;
+            }
+            if (it->is_regular_file(ec) && it->path().extension() == ".lean") files.insert(it->path());
+        }
+    }
+    std::vector<std::pair<fs::path, std::string>> out;
+    for (const auto& f : files)
+        for (auto& t : lean_sorry_theorems(f)) out.emplace_back(f, std::move(t));
     return out;
 }
 
@@ -1010,55 +1036,10 @@ ProveResult prove_theorem(const ProveOptions& opt) {
 }
 
 // ------------------------------------------------------------------ CLI
-int prove_main(int argc, char** argv) {
-    ProveOptions opt;
-    bool allow_exec = false, json_only = false, list = false;
-    std::vector<std::string> pos;
-    for (int i = 1; i < argc; ++i) {
-        std::string a = argv[i];
-        auto next = [&]() -> std::string { return i + 1 < argc ? std::string(argv[++i]) : std::string(); };
-        if (a == "--write") opt.write = true;
-        else if (a == "--allow-exec") allow_exec = true;
-        else if (a == "--json") json_only = true;
-        else if (a == "--list") list = true;
-        else if (a == "--project") opt.project = next();
-        else if (a == "--lemmas") opt.lemmas = next();
-        else if (a == "--budget") opt.budget = std::max(1, std::atoi(next().c_str()));
-        else if (a == "--beam") opt.beam = std::max(1, std::atoi(next().c_str()));
-        else if (a == "--timeout") opt.lean_timeout = std::max(5.0, std::atof(next().c_str()));
-        else if (a == "--out") opt.out = next();
-        else if (a == "--prover-server") opt.prover_server = next();
-        else if (a == "--prover-gguf") opt.prover_gguf = next();
-        else if (a == "--prover-model") opt.prover_model = next();
-        else if (a == "-h" || a == "--help") {
-            std::cout << "prism prove FILE.lean THEOREM [--write] [--allow-exec] [--project DIR]\n"
-                         "            [--lemmas PATH] [--budget N] [--beam N] [--timeout S] [--out DIR]\n"
-                         "            [--prover-server URL] [--prover-gguf PATH] [--prover-model NAME] [--json]\n"
-                         "prism prove FILE.lean --list      theorems with a sorry\n"
-                         "Lean proof search (roadmap 9.2): the prover model proposes tactics, the Lean kernel\n"
-                         "checks each one, #print axioms must stay within propext/Classical.choice/Quot.sound,\n"
-                         "and lake build of the module gates acceptance. --write writes the proof back and adds\n"
-                         "it to the lemma library (default proofs/lemmas.jsonl). Needs --allow-exec (Law 9:\n"
-                         "elaborating Lean runs code). Prover: PRISM_PROVER_SERVER or PRISM_PROVER_GGUF.\n"
-                         "Exit 0 proved, 1 not proved, 3 NOTRUN, 2 error.\n";
-            return 0;
-        } else if (!a.starts_with("-")) pos.push_back(a);
-        else {
-            std::cerr << "prism prove: unknown option " << a << "\n";
-            return 2;
-        }
-    }
-    if (list && !pos.empty()) {
-        for (auto& n : lean_sorry_theorems(pos[0])) std::cout << n << "\n";
-        return 0;
-    }
-    if (pos.size() != 2) {
-        std::cerr << "usage: prism prove FILE.lean THEOREM [--write] [--allow-exec] (see --help)\n";
-        return 2;
-    }
-    opt.file = fs::absolute(pos[0]);
-    opt.theorem = pos[1];
-    opt.out = fs::absolute(opt.out);
+namespace {
+// One theorem through the proof search (NOTRUN without --allow-exec, Law 9),
+// its record written to <out>/prove/<theorem>.json.
+std::pair<ProveResult, nlohmann::json> prove_one(ProveOptions opt, bool allow_exec) {
     ProveResult r;
     if (!allow_exec) {
         r.status = std::string(laws::NOTRUN);
@@ -1085,6 +1066,117 @@ int prove_main(int argc, char** argv) {
     std::error_code ec;
     fs::create_directories(opt.out / "prove", ec);
     std::ofstream(opt.out / "prove" / (opt.theorem + ".json")) << j.dump(2) << "\n";
+    return {std::move(r), std::move(j)};
+}
+
+std::string rel_path(const fs::path& p) {
+    std::error_code ec;
+    auto r = fs::relative(p, fs::current_path(ec), ec);
+    return ec || r.empty() || r.string().starts_with("..") ? p.string() : r.generic_string();
+}
+
+// `prism prove --all [ROOTS...]`: every theorem with a sorry under the roots
+// (default proofs, proofs/semantics, proofs/techniques). The summary line is
+// the "proofs completed by the prover model" metric (9.7).
+int prove_all(const std::vector<std::string>& roots_in, bool list, const ProveOptions& base, bool allow_exec) {
+    std::vector<fs::path> roots;
+    for (auto& r : roots_in) roots.emplace_back(r);
+    if (roots.empty()) roots = {"proofs", "proofs/semantics", "proofs/techniques"};
+    const auto targets = lean_sorry_targets(roots);
+    if (list) {
+        for (auto& [f, t] : targets) std::cout << rel_path(f) << "\t" << t << "\n";
+        return 0;
+    }
+    if (targets.empty()) {
+        std::string names;
+        for (std::size_t i = 0; i < roots.size(); ++i) names += (i ? ", " : "") + roots[i].string();
+        std::cout << "no theorem with a sorry under " << names << "\n";
+        return 0;
+    }
+    nlohmann::json results = nlohmann::json::array();
+    int proved = 0, notrun = 0;
+    for (auto& [f, t] : targets) {
+        auto opt = base;
+        opt.file = fs::absolute(f);
+        opt.theorem = t;
+        auto [r, j] = prove_one(opt, allow_exec);
+        j["file"] = rel_path(f);
+        std::string status = r.status;
+        if (status.size() < 10) status.resize(10, ' ');
+        std::cout << status << " " << rel_path(f) << ":" << t << "  " << r.reason.substr(0, 120) << "\n";
+        if (r.status == laws::PROVED) ++proved;
+        if (r.status == laws::NOTRUN) ++notrun;
+        results.push_back(std::move(j));
+    }
+    const int n = static_cast<int>(results.size());
+    std::cout << "proved " << proved << "/" << n << " (metric 9.7: proofs completed by the prover model)\n";
+    std::error_code ec;
+    fs::create_directories(base.out / "prove", ec);
+    std::ofstream(base.out / "prove" / "summary.json") << results.dump(2);
+    if (proved == n) return 0;
+    return notrun == n ? 3 : 1;
+}
+}  // namespace
+
+int prove_main(int argc, char** argv) {
+    ProveOptions opt;
+    bool allow_exec = false, json_only = false, list = false, all = false;
+    std::vector<std::string> pos;
+    for (int i = 1; i < argc; ++i) {
+        std::string a = argv[i];
+        auto next = [&]() -> std::string { return i + 1 < argc ? std::string(argv[++i]) : std::string(); };
+        if (a == "--write") opt.write = true;
+        else if (a == "--allow-exec") allow_exec = true;
+        else if (a == "--json") json_only = true;
+        else if (a == "--list") list = true;
+        else if (a == "--all") all = true;
+        else if (a == "--project") opt.project = next();
+        else if (a == "--lemmas") opt.lemmas = next();
+        else if (a == "--budget") opt.budget = std::max(1, std::atoi(next().c_str()));
+        else if (a == "--beam") opt.beam = std::max(1, std::atoi(next().c_str()));
+        else if (a == "--timeout") opt.lean_timeout = std::max(5.0, std::atof(next().c_str()));
+        else if (a == "--out") opt.out = next();
+        else if (a == "--prover-server") opt.prover_server = next();
+        else if (a == "--prover-gguf") opt.prover_gguf = next();
+        else if (a == "--prover-model") opt.prover_model = next();
+        else if (a == "-h" || a == "--help") {
+            std::cout << "prism prove FILE.lean THEOREM [--write] [--allow-exec] [--project DIR]\n"
+                         "            [--lemmas PATH] [--budget N] [--beam N] [--timeout S] [--out DIR]\n"
+                         "            [--prover-server URL] [--prover-gguf PATH] [--prover-model NAME] [--json]\n"
+                         "prism prove FILE.lean --list      theorems with a sorry\n"
+                         "prism prove --all [ROOTS...] [--list] [--allow-exec] [--write] [--budget N]\n"
+                         "            every theorem with a sorry under ROOTS (default proofs,\n"
+                         "            proofs/semantics, proofs/techniques; .lake skipped); writes\n"
+                         "            <out>/prove/summary.json\n"
+                         "Lean proof search (roadmap 9.2): the prover model proposes tactics, the Lean kernel\n"
+                         "checks each one, #print axioms must stay within propext/Classical.choice/Quot.sound,\n"
+                         "and lake build of the module gates acceptance. --write writes the proof back and adds\n"
+                         "it to the lemma library (default proofs/lemmas.jsonl). Needs --allow-exec (Law 9:\n"
+                         "elaborating Lean runs code). Prover: PRISM_PROVER_SERVER or PRISM_PROVER_GGUF.\n"
+                         "Exit 0 proved (--all: every one), 1 not proved, 3 NOTRUN (--all: every one), 2 error.\n";
+            return 0;
+        } else if (!a.starts_with("-")) pos.push_back(a);
+        else {
+            std::cerr << "prism prove: unknown option " << a << "\n";
+            return 2;
+        }
+    }
+    if (all) {
+        opt.out = fs::absolute(opt.out);
+        return prove_all(pos, list, opt, allow_exec);
+    }
+    if (list && !pos.empty()) {
+        for (auto& n : lean_sorry_theorems(pos[0])) std::cout << n << "\n";
+        return 0;
+    }
+    if (pos.size() != 2) {
+        std::cerr << "usage: prism prove FILE.lean THEOREM [--write] [--allow-exec] (see --help)\n";
+        return 2;
+    }
+    opt.file = fs::absolute(pos[0]);
+    opt.theorem = pos[1];
+    opt.out = fs::absolute(opt.out);
+    auto [r, j] = prove_one(opt, allow_exec);
     if (json_only) {
         std::cout << j.dump(2) << "\n";
     } else {

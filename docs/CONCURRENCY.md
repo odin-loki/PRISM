@@ -12,7 +12,7 @@ data race counts as a property violation.
 | Engine | C++ only: `src/prism/conc/`, `include/prism/conc.hpp`. The Python engine is frozen (roadmap D8) and records one `NOTRUN` row: "C++ engine only (Python engine frozen as oracle, roadmap D8)" |
 | Verdict audit | origin `solver` in `proofs/Prism/Verdict.lean`, `src/prism/verdict/verdict.cpp` and `prism/laws.py`. The stage **never** emits `PROVED*` |
 | Executes scanned code | no. It runs clang/opt to compile, then Z3 in-process (Law 9: not in `EXEC_STAGES`) |
-| Tests | `tests/conc/*.c`, `tests/cpp/test_conc.cpp` (doctest), `tests/test_conc.py` (end to end through `PRISM_BIN`), `tests/conformance/concurrency/` (scored by `tools/conformance.py`) |
+| Tests | `tests/conc/*.c`, `tests/cpp/test_conc.cpp` (doctest), `tests/test_conc.py` (end to end through `PRISM_BIN`), `tests/conformance/concurrency/` (scored by `src/tools/qa/conformance.cpp`) |
 
 ## What it reports
 
@@ -276,7 +276,7 @@ pairs, with 22 property labels (`norace`, `noassert`, `nodeadlock`):
 - nondeterministic inputs;
 - C11 `<threads.h>`.
 
-`tools/conformance.py` scores these with the `conc` stage only, and scores
+`src/tools/qa/conformance.cpp` scores these with the `conc` stage only, and scores
 `conc` on these only. The labels are property-scoped: a race reported on a
 `noassert` task is "failed-other-property", not a false alarm. `conc` never
 proves, so its soundness line is zero wrong proofs by construction.
@@ -284,7 +284,7 @@ Completeness is 0 by definition, because every true task is `BOUNDED`.
 Detection is measured as "refuted, not replayed", because a counterexample
 is a schedule, not an input vector.
 
-Result (`PRISM_BIN=build/prism python tools/conformance.py --suite
+Result (`build/prism-qa conformance --suite
 tests/conformance/concurrency --no-replay`; see also docs/CONFORMANCE.md):
 0 wrong proofs, 9/9 `false` labels refuted in their property class, 13/13
 `true` labels `BOUNDED`, and 0 false alarms. A non-vacuity probe appended

@@ -1,24 +1,21 @@
 """LLVM -> PIR refinement proofs and the C++ translator stay in step (roadmap 8.2, 8.5).
 
 proofs/refinement proves the translation correct for a Lean translator that
-mirrors src/prism/pir/translate.cpp; tools/pir_lean_check.py checks, per run,
-that the C++ output is exactly that translator's output. These tests lock the
-static parts of that correspondence (check property names and taxonomy
-classes, operator names) without Lean, and run the checker when it is built.
+mirrors src/prism/pir/translate.cpp; `prism-qa pir-lean-check` checks, per
+run, that the C++ output is exactly that translator's output. These tests lock
+the static parts of that correspondence (check property names and taxonomy
+classes, operator names) without Lean. Running the checker (its fixtures, and
+tests/pir end to end) is in tests/cpp/test_qa.cpp.
 """
 
 from __future__ import annotations
 
-import os
 import re
-import subprocess
-import sys
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 REFINE = ROOT / "proofs" / "refinement"
-CHECKER = REFINE / ".lake" / "build" / "bin" / "pir_lean_check"
 
 
 def _read(p: Path) -> str:
@@ -148,39 +145,6 @@ class StaticParity(unittest.TestCase):
         self.assertIn("Heap = 2", enum)
         self.assertIn("New = 5, NewArr = 6", enum)
         self.assertIn(".c 8 2], .assign (j + 12) (.cmp .eq) [.v (j + 2) 8, .c 8 5]", xlean)
-
-
-@unittest.skipUnless(CHECKER.is_file(), "NOTRUN: pir_lean_check not built (cd proofs/refinement && lake build)")
-class CheckerFixtures(unittest.TestCase):
-    def test_fixtures(self):
-        for f in sorted((REFINE / "fixtures").glob("*.pirl")):
-            r = subprocess.run([str(CHECKER), str(f)], capture_output=True, text=True, check=False)
-            want = _read(f.with_suffix(".expected")).strip()
-            self.assertEqual(r.stdout.strip().splitlines()[-1], want, msg=f.name)
-            self.assertEqual(r.returncode, 1 if "mismatch=0" not in want else 0, msg=f.name)
-
-
-@unittest.skipUnless(CHECKER.is_file() and os.environ.get("PRISM_BIN"),
-                     "NOTRUN: needs PRISM_BIN and a built pir_lean_check")
-class EndToEnd(unittest.TestCase):
-    def test_tests_pir_agrees_with_the_proved_translator(self):
-        r = subprocess.run([sys.executable, str(ROOT / "tools" / "pir_lean_check.py"),
-                            str(ROOT / "tests" / "pir"), "--bin", os.environ["PRISM_BIN"],
-                            "--checker", str(CHECKER)],
-                           capture_output=True, text=True, check=False, cwd=ROOT)
-        self.assertEqual(r.returncode, 0, msg=r.stdout + r.stderr)
-        m = re.search(r"total: agree=(\d+) .* mismatch=(\d+)", r.stdout)
-        self.assertIsNotNone(m, msg=r.stdout)
-        assert m is not None
-        self.assertEqual(int(m.group(2)), 0)
-        self.assertGreaterEqual(int(m.group(1)), 30)
-        # the extended fragment (freeze, calls, memory) is checked too
-        ext = re.search(r"total: agree=\d+ agree-ext=(\d+)", r.stdout)
-        self.assertIsNotNone(ext, msg=r.stdout)
-        assert ext is not None
-        # with the intrinsics, memcpy/memset and globals: 28 functions measured;
-        # the pir stage's time budget can leave files unexported on a loaded machine
-        self.assertGreaterEqual(int(ext.group(1)), 15)
 
 
 if __name__ == "__main__":

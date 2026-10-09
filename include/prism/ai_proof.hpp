@@ -33,6 +33,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace prism::ai {
@@ -55,8 +56,12 @@ struct LeanTarget {
 // nullopt + why when the theorem is missing, has no sorry, or more than one.
 PRISM_API std::optional<LeanTarget> find_lean_target(const std::filesystem::path& file,
                                                      const std::string& theorem, std::string* why = nullptr);
-// Theorems with a `sorry` in their proof (comments ignored), for the driver.
+// Theorems with a `sorry` in their proof (comments ignored), in source order.
 PRISM_API std::vector<std::string> lean_sorry_theorems(const std::filesystem::path& file);
+// (file, theorem) for every such theorem in the .lean files under `roots`
+// (.lake skipped; each file once, sorted), for `prism prove --all`.
+PRISM_API std::vector<std::pair<std::filesystem::path, std::string>> lean_sorry_targets(
+    const std::vector<std::filesystem::path>& roots);
 
 // Post-decoding validation of a model proof: {"tactics": [str, ...]} with
 // 1..40 lines of at most 400 characters; no command or escape hatch
@@ -191,10 +196,8 @@ PRISM_API std::string check_callers_requires(const FunctionInfo& caller, const F
 // Contracts drafted by the model for spec-less functions, proved by the
 // contracts engine; HYPOTHESIS unless every clause is approved. One NOTRUN
 // row without a model.
-PRISM_API std::vector<Finding> draft_contracts(const std::vector<FunctionInfo>& functions, const Config& cfg);
-// True when fn already carries a requires / ensures / invariant / decreases
-// clause (any case, // or ACSL): drafting skips it.
 PRISM_API bool has_spec(const FunctionInfo& fn);
+PRISM_API std::vector<Finding> draft_contracts(const std::vector<FunctionInfo>& functions, const Config& cfg);
 
 // =================================================================== assumption audit (9.3)
 // Deterministic: is the conjunction of `clauses` (C expressions over fn's

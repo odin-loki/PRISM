@@ -529,10 +529,11 @@ struct CheckOptions {
     bool use_cache = true;
     std::string cache_dir;      // empty: the solver library's default
     unsigned max_parallel = 0;  // solver members at once; 0: hardware threads
-    std::map<std::string, std::string> tool_paths;  // --tool NAME=PATH; see SolveOptions
     std::vector<std::string> tool_dirs;  // searched first (tests); see SolveOptions
     bool search_default_tools = true;
-    std::string refuse_tools_under;  // Law 9; see SolveOptions
+    // --tool NAME=PATH (Config::tools) and Law 9 refuse_tools_under (scanned root).
+    std::map<std::string, std::string> tool_paths;
+    std::string refuse_tools_under;
     EncodeOptions encode;       // memory encoding (Bv: QF_BV, certifiable)
     // Houdini: the run's shared budget (null: none, each function keeps its
     // own limit), and whether its outcome is cached under cache_dir/houdini
@@ -614,7 +615,7 @@ PRISM_API std::vector<PtrContract> parse_contracts(const std::vector<std::string
 PRISM_API std::vector<Finding> run_pir(const std::vector<std::filesystem::path>& sources,
                                        const Config& cfg);
 
-// Tooling (tools/solver_bench.py; src/prism/pir/bench.cpp). JSON on return.
+// Tooling (prism-qa solver-bench; src/prism/pir/bench.cpp). JSON on return.
 // Every VC of every encodable function of `src`, written as SMT-LIB2 files
 // under out_dir; functions that are not encoded are listed with their status.
 PRISM_API std::string unit_vcs_json(const std::filesystem::path& src, const Config& cfg,

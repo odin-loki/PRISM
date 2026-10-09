@@ -20,7 +20,7 @@
 # A missing checker is NOTRUN and the script exits 3 (never a silent pass),
 # unless PRISM_RECHECK_ALLOW_MISSING=1 (local runs without nanoda).
 # Tools are found on PATH or in ~/.prism/tools/<name>/<commit>/bin
-# (python scripts/fetch_deps.py --tool lean4export / --tool nanoda).
+# (prism-deps tool lean4export / prism-deps tool nanoda).
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 proj="$(cd "$1" && pwd)"; shift
@@ -76,7 +76,7 @@ say "== 5. nanoda (independent kernel)"
 le="$(find_tool lean4export lean4export)"
 nd="$(find_tool nanoda nanoda_bin)"
 if [ -z "$le" ] || [ -z "$nd" ]; then
-  say "NOTRUN: lean4export/nanoda_bin not found (python scripts/fetch_deps.py --tool lean4export; --tool nanoda)"
+  say "NOTRUN: lean4export/nanoda_bin not found (prism-deps tool lean4export; prism-deps tool nanoda)"
   missing=1
 else
   tmp="$(mktemp -d)"

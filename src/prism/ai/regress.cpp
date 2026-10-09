@@ -200,7 +200,7 @@ std::optional<std::string> c_literal_for(const std::string& type, const std::str
     const unsigned __int128 mask = w >= 128 ? ~static_cast<unsigned __int128>(0)
                                             : ((static_cast<unsigned __int128>(1) << w) - 1);
     // Reinterpret in the parameter's width: decimal values are wrapped into
-    // range the same way tools/conformance.py replay() does.
+    // range the same way prism-qa conformance replay() does.
     unsigned __int128 pat = decimal ? static_cast<unsigned __int128>(dec) & mask : (*bits & mask);
     __int128 value;
     if (sc->is_signed && w < 128 && (pat >> (w - 1)) & 1)

@@ -39,6 +39,9 @@
 #  include <signal.h>
 #  include <sys/wait.h>
 #  include <unistd.h>
+#  if defined(__linux__)
+#    include <sys/syscall.h>
+#  endif
 extern char** environ;
 #endif
 
@@ -493,22 +496,120 @@ namespace {
 // kills them on timeout).
 constexpr int kChildSlots = 512;
 std::atomic<int> g_child_groups[kChildSlots];
-}  // namespace
+std::atomic<int> g_child_sessions[kChildSlots];
 
-void track_child_group(int pgid) noexcept {
-    if (pgid <= 0) return;
-    for (auto& slot : g_child_groups) {
+void track_in(std::atomic<int> (&slots)[kChildSlots], int id) noexcept {
+    if (id <= 0) return;
+    for (auto& slot : slots) {
         int z = 0;
-        if (slot.compare_exchange_strong(z, pgid)) return;
+        if (slot.compare_exchange_strong(z, id)) return;
     }
 }
 
-void untrack_child_group(int pgid) noexcept {
-    if (pgid <= 0) return;
-    for (auto& slot : g_child_groups) {
-        int v = pgid;
+void untrack_in(std::atomic<int> (&slots)[kChildSlots], int id) noexcept {
+    if (id <= 0) return;
+    for (auto& slot : slots) {
+        int v = id;
         if (slot.compare_exchange_strong(v, 0)) return;
     }
+}
+
+#if defined(__linux__)
+// Session id (field 6 of /proc/PID/stat) of the process named by the decimal
+// string name; -1 when unreadable. open/read/close only: async-signal-safe.
+int stat_session(const char* name) noexcept {
+    char path[64] = "/proc/";
+    std::size_t n = 6;
+    for (const char* p = name; *p && n + 6 < sizeof path; ++p) path[n++] = *p;
+    std::memcpy(path + n, "/stat", 6);
+    const int fd = ::open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return -1;
+    char buf[1024];
+    ssize_t len = 0;
+    for (;;) {
+        len = ::read(fd, buf, sizeof buf - 1);
+        if (len >= 0 || errno != EINTR) break;
+    }
+    ::close(fd);
+    if (len <= 0) return -1;
+    buf[len] = '\0';
+    // comm (field 2) may contain blanks and ')': fields restart after the last ')'
+    const char* close = nullptr;
+    for (ssize_t i = 0; i < len; ++i)
+        if (buf[i] == ')') close = buf + i;
+    if (!close || close[1] != ' ' || close[2] == 'Z') return -1;  // zombies need no kill
+    const char* p = close + 1;
+    for (int field = 0; field < 3; ++field) {  // state, ppid, pgrp
+        while (*p == ' ') ++p;
+        while (*p && *p != ' ') ++p;
+    }
+    while (*p == ' ') ++p;
+    int sid = 0;
+    bool any = false;
+    for (; *p >= '0' && *p <= '9'; ++p) {
+        sid = sid * 10 + (*p - '0');
+        any = true;
+    }
+    return any ? sid : -1;
+}
+
+struct LinuxDirent64 {
+    unsigned long long d_ino;
+    long long d_off;
+    unsigned short d_reclen;
+    unsigned char d_type;
+    char d_name[1];
+};
+
+// SIGKILL every process whose session id is sid, except the caller. Returns
+// how many were signalled. getdents64 + stat_session: async-signal-safe.
+int kill_session_members_raw(int sid) noexcept {
+    const int dfd = ::open("/proc", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (dfd < 0) return 0;
+    const pid_t self = ::getpid();
+    int hit = 0;
+    alignas(8) char buf[8192];
+    for (;;) {
+        const long got = ::syscall(SYS_getdents64, dfd, buf, sizeof buf);
+        if (got <= 0) break;
+        for (long off = 0; off < got;) {
+            auto* d = reinterpret_cast<LinuxDirent64*>(buf + off);
+            off += d->d_reclen;
+            const char* name = d->d_name;
+            if (*name < '0' || *name > '9') continue;
+            int pid = 0;
+            for (const char* p = name; *p >= '0' && *p <= '9'; ++p) pid = pid * 10 + (*p - '0');
+            if (pid <= 1 || pid == self) continue;
+            if (stat_session(name) == sid) {
+                ::kill(pid, SIGKILL);
+                ++hit;
+            }
+        }
+    }
+    ::close(dfd);
+    return hit;
+}
+#endif
+}  // namespace
+
+void track_child_group(int pgid) noexcept { track_in(g_child_groups, pgid); }
+void untrack_child_group(int pgid) noexcept { untrack_in(g_child_groups, pgid); }
+void track_child_session(int sid) noexcept { track_in(g_child_sessions, sid); }
+void untrack_child_session(int sid) noexcept { untrack_in(g_child_sessions, sid); }
+
+void kill_session_now(int sid) noexcept {
+#ifndef _WIN32
+    if (sid <= 1) return;
+    ::kill(-sid, SIGKILL);
+#  if defined(__linux__)
+    // members that moved to process groups of their own (PRISM's solver children)
+    for (int round = 0; round < 3; ++round)
+        if (kill_session_members_raw(sid) == 0) break;
+#  endif
+    ::kill(sid, SIGKILL);
+#else
+    (void)sid;
+#endif
 }
 
 void kill_child_groups() noexcept {
@@ -516,6 +617,10 @@ void kill_child_groups() noexcept {
     for (auto& slot : g_child_groups) {
         const int g = slot.load();
         if (g > 0) ::kill(-g, SIGKILL);
+    }
+    for (auto& slot : g_child_sessions) {
+        const int s = slot.load();
+        if (s > 0) kill_session_now(s);
     }
 #endif
 }

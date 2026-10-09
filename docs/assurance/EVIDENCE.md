@@ -3,8 +3,8 @@
 Every artefact the assurance documents cite, with what it shows and, as
 importantly, what it does not. Identifiers (E01...) are used by
 [ASSURANCE_CASE.md](ASSURANCE_CASE.md) and the framework mappings.
-`tools/assurance_check.py` verifies every path, test name, anchor and
-theorem name below exists. "CI" means a workflow defined in this
+`prism_docs_check assurance-check` (`src/tools/qa/docscan.cpp`) verifies
+every path, test name, anchor and theorem name below exists. "CI" means a workflow defined in this
 repository; this package does not include CI run results.
 
 ## Formal proofs (Lean 4, core library only, no Mathlib)
@@ -59,19 +59,21 @@ each project's `lean-toolchain`): `proofs/check.sh` passed all four steps
   whole finite domain by `proofs/Prism/Export.lean`),
   `tests/cpp/test_main.cpp::verdict module equals the Lean model`,
   explanation in `docs/VERDICTS.md#connecting-the-proof-to-the-code`.
-- Shows: `src/prism/verdict/verdict.cpp`, the `laws.hpp` string API and
-  `prism/laws.py` agree with the model on every merge pair, rewrite pair,
-  admission and audit input (finite domains, so agreement on every input is
-  equality of the functions).
+- Shows: `src/prism/verdict/verdict.cpp` and the `laws.hpp` string API
+  agree with the model on every merge pair, rewrite pair, admission and
+  audit input (finite domains, so agreement on every input is equality of
+  the functions).
 - Does not show: confidence equality beyond the sampled grid (the laws
   themselves are proved for all inputs); that the tests ran on a particular
-  release binary.
+  release binary; that the Python engine's `prism/laws.py` agrees with the
+  model (no test checks it since the Python test was ported to doctest).
 
 ### E04 The verdict audit runs on every report
 
 - Artefacts: the audit call in `src/prism/pipeline.cpp`,
   `docs/VERDICTS.md#the-verdict-audit`,
-  `tests/cpp/test_main.cpp::verdict audit demotes a non-proving stage`.
+  `tests/cpp/test_main.cpp::verdict audit demotes a non-proving stage`,
+  `tests/cpp/test_verdict_repo.cpp::the pipeline runs the verdict audit`.
 - Shows: a formal verdict from a stage that may not prove is demoted to
   `UNKNOWN` with a recorded violation before the report is written.
 - Does not show: that a proving stage's proof is correct.
@@ -167,9 +169,10 @@ each project's `lean-toolchain`): `proofs/check.sh` passed all four steps
 
 ### E09 Conformance suite and release gate
 
-- Artefacts: `tools/conformance.py`, `tests/conformance/SOURCES.md`, the
+- Artefacts: `src/tools/qa/conformance.cpp`, `tests/conformance/SOURCES.md`, the
   tasks under `tests/conformance/prism/` and `tests/conformance/sv-comp/`,
-  scorer tests `tests/conformance/test_conformance_suite.py`, CI
+  scorer tests `tests/cpp/test_qa_conformance.cpp` (the gate itself:
+  `tests/cpp/test_qa_conformance.cpp::qa conformance: a wrong proof fails the release gate`), CI
   `.github/workflows/conformance.yml`, metrics and history in
   `docs/CONFORMANCE.md`.
 - Shows: soundness (wrong proofs), completeness, detection with replayed
@@ -180,7 +183,7 @@ each project's `lean-toolchain`): `proofs/check.sh` passed all four steps
   the time it was written; commit `7ff59c5` ("harness: drafted assumptions
   never yield a proof class") addresses that row. Re-measured locally on
   2026-09-23 with the C++ engine built from this branch (engine sources as
-  at `9135d97`; `PRISM_BIN=... python tools/conformance.py`, stages
+  at `9135d97`; `prism-qa conformance --prism ...`, stages
   `inventory,classify,bmc,pir,harness`, 297 tasks): **release gate PASS,
   0 wrong proofs** in every stage; `bmc` completeness 82/148, detection with
   replayed counterexample 84/143, 1 false alarm; `pir` completeness 90/148,
@@ -189,9 +192,9 @@ each project's `lean-toolchain`): `proofs/check.sh` passed all four steps
 
 ### E10 Random-program soundness testing
 
-- Artefacts: `tools/csmith_soundness.py`, the `random-programs` job in
+- Artefacts: `src/tools/qa/soundness.cpp`, `src/tools/qa/gen_random.cpp`, the `random-programs` job in
   `.github/workflows/conformance.yml`,
-  `docs/CONFORMANCE.md#random-programs-toolscsmith_soundnesspy-in-house-generator-300-programs-900-functions`.
+  `docs/CONFORMANCE.md#random-programs-prism-qa-soundness-in-house-generator-300-programs-900-functions`.
 - Shows: every `PROVED*` verdict on generated programs is executed under
   UBSan on inputs; any sanitizer report is a wrong proof.
 - Does not show: absence of wrong proofs for program shapes the generators
@@ -199,9 +202,10 @@ each project's `lean-toolchain`): `proofs/check.sh` passed all four steps
 
 ### E11 Differential testing between engines and encoders
 
-- Artefacts: `tests/test_sarif.py::TestEngineParity`, `tools/pir_vs_bmc.py`,
+- Artefacts: `tests/test_sarif.py::TestEngineParity`,
+  `src/tools/qa/pir_vs_bmc.cpp` (`prism-qa pir-vs-bmc`),
   `docs/PIR.md#differential-oracle-vs-the-old-encoder-roadmap-28`,
-  `tests/cpp/test_cli.cpp` (every `STAGE_ORDER` stage runs, in order).
+  `tests/cpp/test_cli.cpp::every STAGE_ORDER name is run, in order`.
 - Shows: the C++ engine and the frozen Python engine (roadmap D8) agree on
   report shape and verdicts on shared inputs; the `pir` stage is compared
   with the older `bmc` encoder and every hard conflict was investigated.
@@ -221,8 +225,9 @@ each project's `lean-toolchain`): `proofs/check.sh` passed all four steps
 
 ### E13 Counterexample replay
 
-- Artefacts: `replay` in `tools/conformance.py`, `replay` in
-  `src/prism/svcomp/replay.cpp`, `tests/cpp/test_svcomp.cpp::svcomp replay`.
+- Artefacts: `replay` in `src/tools/qa/support/replay.cpp`, `replay` in
+  `src/prism/svcomp/replay.cpp`,
+  `tests/cpp/test_svcomp.cpp::sanitizer runs decide replayed`.
 - Shows: a `FAILED` verdict is counted as a detection only when the
   counterexample, compiled with sanitizers and executed, triggers the
   violation.
@@ -261,7 +266,8 @@ each project's `lean-toolchain`): `proofs/check.sh` passed all four steps
 
 ### E17 What was not checked is reported (Laws 1 and 7)
 
-- Artefacts: `tests/test_optional_honesty.py`, `tests/test_prism_optional.py`,
+- Artefacts: `tests/test_optional_honesty.py`,
+  `tests/cpp/test_adapters.cpp::every missing tool is NOTRUN with its install hint`,
   taxonomy coverage `prism/taxonomy.py` / `src/prism/taxonomy.cpp` with
   `tests/test_taxonomy.py`, SARIF notifications in `src/prism/sarif.cpp`
   and `tests/test_sarif.py::TestSarifShape`.
@@ -285,11 +291,8 @@ each project's `lean-toolchain`): `proofs/check.sh` passed all four steps
 
 ### E19 Pinned dependencies, licence firewall, SBOM
 
-- Artefacts: `third_party/MANIFEST.toml`, `scripts/fetch_deps.py`,
-  `scripts/licence_check.py`, `scripts/sbom.py`, `docs/SUPPLY_CHAIN.md`,
-  `tests/test_supply_chain.py::TestManifest`,
-  `tests/test_supply_chain.py::TestLicenceFirewall`,
-  `tests/test_supply_chain.py::TestSbom`, the `supply-chain` job in
+- Artefacts: `third_party/MANIFEST.toml`, `src/tools/prism_deps/` (`prism-deps`),
+  `docs/SUPPLY_CHAIN.md`, `tests/cpp/test_deps.cpp`, the `supply-chain` job in
   `.github/workflows/ci.yml`.
 - Shows: every linked library is pinned by commit and tree digest and
   checked, linked components are permissively licensed, and a CycloneDX
@@ -309,17 +312,19 @@ each project's `lean-toolchain`): `proofs/check.sh` passed all four steps
 
 ### E21 User documentation and report formats
 
-- Artefacts: `docs/USER_GUIDE.md`, `tests/test_docs_cli.py` (every CLI flag
-  of both engines documented, every verdict anchor resolves),
+- Artefacts: `docs/USER_GUIDE.md`, `src/tools/qa/docs_check.cpp`
+  (`prism-qa docs-check`: every `prism --help` and `prism prove --help` flag
+  of the C++ engine documented, every verdict anchor resolves) with doctests
+  in `tests/cpp/test_qa.cpp`,
   `src/prism/sarif.cpp`, `prism/sarif.py`, `docs/USER_GUIDE.md#8-ci-integration`.
 - Does not show: that users read it.
 
 ### E22 SV-COMP readiness
 
 - Artefacts: `tools/svcomp/prism.py` (BenchExec tool-info module),
-  `src/prism/cli_svcomp.cpp` (`prism svcomp`, `svcomp score`, `svcomp pack`),
-  `src/prism/svcomp/witness.cpp`, `tests/cpp/test_svcomp.cpp`, results in
-  `docs/SVCOMP.md`.
+  `src/prism/cli_svcomp.cpp` (`prism svcomp`, `prism svcomp score`,
+  `prism svcomp pack`), `src/prism/svcomp/witness.cpp`,
+  `tests/cpp/test_svcomp.cpp`, results in `docs/SVCOMP.md`.
 - Shows: a local, unvalidated score on the 45-task pinned no-overflow
   subset.
 - Does not show: an SV-COMP result. PRISM has not entered SV-COMP and its

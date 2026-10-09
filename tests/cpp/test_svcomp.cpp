@@ -1058,7 +1058,13 @@ TEST_CASE("run_session: a timeout kills the whole session, also a child in its o
     bool gone = false;
     for (int k = 0; k < 100 && !gone; ++k) {
         std::ifstream st("/proc/" + std::to_string(solver) + "/stat");
-        std::string s((std::istreambuf_iterator<char>(st)), std::istreambuf_iterator<char>());
+        std::string s;
+        try {
+            s.assign(std::istreambuf_iterator<char>(st), std::istreambuf_iterator<char>());
+        } catch (const std::exception&) {
+            gone = true;  // ESRCH mid-read: the process went away
+            break;
+        }
         auto close = s.rfind(')');
         gone = !st.good() && s.empty();
         if (!gone && close != std::string::npos && close + 2 < s.size() && s[close + 2] == 'Z') gone = true;

@@ -139,8 +139,10 @@ At run time the `ident` rule is narrowed to the names in scope, so the
 sampler cannot even spell an unknown variable. The decoded text is validated
 again (`validate_*`): anything that does not match is rejected, logged
 (`output_valid: false`, `checker: grammar-validator`) and never used. The
-files are embedded verbatim in `src/prism/ai/grammars.inc`
-(`tools/gen_ai_grammars.py`; `tests/test_ai.py` fails on drift).
+files are embedded verbatim at configure time: CMake writes
+`<build>/generated/prism/ai/grammars.inc` from `grammars/*.gbnf`, so the
+embedded copy cannot drift (doctest "ai-assist grammars: every
+grammars/*.gbnf is embedded verbatim").
 
 Backends: llama-server (`PRISM_LLAMA_SERVER`, grammar) and Ollama
 (`OLLAMA_HOST`, JSON-schema format). The in-process GGUF path
@@ -211,9 +213,9 @@ changed (D8: frozen).
 
 ## Lean proof search (9.2)
 
-`prism prove FILE.lean THEOREM` (`src/prism/ai/proof_search.cpp`, driver
-`tools/prism_prove.py` for every `sorry` under `proofs/`, `proofs/semantics`,
-`proofs/techniques`). The target is a theorem whose whole proof is `sorry` /
+`prism prove FILE.lean THEOREM` (`src/prism/ai/proof_search.cpp`;
+`prism prove --all` runs it for every `sorry` under `proofs/`,
+`proofs/semantics`, `proofs/techniques`). The target is a theorem whose whole proof is `sorry` /
 `by sorry` (a `sorry` inside a longer proof is refused, and so is a theorem
 with two).
 
@@ -278,7 +280,7 @@ drives the same through `prism prove` and a fake llama-server over HTTP.
 
 The repository's own proofs have no `sorry` (`proofs/check.sh` forbids it),
 so the driver has nothing to search there today; the "proofs completed by
-the prover model" metric (9.7) is `tools/prism_prove.py`'s summary line.
+the prover model" metric (9.7) is the summary line of `prism prove --all`.
 
 ## The review stage (9.2 proof repair, 9.3, 4.2 contract drafting)
 
