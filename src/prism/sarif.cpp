@@ -1,5 +1,5 @@
 // SARIF 2.1.0 export and CI exit policy. Port of the Python engine
-// prism/sarif.py; tests/test_sarif.py compares the two on the same report.
+// prism/sarif.py; tests/cpp/test_sarif.cpp locks the export shape.
 
 #include "prism/pipeline.hpp"
 #include "prism/laws.hpp"

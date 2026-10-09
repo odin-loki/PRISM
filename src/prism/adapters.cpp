@@ -1574,6 +1574,10 @@ std::vector<Finding> run_clang_tidy(const std::string& exe, const std::vector<fs
 std::vector<Finding> run_klee(const std::string& exe, const std::vector<fs::path>& paths, const Config& cfg) {
     return prism::run_klee(exe, paths, cfg);
 }
+std::vector<Finding> run_frama_c(const std::string& exe, const std::vector<fs::path>& paths,
+                                 const Config& cfg) {
+    return prism::run_frama_c(exe, paths, cfg);
+}
 std::vector<Finding> run_strix(const std::string& exe, const std::vector<fs::path>& paths, const Config& cfg) {
     ProcResult probed;
     probed.text = "strix --help";

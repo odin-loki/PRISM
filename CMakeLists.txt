@@ -136,14 +136,22 @@ set(PCRE2_SUPPORT_JIT ON CACHE BOOL "" FORCE)
 add_subdirectory(third_party/pcre2 EXCLUDE_FROM_ALL)
 
 # --- vendored Z3 ---
+# Upstream Z3 CMake always find_package(Python3) and runs Python generators at
+# build time (pyg2hpp, update_api.py, mk_*_cpp.py, mk_pat_db.py). Disabling
+# bindings below does not remove that dependency; phase 6 replaces this block
+# with cmake/z3.cmake + checked-in or C++-generated outputs (docs/CPP_PORT_PLAN.md).
 if(PRISM_Z3 AND EXISTS "${PRISM_ROOT}/third_party/z3/CMakeLists.txt")
   set(Z3_BUILD_LIBZ3_SHARED OFF CACHE BOOL "" FORCE)
   set(Z3_BUILD_EXECUTABLE OFF CACHE BOOL "" FORCE)
   set(Z3_BUILD_TEST_EXECUTABLES OFF CACHE BOOL "" FORCE)
   set(Z3_ENABLE_EXAMPLE_TARGETS OFF CACHE BOOL "" FORCE)
+  set(Z3_BUILD_DOCUMENTATION OFF CACHE BOOL "" FORCE)
   set(Z3_BUILD_PYTHON_BINDINGS OFF CACHE BOOL "" FORCE)
+  set(Z3_INSTALL_PYTHON_BINDINGS OFF CACHE BOOL "" FORCE)
   set(Z3_BUILD_DOTNET_BINDINGS OFF CACHE BOOL "" FORCE)
+  set(Z3_INSTALL_DOTNET_BINDINGS OFF CACHE BOOL "" FORCE)
   set(Z3_BUILD_JAVA_BINDINGS OFF CACHE BOOL "" FORCE)
+  set(Z3_INSTALL_JAVA_BINDINGS OFF CACHE BOOL "" FORCE)
   add_subdirectory(third_party/z3 EXCLUDE_FROM_ALL)
   set(PRISM_HAS_Z3 ON)
 endif()
@@ -637,14 +645,15 @@ if(PRISM_TESTS)
     # Polyglot stage table, parsers and the built-in JSON/TOML syntax checkers.
     tests/cpp/test_polyglot.cpp
     # The command line and run_pipeline end to end.
-    tests/cpp/test_cli.cpp tests/cpp/test_pipeline.cpp
+    tests/cpp/test_cli.cpp tests/cpp/test_pipeline.cpp tests/cpp/test_sarif.cpp
     # `prism svcomp`: answer mapping, replay, waypoints, witness 2.0, scorer, archive.
     tests/cpp/test_svcomp.cpp
     # Qt-free window model and the `prism --gui` launcher (headless).
     tests/cpp/test_gui_model.cpp
     # prism-qa tools, the session runner and the documentation checks.
     tests/cpp/test_qa.cpp
-    tests/cpp/test_gen_tables.cpp)
+    tests/cpp/test_gen_tables.cpp
+    tests/cpp/test_naming.cpp)
   target_include_directories(prism_tests PRIVATE
     "${PRISM_ROOT}/include"
     "${PRISM_ROOT}/third_party")

@@ -160,7 +160,7 @@ tail_names = ["saturate", "abs_ok", "add_u", "idx_u_ok", "idx_u_bad", "add_ll"]
 key_names = []
 seen = set()
 for n in head_names + tail_names:
-    if n not in seen and "unenc" not in n:
+    if n not in seen and "unenc" not in n and not n.startswith("klee_fork"):
         seen.add(n)
         key_names.append(n)
 
@@ -188,20 +188,20 @@ def names_needing_harness(text: str) -> set[str]:
 
 NEEDS_HARNESS_NAMES = names_needing_harness(text)
 
-_FORBID_CONST: dict[tuple[str, ...], str] = {
-    ("ERROR", "CLEAN", "CRASH", "PROVED", "PROVED-UNBOUNDED", "BOUNDED"): "kForbidNeedHarness",
-    ("NEEDS-HARNESS", "ERROR", "PROVED", "PROVED-UNBOUNDED", "BOUNDED"): "kForbidFlexible",
-    ("PROVED", "PROVED-UNBOUNDED", "PROVED-ASSUMING", "ERROR"): "kForbidCrashPlant",
-    ("ERROR", "PROVED", "PROVED-UNBOUNDED", "PROVED-ASSUMING"): "kForbidClean",
-    ("NEEDS-HARNESS", "PROVED", "PROVED-UNBOUNDED", "BOUNDED", "CLEAN"): "kForbidGoto",
-    ("CRASH",): "kForbidOnlyCrash",
+_FORBID_CONST: dict[frozenset[str], str] = {
+    frozenset({"ERROR", "CLEAN", "CRASH", "PROVED", "PROVED-UNBOUNDED", "BOUNDED"}): "kForbidNeedHarness",
+    frozenset({"NEEDS-HARNESS", "ERROR", "PROVED", "PROVED-UNBOUNDED", "BOUNDED"}): "kForbidFlexible",
+    frozenset({"PROVED", "PROVED-UNBOUNDED", "PROVED-ASSUMING", "ERROR"}): "kForbidCrashPlant",
+    frozenset({"ERROR", "PROVED", "PROVED-UNBOUNDED", "PROVED-ASSUMING"}): "kForbidClean",
+    frozenset({"NEEDS-HARNESS", "PROVED", "PROVED-UNBOUNDED", "BOUNDED", "CLEAN"}): "kForbidGoto",
+    frozenset({"CRASH"}): "kForbidOnlyCrash",
 }
 
 
 def _forbid_cpp(forbid: list[str]) -> str:
     if not forbid:
         return "{}"
-    key = tuple(forbid)
+    key = frozenset(forbid)
     if key not in _FORBID_CONST:
         raise ValueError(f"no kForbid* constant for forbid set {forbid!r}")
     return _FORBID_CONST[key]

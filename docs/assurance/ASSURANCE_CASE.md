@@ -68,7 +68,7 @@ several goals are undeveloped.
           - **Sn6** E10: random programs, every proof executed under UBSan,
             `src/tools/qa/soundness.cpp`.
           - **Sn7** E11: engine and encoder differential testing,
-            `tests/test_sarif.py::TestEngineParity`, `src/tools/qa/pir_vs_bmc.cpp`
+            `tests/cpp/test_sarif.cpp`, `src/tools/qa/pir_vs_bmc.cpp`
             (`prism-qa pir-vs-bmc`).
         - **G3.3** The front end presents the program PRISM analyses
           faithfully.
@@ -99,7 +99,7 @@ several goals are undeveloped.
             NEEDS-HARNESS`), E18 (`docs/AI.md#harness-drafting-42-92`).
     - **G4** (c) Everything that was not checked is reported.
       - **Sn12** E17: `tests/test_optional_honesty.py`,
-        `tests/test_sarif.py::TestSarifShape`, taxonomy `GAP` rows;
+        `tests/cpp/test_sarif.cpp`, taxonomy `GAP` rows;
         Law 1 theorem `thm:notrun_never_becomes_clean`.
       - **Sn13** E21: every CLI option documented and every verdict anchor
         resolves, `tests/cpp/test_qa.cpp::docs: every --help flag of prism and prism prove is in docs/USER_GUIDE.md`,

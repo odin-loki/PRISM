@@ -100,10 +100,10 @@ void check_row(const ConcolicRow& row) {
 
 const std::vector<ConcolicRow>& planted_rows() {
     static const std::vector<ConcolicRow> rows = {
-        {"add_overflow", 32, "CRASH", kForbidCrashPlant, "INT-SIGNED-OVF", {}, true, false},
-        {"div_param", 32, "CRASH", kForbidCrashPlant, "INT-DIV-ZERO", {}, true, false},
-        {"oob_write", 32, "CRASH", kForbidCrashPlant, "MEM-OOB-WRITE", {}, true, false},
-        {"shift_ub", 32, "CRASH", kForbidCrashPlant, "INT-SHIFT-UB", {}, true, false},
+        {"add_overflow", 32, "CRASH", kForbidClean, "INT-SIGNED-OVF", {}, true, false},
+        {"div_param", 32, "CRASH", kForbidClean, "INT-DIV-ZERO", {}, true, false},
+        {"oob_write", 32, "CRASH", kForbidClean, "MEM-OOB-WRITE", {}, true, false},
+        {"shift_ub", 32, "CRASH", kForbidClean, "INT-SHIFT-UB", {}, true, false},
     };
     return rows;
 }
@@ -118,7 +118,7 @@ const std::vector<ConcolicRow>& key_rows() {
         {"rec_id", 8, "NEEDS-HARNESS", kForbidNeedHarness, {}, {}, false, false},
         {"with_goto", 8, "ERROR", kForbidGoto, {}, {}, false, false},
         {"taut_bound_bad", 8, {}, kForbidFlexible, {}, {}, false, false},
-        {"copy_bad", 8, "CRASH", kForbidCrashPlant, "MEM-OOB-WRITE", {}, false, false},
+        {"copy_bad", 8, "CRASH", kForbidClean, "MEM-OOB-WRITE", {}, false, false},
         {"trunc_ok", 8, "CLEAN", kForbidClean, {}, {}, false, true},
         {"alloca_bad", 8, "NEEDS-HARNESS", kForbidNeedHarness, {}, {}, false, false},
         {"alloca_ok", 8, "NEEDS-HARNESS", kForbidNeedHarness, {}, {}, false, false},
@@ -739,6 +739,14 @@ TEST_CASE("concolic: unsat branch skipped when Z3 available") {
     CHECK(std::stoi(r.extra.at("skipped_unsat")) > 0);
 }
 #endif
+
+TEST_CASE("concolic: strcat overflow still CRASHes in the oracle") {
+    auto fn = load_fn("cat_bad");
+    auto r = concolic_one(fn, 8);
+    CHECK(r.status == std::string(laws::CRASH));
+    CHECK(r.cls == "MEM-OOB-WRITE");
+    CHECK(r.status != std::string(laws::NEEDS_HARNESS));
+}
 
 TEST_CASE("concolic: run_concolic returns one row per function") {
     auto fn = load_fn("abs_ok");

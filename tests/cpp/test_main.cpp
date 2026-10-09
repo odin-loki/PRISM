@@ -1621,6 +1621,16 @@ TEST_CASE("muttest survived mutant is FAILED not proof") {
     CHECK(survived);
 }
 
+TEST_CASE("rapid plan error: Law 9 exec hint matches Python _eval_status") {
+    auto err = prism::sandbox::exec_message("rapid (gcc fallback harness)");
+    auto [status, extra] = prism::rapid_plan_error_status(err);
+    CHECK(status == std::string(prism::laws::NOTRUN));
+    CHECK(extra.at("install") == prism::sandbox::EXEC_INSTALL);
+    CHECK(extra.at("reason") == prism::sandbox::EXEC_REASON);
+    CHECK(extra.at("exec") == std::string(prism::laws::NOTRUN));
+    CHECK(extra.find("install gcc") == extra.end());
+}
+
 TEST_CASE("muttest eval error probes gcc clang NOTRUN never CLEAN") {
     auto fn = load_fn("contract_add.c", "inc");
     fn.body = "return @@@ + 1;";
@@ -1985,6 +1995,21 @@ TEST_CASE("rapid ACSL-only POINTER is NEEDS-HARNESS") {
     REQUIRE_FALSE(recs.empty());
     CHECK(recs[0].status == std::string(prism::laws::NEEDS_HARNESS));
     CHECK_FALSE(prism::laws::is_proof(recs[0].status));
+}
+
+TEST_CASE("muttest POINTER with ensures is NEEDS-HARNESS") {
+    for (const char* name : {"wp_ptr_get", "wp_acsl_ptr"}) {
+        CAPTURE(name);
+        auto fn = load_fn("wp_ptr.c", name);
+        auto recs = prism::run_muttest({fn}, 4);
+        REQUIRE(recs.size() == 1);
+        CHECK(recs[0].stage == "muttest");
+        CHECK(recs[0].status == std::string(prism::laws::NEEDS_HARNESS));
+        CHECK(recs[0].status != std::string(prism::laws::CLEAN));
+        CHECK(recs[0].status != std::string(prism::laws::ERROR));
+        CHECK_FALSE(prism::laws::is_proof(recs[0].status));
+        CHECK(recs[0].message.find("POINTER") != std::string::npos);
+    }
 }
 
 TEST_CASE("wp pointer member arrow is ERROR not proved-assuming") {
@@ -4803,6 +4828,17 @@ TEST_CASE("ai grammars ship for every model feature") {
     CHECK(prism::ai::grammar_text("nope").empty());
 }
 
+TEST_CASE("ai grammars: invariants comparisons exclude assignment") {
+    std::istringstream in(prism::ai::grammar_text("invariants"));
+    std::string line;
+    std::string binop;
+    for (; std::getline(in, line);)
+        if (line.rfind("binop", 0) == 0) binop = std::move(line);
+    REQUIRE_FALSE(binop.empty());
+    CHECK(binop.find("\"=\"") == std::string::npos);
+    CHECK(binop.find("\"++\"") == std::string::npos);
+}
+
 TEST_CASE("ai invariant output is validated after decoding") {
     std::vector<std::string> vars{"i", "n", "s"};
     auto ok = prism::ai::validate_invariants(R"J(["i >= 0", "s == 2 * i", "(i <= n) || (i == 0)"])J", vars);
@@ -5120,6 +5156,52 @@ TEST_CASE("ai drafted harness counterexample is not a defect") {
     CHECK(recs[0].status != std::string(prism::laws::FAILED));
     CHECK(recs[0].extra["draft_cls"].find("OOB") != std::string::npos);
     CHECK_FALSE(recs[0].extra["draft_cex"].empty());
+}
+
+TEST_CASE("repair: verified fix is HYPOTHESIS with patch_verdict not audit demotion") {
+    auto td = testdata_root() / "div_param.c";
+    prism::Finding fail;
+    fail.stage = "bmc";
+    fail.status = std::string(prism::laws::FAILED);
+    fail.file = td.string();
+    fail.function = std::string("div_param");
+    fail.cls = "INT-DIV-ZERO";
+    fail.message = "div by zero";
+    fail.counterexample = "b=0";
+    prism::Config cfg = prism::default_config();
+    cfg.allow_exec = true;
+    cfg.repair_rounds = 2;
+    auto out = ai_tmp_out("repair_verdict");
+    cfg.out = out;
+    auto fake = std::make_shared<FakeModel>();
+    const std::string patch =
+        "int div_param(int a, int b) {\n"
+        "    if (b == 0 || (a == -2147483647 - 1 && b == -1)) return 0;\n"
+        "    return a / b;\n"
+        "}\n"
+        "int main(void) { return div_param(4, 2) - 2; }\n";
+    fake->replies = {patch};
+    prism::ai::set_session_backend_for_testing(fake);
+    auto rows = prism::rlef_repair(fail, cfg);
+    prism::ai::set_session_backend_for_testing(nullptr);
+    REQUIRE_FALSE(rows.empty());
+    const prism::Finding* fix = nullptr;
+    for (auto& f : rows) if (f.extra.count("patch_verdict")) fix = &f;
+    if (!fix) {
+        for (auto& f : rows)
+            if (f.message.find("sandbox") != std::string::npos || f.message.find("bwrap") != std::string::npos) {
+                MESSAGE("NOTRUN: sandbox could not run candidate");
+                return;
+            }
+    }
+    REQUIRE(fix != nullptr);
+    CHECK(fix->status == std::string(prism::laws::HYPOTHESIS));
+    CHECK(fix->strength == std::string(prism::laws::STRENGTH_READS));
+    CHECK(prism::laws::is_proof(fix->extra.at("patch_verdict")));
+    CHECK(fix->extra.at("fix_label") == "verified fix");
+    CHECK(fix->message.find("not the scanned code") != std::string::npos);
+    for (auto& f : rows) CHECK(f.extra.count("audit") == 0 || f.extra.at("audit") != "verdict");
+    for (auto& f : rows) CHECK_FALSE(prism::laws::is_proof(f.status));
 }
 
 TEST_CASE("ai explanation and repair: NOTRUN without a model, verified only when BMC proves") {

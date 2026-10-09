@@ -43,7 +43,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install toolchain
-        run: sudo apt-get update && sudo apt-get install -y ninja-build clang ccache qt6-base-dev libgl-dev libclang-18-dev
+        # python3-minimal: vendored Z3 CMake still runs Python codegen (phase 6).
+        run: sudo apt-get update && sudo apt-get install -y ninja-build clang ccache qt6-base-dev libgl-dev libclang-18-dev python3-minimal
       - uses: actions/cache@v4
         with:
           path: ~/.cache/ccache
@@ -93,7 +94,7 @@ jobs:
           retention-days: 7
 
   python:
-    name: Python engine (pytest) + engine parity
+    name: Remaining pytest (shrunk suite)
     runs-on: ubuntu-24.04
     needs: cpp
     steps:
@@ -107,17 +108,45 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install pytest z3-solver ruff mypy yamllint PySide6-Essentials
           sudo apt-get install -y libegl1 libxkbcommon0
+      # Shrunk suite: explicit files only (not tests/). SARIF parity lives in
+      # tests/cpp/test_sarif.cpp; no dual-engine pytest remains.
+      - name: pytest (Python engine / repo-lint; no C++ binary)
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          python -m pytest -q \
+            tests/test_ai9.py \
+            tests/test_ai_assist.py \
+            tests/test_cuda.py \
+            tests/test_cxx_models.py \
+            tests/test_exec_safety.py \
+            tests/test_gui.py \
+            tests/test_lints_fastpath.py \
+            tests/test_llm.py \
+            tests/test_pbsd.py \
+            tests/test_pir_refinement.py \
+            tests/test_prism_gui.py \
+            tests/test_proofs_float_conc.py \
+            tests/test_proofs_loopcut.py \
+            tests/test_simdmut.py \
+            tests/test_solver.py \
+            tests/test_taxonomy.py \
+            tests/test_thrd_unenc.py \
+            tests/test_unencoded_contract.py
       - uses: actions/download-artifact@v4
         with:
           name: prism-linux
           path: build
-      - name: pytest
+      - name: pytest (C++ binary e2e; PRISM_BIN smoke)
         env:
           PRISM_BIN: ${{ github.workspace }}/build/prism
           QT_QPA_PLATFORM: offscreen
         run: |
           chmod +x build/prism
-          python -m pytest -q tests
+          python -m pytest -q \
+            tests/test_certified.py \
+            tests/test_pir.py \
+            tests/test_repair_verdict.py
 
   selfcheck:
     name: PRISM on PRISM (SARIF artifact, not gating)

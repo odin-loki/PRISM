@@ -423,6 +423,43 @@ TEST_CASE("config: --tool beats the pinned build, which beats PATH; PATH is last
     CHECK(prism::expand_user("/abs/p") == fs::path("/abs/p"));
 }
 
+#ifndef _WIN32
+TEST_CASE("config: source trees under PRISM_TOOLS_DIR are never adapters") {
+    NoTools nt;
+    const std::vector<std::pair<std::string, std::string>> stages{
+        {"cppcheck", "cppcheck"}, {"semgrep", "semgrep"}, {"infer", "infer"},
+        {"frama-c", "frama-c"},   {"klee", "klee"},       {"esbmc", "esbmc"},
+        {"dafny", "dafny"},       {"cbmc", "cbmc"},       {"spatch", "spatch"},
+        {"strix", "strix"},
+    };
+    for (auto [stage, bin] : stages) {
+        const std::string comp = (stage == "spatch") ? "coccinelle" : stage;
+        auto commit = prism::pinned_commit(comp);
+        REQUIRE(commit.has_value());
+        auto root = nt.tools / comp / *commit;
+        fs::create_directories(root / "bin");
+        fs::create_directories(root / "src");
+        {
+            std::ofstream(root / "bin" / bin) << "int main(void){return 0;}\n";
+        }
+        auto naked = root / "src" / bin;
+        {
+            std::ofstream(naked) << "// source\n";
+        }
+        fs::permissions(naked, fs::perms::owner_all | fs::perms::group_read | fs::perms::group_exec);
+        CAPTURE(stage);
+        CHECK_FALSE(nt.cfg.which_adapter(stage, {bin}).has_value());
+    }
+}
+
+TEST_CASE("config: clang-tidy is never taken from PRISM_TOOLS_DIR") {
+    NoTools nt;
+    auto dir = nt.tools / "clang-tidy" / std::string(40, 'a') / "bin";
+    fake(dir, "clang-tidy", "exit 0");
+    CHECK_FALSE(nt.cfg.which_adapter("clang-tidy", {"clang-tidy"}).has_value());
+}
+#endif
+
 TEST_CASE("config: every pinned external stage has a prism-deps hint (bitwuzla too)") {
     // [[component]] rows of kind "external": each of their stages maps to the
     // component, so adapter_install names its prism-deps command.
@@ -680,6 +717,90 @@ TEST_CASE("semgrep: a match is FAILED; no results or silent output is UNKNOWN") 
     CHECK(ad::extract_json_object("warn\n{\"results\":[]}\ntrailer") == "{\"results\":[]}");
 }
 
+namespace {
+// Frama-C fake: answers the probe, then prints `eva_out` on -eva runs.
+std::string frama_fake(const std::string& eva_out, int rc = 0) {
+    return help_then("Frama-C EVA plugin",
+                     "case \"$*\" in *-eva*) printf '" + eva_out + "\\n'; exit " + std::to_string(rc) +
+                         ";; esac\nexit 0");
+}
+
+std::vector<std::string> finding_key(const std::vector<prism::Finding>& fs) {
+    std::vector<std::string> k;
+    for (const auto& f : fs)
+        k.push_back(f.stage + "|" + f.status + "|" + f.file + "|" + f.cls + "|" + f.message);
+    return k;
+}
+}  // namespace
+
+TEST_CASE("frama-c EVA: zero alarms is UNKNOWN; warnings and alarms are FAILED; doctest is NOTRUN") {
+    NoTools nt;
+    auto cfg = nt.cfg;
+    auto c = testdata() / "abs_ok.c";
+    auto exe = fake(nt.t.dir / "t", "frama-c", frama_fake("[eva] 0 alarms emitted"));
+    cfg.tools["frama-c"] = exe;
+    auto zero = ad::run_frama_c(exe.string(), {c}, cfg);
+    REQUIRE(zero.size() == 1);
+    CHECK(zero[0].status == laws::UNKNOWN);
+    CHECK(has(zero[0].message, "not a proof"));
+    never_clean_or_proof(zero[0]);
+
+    auto no_c = ad::run_frama_c(exe.string(), {testdata() / "unit.cpp"}, cfg);
+    REQUIRE(no_c.size() == 1);
+    CHECK(no_c[0].status == laws::UNKNOWN);
+    CHECK(has(no_c[0].message, "no .c files"));
+    never_clean_or_proof(no_c[0]);
+
+    exe = fake(nt.t.dir / "t", "frama-c-warn", frama_fake("warning: signed overflow", 1));
+    auto warn = ad::run_frama_c(exe.string(), {c}, cfg);
+    REQUIRE_FALSE(warn.empty());
+    CHECK(warn[0].status == laws::FAILED);
+    CHECK(warn[0].cls == "FUNC-CONTRACT");
+    never_clean_or_proof(warn[0]);
+
+    exe = fake(nt.t.dir / "t", "frama-c-alarm", frama_fake("[eva] 1 alarm emitted"));
+    auto one = ad::run_frama_c(exe.string(), {c}, cfg);
+    REQUIRE_FALSE(one.empty());
+    CHECK(one[0].status == laws::FAILED);
+    never_clean_or_proof(one[0]);
+
+    exe = fake(nt.t.dir / "t", "frama-c-ten", frama_fake("[eva] 10 alarms emitted"));
+    auto ten = ad::run_frama_c(exe.string(), {c}, cfg);
+    REQUIRE_FALSE(ten.empty());
+    CHECK(ten[0].status == laws::FAILED);
+    CHECK(ten[0].status != laws::UNKNOWN);
+    never_clean_or_proof(ten[0]);
+
+    exe = fake(nt.t.dir / "t", "frama-c-uninit",
+               frama_fake("[eva] alarm: accessing uninitialized left-value"));
+    auto uninit = ad::run_frama_c(exe.string(), {c}, cfg);
+    REQUIRE_FALSE(uninit.empty());
+    CHECK(uninit[0].status == laws::FAILED);
+    CHECK(uninit[0].cls == "UNINIT-READ");
+    never_clean_or_proof(uninit[0]);
+
+    cfg.timeout = 1;
+    exe = fake(nt.t.dir / "t", "frama-c-sleep",
+               help_then("Frama-C", "case \"$*\" in *-eva*) sleep 30;; esac\nexit 0"));
+    auto to = ad::run_frama_c(exe.string(), {c}, cfg);
+    REQUIRE(to.size() == 1);
+    CHECK(to[0].status == laws::TIMEOUT);
+    never_clean_or_proof(to[0]);
+
+    exe = fake(nt.t.dir / "t", "frama-c-doctest",
+               help_then("Frama-C",
+                         "case \"$*\" in *-eva*) "
+                         "printf '[doctest] doctest version is 2.4.11\\nUnknown option: --timeout\\n' >&2; "
+                         "exit 1;; esac\nexit 0"));
+    auto imp = ad::run_frama_c(exe.string(), {c}, cfg);
+    REQUIRE(imp.size() == 1);
+    CHECK(imp[0].status == laws::NOTRUN);
+    CHECK(has(lower(imp[0].message), "not frama-c"));
+    CHECK(imp[0].status != laws::UNKNOWN);
+    CHECK(imp[0].status != laws::ERROR);
+    never_clean_or_proof(imp[0]);
+}
+
 TEST_CASE("infer: missing is NOTRUN; no issues is UNKNOWN, not a proof") {
     NoTools nt;
     auto paths = std::vector<fs::path>{testdata() / "abs_ok.c"};
@@ -879,6 +1000,83 @@ TEST_CASE("warnings: fake compilers parse output, dedupe, and never emit proof")
     CHECK(!has(slurp(log), "-std=c11"));
 }
 
+TEST_CASE("warnings: gcc and clang agree once; same path is not run twice") {
+    NoTools nt;
+    auto cfg = nt.cfg;
+    cfg.root = nt.t.dir;
+    auto unit = nt.t.put("planted.c", "int main(void){return 0;}\n");
+    const std::string warn = "planted.c:3:5: warning: overflow [-Woverflow]\n";
+    fake(nt.bin, "gcc", "printf '" + warn + "' >&2\nexit 0\n");
+    fake(nt.bin, "clang", "printf '" + warn + "' >&2\nexit 0\n");
+    auto both = prism::run_compiler({unit}, cfg);
+    REQUIRE(both.size() == 1);
+    CHECK(has(xget(both[0], "compilers"), "gcc"));
+    CHECK(has(xget(both[0], "compilers"), "clang"));
+    never_clean_or_proof(both[0]);
+
+    auto log = nt.t.dir / "cc-once.log";
+    fake(nt.bin, "gcc", "echo \"$@\" >> '" + log.string() + "'\nexit 0\n");
+    fs::remove(nt.bin / "clang");
+    fs::copy_file(nt.bin / "gcc", nt.bin / "clang", fs::copy_options::overwrite_existing);
+    prism::run_compiler({unit}, cfg);
+    CHECK(lines_of(log).size() == 1);
+}
+
+TEST_CASE("warnings: jobs=1 and jobs=4 yield the same ordered findings") {
+    NoTools nt;
+    std::vector<fs::path> units;
+    for (int i = 0; i < 8; ++i)
+        units.push_back(nt.t.put("u" + std::to_string(i) + ".c", "int main(void){return 0;}\n"));
+    const std::string script =
+        "f=''\n"
+        "for a in \"$@\"; do case \"$a\" in *.c) f=\"$a\";; esac; done\n"
+        "idx=$(basename \"$f\" .c | sed 's/^u//')\n"
+        "sleep $(awk -v i=\"$idx\" 'BEGIN{printf \"%.3f\", 0.02*(8-i)}')\n"
+        "case \"$idx\" in 2) sleep 35;; 5) exit 127;; 6) printf '%s:6:1: warning: w [-W]\\n' \"$f\" >&2; "
+        "exit 1;; esac\n"
+        "printf '/src/common.h:3:1: warning: shared header\\n' >&2\n"
+        "exit 0\n";
+    fake(nt.bin, "gcc", script);
+    auto run = [&](int jobs) {
+        auto cfg = nt.cfg;
+        cfg.root = nt.t.dir;
+        cfg.jobs = jobs;
+        return prism::run_compiler(units, cfg);
+    };
+    auto serial = run(1);
+    auto parallel = run(4);
+    CHECK(finding_key(serial) == finding_key(parallel));
+    CHECK(std::count_if(serial.begin(), serial.end(),
+                        [](const prism::Finding& f) { return f.status == laws::TIMEOUT; }) >= 1);
+    CHECK(std::count_if(serial.begin(), serial.end(),
+                        [](const prism::Finding& f) { return f.status == laws::NOTRUN; }) >= 1);
+}
+
+TEST_CASE("clang-tidy: jobs=1 and jobs=4 yield the same ordered findings") {
+    NoTools nt;
+    std::vector<fs::path> units;
+    for (int i = 0; i < 6; ++i)
+        units.push_back(nt.t.put("u" + std::to_string(i) + ".c", "int main(void){return 0;}\n"));
+    auto tidy = fake(nt.t.dir / "t", "clang-tidy",
+                     "f=\"$2\"\n"
+                     "idx=$(basename \"$f\" .c | sed 's/^u//')\n"
+                     "sleep $(awk -v i=\"$idx\" 'BEGIN{printf \"%.3f\", 0.002*(6-i)}')\n"
+                     "case \"$idx\" in 1) sleep 35;; esac\n"
+                     "case $((idx % 2)) in 0) exit 0;; esac\n"
+                     "printf '%s:1:1: warning: w%s\\n' \"$f\" \"$idx\"\n"
+                     "exit $([ \"$idx\" = \"4\" ] && echo 3 || echo 0)\n");
+    auto run = [&](int jobs) {
+        auto cfg = nt.cfg;
+        cfg.jobs = jobs;
+        return ad::run_clang_tidy(tidy.string(), units, cfg);
+    };
+    auto serial = run(1);
+    auto parallel = run(4);
+    CHECK(finding_key(serial) == finding_key(parallel));
+    REQUIRE_FALSE(serial.empty());
+    CHECK(serial[0].status == laws::TIMEOUT);
+}
+
 TEST_CASE("spatch: a match is FAILED; silence is UNKNOWN; held script rules stay written down") {
     NoTools nt;
     auto c = testdata() / "abs_ok.c";
@@ -942,11 +1140,49 @@ TEST_CASE("libfuzzer probe: missing clang or no -fsanitize=fuzzer is NOTRUN; sup
     never_clean_or_proof(lf);
     CHECK(has(lower(lf.message), "libfuzzer"));
 
+    for (const char* err :
+         {"error: unknown argument: '-fsanitize=fuzzer'",
+          "clang: error: unrecognized command line option '-fsanitize=fuzzer'"}) {
+        CAPTURE(err);
+        fake(nt.bin, "clang", "echo \"" + std::string(err) + "\" >&2; exit 1");
+        lf = stage_row(prism::run_optional_tools({}, nt.cfg), "libfuzzer");
+        CHECK(lf.status == laws::NOTRUN);
+        never_clean_or_proof(lf);
+    }
+
+    fake(nt.bin, "clang",
+         "echo \"error: unsupported argument '-fsanitize=fuzzer'\" >&2; exit 1\n"
+         "echo \"clang: error: linker command failed\" >&2; exit 1");
+    lf = stage_row(prism::run_optional_tools({}, nt.cfg), "libfuzzer");
+    CHECK(lf.status == laws::NOTRUN);
+    never_clean_or_proof(lf);
+
     fake(nt.bin, "clang", "exit 0");
     lf = stage_row(prism::run_optional_tools({}, nt.cfg), "libfuzzer");
     CHECK(lf.status == laws::UNKNOWN);
     never_clean_or_proof(lf);
     CHECK(has(lower(lf.message), "not a code verdict"));
+    CHECK(lf.file.empty());
+}
+
+TEST_CASE("libfuzzer_probe: keyword reject and successful stub compile are honest") {
+    NoTools nt;
+    auto probe = [&](const std::string& body) {
+        fake(nt.bin, "clang", body);
+        return prism::libfuzzer_probe(nt.cfg);
+    };
+    auto unsupported = probe("echo \"error: unsupported argument '-fsanitize=fuzzer'\" >&2; exit 1");
+    CHECK(unsupported.status == laws::NOTRUN);
+    never_clean_or_proof(unsupported);
+
+    auto unknown = probe("echo \"error: unknown argument: '-fsanitize=fuzzer'\" >&2; exit 1");
+    CHECK(unknown.status == laws::NOTRUN);
+    never_clean_or_proof(unknown);
+
+    auto ok = probe("case \"$*\" in *-fsanitize=fuzzer*) exit 0;; esac\nexit 0");
+    CHECK(ok.status == laws::UNKNOWN);
+    never_clean_or_proof(ok);
+    CHECK(has(lower(ok.message), "not a code verdict"));
 }
 
 // ---------------------------------------------------------------- esbmc / dafny / cppcheck

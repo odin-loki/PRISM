@@ -40,7 +40,16 @@ std::vector<Finding> run_clang_tidy(const std::string& exe, const std::vector<st
                                     const Config& cfg);
 std::vector<Finding> run_klee(const std::string& exe, const std::vector<std::filesystem::path>& paths,
                               const Config& cfg);
+std::vector<Finding> run_frama_c(const std::string& exe, const std::vector<std::filesystem::path>& paths,
+                                 const Config& cfg);
 std::vector<Finding> run_strix(const std::string& exe, const std::vector<std::filesystem::path>& paths,
                                const Config& cfg);
 
 }  // namespace prism::adapters_detail
+
+// Optional-tool pieces tests/cpp/test_adapters.cpp drives directly (adapters.cpp).
+namespace prism {
+std::vector<Finding> run_frama_c(const std::string& exe, const std::vector<std::filesystem::path>& paths,
+                                 const Config& cfg);
+Finding libfuzzer_probe(const Config& cfg);
+}  // namespace prism

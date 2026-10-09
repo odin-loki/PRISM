@@ -9,7 +9,7 @@ code base and says honestly what it could not check.
 - The project was once called **Helix**. That name is **retired**. Do not use
   it in code, comments, docs, env vars, file names, commit messages or output.
   If you find "Helix"/"helix"/"HELIX" anywhere outside `third_party/`, it is a
-  leftover: rename it to PRISM (`tests/test_naming.py` fails on it).
+  leftover: rename it to PRISM (`tests/cpp/test_naming.cpp` fails on it).
 - Env vars are `PRISM_*` only (`PRISM_AFL`, `PRISM_LIBFUZZER`, `PRISM_PBSD`,
   `PRISM_GGUF`, `PRISM_MODEL`, `PRISM_LLAMA_SERVER`, `PRISM_NATIVE_DLL`,
   `PRISM_TOOLS_DIR`, AI: `PRISM_PROVER_SERVER`, `PRISM_PROVER_GGUF`,
@@ -67,8 +67,8 @@ Status vocabulary lives in `prism/laws.py` and `include/prism/laws.hpp`.
 - New stage: `prism/pipeline.py:STAGE_ORDER` and `include/prism/pipeline.hpp`
   in the same position, called from both `Pipeline.run` and `run_pipeline`.
 - Reports: `report.json`, `report.md`, `report.sarif` (`prism/sarif.py`,
-  `src/prism/sarif.cpp`). `tests/test_sarif.py` runs both engines on one tree
-  and compares the SARIF when a C++ binary is available (`PRISM_BIN`).
+ `src/prism/sarif.cpp`). `tests/cpp/test_sarif.cpp` locks SARIF export and
+ `--fail-on`; `tests/cpp/test_cli.cpp` runs the binary with `--fail-on defect`.
 
 ## Build and test
 
@@ -77,7 +77,7 @@ cmake -B build -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
   -DPRISM_CUDA=OFF -DPRISM_LLAMA=OFF -DPRISM_QT=OFF -DPRISM_Z3=ON
 cmake --build build          # first build compiles vendored Z3 (slow)
 ./build/prism_tests
-PRISM_BIN=build/prism python -m pytest tests   # ~10 minutes; PRISM_BIN enables engine parity
+python -m pytest tests/test_*.py   # shrunk suite; PRISM_BIN only for AI/PIR/certified e2e files
 ```
 
 `third_party/` holds only the six linked libraries (z3, pcre2, xsimd,

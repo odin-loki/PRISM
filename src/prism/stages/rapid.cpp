@@ -2,6 +2,9 @@
 // mutation testing of those contracts.
 #include "interp.hpp"
 
+#include "prism/config.hpp"
+#include "prism/sandbox.hpp"
+
 namespace prism {
 namespace fs = std::filesystem;
 using namespace stages_detail;
@@ -323,6 +326,18 @@ PlanRun run_plan(const FunctionInfo& fn, const RapidPlan& plan) {
             0};
 }
 
+bool rapid_compiler_missing(const std::string& err) {
+    auto text = lower_copy(err);
+    if (text.find("no gcc") != std::string::npos || text.find("gcc/clang") != std::string::npos)
+        return true;
+    if (text.find("not on path") != std::string::npos &&
+        (text.find("gcc") != std::string::npos || text.find("clang") != std::string::npos ||
+         text.find("compiler") != std::string::npos))
+        return true;
+    Config cfg;
+    return !cfg.which({"gcc", "clang"}).has_value();
+}
+
 Finding finding_from_plan(const FunctionInfo& fn, const RapidPlan& plan, const std::string& stage) {
     auto extra_req = nlohmann::json(plan.requires_).dump();
     auto extra_ens = nlohmann::json(plan.ensures).dump();
@@ -333,31 +348,20 @@ Finding finding_from_plan(const FunctionInfo& fn, const RapidPlan& plan, const s
         f.extra["sampled"] = "true";
         return f;
     };
-    auto compiler_missing = [](const std::string& err) {
-        auto text = lower_copy(err);
-        if (text.find("no gcc") != std::string::npos || text.find("gcc/clang") != std::string::npos)
-            return true;
-        if (text.find("not on path") != std::string::npos &&
-            (text.find("gcc") != std::string::npos || text.find("clang") != std::string::npos ||
-             text.find("compiler") != std::string::npos))
-            return true;
-        Config cfg;
-        return !cfg.which({"gcc", "clang"}).has_value();
+    auto apply_eval_status = [&](const std::string& err, Finding f) {
+        auto [status, miss] = rapid_plan_error_status(err);
+        f.status = status;
+        for (auto& [k, v] : miss) f.extra[k] = v;
+        return f;
     };
     if (!plan.error.empty() && plan.samples.empty()) {
-        bool missing = compiler_missing(plan.error);
-        auto f = fill(make_find(stage, missing ? laws::NOTRUN : laws::ERROR, fn, "", plan.error,
-                                laws::STRENGTH_SOME));
-        if (missing) f.extra["install"] = "install gcc or clang";
-        return f;
+        return apply_eval_status(plan.error,
+                                 fill(make_find(stage, laws::ERROR, fn, "", plan.error, laws::STRENGTH_SOME)));
     }
     auto info = run_plan(fn, plan);
     if (!info.error.empty() && info.counterexample.empty()) {
-        bool missing = compiler_missing(info.error);
-        auto f = fill(make_find(stage, missing ? laws::NOTRUN : laws::ERROR, fn, "", info.error,
-                                laws::STRENGTH_SOME));
-        if (missing) f.extra["install"] = "install gcc or clang";
-        return f;
+        return apply_eval_status(info.error,
+                                 fill(make_find(stage, laws::ERROR, fn, "", info.error, laws::STRENGTH_SOME)));
     }
     if (!info.ok) {
         auto clause = info.clause.empty() ? join_sv(plan.ensures, " && ") : info.clause;
@@ -464,17 +468,6 @@ std::vector<Finding> run_rapid(const std::vector<FunctionInfo>& functions, int t
 std::vector<Finding> run_muttest(const std::vector<FunctionInfo>& functions, int trials) {
     // Killing a mutant is CLEAN (not a proof). Missing gcc/clang is NOTRUN, never CLEAN.
     // Eval errors without a cex are ERROR/NOTRUN, not a killed mutant.
-    auto compiler_missing = [](const std::string& err) {
-        auto text = lower_copy(err);
-        if (text.find("no gcc") != std::string::npos || text.find("gcc/clang") != std::string::npos)
-            return true;
-        if (text.find("not on path") != std::string::npos &&
-            (text.find("gcc") != std::string::npos || text.find("clang") != std::string::npos ||
-             text.find("compiler") != std::string::npos))
-            return true;
-        Config cfg;
-        return !cfg.which({"gcc", "clang"}).has_value();
-    };
     std::vector<Finding> out;
     for (auto& fn : functions) {
         if (auto syn = scrubbed_byte_reason(fn.body, "the compiled harness")) {
@@ -491,10 +484,10 @@ std::vector<Finding> run_muttest(const std::vector<FunctionInfo>& functions, int
         if (sites.empty()) continue;
         auto baseline = run_plan(fn, *plan);
         if (!baseline.error.empty() && baseline.counterexample.empty()) {
-            bool missing = compiler_missing(baseline.error);
-            auto f = make_find("muttest", missing ? laws::NOTRUN : laws::ERROR, fn, "",
-                               "cannot score mutants: " + baseline.error, laws::STRENGTH_SOME);
-            if (missing) f.extra["install"] = "install gcc or clang";
+            auto [status, miss] = rapid_plan_error_status(baseline.error);
+            auto f = make_find("muttest", status, fn, "", "cannot score mutants: " + baseline.error,
+                               laws::STRENGTH_SOME);
+            for (auto& [k, v] : miss) f.extra[k] = v;
             out.push_back(std::move(f));
             continue;
         }
@@ -515,9 +508,9 @@ std::vector<Finding> run_muttest(const std::vector<FunctionInfo>& functions, int
                 {"ensures", nlohmann::json(plan->ensures).dump()},
             };
             if (!info.error.empty() && info.counterexample.empty()) {
-                bool missing = compiler_missing(info.error);
-                if (missing) extra["install"] = "install gcc or clang";
-                auto f = make_find("muttest", missing ? laws::NOTRUN : laws::ERROR, fn, "",
+                auto [status, miss] = rapid_plan_error_status(info.error);
+                for (auto& [k, v] : miss) extra[k] = v;
+                auto f = make_find("muttest", status, fn, "",
                                    "cannot score mutant " + src + " -> " + dst + ": " + info.error,
                                    laws::STRENGTH_SOME);
                 f.extra = extra;
@@ -546,6 +539,19 @@ std::vector<Finding> run_muttest(const std::vector<FunctionInfo>& functions, int
         }
     }
     return out;
+}
+
+std::pair<std::string, std::map<std::string, std::string>> rapid_plan_error_status(const std::string& err) {
+    std::map<std::string, std::string> extra;
+    if (err.find(sandbox::EXEC_FLAG) != std::string::npos) {
+        extra["install"] = sandbox::EXEC_INSTALL;
+        extra["reason"] = sandbox::EXEC_REASON;
+        extra["exec"] = laws::NOTRUN;
+        return {std::string(laws::NOTRUN), extra};
+    }
+    bool missing = rapid_compiler_missing(err);
+    if (missing) extra["install"] = "install gcc or clang";
+    return {missing ? std::string(laws::NOTRUN) : std::string(laws::ERROR), extra};
 }
 
 }  // namespace prism

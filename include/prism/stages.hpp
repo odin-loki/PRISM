@@ -137,6 +137,8 @@ std::vector<Finding> run_diff(const std::vector<FunctionInfo>& functions,
                               const std::filesystem::path& root);
 std::vector<Finding> run_rapid(const std::vector<FunctionInfo>& functions, int trials = 64);
 std::vector<Finding> run_muttest(const std::vector<FunctionInfo>& functions, int trials = 32);
+// Status + extra for a rapid/muttest evaluation error (twin of prism/rapid.py _eval_status).
+std::pair<std::string, std::map<std::string, std::string>> rapid_plan_error_status(const std::string& err);
 // cfg only locates a strix binary (tools[], pinned build, PATH) to record it;
 // strix output is never a verdict.
 std::vector<Finding> run_ltl(const std::vector<FunctionInfo>& functions,

@@ -5,33 +5,36 @@ engine (`prism/*.py`) is deleted, and every tool, script, test and CI step
 that uses Python is ported to C++23 (CMake already builds with
 `CMAKE_CXX_STANDARD 23`).
 
-**Status (2026-10-09): C++ integration on `main`; phase-5 gate next.**
+**Status (2026-10-09): C++ integration complete on `main`; ~29 pytest files left.**
 
 - **Merged on tree:** `prism-deps` (replaces `scripts/fetch_deps.py`,
   `licence_check.py`, `sbom.py`), unified **`prism-qa`** (`conformance`,
   `soundness`, dev QA commands), **`prism_docs_check`**, Qt GUI parity
   (`gui_model`, stages table, journal poll), native JSON/TOML in polyglot,
   `prism svcomp` in C++, table-driven **`tests/cpp/test_bmc.cpp`** and
-  **`tests/cpp/test_concolic.cpp`** (maintained by `tools/gen_test_concolic_cpp.py`),
-  and the bulk of phase-2 doctest ports (`tests/cpp/*`).
+  **`tests/cpp/test_concolic.cpp`** (`tools/gen_test_bmc_cpp.py`,
+  `tools/gen_test_concolic_cpp.py`), and the bulk of phase-2 doctest ports
+  (`tests/cpp/*`).
 - **`tests/test_core.py`:** deleted — `TestLaws` / `TestBMC` / `TestLints` were
   already doctest-only; the last `TestClassify` cparse cases now live in
   `tests/cpp/test_main.cpp` (`cparse: testdata function kinds`).
-- **Pytest:** **29** tracked `tests/test_*.py` files; SARIF / `--fail-on` →
-  `tests/cpp/test_sarif.cpp`. CI runs an explicit file list (not `tests/`).
+- **Pytest:** **21** tracked `tests/test_*.py` files (shrunk; ports in
+  `tests/cpp/*`). CI runs an explicit list (not `tests/`).
   Phase-5 allow-list: **`tests/cpp/test_deps.cpp`** on every `prism_tests` run.
-- **CI:** `conformance.yml` / `self-check.yml` call `prism-qa`; supply-chain
-  job builds `prism-deps`; `docs.yml` uses `prism_docs_check`.
+- **CI:** `ci.yml` python job lists 20 pytest files (three need `PRISM_BIN`);
+  BenchExec smoke on the `cpp` job. `conformance.yml` / `self-check.yml` →
+  `prism-qa`; supply-chain builds `prism-deps`.
 - **Still open:** phase 5 (delete `prism/*.py` and the remaining pytest suite),
-  phase 6 (Z3 without Python), `port/ai-gen-tools`, owner-only items in
-  `ROADMAP_STATUS.md`.
+  phase 6 (Z3 without Python — see phase-6 section; bindings off, upstream
+  CMake still requires an interpreter), `port/ai-gen-tools`, owner-only items
+  in `ROADMAP_STATUS.md`.
 - Appendix map is from audit `911b9f94f`; many rows are now **DONE** on C++
   even where the table still says partial — treat this status block as current.
 
 ## `prism/*.py` delete checklist (grep vs `src/prism`, 2026-10-09)
 
 **Gate today:** `k_python_engine_deleted = false` in `tests/cpp/test_deps.cpp`.
-**Pytest:** 29 `tests/test_*.py` files remain (`test_sarif.py` deleted).
+**Pytest:** 21 `tests/test_*.py` files remain (`test_ai.py` is a stub only).
 **BLOCKED files:** 21 / 41 — **do not delete `prism/` until BLOCKED = 0.**
 
 Legend: **READY** = C++ owns runtime behaviour; no pytest/oracle pins this
@@ -71,7 +74,7 @@ still references this file.
 | `pbsd.py` | `adapters.cpp` (`run_pbsd_lints`) | BLOCKED | ParanoidBSD Python scanners; `test_pbsd.py` |
 | `pipeline.py` | `pipeline.cpp` | BLOCKED | LLM Dafny hooks, classify cache |
 | `polyglot.py` | `polyglot.cpp`, `scope.cpp` | BLOCKED | embedded Python json-syntax (`SYNTAX_HELPER`) |
-| `rapid.py` | `stages/rapid.cpp` | BLOCKED | gcc fallback; `test_rapid.py` |
+| `rapid.py` | `stages/rapid.cpp` | BLOCKED | gcc fallback (doctest in `test_main.cpp`) |
 | `sandbox.py` | `sandbox.cpp` | READY | |
 | `sanitize.py` | `adapters.cpp` | BLOCKED | parallel compile, triple parse |
 | `sarif.py` | `sarif.cpp` | READY | `tests/cpp/test_sarif.cpp` + `test_cli.cpp` |
@@ -89,9 +92,9 @@ move to `rules/cocci/` (or embed) before phase 5.
 
 ### Deletion blockers (summary)
 
-1. **Pytest surface:** 29 `tests/test_*.py` files (GUI, PIR, fuzz, certified,
-   AI e2e, …). SARIF / `--fail-on` parity is in C++ (`test_sarif.cpp`); CI
-   keeps six `PRISM_BIN` e2e smokes only.
+1. **Pytest surface:** 21 `tests/test_*.py` files (GUI, PIR, certified, …).
+   Most adapter/rapid/framac/naming ports → C++ doctests; CI keeps three
+   `PRISM_BIN` e2e smokes.
 2. **Runtime Python:** `polyglot.cpp` json-syntax check via `SYNTAX_HELPER`
    Python embed (phase 4).
 3. **Partial stages:** checkers, ltl, pbsd, rapid, agent/ai/contracts/gui,
@@ -110,13 +113,13 @@ Single integration commit (or stacked PR) on green `prism_tests` + CI:
    update `adapters.cpp` search paths and doctest.
 2. Native json/tomL syntax in `polyglot.cpp`; remove `SYNTAX_HELPER` exec.
 3. Port or drop remaining pytest: parity → golden in `tests/cpp/`; delete
-   engine-oracle tests; keep `test_naming.py` logic as doctest until `.py` gone.
+   engine-oracle tests; naming doctest is `tests/cpp/test_naming.cpp`.
 4. `git rm -r prism/` `tests/**/*.py` `pyproject.toml` `requirements.txt`;
    remove `prism_native` / `simdmut` ctypes paths; delete obsolete `tools/gen_*.py`.
 5. `tests/cpp/test_deps.cpp`: `k_python_engine_deleted = true`.
 6. `CLAUDE.md` / workflows: one engine, no `python -m prism`, pytest job removed.
 
-**This run:** pytest is not minimal; **no `prism/` delete executed.**
+**This run:** BLOCKED = 21; **no `prism/` delete executed.**
 
 ## Size
 
@@ -374,18 +377,44 @@ goes in phase 5, so these are recorded, not fixed there):
 
 ### Phase 6: build without Python (vendored Z3)
 
-Z3's own CMake requires Python 3 and generates 41 files (API logging
-macros, parameter and tactic registration, and others). `third_party/` is
-never edited, so PRISM adds `cmake/z3.cmake`, its own build description of
-the pinned Z3 sources. The generated files come from one of two places,
-chosen when this phase starts:
+**Status (2026-10-09):** PRISM already forces a minimal in-tree Z3 build
+(`CMakeLists.txt`: static `libz3`, no `z3` binary, no tests/examples, all API
+bindings and Z3 doc install off). That removes z3py / JNI / .NET work, but
+**does not** make configure or compile Python-free: vendored
+`third_party/z3/CMakeLists.txt` still does `find_package(Python3 REQUIRED)` at
+line 162, and Ninja still invokes Python for codegen (configure fails if
+`Python3_EXECUTABLE` is missing or invalid; verified in WSL).
+
+**Where Python is used today (upstream Z3 CMake, bindings disabled):**
+
+| When | Script / mechanism | Outputs (under build tree) |
+|---|---|---|
+| configure | `find_package(Python3)` in `third_party/z3/CMakeLists.txt` | — |
+| build | `scripts/pyg2hpp.py` via `cmake/z3_add_component.cmake` | `*_params.hpp` from each `*.pyg` (~30 rules) |
+| build | `scripts/update_api.py` in `src/api/CMakeLists.txt` | `api_commands.cpp`, `api_log_macros.{cpp,h}` |
+| build | `scripts/mk_install_tactic_cpp.py` | `install_tactic.cpp` |
+| build | `scripts/mk_mem_initializer_cpp.py` | `mem_initializer.cpp` |
+| build | `scripts/mk_gparams_register_modules_cpp.py` | `gparams_register_modules.cpp` |
+| build | `scripts/mk_pat_db.py` in `src/ast/pattern/` | `database.h` |
+| build (MSVC only) | `scripts/mk_def_file.py` | `api_dll.def` |
+
+Not used when PRISM configures Z3: `Z3_BUILD_PYTHON_BINDINGS`,
+`Z3_BUILD_DOCUMENTATION`, examples (`Z3_ENABLE_EXAMPLE_TARGETS` is off for
+subdirectory builds), Java/.NET/Julia bindings.
+
+**What phase 6 still needs:** `third_party/` is never edited, so stop calling
+`add_subdirectory(third_party/z3)` and add `cmake/z3.cmake`, PRISM's own build
+description of the pinned tree (`linked:z3` digest
+`e769f0f2…` in `third_party/MANIFEST.toml`). Generated files come from one of:
 
 - (a) checked in under `cmake/z3-generated/` with the Z3 tree digest they
   were made from. CMake fails if the digest changes.
-- (b) a small C++ generator that reproduces them.
+- (b) a small C++ generator (`src/tools/z3gen.cpp` or similar) that reproduces
+  the scripts above.
 
-Until this phase lands, the build still needs a Python interpreter for Z3
-alone. That is recorded here, not hidden.
+Until that lands, C++ CI/Docker still need a Python 3 interpreter on PATH for
+Z3 alone (Ubuntu images usually provide `python3` via other packages; do not
+assume it is absent until phase 6 completes).
 
 ## Done when
 
@@ -739,7 +768,7 @@ wrong proof first, then by size.
 | D89 | bmc rejects a goto into the start of an else branch and a goto to a self-loop label (`STUCK: goto STUCK;`) | M | docs/SVCOMP.md:173-177 ('Anything else ... is NEEDS-HARNESS'); src/prism/bmc_encoder.inc … |
 | D90 | The Python engine's bmc reports no nondet trace (extra nondet/nondet_loc/nondet_loc_kind) and does no nondet site tagging, unlike C++ | M | docs/PIR.md:1241-1249 ('the same shape as the bmc stage'); src/prism/bmc.cpp:3240-3248; … |
 | D91 | pir's library-model nondeterminism (malloc/calloc/fopen failing) is not in the nondet trace, so such refutations never replay | M | docs/SVCOMP.md:623-625; src/prism/pir/translate.cpp:1296-1300 (`model_stack.empty()` … |
-| D92 | PRISM_FUNCTION_BUDGET test coverage is minimal | M | tests/cpp/test_pir_mem.cpp:1016-1038; tests/test_supply_chain.py:304-306 |
+| D92 | PRISM_FUNCTION_BUDGET test coverage is minimal | M | tests/cpp/test_pir_mem.cpp:1016-1038; `tests/cpp/test_deps.cpp` (prism-deps manifest) |
 | D93 | volatile loads and stores are UNENCODED (this also blocks correct setjmp code that uses volatile locals) | M | docs/PIR.md:173, 913-917; src/prism/pir/ir_parser.cpp:887-903; … |
 | D94 | Atomic load/store, atomicrmw, cmpxchg and fence are UNENCODED in pir | M | docs/PIR.md:173; src/prism/pir/ir_parser.cpp:887-903; src/prism/pir/translate.cpp:733 |
 | D95 | thread_local / _Thread_local globals and llvm.threadlocal.address are UNENCODED | M | docs/PIR.md:174; src/prism/pir/translate_mem.cpp:439, 320; … |
