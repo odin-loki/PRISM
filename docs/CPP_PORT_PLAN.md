@@ -410,7 +410,7 @@ subdirectory builds), Java/.NET/Julia bindings.
 **What phase 6 still needs:** `third_party/` is never edited, so stop calling
 `add_subdirectory(third_party/z3)` and add `cmake/z3.cmake`, PRISM's own build
 description of the pinned tree (`linked:z3` digest
-`e769f0f2…` in `third_party/MANIFEST.toml`). Generated files come from one of:
+`ff553588…` in `third_party/MANIFEST.toml`). Generated files come from one of:
 
 - (a) checked in under `cmake/z3-generated/` with the Z3 tree digest they
   were made from. CMake fails if the digest changes.

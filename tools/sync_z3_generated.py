@@ -9,7 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "cmake" / "z3-generated"
 BUILD = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("/tmp/prism-z3-test")
-PIN = "e769f0f2c796c69c95acf1885b2e994563326801e46fabac52c03e44b17c76ff"
+PIN = "ff553588f5d86e06f51f48a8bc0de7824a10c5f1603027fa486494fb24b7a527"
 
 EXTRA = (
     "api_commands.cpp",
