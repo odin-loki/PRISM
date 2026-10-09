@@ -1623,12 +1623,12 @@ TEST_CASE("muttest survived mutant is FAILED not proof") {
 
 TEST_CASE("rapid plan error: Law 9 exec hint matches Python _eval_status") {
     auto err = prism::sandbox::exec_message("rapid (gcc fallback harness)");
-    auto [status, extra] = prism::rapid_plan_error_status(err);
-    CHECK(status == std::string(prism::laws::NOTRUN));
-    CHECK(extra.at("install") == prism::sandbox::EXEC_INSTALL);
-    CHECK(extra.at("reason") == prism::sandbox::EXEC_REASON);
-    CHECK(extra.at("exec") == std::string(prism::laws::NOTRUN));
-    CHECK(extra.find("install gcc") == extra.end());
+    auto got = prism::rapid_plan_error_status(err);
+    CHECK(got.first == std::string(prism::laws::NOTRUN));
+    CHECK(got.second.at("install") == prism::sandbox::EXEC_INSTALL);
+    CHECK(got.second.at("reason") == prism::sandbox::EXEC_REASON);
+    CHECK(got.second.at("exec") == std::string(prism::laws::NOTRUN));
+    CHECK(got.second.find("install gcc") == got.second.end());
 }
 
 TEST_CASE("muttest eval error probes gcc clang NOTRUN never CLEAN") {
