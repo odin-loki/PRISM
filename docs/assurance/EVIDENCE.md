@@ -280,7 +280,8 @@ each project's `lean-toolchain`): `proofs/check.sh` passed all four steps
 ### E18 AI output never decides a verdict (Law 4)
 
 - Artefacts: `docs/AI.md#the-rule`, `docs/AI.md#prompt-injection-safety-96`,
-  `docs/AI.md#audit-log-96`, `src/prism/ai/core.cpp`, `tests/test_ai.py`,
+  `docs/AI.md#audit-log-96`, `src/prism/ai/core.cpp`, `tests/cpp/test_main.cpp`
+  (AI BMC / audit doctests),
   theorems `thm:admit_model_never_proof` and
   `thm:no_path_fuzzer_or_model_to_proof` (E02).
 - Shows: model output is `HYPOTHESIS`/`READS` unless a checker re-proves

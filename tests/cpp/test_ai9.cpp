@@ -123,8 +123,10 @@ TEST_CASE("ai9 parity: review is in STAGE_ORDER and solver-origin audit") {
     for (auto* s = prism::STAGE_ORDER; *s; ++s) order.emplace_back(*s);
     auto it = std::find(order.begin(), order.end(), "review");
     REQUIRE(it != order.end());
-    CHECK(it != order.begin() && *std::prev(it) == "harness");
-    CHECK(std::next(it) != order.end() && *std::next(it) == "concolic");
+    CHECK(it != order.begin());
+    CHECK(*std::prev(it) == "harness");
+    CHECK(std::next(it) != order.end());
+    CHECK(*std::next(it) == "concolic");
     CHECK(prism::verdict::name(prism::verdict::stage_origin("review")) == "solver");
     const auto cpp = slurp(fs::path(PRISM_SOURCE_DIR) / "src" / "prism" / "pipeline.cpp");
     CHECK(cpp.find("stage(\"review\"") != std::string::npos);

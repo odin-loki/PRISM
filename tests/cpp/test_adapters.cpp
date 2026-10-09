@@ -64,6 +64,13 @@ std::string slurp(const fs::path& p) {
     return ss.str();
 }
 
+std::vector<std::string> lines_of(const fs::path& p) {
+    std::vector<std::string> out;
+    std::istringstream in(slurp(p));
+    for (std::string l; std::getline(in, l);) out.push_back(l);
+    return out;
+}
+
 std::string lower(std::string s) {
     for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     return s;
@@ -1523,13 +1530,6 @@ fs::path fake_cc(const fs::path& bin, const fs::path& log, const std::vector<std
         b += "printf '%s\\n' '#!/bin/sh' '" + exe_body + "' > \"$out\"\nchmod +x \"$out\"\n";
     }
     return fake(bin, "gcc", b);
-}
-
-std::vector<std::string> lines_of(const fs::path& p) {
-    std::vector<std::string> out;
-    std::istringstream in(slurp(p));
-    for (std::string l; std::getline(in, l);) out.push_back(l);
-    return out;
 }
 
 prism::FunctionInfo masked_fn(const fs::path& file) {
