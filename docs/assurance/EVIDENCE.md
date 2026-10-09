@@ -258,15 +258,15 @@ each project's `lean-toolchain`): `proofs/check.sh` passed all four steps
 
 - Artefacts: `docs/PLAN.md#running-on-untrusted-code-law-9`,
   `src/prism/sandbox.cpp`, `prism/sandbox.py`,
-  `tests/test_exec_safety.py::TestHostileTreeWithoutAllowExec`,
-  `tests/test_exec_safety.py::TestPolicyAndSandbox`.
+  `tests/cpp/test_main.cpp::pipeline: hostile tree runs nothing without --allow-exec`,
+  `tests/cpp/test_main.cpp::sandbox: exec NOTRUN row, policy default deny, bwrap argv`.
 - Shows: without `--allow-exec` no step runs code from the scanned tree; with
   it, binaries run under bubblewrap (when installed) and rlimits.
 - Does not show: that the sandbox cannot be escaped.
 
 ### E17 What was not checked is reported (Laws 1 and 7)
 
-- Artefacts: `tests/test_optional_honesty.py`,
+- Artefacts: `tests/cpp/test_adapters.cpp` (config: optional adapter search),
   `tests/cpp/test_adapters.cpp::every missing tool is NOTRUN with its install hint`,
   taxonomy coverage `prism/taxonomy.py` / `src/prism/taxonomy.cpp` with
   `tests/test_taxonomy.py`, SARIF notifications in `src/prism/sarif.cpp`

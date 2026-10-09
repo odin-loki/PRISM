@@ -98,7 +98,7 @@ several goals are undeveloped.
             `tests/conformance/prism/ptrparam` tasks (`expect_status:
             NEEDS-HARNESS`), E18 (`docs/AI.md#harness-drafting-42-92`).
     - **G4** (c) Everything that was not checked is reported.
-      - **Sn12** E17: `tests/test_optional_honesty.py`,
+      - **Sn12** E17: `tests/cpp/test_adapters.cpp` (optional adapter honesty),
         `tests/cpp/test_sarif.cpp`, taxonomy `GAP` rows;
         Law 1 theorem `thm:notrun_never_becomes_clean`.
       - **Sn13** E21: every CLI option documented and every verdict anchor
@@ -112,7 +112,7 @@ several goals are undeveloped.
       - **Sn16** E20: reproducible, signed releases,
         `.github/workflows/release.yml`.
       - **Sn17** E16: no execution of analysed code without `--allow-exec`,
-        `tests/test_exec_safety.py::TestHostileTreeWithoutAllowExec`.
+        `tests/cpp/test_main.cpp::pipeline: hostile tree runs nothing without --allow-exec`.
       - **G5.1** PRISM's own parsers are robust to malformed input.
         - **UNDEVELOPED** Open findings from self-fuzzing (E15,
           `docs/FUZZ_SELF.md`): a crafted C file makes the C++ parser run
