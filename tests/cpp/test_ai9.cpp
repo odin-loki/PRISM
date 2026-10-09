@@ -15,6 +15,7 @@
 #include "prism/laws.hpp"
 #include "prism/pipeline.hpp"
 #include "prism/stages.hpp"
+#include "prism/verdict.hpp"
 
 #include "../../src/tools/qa/docscan.hpp"
 
@@ -22,6 +23,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <algorithm>
 #include <map>
 #include <memory>
 #include <sstream>
@@ -109,6 +111,24 @@ prism::FunctionInfo scalar(const std::string& name, const std::string& body,
 using namespace ai9;
 namespace ai = prism::ai;
 namespace laws = prism::laws;
+
+TEST_CASE("ai9 grammars: contract clauses carry requirement trace links") {
+    const auto text = ai::grammar_text("contract");
+    REQUIRE(!text.empty());
+    CHECK(text.find(R"(trace  ::= " // from ")") != std::string::npos);
+}
+
+TEST_CASE("ai9 parity: review is in STAGE_ORDER and solver-origin audit") {
+    std::vector<std::string> order;
+    for (auto* s = prism::STAGE_ORDER; *s; ++s) order.emplace_back(*s);
+    auto it = std::find(order.begin(), order.end(), "review");
+    REQUIRE(it != order.end());
+    CHECK(it != order.begin() && *std::prev(it) == "harness");
+    CHECK(std::next(it) != order.end() && *std::next(it) == "concolic");
+    CHECK(prism::verdict::name(prism::verdict::stage_origin("review")) == "solver");
+    const auto cpp = slurp(fs::path(PRISM_SOURCE_DIR) / "src" / "prism" / "pipeline.cpp");
+    CHECK(cpp.find("stage(\"review\"") != std::string::npos);
+}
 
 // ============================================================ Lean proof search
 TEST_CASE("ai9 lean: validator admits tactics and rejects commands and escape hatches") {

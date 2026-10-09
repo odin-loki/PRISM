@@ -17,10 +17,9 @@ that uses Python is ported to C++23 (CMake already builds with
 - **`tests/test_core.py`:** deleted — `TestLaws` / `TestBMC` / `TestLints` were
   already doctest-only; the last `TestClassify` cparse cases now live in
   `tests/cpp/test_main.cpp` (`cparse: testdata function kinds`).
-- **Pytest:** **30** tracked files under `tests/test_*.py` (AI, SARIF, PIR
-  refinement, naming, supply-chain parity helpers, etc.); the phase-5 allow-list
-  is enforced in **`tests/cpp/test_deps.cpp`** (`deps: tracked .py files match
-  the phase-5 allow-list`) on every `prism_tests` run.
+- **Pytest:** **29** tracked `tests/test_*.py` files; SARIF / `--fail-on` →
+  `tests/cpp/test_sarif.cpp`. CI runs an explicit file list (not `tests/`).
+  Phase-5 allow-list: **`tests/cpp/test_deps.cpp`** on every `prism_tests` run.
 - **CI:** `conformance.yml` / `self-check.yml` call `prism-qa`; supply-chain
   job builds `prism-deps`; `docs.yml` uses `prism_docs_check`.
 - **Still open:** phase 5 (delete `prism/*.py` and the remaining pytest suite),
@@ -32,57 +31,57 @@ that uses Python is ported to C++23 (CMake already builds with
 ## `prism/*.py` delete checklist (grep vs `src/prism`, 2026-10-09)
 
 **Gate today:** `k_python_engine_deleted = false` in `tests/cpp/test_deps.cpp`.
-**Pytest:** 29–30 files under `tests/test_*.py` still import `prism` (SARIF
-moving to `tests/cpp/test_sarif.cpp`; not phase-5 minimal). **Do not delete
-`prism/` yet.**
+**Pytest:** 29 `tests/test_*.py` files remain (`test_sarif.py` deleted).
+**BLOCKED files:** 21 / 41 — **do not delete `prism/` until BLOCKED = 0.**
 
-Legend: **C++** = runtime owner exists under `src/prism/` or `src/gui/`;
-**partial** = C++ runs the stage but appendix gaps or pytest still pins Python;
-**obsolete** = C++ is the reference (Python only ctypes/tests).
+Legend: **READY** = C++ owns runtime behaviour; no pytest/oracle pins this
+module (generators and tree-wide gates may still block phase-5 delete).
+**BLOCKED** = appendix gap, pytest, generator, ctypes, or embedded Python
+still references this file.
 
-| `prism/*.py` | C++ owner (primary) | Ready to delete? |
-|---|---|---|
-| `__init__.py` | `capi.cpp`, `models.hpp`, `pipeline.hpp` | yes (API surface only) |
-| `__main__.py` | `main.cpp`, `cli.cpp` | partial — CLI flag/exit parity |
-| `adapters.py` | `adapters.cpp`, `config.cpp` | yes |
-| `adapters_extra.py` | `adapters.cpp`, `stages/fuse.cpp` | partial — spatch/semgrep/cocci path bugs |
-| `afl.py` | `stages/fuse.cpp` | partial — AFL env/cwd/sandbox extras |
-| `agent.py` | `stages/hypothesize.cpp`, `fuse.cpp`, `execute_cex.cpp` | partial — `dafny_specs`, interpreter extras |
-| `ai.py` | `stages/llm.cpp`, `ai/*.cpp` | partial — bindings/GGUF limits; pytest `test_llm.py` |
-| `bmc.py` | `bmc.cpp`, `bmc_*.inc` | yes — `tools/gen_prism.py` still reads `.py` until removed |
-| `checkers.py` | `checkers_*.cpp` | partial — branch/guard drift (phase 1) |
-| `concolic.py` | `stages/concolic.cpp`, `bmc.cpp` | yes |
-| `concrete.py` | `stages/interp.cpp`, `common.cpp` | partial — i64 args, `pack_args` test helper |
-| `confidence.py` | `pipeline.cpp`, `verdict/verdict.cpp` | partial — no exported `score()` for tests |
-| `config.py` | `config.cpp`, `threads.hpp` | yes |
-| `contracts.py` | `stages/contracts.cpp` | partial — ACSL case-folding |
-| `cparse.py` | `cparse.cpp` | yes |
-| `diff.py` | `stages/diff.cpp` | yes |
-| `fuse.py` | `stages/fuse.cpp` | yes |
-| `fuzz.py` | `stages/fuse.cpp`, `common.cpp`, `interp.cpp` | partial — caches/parallel fuzz runs |
-| `gui.py` | `src/gui/*`, `gui_model.cpp` | partial — Qt GUI missing journal/stages table |
-| `harness.py` | `stages/harness_bmc.cpp`, `ai/harness.cpp` | yes |
-| `inline.py` | `inline.cpp` | yes |
-| `interval.py` | `interval.cpp` | yes |
-| `journal.py` | `journal.cpp` | yes |
-| `laws.py` | `laws.cpp`, `verdict.hpp` | yes — keep doctest parity for sets |
-| `ltl.py` | `stages/ltl.cpp` | partial — FSM extraction algorithm |
-| `models.py` | `models.cpp`, `journal.cpp` | partial — `extra` typed as strings in C++ |
-| `muttest.py` | `stages/rapid.cpp` | partial — Law-9 / gcc scoring paths |
-| `pbsd.py` | `adapters.cpp` (`run_pbsd_lints`) | partial — ParanoidBSD Python scanners |
-| `pipeline.py` | `pipeline.cpp` | partial — LLM Dafny hooks, classify cache |
-| `polyglot.py` | `polyglot.cpp`, `scope.cpp` | partial — **still runs embedded Python** for json-syntax |
-| `rapid.py` | `stages/rapid.cpp` | partial — gcc fallback / tiny interpreter |
-| `sandbox.py` | `sandbox.cpp` | yes — doctest ports of `test_exec_safety.py` open |
-| `sanitize.py` | `adapters.cpp` | partial — parallel compile, triple parse |
-| `sarif.py` | `sarif.cpp` | yes — engine module only; SARIF tests → `tests/cpp/test_sarif.cpp` |
-| `scope.py` | `scope.cpp` | yes |
-| `shipdocs.py` | `shipdocs.cpp` | yes |
-| `simdmut.py` | `havoc.cpp`, `hash.cpp`, `simd.hpp` | **obsolete** — delete with `prism_native` C ABI |
-| `taint.py` | `stages/taint.cpp` | yes |
-| `taxonomy.py` | `taxonomy.cpp` | yes |
-| `thread.py` | `stages/thread.cpp` | yes |
-| `wp.py` | `stages/wp.cpp` | yes |
+| `prism/*.py` | C++ owner (primary) | Status | Blocker (if BLOCKED) |
+|---|---|---|---|
+| `__init__.py` | `capi.cpp`, `models.hpp`, `pipeline.hpp` | READY | |
+| `__main__.py` | `main.cpp`, `cli.cpp` | BLOCKED | CLI flag/exit parity (D62–D64) |
+| `adapters.py` | `adapters.cpp`, `config.cpp` | READY | |
+| `adapters_extra.py` | `adapters.cpp`, `stages/fuse.cpp` | BLOCKED | spatch/semgrep/cocci bugs; `prism/cocci/` |
+| `afl.py` | `stages/fuse.cpp` | BLOCKED | AFL env/cwd/sandbox extras |
+| `agent.py` | `stages/hypothesize.cpp`, `fuse.cpp`, `execute_cex.cpp` | BLOCKED | `dafny_specs`, interpreter extras |
+| `ai.py` | `stages/llm.cpp`, `ai/*.cpp` | BLOCKED | bindings/GGUF limits; `test_llm.py` |
+| `bmc.py` | `bmc.cpp`, `bmc_*.inc` | BLOCKED | `tools/gen_prism.py` reads `.py` for `bmc_unenc.inc` |
+| `checkers.py` | `checkers_*.cpp` | BLOCKED | branch/guard drift (phase 1); `test_lints_fastpath.py` |
+| `concolic.py` | `stages/concolic.cpp`, `bmc.cpp` | READY | |
+| `concrete.py` | `stages/interp.cpp`, `common.cpp` | BLOCKED | i64 args; `pack_args` test helper |
+| `confidence.py` | `pipeline.cpp`, `verdict/verdict.cpp` | BLOCKED | no exported `score()`; `test_taxonomy.py` |
+| `config.py` | `config.cpp`, `threads.hpp` | READY | |
+| `contracts.py` | `stages/contracts.cpp` | BLOCKED | ACSL case-folding (D126) |
+| `cparse.py` | `cparse.cpp` | READY | |
+| `diff.py` | `stages/diff.cpp` | READY | |
+| `fuse.py` | `stages/fuse.cpp` | READY | |
+| `fuzz.py` | `stages/fuse.cpp`, `common.cpp`, `interp.cpp` | BLOCKED | caches/parallel fuzz runs |
+| `gui.py` | `src/gui/*`, `gui_model.cpp` | BLOCKED | Qt GUI parity; `test_gui.py`, `test_prism_gui.py` |
+| `harness.py` | `stages/harness_bmc.cpp`, `ai/harness.cpp` | READY | |
+| `inline.py` | `inline.cpp` | READY | |
+| `interval.py` | `interval.cpp` | READY | |
+| `journal.py` | `journal.cpp` | READY | |
+| `laws.py` | `laws.cpp`, `verdict.hpp` | READY | |
+| `ltl.py` | `stages/ltl.cpp` | BLOCKED | FSM extraction algorithm |
+| `models.py` | `models.cpp`, `journal.cpp` | BLOCKED | `extra` value types in reports |
+| `muttest.py` | `stages/rapid.cpp` | BLOCKED | Law-9 / gcc scoring paths |
+| `pbsd.py` | `adapters.cpp` (`run_pbsd_lints`) | BLOCKED | ParanoidBSD Python scanners; `test_pbsd.py` |
+| `pipeline.py` | `pipeline.cpp` | BLOCKED | LLM Dafny hooks, classify cache |
+| `polyglot.py` | `polyglot.cpp`, `scope.cpp` | BLOCKED | embedded Python json-syntax (`SYNTAX_HELPER`) |
+| `rapid.py` | `stages/rapid.cpp` | BLOCKED | gcc fallback; `test_rapid.py` |
+| `sandbox.py` | `sandbox.cpp` | READY | |
+| `sanitize.py` | `adapters.cpp` | BLOCKED | parallel compile, triple parse |
+| `sarif.py` | `sarif.cpp` | READY | `tests/cpp/test_sarif.cpp` + `test_cli.cpp` |
+| `scope.py` | `scope.cpp` | READY | |
+| `shipdocs.py` | `shipdocs.cpp` | READY | |
+| `simdmut.py` | `havoc.cpp`, `hash.cpp`, `simd.hpp` | BLOCKED | `test_simdmut.py` ctypes / `prism_native` |
+| `taint.py` | `stages/taint.cpp` | READY | |
+| `taxonomy.py` | `taxonomy.cpp` | READY | |
+| `thread.py` | `stages/thread.cpp` | READY | |
+| `wp.py` | `stages/wp.cpp` | READY | |
 
 **Bundled data (not a `.py` row but blocks tree delete):** `prism/cocci/*.cocci`
 — C++ `cocci_rules()` still resolves `prism/cocci` or `share/prism/cocci`;
@@ -90,9 +89,9 @@ move to `rules/cocci/` (or embed) before phase 5.
 
 ### Deletion blockers (summary)
 
-1. **Pytest surface:** ~29 `tests/test_*.py` files (engine parity, GUI, PIR,
-   fuzz, certified, …) — target end state is naming + SARIF golden (+ thin AI
-   stubs if any), not reached.
+1. **Pytest surface:** 29 `tests/test_*.py` files (GUI, PIR, fuzz, certified,
+   AI e2e, …). SARIF / `--fail-on` parity is in C++ (`test_sarif.cpp`); CI
+   keeps six `PRISM_BIN` e2e smokes only.
 2. **Runtime Python:** `polyglot.cpp` json-syntax check via `SYNTAX_HELPER`
    Python embed (phase 4).
 3. **Partial stages:** checkers, ltl, pbsd, rapid, agent/ai/contracts/gui,
@@ -623,7 +622,7 @@ record.
 | `tests/test_rapid.py` | mixed | S | tests/cpp/test_main.cpp rapid/muttest section: add the missing mutation cases; drop signature/source-read tests |
 | `tests/test_repair_verdict.py` | drives-cpp-binary | M | ctest-registered C++ driver with C++ fake llama-server running build/prism --stage rlef_repair, or doctest in test_ai_assist.cpp asserting extra.patch_verdict |
 | `tests/test_sanitize.py` | python-engine-behaviour | M | tests/cpp/test_sanitize.cpp (needs an injectable process-runner seam in adapters.cpp run_sanitize, or fake cc scripts in a temp PATH) |
-| `tests/test_sarif.py` | mixed | M | tests/cpp/test_sarif.cpp for to_sarif/exit_code matrix; a ctest driver running build/prism --fail-on defect on testdata for the CLI exit code; delete engine-parity cases … |
+| `tests/test_sarif.py` | mixed | none | **DONE** — deleted; `tests/cpp/test_sarif.cpp` + `test_cli.cpp` |
 | `tests/test_scope.py` | mixed | S | extend the existing TEST_CASE in tests/cpp/test_main.cpp (add third_party row, extra map, report.md substring); delete the source-grep test_both_engines_wire_it (parity with deleted engine; a … |
 | `tests/test_semgrep.py` | python-engine-behaviour | M | tests/cpp/test_adapters.cpp (new) with fake semgrep against prism::run_semgrep (adapters.cpp:1268) |
 | `tests/test_simdmut.py` | mixed | S | tests/cpp/test_havoc.cpp (table values vs AFL constants, overlay LE clipping, length preservation, havoc.cpp vs mutate.cu table text as a repo-lint); delete ctypes loader / capi binding / … |

@@ -187,7 +187,7 @@ Tests: `testdata/goto_structured.c` (both engines: forward out of nested
 loops, backward loops that close, an unbounded backward loop proved by
 k-induction, a failure beyond the unwind bound that stays `BOUNDED`, an
 uninitialised read on the goto path, the two unstructured shapes),
-`tests/test_bmc_goto_shift.py`, doctest "bmc goto: ...".
+doctest "bmc goto: ..." in `tests/cpp/test_main.cpp` and `tests/cpp/test_bmc_svcomp.cpp`.
 
 nested6 itself does not change its answer: `bmc` is now `NEEDS-HARNESS`
 (its `main` calls the task's own `__VERIFIER_assert`, which is not
@@ -215,8 +215,8 @@ the call (`inline.cpp` / `prism/inline.py` `inlineable_callee`), so an empty
 unreach-call is about `reach_error` alone). The Python engine also gained
 the canonical `__VERIFIER_assert` rewrite the C++ `bmc` got in the
 invariants round (`_canonical_verifier_assert`, `_rewrite_verifier_assert`),
-so both engines give the same verdicts (`tests/test_bmc_reach_error.py`,
-doctest "bmc: a reachable reach_error() call ...").
+so both engines give the same verdicts (doctest "bmc: a reachable reach_error()
+call ..." in `tests/cpp/test_main.cpp`).
 
 A `bmc` proof of `main` now covers unreach-call: every call of the error
 function reachable from `main` is either encoded (inlined static callees,

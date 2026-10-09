@@ -53,7 +53,7 @@ gate failed once (missing `pyyaml`, fixed in `c4fc65e9d`); the re-run passes
   The Python scorer then required PyYAML (no `json.loads` fallback; the
   scorer is now `prism-qa conformance`, with its own YAML-subset reader); the
   workflow still installs it for the remaining pytest suite;
-  `tests/test_supply_chain.py` guards the install line.
+  `tests/cpp/test_deps.cpp` guards the install line.
   Re-run [36211384015](https://github.com/odin-loki/PRISM/actions/runs/36211384015):
   pytest green. If a later step reports ASan/UBSan, treat it as a real engine
   bug.

@@ -643,8 +643,7 @@ with `./build/prism FILE --no-llm --stage inventory,classify,bmc`.
 **Status: S1–S7, R1, R2, F1–F6 are fixed in both engines** (typed encoder:
 `src/prism/bmc_encoder.inc`, `prism/bmc.py`; inliner `src/prism/inline.cpp`,
 `prism/inline.py`). Every reproducer below is a regression test
-(`tests/test_bmc_soundness.py`, doctest "bmc soundness: ..." in
-`tests/cpp/test_main.cpp`, conformance tasks under
+(doctest `bmc soundness: ...` in `tests/cpp/test_main.cpp`, conformance tasks under
 `tests/conformance/prism/regress/`). F7 (a false alarm, not a soundness
 issue) is fixed too. The fix, in one paragraph: every value carries its C type
 (width, signedness; LP64), integer promotions and the usual arithmetic
@@ -814,7 +813,7 @@ globals (the constructors' stores are not carried into `main`); otherwise
 the file defines a constructor. Tasks: ESBMC
 `try_catch/lower-exceptions_static_init_fail`, `cpp11/constructors/Constructor9-1`;
 `tests/pir/static_init_{throw,value,ok}.cpp`, doctest "bmc soundness:
-dynamic initialisation before main (S8)", `tests/test_bmc_soundness.py`.
+dynamic initialisation before main (S8)" in `tests/cpp/test_main.cpp`.
 
 ### Robustness (no verdict where one was possible)
 
@@ -885,9 +884,9 @@ root or `root/build`, as the Clang-AST lints read it, last `-std=` wins;
 `with_cxx_std` before the bmc stage); without one, the default of the C++
 compilers PRISM runs (clang++ 16–18, g++ 11–14: `gnu++17`), which keeps
 every true refutation of a negative left operand in code built without
-`-std`. Regression tests: `tests/test_bmc_goto_shift.py`, doctest "bmc
-shift rules follow the C++ standard of the unit (F7)" and "with_cxx_std
-reads -std from compile_commands.json". Strict gate after the fix
+`-std`. Regression tests: doctest "bmc shift rules follow the C++ standard of
+the unit (F7)" and "with_cxx_std reads -std from compile_commands.json" in
+`tests/cpp/test_main.cpp`. Strict gate after the fix
 (`src/tools/qa/conformance.cpp`, C++ engine, 2026-09-24, 303 true / 317 false
 tasks): 0 wrong proofs and 0 false alarms in every stage; bmc proves
 99/303 and refutes 93/317 (`cxx_shift_cpp20_true` is now proved), pir

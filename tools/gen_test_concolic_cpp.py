@@ -18,9 +18,6 @@ PY = ROOT / "tests" / "test_concolic.py"
 OUT = ROOT / "tests" / "cpp" / "test_concolic.cpp"
 # Commit immediately before tests/test_concolic.py was removed from the tree.
 CONCOLIC_PY_REV = "190103945^"
-# The emitted C++ still uses std::initializer_list rows (unsafe in static tables).
-# After running, merge into tests/cpp/test_concolic.cpp or update the emitter to
-# match the kForbidNeedHarness / std::vector<std::string_view> layout.
 
 
 def concolic_py_source() -> str:
@@ -191,6 +188,24 @@ def names_needing_harness(text: str) -> set[str]:
 
 NEEDS_HARNESS_NAMES = names_needing_harness(text)
 
+_FORBID_CONST: dict[tuple[str, ...], str] = {
+    ("ERROR", "CLEAN", "CRASH", "PROVED", "PROVED-UNBOUNDED", "BOUNDED"): "kForbidNeedHarness",
+    ("NEEDS-HARNESS", "ERROR", "PROVED", "PROVED-UNBOUNDED", "BOUNDED"): "kForbidFlexible",
+    ("PROVED", "PROVED-UNBOUNDED", "PROVED-ASSUMING", "ERROR"): "kForbidCrashPlant",
+    ("ERROR", "PROVED", "PROVED-UNBOUNDED", "PROVED-ASSUMING"): "kForbidClean",
+    ("NEEDS-HARNESS", "PROVED", "PROVED-UNBOUNDED", "BOUNDED", "CLEAN"): "kForbidGoto",
+    ("CRASH",): "kForbidOnlyCrash",
+}
+
+
+def _forbid_cpp(forbid: list[str]) -> str:
+    if not forbid:
+        return "{}"
+    key = tuple(forbid)
+    if key not in _FORBID_CONST:
+        raise ValueError(f"no kForbid* constant for forbid set {forbid!r}")
+    return _FORBID_CONST[key]
+
 
 def cpp_row(name: str, *, budget: int = 8, planted_bug: bool = False) -> str:
     cls = ""
@@ -210,13 +225,7 @@ def cpp_row(name: str, *, budget: int = 8, planted_bug: bool = False) -> str:
         exact = "CRASH"
     if planted_bug:
         budget = 32
-    parts = [f'{{"{name}", {budget}']
-    if exact:
-        parts.append(f', "{exact}"')
-    else:
-        parts.append(", nullptr")
-    # forbid
-    forbid = []
+    forbid: list[str] = []
     if exact == "NEEDS-HARNESS":
         forbid = ["ERROR", "CLEAN", "CRASH", "PROVED", "PROVED-UNBOUNDED", "BOUNDED"]
     elif exact == "CLEAN":
@@ -225,40 +234,59 @@ def cpp_row(name: str, *, budget: int = 8, planted_bug: bool = False) -> str:
         forbid = ["NEEDS-HARNESS", "PROVED", "PROVED-UNBOUNDED", "BOUNDED", "CLEAN"]
     elif exact == "CRASH" and name not in CRASH_CLS_ANY:
         forbid = ["PROVED", "PROVED-UNBOUNDED", "PROVED-ASSUMING", "ERROR"]
-    elif name in FORBID_PROOF:
+    elif name in FORBID_PROOF or name in (
+        "taut_bound_bad",
+        "empty_inf_ok",
+        "const_param_ok",
+        "vol_ok",
+        "tls_local_ok",
+        "complex_ok",
+        "sizeof_ok",
+        "nested_fn_ok",
+        "desig_init_ok",
+        "static_assert_ok",
+        "alignof_ok",
+        "va_arg_ok",
+        "range_for_ok",
+        "lambda_ok",
+        "static_cast_ok",
+        "packed_ok",
+        "coro_ok",
+        "wide_ok",
+        "bitfield_ok",
+        "spaceship_ok",
+    ):
         forbid = ["NEEDS-HARNESS", "ERROR", "PROVED", "PROVED-UNBOUNDED", "BOUNDED"]
     elif name == "add_ll":
         forbid = ["CRASH"]
-    elif name == "taut_bound_bad":
-        forbid = ["ERROR"]
-    elif name == "empty_inf_ok":
-        forbid = ["ERROR"]
-    elif name in ("const_param_ok", "vol_ok", "tls_local_ok", "complex_ok", "sizeof_ok", "nested_fn_ok",
-                  "desig_init_ok", "static_assert_ok", "alignof_ok", "va_arg_ok", "range_for_ok",
-                  "lambda_ok", "static_cast_ok", "packed_ok", "coro_ok", "wide_ok", "bitfield_ok",
-                  "spaceship_ok"):
-        forbid = ["NEEDS-HARNESS", "ERROR"]
-    if forbid:
-        fb = ", {" + ", ".join(f'"{x}"' for x in forbid) + "}"
-    else:
-        fb = ", {}"
+    elif name in ("throws_not_dtor", "try_ok"):
+        forbid = []
+        exact = None
+    if name == "idx_u_bad":
+        exact = "CRASH"
+        forbid = []
+    fb = _forbid_cpp(forbid)
     if cls:
-        ec = f', "{cls}", {{}}'
+        ac = "{}"
+        ec = f'"{cls}"'
     elif name in CRASH_CLS_ANY:
-        ec = ", nullptr, {" + ", ".join(f'"{x}"' for x in CRASH_CLS_ANY[name]) + "}"
+        ec = "{}"
+        ac = "kAllowOobCls"
     else:
-        ec = ", nullptr, {}"
-    # Python only asserts counterexample on the four run_concolic planted bugs (+ KLEE fork).
-    counter = "true" if planted_bug or name == "klee_fork_neg" else "false"
+        ec = "{}"
+        ac = "{}"
+    exact_s = f'"{exact}"' if exact else "{}"
+    # Python only asserts counterexample on the four run_concolic planted bugs.
+    counter = "true" if planted_bug else "false"
     not_proof = "true" if exact == "CLEAN" else "false"
-    return "".join(parts) + fb + ec + f", {counter}, {not_proof}" + "}"
+    return f'{{"{name}", {budget}, {exact_s}, {fb}, {ec}, {ac}, {counter}, {not_proof}}}'
 
 
 header = textwrap.dedent(
     """\
     // Table-driven doctests for prism::run_concolic (src/prism/stages/concolic.cpp).
     // Ports tests/test_concolic.py planted bugs, semantic harness gates, and unenc corpus.
-    // Generated by tools/gen_test_concolic_cpp.py (sources names from git history).
+    // Generated by tools/gen_test_concolic_cpp.py — regenerate after Python test changes.
 
     #include <doctest/doctest.h>
     #ifdef ERROR
@@ -270,6 +298,7 @@ header = textwrap.dedent(
     #include "prism/models.hpp"
     #include "prism/stages.hpp"
 
+    #include <algorithm>
     #include <filesystem>
     #include <map>
     #include <string>
@@ -300,7 +329,7 @@ header = textwrap.dedent(
         return it->second;
     }
 
-    prism::FunctionInfo load_fn(const char* name) { return fn_named(name).first; }
+    prism::FunctionInfo load_fn(std::string_view name) { return fn_named(std::string(name)).first; }
 
     prism::Finding concolic_one(const prism::FunctionInfo& fn, int budget) {
         auto recs = prism::run_concolic({fn}, budget);
@@ -308,25 +337,28 @@ header = textwrap.dedent(
         return recs[0];
     }
 
-    bool status_in(std::string_view st, std::initializer_list<const char*> xs) {
-        for (auto* x : xs)
-            if (st == x) return true;
-        return false;
+    using Names = std::vector<std::string_view>;
+
+    bool one_of(std::string_view s, const Names& xs) {
+        return std::find(xs.begin(), xs.end(), s) != xs.end();
     }
 
-    bool cls_in(std::string_view cls, std::initializer_list<const char*> xs) {
-        for (auto* x : xs)
-            if (cls == x) return true;
-        return false;
-    }
+    const Names kForbidNeedHarness = {laws::ERROR, laws::CLEAN, laws::CRASH, laws::PROVED, laws::PROVED_UNBOUNDED,
+                                      laws::BOUNDED};
+    const Names kForbidFlexible = {laws::NEEDS_HARNESS, laws::ERROR, laws::PROVED, laws::PROVED_UNBOUNDED, laws::BOUNDED};
+    const Names kForbidCrashPlant = {laws::PROVED, laws::PROVED_UNBOUNDED, laws::PROVED_ASSUMING, laws::ERROR};
+    const Names kForbidClean = {laws::ERROR, laws::PROVED, laws::PROVED_UNBOUNDED, laws::PROVED_ASSUMING};
+    const Names kForbidGoto = {laws::NEEDS_HARNESS, laws::PROVED, laws::PROVED_UNBOUNDED, laws::BOUNDED, laws::CLEAN};
+    const Names kForbidOnlyCrash = {laws::CRASH};
+    const Names kAllowOobCls = {"MEM-OOB-READ", "MEM-OOB-WRITE"};
 
     struct ConcolicRow {
-        const char* func;
+        std::string_view func;
         int budget;
-        const char* exact_status;
-        std::initializer_list<const char*> forbid_status;
-        const char* exact_cls;
-        std::initializer_list<const char*> allow_cls;
+        std::string_view exact_status;
+        Names forbid_status;
+        std::string_view exact_cls;
+        Names allow_cls;
         bool counterexample;
         bool message_not_proof;
     };
@@ -337,22 +369,18 @@ header = textwrap.dedent(
         auto r = concolic_one(fn, row.budget);
         CHECK(r.stage == "concolic");
         CHECK(r.function == row.func);
-        if (row.exact_status)
-            CHECK_MESSAGE(r.status == row.exact_status, r.status, " ", r.message);
-        for (auto* bad : row.forbid_status)
-            CHECK_MESSAGE(r.status != bad, r.status, " ", r.message);
-        if (row.exact_cls) CHECK(r.cls == row.exact_cls);
-        if (row.allow_cls.size() != 0)
-            CHECK_MESSAGE(cls_in(r.cls, row.allow_cls), r.cls, " ", r.message);
+        if (!row.exact_status.empty())
+            CHECK_MESSAGE(r.status == row.exact_status, r.status << " " << r.message);
+        for (auto bad : row.forbid_status) CHECK_MESSAGE(r.status != bad, r.status << " " << r.message);
+        if (!row.exact_cls.empty()) CHECK(r.cls == row.exact_cls);
+        if (!row.allow_cls.empty()) CHECK_MESSAGE(one_of(r.cls, row.allow_cls), r.cls << " " << r.message);
         if (row.counterexample) CHECK_FALSE(r.counterexample.empty());
-        if (row.message_not_proof)
-            CHECK(r.message.find("not a proof") != std::string::npos);
-        if (row.exact_status && std::string_view(row.exact_status) == laws::CRASH) {
+        if (row.message_not_proof) CHECK(r.message.find("not a proof") != std::string::npos);
+        if (row.exact_status == laws::CRASH) {
             CHECK(r.strength == laws::STRENGTH_FINDS);
             CHECK_FALSE(laws::is_proof(r.status));
         }
-        if (row.exact_status && std::string_view(row.exact_status) == laws::CLEAN)
-            CHECK_FALSE(laws::is_proof(r.status));
+        if (row.exact_status == laws::CLEAN) CHECK_FALSE(laws::is_proof(r.status));
     }
 
     """

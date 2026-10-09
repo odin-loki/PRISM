@@ -205,6 +205,19 @@ TEST_CASE("ai-assist grammars: the draft grammar forces links on every claim") {
     CHECK(grammar_line(text, "links").find("link (") != std::string::npos);
 }
 
+TEST_CASE("ai-assist grammars: invariants narrow idents, comparisons only in binop") {
+    const auto text = slurp(grammar_file("invariants"));
+    CHECK(grammar_line(text, "ident").find("::=") != std::string::npos);
+    const auto binop = grammar_line(text, "binop");
+    CHECK(binop.find(R"("=")") == std::string::npos);
+    CHECK(binop.find(R"("++")") == std::string::npos);
+}
+
+TEST_CASE("ai-assist grammars: contract clauses may carry trace links") {
+    const auto text = slurp(grammar_file("contract"));
+    CHECK(grammar_line(text, "trace").find(R"(" // from ")") != std::string::npos);
+}
+
 // ------------------------------------------------------------------ regress
 TEST_CASE("ai-assist regress: counterexample parsing and C literals") {
     auto v = prism::ai::parse_counterexample("x=#x7fffffff, y=-5, flag=true, z = 0x10, bad=zz");
