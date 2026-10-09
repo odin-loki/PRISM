@@ -812,7 +812,7 @@ std::vector<Finding> run_cbmc(const std::string& exe, const std::vector<fs::path
     return out;
 }
 
-Finding libfuzzer_probe(const Config& cfg) {
+Finding libfuzzer_probe_impl(const Config& cfg) {
     auto clang = cfg.which({"clang"});
     const char* install = "clang -fsanitize=fuzzer is a system tool: apt install clang-18 (see third_party/MANIFEST.toml)";
     if (!clang) {
@@ -1585,6 +1585,8 @@ std::vector<Finding> run_strix(const std::string& exe, const std::vector<fs::pat
     return prism::run_strix(exe, paths, cfg, probed);
 }
 }  // namespace adapters_detail
+
+Finding libfuzzer_probe(const Config& cfg) { return libfuzzer_probe_impl(cfg); }
 
 std::string compiler_key(const fs::path& p) {
     std::error_code ec;
