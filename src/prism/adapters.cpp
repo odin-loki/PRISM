@@ -1280,8 +1280,8 @@ std::vector<Finding> run_infer(const std::string& exe, const std::vector<fs::pat
     return out;
 }
 
-std::vector<Finding> run_frama_c(const std::string& exe, const std::vector<fs::path>& paths,
-                                 const Config& cfg) {
+std::vector<Finding> run_frama_c_impl(const std::string& exe, const std::vector<fs::path>& paths,
+                                      const Config& cfg) {
     std::vector<fs::path> c_files;
     for (const auto& p : paths)
         if (ext_of(p) == ".c") {
@@ -1528,7 +1528,7 @@ std::vector<Finding> dispatch_optional(const std::string& stage, const std::stri
     if (c_files.empty()) return {help_ok(stage, exe, probed)};
     if (stage == "semgrep") return run_semgrep(exe, paths, cfg);
     if (stage == "infer") return run_infer(exe, paths, cfg);
-    if (stage == "frama-c") return run_frama_c(exe, paths, cfg);
+    if (stage == "frama-c") return run_frama_c_impl(exe, paths, cfg);
     if (stage == "klee") return run_klee(exe, paths, cfg);
     return {help_ok(stage, exe, probed)};
 }
@@ -1587,6 +1587,11 @@ std::vector<Finding> run_strix(const std::string& exe, const std::vector<fs::pat
 }  // namespace adapters_detail
 
 Finding libfuzzer_probe(const Config& cfg) { return libfuzzer_probe_impl(cfg); }
+
+std::vector<Finding> run_frama_c(const std::string& exe, const std::vector<fs::path>& paths,
+                                 const Config& cfg) {
+    return run_frama_c_impl(exe, paths, cfg);
+}
 
 std::string compiler_key(const fs::path& p) {
     std::error_code ec;
