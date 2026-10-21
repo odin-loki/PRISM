@@ -87,7 +87,7 @@ TEST_CASE("havoc: INTERESTING tables match AFL++ constants") {
 }
 
 TEST_CASE("havoc: overlay_le width 1/2/4 and end clipping") {
-    uint8_t buf[4];
+    uint8_t buf[8];
     std::memset(buf, 0, sizeof buf);
     overlay_le(buf, 4, 0, static_cast<uint32_t>(static_cast<uint8_t>(-128)), 1);
     CHECK(buf[0] == 0x80);

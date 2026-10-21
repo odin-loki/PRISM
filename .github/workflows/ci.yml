@@ -43,7 +43,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install toolchain
-        # python3-minimal: vendored Z3 CMake still runs Python codegen (phase 6).
+        # python3-minimal: pytest and other CI steps; Z3 build is Python-free (phase 6).
         run: sudo apt-get update && sudo apt-get install -y ninja-build clang ccache qt6-base-dev libgl-dev libclang-18-dev python3-minimal
       - uses: actions/cache@v4
         with:
