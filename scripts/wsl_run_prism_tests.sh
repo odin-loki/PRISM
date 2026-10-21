@@ -20,7 +20,6 @@ if [[ ! -d "${SRC}" ]]; then
 fi
 
 RSYNC_EXCLUDES=(
-    --exclude=.git/
     --exclude=build/
     --exclude=build_wsl/
     --exclude=build_win/

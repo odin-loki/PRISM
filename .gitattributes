@@ -1,2 +1,3 @@
 # Linked vendored trees are pinned by tree_sha256 over LF bytes (prism-deps linked).
 third_party/** -text eol=lf
+*.sh text eol=lf

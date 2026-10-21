@@ -2,10 +2,11 @@
 # Run full prism_tests on Linux ext4 (see ~/prism-run). No doctest filters.
 set -euo pipefail
 pkill -9 prism_tests 2>/dev/null || true
-BUILD="${HOME}/prism-run/build"
-LOG="${HOME}/prism-run/prism_tests_full.log"
-EXIT="${HOME}/prism-run/prism_tests_exit.txt"
-XML="${HOME}/prism-run/prism_tests.xml"
+DEST="${PRISM_WSL_DIR:-${HOME}/prism-run}"
+BUILD="${DEST}/build"
+LOG="${DEST}/prism_tests_full.log"
+EXIT="${DEST}/prism_tests_exit.txt"
+XML="${DEST}/prism_tests.xml"
 rm -f "${LOG}" "${EXIT}" "${XML}"
 cd "${BUILD}"
 ./prism_tests -r=xml -o "${XML}" > "${LOG}" 2>&1
