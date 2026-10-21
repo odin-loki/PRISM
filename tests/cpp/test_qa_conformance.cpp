@@ -721,8 +721,9 @@ TEST_CASE("qa conformance: a wrong proof fails the release gate") {
     auto run = [&](const std::string& status) {
         fs::path fake = fake_engine(tmp.dir, "fake_" + status, status);
         fs::path out = tmp.dir / ("out_" + status);
+        // ASan needs a huge address space; the scorer's default RLIMIT_AS breaks fake_prism.
         int rc = qa::conformance_main({"--prism", fake.string(), "--out", out.string(), "--filter",
-                                       "prism/overflow/(add|neg)_", "--no-replay", "-j", "2"});
+                                       "prism/overflow/(add|neg)_", "--no-replay", "-j", "2", "--mem-limit-mb", "0"});
         return std::pair<int, ojson>{rc, ojson::parse(slurp(out / "metrics.json"))};
     };
     auto [rc, m] = run("PROVED");
