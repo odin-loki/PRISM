@@ -16,6 +16,13 @@
 #include <sstream>
 #include <system_error>
 
+#ifdef _WIN32
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
+#  include <windows.h>
+#endif
+
 #ifndef _WIN32
 #include <fcntl.h>
 #include <poll.h>
@@ -213,9 +220,30 @@ Proc run(const std::vector<std::string>& argv, double timeout_s, const std::atom
     r.mem_cap = mem_cap;
     const double t0 = now_s();
 #ifdef _WIN32
-    (void)argv; (void)timeout_s; (void)stop; (void)cap; (void)stdin_path; (void)stdout_path; (void)mem_cap;
-    r.failed = true;
-    r.out = "process runner not implemented on Windows";
+    if (argv.empty()) {
+        r.failed = true;
+        return r;
+    }
+    prism::detail::RunSpec spec;
+    spec.argv = argv;
+    spec.timeout_s = timeout_s;
+    spec.merge_stderr = stdout_path.empty();
+    spec.stop = stop;
+    spec.max_output_bytes = cap;
+    if (!stdout_path.empty()) spec.stdout_path = stdout_path;
+    if (!stdin_path.empty()) spec.input = read_file(stdin_path);
+    auto ro = prism::detail::run(spec);
+    r.secs = now_s() - t0;
+    r.failed = ro.failed;
+    r.timed_out = ro.timed_out;
+    r.cancelled = ro.cancelled;
+    r.rc = ro.rc;
+    if (ro.failed) {
+        r.out = ro.err.empty() ? ro.out : ro.err;
+    } else {
+        r.out = ro.out;
+        if (!ro.err.empty()) r.out += ro.err;
+    }
     return r;
 #else
     if (argv.empty()) { r.failed = true; return r; }
@@ -377,8 +405,15 @@ std::optional<ToolInfo> in_root(const fs::path& root, std::string_view exe, bool
             if (pin && e.path().filename().string() != *pin) continue;
             for (const char* sub : {"bin", "build", ""}) {
                 fs::path cand = sub[0] ? e.path() / sub / bin : e.path() / bin;
+#ifdef _WIN32
+                if (!fs::is_regular_file(cand, ec)) {
+                    fs::path cand_exe = cand;
+                    cand_exe += ".exe";
+                    if (!fs::is_regular_file(cand_exe, ec)) continue;
+                    cand = cand_exe;
+                }
+#else
                 if (!fs::is_regular_file(cand, ec)) continue;
-#ifndef _WIN32
                 if (access(cand.c_str(), X_OK) != 0) continue;
 #endif
                 auto t = fs::last_write_time(cand, ec);
@@ -428,6 +463,31 @@ std::optional<ToolInfo> find_tool(std::string_view name, const SolveOptions& opt
         if (auto t = in_root(home, name, /*pinned=*/true)) return t;
     const char* path = std::getenv("PATH");
     if (!path) return lean_build_tool(name);
+#ifdef _WIN32
+    {
+        char buf[MAX_PATH];
+        const std::string n(name);
+        if (SearchPathA(nullptr, n.c_str(), ".exe", MAX_PATH, buf, nullptr))
+            return ToolInfo{std::string(name), fs::path(buf), "PATH"};
+        if (SearchPathA(nullptr, n.c_str(), nullptr, MAX_PATH, buf, nullptr))
+            return ToolInfo{std::string(name), fs::path(buf), "PATH"};
+    }
+    std::string p = path;
+    std::size_t s = 0;
+    while (s <= p.size()) {
+        std::size_t e = p.find(';', s);
+        if (e == std::string::npos) e = p.size();
+        const std::string dir = p.substr(s, e - s);
+        s = e + 1;
+        if (dir.empty()) continue;
+        char buf[MAX_PATH];
+        const std::string n(name);
+        if (SearchPathA(dir.c_str(), n.c_str(), ".exe", MAX_PATH, buf, nullptr))
+            return ToolInfo{std::string(name), fs::path(buf), "PATH"};
+        if (SearchPathA(dir.c_str(), n.c_str(), nullptr, MAX_PATH, buf, nullptr))
+            return ToolInfo{std::string(name), fs::path(buf), "PATH"};
+    }
+#else
     std::string p = path;
     std::size_t s = 0;
     while (s <= p.size()) {
@@ -439,12 +499,11 @@ std::optional<ToolInfo> find_tool(std::string_view name, const SolveOptions& opt
         fs::path cand = fs::path(dir) / std::string(name);
         std::error_code ec;
         if (fs::is_regular_file(cand, ec)) {
-#ifndef _WIN32
             if (access(cand.c_str(), X_OK) != 0) continue;
-#endif
             return ToolInfo{std::string(name), cand, "PATH"};
         }
     }
+#endif
     return lean_build_tool(name);
 }
 

@@ -133,19 +133,35 @@ RunOut run(const RunSpec& spec) {
     sa.bInheritHandle = TRUE;
     HANDLE in_r = nullptr, in_w = nullptr, out_r = nullptr, out_w = nullptr, err_r = nullptr,
            err_w = nullptr;
+    HANDLE stdout_file = nullptr;
     auto close_h = [](HANDLE& h) {
         if (h) CloseHandle(h);
         h = nullptr;
     };
-    if (!CreatePipe(&in_r, &in_w, &sa, 0) || !CreatePipe(&out_r, &out_w, &sa, 0) ||
+    const bool capture_stdout = spec.stdout_path.empty();
+    if (!CreatePipe(&in_r, &in_w, &sa, 0) ||
+        (capture_stdout && !CreatePipe(&out_r, &out_w, &sa, 0)) ||
         (!spec.merge_stderr && !CreatePipe(&err_r, &err_w, &sa, 0))) {
         close_h(in_r), close_h(in_w), close_h(out_r), close_h(out_w), close_h(err_r), close_h(err_w);
+        close_h(stdout_file);
         r.failed = true;
         r.err = "pipe";
         return r;
     }
+    if (!capture_stdout) {
+        stdout_file = CreateFileW(spec.stdout_path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, &sa,
+                                  CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (!stdout_file || stdout_file == INVALID_HANDLE_VALUE) {
+            close_h(in_r), close_h(in_w), close_h(out_r), close_h(out_w), close_h(err_r), close_h(err_w);
+            close_h(stdout_file);
+            r.failed = true;
+            r.err = "cannot open stdout file";
+            return r;
+        }
+        out_w = stdout_file;
+    }
     SetHandleInformation(in_w, HANDLE_FLAG_INHERIT, 0);
-    SetHandleInformation(out_r, HANDLE_FLAG_INHERIT, 0);
+    if (out_r) SetHandleInformation(out_r, HANDLE_FLAG_INHERIT, 0);
     if (err_r) SetHandleInformation(err_r, HANDLE_FLAG_INHERIT, 0);
     STARTUPINFOW si{};
     si.cb = sizeof si;
@@ -172,6 +188,7 @@ RunOut run(const RunSpec& spec) {
     close_h(err_w);
     if (!ok) {
         close_h(in_w), close_h(out_r), close_h(err_r);
+        if (stdout_file) close_h(stdout_file);
         r.failed = true;
         r.err = "CreateProcess failed";
         return r;
@@ -196,7 +213,8 @@ RunOut run(const RunSpec& spec) {
     } else {
         close_h(in_w);
     }
-    auto drain = [](HANDLE h, std::string& into) {
+    const std::size_t cap = spec.max_output_bytes;
+    auto drain = [&](HANDLE h, std::string& into) {
         if (!h) return;
         char buf[4096];
         for (;;) {
@@ -205,16 +223,27 @@ RunOut run(const RunSpec& spec) {
             DWORD got = 0;
             const DWORD want = std::min<DWORD>(avail, static_cast<DWORD>(sizeof buf));
             if (!ReadFile(h, buf, want, &got, nullptr) || got == 0) return;
-            into.append(buf, got);
+            if (cap == 0 || into.size() < cap) {
+                const std::size_t room = cap == 0 ? got : cap - into.size();
+                into.append(buf, std::min<std::size_t>(got, room));
+            }
         }
     };
-    const auto deadline = std::chrono::steady_clock::now() +
-                          std::chrono::duration<double>(std::max(0.1, spec.timeout_s));
+    const bool limit_time = spec.timeout_s > 0;
+    const auto deadline =
+        limit_time ? std::chrono::steady_clock::now() + std::chrono::duration<double>(spec.timeout_s)
+                   : std::chrono::steady_clock::time_point::max();
     for (;;) {
         drain(out_r, r.out);
         drain(err_r, r.err);
+        if (spec.stop && spec.stop->load()) {
+            TerminateProcess(pi.hProcess, 1);
+            WaitForSingleObject(pi.hProcess, 2000);
+            r.cancelled = true;
+            break;
+        }
         if (WaitForSingleObject(pi.hProcess, 20) == WAIT_OBJECT_0) break;
-        if (std::chrono::steady_clock::now() >= deadline) {
+        if (limit_time && std::chrono::steady_clock::now() >= deadline) {
             TerminateProcess(pi.hProcess, 1);
             WaitForSingleObject(pi.hProcess, 2000);
             r.timed_out = true;
@@ -232,6 +261,7 @@ RunOut run(const RunSpec& spec) {
     if (!r.timed_out && code >= 0xC0000000u) r.crashed = true;
     close_h(out_r);
     close_h(err_r);
+    if (stdout_file) close_h(stdout_file);
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
     return r;

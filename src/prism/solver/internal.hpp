@@ -24,8 +24,10 @@ struct Proc {
     double secs = 0.0;
 };
 
-// posix_spawn in its own process group; the whole group is killed on timeout
-// or when *stop becomes true. Never throws.
+// posix_spawn in its own process group (POSIX); on Windows maps to detail::run
+// (CreateProcess). Killed on timeout or when *stop becomes true. Never throws.
+// Windows smoke: build prism on MSVC or clang-cl, put cadical.exe on PATH, run
+// `prism_tests -tc="solver: sha256*"` then a certified tiny query if tools are installed.
 // stdin_path: the child's stdin (default /dev/null); stdout_path: the child's
 // stdout goes to that file instead of `out` (stderr is still captured).
 // mem_cap > 0: the child's resident memory is sampled (every ~100 ms, Linux

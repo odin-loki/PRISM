@@ -8,6 +8,8 @@
 
 #include "prism/sandbox.hpp"
 
+#include <atomic>
+#include <cstddef>
 #include <filesystem>
 #include <string>
 #include <utility>
@@ -28,6 +30,10 @@ struct RunSpec {
     // the caller wraps argv with sandbox::wrap_argv). Default: none.
     sandbox::Limits limits;
     bool merge_stderr = false;  // one pipe for stdout and stderr (order kept)
+    // Child stdout goes to this file instead of RunOut::out (stderr is still captured).
+    std::filesystem::path stdout_path;
+    const std::atomic<bool>* stop = nullptr;  // when true: kill the child (RunOut::cancelled)
+    std::size_t max_output_bytes = 0;       // 0: unlimited; caps captured stdout/stderr only
 };
 
 struct RunOut {
@@ -35,6 +41,7 @@ struct RunOut {
     std::string err;  // stderr, or why the child could not start
     int rc = -1;      // exit code; -signal on POSIX
     bool timed_out = false;
+    bool cancelled = false;  // stop poll requested termination
     bool failed = false;   // could not start (pipe/fork/exec/CreateProcess)
     bool crashed = false;  // killed by a signal / NTSTATUS exception, not by the timeout
 };
