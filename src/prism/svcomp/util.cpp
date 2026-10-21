@@ -183,7 +183,13 @@ std::optional<long long> parse_ll(std::string_view s) {
     long long v = 0;
     for (; i < t.size(); ++i) {
         if (t[i] < '0' || t[i] > '9') return std::nullopt;
-        if (v < cap) v = std::min(cap, v * 10 + (t[i] - '0'));
+        if (v < cap) {
+            const long long digit = static_cast<long long>(t[i] - '0');
+            if (v > (cap - digit) / 10)
+                v = cap;
+            else
+                v = v * 10 + digit;
+        }
     }
     return neg ? -v : v;
 }
