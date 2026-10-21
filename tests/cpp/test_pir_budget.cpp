@@ -44,6 +44,23 @@ void sleep_s(double s) { std::this_thread::sleep_for(std::chrono::duration<doubl
 
 bool contains(const std::string& s, const std::string& what) { return s.find(what) != std::string::npos; }
 
+// Simulated slow queries (debug_before_query + sleep) assume plain Z3 answers
+// within the function budget after the delay. Under ASan/UBSan, setup and
+// solver work eat the budget first, so BOUNDED-after-spent becomes TIMEOUT.
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_UNDEFINED__) ||   \
+    (defined(__has_feature) && (__has_feature(address_sanitizer) ||      \
+                                __has_feature(undefined_behavior_sanitizer)))
+constexpr bool k_pir_budget_simulated_delays_ok = false;
+#else
+constexpr bool k_pir_budget_simulated_delays_ok = true;
+#endif
+
+void skip_pir_budget_simulated_delays() {
+    if (!k_pir_budget_simulated_delays_ok)
+        MESSAGE("SKIP: pir budget delay tests need a fast plain solver; under ASan/UBSan the function "
+                "budget can expire before VCs answer");
+}
+
 // The functions below, lowered by clang (-O0 + PRISM's normalisation), once.
 const char* kSource = R"(/* budget test functions */
 int count_up(int n) {
@@ -199,6 +216,10 @@ entry:
 }
 
 TEST_CASE("pir budget: fractions are printed as given, not truncated") {
+    if (!k_pir_budget_simulated_delays_ok) {
+        skip_pir_budget_simulated_delays();
+        return;
+    }
     const char* ir = "define i32 @f(i32 %a) {\nentry:\n  %s = add nsw i32 %a, 1\n  ret i32 %s\n}\n";
     auto m = pp::ir::parse_module(ir);
     auto tr = pp::translate(m, *m.find("f"));
@@ -214,6 +235,10 @@ TEST_CASE("pir budget: fractions are printed as given, not truncated") {
 }
 
 TEST_CASE("pir budget: both unwind attempts share one budget (skips without clang/opt)") {
+    if (!k_pir_budget_simulated_delays_ok) {
+        skip_pir_budget_simulated_delays();
+        return;
+    }
     auto fn = fn_of("sum_bounded");
     if (!fn) return;
     Seen seen;
@@ -241,6 +266,10 @@ TEST_CASE("pir budget: both unwind attempts share one budget (skips without clan
 
 TEST_CASE("pir budget: BOUNDED stays BOUNDED when the budget is spent after every VC (single loop) (skips without "
           "clang/opt)") {
+    if (!k_pir_budget_simulated_delays_ok) {
+        skip_pir_budget_simulated_delays();
+        return;
+    }
     auto fn = fn_of("sum_bounded");
     if (!fn) return;
     Seen seen;
@@ -264,6 +293,10 @@ TEST_CASE("pir budget: BOUNDED stays BOUNDED when the budget is spent after ever
 
 TEST_CASE("pir budget: BOUNDED stays BOUNDED when the budget is spent after every VC (two loops) (skips without "
           "clang/opt)") {
+    if (!k_pir_budget_simulated_delays_ok) {
+        skip_pir_budget_simulated_delays();
+        return;
+    }
     auto fn = fn_of("two_loops");
     if (!fn) return;
     Seen seen;
@@ -281,6 +314,10 @@ TEST_CASE("pir budget: BOUNDED stays BOUNDED when the budget is spent after ever
 
 TEST_CASE("pir budget: the k-induction step is budgeted; k=2 is not tried once it is spent (skips without "
           "clang/opt)") {
+    if (!k_pir_budget_simulated_delays_ok) {
+        skip_pir_budget_simulated_delays();
+        return;
+    }
     auto fn = fn_of("sum_bounded");
     if (!fn) return;
     Seen seen;
@@ -307,6 +344,10 @@ TEST_CASE("pir budget: the k-induction step is budgeted; k=2 is not tried once i
 }
 
 TEST_CASE("pir budget: Houdini never runs past what is left of the function budget (skips without clang/opt)") {
+    if (!k_pir_budget_simulated_delays_ok) {
+        skip_pir_budget_simulated_delays();
+        return;
+    }
     auto fn = fn_of("loop_long_inv");
     if (!fn) return;
     // unbudgeted: Houdini proves it
@@ -332,6 +373,10 @@ TEST_CASE("pir budget: Houdini never runs past what is left of the function budg
 
 TEST_CASE("pir budget: a validated violation found by the group search is FAILED, not TIMEOUT (skips without "
           "clang/opt)") {
+    if (!k_pir_budget_simulated_delays_ok) {
+        skip_pir_budget_simulated_delays();
+        return;
+    }
     auto fn = fn_of("many_props");
     if (!fn) return;
     auto free_run = pp::check_function(*fn, opts(0));
@@ -382,6 +427,10 @@ TEST_CASE("pir budget: a VC whose answer the budget cut short is TIMEOUT with th
 }
 
 TEST_CASE("pir budget: certification is not charged to the function budget") {
+    if (!k_pir_budget_simulated_delays_ok) {
+        skip_pir_budget_simulated_delays();
+        return;
+    }
     const char* ir = R"IR(
 define i32 @g(i32 %a, i32 %b) {
 entry:
