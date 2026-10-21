@@ -4,6 +4,8 @@ build/
 build-*/
 build_cxx/
 build_wsl/
+build_win/
+build_z3test/
 __pycache__/
 *.pyc
 .cmake/

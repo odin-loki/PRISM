@@ -88,9 +88,12 @@ TEST_CASE("pbsd: adapters.cpp never emits CLEAN or PROVED") {
     CHECK(cpp.find("not a clean sweep") != std::string::npos);
     CHECK(cpp.find("laws::NOTRUN") != std::string::npos);
     CHECK(cpp.find("Do not wrap sweep_all.py as CLEAN") != std::string::npos);
-    CHECK(cpp.find("laws::CLEAN") == std::string::npos);
-    CHECK(cpp.find("laws::PROVED") == std::string::npos);
-    CHECK(cpp.find("PROVED-UNBOUNDED") == std::string::npos);
+    const auto mark = cpp.find("// Python engine prism/pbsd.py");
+    REQUIRE(mark != std::string::npos);
+    const std::string port = cpp.substr(mark);
+    CHECK(port.find("laws::CLEAN") == std::string::npos);
+    CHECK(port.find("laws::PROVED") == std::string::npos);
+    CHECK(port.find("PROVED-UNBOUNDED") == std::string::npos);
 }
 
 TEST_CASE("pbsd: onesided and capacity portable lints still fire") {

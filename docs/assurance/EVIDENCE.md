@@ -268,8 +268,8 @@ each project's `lean-toolchain`): `proofs/check.sh` passed all four steps
 
 - Artefacts: `tests/cpp/test_adapters.cpp` (config: optional adapter search),
   `tests/cpp/test_adapters.cpp::every missing tool is NOTRUN with its install hint`,
-  taxonomy coverage `prism/taxonomy.py` / `src/prism/taxonomy.cpp` with
-  `tests/test_taxonomy.py`, SARIF notifications in `src/prism/sarif.cpp`
+  taxonomy coverage `src/prism/taxonomy.cpp` with `tests/cpp/test_taxonomy.cpp`,
+  SARIF notifications in `src/prism/sarif.cpp`
   and `tests/cpp/test_sarif.cpp` (SARIF shape).
 - Shows: a missing tool or a stage that cannot run is a `NOTRUN` row, a
   defect class no stage covered is `GAP`, and both reach SARIF as tool

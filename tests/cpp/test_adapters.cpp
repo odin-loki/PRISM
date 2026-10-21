@@ -1065,7 +1065,7 @@ TEST_CASE("clang-tidy: jobs=1 and jobs=4 yield the same ordered findings") {
     for (int i = 0; i < 6; ++i)
         units.push_back(nt.t.put("u" + std::to_string(i) + ".c", "int main(void){return 0;}\n"));
     auto tidy = fake(nt.t.dir / "t", "clang-tidy",
-                     "f=\"$2\"\n"
+                     "f=\"$1\"\n"
                      "idx=$(basename \"$f\" .c | sed 's/^u//')\n"
                      "sleep $(awk -v i=\"$idx\" 'BEGIN{printf \"%.3f\", 0.002*(6-i)}')\n"
                      "case \"$idx\" in 1) sleep 35;; esac\n"

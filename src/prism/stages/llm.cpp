@@ -2,6 +2,8 @@
 // sandboxed compile+run of LLM-written C (declared in llm.hpp).
 #include "llm.hpp"
 
+#include "prism/ai.hpp"
+
 #ifdef PRISM_HAS_LLAMA
 #  include "llama.h"
 #endif
@@ -229,6 +231,27 @@ ChatResult LlamaEngine::complete(const std::vector<std::pair<std::string, std::s
     return r;
 }
 ChatResult LlamaEngine::complete_raw(const std::vector<std::pair<std::string, std::string>>& messages, double timeout) {
+    if (ai::session_config()) {
+        std::string why;
+        if (auto injected = ai::session_backend(&why)) {
+            std::string system;
+            std::string user;
+            for (auto& [role, content] : messages) {
+                if (role == "system")
+                    system = content;
+                else if (user.empty())
+                    user = content;
+                else
+                    user += "\n\n" + role + ":\n" + content;
+            }
+            ai::ModelRequest req;
+            req.feature = "chat";
+            req.system = system;
+            req.user = user;
+            auto reply = injected->complete(req);
+            return {reply.text, injected->name(), reply.error};
+        }
+    }
     if (backend == "none")
         return {"", "none", "llama.cpp not loaded and Ollama not reachable"};
 #ifdef PRISM_HAS_LLAMA

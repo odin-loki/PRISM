@@ -175,8 +175,9 @@ std::pair<std::vector<ojson>, int> self_check(const std::vector<Task>& tasks, co
         fs::path wd = work / "selfcheck" / path_key(t.ident) / it.fn;
         Exec res;
         bool ok = false;
+        constexpr double kSelfCheckRunTimeout = 120.0;
         if (it.exp) {
-            res = run_sanitized(t, it.fn, *params, input_grid(*params), wd);
+            res = run_sanitized(t, it.fn, *params, input_grid(*params), wd, kSelfCheckRunTimeout);
             ok = res.outcome == "clean";
         } else {
             auto w = t.witness.find(it.fn);
@@ -185,7 +186,7 @@ std::pair<std::vector<ojson>, int> self_check(const std::vector<Task>& tasks, co
                 rec["why"] = "false task without witness";
                 return rec;
             }
-            res = run_sanitized(t, it.fn, *params, {w->second}, wd);
+            res = run_sanitized(t, it.fn, *params, {w->second}, wd, kSelfCheckRunTimeout);
             const bool blind = t.sanitizer_blind.count(it.fn) > 0;
             ok = res.outcome == "ub" || (blind && res.outcome == "clean");
             if (blind) rec["sanitizer_blind"] = true;

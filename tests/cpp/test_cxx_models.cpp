@@ -46,15 +46,41 @@ bool run_cmd(const std::vector<std::string>& argv, std::string* out = nullptr, s
     for (auto& a : argv) args.push_back(const_cast<char*>(a.c_str()));
     args.push_back(nullptr);
     int pipe_out[2]{-1, -1};
+    int pipe_err[2]{-1, -1};
     if (out && pipe(pipe_out) != 0) return false;
-    pid_t pid = 0;
-    if (posix_spawnp(&pid, argv[0].c_str(), nullptr, nullptr, args.data(), environ) != 0) {
+    if (err && pipe(pipe_err) != 0) {
         if (out) {
             close(pipe_out[0]);
             close(pipe_out[1]);
         }
         return false;
     }
+    posix_spawn_file_actions_t actions;
+    posix_spawn_file_actions_init(&actions);
+    if (out) {
+        posix_spawn_file_actions_addclose(&actions, pipe_out[0]);
+        posix_spawn_file_actions_adddup2(&actions, pipe_out[1], STDOUT_FILENO);
+        posix_spawn_file_actions_addclose(&actions, pipe_out[1]);
+    }
+    if (err) {
+        posix_spawn_file_actions_addclose(&actions, pipe_err[0]);
+        posix_spawn_file_actions_adddup2(&actions, pipe_err[1], STDERR_FILENO);
+        posix_spawn_file_actions_addclose(&actions, pipe_err[1]);
+    }
+    pid_t pid = 0;
+    if (posix_spawnp(&pid, argv[0].c_str(), &actions, nullptr, args.data(), environ) != 0) {
+        posix_spawn_file_actions_destroy(&actions);
+        if (out) {
+            close(pipe_out[0]);
+            close(pipe_out[1]);
+        }
+        if (err) {
+            close(pipe_err[0]);
+            close(pipe_err[1]);
+        }
+        return false;
+    }
+    posix_spawn_file_actions_destroy(&actions);
     if (out) {
         close(pipe_out[1]);
         out->clear();
@@ -62,6 +88,14 @@ bool run_cmd(const std::vector<std::string>& argv, std::string* out = nullptr, s
         ssize_t n = 0;
         while ((n = ::read(pipe_out[0], buf, sizeof buf)) > 0) out->append(buf, static_cast<size_t>(n));
         close(pipe_out[0]);
+    }
+    if (err) {
+        close(pipe_err[1]);
+        err->clear();
+        char buf[8192];
+        ssize_t n = 0;
+        while ((n = ::read(pipe_err[0], buf, sizeof buf)) > 0) err->append(buf, static_cast<size_t>(n));
+        close(pipe_err[0]);
     }
     int st = 0;
     if (waitpid(pid, &st, 0) < 0) return false;

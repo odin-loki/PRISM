@@ -858,8 +858,9 @@ TEST_CASE("qa conformance: a sample of the label self-check passes") {
     }
     REQUIRE_FALSE(tasks.empty());
     QaTmp tmp;
-    const int jobs = std::max(1, static_cast<int>(std::thread::hardware_concurrency()) / 2);
-    auto [recs, bad] = qa::self_check(tasks, tmp.dir, jobs);
+    // Serial replay keeps the sample deterministic under doctest load (the
+    // workflow runs the full self-check with --jobs).
+    auto [recs, bad] = qa::self_check(tasks, tmp.dir, 1);
     std::string fails;
     for (const auto& r : recs)
         if (r["check"] == "FAIL") fails += r.dump() + "\n";

@@ -177,8 +177,8 @@ TEST_CASE("havoc: CMake CUDA skip is WARNING NOTRUN not STATUS CLEAN") {
     CHECK(cmake.find(warn) != std::string::npos);
     CHECK(cmake.find("CUDA kernel skipped (CLEAN") == std::string::npos);
     CHECK(cmake.find(std::string("message(STATUS \"") + warn) == std::string::npos);
-    std::regex cuda_block(R"(if\s*\(\s*PRISM_CUDA\s*\).*(?:\nendif\(\)\s*\n\s*\n|\nendif\(\)\s*\nif\(PRISM_LLAMA))",
-                          std::regex::extended);
+    std::regex cuda_block(
+        R"(if\s*\(\s*PRISM_CUDA\s*\)[\s\S]*?\nendif\(\)\s*\n\s*if\(PRISM_LLAMA)");
     std::smatch m;
     CHECK(std::regex_search(cmake, m, cuda_block));
     const std::string block = m[0].str();

@@ -20,7 +20,8 @@ namespace prism::qa {
 const std::vector<std::string> SAN_FLAGS = {"-g", "-O0", "-w", "-fsanitize=undefined,address",
                                             "-fno-sanitize-recover=all"};
 const std::vector<std::pair<std::string, std::string>> SAN_ENV = {
-    {"ASAN_OPTIONS", "detect_leaks=0:abort_on_error=0:halt_on_error=1"},
+    {"ASAN_OPTIONS",
+     "detect_leaks=0:abort_on_error=1:halt_on_error=1:print_summary=0:symbolize=0"},
     {"UBSAN_OPTIONS", "print_stacktrace=0:halt_on_error=1"},
 };
 
