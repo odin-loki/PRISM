@@ -201,7 +201,14 @@ void LlamaEngine::bind() {
 #endif
     backend = "none";
 }
-bool LlamaEngine::available() const { return backend != "none"; }
+bool LlamaEngine::available() const {
+    if (backend != "none") return true;
+    if (ai::session_config()) {
+        std::string why;
+        return ai::session_backend(&why) != nullptr;
+    }
+    return false;
+}
 // Roadmap 9.6: every model interaction goes to <out>/ai_audit.jsonl.
 // These chats never set a verdict by themselves (checker "none"); a caller
 // that checks the output (RLEF BMC) logs its own checked record.
