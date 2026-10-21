@@ -25,9 +25,8 @@ that uses Python is ported to C++23 (CMake already builds with
   BenchExec smoke on the `cpp` job. `conformance.yml` / `self-check.yml` →
   `prism-qa`; supply-chain builds `prism-deps`.
 - **Still open:** phase 5 (delete `prism/*.py` and the remaining pytest suite),
-  phase 6 (Z3 without Python — see phase-6 section; bindings off, upstream
-  CMake still requires an interpreter), `port/ai-gen-tools`, owner-only items
-  in `ROADMAP_STATUS.md`.
+  `port/ai-gen-tools`, owner-only items in `ROADMAP_STATUS.md`. **Phase 6
+  (Z3 without Python)** is **done** — see phase-6 section.
 - Appendix map is from audit `911b9f94f`; many rows are now **DONE** on C++
   even where the table still says partial — treat this status block as current.
 
@@ -377,48 +376,24 @@ goes in phase 5, so these are recorded, not fixed there):
 
 ### Phase 6: build without Python (vendored Z3)
 
-**Status (2026-10-09):** **Done.** `cmake/z3.cmake` bootstraps `src/tools/z3gen/main.cpp`
-as `Python3_EXECUTABLE`, copies pre-generated outputs from `cmake/z3-generated/`
-(keyed by `tree_sha256` matching `MANIFEST.toml` linked:z3), and keeps upstream
-`third_party/z3/CMakeLists.txt` unchanged. Refresh after a z3 pin bump:
-`python3 tools/sync_z3_generated.py <build-dir>` (reference build with Python),
-then commit `cmake/z3-generated/`. Previously PRISM already forced a minimal in-tree Z3 build
-(`CMakeLists.txt`: static `libz3`, no `z3` binary, no tests/examples, all API
-bindings and Z3 doc install off). That removes z3py / JNI / .NET work, but
-**does not** make configure or compile Python-free: vendored
-`third_party/z3/CMakeLists.txt` still does `find_package(Python3 REQUIRED)` at
-line 162, and Ninja still invokes Python for codegen (configure fails if
-`Python3_EXECUTABLE` is missing or invalid; verified in WSL).
+**Status (2026-10-22):** **Done.** PRISM still calls upstream
+`add_subdirectory(third_party/z3)` with bindings and examples off, but
+`cmake/z3.cmake` (included from `CMakeLists.txt` before that subdirectory)
+bootstraps the std-only `z3gen` tool and forces `Python3_EXECUTABLE` to a shim
+that runs `z3gen` instead of the system interpreter. At configure time CMake
+checks that `cmake/z3-generated/tree_sha256` matches the `linked:z3` pin in
+`third_party/MANIFEST.toml`; at build time `z3gen` copies the checked-in
+pre-generated outputs (`*_params.hpp` from each `*.pyg`, API glue, pattern DB,
+MSVC `api_dll.def` when needed) into the build tree so Ninja never executes
+upstream `scripts/*.py`. A clean C++ configure/build therefore does not require
+Python on the PATH for Z3 (the `cpp` CI job still installs `python3-minimal`
+for BenchExec smoke only).
 
-**Where Python is used today (upstream Z3 CMake, bindings disabled):**
-
-| When | Script / mechanism | Outputs (under build tree) |
-|---|---|---|
-| configure | `find_package(Python3)` in `third_party/z3/CMakeLists.txt` | — |
-| build | `scripts/pyg2hpp.py` via `cmake/z3_add_component.cmake` | `*_params.hpp` from each `*.pyg` (~30 rules) |
-| build | `scripts/update_api.py` in `src/api/CMakeLists.txt` | `api_commands.cpp`, `api_log_macros.{cpp,h}` |
-| build | `scripts/mk_install_tactic_cpp.py` | `install_tactic.cpp` |
-| build | `scripts/mk_mem_initializer_cpp.py` | `mem_initializer.cpp` |
-| build | `scripts/mk_gparams_register_modules_cpp.py` | `gparams_register_modules.cpp` |
-| build | `scripts/mk_pat_db.py` in `src/ast/pattern/` | `database.h` |
-| build (MSVC only) | `scripts/mk_def_file.py` | `api_dll.def` |
-
-Not used when PRISM configures Z3: `Z3_BUILD_PYTHON_BINDINGS`,
-`Z3_BUILD_DOCUMENTATION`, examples (`Z3_ENABLE_EXAMPLE_TARGETS` is off for
-subdirectory builds), Java/.NET/Julia bindings.
-
-**What phase 6 still needs:** `third_party/` is never edited, so stop calling
-`add_subdirectory(third_party/z3)` and add `cmake/z3.cmake`, PRISM's own build
-description of the pinned tree (`linked:z3` digest
-`ff553588…` in `third_party/MANIFEST.toml`). Generated files come from one of:
-
-- (a) checked in under `cmake/z3-generated/` with the Z3 tree digest they
-  were made from. CMake fails if the digest changes.
-- (b) a small C++ generator (`src/tools/z3gen.cpp` or similar) that reproduces
-  the scripts above.
-
-C++ CI/Docker no longer need Python for Z3 configure or `libz3` codegen (other
-jobs may still use Python until phase 5).
+**Maintainers:** after bumping the vendored Z3 pin, run a one-off reference
+build with real Python, then `python3 tools/sync_z3_generated.py <build-dir>` and
+commit the refreshed `cmake/z3-generated/` tree. Phase 5 may still use Python
+for pytest, generators, and `tools/svcomp/prism.py` until the Python engine is
+deleted.
 
 ## Done when
 
