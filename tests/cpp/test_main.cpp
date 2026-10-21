@@ -6210,7 +6210,8 @@ TEST_CASE("solver: GPU ProbSAT finds a planted assignment") {
 }
 #endif
 
-// The portfolio's process runner is POSIX (posix_spawn); roadmap D7.
+// D178 runs portfolio members on Windows; these integration tests stay
+// Linux CI-only because MSVC lacks __int128 for some solver paths.
 #if defined(PRISM_HAS_Z3) && !defined(_WIN32)
 TEST_CASE("solver: features, certifiability and query normalisation") {
     z3::context c;
