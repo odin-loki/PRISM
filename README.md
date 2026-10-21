@@ -41,6 +41,22 @@ cmake -B build -G Ninja -DPRISM_CUDA=OFF -DPRISM_LLAMA=OFF -DPRISM_QT=OFF -DPRIS
 cmake --build build
 ```
 
+### Windows + WSL
+
+A checkout under OneDrive on `/mnt/c/...` can make `./build/prism_tests` look
+hung: the suite reads thousands of repo files and 9p + sync is slow. Prefer
+building on Linux ext4 and syncing from the Windows tree.
+
+From WSL:
+
+```
+bash scripts/wsl_run_prism_tests.sh   # rsync → ~/prism-run, cmake, full suite
+bash scripts/wsl_run_tests_only.sh  # re-run tests after a manual build there
+```
+
+`PRISM_WSL_DIR` — ext4 working copy (default `~/prism-run`).
+`PRISM_WIN_SRC` — Windows checkout when auto-detection from `/mnt/c` is wrong.
+
 Output under `--out` (default `prism-out/`):
 
 - `report.md` — human report; `report.json` — full machine report
