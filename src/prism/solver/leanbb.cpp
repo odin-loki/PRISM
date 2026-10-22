@@ -10,6 +10,7 @@
 // evaluator below and, when built, by the Lean semantics (`--eval`).
 
 #include "prism/solver.hpp"
+#include "prism/wide_int.hpp"
 #include "internal.hpp"
 
 #ifdef PRISM_HAS_Z3
@@ -37,7 +38,16 @@ std::string_view bitblaster_name(Bitblaster b) {
 
 namespace {
 
-using u128 = unsigned __int128;
+using prism::i128;
+using prism::i128_from_u128;
+using prism::i128_mul;
+using prism::i128_neg;
+using prism::i128_shl;
+using prism::i128_sub;
+using prism::u128;
+using prism::u128_mask;
+using prism::u128_shl;
+using prism::u128_shr;
 
 bool has_line(std::string_view out, std::string_view line) {
     std::size_t s = 0;
@@ -162,7 +172,7 @@ struct Val {
     u128 v = 0;
 };
 
-u128 mask_of(unsigned w) { return w >= 128 ? ~u128(0) : ((u128(1) << w) - 1); }
+u128 mask_of(unsigned w) { return u128_mask(w); }
 
 struct Evaluator {
     const std::vector<SNode>& n;
@@ -205,10 +215,12 @@ struct Evaluator {
         }
         return true;
     }
-    static __int128 sval(Val x) {
-        if (x.w == 0) return 0;
-        if (x.w < 128 && ((x.v >> (x.w - 1)) & 1)) return __int128(x.v) - (__int128(1) << (x.w - 1)) * 2;
-        return __int128(x.v);
+    static i128 sval(Val x) {
+        if (x.w == 0) return i128(0);
+        const u128 pat = x.v & mask_of(x.w);
+        if (x.w < 128 && ((pat >> (x.w - 1)) & 1))
+            return i128_sub(i128_from_u128(pat), i128_shl(i128(1), x.w));
+        return i128_from_u128(pat);
     }
     static bool msb(Val x) { return x.w > 0 && ((x.v >> (x.w - 1)) & 1); }
     static Val mk(unsigned w, u128 v) { return Val{w, v & mask_of(w)}; }
@@ -332,9 +344,9 @@ struct Evaluator {
         if (op == "smulhi" || op == "smullo") {
             if (w == 0) return B(false);
             if (w > 64) return bad("smulo evaluation above 64 bits");
-            __int128 p = sval(*a) * sval(*b);
-            __int128 lim = __int128(1) << (w - 1);
-            return B(op == "smulhi" ? p >= lim : p < -lim);
+            const i128 p = i128_mul(sval(*a), sval(*b));
+            const i128 lim = i128_shl(i128(1), w - 1);
+            return B(op == "smulhi" ? p >= lim : p < i128_neg(lim));
         }
         return bad("unknown operator " + op);
     }

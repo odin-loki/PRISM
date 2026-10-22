@@ -51,13 +51,13 @@ Legend:
 
 | File | ~matches | Role |
 |------|----------|------|
-| `src/prism/solver/leanbb.cpp` | 8 | Lean bit-blast helper: `sval`, wide multiply overflow vs bit-width. |
+| `src/prism/solver/leanbb.cpp` | — | Migrated to `prism::wide_int.hpp` (phase 4). |
 
 ### AI / regress (`native` — `prism_core`)
 
 | File | ~matches | Role |
 |------|----------|------|
-| `src/prism/ai/regress.cpp` | 23 | Parse and format counterexample integers for regression artefacts. |
+| `src/prism/ai/regress.cpp` | — | Migrated to `prism::wide_int.hpp` (phase 4). |
 
 ### BMC / astlint / interp (`string` only — not an MSVC type blocker)
 
@@ -96,25 +96,20 @@ enabled on Windows later.
 
 ---
 
-## 2. Existing portable int128 helper?
+## 2. Portable helper (`include/prism/wide_int.hpp`)
 
-**No.** There is no shared `include/prism/*int128*`, `wide_int`, Boost.Multiprecision,
-or Abseil int128 in the linked tree (`third_party/` policy forbids ad-hoc adds without
-manifest + licence check).
+**`prism::i128` / `prism::u128`** with `PRISM_HAS_INT128` fast path (Clang/GCC) and
+`{hi, lo}` fallback for MSVC. Shared **`parse_i128`** / **`format_i128`**, bitwise
+`u128` ops, and unit tests in `tests/cpp/test_wide_int.cpp`.
 
-Local aliases only (not portable):
+**Still on `__int128` (unix-only QA, phase 6):**
 
-- `src/tools/qa/support/pyrandom.hpp`: `using i128 = __int128`, `using u128 = unsigned __int128`
-- `src/tools/qa/support/task.hpp`: `using i128 = __int128`
-- `src/prism/solver/leanbb.cpp`: `using u128 = unsigned __int128` (file-local)
+- `src/tools/qa/support/pyrandom.hpp`, `task.hpp`, `yaml_subset.*`, `replay.cpp`
 
-Duplicated ad-hoc helpers (candidates to fold into one module):
+**Duplicated ad-hoc helpers (candidates to fold later):**
 
-- `i128_str` / decimal formatting: `yaml_subset.cpp`, `regress.cpp`, `witness.cpp`
-- `parse_int` / `as_int` style parsers: `replay.cpp`, `yaml_subset.cpp`, `regress.cpp`
-
-**Trivial central typedef does not exist** — Phase 1 stops at documentation; no refactor
-in this session.
+- `i128_str` / decimal formatting: `yaml_subset.cpp` (witness/regress use `format_i128`)
+- `parse_int` / `as_int` style parsers: `yaml_subset.cpp` (svcomp/regress use `parse_i128`)
 
 ---
 
@@ -168,9 +163,9 @@ shortcut. Keep **D** only for explicitly documented optional components, not cor
 | Phase | Scope | Deliverable |
 |-------|--------|-------------|
 | **1** (done) | Audit + this doc | File list, strategies, estimates |
-| **2** | `include/prism/wide_int.hpp` (+ `.cpp` if needed) | `PRISM_HAS_INT128`, shared `parse_i128` / `format_i128`, unit tests in `tests/cpp/test_wide_int.cpp` |
-| **3** | SV-COMP surface | `svcomp_witness.hpp` `Num::i` → portable type; migrate `witness.cpp`, `replay.cpp`, `debug_ir.cpp`; fix `test_svcomp.cpp` |
-| **4** | Analysis core | `interval.cpp`, `pir/pir.cpp`, `translate_mem.cpp`, `solver/leanbb.cpp`, `ai/regress.cpp` |
+| **2** (done) | `include/prism/wide_int.hpp` (+ `.cpp` if needed) | `PRISM_HAS_INT128`, shared `parse_i128` / `format_i128`, unit tests in `tests/cpp/test_wide_int.cpp` |
+| **3** (done) | SV-COMP surface | `svcomp_witness.hpp` `Num::i` → portable type; migrate `witness.cpp`, `replay.cpp`, `debug_ir.cpp`; fix `test_svcomp.cpp` |
+| **4** (done) | Analysis core | `interval.cpp`, `pir/pir.cpp`, `translate_mem.cpp`, `solver/leanbb.cpp`, `ai/regress.cpp` |
 | **5** | MSVC CI | `windows-msvc` job: `cmake -G Ninja -DCMAKE_CXX_COMPILER=cl` (or VS generator), `PRISM_Z3=ON`, subset of `prism_tests`; lift `#if !defined(_WIN32)` on solver tests when leanbb compiles |
 | **6** (optional) | QA on Windows | Port `yaml_subset` / conformance sources; remove `if(UNIX)` gate or add Windows subset |
 

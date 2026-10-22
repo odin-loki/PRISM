@@ -19,6 +19,7 @@
 #include "prism/cparse.hpp"
 #include "prism/laws.hpp"
 #include "prism/sandbox.hpp"
+#include "prism/wide_int.hpp"
 
 #include "../proc.hpp"
 
@@ -116,74 +117,54 @@ std::optional<Scalar> scalar_of(const std::string& type) {
     return it->second;
 }
 
+using prism::format_i128;
+using prism::i128;
+using prism::i128_eq;
+using prism::i128_from_u128;
+using prism::i128_neg;
+using prism::i128_shl;
+using prism::i128_sub;
+using prism::i128_to_u128;
+using prism::parse_i128;
+using prism::u128;
+using prism::u128_abs;
+using prism::u128_mask;
+
 // Raw cex value -> the integer it denotes (two's complement bit pattern for #x/#b).
-std::optional<unsigned __int128> raw_bits(const std::string& raw, bool* negative_decimal, __int128* dec) {
+std::optional<u128> raw_bits(const std::string& raw, bool* negative_decimal, i128* dec) {
     *negative_decimal = false;
-    if (raw == "true") return 1;
-    if (raw == "false") return 0;
+    if (raw == "true") return u128(1);
+    if (raw == "false") return u128(0);
     try {
         if (raw.starts_with("#x")) {
             if (raw.size() > 34) return std::nullopt;
-            unsigned __int128 v = 0;
+            u128 v;
             for (std::size_t i = 2; i < raw.size(); ++i) {
                 char c = static_cast<char>(std::tolower(static_cast<unsigned char>(raw[i])));
                 int d = std::isdigit(static_cast<unsigned char>(c)) ? c - '0' : (c >= 'a' && c <= 'f') ? c - 'a' + 10 : -1;
                 if (d < 0) return std::nullopt;
-                v = v * 16 + static_cast<unsigned>(d);
+                v = v * 16 + u128(static_cast<unsigned>(d));
             }
             return v;
         }
         if (raw.starts_with("#b")) {
             if (raw.size() > 130) return std::nullopt;
-            unsigned __int128 v = 0;
+            u128 v;
             for (std::size_t i = 2; i < raw.size(); ++i) {
                 if (raw[i] != '0' && raw[i] != '1') return std::nullopt;
-                v = v * 2 + static_cast<unsigned>(raw[i] - '0');
+                v = v * 2 + u128(static_cast<unsigned>(raw[i] - '0'));
             }
             return v;
         }
-        std::string s = raw;
-        bool neg = false;
-        if (!s.empty() && (s[0] == '-' || s[0] == '+')) {
-            neg = s[0] == '-';
-            s = s.substr(1);
+        if (auto parsed = parse_i128(raw)) {
+            if (dec) *dec = *parsed;
+            *negative_decimal = *parsed < i128(0);
+            return u128_abs(*parsed);
         }
-        if (s.empty()) return std::nullopt;
-        unsigned __int128 v = 0;
-        int base = 10;
-        std::size_t i = 0;
-        if (s.size() > 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
-            base = 16;
-            i = 2;
-        }
-        for (; i < s.size(); ++i) {
-            char c = static_cast<char>(std::tolower(static_cast<unsigned char>(s[i])));
-            int d = std::isdigit(static_cast<unsigned char>(c)) ? c - '0'
-                    : (base == 16 && c >= 'a' && c <= 'f') ? c - 'a' + 10 : -1;
-            if (d < 0) return std::nullopt;
-            v = v * static_cast<unsigned>(base) + static_cast<unsigned>(d);
-            if (v >> 100) return std::nullopt;
-        }
-        *negative_decimal = neg;
-        *dec = neg ? -static_cast<__int128>(v) : static_cast<__int128>(v);
-        return v;
+        return std::nullopt;
     } catch (...) {
         return std::nullopt;
     }
-}
-
-std::string i128_str(__int128 v) {
-    if (v == 0) return "0";
-    bool neg = v < 0;
-    unsigned __int128 u = neg ? static_cast<unsigned __int128>(-(v + 1)) + 1 : static_cast<unsigned __int128>(v);
-    std::string s;
-    while (u) {
-        s += static_cast<char>('0' + static_cast<int>(u % 10));
-        u /= 10;
-    }
-    if (neg) s += '-';
-    std::reverse(s.begin(), s.end());
-    return s;
 }
 
 }  // namespace
@@ -191,33 +172,32 @@ std::string i128_str(__int128 v) {
 std::optional<std::string> c_literal_for(const std::string& type, const std::string& raw) {
     auto sc = scalar_of(type);
     if (!sc) return std::nullopt;
-    bool negdec = false;
-    __int128 dec = 0;
+    bool negdec = false;  // set by raw_bits for decimal forms; pat uses dec directly
+    i128 dec = i128(0);
     auto bits = raw_bits(raw, &negdec, &dec);
     if (!bits) return std::nullopt;
     const bool decimal = !(raw.starts_with("#x") || raw.starts_with("#b") || raw == "true" || raw == "false");
     const int w = sc->bits;
-    const unsigned __int128 mask = w >= 128 ? ~static_cast<unsigned __int128>(0)
-                                            : ((static_cast<unsigned __int128>(1) << w) - 1);
+    const u128 mask = u128_mask(static_cast<unsigned>(w));
     // Reinterpret in the parameter's width: decimal values are wrapped into
     // range the same way prism-qa conformance replay() does.
-    unsigned __int128 pat = decimal ? static_cast<unsigned __int128>(dec) & mask : (*bits & mask);
-    __int128 value;
-    if (sc->is_signed && w < 128 && (pat >> (w - 1)) & 1)
-        value = static_cast<__int128>(pat) - (static_cast<__int128>(1) << w);
+    const u128 pat = decimal ? i128_to_u128(dec) & mask : (*bits & mask);
+    i128 value;
+    if (sc->is_signed && w < 128 && ((pat >> (w - 1)) & 1))
+        value = i128_sub(i128_from_u128(pat), i128_shl(i128(1), w));
     else
-        value = static_cast<__int128>(pat);
+        value = i128_from_u128(pat);
     std::string t = norm_type(type);
-    if (sc->is_bool) return std::string(value ? "1" : "0");
+    if (sc->is_bool) return std::string(value != i128(0) ? "1" : "0");
     std::string lit;
-    if (sc->is_signed && w == 64 && value == -(static_cast<__int128>(1) << 63))
+    if (sc->is_signed && w == 64 && i128_eq(value, i128_neg(i128_shl(i128(1), 63))))
         lit = "(-9223372036854775807LL - 1)";
-    else if (value < 0)
-        lit = "(" + i128_str(value) + "LL)";
+    else if (value < i128(0))
+        lit = "(" + format_i128(value) + "LL)";
     else if (!sc->is_signed && w == 64)
-        lit = i128_str(value) + "ULL";
+        lit = format_i128(value) + "ULL";
     else
-        lit = i128_str(value) + "LL";
+        lit = format_i128(value) + "LL";
     return "(" + t + ")" + lit;
 }
 
@@ -243,7 +223,7 @@ std::vector<std::pair<std::string, std::string>> parse_counterexample(const std:
         while (j < cex.size() && std::isalnum(static_cast<unsigned char>(cex[j]))) ++j;
         std::string val = cex.substr(vb, j - vb);
         bool neg = false;
-        __int128 d = 0;
+        i128 d = i128(0);
         if (!val.empty() && !std::isdigit(static_cast<unsigned char>(name[0])) && raw_bits(val, &neg, &d)) {
             bool dup = false;
             for (auto& [n, v] : out) dup = dup || n == name;

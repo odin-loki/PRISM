@@ -57,6 +57,18 @@ inline i128 i128_shr(i128 v, int n) { return n < 0 ? v : v >> n; }
 
 inline i128 i128_and(i128 a, i128 b) { return a & b; }
 
+inline i128 i128_from_u128(u128 v) { return static_cast<i128>(v); }
+
+inline u128 i128_to_u128(i128 v) { return static_cast<u128>(v); }
+
+inline u128 u128_shl(u128 v, unsigned n) { return n >= 128 ? u128(0) : v << n; }
+
+inline u128 u128_shr(u128 v, unsigned n) { return n >= 128 ? u128(0) : v >> n; }
+
+inline u128 u128_mask(unsigned w) { return w >= 128 ? ~u128(0) : u128_shl(u128(1), w) - u128(1); }
+
+inline bool u128_bit(u128 v, unsigned k) { return k < 128 && ((v >> k) & 1); }
+
 inline std::string format_i128(i128 v) {
     if (v == 0) return "0";
     bool neg = v < 0;
@@ -98,7 +110,25 @@ struct u128 {
     }
 
     friend constexpr u128 operator-(u128 a, u128 b) { return a + ~b + u128(1); }
+
+    friend constexpr u128 operator|(u128 a, u128 b) { return {a.hi | b.hi, a.lo | b.lo}; }
+
+    friend constexpr u128 operator&(u128 a, u128 b) { return {a.hi & b.hi, a.lo & b.lo}; }
+
+    friend constexpr u128 operator^(u128 a, u128 b) { return {a.hi ^ b.hi, a.lo ^ b.lo}; }
 };
+
+inline u128 operator<<(u128 v, unsigned n) {
+    if (n >= 128) return u128(0);
+    if (n >= 64) return u128(v.lo << (n - 64), 0);
+    return u128((v.hi << n) | (v.lo >> (64 - n)), v.lo << n);
+}
+
+inline u128 operator>>(u128 v, unsigned n) {
+    if (n >= 128) return u128(0);
+    if (n >= 64) return u128(0, v.hi >> (n - 64));
+    return u128(v.hi >> n, (v.lo >> n) | (v.hi << (64 - n)));
+}
 
 namespace wide_int_detail {
 
@@ -144,6 +174,26 @@ inline std::pair<u128, std::uint64_t> divmod_u128_u64(u128 n, std::uint64_t d) {
     return {u128(q_hi, q_lo), rem};
 }
 
+inline std::pair<u128, u128> divmod_u128_u128(u128 n, u128 d) {
+    if (d == u128(0)) return {u128(0), n};
+    if (n < d) return {u128(0), n};
+    if (d.hi == 0) {
+        auto qr = divmod_u128_u64(n, d.lo);
+        return {qr.first, u128(qr.second)};
+    }
+    u128 q;
+    u128 r;
+    for (int i = 127; i >= 0; --i) {
+        const bool bit = i >= 64 ? ((n.hi >> (i - 64)) & 1) != 0 : ((n.lo >> i) & 1) != 0;
+        r = (r << 1) | u128(bit ? 1 : 0);
+        if (r >= d) {
+            r = r - d;
+            q = q | (u128(1) << i);
+        }
+    }
+    return {q, r};
+}
+
 }  // namespace wide_int_detail
 
 inline u128 operator*(u128 a, u128 b) {
@@ -156,6 +206,10 @@ inline u128 operator*(u128 a, u128 b) {
 inline u128 operator/(u128 a, std::uint64_t d) { return wide_int_detail::divmod_u128_u64(a, d).first; }
 
 inline std::uint64_t operator%(u128 a, std::uint64_t d) { return wide_int_detail::divmod_u128_u64(a, d).second; }
+
+inline u128 operator/(u128 a, u128 b) { return wide_int_detail::divmod_u128_u128(a, b).first; }
+
+inline u128 operator%(u128 a, u128 b) { return wide_int_detail::divmod_u128_u128(a, b).second; }
 
 struct i128 {
     u128 bits{};
@@ -258,6 +312,18 @@ inline i128 i128_shr(i128 v, int n) {
 }
 
 inline i128 i128_and(i128 a, i128 b) { return i128(u128(a.bits.lo & b.bits.lo, a.bits.hi & b.bits.hi)); }
+
+inline i128 i128_from_u128(u128 v) { return i128(v); }
+
+inline u128 i128_to_u128(i128 v) { return v.bits; }
+
+inline u128 u128_shl(u128 v, unsigned n) { return v << n; }
+
+inline u128 u128_shr(u128 v, unsigned n) { return v >> n; }
+
+inline u128 u128_mask(unsigned w) { return w >= 128 ? ~u128(0) : u128_shl(u128(1), w) - u128(1); }
+
+inline bool u128_bit(u128 v, unsigned k) { return k < 128 && ((u128_shr(v, k).lo) & 1); }
 
 inline std::string format_i128(i128 v) {
     if (v == i128(0)) return "0";

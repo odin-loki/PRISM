@@ -18,6 +18,8 @@ using prism::i128_neg;
 using prism::i128_sub;
 using prism::i128_to_i64;
 using prism::parse_i128;
+using prism::u128;
+using prism::u128_mask;
 
 namespace {
 
@@ -73,4 +75,16 @@ TEST_CASE("wide_int arithmetic smoke") {
     CHECK(i128_eq(i128_max(i128(1), i128(2)), i128(2)));
     CHECK(i128_eq(i128_min(i128(1), i128(2)), i128(1)));
     CHECK(i128_to_i64(i128(-42)) == -42);
+}
+
+TEST_CASE("wide_int u128 bitwise smoke") {
+    CHECK((u128(3) | u128(5)) == u128(7));
+    CHECK((u128(0xff) & u128(0xf0)) == u128(0xf0));
+    CHECK(u128_mask(8) == u128(0xff));
+    CHECK((u128(1) << 64) != u128(0));
+#if !PRISM_HAS_INT128
+    CHECK((u128(1) << 64) == u128(1, 0));
+    CHECK((u128(1, 0) >> 64) == u128(1));
+#endif
+    CHECK(u128(1000) / u128(10) == u128(100));
 }
