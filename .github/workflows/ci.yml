@@ -129,6 +129,32 @@ jobs:
           build/prism testdata/abs_ok.c --no-llm --stage inventory --out /tmp/prism-smoke-out
           test -f /tmp/prism-smoke-out/report.json
 
+  # prism_core / prism / prism_tests use __int128 (interval, PIR, SV-COMP, BMC, …).
+  # Neither MSVC nor VS clang-cl on the Windows ABI implements it, so this job
+  # does not build the engine or run prism_tests. It smoke-checks CMake, Ninja,
+  # and vendored PCRE2 plus std-only targets (same flags as a slim native build).
+  windows-compile-smoke:
+    name: Windows compile smoke
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - uses: actions/cache@v4
+        with:
+          path: build-win
+          key: win-smoke-${{ hashFiles('CMakeLists.txt', 'third_party/pcre2/CMakeLists.txt') }}-${{ github.sha }}
+          restore-keys: win-smoke-${{ hashFiles('CMakeLists.txt', 'third_party/pcre2/CMakeLists.txt') }}-
+      - name: Configure (clang-cl via -T ClangCL)
+        run: >
+          cmake -B build-win -G Ninja -T ClangCL
+          -DPRISM_CUDA=OFF -DPRISM_LLAMA=OFF -DPRISM_QT=OFF -DPRISM_Z3=OFF
+          -DPRISM_TESTS=OFF -DPRISM_LIBCLANG=OFF
+      - name: Build (no prism_core)
+        run: cmake --build build-win --target prism-deps prism_docs_check pcre2-8-static
+
   selfcheck:
     name: PRISM on PRISM (SARIF artifact, not gating)
     runs-on: ubuntu-24.04
