@@ -165,7 +165,7 @@ shortcut. Keep **D** only for explicitly documented optional components, not cor
 | **3** (done) | SV-COMP surface | `svcomp_witness.hpp` `Num::i` → portable type; migrate `witness.cpp`, `replay.cpp`, `debug_ir.cpp`; fix `test_svcomp.cpp` |
 | **4** (done) | Analysis core | `interval.cpp`, `pir/pir.cpp`, `translate_mem.cpp`, `solver/leanbb.cpp`, `ai/regress.cpp` |
 | **5a** (done) | MSVC CI smoke | `windows-compile-smoke`: Ninja + `clang-cl`, `PRISM_Z3=OFF`, build `prism_core` + `prism` + `prism-qa` + portable `prism_tests` subset (phase 7). Shims: `utc_tm`, `set_env`, `NOMINMAX`, `wide_int` / `leanbb`, `solver/util.cpp` `windows.h` + `#undef ERROR`. |
-| **5b** (in progress) | Windows CI + Z3 | `windows-compile-smoke-z3`: Ninja + `clang-cl`, `PRISM_Z3=ON`, same targets as 5a (no full `prism_tests` yet). Remaining: native `cl` (z3gen uses `/Fe:` when not clang-cl), lift `#if !defined(_WIN32)` in `test_leanbb.cpp`, expand WIN subset toward full suite. |
+| **5b** (CI done) | Windows CI + Z3 | `windows-compile-smoke-z3`: Ninja + `clang-cl`, `PRISM_Z3=ON`, builds `prism_core` + `prism` + `prism-qa` (~44 min cold; cache `build-win-z3`; needs `z3gen_shim.bat`). Remaining: native `cl`, `prism_tests` + Z3 on one job, lift `#if !defined(_WIN32)` in `test_leanbb.cpp`. |
 | **6** (partial) | QA on Windows | `yaml_subset` + `task` + `pyrandom` on `prism::i128` (done); `prism-qa` in `windows-compile-smoke`; conformance tree stays `if(UNIX)` |
 | **7** (done) | Windows `prism_tests` subset | `PRISM_TESTS_WIN_SUBSET`: `test_main_win.cpp` + `test_wide_int` / `test_interval` / `test_svcomp` / `test_naming`; CI runs `prism_tests.exe` in `windows-compile-smoke`. |
 
@@ -201,7 +201,8 @@ String-only BMC/astlint files: **0** type migration expected.
   and `z3gen`; no Python on PATH). Windows needs `z3gen_shim.bat` (not `.exe` batch text)
   so `FindPython3` can execute the shim during Z3 configure. **Still open:** MSVC `cl`
   without clang-cl, full Windows `prism_tests` (unistd-heavy TUs beyond the phase-7 subset),
-  and ccache for Z3 on Windows runners (first build is slow).
+  and ccache for Z3 on Windows runners (first vendored Z3 build ~44 min on
+  `windows-latest` as of 2026-10-22; `build-win-z3` cache helps reruns).
 - **Phase 7 (Windows `prism_tests` subset):** `windows-compile-smoke` sets
   `PRISM_TESTS=ON` and `PRISM_TESTS_WIN_SUBSET=ON` (see `CMakeLists.txt`). Configure
   fails on WIN32 if tests are on without the subset flag. The subset links five TUs plus
