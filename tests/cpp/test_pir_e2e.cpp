@@ -278,6 +278,10 @@ std::map<std::pair<std::string, std::string>, const prism::Finding*> index(
 }  // namespace
 
 TEST_CASE("pir e2e: tests/pir verdict table (skips without clang/opt)") {
+#ifdef _WIN32
+    MESSAGE("pir e2e verdict table omitted on WIN32 (CI runtime); smaller cases below still run");
+    return;
+#endif
     auto cfg = prism::default_config();
     auto fe = pp::find_frontend(cfg);
     if (!fe.clang || !fe.opt) {

@@ -9,6 +9,7 @@
 #include "prism/stages.hpp"
 
 #include "../../src/prism/adapters_internal.hpp"
+#include "../../src/prism/stages/llm.hpp"
 
 #include <cctype>
 #include <filesystem>
@@ -20,6 +21,7 @@
 namespace fs = std::filesystem;
 namespace laws = prism::laws;
 namespace ad = prism::adapters_detail;
+namespace sd = prism::stages_detail;
 
 namespace {
 
@@ -38,6 +40,13 @@ std::string lower(std::string s) {
 }
 
 bool has(const std::string& hay, const std::string& needle) { return hay.find(needle) != std::string::npos; }
+
+fs::path testdata() { return repo_root() / "testdata"; }
+
+std::string xget(const prism::Finding& f, const std::string& key) {
+    auto it = f.extra.find(key);
+    return it == f.extra.end() ? std::string() : it->second;
+}
 
 }  // namespace
 
@@ -130,4 +139,46 @@ TEST_CASE("cbmc: Law 8 refuses check-disabling flags") {
     CHECK_THROWS_WITH_AS(ad::refuse_disabled_checks({"cbmc", "a.c", "--no-bounds-check"}),
                          "refusing to disable a check: --no-bounds-check", std::runtime_error);
     CHECK_NOTHROW(ad::refuse_disabled_checks({"cbmc", "a.c", "--bounds-check"}));
+}
+
+TEST_CASE("llm_httpish: connection errors are a missing backend, not a failed repair") {
+    CHECK(sd::llm_httpish("Connection aborted."));
+    CHECK(sd::llm_httpish("connection refused"));
+    CHECK(sd::llm_httpish("[Errno 111] Connection refused"));
+    CHECK(sd::llm_httpish("llama.cpp/Ollama not reachable"));
+    CHECK_FALSE(sd::llm_httpish("candidate did not compile"));
+    CHECK_FALSE(sd::llm_httpish(""));
+}
+
+TEST_CASE("execute_cex replays concretely (not a proof); rlef_repair without a model is NOTRUN") {
+    auto src = testdata() / "div_param.c";
+    prism::FunctionInfo fn;
+    for (auto& f : prism::extract_functions(src, src.string()))
+        if (f.name == "div_param") fn = f;
+    REQUIRE(fn.name == "div_param");
+    prism::Finding fail;
+    fail.stage = "bmc";
+    fail.status = std::string(laws::FAILED);
+    fail.file = fn.file;
+    fail.function = fn.name;
+    fail.line = fn.line;
+    fail.cls = "INT-DIV-ZERO";
+    fail.message = "div by zero";
+    fail.counterexample = "x=1,y=0";
+    auto cfg = prism::default_config();
+    cfg.llm = false;
+    auto out = prism::execute_cex({fail}, {fn}, cfg);
+    REQUIRE_FALSE(out.empty());
+    CHECK(xget(out[0], "oracle") == "concrete-replay");
+    CHECK((out[0].status == laws::CRASH || out[0].status == laws::CLEAN));
+    for (const auto& f : out) CHECK_FALSE(laws::is_proof(f.status));
+
+    cfg.gguf = "/nonexistent/prism-missing.gguf";
+    cfg.ollama_host.clear();
+    cfg.llama_server = "http://127.0.0.1:1";
+    auto rep = prism::rlef_repair(fail, cfg);
+    REQUIRE_FALSE(rep.empty());
+    CHECK(rep[0].stage == "repair");
+    CHECK(rep[0].status == laws::NOTRUN);
+    CHECK(has(rep[0].message, sd::LLM_UNAVAILABLE_MSG));
 }

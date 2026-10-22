@@ -3,6 +3,7 @@
 // flag is not support, CLEAN is not a proof, an abort is FAILED, and an
 // unusable runtime is NOTRUN, not a defect. The compiler is a shell script
 // on a temporary PATH, so every branch runs without a real toolchain.
+// Portable hit/runtime_unusable/is_mingw path checks: test_sanitize_static.cpp.
 
 #include <doctest/doctest.h>
 
