@@ -9,8 +9,8 @@ are migrated to `prism::i128` (phases 2–4). Remaining substring hits are strin
 BMC/astlint tables or `wide_int.hpp` under `PRISM_HAS_INT128`.
 
 **Related:** `docs/ROADMAP_STATUS.md` D7 (WSL primary today); `CMakeLists.txt` rejects
-MinGW and already sets MSVC flags on `prism_core`. `tests/cpp/test_main.cpp` keeps some
-solver integration tests behind `#if !defined(_WIN32)` with an explicit `__int128` note.
+MinGW and already sets MSVC flags on `prism_core`. `tests/cpp/test_main.cpp` solver integration tests are gated on `PRISM_HAS_Z3` only
+(wide_int migration removed the old `_WIN32` / `__int128` skip).
 
 ---
 
@@ -75,8 +75,8 @@ Legend:
 
 | File | ~matches | Role |
 |------|----------|------|
-| `src/tools/qa/support/yaml_subset.hpp` | 1 | `Node::as_int()` → `optional<__int128>`. |
-| `src/tools/qa/support/yaml_subset.cpp` | 9 | YAML integer parse + `i128_str`. |
+| `src/tools/qa/support/yaml_subset.hpp` | — | Migrated: `Node::as_int()` → `optional<prism::i128>` (phase 6 partial). |
+| `src/tools/qa/support/yaml_subset.cpp` | — | Uses `parse_i128` / `format_i128` (phase 6 partial). |
 | `src/tools/qa/support/task.hpp` / `task.cpp` | 4 | Task metadata integers. |
 | `src/tools/qa/support/replay.cpp` | 2 | Replay value decoding. |
 | `src/tools/qa/support/pyrandom.hpp` | 2 | Local `using i128 = __int128`. |
@@ -90,7 +90,7 @@ enabled on Windows later.
 | File | Notes |
 |------|-------|
 | `tests/cpp/test_svcomp.cpp` | `static_cast<__int128>(…)` in witness literal check. |
-| `tests/cpp/test_main.cpp` | `#if !defined(_WIN32)` around solver tests (comment cites `__int128`). |
+| `tests/cpp/test_main.cpp` | Solver integration tests run when `PRISM_HAS_Z3` (including Windows). |
 | `tests/cpp/test_qa_conformance.cpp` | `using i128 = __int128` (Unix QA). |
 
 ---
@@ -103,12 +103,11 @@ enabled on Windows later.
 
 **Still on `__int128` (unix-only QA, phase 6):**
 
-- `src/tools/qa/support/pyrandom.hpp`, `task.hpp`, `yaml_subset.*`, `replay.cpp`
+- `src/tools/qa/support/pyrandom.hpp`, `task.hpp`, `replay.cpp`
 
 **Duplicated ad-hoc helpers (candidates to fold later):**
 
-- `i128_str` / decimal formatting: `yaml_subset.cpp` (witness/regress use `format_i128`)
-- `parse_int` / `as_int` style parsers: `yaml_subset.cpp` (svcomp/regress use `parse_i128`)
+- `parse_int` / `as_int` style parsers elsewhere in QA (svcomp/regress use `parse_i128`)
 
 ---
 
@@ -165,7 +164,7 @@ shortcut. Keep **D** only for explicitly documented optional components, not cor
 | **2** (done) | `include/prism/wide_int.hpp` (+ `.cpp` if needed) | `PRISM_HAS_INT128`, shared `parse_i128` / `format_i128`, unit tests in `tests/cpp/test_wide_int.cpp` |
 | **3** (done) | SV-COMP surface | `svcomp_witness.hpp` `Num::i` → portable type; migrate `witness.cpp`, `replay.cpp`, `debug_ir.cpp`; fix `test_svcomp.cpp` |
 | **4** (done) | Analysis core | `interval.cpp`, `pir/pir.cpp`, `translate_mem.cpp`, `solver/leanbb.cpp`, `ai/regress.cpp` |
-| **5** (done) | MSVC CI | `windows-compile-smoke`: Ninja + `clang-cl`, `PRISM_Z3=OFF`, `PRISM_TESTS=OFF`, `--target prism_core`. Shims: `utc_tm`, `set_env`, `NOMINMAX`, portable `wide_int` / `leanbb`, `#undef ERROR` after `windows.h`. Follow-up: `cl` + `PRISM_Z3=ON`, build `prism`, `prism_tests`, lift `#if !defined(_WIN32)` solver guards |
+| **5** (in progress) | MSVC CI | `windows-compile-smoke`: Ninja + `clang-cl`, `PRISM_Z3=OFF`, `PRISM_TESTS=OFF`, `--target prism`. Shims: `utc_tm`, `set_env`, `NOMINMAX`, `wide_int` / `leanbb`, `solver/util.cpp` `windows.h` + `#undef ERROR`. Follow-up: `cl` + `PRISM_Z3=ON`, `prism_tests`, lift `#if !defined(_WIN32)` solver guards |
 | **6** (optional) | QA on Windows | Port `yaml_subset` / conformance sources; remove `if(UNIX)` gate or add Windows subset |
 
 **Dependency order:** 2 → 3 (public API) → 4 (largest volume) → 5 → 6.
@@ -193,7 +192,7 @@ String-only BMC/astlint files: **0** type migration expected.
 ## 6. Acceptance criteria
 
 - **Phase 5a (CI smoke):** `windows-compile-smoke` configures with `clang-cl` and builds
-  `prism_core` with `PRISM_Z3=OFF` and `PRISM_TESTS=OFF` (see `.github/workflows/ci.yml`).
+  `prism` (via `prism_core`) with `PRISM_Z3=OFF` and `PRISM_TESTS=OFF` (see `.github/workflows/ci.yml`).
 - **Phase 5b (follow-up):** `cmake --build` of `prism_core` + `prism` with **MSVC `cl`**
   on Windows x64 succeeds with default options (`PRISM_Z3=ON` at minimum for parity with
   Linux CI).

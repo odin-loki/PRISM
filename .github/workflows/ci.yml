@@ -130,8 +130,8 @@ jobs:
           test -f /tmp/prism-smoke-out/report.json
 
   # Phase 5 MSVC port: prism_core uses prism::i128 (wide_int.hpp), not native __int128.
-  # Smoke-build the engine with VS clang-cl (MSVC ABI), Z3 off (skip vendored Z3),
-  # tests off (prism_tests still gated on Unix in several places).
+  # Smoke-build prism_core + prism with VS clang-cl (MSVC ABI), Z3 off (skip vendored Z3),
+  # tests off (solver Z3 integration tests compile on Windows when PRISM_HAS_Z3).
   windows-compile-smoke:
     name: Windows compile smoke
     runs-on: windows-latest

@@ -6210,9 +6210,7 @@ TEST_CASE("solver: GPU ProbSAT finds a planted assignment") {
 }
 #endif
 
-// D178 runs portfolio members on Windows; these integration tests stay
-// Linux CI-only because MSVC lacks __int128 for some solver paths.
-#if defined(PRISM_HAS_Z3) && !defined(_WIN32)
+#if defined(PRISM_HAS_Z3)
 TEST_CASE("solver: features, certifiability and query normalisation") {
     z3::context c;
     auto x = c.bv_const("x", 8), y = c.bv_const("y", 8);
@@ -6766,7 +6764,7 @@ TEST_CASE("solver bench: portfolio vs Z3 alone" * doctest::skip()) {
     std::snprintf(tot, sizeof tot, "total        %8.3f          | %9.3f                   | %8.3f", tz, tc, tw);
     MESSAGE(tot);
 }
-#endif  // PRISM_HAS_Z3 && !_WIN32
+#endif  // PRISM_HAS_Z3
 
 // ---------------------------------------------------------------------------
 // Verdict module equals the Lean model (docs/VERDICTS.md). The domain is
