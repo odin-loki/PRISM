@@ -14,8 +14,13 @@
 
 #include <cstdlib>
 #include <filesystem>
-#include <unistd.h>
 #include <fstream>
+
+#ifdef _WIN32
+#  include <process.h>
+#else
+#  include <unistd.h>
+#endif
 #include <map>
 #include <string>
 #include <vector>
@@ -23,6 +28,38 @@
 namespace {
 
 namespace pp = prism::pir;
+
+void test_setenv(const char* key, const char* value) {
+#ifdef _WIN32
+    _putenv_s(key, value);
+#else
+    ::setenv(key, value, 1);
+#endif
+}
+
+void test_unsetenv(const char* key) {
+#ifdef _WIN32
+    _putenv_s(key, "");
+#else
+    ::unsetenv(key);
+#endif
+}
+
+long test_pid() {
+#ifdef _WIN32
+    return static_cast<long>(_getpid());
+#else
+    return static_cast<long>(::getpid());
+#endif
+}
+
+std::filesystem::path bogus_clang_path() {
+#ifdef _WIN32
+    return std::filesystem::path("N:\\nonexistent\\prism_false_clang.exe");
+#else
+    return std::filesystem::path("/bin/false");
+#endif
+}
 
 pp::Translation mem_tr(const std::string& ir, const std::string& fn, const pp::TranslateOptions& o = {}) {
     auto m = pp::ir::parse_module(ir);
@@ -523,11 +560,11 @@ TEST_CASE("pir mem: lowered models are cached on disk; a failed build says why")
         return;
     }
     namespace fs = std::filesystem;
-    const auto dir = fs::temp_directory_path() / ("prism_model_cache_" + std::to_string(::getpid()));
+    const auto dir = fs::temp_directory_path() / ("prism_model_cache_" + std::to_string(test_pid()));
     fs::remove_all(dir);
     const char* old = std::getenv("XDG_CACHE_HOME");
     const std::string saved = old ? old : "";
-    ::setenv("XDG_CACHE_HOME", dir.c_str(), 1);
+    test_setenv("XDG_CACHE_HOME", dir.c_str());
     auto first = pp::build_models(fe, 120);
     REQUIRE_MESSAGE(first.error.empty(), first.error);
     std::size_t cached = 0;
@@ -541,14 +578,14 @@ TEST_CASE("pir mem: lowered models are cached on disk; a failed build says why")
         CHECK(second.units[i].functions.size() == first.units[i].functions.size());
     // another front end (a clang that fails): a new key, and the error is recorded
     auto bad = fe;
-    bad.clang = fs::path("/bin/false");
+    bad.clang = bogus_clang_path();
     auto broken = pp::build_models(bad, 30);
     CHECK_FALSE(broken.error.empty());
     CHECK(broken.units.empty());
     if (old)
-        ::setenv("XDG_CACHE_HOME", saved.c_str(), 1);
+        test_setenv("XDG_CACHE_HOME", saved.c_str());
     else
-        ::unsetenv("XDG_CACHE_HOME");
+        test_unsetenv("XDG_CACHE_HOME");
     fs::remove_all(dir);
 }
 
@@ -948,9 +985,9 @@ int loop_long_bounded(int n) {
     CHECK(b["loop_long_bounded"].status == prism::laws::BOUNDED);
     CHECK(b["loop_long_bounded"].extra["houdini_cache"] == "hit (no proof)");
     // a spent run budget: no proof, and a function that finds it spent says so
-    ::setenv("PRISM_HOUDINI_BUDGET", "0.000001", 1);
+    test_setenv("PRISM_HOUDINI_BUDGET", "0.000001");
     auto c = run("cache2");
-    ::unsetenv("PRISM_HOUDINI_BUDGET");
+    test_unsetenv("PRISM_HOUDINI_BUDGET");
     CHECK(c["loop_long_inv"].status == prism::laws::BOUNDED);
     CHECK(c["loop_long_bounded"].status == prism::laws::BOUNDED);
     int spent = 0;

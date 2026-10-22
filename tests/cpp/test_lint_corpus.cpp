@@ -11,7 +11,11 @@
 #include "prism/regex.hpp"
 #include "prism/stages.hpp"
 
-#include <unistd.h>
+#ifdef _WIN32
+#  include <process.h>
+#else
+#  include <unistd.h>
+#endif
 
 #include <algorithm>
 #include <filesystem>
@@ -413,7 +417,12 @@ TEST_CASE("lint fastpath: match_brace equals the reference loop") {
 }
 
 TEST_CASE("lint fastpath: findings name globals and optionals in sorted order") {
-    const fs::path tmp = fs::temp_directory_path() / ("prism_lint_order_" + std::to_string(::getpid()));
+#ifdef _WIN32
+    const long pid = static_cast<long>(_getpid());
+#else
+    const long pid = static_cast<long>(::getpid());
+#endif
+    const fs::path tmp = fs::temp_directory_path() / ("prism_lint_order_" + std::to_string(pid));
     fs::create_directories(tmp);
     {
         std::ofstream(tmp / "multi.cpp") << "#include <optional>\n"

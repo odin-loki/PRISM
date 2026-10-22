@@ -613,7 +613,10 @@ if(PRISM_TESTS)
       tests/cpp/test_astlint.cpp
       tests/cpp/test_ltl.cpp
       tests/cpp/test_contracts.cpp
-      tests/cpp/test_bmc.cpp)
+      tests/cpp/test_bmc.cpp
+      tests/cpp/test_checkers_cxx.cpp
+      tests/cpp/test_lint_corpus.cpp
+      tests/cpp/test_pir_mem.cpp)
     if(PRISM_HAS_Z3)
       list(APPEND _prism_test_sources tests/cpp/test_leanbb.cpp)
     endif()

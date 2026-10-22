@@ -8,7 +8,11 @@
 #include "prism/cparse.hpp"
 #include "prism/stages.hpp"
 
-#include <unistd.h>
+#ifdef _WIN32
+#  include <process.h>
+#else
+#  include <unistd.h>
+#endif
 
 #include <atomic>
 #include <filesystem>
@@ -25,8 +29,13 @@ struct Snippet {
     fs::path file;
     Snippet(std::string_view name, std::string_view src) {
         static std::atomic<int> seq{0};
+#ifdef _WIN32
+        const long pid = static_cast<long>(_getpid());
+#else
+        const long pid = static_cast<long>(::getpid());
+#endif
         dir = fs::temp_directory_path()
-            / ("prism_ckcxx_" + std::to_string(::getpid()) + "_" + std::to_string(seq++));
+            / ("prism_ckcxx_" + std::to_string(pid) + "_" + std::to_string(seq++));
         fs::create_directories(dir);
         file = dir / std::string(name);
         std::ofstream(file) << src;
