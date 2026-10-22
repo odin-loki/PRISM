@@ -211,9 +211,6 @@ inline u128 operator/(u128 a, u128 b) { return wide_int_detail::divmod_u128_u128
 
 inline u128 operator%(u128 a, u128 b) { return wide_int_detail::divmod_u128_u128(a, b).second; }
 
-struct i128;
-inline u128 u128_abs(i128 v);
-
 struct i128 {
     u128 bits{};
 
@@ -242,29 +239,29 @@ struct i128 {
     friend constexpr i128 operator+(i128 a, i128 b) { return i128(a.bits + b.bits); }
 
     friend constexpr i128 operator-(i128 a, i128 b) { return a + (-b); }
-
-    friend i128 operator*(i128 a, i128 b) {
-        const bool neg = (a.bits.hi >> 63) != (b.bits.hi >> 63);
-        u128 ua = u128_abs(a);
-        u128 ub = u128_abs(b);
-        u128 p = ua * ub;
-        return neg ? -i128(p) : i128(p);
-    }
-
-    explicit operator double() const {
-        double h = static_cast<double>(bits.hi);
-        double l = static_cast<double>(bits.lo);
-        if (bits.hi >> 63) {
-            u128 m = u128_abs(*this);
-            return -(static_cast<double>(m.hi) * 18446744073709551616.0 + static_cast<double>(m.lo));
-        }
-        return h * 18446744073709551616.0 + l;
-    }
 };
 
 inline u128 u128_abs(i128 v) {
     if ((v.bits.hi >> 63) == 0) return v.bits;
     return ~v.bits + u128(1);
+}
+
+inline i128 operator*(i128 a, i128 b) {
+    const bool neg = (a.bits.hi >> 63) != (b.bits.hi >> 63);
+    u128 ua = u128_abs(a);
+    u128 ub = u128_abs(b);
+    u128 p = ua * ub;
+    return neg ? -i128(p) : i128(p);
+}
+
+inline double i128_to_double_bits(i128 v) {
+    double h = static_cast<double>(v.bits.hi);
+    double l = static_cast<double>(v.bits.lo);
+    if (v.bits.hi >> 63) {
+        u128 m = u128_abs(v);
+        return -(static_cast<double>(m.hi) * 18446744073709551616.0 + static_cast<double>(m.lo));
+    }
+    return h * 18446744073709551616.0 + l;
 }
 
 inline i128 i128_neg(i128 v) { return -v; }
@@ -288,11 +285,11 @@ inline std::int64_t i128_to_i64(i128 v) {
     return -static_cast<std::int64_t>(a.lo);
 }
 
-inline double i128_to_double(i128 v) { return static_cast<double>(v); }
-
 inline i128 i128_from_i64(std::int64_t v) { return i128(v); }
 
 inline i128 i128_from_u64(std::uint64_t v) { return i128(u128(v)); }
+
+inline double i128_to_double(i128 v) { return i128_to_double_bits(v); }
 
 inline i128 i128_shl(i128 v, int n) {
     if (n <= 0) return v;
