@@ -164,8 +164,9 @@ shortcut. Keep **D** only for explicitly documented optional components, not cor
 | **2** (done) | `include/prism/wide_int.hpp` (+ `.cpp` if needed) | `PRISM_HAS_INT128`, shared `parse_i128` / `format_i128`, unit tests in `tests/cpp/test_wide_int.cpp` |
 | **3** (done) | SV-COMP surface | `svcomp_witness.hpp` `Num::i` → portable type; migrate `witness.cpp`, `replay.cpp`, `debug_ir.cpp`; fix `test_svcomp.cpp` |
 | **4** (done) | Analysis core | `interval.cpp`, `pir/pir.cpp`, `translate_mem.cpp`, `solver/leanbb.cpp`, `ai/regress.cpp` |
-| **5** (in progress) | MSVC CI | `windows-compile-smoke`: Ninja + `clang-cl`, `PRISM_Z3=OFF`, `PRISM_TESTS=OFF`, `--target prism`. Shims: `utc_tm`, `set_env`, `NOMINMAX`, `wide_int` / `leanbb`, `solver/util.cpp` `windows.h` + `#undef ERROR`. Follow-up: `cl` + `PRISM_Z3=ON`, `prism_tests`, lift `#if !defined(_WIN32)` solver guards |
-| **6** (optional) | QA on Windows | Port `yaml_subset` / conformance sources; remove `if(UNIX)` gate or add Windows subset |
+| **5a** (done) | MSVC CI smoke | `windows-compile-smoke`: Ninja + `clang-cl`, `PRISM_Z3=OFF`, `PRISM_TESTS=OFF`, build `prism_core` + `prism`. Shims: `utc_tm`, `set_env`, `NOMINMAX`, `wide_int` / `leanbb`, `solver/util.cpp` `windows.h` + `#undef ERROR`. |
+| **5b** (follow-up) | Native MSVC + Z3 | `cl` + `PRISM_Z3=ON`, `prism_tests`, lift `#if !defined(_WIN32)` solver guards in tests. |
+| **6** (optional) | QA on Windows | `yaml_subset` on `prism::i128` (done); port `task.hpp` / `pyrandom.hpp` / conformance tree; remove `if(UNIX)` gate or add Windows subset |
 
 **Dependency order:** 2 → 3 (public API) → 4 (largest volume) → 5 → 6.
 
@@ -192,10 +193,13 @@ String-only BMC/astlint files: **0** type migration expected.
 ## 6. Acceptance criteria
 
 - **Phase 5a (CI smoke):** `windows-compile-smoke` configures with `clang-cl` and builds
-  `prism` (via `prism_core`) with `PRISM_Z3=OFF` and `PRISM_TESTS=OFF` (see `.github/workflows/ci.yml`).
-- **Phase 5b (follow-up):** `cmake --build` of `prism_core` + `prism` with **MSVC `cl`**
-  on Windows x64 succeeds with default options (`PRISM_Z3=ON` at minimum for parity with
-  Linux CI).
-- `prism_tests` runs on Windows with the same semantic tests for interval, svcomp witness
-  integers, and leanbb paths that Linux runs (no silent `#ifdef` removal of assertions).
+  `prism_core` and `prism` with `PRISM_Z3=OFF` and `PRISM_TESTS=OFF` (see `.github/workflows/ci.yml`).
+- **Phase 5b (follow-up):** same targets with **MSVC `cl`** on Windows x64 and
+  `PRISM_Z3=ON` (parity with Linux CI vendored Z3).
+- **`prism_tests` on Windows (blocked):** `PRISM_TESTS=ON` does not compile yet: several
+  doctest TUs `#include <unistd.h>` unconditionally (e.g. `tests/cpp/test_lint_corpus.cpp`,
+  `tests/cpp/test_checkers_cxx.cpp`). Solver integration tests stay behind
+  `#if !defined(_WIN32)` in `test_main.cpp` / `test_leanbb.cpp`. Conformance QA remains
+  behind `if(UNIX)` in `CMakeLists.txt`. Next step: guard or port those includes, then
+  enable a Windows subset (`test_wide_int.cpp`, `test_svcomp.cpp`, `test_interval.cpp`).
 - Witness and regress integer formatting unchanged on golden strings in `tests/cpp/`.
