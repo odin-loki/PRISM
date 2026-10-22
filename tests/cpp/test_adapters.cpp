@@ -696,6 +696,7 @@ TEST_CASE("optional tools: every missing tool is NOTRUN with its install hint") 
     }
 }
 
+#ifdef PRISM_HAS_Z3
 TEST_CASE("optional tools: wp is its own stage, not the missing frama-c") {
     auto src = testdata() / "acsl_abs.c";
     auto wp = prism::run_wp(prism::extract_functions(src, src.filename().string()), 8);
@@ -703,6 +704,7 @@ TEST_CASE("optional tools: wp is its own stage, not the missing frama-c") {
     for (const auto& f : wp) CHECK(f.stage == "wp");
     CHECK(wp[0].status != laws::NOTRUN);
 }
+#endif
 
 TEST_CASE("optional tools: a --help answer is UNKNOWN, never a code verdict") {
     NoTools nt;
