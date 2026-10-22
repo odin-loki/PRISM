@@ -603,6 +603,7 @@ if(PRISM_TESTS)
       tests/cpp/test_wide_int.cpp
       tests/cpp/test_interval.cpp
       tests/cpp/test_svcomp.cpp
+      tests/cpp/test_leanbb.cpp
       tests/cpp/test_naming.cpp)
   else()
     set(_prism_test_sources

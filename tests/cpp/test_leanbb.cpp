@@ -21,7 +21,7 @@
 #include <string>
 #include <vector>
 
-#if defined(PRISM_HAS_Z3) && !defined(_WIN32)
+#if defined(PRISM_HAS_Z3)
 
 namespace {
 
@@ -420,4 +420,4 @@ TEST_CASE("leanbb: a cached Lean certificate is re-checked by both checkers") {
     CHECK(z.note.find("made with the lean bit-blaster") != std::string::npos);
 }
 
-#endif  // PRISM_HAS_Z3 && !_WIN32
+#endif  // PRISM_HAS_Z3
