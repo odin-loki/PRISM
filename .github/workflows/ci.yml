@@ -147,9 +147,10 @@ jobs:
           path: build-win
           key: win-smoke-${{ hashFiles('CMakeLists.txt', 'third_party/pcre2/CMakeLists.txt') }}-${{ github.sha }}
           restore-keys: win-smoke-${{ hashFiles('CMakeLists.txt', 'third_party/pcre2/CMakeLists.txt') }}-
-      - name: Configure (clang-cl via -T ClangCL)
+      - name: Configure (Ninja + clang-cl)
         run: >
-          cmake -B build-win -G Ninja -T ClangCL
+          cmake -B build-win -G Ninja
+          -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl
           -DPRISM_CUDA=OFF -DPRISM_LLAMA=OFF -DPRISM_QT=OFF -DPRISM_Z3=OFF
           -DPRISM_TESTS=OFF -DPRISM_LIBCLANG=OFF
       - name: Build (no prism_core)
