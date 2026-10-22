@@ -1,5 +1,6 @@
 // prism-qa (src/tools/qa) and the session runner it uses
 // (src/prism/proc_session.cpp). Part of prism_tests.
+// Portable QA helpers (no fork/session): tests/cpp/test_qa_static.cpp.
 //
 // A tool that needs something this machine lacks (the Lean checkers built by
 // lake, lli) says NOTRUN in a doctest MESSAGE and checks what it can without

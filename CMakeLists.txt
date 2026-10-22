@@ -642,6 +642,7 @@ if(PRISM_TESTS)
       tests/cpp/test_repair.cpp
       tests/cpp/test_adapters_static.cpp
       tests/cpp/test_sanitize_static.cpp
+      tests/cpp/test_qa_static.cpp
       tests/cpp/test_pir_e2e.cpp)
     if(PRISM_HAS_Z3)
       list(APPEND _prism_test_sources tests/cpp/test_leanbb.cpp

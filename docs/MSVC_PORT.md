@@ -167,7 +167,7 @@ shortcut. Keep **D** only for explicitly documented optional components, not cor
 | **5a** (done) | MSVC CI smoke | `windows-compile-smoke`: Ninja + `clang-cl`, `PRISM_Z3=OFF`, build `prism_core` + `prism` + `prism-qa` + portable `prism_tests` subset (phase 7). Shims: `utc_tm`, `set_env`, `NOMINMAX`, `wide_int` / `leanbb`, `solver/util.cpp` `windows.h` + `#undef ERROR`. |
 | **5b** (CI done) | Windows CI + Z3 | `windows-compile-smoke-z3`: Ninja + `clang-cl`, `PRISM_Z3=ON`, builds `prism_core` + `prism` + `prism-qa` + phase-7 `prism_tests` subset including `test_leanbb.cpp` (~44 min cold; cache `build-win-z3`; needs `z3gen_shim.bat`). Remaining: native `cl` without clang-cl. |
 | **6** (partial) | QA on Windows | `yaml_subset` + `task` + `pyrandom` on `prism::i128` (done); `prism-qa` in `windows-compile-smoke`; conformance tree stays `if(UNIX)` |
-| **7** (done) | Windows `prism_tests` subset | `PRISM_TESTS_WIN_SUBSET`: `test_main_win.cpp` plus portable doctest TUs (see `CMakeLists.txt`); `test_leanbb` / `test_pir_budget` / `test_certified` when `PRISM_HAS_Z3`. `test_cli` / `test_pipeline` omit POSIX-only cases; `test_conc` skips without Z3. `test_pir_e2e.cpp` is in the subset: the full `tests/pir` verdict table is skipped on `_WIN32` (MESSAGE); Law 9 / `--fp-checks` / `--strict-aliasing` smoke cases still run when `clang`/`opt` are on PATH. `test_sanitize_static.cpp` covers portable `sanitize_detail` helpers; full `test_sanitize.cpp` stays POSIX (fake `sh` compiler). Static adapter/manifest/`llm_httpish`/`execute_cex` checks live in `test_adapters_static.cpp` (no fake tools). Full `test_adapters.cpp` has WIN32 helpers in-tree (`fake_tool_launcher`, `_putenv_s` `EnvVar`) but is **not** in the subset until `.cmd` fakes pass optional-tool probes on CI. CI runs `prism_tests.exe` in both Windows smoke jobs. |
+| **7** (done) | Windows `prism_tests` subset | `PRISM_TESTS_WIN_SUBSET`: `test_main_win.cpp` plus portable doctest TUs (see `CMakeLists.txt`); `test_leanbb` / `test_pir_budget` / `test_certified` when `PRISM_HAS_Z3`. `test_cli` / `test_pipeline` omit POSIX-only cases; `test_conc` skips without Z3. `test_pir_e2e.cpp` is in the subset: the full `tests/pir` verdict table is skipped on `_WIN32` (MESSAGE); Law 9 / `--fp-checks` / `--strict-aliasing` smoke cases still run when `clang`/`opt` are on PATH. `test_sanitize_static.cpp` covers portable `sanitize_detail` helpers; full `test_sanitize.cpp` stays POSIX (fake `sh` compiler). Static adapter/manifest/`llm_httpish`/`execute_cex` checks live in `test_adapters_static.cpp` (no fake tools). Portable prism-qa checks (triage, pir-vs-bmc, docs slugs/anchors, assurance file scan, libc-bounds, solver-bench task discovery, …) live in `test_qa_static.cpp`; full `test_qa.cpp` stays POSIX (`fork`, `run_session`, Lean/lli drivers). Full `test_adapters.cpp` has WIN32 helpers in-tree (`fake_tool_launcher`, `_putenv_s` `EnvVar`) but is **not** in the subset until `.cmd` fakes pass optional-tool probes on CI. CI runs `prism_tests.exe` in both Windows smoke jobs. |
 
 **Dependency order:** 2 → 3 (public API) → 4 (largest volume) → 5 → 6 → 7 (subset) → 5b (Z3 + full tests).
 
@@ -219,7 +219,7 @@ String-only BMC/astlint files: **0** type migration expected.
   `test_lint_corpus`, `test_pir_mem`, `test_ai_assist`, `test_pbsd`, `test_pir3`,
   `test_pir_refinement`, `test_cli`, `test_pipeline`, `test_ai9`, `test_conc`,
   `test_cxx_models`, `test_fuse`, `test_gui_model`, `test_repair`, `test_adapters_static`,
-  `test_sanitize_static`, `test_pir_e2e`);
+  `test_sanitize_static`, `test_qa_static`, `test_pir_e2e`);
   `test_leanbb`, `test_pir_budget`, and `test_certified` when `PRISM_HAS_Z3`); `test_pipeline` chmod/LTL case is
   POSIX-only; `test_cli` binary integration is POSIX-only. On WIN32, `test_pir_e2e` omits the
   large `tests/pir` table (runtime); `test_sanitize.cpp` remains off WIN32 (fake `sh` compiler).
@@ -250,7 +250,8 @@ String-only BMC/astlint files: **0** type migration expected.
   `test_havoc` uses an MSVC-safe block-comment regex. Remaining doctest TUs still
   need Unix APIs (`unistd.h`, `fork`, sockets): e.g. `test_main.cpp`, `test_adapters.cpp`
   (fake-tool optional probes; static cases are in `test_adapters_static.cpp`), `test_sanitize.cpp`
-  (full stage; portable helpers in `test_sanitize_static.cpp`), `test_qa.cpp`,
+  (full stage; portable helpers in `test_sanitize_static.cpp`), `test_qa.cpp`
+  (session/`run_session` and CLI drivers; static QA in `test_qa_static.cpp`),
   `test_qa_conformance.cpp`, and others. `test_cli` parser tests run on WIN32; binary
   integration is POSIX-only. `Config::which_adapter` on WIN32 accepts `--tool` paths without
   `.exe` when `tool.exe` exists (parity with `SearchPath`). The monolithic
