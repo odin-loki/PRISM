@@ -134,11 +134,12 @@ i128 node_int(const yaml::Node& n, const fs::path& yml) {
         k = 1;
     }
     if (k >= s.size()) throw yaml::Error(yml.string() + ": not an integer: " + t);
-    i128 v = 0;
+    i128 v(0);
+    const i128 ten(10);
     for (; k < s.size(); ++k) {
         if (s[k] == '_') continue;
         if (s[k] < '0' || s[k] > '9') throw yaml::Error(yml.string() + ": not an integer: " + t);
-        v = v * 10 + (s[k] - '0');
+        v = prism::i128_add(prism::i128_mul(v, ten), i128(s[k] - '0'));
     }
     return neg ? -v : v;
 }
@@ -201,7 +202,8 @@ std::optional<Task> load_task(const fs::path& yml, const fs::path& root) {
         }
         t.std = node_str(data.get("std"), "");
         if (const auto* d = data.get("deterministic")) t.deterministic = d->truthy_label();
-        if (const auto* u = data.get("unwind"); !falsy(u)) t.unwind = static_cast<int>(node_int(*u, yml));
+        if (const auto* u = data.get("unwind"); !falsy(u))
+            t.unwind = static_cast<int>(prism::i128_to_i64(node_int(*u, yml)));
         if (const auto* to = data.get("timeout"); !falsy(to)) t.timeout = std::strtod(to->text.c_str(), nullptr);
         if (const auto* c = data.get("expect_class"); !falsy(c)) {
             if (!c->is_map()) throw yaml::Error(yml.string() + ": `expect_class` is not a mapping");
