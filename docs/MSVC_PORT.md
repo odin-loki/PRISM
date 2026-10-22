@@ -165,7 +165,7 @@ shortcut. Keep **D** only for explicitly documented optional components, not cor
 | **2** (done) | `include/prism/wide_int.hpp` (+ `.cpp` if needed) | `PRISM_HAS_INT128`, shared `parse_i128` / `format_i128`, unit tests in `tests/cpp/test_wide_int.cpp` |
 | **3** (done) | SV-COMP surface | `svcomp_witness.hpp` `Num::i` → portable type; migrate `witness.cpp`, `replay.cpp`, `debug_ir.cpp`; fix `test_svcomp.cpp` |
 | **4** (done) | Analysis core | `interval.cpp`, `pir/pir.cpp`, `translate_mem.cpp`, `solver/leanbb.cpp`, `ai/regress.cpp` |
-| **5** (in progress) | MSVC CI | `windows-compile-smoke`: Ninja + `clang-cl`, `PRISM_Z3=OFF`, `PRISM_TESTS=OFF`, `--target prism`. Shims: `utc_tm`, `set_env`, `NOMINMAX`, portable `wide_int` / `leanbb`, `#undef ERROR` after `windows.h`. Follow-up: `cl` + `PRISM_Z3=ON`, `prism_tests`, lift `#if !defined(_WIN32)` solver guards |
+| **5** (done) | MSVC CI | `windows-compile-smoke`: Ninja + `clang-cl`, `PRISM_Z3=OFF`, `PRISM_TESTS=OFF`, `--target prism_core`. Shims: `utc_tm`, `set_env`, `NOMINMAX`, portable `wide_int` / `leanbb`, `#undef ERROR` after `windows.h`. Follow-up: `cl` + `PRISM_Z3=ON`, build `prism`, `prism_tests`, lift `#if !defined(_WIN32)` solver guards |
 | **6** (optional) | QA on Windows | Port `yaml_subset` / conformance sources; remove `if(UNIX)` gate or add Windows subset |
 
 **Dependency order:** 2 → 3 (public API) → 4 (largest volume) → 5 → 6.
@@ -193,7 +193,7 @@ String-only BMC/astlint files: **0** type migration expected.
 ## 6. Acceptance criteria
 
 - **Phase 5a (CI smoke):** `windows-compile-smoke` configures with `clang-cl` and builds
-  `prism` with `PRISM_Z3=OFF` and `PRISM_TESTS=OFF` (see `.github/workflows/ci.yml`).
+  `prism_core` with `PRISM_Z3=OFF` and `PRISM_TESTS=OFF` (see `.github/workflows/ci.yml`).
 - **Phase 5b (follow-up):** `cmake --build` of `prism_core` + `prism` with **MSVC `cl`**
   on Windows x64 succeeds with default options (`PRISM_Z3=ON` at minimum for parity with
   Linux CI).
