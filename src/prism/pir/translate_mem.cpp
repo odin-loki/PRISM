@@ -19,12 +19,20 @@
 
 #include "fp.hpp"
 #include "memory.hpp"
+#include "prism/wide_int.hpp"
 
 #include <algorithm>
 #include <cctype>
 #include <set>
 
 namespace prism::pir::pirmem {
+
+using prism::i128;
+using prism::i128_add;
+using prism::i128_from_i64;
+using prism::i128_mul;
+using prism::i128_neg;
+using prism::i128_to_i64;
 
 namespace {
 
@@ -614,7 +622,7 @@ Arg MemTr::const_gep(int b, const ir::Value& ce, int line) {
     else if (bo.v.kind == ir::Value::Null) base = c64(0);
     else if (bo.v.kind == ir::Value::ConstExpr && bo.v.ce_op == "getelementptr") base = const_gep(b, bo.v, line);
     else throw Unenc{"UNENCODED: constant getelementptr on " + bo.v.text};
-    __int128 total = 0;
+    i128 total(0);
     const ir::Type* t = &ce.ce_ty;
     for (std::size_t k = 1; k < ce.elems.size(); ++k) {
         const auto& ix = ce.elems[k];
@@ -622,25 +630,26 @@ Arg MemTr::const_gep(int b, const ir::Value& ce, int line) {
             throw Unenc{"UNENCODED: constant getelementptr with a non-constant index"};
         int64_t i = sext64(ix.v.bits, ix.ty.bits);
         if (k == 1) {
-            total += static_cast<__int128>(i) * static_cast<__int128>(lay_.alloc_size(*t));
+            total = i128_add(total, i128_mul(i128_from_i64(i), i128_from_i64(lay_.alloc_size(*t))));
             continue;
         }
         const auto& rt = lay_.resolve(*t);
         if (rt.kind == ir::Type::Struct) {
-            total += static_cast<__int128>(lay_.field_offset(rt, static_cast<unsigned>(i)));
+            total = i128_add(total, i128_from_i64(lay_.field_offset(rt, static_cast<unsigned>(i))));
             t = &lay_.field_type(rt, static_cast<unsigned>(i));
         } else if (rt.kind == ir::Type::Array) {
             t = &rt.elems.at(0);
-            total += static_cast<__int128>(i) * static_cast<__int128>(lay_.alloc_size(*t));
+            total = i128_add(total, i128_mul(i128_from_i64(i), i128_from_i64(lay_.alloc_size(*t))));
         } else {
             throw Unenc{"UNENCODED: constant getelementptr into " + rt.text};
         }
     }
-    if (total == 0) return base;
-    if (total > static_cast<__int128>(kMaxObjSize) || total < -static_cast<__int128>(kMaxObjSize))
+    if (total == i128(0)) return base;
+    const i128 lim = i128_from_i64(kMaxObjSize);
+    if (total > lim || total < i128_neg(lim))
         throw Unenc{"UNENCODED: constant pointer offset out of range"};
     mark_memory();
-    return ptr_add(b, base, c64(static_cast<uint64_t>(static_cast<int64_t>(total))));
+    return ptr_add(b, base, c64(static_cast<uint64_t>(i128_to_i64(total))));
 }
 
 std::optional<std::string> MemTr::const_string(const ir::Value& v) const {
@@ -772,7 +781,7 @@ void MemTr::store(int b, Arg ptr, Arg val, Arg init, const ir::Type& ty, unsigne
 void MemTr::gep(int b, int dst, Arg base, const ir::Type& ety, const std::vector<Arg>& idx, bool inbounds,
                 int line, int use, bool base_last_field) {
     mark_memory();
-    __int128 cst = 0;
+    i128 cst(0);
     std::optional<Arg> var;
     const ir::Type* t = &ety;
     bool last_field = base_last_field;  // the current type is the last field of a struct (flexible array)
@@ -794,7 +803,7 @@ void MemTr::gep(int b, int dst, Arg base, const ir::Type& ety, const std::vector
             if (rt.kind == ir::Type::Struct) {
                 if (!idx[k].is_const) throw Unenc{"UNENCODED: getelementptr with a variable struct index"};
                 auto fi = static_cast<unsigned>(idx[k].bits);
-                cst += static_cast<__int128>(lay_.field_offset(rt, fi));
+                cst = i128_add(cst, i128_from_i64(lay_.field_offset(rt, fi)));
                 t = &lay_.field_type(rt, fi);
                 last_field = fi + 1 == rt.elems.size();
                 continue;
@@ -821,8 +830,8 @@ void MemTr::gep(int b, int dst, Arg base, const ir::Type& ety, const std::vector
         }
         const Arg& ix = idx[k];
         if (ix.is_const) {
-            cst += static_cast<__int128>(sext64(ix.bits, ix.width)) * static_cast<__int128>(scale);
-            if (cst > static_cast<__int128>(INT64_MAX) || cst < static_cast<__int128>(INT64_MIN))
+            cst = i128_add(cst, i128_mul(i128_from_i64(sext64(ix.bits, ix.width)), i128_from_i64(scale)));
+            if (cst > i128_from_i64(INT64_MAX) || cst < i128_from_i64(INT64_MIN))
                 throw Unenc{"UNENCODED: constant pointer offset overflows"};
             continue;
         }
@@ -835,12 +844,12 @@ void MemTr::gep(int b, int dst, Arg base, const ir::Type& ety, const std::vector
         }
         add_var(s);
     }
-    Arg delta = c64(static_cast<uint64_t>(static_cast<int64_t>(cst)));
+    Arg delta = c64(static_cast<uint64_t>(i128_to_i64(cst)));
     if (var) {
-        if (cst != 0) add_var(delta);
+        if (cst != i128(0)) add_var(delta);
         delta = *var;
     }
-    if (!var && cst == 0) {
+    if (!var && cst == i128(0)) {
         Stmt s;
         s.kind = Stmt::Assign;
         s.op = Op::Copy;

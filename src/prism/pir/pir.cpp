@@ -5,12 +5,21 @@
 
 #include "fp.hpp"
 #include "memory.hpp"
+#include "prism/wide_int.hpp"
 
 #include <array>
 #include <cstdio>
 #include <sstream>
 
 namespace prism::pir {
+
+using prism::i128;
+using prism::u128;
+using prism::i128_add;
+using prism::i128_eq;
+using prism::i128_from_i64;
+using prism::i128_mul;
+using prism::i128_sub;
 
 Arg Arg::c(unsigned w, uint64_t v) {
     Arg a;
@@ -375,24 +384,29 @@ uint64_t eval_op(Op op, unsigned w, const std::vector<uint64_t>& a, const std::v
         }
         case Op::SAddOvf: {
             auto r = sval((x + y) & mask(xw), xw);
-            __int128 t = static_cast<__int128>(sval(x, xw)) + sval(y, xw);
-            return t != r;
+            i128 t = i128_add(i128_from_i64(sval(x, xw)), i128_from_i64(sval(y, xw)));
+            return !i128_eq(t, i128_from_i64(r));
         }
         case Op::SSubOvf: {
             auto r = sval((x - y) & mask(xw), xw);
-            __int128 t = static_cast<__int128>(sval(x, xw)) - sval(y, xw);
-            return t != r;
+            i128 t = i128_sub(i128_from_i64(sval(x, xw)), i128_from_i64(sval(y, xw)));
+            return !i128_eq(t, i128_from_i64(r));
         }
         case Op::SMulOvf: {
             auto r = sval((x * y) & mask(xw), xw);
-            __int128 t = static_cast<__int128>(sval(x, xw)) * sval(y, xw);
-            return t != r;
+            i128 t = i128_mul(i128_from_i64(sval(x, xw)), i128_from_i64(sval(y, xw)));
+            return !i128_eq(t, i128_from_i64(r));
         }
         case Op::UAddOvf: return ((x + y) & mask(xw)) < x || (xw == 64 && x + y < x);
         case Op::USubOvf: return y > x;
         case Op::UMulOvf: {
-            unsigned __int128 t = static_cast<unsigned __int128>(x) * y;
-            return t > mask(xw);
+#if PRISM_HAS_INT128
+            u128 t = static_cast<u128>(x) * static_cast<u128>(y);
+            return t > static_cast<u128>(mask(xw));
+#else
+            u128 t = u128(x) * u128(y);
+            return t > u128(mask(xw));
+#endif
         }
         case Op::SDivOvf: return x == smin(xw) && y == mask(xw);
         case Op::ShiftOob: return y >= xw;
