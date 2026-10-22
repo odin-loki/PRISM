@@ -129,10 +129,9 @@ jobs:
           build/prism testdata/abs_ok.c --no-llm --stage inventory --out /tmp/prism-smoke-out
           test -f /tmp/prism-smoke-out/report.json
 
-  # prism_core / prism / prism_tests use __int128 (interval, PIR, SV-COMP, BMC, …).
-  # Neither MSVC nor VS clang-cl on the Windows ABI implements it, so this job
-  # does not build the engine or run prism_tests. It smoke-checks CMake, Ninja,
-  # and vendored PCRE2 plus std-only targets (same flags as a slim native build).
+  # Phase 5 MSVC port: prism_core uses prism::i128 (wide_int.hpp), not native __int128.
+  # Smoke-build the engine with VS clang-cl (MSVC ABI), Z3 off (skip vendored Z3),
+  # tests off (prism_tests still gated on Unix in several places).
   windows-compile-smoke:
     name: Windows compile smoke
     runs-on: windows-latest
@@ -152,8 +151,8 @@ jobs:
           -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl
           -DPRISM_CUDA=OFF -DPRISM_LLAMA=OFF -DPRISM_QT=OFF -DPRISM_Z3=OFF
           -DPRISM_TESTS=OFF -DPRISM_LIBCLANG=OFF
-      - name: Build (no prism_core)
-        run: cmake --build build-win --target prism-deps prism_docs_check pcre2-8-static
+      - name: Build (prism_core + prism)
+        run: cmake --build build-win --target prism
 
   selfcheck:
     name: PRISM on PRISM (SARIF artifact, not gating)
