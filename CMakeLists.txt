@@ -615,6 +615,17 @@ if(PRISM_TESTS)
       tests/cpp/test_contracts.cpp
       tests/cpp/test_bmc.cpp
       tests/cpp/test_checkers_cxx.cpp
+      tests/cpp/test_checkers_c.cpp
+      tests/cpp/test_gen_tables.cpp
+      tests/cpp/test_bmc_svcomp.cpp
+      tests/cpp/test_havoc.cpp
+      tests/cpp/test_verdict_repo.cpp
+      tests/cpp/test_diff.cpp
+      tests/cpp/test_journal_confidence.cpp
+      tests/cpp/test_thread_taint.cpp
+      tests/cpp/test_wp_harness.cpp
+      tests/cpp/test_concrete.cpp
+      tests/cpp/test_concolic.cpp
       tests/cpp/test_lint_corpus.cpp
       tests/cpp/test_pir_mem.cpp)
     if(PRISM_HAS_Z3)
