@@ -564,7 +564,7 @@ TEST_CASE("pir mem: lowered models are cached on disk; a failed build says why")
     fs::remove_all(dir);
     const char* old = std::getenv("XDG_CACHE_HOME");
     const std::string saved = old ? old : "";
-    test_setenv("XDG_CACHE_HOME", dir.c_str());
+    test_setenv("XDG_CACHE_HOME", dir.string().c_str());
     auto first = pp::build_models(fe, 120);
     REQUIRE_MESSAGE(first.error.empty(), first.error);
     std::size_t cached = 0;
