@@ -183,7 +183,7 @@ std::optional<std::string> c_literal_for(const std::string& type, const std::str
     // range the same way prism-qa conformance replay() does.
     const u128 pat = decimal ? i128_to_u128(dec) & mask : (*bits & mask);
     i128 value;
-    if (sc->is_signed && w < 128 && ((pat >> (w - 1)) & 1))
+    if (sc->is_signed && w < 128 && u128_bit(pat, static_cast<unsigned>(w - 1)))
         value = i128_sub(i128_from_u128(pat), i128_shl(i128(1), w));
     else
         value = i128_from_u128(pat);

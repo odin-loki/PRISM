@@ -211,6 +211,9 @@ inline u128 operator/(u128 a, u128 b) { return wide_int_detail::divmod_u128_u128
 
 inline u128 operator%(u128 a, u128 b) { return wide_int_detail::divmod_u128_u128(a, b).second; }
 
+struct i128;
+inline u128 u128_abs(i128 v);
+
 struct i128 {
     u128 bits{};
 
