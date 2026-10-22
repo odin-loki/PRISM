@@ -1127,8 +1127,14 @@ TEST_CASE("warnings: fake compilers parse output, dedupe, and never emit proof")
     auto unit = nt.t.put("planted.c", "int main(void){return 0;}\n");
     const std::string warn = "planted.c:3:5: warning: overflow [-Woverflow]\n";
     fake(nt.bin, "gcc", "printf '" + warn + "' >&2\nexit 0\n");
+#ifdef _WIN32
+    const auto gcc_exe = nt.bin / "gcc.exe";
+    auto clang = nt.bin / "clang.exe";
+    fs::copy_file(gcc_exe, clang, fs::copy_options::overwrite_existing);
+#else
     auto clang = nt.bin / "clang";
     fs::copy_file(nt.bin / "gcc", clang, fs::copy_options::overwrite_existing);
+#endif
     auto out = prism::run_compiler({unit}, cfg);
     REQUIRE(out.size() == 1);
     CHECK(out[0].status == laws::FAILED);
@@ -1137,7 +1143,11 @@ TEST_CASE("warnings: fake compilers parse output, dedupe, and never emit proof")
     never_clean_or_proof(out[0]);
 
     fake(nt.bin, "gcc", "echo 'fatal: cannot exec cc1' >&2\nexit 1\n");
+#ifdef _WIN32
+    fs::copy_file(gcc_exe, clang, fs::copy_options::overwrite_existing);
+#else
     fs::copy_file(nt.bin / "gcc", clang, fs::copy_options::overwrite_existing);
+#endif
     auto bad = prism::run_compiler({unit}, cfg);
     REQUIRE_FALSE(bad.empty());
     CHECK(bad[0].status == laws::FAILED);

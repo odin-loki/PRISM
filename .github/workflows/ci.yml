@@ -210,6 +210,33 @@ jobs:
       - name: Run portable prism_tests subset (Z3 + leanbb)
         run: .\build-win-z3\prism_tests.exe
 
+  # Phase 5c + 5b: native MSVC cl with vendored Z3 (Release; same subset as clang-cl Z3).
+  windows-compile-smoke-cl-z3:
+    name: Windows compile smoke (MSVC cl, Z3)
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - uses: actions/cache@v4
+        with:
+          path: build-win-cl-z3
+          key: win-smoke-cl-z3-${{ hashFiles('CMakeLists.txt', 'cmake/z3.cmake', 'cmake/z3-generated/tree_sha256', 'third_party/z3/CMakeLists.txt') }}
+          restore-keys: win-smoke-cl-z3-${{ hashFiles('CMakeLists.txt', 'cmake/z3.cmake', 'cmake/z3-generated/tree_sha256', 'third_party/z3/CMakeLists.txt') }}-
+      - name: Configure (Ninja + cl, PRISM_Z3=ON)
+        run: >
+          cmake -B build-win-cl-z3 -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl
+          -DPRISM_CUDA=OFF -DPRISM_LLAMA=OFF -DPRISM_QT=OFF -DPRISM_Z3=ON
+          -DPRISM_TESTS=ON -DPRISM_TESTS_WIN_SUBSET=ON -DPRISM_LIBCLANG=OFF
+      - name: Build (prism_core + prism + prism-qa + prism_tests)
+        run: cmake --build build-win-cl-z3 --target prism_core prism prism-qa prism_tests
+      - name: Run portable prism_tests subset (Z3 + leanbb)
+        run: .\build-win-cl-z3\prism_tests.exe
+
   selfcheck:
     name: PRISM on PRISM (SARIF artifact, not gating)
     runs-on: ubuntu-24.04
