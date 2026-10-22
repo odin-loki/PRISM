@@ -1,13 +1,12 @@
 # MSVC / `__int128` portability (native Windows `prism_core`)
 
 **Epic:** build `prism_core` and `prism` with MSVC (`cl`) on Windows without relying on
-WSL. **Blocker today:** GCC/Clang extension `__int128` / `unsigned __int128` is used in
-several `prism_core` translation units. MSVC has no 128-bit integer type; `clang-cl` in
-MSVC ABI mode does not expose `__int128` either.
+WSL. **Was:** GCC/Clang `__int128` in several `prism_core` TUs (no MSVC/`clang-cl` ABI type).
+Phases 2–4 route those paths through `prism::i128` (`wide_int.hpp`).
 
-**Audit base:** `main` @ `726941054` (2026-10-22). **86** lines under `src/` + `include/`
-match the substring `__int128` (includes string literals that mention the type name in
-*scanned* C/C++ source).
+**Audit base:** `main` @ `f0c21bd2e` (2026-10-22). Native `__int128` uses in `prism_core`
+are migrated to `prism::i128` (phases 2–4). Remaining substring hits are string-only
+BMC/astlint tables or `wide_int.hpp` under `PRISM_HAS_INT128`.
 
 **Related:** `docs/ROADMAP_STATUS.md` D7 (WSL primary today); `CMakeLists.txt` rejects
 MinGW and already sets MSVC flags on `prism_core`. `tests/cpp/test_main.cpp` keeps some
@@ -166,7 +165,7 @@ shortcut. Keep **D** only for explicitly documented optional components, not cor
 | **2** (done) | `include/prism/wide_int.hpp` (+ `.cpp` if needed) | `PRISM_HAS_INT128`, shared `parse_i128` / `format_i128`, unit tests in `tests/cpp/test_wide_int.cpp` |
 | **3** (done) | SV-COMP surface | `svcomp_witness.hpp` `Num::i` → portable type; migrate `witness.cpp`, `replay.cpp`, `debug_ir.cpp`; fix `test_svcomp.cpp` |
 | **4** (done) | Analysis core | `interval.cpp`, `pir/pir.cpp`, `translate_mem.cpp`, `solver/leanbb.cpp`, `ai/regress.cpp` |
-| **5** (in progress) | MSVC CI | `windows-compile-smoke`: Ninja + `clang-cl`, `PRISM_Z3=OFF`, `PRISM_TESTS=OFF`, `--target prism` (exercises `prism_core`). Follow-up: `cl` + `PRISM_Z3=ON`, run `prism_tests` on Windows, lift `#if !defined(_WIN32)` solver integration guards in `test_main.cpp` |
+| **5** (done) | MSVC CI | `windows-compile-smoke`: Ninja + `clang-cl`, `PRISM_Z3=OFF`, `PRISM_TESTS=OFF`, `--target prism_core`. Follow-up: `cl` + `PRISM_Z3=ON`, build `prism`, run `prism_tests` on Windows, lift `#if !defined(_WIN32)` solver guards in `test_main.cpp` |
 | **6** (optional) | QA on Windows | Port `yaml_subset` / conformance sources; remove `if(UNIX)` gate or add Windows subset |
 
 **Dependency order:** 2 → 3 (public API) → 4 (largest volume) → 5 → 6.
@@ -194,7 +193,7 @@ String-only BMC/astlint files: **0** type migration expected.
 ## 6. Acceptance criteria
 
 - **Phase 5a (CI smoke):** `windows-compile-smoke` configures with `clang-cl` and builds
-  `prism` with `PRISM_Z3=OFF` and `PRISM_TESTS=OFF` (see `.github/workflows/ci.yml`).
+  `prism_core` with `PRISM_Z3=OFF` and `PRISM_TESTS=OFF` (see `.github/workflows/ci.yml`).
 - **Phase 5b (follow-up):** `cmake --build` of `prism_core` + `prism` with **MSVC `cl`**
   on Windows x64 succeeds with default options (`PRISM_Z3=ON` at minimum for parity with
   Linux CI).
