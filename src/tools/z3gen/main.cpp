@@ -19,9 +19,17 @@ namespace {
   std::exit(1);
 }
 
+fs::path g_exe_dir;
+
 fs::path gen_root() {
   if (const char* env = std::getenv("PRISM_Z3_GENERATED_ROOT")) {
     if (env[0] != '\0') return fs::path(env);
+  }
+  const fs::path marker = g_exe_dir / "z3gen_root.txt";
+  std::ifstream in(marker);
+  if (in) {
+    std::string line;
+    if (std::getline(in, line) && !line.empty()) return fs::path(line);
   }
   die("PRISM_Z3_GENERATED_ROOT environment variable is not set");
 }
@@ -175,6 +183,7 @@ int dispatch_script(const std::vector<std::string>& args) {
 }  // namespace
 
 int main(int argc, char** argv) {
+  g_exe_dir = fs::absolute(fs::path(argv[0])).parent_path();
   if (argc >= 2 && std::string_view(argv[1]) == "-c") return emulate_python_c(argc, argv);
   if (argc < 2) {
     std::cerr << "usage: z3gen [-c CODE | SCRIPT.py ...]\n";
