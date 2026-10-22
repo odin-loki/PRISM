@@ -834,3 +834,9 @@ wrong proof first, then by size.
 | D176 | pir not scored on NIST Juliet (only bmc) | M (blocked) | docs/ROADMAP_STATUS.md:154 (M4 'Juliet scored for bmc'); docs/CONFORMANCE.md:266-279 |
 | D177 | In-process GGUF backend has no grammar sampler, so AI features never use it | M (blocked) | docs/AI.md:146-148; src/prism/ai/core.cpp:646-648; src/prism/stages/llm.cpp:154-156 |
 | D178 | ~~The solver process runner is not implemented on Windows~~ Windows external portfolio via `solver::detail::run` → `detail::run` (CreateProcess, stdin/stdout file redirects); manual smoke: `build\\prism.exe testdata\\solver\\tiny.cnf --certified` with CaDiCaL/cake_lpr on PATH | M (done) | src/prism/solver/util.cpp, src/prism/proc.cpp |
+
+## Appendix: MSVC / `__int128` (native Windows `prism_core`)
+
+Phase-1 audit and phased coding plan: **[MSVC_PORT.md](MSVC_PORT.md)** (`main` @ `726941054`).
+Blocker: `__int128` in interval, PIR, SV-COMP, solver `leanbb`, and AI `regress` (`prism_core`);
+QA `__int128` is Unix-only in CMake today.
