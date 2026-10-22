@@ -35,7 +35,15 @@ inline bool i128_eq(i128 a, i128 b) { return a == b; }
 
 inline i128 i128_add(i128 a, i128 b) { return a + b; }
 
+inline i128 i128_sub(i128 a, i128 b) { return a - b; }
+
 inline i128 i128_mul(i128 a, i128 b) { return a * b; }
+
+inline i128 i128_max(i128 a, i128 b) { return a > b ? a : b; }
+
+inline i128 i128_min(i128 a, i128 b) { return a < b ? a : b; }
+
+inline std::int64_t i128_to_i64(i128 v) { return static_cast<std::int64_t>(v); }
 
 inline double i128_to_double(i128 v) { return static_cast<double>(v); }
 
@@ -44,6 +52,8 @@ inline i128 i128_from_i64(std::int64_t v) { return static_cast<i128>(v); }
 inline i128 i128_from_u64(std::uint64_t v) { return static_cast<i128>(static_cast<u128>(v)); }
 
 inline i128 i128_shl(i128 v, int n) { return n < 0 ? v : v << n; }
+
+inline i128 i128_shr(i128 v, int n) { return n < 0 ? v : v >> n; }
 
 inline i128 i128_and(i128 a, i128 b) { return a & b; }
 
@@ -174,6 +184,8 @@ struct i128 {
 
     friend constexpr i128 operator+(i128 a, i128 b) { return i128(a.bits + b.bits); }
 
+    friend constexpr i128 operator-(i128 a, i128 b) { return a + (-b); }
+
     friend i128 operator*(i128 a, i128 b) {
         const bool neg = (a.bits.hi >> 63) != (b.bits.hi >> 63);
         u128 ua = u128_abs(a);
@@ -204,7 +216,20 @@ inline bool i128_eq(i128 a, i128 b) { return a == b; }
 
 inline i128 i128_add(i128 a, i128 b) { return a + b; }
 
+inline i128 i128_sub(i128 a, i128 b) { return a - b; }
+
 inline i128 i128_mul(i128 a, i128 b) { return a * b; }
+
+inline i128 i128_max(i128 a, i128 b) { return a > b ? a : b; }
+
+inline i128 i128_min(i128 a, i128 b) { return a < b ? a : b; }
+
+inline std::int64_t i128_to_i64(i128 v) {
+    if ((v.bits.hi >> 63) == 0) return static_cast<std::int64_t>(v.bits.lo);
+    u128 a = u128_abs(v);
+    if (a.hi != 0 || a.lo > 0x8000000000000000ULL) return static_cast<std::int64_t>(v.bits.lo);
+    return -static_cast<std::int64_t>(a.lo);
+}
 
 inline double i128_to_double(i128 v) { return static_cast<double>(v); }
 
@@ -218,6 +243,18 @@ inline i128 i128_shl(i128 v, int n) {
     u128 b = v.bits;
     if (n >= 64) return i128(u128(b.lo << (n - 64), 0));
     return i128(u128((b.hi << n) | (b.lo >> (64 - n)), b.lo << n));
+}
+
+inline i128 i128_shr(i128 v, int n) {
+    if (n <= 0) return v;
+    if (n >= 128) return v.bits.hi >> 63 ? i128(-1) : i128(0);
+    u128 b = v.bits;
+    if (n >= 64) {
+        const std::uint64_t hi = b.hi >> (n - 64);
+        const std::uint64_t lo = b.hi << (128 - n);
+        return i128(u128(hi, lo));
+    }
+    return i128(u128((b.hi << (64 - n)) | (b.lo >> n), b.lo >> n));
 }
 
 inline i128 i128_and(i128 a, i128 b) { return i128(u128(a.bits.lo & b.bits.lo, a.bits.hi & b.bits.hi)); }

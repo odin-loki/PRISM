@@ -11,8 +11,12 @@ using prism::i128;
 using prism::i128_add;
 using prism::i128_eq;
 using prism::i128_from_i64;
+using prism::i128_max;
+using prism::i128_min;
 using prism::i128_mul;
 using prism::i128_neg;
+using prism::i128_sub;
+using prism::i128_to_i64;
 using prism::parse_i128;
 
 namespace {
@@ -65,4 +69,8 @@ TEST_CASE("wide_int arithmetic smoke") {
     CHECK(i128_eq(i128_add(i128(100), i128(23)), i128(123)));
     CHECK(i128_eq(i128_neg(i128(5)), i128(-5)));
     CHECK(i128_eq(i128_mul(i128(1000), i128(1000)), i128(1000000)));
+    CHECK(i128_eq(i128_sub(i128(10), i128(3)), i128(7)));
+    CHECK(i128_eq(i128_max(i128(1), i128(2)), i128(2)));
+    CHECK(i128_eq(i128_min(i128(1), i128(2)), i128(1)));
+    CHECK(i128_to_i64(i128(-42)) == -42);
 }

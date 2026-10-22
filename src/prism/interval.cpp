@@ -2,6 +2,7 @@
 #include "prism/laws.hpp"
 #include "prism/regex.hpp"
 #include "prism/cparse.hpp"
+#include "prism/wide_int.hpp"
 #include "stages/interp.hpp"
 
 #include <algorithm>
@@ -315,9 +316,10 @@ int sizeof_interval(const std::vector<std::string>& inner) {
     return kWidth / 8;
 }
 
-R clip(__int128 lo, __int128 hi, bool uns = false, int w = kWidth) {
-    return R{static_cast<int64_t>(std::max<__int128>(lo, tmin(w))),
-             static_cast<int64_t>(std::min<__int128>(hi, tmax(w))), uns, w};
+R clip(i128 lo, i128 hi, bool uns = false, int w = kWidth) {
+    const i128 tlo = i128_from_i64(tmin(w));
+    const i128 thi = i128_from_i64(tmax(w));
+    return R{i128_to_i64(i128_max(lo, tlo)), i128_to_i64(i128_min(hi, thi)), uns, w};
 }
 
 R join_r(const R& a, const R& b) {
@@ -447,9 +449,15 @@ std::string while_stmt(Engine& e, const std::string& text, int bound);
 std::string for_stmt(Engine& e, const std::string& text, int bound);
 std::string do_stmt(Engine& e, const std::string& text, int bound);
 
-bool out_of(__int128 v, int w) { return v < tmin(w) || v > tmax(w); }
-bool ovf_add(int64_t a, int64_t b, int w = kWidth) { return out_of(static_cast<__int128>(a) + b, w); }
-bool ovf_sub(int64_t a, int64_t b, int w = kWidth) { return out_of(static_cast<__int128>(a) - b, w); }
+bool out_of(i128 v, int w) {
+    return v < i128_from_i64(tmin(w)) || v > i128_from_i64(tmax(w));
+}
+bool ovf_add(int64_t a, int64_t b, int w = kWidth) {
+    return out_of(i128_add(i128_from_i64(a), i128_from_i64(b)), w);
+}
+bool ovf_sub(int64_t a, int64_t b, int w = kWidth) {
+    return out_of(i128_sub(i128_from_i64(a), i128_from_i64(b)), w);
+}
 
 int64_t py_floordiv(int64_t a, int64_t b) {
     int64_t q = a / b;
@@ -477,17 +485,21 @@ R binop(Engine&, const R& a, const std::string& op, const R& b) {
         bool ovf = ovf_add(a.lo, b.lo, w) || ovf_add(a.lo, b.hi, w) || ovf_add(a.hi, b.lo, w) || ovf_add(a.hi, b.hi, w);
         if (!u && ovf) throw Alarm("INT-SIGNED-OVF", "signed + may overflow");
         if (u && ovf) return top(w, true);
-        return clip(static_cast<__int128>(a.lo) + b.lo, static_cast<__int128>(a.hi) + b.hi, u, w);
+        return clip(i128_add(i128_from_i64(a.lo), i128_from_i64(b.lo)),
+                    i128_add(i128_from_i64(a.hi), i128_from_i64(b.hi)), u, w);
     }
     if (op == "-") {
         bool ovf = ovf_sub(a.lo, b.lo, w) || ovf_sub(a.lo, b.hi, w) || ovf_sub(a.hi, b.lo, w) || ovf_sub(a.hi, b.hi, w);
         if (!u && ovf) throw Alarm("INT-SIGNED-OVF", "signed - may overflow");
         if (u && ovf) return top(w, true);
-        return clip(static_cast<__int128>(a.lo) - b.hi, static_cast<__int128>(a.hi) - b.lo, u, w);
+        return clip(i128_sub(i128_from_i64(a.lo), i128_from_i64(b.hi)),
+                    i128_sub(i128_from_i64(a.hi), i128_from_i64(b.lo)), u, w);
     }
     if (op == "*") {
-        __int128 corners[4] = {static_cast<__int128>(a.lo) * b.lo, static_cast<__int128>(a.lo) * b.hi,
-                               static_cast<__int128>(a.hi) * b.lo, static_cast<__int128>(a.hi) * b.hi};
+        i128 corners[4] = {i128_mul(i128_from_i64(a.lo), i128_from_i64(b.lo)),
+                           i128_mul(i128_from_i64(a.lo), i128_from_i64(b.hi)),
+                           i128_mul(i128_from_i64(a.hi), i128_from_i64(b.lo)),
+                           i128_mul(i128_from_i64(a.hi), i128_from_i64(b.hi))};
         for (auto c : corners) {
             if (out_of(c, w)) {
                 if (u) return top(w, true);
@@ -523,19 +535,20 @@ R binop(Engine&, const R& a, const std::string& op, const R& b) {
         if (!u && op == "<<" && a.contains(1) && b.hi >= lw - 1)
             throw Alarm("INT-SHIFT-UB", lw >= 64 ? "1<<63 is undefined for signed long" : "1<<31 is undefined for signed int");
         if (a.lo == a.hi && b.lo == b.hi && b.lo >= 0 && b.lo < lw) {
-            __int128 v = op == "<<" ? static_cast<__int128>(a.lo) << b.lo : static_cast<__int128>(a.lo >> b.lo);
-            if (!out_of(v, lw)) return R{static_cast<int64_t>(v), static_cast<int64_t>(v), u, lw};
+            const int sh = static_cast<int>(b.lo);
+            i128 v = op == "<<" ? i128_shl(i128_from_i64(a.lo), sh) : i128_shr(i128_from_i64(a.lo), sh);
+            if (!out_of(v, lw)) return R{i128_to_i64(v), i128_to_i64(v), u, lw};
         }
         return top(lw, u);
     }
     if (op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">=") {
         if (a.lo == a.hi && b.lo == b.hi) {
             // two constants: compare in the common type
-            auto x = static_cast<__int128>(a.lo), y = static_cast<__int128>(b.lo);
+            auto x = i128_from_i64(a.lo), y = i128_from_i64(b.lo);
             if (u) {
-                const __int128 m = static_cast<__int128>(1) << w;
-                if (x < 0) x += m;
-                if (y < 0) y += m;
+                const i128 m = i128_shl(i128_from_i64(1), w);
+                if (x < i128(0)) x = i128_add(x, m);
+                if (y < i128(0)) y = i128_add(y, m);
             }
             bool r = op == "==" ? x == y : op == "!=" ? x != y : op == "<" ? x < y : op == ">" ? x > y
                    : op == "<=" ? x <= y : x >= y;
