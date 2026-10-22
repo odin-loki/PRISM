@@ -43,6 +43,15 @@ using namespace prism::svcomp;
 
 namespace {
 
+// Windows CI subset: replay/solve/pack need Unix sandbox, UBSan, or shell archives.
+bool svcomp_exec_portable() {
+#ifndef _WIN32
+    return true;
+#else
+    return false;
+#endif
+}
+
 fs::path repo_root() {
     // __FILE__ may be relative to the build directory (ccache base_dir):
     // try it, then walk up from the working directory.
@@ -697,6 +706,10 @@ TEST_CASE("svcomp replay: stubs for the __VERIFIER_* functions the task does not
 }
 
 TEST_CASE("svcomp replay: sanitizer runs decide replayed / not-replayed") {
+    if (!svcomp_exec_portable()) {
+        MESSAGE("NOTRUN: SV-COMP replay executes task code (Unix sandbox)");
+        return;
+    }
     if (!cc_with_ubsan()) {
         MESSAGE("NOTRUN: no C compiler with UBSan");
         return;
@@ -940,6 +953,10 @@ TEST_CASE("svcomp solve: unsupported properties and ILP32 width answer unknown b
 }
 
 TEST_CASE("svcomp solve: a pinned false task (violation witness) and a true task (correctness witness)") {
+    if (!svcomp_exec_portable()) {
+        MESSAGE("NOTRUN: SV-COMP solve replay needs --allow-exec (Unix sandbox)");
+        return;
+    }
     const fs::path sv = repo_root() / "tests" / "conformance" / "sv-comp";
     TempDir d;
     SolveOptions opt;
@@ -1003,6 +1020,10 @@ TEST_CASE("svcomp: the BenchExec tool-info module runs `prism svcomp` and knows 
 // ---------------------------------------------------------------- archive
 
 TEST_CASE("svcomp pack: the tool archive") {
+    if (!svcomp_exec_portable()) {
+        MESSAGE("NOTRUN: SV-COMP pack test uses a shell stub and tar permission bits");
+        return;
+    }
     prism::Config cfg;
     auto lister = cfg.which({"tar"});
     if (!cfg.which({"cmake"}) && !lister) {

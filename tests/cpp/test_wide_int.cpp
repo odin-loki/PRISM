@@ -8,6 +8,7 @@
 
 using prism::format_i128;
 using prism::i128;
+using prism::i128_and;
 using prism::i128_add;
 using prism::i128_eq;
 using prism::i128_from_i64;
@@ -75,6 +76,11 @@ TEST_CASE("wide_int arithmetic smoke") {
     CHECK(i128_eq(i128_max(i128(1), i128(2)), i128(2)));
     CHECK(i128_eq(i128_min(i128(1), i128(2)), i128(1)));
     CHECK(i128_to_i64(i128(-42)) == -42);
+}
+
+TEST_CASE("wide_int i128_and") {
+    CHECK(i128_eq(i128_and(i128_from_i64(5), i128_from_i64(3)), i128_from_i64(1)));
+    CHECK(i128_eq(i128_and(i128_from_i64(7), i128_from_i64(1)), i128_from_i64(1)));
 }
 
 TEST_CASE("wide_int u128 bitwise smoke") {

@@ -313,7 +313,7 @@ inline i128 i128_shr(i128 v, int n) {
     return i128(u128((b.hi << (64 - n)) | (b.lo >> n), b.lo >> n));
 }
 
-inline i128 i128_and(i128 a, i128 b) { return i128(u128(a.bits.lo & b.bits.lo, a.bits.hi & b.bits.hi)); }
+inline i128 i128_and(i128 a, i128 b) { return i128(u128(a.bits.hi & b.bits.hi, a.bits.lo & b.bits.lo)); }
 
 inline i128 i128_from_u128(u128 v) { return i128(v); }
 
