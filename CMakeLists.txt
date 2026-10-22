@@ -645,7 +645,7 @@ if(PRISM_TESTS)
       tests/cpp/test_pir_e2e.cpp)
     if(PRISM_HAS_Z3)
       list(APPEND _prism_test_sources tests/cpp/test_leanbb.cpp
-        tests/cpp/test_pir_budget.cpp)
+        tests/cpp/test_pir_budget.cpp tests/cpp/test_certified.cpp)
     endif()
   else()
     set(_prism_test_sources
