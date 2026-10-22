@@ -49,9 +49,23 @@ std::string norm_ws(std::string s) {
 
 std::string strip_lean_comments(std::string text) {
     std::erase(text, '\r');
-    text = std::regex_replace(text, std::regex("--[^\n]*"), "");
-    text = std::regex_replace(text, std::regex("/-.*?-/", std::regex::extended), "");
-    return text;
+    std::string out;
+    out.reserve(text.size());
+    for (std::size_t i = 0; i < text.size();) {
+        if (i + 1 < text.size() && text[i] == '-' && text[i + 1] == '-') {
+            while (i < text.size() && text[i] != '\n') ++i;
+            continue;
+        }
+        if (i + 1 < text.size() && text[i] == '/' && text[i + 1] == '-') {
+            const auto end = text.find("-/", i + 2);
+            if (end != std::string::npos) {
+                i = end + 2;
+                continue;
+            }
+        }
+        out += text[i++];
+    }
+    return out;
 }
 
 bool lean_has_axiom_decl(const std::string& stripped) {

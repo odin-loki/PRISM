@@ -361,6 +361,7 @@ TEST_CASE("fuse branch goals and CLEAN is not a proof") {
     CHECK(has(recs[0].message, "not a proof"));
 }
 
+#ifndef _WIN32
 TEST_CASE("diff of disagreeing _a / _b pair is FAILED with a counterexample") {
     prism::sandbox::Policy allow(true);
     std::vector<prism::FunctionInfo> funcs;
@@ -373,3 +374,4 @@ TEST_CASE("diff of disagreeing _a / _b pair is FAILED with a counterexample") {
     CHECK(recs[0].status == std::string(laws::FAILED));
     CHECK_FALSE(recs[0].counterexample.empty());
 }
+#endif

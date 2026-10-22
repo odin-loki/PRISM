@@ -237,11 +237,14 @@ TEST_CASE("sarif: polyglot pipeline emits expected defect results") {
             CHECK((uri == "bad.json" || uri == "bad.py"));
             continue;
         }
+        int line = 0;
+        if (auto& phys = r["locations"][0]["physicalLocation"]; phys.contains("region") && !phys["region"].is_null())
+            line = phys["region"].value("startLine", 0);
         rows.push_back({r["ruleId"],
                         r["level"],
                         msg,
                         r["locations"][0]["physicalLocation"]["artifactLocation"]["uri"].get<std::string>(),
-                        r["locations"][0]["physicalLocation"]["region"].value("startLine", 0)});
+                        line});
     }
     CHECK_FALSE(rows.empty());
     std::set<std::string> rule_ids;
