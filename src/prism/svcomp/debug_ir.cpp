@@ -266,7 +266,8 @@ std::optional<std::string> render_conjunct(const json& conj,
         if (!has(j, "c") || w < 1 || w > 64) return std::nullopt;
         auto v = big_int(j.at("c"));
         if (!v) return std::nullopt;
-        if (is_signed && *v >= i128_shl(i128_from_i64(1), w - 1)) *v -= i128_shl(i128_from_i64(1), w);
+        if (is_signed && *v >= i128_shl(i128_from_i64(1), w - 1))
+            *v = i128_sub(*v, i128_shl(i128_from_i64(1), w));
         if (is_signed || *v <= i128_from_i64(2147483647)) return int_text(*v);
         return int_text(*v) + (w <= 32 ? "U" : "UL");
     };

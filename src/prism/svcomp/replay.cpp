@@ -184,8 +184,8 @@ json replay(const fs::path& src, const std::string& prop, bool allow_exec,
         return json{{"replay", "not-replayed"}, {"why", "replay build failed: " + err}};
     }
     // The run's environment: sanitizers halt on the first report.
-    ::setenv("ASAN_OPTIONS", "detect_leaks=0:halt_on_error=1", 1);
-    ::setenv("UBSAN_OPTIONS", "print_stacktrace=0:halt_on_error=1", 1);
+    detail::set_env("ASAN_OPTIONS", "detect_leaks=0:halt_on_error=1");
+    detail::set_env("UBSAN_OPTIONS", "print_stacktrace=0:halt_on_error=1");
     const bool jailed = sandbox::kind() == "bwrap";
     auto run_argv = sandbox::wrap_argv({exe.string()}, work);
     // ASan reserves terabytes of shadow address space: no RLIMIT_AS for it

@@ -20,6 +20,9 @@ namespace prism::svcomp::detail {
 // UTC calendar fields for a std::time_t (gmtime_r on Unix, gmtime_s on Windows).
 bool utc_tm(std::time_t t, std::tm* out);
 
+// setenv(overwrite) on Unix; _putenv_s on Windows.
+void set_env(const char* key, const char* value);
+
 // File contents with every invalid UTF-8 sequence replaced by U+FFFD
 // ("" when unreadable).
 std::string read_text(const std::filesystem::path& p);

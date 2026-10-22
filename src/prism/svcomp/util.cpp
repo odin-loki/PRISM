@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdlib>
 #include <fstream>
 #include <sstream>
 
@@ -211,6 +212,14 @@ bool utc_tm(std::time_t t, std::tm* out) {
     return ::gmtime_s(out, &t) == 0;
 #else
     return ::gmtime_r(&t, out) != nullptr;
+#endif
+}
+
+void set_env(const char* key, const char* value) {
+#if defined(_WIN32)
+    _putenv_s(key, value);
+#else
+    ::setenv(key, value, 1);
 #endif
 }
 
