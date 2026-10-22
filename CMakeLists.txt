@@ -603,8 +603,20 @@ if(PRISM_TESTS)
       tests/cpp/test_wide_int.cpp
       tests/cpp/test_interval.cpp
       tests/cpp/test_svcomp.cpp
-      tests/cpp/test_leanbb.cpp
-      tests/cpp/test_naming.cpp)
+      tests/cpp/test_naming.cpp
+      tests/cpp/test_polyglot.cpp
+      tests/cpp/test_taxonomy.cpp
+      tests/cpp/test_repolint.cpp
+      tests/cpp/test_deps.cpp
+      tests/cpp/test_cparse.cpp
+      tests/cpp/test_sarif.cpp
+      tests/cpp/test_astlint.cpp
+      tests/cpp/test_ltl.cpp
+      tests/cpp/test_contracts.cpp
+      tests/cpp/test_bmc.cpp)
+    if(PRISM_HAS_Z3)
+      list(APPEND _prism_test_sources tests/cpp/test_leanbb.cpp)
+    endif()
   else()
     set(_prism_test_sources
       tests/cpp/test_main.cpp tests/cpp/test_ai9.cpp tests/cpp/test_conc.cpp

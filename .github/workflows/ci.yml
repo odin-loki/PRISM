@@ -144,7 +144,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: build-win
-          key: win-smoke-${{ hashFiles('CMakeLists.txt', 'third_party/pcre2/CMakeLists.txt') }}-${{ github.sha }}
+          key: win-smoke-${{ hashFiles('CMakeLists.txt', 'third_party/pcre2/CMakeLists.txt') }}
           restore-keys: win-smoke-${{ hashFiles('CMakeLists.txt', 'third_party/pcre2/CMakeLists.txt') }}-
       - name: Configure (Ninja + clang-cl)
         run: >
@@ -170,7 +170,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: build-win-z3
-          key: win-smoke-z3-${{ hashFiles('CMakeLists.txt', 'cmake/z3.cmake', 'cmake/z3-generated/tree_sha256', 'third_party/z3/CMakeLists.txt') }}-${{ github.sha }}
+          key: win-smoke-z3-${{ hashFiles('CMakeLists.txt', 'cmake/z3.cmake', 'cmake/z3-generated/tree_sha256', 'third_party/z3/CMakeLists.txt') }}
           restore-keys: win-smoke-z3-${{ hashFiles('CMakeLists.txt', 'cmake/z3.cmake', 'cmake/z3-generated/tree_sha256', 'third_party/z3/CMakeLists.txt') }}-
       - name: Configure (Ninja + clang-cl, PRISM_Z3=ON)
         run: >
