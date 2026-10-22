@@ -12,6 +12,7 @@
 #endif
 
 #include "prism/config.hpp"
+#include "prism/wide_int.hpp"
 #include "prism/pipeline.hpp"
 #include "prism/svcomp.hpp"
 #include "prism/taskdef.hpp"
@@ -500,7 +501,7 @@ TEST_CASE("svcomp witness: ACSL constants and float text") {
     CHECK(acsl_literal(Num::of_int(-5)) == "-5");
     CHECK(acsl_literal(Num::of_int(7)) == "7");
     CHECK(acsl_literal(Num::of_float(0.5)) == "0.5");
-    CHECK(acsl_literal(Num::of_int(static_cast<__int128>(18446744073709551615ULL))) == "18446744073709551615");
+    CHECK(acsl_literal(Num::of_int(*prism::parse_i128("18446744073709551615"))) == "18446744073709551615");
     // the spelling of Python's repr(float), which the witnesses used so far
     CHECK(float_repr(2147483647.0) == "2147483647.0");
     CHECK(float_repr(1e16) == "1e+16");

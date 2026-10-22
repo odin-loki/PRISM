@@ -24,6 +24,7 @@
 // validation").
 
 #include "prism/export.hpp"
+#include "prism/wide_int.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -43,18 +44,18 @@ inline constexpr const char* WITNESS_PRODUCER = "PRISM";
 // 128-bit) or a floating-point value.
 struct Num {
     bool is_float = false;
-    __int128 i = 0;
+    i128 i{};
     double f = 0.0;
-    static Num of_int(__int128 v) { return Num{false, v, 0.0}; }
-    static Num of_float(double v) { return Num{true, 0, v}; }
-    double as_double() const { return is_float ? f : static_cast<double>(i); }
+    static Num of_int(i128 v) { return Num{false, v, 0.0}; }
+    static Num of_float(double v) { return Num{true, {}, v}; }
+    double as_double() const { return is_float ? f : i128_to_double(i); }
     bool operator==(const Num& o) const {
         return is_float == o.is_float && (is_float ? f == o.f : i == o.i);
     }
 };
 
 // Decimal text of a 128-bit integer.
-PRISM_API std::string int_text(__int128 v);
+PRISM_API std::string int_text(i128 v);
 // The shortest text that reads back as v, spelled like Python's repr(float):
 // "0.5", "2147483647.0", "1e+16", "1.5e-05", "nan", "inf".
 PRISM_API std::string float_repr(double v);

@@ -15,6 +15,7 @@
 
 #include "../stages/common.hpp"
 #include "prism/config.hpp"
+#include "prism/wide_int.hpp"
 
 #include <algorithm>
 #include <map>
@@ -240,21 +241,13 @@ const std::map<std::string, std::string>& rel_c() {
     return k;
 }
 
-std::optional<__int128> big_int(const json& v) {
-    if (v.is_number_integer()) return static_cast<__int128>(v.get<long long>());
-    if (v.is_number_unsigned()) return static_cast<__int128>(v.get<unsigned long long>());
+std::optional<i128> big_int(const json& v) {
+    if (v.is_number_integer()) return i128_from_i64(v.get<long long>());
+    if (v.is_number_unsigned()) return i128_from_u64(v.get<unsigned long long>());
     if (!v.is_string()) return std::nullopt;
     std::string s = strip(v.get<std::string>());
-    std::size_t i = 0;
-    bool neg = false;
-    if (i < s.size() && (s[i] == '-' || s[i] == '+')) neg = s[i++] == '-';
-    if (i >= s.size() || s.size() - i > 38) return std::nullopt;
-    __int128 x = 0;
-    for (; i < s.size(); ++i) {
-        if (s[i] < '0' || s[i] > '9') return std::nullopt;
-        x = x * 10 + (s[i] - '0');
-    }
-    return neg ? -x : x;
+    if (s.size() > 39) return std::nullopt;
+    return parse_i128(s);
 }
 
 }  // namespace
@@ -273,9 +266,8 @@ std::optional<std::string> render_conjunct(const json& conj,
         if (!has(j, "c") || w < 1 || w > 64) return std::nullopt;
         auto v = big_int(j.at("c"));
         if (!v) return std::nullopt;
-        const __int128 one = 1;
-        if (is_signed && *v >= (one << (w - 1))) *v -= one << w;
-        if (is_signed || *v <= 2147483647) return int_text(*v);
+        if (is_signed && *v >= i128_shl(i128_from_i64(1), w - 1)) *v -= i128_shl(i128_from_i64(1), w);
+        if (is_signed || *v <= i128_from_i64(2147483647)) return int_text(*v);
         return int_text(*v) + (w <= 32 ? "U" : "UL");
     };
     const json a = has(conj, "a") && truthy(conj.at("a")) ? conj.at("a") : json::object();
@@ -287,13 +279,12 @@ std::optional<std::string> render_conjunct(const json& conj,
     if (has(b, "v") && (!tb || width(b) != tb->bits)) return std::nullopt;
     const int w = ta->bits;
     if (w < 1 || w > 64) return std::nullopt;
-    const __int128 one = 1;
     if (rel.starts_with("mask:")) {
         auto m = parse_ll(rel.substr(5));
-        if (!m || !has(b, "c") || static_cast<__int128>(*m) >= (one << (w - 1))) return std::nullopt;
+        if (!m || !has(b, "c") || i128_from_i64(*m) >= i128_shl(i128_from_i64(1), w - 1)) return std::nullopt;
         auto c = big_int(b.at("c"));
         if (!c) return std::nullopt;
-        return "(" + ta->name + " & " + std::to_string(*m) + ") == " + int_text(*c & static_cast<__int128>(*m));
+        return "(" + ta->name + " & " + std::to_string(*m) + ") == " + int_text(i128_and(*c, i128_from_i64(*m)));
     }
     if (rel == "add" || rel == "sub") {
         const json c = has(conj, "c") && truthy(conj.at("c")) ? conj.at("c") : json::object();

@@ -2,6 +2,7 @@
 #include "internal.hpp"
 
 #include "prism/config.hpp"
+#include "prism/wide_int.hpp"
 
 #include <algorithm>
 #include <charconv>
@@ -18,18 +19,7 @@ namespace prism::svcomp {
 using namespace detail;
 namespace fs = std::filesystem;
 
-std::string int_text(__int128 v) {
-    if (v == 0) return "0";
-    bool neg = v < 0;
-    unsigned __int128 u = neg ? static_cast<unsigned __int128>(-(v + 1)) + 1 : static_cast<unsigned __int128>(v);
-    std::string s;
-    while (u) {
-        s += static_cast<char>('0' + static_cast<int>(u % 10));
-        u /= 10;
-    }
-    if (neg) s += '-';
-    return {s.rbegin(), s.rend()};
-}
+std::string int_text(i128 v) { return prism::format_i128(v); }
 
 std::string float_repr(double v) {
     if (std::isnan(v)) return "nan";

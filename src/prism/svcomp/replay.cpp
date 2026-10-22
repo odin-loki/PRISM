@@ -7,6 +7,7 @@
 #include "../stages/common.hpp"
 #include "prism/config.hpp"
 #include "prism/sandbox.hpp"
+#include "prism/wide_int.hpp"
 
 #include <cstdlib>
 #include <map>
@@ -57,55 +58,6 @@ const std::map<std::string, std::string>& nondet_types() {
     return k;
 }
 
-// int(text, 0): an optional sign, then a 0x/0o/0b prefix or a decimal
-// without leading zeros; single underscores between digits.
-std::optional<__int128> parse_int0(const std::string& t) {
-    std::size_t i = 0;
-    bool neg = false;
-    if (i < t.size() && (t[i] == '+' || t[i] == '-')) neg = t[i++] == '-';
-    int base = 10;
-    if (i + 1 < t.size() && t[i] == '0') {
-        char p = static_cast<char>(std::tolower(static_cast<unsigned char>(t[i + 1])));
-        if (p == 'x') base = 16;
-        else if (p == 'o') base = 8;
-        else if (p == 'b') base = 2;
-        if (base != 10) {
-            i += 2;
-            if (i < t.size() && t[i] == '_') ++i;  // 0x_ff
-        }
-    }
-    if (i >= t.size()) return std::nullopt;
-    const std::size_t first = i;
-    unsigned __int128 v = 0;
-    const unsigned __int128 limit = (static_cast<unsigned __int128>(1) << 127);
-    bool nonzero_lead = false;
-    for (; i < t.size(); ++i) {
-        char c = t[i];
-        if (c == '_') {
-            if (i == first || i + 1 >= t.size() || t[i + 1] == '_') return std::nullopt;
-            continue;
-        }
-        int d;
-        if (c >= '0' && c <= '9') d = c - '0';
-        else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;
-        else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;
-        else return std::nullopt;
-        if (d >= base) return std::nullopt;
-        if (base == 10 && i == first && d != 0) nonzero_lead = true;
-        v = v * static_cast<unsigned>(base) + static_cast<unsigned>(d);
-        if (v > limit) return std::nullopt;
-    }
-    if (base == 10 && !nonzero_lead) {
-        // "0", "00", "0_0" are 0; "010" is not an int(text, 0) literal
-        for (std::size_t k = first; k < t.size(); ++k)
-            if (t[k] != '0' && t[k] != '_') return std::nullopt;
-    }
-    if (!neg && v == limit) return std::nullopt;
-    __int128 s = neg ? -static_cast<__int128>(v - 1) - 1 : static_cast<__int128>(v);
-    if (neg && v == 0) s = 0;
-    return s;
-}
-
 // float(text): decimal floats, inf/infinity, nan; no hex floats.
 std::optional<double> parse_float(const std::string& t) {
     if (t.empty()) return std::nullopt;
@@ -145,7 +97,7 @@ std::optional<std::vector<std::pair<std::string, Num>>> nondet_trace(const json&
             auto eq = part.find('=');
             std::string name = strip(part.substr(0, eq));
             std::string val = eq == std::string::npos ? "" : strip(part.substr(eq + 1));
-            if (auto iv = parse_int0(val)) out.emplace_back(name, Num::of_int(*iv));
+            if (auto iv = parse_i128(val)) out.emplace_back(name, Num::of_int(*iv));
             else if (auto fv = parse_float(val)) out.emplace_back(name, Num::of_float(*fv));
             else return std::nullopt;
         }
