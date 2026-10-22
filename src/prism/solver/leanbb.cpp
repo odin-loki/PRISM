@@ -185,7 +185,7 @@ struct Evaluator {
         --it;
         if (j >= it->first + it->second.w) return false;
         unsigned k = unsigned(j - it->first);
-        return k < 128 && ((it->second.v >> k) & 1);
+        return u128_bit(it->second.v, k);
     }
     void update(unsigned long long base, Val v) {
         // Remove the overlapped part of existing segments (the serializer
@@ -196,7 +196,7 @@ struct Evaluator {
             for (unsigned k = 0; k < s.w; ++k) {
                 unsigned long long j = b + k;
                 if (j >= base && j < base + v.w) continue;
-                keep[j] = Val{1, (s.v >> k) & 1};
+                keep[j] = Val{1, u128_bit(s.v, k) ? u128(1) : u128(0)};
             }
         }
         keep[base] = v;
@@ -218,11 +218,11 @@ struct Evaluator {
     static i128 sval(Val x) {
         if (x.w == 0) return i128(0);
         const u128 pat = x.v & mask_of(x.w);
-        if (x.w < 128 && ((pat >> (x.w - 1)) & 1))
+        if (x.w < 128 && u128_bit(pat, x.w - 1))
             return i128_sub(i128_from_u128(pat), i128_shl(i128(1), x.w));
         return i128_from_u128(pat);
     }
-    static bool msb(Val x) { return x.w > 0 && ((x.v >> (x.w - 1)) & 1); }
+    static bool msb(Val x) { return x.w > 0 && u128_bit(x.v, x.w - 1); }
     static Val mk(unsigned w, u128 v) { return Val{w, v & mask_of(w)}; }
     static Val neg(Val x) { return mk(x.w, ~x.v + 1); }
     static Val udiv(Val x, Val y) { return y.v == 0 ? mk(x.w, ~u128(0)) : mk(x.w, x.v / y.v); }
@@ -242,7 +242,7 @@ struct Evaluator {
             if (op == "var") {
                 if (!num(e.kids[2], b)) return bad("bad var");
                 u128 v = 0;
-                for (unsigned t = 0; t < w; ++t) v |= u128(bit(b + t)) << t;
+                for (unsigned t = 0; t < w; ++t) v = v | (u128(bit(b + t) ? 1 : 0) << t);
                 return Val{unsigned(w), v};
             }
             const std::string& d = n[e.kids[2]].atom;
@@ -267,7 +267,7 @@ struct Evaluator {
             if (op == "lshrc") return p >= a->w ? mk(a->w, 0) : mk(a->w, a->v >> p);
             if (p >= a->w) return mk(a->w, msb(*a) ? ~u128(0) : 0);
             u128 r = a->v >> p;
-            if (msb(*a) && p > 0) r |= ~u128(0) << (a->w - p);
+            if (msb(*a) && p > 0) r = r | (~u128(0) << (a->w - p));
             return mk(a->w, r);
         }
         if (op == "extract") {
@@ -319,13 +319,15 @@ struct Evaluator {
             Val r = urem(x, y);
             return msb(*a) ? neg(r) : r;
         }
-        if (op == "shl") return b->v >= w ? mk(w, 0) : mk(w, a->v << unsigned(b->v));
-        if (op == "lshr") return b->v >= w ? mk(w, 0) : mk(w, a->v >> unsigned(b->v));
+        if (op == "shl")
+            return b->v >= u128(w) ? mk(w, 0) : mk(w, a->v << static_cast<unsigned>(b->v.lo));
+        if (op == "lshr")
+            return b->v >= u128(w) ? mk(w, 0) : mk(w, a->v >> static_cast<unsigned>(b->v.lo));
         if (op == "ashr") {
-            if (b->v >= w) return mk(w, msb(*a) ? ~u128(0) : 0);
-            unsigned p = unsigned(b->v);
+            if (b->v >= u128(w)) return mk(w, msb(*a) ? ~u128(0) : 0);
+            unsigned p = static_cast<unsigned>(b->v.lo);
             u128 r = a->v >> p;
-            if (msb(*a) && p > 0) r |= ~u128(0) << (w - p);
+            if (msb(*a) && p > 0) r = r | (~u128(0) << (w - p));
             return mk(w, r);
         }
         if (op == "eq") return B(a->v == b->v);
@@ -387,7 +389,7 @@ std::optional<bool> eval_lean_dag(const LeanDag& dag, const std::map<std::string
         if (auto it = model.find(in.name); it != model.end()) {
             auto b = literal_bits(it->second, in.width);
             if (!b) return fail("malformed value for " + in.name);
-            for (unsigned i = 0; i < in.width; ++i) v |= u128((*b)[i]) << i;
+            for (unsigned i = 0; i < in.width; ++i) v = v | (u128((*b)[i] ? 1 : 0) << i);
         }
         ev.update(in.base, Val{in.width, v});
     }
