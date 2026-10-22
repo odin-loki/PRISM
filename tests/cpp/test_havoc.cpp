@@ -56,7 +56,12 @@ std::vector<int> brace_ints(const std::string& src, const std::string& name) {
     std::string body = src.substr(a, b - a + 1);
     body = std::regex_replace(body, std::regex("std::numeric_limits<int32_t>::min\\(\\)"), "-2147483648");
     body = std::regex_replace(body, std::regex(R"(\(int32_t\)\s*0x80000000)"), "-2147483648");
+#if defined(_MSC_VER)
+    // MSVC std::regex rejects non-greedy *? in extended mode.
+    body = std::regex_replace(body, std::regex(R"(/\*[^*]*\*+(?:[^/*][^*]*\*+)*/)"), "");
+#else
     body = std::regex_replace(body, std::regex("/\\*.*?\\*/", std::regex::extended), "");
+#endif
     std::vector<int> out;
     std::regex num(R"(-?\d+|0x[0-9A-Fa-f]+)");
     for (std::sregex_iterator it(body.begin(), body.end(), num), end; it != end; ++it)

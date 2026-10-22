@@ -120,6 +120,7 @@ TEST_CASE("wp: a tautological VC is PROVED-ASSUMING by substitution, never PROVE
     CHECK(truthy(r, "wp_qed"));
 }
 
+#ifdef PRISM_HAS_Z3
 TEST_CASE("wp: the false twin of a tautological VC is FAILED, not a proof") {
     auto recs = prism::run_wp({fn_in("contract_add.c", "not_inc")}, 8);
     REQUIRE_FALSE(recs.empty());
@@ -130,6 +131,7 @@ TEST_CASE("wp: the false twin of a tautological VC is FAILED, not a proof") {
     CHECK(r.status != prism::laws::CLEAN);
     CHECK_FALSE(truthy(r, "wp_qed"));
 }
+#endif
 
 TEST_CASE("wp: a whitespace-only return is kept in the obligation, not dropped") {
     // Dropping the empty return would leave only `return x + 1;`, a
@@ -257,6 +259,7 @@ TEST_CASE("wp: arrow member access is ERROR, not a QED of `-` `>`") {
     CHECK(has(r.message, "->"));
 }
 
+#ifdef PRISM_HAS_Z3
 TEST_CASE("wp: a BMC proof without requires is rewritten PROVED-ASSUMING") {
     // acsl_abs has no requires: the underlying BMC answer is a plain proof,
     // which wp must never pass on as PROVED.
@@ -305,6 +308,7 @@ TEST_CASE("wp: the false twin of the unbounded loop is not a proof") {
     CHECK(recs[0].status == prism::laws::FAILED);
     CHECK_FALSE(prism::laws::is_proof(recs[0].status));
 }
+#endif
 
 // ---- harness
 
@@ -358,6 +362,7 @@ TEST_CASE("harness: SCALAR functions are left to bmc") {
     CHECK(recs[0].status == prism::laws::NEEDS_HARNESS);
 }
 
+#ifdef PRISM_HAS_Z3
 TEST_CASE("harness: bmc finds ++/-- signed overflow and an uninitialised read") {
     auto f = scalar_inc("inc_ovf");
     for (auto* body : {"x++; return x;", "++x; return x;"}) {
@@ -421,3 +426,4 @@ TEST_CASE("harness: a step that k-induction cannot close stays BOUNDED") {
     CHECK(extra_or(r[0], "k_induction") == "step-open");
     CHECK_FALSE(prism::laws::is_proof(r[0].status));
 }
+#endif
