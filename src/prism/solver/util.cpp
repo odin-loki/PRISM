@@ -231,7 +231,7 @@ Proc run(const std::vector<std::string>& argv, double timeout_s, const std::atom
     spec.stop = stop;
     spec.max_output_bytes = cap;
     if (!stdout_path.empty()) spec.stdout_path = stdout_path;
-    if (!stdin_path.empty()) spec.input = read_file(stdin_path);
+    if (!stdin_path.empty()) spec.stdin_path = stdin_path;
     auto ro = prism::detail::run(spec);
     r.secs = now_s() - t0;
     r.failed = ro.failed;

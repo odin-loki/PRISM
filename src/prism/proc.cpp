@@ -134,19 +134,36 @@ RunOut run(const RunSpec& spec) {
     HANDLE in_r = nullptr, in_w = nullptr, out_r = nullptr, out_w = nullptr, err_r = nullptr,
            err_w = nullptr;
     HANDLE stdout_file = nullptr;
+    HANDLE stdin_file = nullptr;
     auto close_h = [](HANDLE& h) {
         if (h) CloseHandle(h);
         h = nullptr;
     };
     const bool capture_stdout = spec.stdout_path.empty();
-    if (!CreatePipe(&in_r, &in_w, &sa, 0) ||
+    const bool stdin_from_file = spec.input.empty() && !spec.stdin_path.empty();
+    if ((!stdin_from_file && !CreatePipe(&in_r, &in_w, &sa, 0)) ||
         (capture_stdout && !CreatePipe(&out_r, &out_w, &sa, 0)) ||
         (!spec.merge_stderr && !CreatePipe(&err_r, &err_w, &sa, 0))) {
         close_h(in_r), close_h(in_w), close_h(out_r), close_h(out_w), close_h(err_r), close_h(err_w);
         close_h(stdout_file);
+        close_h(stdin_file);
         r.failed = true;
         r.err = "pipe";
         return r;
+    }
+    if (stdin_from_file) {
+        stdin_file = CreateFileW(spec.stdin_path.c_str(), GENERIC_READ,
+                                 FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_EXISTING,
+                                 FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (!stdin_file || stdin_file == INVALID_HANDLE_VALUE) {
+            close_h(in_r), close_h(in_w), close_h(out_r), close_h(out_w), close_h(err_r), close_h(err_w);
+            close_h(stdout_file);
+            close_h(stdin_file);
+            r.failed = true;
+            r.err = "cannot open stdin file";
+            return r;
+        }
+        in_r = stdin_file;
     }
     if (!capture_stdout) {
         stdout_file = CreateFileW(spec.stdout_path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, &sa,
@@ -154,13 +171,14 @@ RunOut run(const RunSpec& spec) {
         if (!stdout_file || stdout_file == INVALID_HANDLE_VALUE) {
             close_h(in_r), close_h(in_w), close_h(out_r), close_h(out_w), close_h(err_r), close_h(err_w);
             close_h(stdout_file);
+            close_h(stdin_file);
             r.failed = true;
             r.err = "cannot open stdout file";
             return r;
         }
         out_w = stdout_file;
     }
-    SetHandleInformation(in_w, HANDLE_FLAG_INHERIT, 0);
+    if (in_w) SetHandleInformation(in_w, HANDLE_FLAG_INHERIT, 0);
     if (out_r) SetHandleInformation(out_r, HANDLE_FLAG_INHERIT, 0);
     if (err_r) SetHandleInformation(err_r, HANDLE_FLAG_INHERIT, 0);
     STARTUPINFOW si{};
@@ -184,11 +202,13 @@ RunOut run(const RunSpec& spec) {
                              envb.empty() ? nullptr : envb.data(), wcwd.empty() ? nullptr : wcwd.c_str(),
                              &si, &pi);
     close_h(in_r);
+    if (stdin_file) stdin_file = nullptr;  // in_r was the same handle
     close_h(out_w);
     close_h(err_w);
     if (!ok) {
         close_h(in_w), close_h(out_r), close_h(err_r);
-        if (stdout_file) close_h(stdout_file);
+        close_h(stdout_file);
+        close_h(stdin_file);
         r.failed = true;
         r.err = "CreateProcess failed";
         return r;
@@ -261,7 +281,8 @@ RunOut run(const RunSpec& spec) {
     if (!r.timed_out && code >= 0xC0000000u) r.crashed = true;
     close_h(out_r);
     close_h(err_r);
-    if (stdout_file) close_h(stdout_file);
+    close_h(stdout_file);
+    close_h(stdin_file);
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
     return r;

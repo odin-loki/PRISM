@@ -20,6 +20,8 @@ namespace prism::detail {
 struct RunSpec {
     std::vector<std::string> argv;
     std::string input;  // written to the child's stdin, which is then closed
+    // When input is empty, Windows detail::run opens this for the child's stdin.
+    std::filesystem::path stdin_path;
     // Set on the child only, never on PRISM's own environment (other --jobs
     // threads and later children must not see it). Replaces a variable of
     // the same name.
