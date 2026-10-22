@@ -289,7 +289,7 @@ struct Evaluator {
             auto c = arg(1), a = arg(2), b = arg(3);
             if (!c || !a || !b) return std::nullopt;
             if (c->w != 1 || a->w != b->w) return bad("ite widths");
-            return (c->v & 1) ? *a : *b;
+            return u128_bit(c->v, 0) ? *a : *b;
         }
         if (k != 2) return bad("bad " + op);
         auto a = arg(1), b = arg(2);
@@ -320,12 +320,12 @@ struct Evaluator {
             return msb(*a) ? neg(r) : r;
         }
         if (op == "shl")
-            return b->v >= u128(w) ? mk(w, 0) : mk(w, a->v << static_cast<unsigned>(b->v.lo));
+            return b->v >= u128(w) ? mk(w, 0) : mk(w, a->v << static_cast<unsigned>(u128_to_u64(b->v)));
         if (op == "lshr")
-            return b->v >= u128(w) ? mk(w, 0) : mk(w, a->v >> static_cast<unsigned>(b->v.lo));
+            return b->v >= u128(w) ? mk(w, 0) : mk(w, a->v >> static_cast<unsigned>(u128_to_u64(b->v)));
         if (op == "ashr") {
             if (b->v >= u128(w)) return mk(w, msb(*a) ? ~u128(0) : 0);
-            unsigned p = static_cast<unsigned>(b->v.lo);
+            unsigned p = static_cast<unsigned>(u128_to_u64(b->v));
             u128 r = a->v >> p;
             if (msb(*a) && p > 0) r = r | (~u128(0) << (w - p));
             return mk(w, r);

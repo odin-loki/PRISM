@@ -69,6 +69,8 @@ inline u128 u128_mask(unsigned w) { return w >= 128 ? ~u128(0) : u128_shl(u128(1
 
 inline bool u128_bit(u128 v, unsigned k) { return k < 128 && ((v >> k) & 1); }
 
+inline std::uint64_t u128_to_u64(u128 v) { return static_cast<std::uint64_t>(v); }
+
 inline std::string format_i128(i128 v) {
     if (v == 0) return "0";
     bool neg = v < 0;
@@ -324,6 +326,8 @@ inline u128 u128_shr(u128 v, unsigned n) { return v >> n; }
 inline u128 u128_mask(unsigned w) { return w >= 128 ? ~u128(0) : u128_shl(u128(1), w) - u128(1); }
 
 inline bool u128_bit(u128 v, unsigned k) { return k < 128 && ((u128_shr(v, k).lo) & 1); }
+
+inline std::uint64_t u128_to_u64(u128 v) { return v.lo; }
 
 inline std::string format_i128(i128 v) {
     if (v == i128(0)) return "0";
