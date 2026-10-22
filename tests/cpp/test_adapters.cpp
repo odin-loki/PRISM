@@ -3,9 +3,9 @@
 // NOTRUN, a tool that answers only --help is UNKNOWN, a fake tool (doctest,
 // Catch2, a shell "not found") is NOTRUN: never CLEAN, never a proof.
 //
-// Tools are fake executables (shell scripts in a temp dir) handed over
-// through Config::tools, $PATH or $PRISM_TOOLS_DIR, so every branch runs
-// against a real child process. POSIX only: the scripts need /bin/sh.
+// Tools are fake executables (shell scripts or .cmd stubs on WIN32) in a temp
+// dir, handed over through Config::tools, $PATH or $PRISM_TOOLS_DIR, so every
+// branch runs against a real child process.
 #include <doctest/doctest.h>
 #ifdef ERROR
 #  undef ERROR
@@ -38,6 +38,10 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+#ifdef _WIN32
+#  include <process.h>
+#endif
 
 #ifndef _WIN32
 #  include <arpa/inet.h>
@@ -102,24 +106,132 @@ struct TmpDir {
     }
 };
 
-#ifndef _WIN32
 // Sets (or, with nullopt, unsets) an environment variable for one scope.
 struct EnvVar {
     std::string name;
     std::optional<std::string> was;
     EnvVar(std::string n, std::optional<std::string> value) : name(std::move(n)) {
         if (const char* v = std::getenv(name.c_str())) was = v;
+#ifdef _WIN32
+        if (value) _putenv_s(name.c_str(), value->c_str());
+        else _putenv_s(name.c_str(), "");
+#else
         if (value) ::setenv(name.c_str(), value->c_str(), 1);
         else ::unsetenv(name.c_str());
+#endif
     }
     ~EnvVar() {
+#ifdef _WIN32
+        if (was) _putenv_s(name.c_str(), was->c_str());
+        else _putenv_s(name.c_str(), "");
+#else
         if (was) ::setenv(name.c_str(), was->c_str(), 1);
         else ::unsetenv(name.c_str());
+#endif
     }
     EnvVar(const EnvVar&) = delete;
     EnvVar& operator=(const EnvVar&) = delete;
 };
 
+#ifdef _WIN32
+std::string fake_tool_stem(const std::string& name) {
+    if (name.size() > 4 && name.substr(name.size() - 4) == ".exe") return name.substr(0, name.size() - 4);
+    return name;
+}
+
+// Best-effort sh -> cmd for the adapter doctest bodies (not a general translator).
+std::string sh_to_cmd_body(std::string sh) {
+    std::string out;
+    std::istringstream in(sh);
+    for (std::string line; std::getline(in, line);) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line == "true" || line == ":") {
+            out += "exit /b 0\n";
+            continue;
+        }
+        if (line.rfind("exit ", 0) == 0) {
+            out += "exit /b " + line.substr(5) + "\n";
+            continue;
+        }
+        if (line.rfind("sleep ", 0) == 0) {
+            const auto sec = line.substr(6);
+            out += "timeout /t " + sec + " /nobreak >nul\n";
+            continue;
+        }
+        if (line.find(">&2") != std::string::npos) {
+            auto l = line;
+            for (std::size_t p = 0; (p = l.find(">&2", p)) != std::string::npos;) {
+                l.replace(p, 4, " 1>&2");
+                p += 5;
+            }
+            out += l + "\n";
+            continue;
+        }
+        if (line.find("printf ") != std::string::npos) {
+            // printf 'text\n' or printf '%s\n' "$1"
+            if (line.find("printf '%s\\n'") != std::string::npos ||
+                line.find("printf \"%s\\n\"") != std::string::npos) {
+                out += "echo %1\n";
+                continue;
+            }
+            auto q1 = line.find('\'');
+            auto q2 = line.rfind('\'');
+            if (q1 != std::string::npos && q2 > q1) {
+                out += "echo " + line.substr(q1 + 1, q2 - q1 - 1) + "\n";
+                continue;
+            }
+        }
+        if (line.find("echo ") == 0) {
+            auto l = line;
+            for (std::size_t p = 0; (p = l.find("\"$@\"", p)) != std::string::npos;)
+                l.replace(p, 4, "%*");
+            for (std::size_t p = 0; (p = l.find("$@", p)) != std::string::npos;) l.replace(p, 2, "%*");
+            for (std::size_t p = 0; (p = l.find("$1", p)) != std::string::npos;) l.replace(p, 2, "%1");
+            for (std::size_t p = 0; (p = l.find("$2", p)) != std::string::npos;) l.replace(p, 2, "%2");
+            for (std::size_t p = 0; (p = l.find("$f", p)) != std::string::npos;) l.replace(p, 2, "%f");
+            for (std::size_t p = 0; (p = l.find("$PWD", p)) != std::string::npos;) l.replace(p, 4, "%CD%");
+            for (std::size_t p = 0; (p = l.find("$out", p)) != std::string::npos;) l.replace(p, 4, "%out%");
+            out += l + "\n";
+            continue;
+        }
+        if (line.find("mkdir -p ") == 0) {
+            out += "if not exist \"" + line.substr(9) + "\" mkdir \"" + line.substr(9) + "\"\n";
+            continue;
+        }
+        if (line.find("pwd >") != std::string::npos) {
+            out += "cd >" + line.substr(line.find('>') + 1) + "\n";
+            continue;
+        }
+        out += line + "\n";
+    }
+    return out;
+}
+
+fs::path fake(const fs::path& dir, const std::string& name, const std::string& body) {
+    fs::create_directories(dir);
+    const auto stem = fake_tool_stem(name);
+    const auto cmd_path = dir / (stem + ".cmd");
+    {
+        std::ofstream o(cmd_path, std::ios::binary);
+        o << "@echo off\n" << sh_to_cmd_body(body);
+    }
+    const auto exe_path = dir / (stem + ".exe");
+    std::error_code ec;
+    fs::copy_file(PRISM_FAKE_TOOL_LAUNCHER, exe_path, fs::copy_options::overwrite_existing, ec);
+    REQUIRE_FALSE(ec);
+    return exe_path;
+}
+
+std::string help_then(const std::string& help, const std::string& run, int rc = 0) {
+    return "if \"%1\"==\"--help\" goto prism_help\r\n"
+           "if \"%1\"==\"-h\" goto prism_help\r\n"
+           "if \"%1\"==\"--version\" goto prism_help\r\n"
+           "if \"%1\"==\"-version\" goto prism_help\r\n" +
+           sh_to_cmd_body(run) + "exit /b " + std::to_string(rc) + "\r\n"
+           ":prism_help\r\necho " +
+           help + "\r\nexit /b 0\r\n";
+}
+#else
 // An executable shell script. The body runs with a plain PATH so it can use
 // mkdir/cat/printf even when the test emptied PATH for PRISM's lookups.
 fs::path fake(const fs::path& dir, const std::string& name, const std::string& body) {
@@ -138,6 +250,7 @@ std::string help_then(const std::string& help, const std::string& run, int rc = 
     return "case \"$1\" in --help|-h|--version|-version) printf '%s\\n' '" + help +
            "'; exit 0;; esac\n" + run + "\nexit " + std::to_string(rc);
 }
+#endif
 
 // No tool anywhere: PATH is an empty dir, PRISM_TOOLS_DIR is empty.
 struct NoTools {
@@ -171,7 +284,6 @@ void never_clean_or_proof(const prism::Finding& f) {
 
 const std::vector<std::string> kOptionalStages = {"klee",       "afl-fuzz", "frama-c", "infer",  "clang-tidy",
                                                   "cbmc",       "strix",    "semgrep", "spatch", "libfuzzer"};
-#endif
 
 }  // namespace
 
@@ -403,6 +515,7 @@ TEST_CASE("config: which needs an executable file, like shutil.which") {
     REQUIRE(hit.has_value());
     CHECK(hit->filename() == "plain");
 }
+#endif
 
 TEST_CASE("config: --tool beats the pinned build, which beats PATH; PATH is last") {
     NoTools nt;
@@ -422,9 +535,15 @@ TEST_CASE("config: --tool beats the pinned build, which beats PATH; PATH is last
     fs::remove(onpath);
     CHECK_FALSE(cfg.which_adapter("klee", {"klee"}).has_value());
     // --tool NAME=~/... is expanded like Path.expanduser.
+#ifdef _WIN32
+    EnvVar home("USERPROFILE", (nt.t.dir / "mine").string());
+    cfg.tools["klee"] = "~/klee";
+    CHECK(cfg.which_adapter("klee", {"klee"}) == nt.t.dir / "mine" / "klee.exe");
+#else
     EnvVar home("HOME", (nt.t.dir / "mine").string());
     cfg.tools["klee"] = "~/klee";
     CHECK(cfg.which_adapter("klee", {"klee"}) == nt.t.dir / "mine" / "klee");
+#endif
     CHECK(prism::expand_user("~") == nt.t.dir / "mine");
     CHECK(prism::expand_user("~x/y") == fs::path("~x/y"));
     CHECK(prism::expand_user("/abs/p") == fs::path("/abs/p"));
@@ -617,7 +736,11 @@ TEST_CASE("optional tools: a binary that does not answer --help is NOTRUN, never
     cfg.timeout = 1;  // each probe flag gets at most the check timeout
     // Cannot start (no execute bit): the C++ runner reports exit 127, so the
     // row is "did not answer" (the Python engine's exception path).
+#ifdef _WIN32
+    cfg.tools["klee"] = nt.t.put("t/klee.txt", "not an executable\n");
+#else
     cfg.tools["klee"] = nt.t.put("t/klee", "#!/bin/sh\nexit 0\n");
+#endif
     cfg.tools["infer"] = fake(nt.t.dir / "t", "infer", "exit 3");  // silent, rc 3
     cfg.tools["semgrep"] = fake(nt.t.dir / "t", "semgrep", "sleep 30");  // every flag times out
     cfg.tools["frama-c"] = fake(nt.t.dir / "t", "frama-c",
@@ -727,9 +850,15 @@ TEST_CASE("semgrep: a match is FAILED; no results or silent output is UNKNOWN") 
 namespace {
 // Frama-C fake: answers the probe, then prints `eva_out` on -eva runs.
 std::string frama_fake(const std::string& eva_out, int rc = 0) {
+#ifdef _WIN32
+    return help_then("Frama-C EVA plugin",
+                     "echo %* | findstr /i \"-eva\" >nul && (echo " + eva_out + " & exit /b " +
+                         std::to_string(rc) + ")\r\nexit /b 0");
+#else
     return help_then("Frama-C EVA plugin",
                      "case \"$*\" in *-eva*) printf '" + eva_out + "\\n'; exit " + std::to_string(rc) +
                          ";; esac\nexit 0");
+#endif
 }
 
 std::vector<std::string> finding_key(const std::vector<prism::Finding>& fs) {
@@ -834,6 +963,7 @@ TEST_CASE("cocci: the shipped rules are found from any cwd") {
     };
     CHECK(names(ad::cocci_rules({}, cfg)).contains("getenv_null.cocci"));
     CHECK(names(ad::cocci_rules({testdata() / "getenv_null.c"}, cfg)).contains("getenv_null.cocci"));
+#ifndef _WIN32
     // From a cwd with no prism/cocci above it, the rules next to the binary.
     auto here = fs::current_path();
     fs::current_path(fs::path("/"));
@@ -846,14 +976,29 @@ TEST_CASE("cocci: the shipped rules are found from any cwd") {
          {"memcpy_self.cocci", "realloc_self.cocci", "shift_bit31.cocci", "getenv_null.cocci",
           "strcpy_self.cocci", "sprintf_unbounded.cocci", "strcat_self.cocci", "strncpy_self.cocci"})
         CHECK(rules.contains(need));
+#endif
 }
 
 TEST_CASE("klee: .err dumps and KLEE ERROR are FAILED; a quiet run is UNKNOWN") {
     NoTools nt;
     auto cfile = testdata() / "abs_ok.c";
+#ifdef _WIN32
+    fake(nt.bin, "clang",
+         "set OUT=\r\n"
+         ":cloop\r\n"
+         "if \"%1\"==\"\" goto cdone\r\n"
+         "if \"%1\"==\"-o\" set OUT=%2\r\n"
+         "shift\r\n"
+         "shift\r\n"
+         "goto cloop\r\n"
+         ":cdone\r\n"
+         "if not \"%OUT%\"==\"\" echo BC>\"%OUT%\"\r\n"
+         "exit /b 0\r\n");
+#else
     fake(nt.bin, "clang",
          "OUT=\nwhile [ $# -gt 0 ]; do case \"$1\" in -o) OUT=\"$2\"; shift 2;; *) shift;; esac; "
          "done\n[ -n \"$OUT\" ] && printf 'BC' > \"$OUT\"\nexit 0\n");
+#endif
     auto cfg = nt.cfg;
     cfg.allow_exec = true;
     auto mk_klee = [&](const std::string& body) {
@@ -1021,14 +1166,17 @@ TEST_CASE("warnings: gcc and clang agree once; same path is not run twice") {
     CHECK(has(xget(both[0], "compilers"), "clang"));
     never_clean_or_proof(both[0]);
 
+#ifndef _WIN32
     auto log = nt.t.dir / "cc-once.log";
     fake(nt.bin, "gcc", "echo \"$@\" >> '" + log.string() + "'\nexit 0\n");
     fs::remove(nt.bin / "clang");
     fs::create_symlink(nt.bin / "gcc", nt.bin / "clang");
     prism::run_compiler({unit}, cfg);
     CHECK(lines_of(log).size() == 1);
+#endif
 }
 
+#ifndef _WIN32
 TEST_CASE("warnings: jobs=1 and jobs=4 yield the same ordered findings") {
     NoTools nt;
     std::vector<fs::path> units;
@@ -1058,7 +1206,9 @@ TEST_CASE("warnings: jobs=1 and jobs=4 yield the same ordered findings") {
     CHECK(std::count_if(serial.begin(), serial.end(),
                         [](const prism::Finding& f) { return f.status == laws::NOTRUN; }) >= 1);
 }
+#endif
 
+#ifndef _WIN32
 TEST_CASE("clang-tidy: jobs=1 and jobs=4 yield the same ordered findings") {
     NoTools nt;
     std::vector<fs::path> units;
@@ -1083,6 +1233,7 @@ TEST_CASE("clang-tidy: jobs=1 and jobs=4 yield the same ordered findings") {
     REQUIRE_FALSE(serial.empty());
     CHECK(serial[0].status == laws::TIMEOUT);
 }
+#endif
 
 TEST_CASE("spatch: a match is FAILED; silence is UNKNOWN; held script rules stay written down") {
     NoTools nt;
@@ -1290,7 +1441,11 @@ TEST_CASE("cppcheck: XML errors are FAILED; silence UNKNOWN; odd exit ERROR; can
     CHECK(out[0].status == laws::ERROR);
     // An exe that cannot be executed did not start: the runner reports the
     // exec failure, so the row says so instead of blaming the tool.
+#ifdef _WIN32
+    const auto noexec = nt.t.put("t/cppcheck-noexec.txt", "not runnable\n");
+#else
     const auto noexec = nt.t.put("t/cppcheck-noexec", "#!/bin/sh\n");  // no execute bit
+#endif
     cfg.tools["cppcheck"] = noexec;
     out = prism::run_cppcheck(paths, cfg);
     REQUIRE(out.size() == 1);
@@ -1333,6 +1488,24 @@ prism::FunctionInfo saturate() {
 // A fake afl-fuzz: logs its environment and cwd next to -o DIR, and plants a
 // crash there when `crash` is set.
 std::string fake_afl_body(bool crash, const fs::path& calls = {}) {
+#ifdef _WIN32
+    std::string b =
+        "set out=\r\n"
+        ":afl_arg_loop\r\n"
+        "if \"%1\"==\"\" goto afl_arg_done\r\n"
+        "if \"%1\"==\"-o\" set out=%2\r\n"
+        "shift\r\n"
+        "goto afl_arg_loop\r\n"
+        ":afl_arg_done\r\n"
+        "echo %AFL_NO_UI% %AFL_SKIP_CPUFREQ% %AFL_NO_AFFINITY%> \"%out%\\..\\env.txt\"\r\n"
+        "cd> \"%out%\\..\\cwd.txt\"\r\n";
+    if (!calls.empty()) b += "echo call>>\"" + calls.string() + "\"\r\n";
+    if (crash)
+        b += "if not exist \"%out%\\crashes\" mkdir \"%out%\\crashes\"\r\n"
+             "powershell -NoProfile -Command \"[IO.File]::WriteAllBytes((Join-Path '%out%' "
+             "'crashes\\id:000000'), [byte[]](1,2,3,4))\"\r\n";
+    return b;
+#else
     std::string b =
         "out=''\nwhile [ $# -gt 0 ]; do case \"$1\" in -o) out=\"$2\"; shift;; esac; shift; done\n"
         "printf '%s %s %s' \"$AFL_NO_UI\" \"$AFL_SKIP_CPUFREQ\" \"$AFL_NO_AFFINITY\" > \"$out/../env.txt\"\n"
@@ -1340,6 +1513,7 @@ std::string fake_afl_body(bool crash, const fs::path& calls = {}) {
     if (!calls.empty()) b += "echo call >> '" + calls.string() + "'\n";
     if (crash) b += "mkdir -p \"$out/crashes\"\nprintf '\\001\\002\\003\\004' > \"$out/crashes/id:000000\"\n";
     return b;
+#endif
 }
 }  // namespace
 
@@ -1541,6 +1715,7 @@ prism::FunctionInfo masked_fn(const fs::path& file) {
 }
 }  // namespace
 
+#ifndef _WIN32
 TEST_CASE("afl harness: sanitizer fallback is ASan+UBSan, then UBSan, then ASan, then bare") {
     NoTools nt;
     TmpDir t;
@@ -1582,7 +1757,9 @@ TEST_CASE("afl harness: sanitizer fallback is ASan+UBSan, then UBSan, then ASan,
     CHECK(lines_of(log).size() == 4);
     for (const auto& l : lines_of(log)) CHECK_FALSE(has(l, "thread"));
 }
+#endif
 
+#ifndef _WIN32
 TEST_CASE("fuzz_function: the binary oracle runs after the concrete one and before CLEAN") {
     NoTools nt;
     prism::sandbox::Policy allow(true);
@@ -1641,9 +1818,11 @@ TEST_CASE("fuzz_function: the binary oracle runs after the concrete one and befo
     CHECK_FALSE(recs[0].extra.contains("binary"));
     CHECK(xget(recs[0], "sandbox") == prism::sandbox::kind());
 }
+#endif
 
 // ---------------------------------------------------------------- rlef_repair
 
+#ifndef _WIN32
 namespace {
 // A scripted llama-server: GET /health answers 200; each POST
 // /v1/chat/completions takes the next reply ("" closes the connection

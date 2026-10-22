@@ -218,7 +218,7 @@ String-only BMC/astlint files: **0** type migration expected.
   `test_thread_taint`, `test_wp_harness`, `test_concrete`, `test_concolic`,
   `test_lint_corpus`, `test_pir_mem`, `test_ai_assist`, `test_pbsd`, `test_pir3`,
   `test_pir_refinement`, `test_cli`, `test_pipeline`, `test_ai9`, `test_conc`,
-  `test_cxx_models`, `test_fuse`, `test_gui_model`;
+  `test_cxx_models`, `test_fuse`, `test_gui_model`, `test_adapters`;
   `test_leanbb` and `test_pir_budget` when `PRISM_HAS_Z3`); `test_pipeline` chmod/LTL case is
   POSIX-only; `test_cli` binary integration is POSIX-only. `test_pir_e2e` is still excluded.
   The monolithic `test_main.cpp` stays off WIN32 builds.
@@ -241,9 +241,12 @@ String-only BMC/astlint files: **0** type migration expected.
   APIs. `test_diff` keeps POSIX PATH-mutation cases behind `#ifndef _WIN32`.
   `test_wp_harness` BMC/harness rows are behind `PRISM_HAS_Z3` (Z3-off smoke);
   `test_havoc` uses an MSVC-safe block-comment regex. Remaining doctest TUs still
-  need Unix APIs (`unistd.h`, `fork`, sockets, bulk `setenv`): e.g. `test_main.cpp`,
-  `test_adapters.cpp`, `test_cli.cpp`, `test_pipeline.cpp`, `test_sanitize.cpp`, `test_qa.cpp`,
-  `test_qa_conformance.cpp`, `test_fuse.cpp`, `test_repair.cpp`, and others. The monolithic
+  need Unix APIs (`unistd.h`, `fork`, sockets): e.g. `test_main.cpp`, `test_sanitize.cpp`,
+  `test_qa.cpp`, `test_repair.cpp` (HTTP fake server), `test_cli.cpp` (binary integration),
+  `test_qa_conformance.cpp`, and others. `test_adapters.cpp` runs on WIN32 with `.cmd` fakes
+  (`fake_tool_launcher.exe` + sibling script), `_putenv_s` `EnvVar`, and POSIX-only cases
+  (process runner, `FakeLlama` sockets, `fake_cc` / parallel compiler jobs, cocci `chdir` to
+  `/`, compiler symlink dedupe) behind `#ifndef _WIN32`. The monolithic
   `test_main.cpp` is not linked on WIN32. Conformance QA remains behind `if(UNIX)` in
   `CMakeLists.txt`. Next step: port or gate more unistd-heavy TUs; link `test_main.cpp` on
   WIN32 last.

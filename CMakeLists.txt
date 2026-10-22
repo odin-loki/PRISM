@@ -638,7 +638,8 @@ if(PRISM_TESTS)
       tests/cpp/test_conc.cpp
       tests/cpp/test_cxx_models.cpp
       tests/cpp/test_fuse.cpp
-      tests/cpp/test_gui_model.cpp)
+      tests/cpp/test_gui_model.cpp
+      tests/cpp/test_adapters.cpp)
     if(PRISM_HAS_Z3)
       list(APPEND _prism_test_sources tests/cpp/test_leanbb.cpp
         tests/cpp/test_pir_budget.cpp)
@@ -706,6 +707,12 @@ if(PRISM_TESTS)
   target_link_libraries(prism_tests PRIVATE prism_core prism_qa)
   target_include_directories(prism_tests PRIVATE "${_pins_dir}")
   add_dependencies(prism_tests prism_generated prism prism-qa prism_docs_check)
+  if(WIN32 AND PRISM_TESTS_WIN_SUBSET)
+    add_executable(fake_tool_launcher tests/cpp/fake_tool_launcher.cpp)
+    target_compile_definitions(prism_tests PRIVATE
+      "PRISM_FAKE_TOOL_LAUNCHER=\"$<TARGET_FILE:fake_tool_launcher>\"")
+    add_dependencies(prism_tests fake_tool_launcher)
+  endif()
   if(UNIX)
     # prism-qa conformance / soundness (scorer rules, suite shape, release gate).
     target_sources(prism_tests PRIVATE tests/cpp/test_qa_conformance.cpp)
