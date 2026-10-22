@@ -341,7 +341,7 @@ std::optional<bool> Node::as_bool() const {
     return std::nullopt;
 }
 
-std::optional<__int128> Node::as_int() const {
+std::optional<prism::i128> Node::as_int() const {
     if (kind != Kind::Scalar || quoted || text.empty()) return std::nullopt;
     std::string t;
     for (char c : text)
@@ -368,19 +368,13 @@ std::optional<__int128> Node::as_int() const {
         i += 1;
     }
     if (i >= t.size()) return std::nullopt;
-    unsigned __int128 v = 0;
-    for (; i < t.size(); ++i) {
-        char c = t[i];
-        int d = std::isdigit(static_cast<unsigned char>(c)) ? c - '0'
-                : (c >= 'a' && c <= 'f') ? c - 'a' + 10
-                : (c >= 'A' && c <= 'F') ? c - 'A' + 10
-                                         : 99;
-        if (d >= base) return std::nullopt;
-        v = v * static_cast<unsigned>(base) + static_cast<unsigned>(d);
-        if (v > (static_cast<unsigned __int128>(1) << 126)) return std::nullopt;
-    }
-    __int128 r = static_cast<__int128>(v);
-    return neg ? -r : r;
+    std::string norm;
+    if (neg) norm += '-';
+    if (base == 16) norm += "0x";
+    else if (base == 8) norm += "0o";
+    else if (base == 2) norm += "0b";
+    norm += t.substr(i);
+    return prism::parse_i128(norm);
 }
 
 bool Node::is_float() const {
@@ -406,20 +400,6 @@ bool Node::is_float() const {
     return i == t.size();
 }
 
-namespace {
-std::string i128_str(__int128 v) {
-    if (v == 0) return "0";
-    bool neg = v < 0;
-    unsigned __int128 u = neg ? static_cast<unsigned __int128>(-(v + 1)) + 1 : static_cast<unsigned __int128>(v);
-    std::string s;
-    while (u) {
-        s.insert(s.begin(), static_cast<char>('0' + static_cast<int>(u % 10)));
-        u /= 10;
-    }
-    return neg ? "-" + s : s;
-}
-}  // namespace
-
 std::string Node::py_str() const {
     switch (kind) {
         case Kind::Null: return "None";
@@ -428,7 +408,7 @@ std::string Node::py_str() const {
         case Kind::Scalar: break;
     }
     if (auto b = as_bool()) return *b ? "True" : "False";
-    if (auto i = as_int()) return i128_str(*i);
+    if (auto i = as_int()) return prism::format_i128(*i);
     return text;
 }
 

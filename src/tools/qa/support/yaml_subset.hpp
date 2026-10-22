@@ -11,6 +11,8 @@
 // Scalars keep their text; the accessors type them the way PyYAML's
 // safe_load (YAML 1.1) does, which the task files were written against.
 
+#include <prism/wide_int.hpp>
+
 #include <cstdint>
 #include <filesystem>
 #include <optional>
@@ -46,7 +48,7 @@ struct Node {
 
     // YAML 1.1 plain-scalar typing (PyYAML safe_load)
     std::optional<bool> as_bool() const;          // true/false/yes/no/on/off (plain only)
-    std::optional<__int128> as_int() const;       // decimal, 0x, 0o/0 octal, 0b, `_` separators (plain only)
+    std::optional<prism::i128> as_int() const;    // decimal, 0x, 0o/0 octal, 0b, `_` separators (plain only)
     bool is_float() const;                        // plain float literal
     // Python str() of the loaded value: None, True/False, canonical ints, text
     std::string py_str() const;
