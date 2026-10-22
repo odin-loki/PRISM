@@ -326,7 +326,6 @@ TEST_CASE("pipeline: an unreadable directory does not fail the ltl stage") {
     if (::geteuid() == 0) {
         MESSAGE("running as root: permissions do not hide a directory; the walk still uses error codes");
     }
-#endif
     Work w;
     w.put("a.c", "int f(void) { return 0; }\n");
     fs::create_directories(w.src() / "locked" / "inner");
@@ -340,4 +339,7 @@ TEST_CASE("pipeline: an unreadable directory does not fail the ltl stage") {
     auto& ltl = stage_of(rep, "ltl");
     CHECK(ltl.status != "failed");
     for (auto& f : ltl.findings) CHECK(f.file.find("node_modules") == std::string::npos);
+#else
+    MESSAGE("NOTRUN: chmod-based unreadable directory is POSIX-only");
+#endif
 }

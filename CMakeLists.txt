@@ -631,7 +631,11 @@ if(PRISM_TESTS)
       tests/cpp/test_ai_assist.cpp
       tests/cpp/test_pbsd.cpp
       tests/cpp/test_pir3.cpp
-      tests/cpp/test_pir_refinement.cpp)
+      tests/cpp/test_pir_refinement.cpp
+      tests/cpp/test_cli.cpp
+      tests/cpp/test_pipeline.cpp
+      tests/cpp/test_ai9.cpp
+      tests/cpp/test_conc.cpp)
     if(PRISM_HAS_Z3)
       list(APPEND _prism_test_sources tests/cpp/test_leanbb.cpp
         tests/cpp/test_pir_budget.cpp)
