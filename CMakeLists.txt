@@ -635,7 +635,10 @@ if(PRISM_TESTS)
       tests/cpp/test_cli.cpp
       tests/cpp/test_pipeline.cpp
       tests/cpp/test_ai9.cpp
-      tests/cpp/test_conc.cpp)
+      tests/cpp/test_conc.cpp
+      tests/cpp/test_cxx_models.cpp
+      tests/cpp/test_fuse.cpp
+      tests/cpp/test_gui_model.cpp)
     if(PRISM_HAS_Z3)
       list(APPEND _prism_test_sources tests/cpp/test_leanbb.cpp
         tests/cpp/test_pir_budget.cpp)
