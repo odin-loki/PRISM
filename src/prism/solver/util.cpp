@@ -16,16 +16,6 @@
 #include <sstream>
 #include <system_error>
 
-#ifdef _WIN32
-#  ifndef NOMINMAX
-#    define NOMINMAX
-#  endif
-#  include <windows.h>
-#  ifdef ERROR
-#    undef ERROR
-#  endif
-#endif
-
 #ifndef _WIN32
 #include <fcntl.h>
 #include <poll.h>
@@ -35,6 +25,13 @@
 #include <sys/wait.h>
 #include <unistd.h>
 extern char** environ;
+#endif
+
+#ifdef _WIN32
+// proc.hpp pulls in windows.h; ERROR is a Win32 macro, not laws::ERROR.
+#  ifdef ERROR
+#    undef ERROR
+#  endif
 #endif
 
 namespace fs = std::filesystem;
