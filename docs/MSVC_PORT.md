@@ -196,9 +196,10 @@ String-only BMC/astlint files: **0** type migration expected.
   `prism_core` and `prism` with `PRISM_Z3=OFF` and `PRISM_TESTS=OFF` (see `.github/workflows/ci.yml`).
 - **Phase 5b (CI):** `windows-compile-smoke-z3` builds `prism_core`, `prism`, and
   `prism-qa` with Ninja + `clang-cl` and `PRISM_Z3=ON` (vendored Z3 via `cmake/z3.cmake`
-  and `z3gen`; no Python on PATH). **Still open:** MSVC `cl` without clang-cl (configure
-  must use `clang-cl` or fix z3gen bootstrap), Windows `prism_tests` (unistd-heavy TUs),
-  and ccache for Z3 on Windows runners (first build is slow).
+  and `z3gen`; no Python on PATH). Windows needs `z3gen_shim.bat` (not `.exe` batch text)
+  so `FindPython3` can execute the shim during Z3 configure. **Still open:** MSVC `cl`
+  without clang-cl, Windows `prism_tests` (unistd-heavy TUs), and ccache for Z3 on
+  Windows runners (first build is slow).
 - **`prism_tests` on Windows (blocked):** `PRISM_TESTS=ON` does not compile yet: several
   doctest TUs `#include <unistd.h>` unconditionally (e.g. `tests/cpp/test_lint_corpus.cpp`,
   `tests/cpp/test_checkers_cxx.cpp`). Solver integration tests stay behind

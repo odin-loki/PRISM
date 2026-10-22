@@ -75,14 +75,16 @@ if(_prism_z3gen_needs_build)
 endif()
 
 # Z3 build steps invoke Python3_EXECUTABLE without our configure-time env; wrap z3gen.
-set(_prism_z3gen_shim "${_prism_z3gen_dir}/z3gen_shim${CMAKE_EXECUTABLE_SUFFIX}")
 if(CMAKE_HOST_UNIX)
+  set(_prism_z3gen_shim "${_prism_z3gen_dir}/z3gen_shim")
   file(WRITE "${_prism_z3gen_shim}"
     "#!/bin/sh\nexport PRISM_Z3_GENERATED_ROOT=\"${_prism_z3_gen}\"\nexec \"${_prism_z3gen}\" \"$@\"\n")
   execute_process(COMMAND chmod +x "${_prism_z3gen_shim}")
 else()
+  # Must be .bat (not .exe): batch content is not a PE image; FindPython3 runs this as the interpreter.
+  set(_prism_z3gen_shim "${_prism_z3gen_dir}/z3gen_shim.bat")
   file(WRITE "${_prism_z3gen_shim}"
-    "@echo off\nset \"PRISM_Z3_GENERATED_ROOT=${_prism_z3_gen}\"\n\"${_prism_z3gen}\" %*\n")
+    "@echo off\r\nset \"PRISM_Z3_GENERATED_ROOT=${_prism_z3_gen}\"\r\n\"${_prism_z3gen}\" %*\r\n")
 endif()
 
 set(Python3_EXECUTABLE "${_prism_z3gen_shim}" CACHE FILEPATH "PRISM z3gen (no Python for Z3 codegen)" FORCE)
