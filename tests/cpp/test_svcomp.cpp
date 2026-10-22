@@ -31,7 +31,9 @@
 #include <thread>
 #include <vector>
 
-#ifndef _WIN32
+#ifdef _WIN32
+#  include <process.h>
+#else
 #  include <unistd.h>
 #endif
 
@@ -67,8 +69,13 @@ struct TempDir {
     fs::path path;
     TempDir() {
         static int n = 0;
+#ifdef _WIN32
+        const long pid = static_cast<long>(_getpid());
+#else
+        const long pid = static_cast<long>(::getpid());
+#endif
         path = fs::temp_directory_path() /
-               ("prism_svcomp_test_" + std::to_string(static_cast<long>(::getpid())) + "_" + std::to_string(n++));
+               ("prism_svcomp_test_" + std::to_string(pid) + "_" + std::to_string(n++));
         fs::remove_all(path);
         fs::create_directories(path);
     }

@@ -22,6 +22,8 @@ option(PRISM_LLAMA "Build in-tree llama.cpp inference" ON)
 option(PRISM_QT "Build native Qt GUI" ON)
 option(PRISM_Z3 "Build in-tree Z3 for BMC" ON)
 option(PRISM_TESTS "Build C++ unit tests" ON)
+# Windows CI: portable doctest TUs only (no unistd-heavy integration tests).
+option(PRISM_TESTS_WIN_SUBSET "On WIN32, build portable prism_tests subset only" OFF)
 # Roadmap 8.4 (PRISM on PRISM): build PRISM itself with ASan + UBSan so the
 # test suite doubles as a memory-safety / UB check of the quarantined C++.
 option(PRISM_SANITIZE "Build PRISM with -fsanitize=address,undefined" OFF)
@@ -591,7 +593,20 @@ if(PRISM_QT)
 endif()
 
 if(PRISM_TESTS)
-  add_executable(prism_tests tests/cpp/test_main.cpp tests/cpp/test_ai9.cpp tests/cpp/test_conc.cpp
+  if(WIN32 AND NOT PRISM_TESTS_WIN_SUBSET)
+    message(FATAL_ERROR
+      "Full prism_tests does not build on WIN32 yet; use -DPRISM_TESTS_WIN_SUBSET=ON")
+  endif()
+  if(WIN32 AND PRISM_TESTS_WIN_SUBSET)
+    set(_prism_test_sources
+      tests/cpp/test_main_win.cpp
+      tests/cpp/test_wide_int.cpp
+      tests/cpp/test_interval.cpp
+      tests/cpp/test_svcomp.cpp
+      tests/cpp/test_naming.cpp)
+  else()
+    set(_prism_test_sources
+      tests/cpp/test_main.cpp tests/cpp/test_ai9.cpp tests/cpp/test_conc.cpp
     tests/cpp/test_leanbb.cpp tests/cpp/test_pir_mem.cpp tests/cpp/test_pir_budget.cpp tests/cpp/test_certified.cpp
     tests/cpp/test_pir3.cpp tests/cpp/test_pir_e2e.cpp tests/cpp/test_pir_refinement.cpp tests/cpp/test_pbsd.cpp
     # Roadmap 2.8 Clang-AST lints.
@@ -644,6 +659,8 @@ if(PRISM_TESTS)
     tests/cpp/test_qa.cpp
     tests/cpp/test_gen_tables.cpp
     tests/cpp/test_naming.cpp)
+  endif()
+  add_executable(prism_tests ${_prism_test_sources})
   target_include_directories(prism_tests PRIVATE
     "${PRISM_ROOT}/include"
     "${PRISM_ROOT}/third_party")

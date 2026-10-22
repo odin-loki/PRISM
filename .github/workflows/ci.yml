@@ -132,6 +132,7 @@ jobs:
   # Phase 5 MSVC port: prism_core uses prism::i128 (wide_int.hpp), not native __int128.
   # Smoke-build prism_core + prism with VS clang-cl (MSVC ABI), Z3 off (skip vendored Z3),
   # tests off (solver Z3 integration tests compile on Windows when PRISM_HAS_Z3).
+  # Smoke: prism_core + prism + prism-qa + portable prism_tests (phase 7 subset).
   windows-compile-smoke:
     name: Windows compile smoke
     runs-on: windows-latest
@@ -150,9 +151,11 @@ jobs:
           cmake -B build-win -G Ninja
           -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl
           -DPRISM_CUDA=OFF -DPRISM_LLAMA=OFF -DPRISM_QT=OFF -DPRISM_Z3=OFF
-          -DPRISM_TESTS=OFF -DPRISM_LIBCLANG=OFF
-      - name: Build (prism_core + prism + prism-qa)
-        run: cmake --build build-win --target prism_core prism prism-qa
+          -DPRISM_TESTS=ON -DPRISM_TESTS_WIN_SUBSET=ON -DPRISM_LIBCLANG=OFF
+      - name: Build (prism_core + prism + prism-qa + prism_tests)
+        run: cmake --build build-win --target prism_core prism prism-qa prism_tests
+      - name: Run portable prism_tests subset
+        run: .\build-win\prism_tests.exe
 
   # Phase 5b: vendored Z3 via z3gen (cmake/z3.cmake) + pre-generated cmake/z3-generated/.
   windows-compile-smoke-z3:
