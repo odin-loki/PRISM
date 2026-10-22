@@ -229,6 +229,10 @@ TEST_CASE("pipeline: esbmc missing is NOTRUN with install, never a proof") {
 #endif
 
 TEST_CASE("pipeline: --resume reuses an ok stage instead of running it again") {
+#ifndef PRISM_HAS_Z3
+    MESSAGE("NOTRUN: bmc stage needs PRISM_HAS_Z3");
+    return;
+#endif
     Work w;
     w.put("add.c", "int add(int x) { return x + 1; }\n");
     auto cfg = w.cfg();
