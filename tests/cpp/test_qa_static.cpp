@@ -10,6 +10,7 @@
 #include "prism/laws.hpp"
 #include "prism/pipeline.hpp"
 #include "prism/shipdocs.hpp"
+#include "prism/shipdocs.hpp"
 
 #include <nlohmann/json.hpp>
 
