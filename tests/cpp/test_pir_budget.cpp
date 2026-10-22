@@ -24,6 +24,10 @@
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
+
+#ifdef _WIN32
+#  include <process.h>
+#endif
 #include <fstream>
 #include <map>
 #include <mutex>
@@ -35,6 +39,22 @@ namespace {
 
 namespace pp = prism::pir;
 namespace fs = std::filesystem;
+
+void test_setenv(const char* key, const char* value) {
+#ifdef _WIN32
+    _putenv_s(key, value);
+#else
+    ::setenv(key, value, 1);
+#endif
+}
+
+void test_unsetenv(const char* key) {
+#ifdef _WIN32
+    _putenv_s(key, "");
+#else
+    ::unsetenv(key);
+#endif
+}
 
 double now_s() {
     return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -471,8 +491,8 @@ TEST_CASE("pir budget: $PRISM_FUNCTION_BUDGET in the pir stage (skips without cl
     const fs::path loops = fs::path(PRISM_SOURCE_DIR) / "tests" / "pir" / "loops.c";
     fs::copy_file(loops, dir / "loops.c");
     auto run = [&](const char* env) {
-        if (env) ::setenv("PRISM_FUNCTION_BUDGET", env, 1);
-        else ::unsetenv("PRISM_FUNCTION_BUDGET");
+        if (env) test_setenv("PRISM_FUNCTION_BUDGET", env);
+        else test_unsetenv("PRISM_FUNCTION_BUDGET");
         auto cfg = prism::default_config();
         cfg.root = dir;
         cfg.jobs = 1;
@@ -480,7 +500,7 @@ TEST_CASE("pir budget: $PRISM_FUNCTION_BUDGET in the pir stage (skips without cl
         std::map<std::string, prism::Finding> got;
         for (auto& f : pp::run_pir({dir / "loops.c"}, cfg))
             if (f.function) got[*f.function] = f;
-        ::unsetenv("PRISM_FUNCTION_BUDGET");
+        test_unsetenv("PRISM_FUNCTION_BUDGET");
         return got;
     };
     auto plain = run(nullptr);
@@ -529,7 +549,7 @@ TEST_CASE("pir budget: the memory policy's re-checks of main share the function 
     const fs::path pir = fs::path(PRISM_SOURCE_DIR) / "tests" / "pir";
     fs::copy_file(pir / "static_init_value.cpp", dir / "value.cpp");
     auto run = [&](const char* file, const char* env, const std::string& cache) {
-        if (env) ::setenv("PRISM_FUNCTION_BUDGET", env, 1);
+        if (env) test_setenv("PRISM_FUNCTION_BUDGET", env);
         auto cfg = prism::default_config();
         cfg.root = dir;
         cfg.jobs = 1;
@@ -537,7 +557,7 @@ TEST_CASE("pir budget: the memory policy's re-checks of main share the function 
         std::map<std::string, prism::Finding> got;
         for (auto& f : pp::run_pir({dir / file}, cfg))
             if (f.function) got[*f.function] = f;
-        ::unsetenv("PRISM_FUNCTION_BUDGET");
+        test_unsetenv("PRISM_FUNCTION_BUDGET");
         return got;
     };
     // main's re-checks (the static-initialisation code; arbitrary globals)

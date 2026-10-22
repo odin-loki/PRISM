@@ -24,6 +24,10 @@
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
+
+#ifdef _WIN32
+#  include <process.h>
+#endif
 #include <fstream>
 #include <optional>
 #include <set>
@@ -34,6 +38,22 @@
 namespace fs = std::filesystem;
 
 namespace {
+
+void test_setenv(const char* key, const char* value) {
+#ifdef _WIN32
+    _putenv_s(key, value);
+#else
+    ::setenv(key, value, 1);
+#endif
+}
+
+void test_unsetenv(const char* key) {
+#ifdef _WIN32
+    _putenv_s(key, "");
+#else
+    ::unsetenv(key);
+#endif
+}
 
 struct AssistFake final : prism::ai::ModelBackend {
     std::vector<std::string> replies;
@@ -656,10 +676,10 @@ TEST_CASE("ai-assist predict: GBDT evaluation, built-in model, a model file over
     CHECK(*prism::solver::predict::seconds(dir, "bitwuzla", small) <
           *prism::solver::predict::seconds(dir, "cadical", small));
     CHECK(prism::solver::predict::unwind_for(dir, {}, 8) == 8);
-    ::setenv("PRISM_SOLVER_PREDICT", "0", 1);
+    test_setenv("PRISM_SOLVER_PREDICT", "0");
     CHECK_FALSE(prism::solver::predict::enabled(dir));
     CHECK_FALSE(prism::solver::predict::seconds(dir, "z3", small));
-    ::unsetenv("PRISM_SOLVER_PREDICT");
+    test_unsetenv("PRISM_SOLVER_PREDICT");
     nlohmann::json m;
     m["schema"] = 1;
     m["kind"] = "prism-gbdt";
@@ -679,9 +699,9 @@ TEST_CASE("ai-assist predict: GBDT evaluation, built-in model, a model file over
     CHECK(prism::solver::predict::seconds(dir, "z3", {0, 0, 0, 0, 0, 0, 0, 0, 0}) == doctest::Approx(1.0 - 1e-3));
     CHECK_FALSE(prism::solver::predict::seconds(dir, "kissat", {0, 0, 0, 0, 0, 0, 0, 0, 0}));
     CHECK(prism::solver::predict::unwind_for(dir, {}, 8) == 4);
-    ::setenv("PRISM_SOLVER_PREDICT", "0", 1);
+    test_setenv("PRISM_SOLVER_PREDICT", "0");
     CHECK_FALSE(prism::solver::predict::enabled(dir));
-    ::unsetenv("PRISM_SOLVER_PREDICT");
+    test_unsetenv("PRISM_SOLVER_PREDICT");
     // Feature names drift -> the model is refused.
     m["query_features"] = std::vector<std::string>{"other"};
     write(dir / "predict_model.json", m.dump());

@@ -627,9 +627,14 @@ if(PRISM_TESTS)
       tests/cpp/test_concrete.cpp
       tests/cpp/test_concolic.cpp
       tests/cpp/test_lint_corpus.cpp
-      tests/cpp/test_pir_mem.cpp)
+      tests/cpp/test_pir_mem.cpp
+      tests/cpp/test_ai_assist.cpp
+      tests/cpp/test_pbsd.cpp
+      tests/cpp/test_pir3.cpp
+      tests/cpp/test_pir_refinement.cpp)
     if(PRISM_HAS_Z3)
-      list(APPEND _prism_test_sources tests/cpp/test_leanbb.cpp)
+      list(APPEND _prism_test_sources tests/cpp/test_leanbb.cpp
+        tests/cpp/test_pir_budget.cpp)
     endif()
   else()
     set(_prism_test_sources

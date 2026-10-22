@@ -167,7 +167,7 @@ shortcut. Keep **D** only for explicitly documented optional components, not cor
 | **5a** (done) | MSVC CI smoke | `windows-compile-smoke`: Ninja + `clang-cl`, `PRISM_Z3=OFF`, build `prism_core` + `prism` + `prism-qa` + portable `prism_tests` subset (phase 7). Shims: `utc_tm`, `set_env`, `NOMINMAX`, `wide_int` / `leanbb`, `solver/util.cpp` `windows.h` + `#undef ERROR`. |
 | **5b** (CI done) | Windows CI + Z3 | `windows-compile-smoke-z3`: Ninja + `clang-cl`, `PRISM_Z3=ON`, builds `prism_core` + `prism` + `prism-qa` + phase-7 `prism_tests` subset including `test_leanbb.cpp` (~44 min cold; cache `build-win-z3`; needs `z3gen_shim.bat`). Remaining: native `cl` without clang-cl. |
 | **6** (partial) | QA on Windows | `yaml_subset` + `task` + `pyrandom` on `prism::i128` (done); `prism-qa` in `windows-compile-smoke`; conformance tree stays `if(UNIX)` |
-| **7** (done) | Windows `prism_tests` subset | `PRISM_TESTS_WIN_SUBSET`: `test_main_win.cpp` plus portable doctest TUs (`test_wide_int`, `test_interval`, `test_svcomp`, `test_naming`, `test_polyglot`, `test_taxonomy`, `test_repolint`, `test_deps`, `test_cparse`, `test_sarif`, `test_astlint`, `test_ltl`, `test_contracts`, `test_bmc`, `test_checkers_cxx`, `test_checkers_c`, `test_gen_tables`, `test_bmc_svcomp`, `test_havoc`, `test_verdict_repo`, `test_diff`, `test_journal_confidence`, `test_thread_taint`, `test_wp_harness`, `test_concrete`, `test_concolic`, `test_lint_corpus`, `test_pir_mem`; `test_leanbb` when `PRISM_HAS_Z3`). `test_diff` omits POSIX `setenv`/`ScopedPath` cases on `_WIN32`. CI runs `prism_tests.exe` in `windows-compile-smoke` (`PRISM_Z3=OFF`) and `windows-compile-smoke-z3` (`PRISM_Z3=ON`). |
+| **7** (done) | Windows `prism_tests` subset | `PRISM_TESTS_WIN_SUBSET`: `test_main_win.cpp` plus portable doctest TUs (`test_wide_int`, `test_interval`, `test_svcomp`, `test_naming`, `test_polyglot`, `test_taxonomy`, `test_repolint`, `test_deps`, `test_cparse`, `test_sarif`, `test_astlint`, `test_ltl`, `test_contracts`, `test_bmc`, `test_checkers_cxx`, `test_checkers_c`, `test_gen_tables`, `test_bmc_svcomp`, `test_havoc`, `test_verdict_repo`, `test_diff`, `test_journal_confidence`, `test_thread_taint`, `test_wp_harness`, `test_concrete`, `test_concolic`, `test_lint_corpus`, `test_pir_mem`, `test_ai_assist`, `test_pbsd`, `test_pir3`, `test_pir_refinement`; `test_leanbb` and `test_pir_budget` when `PRISM_HAS_Z3`). `test_diff` omits POSIX `setenv`/`ScopedPath` cases on `_WIN32`; `test_ai_assist` / `test_pir_budget` use `_putenv_s` on WIN32. `test_pir_e2e` stays off the subset (large generated table). CI runs `prism_tests.exe` in `windows-compile-smoke` (`PRISM_Z3=OFF`) and `windows-compile-smoke-z3` (`PRISM_Z3=ON`). |
 
 **Dependency order:** 2 → 3 (public API) → 4 (largest volume) → 5 → 6 → 7 (subset) → 5b (Z3 + full tests).
 
@@ -216,8 +216,9 @@ String-only BMC/astlint files: **0** type migration expected.
   `test_bmc`, `test_checkers_cxx`, `test_checkers_c`, `test_gen_tables`, `test_bmc_svcomp`,
   `test_havoc`, `test_verdict_repo`, `test_diff`, `test_journal_confidence`,
   `test_thread_taint`, `test_wp_harness`, `test_concrete`, `test_concolic`,
-  `test_lint_corpus`, `test_pir_mem`; `test_leanbb` when `PRISM_HAS_Z3`); the monolithic
-  `test_main.cpp` stays off WIN32 builds.
+  `test_lint_corpus`, `test_pir_mem`, `test_ai_assist`, `test_pbsd`, `test_pir3`,
+  `test_pir_refinement`; `test_leanbb` and `test_pir_budget` when `PRISM_HAS_Z3`);
+  `test_pir_e2e` is still excluded. The monolithic `test_main.cpp` stays off WIN32 builds.
 - **`i128_and` on MSVC fallback (`acc88121b`):** the non-`PRISM_HAS_INT128` path in
   `wide_int.hpp` now implements bitwise `&` via `i128_and` (used by SV-COMP debug IR and
   `test_wide_int`); fixes Windows subset link/compile after the portable 128-bit migration.
@@ -231,7 +232,8 @@ String-only BMC/astlint files: **0** type migration expected.
   (`test_checkers_c`, `test_gen_tables`, `test_bmc_svcomp`, `test_havoc`, `test_verdict_repo`,
   `test_journal_confidence`, `test_thread_taint`, `test_wp_harness`, `test_concrete`,
   `test_concolic`) plus earlier portable TUs (`test_checkers_cxx`, `test_lint_corpus`,
-  `test_pir_mem`; `_getpid` / `_putenv_s` where needed). `test_checkers_c` and
+  `test_pir_mem`, `test_ai_assist`, `test_pbsd`, `test_pir3`, `test_pir_refinement`;
+  `test_pir_budget` with Z3; `_getpid` / `_putenv_s` where needed). `test_checkers_c` and
   `test_concolic` mention `fork`/`unistd` only inside scanned snippet strings, not as host
   APIs. `test_diff` keeps POSIX PATH-mutation cases behind `#ifndef _WIN32`.
   `test_wp_harness` BMC/harness rows are behind `PRISM_HAS_Z3` (Z3-off smoke);
