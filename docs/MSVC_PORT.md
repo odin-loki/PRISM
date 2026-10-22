@@ -218,7 +218,7 @@ String-only BMC/astlint files: **0** type migration expected.
   `test_thread_taint`, `test_wp_harness`, `test_concrete`, `test_concolic`,
   `test_lint_corpus`, `test_pir_mem`, `test_ai_assist`, `test_pbsd`, `test_pir3`,
   `test_pir_refinement`, `test_cli`, `test_pipeline`, `test_ai9`, `test_conc`,
-  `test_cxx_models`, `test_fuse`, `test_gui_model`, `test_adapters`;
+  `test_cxx_models`, `test_fuse`, `test_gui_model`, `test_adapters`, `test_repair`;
   `test_leanbb` and `test_pir_budget` when `PRISM_HAS_Z3`); `test_pipeline` chmod/LTL case is
   POSIX-only; `test_cli` binary integration is POSIX-only. `test_pir_e2e` is still excluded.
   The monolithic `test_main.cpp` stays off WIN32 builds.
