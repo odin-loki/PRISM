@@ -151,8 +151,8 @@ jobs:
           -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl
           -DPRISM_CUDA=OFF -DPRISM_LLAMA=OFF -DPRISM_QT=OFF -DPRISM_Z3=OFF
           -DPRISM_TESTS=OFF -DPRISM_LIBCLANG=OFF
-      - name: Build prism_core
-        run: cmake --build build-win --target prism_core
+      - name: Build (prism_core + prism)
+        run: cmake --build build-win --target prism
 
   selfcheck:
     name: PRISM on PRISM (SARIF artifact, not gating)

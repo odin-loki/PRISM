@@ -206,4 +206,12 @@ std::optional<long long> to_int(const json& v) {
     return std::nullopt;
 }
 
+bool utc_tm(std::time_t t, std::tm* out) {
+#if defined(_WIN32)
+    return ::gmtime_s(out, &t) == 0;
+#else
+    return ::gmtime_r(&t, out) != nullptr;
+#endif
+}
+
 }  // namespace prism::svcomp::detail

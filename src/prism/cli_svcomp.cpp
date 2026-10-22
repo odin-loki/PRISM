@@ -562,7 +562,7 @@ PackResult pack(const fs::path& prism_bin, const fs::path& repo, const fs::path&
     {
         std::time_t t = std::time(nullptr);
         std::tm tm{};
-        ::gmtime_r(&t, &tm);
+        detail::utc_tm(t, &tm);
         char buf[32];
         std::strftime(buf, sizeof buf, "%Y-%m-%dT%H:%M:%SZ", &tm);
         manifest["created"] = buf;

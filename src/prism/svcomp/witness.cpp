@@ -91,7 +91,7 @@ std::string uuid4() {
 std::string now_utc() {
     std::time_t t = std::time(nullptr);
     std::tm tm{};
-    ::gmtime_r(&t, &tm);
+    if (!detail::utc_tm(t, &tm)) return "1970-01-01T00:00:00Z";
     char buf[32];
     std::strftime(buf, sizeof buf, "%Y-%m-%dT%H:%M:%SZ", &tm);
     return buf;

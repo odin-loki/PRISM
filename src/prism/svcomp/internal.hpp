@@ -8,6 +8,7 @@
 #include "prism/regex.hpp"
 #include "prism/svcomp.hpp"
 
+#include <ctime>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -15,6 +16,9 @@
 #include <vector>
 
 namespace prism::svcomp::detail {
+
+// UTC calendar fields for a std::time_t (gmtime_r on Unix, gmtime_s on Windows).
+bool utc_tm(std::time_t t, std::tm* out);
 
 // File contents with every invalid UTF-8 sequence replaced by U+FFFD
 // ("" when unreadable).
