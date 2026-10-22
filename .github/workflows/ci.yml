@@ -154,6 +154,30 @@ jobs:
       - name: Build (prism_core + prism + prism-qa)
         run: cmake --build build-win --target prism_core prism prism-qa
 
+  # Phase 5b: vendored Z3 via z3gen (cmake/z3.cmake) + pre-generated cmake/z3-generated/.
+  windows-compile-smoke-z3:
+    name: Windows compile smoke (Z3)
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - uses: actions/cache@v4
+        with:
+          path: build-win-z3
+          key: win-smoke-z3-${{ hashFiles('CMakeLists.txt', 'cmake/z3.cmake', 'third_party/z3/CMakeLists.txt') }}-${{ github.sha }}
+          restore-keys: win-smoke-z3-${{ hashFiles('CMakeLists.txt', 'cmake/z3.cmake', 'third_party/z3/CMakeLists.txt') }}-
+      - name: Configure (Ninja + clang-cl, PRISM_Z3=ON)
+        run: >
+          cmake -B build-win-z3 -G Ninja
+          -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl
+          -DPRISM_CUDA=OFF -DPRISM_LLAMA=OFF -DPRISM_QT=OFF -DPRISM_Z3=ON
+          -DPRISM_TESTS=OFF -DPRISM_LIBCLANG=OFF
+      - name: Build (prism_core + prism + prism-qa)
+        run: cmake --build build-win-z3 --target prism_core prism prism-qa
+
   selfcheck:
     name: PRISM on PRISM (SARIF artifact, not gating)
     runs-on: ubuntu-24.04

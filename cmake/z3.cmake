@@ -52,13 +52,19 @@ endif()
 if(_prism_z3gen_needs_build)
   if(MSVC)
     set(_prism_z3gen_flags /std:c++latest /O2 /EHsc /W3)
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+      set(_prism_z3gen_out -o "${_prism_z3gen}")
+    else()
+      set(_prism_z3gen_out "/Fe:${_prism_z3gen}")
+    endif()
   else()
     set(_prism_z3gen_flags -std=c++23 -O2)
+    set(_prism_z3gen_out -o "${_prism_z3gen}")
   endif()
   execute_process(
     COMMAND ${CMAKE_COMMAND} -E env "PRISM_Z3_GENERATED_ROOT=${_prism_z3_gen}"
             "${CMAKE_CXX_COMPILER}" ${_prism_z3gen_flags}
-            "${_prism_z3gen_src}" -o "${_prism_z3gen}"
+            "${_prism_z3gen_src}" ${_prism_z3gen_out}
     RESULT_VARIABLE _prism_z3gen_rc
     ERROR_VARIABLE _prism_z3gen_err
     OUTPUT_VARIABLE _prism_z3gen_out)

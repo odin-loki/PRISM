@@ -165,7 +165,7 @@ shortcut. Keep **D** only for explicitly documented optional components, not cor
 | **3** (done) | SV-COMP surface | `svcomp_witness.hpp` `Num::i` → portable type; migrate `witness.cpp`, `replay.cpp`, `debug_ir.cpp`; fix `test_svcomp.cpp` |
 | **4** (done) | Analysis core | `interval.cpp`, `pir/pir.cpp`, `translate_mem.cpp`, `solver/leanbb.cpp`, `ai/regress.cpp` |
 | **5a** (done) | MSVC CI smoke | `windows-compile-smoke`: Ninja + `clang-cl`, `PRISM_Z3=OFF`, `PRISM_TESTS=OFF`, build `prism_core` + `prism`. Shims: `utc_tm`, `set_env`, `NOMINMAX`, `wide_int` / `leanbb`, `solver/util.cpp` `windows.h` + `#undef ERROR`. |
-| **5b** (follow-up) | Native MSVC + Z3 | `cl` + `PRISM_Z3=ON`, `prism_tests`, lift `#if !defined(_WIN32)` solver guards in tests. |
+| **5b** (in progress) | Windows CI + Z3 | `windows-compile-smoke-z3`: Ninja + `clang-cl`, `PRISM_Z3=ON`, same targets as 5a. Remaining: native `cl` (z3gen uses `/Fe:` when not clang-cl), `prism_tests` on Windows, lift `#if !defined(_WIN32)` in `test_leanbb.cpp`. |
 | **6** (partial) | QA on Windows | `yaml_subset` + `task` + `pyrandom` on `prism::i128` (done); `prism-qa` in `windows-compile-smoke`; conformance tree stays `if(UNIX)` |
 
 **Dependency order:** 2 → 3 (public API) → 4 (largest volume) → 5 → 6.
@@ -194,8 +194,11 @@ String-only BMC/astlint files: **0** type migration expected.
 
 - **Phase 5a (CI smoke):** `windows-compile-smoke` configures with `clang-cl` and builds
   `prism_core` and `prism` with `PRISM_Z3=OFF` and `PRISM_TESTS=OFF` (see `.github/workflows/ci.yml`).
-- **Phase 5b (follow-up):** same targets with **MSVC `cl`** on Windows x64 and
-  `PRISM_Z3=ON` (parity with Linux CI vendored Z3).
+- **Phase 5b (CI):** `windows-compile-smoke-z3` builds `prism_core`, `prism`, and
+  `prism-qa` with Ninja + `clang-cl` and `PRISM_Z3=ON` (vendored Z3 via `cmake/z3.cmake`
+  and `z3gen`; no Python on PATH). **Still open:** MSVC `cl` without clang-cl (configure
+  must use `clang-cl` or fix z3gen bootstrap), Windows `prism_tests` (unistd-heavy TUs),
+  and ccache for Z3 on Windows runners (first build is slow).
 - **`prism_tests` on Windows (blocked):** `PRISM_TESTS=ON` does not compile yet: several
   doctest TUs `#include <unistd.h>` unconditionally (e.g. `tests/cpp/test_lint_corpus.cpp`,
   `tests/cpp/test_checkers_cxx.cpp`). Solver integration tests stay behind
