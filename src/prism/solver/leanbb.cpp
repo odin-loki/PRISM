@@ -243,7 +243,7 @@ struct Evaluator {
                 if (!num(e.kids[2], b)) return bad("bad var");
                 u128 v = 0;
                 for (unsigned t = 0; t < w; ++t) v = v | (u128(bit(b + t) ? 1 : 0) << t);
-                return Val{unsigned(w), v};
+                return mk(unsigned(w), v);
             }
             const std::string& d = n[e.kids[2]].atom;
             u128 v = 0;
@@ -330,19 +330,21 @@ struct Evaluator {
             if (msb(*a) && p > 0) r = r | (~u128(0) << (w - p));
             return mk(w, r);
         }
-        if (op == "eq") return B(a->v == b->v);
-        if (op == "ult") return B(a->v < b->v);
-        if (op == "ule") return B(a->v <= b->v);
+        const u128 av = a->v & M;
+        const u128 bv = b->v & M;
+        if (op == "eq") return B(av == bv);
+        if (op == "ult") return B(av < bv);
+        if (op == "ule") return B(av <= bv);
         if (op == "slt") return B(sval(*a) < sval(*b));
         if (op == "sle") return B(sval(*a) <= sval(*b));
-        if (op == "uaddo") return B(a->v > M - b->v);
-        if (op == "usubo") return B(a->v < b->v);
+        if (op == "uaddo") return B(av > M - bv);
+        if (op == "usubo") return B(av < bv);
         if (op == "saddo" || op == "ssubo") {
             Val r = op == "saddo" ? mk(w, a->v + b->v) : mk(w, a->v - b->v);
             bool same = op == "saddo" ? msb(*a) == msb(*b) : msb(*a) != msb(*b);
             return B(same && msb(r) != msb(*a));
         }
-        if (op == "umulo") return B(b->v != 0 && a->v > M / b->v);
+        if (op == "umulo") return B(bv != 0 && av > M / bv);
         if (op == "smulhi" || op == "smullo") {
             if (w == 0) return B(false);
             if (w > 64) return bad("smulo evaluation above 64 bits");
