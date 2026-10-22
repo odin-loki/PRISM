@@ -233,8 +233,10 @@ String-only BMC/astlint files: **0** type migration expected.
   `test_concolic`) plus earlier portable TUs (`test_checkers_cxx`, `test_lint_corpus`,
   `test_pir_mem`; `_getpid` / `_putenv_s` where needed). `test_checkers_c` and
   `test_concolic` mention `fork`/`unistd` only inside scanned snippet strings, not as host
-  APIs. `test_diff` keeps POSIX PATH-mutation cases behind `#ifndef _WIN32`. Remaining doctest
-  TUs still need Unix APIs (`unistd.h`, `fork`, sockets, bulk `setenv`): e.g. `test_main.cpp`,
+  APIs. `test_diff` keeps POSIX PATH-mutation cases behind `#ifndef _WIN32`.
+  `test_wp_harness` BMC/harness rows are behind `PRISM_HAS_Z3` (Z3-off smoke);
+  `test_havoc` uses an MSVC-safe block-comment regex. Remaining doctest TUs still
+  need Unix APIs (`unistd.h`, `fork`, sockets, bulk `setenv`): e.g. `test_main.cpp`,
   `test_adapters.cpp`, `test_cli.cpp`, `test_pipeline.cpp`, `test_sanitize.cpp`, `test_qa.cpp`,
   `test_qa_conformance.cpp`, `test_fuse.cpp`, `test_repair.cpp`, and others. The monolithic
   `test_main.cpp` is not linked on WIN32. Conformance QA remains behind `if(UNIX)` in
