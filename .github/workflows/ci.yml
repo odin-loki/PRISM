@@ -133,6 +133,32 @@ jobs:
   # Smoke-build prism_core + prism with VS clang-cl (MSVC ABI), Z3 off (skip vendored Z3),
   # tests off (solver Z3 integration tests compile on Windows when PRISM_HAS_Z3).
   # Smoke: prism_core + prism + prism-qa + portable prism_tests (phase 7 subset).
+  # Native MSVC cl (not clang-cl): same smoke as windows-compile-smoke; needs
+  # portable signed overflow in stages/interp.cpp (no __builtin_*_overflow on cl).
+  windows-compile-smoke-cl:
+    name: Windows compile smoke (MSVC cl)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - uses: actions/cache@v4
+        with:
+          path: build-win-cl
+          key: win-smoke-cl-${{ hashFiles('CMakeLists.txt', 'third_party/pcre2/CMakeLists.txt') }}
+          restore-keys: win-smoke-cl-${{ hashFiles('CMakeLists.txt', 'third_party/pcre2/CMakeLists.txt') }}-
+      - name: Configure (Ninja + cl)
+        run: >
+          cmake -B build-win-cl -G Ninja
+          -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl
+          -DPRISM_CUDA=OFF -DPRISM_LLAMA=OFF -DPRISM_QT=OFF -DPRISM_Z3=OFF
+          -DPRISM_TESTS=ON -DPRISM_TESTS_WIN_SUBSET=ON -DPRISM_LIBCLANG=OFF
+      - name: Build (prism_core + prism + prism-qa + prism_tests)
+        run: cmake --build build-win-cl --target prism_core prism prism-qa prism_tests
+      - name: Run portable prism_tests subset
+        run: .\build-win-cl\prism_tests.exe
+
   windows-compile-smoke:
     name: Windows compile smoke
     runs-on: windows-latest

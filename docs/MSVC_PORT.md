@@ -165,7 +165,8 @@ shortcut. Keep **D** only for explicitly documented optional components, not cor
 | **3** (done) | SV-COMP surface | `svcomp_witness.hpp` `Num::i` → portable type; migrate `witness.cpp`, `replay.cpp`, `debug_ir.cpp`; fix `test_svcomp.cpp` |
 | **4** (done) | Analysis core | `interval.cpp`, `pir/pir.cpp`, `translate_mem.cpp`, `solver/leanbb.cpp`, `ai/regress.cpp` |
 | **5a** (done) | MSVC CI smoke | `windows-compile-smoke`: Ninja + `clang-cl`, `PRISM_Z3=OFF`, build `prism_core` + `prism` + `prism-qa` + portable `prism_tests` subset (phase 7). Shims: `utc_tm`, `set_env`, `NOMINMAX`, `wide_int` / `leanbb`, `solver/util.cpp` `windows.h` + `#undef ERROR`. |
-| **5b** (CI done) | Windows CI + Z3 | `windows-compile-smoke-z3`: Ninja + `clang-cl`, `PRISM_Z3=ON`, builds `prism_core` + `prism` + `prism-qa` + phase-7 `prism_tests` subset including `test_leanbb.cpp` (~44 min cold; cache `build-win-z3`; needs `z3gen_shim.bat`). Remaining: native `cl` without clang-cl. |
+| **5b** (CI done) | Windows CI + Z3 | `windows-compile-smoke-z3`: Ninja + `clang-cl`, `PRISM_Z3=ON`, builds `prism_core` + `prism` + `prism-qa` + phase-7 `prism_tests` subset including `test_leanbb.cpp` (~44 min cold; cache `build-win-z3`; needs `z3gen_shim.bat`). |
+| **5c** (CI done) | Native MSVC `cl` | `windows-compile-smoke-cl`: Ninja + `cl` (not `clang-cl`), `PRISM_Z3=OFF`, same targets/subset as 5a. `stages/interp.cpp` uses `prism::i128` / manual checks instead of `__builtin_*_overflow` (clang-cl only). Configure with default `CMAKE_BUILD_TYPE=Release` (Debug + `prism_core` `/O2` hits cl D8016 vs `/RTC1`). |
 | **6** (partial) | QA on Windows | `yaml_subset` + `task` + `pyrandom` on `prism::i128` (done); `prism-qa` in `windows-compile-smoke`; conformance tree stays `if(UNIX)` |
 | **7** (done) | Windows `prism_tests` subset | `PRISM_TESTS_WIN_SUBSET`: `test_main_win.cpp` plus portable doctest TUs (see `CMakeLists.txt`); `test_leanbb` / `test_pir_budget` / `test_certified` when `PRISM_HAS_Z3`. `test_cli` / `test_pipeline` omit POSIX-only cases; `test_conc` skips without Z3. `test_pir_e2e.cpp` is in the subset: the full `tests/pir` verdict table is skipped on `_WIN32` (MESSAGE); Law 9 / `--fp-checks` / `--strict-aliasing` smoke cases still run when `clang`/`opt` are on PATH. `test_sanitize_static.cpp` covers portable `sanitize_detail` helpers; full `test_sanitize.cpp` stays POSIX (fake `sh` compiler). Static adapter/manifest/`llm_httpish`/`execute_cex` checks live in `test_adapters_static.cpp` (no fake tools). Portable prism-qa checks (triage, pir-vs-bmc, docs slugs/anchors, assurance file scan, libc-bounds, solver-bench task discovery, …) live in `test_qa_static.cpp`; full `test_qa.cpp` stays POSIX (`fork`, `run_session`, Lean/lli drivers). Full `test_adapters.cpp` has WIN32 helpers in-tree (`fake_tool_launcher`, `_putenv_s` `EnvVar`) but is **not** in the subset until `.cmd` fakes pass optional-tool probes on CI. CI runs `prism_tests.exe` in both Windows smoke jobs. |
 
@@ -196,6 +197,8 @@ String-only BMC/astlint files: **0** type migration expected.
 - **Phase 5a (CI smoke):** `windows-compile-smoke` configures with `clang-cl` and builds
   `prism_core`, `prism`, `prism-qa`, and the phase-7 `prism_tests` subset with `PRISM_Z3=OFF`
   (see `.github/workflows/ci.yml`).
+- **Phase 5c (native `cl`):** `windows-compile-smoke-cl` mirrors 5a with
+  `-DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl` after `ilammy/msvc-dev-cmd`.
 - **Phase 5b (CI):** `windows-compile-smoke-z3` builds `prism_core`, `prism`,
   `prism-qa`, and the phase-7 `prism_tests` subset with Ninja + `clang-cl` and
   `PRISM_Z3=ON` (vendored Z3 via `cmake/z3.cmake` and `z3gen`; no Python on PATH).
@@ -204,7 +207,7 @@ String-only BMC/astlint files: **0** type migration expected.
   (cert-chain cases no-op when CaDiCaL / Lean tools are absent). Windows needs
   `z3gen_shim.bat` (not `.exe` batch text) so `FindPython3` can execute the shim during
   Z3 configure. Cache key includes `cmake/z3-generated/tree_sha256`. **Still open:** MSVC
-  `cl` without clang-cl, full Windows `prism_tests` (unistd-heavy TUs beyond the subset),
+  `cl` + vendored Z3 (5b parity), full Windows `prism_tests` (unistd-heavy TUs beyond the subset),
   and ccache for Z3 on Windows runners (first vendored Z3 build ~44 min on `windows-latest`
   as of 2026-10-22; `build-win-z3` cache helps reruns).
 - **Phase 7 (Windows `prism_tests` subset):** `windows-compile-smoke` and

@@ -2,7 +2,10 @@
 // execute, eval_src, eval_cond and the public concrete_execute.
 #include "interp.hpp"
 
+#include "prism/wide_int.hpp"
+
 #include <charconv>
+#include <limits>
 
 namespace prism {
 namespace fs = std::filesystem;
@@ -37,6 +40,36 @@ struct UB : std::runtime_error {
     std::string cls;
     explicit UB(std::string c) : std::runtime_error(c), cls(std::move(c)) {}
 };
+
+#if defined(__clang__) || defined(__GNUC__)
+#define PRISM_I64_ADD_OVF(a, b, r) __builtin_add_overflow(a, b, r)
+#define PRISM_I64_SUB_OVF(a, b, r) __builtin_sub_overflow(a, b, r)
+#define PRISM_I64_MUL_OVF(a, b, r) __builtin_mul_overflow(a, b, r)
+#else
+bool i64_add_ovf(std::int64_t a, std::int64_t b, std::int64_t* r) {
+    if (b > 0 && a > std::numeric_limits<std::int64_t>::max() - b) return true;
+    if (b < 0 && a < std::numeric_limits<std::int64_t>::min() - b) return true;
+    *r = a + b;
+    return false;
+}
+bool i64_sub_ovf(std::int64_t a, std::int64_t b, std::int64_t* r) {
+    if (b > 0 && a < std::numeric_limits<std::int64_t>::min() + b) return true;
+    if (b < 0 && a > std::numeric_limits<std::int64_t>::max() + b) return true;
+    *r = a - b;
+    return false;
+}
+bool i64_mul_ovf(std::int64_t a, std::int64_t b, std::int64_t* r) {
+    const prism::i128 p = prism::i128_mul(prism::i128_from_i64(a), prism::i128_from_i64(b));
+    const auto lo = std::numeric_limits<std::int64_t>::min();
+    const auto hi = std::numeric_limits<std::int64_t>::max();
+    if (p < prism::i128_from_i64(lo) || p > prism::i128_from_i64(hi)) return true;
+    *r = prism::i128_to_i64(p);
+    return false;
+}
+#define PRISM_I64_ADD_OVF(a, b, r) i64_add_ovf(a, b, r)
+#define PRISM_I64_SUB_OVF(a, b, r) i64_sub_ovf(a, b, r)
+#define PRISM_I64_MUL_OVF(a, b, r) i64_mul_ovf(a, b, r)
+#endif
 
 struct BreakEx : std::exception {};
 
@@ -725,9 +758,9 @@ int64_t binop(int64_t a, const std::string& op, int64_t b, CT t) {
     }
     int64_t r = 0;
     bool ovf = false;
-    if (op == "+") ovf = __builtin_add_overflow(a, b, &r);
-    else if (op == "-") ovf = __builtin_sub_overflow(a, b, &r);
-    else if (op == "*") ovf = __builtin_mul_overflow(a, b, &r);
+    if (op == "+") ovf = PRISM_I64_ADD_OVF(a, b, &r);
+    else if (op == "-") ovf = PRISM_I64_SUB_OVF(a, b, &r);
+    else if (op == "*") ovf = PRISM_I64_MUL_OVF(a, b, &r);
     else throw ParseFail("op " + op);
     if (ovf || r < type_min(t) || r > type_max(t)) throw UB("INT-SIGNED-OVF");
     return r;
