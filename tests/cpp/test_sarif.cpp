@@ -92,9 +92,9 @@ TEST_CASE("sarif: defects are results; CLEAN/PROVED/BOUNDED are omitted") {
     CHECK(run["tool"]["driver"]["version"] == prism::PRISM_VERSION);
     auto& res = run["results"];
     REQUIRE(res.size() == 3);
-    CHECK(res[0]["properties"]["status"] == prism::laws::FAILED);
-    CHECK(res[1]["properties"]["status"] == prism::laws::CRASH);
-    CHECK(res[2]["properties"]["status"] == prism::laws::HYPOTHESIS);
+    CHECK(res[0]["properties"]["status"].get<std::string>() == std::string(prism::laws::FAILED));
+    CHECK(res[1]["properties"]["status"].get<std::string>() == std::string(prism::laws::CRASH));
+    CHECK(res[2]["properties"]["status"].get<std::string>() == std::string(prism::laws::HYPOTHESIS));
     CHECK(res[0]["level"] == "error");
     CHECK(res[1]["level"] == "error");
     CHECK(res[2]["level"] == "note");
