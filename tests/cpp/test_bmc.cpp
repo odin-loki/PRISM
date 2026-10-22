@@ -141,7 +141,7 @@ TEST_CASE("bmc: missing Z3 is NOTRUN, never a proof or clean") {
     fn.kind = "SCALAR";
     fn.line = 1;
     fn.signature = "int abs_ok(int x)";
-    fn.params = {"int", "x"};
+    fn.params = {{"int", "x"}};
     fn.body = "return x < 0 ? -x : x;";
     auto recs = prism::run_bmc({fn}, 8);
     REQUIRE(recs.size() == 1);
