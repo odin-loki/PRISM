@@ -45,7 +45,7 @@ namespace {
 namespace fs = std::filesystem;
 namespace qa = prism::qa;
 using qa::ojson;
-using i128 = __int128;
+using i128 = prism::qa::i128;
 
 const std::set<std::string> kProperties = {"no-overflow", "no-div0",       "no-shift-ub", "no-oob",
                                            "no-null-deref", "memsafety", "no-fp-cast",  "no-uncaught"};

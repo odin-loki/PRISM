@@ -8,6 +8,8 @@
 // same --seed as they were when the scorers were Python scripts, so a seed
 // quoted in docs/CONFORMANCE.md still reproduces its programs.
 
+#include <prism/wide_int.hpp>
+
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -18,17 +20,17 @@ namespace prism::qa {
 
 class PyRandom {
 public:
-    using i128 = __int128;
-    using u128 = unsigned __int128;
+    using i128 = prism::i128;
+    using u128 = prism::u128;
 
     explicit PyRandom(i128 seed) { this->seed(seed); }
 
     void seed(i128 s) {
-        u128 n = s < 0 ? static_cast<u128>(-(s + 1)) + 1 : static_cast<u128>(s);
+        u128 n = prism::u128_abs(s);
         std::vector<std::uint32_t> key;
-        while (n) {
-            key.push_back(static_cast<std::uint32_t>(n & 0xffffffffu));
-            n >>= 32;
+        while (n != u128(0)) {
+            key.push_back(static_cast<std::uint32_t>(prism::u128_to_u64(n) & 0xffffffffu));
+            n = prism::u128_shr(n, 32);
         }
         if (key.empty()) key.push_back(0);
         init_by_array(key);
@@ -67,14 +69,14 @@ public:
 
     // random.getrandbits(k), k <= 127
     u128 getrandbits(int k) {
-        if (k <= 0) return 0;
-        if (k <= 32) return genrand() >> (32 - k);
-        u128 r = 0;
+        if (k <= 0) return u128(0);
+        if (k <= 32) return u128(genrand() >> (32 - k));
+        u128 r = u128(0);
         int shift = 0;
         while (k > 0) {
             std::uint32_t w = genrand();
             if (k < 32) w >>= (32 - k);
-            r |= static_cast<u128>(w) << shift;
+            r = r | prism::u128_shl(u128(w), shift);
             shift += 32;
             k -= 32;
         }
@@ -84,7 +86,7 @@ public:
     // random._randbelow(n), n > 0
     u128 randbelow(u128 n) {
         int k = 0;
-        for (u128 t = n; t; t >>= 1) ++k;
+        for (u128 t = n; t != u128(0); t = prism::u128_shr(t, 1)) ++k;
         u128 r = getrandbits(k);
         while (r >= n) r = getrandbits(k);
         return r;
@@ -93,13 +95,14 @@ public:
     // random.randint(a, b), inclusive
     i128 randint(i128 a, i128 b) {
         if (b < a) throw std::invalid_argument("empty range for randint");
-        return a + static_cast<i128>(randbelow(static_cast<u128>(b - a) + 1));
+        u128 span = prism::i128_to_u128(prism::i128_sub(b, a)) + u128(1);
+        return prism::i128_add(a, prism::i128_from_u128(randbelow(span)));
     }
 
     template <class T>
     const T& choice(const std::vector<T>& seq) {
         if (seq.empty()) throw std::invalid_argument("choice from an empty sequence");
-        return seq[static_cast<std::size_t>(randbelow(seq.size()))];
+        return seq[static_cast<std::size_t>(prism::u128_to_u64(randbelow(u128(seq.size()))))];
     }
 
     // random.sample(population, k)
@@ -113,15 +116,15 @@ public:
         if (n <= setsize) {
             std::vector<T> pool(population);
             for (std::size_t i = 0; i < k; ++i) {
-                auto j = static_cast<std::size_t>(randbelow(n - i));
+                auto j = static_cast<std::size_t>(prism::u128_to_u64(randbelow(u128(n - i))));
                 result[i] = pool[j];
                 pool[j] = pool[n - i - 1];
             }
         } else {
             std::vector<bool> selected(n, false);
             for (std::size_t i = 0; i < k; ++i) {
-                auto j = static_cast<std::size_t>(randbelow(n));
-                while (selected[j]) j = static_cast<std::size_t>(randbelow(n));
+                auto j = static_cast<std::size_t>(prism::u128_to_u64(randbelow(u128(n))));
+                while (selected[j]) j = static_cast<std::size_t>(prism::u128_to_u64(randbelow(u128(n))));
                 selected[j] = true;
                 result[i] = population[j];
             }

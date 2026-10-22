@@ -6,6 +6,8 @@
 
 #include "../docscan.hpp"
 
+#include <prism/wide_int.hpp>
+
 #include <filesystem>
 #include <map>
 #include <optional>
@@ -17,7 +19,7 @@
 namespace prism::qa {
 
 namespace fs = std::filesystem;
-using i128 = __int128;
+using i128 = prism::i128;
 
 // ---- fixed tables
 extern const std::set<std::string> PROOF;             // PROVED, PROVED-UNBOUNDED, PROVED-ASSUMING, PROVED-CERTIFIED

@@ -419,12 +419,12 @@ set(_prism_qa_sources
   src/tools/qa/pir_lean_check.cpp
   src/tools/qa/llvm_sem_vs_lli.cpp
   src/tools/qa/libc_bounds.cpp
-  src/tools/qa/solver_bench.cpp)
+  src/tools/qa/solver_bench.cpp
+  src/tools/qa/support/yaml_subset.cpp
+  src/tools/qa/support/task.cpp)
 if(UNIX)
   list(APPEND _prism_qa_sources
-    src/tools/qa/support/yaml_subset.cpp
     src/tools/qa/support/proctree.cpp
-    src/tools/qa/support/task.cpp
     src/tools/qa/support/replay.cpp
     src/tools/qa/support/report.cpp
     src/tools/qa/support/engine.cpp

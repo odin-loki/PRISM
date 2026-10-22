@@ -77,13 +77,13 @@ Legend:
 |------|----------|------|
 | `src/tools/qa/support/yaml_subset.hpp` | — | Migrated: `Node::as_int()` → `optional<prism::i128>` (phase 6 partial). |
 | `src/tools/qa/support/yaml_subset.cpp` | — | Uses `parse_i128` / `format_i128` (phase 6 partial). |
-| `src/tools/qa/support/task.hpp` / `task.cpp` | 4 | Task metadata integers. |
-| `src/tools/qa/support/replay.cpp` | 2 | Replay value decoding. |
-| `src/tools/qa/support/pyrandom.hpp` | 2 | Local `using i128 = __int128`. |
+| `src/tools/qa/support/task.hpp` / `task.cpp` | — | Migrated: `prism::i128`; built on all platforms (phase 6). |
+| `src/tools/qa/support/replay.cpp` | — | Migrated: `prism::u128` / `i128_shl` (phase 6); still **unix-only** (`fork`, `unistd`). |
+| `src/tools/qa/support/pyrandom.hpp` | — | Migrated: `prism::i128` / `u128` (phase 6); header-only, used by unix replay/soundness. |
 
-These sources are appended to `prism_qa` only inside `if(UNIX)` in `CMakeLists.txt`.
-They do **not** block a first Windows `prism_core` build but must be ported if QA is
-enabled on Windows later.
+`yaml_subset.cpp` and `task.cpp` are always in `prism_qa` (Windows can link `prism-qa` for
+docs-check / triage / etc.). Conformance (`proctree`, `replay`, `conformance.cpp`, …) stays
+inside `if(UNIX)` until process-tree and sanitizer replay are ported.
 
 ### Tests (outside `src/` / `include/` but coupled)
 
@@ -166,7 +166,7 @@ shortcut. Keep **D** only for explicitly documented optional components, not cor
 | **4** (done) | Analysis core | `interval.cpp`, `pir/pir.cpp`, `translate_mem.cpp`, `solver/leanbb.cpp`, `ai/regress.cpp` |
 | **5a** (done) | MSVC CI smoke | `windows-compile-smoke`: Ninja + `clang-cl`, `PRISM_Z3=OFF`, `PRISM_TESTS=OFF`, build `prism_core` + `prism`. Shims: `utc_tm`, `set_env`, `NOMINMAX`, `wide_int` / `leanbb`, `solver/util.cpp` `windows.h` + `#undef ERROR`. |
 | **5b** (follow-up) | Native MSVC + Z3 | `cl` + `PRISM_Z3=ON`, `prism_tests`, lift `#if !defined(_WIN32)` solver guards in tests. |
-| **6** (optional) | QA on Windows | `yaml_subset` on `prism::i128` (done); port `task.hpp` / `pyrandom.hpp` / conformance tree; remove `if(UNIX)` gate or add Windows subset |
+| **6** (partial) | QA on Windows | `yaml_subset` + `task` + `pyrandom` on `prism::i128` (done); `prism-qa` in `windows-compile-smoke`; conformance tree stays `if(UNIX)` |
 
 **Dependency order:** 2 → 3 (public API) → 4 (largest volume) → 5 → 6.
 
@@ -200,6 +200,7 @@ String-only BMC/astlint files: **0** type migration expected.
   doctest TUs `#include <unistd.h>` unconditionally (e.g. `tests/cpp/test_lint_corpus.cpp`,
   `tests/cpp/test_checkers_cxx.cpp`). Solver integration tests stay behind
   `#if !defined(_WIN32)` in `test_main.cpp` / `test_leanbb.cpp`. Conformance QA remains
-  behind `if(UNIX)` in `CMakeLists.txt`. Next step: guard or port those includes, then
+  behind `if(UNIX)` in `CMakeLists.txt` (conformance scorer only; `yaml_subset`/`task` are
+  in the Windows `prism_qa` subset). Next step: guard or port those includes, then
   enable a Windows subset (`test_wide_int.cpp`, `test_svcomp.cpp`, `test_interval.cpp`).
 - Witness and regress integer formatting unchanged on golden strings in `tests/cpp/`.

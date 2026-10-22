@@ -93,17 +93,7 @@ std::string py_tail(const std::string& s, std::size_t n) {
     return s;
 }
 
-std::string i128_str(i128 v) {
-    if (v == 0) return "0";
-    bool neg = v < 0;
-    unsigned __int128 u = neg ? static_cast<unsigned __int128>(-(v + 1)) + 1 : static_cast<unsigned __int128>(v);
-    std::string s;
-    while (u) {
-        s.insert(s.begin(), static_cast<char>('0' + static_cast<int>(u % 10)));
-        u /= 10;
-    }
-    return neg ? "-" + s : s;
-}
+std::string i128_str(i128 v) { return prism::format_i128(v); }
 
 namespace {
 

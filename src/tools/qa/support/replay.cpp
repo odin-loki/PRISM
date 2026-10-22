@@ -4,6 +4,7 @@
 #include "pyrandom.hpp"
 
 #include "prism/regex.hpp"
+#include <prism/wide_int.hpp>
 
 #include <algorithm>
 #include <charconv>
@@ -16,6 +17,10 @@
 #include <unistd.h>
 
 namespace prism::qa {
+
+using prism::i128_shl;
+using prism::i128_sub;
+using prism::u128;
 
 const std::vector<std::string> SAN_FLAGS = {"-g", "-O0", "-w", "-fsanitize=undefined,address",
                                             "-fno-sanitize-recover=all"};
@@ -49,9 +54,9 @@ const std::map<std::string, std::pair<i128, i128>>& int_types() {
         };
         for (const auto& r : rows)
             for (const auto& n : r.names) {
-                i128 one = 1;
-                m[n] = r.sign ? std::pair<i128, i128>{-(one << (r.bits - 1)), (one << (r.bits - 1)) - 1}
-                              : std::pair<i128, i128>{0, (one << r.bits) - 1};
+                const i128 one(1);
+                m[n] = r.sign ? std::pair<i128, i128>{-i128_shl(one, r.bits - 1), i128_sub(i128_shl(one, r.bits - 1), one)}
+                              : std::pair<i128, i128>{i128(0), i128_sub(i128_shl(one, r.bits), one)};
             }
         return m;
     }();
@@ -92,7 +97,11 @@ std::string re_escape(const std::string& s) {
 
 // Python floor modulo for a positive divisor
 i128 floor_mod(i128 a, i128 m) {
+#if PRISM_HAS_INT128
     i128 r = a % m;
+#else
+    i128 r = i128(0);  // replay is unix-only today; extend wide_int if this is enabled on MSVC
+#endif
     return r < 0 ? r + m : r;
 }
 
@@ -200,9 +209,9 @@ std::optional<std::pair<i128, i128>> type_range(const std::string& t0) {
     if (auto mm = bitint.search_match(t)) {
         int bits = std::atoi(mm->group(2).c_str());
         if (bits < 1 || bits > 126) return std::nullopt;
-        i128 one = 1;
-        if (mm->groups.size() > 1 && mm->groups[1]) return std::pair<i128, i128>{0, (one << bits) - 1};
-        return std::pair<i128, i128>{-(one << (bits - 1)), (one << (bits - 1)) - 1};
+        const i128 one(1);
+        if (mm->groups.size() > 1 && mm->groups[1]) return std::pair<i128, i128>{i128(0), i128_sub(i128_shl(one, bits), one)};
+        return std::pair<i128, i128>{-i128_shl(one, bits - 1), i128_sub(i128_shl(one, bits - 1), one)};
     }
     return std::nullopt;
 }
@@ -232,11 +241,12 @@ std::optional<std::pair<std::string, Params>> find_signature(const std::string& 
 }
 
 std::string c_literal(i128 v, const std::string& typ) {
-    const i128 one = 1;
+    const i128 one(1);
+    const i128 i64_max = i128_sub(i128_shl(one, 63), one);
     std::string lit;
-    if (v == -(one << 63)) lit = "(-9223372036854775807LL - 1)";
-    else if (v < 0) lit = "(" + i128_str(v) + "LL)";
-    else if (v > (one << 63) - 1) lit = i128_str(v) + "ULL";
+    if (v == -i128_shl(one, 63)) lit = "(-9223372036854775807LL - 1)";
+    else if (v < i128(0)) lit = "(" + i128_str(v) + "LL)";
+    else if (v > i64_max) lit = i128_str(v) + "ULL";
     else lit = i128_str(v) + "LL";
     return "(" + norm_type(typ) + ")" + lit;
 }
@@ -421,11 +431,11 @@ Exec run_program(const Task& task, const fs::path& work, double timeout) {
 }
 
 std::vector<i128> edge_values(i128 lo, i128 hi) {
-    const i128 one = 1;
-    std::set<i128> cand = {lo,    lo + 1, -1000000, -46341, -1000,    -64,       -33,       -32,    -31,
-                           -2,    -1,     0,        1,      2,        3,         7,         8,      16,
-                           31,    32,     33,       63,     64,       255,       256,       1000,   46340,
-                           46341, 65535,  65536,    one << 30, hi - 1, hi};
+    const i128 one(1);
+    std::set<i128> cand = {lo,    lo + 1, i128(-1000000), i128(-46341), i128(-1000),    i128(-64),       i128(-33),       i128(-32),    i128(-31),
+                           i128(-2),    i128(-1),     i128(0),        i128(1),      i128(2),        i128(3),         i128(7),         i128(8),      i128(16),
+                           i128(31),    i128(32),     i128(33),       i128(63),     i128(64),       i128(255),       i128(256),       i128(1000),   i128(46340),
+                           i128(46341), i128(65535),  i128(65536),    i128_shl(one, 30), hi - 1, hi};
     std::vector<i128> out;
     for (i128 v : cand)
         if (lo <= v && v <= hi) out.push_back(v);
@@ -481,11 +491,12 @@ std::vector<std::pair<std::string, i128>> parse_cex(const std::string& cex) {
     // digits into a value modulo 2^128 (bit patterns wider than any C scalar
     // keep their low bits; every scalar range spans a power of two)
     auto digits = [](const std::string& s, unsigned base) {
-        unsigned __int128 v = 0;
+        u128 v = u128(0);
+        const u128 b(base);
         for (char c : s) {
             unsigned d = std::isdigit(static_cast<unsigned char>(c)) ? static_cast<unsigned>(c - '0')
                                                                      : static_cast<unsigned>(std::tolower(c) - 'a' + 10);
-            v = v * base + d;
+            v = v * b + u128(d);
         }
         return v;
     };
@@ -501,12 +512,12 @@ std::vector<std::pair<std::string, i128>> parse_cex(const std::string& cex) {
             neg = true;
             body = body.substr(1);
         }
-        unsigned __int128 u;
+        u128 u;
         if (body.rfind("#x", 0) == 0) u = digits(body.substr(2), 16);
         else if (body.rfind("#b", 0) == 0) u = digits(body.substr(2), 2);
         else if (body.size() > 1 && body[0] == '0' && (body[1] == 'x' || body[1] == 'X')) u = digits(body.substr(2), 16);
         else u = digits(body, 10);
-        i128 s = static_cast<i128>(u);
+        i128 s = prism::i128_from_u128(u);
         set(name, neg ? -s : s);
     }
     return vals;
