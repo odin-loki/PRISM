@@ -7,6 +7,8 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <cctype>
+#include <cstring>
 #include <regex>
 #include <string>
 #include <vector>
@@ -77,6 +79,20 @@ void check_contains_norm(const std::string& hay, const std::string& needle) {
     CHECK(hay.find(norm_ws(needle)) != std::string::npos);
 }
 
+bool lean_has_forbidden_token(const std::string& text) {
+    static const char* words[] = {"sorry", "admit", "native_decide", "bv_decide"};
+    for (const char* w : words) {
+        const std::size_t n = std::strlen(w);
+        for (std::size_t i = 0; (i = text.find(w, i)) != std::string::npos; ++i) {
+            const bool left = i == 0 || !(std::isalnum(static_cast<unsigned char>(text[i - 1])) || text[i - 1] == '_');
+            const bool right = i + n >= text.size() ||
+                               !(std::isalnum(static_cast<unsigned char>(text[i + n])) || text[i + n] == '_');
+            if (left && right) return true;
+        }
+    }
+    return false;
+}
+
 }  // namespace
 
 TEST_CASE("repolint: loop-cut Lean model theorems and audit") {
@@ -91,7 +107,7 @@ TEST_CASE("repolint: loop-cut Lean model theorems and audit") {
     }
     CHECK(slurp(repo() / "proofs" / "techniques" / "PrismTechniques.lean").find("import PrismTechniques.LoopCut") !=
           std::string::npos);
-    CHECK_FALSE(std::regex_search(stripped, std::regex("\\b(sorry|admit|native_decide|bv_decide)\\b")));
+    CHECK_FALSE(lean_has_forbidden_token(stripped));
     CHECK_FALSE(lean_has_axiom_decl(stripped));
     for (const char* ctor :
          {"| loop (L : Nat) (body : Prog S)", "| brk", "| cont", "| ret"}) {

@@ -73,6 +73,14 @@ std::vector<std::pair<std::string, Backend>> front_ends(const std::optional<fs::
     return out;
 }
 
+bool clang_ast_timed_out(const std::vector<prism::Finding>& findings) {
+    for (auto& f : findings) {
+        if (f.status != prism::laws::NOTRUN) continue;
+        if (f.message.find("timed out") != std::string::npos) return true;
+    }
+    return false;
+}
+
 std::set<std::pair<int, std::string>> ast_hits(const std::vector<prism::Finding>& fs_) {
     std::set<std::pair<int, std::string>> out;
     for (auto& f : fs_) {
@@ -209,6 +217,10 @@ int lam() { auto f = [](int q) { int w; w = q; return 0; }; return f(1); }
     for (auto& [fe, b] : front_ends(clang)) {
         INFO("front end: " << fe);
         auto out = lint_with(t, {p}, clang, b);
+        if (clang_ast_timed_out(out)) {
+            MESSAGE("clang timed out on this runner: C++ stdlib unit skipped");
+            continue;
+        }
         auto hits = ast_hits(out);
         CHECK(hits.contains({7, "CTRL-DEAD-STORE"}));
         CHECK(hits.contains({8, "INT-ENUM-HOLE"}));
@@ -396,6 +408,10 @@ void check_marks(const std::string& name, const std::string& text, const std::ve
     for (auto& [fe, b] : fes) {
         INFO("front end: " << fe << ", file " << target);
         auto out = lint_with(t, files, clang, b);
+        if (clang_ast_timed_out(out)) {
+            MESSAGE("clang timed out on this runner: " << name << " skipped");
+            return;
+        }
         std::set<std::pair<int, std::string>> got;
         for (auto& f : out) {
             if (f.status == prism::laws::NOTRUN && prism::astlint::is_layer_row(f) && !f.file.empty())

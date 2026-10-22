@@ -28,6 +28,16 @@
 
 namespace {
 
+#if !defined(PRISM_HAS_Z3)
+#define SKIP_IF_NO_Z3()                                                                        \
+    do {                                                                                       \
+        MESSAGE("PRISM_HAS_Z3: skip");                                                         \
+        return;                                                                                \
+    } while (0)
+#else
+#define SKIP_IF_NO_Z3()
+#endif
+
 namespace fs = std::filesystem;
 using Params = std::vector<std::pair<std::string, std::string>>;
 
@@ -161,6 +171,7 @@ TEST_CASE("cparse: a comment is whitespace, length-preserving") {
 }
 
 TEST_CASE("cparse: body_col survives a block comment (bmc nondet call-site column)") {
+    SKIP_IF_NO_Z3();
     std::string src = "int f(void) { /* c */ int x = __VERIFIER_nondet_int(); return 100 / x; }\n";
     auto fns = prism::extract_functions_from_text(src, "n.c");
     REQUIRE(fns.size() == 1);
@@ -203,6 +214,7 @@ TEST_CASE("cparse: digit separators are not character literals") {
     auto s = prism::strip_comments_keep_lines("int x = 1'000; /* } */ char c = '}';");
     CHECK(s == "int x = 1'000;         char c = '}';");
     // The bmc front end reads the separated number: 1'000 / n fails at n == 0.
+    SKIP_IF_NO_Z3();
     auto rows = prism::run_bmc({fns[1]}, 4);
     bool div0 = false;
     for (auto& r : rows) {
@@ -254,6 +266,7 @@ TEST_CASE("cparse: invalid UTF-8 is scrubbed, byte for byte") {
 // may model a body that holds one. Twin: the same function spelled with the
 // escape '\xE9' (valid text, same value) is still refuted by bmc.
 TEST_CASE("cparse: a scrubbed byte is never modelled (no wrong proof)") {
+    SKIP_IF_NO_Z3();
     const std::string raw = "int f(void) {\n    signed char c = '\xe9';\n    return 100 / (c + 23);\n}\n";
     auto p = scratch_file("latin1_div.c", raw);
     auto fns = prism::extract_functions(p, p.string());
@@ -651,6 +664,7 @@ TEST_CASE("inline: assignment, declaration-initialiser and void-helper forms") {
 }
 
 TEST_CASE("inline: an inlined caller is not an unconstrained proof") {
+    SKIP_IF_NO_Z3();
     auto p = repo_dir("testdata") / "inline_add.c";
     auto fns = prism::extract_functions(p, p.string());
     std::map<std::string, prism::Finding> recs;

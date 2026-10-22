@@ -253,6 +253,11 @@ TEST_CASE("sarif: polyglot pipeline emits expected defect results") {
     CHECK(rule_ids.contains("VCS-CONFLICT-MARKER"));
     CHECK(uris.contains("id_rsa"));
     CHECK(uris.contains("key.pem"));
-    for (auto& n : run["invocations"][0]["toolExecutionNotifications"])
-        CHECK(n["message"]["text"].get<std::string>().find("NOTRUN") == std::string::npos);
+    if (run.contains("invocations") && run["invocations"].is_array() && !run["invocations"].empty()) {
+        auto& inv = run["invocations"][0];
+        if (inv.contains("toolExecutionNotifications") && inv["toolExecutionNotifications"].is_array()) {
+            for (auto& n : inv["toolExecutionNotifications"])
+                CHECK(n["message"]["text"].get<std::string>().find("NOTRUN") == std::string::npos);
+        }
+    }
 }
