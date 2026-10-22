@@ -310,6 +310,12 @@ std::optional<fs::path> Config::which_adapter(std::string_view stage,
         auto p = expand_user(it->second);  // --tool klee=~/bin/klee
         std::error_code ec;
         if (fs::is_regular_file(p, ec) && !ec) return p;
+#ifdef _WIN32
+        if (!p.has_extension()) {
+            const auto pe = p.string() + ".exe";
+            if (fs::is_regular_file(pe, ec) && !ec) return fs::path(pe);
+        }
+#endif
         return std::nullopt;
     };
     if (auto hit = lookup(std::string(stage))) return hit;

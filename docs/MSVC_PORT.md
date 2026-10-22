@@ -167,7 +167,7 @@ shortcut. Keep **D** only for explicitly documented optional components, not cor
 | **5a** (done) | MSVC CI smoke | `windows-compile-smoke`: Ninja + `clang-cl`, `PRISM_Z3=OFF`, build `prism_core` + `prism` + `prism-qa` + portable `prism_tests` subset (phase 7). Shims: `utc_tm`, `set_env`, `NOMINMAX`, `wide_int` / `leanbb`, `solver/util.cpp` `windows.h` + `#undef ERROR`. |
 | **5b** (CI done) | Windows CI + Z3 | `windows-compile-smoke-z3`: Ninja + `clang-cl`, `PRISM_Z3=ON`, builds `prism_core` + `prism` + `prism-qa` + phase-7 `prism_tests` subset including `test_leanbb.cpp` (~44 min cold; cache `build-win-z3`; needs `z3gen_shim.bat`). Remaining: native `cl` without clang-cl. |
 | **6** (partial) | QA on Windows | `yaml_subset` + `task` + `pyrandom` on `prism::i128` (done); `prism-qa` in `windows-compile-smoke`; conformance tree stays `if(UNIX)` |
-| **7** (done) | Windows `prism_tests` subset | `PRISM_TESTS_WIN_SUBSET`: `test_main_win.cpp` plus portable doctest TUs (stages, lint, PIR, AI, CLI/pipeline, `test_adapters`; see `CMakeLists.txt`); `test_leanbb` and `test_pir_budget` when `PRISM_HAS_Z3`). `test_cli` / `test_pipeline` omit POSIX-only cases (`#ifndef _WIN32`); `test_conc` skips without Z3. `test_pir_e2e` stays off the subset. CI runs `prism_tests.exe` in both Windows smoke jobs. Verified full PRISM CI on `bca9ffffc` (incl. Z3 smoke + tests). |
+| **7** (done) | Windows `prism_tests` subset | `PRISM_TESTS_WIN_SUBSET`: `test_main_win.cpp` plus portable doctest TUs (see `CMakeLists.txt`); `test_leanbb` / `test_pir_budget` when `PRISM_HAS_Z3`. `test_cli` / `test_pipeline` omit POSIX-only cases; `test_conc` skips without Z3; `test_pir_e2e` excluded. `test_adapters.cpp` has WIN32 helpers in-tree (`fake_tool_launcher`, `_putenv_s` `EnvVar`) but is **not** in the subset until `.cmd` fakes pass optional-tool probes on CI. CI runs `prism_tests.exe` in both Windows smoke jobs. |
 
 **Dependency order:** 2 → 3 (public API) → 4 (largest volume) → 5 → 6 → 7 (subset) → 5b (Z3 + full tests).
 
@@ -218,7 +218,7 @@ String-only BMC/astlint files: **0** type migration expected.
   `test_thread_taint`, `test_wp_harness`, `test_concrete`, `test_concolic`,
   `test_lint_corpus`, `test_pir_mem`, `test_ai_assist`, `test_pbsd`, `test_pir3`,
   `test_pir_refinement`, `test_cli`, `test_pipeline`, `test_ai9`, `test_conc`,
-  `test_cxx_models`, `test_fuse`, `test_gui_model`, `test_adapters`, `test_repair`;
+  `test_cxx_models`, `test_fuse`, `test_gui_model`, `test_repair`;
   `test_leanbb` and `test_pir_budget` when `PRISM_HAS_Z3`); `test_pipeline` chmod/LTL case is
   POSIX-only; `test_cli` binary integration is POSIX-only. `test_pir_e2e` is still excluded.
   The monolithic `test_main.cpp` stays off WIN32 builds.
@@ -241,12 +241,11 @@ String-only BMC/astlint files: **0** type migration expected.
   APIs. `test_diff` keeps POSIX PATH-mutation cases behind `#ifndef _WIN32`.
   `test_wp_harness` BMC/harness rows are behind `PRISM_HAS_Z3` (Z3-off smoke);
   `test_havoc` uses an MSVC-safe block-comment regex. Remaining doctest TUs still
-  need Unix APIs (`unistd.h`, `fork`, sockets): e.g. `test_main.cpp`, `test_sanitize.cpp`,
-  `test_qa.cpp`, `test_repair.cpp` (HTTP fake server), `test_cli.cpp` (binary integration),
-  `test_qa_conformance.cpp`, and others. `test_adapters.cpp` runs on WIN32 with `.cmd` fakes
-  (`fake_tool_launcher.exe` + sibling script), `_putenv_s` `EnvVar`, and POSIX-only cases
-  (process runner, `FakeLlama` sockets, `fake_cc` / parallel compiler jobs, cocci `chdir` to
-  `/`, compiler symlink dedupe) behind `#ifndef _WIN32`. The monolithic
+  need Unix APIs (`unistd.h`, `fork`, sockets): e.g. `test_main.cpp`, `test_adapters.cpp`
+  (fake-tool optional probes; subset pending), `test_sanitize.cpp`, `test_qa.cpp`,
+  `test_qa_conformance.cpp`, and others. `test_cli` parser tests run on WIN32; binary
+  integration is POSIX-only. `Config::which_adapter` on WIN32 accepts `--tool` paths without
+  `.exe` when `tool.exe` exists (parity with `SearchPath`). The monolithic
   `test_main.cpp` is not linked on WIN32. Conformance QA remains behind `if(UNIX)` in
   `CMakeLists.txt`. Next step: port or gate more unistd-heavy TUs; link `test_main.cpp` on
   WIN32 last.
