@@ -21,6 +21,9 @@
 #    define NOMINMAX
 #  endif
 #  include <windows.h>
+#  ifdef ERROR
+#    undef ERROR
+#  endif
 #endif
 
 #ifndef _WIN32
