@@ -621,6 +621,8 @@ if(PRISM_TESTS)
     tests/cpp/test_concrete.cpp
     # Interval stage (src/prism/interval.cpp).
     tests/cpp/test_interval.cpp
+    # MSVC portability: portable 128-bit integers (include/prism/wide_int.hpp).
+    tests/cpp/test_wide_int.cpp
     # Sanitize stage (src/prism/adapters.cpp run_sanitize).
     tests/cpp/test_sanitize.cpp
     # External tool adapters, AFL, the process runner and tool lookup.
