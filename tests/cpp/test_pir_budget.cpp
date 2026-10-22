@@ -67,10 +67,14 @@ bool contains(const std::string& s, const std::string& what) { return s.find(wha
 // Simulated slow queries (debug_before_query + sleep) assume plain Z3 answers
 // within the function budget after the delay. Under ASan/UBSan, setup and
 // solver work eat the budget first, so BOUNDED-after-spent becomes TIMEOUT.
-#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_UNDEFINED__) ||   \
-    (defined(__has_feature) && (__has_feature(address_sanitizer) ||      \
-                                __has_feature(undefined_behavior_sanitizer)))
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_UNDEFINED__)
 constexpr bool k_pir_budget_simulated_delays_ok = false;
+#elif defined(__has_feature)
+#  if __has_feature(address_sanitizer) || __has_feature(undefined_behavior_sanitizer)
+constexpr bool k_pir_budget_simulated_delays_ok = false;
+#  else
+constexpr bool k_pir_budget_simulated_delays_ok = true;
+#  endif
 #else
 constexpr bool k_pir_budget_simulated_delays_ok = true;
 #endif

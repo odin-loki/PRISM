@@ -140,71 +140,90 @@ std::string fake_tool_stem(const std::string& name) {
 }
 
 // Best-effort sh -> cmd for the adapter doctest bodies (not a general translator).
+void sh_to_cmd_one_line(std::string line, std::string& out);
+
 std::string sh_to_cmd_body(std::string sh) {
     std::string out;
     std::istringstream in(sh);
     for (std::string line; std::getline(in, line);) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
-        if (line == "true" || line == ":") {
-            out += "exit /b 0\n";
-            continue;
+        for (std::size_t start = 0; start < line.size();) {
+            const auto semi = line.find(';', start);
+            const auto piece = line.substr(start, semi == std::string::npos ? std::string::npos : semi - start);
+            start = semi == std::string::npos ? line.size() : semi + 1;
+            std::string trimmed = piece;
+            while (!trimmed.empty() && (trimmed.front() == ' ' || trimmed.front() == '\t')) trimmed.erase(0, 1);
+            while (!trimmed.empty() && (trimmed.back() == ' ' || trimmed.back() == '\t')) trimmed.pop_back();
+            if (trimmed.empty()) continue;
+            sh_to_cmd_one_line(std::move(trimmed), out);
         }
-        if (line.rfind("exit ", 0) == 0) {
-            out += "exit /b " + line.substr(5) + "\n";
-            continue;
-        }
-        if (line.rfind("sleep ", 0) == 0) {
-            const auto sec = line.substr(6);
-            out += "timeout /t " + sec + " /nobreak >nul\n";
-            continue;
-        }
-        if (line.find(">&2") != std::string::npos) {
-            auto l = line;
-            for (std::size_t p = 0; (p = l.find(">&2", p)) != std::string::npos;) {
-                l.replace(p, 4, " 1>&2");
-                p += 5;
-            }
-            out += l + "\n";
-            continue;
-        }
-        if (line.find("printf ") != std::string::npos) {
-            // printf 'text\n' or printf '%s\n' "$1"
-            if (line.find("printf '%s\\n'") != std::string::npos ||
-                line.find("printf \"%s\\n\"") != std::string::npos) {
-                out += "echo %1\n";
-                continue;
-            }
-            auto q1 = line.find('\'');
-            auto q2 = line.rfind('\'');
-            if (q1 != std::string::npos && q2 > q1) {
-                out += "echo " + line.substr(q1 + 1, q2 - q1 - 1) + "\n";
-                continue;
-            }
-        }
-        if (line.find("echo ") == 0) {
-            auto l = line;
-            for (std::size_t p = 0; (p = l.find("\"$@\"", p)) != std::string::npos;)
-                l.replace(p, 4, "%*");
-            for (std::size_t p = 0; (p = l.find("$@", p)) != std::string::npos;) l.replace(p, 2, "%*");
-            for (std::size_t p = 0; (p = l.find("$1", p)) != std::string::npos;) l.replace(p, 2, "%1");
-            for (std::size_t p = 0; (p = l.find("$2", p)) != std::string::npos;) l.replace(p, 2, "%2");
-            for (std::size_t p = 0; (p = l.find("$f", p)) != std::string::npos;) l.replace(p, 2, "%f");
-            for (std::size_t p = 0; (p = l.find("$PWD", p)) != std::string::npos;) l.replace(p, 4, "%CD%");
-            for (std::size_t p = 0; (p = l.find("$out", p)) != std::string::npos;) l.replace(p, 4, "%out%");
-            out += l + "\n";
-            continue;
-        }
-        if (line.find("mkdir -p ") == 0) {
-            out += "if not exist \"" + line.substr(9) + "\" mkdir \"" + line.substr(9) + "\"\n";
-            continue;
-        }
-        if (line.find("pwd >") != std::string::npos) {
-            out += "cd >" + line.substr(line.find('>') + 1) + "\n";
-            continue;
-        }
-        out += line + "\n";
     }
     return out;
+}
+
+void sh_to_cmd_one_line(std::string line, std::string& out) {
+    if (line == "true" || line == ":") {
+        out += "exit /b 0\n";
+        return;
+    }
+    if (line.rfind("exit ", 0) == 0) {
+        out += "exit /b " + line.substr(5) + "\n";
+        return;
+    }
+    if (line.rfind("sleep ", 0) == 0) {
+        const auto sec = line.substr(6);
+        out += "timeout /t " + sec + " /nobreak >nul\n";
+        return;
+    }
+    if (line.find(">&2") != std::string::npos) {
+        auto l = line;
+        for (std::size_t p = 0; (p = l.find(">&2", p)) != std::string::npos;) {
+            l.replace(p, 4, " 1>&2");
+            p += 5;
+        }
+        out += l + "\n";
+        return;
+    }
+    if (line.find("printf ") != std::string::npos) {
+        if (line.find("printf '%s\\n'") != std::string::npos || line.find("printf \"%s\\n\"") != std::string::npos) {
+            out += "echo %1\n";
+            return;
+        }
+        const auto q1 = line.find('\'');
+        const auto q2 = line.rfind('\'');
+        if (q1 != std::string::npos && q2 > q1) {
+            out += "echo " + line.substr(q1 + 1, q2 - q1 - 1) + "\n";
+            return;
+        }
+    }
+    if (line.find("echo ") == 0) {
+        auto l = line;
+        if (l.size() > 6 && l[5] == '\'') {
+            const auto q2 = l.rfind('\'');
+            if (q2 > 6) {
+                out += "echo " + l.substr(6, q2 - 6) + "\n";
+                return;
+            }
+        }
+        for (std::size_t p = 0; (p = l.find("\"$@\"", p)) != std::string::npos;) l.replace(p, 4, "%*");
+        for (std::size_t p = 0; (p = l.find("$@", p)) != std::string::npos;) l.replace(p, 2, "%*");
+        for (std::size_t p = 0; (p = l.find("$1", p)) != std::string::npos;) l.replace(p, 2, "%1");
+        for (std::size_t p = 0; (p = l.find("$2", p)) != std::string::npos;) l.replace(p, 2, "%2");
+        for (std::size_t p = 0; (p = l.find("$f", p)) != std::string::npos;) l.replace(p, 2, "%f");
+        for (std::size_t p = 0; (p = l.find("$PWD", p)) != std::string::npos;) l.replace(p, 4, "%CD%");
+        for (std::size_t p = 0; (p = l.find("$out", p)) != std::string::npos;) l.replace(p, 4, "%out%");
+        out += l + "\n";
+        return;
+    }
+    if (line.find("mkdir -p ") == 0) {
+        out += "if not exist \"" + line.substr(9) + "\" mkdir \"" + line.substr(9) + "\"\n";
+        return;
+    }
+    if (line.find("pwd >") != std::string::npos) {
+        out += "cd >" + line.substr(line.find('>') + 1) + "\n";
+        return;
+    }
+    out += line + "\n";
 }
 
 fs::path fake(const fs::path& dir, const std::string& name, const std::string& body) {
