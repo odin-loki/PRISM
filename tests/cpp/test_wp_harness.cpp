@@ -180,6 +180,7 @@ TEST_CASE("wp and contracts: `return(expr);` is checked, not skipped") {
                         "rq");
     REQUIRE(bad.kind == "SCALAR");
     REQUIRE(good.kind == "SCALAR");
+#ifdef PRISM_HAS_Z3
     for (auto& r : prism::run_wp({bad}, 8)) {
         INFO("wp " << r.status << ": " << r.message);
         CHECK(r.status == prism::laws::FAILED);
@@ -189,12 +190,15 @@ TEST_CASE("wp and contracts: `return(expr);` is checked, not skipped") {
         INFO("contracts " << r.status << ": " << r.message);
         CHECK(r.status == prism::laws::FAILED);
     }
+#endif
     auto w = prism::run_wp({good}, 8);
     REQUIRE(w.size() == 1);
     CHECK(w[0].status == prism::laws::PROVED_ASSUMING);
+#ifdef PRISM_HAS_Z3
     auto c = prism::prove_contracts({good}, 8);
     REQUIRE(c.size() == 1);
     CHECK(c[0].status == prism::laws::PROVED_ASSUMING);
+#endif
 }
 
 TEST_CASE("contracts: an empty return in a value-returning function is ERROR, not a proof") {
@@ -208,6 +212,7 @@ TEST_CASE("contracts: an empty return in a value-returning function is ERROR, no
     INFO(recs[0].status << ": " << recs[0].message);
     CHECK(recs[0].status == prism::laws::ERROR);
     CHECK(extra_or(recs[0], "empty_return") == "true");
+#ifdef PRISM_HAS_Z3
     // The same function without the bare return is proved under requires.
     auto twin = fn_from("contract_empty_return_twin.c",
                         "int cf(int x) {\n    // requires: x < 100\n    // ensures: result == x+1\n"
@@ -216,6 +221,7 @@ TEST_CASE("contracts: an empty return in a value-returning function is ERROR, no
     auto t = prism::prove_contracts({twin}, 8);
     REQUIRE(t.size() == 1);
     CHECK(t[0].status == prism::laws::PROVED_ASSUMING);
+#endif
 }
 
 TEST_CASE("wp: VOID and OTHER functions with ensures are NEEDS-HARNESS") {
