@@ -28,7 +28,11 @@ extern char** environ;
 #endif
 
 #ifdef _WIN32
-// proc.hpp pulls in windows.h; ERROR is a Win32 macro, not laws::ERROR.
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
+#  include <windows.h>
+// Win32 macro ERROR collides with laws::ERROR in verdict_status().
 #  ifdef ERROR
 #    undef ERROR
 #  endif
