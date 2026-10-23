@@ -172,7 +172,9 @@ void sh_to_cmd_one_line(std::string line, std::string& out) {
     }
     if (line.rfind("sleep ", 0) == 0) {
         const auto sec = line.substr(6);
-        out += "timeout /t " + sec + " /nobreak >nul\n";
+        // timeout /t often returns immediately when stdin is not a console (CI).
+        const int n = std::max(2, std::stoi(sec) + 1);
+        out += "ping -n " + std::to_string(n) + " 127.0.0.1 >nul\n";
         return;
     }
     if (line.find(">&2") != std::string::npos) {
@@ -833,12 +835,20 @@ TEST_CASE("optional tools: a binary that does not answer --help is NOTRUN, never
 #else
     cfg.tools["klee"] = nt.t.put("t/klee", "#!/bin/sh\nexit 0\n");
 #endif
+#ifdef _WIN32
+    cfg.tools["infer"] = fake_cmd(nt.t.dir / "t", "infer", "exit /b 3\r\n");
+    cfg.tools["semgrep"] = fake_cmd(nt.t.dir / "t", "semgrep", "ping -n 31 127.0.0.1 >nul\r\nexit /b 0\r\n");
+    cfg.tools["frama-c"] = fake_cmd(nt.t.dir / "t", "frama-c",
+                                     "echo sh: 1: frama-c: not found 1>&2\r\nexit /b 127\r\n");
+    cfg.tools["cbmc"] = fake_cmd(nt.t.dir / "t", "cbmc", "echo Catch2 v3.5.0\r\nexit /b 0\r\n");
+#else
     cfg.tools["infer"] = fake(nt.t.dir / "t", "infer", "exit 3");  // silent, rc 3
     cfg.tools["semgrep"] = fake(nt.t.dir / "t", "semgrep", "sleep 30");  // every flag times out
     cfg.tools["frama-c"] = fake(nt.t.dir / "t", "frama-c",
                                 "echo 'sh: 1: /opt/Code Analysis/.prism/tools/frama-c/bin/frama-c: not found' >&2; "
                                 "exit 127");
     cfg.tools["cbmc"] = fake(nt.t.dir / "t", "cbmc", "echo 'Catch2 v3.5.0'; exit 0");
+#endif
     const auto t0 = std::chrono::steady_clock::now();
     auto out = prism::run_optional_tools({}, cfg);
     CHECK(std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() < 20);
@@ -855,7 +865,11 @@ TEST_CASE("optional tools: a binary that does not answer --help is NOTRUN, never
         CHECK(xget(f, "install") == prism::adapter_install(stage));
     }
     // Catch2 answering --help as Frama-C is not Frama-C.
+#ifdef _WIN32
+    cfg.tools["frama-c"] = fake_cmd(nt.t.dir / "t", "frama-c", "echo Catch2 v3.5.0\r\nexit /b 0\r\n");
+#else
     cfg.tools["frama-c"] = fake(nt.t.dir / "t", "frama-c", "echo 'Catch2 v3.5.0'; exit 0");
+#endif
     auto frama = stage_row(prism::run_optional_tools({}, cfg), "frama-c");
     CHECK(frama.status == laws::NOTRUN);
     CHECK(has(frama.message, "did not answer --help"));
@@ -886,8 +900,13 @@ TEST_CASE("cbmc: never passes a check-disabling flag; a fake cbmc is NOTRUN") {
     CHECK_NOTHROW(ad::refuse_disabled_checks({"cbmc", "a.c", "--bounds-check"}));
     NoTools nt;
     auto args = nt.t.dir / "argv.txt";
+#ifdef _WIN32
+    auto cbmc = fake_cmd(nt.t.dir / "t", "cbmc", "echo %*>>\"" + args.string() + "\"\r\n"
+                                              "echo VERIFICATION SUCCESSFUL\r\nexit /b 0\r\n");
+#else
     auto cbmc = fake(nt.t.dir / "t", "cbmc", "echo \"$@\" >> '" + args.string() +
                                                  "'\necho 'VERIFICATION SUCCESSFUL'");
+#endif
     auto paths = std::vector<fs::path>{testdata() / "abs_ok.c"};
     auto out = ad::run_cbmc(cbmc.string(), paths, nt.cfg);
     REQUIRE(out.size() == 1);
