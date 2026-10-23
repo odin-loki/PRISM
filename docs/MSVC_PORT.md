@@ -171,7 +171,7 @@ shortcut. Keep **D** only for explicitly documented optional components, not cor
 | **5b** (CI done) | Windows CI + Z3 | `windows-compile-smoke-z3`: Ninja + `clang-cl`, `PRISM_Z3=ON`, builds `prism_core` + `prism` + `prism-qa` + phase-7 `prism_tests` subset including `test_leanbb.cpp` (~44 min cold; cache `build-win-z3`; needs `z3gen_shim.bat`). |
 | **5c** (CI done) | Native MSVC `cl` | `windows-compile-smoke-cl`: Ninja + `cl` (not `clang-cl`), `PRISM_Z3=OFF`, same targets/subset as 5a. `stages/interp.cpp` uses `prism::i128` / manual checks instead of `__builtin_*_overflow` (clang-cl only). Configure with default `CMAKE_BUILD_TYPE=Release` (Debug + `prism_core` `/O2` hits cl D8016 vs `/RTC1`). |
 | **6** (partial) | QA on Windows | `yaml_subset` + `task` + `pyrandom` on `prism::i128` (done); `prism-qa` in `windows-compile-smoke`; conformance tree stays `if(UNIX)` |
-| **7** (done) | Windows `prism_tests` subset | `PRISM_TESTS_WIN_SUBSET` in `CMakeLists.txt` (inventory: [§6](#6-acceptance-criteria)). Static splits: `test_adapters_static.cpp`, `test_sanitize_static.cpp`, `test_qa_static.cpp` (full `test_adapters` pending cmd fake parity). `test_cli` / `test_pipeline` omit POSIX-only cases; `test_conc` skips without Z3. `test_pir_e2e` skips the full `tests/pir` table on `_WIN32` (MESSAGE). All three Windows smoke jobs (5a / 5b / 5c) build and run `prism_tests.exe`. |
+| **7** (done) | Windows `prism_tests` subset | `PRISM_TESTS_WIN_SUBSET` in `CMakeLists.txt` (inventory: [§6](#6-acceptance-criteria)). WIN adapters: full `test_adapters.cpp` + `fake_tool_launcher`. Static splits: `test_sanitize_static.cpp`, `test_qa_static.cpp`. `test_cli` / `test_pipeline` omit POSIX-only cases; `test_conc` skips without Z3. `test_pir_e2e` skips the full `tests/pir` table on `_WIN32` (MESSAGE). All three Windows smoke jobs (5a / 5b / 5c) build and run `prism_tests.exe`. |
 
 **Dependency order:** 2 → 3 (public API) → 4 (largest volume) → 5 → 6 → 7 (subset) → 5b (Z3 + full tests).
 
@@ -219,8 +219,8 @@ Remaining epic work is listed in [§7](#7-remaining-work-backlog).
   | Kind | Sources |
   |------|---------|
   | Doctest main | `tests/cpp/test_main_win.cpp` (not `test_main.cpp`) |
-  | Adapter fakes on WIN32 | Subset links `test_adapters_static.cpp`; full `test_adapters.cpp` + `fake_tool_launcher` blocked on richer `sh_to_cmd` (semicolon/`case` bodies; see `12a32926e` CI). |
-| Static splits (remaining monolithic TUs) | `test_adapters_static.cpp`, `test_sanitize_static.cpp`, `test_qa_static.cpp` |
+  | Adapter fakes on WIN32 | Full `test_adapters.cpp` + `fake_tool_launcher`; `fake_cmd` / `help_then_cmd` for native `.cmd` bodies; `sh_to_cmd` for simple shell lines |
+| Static splits (remaining monolithic TUs) | `test_sanitize_static.cpp`, `test_qa_static.cpp` (`test_adapters_static.cpp` reference only) |
   | Portable doctest TUs | `test_wide_int`, `test_interval`, `test_svcomp`, `test_naming`, `test_polyglot`, `test_taxonomy`, `test_repolint`, `test_deps`, `test_cparse`, `test_sarif`, `test_astlint`, `test_ltl`, `test_contracts`, `test_bmc`, `test_checkers_cxx`, `test_checkers_c`, `test_gen_tables`, `test_bmc_svcomp`, `test_havoc`, `test_verdict_repo`, `test_diff`, `test_journal_confidence`, `test_thread_taint`, `test_wp_harness`, `test_concrete`, `test_concolic`, `test_lint_corpus`, `test_pir_mem`, `test_ai_assist`, `test_pbsd`, `test_pir3`, `test_pir_refinement`, `test_cli`, `test_pipeline`, `test_ai9`, `test_conc`, `test_cxx_models`, `test_fuse`, `test_gui_model`, `test_repair`, `test_pir_e2e` |
   | When `PRISM_HAS_Z3` | `test_leanbb`, `test_pir_budget`, `test_certified` |
 
