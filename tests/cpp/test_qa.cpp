@@ -1,6 +1,10 @@
 // prism-qa (src/tools/qa) and the session runner it uses
 // (src/prism/proc_session.cpp). Part of prism_tests.
-// Portable QA helpers (no fork/session): tests/cpp/test_qa_static.cpp.
+// Also built on WIN32 (PRISM_TESTS_WIN_SUBSET): sibling() finds the tools as
+// .exe, run_session is checked with tests/cpp/fake_session_probe.cpp
+// (PRISM_FAKE_SESSION_PROBE) instead of sh, and the fork / session-kill cases
+// are POSIX-only. tests/cpp/test_qa_static.cpp is the older pure-logic subset
+// of these cases (not built together with this file).
 //
 // A tool that needs something this machine lacks (the Lean checkers built by
 // lake, lli) says NOTRUN in a doctest MESSAGE and checks what it can without
@@ -26,12 +30,25 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <random>
 #include <regex>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
 
-#ifndef _WIN32
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#ifdef ERROR
+#  undef ERROR  // wingdi.h; prism::laws::ERROR is a status name
+#endif
+#else
 #include <csignal>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -44,10 +61,33 @@ namespace {
 fs::path repo() { return prism::qa::repo_root(); }
 
 // The binaries CMake builds next to prism_tests (add_dependencies).
+#ifdef _WIN32
+// Tool names are given without the suffix ("prism-qa"); the file is prism-qa.exe.
+fs::path sibling(const char* name) {
+    std::wstring buf(MAX_PATH, L'\0');
+    for (;;) {
+        const DWORD n = GetModuleFileNameW(nullptr, buf.data(), static_cast<DWORD>(buf.size()));
+        if (n == 0) return fs::path(std::string(name) + ".exe");
+        if (n < buf.size()) {
+            buf.resize(n);
+            break;
+        }
+        buf.resize(buf.size() * 2);  // truncated: the path is longer than the buffer
+    }
+    return fs::path(buf).parent_path() / (std::string(name) + ".exe");
+}
+#else
 fs::path sibling(const char* name) {
     std::error_code ec;
     auto exe = fs::read_symlink("/proc/self/exe", ec);
     return ec ? fs::path(name) : exe.parent_path() / name;
+}
+#endif
+
+// A child's text output with CRLF folded to LF (the WIN probe prints in text mode).
+std::string lf(std::string s) {
+    s.erase(std::remove(s.begin(), s.end(), '\r'), s.end());
+    return s;
 }
 
 struct Tmp {
@@ -197,7 +237,83 @@ TEST_CASE("run_session: a SIGTERM to the runner kills the session it started") {
     CHECK(WTERMSIG(st) == SIGTERM);
     CHECK(gone(solver));
 }
+#endif  // !_WIN32: fork / session kill tests stay POSIX-only
 
+#ifdef _WIN32
+// WIN: no sh. tests/cpp/fake_session_probe.cpp has one mode per behaviour
+// (echo-out, echo-err, exit N, echo-env VAR, echo-cwd, copy-stdin); each
+// POSIX `sh -c` line below becomes the probe modes that check the same thing.
+#ifndef PRISM_FAKE_SESSION_PROBE
+#define PRISM_FAKE_SESSION_PROBE ""
+#endif
+TEST_CASE("run_session: normal exit returns stdout, stderr, the exit code, env, cwd and stdin") {
+    const std::string probe = PRISM_FAKE_SESSION_PROBE;
+    REQUIRE_MESSAGE(!probe.empty(), "PRISM_FAKE_SESSION_PROBE not defined (CMake: fake_session_probe)");
+    REQUIRE(fs::exists(probe));
+    auto run = [&](std::vector<std::string> args, const prism::detail::SessionOptions& so = {}) {
+        args.insert(args.begin(), probe);
+        return prism::detail::run_session(args, so);
+    };
+
+    // stdout, stderr and the exit code come back separately
+    auto o = run({"echo-out"});
+    CHECK_FALSE(o.timed_out);
+    CHECK_FALSE(o.failed);
+    CHECK(o.rc == 0);
+    CHECK(lf(o.out) == "probe-out\n");
+    CHECK(o.err.empty());
+    auto er = run({"echo-err"});
+    CHECK_FALSE(er.failed);
+    CHECK(er.rc == 0);
+    CHECK(er.out.empty());
+    CHECK(lf(er.err) == "probe-err\n");
+    auto x = run({"exit", "3"});
+    CHECK_FALSE(x.timed_out);
+    CHECK_FALSE(x.failed);
+    CHECK(x.rc == 3);
+
+    Tmp t("prism_qa_sess_");
+    // the env overlay reaches the child (and only the child) ...
+    prism::detail::SessionOptions so;
+    so.env = {{"PRISM_QA_PROBE", "v1"}};
+    auto ev = run({"echo-env", "PRISM_QA_PROBE"}, so);
+    CHECK(ev.rc == 0);
+    CHECK(lf(ev.out) == "v1\n");
+    CHECK(std::getenv("PRISM_QA_PROBE") == nullptr);
+    CHECK(run({"echo-env", "PRISM_QA_PROBE"}).rc == 3);  // unset without the overlay: the probe says 3
+    // ... the working directory is the one asked for ...
+    prism::detail::SessionOptions in_dir;
+    in_dir.cwd = t.path;
+    auto cw = run({"echo-cwd"}, in_dir);
+    CHECK(cw.rc == 0);
+    auto cl = lines_of(lf(cw.out));
+    REQUIRE(cl.size() == 1);
+    CHECK(fs::equivalent(cl[0], t.path));
+    // ... and stdin is the given input, byte for byte
+    prism::detail::SessionOptions with_in;
+    const std::string input = "line1\nline2\n";
+    with_in.input = input;
+    with_in.timeout_s = 30;
+    auto ci = run({"copy-stdin"}, with_in);
+    CHECK(ci.rc == 0);
+    CHECK_FALSE(ci.timed_out);
+    CHECK(ci.out == input);
+
+    // no input: stdin is empty (EOF), so copy-stdin ends at once
+    prism::detail::SessionOptions bounded;
+    bounded.timeout_s = 30;
+    auto n = run({"copy-stdin"}, bounded);
+    CHECK_FALSE(n.timed_out);
+    CHECK(n.rc == 0);
+    CHECK(n.out.empty());
+
+    // a missing program is 127
+    CHECK(prism::detail::run_session({"/nonexistent/prism-qa-probe"}).rc == 127);
+    // no POSIX signals or process groups here: "kill -9 $$" (rc -9) and a
+    // background grandchild dying with its session are not checked on WIN
+    MESSAGE("NOTRUN on WIN: kill -9 exit status and background grandchild cleanup (POSIX sessions only)");
+}
+#else
 TEST_CASE("run_session: normal exit returns stdout, stderr, the exit code, env, cwd and stdin") {
     auto r = prism::detail::run_session({"sh", "-c", "echo ok; echo err >&2; exit 3"});
     CHECK_FALSE(r.timed_out);
@@ -233,7 +349,9 @@ TEST_CASE("run_session: normal exit returns stdout, stderr, the exit code, env, 
     REQUIRE(gc > 1);
     CHECK(gone(gc));
 }
+#endif  // _WIN32 probe / POSIX sh
 
+#ifndef _WIN32
 TEST_CASE("run_session: RLIMIT_AS applies to the child") {
     prism::detail::SessionOptions so;
     so.rlimit_as_mb = 64;
@@ -277,18 +395,16 @@ TEST_CASE("triage-selfscan buckets the self-scan fixture") {
     CHECK(s.out_of_scope == 1);
 }
 
-#ifndef _WIN32
 TEST_CASE("prism-qa triage-selfscan prints the same lines") {
     auto r = prism::detail::run_session(
         {sibling("prism-qa").string(), "triage-selfscan", (repo() / "tests" / "data" / "selfscan_min").string()});
     REQUIRE(r.rc == 0);
-    CHECK(has_line(r.out, "total FAILED: 4"));
-    CHECK(has_line(r.out, "summary: 1 / 3 / 1"));
+    CHECK(has_line(lf(r.out), "total FAILED: 4"));
+    CHECK(has_line(lf(r.out), "summary: 1 / 3 / 1"));
     auto bad = prism::detail::run_session({sibling("prism-qa").string(), "triage-selfscan", "/nonexistent"});
     CHECK(bad.rc == 2);
     CHECK(prism::detail::run_session({sibling("prism-qa").string(), "no-such-command"}).rc == 2);
 }
-#endif
 
 // ---------------------------------------------------------------- pir-vs-bmc
 TEST_CASE("pir-vs-bmc buckets, matrix and hard conflicts") {
@@ -371,7 +487,7 @@ TEST_CASE("pir-lean-check parses the checker's rows and prints the total line") 
 }
 
 namespace {
-std::optional<fs::path> built_checker() {
+[[maybe_unused]] std::optional<fs::path> built_checker() {
     // the checker lake builds; not built here (no Lean toolchain): NOTRUN
     auto exe = repo() / "proofs" / "refinement" / ".lake" / "build" / "bin" / "pir_lean_check";
     std::error_code ec;
@@ -660,7 +776,6 @@ TEST_CASE("assurance-check catches missing artefacts") {
     CHECK_FALSE(prism::qa::is_path_ref("prism PATH"));
     CHECK_FALSE(prism::qa::is_path_ref("build/prism"));
 
-#ifndef _WIN32
     // the standalone checker (the docs CI job) agrees: exit 0 on the package, 1 here
     auto ok = prism::detail::run_session({sibling("prism_docs_check").string(), "assurance-check", "--repo",
                                           repo().string()});
@@ -673,7 +788,6 @@ TEST_CASE("assurance-check catches missing artefacts") {
     auto missing = prism::detail::run_session({sibling("prism_docs_check").string(), "assurance-check", "--docs",
                                                (t.path / "nope").string()});
     CHECK(missing.rc == 2);
-#endif
 }
 
 // ---------------------------------------------------------------- docs-check
@@ -698,7 +812,6 @@ TEST_CASE("docs: the flag parser ignores prose") {
     CHECK_FALSE(prism::qa::documented("--jobs", "use --jobs N here"));
 }
 
-#ifndef _WIN32
 TEST_CASE("docs: every --help flag of prism and prism prove is in docs/USER_GUIDE.md") {
     const auto guide = prism::qa::read_text(repo() / "docs" / "USER_GUIDE.md");
     for (const auto& sub : std::vector<std::vector<std::string>>{{"--help"}, {"prove", "--help"}}) {
@@ -713,7 +826,6 @@ TEST_CASE("docs: every --help flag of prism and prism prove is in docs/USER_GUID
         CHECK_MESSAGE(missing.empty(), joined);
     }
 }
-#endif
 
 TEST_CASE("docs: the user guide lists the stage order") {
     const auto guide = prism::qa::read_text(repo() / "docs" / "USER_GUIDE.md");
@@ -743,10 +855,8 @@ TEST_CASE("docs: every verdict has the VERDICTS.md anchor reports link to") {
     }
 }
 
-#ifndef _WIN32
 TEST_CASE("prism-qa docs-check passes on this repository") {
     auto r = prism::detail::run_session({sibling("prism-qa").string(), "docs-check", "--bin", sibling("prism").string()});
     CHECK_MESSAGE(r.rc == 0, (r.out + r.err));
-    CHECK(has_line(r.out, "docs-check: 0 problems"));
+    CHECK(has_line(lf(r.out), "docs-check: 0 problems"));
 }
-#endif

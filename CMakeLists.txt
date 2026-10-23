@@ -642,7 +642,11 @@ if(PRISM_TESTS)
       tests/cpp/test_repair.cpp
       tests/cpp/test_adapters.cpp
       tests/cpp/test_sanitize.cpp
-      tests/cpp/test_qa_static.cpp
+      # test_qa.cpp holds every case test_qa_static.cpp has (checked: same 13
+      # TEST_CASEs) plus the prism-qa / run_session subprocess ones; its fork /
+      # session-kill cases are #ifndef _WIN32. test_qa_static.cpp is not built
+      # here (it would register the same names twice).
+      tests/cpp/test_qa.cpp
       tests/cpp/test_pir_e2e.cpp)
     if(PRISM_HAS_Z3)
       list(APPEND _prism_test_sources tests/cpp/test_leanbb.cpp
