@@ -8,10 +8,10 @@ Phases 2–4 route those paths through `prism::i128` (`wide_int.hpp`).
 are migrated to `prism::i128` (phases 2–4). Remaining substring hits are string-only
 BMC/astlint tables or `wide_int.hpp` under `PRISM_HAS_INT128`.
 
-**CI (phases 5a / 5b / 5c / 7):** green on `main` @ `9230cd9ac` (2026-10-23) — all four
-Windows smokes (`clang-cl` / `clang-cl+Z3` / `cl` / `cl+Z3`) build and run the phase-7
-`prism_tests` subset including full `test_adapters.cpp` + `fake_tool_launcher`; Linux
-`prism_tests` and the shrunk Python suite.
+**CI (phases 5a / 5b / 5c / 7):** green on `main` @ `9230cd9ac` (full `test_adapters` + launcher).
+`fba44a6d9` adds full `test_sanitize.cpp` + `fake_cc.exe`; Windows smokes `clang-cl` and `cl`
+passed the phase-7 subset on run `39963224802` (Z3 smokes use the same tests). Linux
+`prism_tests` and the shrunk Python suite stay green.
 
 **Related:** `docs/ROADMAP_STATUS.md` D7 (WSL primary today); `CMakeLists.txt` rejects
 MinGW and already sets MSVC flags on `prism_core`. `tests/cpp/test_main.cpp` solver integration tests are gated on `PRISM_HAS_Z3` only

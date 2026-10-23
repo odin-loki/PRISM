@@ -707,6 +707,7 @@ if(PRISM_TESTS)
   if(WIN32 AND PRISM_TESTS_WIN_SUBSET)
     add_executable(fake_tool_launcher tests/cpp/fake_tool_launcher.cpp)
     add_executable(fake_cc tests/cpp/fake_cc.cpp)
+    add_executable(fake_session_probe tests/cpp/fake_session_probe.cpp)
   endif()
   add_executable(prism_tests ${_prism_test_sources})
   target_include_directories(prism_tests PRIVATE
@@ -714,10 +715,11 @@ if(PRISM_TESTS)
     "${PRISM_ROOT}/third_party")
   target_link_libraries(prism_tests PRIVATE prism_core prism_qa)
   if(WIN32 AND PRISM_TESTS_WIN_SUBSET)
-    add_dependencies(prism_tests fake_tool_launcher fake_cc)
+    add_dependencies(prism_tests fake_tool_launcher fake_cc fake_session_probe)
     target_compile_definitions(prism_tests PRIVATE
       "PRISM_FAKE_TOOL_LAUNCHER=\"$<TARGET_FILE:fake_tool_launcher>\""
-      "PRISM_FAKE_CC=\"$<TARGET_FILE:fake_cc>\"")
+      "PRISM_FAKE_CC=\"$<TARGET_FILE:fake_cc>\""
+      "PRISM_FAKE_SESSION_PROBE=\"$<TARGET_FILE:fake_session_probe>\"")
   endif()
   target_include_directories(prism_tests PRIVATE "${_pins_dir}")
   add_dependencies(prism_tests prism_generated prism prism-qa prism_docs_check)
