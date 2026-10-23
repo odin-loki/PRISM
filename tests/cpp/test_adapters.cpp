@@ -1592,10 +1592,7 @@ TEST_CASE("libfuzzer_probe: keyword reject and successful stub compile are hones
     NoTools nt;
     auto probe = [&](const std::string& body) {
 #ifdef _WIN32
-        if (body.find("findstr") != std::string::npos)
-            fake_cmd(nt.bin, "clang", body);
-        else
-            fake(nt.bin, "clang", body);
+        fake_cmd(nt.bin, "clang", body);
 #else
         fake(nt.bin, "clang", body);
 #endif
@@ -1610,8 +1607,10 @@ TEST_CASE("libfuzzer_probe: keyword reject and successful stub compile are hones
     never_clean_or_proof(unknown);
 
 #ifdef _WIN32
-    auto ok = probe("echo %*|findstr /i \"sanitize=fuzzer\" >nul\r\n"
-                    "if errorlevel 1 (echo error: unsupported argument '-fsanitize=fuzzer' 1>&2& exit /b 1)\r\n"
+    auto ok = probe("for %%A in (%*) do @if /I \"%%A\"==\"-fsanitize=fuzzer\" goto :lf_ok\r\n"
+                    "echo error: unsupported argument '-fsanitize=fuzzer' 1>&2\r\n"
+                    "exit /b 1\r\n"
+                    ":lf_ok\r\n"
                     "set OUT=\r\n"
                     ":lfloop\r\n"
                     "if \"%1\"==\"\" goto lfdone\r\n"
@@ -1796,14 +1795,16 @@ std::string fake_afl_body(bool crash, const fs::path& calls = {}) {
         "shift\r\n"
         "goto afl_arg_loop\r\n"
         ":afl_arg_done\r\n"
-        "echo %AFL_NO_UI% %AFL_SKIP_CPUFREQ% %AFL_NO_AFFINITY%>\"!out!\\..\\env.txt\"\r\n"
-        "cd>\"!out!\\..\\cwd.txt\"\r\n";
-    if (!calls.empty()) b += "echo call>>\"" + calls.string() + "\"\r\n";
+        ">\"!out!\\..\\env.txt\" echo %AFL_NO_UI% %AFL_SKIP_CPUFREQ% %AFL_NO_AFFINITY%\r\n"
+        ">\"!out!\\..\\cwd.txt\" cd\r\n";
+    if (!calls.empty()) b += ">>\"" + calls.string() + "\" echo call\r\n";
     if (crash)
         b += "set AFL_OUT=!out!\r\n"
-             "powershell -NoProfile -Command \"$d=Join-Path $env:AFL_OUT 'crashes'; "
-             "New-Item -ItemType Directory -Force -Path $d | Out-Null; "
-             "[IO.File]::WriteAllBytes((Join-Path $d 'id:000000'),[byte[]](1,2,3,4))\"\r\n";
+             "if not exist \"!out!\\crashes\" mkdir \"!out!\\crashes\"\r\n"
+             "echo AQIDBA==>\"!out!\\crashes\\b64\"\r\n"
+             "%SystemRoot%\\System32\\certutil.exe -f -decode \"!out!\\crashes\\b64\" "
+             "\"!out!\\crashes\\id_000000\" >nul\r\n"
+             "del \"!out!\\crashes\\b64\"\r\n";
     b += "endlocal\r\nexit /b 0\r\n";
     return b;
 #else
