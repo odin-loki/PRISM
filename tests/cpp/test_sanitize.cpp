@@ -3,11 +3,11 @@
 // flag is not support, CLEAN is not a proof, an abort is FAILED, and an
 // unusable runtime is NOTRUN, not a defect. The compiler is a shell script
 // on a temporary PATH, so every branch runs without a real toolchain.
-// Portable hit/runtime_unusable/is_mingw path checks: test_sanitize_static.cpp.
+// On WIN32 the fake compiler is tests/cpp/fake_cc.cpp (PRISM_FAKE_CC). Portable
+// hit/runtime_unusable/is_mingw-only checks: test_sanitize_static.cpp (omitted when
+// this TU is in the WIN subset).
 
 #include <doctest/doctest.h>
-
-#ifndef _WIN32
 
 #include "prism/config.hpp"
 #include "prism/laws.hpp"
@@ -25,17 +25,38 @@
 #include <string>
 #include <vector>
 
-#include <unistd.h>
+#ifdef _WIN32
+#  include <process.h>
+#else
+#  include <unistd.h>
+#endif
 
 namespace {
 
 namespace fs = std::filesystem;
 namespace sd = prism::sanitize_detail;
 
+#ifdef _WIN32
+constexpr const char* kCcName = "gcc.exe";
+int cur_pid() { return _getpid(); }
+void put_env(const std::string& k, const std::string& v) { _putenv_s(k.c_str(), v.c_str()); }
+void del_env(const std::string& k) { _putenv_s(k.c_str(), ""); }
+std::string run_body(const std::string& text, int rc) { return std::to_string(rc) + "\n" + text + "\n"; }
+#else
+constexpr const char* kCcName = "gcc";
+int cur_pid() { return ::getpid(); }
+void put_env(const std::string& k, const std::string& v) { ::setenv(k.c_str(), v.c_str(), 1); }
+void del_env(const std::string& k) { ::unsetenv(k.c_str()); }
+std::string run_body(const std::string& text, int rc) {
+    return "echo '" + text + "' >&2; exit " + std::to_string(rc);
+}
+#endif
+
 const std::vector<std::string> kUb{"-fsanitize=undefined", "-fno-sanitize-recover=undefined", "-O0"};
 const std::vector<std::string> kAs{"-fsanitize=address", "-fno-sanitize-recover=address", "-O0"};
 const std::vector<std::string> kTs{"-fsanitize=thread", "-O0"};
 
+#ifndef _WIN32
 // The fake compiler. -dumpmachine prints $FAKE_TRIPLE; -print-file-name
 // echoes its argument (what a compiler without the runtime does). A build
 // with -fsanitize=X fails unless X is in $FAKE_SAN; otherwise it writes an
@@ -74,6 +95,7 @@ printf '#!/bin/sh\n%s\n' "$body" > "$out"
 chmod +x "$out"
 exit 0
 )";
+#endif
 
 // A scratch tree with a fake compiler at <dir>/<bin>/gcc on PATH, and the
 // environment restored on exit.
@@ -82,14 +104,20 @@ struct FakeCc {
     fs::path cc;
     std::map<std::string, std::optional<std::string>> saved;
     explicit FakeCc(const std::string& bin = "bin") {
-        dir = fs::temp_directory_path() / ("prism_san_fake_" + std::to_string(::getpid()) + "_" + bin);
+        dir = fs::temp_directory_path() / ("prism_san_fake_" + std::to_string(cur_pid()) + "_" + bin);
         std::error_code ec;
         fs::remove_all(dir, ec);
         fs::create_directories(dir / bin);
-        cc = dir / bin / "gcc";
+        cc = dir / bin / kCcName;
+#ifdef _WIN32
+        fs::copy_file(PRISM_FAKE_CC, cc, fs::copy_options::overwrite_existing, ec);
+        REQUIRE_FALSE(ec);
+        set("PATH", (dir / bin).string());
+#else
         std::ofstream(cc) << kFakeCc;
         fs::permissions(cc, fs::perms::owner_all);
         set("PATH", (dir / bin).string() + ":/usr/bin:/bin");
+#endif
         for (auto* k : {"FAKE_SAN", "FAKE_TRIPLE", "FAKE_NOFIRE", "FAKE_RUN_undefined", "FAKE_RUN_address",
                         "FAKE_RUN_thread"})
             unset(k);
@@ -97,8 +125,8 @@ struct FakeCc {
     }
     ~FakeCc() {
         for (auto& [k, v] : saved) {
-            if (v) ::setenv(k.c_str(), v->c_str(), 1);
-            else ::unsetenv(k.c_str());
+            if (v) put_env(k, *v);
+            else del_env(k);
         }
         std::error_code ec;
         fs::remove_all(dir, ec);
@@ -110,11 +138,11 @@ struct FakeCc {
     }
     void set(const std::string& k, const std::string& v) {
         remember(k);
-        ::setenv(k.c_str(), v.c_str(), 1);
+        put_env(k, v);
     }
     void unset(const std::string& k) {
         remember(k);
-        ::unsetenv(k.c_str());
+        del_env(k);
     }
     fs::path put(const std::string& name, const std::string& text) {
         auto p = dir / name;
@@ -216,8 +244,8 @@ TEST_CASE("sanitize: supported UBSan / ASan with exit 0 is CLEAN, not a proof") 
 TEST_CASE("sanitize: a sanitizer abort is FAILED") {
     FakeCc t;
     t.set("FAKE_SAN", "undefined address");
-    t.set("FAKE_RUN_undefined", "echo 'UndefinedBehaviorSanitizer: shift exponent' >&2; exit 1");
-    t.set("FAKE_RUN_address", "echo 'ERROR: AddressSanitizer: heap-buffer-overflow' >&2; exit 1");
+    t.set("FAKE_RUN_undefined", run_body("UndefinedBehaviorSanitizer: shift exponent", 1));
+    t.set("FAKE_RUN_address", run_body("ERROR: AddressSanitizer: heap-buffer-overflow", 1));
     auto out = prism::run_sanitize({t.planted()}, exec_cfg());
     auto ub = rows(out, "ubsan", true), as = rows(out, "asan", true);
     REQUIRE(ub.size() == 1);
@@ -233,7 +261,7 @@ TEST_CASE("sanitize: an unusable TSan runtime is NOTRUN, not FAILED") {
     CHECK_FALSE(sd::hit(mapping, -1));
     FakeCc t;
     t.set("FAKE_SAN", "thread");
-    t.set("FAKE_RUN_thread", "echo '" + mapping + "' >&2; exit 66");
+    t.set("FAKE_RUN_thread", run_body(mapping, 66));
     auto out = prism::run_sanitize({t.planted()}, exec_cfg());
     auto ts = rows(out, "tsan", true);
     REQUIRE(ts.size() == 1);
@@ -319,6 +347,7 @@ TEST_CASE("sanitize: rows keep file order across sanitizers when runs are parall
     }
 }
 
+#ifndef _WIN32
 TEST_CASE("sanitize: a live compiler gives sanitizer rows, never a proof") {
     auto cfg = exec_cfg();
     if (!cfg.which({"gcc", "clang"})) return;  // no toolchain: covered by the fake-compiler cases
@@ -334,5 +363,4 @@ TEST_CASE("sanitize: a live compiler gives sanitizer rows, never a proof") {
         CHECK(f.status != prism::laws::PROVED);
     }
 }
-
-#endif  // _WIN32
+#endif

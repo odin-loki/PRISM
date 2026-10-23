@@ -221,7 +221,8 @@ Remaining epic work is listed in [§7](#7-remaining-work-backlog).
   |------|---------|
   | Doctest main | `tests/cpp/test_main_win.cpp` (not `test_main.cpp`) |
   | Adapter fakes on WIN32 | Full `test_adapters.cpp` + `fake_tool_launcher` (stdio forwarded to `cmd.exe`); `fake_cmd` / `help_then_cmd` / `sh_to_cmd` |
-| Static splits (remaining monolithic TUs) | `test_sanitize_static.cpp`, `test_qa_static.cpp` (`test_adapters_static.cpp` reference only) |
+  | Sanitize fakes on WIN32 | Full `test_sanitize.cpp` + `fake_cc.exe` (PE compiler/runner with `.fakebody` sidecar) |
+| Static splits (remaining monolithic TUs) | `test_qa_static.cpp` (`test_adapters_static.cpp` / `test_sanitize_static.cpp` reference only) |
   | Portable doctest TUs | `test_wide_int`, `test_interval`, `test_svcomp`, `test_naming`, `test_polyglot`, `test_taxonomy`, `test_repolint`, `test_deps`, `test_cparse`, `test_sarif`, `test_astlint`, `test_ltl`, `test_contracts`, `test_bmc`, `test_checkers_cxx`, `test_checkers_c`, `test_gen_tables`, `test_bmc_svcomp`, `test_havoc`, `test_verdict_repo`, `test_diff`, `test_journal_confidence`, `test_thread_taint`, `test_wp_harness`, `test_concrete`, `test_concolic`, `test_lint_corpus`, `test_pir_mem`, `test_ai_assist`, `test_pbsd`, `test_pir3`, `test_pir_refinement`, `test_cli`, `test_pipeline`, `test_ai9`, `test_conc`, `test_cxx_models`, `test_fuse`, `test_gui_model`, `test_repair`, `test_pir_e2e` |
   | When `PRISM_HAS_Z3` | `test_leanbb`, `test_pir_budget`, `test_certified` |
 
@@ -259,7 +260,7 @@ Epic closure for phases 5a / 5b / 5c / 7 does **not** imply full Windows parity 
 | Item | Notes |
 |------|--------|
 | **`test_main.cpp` on WIN32** | Link last; largest integration surface (`unistd`, process, sockets). |
-| **Full sanitize / QA doctest TUs** | `test_sanitize.cpp` (fake `sh` compiler), `test_qa.cpp` (`run_session`, Lean/lli drivers). `test_adapters.cpp` is in the WIN subset (`fake_tool_launcher` + `.cmd` fakes; AFL child env is AFL_*-only so stubs must not rely on PATH). Static coverage stays in `test_*_static.cpp`. |
+| **Full QA doctest TUs** | `test_qa.cpp` (`run_session`, Lean/lli drivers). `test_adapters.cpp` and full `test_sanitize.cpp` (`fake_cc.exe`) are in the WIN subset. AFL child env is AFL_*-only so adapter stubs must not rely on PATH. `test_qa_static.cpp` remains for pure-logic QA checks. |
 | **Phase 6 conformance on Windows** | `prism-qa conformance` and friends remain `if(UNIX)` until `replay.cpp` process tree and sanitizer replay are ported. |
 | **`windows-compile-smoke-cl-z3` (CI)** | Done (four smokes green @ `9230cd9ac`). |
 | **Z3 build time on Windows** | Optional ccache / stronger caching for vendored Z3 on `windows-latest`. |
