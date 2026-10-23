@@ -73,17 +73,35 @@ bool have_cc() { return prism::Config{}.which({"gcc", "clang"}).has_value(); }
         }                                                                      \
     } while (0)
 
-#ifndef _WIN32
-// PATH replaced for the scope of one case (POSIX; the stage reads PATH).
+// MSVC has no setenv/unsetenv; _putenv_s with an empty value removes the
+// variable (same helpers as test_main.cpp's tm_setenv / tm_unsetenv).
+void td_setenv(const char* name, const char* value) {
+#ifdef _WIN32
+    _putenv_s(name, value);
+#else
+    setenv(name, value, 1);
+#endif
+}
+void td_unsetenv(const char* name) {
+#ifdef _WIN32
+    _putenv_s(name, "");
+#else
+    unsetenv(name);
+#endif
+}
+
+// PATH replaced for the scope of one case (the stage reads PATH; on WIN32
+// Config::which is SearchPath, which also looks in the system directories,
+// where there is no gcc/clang).
 struct ScopedPath {
     std::optional<std::string> prev;
     explicit ScopedPath(const std::string& value) {
         if (auto* p = std::getenv("PATH")) prev = p;
-        setenv("PATH", value.c_str(), 1);
+        td_setenv("PATH", value.c_str());
     }
     ~ScopedPath() {
-        if (prev) setenv("PATH", prev->c_str(), 1);
-        else unsetenv("PATH");
+        if (prev) td_setenv("PATH", prev->c_str());
+        else td_unsetenv("PATH");
     }
     ScopedPath(const ScopedPath&) = delete;
     ScopedPath& operator=(const ScopedPath&) = delete;
@@ -95,7 +113,6 @@ fs::path empty_bin(const char* name) {
     fs::create_directories(d);
     return d;
 }
-#endif
 
 }  // namespace
 
@@ -107,7 +124,6 @@ TEST_CASE("diff: without --allow-exec the pair is NOTRUN, never CLEAN") {
     CHECK_FALSE(prism::laws::is_proof(recs[0].status));
 }
 
-#ifndef _WIN32
 TEST_CASE("diff: no gcc/clang is NOTRUN with an install hint, not CLEAN") {
     prism::sandbox::Policy policy(true);
     auto bin = empty_bin("prism_diff_nocc");
@@ -127,8 +143,15 @@ TEST_CASE("diff: MSVC cl alone is not gcc/clang and stays NOTRUN") {
     prism::sandbox::Policy policy(true);
     auto bin = empty_bin("prism_diff_clonly");
     {
+#ifdef _WIN32
+        // A real PE named cl.exe (the adapter stub): present on PATH, still not gcc/clang.
+        std::error_code ec;
+        fs::copy_file(PRISM_FAKE_TOOL_LAUNCHER, bin / "cl.exe", fs::copy_options::overwrite_existing, ec);
+        REQUIRE_FALSE(ec);
+#else
         std::ofstream(bin / "cl") << "#!/bin/sh\nexit 0\n";
         fs::permissions(bin / "cl", fs::perms::owner_all);
+#endif
     }
     ScopedPath path(bin.string());
     auto recs = prism::run_diff(pair_ab(), td());
@@ -136,7 +159,6 @@ TEST_CASE("diff: MSVC cl alone is not gcc/clang and stays NOTRUN") {
     CHECK(recs[0].status == prism::laws::NOTRUN);
     CHECK(recs[0].status != prism::laws::CLEAN);
 }
-#endif
 
 TEST_CASE("diff: agreement is CLEAN, never a proof") {
     PRISM_DIFF_NEED_CC();

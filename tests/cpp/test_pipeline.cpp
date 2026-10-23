@@ -344,6 +344,41 @@ TEST_CASE("pipeline: an unreadable directory does not fail the ltl stage") {
     CHECK(ltl.status != "failed");
     for (auto& f : ltl.findings) CHECK(f.file.find("node_modules") == std::string::npos);
 #else
-    MESSAGE("NOTRUN: chmod-based unreadable directory is POSIX-only");
+    // WIN32 has no chmod: deny list/read to Everyone (S-1-1-0) with icacls, and
+    // lift the deny before Work removes the tree. Without icacls (or if the deny
+    // does not hide the directory) the case still runs, and says so (Law 7).
+    Work w;
+    w.put("a.c", "int f(void) { return 0; }\n");
+    fs::create_directories(w.src() / "locked" / "inner");
+    fs::create_directories(w.src() / "node_modules");
+    std::ofstream(w.src() / "node_modules" / "vendored.ltl") << "G p\n";
+    struct DenyAcl {
+        fs::path dir;
+        bool on = false;
+        explicit DenyAcl(const fs::path& d) : dir(d) {
+            on = std::system(("icacls \"" + dir.string() + "\" /deny *S-1-1-0:(R) >nul 2>&1").c_str()) == 0;
+        }
+        ~DenyAcl() {
+            if (on) std::system(("icacls \"" + dir.string() + "\" /remove:d *S-1-1-0 >nul 2>&1").c_str());
+        }
+        DenyAcl(const DenyAcl&) = delete;
+        DenyAcl& operator=(const DenyAcl&) = delete;
+    };
+    {
+        DenyAcl deny(w.src() / "locked");
+        if (!deny.on) {
+            MESSAGE("NOTRUN: icacls could not deny read on the directory; the walk is run on a readable tree");
+        } else {
+            std::error_code ec;
+            fs::directory_iterator probe(w.src() / "locked", ec);
+            if (!ec) MESSAGE("the deny ACL did not hide the directory; the walk is run on a readable tree");
+        }
+        auto cfg = w.cfg();
+        cfg.stages = std::vector<std::string>{"inventory", "classify", "ltl"};
+        auto rep = prism::run_pipeline(cfg);
+        auto& ltl = stage_of(rep, "ltl");
+        CHECK(ltl.status != "failed");
+        for (auto& f : ltl.findings) CHECK(f.file.find("node_modules") == std::string::npos);
+    }
 #endif
 }

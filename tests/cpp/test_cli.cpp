@@ -20,7 +20,16 @@
 #include <string>
 #include <vector>
 
-#ifndef _WIN32
+#ifdef _WIN32
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
+#  include <windows.h>
+#  undef ERROR
+#else
 #  include <sys/wait.h>
 #  include <unistd.h>
 #endif
@@ -306,14 +315,30 @@ TEST_CASE("pipeline: every STAGE_ORDER name is run, in order (none skipped quiet
 
 // ---- the binary ------------------------------------------------------------------
 
-#ifndef _WIN32
 namespace {
 
+// `prism` (`prism.exe` on WIN32) sits next to prism_tests.
 fs::path prism_bin() {
+#ifdef _WIN32
+    wchar_t buf[MAX_PATH]{};
+    const DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH);
+    return n > 0 && n < MAX_PATH ? fs::path(std::wstring(buf, n)).parent_path() / "prism.exe"
+                                 : fs::path();
+#else
     char buf[4096]{};
     auto n = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
     return n > 0 ? fs::path(std::string(buf, static_cast<std::size_t>(n))).parent_path() / "prism"
                  : fs::path();
+#endif
+}
+
+// One shell word for a path: '...' under sh, "..." under cmd.exe.
+std::string q(const fs::path& p) {
+#ifdef _WIN32
+    return "\"" + p.string() + "\"";
+#else
+    return "'" + p.string() + "'";
+#endif
 }
 
 struct Run {
@@ -323,13 +348,23 @@ struct Run {
 
 Run run_prism(const std::string& args) {
     Run r;
-    std::string cmd = "'" + prism_bin().string() + "' " + args + " 2>&1";
+    std::string cmd = q(prism_bin()) + " " + args + " 2>&1";
+#ifdef _WIN32
+    // cmd /c strips the outer quotes of a line that starts with one.
+    cmd = "\"" + cmd + "\"";
+    FILE* p = ::_popen(cmd.c_str(), "r");
+#else
     FILE* p = ::popen(cmd.c_str(), "r");
+#endif
     if (!p) return r;
     char buf[4096];
     while (auto n = std::fread(buf, 1, sizeof buf, p)) r.out.append(buf, n);
+#ifdef _WIN32
+    r.rc = ::_pclose(p);  // the exit code itself
+#else
     int st = ::pclose(p);
     r.rc = WIFEXITED(st) ? WEXITSTATUS(st) : 128 + (WIFSIGNALED(st) ? WTERMSIG(st) : 0);
+#endif
     return r;
 }
 
@@ -368,8 +403,7 @@ TEST_CASE("prism binary: --fail-on=defect is honoured (conflict marker -> exit 1
     auto td = fs::temp_directory_path() / ("prism_failon_" + std::to_string(rd()));
     fs::create_directories(td / "src");
     std::ofstream(td / "src" / "a.c") << "<<<<<<< HEAD\nint x;\n>>>>>>> b\n";
-    const std::string base = "'" + (td / "src").string() + "' --no-llm --stage polyglot --out '" +
-                             (td / "out").string() + "'";
+    const std::string base = q(td / "src") + " --no-llm --stage polyglot --out " + q(td / "out");
     for (auto* f : {" --fail-on=defect", " --fail-on defect", " --fail-on=gap"}) {
         auto r = run_prism(base + f);
         CHECK_MESSAGE(r.rc == 1, f << ": " << r.out);
@@ -379,4 +413,3 @@ TEST_CASE("prism binary: --fail-on=defect is honoured (conflict marker -> exit 1
     std::error_code ec;
     fs::remove_all(td, ec);
 }
-#endif

@@ -4585,21 +4585,45 @@ TEST_CASE("scope: skip_dir, skipped_path and skipped_dirs") {
     for (auto& p : prism::iter_polyglot_sources(t.dir))
         walked.push_back(p.lexically_relative(t.dir).generic_string());
     CHECK(walked == std::vector<std::string>{"a.c"});
-#ifndef _WIN32
     {
         // A link to a source file counts like the file; a link to a directory
         // is not followed.
         PolyTree l;
         l.put("real/x.js", "x\n");
         l.put("node_modules/y.js", "y\n");
-        std::error_code ec;
-        std::filesystem::create_symlink(l.dir / "real" / "x.js", l.dir / "node_modules" / "link.js", ec);
-        std::filesystem::create_directory_symlink(l.dir / "real", l.dir / "node_modules" / "dirlink", ec);
+        std::error_code ec_file, ec_dir;
+        std::filesystem::create_symlink(l.dir / "real" / "x.js", l.dir / "node_modules" / "link.js", ec_file);
+        std::filesystem::create_directory_symlink(l.dir / "real", l.dir / "node_modules" / "dirlink", ec_dir);
+        std::size_t expect = 2;  // y.js and link.js (counts like x.js)
+#ifdef _WIN32
+        // Symlinks need Developer Mode or SeCreateSymbolicLinkPrivilege. Without
+        // it, say so (Law 7) and use a directory junction for the not-followed
+        // half, which needs no privilege.
+        if (ec_file) {
+            expect = 1;
+            MESSAGE("NOTRUN: file symlink creation failed (" << ec_file.message()
+                    << "); the link-to-a-file count is not asserted");
+        }
+        if (ec_dir) {
+            const auto cmd = "mklink /J \"" + (l.dir / "node_modules" / "dirlink").string() + "\" \""
+                             + (l.dir / "real").string() + "\" >nul 2>&1";
+            if (std::system(("\"" + cmd + "\"").c_str()) == 0) {
+                ec_dir.clear();
+                MESSAGE("directory symlink creation failed; used a junction");
+            }
+        }
+        if (ec_dir)
+            MESSAGE("NOTRUN: neither a directory symlink nor a junction could be created ("
+                    << ec_dir.message() << "); the not-followed half is not asserted");
+#endif
         auto counted = prism::scope::skipped_dirs(l.dir, prism::is_known_source);
         REQUIRE(counted.size() == 1);
-        CHECK(counted[0].files == 2);
-    }
+        CHECK(counted[0].files == expect);
+#ifndef _WIN32
+        CHECK_FALSE(ec_file);
+        CHECK_FALSE(ec_dir);
 #endif
+    }
     CHECK(prism::scope::skipped_message("node_modules", 2) ==
           "skipped node_modules/ (2 source files): vendor/build directory");
 

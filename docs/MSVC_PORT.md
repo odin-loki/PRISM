@@ -180,7 +180,7 @@ shortcut. Keep **D** only for explicitly documented optional components, not cor
 | **5b** (CI done) | Windows CI + Z3 | `windows-compile-smoke-z3`: Ninja + `clang-cl`, `PRISM_Z3=ON`, builds `prism_core` + `prism` + `prism-qa` + phase-7 `prism_tests` subset including `test_leanbb.cpp` (~44 min cold; cache `build-win-z3`; needs `z3gen_shim.bat`). |
 | **5c** (CI done) | Native MSVC `cl` | `windows-compile-smoke-cl`: Ninja + `cl` (not `clang-cl`), `PRISM_Z3=OFF`, same targets/subset as 5a. `stages/interp.cpp` uses `prism::i128` / manual checks instead of `__builtin_*_overflow` (clang-cl only). Configure with default `CMAKE_BUILD_TYPE=Release` (Debug + `prism_core` `/O2` hits cl D8016 vs `/RTC1`). |
 | **6** (partial) | QA on Windows | `yaml_subset` + `task` + `pyrandom` on `prism::i128` (done); `prism-qa` in `windows-compile-smoke`; conformance / soundness / replay compile on WIN; `proctree_win.cpp` + `proc.cpp` Job Object `run_tree` (commit B), `test_qa_conformance.cpp` release-gate / solver-kill / `run_tree` cases run in the subset (`fake_prism.exe` + `.lead` sidecar, `fake_session_probe` `spawn-sleep` / `spawn-bg` / `alloc`) |
-| **7** (done) | Windows `prism_tests` subset | `PRISM_TESTS_WIN_SUBSET` in `CMakeLists.txt` (inventory: [§6](#6-acceptance-criteria)). WIN: full `test_adapters.cpp`, `test_sanitize.cpp` (`fake_cc`), `test_qa.cpp` (`fake_session_probe`). Static splits remain reference-only on WIN. `test_cli` / `test_pipeline` omit POSIX-only cases; `test_conc` skips without Z3. `test_pir_e2e` skips the full `tests/pir` table on `_WIN32` (MESSAGE). All four Windows smoke jobs build and run `prism_tests.exe`. |
+| **7** (done) | Windows `prism_tests` subset | `PRISM_TESTS_WIN_SUBSET` in `CMakeLists.txt` (inventory: [§6](#6-acceptance-criteria)). WIN: full `test_adapters.cpp`, `test_sanitize.cpp` (`fake_cc`), `test_qa.cpp` (`fake_session_probe`). Static splits remain reference-only on WIN. `test_cli` (binary cases included) and `test_diff` run in full; `test_pipeline` omits only the POSIX `PATH`-guard esbmc-missing case; `test_conc` skips without Z3. `test_pir_e2e` skips the full `tests/pir` table on `_WIN32` (MESSAGE). All four Windows smoke jobs build and run `prism_tests.exe`. |
 | **8** (done) | Qt GUI on Windows | `windows-gui-qt`: Ninja + `cl`, Qt 6 via aqtinstall, `PRISM_QT=ON`, `PRISM_Z3=OFF`; `prism_gui_tests.exe` and the `gui model` doctest suite offscreen, plus the `--smoke-screenshot` smoke. See [§7](#7-remaining-work-backlog). |
 
 **Dependency order:** 2 → 3 (public API) → 4 (largest volume) → 5 → 6 → 7 (subset) → 5b (Z3 + full tests).
@@ -268,7 +268,12 @@ Python `which` parity `8d1f9721f` are green as well.
   `--allow-exec`, pinned adapters never taken from inside the scanned tree (fake `esbmc.exe`
   under `PRISM_TOOLS_DIR`), `tool_identity` + a fake pinned `cppcheck.exe`, and the polyglot
   "unparsed tool output is ERROR" case (cmd text; cmd splits `--output-format=concise` at `=`).
-  `test_pipeline` chmod/LTL case is POSIX-only; `test_cli` binary integration is POSIX-only.
+  The `test_pipeline` unreadable-directory / LTL case runs on WIN32 with an `icacls` deny-read
+  ACL in place of `chmod` (lifted before cleanup; without `icacls`, or if the deny does not hide
+  the directory, it says so with a `MESSAGE` and walks a readable tree). `test_cli` binary
+  integration runs on WIN32: `prism.exe` is found next to `prism_tests.exe` with
+  `GetModuleFileNameW`, started with `_popen` and the cmd.exe quoting, and checked for the same
+  exit codes (2 on bad arguments, 1 for `--fail-on=defect`, 0 otherwise).
   On WIN32, `test_pir_e2e` omits the large `tests/pir` verdict table (MESSAGE); Law 9 /
   `--fp-checks` / `--strict-aliasing` smoke cases still run when `clang`/`opt` are on PATH.
 - **`i128_and` on MSVC fallback (`acc88121b`):** the non-`PRISM_HAS_INT128` path in
@@ -286,7 +291,12 @@ Python `which` parity `8d1f9721f` are green as well.
   are installed (typically not on Windows CI).
 - **WIN32 test parity notes:** `tm_setenv` / `tm_unsetenv` (`_putenv_s`) in `test_main.cpp` and selected TUs;
   `test_checkers_c` / `test_concolic` mention `fork` only inside scanned snippet strings.
-  `test_diff` PATH-mutation cases are POSIX-only. `Config::which_adapter` on WIN32 accepts
+  `test_diff` PATH-mutation cases (no gcc/clang, `cl` alone) run on WIN32 through
+  `_putenv_s` (a PE `cl.exe` copy of `fake_tool_launcher` stands in for MSVC). The `scope:`
+  symlink case runs on WIN32: a file symlink needs Developer Mode / `SeCreateSymbolicLinkPrivilege`
+  and otherwise prints `MESSAGE: NOTRUN` (count of the link to a file not asserted); the
+  directory link falls back to a `mklink /J` junction, which needs no privilege, and checks that
+  it is not followed. `Config::which_adapter` on WIN32 accepts
   `--tool` paths without `.exe` when `tool.exe` exists (parity with `SearchPath`).
   `Config::which` on WIN32 probes a `python*.exe` under `\WindowsApps\` with `--version`
   (cached per path); a Microsoft Store stub (exit 9009 / cannot start) is passed over for the
@@ -307,7 +317,7 @@ Linux `prism_tests` or `prism-qa conformance`. What is still open:
 
 | Item | Notes |
 |------|--------|
-| **POSIX-only test cases** | Still `#ifndef _WIN32` or `NOTRUN` on WIN32: the process-tree block in `test_main.cpp` (`fork` / signals; the Job Object equivalent is covered in `test_qa*`), the symlink case in `scope:` (needs a privilege on Windows), `test_diff` PATH mutation, `test_cli` binary integration, the `test_pipeline` chmod/LTL case, the `tests/pir` verdict table in `test_pir_e2e`, SV-COMP replay/solve/pack (execute task code, Law 9), the fake-HTTP repair test, certified-mode `fork` / OOM-checker cases, and "prism_gui without a display". Each is a deliberate gap, not a silent skip: they print `MESSAGE: NOTRUN` or are absent from the Windows build. |
+| **POSIX-only test cases** | Still `#ifndef _WIN32` or `NOTRUN` on WIN32: the process-tree block in `test_main.cpp` (`fork` / signals; the Job Object equivalent is covered in `test_qa*`), the file-symlink half of the `scope:` case (needs Developer Mode or `SeCreateSymbolicLinkPrivilege`; `NOTRUN` message when it cannot be created, the junction half always runs), the `tests/pir` verdict table in `test_pir_e2e`, SV-COMP replay/solve/pack (execute task code, Law 9), the fake-HTTP repair test, certified-mode `fork` / OOM-checker cases, and "prism_gui without a display". Each is a deliberate gap, not a silent skip: they print `MESSAGE: NOTRUN` or are absent from the Windows build. |
 | **Phase 6: label self-check** | `test_qa_conformance.cpp` runs in the subset; the label self-check (UBSan+ASan replay, bwrap) reports `NOTRUN` on Windows because that toolchain is not exercised there. |
 | **Z3 build time on Windows** | Cold vendored-Z3 build is ~44 min on `windows-latest`. Z3 cache fix `75aeb6299`: both Z3 jobs use `actions/cache/restore` + `cache/save` with a working `restore-keys` prefix (the old `<hash>-` fallback could never match), so a changed Z3 input starts from the newest earlier build dir and ninja rebuilds only what changed. The build is split: `libz3` first, saved right after it succeeds (on an exact-key miss), then the PRISM targets, so a later failure no longer discards the Z3 objects. The first runs after the change (`39997000464` @ `75aeb6299`, `39997099937` @ `8d1f9721f`) are green but ran with the Z3 job over an hour, i.e. still cold or close to it; the warm-cache time is not measured yet. sccache is not used: `cl` needs `/Z7` (`CMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded`), which changes the Release flags of both smokes. |
 
