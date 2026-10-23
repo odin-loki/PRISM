@@ -65,7 +65,7 @@ static int compile_mode(int argc, char** argv) {
     bool fire = false;
     for (std::size_t i = 0; i < a.size(); ++i) {
         if (a[i] == "-o" && i + 1 < a.size()) out = a[i + 1];
-        if (a[i].rfind("-fsanitize=", 0) == 0) san = a[i].substr(13);
+        if (a[i].rfind("-fsanitize=", 0) == 0) san = a[i].substr(11);
         if (ends_with(a[i], "ub_fire.c") || ends_with(a[i], "as_fire.c")) fire = true;
     }
     if (const auto log = env_c("FAKE_LOG"); !log.empty()) {
