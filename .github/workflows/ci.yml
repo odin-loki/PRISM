@@ -194,17 +194,29 @@ jobs:
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
-      - uses: actions/cache@v4
+      # Restore/save split. The old restore-keys (exact hash + "-") could never match,
+      # so any Z3 input change was a cold build, and the cache was saved only if the
+      # whole job passed. A miss now falls back to the newest win-smoke-z3- cache (ninja
+      # rebuilds only what changed) and libz3 is saved as soon as it is built.
+      - uses: actions/cache/restore@v4
+        id: z3cache
         with:
           path: build-win-z3
           key: win-smoke-z3-${{ hashFiles('CMakeLists.txt', 'cmake/z3.cmake', 'cmake/z3-generated/tree_sha256', 'third_party/z3/CMakeLists.txt') }}
-          restore-keys: win-smoke-z3-${{ hashFiles('CMakeLists.txt', 'cmake/z3.cmake', 'cmake/z3-generated/tree_sha256', 'third_party/z3/CMakeLists.txt') }}-
+          restore-keys: win-smoke-z3-
       - name: Configure (Ninja + clang-cl, PRISM_Z3=ON)
         run: >
           cmake -B build-win-z3 -G Ninja
           -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl
           -DPRISM_CUDA=OFF -DPRISM_LLAMA=OFF -DPRISM_QT=OFF -DPRISM_Z3=ON
           -DPRISM_TESTS=ON -DPRISM_TESTS_WIN_SUBSET=ON -DPRISM_LIBCLANG=OFF
+      - name: Build vendored Z3 (libz3)
+        run: cmake --build build-win-z3 --target libz3
+      - uses: actions/cache/save@v4
+        if: steps.z3cache.outputs.cache-hit != 'true'
+        with:
+          path: build-win-z3
+          key: win-smoke-z3-${{ hashFiles('CMakeLists.txt', 'cmake/z3.cmake', 'cmake/z3-generated/tree_sha256', 'third_party/z3/CMakeLists.txt') }}
       - name: Build (prism_core + prism + prism-qa + prism_tests)
         run: cmake --build build-win-z3 --target prism_core prism prism-qa prism_tests
       - name: Run portable prism_tests subset (Z3 + leanbb)
@@ -220,11 +232,16 @@ jobs:
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
-      - uses: actions/cache@v4
+      # Restore/save split. The old restore-keys (exact hash + "-") could never match,
+      # so any Z3 input change was a cold build, and the cache was saved only if the
+      # whole job passed. A miss now falls back to the newest win-smoke-cl-z3- cache (ninja
+      # rebuilds only what changed) and libz3 is saved as soon as it is built.
+      - uses: actions/cache/restore@v4
+        id: z3cache
         with:
           path: build-win-cl-z3
           key: win-smoke-cl-z3-${{ hashFiles('CMakeLists.txt', 'cmake/z3.cmake', 'cmake/z3-generated/tree_sha256', 'third_party/z3/CMakeLists.txt') }}
-          restore-keys: win-smoke-cl-z3-${{ hashFiles('CMakeLists.txt', 'cmake/z3.cmake', 'cmake/z3-generated/tree_sha256', 'third_party/z3/CMakeLists.txt') }}-
+          restore-keys: win-smoke-cl-z3-
       - name: Configure (Ninja + cl, PRISM_Z3=ON)
         run: >
           cmake -B build-win-cl-z3 -G Ninja
@@ -232,6 +249,13 @@ jobs:
           -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl
           -DPRISM_CUDA=OFF -DPRISM_LLAMA=OFF -DPRISM_QT=OFF -DPRISM_Z3=ON
           -DPRISM_TESTS=ON -DPRISM_TESTS_WIN_SUBSET=ON -DPRISM_LIBCLANG=OFF
+      - name: Build vendored Z3 (libz3)
+        run: cmake --build build-win-cl-z3 --target libz3
+      - uses: actions/cache/save@v4
+        if: steps.z3cache.outputs.cache-hit != 'true'
+        with:
+          path: build-win-cl-z3
+          key: win-smoke-cl-z3-${{ hashFiles('CMakeLists.txt', 'cmake/z3.cmake', 'cmake/z3-generated/tree_sha256', 'third_party/z3/CMakeLists.txt') }}
       - name: Build (prism_core + prism + prism-qa + prism_tests)
         run: cmake --build build-win-cl-z3 --target prism_core prism prism-qa prism_tests
       - name: Run portable prism_tests subset (Z3 + leanbb)
