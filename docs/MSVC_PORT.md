@@ -27,7 +27,7 @@ Legend:
 |------|---------|
 | **native** | Code uses `__int128` / `unsigned __int128` as a C++ type (MSVC blocker). |
 | **string** | Regex or keyword tables detect `__int128` in user source only (not a blocker). |
-| **conformance tree** | In `src/tools/qa/`; part of `prism_qa` on WIN32 (process runner is the NOTRUN stub). |
+| **conformance tree** | In `src/tools/qa/`; part of `prism_qa` on WIN32 (`run_tree` is the Job Object runner). |
 
 ### Interval (`native` — `prism_core`)
 
@@ -76,22 +76,27 @@ Legend:
 `src/prism/astlint_libclang.cpp` references libclang `CXType_Int128` enums only (not
 `__int128` in PRISM sources).
 
-### QA tools (`native`; conformance tree builds on WIN with the NOTRUN `proctree_win.cpp`)
+### QA tools (`native`; conformance tree builds on WIN with `proctree_win.cpp`, a Job Object `run_tree`)
 
 | File | ~matches | Role |
 |------|----------|------|
 | `src/tools/qa/support/yaml_subset.hpp` | — | Migrated: `Node::as_int()` → `optional<prism::i128>` (phase 6 partial). |
 | `src/tools/qa/support/yaml_subset.cpp` | — | Uses `parse_i128` / `format_i128` (phase 6 partial). |
 | `src/tools/qa/support/task.hpp` / `task.cpp` | — | Migrated: `prism::i128`; built on all platforms (phase 6). |
-| `src/tools/qa/support/replay.cpp` | — | Migrated: `prism::u128` / `i128_shl` (phase 6); portable temp dirs, builds on WIN (its `run_tree` calls are NOTRUN there). |
+| `src/tools/qa/support/replay.cpp` | — | Migrated: `prism::u128` / `i128_shl` (phase 6); portable temp dirs, builds on WIN (`run_tree` is real there; the UBSan+ASan toolchain replay is not exercised). |
 | `src/tools/qa/support/pyrandom.hpp` | — | Migrated: `prism::i128` / `u128` (phase 6); header-only, used by unix replay/soundness. |
 
 All of `prism_qa` (report, cli, engine, fetch, replay, conformance, gen_random, soundness)
 now builds on Windows (`/utf-8`). Temp dirs come from `qa::make_unique_dir` (no `mkdtemp`);
-`proctree.cpp` (POSIX sessions) is replaced by `proctree_win.cpp`, whose `run_tree` is a
-**NOTRUN stub** (`start_failed`, "NOTRUN: ... needs a Job Object"; Law 1) and whose `which()`
-is real (PATH + PATHEXT). Sanitizer replay / process-tree behaviour is therefore not
-exercised on Windows.
+`proctree.cpp` (POSIX sessions) is replaced by `proctree_win.cpp`: `run_tree` calls
+`prism::detail::run` (`src/prism/proc.cpp`), whose Windows path starts the child suspended,
+puts it in a **Job Object** (`KILL_ON_JOB_CLOSE`, optional per-process memory cap) and gives
+it only its three standard handles (`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`). A timeout or
+`RunSpec::stop` terminates the whole job; `RunSpec::kill_descendants` (set by `run_session`)
+also ends what the child left behind. A child that cannot be started or put in the job is
+`start_failed` / `failed` (Laws 1, 7); a `--no-*-check` flag is refused (Law 8). `which()` is
+PATH + PATHEXT. The sanitizer (UBSan+ASan, bwrap) replay toolchain is still not exercised
+on Windows.
 ### Tests (outside `src/` / `include/` but coupled)
 
 | File | Notes |
@@ -174,7 +179,7 @@ shortcut. Keep **D** only for explicitly documented optional components, not cor
 | **5a** (done) | MSVC CI smoke | `windows-compile-smoke`: Ninja + `clang-cl`, `PRISM_Z3=OFF`, build `prism_core` + `prism` + `prism-qa` + portable `prism_tests` subset (phase 7). Shims: `utc_tm`, `set_env`, `NOMINMAX`, `wide_int` / `leanbb`, `solver/util.cpp` `windows.h` + `#undef ERROR`. |
 | **5b** (CI done) | Windows CI + Z3 | `windows-compile-smoke-z3`: Ninja + `clang-cl`, `PRISM_Z3=ON`, builds `prism_core` + `prism` + `prism-qa` + phase-7 `prism_tests` subset including `test_leanbb.cpp` (~44 min cold; cache `build-win-z3`; needs `z3gen_shim.bat`). |
 | **5c** (CI done) | Native MSVC `cl` | `windows-compile-smoke-cl`: Ninja + `cl` (not `clang-cl`), `PRISM_Z3=OFF`, same targets/subset as 5a. `stages/interp.cpp` uses `prism::i128` / manual checks instead of `__builtin_*_overflow` (clang-cl only). Configure with default `CMAKE_BUILD_TYPE=Release` (Debug + `prism_core` `/O2` hits cl D8016 vs `/RTC1`). |
-| **6** (partial) | QA on Windows | `yaml_subset` + `task` + `pyrandom` on `prism::i128` (done); `prism-qa` in `windows-compile-smoke`; conformance / soundness / replay compile on WIN (`proctree_win.cpp` NOTRUN stub), `test_qa_conformance.cpp` static slice in the subset |
+| **6** (partial) | QA on Windows | `yaml_subset` + `task` + `pyrandom` on `prism::i128` (done); `prism-qa` in `windows-compile-smoke`; conformance / soundness / replay compile on WIN; `proctree_win.cpp` + `proc.cpp` Job Object `run_tree` (commit B), `test_qa_conformance.cpp` release-gate / solver-kill / `run_tree` cases run in the subset (`fake_prism.exe` + `.lead` sidecar, `fake_session_probe` `spawn-sleep` / `spawn-bg` / `alloc`) |
 | **7** (done) | Windows `prism_tests` subset | `PRISM_TESTS_WIN_SUBSET` in `CMakeLists.txt` (inventory: [§6](#6-acceptance-criteria)). WIN: full `test_adapters.cpp`, `test_sanitize.cpp` (`fake_cc`), `test_qa.cpp` (`fake_session_probe`). Static splits remain reference-only on WIN. `test_cli` / `test_pipeline` omit POSIX-only cases; `test_conc` skips without Z3. `test_pir_e2e` skips the full `tests/pir` table on `_WIN32` (MESSAGE). All four Windows smoke jobs build and run `prism_tests.exe`. |
 
 **Dependency order:** 2 → 3 (public API) → 4 (largest volume) → 5 → 6 → 7 (subset) → 5b (Z3 + full tests).
@@ -225,8 +230,8 @@ Remaining epic work is listed in [§7](#7-remaining-work-backlog).
   | Doctest main | `tests/cpp/test_main_win.cpp` (not `test_main.cpp`) |
   | Adapter fakes on WIN32 | Full `test_adapters.cpp` + `fake_tool_launcher` (stdio forwarded to `cmd.exe`); `fake_cmd` / `help_then_cmd` / `sh_to_cmd` |
   | Sanitize fakes on WIN32 | Full `test_sanitize.cpp` + `fake_cc.exe` (PE compiler/runner with `.fakebody` sidecar) |
-  | QA on WIN32 | Full `test_qa.cpp` + `fake_session_probe.exe`; fork/session-kill cases POSIX-only |
-  | Conformance on WIN32 | `test_qa_conformance.cpp` static slice (suite shape, scorer rules, `PyRandom` / generator parity); release-gate, solver-kill, `run_tree` and label self-check cases report `MESSAGE: NOTRUN` |
+  | QA on WIN32 | Full `test_qa.cpp` + `fake_session_probe.exe` (incl. Job Object timeout / background-grandchild / memory-cap cases); fork and SIGTERM-to-runner cases POSIX-only |
+  | Conformance on WIN32 | `test_qa_conformance.cpp`: suite shape, scorer rules, `PyRandom` / generator parity, plus the release gate (`fake_prism.exe` copied per status with a `NAME.exe.lead` sidecar), the solver-kill timeout and `run_tree` (via `fake_session_probe.exe`); only the label self-check (UBSan+ASan replay) reports `MESSAGE: NOTRUN` |
   | Static splits (reference only on WIN) | `test_adapters_static.cpp`, `test_sanitize_static.cpp`, `test_qa_static.cpp` |
   | Portable doctest TUs | `test_wide_int`, `test_interval`, `test_svcomp`, `test_naming`, `test_polyglot`, `test_taxonomy`, `test_repolint`, `test_deps`, `test_cparse`, `test_sarif`, `test_astlint`, `test_ltl`, `test_contracts`, `test_bmc`, `test_checkers_cxx`, `test_checkers_c`, `test_gen_tables`, `test_bmc_svcomp`, `test_havoc`, `test_verdict_repo`, `test_diff`, `test_journal_confidence`, `test_thread_taint`, `test_wp_harness`, `test_concrete`, `test_concolic`, `test_lint_corpus`, `test_pir_mem`, `test_ai_assist`, `test_pbsd`, `test_pir3`, `test_pir_refinement`, `test_cli`, `test_pipeline`, `test_ai9`, `test_conc`, `test_cxx_models`, `test_fuse`, `test_gui_model`, `test_repair`, `test_pir_e2e` |
   | When `PRISM_HAS_Z3` | `test_leanbb`, `test_pir_budget`, `test_certified` |
@@ -265,7 +270,7 @@ Epic closure for phases 5a / 5b / 5c / 7 does **not** imply full Windows parity 
 |------|--------|
 | **`test_main.cpp` on WIN32** | Link last; largest integration surface (`unistd`, process, sockets). |
 | **Full QA doctest TUs** | `test_qa.cpp` on WIN (subprocess + `fake_session_probe`; fork/session-kill still POSIX). Lean/lli driver subprocess cases stay POSIX. `test_adapters.cpp` + `test_sanitize.cpp` (`fake_cc.exe`) in subset. `test_qa_static.cpp` not built on WIN (duplicate cases). |
-| **Phase 6 conformance on Windows** | Compiles and links; `test_qa_conformance.cpp` static slice runs in the subset. Remaining: a Job Object `run_tree` in `proctree_win.cpp` (today NOTRUN), then un-skip the release-gate (`fake_prism`, POSIX-only), solver-kill, `run_tree` and label self-check cases (MESSAGE NOTRUN on WIN). |
+| **Phase 6 conformance on Windows** | Job Object `run_tree` done; release-gate, solver-kill and `run_tree` cases run in the subset. Remaining: the label self-check (UBSan+ASan replay with gcc/clang + bwrap) is still `MESSAGE: NOTRUN` on WIN. |
 | **`windows-compile-smoke-cl-z3` (CI)** | Done (four smokes green @ `9230cd9ac`). |
 | **Z3 build time on Windows** | Optional ccache / stronger caching for vendored Z3 on `windows-latest`. |
 

@@ -653,8 +653,10 @@ if(PRISM_TESTS)
       # session-kill cases are #ifndef _WIN32. test_qa_static.cpp is not built
       # here (it would register the same names twice).
       tests/cpp/test_qa.cpp
-      # Conformance / soundness scorer rules and suite shape (static slice); the
-      # process-tree and fake_prism cases are NOTRUN (MESSAGE) on WIN32.
+      # Conformance / soundness scorer rules and suite shape; the release-gate,
+      # solver-kill and run_tree cases run on WIN32 through the Job Object runner
+      # (fake_prism.exe + .lead sidecar, fake_session_probe.exe). Only the label
+      # self-check (UBSan+ASan through run_tree) stays NOTRUN there.
       tests/cpp/test_qa_conformance.cpp
       tests/cpp/test_pir_e2e.cpp)
     if(PRISM_HAS_Z3)
@@ -721,6 +723,7 @@ if(PRISM_TESTS)
     add_executable(fake_tool_launcher tests/cpp/fake_tool_launcher.cpp)
     add_executable(fake_cc tests/cpp/fake_cc.cpp)
     add_executable(fake_session_probe tests/cpp/fake_session_probe.cpp)
+    add_executable(fake_prism tests/cpp/fake_prism.cpp)
   endif()
   add_executable(prism_tests ${_prism_test_sources})
   target_include_directories(prism_tests PRIVATE
@@ -728,11 +731,12 @@ if(PRISM_TESTS)
     "${PRISM_ROOT}/third_party")
   target_link_libraries(prism_tests PRIVATE prism_core prism_qa)
   if(WIN32 AND PRISM_TESTS_WIN_SUBSET)
-    add_dependencies(prism_tests fake_tool_launcher fake_cc fake_session_probe)
+    add_dependencies(prism_tests fake_tool_launcher fake_cc fake_session_probe fake_prism)
     target_compile_definitions(prism_tests PRIVATE
       "PRISM_FAKE_TOOL_LAUNCHER=\"$<TARGET_FILE:fake_tool_launcher>\""
       "PRISM_FAKE_CC=\"$<TARGET_FILE:fake_cc>\""
-      "PRISM_FAKE_SESSION_PROBE=\"$<TARGET_FILE:fake_session_probe>\"")
+      "PRISM_FAKE_SESSION_PROBE=\"$<TARGET_FILE:fake_session_probe>\""
+      "PRISM_FAKE_PRISM=\"$<TARGET_FILE:fake_prism>\"")
   endif()
   target_include_directories(prism_tests PRIVATE "${_pins_dir}")
   add_dependencies(prism_tests prism_generated prism prism-qa prism_docs_check)

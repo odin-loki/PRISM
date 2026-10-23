@@ -36,6 +36,14 @@ struct RunSpec {
     std::filesystem::path stdout_path;
     const std::atomic<bool>* stop = nullptr;  // when true: kill the child (RunOut::cancelled)
     std::size_t max_output_bytes = 0;       // 0: unlimited; caps captured stdout/stderr only
+    // Windows only (the child and every descendant run in a Job Object that a
+    // timeout or stop request terminates whole):
+    // - kill_descendants: also terminate what the child left running when it
+    //   exits (POSIX run_session does the same to its session);
+    // - mem_limit_mb: committed-memory cap per process of the tree (the
+    //   counterpart of RLIMIT_AS), 0: none. POSIX callers use `limits`.
+    bool kill_descendants = false;
+    long mem_limit_mb = 0;
 };
 
 struct RunOut {

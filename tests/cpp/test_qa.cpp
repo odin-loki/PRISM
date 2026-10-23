@@ -309,9 +309,63 @@ TEST_CASE("run_session: normal exit returns stdout, stderr, the exit code, env, 
 
     // a missing program is 127
     CHECK(prism::detail::run_session({"/nonexistent/prism-qa-probe"}).rc == 127);
-    // no POSIX signals or process groups here: "kill -9 $$" (rc -9) and a
-    // background grandchild dying with its session are not checked on WIN
-    MESSAGE("NOTRUN on WIN: kill -9 exit status and background grandchild cleanup (POSIX sessions only)");
+    // a memory cap reaches the child (RLIMIT_AS on POSIX, a Job Object limit here)
+    prism::detail::SessionOptions capped;
+    capped.rlimit_as_mb = 64;
+    CHECK(run({"alloc", "8"}, capped).rc == 0);
+    CHECK(run({"alloc", "256"}, capped).rc == 4);
+    // no POSIX signals here: "kill -9 $$" (rc -9) has no exit status to check on WIN
+    MESSAGE("NOTRUN on WIN: kill -9 exit status (POSIX signals only)");
+}
+
+// The process the Job Object holds is gone (or never existed).
+static bool win_gone(long pid) {
+    HANDLE h = OpenProcess(SYNCHRONIZE, FALSE, static_cast<DWORD>(pid));
+    if (!h) return true;
+    const bool done = WaitForSingleObject(h, 5000) == WAIT_OBJECT_0;
+    CloseHandle(h);
+    return done;
+}
+
+static long read_pid(const fs::path& pidfile) {
+    for (int i = 0; i < 500; ++i) {
+        std::ifstream in(pidfile);
+        long v = 0;
+        if (in >> v && v > 1) return v;
+        Sleep(20);
+    }
+    return 0;
+}
+
+TEST_CASE("run_session: a timeout kills the child and the process it started (Job Object)") {
+    const std::string probe = PRISM_FAKE_SESSION_PROBE;
+    REQUIRE_MESSAGE(!probe.empty(), "PRISM_FAKE_SESSION_PROBE not defined (CMake: fake_session_probe)");
+    Tmp t("prism_qa_sess_");
+    const auto pidfile = t.path / "solver.pid";
+    prism::detail::SessionOptions so;
+    so.timeout_s = 2.0;
+    const auto t0 = std::chrono::steady_clock::now();
+    auto r = prism::detail::run_session({probe, "spawn-sleep", "120", pidfile.string()}, so);
+    const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    CHECK(r.timed_out);
+    CHECK(r.rc == -1);
+    CHECK_FALSE(r.failed);
+    CHECK(secs < 30.0);
+    const long solver = read_pid(pidfile);
+    REQUIRE(solver > 1);
+    CHECK(win_gone(solver));
+}
+
+TEST_CASE("run_session: a background grandchild left behind dies with its session") {
+    const std::string probe = PRISM_FAKE_SESSION_PROBE;
+    REQUIRE_MESSAGE(!probe.empty(), "PRISM_FAKE_SESSION_PROBE not defined (CMake: fake_session_probe)");
+    // the child exits at once, leaving "sleep 120" running; run_session ends it
+    auto bg = prism::detail::run_session({probe, "spawn-bg", "120"});
+    CHECK(bg.rc == 0);
+    CHECK_FALSE(bg.timed_out);
+    const long gc = std::atol(bg.out.c_str());
+    REQUIRE(gc > 1);
+    CHECK(win_gone(gc));
 }
 #else
 TEST_CASE("run_session: normal exit returns stdout, stderr, the exit code, env, cwd and stdin") {

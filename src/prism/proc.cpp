@@ -181,39 +181,105 @@ RunOut run(const RunSpec& spec) {
     if (in_w) SetHandleInformation(in_w, HANDLE_FLAG_INHERIT, 0);
     if (out_r) SetHandleInformation(out_r, HANDLE_FLAG_INHERIT, 0);
     if (err_r) SetHandleInformation(err_r, HANDLE_FLAG_INHERIT, 0);
-    STARTUPINFOW si{};
-    si.cb = sizeof si;
-    si.dwFlags = STARTF_USESTDHANDLES;
-    si.hStdInput = in_r;
-    si.hStdOutput = out_w;
-    si.hStdError = spec.merge_stderr ? out_w : err_w;
+    auto fail_start = [&](const char* why) {
+        // stdin_file / stdout_file are the same handles as in_r / out_w
+        close_h(in_r), close_h(in_w), close_h(out_r), close_h(out_w), close_h(err_r), close_h(err_w);
+        stdin_file = nullptr;
+        stdout_file = nullptr;
+        r.failed = true;
+        r.rc = 127;
+        r.err = why;
+        return r;
+    };
+    // The child inherits exactly its three standard handles (an explicit
+    // handle list), never the other pipe ends of runs going on in other
+    // threads: a stray copy of a write end would keep a pipe open and hang
+    // a reader after its child is gone.
+    HANDLE inherit[3];
+    DWORD n_inherit = 0;
+    for (HANDLE h : {in_r, out_w, spec.merge_stderr ? out_w : err_w}) {
+        if (!h || h == INVALID_HANDLE_VALUE) continue;
+        if (std::find(inherit, inherit + n_inherit, h) == inherit + n_inherit) inherit[n_inherit++] = h;
+    }
+    SIZE_T attr_size = 0;
+    InitializeProcThreadAttributeList(nullptr, 1, 0, &attr_size);
+    std::vector<char> attr_buf(attr_size);
+    auto* attrs = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attr_buf.data());
+    if (attr_size == 0 || !InitializeProcThreadAttributeList(attrs, 1, 0, &attr_size))
+        return fail_start("cannot build the handle inheritance list (InitializeProcThreadAttributeList)");
+    struct AttrGuard {
+        LPPROC_THREAD_ATTRIBUTE_LIST a;
+        ~AttrGuard() { DeleteProcThreadAttributeList(a); }
+    } attr_guard{attrs};
+    if (!UpdateProcThreadAttribute(attrs, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherit,
+                                   n_inherit * sizeof(HANDLE), nullptr, nullptr))
+        return fail_start("cannot build the handle inheritance list (UpdateProcThreadAttribute)");
+    // A Job Object holds the whole process tree: a timeout, a stop request or
+    // PRISM dying ends every descendant, not just the child (the Windows
+    // counterpart of a POSIX process group / session).
+    HANDLE job = CreateJobObjectW(nullptr, nullptr);
+    if (!job) return fail_start("cannot create a Job Object for the process tree");
+    {
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION li{};
+        li.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if (spec.mem_limit_mb > 0) {
+            li.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_PROCESS_MEMORY;
+            li.ProcessMemoryLimit = static_cast<SIZE_T>(spec.mem_limit_mb) << 20;
+        }
+        if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, &li, sizeof li)) {
+            CloseHandle(job);
+            return fail_start("cannot configure the Job Object for the process tree");
+        }
+    }
+    STARTUPINFOEXW si{};
+    si.StartupInfo.cb = sizeof si;
+    si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    si.StartupInfo.hStdInput = in_r;
+    si.StartupInfo.hStdOutput = out_w;
+    si.StartupInfo.hStdError = spec.merge_stderr ? out_w : err_w;
+    si.lpAttributeList = attrs;
     PROCESS_INFORMATION pi{};
     std::wstring wcl = widen(cl);
     std::vector<wchar_t> clbuf(wcl.begin(), wcl.end());
     clbuf.push_back(L'\0');
     const std::wstring wcwd = spec.cwd.empty() ? std::wstring() : spec.cwd.wstring();
     std::vector<wchar_t> envb;
-    DWORD flags = CREATE_NO_WINDOW;
+    // Suspended until it is in the job, so it cannot start a descendant outside it.
+    DWORD flags = CREATE_NO_WINDOW | CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT;
     if (!spec.env.empty()) {
         envb = env_block(spec.env);
         flags |= CREATE_UNICODE_ENVIRONMENT;
     }
     BOOL ok = CreateProcessW(nullptr, clbuf.data(), nullptr, nullptr, TRUE, flags,
                              envb.empty() ? nullptr : envb.data(), wcwd.empty() ? nullptr : wcwd.c_str(),
-                             &si, &pi);
+                             &si.StartupInfo, &pi);
     close_h(in_r);
     if (stdin_file) stdin_file = nullptr;  // in_r was the same handle
     close_h(out_w);
+    if (stdout_file) stdout_file = nullptr;  // out_w was the same handle
     close_h(err_w);
     if (!ok) {
+        CloseHandle(job);
         close_h(in_w), close_h(out_r), close_h(err_r);
-        close_h(stdout_file);
-        close_h(stdin_file);
         r.failed = true;
         r.rc = 127;  // same as a failed exec on POSIX (see run() in proc.hpp)
         r.err = "CreateProcess failed";
         return r;
     }
+    // A child that cannot be put in the job would escape its timeout: that is
+    // a start failure, not a run without a kill switch (Laws 1 and 7).
+    if (!AssignProcessToJobObject(job, pi.hProcess)) {
+        TerminateProcess(pi.hProcess, 1);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        CloseHandle(job);
+        close_h(in_w), close_h(out_r), close_h(err_r);
+        r.failed = true;
+        r.rc = 127;
+        r.err = "cannot assign the child to a Job Object";
+        return r;
+    }
+    ResumeThread(pi.hThread);
     // Stdin is written from a thread of its own: a WriteFile larger than the
     // pipe buffer blocks until the child reads, and the child may be blocked
     // on a full stdout pipe that only the loop below drains. The writer ends
@@ -258,19 +324,30 @@ RunOut run(const RunSpec& spec) {
         drain(out_r, r.out);
         drain(err_r, r.err);
         if (spec.stop && spec.stop->load()) {
-            TerminateProcess(pi.hProcess, 1);
+            TerminateJobObject(job, 1);  // the child and every descendant
             WaitForSingleObject(pi.hProcess, 2000);
             r.cancelled = true;
             break;
         }
         if (WaitForSingleObject(pi.hProcess, 20) == WAIT_OBJECT_0) break;
         if (limit_time && std::chrono::steady_clock::now() >= deadline) {
-            TerminateProcess(pi.hProcess, 1);
+            TerminateJobObject(job, 1);
             WaitForSingleObject(pi.hProcess, 2000);
             r.timed_out = true;
             break;
         }
     }
+    if (spec.kill_descendants) {
+        TerminateJobObject(job, 1);  // whatever the child left running
+    } else {
+        // Closing the job below must not kill a descendant the child left
+        // behind on purpose (as on POSIX, where only a timeout kills the group).
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION li{};
+        QueryInformationJobObject(job, JobObjectExtendedLimitInformation, &li, sizeof li, nullptr);
+        li.BasicLimitInformation.LimitFlags &= ~static_cast<DWORD>(JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE);
+        SetInformationJobObject(job, JobObjectExtendedLimitInformation, &li, sizeof li);
+    }
+    CloseHandle(job);
     drain(out_r, r.out);
     drain(err_r, r.err);
     // The child has exited or been terminated, so its end of stdin is closed

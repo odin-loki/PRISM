@@ -81,6 +81,8 @@ SessionOut run_session(const std::vector<std::string>& args, const SessionOption
     spec.env = opt.env;
     spec.input = opt.input;     // written to the child's stdin, then closed (as on POSIX)
     spec.merge_stderr = false;  // stdout and stderr stay separate (as on POSIX)
+    spec.kill_descendants = true;  // a background grandchild dies with its session
+    spec.mem_limit_mb = opt.rlimit_as_mb;
     auto p = run(spec);
     r.out = p.out;
     r.err = p.err;

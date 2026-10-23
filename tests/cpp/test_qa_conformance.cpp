@@ -116,28 +116,55 @@ fs::path self_dir() {
 #endif
 }
 
-// A wrapper that runs fake_prism with fixed leading arguments: a /bin/sh
-// script on POSIX, a .cmd file on WIN32 (fake_prism itself is POSIX-only, so
-// the WIN32 branch is only reachable once run_tree has a Windows runner; the
-// process tests that use it are NOTRUN there).
-fs::path fake_engine(const fs::path& dir, const std::string& name, const std::string& lead) {
+// A copy of fake_prism that runs with fixed leading arguments: a /bin/sh
+// script on POSIX; on WIN32 a copy of fake_prism.exe with a NAME.exe.lead
+// sidecar (one leading argument per line), as fake_cc.exe has its .fakebody
+// (no .cmd: it would need cmd.exe quoting for every path).
+fs::path fake_engine(const fs::path& dir, const std::string& name, const std::vector<std::string>& lead) {
 #ifdef _WIN32
     fs::path fake = self_dir() / "fake_prism.exe";
     REQUIRE_MESSAGE(fs::exists(fake), "fake_prism.exe is built next to prism_tests");
-    fs::path w = dir / (name + ".cmd");
-    spit(w, "@echo off\r\n\"" + fake.string() + "\" " + lead + " %*\r\n");
+    fs::create_directories(dir);
+    fs::path w = dir / (name + ".exe");
+    std::error_code ec;
+    fs::copy_file(fake, w, fs::copy_options::overwrite_existing, ec);
+    REQUIRE_MESSAGE(!ec, "copy fake_prism.exe: " << ec.message());
+    std::string body;
+    for (const auto& a : lead) body += a + "\n";
+    spit(fs::path(w.string() + ".lead"), body);
     return w;
 #else
     fs::path fake = self_dir() / "fake_prism";
     REQUIRE_MESSAGE(fs::exists(fake), "fake_prism is built next to prism_tests");
     fs::path w = dir / name;
-    spit(w, "#!/bin/sh\nexec '" + fake.string() + "' " + lead + " \"$@\"\n");
+    std::string args;
+    for (const auto& a : lead) args += " '" + a + "'";
+    spit(w, "#!/bin/sh\nexec '" + fake.string() + "'" + args + " \"$@\"\n");
     ::chmod(w.c_str(), 0755);
     return w;
 #endif
 }
 
-#ifndef _WIN32
+#ifdef _WIN32
+#ifndef PRISM_FAKE_SESSION_PROBE
+#define PRISM_FAKE_SESSION_PROBE ""
+#endif
+
+// A child's text output with CRLF folded to LF (the probe prints in text mode).
+std::string lf(std::string s) {
+    s.erase(std::remove(s.begin(), s.end(), '\r'), s.end());
+    return s;
+}
+
+// The process is gone (or never existed): its handle is signalled.
+bool proc_gone(long pid) {
+    HANDLE h = OpenProcess(SYNCHRONIZE, FALSE, static_cast<DWORD>(pid));
+    if (!h) return true;  // no such process
+    const bool done = WaitForSingleObject(h, 5000) == WAIT_OBJECT_0;
+    CloseHandle(h);
+    return done;
+}
+#else
 bool proc_gone(long pid) {
     for (int i = 0; i < 250; ++i) {
         if (::kill(static_cast<pid_t>(pid), 0) != 0 && errno == ESRCH) return true;
@@ -738,12 +765,9 @@ TEST_CASE("qa conformance: certified summary counts loop-free true functions") {
 // ---------------------------------------------------------------- release gate
 
 TEST_CASE("qa conformance: a wrong proof fails the release gate") {
-#ifdef _WIN32
-    MESSAGE("NOTRUN (Windows): needs prism-qa's process-tree runner (Job Object) and the POSIX fake_prism");
-#else
     QaTmp tmp;
     auto run = [&](const std::string& status) {
-        fs::path fake = fake_engine(tmp.dir, "fake_" + status, status);
+        fs::path fake = fake_engine(tmp.dir, "fake_" + status, {status});
         fs::path out = tmp.dir / ("out_" + status);
         // ASan needs a huge address space; the scorer's default RLIMIT_AS breaks fake_prism.
         int rc = qa::conformance_main({"--prism", fake.string(), "--out", out.string(), "--filter",
@@ -764,16 +788,14 @@ TEST_CASE("qa conformance: a wrong proof fails the release gate") {
     CHECK(m["metrics"]["bmc"]["prism"]["detection"].get<double>() == 0.0);  // not replayed
     // an engine that cannot run is NOTRUN (exit 3), never a pass
     CHECK(qa::conformance_main({"--prism", (tmp.dir / "missing").string(), "--out", (tmp.dir / "o").string()}) == 3);
-#endif
 }
 
 TEST_CASE("qa conformance: a timed-out PRISM run kills its solver in another process group") {
-#ifdef _WIN32
-    MESSAGE("NOTRUN (Windows): process groups / session kill are POSIX; no Job Object runner yet");
-#else
+    // POSIX: the solver is in a process group of its own; WIN32: a second
+    // process the Job Object holds. Either way the scorer's timeout ends it.
     QaTmp tmp;
     const fs::path pidfile = tmp.dir / "solver.pid";
-    fs::path fake = fake_engine(tmp.dir, "fake_hang", "HANG '" + pidfile.string() + "'");
+    fs::path fake = fake_engine(tmp.dir, "fake_hang", {"HANG", pidfile.string()});
     spit(tmp.dir / "t.c", "int f(int x) { return x; }\n");
     auto task = mk_task("prism", "p", {{"f", true}});
     task.ident = "t";
@@ -786,15 +808,68 @@ TEST_CASE("qa conformance: a timed-out PRISM run kills its solver in another pro
     long solver = std::atol(slurp(pidfile).c_str());
     REQUIRE(solver > 1);
     CHECK(proc_gone(solver));
-#endif
 }
 
 TEST_CASE("qa proctree: output, exit status, environment, cwd and start failures") {
 #ifdef _WIN32
-    MESSAGE("NOTRUN (Windows): run_tree is the NOTRUN stub (support/proctree_win.cpp); only which() is real");
-    CHECK(qa::run_tree({"cmd", "/c", "exit 0"}).start_failed);  // never a silent clean run (Law 1)
+    // support/proctree_win.cpp: Job Object runner; fake_session_probe.exe stands in for sh.
+    const std::string probe = PRISM_FAKE_SESSION_PROBE;
+    REQUIRE_MESSAGE(!probe.empty(), "PRISM_FAKE_SESSION_PROBE not defined (CMake: fake_session_probe)");
+    REQUIRE(fs::exists(probe));
+    QaTmp tmp;
+    qa::RunOpts o;
+    o.cwd = tmp.dir;
+    o.env = {{"PRISM_QA_T", "v1"}};
+    auto out = qa::run_tree({probe, "echo-out"}, o);
+    CHECK_FALSE(out.start_failed);
+    CHECK(out.rc == 0);
+    CHECK_FALSE(out.timed_out);
+    CHECK(lf(out.out) == "probe-out\n");
+    CHECK(out.err.empty());
+    auto er = qa::run_tree({probe, "echo-err"}, o);
+    CHECK(er.out.empty());
+    CHECK(lf(er.err) == "probe-err\n");
+    auto ev = qa::run_tree({probe, "echo-env", "PRISM_QA_T"}, o);
+    CHECK(ev.rc == 0);
+    CHECK(lf(ev.out) == "v1\n");
+    CHECK(qa::run_tree({probe, "echo-env", "PRISM_QA_T"}).rc == 3);  // overlay is for the child only
+    auto cw = qa::run_tree({probe, "echo-cwd"}, o);
+    CHECK(cw.rc == 0);
+    const std::string cwd_line = lf(cw.out);
+    REQUIRE(cwd_line.size() > 1);
+    CHECK(fs::equivalent(cwd_line.substr(0, cwd_line.size() - 1), tmp.dir));
+    CHECK(qa::run_tree({probe, "exit", "3"}).rc == 3);
+    // stdin is empty (EOF), so copy-stdin ends at once
+    auto in = qa::run_tree({probe, "copy-stdin"});
+    CHECK(in.rc == 0);
+    CHECK(in.out.empty());
+    // a command that cannot start is start_failed, never a clean run (Law 1)
+    auto missing = qa::run_tree({(tmp.dir / "no-such-binary.exe").string()});
+    CHECK(missing.start_failed);
+    CHECK_FALSE(missing.err.empty());
+    // Law 8: a flag that disables a check is refused, not run
+    auto refused = qa::run_tree({probe, "echo-out", "--no-bmc-check"});
+    CHECK(refused.start_failed);
+    CHECK(refused.out.empty());
     CHECK(qa::which("prism-qa-no-such-tool") == "");
     CHECK(qa::which("cmd") != "");
+    // a memory cap every process of the tree inherits (RLIMIT_AS on POSIX)
+    qa::RunOpts lim;
+    lim.mem_limit_mb = 64;
+    CHECK(qa::run_tree({probe, "alloc", "8"}, lim).rc == 0);
+    CHECK(qa::run_tree({probe, "alloc", "256"}, lim).rc == 4);
+    // a timeout kills the command and the process it started; start_failed stays false
+    const fs::path pidfile = tmp.dir / "grandchild.pid";
+    qa::RunOpts to;
+    to.timeout_s = 2.0;
+    const auto t0 = std::chrono::steady_clock::now();
+    auto slow = qa::run_tree({probe, "spawn-sleep", "120", pidfile.string()}, to);
+    CHECK(std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() < 30);
+    CHECK(slow.timed_out);
+    CHECK_FALSE(slow.start_failed);
+    const long gc = std::atol(slurp(pidfile).c_str());
+    REQUIRE(gc > 1);
+    CHECK(proc_gone(gc));
 #else
     QaTmp tmp;
     qa::RunOpts o;
@@ -882,7 +957,8 @@ TEST_CASE("qa conformance: the self-check input grid is the one it always was") 
 TEST_CASE("qa conformance: a sample of the label self-check passes") {
     // the workflow runs all of it (prism-qa conformance --self-check)
 #ifdef _WIN32
-    MESSAGE("NOTRUN (Windows): the label self-check compiles with UBSan+ASan through run_tree (stub on WIN)");
+    MESSAGE("NOTRUN (Windows): the label self-check replays witnesses under UBSan+ASan with gcc/clang (and bwrap); "
+            "that toolchain is not exercised on Windows, only run_tree itself is (see the proctree case)");
     return;
 #endif
     if (!qa::sanitizers_usable()) {
