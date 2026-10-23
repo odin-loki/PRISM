@@ -141,6 +141,7 @@ std::string fake_tool_stem(const std::string& name) {
 
 // Best-effort sh -> cmd for the adapter doctest bodies (not a general translator).
 void sh_to_cmd_one_line(std::string line, std::string& out);
+std::string win_log_argv(const std::string& path);
 
 std::string sh_to_cmd_body(std::string sh) {
     std::string out;
@@ -241,7 +242,7 @@ void sh_to_cmd_one_line(std::string line, std::string& out) {
         std::string path = line.substr(pos + 2);
         while (!path.empty() && path.front() == ' ') path.erase(0, 1);
         if (!path.empty() && path.front() == '\'' && path.back() == '\'') path = path.substr(1, path.size() - 2);
-        out += "echo %*>>\"" + path + "\"\n";
+        out += win_log_argv(path);
         return;
     }
     out += line + "\n";
@@ -252,6 +253,14 @@ std::string win_help_probe() {
            "if \"%1\"==\"-h\" goto prism_help\r\n"
            "if \"%1\"==\"--version\" goto prism_help\r\n"
            "if \"%1\"==\"-version\" goto prism_help\r\n";
+}
+
+std::string win_log_argv(const std::string& path) { return "(echo %*)>>\"" + path + "\"\r\n"; }
+
+std::string win_has_eva_arg() {
+    return "for %%A in (%*) do @if /I \"%%A\"==\"-eva\" goto :prism_eva_run\r\n"
+           "exit /b 0\r\n"
+           ":prism_eva_run\r\n";
 }
 
 fs::path fake_cmd(const fs::path& dir, const std::string& name, const std::string& cmd_body) {
@@ -347,9 +356,7 @@ std::string frama_fake(const std::string& eva_out, int rc = 0) {
 
 fs::path make_frama_fake(const fs::path& dir, const std::string& stem, const std::string& eva_out, int rc = 0) {
 #ifdef _WIN32
-    return fake_cmd(dir, stem, win_help_probe() + "echo %* | findstr /i /c:\"-eva\" >nul\r\n"
-                                         "if errorlevel 1 exit /b 0\r\n"
-                                         "echo " +
+    return fake_cmd(dir, stem, win_help_probe() + win_has_eva_arg() + "echo " +
                                          eva_out + "\r\n"
                                          "exit /b " +
                                          std::to_string(rc) +
@@ -915,7 +922,7 @@ TEST_CASE("cbmc: never passes a check-disabling flag; a fake cbmc is NOTRUN") {
     NoTools nt;
     auto args = nt.t.dir / "argv.txt";
 #ifdef _WIN32
-    auto cbmc = fake_cmd(nt.t.dir / "t", "cbmc", "echo %*>>\"" + args.string() + "\"\r\n"
+    auto cbmc = fake_cmd(nt.t.dir / "t", "cbmc", win_log_argv(args.string()) +
                                               "echo VERIFICATION SUCCESSFUL\r\nexit /b 0\r\n");
 #else
     auto cbmc = fake(nt.t.dir / "t", "cbmc", "echo \"$@\" >> '" + args.string() +
@@ -979,7 +986,18 @@ TEST_CASE("semgrep: a match is FAILED; no results or silent output is UNKNOWN") 
 
     for (const char* body : {"echo '{\"results\":[]}'", "printf '  \\n\\t\\n'", "true"}) {
         CAPTURE(body);
+#ifdef _WIN32
+        std::string run;
+        if (std::string(body) == "echo '{\"results\":[]}'")
+            run = "echo {\"results\":[]}\r\nexit /b 0\r\n";
+        else if (std::string(body).find("printf") != std::string::npos)
+            run = "echo.\r\necho.\t\r\nexit /b 0\r\n";
+        else
+            run = "exit /b 0\r\n";
+        cfg.tools["semgrep"] = help_then_cmd(nt.t.dir / "t", "semgrep", "semgrep --help", run);
+#else
         cfg.tools["semgrep"] = fake(nt.t.dir / "t", "semgrep", help_then("semgrep --help", body));
+#endif
         auto r = stage_row(prism::run_optional_tools(paths, cfg), "semgrep");
         CHECK(r.status == laws::UNKNOWN);  // whitespace-only output used to be ERROR
         never_clean_or_proof(r);
@@ -1046,9 +1064,8 @@ TEST_CASE("frama-c EVA: zero alarms is UNKNOWN; warnings and alarms are FAILED; 
 
     cfg.timeout = 1;
 #ifdef _WIN32
-    exe = fake_cmd(nt.t.dir / "t", "frama-c-sleep", win_help_probe() + "echo %* | findstr /i /c:\"-eva\" >nul\r\n"
-                                                          "if errorlevel 1 exit /b 0\r\n"
-                                                          "timeout /t 30 /nobreak >nul\r\n"
+    exe = fake_cmd(nt.t.dir / "t", "frama-c-sleep", win_help_probe() + win_has_eva_arg() +
+                                                          "ping -n 32 127.0.0.1 >nul\r\n"
                                                           "exit /b 0\r\n"
                                                           ":prism_help\r\necho Frama-C\r\nexit /b 0\r\n");
 #else
@@ -1061,8 +1078,7 @@ TEST_CASE("frama-c EVA: zero alarms is UNKNOWN; warnings and alarms are FAILED; 
     never_clean_or_proof(to[0]);
 
 #ifdef _WIN32
-    exe = fake_cmd(nt.t.dir / "t", "frama-c-doctest", win_help_probe() + "echo %* | findstr /i /c:\"-eva\" >nul\r\n"
-                                                            "if errorlevel 1 exit /b 0\r\n"
+    exe = fake_cmd(nt.t.dir / "t", "frama-c-doctest", win_help_probe() + win_has_eva_arg() +
                                                             "echo [doctest] doctest version is 2.4.11 1>&2\r\n"
                                                             "echo Unknown option: --timeout 1>&2\r\n"
                                                             "exit /b 1\r\n"
@@ -1150,30 +1166,56 @@ TEST_CASE("klee: .err dumps and KLEE ERROR are FAILED; a quiet run is UNKNOWN") 
     auto mk_klee = [&](const std::string& body) {
         return fake(nt.t.dir / "t", "klee", help_then("KLEE --help", body));
     };
+#ifdef _WIN32
+    cfg.tools["klee"] = help_then_cmd(
+        nt.t.dir / "t", "klee", "KLEE --help",
+        "powershell -NoProfile -Command \"New-Item -ItemType Directory -Force -Path 'klee-out/klee-last'|Out-Null\"\r\n"
+        "echo x>\"klee-out/klee-last/test000001.ptr.err\"\r\n"
+        "echo KLEE: done\r\n"
+        "exit /b 0\r\n");
+#else
     cfg.tools["klee"] = mk_klee(
         "mkdir -p klee-out/klee-last\n"
         "echo x > klee-out/klee-last/test000001.ptr.err\n"
         "echo 'KLEE: done'\n");
+#endif
     auto out = ad::run_klee(cfg.tools["klee"].string(), {cfile}, cfg);
     REQUIRE_FALSE(out.empty());
     CHECK(out[0].status == laws::FAILED);
     never_clean_or_proof(out[0]);
 
+#ifdef _WIN32
+    cfg.tools["klee"] = help_then_cmd(nt.t.dir / "t", "klee", "KLEE --help",
+                                        "(echo KLEE: ERROR: invalid pointer) 1>&2\r\nexit /b 1\r\n");
+#else
     cfg.tools["klee"] = mk_klee("echo 'KLEE: ERROR: invalid pointer' >&2; exit 1");
+#endif
     out = ad::run_klee(cfg.tools["klee"].string(), {cfile}, cfg);
     REQUIRE_FALSE(out.empty());
     CHECK(out[0].status == laws::FAILED);
     never_clean_or_proof(out[0]);
 
+#ifdef _WIN32
+    cfg.tools["klee"] = help_then_cmd(nt.t.dir / "t", "klee", "KLEE --help",
+                                        "echo KLEE: done: generated tests = 2\r\nexit /b 0\r\n");
+#else
     cfg.tools["klee"] = mk_klee("echo 'KLEE: done: generated tests = 2'");
+#endif
     out = ad::run_klee(cfg.tools["klee"].string(), {cfile}, cfg);
     REQUIRE_FALSE(out.empty());
     CHECK(out[0].status == laws::UNKNOWN);
     never_clean_or_proof(out[0]);
     CHECK(has(lower(out[0].message), "not a proof"));
 
+#ifdef _WIN32
+    cfg.tools["klee"] = help_then_cmd(nt.t.dir / "t", "klee", "KLEE --help",
+                                        "echo [doctest] doctest version is 2.4.11 1>&2\r\n"
+                                        "echo Unknown option: --max-time 1>&2\r\n"
+                                        "exit /b 1\r\n");
+#else
     cfg.tools["klee"] = mk_klee(
         "echo '[doctest] doctest version is 2.4.11' >&2; echo 'Unknown option: --max-time' >&2; exit 1");
+#endif
     out = ad::run_klee(cfg.tools["klee"].string(), {cfile}, cfg);
     REQUIRE_FALSE(out.empty());
     CHECK(out[0].status == laws::NOTRUN);
@@ -1189,7 +1231,7 @@ TEST_CASE("clang-tidy: no TUs is UNKNOWN; silence is not a proof; warnings are F
 #ifdef _WIN32
     const auto logq = log.string();
     auto tidy = fake_cmd(nt.t.dir / "t", "clang-tidy",
-                         "echo %*>>\"" + logq + "\"\r\n"
+                         win_log_argv(logq) +
                          "if /i \"%~x1\"==\".cpp\" exit /b 0\r\n"
                          "if /i \"%~x1\"==\".cc\" exit /b 0\r\n"
                          "if /i \"%~x1\"==\".cxx\" exit /b 0\r\n"
@@ -1229,7 +1271,7 @@ TEST_CASE("clang-tidy: no TUs is UNKNOWN; silence is not a proof; warnings are F
     log = nt.t.dir / "cxx.log";
 #ifdef _WIN32
     auto tidycxx = fake_cmd(nt.t.dir / "t", "clang-tidy-cxx",
-                            "echo %*>>\"" + log.string() + "\"\r\nexit /b 0\r\n");
+                            win_log_argv(log.string()) + "exit /b 0\r\n");
 #else
     auto tidycxx = fake(nt.t.dir / "t", "clang-tidy-cxx", "echo \"$@\" >> '" + log.string() + "'\nexit 0\n");
 #endif
@@ -1330,9 +1372,9 @@ TEST_CASE("warnings: fake compilers parse output, dedupe, and never emit proof")
 
     auto log = nt.t.dir / "cc.log";
 #ifdef _WIN32
-    fake_cmd(nt.bin, "gcc", "echo %*>>\"" + log.string() + "\"\r\nexit /b 0\r\n");
+    fake_cmd(nt.bin, "gcc", win_log_argv(log.string()) + "exit /b 0\r\n");
     fs::remove(clang);
-    fake_cmd(nt.bin, "clang", "echo %*>>\"" + log.string() + "\"\r\nexit /b 0\r\n");
+    fake_cmd(nt.bin, "clang", win_log_argv(log.string()) + "exit /b 0\r\n");
 #else
     fake(nt.bin, "gcc", "echo \"$@\" >> '" + log.string() + "'\nexit 0\n");
     fs::remove(clang);
@@ -1548,7 +1590,9 @@ TEST_CASE("libfuzzer_probe: keyword reject and successful stub compile are hones
     never_clean_or_proof(unknown);
 
 #ifdef _WIN32
-    auto ok = probe("echo %* | findstr /i fsanitize=fuzzer >nul && exit /b 0\r\nexit /b 1\r\n");
+    auto ok = probe("echo %*|findstr /i \"sanitize=fuzzer\" >nul\r\n"
+                    "if errorlevel 1 exit /b 1\r\n"
+                    "exit /b 0\r\n");
 #else
     auto ok = probe("case \"$*\" in *-fsanitize=fuzzer*) exit 0;; esac\nexit 0");
 #endif
@@ -1581,7 +1625,7 @@ TEST_CASE("esbmc: the verdict line maps to PROVED, BOUNDED, FAILED, UNKNOWN or E
         CAPTURE(c.out);
         auto cfg = nt.cfg;
 #ifdef _WIN32
-        cfg.tools["esbmc"] = fake_cmd(nt.t.dir / "t", "esbmc", "echo %*> \"" + args.string() + "\"\r\n" +
+        cfg.tools["esbmc"] = fake_cmd(nt.t.dir / "t", "esbmc", win_log_argv(args.string()) +
                                                               esbmc_out_cmd(c.out) + "exit /b 0\r\n");
 #else
         cfg.tools["esbmc"] = fake(nt.t.dir / "t", "esbmc",
