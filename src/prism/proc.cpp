@@ -210,6 +210,7 @@ RunOut run(const RunSpec& spec) {
         close_h(stdout_file);
         close_h(stdin_file);
         r.failed = true;
+        r.rc = 127;  // same as a failed exec on POSIX (see run() in proc.hpp)
         r.err = "CreateProcess failed";
         return r;
     }

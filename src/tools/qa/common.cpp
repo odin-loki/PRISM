@@ -8,6 +8,9 @@
 
 #ifndef _WIN32
 #include <unistd.h>
+#else
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
 #endif
 
 namespace fs = std::filesystem;
@@ -27,7 +30,12 @@ bool executable(const fs::path& p) {
 
 fs::path self_dir() {
     std::error_code ec;
-#ifdef __linux__
+#ifdef _WIN32
+    wchar_t buf[MAX_PATH];
+    const DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH);
+    if (n && n < MAX_PATH) return fs::path(buf).parent_path();
+    return {};
+#elif defined(__linux__)
     auto exe = fs::read_symlink("/proc/self/exe", ec);
     if (!ec) return exe.parent_path();
 #endif
@@ -43,7 +51,11 @@ std::optional<fs::path> find_prism(const std::string& explicit_bin, const fs::pa
         return std::nullopt;
     }
     if (const char* e = std::getenv("PRISM_BIN"); e && *e) cands.emplace_back(e);
-    if (auto d = self_dir(); !d.empty()) cands.push_back(d / "prism");
+    if (auto d = self_dir(); !d.empty()) {
+        cands.push_back(d / "prism.exe");
+        cands.push_back(d / "prism");
+    }
+    cands.push_back(repo / "build" / "prism.exe");
     cands.push_back(repo / "build" / "prism");
     for (const auto& c : cands)
         if (executable(c)) return fs::absolute(c);

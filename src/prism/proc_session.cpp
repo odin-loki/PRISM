@@ -79,7 +79,8 @@ SessionOut run_session(const std::vector<std::string>& args, const SessionOption
     spec.timeout_s = opt.timeout_s > 0 ? opt.timeout_s : 1e9;
     spec.cwd = opt.cwd;
     spec.env = opt.env;
-    spec.merge_stderr = true;
+    spec.input = opt.input;     // written to the child's stdin, then closed (as on POSIX)
+    spec.merge_stderr = false;  // stdout and stderr stay separate (as on POSIX)
     auto p = run(spec);
     r.out = p.out;
     r.err = p.err;
