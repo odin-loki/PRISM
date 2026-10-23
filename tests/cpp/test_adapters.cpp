@@ -268,6 +268,9 @@ fs::path fake_cmd(const fs::path& dir, const std::string& name, const std::strin
 }
 
 fs::path fake(const fs::path& dir, const std::string& name, const std::string& body) {
+    // help_then() and other hand-written batch bodies must not go through sh_to_cmd.
+    if (body.find("goto prism_help") != std::string::npos || body.find("\r\n") != std::string::npos)
+        return fake_cmd(dir, name, body);
     return fake_cmd(dir, name, sh_to_cmd_body(body));
 }
 
