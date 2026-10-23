@@ -1702,6 +1702,7 @@ prism::FunctionInfo saturate() {
 std::string fake_afl_body(bool crash, const fs::path& calls = {}) {
 #ifdef _WIN32
     std::string b =
+        "setlocal enabledelayedexpansion\r\n"
         "set out=\r\n"
         ":afl_arg_loop\r\n"
         "if \"%1\"==\"\" goto afl_arg_done\r\n"
@@ -1709,13 +1710,14 @@ std::string fake_afl_body(bool crash, const fs::path& calls = {}) {
         "shift\r\n"
         "goto afl_arg_loop\r\n"
         ":afl_arg_done\r\n"
-        "echo %AFL_NO_UI% %AFL_SKIP_CPUFREQ% %AFL_NO_AFFINITY%> \"%out%\\..\\env.txt\"\r\n"
-        "cd> \"%out%\\..\\cwd.txt\"\r\n";
+        "echo !AFL_NO_UI! !AFL_SKIP_CPUFREQ! !AFL_NO_AFFINITY!>\"!out!\\..\\env.txt\"\r\n"
+        "cd>\"!out!\\..\\cwd.txt\"\r\n";
     if (!calls.empty()) b += "echo call>>\"" + calls.string() + "\"\r\n";
     if (crash)
-        b += "if not exist \"%out%\\crashes\" mkdir \"%out%\\crashes\"\r\n"
-             "powershell -NoProfile -Command \"[IO.File]::WriteAllBytes((Join-Path '%out%' "
-             "'crashes\\id:000000'), [byte[]](1,2,3,4))\"\r\n";
+        b += "if not exist \"!out!\\crashes\" mkdir \"!out!\\crashes\"\r\n"
+             "powershell -NoProfile -Command \"[IO.File]::WriteAllBytes((Join-Path '!out!' "
+             "'crashes/id:000000'), [byte[]](1,2,3,4))\"\r\n";
+    b += "endlocal\r\nexit /b 0\r\n";
     return b;
 #else
     std::string b =
