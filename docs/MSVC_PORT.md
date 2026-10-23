@@ -207,16 +207,22 @@ String-only BMC/astlint files: **0** type migration expected.
 
 ## 6. Acceptance criteria
 
-Status on `main` @ `b30f6dd77`: phases **5a**, **5b**, **5c**, **7** and **8** below are **met**.
-Evidence: the last run that finished green on every job (four Windows smokes, the Qt GUI job,
-Linux `prism_tests` and the shrunk Python suite) is `39985974306` @ `f5af2c33b`;
-`b30f6dd77` only changes this document on top of it. Its own run `39994821578` was still in
-progress when this was written, so confirm it before treating `b30f6dd77` itself as green.
+Status on `main` @ `8d1f9721f`: phases **5a**, **5b**, **5c**, **7** and **8** below are **met**.
+Evidence: run [`39997099937`](https://github.com/odin-loki/PRISM/actions/runs/39997099937)
+(`PRISM CI` @ `8d1f9721f`) finished **success** on every job: the four Windows smokes
+(`clang-cl`, `cl`, and both Z3 jobs), the Qt GUI job, Linux `prism_tests`, the shrunk Python
+suite, the licence firewall and the SARIF self-check. The `PRISM conformance (release gate)`
+run `39997099924` and `docs` / `proofs` on the same commit are green too.
 Remaining epic work is listed in [§7](#7-remaining-work-backlog).
 
 The follow-up to this audit (`Config::which` Store-stub probe, the polyglot / tools-dir cases
-now on WIN32, below) was checked locally with a native `cl` Release build (`prism_tests.exe`:
-716 cases, 0 failed) and has not yet run on CI, including the Z3 smokes.
+now on WIN32, below) was first checked locally with a native `cl` Release build
+(`prism_tests.exe`: 716 cases, 0 failed) and then on CI: run
+[`39996316650`](https://github.com/odin-loki/PRISM/actions/runs/39996316650) @ `8d9650785`
+finished green on all nine jobs, including `Windows compile smoke (Z3)` and
+`Windows compile smoke (MSVC cl, Z3)`. The Z3 cache change `75aeb6299`
+(run [`39997000464`](https://github.com/odin-loki/PRISM/actions/runs/39997000464)) and the
+Python `which` parity `8d1f9721f` are green as well.
 
 - **Phase 5a (CI smoke) — met:** `windows-compile-smoke` configures with `clang-cl` and builds
   `prism_core`, `prism`, `prism-qa`, and the phase-7 `prism_tests` subset with `PRISM_Z3=OFF`,
@@ -286,7 +292,10 @@ now on WIN32, below) was checked locally with a native `cl` Release build (`pris
   (cached per path); a Microsoft Store stub (exit 9009 / cannot start) is passed over for the
   next python on PATH, and if there is none the tool is missing (`NOTRUN`, Law 1), not a tool
   failure. Covered by `config: which skips the Microsoft Store python stub`. The Python engine
-  uses `shutil.which` and has no equivalent; it is not run on Windows CI.
+  has the same probe since `8d1f9721f` (`prism/config.py`: `which_tool` / `resolve_adapter`
+  with `_is_store_python_stub`, same 9009 / cannot-start / timeout rules, cached per path;
+  `tests/test_config.py` fakes the platform and the probe, so it runs on every OS). The
+  Python engine itself is still not run on Windows CI.
 - Witness and regress integer formatting unchanged on golden strings in `tests/cpp/`.
 
 ---
@@ -300,15 +309,17 @@ Linux `prism_tests` or `prism-qa conformance`. What is still open:
 |------|--------|
 | **POSIX-only test cases** | Still `#ifndef _WIN32` or `NOTRUN` on WIN32: the process-tree block in `test_main.cpp` (`fork` / signals; the Job Object equivalent is covered in `test_qa*`), the symlink case in `scope:` (needs a privilege on Windows), `test_diff` PATH mutation, `test_cli` binary integration, the `test_pipeline` chmod/LTL case, the `tests/pir` verdict table in `test_pir_e2e`, SV-COMP replay/solve/pack (execute task code, Law 9), the fake-HTTP repair test, certified-mode `fork` / OOM-checker cases, and "prism_gui without a display". Each is a deliberate gap, not a silent skip: they print `MESSAGE: NOTRUN` or are absent from the Windows build. |
 | **Phase 6: label self-check** | `test_qa_conformance.cpp` runs in the subset; the label self-check (UBSan+ASan replay, bwrap) reports `NOTRUN` on Windows because that toolchain is not exercised there. |
-| **Follow-up not yet on CI** | The `Config::which` Store-stub probe and the polyglot / tools-dir cases enabled in `test_main.cpp` were run locally with `cl` only; the next push shows them on the four Windows smokes (including both Z3 jobs). |
-| **Z3 build time on Windows** | Cold vendored-Z3 build is ~44 min on `windows-latest`. Both Z3 jobs now use `actions/cache/restore` + `cache/save` with a working `restore-keys` prefix (the old `<hash>-` fallback could never match), so a changed Z3 input starts from the newest earlier build dir and ninja rebuilds only what changed. The build is split: `libz3` first, saved right after it succeeds (on an exact-key miss), then the PRISM targets, so a later failure no longer discards the Z3 objects. Not measured yet: the first run after this change is still cold. sccache is not used: `cl` needs `/Z7` (`CMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded`), which changes the Release flags of both smokes. |
+| **Z3 build time on Windows** | Cold vendored-Z3 build is ~44 min on `windows-latest`. Z3 cache fix `75aeb6299`: both Z3 jobs use `actions/cache/restore` + `cache/save` with a working `restore-keys` prefix (the old `<hash>-` fallback could never match), so a changed Z3 input starts from the newest earlier build dir and ninja rebuilds only what changed. The build is split: `libz3` first, saved right after it succeeds (on an exact-key miss), then the PRISM targets, so a later failure no longer discards the Z3 objects. The first runs after the change (`39997000464` @ `75aeb6299`, `39997099937` @ `8d1f9721f`) are green but ran with the Z3 job over an hour, i.e. still cold or close to it; the warm-cache time is not measured yet. sccache is not used: `cl` needs `/Z7` (`CMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded`), which changes the Release flags of both smokes. |
 
 Closed items (earlier rows of this table, kept short): `test_main.cpp` runs in full on WIN32
 (`test_main_win.cpp` retired); `test_gui_model.cpp` / `test_gui.cpp` ported (`fake_prism_gui.exe`,
 `fake_gui_prism.exe`); full QA doctest TUs (`test_qa`, adapters, sanitize, conformance
 static + process slice); `windows-gui-qt`; all four Windows compile smokes including
 `windows-compile-smoke-cl-z3`. The Microsoft Store `python3.exe` stub no longer needs removing
-from PATH to run the polyglot python-syntax test.
+from PATH to run the polyglot python-syntax test. **Follow-up on CI (done):** the
+`Config::which` Store-stub probe and the polyglot / tools-dir cases on WIN32 (`8d9650785`)
+are green on all four Windows smokes (run `39996316650`); Python `which` parity is done
+(`8d1f9721f`, run `39997099937` green).
 
 No Python-engine parity test is required for `stages/interp.cpp` overflow on the MSVC path
 (concrete interpreter is C++-only in CI).
