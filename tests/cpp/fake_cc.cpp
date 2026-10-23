@@ -100,7 +100,7 @@ static int compile_mode(int argc, char** argv) {
     std::error_code ec;
     fs::copy_file(self, out, fs::copy_options::overwrite_existing, ec);
     if (ec) return 1;
-    std::ofstream(out.string() + ".fakebody") << rc << "\n" << text;
+    std::ofstream(out + ".fakebody") << rc << "\n" << text;
     return 0;
 }
 
