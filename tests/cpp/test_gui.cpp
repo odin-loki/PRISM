@@ -362,10 +362,18 @@ TEST_CASE("journal poll: live stage table and one progress line per change") {
     CHECK(log->toPlainText().contains(QStringLiteral("esbmc NOTRUN (0)")));
 }
 
-#ifndef _WIN32
 // A stand-in `prism` so the run/done path is tested without a scan: it
-// writes the journal and report the real CLI would, then exits with $CODE.
-void fake_prism(const fs::path& dir, const fs::path& report, int code) {
+// writes the report the real CLI would, then exits with `code`. Returns the
+// program to hand to MainWindow::setPrismProgram.
+// POSIX: a /bin/sh script. WIN32: tests/cpp/fake_gui_prism.cpp copied here,
+// configured by NAME.exe.report / NAME.exe.code sidecars (no shell script).
+QString fake_prism(const fs::path& dir, const fs::path& report, int code) {
+#ifdef _WIN32
+    const auto p = dir / "fake-prism.exe";
+    fs::copy_file(PRISM_FAKE_GUI_PRISM, p, fs::copy_options::overwrite_existing);
+    std::ofstream(p.string() + ".report", std::ios::binary) << report.string() << "\n";
+    std::ofstream(p.string() + ".code", std::ios::binary) << code << "\n";
+#else
     const auto p = dir / "fake-prism";
     std::ofstream f(p);
     f << "#!/bin/sh\n"
@@ -376,15 +384,16 @@ void fake_prism(const fs::path& dir, const fs::path& report, int code) {
          "exit " << code << "\n";
     f.close();
     ::chmod(p.c_str(), 0755);
+#endif
+    return QString::fromStdString(p.string());
 }
 
 TEST_CASE("a finished run logs the confidence line and the NOTRUN stages") {
     TempDir td("done");
     auto report = mixed_report();
     report.save(td.path / "canned.json");
-    fake_prism(td.path, td.path / "canned.json", 0);
     prism::MainWindow w;
-    w.setPrismProgram(QString::fromStdString((td.path / "fake-prism").string()));
+    w.setPrismProgram(fake_prism(td.path, td.path / "canned.json", 0));
     auto* run = child<QPushButton>(w, "run");
     run->click();
     CHECK_FALSE(run->isEnabled());
@@ -401,9 +410,8 @@ TEST_CASE("a failed run raises a dialog, never a clean result") {
     TempDir td("fail");
     auto report = mixed_report();
     report.save(td.path / "canned.json");
-    fake_prism(td.path, td.path / "canned.json", 2);
     prism::MainWindow w;
-    w.setPrismProgram(QString::fromStdString((td.path / "fake-prism").string()));
+    w.setPrismProgram(fake_prism(td.path, td.path / "canned.json", 2));
     auto* run = child<QPushButton>(w, "run");
     run->click();
     REQUIRE(wait_for([&] { return run->isEnabled(); }, 20000));
@@ -429,7 +437,12 @@ TEST_CASE("a missing prism binary is NOTRUN in the log") {
 }
 
 TEST_CASE("a real run through the window (prism beside the test binary)") {
-    const auto prism = fs::path(QCoreApplication::applicationDirPath().toStdString()) / "prism";
+#ifdef _WIN32
+    const char* prism_name = "prism.exe";
+#else
+    const char* prism_name = "prism";
+#endif
+    const auto prism = fs::path(QCoreApplication::applicationDirPath().toStdString()) / prism_name;
     const auto src = repo_root() / "testdata" / "div_param.c";
     if (!fs::exists(prism) || !fs::exists(src)) {
         MESSAGE("NOTRUN: prism binary or testdata not found");
@@ -451,7 +464,6 @@ TEST_CASE("a real run through the window (prism beside the test binary)") {
     CHECK(child<QLabel>(w, "s_conf")->text().startsWith(QStringLiteral("confidence ")));
     CHECK(w.findChild<QMessageBox*>(QStringLiteral("run_failure")) == nullptr);
 }
-#endif
 
 }  // TEST_SUITE
 

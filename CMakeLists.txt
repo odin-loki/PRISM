@@ -724,6 +724,8 @@ if(PRISM_TESTS)
     add_executable(fake_cc tests/cpp/fake_cc.cpp)
     add_executable(fake_session_probe tests/cpp/fake_session_probe.cpp)
     add_executable(fake_prism tests/cpp/fake_prism.cpp)
+    # Stand-in prism_gui for the `prism --gui` launcher cases (test_gui_model.cpp).
+    add_executable(fake_prism_gui tests/cpp/fake_prism_gui.cpp)
   endif()
   add_executable(prism_tests ${_prism_test_sources})
   target_include_directories(prism_tests PRIVATE
@@ -731,8 +733,9 @@ if(PRISM_TESTS)
     "${PRISM_ROOT}/third_party")
   target_link_libraries(prism_tests PRIVATE prism_core prism_qa)
   if(WIN32 AND PRISM_TESTS_WIN_SUBSET)
-    add_dependencies(prism_tests fake_tool_launcher fake_cc fake_session_probe fake_prism)
+    add_dependencies(prism_tests fake_tool_launcher fake_cc fake_session_probe fake_prism fake_prism_gui)
     target_compile_definitions(prism_tests PRIVATE
+      "PRISM_FAKE_GUI=\"$<TARGET_FILE:fake_prism_gui>\"" 
       "PRISM_FAKE_TOOL_LAUNCHER=\"$<TARGET_FILE:fake_tool_launcher>\""
       "PRISM_FAKE_CC=\"$<TARGET_FILE:fake_cc>\""
       "PRISM_FAKE_SESSION_PROBE=\"$<TARGET_FILE:fake_session_probe>\""
@@ -761,6 +764,15 @@ if(PRISM_TESTS)
     add_executable(prism_gui_tests tests/cpp/test_gui.cpp)
     target_include_directories(prism_gui_tests PRIVATE "${PRISM_ROOT}/third_party")
     target_link_libraries(prism_gui_tests PRIVATE prism_gui_window)
+    # "a real run through the window" finds prism beside prism_gui_tests.
+    add_dependencies(prism_gui_tests prism)
+    if(WIN32)
+      # Stand-in `prism` for the run/done/fail cases (POSIX uses a /bin/sh script).
+      add_executable(fake_gui_prism tests/cpp/fake_gui_prism.cpp)
+      add_dependencies(prism_gui_tests fake_gui_prism)
+      target_compile_definitions(prism_gui_tests PRIVATE
+        "PRISM_FAKE_GUI_PRISM=\"$<TARGET_FILE:fake_gui_prism>\"")
+    endif()
     add_test(NAME prism_gui_tests COMMAND prism_gui_tests)
   endif()
 endif()

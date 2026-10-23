@@ -31,7 +31,18 @@
 #include <string>
 #include <vector>
 
-#ifndef _WIN32
+#ifdef _WIN32
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
+#  include <windows.h>
+#  ifdef ERROR
+#    undef ERROR
+#  endif
+#else
 #  include <sys/stat.h>
 #  include <sys/wait.h>
 #  include <unistd.h>
@@ -143,16 +154,36 @@ std::string slurp(const fs::path& p) {
     return ss.str();
 }
 
-#ifndef _WIN32
+#ifdef _WIN32
+constexpr const char* EXE_EXT = ".exe";
+#else
+constexpr const char* EXE_EXT = "";
+#endif
+
+// A stand-in file for find_prism_gui. POSIX: a script, executable or not.
+// WIN32: the finder only asks "is it a regular file" (no execute bit), so
+// `exec` has no effect there.
 void make_file(const fs::path& p, bool exec) {
+#ifdef _WIN32
+    (void)exec;
+    std::ofstream(p, std::ios::binary) << "MZ stand-in\n";
+#else
     std::ofstream(p) << "#!/bin/sh\nexit 0\n";
     ::chmod(p.c_str(), exec ? 0755 : 0644);
+#endif
 }
 
+// Directory of this test binary: prism / prism_gui sit beside it.
 fs::path self_dir() {
+#ifdef _WIN32
+    wchar_t buf[MAX_PATH];
+    const DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH);
+    return n > 0 && n < MAX_PATH ? fs::path(buf).parent_path() : fs::path();
+#else
     char buf[4096]{};
     auto n = ::readlink("/proc/self/exe", buf, sizeof buf - 1);
     return n > 0 ? fs::path(std::string(buf, static_cast<std::size_t>(n))).parent_path() : fs::path();
+#endif
 }
 
 struct Run {
@@ -162,16 +193,44 @@ struct Run {
 
 Run run_shell(const std::string& cmd) {
     Run r;
+#ifdef _WIN32
+    // _popen runs `cmd.exe /c <string>`; the extra outer quotes keep cmd from
+    // stripping the first and last quote of a command that has several.
+    FILE* p = ::_popen(("\"" + cmd + " 2>&1\"").c_str(), "r");
+#else
     FILE* p = ::popen((cmd + " 2>&1").c_str(), "r");
+#endif
     if (!p) return r;
     char buf[4096];
     std::size_t n;
     while ((n = std::fread(buf, 1, sizeof buf, p)) > 0) r.out.append(buf, n);
+#ifdef _WIN32
+    r.code = ::_pclose(p);  // the exit code itself
+#else
     int st = ::pclose(p);
     r.code = WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+#endif
     return r;
 }
+
+// A path quoted for the platform shell.
+std::string shq(const fs::path& p) {
+#ifdef _WIN32
+    return "\"" + p.string() + "\"";
+#else
+    return "'" + p.string() + "'";
 #endif
+}
+
+// `cd ROOT && <scrubbed PATH> ./prism ARGS`: prism copied into ROOT, with no
+// prism_gui on PATH (WIN32: only System32, so the Windows search finds none).
+Run run_prism_in(const fs::path& root, const std::string& args) {
+#ifdef _WIN32
+    return run_shell("cd /d " + shq(root) + " && set \"PATH=%SystemRoot%\\system32\" && .\\prism.exe " + args);
+#else
+    return run_shell("cd " + shq(root) + " && PATH=/nonexistent ./prism " + args);
+#endif
+}
 
 bool has(const std::vector<std::string>& v, const std::string& x) {
     return std::find(v.begin(), v.end(), x) != v.end();
@@ -716,37 +775,47 @@ TEST_CASE("prism --gui: missing prism_gui is NOTRUN (exit 0), a spawn failure is
 #endif
 }
 
-#ifndef _WIN32
 TEST_CASE("find_prism_gui: beside the binary first, then PATH; not executable is not found") {
     auto root = temp_dir("find");
     auto self = root / "self";
     auto p1 = root / "p1";
     auto p2 = root / "p2";
     for (auto& d : {self, p1, p2}) fs::create_directories(d);
+    const auto name = pg::gui_binary_name();  // prism_gui / prism_gui.exe
+#ifdef _WIN32
+    const std::string path_env = p1.string() + ";" + p2.string();
+#else
     const std::string path_env = p1.string() + ":" + p2.string();
+#endif
     CHECK(pg::find_prism_gui({self}, path_env).empty());
-    make_file(p1 / "prism_gui", false);  // not executable
+#ifndef _WIN32
+    // POSIX only: WIN32 has no execute bit, a regular file is found.
+    make_file(p1 / name, false);  // not executable
     CHECK(pg::find_prism_gui({self}, path_env).empty());
-    make_file(p2 / "prism_gui", true);
-    CHECK(pg::find_prism_gui({self}, path_env) == p2 / "prism_gui");
-    make_file(self / "prism_gui", true);
-    CHECK(pg::find_prism_gui({fs::path(), self}, path_env) == self / "prism_gui");
+#endif
+    make_file(p2 / name, true);
+    CHECK(pg::find_prism_gui({self}, path_env) == p2 / name);
+    make_file(self / name, true);
+    CHECK(pg::find_prism_gui({fs::path(), self}, path_env) == self / name);
     CHECK(pg::find_prism_gui({}, "") .empty());
     fs::remove_all(root);
 }
 
 TEST_CASE("prism --gui without prism_gui: NOTRUN, exit 0, the pipeline never runs") {
-    const auto prism = self_dir() / "prism";
+    const auto prism_name = std::string("prism") + EXE_EXT;
+    const auto prism = self_dir() / prism_name;
     if (!fs::exists(prism)) {
         MESSAGE("NOTRUN: prism binary not beside prism_tests");
         return;
     }
     auto root = temp_dir("cli");
-    fs::copy_file(prism, root / "prism");
-    ::chmod((root / "prism").c_str(), 0755);
+    fs::copy_file(prism, root / prism_name);
+#ifndef _WIN32
+    ::chmod((root / prism_name).c_str(), 0755);
+#endif
     fs::create_directories(root / "src");
     std::ofstream(root / "src" / "a.c") << "int f(int a, int b) { return a / b; }\n";
-    auto r = run_shell("cd '" + root.string() + "' && PATH=/nonexistent ./prism src --gui --out out");
+    auto r = run_prism_in(root, "src --gui --out out");
     CHECK(r.code == 0);
     CHECK(r.out.find("NOTRUN gui: prism_gui not found — not a clean window") != std::string::npos);
     CHECK(r.out.find("confidence") == std::string::npos);
@@ -754,29 +823,54 @@ TEST_CASE("prism --gui without prism_gui: NOTRUN, exit 0, the pipeline never run
     CHECK_FALSE(fs::exists(root / "out" / "report.json"));
 
     // Beside the binary: the forwarded argv reaches prism_gui without --gui.
-    std::ofstream(root / "prism_gui") << "#!/bin/sh\nprintf '%s|' \"$@\"\nexit 7\n";
-    ::chmod((root / "prism_gui").c_str(), 0755);
-    r = run_shell("cd '" + root.string() + "' && PATH=/nonexistent ./prism src --gui --out out --no-llm");
+    const auto gui_name = pg::gui_binary_name();
+    std::string forwarded;
+#ifdef _WIN32
+    // fake_prism_gui.exe (tests/cpp/fake_prism_gui.cpp) records its argv as
+    // "ARG|" per argument in NAME.args (stdout is not inherited by the
+    // launcher's CreateProcess) and exits 7.
+    fs::copy_file(PRISM_FAKE_GUI, root / gui_name, fs::copy_options::overwrite_existing);
+    r = run_prism_in(root, "src --gui --out out --no-llm");
+    forwarded = slurp(root / (gui_name.string() + ".args"));
+#else
+    std::ofstream(root / gui_name) << "#!/bin/sh\nprintf '%s|' \"$@\"\nexit 7\n";
+    ::chmod((root / gui_name).c_str(), 0755);
+    r = run_prism_in(root, "src --gui --out out --no-llm");
+    forwarded = r.out;
+#endif
     CHECK(r.code == 7);  // prism_gui's own exit code
-    CHECK(r.out == "src|--out|out|--no-llm|");
+    CHECK(forwarded == "src|--out|out|--no-llm|");
     CHECK_FALSE(fs::exists(root / "out" / "report.json"));
 
-    // Found but cannot be started (bad interpreter): ERROR, exit 2, no scan.
-    std::ofstream(root / "prism_gui") << "#!/nonexistent/interpreter\n";
-    ::chmod((root / "prism_gui").c_str(), 0755);
-    r = run_shell("cd '" + root.string() + "' && PATH=/nonexistent ./prism src --gui --out out");
+    // Found but cannot be started (bad interpreter / not a PE image): ERROR,
+    // exit 2, no scan.
+    {
+#ifdef _WIN32
+        std::ofstream(root / gui_name, std::ios::binary) << "not an executable image\n";
+#else
+        std::ofstream(root / gui_name) << "#!/nonexistent/interpreter\n";
+        ::chmod((root / gui_name).c_str(), 0755);
+#endif
+    }
+    r = run_prism_in(root, "src --gui --out out");
     CHECK(r.code == 2);
     CHECK(r.out.find("ERROR gui: failed to spawn prism_gui — not a clean window") != std::string::npos);
+#ifdef _WIN32
+    CHECK(r.out.find("CreateProcess error") != std::string::npos);
+#else
     CHECK(r.out.find("execv:") != std::string::npos);
+#endif
     CHECK(r.out.find("confidence") == std::string::npos);
     CHECK_FALSE(fs::exists(root / "out" / "report.json"));
 
-    auto help = run_shell("'" + prism.string() + "' --help");
+    auto help = run_shell(shq(prism) + " --help");
     CHECK(help.code == 0);
     CHECK(help.out.find("--gui") != std::string::npos);
     fs::remove_all(root);
 }
 
+#ifndef _WIN32
+// POSIX only: WIN32 always has a window station (display_available is true).
 TEST_CASE("prism_gui without a display: NOTRUN, exit 0, no window") {
     const auto gui = self_dir() / "prism_gui";
     if (!fs::exists(gui)) {
@@ -789,10 +883,11 @@ TEST_CASE("prism_gui without a display: NOTRUN, exit 0, no window") {
     CHECK(r.out.find("QT_QPA_PLATFORM=offscreen") != std::string::npos);
     CHECK(r.out.find(" CLEAN") == std::string::npos);
 }
+#endif
 
 TEST_CASE("prism_gui smoke: an empty findings table is a failure (exit 3), never a pass") {
-    const auto gui = self_dir() / "prism_gui";
-    if (!fs::exists(gui) || !fs::exists(self_dir() / "prism")) {
+    const auto gui = self_dir() / pg::gui_binary_name();
+    if (!fs::exists(gui) || !fs::exists(self_dir() / (std::string("prism") + EXE_EXT))) {
         MESSAGE("NOTRUN: prism_gui or prism not built");
         return;
     }
@@ -800,14 +895,17 @@ TEST_CASE("prism_gui smoke: an empty findings table is a failure (exit 3), never
     fs::create_directories(root / "empty");
     // --smoke-screenshot is taken out of argv before the window parses it,
     // so it is never mistaken for the scan path or a CLI flag.
-    auto r = run_shell("cd '" + root.string() + "' && QT_QPA_PLATFORM=offscreen '" + gui.string() +
-                       "' empty --no-llm --stage inventory --out out --smoke-screenshot shot.png");
+    const std::string gui_args = " empty --no-llm --stage inventory --out out --smoke-screenshot shot.png";
+#ifdef _WIN32
+    auto r = run_shell("cd /d " + shq(root) + " && set \"QT_QPA_PLATFORM=offscreen\" && " + shq(gui) + gui_args);
+#else
+    auto r = run_shell("cd " + shq(root) + " && QT_QPA_PLATFORM=offscreen " + shq(gui) + gui_args);
+#endif
     CHECK(r.code == 3);
     CHECK(r.out.find("gui smoke: 0 finding rows") != std::string::npos);
     CHECK(fs::exists(root / "out" / "report.json"));
     fs::remove_all(root);
 }
-#endif
 
 TEST_CASE("prism main: --gui returns before run_pipeline (source contract)") {
     const auto main_cpp = slurp(repo_root() / "src" / "prism" / "main.cpp");

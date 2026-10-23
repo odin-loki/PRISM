@@ -237,6 +237,70 @@ jobs:
       - name: Run portable prism_tests subset (Z3 + leanbb)
         run: .\build-win-cl-z3\prism_tests.exe
 
+  # Native Qt GUI on Windows: MSVC cl, Qt 6 from jurplel/install-qt-action
+  # (aqtinstall), PRISM_QT=ON, PRISM_Z3=OFF (the window needs no solver; skips the
+  # vendored Z3 build). Everything runs offscreen (QT_QPA_PLATFORM=offscreen).
+  # prism_tests is built too so the `prism --gui` launcher cases of
+  # test_gui_model.cpp run against the real prism_gui.exe beside them.
+  windows-gui-qt:
+    name: Windows GUI (Qt 6, MSVC cl, offscreen)
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Install Qt 6 (aqtinstall)
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.8.3"
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          cache: true
+      - uses: actions/cache@v4
+        with:
+          path: build-win-qt
+          key: win-qt-${{ hashFiles('CMakeLists.txt', 'third_party/pcre2/CMakeLists.txt') }}
+          restore-keys: win-qt-${{ hashFiles('CMakeLists.txt', 'third_party/pcre2/CMakeLists.txt') }}-
+      - name: Configure (Ninja + cl, PRISM_QT=ON, PRISM_Z3=OFF)
+        run: >
+          cmake -B build-win-qt -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl
+          "-DCMAKE_PREFIX_PATH=$env:QT_ROOT_DIR"
+          -DPRISM_CUDA=OFF -DPRISM_LLAMA=OFF -DPRISM_QT=ON -DPRISM_Z3=OFF
+          -DPRISM_TESTS=ON -DPRISM_TESTS_WIN_SUBSET=ON -DPRISM_LIBCLANG=OFF
+      # An unknown target here means Qt6 Widgets was not found (CMake only warns
+      # and PRISM_QT quietly builds no GUI): the step fails, never passes empty.
+      - name: Build (prism, prism_gui, prism_gui_tests, prism_tests)
+        run: cmake --build build-win-qt --target prism prism_gui prism_gui_tests prism_tests
+      - name: prism_gui_tests (the window, offscreen)
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: .\build-win-qt\prism_gui_tests.exe
+      - name: prism_tests "gui model" suite (launcher against the real prism_gui.exe)
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: .\build-win-qt\prism_tests.exe --test-suite="gui model"
+      - name: GUI smoke (headless Qt, real pipeline run through the window)
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          New-Item -ItemType Directory -Force gui-smoke\src | Out-Null
+          Copy-Item testdata\add_overflow.c, testdata\div_param.c, testdata\oob_write.c gui-smoke\src\
+          .\build-win-qt\prism_gui.exe gui-smoke\src --no-llm `
+            --stage inventory,classify,lints --out gui-smoke\out `
+            --smoke-screenshot gui-smoke\prism_gui.png
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: prism-gui-smoke-windows
+          path: gui-smoke/prism_gui.png
+          retention-days: 7
+
   selfcheck:
     name: PRISM on PRISM (SARIF artifact, not gating)
     runs-on: ubuntu-24.04
