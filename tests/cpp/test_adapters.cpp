@@ -1065,8 +1065,8 @@ TEST_CASE("frama-c EVA: zero alarms is UNKNOWN; warnings and alarms are FAILED; 
     cfg.timeout = 1;
 #ifdef _WIN32
     exe = fake_cmd(nt.t.dir / "t", "frama-c-sleep", win_help_probe() + win_has_eva_arg() +
-                                                          "ping -n 32 127.0.0.1 >nul\r\n"
-                                                          "exit /b 0\r\n"
+                                                          ":prism_spin\r\n"
+                                                          "goto prism_spin\r\n"
                                                           ":prism_help\r\necho Frama-C\r\nexit /b 0\r\n");
 #else
     exe = fake(nt.t.dir / "t", "frama-c-sleep",
@@ -1149,8 +1149,7 @@ TEST_CASE("klee: .err dumps and KLEE ERROR are FAILED; a quiet run is UNKNOWN") 
          "set OUT=\r\n"
          ":cloop\r\n"
          "if \"%1\"==\"\" goto cdone\r\n"
-         "if \"%1\"==\"-o\" set OUT=%2\r\n"
-         "shift\r\n"
+         "if \"%1\"==\"-o\" (set OUT=%2& shift)\r\n"
          "shift\r\n"
          "goto cloop\r\n"
          ":cdone\r\n"
@@ -1343,8 +1342,7 @@ TEST_CASE("warnings: fake compilers parse output, dedupe, and never emit proof")
 #ifdef _WIN32
     fake_cmd(nt.bin, "gcc", "(echo planted.c:3:5: warning: overflow [-Woverflow]) 1>&2\r\nexit /b 0\r\n");
     const auto gcc_exe = nt.bin / "gcc.exe";
-    auto clang = nt.bin / "clang.exe";
-    fs::copy_file(gcc_exe, clang, fs::copy_options::overwrite_existing);
+    fs::path clang = nt.bin / "clang.exe";
 #else
     fake(nt.bin, "gcc", "printf '" + warn + "' >&2\nexit 0\n");
     auto clang = nt.bin / "clang";
@@ -1359,7 +1357,6 @@ TEST_CASE("warnings: fake compilers parse output, dedupe, and never emit proof")
 
 #ifdef _WIN32
     fake_cmd(nt.bin, "gcc", "(echo fatal: cannot exec cc1) 1>&2\r\nexit /b 1\r\n");
-    fs::copy_file(gcc_exe, clang, fs::copy_options::overwrite_existing);
 #else
     fake(nt.bin, "gcc", "echo 'fatal: cannot exec cc1' >&2\nexit 1\n");
     fs::copy_file(nt.bin / "gcc", clang, fs::copy_options::overwrite_existing);
@@ -1591,7 +1588,15 @@ TEST_CASE("libfuzzer_probe: keyword reject and successful stub compile are hones
 
 #ifdef _WIN32
     auto ok = probe("echo %*|findstr /i \"sanitize=fuzzer\" >nul\r\n"
-                    "if errorlevel 1 exit /b 1\r\n"
+                    "if errorlevel 1 (echo error: unsupported argument '-fsanitize=fuzzer' 1>&2& exit /b 1)\r\n"
+                    "set OUT=\r\n"
+                    ":lfloop\r\n"
+                    "if \"%1\"==\"\" goto lfdone\r\n"
+                    "if \"%1\"==\"-o\" (set OUT=%2& shift)\r\n"
+                    "shift\r\n"
+                    "goto lfloop\r\n"
+                    ":lfdone\r\n"
+                    "if not \"%OUT%\"==\"\" type nul >\"%OUT%\"\r\n"
                     "exit /b 0\r\n");
 #else
     auto ok = probe("case \"$*\" in *-fsanitize=fuzzer*) exit 0;; esac\nexit 0");
@@ -1768,13 +1773,13 @@ std::string fake_afl_body(bool crash, const fs::path& calls = {}) {
         "shift\r\n"
         "goto afl_arg_loop\r\n"
         ":afl_arg_done\r\n"
-        "echo !AFL_NO_UI! !AFL_SKIP_CPUFREQ! !AFL_NO_AFFINITY!>\"!out!\\..\\env.txt\"\r\n"
+        "echo %AFL_NO_UI% %AFL_SKIP_CPUFREQ% %AFL_NO_AFFINITY%>\"!out!\\..\\env.txt\"\r\n"
         "cd>\"!out!\\..\\cwd.txt\"\r\n";
     if (!calls.empty()) b += "echo call>>\"" + calls.string() + "\"\r\n";
     if (crash)
         b += "if not exist \"!out!\\crashes\" mkdir \"!out!\\crashes\"\r\n"
-             "powershell -NoProfile -Command \"[IO.File]::WriteAllBytes((Join-Path '!out!' "
-             "'crashes/id:000000'), [byte[]](1,2,3,4))\"\r\n";
+             "powershell -NoProfile -Command \"[IO.File]::WriteAllBytes((Join-Path "
+             "'!out!' 'crashes/id:000000'), [byte[]](1,2,3,4))\"\r\n";
     b += "endlocal\r\nexit /b 0\r\n";
     return b;
 #else
@@ -1891,7 +1896,13 @@ TEST_CASE("afl: a planted crash is CRASH, a quiet run CLEAN (not a proof); env a
         CHECK(slurp(work / "env.txt") == "1 1 1");
         auto cwd = slurp(work / "cwd.txt");
         if (!cwd.empty() && cwd.back() == '\n') cwd.pop_back();
+#ifdef _WIN32
+        std::error_code ec;
+        CHECK(fs::equivalent(fs::weakly_canonical(fs::path(cwd), ec),
+                             fs::weakly_canonical(work, ec)));
+#else
         CHECK(fs::equivalent(fs::path(cwd), work));
+#endif
         CHECK(std::getenv("AFL_NO_UI") == nullptr);
         CHECK(std::getenv("AFL_SKIP_CPUFREQ") == nullptr);
     }
