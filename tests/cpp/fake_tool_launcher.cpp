@@ -35,11 +35,16 @@ int wmain(int argc, wchar_t** argv) {
     for (int i = 1; i < argc; ++i) cl << L' ' << quote(argv[i]);
     STARTUPINFOW si{};
     si.cb = sizeof si;
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    si.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
+    si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
     PROCESS_INFORMATION pi{};
     std::wstring cmd = cl.str();
     std::vector<wchar_t> buf(cmd.begin(), cmd.end());
     buf.push_back(L'\0');
-    if (!CreateProcessW(nullptr, buf.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si,
+    // Forward PRISM's pipe-backed stdio to cmd.exe (the PE is run with inherited handles).
+    if (!CreateProcessW(nullptr, buf.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &si,
                         &pi))
         return 1;
     WaitForSingleObject(pi.hProcess, INFINITE);
