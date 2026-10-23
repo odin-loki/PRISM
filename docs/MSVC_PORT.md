@@ -8,9 +8,10 @@ Phases 2–4 route those paths through `prism::i128` (`wide_int.hpp`).
 are migrated to `prism::i128` (phases 2–4). Remaining substring hits are string-only
 BMC/astlint tables or `wide_int.hpp` under `PRISM_HAS_INT128`.
 
-**CI (phases 5a / 5b / 5c / 7):** green on `main` — `windows-compile-smoke` (clang-cl),
-`windows-compile-smoke-z3` (clang-cl + vendored Z3), `windows-compile-smoke-cl` (native
-`cl`), Linux `prism_tests`, and the shrunk Python suite.
+**CI (phases 5a / 5b / 5c / 7):** green on `main` @ `9230cd9ac` (2026-10-23) — all four
+Windows smokes (`clang-cl` / `clang-cl+Z3` / `cl` / `cl+Z3`) build and run the phase-7
+`prism_tests` subset including full `test_adapters.cpp` + `fake_tool_launcher`; Linux
+`prism_tests` and the shrunk Python suite.
 
 **Related:** `docs/ROADMAP_STATUS.md` D7 (WSL primary today); `CMakeLists.txt` rejects
 MinGW and already sets MSVC flags on `prism_core`. `tests/cpp/test_main.cpp` solver integration tests are gated on `PRISM_HAS_Z3` only
@@ -224,8 +225,8 @@ Remaining epic work is listed in [§7](#7-remaining-work-backlog).
   | Portable doctest TUs | `test_wide_int`, `test_interval`, `test_svcomp`, `test_naming`, `test_polyglot`, `test_taxonomy`, `test_repolint`, `test_deps`, `test_cparse`, `test_sarif`, `test_astlint`, `test_ltl`, `test_contracts`, `test_bmc`, `test_checkers_cxx`, `test_checkers_c`, `test_gen_tables`, `test_bmc_svcomp`, `test_havoc`, `test_verdict_repo`, `test_diff`, `test_journal_confidence`, `test_thread_taint`, `test_wp_harness`, `test_concrete`, `test_concolic`, `test_lint_corpus`, `test_pir_mem`, `test_ai_assist`, `test_pbsd`, `test_pir3`, `test_pir_refinement`, `test_cli`, `test_pipeline`, `test_ai9`, `test_conc`, `test_cxx_models`, `test_fuse`, `test_gui_model`, `test_repair`, `test_pir_e2e` |
   | When `PRISM_HAS_Z3` | `test_leanbb`, `test_pir_budget`, `test_certified` |
 
-  **Not in subset (by design):** `test_main.cpp`; full `test_adapters.cpp`, `test_sanitize.cpp`,
-  `test_qa.cpp`, `test_qa_conformance.cpp`, and other unistd / `fork` / socket-heavy TUs.
+  **Not in subset (by design):** `test_main.cpp`; full `test_sanitize.cpp`, `test_qa.cpp`,
+  `test_qa_conformance.cpp`, and other unistd / `fork` / socket-heavy TUs.
   `test_pipeline` chmod/LTL case is POSIX-only; `test_cli` binary integration is POSIX-only.
   On WIN32, `test_pir_e2e` omits the large `tests/pir` verdict table (MESSAGE); Law 9 /
   `--fp-checks` / `--strict-aliasing` smoke cases still run when `clang`/`opt` are on PATH.
@@ -258,9 +259,9 @@ Epic closure for phases 5a / 5b / 5c / 7 does **not** imply full Windows parity 
 | Item | Notes |
 |------|--------|
 | **`test_main.cpp` on WIN32** | Link last; largest integration surface (`unistd`, process, sockets). |
-| **Full adapter / sanitize / QA doctest TUs** | `test_adapters.cpp` (fake-tool optional probes; `.cmd` fakes on CI), `test_sanitize.cpp` (fake `sh` compiler), `test_qa.cpp` (`run_session`, Lean/lli drivers). Static coverage stays in `test_*_static.cpp`. |
+| **Full sanitize / QA doctest TUs** | `test_sanitize.cpp` (fake `sh` compiler), `test_qa.cpp` (`run_session`, Lean/lli drivers). `test_adapters.cpp` is in the WIN subset (`fake_tool_launcher` + `.cmd` fakes; AFL child env is AFL_*-only so stubs must not rely on PATH). Static coverage stays in `test_*_static.cpp`. |
 | **Phase 6 conformance on Windows** | `prism-qa conformance` and friends remain `if(UNIX)` until `replay.cpp` process tree and sanitizer replay are ported. |
-| **`windows-compile-smoke-cl-z3` (CI)** | Native `cl` + vendored Z3 smoke (5b parity on `cl`); Release, 120 min timeout. |
+| **`windows-compile-smoke-cl-z3` (CI)** | Done (four smokes green @ `9230cd9ac`). |
 | **Z3 build time on Windows** | Optional ccache / stronger caching for vendored Z3 on `windows-latest`. |
 
 No Python-engine parity test is required for `stages/interp.cpp` overflow on the MSVC path
