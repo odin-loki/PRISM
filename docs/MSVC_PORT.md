@@ -95,8 +95,9 @@ it only its three standard handles (`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`). A time
 `RunSpec::stop` terminates the whole job; `RunSpec::kill_descendants` (set by `run_session`)
 also ends what the child left behind. A child that cannot be started or put in the job is
 `start_failed` / `failed` (Laws 1, 7); a `--no-*-check` flag is refused (Law 8). `which()` is
-PATH + PATHEXT. The sanitizer (UBSan+ASan, bwrap) replay toolchain is still not exercised
-on Windows.
+PATH + PATHEXT. The sanitizer (UBSan+ASan) replay toolchain runs on Windows with clang only
+(gcc is skipped in the probe, `-lm` is not passed, bwrap is absent so replay is unsandboxed); the clang-cl CI jobs put the clang ASan DLL dir on PATH. When
+the probe cannot link UBSan+ASan the label self-check is `NOTRUN`.
 ### Tests (outside `src/` / `include/` but coupled)
 
 | File | Notes |
@@ -252,7 +253,7 @@ Python `which` parity `8d1f9721f` are green as well.
   | Adapter fakes on WIN32 | Full `test_adapters.cpp` + `fake_tool_launcher` (stdio forwarded to `cmd.exe`); `fake_cmd` / `help_then_cmd` / `sh_to_cmd` |
   | Sanitize fakes on WIN32 | Full `test_sanitize.cpp` + `fake_cc.exe` (PE compiler/runner with `.fakebody` sidecar) |
   | QA on WIN32 | Full `test_qa.cpp` + `fake_session_probe.exe` (incl. Job Object timeout / background-grandchild / memory-cap cases); fork and SIGTERM-to-runner cases POSIX-only |
-  | Conformance on WIN32 | `test_qa_conformance.cpp`: suite shape, scorer rules, `PyRandom` / generator parity, plus the release gate (`fake_prism.exe` copied per status with a `NAME.exe.lead` sidecar), the solver-kill timeout and `run_tree` (via `fake_session_probe.exe`); only the label self-check (UBSan+ASan replay) reports `MESSAGE: NOTRUN` |
+  | Conformance on WIN32 | `test_qa_conformance.cpp`: suite shape, scorer rules, `PyRandom` / generator parity, plus the release gate (`fake_prism.exe` copied per status with a `NAME.exe.lead` sidecar), the solver-kill timeout and `run_tree` (via `fake_session_probe.exe`); the label self-check (UBSan+ASan replay) runs with clang and is `NOTRUN` (`WARN_MESSAGE`) when no clang links the sanitizers |
   | GUI fakes on WIN32 | `fake_prism_gui.exe` (`prism --gui` launcher, `test_gui_model.cpp`) in `prism_tests`; `fake_gui_prism.exe` (window run/done/fail, `test_gui.cpp`) in `prism_gui_tests` (`PRISM_QT=ON` only) |
   | Static splits (reference only on WIN) | `test_adapters_static.cpp`, `test_sanitize_static.cpp`, `test_qa_static.cpp` |
   | Portable doctest TUs | `test_wide_int`, `test_interval`, `test_svcomp`, `test_naming`, `test_polyglot`, `test_taxonomy`, `test_repolint`, `test_deps`, `test_cparse`, `test_sarif`, `test_astlint`, `test_ltl`, `test_contracts`, `test_bmc`, `test_checkers_cxx`, `test_checkers_c`, `test_gen_tables`, `test_bmc_svcomp`, `test_havoc`, `test_verdict_repo`, `test_diff`, `test_journal_confidence`, `test_thread_taint`, `test_wp_harness`, `test_concrete`, `test_concolic`, `test_lint_corpus`, `test_pir_mem`, `test_ai_assist`, `test_pbsd`, `test_pir3`, `test_pir_refinement`, `test_cli`, `test_pipeline`, `test_ai9`, `test_conc`, `test_cxx_models`, `test_fuse`, `test_gui_model`, `test_repair`, `test_pir_e2e` |
@@ -318,7 +319,7 @@ Linux `prism_tests` or `prism-qa conformance`. What is still open:
 | Item | Notes |
 |------|--------|
 | **POSIX-only test cases** | Still `#ifndef _WIN32` or `NOTRUN` on WIN32: the process-tree block in `test_main.cpp` (`fork` / signals; the Job Object equivalent is covered in `test_qa*`), the file-symlink half of the `scope:` case (needs Developer Mode or `SeCreateSymbolicLinkPrivilege`; `NOTRUN` message when it cannot be created, the junction half always runs), the `tests/pir` verdict table in `test_pir_e2e`, SV-COMP replay/solve/pack (execute task code, Law 9), the fake-HTTP repair test, certified-mode `fork` / OOM-checker cases, and "prism_gui without a display". Each is a deliberate gap, not a silent skip: they print `MESSAGE: NOTRUN` or are absent from the Windows build. |
-| **Phase 6: label self-check** | `test_qa_conformance.cpp` runs in the subset; the label self-check (UBSan+ASan replay, bwrap) reports `NOTRUN` on Windows because that toolchain is not exercised there. |
+| **Phase 6: label self-check** | `test_qa_conformance.cpp` runs in the subset; the label self-check (UBSan+ASan replay) runs on Windows when `sanitizers_usable()` finds a clang that links UBSan+ASan (clang-cl CI jobs add the ASan DLL dir to PATH); otherwise it reports `NOTRUN` (`WARN_MESSAGE`). |
 | **Z3 build time on Windows** | Cold vendored-Z3 build is ~44 min on `windows-latest`. Z3 cache fix `75aeb6299`: both Z3 jobs use `actions/cache/restore` + `cache/save` with a working `restore-keys` prefix (the old `<hash>-` fallback could never match), so a changed Z3 input starts from the newest earlier build dir and ninja rebuilds only what changed. The build is split: `libz3` first, saved right after it succeeds (on an exact-key miss), then the PRISM targets, so a later failure no longer discards the Z3 objects. The first runs after the change (`39997000464` @ `75aeb6299`, `39997099937` @ `8d1f9721f`) are green but ran with the Z3 job over an hour, i.e. still cold or close to it; the warm-cache time is not measured yet. sccache is not used: `cl` needs `/Z7` (`CMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded`), which changes the Release flags of both smokes. |
 
 Closed items (earlier rows of this table, kept short): `test_main.cpp` runs in full on WIN32

@@ -655,8 +655,10 @@ if(PRISM_TESTS)
       tests/cpp/test_qa.cpp
       # Conformance / soundness scorer rules and suite shape; the release-gate,
       # solver-kill and run_tree cases run on WIN32 through the Job Object runner
-      # (fake_prism.exe + .lead sidecar, fake_session_probe.exe). Only the label
-      # self-check (UBSan+ASan through run_tree) stays NOTRUN there.
+      # (fake_prism.exe + .lead sidecar, fake_session_probe.exe). The label
+      # self-check (UBSan+ASan through run_tree) runs there too when a clang with
+      # the ASan runtime is on PATH (the clang-cl CI jobs add its DLL dir); the
+      # sanitizers_usable() probe otherwise reports NOTRUN.
       tests/cpp/test_qa_conformance.cpp
       tests/cpp/test_pir_e2e.cpp)
     if(PRISM_HAS_Z3)

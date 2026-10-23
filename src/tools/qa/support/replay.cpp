@@ -328,6 +328,10 @@ std::pair<std::string, std::string> sanitizer_compilers() {
         cc = {"clang", "clang++"};
         for (const auto& [c, cxx] : std::vector<std::pair<std::string, std::string>>{{"clang", "clang++"},
                                                                                      {"gcc", "g++"}}) {
+#ifdef _WIN32
+            // MinGW gcc has no UBSan/ASan runtime; only clang can link one here
+            if (c == "gcc") continue;
+#endif
             if (which(c).empty()) continue;
             fs::path d;
             try {
@@ -377,7 +381,10 @@ Exec run_sanitized(const Task& task, const std::string& fn, const Params& params
     cc.insert(cc.end(), {drv.string(), "-x", "none"});
     cc.insert(cc.end(), SAN_FLAGS.begin(), SAN_FLAGS.end());
     cc.insert(cc.end(), {"-o", exe.string()});
+#ifndef _WIN32
+    // the MSVC CRT carries libm; clang on Windows has no -lm to link
     if (!is_cxx(task.lang)) cc.push_back("-lm");
+#endif
     RunOpts co;
     co.timeout_s = 180;
     auto r = run_tree(cc, co);

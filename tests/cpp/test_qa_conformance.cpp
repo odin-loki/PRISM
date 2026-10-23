@@ -956,11 +956,8 @@ TEST_CASE("qa conformance: the self-check input grid is the one it always was") 
 
 TEST_CASE("qa conformance: a sample of the label self-check passes") {
     // the workflow runs all of it (prism-qa conformance --self-check)
-#ifdef _WIN32
-    MESSAGE("NOTRUN (Windows): the label self-check replays witnesses under UBSan+ASan with gcc/clang (and bwrap); "
-            "that toolchain is not exercised on Windows, only run_tree itself is (see the proctree case)");
-    return;
-#endif
+    // on Windows the probe only accepts clang (UBSan+ASan runtime DLLs on PATH);
+    // without one the sample is NOTRUN via the WARN below, never a clean pass
     if (!qa::sanitizers_usable()) {
         WARN_MESSAGE(false, "no compiler links UBSan+ASan: label self-check sample NOTRUN");
         return;
