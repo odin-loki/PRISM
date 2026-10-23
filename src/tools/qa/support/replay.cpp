@@ -340,15 +340,36 @@ std::pair<std::string, std::string> sanitizer_compilers() {
                 continue;
             }
             write_file(d / "probe.c", "int main(void) { return 0; }\n");
+#ifdef _WIN32
+            const fs::path probe_exe = d / "probe.exe";
+#else
+            const fs::path probe_exe = d / "probe";
+#endif
             std::vector<std::string> cmd = {c, (d / "probe.c").string()};
             cmd.insert(cmd.end(), SAN_FLAGS.begin(), SAN_FLAGS.end());
-            cmd.insert(cmd.end(), {"-o", (d / "probe").string()});
+            cmd.insert(cmd.end(), {"-o", probe_exe.string()});
             RunOpts o;
             o.timeout_s = 120;
             auto r = run_tree(cmd, o);
+            bool usable = !r.start_failed && !r.timed_out && r.rc == 0;
+#ifdef _WIN32
+            // Linking is not enough on Windows: clang links the dynamic ASan runtime
+            // (clang_rt.asan_dynamic-*.dll), which must also be on PATH when the binary
+            // runs. A missing DLL or entry point (0xC0000135 / 0xC0000139) makes the
+            // loader kill the process before main(). Run the probe once; any failure to
+            // start or exit 0 means the replay cannot work here, so this is NOTRUN (Law 1)
+            // rather than every replayed function reporting a bogus "crash".
+            if (usable) {
+                RunOpts po;
+                po.timeout_s = 30;
+                po.env = SAN_ENV;
+                auto x = run_tree({probe_exe.string()}, po);
+                usable = !x.start_failed && !x.timed_out && x.rc == 0;
+            }
+#endif
             std::error_code ec;
             fs::remove_all(d, ec);
-            if (!r.start_failed && !r.timed_out && r.rc == 0) {
+            if (usable) {
                 cc = {c, cxx};
                 g_san_usable = true;
                 break;

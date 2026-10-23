@@ -189,7 +189,7 @@ jobs:
           $root = Split-Path (Split-Path $clang)
           $dll = Get-ChildItem -Path "$root\lib\clang" -Recurse -Filter "clang_rt.asan_dynamic-x86_64.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
           if ($dll) { $dll.DirectoryName | Out-File -Append -Encoding utf8 $env:GITHUB_PATH; Write-Host "ASan DLL dir: $($dll.DirectoryName)" }
-          else { Write-Host "no clang ASan DLL under $root: label self-check will be NOTRUN" }
+          else { Write-Host "no clang ASan DLL under ${root}: label self-check will be NOTRUN" }
       - name: Run portable prism_tests subset
         run: .\build-win\prism_tests.exe
 
@@ -236,7 +236,7 @@ jobs:
           $root = Split-Path (Split-Path $clang)
           $dll = Get-ChildItem -Path "$root\lib\clang" -Recurse -Filter "clang_rt.asan_dynamic-x86_64.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
           if ($dll) { $dll.DirectoryName | Out-File -Append -Encoding utf8 $env:GITHUB_PATH; Write-Host "ASan DLL dir: $($dll.DirectoryName)" }
-          else { Write-Host "no clang ASan DLL under $root: label self-check will be NOTRUN" }
+          else { Write-Host "no clang ASan DLL under ${root}: label self-check will be NOTRUN" }
       - name: Run portable prism_tests subset (Z3 + leanbb)
         run: .\build-win-z3\prism_tests.exe
 
