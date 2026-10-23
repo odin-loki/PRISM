@@ -181,7 +181,7 @@ shortcut. Keep **D** only for explicitly documented optional components, not cor
 | **5c** (CI done) | Native MSVC `cl` | `windows-compile-smoke-cl`: Ninja + `cl` (not `clang-cl`), `PRISM_Z3=OFF`, same targets/subset as 5a. `stages/interp.cpp` uses `prism::i128` / manual checks instead of `__builtin_*_overflow` (clang-cl only). Configure with default `CMAKE_BUILD_TYPE=Release` (Debug + `prism_core` `/O2` hits cl D8016 vs `/RTC1`). |
 | **6** (partial) | QA on Windows | `yaml_subset` + `task` + `pyrandom` on `prism::i128` (done); `prism-qa` in `windows-compile-smoke`; conformance / soundness / replay compile on WIN; `proctree_win.cpp` + `proc.cpp` Job Object `run_tree` (commit B), `test_qa_conformance.cpp` release-gate / solver-kill / `run_tree` cases run in the subset (`fake_prism.exe` + `.lead` sidecar, `fake_session_probe` `spawn-sleep` / `spawn-bg` / `alloc`) |
 | **7** (done) | Windows `prism_tests` subset | `PRISM_TESTS_WIN_SUBSET` in `CMakeLists.txt` (inventory: [§6](#6-acceptance-criteria)). WIN: full `test_adapters.cpp`, `test_sanitize.cpp` (`fake_cc`), `test_qa.cpp` (`fake_session_probe`). Static splits remain reference-only on WIN. `test_cli` / `test_pipeline` omit POSIX-only cases; `test_conc` skips without Z3. `test_pir_e2e` skips the full `tests/pir` table on `_WIN32` (MESSAGE). All four Windows smoke jobs build and run `prism_tests.exe`. |
-| **8** (CI added) | Qt GUI on Windows | `windows-gui-qt`: Ninja + `cl`, Qt 6 via aqtinstall, `PRISM_QT=ON`, `PRISM_Z3=OFF`; `prism_gui_tests.exe` and the `gui model` doctest suite offscreen, plus the `--smoke-screenshot` smoke. See [§7](#7-remaining-work-backlog). |
+| **8** (done) | Qt GUI on Windows | `windows-gui-qt`: Ninja + `cl`, Qt 6 via aqtinstall, `PRISM_QT=ON`, `PRISM_Z3=OFF`; `prism_gui_tests.exe` and the `gui model` doctest suite offscreen, plus the `--smoke-screenshot` smoke. See [§7](#7-remaining-work-backlog). |
 
 **Dependency order:** 2 → 3 (public API) → 4 (largest volume) → 5 → 6 → 7 (subset) → 5b (Z3 + full tests).
 
@@ -207,8 +207,16 @@ String-only BMC/astlint files: **0** type migration expected.
 
 ## 6. Acceptance criteria
 
-Status on `main` @ `1dfe4eabc`: phases **5a**, **5b**, **5c**, and **7** below are **met** (four Windows smokes green on Job Object + conformance slice; Z3 jobs track the same subset).
+Status on `main` @ `b30f6dd77`: phases **5a**, **5b**, **5c**, **7** and **8** below are **met**.
+Evidence: the last run that finished green on every job (four Windows smokes, the Qt GUI job,
+Linux `prism_tests` and the shrunk Python suite) is `39985974306` @ `f5af2c33b`;
+`b30f6dd77` only changes this document on top of it. Its own run `39994821578` was still in
+progress when this was written, so confirm it before treating `b30f6dd77` itself as green.
 Remaining epic work is listed in [§7](#7-remaining-work-backlog).
+
+The follow-up to this audit (`Config::which` Store-stub probe, the polyglot / tools-dir cases
+now on WIN32, below) was checked locally with a native `cl` Release build (`prism_tests.exe`:
+716 cases, 0 failed) and has not yet run on CI, including the Z3 smokes.
 
 - **Phase 5a (CI smoke) — met:** `windows-compile-smoke` configures with `clang-cl` and builds
   `prism_core`, `prism`, `prism-qa`, and the phase-7 `prism_tests` subset with `PRISM_Z3=OFF`,
@@ -222,6 +230,12 @@ Remaining epic work is listed in [§7](#7-remaining-work-backlog).
   CaDiCaL / Lean tools are absent). `z3gen_shim.bat` satisfies `FindPython3` during Z3 configure;
   cache key includes `cmake/z3-generated/tree_sha256` (`build-win-z3`; cold Z3 build ~44 min on
   `windows-latest` as of 2026-10-22).
+- **Phase 8 (Qt GUI on Windows) — met:** `windows-gui-qt` (Ninja + `cl`, Qt 6.8.3
+  `win64_msvc2022_64`, `PRISM_QT=ON`, `PRISM_Z3=OFF`) builds `prism`, `prism_gui`,
+  `prism_gui_tests` and `prism_tests`, runs `prism_gui_tests.exe` and the `gui model` doctest
+  suite offscreen, and the `prism_gui.exe … --smoke-screenshot` smoke. Green on all nine jobs
+  @ `f5af2c33b` (run `39985974306`). Only "prism_gui without a display" stays POSIX-only
+  (Windows always has a window station).
 - **Phase 7 (Windows `prism_tests` subset) — met:** all three Windows smoke jobs set
   `PRISM_TESTS=ON` and `PRISM_TESTS_WIN_SUBSET=ON` (see `CMakeLists.txt`). Configure fails on
   WIN32 if tests are on without the subset flag. Inventory:
@@ -240,8 +254,14 @@ Remaining epic work is listed in [§7](#7-remaining-work-backlog).
 
   **Not in subset (by design):** other unistd / `fork` / socket-heavy TUs. `test_main.cpp` is the
   doctest main and its cases run on WIN32; BMC-driven cases there (goto / shift rules, fuzz-goal
-  budget) are `NOTRUN` without `PRISM_HAS_Z3`, and the `SolverTmp` shell fakes use
-  `fake_tool_launcher` + `.cmd` (`cmd_tool`) on WIN32.
+  budget) are `NOTRUN` without `PRISM_HAS_Z3`, and the shell fakes use `fake_tool_launcher` +
+  `.cmd` (`SolverTmp::cmd_tool`, `win_cmd_tool`) on WIN32. `PathGuard` / `ToolsDirGuard` use
+  `tm_setenv` (`_putenv_s`), so these cases run on WIN32 too: polyglot missing tools
+  (`PATH` pointed at a nonexistent directory; `shell-syntax` is not asserted there because
+  `SearchPath` finds the System32 WSL `bash.exe` first), `perl -c` / hostile tree held without
+  `--allow-exec`, pinned adapters never taken from inside the scanned tree (fake `esbmc.exe`
+  under `PRISM_TOOLS_DIR`), `tool_identity` + a fake pinned `cppcheck.exe`, and the polyglot
+  "unparsed tool output is ERROR" case (cmd text; cmd splits `--output-format=concise` at `=`).
   `test_pipeline` chmod/LTL case is POSIX-only; `test_cli` binary integration is POSIX-only.
   On WIN32, `test_pir_e2e` omits the large `tests/pir` verdict table (MESSAGE); Law 9 /
   `--fp-checks` / `--strict-aliasing` smoke cases still run when `clang`/`opt` are on PATH.
@@ -262,24 +282,33 @@ Remaining epic work is listed in [§7](#7-remaining-work-backlog).
   `test_checkers_c` / `test_concolic` mention `fork` only inside scanned snippet strings.
   `test_diff` PATH-mutation cases are POSIX-only. `Config::which_adapter` on WIN32 accepts
   `--tool` paths without `.exe` when `tool.exe` exists (parity with `SearchPath`).
+  `Config::which` on WIN32 probes a `python*.exe` under `\WindowsApps\` with `--version`
+  (cached per path); a Microsoft Store stub (exit 9009 / cannot start) is passed over for the
+  next python on PATH, and if there is none the tool is missing (`NOTRUN`, Law 1), not a tool
+  failure. Covered by `config: which skips the Microsoft Store python stub`. The Python engine
+  uses `shutil.which` and has no equivalent; it is not run on Windows CI.
 - Witness and regress integer formatting unchanged on golden strings in `tests/cpp/`.
 
 ---
 
 ## 7. Remaining work (backlog)
 
-Epic closure for phases 5a / 5b / 5c / 7 does **not** imply full Windows parity with Linux
-`prism_tests` or `prism-qa conformance`. Ordered backlog:
+Phases 5a / 5b / 5c / 7 / 8 are closed, but that does **not** imply full Windows parity with
+Linux `prism_tests` or `prism-qa conformance`. What is still open:
 
 | Item | Notes |
 |------|--------|
-| **`test_main.cpp` on WIN32** | **Done:** replaces `test_main_win.cpp` in the subset. Fixes: open files closed before `remove_all`, binary-mode source writes (no CRLF), `generic_string()` paths in `compile_commands.json`, Z3 guards for BMC cases, `.cmd` fakes for the portfolio solver tests (Z3-on path compiled but only exercised by the Z3 smoke job). Local note: a Microsoft Store `python3.exe` stub on PATH makes the polyglot python-syntax test fail; remove it from PATH. |
-| **Qt GUI on Windows (CI)** | **Added:** `windows-gui-qt` builds `prism`, `prism_gui`, `prism_gui_tests` and `prism_tests` with native `cl`, Qt 6.8.3 (`win64_msvc2022_64`, installed by `jurplel/install-qt-action`, i.e. aqtinstall, cached), `PRISM_QT=ON`, `PRISM_Z3=OFF`. It runs `prism_gui_tests.exe` and the `prism_tests --test-suite="gui model"` suite (both offscreen) and the optional `prism_gui.exe … --smoke-screenshot` smoke (PNG uploaded as an artifact). Qt installs in about 1–2 min with the cache, so the cmake-only fallback was not needed. Green on `main` @ `f5af2c33b` (run `39985974306`, all nine jobs). |
-| **`test_gui_model.cpp` / `test_gui.cpp` on WIN32** | **Ported:** `self_dir()` (`GetModuleFileNameW`), `prism.exe` / `prism_gui.exe` sibling names, a `cmd.exe` `run_shell` (`_popen`, outer quotes) with a scrubbed `PATH` (System32 only). `find_prism_gui` runs on WIN32 (no execute bit: the "not executable" step is POSIX-only). `prism --gui` cases use `fake_prism_gui.exe` (records its argv to `NAME.args`, exits 7: the launcher's `CreateProcess` does not pass stdout through) and a non-PE `prism_gui.exe` for the spawn-failure `ERROR` case (`CreateProcess error`). Window tests: the `/bin/sh` fake `prism` becomes `fake_gui_prism.exe` with `.report` / `.code` sidecars, and the real-run case finds `prism.exe` beside `prism_gui_tests.exe`. Still POSIX-only: "prism_gui without a display" (Windows always has a window station). |
-| **Full QA doctest TUs** | **Done** for CI subset: `test_qa.cpp`, adapters, sanitize, conformance static+process slice. Fork/`kill -9`/SIGTERM session cases stay POSIX. |
-| **Phase 6 conformance on Windows** | `test_qa_conformance.cpp` in subset; label self-check still `NOTRUN` without UBSan+ASan toolchain. |
-| **`windows-compile-smoke-cl-z3` (CI)** | Same four smokes as 5a/5b/5c; confirm on latest `main` after each push. |
-| **Z3 build time on Windows** | Optional ccache / stronger caching for vendored Z3 on `windows-latest`. |
+| **POSIX-only test cases** | Still `#ifndef _WIN32` or `NOTRUN` on WIN32: the process-tree block in `test_main.cpp` (`fork` / signals; the Job Object equivalent is covered in `test_qa*`), the symlink case in `scope:` (needs a privilege on Windows), `test_diff` PATH mutation, `test_cli` binary integration, the `test_pipeline` chmod/LTL case, the `tests/pir` verdict table in `test_pir_e2e`, SV-COMP replay/solve/pack (execute task code, Law 9), the fake-HTTP repair test, certified-mode `fork` / OOM-checker cases, and "prism_gui without a display". Each is a deliberate gap, not a silent skip: they print `MESSAGE: NOTRUN` or are absent from the Windows build. |
+| **Phase 6: label self-check** | `test_qa_conformance.cpp` runs in the subset; the label self-check (UBSan+ASan replay, bwrap) reports `NOTRUN` on Windows because that toolchain is not exercised there. |
+| **Follow-up not yet on CI** | The `Config::which` Store-stub probe and the polyglot / tools-dir cases enabled in `test_main.cpp` were run locally with `cl` only; the next push shows them on the four Windows smokes (including both Z3 jobs). |
+| **Z3 build time on Windows** | Cold vendored-Z3 build is ~44 min on `windows-latest`; optional ccache / stronger caching. |
+
+Closed items (earlier rows of this table, kept short): `test_main.cpp` runs in full on WIN32
+(`test_main_win.cpp` retired); `test_gui_model.cpp` / `test_gui.cpp` ported (`fake_prism_gui.exe`,
+`fake_gui_prism.exe`); full QA doctest TUs (`test_qa`, adapters, sanitize, conformance
+static + process slice); `windows-gui-qt`; all four Windows compile smokes including
+`windows-compile-smoke-cl-z3`. The Microsoft Store `python3.exe` stub no longer needs removing
+from PATH to run the polyglot python-syntax test.
 
 No Python-engine parity test is required for `stages/interp.cpp` overflow on the MSVC path
 (concrete interpreter is C++-only in CI).

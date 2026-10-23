@@ -38,6 +38,8 @@
 
 #ifdef _WIN32
 #  include <process.h>
+
+#  include "../../src/prism/proc.hpp"
 #else
 #  include <unistd.h>
 #endif
@@ -100,6 +102,23 @@ static void tm_unsetenv(const char* name) {
     unsetenv(name);
 #endif
 }
+
+#ifdef _WIN32
+// WIN32 stand-in for a `#!/bin/sh` fake tool: a PE stub (fake_tool_launcher, as
+// in test_adapters) copied to <dir>/<stem>.exe runs the sibling <stem>.cmd with
+// the same argv and stdio.
+static std::filesystem::path win_cmd_tool(const std::filesystem::path& dir, const std::string& stem,
+                                          const std::string& cmd_body) {
+    std::filesystem::create_directories(dir);
+    { std::ofstream(dir / (stem + ".cmd"), std::ios::binary) << "@echo off\r\n" << cmd_body; }
+    auto exe = dir / (stem + ".exe");
+    std::error_code ec;
+    std::filesystem::copy_file(PRISM_FAKE_TOOL_LAUNCHER, exe,
+                               std::filesystem::copy_options::overwrite_existing, ec);
+    REQUIRE_FALSE(ec);
+    return exe;
+}
+#endif
 
 // testdata lives at <repo>/testdata. Walk from this file so a space in
 // "Code Analysis" is never split the way an env var / argv path would be.
@@ -4030,15 +4049,11 @@ struct PathGuard {
             had = true;
             was = v;
         }
-#ifndef _WIN32
-        setenv("PATH", value, 1);
-#endif
+        tm_setenv("PATH", value);
     }
     ~PathGuard() {
-#ifndef _WIN32
-        if (had) setenv("PATH", was.c_str(), 1);
-        else unsetenv("PATH");
-#endif
+        if (had) tm_setenv("PATH", was.c_str());
+        else tm_unsetenv("PATH");
     }
 };
 }  // namespace
@@ -4067,7 +4082,6 @@ TEST_CASE("polyglot builtin scan finds conflict markers and secrets") {
     CHECK(aws);
 }
 
-#ifndef _WIN32
 TEST_CASE("polyglot missing tools are NOTRUN with install, never CLEAN") {
     PolyTree t;
     t.put("a.py", "x = 1\n");
@@ -4077,20 +4091,43 @@ TEST_CASE("polyglot missing tools are NOTRUN with install, never CLEAN") {
     cfg.root = t.dir;
     std::vector<prism::Finding> out;
     {
+#ifdef _WIN32
+        PathGuard empty_path("C:\\nonexistent-prism-path");
+#else
         PathGuard empty_path("/nonexistent-prism-path");
+#endif
         out = prism::run_polyglot(t.dir, cfg);
     }
     std::map<std::string, std::string> by_check;
     for (auto& f : out) {
         auto it = f.extra.find("check");
         if (it == f.extra.end()) continue;
+#ifdef _WIN32
+        // Config::which on WIN32 (SearchPath) also looks in System32 before PATH,
+        // where Windows ships the WSL launcher bash.exe: not a missing tool.
+        if (it->second == "shell-syntax") continue;
+#endif
         by_check[it->second] = f.status;
         CHECK(f.status == prism::laws::NOTRUN);
         CHECK(!f.extra.at("install").empty());
     }
-    for (auto* g : {"python-syntax", "python-lint", "python-types", "shell-syntax", "shell-lint",
-                    "ruby-syntax"})
+    for (auto* g : {"python-syntax", "python-lint", "python-types", "shell-lint", "ruby-syntax"})
         CHECK_MESSAGE(by_check.contains(g), g);
+#ifndef _WIN32
+    CHECK_MESSAGE(by_check.contains("shell-syntax"), "shell-syntax");
+#endif
+}
+
+#ifdef _WIN32
+TEST_CASE("config: which skips the Microsoft Store python stub (exit 9009)") {
+    // The stub under ...\WindowsApps\ runs nothing; Config::which probes it and
+    // moves on to the next python on PATH, or reports none (Law 1), never the stub.
+    auto cfg = prism::default_config();
+    auto py = cfg.which({"python3", "python"});
+    if (!py) return;
+    auto r = prism::detail::run_process({py->string(), "--version"}, 10.0);
+    CHECK_FALSE(r.failed);
+    CHECK(r.rc != 9009);
 }
 #endif
 
@@ -4339,7 +4376,6 @@ TEST_CASE("sanitize: `// prism: run` is the only opt-in") {
     CHECK_FALSE(prism::marked_run({"// prism: running", "void f(void) {}"}, 2));
 }
 
-#ifndef _WIN32
 TEST_CASE("polyglot: perl -c / cargo clippy / eslint are NOTRUN without --allow-exec") {
     auto cfg = prism::default_config();
     if (!cfg.which({"perl"})) return;
@@ -4393,7 +4429,6 @@ TEST_CASE("pipeline: hostile tree runs nothing without --allow-exec") {
     CHECK(has_exec_notrun(by["diff"]->findings));
     CHECK_FALSE(std::filesystem::exists(sentinel));
 }
-#endif
 
 namespace {
 // Scoped PRISM_TOOLS_DIR (the `prism-deps tool` install root).
@@ -4405,15 +4440,11 @@ struct ToolsDirGuard {
             had = true;
             was = v;
         }
-#ifndef _WIN32
-        setenv("PRISM_TOOLS_DIR", value.string().c_str(), 1);
-#endif
+        tm_setenv("PRISM_TOOLS_DIR", value.string().c_str());
     }
     ~ToolsDirGuard() {
-#ifndef _WIN32
-        if (had) setenv("PRISM_TOOLS_DIR", was.c_str(), 1);
-        else unsetenv("PRISM_TOOLS_DIR");
-#endif
+        if (had) tm_setenv("PRISM_TOOLS_DIR", was.c_str());
+        else tm_unsetenv("PRISM_TOOLS_DIR");
     }
 };
 
@@ -4441,13 +4472,17 @@ TEST_CASE("config: pinned adapters are never taken from inside the scanned tree"
     CHECK(prism::path_within(t.dir / ".prism" / "tools", t.dir));
     CHECK_FALSE(prism::path_within(t.dir.parent_path(), t.dir));
     CHECK_FALSE(prism::path_within(t.dir.string() + "-sibling", t.dir));
-#ifndef _WIN32
     auto commit = prism::pinned_commit("esbmc");
     REQUIRE(commit.has_value());
     auto tools = t.dir / ".prism" / "tools";
+#ifdef _WIN32
+    // Only a built .exe counts as a pinned tool on WIN32 (is_built_exe).
+    auto fake = win_cmd_tool(tools / "esbmc" / *commit / "bin", "esbmc-planted-by-test", "exit /b 0\r\n");
+#else
     auto fake = t.put(".prism/tools/esbmc/" + *commit + "/bin/esbmc-planted-by-test",
                       "#!/bin/sh\nexit 0\n");
     std::filesystem::permissions(fake, std::filesystem::perms::owner_all);
+#endif
     ToolsDirGuard guard(tools);
     auto cfg = prism::default_config();
     cfg.root = t.dir;
@@ -4456,7 +4491,7 @@ TEST_CASE("config: pinned adapters are never taken from inside the scanned tree"
     auto trusted = cfg.which_adapter("esbmc", {"esbmc-planted-by-test"});
     CHECK_FALSE(hit.has_value());
     REQUIRE(trusted.has_value());
-    CHECK(trusted->filename() == "esbmc-planted-by-test");
+    CHECK(trusted->stem() == "esbmc-planted-by-test");
     // Outside the scanned tree the pinned build is found without --allow-exec,
     // but a build of any other commit is not the pinned tool.
     auto cfg2 = prism::default_config();
@@ -4464,7 +4499,6 @@ TEST_CASE("config: pinned adapters are never taken from inside the scanned tree"
     CHECK(cfg2.which_adapter("esbmc", {"esbmc-planted-by-test"}).has_value());
     std::filesystem::rename(tools / "esbmc" / *commit, tools / "esbmc" / std::string(40, '0'));
     CHECK_FALSE(cfg2.which_adapter("esbmc", {"esbmc-planted-by-test"}).has_value());
-#endif
 }
 
 TEST_CASE("config: manifest pins, install hints and tool identity") {
@@ -4487,7 +4521,6 @@ TEST_CASE("config: manifest pins, install hints and tool identity") {
           "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
     CHECK(prism::sha256_hex(std::string(1000, 'a')) ==
           "41edece42d63e8d9bf515a9ba6932e1c20cbc9f5a5d134645adb5db1b9737ea3");
-#ifndef _WIN32
     ExecTree t;
     auto loose = t.put("bin/tool", "abc");
     auto ident = prism::tool_identity(loose);
@@ -4495,11 +4528,17 @@ TEST_CASE("config: manifest pins, install hints and tool identity") {
                        ";sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
     auto commit = *prism::pinned_commit("cppcheck");
     ToolsDirGuard guard(t.dir / "tools");
+#ifdef _WIN32
+    auto fake = win_cmd_tool(t.dir / "tools" / "cppcheck" / commit / "bin", "cppcheck",
+                             "echo ^<error id=\"nullPointer\" severity=\"error\" msg=\"Null pointer\"^>"
+                             "^<location file=\"abs_ok.c\" line=\"3\"/^> 1>&2\r\nexit /b 0\r\n");
+#else
     auto fake = t.put("tools/cppcheck/" + commit + "/bin/cppcheck",
                       "#!/bin/sh\n"
                       "echo '<error id=\"nullPointer\" severity=\"error\" msg=\"Null pointer\">"
                       "<location file=\"abs_ok.c\" line=\"3\"/>' >&2\nexit 0\n");
     std::filesystem::permissions(fake, std::filesystem::perms::owner_all);
+#endif
     CHECK(prism::tool_identity(fake) == commit);
     auto cfg = prism::default_config();
     cfg.root = testdata_root();
@@ -4507,7 +4546,6 @@ TEST_CASE("config: manifest pins, install hints and tool identity") {
     REQUIRE(recs.size() == 1);
     CHECK(recs[0].status == std::string(prism::laws::FAILED));
     CHECK(extra_get(recs[0], "tool_sha") == commit);
-#endif
 }
 
 // ---- scope: one skip list; skipped sources are written down (Law 7) --------
@@ -4615,14 +4653,19 @@ TEST_CASE("polyglot: secrets in id_rsa / key.pem / .npmrc / Dockerfile, binary s
     CHECK_FALSE(prism::is_text_file(t.dir / "blob.bin"));
 }
 
-#ifndef _WIN32
 TEST_CASE("polyglot: tool output that parses to nothing is ERROR, benign is UNKNOWN") {
     PolyTree t;
     t.put("a.py", "x = 1\n");
     auto fake = t.dir / "fake-ruff";
+    // `script` is sh text on POSIX and cmd text on WIN32 (fake-ruff.exe is the
+    // fake_tool_launcher stub that runs fake-ruff.cmd with the same argv).
     auto run_with = [&](const std::string& script) {
+#ifdef _WIN32
+        fake = win_cmd_tool(t.dir, "fake-ruff", script);
+#else
         std::ofstream(fake, std::ios::binary) << "#!/bin/sh\n" << script;
         std::filesystem::permissions(fake, std::filesystem::perms::owner_all);
+#endif
         auto cfg = prism::default_config();
         cfg.root = t.dir;
         cfg.tools["ruff"] = fake;
@@ -4631,21 +4674,33 @@ TEST_CASE("polyglot: tool output that parses to nothing is ERROR, benign is UNKN
             if (extra_or(f, "check") == "python-lint") rows.push_back(f);
         return rows;
     };
+#ifdef _WIN32
+    auto bad = run_with("echo ruff: something new happened\r\nexit /b 1\r\n");
+#else
     auto bad = run_with("echo 'ruff: something new happened'\nexit 1\n");
+#endif
     REQUIRE(bad.size() == 1);
     CHECK(bad[0].status == prism::laws::ERROR);
     CHECK(bad[0].message == "ruff: output not understood: ruff: something new happened");
+#ifdef _WIN32
+    auto ok = run_with("echo All checks passed!\r\nexit /b 0\r\n");
+#else
     auto ok = run_with("echo 'All checks passed!'\nexit 0\n");
+#endif
     REQUIRE(ok.size() == 1);
     CHECK(ok[0].status == prism::laws::UNKNOWN);
-    // ruff >= 0.5 names syntax errors `invalid-syntax`.
+    // ruff >= 0.5 names syntax errors `invalid-syntax`. $5 is the file argument;
+    // cmd splits `--output-format=concise` at the `=`, which makes it %~6.
+#ifdef _WIN32
+    auto syn = run_with("echo %~6:1:7: invalid-syntax: Expected a parameter\r\nexit /b 1\r\n");
+#else
     auto syn = run_with("echo \"$5:1:7: invalid-syntax: Expected a parameter\"\nexit 1\n");
+#endif
     REQUIRE(syn.size() == 1);
     CHECK(syn[0].status == prism::laws::FAILED);
     CHECK(extra_or(syn[0], "rule") == "invalid-syntax");
     CHECK(syn[0].file == "a.py");
 }
-#endif
 
 // ---- pbsd: explicit tree only; importing it needs --allow-exec -------------
 

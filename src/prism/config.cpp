@@ -1,6 +1,7 @@
 #include "prism/config.hpp"
 #include "prism/deps.hpp"
 #include "prism/manifest_pins.hpp"  // generated from third_party/MANIFEST.toml by prism-deps pins
+#include "proc.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -77,15 +78,80 @@ bool Config::want(std::string_view name) const {
     return false;
 }
 
+#ifdef _WIN32
+static std::string lower_ascii(std::string s) {
+    for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return s;
+}
+
+static bool in_windows_apps(const fs::path& p) {
+    return lower_ascii(p.generic_string()).find("/windowsapps/") != std::string::npos;
+}
+
+// A python launcher under ...\WindowsApps\ is either a real Microsoft Store
+// install or the "install Python from the Store" stub, which exits 9009 and
+// runs nothing. Only a probe tells them apart (both are app-execution-alias
+// reparse points), so run `--version` once per path. A probe that cannot start
+// or exits 9009 means "not a python": the tool is missing (Law 1), never
+// accepted and then reported as a tool failure.
+static bool is_store_python_stub(const fs::path& p) {
+    if (!in_windows_apps(p)) return false;
+    const auto stem = lower_ascii(p.stem().string());
+    if (stem.rfind("python", 0) != 0) return false;
+    static std::mutex mu;
+    static std::map<std::string, bool> cache;
+    const auto key = lower_ascii(p.string());
+    {
+        std::lock_guard<std::mutex> lock(mu);
+        if (auto it = cache.find(key); it != cache.end()) return it->second;
+    }
+    auto r = detail::run_process({p.string(), "--version"}, 10.0);
+    const bool stub = r.failed || r.timed_out || r.rc == 9009;
+    std::lock_guard<std::mutex> lock(mu);
+    cache[key] = stub;
+    return stub;
+}
+
+// PATH walk (PATHEXT subset .exe) that passes over Store python stubs: what
+// SearchPath would have returned had the stub not shadowed a later real python.
+static std::optional<fs::path> search_path_skipping_stubs(const std::string& name) {
+    const char* env = std::getenv("PATH");
+    if (!env) return std::nullopt;
+    const std::string p(env);
+    const bool has_ext = fs::path(name).has_extension();
+    std::size_t i = 0;
+    while (i <= p.size()) {
+        auto j = p.find(';', i);
+        if (j == std::string::npos) j = p.size();
+        std::string dir = p.substr(i, j - i);
+        i = j + 1;
+        if (dir.empty()) continue;
+        for (const char* ext : {".exe", ""}) {
+            if (*ext && has_ext) continue;
+            fs::path cand = fs::path(dir) / (name + ext);
+            std::error_code ec;
+            if (!fs::is_regular_file(cand, ec) || ec) continue;
+            if (is_store_python_stub(cand)) continue;
+            return cand;
+        }
+    }
+    return std::nullopt;
+}
+#endif
+
 std::optional<fs::path> Config::which(std::initializer_list<std::string_view> names) const {
 #ifdef _WIN32
     char buf[MAX_PATH];
     for (auto n : names) {
         std::string name(n);
+        std::optional<fs::path> hit;
         if (SearchPathA(nullptr, name.c_str(), ".exe", MAX_PATH, buf, nullptr))
-            return fs::path(buf);
-        if (SearchPathA(nullptr, name.c_str(), nullptr, MAX_PATH, buf, nullptr))
-            return fs::path(buf);
+            hit = fs::path(buf);
+        else if (SearchPathA(nullptr, name.c_str(), nullptr, MAX_PATH, buf, nullptr))
+            hit = fs::path(buf);
+        if (!hit) continue;
+        if (!is_store_python_stub(*hit)) return hit;
+        if (auto real = search_path_skipping_stubs(name)) return real;
     }
 #else
     auto path = std::getenv("PATH");
