@@ -379,6 +379,20 @@ std::string esbmc_out_cmd(const char* out) {
 
 }  // namespace
 
+#ifdef _WIN32
+TEST_CASE("fake_tool: PE launcher forwards stdout to proc runner") {
+    TmpDir t;
+    auto exe = fake_cmd(t.dir / "bin", "hello-fake", "echo prism-fake-out\r\nexit /b 0\r\n");
+    prism::detail::RunSpec spec;
+    spec.argv = {exe.string()};
+    spec.timeout_s = 5;
+    auto r = prism::detail::run(spec);
+    CHECK_FALSE(r.failed);
+    CHECK_FALSE(r.timed_out);
+    CHECK(has(r.out, "prism-fake-out"));
+}
+#endif
+
 // ---------------------------------------------------------------- runner
 
 #ifndef _WIN32
