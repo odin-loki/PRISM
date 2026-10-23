@@ -10,6 +10,7 @@ import hashlib
 import os
 import re
 import shutil
+import subprocess
 import sys
 import threading
 import tomllib
@@ -236,10 +237,83 @@ def resolve_adapter(cfg: Config, stage: str, names: tuple[str, ...] | list[str])
     if hit:
         return hit
     for n in names_t:
-        found = shutil.which(n)
+        found = which_tool(n)
         if found:
             return found
     return None
+
+
+_STORE_STUB_CACHE: dict[str, bool] = {}
+_STORE_STUB_LOCK = threading.Lock()
+
+
+def _is_store_python_stub(p: str | Path) -> bool:
+    """Mirror of C++ ``is_store_python_stub`` (src/prism/config.cpp).
+
+    A python launcher under ``...\\WindowsApps\\`` is either a real Microsoft
+    Store install or the "install Python from the Store" stub, which exits 9009
+    and runs nothing. Only a probe tells them apart, so run ``--version`` once
+    per path. A probe that cannot start, times out or exits 9009 means "not a
+    python": the tool is missing (Law 1), never accepted and then reported as
+    a tool failure. Only applies on Windows.
+    """
+    if sys.platform != "win32":
+        return False
+    path = Path(p)
+    if "/windowsapps/" not in str(path).replace("\\", "/").lower():
+        return False
+    if not path.stem.lower().startswith("python"):
+        return False
+    key = str(path).lower()
+    with _STORE_STUB_LOCK:
+        if key in _STORE_STUB_CACHE:
+            return _STORE_STUB_CACHE[key]
+    try:
+        rc = subprocess.run([str(path), "--version"], capture_output=True,
+                            timeout=10.0, stdin=subprocess.DEVNULL).returncode
+        stub = rc == 9009
+    except (OSError, ValueError, subprocess.SubprocessError):
+        stub = True
+    with _STORE_STUB_LOCK:
+        _STORE_STUB_CACHE[key] = stub
+    return stub
+
+
+def _search_path_skipping_stubs(name: str) -> str | None:
+    """Mirror of C++ ``search_path_skipping_stubs``: PATH walk (PATHEXT subset
+    ``.exe``) that passes over Store python stubs."""
+    env = os.environ.get("PATH")
+    if env is None:
+        return None
+    has_ext = bool(Path(name).suffix)
+    for d in env.split(os.pathsep):
+        if not d:
+            continue
+        for ext in (".exe", ""):
+            if ext and has_ext:
+                continue
+            cand = Path(d) / (name + ext)
+            try:
+                if not cand.is_file():
+                    continue
+            except OSError:
+                continue
+            if _is_store_python_stub(cand):
+                continue
+            return str(cand)
+    return None
+
+
+def which_tool(name: str) -> str | None:
+    """``shutil.which`` that, on Windows, skips the Microsoft Store python
+    stub (parity with C++ ``Config::which``). None means the tool is missing:
+    callers must report NOTRUN (Law 1)."""
+    hit = shutil.which(name)
+    if not hit:
+        return None
+    if not _is_store_python_stub(hit):
+        return hit
+    return _search_path_skipping_stubs(name)
 
 
 def ordered_map(fn: Callable[[_T], _R], items: Iterable[_T], jobs: int | None) -> list[_R]:
@@ -321,7 +395,7 @@ class Config:
     def which(self, *names: str) -> str | None:
         """PATH lookup for host compilers. Adapter binaries use which_adapter."""
         for n in names:
-            p = shutil.which(n)
+            p = which_tool(n)
             if p:
                 return p
         return None
