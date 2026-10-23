@@ -689,6 +689,10 @@ if(PRISM_TESTS)
     "${PRISM_ROOT}/include"
     "${PRISM_ROOT}/third_party")
   target_link_libraries(prism_tests PRIVATE prism_core prism_qa)
+  if(WIN32)
+    # test_repair's fake llama-server listens on a Winsock loopback socket.
+    target_link_libraries(prism_tests PRIVATE ws2_32)
+  endif()
   if(WIN32 AND PRISM_TESTS_WIN_SUBSET)
     add_dependencies(prism_tests fake_tool_launcher fake_cc fake_session_probe fake_prism fake_prism_gui)
     target_compile_definitions(prism_tests PRIVATE
