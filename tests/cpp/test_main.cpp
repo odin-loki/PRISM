@@ -84,6 +84,23 @@ struct PrivateTmp {
 const PrivateTmp g_private_tmp;
 }  // namespace
 
+// MSVC has no setenv/unsetenv. _putenv_s with an empty value removes the
+// variable, which is what unsetenv does.
+static void tm_setenv(const char* name, const char* value) {
+#ifdef _WIN32
+    _putenv_s(name, value);
+#else
+    setenv(name, value, 1);
+#endif
+}
+static void tm_unsetenv(const char* name) {
+#ifdef _WIN32
+    _putenv_s(name, "");
+#else
+    unsetenv(name);
+#endif
+}
+
 // testdata lives at <repo>/testdata. Walk from this file so a space in
 // "Code Analysis" is never split the way an env var / argv path would be.
 static std::filesystem::path testdata_root() {
@@ -5541,7 +5558,7 @@ TEST_CASE("pir: lean export of freeze, undef and direct calls") {
     auto m = prism::pir::ir::parse_module(kLeanExtIr);
     fs::path dir = fs::temp_directory_path() / "prism-lean-export";
     fs::remove_all(dir);
-    ::setenv("PRISM_PIR_LEAN_EXPORT", dir.string().c_str(), 1);
+    tm_setenv("PRISM_PIR_LEAN_EXPORT", dir.string().c_str());
     prism::pir::TranslateOptions opt;
     for (const char* name : {"caller", "frz_poison", "undef_use", "twice"}) {
         const auto* f = m.find(name);
@@ -5550,7 +5567,7 @@ TEST_CASE("pir: lean export of freeze, undef and direct calls") {
         CHECK(t.fn.has_value());
         prism::pir::export_lean_pair(dir, "unit", m, *f, opt, t);
     }
-    ::unsetenv("PRISM_PIR_LEAN_EXPORT");
+    tm_unsetenv("PRISM_PIR_LEAN_EXPORT");
     std::ifstream in(dir / "unit.pirl");
     std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     MESSAGE(text);
@@ -5629,7 +5646,7 @@ TEST_CASE("pir: lean export of intrinsics, lifetime markers, memory intrinsics a
     auto m = prism::pir::ir::parse_module(kLeanIntrIr);
     fs::path dir = fs::temp_directory_path() / "prism-lean-export-intr";
     fs::remove_all(dir);
-    ::setenv("PRISM_PIR_LEAN_EXPORT", dir.string().c_str(), 1);
+    tm_setenv("PRISM_PIR_LEAN_EXPORT", dir.string().c_str());
     prism::pir::TranslateOptions opt;
     for (const char* name : {"life", "life_bad", "move", "sub_ovf", "kread"}) {
         const auto* f = m.find(name);
@@ -5638,7 +5655,7 @@ TEST_CASE("pir: lean export of intrinsics, lifetime markers, memory intrinsics a
         CHECK(t.fn.has_value());
         prism::pir::export_lean_pair(dir, "unit", m, *f, opt, t);
     }
-    ::unsetenv("PRISM_PIR_LEAN_EXPORT");
+    tm_unsetenv("PRISM_PIR_LEAN_EXPORT");
     std::ifstream in(dir / "unit.pirl");
     std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     MESSAGE(text);
@@ -6301,9 +6318,9 @@ TEST_CASE("solver: sat answer is a validated counterexample; unsat is plain PROV
 
 TEST_CASE("solver: the scheduler gives a historic winner a head start") {
     // History alone (the learned scheduler would otherwise pick the leader).
-    ::setenv("PRISM_SOLVER_PREDICT", "0", 1);
+    tm_setenv("PRISM_SOLVER_PREDICT", "0");
     struct Unset {
-        ~Unset() { ::unsetenv("PRISM_SOLVER_PREDICT"); }
+        ~Unset() { tm_unsetenv("PRISM_SOLVER_PREDICT"); }
     } unset;
     SolverTmp t;
     z3::context c;
@@ -7001,12 +7018,12 @@ TEST_CASE("export_lean_pair writes the LLVM fragment and the PIR only when enabl
     std::filesystem::remove_all(dir);
     const char* old = std::getenv("PRISM_PIR_LEAN_EXPORT");
     std::string saved = old ? old : "";
-    unsetenv("PRISM_PIR_LEAN_EXPORT");
+    tm_unsetenv("PRISM_PIR_LEAN_EXPORT");
     prism::pir::export_lean_pair(dir, "u.c", m, *f, {}, t);
     CHECK_FALSE(std::filesystem::exists(dir));  // off by default
-    setenv("PRISM_PIR_LEAN_EXPORT", dir.string().c_str(), 1);
+    tm_setenv("PRISM_PIR_LEAN_EXPORT", dir.string().c_str());
     prism::pir::export_lean_pair(dir, "u.c", m, *f, {}, t);
-    if (old) setenv("PRISM_PIR_LEAN_EXPORT", saved.c_str(), 1); else unsetenv("PRISM_PIR_LEAN_EXPORT");
+    if (old) tm_setenv("PRISM_PIR_LEAN_EXPORT", saved.c_str()); else tm_unsetenv("PRISM_PIR_LEAN_EXPORT");
     std::ifstream in(dir / "u.c.pirl");
     std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     CHECK(text.find("func lean_add\n") != std::string::npos);
