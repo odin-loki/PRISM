@@ -206,7 +206,7 @@ String-only BMC/astlint files: **0** type migration expected.
 
 ## 6. Acceptance criteria
 
-Status on `main` @ `f377ba3d7`: phases **5a**, **5b**, **5c**, and **7** below are **met**.
+Status on `main` @ `1dfe4eabc`: phases **5a**, **5b**, **5c**, and **7** below are **met** (four Windows smokes green on Job Object + conformance slice; Z3 jobs track the same subset).
 Remaining epic work is listed in [§7](#7-remaining-work-backlog).
 
 - **Phase 5a (CI smoke) — met:** `windows-compile-smoke` configures with `clang-cl` and builds
@@ -268,10 +268,10 @@ Epic closure for phases 5a / 5b / 5c / 7 does **not** imply full Windows parity 
 
 | Item | Notes |
 |------|--------|
-| **`test_main.cpp` on WIN32** | Link last; largest integration surface (`unistd`, process, sockets). |
-| **Full QA doctest TUs** | `test_qa.cpp` on WIN (subprocess + `fake_session_probe`; fork/session-kill still POSIX). Lean/lli driver subprocess cases stay POSIX. `test_adapters.cpp` + `test_sanitize.cpp` (`fake_cc.exe`) in subset. `test_qa_static.cpp` not built on WIN (duplicate cases). |
-| **Phase 6 conformance on Windows** | Job Object `run_tree` done; release-gate, solver-kill and `run_tree` cases run in the subset. Remaining: the label self-check (UBSan+ASan replay with gcc/clang + bwrap) is still `MESSAGE: NOTRUN` on WIN. |
-| **`windows-compile-smoke-cl-z3` (CI)** | Done (four smokes green @ `9230cd9ac`). |
+| **`test_main.cpp` on WIN32** | `tm_setenv`/`tm_unsetenv` compile fix @ `10c33422a`; still use `test_main_win.cpp` in subset until Z3 sh-fakes and polyglot guards are ported. |
+| **Full QA doctest TUs** | **Done** for CI subset: `test_qa.cpp`, adapters, sanitize, conformance static+process slice. Fork/`kill -9`/SIGTERM session cases stay POSIX. |
+| **Phase 6 conformance on Windows** | `test_qa_conformance.cpp` in subset; label self-check still `NOTRUN` without UBSan+ASan toolchain. |
+| **`windows-compile-smoke-cl-z3` (CI)** | Same four smokes as 5a/5b/5c; confirm on latest `main` after each push. |
 | **Z3 build time on Windows** | Optional ccache / stronger caching for vendored Z3 on `windows-latest`. |
 
 No Python-engine parity test is required for `stages/interp.cpp` overflow on the MSVC path
