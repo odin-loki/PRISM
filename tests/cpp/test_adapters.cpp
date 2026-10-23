@@ -1598,19 +1598,26 @@ TEST_CASE("libfuzzer_probe: keyword reject and successful stub compile are hones
 #endif
         return prism::libfuzzer_probe(nt.cfg);
     };
+#ifdef _WIN32
+    auto unsupported = probe(
+        "(echo error: unsupported argument '-fsanitize=fuzzer') 1>&2\r\n"
+        "exit /b 1\r\n");
+    auto unknown = probe(
+        "(echo error: unknown argument: '-fsanitize=fuzzer') 1>&2\r\n"
+        "exit /b 1\r\n");
+#else
     auto unsupported = probe("echo \"error: unsupported argument '-fsanitize=fuzzer'\" >&2; exit 1");
+    auto unknown = probe("echo \"error: unknown argument: '-fsanitize=fuzzer'\" >&2; exit 1");
+#endif
     CHECK(unsupported.status == laws::NOTRUN);
     never_clean_or_proof(unsupported);
 
-    auto unknown = probe("echo \"error: unknown argument: '-fsanitize=fuzzer'\" >&2; exit 1");
     CHECK(unknown.status == laws::NOTRUN);
     never_clean_or_proof(unknown);
 
 #ifdef _WIN32
-    auto ok = probe("for %%A in (%*) do @if /I \"%%A\"==\"-fsanitize=fuzzer\" goto :lf_ok\r\n"
-                    "echo error: unsupported argument '-fsanitize=fuzzer' 1>&2\r\n"
-                    "exit /b 1\r\n"
-                    ":lf_ok\r\n"
+    auto ok = probe("echo %*| %SystemRoot%\\System32\\findstr.exe /i \"sanitize=fuzzer\" >nul\r\n"
+                    "if errorlevel 1 (echo error: unsupported argument '-fsanitize=fuzzer' 1>&2& exit /b 1)\r\n"
                     "set OUT=\r\n"
                     ":lfloop\r\n"
                     "if \"%1\"==\"\" goto lfdone\r\n"
