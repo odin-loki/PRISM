@@ -159,6 +159,55 @@ jobs:
         run: cmake --build build-win-cl --target prism_core prism prism-qa prism_tests
       - name: Run portable prism_tests subset
         run: .\build-win-cl\prism_tests.exe
+      # Feeds python-windows below (the same PE prism.exe the smoke just tested).
+      - uses: actions/upload-artifact@v4
+        with:
+          name: prism-windows
+          path: build-win-cl/prism.exe
+          retention-days: 7
+
+  # Optional: the shrunk Python suite (same files as "Remaining pytest") on
+  # Windows against the built prism.exe (MSVC cl, Z3 off). Not gating
+  # (continue-on-error) until it has a track record; it must not fake a green
+  # either: a missing prism.exe fails the PRISM_BIN smoke step, and tests that
+  # need a binary skip loudly (-rs) rather than pass. shellcheck is not
+  # installed here, so the polyglot shell-syntax tool is NOTRUN on this runner.
+  python-windows:
+    name: Remaining pytest (shrunk suite, Windows, optional)
+    runs-on: windows-latest
+    needs: windows-compile-smoke-cl
+    continue-on-error: true
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install test deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest z3-solver ruff mypy yamllint PySide6-Essentials
+      - uses: actions/download-artifact@v4
+        with:
+          name: prism-windows
+          path: build-win
+      - name: PRISM_BIN smoke (real PE prism.exe; a missing binary fails here)
+        run: |
+          .\build-win\prism.exe testdata\abs_ok.c --no-llm --stage inventory --out prism-smoke-out
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path prism-smoke-out\report.json)) { Write-Error "no report.json"; exit 1 }
+      - name: pytest (Python engine / repo-lint, PRISM_BIN = prism.exe)
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PYTHONUTF8: "1"
+        run: |
+          $env:PRISM_BIN = (Resolve-Path build-win\prism.exe).Path
+          python -m pytest -q -rs `
+            tests/test_ai9.py `
+            tests/test_ai_assist.py `
+            tests/test_lints_fastpath.py `
+            tests/test_llm.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   windows-compile-smoke:
     name: Windows compile smoke

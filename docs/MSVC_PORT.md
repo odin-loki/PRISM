@@ -311,7 +311,8 @@ Remaining epic work is listed in [§7](#7-remaining-work-backlog).
   has the same probe since `8d1f9721f` (`prism/config.py`: `which_tool` / `resolve_adapter`
   with `_is_store_python_stub`, same 9009 / cannot-start / timeout rules, cached per path;
   `tests/test_config.py` fakes the platform and the probe, so it runs on every OS). The
-  Python engine itself is still not run on Windows CI.
+  Python engine's engine tests are not run on Windows CI, but the shrunk suite is: see
+  `python-windows` in [§7](#7-remaining-work-backlog).
 - Witness and regress integer formatting unchanged on golden strings in `tests/cpp/`.
 
 ---
@@ -325,6 +326,7 @@ with Linux. What is still open:
 |------|--------|
 | **POSIX-only test cases** | Still `#ifndef _WIN32` or `NOTRUN` on WIN32: the process-tree block in `test_main.cpp` (`fork` / signals; the Job Object equivalent is covered in `test_qa*`), the file-symlink half of the `scope:` case (needs Developer Mode or `SeCreateSymbolicLinkPrivilege`; `NOTRUN` message when it cannot be created, the junction half always runs), the `tests/pir` verdict table in `test_pir_e2e`, SV-COMP replay/solve/pack (execute task code, Law 9), the fake-HTTP repair test, certified-mode `fork` / OOM-checker cases, and "prism_gui without a display". Each is a deliberate gap, not a silent skip: they print `MESSAGE: NOTRUN` or are absent from the Windows build. |
 | **Phase 6: label self-check** | Runs on Windows only when `sanitizers_usable()` finds a clang that links UBSan+ASan (clang-cl CI jobs put the ASan DLL dir on PATH); otherwise `NOTRUN` (`WARN_MESSAGE`). |
+| **Python suite on Windows (optional job)** | `python-windows` in `ci.yml` runs the same four files as "Remaining pytest" (`test_ai9`, `test_ai_assist`, `test_lints_fastpath`, `test_llm`) on `windows-latest` (Python 3.11) with `PRISM_BIN` set to the `prism.exe` that `windows-compile-smoke-cl` uploads as the `prism-windows` artifact (so it adds no build time). It is `continue-on-error` until it has a track record, and it skips nothing quietly (`-rs`; a missing `prism.exe` fails the smoke step). Differences from Linux: no `shellcheck` (that polyglot tool is `NOTRUN`), no `libegl` (PySide6 runs offscreen). Locally it was green (39 passed) on Windows with Python 3.14. **WinError 193 fix:** `tests/test_ai_assist.py` and `prism/gui.py` (`prism_cpp_binary`) accepted the Linux ELF `build/prism` on Windows because `os.access(X_OK)` is true for any file, then `subprocess` failed with `[WinError 193]`; both now look for `prism.exe` on Windows and require a PE (`MZ`) image, otherwise the binary is "not found" (`NOTRUN`, Law 1). Not run on Windows: the full `tests/test_*.py` set (the repo's own shrunk-suite rule). Promote the job to required once a few runs are green. |
 | **Z3 build time on Windows** | Cold vendored-Z3 build is ~44 min on `windows-latest`. Both Z3 jobs restore/save the build dir with a `restore-keys` prefix (`75aeb6299`), and `libz3` is saved before the PRISM targets. On run `40019517666` the two Z3 jobs took about 57 min (`clang-cl`) and 44 min (`cl`); the warm-cache time is still not measured. sccache is not used: `cl` needs `/Z7`, which changes the Release flags of both smokes. |
 
 Closed: `test_main.cpp` in full on WIN32, GUI tests ported, full QA doctest TUs,

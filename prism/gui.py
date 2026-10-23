@@ -255,10 +255,27 @@ def taxonomy_background(verdict: str) -> str:
     return ""
 
 
+def _runnable_binary(path: str | Path) -> bool:
+    """A file this OS can start. On Windows `os.access(X_OK)` is true for any
+    file, so a Linux ELF `build/prism` would pass and then fail with
+    WinError 193; require a PE image ("MZ") there. A binary that cannot be
+    started is "not found" (NOTRUN, Law 1), never an ERROR from a wrong file."""
+    p = Path(path)
+    if not p.is_file() or not os.access(p, os.X_OK):
+        return False
+    if sys.platform != "win32":
+        return True
+    try:
+        with p.open("rb") as f:
+            return f.read(2) == b"MZ"
+    except OSError:
+        return False
+
+
 def prism_cpp_binary(explicit: str | None = None) -> str | None:
     """The C++ `prism` binary the assistant runs (explicit, PRISM_BIN, PATH)."""
     for cand in (explicit, os.environ.get("PRISM_BIN"), shutil.which("prism")):
-        if cand and Path(cand).is_file() and os.access(cand, os.X_OK):
+        if cand and _runnable_binary(cand):
             return str(cand)
     return None
 

@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -19,12 +20,24 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def _cpp_prism() -> Path | None:
     env = os.environ.get("PRISM_BIN")
+    name = "prism.exe" if sys.platform == "win32" else "prism"
     cands = [Path(env)] if env else []
-    cands += [ROOT / d / "prism" for d in ("build", "build_wsl")]
+    cands += [ROOT / d / name for d in ("build", "build_wsl", "build-win-cl", "build-win")]
     for c in cands:
-        if c.is_file() and os.access(c, os.X_OK):
+        if c.is_file() and os.access(c, os.X_OK) and _is_native_binary(c):
             return c
     return None
+
+
+def _is_native_binary(p: Path) -> bool:
+    """Windows runs only PE images; a Linux ELF `build/prism` is WinError 193."""
+    if sys.platform != "win32":
+        return True
+    try:
+        with p.open("rb") as f:
+            return f.read(2) == b"MZ"
+    except OSError:
+        return False
 
 
 class TestGbdt(unittest.TestCase):
