@@ -181,7 +181,7 @@ shortcut. Keep **D** only for explicitly documented optional components, not cor
 | **5b** (CI done) | Windows CI + Z3 | `windows-compile-smoke-z3`: Ninja + `clang-cl`, `PRISM_Z3=ON`, builds `prism_core` + `prism` + `prism-qa` + phase-7 `prism_tests` subset including `test_leanbb.cpp` (~44 min cold; cache `build-win-z3`; needs `z3gen_shim.bat`). |
 | **5c** (CI done) | Native MSVC `cl` | `windows-compile-smoke-cl`: Ninja + `cl` (not `clang-cl`), `PRISM_Z3=OFF`, same targets/subset as 5a. `stages/interp.cpp` uses `prism::i128` / manual checks instead of `__builtin_*_overflow` (clang-cl only). Configure with default `CMAKE_BUILD_TYPE=Release` (Debug + `prism_core` `/O2` hits cl D8016 vs `/RTC1`). |
 | **6** (partial) | QA on Windows | `yaml_subset` + `task` + `pyrandom` on `prism::i128` (done); `prism-qa` in `windows-compile-smoke`; conformance / soundness / replay compile on WIN; `proctree_win.cpp` + `proc.cpp` Job Object `run_tree` (commit B), `test_qa_conformance.cpp` release-gate / solver-kill / `run_tree` cases run in the subset (`fake_prism.exe` + `.lead` sidecar, `fake_session_probe` `spawn-sleep` / `spawn-bg` / `alloc`) |
-| **7** (done) | Windows `prism_tests` subset | `PRISM_TESTS_WIN_SUBSET` in `CMakeLists.txt` (inventory: [§6](#6-acceptance-criteria)). WIN: full `test_adapters.cpp`, `test_sanitize.cpp` (`fake_cc`), `test_qa.cpp` (`fake_session_probe`). Static splits remain reference-only on WIN. `test_cli` (binary cases included) and `test_diff` run in full; `test_pipeline` omits only the POSIX `PATH`-guard esbmc-missing case; `test_conc` skips without Z3. `test_pir_e2e` skips the full `tests/pir` table on `_WIN32` (MESSAGE). All four Windows smoke jobs build and run `prism_tests.exe`. |
+| **7** (done) | Windows `prism_tests` subset | `PRISM_TESTS_WIN_SUBSET` in `CMakeLists.txt` (gates only the `fake_*` stand-ins; sources are the shared Linux list) (inventory: [§6](#6-acceptance-criteria)). WIN: full `test_adapters.cpp`, `test_sanitize.cpp` (`fake_cc`), `test_qa.cpp` (`fake_session_probe`). Static splits remain reference-only on WIN. `test_cli` (binary cases included) and `test_diff` run in full; `test_pipeline` omits only the POSIX `PATH`-guard esbmc-missing case; `test_conc` skips without Z3. `test_pir_e2e` skips the full `tests/pir` table on `_WIN32` (MESSAGE). All four Windows smoke jobs build and run `prism_tests.exe`. |
 | **8** (done) | Qt GUI on Windows | `windows-gui-qt`: Ninja + `cl`, Qt 6 via aqtinstall, `PRISM_QT=ON`, `PRISM_Z3=OFF`; `prism_gui_tests.exe` and the `gui model` doctest suite offscreen, plus the `--smoke-screenshot` smoke. See [§7](#7-remaining-work-backlog). |
 
 **Dependency order:** 2 → 3 (public API) → 4 (largest volume) → 5 → 6 → 7 (subset) → 5b (Z3 + full tests).
@@ -244,8 +244,17 @@ Python `which` parity `8d1f9721f` are green as well.
   @ `f5af2c33b` (run `39985974306`). Only "prism_gui without a display" stays POSIX-only
   (Windows always has a window station).
 - **Phase 7 (Windows `prism_tests` subset) — met:** all three Windows smoke jobs set
-  `PRISM_TESTS=ON` and `PRISM_TESTS_WIN_SUBSET=ON` (see `CMakeLists.txt`). Configure fails on
-  WIN32 if tests are on without the subset flag. Inventory:
+  `PRISM_TESTS=ON` and `PRISM_TESTS_WIN_SUBSET=ON` (see `CMakeLists.txt`).
+
+  **Epic note — the WIN "subset" inventory equals the Linux `prism_tests` sources.** There is
+  now one shared `_prism_test_sources` list in `CMakeLists.txt` for every platform (49 TUs plus
+  `test_leanbb` / `test_pir_budget` / `test_certified` when `PRISM_HAS_Z3`); platform differences
+  live inside the test files (`#ifdef _WIN32`), not in the source list. `PRISM_TESTS_WIN_SUBSET`
+  survives only as the WIN32 switch that builds the `fake_*` stand-in executables and defines the
+  `PRISM_FAKE_*` paths. The old "Full prism_tests does not build on WIN32 yet" `FATAL_ERROR` is
+  gone; WIN32 with tests on but the flag off now configures with a warning (the fake-dependent
+  cases cannot find their stand-ins), so keep `-DPRISM_TESTS_WIN_SUBSET=ON` on Windows. The
+  name "subset" is historical. Inventory:
 
   | Kind | Sources |
   |------|---------|

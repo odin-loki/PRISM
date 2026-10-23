@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.20)
+﻿cmake_minimum_required(VERSION 3.20)
 
 project(prism VERSION 0.1.0 LANGUAGES C CXX)
 
@@ -23,7 +23,7 @@ option(PRISM_QT "Build native Qt GUI" ON)
 option(PRISM_Z3 "Build in-tree Z3 for BMC" ON)
 option(PRISM_TESTS "Build C++ unit tests" ON)
 # Windows CI: portable doctest TUs only (no unistd-heavy integration tests).
-option(PRISM_TESTS_WIN_SUBSET "On WIN32, build portable prism_tests subset only" OFF)
+option(PRISM_TESTS_WIN_SUBSET "On WIN32, build the fake_* stand-ins prism_tests needs (sources are shared with Linux)" OFF)
 # Roadmap 8.4 (PRISM on PRISM): build PRISM itself with ASan + UBSan so the
 # test suite doubles as a memory-safety / UB check of the quarantined C++.
 option(PRISM_SANITIZE "Build PRISM with -fsanitize=address,undefined" OFF)
@@ -599,127 +599,82 @@ if(PRISM_QT)
 endif()
 
 if(PRISM_TESTS)
-  if(WIN32 AND NOT PRISM_TESTS_WIN_SUBSET)
-    message(FATAL_ERROR
-      "Full prism_tests does not build on WIN32 yet; use -DPRISM_TESTS_WIN_SUBSET=ON")
-  endif()
-  if(WIN32 AND PRISM_TESTS_WIN_SUBSET)
-    set(_prism_test_sources
-      tests/cpp/test_main.cpp
-      tests/cpp/test_wide_int.cpp
-      tests/cpp/test_interval.cpp
-      tests/cpp/test_svcomp.cpp
-      tests/cpp/test_naming.cpp
-      tests/cpp/test_polyglot.cpp
-      tests/cpp/test_taxonomy.cpp
-      tests/cpp/test_repolint.cpp
-      tests/cpp/test_deps.cpp
-      tests/cpp/test_cparse.cpp
-      tests/cpp/test_sarif.cpp
-      tests/cpp/test_astlint.cpp
-      tests/cpp/test_ltl.cpp
-      tests/cpp/test_contracts.cpp
-      tests/cpp/test_bmc.cpp
-      tests/cpp/test_checkers_cxx.cpp
-      tests/cpp/test_checkers_c.cpp
-      tests/cpp/test_gen_tables.cpp
-      tests/cpp/test_bmc_svcomp.cpp
-      tests/cpp/test_havoc.cpp
-      tests/cpp/test_verdict_repo.cpp
-      tests/cpp/test_diff.cpp
-      tests/cpp/test_journal_confidence.cpp
-      tests/cpp/test_thread_taint.cpp
-      tests/cpp/test_wp_harness.cpp
-      tests/cpp/test_concrete.cpp
-      tests/cpp/test_concolic.cpp
-      tests/cpp/test_lint_corpus.cpp
-      tests/cpp/test_pir_mem.cpp
-      tests/cpp/test_ai_assist.cpp
-      tests/cpp/test_pbsd.cpp
-      tests/cpp/test_pir3.cpp
-      tests/cpp/test_pir_refinement.cpp
-      tests/cpp/test_cli.cpp
-      tests/cpp/test_pipeline.cpp
-      tests/cpp/test_ai9.cpp
-      tests/cpp/test_conc.cpp
-      tests/cpp/test_cxx_models.cpp
-      tests/cpp/test_fuse.cpp
-      tests/cpp/test_gui_model.cpp
-      tests/cpp/test_repair.cpp
-      tests/cpp/test_adapters.cpp
-      tests/cpp/test_sanitize.cpp
-      # test_qa.cpp holds every case test_qa_static.cpp has (checked: same 13
-      # TEST_CASEs) plus the prism-qa / run_session subprocess ones; its fork /
-      # session-kill cases are #ifndef _WIN32. test_qa_static.cpp is not built
-      # here (it would register the same names twice).
-      tests/cpp/test_qa.cpp
-      # Conformance / soundness scorer rules and suite shape; the release-gate,
-      # solver-kill and run_tree cases run on WIN32 through the Job Object runner
-      # (fake_prism.exe + .lead sidecar, fake_session_probe.exe). The label
-      # self-check (UBSan+ASan through run_tree) runs there too when a clang with
-      # the ASan runtime is on PATH (the clang-cl CI jobs add its DLL dir); the
-      # sanitizers_usable() probe otherwise reports NOTRUN.
-      tests/cpp/test_qa_conformance.cpp
-      tests/cpp/test_pir_e2e.cpp)
-    if(PRISM_HAS_Z3)
-      list(APPEND _prism_test_sources tests/cpp/test_leanbb.cpp
-        tests/cpp/test_pir_budget.cpp tests/cpp/test_certified.cpp)
-    endif()
-  else()
-    set(_prism_test_sources
-      tests/cpp/test_main.cpp tests/cpp/test_ai9.cpp tests/cpp/test_conc.cpp
-    tests/cpp/test_leanbb.cpp tests/cpp/test_pir_mem.cpp tests/cpp/test_pir_budget.cpp tests/cpp/test_certified.cpp
-    tests/cpp/test_pir3.cpp tests/cpp/test_pir_e2e.cpp tests/cpp/test_pir_refinement.cpp tests/cpp/test_pbsd.cpp
-    # Roadmap 2.8 Clang-AST lints.
-    tests/cpp/test_astlint.cpp
-    # C lint checks: API branches, dispatch, real-code false alarms, CVE shapes.
-    tests/cpp/test_checkers_c.cpp
-    # Front end, report JSON form, static inliner.
-    tests/cpp/test_cparse.cpp
-    # Roadmap 9.1/9.3/9.4 AI assistant features (regress, triage, ask, draft, predict).
-    tests/cpp/test_ai_assist.cpp
-    # bmc front end on SV-COMP shapes (docs/SVCOMP.md).
-    tests/cpp/test_bmc_svcomp.cpp
-    # Table-driven run_bmc on testdata/ (tools/gen_test_bmc_cpp.py).
-    tests/cpp/test_bmc.cpp
-    # Table-driven run_concolic on testdata/ (tests/test_concolic.py).
-    tests/cpp/test_concolic.cpp
-    # Planted-bug lint corpus (every testdata/ plant, table-driven).
-    tests/cpp/test_lint_corpus.cpp
-    # checkers_cxx.cpp branches and guards (bad / good twins).
-    tests/cpp/test_checkers_cxx.cpp
-    # Supply chain: prism-deps, MANIFEST.toml, licence firewall, SBOM.
-    tests/cpp/test_deps.cpp
-    # ltl and contracts stages.
-    tests/cpp/test_ltl.cpp tests/cpp/test_contracts.cpp
-    # Stage tests ported from the Python suite.
-    tests/cpp/test_thread_taint.cpp tests/cpp/test_wp_harness.cpp
-    tests/cpp/test_diff.cpp tests/cpp/test_journal_confidence.cpp
-    tests/cpp/test_verdict_repo.cpp tests/cpp/test_fuse.cpp
-    # Concrete interpreter and fuzzer (src/prism/stages/interp.cpp, fuse.cpp).
-    tests/cpp/test_concrete.cpp
-    # Interval stage (src/prism/interval.cpp).
-    tests/cpp/test_interval.cpp
-    # MSVC portability: portable 128-bit integers (include/prism/wide_int.hpp).
+  # One source list for every platform (WIN32 subset == Linux full: same TUs,
+  # checked). Cases that cannot run on a platform are guarded inside the test
+  # files (#ifdef _WIN32 / #ifndef _WIN32), not by dropping translation units.
+  # test_qa.cpp holds every case test_qa_static.cpp has plus the prism-qa /
+  # run_session subprocess ones; test_qa_static.cpp, test_adapters_static.cpp and
+  # test_sanitize_static.cpp are reference-only splits and are not built (they
+  # would register the same doctest names twice).
+  set(_prism_test_sources
+    tests/cpp/test_main.cpp
     tests/cpp/test_wide_int.cpp
-    # Sanitize stage (src/prism/adapters.cpp run_sanitize).
-    tests/cpp/test_sanitize.cpp
-    # External tool adapters, AFL, the process runner and tool lookup.
-    tests/cpp/test_adapters.cpp
-    # Polyglot stage table, parsers and the built-in JSON/TOML syntax checkers.
-    tests/cpp/test_polyglot.cpp
-    # The command line and run_pipeline end to end.
-    tests/cpp/test_cli.cpp tests/cpp/test_pipeline.cpp tests/cpp/test_sarif.cpp
-    tests/cpp/test_havoc.cpp tests/cpp/test_repolint.cpp tests/cpp/test_taxonomy.cpp
-    tests/cpp/test_cxx_models.cpp tests/cpp/test_repair.cpp
-    # `prism svcomp`: answer mapping, replay, waypoints, witness 2.0, scorer, archive.
+    tests/cpp/test_interval.cpp
     tests/cpp/test_svcomp.cpp
-    # Qt-free window model and the `prism --gui` launcher (headless).
-    tests/cpp/test_gui_model.cpp
-    # prism-qa tools, the session runner and the documentation checks.
-    tests/cpp/test_qa.cpp
+    tests/cpp/test_naming.cpp
+    tests/cpp/test_polyglot.cpp
+    tests/cpp/test_taxonomy.cpp
+    tests/cpp/test_repolint.cpp
+    tests/cpp/test_deps.cpp
+    tests/cpp/test_cparse.cpp
+    tests/cpp/test_sarif.cpp
+    tests/cpp/test_astlint.cpp
+    tests/cpp/test_ltl.cpp
+    tests/cpp/test_contracts.cpp
+    tests/cpp/test_bmc.cpp
+    tests/cpp/test_checkers_cxx.cpp
+    tests/cpp/test_checkers_c.cpp
     tests/cpp/test_gen_tables.cpp
-    tests/cpp/test_naming.cpp)
+    tests/cpp/test_bmc_svcomp.cpp
+    tests/cpp/test_havoc.cpp
+    tests/cpp/test_verdict_repo.cpp
+    tests/cpp/test_diff.cpp
+    tests/cpp/test_journal_confidence.cpp
+    tests/cpp/test_thread_taint.cpp
+    tests/cpp/test_wp_harness.cpp
+    tests/cpp/test_concrete.cpp
+    tests/cpp/test_concolic.cpp
+    tests/cpp/test_lint_corpus.cpp
+    tests/cpp/test_pir_mem.cpp
+    tests/cpp/test_ai_assist.cpp
+    tests/cpp/test_pbsd.cpp
+    tests/cpp/test_pir3.cpp
+    tests/cpp/test_pir_refinement.cpp
+    tests/cpp/test_cli.cpp
+    tests/cpp/test_pipeline.cpp
+    tests/cpp/test_ai9.cpp
+    tests/cpp/test_conc.cpp
+    tests/cpp/test_cxx_models.cpp
+    tests/cpp/test_fuse.cpp
+    tests/cpp/test_gui_model.cpp
+    tests/cpp/test_repair.cpp
+    tests/cpp/test_adapters.cpp
+    tests/cpp/test_sanitize.cpp
+    # test_qa.cpp holds every case test_qa_static.cpp has (checked: same 13
+    # TEST_CASEs) plus the prism-qa / run_session subprocess ones; its fork /
+    # session-kill cases are #ifndef _WIN32. test_qa_static.cpp is not built
+    # here (it would register the same names twice).
+    tests/cpp/test_qa.cpp
+    # Conformance / soundness scorer rules and suite shape; the release-gate,
+    # solver-kill and run_tree cases run on WIN32 through the Job Object runner
+    # (fake_prism.exe + .lead sidecar, fake_session_probe.exe). The label
+    # self-check (UBSan+ASan through run_tree) runs there too when a clang with
+    # the ASan runtime is on PATH (the clang-cl CI jobs add its DLL dir); the
+    # sanitizers_usable() probe otherwise reports NOTRUN.
+    tests/cpp/test_qa_conformance.cpp
+    tests/cpp/test_pir_e2e.cpp)
+  if(PRISM_HAS_Z3)
+    list(APPEND _prism_test_sources tests/cpp/test_leanbb.cpp
+      tests/cpp/test_pir_budget.cpp tests/cpp/test_certified.cpp)
+  endif()
+  # PRISM_TESTS_WIN_SUBSET no longer selects sources. On WIN32 it only gates the
+  # fake_* stand-in executables and the PRISM_FAKE_* compile definitions the
+  # subprocess cases need (POSIX uses /bin/sh scripts and sibling fake_prism).
+  if(WIN32 AND NOT PRISM_TESTS_WIN_SUBSET)
+    message(WARNING
+      "WIN32 prism_tests without -DPRISM_TESTS_WIN_SUBSET=ON: fake_* stand-ins "
+      "are not built, so cases that spawn them (adapters, sanitize, qa, gui "
+      "launcher) cannot find them. Use -DPRISM_TESTS_WIN_SUBSET=ON.")
   endif()
   if(WIN32 AND PRISM_TESTS_WIN_SUBSET)
     add_executable(fake_tool_launcher tests/cpp/fake_tool_launcher.cpp)
@@ -746,8 +701,7 @@ if(PRISM_TESTS)
   target_include_directories(prism_tests PRIVATE "${_pins_dir}")
   add_dependencies(prism_tests prism_generated prism prism-qa prism_docs_check)
   if(UNIX)
-    # prism-qa conformance / soundness (scorer rules, suite shape, release gate).
-    target_sources(prism_tests PRIVATE tests/cpp/test_qa_conformance.cpp)
+    # test_qa_conformance (in the shared list) finds fake_prism beside prism_tests.
     add_executable(fake_prism tests/cpp/fake_prism.cpp)
     add_dependencies(prism_tests fake_prism)
   endif()

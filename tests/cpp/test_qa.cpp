@@ -1,6 +1,6 @@
 // prism-qa (src/tools/qa) and the session runner it uses
 // (src/prism/proc_session.cpp). Part of prism_tests.
-// Also built on WIN32 (PRISM_TESTS_WIN_SUBSET): sibling() finds the tools as
+// Same source list on WIN32 (PRISM_TESTS_WIN_SUBSET builds the fakes): sibling() finds the tools as
 // .exe, run_session is checked with tests/cpp/fake_session_probe.cpp
 // (PRISM_FAKE_SESSION_PROBE) instead of sh, and the fork / session-kill cases
 // are POSIX-only. tests/cpp/test_qa_static.cpp is the older pure-logic subset
