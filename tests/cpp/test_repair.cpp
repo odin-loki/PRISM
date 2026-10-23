@@ -190,6 +190,16 @@ bool have_cc() {
 }  // namespace
 
 TEST_CASE("repair: verified fix is HYPOTHESIS with patch_verdict, audit clean") {
+#ifdef PRISM_HAS_Z3
+    const bool have_bmc = true;
+#else
+    const bool have_bmc = false;
+#endif
+    if (!have_bmc) {
+        // patch_verdict is BMC on the candidate; without Z3 BMC is NOTRUN (Law 1).
+        MESSAGE("NOTRUN: PRISM_HAS_Z3 off, no BMC verdict on the candidate");
+        return;
+    }
     if (!have_cc()) {
         MESSAGE("NOTRUN: no gcc/clang on PATH for the LLM candidate");
         return;
