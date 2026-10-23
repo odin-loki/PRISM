@@ -16,6 +16,8 @@
 #  include <spawn.h>
 #  include <sys/wait.h>
 #  include <unistd.h>
+#else
+#  include "support/proctree.hpp"  // prism::qa::run_tree (prism_qa): the Windows process runner
 #endif
 
 namespace fs = std::filesystem;
@@ -101,22 +103,47 @@ bool run_cmd(const std::vector<std::string>& argv, std::string* out = nullptr, s
     if (waitpid(pid, &st, 0) < 0) return false;
     return WIFEXITED(st) && WEXITSTATUS(st) == 0;
 #else
-    return false;
+    // Same runner as replay.cpp's sanitizers_usable(): no shell, no posix_spawn.
+    prism::qa::RunOpts o;
+    o.timeout_s = 300;
+    auto r = prism::qa::run_tree(argv, o);
+    if (out) *out = r.out;
+    if (err) *err = r.err;
+    return !r.start_failed && !r.timed_out && r.rc == 0;
 #endif
 }
 
+// Slashes only, for comparing a path the test built with one the compiler printed.
+std::string fwd(std::string s) {
+    for (auto& c : s)
+        if (c == '\\') c = '/';
+    return s;
+}
+
+#ifdef _WIN32
+constexpr const char* kProbeExe = "probe.exe";  // named explicitly: the driver's suffix rule differs per clang flavour
+#else
+constexpr const char* kProbeExe = "probe";
+#endif
+
 bool probe_clang_asan(const std::string& cxx, const fs::path& tmp) {
     auto probe = tmp / "probe.cpp";
-    std::ofstream(probe) << "#include <vector>\nint main() { std::vector<int> v{1}; return v[0] - 1; }\n";
+    // <bits/c++config.h> is libstdc++'s: the model headers replace its containers and
+    // include its internals, so a clang on another standard library (the MSVC STL) has
+    // nothing to compare against and the cases are NOTRUN, not failures.
+    std::ofstream(probe) << "#include <bits/c++config.h>\n#include <vector>\n"
+                            "int main() { std::vector<int> v{1}; return v[0] - 1; }\n";
     const std::vector<std::string> flags{"-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-fsanitize=address,undefined",
                                          "-fno-sanitize-recover=all", "-g", "-O1", "-w"};
     std::vector<std::string> build{cxx};
     build.insert(build.end(), flags.begin(), flags.end());
     build.push_back(probe.string());
     build.push_back("-o");
-    build.push_back((tmp / "probe").string());
+    build.push_back((tmp / kProbeExe).string());
     if (!run_cmd(build)) return false;
-    return run_cmd({(tmp / "probe").string()});
+    // Run it once too: on Windows a clang that links the dynamic ASan runtime needs its
+    // DLL on PATH, and a missing one only shows when the binary starts.
+    return run_cmd({(tmp / kProbeExe).string()});
 }
 
 fs::path build_prog(const std::string& cxx, const fs::path& tmp, const std::string& prog, bool with_models) {
@@ -169,7 +196,8 @@ void same_trace(const std::string& prog, const std::vector<const char*>& model_h
     REQUIRE(c.ok);
     const fs::path models = repo() / "src" / "prism" / "pir" / "models" / "cxx";
     auto deps = headers(c.cxx, prog);
-    for (const char* m : model_headers) CHECK(deps.find((models / m).string()) != std::string::npos);
+    deps = fwd(deps);
+    for (const char* m : model_headers) CHECK(deps.find(fwd((models / m).string())) != std::string::npos);
     auto lib = build_prog(c.cxx, c.tmp, prog, false);
     auto mod = build_prog(c.cxx, c.tmp, prog, true);
     auto a = run_lines(lib);

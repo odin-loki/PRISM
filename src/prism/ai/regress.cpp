@@ -645,9 +645,19 @@ RegressResult generate_regression_tests(const RunReport& report, const RegressOp
             std::istringstream fl(t.flags);
             for (std::string w; fl >> w;) argv.push_back(w);
             argv.push_back((dir / t.harness).string());
+            // Windows executables carry .exe (named explicitly: the driver's own
+            // suffix rule differs between clang and clang-cl).
+#ifdef _WIN32
+            const fs::path exe_path = bin / (t.name + ".exe");
+#else
+            const fs::path exe_path = bin / t.name;
+#endif
             argv.push_back("-o");
-            argv.push_back((bin / t.name).string());
+            argv.push_back(exe_path.string());
+#ifndef _WIN32
+            // the MSVC CRT carries libm; there is no -lm to link on Windows
             if (!cxx) argv.push_back("-lm");
+#endif
             auto b = detail::run_process(argv, 180.0);
             if (!b.failed && b.rc != 0 && b.text.find("libclang_rt.") != std::string::npos) {
                 // The compiler is there but its sanitizer runtime is not: a missing tool (Law 1).
@@ -661,11 +671,20 @@ RegressResult generate_regression_tests(const RunReport& report, const RegressOp
                 continue;
             }
             // halt_on_error so the first UB report ends the run with a failure.
-            auto r = detail::run_process(
-                sandbox::wrap_argv({"env", "UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1",
-                                    "ASAN_OPTIONS=detect_leaks=0", (bin / t.name).string()},
-                                   bin),
-                opt.timeout_s);
+            // (an environment overlay on the child, not an `env` program: there is
+            // none on Windows)
+            detail::RunSpec rs;
+            rs.argv = sandbox::wrap_argv({exe_path.string()}, bin);
+            rs.env = {{"UBSAN_OPTIONS", "halt_on_error=1:print_stacktrace=1"}, {"ASAN_OPTIONS", "detect_leaks=0"}};
+            rs.timeout_s = opt.timeout_s;
+            rs.merge_stderr = true;
+            auto ro = detail::run(rs);
+            struct {
+                std::string text;
+                int rc;
+                bool timed_out;
+            } r{ro.out, ro.rc, ro.timed_out};
+            if (ro.failed) r.rc = 127;
             auto hit = r.text.find("runtime error:");
             if (hit == std::string::npos) hit = r.text.find("ERROR: AddressSanitizer");
             if (r.rc != 0 || r.timed_out || hit != std::string::npos) {

@@ -27,6 +27,7 @@
 
 #ifdef _WIN32
 #  include <process.h>
+#  include "support/replay.hpp"  // prism::qa::sanitizers_usable (prism_qa)
 #endif
 #include <fstream>
 #include <optional>
@@ -167,10 +168,18 @@ prism::RunReport sample_report(const fs::path& root) {
 }
 
 bool have_clang_sanitizers(const fs::path& dir) {
+#ifdef _WIN32
+    // No /dev/null and no shell under cmd: the QA probe links and runs a
+    // UBSan+ASan binary through run_tree (clang only on Windows; the ASan
+    // runtime DLL must be on PATH), the same check as the label self-check.
+    (void)dir;
+    return prism::qa::sanitizers_usable();
+#else
     write(dir / "probe.c", "int main(void) { return 0; }\n");
     std::string cmd = "clang -fsanitize=undefined,address " + (dir / "probe.c").string() + " -o " +
                       (dir / "probe").string() + " >/dev/null 2>&1";
     return std::system(cmd.c_str()) == 0;
+#endif
 }
 
 }  // namespace
@@ -371,8 +380,10 @@ TEST_CASE("ai-assist regress: generated tests fail on the bug and pass on the fi
             repro += t.status == "reproduces";
         }
     CHECK(repro == 2);
+#ifndef _WIN32  // the POSIX shell runner and cmake/ctest project below need sh and /dev/null
     // The framework-free runner fails too (exit 1).
     CHECK(std::system(("sh " + (opt.out_dir / "run_tests.sh").string() + " >/dev/null 2>&1").c_str()) != 0);
+#endif
     // Fix the bugs: the same tests now pass.
     write(root / "src" / "calc.c",
           "int add_big(int x) {\n    return x > 2147483547 ? 2147483647 : x + 100;\n}\n\n"
@@ -381,6 +392,7 @@ TEST_CASE("ai-assist regress: generated tests fail on the bug and pass on the fi
     auto fixed = prism::ai::generate_regression_tests(report, opt);
     for (auto& t : fixed.tests)
         if (!t.name.empty()) CHECK_MESSAGE(t.status == "does-not-reproduce", t.name, ": ", t.detail);
+#ifndef _WIN32
     CHECK(std::system(("sh " + (opt.out_dir / "run_tests.sh").string() + " >/dev/null 2>&1").c_str()) == 0);
     // ctest project: build and run with cmake when available.
     if (std::system("cmake --version >/dev/null 2>&1") == 0) {
@@ -398,6 +410,7 @@ TEST_CASE("ai-assist regress: generated tests fail on the bug and pass on the fi
                                        "int divide(int a, int b) {\n    return b == 0 ? 0 : a / b;\n}\n");
         CHECK(std::system(cmd.c_str()) != 0);  // bug back: ctest fails
     }
+#endif
 }
 
 // ------------------------------------------------------------------ triage
