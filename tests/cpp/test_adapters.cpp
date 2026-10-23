@@ -68,6 +68,11 @@ std::string slurp(const fs::path& p) {
     return ss.str();
 }
 
+std::string trim_crlf(std::string s) {
+    while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back();
+    return s;
+}
+
 std::vector<std::string> lines_of(const fs::path& p) {
     std::vector<std::string> out;
     std::istringstream in(slurp(p));
@@ -1168,8 +1173,8 @@ TEST_CASE("klee: .err dumps and KLEE ERROR are FAILED; a quiet run is UNKNOWN") 
 #ifdef _WIN32
     cfg.tools["klee"] = help_then_cmd(
         nt.t.dir / "t", "klee", "KLEE --help",
-        "powershell -NoProfile -Command \"New-Item -ItemType Directory -Force -Path 'klee-out/klee-last'|Out-Null\"\r\n"
-        "echo x>\"klee-out/klee-last/test000001.ptr.err\"\r\n"
+        "if not exist klee-out\\klee-last mkdir klee-out\\klee-last\r\n"
+        "echo x>klee-out\\klee-last\\test000001.ptr.err\r\n"
         "echo KLEE: done\r\n"
         "exit /b 0\r\n");
 #else
@@ -1340,6 +1345,11 @@ TEST_CASE("warnings: fake compilers parse output, dedupe, and never emit proof")
     auto unit = nt.t.put("planted.c", "int main(void){return 0;}\n");
     const std::string warn = "planted.c:3:5: warning: overflow [-Woverflow]\n";
 #ifdef _WIN32
+    {
+        std::error_code ec;
+        fs::remove(nt.bin / "clang.exe", ec);
+        fs::remove(nt.bin / "clang", ec);
+    }
     fake_cmd(nt.bin, "gcc", "(echo planted.c:3:5: warning: overflow [-Woverflow]) 1>&2\r\nexit /b 0\r\n");
     const auto gcc_exe = nt.bin / "gcc.exe";
     fs::path clang = nt.bin / "clang.exe";
@@ -1557,7 +1567,20 @@ TEST_CASE("libfuzzer probe: missing clang or no -fsanitize=fuzzer is NOTRUN; sup
     CHECK(lf.status == laws::NOTRUN);
     never_clean_or_proof(lf);
 
+#ifdef _WIN32
+    fake_cmd(nt.bin, "clang",
+             "set OUT=\r\n"
+             ":lfloop\r\n"
+             "if \"%1\"==\"\" goto lfdone\r\n"
+             "if \"%1\"==\"-o\" (set OUT=%2& shift)\r\n"
+             "shift\r\n"
+             "goto lfloop\r\n"
+             ":lfdone\r\n"
+             "if not \"%OUT%\"==\"\" copy /y nul \"%OUT%\" >nul\r\n"
+             "exit /b 0\r\n");
+#else
     fake(nt.bin, "clang", "exit 0");
+#endif
     lf = stage_row(prism::run_optional_tools({}, nt.cfg), "libfuzzer");
     CHECK(lf.status == laws::UNKNOWN);
     never_clean_or_proof(lf);
@@ -1596,7 +1619,7 @@ TEST_CASE("libfuzzer_probe: keyword reject and successful stub compile are hones
                     "shift\r\n"
                     "goto lfloop\r\n"
                     ":lfdone\r\n"
-                    "if not \"%OUT%\"==\"\" type nul >\"%OUT%\"\r\n"
+                    "if not \"%OUT%\"==\"\" copy /y nul \"%OUT%\" >nul\r\n"
                     "exit /b 0\r\n");
 #else
     auto ok = probe("case \"$*\" in *-fsanitize=fuzzer*) exit 0;; esac\nexit 0");
@@ -1777,9 +1800,10 @@ std::string fake_afl_body(bool crash, const fs::path& calls = {}) {
         "cd>\"!out!\\..\\cwd.txt\"\r\n";
     if (!calls.empty()) b += "echo call>>\"" + calls.string() + "\"\r\n";
     if (crash)
-        b += "if not exist \"!out!\\crashes\" mkdir \"!out!\\crashes\"\r\n"
-             "powershell -NoProfile -Command \"[IO.File]::WriteAllBytes((Join-Path "
-             "'!out!' 'crashes/id:000000'), [byte[]](1,2,3,4))\"\r\n";
+        b += "set AFL_OUT=!out!\r\n"
+             "powershell -NoProfile -Command \"$d=Join-Path $env:AFL_OUT 'crashes'; "
+             "New-Item -ItemType Directory -Force -Path $d | Out-Null; "
+             "[IO.File]::WriteAllBytes((Join-Path $d 'id:000000'),[byte[]](1,2,3,4))\"\r\n";
     b += "endlocal\r\nexit /b 0\r\n";
     return b;
 #else
@@ -1893,9 +1917,8 @@ TEST_CASE("afl: a planted crash is CRASH, a quiet run CLEAN (not a proof); env a
             CHECK(has(lower(rec->message), "not a proof"));
         }
         // AFL_* defaults reach afl-fuzz, in the work dir, and never PRISM itself.
-        CHECK(slurp(work / "env.txt") == "1 1 1");
-        auto cwd = slurp(work / "cwd.txt");
-        if (!cwd.empty() && cwd.back() == '\n') cwd.pop_back();
+        CHECK(trim_crlf(slurp(work / "env.txt")) == "1 1 1");
+        auto cwd = trim_crlf(slurp(work / "cwd.txt"));
 #ifdef _WIN32
         std::error_code ec;
         CHECK(fs::equivalent(fs::weakly_canonical(fs::path(cwd), ec),
@@ -1911,7 +1934,7 @@ TEST_CASE("afl: a planted crash is CRASH, a quiet run CLEAN (not a proof); env a
     auto work = t.dir / "w_user";
     auto rec = sd::run_afl_fuzz(scalar_fn(src), src, cfg, 1.0, work);
     REQUIRE(rec.has_value());
-    CHECK(slurp(work / "env.txt") == "0 1 1");
+    CHECK(trim_crlf(slurp(work / "env.txt")) == "0 1 1");
 }
 
 TEST_CASE("fuse: PRISM_AFL opt-in; AFL on hand but not opted in; opted in but missing") {
@@ -1963,7 +1986,7 @@ TEST_CASE("fuse: PRISM_AFL opt-in; AFL on hand but not opted in; opted in but mi
         CHECK(recs[0].status == laws::CLEAN);
         CHECK(xget(recs[0], "engine") == "afl");
         CHECK_FALSE(recs[0].extra.contains("afl_available"));
-        CHECK(slurp(calls) == "call\n");
+        CHECK(trim_crlf(slurp(calls)) == "call");
         // The binary half of fuzz_function ran after the concrete oracle.
         CHECK(xget(recs[0], "sandbox") == prism::sandbox::kind());
     }
