@@ -552,7 +552,9 @@ TEST_CASE("real-world: fuzz goal BMC stops when the fuzz budget is spent, and sa
     auto fz = prism::run_fuse(fns, {}, std::filesystem::temp_directory_path(), 0.0, 4, false);
     REQUIRE_FALSE(fz.empty());
     CHECK(fz[0].status != prism::laws::PROVED);
+#ifdef PRISM_HAS_Z3  // the BMC goals come from the solver (Law 1: without Z3 there are none)
     CHECK(fz[0].extra["bmc_goals_skipped"].find("fuzz budget spent") != std::string::npos);
+#endif
 }
 
 TEST_CASE("real-world: concolic reads '#' inside a string as code, not a directive") {
@@ -5582,6 +5584,7 @@ TEST_CASE("pir: lean export of freeze, undef and direct calls") {
     CHECK(text.find("L depth 4\n") != std::string::npos);
     // undef outside freeze is exported; the Lean checker refuses it
     CHECK(text.find("L bin %y add - 32 %x undef\n") != std::string::npos);
+    in.close();  // WIN32 cannot remove a directory holding an open file
     fs::remove_all(dir);
 }
 
@@ -5674,6 +5677,7 @@ TEST_CASE("pir: lean export of intrinsics, lifetime markers, memory intrinsics a
     CHECK(text.find("P free ") != std::string::npos);
     CHECK(text.find("P memcpy ") != std::string::npos);
     CHECK(text.find("P memset ") != std::string::npos);
+    in.close();  // WIN32 cannot remove a directory holding an open file
     fs::remove_all(dir);
 }
 
@@ -6105,6 +6109,20 @@ struct SolverTmp {
         std::filesystem::permissions(p, std::filesystem::perms::owner_all);
         return p;
     }
+#ifdef _WIN32
+    // WIN32 stand-in for script(): a PE stub (fake_tool_launcher, as in
+    // test_adapters) runs the sibling STEM.cmd with the same argv and stdio.
+    std::filesystem::path cmd_tool(const std::string& stem, const std::string& cmd_body) {
+        std::filesystem::create_directories(dir);
+        { std::ofstream(dir / (stem + ".cmd"), std::ios::binary) << "@echo off\r\n" << cmd_body; }
+        auto exe = dir / (stem + ".exe");
+        std::error_code ec;
+        std::filesystem::copy_file(PRISM_FAKE_TOOL_LAUNCHER, exe,
+                                   std::filesystem::copy_options::overwrite_existing, ec);
+        REQUIRE_FALSE(ec);
+        return exe;
+    }
+#endif
 };
 
 ps::SolveOptions solver_opts(const SolverTmp& t) {
@@ -6483,7 +6501,12 @@ TEST_CASE("solver: a goal the simplifier decides is still certified through the 
 }
 
 TEST_CASE("solver: a tampered LRAT proof never yields PROVED-CERTIFIED") {
-    if (!have_cert_tools()) return;  // needs the real CaDiCaL behind the wrapper
+#ifdef _WIN32
+    constexpr bool posix_wrapper = false;  // the CaDiCaL wrapper is a #!/bin/sh + sed script
+#else
+    constexpr bool posix_wrapper = true;
+#endif
+    if (!posix_wrapper || !have_cert_tools()) return;  // needs the real CaDiCaL behind the wrapper
     SolverTmp t;
     ps::SolveOptions def;
     auto real = ps::find_tool("cadical", def);
@@ -6508,7 +6531,11 @@ TEST_CASE("solver: a tampered LRAT proof never yields PROVED-CERTIFIED") {
 
 TEST_CASE("solver: a portfolio member's bogus SAT model is rejected") {
     SolverTmp t;
+#ifdef _WIN32
+    auto fake = t.cmd_tool("fake-solver", "echo sat\r\necho ((^|x^| #x00))\r\n");
+#else
     auto fake = t.script("fake-solver", "#!/bin/sh\nprintf 'sat\\n((|x| #x00))\\n'\n");
+#endif
     z3::context c;
     auto x = c.bv_const("x", 8);
     auto o = solver_opts(t);
@@ -6530,7 +6557,11 @@ TEST_CASE("solver: a portfolio member's bogus SAT model is rejected") {
     REQUIRE(z.kind == ps::SolveResult::Sat);
     CHECK(z.model["x"] == "#x05");
     // A DIMACS member whose assignment does not satisfy the CNF is refused too.
+#ifdef _WIN32
+    auto dfake = t.cmd_tool("fake-sat", "echo s SATISFIABLE\r\necho v -1 -2 -3 -4 -5 -6 -7 -8 0\r\nexit /b 10\r\n");
+#else
     auto dfake = t.script("fake-sat", "#!/bin/sh\nprintf 's SATISFIABLE\\nv -1 -2 -3 -4 -5 -6 -7 -8 0\\n'\nexit 10\n");
+#endif
     o.z3_in_process = false;
     o.extra_solvers = {{"dliar", {dfake.string(), "{input}"}, ps::ExternalSolver::Input::Dimacs}};
     auto d = ps::solve(c, x == c.bv_val(5, 8), o);
@@ -7035,6 +7066,7 @@ TEST_CASE("export_lean_pair writes the LLVM fragment and the PIR only when enabl
     CHECK(text.find("P check v3:1 ovf+ INT-SIGNED-OVF\n") != std::string::npos);
     CHECK(text.find("P ret v2:32\n") != std::string::npos);
     CHECK(text.find("end\n") != std::string::npos);
+    in.close();  // WIN32 cannot remove a directory holding an open file
     std::filesystem::remove_all(dir);
 }
 
@@ -7101,7 +7133,7 @@ std::vector<prism::FunctionInfo> fns_of(const std::string& file, const std::stri
     auto sub = dir.d / std::to_string(n++);
     std::filesystem::create_directories(sub);
     auto p = sub / file;
-    { std::ofstream(p) << src; }
+    { std::ofstream(p, std::ios::binary) << src; }  // binary: WIN32 text mode would write CRLF
     return prism::extract_functions(p, p.string());
 }
 std::string bmc_status(prism::FunctionInfo fn, int std = 0) {
@@ -7113,6 +7145,10 @@ std::string bmc_status(prism::FunctionInfo fn, int std = 0) {
 }  // namespace
 
 TEST_CASE("bmc goto: structured jumps encoded, unstructured NEEDS-HARNESS") {
+#ifndef PRISM_HAS_Z3
+    MESSAGE("NOTRUN: bmc needs PRISM_HAS_Z3");
+    return;
+#endif
     const std::map<std::string, std::set<std::string_view>> want = {
         {"goto_out_ok", {prism::laws::PROVED, prism::laws::PROVED_UNBOUNDED}},
         {"goto_out_bad", {prism::laws::FAILED}},
@@ -7140,6 +7176,10 @@ TEST_CASE("bmc goto: structured jumps encoded, unstructured NEEDS-HARNESS") {
 }
 
 TEST_CASE("bmc goto: backward goto across an inner loop, forward out of a switch") {
+#ifndef PRISM_HAS_Z3
+    MESSAGE("NOTRUN: bmc needs PRISM_HAS_Z3");
+    return;
+#endif
     auto a = fns_of("t.c",
                     "int f(int x) {\n    int n = 0;\nagain:\n    n++;\n"
                     "    for (int i = 0; i < 2; i++) {\n        if (n < 3) goto again;\n    }\n"
@@ -7164,6 +7204,10 @@ TEST_CASE("bmc goto: backward goto across an inner loop, forward out of a switch
 }
 
 TEST_CASE("bmc shift rules follow the C++ standard of the unit (F7)") {
+#ifndef PRISM_HAS_Z3
+    MESSAGE("NOTRUN: bmc needs PRISM_HAS_Z3");
+    return;
+#endif
     const char* pos = "int f(int s) {\n    if (s < 0 || s > 31) return 0;\n    return 1 << s;\n}\n";
     const char* neg = "int f(int s) {\n    if (s < 0 || s > 31) return 0;\n    return -1 << s;\n}\n";
     const char* three = "int f(int s) {\n    if (s < 0 || s > 31) return 0;\n    return 3 << s;\n}\n";
@@ -7195,8 +7239,8 @@ TEST_CASE("with_cxx_std reads -std from compile_commands.json") {
     { std::ofstream(dir / "c.cpp") << "int h(int s) { return s; }\n"; }
     {
         std::ofstream(dir / "compile_commands.json")
-            << "[{\"directory\": \"" << dir.string() << "\", \"file\": \"a.cpp\", \"arguments\": [\"c++\", \"-std=c++20\", \"-c\", \"a.cpp\"]},"
-            << " {\"directory\": \"" << dir.string() << "\", \"file\": \"b.cpp\", \"command\": \"c++ -std=c++20 -std=c++14 -c b.cpp\"}]";
+            << "[{\"directory\": \"" << dir.generic_string() << "\", \"file\": \"a.cpp\", \"arguments\": [\"c++\", \"-std=c++20\", \"-c\", \"a.cpp\"]},"
+            << " {\"directory\": \"" << dir.generic_string() << "\", \"file\": \"b.cpp\", \"command\": \"c++ -std=c++20 -std=c++14 -c b.cpp\"}]";
     }
     std::vector<prism::FunctionInfo> fns;
     for (auto* f : {"a.cpp", "b.cpp", "c.cpp"})
@@ -7222,7 +7266,9 @@ TEST_CASE("cparse extracts a function-try-block with its handlers (F10)") {
     CHECK(fns[0].signature.find("try") == std::string::npos);
     CHECK(fns[0].body_line == 1);
     CHECK(fns[1].name == "user");
+#ifdef PRISM_HAS_Z3
     for (auto& fn : fns) CHECK(bmc_status(fn) == prism::laws::NEEDS_HARNESS);
+#endif
 }
 
 // ---- process trees: a timeout or a signal to PRISM kills the children's

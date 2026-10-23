@@ -605,7 +605,7 @@ if(PRISM_TESTS)
   endif()
   if(WIN32 AND PRISM_TESTS_WIN_SUBSET)
     set(_prism_test_sources
-      tests/cpp/test_main_win.cpp
+      tests/cpp/test_main.cpp
       tests/cpp/test_wide_int.cpp
       tests/cpp/test_interval.cpp
       tests/cpp/test_svcomp.cpp

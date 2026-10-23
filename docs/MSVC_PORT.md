@@ -227,7 +227,7 @@ Remaining epic work is listed in [§7](#7-remaining-work-backlog).
 
   | Kind | Sources |
   |------|---------|
-  | Doctest main | `tests/cpp/test_main_win.cpp` (not `test_main.cpp`) |
+  | Doctest main | `tests/cpp/test_main.cpp` (shared with Unix; `test_main_win.cpp` retired) |
   | Adapter fakes on WIN32 | Full `test_adapters.cpp` + `fake_tool_launcher` (stdio forwarded to `cmd.exe`); `fake_cmd` / `help_then_cmd` / `sh_to_cmd` |
   | Sanitize fakes on WIN32 | Full `test_sanitize.cpp` + `fake_cc.exe` (PE compiler/runner with `.fakebody` sidecar) |
   | QA on WIN32 | Full `test_qa.cpp` + `fake_session_probe.exe` (incl. Job Object timeout / background-grandchild / memory-cap cases); fork and SIGTERM-to-runner cases POSIX-only |
@@ -236,7 +236,10 @@ Remaining epic work is listed in [§7](#7-remaining-work-backlog).
   | Portable doctest TUs | `test_wide_int`, `test_interval`, `test_svcomp`, `test_naming`, `test_polyglot`, `test_taxonomy`, `test_repolint`, `test_deps`, `test_cparse`, `test_sarif`, `test_astlint`, `test_ltl`, `test_contracts`, `test_bmc`, `test_checkers_cxx`, `test_checkers_c`, `test_gen_tables`, `test_bmc_svcomp`, `test_havoc`, `test_verdict_repo`, `test_diff`, `test_journal_confidence`, `test_thread_taint`, `test_wp_harness`, `test_concrete`, `test_concolic`, `test_lint_corpus`, `test_pir_mem`, `test_ai_assist`, `test_pbsd`, `test_pir3`, `test_pir_refinement`, `test_cli`, `test_pipeline`, `test_ai9`, `test_conc`, `test_cxx_models`, `test_fuse`, `test_gui_model`, `test_repair`, `test_pir_e2e` |
   | When `PRISM_HAS_Z3` | `test_leanbb`, `test_pir_budget`, `test_certified` |
 
-  **Not in subset (by design):** `test_main.cpp`; other unistd / `fork` / socket-heavy TUs.
+  **Not in subset (by design):** other unistd / `fork` / socket-heavy TUs. `test_main.cpp` is the
+  doctest main and its cases run on WIN32; BMC-driven cases there (goto / shift rules, fuzz-goal
+  budget) are `NOTRUN` without `PRISM_HAS_Z3`, and the `SolverTmp` shell fakes use
+  `fake_tool_launcher` + `.cmd` (`cmd_tool`) on WIN32.
   `test_pipeline` chmod/LTL case is POSIX-only; `test_cli` binary integration is POSIX-only.
   On WIN32, `test_pir_e2e` omits the large `tests/pir` verdict table (MESSAGE); Law 9 /
   `--fp-checks` / `--strict-aliasing` smoke cases still run when `clang`/`opt` are on PATH.
@@ -253,7 +256,7 @@ Remaining epic work is listed in [§7](#7-remaining-work-backlog).
   cap checks, the orphan work-dir sweep (`fork`), and the resident-memory OOM checker test stay
   POSIX-only (`#ifndef _WIN32`). Fake `#!/bin/sh` checker wrappers run only when the real tools
   are installed (typically not on Windows CI).
-- **WIN32 test parity notes:** `_getpid` / `_putenv_s` in `test_main_win` and selected TUs;
+- **WIN32 test parity notes:** `tm_setenv` / `tm_unsetenv` (`_putenv_s`) in `test_main.cpp` and selected TUs;
   `test_checkers_c` / `test_concolic` mention `fork` only inside scanned snippet strings.
   `test_diff` PATH-mutation cases are POSIX-only. `Config::which_adapter` on WIN32 accepts
   `--tool` paths without `.exe` when `tool.exe` exists (parity with `SearchPath`).
@@ -268,7 +271,7 @@ Epic closure for phases 5a / 5b / 5c / 7 does **not** imply full Windows parity 
 
 | Item | Notes |
 |------|--------|
-| **`test_main.cpp` on WIN32** | `tm_setenv`/`tm_unsetenv` compile fix @ `10c33422a`; still use `test_main_win.cpp` in subset until Z3 sh-fakes and polyglot guards are ported. |
+| **`test_main.cpp` on WIN32** | **Done:** replaces `test_main_win.cpp` in the subset. Fixes: open files closed before `remove_all`, binary-mode source writes (no CRLF), `generic_string()` paths in `compile_commands.json`, Z3 guards for BMC cases, `.cmd` fakes for the portfolio solver tests (Z3-on path compiled but only exercised by the Z3 smoke job). Local note: a Microsoft Store `python3.exe` stub on PATH makes the polyglot python-syntax test fail; remove it from PATH. |
 | **Full QA doctest TUs** | **Done** for CI subset: `test_qa.cpp`, adapters, sanitize, conformance static+process slice. Fork/`kill -9`/SIGTERM session cases stay POSIX. |
 | **Phase 6 conformance on Windows** | `test_qa_conformance.cpp` in subset; label self-check still `NOTRUN` without UBSan+ASan toolchain. |
 | **`windows-compile-smoke-cl-z3` (CI)** | Same four smokes as 5a/5b/5c; confirm on latest `main` after each push. |
