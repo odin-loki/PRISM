@@ -347,7 +347,7 @@ std::string frama_fake(const std::string& eva_out, int rc = 0) {
 
 fs::path make_frama_fake(const fs::path& dir, const std::string& stem, const std::string& eva_out, int rc = 0) {
 #ifdef _WIN32
-    return fake_cmd(dir, stem, win_help_probe() + "echo %* | findstr /i \"-eva\" >nul\r\n"
+    return fake_cmd(dir, stem, win_help_probe() + "echo %* | findstr /i /c:\"-eva\" >nul\r\n"
                                          "if errorlevel 1 exit /b 0\r\n"
                                          "echo " +
                                          eva_out + "\r\n"
@@ -916,10 +916,20 @@ TEST_CASE("cbmc: never passes a check-disabling flag; a fake cbmc is NOTRUN") {
     CHECK(has(argv, "--unwind"));
     CHECK_FALSE(has(argv, "--no-"));
 
+#ifdef _WIN32
+    auto doctest = fake_cmd(nt.t.dir / "t", "cbmc2",
+                            "echo Unknown option: --timeout 1>&2\r\n"
+                            "echo  --stack-trace 1>&2\r\n"
+                            "echo [doctest] doctest version is 2.4.11 1>&2\r\n"
+                            "exit /b 1\r\n");
+    auto catch2 = fake_cmd(nt.t.dir / "t", "cbmc3",
+                           "echo Catch2 v3.5.0\r\necho Unknown option: --unwind\r\nexit /b 0\r\n");
+#else
     auto doctest = fake(nt.t.dir / "t", "cbmc2",
                         "echo 'Unknown option: --timeout' >&2; echo ' --stack-trace' >&2; "
                         "echo '[doctest] doctest version is 2.4.11' >&2; exit 1");
     auto catch2 = fake(nt.t.dir / "t", "cbmc3", "echo 'Catch2 v3.5.0'; echo 'Unknown option: --unwind'");
+#endif
     for (const auto& exe : {doctest, catch2}) {
         auto r = ad::run_cbmc(exe.string(), paths, nt.cfg);
         REQUIRE_FALSE(r.empty());
@@ -938,7 +948,15 @@ TEST_CASE("semgrep: a match is FAILED; no results or silent output is UNKNOWN") 
     auto cfg = nt.cfg;
     const std::string hit =
         R"({"results":[{"check_id":"c.lang.security","path":"test.c","start":{"line":3},"extra":{"message":"use-after-free"}}]})";
+#ifdef _WIN32
+    const auto semgrep_json = nt.t.dir / "t" / "semgrep_hit.json";
+    fs::create_directories(semgrep_json.parent_path());
+    std::ofstream(semgrep_json, std::ios::binary) << hit;
+    cfg.tools["semgrep"] = help_then_cmd(nt.t.dir / "t", "semgrep", "semgrep --help",
+                                         "type \"" + semgrep_json.string() + "\"\r\nexit /b 0\r\n");
+#else
     cfg.tools["semgrep"] = fake(nt.t.dir / "t", "semgrep", help_then("semgrep --help", "echo '" + hit + "'"));
+#endif
     auto sg = stage_row(prism::run_optional_tools(paths, cfg), "semgrep");
     CHECK(sg.status == laws::FAILED);
     CHECK(sg.cls == "c.lang.security");
@@ -1014,7 +1032,7 @@ TEST_CASE("frama-c EVA: zero alarms is UNKNOWN; warnings and alarms are FAILED; 
 
     cfg.timeout = 1;
 #ifdef _WIN32
-    exe = fake_cmd(nt.t.dir / "t", "frama-c-sleep", win_help_probe() + "echo %* | findstr /i \"-eva\" >nul\r\n"
+    exe = fake_cmd(nt.t.dir / "t", "frama-c-sleep", win_help_probe() + "echo %* | findstr /i /c:\"-eva\" >nul\r\n"
                                                           "if errorlevel 1 exit /b 0\r\n"
                                                           "timeout /t 30 /nobreak >nul\r\n"
                                                           "exit /b 0\r\n"
@@ -1029,7 +1047,7 @@ TEST_CASE("frama-c EVA: zero alarms is UNKNOWN; warnings and alarms are FAILED; 
     never_clean_or_proof(to[0]);
 
 #ifdef _WIN32
-    exe = fake_cmd(nt.t.dir / "t", "frama-c-doctest", win_help_probe() + "echo %* | findstr /i \"-eva\" >nul\r\n"
+    exe = fake_cmd(nt.t.dir / "t", "frama-c-doctest", win_help_probe() + "echo %* | findstr /i /c:\"-eva\" >nul\r\n"
                                                             "if errorlevel 1 exit /b 0\r\n"
                                                             "echo [doctest] doctest version is 2.4.11 1>&2\r\n"
                                                             "echo Unknown option: --timeout 1>&2\r\n"
@@ -1266,12 +1284,13 @@ TEST_CASE("warnings: fake compilers parse output, dedupe, and never emit proof")
     cfg.root = nt.t.dir;
     auto unit = nt.t.put("planted.c", "int main(void){return 0;}\n");
     const std::string warn = "planted.c:3:5: warning: overflow [-Woverflow]\n";
-    fake(nt.bin, "gcc", "printf '" + warn + "' >&2\nexit 0\n");
 #ifdef _WIN32
+    fake_cmd(nt.bin, "gcc", "(echo planted.c:3:5: warning: overflow [-Woverflow]) 1>&2\r\nexit /b 0\r\n");
     const auto gcc_exe = nt.bin / "gcc.exe";
     auto clang = nt.bin / "clang.exe";
     fs::copy_file(gcc_exe, clang, fs::copy_options::overwrite_existing);
 #else
+    fake(nt.bin, "gcc", "printf '" + warn + "' >&2\nexit 0\n");
     auto clang = nt.bin / "clang";
     fs::copy_file(nt.bin / "gcc", clang, fs::copy_options::overwrite_existing);
 #endif
@@ -1282,10 +1301,11 @@ TEST_CASE("warnings: fake compilers parse output, dedupe, and never emit proof")
     CHECK(out[0].line == 3);
     never_clean_or_proof(out[0]);
 
-    fake(nt.bin, "gcc", "echo 'fatal: cannot exec cc1' >&2\nexit 1\n");
 #ifdef _WIN32
+    fake_cmd(nt.bin, "gcc", "(echo fatal: cannot exec cc1) 1>&2\r\nexit /b 1\r\n");
     fs::copy_file(gcc_exe, clang, fs::copy_options::overwrite_existing);
 #else
+    fake(nt.bin, "gcc", "echo 'fatal: cannot exec cc1' >&2\nexit 1\n");
     fs::copy_file(nt.bin / "gcc", clang, fs::copy_options::overwrite_existing);
 #endif
     auto bad = prism::run_compiler({unit}, cfg);
@@ -1316,8 +1336,14 @@ TEST_CASE("warnings: gcc and clang agree once; same path is not run twice") {
     cfg.root = nt.t.dir;
     auto unit = nt.t.put("planted.c", "int main(void){return 0;}\n");
     const std::string warn = "planted.c:3:5: warning: overflow [-Woverflow]\n";
+#ifdef _WIN32
+    const char* warn_cmd = "(echo planted.c:3:5: warning: overflow [-Woverflow]) 1>&2\r\nexit /b 0\r\n";
+    fake_cmd(nt.bin, "gcc", warn_cmd);
+    fake_cmd(nt.bin, "clang", warn_cmd);
+#else
     fake(nt.bin, "gcc", "printf '" + warn + "' >&2\nexit 0\n");
     fake(nt.bin, "clang", "printf '" + warn + "' >&2\nexit 0\n");
+#endif
     auto both = prism::run_compiler({unit}, cfg);
     REQUIRE(both.size() == 1);
     CHECK(has(xget(both[0], "compilers"), "gcc"));
@@ -1397,8 +1423,13 @@ TEST_CASE("spatch: a match is FAILED; silence is UNKNOWN; held script rules stay
     NoTools nt;
     auto c = testdata() / "abs_ok.c";
     auto cfg = nt.cfg;
+#ifdef _WIN32
+    cfg.tools["spatch"] = help_then_cmd(nt.t.dir / "t", "spatch", "spatch --help",
+                                        "echo " + c.filename().string() + ":12: realloc(p, n)\r\nexit /b 0\r\n");
+#else
     cfg.tools["spatch"] =
         fake(nt.t.dir / "t", "spatch", help_then("spatch --help", "echo '" + c.string() + ":12: realloc(p, n)'"));
+#endif
     auto out = prism::run_optional_tools({c}, cfg);
     std::set<std::string> classes;
     for (const auto& f : out)
@@ -1674,7 +1705,7 @@ std::string fake_afl_body(bool crash, const fs::path& calls = {}) {
         "set out=\r\n"
         ":afl_arg_loop\r\n"
         "if \"%1\"==\"\" goto afl_arg_done\r\n"
-        "if \"%1\"==\"-o\" set out=%2\r\n"
+        "if \"%1\"==\"-o\" (set out=%2& shift)\r\n"
         "shift\r\n"
         "goto afl_arg_loop\r\n"
         ":afl_arg_done\r\n"
