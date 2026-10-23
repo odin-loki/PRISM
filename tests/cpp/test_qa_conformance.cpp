@@ -37,8 +37,13 @@
 #include <thread>
 #include <vector>
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#else
 #include <sys/stat.h>
 #include <unistd.h>
+#endif
 
 namespace {
 
@@ -65,11 +70,7 @@ bool ends_with(const std::string& s, const std::string& suf) {
 
 struct QaTmp {
     fs::path dir;
-    QaTmp() {
-        std::string tmpl = (fs::temp_directory_path() / "prism-qa-test-XXXXXX").string();
-        REQUIRE(::mkdtemp(tmpl.data()) != nullptr);
-        dir = tmpl;
-    }
+    QaTmp() { dir = qa::make_unique_dir("prism-qa-test-"); }
     ~QaTmp() {
         std::error_code ec;
         fs::remove_all(dir, ec);
@@ -101,23 +102,42 @@ ojson finding(const std::string& status, const std::string& cls = "") {
 ojson one(const ojson& f) { return ojson::array({f}); }
 
 fs::path self_dir() {
+#ifdef _WIN32
+    wchar_t buf[MAX_PATH];
+    const DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH);
+    REQUIRE((n > 0 && n < MAX_PATH));
+    return fs::path(buf).parent_path();
+#else
     char buf[4096];
     ssize_t n = ::readlink("/proc/self/exe", buf, sizeof buf - 1);
     REQUIRE(n > 0);
     buf[n] = 0;
     return fs::path(buf).parent_path();
+#endif
 }
 
-// a /bin/sh wrapper that runs fake_prism with fixed leading arguments
+// A wrapper that runs fake_prism with fixed leading arguments: a /bin/sh
+// script on POSIX, a .cmd file on WIN32 (fake_prism itself is POSIX-only, so
+// the WIN32 branch is only reachable once run_tree has a Windows runner; the
+// process tests that use it are NOTRUN there).
 fs::path fake_engine(const fs::path& dir, const std::string& name, const std::string& lead) {
+#ifdef _WIN32
+    fs::path fake = self_dir() / "fake_prism.exe";
+    REQUIRE_MESSAGE(fs::exists(fake), "fake_prism.exe is built next to prism_tests");
+    fs::path w = dir / (name + ".cmd");
+    spit(w, "@echo off\r\n\"" + fake.string() + "\" " + lead + " %*\r\n");
+    return w;
+#else
     fs::path fake = self_dir() / "fake_prism";
     REQUIRE_MESSAGE(fs::exists(fake), "fake_prism is built next to prism_tests");
     fs::path w = dir / name;
     spit(w, "#!/bin/sh\nexec '" + fake.string() + "' " + lead + " \"$@\"\n");
     ::chmod(w.c_str(), 0755);
     return w;
+#endif
 }
 
+#ifndef _WIN32
 bool proc_gone(long pid) {
     for (int i = 0; i < 250; ++i) {
         if (::kill(static_cast<pid_t>(pid), 0) != 0 && errno == ESRCH) return true;
@@ -128,6 +148,7 @@ bool proc_gone(long pid) {
     }
     return false;
 }
+#endif
 
 std::string repr_rows(const std::vector<std::vector<i128>>& rows) {
     std::string s = "[";
@@ -607,7 +628,7 @@ TEST_CASE("qa conformance: function signatures and scalar ranges") {
     CHECK_FALSE(qa::type_range("int *"));
     CHECK(qa::type_range("unsigned _BitInt(40)") == std::pair<i128, i128>{0, (i128(1) << 40) - 1});
     CHECK(qa::c_literal(-(i128(1) << 63), "long long") == "(long long)(-9223372036854775807LL - 1)");
-    CHECK(qa::c_literal(i128(18446744073709551615ULL), "const size_t") == "(size_t)18446744073709551615ULL");
+    CHECK(qa::c_literal(prism::i128_from_u64(18446744073709551615ULL), "const size_t") == "(size_t)18446744073709551615ULL");
     CHECK(qa::c_literal(-5, "int") == "(int)(-5LL)");
     CHECK_FALSE(qa::find_signature("int f(int *p) {}", "g"));
     auto v = qa::find_signature("int f(void) { return 0; }", "f");
@@ -717,6 +738,9 @@ TEST_CASE("qa conformance: certified summary counts loop-free true functions") {
 // ---------------------------------------------------------------- release gate
 
 TEST_CASE("qa conformance: a wrong proof fails the release gate") {
+#ifdef _WIN32
+    MESSAGE("NOTRUN (Windows): needs prism-qa's process-tree runner (Job Object) and the POSIX fake_prism");
+#else
     QaTmp tmp;
     auto run = [&](const std::string& status) {
         fs::path fake = fake_engine(tmp.dir, "fake_" + status, status);
@@ -740,9 +764,13 @@ TEST_CASE("qa conformance: a wrong proof fails the release gate") {
     CHECK(m["metrics"]["bmc"]["prism"]["detection"].get<double>() == 0.0);  // not replayed
     // an engine that cannot run is NOTRUN (exit 3), never a pass
     CHECK(qa::conformance_main({"--prism", (tmp.dir / "missing").string(), "--out", (tmp.dir / "o").string()}) == 3);
+#endif
 }
 
 TEST_CASE("qa conformance: a timed-out PRISM run kills its solver in another process group") {
+#ifdef _WIN32
+    MESSAGE("NOTRUN (Windows): process groups / session kill are POSIX; no Job Object runner yet");
+#else
     QaTmp tmp;
     const fs::path pidfile = tmp.dir / "solver.pid";
     fs::path fake = fake_engine(tmp.dir, "fake_hang", "HANG '" + pidfile.string() + "'");
@@ -758,9 +786,16 @@ TEST_CASE("qa conformance: a timed-out PRISM run kills its solver in another pro
     long solver = std::atol(slurp(pidfile).c_str());
     REQUIRE(solver > 1);
     CHECK(proc_gone(solver));
+#endif
 }
 
 TEST_CASE("qa proctree: output, exit status, environment, cwd and start failures") {
+#ifdef _WIN32
+    MESSAGE("NOTRUN (Windows): run_tree is the NOTRUN stub (support/proctree_win.cpp); only which() is real");
+    CHECK(qa::run_tree({"cmd", "/c", "exit 0"}).start_failed);  // never a silent clean run (Law 1)
+    CHECK(qa::which("prism-qa-no-such-tool") == "");
+    CHECK(qa::which("cmd") != "");
+#else
     QaTmp tmp;
     qa::RunOpts o;
     o.cwd = tmp.dir;
@@ -781,6 +816,7 @@ TEST_CASE("qa proctree: output, exit status, environment, cwd and start failures
     lim.mem_limit_mb = 64;
     auto big = qa::run_tree({"sh", "-c", "ulimit -v"}, lim);
     CHECK(big.out == "65536\n");
+#endif
 }
 
 // ---------------------------------------------------------------- random programs
@@ -845,6 +881,10 @@ TEST_CASE("qa conformance: the self-check input grid is the one it always was") 
 
 TEST_CASE("qa conformance: a sample of the label self-check passes") {
     // the workflow runs all of it (prism-qa conformance --self-check)
+#ifdef _WIN32
+    MESSAGE("NOTRUN (Windows): the label self-check compiles with UBSan+ASan through run_tree (stub on WIN)");
+    return;
+#endif
     if (!qa::sanitizers_usable()) {
         WARN_MESSAGE(false, "no compiler links UBSan+ASan: label self-check sample NOTRUN");
         return;

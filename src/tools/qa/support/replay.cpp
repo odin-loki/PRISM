@@ -14,8 +14,6 @@
 #include <mutex>
 #include <set>
 
-#include <unistd.h>
-
 namespace prism::qa {
 
 using prism::i128_shl;
@@ -97,12 +95,8 @@ std::string re_escape(const std::string& s) {
 
 // Python floor modulo for a positive divisor
 i128 floor_mod(i128 a, i128 m) {
-#if PRISM_HAS_INT128
-    i128 r = a % m;
-#else
-    i128 r = i128(0);  // replay is unix-only today; extend wide_int if this is enabled on MSVC
-#endif
-    return r < 0 ? r + m : r;
+    i128 r = a % m;  // truncating on both i128 flavours (wide_int.hpp)
+    return r < i128(0) ? r + m : r;
 }
 
 std::string lower(std::string s) {
@@ -335,9 +329,12 @@ std::pair<std::string, std::string> sanitizer_compilers() {
         for (const auto& [c, cxx] : std::vector<std::pair<std::string, std::string>>{{"clang", "clang++"},
                                                                                      {"gcc", "g++"}}) {
             if (which(c).empty()) continue;
-            std::string tmpl = (fs::temp_directory_path() / "prism-sanprobe-XXXXXX").string();
-            if (!::mkdtemp(tmpl.data())) continue;
-            fs::path d = tmpl;
+            fs::path d;
+            try {
+                d = make_unique_dir("prism-sanprobe-");
+            } catch (const std::exception&) {
+                continue;
+            }
             write_file(d / "probe.c", "int main(void) { return 0; }\n");
             std::vector<std::string> cmd = {c, (d / "probe.c").string()};
             cmd.insert(cmd.end(), SAN_FLAGS.begin(), SAN_FLAGS.end());

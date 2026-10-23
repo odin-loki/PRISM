@@ -88,4 +88,9 @@ std::string py_head(const std::string& s, std::size_t n);  // s[:n]
 std::string py_tail(const std::string& s, std::size_t n);  // s[-n:]
 std::string i128_str(i128 v);
 
+// A new, empty, uniquely named directory `<parent>/<prefix><unique>` (parent
+// defaults to the system temp dir). Portable stand-in for mkdtemp, which MSVC
+// lacks. Throws std::runtime_error when none can be created.
+fs::path make_unique_dir(const std::string& prefix, const fs::path& parent = {});
+
 }  // namespace prism::qa

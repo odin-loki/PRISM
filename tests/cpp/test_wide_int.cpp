@@ -94,3 +94,40 @@ TEST_CASE("wide_int u128 bitwise smoke") {
 #endif
     CHECK(u128(1000) / u128(10) == u128(100));
 }
+
+TEST_CASE("wide_int shifts, increment, division and casts (generic i128 code)") {
+    const i128 one(1);
+    CHECK(format_i128(one << 0) == "1");
+    CHECK(format_i128(one << 63) == "9223372036854775808");
+    CHECK(format_i128(one << 64) == "18446744073709551616");
+    CHECK(format_i128(one << 126) == "85070591730234615865843651857942052864");
+    CHECK(format_i128(i128(-1) >> 1) == "-1");
+    CHECK(format_i128(i128(-1) >> 100) == "-1");
+    CHECK(format_i128(i128(-4) >> 1) == "-2");
+    CHECK(format_i128((one << 100) >> 40) == "1152921504606846976");
+    CHECK(format_i128((one << 70) >> 3) == "147573952589676412928");
+    CHECK(format_i128(-(one << 100) >> 99) == "-2");
+    CHECK(format_i128(i128(77) >> 0) == "77");
+    i128 i = 0;
+    ++i;
+    ++i;
+    CHECK(format_i128(i) == "2");
+    CHECK(format_i128(i++) == "2");
+    CHECK(format_i128(i) == "3");
+    CHECK(format_i128(--i) == "2");
+    i += 40;
+    CHECK(format_i128(i) == "42");
+    // truncating division like C
+    CHECK(format_i128(i128(7) / i128(2)) == "3");
+    CHECK(format_i128(i128(-7) / i128(2)) == "-3");
+    CHECK(format_i128(i128(-7) % i128(3)) == "-1");
+    CHECK(format_i128(i128(7) % i128(-3)) == "1");
+    CHECK(format_i128((one << 100) % i128(1000007)) == format_i128((one << 100) - ((one << 100) / i128(1000007)) * i128(1000007)));
+    // two's-complement truncating casts and a boundary constructor
+    CHECK(static_cast<long long>(i128(-5)) == -5);
+    CHECK(static_cast<unsigned long long>(i128(-1)) == 18446744073709551615ULL);
+    CHECK(static_cast<std::size_t>(i128(9)) == 9u);
+    CHECK(static_cast<double>(one << 70) == doctest::Approx(1180591620717411303424.0));
+    CHECK(format_i128(i128(std::numeric_limits<std::int64_t>::min())) == "-9223372036854775808");
+    CHECK(format_i128(prism::i128_from_u64(18446744073709551615ULL)) == "18446744073709551615");
+}

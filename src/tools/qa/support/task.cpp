@@ -3,9 +3,15 @@
 #include "yaml_subset.hpp"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <random>
 #include <sstream>
+#include <stdexcept>
 
 namespace prism::qa {
 
@@ -94,6 +100,28 @@ std::string py_tail(const std::string& s, std::size_t n) {
 }
 
 std::string i128_str(i128 v) { return prism::format_i128(v); }
+
+fs::path make_unique_dir(const std::string& prefix, const fs::path& parent) {
+    std::error_code ec;
+    const fs::path base = parent.empty() ? fs::temp_directory_path(ec) : parent;
+    if (ec) throw std::runtime_error("no temporary directory: " + ec.message());
+    static std::atomic<unsigned> counter{0};
+    std::random_device rd;
+    for (int i = 0; i < 128; ++i) {
+        const auto ticks = std::chrono::high_resolution_clock::now().time_since_epoch().count();
+        const std::uint64_t salt = (static_cast<std::uint64_t>(rd()) << 32) ^ rd() ^ static_cast<std::uint64_t>(ticks);
+        char tail[40];
+        std::snprintf(tail, sizeof tail, "%08llx%u", static_cast<unsigned long long>(salt & 0xffffffffffULL),
+                      counter.fetch_add(1));
+        fs::path cand = base / (prefix + tail);
+        std::error_code cec;
+        if (fs::create_directory(cand, cec)) {
+            fs::permissions(cand, fs::perms::owner_all, fs::perm_options::replace, cec);
+            return cand;
+        }
+    }
+    throw std::runtime_error("could not create a temporary directory under " + base.string());
+}
 
 namespace {
 

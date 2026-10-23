@@ -11,10 +11,8 @@
 #include "qa.hpp"
 
 #include "../../prism/proc.hpp"
-#ifndef _WIN32
-#  include "support/cli.hpp"
-#  include "support/proctree.hpp"
-#endif
+#include "support/cli.hpp"
+#include "support/proctree.hpp"
 
 #include <iostream>
 #include <string>
@@ -30,17 +28,13 @@ struct Command {
 
 int assurance(const prism::qa::Args& a) { return prism::qa::assurance_main(a, prism::qa::repo_root()); }
 
-#ifndef _WIN32
 int conformance(const prism::qa::Args& a) { return prism::qa::conformance_main(a); }
 int soundness(const prism::qa::Args& a) { return prism::qa::soundness_main(a); }
-#endif
 
 constexpr Command COMMANDS[] = {
-#ifndef _WIN32
     {"conformance", conformance,
      "run the conformance suite and the release gate (0 wrong proofs)"},
     {"soundness", soundness, "random-program soundness campaign"},
-#endif
     {"triage-selfscan", prism::qa::triage_selfscan_main,
      "bucket a self-scan report.sarif (real / false alarm / out of scope)"},
     {"pir-vs-bmc", prism::qa::pir_vs_bmc_main, "bmc encoder vs pir stage agreement matrix and hard conflicts"},
@@ -60,9 +54,7 @@ int usage(std::ostream& o, int rc) {
 }  // namespace
 
 int main(int argc, char** argv) {
-#ifndef _WIN32
     prism::qa::install_interrupt_cleanup();
-#endif
     prism::detail::install_child_cleanup();
     if (argc < 2) return usage(std::cerr, 2);
     const std::string_view cmd = argv[1];

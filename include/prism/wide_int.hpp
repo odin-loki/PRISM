@@ -9,6 +9,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 
 #if !defined(PRISM_HAS_INT128) && defined(__SIZEOF_INT128__) && __SIZEOF_INT128__ == 16 && !defined(_MSC_VER)
@@ -94,6 +95,10 @@ struct u128 {
     constexpr u128(std::uint64_t v) : lo(v), hi(0) {}
     constexpr u128(std::uint64_t h, std::uint64_t l) : lo(l), hi(h) {}
 
+    // static_cast<uint64_t>(x) etc.: the low bits (as native unsigned __int128 does)
+    template <class T, class = std::enable_if_t<std::is_integral_v<T> && !std::is_same_v<T, bool>>>
+    explicit constexpr operator T() const { return static_cast<T>(lo); }
+
     friend constexpr bool operator==(u128 a, u128 b) { return a.lo == b.lo && a.hi == b.hi; }
     friend constexpr bool operator!=(u128 a, u128 b) { return !(a == b); }
     friend constexpr bool operator<(u128 a, u128 b) {
@@ -121,12 +126,14 @@ struct u128 {
 };
 
 inline u128 operator<<(u128 v, unsigned n) {
+    if (n == 0) return v;  // the shifts below by 64 - n would be UB
     if (n >= 128) return u128(0);
     if (n >= 64) return u128(v.lo << (n - 64), 0);
     return u128((v.hi << n) | (v.lo >> (64 - n)), v.lo << n);
 }
 
 inline u128 operator>>(u128 v, unsigned n) {
+    if (n == 0) return v;
     if (n >= 128) return u128(0);
     if (n >= 64) return u128(0, v.hi >> (n - 64));
     return u128(v.hi >> n, (v.lo >> n) | (v.hi << (64 - n)));
@@ -220,8 +227,13 @@ struct i128 {
     constexpr explicit i128(u128 b) : bits(b) {}
     constexpr i128(std::int64_t v) {
         if (v >= 0) bits = u128(static_cast<std::uint64_t>(v));
-        else bits = ~u128(static_cast<std::uint64_t>(-v)) + u128(1);
+        else bits = ~u128(std::uint64_t(0) - static_cast<std::uint64_t>(v)) + u128(1);  // INT64_MIN safe
     }
+
+    // static_cast<int64_t>(x) etc.: two's-complement truncation, like native __int128
+    template <class T, class = std::enable_if_t<std::is_integral_v<T> && !std::is_same_v<T, bool>>>
+    explicit constexpr operator T() const { return static_cast<T>(bits.lo); }
+    explicit operator double() const;  // i128_to_double
 
     friend constexpr bool operator==(i128 a, i128 b) { return a.bits == b.bits; }
     friend constexpr bool operator!=(i128 a, i128 b) { return !(a == b); }
@@ -304,13 +316,15 @@ inline i128 i128_shl(i128 v, int n) {
 inline i128 i128_shr(i128 v, int n) {
     if (n <= 0) return v;
     if (n >= 128) return v.bits.hi >> 63 ? i128(-1) : i128(0);
-    u128 b = v.bits;
+    // arithmetic shift: the high word keeps its sign
+    const u128 b = v.bits;
+    const std::int64_t shi = static_cast<std::int64_t>(b.hi);
     if (n >= 64) {
-        const std::uint64_t hi = b.hi >> (n - 64);
-        const std::uint64_t lo = b.hi << (128 - n);
+        const std::uint64_t hi = shi < 0 ? ~std::uint64_t(0) : 0;
+        const std::uint64_t lo = static_cast<std::uint64_t>(shi >> (n - 64));
         return i128(u128(hi, lo));
     }
-    return i128(u128((b.hi << (64 - n)) | (b.lo >> n), b.lo >> n));
+    return i128(u128(static_cast<std::uint64_t>(shi >> n), (b.lo >> n) | (b.hi << (64 - n))));
 }
 
 inline i128 i128_and(i128 a, i128 b) { return i128(u128(a.bits.hi & b.bits.hi, a.bits.lo & b.bits.lo)); }
@@ -318,6 +332,45 @@ inline i128 i128_and(i128 a, i128 b) { return i128(u128(a.bits.hi & b.bits.hi, a
 inline i128 i128_from_u128(u128 v) { return i128(v); }
 
 inline u128 i128_to_u128(i128 v) { return v.bits; }
+
+inline i128::operator double() const { return i128_to_double_bits(*this); }
+
+// Operators native __int128 has and the generic scorers rely on. Shifts take
+// an int count like the native ones (negative / >= 128 is UB there; here it
+// is a no-op / 0 / sign fill, as i128_shl / i128_shr). / and % truncate
+// toward zero (C semantics); division by zero yields 0 instead of trapping.
+inline i128 operator<<(i128 v, int n) { return i128_shl(v, n); }
+inline i128 operator>>(i128 v, int n) { return i128_shr(v, n); }
+inline i128& operator++(i128& v) { return v = v + i128(1); }
+inline i128 operator++(i128& v, int) {
+    i128 old = v;
+    v = v + i128(1);
+    return old;
+}
+inline i128& operator--(i128& v) { return v = v - i128(1); }
+inline i128 operator--(i128& v, int) {
+    i128 old = v;
+    v = v - i128(1);
+    return old;
+}
+inline i128& operator+=(i128& a, i128 b) { return a = a + b; }
+inline i128& operator-=(i128& a, i128 b) { return a = a - b; }
+inline i128& operator*=(i128& a, i128 b) { return a = a * b; }
+inline i128 operator~(i128 v) { return i128(~v.bits); }
+inline i128 operator&(i128 a, i128 b) { return i128(a.bits & b.bits); }
+inline i128 operator|(i128 a, i128 b) { return i128(a.bits | b.bits); }
+inline i128 operator^(i128 a, i128 b) { return i128(a.bits ^ b.bits); }
+inline i128 operator/(i128 a, i128 b) {
+    if (b == i128(0)) return i128(0);
+    const bool neg = (a.bits.hi >> 63) != (b.bits.hi >> 63);
+    const u128 q = u128_abs(a) / u128_abs(b);
+    return neg ? -i128(q) : i128(q);
+}
+inline i128 operator%(i128 a, i128 b) {
+    if (b == i128(0)) return a;
+    const u128 r = u128_abs(a) % u128_abs(b);
+    return (a.bits.hi >> 63) ? -i128(r) : i128(r);
+}
 
 inline u128 u128_shl(u128 v, unsigned n) { return v << n; }
 

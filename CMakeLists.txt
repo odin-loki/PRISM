@@ -423,20 +423,26 @@ set(_prism_qa_sources
   src/tools/qa/libc_bounds.cpp
   src/tools/qa/solver_bench.cpp
   src/tools/qa/support/yaml_subset.cpp
-  src/tools/qa/support/task.cpp)
-if(UNIX)
-  list(APPEND _prism_qa_sources
-    src/tools/qa/support/proctree.cpp
-    src/tools/qa/support/replay.cpp
-    src/tools/qa/support/report.cpp
-    src/tools/qa/support/engine.cpp
-    src/tools/qa/support/fetch.cpp
-    src/tools/qa/support/cli.cpp
-    src/tools/qa/conformance.cpp
-    src/tools/qa/gen_random.cpp
-    src/tools/qa/soundness.cpp)
+  src/tools/qa/support/task.cpp
+  src/tools/qa/support/replay.cpp
+  src/tools/qa/support/report.cpp
+  src/tools/qa/support/engine.cpp
+  src/tools/qa/support/fetch.cpp
+  src/tools/qa/support/cli.cpp
+  src/tools/qa/conformance.cpp
+  src/tools/qa/gen_random.cpp
+  src/tools/qa/soundness.cpp)
+# Process tree runner: POSIX sessions (setsid/killpg) vs a Windows stub whose
+# run_tree is NOTRUN (Law 1) until a Job Object implementation lands.
+if(WIN32)
+  list(APPEND _prism_qa_sources src/tools/qa/support/proctree_win.cpp)
+else()
+  list(APPEND _prism_qa_sources src/tools/qa/support/proctree.cpp)
 endif()
 add_library(prism_qa STATIC ${_prism_qa_sources})
+if(MSVC)
+  target_compile_options(prism_qa PRIVATE /utf-8)
+endif()
 target_include_directories(prism_qa PUBLIC "${PRISM_ROOT}/src/tools/qa")
 target_link_libraries(prism_qa PUBLIC prism_core nlohmann_json)
 target_compile_definitions(prism_qa PRIVATE
@@ -647,6 +653,9 @@ if(PRISM_TESTS)
       # session-kill cases are #ifndef _WIN32. test_qa_static.cpp is not built
       # here (it would register the same names twice).
       tests/cpp/test_qa.cpp
+      # Conformance / soundness scorer rules and suite shape (static slice); the
+      # process-tree and fake_prism cases are NOTRUN (MESSAGE) on WIN32.
+      tests/cpp/test_qa_conformance.cpp
       tests/cpp/test_pir_e2e.cpp)
     if(PRISM_HAS_Z3)
       list(APPEND _prism_test_sources tests/cpp/test_leanbb.cpp

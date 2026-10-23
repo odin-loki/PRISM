@@ -2,7 +2,8 @@
 
 // prism-qa: developer QA tools (not shipped). Each command is a function here
 // so that the doctests (tests/cpp/test_qa.cpp) can drive it; main.cpp only
-// dispatches. conformance / soundness live in support/cli.hpp (Unix only).
+// dispatches. conformance / soundness live in support/cli.hpp (on Windows their
+// process runner is the NOTRUN stub in support/proctree_win.cpp).
 //
 //   conformance [...]         conformance suite and release gate
 //   soundness [...]           random-program soundness campaign

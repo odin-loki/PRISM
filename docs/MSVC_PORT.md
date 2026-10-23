@@ -27,7 +27,7 @@ Legend:
 |------|---------|
 | **native** | Code uses `__int128` / `unsigned __int128` as a C++ type (MSVC blocker). |
 | **string** | Regex or keyword tables detect `__int128` in user source only (not a blocker). |
-| **unix-only** | In `src/tools/qa/`; omitted from `prism_qa` when `WIN32` (not in Windows `prism_core` link). |
+| **conformance tree** | In `src/tools/qa/`; part of `prism_qa` on WIN32 (process runner is the NOTRUN stub). |
 
 ### Interval (`native` — `prism_core`)
 
@@ -76,27 +76,29 @@ Legend:
 `src/prism/astlint_libclang.cpp` references libclang `CXType_Int128` enums only (not
 `__int128` in PRISM sources).
 
-### QA tools (`native`, **unix-only** CMake gate)
+### QA tools (`native`; conformance tree builds on WIN with the NOTRUN `proctree_win.cpp`)
 
 | File | ~matches | Role |
 |------|----------|------|
 | `src/tools/qa/support/yaml_subset.hpp` | — | Migrated: `Node::as_int()` → `optional<prism::i128>` (phase 6 partial). |
 | `src/tools/qa/support/yaml_subset.cpp` | — | Uses `parse_i128` / `format_i128` (phase 6 partial). |
 | `src/tools/qa/support/task.hpp` / `task.cpp` | — | Migrated: `prism::i128`; built on all platforms (phase 6). |
-| `src/tools/qa/support/replay.cpp` | — | Migrated: `prism::u128` / `i128_shl` (phase 6); still **unix-only** (`fork`, `unistd`). |
+| `src/tools/qa/support/replay.cpp` | — | Migrated: `prism::u128` / `i128_shl` (phase 6); portable temp dirs, builds on WIN (its `run_tree` calls are NOTRUN there). |
 | `src/tools/qa/support/pyrandom.hpp` | — | Migrated: `prism::i128` / `u128` (phase 6); header-only, used by unix replay/soundness. |
 
-`yaml_subset.cpp` and `task.cpp` are always in `prism_qa` (Windows can link `prism-qa` for
-docs-check / triage / etc.). Conformance (`proctree`, `replay`, `conformance.cpp`, …) stays
-inside `if(UNIX)` until process-tree and sanitizer replay are ported.
-
+All of `prism_qa` (report, cli, engine, fetch, replay, conformance, gen_random, soundness)
+now builds on Windows (`/utf-8`). Temp dirs come from `qa::make_unique_dir` (no `mkdtemp`);
+`proctree.cpp` (POSIX sessions) is replaced by `proctree_win.cpp`, whose `run_tree` is a
+**NOTRUN stub** (`start_failed`, "NOTRUN: ... needs a Job Object"; Law 1) and whose `which()`
+is real (PATH + PATHEXT). Sanitizer replay / process-tree behaviour is therefore not
+exercised on Windows.
 ### Tests (outside `src/` / `include/` but coupled)
 
 | File | Notes |
 |------|-------|
 | `tests/cpp/test_svcomp.cpp` | `static_cast<__int128>(…)` in witness literal check. |
 | `tests/cpp/test_main.cpp` | Solver integration tests run when `PRISM_HAS_Z3` (including Windows). |
-| `tests/cpp/test_qa_conformance.cpp` | `using i128 = __int128` (Unix QA). |
+| `tests/cpp/test_qa_conformance.cpp` | Migrated: `prism::i128`, portable `QaTmp` / `self_dir` / `fake_engine`; in the WIN subset (static slice). |
 
 ---
 
@@ -106,8 +108,9 @@ inside `if(UNIX)` until process-tree and sanitizer replay are ported.
 `{hi, lo}` fallback for MSVC. Shared **`parse_i128`** / **`format_i128`**, bitwise
 `u128` ops, and unit tests in `tests/cpp/test_wide_int.cpp`.
 
-**Unix-only QA (phase 6):** `replay.cpp` and conformance drivers still need `fork` /
-`unistd`; wide integers in `yaml_subset`, `task`, and `pyrandom` use `prism::i128`.
+The fallback `i128` also provides `<<`, `>>` (arithmetic), `++`/`--`, `+=`, `/`, `%` (truncating),
+bit ops and explicit integral / `double` casts, so generic QA code (`gen_random`, `replay`,
+`pyrandom`) compiles unchanged on MSVC.
 
 **Duplicated ad-hoc helpers (candidates to fold later):**
 
@@ -171,8 +174,8 @@ shortcut. Keep **D** only for explicitly documented optional components, not cor
 | **5a** (done) | MSVC CI smoke | `windows-compile-smoke`: Ninja + `clang-cl`, `PRISM_Z3=OFF`, build `prism_core` + `prism` + `prism-qa` + portable `prism_tests` subset (phase 7). Shims: `utc_tm`, `set_env`, `NOMINMAX`, `wide_int` / `leanbb`, `solver/util.cpp` `windows.h` + `#undef ERROR`. |
 | **5b** (CI done) | Windows CI + Z3 | `windows-compile-smoke-z3`: Ninja + `clang-cl`, `PRISM_Z3=ON`, builds `prism_core` + `prism` + `prism-qa` + phase-7 `prism_tests` subset including `test_leanbb.cpp` (~44 min cold; cache `build-win-z3`; needs `z3gen_shim.bat`). |
 | **5c** (CI done) | Native MSVC `cl` | `windows-compile-smoke-cl`: Ninja + `cl` (not `clang-cl`), `PRISM_Z3=OFF`, same targets/subset as 5a. `stages/interp.cpp` uses `prism::i128` / manual checks instead of `__builtin_*_overflow` (clang-cl only). Configure with default `CMAKE_BUILD_TYPE=Release` (Debug + `prism_core` `/O2` hits cl D8016 vs `/RTC1`). |
-| **6** (partial) | QA on Windows | `yaml_subset` + `task` + `pyrandom` on `prism::i128` (done); `prism-qa` in `windows-compile-smoke`; conformance tree stays `if(UNIX)` |
-| **7** (done) | Windows `prism_tests` subset | `PRISM_TESTS_WIN_SUBSET` in `CMakeLists.txt` (inventory: [§6](#6-acceptance-criteria)). WIN adapters: full `test_adapters.cpp` + `fake_tool_launcher`. Static splits: `test_sanitize_static.cpp`, `test_qa_static.cpp`. `test_cli` / `test_pipeline` omit POSIX-only cases; `test_conc` skips without Z3. `test_pir_e2e` skips the full `tests/pir` table on `_WIN32` (MESSAGE). All four Windows smoke jobs (5a / 5b / 5c / 5c+Z3 on `cl`) build and run `prism_tests.exe`. |
+| **6** (partial) | QA on Windows | `yaml_subset` + `task` + `pyrandom` on `prism::i128` (done); `prism-qa` in `windows-compile-smoke`; conformance / soundness / replay compile on WIN (`proctree_win.cpp` NOTRUN stub), `test_qa_conformance.cpp` static slice in the subset |
+| **7** (done) | Windows `prism_tests` subset | `PRISM_TESTS_WIN_SUBSET` in `CMakeLists.txt` (inventory: [§6](#6-acceptance-criteria)). WIN: full `test_adapters.cpp`, `test_sanitize.cpp` (`fake_cc`), `test_qa.cpp` (`fake_session_probe`). Static splits remain reference-only on WIN. `test_cli` / `test_pipeline` omit POSIX-only cases; `test_conc` skips without Z3. `test_pir_e2e` skips the full `tests/pir` table on `_WIN32` (MESSAGE). All four Windows smoke jobs build and run `prism_tests.exe`. |
 
 **Dependency order:** 2 → 3 (public API) → 4 (largest volume) → 5 → 6 → 7 (subset) → 5b (Z3 + full tests).
 
@@ -222,12 +225,13 @@ Remaining epic work is listed in [§7](#7-remaining-work-backlog).
   | Doctest main | `tests/cpp/test_main_win.cpp` (not `test_main.cpp`) |
   | Adapter fakes on WIN32 | Full `test_adapters.cpp` + `fake_tool_launcher` (stdio forwarded to `cmd.exe`); `fake_cmd` / `help_then_cmd` / `sh_to_cmd` |
   | Sanitize fakes on WIN32 | Full `test_sanitize.cpp` + `fake_cc.exe` (PE compiler/runner with `.fakebody` sidecar) |
-| Static splits (remaining monolithic TUs) | `test_adapters_static.cpp` / `test_sanitize_static.cpp` / `test_qa_static.cpp` (reference only; not linked on WIN) |
+  | QA on WIN32 | Full `test_qa.cpp` + `fake_session_probe.exe`; fork/session-kill cases POSIX-only |
+  | Conformance on WIN32 | `test_qa_conformance.cpp` static slice (suite shape, scorer rules, `PyRandom` / generator parity); release-gate, solver-kill, `run_tree` and label self-check cases report `MESSAGE: NOTRUN` |
+  | Static splits (reference only on WIN) | `test_adapters_static.cpp`, `test_sanitize_static.cpp`, `test_qa_static.cpp` |
   | Portable doctest TUs | `test_wide_int`, `test_interval`, `test_svcomp`, `test_naming`, `test_polyglot`, `test_taxonomy`, `test_repolint`, `test_deps`, `test_cparse`, `test_sarif`, `test_astlint`, `test_ltl`, `test_contracts`, `test_bmc`, `test_checkers_cxx`, `test_checkers_c`, `test_gen_tables`, `test_bmc_svcomp`, `test_havoc`, `test_verdict_repo`, `test_diff`, `test_journal_confidence`, `test_thread_taint`, `test_wp_harness`, `test_concrete`, `test_concolic`, `test_lint_corpus`, `test_pir_mem`, `test_ai_assist`, `test_pbsd`, `test_pir3`, `test_pir_refinement`, `test_cli`, `test_pipeline`, `test_ai9`, `test_conc`, `test_cxx_models`, `test_fuse`, `test_gui_model`, `test_repair`, `test_pir_e2e` |
   | When `PRISM_HAS_Z3` | `test_leanbb`, `test_pir_budget`, `test_certified` |
 
-  **Not in subset (by design):** `test_main.cpp`; full `test_sanitize.cpp`, `test_qa.cpp`,
-  `test_qa_conformance.cpp`, and other unistd / `fork` / socket-heavy TUs.
+  **Not in subset (by design):** `test_main.cpp`; other unistd / `fork` / socket-heavy TUs.
   `test_pipeline` chmod/LTL case is POSIX-only; `test_cli` binary integration is POSIX-only.
   On WIN32, `test_pir_e2e` omits the large `tests/pir` verdict table (MESSAGE); Law 9 /
   `--fp-checks` / `--strict-aliasing` smoke cases still run when `clang`/`opt` are on PATH.
@@ -261,7 +265,7 @@ Epic closure for phases 5a / 5b / 5c / 7 does **not** imply full Windows parity 
 |------|--------|
 | **`test_main.cpp` on WIN32** | Link last; largest integration surface (`unistd`, process, sockets). |
 | **Full QA doctest TUs** | `test_qa.cpp` on WIN (subprocess + `fake_session_probe`; fork/session-kill still POSIX). Lean/lli driver subprocess cases stay POSIX. `test_adapters.cpp` + `test_sanitize.cpp` (`fake_cc.exe`) in subset. `test_qa_static.cpp` not built on WIN (duplicate cases). |
-| **Phase 6 conformance on Windows** | `prism-qa conformance` and friends remain `if(UNIX)` until `replay.cpp` process tree and sanitizer replay are ported. |
+| **Phase 6 conformance on Windows** | Compiles and links; `test_qa_conformance.cpp` static slice runs in the subset. Remaining: a Job Object `run_tree` in `proctree_win.cpp` (today NOTRUN), then un-skip the release-gate (`fake_prism`, POSIX-only), solver-kill, `run_tree` and label self-check cases (MESSAGE NOTRUN on WIN). |
 | **`windows-compile-smoke-cl-z3` (CI)** | Done (four smokes green @ `9230cd9ac`). |
 | **Z3 build time on Windows** | Optional ccache / stronger caching for vendored Z3 on `windows-latest`. |
 

@@ -45,8 +45,6 @@
 #include <set>
 #include <thread>
 
-#include <unistd.h>
-
 namespace prism::qa {
 
 namespace {
@@ -183,12 +181,13 @@ int soundness_main(const std::vector<std::string>& argv) {
     fs::create_directories(out_dir, ec);
     const fs::path progs_dir = out_dir / "programs";
     fs::create_directories(progs_dir, ec);
-    std::string tmpl = (fs::temp_directory_path() / "prism-rand-XXXXXX").string();
-    if (!::mkdtemp(tmpl.data())) {
-        std::cerr << "mkdtemp failed\n";
+    fs::path work;
+    try {
+        work = make_unique_dir("prism-rand-");
+    } catch (const std::exception& e) {
+        std::cerr << "temporary directory failed: " << e.what() << "\n";
         return 2;
     }
-    const fs::path work = tmpl;
     struct Cleanup {
         fs::path p;
         ~Cleanup() {

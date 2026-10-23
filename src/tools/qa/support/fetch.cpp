@@ -12,8 +12,6 @@
 #include <sstream>
 #include <stdexcept>
 
-#include <unistd.h>
-
 namespace prism::qa {
 
 const std::string JULIET_URL =
@@ -220,9 +218,7 @@ fs::path fetch_juliet(const fs::path& dest, const std::vector<std::string>& flow
         }
     };
     extract(support, dest);
-    std::string tmpl = (dest / ".extract-XXXXXX").string();
-    if (!::mkdtemp(tmpl.data())) throw std::runtime_error("mkdtemp failed under " + dest.string());
-    fs::path tmp = tmpl;
+    fs::path tmp = make_unique_dir(".extract-", dest);
     int written = 0;
     try {
         extract(wanted, tmp);

@@ -74,8 +74,6 @@
 #include <iostream>
 #include <thread>
 
-#include <unistd.h>
-
 namespace prism::qa {
 
 namespace {
@@ -110,9 +108,7 @@ ojson found_rec(const std::string& status, const std::string& message) {
 }
 
 fs::path make_work_dir(const std::string& prefix) {
-    std::string tmpl = (fs::temp_directory_path() / (prefix + "XXXXXX")).string();
-    if (!::mkdtemp(tmpl.data())) throw std::runtime_error("mkdtemp failed");
-    return tmpl;
+    return make_unique_dir(prefix);
 }
 
 struct WorkDir {
