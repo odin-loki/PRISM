@@ -53,6 +53,7 @@ bool write_text(const fs::path& p, const std::string& s) {
     std::error_code ec;
     fs::create_directories(p.parent_path(), ec);
     std::ofstream o(p, std::ios::binary);
+    if (!o.is_open()) return false;
     o << s;
     return static_cast<bool>(o);
 }
@@ -66,7 +67,7 @@ std::string ident(const std::string& s) {
     std::string o;
     for (char c : s) o += std::isalnum(static_cast<unsigned char>(c)) ? c : '_';
     while (o.find("__") != std::string::npos) o.replace(o.find("__"), 2, "_");
-    if (o.empty() || std::isdigit(static_cast<unsigned char>(o[0]))) o = "t_" + o;
+    if (o.empty() || std::isdigit(static_cast<unsigned char>(o.at(0)))) o = "t_" + o;
     return o;
 }
 
@@ -81,9 +82,9 @@ std::string norm_type(std::string t) {
     for (const char* q : {"const", "volatile", "register", "static", "inline", "restrict", "__restrict", "struct"}) {
         std::string w = q;
         for (std::size_t p = 0; (p = t.find(w, p)) != std::string::npos;) {
-            bool lb = p == 0 || !(std::isalnum(static_cast<unsigned char>(t[p - 1])) || t[p - 1] == '_');
+            bool lb = p == 0 || !(std::isalnum(static_cast<unsigned char>(t.at(p - 1))) || t.at(p - 1) == '_');
             bool rb = p + w.size() >= t.size() ||
-                      !(std::isalnum(static_cast<unsigned char>(t[p + w.size()])) || t[p + w.size()] == '_');
+                      !(std::isalnum(static_cast<unsigned char>(t.at(p + w.size()))) || t.at(p + w.size()) == '_');
             if (lb && rb && w != "struct") t.replace(p, w.size(), " ");
             else p += w.size();
         }
@@ -140,7 +141,7 @@ std::optional<u128> raw_bits(const std::string& raw, bool* negative_decimal, i12
             if (raw.size() > 34) return std::nullopt;
             u128 v;
             for (std::size_t i = 2; i < raw.size(); ++i) {
-                char c = static_cast<char>(std::tolower(static_cast<unsigned char>(raw[i])));
+                char c = static_cast<char>(std::tolower(static_cast<unsigned char>(raw.at(i))));
                 int d = std::isdigit(static_cast<unsigned char>(c)) ? c - '0' : (c >= 'a' && c <= 'f') ? c - 'a' + 10 : -1;
                 if (d < 0) return std::nullopt;
                 v = v * 16 + u128(static_cast<unsigned>(d));
@@ -151,8 +152,8 @@ std::optional<u128> raw_bits(const std::string& raw, bool* negative_decimal, i12
             if (raw.size() > 130) return std::nullopt;
             u128 v;
             for (std::size_t i = 2; i < raw.size(); ++i) {
-                if (raw[i] != '0' && raw[i] != '1') return std::nullopt;
-                v = v * 2 + u128(static_cast<unsigned>(raw[i] - '0'));
+                if (raw.at(i) != '0' && raw.at(i) != '1') return std::nullopt;
+                v = v * 2 + u128(static_cast<unsigned>(raw.at(i) - '0'));
             }
             return v;
         }
@@ -206,16 +207,16 @@ std::vector<std::pair<std::string, std::string>> parse_counterexample(const std:
     std::size_t i = 0;
     auto is_id = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; };
     while (i < cex.size()) {
-        if (!is_id(cex[i]) || (i > 0 && is_id(cex[i - 1]))) {
+        if (!is_id(cex.at(i)) || (i > 0 && is_id(cex.at(i - 1)))) {
             ++i;
             continue;
         }
         std::size_t b = i;
-        while (i < cex.size() && is_id(cex[i])) ++i;
+        while (i < cex.size() && is_id(cex.at(i))) ++i;
         std::string name = cex.substr(b, i - b);
         std::size_t j = i;
-        while (j < cex.size() && cex[j] == ' ') ++j;
-        if (j >= cex.size() || cex[j] != '=' || (j + 1 < cex.size() && cex[j + 1] == '=')) continue;
+        while (j < cex.size() && cex.at(j) == ' ') ++j;
+        if (j >= cex.size() || cex.at(j) != '=' || (j + 1 < cex.size() && cex.at(j + 1) == '=')) continue;
         ++j;
         while (j < cex.size() && cex[j] == ' ') ++j;
         std::size_t vb = j;
@@ -224,7 +225,7 @@ std::vector<std::pair<std::string, std::string>> parse_counterexample(const std:
         std::string val = cex.substr(vb, j - vb);
         bool neg = false;
         i128 d = i128(0);
-        if (!val.empty() && !std::isdigit(static_cast<unsigned char>(name[0])) && raw_bits(val, &neg, &d)) {
+        if (!val.empty() && !std::isdigit(static_cast<unsigned char>(name.at(0))) && raw_bits(val, &neg, &d)) {
             bool dup = false;
             for (auto& [n, v] : out) dup = dup || n == name;
             if (!dup) out.emplace_back(name, val);
@@ -576,7 +577,7 @@ RegressResult generate_regression_tests(const RunReport& report, const RegressOp
             continue;
         }
         std::string call = *f.function + "(";
-        for (std::size_t i = 0; i < args.size(); ++i) call += (i ? ", " : "") + args[i];
+        for (std::size_t i = 0; i < args.size(); ++i) call += (i ? ", " : "") + args.at(i);
         call += ")";
         if (scalar_of(fn->return_type)) call = "if (" + call + ") prism_regress_sink_ = 1";  // a use (MSan)
         else if (fn->return_type != "void") call = "(void)" + call;

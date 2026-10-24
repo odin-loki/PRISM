@@ -39,9 +39,9 @@ std::optional<Cnf> parse_dimacs(std::string_view text, std::string* why) {
         std::string line(text.substr(s, e - s));
         s = e + 1;
         std::size_t f = line.find_first_not_of(" \t\r");
-        if (f == std::string::npos || line[f] == 'c') continue;
+        if (f == std::string::npos || line.at(f) == 'c') continue;
         std::istringstream ls(line);
-        if (line[f] == 'p') {
+        if (line.at(f) == 'p') {
             std::string p, fmt;
             long long nv = 0, nc = 0;
             if (!(ls >> p >> fmt >> nv >> nc) || fmt != "cnf" || nv < 0 || nc < 0)
@@ -73,12 +73,12 @@ std::string bits_literal(const std::vector<bool>& bits) {  // LSB first
         out = "#x";
         for (std::size_t i = w; i >= 4; i -= 4) {
             int v = 0;
-            for (std::size_t b = 0; b < 4; ++b) v |= bits[i - 4 + b] ? (1 << b) : 0;
+            for (std::size_t b = 0; b < 4; ++b) v |= bits.at(i - 4 + b) ? (1 << b) : 0;
             out += "0123456789abcdef"[v];
         }
     } else {
         out = "#b";
-        for (std::size_t i = w; i-- > 0;) out += bits[i] ? '1' : '0';
+        for (std::size_t i = w; i-- > 0;) out += bits.at(i) ? '1' : '0';
     }
     return out;
 }
@@ -91,11 +91,11 @@ std::map<std::string, std::string> model_from_assignment(const Cnf& cnf,
     for (const auto& sym : cnf.symbols) {
         std::vector<bool> bits(sym.width, false);
         for (unsigned i = 0; i < sym.width && i < sym.vars.size(); ++i) {
-            int v = sym.vars[i];
+            int v = sym.vars.at(i);
             // A bit the simplifier dropped is unconstrained: 0 is as good as any.
-            if (v > 0 && std::size_t(v) < a.size()) bits[i] = a[std::size_t(v)] == 1;
+            if (v > 0 && std::size_t(v) < a.size()) bits.at(i) = a.at(std::size_t(v)) == 1;
         }
-        m[sym.name] = sym.is_bool ? (bits[0] ? "true" : "false") : bits_literal(bits);
+        m[sym.name] = sym.is_bool ? (bits.at(0) ? "true" : "false") : bits_literal(bits);
     }
     return m;
 }
@@ -106,7 +106,7 @@ bool assignment_satisfies(const Cnf& cnf, const std::vector<std::int8_t>& a) {
         for (int l : c) {
             std::size_t v = std::size_t(std::abs(l));
             if (v >= a.size()) return false;
-            if ((l > 0) == (a[v] == 1)) { sat = true; break; }
+            if ((l > 0) == (a.at(v) == 1)) { sat = true; break; }
         }
         if (!sat) return false;
     }
@@ -130,7 +130,7 @@ std::optional<std::vector<std::int8_t>> parse_sat_values(std::string_view out, i
             if (l == 0) { done = true; break; }
             auto v = std::llabs(l);
             if (v > num_vars) return std::nullopt;
-            a[std::size_t(v)] = l > 0 ? 1 : 0;
+            a.at(std::size_t(v)) = l > 0 ? 1 : 0;
         }
     }
     if (!any || !done) return std::nullopt;
@@ -182,20 +182,20 @@ SlsResult probsat(const Cnf& cnf, const SlsOptions& opt) {
     std::vector<std::uint32_t> unsat;
     auto is_true = [&](int l) { return (l > 0) == (r.assignment[std::size_t(std::abs(l))] == 1); };
     for (std::size_t i = 0; i < nc; ++i) {
-        for (int l : cnf.clauses[i]) ntrue[i] += is_true(l) ? 1u : 0u;
-        if (ntrue[i] == 0) { where[i] = std::int64_t(unsat.size()); unsat.push_back(std::uint32_t(i)); }
+        for (int l : cnf.clauses.at(i)) ntrue.at(i) += is_true(l) ? 1u : 0u;
+        if (ntrue.at(i) == 0) { where.at(i) = std::int64_t(unsat.size()); unsat.push_back(std::uint32_t(i)); }
     }
     auto drop = [&](std::uint32_t c) {
-        auto pos = std::size_t(where[c]);
+        auto pos = std::size_t(where.at(c));
         std::uint32_t last = unsat.back();
-        unsat[pos] = last;
-        where[last] = std::int64_t(pos);
+        unsat.at(pos) = last;
+        where.at(last) = std::int64_t(pos);
         unsat.pop_back();
-        where[c] = -1;
+        where.at(c) = -1;
     };
     // Lookup table (eps + break)^-cb for small breaks.
     std::vector<double> table(64);
-    for (std::size_t b = 0; b < table.size(); ++b) table[b] = std::pow(eps + double(b), -cb);
+    for (std::size_t b = 0; b < table.size(); ++b) table.at(b) = std::pow(eps + double(b), -cb);
     std::vector<double> probs;
     const double t0 = detail::now_s();
     while (!unsat.empty()) {
@@ -211,25 +211,25 @@ SlsResult probsat(const Cnf& cnf, const SlsOptions& opt) {
             // Flipping var(cl[j]) breaks every clause whose only true literal
             // is var's current (true) literal, i.e. -cl[j].
             std::size_t brk = 0;
-            for (auto c : occ[lit_index(-cl[j])]) brk += ntrue[c] == 1 ? 1 : 0;
-            probs[j] = brk < table.size() ? table[brk] : std::pow(eps + double(brk), -cb);
-            sum += probs[j];
+            for (auto c : occ[lit_index(-cl.at(j))]) brk += ntrue.at(c) == 1 ? 1 : 0;
+            probs.at(j) = brk < table.size() ? table.at(brk) : std::pow(eps + double(brk), -cb);
+            sum += probs.at(j);
         }
         double pick = rng.unit() * sum;
         std::size_t j = 0;
         for (; j + 1 < cl.size(); ++j) {
-            if (pick < probs[j]) break;
-            pick -= probs[j];
+            if (pick < probs.at(j)) break;
+            pick -= probs.at(j);
         }
-        const int lit = cl[j];  // currently false; becomes true
+        const int lit = cl.at(j);  // currently false; becomes true
         const auto v = std::size_t(std::abs(lit));
         r.assignment[v] = std::int8_t(lit > 0 ? 1 : 0);
         ++r.flips;
         for (auto c : occ[lit_index(lit)]) {
-            if (ntrue[c]++ == 0) drop(c);
+            if (ntrue.at(c)++ == 0) drop(c);
         }
         for (auto c : occ[lit_index(-lit)]) {
-            if (--ntrue[c] == 0) { where[c] = std::int64_t(unsat.size()); unsat.push_back(c); }
+            if (--ntrue.at(c) == 0) { where.at(c) = std::int64_t(unsat.size()); unsat.push_back(c); }
         }
     }
     r.found = true;

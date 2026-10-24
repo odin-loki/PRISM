@@ -105,14 +105,14 @@ struct ReturnEx : std::exception {};
 
 std::string strip(std::string s) {
     std::size_t a = 0, b = s.size();
-    while (a < b && std::isspace(static_cast<unsigned char>(s[a]))) ++a;
-    while (b > a && std::isspace(static_cast<unsigned char>(s[b - 1]))) --b;
+    while (a < b && std::isspace(static_cast<unsigned char>(s.at(a)))) ++a;
+    while (b > a && std::isspace(static_cast<unsigned char>(s.at(b - 1)))) --b;
     return s.substr(a, b - a);
 }
 
 std::string lstrip(std::string s) {
     std::size_t i = 0;
-    while (i < s.size() && std::isspace(static_cast<unsigned char>(s[i]))) ++i;
+    while (i < s.size() && std::isspace(static_cast<unsigned char>(s.at(i)))) ++i;
     return s.substr(i);
 }
 
@@ -190,12 +190,12 @@ std::vector<std::string> split_comma(const std::string& s) {
 }
 
 std::pair<std::string, std::string> paren(std::string text) {
-    text = lstrip(std::move(text));
+    text = lstrip(text);
     if (!text.starts_with("(")) throw ParseFail("expected (");
     int depth = 0;
     for (std::size_t i = 0; i < text.size(); ++i) {
-        if (text[i] == '(') ++depth;
-        else if (text[i] == ')') {
+        if (text.at(i) == '(') ++depth;
+        else if (text.at(i) == ')') {
             --depth;
             if (depth == 0) return {text.substr(1, i - 1), text.substr(i + 1)};
         }
@@ -204,12 +204,12 @@ std::pair<std::string, std::string> paren(std::string text) {
 }
 
 std::pair<std::string, std::string> brace(std::string text) {
-    text = lstrip(std::move(text));
+    text = lstrip(text);
     if (!text.starts_with("{")) throw ParseFail("expected {");
     int depth = 0;
     for (std::size_t i = 0; i < text.size(); ++i) {
-        if (text[i] == '{') ++depth;
-        else if (text[i] == '}') {
+        if (text.at(i) == '{') ++depth;
+        else if (text.at(i) == '}') {
             --depth;
             if (depth == 0) return {text.substr(1, i - 1), text.substr(i + 1)};
         }
@@ -220,7 +220,7 @@ std::pair<std::string, std::string> brace(std::string text) {
 std::pair<std::string, std::string> stmt(const std::string& text) {
     int depth = 0;
     for (std::size_t i = 0; i < text.size(); ++i) {
-        char ch = text[i];
+        char ch = text.at(i);
         if (ch == '(') ++depth;
         else if (ch == ')') --depth;
         else if (ch == '{' && depth == 0) break;
@@ -232,7 +232,7 @@ std::pair<std::string, std::string> stmt(const std::string& text) {
 }
 
 std::pair<std::string, std::string> take_block(std::string text) {
-    text = lstrip(std::move(text));
+    text = lstrip(text);
     if (text.starts_with("{")) return brace(text);
     return stmt(text);
 }
@@ -279,8 +279,8 @@ int char_lit_value(const std::string& tok_s) {
     if (tok_s.size() < 2) throw ParseFail("empty character literal");
     std::string inner = tok_s.substr(1, tok_s.size() - 2);
     if (inner.empty()) throw ParseFail("empty character literal");
-    if (inner[0] == '\\' && inner.size() >= 2) {
-        char esc = inner[1];
+    if (inner.front() == '\\' && inner.size() >= 2) {
+        char esc = inner.at(1);
         switch (esc) {
         case 'n': return 10;
         case 't': return 9;
@@ -292,7 +292,7 @@ int char_lit_value(const std::string& tok_s) {
         default: return static_cast<unsigned char>(esc);
         }
     }
-    return static_cast<unsigned char>(inner[0]);
+    return static_cast<unsigned char>(inner.front());
 }
 
 int sizeof_interval(const std::vector<std::string>& inner) {
@@ -303,7 +303,7 @@ int sizeof_interval(const std::vector<std::string>& inner) {
     std::string joined;
     for (std::size_t i = 0; i < inner.size(); ++i) {
         if (i) joined += " ";
-        joined += inner[i];
+        joined += inner.at(i);
     }
     auto it = kTypeSize.find(joined);
     if (it != kTypeSize.end()) return it->second;
@@ -822,7 +822,7 @@ void refine(Engine& e, const std::string& cond, bool truth) {
 void decl(Engine& e, std::string stmt_s) {
     stmt_s = strip(stmt_s);
     while (!stmt_s.empty() && stmt_s.back() == ';') stmt_s.pop_back();
-    stmt_s = strip(std::move(stmt_s));
+    stmt_s = strip(stmt_s);
     static Regex re(
         "((?:(?:unsigned|signed|long|short|int|char|uint32_t|int32_t|uint64_t|int64_t|size_t)\\s+)+)"
         "(?:const\\s+)?([A-Za-z_]\\w*)(?:\\s*=\\s*(.*))?$");
@@ -854,7 +854,7 @@ void decl(Engine& e, std::string stmt_s) {
 void assign(Engine& e, std::string stmt_s) {
     stmt_s = strip(stmt_s);
     while (!stmt_s.empty() && stmt_s.back() == ';') stmt_s.pop_back();
-    stmt_s = strip(std::move(stmt_s));
+    stmt_s = strip(stmt_s);
     if (stmt_s.empty()) return;
     auto parts = split_comma(stmt_s);
     if (parts.size() > 1) {
@@ -949,9 +949,9 @@ std::string if_stmt(Engine& e, const std::string& text, int bound) {
             then_dead = true;
         }
     }
-    if (else_src && !else_dead) {
+    if (else_src.has_value() && !else_dead) {
         try {
-            stmts(else_e, *else_src, bound);
+            stmts(else_e, else_src.value(), bound);
         } catch (const ReturnEx&) {
             else_dead = true;
         }
@@ -1037,9 +1037,9 @@ std::string for_stmt(Engine& e, const std::string& text, int bound) {
     auto raw_parts = split_for(header);
     std::vector<std::string> parts;
     for (auto& p : raw_parts) parts.push_back(strip(p));
-    std::string init = parts.empty() ? "" : parts[0];
-    std::string cond = parts.size() > 1 ? parts[1] : "";
-    std::string step = parts.size() > 2 ? parts[2] : "";
+    std::string init = parts.empty() ? "" : parts.front();
+    std::string cond = parts.size() > 1 ? parts.at(1) : "";
+    std::string step = parts.size() > 2 ? parts.at(2) : "";
     if (!init.empty()) {
         std::string init_stmt = init.ends_with(";") ? init : init + ";";
         if (auto miss = unencoded_layout_stmt(init_stmt)) throw ParseFail(*miss);
@@ -1253,7 +1253,7 @@ std::optional<Finding> interval_function(const FunctionInfo& fn) {
 std::vector<Finding> run_interval(const std::vector<FunctionInfo>& functions) {
     std::vector<Finding> out;
     for (auto& fn : functions) {
-        if (auto rec = interval_function(fn)) out.push_back(std::move(*rec));
+        if (auto rec = interval_function(fn)) out.push_back(std::move(rec).value());
     }
     return out;
 }

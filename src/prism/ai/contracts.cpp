@@ -54,9 +54,9 @@ std::vector<Requirement> load_requirements(const std::vector<fs::path>& paths) {
         }
     }
     std::sort(files.begin(), files.end());
-    static const std::regex marker(R"(^\s*(?:#{1,6}\s+|[-*+]\s+|\d+[.)]\s+|>\s*)+)");
     for (auto& f : files) {
         std::ifstream in(f);
+        if (!in.is_open()) continue;
         std::string line;
         int n = 0;
         bool fence = false;
@@ -68,7 +68,7 @@ std::vector<Requirement> load_requirements(const std::vector<fs::path>& paths) {
                 continue;
             }
             if (fence || t.empty()) continue;
-            t = std::regex_replace(t, marker, "");
+            t = std::regex_replace(t, std::regex(R"(^\s*(?:#{1,6}\s+|[-*+]\s+|\d+[.)]\s+|>\s*)+)"), "");
             // Sentences: split after . ! ? followed by a space.
             std::size_t start = 0;
             for (std::size_t i = 0; i <= t.size(); ++i) {
@@ -162,8 +162,8 @@ std::string contract_to_c(const std::string& expr_in) {
     // Top-level (right-associative) implication.
     int depth = 0;
     for (std::size_t i = 0; i + 2 < e.size(); ++i) {
-        if (e[i] == '(') ++depth;
-        else if (e[i] == ')') --depth;
+        if (e.at(i) == '(') ++depth;
+        else if (e.at(i) == ')') --depth;
         else if (depth == 0 && e.compare(i, 3, "==>") == 0) {
             auto lhs = trim(e.substr(0, i)), rhs = trim(e.substr(i + 3));
             return "(!(" + contract_to_c(lhs) + ") || (" + contract_to_c(rhs) + "))";
@@ -172,15 +172,15 @@ std::string contract_to_c(const std::string& expr_in) {
     // Implications inside parentheses.
     std::string out;
     for (std::size_t i = 0; i < e.size(); ++i) {
-        if (e[i] != '(') {
-            out += e[i];
+        if (e.at(i) != '(') {
+            out += e.at(i);
             continue;
         }
         int d = 0;
         std::size_t j = i;
         for (; j < e.size(); ++j) {
-            if (e[j] == '(') ++d;
-            else if (e[j] == ')' && --d == 0) break;
+            if (e.at(j) == '(') ++d;
+            else if (e.at(j) == ')' && --d == 0) break;
         }
         if (j >= e.size()) {
             out += e.substr(i);
@@ -200,16 +200,16 @@ bool is_ident_char(char c) { return std::isalnum(static_cast<unsigned char>(c)) 
 std::string substitute(const std::string& expr, const std::map<std::string, std::string>& map) {
     std::string out;
     for (std::size_t i = 0; i < expr.size();) {
-        if (std::isalpha(static_cast<unsigned char>(expr[i])) || expr[i] == '_') {
+        if (std::isalpha(static_cast<unsigned char>(expr.at(i))) || expr.at(i) == '_') {
             std::size_t j = i;
-            while (j < expr.size() && is_ident_char(expr[j])) ++j;
+            while (j < expr.size() && is_ident_char(expr.at(j))) ++j;
             auto w = expr.substr(i, j - i);
             auto it = map.find(w);
             out += it != map.end() ? it->second : w;
             i = j;
             continue;
         }
-        out += expr[i++];
+        out += expr.at(i++);
     }
     return out;
 }
@@ -217,13 +217,13 @@ std::string substitute(const std::string& expr, const std::map<std::string, std:
 bool simple_arg(const std::string& a) {
     if (a.empty() || a.size() > 200) return false;
     for (std::size_t i = 0; i < a.size(); ++i) {
-        char c = a[i];
+        char c = a.at(i);
         if (!(is_ident_char(c) || std::strchr(" +-*/%()", c))) return false;
-        if ((c == '+' || c == '-') && i + 1 < a.size() && a[i + 1] == c) return false;
+        if ((c == '+' || c == '-') && i + 1 < a.size() && a.at(i + 1) == c) return false;
         if (c == '(' && i > 0) {
             auto k = i;
-            while (k > 0 && a[k - 1] == ' ') --k;
-            if (k > 0 && is_ident_char(a[k - 1])) return false;  // a call
+            while (k > 0 && a.at(k - 1) == ' ') --k;
+            if (k > 0 && is_ident_char(a.at(k - 1))) return false;  // a call
         }
     }
     return true;
@@ -277,8 +277,8 @@ std::string check_callers_requires(const FunctionInfo& caller, const FunctionInf
         if (whole.find("&&") != std::string::npos || whole.find("||") != std::string::npos ||
             whole.find('?') != std::string::npos)
             return "unknown: call under a short-circuit or conditional operator";
-        static const std::regex loop_kw(R"(^(for|while|do|else|switch|case|default)\b)");
-        if (std::regex_search(prefix, loop_kw)) return "unknown: call in a loop header or else/switch arm";
+        if (std::regex_search(prefix, std::regex(R"(^(for|while|do|else|switch|case|default)\b)")))
+            return "unknown: call in a loop header or else/switch arm";
         if (prefix.rfind("if", 0) == 0) {
             int bal = 0;
             for (char c : prefix) bal += c == '(' ? 1 : c == ')' ? -1 : 0;
@@ -289,9 +289,10 @@ std::string check_callers_requires(const FunctionInfo& caller, const FunctionInf
     if (sites.empty()) return "no-calls";
     std::string nb = body;
     for (std::size_t k = sites.size(); k-- > 0;) {
-        auto& s = sites[k];
+        auto& s = sites.at(k);
         std::map<std::string, std::string> sub;
-        for (std::size_t i = 0; i < callee.params.size(); ++i) sub[callee.params[i].second] = "(" + s.args[i] + ")";
+        for (std::size_t i = 0; i < callee.params.size(); ++i)
+            sub[callee.params.at(i).second] = "(" + s.args.at(i) + ")";
         auto req = substitute(requires_expr, sub);
         auto tag = std::to_string(k + 1);
         auto ret = "__prism_ret" + tag;
@@ -347,7 +348,7 @@ Finding prove_clauses(const FunctionInfo& fn, const std::vector<Clause>& cs, int
     std::optional<std::string> r, e;
     if (!req.empty()) r = join(req, " && ");
     if (!ens.empty()) e = join(ens, " && ");
-    if (req_out) *req_out = r ? *r : "";
+    if (req_out) *req_out = r.has_value() ? r.value() : "";
     return prove_with_contract(fn, unwind, r, e);
 }
 
@@ -389,15 +390,15 @@ std::string block_comment_above(const FunctionInfo& fn) {
         int a = std::max(1, fn.span.first > 0 ? fn.span.first : fn.line);
         int i = std::min<int>(a - 1, static_cast<int>(lines.size()));  // 1-based line above
         while (i >= 1) {
-            auto t = trim(lines[static_cast<std::size_t>(i - 1)]);
+            auto t = trim(lines.at(static_cast<std::size_t>(i - 1)));
             if (!t.empty() && t.rfind("//", 0) != 0) break;
             --i;
         }
-        if (i < 1 || !trim(lines[static_cast<std::size_t>(i - 1)]).ends_with("*/")) return {};
+        if (i < 1 || !trim(lines.at(static_cast<std::size_t>(i - 1))).ends_with("*/")) return {};
         std::string out;
         for (int k = i; k >= 1; --k) {
-            out = lines[static_cast<std::size_t>(k - 1)] + "\n" + out;
-            if (lines[static_cast<std::size_t>(k - 1)].find("/*") != std::string::npos) return out;
+            out = lines.at(static_cast<std::size_t>(k - 1)) + "\n" + out;
+            if (lines.at(static_cast<std::size_t>(k - 1)).find("/*") != std::string::npos) return out;
         }
         return {};
     }
@@ -407,9 +408,12 @@ std::string block_comment_above(const FunctionInfo& fn) {
 
 bool has_spec(const FunctionInfo& fn) {
     // Clause keywords are case-insensitive, as in parse_comments.
-    static const std::regex spec(R"((//|/\*|\*|@)\s*(requires|ensures|invariant|decreases)\b)",
-                                 std::regex::icase);
-    return std::regex_search(function_source(fn), spec) || std::regex_search(block_comment_above(fn), spec);
+    return std::regex_search(function_source(fn),
+                             std::regex(R"((//|/\*|\*|@)\s*(requires|ensures|invariant|decreases)\b)",
+                                        std::regex::icase)) ||
+           std::regex_search(block_comment_above(fn),
+                             std::regex(R"((//|/\*|\*|@)\s*(requires|ensures|invariant|decreases)\b)",
+                                        std::regex::icase));
 }
 
 std::vector<Finding> draft_contracts(const std::vector<FunctionInfo>& functions, const Config& cfg) {
@@ -590,7 +594,7 @@ std::vector<Finding> draft_contracts(const std::vector<FunctionInfo>& functions,
         nlohmann::json cj = nlohmann::json::array(), approve = nlohmann::json::array(), trace = nlohmann::json::array();
         for (auto& c : cs) {
             nlohmann::json t{{"clause", c.kind + " " + c.expr + ";"}, {"source", c.trace.empty() ? "unstated" : c.trace}};
-            if (auto it = offered.find(c.trace); it != offered.end()) {
+            if (auto it = offered.find(c.trace); it != offered.end() && it->second != nullptr) {
                 t["file"] = it->second->file;
                 t["line"] = it->second->line;
                 t["text"] = it->second->text;

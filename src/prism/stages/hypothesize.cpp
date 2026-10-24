@@ -35,7 +35,7 @@ std::vector<Finding> dafny_specs(const std::vector<FunctionInfo>& functions, int
     std::vector<Finding> out;
     const int n = std::min(budget, static_cast<int>(functions.size()));
     for (int i = 0; i < n; ++i) {
-        const auto& fn = functions[static_cast<std::size_t>(i)];
+        const auto& fn = functions.at(static_cast<std::size_t>(i));
         auto r = engine.complete({{"system", SYSTEM_DAFNY}, {"user", fn.signature + "\n{" + fn.body + "\n}"}});
         if (!r.error.empty()) {
             if (llm_httpish(r.error)) {
@@ -83,7 +83,7 @@ std::vector<Finding> hypothesize(const std::vector<FunctionInfo>& functions, int
     std::vector<Finding> out;
     int n = std::min(budget, static_cast<int>(functions.size()));
     for (int i = 0; i < n; ++i) {
-        auto& fn = functions[static_cast<std::size_t>(i)];
+        auto& fn = functions.at(static_cast<std::size_t>(i));
         auto src = fn.signature + "\n{" + fn.body + "\n}";
         if (src.size() > 6000) src.resize(6000);
         auto r = engine.complete({{"system", SYSTEM_AUDITOR}, {"user", src}});

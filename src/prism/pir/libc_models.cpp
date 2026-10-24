@@ -72,7 +72,7 @@ std::string rename_privates(std::string text, const std::string& tag) {
             i += 4;
             continue;
         }
-        out.push_back(text[i]);
+        out.push_back(text.at(i));
     }
     return out;
 }

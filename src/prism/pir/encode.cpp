@@ -30,6 +30,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <cmath>
 #include <deque>
 #include <filesystem>
@@ -81,40 +82,38 @@ struct CfgInfo {
 };
 
 std::vector<int> succs(const Block& b) {
-    switch (b.term.kind) {
-        case Term::Jmp: return {b.term.t};
-        case Term::Br: return {b.term.t, b.term.f};
-        default: return {};
-    }
+    if (b.term.kind == Term::Jmp) return {b.term.t};
+    if (b.term.kind == Term::Br) return {b.term.t, b.term.f};
+    return {};
 }
 
 CfgInfo analyze(const Function& fn) {
     CfgInfo g;
     g.n = static_cast<int>(fn.blocks.size());
     g.succ.resize(static_cast<std::size_t>(g.n));
-    for (int b = 0; b < g.n; ++b) g.succ[static_cast<std::size_t>(b)] = succs(fn.blocks[static_cast<std::size_t>(b)]);
+    for (int b = 0; b < g.n; ++b) g.succ.at(static_cast<std::size_t>(b)) = succs(fn.blocks.at(static_cast<std::size_t>(b)));
     g.reachable.assign(static_cast<std::size_t>(g.n), 0);
     // DFS (iterative) for reachability and retreating edges
     std::vector<int> state(static_cast<std::size_t>(g.n), 0);  // 0 new, 1 on stack, 2 done
     std::vector<std::pair<int, int>> retreating;
     if (g.n > 0) {
         std::vector<std::pair<int, std::size_t>> st{{0, 0}};
-        state[0] = 1;
-        g.reachable[0] = 1;
+        state.at(0) = 1;
+        g.reachable.at(0) = 1;
         while (!st.empty()) {
             auto& [b, k] = st.back();
-            auto& ss = g.succ[static_cast<std::size_t>(b)];
+            auto& ss = g.succ.at(static_cast<std::size_t>(b));
             if (k < ss.size()) {
                 int s = ss[k++];
-                if (state[static_cast<std::size_t>(s)] == 0) {
-                    state[static_cast<std::size_t>(s)] = 1;
-                    g.reachable[static_cast<std::size_t>(s)] = 1;
+                if (state.at(static_cast<std::size_t>(s)) == 0) {
+                    state.at(static_cast<std::size_t>(s)) = 1;
+                    g.reachable.at(static_cast<std::size_t>(s)) = 1;
                     st.emplace_back(s, 0);
-                } else if (state[static_cast<std::size_t>(s)] == 1) {
+                } else if (state.at(static_cast<std::size_t>(s)) == 1) {
                     retreating.emplace_back(b, s);
                 }
             } else {
-                state[static_cast<std::size_t>(b)] = 2;
+                state.at(static_cast<std::size_t>(b)) = 2;
                 st.pop_back();
             }
         }
@@ -122,8 +121,8 @@ CfgInfo analyze(const Function& fn) {
     // dominators (iterative data flow over reachable blocks)
     std::vector<std::vector<int>> preds(static_cast<std::size_t>(g.n));
     for (int b = 0; b < g.n; ++b)
-        if (g.reachable[static_cast<std::size_t>(b)])
-            for (int s : g.succ[static_cast<std::size_t>(b)]) preds[static_cast<std::size_t>(s)].push_back(b);
+        if (g.reachable.at(static_cast<std::size_t>(b)))
+            for (int s : g.succ.at(static_cast<std::size_t>(b))) preds.at(static_cast<std::size_t>(s)).push_back(b);
     g.dom.assign(static_cast<std::size_t>(g.n), std::vector<char>(static_cast<std::size_t>(g.n), 1));
     if (g.n > 0) {
         g.dom[0].assign(static_cast<std::size_t>(g.n), 0);
@@ -133,19 +132,21 @@ CfgInfo analyze(const Function& fn) {
     while (changed) {
         changed = false;
         for (int b = 1; b < g.n; ++b) {
-            if (!g.reachable[static_cast<std::size_t>(b)]) continue;
+            if (!g.reachable.at(static_cast<std::size_t>(b))) continue;
             std::vector<char> nd(static_cast<std::size_t>(g.n), 1);
             bool any = false;
-            for (int p : preds[static_cast<std::size_t>(b)]) {
+            for (int p : preds.at(static_cast<std::size_t>(b))) {
                 any = true;
-                for (int d = 0; d < g.n; ++d)
-                    nd[static_cast<std::size_t>(d)] = static_cast<char>(nd[static_cast<std::size_t>(d)] &&
-                                                                        g.dom[static_cast<std::size_t>(p)][static_cast<std::size_t>(d)]);
+                for (int d = 0; d < g.n; ++d) {
+                    const auto di = static_cast<std::size_t>(d);
+                    const auto pi = static_cast<std::size_t>(p);
+                    nd.at(di) = static_cast<char>(nd.at(di) && g.dom.at(pi).at(di));
+                }
             }
             if (!any) nd.assign(static_cast<std::size_t>(g.n), 0);
-            nd[static_cast<std::size_t>(b)] = 1;
-            if (nd != g.dom[static_cast<std::size_t>(b)]) {
-                g.dom[static_cast<std::size_t>(b)] = std::move(nd);
+            nd.at(static_cast<std::size_t>(b)) = 1;
+            if (nd != g.dom.at(static_cast<std::size_t>(b))) {
+                g.dom.at(static_cast<std::size_t>(b)) = std::move(nd);
                 changed = true;
             }
         }
@@ -153,33 +154,33 @@ CfgInfo analyze(const Function& fn) {
     // back edges; a retreating edge that is not a back edge = irreducible
     std::map<int, std::vector<int>> latches;
     for (auto [u, h] : retreating) {
-        if (!g.dom[static_cast<std::size_t>(u)][static_cast<std::size_t>(h)]) {
+        if (!g.dom.at(static_cast<std::size_t>(u))[static_cast<std::size_t>(h)]) {
             g.unencoded = "UNENCODED: irreducible control flow";
             return g;
         }
     }
     for (int u = 0; u < g.n; ++u) {
-        if (!g.reachable[static_cast<std::size_t>(u)]) continue;
-        for (int h : g.succ[static_cast<std::size_t>(u)])
-            if (g.dom[static_cast<std::size_t>(u)][static_cast<std::size_t>(h)]) latches[h].push_back(u);
+        if (!g.reachable.at(static_cast<std::size_t>(u))) continue;
+        for (int h : g.succ.at(static_cast<std::size_t>(u)))
+            if (g.dom.at(static_cast<std::size_t>(u))[static_cast<std::size_t>(h)]) latches[h].push_back(u);
     }
     for (auto& [h, ls] : latches) {
         Loop L;
         L.header = h;
         L.body.assign(static_cast<std::size_t>(g.n), 0);
-        L.body[static_cast<std::size_t>(h)] = 1;
+        L.body.at(static_cast<std::size_t>(h)) = 1;
         std::vector<int> work;
         for (int l : ls)
-            if (!L.body[static_cast<std::size_t>(l)]) {
-                L.body[static_cast<std::size_t>(l)] = 1;
+            if (!L.body.at(static_cast<std::size_t>(l))) {
+                L.body.at(static_cast<std::size_t>(l)) = 1;
                 work.push_back(l);
             }
         while (!work.empty()) {
             int x = work.back();
             work.pop_back();
-            for (int p : preds[static_cast<std::size_t>(x)])
-                if (!L.body[static_cast<std::size_t>(p)]) {
-                    L.body[static_cast<std::size_t>(p)] = 1;
+            for (int p : preds.at(static_cast<std::size_t>(x)))
+                if (!L.body.at(static_cast<std::size_t>(p))) {
+                    L.body.at(static_cast<std::size_t>(p)) = 1;
                     work.push_back(p);
                 }
         }
@@ -187,25 +188,25 @@ CfgInfo analyze(const Function& fn) {
         g.loops.push_back(std::move(L));
     }
     std::vector<int> order(g.loops.size());
-    for (std::size_t i = 0; i < order.size(); ++i) order[i] = static_cast<int>(i);
+    for (std::size_t i = 0; i < order.size(); ++i) order.at(i) = static_cast<int>(i);
     std::sort(order.begin(), order.end(), [&](int a, int b) {
-        return g.loops[static_cast<std::size_t>(a)].size > g.loops[static_cast<std::size_t>(b)].size;
+        return g.loops.at(static_cast<std::size_t>(a)).size > g.loops.at(static_cast<std::size_t>(b)).size;
     });
     g.loops_of.assign(static_cast<std::size_t>(g.n), {});
     for (int b = 0; b < g.n; ++b)
         for (int li : order)
-            if (g.loops[static_cast<std::size_t>(li)].body[static_cast<std::size_t>(b)])
-                g.loops_of[static_cast<std::size_t>(b)].push_back(li);
+            if (g.loops.at(static_cast<std::size_t>(li)).body.at(static_cast<std::size_t>(b)))
+                g.loops_of.at(static_cast<std::size_t>(b)).push_back(li);
     // definitions
     g.def_block.assign(fn.vars.size(), -1);
     for (int b = 0; b < g.n; ++b) {
-        auto& bl = fn.blocks[static_cast<std::size_t>(b)];
-        for (auto& p : bl.phis) g.def_block[static_cast<std::size_t>(p.dst)] = b;
+        auto& bl = fn.blocks.at(static_cast<std::size_t>(b));
+        for (auto& p : bl.phis) g.def_block.at(static_cast<std::size_t>(p.dst)) = b;
         for (auto& s : bl.stmts)
             for (int d : {s.dst, s.dst2, s.dst3})
                 if (d >= 0 && (s.kind == Stmt::Assign || s.kind == Stmt::Alloc || s.kind == Stmt::Load ||
                                s.kind == Stmt::StackSave))
-                    g.def_block[static_cast<std::size_t>(d)] = b;
+                    g.def_block.at(static_cast<std::size_t>(d)) = b;
     }
     return g;
 }
@@ -215,9 +216,10 @@ CfgInfo analyze(const Function& fn) {
 std::string format_cex(const Function& fn, const std::vector<uint64_t>& args) {
     std::string out;
     for (std::size_t i = 0; i < fn.params.size() && i < args.size(); ++i) {
-        auto& v = fn.vars[static_cast<std::size_t>(fn.params[i])];
+        auto& v = fn.vars.at(static_cast<std::size_t>(fn.params[i]));
         if (i) out += ", ";
-        out += v.name + "=" + (v.fp ? fp::format(args[i], v.width) : std::to_string(as_signed(args[i], v.width)));
+        out += v.name + "=" +
+               (v.fp ? fp::format(args.at(i), v.width) : std::to_string(as_signed(args.at(i), v.width)));
     }
     return out;
 }
@@ -361,37 +363,37 @@ struct Encoding {
     // Memory statements (docs/PIR.md "Memory model"); every update is
     // guarded by the reach condition of this block instance.
     void encode_mem(const Stmt& s, int id, const z3::expr& r, std::unordered_map<int, z3::expr>& m) {
-        auto arg = [&](std::size_t i) { return lookup(s.args[i], id); };
+        auto arg = [&](std::size_t i) { return lookup(s.args.at(i), id); };
         switch (s.kind) {
             case Stmt::Alloc: m.insert_or_assign(s.dst, M().alloc(r, arg(0), s.mkind, s.align, s.init)); break;
             case Stmt::Free: M().free(r, arg(0)); break;
             case Stmt::Revive: M().revive(r, arg(0)); break;
             case Stmt::Load: {
                 auto ptr = arg(0);
-                auto ld = M().load(ptr, fn.vars[static_cast<std::size_t>(s.dst)].width, s.tag);
+                auto ld = M().load(ptr, fn.vars.at(static_cast<std::size_t>(s.dst)).width, s.tag);
                 m.insert_or_assign(s.dst, ld.val);
                 if (s.dst2 >= 0)
-                    m.insert_or_assign(s.dst2, fn.vars[static_cast<std::size_t>(s.dst2)].width == 1 ? ld.uninit : ld.mask);
+                    m.insert_or_assign(s.dst2, fn.vars.at(static_cast<std::size_t>(s.dst2)).width == 1 ? ld.uninit : ld.mask);
                 if (s.dst3 >= 0) m.insert_or_assign(s.dst3, ld.tagbad);
                 break;
             }
             case Stmt::Store: {
                 auto p = arg(0);
-                auto& in = s.args[2];
+                auto& in = s.args.at(2);
                 bool inits = in.is_const && in.bits == wmask(in.width);
-                writes.push_back(WriteInst{nodes[static_cast<std::size_t>(id)].block, M().known(p), inits, chain_of(s.args[0])});
-                M().store(r, p, arg(1), s.args[1].width, arg(2), s.tag);
+                writes.push_back(WriteInst{nodes.at(static_cast<std::size_t>(id)).block, M().known(p), inits, chain_of(s.args.at(0))});
+                M().store(r, p, arg(1), s.args.at(1).width, arg(2), s.tag);
                 break;
             }
             case Stmt::MemCpy: {
                 auto p = arg(0);
-                writes.push_back(WriteInst{nodes[static_cast<std::size_t>(id)].block, M().known(p), false, chain_of(s.args[0])});
+                writes.push_back(WriteInst{nodes.at(static_cast<std::size_t>(id)).block, M().known(p), false, chain_of(s.args.at(0))});
                 M().copy(r, p, arg(1), arg(2));
                 break;
             }
             case Stmt::MemSet: {
                 auto p = arg(0);
-                writes.push_back(WriteInst{nodes[static_cast<std::size_t>(id)].block, M().known(p), true, chain_of(s.args[0])});
+                writes.push_back(WriteInst{nodes.at(static_cast<std::size_t>(id)).block, M().known(p), true, chain_of(s.args.at(0))});
                 M().set(r, p, arg(1), arg(2));
                 break;
             }
@@ -411,12 +413,12 @@ struct Encoding {
             def_stmt.assign(fn.vars.size(), nullptr);
             for (auto& b : fn.blocks)
                 for (auto& st : b.stmts)
-                    if (st.kind == Stmt::Assign && st.dst >= 0) def_stmt[static_cast<std::size_t>(st.dst)] = &st;
+                    if (st.kind == Stmt::Assign && st.dst >= 0) def_stmt.at(static_cast<std::size_t>(st.dst)) = &st;
         }
         int v = a.var;
         while (v >= 0 && out.size() < 64) {
             out.push_back(v);
-            auto* d = def_stmt[static_cast<std::size_t>(v)];
+            auto* d = def_stmt.at(static_cast<std::size_t>(v));
             if (!d || d->args.empty() || d->args[0].is_const) break;
             if (!(d->op == Op::Copy || (d->ptr_arith && d->op != Op::Select))) break;
             v = d->args[0].var;
@@ -429,12 +431,12 @@ struct Encoding {
         if (!mem || !s.ptr_arith || s.args.empty()) return;
         std::optional<uint64_t> k;
         if (s.op == Op::Select && s.args.size() == 3) {
-            auto k1 = mem->known(lookup(s.args[1], node));
-            auto k2 = mem->known(lookup(s.args[2], node));
+            auto k1 = mem->known(lookup(s.args.at(1), node));
+            auto k2 = mem->known(lookup(s.args.at(2), node));
             if (!(k1 && k2 && *k1 == *k2)) return;
             k = k1;
         } else {
-            k = mem->known(lookup(s.args[0], node));
+            k = mem->known(lookup(s.args.at(0), node));
         }
         if (k) mem->note(v, *k);
     }
@@ -459,17 +461,17 @@ struct Encoding {
 
     // Context of successor s entered from node (b, ctx); nullopt: unwinding cut.
     std::optional<std::vector<int>> succ_ctx(int b, const std::vector<int>& ctx, int s) {
-        const auto& Lb = g.loops_of[static_cast<std::size_t>(b)];
-        const auto& Ls = g.loops_of[static_cast<std::size_t>(s)];
+        const auto& Lb = g.loops_of.at(static_cast<std::size_t>(b));
+        const auto& Ls = g.loops_of.at(static_cast<std::size_t>(s));
         std::vector<int> out;
         for (int L : Ls) {
             auto pos = std::find(Lb.begin(), Lb.end(), L);
             int cnt;
             if (pos != Lb.end()) {
-                cnt = ctx[static_cast<std::size_t>(pos - Lb.begin())];
-                if (s == g.loops[static_cast<std::size_t>(L)].header) ++cnt;  // back edge
+                cnt = ctx.at(static_cast<std::size_t>(pos - Lb.begin()));
+                if (s == g.loops.at(static_cast<std::size_t>(L)).header) ++cnt;  // back edge
             } else {
-                if (s != g.loops[static_cast<std::size_t>(L)].header)
+                if (s != g.loops.at(static_cast<std::size_t>(L)).header)
                     throw EncodeFail{std::string(laws::NEEDS_HARNESS), "UNENCODED: irreducible control flow"};
                 cnt = 0;
             }
@@ -487,8 +489,8 @@ struct Encoding {
         while (!q.empty()) {
             int id = q.front();
             q.pop_front();
-            auto nb = nodes[static_cast<std::size_t>(id)];
-            const auto& ss = g.succ[static_cast<std::size_t>(nb.block)];
+            auto nb = nodes.at(static_cast<std::size_t>(id));
+            const auto& ss = g.succ.at(static_cast<std::size_t>(nb.block));
             for (std::size_t k = 0; k < ss.size(); ++k) {
                 auto ctx = succ_ctx(nb.block, nb.ctx, ss[k]);
                 if (!ctx) {
@@ -505,36 +507,37 @@ struct Encoding {
         std::vector<std::vector<std::tuple<int, int, int>>> out_edges(nodes.size());
         for (auto& e : edges) {
             auto [from, k, to] = e;
-            out_edges[static_cast<std::size_t>(from)].push_back(e);
+            out_edges.at(static_cast<std::size_t>(from)).push_back(e);
             if (to >= 0) {
-                ++indeg[static_cast<std::size_t>(to)];
-                in_edges[static_cast<std::size_t>(to)].push_back(e);
+                ++indeg.at(static_cast<std::size_t>(to));
+                in_edges.at(static_cast<std::size_t>(to)).push_back(e);
             }
         }
         std::vector<int> order;
         std::deque<int> ready;
         for (std::size_t i = 0; i < nodes.size(); ++i)
-            if (indeg[i] == 0) ready.push_back(static_cast<int>(i));
+            if (indeg.at(i) == 0) ready.push_back(static_cast<int>(i));
         while (!ready.empty()) {
             int x = ready.front();
             ready.pop_front();
             order.push_back(x);
-            for (auto& [from, k, to] : out_edges[static_cast<std::size_t>(x)])
-                if (to >= 0 && --indeg[static_cast<std::size_t>(to)] == 0) ready.push_back(to);
+            for (auto& [from, k, to] : out_edges.at(static_cast<std::size_t>(x)))
+                if (to >= 0 && --indeg.at(static_cast<std::size_t>(to)) == 0) ready.push_back(to);
         }
         if (order.size() != nodes.size())
             throw EncodeFail{std::string(laws::ERROR), "internal: unrolled graph is not acyclic"};
 
         for (std::size_t i = 0; i < fn.params.size(); ++i) {
-            auto& v = fn.vars[static_cast<std::size_t>(fn.params[i])];
+            auto& v = fn.vars.at(static_cast<std::size_t>(fn.params[i]));
             params.push_back(c.bv_const(v.name.c_str(), v.width));
         }
         topo_pos.assign(nodes.size(), 0);
-        for (std::size_t i = 0; i < order.size(); ++i) topo_pos[static_cast<std::size_t>(order[i])] = static_cast<int>(i);
+        for (std::size_t i = 0; i < order.size(); ++i)
+            topo_pos.at(static_cast<std::size_t>(order.at(i))) = static_cast<int>(i);
         reach.assign(nodes.size(), c.bool_val(false));
         exit_reach.assign(nodes.size(), c.bool_val(false));
         vals.assign(nodes.size(), {});
-        for (int id : order) encode_node(id, out_edges[static_cast<std::size_t>(id)]);
+        for (int id : order) encode_node(id, out_edges.at(static_cast<std::size_t>(id)));
     }
 
     // A use outside the loop of its definition. LLVM's LCSSA form never has
@@ -544,9 +547,9 @@ struct Encoding {
     // iteration the path left from: the implicit LCSSA phi over the node's
     // incoming edges (memoised in the node's values).
     z3::expr lcssa_value(const Arg& a, int node) {
-        auto& m = vals[static_cast<std::size_t>(node)];
+        auto& m = vals.at(static_cast<std::size_t>(node));
         if (auto it = m.find(a.var); it != m.end()) return it->second;
-        const auto& ins = in_edges[static_cast<std::size_t>(node)];
+        const auto& ins = in_edges.at(static_cast<std::size_t>(node));
         if (ins.empty())
             throw EncodeFail{std::string(laws::NEEDS_HARNESS), "UNENCODED: value used outside its loop (not LCSSA)"};
         std::optional<z3::expr> acc;
@@ -554,23 +557,25 @@ struct Encoding {
             auto [from, k, to] = *it;
             (void)to;
             z3::expr v = lookup(a, from);
-            acc = acc ? z3::ite(edge_guard(from, k), v, *acc) : v;
+            if (acc.has_value()) acc = z3::ite(edge_guard(from, k), v, acc.value());
+            else acc = v;
         }
-        m.insert_or_assign(a.var, *acc);
-        return *acc;
+        if (!acc.has_value()) throw EncodeFail{std::string(laws::ERROR), "internal: LCSSA merge with no incoming edge value"};
+        m.insert_or_assign(a.var, acc.value());
+        return acc.value();
     }
 
     z3::expr lookup(const Arg& a, int node) {
         if (a.is_const) return bv(a.bits, a.width);
         for (std::size_t i = 0; i < fn.params.size(); ++i)
             if (fn.params[i] == a.var) return params[i];
-        int d = g.def_block[static_cast<std::size_t>(a.var)];
+        int d = g.def_block.at(static_cast<std::size_t>(a.var));
         if (d < 0) throw EncodeFail{std::string(laws::ERROR), "internal: use of undefined PIR variable"};
-        auto& nd = nodes[static_cast<std::size_t>(node)];
+        auto& nd = nodes.at(static_cast<std::size_t>(node));
         int target = node;
         if (d != nd.block) {
-            const auto& Ld = g.loops_of[static_cast<std::size_t>(d)];
-            const auto& Lb = g.loops_of[static_cast<std::size_t>(nd.block)];
+            const auto& Ld = g.loops_of.at(static_cast<std::size_t>(d));
+            const auto& Lb = g.loops_of.at(static_cast<std::size_t>(nd.block));
             if (Ld.size() > Lb.size() || !std::equal(Ld.begin(), Ld.end(), Lb.begin()))
                 return lcssa_value(a, node);
             std::vector<int> ctx(nd.ctx.begin(), nd.ctx.begin() + static_cast<std::ptrdiff_t>(Ld.size()));
@@ -579,7 +584,7 @@ struct Encoding {
                 throw EncodeFail{std::string(laws::ERROR), "internal: definition instance missing"};
             target = it->second;
         }
-        auto& m = vals[static_cast<std::size_t>(target)];
+        auto& m = vals.at(static_cast<std::size_t>(target));
         auto it = m.find(a.var);
         if (it == m.end()) throw EncodeFail{std::string(laws::ERROR), "internal: value used before definition"};
         return it->second;
@@ -590,127 +595,127 @@ struct Encoding {
     }
 
     z3::expr op_expr(const Stmt& s, int node) {
-        unsigned w = fn.vars[static_cast<std::size_t>(s.dst)].width;
+        unsigned w = fn.vars.at(static_cast<std::size_t>(s.dst)).width;
         std::vector<z3::expr> a;
         for (auto& x : s.args) a.push_back(lookup(x, node));
-        auto aw = [&](std::size_t i) { return s.args[i].width; };
+        auto aw = [&](std::size_t i) { return s.args.at(i).width; };
         switch (s.op) {
-            case Op::Copy: return a[0];
+            case Op::Copy: return a.at(0);
             case Op::Havoc: return fresh_const(s.uninit ? "uninit" : s.nondet ? "nondet" : "havoc", w);
-            case Op::Add: return a[0] + a[1];
-            case Op::Sub: return a[0] - a[1];
-            case Op::Mul: return a[0] * a[1];
-            case Op::UDiv: return z3::udiv(a[0], a[1]);
-            case Op::SDiv: return a[0] / a[1];
-            case Op::URem: return z3::urem(a[0], a[1]);
-            case Op::SRem: return z3::srem(a[0], a[1]);
-            case Op::Shl: return z3::shl(a[0], a[1]);
-            case Op::LShr: return z3::lshr(a[0], a[1]);
-            case Op::AShr: return z3::ashr(a[0], a[1]);
-            case Op::And: return a[0] & a[1];
-            case Op::Or: return a[0] | a[1];
-            case Op::Xor: return a[0] ^ a[1];
-            case Op::Eq: return b2bv(a[0] == a[1]);
-            case Op::Ne: return b2bv(a[0] != a[1]);
-            case Op::Ult: return b2bv(z3::ult(a[0], a[1]));
-            case Op::Ule: return b2bv(z3::ule(a[0], a[1]));
-            case Op::Ugt: return b2bv(z3::ugt(a[0], a[1]));
-            case Op::Uge: return b2bv(z3::uge(a[0], a[1]));
-            case Op::Slt: return b2bv(a[0] < a[1]);
-            case Op::Sle: return b2bv(a[0] <= a[1]);
-            case Op::Sgt: return b2bv(a[0] > a[1]);
-            case Op::Sge: return b2bv(a[0] >= a[1]);
-            case Op::Select: return z3::ite(is1(a[0]), a[1], a[2]);
-            case Op::ZExt: return w == aw(0) ? a[0] : z3::zext(a[0], w - aw(0));
-            case Op::SExt: return w == aw(0) ? a[0] : z3::sext(a[0], w - aw(0));
-            case Op::Trunc: return w == aw(0) ? a[0] : a[0].extract(w - 1, 0);
-            case Op::SMax: return z3::ite(a[0] >= a[1], a[0], a[1]);
-            case Op::SMin: return z3::ite(a[0] <= a[1], a[0], a[1]);
-            case Op::UMax: return z3::ite(z3::uge(a[0], a[1]), a[0], a[1]);
-            case Op::UMin: return z3::ite(z3::ule(a[0], a[1]), a[0], a[1]);
-            case Op::Abs: return z3::ite(a[0] < bv(0, w), -a[0], a[0]);
+            case Op::Add: return a.at(0) + a.at(1);
+            case Op::Sub: return a.at(0) - a.at(1);
+            case Op::Mul: return a.at(0) * a.at(1);
+            case Op::UDiv: return z3::udiv(a.at(0), a.at(1));
+            case Op::SDiv: return a.at(0) / a.at(1);
+            case Op::URem: return z3::urem(a.at(0), a.at(1));
+            case Op::SRem: return z3::srem(a.at(0), a.at(1));
+            case Op::Shl: return z3::shl(a.at(0), a.at(1));
+            case Op::LShr: return z3::lshr(a.at(0), a.at(1));
+            case Op::AShr: return z3::ashr(a.at(0), a.at(1));
+            case Op::And: return a.at(0) & a.at(1);
+            case Op::Or: return a.at(0) | a.at(1);
+            case Op::Xor: return a.at(0) ^ a.at(1);
+            case Op::Eq: return b2bv(a.at(0) == a.at(1));
+            case Op::Ne: return b2bv(a.at(0) != a.at(1));
+            case Op::Ult: return b2bv(z3::ult(a.at(0), a.at(1)));
+            case Op::Ule: return b2bv(z3::ule(a.at(0), a.at(1)));
+            case Op::Ugt: return b2bv(z3::ugt(a.at(0), a.at(1)));
+            case Op::Uge: return b2bv(z3::uge(a.at(0), a.at(1)));
+            case Op::Slt: return b2bv(a.at(0) < a.at(1));
+            case Op::Sle: return b2bv(a.at(0) <= a.at(1));
+            case Op::Sgt: return b2bv(a.at(0) > a.at(1));
+            case Op::Sge: return b2bv(a.at(0) >= a.at(1));
+            case Op::Select: return z3::ite(is1(a.at(0)), a.at(1), a.at(2));
+            case Op::ZExt: return w == aw(0) ? a.at(0) : z3::zext(a.at(0), w - aw(0));
+            case Op::SExt: return w == aw(0) ? a.at(0) : z3::sext(a.at(0), w - aw(0));
+            case Op::Trunc: return w == aw(0) ? a.at(0) : a.at(0).extract(w - 1, 0);
+            case Op::SMax: return z3::ite(a.at(0) >= a.at(1), a.at(0), a.at(1));
+            case Op::SMin: return z3::ite(a.at(0) <= a.at(1), a.at(0), a.at(1));
+            case Op::UMax: return z3::ite(z3::uge(a.at(0), a.at(1)), a.at(0), a.at(1));
+            case Op::UMin: return z3::ite(z3::ule(a.at(0), a.at(1)), a.at(0), a.at(1));
+            case Op::Abs: return z3::ite(a.at(0) < bv(0, w), -a.at(0), a.at(0));
             case Op::Ctlz: {
                 z3::expr r = bv(w, w);
-                for (unsigned i = 0; i < w; ++i) r = z3::ite(a[0].extract(i, i) == c.bv_val(1, 1), bv(w - 1 - i, w), r);
+                for (unsigned i = 0; i < w; ++i) r = z3::ite(a.at(0).extract(i, i) == c.bv_val(1, 1), bv(w - 1 - i, w), r);
                 return r;
             }
             case Op::Cttz: {
                 z3::expr r = bv(w, w);
                 for (int i = static_cast<int>(w) - 1; i >= 0; --i) {
                     auto u = static_cast<unsigned>(i);
-                    r = z3::ite(a[0].extract(u, u) == c.bv_val(1, 1), bv(u, w), r);
+                    r = z3::ite(a.at(0).extract(u, u) == c.bv_val(1, 1), bv(u, w), r);
                 }
                 return r;
             }
             case Op::Ctpop: {
                 z3::expr r = bv(0, w);
-                for (unsigned i = 0; i < w; ++i) r = r + z3::zext(a[0].extract(i, i), w - 1);
+                for (unsigned i = 0; i < w; ++i) r = r + z3::zext(a.at(0).extract(i, i), w - 1);
                 return r;
             }
             case Op::Bswap: {
-                z3::expr r = a[0].extract(7, 0);
-                for (unsigned i = 1; i < w / 8; ++i) r = z3::concat(r, a[0].extract(i * 8 + 7, i * 8));
+                z3::expr r = a.at(0).extract(7, 0);
+                for (unsigned i = 1; i < w / 8; ++i) r = z3::concat(r, a.at(0).extract(i * 8 + 7, i * 8));
                 return r;
             }
             case Op::SAddOvf: {
-                auto x = z3::sext(a[0], 1), y = z3::sext(a[1], 1);
-                return b2bv(x + y != z3::sext(a[0] + a[1], 1));
+                auto x = z3::sext(a.at(0), 1), y = z3::sext(a.at(1), 1);
+                return b2bv(x + y != z3::sext(a.at(0) + a.at(1), 1));
             }
             case Op::SSubOvf: {
-                auto x = z3::sext(a[0], 1), y = z3::sext(a[1], 1);
-                return b2bv(x - y != z3::sext(a[0] - a[1], 1));
+                auto x = z3::sext(a.at(0), 1), y = z3::sext(a.at(1), 1);
+                return b2bv(x - y != z3::sext(a.at(0) - a.at(1), 1));
             }
             case Op::SMulOvf:
                 // Z3's dedicated no-overflow predicates bit-blast far smaller
                 // than a 2w-bit multiplier (same semantics).
-                return b2bv(!(z3::bvmul_no_overflow(a[0], a[1], true) && z3::bvmul_no_underflow(a[0], a[1])));
+                return b2bv(!(z3::bvmul_no_overflow(a.at(0), a.at(1), true) && z3::bvmul_no_underflow(a.at(0), a.at(1))));
             case Op::UAddOvf: {
-                auto x = z3::zext(a[0], 1), y = z3::zext(a[1], 1);
-                return b2bv(x + y != z3::zext(a[0] + a[1], 1));
+                auto x = z3::zext(a.at(0), 1), y = z3::zext(a.at(1), 1);
+                return b2bv(x + y != z3::zext(a.at(0) + a.at(1), 1));
             }
-            case Op::USubOvf: return b2bv(z3::ult(a[0], a[1]));
-            case Op::UMulOvf: return b2bv(!z3::bvmul_no_overflow(a[0], a[1], false));
+            case Op::USubOvf: return b2bv(z3::ult(a.at(0), a.at(1)));
+            case Op::UMulOvf: return b2bv(!z3::bvmul_no_overflow(a.at(0), a.at(1), false));
             case Op::SDivOvf: {
                 unsigned n = aw(0);
-                return b2bv(a[0] == bv(uint64_t{1} << (n - 1), n) && a[1] == bv(wmask(n), n));
+                return b2bv(a.at(0) == bv(uint64_t{1} << (n - 1), n) && a.at(1) == bv(wmask(n), n));
             }
-            case Op::ShiftOob: return b2bv(z3::uge(a[1], bv(aw(0), aw(1))));
+            case Op::ShiftOob: return b2bv(z3::uge(a.at(1), bv(aw(0), aw(1))));
             case Op::ShlSOvf: {
                 unsigned n = aw(0);
-                auto oob = z3::uge(a[1], bv(n, n));
-                auto neg = a[0] < bv(0, n);
-                auto lost = z3::lshr(a[0], bv(n - 1, n) - a[1]) != bv(0, n);
+                auto oob = z3::uge(a.at(1), bv(n, n));
+                auto neg = a.at(0) < bv(0, n);
+                auto lost = z3::lshr(a.at(0), bv(n - 1, n) - a.at(1)) != bv(0, n);
                 return b2bv(oob || neg || lost);
             }
             case Op::ShlNswOvf: {
                 unsigned n = aw(0);
-                return b2bv(z3::uge(a[1], bv(n, n)) || z3::ashr(z3::shl(a[0], a[1]), a[1]) != a[0]);
+                return b2bv(z3::uge(a.at(1), bv(n, n)) || z3::ashr(z3::shl(a.at(0), a.at(1)), a.at(1)) != a.at(0));
             }
             case Op::ShlNuwOvf: {
                 unsigned n = aw(0);
-                return b2bv(z3::uge(a[1], bv(n, n)) || z3::lshr(z3::shl(a[0], a[1]), a[1]) != a[0]);
+                return b2bv(z3::uge(a.at(1), bv(n, n)) || z3::lshr(z3::shl(a.at(0), a.at(1)), a.at(1)) != a.at(0));
             }
             case Op::LostBitsL: {
                 unsigned n = aw(0);
-                return b2bv(z3::uge(a[1], bv(n, n)) || z3::shl(z3::lshr(a[0], a[1]), a[1]) != a[0]);
+                return b2bv(z3::uge(a.at(1), bv(n, n)) || z3::shl(z3::lshr(a.at(0), a.at(1)), a.at(1)) != a.at(0));
             }
             case Op::LostBitsA: {
                 unsigned n = aw(0);
-                return b2bv(z3::uge(a[1], bv(n, n)) || z3::shl(z3::ashr(a[0], a[1]), a[1]) != a[0]);
+                return b2bv(z3::uge(a.at(1), bv(n, n)) || z3::shl(z3::ashr(a.at(0), a.at(1)), a.at(1)) != a.at(0));
             }
             case Op::InexactU: {
                 unsigned n = aw(0);
-                return b2bv(a[1] != bv(0, n) && z3::urem(a[0], a[1]) != bv(0, n));
+                return b2bv(a.at(1) != bv(0, n) && z3::urem(a.at(0), a.at(1)) != bv(0, n));
             }
             case Op::InexactS: {
                 unsigned n = aw(0);
-                auto ovf = a[0] == bv(uint64_t{1} << (n - 1), n) && a[1] == bv(wmask(n), n);
-                return b2bv(a[1] != bv(0, n) && !ovf && z3::srem(a[0], a[1]) != bv(0, n));
+                auto ovf = a.at(0) == bv(uint64_t{1} << (n - 1), n) && a.at(1) == bv(wmask(n), n);
+                return b2bv(a.at(1) != bv(0, n) && !ovf && z3::srem(a.at(0), a.at(1)) != bv(0, n));
             }
-            case Op::ObjSize: return M().size(a[0]);
-            case Op::ObjLive: return M().live(a[0]);
-            case Op::ObjKind: return M().kind(a[0]);
-            case Op::ObjAlign: return M().align(a[0]);
+            case Op::ObjSize: return M().size(a.at(0));
+            case Op::ObjLive: return M().live(a.at(0));
+            case Op::ObjKind: return M().kind(a.at(0));
+            case Op::ObjAlign: return M().align(a.at(0));
             default: return fp_expr(s, a, w);
         }
         throw EncodeFail{std::string(laws::ERROR), "internal: unknown PIR op"};
@@ -745,8 +750,8 @@ struct Encoding {
     z3::expr fnum(double d, unsigned w) { return z3::expr(c, Z3_mk_fpa_numeral_double(c, d, fsort(w))); }
 
     z3::expr fp_expr(const Stmt& s, const std::vector<z3::expr>& a, unsigned w) {
-        auto aw = [&](std::size_t i) { return s.args[i].width; };
-        auto F = [&](std::size_t i) { return to_fp(a[i], aw(i)); };
+        auto aw = [&](std::size_t i) { return s.args.at(i).width; };
+        auto F = [&](std::size_t i) { return to_fp(a.at(i), aw(i)); };
         auto bin = [&](Z3_ast (*mk)(Z3_context, Z3_ast, Z3_ast, Z3_ast)) {
             return bits_of(z3::expr(c, mk(c, rne(), F(0), F(1))), w);
         };
@@ -779,17 +784,19 @@ struct Encoding {
                 return bits_of(z3::ite(pick, fused, split), w);
             }
             case Op::FMinNum:
+                [[fallthrough]];
             case Op::FMaxNum: {
                 auto x = F(0), y = F(1);
                 auto pick = c.bool_const(("pick!" + std::to_string(fresh++)).c_str());
                 bool mn = s.op == Op::FMinNum;
                 auto first = mn ? flt(x, y) : flt(y, x);
                 auto second = mn ? flt(y, x) : flt(x, y);
-                return z3::ite(is_nan(x), a[1],
-                               z3::ite(is_nan(y), a[0],
-                                       z3::ite(first, a[0], z3::ite(second, a[1], z3::ite(pick, a[0], a[1])))));
+                return z3::ite(is_nan(x), a.at(1),
+                               z3::ite(is_nan(y), a.at(0),
+                                       z3::ite(first, a.at(0), z3::ite(second, a.at(1), z3::ite(pick, a.at(0), a.at(1))))));
             }
             case Op::FMinimum:
+                [[fallthrough]];
             case Op::FMaximum: {
                 auto x = F(0), y = F(1);
                 bool mn = s.op == Op::FMinimum;
@@ -798,7 +805,7 @@ struct Encoding {
                 // equal values: -0 is the smaller of the zeros; otherwise the bits agree
                 auto zpick = mn ? is_neg(x) : !is_neg(x);
                 return z3::ite(is_nan(x) || is_nan(y), fresh_nan_bits(w),
-                               z3::ite(first, a[0], z3::ite(second, a[1], z3::ite(zpick, a[0], a[1]))));
+                               z3::ite(first, a.at(0), z3::ite(second, a.at(1), z3::ite(zpick, a.at(0), a.at(1)))));
             }
             case Op::FFloor: return round(Z3_mk_fpa_rtn(c));
             case Op::FCeil: return round(Z3_mk_fpa_rtp(c));
@@ -814,12 +821,14 @@ struct Encoding {
             case Op::FIsInf: return b2bv(is_inf(F(0)));
             case Op::FToSI: return z3::expr(c, Z3_mk_fpa_to_sbv(c, rm(Z3_mk_fpa_rtz(c)), F(0), w));
             case Op::FToUI: return z3::expr(c, Z3_mk_fpa_to_ubv(c, rm(Z3_mk_fpa_rtz(c)), F(0), w));
-            case Op::SIToF: return bits_of(z3::expr(c, Z3_mk_fpa_to_fp_signed(c, rne(), a[0], fsort(w))), w);
-            case Op::UIToF: return bits_of(z3::expr(c, Z3_mk_fpa_to_fp_unsigned(c, rne(), a[0], fsort(w))), w);
-            case Op::FConv:
-                if (w == aw(0)) return a[0];
+            case Op::SIToF: return bits_of(z3::expr(c, Z3_mk_fpa_to_fp_signed(c, rne(), a.at(0), fsort(w))), w);
+            case Op::UIToF: return bits_of(z3::expr(c, Z3_mk_fpa_to_fp_unsigned(c, rne(), a.at(0), fsort(w))), w);
+            case Op::FConv: {
+                if (w == aw(0)) return a.at(0);
                 return bits_of(z3::expr(c, Z3_mk_fpa_to_fp_float(c, rne(), F(0), fsort(w))), w);
+            }
             case Op::FToSIOvf:
+                [[fallthrough]];
             case Op::FToUIOvf: {
                 auto k = static_cast<unsigned>(s.args.at(1).bits);
                 auto x = F(0);
@@ -852,47 +861,47 @@ struct Encoding {
     }
 
     void encode_node(int id, const std::vector<std::tuple<int, int, int>>& outs) {
-        auto& nd = nodes[static_cast<std::size_t>(id)];
-        auto& bl = fn.blocks[static_cast<std::size_t>(nd.block)];
-        auto& m = vals[static_cast<std::size_t>(id)];
+        auto& nd = nodes.at(static_cast<std::size_t>(id));
+        auto& bl = fn.blocks.at(static_cast<std::size_t>(nd.block));
+        auto& m = vals.at(static_cast<std::size_t>(id));
         // reach + phi guards
         std::vector<std::pair<z3::expr, int>> guards;  // (guard, pred node)
-        for (auto& [from, k, to] : in_edges[static_cast<std::size_t>(id)]) {
+        for (auto& [from, k, to] : in_edges.at(static_cast<std::size_t>(id))) {
             (void)to;
             guards.emplace_back(edge_guard(from, k), from);
         }
         if (id == 0 && nd.block == 0 && nd.ctx.empty()) {
-            reach[static_cast<std::size_t>(id)] = c.bool_val(true);
+            reach.at(static_cast<std::size_t>(id)) = c.bool_val(true);
         } else {
             z3::expr_vector gs(c);
             for (auto& [gd, _] : guards) gs.push_back(gd);
-            reach[static_cast<std::size_t>(id)] = gs.empty() ? c.bool_val(false) : z3::mk_or(gs);
+            reach.at(static_cast<std::size_t>(id)) = gs.empty() ? c.bool_val(false) : z3::mk_or(gs);
         }
         int cut_L = -1;
         if (cut_mode)
             for (std::size_t L = 0; L < g.loops.size(); ++L)
                 if (g.loops[L].header == nd.block) cut_L = static_cast<int>(L);
         const int seq = seq_counter++;
-        bool havoc_phis = step_loop >= 0 && nd.block == g.loops[static_cast<std::size_t>(step_loop)].header &&
+        bool havoc_phis = step_loop >= 0 && nd.block == g.loops.at(static_cast<std::size_t>(step_loop)).header &&
                           !nd.ctx.empty() && nd.ctx.back() == 0;
         if (havoc_phis && mem && !step_fp.empty()) {
             // the memory the loop may have written since the prefix: arbitrary
             std::vector<uint64_t> ids(step_fp.objs.begin(), step_fp.objs.end());
-            step_havocked = mem->havoc_objects(reach[static_cast<std::size_t>(id)], ids, step_fp.all,
+            step_havocked = mem->havoc_objects(reach.at(static_cast<std::size_t>(id)), ids, step_fp.all,
                                                step_fp.keep_init);
         }
         std::vector<std::pair<int, z3::expr>> phi_vals;
         for (auto& p : bl.phis) {
-            unsigned w = fn.vars[static_cast<std::size_t>(p.dst)].width;
+            unsigned w = fn.vars.at(static_cast<std::size_t>(p.dst)).width;
             if (havoc_phis) {
-                phi_vals.emplace_back(p.dst, fresh_const("step_" + fn.vars[static_cast<std::size_t>(p.dst)].name, w));
+                phi_vals.emplace_back(p.dst, fresh_const("step_" + fn.vars.at(static_cast<std::size_t>(p.dst)).name, w));
                 continue;
             }
             std::optional<z3::expr> acc;
             std::optional<uint64_t> prov;
             bool prov_ok = mem && w == 64;
             for (auto it = guards.rbegin(); it != guards.rend(); ++it) {
-                int pb = nodes[static_cast<std::size_t>(it->second)].block;
+                int pb = nodes.at(static_cast<std::size_t>(it->second)).block;
                 const Arg* src = nullptr;
                 for (auto& [pred, a] : p.in)
                     if (pred == pb) {
@@ -902,43 +911,44 @@ struct Encoding {
                 z3::expr v = src ? lookup(*src, it->second) : fresh_const("phi_undef", w);
                 if (prov_ok) {
                     auto k = mem->known(v);
-                    if (!k || (prov && *prov != *k)) prov_ok = false;
+                    if (!k || (prov.has_value() && prov.value() != *k)) prov_ok = false;
                     else prov = k;
                 }
-                acc = acc ? z3::ite(it->first, v, *acc) : v;
+                if (acc.has_value()) acc = z3::ite(it->first, v, acc.value());
+                else acc = v;
             }
-            if (acc && prov_ok && prov) mem->note(*acc, *prov);
-            phi_vals.emplace_back(p.dst, acc ? *acc : fresh_const("phi_dead", w));
+            if (acc.has_value() && prov_ok && prov.has_value()) mem->note(acc.value(), prov.value());
+            phi_vals.emplace_back(p.dst, acc.has_value() ? *acc : fresh_const("phi_dead", w));
         }
         if (cut_L >= 0) {
             // entry state, then the arbitrary state of some later header visit
-            auto& CL = cut_loops[static_cast<std::size_t>(cut_L)];
+            auto& CL = cut_loops.at(static_cast<std::size_t>(cut_L));
             CL.node = id;
             CL.seq = seq;
             CL.props_before = props.size();
             for (auto& pv : phi_vals) CL.entry.push_back(pv.second);
             if (mem) CL.entry_mem = mem->mark();
-            const auto& fpL = loop_fp[static_cast<std::size_t>(cut_L)];
+            const auto& fpL = loop_fp.at(static_cast<std::size_t>(cut_L));
             if (mem && !fpL.empty()) {
                 std::vector<uint64_t> ids(fpL.objs.begin(), fpL.objs.end());
-                CL.havocked = mem->havoc_objects(reach[static_cast<std::size_t>(id)], ids, fpL.all, fpL.keep_init);
+                CL.havocked = mem->havoc_objects(reach.at(static_cast<std::size_t>(id)), ids, fpL.all, fpL.keep_init);
                 if (!fpL.all) {
                     std::vector<z3::expr> ptrs;
                     for (int bv : fpL.base_vars) ptrs.push_back(lookup(Arg::v(bv, 64), id));
-                    CL.havocked += mem->havoc_pointed(reach[static_cast<std::size_t>(id)], ptrs, fpL.keep_init);
+                    CL.havocked += mem->havoc_pointed(reach.at(static_cast<std::size_t>(id)), ptrs, fpL.keep_init);
                 }
             }
             if (mem) CL.havoc_mem = mem->mark();
             for (auto& pv : phi_vals) {
-                pv.second = fresh_const("cut_" + fn.vars[static_cast<std::size_t>(pv.first)].name,
-                                        fn.vars[static_cast<std::size_t>(pv.first)].width);
+                pv.second = fresh_const("cut_" + fn.vars.at(static_cast<std::size_t>(pv.first)).name,
+                                        fn.vars.at(static_cast<std::size_t>(pv.first)).width);
                 CL.havoc.push_back(pv.second);
             }
         }
         for (auto& [d, e] : phi_vals) m.insert_or_assign(d, e);
         // The guard of the statement being encoded: the node's reach,
         // strengthened by each Assume already passed in this node.
-        z3::expr r = reach[static_cast<std::size_t>(id)];
+        z3::expr r = reach.at(static_cast<std::size_t>(id));
         for (std::size_t si = 0; si < bl.stmts.size(); ++si) {
             const auto& s = bl.stmts[si];
             switch (s.kind) {
@@ -949,24 +959,24 @@ struct Encoding {
                     m.insert_or_assign(s.dst, v);
                     break;
                 }
-                case Stmt::Check: props.push_back(PropInst{&s, id, r && is1(lookup(s.args[0], id))}); break;
-                case Stmt::Assume: r = r && is1(lookup(s.args[0], id)); break;
+                case Stmt::Check: props.push_back(PropInst{&s, id, r && is1(lookup(s.args.at(0), id))}); break;
+                case Stmt::Assume: r = r && is1(lookup(s.args.at(0), id)); break;
                 default: encode_mem(s, id, r, m); break;
             }
         }
-        exit_reach[static_cast<std::size_t>(id)] = r;
+        exit_reach.at(static_cast<std::size_t>(id)) = r;
         for (auto& [from, k, to] : outs) {
             if (to >= 0) continue;
             cuts.push_back(edge_guard(from, k));
             if (!cut_mode) continue;
             // a back edge: the next state of its loop's header
-            const int h = g.succ[static_cast<std::size_t>(nd.block)][static_cast<std::size_t>(k)];
+            const int h = g.succ.at(static_cast<std::size_t>(nd.block))[static_cast<std::size_t>(k)];
             int L = -1;
             for (std::size_t j = 0; j < g.loops.size(); ++j)
                 if (g.loops[j].header == h) L = static_cast<int>(j);
             if (L < 0) throw EncodeFail{std::string(laws::ERROR), "internal: unwinding cut that is not a back edge"};
             CutLatch cl{id, cuts.back(), {}, mem ? mem->mark() : mem::SymMem::Mark{}, props.size(), seq};
-            for (auto& p : fn.blocks[static_cast<std::size_t>(h)].phis) {
+            for (auto& p : fn.blocks.at(static_cast<std::size_t>(h)).phis) {
                 const Arg* src = nullptr;
                 for (auto& [pred, a] : p.in)
                     if (pred == nd.block) {
@@ -974,16 +984,16 @@ struct Encoding {
                         break;
                     }
                 cl.next.push_back(src ? lookup(*src, id)
-                                      : fresh_const("phi_undef", fn.vars[static_cast<std::size_t>(p.dst)].width));
+                                      : fresh_const("phi_undef", fn.vars.at(static_cast<std::size_t>(p.dst)).width));
             }
-            cut_loops[static_cast<std::size_t>(L)].latches.push_back(std::move(cl));
+            cut_loops.at(static_cast<std::size_t>(L)).latches.push_back(std::move(cl));
         }
     }
 
     z3::expr edge_guard(int from, int k) {
-        auto& nd = nodes[static_cast<std::size_t>(from)];
-        auto& t = fn.blocks[static_cast<std::size_t>(nd.block)].term;
-        const auto& r = exit_reach[static_cast<std::size_t>(from)];
+        auto& nd = nodes.at(static_cast<std::size_t>(from));
+        auto& t = fn.blocks.at(static_cast<std::size_t>(nd.block)).term;
+        const auto& r = exit_reach.at(static_cast<std::size_t>(from));
         if (t.kind != Term::Br) return r;
         auto cnd = is1(lookup(t.cond, from));
         return r && (k == 0 ? cnd : !cnd);
@@ -1004,20 +1014,20 @@ z3::expr any_of(z3::context& c, const std::vector<z3::expr>& xs) {
 std::vector<char> post_loop_blocks(const CfgInfo& g, int L) {
     std::vector<char> after(static_cast<std::size_t>(g.n), 0);
     std::vector<int> work;
-    auto& body = g.loops[static_cast<std::size_t>(L)].body;
+    auto& body = g.loops.at(static_cast<std::size_t>(L)).body;
     for (int b = 0; b < g.n; ++b)
-        if (body[static_cast<std::size_t>(b)])
-            for (int s : g.succ[static_cast<std::size_t>(b)])
-                if (!body[static_cast<std::size_t>(s)] && !after[static_cast<std::size_t>(s)]) {
-                    after[static_cast<std::size_t>(s)] = 1;
+        if (body.at(static_cast<std::size_t>(b)))
+            for (int s : g.succ.at(static_cast<std::size_t>(b)))
+                if (!body.at(static_cast<std::size_t>(s)) && !after.at(static_cast<std::size_t>(s))) {
+                    after.at(static_cast<std::size_t>(s)) = 1;
                     work.push_back(s);
                 }
     while (!work.empty()) {
         int x = work.back();
         work.pop_back();
-        for (int s : g.succ[static_cast<std::size_t>(x)])
-            if (!body[static_cast<std::size_t>(s)] && !after[static_cast<std::size_t>(s)]) {
-                after[static_cast<std::size_t>(s)] = 1;
+        for (int s : g.succ.at(static_cast<std::size_t>(x)))
+            if (!body.at(static_cast<std::size_t>(s)) && !after.at(static_cast<std::size_t>(s))) {
+                after.at(static_cast<std::size_t>(s)) = 1;
                 work.push_back(s);
             }
     }
@@ -1032,7 +1042,7 @@ std::vector<char> post_loop_blocks(const CfgInfo& g, int L) {
 // violation-free run. keep_init needs every write to initialise its bytes.
 bool footprint_covers(const Footprint& fp, const std::vector<WriteInst>& writes, const std::vector<char>& body) {
     for (auto& w : writes) {
-        if (!body[static_cast<std::size_t>(w.block)]) continue;
+        if (!body.at(static_cast<std::size_t>(w.block))) continue;
         if (fp.keep_init && !w.inits) return false;
         if (fp.all) continue;
         if (!w.obj || !fp.objs.count(*w.obj)) return false;
@@ -1044,7 +1054,7 @@ bool footprint_covers(const Footprint& fp, const std::vector<WriteInst>& writes,
 Footprint footprint_of(const std::vector<WriteInst>& writes, const std::vector<char>& body) {
     Footprint fp;
     for (auto& w : writes) {
-        if (!body[static_cast<std::size_t>(w.block)]) continue;
+        if (!body.at(static_cast<std::size_t>(w.block))) continue;
         if (!w.inits) fp.keep_init = false;
         if (w.obj) fp.objs.insert(*w.obj);
         else fp.all = true;
@@ -1096,17 +1106,17 @@ StepAnswer kinduction_step(const Function& fn, const CfgInfo& g, int k, unsigned
         s.set("timeout", timeout_ms);
         add_all(s, e.assumptions);
         for (auto& p : e.props) {
-            auto& nd = e.nodes[static_cast<std::size_t>(p.node)];
+            auto& nd = e.nodes.at(static_cast<std::size_t>(p.node));
             if (!nd.ctx.empty()) {
-                if (nd.ctx[0] < k) s.add(!p.viol);
+                if (nd.ctx.at(0) < k) s.add(!p.viol);
                 else goal.push_back(p.viol);
-            } else if (after[static_cast<std::size_t>(nd.block)]) {
+            } else if (after.at(static_cast<std::size_t>(nd.block))) {
                 goal.push_back(p.viol);
             }
         }
         auto hk = e.ids.find({g.loops[0].header, std::vector<int>{k}});
         if (hk == e.ids.end()) return StepAnswer{true, fp, e.step_havocked};  // header@k unreachable: nothing to show
-        s.add(e.reach[static_cast<std::size_t>(hk->second)]);
+        s.add(e.reach.at(static_cast<std::size_t>(hk->second)));
         s.add(any_of(c, goal));
         auto r = s.check();
         if (r == z3::unsat) return StepAnswer{true, fp, e.step_havocked};
@@ -1183,20 +1193,20 @@ void nondet_trace(Encoding& e, const PropInst& hit, const z3::expr& base, const 
         return;
     }
     auto m = s.get_model();
-    const auto& hb = e.fn.blocks[static_cast<std::size_t>(e.nodes[static_cast<std::size_t>(hit.node)].block)];
+    const auto& hb = e.fn.blocks.at(static_cast<std::size_t>(e.nodes.at(static_cast<std::size_t>(hit.node)).block));
     const auto hidx = static_cast<std::size_t>(hit.stmt - hb.stmts.data());
-    const int hpos = e.topo_pos[static_cast<std::size_t>(hit.node)];
+    const int hpos = e.topo_pos.at(static_cast<std::size_t>(hit.node));
     std::vector<std::string> vals, locs;
     for (auto& n : e.nondets) {
-        const int pos = e.topo_pos[static_cast<std::size_t>(n.node)];
+        const int pos = e.topo_pos.at(static_cast<std::size_t>(n.node));
         if (pos > hpos || (pos == hpos && n.idx >= hidx)) continue;
-        if (!m.eval(e.reach[static_cast<std::size_t>(n.node)], true).is_true()) continue;
+        if (!m.eval(e.reach.at(static_cast<std::size_t>(n.node)), true).is_true()) continue;
         uint64_t raw = 0;
         if (!m.eval(n.v, true).is_numeral_u64(raw)) {
             v.extra["nondet_note"] = "nondet values not reported: a value is not a numeral";
             return;
         }
-        const auto& var = e.fn.vars[static_cast<std::size_t>(n.stmt->dst)];
+        const auto& var = e.fn.vars.at(static_cast<std::size_t>(n.stmt->dst));
         const unsigned w = var.width;
         std::string val;
         if (var.fp) val = fp::format(raw, w);
@@ -1243,10 +1253,11 @@ double detail_now_s() {
 std::string budget_seconds(double s) {
     char buf[32];
     std::snprintf(buf, sizeof buf, "%g", s);
-    return buf;
+    return std::string(buf, std::strlen(buf));
 }
 
 std::string vc_label(const PropInst& p) {
+    if (!p.stmt) return "?";
     return p.stmt->prop + (p.stmt->line ? "@" + std::to_string(p.stmt->line) : std::string());
 }
 
@@ -1320,7 +1331,7 @@ void certify_batches(Verdict& v, const std::vector<CertBatch>& batches) {
     v.extra["certificate_vcs"] = n;
     v.extra["certificate_scope"] = one ? "combined" : "batched";
     v.extra["certificate_proofs"] = np;
-    v.extra["certificate_covers"] = one ? join_s(batches[0].labels, ", ") : join_s(covers, " ");
+    v.extra["certificate_covers"] = one ? join_s(batches.front().labels, ", ") : join_s(covers, " ");
     v.extra["certificate_bitblast"] = std::to_string(lean) + "/" + np + " lean-proved (" + np + " CNF" +
                                       (one ? "" : "s") + " for " + n + " VCs)";
     v.extra["certificate_info"] = n + " VCs, " + (one ? std::string("one LRAT proof of their disjunction")
@@ -1614,10 +1625,10 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
                 return o;
             };
             if (opt.certify_combined && all.size() >= 2 &&
-                !(plain_all && *plain_all == solver::SolveResult::Sat)) {
+                !(plain_all.has_value() && *plain_all == solver::SolveResult::Sat)) {
                 std::vector<CertBatch> got;
                 std::string failed, uncertifiable;
-                std::function<bool(std::size_t, std::size_t)> batch = [&](std::size_t lo, std::size_t hi) -> bool {
+                auto batch_impl = [&](auto& self, std::size_t lo, std::size_t hi) -> bool {
                     if (left() <= 0) {
                         failed = "certification budget spent";
                         return false;
@@ -1625,16 +1636,20 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
                     const auto l0 = static_cast<std::ptrdiff_t>(lo), l1 = static_cast<std::ptrdiff_t>(hi);
                     std::vector<z3::expr> part(all.begin() + l0, all.begin() + l1);
                     auto cr = solver::solve(c, base && any_of(c, part), budgeted(ko));
-                    if (cr.kind == solver::SolveResult::Unsat && cr.certified) {
+                    const std::string cr_note = cr.note;
+                    const auto cr_kind = cr.kind;
+                    if (cr_kind == solver::SolveResult::Unsat && cr.certified) {
                         got.push_back(CertBatch{std::vector<std::string>(labels.begin() + l0, labels.begin() + l1),
                                                 std::move(cr)});
                         return true;
                     }
                     if (hi - lo >= 4 && checker_ran_out(cr)) {
                         const std::size_t mid = lo + (hi - lo) / 2;
-                        return batch(lo, mid) && batch(mid, hi);
+                        if (!self(self, lo, mid)) return false;
+                        if (!self(self, mid, hi)) return false;
+                        return true;
                     }
-                    std::string why = cr.note;
+                    std::string why = cr_note;
                     if (auto q = why.find("not certif"); q != std::string::npos) why = why.substr(q);
                     if (auto q = why.find("; ran:"); q != std::string::npos) why = why.substr(0, q);
                     // Not certifiable (floating point, arrays, ...): some VC
@@ -1644,11 +1659,11 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
                     failed = "one certificate for " + std::to_string(hi - lo) + " VCs" +
                              (hi - lo == all.size() ? std::string()
                                                     : " (a batch of the " + std::to_string(all.size()) + ")") +
-                             " not obtained (" + std::string(solver::kind_name(cr.kind)) +
-                             (cr.kind == solver::SolveResult::Unsat ? ", " + why : "") + ")";
+                             " not obtained (" + std::string(solver::kind_name(cr_kind)) +
+                             (cr_kind == solver::SolveResult::Unsat ? ", " + why : "") + ")";
                     return false;
                 };
-                if (batch(0, all.size())) {
+                if (batch_impl(batch_impl, 0, all.size())) {
                     for (auto& bt : got) cbook.add("combined[" + std::to_string(bt.labels.size()) + " VCs]", bt.r);
                     certify_batches(vr, got);
                     vr.extra["certificate_solver"] = cbook.summary();
@@ -1673,7 +1688,7 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
                     out_of_budget(i);
                     return;
                 }
-                const auto& r = cbook.add(labels[i], solver::solve(c, base && all[i], budgeted(ko)));
+                const auto& r = cbook.add(labels.at(i), solver::solve(c, base && all.at(i), budgeted(ko)));
                 if (!(r.kind == solver::SolveResult::Unsat && r.certified)) break;
             }
             vr.extra["certificate_solver"] = cbook.summary();
@@ -1746,33 +1761,33 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
                 m.add_const_interp(d, val);
             }
             for (std::size_t i = lo; i < hi; ++i) {
-                auto v = m.eval(hard[i]->viol, false);
+                auto v = m.eval(hard.at(i)->viol, false);
                 if (v.is_true()) return i;
             }
             return std::nullopt;
         };
         if (hard.size() > 16) {
-            std::function<int(std::size_t, std::size_t)> group = [&](std::size_t lo, std::size_t hi) -> int {
+            auto group_impl = [&](auto& self, std::size_t lo, std::size_t hi) -> int {
                 // 1 SAT (hit set), 0 UNSAT, -1 no answer
                 if (hi - lo == 1) {
-                    const auto* rp = solve_vc(book, vc_label(*hard[lo]), base && hard[lo]->viol, so);
+                    const auto* rp = solve_vc(book, vc_label(*hard.at(lo)), base && hard.at(lo)->viol, so);
                     if (!rp) return -1;
                     const auto& r = *rp;
                     if (r.kind == solver::SolveResult::Sat) {
-                        hit = hard[lo];
+                        hit = hard.at(lo);
                         hit_r = r;
                         return 1;
                     }
                     return r.kind == solver::SolveResult::Unsat ? 0 : -1;
                 }
                 std::vector<z3::expr> vs;
-                for (std::size_t i = lo; i < hi; ++i) vs.push_back(hard[i]->viol);
+                for (std::size_t i = lo; i < hi; ++i) vs.push_back(hard.at(i)->viol);
                 const auto* rp = solve_vc(book, "properties[" + std::to_string(lo) + "," + std::to_string(hi) + "]",
                                           base && any_of(c, vs), so);
                 if (!rp) return -1;
                 const auto& r = *rp;
                 if (r.kind == solver::SolveResult::Unsat) {
-                    for (std::size_t i = lo; i < hi; ++i) answered.insert(hard[i]);
+                    for (std::size_t i = lo; i < hi; ++i) answered.insert(hard.at(i));
                     return 0;
                 }
                 std::size_t mid = lo + (hi - lo) / 2;
@@ -1785,17 +1800,17 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
                     // before it are asked as one group first, so the verdict
                     // is the first violated property, as the halving finds.
                     if (auto k = pick_violated(r.model, lo, hi)) {
-                        const auto* r1p = solve_vc(book, vc_label(*hard[*k]), base && hard[*k]->viol, so);
+                        const auto* r1p = solve_vc(book, vc_label(*hard.at(*k)), base && hard.at(*k)->viol, so);
                         if (!r1p) return -1;
                         const auto& r1 = *r1p;
                         if (r1.kind == solver::SolveResult::Sat) {
-                            const int before = *k == lo ? 0 : group(lo, *k);
+                            const int before = *k == lo ? 0 : self(self, lo, *k);
                             if (before == 1) return 1;  // an earlier one (hit set there)
-                            // hard[*k] is violated (its own validated model),
+                            // hard.at(*k) is violated (its own validated model),
                             // whether or not the earlier ones were decided
                             // (the budget may have stopped that search)
                             if (before == -1) hit_earlier_undecided = true;
-                            hit = hard[*k];
+                            hit = hard.at(*k);
                             hit_r = r1;
                             return 1;
                         }
@@ -1806,24 +1821,24 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
                     // (down to 16 properties; the rest are asked one by one
                     // below, skipping the ones a group answered UNSAT)
                     if (hi - lo <= 16) return -1;
-                    int a = group(lo, mid);
+                    int a = self(self, lo, mid);
                     if (a == 1) return 1;
-                    int b = group(mid, hi);
+                    int b = self(self, mid, hi);
                     if (b == 1) return 1;
                     return a == 0 && b == 0 ? 0 : -1;
                 }
-                int a = group(lo, mid);
+                int a = self(self, lo, mid);
                 if (a == 1) return 1;
-                int b = group(mid, hi);
+                int b = self(self, mid, hi);
                 if (b == 1) return 1;
                 // SAT group whose halves are both UNSAT: the answers disagree;
                 // never read that as "all UNSAT" (fall back to per-property
                 // VCs, every one of the group asked again)
                 if (a == 0 && b == 0)
-                    for (std::size_t i = lo; i < hi; ++i) answered.erase(hard[i]);
+                    for (std::size_t i = lo; i < hi; ++i) answered.erase(hard.at(i));
                 return -1;
             };
-            int g = group(0, hard.size());
+            int g = group_impl(group_impl, 0, hard.size());
             // A validated violation is FAILED even when the budget ran out
             // while earlier properties were searched: TIMEOUT only without one.
             if (fn_budget_spent && !hit) {
@@ -1851,20 +1866,22 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
                 if (cut_by_budget(vc_label(p))) no_answer_label = vc_label(p);
             }
         }
-        if (hit) {
+        if (hit && hit->stmt && hit_r.has_value()) {
+            const Stmt& hs = *hit->stmt;
+            const solver::SolveResult& hr = *hit_r;
             v.status = std::string(laws::FAILED);
-            v.prop = hit->stmt->prop;
-            v.cls = hit->stmt->cls;
-            v.line = hit->stmt->line;
+            v.prop = hs.prop;
+            v.cls = hs.cls;
+            v.line = hs.line;
             for (auto& pe : e.params) {
-                auto it = hit_r->model.find(pe.decl().name().str());
-                const uint64_t bits = it == hit_r->model.end() ? 0 : literal_bits(it->second);
+                auto it = hr.model.find(pe.decl().name().str());
+                const uint64_t bits = it == hr.model.end() ? 0 : literal_bits(it->second);
                 v.cex_args.push_back(bits & wmask(pe.get_sort().bv_size()));
             }
             for (std::size_t i = 0; i < fn.params.size() && i < v.cex_args.size(); ++i)
-                v.cex[fn.vars[static_cast<std::size_t>(fn.params[i])].name] = v.cex_args[i];
-            v.message = hit->stmt->prop + ": " + hit->stmt->cls + " (" + hit->stmt->msg + ")";
-            v.extra["cex_solver"] = hit_r->winner + (hit_r->cache_hit ? " (cache, re-validated)" : "");
+                v.cex[fn.vars.at(static_cast<std::size_t>(fn.params[i])).name] = v.cex_args[i];
+            v.message = hs.prop + ": " + hs.cls + " (" + hs.msg + ")";
+            v.extra["cex_solver"] = hr.winner + (hr.cache_hit ? " (cache, re-validated)" : "");
             if (hit_earlier_undecided)
                 v.extra["earlier_properties"] =
                     "not decided (" + std::string(fn_budget_spent ? "function budget spent" : "no solver answer") +
@@ -1961,7 +1978,7 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
         auto loops_allocate = [&]() {
             for (auto& L : g.loops)
                 for (std::size_t b = 0; b < L.body.size(); ++b) {
-                    if (!L.body[b]) continue;
+                    if (!L.body.at(b)) continue;
                     for (auto& s : fn.blocks[b].stmts)
                         if (s.kind == Stmt::Alloc || s.kind == Stmt::Free || s.kind == Stmt::StackRestore ||
                             s.kind == Stmt::Revive) return true;
@@ -2063,7 +2080,7 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
             bool allocs = false;
             const auto& body = g.loops[0].body;
             for (std::size_t b = 0; b < body.size() && !allocs; ++b) {
-                if (!body[b]) continue;
+                if (!body.at(b)) continue;
                 for (auto& s : fn.blocks[b].stmts)
                     if (s.kind == Stmt::Alloc || s.kind == Stmt::Free || s.kind == Stmt::StackRestore ||
                             s.kind == Stmt::Revive) allocs = true;

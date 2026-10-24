@@ -9,7 +9,6 @@ that proves it.
 |---|---|
 | `include/prism/verdict.hpp`, `src/prism/verdict/verdict.cpp` | The lattice as a pure C++ module (no I/O) |
 | `include/prism/laws.hpp`, `src/prism/laws.cpp` | String constants and API, forwarding to the module; `audit_report` |
-| `prism/laws.py` | The Python engine's copy (frozen engine, same vocabulary) |
 | `proofs/Prism/Verdict.lean` | The Lean 4 model and the proved laws |
 | `proofs/Prism/Export.lean`, `proofs/Main.lean` | `lake exe verdict_tables`: every function over its whole domain as JSON |
 | `tests/data/verdict_tables.json` | That JSON, committed |
@@ -107,8 +106,7 @@ Every result has an *origin*. Only two origins may prove.
 
 ## The verdict audit
 
-After every stage has run, both pipelines (`run_pipeline` in
-`src/prism/pipeline.cpp`, `Pipeline.run` in `prism/pipeline.py`) call
+After every stage has run, `run_pipeline` in `src/prism/pipeline.cpp` calls
 `audit_report(report)` once before `unify` (so the taxonomy and confidence
 only see admitted verdicts) and once after it. For every finding of every
 stage it computes `audit(stage, status, certificate)`, which is
@@ -193,9 +191,7 @@ into PRISM. PRISM does not do that. Instead:
    `tests/data/verdict_tables.json`.
 2. The C++ doctest compares `src/prism/verdict/` and the `laws.hpp` string
    API with that file entry by entry, and checks that the table's stage
-   list is `STAGE_ORDER` plus `other`. `prism/laws.py` (the frozen Python
-   engine) is no longer checked against the table; see
-   `docs/CPP_PORT_PLAN.md`.
+   list is `STAGE_ORDER` plus `other`.
 3. CI (`proofs.yml`) rebuilds the model and fails if the regenerated table
    differs from the committed one.
 
@@ -208,13 +204,13 @@ the tests, and the fact that the tests run on the shipped build.
 
 Confidence ranges over the naturals, so its table is a sample grid (every
 count up to 3, 119 rows) and the laws above are proved for all inputs; the
-C++ and Python products are compared with the model's exact fractions on the
-grid to 1e-12.
+The C++ product is compared with the model's exact fractions on the grid to
+1e-12.
 
 ## Changing the lattice
 
 Change `proofs/Prism/Verdict.lean`, `src/prism/verdict/verdict.cpp` and
-`prism/laws.py` together, then run `proofs/check.sh --write` to regenerate
-the table. A new pipeline stage needs a row in `Stage` / `Stage.origin`
-(Lean), `kStages` / `kStageOrigin` (C++) and `STAGE_ORIGIN` (Python); the
-tests fail until all three and `STAGE_ORDER` agree.
+`include/prism/laws.hpp` together, then run `proofs/check.sh --write` to
+regenerate the table. A new pipeline stage needs a row in `Stage` /
+`Stage.origin` (Lean), `kStages` / `kStageOrigin` (C++) and `STAGE_ORDER`
+in `include/prism/pipeline.hpp`; the tests fail until they agree.

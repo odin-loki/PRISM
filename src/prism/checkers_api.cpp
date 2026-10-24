@@ -225,7 +225,7 @@ std::string join_range(const std::vector<std::string>& v, std::size_t a, std::si
     if (b > v.size()) b = v.size();
     for (std::size_t i = a; i < b; ++i) {
         if (i > a) s.push_back('\n');
-        s += v[i];
+        s += v.at(i);
     }
     return s;
 }
@@ -332,8 +332,10 @@ bool var_in_call_args(std::string_view var, std::string_view ln,
 
 bool null_test_for(std::string_view var, std::string_view text) {
     auto v = re_escape(var);
-    Regex a("\\bif\\s*\\(\\s*(?:" + v + "\\s*==\\s*(?:NULL|0|nullptr)|!\\s*" + v + "\\b|" + v +
-            "\\s*\\))");
+    const std::string eq_null = v + "\\s*==\\s*(?:NULL|0|nullptr)";
+    const std::string neg = "!\\s*" + v + "\\b";
+    const std::string bare = v + "\\s*\\)";
+    Regex a("\\bif\\s*\\(\\s*(?:" + eq_null + "|" + neg + "|" + bare + ")");
     if (a.search(text)) return true;
     // `(p = f(x)) == NULL`: the call inside the assignment has its own parentheses.
     Regex b("\\(\\s*" + v + "\\s*=(?!=)(?:[^;()]|\\([^;()]*\\))*?\\)\\s*==\\s*(?:NULL|nullptr|0)\\b");
@@ -493,7 +495,7 @@ enum class GuardKind { Null, NullCheck, LtZero, MapFailed, Mq };
 
 bool has_guard(std::string_view var, std::string_view text, GuardKind g) {
     switch (g) {
-        case GuardKind::Null:
+        case GuardKind::Null: [[fallthrough]];
         case GuardKind::NullCheck: return null_test_for(var, text);
         case GuardKind::LtZero: return lt_zero_test_for(var, text);
         case GuardKind::MapFailed: return map_failed_test_for(var, text);
@@ -650,7 +652,7 @@ bool pipe_fds_used(std::string_view name, const std::vector<std::string>& chunk,
     Regex idx("\\b" + v + "\\s*\\[");
     Regex ret("\\breturn\\s+" + v + "\\s*;");
     for (int j = start + 1; j < static_cast<int>(chunk.size()); ++j) {
-        auto& ln = chunk[static_cast<std::size_t>(j)];
+        auto& ln = chunk.at(static_cast<std::size_t>(j));
         if (idx.search(ln)) return true;
         if (var_in_call_args(name, ln, {"pipe", "pipe2"})) return true;
         if (ret.search(ln)) return true;

@@ -133,11 +133,11 @@ TEST_CASE("repolint: loop-cut Lean model theorems and audit") {
 TEST_CASE("repolint: loop-cut encoder parity with encode.cpp and houdini.inc") {
     const auto enc = slurp(repo() / "src" / "prism" / "pir" / "encode.cpp");
     const auto hou = slurp(repo() / "src" / "prism" / "pir" / "houdini.inc");
-    CHECK(enc.find("case Stmt::Check: props.push_back(PropInst{&s, id, r && is1(lookup(s.args[0], id))}); break;") !=
+    CHECK(enc.find("case Stmt::Check: props.push_back(PropInst{&s, id, r && is1(lookup(s.args.at(0), id))}); break;") !=
           std::string::npos);
-    CHECK(enc.find("case Stmt::Assume: r = r && is1(lookup(s.args[0], id)); break;") != std::string::npos);
-    CHECK(enc.find("exit_reach[static_cast<std::size_t>(id)] = r;") != std::string::npos);
-    CHECK(enc.find("const auto& r = exit_reach[static_cast<std::size_t>(from)];") != std::string::npos);
+    CHECK(enc.find("case Stmt::Assume: r = r && is1(lookup(s.args.at(0), id)); break;") != std::string::npos);
+    CHECK(enc.find("exit_reach.at(static_cast<std::size_t>(id)) = r;") != std::string::npos);
+    CHECK(enc.find("const auto& r = exit_reach.at(static_cast<std::size_t>(from));") != std::string::npos);
     std::regex guarded(
         R"(z3::implies\(\s*\*sel\[i\],\s*z3::implies\(e\.reach\[static_cast<std::size_t>\(CL\.node\)\]\s*&&\s*noviol\(CL\.props_before\))");
     auto begin = std::sregex_iterator(hou.begin(), hou.end(), guarded);
@@ -157,8 +157,8 @@ TEST_CASE("repolint: float checks mirror FloatOps.lean") {
          {"Arg n = p(b, Op::FIsNaN, {a});", "Arg fin = p(b, Op::Xor, {p(b, Op::Or, {n, p(b, Op::FIsInf, {a})}), Arg::c(1, 1)});",
           "any_nan = any_nan ? p(b, Op::Or, {*any_nan, n}) : n;",
           "all_finite = all_finite ? p(b, Op::And, {*all_finite, fin}) : fin;",
-          "if (op == Op::FDiv) { divz = p(b, Op::FIsZero, {args[1]});",
-          R"(t_.check(b, p(b, Op::And, {*divz, p(b, Op::Xor, {p(b, Op::FIsNaN, {args[0]}), Arg::c(1, 1)})}), "fp-div0", "FLOAT-DIV-ZERO",)",
+          "if (op == Op::FDiv) { divz = p(b, Op::FIsZero, {args.at(1)});",
+          R"(t_.check(b, p(b, Op::And, {*divz, p(b, Op::Xor, {p(b, Op::FIsNaN, {args.at(0)}), Arg::c(1, 1)})}), "fp-div0", "FLOAT-DIV-ZERO",)",
           R"(t_.check(b, p(b, Op::And, {p(b, Op::FIsNaN, {r}), p(b, Op::Xor, {*any_nan, Arg::c(1, 1)})}), "fp-invalid", "FLOAT-INVALID",)",
           "Arg ovf = p(b, Op::And, {p(b, Op::FIsInf, {r}), *all_finite});",
           "if (divz) ovf = p(b, Op::And, {ovf, p(b, Op::Xor, {*divz, Arg::c(1, 1)})});",
@@ -200,8 +200,7 @@ TEST_CASE("repolint: float cast encoder and interpreter mirror Lean") {
           "return b2bv(is_nan(x) || is_inf(x) || below || above);"}) {
         check_contains_norm(enc_fp, expr);
     }
-    const auto fp = norm_ws(body_between(slurp(repo() / "src" / "prism" / "pir" / "fp.cpp"), "case Op::FToSIOvf:",
-                                         "case Op::FLibm:"));
+    const auto fp = norm_ws(slurp(repo() / "src" / "prism" / "pir" / "fp.cpp"));
     for (const char* expr :
          {"if (std::isnan(x) || std::isinf(x)) return 1;", "double t = std::trunc(x);",
           "if (op == Op::FToSIOvf) return t < -std::ldexp(1.0, k - 1) || t >= std::ldexp(1.0, k - 1);",
@@ -264,8 +263,8 @@ TEST_CASE("repolint: solver sources are listed and certified status is one liter
         CHECK(window.find("ck.certified") != std::string::npos);
     }
     CHECK(slurp(solver_dir / "util.cpp").find(R"(has_line(p.out, "s VERIFIED UNSAT"))") != std::string::npos);
-    CHECK(portfolio.find("validate_model(c, formula, msg.model") != std::string::npos);
-    CHECK(portfolio.find("validate_model(c, formula, m, &why)") != std::string::npos);
+    CHECK(portfolio.find("validate_model(c, formula, handled.model") != std::string::npos);
+    CHECK(portfolio.find("validate_model(c, formula, cached_model, &why)") != std::string::npos);
     auto sls = portfolio.substr(portfolio.find("case MemberKind::Sls:"));
     sls = sls.substr(0, sls.find("break;"));
     CHECK(sls.find("Kind::Unsat") == std::string::npos);

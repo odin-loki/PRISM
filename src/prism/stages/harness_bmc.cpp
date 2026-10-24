@@ -115,7 +115,7 @@ std::optional<FunctionInfo> materialize(const FunctionInfo& fn) {
     std::string guard;
     for (std::size_t i = 0; i < reqs.size(); ++i) {
         if (i) guard += " && ";
-        guard += "(" + reqs[i] + ")";
+        guard += "(" + reqs.at(i) + ")";
     }
     auto parts = decls;
     if (!guard.empty()) parts.push_back("if (!(" + guard + ")) return 0;");
@@ -150,7 +150,7 @@ std::vector<Finding> run_harness_bmc(const std::vector<FunctionInfo>& functions,
             // assumption listed; no draft keeps the NEEDS-HARNESS row below.
             std::string refused;
             if (auto drafted = ai::drafted_harness_bmc(fn, unwind, &refused)) {
-                out.push_back(std::move(*drafted));
+                out.push_back(std::move(drafted).value());
                 continue;
             }
             auto f = make_find(

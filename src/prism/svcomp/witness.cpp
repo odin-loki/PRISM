@@ -85,7 +85,7 @@ std::string uuid4() {
     char out[37];
     std::snprintf(out, sizeof out, "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x", b[0], b[1],
                   b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]);
-    return out;
+    return std::string(out, sizeof out - 1);
 }
 
 std::string now_utc() {
@@ -93,8 +93,8 @@ std::string now_utc() {
     std::tm tm{};
     if (!detail::utc_tm(t, &tm)) return "1970-01-01T00:00:00Z";
     char buf[32];
-    std::strftime(buf, sizeof buf, "%Y-%m-%dT%H:%M:%SZ", &tm);
-    return buf;
+    const std::size_t n = std::strftime(buf, sizeof buf, "%Y-%m-%dT%H:%M:%SZ", &tm);
+    return n ? std::string(buf, n) : "1970-01-01T00:00:00Z";
 }
 
 ojson metadata(const WitnessMeta& m) {
@@ -191,7 +191,7 @@ std::string scalar(const ojson& v) {
     std::string low;
     for (char c : s) low += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     static const std::vector<std::string> reserved = {"true", "false", "null", "yes", "no", "on", "off", "~", "y", "n"};
-    if (fullmatch(plain, s) && std::find(reserved.begin(), reserved.end(), low) == reserved.end()) return s;
+    if (fullmatch(plain, s) && std::ranges::find(reserved, low) == reserved.end()) return s;
     std::string out = "\"";
     for (char c : s) {
         if (c == '\\') out += "\\\\";
@@ -246,7 +246,7 @@ std::string to_yaml(const ojson& doc) {
     std::vector<std::string> out;
     emit(doc, 0, out);
     std::string text;
-    for (std::size_t i = 0; i < out.size(); ++i) text += (i ? "\n" : "") + out[i];
+    for (std::size_t i = 0; i < out.size(); ++i) text += (i ? "\n" : "") + out.at(i);
     return text + "\n";
 }
 

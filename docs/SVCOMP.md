@@ -163,7 +163,7 @@ shift of N by M places cannot be represented" counts.
 `loop-invgen/nested6` has a `goto END` out of an `if`, which the `bmc`
 front end used to reject (`ERROR`, "goto unencoded"). Both engines' `bmc`
 now encode structured gotos (`src/prism/bmc_encoder.inc` `goto_stmt` /
-`label_stmt`, `prism/bmc.py` `_goto` / `_label`):
+`label_stmt`, `src/prism/bmc.cpp` goto/label handling):
 
 - **Forward, out of blocks:** `goto L` keeps its state until `L:`, which
   must label a later statement of the goto's own statement list or of an
@@ -205,11 +205,11 @@ said nothing about unreach-call. `loop-simple/deep-nested` (expected
 unreach-call.
 
 Now both engines' `bmc` encode such a call as a property (`bmc_encoder.inc`
-`model_call`, `prism/bmc.py` `_model_call`): reaching it is a violation, a
+`model_call`, BMC `model_call` encoding): reaching it is a violation, a
 `FAILED` `FUNC-CONTRACT` with the check name `reach_error` (message
 `reach_error: FUNC-CONTRACT`), as in `pir`; the path still ends there.
 A static definition of the error function in the unit is never inlined over
-the call (`inline.cpp` / `prism/inline.py` `inlineable_callee`), so an empty
+the call (`src/prism/inline.cpp` `inlineable_callee`), so an empty
 `static void reach_error(void) {}` cannot make the violation disappear.
 `abort()`, `exit()` and `__assert_fail()` still only end the path (SV-COMP's
 unreach-call is about `reach_error` alone). The Python engine also gained
@@ -669,12 +669,13 @@ vendored code). Re-running needs Java 21 and the two archives above.
    builds `prism-svcomp.tar.gz` (the binary, which is also the wrapper and
    witness writer, the tool-info module, `LICENSE`, `README.md`,
    `fm-tools.yml`, `MANIFEST.json` listing every file, `dependencies.json`
-   with the host clang/opt lines seen at pack time); `tools/svcomp/fm-tools.yml` is a
-   registration draft. Still missing: clang/opt bundling (only recorded, not
+   with the host clang/opt lines seen at pack time); `tools/svcomp/fm-tools.yml`
+   is a format-2.0 fm-tools registration draft (`id: prism-svcomp`). Still
+   missing: clang/opt bundling (only recorded, not
    vendored), merging `prism.py` into upstream BenchExec, an archived release
    URL, and fm-tools upload.
-6. **A version string.** `prism --version` reports `prism 0.1.0 (C++ engine)`
-   (same semver as the Python engine's `__version__`); `prism svcomp` puts
+6. **A version string.** `prism --version` reports `prism 0.1.0 (C++ engine)`;
+   `prism svcomp` puts
    the same version into witness `producer.version` (it is that binary, so
    there is no fallback).
 7. **Scale.** Only the pinned subset (45 no-overflow and 20 unreach-call

@@ -637,7 +637,7 @@ struct Conv {
             }
         }
         if (semis.size() != 2) return std::nullopt;
-        return std::make_pair(semis[0], semis[1]);
+        return std::make_pair(semis.at(0), semis.at(1));
     }
 
     char next_char_after(CXCursor c) {
@@ -760,9 +760,9 @@ struct Conv {
 
         switch (k) {
             case CXCursor_UnexposedExpr: {
-                if (ch.size() == 1 && is_expr_kind(A.clang_getCursorKind(ch[0]))) {
+                if (ch.size() == 1 && is_expr_kind(A.clang_getCursorKind(ch.at(0)))) {
                     n["kind"] = "ImplicitCastExpr";
-                    n["castKind"] = cast_kind(c, ch[0]);
+                    n["castKind"] = cast_kind(c, ch.at(0));
                 } else {
                     n["kind"] = "UnexposedExpr";
                 }
@@ -802,7 +802,7 @@ struct Conv {
                     n["inner"] = json::array({{{"kind", "CXXThisExpr"}, {"implicit", true}, {"range", n["range"]}}});
                     return n;
                 }
-                auto bt = A.clang_getCanonicalType(A.clang_getCursorType(ch[0]));
+                auto bt = A.clang_getCanonicalType(A.clang_getCursorType(ch.at(0)));
                 n["isArrow"] = bt.kind == CXType_Pointer;
                 break;
             }
@@ -822,7 +822,7 @@ struct Conv {
                                          : rt.kind == CXType_RValueReference ? "xvalue"
                                                                              : "prvalue";
                 }
-                if (!ch.empty() && A.clang_getCursorKind(ch[0]) == CXCursor_MemberRefExpr) {
+                if (!ch.empty() && A.clang_getCursorKind(ch.front()) == CXCursor_MemberRefExpr) {
                     n["kind"] = "CXXMemberCallExpr";
                     break;
                 }
@@ -961,7 +961,7 @@ struct Conv {
                 } else {
                     n["arrayUnknown"] = true;
                 }
-                if (!ch.empty()) note_record(A.clang_getPointeeType(A.clang_getCursorType(ch[0])));
+                if (!ch.empty()) note_record(A.clang_getPointeeType(A.clang_getCursorType(ch.front())));
                 break;
             }
             case CXCursor_CXXBoolLiteralExpr: {
@@ -976,14 +976,14 @@ struct Conv {
                 json inner = json::array();
                 std::size_t i = 0;
                 if (ch.size() >= 3) {
-                    auto k0 = A.clang_getCursorKind(ch[0]);
-                    if (k0 == CXCursor_DeclStmt || (is_expr_kind(k0) && next_char_after(ch[0]) == ';')) {
+                    auto k0 = A.clang_getCursorKind(ch.front());
+                    if (k0 == CXCursor_DeclStmt || (is_expr_kind(k0) && next_char_after(ch.front()) == ';')) {
                         n["hasInit"] = true;
-                        inner.push_back(node(ch[0]));
+                        inner.push_back(node(ch.front()));
                         i = 1;
                     }
                 }
-                if (i < ch.size() && A.clang_getCursorKind(ch[i]) == CXCursor_VarDecl) {
+                if (i < ch.size() && A.clang_getCursorKind(ch.at(i)) == CXCursor_VarDecl) {
                     n["hasVar"] = true;
                     inner.push_back(wrap_declstmt(node(ch[i])));
                     ++i;
@@ -999,12 +999,12 @@ struct Conv {
                 n["kind"] = "WhileStmt";
                 json inner = json::array();
                 std::size_t i = 0;
-                if (!ch.empty() && A.clang_getCursorKind(ch[0]) == CXCursor_VarDecl) {
+                if (!ch.empty() && A.clang_getCursorKind(ch.front()) == CXCursor_VarDecl) {
                     n["hasVar"] = true;
-                    inner.push_back(wrap_declstmt(node(ch[0])));
+                    inner.push_back(wrap_declstmt(node(ch.front())));
                     i = 1;
                 }
-                for (; i < ch.size(); ++i) inner.push_back(node(ch[i]));
+                for (; i < ch.size(); ++i) inner.push_back(node(ch.at(i)));
                 n["inner"] = std::move(inner);
                 return n;
             }
@@ -1033,7 +1033,7 @@ struct Conv {
                 n["kind"] = "CaseStmt";
                 json inner = json::array();
                 if (ch.size() >= 3) {
-                    auto between = text_at(extent(ch[0]).second, extent(ch[1]).first);
+                    auto between = text_at(extent(ch.at(0)).second, extent(ch.at(1)).first);
                     if (between.find("...") != std::string_view::npos) n["isGNURange"] = true;
                 }
                 std::size_t labels = n.value("isGNURange", false) ? 2 : 1;

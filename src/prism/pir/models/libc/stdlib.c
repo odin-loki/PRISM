@@ -68,14 +68,17 @@ size_t strlen(const char *s);
 
 /* atoi/atol/strtol: the argument must be a string; the value is unknown. */
 int atoi(const char *s) {
+    __prism_check(s != 0, "STR-NULL-ARG", "strlen() called with unchecked pointer parameter s");
     (void)strlen(s);
     return __VERIFIER_nondet_int();
 }
 long atol(const char *s) {
+    __prism_check(s != 0, "STR-NULL-ARG", "strlen() called with unchecked pointer parameter s");
     (void)strlen(s);
     return __VERIFIER_nondet_long();
 }
 long strtol(const char *s, char **end, int base) {
+    __prism_check(s != 0, "STR-NULL-ARG", "strlen() called with unchecked pointer parameter s");
     size_t n = strlen(s);
     (void)base;
     if (end) {
@@ -98,6 +101,7 @@ void srand(unsigned s) { (void)s; }
 
 /* getenv: NULL or a read-only string of unknown contents */
 char *getenv(const char *name) {
+    __prism_check(name != 0, "STR-NULL-ARG", "strlen() called with unchecked pointer parameter name");
     (void)strlen(name);
     if (__VERIFIER_nondet_int()) return 0;
     return __prism_fresh_cstr(PRISM_CONST);

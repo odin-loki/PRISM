@@ -23,7 +23,7 @@ std::vector<std::string> split_csv(std::string_view s) {
     std::string t;
     std::stringstream ss{std::string(s)};
     while (std::getline(ss, t, ',')) {
-        while (!t.empty() && (t.front() == ' ' || t.front() == '\t')) t.erase(t.begin());
+        while (!t.empty() && (t.front() == ' ' || t.front() == '\t')) t.erase(0, 1);
         while (!t.empty() && (t.back() == ' ' || t.back() == '\t')) t.pop_back();
         if (!t.empty()) out.push_back(t);
     }
@@ -237,10 +237,10 @@ CliResult<CliOptions> parse_cli(std::span<const char* const> args) {
             auto v = in.take();
             if ((ok = v.has_value())) {
                 auto eq = v->find('=');
-                auto trim = [](std::string s) {
-                    while (!s.empty() && s.front() == ' ') s.erase(s.begin());
-                    while (!s.empty() && s.back() == ' ') s.pop_back();
-                    return s;
+                auto trim = [](std::string_view sv) {
+                    while (!sv.empty() && sv.front() == ' ') sv.remove_prefix(1);
+                    while (!sv.empty() && sv.back() == ' ') sv.remove_suffix(1);
+                    return std::string(sv);
                 };
                 std::string k = eq == std::string::npos ? "" : trim(v->substr(0, eq));
                 std::string p = eq == std::string::npos ? "" : trim(v->substr(eq + 1));

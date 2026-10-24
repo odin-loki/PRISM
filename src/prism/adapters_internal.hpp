@@ -23,8 +23,7 @@ bool is_fake_adapter(const std::string& text);
 bool tool_unusable(const std::string& text, int rc);
 // A --help probe answered by something that is not the tool.
 bool probe_looks_missing(const std::string& text, int rc);
-// The bundled .cocci rules (prism/cocci next to the cwd, the scanned root or
-// the binary; share/prism/cocci) plus any in the source roots.
+// Any *.cocci files under scanned source roots (optional spatch stage).
 std::vector<std::filesystem::path> cocci_rules(const std::vector<std::filesystem::path>& paths,
                                                const Config& cfg);
 bool cocci_has_script(const std::filesystem::path& rule);

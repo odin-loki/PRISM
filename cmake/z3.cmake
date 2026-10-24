@@ -1,8 +1,9 @@
 # Python-free integration for vendored Z3 (CPP_PORT_PLAN phase 6).
 # Upstream third_party/z3/CMakeLists.txt is unchanged; PRISM bootstraps z3gen
 # and points Python3_EXECUTABLE at it so Ninja never invokes Python for codegen.
-# Pre-generated outputs live in cmake/z3-generated/ (refresh with
-# tools/sync_z3_generated.py after bumping the z3 pin).
+# Pre-generated outputs live in cmake/z3-generated/ (refresh after bumping the
+# z3 pin: one-off upstream Z3 build with real Python, copy outputs into
+# cmake/z3-generated/, update tree_sha256; see docs/CPP_PORT_PLAN.md phase 6).
 
 if(NOT PRISM_Z3)
   return()
@@ -16,7 +17,7 @@ endif()
 set(_prism_z3_gen "${PRISM_ROOT}/cmake/z3-generated")
 set(_prism_z3_digest_file "${_prism_z3_gen}/tree_sha256")
 if(NOT EXISTS "${_prism_z3_digest_file}")
-  message(FATAL_ERROR "cmake/z3-generated/tree_sha256 missing (run tools/sync_z3_generated.py)")
+  message(FATAL_ERROR "cmake/z3-generated/tree_sha256 missing (refresh cmake/z3-generated/ after a z3 pin bump)")
 endif()
 file(READ "${_prism_z3_digest_file}" _prism_z3_gen_digest)
 string(STRIP "${_prism_z3_gen_digest}" _prism_z3_gen_digest)

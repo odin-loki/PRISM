@@ -69,7 +69,7 @@ std::optional<std::pair<std::string, std::string>> wp_split_top(std::string_view
 }
 
 std::optional<std::string> wp_rewrite_implies(std::string text) {
-    text = strip(std::move(text));
+    text = strip(text);
     if (wp_outer_parens(text)) {
         auto inner = wp_rewrite_implies(text.substr(1, text.size() - 2));
         if (!inner) return std::nullopt;
@@ -93,27 +93,27 @@ bool wp_before_unary(const std::optional<std::string>& prev) {
 std::optional<std::string> wp_encode_scalar(const std::string& text) {
     std::vector<std::string> toks;
     for (auto& m : wp_tok.finditer(text)) {
-        auto t = m.text;
-        if (t.empty()) continue;
+        auto tok = m.text;
+        if (tok.empty()) continue;
         bool sp = true;
-        for (char c : t)
+        for (char c : tok)
             if (!std::isspace(static_cast<unsigned char>(c))) {
                 sp = false;
                 break;
             }
         if (sp) continue;
-        toks.push_back(std::move(t));
+        toks.push_back(std::move(tok));
     }
     if (toks.empty()) return std::nullopt;
     std::optional<std::string> prev;
     for (std::size_t i = 0; i < toks.size(); ++i) {
-        const auto& t = toks[i];
+        const auto& t = toks.at(i);
         if (t == "[" || t == "]" || t == "{" || t == "}" || t == "." || t == "," || t == ";" ||
             t == "@" || t == "\\" || t == "#")
             return std::nullopt;
         if (t == "->") return std::nullopt;
         if (fullmatch(wp_ident_re, t)) {
-            const std::string* nxt = (i + 1 < toks.size()) ? &toks[i + 1] : nullptr;
+            const std::string* nxt = (i + 1 < toks.size()) ? &toks.at(i + 1) : nullptr;
             if (nxt && *nxt == "(") return std::nullopt;
             prev = t;
             continue;
@@ -123,7 +123,9 @@ std::optional<std::string> wp_encode_scalar(const std::string& text) {
             continue;
         }
         if (kWpUnaryOk.contains(t) || t == "*" || t == "&") {
-            bool unary = wp_before_unary(prev) || (prev && (kWpUnaryOk.contains(*prev) || *prev == "*" || *prev == "&"));
+            bool unary = wp_before_unary(prev) ||
+                         (prev.has_value() &&
+                          (kWpUnaryOk.contains(prev.value()) || prev.value() == "*" || prev.value() == "&"));
             if ((t == "*" || t == "&") && unary) return std::nullopt;
             if (kWpUnaryOk.contains(t) && unary) {
                 prev = t;
@@ -140,7 +142,7 @@ std::optional<std::string> wp_encode_scalar(const std::string& text) {
 }
 
 std::optional<std::string> wp_encode_predicate(std::string raw) {
-    raw = strip(std::move(raw));
+    raw = strip(raw);
     if (raw.empty()) return std::nullopt;
     {
         const std::string from = "\\result";
@@ -176,7 +178,7 @@ std::string wp_subst_result(const std::string& ensures, const std::string& expr)
 }
 
 std::string wp_norm_expr(std::string s) {
-    s = strip(std::move(s));
+    s = strip(s);
     while (wp_outer_parens(s)) s = strip(s.substr(1, s.size() - 2));
     std::string o;
     for (char c : s)
@@ -190,10 +192,10 @@ std::vector<std::string> wp_split_and(const std::string& text) {
     std::size_t last = 0;
     std::size_t i = 0;
     while (i + 1 < text.size()) {
-        char ch = text[i];
+        char ch = text.at(i);
         if (ch == '(') ++depth;
         else if (ch == ')') --depth;
-        else if (depth == 0 && text[i] == '&' && text[i + 1] == '&') {
+        else if (depth == 0 && text.at(i) == '&' && text.at(i + 1) == '&') {
             auto p = strip(text.substr(last, i - last));
             if (!p.empty()) out.push_back(std::move(p));
             last = i + 2;
@@ -318,7 +320,7 @@ std::vector<Finding> run_wp(const std::vector<FunctionInfo>& functions, int unwi
         if (requires_) wp_vc += "(" + *requires_ + ") ==> ";
         for (std::size_t i = 0; i < vcs.size(); ++i) {
             if (i) wp_vc += " && ";
-            wp_vc += "(" + vcs[i] + ")";
+            wp_vc += "(" + vcs.at(i) + ")";
         }
         auto fill_extra = [&](Finding& rec) {
             mark(rec);

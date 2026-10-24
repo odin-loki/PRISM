@@ -41,7 +41,7 @@ std::string hex_of(const std::vector<uint8_t>& b, std::size_t limit = std::strin
     std::string hex;
     for (std::size_t k = 0; k < b.size() && k < limit; ++k) {
         char buf[8];
-        std::snprintf(buf, sizeof buf, "%02x", b[k]);
+        std::snprintf(buf, sizeof buf, "%02x", b.at(k));
         hex += buf;
     }
     return hex;
@@ -90,6 +90,13 @@ int run_width() {
     return static_cast<int>(std::max(1u, std::min(4u, std::thread::hardware_concurrency())));
 }
 
+std::vector<uint8_t> random_seed_row(std::size_t nbytes) {
+    std::vector<uint8_t> rnd(nbytes);
+    std::mt19937 rng{std::random_device{}()};
+    for (auto& byte : rnd) byte = static_cast<uint8_t>(rng());
+    return rnd;
+}
+
 }  // namespace
 
 namespace stages_detail {
@@ -98,8 +105,8 @@ std::optional<uint64_t> cex_value(std::string v) {
     v = strip(v);
     if (v.empty()) return std::nullopt;
     bool neg = false;
-    if (v[0] == '-' || v[0] == '+') {
-        neg = v[0] == '-';
+    if (v.at(0) == '-' || v.at(0) == '+') {
+        neg = v.at(0) == '-';
         v = v.substr(1);
     }
     int base = 10;
@@ -109,7 +116,7 @@ std::optional<uint64_t> cex_value(std::string v) {
     } else if (v.starts_with("0b") || v.starts_with("0B") || v.starts_with("#b")) {
         base = 2;
         v = v.substr(2);
-    } else if (v.size() > 1 && v[0] == '0') {
+    } else if (v.size() > 1 && v.at(0) == '0') {
         return std::nullopt;
     }
     if (v.empty()) return std::nullopt;
@@ -167,21 +174,16 @@ Finding fuzz_function(const FunctionInfo& fn, const fs::path& src, double budget
     int nbytes = param_nbytes(fn.params);
     std::vector<std::vector<uint8_t>> corpus;
     for (auto& s : interesting_seeds(fn)) {
-        auto b = s;
-        b.resize(static_cast<std::size_t>(nbytes), 0);
-        corpus.push_back(std::move(b));
+        auto seed_row = s;
+        seed_row.resize(static_cast<std::size_t>(nbytes), 0);
+        corpus.push_back(std::move(seed_row));
     }
     if (seeds)
         for (auto s : *seeds) {
             s.resize(static_cast<std::size_t>(nbytes), 0);
             corpus.push_back(std::move(s));
         }
-    if (corpus.empty()) {
-        std::vector<uint8_t> rnd(static_cast<std::size_t>(nbytes));
-        std::mt19937 rng{std::random_device{}()};
-        for (auto& b : rnd) b = static_cast<uint8_t>(rng());
-        corpus.push_back(std::move(rnd));
-    }
+    if (corpus.empty()) corpus.push_back(random_seed_row(static_cast<std::size_t>(nbytes)));
     bool noseed = !seeds;
     auto t0 = std::chrono::steady_clock::now();
     std::set<uint64_t> seen;
@@ -328,6 +330,7 @@ Finding fuzz_function(const FunctionInfo& fn, const fs::path& src, double budget
         auto td = cache.new_dir();
         {
             std::ofstream out(td / src.filename(), std::ios::binary);
+            if (!out.is_open()) return no_crash();
             out << src_text;
         }
         auto hpath = td / ("harness_" + fn.name + ".c");
@@ -443,7 +446,7 @@ std::string norm_ws(std::string_view s) {
 
 void add_goal(std::vector<std::string>& seen, std::string cond) {
     cond = norm_ws(cond);
-    if (!cond.empty() && std::find(seen.begin(), seen.end(), cond) == seen.end())
+    if (!cond.empty() && std::ranges::find(seen, cond) == seen.end())
         seen.push_back(std::move(cond));
 }
 
@@ -660,8 +663,8 @@ std::optional<Finding> run_afl_fuzz(const FunctionInfo& fn, const fs::path& src,
                                     double timeout, const fs::path& work) {
     auto afl = afl_fuzz_which(cfg);
     if (!afl || fn.kind != "SCALAR") return std::nullopt;
-    auto afl_base = [&](std::string_view st, std::string cls, std::string msg) {
-        auto f = make_find("fuse", st, fn, std::move(cls), std::move(msg), laws::STRENGTH_FINDS);
+    auto afl_base = [&](std::string_view st, std::string cls, std::string text) {
+        auto f = make_find("fuse", st, fn, std::move(cls), std::move(text), laws::STRENGTH_FINDS);
         if (st != laws::NOTRUN) {
             f.extra["engine"] = "afl";
             f.extra["sandbox"] = sandbox::kind();
@@ -697,6 +700,7 @@ std::optional<Finding> run_afl_fuzz(const FunctionInfo& fn, const fs::path& src,
     auto src_copy = td / src.filename();
     if (!fs::exists(src_copy)) {
         std::ofstream out(src_copy);
+        if (!out.is_open()) return afl_base(laws::ERROR, "", "AFL: cannot write source copy");
         out << read_text_file(src);
     }
     auto hpath = td / ("harness_" + fn.name + ".c");
@@ -725,6 +729,7 @@ std::optional<Finding> run_afl_fuzz(const FunctionInfo& fn, const fs::path& src,
     int nbytes = param_nbytes(fn.params);
     {
         std::ofstream seed(in_dir / "seed", std::ios::binary);
+        if (!seed.is_open()) return afl_base(laws::ERROR, "", "AFL: cannot write seed file");
         std::vector<char> zeros(static_cast<std::size_t>(std::max(1, nbytes)), 0);
         seed.write(zeros.data(), static_cast<std::streamsize>(zeros.size()));
     }
@@ -750,7 +755,7 @@ std::optional<Finding> run_afl_fuzz(const FunctionInfo& fn, const fs::path& src,
             crashes.push_back(ent.path());
         }
         if (crashes.empty()) continue;
-        std::string data = read_text_file(crashes[0]);
+        std::string data = read_text_file(crashes.at(0));
         std::vector<uint8_t> raw(data.begin(), data.end());
         if (raw.size() > 16) raw.resize(16);
         auto f = afl_base(laws::CRASH, "AFL-CRASH", "AFL crash on " + bytes_to_hex(raw));
@@ -869,11 +874,13 @@ Finding run_libfuzzer(const FunctionInfo& fn, const fs::path& src, double timeou
     auto src_copy = td / src.filename();
     if (!fs::exists(src_copy)) {
         std::ofstream out(src_copy);
+        if (!out.is_open()) return lf_base(laws::ERROR, "", "libFuzzer: cannot write source copy");
         out << read_text_file(src);
     }
     auto hpath = td / ("lfuzzer_" + fn.name + ".c");
     {
         std::ofstream out(hpath);
+        if (!out.is_open()) return lf_base(laws::ERROR, "", "libFuzzer: cannot write harness source");
         out << libfuzzer_harness_source(fn, src.filename().string());
     }
     auto exe = td / ("lfuzzer_" + fn.name + ".exe");
@@ -891,9 +898,9 @@ Finding run_libfuzzer(const FunctionInfo& fn, const fs::path& src, double timeou
         return f;
     }
     if (st != "ok") {
-        std::string msg = err;
-        if (msg.size() > 200) msg.resize(200);
-        auto f = lf_base(laws::ERROR, "", "libFuzzer compile failed: " + msg);
+        std::string err_snip = err;
+        if (err_snip.size() > 200) err_snip.resize(200);
+        auto f = lf_base(laws::ERROR, "", "libFuzzer compile failed: " + err_snip);
         f.extra["exe"] = clang->string();
         return f;
     }
@@ -902,6 +909,7 @@ Finding run_libfuzzer(const FunctionInfo& fn, const fs::path& src, double timeou
     int nbytes = param_nbytes(fn.params);
     {
         std::ofstream seed(corpus / "seed", std::ios::binary);
+        if (!seed.is_open()) return lf_base(laws::ERROR, "", "libFuzzer: cannot write seed file");
         std::string zeros(static_cast<std::size_t>(std::max(0, nbytes)), '\0');
         seed.write(zeros.data(), static_cast<std::streamsize>(zeros.size()));
     }
@@ -927,7 +935,7 @@ Finding run_libfuzzer(const FunctionInfo& fn, const fs::path& src, double timeou
         if (name.rfind("crash-", 0) == 0) crashes.push_back(it->path());
     }
     if (!crashes.empty()) {
-        std::string data = read_text_file(crashes[0]);
+        std::string data = read_text_file(crashes.at(0));
         std::vector<uint8_t> raw(data.begin(), data.end());
         if (raw.size() > 16) raw.resize(16);
         auto f = lf_base(laws::CRASH, "LIBFUZZER-CRASH", "libFuzzer crash on " + bytes_to_hex(raw));
@@ -936,7 +944,8 @@ Finding run_libfuzzer(const FunctionInfo& fn, const fs::path& src, double timeou
         f.extra["libfuzzer_crashes"] = std::to_string(crashes.size());
         return f;
     }
-    std::string text = lower_copy(r.err + r.out);
+    const std::string run_log = r.err + r.out;
+    const std::string text = lower_copy(run_log);
     if (text.find("addresssanitizer") != std::string::npos ||
         text.find("undefinedbehaviorsanitizer") != std::string::npos) {
         auto f = lf_base(laws::CRASH, "LIBFUZZER-CRASH", "libFuzzer sanitizer crash");
@@ -1016,10 +1025,10 @@ Finding fuse_one(const FunctionInfo& fn, const std::vector<Finding>& bmc_finding
         try {
             int n = param_nbytes(fn.params);
             int added = 0;
-            for (auto b : fuzz4all_seeds(*engine, fn, n)) {
-                pad_seed_nbytes(b, n);
-                if (!b.empty() && std::find(seeds.begin(), seeds.end(), b) == seeds.end()) {
-                    seeds.push_back(std::move(b));
+            for (auto seed_row : fuzz4all_seeds(*engine, fn, n)) {
+                pad_seed_nbytes(seed_row, n);
+                if (!seed_row.empty() && std::ranges::find(seeds, seed_row) == seeds.end()) {
+                    seeds.push_back(std::move(seed_row));
                     ++added;
                 }
             }
@@ -1110,6 +1119,7 @@ Finding fuse_one(const FunctionInfo& fn, const std::vector<Finding>& bmc_finding
             try {
                 new_cov = std::stoi(last.extra["new_cov"]);
             } catch (...) {
+                new_cov = 0;
             }
         }
         nlohmann::json newly = nlohmann::json::array();
@@ -1130,6 +1140,7 @@ Finding fuse_one(const FunctionInfo& fn, const std::vector<Finding>& bmc_finding
                 try {
                     ng = nlohmann::json::parse(extra["new_goals"]);
                 } catch (...) {
+                    ng = nlohmann::json::array();
                 }
             }
             for (auto& x : newly) ng.push_back(x);
@@ -1144,7 +1155,7 @@ Finding fuse_one(const FunctionInfo& fn, const std::vector<Finding>& bmc_finding
                 extra["chatfuzz"] = "true";
                 for (auto m : chatfuzz_mutants(*engine, fn, seed_hex)) {
                     pad_seed_nbytes(m, n);
-                    if (!m.empty() && std::find(seeds.begin(), seeds.end(), m) == seeds.end())
+                    if (!m.empty() && std::ranges::find(seeds, m) == seeds.end())
                         seeds.push_back(std::move(m));
                 }
             } catch (const std::exception& ex) {
@@ -1163,7 +1174,7 @@ Finding fuse_one(const FunctionInfo& fn, const std::vector<Finding>& bmc_finding
                     extra["fuzz4all_mutate"] = "true";
                     for (auto m : fuzz4all_mutate_interesting(*engine, fn, parent_hex)) {
                         pad_seed_nbytes(m, n);
-                        if (!m.empty() && std::find(seeds.begin(), seeds.end(), m) == seeds.end())
+                        if (!m.empty() && std::ranges::find(seeds, m) == seeds.end())
                             seeds.push_back(std::move(m));
                     }
                 }
@@ -1177,7 +1188,7 @@ Finding fuse_one(const FunctionInfo& fn, const std::vector<Finding>& bmc_finding
                     extra["fuzz4all_combine"] = "true";
                     for (auto m : fuzz4all_combine(*engine, fn, parent_hex, prev_hex)) {
                         pad_seed_nbytes(m, n);
-                        if (!m.empty() && std::find(seeds.begin(), seeds.end(), m) == seeds.end())
+                        if (!m.empty() && std::ranges::find(seeds, m) == seeds.end())
                             seeds.push_back(std::move(m));
                     }
                 }
@@ -1210,13 +1221,14 @@ Finding fuse_one(const FunctionInfo& fn, const std::vector<Finding>& bmc_finding
                     try {
                         ids = nlohmann::json::parse(extra["bmc_goals"]);
                     } catch (...) {
+                        ids = nlohmann::json::array();
                     }
                 }
                 ids.push_back(lab);
                 extra["bmc_goals"] = ids.dump();
-                auto b = bytes_from_cex(g.counterexample, fn);
-                if (b && std::find(seeds.begin(), seeds.end(), *b) == seeds.end()) {
-                    seeds.push_back(*b);
+                if (auto seed_bytes = bytes_from_cex(g.counterexample, fn)) {
+                    if (std::ranges::find(seeds, *seed_bytes) == seeds.end())
+                        seeds.push_back(*seed_bytes);
                     extra["new_bmc_seeds"] = std::to_string(std::stoi(extra["new_bmc_seeds"]) + 1);
                 }
             } else if (g.status == laws::PROVED || g.status == laws::PROVED_UNBOUNDED ||
@@ -1313,12 +1325,12 @@ std::optional<std::vector<uint8_t>> parse_hex_bytes(std::string h) {
     std::vector<uint8_t> out;
     out.reserve(h.size() / 2);
     for (std::size_t i = 0; i < h.size();) {
-        if (space(h[i])) {
+        if (space(h.at(i))) {
             ++i;
             continue;
         }
         if (i + 1 >= h.size()) return std::nullopt;
-        const int a = nibble(h[i]), b = nibble(h[i + 1]);
+        const int a = nibble(h.at(i)), b = nibble(h.at(i + 1));
         if (a < 0 || b < 0) return std::nullopt;
         out.push_back(static_cast<uint8_t>((a << 4) | b));
         i += 2;
@@ -1332,7 +1344,7 @@ std::vector<std::vector<uint8_t>> json_hex_list(const nlohmann::json& data, cons
     for (auto& h : data[key]) {
         // str(h): a number the model wrote without quotes is read as its digits.
         auto raw = parse_hex_bytes(h.is_string() ? h.get<std::string>() : h.is_number() ? h.dump() : std::string{});
-        if (raw && !raw->empty()) out.push_back(std::move(*raw));
+        if (raw && !raw->empty()) out.push_back(std::move(raw).value());
     }
     return out;
 }
@@ -1375,8 +1387,8 @@ std::string documentation_from_comments(const std::string& source) {
         return re.search(s);
     };
     for (std::size_t i = 0; i < source.size();) {
-        if (i + 1 < source.size() && source[i] == '/' && source[i + 1] == '*') {
-            if (i + 2 < source.size() && source[i + 2] == '@') {
+        if (i + 1 < source.size() && source.at(i) == '/' && source.at(i + 1) == '*') {
+            if (i + 2 < source.size() && source.at(i + 2) == '@') {
                 auto end = source.find("*/", i + 2);
                 i = end == std::string::npos ? source.size() : end + 2;
                 continue;
@@ -1393,7 +1405,7 @@ std::string documentation_from_comments(const std::string& source) {
             while (std::getline(ss, ln)) {
                 ln = strip(ln);
                 std::size_t k = 0;
-                while (k < ln.size() && ln[k] == '*') ++k;
+                while (k < ln.size() && ln.at(k) == '*') ++k;
                 joined += (first ? "" : " ") + strip(ln.substr(k));
                 first = false;
             }
@@ -1403,7 +1415,7 @@ std::string documentation_from_comments(const std::string& source) {
             if (!blob.empty() && !is_contract(blob)) parts.push_back(blob);
             continue;
         }
-        if (i + 1 < source.size() && source[i] == '/' && source[i + 1] == '/') {
+        if (i + 1 < source.size() && source.at(i) == '/' && source.at(i + 1) == '/') {
             auto eol = source.find('\n', i);
             auto line = strip(source.substr(i + 2, (eol == std::string::npos ? source.size() : eol) - (i + 2)));
             i = eol == std::string::npos ? source.size() : eol + 1;
@@ -1415,7 +1427,7 @@ std::string documentation_from_comments(const std::string& source) {
     std::string out;
     for (std::size_t k = 0; k < parts.size() && k < 8; ++k) {
         if (!out.empty()) out.push_back('\n');
-        out += parts[k];
+        out += parts.at(k);
     }
     return out;
 }
@@ -1521,23 +1533,24 @@ std::vector<Finding> run_fuse(const std::vector<FunctionInfo>& functions, const 
     // The run's model settings (PRISM_MODEL, PRISM_LLAMA_SERVER, OLLAMA_HOST,
     // PRISM_GGUF, and its output directory for the audit log).
     if (llm) eng.emplace(cfg);
-    LlamaEngine* ep = eng ? &*eng : nullptr;
+    LlamaEngine* ep = eng.has_value() ? &eng.value() : nullptr;
     for (auto& fn : functions)
         out.push_back(fuse_one(fn, bmc_findings, src_root, slice_budget, slice_iters, rounds, ep, cfg));
     if (ep && !ep->available() && !functions.empty()) {
         Finding f;
         f.stage = "fuse";
         f.status = std::string(laws::NOTRUN);
-        f.file = functions[0].file;
-        f.function = functions[0].name;
-        f.line = functions[0].line;
+        f.file = functions.at(0).file;
+        f.function = functions.at(0).name;
+        f.line = functions.at(0).line;
         f.message = LLM_SKIP_FUSE_MSG;
         f.strength = std::string(laws::STRENGTH_READS);
         f.extra["install"] = LLM_INSTALL;
         f.extra["autoprompt"] = "NOTRUN";
         f.extra["chatfuzz"] = "NOTRUN";
         f.extra["docstring"] =
-            create_prompt_from_source(functions[0].name, functions[0].body, fn_source_text(functions[0], src_root))
+            create_prompt_from_source(functions.at(0).name, functions.at(0).body,
+                                      fn_source_text(functions.at(0), src_root))
                 .docstring;
         out.push_back(std::move(f));
     } else if (ep && ep->available()) {
@@ -1548,6 +1561,7 @@ std::vector<Finding> run_fuse(const std::vector<FunctionInfo>& functions, const 
                 auto t = fuzz4all_autoprompt_text(*ep, fn);
                 if (!t.empty()) distilled = t;
             } catch (...) {
+                distilled = docs;
             }
             Finding f;
             f.stage = "fuse";

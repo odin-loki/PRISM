@@ -9,13 +9,15 @@
 
 #include <algorithm>
 #include <regex>
+#include <unordered_set>
 
 namespace prism::pir::pirmem {
 
 std::vector<PtrContract> contracts_from_draft(const std::vector<std::string>& assumptions, const ir::Function& irf) {
     std::vector<PtrContract> out;
-    static const std::regex size(R"(^([A-Za-z_]\w*) points to (at least |exactly )?([A-Za-z_]\w*|\d+) int element)");
-    static const std::regex range(R"(^(-?\d+) <= ([A-Za-z_]\w*) <= (\d+))");
+    static const std::regex size(
+        "^([A-Za-z_][A-Za-z0-9_]*) points to (at least |exactly )?([A-Za-z_][A-Za-z0-9_]*|[0-9]+) int element");
+    static const std::regex range("^(-?[0-9]+) <= ([A-Za-z_][A-Za-z0-9_]*) <= ([0-9]+)");
     auto param = [&](const std::string& n, bool ptr) {
         for (auto& p : irf.params)
             if (p.name == n) return ptr ? p.ty.kind == ir::Type::Ptr : p.ty.kind == ir::Type::Int;
@@ -59,15 +61,15 @@ std::vector<PtrContract> contracts_from_draft(const std::vector<std::string>& as
 std::map<int, std::string> asm_contracts(const std::vector<std::string>& lines) {
     // `// prism: asm ensures <cond>` on the asm statement's line or on one of
     // the (up to) three lines above it (docs/PIR.md "Inline assembly")
-    static const std::regex contract(R"(//\s*prism:\s*asm\s+ensures\s+(.*?)\s*$)");
-    static const std::regex asm_kw(R"(\b(__asm__|__asm|asm)\b)");
+    static const std::regex contract("//\\s*prism:\\s*asm\\s+ensures\\s+(.*?)\\s*$");
+    static const std::regex asm_kw("\\b(__asm__|__asm|asm)\\b");
     std::map<int, std::string> out;
     for (std::size_t i = 0; i < lines.size(); ++i) {
         std::smatch m;
-        if (!std::regex_search(lines[i], m, contract)) continue;
+        if (!std::regex_search(lines.at(i), m, contract)) continue;
         auto cond = m[1].str();
         for (std::size_t j = i; j < lines.size() && j <= i + 3; ++j) {
-            auto code = lines[j].substr(0, lines[j].find("//"));
+            auto code = lines.at(j).substr(0, lines.at(j).find("//"));
             if (std::regex_search(code, asm_kw)) {
                 out[static_cast<int>(j) + 1] = cond;
                 break;
@@ -88,10 +90,10 @@ bool has_dynamic_init(const ir::Module& m) {
 std::vector<std::string> static_init_functions(const ir::Module& m) {
     std::vector<std::string> out;
     auto add = [&](const std::string& n) {
-        if (std::find(out.begin(), out.end(), n) == out.end()) out.push_back(n);
+        if (std::ranges::find(out, n) == out.end()) out.push_back(n);
     };
     // @llvm.global_ctors = appending global [N x { i32, ptr, ptr }] [{ i32 65535, ptr @f, ptr null }, ...]
-    static const std::regex ref(R"(\{\s*i32\s+\d+\s*,\s*ptr\s+@([\w.$"]+))");
+    static const std::regex ref("\\{\\s*i32\\s+\\d+\\s*,\\s*ptr\\s+@([\\w.$\"]+)");
     for (auto& g : m.globals) {
         if (g.name != "llvm.global_ctors" && g.name != "@llvm.global_ctors") continue;
         for (std::sregex_iterator it(g.text.begin(), g.text.end(), ref), end; it != end; ++it) {
@@ -118,21 +120,24 @@ TranslateOptions function_options(const TranslateOptions& base, const ir::Functi
     o.globals_initial = source_name == "main";
     // C++ library code (constructors, accessors) nests deeper than C helpers
     if (unit.cxx) o.inline_depth = std::max(o.inline_depth, 12);
-    o.contracts.clear();
     std::vector<std::string> ptrs;
     for (auto& p : irf.params)
         if (p.ty.kind == ir::Type::Ptr && p.attrs.find("byval(") == std::string::npos &&
             p.attrs.find("sret(") == std::string::npos)
             ptrs.push_back(p.name);
     if (ptrs.empty() || line <= 0) return o;
-    o.contracts = parse_contracts(unit.src_lines, line, irf);
-    auto covered = [&] {
-        for (auto& p : ptrs)
-            if (std::none_of(o.contracts.begin(), o.contracts.end(), [&](auto& c) { return c.param == p; }))
-                return false;
+    std::vector<PtrContract> contracts = parse_contracts(unit.src_lines, line, irf);
+    auto covered = [&](const std::vector<PtrContract>& cs) {
+        std::unordered_set<std::string> have;
+        for (const auto& c : cs) have.insert(c.param);
+        for (const auto& p : ptrs)
+            if (!have.contains(p)) return false;
         return true;
     };
-    if (covered() || unit.cxx || !cfg.pir_drafts) return o;
+    if (covered(contracts) || unit.cxx || !cfg.pir_drafts) {
+        o.contracts = std::move(contracts);
+        return o;
+    }
     // no (complete) precondition: a deterministic template harness draft may
     // give the sizes (ai::draft_harness; never an LLM here, Law 4)
     if (!unit.functions) {
@@ -148,11 +153,13 @@ TranslateOptions function_options(const TranslateOptions& base, const ir::Functi
         auto drafts = ai::draft_harness(fi, &why);
         if (drafts.empty() || drafts.front().source != "template") break;
         auto dc = contracts_from_draft(drafts.front().assumptions, irf);
+        std::unordered_set<std::string> params;
+        for (const auto& x : contracts) params.insert(x.param);
         for (auto& c : dc)
-            if (std::none_of(o.contracts.begin(), o.contracts.end(), [&](auto& x) { return x.param == c.param; }))
-                o.contracts.push_back(c);
+            if (params.insert(c.param).second) contracts.push_back(c);
         break;
     }
+    o.contracts = std::move(contracts);
     return o;
 }
 
@@ -230,7 +237,7 @@ void apply_memory_policy(Finding& f, Verdict& v, Function& fn, const ir::Module&
         auto tr = translate(mod, irf, o);
         std::optional<Verdict> v2;
         if (tr.fn) v2 = recheck(*tr.fn, "arbitrary globals");
-        if (v2 && (v2->status == laws::PROVED || v2->status == laws::PROVED_UNBOUNDED)) {
+        if (v2.has_value() && (v2->status == laws::PROVED || v2->status == laws::PROVED_UNBOUNDED)) {
             v2->extra["globals"] = "arbitrary (dynamic initialisation not modelled): " + v2->status;
             v = std::move(*v2);
         } else {

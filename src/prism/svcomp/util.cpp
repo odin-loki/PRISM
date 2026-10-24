@@ -175,17 +175,17 @@ std::optional<long long> parse_ll(std::string_view s) {
     if (t.empty()) return std::nullopt;
     std::size_t i = 0;
     bool neg = false;
-    if (t[0] == '+' || t[0] == '-') {
-        neg = t[0] == '-';
+    if (t.at(0) == '+' || t.at(0) == '-') {
+        neg = t.at(0) == '-';
         i = 1;
     }
     if (i >= t.size()) return std::nullopt;
     constexpr long long cap = 1LL << 62;
     long long v = 0;
     for (; i < t.size(); ++i) {
-        if (t[i] < '0' || t[i] > '9') return std::nullopt;
+        if (t.at(i) < '0' || t.at(i) > '9') return std::nullopt;
         if (v < cap) {
-            const long long digit = static_cast<long long>(t[i] - '0');
+            const long long digit = static_cast<long long>(t.at(i) - '0');
             if (v > (cap - digit) / 10)
                 v = cap;
             else

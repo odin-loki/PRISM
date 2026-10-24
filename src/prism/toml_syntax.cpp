@@ -193,7 +193,7 @@ private:
         std::string o;
         for (std::size_t k = 0; k <= upto && k < parts.size(); ++k) {
             if (k) o += '.';
-            o += parts[k].name;
+            o += parts.at(k).name;
         }
         return o;
     }
@@ -632,8 +632,10 @@ SyntaxIssue at_offset(std::string_view s, std::size_t pos, std::string msg) {
             bol = k + 1;
         }
     int col = 1;
-    for (std::size_t k = bol; k < pos && k < s.size(); ++k)
-        if ((static_cast<unsigned char>(s[k]) & 0xC0) != 0x80) ++col;
+    for (std::size_t k = bol; k < pos && k < s.size(); ++k) {
+        const unsigned char ch = static_cast<unsigned char>(s.at(k));
+        if ((ch & 0xC0u) != 0x80u) ++col;
+    }
     out.col = col;
     out.msg = std::move(msg);
     return out;

@@ -327,11 +327,11 @@ bool comment_line(const std::string& line) {
 bool marked_run(const std::vector<std::string>& lines, int line) {
     const std::size_t i = line > 0 ? static_cast<std::size_t>(line - 1) : 0;
     for (std::size_t j = i; j < lines.size(); ++j) {
-        if (has_run_marker(lines[j])) return true;
-        if (lines[j].find('{') != std::string::npos || j - i >= 8) break;
+        if (has_run_marker(lines.at(j))) return true;
+        if (lines.at(j).find('{') != std::string::npos || j - i >= 8) break;
     }
     for (std::size_t k = i; k > 0; --k) {
-        const auto& ln = lines[k - 1];
+        const auto& ln = lines.at(k - 1);
         if (trim_copy(ln).empty() || !comment_line(ln)) break;
         if (run_word(ln)) return true;
     }
@@ -653,7 +653,7 @@ std::vector<Finding> sanitizer_rows(const std::string& cc, const SanTargets& t, 
     std::vector<Finding> out;
     for (std::size_t i = 0; i < t.targets.size(); ++i) {
         const auto& [p, fn] = t.targets[i];
-        const auto& [st, msg, evidence] = runs[i];
+        const auto& [st, msg, evidence] = runs.at(i);
         auto f = finding("sanitize", st, p.string(), sanitizer, msg, laws::STRENGTH_FINDS);
         f.function = fn;
         f.evidence = tail(evidence, 1500);
@@ -692,13 +692,13 @@ std::vector<Finding> run_clang_tidy(const std::string& exe, const std::vector<fs
     parallel_for(cfg.jobs, files, [&](std::size_t i, const fs::path& p) {
         auto ext = ext_of(p);
         const char* stdv = (ext == ".cc" || ext == ".cpp" || ext == ".cxx") ? "-std=c++11" : "-std=c11";
-        results[i] = run_argv({exe, p.string(), "--", stdv}, std::min(60.0, cfg.timeout + 15));
+        results.at(i) = run_argv({exe, p.string(), "--", stdv}, std::min(60.0, cfg.timeout + 15));
     });
     static Regex missing_header(
         R"(fatal error:\s*(?:'([^'\n]+)' file not found|([^:\n]+): No such file or directory))");
     for (std::size_t fi = 0; fi < files.size(); ++fi) {
-        const auto& p = files[fi];
-        const auto& r = results[fi];
+        const auto& p = files.at(fi);
+        const auto& r = results.at(fi);
         if (!r.failed && !r.timed_out && !is_fake_adapter(r.text)) {
             // The unit does not compile standalone (include path unknown):
             // a gap, not a clang-tidy finding (warnings stage, Law 7).
@@ -887,7 +887,7 @@ fs::path resolved(const fs::path& p) {
     return ec ? fs::absolute(p) : r;
 }
 
-std::vector<fs::path> cocci_rules(const std::vector<fs::path>& paths, const Config& cfg) {
+std::vector<fs::path> cocci_rules(const std::vector<fs::path>& paths, const Config& /*cfg*/) {
     std::vector<fs::path> rules;
     std::set<fs::path> seen;
     auto add_dir = [&](const fs::path& dir) {
@@ -896,37 +896,6 @@ std::vector<fs::path> cocci_rules(const std::vector<fs::path>& paths, const Conf
             if (seen.insert(rp).second) rules.push_back(rule);
         }
     };
-    std::vector<fs::path> pkg;
-    auto consider = [&](fs::path base) {
-        for (int i = 0; i < 8 && !base.empty(); ++i) {
-            pkg.push_back(base / "prism" / "cocci");
-            if (base.parent_path() == base) break;
-            base = base.parent_path();
-        }
-    };
-    std::error_code ec;
-    consider(fs::current_path(ec));
-    consider(cfg.root);
-    // The shipped rules next to the binary, whatever the cwd: a build tree
-    // (<repo>/build/prism -> <repo>/prism/cocci) or an installed layout
-    // (<prefix>/bin/prism -> <prefix>/share/prism/cocci).
-    fs::path self;
-#ifdef _WIN32
-    char buf[MAX_PATH]{};
-    if (GetModuleFileNameA(nullptr, buf, MAX_PATH)) self = fs::path(buf);
-#else
-    self = fs::read_symlink("/proc/self/exe", ec);
-    if (ec) self.clear();
-#endif
-    if (!self.empty()) {
-        pkg.push_back(self.parent_path().parent_path() / "share" / "prism" / "cocci");
-        consider(self.parent_path());
-    }
-#ifdef PRISM_SOURCE_COCCI_DIR
-    // An out-of-tree build: the rules of the tree it was built from.
-    pkg.push_back(fs::path(PRISM_SOURCE_COCCI_DIR));
-#endif
-    for (const auto& d : pkg) add_dir(d);
     for (const auto& root : source_roots(paths)) add_dir(root);
     return rules;
 }
@@ -1626,10 +1595,10 @@ std::string norm_diag(const std::string& msg) {
     if (auto hit = flag.search_match(m)) m = m.substr(0, static_cast<std::size_t>(hit->spans[0].first));
     std::string q;
     for (std::size_t i = 0; i < m.size(); ++i) {
-        unsigned char c = static_cast<unsigned char>(m[i]);
+        unsigned char c = static_cast<unsigned char>(m.at(i));
         // U+2018 U+2019 U+201C U+201D are E2 80 98/99/9C/9D in UTF-8.
-        if (c == 0xE2 && i + 2 < m.size() && static_cast<unsigned char>(m[i + 1]) == 0x80) {
-            unsigned char d = static_cast<unsigned char>(m[i + 2]);
+        if (c == 0xE2 && i + 2 < m.size() && static_cast<unsigned char>(m.at(i + 1)) == 0x80) {
+            unsigned char d = static_cast<unsigned char>(m.at(i + 2));
             if (d == 0x98 || d == 0x99 || d == 0x9C || d == 0x9D) {
                 q += '\'';
                 i += 2;
@@ -1707,7 +1676,7 @@ std::vector<Finding> run_compiler(const std::vector<fs::path>& paths, const Conf
         auto name = cc_name(cc);
         auto key = std::make_tuple(file, line, norm_diag(msg));
         if (auto it = by_diag.find(key); it != by_diag.end()) {
-            auto& f = out[it->second];
+            auto& f = out.at(it->second);
             auto& names = f.extra["compilers"];
             bool have = false;
             std::size_t pos = 0;
@@ -1782,19 +1751,19 @@ std::vector<Finding> run_compiler(const std::vector<fs::path>& paths, const Conf
     // threads (the Python engine's ordered_map), then build findings in the
     // serial order so dedup and output order are unchanged.
     std::vector<ProcResult> results(jobs.size());
-    parallel_for(cfg.jobs, jobs, [&](std::size_t i, const Job& j) { results[i] = run_argv(j.cmd, 30.0); });
+    parallel_for(cfg.jobs, jobs, [&](std::size_t i, const Job& j) { results.at(i) = run_argv(j.cmd, 30.0); });
     for (std::size_t ji = 0; ji < jobs.size(); ++ji) {
         {
-            const auto& cc = jobs[ji].cc;
-            const auto& p = jobs[ji].unit;
-            const auto& r = results[ji];
+            const auto& cc = jobs.at(ji).cc;
+            const auto& p = jobs.at(ji).unit;
+            const auto& r = results.at(ji);
             const auto rel = rel_to_root(p, cfg);
             if (!r.failed && !r.timed_out && r.rc != 0) {
                 if (auto mh = missing_header.search_match(r.text)) {
                     auto hdr = mh->group(1).empty() ? trim_copy(mh->group(2)) : mh->group(1);
                     auto f = finding("warnings", laws::NOTRUN, rel, "",
                                      "does not compile standalone: header '" + hdr + "' not found " +
-                                         (jobs[ji].has_db ? "with its compile_commands.json flags (generated or not built yet?)"
+                                         (jobs.at(ji).has_db ? "with its compile_commands.json flags (generated or not built yet?)"
                                                           : "(include path unknown: no compile_commands.json entry)") +
                                          "; compiler warnings not checked for this unit",
                                      laws::STRENGTH_SOME);
@@ -2057,12 +2026,12 @@ std::vector<Finding> run_sanitize(const std::vector<fs::path>& paths, const Conf
     // cfg.jobs threads and the rows keep the one-at-a-time order.
     std::vector<std::pair<std::size_t, std::size_t>> jobs;  // (sanitizer, target)
     for (std::size_t si = 0; si < sans.size(); ++si)
-        if (sans[si].supported)
+        if (sans.at(si).supported)
             for (std::size_t ti = 0; ti < t.targets.size(); ++ti) jobs.emplace_back(si, ti);
     std::vector<std::tuple<std::string, std::string, std::string>> runs(jobs.size());
     parallel_for(cfg.jobs, jobs, [&](std::size_t i, const std::pair<std::size_t, std::size_t>& job) {
-        const auto& [p, fn] = t.targets[job.second];
-        runs[i] = compile_and_run_san(cc->string(), p, sans[job.first].flags, cfg.timeout, fn);
+        const auto& [p, fn] = t.targets.at(job.second);
+        runs[i] = compile_and_run_san(cc->string(), p, sans.at(job.first).flags, cfg.timeout, fn);
     });
     std::vector<Finding> out;
     std::size_t k = 0;
@@ -2105,11 +2074,11 @@ std::vector<Finding> run_optional_tools(const std::vector<fs::path>& paths, cons
         const auto install = adapter_install(tool.stage);
         std::optional<fs::path> exe;
         if (names.size() == 1)
-            exe = cfg.which_adapter(tool.stage, {names[0]});
+            exe = cfg.which_adapter(tool.stage, {names.front()});
         else if (names.size() == 2)
-            exe = cfg.which_adapter(tool.stage, {names[0], names[1]});
+            exe = cfg.which_adapter(tool.stage, {names.at(0), names.at(1)});
         else if (names.size() >= 3)
-            exe = cfg.which_adapter(tool.stage, {names[0], names[1], names[2]});
+            exe = cfg.which_adapter(tool.stage, {names.at(0), names.at(1), names.at(2)});
         if (!exe) {
             out.push_back(notrun(tool.stage, first_name, install));
             continue;
@@ -2147,7 +2116,7 @@ std::vector<Finding> run_optional_tools(const std::vector<fs::path>& paths, cons
         } catch (const std::system_error& ex) {
             // Python engine adapters_extra.run_optional_tools: OSError → NOTRUN unusable.
             auto f = notrun(tool.stage, first_name, install);
-            f.message = std::string(tool.stage) + " unusable: " + ex.what();
+            f.message = std::string(tool.stage) + " unusable: " + ex.code().message();
             f.extra["exe"] = exe->string();
             out.push_back(std::move(f));
         } catch (const std::exception& ex) {
@@ -2249,18 +2218,18 @@ std::vector<Finding> pbsd_dedupe(std::vector<Finding> findings) {
     std::vector<Finding> out;
     out.reserve(findings.size());
     for (std::size_t i = 0; i < findings.size(); ++i) {
-        auto key = std::make_tuple(findings[i].file, findings[i].line, findings[i].cls, findings[i].message);
+        auto key = std::make_tuple(findings.at(i).file, findings.at(i).line, findings.at(i).cls, findings.at(i).message);
         if (!seen.insert(key).second) continue;
-        out.push_back(std::move(findings[i]));
+        out.push_back(std::move(findings.at(i)));
     }
     return out;
 }
 
 Finding pbsd_not_run(std::string message, std::string install,
                      std::map<std::string, std::string> extra) {
+    extra.emplace("install", std::move(install));
     auto f = finding("pbsd", laws::NOTRUN, "", "", std::move(message), laws::STRENGTH_FINDS);
     f.extra = std::move(extra);
-    f.extra["install"] = std::move(install);
     return f;
 }
 

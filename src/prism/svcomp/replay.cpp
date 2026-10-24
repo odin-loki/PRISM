@@ -63,11 +63,11 @@ std::optional<double> parse_float(const std::string& t) {
     if (t.empty()) return std::nullopt;
     std::string c;
     for (std::size_t k = 0; k < t.size(); ++k) {
-        char ch = t[k];
+        char ch = t.at(k);
         if (ch == 'x' || ch == 'X' || ch == '(') return std::nullopt;
         if (ch == '_') {
-            bool ok = k > 0 && k + 1 < t.size() && std::isdigit(static_cast<unsigned char>(t[k - 1])) &&
-                      std::isdigit(static_cast<unsigned char>(t[k + 1]));
+            bool ok = k > 0 && k + 1 < t.size() && std::isdigit(static_cast<unsigned char>(t.at(k - 1))) &&
+                      std::isdigit(static_cast<unsigned char>(t.at(k + 1)));
             if (!ok) return std::nullopt;
             continue;
         }
@@ -111,7 +111,7 @@ std::string stub_source(const std::string& source, const std::vector<Num>& nonde
     std::string vals;
     for (std::size_t i = 0; i < nondet_values.size(); ++i) {
         if (i) vals += ", ";
-        vals += float_repr(nondet_values[i].as_double());
+        vals += float_repr(nondet_values.at(i).as_double());
     }
     if (vals.empty()) vals = "0.0";
     std::vector<std::string> out = {
@@ -139,7 +139,7 @@ std::string stub_source(const std::string& source, const std::vector<Num>& nonde
     if (source.find("reach_error") != std::string::npos && !defines(source, "reach_error"))
         out.emplace_back("void reach_error(void) { fprintf(stderr, \"PRISM-REACH-ERROR reach_error\\n\"); abort(); }");
     std::string text;
-    for (std::size_t i = 0; i < out.size(); ++i) text += (i ? "\n" : "") + out[i];
+    for (std::size_t i = 0; i < out.size(); ++i) text += (i ? "\n" : "") + out.at(i);
     return text + "\n";
 }
 

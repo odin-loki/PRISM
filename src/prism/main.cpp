@@ -7,6 +7,7 @@
 #include "prism/svcomp.hpp"
 #include "proc.hpp"
 
+#include <array>
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
@@ -59,11 +60,11 @@ static std::vector<std::filesystem::path> self_dirs(const char* argv0) {
     DWORD n = GetModuleFileNameA(nullptr, buf.data(), static_cast<DWORD>(buf.size()));
     if (n && n < buf.size()) add_dir(dirs, std::filesystem::path(buf.data()).parent_path());
 #else
-    char buf[4096]{};
-    ssize_t n = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    std::array<char, 4096> buf{};
+    ssize_t n = ::readlink("/proc/self/exe", buf.data(), buf.size() - 1);
     if (n > 0) {
-        buf[n] = '\0';
-        add_dir(dirs, std::filesystem::path(buf).parent_path());
+        buf.at(static_cast<std::size_t>(n)) = '\0';
+        add_dir(dirs, std::filesystem::path(buf.data()).parent_path());
     }
 #endif
     if (argv0 && *argv0) {
@@ -150,9 +151,10 @@ static int spawn_prism_gui(const std::filesystem::path& gui, int argc, char** ar
     std::string cl;
     for (std::size_t i = 0; i < args.size(); ++i) {
         if (i) cl += ' ';
-        cl += quote_win(args[i]);
+        cl += quote_win(args.at(i));
     }
-    auto wapp = utf8_wide(args[0]);
+    if (args.empty()) return error_spawn_gui("no arguments for GUI");
+    auto wapp = utf8_wide(args.at(0));
     auto wcl = utf8_wide(cl);
     std::vector<wchar_t> buf(wcl.begin(), wcl.end());
     buf.push_back(0);
@@ -170,11 +172,13 @@ static int spawn_prism_gui(const std::filesystem::path& gui, int argc, char** ar
     CloseHandle(pi.hProcess);
     return static_cast<int>(code);
 #else
+    if (args.empty()) return error_spawn_gui("execv: no program path");
     std::vector<char*> cargv;
     cargv.reserve(args.size() + 1);
     for (auto& a : args) cargv.push_back(a.data());
     cargv.push_back(nullptr);
-    ::execv(args[0].c_str(), cargv.data());
+    const std::string& prog = args.at(0);
+    ::execv(prog.c_str(), cargv.data());
     return error_spawn_gui(std::string("execv: ") + std::strerror(errno));
 #endif
 }
@@ -209,8 +213,8 @@ int main(int argc, char** argv) {
         if (std::strcmp(argv[i], "--gui") == 0) return launch_gui(argc, argv);
 
     auto parsed = parse_cli(std::span<const char* const>(argv + 1, argc - 1));
-    if (!parsed) {
-        std::cerr << "prism: error: " << parsed.error() << "\n(prism --help lists the options)\n";
+    if (!parsed.value) {
+        std::cerr << "prism: error: " << parsed.message << "\n(prism --help lists the options)\n";
         return 2;
     }
     if (parsed->help) {
@@ -285,7 +289,7 @@ int main(int argc, char** argv) {
         return a->file < b->file;
     });
     for (std::size_t i = 0; i < failed.size() && i < 30; ++i) {
-        auto* f = failed[i];
+        auto* f = failed.at(i);
         std::cout << "  " << f->status << " " << f->stage << " " << f->file << ":"
                   << (f->line ? *f->line : 0) << " "
                   << (f->function ? *f->function : "") << " " << f->message << "\n";

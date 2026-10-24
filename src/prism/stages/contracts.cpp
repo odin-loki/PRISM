@@ -8,7 +8,7 @@ using namespace stages_detail;
 
 namespace {
 std::pair<std::string, std::string> take_block_keep_braces(std::string text) {
-    text = lstrip(std::move(text));
+    text = lstrip(text);
     if (text.starts_with("{")) {
         auto [inner, rest] = brace(text);
         return {"{" + inner + "}", rest};
@@ -39,13 +39,13 @@ bool encode_invariant(const std::string& expr) {
     std::vector<std::string> ps;
     std::string cur;
     for (std::size_t i = 0; i < expr.size();) {
-        if (i + 1 < expr.size() && expr[i] == '&' && expr[i + 1] == '&') {
+        if (i + 1 < expr.size() && expr.at(i) == '&' && expr[i + 1] == '&') {
             auto p = strip(cur);
             if (!p.empty()) ps.push_back(p);
             cur.clear();
             i += 2;
         } else {
-            cur.push_back(expr[i++]);
+            cur.push_back(expr.at(i++));
         }
     }
     auto tail = strip(cur);

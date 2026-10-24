@@ -328,7 +328,7 @@ std::string tool_identity(const fs::path& exe) {
         auto rel = ap.lexically_relative(home);
         std::vector<std::string> parts;
         for (const auto& part : rel) parts.push_back(part.string());
-        if (parts.size() >= 3 && is_hex40(parts[1])) return parts[1];
+        if (parts.size() >= 3 && is_hex40(parts.at(1))) return parts.at(1);
     }
     const std::string key_path = ap.string();
     std::error_code sec;

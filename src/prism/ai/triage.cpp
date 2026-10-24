@@ -182,12 +182,12 @@ std::string normalise(const std::string& in) {
     std::string o;
     o.reserve(s.size());
     for (std::size_t i = 0; i < s.size();) {
-        unsigned char c = static_cast<unsigned char>(s[i]);
-        bool start_num = std::isdigit(c) && (i == 0 || !(std::isalnum(static_cast<unsigned char>(s[i - 1])) || s[i - 1] == '_'));
-        if (c == '#' && i + 1 < s.size() && (s[i + 1] == 'x' || s[i + 1] == 'b')) start_num = true;
+        unsigned char c = static_cast<unsigned char>(s.at(i));
+        bool start_num = std::isdigit(c) && (i == 0 || !(std::isalnum(static_cast<unsigned char>(s.at(i - 1))) || s.at(i - 1) == '_'));
+        if (c == '#' && i + 1 < s.size() && (s.at(i + 1) == 'x' || s.at(i + 1) == 'b')) start_num = true;
         if (start_num) {
             std::size_t j = i + 1;
-            while (j < s.size() && (std::isalnum(static_cast<unsigned char>(s[j])) || s[j] == '.')) ++j;
+            while (j < s.size() && (std::isalnum(static_cast<unsigned char>(s.at(j))) || s.at(j) == '.')) ++j;
             o += '0';
             i = j;
             continue;
@@ -277,21 +277,21 @@ std::vector<Vec> tfidf_vectors(const std::vector<std::string>& texts) {
     Space sp;
     std::vector<std::map<std::uint32_t, double>> raw(texts.size());
     for (std::size_t i = 0; i < texts.size(); ++i) {
-        for (auto& [k, v] : raw_features(texts[i])) raw[i][sp.id(k)] += v;
+        for (auto& [k, v] : raw_features(texts.at(i))) raw.at(i)[sp.id(k)] += v;
         for (auto& [id, v] : raw[i]) ++sp.df[id];
     }
     const double n = static_cast<double>(texts.size());
     std::vector<Vec> out(texts.size());
     for (std::size_t i = 0; i < texts.size(); ++i) {
         double norm = 0;
-        for (auto& [id, v] : raw[i]) {
+        for (auto& [id, v] : raw.at(i)) {
             double w = (1.0 + std::log(v > 0 ? v : 1.0)) * (std::log((1.0 + n) / (1.0 + sp.df[id])) + 1.0);
-            out[i].emplace_back(id, w);
+            out.at(i).emplace_back(id, w);
             norm += w * w;
         }
         norm = std::sqrt(norm);
         if (norm > 0)
-            for (auto& [id, w] : out[i]) w /= norm;
+            for (auto& [id, w] : out.at(i)) w /= norm;
     }
     return out;
 }
@@ -311,9 +311,9 @@ double dense_cos(const std::vector<double>& a, const std::vector<double>& b) {
     if (a.size() != b.size() || a.empty()) return 0.0;
     double d = 0, na = 0, nb = 0;
     for (std::size_t i = 0; i < a.size(); ++i) {
-        d += a[i] * b[i];
-        na += a[i] * a[i];
-        nb += b[i] * b[i];
+        d += a.at(i) * b.at(i);
+        na += a.at(i) * a.at(i);
+        nb += b.at(i) * b.at(i);
     }
     return na > 0 && nb > 0 ? d / std::sqrt(na * nb) : 0.0;
 }
@@ -379,9 +379,9 @@ TriageResult triage(const RunReport& report, const TriageOptions& opt) {
         if (auto e = connect_embedder(&why)) {
             bool ok = items.size() <= 5000;
             for (std::size_t i = 0; ok && i < items.size(); ++i) {
-                auto v = e->embed(texts[i]);
-                if (!v) ok = false;
-                else dense.push_back(std::move(*v));
+                auto emb = e->embed(texts.at(i));
+                if (!emb) ok = false;
+                else dense.push_back(emb.value());
             }
             if (ok) {
                 res.embedder = "tfidf+" + e->name();
@@ -397,8 +397,8 @@ TriageResult triage(const RunReport& report, const TriageOptions& opt) {
         res.embedder_note = "embedding model disabled; deterministic TF-IDF embedding used";
     }
     auto sim = [&](std::size_t i, std::size_t j) {
-        double s = dot(vecs[i], vecs[j]);
-        if (!dense.empty()) s = 0.5 * s + 0.5 * dense_cos(dense[i], dense[j]);
+        double s = dot(vecs.at(i), vecs.at(j));
+        if (!dense.empty()) s = 0.5 * s + 0.5 * dense_cos(dense.at(i), dense.at(j));
         return s;
     };
 
@@ -411,7 +411,7 @@ TriageResult triage(const RunReport& report, const TriageOptions& opt) {
     std::map<std::string, std::size_t> exact;
     std::map<std::string, std::vector<std::size_t>> blocks;
     for (std::size_t i = 0; i < items.size(); ++i) {
-        const auto& f = *items[i].f;
+        const auto& f = *items.at(i).f;
         auto key = f.file + "|" + std::to_string(f.line.value_or(0)) + "|" + f.cls;
         if (!f.file.empty() && f.line) {
             auto [it, fresh] = exact.emplace(key, i);
@@ -441,8 +441,8 @@ TriageResult triage(const RunReport& report, const TriageOptions& opt) {
     for (auto& [root_i, mem] : groups) {
         // Representative: most severe, then one with a counterexample, then earliest stage.
         std::sort(mem.begin(), mem.end(), [&](std::size_t a, std::size_t b) {
-            const auto& fa = *items[a].f;
-            const auto& fb = *items[b].f;
+            const auto& fa = *items.at(a).f;
+            const auto& fb = *items.at(b).f;
             int sa = severity(fa.status), sb = severity(fb.status);
             if (sa != sb) return sa < sb;
             bool ca = !fa.counterexample.empty(), cb = !fb.counterexample.empty();
@@ -451,33 +451,33 @@ TriageResult triage(const RunReport& report, const TriageOptions& opt) {
             if (pa != pb) return pa < pb;
             return a < b;
         });
-        Pending p;
-        const auto& rep = *items[mem[0]].f;
-        p.c.representative = items[mem[0]].id;
-        p.c.top_status = rep.status;
+        Pending pending;
+        const auto& rep = *items.at(mem.at(0)).f;
+        pending.c.representative = items.at(mem.at(0)).id;
+        pending.c.top_status = rep.status;
         std::set<std::string> st;
         double coh = 0;
         for (auto i : mem) {
-            p.c.members.push_back(items[i].id);
-            st.insert(items[i].f->stage);
+            pending.c.members.push_back(items.at(i).id);
+            st.insert(items.at(i).f->stage);
             coh += i == mem[0] ? 1.0 : sim(mem[0], i);
         }
-        p.c.cohesion = coh / static_cast<double>(mem.size());
-        p.c.stages.assign(st.begin(), st.end());
-        std::sort(p.c.stages.begin(), p.c.stages.end(),
+        pending.c.cohesion = coh / static_cast<double>(mem.size());
+        pending.c.stages.assign(st.begin(), st.end());
+        std::sort(pending.c.stages.begin(), pending.c.stages.end(),
                   [](auto& a, auto& b) { return stage_pos(a) < stage_pos(b); });
         std::string what = !rep.cls.empty() ? rep.cls : rep.message.substr(0, 60);
-        p.c.label = what;
-        if (rep.function && !rep.function->empty()) p.c.label += " in " + *rep.function;
-        if (!rep.file.empty()) p.c.label += " (" + fs::path(rep.file).filename().string() + ")";
-        p.sev = severity(rep.status);
-        p.file = rep.file;
-        p.line = rep.line.value_or(0);
+        pending.c.label = what;
+        if (rep.function && !rep.function->empty()) pending.c.label += " in " + *rep.function;
+        if (!rep.file.empty()) pending.c.label += " (" + fs::path(rep.file).filename().string() + ")";
+        pending.sev = severity(rep.status);
+        pending.file = rep.file;
+        pending.line = rep.line.value_or(0);
         std::set<std::string> ds;
         for (auto i : mem)
-            if (severity(items[i].f->status) <= 2) ds.insert(items[i].f->stage);  // CRASH / FAILED / SANFAIL
-        p.corroboration = ds.size();
-        pend.push_back(std::move(p));
+            if (severity(items.at(i).f->status) <= 2) ds.insert(items.at(i).f->stage);  // CRASH / FAILED / SANFAIL
+        pending.corroboration = ds.size();
+        pend.push_back(std::move(pending));
     }
     // Rank: severity, then corroboration (distinct stages reporting a defect), then
     // distinct stages, then size, then location.
@@ -491,10 +491,10 @@ TriageResult triage(const RunReport& report, const TriageOptions& opt) {
         return a.c.representative < b.c.representative;
     });
     int rank = 0;
-    for (auto& p : pend) {
-        p.c.rank = ++rank;
-        p.c.id = "C" + std::to_string(rank);
-        res.clusters.push_back(std::move(p.c));
+    for (auto& item : pend) {
+        item.c.rank = ++rank;
+        item.c.id = "C" + std::to_string(rank);
+        res.clusters.push_back(std::move(item.c));
     }
     return res;
 }
@@ -559,14 +559,14 @@ void write_triage(const RunReport& report, const fs::path& out, const TriageOpti
 
 int triage_main(int argc, char** argv) {
     auto parsed = parse_triage_cli(std::span<const char* const>(argv, static_cast<std::size_t>(argc)));
-    if (!parsed) {
-        std::cerr << "prism triage: error: " << parsed.error() << "\n";
+    if (!parsed.value) {
+        std::cerr << "prism triage: error: " << parsed.message << "\n";
         return 2;
     }
-    fs::path rp = parsed->report_dir;
+    fs::path rp = parsed.value->report_dir;
     TriageOptions topt;
-    if (parsed->threshold >= 0) topt.threshold = parsed->threshold;
-    topt.use_embedder = parsed->use_embedder;
+    if (parsed.value->threshold >= 0) topt.threshold = parsed.value->threshold;
+    topt.use_embedder = parsed.value->use_embedder;
     if (fs::is_regular_file(rp)) rp = rp.parent_path();
     auto rep = RunReport::load(rp / "report.json");
     if (!rep) {

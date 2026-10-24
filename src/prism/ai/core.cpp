@@ -29,7 +29,7 @@ std::string trim(const std::string& s) {
 
 bool is_identifier(const std::string& s) {
     if (s.empty() || s.size() > 64) return false;
-    if (!(std::isalpha(static_cast<unsigned char>(s[0])) || s[0] == '_')) return false;
+    if (!(std::isalpha(static_cast<unsigned char>(s.at(0))) || s.at(0) == '_')) return false;
     for (char c : s)
         if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '_')) return false;
     return true;
@@ -39,7 +39,7 @@ std::string join(const std::vector<std::string>& v, const std::string& sep) {
     std::string out;
     for (std::size_t i = 0; i < v.size(); ++i) {
         if (i) out += sep;
-        out += v[i];
+        out += v.at(i);
     }
     return out;
 }
@@ -172,9 +172,9 @@ std::string grammar_for(const std::string& name, const std::vector<std::string>&
     if (names.empty()) return g;
     std::string alt;
     for (std::size_t i = 0; i < names.size(); ++i) {
-        if (!is_identifier(names[i])) continue;
+        if (!is_identifier(names.at(i))) continue;
         if (!alt.empty()) alt += " | ";
-        alt += "\"" + names[i] + "\"";
+        alt += "\"" + names.at(i) + "\"";
     }
     if (alt.empty()) return g;
     std::istringstream in(g);
@@ -295,14 +295,14 @@ struct ExprCheck {
 bool tokenize_expr(const std::string& s, std::vector<std::string>& out, std::string& why, bool allow_implies) {
     std::size_t i = 0;
     while (i < s.size()) {
-        char c = s[i];
+        char c = s.at(i);
         if (c == ' ' || c == '\t') {
             ++i;
             continue;
         }
         if (std::isalpha(static_cast<unsigned char>(c)) || c == '_') {
             std::size_t j = i;
-            while (j < s.size() && (std::isalnum(static_cast<unsigned char>(s[j])) || s[j] == '_')) ++j;
+            while (j < s.size() && (std::isalnum(static_cast<unsigned char>(s.at(j))) || s.at(j) == '_')) ++j;
             out.push_back(s.substr(i, j - i));
             i = j;
             continue;
@@ -331,7 +331,7 @@ bool tokenize_expr(const std::string& s, std::vector<std::string>& out, std::str
         if (two == "++" || two == "--" || two == "<<" || two == ">>")
             return (why = "operator '" + two + "' not allowed", false);
         if (std::strchr("+-*/%<>!()", c)) {
-            if (c == '!' && i + 1 < s.size() && s[i + 1] == '=') return (why = "bad token", false);
+            if (c == '!' && i + 1 < s.size() && s.at(i + 1) == '=') return (why = "bad token", false);
             out.push_back(std::string(1, c));
             ++i;
             continue;
@@ -500,10 +500,10 @@ Validated validate_contract(const std::string& raw, const std::vector<std::strin
             trace = trim(line.substr(tp + 9));
             line = trim(line.substr(0, tp));
             bool ok_trace = trace == "comment" || trace == "code";
-            if (!ok_trace && trace.size() >= 2 && trace.size() <= 5 && trace[0] == 'R' && trace[1] != '0') {
+            if (!ok_trace && trace.size() >= 2 && trace.size() <= 5 && trace.at(0) == 'R' && trace.at(1) != '0') {
                 ok_trace = true;
                 for (std::size_t k = 1; k < trace.size(); ++k)
-                    if (!std::isdigit(static_cast<unsigned char>(trace[k]))) ok_trace = false;
+                    if (!std::isdigit(static_cast<unsigned char>(trace.at(k)))) ok_trace = false;
             }
             if (!ok_trace) return (v.reason = "bad trace link '" + trace.substr(0, 20) + "'", v.pairs.clear(), v);
         }
@@ -788,12 +788,12 @@ std::string function_source(const FunctionInfo& fn) {
         while (std::getline(in, l)) lines.push_back(l);
         int a = std::max(1, fn.span.first > 0 ? fn.span.first : fn.line);
         // Include the comment block directly above the definition.
-        while (a > 1 && trim(lines[static_cast<std::size_t>(a - 2)]).rfind("//", 0) == 0) --a;
+        while (a > 1 && trim(lines.at(static_cast<std::size_t>(a - 2))).rfind("//", 0) == 0) --a;
         int b = fn.span.second > 0 ? fn.span.second : static_cast<int>(lines.size());
         b = std::min<int>(b, static_cast<int>(lines.size()));
         if (a > b) break;
         std::string out;
-        for (int i = a; i <= b; ++i) out += lines[static_cast<std::size_t>(i - 1)] + "\n";
+        for (int i = a; i <= b; ++i) out += lines.at(static_cast<std::size_t>(i - 1)) + "\n";
         if (!out.empty()) return out;
     }
     return fn.signature + "\n{" + fn.body + "\n}\n";

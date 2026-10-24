@@ -77,10 +77,10 @@ std::vector<std::string> split_conjuncts(const std::string& expr) {
     int depth = 0;
     std::size_t start = 0;
     for (std::size_t i = 0; i < expr.size(); ++i) {
-        char c = expr[i];
+        char c = expr.at(i);
         if (c == '(') ++depth;
         else if (c == ')') --depth;
-        else if (depth == 0 && c == '&' && i + 1 < expr.size() && expr[i + 1] == '&') {
+        else if (depth == 0 && c == '&' && i + 1 < expr.size() && expr.at(i + 1) == '&') {
             auto part = trim(expr.substr(start, i - start));
             if (!part.empty()) out.push_back(part);
             start = i + 2;
@@ -144,25 +144,26 @@ std::vector<std::pair<std::string, std::string>> finding_assumptions(const Findi
             try {
                 for (auto& x : nlohmann::json::parse(r))
                     if (x.is_string()) add_requires(x.get<std::string>());
-            } catch (...) {
+            } catch (const nlohmann::json::exception&) {
             }
         } else {
             add_requires(r);
         }
     }
     if (auto it = f.extra.find("assumptions"); it != f.extra.end()) {
-        static const std::regex range(R"(^\s*(-?\d+)\s*<=\s*([A-Za-z_]\w*)\s*<=\s*(-?\d+))");
         try {
             for (auto& x : nlohmann::json::parse(it->second)) {
                 if (!x.is_string()) continue;
                 auto a = x.get<std::string>();
                 std::smatch m;
-                if (std::regex_search(a, m, range))
+                if (std::regex_search(
+                        a, m,
+                        std::regex(R"(^\s*(-?\d+)\s*<=\s*([A-Za-z_]\w*)\s*<=\s*(-?\d+))")))
                     out.push_back({a, m[2].str() + " >= " + m[1].str() + " && " + m[2].str() + " <= " + m[3].str()});
                 else
                     out.push_back({a, ""});
             }
-        } catch (...) {
+        } catch (const nlohmann::json::exception&) {
         }
     }
     return out;
@@ -294,7 +295,7 @@ std::vector<Finding> model_assumption_audit(const std::vector<FunctionInfo>& fun
         if (budget-- <= 0) break;
         std::string list;
         for (std::size_t i = 0; i < it.assumptions.size(); ++i)
-            list += std::to_string(i) + ": " + it.assumptions[i] + "\n";
+            list += std::to_string(i) + ": " + it.assumptions.at(i) + "\n";
         ModelRequest req;
         req.feature = "assumption-audit";
         req.system = system_prompt(
@@ -328,13 +329,14 @@ std::vector<Finding> model_assumption_audit(const std::vector<FunctionInfo>& fun
         rec.checker_result = "flags: " + std::to_string(v.pairs.size());
         audit_append(rec);
         for (std::size_t k = 0; k < v.pairs.size(); ++k) {
-            auto idx = static_cast<std::size_t>(std::stoul(v.pairs[k].first));
+            auto idx = static_cast<std::size_t>(std::stoul(v.pairs.at(k).first));
+            if (idx >= it.assumptions.size()) continue;
             auto g = base_finding(stage, laws::READS, it.fn, it.f, "",
-                                  "assumption audit (model, not a verdict): '" + it.assumptions[idx] +
-                                      "' may exclude a realistic input (" + v.pairs[k].second + "): " + v.items[k],
+                                  "assumption audit (model, not a verdict): '" + it.assumptions.at(idx) +
+                                      "' may exclude a realistic input (" + v.pairs.at(k).second + "): " + v.items.at(k),
                                   laws::STRENGTH_READS);
-            g.extra["assumption"] = it.assumptions[idx];
-            g.extra["excluded_input"] = v.pairs[k].second;
+            g.extra["assumption"] = it.assumptions.at(idx);
+            g.extra["excluded_input"] = v.pairs.at(k).second;
             g.extra["audited_stage"] = it.f->stage;
             g.extra["audited_status"] = it.f->status;
             g.extra["ai_audit_id"] = rec.id;

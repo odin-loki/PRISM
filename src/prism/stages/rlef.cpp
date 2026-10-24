@@ -39,6 +39,7 @@ std::string bmc_status_of_source(const std::string& source, int unwind) {
     auto p = td / "cand.c";
     {
         std::ofstream out(p);
+        if (!out.is_open()) return {};
         out << src;
     }
     auto fns = extract_functions(p, "cand.c");

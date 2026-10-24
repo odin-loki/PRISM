@@ -49,7 +49,7 @@ double eval_tree(const json& n, const std::vector<double>& x, int depth = 0) {
     if (n.contains("v")) return n["v"].get<double>();
     auto f = n.value("f", -1);
     double t = n.value("t", 0.0);
-    double xv = (f >= 0 && static_cast<std::size_t>(f) < x.size()) ? x[static_cast<std::size_t>(f)] : 0.0;
+    double xv = (f >= 0 && static_cast<std::size_t>(f) < x.size()) ? x.at(static_cast<std::size_t>(f)) : 0.0;
     return eval_tree(xv <= t ? n["l"] : n["r"], x, depth + 1);
 }
 

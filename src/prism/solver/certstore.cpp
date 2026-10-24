@@ -215,9 +215,9 @@ bool parse_size(const std::string& s, std::uint64_t& out) {
     if (s.empty()) return false;
     std::size_t i = 0;
     std::uint64_t v = 0;
-    while (i < s.size() && s[i] >= '0' && s[i] <= '9') {
+    while (i < s.size() && s.at(i) >= '0' && s.at(i) <= '9') {
         if (v > (std::uint64_t(1) << 50)) return false;
-        v = v * 10 + static_cast<std::uint64_t>(s[i] - '0');
+        v = v * 10 + static_cast<std::uint64_t>(s.at(i) - '0');
         ++i;
     }
     if (i == 0) return false;

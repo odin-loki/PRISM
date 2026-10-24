@@ -115,6 +115,7 @@ std::optional<std::string> http_request(const std::string& method, const std::st
         try {
             port = static_cast<INTERNET_PORT>(std::stoi(hostport.substr(colon + 1)));
         } catch (...) {
+            port = https ? 443 : 80;
         }
     }
     HINTERNET sess = WinHttpOpen(L"PRISM", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME,
@@ -275,7 +276,7 @@ std::optional<std::string> http_request(const std::string& method, const std::st
     }
     if (fd < 0) return std::nullopt;
     struct FdGuard {
-        int fd;
+        int fd{-1};
         explicit FdGuard(int f) : fd(f) {}
         ~FdGuard() {
             if (fd >= 0) ::close(fd);
@@ -365,7 +366,7 @@ std::optional<std::string> http_request(const std::string& method, const std::st
     auto clp = hlow.find(cl_key);
     if (clp != std::string::npos) {
         clp += cl_key.size();
-        while (clp < hlow.size() && (hlow[clp] == ' ' || hlow[clp] == '\t')) ++clp;
+        while (clp < hlow.size() && (hlow.at(clp) == ' ' || hlow.at(clp) == '\t')) ++clp;
         auto cle = hlow.find("\r\n", clp);
         if (cle == std::string::npos) cle = hlow.size();
         const std::string cl = hlow.substr(clp, cle - clp);

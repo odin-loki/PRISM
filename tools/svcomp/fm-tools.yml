@@ -1,24 +1,37 @@
 # SV-COMP fm-tools registration draft (roadmap 6.3).
+# Schema: https://fm-tools.sosy-lab.org/schema.html (format 2.0).
 # Upload via https://fm-tools.org/ after filling version and archive URL.
+# Note: fm-tools id `prism` is the Oxford probabilistic model checker; use a
+# distinct id (here `prism-svcomp`) unless coordinators assign another.
 
+id: prism-svcomp
 name: PRISM
 description: >
   Performance, Regression, Integration and Security Module — hybrid C/C++
   verifier with BMC, Clang/LLVM PIR front end, and SV-COMP witness export.
+  LP64 only today; ILP32 tasks with width-dependent types answer unknown.
+  valid-memsafety refutations only; no true memsafety proofs yet.
+  Submission archive: `prism svcomp pack` (dependencies.json lists host clang/opt).
+  Runtime: clang/llvm 18, bubblewrap; verifier is the C++ prism binary.
+input_languages:
+  - C
 project_url: https://github.com/odin-loki/PRISM
-repository: https://github.com/odin-loki/PRISM
-license: AGPL-3.0-only
-version: "0.1.0"
-participation:
-  - name: SV-COMP
-    status: preparation
-    properties:
-      - no-overflow
-      - unreach-call
-    notes: >
-      LP64 only today; ILP32 tasks with width-dependent types answer unknown.
-      valid-memsafety refutations only; no true memsafety proofs yet.
-      Pinned subset (2026-09-26): 203/417 on no-overflow + unreach-call, 0 incorrect.
-      Archive: `prism svcomp pack` (dependencies.json lists host clang/opt).
-      Tool-info module: benchexec.tools.prism (tools/svcomp/prism.py, to be upstreamed).
-      Runtime packages: clang and llvm (opt) 18, bubblewrap; no Python for the verifier.
+repository_url: https://github.com/odin-loki/PRISM
+spdx_license_identifier: AGPL-3.0-only
+benchexec_toolinfo_module: benchexec.tools.prism
+fmtools_format_version: "2.0"
+fmtools_entry_maintainers: []
+
+maintainers: []
+
+versions: []
+
+competition_participations: []
+
+techniques:
+  - Bounded Model Checking
+
+frameworks_solvers:
+  - Z3
+
+literature: []

@@ -229,7 +229,7 @@ Each finding carries a `stage`, a `status` (the verdict), the `file`,
 
 ### Verdicts
 
-The status vocabulary is closed (`prism/laws.py`, `include/prism/laws.hpp`);
+The status vocabulary is closed (`include/prism/laws.hpp`);
 [VERDICTS.md](VERDICTS.md) defines each one and the laws that relate them.
 In short:
 

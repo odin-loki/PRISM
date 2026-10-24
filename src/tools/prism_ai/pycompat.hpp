@@ -1,9 +1,9 @@
 #pragma once
 
-// Reproducibility helpers for the prism_ai offline tool: the numbers it
-// writes into model metrics and docs/AI.md / docs/SOLVERS.md were first
-// produced by a Python implementation, so the same seeded sample and the same
-// printed digits are kept:
+// Reproducibility helpers for the prism_ai offline tool (`prism_ai measure`,
+// `sample-pairs`, `predict`, etc.). Metrics in docs/AI.md and docs/SOLVERS.md
+// were first produced by a deleted Python implementation; this header keeps the
+// same seeded draws and printed digits so regenerated docs stay byte-stable:
 //
 //   * PyRandom: the Mersenne Twister of CPython's random.Random(int seed)
 //     (init_by_array on the seed's 32-bit words), with randrange(n) and

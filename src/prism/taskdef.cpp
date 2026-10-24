@@ -36,7 +36,7 @@ std::string rtrim(std::string s) {
 
 std::string trim(const std::string& s) {
     std::size_t a = 0;
-    while (a < s.size() && (s[a] == ' ' || s[a] == '\t')) ++a;
+    while (a < s.size() && (s.at(a) == ' ' || s.at(a) == '\t')) ++a;
     return rtrim(s.substr(a));
 }
 
@@ -44,10 +44,10 @@ std::string trim(const std::string& s) {
 std::string cut_comment(const std::string& s) {
     char q = 0;
     for (std::size_t i = 0; i < s.size(); ++i) {
-        char c = s[i];
+        char c = s.at(i);
         if (q) {
             if (q == '\'' && c == '\'') {
-                if (i + 1 < s.size() && s[i + 1] == '\'') ++i;
+                if (i + 1 < s.size() && s.at(i + 1) == '\'') ++i;
                 else q = 0;
             } else if (q == '"' && c == '\\') {
                 ++i;
@@ -56,10 +56,11 @@ std::string cut_comment(const std::string& s) {
             }
             continue;
         }
-        if ((c == '\'' || c == '"') && (i == 0 || s[i - 1] == ' ' || s[i - 1] == '\t' || s[i - 1] == '[' ||
-                                        s[i - 1] == '{' || s[i - 1] == ',' || s[i - 1] == ':' || s[i - 1] == '-'))
-            q = c;
-        else if (c == '#' && (i == 0 || s[i - 1] == ' ' || s[i - 1] == '\t'))
+        if ((c == '\'' || c == '"') &&
+            (i == 0 || s.at(i - 1) == ' ' || s.at(i - 1) == '\t' || s.at(i - 1) == '[' ||
+             s.at(i - 1) == '{' || s.at(i - 1) == ',' || s.at(i - 1) == ':' || s.at(i - 1) == '-'))
+            q = static_cast<char>(c);
+        else if (c == '#' && (i == 0 || s.at(i - 1) == ' ' || s.at(i - 1) == '\t'))
             return s.substr(0, i);
     }
     return s;
@@ -77,7 +78,7 @@ ojson plain_scalar(const std::string& s) {
     std::string d;
     for (char c : s)
         if (c != '_') d += c;
-    std::size_t i = (d[0] == '+' || d[0] == '-') ? 1 : 0;
+    std::size_t i = (!d.empty() && (d.at(0) == '+' || d.at(0) == '-')) ? 1 : 0;
     auto all = [&](std::size_t from, auto pred) {
         if (from >= d.size()) return false;
         for (std::size_t k = from; k < d.size(); ++k)
@@ -114,13 +115,14 @@ ojson plain_scalar(const std::string& s) {
         }
         if (k < d.size() && d[k] == '.') {
             ++k;
-            while (k < d.size() && std::isdigit(static_cast<unsigned char>(d[k]))) {
+            while (k < d.size() && std::isdigit(static_cast<unsigned char>(d.at(k)))) {
                 ++k;
                 digits = true;
             }
-            if (k + 1 < d.size() && (d[k] == 'e' || d[k] == 'E') && (d[k + 1] == '+' || d[k + 1] == '-')) {
+            if (k + 1 < d.size() && (d.at(k) == 'e' || d.at(k) == 'E') &&
+                (d.at(k + 1) == '+' || d.at(k + 1) == '-')) {
                 std::size_t e = k + 2;
-                while (e < d.size() && std::isdigit(static_cast<unsigned char>(d[e]))) ++e;
+                while (e < d.size() && std::isdigit(static_cast<unsigned char>(d.at(e)))) ++e;
                 if (e == d.size() && e > k + 2) k = e;
             }
             if (k == d.size() && digits) return std::strtod(d.c_str(), nullptr);
@@ -324,7 +326,7 @@ struct Parser {
 
     // `|` / `>` block scalar: the lines indented deeper than parent_indent.
     ojson block_scalar(const std::string& head, int parent_indent) {
-        bool folded = head[0] == '>';
+        bool folded = head.front() == '>';
         std::string out;
         int ind = -1;
         std::vector<std::string> parts;
@@ -333,7 +335,7 @@ struct Parser {
             parts.push_back(std::string(static_cast<std::size_t>(lines[i].indent - ind), ' ') + lines[i].text);
             ++i;
         }
-        for (std::size_t k = 0; k < parts.size(); ++k) out += (k ? (folded ? " " : "\n") : "") + parts[k];
+        for (std::size_t k = 0; k < parts.size(); ++k) out += (k ? (folded ? " " : "\n") : "") + parts.at(k);
         if (!parts.empty() && head.find('-') == std::string::npos) out += "\n";
         return out;
     }
@@ -368,7 +370,7 @@ struct Parser {
             Line l = lines[i];
             std::string rest = l.text == "-" ? "" : l.text.substr(2);
             std::size_t extra = 0;
-            while (extra < rest.size() && rest[extra] == ' ') ++extra;
+            while (extra < rest.size() && rest.at(extra) == ' ') ++extra;
             rest = rest.substr(extra);
             if (rest.empty()) {
                 ++i;

@@ -1,3 +1,4 @@
+// Built only when CMake PRISM_NATIVE=ON (libprism_native shared library).
 #include "prism/simd.hpp"
 
 #include <cstddef>

@@ -11,7 +11,8 @@ code base and says honestly what it could not check.
   If you find "Helix"/"helix"/"HELIX" anywhere outside `third_party/`, it is a
   leftover: rename it to PRISM (`tests/cpp/test_naming.cpp` fails on it).
 - Env vars are `PRISM_*` only (`PRISM_AFL`, `PRISM_LIBFUZZER`, `PRISM_PBSD`,
-  `PRISM_GGUF`, `PRISM_MODEL`, `PRISM_LLAMA_SERVER`, `PRISM_NATIVE_DLL`,
+  `PRISM_GGUF`, `PRISM_MODEL`, `PRISM_LLAMA_SERVER`, `PRISM_NATIVE_DLL` (only
+  when `libprism_native` is built with `-DPRISM_NATIVE=ON`),
   `PRISM_TOOLS_DIR`, AI: `PRISM_PROVER_SERVER`, `PRISM_PROVER_GGUF`,
   `PRISM_PROOF_CACHE`, `PRISM_EMBED_SERVER`, `PRISM_TRIAGE`,
   `PRISM_SOLVER_MODEL`, `PRISM_SOLVER_PREDICT`, `PRISM_PREDICT_COLLECT`,
@@ -101,7 +102,6 @@ entry in `src/prism/config.cpp`. See `docs/SUPPLY_CHAIN.md`.
 
 ## Layout
 
-- `prism/` Python engine; `prism/cocci/` shipped Coccinelle rules
 - `src/prism/` C++ engine; `src/gui/` Qt GUI; `src/cuda/` CUDA havoc
 - `src/prism/stages/` one .cpp per analysis stage + shared `common`/`interp`/`llm`/`platform` (internal headers)
 - `include/prism/` C++ headers

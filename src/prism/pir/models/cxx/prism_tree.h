@@ -223,11 +223,19 @@ public:
     _Base _M_head;
 
     // comparisons that cannot throw need no clean-up path
-    static constexpr bool _S_nothrow_cmp =
-        noexcept(std::declval<const _Compare&>()(std::declval<const _Key&>(), std::declval<const _Key&>())) ||
-        ((is_same_v<_Compare, less<_Key>> || is_same_v<_Compare, greater<_Key>> || is_same_v<_Compare, less<>> ||
-          is_same_v<_Compare, greater<>>) &&
-         is_scalar_v<_Key>);
+    static constexpr bool _S_less_cmp = is_same_v<_Compare, less<_Key> >;
+    static constexpr bool _S_greater_cmp = is_same_v<_Compare, greater<_Key> >;
+    static constexpr bool _S_less_any = is_same_v<_Compare, less<> >;
+    static constexpr bool _S_greater_any = is_same_v<_Compare, greater<> >;
+    static constexpr bool _S_lib_cmp =
+        _S_less_cmp ? true : _S_greater_cmp ? true : _S_less_any ? true : _S_greater_any ? true : false;
+    static constexpr bool _S_scalar_key = is_scalar_v<_Key>;
+    static constexpr bool _S_scalar_cmp = _S_lib_cmp ? _S_scalar_key : false;
+    using _CompareRef = std::add_lvalue_reference_t<std::add_const_t<_Compare>>;
+    using _KeyRef = std::add_lvalue_reference_t<std::add_const_t<_Key>>;
+    using _NoexceptCmp =
+        std::bool_constant<noexcept(std::declval<_CompareRef>()(std::declval<_KeyRef>(), std::declval<_KeyRef>()))>;
+    static constexpr bool _S_nothrow_cmp = _NoexceptCmp::value ? true : _S_scalar_cmp;
 
     _Prism_tree() : _M_cmp() { _M_reset(); }
     explicit _Prism_tree(const _Compare& __c) : _M_cmp(__c) { _M_reset(); }
@@ -341,15 +349,18 @@ public:
     }
     // Links __n just before __pos.
     _Base* _M_link(_Base* __pos, _Base* __n) noexcept {
+        _Base* const prev = __pos ? __pos->_M_prev : nullptr;
+        if (!__pos || !prev || !__n) return __n;
         __n->_M_next = __pos;
-        __n->_M_prev = __pos->_M_prev;
-        __pos->_M_prev->_M_next = __n;
+        __n->_M_prev = prev;
+        prev->_M_next = __n;
         __pos->_M_prev = __n;
         __n->_M_owner = &_M_head;
         ++_M_count;
         return __n;
     }
     void _M_unlink(_Base* __n) noexcept {
+        if (!__n || !__n->_M_prev || !__n->_M_next) return;
         __n->_M_prev->_M_next = __n->_M_next;
         __n->_M_next->_M_prev = __n->_M_prev;
         --_M_count;

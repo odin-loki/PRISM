@@ -40,7 +40,7 @@ constexpr int WIDTH = 32;
 
 std::string lstrip(std::string s) {
     size_t i = 0;
-    while (i < s.size() && std::isspace(static_cast<unsigned char>(s[i]))) ++i;
+    while (i < s.size() && std::isspace(static_cast<unsigned char>(s.at(i)))) ++i;
     return s.substr(i);
 }
 std::string rstrip(std::string s) {
@@ -2917,7 +2917,9 @@ std::map<std::string, int> extract_enums(std::string text) {
                     size_t used = 0;
                     auto v = std::stoll(val, &used, 0);
                     if (used == val.size() && !val.empty()) nxt = v;
-                } catch (...) {}
+                } catch (...) {
+                    nxt = std::nullopt;
+                }
                 if (!nxt && is_ident(val) && !ambiguous.count(val)) {
                     auto it = out.find(val);
                     if (it != out.end()) nxt = it->second;
@@ -2927,7 +2929,7 @@ std::map<std::string, int> extract_enums(std::string text) {
                 nxt = std::nullopt;
                 continue;
             }
-            if (!nxt || *nxt < INT32_MIN || *nxt > INT32_MAX) {
+            if (!nxt.has_value() || *nxt < INT32_MIN || *nxt > INT32_MAX) {
                 drop(name);
                 nxt = std::nullopt;
                 continue;
@@ -3062,7 +3064,7 @@ std::vector<int> unwind_schedule(int unwind) {
         ks.push_back(k);
         k *= 2;
     }
-    if (std::find(ks.begin(), ks.end(), unwind) == ks.end())
+    if (std::ranges::find(ks, unwind) == ks.end())
         ks.push_back(std::max(1, unwind));
     return ks;
 }
@@ -3096,7 +3098,7 @@ std::string join_csv(const std::vector<int>& v) {
     std::string s;
     for (size_t i = 0; i < v.size(); ++i) {
         if (i) s += ",";
-        s += std::to_string(v[i]);
+        s += std::to_string(v.at(i));
     }
     return s;
 }
@@ -3104,7 +3106,7 @@ std::string join_csv(const std::vector<std::string>& v) {
     std::string s;
     for (size_t i = 0; i < v.size(); ++i) {
         if (i) s += ",";
-        s += v[i];
+        s += v.at(i);
     }
     return s;
 }
@@ -3551,7 +3553,8 @@ ForkFlipResult solve_fork_flip(const FunctionInfo& fn, const std::map<std::strin
             int cur = 0;
             if (auto sit = seed.find(name); sit != seed.end()) cur = sit->second;
             uint64_t mask = w >= 64 ? ~uint64_t{0} : ((uint64_t{1} << w) - 1);
-            uint64_t bitsv = static_cast<uint64_t>(static_cast<int64_t>(cur)) & mask;
+            uint64_t bitsv = static_cast<uint64_t>(static_cast<int64_t>(cur));
+            bitsv &= mask;
             diffs.push_back(it->second != e.ctx.bv_val(bitsv, static_cast<unsigned>(w)));
         }
         z3::check_result verdict = z3::unknown;
@@ -3571,7 +3574,9 @@ ForkFlipResult solve_fork_flip(const FunctionInfo& fn, const std::map<std::strin
         auto model = s.get_model();
         std::map<std::string, int> out;
         auto to_i32 = [](int64_t x) -> int {
-            auto u = static_cast<uint32_t>(static_cast<uint64_t>(x) & 0xFFFFFFFFu);
+            uint64_t low = static_cast<uint64_t>(x);
+            low &= 0xFFFFFFFFu;
+            auto u = static_cast<uint32_t>(low);
             return static_cast<int>(static_cast<int32_t>(u));
         };
         for (auto& name : names) {
@@ -3766,13 +3771,13 @@ std::vector<Finding> run_bmc(const std::vector<FunctionInfo>& functions, int unw
 #else
     (void)functions;
     (void)unwind;
-    Finding f;
-    f.stage = "bmc";
-    f.status = std::string(laws::NOTRUN);
-    f.message = "z3 not built";
-    f.strength = std::string(laws::STRENGTH_PROVES);
-    f.extra["install"] = "rebuild with -DPRISM_Z3=ON (vendored third_party/z3)";
-    return {f};
+    Finding notrun;
+    notrun.stage = "bmc";
+    notrun.status = std::string(laws::NOTRUN);
+    notrun.message = "z3 not built";
+    notrun.strength = std::string(laws::STRENGTH_PROVES);
+    notrun.extra["install"] = "rebuild with -DPRISM_Z3=ON (vendored third_party/z3)";
+    return {notrun};
 #endif
 }
 

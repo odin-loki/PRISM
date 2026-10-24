@@ -40,7 +40,7 @@ std::vector<int> session_members(int sid) {
         std::vector<std::string> rest;
         std::string cur;
         for (std::size_t i = close + 2; i < stat.size(); ++i) {
-            char c = stat[i];
+            char c = stat.at(i);
             if (c == ' ' || c == '\n') {
                 if (!cur.empty()) rest.push_back(cur);
                 cur.clear();
@@ -146,7 +146,7 @@ SessionOut run_session(const std::vector<std::string>& args, const SessionOption
         }
         if (!dir.empty() && ::chdir(dir.c_str()) != 0) ::_exit(127);
         for (const auto& [k, v] : opt.env) ::setenv(k.c_str(), v.c_str(), 1);
-        ::execvp(argv[0], argv.data());
+        ::execvp(argv.at(0), argv.data());
         ::_exit(127);
     }
     ChildSession tracked(pid);  // the whole session dies with PRISM on SIGINT/SIGTERM

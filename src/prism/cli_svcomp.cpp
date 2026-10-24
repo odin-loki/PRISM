@@ -393,15 +393,17 @@ int score_main(int argc, char** argv) {
     const fs::path work = fs::weakly_canonical(fs::absolute(out), ec);
     fs::create_directories(work, ec);
     std::vector<SubsetTask> ts;
-    for (auto& t : subset_tasks(suite, property + ".prp"))
-        if (only.empty() || t.id.find(only) != std::string::npos) ts.push_back(std::move(t));
+    for (SubsetTask task : subset_tasks(suite, property + ".prp")) {
+        if (!only.empty() && task.id.find(only) == std::string::npos) continue;
+        ts.push_back(std::move(task));
+    }
     std::vector<ojson> rows(ts.size());
     std::atomic<std::size_t> next_task{0};
     auto worker = [&] {
         for (;;) {
             std::size_t k = next_task++;
             if (k >= ts.size()) return;
-            const auto& t = ts[k];
+            const auto& t = ts.at(k);
             // "a/b.yml" -> "a__b"
             std::string stem;
             for (char c : t.id) stem += c == '/' ? std::string("__") : std::string(1, c);
@@ -445,7 +447,7 @@ int score_main(int argc, char** argv) {
             row["witness"] = fs::exists(wit, wec) ? ojson(wit.string()) : ojson(nullptr);
             row["seconds"] = round1(secs);
             row["data_model"] = t.data_model;
-            rows[k] = std::move(row);
+            rows.at(k) = std::move(row);
         }
     };
     {
@@ -574,10 +576,10 @@ PackResult pack(const fs::path& prism_bin, const fs::path& repo, const fs::path&
         ls >> word >> word;
         version = word;
     }
-    manifest["prism_version"] = version ? ojson(*version) : ojson(nullptr);
+    manifest["prism_version"] = version.has_value() ? ojson(version.value()) : ojson(nullptr);
     std::optional<std::string> head;
     if (auto g = cfg.which({"git"})) head = first_line({g->string(), "-C", repo.string(), "rev-parse", "HEAD"});
-    manifest["git_commit"] = head ? ojson(*head) : ojson(nullptr);
+    manifest["git_commit"] = head.has_value() ? ojson(head.value()) : ojson(nullptr);
     std::vector<std::string> files = {"prism", "MANIFEST.json", "dependencies.json"};
     for (const auto& [_, name] : statics) files.push_back(name);
     std::sort(files.begin(), files.end());
@@ -709,14 +711,19 @@ int svcomp_main(int argc, char** argv) {
         std::cout << version_string() << "\n";
         return 0;
     }
-    if (!task || !prop) {
+    if (!task) {
+        usage();
+        std::cerr << "prism svcomp: TASK and --prop are required\n";
+        return 2;
+    }
+    if (!prop) {
         usage();
         std::cerr << "prism svcomp: TASK and --prop are required\n";
         return 2;
     }
     Outcome oc;
     try {
-        oc = solve(*task, *prop, opt);
+        oc = solve(task.value(), prop.value(), opt);
     } catch (const std::exception& e) {
         oc.decision = Decision{"error", std::string("prism svcomp failed: ") + e.what(), std::nullopt, json::object()};
         oc.witness_path.reset();

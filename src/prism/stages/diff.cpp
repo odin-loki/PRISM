@@ -50,7 +50,7 @@ std::vector<std::pair<FunctionInfo, FunctionInfo>> diff_pairs(const std::vector<
             if (stem_of(f).ends_with("_a")) a_fns.push_back(&f);
             if (stem_of(f).ends_with("_b")) b_fns.push_back(&f);
         }
-        for (std::size_t i = 0; i < a_fns.size() && i < b_fns.size(); ++i) mark(*a_fns[i], *b_fns[i]);
+        for (std::size_t i = 0; i < a_fns.size() && i < b_fns.size(); ++i) mark(*a_fns.at(i), *b_fns[i]);
     }
     return pairs;
 }
@@ -165,6 +165,7 @@ Finding diff_pair(const FunctionInfo& a, const FunctionInfo& b, const fs::path&)
     auto exe = td / "diff.exe";
     {
         std::ofstream out(harness);
+        if (!out.is_open()) return base;
         out << src;
     }
     auto cr = run_argv({cc->string(), "-O0", "-g", "-std=c11", harness.string(), "-o", exe.string()}, {}, 30.0);

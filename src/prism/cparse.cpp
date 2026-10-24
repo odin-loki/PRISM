@@ -399,11 +399,12 @@ std::string blank_char_literals(std::string text) {
     if (text.find('\'') == std::string::npos) return text;
     const auto n = text.size();
     for (std::size_t i = 0; i < n; ++i) {
-        if (text[i] != '\'' || is_digit_separator(text, i)) continue;
+        if (text.at(i) != '\'' || is_digit_separator(text, i)) continue;
         std::size_t k = i + 1;
-        while (k < n && text[k] != '\'' && text[k] != '\n') k += text[k] == '\\' && k + 1 < n && text[k + 1] != '\n' ? 2 : 1;
-        if (k >= n || text[k] != '\'') continue;  // unterminated on its line: left as it is
-        for (auto q = i + 1; q < k; ++q) text[q] = ' ';
+        while (k < n && text.at(k) != '\'' && text.at(k) != '\n')
+            k += text.at(k) == '\\' && k + 1 < n && text.at(k + 1) != '\n' ? 2 : 1;
+        if (k >= n || text.at(k) != '\'') continue;  // unterminated on its line: left as it is
+        for (auto q = i + 1; q < k; ++q) text.at(q) = ' ';
         i = k;
     }
     return text;
@@ -415,7 +416,7 @@ std::string blank_preprocessor(std::string text) {
     static Regex pp(R"((?m)^[ \t]*#(?:[^\n]*\\\n)*[^\n]*)", true);
     for (auto& m : pp.finditer(text))
         for (int k = m.spans[0].first; k < m.spans[0].second; ++k)
-            if (text[static_cast<std::size_t>(k)] != '\n') text[static_cast<std::size_t>(k)] = ' ';
+            if (text.at(static_cast<std::size_t>(k)) != '\n') text.at(static_cast<std::size_t>(k)) = ' ';
     return text;
 }
 
@@ -473,8 +474,8 @@ std::string drop_type_operators(std::string head) {
         int depth = 0;
         std::size_t e = head.size();
         for (auto i = k; i < head.size(); ++i) {
-            if (head[i] == '(') ++depth;
-            else if (head[i] == ')' && --depth == 0) {
+            if (head.at(i) == '(') ++depth;
+            else if (head.at(i) == ')' && --depth == 0) {
                 e = i + 1;
                 break;
             }
@@ -738,7 +739,7 @@ struct Parser {
                 if (b == std::string::npos) break;
                 a = b + 2;
             }
-            if (parts.size() >= 2 && (parts.back().starts_with("~") || parts.back() == parts[parts.size() - 2]))
+            if (parts.size() >= 2 && (parts.back().starts_with("~") || parts.back() == parts.at(parts.size() - 2)))
                 return add(start, brace, name, "OTHER", head, split_params(m->named("params")), "", false);
         }
         if (in_class) {

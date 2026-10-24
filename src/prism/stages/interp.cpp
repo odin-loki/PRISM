@@ -145,7 +145,7 @@ std::optional<CT> scalar_ctype(std::string_view typ) {
         {"intmax_t", {64, false}}, {"uintmax_t", {64, true}},
     };
     if (words.size() == 1) {
-        auto it = kNamed.find(words[0]);
+        auto it = kNamed.find(words.at(0));
         if (it != kNamed.end()) return it->second;
     }
     bool is_u = false, is_s = false;
@@ -171,8 +171,10 @@ std::optional<CT> scalar_ctype(std::string_view typ) {
 int64_t norm(int64_t v, CT t) {
     if (t.w == 1) return v != 0;
     if (t.w >= 64) return v;
-    auto bits = static_cast<uint64_t>(v) & ((uint64_t{1} << t.w) - 1);
-    if (!t.u && (bits >> (t.w - 1)) & 1) return static_cast<int64_t>(bits) - (int64_t{1} << t.w);
+    const uint64_t mod = uint64_t{1} << t.w;
+    uint64_t bits = static_cast<uint64_t>(v) % mod;
+    const bool sign = bits >= (uint64_t{1} << (t.w - 1));
+    if (!t.u && sign) return static_cast<int64_t>(bits) - static_cast<int64_t>(mod);
     return static_cast<int64_t>(bits);
 }
 
@@ -198,7 +200,7 @@ std::vector<std::string> split_semi(const std::string& s) {
 }
 
 std::pair<std::string, std::string> take_block(std::string text) {
-    text = lstrip(std::move(text));
+    text = lstrip(text);
     if (text.starts_with("{")) return brace(text);
     return stmt(text);
 }
@@ -206,9 +208,9 @@ std::pair<std::string, std::string> take_block(std::string text) {
 std::pair<std::string, std::string> upto_colon(const std::string& text) {
     int depth = 0;
     for (std::size_t i = 0; i < text.size(); ++i) {
-        if (text[i] == '(') ++depth;
-        else if (text[i] == ')') --depth;
-        else if (text[i] == ':' && depth == 0) return {text.substr(0, i), text.substr(i + 1)};
+        if (text.at(i) == '(') ++depth;
+        else if (text.at(i) == ')') --depth;
+        else if (text.at(i) == ':' && depth == 0) return {text.substr(0, i), text.substr(i + 1)};
     }
     throw ParseFail("expected :");
 }
@@ -240,7 +242,7 @@ std::vector<std::string> tok_uncached(const std::string& src) {
     auto gap = [&](std::size_t to) {
         for (; at < to; ++at)
             if (!std::isspace(static_cast<unsigned char>(src[at])))
-                throw ParseFail(std::string("unexpected character '") + src[at] + "'");
+                throw ParseFail(std::string("unexpected character '") + src.at(at) + "'");
     };
     for (auto& m : rx.finditer(src)) {
         if (m.spans.empty() || m.spans[0].first < 0) continue;
@@ -279,8 +281,9 @@ std::string string_lit_value(const std::string& t) {
     std::string inner = t.substr(1, t.size() - 2);
     std::string out;
     for (std::size_t i = 0; i < inner.size(); ++i) {
-        if (inner[i] == '\\' && i + 1 < inner.size()) {
-            char esc = inner[++i];
+        if (inner.at(i) == '\\' && i + 1 < inner.size()) {
+            ++i;
+            const char esc = inner.at(i);
             switch (esc) {
             case 'n': out.push_back('\n'); break;
             case 't': out.push_back('\t'); break;
@@ -289,7 +292,7 @@ std::string string_lit_value(const std::string& t) {
             default: out.push_back(esc); break;
             }
         } else {
-            out.push_back(inner[i]);
+            out.push_back(inner.at(i));
         }
     }
     return out;
@@ -382,8 +385,10 @@ std::map<std::string, int> extract_enums(std::string text) {
                     size_t used = 0;
                     auto v = std::stoll(val, &used, 0);
                     if (used == val.size() && !val.empty()) nxt = v;
-                } catch (...) {}
-                if (!nxt && is_ident(val) && !ambiguous.count(val)) {
+                } catch (...) {
+                    nxt = std::nullopt;
+                }
+                if (!nxt.has_value() && is_ident(val) && !ambiguous.count(val)) {
                     auto it = out.find(val);
                     if (it != out.end()) nxt = it->second;
                 }
@@ -392,7 +397,7 @@ std::map<std::string, int> extract_enums(std::string text) {
                 nxt = std::nullopt;
                 continue;
             }
-            if (!nxt || *nxt < INT32_MIN || *nxt > INT32_MAX) {
+            if (!nxt.has_value() || nxt.value() < INT32_MIN || nxt.value() > INT32_MAX) {
                 drop(name);
                 nxt = std::nullopt;
                 continue;
@@ -452,13 +457,13 @@ std::pair<int64_t, CT> int_literal(const std::string& tok0) {
     }
     int base = 10;
     std::string digits = t;
-    if (t.size() > 2 && t[0] == '0' && (t[1] == 'x' || t[1] == 'X')) {
+    if (t.size() > 2 && t.at(0) == '0' && (t.at(1) == 'x' || t.at(1) == 'X')) {
         base = 16;
         digits = t.substr(2);
-    } else if (t.size() > 2 && t[0] == '0' && (t[1] == 'b' || t[1] == 'B')) {
+    } else if (t.size() > 2 && t.at(0) == '0' && (t.at(1) == 'b' || t.at(1) == 'B')) {
         base = 2;
         digits = t.substr(2);
-    } else if (t.size() > 1 && t[0] == '0') {
+    } else if (t.size() > 1 && t.at(0) == '0') {
         base = 8;
         digits = t.substr(1);
     }
@@ -505,14 +510,14 @@ int sizeof_concrete(const std::vector<std::string>& inner, const St& st) {
     if (inner.empty()) return 4;
     for (auto& t : inner)
         if (t == "*") return 8;  // LP64 pointer
-    if (inner.size() == 1 && is_ident(inner[0])) {
-        auto a = st.arrays.find(inner[0]);
+    if (inner.size() == 1 && is_ident(inner.at(0))) {
+        auto a = st.arrays.find(inner.at(0));
         if (a != st.arrays.end()) {
-            auto et = st.arr_t.find(inner[0]);
+            auto et = st.arr_t.find(inner.at(0));
             int esz = et == st.arr_t.end() ? 4 : std::max(1, et->second.w / 8);
             return static_cast<int>(a->second.size()) * esz;
         }
-        auto v = st.types.find(inner[0]);
+        auto v = st.types.find(inner.at(0));
         if (v != st.types.end()) return std::max(1, v->second.w / 8);
     }
     if (auto ct = scalar_ctype(join_sv(inner, " "))) return std::max(1, ct->w / 8);
@@ -651,29 +656,32 @@ struct EParser {
         while (prec.contains(peek()) && prec.at(peek()) >= minp) {
             auto op = eat();
             auto right = parse(prec.at(op) + 1);
-            Node n{Nk::Bin, op, 0, {}, {}, {}};
-            n.ch.push_back(std::move(left));
-            n.ch.push_back(std::move(right));
-            left = std::move(n);
+            auto lhs = std::move(left);
+            Node bin{Nk::Bin, op, 0, {}, {}, {}};
+            bin.ch.push_back(std::move(lhs));
+            bin.ch.push_back(std::move(right));
+            left = std::move(bin);
         }
         if (minp <= 5 && peek() == "?") {
             eat_s("?");
             auto th = parse(0);
             eat_s(":");
             auto el = parse(5);
-            Node n{Nk::Tern, {}, 0, {}, {}, {}};
-            n.ch.push_back(std::move(left));
-            n.ch.push_back(std::move(th));
-            n.ch.push_back(std::move(el));
-            left = std::move(n);
+            auto lhs = std::move(left);
+            Node tern{Nk::Tern, {}, 0, {}, {}, {}};
+            tern.ch.push_back(std::move(lhs));
+            tern.ch.push_back(std::move(th));
+            tern.ch.push_back(std::move(el));
+            left = std::move(tern);
         }
         if (minp <= 1 && peek() == ",") {
             eat_s(",");
             auto right = parse(0);
-            Node n{Nk::Comma, {}, 0, {}, {}, {}};
-            n.ch.push_back(std::move(left));
-            n.ch.push_back(std::move(right));
-            left = std::move(n);
+            auto lhs = std::move(left);
+            Node comma{Nk::Comma, {}, 0, {}, {}, {}};
+            comma.ch.push_back(std::move(lhs));
+            comma.ch.push_back(std::move(right));
+            return comma;
         }
         return left;
     }
@@ -692,7 +700,9 @@ CT var_type(const St& st, const std::string& name) {
 CT tree_type(const Node& t, const St& st) {
     switch (t.k) {
     case Nk::Num:
-    case Nk::Cast: return t.t;
+        [[fallthrough]];
+    case Nk::Cast:
+        return t.t;
     case Nk::Id: return var_type(st, t.a);
     case Nk::Idx: {
         auto it = st.arr_t.find(t.a);
@@ -700,9 +710,13 @@ CT tree_type(const Node& t, const St& st) {
     }
     case Nk::Un: return t.a == "!" ? kInt : promote(tree_type(t.ch[0], st));
     case Nk::Pre:
-    case Nk::Post: return var_type(st, t.s);
+        [[fallthrough]];
+    case Nk::Post:
+        return var_type(st, t.s);
     case Nk::Str:
-    case Nk::Call: return kInt;
+        [[fallthrough]];
+    case Nk::Call:
+        return kInt;
     case Nk::Tern: return common_type(tree_type(t.ch[1], st), tree_type(t.ch[2], st));
     case Nk::Comma: return tree_type(t.ch[1], st);
     case Nk::Bin:
@@ -802,7 +816,7 @@ void eval_cstr_copy(St& st, const Node& dest, const Node& src, std::optional<int
     for (std::size_t i = 0; i < payload.size(); ++i) {
         auto idx = start + i;
         if (idx >= arr.size()) throw UB("MEM-OOB-WRITE");
-        arr[idx] = payload[i];
+        arr[idx] = payload.at(i);
     }
 }
 
@@ -843,6 +857,7 @@ int64_t eval_tree(const Node& t, St& st) {
         throw ParseFail("unop " + t.a);
     }
     case Nk::Post:
+        [[fallthrough]];
     case Nk::Pre: {
         CT vt = var_type(st, t.s);
         CT pt = promote(vt);
@@ -971,17 +986,18 @@ std::vector<std::string> split_top(const std::string& s, char sep) {
     std::vector<std::string> parts;
     int depth = 0;
     std::string cur;
-    char quote = 0;
+    char quote = '\0';
     for (std::size_t i = 0; i < s.size(); ++i) {
-        char ch = s[i];
+        char ch = s.at(i);
         if (quote) {
             cur.push_back(ch);
-            if (ch == '\\' && i + 1 < s.size()) cur.push_back(s[++i]);
-            else if (ch == quote) quote = 0;
+            if (ch == '\\' && i + 1 < s.size()) cur.push_back(s.at(++i));
+            else if (ch == quote) quote = '\0';
             continue;
         }
         // A ' after a digit or letter is a digit separator (1'000), not a quote.
-        if (ch == '"' || (ch == '\'' && !(i && std::isalnum(static_cast<unsigned char>(s[i - 1]))))) quote = ch;
+        if (ch == '"' || (ch == '\'' && !(i && std::isalnum(static_cast<unsigned char>(s.at(i - 1))))))
+            quote = static_cast<char>(ch);
         else if (ch == '(' || ch == '[' || ch == '{') ++depth;
         else if (ch == ')' || ch == ']' || ch == '}') --depth;
         if (ch == sep && depth == 0) {
@@ -999,16 +1015,17 @@ std::vector<std::string> split_top(const std::string& s, char sep) {
 // up to the first `;` outside (), {} and quotes.
 std::pair<std::string, std::string> decl_stmt(const std::string& text) {
     int depth = 0;
-    char quote = 0;
+    char quote = '\0';
     for (std::size_t i = 0; i < text.size(); ++i) {
-        char ch = text[i];
+        char ch = text.at(i);
         if (quote) {
             if (ch == '\\') ++i;
-            else if (ch == quote) quote = 0;
+            else if (ch == quote) quote = '\0';
             continue;
         }
         // A ' after a digit or letter is a digit separator (1'000), not a quote.
-        if (ch == '"' || (ch == '\'' && !(i && std::isalnum(static_cast<unsigned char>(text[i - 1]))))) quote = ch;
+        if (ch == '"' || (ch == '\'' && !(i && std::isalnum(static_cast<unsigned char>(text.at(i - 1))))))
+            quote = static_cast<char>(ch);
         else if (ch == '(' || ch == '{') ++depth;
         else if (ch == ')' || ch == '}') --depth;
         else if (ch == ';' && depth == 0) return {text.substr(0, i + 1), text.substr(i + 1)};
@@ -1045,12 +1062,12 @@ void CParser::decl(std::string s) {
     std::size_t pos = 0;
     while (true) {
         std::size_t e = pos;
-        while (e < s.size() && (std::isalnum(static_cast<unsigned char>(s[e])) || s[e] == '_')) ++e;
+        while (e < s.size() && (std::isalnum(static_cast<unsigned char>(s.at(e))) || s.at(e) == '_')) ++e;
         auto w = s.substr(pos, e - pos);
         if (w.empty() || !kDeclKws.contains(w)) break;
         words.push_back(w);
         pos = e;
-        while (pos < s.size() && std::isspace(static_cast<unsigned char>(s[pos]))) ++pos;
+        while (pos < s.size() && std::isspace(static_cast<unsigned char>(s.at(pos)))) ++pos;
     }
     auto ct = words.empty() ? std::nullopt : scalar_ctype(join_sv(words, " "));
     if (!ct) throw ParseFail("unparsed decl: " + s.substr(0, 80));
@@ -1431,7 +1448,7 @@ void CParser::stmts(std::string text) {
             std::optional<int64_t> val;
             if (!restv.empty()) {
                 val = eval_src(st, restv);
-                if (!st.ret_void) val = norm(*val, st.ret);
+                if (!st.ret_void && val.has_value()) val = norm(val.value(), st.ret);
             }
             throw ReturnEx(val);
         }

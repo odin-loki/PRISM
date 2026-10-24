@@ -18,7 +18,8 @@ jobs removed; doctest + `prism_tests` only.**
   `.cpp` files directly; one-shot generators retired), and the bulk of phase-2
   doctest ports (`tests/cpp/*`).
 - **Phase 5 (delete Python engine):** **done** (2026-10-25). All `prism/*.py`
-  removed; **`prism/cocci/*.cocci`** kept as bundled data. Tracked `.py` outside
+  removed; bundled **`prism/cocci/*.cocci`** deleted (checks live in C++
+  lints; optional `spatch` only for tree-local `*.cocci`). Tracked `.py` outside
   `third_party/` is only **`tools/svcomp/prism.py`**. Gate:
   **`tests/cpp/test_deps.cpp`** (`k_python_engine_deleted = true`).
 - **CI:** no engine pytest job; lint fastpath + e2e smokes live in
@@ -36,9 +37,9 @@ jobs removed; doctest + `prism_tests` only.**
 tool-info; see [What cannot become C++](#what-cannot-become-c-the-only-exceptions)).
 **BLOCKED files:** **0** / 41 — all engine `prism/*.py` modules **deleted**.
 
-**Kept under `prism/` (data only):** `prism/cocci/*.cocci` — bundled Coccinelle
-rules; `cocci_rules()` still resolves `prism/cocci` next to the repo/build layout
-(or `share/prism/cocci` when installed). No `.py` remains in `prism/`.
+**Coccinelle:** bundled `.cocci` rules retired; optional `spatch` uses tree-local
+`*.cocci` under scanned source roots only (`cocci_rules()` in `adapters.cpp`).
+The legacy `prism/` directory is removed.
 
 Legend: **DELETED** = module removed; runtime and doctest coverage live in the C++
 column. Appendix rows may still note historical parity gaps; they no longer block
@@ -91,13 +92,14 @@ the tree.
 ### Phase 5 delete (executed 2026-10-25)
 
 - Removed all `prism/*.py`, the pytest suite, `pyproject.toml`, `requirements.txt`,
-  and `prism_native` / ctypes paths; **left `prism/cocci/` in place**.
+  and `prism_native` / ctypes paths; **deleted bundled `prism/cocci/`** (no shipped
+  `.cocci` format).
 - `tests/cpp/test_deps.cpp`: `k_python_engine_deleted = true`; only
   `tools/svcomp/prism.py` may appear outside `third_party/`.
 - Table-driven doctests: edit `tests/cpp/test_bmc.cpp`, `test_concolic.cpp`,
   `test_pir_e2e.cpp` directly (generators optional / retired).
 
-**This run:** BLOCKED = **0**; engine delete **executed** (`prism/cocci/` retained).
+**This run:** BLOCKED = **0**; engine delete **executed** (bundled cocci retired).
 
 ## Size
 
@@ -325,7 +327,8 @@ goes in phase 5, so these are recorded, not fixed there):
 | `tools/prism_prove.py` | folded into `prism prove` |
 | `tools/assurance_check.py`, docs checks | `prism-qa assurance-check`, `docs-check` |
 | `tools/prism_ai/*` (GBDT trainer, scheduler replay, predict, measure) | trainer in `src/prism/solver/gbdt.cpp` next to the evaluator; `prism_ai` offline tool; model stored as `predict_default.json`, turned into `.inc` by CMake |
-| `tools/gen_ai_grammars.py`, `gen_astlint_discard.py` | CMake configure-time generation / one constexpr table |
+| `tools/gen_ai_grammars.py` | CMake configure-time `grammars/*.gbnf` → `prism/ai/grammars.inc` |
+| `tools/gen_astlint_discard.py` | **DONE:** `src/tools/gen_astlint_discard.cpp` + CMake build-time `prism/astlint_discard.inc` from `checkers_*.cpp` |
 | `tools/gen_prism.py`, `gen_cxx.cpp.py`, `patch_cxx.py`, `fuzz_self/fuzz_py.py`, `scripts/python_plan_done.py`, `exclude_large_files.py`, `smoke_core.*` | deleted (their inputs are the Python engine, or they are obsolete) |
 | `tools/fuzz_self/make_corpus.py`, `run_cpp.sh` | `prism_fuzz_corpus` + CMake target `fuzz-self-run` |
 | `proofs/**/check.sh` Python snippets | `lean_audit scan/axioms` (std-only) |
@@ -366,8 +369,8 @@ Python on the PATH for Z3 (the `cpp` CI job still installs `python3-minimal`
 for BenchExec smoke only).
 
 **Maintainers:** after bumping the vendored Z3 pin, run a one-off reference
-build with real Python, then `python3 tools/sync_z3_generated.py <build-dir>` and
-commit the refreshed `cmake/z3-generated/` tree. The only tracked project Python
+build with real Python (upstream Z3 codegen), copy the generated outputs into
+`cmake/z3-generated/`, update `tree_sha256`, and commit. The only tracked project Python
 outside `third_party/` is `tools/svcomp/prism.py` (BenchExec).
 
 ## Done when
@@ -466,7 +469,7 @@ record.
 | `tools/fuzz_self/fuzz_py.py` | none | Delete it as obsolete: it only exercises prism/*.py, which the port removes. The C++ libFuzzer target tests/fuzz/fuzz_cparse.cpp already covers extract_functions, parse_gaps, pir::ir::parse_module, RunReport::load and … |
 | `tools/fuzz_self/run_cpp.sh` | S | Replace it with a CMake custom target `fuzz-self-run` under PRISM_FUZZ. The target depends on prism_fuzz_self and prism_fuzz_corpus, runs the corpus tool and then the fuzzer with the same flags, and takes FUZZ_SECONDS as a cache variable. This drops both the … |
 | `tools/gen_ai_grammars.py` | S | Fold it into CMake, following the configure-time generation of manifest_pins.hpp (CMakeLists.txt:41-81). Read each grammars/<name>.gbnf with file(READ), add it to CMAKE_CONFIGURE_DEPENDS, fail with message(FATAL_ERROR) if the text contains `)GBNF"`, and … |
-| `tools/gen_astlint_discard.py` | M | Fold it into existing C++ code by inverting the source of truth. Make the discard family one constexpr table, for example src/prism/discard_rules.inc with rows {class, message, callee-names..., zero-arg}. checkers_*.cpp would build its line regexes from the … |
+| `tools/gen_astlint_discard.py` | none | **DONE** (shim C3): deleted. `checkers_*.cpp` stays the source of truth for `lint_discarded*` regex rules; `prism_gen_astlint_discard` (`src/tools/gen_astlint_discard.cpp`, `CMakeLists.txt` ~327–342) writes `${CMAKE_BINARY_DIR}/generated/prism/astlint_discard.inc` at build time. Locked by `tests/cpp/test_gen_tables.cpp`. No checked-in `.inc`; no Python generator. |
 | `tools/gen_prism.py` | none | Delete it as obsolete, and make bmc_unenc.inc (1787 lines) and taxonomy.cpp (777 lines) the hand-maintained C++ source of truth. Its inputs, prism/bmc.py and prism/taxonomy.py, are deleted by the port. It is also already stale: I called gen_unenc() and … |
 | `tools/gen_cxx.cpp.py` | none | Delete it as obsolete. src/prism/checkers_cxx.cpp (5234 lines) has been hand-maintained since the bootstrap, and prism/checkers.py goes away with the Python engine. |
 | `tools/patch_cxx.py` | none | Delete it as obsolete. The current checkers_cxx.cpp has zero occurrences of py_or, str_index, group_of or the sub_of needle, so the shims were refactored out and the script has nothing left to patch. |
@@ -533,7 +536,7 @@ record.
 | `tests/test_ai9.py` | mixed | L | tests/cpp/test_ai9.cpp for unit parts; ctest-registered C++ driver (needs a C++ fake llama-server test double) running build/prism prove/review; grammar-verbatim and no-sorry become C++ repo-lint … |
 | `tests/test_ai_assist.py` | mixed | none | **deleted** (milestone A); `tests/cpp/test_ai_assist.cpp` (+ `prism_ai` tool as needed) |
 | `tests/test_assurance_check.py` | tool | S | port tools/assurance_check.py to a C++ tool (tools/assurance_check.cpp) and register a ctest that runs it on the repo plus a temp tree with a missing artefact |
-| `tests/test_astlint_table.py` | tool | S | source of truth moves to C++ (checkers_*.cpp) once prism/checkers.py is deleted: delete the generator check (or port generator to C++); add a doctest that every astlint_discard.inc class is in … |
+| `tests/test_astlint_table.py` | tool | none | **deleted** — generator ported to `src/tools/gen_astlint_discard.cpp`; parity in `tests/cpp/test_gen_tables.cpp` (every `astlint_discard.inc` class in taxonomy). |
 | `tests/test_bmc.py` | python-engine-behaviour | XL | tests/cpp/test_bmc.cpp (new doctest file): table-driven {file, function, expected status, allowed cls set, must-not-status set} over prism::run_bmc(load_fn(...), 8) plus k-induction extras; port the … |
 | `tests/test_bmc_goto_shift.py` | mixed | none | delete (parity with deleted Python engine; C++ doctests already cover) |
 | `tests/test_bmc_reach_error.py` | mixed | none | delete (parity with deleted engine; doctests cover) |
@@ -647,7 +650,7 @@ wrong proof first, then by size.
 | D14 | pir's shift-base check mixes negative-base and overflow into one property, so a negative-base shift blocks no-overflow answers | S | docs/SVCOMP.md:681-685 and 145-152; src/prism/pir/translate.cpp:936; … |
 | D15 | bmc does not model printf (or puts/putchar), so the signedintegeroverflow-regression mains are NEEDS-HARNESS in bmc | S | src/prism/bmc_encoder.inc:2432-2440 (only the Juliet print helpers are modelled); … |
 | D16 | package_archive.py writes an incomplete MANIFEST.json and records the packer's Python version as the minimum | S | docs/SVCOMP.md:656-660; tools/svcomp/package_archive.py:110-119, 62-64 |
-| D17 | fm-tools.yml draft does not follow the fm-tools schema, and the tool-info module's project_url() returns None | S | docs/SVCOMP.md:649-656; tools/svcomp/fm-tools.yml:1-22; tools/svcomp/prism.py:46-47 |
+| D17 | fm-tools.yml draft does not follow the fm-tools schema, and the tool-info module's project_url() returns None | **done** | `tools/svcomp/fm-tools.yml` (format 2.0, `id: prism-svcomp`); `tools/svcomp/prism.py` `project_url()` |
 | D18 | PRISM_FUNCTION_BUDGET is reset between check_function's two unwind attempts (up to about 2x the budget) | S | docs/PIR.md:1362-1371; src/prism/pir/encode.cpp:1386-1414 |
 | D19 | k-induction step queries ignore the remaining function budget | S | docs/PIR.md:1362-1371 ("Each VC query also gets at most what is left"); … |
 | D20 | Houdini's final query and per-query floors overrun the function budget | S | docs/PIR.md:1362-1371 and 1113-1116 ("plus at least three for the final query"); … |

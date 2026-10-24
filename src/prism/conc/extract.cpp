@@ -75,7 +75,7 @@ std::vector<std::string> split_top(std::string_view s) {
 // ", !md !N" parts.
 std::vector<std::string> inst_parts(const std::string& text) {
     std::string body = text;
-    if (!body.empty() && body[0] == '%') {
+    if (!body.empty() && body.at(0) == '%') {
         auto eq = body.find(" = ");
         if (eq != std::string::npos) body = body.substr(eq + 3);
     }
@@ -117,7 +117,7 @@ std::string unquote(std::string s) {
 
 // "@name" -> "name"; "" if not a plain global reference.
 std::string global_ref(const std::string& w) {
-    if (w.size() < 2 || w[0] != '@') return {};
+    if (w.size() < 2 || w.at(0) != '@') return {};
     return unquote(w.substr(1));
 }
 
@@ -146,12 +146,12 @@ ir::Value parse_value(const std::string& w, const ir::Type& ty) {
     ir::Value v;
     v.text = w;
     if (w.empty()) return v;
-    if (w[0] == '%') {
+    if (w.at(0) == '%') {
         v.kind = ir::Value::Local;
         v.name = unquote(w.substr(1));
         return v;
     }
-    if (w[0] == '@') {
+    if (w.at(0) == '@') {
         v.kind = ir::Value::Global;
         v.name = unquote(w.substr(1));
         return v;
@@ -177,7 +177,7 @@ ir::Value parse_value(const std::string& w, const ir::Type& ty) {
         v.kind = ty.kind == ir::Type::Int ? ir::Value::Int : ir::Value::Zero;
         return v;
     }
-    bool neg = w[0] == '-';
+    bool neg = w.at(0) == '-';
     std::string_view d(w);
     if (neg) d.remove_prefix(1);
     if (!d.empty() && std::all_of(d.begin(), d.end(), [](char c) { return std::isdigit(static_cast<unsigned char>(c)); }) &&
@@ -518,7 +518,7 @@ struct Rewriter {
             if (parts.size() < 2) throw Unenc{"UNENCODED: atomicrmw form " + in.text};
             auto w0 = words(parts[0]);  // atomicrmw [volatile] OP ptr P
             auto w1 = words(parts[1]);  // T V [syncscope] ORDER
-            w0.erase(std::remove(w0.begin(), w0.end(), "volatile"), w0.end());
+            std::erase(w0, "volatile");
             if (w0.size() < 4 || w1.size() < 2) throw Unenc{"UNENCODED: atomicrmw form " + in.text};
             require_sc(w1);
             auto rop = w0[1];
@@ -567,9 +567,9 @@ struct Rewriter {
             auto w0 = words(parts[0]);  // cmpxchg [weak] [volatile] ptr P
             auto w1 = words(parts[1]);  // T C
             auto w2 = words(parts[2]);  // T N [syncscope] S F
-            bool weak = std::find(w0.begin(), w0.end(), "weak") != w0.end();
-            w0.erase(std::remove(w0.begin(), w0.end(), "weak"), w0.end());
-            w0.erase(std::remove(w0.begin(), w0.end(), "volatile"), w0.end());
+            const bool weak = std::ranges::find(w0, "weak") != w0.end();
+            std::erase(w0, "weak");
+            std::erase(w0, "volatile");
             if (w0.size() < 3 || w1.size() < 2 || w2.size() < 2) throw Unenc{"UNENCODED: cmpxchg form " + in.text};
             require_sc(w2);
             auto g = global_ref(w0[2]);
@@ -603,7 +603,7 @@ struct Rewriter {
             sel.ops = {local(ok, int_type(1)), nv, old};
             out.push_back(sel);
             out.push_back(copy(in, marker(k, true), local(n, ty)));
-            if (!in.result.empty()) cmpx[in.result] = {marker(k), ok};
+            if (!in.result.empty()) cmpx.insert_or_assign(in.result, std::pair{marker(k), ok});
             return;
         }
         if (op == "call") {

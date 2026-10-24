@@ -132,7 +132,7 @@ std::pair<std::optional<IrFunc>, Md> parse_debug_ir(const std::string& ir, const
 
 std::vector<std::string> scope_chain(const Md& md, std::optional<std::string> ref) {
     std::vector<std::string> out;
-    while (ref && !ref->empty() && std::find(out.begin(), out.end(), *ref) == out.end() && out.size() < 64) {
+    while (ref && !ref->empty() && std::ranges::find(out, *ref) == out.end() && out.size() < 64) {
         out.push_back(*ref);
         std::string body = md_get(md, *ref);
         ref = body.find("DILexicalBlock") != std::string::npos ? md_field(body, "scope") : std::nullopt;
@@ -206,7 +206,7 @@ std::optional<CVar> current_var(const IrFunc& f, const Md& md, const std::string
         if (md_field(md_get(md, v), "name") == name) ++same_name;
     if (same_name != 1) return std::nullopt;
     auto scope = md_field(body, "scope");
-    if (!scope || std::find(loop_scope.begin(), loop_scope.end(), *scope) == loop_scope.end()) return std::nullopt;
+    if (!scope || std::ranges::find(loop_scope, *scope) == loop_scope.end()) return std::nullopt;
     auto ty = c_type(md, md_field(body, "type"));
     if (!ty) return std::nullopt;
     auto dit = f.defs.find(value);
@@ -386,7 +386,7 @@ std::optional<std::vector<std::vector<std::string>>> pir_invariant_texts(const f
             };
             for (const auto& c : conj[j]) {
                 auto txt = render_conjunct(c, term_of);
-                if (txt && !txt->empty() && std::find(texts.begin(), texts.end(), *txt) == texts.end())
+                if (txt && !txt->empty() && std::ranges::find(texts, *txt) == texts.end())
                     texts.push_back(*txt);
             }
         }

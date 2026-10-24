@@ -212,9 +212,8 @@ keeps a closed k-induction result only when the loop cut (which covers the
 post-loop code) also closes; otherwise it is `BOUNDED` with
 `extra.k_induction = "step-closed-post-open"`
 (`testdata/ai_invariants.c:ai_post_loop`). All 9 existing closed results in
-`testdata/` re-verify (`extra.post_loop_check = "closed (loop cut)"`). The
-Python engine (`prism/bmc.py:k_induction`) has the same gap and is not
-changed (D8: frozen).
+`testdata/` re-verify (`extra.post_loop_check = "closed (loop cut)"`). The deleted Python engine had the same gap; the C++ fix above is the
+authoritative behaviour.
 
 ## Lean proof search (9.2)
 
@@ -542,7 +541,8 @@ per function, unwind 8) every member alone (Z3, Bitwuzla, CaDiCaL, Kissat,
 CPU only, no model; the machine was heavily loaded by other builds, so
 absolute seconds are noisy. Commands: `prism_ai measure {triage,ask,regress,draft} OUT` and
 `prism_ai sample-pairs OUT` (the reviewed triage sample; CPython-compatible
-seeded shuffle, so the documented sample reproduces).
+seeded shuffle via `src/tools/prism_ai/pycompat.hpp`, so the documented sample
+reproduces).
 
 | Feature | Metric | Baseline (no AI) | Result | Default |
 |---|---|---|---|---|

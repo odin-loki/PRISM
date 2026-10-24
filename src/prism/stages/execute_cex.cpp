@@ -24,16 +24,19 @@ std::optional<long long> parse_cex_int(std::string v) {
     if (v.empty()) return std::nullopt;
     bool neg = false;
     std::size_t i = 0;
-    if (v[i] == '+' || v[i] == '-') neg = v[i++] == '-';
+    if (v.at(i) == '+' || v.at(i) == '-') {
+        neg = v.at(i) == '-';
+        ++i;
+    }
     int base = 10;
-    if (i + 1 < v.size() && v[i] == '0') {
-        const char p = static_cast<char>(std::tolower(static_cast<unsigned char>(v[i + 1])));
+    if (i + 1 < v.size() && v.at(i) == '0') {
+        const char p = static_cast<char>(std::tolower(static_cast<unsigned char>(v.at(i + 1))));
         if (p == 'x') base = 16;
         else if (p == 'o') base = 8;
         else if (p == 'b') base = 2;
         if (base != 10) {
             i += 2;
-            if (i < v.size() && v[i] == '_') ++i;  // 0x_1f
+            if (i < v.size() && v.at(i) == '_') ++i;  // 0x_1f
         }
     }
     const std::size_t start = i;
@@ -60,7 +63,7 @@ std::optional<long long> parse_cex_int(std::string v) {
         prev_us = false;
     }
     if (!any || prev_us) return std::nullopt;
-    if (base == 10 && v[start] == '0' && nonzero) return std::nullopt;  // "010"
+    if (base == 10 && v.at(start) == '0' && nonzero) return std::nullopt;  // "010"
     if (neg) {
         if (acc > static_cast<unsigned long long>(LLONG_MAX) + 1) return std::nullopt;
         return acc == static_cast<unsigned long long>(LLONG_MAX) + 1 ? LLONG_MIN : -static_cast<long long>(acc);
@@ -275,7 +278,7 @@ std::vector<Finding> execute_cex(const std::vector<Finding>& fails, const std::v
             f.extra["half"] = "llm";
             out.push_back(std::move(f));
         } else {
-            auto& f0 = fails[0];
+            const Finding& f0 = fails.at(0);
             std::string prompt = "Write a C main() that demonstrates this finding is real or not.\n" + f0.file +
                                  ":" + (f0.line ? std::to_string(*f0.line) : "0") + " " +
                                  (f0.function ? *f0.function : "") + " " + f0.cls + ": " + f0.message +

@@ -147,7 +147,7 @@ std::string var_text(const Function& fn, int v) {
 
 std::string mem_stmt_text(const Function& fn, const Stmt& s) {
     std::string args;
-    for (std::size_t k = 0; k < s.args.size(); ++k) args += (k ? ", " : "") + arg_text(fn, s.args[k]);
+    for (std::size_t k = 0; k < s.args.size(); ++k) args += (k ? ", " : "") + arg_text(fn, s.args.at(k));
     switch (s.kind) {
         case Stmt::Alloc:
             return var_text(fn, s.dst) + " = alloc " + mem_kind_name(s.mkind) + " " + args + " align " +
@@ -252,7 +252,7 @@ std::string sha256_hex(std::string_view data) {
         uint32_t w[64];
         for (int i = 0; i < 16; ++i) {
             auto b = [&](int k) {
-                return static_cast<uint32_t>(static_cast<unsigned char>(msg[off + static_cast<std::size_t>(i * 4 + k)]));
+                return static_cast<uint32_t>(static_cast<unsigned char>(msg.at(off + static_cast<std::size_t>(i * 4 + k))));
             };
             w[i] = (b(0) << 24) | (b(1) << 16) | (b(2) << 8) | b(3);
         }
@@ -265,7 +265,7 @@ std::string sha256_hex(std::string_view data) {
         for (int i = 0; i < 64; ++i) {
             uint32_t S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
             uint32_t ch = (e & f) ^ (~e & g);
-            uint32_t t1 = hh + S1 + ch + K[static_cast<std::size_t>(i)] + w[i];
+            uint32_t t1 = hh + S1 + ch + K.at(static_cast<std::size_t>(i)) + w[i];
             uint32_t S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
             uint32_t mj = (a & b) ^ (a & c) ^ (b & c);
             uint32_t t2 = S0 + mj;
@@ -312,9 +312,9 @@ uint64_t smin(unsigned w) { return (uint64_t{1} << (w - 1)) & mask(w); }
 
 uint64_t eval_op(Op op, unsigned w, const std::vector<uint64_t>& a, const std::vector<unsigned>& aw) {
     auto m = mask(w);
-    auto x = a.empty() ? 0 : a[0];
-    auto y = a.size() > 1 ? a[1] : 0;
-    unsigned xw = aw.empty() ? w : aw[0];
+    auto x = a.empty() ? 0 : a.at(0);
+    auto y = a.size() > 1 ? a.at(1) : 0;
+    unsigned xw = aw.empty() ? w : aw.at(0);
     switch (op) {
         case Op::Copy: return x & m;
         case Op::Havoc: return 0;
@@ -326,19 +326,22 @@ uint64_t eval_op(Op op, unsigned w, const std::vector<uint64_t>& a, const std::v
         case Op::SDiv: {
             if (y == 0) return sval(x, w) < 0 ? 1 : m;  // Z3 bvsdiv x 0
             if (x == smin(w) && y == m) return x;
-            return static_cast<uint64_t>(sval(x, w) / sval(y, w)) & m;
+            const uint64_t q = static_cast<uint64_t>(sval(x, w) / sval(y, w));
+            return q & m;
         }
         case Op::SRem: {
             if (y == 0) return x;
             if (x == smin(w) && y == m) return 0;
-            return static_cast<uint64_t>(sval(x, w) % sval(y, w)) & m;
+            const uint64_t r = static_cast<uint64_t>(sval(x, w) % sval(y, w));
+            return r & m;
         }
         case Op::Shl: return y >= w ? 0 : (x << y) & m;
         case Op::LShr: return y >= w ? 0 : (x >> y) & m;
         case Op::AShr: {
             auto sx = sval(x, w);
             if (y >= w) return sx < 0 ? m : 0;
-            return static_cast<uint64_t>(sx >> y) & m;
+            const uint64_t shr = static_cast<uint64_t>(sx >> y);
+            return shr & m;
         }
         case Op::And: return x & y;
         case Op::Or: return x | y;
@@ -353,9 +356,18 @@ uint64_t eval_op(Op op, unsigned w, const std::vector<uint64_t>& a, const std::v
         case Op::Sle: return sval(x, xw) <= sval(y, xw);
         case Op::Sgt: return sval(x, xw) > sval(y, xw);
         case Op::Sge: return sval(x, xw) >= sval(y, xw);
-        case Op::Select: return (x & 1) ? (a[1] & m) : (a[2] & m);
-        case Op::ZExt: return x & mask(xw) & m;
-        case Op::SExt: return static_cast<uint64_t>(sval(x, xw)) & m;
+        case Op::Select: {
+            const uint64_t sel = x & 1u;
+            return sel ? (a.at(1) & m) : (a.at(2) & m);
+        }
+        case Op::ZExt: {
+            const uint64_t z = x & mask(xw);
+            return z & m;
+        }
+        case Op::SExt: {
+            const uint64_t se = static_cast<uint64_t>(sval(x, xw));
+            return se & m;
+        }
         case Op::Trunc: return x & m;
         case Op::SMax: return sval(x, w) >= sval(y, w) ? x : y;
         case Op::SMin: return sval(x, w) <= sval(y, w) ? x : y;
@@ -364,17 +376,17 @@ uint64_t eval_op(Op op, unsigned w, const std::vector<uint64_t>& a, const std::v
         case Op::Abs: return sval(x, w) < 0 ? (~x + 1) & m : x;
         case Op::Ctlz: {
             uint64_t n = 0;
-            for (int i = static_cast<int>(w) - 1; i >= 0 && !((x >> i) & 1); --i) ++n;
+            for (int i = static_cast<int>(w) - 1; i >= 0 && ((x >> i) & 1u) == 0u; --i) ++n;
             return n & m;
         }
         case Op::Cttz: {
             uint64_t n = 0;
-            for (unsigned i = 0; i < w && !((x >> i) & 1); ++i) ++n;
+            for (unsigned i = 0; i < w && ((x >> i) & 1u) == 0u; ++i) ++n;
             return n & m;
         }
         case Op::Ctpop: {
             uint64_t n = 0;
-            for (unsigned i = 0; i < w; ++i) n += (x >> i) & 1;
+            for (unsigned i = 0; i < w; ++i) n += (x >> i) & 1u;
             return n & m;
         }
         case Op::Bswap: {
@@ -418,32 +430,40 @@ uint64_t eval_op(Op op, unsigned w, const std::vector<uint64_t>& a, const std::v
         }
         case Op::ShlNswOvf: {
             if (y >= xw) return 1;
-            auto r = (x << y) & mask(xw);
-            return (static_cast<uint64_t>(sval(r, xw) >> y) & mask(xw)) != x;
+            const uint64_t r = (x << y) & mask(xw);
+            const uint64_t shifted = static_cast<uint64_t>(sval(r, xw) >> y);
+            const uint64_t shr = shifted & mask(xw);
+            return shr != x;
         }
         case Op::ShlNuwOvf: {
             if (y >= xw) return 1;
-            auto r = (x << y) & mask(xw);
+            const uint64_t r = (x << y) & mask(xw);
             return (r >> y) != x;
         }
         case Op::LostBitsL: {
             if (y >= xw) return 1;
-            return ((x >> y) << y & mask(xw)) != x;
+            const uint64_t folded = ((x >> y) << y) & mask(xw);
+            return folded != x;
         }
         case Op::LostBitsA: {
             if (y >= xw) return 1;
-            auto r = static_cast<uint64_t>(sval(x, xw) >> y) & mask(xw);
-            return ((r << y) & mask(xw)) != x;
+            const uint64_t shifted = static_cast<uint64_t>(sval(x, xw) >> y);
+            const uint64_t r = shifted & mask(xw);
+            const uint64_t unfolded = (r << y) & mask(xw);
+            return unfolded != x;
         }
-        case Op::InexactU: return y != 0 && (x % y) != 0;
+        case Op::InexactU: {
+            const bool rem = (x % y) != 0;
+            return y != 0 && rem;
+        }
         case Op::InexactS: {
             if (y == 0) return 0;
             if (x == smin(xw) && y == mask(xw)) return 0;
             return (sval(x, xw) % sval(y, xw)) != 0;
         }
-        case Op::ObjSize:
-        case Op::ObjLive:
-        case Op::ObjKind:
+        case Op::ObjSize: [[fallthrough]];
+        case Op::ObjLive: [[fallthrough]];
+        case Op::ObjKind: [[fallthrough]];
         case Op::ObjAlign: return 0;  // memory queries: evaluated by interpret() on its memory
         default: break;
     }
@@ -461,13 +481,13 @@ InterpResult interpret(const Function& fn, const std::vector<uint64_t>& args, ui
     std::vector<char> taint(fn.vars.size(), 0);
     for (std::size_t i = 0; i < fn.params.size() && i < args.size(); ++i) {
         auto v = static_cast<std::size_t>(fn.params[i]);
-        val[v] = args[i] & mask(fn.vars[v].width);
+        val.at(v) = args.at(i) & mask(fn.vars.at(v).width);
     }
     auto get = [&](const Arg& a) -> uint64_t {
-        return a.is_const ? a.bits : val[static_cast<std::size_t>(a.var)];
+        return a.is_const ? a.bits : val.at(static_cast<std::size_t>(a.var));
     };
     auto tainted = [&](const Arg& a) -> bool {
-        return !a.is_const && taint[static_cast<std::size_t>(a.var)];
+        return !a.is_const && taint.at(static_cast<std::size_t>(a.var));
     };
     int prev = -1, cur = 0;
     uint64_t steps = 0;
@@ -488,8 +508,8 @@ InterpResult interpret(const Function& fn, const std::vector<uint64_t>& args, ui
             }
         }
         for (auto& [d, vt] : upd) {
-            val[d] = vt.first;
-            taint[d] = vt.second;
+            val.at(d) = vt.first;
+            taint.at(d) = vt.second;
         }
         for (auto& s : bl.stmts) {
             if (++steps > step_limit) {
@@ -497,7 +517,7 @@ InterpResult interpret(const Function& fn, const std::vector<uint64_t>& args, ui
                 return r;
             }
             if (s.kind == Stmt::Check) {
-                if (get(s.args[0]) & 1) {
+                if (get(s.args.at(0)) & 1) {
                     r.status = InterpResult::Violation;
                     r.prop = s.prop;
                     r.cls = s.cls;
@@ -507,7 +527,7 @@ InterpResult interpret(const Function& fn, const std::vector<uint64_t>& args, ui
                 continue;
             }
             if (s.kind == Stmt::Assume) {
-                if (!(get(s.args[0]) & 1)) {
+                if (!(get(s.args.at(0)) & 1)) {
                     r.status = InterpResult::AssumeFailed;
                     return r;
                 }
@@ -515,11 +535,12 @@ InterpResult interpret(const Function& fn, const std::vector<uint64_t>& args, ui
             }
             if (s.kind != Stmt::Assign) {
                 // memory statements (memory.hpp ConcMem; same semantics as SymMem)
-                auto A = [&](std::size_t i) { return get(s.args[i]); };
+                auto A = [&](std::size_t i) { return get(s.args.at(i)); };
                 auto setv = [&](int dst, uint64_t v, bool t) {
                     if (dst < 0) return;
-                    val[static_cast<std::size_t>(dst)] = v & mask(fn.vars[static_cast<std::size_t>(dst)].width);
-                    taint[static_cast<std::size_t>(dst)] = t;
+                    const auto di = static_cast<std::size_t>(dst);
+                    val.at(di) = v & mask(fn.vars.at(di).width);
+                    taint.at(di) = t;
                 };
                 switch (s.kind) {
                     case Stmt::Alloc: {
@@ -528,7 +549,7 @@ InterpResult interpret(const Function& fn, const std::vector<uint64_t>& args, ui
                             r.status = InterpResult::StepLimit;  // too large to run concretely
                             return r;
                         }
-                        setv(s.dst, *p, tainted(s.args[0]));
+                        setv(s.dst, *p, tainted(s.args.at(0)));
                         break;
                     }
                     case Stmt::Free: M.free(A(0)); break;
@@ -537,7 +558,7 @@ InterpResult interpret(const Function& fn, const std::vector<uint64_t>& args, ui
                         unsigned w = fn.vars[static_cast<std::size_t>(s.dst)].width;
                         unsigned n = (w + 7) / 8;
                         uint64_t v = 0, umask = 0;
-                        bool uninit = false, t = tainted(s.args[0]) || mem_taint, tagbad = false;
+                        bool uninit = false, t = tainted(s.args.at(0)) || mem_taint, tagbad = false;
                         for (unsigned k = 0; k < n; ++k) {
                             auto c = M.read(A(0) + k);
                             v |= static_cast<uint64_t>(c.val) << (8 * k);
@@ -554,11 +575,11 @@ InterpResult interpret(const Function& fn, const std::vector<uint64_t>& args, ui
                         break;
                     }
                     case Stmt::Store: {
-                        unsigned n = (s.args[1].width + 7) / 8;
+                        unsigned n = (s.args.at(1).width + 7) / 8;
                         uint64_t v = A(1);
-                        bool t = tainted(s.args[1]);
-                        if (tainted(s.args[0])) mem_taint = true;
-                        const bool per_byte = s.args[2].width > 1;
+                        bool t = tainted(s.args.at(1));
+                        if (tainted(s.args.at(0))) mem_taint = true;
+                        const bool per_byte = s.args.at(2).width > 1;
                         for (unsigned k = 0; k < n; ++k)
                             M.write(A(0) + k, mem::ConcMem::Cell{static_cast<uint8_t>(v >> (8 * k)),
                                                                  ((A(2) >> (per_byte ? k : 0)) & 1) != 0,
@@ -567,26 +588,27 @@ InterpResult interpret(const Function& fn, const std::vector<uint64_t>& args, ui
                     }
                     case Stmt::MemCpy: {
                         uint64_t n = A(2);
-                        if (tainted(s.args[0]) || tainted(s.args[2])) mem_taint = true;
+                        if (tainted(s.args.at(0)) || tainted(s.args.at(2))) mem_taint = true;
                         if (n > (uint64_t{1} << 24)) {
                             r.status = InterpResult::StepLimit;
                             return r;
                         }
                         std::vector<mem::ConcMem::Cell> tmp;
                         for (uint64_t k = 0; k < n; ++k) tmp.push_back(M.read(A(1) + k));
-                        for (uint64_t k = 0; k < n; ++k) M.write(A(0) + k, tmp[static_cast<std::size_t>(k)]);
+                        for (uint64_t k = 0; k < n; ++k) M.write(A(0) + k, tmp.at(static_cast<std::size_t>(k)));
                         steps += n;
                         break;
                     }
                     case Stmt::MemSet: {
                         uint64_t n = A(2);
-                        if (tainted(s.args[0]) || tainted(s.args[2])) mem_taint = true;
+                        if (tainted(s.args.at(0)) || tainted(s.args.at(2))) mem_taint = true;
                         if (n > (uint64_t{1} << 24)) {
                             r.status = InterpResult::StepLimit;
                             return r;
                         }
                         for (uint64_t k = 0; k < n; ++k)
-                            M.write(A(0) + k, mem::ConcMem::Cell{static_cast<uint8_t>(A(1)), true, 0, tainted(s.args[1])});
+                            M.write(A(0) + k,
+                                    mem::ConcMem::Cell{static_cast<uint8_t>(A(1)), true, 0, tainted(s.args.at(1))});
                         steps += n;
                         break;
                     }
@@ -597,18 +619,18 @@ InterpResult interpret(const Function& fn, const std::vector<uint64_t>& args, ui
                 continue;
             }
             auto d = static_cast<std::size_t>(s.dst);
-            unsigned w = fn.vars[d].width;
+            unsigned w = fn.vars.at(d).width;
             if (s.op == Op::ObjSize || s.op == Op::ObjLive || s.op == Op::ObjKind || s.op == Op::ObjAlign) {
-                auto p = get(s.args[0]);
+                auto p = get(s.args.at(0));
                 uint64_t v = s.op == Op::ObjSize ? M.size(p) : s.op == Op::ObjLive ? M.live(p)
                              : s.op == Op::ObjKind ? M.kind(p) : M.align(p);
-                val[d] = v & mask(w);
-                taint[d] = tainted(s.args[0]);
+                val.at(d) = v & mask(w);
+                taint.at(d) = tainted(s.args.at(0));
                 continue;
             }
             if (s.op == Op::Havoc) {
-                val[d] = 0;
-                taint[d] = 1;
+                val.at(d) = 0;
+                taint.at(d) = 1;
                 continue;
             }
             std::vector<uint64_t> xs;
@@ -621,19 +643,19 @@ InterpResult interpret(const Function& fn, const std::vector<uint64_t>& args, ui
             }
             if (s.op == Op::FLibm) {
                 // unmodelled libm call: the host library's value
-                val[d] = fp::eval(s.op, w, xs, ws, s.msg) & mask(w);
-                taint[d] = t;
+                val.at(d) = fp::eval(s.op, w, xs, ws, s.msg) & mask(w);
+                taint.at(d) = t;
                 continue;
             }
             if (fp::is_fp_op(s.op) && fp::ambiguous(s.op, w, xs, ws)) {
                 // fmuladd fused or not, minnum(+0, -0): the compiler's choice; a
                 // result that depends on it is not replayable
-                val[d] = fp::eval(s.op, w, xs, ws) & mask(w);
-                taint[d] = true;
+                val.at(d) = fp::eval(s.op, w, xs, ws) & mask(w);
+                taint.at(d) = true;
                 continue;
             }
-            val[d] = eval_op(s.op, w, xs, ws) & mask(w);
-            taint[d] = t;
+            val.at(d) = eval_op(s.op, w, xs, ws) & mask(w);
+            taint.at(d) = t;
         }
         auto& tm = bl.term;
         prev = cur;

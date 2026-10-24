@@ -7,11 +7,22 @@
 #include <algorithm>
 #include <cctype>
 #include <fstream>
-#include <mutex>
 #include <ranges>
 #include <sstream>
+#include <tuple>
 
 namespace prism {
+
+namespace {
+
+void sort_lint_findings(std::vector<Finding>& out) {
+    auto key = [](const Finding& f) {
+        return std::tuple{f.file, f.line.value_or(INT_MAX), f.cls, f.message, f.function.value_or("")};
+    };
+    std::sort(out.begin(), out.end(), [&](const Finding& a, const Finding& b) { return key(a) < key(b); });
+}
+
+}  // namespace
 
 void lint_add(std::vector<Finding>& out, std::string_view rel, std::optional<std::string> fn,
               int line, std::string_view cls, std::string_view msg,
@@ -25,7 +36,7 @@ void lint_add(std::vector<Finding>& out, std::string_view rel, std::optional<std
     f.cls = std::string(cls);
     f.message = std::string(msg);
     f.strength = std::string(laws::STRENGTH_FINDS);
-    if (line > 0 && static_cast<std::size_t>(line) <= lines.size()) f.evidence = lines[static_cast<std::size_t>(line) - 1];
+    if (line > 0 && static_cast<std::size_t>(line) <= lines.size()) f.evidence = lines.at(static_cast<std::size_t>(line) - 1);
     out.push_back(std::move(f));
 }
 
@@ -52,9 +63,8 @@ void lint_discarded(const std::vector<FunctionInfo>& funcs,
 
 std::vector<Finding> run_lints(const std::vector<std::filesystem::path>& paths,
                                const std::filesystem::path& root, int jobs) {
-    std::vector<Finding> out;
-    std::mutex mu;
-    parallel_for(jobs, paths, [&](std::size_t, const std::filesystem::path& p) {
+    std::vector<std::vector<Finding>> per_path(paths.size());
+    parallel_for(jobs, paths, [&](std::size_t i, const std::filesystem::path& p) {
         std::string rel;
         std::error_code ec;
         if (std::filesystem::is_directory(root)) {
@@ -85,7 +95,7 @@ std::vector<Finding> run_lints(const std::vector<std::filesystem::path>& paths,
             int head = f.span.first - 1;
             int end = std::min(static_cast<int>(lines.size()), f.span.second);
             for (int j = std::max(head, 0); j < end; ++j) {
-                if (lines[static_cast<std::size_t>(j)].find('{') == std::string::npos) continue;
+                if (lines.at(static_cast<std::size_t>(j)).find('{') == std::string::npos) continue;
                 if (j > head) f.body = std::string(static_cast<std::size_t>(j - head), '\n') + f.body;
                 break;
             }
@@ -101,9 +111,11 @@ std::vector<Finding> run_lints(const std::vector<std::filesystem::path>& paths,
             checkers_api(lines, rel, funcs, local);
         else
             checkers_cxx(lines, rel, funcs, stripped, local);
-        std::lock_guard<std::mutex> lock(mu);
-        out.insert(out.end(), local.begin(), local.end());
+        per_path[i] = std::move(local);
     });
+    std::vector<Finding> out;
+    for (auto& chunk : per_path) out.insert(out.end(), chunk.begin(), chunk.end());
+    sort_lint_findings(out);
     return out;
 }
 

@@ -43,7 +43,7 @@ std::string function_fingerprint(const FunctionInfo& fn) {
     const std::string src = fn.signature + "\n" + fn.body;
     for (std::size_t i = 0; i < src.size(); ++i) {
         if (src.compare(i, 2, "//") == 0) {
-            while (i < src.size() && src[i] != '\n') ++i;
+            while (i < src.size() && src.at(i) != '\n') ++i;
             continue;
         }
         if (src.compare(i, 2, "/*") == 0) {
@@ -51,7 +51,7 @@ std::string function_fingerprint(const FunctionInfo& fn) {
             i = e == std::string::npos ? src.size() : e + 1;
             continue;
         }
-        if (!std::isspace(static_cast<unsigned char>(src[i]))) code += src[i];
+        if (!std::isspace(static_cast<unsigned char>(src.at(i)))) code += src.at(i);
     }
     return sha256_hex(code);
 }
@@ -240,7 +240,7 @@ std::optional<Finding> repair_invariants(const FunctionInfo& fn, const ProofArte
     std::vector<std::string> vocab;
     for (auto& L : *loops)
         for (auto& v : L.scalars)
-            if (std::find(vocab.begin(), vocab.end(), v) == vocab.end()) vocab.push_back(v);
+            if (std::ranges::find(vocab, v) == vocab.end()) vocab.push_back(v);
     ModelRequest req;
     req.feature = "proof-repair";
     req.system = system_prompt(
@@ -383,29 +383,30 @@ std::vector<Finding> run_proof_regression(const std::vector<FunctionInfo>& funct
         e.file = f.file;
         e.function = *f.function;
         e.fingerprint = function_fingerprint(*it->second);
-        ProofArtefact a;
-        a.stage = f.stage;
-        a.status = f.status;
+        ProofArtefact artefact;
+        artefact.stage = f.stage;
+        artefact.status = f.status;
         auto get = [&](const char* key) {
             auto x = f.extra.find(key);
             return x == f.extra.end() ? std::string{} : x->second;
         };
-        a.invariants = get("invariants");
-        if (a.invariants == "[]") a.invariants.clear();
+        artefact.invariants = get("invariants");
+        if (artefact.invariants == "[]") artefact.invariants.clear();
         if (f.stage == "contracts" || f.stage == "wp" || get("contract_state") == "approved") {
-            a.requires_ = get("requires");
-            a.ensures = get("ensures");
+            artefact.requires_ = get("requires");
+            artefact.ensures = get("ensures");
         }
-        if (f.stage == "harness") a.assumptions = get("assumptions");
-        a.source = !get("invariant_source").empty() ? get("invariant_source")
+        if (f.stage == "harness") artefact.assumptions = get("assumptions");
+        artefact.source = !get("invariant_source").empty() ? get("invariant_source")
                    : !get("harness_source").empty() ? get("harness_source")
                                                     : "pipeline";
-        a.unwind = cfg.unwind;
+        artefact.unwind = cfg.unwind;
         for (auto& old : e.artefacts)
-            if (old.stage == a.stage && old.invariants == a.invariants && old.requires_ == a.requires_ &&
-                old.ensures == a.ensures && old.assumptions == a.assumptions)
+            if (old.stage == artefact.stage && old.invariants == artefact.invariants &&
+                old.requires_ == artefact.requires_ && old.ensures == artefact.ensures &&
+                old.assumptions == artefact.assumptions)
                 return;
-        e.artefacts.push_back(std::move(a));
+        e.artefacts.push_back(std::move(artefact));
     };
     for (auto& s : stages)
         if (proving_stages().count(s.name))
@@ -425,15 +426,15 @@ std::vector<Finding> run_proof_regression(const std::vector<FunctionInfo>& funct
         bool changed = fp != prev.fingerprint;
         int best_prev = 0;
         std::string prev_status, prev_stage;
-        for (auto& a : prev.artefacts)
-            if (proof_rank(a.status) > best_prev) {
-                best_prev = proof_rank(a.status);
-                prev_status = a.status;
-                prev_stage = a.stage;
+        for (auto& stored : prev.artefacts)
+            if (proof_rank(stored.status) > best_prev) {
+                best_prev = proof_rank(stored.status);
+                prev_status = stored.status;
+                prev_stage = stored.stage;
             }
         if (auto cit = current.find(k); cit != current.end()) {
             int best_now = 0;
-            for (auto& a : cit->second.artefacts) best_now = std::max(best_now, proof_rank(a.status));
+            for (auto& art : cit->second.artefacts) best_now = std::max(best_now, proof_rank(art.status));
             if (best_now >= best_prev) continue;  // proof maintained (or improved) by this run
         }
         // Re-check the stored artefacts, strongest first.
@@ -442,24 +443,24 @@ std::vector<Finding> run_proof_regression(const std::vector<FunctionInfo>& funct
                          [](auto& a, auto& b) { return proof_rank(a.status) > proof_rank(b.status); });
         std::optional<Finding> reproved;
         std::vector<std::string> failures;
-        for (auto& a : arts) {
-            auto r = recheck_artefact(fn, a, cfg.unwind);
+        for (auto& art : arts) {
+            auto r = recheck_artefact(fn, art, cfg.unwind);
             if (laws::is_proof(r.status)) {
                 r.stage = "review";
-                r.message = "re-proved from the proof store (" + a.stage + " " + describe(a) + "): " + r.message;
+                r.message = "re-proved from the proof store (" + art.stage + " " + describe(art) + "): " + r.message;
                 r.extra["proof_store"] = "reused";
                 r.extra["code_changed"] = changed ? "true" : "false";
-                r.extra["previous_status"] = a.status;
-                r.extra["previous_stage"] = a.stage;
-                if (r.status == laws::PROVED_ASSUMING || !a.requires_.empty()) r.extra["requires"] = a.requires_;
+                r.extra["previous_status"] = art.status;
+                r.extra["previous_stage"] = art.stage;
+                if (r.status == laws::PROVED_ASSUMING || !art.requires_.empty()) r.extra["requires"] = art.requires_;
                 reproved = std::move(r);
                 break;
             }
-            failures.push_back(a.stage + " " + describe(a) + " -> " + r.status + ": " + r.message.substr(0, 300));
+            failures.push_back(art.stage + " " + describe(art) + " -> " + r.status + ": " + r.message.substr(0, 300));
         }
         if (reproved) {
             record(*reproved);
-            out.push_back(std::move(*reproved));
+            out.push_back(std::move(reproved).value());
             continue;
         }
         // Repair with the model (optional), re-checked before acceptance.
@@ -470,16 +471,17 @@ std::vector<Finding> run_proof_regression(const std::vector<FunctionInfo>& funct
             backend = session_backend(&why_no_model);
         }
         if (backend && repair_budget > 0) {
-            for (auto& a : arts) {
+            for (auto& art : arts) {
                 if (repair_budget-- <= 0) break;
                 std::string aid;
-                if (!a.invariants.empty()) {
-                    if (auto r = repair_invariants(fn, a, cfg.unwind, *backend, &aid)) {
+                if (!art.invariants.empty()) {
+                    if (auto r = repair_invariants(fn, art, cfg.unwind, *backend, &aid)) {
                         repaired = std::move(r);
                         break;
                     }
-                } else if (!a.requires_.empty() || !a.ensures.empty()) {
-                    if (auto r = repair_contract(fn, a, cfg.unwind, *backend)) proposals.push_back(std::move(*r));
+                } else if (!art.requires_.empty() || !art.ensures.empty()) {
+                    if (auto rf = repair_contract(fn, art, cfg.unwind, *backend))
+                        proposals.push_back(std::move(rf).value());
                 }
             }
         }
@@ -489,13 +491,14 @@ std::vector<Finding> run_proof_regression(const std::vector<FunctionInfo>& funct
             repaired->extra["previous_stage"] = prev_stage;
             repaired->extra["code_changed"] = changed ? "true" : "false";
             record(*repaired);
-            out.push_back(std::move(*repaired));
+            out.push_back(std::move(repaired).value());
             continue;
         }
         auto f = row(laws::UNKNOWN, fn, "PROOF-REGRESSION",
                      "proof regression: " + fn.name + " was " + prev_status + " (" + prev_stage + ")" +
                          (changed ? "; the function changed and " : "; the code is unchanged but ") +
-                         "the stored proof artefacts no longer check: " + (failures.empty() ? "none stored" : failures[0]),
+                         "the stored proof artefacts no longer check: " +
+                             (failures.empty() ? "none stored" : failures.at(0)),
                      laws::STRENGTH_PROVES);
         f.extra["regression"] = "true";
         f.extra["previous_status"] = prev_status;

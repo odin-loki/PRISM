@@ -42,12 +42,15 @@ std::vector<PtrContract> parse_contracts(const std::vector<std::string>& lines, 
     // line(s) up to '{', and the leading comment lines of the body
     std::vector<std::string> cand;
     int i = fn_line - 2;
-    while (i >= 0 && is_comment_or_blank(lines[static_cast<std::size_t>(i)])) {
-        cand.push_back(lines[static_cast<std::size_t>(i)]);
+    while (i >= 0 && is_comment_or_blank(lines.at(static_cast<std::size_t>(i)))) {
+        cand.push_back(lines.at(static_cast<std::size_t>(i)));
         --i;
     }
     std::size_t j = static_cast<std::size_t>(fn_line - 1);
-    while (j < lines.size() && lines[j].find('{') == std::string::npos) cand.push_back(lines[j++]);
+    while (j < lines.size() && lines.at(j).find('{') == std::string::npos) {
+        cand.push_back(lines.at(j));
+        ++j;
+    }
     if (j < lines.size()) {
         auto l = lines[j];
         auto rest = l.substr(l.find('{') + 1);
@@ -55,9 +58,11 @@ std::vector<PtrContract> parse_contracts(const std::vector<std::string>& lines, 
             cand.push_back(rest);
             ++j;
             // leading comment lines of the body (a blank line or code ends them)
-            while (j < lines.size() && !trim(lines[j]).empty() && is_comment_or_blank(lines[j]) &&
-                   lines[j].find('}') == std::string::npos)
-                cand.push_back(lines[j++]);
+            while (j < lines.size() && !trim(lines.at(j)).empty() && is_comment_or_blank(lines.at(j)) &&
+                   lines.at(j).find('}') == std::string::npos) {
+                cand.push_back(lines.at(j));
+                ++j;
+            }
         }
     }
     std::string text;
@@ -68,7 +73,8 @@ std::vector<PtrContract> parse_contracts(const std::vector<std::string>& lines, 
     if (text.empty()) return out;
     static const std::regex valid(
         R"(\\valid(_read)?\s*\(\s*([A-Za-z_]\w*)\s*(?:\+\s*\(\s*0\s*\.\.\s*([^()]+?)\s*\))?\s*\))");
-    static const std::regex upper(R"(^\s*(?:([A-Za-z_]\w*)\s*(?:([+-])\s*(\d+))?|(\d+))\s*$)");
+    static const std::regex upper(
+        R"re(^\s*(?:([A-Za-z_]\w*)\s*(?:([+-])\s*(\d+))?|(\d+))\s*$)re");
     auto is_param = [&](const std::string& n, bool ptr) {
         for (auto& p : f.params)
             if (p.name == n) return ptr ? p.ty.kind == ir::Type::Ptr : p.ty.kind == ir::Type::Int;

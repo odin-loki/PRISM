@@ -21,6 +21,7 @@ void journal_append_stage(const std::filesystem::path& out, const StageResult& r
     auto line = dump_json(nlohmann::json(rec));
     {
         std::ofstream f(out / STAGES_JSONL, std::ios::app | std::ios::binary);
+        if (!f.is_open()) return;
         f << line << "\n";
     }
     nlohmann::json progress = {
@@ -31,6 +32,7 @@ void journal_append_stage(const std::filesystem::path& out, const StageResult& r
     };
     // One line, rewritten after every stage (a reader tails it).
     std::ofstream p(out / PROGRESS_JSON, std::ios::binary);
+    if (!p.is_open()) return;
     p << dump_json(progress);
 }
 
@@ -43,8 +45,8 @@ std::vector<StageResult> journal_read_stages(const std::filesystem::path& out) {
         if (ln.empty()) continue;
         try {
             recs.push_back(stage_from_json_object(ln));
-        } catch (...) {
-            // A torn or corrupt line (a killed run) is skipped; the rest stands.
+        } catch (const std::exception&) {
+            continue;  // torn/corrupt line from a killed run
         }
     }
     return recs;
@@ -73,6 +75,7 @@ void journal_write_functions(const std::filesystem::path& out,
     nlohmann::json fns = nlohmann::json::array();
     for (auto& fn : functions) fns.push_back(fn);
     std::ofstream f(out / FUNCTIONS_JSON, std::ios::binary);
+    if (!f.is_open()) return;
     f << dump_json(fns);
 }
 

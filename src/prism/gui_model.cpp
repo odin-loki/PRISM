@@ -29,7 +29,7 @@ bool is_noise_stage(std::string_view name) {
 std::string utf8_left(const std::string& s, std::size_t n) {
     std::size_t chars = 0;
     for (std::size_t i = 0; i < s.size(); ++i) {
-        const auto c = static_cast<unsigned char>(s[i]);
+        const auto c = static_cast<unsigned char>(s.at(i));
         if ((c & 0xC0) != 0x80) {
             if (chars == n) return s.substr(0, i);
             ++chars;
@@ -303,7 +303,7 @@ std::vector<std::string> gui_run_args(const RunOptions& o) {
     if (o.allow_exec) args.emplace_back("--allow-exec");
     auto skip = skip_from_checks(o.skip_fuzz, o.skip_repair, o.skip_optional);
     for (const auto& s : o.extra_skip)
-        if (std::find(skip.begin(), skip.end(), s) == skip.end()) skip.push_back(s);
+        if (std::ranges::find(skip, s) == skip.end()) skip.push_back(s);
     if (!skip.empty()) {
         std::string joined;
         for (const auto& s : skip) joined += (joined.empty() ? "" : ",") + s;
@@ -330,8 +330,14 @@ Launch parse_launch(const std::vector<std::string>& args) {
         std::stringstream ss(csv);
         std::string t;
         while (std::getline(ss, t, ',')) {
-            while (!t.empty() && t.front() == ' ') t.erase(t.begin());
-            while (!t.empty() && t.back() == ' ') t.pop_back();
+            auto trim = [](std::string& s) {
+                std::size_t a = 0;
+                while (a < s.size() && s[a] == ' ') ++a;
+                std::size_t b = s.size();
+                while (b > a && s[b - 1] == ' ') --b;
+                s = s.substr(a, b - a);
+            };
+            trim(t);
             if (t == "fuzz") c.skip_fuzz = true;
             else if (t == "repair") c.skip_repair = true;
             else if (t == "optional") c.skip_optional = true;
@@ -339,7 +345,7 @@ Launch parse_launch(const std::vector<std::string>& args) {
         }
     };
     for (std::size_t i = 0; i < args.size(); ++i) {
-        std::string a = args[i];
+        std::string a = args.at(i);
         // --flag=value is the same as --flag value.
         std::optional<std::string> inline_value;
         if (a.starts_with("--")) {
@@ -350,7 +356,10 @@ Launch parse_launch(const std::vector<std::string>& args) {
         }
         auto value = [&]() -> std::optional<std::string> {
             if (inline_value) return inline_value;
-            if (i + 1 < args.size()) return args[++i];
+            if (i + 1 < args.size()) {
+                ++i;
+                return args.at(i);
+            }
             return std::nullopt;
         };
         if (a == "--gui") {
@@ -382,7 +391,7 @@ Launch parse_launch(const std::vector<std::string>& args) {
         } else if (a.starts_with("-") && a.size() > 1) {
             // A boolean scan flag (--strict-aliasing, --pir-drafts,
             // --fp-checks, --certified, ...) or one the CLI will judge.
-            c.extra.push_back(args[i]);
+            c.extra.push_back(args.at(i));
         } else if (c.path.empty()) {
             c.path = a;
         } else {

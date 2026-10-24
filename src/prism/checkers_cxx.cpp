@@ -888,8 +888,8 @@ std::set<std::string> lambda_ref_locals(const std::string& capture, const std::s
     for (char c : capture)
         if (!std::isspace(static_cast<unsigned char>(c))) cap.push_back(c);
     if (cap.find('&') == std::string::npos) return {};
-    if (cap[0] == '=' && cap.find('&', 1) == std::string::npos) return {};
-    if (cap[0] == '&') {
+    if (cap.at(0) == '=' && cap.find('&', 1) == std::string::npos) return {};
+    if (cap.at(0) == '&') {
         if (cap == "&" || cap.starts_with("&,")) {
             std::set<std::string> val_only;
             if (cap.starts_with("&,")) {
@@ -898,7 +898,7 @@ std::set<std::string> lambda_ref_locals(const std::string& capture, const std::s
                 while (at <= rest.size()) {
                     auto comma = rest.find(',', at);
                     std::string part = rest.substr(at, comma == std::string::npos ? std::string::npos : comma - at);
-                    if (!part.empty() && part[0] != '&') val_only.insert(part.substr(0, part.find_first_of("=:")));
+                    if (!part.empty() && part.front() != '&') val_only.insert(part.substr(0, part.find_first_of("=:")));
                     if (comma == std::string::npos) break;
                     at = comma + 1;
                 }
@@ -1077,7 +1077,8 @@ std::map<std::string, int> c_array_sizes(std::string_view body) {
     for (auto& m : _C_ARRAY_SIZE.finditer(body)) {
         try {
             sizes[m.named("name")] = std::stoi(m.named("n"));
-        } catch (...) {
+        } catch (const std::exception&) {
+            continue;
         }
     }
     return sizes;
@@ -1197,7 +1198,7 @@ void _cxx_new_delete(const std::vector<std::string>& lines, std::string_view rel
         if (start <= 0 || end < start) continue;
         std::vector<std::string> chunk;
         for (int i = start - 1; i < end && i < static_cast<int>(lines.size()); ++i)
-            chunk.push_back(lines[static_cast<std::size_t>(i)]);
+            chunk.push_back(lines.at(static_cast<std::size_t>(i)));
         std::map<std::string, bool> new_kind;
         for (auto& ln : chunk) {
             auto m = _NEW_ASSIGN.search_match(ln);
@@ -1209,7 +1210,7 @@ void _cxx_new_delete(const std::vector<std::string>& lines, std::string_view rel
         }
         std::set<std::pair<std::string, int>> seen;
         for (int i = 0; i < static_cast<int>(chunk.size()); ++i) {
-            auto m = _DELETE.search_match(chunk[static_cast<std::size_t>(i)]);
+            auto m = _DELETE.search_match(chunk.at(static_cast<std::size_t>(i)));
             if (!m) continue;
             auto var = m->named("var");
             auto it = new_kind.find(var);
@@ -1708,8 +1709,8 @@ void _cxx_reinterpret(const std::vector<std::string>& lines, std::string_view re
                     auto name = nm->group(1);
                     if (ptr_decls.count(name)) src_typ = ptr_decls[name];
                 }
-                if (!src_typ || allowed_reinterp_pointee(*src_typ)) continue;
-                if (cxx_pointee(target) == cxx_pointee(*src_typ)) continue;
+                if (!src_typ.has_value() || allowed_reinterp_pointee(src_typ.value())) continue;
+                if (cxx_pointee(target) == cxx_pointee(src_typ.value())) continue;
                 report(out, rel, fn.name, start + i, "CXX-REINTERPRET",
                        "reinterpret_cast type-puns between object pointers", lines);
                 break;
@@ -2234,13 +2235,13 @@ void _cxx_bit_cast(const std::vector<std::string>& lines, std::string_view rel,
         // type, or a name declared as one.
         auto src_is_obj_ptr = [&](std::string src) {
             src = strip(src);
-            if (src.find('*') != std::string::npos || (!src.empty() && src[0] == '&')) {
+            if (src.find('*') != std::string::npos || (!src.empty() && src.front() == '&')) {
                 // `&x`: no scalar table here, so the address's type is unknown.
                 std::optional<std::string> src_typ;
                 if (!re_search(R"(^&\s*[A-Za-z_]\w*)", src))
                     if (auto nm = re_search_match(R"(^([A-Za-z_]\w*))", src))
                         if (auto it = ptr_decls.find(nm->group(1)); it != ptr_decls.end()) src_typ = it->second;
-                return !src_typ || !allowed_reinterp_pointee(*src_typ);
+                return !src_typ.has_value() || !allowed_reinterp_pointee(src_typ.value());
             }
             auto nm = re_search_match(R"(^([A-Za-z_]\w*))", src);
             if (!nm) return false;
@@ -2408,7 +2409,7 @@ void _cxx_uninit_member(std::string_view stripped, const std::vector<std::string
         std::string mems;
         for (std::size_t i = 0; i < missing.size(); ++i) {
             if (i) mems += ", ";
-            mems += missing[i];
+            mems += missing.at(i);
         }
         int ctor_line = 1 + static_cast<int>(std::count(stripped.begin(), stripped.begin() + static_cast<std::ptrdiff_t>(pos) + 1 + ctor->spans[0].first, '\n'));
         std::string hit_fn;
@@ -2984,7 +2985,7 @@ void _cxx_pack_pragma(const std::vector<std::string>& lines, std::string_view re
     std::string blob;
     for (std::size_t k = 0; k < lines.size(); ++k) {
         if (k) blob += '\n';
-        blob += lines[k];
+        blob += lines.at(k);
     }
     if (!_PACK_PRAGMA_1.search(blob)) return;
     for (auto& fn : funcs) {
@@ -4632,7 +4633,7 @@ void _cxx_quick_exit(const std::vector<std::string>& lines, std::string_view rel
     std::string text;
     for (std::size_t k = 0; k < lines.size(); ++k) {
         if (k) text += '\n';
-        text += lines[k];
+        text += lines.at(k);
     }
     for (auto& m : _DTOR_HEAD.finditer(text)) {
         const int brace = m.spans[0].second - 1;
@@ -4848,7 +4849,7 @@ void _cxx_midpoint(const std::vector<std::string>& lines, std::string_view rel,
 // (CWE-125). Requires cmp_less or in_range so ordinary < stays silent.
 void _cxx_cmp_less(const std::vector<std::string>& lines, std::string_view rel,
                    const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
-    static const Regex in_range(R"(\bin_range\s*(?:<[^>;]*>)?\s*\()");
+    static const Regex in_range_rx(R"(\bin_range\s*(?:<[^>;]*>)?\s*\()");
     for (auto& fn : funcs) {
         if (!_CXX_CMPLESS_TOKEN.search(fn.body)) continue;
         std::set<std::string> assigned;
@@ -4873,10 +4874,11 @@ void _cxx_cmp_less(const std::vector<std::string>& lines, std::string_view rel,
             }
         }
         if (_CXX_IN_RANGE_IF.search(fn.body)) continue;
-        if (!in_range.search(fn.body)) continue;
+        if (!in_range_rx.search(fn.body)) continue;
         for (int i = 0; i < static_cast<int>(bl.size()); ++i) {
             if (!_CXX_SUBSCRIPT.search(bl[static_cast<std::size_t>(i)])) continue;
-            report(out, rel, fn.name, start + i, "CXX-CMP-LESS", "std::in_range ignored before a subscript", lines);
+            report(out, rel, fn.name, start + i, "CXX-CMP-LESS",
+                   "std::cmp_less/in_range guard ignored before a subscript", lines);
             return;
         }
     }
@@ -5758,7 +5760,10 @@ void checkers_cxx(const std::vector<std::string>& lines, std::string_view rel,
     _cxx_filesystem(lines, rel, funcs, out);
     _cxx_regex(lines, rel, funcs, out);
     _cxx_latch(lines, rel, funcs, out);
-    _cxx_from_chars(lines, rel, funcs, out);
+    {
+        const auto& fn_infos = funcs;
+        _cxx_from_chars(lines, rel, fn_infos, out);
+    }
     _cxx_init_list_dangle(lines, rel, funcs, out);
     _cxx_stop_token(lines, rel, funcs, out);
     _cxx_flat_map(lines, rel, funcs, out);

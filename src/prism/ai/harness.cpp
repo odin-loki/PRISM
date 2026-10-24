@@ -67,8 +67,8 @@ PtrUse pointer_uses(const std::string& body, const std::string& p) {
         auto after = pos + p.size();
         while (after < body.size() && body[after] == ' ') ++after;
         std::size_t before = pos;
-        while (before > 0 && body[before - 1] == ' ') --before;
-        char prev = before > 0 ? body[before - 1] : ';';
+        while (before > 0 && body.at(before - 1) == ' ') --before;
+        char prev = before > 0 ? body.at(before - 1) : ';';
         if (after < body.size() && body[after] == '[') {
             auto close = body.find(']', after);
             if (close == std::string::npos) return (u.ok = false, u.why = "unbalanced [", u);
@@ -84,10 +84,11 @@ PtrUse pointer_uses(const std::string& body, const std::string& p) {
             // *p (deref) — but not a multiplication a * p: require a statement
             // or expression start before the '*'.
             std::size_t b2 = before - 1;
-            while (b2 > 0 && body[b2 - 1] == ' ') --b2;
-            char pp = b2 > 0 ? body[b2 - 1] : ';';
+            while (b2 > 0 && body.at(b2 - 1) == ' ') --b2;
+            char pp = b2 > 0 ? body.at(b2 - 1) : ';';
             bool after_return = b2 >= 6 && body.compare(b2 - 6, 6, "return") == 0 &&
-                                (b2 == 6 || !(std::isalnum(static_cast<unsigned char>(body[b2 - 7])) || body[b2 - 7] == '_'));
+                                (b2 == 6 || !(std::isalnum(static_cast<unsigned char>(body.at(b2 - 7))) ||
+                                              body.at(b2 - 7) == '_'));
             if (after_return || std::string(";{}(=,!<>&|+-?:").find(pp) != std::string::npos) {
                 u.literal_idx.insert(0);
                 continue;
@@ -181,8 +182,8 @@ std::vector<HarnessDraft> build(const FunctionInfo& fn, const Plan& plan, std::s
 }
 
 std::optional<Plan> template_plan(const FunctionInfo& fn, std::string* why) {
-    auto say = [&](std::string m) -> std::optional<Plan> {
-        if (why) *why = std::move(m);
+    auto say = [&](std::string msg) -> std::optional<Plan> {
+        if (why) *why = std::move(msg);
         return std::nullopt;
     };
     if (fn.kind != "POINTER") return say("not a POINTER function");
@@ -220,7 +221,7 @@ std::optional<Plan> template_plan(const FunctionInfo& fn, std::string* why) {
                 auto v = *u.sym_idx.begin();
                 std::smatch m;
                 std::regex ge("if\\s*\\(\\s*" + v + "\\s*(>=|>)\\s*(\\d+)\\s*\\)\\s*return\\b");
-                if (std::regex_search(b, m, ge)) {
+                if (std::regex_search(b, m, ge) && m.size() > 2) {
                     long long k = std::stoll(m[2].str()) + (m[1].str() == ">" ? 1 : 0);
                     if (k >= 1 && k <= 4096) {
                         plan.size_of[p] = std::to_string(k);

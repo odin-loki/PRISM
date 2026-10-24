@@ -34,13 +34,17 @@ void refuse_merge(std::string_view a, std::string_view b) {
         case verdict::Refusal::None: return;
         case verdict::Refusal::Formal:
             throw std::runtime_error("refusing to merge formal statuses " + as + " and " + bs);
+            break;
         case verdict::Refusal::PromoteFuzz:
             throw std::runtime_error("refusing to promote fuzz " + as + "/" + bs + " to a proof");
+            break;
         case verdict::Refusal::PromoteModel:
             throw std::runtime_error("refusing to promote model output " + as + "/" + bs + " to a proof");
+            break;
         case verdict::Refusal::NotRunClean:
             throw std::runtime_error("refusing to merge NOTRUN with " + (a == NOTRUN ? bs : as) +
                                      ": a stage that did not run is never clean");
+            break;
     }
 }
 

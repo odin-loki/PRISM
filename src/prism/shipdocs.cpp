@@ -33,6 +33,7 @@ void write_shipped_docs(const std::filesystem::path& dir) {
     std::filesystem::create_directories(dir, ec);
     for (const auto& d : shipped_docs()) {
         std::ofstream out(dir / std::string(d.name), std::ios::binary);
+        if (!out.is_open()) return;
         out << d.text;
     }
 }

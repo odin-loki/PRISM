@@ -114,7 +114,7 @@ json history_load(const fs::path& root) {
             auto j = json::parse(txt);
             if (j.is_object() && j.value("schema", 0) == 1) return j;
         }
-    } catch (...) {
+    } catch (const std::exception&) {
     }
     return json{{"schema", 1}, {"buckets", json::object()}};
 }
@@ -617,16 +617,16 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
         if (auto j = cache_load(root, res.query_hash)) {
             const std::string kind = j->value("kind", "");
             if (kind == "sat") {
-                std::map<std::string, std::string> m;
+                std::map<std::string, std::string> cached_model;
                 const auto& jm = (*j)["model"];
                 for (std::size_t i = 0; i < canonical.size(); ++i) {
                     auto key = "prism!v" + std::to_string(i);
-                    if (jm.contains(key)) m[canonical[i]] = jm[key].get<std::string>();
+                    if (jm.contains(key)) cached_model[canonical.at(i)] = jm[key].get<std::string>();
                 }
                 std::string why;
-                if (validate_model(c, formula, m, &why)) {
+                if (validate_model(c, formula, cached_model, &why)) {
                     res.kind = Kind::Sat;
-                    res.model = std::move(m);
+                    res.model = std::move(cached_model);
                     res.winner = j->value("winner", "");
                     res.cache_hit = true;
                     notes.push_back("cache hit: counterexample re-validated in Z3");
@@ -712,13 +712,13 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
         hist = history_load(root);
     }
     std::vector<Member> members;
-    auto add = [&](std::string name, MemberKind k, std::vector<std::string> argv, std::string ver) {
-        Member m;
-        m.name = std::move(name);
-        m.kind = k;
-        m.argv = std::move(argv);
-        m.version = std::move(ver);
-        members.push_back(std::move(m));
+    auto add = [&](std::string name, MemberKind k, const std::vector<std::string>& cmd_argv, std::string ver) {
+        Member new_member;
+        new_member.name = std::move(name);
+        new_member.kind = k;
+        new_member.argv = cmd_argv;
+        new_member.version = std::move(ver);
+        members.push_back(std::move(new_member));
     };
     const bool smt_ok = !ft.quant && !ft.arith && !ft.other_sort;
     if (opt.z3_in_process) add("z3", MemberKind::Z3, {}, Z3_get_full_version());
@@ -735,7 +735,7 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
                     std::vector<std::string> argv{t->path.string()};
                     if (std::string_view(s) == "kissat") argv.push_back("--quiet");
                     argv.push_back("{input}");
-                    add(s, MemberKind::Dimacs, std::move(argv), t->version);
+                    add(s, MemberKind::Dimacs, argv, t->version);
                 } else {
                     res.missing.push_back(s);
                 }
@@ -752,12 +752,12 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
     if (want_cert) {
         // The certificate chain needs CaDiCaL with an LRAT proof even when
         // the portfolio is off.
-        auto it = std::find_if(members.begin(), members.end(), [](const Member& m) { return m.name == "cadical"; });
+        auto it = std::find_if(members.begin(), members.end(), [](const Member& mem) { return mem.name == "cadical"; });
         if (it == members.end()) {
             if (auto t = find_tool("cadical", opt)) {
                 add("cadical", MemberKind::Dimacs, {t->path.string(), "{input}"}, t->version);
                 it = members.end() - 1;
-            } else if (std::find(res.missing.begin(), res.missing.end(), "cadical") == res.missing.end()) {
+            } else if (std::ranges::find(res.missing, "cadical") == res.missing.end()) {
                 res.missing.push_back("cadical");
             }
         }
@@ -768,7 +768,8 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
             // multiplication-overflow VCs: 32-bit 9.1 s -> 7.2 s, 64-bit
             // widening 194 s -> 76 s, and smaller LRAT proofs (docs/SOLVERS.md).
             // It only changes the search; the proof is checked as before.
-            it->argv = {it->argv[0], "--lrat=true", "--binary=false", "--unsat", "{input}", "{proof}"};
+            const std::string cadical_bin = it->argv.at(0);
+            it->argv = {cadical_bin, "--lrat=true", "--binary=false", "--unsat", "{input}", "{proof}"};
         } else {
             notes.push_back("not certified: cadical not found (NOTRUN)");
         }
@@ -779,10 +780,12 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
     // runs, until cert_deadline. If it gives no certificate, the cached plain
     // answer stands, uncertified (below); a validated model still wins.
     const bool cert_only = want_cert && cached_unsat_winner &&
-                           std::any_of(members.begin(), members.end(), [](const Member& m) { return m.lrat; });
+                           std::ranges::any_of(members, [](const Member& mem) { return mem.lrat; });
     if (cert_only) {
-        members.erase(std::remove_if(members.begin(), members.end(), [](const Member& m) { return !m.lrat; }),
-                      members.end());
+        std::vector<Member> lrat_only;
+        for (auto& lrat_entry : members)
+            if (lrat_entry.lrat) lrat_only.push_back(std::move(lrat_entry));
+        members = std::move(lrat_only);
         notes.push_back(opt.known_unsat ? "plain unsat known: only the certificate member runs"
                                          : "cached plain unsat: only the certificate member runs");
     }
@@ -802,13 +805,15 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
     const auto& hb = hist["buckets"].contains(res.bucket) ? hist["buckets"][res.bucket] : json::object();
     std::optional<std::size_t> lead;
     for (std::size_t i = 0; i < members.size(); ++i) {
-        auto& m = members[i];
-        m.est = rule_estimate(m.name, ft);
-        if (hb.contains(m.name) && hb[m.name].is_object()) {
-            const auto n = hb[m.name].value("n", 0);
+        auto& mem = members.at(i);
+        mem.est = rule_estimate(mem.name, ft);
+        if (hb.contains(mem.name) && hb[mem.name].is_object()) {
+            const auto n = hb[mem.name].value("n", 0);
             if (n >= 1) {
-                m.est = hb[m.name].value("total", 0.0) / n;
-                if (hb[m.name].value("wins", 0) >= 1 && (!lead || m.est < members[*lead].est)) lead = i;
+                mem.est = hb[mem.name].value("total", 0.0) / n;
+                if (hb[mem.name].value("wins", 0) >= 1 &&
+                    (!lead.has_value() || mem.est < members.at(lead.value()).est))
+                    lead = i;
             }
         }
     }
@@ -819,19 +824,20 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
         const auto x = predict::query_features(ft);
         std::optional<std::size_t> best;
         for (std::size_t i = 0; i < members.size(); ++i)
-            if (auto p = predict::seconds(root, members[i].name, x); p && !members[i].lrat) {
-                members[i].est = *p;
-                if (!best || *p < members[*best].est) best = i;
+            if (auto p = predict::seconds(root, members.at(i).name, x); p && !members.at(i).lrat) {
+                members.at(i).est = *p;
+                if (!best.has_value() || *p < members.at(best.value()).est) best = i;
             }
-        if (best) lead = best, why = "model";
+        if (best.has_value()) lead = best, why = "model";
     }
-    if (lead && members.size() > 1) {
-        const double delay = std::min(3.0 * members[*lead].est + 0.2, 0.3 * opt.timeout_s);
+    if (lead.has_value() && members.size() > 1) {
+        const double delay = std::min(3.0 * members.at(lead.value()).est + 0.2, 0.3 * opt.timeout_s);
+        const std::size_t lead_i = lead.value();
         for (std::size_t i = 0; i < members.size(); ++i)
-            if (i != *lead && !members[i].lrat) members[i].not_before = t0 + delay;
+            if (i != lead_i && !members.at(i).lrat) members.at(i).not_before = t0 + delay;
         char buf[160];
         std::snprintf(buf, sizeof buf, "scheduler: %s leads by %.2fs (%s, bucket %s)",
-                      members[*lead].name.c_str(), delay, why, res.bucket.c_str());
+                      members.at(lead_i).name.c_str(), delay, why, res.bucket.c_str());
         notes.push_back(buf);
     } else if (members.size() > 1 && opt.z3_in_process) {
         // No history: in-process Z3 goes first for a moment. Most
@@ -840,15 +846,15 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
         // conformance suite's pir VCs, docs/SOLVERS.md). The certificate
         // member is never delayed.
         const double delay = std::min(kZ3FirstS, 0.1 * opt.timeout_s);
-        for (auto& m : members)
-            if (m.kind != MemberKind::Z3 && !m.lrat) m.not_before = t0 + delay;
+        for (auto& mem : members)
+            if (mem.kind != MemberKind::Z3 && !mem.lrat) mem.not_before = t0 + delay;
         char buf[128];
         std::snprintf(buf, sizeof buf, "scheduler: z3 first for %.2fs (no history for bucket %s)", delay,
                       res.bucket.c_str());
         notes.push_back(buf);
     }
-    for (auto& m : members)
-        if (m.lrat) m.est = -1;  // the certificate path always gets a slot
+    for (auto& mem : members)
+        if (mem.lrat) mem.est = -1;  // the certificate path always gets a slot
     std::stable_sort(members.begin(), members.end(), [](const Member& a, const Member& b) { return a.est < b.est; });
     if (members.empty()) {
         res.kind = Kind::Unknown;
@@ -868,7 +874,7 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
     const fs::path smt_path = work / "query.smt2";
     const fs::path cnf_path = work / "query.cnf";
     const fs::path lrat_path = work / "proof.lrat";
-    const bool need_smt = std::any_of(members.begin(), members.end(), [](const Member& m) { return m.kind == MemberKind::Smt2; });
+    const bool need_smt = std::any_of(members.begin(), members.end(), [](const Member& mem) { return mem.kind == MemberKind::Smt2; });
     if (need_smt) {
         std::string txt = "(set-option :produce-models true)\n";
         txt += Z3_benchmark_to_smtlib_string(c, "prism", ft.logic().c_str(), "unknown", "", 0, nullptr,
@@ -904,7 +910,7 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
     auto shutdown = [&] {
         if (shut) return;
         shut = true;
-        for (auto& m : members) m.stop->store(true);
+        for (auto& mem : members) mem.stop->store(true);
         J->blast_stop.store(true);
         const double t_stop = now_s();
         const double give_up = t_stop + std::max(0.0, opt.watchdog_grace_s);
@@ -915,19 +921,19 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
             if (now_s() > give_up) {
                 std::size_t k = 0;
                 for (auto& d : J->done) {
-                    if (!d.load() && k < threads.size() && threads[k].joinable()) {
+                    if (!d.load() && k < threads.size() && threads.at(k).joinable()) {
                         char buf[200];
                         std::snprintf(buf, sizeof buf, "%s did not stop %.1fs after it was stopped (%.1fs into the query): detached",
-                                      thread_names[k].c_str(), now_s() - t_stop, now_s() - t0);
+                                      thread_names.at(k).c_str(), now_s() - t_stop, now_s() - t0);
                         watchdog.push_back(buf);
-                        threads[k].detach();
+                        threads.at(k).detach();
                     }
                     ++k;
                 }
                 break;
             }
-            for (auto& m : members)
-                if (m.zctx) Z3_interrupt(*m.zctx);
+            for (auto& mem : members)
+                if (mem.zctx) Z3_interrupt(*mem.zctx);
             if (blast_ctx) Z3_interrupt(*blast_ctx);
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
@@ -936,7 +942,9 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
     };
     struct Guard {
         std::function<void()> f;
-        ~Guard() { f(); }
+        ~Guard() {
+            if (f) f();
+        }
     } guard{[&] {
         shutdown();
         if (!opt.keep_artifacts && opt.work_dir.empty()) {
@@ -973,18 +981,18 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
             auto lp = std::make_shared<const BlastPlan>(plan);
             const std::uint64_t mem_cap = std::uint64_t(checker_mem_mb(opt)) << 20;
             spawn("bit-blast", [J = J.get(), lp, work, cnf_path, left, mem_cap] {
-                Msg m;
-                m.type = Msg::CnfFailed;
+                Msg cnf_post;
+                cnf_post.type = Msg::CnfFailed;
                 std::string why;
                 auto r = lean_bitblast(lp->dag, lp->bb, work, left, &why, &J->blast_stop, mem_cap);
                 if (r) {
                     J->cnf_sha = sha256_file(cnf_path);
                     J->cnf = std::make_shared<const Cnf>(std::move(*r));
-                    m.type = Msg::CnfReady;
+                    cnf_post.type = Msg::CnfReady;
                 } else {
-                    m.detail = "prism-bitblast: " + why;
+                    cnf_post.detail = "prism-bitblast: " + why;
                 }
-                J->board.post(std::move(m));
+                J->board.post(std::move(cnf_post));
             });
             return;
         }
@@ -992,8 +1000,8 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
         blast_ctx = &bc;
         const z3::expr* f2 = &translated(bc);
         spawn("bit-blast", [J = J.get(), &bc, f2, cnf_path] {
-            Msg m;
-            m.type = Msg::CnfFailed;
+            Msg cnf_post;
+            cnf_post.type = Msg::CnfFailed;
             try {
                 std::string why;
                 auto r = detail::bitblast_fresh(bc, *f2, &why);
@@ -1002,35 +1010,35 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
                     if (detail::write_file(cnf_path, txt)) {
                         J->cnf_sha = sha256_hex(txt);
                         J->cnf = std::make_shared<const Cnf>(std::move(*r));
-                        m.type = Msg::CnfReady;
+                        cnf_post.type = Msg::CnfReady;
                     } else {
-                        m.detail = "cannot write " + cnf_path.string();
+                        cnf_post.detail = "cannot write " + cnf_path.string();
                     }
                 } else {
-                    m.detail = why;
+                    cnf_post.detail = why;
                 }
             } catch (const z3::exception& e) {
-                m.detail = std::string("bit-blast: ") + e.msg();
+                cnf_post.detail = std::string("bit-blast: ") + e.msg();
             }
-            J->board.post(std::move(m));
+            J->board.post(std::move(cnf_post));
         });
     };
     auto start = [&](std::size_t i) {
-        Member& m = members[i];
-        m.started = true;
+        Member& slot = members.at(i);
+        slot.started = true;
         ++running;
-        res.ran.push_back(m.name);
-        auto stop = m.stop;
-        const double left = std::max(0.01, (m.lrat ? cert_deadline : deadline) - now_s());
-        switch (m.kind) {
+        res.ran.push_back(slot.name);
+        auto stop = slot.stop;
+        const double left = std::max(0.01, (slot.lrat ? cert_deadline : deadline) - now_s());
+        switch (slot.kind) {
             case MemberKind::Z3: {
                 z3::context& zc = new_ctx();
-                m.zctx = &zc;
+                slot.zctx = &zc;
                 const z3::expr* f2 = &translated(zc);
                 const double stall = opt.debug_stall_s;
-                spawn(m.name, [J = J.get(), &zc, f2, i, left, stop, stall] {
-                    Msg msg;
-                    msg.member = i;
+                spawn(slot.name, [J = J.get(), &zc, f2, i, left, stop, stall] {
+                    Msg worker_msg;
+                    worker_msg.member = i;
                     const double s0 = now_s();
                     // Fault injection for the watchdog test: a job that
                     // ignores its stop flag for `stall` seconds.
@@ -1043,41 +1051,41 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
                         s.add(*f2);
                         auto r = stop->load() ? z3::unknown : s.check();
                         if (r == z3::sat) {
-                            msg.kind = Kind::Sat;
+                            worker_msg.kind = Kind::Sat;
                             z3::model md = s.get_model();
                             for (const auto& k : collect_consts(*f2))
-                                msg.model[const_name(k)] = md.eval(k, true).to_string();
+                                worker_msg.model[const_name(k)] = md.eval(k, true).to_string();
                         } else if (r == z3::unsat) {
-                            msg.kind = Kind::Unsat;
+                            worker_msg.kind = Kind::Unsat;
                         } else {
-                            msg.kind = Kind::Unknown;
-                            msg.detail = s.reason_unknown();
-                            if (msg.detail.find("timeout") != std::string::npos ||
-                                msg.detail.find("canceled") != std::string::npos)
-                                msg.kind = Kind::Timeout;
+                            worker_msg.kind = Kind::Unknown;
+                            worker_msg.detail = s.reason_unknown();
+                            if (worker_msg.detail.find("timeout") != std::string::npos ||
+                                worker_msg.detail.find("canceled") != std::string::npos)
+                                worker_msg.kind = Kind::Timeout;
                         }
                     } catch (const z3::exception& e) {
-                        msg.kind = Kind::Error;
-                        msg.detail = e.msg();
+                        worker_msg.kind = Kind::Error;
+                        worker_msg.detail = e.msg();
                     }
-                    msg.secs = now_s() - s0;
-                    J->board.post(std::move(msg));
+                    worker_msg.secs = now_s() - s0;
+                    J->board.post(std::move(worker_msg));
                 });
                 break;
             }
             case MemberKind::Smt2: {
                 std::vector<std::string> argv;
-                for (const auto& a : m.argv) argv.push_back(subst(a, smt_path, lrat_path));
-                spawn(m.name, [J = J.get(), argv, i, left, stop] {
+                for (const auto& a : slot.argv) argv.push_back(subst(a, smt_path, lrat_path));
+                spawn(slot.name, [J = J.get(), argv, i, left, stop] {
                     J->board.post(smt_result(i, detail::run(argv, left, stop.get())));
                 });
                 break;
             }
             case MemberKind::Dimacs: {
                 std::vector<std::string> argv;
-                for (const auto& a : m.argv) argv.push_back(subst(a, cnf_path, lrat_path));
+                for (const auto& a : slot.argv) argv.push_back(subst(a, cnf_path, lrat_path));
                 auto cp = cnf;
-                spawn(m.name, [J = J.get(), argv, i, left, stop, cp] {
+                spawn(slot.name, [J = J.get(), argv, i, left, stop, cp] {
                     J->board.post(dimacs_result(i, detail::run(argv, left, stop.get()), *cp));
                 });
                 break;
@@ -1089,24 +1097,24 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
                 // structured (Tseitin) CNF: cap it so it gives its core back.
                 const double budget = std::min(
                     left, opt.sls_budget_s > 0 ? opt.sls_budget_s : std::max(1.0, 0.1 * opt.timeout_s));
-                spawn(m.name, [J = J.get(), i, budget, stop, cp, seed] {
-                    Msg msg;
-                    msg.member = i;
+                spawn(slot.name, [J = J.get(), i, budget, stop, cp, seed] {
+                    Msg worker_msg;
+                    worker_msg.member = i;
                     const double s0 = now_s();
                     SlsOptions so;
                     so.seed = seed;
                     so.timeout_s = budget;
                     so.stop = stop.get();
                     auto r = probsat(*cp, so);
-                    msg.secs = now_s() - s0;
+                    worker_msg.secs = now_s() - s0;
                     if (r.found && assignment_satisfies(*cp, r.assignment)) {
-                        msg.kind = Kind::Sat;
-                        msg.model = model_from_assignment(*cp, r.assignment);
+                        worker_msg.kind = Kind::Sat;
+                        worker_msg.model = model_from_assignment(*cp, r.assignment);
                     } else {
-                        msg.kind = Kind::Unknown;  // never evidence of unsat
-                        msg.detail = "no assignment after " + std::to_string(r.flips) + " flips";
+                        worker_msg.kind = Kind::Unknown;  // never evidence of unsat
+                        worker_msg.detail = "no assignment after " + std::to_string(r.flips) + " flips";
                     }
-                    J->board.post(std::move(msg));
+                    J->board.post(std::move(worker_msg));
                 });
                 break;
             }
@@ -1114,11 +1122,11 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
     };
     auto fill_slots = [&] {
         for (std::size_t i = 0; i < members.size(); ++i) {
-            Member& m = members[i];
-            if (m.started || m.finished) continue;
-            if (m.not_before > now_s()) continue;
-            const bool on_cnf = m.kind == MemberKind::Dimacs || m.kind == MemberKind::Sls;
-            if (running >= slots && !m.lrat) break;
+            Member& mem = members.at(i);
+            if (mem.started || mem.finished) continue;
+            if (mem.not_before > now_s()) continue;
+            const bool on_cnf = mem.kind == MemberKind::Dimacs || mem.kind == MemberKind::Sls;
+            if (running >= slots && !mem.lrat) break;
             if (on_cnf) {
                 if (cnf_state == CnfState::None) { start_blast(); continue; }
                 if (cnf_state != CnfState::Ready) continue;
@@ -1131,9 +1139,9 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
     auto stop_all = [&](std::optional<std::size_t> keep = std::nullopt) {
         for (std::size_t i = 0; i < members.size(); ++i) {
             if (keep && *keep == i) continue;
-            members[i].stop->store(true);
-            if (!members[i].started) members[i].finished = true;
-            if (members[i].zctx) Z3_interrupt(*members[i].zctx);
+            members.at(i).stop->store(true);
+            if (!members.at(i).started) members.at(i).finished = true;
+            if (members.at(i).zctx) Z3_interrupt(*members.at(i).zctx);
         }
         if (!keep && blast_ctx) Z3_interrupt(*blast_ctx);
         if (!keep) J->blast_stop.store(true);
@@ -1143,82 +1151,86 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
     std::string accepted_by;
     std::optional<std::size_t> cert_member;
     for (std::size_t i = 0; i < members.size(); ++i)
-        if (members[i].lrat) cert_member = i;
+        if (members.at(i).lrat) cert_member = i;
     std::optional<Msg> cert_msg;
     bool timed_out = false;
     std::vector<std::string> disagreements;
 
     fill_slots();
     for (;;) {
-        const bool cert_pending = want_cert && cert_member && !members[*cert_member].finished &&
+        const bool cert_pending = want_cert && cert_member.has_value() &&
+                                  !members.at(cert_member.value()).finished &&
                                   cnf_state != CnfState::Failed;
         if (accepted && !(accepted->kind == Kind::Unsat && cert_pending)) break;
-        const bool any_live = running > 0 || std::any_of(members.begin(), members.end(), [](const Member& m) {
-                                  return !m.started && !m.finished;
+        const bool any_live = running > 0 || std::any_of(members.begin(), members.end(), [](const Member& mem) {
+                                  return !mem.started && !mem.finished;
                               });
         if (!any_live) break;
         // Answered UNSAT and only the certificate is outstanding: wait for
         // it until cert_deadline; otherwise the answer is due by deadline.
         const double due = accepted || cert_only ? cert_deadline : deadline;
         double wake = due;
-        for (const auto& m : members)
-            if (!m.started && !m.finished && m.not_before > 0) wake = std::min(wake, m.not_before);
-        Msg msg;
-        if (!board.wait(msg, wake)) {
+        for (const auto& mem : members)
+            if (!mem.started && !mem.finished && mem.not_before > 0) wake = std::min(wake, mem.not_before);
+        Msg board_msg;
+        if (!board.wait(board_msg, wake)) {
             if (now_s() >= due) { timed_out = true; break; }
             if (!accepted) fill_slots();
-            for (auto& m : members)  // due now: never wait on them again
-                if (m.not_before <= now_s()) m.not_before = 0;
+            for (auto& mem : members)  // due now: never wait on them again
+                if (mem.not_before <= now_s()) mem.not_before = 0;
             continue;
         }
-        if (msg.type == Msg::CnfReady || msg.type == Msg::CnfFailed) {
+        const Msg inbound = board_msg;
+        if (inbound.type == Msg::CnfReady || inbound.type == Msg::CnfFailed) {
             --running;
-            if (msg.type == Msg::CnfReady) {
+            if (inbound.type == Msg::CnfReady) {
                 cnf_state = CnfState::Ready;
-                if (accepted && cert_member && !members[*cert_member].started) start(*cert_member);
+                if (accepted && cert_member.has_value() && !members.at(cert_member.value()).started)
+                    start(cert_member.value());
             } else {
                 cnf_state = CnfState::Failed;
-                notes.push_back("bit-blast failed: " + msg.detail);
-                for (auto& m : members)
-                    if (!m.started && (m.kind == MemberKind::Dimacs || m.kind == MemberKind::Sls)) m.finished = true;
+                notes.push_back("bit-blast failed: " + inbound.detail);
+                for (auto& mem : members)
+                    if (!mem.started && (mem.kind == MemberKind::Dimacs || mem.kind == MemberKind::Sls)) mem.finished = true;
             }
             if (!accepted) fill_slots();
             continue;
         }
         --running;
-        Member& m = members[msg.member];
-        m.finished = true;
-        const bool definitive = msg.kind == Kind::Sat || msg.kind == Kind::Unsat;
-        if (definitive) res.times[m.name] = msg.secs;
-        if (msg.member == cert_member) cert_msg = msg;
-        if (msg.kind == Kind::Sat) {
+        const Msg handled = board_msg;
+        Member& member = members.at(handled.member);
+        member.finished = true;
+        const bool definitive = handled.kind == Kind::Sat || handled.kind == Kind::Unsat;
+        if (definitive) res.times[member.name] = handled.secs;
+        if (cert_member.has_value() && handled.member == cert_member.value()) cert_msg = handled;
+        if (handled.kind == Kind::Sat) {
             std::string why;
-            if (validate_model(c, formula, msg.model, &why)) {
+            if (validate_model(c, formula, handled.model, &why)) {
                 if (accepted && accepted->kind == Kind::Unsat) {
                     // A validated counterexample outranks any solver's unsat.
-                    disagreements.push_back(accepted_by + " said unsat but " + m.name + "'s model validates");
-                    accepted = msg;
-                    accepted_by = m.name;
+                    disagreements.push_back(accepted_by + " said unsat but " + member.name + "'s model validates");
+                    accepted = handled;
+                    accepted_by = member.name;
                     stop_all();
                 } else if (!accepted) {
-                    accepted = msg;
-                    accepted_by = m.name;
+                    accepted = handled;
+                    accepted_by = member.name;
                     stop_all();
                 }
             } else {
-                notes.push_back(m.name + ": SAT model rejected by Z3 model check (" + why + ")");
+                notes.push_back(member.name + ": SAT model rejected by Z3 model check (" + why + ")");
             }
-        } else if (msg.kind == Kind::Unsat) {
+        } else if (handled.kind == Kind::Unsat) {
             if (!accepted) {
-                accepted = msg;
-                accepted_by = m.name;
+                accepted = handled;
+                accepted_by = member.name;
                 stop_all(cert_member);
             }
-        } else if (!msg.detail.empty() && msg.detail != "cancelled") {
-            if (msg.detail.find(kUnreaped) != std::string::npos)
-                watchdog.push_back(m.name + " (" + msg.detail + ")");
+        } else if (!handled.detail.empty() && handled.detail != "cancelled") {
+            if (handled.detail.find(kUnreaped) != std::string::npos)
+                watchdog.push_back(member.name + " (" + handled.detail + ")");
             else
-                notes.push_back(m.name + ": " + std::string(kind_name(msg.kind)) + " (" + msg.detail + ")");
+                notes.push_back(member.name + ": " + std::string(kind_name(handled.kind)) + " (" + handled.detail + ")");
         }
         if (!accepted) fill_slots();
     }
@@ -1227,11 +1239,11 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
     shutdown();
     const double t_stopped = now_s();
     // Drain what arrived while stopping (a late certificate-member answer).
-    for (Msg msg; board.wait(msg, 0.0);) {
-        if (msg.type != Msg::Result) continue;
-        if (msg.detail.find(kUnreaped) != std::string::npos)
-            watchdog.push_back(members[msg.member].name + " (" + msg.detail + ")");
-        if (msg.member == cert_member && !cert_msg) cert_msg = msg;
+    for (Msg late_msg; board.wait(late_msg, 0.0);) {
+        if (late_msg.type != Msg::Result) continue;
+        if (late_msg.detail.find(kUnreaped) != std::string::npos)
+            watchdog.push_back(members.at(late_msg.member).name + " (" + late_msg.detail + ")");
+        if (late_msg.member == cert_member && !cert_msg) cert_msg = late_msg;
     }
     // ---------------------------------------------------------------- verdict
     if (accepted) {
@@ -1253,7 +1265,7 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
     for (const auto& d : disagreements) notes.push_back("DISAGREEMENT: " + d);
 
     if (want_cert && res.kind == Kind::Unsat && cert_member) {
-        const Member& cm = members[*cert_member];
+        const Member& cm = members.at(cert_member.value());
         char budget_note[160];
         std::snprintf(budget_note, sizeof budget_note,
                       "not certified: cadical did not finish within the certificate budget (%.0f s)",
@@ -1295,7 +1307,7 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
             json jm = json::object();
             std::map<std::string, std::string> back;
             for (std::size_t i = 0; i < canonical.size(); ++i)
-                if (auto it = res.model.find(canonical[i]); it != res.model.end())
+                if (auto it = res.model.find(canonical.at(i)); it != res.model.end())
                     jm["prism!v" + std::to_string(i)] = it->second;
             e["model"] = jm;
         }
@@ -1304,7 +1316,7 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
             e["certificate_info"] = res.certificate_info;
             e["cnf_sha256"] = J->cnf_sha;
             e["bitblaster"] = plan_name;
-            e["cert_solver"] = cert_member ? "cadical " + members[*cert_member].version : "cadical";
+            e["cert_solver"] = cert_member ? "cadical " + members.at(cert_member.value()).version : "cadical";
             if (opt.cache_certificates) {
                 // The packed proof only; the CNF is bit-blasted again on a
                 // hit. Not kept (cap, I/O): the entry is a plain unsat.

@@ -1,6 +1,9 @@
 void overlap_bad(char *p, int n) {
     memcpy(p, p, n);
 }
+void strcpy_self_bad(char *p) {
+    strcpy(p, p);
+}
 void overlap_ok(char *p, int n) {
     memmove(p, p, n);
 }

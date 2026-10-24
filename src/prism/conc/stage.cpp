@@ -162,28 +162,28 @@ std::vector<Finding> run_conc(const std::vector<fs::path>& sources, const Config
     std::vector<std::string> errs(units.size());
     for (std::size_t i = 0; i < units.size(); ++i) {
         try {
-            irs[i] = pir::lower_to_ir(fe, units[i], std::max(10.0, cfg.timeout), errs[i]);
+            irs.at(i) = pir::lower_to_ir(fe, units.at(i), std::max(10.0, cfg.timeout), errs.at(i));
         } catch (const std::exception& ex) {
-            irs[i].reset();
-            errs[i] = std::string("internal error: ") + ex.what();
+            irs.at(i).reset();
+            errs.at(i) = std::string("internal error: ") + ex.what();
         }
     }
     // phase 2: extract + solve (Z3 only)
     std::vector<Finding> out;
     for (std::size_t i = 0; i < units.size(); ++i) {
-        auto rel = rel_of(units[i], cfg.root);
-        if (!irs[i]) {
+        auto rel = rel_of(units.at(i), cfg.root);
+        if (!irs.at(i)) {
             auto f = base(rel);
             f.status = std::string(laws::ERROR);
             f.strength = std::string(laws::STRENGTH_SOME);
-            f.message = "clang front end failed: " + errs[i];
+            f.message = "clang front end failed: " + errs.at(i);
             f.extra["frontend"] = fe.version;
             out.push_back(std::move(f));
             continue;
         }
         std::vector<Harnessed> hs;
         try {
-            hs = analyse_ir(*irs[i], opt);
+            hs = analyse_ir(*irs.at(i), opt);
         } catch (const std::exception& ex) {
             auto f = base(rel);
             f.status = std::string(laws::ERROR);

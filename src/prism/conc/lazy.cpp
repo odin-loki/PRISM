@@ -119,11 +119,9 @@ bool is_head(const pir::Function& fn, const Stmt& s) {
 }
 
 std::vector<int> succs(const Block& b) {
-    switch (b.term.kind) {
-        case Term::Jmp: return {b.term.t};
-        case Term::Br: return {b.term.t, b.term.f};
-        default: return {};
-    }
+    if (b.term.kind == Term::Jmp) return {b.term.t};
+    if (b.term.kind == Term::Br) return {b.term.t, b.term.f};
+    return {};
 }
 
 void split(Graph& g) {
@@ -224,20 +222,20 @@ void analyze(Graph& g) {
             throw Fail{std::string(laws::NEEDS_HARNESS), "UNENCODED: irreducible control flow"};
         auto it = by_header.find(h);
         if (it == by_header.end()) {
-            Loop L;
-            L.header = h;
-            L.body.assign(static_cast<std::size_t>(n), 0);
-            L.body[static_cast<std::size_t>(h)] = 1;
-            g.loops.push_back(std::move(L));
+            Loop fresh;
+            fresh.header = h;
+            fresh.body.assign(static_cast<std::size_t>(n), 0);
+            fresh.body[static_cast<std::size_t>(h)] = 1;
+            g.loops.push_back(std::move(fresh));
             it = by_header.emplace(h, static_cast<int>(g.loops.size()) - 1).first;
         }
-        auto& L = g.loops[static_cast<std::size_t>(it->second)];
+        auto& loop = g.loops[static_cast<std::size_t>(it->second)];
         std::vector<int> st{b};
         while (!st.empty()) {
             int x = st.back();
             st.pop_back();
-            if (L.body[static_cast<std::size_t>(x)]) continue;
-            L.body[static_cast<std::size_t>(x)] = 1;
+            if (loop.body[static_cast<std::size_t>(x)]) continue;
+            loop.body[static_cast<std::size_t>(x)] = 1;
             for (int p : preds[static_cast<std::size_t>(x)]) st.push_back(p);
         }
     }
@@ -263,15 +261,15 @@ void unroll(Graph& g, int unwind, std::size_t max_nodes) {
     std::map<std::pair<int, std::vector<int>>, int> ids;
     std::vector<Node> tmp;
     std::deque<int> work;
-    auto get = [&](int b, std::vector<int> ctx) {
-        auto key = std::make_pair(b, ctx);
+    auto get = [&](int b, std::vector<int> loop_ctx) {
+        auto key = std::make_pair(b, loop_ctx);
         auto it = ids.find(key);
         if (it != ids.end()) return it->second;
         if (tmp.size() >= max_nodes)
             throw Fail{std::string(laws::UNKNOWN), "unrolled thread exceeds " + std::to_string(max_nodes) + " nodes"};
         Node nd;
         nd.block = b;
-        nd.ctx = std::move(ctx);
+        nd.ctx = std::move(loop_ctx);
         nd.head = g.head_op[static_cast<std::size_t>(b)];
         tmp.push_back(std::move(nd));
         int id = static_cast<int>(tmp.size()) - 1;
@@ -292,7 +290,7 @@ void unroll(Graph& g, int unwind, std::size_t max_nodes) {
             int kind = bl.term.kind == Term::Jmp ? 0 : (k == 0 ? 1 : 2);
             const auto& Ls = g.loops_of[static_cast<std::size_t>(s)];
             const auto& Lb = g.loops_of[static_cast<std::size_t>(b)];
-            std::vector<int> ctx;
+            std::vector<int> next_ctx;
             bool cut = false;
             for (int L : Ls) {
                 auto pos = std::find(Lb.begin(), Lb.end(), L);
@@ -302,9 +300,9 @@ void unroll(Graph& g, int unwind, std::size_t max_nodes) {
                     if (g.loops[static_cast<std::size_t>(L)].header == s) ++cnt;  // back edge
                 }
                 if (cnt >= unwind) cut = true;
-                ctx.push_back(cnt);
+                next_ctx.push_back(cnt);
             }
-            int to = cut ? -1 : get(s, ctx);
+            int to = cut ? -1 : get(s, next_ctx);
             if (cut) g.has_cut = true;
             tmp.at(static_cast<std::size_t>(id)).out.emplace_back(to, kind);
         }
@@ -850,13 +848,21 @@ struct Enc {
                         ok = ok && z3::implies(e, is1(lookup(t, node, s.args.at(0))));
                         break;
                     case Stmt::Alloc:
+                        [[fallthrough]];
                     case Stmt::Free:
+                        [[fallthrough]];
                     case Stmt::Load:
+                        [[fallthrough]];
                     case Stmt::Store:
+                        [[fallthrough]];
                     case Stmt::MemCpy:
+                        [[fallthrough]];
                     case Stmt::MemSet:
+                        [[fallthrough]];
                     case Stmt::StackSave:
+                        [[fallthrough]];
                     case Stmt::StackRestore:
+                        [[fallthrough]];
                     case Stmt::Revive:
                         break;  // visible ops are handled separately; SSA memory is not encoded here
                 }
@@ -868,6 +874,7 @@ struct Enc {
                     stopped = stopped || e;
                     break;
                 case Term::Jmp:
+                    [[fallthrough]];
                 case Term::Br: {
                     for (auto& [to, kind] : nd.out) {
                         z3::expr cond = e;
@@ -1008,16 +1015,17 @@ struct Enc {
         for (auto& ev : events) {
             if (ev.seq > v.seq) continue;
             if (!m.eval(ev.exec, true).is_true()) continue;
-            Event e;
-            e.round = ev.round;
-            e.thread = ev.thread;
-            e.op = ev.op;
+            Event step;
+            step.round = ev.round;
+            step.thread = ev.thread;
+            step.op = ev.op;
             const auto& o = p.ops[static_cast<std::size_t>(ev.op)];
-            e.line = o.line;
-            e.text = "[r" + std::to_string(ev.round) + " " + tname(p, ev.thread) + "] " + op_text(p, o);
-            if (ev.val) e.text += (o.kind == VisOp::Store ? " := " : " -> ") + value_text(m, *ev.val, ev.width);
-            e.text += at_line(o.line);
-            out.trace.push_back(std::move(e));
+            step.line = o.line;
+            step.text = "[r" + std::to_string(ev.round) + " " + tname(p, ev.thread) + "] " + op_text(p, o);
+            if (ev.val)
+                step.text += (o.kind == VisOp::Store ? " := " : " -> ") + value_text(m, *ev.val, ev.width);
+            step.text += at_line(o.line);
+            out.trace.push_back(std::move(step));
         }
         std::string sched;
         int cur = -1, cur_r = -1;

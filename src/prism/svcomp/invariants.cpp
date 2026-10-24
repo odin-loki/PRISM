@@ -91,14 +91,16 @@ bool int_safe(const std::string& expr, const Bounds& bounds) {
     std::function<Iv()> add;
     std::function<Iv()> atom = [&]() -> Iv {
         if (pos >= toks.size()) throw Unsafe{};
-        const std::string t = toks[pos++];
+        const std::string t = toks.at(pos++);
         if (t == "(") {
+            if (!add) throw Unsafe{};
             Iv v = add();
-            if (pos >= toks.size() || toks[pos] != ")") throw Unsafe{};
+            if (pos >= toks.size() || toks.at(pos) != ")") throw Unsafe{};
             ++pos;
             return v;
         }
         if (t == "-") {
+            if (!atom) throw Unsafe{};
             Iv a = atom();
             return ok({-a.second, -a.first});
         }
@@ -115,7 +117,7 @@ bool int_safe(const std::string& expr, const Bounds& bounds) {
     };
     auto mul = [&]() -> Iv {
         Iv v = atom();
-        while (pos < toks.size() && toks[pos] == "*") {
+        while (pos < toks.size() && toks.at(pos) == "*") {
             ++pos;
             Iv w = atom();
             long long ps[4] = {v.first * w.first, v.first * w.second, v.second * w.first, v.second * w.second};
@@ -125,8 +127,8 @@ bool int_safe(const std::string& expr, const Bounds& bounds) {
     };
     add = [&]() -> Iv {
         Iv v = mul();
-        while (pos < toks.size() && (toks[pos] == "+" || toks[pos] == "-")) {
-            std::string op = toks[pos++];
+        while (pos < toks.size() && (toks.at(pos) == "+" || toks.at(pos) == "-")) {
+            std::string op = toks.at(pos++);
             Iv w = mul();
             v = ok(op == "+" ? Iv{v.first + w.first, v.second + w.second} : Iv{v.first - w.second, v.second - w.first});
         }
@@ -240,12 +242,12 @@ std::pair<std::vector<Invariant>, std::string> correctness_invariants(const fs::
             if (decl) declared.emplace("\\b" + re_escape(decl->group(1)) + "\\b");
             std::vector<std::string> mine;
             for (const auto& e : invs[j])
-                if (!(declared && declared->search(e))) mine.push_back(strip(e));
+                if (!(declared.has_value() && declared->search(e))) mine.push_back(strip(e));
             // pir conjuncts are rendered with their C types; bmc's are filtered here
             std::vector<std::string> kept = pir ? mine : exportable_conjuncts(mine);
             if (!kept.empty()) {
                 std::string value;
-                for (std::size_t k = 0; k < kept.size(); ++k) value += (k ? " && " : "") + ("(" + kept[k] + ")");
+                for (std::size_t k = 0; k < kept.size(); ++k) value += (k ? " && " : "") + ("(" + kept.at(k) + ")");
                 out.push_back(Invariant{"loop_invariant", Location{task.filename().string(), line, col, function}, value});
             }
         }

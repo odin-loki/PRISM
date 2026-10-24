@@ -239,6 +239,7 @@ std::string RunReport::dumps() const {
 void RunReport::save(const std::filesystem::path& path) const {
     std::filesystem::create_directories(path.parent_path());
     std::ofstream out(path, std::ios::binary);
+    if (!out.is_open()) return;
     out << dumps();
 }
 

@@ -493,7 +493,7 @@ RunOut run(const RunSpec& spec) {
         for (int fd : {in_p[0], in_p[1], out_p[0], out_p[1], err_p[0], err_p[1], exec_p[0]})
             if (fd > STDERR_FILENO) ::close(fd);
         if (!envp.empty()) environ = envp.data();
-        ::execvp(argv[0], argv.data());
+        ::execvp(argv.at(0), argv.data());
         die(2);
     }
     close_fd(exec_p[1]);

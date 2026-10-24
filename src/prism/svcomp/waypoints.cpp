@@ -73,7 +73,7 @@ std::optional<LineCol> call_at(const std::string& text, const std::string& name,
     for (long k = 0; k < line - 1; ++k) start += lines[static_cast<std::size_t>(k)].size() + 1;
     start += static_cast<std::size_t>(col - 1);
     if (start > 0) {
-        unsigned char c = static_cast<unsigned char>(text[start - 1]);
+        unsigned char c = static_cast<unsigned char>(text.at(start - 1));
         if (std::isalnum(c) || c == '_') return std::nullopt;
     }
     Regex re(re_escape(name) + R"(\s*\(\s*\))");
@@ -88,9 +88,10 @@ std::vector<NondetValue> nondet_waypoints(const fs::path& task, const std::vecto
     if (locs && (locs->size() != trace.size() || (!physical && line_marker().search(text)))) locs.reset();
     std::vector<NondetValue> out;
     for (std::size_t i = 0; i < trace.size(); ++i) {
-        const auto& [name, value] = trace[i];
+        const auto& [name, value] = trace.at(i);
         std::optional<LineCol> at = locs ? (*locs)[i] : std::nullopt;
-        std::optional<LineCol> pos = at ? call_at(text, name, at->first, at->second) : std::nullopt;
+        std::optional<LineCol> pos =
+            at.has_value() ? call_at(text, name, at->first, at->second) : std::nullopt;
         if (!pos) {
             Regex re("\\b" + re_escape(name) + R"(\s*\(\s*\))");
             std::vector<Match> sites;
@@ -98,7 +99,7 @@ std::vector<NondetValue> nondet_waypoints(const fs::path& task, const std::vecto
                 if (!is_declaration(text, static_cast<std::size_t>(m.spans[0].first))) sites.push_back(std::move(m));
             if (sites.size() != 1) break;
             // just past ')': format 2.0 points at the closing parenthesis
-            pos = paren_location(text, static_cast<std::size_t>(sites[0].spans[0].second));
+            pos = paren_location(text, static_cast<std::size_t>(sites.front().spans[0].second));
         }
         out.push_back(NondetValue{Location{task.filename().string(), pos->first, pos->second, std::nullopt}, value});
     }

@@ -59,7 +59,7 @@ const std::map<std::string, std::string>& exec_stages() {
     static const std::map<std::string, std::string> k{
         {"pbsd", "part"},       // imports the configured ParanoidBSD tools/verify modules
         {"sanitize", "whole"},  // compiles + runs `// prism: run` functions under ASan/UBSan/TSan
-        {"optional", "part"},   // klee (native external calls), .cocci script rules
+        {"optional", "part"},   // klee (native external calls), tree-local .cocci script rules
         {"pir", "part"},        // Clang->PIR->Z3 runs; lli translation validation does not
         {"polyglot", "part"},   // perl -c, cargo clippy, eslint (PgTool::executes)
         {"fuzz", "part"},       // concrete oracle runs; compiled harness / AFL++ / libFuzzer do not
@@ -152,9 +152,10 @@ double round4(double x) {
     // The exact binary value rounded to 4 decimals, ties to even: the
     // correctly rounded decimal form, read back.
     auto s = std::format("{:.4f}", x);
-    double out = 0;
-    std::from_chars(s.data(), s.data() + s.size(), out);
-    return out;
+    double parsed = 0;
+    auto [ptr, ec] = std::from_chars(s.data(), s.data() + s.size(), parsed);
+    if (ec != std::errc{} || ptr != s.data() + s.size()) return x;
+    return parsed;
 }
 
 void apply_confidence(RunReport& report) {
@@ -165,8 +166,7 @@ void apply_confidence(RunReport& report) {
     report.confidence = round4(sc.confidence);
     if (report.functions.empty()) {
         static const char* kEmpty = "confidence 0: no functions parsed (no data, not clean)";
-        if (std::find(report.notes.begin(), report.notes.end(), kEmpty) == report.notes.end())
-            report.notes.push_back(kEmpty);
+        if (std::ranges::find(report.notes, kEmpty) == report.notes.end()) report.notes.push_back(kEmpty);
     }
 }
 
@@ -374,7 +374,7 @@ RunReport run_pipeline(const Config& cfg) {
                       "", "", {}};
             f.extra["skipped"] = sk.dir;
             f.extra["files"] = std::to_string(sk.files);
-            out.push_back(std::move(f));
+            out.push_back(f);
         }
         return out;
     });
@@ -397,7 +397,7 @@ RunReport run_pipeline(const Config& cfg) {
                 f.message = fn.signature;
                 f.strength = std::string(laws::STRENGTH_FINDS);
                 f.extra["static"] = fn.is_static ? "true" : "false";
-                out.push_back(std::move(f));
+                out.push_back(f);
             }
         }
         report.functions = functions;

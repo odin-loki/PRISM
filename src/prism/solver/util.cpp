@@ -123,7 +123,7 @@ struct Sha256 {
 
     std::string hex() {
         std::uint64_t bits = total * 8;
-        unsigned char pad = 0x80;
+        const unsigned char pad = static_cast<unsigned char>(0x80);
         update(&pad, 1);
         unsigned char zero = 0;
         while (used != 56) update(&zero, 1);
@@ -277,14 +277,14 @@ Proc run(const std::vector<std::string>& argv, double timeout_s, const std::atom
     for (const auto& a : argv) args.push_back(const_cast<char*>(a.c_str()));
     args.push_back(nullptr);
     pid_t pid = -1;
-    int rc = posix_spawnp(&pid, args[0], &fa, &at, args.data(), environ);
+    int rc = posix_spawnp(&pid, args.at(0), &fa, &at, args.data(), environ);
     posix_spawn_file_actions_destroy(&fa);
     posix_spawnattr_destroy(&at);
     close(fds[1]);
     if (rc != 0) {
         close(fds[0]);
         r.failed = true;
-        r.out = std::string("cannot start ") + argv[0] + ": " + std::strerror(rc);
+        r.out = std::string("cannot start ") + argv.at(0) + ": " + std::strerror(rc);
         return r;
     }
     // registered so that a SIGINT/SIGTERM to PRISM kills this group too (proc.hpp)
@@ -525,7 +525,7 @@ std::size_t lrat_steps(const fs::path& lrat) {
         std::istringstream ls(line);
         std::string id, second;
         if (!(ls >> id)) continue;
-        if (id[0] == 'c') continue;
+        if (id.empty() || id.front() == 'c') continue;
         if (ls >> second && second == "d") continue;
         ++n;
     }

@@ -69,7 +69,7 @@ std::string opnd(const ir::Operand& o) {
         case ir::Value::Int: width(o.ty); return "#" + std::to_string(o.v.bits);
         case ir::Value::Poison: vw(o.ty); return "poison";
         case ir::Value::Undef: vw(o.ty); return "undef";  // only accepted under freeze
-        case ir::Value::Null:
+        case ir::Value::Null: [[fallthrough]];
         case ir::Value::Zero:
             // Tr::operand: a null pointer is the constant 0
             if (o.ty.kind == ir::Type::Ptr && o.ty.text == "ptr") return "#0";
@@ -435,6 +435,7 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
             }
             uint64_t sz = 0;
             try {
+                if (!ty.has_value()) throw Unsupported{"parameter object type missing"};
                 sz = lay.alloc_size(*ty);
             } catch (const pirmem::Unenc& u) {
                 throw Unsupported{"parameter object: " + u.reason};
@@ -603,7 +604,7 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
                 for (auto& a : in.ops) b << " " << opnd(a) << " " << vw(a.ty);
                 if (coom) b << " %" << kOom << " 64";
                 b << "\n";
-                auto it = std::find_if(callees.begin(), callees.end(), [&](const Callee& c) { return c.name == in.callee; });
+                auto it = std::ranges::find_if(callees, [&](const Callee& c) { return c.name == in.callee; });
                 if (it == callees.end()) callees.push_back({in.callee, cforeign});
                 else if (it->foreign != cforeign)
                     throw Unsupported{"@" + in.callee + " inlined both as library and as user code"};
@@ -658,7 +659,7 @@ void pir_side(std::ostream& o, const Function& fn) {
                     o << "P store " << arg(s.args[0]) << " " << arg(s.args[1]) << " " << arg(s.args[2]) << " "
                       << s.tag << "\n";
                     break;
-                case Stmt::MemCpy:
+                case Stmt::MemCpy: [[fallthrough]];
                 case Stmt::MemSet:
                     o << "P " << (s.kind == Stmt::MemCpy ? "memcpy " : "memset ") << arg(s.args[0]) << " "
                       << arg(s.args[1]) << " " << arg(s.args[2]) << "\n";
@@ -697,7 +698,7 @@ void export_lean_pair(const std::filesystem::path& out_root, const std::string& 
         llvm_side(l, m, f, opt, top_file, callees, true, false);
         // every function the calls reach, once, in order of first call
         for (std::size_t i = 0; i < callees.size(); ++i) {
-            const Callee c = callees[i];
+            const Callee c = callees.at(i);
             l << "L fn " << name(c.name) << "\n";
             llvm_side(l, m, *m.find(c.name), opt, top_file, callees, false, c.foreign);
         }

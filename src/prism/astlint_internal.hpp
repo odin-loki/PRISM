@@ -77,7 +77,7 @@ std::string canon_path(const std::filesystem::path& p);
 FileResult analyze_unit(Unit& u, const FileSet& files);
 
 // Normalised record name of a type spelling ("const struct ns::B *" -> "ns::B").
-std::string record_name(std::string t);
+std::string record_name(std::string_view t);
 
 // ---------------------------------------------------------------- libclang
 // Compiled only with PRISM_HAS_LIBCLANG (CMake option PRISM_LIBCLANG); the

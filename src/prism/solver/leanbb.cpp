@@ -118,10 +118,10 @@ std::optional<std::vector<bool>> literal_bits(std::string_view v, unsigned w) {
 std::string bits_decimal(const std::vector<bool>& bits) {  // LSB first
     std::string d = "0";
     for (std::size_t i = bits.size(); i-- > 0;) {
-        int carry = bits[i] ? 1 : 0;
+        int carry = bits.at(i) ? 1 : 0;
         for (std::size_t j = d.size(); j-- > 0;) {
-            int x = (d[j] - '0') * 2 + carry;
-            d[j] = char('0' + x % 10);
+            int x = (d.at(j) - '0') * 2 + carry;
+            d.at(j) = char('0' + x % 10);
             carry = x / 10;
         }
         if (carry) d.insert(d.begin(), char('0' + carry));
@@ -147,7 +147,7 @@ bool parse_sexps(std::string_view s, std::vector<SNode>& nodes, std::vector<std:
             nodes.push_back(SNode{{}, {}, true});
             std::size_t id = nodes.size() - 1;
             if (open.empty()) tops.push_back(id);
-            else nodes[open.back()].kids.push_back(id);
+            else nodes.at(open.back()).kids.push_back(id);
             open.push_back(id);
             ++i;
             continue;
@@ -159,10 +159,11 @@ bool parse_sexps(std::string_view s, std::vector<SNode>& nodes, std::vector<std:
             continue;
         }
         std::size_t b = i;
-        while (i < s.size() && !std::isspace(static_cast<unsigned char>(s[i])) && s[i] != '(' && s[i] != ')') ++i;
+        while (i < s.size() && !std::isspace(static_cast<unsigned char>(s.at(i))) && s.at(i) != '(' && s.at(i) != ')')
+            ++i;
         nodes.push_back(SNode{std::string(s.substr(b, i - b)), {}, false});
         if (open.empty()) tops.push_back(nodes.size() - 1);
-        else nodes[open.back()].kids.push_back(nodes.size() - 1);
+        else nodes.at(open.back()).kids.push_back(nodes.size() - 1);
     }
     return open.empty();
 }
@@ -296,7 +297,8 @@ struct Evaluator {
         if (!a || !b) return std::nullopt;
         if (op == "concat") {
             if (a->w + b->w > 128) return bad("width above 128");
-            return mk(a->w + b->w, (b->w >= 128 ? 0 : (a->v << b->w)) | b->v);
+            const u128 hi = b->w >= 128 ? u128(0) : (a->v << b->w);
+            return mk(a->w + b->w, hi | b->v);
         }
         if (a->w != b->w) return bad("width mismatch in " + op);
         const unsigned w = a->w;
@@ -382,8 +384,8 @@ std::optional<bool> eval_lean_dag(const LeanDag& dag, const std::map<std::string
     std::vector<SNode> nodes;
     std::vector<std::size_t> tops;
     if (!parse_sexps(dag.text, nodes, tops) || tops.size() != 1) return fail("malformed dag text");
-    const auto& d = nodes[tops[0]];
-    if (!d.list || d.kids.size() < 2 || nodes[d.kids[0]].atom != "dag") return fail("not a (dag ...) form");
+    const auto& d = nodes.at(tops.front());
+    if (!d.list || d.kids.size() < 2 || nodes.at(d.kids.front()).atom != "dag") return fail("not a (dag ...) form");
     Evaluator ev{nodes, {}, {}};
     for (const auto& in : dag.inputs) {
         if (in.width > 128) return fail("input wider than 128 bits");
@@ -396,10 +398,10 @@ std::optional<bool> eval_lean_dag(const LeanDag& dag, const std::map<std::string
         ev.update(in.base, Val{in.width, v});
     }
     for (std::size_t i = 1; i + 1 < d.kids.size(); ++i) {
-        const auto& df = nodes[d.kids[i]];
+        const auto& df = nodes.at(d.kids.at(i));
         unsigned long long w = 0, b = 0;
-        if (!df.list || df.kids.size() != 4 || nodes[df.kids[0]].atom != "def" || !ev.num(df.kids[1], w) ||
-            !ev.num(df.kids[2], b))
+        if (!df.list || df.kids.size() != 4 || nodes.at(df.kids.at(0)).atom != "def" || !ev.num(df.kids.at(1), w) ||
+            !ev.num(df.kids.at(2), b))
             return fail("malformed def");
         auto v = ev.eval(df.kids[3]);
         if (!v) return fail(ev.why);
@@ -424,7 +426,10 @@ std::optional<Cnf> lean_bitblast(const LeanDag& dag, const ToolInfo& exe, const 
     auto p = detail::run({exe.path.string()}, timeout_s, stop, 1u << 20, dp.string(), op.string(), mem_cap);
     if (p.failed) return fail("prism-bitblast did not start: " + p.out);
     if (p.cancelled) return fail("prism-bitblast cancelled");
-    if (auto m = detail::out_of_memory(p)) return fail("prism-bitblast " + *m);
+    if (auto oom = detail::out_of_memory(p)) {
+        const std::string detail = oom.value();
+        return fail("prism-bitblast " + detail);
+    }
     if (p.timed_out) return fail("prism-bitblast timed out");
     if (p.rc != 0) return fail("prism-bitblast exit " + std::to_string(p.rc) + ": " + tail_of(p.out));
     std::string txt = detail::read_file(op);
@@ -503,7 +508,7 @@ namespace {
 unsigned width_of(const z3::expr& e) { return e.is_bool() ? 1u : e.get_sort().bv_size(); }
 
 std::string balanced(const char* op, const std::vector<std::string>& xs, std::size_t lo, std::size_t hi) {
-    if (hi - lo == 1) return xs[lo];
+    if (hi - lo == 1) return xs.at(lo);
     std::size_t mid = lo + (hi - lo) / 2;
     return std::string("(") + op + " " + balanced(op, xs, lo, mid) + " " + balanced(op, xs, mid, hi) + ")";
 }
@@ -517,9 +522,9 @@ bool emit(const z3::expr& e, const std::vector<std::string>& a, const std::strin
     const auto k = e.decl().decl_kind();
     const std::size_t n = e.num_args();
     const std::string W = std::to_string(width_of(e));
-    auto s1 = [&](const char* op) { out = std::string("(") + op + " " + a[0] + ")"; return true; };
+    auto s1 = [&](const char* op) { out = std::string("(") + op + " " + a.at(0) + ")"; return true; };
     auto s2 = [&](const char* op, std::size_t i, std::size_t j) {
-        out = std::string("(") + op + " " + a[i] + " " + a[j] + ")";
+        out = std::string("(") + op + " " + a.at(i) + " " + a.at(j) + ")";
         return true;
     };
     auto nary = [&](const char* op, const char* unit) {
@@ -545,7 +550,7 @@ bool emit(const z3::expr& e, const std::vector<std::string>& a, const std::strin
         case Z3_OP_XOR: return nary("xor", "(const 1 0)");
         case Z3_OP_IMPLIES:
             if (n != 2) return outside();
-            out = "(or (not " + a[0] + ") " + a[1] + ")";
+            out = "(or (not " + a.at(0) + ") " + a.at(1) + ")";
             return true;
         case Z3_OP_IFF: return n == 2 && s2("eq", 0, 1);
         case Z3_OP_EQ: return n == 2 ? s2("eq", 0, 1) : outside();
@@ -553,11 +558,11 @@ bool emit(const z3::expr& e, const std::vector<std::string>& a, const std::strin
             if (n < 2) { out = "(const 1 1)"; return true; }
             std::vector<std::string> pairs;
             for (std::size_t i = 0; i < n; ++i)
-                for (std::size_t j = i + 1; j < n; ++j) pairs.push_back("(not (eq " + a[i] + " " + a[j] + "))");
+                for (std::size_t j = i + 1; j < n; ++j) pairs.push_back("(not (eq " + a.at(i) + " " + a.at(j) + "))");
             out = balanced("and", pairs, 0, pairs.size());
             return true;
         }
-        case Z3_OP_ITE: return n == 3 && (out = "(ite " + a[0] + " " + a[1] + " " + a[2] + ")", true);
+        case Z3_OP_ITE: return n == 3 && (out = "(ite " + a.at(0) + " " + a.at(1) + " " + a.at(2) + ")", true);
         case Z3_OP_ULEQ: return s2("ule", 0, 1);
         case Z3_OP_UGEQ: return s2("ule", 1, 0);
         case Z3_OP_ULT: return s2("ult", 0, 1);
@@ -566,23 +571,23 @@ bool emit(const z3::expr& e, const std::vector<std::string>& a, const std::strin
         case Z3_OP_SGEQ: return s2("sle", 1, 0);
         case Z3_OP_SLT: return s2("slt", 0, 1);
         case Z3_OP_SGT: return s2("slt", 1, 0);
-        case Z3_OP_BSMUL_NO_OVFL: out = "(not (smulhi " + a[0] + " " + a[1] + "))"; return true;
-        case Z3_OP_BSMUL_NO_UDFL: out = "(not (smullo " + a[0] + " " + a[1] + "))"; return true;
-        case Z3_OP_BUMUL_NO_OVFL: out = "(not (umulo " + a[0] + " " + a[1] + "))"; return true;
+        case Z3_OP_BSMUL_NO_OVFL: out = "(not (smulhi " + a.at(0) + " " + a.at(1) + "))"; return true;
+        case Z3_OP_BSMUL_NO_UDFL: out = "(not (smullo " + a.at(0) + " " + a.at(1) + "))"; return true;
+        case Z3_OP_BUMUL_NO_OVFL: out = "(not (umulo " + a.at(0) + " " + a.at(1) + "))"; return true;
         case Z3_OP_BNOT: return s1("not");
         case Z3_OP_BNEG: return s1("neg");
         case Z3_OP_BAND: return n > 0 ? nary("and", "") : outside();
         case Z3_OP_BOR: return n > 0 ? nary("or", "") : outside();
         case Z3_OP_BXOR: return n > 0 ? nary("xor", "") : outside();
-        case Z3_OP_BNAND: return n == 2 && (out = "(not (and " + a[0] + " " + a[1] + "))", true);
-        case Z3_OP_BNOR: return n == 2 && (out = "(not (or " + a[0] + " " + a[1] + "))", true);
-        case Z3_OP_BXNOR: return n == 2 && (out = "(not (xor " + a[0] + " " + a[1] + "))", true);
+        case Z3_OP_BNAND: return n == 2 && (out = "(not (and " + a.at(0) + " " + a.at(1) + "))", true);
+        case Z3_OP_BNOR: return n == 2 && (out = "(not (or " + a.at(0) + " " + a.at(1) + "))", true);
+        case Z3_OP_BXNOR: return n == 2 && (out = "(not (xor " + a.at(0) + " " + a.at(1) + "))", true);
         case Z3_OP_BADD: return n > 0 ? nary("add", "") : outside();
         case Z3_OP_BMUL: return n > 0 ? nary("mul", "") : outside();
         case Z3_OP_BSUB: {
             if (n == 0) return outside();
-            out = a[0];
-            for (std::size_t i = 1; i < n; ++i) out = "(sub " + out + " " + a[i] + ")";
+            out = a.at(0);
+            for (std::size_t i = 1; i < n; ++i) out = "(sub " + out + " " + a.at(i) + ")";
             return true;
         }
         case Z3_OP_BUDIV: return n == 2 && s2("udiv", 0, 1);
@@ -595,7 +600,7 @@ bool emit(const z3::expr& e, const std::vector<std::string>& a, const std::strin
             if (n != 2) return outside();
             const char* v = k == Z3_OP_BSHL ? "shl" : k == Z3_OP_BLSHR ? "lshr" : "ashr";
             if (e.arg(1).is_numeral()) {
-                out = std::string("(") + v + "c " + numeral(e.arg(1)) + " " + a[0] + ")";
+                out = std::string("(") + v + "c " + numeral(e.arg(1)) + " " + a.at(0) + ")";
                 return true;
             }
             return s2(v, 0, 1);
@@ -603,19 +608,19 @@ bool emit(const z3::expr& e, const std::vector<std::string>& a, const std::strin
         case Z3_OP_CONCAT: return n > 0 ? nary("concat", "") : outside();
         case Z3_OP_EXTRACT: {
             const unsigned hi = param(0), lo = param(1);
-            out = "(extract " + std::to_string(lo) + " " + std::to_string(hi - lo + 1) + " " + a[0] + ")";
+            out = "(extract " + std::to_string(lo) + " " + std::to_string(hi - lo + 1) + " " + a.at(0) + ")";
             return true;
         }
         case Z3_OP_ZERO_EXT:
         case Z3_OP_SIGN_EXT: {
             const unsigned w0 = width_of(e.arg(0));
-            out = std::string(k == Z3_OP_ZERO_EXT ? "(zext " : "(sext ") + std::to_string(w0 + param(0)) + " " + a[0] + ")";
+            out = std::string(k == Z3_OP_ZERO_EXT ? "(zext " : "(sext ") + std::to_string(w0 + param(0)) + " " + a.at(0) + ")";
             return true;
         }
         case Z3_OP_REPEAT: {
             const unsigned r = param(0);
             if (r == 0) return outside();
-            std::vector<std::string> copies(r, a[0]);
+            std::vector<std::string> copies(r, a.at(0));
             out = balanced("concat", copies, 0, r);
             return true;
         }
@@ -625,21 +630,21 @@ bool emit(const z3::expr& e, const std::vector<std::string>& a, const std::strin
             if (w == 0) return outside();
             unsigned s = param(0) % w;
             if (k == Z3_OP_ROTATE_RIGHT) s = (w - s) % w;
-            if (s == 0) { out = a[0]; return true; }
+            if (s == 0) { out = a.at(0); return true; }
             // rotl(x, s) = x[w-s-1:0] ++ x[w-1:w-s]
-            out = "(concat (extract 0 " + std::to_string(w - s) + " " + a[0] + ") (extract " + std::to_string(w - s) +
-                  " " + std::to_string(s) + " " + a[0] + "))";
+            out = "(concat (extract 0 " + std::to_string(w - s) + " " + a.at(0) + ") (extract " + std::to_string(w - s) +
+                  " " + std::to_string(s) + " " + a.at(0) + "))";
             return true;
         }
         case Z3_OP_BCOMP: return n == 2 && s2("eq", 0, 1);
         case Z3_OP_BREDOR: {
             const std::string w0 = std::to_string(width_of(e.arg(0)));
-            out = "(not (eq " + a[0] + " (const " + w0 + " 0)))";
+            out = "(not (eq " + a.at(0) + " (const " + w0 + " 0)))";
             return true;
         }
         case Z3_OP_BREDAND: {
             const std::string w0 = std::to_string(width_of(e.arg(0)));
-            out = "(eq " + a[0] + " (not (const " + w0 + " 0)))";
+            out = "(eq " + a.at(0) + " (not (const " + w0 + " 0)))";
             return true;
         }
         default: return outside();

@@ -37,14 +37,14 @@ struct Tree {
 
 std::string strip(std::string s) {
     std::size_t a = 0, b = s.size();
-    while (a < b && std::isspace(static_cast<unsigned char>(s[a]))) ++a;
-    while (b > a && std::isspace(static_cast<unsigned char>(s[b - 1]))) --b;
+    while (a < b && std::isspace(static_cast<unsigned char>(s.at(a)))) ++a;
+    while (b > a && std::isspace(static_cast<unsigned char>(s.at(b - 1)))) --b;
     return s.substr(a, b - a);
 }
 
 std::string lstrip_copy(std::string text) {
     std::size_t i = 0;
-    while (i < text.size() && std::isspace(static_cast<unsigned char>(text[i]))) ++i;
+    while (i < text.size() && std::isspace(static_cast<unsigned char>(text.at(i)))) ++i;
     return text.substr(i);
 }
 
@@ -178,13 +178,13 @@ const FunctionInfo* lookup(const Index& index, const std::string& file, const st
 }
 
 std::vector<std::string> split_args(std::string args) {
-    args = strip(std::move(args));
+    args = strip(args);
     if (args.empty()) return {};
     std::vector<std::string> out;
     int depth = 0;
     std::size_t start = 0;
     for (std::size_t i = 0; i < args.size(); ++i) {
-        char ch = args[i];
+        char ch = args.at(i);
         if (ch == '(') ++depth;
         else if (ch == ')') --depth;
         else if (ch == ',' && depth == 0) {
@@ -205,11 +205,11 @@ std::optional<std::tuple<std::string, std::string, std::size_t>> parse_call(cons
     std::string name = m->text;
     if (kKw.contains(name) || !is_ident(name)) return std::nullopt;
     std::size_t pos = start + name.size();
-    while (pos < text.size() && (text[pos] == ' ' || text[pos] == '\t' || text[pos] == '\n')) ++pos;
-    if (pos >= text.size() || text[pos] != '(') return std::nullopt;
+    while (pos < text.size() && (text.at(pos) == ' ' || text.at(pos) == '\t' || text.at(pos) == '\n')) ++pos;
+    if (pos >= text.size() || text.at(pos) != '(') return std::nullopt;
     int depth = 0;
     for (std::size_t i = pos; i < text.size(); ++i) {
-        char ch = text[i];
+        char ch = text.at(i);
         if (ch == '(') ++depth;
         else if (ch == ')') {
             --depth;
@@ -226,8 +226,8 @@ std::optional<std::pair<std::string, std::string>> match_balanced(const std::str
     if (text.empty() || text.front() != open_ch) return std::nullopt;
     int depth = 0;
     for (std::size_t i = 0; i < text.size(); ++i) {
-        if (text[i] == open_ch) ++depth;
-        else if (text[i] == close_ch) {
+        if (text.at(i) == open_ch) ++depth;
+        else if (text.at(i) == close_ch) {
             --depth;
             if (depth == 0) {
                 return std::make_pair(text.substr(1, i - 1), text.substr(i + 1));
@@ -247,12 +247,12 @@ std::string regex_sub(const Regex& re, const std::string& src, const std::string
         if (a < i) continue;
         out.append(src, i, a - i);
         for (std::size_t k = 0; k < repl.size(); ++k) {
-            if ((repl[k] == '$' || repl[k] == '\\') && k + 1 < repl.size() &&
-                std::isdigit(static_cast<unsigned char>(repl[k + 1]))) {
-                out += m.group(static_cast<std::size_t>(repl[k + 1] - '0'));
+            if ((repl.at(k) == '$' || repl.at(k) == '\\') && k + 1 < repl.size() &&
+                std::isdigit(static_cast<unsigned char>(repl.at(k + 1)))) {
+                out += m.group(static_cast<std::size_t>(repl.at(k + 1) - '0'));
                 ++k;
             } else {
-                out += repl[k];
+                out += repl.at(k);
             }
         }
         i = b;
@@ -297,8 +297,8 @@ std::optional<std::string> adapt_callee_body(std::string body, const std::map<st
         auto at = static_cast<std::size_t>(rets[0].spans[0].first);
         int depth = 0;
         for (std::size_t i = 0; i < at; ++i) {
-            if (body[i] == '{') ++depth;
-            else if (body[i] == '}') --depth;
+            if (body.at(i) == '{') ++depth;
+            else if (body.at(i) == '}') --depth;
         }
         auto semi = body.find(';', at);
         single_final = depth == 0 && semi != std::string::npos && strip(body.substr(semi + 1)).empty();
@@ -323,7 +323,7 @@ void add_callee_locals(const std::string& body, const std::string& prefix,
     for (auto& m : decl.finditer(body)) {
         auto name = m.group(1);
         if (type_words.contains(name) || rename.count(name)) continue;
-        rename[name] = prefix + "_l_" + name;
+        rename.emplace(name, prefix + "_l_" + name);
     }
 }
 
@@ -406,21 +406,22 @@ std::optional<std::string> build_inline_block(const FunctionInfo& callee,
     for (std::size_t i = 0; i < callee.params.size(); ++i) {
         const auto& [typ, pname] = callee.params[i];
         std::string temp = prefix + "_i" + std::to_string(i);
-        rename[pname] = temp;
-        decls.push_back(param_type(typ) + " " + temp + " = " + args[i] + ";");
+        rename.insert_or_assign(pname, temp);
+        decls.push_back(param_type(typ) + " " + temp + " = " + args.at(i) + ";");
     }
     std::optional<std::string> ret_var;
     if (returns_value(callee)) {
         auto rt = callee_ret_type(callee);
         if (!rt) return std::nullopt;
-        ret_var = prefix + "_ret";
-        decls.push_back(*rt + " " + *ret_var + ";");
+        const std::string rv = prefix + "_ret";
+        ret_var = rv;
+        decls.push_back(*rt + " " + rv + ";");
     }
     add_callee_locals(callee.body, prefix, rename);
     auto adapted = adapt_callee_body(callee.body, rename, ret_var);
     if (!adapted) return std::nullopt;
     std::vector<std::string> parts = std::move(decls);
-    if (!adapted->empty()) parts.push_back(std::move(*adapted));
+    if (adapted.has_value() && !adapted->empty()) parts.push_back(std::move(*adapted));
     if (!tail.empty()) {
         std::string t = tail;
         while (!t.empty() && t.back() == ';') t.pop_back();
@@ -429,7 +430,7 @@ std::optional<std::string> build_inline_block(const FunctionInfo& callee,
     std::string inner;
     for (std::size_t i = 0; i < parts.size(); ++i) {
         if (i) inner += "\n";
-        inner += parts[i];
+        inner += parts.at(i);
     }
     return "{\n" + inner + "\n}";
 }
@@ -513,10 +514,10 @@ std::string try_inline_stmt(const std::string& stmt, const FunctionInfo& fn, con
 std::pair<std::string, std::string> take_stmt(const std::string& text) {
     int depth = 0;
     for (std::size_t i = 0; i < text.size(); ++i) {
-        char ch = text[i];
+        char ch = text.at(i);
         if (ch == '"' || ch == '\'') {
-            for (++i; i < text.size() && text[i] != ch; ++i)
-                if (text[i] == '\\') ++i;
+            for (++i; i < text.size() && text.at(i) != ch; ++i)
+                if (text.at(i) == '\\') ++i;
             continue;
         }
         if (ch == '(' || ch == '[' || ch == '{') ++depth;
@@ -530,7 +531,7 @@ std::pair<std::string, std::string> take_stmt(const std::string& text) {
 bool starts_word(const std::string& text, std::string_view kw) {
     if (!text.starts_with(kw)) return false;
     return text.size() == kw.size() ||
-           !(std::isalnum(static_cast<unsigned char>(text[kw.size()])) || text[kw.size()] == '_');
+           !(std::isalnum(static_cast<unsigned char>(text.at(kw.size()))) || text.at(kw.size()) == '_');
 }
 
 std::string transform_body(std::string text, const FunctionInfo& fn, const Tree& tree, int& counter);
@@ -540,17 +541,18 @@ std::string transform_body(std::string text, const FunctionInfo& fn, const Tree&
 // each site keeps its own prefix). A changed statement that is not a block
 // becomes one, so it stays a single statement under `if (c)`.
 std::string transform_stmt(std::string& text, const FunctionInfo& fn, const Tree& tree, int& counter) {
-    text = lstrip_copy(std::move(text));
+    text = lstrip_copy(text);
     if (text.empty()) return {};
     if (text.front() == '{') {
         auto matched = match_balanced(text, '{', '}');
         if (!matched) {
-            std::string all = std::move(text);
+            std::string all = text;
             text.clear();
             return all;
         }
+        const std::string body = matched->first;
         text = matched->second;
-        return "{" + transform_body(matched->first, fn, tree, counter) + "}";
+        return "{" + transform_body(body, fn, tree, counter) + "}";
     }
     auto sub = [&](const std::string& head) {
         int before = counter;
@@ -591,7 +593,7 @@ std::string transform_stmt(std::string& text, const FunctionInfo& fn, const Tree
 
 std::string transform_body(std::string text, const FunctionInfo& fn, const Tree& tree, int& counter) {
     std::string out;
-    while (!(text = lstrip_copy(std::move(text))).empty()) {
+    while (!(text = lstrip_copy(text)).empty()) {
         std::size_t before = text.size();
         out += transform_stmt(text, fn, tree, counter);
         out += '\n';

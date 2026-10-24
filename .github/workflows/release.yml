@@ -76,13 +76,13 @@ jobs:
       - name: Sign every artefact (Sigstore bundle per file)
         working-directory: out
         run: |
-          for f in prism libprism_native.so prism.cdx.json SHA256SUMS; do
+          for f in prism prism.cdx.json SHA256SUMS; do
             cosign sign-blob --yes --bundle "$f.sigstore.json" "$f"
           done
       - name: Verify the signatures before publishing
         working-directory: out
         run: |
-          for f in prism libprism_native.so prism.cdx.json SHA256SUMS; do
+          for f in prism prism.cdx.json SHA256SUMS; do
             cosign verify-blob --bundle "$f.sigstore.json" \
               --certificate-identity "https://github.com/${{ github.repository }}/.github/workflows/release.yml@${{ github.ref }}" \
               --certificate-oidc-issuer https://token.actions.githubusercontent.com \

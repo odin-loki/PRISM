@@ -73,10 +73,10 @@ RUN cmake -S /src -B /build -G Ninja \
  && cmake --build /build \
  && (cd /src && /build/prism_tests) \
  && mkdir -p /out \
- && cp /build/prism /build/libprism_native.so /out/ \
+ && cp /build/prism /out/ \
  && /build-deps/prism-deps sbom --version "${PRISM_VERSION}" -o /out/prism.cdx.json \
  && touch -d "@${SOURCE_DATE_EPOCH}" /out/* \
- && (cd /out && sha256sum prism libprism_native.so prism.cdx.json > SHA256SUMS)
+ && (cd /out && sha256sum prism prism.cdx.json > SHA256SUMS)
 
 # `--output type=local,dest=out` exports just the artefacts.
 FROM scratch AS artefacts

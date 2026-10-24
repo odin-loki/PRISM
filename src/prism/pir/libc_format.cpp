@@ -65,9 +65,9 @@ FormatPlan plan_format(const std::string& callee, const std::optional<std::strin
                                                       "' has no matching argument (C17 7.21.6.1p2)");
             return;
         }
-        if (!ok(args[next]))
+        if (!ok(args.at(next)))
             p.violations.emplace_back("FMT-ARGS", callee + " argument " + std::to_string(next + 1) + " has type " +
-                                                      args[next].text + ", '%" + std::string(conv) + "' expects " +
+                                                      args.at(next).text + ", '%" + std::string(conv) + "' expects " +
                                                       what + " (C17 7.21.6.1p9)");
         ++next;
     };
@@ -123,9 +123,9 @@ FormatPlan plan_format(const std::string& callee, const std::optional<std::strin
         // of the conversion's own width (hh/h/j/... fall back to the type maximum).
         auto literal = [&]() -> std::optional<uint64_t> {
             if (alt_flag || (lenmod != "" && !wide)) return std::nullopt;
-            if (next >= args.size() || next >= consts.size() || !consts[next]) return std::nullopt;
-            if (!is_int_ty(args[next], ib)) return std::nullopt;
-            return ib == 64 ? *consts[next] : (*consts[next] & 0xffffffffull);
+            if (next >= args.size() || next >= consts.size() || !consts.at(next)) return std::nullopt;
+            if (!is_int_ty(args.at(next), ib)) return std::nullopt;
+            return ib == 64 ? *consts.at(next) : (*consts.at(next) & 0xffffffffull);
         };
         auto digits = [](uint64_t v, unsigned base) {
             uint64_t n = 1;
@@ -164,7 +164,7 @@ FormatPlan plan_format(const std::string& callee, const std::optional<std::strin
                 break;
             case 's':
                 take("a string pointer", conv, [](const ir::Type& t) { return t.kind == ir::Type::Ptr; });
-                if (!has_prec && next - 1 < args.size() && args[next - 1].kind == ir::Type::Ptr)
+                if (!has_prec && next > 0 && next - 1 < args.size() && args.at(next - 1).kind == ir::Type::Ptr)
                     p.cstr_args.push_back(next - 1);
                 bounded = bounded && has_prec;
                 m = prec;

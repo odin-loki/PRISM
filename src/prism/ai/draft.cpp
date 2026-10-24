@@ -134,8 +134,8 @@ Draft draft_template(const RunReport& report, const std::string& kind, const std
             Claim g;
             g.text = std::to_string(notrun.size()) + " stages could not run (NOTRUN, a gap, not a clean result): ";
             for (std::size_t i = 0; i < notrun.size(); ++i) {
-                g.text += (i ? ", " : "") + notrun[i];
-                g.links.push_back("stage:" + notrun[i]);
+                g.text += (i ? ", " : "") + notrun.at(i);
+                g.links.push_back("stage:" + notrun.at(i));
             }
             g.text += ".";
             scope.claims.push_back(g);
@@ -170,11 +170,11 @@ Draft draft_template(const RunReport& report, const std::string& kind, const std
             for (auto& m : c.members)
                 if (const Finding* g = find_by_id(report, m);
                     g && (g->status == "FAILED" || g->status == "CRASH" || g->status == "SANFAIL") &&
-                    std::find(by.begin(), by.end(), g->stage) == by.end())
+                    std::ranges::find(by, g->stage) == by.end())
                     by.push_back(g->stage);
             if (by.size() > 1) {
                 cl.text += " (reported by " + std::to_string(by.size()) + " stages: ";
-                for (std::size_t i = 0; i < by.size(); ++i) cl.text += (i ? ", " : "") + by[i];
+                for (std::size_t i = 0; i < by.size(); ++i) cl.text += (i ? ", " : "") + by.at(i);
                 cl.text += ")";
             }
             if (c.members.size() > by.size()) cl.text += "; related findings are linked";
@@ -200,14 +200,20 @@ Draft draft_template(const RunReport& report, const std::string& kind, const std
     DraftSection proofs{"Proofs", {}};
     {
         std::map<std::string, std::vector<const FindingRef*>> by;
-        for (auto& r : refs)
-            if (is_proof_status(r.f->status) && r.f->function) by[r.f->status].push_back(&r);
+        for (auto& r : refs) {
+            if (!is_proof_status(r.f->status) || !r.f->function) continue;
+            auto [it, _] = by.try_emplace(r.f->status);
+            it->second.push_back(&r);
+        }
         for (const char* st : {"PROVED-CERTIFIED", "PROVED-UNBOUNDED", "PROVED", "PROVED-ASSUMING"}) {
             auto it = by.find(st);
             if (it == by.end()) continue;
             Claim c;
             std::set<std::string> fns;
-            for (auto* r : it->second) fns.insert(r->f->file + ":" + r->f->function.value_or(""));
+            for (auto* r : it->second) {
+                if (!r || !r->f) continue;
+                fns.insert(r->f->file + ":" + r->f->function.value_or(""));
+            }
             c.text = std::to_string(fns.size()) + " functions are " + st;
             if (std::string(st) == "PROVED-ASSUMING") c.text += " (proved only under the listed assumptions)";
             if (std::string(st) == "PROVED") c.text += " (the solver is trusted; no certificate)";

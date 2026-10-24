@@ -258,18 +258,21 @@ std::vector<std::string> shell_split(const std::string& cmd) {
     std::vector<std::string> out;
     std::string cur;
     bool have = false;
-    char q = 0;
+    int quote = 0;
     for (std::size_t i = 0; i < cmd.size(); ++i) {
-        char c = cmd[i];
-        if (q) {
-            if (c == q) q = 0;
-            else if (c == '\\' && q == '"' && i + 1 < cmd.size()) cur += cmd[++i];
-            else cur += c;
+        char c = cmd.at(i);
+        if (quote) {
+            if (c == quote) quote = 0;
+            else if (c == '\\' && quote == '"' && i + 1 < cmd.size()) {
+                cur += cmd.at(i + 1);
+                ++i;
+            } else cur += c;
         } else if (c == '"' || c == '\'') {
-            q = c;
+            quote = static_cast<unsigned char>(c);
             have = true;
         } else if (c == '\\' && i + 1 < cmd.size()) {
-            cur += cmd[++i];
+            cur += cmd.at(i + 1);
+            ++i;
             have = true;
         } else if (std::isspace(static_cast<unsigned char>(c))) {
             if (have || !cur.empty()) out.push_back(cur);
@@ -291,12 +294,13 @@ std::vector<std::string> keep_flags(const std::vector<std::string>& argv, const 
     };
     static const std::vector<std::string> kPathFlags{"-I", "-isystem", "-iquote", "-idirafter", "-include"};
     for (std::size_t i = 1; i < argv.size(); ++i) {
-        const auto& a = argv[i];
+        const auto& a = argv.at(i);
         bool done = false;
         for (auto& pf : kPathFlags) {
             if (a == pf && i + 1 < argv.size()) {
                 out.push_back(pf);
-                out.push_back(abs(argv[++i]));
+                out.push_back(abs(argv.at(i + 1)));
+                ++i;
                 done = true;
                 break;
             }
@@ -309,7 +313,8 @@ std::vector<std::string> keep_flags(const std::vector<std::string>& argv, const 
         if (done) continue;
         if ((a == "-D" || a == "-U") && i + 1 < argv.size()) {
             out.push_back(a);
-            out.push_back(argv[++i]);
+            out.push_back(argv.at(i + 1));
+            ++i;
         } else if ((a.starts_with("-D") || a.starts_with("-U")) && a.size() > 2) {
             out.push_back(a);
         } else if (a.starts_with("-std=")) {
@@ -568,25 +573,25 @@ std::vector<Finding> run_lints_ast(const std::vector<fs::path>& paths, const fs:
         const double timeout = std::max(30.0, cfg.timeout);
         parallel_for(cfg.jobs, units, [&](std::size_t i, const fs::path& p) {
             try {
-                res[i] = run_file(clang, p, root, rel_of(p), timeout, lib ? Backend::LibClang : Backend::Process,
-                                  headers);
+                res.at(i) = run_file(clang, p, root, rel_of(p), timeout, lib ? Backend::LibClang : Backend::Process,
+                                     headers);
             } catch (const std::exception& ex) {
-                res[i] = FileResult{};
-                res[i].error = std::string("internal error: ") + ex.what();
+                res.at(i) = FileResult{};
+                res.at(i).error = std::string("internal error: ") + ex.what();
             }
         });
         std::set<std::tuple<std::string, int, std::string>> seen;  // a header's rows once
         for (std::size_t i = 0; i < units.size(); ++i) {
-            if (!res[i].ran) {
-                auto f = layer_row(rel_of(units[i]), "Clang-AST lints did not run: " + res[i].error + "; regex lints only");
+            if (!res.at(i).ran) {
+                auto f = layer_row(rel_of(units.at(i)), "Clang-AST lints did not run: " + res.at(i).error + "; regex lints only");
                 f.extra["install"] = kInstall;
                 notes.push_back(std::move(f));
                 continue;
             }
-            if (used.empty()) used = res[i].backend;
-            for (auto& h : res[i].headers) headers_checked.insert(h);
-            for (auto& f : res[i].findings) {
-                f.extra["ast_backend"] = res[i].backend;
+            if (used.empty()) used = res.at(i).backend;
+            for (auto& h : res.at(i).headers) headers_checked.insert(h);
+            for (auto& f : res.at(i).findings) {
+                f.extra["ast_backend"] = res.at(i).backend;
                 if (seen.insert({f.file, f.line.value_or(0), f.cls}).second) ast.push_back(std::move(f));
             }
         }

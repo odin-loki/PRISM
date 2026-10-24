@@ -43,15 +43,15 @@ std::vector<Tok> lex(const std::string& s) {
     static const char* ops2[] = {"++", "--", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "==", "!=",
                                  "<=", ">=", "&&", "||", "->", "<<", ">>", "::"};
     while (i < s.size()) {
-        char c = s[i];
+        char c = s.at(i);
         if (std::isspace(static_cast<unsigned char>(c))) {
             ++i;
             continue;
         }
         if (c == '"' || c == '\'') {
             std::size_t j = i + 1;
-            while (j < s.size() && s[j] != c) {
-                if (s[j] == '\\') ++j;
+            while (j < s.size() && s.at(j) != c) {
+                if (s.at(j) == '\\') ++j;
                 ++j;
             }
             out.push_back({s.substr(i, std::min(j + 1, s.size()) - i), i});
@@ -60,14 +60,14 @@ std::vector<Tok> lex(const std::string& s) {
         }
         if (std::isalpha(static_cast<unsigned char>(c)) || c == '_') {
             std::size_t j = i;
-            while (j < s.size() && (std::isalnum(static_cast<unsigned char>(s[j])) || s[j] == '_')) ++j;
+            while (j < s.size() && (std::isalnum(static_cast<unsigned char>(s.at(j))) || s.at(j) == '_')) ++j;
             out.push_back({s.substr(i, j - i), i});
             i = j;
             continue;
         }
         if (std::isdigit(static_cast<unsigned char>(c))) {
             std::size_t j = i;
-            while (j < s.size() && (std::isalnum(static_cast<unsigned char>(s[j])) || s[j] == '.')) ++j;
+            while (j < s.size() && (std::isalnum(static_cast<unsigned char>(s.at(j))) || s.at(j) == '.')) ++j;
             out.push_back({s.substr(i, j - i), i});
             i = j;
             continue;
@@ -121,24 +121,24 @@ struct Written {
 Written writes_of(const std::vector<Tok>& tk) {
     Written w;
     for (std::size_t i = 0; i < tk.size(); ++i) {
-        auto& t = tk[i].t;
+        auto& t = tk.at(i).t;
         if (!is_identifier(t) || keywords().count(t) || type_words().count(t)) continue;
         std::size_t j = i + 1;
         bool arr = false;
-        if (j < tk.size() && tk[j].t == "[") {
+        if (j < tk.size() && tk.at(j).t == "[") {
             int depth = 0;
             for (; j < tk.size(); ++j) {
-                if (tk[j].t == "[") ++depth;
-                else if (tk[j].t == "]" && --depth == 0) break;
+                if (tk.at(j).t == "[") ++depth;
+                else if (tk.at(j).t == "]" && --depth == 0) break;
             }
             ++j;
             arr = true;
         }
-        bool post = j < tk.size() && (is_assign_op(tk[j].t) || tk[j].t == "++" || tk[j].t == "--");
-        bool pre = i > 0 && (tk[i - 1].t == "++" || tk[i - 1].t == "--");
-        bool deref = i > 0 && tk[i - 1].t == "*" &&
-                     (i == 1 || tk[i - 2].t == ";" || tk[i - 2].t == "{" || tk[i - 2].t == "}") &&
-                     j < tk.size() && is_assign_op(tk[j].t);
+        bool post = j < tk.size() && (is_assign_op(tk.at(j).t) || tk.at(j).t == "++" || tk.at(j).t == "--");
+        bool pre = i > 0 && (tk.at(i - 1).t == "++" || tk.at(i - 1).t == "--");
+        bool deref = i > 0 && tk.at(i - 1).t == "*" &&
+                     (i == 1 || tk.at(i - 2).t == ";" || tk.at(i - 2).t == "{" || tk.at(i - 2).t == "}") &&
+                     j < tk.size() && is_assign_op(tk.at(j).t);
         if (deref) w.arrays.insert(t);
         else if (post || pre) (arr ? w.arrays : w.scalars).insert(t);
     }
@@ -149,22 +149,22 @@ Written writes_of(const std::vector<Tok>& tk) {
 void decls_of(const std::vector<Tok>& tk, std::vector<std::string>& scalars,
               std::vector<std::pair<std::string, int>>& arrays) {
     for (std::size_t i = 0; i + 1 < tk.size(); ++i) {
-        if (!type_words().count(tk[i].t)) continue;
+        if (!type_words().count(tk.at(i).t)) continue;
         std::size_t j = i + 1;
-        while (j < tk.size() && type_words().count(tk[j].t)) ++j;
+        while (j < tk.size() && type_words().count(tk.at(j).t)) ++j;
         // declarator list: name [= ...] (, name ...)*
-        while (j < tk.size() && is_identifier(tk[j].t) && !keywords().count(tk[j].t)) {
-            auto name = tk[j].t;
-            if (j + 1 < tk.size() && tk[j + 1].t == "[") {
+        while (j < tk.size() && is_identifier(tk.at(j).t) && !keywords().count(tk.at(j).t)) {
+            auto name = tk.at(j).t;
+            if (j + 1 < tk.size() && tk.at(j + 1).t == "[") {
                 int n = -1;
-                if (j + 3 < tk.size() && tk[j + 3].t == "]") {
+                if (j + 3 < tk.size() && tk.at(j + 3).t == "]") {
                     try {
-                        n = std::stoi(tk[j + 2].t);
-                    } catch (...) {
+                        n = std::stoi(tk.at(j + 2).t);
+                    } catch (const std::exception&) {
                     }
                 }
                 if (n > 0) arrays.push_back({name, n});
-            } else if (j + 1 < tk.size() && tk[j + 1].t == "(") {
+            } else if (j + 1 < tk.size() && tk.at(j + 1).t == "(") {
                 break;  // a function declaration, not a variable
             } else {
                 scalars.push_back(name);
@@ -348,9 +348,9 @@ struct Walker {
                 }
                 parts.push_back(cur);
                 if (parts.size() != 3) return fail("for header");
-                L.init = trim(parts[0]);
-                L.cond = trim(parts[1]);
-                L.incr = trim(parts[2]);
+                L.init = trim(parts.at(0));
+                L.cond = trim(parts.at(1));
+                L.incr = trim(parts.at(2));
             } else {
                 L.cond = trim(head);
             }
@@ -415,7 +415,7 @@ std::vector<long long> literals(const std::string& text) {
             std::size_t used = 0;
             auto v = std::stoll(t.t, &used, 0);
             if (std::llabs(v) <= 1000000) vals.insert(v);
-        } catch (...) {
+        } catch (const std::exception&) {
         }
     }
     vals.insert(0);
@@ -616,8 +616,8 @@ std::string cut_program(const FunctionInfo& fn, const std::vector<LoopCut>& loop
                         const std::vector<std::vector<std::pair<int, std::string>>>& inv) {
     std::string body = fn.body;
     for (std::size_t j = loops.size(); j-- > 0;) {
-        auto& L = loops[j];
-        const auto& I = j < inv.size() ? inv[j] : std::vector<std::pair<int, std::string>>{};
+        auto& L = loops.at(j);
+        const auto& I = j < inv.size() ? inv.at(j) : std::vector<std::pair<int, std::string>>{};
         std::string asserts, assume;
         for (auto& [tag, e] : I) {
             asserts += "__prism_assert(" + std::to_string(tag) + ", (" + e + "));\n";
@@ -657,12 +657,12 @@ HoudiniResult houdini(const FunctionInfo& fn, const std::vector<LoopCut>& loops,
     };
     std::vector<Cand> all;
     for (std::size_t j = 0; j < loops.size(); ++j)
-        for (std::size_t k = 0; k < candidates[j].size(); ++k)
-            all.push_back({j, candidates[j][k], k < sources[j].size() ? sources[j][k] : "template"});
+        for (std::size_t k = 0; k < candidates.at(j).size(); ++k)
+            all.push_back({j, candidates.at(j).at(k), k < sources.at(j).size() ? sources.at(j).at(k) : "template"});
     auto build = [&] {
         std::vector<std::vector<std::pair<int, std::string>>> inv(loops.size());
         for (std::size_t t = 0; t < all.size(); ++t)
-            if (all[t].alive) inv[all[t].loop].push_back({static_cast<int>(t), all[t].expr});
+            if (all.at(t).alive) inv.at(all.at(t).loop).push_back({static_cast<int>(t), all.at(t).expr});
         return cut_program(fn, loops, inv);
     };
     for (int round = 0; round < 64; ++round) {
@@ -682,10 +682,10 @@ HoudiniResult houdini(const FunctionInfo& fn, const std::vector<LoopCut>& loops,
             int tag = -1;
             try {
                 tag = std::stoi(p.name.substr(7));
-            } catch (...) {
+            } catch (const std::exception&) {
             }
-            if (tag >= 0 && tag < static_cast<int>(all.size()) && all[static_cast<std::size_t>(tag)].alive) {
-                all[static_cast<std::size_t>(tag)].alive = false;
+            if (tag >= 0 && tag < static_cast<int>(all.size()) && all.at(static_cast<std::size_t>(tag)).alive) {
+                all.at(static_cast<std::size_t>(tag)).alive = false;
                 dropped = true;
             }
         }
@@ -698,8 +698,8 @@ HoudiniResult houdini(const FunctionInfo& fn, const std::vector<LoopCut>& loops,
     h.sources.assign(loops.size(), {});
     for (auto& c : all)
         if (c.alive) {
-            h.invariants[c.loop].push_back(c.expr);
-            h.sources[c.loop].push_back(c.source);
+            h.invariants.at(c.loop).push_back(c.expr);
+            h.sources.at(c.loop).push_back(c.source);
         }
     if (!fin.encoded) {
         h.why = "cut program not encodable: " + fin.error;
@@ -834,7 +834,7 @@ Finding strengthen_bounded(const FunctionInfo& fn, const Finding& bounded, int u
         std::vector<std::string> vocab;
         for (auto& L : *loops)
             for (auto& v : L.scalars)
-                if (std::find(vocab.begin(), vocab.end(), v) == vocab.end()) vocab.push_back(v);
+                if (std::ranges::find(vocab, v) == vocab.end()) vocab.push_back(v);
         ModelRequest req;
         req.feature = "invariants";
         req.grammar = "invariants";

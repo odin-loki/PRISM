@@ -77,19 +77,25 @@ std::optional<uint64_t> eval_const(const z3::expr& e, const std::vector<uint64_t
     switch (k) {
         case Z3_OP_BADD: for (auto x : a) r += x; break;
         case Z3_OP_BMUL: r = 1; for (auto x : a) r *= x; break;
-        case Z3_OP_BSUB: r = a[0]; for (std::size_t i = 1; i < a.size(); ++i) r -= a[i]; break;
+        case Z3_OP_BSUB: r = a.at(0); for (std::size_t i = 1; i < a.size(); ++i) r -= a.at(i); break;
         case Z3_OP_BAND: r = ~uint64_t{0}; for (auto x : a) r &= x; break;
         case Z3_OP_BOR: for (auto x : a) r |= x; break;
         case Z3_OP_BXOR: for (auto x : a) r ^= x; break;
-        case Z3_OP_BNOT: r = ~a[0]; break;
-        case Z3_OP_BNEG: r = uint64_t{0} - a[0]; break;
-        case Z3_OP_CONCAT: for (std::size_t i = 0; i < a.size(); ++i) r = (aw(static_cast<unsigned>(i)) >= 64 ? 0 : r << aw(static_cast<unsigned>(i))) | a[i]; break;
-        case Z3_OP_EXTRACT: r = a[0] >> e.lo(); break;
-        case Z3_OP_ZERO_EXT: r = a[0]; break;
+        case Z3_OP_BNOT: r = a.empty() ? 0 : ~a.at(0); break;
+        case Z3_OP_BNEG: r = a.empty() ? 0 : uint64_t{0} - a.at(0); break;
+        case Z3_OP_CONCAT:
+            for (std::size_t i = 0; i < a.size(); ++i) {
+                const unsigned w_i = aw(static_cast<unsigned>(i));
+                const uint64_t shift = w_i >= 64 ? 0 : r << w_i;
+                r = shift | a.at(i);
+            }
+            break;
+        case Z3_OP_EXTRACT: r = a.empty() ? 0 : a.at(0) >> e.lo(); break;
+        case Z3_OP_ZERO_EXT: r = a.empty() ? 0 : a.at(0); break;
         case Z3_OP_SIGN_EXT: {
             const unsigned iw = aw(0);
-            r = a[0];
-            if (iw < 64 && ((r >> (iw - 1)) & 1)) r |= ~mask_w(iw);
+            r = a.empty() ? 0 : a.at(0);
+            if (iw < 64 && ((r >> (iw - 1)) & 1u) != 0u) r |= ~mask_w(iw);
             break;
         }
         default: return std::nullopt;
@@ -167,7 +173,7 @@ const SymMem::Vs* SymMem::vs_raw(const z3::expr& e) const {
                     const unsigned h = std::min(hi, b_hi) - b_lo, l = std::max(lo, b_lo) - b_lo;
                     parts.push_back(h == w - 1 && l == 0 ? x.arg(i) : x.arg(i).extract(h, l));
                 }
-                if (parts.size() == 1) out = copy_vs(vs_raw(parts[0]));
+                if (parts.size() == 1) out = copy_vs(vs_raw(parts.at(0)));
                 else {
                     z3::expr_vector pv(c_);
                     for (auto& pp : parts) pv.push_back(pp);
@@ -208,7 +214,7 @@ const SymMem::Vs* SymMem::vs_raw(const z3::expr& e) const {
                     std::vector<uint64_t> vals;
                     z3::expr g = tt;
                     for (std::size_t i = 0; i < as.size(); ++i) {
-                        const auto& a = *as[i];
+                        const auto& a = *as.at(i);
                         const auto& o = a.size() == 1 ? a[0] : zip ? a[m] : a[idx[i]];
                         vals.push_back(o.val);
                         if (!zip || a.size() == 1) g = and2(g, o.guard);
@@ -218,7 +224,7 @@ const SymMem::Vs* SymMem::vs_raw(const z3::expr& e) const {
                     if (!kv) {
                         z3::expr_vector args(c_);
                         for (std::size_t i = 0; i < vals.size(); ++i)
-                            args.push_back(c_.bv_val(vals[i], e.arg(static_cast<unsigned>(i)).get_sort().bv_size()));
+                            args.push_back(c_.bv_val(vals.at(i), e.arg(static_cast<unsigned>(i)).get_sort().bv_size()));
                         auto val = e.decl()(args).simplify();
                         uint64_t x = 0;
                         if (val.is_numeral() && val.is_numeral_u64(x)) kv = x;
@@ -227,16 +233,16 @@ const SymMem::Vs* SymMem::vs_raw(const z3::expr& e) const {
                     else r.push_back(VsOpt{g, *kv});
                     if (!zip)
                         for (std::size_t i = 0; i < idx.size(); ++i) {  // next combination
-                            if (as[i]->size() == 1) continue;
-                            if (++idx[i] < as[i]->size()) break;
-                            idx[i] = 0;
+                            if (as.at(i)->size() == 1) continue;
+                            if (++idx.at(i) < as.at(i)->size()) break;
+                            idx.at(i) = 0;
                         }
                 }
                 if (ok) out = std::move(r);
             }
         }
     }
-    if (out && out->size() > kVsMax) out.reset();
+    if (out.has_value() && out->size() > kVsMax) out.reset();
     auto& slot = vs_memo_[e.id()];
     slot = std::move(out);
     return slot ? &*slot : nullptr;
@@ -256,7 +262,7 @@ const SymMem::Vs* SymMem::vs_of(const z3::expr& e) const {
     if (raw) {
         Vs r;
         for (auto& o : *raw) {
-            auto it = std::find_if(r.begin(), r.end(), [&](const VsOpt& x) { return x.val == o.val; });
+            auto it = std::ranges::find_if(r, [&](const VsOpt& x) { return x.val == o.val; });
             if (it == r.end()) r.push_back(o);
             else it->guard = it->guard || o.guard;
         }
@@ -273,8 +279,10 @@ std::optional<std::vector<uint64_t>> SymMem::objs_of(const z3::expr& p) const {
     const Vs* vs = vs_of(p);
     if (!vs) return std::nullopt;
     std::vector<uint64_t> os;
-    for (auto& o : *vs)
-        if (std::find(os.begin(), os.end(), obj_of(o.val)) == os.end()) os.push_back(obj_of(o.val));
+    for (auto& o : *vs) {
+        const uint64_t id = obj_of(o.val);
+        if (std::ranges::find(os, id) == os.end()) os.push_back(id);
+    }
     return os;
 }
 
@@ -422,25 +430,26 @@ void SymMem::add_entry(Entry e) {
         log_.push_back(std::move(e));
         return;
     }
+    Entry live = std::move(e);
     auto& A = *arr_;
-    if (e.kind == Entry::Byte) {
-        A = z3::ite(e.guard, z3::store(A, e.addr, e.cell), A);
+    if (live.kind == Entry::Byte) {
+        A = z3::ite(live.guard, z3::store(A, live.addr, live.cell), A);
         return;
     }
     auto x = c_.bv_const(("mem!x" + std::to_string(fresh_++)).c_str(), 64);
-    if (e.kind == Entry::HavocObj) {
+    if (live.kind == Entry::HavocObj) {
         auto h = c_.constant(("mem!havocobj" + std::to_string(fresh_++)).c_str(),
                              c_.array_sort(c_.bv_sort(64), c_.bv_sort(cw_)));
         z3::expr val = z3::select(h, x);
-        if (e.keep) val = val | (z3::select(A, x) & bv(uint64_t{1} << kCellInit, cw_));
-        A = z3::lambda(x, z3::ite(e.guard && objid(x) == objid(e.addr), val, z3::select(A, x)));
+        if (live.keep) val = val | (z3::select(A, x) & bv(uint64_t{1} << kCellInit, cw_));
+        A = z3::lambda(x, z3::ite(live.guard && objid(x) == objid(live.addr), val, z3::select(A, x)));
         return;
     }
-    z3::expr hit = e.guard && in_range(x, e.addr, e.len);
-    z3::expr val = e.cell;
-    if (e.kind == Entry::Copy) {
-        val = z3::select(A, e.src + (x - e.addr));
-    } else if (e.kind == Entry::Havoc) {
+    z3::expr hit = live.guard && in_range(x, live.addr, live.len);
+    z3::expr val = live.cell;
+    if (live.kind == Entry::Copy) {
+        val = z3::select(A, live.src + (x - live.addr));
+    } else if (live.kind == Entry::Havoc) {
         auto h = c_.constant(("mem!havoc" + std::to_string(fresh_++)).c_str(),
                              c_.array_sort(c_.bv_sort(64), c_.bv_sort(8)));
         val = cell_of(z3::select(h, x), bv(1, 1), 0);
@@ -481,7 +490,8 @@ z3::expr SymMem::read_cell_log(const z3::expr& addr_in, std::size_t upto, bool u
         if (!ev) return addr == ea;
         std::optional<z3::expr> hit;
         for (auto& o : *ev)
-            if (o.val == *caddr) hit = hit ? *hit || o.guard : o.guard;
+            if (o.val == *caddr)
+                hit = hit.has_value() ? std::optional<z3::expr>(*hit || o.guard) : std::optional<z3::expr>(o.guard);
         return hit;  // nullopt: never equal
     };
     // false when the entry's object is known and differs from addr's
@@ -492,8 +502,8 @@ z3::expr SymMem::read_cell_log(const z3::expr& addr_in, std::size_t upto, bool u
     };
     auto ko = use_prov ? known(addr) : std::nullopt;
     z3::expr v = bv(0, cw_);  // never written: value 0, not initialised
-    for (std::size_t i = 0; i < upto; ++i) {
-        auto& e = log_[i];
+    for (std::size_t i = 0; i < upto && i < log_.size(); ++i) {
+        auto& e = log_.at(i);
         if (ko) {
             auto kb = known(e.addr);
             if (kb && *kb != *ko) continue;
@@ -592,8 +602,10 @@ std::optional<z3::expr> SymMem::word_at(uint64_t a, unsigned n, std::size_t upto
             std::optional<z3::expr> val;
             for (unsigned k = 0; k < n; ++k) {
                 auto h = havoc_read(e, bv(a + k, 64), cw_, "mem!ho").extract(7, 0);
-                val = val ? z3::concat(h, *val) : h;
+                if (!val.has_value()) val = h;
+                else val = z3::concat(h, *val);
             }
+            if (!val.has_value()) return std::nullopt;
             v = z3::ite(e.guard, *val, v);
             continue;
         }
@@ -612,13 +624,17 @@ std::optional<z3::expr> SymMem::word_at(uint64_t a, unsigned n, std::size_t upto
             if (e.kind == Entry::Set) {
                 auto byte = e.cell.extract(7, 0);
                 std::optional<z3::expr> val;
-                for (unsigned k = 0; k < n; ++k) val = val ? z3::concat(byte, *val) : byte;
+                for (unsigned k = 0; k < n; ++k) {
+                    if (!val.has_value()) val = byte;
+                    else val = z3::concat(byte, *val);
+                }
                 x = *val;
             } else if (e.kind == Entry::Havoc) {
                 std::optional<z3::expr> val;
                 for (unsigned k = 0; k < n; ++k) {
                     auto h = havoc_read(e, bv(a + k, 64), 8, "mem!h");
-                    val = val ? z3::concat(h, *val) : h;
+                    if (!val.has_value()) val = h;
+                    else val = z3::concat(h, *val);
                 }
                 x = *val;
             } else {  // Copy: the source bytes at the time of the copy
@@ -669,7 +685,7 @@ SymMem::Loaded SymMem::load(const z3::expr& ptr, unsigned width, unsigned tag) {
             }
             if (ws.size() == av->size()) {
                 z3::expr r = ws.back();
-                for (std::size_t i = ws.size() - 1; i-- > 0;) r = z3::ite((*av)[i].guard, ws[i], r);
+                for (std::size_t i = ws.size() - 1; i-- > 0;) r = z3::ite(av->at(i).guard, ws.at(i), r);
                 if (8 * n > width) r = r.extract(width - 1, 0);
                 word = r;
             }
@@ -683,9 +699,11 @@ SymMem::Loaded SymMem::load(const z3::expr& ptr, unsigned width, unsigned tag) {
         if (ko) note(a, *ko);
         auto cell = read_cell(a);
         auto byte = cell.extract(7, 0);
-        val = val ? z3::concat(byte, *val) : byte;
+        if (!val.has_value()) val = byte;
+        else val = z3::concat(byte, *val);
         auto u = ~cell.extract(kCellInit, kCellInit);
-        mask = mask ? z3::concat(u, *mask) : u;
+        if (!mask.has_value()) mask = u;
+        else mask = z3::concat(u, *mask);
         uninit = uninit || cell.extract(kCellInit, kCellInit) == bv(0, 1);
         if (tags_ && tag != 0) {
             auto t = cell.extract(kTagLo + 3, kTagLo);
@@ -706,7 +724,8 @@ SymMem::Loaded SymMem::load_exact(const Mark& m, const z3::expr& ptr, unsigned w
         auto a = k == 0 ? ptr : ptr + bv(k, 64);
         auto cell = enc_ == MemEncoding::Array ? z3::select(*m.arr, a) : read_cell_log(a, m.upto, false);
         auto byte = cell.extract(7, 0);
-        val = val ? z3::concat(byte, *val) : byte;
+        if (!val.has_value()) val = byte;
+        else val = z3::concat(byte, *val);
         uninit = uninit || cell.extract(kCellInit, kCellInit) == bv(0, 1);
     }
     auto v = *val;

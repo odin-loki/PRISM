@@ -88,8 +88,8 @@ void FpTr::checks(int b, Op op, unsigned w, const std::vector<Arg>& args, Arg r,
     if (!any_nan) return;
     std::optional<Arg> divz;
     if (op == Op::FDiv) {
-        divz = p(b, Op::FIsZero, {args[1]});
-        t_.check(b, p(b, Op::And, {*divz, p(b, Op::Xor, {p(b, Op::FIsNaN, {args[0]}), Arg::c(1, 1)})}), "fp-div0",
+        divz = p(b, Op::FIsZero, {args.at(1)});
+        t_.check(b, p(b, Op::And, {*divz, p(b, Op::Xor, {p(b, Op::FIsNaN, {args.at(0)}), Arg::c(1, 1)})}), "fp-div0",
                  "FLOAT-DIV-ZERO", "floating-point division by zero (result is infinite or NaN)", line);
     }
     t_.check(b, p(b, Op::And, {p(b, Op::FIsNaN, {r}), p(b, Op::Xor, {*any_nan, Arg::c(1, 1)})}), "fp-invalid",
@@ -278,12 +278,12 @@ bool FpTr::call(int& cur, const ir::Inst& in, Ctx& c) {
     switch (kind) {
         case Fabs:
             need(1);
-            set(cur, dst, Op::And, {args[0], Arg::c(w, wmask(w) & ~sign_bit(w))});
+            set(cur, dst, Op::And, {args.at(0), Arg::c(w, wmask(w) & ~sign_bit(w))});
             return true;
         case Copysign: {
             need(2);
-            Arg mag = t_.assign(cur, Op::And, w, {args[0], Arg::c(w, wmask(w) & ~sign_bit(w))}, "mag");
-            Arg sg = t_.assign(cur, Op::And, w, {args[1], Arg::c(w, sign_bit(w))}, "sgn");
+            Arg mag = t_.assign(cur, Op::And, w, {args.at(0), Arg::c(w, wmask(w) & ~sign_bit(w))}, "mag");
+            Arg sg = t_.assign(cur, Op::And, w, {args.at(1), Arg::c(w, sign_bit(w))}, "sgn");
             set(cur, dst, Op::Or, {mag, sg});
             return true;
         }
@@ -311,7 +311,7 @@ bool FpTr::call(int& cur, const ir::Inst& in, Ctx& c) {
             s.msg = n;
             t_.push(cur, std::move(s));
             auto& lm = t_.fn().libm;
-            if (std::find(lm.begin(), lm.end(), n) == lm.end()) lm.push_back(n);
+            if (std::ranges::find(lm, n) == lm.end()) lm.push_back(n);
             return true;
         }
         default: return false;

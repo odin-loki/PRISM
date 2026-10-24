@@ -1119,29 +1119,21 @@ TEST_CASE("infer: missing is NOTRUN; no issues is UNKNOWN, not a proof") {
     CHECK(has(lower(infer.message), "not a proof"));
 }
 
-TEST_CASE("cocci: the shipped rules are found from any cwd") {
+TEST_CASE("cocci: only tree-local *.cocci under scanned source roots") {
+    TmpDir tree;
+    auto src = tree.put("unit.c", "int f(void) { return 0; }\n");
+    tree.put("local_rule.cocci", "@match@\nexpression E;\n@@\nE\n");
+    tree.put("nested/sub.cocci", "@match@\nidentifier x;\n@@\nx\n");
     prism::Config cfg;
     auto names = [](const std::vector<fs::path>& rules) {
         std::set<std::string> n;
         for (const auto& r : rules) n.insert(r.filename().string());
         return n;
     };
-    CHECK(names(ad::cocci_rules({}, cfg)).contains("getenv_null.cocci"));
-    CHECK(names(ad::cocci_rules({testdata() / "getenv_null.c"}, cfg)).contains("getenv_null.cocci"));
-#ifndef _WIN32
-    // From a cwd with no prism/cocci above it, the rules next to the binary.
-    auto here = fs::current_path();
-    fs::current_path(fs::path("/"));
-    auto rules = names(ad::cocci_rules({}, cfg));
-    fs::current_path(here);
-    CHECK(rules.contains("getenv_null.cocci"));
-    CHECK(rules.contains("realloc_self.cocci"));
-    CHECK(rules.size() >= 8);
-    for (const char* need :
-         {"memcpy_self.cocci", "realloc_self.cocci", "shift_bit31.cocci", "getenv_null.cocci",
-          "strcpy_self.cocci", "sprintf_unbounded.cocci", "strcat_self.cocci", "strncpy_self.cocci"})
-        CHECK(rules.contains(need));
-#endif
+    CHECK(names(ad::cocci_rules({}, cfg)).empty());
+    auto rules = names(ad::cocci_rules({src}, cfg));
+    CHECK(rules.contains("local_rule.cocci"));
+    CHECK_FALSE(rules.contains("sub.cocci"));
 }
 
 TEST_CASE("klee: .err dumps and KLEE ERROR are FAILED; a quiet run is UNKNOWN") {
@@ -1482,7 +1474,9 @@ TEST_CASE("clang-tidy: jobs=1 and jobs=4 yield the same ordered findings") {
 
 TEST_CASE("spatch: a match is FAILED; silence is UNKNOWN; held script rules stay written down") {
     NoTools nt;
-    auto c = testdata() / "abs_ok.c";
+    TmpDir tree;
+    auto c = tree.put("unit.c", "int f(void) { return 0; }\n");
+    tree.put("realloc_self.cocci", "@match@\nidentifier p;\n@@\nrealloc(p, ...)\n");
     auto cfg = nt.cfg;
 #ifdef _WIN32
     cfg.tools["spatch"] = help_then_cmd(nt.t.dir / "t", "spatch", "spatch --help",
@@ -1517,17 +1511,17 @@ TEST_CASE("spatch: a match is FAILED; silence is UNKNOWN; held script rules stay
 
     // Law 7: a rule with a script block is held without --allow-exec, and the
     // held rows survive whatever the other rules found (they were dropped).
-    TmpDir tree;
-    auto src = tree.put("a.c", "int f(void) { return 0; }\n");
-    tree.put("scripted.cocci", "@r@\nexpression E;\n@@\nf(E)\n\n@script:python@\nx << r.E;\n@@\nprint(x)\n");
+    TmpDir scripted;
+    auto src = scripted.put("a.c", "int f(void) { return 0; }\n");
+    scripted.put("scripted.cocci", "@r@\nexpression E;\n@@\nf(E)\n\n@script:python@\nx << r.E;\n@@\nprint(x)\n");
     auto held = ad::run_spatch(norules.string(), {src}, nt.cfg);
-    REQUIRE(held.size() == 2);
+    REQUIRE(held.size() == 1);
     CHECK(held[0].status == laws::NOTRUN);
     CHECK(xget(held[0], "rule") == "scripted.cocci");
     CHECK(xget(held[0], "reason") == prism::sandbox::EXEC_REASON);
-    CHECK(held[1].status == laws::UNKNOWN);
-    CHECK(ad::cocci_has_script(tree.dir / "scripted.cocci"));
-    CHECK_FALSE(ad::cocci_has_script(repo_root() / "prism" / "cocci" / "getenv_null.cocci"));
+    CHECK(ad::cocci_has_script(scripted.dir / "scripted.cocci"));
+    scripted.put("plain.cocci", "@match@\nidentifier x;\n@@\nx\n");
+    CHECK_FALSE(ad::cocci_has_script(scripted.dir / "plain.cocci"));
     auto trusted = nt.cfg;
     trusted.allow_exec = true;
     auto ran = ad::run_spatch(norules.string(), {src}, trusted);

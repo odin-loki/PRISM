@@ -47,24 +47,26 @@ uint16_t double_to_half(double d) {
         ++he;
     }
     if (he > 15) return static_cast<uint16_t>(sign | 0x7C00);
-    return static_cast<uint16_t>(sign | ((he + 15) << 10) | (static_cast<unsigned>(q) - 1024));
+    const unsigned qbits = static_cast<unsigned>(q) - 1024u;
+    const uint16_t exp = static_cast<uint16_t>((he + 15) << 10);
+    return static_cast<uint16_t>(sign | exp | qbits);
 }
 
 float as_float(uint64_t b) {
     auto u = static_cast<uint32_t>(b);
-    float f;
+    float f{};
     std::memcpy(&f, &u, 4);
     return f;
 }
 
 uint64_t float_bits(float f) {
-    uint32_t u;
+    uint32_t u{};
     std::memcpy(&u, &f, 4);
     return u;
 }
 
 uint64_t double_bits(double d) {
-    uint64_t u;
+    uint64_t u{};
     std::memcpy(&u, &d, 8);
     return u;
 }
@@ -156,7 +158,7 @@ bool is_nan(uint64_t bits, unsigned w) {
 double to_double(uint64_t bits, unsigned w) {
     if (w == 16) return half_to_double(static_cast<uint16_t>(bits));
     if (w == 32) return static_cast<double>(as_float(bits));
-    double d;
+    double d{};
     std::memcpy(&d, &bits, 8);
     return d;
 }
@@ -187,7 +189,7 @@ bool is_libm_value(const std::string& name) { return libm_table().count(name) > 
 
 uint64_t eval(Op op, unsigned w, const std::vector<uint64_t>& a, const std::vector<unsigned>& aw,
               const std::string& libm, bool fused) {
-    auto W = [&](std::size_t i) { return i < aw.size() ? aw[i] : w; };
+    auto W = [&](std::size_t i) { return i < aw.size() ? aw.at(i) : w; };
     auto D = [&](std::size_t i) { return to_double(a.at(i), W(i)); };
     auto nan = [&](std::size_t i) { return std::isnan(D(i)); };
     auto res = [&](double d) { return from_double(d, w) & mask(w); };
@@ -224,6 +226,7 @@ uint64_t eval(Op op, unsigned w, const std::vector<uint64_t>& a, const std::vect
             if (w == 32) return float_bits(std::sqrt(as_float(a.at(0))));
             return res(std::sqrt(D(0)));
         case Op::FFma:
+            [[fallthrough]];
         case Op::FMulAdd: {
             bool f = op == Op::FFma || fused;
             if (w == 32) {
@@ -237,6 +240,7 @@ uint64_t eval(Op op, unsigned w, const std::vector<uint64_t>& a, const std::vect
             return res(m + D(2));
         }
         case Op::FMinNum:
+            [[fallthrough]];
         case Op::FMaxNum: {
             if (nan(0)) return a.at(1) & mask(w);
             if (nan(1)) return a.at(0) & mask(w);
@@ -247,6 +251,7 @@ uint64_t eval(Op op, unsigned w, const std::vector<uint64_t>& a, const std::vect
             return a.at(0) & mask(w);  // equal (maybe +0 / -0: see ambiguous())
         }
         case Op::FMinimum:
+            [[fallthrough]];
         case Op::FMaximum: {
             if (nan(0) || nan(1)) return quiet_nan(w);
             double x = D(0), y = D(1);
@@ -275,15 +280,18 @@ uint64_t eval(Op op, unsigned w, const std::vector<uint64_t>& a, const std::vect
         case Op::FIsZero: return D(0) == 0.0;
         case Op::FIsInf: return std::isinf(D(0));
         case Op::FToSI:
+            [[fallthrough]];
         case Op::FToUI: {
             double t = std::trunc(D(0));
             if (std::isnan(t)) return 0;
             if (op == Op::FToSI) {
                 if (t < -9223372036854775808.0 || t >= 9223372036854775808.0) return 0;
-                return static_cast<uint64_t>(static_cast<int64_t>(t)) & mask(w);
+                const uint64_t bits = static_cast<uint64_t>(static_cast<int64_t>(t));
+                return bits & mask(w);
             }
             if (t < 0 || t >= 18446744073709551616.0) return 0;
-            return static_cast<uint64_t>(t) & mask(w);
+            const uint64_t bits = static_cast<uint64_t>(t);
+            return bits & mask(w);
         }
         case Op::SIToF: {
             int64_t v = sext(a.at(0), W(0));
@@ -299,6 +307,7 @@ uint64_t eval(Op op, unsigned w, const std::vector<uint64_t>& a, const std::vect
             if (w == W(0)) return a.at(0) & mask(w);
             return res(D(0));
         case Op::FToSIOvf:
+            [[fallthrough]];
         case Op::FToUIOvf: {
             double x = D(0);
             if (std::isnan(x) || std::isinf(x)) return 1;
@@ -338,15 +347,20 @@ std::string format(uint64_t bits, unsigned w) {
     if (std::isnan(d)) return "nan";
     if (std::isinf(d)) return d < 0 ? "-inf" : "inf";
     char buf[64];
-    std::snprintf(buf, sizeof buf, w == 64 ? "%.17g" : w == 32 ? "%.9g" : "%.5g", d);
-    return buf;
+    if (w == 64)
+        std::snprintf(buf, sizeof buf, "%.17g", d);
+    else if (w == 32)
+        std::snprintf(buf, sizeof buf, "%.9g", d);
+    else
+        std::snprintf(buf, sizeof buf, "%.5g", d);
+    return std::string(buf);
 }
 
 std::string ll_const(uint64_t bits, unsigned w) {
     char buf[40];
     if (w == 16) {
         std::snprintf(buf, sizeof buf, "0xH%04llX", static_cast<unsigned long long>(bits & 0xFFFF));
-        return buf;
+        return std::string(buf);
     }
     uint64_t d = bits;
     if (w == 32) {
@@ -357,7 +371,7 @@ std::string ll_const(uint64_t bits, unsigned w) {
         }
     }
     std::snprintf(buf, sizeof buf, "0x%016llX", static_cast<unsigned long long>(d));
-    return buf;
+    return std::string(buf);
 }
 
 }  // namespace prism::pir::fp

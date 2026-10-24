@@ -370,7 +370,7 @@ std::optional<z3::expr> parse_literal(z3::context& c, const z3::sort& s, std::st
     }
     if (bits.size() != w) return std::nullopt;
     std::unique_ptr<bool[]> raw(new bool[w]);
-    for (unsigned i = 0; i < w; ++i) raw[i] = bits[i];
+    for (unsigned i = 0; i < w; ++i) raw[i] = bits.at(i);
     return z3::expr(c, Z3_mk_bv_numeral(c, w, raw.get()));
 }
 
@@ -378,8 +378,8 @@ std::optional<z3::expr> parse_literal(z3::context& c, const z3::sort& s, std::st
 
 bool validate_model(z3::context& c, const z3::expr& f, const std::map<std::string, std::string>& model,
                     std::string* why) {
-    auto fail = [&](std::string m) {
-        if (why) *why = std::move(m);
+    auto fail = [&](std::string message) {
+        if (why) *why = std::move(message);
         return false;
     };
     try {

@@ -1119,7 +1119,7 @@ HoudiniOut Houdini::run() {
         auto fleft = [&] {
             return budget - std::chrono::duration<double>(std::chrono::steady_clock::now() - tf).count();
         };
-        std::function<int(std::size_t, std::size_t)> group = [&](std::size_t lo, std::size_t hi) -> int {
+        std::function<int(std::size_t, std::size_t)> prop_group = [&](std::size_t lo, std::size_t hi) -> int {
             if (lo >= hi) return 0;
             if (fleft() <= 0) {
                 fail = "cut program: out of time";
@@ -1149,11 +1149,13 @@ HoudiniOut Houdini::run() {
                 return -1;
             }
             std::size_t mid = lo + (hi - lo) / 2;
-            int a = group(lo, mid);
+            if (!prop_group) return -1;
+            int a = prop_group(lo, mid);
             if (a != 0) return a;
-            return group(mid, hi);
+            return prop_group(mid, hi);
         };
-        return group(0, e.props.size());
+        if (!prop_group) return -1;
+        return prop_group(0, e.props.size());
     };
     auto alive_set = [&]() {
         std::vector<char> a(cands.size(), 0);

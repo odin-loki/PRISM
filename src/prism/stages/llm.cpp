@@ -32,7 +32,7 @@ bool llm_httpish(const std::string& err) {
 nlohmann::json extract_json(std::string text) {
     text = strip(text);
     if (text.starts_with("```")) {
-        while (!text.empty() && text.front() == '`') text.erase(text.begin());
+        while (!text.empty() && text.front() == '`') text.erase(0, 1);
         auto nl = text.find('\n');
         if (nl != std::string::npos) text = text.substr(nl + 1);
         auto end = text.rfind("```");
@@ -47,6 +47,7 @@ nlohmann::json extract_json(std::string text) {
             try {
                 return nlohmann::json::parse(text.substr(a, b - a + 1));
             } catch (...) {
+                return nullptr;
             }
         }
     }
@@ -82,6 +83,7 @@ int native_gpu_layers() {
         try {
             return std::stoi(e);
         } catch (...) {
+            return -1;
         }
     }
     return -1;
@@ -363,7 +365,11 @@ ChatResult LlamaEngine::complete_raw(const std::vector<std::pair<std::string, st
 std::string tail(const std::string& s, std::size_t n) {
     if (s.size() <= n) return s;
     std::size_t b = s.size() - n;
-    while (b < s.size() && (static_cast<unsigned char>(s[b]) & 0xC0) == 0x80) ++b;  // no split character
+    while (b < s.size()) {
+        const unsigned char bc = static_cast<unsigned char>(s.at(b));
+        if ((bc & 0xC0u) != 0x80u) break;
+        ++b;
+    }
     return s.substr(b);
 }
 
@@ -384,6 +390,8 @@ nlohmann::json sandbox_run(const std::string& source, double timeout, bool allow
     auto src = td / "prog.c";
     {
         std::ofstream out(src);
+        if (!out.is_open())
+            return {{"ok", false}, {"error", "cannot write source"}, {"stdout", ""}, {"stderr", ""}, {"code", nullptr}};
         out << source;
     }
 #ifdef _WIN32
@@ -436,8 +444,8 @@ std::string c_from_llm(std::string src) {
         // The whole reply is fenced: drop the fence line (a fence with no
         // newline holds no file) and everything from the last closing fence.
         std::size_t a = 0, b = src.size();
-        while (a < b && src[a] == '`') ++a;
-        while (b > a && src[b - 1] == '`') --b;
+        while (a < b && src.at(a) == '`') ++a;
+        while (b > a && src.at(b - 1) == '`') --b;
         auto body = after_newline(src.substr(a, b - a));
         if (auto end = body.rfind("```"); end != std::string::npos) body = body.substr(0, end);
         return strip(body);

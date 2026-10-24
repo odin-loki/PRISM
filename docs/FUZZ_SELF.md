@@ -108,7 +108,7 @@ also fuzzed on their own (`PRISM_FUZZ_TARGET`).
 
 ### F2 (Python): `RunReport.load` raises on well-formed JSON of the wrong shape
 
-- **Contract:** `prism/models.py` `RunReport.load` returns a report or
+- **Contract:** `RunReport::load` (`src/prism/models.cpp`) returns a report or
   `None`; it catches `OSError`, `JSONDecodeError`, `TypeError` and
   `ValueError` only.
 - **Reproducers** (as the whole content of `report.json`):
@@ -126,7 +126,7 @@ also fuzzed on their own (`PRISM_FUZZ_TARGET`).
 
 ### F3 (Python): `journal.read_stages` raises on a journal line that is JSON but not an object
 
-- **Contract:** `prism/journal.py` `read_stages` skips unreadable lines; it
+- **Contract:** journal `read_stages` (`src/prism/journal.cpp`) skips unreadable lines; it
   catches `JSONDecodeError`, `TypeError` and `ValueError`.
 - **Reproducers** (one line of `stages.jsonl`): `""`, `1`, `[]`
   (`AttributeError`, `models.py:169`, `stage_from_dict`), and
@@ -140,7 +140,7 @@ also fuzzed on their own (`PRISM_FUZZ_TARGET`).
 
 ### F4 (Python, low): `config.load_manifest` raises on a manifest that is not UTF-8
 
-- **Contract:** `prism/config.py` `load_manifest` returns `{}` when the
+- **Contract:** manifest load (`src/prism/config.cpp`) returns `{}` when the
   manifest is unreadable; it catches `OSError` and `tomllib.TOMLDecodeError`.
 - **Reproducer:** `third_party/MANIFEST.toml` containing the single byte
   `0xF3`: `tomllib` raises `UnicodeDecodeError`, which is not a

@@ -88,8 +88,21 @@ int rank(Verdict v) {
         case V::Proved: return 3;
         case V::ProvedAssuming: return 2;
         case V::Bounded: return 1;
-        default: return 0;
+        case V::Failed: [[fallthrough]];
+        case V::Unknown: [[fallthrough]];
+        case V::Timeout: [[fallthrough]];
+        case V::Error: [[fallthrough]];
+        case V::NoFunc: [[fallthrough]];
+        case V::NotRun: [[fallthrough]];
+        case V::NeedsHarness: [[fallthrough]];
+        case V::Crash: [[fallthrough]];
+        case V::Clean: [[fallthrough]];
+        case V::NoSeed: [[fallthrough]];
+        case V::SanFail: [[fallthrough]];
+        case V::Hypothesis: [[fallthrough]];
+        case V::Reads: return 0;
     }
+    return 0;
 }
 
 std::string_view name(Refusal r) {

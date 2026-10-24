@@ -99,12 +99,17 @@ struct Frame {
     int serial = 0;                                     // unique per inlined instance (translate_ctl.inc)
 };
 
+struct PPhiIn {
+    std::string qname;
+    int idx = -1;
+    Arg a;
+    int kind = 0;  // 0 value, 1 undef, 2 poison
+};
+
 struct PPhi {
     int block = -1;
     int dst = -1;
-    // (pred qualified name or "", pred block index when known, value, kind)
-    // kind: 0 value, 1 undef, 2 poison
-    std::vector<std::tuple<std::string, int, Arg, int>> in;
+    std::vector<PPhiIn> in;
 };
 
 struct Tr final : pirmem::TrApi {
@@ -198,7 +203,8 @@ struct Tr final : pirmem::TrApi {
     const TranslateOptions& options() const override { return opt; }
     Function& fn() override { return out; }
     std::vector<Stmt>& stmts(int b) {
-        return b < 0 ? prologue : out.blocks[static_cast<std::size_t>(b)].stmts;
+        if (b < 0) return prologue;
+        return out.blocks.at(static_cast<std::size_t>(b)).stmts;
     }
     void push(int b, Stmt s) override { stmts(b).push_back(std::move(s)); }
 
@@ -404,7 +410,7 @@ struct Tr final : pirmem::TrApi {
                                 nu = {true, true};
                             else if (agg.v.kind == ir::Value::Local && fr.upair.count(agg.v.name))
                                 nu = fr.upair[agg.v.name];
-                            nu[in.indices[0]] = is_u(in.ops[1]);
+                            nu.at(in.indices[0]) = is_u(in.ops[1]);
                         } else if ((op == "call" || op == "invoke") && (in.callee.empty() || !m.find(in.callee))) {
                             // (an inlined callee's returned fields are checked at its `ret`)
                             for (auto& o : in.ops)
@@ -671,15 +677,16 @@ struct Tr final : pirmem::TrApi {
                         Arg a;
                         if (kind == 0) a = operand(fr, o, cur, line, /*use=*/false);
                         else a.width = vwidth(o.ty);
-                        p.in.emplace_back(fr.prefix + pred, -1, a, kind);
+                        p.in.push_back(PPhiIn{fr.prefix + pred, -1, a, kind});
                         if (ps.dst >= 0) {
                             Arg s = Arg::c(1, 0);
                             if (kind == 0 && !a.is_const)
                                 if (auto it = fr.shadow.find(a.var); it != fr.shadow.end()) s = it->second;
-                            ps.in.emplace_back(fr.prefix + pred, -1, s, 0);
+                            ps.in.push_back(PPhiIn{fr.prefix + pred, -1, s, 0});
                         }
                         if (pu.dst >= 0)
-                            pu.in.emplace_back(fr.prefix + pred, -1, kind != 0 ? Arg::c(1, 1) : ushadow(fr, o), 0);
+                            pu.in.push_back(
+                                PPhiIn{fr.prefix + pred, -1, kind != 0 ? Arg::c(1, 1) : ushadow(fr, o), 0});
                     }
                     pphis.push_back(std::move(p));
                     if (ps.dst >= 0) pphis.push_back(std::move(ps));
@@ -802,14 +809,14 @@ struct Tr final : pirmem::TrApi {
                 bool found = false;
                 for (auto& p : pphis)
                     if (p.block == fr.ret_block && p.dst == dst) {
-                        p.in.emplace_back("", cur, v, 0);
+                        p.in.push_back(PPhiIn{"", cur, v, 0});
                         found = true;
                     }
                 if (!found) {
                     PPhi p;
                     p.block = fr.ret_block;
                     p.dst = dst;
-                    p.in.emplace_back("", cur, v, 0);
+                    p.in.push_back(PPhiIn{"", cur, v, 0});
                     pphis.push_back(std::move(p));
                 }
             }
@@ -829,7 +836,7 @@ struct Tr final : pirmem::TrApi {
                 throw Unenc{"UNENCODED: undef value returned from @" + fr.f->name + " (no noundef)"};
         }
         if (!in.ops.empty()) v = operand(fr, in.ops[0], cur, line, !raw);
-        if (fr.ret_shadow >= 0 && v) {
+        if (fr.ret_shadow >= 0 && v.has_value()) {
             Arg s = Arg::c(out.vars[static_cast<std::size_t>(fr.ret_shadow)].width, 0);
             if (raw && fr.shadow[v->var].width == s.width) {
                 s = fr.shadow[v->var];
@@ -839,13 +846,13 @@ struct Tr final : pirmem::TrApi {
             bool found = false;
             for (auto& p : pphis)
                 if (p.block == fr.ret_block && p.dst == fr.ret_shadow) {
-                    p.in.emplace_back("", cur, s, 0);
+                    p.in.push_back(PPhiIn{"", cur, s, 0});
                     found = true;
                 }
             if (!found) {
                 sp.block = fr.ret_block;
                 sp.dst = fr.ret_shadow;
-                sp.in.emplace_back("", cur, s, 0);
+                sp.in.push_back(PPhiIn{"", cur, s, 0});
                 pphis.push_back(std::move(sp));
             }
         }
@@ -864,13 +871,13 @@ struct Tr final : pirmem::TrApi {
                 // continuation phi
                 for (auto& p : pphis)
                     if (p.block == fr.ret_block && p.dst == fr.ret_var) {
-                        p.in.emplace_back("", cur, *v, 0);
+                        p.in.push_back(PPhiIn{"", cur, *v, 0});
                         return;
                     }
                 PPhi p;
                 p.block = fr.ret_block;
                 p.dst = fr.ret_var;
-                p.in.emplace_back("", cur, *v, 0);
+                p.in.push_back(PPhiIn{"", cur, *v, 0});
                 pphis.push_back(std::move(p));
             }
             return;
@@ -1369,7 +1376,7 @@ struct Tr final : pirmem::TrApi {
     void inline_call(Frame& fr, const ir::Inst& in, int& cur, int line) {
         const auto& n = in.callee;
         const auto* callee = m.find(n);
-        if (std::find(stack.begin(), stack.end(), n) != stack.end())
+        if (std::ranges::find(stack, n) != stack.end())
             throw Unenc{"UNENCODED: recursive call @" + n};
         if (static_cast<int>(stack.size()) > opt.inline_depth)
             throw Unenc{"UNENCODED: call depth > " + std::to_string(opt.inline_depth) + " (@" + n + ")"};
@@ -1389,25 +1396,25 @@ struct Tr final : pirmem::TrApi {
         if (args.size() != callee->params.size()) throw Unenc{"UNENCODED: call @" + n + " arity"};
         Frame cf;
         for (std::size_t i = 0; i < args.size(); ++i)
-            if (raw_arg[i] && !args[i].is_const) {
-                cf.shadow[args[i].var] = fr.shadow[args[i].var];
-                cf.raw.insert(args[i].var);
+            if (raw_arg.at(i) && !args.at(i).is_const) {
+                cf.shadow[args.at(i).var] = fr.shadow[args.at(i).var];
+                cf.raw.insert(args.at(i).var);
             }
         cf.f = callee;
         cf.prefix = n + "#" + std::to_string(uniq++) + ".";
         cf.serial = ++frame_serial;
         for (std::size_t i = 0; i < args.size(); ++i) {
             auto w = vwidth(callee->params[i].ty, "call @" + n + " parameter");
-            args[i].width = w;
+            args.at(i).width = w;
             if (auto bt = byval_type(callee->params[i].attrs)) {
                 // by-value aggregate: the callee gets its own copy
                 auto sz = mt.layout().alloc_size(*bt);
                 auto copy = mt.alloc(cur, Arg::c(64, sz), MemKind::Stack, 0, callee->params[i].name, line);
-                mt.memcpy_(cur, copy, args[i], Arg::c(64, sz), true, line);
+                mt.memcpy_(cur, copy, args.at(i), Arg::c(64, sz), true, line);
                 cf.allocas.push_back(copy);
-                args[i] = copy;
+                args.at(i) = copy;
             }
-            cf.env[callee->params[i].name] = args[i];
+            cf.env[callee->params[i].name] = args.at(i);
         }
         int cont = newblock(fr.prefix + "call." + n + "." + std::to_string(uniq++));
         cf.ret_block = cont;
@@ -1459,8 +1466,8 @@ struct Tr final : pirmem::TrApi {
             int depth = 1;
             auto e = a;
             while (e < attrs.size() && depth > 0) {
-                if (attrs[e] == '(') ++depth;
-                if (attrs[e] == ')') --depth;
+                if (attrs.at(e) == '(') ++depth;
+                if (attrs.at(e) == ')') --depth;
                 if (depth > 0) ++e;
             }
             return ir::parse_type(attrs.substr(a, e - a));
@@ -1471,7 +1478,7 @@ struct Tr final : pirmem::TrApi {
     bool is_ptrtoint(Frame& fr, const ir::Operand& o) {
         if (o.v.kind != ir::Value::Local) return false;
         auto it = fr.defs.find(o.v.name);
-        return it != fr.defs.end() && it->second->op == "ptrtoint";
+        return it != fr.defs.end() && it->second != nullptr && it->second->op == "ptrtoint";
     }
 
     // alloca/load/store/getelementptr/ptrtoint/inttoptr/bitcast; false = not a memory instruction
@@ -1498,11 +1505,12 @@ struct Tr final : pirmem::TrApi {
             std::optional<Arg> count, src;
             if (!in.ops.empty()) {
                 count = operand(fr, in.ops[0], cur, line);
-                count->width = int_width(in.ops[0].ty, "alloca count");
+                if (count.has_value()) count->width = int_width(in.ops[0].ty, "alloca count");
                 if (in.ops[0].v.kind == ir::Value::Local)
                     if (auto it = fr.defs.find(in.ops[0].v.name);
-                        it != fr.defs.end() && (it->second->op == "zext" || it->second->op == "sext") &&
-                        !it->second->ops.empty() && it->second->ops[0].ty.kind == ir::Type::Int) {
+                        it != fr.defs.end() && it->second != nullptr &&
+                        (it->second->op == "zext" || it->second->op == "sext") && !it->second->ops.empty() &&
+                        it->second->ops[0].ty.kind == ir::Type::Int) {
                         src = operand(fr, it->second->ops[0], cur, line);
                         src->width = int_width(it->second->ops[0].ty);
                     }
@@ -1795,25 +1803,28 @@ struct Tr final : pirmem::TrApi {
     }
 
     void resolve_phis() {
-        for (auto& lp : lpad_phis) {
+        for (const auto& lp : lpad_phis) {
             // one incoming per throw edge, valued by the invoke it passed through
             PPhi p;
             p.block = lp.block;
             p.dst = lp.dst;
-            for (auto& e : eh_edges)
+            for (const auto& e : eh_edges)
                 if (e.frame == lp.frame && e.lpad == lp.lpad)
-                    for (auto& [pred, v] : lp.in)
+                    for (const auto& [pred, v] : lp.in)
                         if (pred == e.invoke_block) {
-                            p.in.emplace_back("", e.pred, v, 0);
+                            p.in.push_back(PPhiIn{"", e.pred, v, 0});
                             break;
                         }
-            pphis.push_back(std::move(p));
+            pphis.push_back(p);
         }
-        for (auto& p : pphis) {
+        for (const auto& p : pphis) {
             Phi phi;
             phi.dst = p.dst;
-            for (auto& [qname, idx, a, kind] : p.in) {
-                int pred = idx;
+            for (const auto& edge : p.in) {
+                const auto& qname = edge.qname;
+                int pred = edge.idx;
+                const Arg a = edge.a;
+                const int kind = edge.kind;
                 if (pred < 0) {
                     auto it = tail.find(qname);
                     if (it == tail.end()) continue;  // predecessor never translated (dead)
@@ -1865,18 +1876,18 @@ bool Tr::format_call(Frame& fr, const ir::Inst& in, int& cur, int line) {
     }
     for (auto& [cls, msg] : plan.violations) check(cur, Arg::c(1, 1), "format", cls, msg, line);
     for (auto i : plan.cstr_args) {
-        Arg a = args[i];
+        Arg a = args.at(i);
         a.width = kPtrW;
         check(cur, assign(cur, Op::Eq, 1, {assign(cur, Op::LShr, 64, {a, Arg::c(64, kObjShift)}), Arg::c(64, 0)}),
               "null", "PTR-NULL-DEREF", n + " %s argument is a null pointer", line);
         inline_named(fr, "strlen", {in.ops[i]}, cur, line);
     }
     if (plan.buf_arg >= 0) {
-        Arg buf = args[static_cast<std::size_t>(plan.buf_arg)];
+        Arg buf = args.at(static_cast<std::size_t>(plan.buf_arg));
         buf.width = kPtrW;
         Arg len = havoc(cur, 64, false, false);
         if (plan.size_arg >= 0) {
-            Arg sz = args[static_cast<std::size_t>(plan.size_arg)];
+            Arg sz = args.at(static_cast<std::size_t>(plan.size_arg));
             if (sz.width < 64) sz = assign(cur, Op::ZExt, 64, {sz});
             // snprintf(buf, 0, ...) writes nothing; otherwise at most size-1 characters and a NUL
             int wb = newblock("snprintf.write"), done = newblock("snprintf.done");

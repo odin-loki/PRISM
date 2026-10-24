@@ -95,7 +95,7 @@ std::vector<Finding> run_thread(const std::vector<FunctionInfo>& functions) {
             for (auto& fn : who)
                 if (!mutex_re.search(fn.body)) unsync.push_back(fn);
             if (unsync.size() < 2) continue;
-            auto& anchor = unsync[0];
+            auto& anchor = unsync.at(0);
             auto f = make_find("thread", laws::FAILED, anchor, "RACE-SHARED",
                                "global '" + g + "' written from " + std::to_string(unsync.size()) +
                                    " functions without mtx_lock/pthread_mutex",

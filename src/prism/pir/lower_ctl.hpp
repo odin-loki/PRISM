@@ -5,7 +5,9 @@
 
 #include <string>
 
-namespace prism::pir::pirctl {
+namespace prism {
+namespace pir {
+namespace pirctl {
 
 // In every function that calls setjmp, keep the locals in memory: each
 // alloca gets a `call void @__prism.keep(ptr %x)` use so mem2reg leaves it
@@ -18,4 +20,6 @@ std::string keep_setjmp_locals(const std::string& ir);
 // a read before the first store stays visible after mem2reg (UNINIT-READ).
 std::string uninit_fp_locals(const std::string& ir);
 
-}  // namespace prism::pir::pirctl
+}  // namespace pirctl
+}  // namespace pir
+}  // namespace prism

@@ -673,9 +673,9 @@ bool is_cast(std::string_view op) {
 }
 
 // Parse the tokens of one instruction (metadata attachments already removed).
-Inst parse_inst(const std::vector<Tok>& toks, std::string text) {
+Inst parse_inst(const std::vector<Tok>& toks, std::string line_text) {
     Inst in;
-    in.text = std::move(text);
+    in.text = std::move(line_text);
     P p{toks};
     if (p.peek().kind == Tok::Local && p.is_punct('=', 1)) {
         in.result = p.next().text;
@@ -997,20 +997,20 @@ std::string strip_attachments(std::vector<Tok>& toks, std::string* loop_md = nul
     std::vector<Tok> out;
     out.reserve(toks.size());
     for (std::size_t i = 0; i < toks.size(); ++i) {
-        auto& t = toks[i];
+        auto& t = toks.at(i);
         if (t.kind == Tok::Attr) continue;
         if (t.kind == Tok::Punct && t.text == "," && i + 2 < toks.size() &&
-            toks[i + 1].kind == Tok::Meta && toks[i + 2].kind == Tok::Meta) {
-            if (toks[i + 1].text == "dbg") dbg = "!" + toks[i + 2].text;
-            if (loop_md && toks[i + 1].text == "llvm.loop") *loop_md = "!" + toks[i + 2].text;
+            toks.at(i + 1).kind == Tok::Meta && toks.at(i + 2).kind == Tok::Meta) {
+            if (toks.at(i + 1).text == "dbg") dbg = "!" + toks.at(i + 2).text;
+            if (loop_md && toks.at(i + 1).text == "llvm.loop") *loop_md = "!" + toks.at(i + 2).text;
             // skip `, !name !N` (and an inline !{...} tuple)
             std::size_t j = i + 2;
-            if (toks[j].text == "{") {
+            if (toks.at(j).text == "{") {
                 int depth = 1;
                 ++j;
                 while (j < toks.size() && depth > 0) {
-                    if (toks[j].kind == Tok::Punct && toks[j].text == "{") ++depth;
-                    if (toks[j].kind == Tok::Punct && toks[j].text == "}") --depth;
+                    if (toks.at(j).kind == Tok::Punct && toks.at(j).text == "{") ++depth;
+                    if (toks.at(j).kind == Tok::Punct && toks.at(j).text == "}") --depth;
                     ++j;
                 }
                 i = j - 1;
@@ -1064,7 +1064,8 @@ std::string md_field(std::string_view line, std::string_view key) {
 
 int to_int(const std::string& s) {
     int v = 0;
-    std::from_chars(s.data(), s.data() + s.size(), v);
+    const auto r = std::from_chars(s.data(), s.data() + s.size(), v);
+    if (r.ec != std::errc{}) return 0;
     return v;
 }
 
@@ -1282,13 +1283,13 @@ Module parse_module(std::string_view text) {
     std::vector<std::pair<std::string, std::string>> subs_raw;
     std::vector<std::pair<std::string, std::string>> loop_tuples;  // "!N" -> its first location ref
     for (std::size_t i = 0; i < lines.size(); ++i) {
-        auto line = lines[i];
+        auto line = lines.at(i);
         if (line.starts_with("define ")) {
             Function fn;
             std::vector<std::string_view> body;
             std::size_t j = i + 1;
             // header may end with '{' on the same line (opt -S always does)
-            while (j < lines.size() && trim(lines[j]) != "}") body.push_back(lines[j++]);
+            while (j < lines.size() && trim(lines.at(j)) != "}") body.push_back(lines.at(j++));
             auto header = line;
             if (auto brace = header.rfind('{'); brace != std::string_view::npos)
                 header = header.substr(0, brace);
@@ -1311,7 +1312,7 @@ Module parse_module(std::string_view text) {
             if (toks.size() >= 4 && toks[0].kind == Tok::Local) {
                 std::vector<Tok> rest(toks.begin() + 3, toks.end());
                 Type body;
-                if (rest.size() == 1 && rest[0].kind == Tok::Word && rest[0].text == "opaque") {
+                if (rest.size() == 1 && rest.at(0).kind == Tok::Word && rest.at(0).text == "opaque") {
                     body.kind = Type::Other;
                     body.text = "opaque";
                 } else {
@@ -1367,7 +1368,7 @@ Module parse_module(std::string_view text) {
                     refs.emplace_back(rhs.substr(q, e - q));
                     q = e - 1;
                 }
-                if (refs.size() >= 2 && refs[0] == ref) loop_tuples.emplace_back(ref, refs[1]);
+                if (refs.size() >= 2 && refs.at(0) == ref) loop_tuples.emplace_back(ref, refs.at(1));
             }
         }
     }

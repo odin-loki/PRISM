@@ -5,9 +5,18 @@
 #include <sstream>
 #include <vector>
 
-namespace prism::pir::pirctl {
+namespace prism {
+namespace pir {
+namespace pirctl {
 
 namespace {
+
+bool line_starts_with(const std::string& s, const char* prefix) {
+    if (!prefix) return false;
+    for (std::size_t i = 0; prefix[i] != '\0'; ++i)
+        if (i >= s.size() || s.at(i) != prefix[i]) return false;
+    return true;
+}
 
 bool calls_setjmp(const std::string& line) {
     for (const char* n : {"@_setjmp(", "@setjmp(", "@__sigsetjmp(", "@sigsetjmp("})
@@ -27,19 +36,19 @@ std::string keep_setjmp_locals(const std::string& ir) {
     std::ostringstream out;
     bool any = false;
     for (std::size_t i = 0; i < lines.size(); ++i) {
-        const auto& l = lines[i];
-        if (!l.starts_with("define ")) {
+        const auto& l = lines.at(i);
+        if (!line_starts_with(l, "define ")) {
             out << l << "\n";
             continue;
         }
         std::size_t end = i;
         bool sj = false;
-        for (; end < lines.size() && lines[end] != "}"; ++end)
-            if (calls_setjmp(lines[end])) sj = true;
+        for (; end < lines.size() && lines.at(end) != "}"; ++end)
+            if (calls_setjmp(lines.at(end))) sj = true;
         for (std::size_t k = i; k <= end && k < lines.size(); ++k) {
-            out << lines[k] << "\n";
+            out << lines.at(k) << "\n";
             if (!sj) continue;
-            const auto& a = lines[k];
+            const auto& a = lines.at(k);
             auto eq = a.find(" = alloca ");
             auto pct = a.find('%');
             if (eq == std::string::npos || pct == std::string::npos || pct > eq) continue;
@@ -65,13 +74,13 @@ std::string uninit_fp_locals(const std::string& ir) {
         if (a == std::string::npos) continue;
         auto nm = l.substr(0, a);
         nm.erase(0, nm.find_first_not_of(' '));
-        if (!nm.starts_with("%") || nm == "%retval") continue;
+        if (!line_starts_with(nm, "%") || nm == "%retval") continue;
         auto rest = l.substr(a + 10);
         for (int k = 0; k < 3; ++k) {
             std::string t = kTy[k];
-            if (!rest.starts_with(t)) continue;
+            if (!line_starts_with(rest, t.c_str())) continue;
             auto tail = rest.substr(t.size());
-            if (!(tail.empty() || tail.starts_with(", align ")) || tail.find(", i") != std::string::npos) break;
+            if (!(tail.empty() || line_starts_with(tail, ", align ")) || tail.find(", i") != std::string::npos) break;
             std::string v = "%__prism_uninit_fp." + std::to_string(uniq++);
             out << "  " << v << " = call " << t << " @__prism.uninit." << t << "()\n";
             out << "  store " << t << " " << v << ", ptr " << nm << "\n";
@@ -84,4 +93,6 @@ std::string uninit_fp_locals(const std::string& ir) {
     return out.str();
 }
 
-}  // namespace prism::pir::pirctl
+}  // namespace pirctl
+}  // namespace pir
+}  // namespace prism

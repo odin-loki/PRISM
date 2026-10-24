@@ -19,8 +19,8 @@ std::string strip_parens(std::string s) {
         int depth = 0;
         bool ok = true;
         for (std::size_t i = 0; i < s.size(); ++i) {
-            if (s[i] == '(') ++depth;
-            else if (s[i] == ')') {
+            if (s.at(i) == '(') ++depth;
+            else if (s.at(i) == ')') {
                 --depth;
                 if (depth == 0 && i + 1 != s.size()) {
                     ok = false;
@@ -39,18 +39,18 @@ std::vector<std::string> split_top(const std::string& s, const std::string& sep)
     int depth = 0;
     std::string cur;
     for (std::size_t i = 0; i < s.size();) {
-        if (s[i] == '(') {
+        if (s.at(i) == '(') {
             ++depth;
-            cur.push_back(s[i++]);
-        } else if (s[i] == ')') {
+            cur.push_back(s.at(i++));
+        } else if (s.at(i) == ')') {
             --depth;
-            cur.push_back(s[i++]);
+            cur.push_back(s.at(i++));
         } else if (depth == 0 && i + sep.size() <= s.size() && s.compare(i, sep.size(), sep) == 0) {
             parts.push_back(cur);
             cur.clear();
             i += sep.size();
         } else {
-            cur.push_back(s[i++]);
+            cur.push_back(s.at(i++));
         }
     }
     parts.push_back(cur);
@@ -73,9 +73,9 @@ bool eval_pred(std::string pred, const std::string& state) {
         std::string rest;
         for (std::size_t i = 1; i < imps.size(); ++i) {
             if (i > 1) rest += "->";
-            rest += imps[i];
+            rest += imps.at(i);
         }
-        return !eval_pred(imps[0], state) || eval_pred(rest, state);
+        return !eval_pred(imps.at(0), state) || eval_pred(rest, state);
     }
     auto ors = split_top(pred, "||");
     if (ors.size() > 1) {
@@ -166,12 +166,12 @@ bool fsm_word_char(char c) {
 
 bool word_at(const std::string& s, std::size_t p, std::string_view w) {
     if (p + w.size() > s.size() || s.compare(p, w.size(), w) != 0) return false;
-    if (p > 0 && fsm_word_char(s[p - 1])) return false;
-    return p + w.size() == s.size() || !fsm_word_char(s[p + w.size()]);
+    if (p > 0 && fsm_word_char(s.at(p - 1))) return false;
+    return p + w.size() == s.size() || !fsm_word_char(s.at(p + w.size()));
 }
 
 std::size_t skip_ws(const std::string& s, std::size_t p) {
-    while (p < s.size() && std::isspace(static_cast<unsigned char>(s[p]))) ++p;
+    while (p < s.size() && std::isspace(static_cast<unsigned char>(s.at(p)))) ++p;
     return p;
 }
 
@@ -182,24 +182,24 @@ std::string blank_non_code(const std::string& s) {
     const std::size_t n = s.size();
     auto blank = [&](std::size_t a, std::size_t b) {
         for (auto k = a; k < b && k < n; ++k)
-            if (out[k] != '\n') out[k] = ' ';
+            if (out.at(k) != '\n') out.at(k) = ' ';
     };
     std::size_t i = 0;
     while (i < n) {
-        char c = s[i];
-        if (c == '/' && i + 1 < n && s[i + 1] == '/') {
+        char c = s.at(i);
+        if (c == '/' && i + 1 < n && s.at(i + 1) == '/') {
             auto e = s.find('\n', i);
             if (e == std::string::npos) e = n;
             blank(i, e);
             i = e;
-        } else if (c == '/' && i + 1 < n && s[i + 1] == '*') {
+        } else if (c == '/' && i + 1 < n && s.at(i + 1) == '*') {
             auto e = s.find("*/", i + 2);
             e = e == std::string::npos ? n : e + 2;
             blank(i, e);
             i = e;
-        } else if (c == '"' || (c == '\'' && !(i > 0 && fsm_word_char(s[i - 1])))) {
+        } else if (c == '"' || (c == '\'' && !(i > 0 && fsm_word_char(s.at(i - 1))))) {
             auto k = i + 1;
-            while (k < n && s[k] != c && s[k] != '\n') k += s[k] == '\\' ? 2 : 1;
+            while (k < n && s.at(k) != c && s.at(k) != '\n') k += s.at(k) == '\\' ? 2 : 1;
             k = std::min(k + 1, n);
             blank(i, k);
             i = k;
@@ -214,7 +214,7 @@ std::string blank_non_code(const std::string& s) {
 std::size_t match_close(const std::string& s, std::size_t open) {
     int depth = 0;
     for (std::size_t k = open; k < s.size(); ++k) {
-        char c = s[k];
+        char c = s.at(k);
         if (c == '(' || c == '{' || c == '[') ++depth;
         else if (c == ')' || c == '}' || c == ']') {
             if (--depth == 0) return k;
@@ -227,7 +227,7 @@ std::size_t match_close(const std::string& s, std::size_t open) {
 std::size_t stmt_end(const std::string& s, std::size_t p) {
     int depth = 0;
     for (std::size_t k = p; k < s.size(); ++k) {
-        char c = s[k];
+        char c = s.at(k);
         if (c == '(' || c == '{' || c == '[') ++depth;
         else if (c == ')' || c == '}' || c == ']') --depth;
         else if (c == ';' && depth <= 0) return k;
@@ -270,7 +270,7 @@ std::optional<std::vector<SwitchArm>> parse_switch_arms(const std::string& sw) {
     std::vector<Mark> marks;
     int depth = 0;
     for (std::size_t k = 0; k < sw.size(); ++k) {
-        char c = sw[k];
+        char c = sw.at(k);
         if (c == '(' || c == '{' || c == '[') ++depth;
         else if (c == ')' || c == '}' || c == ']') --depth;
         else if (depth == 0 && word_at(sw, k, "case")) {
@@ -287,14 +287,14 @@ std::optional<std::vector<SwitchArm>> parse_switch_arms(const std::string& sw) {
     }
     std::vector<SwitchArm> arms;
     for (std::size_t i = 0; i < marks.size(); ++i) {
-        auto stop = i + 1 < marks.size() ? marks[i + 1].at : sw.size();
-        auto content = sw.substr(marks[i].body, stop - marks[i].body);
+        auto stop = i + 1 < marks.size() ? marks.at(i + 1).at : sw.size();
+        auto content = sw.substr(marks.at(i).body, stop - marks.at(i).body);
         if (!arms.empty() && strip(arms.back().content).empty()) {
             // `case A: case B:` - the extra label joins the open arm.
-            arms.back().labels.push_back(marks[i].lab);
+            arms.back().labels.push_back(marks.at(i).lab);
             arms.back().content += content;
         } else {
-            arms.push_back({{marks[i].lab}, content});
+            arms.push_back({{marks.at(i).lab}, content});
         }
     }
     return arms;
@@ -348,17 +348,17 @@ std::size_t flow_stmt(const std::string& s, std::size_t p, bool in, Flow& out) {
         "^(?:[A-Za-z_]\\w*\\s*(?:->|\\.)\\s*)*state\\s*=(?!=)\\s*(?:\\(\\s*(?:[A-Za-z_]\\w*|\\d+)\\s*\\)|"
         "[A-Za-z_]\\w*|\\d+)\\s*$");
     out = Flow{false, true, in, false};
-    if (s[p] == '{') {
+    if (s.at(p) == '{') {
         auto e = match_close(s, p);
         if (e == std::string::npos) e = s.size();
         out = flow_seq(s.substr(p + 1, e - p - 1), in);
         out.label = false;
         return e + 1;
     }
-    if (s[p] == ';') return p + 1;
+    if (s.at(p) == ';') return p + 1;
     if (word_at(s, p, "if")) {
         auto q = skip_ws(s, p + 2);
-        if (q < s.size() && s[q] == '(') {
+        if (q < s.size() && s.at(q) == '(') {
             auto c = match_close(s, q);
             if (c == std::string::npos) return s.size();
             Flow a;
@@ -375,7 +375,7 @@ std::size_t flow_stmt(const std::string& s, std::size_t p, bool in, Flow& out) {
     for (std::string_view kw : {"for", "while", "switch"}) {
         if (!word_at(s, p, kw)) continue;
         auto q = skip_ws(s, p + kw.size());
-        if (q >= s.size() || s[q] != '(') break;
+        if (q >= s.size() || s.at(q) != '(') break;
         auto c = match_close(s, q);
         if (c == std::string::npos) return s.size();
         // The body may run zero times, so it assigns nothing for sure; a
@@ -421,7 +421,7 @@ struct ArmOut {
 void add_dests(const std::string& text, std::vector<std::string>& dests) {
     for (auto& m : state_asg_re().finditer(text)) {
         auto d = asg_dest(m);
-        if (std::find(dests.begin(), dests.end(), d) == dests.end()) dests.push_back(d);
+        if (std::ranges::find(dests, d) == dests.end()) dests.push_back(d);
     }
 }
 
@@ -431,8 +431,8 @@ ArmOut resolved_dests(const std::vector<SwitchArm>& arms, std::size_t i) {
     ArmOut r;
     bool assigned = false;
     for (std::size_t j = i; j < arms.size(); ++j) {
-        add_dests(arms[j].content, r.dests);
-        auto f = flow_seq(arms[j].content, assigned);
+        add_dests(arms.at(j).content, r.dests);
+        auto f = flow_seq(arms.at(j).content, assigned);
         r.stay = r.stay || f.leak;
         if (!f.falls) return r;
         assigned = f.assigned;
@@ -449,16 +449,16 @@ bool writes_state_outside(const std::string& body,
     std::string outside = body;
     for (auto& [a, b] : spans)
         for (auto k = a; k < b; ++k)
-            if (outside[k] != '\n') outside[k] = ' ';
+            if (outside.at(k) != '\n') outside.at(k) = ' ';
     if (state_compound_re().search(outside)) return true;
     for (auto& m : state_write_re().finditer(outside)) {
-        auto k = static_cast<std::size_t>(m.spans[0].first);
-        while (k > 0 && std::isspace(static_cast<unsigned char>(outside[k - 1]))) --k;
+        auto k = static_cast<std::size_t>(m.spans.at(0).first);
+        while (k > 0 && std::isspace(static_cast<unsigned char>(outside.at(k - 1)))) --k;
         if (k == 0) return true;
-        if (outside[k - 1] == '*') continue;  // `T *state = ...`
-        if (!fsm_word_char(outside[k - 1])) return true;
+        if (outside.at(k - 1) == '*') continue;  // `T *state = ...`
+        if (!fsm_word_char(outside.at(k - 1))) return true;
         auto w_end = k;
-        while (k > 0 && fsm_word_char(outside[k - 1])) --k;
+        while (k > 0 && fsm_word_char(outside.at(k - 1))) --k;
         auto word = outside.substr(k, w_end - k);
         if (word == "return" || word == "else" || word == "do" || word == "case" || word == "goto")
             return true;
@@ -563,11 +563,11 @@ const Regex& ltl_gflive_re() {
 std::optional<std::pair<std::string, std::string>> split_until(const std::string& s) {
     int depth = 0;
     for (std::size_t i = 0; i < s.size(); ++i) {
-        if (s[i] == '(') ++depth;
-        else if (s[i] == ')') --depth;
-        else if (depth == 0 && s[i] == 'U') {
-            bool prev_ok = i == 0 || !ltl_word_char(s[i - 1]);
-            bool next_ok = i + 1 >= s.size() || !ltl_word_char(s[i + 1]);
+        if (s.at(i) == '(') ++depth;
+        else if (s.at(i) == ')') --depth;
+        else if (depth == 0 && s.at(i) == 'U') {
+            bool prev_ok = i == 0 || !ltl_word_char(s.at(i - 1));
+            bool next_ok = i + 1 >= s.size() || !ltl_word_char(s.at(i + 1));
             if (prev_ok && next_ok) {
                 auto left = strip(s.substr(0, i));
                 auto right = strip(s.substr(i + 1));
@@ -650,8 +650,8 @@ LtlClass classify_ltl(const std::string& formula) {
     auto inner = strip_parens(m->group(1));
     auto parts = split_top(inner, "->");
     if (parts.size() == 2) {
-        auto lhs = strip(parts[0]);
-        auto rhs = strip(parts[1]);
+        auto lhs = strip(parts.at(0));
+        auto rhs = strip(parts.at(1));
         static Regex xm("^X\\s*\\(?(.+?)\\)?$", false, true);
         if (auto xm_ = match_at(xm, rhs))
             return {LtlKind::Next, lhs, strip_parens(xm_->group(1)), 0, raw};
@@ -678,7 +678,7 @@ Finding ltl_finding(std::string_view status, const std::string& formula, const s
     f.cls = "LTL-SAFETY";
     f.message = message;
     f.strength = std::string(strength);
-    extra["formula"] = formula;
+    extra.insert_or_assign("formula", formula);
     f.extra = std::move(extra);
     return f;
 }

@@ -40,7 +40,7 @@ std::vector<std::string> function_bodies(const std::string& src) {
     int depth = 0;
     long start = -1;
     for (std::size_t i = 0; i < src.size(); ++i) {
-        char ch = src[i];
+        char ch = src.at(i);
         if (ch == '{') {
             if (depth == 0) {
                 std::size_t from = i >= 200 ? i - 200 : 0;
@@ -63,7 +63,7 @@ Regex word_re(const std::vector<std::string>& words) {
     std::string pat = "\\b(";
     for (std::size_t i = 0; i < words.size(); ++i) {
         if (i) pat += '|';
-        pat += re_escape(words[i]);
+        pat += re_escape(words.at(i));
     }
     pat += ")\\b";
     return Regex(pat);

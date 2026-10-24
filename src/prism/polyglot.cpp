@@ -243,7 +243,7 @@ std::string join(const std::vector<std::string>& v, const std::string& sep) {
     std::string o;
     for (std::size_t i = 0; i < v.size(); ++i) {
         if (i) o += sep;
-        o += v[i];
+        o += v.at(i);
     }
     return o;
 }
@@ -332,11 +332,13 @@ std::vector<fs::path> walk_files(const fs::path& root) {
                 files.push_back(it->path());
             }
         }
-        ec.clear();
+        if (ec) break;
+        ec = {};
         std::sort(files.begin(), files.end());
         std::sort(dirs.begin(), dirs.end());
         out.insert(out.end(), files.begin(), files.end());
         for (auto d = dirs.rbegin(); d != dirs.rend(); ++d) stack.push_back(*d);
+        if (ec) break;
     }
     return out;
 }
@@ -599,7 +601,7 @@ std::vector<Call> invocations(const PgTool& tool, const std::vector<fs::path>& f
             for (auto d = f.parent_path(); !d.empty(); d = d.parent_path()) {
                 std::error_code ec;
                 if (fs::is_regular_file(d / tool.cwd_marker, ec)) {
-                    if (std::find(dirs.begin(), dirs.end(), d) == dirs.end()) dirs.push_back(d);
+                    if (std::ranges::find(dirs, d) == dirs.end()) dirs.push_back(d);
                     break;
                 }
                 if (d == d.parent_path()) break;
@@ -695,6 +697,12 @@ std::vector<Finding> run_check(const PgCheck& check, std::vector<fs::path> files
         files.resize(MAX_FILES_PER_TOOL);
         nfiles = std::to_string(files.size());
     }
+    if (!exe.has_value()) {
+        return {pg_finding(laws::NOTRUN, "", std::nullopt, "",
+                           check.group + ": " + tool->name + " executable not resolved",
+                           {{"install", check.install}, {"check", check.group}})};
+    }
+    const fs::path exe_path = exe.value();
     auto calls = invocations(*tool, files);
     if (calls.empty())
         return {pg_finding(laws::NOTRUN, "", std::nullopt, "",
@@ -705,7 +713,7 @@ std::vector<Finding> run_check(const PgCheck& check, std::vector<fs::path> files
     const Regex unconfigured(tool->unconfigured.empty() ? std::string{}
                                                         : "(?i)" + tool->unconfigured);
     auto one = [&](const Call& call) -> std::vector<Finding> {
-        auto r = detail::run_process(expand(*tool, exe->string(), call.files),
+        auto r = detail::run_process(expand(*tool, exe_path.string(), call.files),
                                      tool->timeout, call.cwd);
         if (r.timed_out)
             return {pg_finding(laws::TIMEOUT, "", std::nullopt, "",
@@ -730,7 +738,7 @@ std::vector<Finding> run_check(const PgCheck& check, std::vector<fs::path> files
         if (!ok_rc) {
             auto t = trim(r.text);
             if (t.size() > 300) t = t.substr(t.size() - 300);
-            return {pg_finding(laws::FAILED, call.files.empty() ? std::string{} : rel(call.files[0], root),
+            return {pg_finding(laws::FAILED, call.files.empty() ? std::string{} : rel(call.files.at(0), root),
                                std::nullopt, check.kind == "syntax" ? "SYNTAX-ERROR" : "LANG-LINT",
                                tool->name + " exit " + std::to_string(r.rc) + ": " + t,
                                {{"tool", tool->name}, {"check", check.group}})};

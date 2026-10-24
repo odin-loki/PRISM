@@ -87,12 +87,12 @@ Layout::Layout(const ir::Module& m) : m_(m) {
         };
         if (spec.size() > 1 && spec[0] == 'i' && std::isdigit(static_cast<unsigned char>(spec[1]))) {
             auto v = nums(1);
-            if (v.size() >= 2 && v[0] && v[1]) int_align_[v[0]] = v[1] / 8;
+            if (v.size() >= 2 && v.at(0) && v.at(1)) int_align_[v.at(0)] = v.at(1) / 8;
         } else if (spec.size() > 1 && spec[0] == 'p' && (spec[1] == ':' || spec.starts_with("p0:"))) {
             auto v = nums(spec[1] == ':' ? 2 : 3);
-            if (v.size() >= 2 && v[0] && v[1]) {
-                ptr_bytes_ = v[0] / 8;
-                ptr_align_ = v[1] / 8;
+            if (v.size() >= 2 && v.at(0) && v.at(1)) {
+                ptr_bytes_ = v.at(0) / 8;
+                ptr_align_ = v.at(1) / 8;
             }
         }
     }
@@ -244,9 +244,9 @@ constexpr uint64_t kMaxInitStores = 256;
 // Stores emit_init pushes for an initialiser (zero leaves cost none), up to `cap`.
 uint64_t init_store_count(const Layout& lay, const ir::Type& ty, const ir::Value& v, uint64_t cap) {
     switch (v.kind) {
-        case ir::Value::Int:
+        case ir::Value::Int: [[fallthrough]];
         case ir::Value::Fp: return v.bits != 0 ? 1 : 0;
-        case ir::Value::Zero:
+        case ir::Value::Zero: [[fallthrough]];
         case ir::Value::Null: return 0;
         case ir::Value::Str: {
             uint64_t n = 0;
@@ -281,7 +281,7 @@ bool flat_rec(const Layout& lay, uint64_t off, const ir::Type& ty, const ir::Val
             if (v.bits != 0) out.push_back({off, *w, v.bits});
             return true;
         }
-        case ir::Value::Zero:
+        case ir::Value::Zero: [[fallthrough]];
         case ir::Value::Null: return true;
         case ir::Value::Str:
             for (std::size_t k = 0; k < v.bytes.size(); ++k)
@@ -354,7 +354,7 @@ std::vector<std::string> entry_globals(const ir::Module& m, const Layout& lay, c
     std::vector<std::string> out;
     auto see = [&](const ir::Operand& o) {
         if (o.v.kind == ir::Value::Global && o.ty.kind == ir::Type::Ptr &&
-            std::find(out.begin(), out.end(), o.v.name) == out.end() && entry_global(m, lay, o.v.name, initial))
+            std::ranges::find(out, o.v.name) == out.end() && entry_global(m, lay, o.v.name, initial))
             out.push_back(o.v.name);
     };
     for (auto& bl : f.blocks)
@@ -566,9 +566,9 @@ void MemTr::emit_init(Arg base, uint64_t offs, const ir::Type& ty, const ir::Val
             if (v.bits != 0) put(offs, Arg::c(w, v.bits));
             return;
         }
-        case ir::Value::Zero:
+        case ir::Value::Zero: [[fallthrough]];
         case ir::Value::Null: return;
-        case ir::Value::Undef:
+        case ir::Value::Undef: [[fallthrough]];
         case ir::Value::Poison:
             if (ty.kind == ir::Type::Int || ty.kind == ir::Type::Ptr) {
                 // undef bytes: every load may read another value, so they are
@@ -801,8 +801,8 @@ void MemTr::gep(int b, int dst, Arg base, const ir::Type& ety, const std::vector
         } else {
             const auto& rt = lay_.resolve(*t);
             if (rt.kind == ir::Type::Struct) {
-                if (!idx[k].is_const) throw Unenc{"UNENCODED: getelementptr with a variable struct index"};
-                auto fi = static_cast<unsigned>(idx[k].bits);
+                if (!idx.at(k).is_const) throw Unenc{"UNENCODED: getelementptr with a variable struct index"};
+                auto fi = static_cast<unsigned>(idx.at(k).bits);
                 cst = i128_add(cst, i128_from_i64(lay_.field_offset(rt, fi)));
                 t = &lay_.field_type(rt, fi);
                 last_field = fi + 1 == rt.elems.size();
@@ -815,7 +815,7 @@ void MemTr::gep(int b, int dst, Arg base, const ir::Type& ety, const std::vector
             // field of a struct (flexible array / struct hack).
             uint64_t n = count_of(rt);
             if (!last_field && n > 0) {
-                const Arg& ix = idx[k];
+                const Arg& ix = idx.at(k);
                 Arg s64 = ix.width < 64 ? (ix.is_const ? c64(static_cast<uint64_t>(sext64(ix.bits, ix.width)))
                                                        : t_.assign(b, Op::SExt, 64, {ix}, "idx"))
                                         : ix;
@@ -828,7 +828,7 @@ void MemTr::gep(int b, int dst, Arg base, const ir::Type& ety, const std::vector
             t = &rt.elems.at(0);
             scale = lay_.alloc_size(*t);
         }
-        const Arg& ix = idx[k];
+        const Arg& ix = idx.at(k);
         if (ix.is_const) {
             cst = i128_add(cst, i128_mul(i128_from_i64(sext64(ix.bits, ix.width)), i128_from_i64(scale)));
             if (cst > i128_from_i64(INT64_MAX) || cst < i128_from_i64(INT64_MIN))
@@ -1039,6 +1039,7 @@ void MemTr::stack_escape_check(int b, Arg ret, const std::vector<Arg>& own, int 
         Arg e = p2(b, Op::Eq, ro, obj(b, a));
         hit = hit ? bor(b, *hit, e) : e;
     }
+    if (!hit.has_value()) return;
     t_.check(b, band(b, *hit, p2(b, Op::Ne, ro, c64(0))), "stack-escape", "MEM-STACK-ESCAPE",
              "returns a pointer to its own stack object (dangling after the return)", line);
 }

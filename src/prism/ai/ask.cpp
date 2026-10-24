@@ -60,8 +60,8 @@ std::vector<std::string> stage_names() {
 }
 
 void add_all(std::vector<std::string>& to, const std::vector<std::string>& from) {
-    for (auto& x : from)
-        if (std::find(to.begin(), to.end(), x) == to.end()) to.push_back(x);
+    for (const auto& x : from)
+        if (std::ranges::find(to, x) == to.end()) to.push_back(x);
 }
 
 // word -> class substrings (matched case-insensitively against Finding::cls)
@@ -173,7 +173,7 @@ std::optional<Query> query_from_json(const std::string& text, std::string* why) 
         if (!keys.contains(k)) return fail("unknown key '" + k + "'");
     if (!str_list("stages", q.stages)) return fail("stages must be a list of strings");
     for (auto& s : q.stages)
-        if (std::find(stages.begin(), stages.end(), s) == stages.end()) return fail("unknown stage '" + s + "'");
+        if (std::ranges::find(stages, s) == stages.end()) return fail("unknown stage '" + s + "'");
     if (!str_list("statuses", q.statuses)) return fail("statuses must be a list of strings");
     for (auto& s : q.statuses)
         if (!vocab_status(s)) return fail("unknown status '" + s + "'");
@@ -237,10 +237,10 @@ Query parse_question(const std::string& question, std::string* unused) {
             cur_o.clear();
         };
         for (std::size_t i = 0; i < text.size(); ++i) {
-            char c = text[i];
+            char c = text.at(i);
             if (std::isalnum(static_cast<unsigned char>(c)) || std::string("_-./*+:#()?").find(c) != std::string::npos) {
                 cur += c;
-                cur_o += original[i];
+                cur_o += original.at(i);
             } else {
                 flush();
             }
@@ -254,17 +254,17 @@ Query parse_question(const std::string& question, std::string* unused) {
         for (std::string w; is >> w;) pw.push_back(w);
         if (i + pw.size() > toks.size()) return 0;
         for (std::size_t k = 0; k < pw.size(); ++k)
-            if (toks[i + k] != pw[k]) return 0;
+            if (toks.at(i + k) != pw.at(k)) return 0;
         return pw.size();
     };
     auto mark = [&](std::size_t i, std::size_t n) {
-        for (std::size_t k = 0; k < n; ++k) used[i + k] = true;
+        for (std::size_t k = 0; k < n; ++k) used.at(i + k) = true;
     };
     bool negate_proof = false;
     const auto stages = stage_names();
     for (std::size_t i = 0; i < toks.size(); ++i) {
-        if (used[i]) continue;
-        const std::string& w = toks[i];
+        if (used.at(i)) continue;
+        const std::string& w = toks.at(i);
         std::size_t n = 0;
         // negation of proofs: "not proved", "unproved", "unproven", "open", "not verified"
         if ((n = phrase_at(i, "not proved")) || (n = phrase_at(i, "not proven")) || (n = phrase_at(i, "not verified")) ||
@@ -344,7 +344,7 @@ Query parse_question(const std::string& question, std::string* unused) {
         if (hit) continue;
         if (std::find(stages.begin(), stages.end(), w) != stages.end() && w != "classify" && w != "optional") {
             add_all(q.stages, {w});
-            used[i] = true;
+            used.at(i) = true;
             continue;
         }
         // Class lexicon (longest phrases are listed first per row).
@@ -360,9 +360,9 @@ Query parse_question(const std::string& question, std::string* unused) {
         }
         if (hit) continue;
         // Exact status words (any case) and status vocabulary words.
-        if (vocab_status(upper(w)) && orig[i] == upper(orig[i])) {  // spelled as a status word
+        if (vocab_status(upper(w)) && orig.at(i) == upper(orig.at(i))) {  // spelled as a status word
             add_all(q.statuses, {upper(w)});
-            used[i] = true;
+            used.at(i) = true;
             continue;
         }
         static const std::map<std::string, std::vector<std::string>> status_words = {
@@ -394,19 +394,19 @@ Query parse_question(const std::string& question, std::string* unused) {
         }
         if (auto it = status_words.find(w); it != status_words.end()) {
             add_all(q.statuses, it->second);
-            used[i] = true;
+            used.at(i) = true;
             continue;
         }
         // "in foo.c" / "src/net" : a path-looking word is a file scope.
         if (looks_like_path(w) && q.file_glob.empty()) {
-            q.file_glob = orig[i].find_first_of("*?") != std::string::npos ? orig[i] : "*" + orig[i] + "*";
-            used[i] = true;
+            q.file_glob = orig.at(i).find_first_of("*?") != std::string::npos ? orig.at(i) : "*" + orig.at(i) + "*";
+            used.at(i) = true;
             continue;
         }
         // "f()" style function names
         if (w.size() > 2 && w.ends_with("()")) {
-            q.function_glob = orig[i].substr(0, orig[i].size() - 2);
-            used[i] = true;
+            q.function_glob = orig.at(i).substr(0, orig.at(i).size() - 2);
+            used.at(i) = true;
             continue;
         }
     }
@@ -416,14 +416,14 @@ Query parse_question(const std::string& question, std::string* unused) {
         if (q.statuses.empty()) st = kUnproved;
         else
             for (auto& s : q.statuses)
-                if (std::find(kProof.begin(), kProof.end(), s) == kProof.end()) st.push_back(s);
+                if (std::ranges::find(kProof, s) == kProof.end()) st.push_back(s);
         if (st.empty()) st = kUnproved;
         q.statuses = st;
     }
     if (unused) {
         std::string u;
         for (std::size_t i = 0; i < toks.size(); ++i)
-            if (!used[i] && !stopwords().contains(toks[i])) u += (u.empty() ? "" : " ") + orig[i];
+            if (!used.at(i) && !stopwords().contains(toks.at(i))) u += (u.empty() ? "" : " ") + orig.at(i);
         *unused = u;
     }
     return q;
@@ -433,10 +433,10 @@ bool glob_match(const std::string& pattern, const std::string& text) {
     // Iterative '*' / '?' matcher, case-sensitive; '*' also crosses '/'.
     std::size_t p = 0, t = 0, star = std::string::npos, mark = 0;
     while (t < text.size()) {
-        if (p < pattern.size() && (pattern[p] == '?' || pattern[p] == text[t])) {
+        if (p < pattern.size() && (pattern.at(p) == '?' || pattern.at(p) == text.at(t))) {
             ++p;
             ++t;
-        } else if (p < pattern.size() && pattern[p] == '*') {
+        } else if (p < pattern.size() && pattern.at(p) == '*') {
             star = p++;
             mark = t;
         } else if (star != std::string::npos) {

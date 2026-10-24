@@ -641,8 +641,7 @@ Every wrong proof found, reduced to a minimal reproducer. Run any of them
 with `./build/prism FILE --no-llm --stage inventory,classify,bmc`.
 
 **Status: S1–S7, R1, R2, F1–F6 are fixed in both engines** (typed encoder:
-`src/prism/bmc_encoder.inc`, `prism/bmc.py`; inliner `src/prism/inline.cpp`,
-`prism/inline.py`). Every reproducer below is a regression test
+`src/prism/bmc_encoder.inc`; inliner `src/prism/inline.cpp`). Every reproducer below is a regression test
 (doctest `bmc soundness: ...` in `tests/cpp/test_main.cpp`, conformance tasks under
 `tests/conformance/prism/regress/`). F7 (a false alarm, not a soundness
 issue) is fixed too. The fix, in one paragraph: every value carries its C type
@@ -670,7 +669,7 @@ the code after the loop (`regress/kind_postloop`, `regress/post_loop`);
 `enum { A = 1 << 3, B }` gave `B` the value 1 (`regress/enum_expr`); an
 unknown-callee refutation that needs a particular return value is no longer
 reported; the harness buffer had type `int` whatever the pointee type.
-The concrete oracle (`prism/concrete.py`, `src/prism/stages/interp.cpp`) had
+The concrete oracle (`src/prism/stages/interp.cpp`) had
 S2 and S3 too: fixed there as well.
 
 ### Soundness (wrong proofs)
@@ -809,7 +808,7 @@ proved, `main` is `NEEDS-HARNESS` naming it. When they are proved, `main`
 keeps a verdict only if it holds for *arbitrary* values of the mutable
 globals (the constructors' stores are not carried into `main`); otherwise
 `NEEDS-HARNESS`. `bmc` (`dynamic_init_before_main` in `src/prism/bmc.cpp`,
-`prism/bmc.py`) turns a proof or BOUNDED of `main` into `NEEDS-HARNESS` when
+`src/prism/bmc.cpp`) turns a proof or BOUNDED of `main` into `NEEDS-HARNESS` when
 the file defines a constructor. Tasks: ESBMC
 `try_catch/lower-exceptions_static_init_fail`, `cpp11/constructors/Constructor9-1`;
 `tests/pir/static_init_{throw,value,ok}.cpp`, doctest "bmc soundness:
@@ -872,7 +871,7 @@ flagged (SV-COMP `NoNegativeIntegerConstant`, true).
 **F7. C++20 shift semantics.** `1 << 31` is well defined in C++20 but was
 flagged (`cxx/cxx_shift_cpp20_true`): C rules were applied to C++ files.
 Both engines' bmc now pick the rules for `<<` per unit (`Parser::shift_rules`,
-`prism/bmc.py` `_shift_rules_for`): a C file, a header (it may be C) and a
+`src/prism/bmc.cpp` shift rules): a C file, a header (it may be C) and a
 C++ unit built as C++98/03 keep the C rules (C11 6.5.7p4: a negative left
 operand, or `E1 × 2^E2` not representable in the type, is undefined); C++11
 to C++17 define `E1 << E2` for `E1 >= 0` when `E1 × 2^E2` fits the
@@ -930,7 +929,7 @@ b`) lets everything it mentions escape. By-value C calls are unchanged. The
 unmodelled call already ruled out a proof (S6), so this only removes wrong
 refutations; `main` is now NEEDS-HARNESS (pir proves it). Since then the
 front end also extracts a function-try-block (`cparse.cpp` `extend_try`,
-`prism/cparse.py` `_extend_try`): the function's body is the try block and
+`src/prism/cparse.cpp` try extension): the function's body is the try block and
 every handler, `try { ... } catch (...) { ... }`, as written, so no
 PARSE-GAP row is left and every per-function stage sees it. bmc has no
 exception model (`try`/`catch` is "C++ try/catch unencoded",

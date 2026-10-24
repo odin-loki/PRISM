@@ -165,7 +165,7 @@ TEST_CASE("checkers: index-token rules name the token in the subscript message")
          "std::cmp_less/in_range result used as an array index", "f"},
         {"in_range ignored", "a.cpp", "CXX-CMP-LESS",
          "int f(int* t, long k) {\n    bool ok = std::in_range<int>(k);\n    return t[k];\n}\n",
-         "std::in_range ignored before a subscript", "f"},
+         "std::cmp_less/in_range guard ignored before a subscript", "f"},
         {"in_range tested", "a.cpp", "CXX-CMP-LESS",
          "int f(int* t, long k) {\n    if (!std::in_range<int>(k)) return 0;\n    return t[k];\n}\n", nullptr,
          nullptr},

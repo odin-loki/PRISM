@@ -92,9 +92,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: prism-linux
-          path: |
-            build/prism
-            build/libprism_native.so
+          path: build/prism
           retention-days: 7
 
   # Phase 5 MSVC port: prism_core uses prism::i128 (wide_int.hpp), not native __int128.

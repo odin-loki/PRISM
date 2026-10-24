@@ -73,7 +73,7 @@ loaders — the *finding* vocabulary does not care which loader answered.
                  leaked-credential scan over every text file. Missing tool is NOTRUN;
                  silent tool is UNKNOWN; syntax-broken files are kept from type checkers
 5  contracts     Dafny-style + ACSL specs (PROVED-ASSUMING under requires)
-5b wp            in-tree Frama-C WP after contracts (`prism/wp.py`); closed is PROVED-ASSUMING — see docs/MINED.md
+5b wp            in-tree Frama-C WP after contracts (`src/prism/stages/wp.cpp`); closed is PROVED-ASSUMING — see docs/MINED.md
 6  bmc           k-induction + incremental BMC via Z3 (ESBMC method);
                  C subset includes do-while, continue, sizeof, ternary,
                  comma; unsigned params use unsigned compares and wrap;
@@ -159,10 +159,10 @@ executes code derived from the scanned tree or from the LLM is opt-in:
   --allow-exec (only on code you trust)"`, `extra.install` = the hint and
   `extra.reason = "executes-scanned-code"`. A "part" stage keeps its analysis
   half and adds one such row for the held-back half.
-- The policy lives in `prism/sandbox.py` / `src/prism/sandbox.cpp`
+- The policy lives in `src/prism/sandbox.cpp`
   (`allowed()`, set for the run by the pipeline); stages that get a Config
   read `allow_exec` directly. The stage table is `EXEC_STAGES`
-  (`prism/pipeline.py`) = `exec_stages()` (`src/prism/pipeline.cpp`).
+  `exec_stages()` in `src/prism/pipeline.cpp`.
 - Sandbox (with the flag): on Linux with a working `bwrap`, built binaries
   run as `bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp --bind
   <scratch> <scratch> --unshare-all --die-with-parent` (read-only root,
@@ -216,7 +216,7 @@ These are the holes the named tools do not fill:
 - **Differential testing** — two implementations, same inputs, disagree = bug.
 - **Mutation testing** — did the tests actually see the fault class?
 - **Semgrep** — taught shapes, like Coccinelle, for non-C too.
-- **Coccinelle** — `spatch` adapter plus shipped `.cocci` rules; missing is `NOTRUN`.
+- **Coccinelle** — optional `spatch` adapter for tree-local `*.cocci` rules; missing is `NOTRUN`.
 
 ## What "done" means for this repo
 

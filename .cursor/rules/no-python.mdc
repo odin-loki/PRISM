@@ -1,0 +1,15 @@
+---
+description: Do not use Python in agent workflows for this repo
+alwaysApply: true
+---
+
+# No Python (agent workflows)
+
+When working on PRISM in Cursor:
+
+- **Do not** write, run, or add **Python** scripts to automate fixes, parse reports, count findings, or drive builds/tests.
+- Use **C++ / CMake / Ninja / shell (bash, jq, grep)** and existing binaries (`prism`, `prism_tests`, `prism-qa`) instead.
+- **Exception:** `tools/svcomp/prism.py` is the only tracked project Python (BenchExec); do not extend Python elsewhere.
+- **Do not** add new `scripts/*.py` under the repo root; remove ad-hoc helper scripts if introduced during a task.
+
+WSL builds: `~/PRISM` on ext4 after `scripts/wsl_sync_from_windows.sh` — not OneDrive, not `/mnt/c`.

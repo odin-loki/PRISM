@@ -66,7 +66,7 @@ std::vector<std::pair<std::string, std::vector<json>>> main_findings(const json&
     if (!has(report, "stages") || !report.at("stages").is_array()) return per;
     for (const auto& st : report.at("stages")) {
         const std::string name = get_str(st, "name");
-        if (std::find(VERDICT_STAGES.begin(), VERDICT_STAGES.end(), name) == VERDICT_STAGES.end()) continue;
+        if (std::ranges::find(VERDICT_STAGES, name) == VERDICT_STAGES.end()) continue;
         std::vector<json> rows;
         if (has(st, "findings") && st.at("findings").is_array())
             for (const auto& f : st.at("findings"))

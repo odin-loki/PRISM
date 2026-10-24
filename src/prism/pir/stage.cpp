@@ -62,6 +62,7 @@ std::string read_file(const fs::path& p) {
 
 bool write_file(const fs::path& p, const std::string& s) {
     std::ofstream out(p, std::ios::binary);
+    if (!out.is_open()) return false;
     out << s;
     return static_cast<bool>(out);
 }
@@ -157,7 +158,7 @@ std::string dbg_ref(const std::string& line) {
     if (p == std::string::npos) return {};
     auto e = p + 5;
     auto q = e + 1;
-    while (q < line.size() && std::isdigit(static_cast<unsigned char>(line[q]))) ++q;
+    while (q < line.size() && std::isdigit(static_cast<unsigned char>(line.at(q)))) ++q;
     return line.substr(e, q - e);
 }
 
@@ -185,13 +186,13 @@ std::string instrument(const std::string& ir, const std::vector<FoldedUb>& folde
         bool in_body = false;
         std::vector<std::size_t> cand_idx;
         for (std::size_t k = 0; k < folded.size(); ++k) {
-            const auto& f = folded[k];
+            const auto& f = folded.at(k);
             std::size_t best = std::string::npos;
             int best_col = -1;
             std::size_t first = std::string::npos;
             in_body = false;
             for (std::size_t i = 0; i < lines.size(); ++i) {
-                const auto& l = lines[i];
+                const auto& l = lines.at(i);
                 if (l.starts_with("define ")) {
                     in_body = true;
                     continue;
@@ -225,7 +226,7 @@ std::string instrument(const std::string& ir, const std::vector<FoldedUb>& folde
     bool in_body = false;
     int uniq = 0;
     for (std::size_t i = 0; i < lines.size(); ++i) {
-        auto l = lines[i];
+        auto l = lines.at(i);
         if (l.starts_with("define ")) {
             in_body = true;
             out << l << "\n";
@@ -328,7 +329,8 @@ std::vector<std::pair<int, int>> parse_ubsan_locs(const std::string& ir) {
         if (b == std::string::npos) continue;
         try {
             out.emplace_back(std::stoi(body.substr(a + 6)), std::stoi(body.substr(b + 6)));
-        } catch (...) {
+        } catch (const std::exception&) {
+            (void)0;
         }
     }
     return out;
@@ -421,7 +423,10 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
         av.insert(av.end(), mf.begin(), mf.end());
         av.insert(av.end(), {"-o", o0.string(), src.string()});
         auto rm = detail::run_process(av, timeout_s);
-        if (!rm.failed && !rm.timed_out && rm.rc == 0) {
+        const bool rm_ok = !rm.failed && !rm.timed_out && rm.rc == 0;
+        const bool rm_timed = rm.timed_out;
+        const std::string rm_err = rm.text;
+        if (rm_ok) {
             // which model headers the unit's code actually uses (their DIFiles)
             const auto ir0 = read_file(o0);
             std::string used;
@@ -432,17 +437,17 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
                     used += (used.empty() ? "" : ", ") + name.substr(4);
             if (cxx_models && !used.empty()) *cxx_models = "model: " + used;
             modelled = std::move(rm);
-        } else if (rm.timed_out) {
+        } else if (rm_timed) {
             err = "clang timed out";
             return std::nullopt;
         } else if (cxx_models) {
             *cxx_models = "libstdc++ (fallback: the unit does not compile against the PRISM models: " +
-                          first_error(rm.text) + ")";
+                          first_error(rm_err) + ")";
         }
     }
     argv.insert(argv.end(), fl.begin(), fl.end());
     argv.insert(argv.end(), {"-o", o0.string(), src.string()});
-    auto r = modelled ? std::move(*modelled) : detail::run_process(argv, timeout_s);
+    auto r = modelled.has_value() ? std::move(*modelled) : detail::run_process(argv, timeout_s);
     if (!cxx && !r.timed_out && (r.failed || r.rc != 0)) {
         // C23 code (bool, nullptr, typeof, digit separators ...) does not
         // compile as C17: try once more as C23 before giving up. Only the
@@ -559,7 +564,7 @@ std::vector<std::vector<uint64_t>> tv_inputs(const Function& fn, const std::vect
     while (static_cast<int>(out.size()) < kTvVectors) {
         std::vector<uint64_t> v;
         for (std::size_t k = 0; k < ws.size(); ++k) {
-            auto w = ws[k];
+            auto w = ws.at(k);
             uint64_t m = w >= 64 ? ~uint64_t{0} : ((uint64_t{1} << w) - 1);
             auto r = splitmix(seed);
             if (fn.vars[static_cast<std::size_t>(fn.params[k])].fp && r % 3 != 0) {
@@ -635,7 +640,7 @@ void validate(std::vector<FnRec>& recs, const std::string& ir, const Frontend& f
     std::vector<Case> cases;
     std::vector<std::size_t> todo;
     for (std::size_t i = 0; i < recs.size(); ++i) {
-        auto& r = recs[i];
+        auto& r = recs.at(i);
         if (!r.fn) continue;
         const auto& st = r.f.status;
         if (!(st == laws::FAILED || st == laws::PROVED || st == laws::PROVED_CERTIFIED ||
@@ -679,7 +684,7 @@ void validate(std::vector<FnRec>& recs, const std::string& ir, const Frontend& f
     }
     if (cases.empty()) return;
     auto fail_all = [&](const std::string& why) {
-        for (auto i : todo) recs[i].f.extra["tv"] = "NOTRUN (" + why + ")";
+        for (auto i : todo) recs.at(i).f.extra["tv"] = "NOTRUN (" + why + ")";
     };
     if (ir.find("@printf(") != std::string::npos && ir.find("define") != std::string::npos &&
         ir.find("define i32 @printf(") != std::string::npos) {
@@ -694,21 +699,21 @@ void validate(std::vector<FnRec>& recs, const std::string& ir, const Frontend& f
     drv << "define i32 @__prism_tv_main() {\nentry:\n";
     int t = 0;
     for (auto& c : cases) {
-        auto& r = recs[c.rec];
+        auto& r = recs.at(c.rec);
         const auto* irf = r.irf;
         std::string args;
         for (std::size_t k = 0; k < c.args.size(); ++k) {
             auto w = r.fn->vars[static_cast<std::size_t>(r.fn->params[k])].width;
             if (k) args += ", ";
             if (irf->params[k].ty.kind == ir::Type::Float) {  // IEEE bits as an LLVM float literal
-                args += irf->params[k].ty.text + " " + fp::ll_const(c.args[k], w);
+                args += irf->params.at(k).ty.text + " " + fp::ll_const(c.args.at(k), w);
                 continue;
             }
             args += "i" + std::to_string(w);
             auto& at = irf->params[k].attrs;
             if (at.find("signext") != std::string::npos) args += " signext";
             if (at.find("zeroext") != std::string::npos) args += " zeroext";
-            args += " " + ll_const(c.args[k], w);
+            args += " " + ll_const(c.args.at(k), w);
         }
         std::string callee = "@\"" + irf->name + "\"";
         if (c.w && irf->ret.kind == ir::Type::Float) {
@@ -770,7 +775,7 @@ void validate(std::vector<FnRec>& recs, const std::string& ir, const Frontend& f
     std::map<std::size_t, std::string> diverged;
     std::map<std::size_t, int> agreed;
     for (auto& c : cases) {
-        auto& r = recs[c.rec];
+        auto& r = recs.at(c.rec);
         if (diverged.count(c.rec)) continue;
         auto it = got.find({c.rec, c.idx});
         uint64_t m = c.w >= 64 ? ~uint64_t{0} : c.w ? ((uint64_t{1} << c.w) - 1) : 0;
@@ -791,7 +796,7 @@ void validate(std::vector<FnRec>& recs, const std::string& ir, const Frontend& f
         ++agreed[c.rec];
     }
     for (auto i : todo) {
-        auto& f = recs[i].f;
+        auto& f = recs.at(i).f;
         f.extra["sandbox"] = sandbox::kind();
         if (auto d = diverged.find(i); d != diverged.end()) {
             f.extra["verdict_before_tv"] = f.status;
@@ -815,7 +820,8 @@ std::string span_text(const std::vector<std::string>& lines, const std::vector<i
             break;
         }
     std::string out;
-    for (int i = line; i <= end && i <= static_cast<int>(lines.size()); ++i) out += lines[static_cast<std::size_t>(i - 1)] + "\n";
+    for (int i = line; i <= end && i <= static_cast<int>(lines.size()); ++i)
+        out += lines.at(static_cast<std::size_t>(i - 1)) + "\n";
     return out;
 }
 
@@ -1064,7 +1070,7 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
             rec.fn.reset();
             break;
         }
-        rec.fn = std::move(fn);
+        rec.fn = std::move(tr.fn);
         recs.push_back(std::move(rec));
     }
     // Folded UB that no instruction carries: the function cannot be proved.
@@ -1080,8 +1086,9 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
         owner->f.extra.erase(std::string(laws::CERTIFICATE_KEY));
         owner->f.status = std::string(laws::NEEDS_HARNESS);
         owner->f.strength = std::string(laws::STRENGTH_SOME);
+        const std::string folded_msg = folded.at(k).msg;
         owner->f.message = "UNENCODED: clang-folded UB at line " + std::to_string(line) +
-                           " not attributable to an IR instruction (" + folded[k].msg + ")";
+                           " not attributable to an IR instruction (" + folded_msg + ")";
         owner->fn.reset();
     }
     if (recs.empty()) {
@@ -1150,14 +1157,14 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
     std::string cxx_models_error;
     if (std::any_of(units.begin(), units.end(), [](auto& u) { return is_cxx(u.path); })) {
         cxx_dir.emplace();
-        if (write_cxx_models(cxx_dir->path / "prism_cxx"))
+        if (cxx_dir.has_value() && write_cxx_models(cxx_dir->path / "prism_cxx"))
             fe.cxx_models = cxx_dir->path / "prism_cxx";
         else
             cxx_models_error = "libstdc++ (the PRISM C++ model headers could not be written)";
     }
     std::vector<Lowered> low(units.size());
     parallel_for(cfg.jobs, units, [&](std::size_t i, const Unit& u) {
-        auto& l = low[i];
+        auto& l = low.at(i);
         try {
             // The unit's include path: its compile_commands.json entry (without
             // -std=, PRISM's language level stays), else the scan root and
@@ -1183,24 +1190,24 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
     const auto budget = houdini_budget(cfg);
     parallel_for(cfg.jobs, units, [&](std::size_t i, const Unit& u) {
         try {
-            an[i] = run_unit(u, fe, cfg, low[i], models, budget);
+            an.at(i) = run_unit(u, fe, cfg, low.at(i), models, budget);
         } catch (const std::exception& ex) {
             auto f = base_finding(u);
             f.status = std::string(laws::ERROR);
             f.strength = std::string(laws::STRENGTH_SOME);
             f.message = std::string("pir internal error: ") + ex.what();
-            an[i].recs.clear();
-            an[i].out = {f};
+            an.at(i).recs.clear();
+            an.at(i).out = {f};
         }
     });
     std::vector<std::vector<Finding>> per(units.size());
     parallel_for(cfg.jobs, units, [&](std::size_t i, const Unit&) {
-        auto& a = an[i];
-        if (low[i].ir && !a.recs.empty()) validate(a.recs, *low[i].ir, fe, cfg);
-        per[i] = std::move(a.out);
-        for (auto& r : a.recs) per[i].push_back(std::move(r.f));
-        if (!low[i].cxx_models.empty())
-            for (auto& f : per[i]) f.extra["cxx_models"] = low[i].cxx_models;
+        auto& a = an.at(i);
+        if (low.at(i).ir && !a.recs.empty()) validate(a.recs, *low.at(i).ir, fe, cfg);
+        per.at(i) = std::move(a.out);
+        for (auto& r : a.recs) per.at(i).push_back(std::move(r.f));
+        if (!low.at(i).cxx_models.empty())
+            for (auto& f : per.at(i)) f.extra["cxx_models"] = low.at(i).cxx_models;
     });
     std::vector<Finding> out;
     if (!models.error.empty()) {

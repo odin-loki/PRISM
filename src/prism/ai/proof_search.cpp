@@ -65,6 +65,7 @@ bool write_text(const fs::path& p, const std::string& s) {
     std::error_code ec;
     fs::create_directories(p.parent_path(), ec);
     std::ofstream out(p, std::ios::binary | std::ios::trunc);
+    if (!out.is_open()) return false;
     out << s;
     return static_cast<bool>(out);
 }
@@ -81,7 +82,10 @@ std::string mask_lean(const std::string& text) {
     std::size_t i = 0, n = text.size();
     while (i < n) {
         if (text.compare(i, 2, "--") == 0) {
-            while (i < n && text[i] != '\n') m[i++] = ' ';
+            while (i < n && text.at(i) != '\n') {
+                m.at(i) = ' ';
+                ++i;
+            }
             continue;
         }
         if (text.compare(i, 2, "/-") == 0) {
@@ -89,29 +93,36 @@ std::string mask_lean(const std::string& text) {
             while (i < n) {
                 if (text.compare(i, 2, "/-") == 0) {
                     ++depth;
-                    m[i] = m[i + 1] = ' ';
+                    m.at(i) = m.at(i + 1) = ' ';
                     i += 2;
                     continue;
                 }
                 if (text.compare(i, 2, "-/") == 0) {
-                    m[i] = m[i + 1] = ' ';
+                    m.at(i) = m.at(i + 1) = ' ';
                     i += 2;
                     if (--depth == 0) break;
                     continue;
                 }
-                if (text[i] != '\n') m[i] = ' ';
+                if (text.at(i) != '\n') m.at(i) = ' ';
                 ++i;
             }
             continue;
         }
-        if (text[i] == '"') {
-            m[i++] = ' ';
-            while (i < n && text[i] != '"') {
-                if (text[i] == '\\' && i + 1 < n) m[i++] = ' ';
-                if (text[i] != '\n') m[i] = ' ';
+        if (text.at(i) == '"') {
+            m.at(i) = ' ';
+            ++i;
+            while (i < n && text.at(i) != '"') {
+                if (text.at(i) == '\\' && i + 1 < n) {
+                    m.at(i) = ' ';
+                    ++i;
+                }
+                if (text.at(i) != '\n') m.at(i) = ' ';
                 ++i;
             }
-            if (i < n) m[i++] = ' ';
+            if (i < n) {
+                m.at(i) = ' ';
+                ++i;
+            }
             continue;
         }
         ++i;
@@ -128,8 +139,8 @@ bool ident_char(char c) {
 std::vector<std::size_t> word_hits(const std::string& m, const std::string& w, std::size_t a, std::size_t b) {
     std::vector<std::size_t> out;
     for (std::size_t p = m.find(w, a); p != std::string::npos && p < b; p = m.find(w, p + 1)) {
-        bool left = p == 0 || !ident_char(m[p - 1]);
-        bool right = p + w.size() >= m.size() || !ident_char(m[p + w.size()]);
+        bool left = p == 0 || !ident_char(m.at(p - 1));
+        bool right = p + w.size() >= m.size() || !ident_char(m.at(p + w.size()));
         if (left && right) out.push_back(p);
     }
     return out;
@@ -152,12 +163,12 @@ std::size_t decl_end(const std::string& m, std::size_t from) {
     while (p != std::string::npos) {
         std::size_t line = p + 1;
         if (line >= m.size()) return m.size();
-        char c = m[line];
+        char c = m.at(line);
         if (c != ' ' && c != '\t' && c != '\n' && c != '\r') {
             for (auto& kw : top_level_keywords()) {
                 if (m.compare(line, kw.size(), kw) != 0) continue;
                 auto after = line + kw.size();
-                if (kw == "#" || kw == "@[" || kw == "/--" || after >= m.size() || !ident_char(m[after]))
+                if (kw == "#" || kw == "@[" || kw == "/--" || after >= m.size() || !ident_char(m.at(after)))
                     return line;
             }
         }
@@ -191,28 +202,28 @@ fs::path find_project(const fs::path& file) {
 
 // ------------------------------------------------------------------ targets
 std::optional<LeanTarget> find_lean_target(const fs::path& file, const std::string& theorem, std::string* why) {
-    auto fail = [&](std::string m) -> std::optional<LeanTarget> {
-        if (why) *why = std::move(m);
+    auto fail = [&](std::string msg) -> std::optional<LeanTarget> {
+        if (why) *why = std::move(msg);
         return std::nullopt;
     };
     std::error_code ec;
     if (!fs::is_regular_file(file, ec)) return fail("no such Lean file: " + file.string());
     auto text = read_text(file);
-    auto m = mask_lean(text);
+    auto masked = mask_lean(text);
     std::vector<std::string> names{theorem};
     if (auto dot = theorem.rfind('.'); dot != std::string::npos) names.push_back(theorem.substr(dot + 1));
     for (auto& name : names) {
         for (auto* kw : {"theorem", "lemma"}) {
-            for (auto kp : word_hits(m, kw, 0, m.size())) {
+            for (auto kp : word_hits(masked, kw, 0, masked.size())) {
                 auto p = kp + std::strlen(kw);
-                while (p < m.size() && (m[p] == ' ' || m[p] == '\t' || m[p] == '\n')) ++p;
-                if (m.compare(p, name.size(), name) != 0) continue;
-                if (p + name.size() < m.size() && ident_char(m[p + name.size()])) continue;
+                while (p < masked.size() && (masked[p] == ' ' || masked[p] == '\t' || masked[p] == '\n')) ++p;
+                if (masked.compare(p, name.size(), name) != 0) continue;
+                if (p + name.size() < masked.size() && ident_char(masked[p + name.size()])) continue;
                 // Declaration start: beginning of the line (modifiers included).
-                auto ls = m.rfind('\n', kp);
+                auto ls = masked.rfind('\n', kp);
                 ls = ls == std::string::npos ? 0 : ls + 1;
-                auto end = decl_end(m, p);
-                auto sorries = word_hits(m, "sorry", p, end);
+                auto end = decl_end(masked, p);
+                auto sorries = word_hits(masked, "sorry", p, end);
                 if (sorries.empty()) return fail("theorem " + name + " has no sorry to replace");
                 if (sorries.size() > 1)
                     return fail("theorem " + name + " has " + std::to_string(sorries.size()) +
@@ -221,19 +232,19 @@ std::optional<LeanTarget> find_lean_target(const fs::path& file, const std::stri
                 int depth = 0;
                 std::size_t assign = std::string::npos;
                 for (auto i = p + name.size(); i + 1 < end; ++i) {
-                    char c = m[i];
+                    char c = masked.at(i);
                     if (c == '(' || c == '[' || c == '{') {
                         ++depth;
                     } else if (c == ')' || c == ']' || c == '}') {
                         --depth;
-                    } else if (depth == 0 && c == ':' && m[i + 1] == '=') {
+                    } else if (depth == 0 && c == ':' && masked.at(i + 1) == '=') {
                         assign = i;
                         break;
                     }
                 }
                 if (assign == std::string::npos || assign > sorries[0])
                     return fail("theorem " + name + ": no `:=` before the sorry");
-                auto between = trim(m.substr(assign + 2, sorries[0] - assign - 2));
+                auto between = trim(masked.substr(assign + 2, sorries[0] - assign - 2));
                 if (!between.empty() && between != "by")
                     return fail("theorem " + name +
                                 ": the sorry is not the whole proof (only `:= sorry` / `:= by sorry` are searched)");
@@ -395,9 +406,6 @@ LeanCheck parse_lean_output(const std::string& out, const std::string& theorem, 
     LeanCheck c;
     c.ran = true;
     c.log = out;
-    static const std::regex head(R"(^(?:(?:error|warning|info): )?(.*?):(\d+):(\d+): (error|warning|info): ?(.*)$)");
-    static const std::regex ax(R"('([^']+)' depends on axioms: \[(.*)\])");
-    static const std::regex noax(R"('([^']+)' does not depend on any axioms)");
     std::istringstream in(out);
     std::string line;
     struct Msg {
@@ -407,7 +415,7 @@ LeanCheck parse_lean_output(const std::string& out, const std::string& theorem, 
     while (std::getline(in, line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
         std::smatch mm;
-        if (std::regex_search(line, mm, ax)) {
+        if (std::regex_search(line, mm, std::regex(R"('([^']+)' depends on axioms: \[(.*)\])"))) {
             auto name = mm[1].str();
             if (name == theorem || name.ends_with("." + theorem)) {
                 c.axioms_seen = true;
@@ -420,12 +428,14 @@ LeanCheck parse_lean_output(const std::string& out, const std::string& theorem, 
             }
             continue;
         }
-        if (std::regex_search(line, mm, noax)) {
+        if (std::regex_search(line, mm, std::regex(R"('([^']+)' does not depend on any axioms)"))) {
             auto name = mm[1].str();
             if (name == theorem || name.ends_with("." + theorem)) c.axioms_seen = true;
             continue;
         }
-        if (std::regex_match(line, mm, head)) {
+        if (std::regex_match(
+                line, mm,
+                std::regex(R"(^(?:(?:error|warning|info): )?(.*?):(\d+):(\d+): (error|warning|info): ?(.*)$)"))) {
             msgs.push_back({mm[4].str(), mm[5].str()});
             continue;
         }
@@ -488,7 +498,7 @@ std::vector<LemmaEntry> read_lemmas(const fs::path& path) {
             e.model = j.value("model", "");
             e.audit_id = j.value("audit_id", "");
             if (!e.theorem.empty() && !e.proof.empty()) out.push_back(std::move(e));
-        } catch (...) {
+        } catch (const nlohmann::json::exception&) {
             // A corrupt line is skipped; the library is advisory prompt context only.
         }
     }
@@ -669,7 +679,11 @@ std::shared_ptr<ModelBackend> resolve_prover(const ProveOptions& opt, SpawnedSer
 #else
     auto bin_env = env_or("PRISM_LLAMA_SERVER_BIN");
     std::optional<fs::path> bin = bin_env.empty() ? Config{}.which({"llama-server"}) : std::optional<fs::path>(bin_env);
-    if (!bin || !fs::is_regular_file(*bin, ec)) {
+    if (!bin) {
+        if (why) *why = "prover GGUF " + gguf.string() + " found but no llama-server binary (PATH or PRISM_LLAMA_SERVER_BIN)";
+        return nullptr;
+    }
+    if (!fs::is_regular_file(*bin, ec)) {
         if (why) *why = "prover GGUF " + gguf.string() + " found but no llama-server binary (PATH or PRISM_LLAMA_SERVER_BIN)";
         return nullptr;
     }
@@ -728,13 +742,14 @@ std::vector<LemmaEntry> relevant_lemmas(const std::vector<LemmaEntry>& lib, cons
     std::vector<std::pair<int, std::size_t>> scored;
     for (std::size_t i = 0; i < lib.size(); ++i) {
         int s = 0;
-        for (auto& w : words(lib[i].statement))
+        for (auto& w : words(lib.at(i).statement))
             if (target.count(w)) ++s;
         scored.push_back({-s, lib.size() - i});  // more overlap, then newer first
     }
     std::sort(scored.begin(), scored.end());
     std::vector<LemmaEntry> out;
-    for (std::size_t i = 0; i < scored.size() && out.size() < k; ++i) out.push_back(lib[lib.size() - scored[i].second]);
+    for (std::size_t i = 0; i < scored.size() && out.size() < k; ++i)
+        out.push_back(lib.at(lib.size() - scored.at(i).second));
     return out;
 }
 
@@ -1089,7 +1104,7 @@ int prove_all(const std::vector<std::string>& roots_in, bool list, const ProveOp
     }
     if (targets.empty()) {
         std::string names;
-        for (std::size_t i = 0; i < roots.size(); ++i) names += (i ? ", " : "") + roots[i].string();
+        for (std::size_t i = 0; i < roots.size(); ++i) names += (i ? ", " : "") + roots.at(i).string();
         std::cout << "no theorem with a sorry under " << names << "\n";
         return 0;
     }
@@ -1166,15 +1181,15 @@ int prove_main(int argc, char** argv) {
         return prove_all(pos, list, opt, allow_exec);
     }
     if (list && !pos.empty()) {
-        for (auto& n : lean_sorry_theorems(pos[0])) std::cout << n << "\n";
+        for (auto& n : lean_sorry_theorems(pos.at(0))) std::cout << n << "\n";
         return 0;
     }
     if (pos.size() != 2) {
         std::cerr << "usage: prism prove FILE.lean THEOREM [--write] [--allow-exec] (see --help)\n";
         return 2;
     }
-    opt.file = fs::absolute(pos[0]);
-    opt.theorem = pos[1];
+    opt.file = fs::absolute(pos.at(0));
+    opt.theorem = pos.at(1);
     opt.out = fs::absolute(opt.out);
     auto [r, j] = prove_one(opt, allow_exec);
     if (json_only) {

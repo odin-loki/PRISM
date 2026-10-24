@@ -28,9 +28,9 @@ Finding exec_notrun(std::string stage, std::string_view what,
     f.status = std::string(laws::NOTRUN);
     f.message = exec_message(what);
     f.strength = std::string(laws::STRENGTH_FINDS);
+    extra.emplace("install", EXEC_INSTALL);
+    extra.emplace("reason", EXEC_REASON);
     f.extra = std::move(extra);
-    f.extra["install"] = EXEC_INSTALL;
-    f.extra["reason"] = EXEC_REASON;
     return f;
 }
 
@@ -162,7 +162,7 @@ std::string windows_command_line(const std::vector<std::string>& args) {
     std::string cl;
     for (std::size_t i = 0; i < args.size(); ++i) {
         if (i) cl += ' ';
-        cl += quote_windows_arg(args[i]);
+        cl += quote_windows_arg(args.at(i));
     }
     return cl;
 }
@@ -179,9 +179,9 @@ std::optional<std::string> batch_command_line(const std::vector<std::string>& ar
     for (std::size_t i = 0; i < args.size(); ++i) {
         // cmd.exe expands %var% and (with delayed expansion) !var! even
         // inside quotes, and a quote would end the quoted region.
-        if (args[i].find_first_of("%!\"\r\n") != std::string::npos) return std::nullopt;
+        if (args.at(i).find_first_of("%!\"\r\n") != std::string::npos) return std::nullopt;
         if (i) inner += ' ';
-        inner += quote_windows_arg(args[i], /*force=*/true);
+        inner += quote_windows_arg(args.at(i), /*force=*/true);
     }
     // /s strips exactly the outer quote pair; every argument stays quoted, so
     // & | < > ^ ( ) in a file name are literal to cmd.exe.

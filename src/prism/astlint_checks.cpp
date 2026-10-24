@@ -47,7 +47,8 @@ std::string canon_path(const fs::path& p) {
     return (ec ? p.lexically_normal() : c).generic_string();
 }
 
-std::string record_name(std::string t) {
+std::string record_name(std::string_view tv) {
+    std::string t(tv);
     for (;;) {
         bool again = false;
         for (auto* q : {"const ", "volatile ", "struct ", "class ", "union ", "::"}) {
@@ -67,22 +68,23 @@ std::string record_name(std::string t) {
 
 namespace {
 
-const json& null_json() {
-    static const json j;
-    return j;
-}
+const json kNullJson{};
 
 // ---------------------------------------------------------------- node helpers
 
-const std::string& str_field(const json& n, const char* key) {
-    static const std::string empty;
-    if (!n.is_object()) return empty;
+std::string str_field(const json& n, const char* key) {
+    if (!n.is_object()) return {};
     auto it = n.find(key);
-    if (it == n.end() || !it->is_string()) return empty;
-    return it->get_ref<const std::string&>();
+    if (it == n.end() || !it->is_string()) return {};
+    return it->get<std::string>();
 }
 
-const std::string& kind(const json& n) { return str_field(n, "kind"); }
+std::string kind(const json& n) {
+    if (!n.is_object()) return {};
+    auto it = n.find("kind");
+    if (it == n.end() || !it->is_string()) return {};
+    return it->get<std::string>();
+}
 
 bool flag(const json& n, const char* key) {
     if (!n.is_object()) return false;
@@ -91,9 +93,10 @@ bool flag(const json& n, const char* key) {
 }
 
 const json& inner(const json& n) {
-    if (!n.is_object()) return null_json();
+    if (!n.is_object()) return kNullJson;
     auto it = n.find("inner");
-    return it == n.end() ? null_json() : *it;
+    if (it == n.end()) return kNullJson;
+    return *it;
 }
 
 std::size_t n_children(const json& n) {
@@ -103,26 +106,26 @@ std::size_t n_children(const json& n) {
 
 const json& child(const json& n, std::size_t i) {
     const auto& in = inner(n);
-    if (!in.is_array() || i >= in.size()) return null_json();
-    return in[i];
+    if (!in.is_array() || i >= in.size()) return kNullJson;
+    return in.at(i);
 }
 
 const json& last_child(const json& n) {
     auto c = n_children(n);
-    return c ? child(n, c - 1) : null_json();
+    return c ? child(n, c - 1) : kNullJson;
 }
 
 const json& ref_decl(const json& n) {
-    if (!n.is_object()) return null_json();
+    if (!n.is_object()) return kNullJson;
     auto it = n.find("referencedDecl");
-    return it == n.end() ? null_json() : *it;
+    if (it == n.end()) return kNullJson;
+    return *it;
 }
 
-const std::string& qual_type(const json& n) {
-    static const std::string empty;
-    if (!n.is_object()) return empty;
+std::string qual_type(const json& n) {
+    if (!n.is_object()) return {};
     auto it = n.find("type");
-    if (it == n.end() || !it->is_object()) return empty;
+    if (it == n.end() || !it->is_object()) return {};
     return str_field(*it, "qualType");
 }
 
@@ -140,7 +143,7 @@ std::string type_of(const json& n) {
     return t;
 }
 
-bool is_implicit_wrapper(const std::string& k) {
+bool is_implicit_wrapper(std::string_view k) {
     return k == "ImplicitCastExpr" || k == "ExprWithCleanups" || k == "ConstantExpr" ||
            k == "MaterializeTemporaryExpr" || k == "CXXBindTemporaryExpr" || k == "FullExpr";
 }
@@ -158,7 +161,7 @@ const json& strip_all(const json& n) {
     return *p;
 }
 
-bool is_explicit_cast(const std::string& k) {
+bool is_explicit_cast(std::string_view k) {
     return k == "CStyleCastExpr" || k == "CXXStaticCastExpr" || k == "CXXReinterpretCastExpr" ||
            k == "CXXConstCastExpr" || k == "CXXFunctionalCastExpr";
 }
@@ -178,7 +181,7 @@ const json& strip_parens(const json& n) {
     return *p;
 }
 
-bool one_of(const std::string& s, std::initializer_list<std::string_view> xs) {
+bool one_of(std::string_view s, std::initializer_list<std::string_view> xs) {
     return std::any_of(xs.begin(), xs.end(), [&](std::string_view x) { return s == x; });
 }
 
@@ -229,15 +232,14 @@ int int_width(const std::string& t) {
 
 std::string decl_name(const json& n) {
     const auto& s = strip_all(n);
-    if (kind(s) == "DeclRefExpr") return str_field(ref_decl(s), "name");
-    if (kind(s) == "MemberExpr") return str_field(s, "name");
+    if (kind(s) == "DeclRefExpr") return std::string(str_field(ref_decl(s), "name"));
+    if (kind(s) == "MemberExpr") return std::string(str_field(s, "name"));
     return {};
 }
 
-const std::string& ref_id(const json& n) {
+std::string ref_id(const json& n) {
     const auto& s = strip_all(n);
-    static const std::string empty;
-    if (kind(s) != "DeclRefExpr") return empty;
+    if (kind(s) != "DeclRefExpr") return {};
     return str_field(ref_decl(s), "id");
 }
 
@@ -251,6 +253,7 @@ std::optional<long long> int_value(const json& n0) {
             if (it->is_number_integer()) return it->get<long long>();
             if (it->is_string()) return std::stoll(it->get<std::string>());
         } catch (...) {
+            return std::nullopt;
         }
         return std::nullopt;
     }
@@ -272,7 +275,7 @@ std::optional<double> float_value(const json& n0) {
     if (kind(n) != "FloatingLiteral") return std::nullopt;
     const auto& v = str_field(n, "value");
     try {
-        return std::stod(v);
+        return std::stod(std::string(v));
     } catch (...) {
         return std::nullopt;
     }
@@ -303,17 +306,17 @@ std::optional<std::string> string_lit(const json& n0) {
     const auto& n = strip_all(n0);
     if (kind(n) != "StringLiteral") return std::nullopt;
     if (auto it = n.find("str"); it != n.end() && it->is_string()) return it->get<std::string>();
-    std::string v = str_field(n, "value");
+    std::string v(str_field(n, "value"));
     if (v.size() < 2 || v.front() != '"' || v.back() != '"') return std::nullopt;  // L"..", u8"..": skip
     std::string out;
     for (std::size_t i = 1; i + 1 < v.size(); ++i) {
-        char c = v[i];
+        char c = v.at(i);
         if (c != '\\') {
             out += c;
             continue;
         }
         if (++i + 1 > v.size()) break;
-        char e = v[i];
+        char e = v.at(i);
         switch (e) {
             case 'n': out += '\n'; break;
             case 't': out += '\t'; break;
@@ -327,8 +330,8 @@ std::optional<std::string> string_lit(const json& n0) {
             case '6':
             case '7': {
                 int val = 0, cnt = 0;
-                while (cnt < 3 && i + 1 < v.size() && v[i] >= '0' && v[i] <= '7') {
-                    val = val * 8 + (v[i] - '0');
+                while (cnt < 3 && i + 1 < v.size() && v.at(i) >= '0' && v.at(i) <= '7') {
+                    val = val * 8 + (v.at(i) - '0');
                     ++i;
                     ++cnt;
                 }
@@ -338,10 +341,10 @@ std::optional<std::string> string_lit(const json& n0) {
             }
             case 'x': {
                 int val = 0;
-                while (i + 2 < v.size() && std::isxdigit(static_cast<unsigned char>(v[i + 1]))) {
+                while (i + 2 < v.size() && std::isxdigit(static_cast<unsigned char>(v.at(i + 1)))) {
                     ++i;
-                    val = val * 16 + (std::isdigit(static_cast<unsigned char>(v[i])) ? v[i] - '0'
-                                                                                      : (std::tolower(v[i]) - 'a' + 10));
+                    val = val * 16 + (std::isdigit(static_cast<unsigned char>(v.at(i))) ? v.at(i) - '0'
+                                                                                          : (std::tolower(v.at(i)) - 'a' + 10));
                 }
                 out += static_cast<char>(val);
                 break;
@@ -353,21 +356,21 @@ std::optional<std::string> string_lit(const json& n0) {
 }
 
 // Result type of a function type spelling ("const int &(int)" -> "const int &").
-std::string result_type(const std::string& fnt) {
-    if (auto arrow = fnt.find(") -> "); arrow != std::string::npos) return fnt.substr(arrow + 5);
+std::string result_type(std::string_view fnt) {
+    if (auto arrow = fnt.find(") -> "); arrow != std::string_view::npos) return std::string(fnt.substr(arrow + 5));
     auto p = fnt.find('(');
-    if (p == std::string::npos) return {};
-    std::string r = fnt.substr(0, p);
+    if (p == std::string_view::npos) return {};
+    std::string r(fnt.substr(0, p));
     while (!r.empty() && r.back() == ' ') r.pop_back();
     return r;
 }
 
-bool fn_noexcept(const std::string& fnt) {
+bool fn_noexcept(std::string_view fnt) {
     auto p = fnt.rfind(')');
-    if (p == std::string::npos) return false;
+    if (p == std::string_view::npos) return false;
     auto tail = fnt.substr(p);
-    if (tail.find("noexcept(false)") != std::string::npos) return false;
-    if (tail.find("noexcept") != std::string::npos) return true;
+    if (tail.find("noexcept(false)") != std::string_view::npos) return false;
+    if (tail.find("noexcept") != std::string_view::npos) return true;
     // "void () throw()": the empty dynamic exception specification.
     return fnt.ends_with("throw()");
 }
@@ -390,7 +393,15 @@ Pos loc_pos(const json& l) {
     auto f = l.find("_f");
     auto o = l.find("offset");
     if (f == l.end() || o == l.end() || !f->is_string() || !o->is_number_integer()) return {};
-    return {&f->get_ref<const std::string&>(), o->get<long long>(), false};
+    Pos p;
+    p.offset = o->get<long long>();
+    p.macro = false;
+    if (f->is_string()) {
+        thread_local std::string loc_file;
+        loc_file = f->get<std::string>();
+        p.file = &loc_file;
+    }
+    return p;
 }
 
 Pos begin_of(const json& n) {
@@ -422,7 +433,7 @@ bool in_macro(const json& n) { return begin_of(n).macro; }
 
 // ---------------------------------------------------------------- dependent code
 
-bool dependent_kind(const std::string& k) {
+bool dependent_kind(std::string_view k) {
     return k == "CXXDependentScopeMemberExpr" || k == "UnresolvedLookupExpr" || k == "UnresolvedMemberExpr" ||
            k == "CXXUnresolvedConstructExpr" || k == "DependentScopeDeclRefExpr" || k == "ParenListExpr" ||
            k == "PackExpansionExpr" || k == "SizeOfPackExpr" || k == "CXXFoldExpr" ||
@@ -431,9 +442,9 @@ bool dependent_kind(const std::string& k) {
 
 bool has_word(const std::string& s, const std::string& w) {
     for (auto p = s.find(w); p != std::string::npos; p = s.find(w, p + 1)) {
-        bool l = p == 0 || !(std::isalnum(static_cast<unsigned char>(s[p - 1])) || s[p - 1] == '_');
+        bool l = p == 0 || !(std::isalnum(static_cast<unsigned char>(s.at(p - 1))) || s.at(p - 1) == '_');
         auto e = p + w.size();
-        bool r = e >= s.size() || !(std::isalnum(static_cast<unsigned char>(s[e])) || s[e] == '_');
+        bool r = e >= s.size() || !(std::isalnum(static_cast<unsigned char>(s.at(e))) || s.at(e) == '_');
         if (l && r) return true;
     }
     return false;
@@ -448,7 +459,7 @@ bool dependent_type(const json& n, const std::vector<std::string>& params) {
         if (t.find("dependent type") != std::string::npos || t.find("type-parameter-") != std::string::npos)
             return true;
         for (auto& p : params)
-            if (has_word(t, p)) return true;
+            if (has_word(std::string(t), p)) return true;
     }
     return false;
 }
@@ -554,8 +565,9 @@ struct Ctx {
         std::vector<Finding> tmp;
         lint_add(tmp, f->rel, fn.empty() ? std::nullopt : std::optional<std::string>(fn), line, cls, msg,
                  f->lines);
-        tmp[0].extra["engine"] = std::string(ENGINE);
-        out.push_back(std::move(tmp[0]));
+        if (tmp.empty()) return;
+        tmp.front().extra["engine"] = std::string(ENGINE);
+        out.push_back(std::move(tmp.front()));
     }
 
     const DeclFacts* facts(const std::string& id) const {
@@ -573,10 +585,10 @@ void collect_enums(const json& n, Ctx& cx) {
         return;
     }
     if (kind(n) == "EnumDecl") {
-        const auto& id = str_field(n, "id");
+        const std::string id = std::string(str_field(n, "id"));
         if (cx.enums.contains(id)) return;
         EnumInfo info;
-        info.name = str_field(n, "name");
+        info.name = std::string(str_field(n, "name"));
         long long next = 0;
         for (auto& c : inner(n)) {
             if (kind(c) != "EnumConstantDecl") continue;
@@ -588,7 +600,7 @@ void collect_enums(const json& n, Ctx& cx) {
                 const auto& val = str_field(init, "value");
                 if (kind(init) == "ConstantExpr" && !val.empty()) {
                     try {
-                        v = std::stoll(val);
+                        v = std::stoll(std::string(val));
                     } catch (...) {
                         info.values_known = false;
                     }
@@ -596,9 +608,9 @@ void collect_enums(const json& n, Ctx& cx) {
                     info.values_known = false;
                 }
             }
-            info.consts.emplace_back(str_field(c, "name"), v);
-            cx.enum_of[str_field(c, "id")] = id;
-            cx.const_info[str_field(c, "id")] = {str_field(c, "name"), v};
+            info.consts.emplace_back(std::string(str_field(c, "name")), v);
+            cx.enum_of[std::string(str_field(c, "id"))] = id;
+            cx.const_info[std::string(str_field(c, "id"))] = {std::string(str_field(c, "name")), v};
             next = v + 1;
         }
         if (!id.empty()) cx.enums[id] = std::move(info);
@@ -614,7 +626,7 @@ void collect_defined(const json& n, Ctx& cx) {
     }
     if (kind(n) == "FunctionDecl" && !flag(n, "isImplicit")) {
         for (auto& c : inner(n))
-            if (kind(c) == "CompoundStmt") cx.defined.insert(str_field(n, "name"));
+            if (kind(c) == "CompoundStmt") cx.defined.insert(std::string(str_field(n, "name")));
         return;
     }
     if (one_of(kind(n), {"NamespaceDecl", "LinkageSpecDecl", "ExportDecl"}))
@@ -638,21 +650,22 @@ void collect_facts(const json& n, Ctx& cx, const std::string& scope) {
             f.is_virtual = flag(n, "virtual");
             // "The project's own function": defined (with a body) in a checked
             // file. A bare prototype of a libc name is still the libc function.
-            f.user = cx.defined.contains(str_field(n, "name")) && k == "FunctionDecl";
+            f.user = cx.defined.contains(std::string(str_field(n, "name"))) && k == "FunctionDecl";
             for (auto& c : inner(n)) {
                 const auto& ck = kind(c);
                 if (ck == "WarnUnusedResultAttr") f.nodiscard = true;
                 if (one_of(ck, {"NoReturnAttr", "CXX11NoReturnAttr", "C11NoReturnAttr"})) f.noreturn = true;
             }
-            auto rt = result_type(qual_type(n));
+            auto rt = result_type(std::string(qual_type(n)));
             f.result = rt.ends_with("&&") ? "xvalue" : rt.ends_with("&") ? "lvalue" : "prvalue";
             cx.unit.facts[id] = f;
         }
     }
     std::string sub = scope;
-    if (k == "NamespaceDecl" && !str_field(n, "name").empty()) sub = scope + str_field(n, "name") + "::";
+    if (k == "NamespaceDecl" && !str_field(n, "name").empty())
+        sub = scope + std::string(str_field(n, "name")) + "::";
     if ((k == "CXXRecordDecl" || k == "RecordDecl") && !flag(n, "isImplicit") && n.contains("inner")) {
-        auto name = scope + str_field(n, "name");
+        auto name = scope + std::string(str_field(n, "name"));
         if (!str_field(n, "name").empty() && !cx.unit.records.contains(name)) {
             RecordFacts r;
             if (auto dd = n.find("definitionData"); dd != n.end()) r.polymorphic = flag(*dd, "isPolymorphic");
@@ -1081,9 +1094,11 @@ struct Checker {
                     found = true;
             }
             // strncpy(dst, src, sizeof dst - 1) style helpers that terminate: snprintf / strlcpy after it.
-            for (auto& c : inner(n)) rec(c);
+            for (auto& c : inner(n)) {
+                if (rec) rec(c);
+            }
         };
-        if (fn.node) rec(*fn.node);
+        if (fn.node && rec) rec(*fn.node);
         return found;
     }
 
@@ -1108,7 +1123,7 @@ struct Checker {
         auto it = kFmt.find(name);
         if (it == kFmt.end() || static_cast<std::size_t>(it->second.fmt) >= args.size()) return;
         const auto& f = it->second;
-        const json& farg = *args[static_cast<std::size_t>(f.fmt)];
+        const json& farg = *args.at(static_cast<std::size_t>(f.fmt));
         auto lit = string_lit(farg);
         const auto& core = strip_casts(farg);
         const std::size_t given = args.size() - static_cast<std::size_t>(f.fmt) - 1;
@@ -1210,10 +1225,12 @@ struct Checker {
         }
         if (f.scan) return;
         for (std::size_t i = 0; i < convs.size(); ++i) {
-            const json& a = *args[static_cast<std::size_t>(f.fmt) + 1 + i];
+            const std::size_t arg_i = static_cast<std::size_t>(f.fmt) + 1 + i;
+            if (arg_i >= args.size()) continue;
+            const json& a = *args.at(arg_i);
             auto t = type_of(strip_implicit(a));
             if (t.empty() || dep(a)) continue;
-            const char cv = convs[i].c;
+            const char cv = convs.at(i).c;
             const bool ptr = is_pointer_type(t) || t.find('[') != std::string::npos;
             const bool integ = is_int_type(t) || t == "bool" || t == "_Bool" || t.starts_with("enum ");
             const bool flt = is_floating(t);
@@ -1226,14 +1243,15 @@ struct Checker {
             // promoted), %ld/%lld/%zd/%jd a 64-bit integer.
             if (want.empty() && integ && std::strchr("diouxX", cv)) {
                 const int w = int_width(t);
-                const auto& len = convs[i].len;
+                const auto& len = convs.at(i).len;
                 const bool wide = one_of(len, {"l", "ll", "q", "j", "z", "t"});
                 if (w == 64 && !wide && len != "L") want = "an int (use %l" + std::string(1, cv) + ")";
                 else if (w > 0 && w <= 32 && wide) want = "a 64-bit integer";
             }
             if (want.empty()) continue;
             add(a, "FMT-ARGS",
-                name + "() conversion %" + convs[i].len + std::string(1, cv) + " expects " + want + " but argument " +
+                name + "() conversion %" + convs.at(i).len + std::string(1, cv) + " expects " + want +
+                    " but argument " +
                     std::to_string(i + 1) + " has type " + t);
             return;
         }
@@ -1432,7 +1450,7 @@ struct Checker {
         return true;
     }
 
-    void delete_expr(const json& d) {
+    void check_cxx_delete(const json& d) {
         if (n_children(d) == 0) return;
         const auto& op = strip_all(child(d, 0));
         if (kind(op) == "CXXThisExpr") {
@@ -1442,7 +1460,7 @@ struct Checker {
         auto name = record_name(type_of(op));
         if (name.empty()) {
             // Dump path: records are known by their spelled name.
-            name = record_name(qual_type(op));
+            name = record_name(std::string(qual_type(op)));
         }
         bool poly = false, vdtor = false;
         if (!polymorphic_no_vdtor(name, 0, poly, vdtor)) {
@@ -1462,11 +1480,13 @@ struct Checker {
         if (kind(v) != "VarDecl") return;
         auto qt = qual_type(v);
         auto t = type_of(v);
-        if (qt.find('&') != std::string::npos || is_pointer_type(t) || is_builtin_arith(t) || t.starts_with("enum "))
+        if (qt.find('&') != std::string_view::npos || is_pointer_type(t) || is_builtin_arith(t) ||
+            t.starts_with("enum "))
             return;
         if (in_macro(v) || dep(v)) return;
         add(v, "CXX-CATCH-BY-VALUE",
-            "exception caught by value (" + qt + "): a derived exception is sliced and copied (catch by const reference)");
+            "exception caught by value (" + std::string(qt) +
+                "): a derived exception is sliced and copied (catch by const reference)");
     }
 };
 
@@ -1562,7 +1582,7 @@ struct Flow {
             std::size_t i = parents.size();
             const json* below = &ref;
             while (i > 0) {
-                const json& p = *parents[i - 1];
+                const json& p = *parents.at(i - 1);
                 const auto& pk = kind(p);
                 if (is_implicit_wrapper(pk) || pk == "ParenExpr") {
                     below = &p;
@@ -2119,7 +2139,7 @@ struct Walker {
             if (!groups.empty()) groups.back().stmts.push_back(p);
         }
         for (std::size_t g = 0; g + 1 < groups.size(); ++g) {
-            auto& gr = groups[g];
+            auto& gr = groups.at(g);
             std::vector<const json*> real;
             for (auto* s : gr.stmts)
                 if (kind(*s) != "NullStmt") real.push_back(s);
@@ -2130,13 +2150,13 @@ struct Walker {
             if (kind(ls) == "NullStmt" && gr.stmts.size() == 1) continue;
             // An annotation comment between the last statement and the next label.
             auto b = begin_of(ls);
-            auto e = begin_of(*groups[g + 1].label);
+            if (g + 1 >= groups.size()) continue;
+            auto e = begin_of(*groups.at(g + 1).label);
             if (b.macro || e.macro) continue;
             auto t = std::string(cx.text(b, e));
             std::string low;
             for (char ch : t) low += static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-            static const std::regex ann(R"(falls?[ \t-]*thr(ough|u)|no\s*break)");
-            if (std::regex_search(low, ann)) continue;
+            if (std::regex_search(low, std::regex(R"(falls?[ \t-]*thr(ough|u)|no\s*break)"))) continue;
             // Reported at the arm's first statement, as the regex lint does
             // (one row per arm, on the line after its label).
             const json& at = begin_of(*real.front()).macro ? ls : *real.front();
@@ -2312,8 +2332,9 @@ struct Walker {
                 o = &child(*o, 0);
             if (kind(*o) == "DeclRefExpr" && str_field(ref_decl(*o), "id") == str_field(*catch_var, "id")) {
                 ck.add(t, "CXX-THROW-COPY",
-                       "throw " + str_field(*catch_var, "name") + "; throws a copy of the caught exception (sliced to " +
-                           qual_type(*catch_var) + "): use throw; to rethrow it");
+                       "throw " + std::string(str_field(*catch_var, "name")) +
+                           "; throws a copy of the caught exception (sliced to " + std::string(qual_type(*catch_var)) +
+                           "): use throw; to rethrow it");
             }
         }
         if (try_depth > 0) return;
@@ -2395,7 +2416,9 @@ struct Walker {
                 widest = std::max(widest, int_width(type_of(xs)));
                 return;
             }
-            for (auto& c : inner(xs)) leaves(c);
+            for (auto& c : inner(xs)) {
+                if (leaves) leaves(c);
+            }
         };
         leaves(src);
         if (widest <= wt) return;
@@ -2432,17 +2455,19 @@ struct Walker {
     // assigned value (not a statement, a comma's left side or a for-increment).
     static bool assign_value_used(const std::vector<const json*>& parents) {
         std::size_t i = parents.size() - 1;  // the `=`
-        const json* cur = parents[i];
+        const json* cur = parents.at(i);
         while (i > 0) {
-            const json* up = parents[i - 1];
+            const json* up = parents.at(i - 1);
             const auto& uk = kind(*up);
             if (uk == "ExprWithCleanups" || uk == "ParenExpr") {
                 cur = up;
                 --i;
                 continue;
             }
-            if (uk == "BinaryOperator" && str_field(*up, "opcode") == ",")
-                return &child(*up, 0) != cur && assign_value_used_at(parents, i - 1);
+            if (uk == "BinaryOperator" && str_field(*up, "opcode") == ",") {
+                const json* lhs = &child(*up, 0);
+                return lhs != cur && assign_value_used_at(parents, i - 1);
+            }
             std::size_t at = 0;
             for (std::size_t j = 0; j < n_children(*up); ++j)
                 if (&child(*up, j) == cur) at = j;
@@ -2538,7 +2563,7 @@ struct Walker {
         } else if (k == "UnaryExprOrTypeTraitExpr") {
             ck.sizeof_array_param(n);
         } else if (k == "CXXDeleteExpr") {
-            if (!lambda_depth) ck.delete_expr(n);
+            if (!lambda_depth) ck.check_cxx_delete(n);
         } else if (k == "CXXThrowExpr") {
             throw_expr(n);
         } else if (k == "ReturnStmt") {
@@ -2648,10 +2673,10 @@ struct Walker {
 void analyze_function(const json& f, Ctx& cx, const std::vector<std::string>& tparams) {
     Fn fn;
     fn.node = &f;
-    fn.name = str_field(f, "name");
-    fn.kind = kind(f);
-    fn.ret = result_type(qual_type(f));
-    fn.noexcept_ = fn_noexcept(qual_type(f)) || fn.kind == "CXXDestructorDecl";
+    fn.name = std::string(str_field(f, "name"));
+    fn.kind = std::string(kind(f));
+    fn.ret = result_type(std::string(qual_type(f)));
+    fn.noexcept_ = fn_noexcept(std::string(qual_type(f))) || fn.kind == "CXXDestructorDecl";
     fn.tparams = tparams;
     const json* body = nullptr;
     Walker w(cx, fn);

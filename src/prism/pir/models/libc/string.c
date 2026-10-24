@@ -2,6 +2,11 @@
  * Contracts are the C standard's; PIR checks them through the memory model. */
 #include "prism_model.h"
 
+static unsigned char uc(const char *s, size_t i) {
+    const unsigned char *p = (const unsigned char *)s;
+    return p[i];
+}
+
 /* requires: s points to a NUL-terminated string (readable up to the NUL) */
 size_t strlen(const char *s) {
     size_t n = 0;
@@ -33,6 +38,7 @@ char *strncpy(char *d, const char *s, size_t n) {
 
 /* requires: d and s strings; d writable for strlen(d)+strlen(s)+1 bytes */
 char *strcat(char *d, const char *s) {
+    __prism_check(d != 0, "STR-NULL-ARG", "strlen() called with unchecked pointer parameter d");
     size_t k = strlen(d);
     size_t i = 0;
     while ((d[k + i] = s[i]) != 0) i++;
@@ -40,6 +46,7 @@ char *strcat(char *d, const char *s) {
 }
 
 char *strncat(char *d, const char *s, size_t n) {
+    __prism_check(d != 0, "STR-NULL-ARG", "strlen() called with unchecked pointer parameter d");
     size_t k = strlen(d);
     size_t i = 0;
     for (; i < n && s[i]; i++) d[k + i] = s[i];
@@ -48,32 +55,47 @@ char *strncat(char *d, const char *s, size_t n) {
 }
 
 int strcmp(const char *a, const char *b) {
-    size_t i = 0;
-    while (a[i] && a[i] == b[i]) i++;
-    return (int)(unsigned char)a[i] - (int)(unsigned char)b[i];
+    while (*a && *a == *b) {
+        ++a;
+        ++b;
+    }
+    if (*a != *b) return *a > *b ? 1 : -1;
+    return 0;
 }
 
 int strncmp(const char *a, const char *b, size_t n) {
-    size_t i = 0;
     if (n == 0) return 0;
-    while (i + 1 < n && a[i] && a[i] == b[i]) i++;
-    return (int)(unsigned char)a[i] - (int)(unsigned char)b[i];
+    size_t i = 0;
+    while (i + 1 < n) {
+        const unsigned char ca = uc(a, i);
+        const unsigned char cb = uc(b, i);
+        if (!ca || ca != cb) break;
+        ++i;
+    }
+    {
+        const unsigned char ca = uc(a, i);
+        const unsigned char cb = uc(b, i);
+        if (ca != cb) return ca > cb ? 1 : -1;
+    }
+    return 0;
 }
 
 char *strchr(const char *s, int c) {
-    size_t i = 0;
-    for (;; i++) {
-        if (s[i] == (char)c) return (char *)s + i;
-        if (!s[i]) return 0;
+    const unsigned char *us = (const unsigned char *)s;
+    const unsigned char want = (unsigned char)(c & 0xff);
+    for (size_t i = 0;; ++i) {
+        if (us[i] == want) return (char *)(s + i);
+        if (!us[i]) return 0;
     }
 }
 
 char *strrchr(const char *s, int c) {
     const char *r = 0;
-    size_t i = 0;
-    for (;; i++) {
-        if (s[i] == (char)c) r = s + i;
-        if (!s[i]) return (char *)r;
+    const unsigned char *us = (const unsigned char *)s;
+    const unsigned char want = (unsigned char)(c & 0xff);
+    for (size_t i = 0;; ++i) {
+        if (us[i] == want) r = s + i;
+        if (!us[i]) return (char *)r;
     }
 }
 
@@ -103,14 +125,16 @@ int memcmp(const void *a, const void *b, size_t n) {
 
 void *memchr(const void *s, int c, size_t n) {
     const unsigned char *x = (const unsigned char *)s;
+    const unsigned char want = (unsigned char)(c & 0xff);
     for (size_t i = 0; i < n; i++)
-        if (x[i] == (unsigned char)c) return (void *)(x + i);
+        if (x[i] == want) return (void *)(x + i);
     return 0;
 }
 
 void *malloc(size_t n);
 
 char *strdup(const char *s) {
+    __prism_check(s != 0, "STR-NULL-ARG", "strlen() called with unchecked pointer parameter s");
     size_t n = strlen(s);
     char *p = (char *)malloc(n + 1);
     if (!p) return 0;

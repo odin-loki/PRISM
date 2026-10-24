@@ -75,7 +75,8 @@ std::vector<Skipped> skipped_dirs(const fs::path& root,
                 stack.push_back(it->path());
             }
         }
-        ec.clear();
+        if (ec) break;
+        ec = {};
     }
     std::sort(out.begin(), out.end(), [](const Skipped& a, const Skipped& b) { return a.dir < b.dir; });
     return out;

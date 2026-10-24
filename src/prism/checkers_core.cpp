@@ -123,7 +123,7 @@ std::string join_range(const std::vector<std::string>& v, std::size_t a, std::si
     if (b > v.size()) b = v.size();
     for (std::size_t i = a; i < b; ++i) {
         if (i > a) s.push_back('\n');
-        s += v[i];
+        s += v.at(i);
     }
     return s;
 }
@@ -396,7 +396,7 @@ std::string blank_char_literals_full(std::string text) {
     if (text.find('\'') == std::string::npos) return text;
     static Regex lit(R"('(?:\\.|[^'\\\n])*')");
     for (auto& m : lit.finditer(text))
-        for (int k = m.spans[0].first; k < m.spans[0].second; ++k) text[static_cast<std::size_t>(k)] = ' ';
+        for (int k = m.spans.at(0).first; k < m.spans[0].second; ++k) text.at(static_cast<std::size_t>(k)) = ' ';
     return text;
 }
 
@@ -454,9 +454,9 @@ std::vector<ExitBlock> exit_blocks(const std::vector<std::string>& lines) {
             std::optional<std::string> last = !strip(tail).empty() ? std::optional<std::string>(tail) : frame.last;
             paren = frame.saved_paren;
             stmt_start = pos + 1;
-            for (auto k : frame.waiting) out[k].merge_line = line;
+            for (auto k : frame.waiting) out.at(k).merge_line = line;
             if (!stack.empty()) stack.back().last = std::string();
-            if (!last || last->empty()) continue;
+            if (!last.has_value() || last->empty()) continue;
             auto s = strip_labels(strip(*last));
             auto em = exit_stmt.search_match(s);
             if (!em || em->spans[0].first != 0) continue;
@@ -551,9 +551,10 @@ Regex null_guard_re(std::string_view var) {
 // line, an unbraced `if` on the line before, or the head of the innermost
 // block holding it.
 bool null_guarded_return(const Regex& pat, const std::vector<std::string>& body_lines, int r) {
-    if (pat.search(body_lines[static_cast<std::size_t>(r)])) return true;
+    if (r < 0 || static_cast<std::size_t>(r) >= body_lines.size()) return false;
+    if (pat.search(body_lines.at(static_cast<std::size_t>(r)))) return true;
     if (r > 0) {
-        auto prev = body_lines[static_cast<std::size_t>(r - 1)];
+        auto prev = body_lines.at(static_cast<std::size_t>(r - 1));
         while (!prev.empty() && std::isspace(static_cast<unsigned char>(prev.back()))) prev.pop_back();
         if (!prev.empty() && prev.back() != ';' && prev.back() != '{' && prev.back() != '}' &&
             pat.search(prev))
@@ -561,16 +562,16 @@ bool null_guarded_return(const Regex& pat, const std::vector<std::string>& body_
     }
     int depth = 0;
     for (int j = r - 1; j >= 0; --j) {
-        auto& ln = body_lines[static_cast<std::size_t>(j)];
+        auto& ln = body_lines.at(static_cast<std::size_t>(j));
         for (int k = static_cast<int>(ln.size()) - 1; k >= 0; --k) {
-            char c = ln[static_cast<std::size_t>(k)];
+            char c = ln.at(static_cast<std::size_t>(k));
             if (c == '}') {
                 ++depth;
             } else if (c == '{') {
                 --depth;
                 if (depth < 0) {
                     auto head = ln.substr(0, static_cast<std::size_t>(k));
-                    if (strip(head).empty() && j > 0) head = body_lines[static_cast<std::size_t>(j - 1)];
+                    if (strip(head).empty() && j > 0) head = body_lines.at(static_cast<std::size_t>(j - 1));
                     return pat.search(head);
                 }
             }
@@ -860,12 +861,12 @@ std::optional<int> first_ptr_use(std::string_view var, const std::vector<std::st
     for (int j = start + 1; j < static_cast<int>(chunk.size()); ++j) {
         std::string stripped;
         std::size_t off = 0;
-        for (auto& m : sz.finditer(chunk[static_cast<std::size_t>(j)])) {
+        for (auto& m : sz.finditer(chunk.at(static_cast<std::size_t>(j)))) {
             auto a = static_cast<std::size_t>(std::max(0, m.spans[0].first));
-            stripped.append(chunk[static_cast<std::size_t>(j)], off, a - off);
+            stripped.append(chunk.at(static_cast<std::size_t>(j)), off, a - off);
             off = static_cast<std::size_t>(std::max(0, m.spans[0].second));
         }
-        stripped.append(chunk[static_cast<std::size_t>(j)], off, std::string::npos);
+        stripped.append(chunk.at(static_cast<std::size_t>(j)), off, std::string::npos);
         if (arrow.search(stripped) || star.search(stripped) || idx.search(stripped)) return j;
     }
     return std::nullopt;
@@ -881,13 +882,13 @@ NullMacros null_check_macros(const std::vector<std::string>& lines) {
     static Regex def(R"(^\s*#\s*define\s+([A-Za-z_]\w*)\(([^)]*)\)(.*)$)");
     NullMacros out;
     for (std::size_t i = 0; i < lines.size(); ++i) {
-        if (lines[i].find("define") == std::string::npos) continue;
-        auto m = def.search_match(lines[i]);
+        if (lines.at(i).find("define") == std::string::npos) continue;
+        auto m = def.search_match(lines.at(i));
         if (!m) continue;
         auto body = m->group(3);
         for (std::size_t j = i + 1; !body.empty() && body.back() == '\\' && j < lines.size(); ++j) {
             body.pop_back();
-            body += " " + lines[j];
+            body += " " + lines.at(j);
         }
         auto params = split_call_args(m->group(2));
         for (std::size_t k = 0; k < params.size(); ++k) {
@@ -928,7 +929,7 @@ std::optional<std::pair<std::string, int>> unchecked_alloc_site(const std::vecto
                                                                 std::size_t match_end,
                                                                 const NullMacros& macros) {
     var = strip_ws(var);
-    auto& line = chunk[static_cast<std::size_t>(i)];
+    auto& line = chunk.at(static_cast<std::size_t>(i));
     if (fn == "realloc") {
         Regex argm("realloc\\s*\\(\\s*(?P<p>" + re_escape(var) + ")\\s*,");
         if (argm.search(line)) return std::nullopt;
@@ -953,7 +954,7 @@ std::optional<std::pair<std::string, int>> unchecked_alloc_site(const std::vecto
     std::string stmt;
     for (int x = i; x < i + 4 && x < static_cast<int>(chunk.size()); ++x) {
         if (!stmt.empty()) stmt.push_back(' ');
-        stmt += strip(chunk[static_cast<std::size_t>(x)]);
+        stmt += strip(chunk.at(static_cast<std::size_t>(x)));
     }
     if (require_nowait && stmt.find("M_NOWAIT") == std::string::npos) return std::nullopt;
     return std::pair{var, *use_j};
@@ -1164,7 +1165,10 @@ bool bitop_on_comparison(std::string_view s) {
                     break;
                 }
             }
-            if (close == b - 1) return has_cmp(a + 1, b - 1);
+            if (close == b - 1) {
+                if (!has_cmp) return false;
+                return has_cmp(a + 1, b - 1);
+            }
         }
         int depth = 0;
         for (int i = a; i < b; ++i) {
@@ -1263,7 +1267,7 @@ std::optional<std::pair<std::string, std::string>> first_two_locks(std::string_v
             if (seen.contains(name)) continue;
             seen.insert(name);
             seq.push_back(name);
-            if (seq.size() >= 2) return std::pair{seq[0], seq[1]};
+            if (seq.size() >= 2) return std::pair{seq.at(0), seq.at(1)};
         }
     }
     return std::nullopt;
@@ -1335,13 +1339,13 @@ bool param_guarded(std::string_view name, const std::vector<std::string>& body_l
     for (std::size_t i = 0; i < body_lines.size(); ++i) {
         bool hit = false;
         for (auto& p : tests)
-            if (p.search(body_lines[i])) {
+            if (p.search(body_lines.at(i))) {
                 hit = true;
                 break;
             }
         if (!hit) continue;
-        auto nxt = i + 1 < body_lines.size() ? body_lines[i + 1] : std::string();
-        if (ret.search(body_lines[i]) || ret.search(nxt)) return true;
+        auto nxt = i + 1 < body_lines.size() ? body_lines.at(i + 1) : std::string();
+        if (ret.search(body_lines.at(i)) || ret.search(nxt)) return true;
     }
     return false;
 }
@@ -1368,7 +1372,7 @@ int first_subscript_line(const FunctionInfo& fn, std::string_view name,
     auto b0 = std::min(static_cast<std::size_t>(std::max(end, 0)), lines.size());
     int i = start;
     for (auto p = a0; p < b0; ++p, ++i) {
-        if (a.search(lines[p]) || b.search(lines[p])) return i;
+        if (a.search(lines.at(p)) || b.search(lines.at(p))) return i;
     }
     return start;
 }
@@ -1380,7 +1384,7 @@ bool explicit_nul_store_for(std::string_view var, std::string_view text) {
 
 bool chroot_followed_by_chdir(const std::vector<std::string>& body_lines, int chroot_idx) {
     for (int i = chroot_idx + 1; i < static_cast<int>(body_lines.size()); ++i)
-        if (find_call_args(body_lines[static_cast<std::size_t>(i)], "chdir")) return true;
+        if (find_call_args(body_lines.at(static_cast<std::size_t>(i)), "chdir")) return true;
     return false;
 }
 
@@ -1427,7 +1431,7 @@ bool getenv_only_returned(std::string_view var, const std::vector<std::string>& 
     Regex retv("\\breturn\\s+" + v + "\\s*;");
     bool saw = false;
     for (int j = assign_i + 1; j < static_cast<int>(chunk.size()); ++j) {
-        auto& ln = chunk[static_cast<std::size_t>(j)];
+        auto& ln = chunk.at(static_cast<std::size_t>(j));
         if (getenv_uses(var, ln)) return false;
         if (retb.search(ln)) {
             if (retv.search(ln)) saw = true;
@@ -1457,7 +1461,7 @@ bool strdup_only_returned(std::string_view var, const std::vector<std::string>& 
     Regex retv("\\breturn\\s+" + v + "\\s*;");
     bool saw = false;
     for (int j = assign_i + 1; j < static_cast<int>(chunk.size()); ++j) {
-        auto& ln = chunk[static_cast<std::size_t>(j)];
+        auto& ln = chunk.at(static_cast<std::size_t>(j));
         if (getenv_uses(var, ln)) return false;
         if (retb.search(ln)) {
             if (retv.search(ln)) saw = true;
@@ -1671,8 +1675,8 @@ std::string comment_preamble(const std::vector<std::string>& lines, int body_sta
                              int max_comments = 3) {
     int i = body_start - 1;
     bool in_block = false;
-    while (i >= 0) {
-        auto& raw = lines[static_cast<std::size_t>(i)];
+    while (i >= 0 && i < static_cast<int>(lines.size())) {
+        auto& raw = lines.at(static_cast<std::size_t>(i));
         auto s = strip(raw);
         if (in_block) {
             if (raw.find("/*@") != std::string::npos || s.starts_with("/*")) in_block = false;
@@ -1915,17 +1919,17 @@ void mem_lifetime(const std::vector<std::string>& lines, std::string_view rel,
         }
         for (int i = 0; i < static_cast<int>(chunk.size()); ++i) {
             if (replay) replay->before(i);
-            auto& ln = chunk[static_cast<std::size_t>(i)];
-            for (auto it = st.uaf.begin(); it != st.uaf.end();) {
-                if (reassigns_var(it->first, ln)) {
-                    st.df.erase(it->first);
-                    st.reported_uaf.erase(it->first);
-                    it = st.uaf.erase(it);
-                } else {
-                    if (has_assignment(it->first, ln)) st.df.erase(it->first);
-                    ++it;
-                }
+            auto& ln = chunk.at(static_cast<std::size_t>(i));
+            std::vector<std::string> reassign;
+            for (auto& [var, _] : st.uaf)
+                if (reassigns_var(var, ln)) reassign.push_back(var);
+            for (auto& var : reassign) {
+                st.df.erase(var);
+                st.reported_uaf.erase(var);
+                st.uaf.erase(var);
             }
+            for (auto& [var, _] : st.uaf)
+                if (has_assignment(var, ln)) st.df.erase(var);
             std::optional<Match> fm;
             if (ln.find("free") != std::string::npos) fm = free_call.search_match(ln);
             for (auto& [var, _] : st.uaf) {
@@ -1963,7 +1967,7 @@ void shift31_realloc(const std::vector<std::string>& lines, std::string_view rel
     static Regex unsigned_w(R"(\bunsigned\b)");
     static Regex uint_cast(R"(\(\s*uint)");
     for (int i = 0; i < static_cast<int>(lines.size()); ++i) {
-        auto& ln = lines[static_cast<std::size_t>(i)];
+        auto& ln = lines.at(static_cast<std::size_t>(i));
         auto fn = func_of_line(funcs, i + 1);
         if (shift31.search(ln) && !unsigned_w.search(ln) && !uint_cast.search(ln) && !oneu.search(ln))
             lint_add(out, rel, fn, i + 1, "INT-SHIFT-UB", "signed 1<<31 is undefined", lines);
@@ -2043,8 +2047,8 @@ void masked_switch(const std::vector<std::string>& lines, std::string_view rel,
         std::unordered_set<std::string> declared;
         int from = std::max(0, line - 80);
         for (int li = from; li < line && li < static_cast<int>(lines.size()); ++li) {
-            auto dm = decl.search_match(lines[static_cast<std::size_t>(li)]);
-            if (dm && decl.match_line(lines[static_cast<std::size_t>(li)]))
+            auto dm = decl.search_match(lines.at(static_cast<std::size_t>(li)));
+            if (dm && decl.match_line(lines.at(static_cast<std::size_t>(li))))
                 declared.insert(dm->group(1));
         }
         std::string used;
@@ -2075,13 +2079,13 @@ std::pair<std::string, int> then_branch(const std::vector<std::string>& lines, i
         auto k = s.find_first_not_of(" \t\r\f\v");
         return k != std::string::npos && s[k] == '{';
     };
-    const auto& cur = lines[static_cast<std::size_t>(i)];
+    const auto& cur = lines.at(static_cast<std::size_t>(i));
     std::string rest = cur.substr(std::min(cur.size(), static_cast<std::size_t>(std::max(0, cond_end))));
     if (!blank(rest) && !starts_brace(rest)) return {rest, i + 1};
     int k = i;
     while (blank(rest) && k + 1 < n) {
         ++k;
-        rest = lines[static_cast<std::size_t>(k)];
+        rest = lines.at(static_cast<std::size_t>(k));
     }
     if (!starts_brace(rest)) return {k > i ? rest : std::string(), k + 1};
     int depth = 0;
@@ -2099,8 +2103,9 @@ std::pair<std::string, int> then_branch(const std::vector<std::string>& lines, i
         }
         buf.push_back('\n');
         if (++line_k >= n) return {buf, line_k};
-        text = lines[static_cast<std::size_t>(line_k)];
+        text = lines.at(static_cast<std::size_t>(line_k));
     }
+    return {buf, line_k};
 }
 
 void null_branch(const std::vector<std::string>& lines, std::string_view rel,
@@ -2109,7 +2114,7 @@ void null_branch(const std::vector<std::string>& lines, std::string_view rel,
         R"(\bif\s*\(\s*(?:(?P<p1>[A-Za-z_]\w*)\s*==\s*(?:NULL|0|nullptr)|!\s*(?P<p2>[A-Za-z_]\w*))\s*\))");
     int i = 0;
     while (i < static_cast<int>(lines.size())) {
-        auto m = null_test.search_match(lines[static_cast<std::size_t>(i)]);
+        auto m = null_test.search_match(lines.at(static_cast<std::size_t>(i)));
         if (!m) {
             ++i;
             continue;
@@ -2139,7 +2144,7 @@ void lock_balance(const std::vector<std::string>& lines, std::string_view rel,
         auto body_lines = split_lines(fn.body);
         std::map<std::pair<std::string, std::string>, std::vector<int>> pairs, unlocks;
         for (int i = 0; i < static_cast<int>(body_lines.size()); ++i) {
-            for (auto& m : call.finditer(body_lines[static_cast<std::size_t>(i)])) {
+            for (auto& m : call.finditer(body_lines.at(static_cast<std::size_t>(i)))) {
                 auto name = m.group(1);
                 auto arg = squeeze_ws(m.group(2));
                 if (unlock_of(name)) pairs[{name, arg}].push_back(i);
@@ -2148,7 +2153,7 @@ void lock_balance(const std::vector<std::string>& lines, std::string_view rel,
         }
         std::vector<int> returns;
         for (int i = 0; i < static_cast<int>(body_lines.size()); ++i)
-            if (ret.match_line(body_lines[static_cast<std::size_t>(i)])) returns.push_back(i);
+            if (ret.match_line(body_lines.at(static_cast<std::size_t>(i)))) returns.push_back(i);
         if (returns.size() < 2) continue;
         for (auto& [key, hits] : pairs) {
             auto u = unlock_of(key.first);
@@ -2162,7 +2167,7 @@ void lock_balance(const std::vector<std::string>& lines, std::string_view rel,
                 if (last_lock > last_un) held_returns.push_back(r);
             }
             if (!held_returns.empty() && held_returns.size() < returns.size()) {
-                int ln = fn.span.first + held_returns[0];
+                int ln = fn.span.first + held_returns.front();
                 lint_add(out, rel, fn.name, ln, "LOCK-IMBALANCE",
                          key.first + " held on " + std::to_string(held_returns.size()) + " of " +
                              std::to_string(returns.size()) + " returns; released on the others",
@@ -2195,7 +2200,7 @@ void lock_double_unlock(const std::vector<std::string>& lines, std::string_view 
         for (int i = 0; i < static_cast<int>(body_lines.size()); ++i) {
             if (replay) replay->before(i);
             bool found = false;
-            for (auto& m : call.finditer(body_lines[static_cast<std::size_t>(i)])) {
+            for (auto& m : call.finditer(body_lines.at(static_cast<std::size_t>(i)))) {
                 auto name = m.group(1);
                 auto arg = squeeze_ws(m.group(2));
                 if (unlk.search(name)) {
@@ -2228,7 +2233,7 @@ void lock_double_lock(const std::vector<std::string>& lines, std::string_view re
         auto body_lines = split_lines(fn.body);
         for (int i = 0; i < static_cast<int>(body_lines.size()); ++i) {
             bool found = false;
-            for (auto& m : call.finditer(body_lines[static_cast<std::size_t>(i)])) {
+            for (auto& m : call.finditer(body_lines.at(static_cast<std::size_t>(i)))) {
                 auto name = m.group(1);
                 auto arg = squeeze_ws(m.group(2));
                 if (unlk.search(name)) {
@@ -2292,7 +2297,7 @@ void div_zero_const(const std::vector<std::string>& lines, std::string_view rel,
     static Regex flt(R"([0-9]\s*[/%]\s*0\.\d)");
     static Regex zdot(R"([/%]\s*0\.)");
     for (int i = 0; i < static_cast<int>(lines.size()); ++i) {
-        auto& ln = lines[static_cast<std::size_t>(i)];
+        auto& ln = lines.at(static_cast<std::size_t>(i));
         if (dz.search(ln) && !flt.search(ln)) {
             if (zdot.search(ln)) continue;
             lint_add(out, rel, func_of_line(funcs, i + 1), i + 1, "INT-DIV-ZERO",
@@ -2339,14 +2344,14 @@ void capacity_first(const std::vector<std::string>& lines, std::string_view rel,
     static Regex cap_dead(
         R"(\b(?:err|errx|xo_err|xo_errx|abort|exit|panic|_errx|out_of_mem|AbortProgram|fatal|bsdar_errc)\s*\()");
     for (int i = 0; i < static_cast<int>(lines.size()); ++i) {
-        auto m = cap_grow.search_match(lines[static_cast<std::size_t>(i)]);
-        if (!m || !cap_grow.match_line(lines[static_cast<std::size_t>(i)])) continue;
+        auto m = cap_grow.search_match(lines.at(static_cast<std::size_t>(i)));
+        if (!m || !cap_grow.match_line(lines.at(static_cast<std::size_t>(i)))) continue;
         auto var = cap_norm(m->named("a"));
         if (var.empty()) var = cap_norm(m->named("b"));
         if (var.empty()) var = cap_norm(m->named("c"));
         std::optional<int> aidx;
         for (int j = i + 1; j < std::min(i + 6, static_cast<int>(lines.size())); ++j)
-            if (cap_alloc.search(lines[static_cast<std::size_t>(j)])) {
+            if (cap_alloc.search(lines.at(static_cast<std::size_t>(j)))) {
                 aidx = j;
                 break;
             }
@@ -2356,7 +2361,7 @@ void capacity_first(const std::vector<std::string>& lines, std::string_view rel,
         if (window.find(var) == std::string::npos) continue;
         std::optional<std::string> arm;
         for (int j = *aidx + 1; j < std::min(*aidx + 7, static_cast<int>(lines.size())); ++j) {
-            if (cap_nullt.search(lines[static_cast<std::size_t>(j)]) &&
+            if (cap_nullt.search(lines.at(static_cast<std::size_t>(j))) &&
                 cap_leave.search(join_range(lines, static_cast<std::size_t>(j),
                                             static_cast<std::size_t>(j + 4)))) {
                 arm = join_range(lines, static_cast<std::size_t>(j),
@@ -2382,19 +2387,23 @@ void capacity_first(const std::vector<std::string>& lines, std::string_view rel,
 
 void mem_overlap(const std::vector<std::string>& lines, std::string_view rel,
                  const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
+    static const char* kFns[] = {"memcpy", "strcpy", "strncpy", "strcat"};
     for (auto& fn : funcs) {
         auto chunk = chunk_of(lines, fn);
         int start = fn.span.first;
         std::unordered_set<int> seen;
         for (int i = 0; i < static_cast<int>(chunk.size()); ++i) {
-            auto args = find_call_args(chunk[static_cast<std::size_t>(i)], "memcpy");
-            if (!args || args->size() < 2) continue;
-            auto dst = strip_ws((*args)[0]), src = strip_ws((*args)[1]);
-            if (dst != src || !is_ident(dst) || seen.contains(i)) continue;
-            seen.insert(i);
-            lint_add(out, rel, fn.name, start + i, "MEM-OVERLAP",
-                     "memcpy(" + dst + ", " + dst + ", …) has overlapping source and destination",
-                     lines);
+            for (const char* name : kFns) {
+                auto args = find_call_args(chunk.at(static_cast<std::size_t>(i)), name);
+                if (!args || args->size() < 2) continue;
+                auto dst = strip_ws((*args)[0]), src = strip_ws((*args)[1]);
+                if (dst != src || !is_ident(dst) || seen.contains(i)) continue;
+                seen.insert(i);
+                const std::string msg = std::string(name) + "(" + dst + ", " + dst +
+                                        (args->size() >= 3 ? ", …" : "") +
+                                        ") has overlapping source and destination";
+                lint_add(out, rel, fn.name, start + i, "MEM-OVERLAP", msg, lines);
+            }
         }
     }
 }
@@ -2409,12 +2418,12 @@ void unchecked_alloc(const std::vector<std::string>& lines, std::string_view rel
         int start = fn.span.first;
         std::set<std::pair<std::string, int>> seen;
         for (int i = 0; i < static_cast<int>(chunk.size()); ++i) {
-            auto m = re.search_match(chunk[static_cast<std::size_t>(i)]);
+            auto m = re.search_match(chunk.at(static_cast<std::size_t>(i)));
             if (!m) continue;
             std::string stmt;
             for (int x = i; x < i + 4 && x < static_cast<int>(chunk.size()); ++x) {
                 if (!stmt.empty()) stmt.push_back(' ');
-                stmt += strip(chunk[static_cast<std::size_t>(x)]);
+                stmt += strip(chunk.at(static_cast<std::size_t>(x)));
             }
             if (stmt.find("M_NOWAIT") != std::string::npos) continue;
             auto hit = unchecked_alloc_site(chunk, i, m->named("var"), m->named("fn"), false,
@@ -2440,7 +2449,7 @@ void nowait_alloc(const std::vector<std::string>& lines, std::string_view rel,
         int start = fn.span.first;
         std::set<std::pair<std::string, int>> seen;
         for (int i = 0; i < static_cast<int>(chunk.size()); ++i) {
-            auto m = re.search_match(chunk[static_cast<std::size_t>(i)]);
+            auto m = re.search_match(chunk.at(static_cast<std::size_t>(i)));
             if (!m) continue;
             auto hit = unchecked_alloc_site(chunk, i, m->named("var"), m->named("fn"), true,
                                             static_cast<std::size_t>(m->spans[0].second), macros);
@@ -2471,7 +2480,7 @@ void noreturn_fatal(const std::vector<std::string>& lines, std::string_view rel,
         if (!m || !fatal.match_line(s)) continue;
         int rel_off = static_cast<int>(body_lines.size()) - 1;
         for (int i = static_cast<int>(body_lines.size()) - 1; i >= 0; --i) {
-            auto t = strip(body_lines[static_cast<std::size_t>(i)]);
+            auto t = strip(body_lines.at(static_cast<std::size_t>(i)));
             if (!t.empty() && t != "{" && t != "}") {
                 rel_off = i;
                 break;
@@ -2493,7 +2502,7 @@ void fmt_string(const std::vector<std::string>& lines, std::string_view rel,
         std::set<std::pair<std::string, int>> seen;
         for (int i = 0; i < static_cast<int>(chunk.size()); ++i) {
             for (auto& [fname, idx] : kFmtFn) {
-                auto args = find_call_args(chunk[static_cast<std::size_t>(i)], fname);
+                auto args = find_call_args(chunk.at(static_cast<std::size_t>(i)), fname);
                 if (!args || static_cast<int>(args->size()) <= idx) continue;
                 if (is_literal_format((*args)[static_cast<std::size_t>(idx)], macros)) continue;
                 auto key = std::pair{fname, i};
@@ -2513,7 +2522,7 @@ void memset_swap(const std::vector<std::string>& lines, std::string_view rel,
         int start = fn.span.first;
         std::unordered_set<int> seen;
         for (int i = 0; i < static_cast<int>(chunk.size()); ++i) {
-            auto args = find_call_args(chunk[static_cast<std::size_t>(i)], "memset");
+            auto args = find_call_args(chunk.at(static_cast<std::size_t>(i)), "memset");
             if (!args || args->size() < 3) continue;
             if (!is_zero_literal((*args)[2])) continue;
             auto size_arg = strip((*args)[1]);
@@ -2539,7 +2548,7 @@ void taut_bound(const std::vector<std::string>& lines, std::string_view rel,
         int start = fn.span.first;
         std::set<std::pair<std::string, int>> seen;
         for (int i = 0; i < static_cast<int>(chunk.size()); ++i) {
-            auto m = iff.search_match(chunk[static_cast<std::size_t>(i)]);
+            auto m = iff.search_match(chunk.at(static_cast<std::size_t>(i)));
             if (!m) continue;
             auto cond = m->group(1);
             std::string cls, msg, var;
@@ -2552,7 +2561,7 @@ void taut_bound(const std::vector<std::string>& lines, std::string_view rel,
                     if (uppers.contains(v)) both.push_back(v);
                 std::sort(both.begin(), both.end());
                 if (!both.empty()) {
-                    var = both[0];
+                    var = both.front();
                     cls = "INT-TAUTOLOGY";
                     msg = var + " lower/upper bounds use ||; nearly always true";
                 }
@@ -2565,7 +2574,7 @@ void taut_bound(const std::vector<std::string>& lines, std::string_view rel,
                     if (highs.contains(v)) both.push_back(v);
                 std::sort(both.begin(), both.end());
                 if (!both.empty()) {
-                    var = both[0];
+                    var = both.front();
                     cls = "INT-TAUTOLOGY";
                     msg = var + " contradictory bounds use &&; always false";
                 }
@@ -2606,7 +2615,7 @@ void wrap_alloc(const std::vector<std::string>& lines, std::string_view rel,
         std::set<std::pair<std::string, int>> seen;
         for (int i = 0; i < static_cast<int>(chunk.size()); ++i) {
             for (auto* fname : fnames) {
-                auto args = find_call_args(chunk[static_cast<std::size_t>(i)], fname);
+                auto args = find_call_args(chunk.at(static_cast<std::size_t>(i)), fname);
                 if (!args) continue;
                 std::string name = fname;
                 if (name == "calloc" && args->size() >= 2) {
@@ -2653,7 +2662,7 @@ void int_trunc(const std::vector<std::string>& lines, std::string_view rel,
         auto narrow = narrow_names(fn);
         std::set<std::pair<std::string, int>> seen;
         for (int i = 0; i < static_cast<int>(chunk.size()); ++i) {
-            auto& ln = chunk[static_cast<std::size_t>(i)];
+            auto& ln = chunk.at(static_cast<std::size_t>(i));
             for (auto& m : ninit.finditer(ln)) {
                 auto name = m.group(1);
                 auto rhs = strip(m.named("rhs"));
@@ -2707,7 +2716,7 @@ void int_sign_conv(const std::vector<std::string>& lines, std::string_view rel,
         int start = fn.span.first;
         std::set<std::pair<std::string, int>> seen;
         for (int i = 0; i < static_cast<int>(chunk.size()); ++i) {
-            for (auto& m : sc.finditer(chunk[static_cast<std::size_t>(i)])) {
+            for (auto& m : sc.finditer(chunk.at(static_cast<std::size_t>(i)))) {
                 auto a = m.named("a"), b = m.named("b");
                 std::optional<std::pair<std::string, std::string>> pair;
                 if (signed_n.contains(a) && unsigned_n.contains(b)) pair = {a, b};
@@ -2736,7 +2745,7 @@ void stack_escape(const std::vector<std::string>& lines, std::string_view rel,
         int start = fn.span.first;
         std::set<std::pair<std::string, int>> seen;
         for (int i = 0; i < static_cast<int>(chunk.size()); ++i) {
-            auto& ln = chunk[static_cast<std::size_t>(i)];
+            auto& ln = chunk.at(static_cast<std::size_t>(i));
             if (auto m = ret_addr.search_match(ln)) {
                 auto var = m->group(1);
                 if (scalars.contains(var)) {
@@ -2774,7 +2783,7 @@ void unbounded_copy(const std::vector<std::string>& lines, std::string_view rel,
         std::set<std::pair<std::string, int>> seen;
         for (int i = 0; i < static_cast<int>(chunk.size()); ++i) {
             for (auto& [fname, dst_idx] : kUnboundedCopyFn) {
-                auto args = find_call_args(chunk[static_cast<std::size_t>(i)], fname);
+                auto args = find_call_args(chunk.at(static_cast<std::size_t>(i)), fname);
                 if (!args || static_cast<int>(args->size()) <= dst_idx) continue;
                 auto dst = strip_ws((*args)[static_cast<std::size_t>(dst_idx)]);
                 if (!locals_arr.contains(dst)) continue;
@@ -2798,7 +2807,7 @@ void str_sprintf(const std::vector<std::string>& lines, std::string_view rel,
         std::set<std::pair<std::string, int>> seen;
         for (int i = 0; i < static_cast<int>(chunk.size()); ++i) {
             for (auto& [fname, dst_idx] : kSprintfFn) {
-                auto args = find_call_args(chunk[static_cast<std::size_t>(i)], fname);
+                auto args = find_call_args(chunk.at(static_cast<std::size_t>(i)), fname);
                 if (!args || static_cast<int>(args->size()) <= dst_idx) continue;
                 auto dst = strip_ws((*args)[static_cast<std::size_t>(dst_idx)]);
                 if (!locals_arr.contains(dst)) continue;
@@ -2826,7 +2835,7 @@ void missing_return(const std::vector<std::string>& lines, std::string_view rel,
         if (!has_return || !missing_return_tail_ok(*last)) {
             int rel_off = static_cast<int>(body_lines.size()) - 1;
             for (int i = static_cast<int>(body_lines.size()) - 1; i >= 0; --i) {
-                auto s = strip(body_lines[static_cast<std::size_t>(i)]);
+                auto s = strip(body_lines.at(static_cast<std::size_t>(i)));
                 if (!s.empty() && s != "{" && s != "}") {
                     rel_off = i;
                     break;
@@ -2861,9 +2870,9 @@ std::string mask_nested_switches(const std::string& body) {
         int depth = 0;
         std::size_t end = std::string::npos;
         for (std::size_t k = brace; k < out.size(); ++k) {
-            if (out[k] == '{') {
+            if (out.at(k) == '{') {
                 ++depth;
-            } else if (out[k] == '}' && --depth == 0) {
+            } else if (out.at(k) == '}' && --depth == 0) {
                 end = k;
                 break;
             }
@@ -2872,13 +2881,14 @@ std::string mask_nested_switches(const std::string& body) {
         // Only a switch that starts its statement always runs: under
         // `if (a) switch ...` or `else switch ...` the arm can go on past it.
         std::size_t prev = kw;
-        while (prev > 0 && std::isspace(static_cast<unsigned char>(out[prev - 1]))) --prev;
-        bool starts_stmt = prev == 0 || std::string_view(";{}:").find(out[prev - 1]) != std::string_view::npos;
+        while (prev > 0 && std::isspace(static_cast<unsigned char>(out.at(prev - 1)))) --prev;
+        bool starts_stmt =
+            prev == 0 || std::string_view(";{}:").find(out.at(prev - 1)) != std::string_view::npos;
         bool leaves = starts_stmt && nested_switch_leaves(out.substr(brace + 1, end - brace - 1));
         // Keep a statement in the arm: `return` when the nested switch
         // leaves, the keyword itself (not a stop) when it does not.
-        for (std::size_t k = kw + 6; k <= end; ++k)
-            if (out[k] != '\n') out[k] = ' ';
+        for (std::size_t k = kw + 6; k <= end && k < out.size(); ++k)
+            if (out.at(k) != '\n') out.at(k) = ' ';
         if (leaves) out.replace(kw, 6, "return");
         from = end + 1;
     }
@@ -2935,7 +2945,7 @@ void fallthrough(const std::vector<std::string>& lines, const std::vector<std::s
                 bool annotated = false;
                 for (int ln = start + line_off + rel_off; ln <= std::max(start + line_off + rel_off, start + line_off + next_off - 1); ++ln)
                     if (ln > 0 && ln <= static_cast<int>(orig_lines.size()) &&
-                        comment_annot.search(orig_lines[static_cast<std::size_t>(ln - 1)]))
+                        comment_annot.search(orig_lines.at(static_cast<std::size_t>(ln - 1))))
                         annotated = true;
                 if (annotated) continue;
                 if (seen.contains(rel_off)) continue;
@@ -2957,7 +2967,7 @@ void dead_guard(const std::vector<std::string>& lines, std::string_view rel,
         int start = fn.span.first;
         std::set<std::pair<std::string, int>> seen;
         for (int i = 0; i < static_cast<int>(chunk.size()); ++i) {
-            auto m = dg.search_match(chunk[static_cast<std::size_t>(i)]);
+            auto m = dg.search_match(chunk.at(static_cast<std::size_t>(i)));
             if (!m || !unsigned_n.contains(m->group(1))) continue;
             auto key = std::pair{m->group(1), i};
             if (seen.contains(key)) continue;
@@ -2995,7 +3005,7 @@ void uninit_return(const std::vector<std::string>& lines, std::string_view rel,
         int start = fn.span.first;
         std::set<std::pair<std::string, int>> seen;
         for (int i = 0; i < static_cast<int>(chunk.size()); ++i) {
-            auto m = ret_var.search_match(chunk[static_cast<std::size_t>(i)]);
+            auto m = ret_var.search_match(chunk.at(static_cast<std::size_t>(i)));
             if (!m) continue;
             auto var = m->group(1);
             if (!uninit.contains(var)) continue;
@@ -3024,7 +3034,7 @@ void ptr_uninit(const std::vector<std::string>& lines, std::string_view rel,
             Regex arrow("\\b" + v + "\\s*->");
             Regex as("\\b" + v + "\\s*=(?!=)");
             for (int i = 0; i < static_cast<int>(chunk.size()); ++i) {
-                auto& ln = chunk[static_cast<std::size_t>(i)];
+                auto& ln = chunk.at(static_cast<std::size_t>(i));
                 if (ptr_decl_line(p, ln)) continue;
                 if (!(star.search(ln) || arrow.search(ln))) continue;
                 auto prior = join_range(chunk, 0, static_cast<std::size_t>(i));
@@ -3049,7 +3059,7 @@ void uninit_branch(const std::vector<std::string>& lines, std::string_view rel,
         int start = fn.span.first;
         std::set<std::pair<std::string, int>> seen;
         for (int i = 0; i < static_cast<int>(chunk.size()); ++i) {
-            auto m = br.search_match(chunk[static_cast<std::size_t>(i)]);
+            auto m = br.search_match(chunk.at(static_cast<std::size_t>(i)));
             if (!m) continue;
             auto var = m->named("var");
             if (!uninit.contains(var)) continue;
@@ -3079,7 +3089,7 @@ void off_by_one(const std::vector<std::string>& lines, std::string_view rel,
         int start = fn.span.first;
         std::set<std::pair<std::string, int>> seen;
         for (int i = 0; i < static_cast<int>(chunk.size()); ++i) {
-            auto& ln = chunk[static_cast<std::size_t>(i)];
+            auto& ln = chunk.at(static_cast<std::size_t>(i));
             if (auto args = find_call_args(ln, "strncpy"); args && args->size() >= 3) {
                 auto dst = strip_ws((*args)[0]);
                 if (arrays.contains(dst)) {
@@ -3107,7 +3117,7 @@ void off_by_one(const std::vector<std::string>& lines, std::string_view rel,
                     }
                     int raw_ln = start + i;
                     if (raw_ln > 0 && raw_ln <= static_cast<int>(raw_lines.size())) {
-                        auto raw_args = find_call_args(raw_lines[static_cast<std::size_t>(raw_ln - 1)], "strcpy");
+                        auto raw_args = find_call_args(raw_lines.at(static_cast<std::size_t>(raw_ln - 1)), "strcpy");
                         if (raw_args && raw_args->size() >= 2 && strip_ws((*raw_args)[0]) == dst)
                             args = raw_args;
                     }
@@ -3141,10 +3151,10 @@ bool later_nul_store(std::string_view base, const std::vector<std::string>& body
         if (b.compare(k, 2, "->") == 0) {
             be += "\\s*->\\s*";
             ++k;
-        } else if (b[k] == '.') {
+        } else if (b.at(k) == '.') {
             be += "\\s*\\.\\s*";
         } else {
-            be += re_escape(std::string(1, b[k]));
+            be += re_escape(std::string(1, b.at(k)));
         }
     }
     std::string zero = R"((?:0|'\\0'|'\\x0+'|\(\s*char\s*\)\s*0)\s*;)";
@@ -3157,7 +3167,7 @@ bool later_nul_store(std::string_view base, const std::vector<std::string>& body
     Regex write_after(R"(^\s*\[[^;\]]*\]\s*=(?!=))");
     Regex write_before(R"(\b(?:memcpy|memmove|memset)\s*\(\s*&?\s*\(*\s*$)");
     for (std::size_t k = from; k < body_lines.size(); ++k) {
-        auto& ln = body_lines[k];
+        auto& ln = body_lines.at(k);
         auto st = store.search_match(ln);
         auto st_at = st ? static_cast<std::size_t>(st->spans[0].first) : ln.size();
         for (auto& m : mention.finditer(ln)) {
@@ -3182,7 +3192,7 @@ void str_missing_nul(const std::vector<std::string>& lines, std::string_view rel
         std::unordered_set<int> seen;
         auto body_lines = split_lines(fn.body);
         for (int i = 0; i < static_cast<int>(body_lines.size()); ++i) {
-            auto& ln = body_lines[static_cast<std::size_t>(i)];
+            auto& ln = body_lines.at(static_cast<std::size_t>(i));
             auto args = find_call_args(ln, "memcpy");
             if (args && args->size() >= 3) {
                 auto lit_len = string_lit_len((*args)[1]);
@@ -3283,7 +3293,7 @@ void int_atoi(const std::vector<std::string>& lines, std::string_view rel,
         for (auto& var : vars) {
             if (has_bounds_guard(var, fn.body)) continue;
             for (int i = 0; i < static_cast<int>(body_lines.size()); ++i) {
-                if (!atoi_index_or_size_use(var, body_lines[static_cast<std::size_t>(i)])) continue;
+                if (!atoi_index_or_size_use(var, body_lines.at(static_cast<std::size_t>(i)))) continue;
                 lint_add(out, rel, fn.name, start + i, "INT-ATOI",
                          var + " from atoi/atol/atoll used as index or allocation size without a range check",
                          lines);
@@ -3321,7 +3331,7 @@ void enum_hole(const std::vector<std::string>& lines, std::string_view rel,
             std::string miss;
             for (std::size_t k = 0; k < missing.size(); ++k) {
                 if (k) miss += ", ";
-                miss += missing[k];
+                miss += missing.at(k);
             }
             lint_add(out, rel, fn.name, start + sw.line_off, "INT-ENUM-HOLE",
                      "switch (" + sw.var + ") on enum " + it->second + " misses " + miss +
@@ -3341,14 +3351,14 @@ void fd_leak(const std::vector<std::string>& lines, std::string_view rel,
         auto body_lines = split_lines(fn.body);
         std::map<std::string, std::vector<int>> opens, closes;
         for (int i = 0; i < static_cast<int>(body_lines.size()); ++i) {
-            for (auto& m : fd_open.finditer(body_lines[static_cast<std::size_t>(i)]))
+            for (auto& m : fd_open.finditer(body_lines.at(static_cast<std::size_t>(i))))
                 opens[m.named("var")].push_back(i);
-            for (auto& m : fd_close.finditer(body_lines[static_cast<std::size_t>(i)]))
+            for (auto& m : fd_close.finditer(body_lines.at(static_cast<std::size_t>(i))))
                 closes[m.named("var")].push_back(i);
         }
         std::vector<int> returns;
         for (int i = 0; i < static_cast<int>(body_lines.size()); ++i)
-            if (ret.match_line(body_lines[static_cast<std::size_t>(i)])) returns.push_back(i);
+            if (ret.match_line(body_lines.at(static_cast<std::size_t>(i)))) returns.push_back(i);
         if (returns.size() < 2) continue;
         for (auto& [var, open_hits] : opens) {
             auto& close_hits = closes[var];
@@ -3363,7 +3373,7 @@ void fd_leak(const std::vector<std::string>& lines, std::string_view rel,
             for (int r : var_returns)
                 if (max_before(open_hits, r) > max_before(close_hits, r)) held_returns.push_back(r);
             if (!held_returns.empty() && held_returns.size() < var_returns.size())
-                lint_add(out, rel, fn.name, fn.span.first + held_returns[0], "RES-FD-LEAK",
+                lint_add(out, rel, fn.name, fn.span.first + held_returns.front(), "RES-FD-LEAK",
                          var + " open on " + std::to_string(open_hits.size()) +
                              " path(s) but closed before only " +
                              std::to_string(var_returns.size() - held_returns.size()) + " of " +
@@ -3382,19 +3392,19 @@ void popen_leak(const std::vector<std::string>& lines, std::string_view rel,
         auto body_lines = split_lines(fn.body);
         std::map<std::string, std::vector<int>> opens, closes;
         for (int i = 0; i < static_cast<int>(body_lines.size()); ++i) {
-            for (auto& m : po.finditer(body_lines[static_cast<std::size_t>(i)]))
+            for (auto& m : po.finditer(body_lines.at(static_cast<std::size_t>(i))))
                 opens[m.named("var")].push_back(i);
-            for (auto& m : pc.finditer(body_lines[static_cast<std::size_t>(i)]))
+            for (auto& m : pc.finditer(body_lines.at(static_cast<std::size_t>(i))))
                 closes[m.named("var")].push_back(i);
         }
         if (opens.empty()) continue;
         std::vector<int> returns;
         for (int i = 0; i < static_cast<int>(body_lines.size()); ++i)
-            if (ret.match_line(body_lines[static_cast<std::size_t>(i)])) returns.push_back(i);
+            if (ret.match_line(body_lines.at(static_cast<std::size_t>(i)))) returns.push_back(i);
         for (auto& [var, open_hits] : opens) {
             auto& close_hits = closes[var];
             bool leaked = false;
-            int leak_ep = open_hits[0];
+            int leak_ep = open_hits.front();
             for (int r : returns) {
                 if (max_before(open_hits, r) > max_before(close_hits, r)) {
                     leaked = true;
@@ -3430,14 +3440,14 @@ void mem_leak(const std::vector<std::string>& lines, std::string_view rel,
         auto body_lines = split_lines(fn.body);
         std::map<std::string, std::vector<int>> allocs, frees;
         for (int i = 0; i < static_cast<int>(body_lines.size()); ++i) {
-            for (auto& m : alloc.finditer(body_lines[static_cast<std::size_t>(i)]))
+            for (auto& m : alloc.finditer(body_lines.at(static_cast<std::size_t>(i))))
                 allocs[cap_norm(m.named("var"))].push_back(i);
-            for (auto& m : free_call.finditer(body_lines[static_cast<std::size_t>(i)]))
+            for (auto& m : free_call.finditer(body_lines.at(static_cast<std::size_t>(i))))
                 frees[cap_norm(m.named("var"))].push_back(i);
         }
         std::vector<int> returns;
         for (int i = 0; i < static_cast<int>(body_lines.size()); ++i)
-            if (ret.match_line(body_lines[static_cast<std::size_t>(i)])) returns.push_back(i);
+            if (ret.match_line(body_lines.at(static_cast<std::size_t>(i)))) returns.push_back(i);
         if (returns.size() < 2) continue;
         for (auto& [var, alloc_hits] : allocs) {
             auto& free_hits = frees[var];
@@ -3452,7 +3462,7 @@ void mem_leak(const std::vector<std::string>& lines, std::string_view rel,
             for (int r : var_returns)
                 if (max_before(alloc_hits, r) > max_before(free_hits, r)) held_returns.push_back(r);
             if (!held_returns.empty() && held_returns.size() < var_returns.size())
-                lint_add(out, rel, fn.name, fn.span.first + held_returns[0], "MEM-LEAK",
+                lint_add(out, rel, fn.name, fn.span.first + held_returns.front(), "MEM-LEAK",
                          var + " allocated on " + std::to_string(alloc_hits.size()) +
                              " path(s) but freed before only " +
                              std::to_string(var_returns.size() - held_returns.size()) + " of " +
@@ -3480,7 +3490,7 @@ void mismatched_free(const std::vector<std::string>& lines, std::string_view rel
         }
         std::set<std::pair<std::string, int>> seen;
         for (int i = 0; i < static_cast<int>(body_lines.size()); ++i) {
-            auto& ln = body_lines[static_cast<std::size_t>(i)];
+            auto& ln = body_lines.at(static_cast<std::size_t>(i));
             if (auto m = del.search_match(ln)) {
                 auto var = m->named("var");
                 if (alloc_family[var] != "c") continue;
@@ -3553,7 +3563,7 @@ bool copy_len_guarded(std::string_view size, std::string_view prior,
                               me + "\\s*(?:<=|>=|>|<)\\s*" + se + "\\b";
             it = cache.emplace(std::move(key), std::make_unique<Regex>(pat)).first;
         }
-        if (it->second->search(prior)) return true;
+        if (auto* re = it->second.get(); re && re->search(prior)) return true;
     }
     return false;
 }
@@ -3577,8 +3587,8 @@ std::string call_text(const std::vector<std::string>& body_lines, std::size_t i)
     bool opened = false;
     for (std::size_t j = i; j < body_lines.size() && j < i + 8; ++j) {
         if (!text.empty()) text += ' ';
-        text += body_lines[j];
-        for (char c : body_lines[j]) {
+        text += body_lines.at(j);
+        for (char c : body_lines.at(j)) {
             if (c == '(') {
                 ++depth;
                 opened = true;
@@ -3615,7 +3625,7 @@ void mem_copy_len(const std::vector<std::string>& lines, std::string_view rel,
         std::set<std::pair<int, std::string>> seen;
         std::size_t line_off = 0;
         for (int i = 0; i < static_cast<int>(body_lines.size()); ++i) {
-            auto& ln = body_lines[static_cast<std::size_t>(i)];
+            auto& ln = body_lines.at(static_cast<std::size_t>(i));
             auto here = line_off;
             line_off += ln.size() + 1;
             auto calls = copy_call.finditer(ln);
@@ -3774,7 +3784,7 @@ void ptr_arith(const std::vector<std::string>& lines, std::string_view rel,
                 Regex a("\\*\\s*\\(\\s*" + pe + "\\s*\\+\\s*" + ne + "\\s*\\)");
                 Regex b("\\b" + pe + "\\s*\\[\\s*" + ne + "\\s*\\]");
                 for (int i = 0; i < static_cast<int>(body_lines.size()); ++i) {
-                    auto& ln = body_lines[static_cast<std::size_t>(i)];
+                    auto& ln = body_lines.at(static_cast<std::size_t>(i));
                     if (!(a.search(ln) || b.search(ln))) continue;
                     lint_add(out, rel, fn.name, start + i, "MEM-PTR-ARITH",
                              p + "[" + n + "] or *(" + p + "+" + n + ") without guard on " + p +
@@ -3815,32 +3825,32 @@ bool constant_bound(std::string_view size, const FunctionInfo& fn,
     // Drop sizeof operands: `sizeof(x)` / `sizeof x` is constant for non-VLA x.
     for (auto k = s.find("sizeof"); k != std::string::npos; k = s.find("sizeof", k)) {
         std::size_t e = k + 6;
-        while (e < s.size() && std::isspace(static_cast<unsigned char>(s[e]))) ++e;
-        if (e < s.size() && s[e] == '(') {
+        while (e < s.size() && std::isspace(static_cast<unsigned char>(s.at(e)))) ++e;
+        if (e < s.size() && s.at(e) == '(') {
             int depth = 0;
             for (; e < s.size(); ++e) {
-                if (s[e] == '(') ++depth;
-                else if (s[e] == ')' && --depth == 0) break;
+                if (s.at(e) == '(') ++depth;
+                else if (s.at(e) == ')' && --depth == 0) break;
             }
             if (e >= s.size()) return false;
             ++e;
         } else {
-            while (e < s.size() && (std::isalnum(static_cast<unsigned char>(s[e])) || s[e] == '_')) ++e;
+            while (e < s.size() && (std::isalnum(static_cast<unsigned char>(s.at(e))) || s.at(e) == '_')) ++e;
         }
         s.replace(k, e - k, std::string(e - k, ' '));
     }
     for (std::size_t i = 0; i < s.size();) {
-        char c = s[i];
+        char c = s.at(i);
         if (std::isdigit(static_cast<unsigned char>(c))) {
-            while (i < s.size() && (std::isalnum(static_cast<unsigned char>(s[i])) || s[i] == '.')) ++i;
+            while (i < s.size() && (std::isalnum(static_cast<unsigned char>(s.at(i))) || s.at(i) == '.')) ++i;
             continue;
         }
         if (std::isalpha(static_cast<unsigned char>(c)) || c == '_') {
             std::size_t j = i;
             bool caps = true, letter = false;
-            while (j < s.size() && (std::isalnum(static_cast<unsigned char>(s[j])) || s[j] == '_')) {
-                if (std::islower(static_cast<unsigned char>(s[j]))) caps = false;
-                if (std::isalpha(static_cast<unsigned char>(s[j]))) letter = true;
+            while (j < s.size() && (std::isalnum(static_cast<unsigned char>(s.at(j))) || s.at(j) == '_')) {
+                if (std::islower(static_cast<unsigned char>(s.at(j)))) caps = false;
+                if (std::isalpha(static_cast<unsigned char>(s.at(j)))) letter = true;
                 ++j;
             }
             std::string name = s.substr(i, j - i);
@@ -4004,7 +4014,7 @@ void infoleak_pad(const std::vector<std::string>& lines, std::string_view rel,
         int start = fn.span.first;
         std::set<std::pair<std::string, int>> seen;
         for (int i = 0; i < static_cast<int>(chunk.size()); ++i) {
-            auto m = memcpy_addr.search_match(chunk[static_cast<std::size_t>(i)]);
+            auto m = memcpy_addr.search_match(chunk.at(static_cast<std::size_t>(i)));
             if (!m) continue;
             auto var = m->named("var");
             if (!structs.contains(var) || local_zeroed(fn.body, var)) continue;
@@ -4082,7 +4092,7 @@ void trust_unvalidated_input(const std::vector<std::string>& lines, std::string_
         for (auto& var : vars) {
             if (has_if_guard(var, fn.body)) continue;
             for (int i = 0; i < static_cast<int>(body_lines.size()); ++i) {
-                if (!unvalidated_index_use(var, body_lines[static_cast<std::size_t>(i)])) continue;
+                if (!unvalidated_index_use(var, body_lines.at(static_cast<std::size_t>(i)))) continue;
                 lint_add(out, rel, fn.name, start + i, "TRUST-UNVALIDATED-INPUT",
                          var + " from parsed input used as index or divisor without an if (" + var +
                              " …) guard",
@@ -4114,10 +4124,10 @@ void mem_realloc_zero(const std::vector<std::string>& lines, std::string_view re
         auto body_lines = split_lines(fn.body);
         int start = fn.span.first;
         for (int i = 0; i < static_cast<int>(body_lines.size()); ++i) {
-            auto old = realloc_zero_old_ptr(body_lines[static_cast<std::size_t>(i)]);
+            auto old = realloc_zero_old_ptr(body_lines.at(static_cast<std::size_t>(i)));
             if (!old) continue;
             for (int j = i + 1; j < static_cast<int>(body_lines.size()); ++j) {
-                auto& later = body_lines[static_cast<std::size_t>(j)];
+                auto& later = body_lines.at(static_cast<std::size_t>(j));
                 if (Regex("\\b" + re_escape(*old) + "\\s*=").search(later)) break;
                 if (stale_ptr_use(*old, later)) {
                     lint_add(out, rel, fn.name, start + j, "MEM-REALLOC-ZERO",
@@ -4140,7 +4150,7 @@ void crypto_misuse(const std::vector<std::string>& lines, std::string_view rel,
         int start = fn.span.first;
         bool reported = false;
         for (int i = 0; i < static_cast<int>(body_lines.size()); ++i) {
-            if (!key_rand.search(body_lines[static_cast<std::size_t>(i)])) continue;
+            if (!key_rand.search(body_lines.at(static_cast<std::size_t>(i)))) continue;
             lint_add(out, rel, fn.name, start + i, "CRYPTO-MISUSE", "rand() used to fill key[]",
                      lines);
             reported = true;
@@ -4151,9 +4161,9 @@ void crypto_misuse(const std::vector<std::string>& lines, std::string_view rel,
         auto ptrs = pointer_param_names(fn);
         if (ptrs.empty()) continue;
         for (int i = 0; i < static_cast<int>(body_lines.size()); ++i) {
-            if (!rand_call.search(body_lines[static_cast<std::size_t>(i)])) continue;
+            if (!rand_call.search(body_lines.at(static_cast<std::size_t>(i)))) continue;
             for (auto& p : ptrs) {
-                if (!ptr_rand_store(p, body_lines[static_cast<std::size_t>(i)])) continue;
+                if (!ptr_rand_store(p, body_lines.at(static_cast<std::size_t>(i)))) continue;
                 lint_add(out, rel, fn.name, start + i, "CRYPTO-MISUSE",
                          "rand() assigned into pointer parameter " + p, lines);
                 reported = true;
@@ -4170,7 +4180,7 @@ void crypto_misuse(const std::vector<std::string>& lines, std::string_view rel,
             for (auto& local : rand_locals) {
                 if (!ptr_local_store(p, local, fn.body)) continue;
                 for (int i = 0; i < static_cast<int>(body_lines.size()); ++i) {
-                    auto& ln = body_lines[static_cast<std::size_t>(i)];
+                    auto& ln = body_lines.at(static_cast<std::size_t>(i));
                     if (ln.find(local) == std::string::npos || ln.find(p) == std::string::npos)
                         continue;
                     if (!ptr_local_store(p, local, ln)) continue;
@@ -4215,19 +4225,19 @@ void lock_order(const std::vector<std::string>& lines, std::string_view rel,
     std::vector<std::string> names;
     for (auto& [n, _] : orders) names.push_back(n);
     for (std::size_t i = 0; i < names.size(); ++i) {
-        auto [x1, y1] = orders[names[i]];
+        auto [x1, y1] = orders.at(names.at(i));
         for (std::size_t j = i + 1; j < names.size(); ++j) {
-            auto [x2, y2] = orders[names[j]];
+            auto [x2, y2] = orders.at(names.at(j));
             std::set<std::string> a{x1, y1}, b{x2, y2};
             if (a != b) continue;
             if (x1 == x2 && y1 == y2) continue;
-            for (auto* fn_name : {&names[i], &names[j]}) {
+            for (auto* fn_name : {&names.at(i), &names.at(j)}) {
                 if (reported.contains(*fn_name)) continue;
                 reported.insert(*fn_name);
                 auto [x_ord, y_ord] = orders[*fn_name];
                 int line = first_line.contains(*fn_name)
                                ? first_line[*fn_name]
-                               : (funcs.empty() ? 1 : funcs[0].span.first);
+                               : (funcs.empty() ? 1 : funcs.front().span.first);
                 lint_add(out, rel, *fn_name, line, "LOCK-ORDER",
                          "locks " + x_ord + " then " + y_ord +
                              "; another function locks them in the opposite order",
@@ -4245,8 +4255,9 @@ void conc_toctou(const std::vector<std::string>& lines, std::string_view rel,
         auto body_lines = split_lines(fn.body);
         std::optional<int> check_at, use_at;
         for (int i = 0; i < static_cast<int>(body_lines.size()); ++i) {
-            if (!check_at && check.search(body_lines[static_cast<std::size_t>(i)])) check_at = i;
-            else if (check_at && i > *check_at && use.search(body_lines[static_cast<std::size_t>(i)])) {
+            if (!check_at && check.search(body_lines.at(static_cast<std::size_t>(i)))) check_at = i;
+            else if (check_at.has_value() && i > check_at.value() &&
+                     use.search(body_lines.at(static_cast<std::size_t>(i)))) {
                 use_at = i;
                 break;
             }
@@ -4299,7 +4310,7 @@ void wcs_unbounded(const std::vector<std::string>& lines, std::string_view rel,
         std::set<std::pair<std::string, int>> seen;
         for (int i = 0; i < static_cast<int>(chunk.size()); ++i) {
             for (auto& [fname, dst_idx] : kWcsUnboundedFn) {
-                auto args = find_call_args(chunk[static_cast<std::size_t>(i)], fname);
+                auto args = find_call_args(chunk.at(static_cast<std::size_t>(i)), fname);
                 if (!args || static_cast<int>(args->size()) <= dst_idx) continue;
                 auto dst = strip_ws((*args)[static_cast<std::size_t>(dst_idx)]);
                 if (!locals_arr.contains(dst)) continue;
@@ -4323,7 +4334,7 @@ void int_clz_zero(const std::vector<std::string>& lines, std::string_view rel,
         std::unordered_set<int> seen;
         for (int i = 0; i < static_cast<int>(chunk.size()); ++i) {
             for (auto* fname : clz_fns) {
-                auto args = find_call_args(chunk[static_cast<std::size_t>(i)], fname);
+                auto args = find_call_args(chunk.at(static_cast<std::size_t>(i)), fname);
                 if (!args || args->empty()) continue;
                 auto arg = strip((*args)[0]);
                 auto lit = parse_int_literal(arg);
@@ -4352,7 +4363,7 @@ void str_strncpy_nul(const std::vector<std::string>& lines, std::string_view rel
         int start = fn.span.first;
         std::unordered_set<int> seen;
         for (int i = 0; i < static_cast<int>(chunk.size()); ++i) {
-            auto args = find_call_args(chunk[static_cast<std::size_t>(i)], "strncpy");
+            auto args = find_call_args(chunk.at(static_cast<std::size_t>(i)), "strncpy");
             if (!args || args->empty()) continue;
             auto dst = strip_ws((*args)[0]);
             if (!arrays.contains(dst)) continue;
@@ -4374,7 +4385,7 @@ void str_snprintf(const std::vector<std::string>& lines, std::string_view rel,
         int start = fn.span.first;
         std::unordered_set<int> seen;
         for (int i = 0; i < static_cast<int>(chunk.size()); ++i) {
-            auto args = find_call_args(chunk[static_cast<std::size_t>(i)], "snprintf");
+            auto args = find_call_args(chunk.at(static_cast<std::size_t>(i)), "snprintf");
             if (!args || args->size() < 2) continue;
             auto dst = strip_ws((*args)[0]);
             if (!arrays.contains(dst)) continue;
@@ -4399,7 +4410,7 @@ void mem_bcopy(const std::vector<std::string>& lines, std::string_view rel,
         int start = fn.span.first;
         std::unordered_set<int> seen;
         for (int i = 0; i < static_cast<int>(chunk.size()); ++i) {
-            auto args = find_call_args(chunk[static_cast<std::size_t>(i)], "bcopy");
+            auto args = find_call_args(chunk.at(static_cast<std::size_t>(i)), "bcopy");
             if (!args || args->size() < 2) continue;
             auto src = strip_ws((*args)[0]);
             auto dst = strip_ws((*args)[1]);
@@ -4528,14 +4539,14 @@ void api_getenv_null(const std::vector<std::string>& lines, std::string_view rel
         int start = fn.span.first;
         std::set<std::pair<std::string, int>> seen;
         for (int i = 0; i < static_cast<int>(chunk.size()); ++i) {
-            for (auto& var : getenv_assign_vars(chunk[static_cast<std::size_t>(i)])) {
+            for (auto& var : getenv_assign_vars(chunk.at(static_cast<std::size_t>(i)))) {
                 auto key = std::pair{var, i};
                 if (seen.contains(key)) continue;
-                if (getenv_in_truthy_if(chunk[static_cast<std::size_t>(i)], var)) continue;
+                if (getenv_in_truthy_if(chunk.at(static_cast<std::size_t>(i)), var)) continue;
                 if (getenv_only_returned(var, chunk, i)) continue;
                 std::optional<int> use_j;
                 for (int j = i + 1; j < static_cast<int>(chunk.size()); ++j)
-                    if (getenv_uses(var, chunk[static_cast<std::size_t>(j)])) {
+                    if (getenv_uses(var, chunk.at(static_cast<std::size_t>(j)))) {
                         use_j = j;
                         break;
                     }
@@ -4558,14 +4569,14 @@ void api_strdup_null(const std::vector<std::string>& lines, std::string_view rel
         int start = fn.span.first;
         std::set<std::pair<std::string, int>> seen;
         for (int i = 0; i < static_cast<int>(chunk.size()); ++i) {
-            for (auto& var : strdup_assign_vars(chunk[static_cast<std::size_t>(i)])) {
+            for (auto& var : strdup_assign_vars(chunk.at(static_cast<std::size_t>(i)))) {
                 auto key = std::pair{var, i};
                 if (seen.contains(key)) continue;
-                if (strdup_in_truthy_if(chunk[static_cast<std::size_t>(i)], var)) continue;
+                if (strdup_in_truthy_if(chunk.at(static_cast<std::size_t>(i)), var)) continue;
                 if (strdup_only_returned(var, chunk, i)) continue;
                 std::optional<int> use_j;
                 for (int j = i + 1; j < static_cast<int>(chunk.size()); ++j)
-                    if (getenv_uses(var, chunk[static_cast<std::size_t>(j)])) {
+                    if (getenv_uses(var, chunk.at(static_cast<std::size_t>(j)))) {
                         use_j = j;
                         break;
                     }
@@ -4588,7 +4599,7 @@ void api_chroot(const std::vector<std::string>& lines, std::string_view rel,
         auto body_lines = split_lines(fn.body);
         int start = fn.span.first;
         for (int i = 0; i < static_cast<int>(body_lines.size()); ++i) {
-            if (!re.search(body_lines[static_cast<std::size_t>(i)])) continue;
+            if (!re.search(body_lines.at(static_cast<std::size_t>(i)))) continue;
             if (chroot_followed_by_chdir(body_lines, i)) continue;
             lint_add(out, rel, fn.name, start + i, "API-CHROOT",
                      "chroot() without chdir(/) into the new root", lines);
@@ -4603,8 +4614,8 @@ void api_umask(const std::vector<std::string>& lines, std::string_view rel,
         auto body_lines = split_lines(fn.body);
         int start = fn.span.first;
         for (int i = 0; i < static_cast<int>(body_lines.size()); ++i) {
-            if (!re.search(body_lines[static_cast<std::size_t>(i)])) continue;
-            auto args = find_call_args(body_lines[static_cast<std::size_t>(i)], "umask");
+            if (!re.search(body_lines.at(static_cast<std::size_t>(i)))) continue;
+            auto args = find_call_args(body_lines.at(static_cast<std::size_t>(i)), "umask");
             if (!args || args->size() != 1 || !umask_arg_unsafe((*args)[0])) continue;
             lint_add(out, rel, fn.name, start + i, "API-UMASK",
                      "umask(0) leaves world-writable default", lines);

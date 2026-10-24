@@ -2,6 +2,8 @@
 // mutation testing of those contracts.
 #include "interp.hpp"
 
+#include <cstdlib>
+
 #include "prism/config.hpp"
 #include "prism/sandbox.hpp"
 
@@ -25,7 +27,7 @@ Spec spec_comments_rapid(const FunctionInfo& fn) {
     end = std::min(static_cast<int>(lines.size()), end);
     static Regex clause("(?i)(?://|/\\*|\\*)\\s*(requires|ensures|invariant|decreases|diff)\\s*:\\s*(.+?)(?:\\*/)?\\s*$");
     for (int i = start; i < end; ++i) {
-        auto m = clause.search_match(lines[static_cast<std::size_t>(i)]);
+        auto m = clause.search_match(lines.at(static_cast<std::size_t>(i)));
         if (!m) continue;
         auto kind = lower_copy(m->group(1));
         auto val = strip(m->group(2));
@@ -74,8 +76,8 @@ void apply_atom(std::map<std::string, Bound>& bounds, const std::string& atom) {
     auto name = m->group(1);
     auto op = m->group(2);
     int raw = std::stoi(m->group(3));
-    if (!bounds.contains(name)) bounds[name] = {};
-    auto& b = bounds[name];
+    if (!bounds.contains(name)) bounds.at(name) = {};
+    auto& b = bounds.at(name);
     if (op == "<") b.hi = std::min(b.hi, raw - 1);
     else if (op == "<=") b.hi = std::min(b.hi, raw);
     else if (op == ">") b.lo = std::max(b.lo, raw + 1);
@@ -94,7 +96,7 @@ int pick_bound(std::mt19937& rng, const Bound& b, const std::vector<int>* intere
             if (v >= b.lo && v <= b.hi && !b.neq.contains(v)) cand.push_back(v);
         if (!cand.empty()) {
             std::uniform_int_distribution<int> d(0, static_cast<int>(cand.size()) - 1);
-            return cand[static_cast<std::size_t>(d(rng))];
+            return cand.at(static_cast<std::size_t>(d(rng)));
         }
     }
     for (int i = 0; i < 64; ++i) {
@@ -104,7 +106,7 @@ int pick_bound(std::mt19937& rng, const Bound& b, const std::vector<int>* intere
     }
     for (int v = b.lo; v <= b.hi; ++v)
         if (!b.neq.contains(v)) return v;
-    throw std::runtime_error("empty domain");
+    abort();
 }
 
 struct RapidPlan {
@@ -321,6 +323,8 @@ PlanRun run_plan(const FunctionInfo& fn, const RapidPlan& plan) {
             return {true, "", "", "concrete", "", std::nullopt, {}, static_cast<int>(plan.samples.size())};
         }
     } catch (...) {
+        return {false, ub_err.empty() ? "cannot evaluate " + fn.name : ub_err, "", "interp", "", std::nullopt, {},
+                0};
     }
     return {false, ub_err.empty() ? "cannot evaluate " + fn.name : ub_err, "", "interp", "", std::nullopt, {},
             0};
@@ -365,23 +369,21 @@ Finding finding_from_plan(const FunctionInfo& fn, const RapidPlan& plan, const s
     }
     if (!info.ok) {
         auto clause = info.clause.empty() ? join_sv(plan.ensures, " && ") : info.clause;
-        auto f = make_find(stage, laws::FAILED, fn, "FUNC-CONTRACT",
-                           "ensures (" + clause + ") failed on " + info.counterexample, laws::STRENGTH_FINDS);
-        f.evidence = fn.body.substr(0, 400);
-        f.counterexample = info.counterexample;
-        f = fill(std::move(f));
+        Finding raw = make_find(stage, laws::FAILED, fn, "FUNC-CONTRACT",
+                                "ensures (" + clause + ") failed on " + info.counterexample, laws::STRENGTH_FINDS);
+        raw.evidence = fn.body.substr(0, 400);
+        raw.counterexample = info.counterexample;
+        Finding f = fill(std::move(raw));
         f.extra["engine"] = info.engine;
-        // extra.shrinks counts cex minimization; FAILED is a cex, never a proof.
         f.extra["shrinks"] = std::to_string(info.shrinks);
         return f;
     }
     auto ens = join_sv(plan.ensures, " && ");
     int n = info.n ? info.n : static_cast<int>(plan.samples.size());
-    auto f = make_find(stage, laws::CLEAN, fn, "",
-                       "all " + std::to_string(n) + " trials hold for ensures (" + ens +
-                           "); not a proof - sampling is not forall",
-                       laws::STRENGTH_SOME);
-    f = fill(std::move(f));
+    Finding f = fill(make_find(stage, laws::CLEAN, fn, "",
+                               "all " + std::to_string(n) + " trials hold for ensures (" + ens +
+                                   "); not a proof - sampling is not forall",
+                               laws::STRENGTH_SOME));
     f.extra["engine"] = info.engine;
     return f;
 }
@@ -389,40 +391,40 @@ Finding finding_from_plan(const FunctionInfo& fn, const RapidPlan& plan, const s
 std::vector<std::tuple<int, int, std::string, std::string>> iter_mutations(const std::string& body) {
     std::vector<std::tuple<int, int, std::string, std::string>> sites;
     std::size_t i = 0;
-    char quote = 0;
+    char quote = '\0';
     while (i < body.size()) {
-        char c = body[i];
+        char c = body.at(i);
         if (quote) {
             if (c == '\\' && i + 1 < body.size()) {
                 i += 2;
                 continue;
             }
-            if (c == quote) quote = 0;
+            if (c == quote) quote = '\0';
             ++i;
             continue;
         }
         if (c == '"' || c == '\'') {
-            quote = c;
+            quote = static_cast<char>(c);
             ++i;
             continue;
         }
         if (i + 2 <= body.size() && body.compare(i, 2, "==") == 0) {
-            char prev = i ? body[i - 1] : '\0';
+            char prev = i ? body.at(i - 1) : '\0';
             if (prev != '=' && prev != '!') sites.emplace_back(static_cast<int>(i), static_cast<int>(i + 2), "==", "!=");
             i += 2;
             continue;
         }
         if (c == '+') {
-            char nxt = i + 1 < body.size() ? body[i + 1] : '\0';
-            char prev = i ? body[i - 1] : '\0';
+            char nxt = i + 1 < body.size() ? body.at(i + 1) : '\0';
+            char prev = i ? body.at(i - 1) : '\0';
             if (nxt != '+' && nxt != '=' && prev != '+')
                 sites.emplace_back(static_cast<int>(i), static_cast<int>(i + 1), "+", "-");
             ++i;
             continue;
         }
         if (c == '<') {
-            char nxt = i + 1 < body.size() ? body[i + 1] : '\0';
-            char prev = i ? body[i - 1] : '\0';
+            char nxt = i + 1 < body.size() ? body.at(i + 1) : '\0';
+            char prev = i ? body.at(i - 1) : '\0';
             if (nxt != '<' && nxt != '=' && prev != '<')
                 sites.emplace_back(static_cast<int>(i), static_cast<int>(i + 1), "<", ">");
             ++i;

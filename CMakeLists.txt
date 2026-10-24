@@ -204,7 +204,6 @@ set(PRISM_SRC
   src/prism/ai/regress.cpp
   src/prism/ai/triage.cpp
   src/prism/bmc.cpp
-  src/prism/capi.cpp
   src/prism/checkers_api.cpp
   src/prism/checkers_core.cpp
   src/prism/checkers_cxx.cpp
@@ -357,11 +356,6 @@ target_compile_definitions(prism_core PUBLIC PRISM_VERSION_STRING="${PROJECT_VER
 # back to Z3's bit-blast tactics and says so (NOTRUN, never silent).
 target_compile_definitions(prism_core PRIVATE
   PRISM_LEAN_BIN_DIR="${PRISM_ROOT}/proofs/techniques/.lake/build/bin")
-# The shipped Coccinelle rules of this source tree: found when the build dir
-# is outside the source tree (cmake -B /elsewhere), where neither the cwd nor
-# the binary's location leads back to prism/cocci. adapters.cpp only.
-set_source_files_properties(src/prism/adapters.cpp PROPERTIES
-  COMPILE_DEFINITIONS PRISM_SOURCE_COCCI_DIR="${PRISM_ROOT}/prism/cocci")
 target_link_libraries(prism_core PUBLIC xsimd nlohmann_json prism_deps_lib)
 # pcre2-8 is the 8-bit library target from the vendored tree
 if(TARGET pcre2-8-static)
@@ -443,17 +437,16 @@ if(UNIX)
   set_target_properties(prism PROPERTIES BUILD_RPATH "$ORIGIN" INSTALL_RPATH "$ORIGIN")
 endif()
 
-# Installed layout: <prefix>/bin/prism finds the shipped Coccinelle rules in
-# <prefix>/share/prism/cocci (adapters.cpp cocci_rules), whatever the cwd.
 include(GNUInstallDirs)
 install(TARGETS prism RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
-install(DIRECTORY "${PRISM_ROOT}/prism/cocci/" DESTINATION "${CMAKE_INSTALL_DATADIR}/prism/cocci"
-  FILES_MATCHING PATTERN "*.cocci")
 
 # --- prism_ai: offline analytics of the AI layer (src/tools/prism_ai/) ---
 # Trains / measures the solver and bound model (prism_ai predict), replays the
 # portfolio scheduler, measures the assistant features. Not part of a scan.
 option(PRISM_TOOLS "Build the offline developer tools (prism_ai)" ON)
+# Optional C ABI shared library (prism_havoc / prism_coverage_hash) for external
+# fuzz mutators; the engine uses havoc.cpp/hash.cpp in prism_core directly.
+option(PRISM_NATIVE "Build libprism_native (C ABI for havoc/coverage hash)" OFF)
 if(PRISM_TOOLS OR PRISM_TESTS)
   add_library(prism_ai_lib STATIC
     src/tools/prism_ai/dispatch.cpp
@@ -470,13 +463,14 @@ if(PRISM_TOOLS)
   target_link_libraries(prism_ai PRIVATE prism_ai_lib)
 endif()
 
-# C ABI for coverage hash / havoc
-add_library(prism_native SHARED src/prism/capi.cpp src/prism/hash.cpp src/prism/havoc.cpp)
-target_include_directories(prism_native PUBLIC "${PRISM_ROOT}/include")
-target_link_libraries(prism_native PUBLIC xsimd)
-target_compile_definitions(prism_native PRIVATE PRISM_EXPORTS)
-if(WIN32)
-  set_target_properties(prism_native PROPERTIES PREFIX "" OUTPUT_NAME "prism_native")
+if(PRISM_NATIVE)
+  add_library(prism_native SHARED src/prism/capi.cpp src/prism/hash.cpp src/prism/havoc.cpp)
+  target_include_directories(prism_native PUBLIC "${PRISM_ROOT}/include")
+  target_link_libraries(prism_native PUBLIC xsimd)
+  target_compile_definitions(prism_native PRIVATE PRISM_EXPORTS)
+  if(WIN32)
+    set_target_properties(prism_native PROPERTIES PREFIX "" OUTPUT_NAME "prism_native")
+  endif()
 endif()
 
 # --- prism-qa: developer QA tools (src/tools/qa; built by default, not shipped) ---
@@ -603,8 +597,10 @@ if(PRISM_CUDA)
       # prism / prism_tests / prism_gui link prism_core, not prism_native.
       # Leaving the kernel only on prism_native was a silent disable.
       target_link_libraries(prism_core PUBLIC prism_cuda)
-      target_link_libraries(prism_native PUBLIC prism_cuda)
-      target_compile_definitions(prism_native PUBLIC PRISM_HAS_CUDA)
+      if(TARGET prism_native)
+        target_link_libraries(prism_native PUBLIC prism_cuda)
+        target_compile_definitions(prism_native PUBLIC PRISM_HAS_CUDA)
+      endif()
       target_compile_definitions(prism_core PUBLIC PRISM_HAS_CUDA)
       message(STATUS "CUDA mutation kernel ON (nvcc host ${CMAKE_CUDA_HOST_COMPILER})")
     else()

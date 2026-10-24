@@ -96,20 +96,19 @@ CaDiCaL 3.0.1 and Kissat 4.0.4, and
 
 ## How PRISM finds and records tools
 
-Search order in both engines (`prism/config.py`, `src/prism/config.cpp`):
+Search order (`src/prism/config.cpp`):
 
 1. `--tool NAME=PATH` / `Config.tools`
 2. `~/.prism/tools/<component>/<pinned commit>/bin/<exe>`: only the commit
-   the manifest pins. The Python engine reads `MANIFEST.toml` with `tomllib`.
-   The C++ engine reads it at CMake configure time into the generated
+   the manifest pins. Pins are read at CMake configure time into the generated
    `prism/manifest_pins.hpp`, so a binary trusts the builds its own manifest
    named.
 3. `PATH`
 
 A missing tool is `NOTRUN` with the hint
 `prism-deps tool <component> (pinned in third_party/MANIFEST.toml)`.
-Law 9: a tools directory (or, in the Python engine, a manifest) inside the
-scanned tree is ignored unless `--allow-exec` is given.
+Law 9: a tools directory inside the scanned tree is ignored unless
+`--allow-exec` is given.
 
 Every finding an external tool produced carries `extra["tool_sha"]`: the
 manifest commit when the binary lives under
@@ -173,8 +172,9 @@ every push.
   `-Wl,--build-id=sha1`, and deterministic `llvm-ar`.
 - `prism-deps licence-check` and `prism-deps linked` run before compiling;
   `prism_tests` runs after.
-- The `artefacts` stage exports `prism`, `libprism_native.so`,
-  `prism.cdx.json` and `SHA256SUMS`.
+- The `artefacts` stage exports `prism`, `prism.cdx.json` and `SHA256SUMS`.
+  Optional `-DPRISM_NATIVE=ON` also builds `libprism_native.so` (C ABI for
+  external fuzz mutators; not part of the release tarball).
 
 `.github/workflows/release.yml` runs on tags `v*`. It builds twice from
 scratch with `--no-cache` and fails if the two `SHA256SUMS` differ. It then
@@ -209,7 +209,6 @@ passed `prism_tests` (287/287) and wrote identical `SHA256SUMS`:
 
 ```
 946419ea646243e6eea40cf3421d1e1ba850e595d55de83b00d49c65d0d7ecd1  prism
-29e981bc551dc3bfefc83355a1be7206a7f361afa2d09ed5057b6bc9a88aa148  libprism_native.so
 d740568217f39451c3764aeb56d241b5bb154f7728d9ac2cade5ce805e9880a1  prism.cdx.json
 ```
 

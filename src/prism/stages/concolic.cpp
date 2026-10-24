@@ -84,7 +84,7 @@ std::vector<Args> initial_seeds(const FunctionInfo& fn) {
             }
             for (auto v : extremes) {
                 cur[names[i]] = i32(v);
-                rec(i + 1, cur);
+                if (rec) rec(i + 1, cur);
             }
         };
         rec(0, {});
@@ -111,7 +111,7 @@ std::vector<std::string> branch_conditions(const FunctionInfo& fn) {
             }
         }
         while (!n.empty() && n.back() == ' ') n.pop_back();
-        if (!n.empty() && std::find(seen.begin(), seen.end(), n) == seen.end()) seen.push_back(n);
+        if (!n.empty() && std::ranges::find(seen, n) == seen.end()) seen.push_back(n);
     }
     return seen;
 }
@@ -227,8 +227,8 @@ std::tuple<std::optional<Args>, bool, bool> neighbor_for_cond(const FunctionInfo
 }
 
 Finding concolic_function(const FunctionInfo& fn, int budget) {
-    auto base_nh = [&](std::string msg) {
-        return make_find("concolic", laws::NEEDS_HARNESS, fn, "", std::move(msg), laws::STRENGTH_FINDS);
+    auto base_nh = [&](std::string text) {
+        return make_find("concolic", laws::NEEDS_HARNESS, fn, "", std::move(text), laws::STRENGTH_FINDS);
     };
     if (fn.kind == "POINTER")
         return base_nh("pointer parameter: concolic engine does not invent buffers");
@@ -283,8 +283,8 @@ Finding concolic_function(const FunctionInfo& fn, int budget) {
         if (!rec.error.empty()) {
             if (rec.error == "skip-pointer")
                 return base_nh("pointer parameter: concolic engine does not invent buffers");
-            if (auto msg = harness_for_parsefail(rec.error, "concolic engine")) {
-                auto f = base_nh(*msg);
+            if (auto harness = harness_for_parsefail(rec.error, "concolic engine")) {
+                auto f = base_nh(*harness);
                 f.extra["tried"] = std::to_string(tried);
                 return f;
             }

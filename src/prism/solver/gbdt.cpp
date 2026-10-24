@@ -44,7 +44,7 @@ int fit_tree(Tree& tree, const std::vector<std::vector<double>>& xs, const std::
     tree.nodes.emplace_back();
     std::vector<double> vals;
     vals.reserve(idx.size());
-    for (auto i : idx) vals.push_back(ys[i]);
+    for (auto i : idx) vals.push_back(ys.at(i));
     const std::size_t n = idx.size();
     if (depth == 0 || n < 2 * static_cast<std::size_t>(std::max(min_leaf, 0))) {
         tree.nodes[self].v = mean(vals);
@@ -54,7 +54,7 @@ int fit_tree(Tree& tree, const std::vector<std::vector<double>>& xs, const std::
     double total_sq = 0.0;
     for (double v : vals) total_sq += v * v;
     const double parent = total_sq - total_sum * total_sum / static_cast<double>(n);
-    const std::size_t nfeat = n ? xs[idx[0]].size() : 0;
+    const std::size_t nfeat = n ? xs.at(idx.at(0)).size() : 0;
     bool have = false;
     double best_gain = 0.0, best_t = 0.0;
     int best_f = -1;
@@ -63,15 +63,15 @@ int fit_tree(Tree& tree, const std::vector<std::vector<double>>& xs, const std::
     for (std::size_t f = 0; f < nfeat; ++f) {
         std::vector<std::size_t> order = idx;
         std::stable_sort(order.begin(), order.end(),
-                         [&](std::size_t a, std::size_t b) { return xs[a][f] < xs[b][f]; });
+                         [&](std::size_t a, std::size_t b) { return xs.at(a).at(f) < xs.at(b).at(f); });
         double ls = 0.0, lsq = 0.0;
         for (std::size_t k = 0; k + 1 < n; ++k) {
-            const double y = ys[order[k]];
+            const double y = ys.at(order.at(k));
             ls += y;
             lsq += y * y;
             const std::size_t nl = k + 1;
             if (nl < static_cast<std::size_t>(min_leaf) || n - nl < static_cast<std::size_t>(min_leaf)) continue;
-            const double a = xs[order[k]][f], b = xs[order[k + 1]][f];
+            const double a = xs.at(order.at(k)).at(f), b = xs.at(order.at(k + 1)).at(f);
             if (a == b) continue;
             const double rs = total_sum - ls, rsq = total_sq - lsq;
             const auto nr = static_cast<double>(n - nl);
@@ -149,19 +149,19 @@ double Tree::eval(const std::vector<double>& x) const {
     if (nodes.empty()) return 0.0;
     std::size_t i = 0;
     while (true) {
-        const auto& n = nodes[i];
+        const auto& n = nodes.at(i);
         if (n.f == -1) return n.v;
-        const double xv = (n.f >= 0 && static_cast<std::size_t>(n.f) < x.size()) ? x[static_cast<std::size_t>(n.f)] : 0.0;
+        const double xv = (n.f >= 0 && static_cast<std::size_t>(n.f) < x.size()) ? x.at(static_cast<std::size_t>(n.f)) : 0.0;
         i = static_cast<std::size_t>(xv <= n.t ? n.l : n.r);
     }
 }
 
 int Tree::depth() const {
-    std::function<int(int)> d = [&](int i) -> int {
+    auto rec = [&](const auto& self, int i) -> int {
         const auto& n = nodes[static_cast<std::size_t>(i)];
-        return n.f == -1 ? 0 : 1 + std::max(d(n.l), d(n.r));
+        return n.f == -1 ? 0 : 1 + std::max(self(self, n.l), self(self, n.r));
     };
-    return nodes.empty() ? 0 : d(0);
+    return nodes.empty() ? 0 : rec(rec, 0);
 }
 
 ojson Tree::to_json() const { return nodes.empty() ? ojson{{"v", 0.0}} : node_json(*this, 0); }
@@ -177,14 +177,14 @@ Model& Model::fit(const std::vector<std::vector<double>>& xs, const std::vector<
     base = mean(ys);
     std::vector<double> pred(ys.size(), base);
     std::vector<std::size_t> idx(ys.size());
-    for (std::size_t i = 0; i < idx.size(); ++i) idx[i] = i;
+    for (std::size_t i = 0; i < idx.size(); ++i) idx.at(i) = i;
     trees.clear();
     std::vector<double> resid(ys.size());
     for (int it = 0; it < n_trees; ++it) {
-        for (std::size_t i = 0; i < ys.size(); ++i) resid[i] = ys[i] - pred[i];
+        for (std::size_t i = 0; i < ys.size(); ++i) resid.at(i) = ys.at(i) - pred.at(i);
         if (sse(resid) < 1e-12) break;
         trees.push_back(fit_one(xs, resid, idx, depth, min_leaf));
-        for (auto i : idx) pred[i] += lr * trees.back().eval(xs[i]);
+        for (auto i : idx) pred.at(i) += lr * trees.back().eval(xs.at(i));
     }
     return *this;
 }
@@ -195,7 +195,7 @@ Model& Model::fit_censored(const std::vector<std::vector<double>>& xs, const std
     if (!sigma) {
         std::vector<double> obs;
         for (std::size_t i = 0; i < ys.size(); ++i)
-            if (!censored[i]) obs.push_back(ys[i]);
+            if (!censored.at(i)) obs.push_back(ys.at(i));
         // Half the spread of the observed targets, clamped: a fixed noise
         // scale (the trees model the location).
         const double sd = obs.size() > 1 ? std::sqrt(sse(obs) / static_cast<double>(obs.size())) : 1.0;
@@ -205,19 +205,19 @@ Model& Model::fit_censored(const std::vector<std::vector<double>>& xs, const std
     base = mean(ys);
     std::vector<double> pred(ys.size(), base);
     std::vector<std::size_t> idx(ys.size());
-    for (std::size_t i = 0; i < idx.size(); ++i) idx[i] = i;
+    for (std::size_t i = 0; i < idx.size(); ++i) idx.at(i) = i;
     trees.clear();
     std::vector<double> resid(ys.size());
     for (int it = 0; it < n_trees; ++it) {
         bool small = true;
         for (std::size_t i = 0; i < ys.size(); ++i) {
-            if (!censored[i]) resid[i] = ys[i] - pred[i];
-            else resid[i] = sg * mills((ys[i] - pred[i]) / sg);
-            if (!(std::abs(resid[i]) < 1e-9)) small = false;
+            if (!censored.at(i)) resid.at(i) = ys.at(i) - pred.at(i);
+            else resid.at(i) = sg * mills((ys.at(i) - pred.at(i)) / sg);
+            if (!(std::abs(resid.at(i)) < 1e-9)) small = false;
         }
         if (sse(resid) < 1e-12 && small) break;
         trees.push_back(fit_one(xs, resid, idx, depth, min_leaf));
-        for (auto i : idx) pred[i] += lr * trees.back().eval(xs[i]);
+        for (auto i : idx) pred.at(i) += lr * trees.back().eval(xs.at(i));
     }
     return *this;
 }
@@ -250,7 +250,7 @@ Model Model::from_json(const ojson& j) {
 double rmse(const Model& m, const std::vector<std::vector<double>>& xs, const std::vector<double>& ys) {
     if (xs.empty()) return std::nan("");
     double s = 0.0;
-    for (std::size_t i = 0; i < xs.size(); ++i) s += std::pow(m.predict(xs[i]) - ys[i], 2.0);
+    for (std::size_t i = 0; i < xs.size(); ++i) s += std::pow(m.predict(xs.at(i)) - ys.at(i), 2.0);
     return std::sqrt(s / static_cast<double>(xs.size()));
 }
 
