@@ -30,7 +30,7 @@ PRISM_API std::string sha256_hex(const std::string& data);
 PRISM_API std::string sha256_file(const std::filesystem::path& path);  // "" when unreadable
 
 // ---------------------------------------------------------------- grammars
-// GBNF text shipped in grammars/<name>.gbnf (embedded verbatim; tests/test_ai.py
+// GBNF text shipped in grammars/<name>.gbnf (embedded verbatim; tests/cpp/test_ai_assist.cpp
 // locks the embedded copy to the file). Names: invariants, harness, contract, explain,
 // lean_proof, assumption_audit (include/prism/ai_proof.hpp).
 PRISM_API const std::string& grammar_text(const std::string& name);

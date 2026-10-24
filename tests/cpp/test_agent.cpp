@@ -483,3 +483,23 @@ TEST_CASE("agent: the contracts stage adds the model's specs beside its proofs, 
         if (s.name == "contracts")
             for (const auto& f : s.findings) CHECK(f.message != "Dafny-style spec (hypothesis, not proved)");
 }
+
+TEST_CASE("repo lint: LLM stage strings and pipeline exports (ex test_llm.py)") {
+    namespace fs = std::filesystem;
+    auto slurp = [](const fs::path& p) {
+        std::ifstream in(p, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    };
+    const fs::path root(PRISM_SOURCE_DIR);
+    const auto llm_hpp = slurp(root / "src" / "prism" / "stages" / "llm.hpp");
+    CHECK(llm_hpp.find("LLM_UNAVAILABLE_MSG") != std::string::npos);
+    CHECK(llm_hpp.find("LLM_INSTALL") != std::string::npos);
+    CHECK(llm_hpp.find("llama.cpp/Ollama not reachable") != std::string::npos);
+    const auto hyp = slurp(root / "src" / "prism" / "stages" / "hypothesize.cpp");
+    CHECK(hyp.find("LLM_INSTALL") != std::string::npos);
+    CHECK(hyp.find("llm_httpish") != std::string::npos);
+    const auto pipe_hpp = slurp(root / "include" / "prism" / "pipeline.hpp");
+    CHECK(pipe_hpp.find("llm_forced_reads") != std::string::npos);
+    const auto tax = slurp(root / "src" / "prism" / "taxonomy.cpp");
+    CHECK(tax.find("coverage_from_report") != std::string::npos);
+}

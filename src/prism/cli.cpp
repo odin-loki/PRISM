@@ -136,7 +136,7 @@ CliResult<CliOptions> parse_cli(std::span<const char* const> args) {
     o.cfg = default_config();
     auto& cfg = o.cfg;
     bool have_path = false, positional_only = false;
-    Args in{args};
+    Args in{args, 0, {}, {}, {}};
     for (in.i = 0; in.i < args.size(); ++in.i) {
         const std::string_view raw = args[in.i];
         if (positional_only || !split_option(raw, in.name, in.value)) {
@@ -259,7 +259,7 @@ CliResult<CliOptions> parse_cli(std::span<const char* const> args) {
 CliResult<TriageCli> parse_triage_cli(std::span<const char* const> args) {
     TriageCli t;
     bool have_dir = false;
-    Args in{args};
+    Args in{args, 0, {}, {}, {}};
     for (in.i = 0; in.i < args.size(); ++in.i) {
         const std::string_view raw = args[in.i];
         if (!split_option(raw, in.name, in.value)) {

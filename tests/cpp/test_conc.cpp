@@ -8,6 +8,7 @@
 #include "prism/config.hpp"
 #include "prism/laws.hpp"
 #include "prism/pir.hpp"
+#include "prism/pir/frontend.hpp"
 
 #include <filesystem>
 #include <string>
@@ -20,8 +21,7 @@ std::filesystem::path conc_dir() {
 
 bool have_frontend() {
     prism::Config cfg;
-    auto fe = prism::pir::find_frontend(cfg);
-    return fe.clang && fe.opt && prism::pir::z3_available();
+    return prism::pir::frontend_usable(cfg) && prism::pir::z3_available();
 }
 
 prism::conc::Result run_main(const char* file, prism::conc::Options opt = {}) {

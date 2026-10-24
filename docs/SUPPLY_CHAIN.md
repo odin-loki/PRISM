@@ -141,12 +141,10 @@ table still needs review before the first sale.
 
 ## Phase-5 Python allow-list (C++ port)
 
-Until `prism/*.py` and the pytest suite are deleted, `prism_tests` runs
-`deps: tracked .py files match the phase-5 allow-list` in
-`tests/cpp/test_deps.cpp`. The constexpr `k_python_engine_deleted` selects the
-rules: `false` while the Python engine remains (allow `prism/`, `tests/`,
-`scripts/`, `tools/` prefixes outside `third_party/`), `true` after phase 5
-(only `tools/svcomp/prism.py` may remain). See [CPP_PORT_PLAN.md](CPP_PORT_PLAN.md).
+`prism_tests` runs `deps: tracked .py files match the phase-5 allow-list` in
+`tests/cpp/test_deps.cpp` with `k_python_engine_deleted = true`: tracked `.py`
+outside `third_party/` must be only `tools/svcomp/prism.py` (BenchExec
+tool-info). See [CPP_PORT_PLAN.md](CPP_PORT_PLAN.md).
 
 ## SBOM
 
@@ -234,16 +232,12 @@ date.
 Rebuilds are expected to match only on x86-64 with AVX2, the configured
 target (`-mavx2`).
 
-## Phase 5: tracked Python (until the engine is deleted)
+## Phase 5: tracked Python (engine deleted)
 
 `tests/cpp/test_deps.cpp` runs `git ls-files '*.py'` and fails on any tracked
 `.py` outside the allow-list (`deps: tracked .py files match the phase-5
-allow-list`). While `prism/*.py` and the remaining pytest suite exist, paths
-under `prism/`, `tests/`, `scripts/`, and `tools/` are permitted; vendored
-`third_party/**` is ignored; `tools/svcomp/prism.py` stays allow-listed as the
-BenchExec tool-info plugin. When the Python engine is removed, flip
-`k_python_engine_deleted` in that doctest to `true` so only
-`tools/svcomp/prism.py` may appear outside `third_party/`.
+allow-list`). Vendored `third_party/**` is ignored; the only permitted path
+outside it is `tools/svcomp/prism.py` (BenchExec tool-info plugin).
 
 ## History rewrite (owner action)
 

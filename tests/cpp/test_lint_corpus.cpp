@@ -416,7 +416,9 @@ TEST_CASE("lint fastpath: match_brace equals the reference loop") {
     CHECK(bad == 0);
 }
 
-TEST_CASE("lint fastpath: findings name globals and optionals in sorted order") {
+TEST_CASE("lint fastpath: same output when iteration order varies (hash-seed port)") {
+    // Port of tests/test_lints_fastpath.py: PYTHONHASHSEED must not change lint
+    // finding order or messages (optional names and file-scope globals are sorted).
 #ifdef _WIN32
     const long pid = static_cast<long>(_getpid());
 #else
@@ -441,10 +443,10 @@ TEST_CASE("lint fastpath: findings name globals and optionals in sorted order") 
     std::vector<fs::path> ps;
     for (const auto& e : fs::directory_iterator(tmp)) ps.push_back(e.path());
     std::sort(ps.begin(), ps.end());
-    auto run_once = [&] {
-        auto found = prism::run_lints(ps, tmp, 1);
+    auto run_pack = [&](const std::vector<fs::path>& paths) {
+        auto found = prism::run_lints(paths, tmp, 1);
         std::vector<prism::FunctionInfo> fns;
-        for (const auto& p : ps)
+        for (const auto& p : paths)
             for (auto& f : prism::extract_functions(p, p.string())) fns.push_back(f);
         for (auto& f : prism::run_thread(fns)) found.push_back(f);
         std::string out;
@@ -452,9 +454,16 @@ TEST_CASE("lint fastpath: findings name globals and optionals in sorted order") 
             out += f.cls + "|" + std::to_string(f.line.value_or(0)) + "|" + f.message + "\n";
         return out;
     };
-    const std::string out = run_once();
+    std::set<std::string> outs;
+    for (int seed = 0; seed < 6; ++seed) {
+        auto order = ps;
+        if (seed % 2) std::reverse(order.begin(), order.end());
+        if (seed >= 3) std::rotate(order.begin(), order.begin() + 1, order.end());
+        outs.insert(run_pack(order));
+    }
+    CHECK(outs.size() == 1);
+    const std::string out = *outs.begin();
     std::error_code ec;
-    CHECK(run_once() == out);
     fs::remove_all(tmp, ec);
     INFO(out);
     CHECK(out.find("alpha dereferenced without has_value()") != std::string::npos);

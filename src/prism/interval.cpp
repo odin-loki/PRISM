@@ -48,14 +48,8 @@ int64_t tmin(int w) { return w >= 64 ? std::numeric_limits<int64_t>::min() : kIn
 int64_t tmax(int w) { return w >= 64 ? std::numeric_limits<int64_t>::max() : kIntMax; }
 R top(int w, bool u = false) { return R{tmin(w), tmax(w), u, w}; }
 
-const R kTop{kIntMin, kIntMax, false};
 const R kBot{1, 0, false};
 const R kCallDummy{1, 1, false};
-
-const char* kDeclType =
-    "(?:unsigned\\s+long\\s+long(?:\\s+int)?|long\\s+long(?:\\s+int)?|"
-    "unsigned\\s+long(?:\\s+int)?|uint64_t|int64_t|"
-    "unsigned(?:\\s+int)?|int|long|short|char|uint32_t|int32_t|size_t)";
 
 const std::unordered_set<std::string> kCastWords = {
     "char", "short", "int", "long", "unsigned", "signed",

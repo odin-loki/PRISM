@@ -17,6 +17,10 @@ CMakeFiles/
 err*.txt
 _tmp_*.txt
 %TEMP%/
+/*.log
+/*.obj
+/*.ll
+/*.zip
 
 # Model weights are never vendored (llama.cpp's vocab test files included).
 third_party/llama.cpp/models/*.gguf

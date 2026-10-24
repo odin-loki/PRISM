@@ -1,0 +1,37 @@
+# PRISM engine clang-tidy (ISO C++23). Policy: docs/CXX_STANDARD.md.
+# Use with compile_commands.json on src/ (and matching include/prism/ headers).
+# third_party/ is vendored and out of scope; incremental rollout — no WarningsAsErrors yet.
+
+---
+Checks: >
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-implicit-widening-of-multiplication-result,
+  -bugprone-misplaced-widening-cast,
+  -bugprone-narrowing-conversions,
+  -bugprone-reserved-identifier,
+  -bugprone-too-small-loop-variable,
+  cppcoreguidelines-*,
+  -cppcoreguidelines-avoid-c-arrays,
+  -cppcoreguidelines-avoid-do-while,
+  -cppcoreguidelines-avoid-magic-numbers,
+  -cppcoreguidelines-macro-usage,
+  -cppcoreguidelines-non-private-member-variables-in-classes,
+  -cppcoreguidelines-owning-memory,
+  -cppcoreguidelines-pro-bounds-array-to-pointer-decay,
+  -cppcoreguidelines-pro-bounds-constant-array-index,
+  -cppcoreguidelines-pro-bounds-pointer-arithmetic,
+  -cppcoreguidelines-pro-type-const-cast,
+  -cppcoreguidelines-pro-type-reinterpret-cast,
+  -cppcoreguidelines-pro-type-union-access,
+  -cppcoreguidelines-pro-type-vararg,
+  modernize-*,
+  -modernize-avoid-c-arrays,
+  -modernize-concat-nested-namespaces,
+  -modernize-loop-convert,
+  -modernize-pass-by-value,
+  -modernize-use-nodiscard,
+  -modernize-use-trailing-return-type,
+  -modernize-use-using,
+HeaderFilterRegex: '(src/|include/prism/).*'
+FormatStyle: none

@@ -5,120 +5,99 @@ engine (`prism/*.py`) is deleted, and every tool, script, test and CI step
 that uses Python is ported to C++23 (CMake already builds with
 `CMAKE_CXX_STANDARD 23`).
 
-**Status (2026-10-09): C++ integration complete on `main`; ~29 pytest files left.**
+**Status (2026-10-25): Python engine deleted (`prism/*.py` removed);
+`k_python_engine_deleted = true` in `tests/cpp/test_deps.cpp`; CI pytest
+jobs removed; doctest + `prism_tests` only.**
 
 - **Merged on tree:** `prism-deps` (replaces `scripts/fetch_deps.py`,
   `licence_check.py`, `sbom.py`), unified **`prism-qa`** (`conformance`,
   `soundness`, dev QA commands), **`prism_docs_check`**, Qt GUI parity
   (`gui_model`, stages table, journal poll), native JSON/TOML in polyglot,
-  `prism svcomp` in C++, table-driven **`tests/cpp/test_bmc.cpp`** and
-  **`tests/cpp/test_concolic.cpp`** (`tools/gen_test_bmc_cpp.py`,
-  `tools/gen_test_concolic_cpp.py`), and the bulk of phase-2 doctest ports
-  (`tests/cpp/*`).
-- **`tests/test_core.py`:** deleted — `TestLaws` / `TestBMC` / `TestLints` were
-  already doctest-only; the last `TestClassify` cparse cases now live in
-  `tests/cpp/test_main.cpp` (`cparse: testdata function kinds`).
-- **Pytest:** **21** tracked `tests/test_*.py` files (shrunk; ports in
-  `tests/cpp/*`). CI runs an explicit list (not `tests/`).
-  Phase-5 allow-list: **`tests/cpp/test_deps.cpp`** on every `prism_tests` run.
-- **CI:** `ci.yml` python job lists 20 pytest files (three need `PRISM_BIN`);
-  BenchExec smoke on the `cpp` job. `conformance.yml` / `self-check.yml` →
-  `prism-qa`; supply-chain builds `prism-deps`.
-- **Still open:** phase 5 (delete `prism/*.py` and the remaining pytest suite),
-  `port/ai-gen-tools`, owner-only items in `ROADMAP_STATUS.md`. **Phase 6
-  (Z3 without Python)** is **done** — see phase-6 section.
+  `prism svcomp` in C++, table-driven **`tests/cpp/test_bmc.cpp`**,
+  **`tests/cpp/test_concolic.cpp`**, **`tests/cpp/test_pir_e2e.cpp`** (edit the
+  `.cpp` files directly; one-shot generators retired), and the bulk of phase-2
+  doctest ports (`tests/cpp/*`).
+- **Phase 5 (delete Python engine):** **done** (2026-10-25). All `prism/*.py`
+  removed; **`prism/cocci/*.cocci`** kept as bundled data. Tracked `.py` outside
+  `third_party/` is only **`tools/svcomp/prism.py`**. Gate:
+  **`tests/cpp/test_deps.cpp`** (`k_python_engine_deleted = true`).
+- **CI:** no engine pytest job; lint fastpath + e2e smokes live in
+  `prism_tests`. BenchExec smoke on the `cpp` job. `conformance.yml` /
+  `self-check.yml` → `prism-qa`; supply-chain builds `prism-deps`.
+- **Still open:** `port/ai-gen-tools`, owner-only items in `ROADMAP_STATUS.md`.
+  **Phase 6 (Z3 without Python)** is **done** — see phase-6 section.
 - Appendix map is from audit `911b9f94f`; many rows are now **DONE** on C++
   even where the table still says partial — treat this status block as current.
 
 ## `prism/*.py` delete checklist (grep vs `src/prism`, 2026-10-09)
 
-**Gate today:** `k_python_engine_deleted = false` in `tests/cpp/test_deps.cpp`.
-**Pytest:** 21 `tests/test_*.py` files remain (`test_ai.py` is a stub only).
-**BLOCKED files:** 21 / 41 — **do not delete `prism/` until BLOCKED = 0.**
+**Gate (2026-10-25):** `k_python_engine_deleted = true` in `tests/cpp/test_deps.cpp`.
+**Tracked `.py` outside `third_party/`:** only `tools/svcomp/prism.py` (BenchExec
+tool-info; see [What cannot become C++](#what-cannot-become-c-the-only-exceptions)).
+**BLOCKED files:** **0** / 41 — all engine `prism/*.py` modules **deleted**.
 
-Legend: **READY** = C++ owns runtime behaviour; no pytest/oracle pins this
-module (generators and tree-wide gates may still block phase-5 delete).
-**BLOCKED** = appendix gap, pytest, generator, ctypes, or embedded Python
-still references this file.
+**Kept under `prism/` (data only):** `prism/cocci/*.cocci` — bundled Coccinelle
+rules; `cocci_rules()` still resolves `prism/cocci` next to the repo/build layout
+(or `share/prism/cocci` when installed). No `.py` remains in `prism/`.
 
-| `prism/*.py` | C++ owner (primary) | Status | Blocker (if BLOCKED) |
-|---|---|---|---|
-| `__init__.py` | `capi.cpp`, `models.hpp`, `pipeline.hpp` | READY | |
-| `__main__.py` | `main.cpp`, `cli.cpp` | BLOCKED | CLI flag/exit parity (D62–D64) |
-| `adapters.py` | `adapters.cpp`, `config.cpp` | READY | |
-| `adapters_extra.py` | `adapters.cpp`, `stages/fuse.cpp` | BLOCKED | spatch/semgrep/cocci bugs; `prism/cocci/` |
-| `afl.py` | `stages/fuse.cpp` | BLOCKED | AFL env/cwd/sandbox extras |
-| `agent.py` | `stages/hypothesize.cpp`, `fuse.cpp`, `execute_cex.cpp` | BLOCKED | `dafny_specs`, interpreter extras |
-| `ai.py` | `stages/llm.cpp`, `ai/*.cpp` | BLOCKED | bindings/GGUF limits; `test_llm.py` |
-| `bmc.py` | `bmc.cpp`, `bmc_*.inc` | BLOCKED | `tools/gen_prism.py` reads `.py` for `bmc_unenc.inc` |
-| `checkers.py` | `checkers_*.cpp` | BLOCKED | branch/guard drift (phase 1); `test_lints_fastpath.py` |
-| `concolic.py` | `stages/concolic.cpp`, `bmc.cpp` | READY | |
-| `concrete.py` | `stages/interp.cpp`, `common.cpp` | BLOCKED | i64 args; `pack_args` test helper |
-| `confidence.py` | `pipeline.cpp`, `verdict/verdict.cpp` | BLOCKED | no exported `score()`; `test_taxonomy.py` |
-| `config.py` | `config.cpp`, `threads.hpp` | READY | |
-| `contracts.py` | `stages/contracts.cpp` | BLOCKED | ACSL case-folding (D126) |
-| `cparse.py` | `cparse.cpp` | READY | |
-| `diff.py` | `stages/diff.cpp` | READY | |
-| `fuse.py` | `stages/fuse.cpp` | READY | |
-| `fuzz.py` | `stages/fuse.cpp`, `common.cpp`, `interp.cpp` | BLOCKED | caches/parallel fuzz runs |
-| `gui.py` | `src/gui/*`, `gui_model.cpp` | BLOCKED | Qt GUI parity; `test_gui.py`, `test_prism_gui.py` |
-| `harness.py` | `stages/harness_bmc.cpp`, `ai/harness.cpp` | READY | |
-| `inline.py` | `inline.cpp` | READY | |
-| `interval.py` | `interval.cpp` | READY | |
-| `journal.py` | `journal.cpp` | READY | |
-| `laws.py` | `laws.cpp`, `verdict.hpp` | READY | |
-| `ltl.py` | `stages/ltl.cpp` | BLOCKED | FSM extraction algorithm |
-| `models.py` | `models.cpp`, `journal.cpp` | BLOCKED | `extra` value types in reports |
-| `muttest.py` | `stages/rapid.cpp` | BLOCKED | Law-9 / gcc scoring paths |
-| `pbsd.py` | `adapters.cpp` (`run_pbsd_lints`) | BLOCKED | ParanoidBSD Python scanners; `test_pbsd.py` |
-| `pipeline.py` | `pipeline.cpp` | BLOCKED | LLM Dafny hooks, classify cache |
-| `polyglot.py` | `polyglot.cpp`, `scope.cpp` | BLOCKED | embedded Python json-syntax (`SYNTAX_HELPER`) |
-| `rapid.py` | `stages/rapid.cpp` | BLOCKED | gcc fallback (doctest in `test_main.cpp`) |
-| `sandbox.py` | `sandbox.cpp` | READY | |
-| `sanitize.py` | `adapters.cpp` | BLOCKED | parallel compile, triple parse |
-| `sarif.py` | `sarif.cpp` | READY | `tests/cpp/test_sarif.cpp` + `test_cli.cpp` |
-| `scope.py` | `scope.cpp` | READY | |
-| `shipdocs.py` | `shipdocs.cpp` | READY | |
-| `simdmut.py` | `havoc.cpp`, `hash.cpp`, `simd.hpp` | BLOCKED | `test_simdmut.py` ctypes / `prism_native` |
-| `taint.py` | `stages/taint.cpp` | READY | |
-| `taxonomy.py` | `taxonomy.cpp` | READY | |
-| `thread.py` | `stages/thread.cpp` | READY | |
-| `wp.py` | `stages/wp.cpp` | READY | |
+Legend: **DELETED** = module removed; runtime and doctest coverage live in the C++
+column. Appendix rows may still note historical parity gaps; they no longer block
+the tree.
 
-**Bundled data (not a `.py` row but blocks tree delete):** `prism/cocci/*.cocci`
-— C++ `cocci_rules()` still resolves `prism/cocci` or `share/prism/cocci`;
-move to `rules/cocci/` (or embed) before phase 5.
+| `prism/*.py` | C++ owner (primary) | Status |
+|---|---|---|
+| `__init__.py` | `capi.cpp`, `models.hpp`, `pipeline.hpp` | DELETED |
+| `__main__.py` | `main.cpp`, `cli.cpp` | DELETED |
+| `adapters.py` | `adapters.cpp`, `config.cpp` | DELETED |
+| `adapters_extra.py` | `adapters.cpp`, `stages/fuse.cpp` | DELETED |
+| `afl.py` | `stages/fuse.cpp` | DELETED |
+| `agent.py` | `stages/hypothesize.cpp`, `fuse.cpp`, `execute_cex.cpp` | DELETED |
+| `ai.py` | `stages/llm.cpp`, `ai/*.cpp` | DELETED |
+| `bmc.py` | `bmc.cpp`, `bmc_*.inc` | DELETED |
+| `checkers.py` | `checkers_*.cpp` | DELETED |
+| `concolic.py` | `stages/concolic.cpp`, `bmc.cpp` | DELETED |
+| `concrete.py` | `stages/interp.cpp`, `common.cpp` | DELETED |
+| `confidence.py` | `pipeline.cpp`, `verdict/verdict.cpp` | DELETED |
+| `config.py` | `config.cpp`, `threads.hpp` | DELETED |
+| `contracts.py` | `stages/contracts.cpp` | DELETED |
+| `cparse.py` | `cparse.cpp` | DELETED |
+| `diff.py` | `stages/diff.cpp` | DELETED |
+| `fuse.py` | `stages/fuse.cpp` | DELETED |
+| `fuzz.py` | `stages/fuse.cpp`, `common.cpp`, `interp.cpp` | DELETED |
+| `gui.py` | `src/gui/*`, `gui_model.cpp` | DELETED |
+| `harness.py` | `stages/harness_bmc.cpp`, `ai/harness.cpp` | DELETED |
+| `inline.py` | `inline.cpp` | DELETED |
+| `interval.py` | `interval.cpp` | DELETED |
+| `journal.py` | `journal.cpp` | DELETED |
+| `laws.py` | `laws.cpp`, `verdict.hpp` | DELETED |
+| `ltl.py` | `stages/ltl.cpp` | DELETED |
+| `models.py` | `models.cpp`, `journal.cpp` | DELETED |
+| `muttest.py` | `stages/rapid.cpp` | DELETED |
+| `pbsd.py` | `adapters.cpp` (`run_pbsd_lints`) | DELETED |
+| `pipeline.py` | `pipeline.cpp` | DELETED |
+| `polyglot.py` | `polyglot.cpp`, `scope.cpp` | DELETED |
+| `rapid.py` | `stages/rapid.cpp` | DELETED |
+| `sandbox.py` | `sandbox.cpp` | DELETED |
+| `sanitize.py` | `adapters.cpp` | DELETED |
+| `sarif.py` | `sarif.cpp` | DELETED |
+| `scope.py` | `scope.cpp` | DELETED |
+| `shipdocs.py` | `shipdocs.cpp` | DELETED |
+| `simdmut.py` | `havoc.cpp`, `hash.cpp`, `simd.hpp` | DELETED |
+| `taint.py` | `stages/taint.cpp` | DELETED |
+| `taxonomy.py` | `taxonomy.cpp` | DELETED |
+| `thread.py` | `stages/thread.cpp` | DELETED |
+| `wp.py` | `stages/wp.cpp` | DELETED |
 
-### Deletion blockers (summary)
+### Phase 5 delete (executed 2026-10-25)
 
-1. **Pytest surface:** 21 `tests/test_*.py` files (GUI, PIR, certified, …).
-   Most adapter/rapid/framac/naming ports → C++ doctests; CI keeps three
-   `PRISM_BIN` e2e smokes.
-2. **Runtime Python:** `polyglot.cpp` json-syntax check via `SYNTAX_HELPER`
-   Python embed (phase 4).
-3. **Partial stages:** checkers, ltl, pbsd, rapid, agent/ai/contracts/gui,
-   polyglot resolve (`~` / pinned tools).
-4. **Co-packaged rules:** `prism/cocci/` path hard-coded in adapters + tests.
-5. **Generators:** `tools/gen_prism.py` / taxonomy bootstrap still mention
-   `prism/bmc.py` until generators are deleted or repointed.
-6. **Gate:** flip `k_python_engine_deleted` only after (1)–(5) and CI green
-   without `python -m pytest` on the engine.
+- Removed all `prism/*.py`, the pytest suite, `pyproject.toml`, `requirements.txt`,
+  and `prism_native` / ctypes paths; **left `prism/cocci/` in place**.
+- `tests/cpp/test_deps.cpp`: `k_python_engine_deleted = true`; only
+  `tools/svcomp/prism.py` may appear outside `third_party/`.
+- Table-driven doctests: edit `tests/cpp/test_bmc.cpp`, `test_concolic.cpp`,
+  `test_pir_e2e.cpp` directly (generators optional / retired).
 
-### Follow-up commit plan (execute only when blockers cleared)
-
-Single integration commit (or stacked PR) on green `prism_tests` + CI:
-
-1. Relocate `prism/cocci/` → installed `share/prism/cocci` (or CMake embed);
-   update `adapters.cpp` search paths and doctest.
-2. Native json/tomL syntax in `polyglot.cpp`; remove `SYNTAX_HELPER` exec.
-3. Port or drop remaining pytest: parity → golden in `tests/cpp/`; delete
-   engine-oracle tests; naming doctest is `tests/cpp/test_naming.cpp`.
-4. `git rm -r prism/` `tests/**/*.py` `pyproject.toml` `requirements.txt`;
-   remove `prism_native` / `simdmut` ctypes paths; delete obsolete `tools/gen_*.py`.
-5. `tests/cpp/test_deps.cpp`: `k_python_engine_deleted = true`.
-6. `CLAUDE.md` / workflows: one engine, no `python -m prism`, pytest job removed.
-
-**This run:** BLOCKED = 21; **no `prism/` delete executed.**
+**This run:** BLOCKED = **0**; engine delete **executed** (`prism/cocci/` retained).
 
 ## Size
 
@@ -367,14 +346,9 @@ goes in phase 5, so these are recorded, not fixed there):
 
 ### Phase 5: delete Python
 
-- Remove `prism/`, `tests/**/*.py`, `pyproject.toml`, `requirements.txt`,
-  the Python ignores, the `prism_native` C ABI library (its only user was
-  `prism/simdmut.py`) and every Python `__pycache__`.
-- `CLAUDE.md`: "one product, two engines" becomes one engine. Laws and
-  "Adding a check" point at C++ files only. The parity rules are removed.
-- Flip `k_python_engine_deleted` to `true` in
-  `tests/cpp/test_deps.cpp` (see the gate description at the top of this
-  document).
+**Done (2026-10-25).** All `prism/*.py` and the pytest suite removed;
+`prism/cocci/*.cocci` retained. Only `tools/svcomp/prism.py` remains outside
+`third_party/`. `k_python_engine_deleted = true` in `tests/cpp/test_deps.cpp`.
 
 ### Phase 6: build without Python (vendored Z3)
 
@@ -393,9 +367,8 @@ for BenchExec smoke only).
 
 **Maintainers:** after bumping the vendored Z3 pin, run a one-off reference
 build with real Python, then `python3 tools/sync_z3_generated.py <build-dir>` and
-commit the refreshed `cmake/z3-generated/` tree. Phase 5 may still use Python
-for pytest, generators, and `tools/svcomp/prism.py` until the Python engine is
-deleted.
+commit the refreshed `cmake/z3-generated/` tree. The only tracked project Python
+outside `third_party/` is `tools/svcomp/prism.py` (BenchExec).
 
 ## Done when
 
@@ -515,7 +488,7 @@ record.
 | `.github/workflows/docs.yml:16-28` | M | `prism-dev assurance-check` and `prism-dev docs-check` (src/tools/prism_dev.cpp, std-only, no Z3), or doctest cases in tests/cpp/test_docs.cpp that parse `prism --help`. The docs job then builds only that small target. |
 | `.github/workflows/proofs-recheck.yml:77-80 (+ paths filter :26, :32)` | S | Build the std-only prism-deps first (clang/cmake step), then run `prism-deps tool lean4export nanoda`. Point the paths filter at src/tools/prism_deps/**. |
 | `.github/workflows/release.yml:27-30` | S | Build prism-deps and run `prism-deps licence-check` and `prism-deps linked`, or drop these two steps because the Dockerfile repeats both checks inside the reproducible build. |
-| `.github/workflows/self-check.yml:26-55` | S | Drop setup-python, pip and the pytest step (prism_tests covers them). Replace the conformance step with `build-san/prism conformance -j 2 --mem-limit-mb 0`. |
+| `.github/workflows/self-check.yml:26-55` | none | **DONE** — no setup-python or pytest; `prism_tests` + `prism-qa conformance` under ASan+UBSan. |
 | `Dockerfile:34,48-49,70` | S | `cmake --build /build --target prism-deps && /build/prism-deps licence-check && /build/prism-deps linked`, then the full build, then `/build/prism-deps sbom --version ${PRISM_VERSION} -o /out/prism.cdx.json`. Remove python3 from apt once phase 5 deletes the Python engine (Z3 no longer needs it at configure/build time; see phase 6). |
 | `CMakeLists.txt:122-130 -> third_party/z3/CMakeLists.txt:162 (vendored Z3 build)` | none | **DONE** (phase 6): `cmake/z3.cmake` + std-only `z3gen` (`src/tools/z3gen.cpp`) shim `Python3_EXECUTABLE` at configure time; checked-in `cmake/z3-generated/` supplies pyg2hpp/API outputs so Ninja never runs upstream `scripts/*.py`. Still `add_subdirectory(third_party/z3)` with bindings/examples off; `third_party/` is never edited. Maintainer pin bump: phase-6 section. |
 | `src/prism/polyglot.cpp:79-116,149-154,569,644 (python-syntax check / SYNTAX_HELPER)` | M | Move JSON and TOML into C++ builtins in polyglot.cpp. JSON via nlohmann::json::parse, turning the error byte offset into line and column. TOML via a full TOML 1.0 reader: extend the prism-deps reader, or add toml++ as a seventh linked library through the … |
@@ -558,7 +531,7 @@ record.
 | `tests/test_afl_flag.py` | python-engine-behaviour | S | tests/cpp/test_fuse.cpp: setenv PRISM_AFL with empty PATH and assert NOTRUN/engine!=afl |
 | `tests/test_ai.py` | drives-cpp-binary | M | ctest-registered C++ driver running build/prism with an in-process C++ fake llama-server; grammar-verbatim check to C++ repo-lint |
 | `tests/test_ai9.py` | mixed | L | tests/cpp/test_ai9.cpp for unit parts; ctest-registered C++ driver (needs a C++ fake llama-server test double) running build/prism prove/review; grammar-verbatim and no-sorry become C++ repo-lint … |
-| `tests/test_ai_assist.py` | mixed | L | trainer tools/prism_ai -> C++ tool (src/tools/prism_ai/*.cpp) with doctests in tests/cpp/test_ai_assist.cpp; grammars_assist.inc generated at build time by CMake (removes lock) or repo-lint; e2e CLI … |
+| `tests/test_ai_assist.py` | mixed | none | **deleted** (milestone A); `tests/cpp/test_ai_assist.cpp` (+ `prism_ai` tool as needed) |
 | `tests/test_assurance_check.py` | tool | S | port tools/assurance_check.py to a C++ tool (tools/assurance_check.cpp) and register a ctest that runs it on the repo plus a temp tree with a missing artefact |
 | `tests/test_astlint_table.py` | tool | S | source of truth moves to C++ (checkers_*.cpp) once prism/checkers.py is deleted: delete the generator check (or port generator to C++); add a doctest that every astlint_discard.inc class is in … |
 | `tests/test_bmc.py` | python-engine-behaviour | XL | tests/cpp/test_bmc.cpp (new doctest file): table-driven {file, function, expected status, allowed cls set, must-not-status set} over prism::run_bmc(load_fn(...), 8) plus k-induction extras; port the … |
@@ -604,7 +577,7 @@ record.
 | `tests/test_journal.py` | python-engine-behaviour | S | tests/cpp/test_main.cpp journal section: add pipeline-resume cases against run_pipeline |
 | `tests/test_klee_adapter.py` | python-engine-behaviour | M | tests/cpp/test_adapters.cpp with a fake klee script writing .err/.ktest into klee-out |
 | `tests/test_libfuzzer.py` | mixed | M | tests/cpp/test_adapters.cpp: prism::libfuzzer_probe(Config) (adapters.cpp:970) with PATH pointed at fake clang stubs; campaign cases via the fuzz stage with --allow-exec off/on |
-| `tests/test_lints_fastpath.py` | python-engine-behaviour | S | strip/match_brace fuzz, sorted names and the interval va_arg gate are in tests/cpp/test_lint_corpus.cpp ("lint fastpath: ..."). The _required_literal and PYTHONHASHSEED cases test only the Python engine: they stay until phase 5 and are deleted with prism/checkers.py |
+| `tests/test_lints_fastpath.py` | python-engine-behaviour | DONE | tests/cpp/test_lint_corpus.cpp ("lint fastpath: ..."; PYTHONHASHSEED port in hash-seed case) |
 | `tests/test_llm.py` | python-engine-behaviour | M | tests/cpp/test_llm.cpp against src/prism/stages/llm.cpp + hypothesize.cpp with a fake local HTTP server (or engine seam) for error/timeout cases |
 | `tests/test_ltl.py` | mixed | S | tests/cpp/test_main.cpp ltl section (or split tests/cpp/test_ltl.cpp): add the FSM-extraction and comments_only.ltl cases; drop source-read test |
 | `tests/test_mined.py` | python-engine-behaviour | S | tests/cpp/test_contracts.cpp + tests/cpp/test_ltl.cpp for the gaps (ACSL no-leak, seeds from cex, branch goals in stages/concolic.cpp); rest delete as duplicated |

@@ -1,4 +1,4 @@
-// Honest taxonomy coverage (prism/taxonomy.cpp). Port of tests/test_taxonomy.py.
+// Honest taxonomy coverage (src/prism/taxonomy.cpp).
 
 #include <doctest/doctest.h>
 #ifdef ERROR
@@ -93,9 +93,7 @@ TEST_CASE("taxonomy: wp PROVED-ASSUMING covers FUNC-CONTRACT; empty cls on wp to
 
 TEST_CASE("taxonomy: C++ does not promote READS to FINDS") {
     const auto cpp = slurp(repo() / "src" / "prism" / "taxonomy.cpp");
-    const auto gen = slurp(repo() / "tools" / "gen_prism.py");
     CHECK(cpp.find("if (st == READS) st = FINDS") == std::string::npos);
-    CHECK(gen.find("if (st == READS) st = FINDS") == std::string::npos);
     CHECK(cpp.find(R"(cls.empty() && (s.name == "wp" || s.name == "contracts"))") != std::string::npos);
 }
 

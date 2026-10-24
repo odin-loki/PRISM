@@ -15,6 +15,7 @@
 #include "prism/config.hpp"
 #include "prism/laws.hpp"
 #include "prism/pir.hpp"
+#include "prism/pir/frontend.hpp"
 
 #ifdef PRISM_HAS_Z3
 #  include "prism/solver.hpp"
@@ -39,6 +40,15 @@ namespace {
 
 namespace pp = prism::pir;
 namespace fs = std::filesystem;
+
+bool skip_without_frontend(const prism::Config& cfg = prism::default_config()) {
+    std::string why;
+    if (!pp::frontend_usable(cfg, &why)) {
+        MESSAGE(why);
+        return true;
+    }
+    return false;
+}
 
 void test_setenv(const char* key, const char* value) {
 #ifdef _WIN32
@@ -158,8 +168,8 @@ struct Lowered {
 const Lowered& lowered() {
     static Lowered L = [] {
         Lowered l;
+        if (!pp::frontend_usable(prism::default_config())) return l;
         auto fe = pp::find_frontend(prism::default_config());
-        if (!fe.clang || !fe.opt) return l;
         auto dir = fs::temp_directory_path() / "prism_pir_budget_src";
         fs::create_directories(dir);
         std::ofstream(dir / "b.c") << kSource;
@@ -487,8 +497,7 @@ entry:
 }
 
 TEST_CASE("pir budget: $PRISM_FUNCTION_BUDGET in the pir stage (skips without clang/opt)") {
-    auto fe = pp::find_frontend(prism::default_config());
-    if (!fe.clang || !fe.opt) return;
+    if (skip_without_frontend()) return;
     auto dir = fs::temp_directory_path() / "prism_pir_budget_stage";
     fs::remove_all(dir);
     fs::create_directories(dir);
@@ -545,8 +554,9 @@ TEST_CASE("pir budget: $PRISM_FUNCTION_BUDGET in the pir stage (skips without cl
 
 TEST_CASE("pir budget: the memory policy's re-checks of main share the function budget and the cache (skips "
           "without clang++/opt)") {
+    if (skip_without_frontend()) return;
     auto fe = pp::find_frontend(prism::default_config());
-    if (!fe.clangxx || !fe.opt) return;
+    if (!fe.clangxx) return;
     auto dir = fs::temp_directory_path() / "prism_pir_budget_static_init";
     fs::remove_all(dir);
     fs::create_directories(dir);

@@ -162,17 +162,6 @@ bool fullmatch(const Regex& re, std::string_view s) {
            m->spans[0].second == static_cast<int>(s.size());
 }
 
-std::vector<std::string> findall1(const Regex& re, std::string_view s) {
-    std::vector<std::string> out;
-    for (auto& m : re.finditer(s)) out.push_back(m.group(1));
-    return out;
-}
-
-std::string named_or(const Match& m, std::string_view a, std::string_view b) {
-    auto x = m.named(a);
-    return !x.empty() ? x : m.named(b);
-}
-
 int count_nl(std::string_view s) {
     return static_cast<int>(std::count(s.begin(), s.end(), '\n'));
 }
@@ -1653,10 +1642,6 @@ std::size_t member_test_pos(std::string_view param, std::string_view member, std
     auto m = member_test_re(param, member).search_match(body);
     if (!m || m->spans.empty() || m->spans[0].first < 0) return std::string_view::npos;
     return static_cast<std::size_t>(m->spans[0].first);
-}
-
-bool member_null_tested(std::string_view param, std::string_view member, std::string_view body) {
-    return member_test_pos(param, member, body) != std::string_view::npos;
 }
 
 std::optional<std::pair<std::string, std::string>> parse_member_arg(std::string_view arg) {

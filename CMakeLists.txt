@@ -27,6 +27,21 @@ option(PRISM_TESTS_WIN_SUBSET "On WIN32, build the fake_* stand-ins prism_tests 
 # Roadmap 8.4 (PRISM on PRISM): build PRISM itself with ASan + UBSan so the
 # test suite doubles as a memory-safety / UB check of the quarantined C++.
 option(PRISM_SANITIZE "Build PRISM with -fsanitize=address,undefined" OFF)
+# docs/CXX_STANDARD.md — strict warnings; -Werror only when explicitly enabled.
+option(PRISM_WERROR "Clang/GCC: treat warnings as errors on PRISM engine targets" OFF)
+function(prism_engine_warning_flags out_var)
+  if(MSVC)
+    set(${out_var} /W4 /permissive- PARENT_SCOPE)
+  elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    set(_flags -Wall -Wextra -Wpedantic)
+    if(PRISM_WERROR)
+      list(APPEND _flags -Werror)
+    endif()
+    set(${out_var} ${_flags} PARENT_SCOPE)
+  else()
+    set(${out_var} "" PARENT_SCOPE)
+  endif()
+endfunction()
 if(PRISM_SANITIZE)
   if(MSVC)
     message(FATAL_ERROR "PRISM_SANITIZE needs clang or gcc")
@@ -214,6 +229,8 @@ set(PRISM_SRC
   src/prism/pir/encode.cpp
   src/prism/pir/export_lean.cpp
   src/prism/pir/fp.cpp
+  src/prism/pir/folded_diag.cpp
+  src/prism/pir/frontend.cpp
   src/prism/pir/ir_parser.cpp
   src/prism/pir/libc_format.cpp
   src/prism/pir/libc_models.cpp
@@ -409,12 +426,19 @@ else()
     src/prism/taxonomy.cpp src/prism/checkers_cxx.cpp
     PROPERTIES COMPILE_OPTIONS "-O0")
 endif()
+prism_engine_warning_flags(_prism_warn)
+if(_prism_warn)
+  target_compile_options(prism_core PRIVATE ${_prism_warn})
+endif()
 if(WIN32)
   target_link_libraries(prism_core PUBLIC winhttp)
 endif()
 
 add_executable(prism src/prism/main.cpp)
 target_link_libraries(prism PRIVATE prism_core)
+if(_prism_warn)
+  target_compile_options(prism PRIVATE ${_prism_warn})
+endif()
 if(UNIX)
   set_target_properties(prism PROPERTIES BUILD_RPATH "$ORIGIN" INSTALL_RPATH "$ORIGIN")
 endif()
@@ -489,6 +513,9 @@ add_library(prism_qa STATIC ${_prism_qa_sources})
 if(MSVC)
   target_compile_options(prism_qa PRIVATE /utf-8)
 endif()
+if(_prism_warn)
+  target_compile_options(prism_qa PRIVATE ${_prism_warn})
+endif()
 target_include_directories(prism_qa PUBLIC "${PRISM_ROOT}/src/tools/qa")
 target_link_libraries(prism_qa PUBLIC prism_core nlohmann_json)
 target_compile_definitions(prism_qa PRIVATE
@@ -496,6 +523,9 @@ target_compile_definitions(prism_qa PRIVATE
   PRISM_QA_SOURCE_DIR="${PRISM_ROOT}")
 add_executable(prism-qa src/tools/qa/main.cpp)
 target_link_libraries(prism-qa PRIVATE prism_qa)
+if(_prism_warn)
+  target_compile_options(prism-qa PRIVATE ${_prism_warn})
+endif()
 if(UNIX)
   set_target_properties(prism-qa PROPERTIES BUILD_RPATH "$ORIGIN" INSTALL_RPATH "$ORIGIN")
 endif()
@@ -747,6 +777,9 @@ if(PRISM_TESTS)
     "${PRISM_ROOT}/include"
     "${PRISM_ROOT}/third_party")
   target_link_libraries(prism_tests PRIVATE prism_core prism_qa prism_ai_lib)
+  if(_prism_warn)
+    target_compile_options(prism_tests PRIVATE ${_prism_warn})
+  endif()
   if(WIN32)
     # test_repair's fake llama-server listens on a Winsock loopback socket.
     target_link_libraries(prism_tests PRIVATE ws2_32)

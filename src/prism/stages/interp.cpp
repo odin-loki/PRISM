@@ -538,7 +538,7 @@ struct EParser {
     }
     std::string eat_s(std::string t) { return eat(&t); }
     Node num(int64_t v, CT t) {
-        Node n{Nk::Num, {}, v};
+        Node n{Nk::Num, {}, v, {}, {}, {}};
         n.t = t;
         return n;
     }
@@ -588,7 +588,7 @@ struct EParser {
                         throw ParseFail("cast unencoded (" + joined + ")");
                     return operand;
                 }
-                Node n{Nk::Cast};
+                Node n{Nk::Cast, {}, 0, {}, {}, {}};
                 n.t = *ct;
                 n.ch.push_back(std::move(operand));
                 return n;
@@ -598,7 +598,7 @@ struct EParser {
             return v;
         }
         if (t == "-" || t == "!" || t == "~") {
-            Node n{Nk::Un, t};
+            Node n{Nk::Un, t, 0, {}, {}, {}};
             n.ch.push_back(parse(110));
             return n;
         }
@@ -606,11 +606,11 @@ struct EParser {
         if (t == "++" || t == "--") {
             auto name = eat();
             if (!is_ident(name)) throw ParseFail("bad token " + name);
-            return Node{Nk::Pre, t, 0, name};
+            return Node{Nk::Pre, t, 0, name, {}, {}};
         }
         if (t.size() >= 3 && t.front() == '\'' && t.back() == '\'') return num(char_lit_value(t), kInt);
         if (t.size() >= 2 && t.front() == '"' && t.back() == '"')
-            return Node{Nk::Str, {}, 0, string_lit_value(t)};
+            return Node{Nk::Str, {}, 0, string_lit_value(t), {}, {}};
         if (std::isdigit(static_cast<unsigned char>(t[0]))) {
             auto [v, ct] = int_literal(t);
             return num(v, ct);
@@ -621,13 +621,13 @@ struct EParser {
                 eat_s("[");
                 auto idx = parse(0);
                 eat_s("]");
-                Node n{Nk::Idx, t};
+                Node n{Nk::Idx, t, 0, {}, {}, {}};
                 n.ch.push_back(std::move(idx));
                 return n;
             }
             if (peek() == "(") {
                 eat_s("(");
-                Node n{Nk::Call, t};
+                Node n{Nk::Call, t, 0, {}, {}, {}};
                 if (peek() != ")") {
                     n.ch.push_back(parse(2));
                     while (peek() == ",") {
@@ -640,9 +640,9 @@ struct EParser {
             }
             if (peek() == "++" || peek() == "--") {
                 auto op = eat();
-                return Node{Nk::Post, op, 0, t};
+                return Node{Nk::Post, op, 0, t, {}, {}};
             }
-            return Node{Nk::Id, t};
+            return Node{Nk::Id, t, 0, {}, {}, {}};
         }
         throw ParseFail("bad token " + t);
     }
@@ -651,7 +651,7 @@ struct EParser {
         while (prec.contains(peek()) && prec.at(peek()) >= minp) {
             auto op = eat();
             auto right = parse(prec.at(op) + 1);
-            Node n{Nk::Bin, op};
+            Node n{Nk::Bin, op, 0, {}, {}, {}};
             n.ch.push_back(std::move(left));
             n.ch.push_back(std::move(right));
             left = std::move(n);
@@ -661,7 +661,7 @@ struct EParser {
             auto th = parse(0);
             eat_s(":");
             auto el = parse(5);
-            Node n{Nk::Tern};
+            Node n{Nk::Tern, {}, 0, {}, {}, {}};
             n.ch.push_back(std::move(left));
             n.ch.push_back(std::move(th));
             n.ch.push_back(std::move(el));
@@ -670,7 +670,7 @@ struct EParser {
         if (minp <= 1 && peek() == ",") {
             eat_s(",");
             auto right = parse(0);
-            Node n{Nk::Comma};
+            Node n{Nk::Comma, {}, 0, {}, {}, {}};
             n.ch.push_back(std::move(left));
             n.ch.push_back(std::move(right));
             left = std::move(n);

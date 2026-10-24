@@ -372,8 +372,8 @@ fs::path make_frama_fake(const fs::path& dir, const std::string& stem, const std
 #endif
 }
 
-std::string esbmc_out_cmd(const char* out) {
 #ifdef _WIN32
+std::string esbmc_out_cmd(const char* out) {
     std::string cmd;
     std::string s = out;
     for (std::size_t i = 0; i < s.size();) {
@@ -384,10 +384,8 @@ std::string esbmc_out_cmd(const char* out) {
         i = nl + 1;
     }
     return cmd;
-#else
-    return "printf '" + std::string(out) + "\\n'";
-#endif
 }
+#endif
 
 }  // namespace
 

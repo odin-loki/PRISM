@@ -43,7 +43,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install toolchain
-        # python3-minimal: pytest and other CI steps; Z3 build is Python-free (phase 6).
+        # python3-minimal: BenchExec SV-COMP tool-info smoke only; Z3 build is Python-free (phase 6).
         run: sudo apt-get update && sudo apt-get install -y ninja-build clang ccache qt6-base-dev libgl-dev libclang-18-dev python3-minimal
       - uses: actions/cache@v4
         with:
@@ -85,6 +85,10 @@ jobs:
           name: prism-gui-smoke
           path: gui-smoke/prism_gui.png
           retention-days: 7
+      - name: PRISM_BIN smoke (e2e lives in prism_tests / ctest)
+        run: |
+          ./build/prism testdata/abs_ok.c --no-llm --stage inventory --out /tmp/prism-smoke-out
+          test -f /tmp/prism-smoke-out/report.json
       - uses: actions/upload-artifact@v4
         with:
           name: prism-linux
@@ -92,41 +96,6 @@ jobs:
             build/prism
             build/libprism_native.so
           retention-days: 7
-
-  python:
-    name: Remaining pytest (shrunk suite)
-    runs-on: ubuntu-24.04
-    needs: cpp
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - name: Install test deps and the linters the polyglot stage drives
-        run: |
-          sudo apt-get update && sudo apt-get install -y shellcheck clang
-          python -m pip install --upgrade pip
-          python -m pip install pytest z3-solver ruff mypy yamllint PySide6-Essentials
-          sudo apt-get install -y libegl1 libxkbcommon0
-      # Shrunk suite: explicit files only (not tests/). SARIF parity lives in
-      # tests/cpp/test_sarif.cpp; no dual-engine pytest remains.
-      - name: pytest (Python engine / repo-lint; no C++ binary)
-        env:
-          QT_QPA_PLATFORM: offscreen
-        run: |
-          python -m pytest -q \
-            tests/test_ai9.py \
-            tests/test_lints_fastpath.py \
-            tests/test_llm.py
-      - uses: actions/download-artifact@v4
-        with:
-          name: prism-linux
-          path: build
-      - name: PRISM_BIN smoke (e2e lives in prism_tests / ctest)
-        run: |
-          chmod +x build/prism
-          build/prism testdata/abs_ok.c --no-llm --stage inventory --out /tmp/prism-smoke-out
-          test -f /tmp/prism-smoke-out/report.json
 
   # Phase 5 MSVC port: prism_core uses prism::i128 (wide_int.hpp), not native __int128.
   # Smoke-build prism_core + prism with VS clang-cl (MSVC ABI), Z3 off (skip vendored Z3),
@@ -158,53 +127,16 @@ jobs:
         run: cmake --build build-win-cl --target prism_core prism prism-qa prism_tests
       - name: Run portable prism_tests subset
         run: .\build-win-cl\prism_tests.exe
-      # Feeds python-windows below (the same PE prism.exe the smoke just tested).
+      - name: PRISM_BIN smoke (real PE prism.exe)
+        run: |
+          .\build-win-cl\prism.exe testdata\abs_ok.c --no-llm --stage inventory --out prism-smoke-out
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path prism-smoke-out\report.json)) { Write-Error "no report.json"; exit 1 }
       - uses: actions/upload-artifact@v4
         with:
           name: prism-windows
           path: build-win-cl/prism.exe
           retention-days: 7
-
-  # The shrunk Python suite (same files as "Remaining pytest") on Windows
-  # against the built prism.exe (MSVC cl, Z3 off). Gating (green in runs
-  # 40033600830 and 40038665356); it must not fake a green
-  # either: a missing prism.exe fails the PRISM_BIN smoke step, and tests that
-  # need a binary skip loudly (-rs) rather than pass. shellcheck is not
-  # installed here, so the polyglot shell-syntax tool is NOTRUN on this runner.
-  python-windows:
-    name: Remaining pytest (shrunk suite, Windows)
-    runs-on: windows-latest
-    needs: windows-compile-smoke-cl
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - name: Install test deps
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install pytest z3-solver ruff mypy yamllint PySide6-Essentials
-      - uses: actions/download-artifact@v4
-        with:
-          name: prism-windows
-          path: build-win
-      - name: PRISM_BIN smoke (real PE prism.exe; a missing binary fails here)
-        run: |
-          .\build-win\prism.exe testdata\abs_ok.c --no-llm --stage inventory --out prism-smoke-out
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          if (-not (Test-Path prism-smoke-out\report.json)) { Write-Error "no report.json"; exit 1 }
-      - name: pytest (Python engine / repo-lint, PRISM_BIN = prism.exe)
-        env:
-          QT_QPA_PLATFORM: offscreen
-          PYTHONUTF8: "1"
-        run: |
-          $env:PRISM_BIN = (Resolve-Path build-win\prism.exe).Path
-          python -m pytest -q -rs `
-            tests/test_ai9.py `
-            tests/test_lints_fastpath.py `
-            tests/test_llm.py
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   windows-compile-smoke:
     name: Windows compile smoke
@@ -304,6 +236,50 @@ jobs:
           $dll = Get-ChildItem -Path "$root\lib\clang" -Recurse -Filter "clang_rt.asan_dynamic-x86_64.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
           if ($dll) { $dll.DirectoryName | Out-File -Append -Encoding utf8 $env:GITHUB_PATH; Write-Host "ASan DLL dir: $($dll.DirectoryName)" }
           else { Write-Host "no clang ASan DLL under ${root}: label self-check will be NOTRUN" }
+      # PIR e2e on Windows needs clang + opt. The stock LLVM install on the runner has
+      # clang but no opt.exe, so test_pir_e2e reports NOTRUN. This step fetches the
+      # official LLVM 18.1.8 MSVC archive (the version PIR is validated against, see
+      # kInstall in src/prism/pir/stage.cpp) and unpacks only bin/clang.exe, bin/opt.exe
+      # and the clang resource headers. clang is installed as clang-18.exe (find_frontend
+      # looks for clang-18 first), so the runner's clang.exe, and with it the ASan DLL
+      # lookup and label self-check above, are untouched. Best effort: if the download
+      # fails, the e2e cases print "NOTRUN" (Law 1), they never pass quietly.
+      - name: Cache LLVM 18 (clang-18 + opt for PIR e2e)
+        uses: actions/cache@v4
+        id: llvm18
+        with:
+          path: C:\llvm18
+          key: win-llvm-18.1.8-pir-v1
+      - name: Install LLVM 18 clang-18 + opt (PIR e2e C subset)
+        if: steps.llvm18.outputs.cache-hit != 'true'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $name = "clang+llvm-18.1.8-x86_64-pc-windows-msvc"
+          $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/$name.tar.xz"
+          $tar = Join-Path $env:RUNNER_TEMP "llvm18.tar.xz"
+          try {
+            curl.exe -sSL --retry 3 -o $tar $url
+            if ($LASTEXITCODE -ne 0) { throw "download failed" }
+            New-Item -ItemType Directory -Force C:\llvm18 | Out-Null
+            & "$env:SystemRoot\System32\tar.exe" -xf $tar -C C:\llvm18 --strip-components=1 "$name/bin/clang.exe" "$name/bin/opt.exe" "$name/lib/clang/18/include"
+            if ($LASTEXITCODE -ne 0) { throw "extract failed" }
+            Move-Item C:\llvm18\bin\clang.exe C:\llvm18\bin\clang-18.exe -Force
+          } catch {
+            # Never let actions/cache save a half-unpacked tree under the key.
+            Remove-Item -Recurse -Force C:\llvm18 -ErrorAction SilentlyContinue
+            throw
+          }
+      - name: Put LLVM 18 (clang-18, opt) on PATH
+        shell: pwsh
+        run: |
+          if ((Test-Path C:\llvm18\bin\opt.exe) -and (Test-Path C:\llvm18\bin\clang-18.exe)) {
+            "C:\llvm18\bin" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+            Write-Host "LLVM 18 on PATH: PIR e2e C subset will run"
+          } else {
+            Write-Host "::warning::LLVM 18 opt.exe not available: PIR e2e cases will be NOTRUN"
+          }
       - name: Run portable prism_tests subset (Z3 + leanbb)
         run: .\build-win-z3\prism_tests.exe
 
@@ -358,6 +334,42 @@ jobs:
           key: win-smoke-cl-z3-${{ hashFiles('CMakeLists.txt', 'cmake/z3.cmake', 'cmake/z3-generated/tree_sha256', 'third_party/z3/CMakeLists.txt') }}
       - name: Build (prism_core + prism + prism-qa + prism_tests)
         run: cmake --build build-win-cl-z3 --target prism_core prism prism-qa prism_tests
+      # PIR e2e: same LLVM 18 clang-18 + opt as the clang-cl Z3 job (see comment there).
+      - name: Cache LLVM 18 (clang-18 + opt for PIR e2e)
+        uses: actions/cache@v4
+        id: llvm18
+        with:
+          path: C:\llvm18
+          key: win-llvm-18.1.8-pir-v1
+      - name: Install LLVM 18 clang-18 + opt (PIR e2e C subset)
+        if: steps.llvm18.outputs.cache-hit != 'true'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $name = "clang+llvm-18.1.8-x86_64-pc-windows-msvc"
+          $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/$name.tar.xz"
+          $tar = Join-Path $env:RUNNER_TEMP "llvm18.tar.xz"
+          try {
+            curl.exe -sSL --retry 3 -o $tar $url
+            if ($LASTEXITCODE -ne 0) { throw "download failed" }
+            New-Item -ItemType Directory -Force C:\llvm18 | Out-Null
+            & "$env:SystemRoot\System32\tar.exe" -xf $tar -C C:\llvm18 --strip-components=1 "$name/bin/clang.exe" "$name/bin/opt.exe" "$name/lib/clang/18/include"
+            if ($LASTEXITCODE -ne 0) { throw "extract failed" }
+            Move-Item C:\llvm18\bin\clang.exe C:\llvm18\bin\clang-18.exe -Force
+          } catch {
+            Remove-Item -Recurse -Force C:\llvm18 -ErrorAction SilentlyContinue
+            throw
+          }
+      - name: Put LLVM 18 (clang-18, opt) on PATH
+        shell: pwsh
+        run: |
+          if ((Test-Path C:\llvm18\bin\opt.exe) -and (Test-Path C:\llvm18\bin\clang-18.exe)) {
+            "C:\llvm18\bin" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+            Write-Host "LLVM 18 on PATH: PIR e2e C subset will run"
+          } else {
+            Write-Host "::warning::LLVM 18 opt.exe not available: PIR e2e cases will be NOTRUN"
+          }
       - name: Run portable prism_tests subset (Z3 + leanbb)
         run: .\build-win-cl-z3\prism_tests.exe
 

@@ -21,20 +21,20 @@ code base and says honestly what it could not check.
   There are no `HELIX_*` fallbacks.
 - Output directory is `prism-out/` (GUI: `prism-out-gui/`).
 
-## One product, two engines
+## Engine
 
-| | C++ engine (primary) | Python engine (reference) |
-|---|---|---|
-| Source | `src/prism/*.cpp`, `include/prism/*.hpp` | `prism/*.py` (package `prism`) |
-| Run | `./build/prism PATH` | `python -m prism PATH` |
-| Tests | `tests/cpp/test_main.cpp` → `prism_tests` | `tests/test_*.py` (pytest / unittest) |
-| GUI | `src/gui/` (Qt 6, `prism_gui`) | `prism/gui.py` (PySide6) |
+| | C++ |
+|---|---|
+| Source | `src/prism/*.cpp`, `include/prism/*.hpp` |
+| Run | `./build/prism PATH` |
+| Tests | `tests/cpp/` → `prism_tests` |
+| GUI | `src/gui/` (Qt 6, `prism_gui`) |
 
-Both are PRISM. In comments and tests, "the Python engine" means `prism/*.py`
-and "C++" means `src/prism/`. The two must stay in parity: same stage order
-(`prism/pipeline.py:STAGE_ORDER` == `include/prism/pipeline.hpp`), same status
-vocabulary, same report shape. Many Python tests read the C++ sources to lock
-that parity, so when you change one engine, change the other.
+PRISM runs on the **C++ engine** (`src/prism/`). Stage order is
+`include/prism/pipeline.hpp` (`STAGE_ORDER`); status vocabulary and report
+shape are locked by doctest (`tests/cpp/`) and `prism/laws.hpp`. The only
+tracked Python outside `third_party/` is `tools/svcomp/prism.py` (BenchExec
+tool-info plugin).
 
 ## Laws (never break these)
 
@@ -77,8 +77,17 @@ cmake -B build -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
   -DPRISM_CUDA=OFF -DPRISM_LLAMA=OFF -DPRISM_QT=OFF -DPRISM_Z3=ON
 cmake --build build          # first build compiles vendored Z3 (slow)
 ./build/prism_tests
-python -m pytest tests/test_*.py   # shrunk suite; PRISM_BIN only for AI/PIR/certified e2e files
 ```
+
+**OneDrive / Desktop clone:** fine for editing; **do not** run `cmake`/`ninja` or
+keep `build-wsl/` there — it is slow and flaky. **WSL:** sync then build on ext4
+(`scripts/wsl_sync_from_windows.sh`, then `cd ~/PRISM && scripts/wsl_build.sh`).
+**Windows MSVC:** `C:\Temp\prism-build-*`, not OneDrive — see `AGENTS.md` and
+`docs/MSVC_PORT.md`.
+
+**C++ standard:** [docs/CXX_STANDARD.md](docs/CXX_STANDARD.md) (ISO C++23, memory
+safety target). Stricter warnings: `-DPRISM_WERROR=ON` (Clang/GCC). Root `.clang-tidy`
+for engine sources.
 
 `third_party/` holds only the six linked libraries (z3, pcre2, xsimd,
 nlohmann, doctest, llama.cpp; ~140 MB), pinned in `third_party/MANIFEST.toml`.

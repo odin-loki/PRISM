@@ -1028,19 +1028,8 @@ TEST_CASE("deps: self-check and SV-COMP workflow guards") {
         MESSAGE("NOTRUN: .github/workflows is not in this tree");
         return;
     }
-    auto self = slurp(wf / "self-check.yml");
-    bool pyyaml = false, pip = false;
-    std::istringstream lines(self);
-    std::string line;
-    while (std::getline(lines, line))
-        if (contains(line, "pip install")) {
-            pip = true;
-            std::string lower = line;
-            for (char& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-            pyyaml |= contains(lower, "pyyaml");
-        }
-    CHECK_MESSAGE(pip, "self-check.yml has no pip install line");
-    CHECK(pyyaml);
+    const auto self = slurp(wf / "self-check.yml");
+    CHECK_FALSE(contains(self, "pytest"));
     // The self-scan must match ci.yml's stage limit (the full tree exceeds the job timeout).
     CHECK(contains(self, "--stage inventory,lints,polyglot"));
     CHECK_MESSAGE(contains(slurp(repo_root() / "src" / "prism" / "cli_svcomp.cpp"), "svcomp pack"),
@@ -1066,10 +1055,10 @@ TEST_CASE("deps: notice, licence and history-rewrite script") {
 }
 
 // docs/CPP_PORT_PLAN.md phase 5: tracked .py outside vendored third_party/ must
-// stay on the allow-list until the Python engine and pytest suite are deleted.
+// be only tools/svcomp/prism.py once k_python_engine_deleted is true.
 TEST_CASE("deps: tracked .py files match the phase-5 allow-list") {
     // When true, only tools/svcomp/prism.py may appear outside third_party/.
-    constexpr bool k_python_engine_deleted = false;
+    constexpr bool k_python_engine_deleted = true;
 
     auto norm_rel = [](std::string rel) {
         for (char& c : rel)
@@ -1091,8 +1080,15 @@ TEST_CASE("deps: tracked .py files match the phase-5 allow-list") {
         MESSAGE("NOTRUN: git not on PATH");
         return;
     }
+    if (!fs::is_directory(root / ".git")) {
+        MESSAGE("NOTRUN: not a git checkout (no .git at repo root)");
+        return;
+    }
     auto r = deps::run_process({"git", "ls-files", "--", "*.py"}, root);
-    REQUIRE(r.code == 0);
+    if (r.code != 0) {
+        MESSAGE("NOTRUN: git ls-files failed: " << r.out);
+        return;
+    }
 
     std::vector<std::string> forbidden;
     std::istringstream lines(r.out);

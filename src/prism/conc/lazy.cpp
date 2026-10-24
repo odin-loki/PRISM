@@ -133,11 +133,11 @@ void split(Graph& g) {
     std::vector<int> last(nb);
     for (std::size_t b = 0; b < nb; ++b) {
         const auto& B = fn.blocks[b];
-        out[b].name = B.name;
-        out[b].phis = B.phis;
+        out.at(b).name = B.name;
+        out.at(b).phis = B.phis;
         int cur = static_cast<int>(b);
         for (const auto& s : B.stmts) {
-            if (is_head(fn, s) && !out[static_cast<std::size_t>(cur)].stmts.empty()) {
+            if (is_head(fn, s) && !out.at(static_cast<std::size_t>(cur)).stmts.empty()) {
                 Block nbk;
                 nbk.name = B.name + ".v" + std::to_string(out.size());
                 out.push_back(std::move(nbk));
@@ -145,82 +145,82 @@ void split(Graph& g) {
                 Term t;
                 t.kind = Term::Jmp;
                 t.t = j;
-                out[static_cast<std::size_t>(cur)].term = t;
+                out.at(static_cast<std::size_t>(cur)).term = t;
                 cur = j;
             }
-            out[static_cast<std::size_t>(cur)].stmts.push_back(s);
+            out.at(static_cast<std::size_t>(cur)).stmts.push_back(s);
         }
-        out[static_cast<std::size_t>(cur)].term = B.term;
-        last[b] = cur;
+        out.at(static_cast<std::size_t>(cur)).term = B.term;
+        last.at(b) = cur;
     }
     for (auto& bl : out)
         for (auto& ph : bl.phis)
             for (auto& [pred, _] : ph.in)
-                if (pred >= 0 && static_cast<std::size_t>(pred) < nb) pred = last[static_cast<std::size_t>(pred)];
+                if (pred >= 0 && static_cast<std::size_t>(pred) < nb) pred = last.at(static_cast<std::size_t>(pred));
     g.blocks = std::move(out);
     g.head_op.assign(g.blocks.size(), -1);
     for (std::size_t b = 0; b < g.blocks.size(); ++b) {
         auto& st = g.blocks[b].stmts;
-        if (!st.empty() && is_head(fn, st[0]))
-            g.head_op[b] = marker_of(fn.vars[static_cast<std::size_t>(st[0].dst)].name).op;
+        if (!st.empty() && is_head(fn, st.at(0)))
+            g.head_op[b] = marker_of(fn.vars[static_cast<std::size_t>(st.at(0).dst)].name).op;
     }
 }
 
 void analyze(Graph& g) {
     int n = static_cast<int>(g.blocks.size());
     std::vector<std::vector<int>> succ(static_cast<std::size_t>(n)), preds(static_cast<std::size_t>(n));
-    for (int b = 0; b < n; ++b) succ[static_cast<std::size_t>(b)] = succs(g.blocks[static_cast<std::size_t>(b)]);
+    for (int b = 0; b < n; ++b) succ.at(static_cast<std::size_t>(b)) = succs(g.blocks[static_cast<std::size_t>(b)]);
     std::vector<char> reach(static_cast<std::size_t>(n), 0);
     std::vector<int> state(static_cast<std::size_t>(n), 0);
     std::vector<std::pair<int, int>> retreating;
     if (n > 0) {
         std::vector<std::pair<int, std::size_t>> st{{0, 0}};
-        state[0] = 1;
-        reach[0] = 1;
+        state.at(0) = 1;
+        reach.at(0) = 1;
         while (!st.empty()) {
             auto& [b, k] = st.back();
-            auto& ss = succ[static_cast<std::size_t>(b)];
+            auto& ss = succ.at(static_cast<std::size_t>(b));
             if (k < ss.size()) {
-                int s = ss[k++];
-                if (state[static_cast<std::size_t>(s)] == 0) {
-                    state[static_cast<std::size_t>(s)] = 1;
-                    reach[static_cast<std::size_t>(s)] = 1;
+                int s = ss.at(k++);
+                if (state.at(static_cast<std::size_t>(s)) == 0) {
+                    state.at(static_cast<std::size_t>(s)) = 1;
+                    reach.at(static_cast<std::size_t>(s)) = 1;
                     st.emplace_back(s, 0);
-                } else if (state[static_cast<std::size_t>(s)] == 1) {
+                } else if (state.at(static_cast<std::size_t>(s)) == 1) {
                     retreating.emplace_back(b, s);
                 }
             } else {
-                state[static_cast<std::size_t>(b)] = 2;
+                state.at(static_cast<std::size_t>(b)) = 2;
                 st.pop_back();
             }
         }
     }
     for (int b = 0; b < n; ++b)
-        if (reach[static_cast<std::size_t>(b)])
-            for (int s : succ[static_cast<std::size_t>(b)]) preds[static_cast<std::size_t>(s)].push_back(b);
+        if (reach.at(static_cast<std::size_t>(b)))
+            for (int s : succ.at(static_cast<std::size_t>(b))) preds.at(static_cast<std::size_t>(s)).push_back(b);
     std::vector<std::vector<char>> dom(static_cast<std::size_t>(n), std::vector<char>(static_cast<std::size_t>(n), 1));
     if (n > 0) {
-        dom[0].assign(static_cast<std::size_t>(n), 0);
-        dom[0][0] = 1;
+        dom.at(0).assign(static_cast<std::size_t>(n), 0);
+        dom.at(0).at(0) = 1;
     }
     bool changed = true;
     while (changed) {
         changed = false;
         for (int b = 1; b < n; ++b) {
-            if (!reach[static_cast<std::size_t>(b)]) continue;
+            if (!reach.at(static_cast<std::size_t>(b))) continue;
             std::vector<char> nd(static_cast<std::size_t>(n), 1);
-            for (int p : preds[static_cast<std::size_t>(b)])
-                for (int d = 0; d < n; ++d) nd[static_cast<std::size_t>(d)] &= dom[static_cast<std::size_t>(p)][static_cast<std::size_t>(d)];
-            nd[static_cast<std::size_t>(b)] = 1;
-            if (nd != dom[static_cast<std::size_t>(b)]) {
-                dom[static_cast<std::size_t>(b)] = std::move(nd);
+            for (int p : preds.at(static_cast<std::size_t>(b)))
+                for (int d = 0; d < n; ++d) nd.at(static_cast<std::size_t>(d)) &= dom.at(static_cast<std::size_t>(p)).at(static_cast<std::size_t>(d));
+            nd.at(static_cast<std::size_t>(b)) = 1;
+            if (nd != dom.at(static_cast<std::size_t>(b))) {
+                dom.at(static_cast<std::size_t>(b)) = std::move(nd);
                 changed = true;
             }
         }
     }
     std::map<int, int> by_header;
     for (auto [b, h] : retreating) {
-        if (!dom[static_cast<std::size_t>(b)][static_cast<std::size_t>(h)])
+        if (!dom.at(static_cast<std::size_t>(b)).at(static_cast<std::size_t>(h)))
             throw Fail{std::string(laws::NEEDS_HARNESS), "UNENCODED: irreducible control flow"};
         auto it = by_header.find(h);
         if (it == by_header.end()) {
@@ -243,7 +243,7 @@ void analyze(Graph& g) {
     }
     for (auto& L : g.loops) L.size = static_cast<int>(std::count(L.body.begin(), L.body.end(), 1));
     std::vector<int> order(g.loops.size());
-    for (std::size_t i = 0; i < order.size(); ++i) order[i] = static_cast<int>(i);
+    for (std::size_t i = 0; i < order.size(); ++i) order.at(i) = static_cast<int>(i);
     std::sort(order.begin(), order.end(), [&](int a, int b) {
         return g.loops[static_cast<std::size_t>(a)].size > g.loops[static_cast<std::size_t>(b)].size;
     });
@@ -283,12 +283,12 @@ void unroll(Graph& g, int unwind, std::size_t max_nodes) {
     while (!work.empty()) {
         int id = work.front();
         work.pop_front();
-        int b = tmp[static_cast<std::size_t>(id)].block;
-        auto ctx_b = tmp[static_cast<std::size_t>(id)].ctx;
+        int b = tmp.at(static_cast<std::size_t>(id)).block;
+        auto ctx_b = tmp.at(static_cast<std::size_t>(id)).ctx;
         const auto& bl = g.blocks[static_cast<std::size_t>(b)];
         auto ss = succs(bl);
         for (std::size_t k = 0; k < ss.size(); ++k) {
-            int s = ss[k];
+            int s = ss.at(k);
             int kind = bl.term.kind == Term::Jmp ? 0 : (k == 0 ? 1 : 2);
             const auto& Ls = g.loops_of[static_cast<std::size_t>(s)];
             const auto& Lb = g.loops_of[static_cast<std::size_t>(b)];
@@ -306,31 +306,31 @@ void unroll(Graph& g, int unwind, std::size_t max_nodes) {
             }
             int to = cut ? -1 : get(s, ctx);
             if (cut) g.has_cut = true;
-            tmp[static_cast<std::size_t>(id)].out.emplace_back(to, kind);
+            tmp.at(static_cast<std::size_t>(id)).out.emplace_back(to, kind);
         }
     }
     // topological order (the unrolled graph is acyclic)
     std::vector<int> indeg(tmp.size(), 0);
     for (auto& nd : tmp)
         for (auto& [to, _] : nd.out)
-            if (to >= 0) ++indeg[static_cast<std::size_t>(to)];
+            if (to >= 0) ++indeg.at(static_cast<std::size_t>(to));
     std::vector<int> order, ready{0};
     std::vector<int> newid(tmp.size(), -1);
     while (!ready.empty()) {
         int x = ready.back();
         ready.pop_back();
-        newid[static_cast<std::size_t>(x)] = static_cast<int>(order.size());
+        newid.at(static_cast<std::size_t>(x)) = static_cast<int>(order.size());
         order.push_back(x);
-        auto& o = tmp[static_cast<std::size_t>(x)].out;
+        auto& o = tmp.at(static_cast<std::size_t>(x)).out;
         for (auto it = o.rbegin(); it != o.rend(); ++it)
-            if (it->first >= 0 && --indeg[static_cast<std::size_t>(it->first)] == 0) ready.push_back(it->first);
+            if (it->first >= 0 && --indeg.at(static_cast<std::size_t>(it->first)) == 0) ready.push_back(it->first);
     }
     if (order.size() != tmp.size()) throw Fail{std::string(laws::ERROR), "internal: unrolled thread graph has a cycle"};
     g.nodes.resize(tmp.size());
     for (std::size_t i = 0; i < order.size(); ++i) {
-        auto nd = std::move(tmp[static_cast<std::size_t>(order[i])]);
+        auto nd = std::move(tmp.at(static_cast<std::size_t>(order.at(i))));
         for (auto& [to, _] : nd.out)
-            if (to >= 0) to = newid[static_cast<std::size_t>(to)];
+            if (to >= 0) to = newid.at(static_cast<std::size_t>(to));
         g.nodes[i] = std::move(nd);
     }
     for (std::size_t i = 0; i < g.nodes.size(); ++i)
@@ -355,8 +355,11 @@ std::string op_text(const Program& p, const VisOp& o) {
         case VisOp::Store: return o.what + " " + p.vars[static_cast<std::size_t>(o.var)].name;
         case VisOp::Rmw: return o.what + " " + p.vars[static_cast<std::size_t>(o.var)].name;
         case VisOp::Lock:
+            [[fallthrough]];
         case VisOp::TryLock:
+            [[fallthrough]];
         case VisOp::Unlock:
+            [[fallthrough]];
         case VisOp::MutexInit: return o.what + "(" + p.mutexes[static_cast<std::size_t>(o.mutex)] + ")";
         case VisOp::Create: return o.what + " T" + std::to_string(o.thread);
         case VisOp::Join: return o.what;
@@ -422,7 +425,7 @@ std::string lazy_text(const Program& prog, const Options& opt) {
         o << "    if (active[" << t << "] && !exited) seq_T" << t << "_" << prog.threads[static_cast<std::size_t>(t)].name
           << "();\n";
     o << "    assert(!deadlock());\n  }\n";
-    o << "  if (!exited) seq_T0_" << prog.threads[0].name << "();  /* main's final slot */\n";
+    o << "  if (!exited) seq_T0_" << prog.threads.at(0).name << "();  /* main's final slot */\n";
     o << "  assert(!deadlock());\n}\n";
     o << "/* data race: assert at every access that the previous visible operation was not a conflicting\n"
          "   access of another thread; every PIR check (assertions, UB) is asserted in every thread */\n";
@@ -530,117 +533,117 @@ struct Enc {
         unsigned w = fn.vars[static_cast<std::size_t>(s.dst)].width;
         std::vector<z3::expr> a;
         for (auto& x : s.args) a.push_back(lookup(t, node, x));
-        auto aw = [&](std::size_t i) { return width_of(t, s.args[i]); };
+        auto aw = [&](std::size_t i) { return width_of(t, s.args.at(i)); };
         switch (s.op) {
-            case Op::Copy: return a[0];
+            case Op::Copy: return a.at(0);
             case Op::Havoc: return fresh_bv(s.uninit ? "uninit" : s.nondet ? "nondet" : "havoc", w);
-            case Op::Add: return a[0] + a[1];
-            case Op::Sub: return a[0] - a[1];
-            case Op::Mul: return a[0] * a[1];
-            case Op::UDiv: return z3::udiv(a[0], a[1]);
-            case Op::SDiv: return a[0] / a[1];
-            case Op::URem: return z3::urem(a[0], a[1]);
-            case Op::SRem: return z3::srem(a[0], a[1]);
-            case Op::Shl: return z3::shl(a[0], a[1]);
-            case Op::LShr: return z3::lshr(a[0], a[1]);
-            case Op::AShr: return z3::ashr(a[0], a[1]);
-            case Op::And: return a[0] & a[1];
-            case Op::Or: return a[0] | a[1];
-            case Op::Xor: return a[0] ^ a[1];
-            case Op::Eq: return b2bv(a[0] == a[1]);
-            case Op::Ne: return b2bv(a[0] != a[1]);
-            case Op::Ult: return b2bv(z3::ult(a[0], a[1]));
-            case Op::Ule: return b2bv(z3::ule(a[0], a[1]));
-            case Op::Ugt: return b2bv(z3::ugt(a[0], a[1]));
-            case Op::Uge: return b2bv(z3::uge(a[0], a[1]));
-            case Op::Slt: return b2bv(a[0] < a[1]);
-            case Op::Sle: return b2bv(a[0] <= a[1]);
-            case Op::Sgt: return b2bv(a[0] > a[1]);
-            case Op::Sge: return b2bv(a[0] >= a[1]);
-            case Op::Select: return z3::ite(is1(a[0]), a[1], a[2]);
-            case Op::ZExt: return w == aw(0) ? a[0] : z3::zext(a[0], w - aw(0));
-            case Op::SExt: return w == aw(0) ? a[0] : z3::sext(a[0], w - aw(0));
-            case Op::Trunc: return w == aw(0) ? a[0] : a[0].extract(w - 1, 0);
-            case Op::SMax: return z3::ite(a[0] >= a[1], a[0], a[1]);
-            case Op::SMin: return z3::ite(a[0] <= a[1], a[0], a[1]);
-            case Op::UMax: return z3::ite(z3::uge(a[0], a[1]), a[0], a[1]);
-            case Op::UMin: return z3::ite(z3::ule(a[0], a[1]), a[0], a[1]);
-            case Op::Abs: return z3::ite(a[0] < bv(0, w), -a[0], a[0]);
+            case Op::Add: return a.at(0) + a.at(1);
+            case Op::Sub: return a.at(0) - a.at(1);
+            case Op::Mul: return a.at(0) * a.at(1);
+            case Op::UDiv: return z3::udiv(a.at(0), a.at(1));
+            case Op::SDiv: return a.at(0) / a.at(1);
+            case Op::URem: return z3::urem(a.at(0), a.at(1));
+            case Op::SRem: return z3::srem(a.at(0), a.at(1));
+            case Op::Shl: return z3::shl(a.at(0), a.at(1));
+            case Op::LShr: return z3::lshr(a.at(0), a.at(1));
+            case Op::AShr: return z3::ashr(a.at(0), a.at(1));
+            case Op::And: return a.at(0) & a.at(1);
+            case Op::Or: return a.at(0) | a.at(1);
+            case Op::Xor: return a.at(0) ^ a.at(1);
+            case Op::Eq: return b2bv(a.at(0) == a.at(1));
+            case Op::Ne: return b2bv(a.at(0) != a.at(1));
+            case Op::Ult: return b2bv(z3::ult(a.at(0), a.at(1)));
+            case Op::Ule: return b2bv(z3::ule(a.at(0), a.at(1)));
+            case Op::Ugt: return b2bv(z3::ugt(a.at(0), a.at(1)));
+            case Op::Uge: return b2bv(z3::uge(a.at(0), a.at(1)));
+            case Op::Slt: return b2bv(a.at(0) < a.at(1));
+            case Op::Sle: return b2bv(a.at(0) <= a.at(1));
+            case Op::Sgt: return b2bv(a.at(0) > a.at(1));
+            case Op::Sge: return b2bv(a.at(0) >= a.at(1));
+            case Op::Select: return z3::ite(is1(a.at(0)), a.at(1), a.at(2));
+            case Op::ZExt: return w == aw(0) ? a.at(0) : z3::zext(a.at(0), w - aw(0));
+            case Op::SExt: return w == aw(0) ? a.at(0) : z3::sext(a.at(0), w - aw(0));
+            case Op::Trunc: return w == aw(0) ? a.at(0) : a.at(0).extract(w - 1, 0);
+            case Op::SMax: return z3::ite(a.at(0) >= a.at(1), a.at(0), a.at(1));
+            case Op::SMin: return z3::ite(a.at(0) <= a.at(1), a.at(0), a.at(1));
+            case Op::UMax: return z3::ite(z3::uge(a.at(0), a.at(1)), a.at(0), a.at(1));
+            case Op::UMin: return z3::ite(z3::ule(a.at(0), a.at(1)), a.at(0), a.at(1));
+            case Op::Abs: return z3::ite(a.at(0) < bv(0, w), -a.at(0), a.at(0));
             case Op::Ctlz: {
                 z3::expr r = bv(w, w);
-                for (unsigned i = 0; i < w; ++i) r = z3::ite(a[0].extract(i, i) == c.bv_val(1, 1), bv(w - 1 - i, w), r);
+                for (unsigned i = 0; i < w; ++i) r = z3::ite(a.at(0).extract(i, i) == c.bv_val(1, 1), bv(w - 1 - i, w), r);
                 return r;
             }
             case Op::Cttz: {
                 z3::expr r = bv(w, w);
                 for (int i = static_cast<int>(w) - 1; i >= 0; --i) {
                     auto u = static_cast<unsigned>(i);
-                    r = z3::ite(a[0].extract(u, u) == c.bv_val(1, 1), bv(u, w), r);
+                    r = z3::ite(a.at(0).extract(u, u) == c.bv_val(1, 1), bv(u, w), r);
                 }
                 return r;
             }
             case Op::Ctpop: {
                 z3::expr r = bv(0, w);
-                for (unsigned i = 0; i < w; ++i) r = r + z3::zext(a[0].extract(i, i), w - 1);
+                for (unsigned i = 0; i < w; ++i) r = r + z3::zext(a.at(0).extract(i, i), w - 1);
                 return r;
             }
             case Op::Bswap: {
-                z3::expr r = a[0].extract(7, 0);
-                for (unsigned i = 1; i < w / 8; ++i) r = z3::concat(r, a[0].extract(i * 8 + 7, i * 8));
+                z3::expr r = a.at(0).extract(7, 0);
+                for (unsigned i = 1; i < w / 8; ++i) r = z3::concat(r, a.at(0).extract(i * 8 + 7, i * 8));
                 return r;
             }
             case Op::SAddOvf: {
-                auto x = z3::sext(a[0], 1), y = z3::sext(a[1], 1);
-                return b2bv(x + y != z3::sext(a[0] + a[1], 1));
+                auto x = z3::sext(a.at(0), 1), y = z3::sext(a.at(1), 1);
+                return b2bv(x + y != z3::sext(a.at(0) + a.at(1), 1));
             }
             case Op::SSubOvf: {
-                auto x = z3::sext(a[0], 1), y = z3::sext(a[1], 1);
-                return b2bv(x - y != z3::sext(a[0] - a[1], 1));
+                auto x = z3::sext(a.at(0), 1), y = z3::sext(a.at(1), 1);
+                return b2bv(x - y != z3::sext(a.at(0) - a.at(1), 1));
             }
             case Op::SMulOvf:
-                return b2bv(!(z3::bvmul_no_overflow(a[0], a[1], true) && z3::bvmul_no_underflow(a[0], a[1])));
+                return b2bv(!(z3::bvmul_no_overflow(a.at(0), a.at(1), true) && z3::bvmul_no_underflow(a.at(0), a.at(1))));
             case Op::UAddOvf: {
-                auto x = z3::zext(a[0], 1), y = z3::zext(a[1], 1);
-                return b2bv(x + y != z3::zext(a[0] + a[1], 1));
+                auto x = z3::zext(a.at(0), 1), y = z3::zext(a.at(1), 1);
+                return b2bv(x + y != z3::zext(a.at(0) + a.at(1), 1));
             }
-            case Op::USubOvf: return b2bv(z3::ult(a[0], a[1]));
-            case Op::UMulOvf: return b2bv(!z3::bvmul_no_overflow(a[0], a[1], false));
+            case Op::USubOvf: return b2bv(z3::ult(a.at(0), a.at(1)));
+            case Op::UMulOvf: return b2bv(!z3::bvmul_no_overflow(a.at(0), a.at(1), false));
             case Op::SDivOvf: {
                 unsigned n = aw(0);
-                return b2bv(a[0] == bv(uint64_t{1} << (n - 1), n) && a[1] == bv(wmask(n), n));
+                return b2bv(a.at(0) == bv(uint64_t{1} << (n - 1), n) && a.at(1) == bv(wmask(n), n));
             }
-            case Op::ShiftOob: return b2bv(z3::uge(a[1], bv(aw(0), aw(1))));
+            case Op::ShiftOob: return b2bv(z3::uge(a.at(1), bv(aw(0), aw(1))));
             case Op::ShlSOvf: {
                 unsigned n = aw(0);
-                auto oob = z3::uge(a[1], bv(n, n));
-                auto neg = a[0] < bv(0, n);
-                auto lost = z3::lshr(a[0], bv(n - 1, n) - a[1]) != bv(0, n);
+                auto oob = z3::uge(a.at(1), bv(n, n));
+                auto neg = a.at(0) < bv(0, n);
+                auto lost = z3::lshr(a.at(0), bv(n - 1, n) - a.at(1)) != bv(0, n);
                 return b2bv(oob || neg || lost);
             }
             case Op::ShlNswOvf: {
                 unsigned n = aw(0);
-                return b2bv(z3::uge(a[1], bv(n, n)) || z3::ashr(z3::shl(a[0], a[1]), a[1]) != a[0]);
+                return b2bv(z3::uge(a.at(1), bv(n, n)) || z3::ashr(z3::shl(a.at(0), a.at(1)), a.at(1)) != a.at(0));
             }
             case Op::ShlNuwOvf: {
                 unsigned n = aw(0);
-                return b2bv(z3::uge(a[1], bv(n, n)) || z3::lshr(z3::shl(a[0], a[1]), a[1]) != a[0]);
+                return b2bv(z3::uge(a.at(1), bv(n, n)) || z3::lshr(z3::shl(a.at(0), a.at(1)), a.at(1)) != a.at(0));
             }
             case Op::LostBitsL: {
                 unsigned n = aw(0);
-                return b2bv(z3::uge(a[1], bv(n, n)) || z3::shl(z3::lshr(a[0], a[1]), a[1]) != a[0]);
+                return b2bv(z3::uge(a.at(1), bv(n, n)) || z3::shl(z3::lshr(a.at(0), a.at(1)), a.at(1)) != a.at(0));
             }
             case Op::LostBitsA: {
                 unsigned n = aw(0);
-                return b2bv(z3::uge(a[1], bv(n, n)) || z3::shl(z3::ashr(a[0], a[1]), a[1]) != a[0]);
+                return b2bv(z3::uge(a.at(1), bv(n, n)) || z3::shl(z3::ashr(a.at(0), a.at(1)), a.at(1)) != a.at(0));
             }
             case Op::InexactU: {
                 unsigned n = aw(0);
-                return b2bv(a[1] != bv(0, n) && z3::urem(a[0], a[1]) != bv(0, n));
+                return b2bv(a.at(1) != bv(0, n) && z3::urem(a.at(0), a.at(1)) != bv(0, n));
             }
             case Op::InexactS: {
                 unsigned n = aw(0);
-                auto ovf = a[0] == bv(uint64_t{1} << (n - 1), n) && a[1] == bv(wmask(n), n);
-                return b2bv(a[1] != bv(0, n) && !ovf && z3::srem(a[0], a[1]) != bv(0, n));
+                auto ovf = a.at(0) == bv(uint64_t{1} << (n - 1), n) && a.at(1) == bv(wmask(n), n);
+                return b2bv(a.at(1) != bv(0, n) && !ovf && z3::srem(a.at(0), a.at(1)) != bv(0, n));
             }
             default:
                 // IEEE floating point is encoded by the pir stage only
@@ -707,7 +710,7 @@ struct Enc {
         if (o.kind == VisOp::Load || o.kind == VisOp::Store || o.kind == VisOp::Rmw) {
             auto& gv = G[static_cast<std::size_t>(o.var)];
             if (mk.tail) {  // Rmw write part, same atomic step as the head
-                auto nv = lookup(t, node, s.args[0]);
+                auto nv = lookup(t, node, s.args.at(0));
                 gv = z3::ite(e, nv, gv);
                 define(t, node, s.dst, e, nv);
                 return;
@@ -715,7 +718,7 @@ struct Enc {
             bool write = o.kind != VisOp::Load;
             race_check(t, e, mk.op, o, write);
             if (o.kind == VisOp::Store) {
-                auto nv = lookup(t, node, s.args[0]);
+                auto nv = lookup(t, node, s.args.at(0));
                 event(e, r, t, mk.op, nv, o.width);
                 gv = z3::ite(e, nv, gv);
                 define(t, node, s.dst, e, nv);
@@ -762,14 +765,14 @@ struct Enc {
                 break;
             }
             case VisOp::Join: {
-                auto h = lookup(t, node, s.args[0]);
+                auto h = lookup(t, node, s.args.at(0));
                 ok = ok && z3::implies(e, joinable(h));
                 break;
             }
             default: break;
         }
         if (s.kind == Stmt::Assign && o.kind != VisOp::TryLock && !s.args.empty())
-            define(t, node, s.dst, e, lookup(t, node, s.args[0]));
+            define(t, node, s.dst, e, lookup(t, node, s.args.at(0)));
         touch(t, e, mk.op, -1, false, false);
     }
 
@@ -800,7 +803,7 @@ struct Enc {
             const auto& bl = gr.blocks[static_cast<std::size_t>(nd.block)];
             auto id = c.bv_val(static_cast<uint64_t>(n), 16);
             z3::expr rch = runnable && pct == id;
-            for (auto& [pr, cond] : taken[n]) rch = rch || cond;
+            for (auto& [pr, cond] : taken.at(n)) rch = rch || cond;
             z3::expr e = rch && z3::ult(id, cs);
             stops.emplace_back(rch && !z3::ult(id, cs), static_cast<int>(n));
             ex.push_back(e);
@@ -811,7 +814,7 @@ struct Enc {
                 for (auto& ph : bl.phis) {
                     auto key = inst_key(t, node, ph.dst);
                     z3::expr v = slot(t, key);
-                    for (auto& [pr, cond] : taken[n]) {
+                    for (auto& [pr, cond] : taken.at(n)) {
                         int pb = gr.nodes[static_cast<std::size_t>(pr)].block;
                         const Arg* in = nullptr;
                         for (auto& [b, a] : ph.in)
@@ -838,14 +841,24 @@ struct Enc {
                         // a path PIR cannot follow (exception/indirect-call soft check): not a violation
                         if (s.prop == "unmodelled" || s.prop == "throw-unmodelled")
                             throw Fail{std::string(laws::NEEDS_HARNESS), "UNENCODED: " + s.msg};
-                        auto cond = is1(lookup(t, node, s.args[0]));
+                        auto cond = is1(lookup(t, node, s.args.at(0)));
                         violation(e && cond, s.prop, s.cls, s.msg + " in " + tname(p, t) + at_line(s.line), s.line, t,
                                   s.prop + ":" + s.cls + ":" + std::to_string(s.line));
                         break;
                     }
                     case Stmt::Assume:
-                        ok = ok && z3::implies(e, is1(lookup(t, node, s.args[0])));
+                        ok = ok && z3::implies(e, is1(lookup(t, node, s.args.at(0))));
                         break;
+                    case Stmt::Alloc:
+                    case Stmt::Free:
+                    case Stmt::Load:
+                    case Stmt::Store:
+                    case Stmt::MemCpy:
+                    case Stmt::MemSet:
+                    case Stmt::StackSave:
+                    case Stmt::StackRestore:
+                    case Stmt::Revive:
+                        break;  // visible ops are handled separately; SSA memory is not encoded here
                 }
             }
             switch (bl.term.kind) {
@@ -866,7 +879,7 @@ struct Enc {
                             ok = ok && !cond;  // unwinding cut: the path is assumed away (bounded)
                             continue;
                         }
-                        taken[static_cast<std::size_t>(to)].emplace_back(node, cond);
+                        taken.at(static_cast<std::size_t>(to)).emplace_back(node, cond);
                     }
                     break;
                 }
@@ -895,8 +908,8 @@ struct Enc {
                 if (o.kind == VisOp::Lock) {
                     blocked = blocked || (at && owner[static_cast<std::size_t>(o.mutex)] != bv(0, 8));
                 } else if (o.kind == VisOp::Join) {
-                    const auto& s = gr.blocks[static_cast<std::size_t>(gr.nodes[n].block)].stmts[0];
-                    blocked = blocked || (at && !joinable(lookup(ti, static_cast<int>(n), s.args[0])));
+                    const auto& s = gr.blocks[static_cast<std::size_t>(gr.nodes[n].block)].stmts.at(0);
+                    blocked = blocked || (at && !joinable(lookup(ti, static_cast<int>(n), s.args.at(0))));
                 }
             }
             auto alive = active[t] && pc[t] != end_of(ti);
@@ -1091,7 +1104,7 @@ Result check(const Program& prog, const Options& opt) {
         }
         if (!res.violations.empty()) {
             res.status = std::string(laws::FAILED);
-            res.message = res.violations[0].msg;
+            res.message = res.violations.at(0).msg;
         } else {
             res.status = std::string(laws::BOUNDED);
             res.message = "no data race, deadlock, assertion failure or UB within " + std::to_string(opt.rounds) +

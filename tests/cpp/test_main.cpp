@@ -12,6 +12,7 @@
 #include "prism/journal.hpp"
 #include "prism/pipeline.hpp"
 #include "prism/pir.hpp"
+#include "prism/pir/frontend.hpp"
 #include "prism/sandbox.hpp"
 #include "prism/scope.hpp"
 #include "prism/taxonomy.hpp"
@@ -504,8 +505,7 @@ TEST_CASE("real-world: pir finds root/include headers; a missing header is NOTRU
     // cxxopts: every unit under src/ and test/ includes "cxxopts.hpp" from
     // include/ and was pir ERROR "clang front end failed".
     prism::Config cfg;
-    auto fe = prism::pir::find_frontend(cfg);
-    if (!fe.clang || !fe.opt) return;
+    if (!prism::pir::frontend_usable(cfg)) return;
     auto td = std::filesystem::temp_directory_path() / "prism_rw_pir_inc";
     std::filesystem::remove_all(td);
     std::filesystem::create_directories(td / "include");
@@ -5425,6 +5425,7 @@ TEST_CASE("ai measure corpus (PRISM_AI_MEASURE=1)") {
 // round trip runs when clang/opt are on PATH.
 // ---------------------------------------------------------------------------
 #include "prism/pir.hpp"
+#include "prism/pir/frontend.hpp"
 
 namespace {
 
@@ -6122,9 +6123,9 @@ TEST_CASE("pir: VCs are solver-neutral SMT-LIB2 per property") {
 
 TEST_CASE("pir: clang round trip on tests/pir (skips without clang/opt)") {
     auto cfg = prism::default_config();
-    auto fe = prism::pir::find_frontend(cfg);
-    if (!fe.clang || !fe.opt) {
-        MESSAGE("clang/opt not on PATH: pir round trip skipped");
+    std::string why;
+    if (!prism::pir::frontend_usable(cfg, &why)) {
+        MESSAGE(why);
         return;
     }
     auto dir = testdata_root().parent_path() / "tests" / "pir";
@@ -7049,18 +7050,18 @@ TEST_CASE("verdict audit demotes a non-proving stage and records an ERROR") {
     prism::StageResult fuzz;
     fuzz.name = "fuzz";
     fuzz.findings.push_back({"fuzz", std::string(prism::laws::PROVED), "a.c", std::string("f"), 3, "",
-                             "lying fuzzer", std::string(prism::laws::STRENGTH_PROVES)});
+                             "lying fuzzer", std::string(prism::laws::STRENGTH_PROVES), "", "", {}});
     fuzz.findings.push_back({"fuzz", std::string(prism::laws::CLEAN), "a.c", std::string("g"), 9, "",
-                             "no crash", std::string(prism::laws::STRENGTH_SOME)});
+                             "no crash", std::string(prism::laws::STRENGTH_SOME), "", "", {}});
     prism::StageResult bmc;
     bmc.name = "bmc";
     prism::Finding cert{"bmc", std::string(prism::laws::PROVED_CERTIFIED), "a.c", std::string("h"), 1, "",
-                        "uncertified", std::string(prism::laws::STRENGTH_PROVES)};
+                        "uncertified", std::string(prism::laws::STRENGTH_PROVES), "", "", {}};
     prism::Finding ok = cert;
     ok.function = std::string("k");
     ok.extra[std::string(prism::laws::CERTIFICATE_KEY)] = std::string(prism::laws::CERTIFICATE_CHECKED);
     prism::Finding bounded{"bmc", std::string(prism::laws::BOUNDED), "a.c", std::string("m"), 2, "",
-                           "k=4", std::string(prism::laws::STRENGTH_SOME)};
+                           "k=4", std::string(prism::laws::STRENGTH_SOME), "", "", {}};
     bmc.findings = {cert, ok, bounded};
     rep.stages = {fuzz, bmc};
 
@@ -7088,7 +7089,7 @@ TEST_CASE("PROVED-CERTIFIED is counted in SARIF run properties, never a result")
     prism::StageResult bmc;
     bmc.name = "bmc";
     prism::Finding f{"bmc", std::string(prism::laws::PROVED_CERTIFIED), "a.c", std::string("h"), 1, "",
-                     "certified", std::string(prism::laws::STRENGTH_PROVES)};
+                     "certified", std::string(prism::laws::STRENGTH_PROVES), "", "", {}};
     f.extra[std::string(prism::laws::CERTIFICATE_KEY)] = std::string(prism::laws::CERTIFICATE_CHECKED);
     bmc.findings = {f};
     rep.stages = {bmc};

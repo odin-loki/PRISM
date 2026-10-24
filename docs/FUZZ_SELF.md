@@ -115,10 +115,11 @@ also fuzzed on their own (`PRISM_FUZZ_TARGET`).
   `true` and `[]` (`AttributeError`, `models.py:116`, `data.get` on a
   non-object); `{"stages":"x"}` (`models.py:169`); `{"functions":[2]}`
   (`models.py:126`); `{"stages":[{"findings":[null]}]}` (`models.py:154`).
-- **Reached from:** `python -m prism PATH --resume` when `stages.jsonl` is
-  absent (`prism/pipeline.py`, the `report.json` fallback): verified to exit
-  1 with a traceback on `{"stages":"x"}`. Also `prism/gui.py` when it opens a
-  report.
+- **Reached from (historical Python engine, deleted):** `PATH --resume` when
+  `stages.jsonl` was absent (`report.json` fallback): exited 1 with a traceback
+  on `{"stages":"x"}`. The GUI had the same bug when opening a report. Today use
+  `./build/prism PATH --resume` or `./build/prism_gui` — both handle these
+  reproducers (see C++ note below).
 - The C++ `RunReport::load` and journal readers handle every F2 and F3
   reproducer (each was run through `prism_fuzz_self` with the `report`
   selector: no exception, no sanitizer report).
@@ -130,9 +131,10 @@ also fuzzed on their own (`PRISM_FUZZ_TARGET`).
 - **Reproducers** (one line of `stages.jsonl`): `""`, `1`, `[]`
   (`AttributeError`, `models.py:169`, `stage_from_dict`), and
   `{"findings":[1]}` (`models.py:154`, `finding_from_dict`).
-- **Reached from:** `python -m prism PATH --resume`: verified to crash with
-  `AttributeError: 'str' object has no attribute 'get'` when the journal
-  holds the line `""`. The C++ engine resumes normally on the same journal.
+- **Reached from (historical Python engine, deleted):** `PATH --resume` crashed
+  with `AttributeError: 'str' object has no attribute 'get'` when the journal
+  held the line `""`. `./build/prism PATH --resume` resumes normally on the
+  same journal.
 - `read_functions` handles the equivalent inputs (it returned a list for
   `[1]`, `{"a":1}`, `"x"` and `[{"params":[1]}]`).
 

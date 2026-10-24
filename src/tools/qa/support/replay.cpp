@@ -99,11 +99,6 @@ i128 floor_mod(i128 a, i128 m) {
     return r < i128(0) ? r + m : r;
 }
 
-std::string lower(std::string s) {
-    for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return s;
-}
-
 std::string upper(std::string s) {
     for (auto& c : s) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
     return s;

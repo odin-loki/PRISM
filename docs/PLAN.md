@@ -220,7 +220,7 @@ These are the holes the named tools do not fill:
 
 ## What "done" means for this repo
 
-A command `python -m prism path/to/code` that:
+A command `./build/prism path/to/code` that:
 
 - runs every stage that *can* run on this machine,
 - names every stage that cannot (`NOTRUN` + install line),

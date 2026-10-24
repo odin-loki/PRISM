@@ -1,5 +1,4 @@
-// Table-driven PIR stage on tests/pir (was tests/test_pir.py::TestPirStage).
-// Regenerate: python tools/gen_test_pir_e2e_cpp.py
+// Table-driven PIR stage on tests/pir; edit this file directly when adding cases.
 #include <doctest/doctest.h>
 #ifdef ERROR
 #  undef ERROR
@@ -8,6 +7,7 @@
 #include "prism/config.hpp"
 #include "prism/laws.hpp"
 #include "prism/pir.hpp"
+#include "prism/pir/frontend.hpp"
 
 #include <filesystem>
 #include <map>
@@ -225,7 +225,7 @@ const std::vector<Row>& rows() {
     return k;
 }
 
-const std::vector<const char*>& pir_files() {
+const std::vector<const char*>& pir_files_all() {
     static const std::vector<const char*> k{
         "asm_contract.c",
         "assert.c",
@@ -264,6 +264,39 @@ const std::vector<const char*>& pir_files() {
     return k;
 }
 
+#ifdef _WIN32
+const std::vector<const char*>& pir_files_win_c() {
+    static const std::vector<const char*> k{
+        "asm_contract.c",
+        "calls.c",
+        "casts.c",
+        "div0.c",
+        "folded.c",
+        "kinduct.c",
+        "loops.c",
+        "mem_alias.c",
+        "mem_array.c",
+        "mem_contract.c",
+        "mem_ptr.c",
+        "overflow.c",
+        "select.c",
+        "shift.c",
+        "switch.c",
+        "unencoded.c",
+        "uninit.c",
+    };
+    return k;
+}
+#endif
+
+const std::vector<const char*>& pir_files() {
+#ifdef _WIN32
+    return pir_files_win_c();
+#else
+    return pir_files_all();
+#endif
+}
+
 std::map<std::pair<std::string, std::string>, const prism::Finding*> index(
     const std::vector<prism::Finding>& out) {
     std::map<std::pair<std::string, std::string>, const prism::Finding*> m;
@@ -275,32 +308,32 @@ std::map<std::pair<std::string, std::string>, const prism::Finding*> index(
     return m;
 }
 
-// PIR models an LP64 target (docs/PIR.md: long and pointers are 64 bits, the
-// libc models say `typedef unsigned long size_t`). clang on Windows targets
-// LLP64 (x86_64-pc-windows-msvc: long is 32 bits, size_t is unsigned long
-// long) and has no libstdc++, so the library models do not build ("typedef
-// redefinition with different types") and every verdict row fails. Until PIR
-// lowers for an LP64 target on Windows, the e2e table is NOTRUN there, even
-// when clang and opt are present (Law 1): never a pass, never a failure that
-// blames the code under test.
-bool frontend_usable(const prism::Config& cfg) {
-#ifdef _WIN32
-    (void)cfg;
-    MESSAGE("NOTRUN: pir e2e needs an LP64 clang target; clang on Windows is LLP64 (run PIR under WSL/Linux)");
+bool skip_without_frontend(const prism::Config& cfg) {
+    std::string why;
+    if (!pp::frontend_usable(cfg, &why)) {
+        MESSAGE(why);
+        return true;
+    }
+    if (!pp::z3_available()) {
+        MESSAGE("NOTRUN: pir e2e needs Z3 (rebuild with -DPRISM_Z3=ON)");
+        return true;
+    }
     return false;
-#else
-    auto fe = pp::find_frontend(cfg);
-    if (fe.clang && fe.opt) return true;
-    MESSAGE("NOTRUN: pir e2e needs clang and opt on PATH (clang " << (fe.clang ? "found" : "missing")
-            << ", opt " << (fe.opt ? "found" : "missing") << ")");
-    return false;
-#endif
+}
+
+bool skip_glibc_corpus_file(const char* pir_c_file) {
+    if (pp::pir_test_c_file_supported(pir_c_file)) return false;
+    const std::string skip_msg =
+        std::string("NOTRUN: ") + (pir_c_file ? pir_c_file : "") +
+        " needs glibc headers (assert.c, fp_arith.c, kind_mem.c, mem_heap.c, mem_libc.c, mem_str.c, sjlj_basic.c); not in the Windows C subset";
+    MESSAGE(skip_msg);
+    return true;
 }
 }  // namespace
 
-TEST_CASE("pir e2e: tests/pir verdict table (NOTRUN without clang/opt, and on WIN32)") {
+TEST_CASE("pir e2e: tests/pir verdict table (NOTRUN without clang/opt/LP64 probe)") {
     auto cfg = prism::default_config();
-    if (!frontend_usable(cfg)) return;
+    if (skip_without_frontend(cfg)) return;
     auto dir = fs::path(PRISM_SOURCE_DIR) / "tests" / "pir";
     cfg.root = dir;
     cfg.jobs = 2;
@@ -310,6 +343,9 @@ TEST_CASE("pir e2e: tests/pir verdict table (NOTRUN without clang/opt, and on WI
     auto got = index(out);
     std::vector<std::string> wrong;
     for (auto& r : rows()) {
+#ifdef _WIN32
+        if (!pp::pir_test_c_file_supported(r.file)) continue;
+#endif
         auto it = got.find({r.file, r.function});
         if (it == got.end()) {
             wrong.push_back(std::string(r.file) + ":" + r.function + " missing");
@@ -335,7 +371,8 @@ TEST_CASE("pir e2e: tests/pir verdict table (NOTRUN without clang/opt, and on WI
 
 TEST_CASE("pir e2e: Law 9 holds translation validation without --allow-exec") {
     auto cfg = prism::default_config();
-    if (!frontend_usable(cfg)) return;
+    if (skip_without_frontend(cfg)) return;
+    if (skip_glibc_corpus_file("overflow.c")) return;
     auto dir = fs::path(PRISM_SOURCE_DIR) / "tests" / "pir";
     cfg.root = dir;
     auto out = pp::run_pir({dir / "overflow.c"}, cfg);
@@ -351,7 +388,8 @@ TEST_CASE("pir e2e: Law 9 holds translation validation without --allow-exec") {
 
 TEST_CASE("pir e2e: --fp-checks is opt-in (NOTRUN without clang/opt)") {
     auto cfg = prism::default_config();
-    if (!frontend_usable(cfg)) return;
+    if (skip_without_frontend(cfg)) return;
+    if (skip_glibc_corpus_file("fp_arith.c")) return;
     auto dir = fs::path(PRISM_SOURCE_DIR) / "tests" / "pir";
     cfg.root = dir;
     cfg.fp_checks = true;
@@ -367,7 +405,8 @@ TEST_CASE("pir e2e: --fp-checks is opt-in (NOTRUN without clang/opt)") {
 
 TEST_CASE("pir e2e: --strict-aliasing is opt-in (NOTRUN without clang/opt)") {
     auto cfg = prism::default_config();
-    if (!frontend_usable(cfg)) return;
+    if (skip_without_frontend(cfg)) return;
+    if (skip_glibc_corpus_file("mem_alias.c")) return;
     auto dir = fs::path(PRISM_SOURCE_DIR) / "tests" / "pir";
     cfg.root = dir;
     {

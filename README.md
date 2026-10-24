@@ -8,9 +8,8 @@ bounded proofs, then fuzzing, then an LLM (Qwen 3.5 9B) that may only
 *hypothesize*.
 
 > The name is **PRISM** (an earlier name is retired) — see [CLAUDE.md](CLAUDE.md).
-> PRISM ships two engines with the same stages and laws: the C++23 engine
-> (`src/prism`, binary `prism`) and the Python engine (package `prism/`,
-> `python -m prism PATH`).
+> PRISM is the C++23 engine (`src/prism`, binary `prism`). The Python engine
+> is deleted; only `tools/svcomp/prism.py` remains for BenchExec tool-info.
 
 ## What it checks
 
@@ -32,30 +31,36 @@ cmake --build build
 ./build/prism path/to/code --resume
 ./build/prism_tests
 
-# Python engine (same stages, same report)
-pip install z3-solver
-python -m prism path/to/code --no-llm
-
-# Native MSVC (cl), from a VS/x64 Native Tools prompt
+# Native MSVC (cl), from a VS/x64 Native Tools prompt — build under
+# C:\Temp\prism-build-* (not OneDrive); see docs/MSVC_PORT.md
 cmake -B build -G Ninja -DPRISM_CUDA=OFF -DPRISM_LLAMA=OFF -DPRISM_QT=OFF -DPRISM_Z3=ON
 cmake --build build
 ```
 
 ### Windows + WSL
 
-A checkout under OneDrive on `/mnt/c/...` can make `./build/prism_tests` look
-hung: the suite reads thousands of repo files and 9p + sync is slow. Prefer
-building on Linux ext4 and syncing from the Windows tree.
+| Location | Use for |
+|----------|---------|
+| `C:\Users\...\OneDrive\Desktop\PRISM` (or any sync’d Desktop tree) | **Edit** in the IDE, git, docs |
+| `~/PRISM` on WSL **ext4** | **Linux** `cmake` / `ninja` / `prism_tests` (`build-wsl/`) |
+| `C:\Temp\prism-build-*` (or other non-OneDrive path) | **Windows** MSVC / Z3 builds ([docs/MSVC_PORT.md](docs/MSVC_PORT.md)) |
 
-From WSL:
+Do **not** run `cmake`, `ninja`, or full `prism_tests` on **OneDrive** paths
+(including `build-wsl/` next to the Desktop clone). DrvFS (`/mnt/c/...`) is
+slow and flaky for large link steps and test I/O.
+
+Keep a **full git checkout** on ext4, e.g. `~/PRISM` (must include
+`third_party/` and `.git/` per `MANIFEST.toml`). After editing on OneDrive,
+sync into ext4 from WSL:
 
 ```
-bash scripts/wsl_run_prism_tests.sh   # rsync → ~/prism-run, cmake, full suite
-bash scripts/wsl_run_tests_only.sh  # re-run tests after a manual build there
+scripts/wsl_sync_from_windows.sh    # from repo root (default: Desktop PRISM → ~/PRISM)
+cd ~/PRISM && scripts/wsl_build.sh
 ```
 
-`PRISM_WSL_DIR` — ext4 working copy (default `~/prism-run`).
-`PRISM_WIN_SRC` — Windows checkout when auto-detection from `/mnt/c` is wrong.
+Or `git clone` / `git pull` in `~/PRISM` if the remote is up to date. Do not
+`rsync --delete` from `/mnt/c` without preserving `.git` (breaks
+`tests/cpp/test_deps.cpp`).
 
 Output under `--out` (default `prism-out/`):
 

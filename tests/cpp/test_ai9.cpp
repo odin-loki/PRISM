@@ -130,6 +130,10 @@ TEST_CASE("ai9 parity: review is in STAGE_ORDER and solver-origin audit") {
     CHECK(prism::verdict::name(prism::verdict::stage_origin("review")) == "solver");
     const auto cpp = slurp(fs::path(PRISM_SOURCE_DIR) / "src" / "prism" / "pipeline.cpp");
     CHECK(cpp.find("stage(\"review\"") != std::string::npos);
+    CHECK(cpp.find("ai::run_review") != std::string::npos);
+    const auto tax = slurp(fs::path(PRISM_SOURCE_DIR) / "src" / "prism" / "taxonomy.cpp");
+    CHECK(tax.find(R"({"VACUOUS-ASSUMPTION")") != std::string::npos);
+    CHECK(tax.find(R"({"PROOF-REGRESSION")") != std::string::npos);
 }
 
 // ============================================================ Lean proof search

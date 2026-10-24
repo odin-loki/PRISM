@@ -24,6 +24,7 @@
 
 #include <chrono>
 #include <filesystem>
+#include <memory>
 #include <optional>
 
 namespace {
@@ -49,8 +50,16 @@ QStringList header(const auto& columns) {
     return h;
 }
 
-QTableWidget* table(const char* name, const QStringList& columns) {
-    auto *t = new QTableWidget(0, static_cast<int>(columns.size()));
+// Qt parent or addWidget/addLayout owns the pointer; unique_ptr silences CXX-EXCEPTION-LEAK.
+template<typename T>
+T* qt_own(T* p) {
+    std::unique_ptr<T> hold(p);
+    hold.release();
+    return p;
+}
+
+QTableWidget* table(QWidget* parent, const char* name, const QStringList& columns) {
+    auto *t = qt_own(new QTableWidget(0, static_cast<int>(columns.size()), parent));
     t->setObjectName(QLatin1String(name));
     t->setHorizontalHeaderLabels(columns);
     t->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
@@ -58,7 +67,8 @@ QTableWidget* table(const char* name, const QStringList& columns) {
 }
 
 void setRow(QTableWidget* t, int row, const std::vector<std::string>& cells) {
-    for (int c = 0; c < static_cast<int>(cells.size()); ++c)
+    const int ncol = t->columnCount();
+    for (int c = 0; c < static_cast<int>(cells.size()) && c < ncol; ++c)
         t->setItem(row, c, new QTableWidgetItem(qs(cells[c])));
 }
 
@@ -78,30 +88,31 @@ MainWindow::MainWindow(const QStringList& launch, QWidget *parent) : QMainWindow
 
     setWindowTitle(qs(pg::WINDOW_TITLE));
     resize(1280, 800);
-    auto *root = new QWidget(this);
+    auto *root = qt_own(new QWidget(this));
     setCentralWidget(root);
-    auto *v = new QVBoxLayout(root);
+    auto *v = qt_own(new QVBoxLayout(root));
 
     auto *bar = new QHBoxLayout();
-    path_ = new QLineEdit(QStringLiteral("testdata"));
+    std::unique_ptr<QHBoxLayout> bar_hold(bar);
+    path_ = qt_own(new QLineEdit(QStringLiteral("testdata"), root));
     path_->setObjectName(QStringLiteral("path"));
-    auto *browse = new QPushButton(QStringLiteral("Open…"));
+    auto *browse = qt_own(new QPushButton(QStringLiteral("Open…"), root));
     // The LLM stage is on by default: its output is HYPOTHESIS/READS and
     // never covers a class (Law 4); without a model it is NOTRUN.
-    llm_ = new QCheckBox(QStringLiteral("LLM hypotheses"));
+    llm_ = qt_own(new QCheckBox(QStringLiteral("LLM hypotheses"), root));
     llm_->setObjectName(QStringLiteral("llm"));
     llm_->setChecked(true);
-    resume_ = new QCheckBox(QStringLiteral("Resume last report"));
+    resume_ = qt_own(new QCheckBox(QStringLiteral("Resume last report"), root));
     resume_->setObjectName(QStringLiteral("resume"));
-    allow_exec_ = new QCheckBox(QStringLiteral("Allow executing scanned code"));
+    allow_exec_ = qt_own(new QCheckBox(QStringLiteral("Allow executing scanned code"), root));
     allow_exec_->setObjectName(QStringLiteral("allow_exec"));
     allow_exec_->setChecked(false);
     allow_exec_->setToolTip(QStringLiteral(
         "--allow-exec: sanitizer/fuzz/diff harnesses, perl -c, cargo clippy, eslint, "
         "ParanoidBSD modules, LLM programs. Only on code you trust; off = NOTRUN."));
-    run_ = new QPushButton(QStringLiteral("Run pipeline"));
+    run_ = qt_own(new QPushButton(QStringLiteral("Run pipeline"), root));
     run_->setObjectName(QStringLiteral("run"));
-    bar->addWidget(new QLabel(QStringLiteral("Path")));
+    bar->addWidget(qt_own(new QLabel(QStringLiteral("Path"), root)));
     bar->addWidget(path_, 1);
     bar->addWidget(browse);
     bar->addWidget(llm_);
@@ -109,27 +120,31 @@ MainWindow::MainWindow(const QStringList& launch, QWidget *parent) : QMainWindow
     bar->addWidget(allow_exec_);
     bar->addWidget(run_);
     v->addLayout(bar);
+    bar_hold.release();
 
     auto *skipBar = new QHBoxLayout();
-    skipBar->addWidget(new QLabel(QStringLiteral("Skip:")));
-    skip_fuzz_ = new QCheckBox(QStringLiteral("fuzz"));
+    std::unique_ptr<QHBoxLayout> skipBar_hold(skipBar);
+    skipBar->addWidget(qt_own(new QLabel(QStringLiteral("Skip:"), root)));
+    skip_fuzz_ = qt_own(new QCheckBox(QStringLiteral("fuzz"), root));
     skip_fuzz_->setObjectName(QStringLiteral("skip_fuzz"));
-    skip_repair_ = new QCheckBox(QStringLiteral("repair"));
+    skip_repair_ = qt_own(new QCheckBox(QStringLiteral("repair"), root));
     skip_repair_->setObjectName(QStringLiteral("skip_repair"));
-    skip_optional_ = new QCheckBox(QStringLiteral("optional"));
+    skip_optional_ = qt_own(new QCheckBox(QStringLiteral("optional"), root));
     skip_optional_->setObjectName(QStringLiteral("skip_optional"));
     skipBar->addWidget(skip_fuzz_);
     skipBar->addWidget(skip_repair_);
     skipBar->addWidget(skip_optional_);
     skipBar->addStretch(1);
     v->addLayout(skipBar);
+    skipBar_hold.release();
 
     auto *stats = new QHBoxLayout();
+    std::unique_ptr<QHBoxLayout> stats_hold(stats);
     stats->setSpacing(24);
-    vis_ = new QLabel;
-    ans_ = new QLabel;
-    res_ = new QLabel;
-    conf_ = new QLabel;
+    vis_ = qt_own(new QLabel(root));
+    ans_ = qt_own(new QLabel(root));
+    res_ = qt_own(new QLabel(root));
+    conf_ = qt_own(new QLabel(root));
     vis_->setObjectName(QStringLiteral("s_vis"));
     ans_->setObjectName(QStringLiteral("s_ans"));
     res_->setObjectName(QStringLiteral("s_res"));
@@ -142,19 +157,20 @@ MainWindow::MainWindow(const QStringList& launch, QWidget *parent) : QMainWindow
         stats->addWidget(l, l == conf_ ? 1 : 0);
     }
     v->addLayout(stats);
+    stats_hold.release();
 
-    stages_ = table("stages", header(pg::STAGE_COLUMNS));
-    findings_ = table("findings", header(pg::FINDING_COLUMNS));
-    tax_ = table("taxonomy", {QStringLiteral("class"), QStringLiteral("verdict"),
-                              QStringLiteral("best")});
-    auto *split = new QSplitter(Qt::Vertical);
+    auto *split = qt_own(new QSplitter(Qt::Vertical, root));
+    stages_ = table(split, "stages", header(pg::STAGE_COLUMNS));
+    findings_ = table(split, "findings", header(pg::FINDING_COLUMNS));
+    tax_ = table(split, "taxonomy", {QStringLiteral("class"), QStringLiteral("verdict"),
+                                     QStringLiteral("best")});
     split->addWidget(stages_);
     split->addWidget(findings_);
     split->addWidget(tax_);
     split->setStretchFactor(1, 2);
     v->addWidget(split, 3);
 
-    log_ = new QPlainTextEdit;
+    log_ = qt_own(new QPlainTextEdit(root));
     log_->setObjectName(QStringLiteral("log"));
     log_->setReadOnly(true);
     v->addWidget(log_, 1);
@@ -162,15 +178,17 @@ MainWindow::MainWindow(const QStringList& launch, QWidget *parent) : QMainWindow
     // Assistant (roadmap 9.4): "unproved memory safety in module net",
     // "explain bmc#3", "trusted base". Double-click a finding to explain it.
     auto *chatRow = new QHBoxLayout();
-    ask_ = new QLineEdit;
+    std::unique_ptr<QHBoxLayout> chatRow_hold(chatRow);
+    ask_ = qt_own(new QLineEdit(root));
     ask_->setObjectName(QStringLiteral("ask"));
     ask_->setPlaceholderText(QStringLiteral("Ask about findings, or: explain <id> / trusted base"));
-    ask_btn_ = new QPushButton(QStringLiteral("Ask"));
-    chatRow->addWidget(new QLabel(QStringLiteral("Assistant")));
+    ask_btn_ = qt_own(new QPushButton(QStringLiteral("Ask"), root));
+    chatRow->addWidget(qt_own(new QLabel(QStringLiteral("Assistant"), root)));
     chatRow->addWidget(ask_, 1);
     chatRow->addWidget(ask_btn_);
     v->addLayout(chatRow);
-    chat_ = new QPlainTextEdit;
+    chatRow_hold.release();
+    chat_ = qt_own(new QPlainTextEdit(root));
     chat_->setObjectName(QStringLiteral("chat"));
     chat_->setReadOnly(true);
     v->addWidget(chat_, 1);
@@ -183,8 +201,8 @@ MainWindow::MainWindow(const QStringList& launch, QWidget *parent) : QMainWindow
         }
     });
 
-    proc_ = new QProcess(this);
-    poll_ = new QTimer(this);
+    proc_ = qt_own(new QProcess(this));
+    poll_ = qt_own(new QTimer(this));
     poll_->setInterval(pg::POLL_MS);
     connect(poll_, &QTimer::timeout, this, &MainWindow::pollJournal);
     connect(browse, &QPushButton::clicked, this, [this] {
@@ -378,8 +396,8 @@ void MainWindow::onDone(int exitCode, QProcess::ExitStatus st) {
     if (auto why = pg::run_failure(exitCode, crashed)) {
         log_->appendPlainText(qs(*why));
         // Not modal-blocking: the window stays live (and testable offscreen).
-        auto *box = new QMessageBox(QMessageBox::Critical, QStringLiteral("PRISM"), qs(*why),
-                                    QMessageBox::Ok, this);
+        auto *box = qt_own(new QMessageBox(QMessageBox::Critical, QStringLiteral("PRISM"), qs(*why),
+                                           QMessageBox::Ok, this));
         box->setObjectName(QStringLiteral("run_failure"));
         box->setAttribute(Qt::WA_DeleteOnClose);
         box->open();

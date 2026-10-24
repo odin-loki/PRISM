@@ -10,6 +10,7 @@
 // collide with the unit's), so no llvm-link run is needed.
 
 #include "prism/pir.hpp"
+#include "prism/pir/frontend.hpp"
 
 #include "../proc.hpp"
 
@@ -88,6 +89,9 @@ namespace {
 // Where lowered models are kept across runs: $XDG_CACHE_HOME/prism/pir-models
 // or ~/.cache/prism/pir-models ("" when neither is set).
 fs::path model_cache_root() {
+#ifdef _WIN32
+    if (const char* l = std::getenv("LOCALAPPDATA"); l && *l) return fs::path(l) / "prism" / "pir-models";
+#endif
     if (const char* x = std::getenv("XDG_CACHE_HOME"); x && *x) return fs::path(x) / "prism" / "pir-models";
     if (const char* h = std::getenv("HOME"); h && *h) return fs::path(h) / ".cache" / "prism" / "pir-models";
     return {};
@@ -98,10 +102,12 @@ std::string lower_model(const Frontend& fe, const fs::path& dir, const std::stri
                         std::string& ll) {
     auto src = dir / ("prism_model_" + name);
     auto o0 = dir / (name + ".o0.ll"), o1 = dir / (name + ".ll");
-    auto r = detail::run_process({fe.clang->string(), "-S", "-emit-llvm", "-O0", "-Xclang", "-disable-O0-optnone",
-                                  "-fno-builtin", "-ffreestanding", "-fno-discard-value-names", "-gline-tables-only",
-                                  "-std=c17", "-w", "-o", o0.string(), src.string()},
-                                 timeout_s);
+    std::vector<std::string> argv{fe.clang->string(), "-S"};
+    for (auto& t : lp64_target_flags()) argv.push_back(t);
+    argv.insert(argv.end(), {"-emit-llvm", "-O0", "-Xclang", "-disable-O0-optnone", "-fno-builtin", "-ffreestanding",
+                             "-fno-discard-value-names", "-gline-tables-only", "-std=c17", "-w", "-o", o0.string(),
+                             src.string()});
+    auto r = detail::run_process(argv, timeout_s);
     if (r.timed_out) return "model " + name + ": clang timed out after " + std::to_string(int(timeout_s)) + " s";
     if (r.failed || r.rc != 0) return "model " + name + ": " + first_error_line(r.text);
     auto ro = detail::run_process({fe.opt->string(), "-passes=mem2reg,lowerswitch,loop-simplify,lcssa,instnamer", "-S",
@@ -112,6 +118,40 @@ std::string lower_model(const Frontend& fe, const fs::path& dir, const std::stri
     ll = slurp(o1);
     if (ll.empty()) return "model " + name + ": opt wrote no IR";
     return {};
+}
+
+std::size_t model_source_c_count() {
+    std::size_t n = 0;
+    for (auto& [name, _] : model_sources())
+        if (name.ends_with(".c")) ++n;
+    return n;
+}
+
+bool cached_model_ir_ok(const std::string& ll) {
+    if (ll.empty()) return false;
+#ifdef _WIN32
+    const std::string triple_line = lp64_llvm_triple_metadata_line();
+    if (ll.find(triple_line) == std::string::npos) return false;
+    if (ll.find("target triple = \"x86_64-pc-windows") != std::string::npos) return false;
+    if (ll.find("target datalayout = ") == std::string::npos) return false;
+    // Native Windows clang IR uses e-m:w- (LLP64); reject pre-LP64 model caches.
+    if (ll.find("e-m:w-") != std::string::npos) return false;
+#endif
+    return true;
+}
+
+// Every embedded .c model must be present and pass cached_model_ir_ok.
+bool try_load_model_cache(const fs::path& cache, std::vector<std::pair<std::string, std::string>>& out) {
+    out.clear();
+    std::error_code ec;
+    if (!fs::is_directory(cache, ec)) return false;
+    for (auto& [name, _] : model_sources()) {
+        if (!name.ends_with(".c")) continue;
+        auto ll = slurp(cache / (name + ".ll"));
+        if (!cached_model_ir_ok(ll)) return false;
+        out.emplace_back(name, std::move(ll));
+    }
+    return out.size() == model_source_c_count() && !out.empty();
 }
 
 }  // namespace
@@ -127,22 +167,35 @@ ModelLibrary build_models(const Frontend& fe, double timeout_s) {
         lib.error = "clang/opt not found";
         return lib;
     }
+#ifdef _WIN32
+    std::string key_text = "prism-pir-models-v3\n" + fe.version + "\n" + fe.clang->string() + "\n" +
+                           fe.opt->string() + "\n" + lp64_target_triple() + "\n";
+#else
     std::string key_text = "prism-pir-models-v1\n" + fe.version + "\n" + fe.clang->string() + "\n" + fe.opt->string();
+#endif
     for (auto& [name, text] : model_sources())
         if (!name.starts_with("cxx/")) key_text += "\n--" + name + "\n" + text;
     std::error_code ec;
     fs::path cache;
-    if (auto root = model_cache_root(); !root.empty()) cache = root / sha256_hex(key_text).substr(0, 24);
+    if (auto root = model_cache_root(); !root.empty()) {
+        cache = root / sha256_hex(key_text).substr(0, 24);
+#ifdef _WIN32
+        // Drop pre-LP64 or partial trees (v1/v2 keys, bad triples) without manual cache delete.
+        if (fs::is_directory(root, ec)) {
+            for (auto it = fs::directory_iterator(root, ec); !ec && it != fs::directory_iterator(); ++it) {
+                if (!it->is_directory(ec)) continue;
+                if (it->path() == cache) continue;
+                std::vector<std::pair<std::string, std::string>> probe;
+                if (!try_load_model_cache(it->path(), probe)) fs::remove_all(it->path(), ec);
+            }
+        }
+#endif
+    }
     std::vector<std::pair<std::string, std::string>> lowered;  // model file -> IR
     if (!cache.empty() && fs::is_directory(cache, ec)) {
-        for (auto& [name, text] : model_sources()) {
-            if (!name.ends_with(".c")) continue;
-            auto ll = slurp(cache / (name + ".ll"));
-            if (ll.empty()) {
-                lowered.clear();
-                break;
-            }
-            lowered.emplace_back(name, std::move(ll));
+        if (!try_load_model_cache(cache, lowered)) {
+            fs::remove_all(cache, ec);
+            lowered.clear();
         }
     }
     if (lowered.empty()) {

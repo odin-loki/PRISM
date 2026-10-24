@@ -15,6 +15,7 @@
 #include "prism/models.hpp"
 #include "prism/pipeline.hpp"
 #include "prism/pir.hpp"
+#include "prism/pir/frontend.hpp"
 #include "prism/shipdocs.hpp"
 #include "prism/taxonomy.hpp"
 #include "prism/verdict.hpp"
@@ -37,6 +38,15 @@
 namespace {
 
 namespace fs = std::filesystem;
+
+bool skip_without_pir_frontend(const prism::Config& cfg = prism::default_config()) {
+    std::string why;
+    if (!prism::pir::frontend_usable(cfg, &why)) {
+        MESSAGE(why);
+        return true;
+    }
+    return false;
+}
 
 struct CertTmp {
     fs::path dir;
@@ -363,11 +373,7 @@ TEST_CASE("certified: a checker that rejects leaves PROVED with the reason") {
 
 TEST_CASE("certified: the pir stage end to end on tests/pir (skips without clang/opt)") {
     auto cfg = prism::default_config();
-    auto fe = prism::pir::find_frontend(cfg);
-    if (!fe.clang || !fe.opt) {
-        MESSAGE("clang/opt not on PATH: skipped");
-        return;
-    }
+    if (skip_without_pir_frontend(cfg)) return;
     CertTmp tmp;
     auto dir = repo_root() / "tests" / "pir";
     cfg.root = dir;
@@ -417,7 +423,7 @@ TEST_CASE("taxonomy and confidence credit pir like bmc") {
     pir.name = "pir";
     pir.status = "ok";
     prism::Finding f{"pir", std::string(prism::laws::PROVED_CERTIFIED), "a.c", std::string("f"), 1, "", "",
-                     std::string(prism::laws::STRENGTH_PROVES)};
+                     std::string(prism::laws::STRENGTH_PROVES), "", "", {}};
     f.extra["certificate"] = "checked";
     pir.findings = {f};
     r.stages = {pir};
@@ -468,7 +474,7 @@ TEST_CASE("reports ship the trusted base and link every verdict to its definitio
     s.name = "pir";
     s.status = "ok";
     s.findings = {{"pir", std::string(prism::laws::PROVED), "a.c", std::string("f"), 1, "", "ok",
-                   std::string(prism::laws::STRENGTH_PROVES)}};
+                   std::string(prism::laws::STRENGTH_PROVES), "", "", {}}};
     r.stages = {s};
     prism::write_report_md(r, tmp.dir / "report.md");
     prism::write_sarif(r, tmp.dir / "report.sarif");
@@ -500,8 +506,7 @@ TEST_CASE("certified: a function with no VC stays PROVED (nothing to certify)") 
 
 TEST_CASE("pir: C23 units that do not compile as C17 are lowered as C23 (skips without clang/opt)") {
     auto cfg = prism::default_config();
-    auto fe = prism::pir::find_frontend(cfg);
-    if (!fe.clang || !fe.opt) return;
+    if (skip_without_pir_frontend(cfg)) return;
     CertTmp tmp;
     auto src = tmp.dir / "c23.c";
     std::ofstream(src) << "bool c23_ok(int a) {\n    typeof(a) b = a & 7;\n    return b < 8 && nullptr == (void *)0;\n}\n";
@@ -1083,11 +1088,7 @@ TEST_CASE("certified: a checker out of memory is reported as such, never as a ve
 #  endif
 
 TEST_CASE("certified: run_pipeline pir with --certified (skips without clang/opt)") {
-    auto fe = prism::pir::find_frontend(prism::default_config());
-    if (!fe.clang || !fe.opt) {
-        MESSAGE("clang/opt not on PATH: skipped");
-        return;
-    }
+    if (skip_without_pir_frontend()) return;
     CertTmp tmp;
     auto src = tmp.dir / "src";
     fs::create_directories(src);
@@ -1136,8 +1137,7 @@ int sum3(int x) {
 }
 
 TEST_CASE("certified: plain run_pipeline never certifies") {
-    auto fe = prism::pir::find_frontend(prism::default_config());
-    if (!fe.clang || !fe.opt) return;
+    if (skip_without_pir_frontend()) return;
     CertTmp tmp;
     auto src = tmp.dir / "src";
     fs::create_directories(src);

@@ -108,7 +108,7 @@ TEST_CASE("verdict audit: the ERROR row is marked as the audit's, the demoted ro
     prism::StageResult fuzz;
     fuzz.name = "fuzz";
     prism::Finding lie{"fuzz", std::string(prism::laws::PROVED), "a.c", std::string("f"), 3, "",
-                       "lying fuzzer", std::string(prism::laws::STRENGTH_PROVES)};
+                       "lying fuzzer", std::string(prism::laws::STRENGTH_PROVES), "", "", {}};
     fuzz.findings = {lie};
     rep.stages = {fuzz};
     CHECK(prism::laws::audit_report(rep) == 1);

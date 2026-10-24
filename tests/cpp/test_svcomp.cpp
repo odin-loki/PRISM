@@ -461,16 +461,16 @@ TEST_CASE("svcomp witness: a target without a column, never column 1 by default"
     // a statement first on its line: no column ("the first statement or
     // full expression in that line")
     CHECK(Location{"t.c", 4, std::nullopt, std::nullopt}.as_dict().dump() == R"({"file_name":"t.c","line":4})");
-    CHECK(Location{"t.c", 4}.as_dict()["column"] == 1);
-    CHECK(Location{"t.c", 4, 0}.as_dict()["column"] == 1);
+    CHECK(Location{"t.c", 4, 1, std::nullopt}.as_dict()["column"] == 1);
+    CHECK(Location{"t.c", 4, 0, std::nullopt}.as_dict()["column"] == 1);
 }
 
 TEST_CASE("svcomp witness: YAML text (golden) and it reads back as the same document") {
     TempDir d;
     auto src = d.write("t.c", kTaskText);
     Counterexample cex{"main", Location{"t.c", 1, std::nullopt, std::nullopt}, {}};
-    cex.nondet.push_back(NondetValue{Location{"t.c", 1, 50}, Num::of_int(-3)});
-    cex.nondet.push_back(NondetValue{Location{"t.c", 2, 7}, Num::of_float(0.25)});
+    cex.nondet.push_back(NondetValue{Location{"t.c", 1, 50, std::nullopt}, Num::of_int(-3)});
+    cex.nondet.push_back(NondetValue{Location{"t.c", 2, 7, std::nullopt}, Num::of_float(0.25)});
     auto doc = build_violation_witness(cex, test_meta(src));
     const std::string want = std::string("- entry_type: violation_sequence\n") + kMetaYaml +
                              "  content:\n"

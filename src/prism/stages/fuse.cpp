@@ -37,10 +37,6 @@ using namespace stages_detail;
 
 namespace {
 
-std::string afl_harness_source(const FunctionInfo& fn, std::string src_rel);
-
-std::pair<bool, std::string> compile_afl_harness(const fs::path& harness, const fs::path& exe);
-
 std::string hex_of(const std::vector<uint8_t>& b, std::size_t limit = std::string::npos) {
     std::string hex;
     for (std::size_t k = 0; k < b.size() && k < limit; ++k) {

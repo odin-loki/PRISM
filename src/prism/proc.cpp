@@ -637,7 +637,12 @@ ProcOut run_process(const std::vector<std::string>& args, double timeout_s, cons
     spec.cwd = cwd;
     spec.merge_stderr = true;
     auto r = run(spec);
-    return {std::move(r.out), r.rc, r.timed_out, r.failed};
+    std::string text = std::move(r.out);
+    if (!r.err.empty()) {
+        if (!text.empty()) text += '\n';
+        text += r.err;
+    }
+    return {std::move(text), r.rc, r.timed_out, r.failed};
 }
 
 namespace {

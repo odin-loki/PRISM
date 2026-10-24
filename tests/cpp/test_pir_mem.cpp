@@ -9,6 +9,8 @@
 #include "prism/config.hpp"
 #include "prism/laws.hpp"
 #include "prism/pir.hpp"
+#include "prism/pir/folded_diag.hpp"
+#include "prism/pir/frontend.hpp"
 
 #include "../../src/prism/pir/translate_mem.hpp"
 
@@ -29,6 +31,15 @@ namespace {
 
 namespace pp = prism::pir;
 
+bool skip_without_frontend(const prism::Config& cfg = prism::default_config()) {
+    std::string why;
+    if (!pp::frontend_usable(cfg, &why)) {
+        MESSAGE(why);
+        return true;
+    }
+    return false;
+}
+
 void test_setenv(const char* key, const char* value) {
 #ifdef _WIN32
     _putenv_s(key, value);
@@ -42,6 +53,23 @@ void test_unsetenv(const char* key) {
     _putenv_s(key, "");
 #else
     ::unsetenv(key);
+#endif
+}
+
+// libc_models reads LOCALAPPDATA on _WIN32, else XDG_CACHE_HOME / ~/.cache.
+void test_redirect_pir_model_cache(const std::filesystem::path& base) {
+#ifdef _WIN32
+    test_setenv("LOCALAPPDATA", base.string().c_str());
+#else
+    test_setenv("XDG_CACHE_HOME", base.string().c_str());
+#endif
+}
+
+const char* pir_model_cache_env_key() {
+#ifdef _WIN32
+    return "LOCALAPPDATA";
+#else
+    return "XDG_CACHE_HOME";
 #endif
 }
 
@@ -523,12 +551,9 @@ TEST_CASE("pir mem: library models are embedded, build with clang and link on de
     REQUIRE(by.count("string.c"));
     REQUIRE(by.count("stdlib.c"));
     CHECK(by["string.c"].find("size_t strlen(") != std::string::npos);
+    if (skip_without_frontend()) return;
     auto cfg = prism::default_config();
     auto fe = pp::find_frontend(cfg);
-    if (!fe.clang || !fe.opt) {
-        MESSAGE("clang/opt not on PATH: model build skipped");
-        return;
-    }
     auto lib = pp::build_models(fe, 60);
     REQUIRE_MESSAGE(lib.error.empty(), lib.error);
     auto m = pp::ir::parse_module(R"IR(define i64 @f() {
@@ -553,18 +578,52 @@ declare i64 @strdup_len()
     CHECK(m.find("strlen")->is_model);
 }
 
+TEST_CASE("pir: parse_folded_clang_diagnostics") {
+    namespace fs = std::filesystem;
+    const fs::path src = fs::path(PRISM_SOURCE_DIR) / "tests" / "pir" / "folded.c";
+    std::string diag_path = src.lexically_normal().string();
+#ifdef _WIN32
+    for (char& c : diag_path)
+        if (c == '/') c = '\\';
+#endif
+    const std::string warn =
+        diag_path + ":2:37: warning: signed shift [-Wshift-sign-overflow]\r\n";
+    auto diags = pp::parse_folded_clang_diagnostics(warn, src);
+    REQUIRE(diags.size() == 1);
+    CHECK(diags[0].line == 2);
+    CHECK(diags[0].col == 37);
+    CHECK(diags[0].cls == "INT-SHIFT-UB");
+
+    const std::string basename_only = "folded.c:2:37: warning: x [-Wshift-sign-overflow]\n";
+    diags = pp::parse_folded_clang_diagnostics(basename_only, src);
+    REQUIRE(diags.size() == 1);
+
+    const std::string wrong_parent = "D:\\other\\folded.c:2:37: warning: x [-Wshift-sign-overflow]\n";
+    diags = pp::parse_folded_clang_diagnostics(wrong_parent, src);
+    CHECK(diags.empty());
+
+    CHECK(pp::lp64_llvm_triple_metadata_line().find(pp::lp64_target_triple()) != std::string::npos);
+}
+
+TEST_CASE("pir ir: parse_module accepts CRLF line endings from Windows opt -S") {
+    const std::string ir = "define i32 @f() {\r\nentry:\r\n  ret i32 0\r\n}\r\n";
+    auto m = pp::ir::parse_module(ir);
+    REQUIRE(m.functions.size() == 1);
+    CHECK(m.functions[0].name == "f");
+    CHECK(m.functions[0].parse_error.empty());
+    CHECK(m.functions[0].blocks.size() == 1);
+}
+
 TEST_CASE("pir mem: lowered models are cached on disk; a failed build says why") {
+    if (skip_without_frontend()) return;
     auto fe = pp::find_frontend(prism::default_config());
-    if (!fe.clang || !fe.opt) {
-        MESSAGE("clang/opt not on PATH: model cache check skipped");
-        return;
-    }
     namespace fs = std::filesystem;
     const auto dir = fs::temp_directory_path() / ("prism_model_cache_" + std::to_string(test_pid()));
     fs::remove_all(dir);
-    const char* old = std::getenv("XDG_CACHE_HOME");
+    const char* env_key = pir_model_cache_env_key();
+    const char* old = std::getenv(env_key);
     const std::string saved = old ? old : "";
-    test_setenv("XDG_CACHE_HOME", dir.string().c_str());
+    test_redirect_pir_model_cache(dir);
     auto first = pp::build_models(fe, 120);
     REQUIRE_MESSAGE(first.error.empty(), first.error);
     std::size_t cached = 0;
@@ -583,19 +642,49 @@ TEST_CASE("pir mem: lowered models are cached on disk; a failed build says why")
     CHECK_FALSE(broken.error.empty());
     CHECK(broken.units.empty());
     if (old)
-        test_setenv("XDG_CACHE_HOME", saved.c_str());
+        test_setenv(env_key, saved.c_str());
     else
-        test_unsetenv("XDG_CACHE_HOME");
+        test_unsetenv(env_key);
+    fs::remove_all(dir);
+}
+
+TEST_CASE("pir mem: stale model cache is removed and rebuilt (skips without clang/opt)") {
+    if (skip_without_frontend()) return;
+    auto fe = pp::find_frontend(prism::default_config());
+    namespace fs = std::filesystem;
+    const auto dir = fs::temp_directory_path() / ("prism_model_stale_" + std::to_string(test_pid()));
+    fs::remove_all(dir);
+    const char* env_key = pir_model_cache_env_key();
+    const char* old = std::getenv(env_key);
+    const std::string saved = old ? old : "";
+    test_redirect_pir_model_cache(dir);
+    auto good = pp::build_models(fe, 120);
+    REQUIRE_MESSAGE(good.error.empty(), good.error);
+    REQUIRE_FALSE(good.units.empty());
+    // Poison one cached .ll with a pre-LP64 Windows triple (same key dir as a good build).
+    const fs::path cache_root = dir / "prism" / "pir-models";
+    std::size_t touched = 0;
+    for (auto& e : fs::recursive_directory_iterator(cache_root)) {
+        if (e.path().extension() != ".ll") continue;
+        std::ofstream(e.path(), std::ios::binary) << "target triple = \"x86_64-pc-windows-msvc\"\n";
+        ++touched;
+        break;
+    }
+    REQUIRE(touched == 1);
+    auto after = pp::build_models(fe, 120);
+    REQUIRE_MESSAGE(after.error.empty(), after.error);
+    REQUIRE(after.units.size() == good.units.size());
+    if (old)
+        test_setenv(env_key, saved.c_str());
+    else
+        test_unsetenv(env_key);
     fs::remove_all(dir);
 }
 
 TEST_CASE("pir mem: clang round trip on tests/pir/mem_*.c (skips without clang/opt)") {
+    if (skip_without_frontend()) return;
     auto cfg = prism::default_config();
     auto fe = pp::find_frontend(cfg);
-    if (!fe.clang || !fe.opt) {
-        MESSAGE("clang/opt not on PATH: pir memory round trip skipped");
-        return;
-    }
     auto dir = std::filesystem::path(PRISM_SOURCE_DIR) / "tests" / "pir";
     cfg.root = dir;
     cfg.jobs = 2;
@@ -637,8 +726,8 @@ static std::map<std::string, std::pair<std::string, std::string>> pir_programs(
 }
 
 TEST_CASE("pir mem: large zero-initialised globals keep their contents (F8; skips without clang/opt)") {
+    if (skip_without_frontend()) return;
     auto fe = pp::find_frontend(prism::default_config());
-    if (!fe.clang || !fe.opt) return;
     std::string dense;
     for (int i = 0; i < 300; ++i) dense += "1,";
     auto st = pir_programs({
@@ -657,8 +746,8 @@ TEST_CASE("pir mem: large zero-initialised globals keep their contents (F8; skip
 }
 
 TEST_CASE("pir mem: abort() after a failed allocation is OOM handling, not a defect (F9; skips without clang/opt)") {
+    if (skip_without_frontend()) return;
     auto fe = pp::find_frontend(prism::default_config());
-    if (!fe.clang || !fe.opt) return;
     auto st = pir_programs({{"f9.c", R"(#include <stdlib.h>
 #include <assert.h>
 int oom_abort(int n) { int *p = malloc(sizeof *p); if (!p) abort(); *p = n; int r = *p; free(p); return r; }
@@ -841,8 +930,8 @@ done:
 // terminator, an off-by-one write, an unterminated string, a write through
 // a pointer read from memory) are still refuted, never proved.
 TEST_CASE("pir: Houdini loop invariants prove symbolic-size byte loops, twins refuted (skips without clang/opt)") {
+    if (skip_without_frontend()) return;
     auto fe = pp::find_frontend(prism::default_config());
-    if (!fe.clang || !fe.opt) return;
     auto cfg = prism::default_config();
     auto dir = std::filesystem::temp_directory_path() / "prism_pir_houdini";
     std::filesystem::remove_all(dir);
@@ -943,8 +1032,8 @@ int inv_indirect_write_bad(unsigned long n) {
 }
 
 TEST_CASE("pir: Houdini outcome cache and run budget (skips without clang/opt)") {
+    if (skip_without_frontend()) return;
     auto fe = pp::find_frontend(prism::default_config());
-    if (!fe.clang || !fe.opt) return;
     auto dir = std::filesystem::temp_directory_path() / "prism_pir_houdini_cache";
     std::filesystem::remove_all(dir);
     std::filesystem::create_directories(dir);
@@ -997,8 +1086,9 @@ int loop_long_bounded(int n) {
 }
 
 TEST_CASE("pir: value sets: map erase at an input-dependent position, then a traversal (skips without clang++/opt)") {
+    if (skip_without_frontend()) return;
     auto fe = pp::find_frontend(prism::default_config());
-    if (!fe.clang || !fe.clangxx || !fe.opt) return;
+    if (!fe.clangxx) return;
     auto cfg = prism::default_config();
     auto dir = std::filesystem::temp_directory_path() / "prism_pir_valueset_map";
     std::filesystem::remove_all(dir);

@@ -45,6 +45,16 @@ check. Compiling scanned code does not execute it, so the stage needs no
 `--allow-exec`; clang/opt missing is `NOTRUN` with an install hint; a unit
 that does not compile is one `ERROR` row ("clang front end failed: …").
 
+**Windows host.** Native Windows clang targets LLP64 (`long` is 32 bits); the libc models and
+memory encoding assume LP64 (`unsigned long size_t`). On `_WIN32`, PRISM adds
+`--target=x86_64-unknown-linux-gnu` to every PIR clang invocation (no sysroot: only clang
+resource headers and the 17-file `tests/pir` C subset run in CI; glibc-heavy corpus files stay
+`NOTRUN` via `pir_test_c_file_supported(basename)`). `frontend_usable` verifies that triple with
+a temp-file LP64 probe (not clang stdin `-`, which writes `-.ll` on disk instead of IR on
+stdout). The `test_pir_e2e` doctest also requires `z3_available()` so Z3-off Windows smokes stay
+`NOTRUN` rather than failing on missing verdict rows. C++ units still need libstdc++ and are not
+lowered on Windows.
+
 ### Instrumentation before mem2reg
 
 Three things would be lost by `mem2reg` or by clang's constant folding, so
@@ -446,6 +456,21 @@ at an unmodelled call is `NOTRUN` (`library models could not be built
 (<why>): UNENCODED: call @name`, `extra.models_error`) instead of
 `NEEDS-HARNESS`: the call may be one the models define, so the missing
 answer is the stage's, not the function's.
+
+### Windows disk cache (LP64)
+
+On `_WIN32` the lowered models live under
+`%LOCALAPPDATA%\prism\pir-models\<key>\` when `LOCALAPPDATA` is set (no
+disk cache otherwise). The key hashes `prism-pir-models-v3`, the embedded
+model sources, the front end's version, the `clang` and `opt` paths, and
+`x86_64-unknown-linux-gnu` (the LP64 triple PIR lowers with on Windows;
+Linux uses `prism-pir-models-v1` without that line). Before reuse,
+`try_load_model_cache` loads every embedded `.c` model's `.ll` and insists
+the IR matches that triple (`cached_model_ir_ok` rejects native LLP64
+caches: a Windows `target triple`, or `e-m:w-` in the datalayout). A bad or
+incomplete tree drops the keyed directory and the models are lowered again;
+on load, any other subdirectory of `pir-models` that fails the same check is
+removed too, so older v1/v2 keys and partial trees need no manual delete.
 
 **C++ library.** C++ units are compiled with `-D_GLIBCXX_ASSERTIONS`, which
 turns on libstdc++'s own precondition checks; library code is ordinary IR

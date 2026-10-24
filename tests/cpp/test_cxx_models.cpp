@@ -26,11 +26,6 @@ namespace {
 
 fs::path repo() { return fs::path(PRISM_SOURCE_DIR); }
 
-std::string slurp(const fs::path& p) {
-    std::ifstream in(p, std::ios::binary);
-    return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
-}
-
 struct CxxModelsCtx {
     fs::path tmp;
     std::string cxx;

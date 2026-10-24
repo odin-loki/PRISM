@@ -287,7 +287,7 @@ RunReport run_pipeline(const Config& cfg) {
 
     auto stage = [&](const char* name, auto fn) -> StageResult {
         if (!cfg.want(name)) {
-            return emit(StageResult{name, "skipped", "excluded by --stage/--skip"});
+            return emit(StageResult{name, "skipped", "excluded by --stage/--skip", 0, 0, {}, 0, {}});
         }
         if (auto it = resume.find(name); it != resume.end() &&
             (it->second.status == "ok" || it->second.status == "NOTRUN") &&
@@ -299,12 +299,12 @@ RunReport run_pipeline(const Config& cfg) {
         try {
             findings = fn();
         } catch (const std::exception& ex) {
-            return emit(StageResult{name, "failed", ex.what(), t0, now_secs() - t0});
+            return emit(StageResult{name, "failed", ex.what(), t0, now_secs() - t0, {}, 0, {}});
         } catch (...) {
             // Anything else a stage throws is still written down (Law 7), not a
             // terminate with no report.
             return emit(StageResult{name, "failed", "stage threw a non-standard exception", t0,
-                                    now_secs() - t0});
+                                    now_secs() - t0, {}, 0, {}});
         }
         std::string status = "ok", install, detail;
         if (!findings.empty()) {
@@ -345,7 +345,7 @@ RunReport run_pipeline(const Config& cfg) {
         if (std::error_code ec; !std::filesystem::exists(cfg.root, ec)) {
             out.push_back(Finding{"inventory", std::string(laws::ERROR), "", std::nullopt,
                                   std::nullopt, "", "scan root does not exist: " + cfg.root.string(),
-                                  std::string(laws::STRENGTH_FINDS)});
+                                  std::string(laws::STRENGTH_FINDS), "", "", {}});
             return out;
         }
         for (auto& p : sources) {
@@ -358,19 +358,20 @@ RunReport run_pipeline(const Config& cfg) {
                     out.push_back(Finding{"inventory", std::string(laws::ERROR), rel, std::nullopt,
                                           std::nullopt, "EMPTY-TU",
                                           "no functions parsed (not a clean unit)",
-                                          std::string(laws::STRENGTH_FINDS)});
+                                          std::string(laws::STRENGTH_FINDS), "", "", {}});
                 }
                 continue;
             }
             out.push_back(Finding{"inventory", std::string(laws::CLEAN), rel, std::nullopt,
                                   std::nullopt, "", "translation unit",
-                                  std::string(laws::STRENGTH_FINDS)});
+                                  std::string(laws::STRENGTH_FINDS), "", "", {}});
         }
         // Law 7: a skipped vendor/build directory holding sources is written
         // down, not skipped quietly (prism/scope.hpp).
         for (auto& sk : scope::skipped_dirs(cfg.root, is_known_source)) {
             Finding f{"inventory", std::string(laws::UNKNOWN), "", std::nullopt, std::nullopt, "",
-                      scope::skipped_message(sk.dir, sk.files), std::string(laws::STRENGTH_FINDS)};
+                      scope::skipped_message(sk.dir, sk.files), std::string(laws::STRENGTH_FINDS),
+                      "", "", {}};
             f.extra["skipped"] = sk.dir;
             f.extra["files"] = std::to_string(sk.files);
             out.push_back(std::move(f));
@@ -473,7 +474,8 @@ RunReport run_pipeline(const Config& cfg) {
     stage("llm", [&] {
         if (!cfg.llm) {
             return std::vector<Finding>{{"llm", std::string(laws::NOTRUN), "", std::nullopt,
-                                         std::nullopt, "", "--no-llm", std::string(laws::STRENGTH_READS)}};
+                                         std::nullopt, "", "--no-llm", std::string(laws::STRENGTH_READS),
+                                         "", "", {}}};
         }
         return llm_forced_reads(hypothesize(functions, 4, cfg));
     });
@@ -489,7 +491,8 @@ RunReport run_pipeline(const Config& cfg) {
     stage("repair", [&] {
         if (!cfg.llm) {
             return std::vector<Finding>{{"repair", std::string(laws::NOTRUN), "", std::nullopt,
-                                         std::nullopt, "", "--no-llm", std::string(laws::STRENGTH_READS)}};
+                                         std::nullopt, "", "--no-llm", std::string(laws::STRENGTH_READS),
+                                         "", "", {}}};
         }
         for (auto& s : report.stages)
             for (auto& f : s.findings)
@@ -513,7 +516,7 @@ RunReport run_pipeline(const Config& cfg) {
                 }
         return std::vector<Finding>{{"repair", std::string(laws::NOTRUN), "", std::nullopt,
                                      std::nullopt, "", "nothing to repair",
-                                     std::string(laws::STRENGTH_READS)}};
+                                     std::string(laws::STRENGTH_READS), "", "", {}}};
     });
     // Verdict audit (docs/VERDICTS.md): before unify so taxonomy and
     // confidence only see admitted verdicts; again after, for unify itself.

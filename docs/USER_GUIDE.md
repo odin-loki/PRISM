@@ -11,13 +11,11 @@ running it, reading its reports and wiring it into CI.
 
 ## 1. Install
 
-PRISM has two engines with the same stages, laws and report format. The C++
-engine is the product; the Python engine is a frozen reference used to
-cross-check it (roadmap decision D8). Linux x86-64 is the primary platform
-(Windows builds natively with MSVC `cl`, tested in CI; see
-[MSVC_PORT.md](MSVC_PORT.md). WSL also works).
+The checker is the C++ engine (`src/prism/`, `include/prism/`). Linux x86-64
+is the primary platform (Windows builds natively with MSVC `cl`, tested in CI;
+see [MSVC_PORT.md](MSVC_PORT.md). WSL also works).
 
-### C++ engine (primary)
+### Build
 
 Requirements: CMake 3.20+, Ninja, clang 18 (or GCC 13), Python 3.11 for the
 tooling. Z3, PCRE2, xsimd and nlohmann/json are vendored under `third_party/`
@@ -48,13 +46,6 @@ When the run finishes, the report loads into the window and the window is
 saved to `gui.png`. The exit code is 0 only when the findings table is
 non-empty and the screenshot was written. It is 3 for an empty table and 2
 when the `prism` binary is not found. CI runs this on every push.
-
-### Python engine (reference)
-
-```
-pip install z3-solver
-python -m prism path/to/code --no-llm
-```
 
 ### Optional external tools
 

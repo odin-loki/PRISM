@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <charconv>
 #include <cctype>
 #include <chrono>
 #include <cstdio>
@@ -235,12 +236,6 @@ bool frama_c_probe_present(const ProcResult& r) {
     return lower_copy(trimmed).find("frama") != std::string::npos;
 }
 
-bool adapter_start_or_fake_missing(const ProcResult& r) {
-    // Process didn't start, or PATH pointed at doctest/Catch2 / rc 126/127.
-    if (r.failed) return true;
-    return probe_looks_missing(r);
-}
-
 // Each flag gets 12 s, or less when the run's per-check timeout is shorter.
 std::optional<ProcResult> probe_exe(const std::string& exe, double check_timeout) {
     const double per_flag = std::clamp(check_timeout, 1.0, 12.0);
@@ -295,7 +290,7 @@ std::vector<std::string> split_lines(const std::string& text) {
     std::istringstream in(text);
     while (std::getline(in, line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
-        out.push_back(std::move(line));
+        out.push_back(line);
     }
     return out;
 }
@@ -534,7 +529,7 @@ bool probe_sanitizer(const std::string& cc, const std::vector<std::string>& flag
                              "}\n");
         }
         return true;
-    } catch (...) {
+    } catch (const std::exception&) {
         return false;
     }
 }
@@ -748,11 +743,11 @@ std::vector<Finding> run_clang_tidy(const std::string& exe, const std::vector<fs
         }
     }
     if (out.empty()) {
-        auto f = finding("clang-tidy", laws::UNKNOWN, "", "",
-                         "clang-tidy present at " + exe + "; no diagnostics (not a proof)",
-                         laws::STRENGTH_FINDS);
-        f.extra["exe"] = exe;
-        return {f};
+        auto stub = finding("clang-tidy", laws::UNKNOWN, "", "",
+                            "clang-tidy present at " + exe + "; no diagnostics (not a proof)",
+                            laws::STRENGTH_FINDS);
+        stub.extra["exe"] = exe;
+        return {std::move(stub)};
     }
     return out;
 }
@@ -945,18 +940,17 @@ struct SpatchHit {
 std::vector<SpatchHit> parse_spatch_hits(const std::string& text) {
     static Regex re("^(.+):(\\d+):\\s*(.*)$");
     std::vector<SpatchHit> hits;
-    for (const auto& ln : split_lines(text)) {
-        auto stripped = trim_copy(ln);
+    for (const auto& line : split_lines(text)) {
+        const auto stripped = trim_copy(line);
         auto m = re.search_match(stripped);
         if (!m) continue;
-        SpatchHit h;
-        h.path = m->group(1);
-        try {
-            h.line = std::stoi(m->group(2));
-        } catch (...) {
-        }
-        h.msg = stripped;
-        hits.push_back(std::move(h));
+        std::optional<int> line_no;
+        int parsed = 0;
+        const auto& num = m->group(2);
+        if (auto [p, ec] = std::from_chars(num.data(), num.data() + num.size(), parsed);
+            ec == std::errc{})
+            line_no = parsed;
+        hits.push_back({m->group(1), line_no, stripped});
     }
     return hits;
 }
@@ -981,7 +975,7 @@ std::vector<Finding> run_spatch(const std::string& exe, const std::vector<fs::pa
             else
                 keep.push_back(r);
         }
-        rules = std::move(keep);
+        rules = keep;
         if (rules.empty() && !held.empty()) return held;
     }
     if (rules.empty()) {
@@ -1066,16 +1060,24 @@ std::vector<Finding> run_spatch(const std::string& exe, const std::vector<fs::pa
     }
     // Law 7: the rules held back for --allow-exec stay written down whatever
     // the rules that ran found (the Python engine returns held + ...).
-    const bool only_bad = !out.empty() && std::all_of(out.begin(), out.end(), [](const Finding& f) {
-        return f.status == laws::TIMEOUT || f.status == laws::ERROR || f.status == laws::NOTRUN;
-    });
+    const bool only_bad = !out.empty() &&
+        std::ranges::all_of(out, [](const Finding& row) {
+            return row.status == laws::TIMEOUT || row.status == laws::ERROR || row.status == laws::NOTRUN;
+        });
     if (!any_hit && !only_bad) {
-        auto f = finding("spatch", laws::UNKNOWN, "", "", "spatch ran; no matches (not a proof)",
-                         laws::STRENGTH_FINDS);
-        f.extra["exe"] = exe;
-        out = {f};
+        auto none = finding("spatch", laws::UNKNOWN, "", "", "spatch ran; no matches (not a proof)",
+                            laws::STRENGTH_FINDS);
+        none.extra["exe"] = exe;
+        out.clear();
+        out.push_back(none);
     }
-    out.insert(out.begin(), held.begin(), held.end());
+    if (!held.empty()) {
+        std::vector<Finding> merged;
+        merged.reserve(held.size() + out.size());
+        for (const auto& row : held) merged.push_back(row);
+        for (const auto& row : out) merged.push_back(row);
+        out = std::move(merged);
+    }
     return out;
 }
 
@@ -1125,7 +1127,7 @@ std::optional<std::vector<Finding>> parse_semgrep(const std::string& stdout_text
             out.push_back(std::move(f));
         }
         return out;
-    } catch (...) {
+    } catch (const nlohmann::json::exception&) {
         return std::nullopt;
     }
 }
@@ -1456,10 +1458,10 @@ std::vector<Finding> run_klee(const std::string& exe, const std::vector<fs::path
         }
     }
     if (out.empty() && !bitcode_ok) {
-        auto f = finding("klee", laws::UNKNOWN, "", "",
-                         "klee present; no bitcode toolchain (not a verdict)", laws::STRENGTH_FINDS);
-        f.extra["exe"] = exe;
-        return {f};
+        auto stub = finding("klee", laws::UNKNOWN, "", "",
+                            "klee present; no bitcode toolchain (not a verdict)", laws::STRENGTH_FINDS);
+        stub.extra["exe"] = exe;
+        return {std::move(stub)};
     }
     return out;
 }
@@ -1767,7 +1769,7 @@ std::vector<Finding> run_compiler(const std::vector<fs::path>& paths, const Conf
                 cmd.push_back("-I" + db_root.string());
                 if (fs::is_directory(db_root / "include", ec)) cmd.push_back("-I" + (db_root / "include").string());
             }
-            cmd.insert(cmd.end(), db.begin(), db.end());
+            for (const auto& flag : db) cmd.push_back(flag);
             cmd.push_back(p.string());
             for (const auto& flag : cmd) {
                 if (flag == "-w" || flag.rfind("-Wno-", 0) == 0)
@@ -1817,10 +1819,11 @@ std::vector<Finding> run_compiler(const std::vector<fs::path>& paths, const Conf
             for (auto& m : wrn.finditer(r.text)) {
                 ++hits;
                 std::optional<int> line;
-                try {
-                    line = std::stoi(m.group(2));
-                } catch (...) {
-                }
+                const auto& num = m.group(2);
+                int ln = 0;
+                if (auto [p, ec] = std::from_chars(num.data(), num.data() + num.size(), ln);
+                    ec == std::errc{})
+                    line = ln;
                 diag(cc.string(), rel_to_root(m.group(1), cfg), line, m.group(4), m.group(5));
             }
             if (hits == 0 && r.rc != 0) {
@@ -1872,10 +1875,11 @@ static std::vector<Finding> run_cppcheck_unstamped(const std::vector<fs::path>& 
         f.status = std::string(laws::FAILED);
         f.file = m.group(4);
         if (!m.group(5).empty()) {
-            try {
-                f.line = std::stoi(m.group(5));
-            } catch (...) {
-            }
+            const auto& num = m.group(5);
+            int ln = 0;
+            if (auto [p, ec] = std::from_chars(num.data(), num.data() + num.size(), ln);
+                ec == std::errc{})
+                f.line = ln;
         }
         f.cls = eid;
         f.message = xml_unescape(m.group(3));
@@ -1883,27 +1887,27 @@ static std::vector<Finding> run_cppcheck_unstamped(const std::vector<fs::path>& 
         out.push_back(std::move(f));
     }
     if (out.empty() && (tool_unusable(r.text, r.rc) || r.failed)) {
-        auto f = finding("cppcheck", laws::NOTRUN, "", "",
-                         r.failed ? "cppcheck unusable: failed to start " + exe->string()
-                                  : "cppcheck at " + exe->string() + " is not cppcheck (not a proof)",
-                         laws::STRENGTH_FINDS);
-        f.extra["exe"] = exe->string();
-        f.extra["install"] = adapter_install("cppcheck");
-        return {f};
+        auto stub = finding("cppcheck", laws::NOTRUN, "", "",
+                            r.failed ? "cppcheck unusable: failed to start " + exe->string()
+                                     : "cppcheck at " + exe->string() + " is not cppcheck (not a proof)",
+                            laws::STRENGTH_FINDS);
+        stub.extra["exe"] = exe->string();
+        stub.extra["install"] = adapter_install("cppcheck");
+        return {std::move(stub)};
     }
     if (out.empty() && r.rc != 0 && r.rc != 1) {
         auto msg = tail(r.text, 400);
         if (msg.empty()) msg = "cppcheck exit " + std::to_string(r.rc);
-        auto f = finding("cppcheck", laws::ERROR, "", "", msg, laws::STRENGTH_FINDS);
-        f.extra["exe"] = exe->string();
-        return {f};
+        auto stub = finding("cppcheck", laws::ERROR, "", "", msg, laws::STRENGTH_FINDS);
+        stub.extra["exe"] = exe->string();
+        return {std::move(stub)};
     }
     if (out.empty()) {
-        auto f = finding("cppcheck", laws::UNKNOWN, "", "",
-                         "cppcheck present at " + exe->string() + "; no diagnostics (not a proof)",
-                         laws::STRENGTH_FINDS);
-        f.extra["exe"] = exe->string();
-        return {f};
+        auto stub = finding("cppcheck", laws::UNKNOWN, "", "",
+                             "cppcheck present at " + exe->string() + "; no diagnostics (not a proof)",
+                             laws::STRENGTH_FINDS);
+        stub.extra["exe"] = exe->string();
+        return {std::move(stub)};
     }
     (void)cfg;
     return out;
@@ -2139,7 +2143,7 @@ std::vector<Finding> run_optional_tools(const std::vector<fs::path>& paths, cons
         try {
             auto more = dispatch_optional(tool.stage, exe->string(), paths, cfg, *probed);
             stamp_tool_sha(more, *exe);
-            out.insert(out.end(), more.begin(), more.end());
+            for (auto& row : more) out.push_back(std::move(row));
         } catch (const std::system_error& ex) {
             // Python engine adapters_extra.run_optional_tools: OSError → NOTRUN unusable.
             auto f = notrun(tool.stage, first_name, install);
@@ -2244,10 +2248,10 @@ std::vector<Finding> pbsd_dedupe(std::vector<Finding> findings) {
     std::set<std::tuple<std::string, std::optional<int>, std::string, std::string>> seen;
     std::vector<Finding> out;
     out.reserve(findings.size());
-    for (auto& f : findings) {
-        auto key = std::make_tuple(f.file, f.line, f.cls, f.message);
+    for (std::size_t i = 0; i < findings.size(); ++i) {
+        auto key = std::make_tuple(findings[i].file, findings[i].line, findings[i].cls, findings[i].message);
         if (!seen.insert(key).second) continue;
-        out.push_back(std::move(f));
+        out.push_back(std::move(findings[i]));
     }
     return out;
 }
@@ -2286,11 +2290,11 @@ std::vector<Finding> prism_portable(const std::vector<fs::path>& files, const Co
         const bool checkers = tree_present && pbsd_tree_extra_cls(f.cls);
         if (!portable && !checkers) continue;
         if (laws::is_proof(f.status)) continue;  // Never PROVED.
-        Finding g = f;
-        g.stage = "pbsd";
-        g.extra.clear();
-        g.extra["via"] = portable ? "prism.portable" : "prism.checkers";
-        out.push_back(std::move(g));
+        out.push_back(f);
+        auto& row = out.back();
+        row.stage = "pbsd";
+        row.extra.clear();
+        row.extra["via"] = portable ? "prism.portable" : "prism.checkers";
     }
     return out;
 }
@@ -2334,18 +2338,18 @@ std::vector<Finding> run_pbsd_lints(const std::vector<fs::path>& paths, const Co
     auto portable = prism_portable(files, cfg, tree && cfg.allow_exec);
 
     if (looked.empty()) {
-        if (!portable.empty()) return pbsd_dedupe(std::move(portable));
+        if (!portable.empty()) return pbsd_dedupe(portable);
         return {pbsd_not_run("ParanoidBSD tree not configured", PBSD_INSTALL, {})};
     }
     if (!tree) {
-        if (!portable.empty()) return pbsd_dedupe(std::move(portable));
+        if (!portable.empty()) return pbsd_dedupe(portable);
         return {pbsd_not_run(
             "ParanoidBSD tree not found at " + looked.string(),
             std::string(PBSD_INSTALL) + " (looked at " + looked.string() + ")",
             {{"looked", looked.string()}})};
     }
     if (!cfg.allow_exec) {
-        auto out = pbsd_dedupe(std::move(portable));
+        auto out = pbsd_dedupe(portable);
         out.push_back(sandbox::exec_notrun(
             "pbsd", "pbsd (import ParanoidBSD tools/verify modules)", {{"looked", looked.string()}}));
         return out;
@@ -2354,7 +2358,7 @@ std::vector<Finding> run_pbsd_lints(const std::vector<fs::path>& paths, const Co
     // Tree present: portable + prism.checkers restage + missing-bin NOTRUN.
     // Not a clean sweep, not CLEAN-as-proof. Empty list is OK (heavies on PATH).
     auto heavy = pbsd_heavy_notrun(cfg);
-    portable.insert(portable.end(), heavy.begin(), heavy.end());
+    for (const auto& row : heavy) portable.push_back(row);
     auto out = pbsd_dedupe(std::move(portable));
     if (out.empty()) return {};
     const auto ported = pbsd_ported_json();

@@ -10,6 +10,8 @@
 #include "prism/regex.hpp"
 #include "prism/pipeline.hpp"
 #include "prism/pir.hpp"
+#include "prism/pir/folded_diag.hpp"
+#include "prism/pir/frontend.hpp"
 #include "prism/sandbox.hpp"
 #include "prism/threads.hpp"
 
@@ -112,59 +114,19 @@ std::vector<std::string> split_lines(const std::string& s) {
     while (pos <= s.size()) {
         auto nl = s.find('\n', pos);
         if (nl == std::string::npos) nl = s.size();
-        out.push_back(s.substr(pos, nl - pos));
+        std::string line = s.substr(pos, nl - pos);
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        out.push_back(std::move(line));
         pos = nl + 1;
     }
     if (!out.empty() && out.back().empty()) out.pop_back();
     return out;
 }
 
-// clang warnings that mean "this constant expression has undefined
-// behaviour and was folded to a value". The division-by-zero and
-// shift-count cases fold to poison (or stay in the IR), which the poison
-// marker / IR checks already cover.
-const std::map<std::string, std::string>& folding_flags() {
-    static const std::map<std::string, std::string> k{
-        {"-Wshift-sign-overflow", "INT-SHIFT-UB"},
-        {"-Wshift-negative-value", "INT-SHIFT-UB"},
-        {"-Wshift-overflow", "INT-SHIFT-UB"},
-        {"-Winteger-overflow", "INT-SIGNED-OVF"},
-    };
-    return k;
-}
-
-std::vector<FoldedUb> parse_folded(const std::string& text, const fs::path& src) {
-    std::vector<FoldedUb> out;
-    const auto want = src.string();
-    for (auto& line : split_lines(text)) {
-        auto w = line.find(": warning: ");
-        if (w == std::string::npos) continue;
-        auto lb = line.rfind(" [");
-        if (lb == std::string::npos || line.back() != ']') continue;
-        auto flag = line.substr(lb + 2, line.size() - lb - 3);
-        auto it = folding_flags().find(flag);
-        if (it == folding_flags().end()) continue;
-        // path:line:col
-        auto head = line.substr(0, w);
-        auto c2 = head.rfind(':');
-        if (c2 == std::string::npos) continue;
-        auto c1 = head.rfind(':', c2 - 1);
-        if (c1 == std::string::npos) continue;
-        auto path = head.substr(0, c1);
-        if (path != want && fs::path(path).filename() != src.filename()) continue;
-        if (path != want) continue;  // header diagnostics: not attributed (docs/PIR.md)
-        FoldedUb f;
-        try {
-            f.line = std::stoi(head.substr(c1 + 1, c2 - c1 - 1));
-            f.col = std::stoi(head.substr(c2 + 1));
-        } catch (...) {
-            continue;
-        }
-        f.cls = it->second;
-        f.msg = line.substr(w + 11, lb - w - 11) + " [" + flag + "]";
-        out.push_back(std::move(f));
-    }
-    return out;
+bool ir_line_closes_function(const std::string& l) {
+    std::string t = l;
+    while (!t.empty() && t.back() == '\r') t.pop_back();
+    return t == "}";
 }
 
 // "!N = !DILocation(line: L, column: C, ...)" -> line/col
@@ -234,7 +196,7 @@ std::string instrument(const std::string& ir, const std::vector<FoldedUb>& folde
                     in_body = true;
                     continue;
                 }
-                if (l == "}") {
+                if (ir_line_closes_function(l)) {
                     in_body = false;
                     continue;
                 }
@@ -269,7 +231,7 @@ std::string instrument(const std::string& ir, const std::vector<FoldedUb>& folde
             out << l << "\n";
             continue;
         }
-        if (l == "}") {
+        if (ir_line_closes_function(l)) {
             in_body = false;
             out << l << "\n";
             continue;
@@ -373,8 +335,10 @@ std::vector<std::pair<int, int>> parse_ubsan_locs(const std::string& ir) {
 }
 
 std::vector<std::string> base_flags(const fs::path& src) {
-    std::vector<std::string> f{"-S", "-emit-llvm", "-O0", "-Xclang", "-disable-O0-optnone",
-                               "-fno-discard-value-names", "-gline-tables-only"};
+    std::vector<std::string> f{"-S"};
+    for (auto& t : lp64_target_flags()) f.push_back(t);
+    f.insert(f.end(), {"-emit-llvm", "-O0", "-Xclang", "-disable-O0-optnone", "-fno-discard-value-names",
+                       "-gline-tables-only"});
     f.push_back(is_cxx(src) ? "-std=c++23" : "-std=c17");
     // A C/C++ memcpy call stays a call to memcpy (its library model checks
     // C's rule: no overlap at all, C17 7.24.2.1) instead of becoming the
@@ -433,6 +397,12 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
         err = std::string(cxx ? "clang++" : "clang") + "/opt not found";
         return std::nullopt;
     }
+#ifdef _WIN32
+    if (cxx) {
+        err = "C++ PIR needs libstdc++ (not available on Windows)";
+        return std::nullopt;
+    }
+#endif
     TmpDir td;
     auto o0 = td.path / "o0.ll", o1 = td.path / "o1.ll", o2 = td.path / "o2.ll";
     std::vector<std::string> argv{cc->string()};
@@ -492,7 +462,7 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
         err = r.timed_out ? "clang timed out" : "clang: " + first_error(r.text);
         return std::nullopt;
     }
-    auto diags = parse_folded(r.text, src);
+    auto diags = parse_folded_clang_diagnostics(r.text, src);
     std::vector<int> placed;
     auto text = pirctl::keep_setjmp_locals(pirctl::uninit_fp_locals(instrument(read_file(o0), diags, placed)));
     if (folded) {
@@ -526,7 +496,13 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
     if (signed_shl) {
         signed_shl->clear();
         // C only: C++20 and later define signed left shift (no base UB).
-        if (!cxx && out.find(" = shl ") != std::string::npos) {
+        bool want_shift_loc = false;
+        for (auto& d : diags)
+            if (d.cls == "INT-SHIFT-UB") {
+                want_shift_loc = true;
+                break;
+            }
+        if (!cxx && (out.find(" = shl ") != std::string::npos || want_shift_loc)) {
             std::vector<std::string> av{cc->string()};
             av.insert(av.end(), fl.begin(), fl.end());
             auto os = td.path / "shift.ll";
@@ -1069,6 +1045,25 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
             f.extra["prop"] = v.prop;
             if (v.line) f.line = v.line;
         }
+        // Folded UB whose IR marker was dropped or not encoded must not stand as PROVED.
+        for (std::size_t k = 0; k < folded.size(); ++k) {
+            if (used_folded.count(static_cast<int>(k))) continue;
+            if (folded[k].line <= 0) continue;
+            if (!f.line || *f.line != folded[k].line) continue;
+            if (f.status != std::string(laws::PROVED) && f.status != std::string(laws::PROVED_UNBOUNDED) &&
+                f.status != std::string(laws::BOUNDED))
+                continue;
+            f.status = std::string(laws::FAILED);
+            f.strength = std::string(laws::STRENGTH_PROVES);
+            f.cls = folded[k].cls;
+            f.message = "clang-folded UB: " + folded[k].msg;
+            f.extra["prop"] = "folded";
+            rec.cex.clear();
+            f.counterexample.clear();
+            f.extra.erase("cex");
+            rec.fn.reset();
+            break;
+        }
         rec.fn = std::move(fn);
         recs.push_back(std::move(rec));
     }
@@ -1115,6 +1110,21 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
         f.extra["install"] = "rebuild with -DPRISM_Z3=ON (vendored third_party/z3)";
         return {f};
     }
+#ifdef _WIN32
+    {
+        std::string why;
+        if (!frontend_usable(cfg, &why)) {
+            Finding f;
+            f.stage = "pir";
+            f.status = std::string(laws::NOTRUN);
+            if (why.starts_with("NOTRUN: ")) f.message = why.substr(8);
+            else f.message = std::move(why);
+            f.strength = std::string(laws::STRENGTH_PROVES);
+            f.extra["install"] = kInstall;
+            return {f};
+        }
+    }
+#endif
     auto fe = find_frontend(cfg);
     if (units.empty()) return {};
     if (!fe.clang || !fe.opt || (!fe.clangxx && std::any_of(units.begin(), units.end(), [](auto& u) {

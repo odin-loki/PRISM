@@ -1288,7 +1288,7 @@ Module parse_module(std::string_view text) {
             std::vector<std::string_view> body;
             std::size_t j = i + 1;
             // header may end with '{' on the same line (opt -S always does)
-            while (j < lines.size() && lines[j] != "}") body.push_back(lines[j++]);
+            while (j < lines.size() && trim(lines[j]) != "}") body.push_back(lines[j++]);
             auto header = line;
             if (auto brace = header.rfind('{'); brace != std::string_view::npos)
                 header = header.substr(0, brace);

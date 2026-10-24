@@ -2720,7 +2720,7 @@ void walk_decl(const json& d, Ctx& cx, std::vector<std::string>& tparams) {
 
 FileResult analyze_unit(Unit& u, const FileSet& files) {
     FileResult r;
-    Ctx cx{files, u, {}, {}, {}, {}, {}, {}};
+    Ctx cx{files, u, {}, {}, {}, {}, {}, {}, {}};
     for (auto& d : u.decls) collect_enums(d, cx);
     if (u.backend != "libclang") {
         for (auto& d : u.decls) collect_defined(d, cx);
