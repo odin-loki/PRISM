@@ -285,6 +285,50 @@ jobs:
           $dll = Get-ChildItem -Path "$root\lib\clang" -Recurse -Filter "clang_rt.asan_dynamic-x86_64.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
           if ($dll) { $dll.DirectoryName | Out-File -Append -Encoding utf8 $env:GITHUB_PATH; Write-Host "ASan DLL dir: $($dll.DirectoryName)" }
           else { Write-Host "no clang ASan DLL under ${root}: label self-check will be NOTRUN" }
+      # PIR e2e on Windows needs clang + opt. The stock LLVM install on the runner has
+      # clang but no opt.exe, so test_pir_e2e reports NOTRUN. This step fetches the
+      # official LLVM 18.1.8 MSVC archive (the version PIR is validated against, see
+      # kInstall in src/prism/pir/stage.cpp) and unpacks only bin/clang.exe, bin/opt.exe
+      # and the clang resource headers. clang is installed as clang-18.exe (find_frontend
+      # looks for clang-18 first), so the runner's clang.exe, and with it the ASan DLL
+      # lookup and label self-check below, are untouched. Best effort: if the download
+      # fails, the e2e cases print "NOTRUN" (Law 1), they never pass quietly.
+      - name: Cache LLVM 18 (clang-18 + opt for PIR e2e)
+        uses: actions/cache@v4
+        id: llvm18
+        with:
+          path: C:\llvm18
+          key: win-llvm-18.1.8-pir-v1
+      - name: Install LLVM 18 clang-18 + opt (PIR e2e C subset)
+        if: steps.llvm18.outputs.cache-hit != 'true'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $name = "clang+llvm-18.1.8-x86_64-pc-windows-msvc"
+          $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/$name.tar.xz"
+          $tar = Join-Path $env:RUNNER_TEMP "llvm18.tar.xz"
+          try {
+            curl.exe -sSL --retry 3 -o $tar $url
+            if ($LASTEXITCODE -ne 0) { throw "download failed" }
+            New-Item -ItemType Directory -Force C:\llvm18 | Out-Null
+            & "$env:SystemRoot\System32\tar.exe" -xf $tar -C C:\llvm18 --strip-components=1 "$name/bin/clang.exe" "$name/bin/opt.exe" "$name/lib/clang/18/include"
+            if ($LASTEXITCODE -ne 0) { throw "extract failed" }
+            Move-Item C:\llvm18\bin\clang.exe C:\llvm18\bin\clang-18.exe -Force
+          } catch {
+            # Never let actions/cache save a half-unpacked tree under the key.
+            Remove-Item -Recurse -Force C:\llvm18 -ErrorAction SilentlyContinue
+            throw
+          }
+      - name: Put LLVM 18 (clang-18, opt) on PATH
+        shell: pwsh
+        run: |
+          if ((Test-Path C:\llvm18\bin\opt.exe) -and (Test-Path C:\llvm18\bin\clang-18.exe)) {
+            "C:\llvm18\bin" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+            Write-Host "LLVM 18 on PATH: PIR e2e C subset will run"
+          } else {
+            Write-Host "::warning::LLVM 18 opt.exe not available: PIR e2e cases will be NOTRUN"
+          }
       - name: Run portable prism_tests subset (Z3 + leanbb)
         run: .\build-win-z3\prism_tests.exe
 
@@ -324,6 +368,50 @@ jobs:
           key: win-smoke-cl-z3-${{ hashFiles('CMakeLists.txt', 'cmake/z3.cmake', 'cmake/z3-generated/tree_sha256', 'third_party/z3/CMakeLists.txt') }}
       - name: Build (prism_core + prism + prism-qa + prism_tests)
         run: cmake --build build-win-cl-z3 --target prism_core prism prism-qa prism_tests
+      # PIR e2e on Windows needs clang + opt. The stock LLVM install on the runner has
+      # clang but no opt.exe, so test_pir_e2e reports NOTRUN. This step fetches the
+      # official LLVM 18.1.8 MSVC archive (the version PIR is validated against, see
+      # kInstall in src/prism/pir/stage.cpp) and unpacks only bin/clang.exe, bin/opt.exe
+      # and the clang resource headers. clang is installed as clang-18.exe (find_frontend
+      # looks for clang-18 first), so the runner's clang.exe, and with it the ASan DLL
+      # lookup and label self-check below, are untouched. Best effort: if the download
+      # fails, the e2e cases print "NOTRUN" (Law 1), they never pass quietly.
+      - name: Cache LLVM 18 (clang-18 + opt for PIR e2e)
+        uses: actions/cache@v4
+        id: llvm18
+        with:
+          path: C:\llvm18
+          key: win-llvm-18.1.8-pir-v1
+      - name: Install LLVM 18 clang-18 + opt (PIR e2e C subset)
+        if: steps.llvm18.outputs.cache-hit != 'true'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $name = "clang+llvm-18.1.8-x86_64-pc-windows-msvc"
+          $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/$name.tar.xz"
+          $tar = Join-Path $env:RUNNER_TEMP "llvm18.tar.xz"
+          try {
+            curl.exe -sSL --retry 3 -o $tar $url
+            if ($LASTEXITCODE -ne 0) { throw "download failed" }
+            New-Item -ItemType Directory -Force C:\llvm18 | Out-Null
+            & "$env:SystemRoot\System32\tar.exe" -xf $tar -C C:\llvm18 --strip-components=1 "$name/bin/clang.exe" "$name/bin/opt.exe" "$name/lib/clang/18/include"
+            if ($LASTEXITCODE -ne 0) { throw "extract failed" }
+            Move-Item C:\llvm18\bin\clang.exe C:\llvm18\bin\clang-18.exe -Force
+          } catch {
+            # Never let actions/cache save a half-unpacked tree under the key.
+            Remove-Item -Recurse -Force C:\llvm18 -ErrorAction SilentlyContinue
+            throw
+          }
+      - name: Put LLVM 18 (clang-18, opt) on PATH
+        shell: pwsh
+        run: |
+          if ((Test-Path C:\llvm18\bin\opt.exe) -and (Test-Path C:\llvm18\bin\clang-18.exe)) {
+            "C:\llvm18\bin" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+            Write-Host "LLVM 18 on PATH: PIR e2e C subset will run"
+          } else {
+            Write-Host "::warning::LLVM 18 opt.exe not available: PIR e2e cases will be NOTRUN"
+          }
       - name: Run portable prism_tests subset (Z3 + leanbb)
         run: .\build-win-cl-z3\prism_tests.exe
 

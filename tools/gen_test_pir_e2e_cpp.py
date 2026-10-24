@@ -131,24 +131,57 @@ std::map<std::pair<std::string, std::string>, const prism::Finding*> index(
     return m;
 }}
 
+[[maybe_unused]] bool is_c_file(const std::string& name) {{
+    return name.size() > 2 && name.compare(name.size() - 2, 2, ".c") == 0;
+}}
+
+// WIN32 runs the C-only subset: the C++ rows depend on the libstdc++ model
+// headers and _GLIBCXX_ASSERTIONS, which a clang on the MSVC STL does not
+// have. They are reported NOTRUN (MESSAGE), never counted as passed.
+bool in_subset(const std::string& file) {{
+#ifdef _WIN32
+    return is_c_file(file);
+#else
+    (void)file;
+    return true;
+#endif
+}}
+
+// A missing clang or opt is NOTRUN, never a clean result (Law 1); say so.
+bool frontend_usable(const prism::Config& cfg) {{
+    auto fe = pp::find_frontend(cfg);
+    if (fe.clang && fe.opt) return true;
+    std::string why = std::string("NOTRUN: pir e2e needs clang and opt on PATH (clang ") +
+                      (fe.clang ? "found" : "missing") + ", opt " + (fe.opt ? "found" : "missing") + ")";
+#ifdef _WIN32
+    why += "; the stock Windows LLVM installer ships no opt.exe";
+#endif
+    MESSAGE(why);
+    return false;
+}}
+
 }}  // namespace
 
-TEST_CASE("pir e2e: tests/pir verdict table (skips without clang/opt)") {{
+TEST_CASE("pir e2e: tests/pir verdict table (NOTRUN without clang/opt; C-only on WIN32)") {{
     auto cfg = prism::default_config();
-    auto fe = pp::find_frontend(cfg);
-    if (!fe.clang || !fe.opt) {{
-        MESSAGE("clang/opt not on PATH: pir e2e skipped");
-        return;
-    }}
+    if (!frontend_usable(cfg)) return;
     auto dir = fs::path(PRISM_SOURCE_DIR) / "tests" / "pir";
     cfg.root = dir;
     cfg.jobs = 2;
     std::vector<fs::path> paths;
-    for (auto* name : pir_files()) paths.push_back(dir / name);
+    std::size_t omitted = 0;
+    for (auto* name : pir_files()) {{
+        if (in_subset(name)) paths.push_back(dir / name);
+        else ++omitted;
+    }}
+    if (omitted)
+        MESSAGE("NOTRUN: " << omitted << " of " << pir_files().size()
+                << " tests/pir files (C++) omitted on WIN32; the " << paths.size() << " C files run");
     auto out = pp::run_pir(paths, cfg);
     auto got = index(out);
     std::vector<std::string> wrong;
     for (auto& r : rows()) {{
+        if (!in_subset(r.file)) continue;
         auto it = got.find({{r.file, r.function}});
         if (it == got.end()) {{
             wrong.push_back(std::string(r.file) + ":" + r.function + " missing");
@@ -174,8 +207,7 @@ TEST_CASE("pir e2e: tests/pir verdict table (skips without clang/opt)") {{
 
 TEST_CASE("pir e2e: Law 9 holds translation validation without --allow-exec") {{
     auto cfg = prism::default_config();
-    auto fe = pp::find_frontend(cfg);
-    if (!fe.clang || !fe.opt) return;
+    if (!frontend_usable(cfg)) return;
     auto dir = fs::path(PRISM_SOURCE_DIR) / "tests" / "pir";
     cfg.root = dir;
     auto out = pp::run_pir({{dir / "overflow.c"}}, cfg);
@@ -189,10 +221,9 @@ TEST_CASE("pir e2e: Law 9 holds translation validation without --allow-exec") {{
     CHECK(out.back().extra.at("reason") == "executes-scanned-code");
 }}
 
-TEST_CASE("pir e2e: --fp-checks is opt-in (skips without clang/opt)") {{
+TEST_CASE("pir e2e: --fp-checks is opt-in (NOTRUN without clang/opt)") {{
     auto cfg = prism::default_config();
-    auto fe = pp::find_frontend(cfg);
-    if (!fe.clang || !fe.opt) return;
+    if (!frontend_usable(cfg)) return;
     auto dir = fs::path(PRISM_SOURCE_DIR) / "tests" / "pir";
     cfg.root = dir;
     cfg.fp_checks = true;
@@ -206,10 +237,9 @@ TEST_CASE("pir e2e: --fp-checks is opt-in (skips without clang/opt)") {{
     CHECK(got.at({{"fp_arith.c", "fp_div_guard"}})->status == prism::laws::PROVED);
 }}
 
-TEST_CASE("pir e2e: --strict-aliasing is opt-in (skips without clang/opt)") {{
+TEST_CASE("pir e2e: --strict-aliasing is opt-in (NOTRUN without clang/opt)") {{
     auto cfg = prism::default_config();
-    auto fe = pp::find_frontend(cfg);
-    if (!fe.clang || !fe.opt) return;
+    if (!frontend_usable(cfg)) return;
     auto dir = fs::path(PRISM_SOURCE_DIR) / "tests" / "pir";
     cfg.root = dir;
     {{
