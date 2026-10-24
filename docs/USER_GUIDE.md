@@ -14,7 +14,8 @@ running it, reading its reports and wiring it into CI.
 PRISM has two engines with the same stages, laws and report format. The C++
 engine is the product; the Python engine is a frozen reference used to
 cross-check it (roadmap decision D8). Linux x86-64 is the primary platform
-(Windows users run PRISM under WSL).
+(Windows builds natively with MSVC `cl`, tested in CI; see
+[MSVC_PORT.md](MSVC_PORT.md). WSL also works).
 
 ### C++ engine (primary)
 

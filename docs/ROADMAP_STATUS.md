@@ -32,7 +32,7 @@ generators): 0 wrong proofs over every campaign run.
 | D4 | GPU for batched queries / SLS / preprocessing / fuzzing | **PARTIAL** — CPU ProbSAT walker in the portfolio; CUDA kernel `src/cuda/probsat.cu` type-checked only (no GPU in this environment) |
 | D5 | LLM proposes, prover decides | **DONE** — `src/prism/ai/`, audit log, verdict audit |
 | D6 | Lean 4 | **DONE** — `proofs/`, `proofs/semantics`, `proofs/techniques`, `proofs/refinement` (core Lean, no Mathlib) |
-| D7 | Linux primary, WSL for Windows | **DONE** — MinGW rejected in CMake; Windows command-line quoting kept correct |
+| D7 | Linux primary; native MSVC on Windows | **DONE** — MinGW rejected in CMake; Windows command-line quoting kept correct. Native MSVC `cl` is in CI: four Windows compile smokes (`clang-cl`, `cl`, each with and without Z3), the Qt GUI job (`windows-gui-qt`) and the optional `python-windows` suite; see [MSVC_PORT.md](MSVC_PORT.md) |
 | D8 | Python engine frozen as oracle | **SUPERSEDED (2026-09-30)** — the owner's goal is now C++23 only, no Python; see [CPP_PORT_PLAN.md](CPP_PORT_PLAN.md). Until phase 5 of that plan: new stages run in C++ only; the Python engine lists them and records one `NOTRUN` row; correctness fixes still land in both |
 | PROVED-CERTIFIED | new verdict, never merged | **DONE** — both engines, Lean lattice (`proofs/Prism/Verdict.lean`), audit gate |
 
