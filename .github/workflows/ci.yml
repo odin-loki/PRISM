@@ -166,9 +166,9 @@ jobs:
           path: build-win-cl/prism.exe
           retention-days: 7
 
-  # Optional: the shrunk Python suite (same files as "Remaining pytest") on
-  # Windows against the built prism.exe (MSVC cl, Z3 off). Not gating
-  # (continue-on-error) until it has a track record; it must not fake a green
+  # The shrunk Python suite (same files as "Remaining pytest") on Windows
+  # against the built prism.exe (MSVC cl, Z3 off). Gating (green in runs
+  # 40033600830 and 40038665356); it must not fake a green
   # either: a missing prism.exe fails the PRISM_BIN smoke step, and tests that
   # need a binary skip loudly (-rs) rather than pass. shellcheck is not
   # installed here, so the polyglot shell-syntax tool is NOTRUN on this runner.
@@ -176,7 +176,6 @@ jobs:
     name: Remaining pytest (shrunk suite, Windows, optional)
     runs-on: windows-latest
     needs: windows-compile-smoke-cl
-    continue-on-error: true
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
