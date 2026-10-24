@@ -261,14 +261,35 @@ jobs:
           path: build-win-z3
           key: win-smoke-z3-${{ hashFiles('CMakeLists.txt', 'cmake/z3.cmake', 'cmake/z3-generated/tree_sha256', 'third_party/z3/CMakeLists.txt') }}
           restore-keys: win-smoke-z3-
+      # Warm-cache fix: a fresh checkout stamps every Z3 source (and the generated
+      # cmake/z3-generated inputs) with the checkout time, which is newer than the
+      # restored objects, so Ninja recompiles all of libz3 although nothing changed.
+      # On an EXACT key hit the tree is byte-identical to the one that was built (the key
+      # includes cmake/z3-generated/tree_sha256, the Z3 tree digest), so the sources are
+      # backdated below the restored objects. Never done on a restore-keys fallback: there
+      # the sources may differ, and stale objects must rebuild.
+      - name: Backdate Z3 sources (exact cache hit only)
+        if: steps.z3cache.outputs.cache-hit == 'true'
+        shell: pwsh
+        run: |
+          $old = [datetime]'2000-01-01T00:00:00Z'
+          $n = 0
+          foreach ($d in 'third_party/z3', 'cmake/z3-generated') {
+            Get-ChildItem -Path $d -Recurse -File | ForEach-Object { $_.LastWriteTimeUtc = $old; $n++ }
+          }
+          Write-Host "backdated $n files"
       - name: Configure (Ninja + clang-cl, PRISM_Z3=ON)
         run: >
           cmake -B build-win-z3 -G Ninja
           -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl
           -DPRISM_CUDA=OFF -DPRISM_LLAMA=OFF -DPRISM_QT=OFF -DPRISM_Z3=ON
           -DPRISM_TESTS=ON -DPRISM_TESTS_WIN_SUBSET=ON -DPRISM_LIBCLANG=OFF
+      # On a warm (exact) hit, `-d explain` prints why Ninja rebuilds anything at all.
       - name: Build vendored Z3 (libz3)
-        run: cmake --build build-win-z3 --target libz3
+        shell: pwsh
+        run: |
+          if ('${{ steps.z3cache.outputs.cache-hit }}' -eq 'true') { cmake --build build-win-z3 --target libz3 -- -d explain } else { cmake --build build-win-z3 --target libz3 }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/cache/save@v4
         if: steps.z3cache.outputs.cache-hit != 'true'
         with:
@@ -308,6 +329,18 @@ jobs:
           path: build-win-cl-z3
           key: win-smoke-cl-z3-${{ hashFiles('CMakeLists.txt', 'cmake/z3.cmake', 'cmake/z3-generated/tree_sha256', 'third_party/z3/CMakeLists.txt') }}
           restore-keys: win-smoke-cl-z3-
+      # Warm-cache fix: see the clang-cl Z3 job (checkout mtimes are newer than the
+      # restored objects; backdate sources on an exact key hit only).
+      - name: Backdate Z3 sources (exact cache hit only)
+        if: steps.z3cache.outputs.cache-hit == 'true'
+        shell: pwsh
+        run: |
+          $old = [datetime]'2000-01-01T00:00:00Z'
+          $n = 0
+          foreach ($d in 'third_party/z3', 'cmake/z3-generated') {
+            Get-ChildItem -Path $d -Recurse -File | ForEach-Object { $_.LastWriteTimeUtc = $old; $n++ }
+          }
+          Write-Host "backdated $n files"
       - name: Configure (Ninja + cl, PRISM_Z3=ON)
         run: >
           cmake -B build-win-cl-z3 -G Ninja
@@ -316,7 +349,10 @@ jobs:
           -DPRISM_CUDA=OFF -DPRISM_LLAMA=OFF -DPRISM_QT=OFF -DPRISM_Z3=ON
           -DPRISM_TESTS=ON -DPRISM_TESTS_WIN_SUBSET=ON -DPRISM_LIBCLANG=OFF
       - name: Build vendored Z3 (libz3)
-        run: cmake --build build-win-cl-z3 --target libz3
+        shell: pwsh
+        run: |
+          if ('${{ steps.z3cache.outputs.cache-hit }}' -eq 'true') { cmake --build build-win-cl-z3 --target libz3 -- -d explain } else { cmake --build build-win-cl-z3 --target libz3 }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/cache/save@v4
         if: steps.z3cache.outputs.cache-hit != 'true'
         with:
