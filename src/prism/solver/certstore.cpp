@@ -27,6 +27,18 @@
 #ifndef _WIN32
 #include <signal.h>
 #include <unistd.h>
+#else
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  include <windows.h>
+// Win32 macro ERROR collides with laws::ERROR.
+#  ifdef ERROR
+#    undef ERROR
+#  endif
 #endif
 
 namespace fs = std::filesystem;
@@ -484,15 +496,37 @@ PruneStats prune(const fs::path& cache_root, std::uint64_t cap, const std::set<s
     return st;
 }
 
-std::size_t sweep_orphan_work_dirs() {
+namespace {
+// True only when the process certainly does not exist (or has exited);
+// a process that cannot be inspected counts as alive, never as dead.
+bool process_certainly_gone(long long pid) {
 #ifdef _WIN32
-    return 0;
+    HANDLE h = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, static_cast<DWORD>(pid));
+    if (!h) {
+        // ERROR_INVALID_PARAMETER: no such pid. ERROR_ACCESS_DENIED etc.: it exists.
+        return GetLastError() == ERROR_INVALID_PARAMETER;
+    }
+    // A process object kept alive by someone's open handle is still "gone" once it has exited.
+    const bool done = WaitForSingleObject(h, 0) == WAIT_OBJECT_0;
+    CloseHandle(h);
+    return done;
 #else
+    // Only ESRCH; EPERM means it exists under another user.
+    return !(kill(static_cast<pid_t>(pid), 0) == 0 || errno != ESRCH);
+#endif
+}
+}  // namespace
+
+std::size_t sweep_orphan_work_dirs() {
     std::error_code ec;
     const fs::path base = fs::temp_directory_path(ec);
     if (ec) return 0;
     std::size_t n = 0;
+#ifdef _WIN32
+    const long long self = static_cast<long long>(GetCurrentProcessId());
+#else
     const long long self = static_cast<long long>(getpid());
+#endif
     for (fs::directory_iterator it(base, ec), end; !ec && it != end; it.increment(ec)) {
         const auto name = it->path().filename().string();
         if (name.rfind("prism-solve-", 0) != 0) continue;
@@ -505,16 +539,13 @@ std::size_t sweep_orphan_work_dirs() {
         if (pid_s.empty() || pid_s.find_first_not_of("0123456789") != std::string::npos || pid_s.size() > 9) continue;
         const long long pid = std::stoll(pid_s);
         if (pid <= 1 || pid == self) continue;
-        // Only a process that certainly does not exist (ESRCH); EPERM means
-        // it exists under another user.
-        if (kill(static_cast<pid_t>(pid), 0) == 0 || errno != ESRCH) continue;
+        if (!process_certainly_gone(pid)) continue;
         std::error_code e2;
         std::error_code e3;
         if (!it->is_directory(e3) || it->is_symlink(e3)) continue;
         if (fs::remove_all(it->path(), e2) > 0 && !e2) ++n;
     }
     return n;
-#endif
 }
 
 }  // namespace prism::solver::certs

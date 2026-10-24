@@ -267,6 +267,7 @@ the shared `prism_tests` source list (`447e6bca2`), the WIN32 label self-check w
   | Doctest main | `tests/cpp/test_main.cpp` (shared with Unix; `test_main_win.cpp` retired) |
   | Adapter fakes on WIN32 | Full `test_adapters.cpp` + `fake_tool_launcher` (stdio forwarded to `cmd.exe`); `fake_cmd` / `help_then_cmd` / `sh_to_cmd` |
   | Sanitize fakes on WIN32 | Full `test_sanitize.cpp` + `fake_cc.exe` (PE compiler/runner with `.fakebody` sidecar) |
+  | Certified on WIN32 | `test_certified.cpp` in full when `PRISM_HAS_Z3`, with `fake_session_probe.exe` (sweep) and `fake_cake_lpr.exe` (checker OOM) stand-ins; only the resident-memory kill is `NOTRUN` |
   | QA on WIN32 | Full `test_qa.cpp` + `fake_session_probe.exe` (incl. Job Object timeout / background-grandchild / memory-cap cases); fork and SIGTERM-to-runner cases POSIX-only |
   | Conformance on WIN32 | `test_qa_conformance.cpp`: suite shape, scorer rules, `PyRandom` / generator parity, plus the release gate (`fake_prism.exe` copied per status with a `NAME.exe.lead` sidecar), the solver-kill timeout and `run_tree` (via `fake_session_probe.exe`); the label self-check (UBSan+ASan replay) runs with clang and is `NOTRUN` (`WARN_MESSAGE`) when no clang links the sanitizers |
   | GUI fakes on WIN32 | `fake_prism_gui.exe` (`prism --gui` launcher, `test_gui_model.cpp`) in `prism_tests`; `fake_gui_prism.exe` (window run/done/fail, `test_gui.cpp`) in `prism_gui_tests` (`PRISM_QT=ON` only) |
@@ -301,10 +302,23 @@ the shared `prism_tests` source list (`447e6bca2`), the WIN32 label self-check w
   only. It is in the phase-7 subset when `PRISM_HAS_Z3` (Z3 smoke job). Certified-mode cases
   early-return when `prism-bitblast` / `cake_lpr` / CaDiCaL are missing.
 - **`test_certified.cpp` on Windows:** in the Z3 subset with `test_leanbb` / `test_pir_budget`.
-  CaDiCaL / `cake_lpr` cases no-op when the cert chain is absent; `PRISM_CERT_CACHE_MAX` env
-  cap checks, the orphan work-dir sweep (`fork`), and the resident-memory OOM checker test stay
-  POSIX-only (`#ifndef _WIN32`). Fake `#!/bin/sh` checker wrappers run only when the real tools
-  are installed (typically not on Windows CI).
+  CaDiCaL / `cake_lpr` cases no-op when the cert chain is absent. The former POSIX-only cases now
+  run on WIN32 too:
+  - `PRISM_CERT_CACHE_MAX` cap checks use `_putenv_s` (`cert_setenv` / `cert_unsetenv`).
+  - The orphan work-dir sweep (was `fork`): `sweep_orphan_work_dirs()` in `certstore.cpp` now
+    has a WIN32 implementation (`OpenProcess` + `WaitForSingleObject`; a process that cannot be
+    inspected counts as alive, only `ERROR_INVALID_PARAMETER` or an exited process is dead), and
+    `make_work_dir` in `portfolio.cpp` names work dirs with `GetCurrentProcessId()` instead of
+    `0`, so a dead PRISM's `prism-solve-*` dirs are reclaimed. The test uses
+    `fake_session_probe.exe` (`exit 0` for the dead pid, `sleep 120` for a live one, ended with
+    `TerminateProcess`), the same stand-in `test_qa` uses for its Job Object cases.
+  - The checker-out-of-memory case (was a `#!/bin/sh` script): `fake_cake_lpr.exe`
+    (`tests/cpp/fake_cake_lpr.cpp`, copied to `cake_lpr.exe`) prints the CakeML heap-exhausted
+    line and records its argv; `check_lrat` must report "ran out of memory (CakeML heap
+    exhausted)" and pass `--CML_HEAP_SIZE=<mb>`. It needs no external tool, so it never
+    no-ops. Only the "killed past the resident-memory cap" half stays Linux-only: that
+    watchdog reads `/proc/<pid>/statm` (`solver/util.cpp`), and the WIN32 runner has none, so
+    the case prints `MESSAGE: NOTRUN on WIN` (Laws 1 and 7) instead of passing.
 - **WIN32 test parity notes:** `tm_setenv` / `tm_unsetenv` (`_putenv_s`) in `test_main.cpp` and selected TUs;
   `test_checkers_c` / `test_concolic` mention `fork` only inside scanned snippet strings.
   `test_diff` PATH-mutation cases (no gcc/clang, `cl` alone) run on WIN32 through
@@ -334,7 +348,7 @@ with Linux. What is still open:
 
 | Item | Notes |
 |------|--------|
-| **POSIX-only test cases** | Still `#ifndef _WIN32` or `NOTRUN` on WIN32: the process-tree block in `test_main.cpp` (`fork` / signals; the Job Object equivalent is covered in `test_qa*`), the file-symlink half of the `scope:` case (needs Developer Mode or `SeCreateSymbolicLinkPrivilege`; `NOTRUN` message when it cannot be created, the junction half always runs), the `tests/pir` verdict table in `test_pir_e2e`, SV-COMP replay/solve/pack (execute task code, Law 9), certified-mode `fork` / OOM-checker cases, and "prism_gui without a display". Each is a deliberate gap, not a silent skip: they print `MESSAGE: NOTRUN` or are absent from the Windows build. |
+| **POSIX-only test cases** | Still `#ifndef _WIN32` or `NOTRUN` on WIN32: the process-tree block in `test_main.cpp` (`fork` / signals; the Job Object equivalent is covered in `test_qa*`), the file-symlink half of the `scope:` case (needs Developer Mode or `SeCreateSymbolicLinkPrivilege`; `NOTRUN` message when it cannot be created, the junction half always runs), the `tests/pir` verdict table in `test_pir_e2e`, SV-COMP replay/solve/pack (execute task code, Law 9), the certified-mode checker resident-memory cap (the kill-past-the-cap half of the OOM-checker case; the Linux `/proc` watchdog has no Windows counterpart yet, so it prints `NOTRUN`; the `fork` sweep, env-cap and `cake_lpr` heap-exhausted cases were ported, see §6), and "prism_gui without a display". Each is a deliberate gap, not a silent skip: they print `MESSAGE: NOTRUN` or are absent from the Windows build. |
 | **Label self-check (phase 6, closed)** | Passes on the `clang-cl` smoke; `NOTRUN` on the `cl` smoke (verified on CI, run `40038665356`). Runs on Windows only when `sanitizers_usable()` finds a clang that links UBSan+ASan (clang-cl CI jobs put the ASan DLL dir on PATH); otherwise `NOTRUN` (`WARN_MESSAGE`). The same probe gates `test_ai_assist` "generated tests fail on the bug and pass on the fix": `regress --run` builds `bin/<name>.exe`, links no `-lm`, and passes `UBSAN_OPTIONS` / `ASAN_OPTIONS` as a child environment overlay; the `sh run_tests.sh` and cmake/ctest halves stay POSIX-only. `test_cxx_models` needs libstdc++ (`<bits/c++config.h>`): a clang on the MSVC STL is `NOTRUN` (still the case on CI), since the model headers replace libstdc++ containers. |
 | **Python suite on Windows (gating job)** | `python-windows` in `ci.yml` runs the same four files as "Remaining pytest" (`test_ai9`, `test_ai_assist`, `test_lints_fastpath`, `test_llm`) on `windows-latest` (Python 3.11) with `PRISM_BIN` set to the `prism.exe` that `windows-compile-smoke-cl` uploads as the `prism-windows` artifact (so it adds no build time). It is gating (`continue-on-error` removed after two green runs), and it skips nothing quietly (`-rs`; a missing `prism.exe` fails the smoke step). Differences from Linux: no `shellcheck` (that polyglot tool is `NOTRUN`), no `libegl` (PySide6 runs offscreen). Locally it was green (39 passed) on Windows with Python 3.14, and on CI in runs `40033600830` and `40038665356` (39 passed each, Python 3.11, no skips). **WinError 193 fix:** `tests/test_ai_assist.py` and `prism/gui.py` (`prism_cpp_binary`) accepted the Linux ELF `build/prism` on Windows because `os.access(X_OK)` is true for any file, then `subprocess` failed with `[WinError 193]`; both now look for `prism.exe` on Windows and require a PE (`MZ`) image, otherwise the binary is "not found" (`NOTRUN`, Law 1). Not run on Windows: the full `tests/test_*.py` set (the repo's own shrunk-suite rule). Promoted to gating after the two green runs above (`continue-on-error` dropped). The check name still says "optional" (kept so any branch-protection rule on that name keeps matching). |
 | **Z3 build time on Windows** | Cold vendored-Z3 build is ~44 min on `windows-latest`. Both Z3 jobs restore/save the build dir with a `restore-keys` prefix (`75aeb6299`), and `libz3` is saved before the PRISM targets. On run `40019517666` the two Z3 jobs took about 57 min (`clang-cl`) and 44 min (`cl`); the warm-cache time is still not measured. sccache is not used: `cl` needs `/Z7`, which changes the Release flags of both smokes. |

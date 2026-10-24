@@ -612,9 +612,37 @@ declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)
 #  ifndef _WIN32
 #    include <sys/wait.h>
 #    include <unistd.h>
+#  else
+#    ifndef NOMINMAX
+#      define NOMINMAX
+#    endif
+#    ifndef WIN32_LEAN_AND_MEAN
+#      define WIN32_LEAN_AND_MEAN
+#    endif
+#    include <windows.h>
+#    ifdef ERROR
+#      undef ERROR  // wingdi.h; prism::laws::ERROR is a status name
+#    endif
 #  endif
 
 namespace {
+// MSVC has no setenv/unsetenv; _putenv_s with an empty value removes the
+// variable (same helpers as test_main.cpp's tm_setenv / tm_unsetenv).
+void cert_setenv(const char* name, const char* value) {
+#  ifdef _WIN32
+    _putenv_s(name, value);
+#  else
+    setenv(name, value, 1);
+#  endif
+}
+void cert_unsetenv(const char* name) {
+#  ifdef _WIN32
+    _putenv_s(name, "");
+#  else
+    unsetenv(name);
+#  endif
+}
+
 // Whitespace-normalised token lines of an LRAT file, comments dropped.
 std::vector<std::string> lrat_lines(const std::string& text) {
     std::vector<std::string> out;
@@ -650,20 +678,18 @@ TEST_CASE("certificate store: sizes and the cap") {
     std::string why;
     CHECK(certs::cap_bytes(123, &why) == 123);
     CHECK(why == "option");
-#  ifndef _WIN32
     const char* old = std::getenv("PRISM_CERT_CACHE_MAX");
     const std::string saved = old ? old : "";
-    setenv("PRISM_CERT_CACHE_MAX", "3M", 1);
+    cert_setenv("PRISM_CERT_CACHE_MAX", "3M");
     CHECK(certs::cap_bytes(-1, &why) == (3ull << 20));
     CHECK(why == "PRISM_CERT_CACHE_MAX");
-    setenv("PRISM_CERT_CACHE_MAX", "lots", 1);
+    cert_setenv("PRISM_CERT_CACHE_MAX", "lots");
     CHECK(certs::cap_bytes(-1, &why) == certs::kDefaultCapBytes);
     CHECK(why.find("not a size") != std::string::npos);
-    unsetenv("PRISM_CERT_CACHE_MAX");
+    cert_unsetenv("PRISM_CERT_CACHE_MAX");
     CHECK(certs::cap_bytes(-1, &why) == certs::kDefaultCapBytes);
     CHECK(why == "default");
-    if (old) setenv("PRISM_CERT_CACHE_MAX", saved.c_str(), 1);
-#  endif
+    if (old) cert_setenv("PRISM_CERT_CACHE_MAX", saved.c_str());
 }
 
 TEST_CASE("certificate store: packing is lossless and much smaller") {
@@ -912,10 +938,95 @@ TEST_CASE("certificate store: work directories of dead solver processes are swep
     fs::remove_all(live, ec);
     fs::remove_all(mine, ec);
 }
+#  else
+// WIN32: no fork. fake_session_probe.exe stands in for the child: "exit 0"
+// is a process that has ended (its pid is then dead), "sleep 120" one that is
+// alive for the sweep and is ended by the test (same pattern as test_qa.cpp).
+#    ifndef PRISM_FAKE_SESSION_PROBE
+#      define PRISM_FAKE_SESSION_PROBE ""
+#    endif
+TEST_CASE("certificate store: work directories of dead solver processes are swept") {
+    namespace certs = prism::solver::certs;
+    const std::string probe = PRISM_FAKE_SESSION_PROBE;
+    REQUIRE_MESSAGE(!probe.empty(), "PRISM_FAKE_SESSION_PROBE not defined (CMake: fake_session_probe)");
+    REQUIRE(fs::exists(probe));
+    auto spawn = [&](const char* mode, const char* arg, PROCESS_INFORMATION& pi) {
+        std::string cl = "\"" + probe + "\" " + mode + " " + arg;
+        cl.push_back('\0');
+        STARTUPINFOA si{};
+        si.cb = sizeof si;
+        pi = PROCESS_INFORMATION{};
+        return CreateProcessA(nullptr, cl.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si,
+                              &pi) != 0;
+    };
+    // a process that has exited, and whose handle is closed: certainly gone
+    PROCESS_INFORMATION d{};
+    REQUIRE(spawn("exit", "0", d));
+    REQUIRE(WaitForSingleObject(d.hProcess, 30000) == WAIT_OBJECT_0);
+    const unsigned long dead_pid = d.dwProcessId;
+    CloseHandle(d.hThread);
+    CloseHandle(d.hProcess);
+    // a process that is running
+    PROCESS_INFORMATION l{};
+    REQUIRE(spawn("sleep", "120", l));
+    const unsigned long live_pid = l.dwProcessId;
+
+    const auto base = fs::temp_directory_path();
+    const auto dead = base / ("prism-solve-0123456789ab-" + std::to_string(dead_pid) + "-0");
+    const auto live = base / ("prism-solve-0123456789ab-" + std::to_string(live_pid) + "-0");
+    const auto mine = base / ("prism-solve-0123456789ab-" + std::to_string(GetCurrentProcessId()) + "-99999");
+    for (auto& dir : {dead, live, mine}) {
+        fs::create_directories(dir);
+        write_text(dir / "proof.lrat", "1 0\n");
+    }
+    certs::sweep_orphan_work_dirs();
+    CHECK_FALSE(fs::exists(dead));
+    CHECK(fs::exists(live));
+    CHECK(fs::exists(mine));
+    TerminateProcess(l.hProcess, 1);
+    WaitForSingleObject(l.hProcess, 30000);
+    CloseHandle(l.hThread);
+    CloseHandle(l.hProcess);
+    std::error_code ec;
+    fs::remove_all(live, ec);
+    fs::remove_all(mine, ec);
+}
 #  endif
 #endif
 
 #ifdef PRISM_HAS_Z3
+#  ifdef _WIN32
+// WIN32: the cake_lpr half uses fake_cake_lpr.exe (tests/cpp/fake_cake_lpr.cpp)
+// copied to <dir>/cake_lpr.exe. The resident-memory cap of any other checker
+// is a Linux watchdog (/proc/<pid>/statm in src/prism/solver/util.cpp): the
+// Windows runner does not read a checker's resident memory, so that half is
+// reported NOTRUN rather than passed (Laws 1 and 7).
+#    ifndef PRISM_FAKE_CAKE_LPR
+#      define PRISM_FAKE_CAKE_LPR ""
+#    endif
+TEST_CASE("certified: a checker out of memory is reported as such, never as a verdict") {
+    CertTmp tmp;
+    write_text(tmp.dir / "q.cnf", "p cnf 1 2\n1 0\n-1 0\n");
+    write_text(tmp.dir / "q.lrat", "3 0 1 2 0\n");
+    const std::string fake = PRISM_FAKE_CAKE_LPR;
+    REQUIRE_MESSAGE(!fake.empty(), "PRISM_FAKE_CAKE_LPR not defined (CMake: fake_cake_lpr)");
+    REQUIRE(fs::exists(fake));
+    const auto cake = tmp.dir / "cake_lpr.exe";
+    const auto argf = tmp.dir / "cake_lpr.exe.args";
+    fs::copy_file(fake, cake, fs::copy_options::overwrite_existing);
+    // cake_lpr's heap cap is passed as --CML_HEAP_SIZE and its exhaustion
+    // is reported as running out of memory
+    auto o = prism::solver::check_lrat(prism::solver::ToolInfo{"cake_lpr", cake, "test"}, tmp.dir / "q.cnf",
+                                       tmp.dir / "q.lrat", 30, 64);
+    CAPTURE(o.detail);
+    CHECK(o.ran);
+    CHECK_FALSE(o.verified);
+    CHECK(o.detail.find("ran out of memory (CakeML heap exhausted)") == 0);
+    CHECK(o.detail.find("heap cap 64 MB") != std::string::npos);
+    CHECK(slurp(argf).find("--CML_HEAP_SIZE=64 ") == 0);
+    MESSAGE("NOTRUN on WIN: checker killed past its resident-memory cap (Linux /proc watchdog only)");
+}
+#  endif
 #  ifndef _WIN32
 TEST_CASE("certified: a checker out of memory is reported as such, never as a verdict") {
     CertTmp tmp;

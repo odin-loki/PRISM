@@ -48,6 +48,18 @@
 
 #ifndef _WIN32
 #include <unistd.h>
+#else
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  include <windows.h>
+// Win32 macro ERROR collides with laws::ERROR.
+#  ifdef ERROR
+#    undef ERROR
+#  endif
 #endif
 
 namespace fs = std::filesystem;
@@ -481,7 +493,9 @@ fs::path make_work_dir(const SolveOptions& opt, const std::string& h) {
 #ifndef _WIN32
     const auto pid = static_cast<long long>(getpid());
 #else
-    const long long pid = 0;
+    // The real process id, so certs::sweep_orphan_work_dirs can tell a work
+    // directory of a dead PRISM from one of a live process.
+    const auto pid = static_cast<long long>(GetCurrentProcessId());
 #endif
     // A directory this call creates itself (never one that already exists:
     // the CNF and proof in it are what gets certified).
