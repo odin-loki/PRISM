@@ -12,6 +12,7 @@
 #endif
 
 #include "prism/config.hpp"
+#include "prism/pir/frontend.hpp"
 #include "prism/wide_int.hpp"
 #include "prism/pipeline.hpp"
 #include "prism/svcomp.hpp"
@@ -667,8 +668,9 @@ TEST_CASE("svcomp: pir conjuncts rendered in C only when C means the proved rela
 
 TEST_CASE("svcomp: pir invariants named with the C variables from debug information") {
     prism::Config cfg;
-    if (!cfg.which({"clang-18", "clang"}) || !cfg.which({"opt-18", "opt"})) {
-        MESSAGE("NOTRUN: clang/opt not on PATH (pir invariants need the debug IR)");
+    std::string why;
+    if (!prism::pir::frontend_usable(cfg, &why)) {
+        MESSAGE(why);
         return;
     }
     TempDir d;

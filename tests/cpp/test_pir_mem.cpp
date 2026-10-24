@@ -1086,9 +1086,11 @@ int loop_long_bounded(int n) {
 }
 
 TEST_CASE("pir: value sets: map erase at an input-dependent position, then a traversal (skips without clang++/opt)") {
-    if (skip_without_frontend()) return;
-    auto fe = pp::find_frontend(prism::default_config());
-    if (!fe.clangxx) return;
+    std::string why;
+    if (!pp::pir_cxx_usable(prism::default_config(), &why)) {
+        MESSAGE(why);
+        return;
+    }
     auto cfg = prism::default_config();
     auto dir = std::filesystem::temp_directory_path() / "prism_pir_valueset_map";
     std::filesystem::remove_all(dir);

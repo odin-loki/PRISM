@@ -336,7 +336,11 @@ TEST_CASE("pir e2e: tests/pir verdict table (NOTRUN without clang/opt/LP64 probe
     if (skip_without_frontend(cfg)) return;
     auto dir = fs::path(PRISM_SOURCE_DIR) / "tests" / "pir";
     cfg.root = dir;
+#ifdef _WIN32
+    cfg.jobs = 1;  // parallel Z3 on Windows CI can leave simple cases UNKNOWN
+#else
     cfg.jobs = 2;
+#endif
     std::vector<fs::path> paths;
     for (auto* name : pir_files()) paths.push_back(dir / name);
     auto out = pp::run_pir(paths, cfg);

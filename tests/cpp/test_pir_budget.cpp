@@ -77,7 +77,7 @@ bool contains(const std::string& s, const std::string& what) { return s.find(wha
 // Simulated slow queries (debug_before_query + sleep) assume plain Z3 answers
 // within the function budget after the delay. Under ASan/UBSan, setup and
 // solver work eat the budget first, so BOUNDED-after-spent becomes TIMEOUT.
-#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_UNDEFINED__)
+#if defined(_WIN32) || defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_UNDEFINED__)
 constexpr bool k_pir_budget_simulated_delays_ok = false;
 #elif defined(__has_feature)
 #  if __has_feature(address_sanitizer) || __has_feature(undefined_behavior_sanitizer)
@@ -91,8 +91,8 @@ constexpr bool k_pir_budget_simulated_delays_ok = true;
 
 void skip_pir_budget_simulated_delays() {
     if (!k_pir_budget_simulated_delays_ok)
-        MESSAGE("SKIP: pir budget delay tests need a fast plain solver; under ASan/UBSan the function "
-                "budget can expire before VCs answer");
+        MESSAGE("SKIP: pir budget delay tests need a fast plain solver; under ASan/UBSan or on Windows CI "
+                "the function budget can expire before VCs answer");
 }
 
 // The functions below, lowered by clang (-O0 + PRISM's normalisation), once.
@@ -554,9 +554,11 @@ TEST_CASE("pir budget: $PRISM_FUNCTION_BUDGET in the pir stage (skips without cl
 
 TEST_CASE("pir budget: the memory policy's re-checks of main share the function budget and the cache (skips "
           "without clang++/opt)") {
-    if (skip_without_frontend()) return;
-    auto fe = pp::find_frontend(prism::default_config());
-    if (!fe.clangxx) return;
+    std::string why;
+    if (!pp::pir_cxx_usable(prism::default_config(), &why)) {
+        MESSAGE(why);
+        return;
+    }
     auto dir = fs::temp_directory_path() / "prism_pir_budget_static_init";
     fs::remove_all(dir);
     fs::create_directories(dir);

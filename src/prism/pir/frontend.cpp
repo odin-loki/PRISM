@@ -75,6 +75,19 @@ std::vector<std::string> lp64_target_flags() {
 #endif
 }
 
+std::vector<std::string> lp64_clang_driver_flags() {
+    std::vector<std::string> f = lp64_target_flags();
+#ifdef _WIN32
+    const fs::path shim = fs::path(__FILE__).parent_path() / "models" / "libc" / "shim";
+    std::error_code ec;
+    if (fs::is_directory(shim, ec)) {
+        f.push_back("-idirafter");
+        f.push_back(shim.string());
+    }
+#endif
+    return f;
+}
+
 bool frontend_usable(const Config& cfg, std::string* notrun_reason) {
     auto fe = find_frontend(cfg);
     if (!fe.clang || !fe.opt) {
@@ -105,6 +118,23 @@ bool pir_test_c_file_supported(const char* basename) {
 #else
     if (!basename) return false;
     return pir_win_c_files().count(basename) > 0;
+#endif
+}
+
+bool pir_cxx_usable(const Config& cfg, std::string* notrun_reason) {
+#ifdef _WIN32
+    if (notrun_reason) {
+        *notrun_reason = "NOTRUN: C++ PIR needs libstdc++ (not available on Windows)";
+    }
+    return false;
+#else
+    if (!frontend_usable(cfg, notrun_reason)) return false;
+    auto fe = find_frontend(cfg);
+    if (!fe.clangxx) {
+        if (notrun_reason) *notrun_reason = "NOTRUN: clang++ not on PATH (C++ PIR)";
+        return false;
+    }
+    return true;
 #endif
 }
 

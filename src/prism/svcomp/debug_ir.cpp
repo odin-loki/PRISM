@@ -15,6 +15,7 @@
 
 #include "../stages/common.hpp"
 #include "prism/config.hpp"
+#include "prism/pir/frontend.hpp"
 #include "prism/wide_int.hpp"
 
 #include <algorithm>
@@ -323,10 +324,12 @@ std::optional<std::string> debug_ir(const fs::path& task) {
     auto cc = cfg.which({"clang-18", "clang"});
     auto opt = cfg.which({"opt-18", "opt"});
     if (!cc || !opt) return std::nullopt;
-    auto r = stages_detail::run_argv({cc->string(), "-x", "c", "-S", "-emit-llvm", "-O0", "-Xclang", "-disable-O0-optnone",
-                                      "-fno-discard-value-names", "-fno-builtin-memcpy", "-g", "-std=c17", "-w",
-                                      task.string(), "-o", "-"},
-                                     "", 120.0);
+    std::vector<std::string> argv{cc->string()};
+    for (auto& flag : pir::lp64_clang_driver_flags()) argv.push_back(flag);
+    argv.insert(argv.end(), {"-x", "c", "-S", "-emit-llvm", "-O0", "-Xclang", "-disable-O0-optnone",
+                             "-fno-discard-value-names", "-fno-builtin-memcpy", "-g", "-std=c17", "-w", task.string(),
+                             "-o", "-"});
+    auto r = stages_detail::run_argv(argv, "", 120.0);
     if (r.rc != 0 || r.timeout) return std::nullopt;
     auto o = stages_detail::run_argv({opt->string(), "-S", IR_PASSES}, r.out, 120.0);
     if (o.rc != 0 || o.timeout) return std::nullopt;

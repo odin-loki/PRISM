@@ -338,16 +338,7 @@ std::vector<std::pair<int, int>> parse_ubsan_locs(const std::string& ir) {
 
 std::vector<std::string> base_flags(const fs::path& src) {
     std::vector<std::string> f{"-S"};
-    for (auto& t : lp64_target_flags()) f.push_back(t);
-#ifdef _WIN32
-    // LP64 linux-gnu has no Windows sysroot; minimal libc name headers for tests/pir and doctests.
-    const fs::path shim = fs::path(__FILE__).parent_path() / "models" / "libc" / "shim";
-    std::error_code ec;
-    if (fs::is_directory(shim, ec)) {
-        f.push_back("-idirafter");
-        f.push_back(shim.string());
-    }
-#endif
+    for (auto& t : lp64_clang_driver_flags()) f.push_back(t);
     f.insert(f.end(), {"-emit-llvm", "-O0", "-Xclang", "-disable-O0-optnone", "-fno-discard-value-names",
                        "-gline-tables-only"});
     f.push_back(is_cxx(src) ? "-std=c++23" : "-std=c17");
