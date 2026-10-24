@@ -7350,10 +7350,18 @@ TEST_CASE("cparse extracts a function-try-block with its handlers (F10)") {
 #endif
 }
 
-// ---- process trees: a timeout or a signal to PRISM kills the children's
-// children too (a solver's workers, a compiler driver's cc1/ld), not just the
-// direct child (tools/proctree.py does the same for the scorers).
-#ifndef _WIN32
+// ---- process trees: a timeout or signal kills grandchildren too, not just
+// the direct child. POSIX only (fork); the Windows equivalents are the Job
+// Object cases in test_qa.cpp.
+#ifdef _WIN32
+TEST_CASE("process runners kill the child's whole process tree on timeout") {
+    MESSAGE("POSIX-only (fork); Windows: see the Job Object cases in tests/cpp/test_qa.cpp");
+}
+
+TEST_CASE("a SIGTERM to PRISM kills the child process groups it started") {
+    MESSAGE("POSIX-only (fork/SIGTERM); Windows: see the Job Object cases in tests/cpp/test_qa.cpp");
+}
+#else
 #include "../../src/prism/proc.hpp"
 #include "../../src/prism/stages/common.hpp"
 
