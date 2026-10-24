@@ -173,7 +173,7 @@ jobs:
   # need a binary skip loudly (-rs) rather than pass. shellcheck is not
   # installed here, so the polyglot shell-syntax tool is NOTRUN on this runner.
   python-windows:
-    name: Remaining pytest (shrunk suite, Windows, optional)
+    name: Remaining pytest (shrunk suite, Windows)
     runs-on: windows-latest
     needs: windows-compile-smoke-cl
     timeout-minutes: 30

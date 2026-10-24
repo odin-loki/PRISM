@@ -221,7 +221,7 @@ Status on `main` @ `1f59511ab` (latest green): phases **5a**, **5b**, **5c**, **
 (`clang-cl`), `Windows compile smoke (MSVC cl)`, `Windows compile smoke (Z3)`,
 `Windows compile smoke (MSVC cl, Z3)`, `Windows GUI (Qt 6, MSVC cl, offscreen)`,
 `C++ engine (build + prism_tests)`, `Remaining pytest (shrunk suite)`,
-`Remaining pytest (shrunk suite, Windows, optional)`, `Licence firewall + manifest + SBOM`
+`Remaining pytest (shrunk suite, Windows)`, `Licence firewall + manifest + SBOM`
 and the SARIF self-check. Read from the job logs: the `clang-cl` smoke ran 722 doctest cases,
 all passed, and logged no "label self-check sample NOTRUN" (the ASan DLL dir was put on PATH,
 so the sample ran); the `cl` smoke logged that NOTRUN line, as designed. In the same run the
