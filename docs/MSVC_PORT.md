@@ -75,7 +75,7 @@ Legend:
 |------|----------|------|
 | `src/prism/bmc.cpp` | 2 | Unencoded-syntax detection in scanned code. |
 | `src/prism/bmc_encoder.inc` | 2 | Type name match for 128-bit model gap. |
-| `src/prism/bmc_unenc.inc` | 1 | Same. |
+| `src/prism/bmc_unenc.inc` | 1 | Same; `#include`d only from `bmc.cpp` (other stages use `unencoded_syntax_reason_cached()`). |
 | `src/prism/stages/interp.cpp` | 1 | `__int128` in scanned source only; host overflow uses `__builtin_*_overflow` on Clang/GCC and manual / `prism::i128` checks on MSVC `cl` (phase 5c). |
 | `src/prism/astlint_checks.cpp` | 5 | Width tables / type names (includes `__int128` as string). |
 

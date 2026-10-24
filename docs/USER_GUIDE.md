@@ -56,7 +56,7 @@ with `--tool NAME=PATH`). A tool that is not installed is reported as
 
 | kind | tools |
 |---|---|
-| C/C++ analyzers | cppcheck, clang-tidy, ESBMC, CBMC, Infer, CodeQL, Semgrep, Coccinelle (`spatch`), Frama-C, KLEE, Strix |
+| C/C++ analyzers | cppcheck, clang-tidy, ESBMC, CBMC, Infer, CodeQL, Semgrep, Coccinelle (`spatch`, tree-local `*.cocci` in the scanned tree only), Frama-C, KLEE, Strix |
 | fuzzers | AFL++ (`PRISM_AFL=1`), libFuzzer (`PRISM_LIBFUZZER=1`) |
 | other languages | ruff or pyflakes, mypy, node, tsc, eslint, bash, shellcheck, gofmt, cargo clippy, ruby, php, perl, luac, yamllint |
 | sandbox | bubblewrap (`bwrap`) for `--allow-exec` |
