@@ -131,57 +131,41 @@ std::map<std::pair<std::string, std::string>, const prism::Finding*> index(
     return m;
 }}
 
-[[maybe_unused]] bool is_c_file(const std::string& name) {{
-    return name.size() > 2 && name.compare(name.size() - 2, 2, ".c") == 0;
-}}
-
-// WIN32 runs the C-only subset: the C++ rows depend on the libstdc++ model
-// headers and _GLIBCXX_ASSERTIONS, which a clang on the MSVC STL does not
-// have. They are reported NOTRUN (MESSAGE), never counted as passed.
-bool in_subset(const std::string& file) {{
-#ifdef _WIN32
-    return is_c_file(file);
-#else
-    (void)file;
-    return true;
-#endif
-}}
-
-// A missing clang or opt is NOTRUN, never a clean result (Law 1); say so.
+// PIR models an LP64 target (docs/PIR.md: long and pointers are 64 bits, the
+// libc models say `typedef unsigned long size_t`). clang on Windows targets
+// LLP64 (x86_64-pc-windows-msvc: long is 32 bits, size_t is unsigned long
+// long) and has no libstdc++, so the library models do not build ("typedef
+// redefinition with different types") and every verdict row fails. Until PIR
+// lowers for an LP64 target on Windows, the e2e table is NOTRUN there, even
+// when clang and opt are present (Law 1): never a pass, never a failure that
+// blames the code under test.
 bool frontend_usable(const prism::Config& cfg) {{
+#ifdef _WIN32
+    (void)cfg;
+    MESSAGE("NOTRUN: pir e2e needs an LP64 clang target; clang on Windows is LLP64 (run PIR under WSL/Linux)");
+    return false;
+#else
     auto fe = pp::find_frontend(cfg);
     if (fe.clang && fe.opt) return true;
-    std::string why = std::string("NOTRUN: pir e2e needs clang and opt on PATH (clang ") +
-                      (fe.clang ? "found" : "missing") + ", opt " + (fe.opt ? "found" : "missing") + ")";
-#ifdef _WIN32
-    why += "; the stock Windows LLVM installer ships no opt.exe";
-#endif
-    MESSAGE(why);
+    MESSAGE(std::string("NOTRUN: pir e2e needs clang and opt on PATH (clang ") + (fe.clang ? "found" : "missing") +
+            ", opt " + (fe.opt ? "found" : "missing") + ")");
     return false;
+#endif
 }}
-
 }}  // namespace
 
-TEST_CASE("pir e2e: tests/pir verdict table (NOTRUN without clang/opt; C-only on WIN32)") {{
+TEST_CASE("pir e2e: tests/pir verdict table (NOTRUN without clang/opt, and on WIN32)") {{
     auto cfg = prism::default_config();
     if (!frontend_usable(cfg)) return;
     auto dir = fs::path(PRISM_SOURCE_DIR) / "tests" / "pir";
     cfg.root = dir;
     cfg.jobs = 2;
     std::vector<fs::path> paths;
-    std::size_t omitted = 0;
-    for (auto* name : pir_files()) {{
-        if (in_subset(name)) paths.push_back(dir / name);
-        else ++omitted;
-    }}
-    if (omitted)
-        MESSAGE("NOTRUN: " << omitted << " of " << pir_files().size()
-                << " tests/pir files (C++) omitted on WIN32; the " << paths.size() << " C files run");
+    for (auto* name : pir_files()) paths.push_back(dir / name);
     auto out = pp::run_pir(paths, cfg);
     auto got = index(out);
     std::vector<std::string> wrong;
     for (auto& r : rows()) {{
-        if (!in_subset(r.file)) continue;
         auto it = got.find({{r.file, r.function}});
         if (it == got.end()) {{
             wrong.push_back(std::string(r.file) + ":" + r.function + " missing");
