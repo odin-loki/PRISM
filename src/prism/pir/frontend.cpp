@@ -78,9 +78,10 @@ std::vector<std::string> lp64_target_flags() {
 std::vector<std::string> lp64_clang_driver_flags() {
     std::vector<std::string> f = lp64_target_flags();
 #ifdef _WIN32
-    const fs::path shim = fs::path(__FILE__).parent_path() / "models" / "libc" / "shim";
+    const std::filesystem::path shim =
+        std::filesystem::path(__FILE__).parent_path() / "models" / "libc" / "shim";
     std::error_code ec;
-    if (fs::is_directory(shim, ec)) {
+    if (std::filesystem::is_directory(shim, ec)) {
         f.push_back("-idirafter");
         f.push_back(shim.string());
     }
