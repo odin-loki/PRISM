@@ -20,7 +20,7 @@ struct Proc {
     bool unreaped = false;   // killed but not reaped within 2 s: left to a detached reaper (watchdog)
     bool mem_exceeded = false;       // killed: resident memory passed mem_cap
     std::uint64_t mem_cap = 0;       // the cap that applied (bytes; 0: none)
-    std::uint64_t peak_rss = 0;      // bytes, sampled (Linux /proc; 0 elsewhere)
+    std::uint64_t peak_rss = 0;      // bytes, sampled (Linux /proc, Windows working set; 0: not sampled)
     double secs = 0.0;
 };
 
@@ -30,9 +30,10 @@ struct Proc {
 // `prism_tests -tc="solver: sha256*"` then a certified tiny query if tools are installed.
 // stdin_path: the child's stdin (default /dev/null); stdout_path: the child's
 // stdout goes to that file instead of `out` (stderr is still captured).
-// mem_cap > 0: the child's resident memory is sampled (every ~100 ms, Linux
-// /proc/<pid>/statm) and the process group is killed once it passes the cap
-// (mem_exceeded; out_of_memory() then reports it).
+// mem_cap > 0: the child's resident memory is sampled (every ~100 ms; Linux
+// /proc/<pid>/statm, Windows working set via the Job Object runner's
+// RunSpec::rss_cap_bytes) and the process group / Job Object is killed once
+// it passes the cap (mem_exceeded; out_of_memory() then reports it).
 Proc run(const std::vector<std::string>& argv, double timeout_s,
          const std::atomic<bool>* stop = nullptr, std::size_t cap = 64u << 20,
          const std::string& stdin_path = {}, const std::string& stdout_path = {},

@@ -26,6 +26,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -998,11 +999,14 @@ TEST_CASE("certificate store: work directories of dead solver processes are swep
 #  ifdef _WIN32
 // WIN32: the cake_lpr half uses fake_cake_lpr.exe (tests/cpp/fake_cake_lpr.cpp)
 // copied to <dir>/cake_lpr.exe. The resident-memory cap of any other checker
-// is a Linux watchdog (/proc/<pid>/statm in src/prism/solver/util.cpp): the
-// Windows runner does not read a checker's resident memory, so that half is
-// reported NOTRUN rather than passed (Laws 1 and 7).
+// is the Windows counterpart of the Linux /proc/<pid>/statm watchdog
+// (RunSpec::rss_cap_bytes in src/prism/proc.cpp samples the working set and
+// terminates the Job Object); fake_mem_hog.exe stands in for the checker.
 #    ifndef PRISM_FAKE_CAKE_LPR
 #      define PRISM_FAKE_CAKE_LPR ""
+#    endif
+#    ifndef PRISM_FAKE_MEM_HOG
+#      define PRISM_FAKE_MEM_HOG ""
 #    endif
 TEST_CASE("certified: a checker out of memory is reported as such, never as a verdict") {
     CertTmp tmp;
@@ -1024,7 +1028,22 @@ TEST_CASE("certified: a checker out of memory is reported as such, never as a ve
     CHECK(o.detail.find("ran out of memory (CakeML heap exhausted)") == 0);
     CHECK(o.detail.find("heap cap 64 MB") != std::string::npos);
     CHECK(slurp(argf).find("--CML_HEAP_SIZE=64 ") == 0);
-    MESSAGE("NOTRUN on WIN: checker killed past its resident-memory cap (Linux /proc watchdog only)");
+    // any other checker is killed once its resident memory (working set)
+    // passes the cap: fake_mem_hog.exe touches 400 MB against a 100 MB cap
+    const std::string hog_exe = PRISM_FAKE_MEM_HOG;
+    REQUIRE_MESSAGE(!hog_exe.empty(), "PRISM_FAKE_MEM_HOG not defined (CMake: fake_mem_hog)");
+    REQUIRE(fs::exists(hog_exe));
+    const auto hog = tmp.dir / "lrat-check.exe";
+    fs::copy_file(hog_exe, hog, fs::copy_options::overwrite_existing);
+    const auto t0 = std::chrono::steady_clock::now();
+    auto h = prism::solver::check_lrat(prism::solver::ToolInfo{"lrat-check", hog, "test"}, tmp.dir / "q.cnf",
+                                       tmp.dir / "q.lrat", 30, 100);
+    const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    CAPTURE(h.detail);
+    CHECK(h.ran);
+    CHECK_FALSE(h.verified);
+    CHECK(h.detail.find("ran out of memory (resident memory passed the cap of 100 MB") == 0);
+    CHECK(secs < 15.0);  // killed by the watchdog, not by running to its 20 s sleep
 }
 #  endif
 #  ifndef _WIN32

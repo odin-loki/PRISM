@@ -234,6 +234,9 @@ Proc run(const std::vector<std::string>& argv, double timeout_s, const std::atom
     spec.merge_stderr = stdout_path.empty();
     spec.stop = stop;
     spec.max_output_bytes = cap;
+    // Resident-memory cap: the Job Object runner samples the working set
+    // (the counterpart of the Linux /proc/<pid>/statm watchdog below).
+    spec.rss_cap_bytes = mem_cap;
     if (!stdout_path.empty()) spec.stdout_path = stdout_path;
     if (!stdin_path.empty()) spec.stdin_path = stdin_path;
     auto ro = prism::detail::run(spec);
@@ -241,6 +244,8 @@ Proc run(const std::vector<std::string>& argv, double timeout_s, const std::atom
     r.failed = ro.failed;
     r.timed_out = ro.timed_out;
     r.cancelled = ro.cancelled;
+    r.mem_exceeded = ro.rss_exceeded;
+    r.peak_rss = ro.peak_rss;
     r.rc = ro.rc;
     if (ro.failed) {
         r.out = ro.err.empty() ? ro.out : ro.err;

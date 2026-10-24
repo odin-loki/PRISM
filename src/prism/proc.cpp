@@ -19,6 +19,7 @@
 #    define NOMINMAX
 #  endif
 #  include <windows.h>
+#  include <psapi.h>
 #  include <cwchar>
 #  include <cwctype>
 #  ifdef min
@@ -320,9 +321,30 @@ RunOut run(const RunSpec& spec) {
     const auto deadline =
         limit_time ? std::chrono::steady_clock::now() + std::chrono::duration<double>(spec.timeout_s)
                    : std::chrono::steady_clock::time_point::max();
+    // Resident-memory watchdog (Linux: /proc/<pid>/statm). Sampled about every
+    // 100 ms; a child whose working set cannot be read is not capped, which
+    // peak_rss == 0 shows to the caller (it is never reported as under the cap).
+    auto next_rss = std::chrono::steady_clock::now();
+    auto over_rss = [&]() -> bool {
+        if (spec.rss_cap_bytes == 0) return false;
+        const auto now = std::chrono::steady_clock::now();
+        if (now < next_rss) return false;
+        next_rss = now + std::chrono::milliseconds(100);
+        PROCESS_MEMORY_COUNTERS pmc{};
+        pmc.cb = sizeof pmc;
+        if (!K32GetProcessMemoryInfo(pi.hProcess, &pmc, sizeof pmc)) return false;
+        r.peak_rss = std::max<std::uint64_t>(r.peak_rss, pmc.WorkingSetSize);
+        return pmc.WorkingSetSize > spec.rss_cap_bytes;
+    };
     for (;;) {
         drain(out_r, r.out);
         drain(err_r, r.err);
+        if (over_rss()) {
+            TerminateJobObject(job, 1);  // the child and every descendant
+            WaitForSingleObject(pi.hProcess, 2000);
+            r.rss_exceeded = true;
+            break;
+        }
         if (spec.stop && spec.stop->load()) {
             TerminateJobObject(job, 1);  // the child and every descendant
             WaitForSingleObject(pi.hProcess, 2000);

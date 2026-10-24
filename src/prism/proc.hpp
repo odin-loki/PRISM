@@ -10,6 +10,7 @@
 
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <string>
 #include <utility>
@@ -44,6 +45,14 @@ struct RunSpec {
     //   counterpart of RLIMIT_AS), 0: none. POSIX callers use `limits`.
     bool kill_descendants = false;
     long mem_limit_mb = 0;
+    // - rss_cap_bytes: resident-memory watchdog, 0: none. The child's working
+    //   set is sampled (~every 100 ms, the Windows counterpart of the Linux
+    //   /proc/<pid>/statm watchdog in solver/util.cpp) and the Job Object is
+    //   terminated once it passes the cap (RunOut::rss_exceeded). Unlike
+    //   mem_limit_mb (committed memory; the child sees failed allocations)
+    //   this kills a checker that is merely large. POSIX callers sample
+    //   /proc themselves (solver::detail::run); this field is ignored there.
+    std::uint64_t rss_cap_bytes = 0;
 };
 
 struct RunOut {
@@ -54,6 +63,8 @@ struct RunOut {
     bool cancelled = false;  // stop poll requested termination
     bool failed = false;   // could not start (pipe/fork/exec/CreateProcess)
     bool crashed = false;  // killed by a signal / NTSTATUS exception, not by the timeout
+    bool rss_exceeded = false;       // Windows: killed, working set passed RunSpec::rss_cap_bytes
+    std::uint64_t peak_rss = 0;      // Windows: highest sampled working set (bytes; 0: not sampled)
 };
 
 // Law 8: throws std::runtime_error on a --no-*-check flag. detail::run calls

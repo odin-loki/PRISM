@@ -683,6 +683,8 @@ if(PRISM_TESTS)
     add_executable(fake_prism tests/cpp/fake_prism.cpp)
     # Stand-in cake_lpr (test_certified.cpp): heap exhausted, records its argv.
     add_executable(fake_cake_lpr tests/cpp/fake_cake_lpr.cpp)
+    # Stand-in lrat-check that touches 400 MB (resident-memory cap kill case).
+    add_executable(fake_mem_hog tests/cpp/fake_mem_hog.cpp)
     # Stand-in prism_gui for the `prism --gui` launcher cases (test_gui_model.cpp).
     add_executable(fake_prism_gui tests/cpp/fake_prism_gui.cpp)
   endif()
@@ -696,9 +698,10 @@ if(PRISM_TESTS)
     target_link_libraries(prism_tests PRIVATE ws2_32)
   endif()
   if(WIN32 AND PRISM_TESTS_WIN_SUBSET)
-    add_dependencies(prism_tests fake_tool_launcher fake_cc fake_session_probe fake_prism fake_prism_gui fake_cake_lpr)
+    add_dependencies(prism_tests fake_tool_launcher fake_cc fake_session_probe fake_prism fake_prism_gui fake_cake_lpr fake_mem_hog)
     target_compile_definitions(prism_tests PRIVATE
       "PRISM_FAKE_CAKE_LPR=\"$<TARGET_FILE:fake_cake_lpr>\""
+      "PRISM_FAKE_MEM_HOG=\"$<TARGET_FILE:fake_mem_hog>\""
       "PRISM_FAKE_GUI=\"$<TARGET_FILE:fake_prism_gui>\"" 
       "PRISM_FAKE_TOOL_LAUNCHER=\"$<TARGET_FILE:fake_tool_launcher>\""
       "PRISM_FAKE_CC=\"$<TARGET_FILE:fake_cc>\""
