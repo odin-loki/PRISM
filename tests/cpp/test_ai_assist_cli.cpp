@@ -51,6 +51,12 @@ using json = nlohmann::json;
 
 namespace {
 
+#ifdef PRISM_HAS_Z3
+constexpr bool kHasBmc = true;
+#else
+constexpr bool kHasBmc = false;  // Law 1: no Z3, no BMC verdicts
+#endif
+
 fs::path repo_root() { return fs::path(__FILE__).parent_path().parent_path().parent_path(); }
 
 std::string slurp(const fs::path& p) {
@@ -271,6 +277,10 @@ struct AssistRun {
 }  // namespace
 
 TEST_CASE("ai-assist cli: the pipeline's triage orders only; `prism triage` keeps report.json") {
+    if (!kHasBmc) {
+        MESSAGE("NOTRUN: PRISM_HAS_Z3 off: the pipeline's bmc stage gives no FAILED rows");
+        return;
+    }
     AssistRun run;
     REQUIRE(!run.report_text.empty());
     const auto tri = json::parse(slurp(run.out / "triage.json"));
@@ -296,6 +306,10 @@ TEST_CASE("ai-assist cli: the pipeline's triage orders only; `prism triage` keep
 }
 
 TEST_CASE("ai-assist cli: `prism ask` prints the query with the answer") {
+    if (!kHasBmc) {
+        MESSAGE("NOTRUN: PRISM_HAS_Z3 off: the pipeline's bmc stage gives no FAILED rows");
+        return;
+    }
     AssistRun run;
     auto r = run_cli(prism::ai::ask_main,
                      {"failed findings in function divide", "--report", run.out.string(), "--no-llm"});
@@ -368,6 +382,10 @@ TEST_CASE("ai-assist cli: triage uses the embedding endpoint when PRISM_EMBED_SE
 #endif
 
 TEST_CASE("ai-assist cli: `prism regress` writes under <out> only; --run without --allow-exec runs nothing") {
+    if (!kHasBmc) {
+        MESSAGE("NOTRUN: PRISM_HAS_Z3 off: the pipeline's bmc stage gives no FAILED rows");
+        return;
+    }
     AssistRun run;
     auto r = run_cli(prism::ai::regress_main, {"--report", (run.out / "report.json").string()});
     CHECK(r.rc == 0);
