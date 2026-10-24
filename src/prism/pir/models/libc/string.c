@@ -55,11 +55,13 @@ char *strncat(char *d, const char *s, size_t n) {
 }
 
 int strcmp(const char *a, const char *b) {
-    while (*a && *a == *b) {
-        ++a;
-        ++b;
+    size_t i = 0;
+    while (uc(a, i) && uc(a, i) == uc(b, i)) ++i;
+    {
+        const unsigned char ca = uc(a, i);
+        const unsigned char cb = uc(b, i);
+        if (ca != cb) return ca > cb ? 1 : -1;
     }
-    if (*a != *b) return *a > *b ? 1 : -1;
     return 0;
 }
 
