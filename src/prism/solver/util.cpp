@@ -444,6 +444,9 @@ std::optional<ToolInfo> lean_build_tool(std::string_view name) {
     if (name != "prism-bitblast" && name != "prism-lrat-check") return std::nullopt;
     fs::path cand = fs::path(PRISM_LEAN_BIN_DIR) / std::string(name);
     std::error_code ec;
+#ifdef _WIN32
+    if (!fs::is_regular_file(cand, ec)) cand += ".exe";
+#endif
     if (!fs::is_regular_file(cand, ec)) return std::nullopt;
 #ifndef _WIN32
     if (access(cand.c_str(), X_OK) != 0) return std::nullopt;

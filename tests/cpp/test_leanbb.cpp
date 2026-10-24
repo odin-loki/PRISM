@@ -11,6 +11,8 @@
 
 #include "prism/solver.hpp"
 
+#include "../../src/prism/proc.hpp"
+
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -89,18 +91,20 @@ std::string rand_literal(std::mt19937_64& rng, unsigned w, bool is_bool) {
 // Run `prism-bitblast --eval` on the DAG and the assignments; one 0/1 per line.
 std::vector<int> lean_eval(const ps::ToolInfo& bb, const ps::LeanDag& dag, const std::vector<std::string>& rhos,
                            const fs::path& dir) {
-    const fs::path in = dir / "eval.sexp", out = dir / "eval.out";
-    {
-        std::ofstream f(in);
-        f << dag.text;
-        for (const auto& r : rhos) f << r << "\n";
-    }
-    std::string cmd = "'" + bb.path.string() + "' --eval < '" + in.string() + "' > '" + out.string() + "'";
+    std::ostringstream input;
+    input << dag.text;
+    for (const auto& r : rhos) input << r << "\n";
+    prism::detail::RunSpec spec;
+    spec.argv = {bb.path.string(), "--eval"};
+    spec.input = input.str();
+    spec.cwd = dir;
+    spec.timeout_s = 120;
+    auto run = prism::detail::run(spec);
+    if (run.rc != 0 || run.failed) return {};
     std::vector<int> res;
-    if (std::system(cmd.c_str()) != 0) return res;
-    std::ifstream f(out);
+    std::istringstream out(run.out);
     std::string line;
-    while (std::getline(f, line)) res.push_back(line == "1" ? 1 : line == "0" ? 0 : -1);
+    while (std::getline(out, line)) res.push_back(line == "1" ? 1 : line == "0" ? 0 : -1);
     return res;
 }
 
@@ -167,7 +171,18 @@ TEST_CASE("leanbb: the serializer round-trips against Z3 on random assignments")
     z3::context c;
     std::mt19937_64 rng(20260923);
     ps::SolveOptions def;
-    auto bb = ps::find_tool("prism-bitblast", def);
+    std::optional<ps::ToolInfo> bb = ps::find_tool("prism-bitblast", def);
+    if (bb) {
+        prism::detail::RunSpec probe;
+        probe.argv = {bb->path.string(), "--eval"};
+        probe.input = "(assert true)\n";
+        probe.timeout_s = 30;
+        auto pr = prism::detail::run(probe);
+        if (pr.rc != 0 || pr.failed) {
+            MESSAGE("NOTRUN: prism-bitblast --eval did not run (need a Windows PE build, not a Linux artefact)");
+            bb = std::nullopt;
+        }
+    }
     std::size_t lean_checked = 0;
     for (const auto& [name, f] : fragment_formulas(c)) {
         std::string why;

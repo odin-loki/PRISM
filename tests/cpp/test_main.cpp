@@ -5279,6 +5279,10 @@ TEST_CASE("repair: verified fix is HYPOTHESIS with patch_verdict not audit demot
         "}\n"
         "int main(void) { return div_param(4, 2) - 2; }\n";
     fake->replies = {patch};
+    if (!prism::Config{}.which({"gcc", "clang"}).has_value()) {
+        MESSAGE("NOTRUN: no gcc/clang on PATH for the LLM candidate");
+        return;
+    }
     prism::ai::Session session(cfg);
     prism::ai::set_session_backend_for_testing(fake);
     auto rows = prism::rlef_repair(fail, cfg);

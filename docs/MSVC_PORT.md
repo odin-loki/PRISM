@@ -325,8 +325,18 @@ the shared `prism_tests` source list (`447e6bca2`), the WIN32 label self-check w
   - `svcomp pack` runs on WIN32 with a `.cmd` stand-in for the prism binary and `cmake -E
     tar` / `tar`; only the `rwxr-xr-x` check is POSIX-only (`MESSAGE: NOTRUN`).
 - **`test_leanbb.cpp` on Windows:** no `unistd.h`; the file uses `std::filesystem` temp dirs
-  only. It is in the phase-7 subset when `PRISM_HAS_Z3` (Z3 smoke job). Certified-mode cases
+  only. It is in the phase-7 subset when `PRISM_HAS_Z3` (Z3 smoke job). The serializer round
+  trip drives `prism-bitblast --eval` through `detail::run` (stdin pipe), not a POSIX shell
+  redirect. If the file under `PRISM_LEAN_BIN_DIR` is not a runnable Windows PE (e.g. a Linux
+  ELF left from WSL), the serializer case prints `NOTRUN` after a short probe; CI must ship a
+  native build. `lean_build_tool` also accepts `name.exe` on WIN32. Certified-mode cases
   early-return when `prism-bitblast` / `cake_lpr` / CaDiCaL are missing.
+- **Label self-check on MSVC `cl`:** `qa conformance: a sample of the label self-check passes`
+  prints `MESSAGE: NOTRUN: ...` when `sanitizers_usable()` is false (no clang UBSan+ASan on
+  PATH). The `clang-cl` Z3 jobs put the ASan DLL dir on PATH so the sample runs there; native
+  `cl` smokes do not link sanitizers and stay NOTRUN (Law 1), not a doctest failure.
+- **`repair: verified fix` in `test_main.cpp`:** same `NOTRUN` as `test_repair.cpp` when no
+  `gcc`/`clang` is on PATH (candidates use gcc-style flags, not bare `cl`).
 - **`test_certified.cpp` on Windows:** in the Z3 subset with `test_leanbb` / `test_pir_budget`.
   CaDiCaL / `cake_lpr` cases no-op when the cert chain is absent. The former POSIX-only cases now
   run on WIN32 too:

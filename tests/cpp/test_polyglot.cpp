@@ -99,11 +99,11 @@ std::vector<prism::Finding> parse(const std::string& name, std::string text) {
     auto& t = tool_named(name, &c);
 #ifdef _WIN32
     // Parser regexes use ':' as a field delimiter; avoid 'C:' in absolute paths.
-    const std::string root = "testdata/";
+    for (std::size_t k; (k = text.find("/r/")) != std::string::npos;) text.replace(k, 3, "");
 #else
     const std::string root = testdata().generic_string() + "/";
-#endif
     for (std::size_t k; (k = text.find("/r/")) != std::string::npos;) text.replace(k, 3, root);
+#endif
     return pg::parse_output(t, text, testdata(), {}, *c);
 }
 

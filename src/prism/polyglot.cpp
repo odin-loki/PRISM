@@ -34,6 +34,7 @@
 #include <iterator>
 #include <future>
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
 #include <system_error>
@@ -261,13 +262,19 @@ fs::path base_of(const fs::path& root) {
 
 std::string rel(const fs::path& p, const fs::path& root) {
     std::error_code ec;
-    auto a = fs::weakly_canonical(p, ec);
-    if (ec) return p.generic_string();
-    auto b = fs::weakly_canonical(base_of(root), ec);
-    if (ec) return p.generic_string();
-    auto r = a.lexically_relative(b);
-    if (r.empty() || r.native().starts_with(fs::path("..").native())) return p.generic_string();
-    return r.generic_string();
+    const auto base = base_of(root);
+    auto rel_under = [&](fs::path probe) -> std::optional<std::string> {
+        auto a = fs::weakly_canonical(probe, ec);
+        if (ec) return std::nullopt;
+        auto b = fs::weakly_canonical(base, ec);
+        if (ec) return std::nullopt;
+        auto r = a.lexically_relative(b);
+        if (r.empty() || r.native().starts_with(fs::path("..").native())) return std::nullopt;
+        return r.generic_string();
+    };
+    if (auto s = rel_under(p)) return *s;
+    if (!p.is_absolute()) if (auto s = rel_under(base / p)) return *s;
+    return p.generic_string();
 }
 
 Finding pg_finding(std::string_view status, std::string file, std::optional<int> line,
