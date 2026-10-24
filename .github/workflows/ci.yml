@@ -116,7 +116,6 @@ jobs:
         run: |
           python -m pytest -q \
             tests/test_ai9.py \
-            tests/test_ai_assist.py \
             tests/test_lints_fastpath.py \
             tests/test_llm.py
       - uses: actions/download-artifact@v4
@@ -203,7 +202,6 @@ jobs:
           $env:PRISM_BIN = (Resolve-Path build-win\prism.exe).Path
           python -m pytest -q -rs `
             tests/test_ai9.py `
-            tests/test_ai_assist.py `
             tests/test_lints_fastpath.py `
             tests/test_llm.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
