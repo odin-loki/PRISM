@@ -1419,8 +1419,8 @@ Verdict check_function(const Function& fn, const CheckOptions& opt_in) {
     }
     tl_first_unwind = false;
     auto closed = v.extra.find("unwind_closed");
-    const bool proved = v.status == laws::PROVED && closed != v.extra.end() && closed->second == "true";
-    if (proved || v.status == laws::FAILED) {
+    const bool proved = v.status == std::string(laws::PROVED) && closed != v.extra.end() && closed->second == "true";
+    if (proved || v.status == std::string(laws::FAILED)) {
         v.extra["unwind_requested"] = std::to_string(opt.unwind);
         return v;
     }
@@ -1429,7 +1429,8 @@ Verdict check_function(const Function& fn, const CheckOptions& opt_in) {
     // first attempt's BOUNDED (no violation within its unwind, every VC
     // answered) stands, with the reason the requested unwind was not decided
     // (Law 7). It is never promoted (Law 2).
-    if (v.status == laws::BOUNDED && full.status == laws::TIMEOUT && full.extra.count("function_budget_s")) {
+    if (v.status == std::string(laws::BOUNDED) && full.status == std::string(laws::TIMEOUT) &&
+        full.extra.count("function_budget_s")) {
         v.extra["unwind_requested"] = std::to_string(opt.unwind);
         v.extra["unwind_requested_note"] = "not decided: " + full.message;
         v.extra["function_budget_s"] = full.extra["function_budget_s"];
@@ -1845,10 +1846,15 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
                 fn_budget_timeout(v);
                 return finish(v);
             }
-            all_unsat = g != -1;  // 0: every property UNSAT; 1: hit found (loop below is skipped)
+            // g==0: every hard property UNSAT (answered marks them). g==1: a
+            // validated violation (hit + hit_r). Do not treat g==1 without a
+            // hit as "all answered": MSVC portfolio paths can return SAT from a
+            // group query without pick_violated + per-property confirmation.
+            if (g == 1 && !(hit && hit_r.has_value())) g = -1;
+            all_unsat = g == 0;
         }
         for (auto& p : e.props) {
-            if (soft(p) || all_unsat || answered.count(&p)) continue;
+            if (soft(p) || all_unsat || answered.count(&p) || (hit && hit_r.has_value())) continue;
             const auto* rp = solve_vc(book, vc_label(p), base && p.viol, so);
             if (!rp) {
                 fn_budget_timeout(v);
@@ -1866,7 +1872,12 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
                 if (cut_by_budget(vc_label(p))) no_answer_label = vc_label(p);
             }
         }
-        if (hit && hit->stmt && hit_r.has_value()) {
+        if (hit && hit_r.has_value()) {
+            if (!hit->stmt) {
+                v.status = std::string(laws::ERROR);
+                v.message = "internal: validated property violation without statement metadata";
+                return finish(v);
+            }
             const Stmt& hs = *hit->stmt;
             const solver::SolveResult& hr = *hit_r;
             v.status = std::string(laws::FAILED);
