@@ -1,4 +1,4 @@
-﻿# MSVC / `__int128` portability (native Windows `prism_core`)
+# MSVC / `__int128` portability (native Windows `prism_core`)
 
 **Epic:** build `prism_core` and `prism` with MSVC (`cl`) on Windows without relying on
 WSL. **Was:** GCC/Clang `__int128` in several `prism_core` TUs (no MSVC/`clang-cl` ABI type).
