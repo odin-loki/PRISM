@@ -11,8 +11,8 @@ BMC/astlint tables or `wide_int.hpp` under `PRISM_HAS_INT128`.
 **Epic status:** phases 1–8 (5a / 5b / 5c included) are **done**. Phase 6 (QA on Windows)
 is closed: the label self-check (UBSan+ASan replay) sample **passes** on the `clang-cl`
 smoke, and is `NOTRUN` (logged, Law 1) wherever no clang links the sanitizers, which is
-the case on the MSVC `cl` smoke. Latest green CI on `main` is `1f59511ab`: run
-[`40038665356`](https://github.com/odin-loki/PRISM/actions/runs/40038665356) passed all
+the case on the MSVC `cl` smoke. Latest green CI on `main` is `5c17a086e`: run
+[`40043204840`](https://github.com/odin-loki/PRISM/actions/runs/40043204840) passed all
 ten jobs (four Windows smokes, Qt GUI, Linux `prism_tests`, shrunk Python suite,
 `python-windows`, licence firewall, SARIF self-check). The fake-HTTP `repair` test runs on
 WIN32 (Winsock fake llama-server) and the `python-windows` job is green (39 passed). That
@@ -214,7 +214,7 @@ String-only BMC/astlint files: **0** type migration expected.
 
 ## 6. Acceptance criteria
 
-Status on `main` @ `1f59511ab` (latest green): phases **5a**, **5b**, **5c**, **6**, **7** and
+Status on `main` @ `5c17a086e` (latest green, run [`40043204840`](https://github.com/odin-loki/PRISM/actions/runs/40043204840), all ten jobs success; the job-log details below were read from the earlier run on `1f59511ab`): phases **5a**, **5b**, **5c**, **6**, **7** and
 **8** below are **met**. Evidence: run
 [`40038665356`](https://github.com/odin-loki/PRISM/actions/runs/40038665356)
 (`PRISM CI` @ `1f59511ab`) finished **success** on all ten jobs: `Windows compile smoke`
