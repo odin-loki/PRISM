@@ -1852,6 +1852,7 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
             // group query without pick_violated + per-property confirmation.
             if (g == 1 && !(hit && hit_r.has_value())) g = -1;
             all_unsat = g == 0;
+            if (g == -1) answered.clear();
         }
         for (auto& p : e.props) {
             if (soft(p) || all_unsat || answered.count(&p) || (hit && hit_r.has_value())) continue;
