@@ -73,6 +73,14 @@ ProcRun run_argv(const std::vector<std::string>& args, const std::string& input,
     return run_spec(spec);
 }
 
+void suppress_crash_dialogs() {
+#ifdef _WIN32
+    // A crashing child must not hang on a Windows error dialog (inherited by
+    // the child): SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX.
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
+#endif
+}
+
 ProcRun run_spec(const detail::RunSpec& spec) {
     auto r = detail::run(spec);
     ProcRun out;

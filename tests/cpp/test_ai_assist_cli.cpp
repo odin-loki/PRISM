@@ -63,18 +63,25 @@ std::string slurp(const fs::path& p) {
 // Sets environment variables for one scope and restores them after.
 struct EnvScope {
     std::map<std::string, std::optional<std::string>> saved;
+    // MSVC has no setenv/unsetenv; _putenv_s with an empty value removes the variable.
+    static void put(const std::string& k, const std::optional<std::string>& v) {
+#ifdef _WIN32
+        _putenv_s(k.c_str(), v ? v->c_str() : "");
+#else
+        if (v) ::setenv(k.c_str(), v->c_str(), 1);
+        else ::unsetenv(k.c_str());
+#endif
+    }
     void set(const std::string& k, const std::optional<std::string>& v) {
         if (!saved.count(k)) {
             const char* old = std::getenv(k.c_str());
             saved[k] = old ? std::optional<std::string>(old) : std::nullopt;
         }
-        if (v) ::setenv(k.c_str(), v->c_str(), 1);
-        else ::unsetenv(k.c_str());
+        put(k, v);
     }
     ~EnvScope() {
         for (auto& [k, v] : saved) {
-            if (v) ::setenv(k.c_str(), v->c_str(), 1);
-            else ::unsetenv(k.c_str());
+            put(k, v);
         }
     }
 };

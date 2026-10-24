@@ -152,6 +152,9 @@ ProcRun run_argv(const std::vector<std::string>& args, const std::string& input,
                  const sandbox::Limits& limits = sandbox::Limits());
 // The full spec: an environment overlay for the child only, a working directory.
 ProcRun run_spec(const detail::RunSpec& spec);
+// Windows: children (and this process) get no crash / critical-error dialog
+// that would hang them; a no-op elsewhere.
+void suppress_crash_dialogs();
 
 // ---- fuse.cpp: the optional AFL++ half of FuSeBMC (PRISM_AFL=1)
 // afl-fuzz through Config::which_adapter (--tool, pinned build, PATH).

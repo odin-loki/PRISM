@@ -400,11 +400,7 @@ nlohmann::json sandbox_run(const std::string& source, double timeout, bool allow
                 {"stdout", tail(cr.out, 2000)},
                 {"stderr", tail(cr.err, 2000)},
                 {"code", cr.rc}};
-#ifdef _WIN32
-    // A crashing child must not hang on a Windows error dialog (inherited by
-    // the child): SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX.
-    SetErrorMode(0x0001 | 0x0002 | 0x8000);
-#endif
+    suppress_crash_dialogs();  // a crashing child must not hang on a Windows error dialog
     auto rr = run_argv(sandbox::wrap_argv({exe.string()}, td), {}, timeout, sandbox::limits_for(timeout));
     bool ok = rr.rc == 0 && !rr.timeout;
     bool crashed = rr.crashed || rr.rc < 0 || static_cast<unsigned>(rr.rc) >= 0xC0000000u ||

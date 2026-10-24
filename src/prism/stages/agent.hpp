@@ -44,11 +44,12 @@ std::vector<Finding> rlef_repair_with(const Finding& fail, const Config& cfg, co
 std::optional<std::vector<uint8_t>> parse_hex_bytes(std::string h);
 // data[key] as a list of non-empty hex blobs (a bare number is read as its digits).
 std::vector<std::vector<uint8_t>> json_hex_list(const nlohmann::json& data, const char* key);
-// Fuzz4All validate_prompt: the number of distinct encodings, padded / cut to nbytes.
-int score_prompt_seeds(const std::vector<std::vector<uint8_t>>& seeds, int nbytes);
-// Documentation comments of a source (Fuzz4All's path_documentation): up to
-// 8 comments, contract comments (requires/ensures/invariant/decreases/diff:)
-// and ACSL /*@ blocks left out.
-std::string documentation_from_comments(const std::string& source);
+// prism::score_prompt_seeds (Fuzz4All validate_prompt: the number of distinct
+// encodings, padded / cut to nbytes) and prism::documentation_from_comments
+// (Fuzz4All's path_documentation: up to 8 comments, contract comments
+// (requires/ensures/invariant/decreases/diff:) and ACSL /*@ blocks left out)
+// are public (prism/stages.hpp); named here so tests reach every piece as sd::.
+using prism::documentation_from_comments;
+using prism::score_prompt_seeds;
 
 }  // namespace prism::stages_detail

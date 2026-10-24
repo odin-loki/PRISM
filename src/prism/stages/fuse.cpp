@@ -1,4 +1,4 @@
-// Stage fuse: concrete and binary fuzzing (fuzz_function), AFL++ and
+﻿// Stage fuse: concrete and binary fuzzing (fuzz_function), AFL++ and
 // libFuzzer engines, Fuzz4All / ChatFuzz LLM seeds and mutants (run_fuse).
 #include "agent.hpp"
 #include "fuse.hpp"
@@ -1330,7 +1330,18 @@ std::optional<std::vector<uint8_t>> parse_hex_bytes(std::string h) {
     return out;
 }
 
-}  // namespace
+std::vector<std::vector<uint8_t>> json_hex_list(const nlohmann::json& data, const char* key) {
+    std::vector<std::vector<uint8_t>> out;
+    if (!data.is_object() || !data.contains(key) || !data[key].is_array()) return out;
+    for (auto& h : data[key]) {
+        // str(h): a number the model wrote without quotes is read as its digits.
+        auto raw = parse_hex_bytes(h.is_string() ? h.get<std::string>() : h.is_number() ? h.dump() : std::string{});
+        if (raw && !raw->empty()) out.push_back(std::move(*raw));
+    }
+    return out;
+}
+
+}  // namespace stages_detail
 
 int score_prompt_seeds(const std::vector<std::vector<uint8_t>>& seeds, int nbytes) {
     int n = nbytes > 0 ? nbytes : 1;
@@ -1359,21 +1370,6 @@ PromptPick pick_best_prompt(const std::vector<std::pair<std::string, std::vector
     if (best_sc < 0) return {};
     return best;
 }
-
-namespace {
-
-std::vector<std::vector<uint8_t>> json_hex_list(const nlohmann::json& data, const char* key) {
-    std::vector<std::vector<uint8_t>> out;
-    if (!data.is_object() || !data.contains(key) || !data[key].is_array()) return out;
-    for (auto& h : data[key]) {
-        // str(h): a number the model wrote without quotes is read as its digits.
-        auto raw = parse_hex_bytes(h.is_string() ? h.get<std::string>() : h.is_number() ? h.dump() : std::string{});
-        if (raw && !raw->empty()) out.push_back(std::move(*raw));
-    }
-    return out;
-}
-
-}  // namespace
 
 std::string documentation_from_comments(const std::string& source) {
     std::vector<std::string> parts;
