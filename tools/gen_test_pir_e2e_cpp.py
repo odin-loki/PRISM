@@ -147,8 +147,8 @@ bool frontend_usable(const prism::Config& cfg) {{
 #else
     auto fe = pp::find_frontend(cfg);
     if (fe.clang && fe.opt) return true;
-    MESSAGE(std::string("NOTRUN: pir e2e needs clang and opt on PATH (clang ") + (fe.clang ? "found" : "missing") +
-            ", opt " + (fe.opt ? "found" : "missing") + ")");
+    MESSAGE("NOTRUN: pir e2e needs clang and opt on PATH (clang " << (fe.clang ? "found" : "missing")
+            << ", opt " << (fe.opt ? "found" : "missing") << ")");
     return false;
 #endif
 }}
