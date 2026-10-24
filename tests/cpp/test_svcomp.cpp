@@ -25,6 +25,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -43,7 +44,11 @@ using namespace prism::svcomp;
 
 namespace {
 
-// Windows CI subset: replay/solve/pack need Unix sandbox, UBSan, or shell archives.
+// True where the cases that need a real C toolchain run: the replay stub is
+// POSIX C (<unistd.h>, _exit), UBSan/ASan come from a gcc/clang, and the solve
+// pins were only ever verified with them. On WIN32 this is false and each gated
+// case prints its own `MESSAGE: NOTRUN: ...` (Law 1); what *can* run there is
+// covered by the `fake_cc` / `.cmd` cases below (docs/MSVC_PORT.md §7).
 bool svcomp_exec_portable() {
 #ifndef _WIN32
     return true;
@@ -126,6 +131,44 @@ bool cc_with_ubsan() {
                                         120.0);
     return !r.failed && !r.timed_out && r.rc == 0;
 }
+
+#if defined(_WIN32) && defined(PRISM_FAKE_CC)
+// WIN32 stand-in for a real compiler: PATH holds only tests/cpp/fake_cc.cpp as
+// gcc.exe. A build copies fake_cc to `-o` with a sidecar: exit code and stderr
+// come from $FAKE_RUN_<sanitizer> ("<rc>\n<stderr>"), and a -fsanitize value
+// not in $FAKE_SAN fails the build. Environment and PATH are restored on exit.
+struct WinFakeCc {
+    fs::path dir;
+    std::map<std::string, std::optional<std::string>> saved;
+    WinFakeCc() {
+        static int n = 0;
+        dir = fs::temp_directory_path() /
+              ("prism_svcomp_fakecc_" + std::to_string(_getpid()) + "_" + std::to_string(n++));
+        std::error_code ec;
+        fs::remove_all(dir, ec);
+        fs::create_directories(dir / "bin");
+        fs::copy_file(PRISM_FAKE_CC, dir / "bin" / "gcc.exe", fs::copy_options::overwrite_existing, ec);
+        REQUIRE_FALSE(ec);
+        set("PATH", (dir / "bin").string());
+        for (const char* k : {"FAKE_SAN", "FAKE_LOG", "FAKE_RUN_signed-integer-overflow,shift-base", "FAKE_RUN_"})
+            set(k, "");
+    }
+    ~WinFakeCc() {
+        for (auto& [k, v] : saved) _putenv_s(k.c_str(), v ? v->c_str() : "");
+        std::error_code ec;
+        fs::remove_all(dir, ec);
+    }
+    WinFakeCc(const WinFakeCc&) = delete;
+    WinFakeCc& operator=(const WinFakeCc&) = delete;
+    void set(const std::string& k, const std::string& v) {
+        if (!saved.contains(k)) {
+            const char* old = std::getenv(k.c_str());
+            saved[k] = old ? std::optional<std::string>(old) : std::nullopt;
+        }
+        _putenv_s(k.c_str(), v.c_str());
+    }
+};
+#endif
 
 std::vector<std::pair<long, std::optional<long>>> positions(const std::vector<NondetValue>& wps) {
     std::vector<std::pair<long, std::optional<long>>> out;
@@ -705,9 +748,71 @@ TEST_CASE("svcomp replay: stubs for the __VERIFIER_* functions the task does not
     CHECK_THROWS_AS(stub_source("int main(void) { return __VERIFIER_nondet_x(); }", {}), std::invalid_argument);
 }
 
+TEST_CASE("svcomp replay: no --allow-exec or no nondet values never compiles or runs anything (every OS)") {
+    // Law 9 + Law 1: both answers are decided before any compiler is looked up.
+    TempDir d;
+    auto plain = d.write("p.c", "int main(void) { return 0; }\n");
+    auto rp = replay(plain, "no-overflow", false, std::nullopt, d.path / "w");
+    CHECK(rp["replay"] == "notrun");
+    CHECK(rp["why"].get<std::string>().find("--allow-exec") != std::string::npos);
+    CHECK_FALSE(fs::exists(d.path / "w" / "replay.bin"));
+    auto nd = d.write("n.c", "extern int __VERIFIER_nondet_int(void);\nint main(void) { return __VERIFIER_nondet_int(); }\n");
+    CHECK(replay(nd, "no-overflow", true, std::nullopt, d.path / "w2")["replay"] == "unsupported");
+    CHECK(replay(nd, "no-overflow", false, std::nullopt, d.path / "w3")["replay"] == "unsupported");
+}
+
+#if defined(_WIN32) && defined(PRISM_FAKE_CC)
+TEST_CASE("svcomp replay: --allow-exec with a fake compiler decides replayed / not-replayed (WIN32)") {
+    // The real-compiler case below is NOTRUN on WIN32; here the compiler is
+    // fake_cc.exe, so this checks replay's own logic: build, run, parse stderr.
+    WinFakeCc cc;
+    TempDir d;
+    const char* san = "signed-integer-overflow,shift-base";
+    cc.set("FAKE_SAN", san);
+    auto src = d.write("t.c", "int main(void) {\n  int x = 2147483647;\n  x = x + 1;\n  return x == 0;\n}\n");
+    const std::string key = std::string("FAKE_RUN_") + san;
+    SUBCASE("an overflow report replays at its line and column") {
+        cc.set(key, "1\nt.c:3:9: runtime error: signed integer overflow\n");
+        auto rp = replay(src, "no-overflow", true, std::nullopt, d.path / "w");
+        INFO(rp.dump());
+        CHECK(rp["replay"] == "replayed");
+        CHECK(rp["line"] == 3);
+        CHECK(rp["column"] == 9);
+        CHECK(rp["sandbox"] == "rlimits only (no bwrap)");
+    }
+    SUBCASE("a clean run is not-replayed, never replayed") {
+        auto rp = replay(src, "no-overflow", true, std::nullopt, d.path / "w");
+        INFO(rp.dump());
+        CHECK(rp["replay"] == "not-replayed");
+    }
+    SUBCASE("a UBSan report that is not an overflow is not-replayed") {
+        cc.set(key, "1\nt.c:3:9: runtime error: left shift of negative value -1\n");
+        CHECK(replay(src, "no-overflow", true, std::nullopt, d.path / "w")["replay"] == "not-replayed");
+        cc.set(key, "1\nt.c:3:9: runtime error: left shift of 1 by 31 places cannot be represented in type 'int'\n");
+        CHECK(replay(src, "no-overflow", true, std::nullopt, d.path / "w2")["replay"] == "replayed");
+    }
+    SUBCASE("a compiler without the sanitizer fails the build: not-replayed with the reason") {
+        cc.set("FAKE_SAN", "address");
+        auto rp = replay(src, "no-overflow", true, std::nullopt, d.path / "w");
+        INFO(rp.dump());
+        CHECK(rp["replay"] == "not-replayed");
+        CHECK(rp["why"].get<std::string>().find("replay build failed") != std::string::npos);
+    }
+    SUBCASE("reach_error() must be called and the program must fail") {
+        auto ur = d.write("u.c", "void reach_error();\nint main(void) {\n  reach_error();\n  return 0;\n}\n");
+        cc.set("FAKE_RUN_", "134\nPRISM-REACH-ERROR reach_error\n");
+        CHECK(replay(ur, "unreach-call", true, std::nullopt, d.path / "w")["replay"] == "replayed");
+        cc.set("FAKE_RUN_", "0\nPRISM-REACH-ERROR reach_error\n");  // message but exit 0: not an abort
+        CHECK(replay(ur, "unreach-call", true, std::nullopt, d.path / "w2")["replay"] == "not-replayed");
+    }
+}
+#endif
+
 TEST_CASE("svcomp replay: sanitizer runs decide replayed / not-replayed") {
     if (!svcomp_exec_portable()) {
-        MESSAGE("NOTRUN: SV-COMP replay executes task code (Unix sandbox)");
+        MESSAGE("NOTRUN: SV-COMP replay with a real compiler + UBSan: the stub is POSIX C and MSVC-target "
+                "clang has no usable UBSan here; WIN32 covers replay logic via fake_cc "
+                "(case 'svcomp replay: --allow-exec with a fake compiler')");
         return;
     }
     if (!cc_with_ubsan()) {
@@ -954,7 +1059,11 @@ TEST_CASE("svcomp solve: unsupported properties and ILP32 width answer unknown b
 
 TEST_CASE("svcomp solve: a pinned false task (violation witness) and a true task (correctness witness)") {
     if (!svcomp_exec_portable()) {
-        MESSAGE("NOTRUN: SV-COMP solve replay needs --allow-exec (Unix sandbox)");
+        // Not a missing --allow-exec: the cases below pass it. They need a real
+        // compiler with UBSan to replay the pinned PostfixIncrement refutation
+        // and the PIR/BMC engines on LP64 pins, which are verified on POSIX only.
+        MESSAGE("NOTRUN: SV-COMP solve on the pinned conformance tasks (real compiler + UBSan replay, "
+                "LP64 engines) is POSIX-only; the replay logic itself runs on WIN32 via fake_cc");
         return;
     }
     const fs::path sv = repo_root() / "tests" / "conformance" / "sv-comp";
@@ -1020,10 +1129,6 @@ TEST_CASE("svcomp: the BenchExec tool-info module runs `prism svcomp` and knows 
 // ---------------------------------------------------------------- archive
 
 TEST_CASE("svcomp pack: the tool archive") {
-    if (!svcomp_exec_portable()) {
-        MESSAGE("NOTRUN: SV-COMP pack test uses a shell stub and tar permission bits");
-        return;
-    }
     prism::Config cfg;
     auto lister = cfg.which({"tar"});
     if (!cfg.which({"cmake"}) && !lister) {
@@ -1031,8 +1136,14 @@ TEST_CASE("svcomp pack: the tool archive") {
         return;
     }
     TempDir d;
+#ifdef _WIN32
+    // `.cmd` stand-in for the prism binary: pack runs `<bin> --version` (run_process
+    // sends a .cmd through cmd.exe) and copies the file into the archive as `prism`.
+    auto fake = d.write("prism.cmd", "@echo off\r\necho prism 0.1.0 (C++ engine)\r\n");
+#else
     auto fake = d.write("prism", "#!/bin/sh\necho 'prism 0.1.0 (C++ engine)'\n");
     fs::permissions(fake, fs::perms(0755), fs::perm_options::replace);
+#endif
     const fs::path out = d.path / "prism-svcomp.tar.gz";
     auto res = pack(fake, repo_root(), out);
     INFO(res.error);
@@ -1049,7 +1160,13 @@ TEST_CASE("svcomp pack: the tool archive") {
     if (!lister) return;
     auto ls = prism::detail::run_process({lister->string(), "tzvf", out.string()}, 60.0);
     for (const auto& name : want) CHECK(ls.text.find("prism/" + name) != std::string::npos);
+#ifdef _WIN32
+    // NTFS has no mode bits: bsdtar's rwx column says nothing about the executable
+    // bit, so it is not asserted here (POSIX-only; MSVC_PORT §7).
+    MESSAGE("NOTRUN: archive executable-bit check (rwxr-xr-x) is POSIX-only; names, manifest and deps were checked");
+#else
     CHECK(ls.text.find("rwxr-xr-x") != std::string::npos);  // the binary stays executable
+#endif
     fs::create_directories(d.path / "x");
     prism::detail::run_process({lister->string(), "xzf", out.string(), "-C", (d.path / "x").string()}, 60.0);
     auto deps = json::parse(slurp(d.path / "x" / "prism" / "dependencies.json"));

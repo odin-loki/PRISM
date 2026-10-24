@@ -83,7 +83,7 @@ static int compile_mode(int argc, char** argv) {
             text = "x.c:3: runtime error: signed integer overflow\n";
         else
             text = "ERROR: AddressSanitizer: heap-buffer-overflow\n";
-    } else if (!fire && !san.empty()) {
+    } else if (!fire) {  // san empty reads FAKE_RUN_ (the POSIX fake does the same)
         const std::string key = "FAKE_RUN_" + san;
         const std::string body = env_c(key.c_str());
         if (!body.empty()) {
