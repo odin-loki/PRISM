@@ -11,15 +11,13 @@ BMC/astlint tables or `wide_int.hpp` under `PRISM_HAS_INT128`.
 **Epic status:** phases 1–8 (5a / 5b / 5c included) are **done**. Phase 6 (QA on Windows)
 is closed: the label self-check (UBSan+ASan replay) sample **passes** on the `clang-cl`
 smoke, and is `NOTRUN` (logged, Law 1) wherever no clang links the sanitizers, which is
-the case on the MSVC `cl` smoke. Latest green CI on `main` is `0b63dfcde`: run
-[`40033600830`](https://github.com/odin-loki/PRISM/actions/runs/40033600830) passed all
+the case on the MSVC `cl` smoke. Latest green CI on `main` is `1f59511ab`: run
+[`40038665356`](https://github.com/odin-loki/PRISM/actions/runs/40038665356) passed all
 ten jobs (four Windows smokes, Qt GUI, Linux `prism_tests`, shrunk Python suite,
 `python-windows`, licence firewall, SARIF self-check). The fake-HTTP `repair` test runs on
-WIN32 (Winsock fake llama-server) and the `python-windows` job is green (39 passed).
-`HEAD` (`1f59511ab`) is **not** covered by that run: it adds the Windows `regress --run`
-and `test_ai_assist` / `test_cxx_models` probe changes, and its CI run
-[`40038665356`](https://github.com/odin-loki/PRISM/actions/runs/40038665356) had not finished
-when this was written. What is left is listed in [§7](#7-remaining-work-backlog).
+WIN32 (Winsock fake llama-server) and the `python-windows` job is green (39 passed). That
+run includes the Windows `regress --run` and `test_ai_assist` / `test_cxx_models` probe
+changes. What is left is listed in [§7](#7-remaining-work-backlog).
 
 **Related:** `docs/ROADMAP_STATUS.md` D7 (WSL primary today); `CMakeLists.txt` rejects
 MinGW and already sets MSVC flags on `prism_core`. `tests/cpp/test_main.cpp` solver integration tests are gated on `PRISM_HAS_Z3` only
@@ -188,7 +186,7 @@ shortcut. Keep **D** only for explicitly documented optional components, not cor
 | **5a** (done) | MSVC CI smoke | `windows-compile-smoke`: Ninja + `clang-cl`, `PRISM_Z3=OFF`, build `prism_core` + `prism` + `prism-qa` + portable `prism_tests` subset (phase 7). Shims: `utc_tm`, `set_env`, `NOMINMAX`, `wide_int` / `leanbb`, `solver/util.cpp` `windows.h` + `#undef ERROR`. |
 | **5b** (CI done) | Windows CI + Z3 | `windows-compile-smoke-z3`: Ninja + `clang-cl`, `PRISM_Z3=ON`, builds `prism_core` + `prism` + `prism-qa` + phase-7 `prism_tests` subset including `test_leanbb.cpp` (~44 min cold; cache `build-win-z3`; needs `z3gen_shim.bat`). |
 | **5c** (CI done) | Native MSVC `cl` | `windows-compile-smoke-cl`: Ninja + `cl` (not `clang-cl`), `PRISM_Z3=OFF`, same targets/subset as 5a. `stages/interp.cpp` uses `prism::i128` / manual checks instead of `__builtin_*_overflow` (clang-cl only). Configure with default `CMAKE_BUILD_TYPE=Release` (Debug + `prism_core` `/O2` hits cl D8016 vs `/RTC1`). |
-| **6** (done) | QA on Windows | `yaml_subset` + `task` + `pyrandom` on `prism::i128` (done); `prism-qa` in `windows-compile-smoke`; conformance / soundness / replay compile on WIN; `proctree_win.cpp` + `proc.cpp` Job Object `run_tree` (commit B), `test_qa_conformance.cpp` release-gate / solver-kill / `run_tree` cases run in the subset (`fake_prism.exe` + `.lead` sidecar, `fake_session_probe` `spawn-sleep` / `spawn-bg` / `alloc`); label self-check sample passes on the `clang-cl` smoke (run `40033600830`), `NOTRUN` where no clang links UBSan+ASan |
+| **6** (done) | QA on Windows | `yaml_subset` + `task` + `pyrandom` on `prism::i128` (done); `prism-qa` in `windows-compile-smoke`; conformance / soundness / replay compile on WIN; `proctree_win.cpp` + `proc.cpp` Job Object `run_tree` (commit B), `test_qa_conformance.cpp` release-gate / solver-kill / `run_tree` cases run in the subset (`fake_prism.exe` + `.lead` sidecar, `fake_session_probe` `spawn-sleep` / `spawn-bg` / `alloc`); label self-check sample passes on the `clang-cl` smoke (run `40038665356`), `NOTRUN` where no clang links UBSan+ASan |
 | **7** (done) | Windows `prism_tests` subset | `PRISM_TESTS_WIN_SUBSET` in `CMakeLists.txt` (gates only the `fake_*` stand-ins; sources are the shared Linux list) (inventory: [§6](#6-acceptance-criteria)). WIN: full `test_adapters.cpp`, `test_sanitize.cpp` (`fake_cc`), `test_qa.cpp` (`fake_session_probe`). Static splits remain reference-only on WIN. `test_cli` (binary cases included) and `test_diff` run in full; `test_pipeline` omits only the POSIX `PATH`-guard esbmc-missing case; `test_conc` skips without Z3. `test_pir_e2e` skips the full `tests/pir` table on `_WIN32` (MESSAGE). All four Windows smoke jobs build and run `prism_tests.exe`. |
 | **8** (done) | Qt GUI on Windows | `windows-gui-qt`: Ninja + `cl`, Qt 6 via aqtinstall, `PRISM_QT=ON`, `PRISM_Z3=OFF`; `prism_gui_tests.exe` and the `gui model` doctest suite offscreen, plus the `--smoke-screenshot` smoke. See [§7](#7-remaining-work-backlog). |
 
@@ -216,10 +214,10 @@ String-only BMC/astlint files: **0** type migration expected.
 
 ## 6. Acceptance criteria
 
-Status on `main` @ `0b63dfcde` (latest green): phases **5a**, **5b**, **5c**, **6**, **7** and
+Status on `main` @ `1f59511ab` (latest green): phases **5a**, **5b**, **5c**, **6**, **7** and
 **8** below are **met**. Evidence: run
-[`40033600830`](https://github.com/odin-loki/PRISM/actions/runs/40033600830)
-(`PRISM CI` @ `0b63dfcde`) finished **success** on all ten jobs: `Windows compile smoke`
+[`40038665356`](https://github.com/odin-loki/PRISM/actions/runs/40038665356)
+(`PRISM CI` @ `1f59511ab`) finished **success** on all ten jobs: `Windows compile smoke`
 (`clang-cl`), `Windows compile smoke (MSVC cl)`, `Windows compile smoke (Z3)`,
 `Windows compile smoke (MSVC cl, Z3)`, `Windows GUI (Qt 6, MSVC cl, offscreen)`,
 `C++ engine (build + prism_tests)`, `Remaining pytest (shrunk suite)`,
@@ -231,9 +229,7 @@ so the sample ran); the `cl` smoke logged that NOTRUN line, as designed. In the 
 in the `PRISM_Z3=OFF` smokes because there is no BMC verdict on the candidate), and
 `python-windows` reported `39 passed` (the job is still `continue-on-error`). The run includes
 the shared `prism_tests` source list (`447e6bca2`), the WIN32 label self-check with clang
-(`2ef3ba701`) and the ASan PATH step fix (`371010f81`). `HEAD` (`1f59511ab`) is not covered: its CI run
-[`40038665356`](https://github.com/odin-loki/PRISM/actions/runs/40038665356) was still
-running. Remaining epic work is listed in [§7](#7-remaining-work-backlog).
+(`2ef3ba701`) and the ASan PATH step fix (`371010f81`). Remaining epic work is listed in [§7](#7-remaining-work-backlog).
 
 - **Phase 5a (CI smoke) — met:** `windows-compile-smoke` configures with `clang-cl` and builds
   `prism_core`, `prism`, `prism-qa`, and the phase-7 `prism_tests` subset with `PRISM_Z3=OFF`,
@@ -339,8 +335,8 @@ with Linux. What is still open:
 | Item | Notes |
 |------|--------|
 | **POSIX-only test cases** | Still `#ifndef _WIN32` or `NOTRUN` on WIN32: the process-tree block in `test_main.cpp` (`fork` / signals; the Job Object equivalent is covered in `test_qa*`), the file-symlink half of the `scope:` case (needs Developer Mode or `SeCreateSymbolicLinkPrivilege`; `NOTRUN` message when it cannot be created, the junction half always runs), the `tests/pir` verdict table in `test_pir_e2e`, SV-COMP replay/solve/pack (execute task code, Law 9), certified-mode `fork` / OOM-checker cases, and "prism_gui without a display". Each is a deliberate gap, not a silent skip: they print `MESSAGE: NOTRUN` or are absent from the Windows build. |
-| **Label self-check (phase 6, closed)** | Passes on the `clang-cl` smoke (run `40033600830`); `NOTRUN` on the `cl` smoke. Runs on Windows only when `sanitizers_usable()` finds a clang that links UBSan+ASan (clang-cl CI jobs put the ASan DLL dir on PATH); otherwise `NOTRUN` (`WARN_MESSAGE`). The same probe now also gates `test_ai_assist` "generated tests fail on the bug and pass on the fix" (`have_clang_sanitizers` no longer shells out with `>/dev/null`; `regress --run` builds `bin/<name>.exe`, links no `-lm`, and passes `UBSAN_OPTIONS` / `ASAN_OPTIONS` as a child environment overlay instead of an `env` program; the `sh run_tests.sh` and cmake/ctest halves stay POSIX-only). `test_cxx_models` probes clang++ through `run_tree` on Windows and needs libstdc++ (`<bits/c++config.h>`): a clang on the MSVC STL is `NOTRUN`, since the model headers replace libstdc++ containers. These probe changes are in `1f59511ab` only and are **not yet verified on Windows CI**: run `40033600830` predates them (its `clang-cl` smoke still logged `NOTRUN: clang with UBSan/ASan not available` for `test_ai_assist` and `NOTRUN: clang++ with ASan/UBSan not usable here` for `test_cxx_models`); check run `40038665356`. |
-| **Python suite on Windows (optional job)** | `python-windows` in `ci.yml` runs the same four files as "Remaining pytest" (`test_ai9`, `test_ai_assist`, `test_lints_fastpath`, `test_llm`) on `windows-latest` (Python 3.11) with `PRISM_BIN` set to the `prism.exe` that `windows-compile-smoke-cl` uploads as the `prism-windows` artifact (so it adds no build time). It is `continue-on-error` until it has a track record, and it skips nothing quietly (`-rs`; a missing `prism.exe` fails the smoke step). Differences from Linux: no `shellcheck` (that polyglot tool is `NOTRUN`), no `libegl` (PySide6 runs offscreen). Locally it was green (39 passed) on Windows with Python 3.14, and on CI in run `40033600830` (39 passed, Python 3.11, no skips). **WinError 193 fix:** `tests/test_ai_assist.py` and `prism/gui.py` (`prism_cpp_binary`) accepted the Linux ELF `build/prism` on Windows because `os.access(X_OK)` is true for any file, then `subprocess` failed with `[WinError 193]`; both now look for `prism.exe` on Windows and require a PE (`MZ`) image, otherwise the binary is "not found" (`NOTRUN`, Law 1). Not run on Windows: the full `tests/test_*.py` set (the repo's own shrunk-suite rule). One green CI run so far; promote the job to required (drop `continue-on-error`) once a few more are green. |
+| **Label self-check (phase 6, closed)** | Passes on the `clang-cl` smoke; `NOTRUN` on the `cl` smoke (verified on CI, run `40038665356`). Runs on Windows only when `sanitizers_usable()` finds a clang that links UBSan+ASan (clang-cl CI jobs put the ASan DLL dir on PATH); otherwise `NOTRUN` (`WARN_MESSAGE`). The same probe gates `test_ai_assist` "generated tests fail on the bug and pass on the fix": `regress --run` builds `bin/<name>.exe`, links no `-lm`, and passes `UBSAN_OPTIONS` / `ASAN_OPTIONS` as a child environment overlay; the `sh run_tests.sh` and cmake/ctest halves stay POSIX-only. `test_cxx_models` needs libstdc++ (`<bits/c++config.h>`): a clang on the MSVC STL is `NOTRUN` (still the case on CI), since the model headers replace libstdc++ containers. |
+| **Python suite on Windows (optional job)** | `python-windows` in `ci.yml` runs the same four files as "Remaining pytest" (`test_ai9`, `test_ai_assist`, `test_lints_fastpath`, `test_llm`) on `windows-latest` (Python 3.11) with `PRISM_BIN` set to the `prism.exe` that `windows-compile-smoke-cl` uploads as the `prism-windows` artifact (so it adds no build time). It is `continue-on-error` until it has a track record, and it skips nothing quietly (`-rs`; a missing `prism.exe` fails the smoke step). Differences from Linux: no `shellcheck` (that polyglot tool is `NOTRUN`), no `libegl` (PySide6 runs offscreen). Locally it was green (39 passed) on Windows with Python 3.14, and on CI in runs `40033600830` and `40038665356` (39 passed each, Python 3.11, no skips). **WinError 193 fix:** `tests/test_ai_assist.py` and `prism/gui.py` (`prism_cpp_binary`) accepted the Linux ELF `build/prism` on Windows because `os.access(X_OK)` is true for any file, then `subprocess` failed with `[WinError 193]`; both now look for `prism.exe` on Windows and require a PE (`MZ`) image, otherwise the binary is "not found" (`NOTRUN`, Law 1). Not run on Windows: the full `tests/test_*.py` set (the repo's own shrunk-suite rule). Two green CI runs so far; promote the job to required (drop `continue-on-error`) once a few more are green. |
 | **Z3 build time on Windows** | Cold vendored-Z3 build is ~44 min on `windows-latest`. Both Z3 jobs restore/save the build dir with a `restore-keys` prefix (`75aeb6299`), and `libz3` is saved before the PRISM targets. On run `40019517666` the two Z3 jobs took about 57 min (`clang-cl`) and 44 min (`cl`); the warm-cache time is still not measured. sccache is not used: `cl` needs `/Z7`, which changes the Release flags of both smokes. |
 
 Closed: `test_main.cpp` in full on WIN32, GUI tests ported, full QA doctest TUs,
