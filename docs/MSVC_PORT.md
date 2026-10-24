@@ -374,6 +374,67 @@ with Linux. What is still open:
 | **Python suite on Windows (gating job)** | `python-windows` in `ci.yml` runs the same four files as "Remaining pytest" (`test_ai9`, `test_ai_assist`, `test_lints_fastpath`, `test_llm`) on `windows-latest` (Python 3.11) with `PRISM_BIN` set to the `prism.exe` that `windows-compile-smoke-cl` uploads as the `prism-windows` artifact (so it adds no build time). It is gating (`continue-on-error` removed after two green runs), and it skips nothing quietly (`-rs`; a missing `prism.exe` fails the smoke step). Differences from Linux: no `shellcheck` (that polyglot tool is `NOTRUN`), no `libegl` (PySide6 runs offscreen). Locally it was green (39 passed) on Windows with Python 3.14, and on CI in runs `40033600830` and `40038665356` (39 passed each, Python 3.11, no skips). **WinError 193 fix:** `tests/test_ai_assist.py` and `prism/gui.py` (`prism_cpp_binary`) accepted the Linux ELF `build/prism` on Windows because `os.access(X_OK)` is true for any file, then `subprocess` failed with `[WinError 193]`; both now look for `prism.exe` on Windows and require a PE (`MZ`) image, otherwise the binary is "not found" (`NOTRUN`, Law 1). Not run on Windows: the full `tests/test_*.py` set (the repo's own shrunk-suite rule). Promoted to gating after the two green runs above (`continue-on-error` dropped). The check is named `Remaining pytest (shrunk suite, Windows)` (the "optional" suffix was dropped in `47ba80020`; any branch-protection rule that matched the old name must be updated). |
 | **Z3 build time on Windows** | Both Z3 jobs restore/save the build dir with a `restore-keys` prefix (`75aeb6299`), and `libz3` is saved before the PRISM targets. Measured job wall time (`gh run view`), with the `Build vendored Z3 (libz3)` step in brackets: run `40019517666` (`371010f81`, which already includes `75aeb6299`; the `cl` job log shows an exact-key hit, so this run was not a true cold build either, only the first one measured): `clang-cl` 56m54s (libz3 33m25s), `cl` 44m08s (libz3 23m12s). Run `40038665356` (`1f59511ab`, exact-key cache hit on both): `clang-cl` 43m51s (libz3 25m01s), `cl` 28m44s (libz3 13m48s). Run `40043699695` (`3b06ee7be`, `restore-keys` prefix hit, then a new cache saved): `clang-cl` 78m18s (libz3 50m30s; the slowest of the three, so runner variance is large), `cl` 34m13s (libz3 16m31s). **Compared with `40019517666`, the later runs are only partly faster (`cl` -15m and -10m; `clang-cl` -13m, then +21m), and no run is warm in the sense of "libz3 is skipped":** every run restored the ~557 MB (`clang-cl`) / ~221 MB (`cl`) archive in under 20 s, yet `libz3` still compiled for 14-50 min, so the warm-cache time (a no-op `libz3` step) is still not achieved. Likely cause, not yet confirmed: a fresh checkout gives every source a newer mtime than the restored objects, so Ninja rebuilds them; the next step is to read `ninja -d explain` output in the libz3 step. sccache is not used: `cl` needs `/Z7`, which changes the Release flags of both smokes. |
 
+### PIR on Windows (LP64)
+
+**Status: not implemented; design only.** `base_flags` in `src/prism/pir/stage.cpp` passes no
+`--target`, so clang on Windows lowers for `x86_64-pc-windows-msvc` (LLP64: `long` is 32 bits,
+`size_t` is `unsigned long long`). PIR's memory model, the libc models
+(`src/prism/pir/models/libc/prism_model.h`: `typedef unsigned long size_t`) and `docs/PIR.md`
+assume LP64. A one-line triple change was judged too risky to push untested (no clang/opt on
+the machine this was written on, and the Z3 CI jobs have no `opt`, so CI cannot exercise it
+either). Until the steps below are done and verified, `test_pir_e2e` stays `NOTRUN` on WIN32
+(Law 1). Linux is untouched by every step: all code changes sit under `#ifdef _WIN32`.
+
+Concrete steps, in order:
+
+1. **Triple, one helper.** Add `pir::lp64_target_flags()` in `src/prism/pir/` returning
+   `{"--target=x86_64-unknown-linux-gnu"}` on `_WIN32` and `{}` elsewhere. Call it from both
+   places that run clang on PIR input, because they must agree:
+   - `base_flags` (`stage.cpp`, push right after `-S`); this also covers `conc/stage.cpp`,
+     `pir/bench.cpp` and `tools/qa/llvm_sem_vs_lli.cpp`, which go through `lower_to_ir`;
+   - `lower_model` (`libc_models.cpp`, the argv that has `-fno-builtin -ffreestanding`), which
+     does not use `base_flags`.
+2. **Cache key.** `build_models` hashes `"prism-pir-models-v1\n" + version + paths`; add the
+   triple (or bump to `-v2` on WIN32) so a cached MSVC-target `.ll` is never reused. Note
+   `model_cache_root()` reads `HOME` / `XDG_CACHE_HOME`; on Windows neither is normally set,
+   so models are re-lowered every run (add `LOCALAPPDATA` there, separately, if wanted).
+3. **Gate on the front end, not on `_WIN32`.** Replace the unconditional `NOTRUN` in
+   `frontend_usable` (`tools/gen_test_pir_e2e_cpp.py`, then regenerate
+   `tests/cpp/test_pir_e2e.cpp`) with: `find_frontend` has `clang` **and** `opt`, and a probe
+   `clang --target=x86_64-unknown-linux-gnu -S -emit-llvm -x c -` of
+   `int main(void){return 0;}` succeeds and prints `target triple = "x86_64-unknown-linux-gnu"`.
+   Otherwise `MESSAGE("NOTRUN: ...")` naming what failed. `opt` must have the X86 target
+   (stock LLVM Windows builds do; 18.x to match the models).
+4. **No glibc headers: C subset only.** With a Linux triple and no sysroot, `<stdlib.h>`,
+   `<string.h>`, `<stdio.h>`, `<setjmp.h>`, `<assert.h>`, `<math.h>` do not exist. clang's own
+   resource headers (`<stddef.h>`, `<stdint.h>`, `<stdarg.h>`, `<limits.h>`, `<float.h>`) do.
+   In `tests/pir/` 17 of 24 files include nothing else and form the subset: `asm_contract`,
+   `calls`, `casts`, `div0`, `folded`, `kinduct`, `loops`, `mem_alias`, `mem_array`,
+   `mem_contract`, `mem_ptr`, `overflow`, `select`, `shift`, `switch`, `unencoded`, `uninit`
+   (re-count with `rg -L '#include <(?!stddef)' tests/pir` before relying on this list). The
+   other seven (`assert`, `fp_arith`, `kind_mem`, `mem_heap`, `mem_libc`, `mem_str`,
+   `sjlj_basic`) need a glibc sysroot or a Linux clang and stay `NOTRUN` on WIN32, listed by
+   name in the MESSAGE. In the generator, split `pir_files()` into `pir_files_all()` and
+   `pir_files_win_c()`, and select by `#ifdef _WIN32`; the verdict rows (`rows()`) for the
+   excluded files must be skipped too, not reported as wrong.
+5. **C++ is out.** `-D_GLIBCXX_ASSERTIONS` and the `cxx/` model headers replace libstdc++, which
+   a Windows clang does not have (`test_cxx_models` is already `NOTRUN` for the same reason).
+   On WIN32 `lower_to_ir` for a `.cpp` unit should return `err = "C++ PIR needs libstdc++
+   (not available on Windows)"` so the unit is `NOTRUN`, never a model-fallback failure.
+6. **Other PIR doctests.** `test_pir_mem`, `test_pir_budget`, `test_certified` and `test_conc`
+   also call `find_frontend`; after step 3 they would start running wherever `opt` exists.
+   Give them the same probe (put it in `include/prism/pir/` as `frontend_usable(cfg)` and have
+   the generated e2e file use it too) before adding `opt` to any Windows CI job.
+7. **CI.** Only after steps 1-6 pass locally on Windows with LLVM 18 `clang` + `opt`: add the
+   LLVM 18 download step back to the two Z3 jobs (it was removed in `223b3d94b`), and watch the
+   first run for the ~38 failures seen in run 40054072810; any remaining ones are `size_t` /
+   `long` width assumptions that the Linux triple should have removed. Update the §6 and §7
+   text above (and `docs/PIR.md` if it mentions Windows) in the same commit.
+
+Out of scope for this change: making PIR target-independent (reading the data layout from
+the IR and replacing the hard-coded 64-bit `long`), which is the only fix for `clang-cl`
+users who cannot add a second target.
+
 Closed: `test_main.cpp` in full on WIN32, GUI tests ported, full QA doctest TUs,
 `windows-gui-qt`, all four Windows compile smokes, the `Config::which` Store-stub probe
 (C++ and Python), and the WIN32 polyglot / tools-dir / diff / cli / scope / ltl cases.
