@@ -371,6 +371,14 @@ void model_line(std::ostream& b, const ir::Module& m, const ir::Inst& in) {
           << opnd(in.ops[0]) << "\n";
         return;
     }
+    if (n == "__prism_memcpy") {
+        // MemTr::memcpy_(dst, src, len, overlap_ok): same L memcpy as llvm.memcpy/memmove
+        if (in.ops.size() != 4) throw Unsupported{"call @" + n + " arity"};
+        const uint64_t move = cint(3) != 0 ? 1u : 0u;
+        b << "L memcpy " << ptr_opnd(in.ops[0]) << " " << ptr_opnd(in.ops[1]) << " " << opnd(in.ops[2]) << " "
+          << vw(in.ops[2].ty) << " " << move << "\n";
+        return;
+    }
     if (n == "__prism_alloc_failed") {
         // Tr::st(oom, i8 1): a store of one byte, alignment 8, into the flag object
         b << "L store 8 #1 %" << kOom << " 8\n";

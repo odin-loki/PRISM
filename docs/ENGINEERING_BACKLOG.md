@@ -65,7 +65,7 @@ C++ surface: `prism svcomp`, `src/prism/svcomp/`. **Keep** `tools/svcomp/prism.p
 
 Grow **`agree-ext`** beyond 146 functions (`docs/PROOFS_REFINEMENT.md`):
 
-1. **D118** — **export (2026-10-25):** `__prism_obj_size` → `L hobjsz` in `export_lean.cpp`; Lean `hobjsz` + `__prism_memcpy` still open (`realloc` in `stdlib.cpp`)
+1. **D118** — **export (2026-10-25):** `__prism_obj_size` → `L hobjsz`, `__prism_memcpy` → `L memcpy` in `export_lean.cpp`; Lean `hobjsz` + `memcpy` still open (`realloc` in `stdlib.cpp`)
 2. **D136** — `PRISM_FILEK`, `__prism_read_range`, `__prism_havoc_bytes` (stdio models)
 3. **`__prism_check` / `__prism_memset` / `__prism_fresh_cstr`** for inlined libc bodies
 
