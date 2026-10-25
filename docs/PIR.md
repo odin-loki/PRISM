@@ -46,10 +46,13 @@ check. Compiling scanned code does not execute it, so the stage needs no
 that does not compile is one `ERROR` row ("clang front end failed: …").
 
 **Windows host.** Native Windows clang targets LLP64 (`long` is 32 bits); the libc models and
-memory encoding assume LP64 (`unsigned long size_t`). On `_WIN32`, PRISM adds
-`--target=x86_64-unknown-linux-gnu` to every PIR clang invocation (no sysroot: only clang
-resource headers and the 17-file `tests/pir` C subset run in CI; glibc-heavy corpus files stay
-`NOTRUN` via `pir_test_c_file_supported(basename)`). `frontend_usable` verifies that triple with
+memory encoding assume LP64 (`unsigned long size_t`). On `_WIN32`, every PIR (and SV-COMP debug
+IR) clang invocation uses `lp64_clang_driver_flags()`: `--target=x86_64-unknown-linux-gnu` and
+`-idirafter` `src/prism/pir/models/libc/shim/` (minimal `string.h` / `stdlib.h` / `assert.h` /
+`pthread.h` / `stdatomic.h` typedefs so scanned C compiles; no sysroot). The 17-file `tests/pir`
+C subset runs in CI; glibc-heavy corpus files stay `NOTRUN` via
+`pir_test_c_file_supported(basename)`. The shim does not model C11 atomics for the `conc` stage
+(`test_conc.cpp` prints `NOTRUN` for those cases). `frontend_usable` verifies the LP64 triple with
 a temp-file LP64 probe (not clang stdin `-`, which writes `-.ll` on disk instead of IR on
 stdout). The `test_pir_e2e` doctest also requires `z3_available()` so Z3-off Windows smokes stay
 `NOTRUN` rather than failing on missing verdict rows. C++ units still need libstdc++ and are not

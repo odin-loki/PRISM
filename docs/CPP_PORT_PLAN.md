@@ -24,7 +24,8 @@ jobs removed; doctest + `prism_tests` only.**
   **`tests/cpp/test_deps.cpp`** (`k_python_engine_deleted = true`).
 - **CI:** no engine pytest job; lint fastpath + e2e smokes live in
   `prism_tests`. BenchExec smoke on the `cpp` job. `conformance.yml` /
-  `self-check.yml` → `prism-qa`; supply-chain builds `prism-deps`.
+  `self-check.yml` → `prism-qa`; supply-chain builds `prism-deps`. Gating
+  workflows green on `main` @ `6f019d4c8` (PRISM CI [`40146650874`](https://github.com/odin-loki/PRISM/actions/runs/40146650874)), including all four Windows smokes after LP64 libc shims.
 - **Still open:** `port/ai-gen-tools`, owner-only items in `ROADMAP_STATUS.md`.
   **Phase 6 (Z3 without Python)** is **done** — see phase-6 section.
 - Appendix map is from audit `911b9f94f`; many rows are now **DONE** on C++

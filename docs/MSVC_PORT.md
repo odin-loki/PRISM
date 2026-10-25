@@ -4,20 +4,20 @@
 WSL. **Was:** GCC/Clang `__int128` in several `prism_core` TUs (no MSVC/`clang-cl` ABI type).
 Phases 2–4 route those paths through `prism::i128` (`wide_int.hpp`).
 
-**Audit base:** `main` @ `f377ba3d7` (2026-10-23). Native `__int128` uses in `prism_core`
+**Audit base:** `main` @ `6f019d4c8` (2026-10-25). Native `__int128` uses in `prism_core`
 are migrated to `prism::i128` (phases 2–4). Remaining substring hits are string-only
 BMC/astlint tables or `wide_int.hpp` under `PRISM_HAS_INT128`.
 
 **Epic status:** phases 1–8 (5a / 5b / 5c included) are **done**. Phase 6 (QA on Windows)
 is closed: the label self-check (UBSan+ASan replay) sample **passes** on the `clang-cl`
 smoke, and is `NOTRUN` (logged, Law 1) wherever no clang links the sanitizers, which is
-the case on the MSVC `cl` smoke. Latest green CI on `main` is `2ecd1b77e`: run
-[`40062953689`](https://github.com/odin-loki/PRISM/actions/runs/40062953689) passed all
+the case on the MSVC `cl` smoke. Latest green CI on `main` is `6f019d4c8`: run
+[`40146650874`](https://github.com/odin-loki/PRISM/actions/runs/40146650874) passed all
 nine jobs (four Windows smokes, Qt GUI, Linux `prism_tests`, licence firewall,
-SARIF self-check). The fake-HTTP `repair` test runs on WIN32 (Winsock fake
-llama-server). That
-run includes the Windows `regress --run` and `test_ai_assist` / `test_cxx_models` probe
-changes. What is left is listed in [§7](#7-remaining-work-backlog).
+SARIF self-check), including native `cl` smokes after the LP64 libc shims
+(`src/prism/pir/models/libc/shim/`, `lp64_clang_driver_flags`) and honest `NOTRUN`
+rows for conc C11 atomics, `leanbb` without a PE `prism-bitblast`, and repair when
+only `cl` is on PATH. What is left is listed in [§7](#7-remaining-work-backlog).
 
 **Related:** `docs/ROADMAP_STATUS.md` D7 (WSL primary today); `CMakeLists.txt` rejects
 MinGW and already sets MSVC flags on `prism_core`. `tests/cpp/test_main.cpp` solver integration tests are gated on `PRISM_HAS_Z3` only
@@ -214,7 +214,7 @@ String-only BMC/astlint files: **0** type migration expected.
 
 ## 6. Acceptance criteria
 
-Status on `main` @ `2ecd1b77e` (latest green, run [`40062953689`](https://github.com/odin-loki/PRISM/actions/runs/40062953689), all nine jobs success; `327f7de99`, run [`40054072810`](https://github.com/odin-loki/PRISM/actions/runs/40054072810), was red on both Z3 jobs and is superseded; the job-log details below were read from the earlier run on `1f59511ab`): phases **5a**, **5b**, **5c**, **6**, **7** and
+Status on `main` @ `6f019d4c8` (latest green, run [`40146650874`](https://github.com/odin-loki/PRISM/actions/runs/40146650874), all nine jobs success; job-log details below were read from run [`40038665356`](https://github.com/odin-loki/PRISM/actions/runs/40038665356) on `1f59511ab` where noted): phases **5a**, **5b**, **5c**, **6**, **7** and
 **8** below are **met**. Evidence: run
 [`40038665356`](https://github.com/odin-loki/PRISM/actions/runs/40038665356)
 (`PRISM CI` @ `1f59511ab`) finished **success** on all jobs: `Windows compile smoke`
@@ -290,8 +290,9 @@ the shared `prism_tests` source list (`447e6bca2`), the WIN32 label self-check w
   integration runs on WIN32: `prism.exe` is found next to `prism_tests.exe` with
   `GetModuleFileNameW`, started with `_popen` and the cmd.exe quoting, and checked for the same
   exit codes (2 on bad arguments, 1 for `--fail-on=defect`, 0 otherwise).
-  On WIN32, PIR lowers with `--target=x86_64-unknown-linux-gnu` so the libc models' LP64 `size_t`
-  matches the IR (native Windows clang is LLP64). `test_pir_e2e` uses `frontend_usable` (needs
+  On WIN32, PIR clang lowers use `lp64_clang_driver_flags()` (`--target=x86_64-unknown-linux-gnu`
+  plus `-idirafter` `src/prism/pir/models/libc/shim/` so scanned C sees LP64 `size_t` and
+  pthread/atomic typedefs; native Windows clang is LLP64 without the shim). `test_pir_e2e` uses `frontend_usable` (needs
   `clang`, `opt`, and a successful LP64 probe); when that passes it runs the 17-file C subset from
   `tests/pir/` and skips verdict rows for the seven glibc-only files (`assert`, `fp_arith`, `kind_mem`,
   `mem_heap`, `mem_libc`, `mem_str`, `sjlj_basic`), each named in a `NOTRUN` message. Without
@@ -337,6 +338,9 @@ the shared `prism_tests` source list (`447e6bca2`), the WIN32 label self-check w
   `cl` smokes do not link sanitizers and stay NOTRUN (Law 1), not a doctest failure.
 - **`repair: verified fix` in `test_main.cpp`:** same `NOTRUN` as `test_repair.cpp` when no
   `gcc`/`clang` is on PATH (candidates use gcc-style flags, not bare `cl`).
+- **`test_conc.cpp` on Windows:** pthread mutex cases run when `frontend_usable` and Z3 are
+  present; the two C11 `atomic_*` cases print `NOTRUN` when `conc_c11_atomics_on_host()` is false
+  (the LP64 libc shim does not model `<stdatomic.h>` for the conc stage).
 - **`test_certified.cpp` on Windows:** in the Z3 subset with `test_leanbb` / `test_pir_budget`.
   CaDiCaL / `cake_lpr` cases no-op when the cert chain is absent. The former POSIX-only cases now
   run on WIN32 too:
@@ -401,21 +405,21 @@ with Linux. What is still open:
 
 ### PIR on Windows (LP64)
 
-**Status: steps 1–6 implemented; step 7 (CI + docs) closed in-tree.** On `_WIN32`, PIR passes
-`--target=x86_64-unknown-linux-gnu` when lowering (see `pir::lp64_target_flags()` and
-`docs/PIR.md` "Windows host") so libc models keep LP64 `size_t` despite the LLP64 Windows
-default triple. Linux is unchanged; WIN32-only paths are behind `#ifdef _WIN32` or runtime
-probes. `test_pir_e2e` runs the 17-file C subset when `frontend_usable` and `z3_available()`
-both pass (Z3-off Windows smokes are `NOTRUN`, not missing verdict rows); the seven glibc
-corpus files are `NOTRUN` by name via `pir_test_c_file_supported(basename)`. The two Windows Z3
-jobs restore the LLVM 18.1.8
-`clang-18` + `opt` download (removed in `223b3d94b` after run 40054072810 failed on the old
-LLP64 path).
+**Status: steps 1–6 implemented; step 7 (CI + docs) closed in-tree.** On `_WIN32`, PIR uses
+`pir::lp64_clang_driver_flags()` (`lp64_target_flags()` plus `-idirafter`
+`src/prism/pir/models/libc/shim/`; see `docs/PIR.md` "Windows host") so libc models keep LP64
+`size_t` despite the LLP64 Windows default triple. Linux is unchanged; WIN32-only paths are
+behind `#ifdef _WIN32` or runtime probes. `test_pir_e2e` runs the 17-file C subset when
+`frontend_usable` and `z3_available()` both pass (Z3-off Windows smokes are `NOTRUN`, not missing
+verdict rows); the seven glibc corpus files are `NOTRUN` by name via
+`pir_test_c_file_supported(basename)`. The two Windows Z3 jobs restore LLVM 18.1.8 `clang-18` +
+`opt` on PATH for the test run.
 
 Concrete steps (reference):
 
-1. **Triple, one helper.** **Done.** `pir::lp64_target_flags()` in `src/prism/pir/`; wired from
-   `base_flags` (`stage.cpp`) and `lower_model` (`libc_models.cpp`).
+1. **Triple + driver flags.** **Done.** `pir::lp64_target_flags()` / `lp64_clang_driver_flags()`
+   in `src/prism/pir/frontend.cpp`; wired from `base_flags` (`stage.cpp`), `lower_model`
+   (`libc_models.cpp`), and `svcomp/debug_ir.cpp`.
 2. **Cache key.** **Done.** WIN32 disk key `prism-pir-models-v3` includes the LP64
    triple (`docs/PIR.md` "Windows disk cache (LP64)").
 3. **Gate on the front end.** **Done.** `frontend_usable` in `include/prism/pir/frontend.hpp`
