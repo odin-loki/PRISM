@@ -23,7 +23,7 @@ Earlier `main` pushes (Lean export / doc sweep) are still **failure** or long-ru
 |-----|-------------|---------------|
 | `getenv_true` → PROVED | **Done:** `__prism_obj_size` + NUL; `harness.h` `extern "C"` for `assert` in `.cpp` harnesses | `stdlib_contracts.cpp`, `harness.h` |
 | `strcat`/`strncat` unbounded BOUNDED | **Started:** Houdini `MemScopeAt` (`∀x < i: off + x < size(p)`) generated from store scope offsets; still need `MemEq`/`MemFrame` fixpoint + Z3 timing on `strcat_any_true` / `strncat_any_true` | `houdini.inc`, `unbounded_string_contracts.cpp` |
-| ~~`vector_insert_true` timeout~~ | **Done (2026-10-25):** `PRISM_INDEX_LE3` ite chain + `SymMem::seed_vs_bin` on pointer `Add`/`Sub`/`Mul`; WSL `prism-qa conformance --filter vector_insert --stages pir`: `vector_insert_true` **PROVED** (~100 s), `vector_insert_uaf_false` **FAILED** MEM-UAF | `memory.cpp`, `encode.cpp`, `vector_insert.cpp`, `harness.h` |
+| `vector_insert_true` timeout | **In progress:** `PRISM_INDEX_LE3` + `seed_vs_bin` + `materialize_vs`; direct `pir` ~61 min failed (no output); `prism-qa conformance --stages pir` still **Law 7** (no findings, ~96 s) — raise mem limit / disable solver cache / debug OOM | `memory.cpp`, `encode.cpp`, `vector_insert.cpp` |
 | printf not in libc harnesses | **Done (doc):** translator + `mem_libc.c` boundary in `docs/PIR.md` §8.2 | `libc_format.cpp` |
 | iostreams / unordered / libc++ | New `models/cxx/` headers + harnesses | `docs/PIR.md` "Not modelled" |
 
