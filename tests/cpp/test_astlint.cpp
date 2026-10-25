@@ -734,7 +734,7 @@ TEST_CASE("astlint: ported regex classes on C (planted + guards, both front ends
     check_marks("ported.c", kPortedC);
 }
 
-TEST_CASE("astlint: testdata STR-MISSING-NUL, STR-STRNCPY-NUL, and MEM-MEMSET-SWAP (both front ends)") {
+TEST_CASE("astlint: testdata STR-MISSING-NUL, STR-STRNCPY-NUL, MEM-MEMSET-SWAP, MEM-REALLOC-SELF (both front ends)") {
     auto clang = find_clang();
     if (!clang) {
         MESSAGE("clang not installed: testdata string/memory astlint skipped");
@@ -764,6 +764,7 @@ TEST_CASE("astlint: testdata STR-MISSING-NUL, STR-STRNCPY-NUL, and MEM-MEMSET-SW
         CHECK(ast_lines("strncpy_nul.c", "STR-STRNCPY-NUL", "strncpy_nul_ok", b).empty());
         CHECK(ast_lines("memset_swap.c", "MEM-MEMSET-SWAP", "memset_swap_bad", b) == std::set<int>{5});
         CHECK(ast_lines("memset_swap.c", "MEM-MEMSET-SWAP", "memset_ok", b).empty());
+        CHECK(ast_lines("realloc_self.c", "MEM-REALLOC-SELF", "grow", b) == std::set<int>{5});
     }
 }
 
