@@ -25,8 +25,9 @@ jobs removed; doctest + `prism_tests` only.**
 - **CI:** no engine pytest job; lint fastpath + e2e smokes live in
   `prism_tests`. BenchExec smoke on the `cpp` job. `conformance.yml` /
   `self-check.yml` → `prism-qa`; supply-chain builds `prism-deps`. Gating
-  workflows green on `main` @ `abcfaf933` (libc models C++ + supply-chain doc sync); see [ENGINEERING_BACKLOG.md](ENGINEERING_BACKLOG.md) for PARTIAL row work.
-- **Still open:** `port/ai-gen-tools`, owner-only items in `ROADMAP_STATUS.md`.
+  workflows: see latest green **PRISM CI** on `main` (audit `9acaeeeba`); [ENGINEERING_BACKLOG.md](ENGINEERING_BACKLOG.md) tracks PARTIAL rows.
+- **port/ai-gen-tools:** **done** on `main` (`src/tools/prism_ai/`, `gbdt.cpp`, CMake `grammars.inc` / `predict_default.inc`).
+- **Still open:** owner-only items in `ROADMAP_STATUS.md`; Phase 4 docs/assurance sweep (`prism-qa docs-check`).
   **Phase 6 (Z3 without Python)** is **done** — see phase-6 section.
 - Appendix map is from audit `911b9f94f`; many rows are now **DONE** on C++
   even where the table still says partial — treat this status block as current.

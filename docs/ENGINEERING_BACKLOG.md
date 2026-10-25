@@ -11,7 +11,7 @@ Owner-only rows (history rewrite, GPU hardware, LoRA) are omitted. Supply-chain
 | `getenv_true` → PROVED | **Done:** `__prism_obj_size` + NUL; `harness.h` `extern "C"` for `assert` in `.cpp` harnesses | `stdlib_contracts.cpp`, `harness.h` |
 | `strcat`/`strncat` unbounded BOUNDED | New Houdini templates for four-loop concat | `src/prism/pir/houdini.inc`, `unbounded_string_contracts.cpp` |
 | `vector_insert_true` timeout | Value sets for `data()+i`, `i ∈ [0,3]` (map-insert pattern) | `src/prism/pir/memory.cpp`, `vector_insert.cpp` |
-| printf not in libc harnesses | Document translator-only scope **or** new models | `libc_format.cpp`, `docs/PIR.md` |
+| printf not in libc harnesses | **Done (doc):** translator + `mem_libc.c` boundary in `docs/PIR.md` §8.2 | `libc_format.cpp` |
 | iostreams / unordered / libc++ | New `models/cxx/` headers + harnesses | `docs/PIR.md` "Not modelled" |
 
 ## 2.8 AST lints (`astlint`)
@@ -20,8 +20,8 @@ Owner-only rows (history rewrite, GPU hardware, LoRA) are omitted. Supply-chain
 |-----|-------------|---------------|
 | ~287 regex-only classes | Port high-impact rules with `testdata/` plants | `checkers_core.cpp` → `astlint_checks.cpp`, `test_astlint.cpp` |
 | Done (2026-10-25) | **`STR-UNBOUNDED-COPY`**, **`API-GETS`** doctest in `kPortedC` | `astlint_checks.cpp`, `test_astlint.cpp` |
-| Done (2026-10-25) | **`MEM-BCOPY`**, **`INT-TAUTOLOGY`** in `kPortedC` | `test_astlint.cpp` |
-| Next | Pick from regex-only table (~280 left) | `checkers_core.cpp` → `astlint_checks.cpp` |
+| Done (2026-10-25) | **`MEM-BCOPY`**, **`INT-TAUTOLOGY`**, **`MEM-COPY-LEN`** in `kPortedC` | `astlint_checks.cpp`, `test_astlint.cpp` |
+| Next | Pick from regex-only table (~275 left) | `checkers_core.cpp` → `astlint_checks.cpp` |
 | Template / flow limits | Document NOTRUN; defer dependent-template rules | `astlint.hpp` |
 
 ## 2.8 / D2 — Retire hand `bmc` encoder
@@ -76,7 +76,7 @@ Verify: `prism-qa pir-lean-check` on `tests/pir` + `testdata`.
 | Priority | Item |
 |----------|------|
 | 1 | **Done when**: Dockerfile without `python3` (CI BenchExec-only Python) |
-| 2 | Close **`port/ai-gen-tools`** status on `main` |
+| 2 | **Done:** `port/ai-gen-tools` closed in `CPP_PORT_PLAN.md` |
 | 3 | Phase 4 docs/assurance sweep (`prism-qa docs-check`) |
 | 4 | Appendix A partials: checkers, rapid, GUI, LTL |
 | 5 | `tests/cpp/test_thread.cpp` (appendix C) |

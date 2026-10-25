@@ -4,7 +4,7 @@
 WSL. **Was:** GCC/Clang `__int128` in several `prism_core` TUs (no MSVC/`clang-cl` ABI type).
 Phases 2–4 route those paths through `prism::i128` (`wide_int.hpp`).
 
-**Audit base:** `main` @ `7b652bf9f` (2026-10-25). Native `__int128` uses in `prism_core`
+**Audit base:** `main` @ `9acaeeeba` (2026-10-25). Native `__int128` uses in `prism_core`
 are migrated to `prism::i128` (phases 2–4). Remaining substring hits are string-only
 BMC/astlint tables or `wide_int.hpp` under `PRISM_HAS_INT128`.
 

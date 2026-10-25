@@ -145,7 +145,8 @@ std::string type_of(const json& n) {
 
 bool is_implicit_wrapper(std::string_view k) {
     return k == "ImplicitCastExpr" || k == "ExprWithCleanups" || k == "ConstantExpr" ||
-           k == "MaterializeTemporaryExpr" || k == "CXXBindTemporaryExpr" || k == "FullExpr";
+           k == "MaterializeTemporaryExpr" || k == "CXXBindTemporaryExpr" || k == "FullExpr" ||
+           k == "UnexposedExpr";  // libclang: implicit casts and similar wrappers
 }
 
 // Strip implicit conversions (not parentheses: `if ((x = f()))` says "meant").
@@ -755,6 +756,87 @@ bool is_noreturn_name(const std::string& n) {
                       "trap", "__cxa_throw", "pthread_exit", "thrd_exit", "__stack_chk_fail"});
 }
 
+std::string strip_ws(std::string s) {
+    auto notsp = [](unsigned char c) { return !std::isspace(c); };
+    s.erase(s.begin(), std::find_if(s.begin(), s.end(), notsp));
+    s.erase(std::find_if(s.rbegin(), s.rend(), notsp).base(), s.end());
+    return s;
+}
+
+std::string re_escape(std::string_view s) {
+    std::string o;
+    o.reserve(s.size());
+    for (char c : s) {
+        if (strchr(R"(\[]{}()*+?.|^$)", c)) o.push_back('\\');
+        o.push_back(c);
+    }
+    return o;
+}
+
+bool is_ident(std::string_view s) {
+    if (s.empty()) return false;
+    if (!std::isalpha(static_cast<unsigned char>(s.front())) && s.front() != '_') return false;
+    for (char c : s)
+        if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_') return false;
+    return true;
+}
+
+bool regex_search_sv(std::string_view hay, const std::regex& re) {
+    return std::regex_search(hay.begin(), hay.end(), re);
+}
+
+void collect_max_fields(std::string_view text, std::unordered_set<std::string>& out) {
+    static const std::regex re(R"(\b(\w+_max)\b)");
+    const std::string s(text);
+    for (std::sregex_iterator it(s.begin(), s.end(), re), end; it != end; ++it) out.insert(it->str(1));
+}
+
+// checkers_core.cpp copy_len_guarded / below_max_tested (same patterns).
+bool copy_len_guarded(std::string_view size, std::string_view prior,
+                      const std::unordered_set<std::string>& max_names) {
+    thread_local std::unordered_map<std::string, std::regex> cache;
+    if (cache.size() > 4096) cache.clear();
+    auto se = re_escape(size);
+    for (auto& m : max_names) {
+        std::string key = std::string(size) + "\x1f" + m;
+        auto it = cache.find(key);
+        if (it == cache.end()) {
+            auto me = re_escape(m);
+            std::string pat = "\\b" + se + "\\s*(?:<=|>=|>|<)\\s*[\\w\\->.]*" + me + "\\b|\\b[\\w\\->.]*" +
+                              me + "\\s*(?:<=|>=|>|<)\\s*" + se + "\\b";
+            it = cache.emplace(std::move(key), std::regex(pat)).first;
+        }
+        if (regex_search_sv(prior, it->second)) return true;
+    }
+    return false;
+}
+
+bool below_max_tested(std::string_view v, std::string_view max, std::string_view prior) {
+    auto ve = re_escape(v), me = re_escape(max);
+    std::string pat = "\\b" + ve + "\\s*<=?\\s*[\\w\\->.]*\\b" + me + "\\b|\\b[\\w\\->.]*" + me +
+                      "\\s*>=?\\s*" + ve + "\\b|\\(\\s*" + ve + "\\s*=(?!=)[^;]*\\)\\s*<=?\\s*[\\w\\->.]*\\b" +
+                      me + "\\b";
+    static thread_local std::unordered_map<std::string, std::regex> cache;
+    if (cache.size() > 4096) cache.clear();
+    std::string key = std::string(v) + "\x1f" + std::string(max);
+    auto it = cache.find(key);
+    if (it == cache.end()) it = cache.emplace(std::move(key), std::regex(pat)).first;
+    return regex_search_sv(prior, it->second);
+}
+
+const json* function_body(const json* decl) {
+    if (!decl) return nullptr;
+    for (auto& c : inner(*decl)) {
+        const auto& k = kind(c);
+        if (k == "CompoundStmt" || k == "CXXTryStmt") return &c;
+    }
+    return nullptr;
+}
+
+bool mem_copy_callee(std::string_view name) {
+    return name.find("memcpy") != std::string_view::npos || name.find("memmove") != std::string_view::npos;
+}
+
 // ---------------------------------------------------------------- simple checks
 
 struct Checker {
@@ -1084,7 +1166,62 @@ struct Checker {
                         "\" without its terminating NUL into " + decl_name(*args[0]));
             }
         }
+        if (mem_copy_callee(name) && args.size() >= 3 && !in_macro(c)) mem_copy_len(c, name, args);
         format_call(c, name, args);
+    }
+
+    std::string arg_text(const json& arg) const {
+        const auto& s = strip_all(arg);
+        if (kind(s) == "DeclRefExpr") return str_field(ref_decl(s), "name");
+        auto t = strip_ws(std::string(cx.text_of(s)));
+        if (!t.empty()) return t;
+        return decl_name(s);
+    }
+
+    void mem_copy_len(const json& c, const std::string& callee, const std::vector<const json*>& args) {
+        const auto* body = function_body(fn.node);
+        if (!body) return;
+        auto call_pos = begin_of(c);
+        auto body_pos = begin_of(*body);
+        if (body_pos.offset < 0 && n_children(*body)) body_pos = begin_of(child(*body, 0));
+        const std::string* canon = call_pos.file ? call_pos.file : body_pos.file;
+        if (!canon) return;
+        auto* fc = cx.file(canon);
+        if (!fc) return;
+        const int call_line = cx.line_of(call_pos);
+        const int body_line = cx.line_of(body_pos);
+        std::string prior;
+        if (call_line > 0 && body_line > 0 && call_line > body_line) {
+            for (int ln = body_line; ln < call_line && ln <= static_cast<int>(fc->lines.size()); ++ln) {
+                if (!prior.empty()) prior.push_back('\n');
+                prior += fc->lines.at(static_cast<std::size_t>(ln - 1));
+            }
+        }
+        std::unordered_set<std::string> max_names;
+        for (auto& ln : fc->lines) collect_max_fields(ln, max_names);
+        collect_max_fields(prior, max_names);
+        if (max_names.empty()) return;
+        const bool plain = callee == "memcpy" || callee == "memmove";
+        static const std::regex max_minus(R"(\b(\w+_max)\s*-\s*([A-Za-z_]\w*)\b(?!\s*(?:->|\.|\[|\()))");
+        std::optional<std::string> msg;
+        for (std::size_t a : {std::size_t{2}, std::size_t{0}}) {
+            if (a >= args.size()) continue;
+            auto size = arg_text(*args[a]);
+            if (a == 2 && is_ident(size)) {
+                if (plain && !copy_len_guarded(size, prior, max_names))
+                    msg = callee + "() length " + size + " not checked against a *_max bound in this function";
+                break;
+            }
+            std::smatch mm;
+            if (!std::regex_search(size, mm, max_minus)) continue;
+            auto mx = mm.str(1), v = mm.str(2);
+            if (below_max_tested(v, mx, prior)) continue;
+            msg = callee + "() " + (a == 2 ? "length" : "destination") + " uses " + mx + " - " + v + " with no " +
+                  v + " < " + mx + " test before it (it can wrap)";
+            break;
+        }
+        if (!msg) return;
+        add(c, "MEM-COPY-LEN", *msg);
     }
 
     // A `buf[k] = 0` / `buf[k] = '\0'` store after `at` in this function.

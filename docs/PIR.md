@@ -764,11 +764,14 @@ Every function defined in a model file is called by a harness
 and does not see the models (NEEDS-HARNESS apart from its own built-in
 `abs`/`rand` models).
 
-Not checked this way: the printf family is modelled in the translator
-(`libc_format.cpp`), not in C, and cannot be run through PRISM as a model
-(its checks are unit-tested in `tests/pir/mem_libc.c`); the `__prism_*`
-intrinsics themselves are PIR statements whose encoding the harnesses
-exercise but do not verify in isolation.
+The `printf`/`fprintf` family (`sprintf`, `snprintf`, …) is intentionally
+**outside** the libc-models contract harnesses above (roadmap 8.2 boundary):
+those calls are lowered in the PIR translator (`libc_format.cpp`), not as C
+sources under `tests/conformance/libc-models/`, so they are not proved via
+the `#include` harness loop that fills the table. Format-string and buffer
+contracts for that family are verified in `tests/pir/mem_libc.c` instead. The
+`__prism_*` intrinsics themselves are PIR statements whose encoding the
+harnesses exercise but do not verify in isolation.
 
 **C++ library contracts.** The same directory holds C++ contract harnesses
 for the C++ library ("C++ library models" above): `vector_contracts.cpp`,

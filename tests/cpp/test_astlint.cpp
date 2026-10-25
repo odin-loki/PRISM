@@ -587,6 +587,14 @@ int taut_ok(int i, int n) {
     if (i >= 0 && i < n) return 1;
     return 0;
 }
+struct copy_buf { char data[8]; unsigned data_max; };
+void copy_len_bad(struct copy_buf *b, const char *src, unsigned len) {
+    memcpy(b->data, src, len); // expect: MEM-COPY-LEN
+}
+void copy_len_ok(struct copy_buf *b, const char *src, unsigned len) {
+    if (len > b->data_max) return;
+    memcpy(b->data, src, len);
+}
 )";
 
 const char* kPortedCxx = R"(#include <string>
