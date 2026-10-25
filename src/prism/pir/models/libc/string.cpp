@@ -2,10 +2,16 @@
  * Contracts are the C standard's; PIR checks them through the memory model. */
 #include "prism_model.h"
 
+namespace {
+
 static unsigned char uc(const char *s, size_t i) {
     const unsigned char *p = (const unsigned char *)s;
     return p[i];
 }
+
+}  // namespace
+
+extern "C" {
 
 /* requires: s points to a NUL-terminated string (readable up to the NUL) */
 size_t strlen(const char *s) {
@@ -143,3 +149,5 @@ char *strdup(const char *s) {
     __prism_memcpy(p, s, n + 1, 0);
     return p;
 }
+
+}  // extern "C"

@@ -399,7 +399,7 @@ or refuted within it when the machine is idle).
 
 125 functions (53 contract harnesses, 72 false twins); see docs/PIR.md
 "Library models verified by PRISM". C models: 41 harnesses (every function
-defined in `src/prism/pir/models/libc/*.c` is called by one), 58 false twins;
+defined in `src/prism/pir/models/libc/*.cpp` is called by one), 58 false twins;
 C++ library: 12 harnesses, 14 false twins (`std::vector` model;
 libstdc++'s `std::array`, `std::span`, `std::optional`, `std::unique_ptr`,
 `std::string`). `pir` (2026-09-24): 52/53 PROVED, 1 BOUNDED (`getenv`),

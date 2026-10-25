@@ -2,7 +2,7 @@
  * "libc models verified by PRISM"; docs/PIR.md "Library models").
  *
  * Every harness file #includes the model source it checks from
- * src/prism/pir/models/libc/, so PRISM's pir stage analyses the repository's
+ * src/prism/pir/models/libc/*.cpp, so PRISM's pir stage analyses the repository's
  * model code itself (inlined at the harness's call, like any function of the
  * unit), not the platform libc. A harness builds its own objects with
  * symbolic contents (`nd_char`) and symbolic sizes/positions (its scalar

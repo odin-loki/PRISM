@@ -5,7 +5,7 @@
  * (libc_format.cpp) because their argument lists are variadic. */
 #include "prism_model.h"
 
-size_t strlen(const char *s);
+namespace {
 
 /* Output may fail on any call (disk full, closed pipe): every output
  * function also returns EOF (-1) on some path, so code that ignores a write
@@ -16,6 +16,17 @@ static int prism_nonneg_or_eof(void) {
     __prism_assume(r >= -1);
     return r;
 }
+
+static void prism_file_ok(FILE *f) {
+    __prism_check(f != 0, "PTR-NULL-DEREF", "stdio call on a NULL FILE pointer");
+    __prism_read_range(f, PRISM_FILE_SIZE);
+}
+
+}  // namespace
+
+extern "C" {
+
+size_t strlen(const char *s);
 
 FILE *fopen(const char *path, const char *mode) {
     __prism_check(path != 0, "STR-NULL-ARG", "strlen() called with unchecked pointer parameter path");
@@ -31,11 +42,6 @@ int fclose(FILE *f) {
     __prism_check(f != 0, "PTR-NULL-DEREF", "fclose of a NULL FILE pointer");
     __prism_free(f, PRISM_FILEK);
     return prism_eof_or(0);
-}
-
-static void prism_file_ok(FILE *f) {
-    __prism_check(f != 0, "PTR-NULL-DEREF", "stdio call on a NULL FILE pointer");
-    __prism_read_range(f, PRISM_FILE_SIZE);
 }
 
 /* requires: buf writable for n bytes, f an open FILE */
@@ -108,3 +114,5 @@ int fflush(FILE *f) {
     if (f) prism_file_ok(f);
     return prism_eof_or(0);
 }
+
+}  // extern "C"

@@ -1,8 +1,8 @@
-/* <string.h> models (src/prism/pir/models/libc/string.c) against C17 7.24.
+/* <string.h> models (src/prism/pir/models/libc/string.cpp) against C17 7.24.
  * See harness.h. Each function is one contract; `_false` ones must fail. */
 #include "harness.h"
-#include "../../../src/prism/pir/models/libc/string.c"
-#include "../../../src/prism/pir/models/libc/stdlib.c" /* malloc/free for strdup */
+#include "../../../src/prism/pir/models/libc/string.cpp"
+#include "../../../src/prism/pir/models/libc/stdlib.cpp" /* malloc/free for strdup */
 
 /* 7.24.6.3: strlen returns the number of characters before the first NUL. */
 int strlen_true(int k) {

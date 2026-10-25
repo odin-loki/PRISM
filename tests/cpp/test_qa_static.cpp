@@ -270,7 +270,10 @@ TEST_CASE("libc-bounds splits a contract harness file into prelude and harnesses
 
     int files = 0;
     for (auto& e : fs::directory_iterator(suite)) {
-        if (!e.path().filename().string().ends_with("_contracts.c")) continue;
+        if (e.path().filename().string() != "string_contracts.cpp" &&
+            e.path().filename().string() != "stdlib_contracts.cpp" &&
+            e.path().filename().string() != "stdio_contracts.cpp")
+            continue;
         ++files;
         auto sp = prism::qa::split_harness(prism::qa::read_text(e.path()));
         CHECK_MESSAGE(std::any_of(sp.funcs.begin(), sp.funcs.end(), [](auto& p) { return p.first.ends_with("_true"); }),

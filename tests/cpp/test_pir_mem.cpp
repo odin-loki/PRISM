@@ -548,9 +548,9 @@ TEST_CASE("pir mem: library models are embedded, build with clang and link on de
     auto& src = pp::model_sources();
     std::map<std::string, std::string> by;
     for (auto& [n, t] : src) by[n] = t;
-    REQUIRE(by.count("string.c"));
-    REQUIRE(by.count("stdlib.c"));
-    CHECK(by["string.c"].find("size_t strlen(") != std::string::npos);
+    REQUIRE(by.count("string.cpp"));
+    REQUIRE(by.count("stdlib.cpp"));
+    CHECK(by["string.cpp"].find("size_t strlen(") != std::string::npos);
     if (skip_without_frontend()) return;
     auto cfg = prism::default_config();
     auto fe = pp::find_frontend(cfg);

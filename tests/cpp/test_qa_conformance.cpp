@@ -68,6 +68,29 @@ bool ends_with(const std::string& s, const std::string& suf) {
     return s.size() >= suf.size() && s.compare(s.size() - suf.size(), suf.size(), suf) == 0;
 }
 
+// C libc models are ISO C++23 sources (extern "C" bodies + operator new/delete).
+std::set<std::string> libc_model_defined(const std::string& source) {
+    std::set<std::string> defined;
+    static const prism::Regex def_re(
+        R"(^(?!static)(?!.*\boperator\b)[A-Za-z_][\w \*]*?\b(\w+)\([^;{]*\)\s*\{)", true);
+    for (const auto& m : def_re.finditer(source)) defined.insert(m.group(1));
+    struct Op {
+        const char* re;
+        const char* sym;
+    };
+    static const Op ops[] = {
+        {R"(void\s*\*\s*operator\s+new\s*\(\s*size_t)", "_Znwm"},
+        {R"(void\s*\*\s*operator\s+new\s*\[\s*\]\s*\(\s*size_t)", "_Znam"},
+        {R"(void\s+operator\s+delete\s*\(\s*void\s*\*\s*p\s*\)\s*noexcept)", "_ZdlPv"},
+        {R"(void\s+operator\s+delete\s*\(\s*void\s*\*\s*p\s*,\s*size_t)", "_ZdlPvm"},
+        {R"(void\s+operator\s+delete\s*\[\s*\]\s*\(\s*void\s*\*\s*p\s*\)\s*noexcept)", "_ZdaPv"},
+        {R"(void\s+operator\s+delete\s*\[\s*\]\s*\(\s*void\s*\*\s*p\s*,\s*size_t)", "_ZdaPvm"},
+    };
+    for (const auto& op : ops)
+        if (prism::Regex(op.re).search(source)) defined.insert(op.sym);
+    return defined;
+}
+
 struct QaTmp {
     fs::path dir;
     QaTmp() { dir = qa::make_unique_dir("prism-qa-test-"); }
@@ -484,7 +507,7 @@ TEST_CASE("qa conformance: every libc model file has a contract harness") {
     auto tasks = qa::discover({suite() / "libc-models"});
     CHECK(tasks.size() >= 4);
     const fs::path models = qa::repo_root() / "src" / "prism" / "pir" / "models" / "libc";
-    const prism::Regex inc_re(R"re(#include "\.\./\.\./\.\./src/prism/pir/models/libc/(\w+\.c)")re");
+    const prism::Regex inc_re(R"re(#include "\.\./\.\./\.\./src/prism/pir/models/libc/(\w+\.cpp)")re");
     std::set<std::string> included;
     for (const auto& t : tasks) {
         CAPTURE(t.ident);
@@ -507,7 +530,7 @@ TEST_CASE("qa conformance: every libc model file has a contract harness") {
     }
     std::set<std::string> model_files;
     for (const auto& e : fs::directory_iterator(models))
-        if (e.path().extension() == ".c") model_files.insert(e.path().filename().string());
+        if (e.path().extension() == ".cpp") model_files.insert(e.path().filename().string());
     CHECK_MESSAGE(included == model_files, "every model file has a harness");
     CHECK(std::find(qa::DEFAULT_ROOTS.begin(), qa::DEFAULT_ROOTS.end(), "libc-models") != qa::DEFAULT_ROOTS.end());
 }
@@ -519,7 +542,7 @@ TEST_CASE("qa conformance: every libc model function is called by a harness") {
     const fs::path models = qa::repo_root() / "src" / "prism" / "pir" / "models" / "libc";
     std::string harness_c;
     for (const auto& e : fs::directory_iterator(suite() / "libc-models")) {
-        if (e.path().extension() != ".c") continue;
+        if (e.path().extension() != ".cpp") continue;
         std::istringstream in(slurp(e.path()));
         std::string ln;
         while (std::getline(in, ln))
@@ -530,11 +553,10 @@ TEST_CASE("qa conformance: every libc model function is called by a harness") {
         {"_Znwm", "new int("},        {"_Znam", "new int["},
         {"_ZdlPv", "delete q;"},      {"_ZdaPv", "delete[] p;"},
         {"_ZdlPvm", "::operator delete(p, sizeof(int))"}, {"_ZdaPvm", "::operator delete[](q, 4)"}};
-    const prism::Regex def_re(R"(^(?!static)[A-Za-z_][\w \*]*?\b(\w+)\([^;{]*\)\s*\{)", true);
     std::set<std::string> defined;
     for (const auto& e : fs::directory_iterator(models))
-        if (e.path().extension() == ".c")
-            for (const auto& m : def_re.finditer(slurp(e.path()))) defined.insert(m.group(1));
+        if (e.path().extension() == ".cpp")
+            for (const auto& n : libc_model_defined(slurp(e.path()))) defined.insert(n);
     CHECK(defined.size() >= 50);
     for (const auto& name : defined) {
         CAPTURE(name);

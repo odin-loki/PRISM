@@ -1,7 +1,8 @@
 /* PRISM operational models of the C library (roadmap 2.6, docs/PIR.md
  * "Library models"). These files are compiled by clang to LLVM IR at run
  * time and linked into the analysed module for every symbol the module
- * declares but does not define. They are ordinary C: every load, store and
+ * declares but does not define. They are C++ sources with extern "C" libc API:
+ * every load, store and
  * pointer step inside a model is checked by PIR exactly like user code, so a
  * model's preconditions (the `requires:` comments) are enforced by the
  * memory model, not assumed.
@@ -11,6 +12,10 @@
  */
 #ifndef PRISM_MODEL_H
 #define PRISM_MODEL_H
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 typedef unsigned long size_t;
 typedef long ssize_t;
@@ -49,5 +54,9 @@ char *__prism_fresh_cstr(int kind);
 int __VERIFIER_nondet_int(void);
 long __VERIFIER_nondet_long(void);
 unsigned long __VERIFIER_nondet_ulong(void);
+
+#ifdef __cplusplus
+}  // extern "C"
+#endif
 
 #endif

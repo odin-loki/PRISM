@@ -1,7 +1,7 @@
 // libc-bounds: size-bound sweep for the libc model contract harnesses
 // (roadmap 8.2).
 //
-// tests/conformance/libc-models/*_contracts.c prove each model's contract for
+// tests/conformance/libc-models/*_contracts.cpp prove each model's contract for
 // objects of up to N bytes (harness.h, default N = 4). This re-runs every
 // `_true` harness alone with N = 4, 8, 16, ... (`#define N` before harness.h,
 // `--unwind 2N + 2` so every model loop can close) and reports per function
@@ -126,7 +126,7 @@ HarnessSplit split_harness(const std::string& text) {
         return j;
     };
     for (std::size_t k = 0; k < comment_start(starts[0]); ++k) out.prelude += lines[k];
-    // one-line static helpers between harnesses (string_contracts.c `sign`)
+    // one-line static helpers between harnesses (string_contracts.cpp `sign`)
     for (std::size_t k = starts[0]; k < lines.size(); ++k)
         if (lines[k].starts_with("static ") && rstrip(lines[k]).ends_with("}")) out.prelude += lines[k];
     for (auto i : starts) {
@@ -208,8 +208,12 @@ int libc_bounds_main(const Args& args) {
     nlohmann::json results = nlohmann::json::object();
     std::vector<fs::path> harnesses;
     std::error_code ec;
-    for (auto& e : fs::directory_iterator(suite, ec))
-        if (e.is_regular_file() && e.path().filename().string().ends_with("_contracts.c")) harnesses.push_back(e.path());
+    for (auto& e : fs::directory_iterator(suite, ec)) {
+        const auto name = e.path().filename().string();
+        if (e.is_regular_file() && (name == "string_contracts.cpp" || name == "stdlib_contracts.cpp" ||
+                                    name == "stdio_contracts.cpp"))
+            harnesses.push_back(e.path());
+    }
     std::sort(harnesses.begin(), harnesses.end());
     auto pad = [](const std::string& s, std::size_t w) { return s.size() >= w ? s : s + std::string(w - s.size(), ' '); };
     for (const auto& f : harnesses) {

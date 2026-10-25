@@ -290,13 +290,13 @@ set(PRISM_SRC
   src/prism/solver/util.cpp
 )
 
-# PIR library operational models (docs/PIR.md "Library models"): C sources
-# embedded as strings, lowered by clang at run time. Explicit list.
+# PIR library operational models (docs/PIR.md "Library models"): C++ sources
+# (extern "C" libc API) embedded as strings, lowered by clang at run time.
 set(PRISM_PIR_MODELS
   src/prism/pir/models/libc/prism_model.h
-  src/prism/pir/models/libc/string.c
-  src/prism/pir/models/libc/stdlib.c
-  src/prism/pir/models/libc/stdio.c
+  src/prism/pir/models/libc/string.cpp
+  src/prism/pir/models/libc/stdlib.cpp
+  src/prism/pir/models/libc/stdio.cpp
   # C++ library model headers (docs/PIR.md "C++ library models"), embedded as "cxx/<name>"
   src/prism/pir/models/cxx/vector
   src/prism/pir/models/cxx/map

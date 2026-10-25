@@ -7,6 +7,8 @@
  * function and is not followed). */
 #include "prism_model.h"
 
+extern "C" {
+
 void *malloc(size_t n) {
     if (n >= PRISM_MAX_OBJ || __VERIFIER_nondet_int()) {
         __prism_alloc_failed();
@@ -45,19 +47,6 @@ void *realloc(void *p, size_t n) {
     __prism_free(p, PRISM_HEAP);
     return q;
 }
-
-void *_Znwm(size_t n) { /* operator new(size_t) */
-    __prism_assume(n < PRISM_MAX_OBJ);
-    return __prism_alloc(n, PRISM_NEW, PRISM_UNINIT);
-}
-void *_Znam(size_t n) { /* operator new[](size_t) */
-    __prism_assume(n < PRISM_MAX_OBJ);
-    return __prism_alloc(n, PRISM_NEWARR, PRISM_UNINIT);
-}
-void _ZdlPv(void *p) { __prism_free(p, PRISM_NEW); }          /* operator delete(void*) */
-void _ZdlPvm(void *p, size_t n) { (void)n; __prism_free(p, PRISM_NEW); }
-void _ZdaPv(void *p) { __prism_free(p, PRISM_NEWARR); }       /* operator delete[](void*) */
-void _ZdaPvm(void *p, size_t n) { (void)n; __prism_free(p, PRISM_NEWARR); }
 
 /* abs(INT_MIN) is undefined: the negation below is a checked `sub nsw`. */
 int abs(int x) { return x < 0 ? -x : x; }
@@ -105,4 +94,25 @@ char *getenv(const char *name) {
     (void)strlen(name);
     if (__VERIFIER_nondet_int()) return 0;
     return __prism_fresh_cstr(PRISM_CONST);
+}
+
+}  // extern "C"
+
+void *operator new(size_t n) {
+    __prism_assume(n < PRISM_MAX_OBJ);
+    return __prism_alloc(n, PRISM_NEW, PRISM_UNINIT);
+}
+void *operator new[](size_t n) {
+    __prism_assume(n < PRISM_MAX_OBJ);
+    return __prism_alloc(n, PRISM_NEWARR, PRISM_UNINIT);
+}
+void operator delete(void *p) noexcept { __prism_free(p, PRISM_NEW); }
+void operator delete(void *p, size_t n) noexcept {
+    (void)n;
+    __prism_free(p, PRISM_NEW);
+}
+void operator delete[](void *p) noexcept { __prism_free(p, PRISM_NEWARR); }
+void operator delete[](void *p, size_t n) noexcept {
+    (void)n;
+    __prism_free(p, PRISM_NEWARR);
 }

@@ -1,5 +1,5 @@
 // C++ allocation models (_Znwm, _Znam, _ZdlPv, _ZdaPv ... in
-// src/prism/pir/models/libc/stdlib.c) against [basic.stc.dynamic]. A C++
+// src/prism/pir/models/libc/stdlib.cpp) against [basic.stc.dynamic]. A C++
 // unit cannot include the C model (the symbols are mangled names), so this
 // harness uses the model the pir stage links for every undefined symbol
 // (the same embedded source, docs/PIR.md "Library models").

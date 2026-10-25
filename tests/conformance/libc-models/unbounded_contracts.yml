@@ -1,5 +1,5 @@
 format_version: 1
-input_files: unbounded_contracts.c
+input_files: unbounded_contracts.cpp
 language: C
 property: libc-contract
 expected:

@@ -4,12 +4,12 @@
  * symbolic size n of up to 2^40 bytes (not only up to N bytes as in the
  * other harness files): a PROVED here covers every size in that range. The
  * byte loops of the string models (strlen, strcpy, ...) are checked on
- * objects of a symbolic size in unbounded_string_contracts.c, where their
+ * objects of a symbolic size in unbounded_string_contracts.cpp, where their
  * loops close with inductive loop invariants (docs/PIR.md "Loop
  * invariants"). */
 #include "harness.h"
-#include "../../../src/prism/pir/models/libc/string.c"
-#include "../../../src/prism/pir/models/libc/stdlib.c"
+#include "../../../src/prism/pir/models/libc/string.cpp"
+#include "../../../src/prism/pir/models/libc/stdlib.cpp"
 
 #define BIG (1UL << 40)
 

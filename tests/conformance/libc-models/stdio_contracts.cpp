@@ -1,10 +1,10 @@
-/* <stdio.h> models (src/prism/pir/models/libc/stdio.c) against C17 7.21.
+/* <stdio.h> models (src/prism/pir/models/libc/stdio.cpp) against C17 7.21.
  * See harness.h. Each function is one contract; `_false` ones must fail.
  * printf/fprintf/sprintf/snprintf are modelled in the translator
  * (src/prism/pir/libc_format.cpp), not in C, and are not covered here. */
 #include "harness.h"
-#include "../../../src/prism/pir/models/libc/string.c" /* strlen for fopen/fputs/puts */
-#include "../../../src/prism/pir/models/libc/stdio.c"
+#include "../../../src/prism/pir/models/libc/string.cpp" /* strlen for fopen/fputs/puts */
+#include "../../../src/prism/pir/models/libc/stdio.cpp"
 
 /* 7.21.5.3 / 7.21.5.1: fopen returns NULL or an open stream; fclose closes it. */
 int fopen_true(void) {

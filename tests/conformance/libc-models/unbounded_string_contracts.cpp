@@ -15,8 +15,8 @@
  * (unterminated strings, short destinations) and adversarial loops (reading
  * one past the terminator, off-by-one writes). */
 #include "harness.h"
-#include "../../../src/prism/pir/models/libc/string.c"
-#include "../../../src/prism/pir/models/libc/stdlib.c"
+#include "../../../src/prism/pir/models/libc/string.cpp"
+#include "../../../src/prism/pir/models/libc/stdlib.cpp"
 
 #define BIG (1UL << 40)
 

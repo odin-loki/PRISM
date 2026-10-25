@@ -14,7 +14,7 @@ Sources: `include/prism/pir.hpp`, `src/prism/pir/{ir_parser,pir,translate,encode
 floating point `src/prism/pir/{fp,translate_fp}.cpp`; exceptions, setjmp/longjmp,
 indirect calls and inline assembly `src/prism/pir/translate_ctl.inc` (+ `lower_ctl.cpp`);
 memory model `src/prism/pir/{memory,translate_mem,stage_mem,contracts}.cpp`; library
-models `src/prism/pir/{libc_models,libc_format}.cpp` + `src/prism/pir/models/libc/*.c`.
+models `src/prism/pir/{libc_models,libc_format}.cpp` + `src/prism/pir/models/libc/*.cpp`.
 Tests: `tests/pir/*` (true and false variants; `mem_*.c` for the memory
 model; `fp_*`, `eh_*`, `coro_*`, `sjlj_*`, `virt_*`, `asm_*` for roadmap 2.6), `tests/test_pir.py`,
 doctests `pir: …` in `tests/cpp/test_main.cpp`, `pir mem: …` in `tests/cpp/test_pir_mem.cpp`
@@ -414,7 +414,7 @@ functions (`tv = PARTIAL`).
 ## Library models (roadmap 2.6)
 
 Operational models are C files in `src/prism/pir/models/libc/`
-(`string.c`, `stdlib.c`, `stdio.c`, `prism_model.h`), embedded in the binary
+(`string.cpp`, `stdlib.cpp`, `stdio.cpp`, `prism_model.h`), embedded in the binary
 at build time (CMake), lowered once per run with the same clang/opt pipeline
 (`-fno-builtin -ffreestanding`), and linked into every unit that declares a
 modelled symbol and does not define it (`link_models`, on the parsed
@@ -468,7 +468,7 @@ disk cache otherwise). The key hashes `prism-pir-models-v3`, the embedded
 model sources, the front end's version, the `clang` and `opt` paths, and
 `x86_64-unknown-linux-gnu` (the LP64 triple PIR lowers with on Windows;
 Linux uses `prism-pir-models-v1` without that line). Before reuse,
-`try_load_model_cache` loads every embedded `.c` model's `.ll` and insists
+`try_load_model_cache` loads every embedded libc `.cpp` model's `.ll` and insists
 the IR matches that triple (`cached_model_ir_ok` rejects native LLP64
 caches: a Windows `target triple`, or `e-m:w-` in the datalayout). A bad or
 incomplete tree drops the keyed directory and the models are lowered again;
@@ -649,8 +649,8 @@ Encoder support added for the map/set models (and user code alike):
 
 The models are checked by PRISM itself: `tests/conformance/libc-models/`
 holds contract harnesses that `#include` the model sources
-(`string.c`, `stdlib.c`, `stdio.c`; the C++ allocation models through the
-linked copy of `stdlib.c`, since their names are mangled) and state each
+(`string.cpp`, `stdlib.cpp`, `stdio.cpp`; the C++ allocation models through the
+linked copy of `stdlib.cpp`, since their names are mangled) and state each
 function's contract from the C standard with `assert()`. Every harness
 builds its own objects with symbolic contents and symbolic sizes/positions
 (scalar parameters, so no pointer-parameter precondition is assumed, Law 6),
@@ -686,11 +686,11 @@ bound reported below (larger sizes were not part of that sweep).
 
 **Size-unbounded contracts.** The ranged models — `memcpy`, `memmove`,
 `memset` (PIR's ranged memory statements) and `realloc`'s copy — have no
-loop, so `unbounded_contracts.c` checks them on heap objects of a symbolic
+loop, so `unbounded_contracts.cpp` checks them on heap objects of a symbolic
 size n < 2^40: those PROVED verdicts hold for every size in that range, not
 only up to N.
 
-**Size-unbounded string contracts.** `unbounded_string_contracts.c` checks
+**Size-unbounded string contracts.** `unbounded_string_contracts.cpp` checks
 the byte-loop models on heap objects of a symbolic size below 2^40 with
 arbitrary contents: `NEW_STR(s, n, k)` havocs n bytes (`__prism_havoc_bytes`),
 assumes the first k non-NUL in a read-only loop and stores a NUL at k, so a
@@ -1175,7 +1175,7 @@ before, each of those ran the full final query ("not implied"), now the
 optimistic query decides them; Houdini total 7.5 s, the same verdicts (971
 PROVED, 14 PROVED-UNBOUNDED, 7 BOUNDED). The pir stage there is dominated
 by the Clang front end, not by Houdini. `strcat`/`strncat` of
-`unbounded_string_contracts.c` (4 loops each): BOUNDED before and after at
+`unbounded_string_contracts.cpp` (4 loops each): BOUNDED before and after at
 the default 30 s (search out of time, 181 s each); with `--timeout 100`
 the search reaches its fixpoint and the optimistic query is SAT for both
 (after 293 s / 489 s): the templates do not contain the invariant these
@@ -1222,7 +1222,7 @@ correctness witness (docs/SVCOMP.md). The wrapper maps IR names to C
 variables with full debug information and exports a conjunct only where C's
 meaning of the text is the proved bit-vector relation.
 
-Tasks: `tests/conformance/libc-models/unbounded_string_contracts.c` (below),
+Tasks: `tests/conformance/libc-models/unbounded_string_contracts.cpp` (below),
 doctest `pir: Houdini loop invariants prove symbolic-size byte loops, twins
 refuted` (strlen and copy loops over heap objects of any size; reading one
 past the terminator, an off-by-one write, an unterminated string and a write
@@ -1251,7 +1251,7 @@ pass; no `-fsanitize` check insertion (Law 8).
 | Inline assembly | NEEDS-HARNESS unless `// prism: asm ensures <cond>`; then PROVED-ASSUMING listing the contract | DONE | `tests/pir/asm_contract.c`, `conformance/prism/asm` |
 | C (C11 to C23): `_Generic`, VLAs, `setjmp`/`longjmp` | `_Generic` by Clang; VLAs in the memory model; setjmp/longjmp as exception-like edges (CTRL-LONGJMP-INVALID) | DONE | `tests/pir/mem_libc.c`, `tests/pir/sjlj_basic.c`, `conformance/prism/sjlj` |
 | k-induction for functions using memory | step case havocs the loop's write footprint (provenance-resolved objects, else every pre-loop object; initialised flags `old \| arbitrary` or arbitrary) | DONE for loops that do not allocate or free (those stay BOUNDED, `not-attempted`); object-granular | `tests/pir/kind_mem.c`, `conformance/prism/kindmem`, `extra.k_induction_footprint` |
-| Loop invariants | Houdini over templates on a loop-cut encoding (every loop, nested and sequential), base and step proved in Z3; universal memory templates checked pointwise; only the fixpoint is used | DONE for loops that do not allocate or free; templates, not synthesis (non-linear invariants stay BOUNDED) | "Loop invariants", `libc-models/unbounded_string_contracts.c`, `extra.pir_invariants` |
+| Loop invariants | Houdini over templates on a loop-cut encoding (every loop, nested and sequential), base and step proved in Z3; universal memory templates checked pointwise; only the fixpoint is used | DONE for loops that do not allocate or free; templates, not synthesis (non-linear invariants stay BOUNDED) | "Loop invariants", `libc-models/unbounded_string_contracts.cpp`, `extra.pir_invariants` |
 
 ## Encoder and verdicts
 

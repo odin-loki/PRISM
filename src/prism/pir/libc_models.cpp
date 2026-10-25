@@ -1,6 +1,7 @@
 // Library operational models (roadmap 2.6, docs/PIR.md "Library models").
 //
-// The models are C files (src/prism/pir/models/libc/*.c) embedded in the
+// The models are C++ sources (src/prism/pir/models/libc/*.cpp, extern "C"
+// libc API) embedded in the
 // binary at build time. Once per run they are lowered by the same clang ->
 // opt pipeline as scanned code (plus -fno-builtin -ffreestanding so clang
 // does not replace a model by the builtin it models), and every function a
@@ -82,6 +83,15 @@ void refs_of(const ir::Value& v, std::set<std::string>& globals) {
     for (auto& e : v.elems) refs_of(e.v, globals);
 }
 
+bool is_lowered_libc_model(const std::string& name) {
+    return name.ends_with(".cpp") && !name.starts_with("cxx/");
+}
+
+std::string model_unit_tag(const std::string& name) {
+    const auto dot = name.rfind('.');
+    return dot == std::string::npos ? name : name.substr(0, dot);
+}
+
 }  // namespace
 
 namespace {
@@ -105,7 +115,7 @@ std::string lower_model(const Frontend& fe, const fs::path& dir, const std::stri
     std::vector<std::string> argv{fe.clang->string(), "-S"};
     for (auto& t : lp64_target_flags()) argv.push_back(t);
     argv.insert(argv.end(), {"-emit-llvm", "-O0", "-Xclang", "-disable-O0-optnone", "-fno-builtin", "-ffreestanding",
-                             "-fno-discard-value-names", "-gline-tables-only", "-std=c17", "-w", "-o", o0.string(),
+                             "-fno-discard-value-names", "-gline-tables-only", "-std=c++23", "-w", "-o", o0.string(),
                              src.string()});
     auto r = detail::run_process(argv, timeout_s);
     if (r.timed_out) return "model " + name + ": clang timed out after " + std::to_string(int(timeout_s)) + " s";
@@ -120,10 +130,10 @@ std::string lower_model(const Frontend& fe, const fs::path& dir, const std::stri
     return {};
 }
 
-std::size_t model_source_c_count() {
+std::size_t model_source_lowered_count() {
     std::size_t n = 0;
     for (auto& [name, _] : model_sources())
-        if (name.ends_with(".c")) ++n;
+        if (is_lowered_libc_model(name)) ++n;
     return n;
 }
 
@@ -140,18 +150,18 @@ bool cached_model_ir_ok(const std::string& ll) {
     return true;
 }
 
-// Every embedded .c model must be present and pass cached_model_ir_ok.
+// Every embedded libc .cpp model must be present and pass cached_model_ir_ok.
 bool try_load_model_cache(const fs::path& cache, std::vector<std::pair<std::string, std::string>>& out) {
     out.clear();
     std::error_code ec;
     if (!fs::is_directory(cache, ec)) return false;
     for (auto& [name, _] : model_sources()) {
-        if (!name.ends_with(".c")) continue;
+        if (!is_lowered_libc_model(name)) continue;
         auto ll = slurp(cache / (name + ".ll"));
         if (!cached_model_ir_ok(ll)) return false;
         out.emplace_back(name, std::move(ll));
     }
-    return out.size() == model_source_c_count() && !out.empty();
+    return out.size() == model_source_lowered_count() && !out.empty();
 }
 
 }  // namespace
@@ -168,10 +178,10 @@ ModelLibrary build_models(const Frontend& fe, double timeout_s) {
         return lib;
     }
 #ifdef _WIN32
-    std::string key_text = "prism-pir-models-v3\n" + fe.version + "\n" + fe.clang->string() + "\n" +
+    std::string key_text = "prism-pir-models-v5\n" + fe.version + "\n" + fe.clang->string() + "\n" +
                            fe.opt->string() + "\n" + lp64_target_triple() + "\n";
 #else
-    std::string key_text = "prism-pir-models-v1\n" + fe.version + "\n" + fe.clang->string() + "\n" + fe.opt->string();
+    std::string key_text = "prism-pir-models-v5\n" + fe.version + "\n" + fe.clang->string() + "\n" + fe.opt->string();
 #endif
     for (auto& [name, text] : model_sources())
         if (!name.starts_with("cxx/")) key_text += "\n--" + name + "\n" + text;
@@ -213,7 +223,7 @@ ModelLibrary build_models(const Frontend& fe, double timeout_s) {
             std::ofstream(dst, std::ios::binary) << text;
         }
         for (auto& [name, text] : model_sources()) {
-            if (!name.ends_with(".c")) continue;
+            if (!is_lowered_libc_model(name)) continue;
             std::string ll;
             auto err = lower_model(fe, dir, name, timeout_s, ll);
             if (!err.empty() && err.find("timed out") != std::string::npos)
@@ -242,7 +252,7 @@ ModelLibrary build_models(const Frontend& fe, double timeout_s) {
         }
     }
     for (auto& [name, ll] : lowered) {
-        auto tag = name.substr(0, name.size() - 2);
+        auto tag = model_unit_tag(name);
         lib.units.push_back(ir::parse_module(rename_privates(ll, tag)));
     }
     return lib;

@@ -1,8 +1,8 @@
-/* <stdlib.h> models (src/prism/pir/models/libc/stdlib.c) against C17 7.22.
+/* <stdlib.h> models (src/prism/pir/models/libc/stdlib.cpp) against C17 7.22.
  * See harness.h. Each function is one contract; `_false` ones must fail. */
 #include "harness.h"
-#include "../../../src/prism/pir/models/libc/string.c" /* strlen for atoi/strtol/getenv */
-#include "../../../src/prism/pir/models/libc/stdlib.c"
+#include "../../../src/prism/pir/models/libc/string.cpp" /* strlen for atoi/strtol/getenv */
+#include "../../../src/prism/pir/models/libc/stdlib.cpp"
 
 /* 7.22.3.4: malloc returns NULL or an object of n bytes (indeterminate). */
 int malloc_true(int n, int j, int v) {

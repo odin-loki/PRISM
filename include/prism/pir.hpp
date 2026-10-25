@@ -582,7 +582,7 @@ PRISM_API std::optional<std::string> lower_to_ir(const Frontend& fe,
 // ---------------------------------------------------------------------------
 
 // Sources of the operational models, embedded in the binary at build time:
-// (file name, text). C models (src/prism/pir/models/libc/*.c, prism_model.h)
+// (file name, text). Libc models (src/prism/pir/models/libc/*.cpp, prism_model.h)
 // by file name; C++ library model headers as "cxx/<header>".
 PRISM_API const std::vector<std::pair<std::string, std::string>>& model_sources();
 // Write the C++ model headers ("cxx/..." sources) into dir; false on an I/O error.
