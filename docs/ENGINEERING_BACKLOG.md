@@ -21,7 +21,8 @@ Owner-only rows (history rewrite, GPU hardware, LoRA) are omitted. Supply-chain
 | ~287 regex-only classes | Port high-impact rules with `testdata/` plants | `checkers_core.cpp` → `astlint_checks.cpp`, `test_astlint.cpp` |
 | Done (2026-10-25) | **`STR-UNBOUNDED-COPY`**, **`API-GETS`** doctest in `kPortedC` | `astlint_checks.cpp`, `test_astlint.cpp` |
 | Done (2026-10-25) | **`API-STRTOK`**, **`API-TMPNAM`**, **`API-MKTEMP`**, **`API-UMASK`** AST ports (+ prior batch) | `astlint_checks.cpp`, `test_astlint.cpp` |
-| Next | Pick from regex-only table (~275 left) | `checkers_core.cpp` → `astlint_checks.cpp` |
+| Done (2026-10-25) | **STR-MISSING-NUL** / **MEM-MEMSET-SWAP** kPortedC + testdata doctest | `test_astlint.cpp` |
+| Next | Pick from regex-only table (~270 left) | `checkers_core.cpp` → `astlint_checks.cpp` |
 | Template / flow limits | Document NOTRUN; defer dependent-template rules | `astlint.hpp` |
 
 ## 2.8 / D2 — Retire hand `bmc` encoder
