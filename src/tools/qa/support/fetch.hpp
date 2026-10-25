@@ -3,7 +3,7 @@
 // External suites kept out of git: NIST Juliet C/C++ 1.3 (downloaded,
 // sha256-checked, a subset converted to tasks) and ESBMC's C++ regression
 // tests (a pinned commit, converted; a curated subset is committed under
-// tests/conformance/esbmc-cpp).
+// testdata/conformance/esbmc-cpp).
 
 #include "replay.hpp"
 #include "task.hpp"

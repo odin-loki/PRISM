@@ -41,7 +41,7 @@ std::string lower(std::string s) {
 
 bool has(const std::string& hay, const std::string& needle) { return hay.find(needle) != std::string::npos; }
 
-fs::path testdata() { return repo_root() / "testdata"; }
+fs::path testdata() { return repo_root() / "testdata" / "planted"; }
 
 std::string xget(const prism::Finding& f, const std::string& key) {
     auto it = f.extra.find(key);

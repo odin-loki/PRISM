@@ -4,7 +4,7 @@
 // allocation beyond the returned strings, no dependency on the rest of
 // PRISM. It is the C++ image of proofs/Prism/Verdict.lean; the doctest
 // "verdict module equals the Lean model" checks every function here against
-// tests/data/verdict_tables.json, which `lake exe verdict_tables` prints
+// testdata/fixtures/verdict_tables.json, which `lake exe verdict_tables` prints
 // from the proved model, entry by entry over the whole finite domain.
 //
 // prism::laws (include/prism/laws.hpp) keeps its string API and forwards

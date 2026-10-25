@@ -27,7 +27,7 @@ namespace laws = prism::laws;
 using Trans = std::pair<std::string, std::string>;
 
 fs::path td_root() {
-    return fs::path(PRISM_SOURCE_DIR) / "testdata";
+    return fs::path(PRISM_SOURCE_DIR) / "testdata" / "planted";
 }
 
 prism::FunctionInfo plant(const char* name) {

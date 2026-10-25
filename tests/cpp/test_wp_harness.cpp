@@ -24,7 +24,7 @@
 namespace {
 
 std::filesystem::path td() {
-    return std::filesystem::path(PRISM_SOURCE_DIR) / "testdata";
+    return std::filesystem::path(PRISM_SOURCE_DIR) / "testdata" / "planted";
 }
 
 prism::FunctionInfo fn_in(const char* file, const char* name) {

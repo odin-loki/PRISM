@@ -520,7 +520,7 @@ TEST_CASE("cparse: C++ shapes from cxxopts and Catch2") {
 // already hold.
 
 TEST_CASE("false positives: the guard return is not the leak") {
-    auto tp = repo_dir("testdata_tp");
+    auto tp = repo_dir("testdata/tp");
     auto hits = prism::run_lints({tp / "leaks.c"}, tp);
     CHECK(has_hit(hits, 12, "MEM-LEAK"));
     CHECK(has_hit(hits, 23, "RES-FD-LEAK"));
@@ -529,7 +529,7 @@ TEST_CASE("false positives: the guard return is not the leak") {
 }
 
 TEST_CASE("false positives: parser forms in the corpus") {
-    auto fp = repo_dir("testdata_fp");
+    auto fp = repo_dir("testdata/fp");
     CHECK(names_in(fp / "raii.cpp") == std::vector<std::string>{"add_locked", "make_squares", "greet"});
     for (auto& f : prism::extract_functions(fp / "methods.cpp"))
         if (f.name.find("::") != std::string::npos) CHECK(f.kind == "OTHER");
@@ -537,12 +537,12 @@ TEST_CASE("false positives: parser forms in the corpus") {
     for (auto& f : prism::extract_functions(fp / "namespaced.cpp")) kinds[f.name] = f.kind;
     CHECK(kinds["twice"] == "OTHER");  // trailing return type
     CHECK(kinds["clamp_to"] == "OTHER");
-    // testdata_tp/knr_gap.c: the zlib gz_strwinerror shape is a function now.
-    auto gap = repo_dir("testdata_tp") / "knr_gap.c";
+    // testdata/tp/knr_gap.c: the zlib gz_strwinerror shape is a function now.
+    auto gap = repo_dir("testdata/tp") / "knr_gap.c";
     CHECK(prism::parse_gaps(gap).empty());
     CHECK(names_in(gap) == std::vector<std::string>{"strwinerror", "after_gap"});
     // Its unreadable twin stays a gap on disk too.
-    auto unread = repo_dir("testdata_tp") / "knr_gap_unread.c";
+    auto unread = repo_dir("testdata/tp") / "knr_gap_unread.c";
     CHECK(prism::parse_gaps(unread) ==
           std::vector<std::pair<int, std::string>>{{8, "char zlib_internal *strwinerror(error)"}});
     CHECK(names_in(unread) == std::vector<std::string>{"after_gap"});
@@ -570,7 +570,7 @@ TEST_CASE("cparse: gap decisions after a macro line or a declaration") {
 }
 
 TEST_CASE("false positives: the whole lints stage, AST layer too, is silent on the corpus") {
-    auto root = repo_dir("testdata_fp");
+    auto root = repo_dir("testdata/fp");
     prism::Config cfg;
     cfg.root = root;
     for (auto& f : prism::astlint::run_lints_ast(prism::iter_sources(root), root, cfg)) {

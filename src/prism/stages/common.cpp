@@ -165,6 +165,8 @@ std::optional<fs::path> locate_source(const FunctionInfo& fn) {
     fs::path name = p.filename();
     fs::path walk = fs::current_path();
     for (int i = 0; i < 6; ++i) {
+        auto planted = walk / "testdata" / "planted" / name;
+        if (fs::is_regular_file(planted)) return planted;
         auto td = walk / "testdata" / name;
         if (fs::is_regular_file(td)) return td;
         if (!walk.has_parent_path() || walk == walk.parent_path()) break;

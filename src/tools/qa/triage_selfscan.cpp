@@ -2,7 +2,7 @@
 // into real / false_alarm / out_of_scope (docs/VERIFICATION_PLAN.md step 1).
 //
 //   third_party/                        out of scope (not our code)
-//   testdata/, testdata_tp/, tests/     false alarm (planted bugs, fixtures)
+//   testdata/planted/, testdata/tp/, tests/       false alarm (plants, twins, harness code)
 //   .github/                            false alarm (workflow LANG-LINT)
 //   src/prism/, src/gui/                false alarm after manual review,
 //                                       except a sanitize CRASH (real)
@@ -18,7 +18,7 @@ namespace fs = std::filesystem;
 namespace prism::qa {
 
 namespace {
-constexpr const char* CORPUS[] = {"testdata/", "testdata_tp/", "tests/"};
+constexpr const char* CORPUS[] = {"testdata/planted/", "testdata/tp/", "tests/"};
 constexpr const char* SRC[] = {"src/prism/", "src/gui/"};
 
 bool is_defect(const std::string& s) { return s == "FAILED" || s == "CRASH" || s == "SANFAIL"; }
@@ -98,7 +98,7 @@ std::string triage_text(const TriageSummary& s) {
     std::ostringstream o;
     o << "total FAILED: " << s.failed << "\n"
       << "third_party (out of scope): " << s.third_party << "\n"
-      << "testdata/tests (false alarm corpus): " << s.corpus << "\n"
+      << "testdata (false alarm corpus): " << s.corpus << "\n"
       << "src/prism|gui (manual review): " << s.src << "\n"
       << ".github (false alarm LANG-LINT): " << s.github << "\n"
       << "summary: " << s.real << " / " << s.false_alarm << " / " << s.out_of_scope << "\n";

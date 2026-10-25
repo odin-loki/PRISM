@@ -501,7 +501,7 @@ TEST_CASE("pir budget: $PRISM_FUNCTION_BUDGET in the pir stage (skips without cl
     auto dir = fs::temp_directory_path() / "prism_pir_budget_stage";
     fs::remove_all(dir);
     fs::create_directories(dir);
-    const fs::path loops = fs::path(PRISM_SOURCE_DIR) / "tests" / "pir" / "loops.c";
+    const fs::path loops = fs::path(PRISM_SOURCE_DIR) / "testdata" / "pir" / "loops.c";
     fs::copy_file(loops, dir / "loops.c");
     auto run = [&](const char* env) {
         if (env) test_setenv("PRISM_FUNCTION_BUDGET", env);
@@ -562,7 +562,7 @@ TEST_CASE("pir budget: the memory policy's re-checks of main share the function 
     auto dir = fs::temp_directory_path() / "prism_pir_budget_static_init";
     fs::remove_all(dir);
     fs::create_directories(dir);
-    const fs::path pir = fs::path(PRISM_SOURCE_DIR) / "tests" / "pir";
+    const fs::path pir = fs::path(PRISM_SOURCE_DIR) / "testdata" / "pir";
     fs::copy_file(pir / "static_init_value.cpp", dir / "value.cpp");
     auto run = [&](const char* file, const char* env, const std::string& cache) {
         if (env) test_setenv("PRISM_FUNCTION_BUDGET", env);

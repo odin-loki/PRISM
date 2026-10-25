@@ -59,7 +59,7 @@ namespace sd = prism::stages_detail;
 namespace {
 
 fs::path repo_root() { return fs::path(PRISM_SOURCE_DIR); }
-fs::path testdata() { return repo_root() / "testdata"; }
+fs::path testdata() { return repo_root() / "testdata" / "planted"; }
 
 std::string slurp(const fs::path& p) {
     std::ifstream in(p, std::ios::binary);

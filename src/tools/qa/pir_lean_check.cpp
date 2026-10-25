@@ -124,7 +124,7 @@ int pir_lean_check_main(const Args& args) {
             std::cout << "prism-qa pir-lean-check [TREE...] [--bin PRISM] [--checker EXE] [--jobs N]\n"
                          "                        [--json OUT.json] [--keep DIR]\n"
                          "C++ LLVM->PIR translator vs the proved Lean translator (proofs/refinement).\n"
-                         "Default trees: tests/pir and testdata. Exit 1 on a MISMATCH, 2 NOTRUN.\n";
+                         "Default trees: testdata/pir and testdata/planted. Exit 1 on a MISMATCH, 2 NOTRUN.\n";
             return 0;
         } else if (!a.starts_with("-")) trees.emplace_back(a);
         else {
@@ -144,7 +144,7 @@ int pir_lean_check_main(const Args& args) {
                      "(cd proofs/refinement && lake build)\n";
         return 2;
     }
-    if (trees.empty()) trees = {repo / "tests" / "pir", repo / "testdata"};
+    if (trees.empty()) trees = {repo / "testdata" / "pir", repo / "testdata" / "planted"};
 
     nlohmann::json summary = nlohmann::json::object();
     std::map<std::string, int> total;

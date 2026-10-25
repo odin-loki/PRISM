@@ -75,7 +75,7 @@ jobs:
       - name: GUI smoke (headless Qt, real pipeline run through the window)
         run: |
           mkdir -p gui-smoke/src
-          cp testdata/add_overflow.c testdata/div_param.c testdata/oob_write.c gui-smoke/src/
+          cp testdata/planted/add_overflow.c testdata/planted/div_param.c testdata/planted/oob_write.c gui-smoke/src/
           QT_QPA_PLATFORM=offscreen timeout 600 ./build/prism_gui gui-smoke/src --no-llm \
             --stage inventory,classify,lints,bmc --out gui-smoke/out \
             --smoke-screenshot gui-smoke/prism_gui.png
@@ -87,7 +87,7 @@ jobs:
           retention-days: 7
       - name: PRISM_BIN smoke (e2e lives in prism_tests / ctest)
         run: |
-          ./build/prism testdata/abs_ok.c --no-llm --stage inventory --out /tmp/prism-smoke-out
+          ./build/prism testdata/planted/abs_ok.c --no-llm --stage inventory --out /tmp/prism-smoke-out
           test -f /tmp/prism-smoke-out/report.json
       - uses: actions/upload-artifact@v4
         with:
@@ -127,7 +127,7 @@ jobs:
         run: .\build-win-cl\prism_tests.exe
       - name: PRISM_BIN smoke (real PE prism.exe)
         run: |
-          .\build-win-cl\prism.exe testdata\abs_ok.c --no-llm --stage inventory --out prism-smoke-out
+          .\build-win-cl\prism.exe testdata\planted\abs_ok.c --no-llm --stage inventory --out prism-smoke-out
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if (-not (Test-Path prism-smoke-out\report.json)) { Write-Error "no report.json"; exit 1 }
       - uses: actions/upload-artifact@v4
@@ -423,7 +423,7 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: |
           New-Item -ItemType Directory -Force gui-smoke\src | Out-Null
-          Copy-Item testdata\add_overflow.c, testdata\div_param.c, testdata\oob_write.c gui-smoke\src\
+          Copy-Item testdata\planted\add_overflow.c, testdata\planted\div_param.c, testdata\planted\oob_write.c gui-smoke\src\
           .\build-win-qt\prism_gui.exe gui-smoke\src --no-llm `
             --stage inventory,classify,lints --out gui-smoke\out `
             --smoke-screenshot gui-smoke\prism_gui.png

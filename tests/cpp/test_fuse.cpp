@@ -45,7 +45,7 @@ namespace {
 namespace fs = std::filesystem;
 using Bytes = std::vector<uint8_t>;
 
-fs::path td() { return fs::path(PRISM_SOURCE_DIR) / "testdata"; }
+fs::path td() { return fs::path(PRISM_SOURCE_DIR) / "testdata" / "planted"; }
 
 prism::FunctionInfo fn_named(const char* file, const char* name) {
     for (auto& f : prism::extract_functions(td() / file, file))

@@ -30,7 +30,7 @@ namespace fs = std::filesystem;
 
 namespace {
 
-fs::path testdata() { return fs::path(PRISM_SOURCE_DIR) / "testdata"; }
+fs::path testdata() { return fs::path(PRISM_SOURCE_DIR) / "testdata" / "planted"; }
 
 struct Work {
     fs::path dir;

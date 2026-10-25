@@ -34,7 +34,7 @@ FunctionInfo in_file(const fs::path& p, const std::string& name) {
 FunctionInfo fn(const std::string& name) {
     static std::map<std::string, FunctionInfo> all = [] {
         std::map<std::string, FunctionInfo> m;
-        for (auto& e : fs::directory_iterator(repo() / "testdata"))
+        for (auto& e : fs::directory_iterator(repo() / "testdata" / "planted"))
             if (e.path().extension() == ".c")
                 for (auto& f : prism::extract_functions(e.path(), e.path().filename().string()))
                     m.emplace(f.name, f);
@@ -111,7 +111,7 @@ TEST_CASE("interval: pointer and unmodelled syntax are skipped, not PROVED") {
                        "auto_type_gnu_bad", "static_local_bad", "extern_local_bad", "anon_enum_bad",
                        "alignas_bad", "compound_bad", "const_for_bad", "anon_struct_bad"})
         check_silent(fn(name));
-    auto td = repo() / "testdata";
+    auto td = repo() / "testdata" / "planted";
     check_silent(in_file(td / "throw_dtor.cpp", "throws_not_dtor"));
     check_silent(in_file(td / "try_catch.cpp", "try_ok"));
 }
@@ -171,13 +171,13 @@ TEST_CASE("interval LP64: long arithmetic is 64-bit") {
     check_failed(synth("int y = a; return y * 100000;", {{"int", "a"}}), "INT-SIGNED-OVF");
 }
 
-TEST_CASE("interval LP64: testdata_fp/long_arith.c is silent, its testdata_tp twins are FAILED") {
-    auto fp = repo() / "testdata_fp" / "long_arith.c";
+TEST_CASE("interval LP64: testdata/fp/long_arith.c is silent, its testdata/tp twins are FAILED") {
+    auto fp = repo() / "testdata" / "fp" / "long_arith.c";
     auto fns = prism::extract_functions(fp, fp.filename().string());
     CHECK(fns.size() == 4);
     for (auto& r : prism::run_interval(fns))
         CHECK_MESSAGE(r.status != prism::laws::FAILED, r.function.value_or(""), " ", r.message);
-    auto tp = repo() / "testdata_tp" / "long_arith.c";
+    auto tp = repo() / "testdata" / "tp" / "long_arith.c";
     for (auto* name : {"next_long", "square_ll", "ull_sum"})
         check_failed(in_file(tp, name), "INT-SIGNED-OVF");
 }

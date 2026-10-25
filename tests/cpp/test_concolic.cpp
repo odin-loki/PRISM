@@ -25,7 +25,7 @@ namespace {
 namespace fs = std::filesystem;
 namespace laws = prism::laws;
 
-fs::path td_root() { return fs::path(PRISM_SOURCE_DIR) / "testdata"; }
+fs::path td_root() { return fs::path(PRISM_SOURCE_DIR) / "testdata" / "planted"; }
 
 std::pair<prism::FunctionInfo, fs::path> fn_named(const std::string& name) {
     static std::map<std::string, std::pair<prism::FunctionInfo, fs::path>> cache = [] {

@@ -35,7 +35,7 @@ constexpr int64_t kI64Max = std::numeric_limits<int64_t>::max();
 
 fs::path repo() { return fs::path(PRISM_SOURCE_DIR); }
 
-fs::path td() { return repo() / "testdata"; }
+fs::path td() { return repo() / "testdata" / "planted"; }
 
 // The testdata function `name` (C or C++ file), with the file it came from.
 std::pair<FunctionInfo, fs::path> fn_named(const std::string& name) {
@@ -602,14 +602,14 @@ TEST_CASE("fuse without an LLM keeps the pointer NEEDS-HARNESS") {
     CHECK_FALSE(is(r, prism::laws::ERROR));
 }
 
-TEST_CASE("fuzz LP64: testdata_fp/long_arith.c never crashes, its testdata_tp twins do") {
-    auto fp = repo() / "testdata_fp" / "long_arith.c";
+TEST_CASE("fuzz LP64: testdata/fp/long_arith.c never crashes, its testdata/tp twins do") {
+    auto fp = repo() / "testdata" / "fp" / "long_arith.c";
     for (auto& f : prism::extract_functions(fp, fp.string())) {
         auto r = sd::fuzz_function(f, fp, 0.3, 64, nullptr);
         CHECK_MESSAGE(r.status != prism::laws::CRASH, f.name, " ", r.message);
         CHECK_MESSAGE(r.status != prism::laws::ERROR, f.name, " ", r.message);
     }
-    auto tp = repo() / "testdata_tp" / "long_arith.c";
+    auto tp = repo() / "testdata" / "tp" / "long_arith.c";
     for (auto& f : prism::extract_functions(tp, tp.string())) {
         auto r = sd::fuzz_function(f, tp, 1.0, 256, nullptr);
         CHECK_MESSAGE(is(r, prism::laws::CRASH), f.name, " ", r.message);

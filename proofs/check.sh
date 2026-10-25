@@ -7,14 +7,14 @@
 #   2. `lake build` succeeds with no warning (Lean warns on every sorry);
 #   3. every main theorem's axioms are within {propext, Classical.choice,
 #      Quot.sound} (Prism/Axioms.lean; sorryAx or anything else fails);
-#   4. the exported truth tables equal tests/data/verdict_tables.json, which
+#   4. the exported truth tables equal testdata/fixtures/verdict_tables.json, which
 #      the C++ doctests (tests/cpp/test_main.cpp) check the code against.
 #
-# --write regenerates tests/data/verdict_tables.json instead of step 4's diff.
+# --write regenerates testdata/fixtures/verdict_tables.json instead of step 4's diff.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 repo="$(dirname "$here")"
-tables="$repo/tests/data/verdict_tables.json"
+tables="$repo/testdata/fixtures/verdict_tables.json"
 cd "$here"
 fail() { echo "proofs: FAIL: $*" >&2; exit 1; }
 # lean_audit (src/tools/lean_audit.cpp): the comment-aware source scan and the
@@ -55,8 +55,8 @@ if [ "${1:-}" = "--write" ]; then
   cp "$out" "$tables"
   echo "wrote $tables"
 else
-  diff -u "$tables" "$out" || fail "tests/data/verdict_tables.json differs from the Lean model (run proofs/check.sh --write)"
-  echo "ok: tests/data/verdict_tables.json equals the Lean model"
+  diff -u "$tables" "$out" || fail "testdata/fixtures/verdict_tables.json differs from the Lean model (run proofs/check.sh --write)"
+  echo "ok: testdata/fixtures/verdict_tables.json equals the Lean model"
 fi
 rm -f "$log" "$out"
 echo "proofs: OK"

@@ -1,4 +1,4 @@
-// Table-driven PIR stage on tests/pir; edit this file directly when adding cases.
+// Table-driven PIR stage on testdata/pir; edit this file directly when adding cases.
 #include <doctest/doctest.h>
 #ifdef ERROR
 #  undef ERROR
@@ -331,10 +331,10 @@ bool skip_glibc_corpus_file(const char* pir_c_file) {
 }
 }  // namespace
 
-TEST_CASE("pir e2e: tests/pir verdict table (NOTRUN without clang/opt/LP64 probe)") {
+TEST_CASE("pir e2e: testdata/pir verdict table (NOTRUN without clang/opt/LP64 probe)") {
     auto cfg = prism::default_config();
     if (skip_without_frontend(cfg)) return;
-    auto dir = fs::path(PRISM_SOURCE_DIR) / "tests" / "pir";
+    auto dir = fs::path(PRISM_SOURCE_DIR) / "testdata" / "pir";
     cfg.root = dir;
 #ifdef _WIN32
     cfg.jobs = 1;  // parallel Z3 on Windows CI can leave simple cases UNKNOWN
@@ -383,7 +383,7 @@ TEST_CASE("pir e2e: Law 9 holds translation validation without --allow-exec") {
     auto cfg = prism::default_config();
     if (skip_without_frontend(cfg)) return;
     if (skip_glibc_corpus_file("overflow.c")) return;
-    auto dir = fs::path(PRISM_SOURCE_DIR) / "tests" / "pir";
+    auto dir = fs::path(PRISM_SOURCE_DIR) / "testdata" / "pir";
     cfg.root = dir;
     auto out = pp::run_pir({dir / "overflow.c"}, cfg);
     auto got = index(out);
@@ -400,7 +400,7 @@ TEST_CASE("pir e2e: --fp-checks is opt-in (NOTRUN without clang/opt)") {
     auto cfg = prism::default_config();
     if (skip_without_frontend(cfg)) return;
     if (skip_glibc_corpus_file("fp_arith.c")) return;
-    auto dir = fs::path(PRISM_SOURCE_DIR) / "tests" / "pir";
+    auto dir = fs::path(PRISM_SOURCE_DIR) / "testdata" / "pir";
     cfg.root = dir;
     cfg.fp_checks = true;
     auto out = pp::run_pir({dir / "fp_arith.c"}, cfg);
@@ -417,7 +417,7 @@ TEST_CASE("pir e2e: --strict-aliasing is opt-in (NOTRUN without clang/opt)") {
     auto cfg = prism::default_config();
     if (skip_without_frontend(cfg)) return;
     if (skip_glibc_corpus_file("mem_alias.c")) return;
-    auto dir = fs::path(PRISM_SOURCE_DIR) / "tests" / "pir";
+    auto dir = fs::path(PRISM_SOURCE_DIR) / "testdata" / "pir";
     cfg.root = dir;
     {
         auto out = pp::run_pir({dir / "mem_alias.c"}, cfg);

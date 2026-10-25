@@ -2,7 +2,7 @@ name: proofs
 
 # Lean 4 proof of the verdict laws (proofs/, docs/VERDICTS.md). Fails on any
 # sorry, any build warning, any axiom outside {propext, Classical.choice,
-# Quot.sound}, or truth tables that differ from tests/data/verdict_tables.json
+# Quot.sound}, or truth tables that differ from testdata/fixtures/verdict_tables.json
 # (the file the C++ and Python verdict code are tested against).
 
 on:
@@ -21,7 +21,7 @@ jobs:
         with:
           sparse-checkout: |
             proofs
-            tests/data
+            testdata/fixtures
             src/tools
           sparse-checkout-cone-mode: true
 

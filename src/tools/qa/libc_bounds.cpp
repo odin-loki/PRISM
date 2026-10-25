@@ -1,7 +1,7 @@
 // libc-bounds: size-bound sweep for the libc model contract harnesses
 // (roadmap 8.2).
 //
-// tests/conformance/libc-models/*_contracts.cpp prove each model's contract for
+// testdata/conformance/libc-models/*_contracts.cpp prove each model's contract for
 // objects of up to N bytes (harness.h, default N = 4). This re-runs every
 // `_true` harness alone with N = 4, 8, 16, ... (`#define N` before harness.h,
 // `--unwind 2N + 2` so every model loop can close) and reports per function

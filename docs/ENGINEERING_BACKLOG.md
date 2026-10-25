@@ -80,7 +80,7 @@ C++ surface: `prism svcomp`, `src/prism/svcomp/`. **Keep** `tools/svcomp/prism.p
 
 ## 8.2 LLVM → PIR refinement (Lean checker)
 
-Grow **`agree-ext`** beyond 139 functions (`docs/PROOFS_REFINEMENT.md`; `pir-lean-check` on `tests/pir` + `testdata`):
+Grow **`agree-ext`** beyond 139 functions (`docs/PROOFS_REFINEMENT.md`; `pir-lean-check` on `testdata/pir` + `testdata`):
 
 1. **D118** — **Done (checker):** Lean `hobjsz` + `memcpy selfOk` align C++; `pir-lean-check` **139** `agree-ext`, `heap` fixture **15** `agree-ext`, `mismatch=0`; `hobjsz` full sim in `XRefine` still `admit`
 2. **D136 (partial)** — stdio / FILE models: C++ Lean export emits `L hhavoc` for
@@ -89,7 +89,7 @@ Grow **`agree-ext`** beyond 139 functions (`docs/PROOFS_REFINEMENT.md`; `pir-lea
    hread`/`hhavoc` parity for `__prism_read_range`, `__prism_check` in stdio bodies.
 3. **`__prism_check` / `__prism_memset` / `__prism_fresh_cstr`** for inlined libc bodies
 
-Verify: `prism-qa pir-lean-check` on `tests/pir` + `testdata`.
+Verify: `prism-qa pir-lean-check` on `testdata/pir` + `testdata`.
 
 ## C++ port / Python elimination ([CPP_PORT_PLAN.md](CPP_PORT_PLAN.md))
 

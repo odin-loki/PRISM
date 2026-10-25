@@ -417,19 +417,19 @@ TEST_CASE("run_session: RLIMIT_AS applies to the child") {
 
 // ---------------------------------------------------------------- triage-selfscan
 TEST_CASE("triage-selfscan buckets the self-scan fixture") {
-    auto sarif = prism::qa::load_json(repo() / "tests" / "data" / "selfscan_min" / "report.sarif");
+    auto sarif = prism::qa::load_json(repo() / "testdata" / "fixtures" / "selfscan_min" / "report.sarif");
     REQUIRE(sarif);
     const auto text = prism::qa::triage_text(prism::qa::triage_selfscan(*sarif));
     CHECK(has_line(text, "total FAILED: 4"));
     CHECK(has_line(text, "third_party (out of scope): 1"));
-    CHECK(has_line(text, "testdata/tests (false alarm corpus): 1"));
+    CHECK(has_line(text, "testdata (false alarm corpus): 1"));
     CHECK(has_line(text, "src/prism|gui (manual review): 1"));
     CHECK(has_line(text, ".github (false alarm LANG-LINT): 1"));
     CHECK(has_line(text, "summary: 1 / 3 / 1"));
 
     CHECK(prism::qa::triage_classify("third_party/z3/a.c", "FAILED", "lints") == "out_of_scope");
     CHECK(prism::qa::triage_classify("x/third_party/a.c", "FAILED", "lints") == "out_of_scope");
-    CHECK(prism::qa::triage_classify("testdata_tp/a.c", "FAILED", "lints") == "false_alarm");
+    CHECK(prism::qa::triage_classify("testdata/tp/a.c", "FAILED", "lints") == "false_alarm");
     CHECK(prism::qa::triage_classify("tests/a.py", "FAILED", "polyglot") == "false_alarm");
     CHECK(prism::qa::triage_classify("src/gui/a.cpp", "FAILED", "lints") == "false_alarm");
     CHECK(prism::qa::triage_classify("src/prism/a.cpp", "CRASH", "sanitize") == "real");
@@ -451,7 +451,7 @@ TEST_CASE("triage-selfscan buckets the self-scan fixture") {
 
 TEST_CASE("prism-qa triage-selfscan prints the same lines") {
     auto r = prism::detail::run_session(
-        {sibling("prism-qa").string(), "triage-selfscan", (repo() / "tests" / "data" / "selfscan_min").string()});
+        {sibling("prism-qa").string(), "triage-selfscan", (repo() / "testdata" / "fixtures" / "selfscan_min").string()});
     REQUIRE(r.rc == 0);
     CHECK(has_line(lf(r.out), "total FAILED: 4"));
     CHECK(has_line(lf(r.out), "summary: 1 / 3 / 1"));
@@ -574,12 +574,12 @@ TEST_CASE("pir_lean_check fixtures give their expected verdicts") {
     }
 }
 
-TEST_CASE("pir-lean-check: tests/pir agrees with the proved translator") {
+TEST_CASE("pir-lean-check: testdata/pir agrees with the proved translator") {
     auto checker = built_checker();
     if (!checker) {
         // the driver itself reports NOTRUN (exit 2), never a pass
         auto r = prism::detail::run_session({sibling("prism-qa").string(), "pir-lean-check",
-                                             (repo() / "tests" / "pir").string(), "--checker",
+                                             (repo() / "testdata" / "pir").string(), "--checker",
                                              "/nonexistent/pir_lean_check"});
         CHECK(r.rc == 2);
         CHECK(r.out.find("NOTRUN") != std::string::npos);
@@ -587,7 +587,7 @@ TEST_CASE("pir-lean-check: tests/pir agrees with the proved translator") {
         return;
     }
     auto r = prism::detail::run_session({sibling("prism-qa").string(), "pir-lean-check",
-                                         (repo() / "tests" / "pir").string(), "--bin", sibling("prism").string(),
+                                         (repo() / "testdata" / "pir").string(), "--bin", sibling("prism").string(),
                                          "--checker", checker->string()});
     CHECK_MESSAGE(r.rc == 0, (r.out + r.err));
     std::smatch m;

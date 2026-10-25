@@ -2,7 +2,7 @@
 // sample of triage merges for manual review.
 //
 //     prism_ai measure triage OUT/            # clusters vs exact-key dedup
-//     prism_ai measure ask OUT/ tests/data/ask_questions.jsonl --prism build/prism
+//     prism_ai measure ask OUT/ testdata/fixtures/ask_questions.jsonl --prism build/prism
 //     prism_ai measure regress OUT/           # manifest of `prism regress --run`
 //     prism_ai measure draft OUT/             # draft_*.json of `prism draft`
 //     prism_ai sample-pairs OUT/ [--n 40] [--seed 1]

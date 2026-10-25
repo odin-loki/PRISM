@@ -10,7 +10,7 @@
 // confirm; once a human writes them into the source, the ordinary harness
 // path reports PROVED-ASSUMING. A drafted assumption can hide the bug (e.g.
 // p != NULL when NULL is a legal input), so it never yields a proof class
-// on its own (Law 6; tests/conformance ptrparam*_false). A counterexample found
+// on its own (Law 6; testdata/conformance ptrparam*_false). A counterexample found
 // under a drafted (not user-written) assumption is not reported as a defect:
 // the assumption may be too narrow, so the row stays NEEDS-HARNESS with the
 // counterexample attached for a reviewer.

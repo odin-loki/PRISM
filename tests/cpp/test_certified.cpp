@@ -371,11 +371,11 @@ TEST_CASE("certified: a checker that rejects leaves PROVED with the reason") {
     CHECK(v.extra.at("certificate_combined").find("one certificate per VC instead") != std::string::npos);
 }
 
-TEST_CASE("certified: the pir stage end to end on tests/pir (skips without clang/opt)") {
+TEST_CASE("certified: the pir stage end to end on testdata/pir (skips without clang/opt)") {
     auto cfg = prism::default_config();
     if (skip_without_pir_frontend(cfg)) return;
     CertTmp tmp;
-    auto dir = repo_root() / "tests" / "pir";
+    auto dir = repo_root() / "testdata" / "pir";
     cfg.root = dir;
     cfg.jobs = 1;
     cfg.certified = true;

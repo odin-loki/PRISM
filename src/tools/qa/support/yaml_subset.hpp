@@ -1,6 +1,6 @@
 #pragma once
 
-// The YAML subset the conformance task files use (tests/conformance/**.yml):
+// The YAML subset the conformance task files use (testdata/conformance/**.yml):
 // block mappings, block sequences (also of mappings: SV-COMP `properties:`),
 // flow sequences of scalars (`witness: f: [2147483647, 1]`), plain, 'single'
 // and "double" quoted scalars, and `#` comments. Anything else (block

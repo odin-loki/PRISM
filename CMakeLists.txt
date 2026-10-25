@@ -802,7 +802,7 @@ if(PRISM_TESTS)
     add_executable(fake_prism tests/cpp/fake_prism.cpp)
     add_dependencies(prism_tests fake_prism)
   endif()
-  # The tests find testdata/, proofs/ and tests/data/ from the source dir,
+  # The tests find testdata/ (see testdata/README.md) and proofs/ from the source dir,
   # not from __FILE__: Ninja passes sources relative to the build dir
   # ("../tests/cpp/..."), which resolves only when run from build/, and CI
   # runs ./build/prism_tests from the repo root.

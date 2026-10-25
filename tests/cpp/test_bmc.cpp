@@ -24,7 +24,7 @@ namespace {
 namespace fs = std::filesystem;
 namespace laws = prism::laws;
 
-fs::path td_root() { return fs::path(PRISM_SOURCE_DIR) / "testdata"; }
+fs::path td_root() { return fs::path(PRISM_SOURCE_DIR) / "testdata" / "planted"; }
 
 using Names = std::vector<std::string_view>;
 

@@ -16,15 +16,15 @@
 
   <rundefinition name="no-overflow">
     <tasks name="subset">
-      <include>../../tests/conformance/sv-comp/*/*.yml</include>
-      <propertyfile>../../tests/conformance/sv-comp/properties/no-overflow.prp</propertyfile>
+      <include>../../testdata/conformance/sv-comp/*/*.yml</include>
+      <propertyfile>../../testdata/conformance/sv-comp/properties/no-overflow.prp</propertyfile>
     </tasks>
   </rundefinition>
 
   <rundefinition name="unreach-call">
     <tasks name="subset">
-      <include>../../tests/conformance/sv-comp/*/*.yml</include>
-      <propertyfile>../../tests/conformance/sv-comp/properties/unreach-call.prp</propertyfile>
+      <include>../../testdata/conformance/sv-comp/*/*.yml</include>
+      <propertyfile>../../testdata/conformance/sv-comp/properties/unreach-call.prp</propertyfile>
     </tasks>
   </rundefinition>
 </benchmark>

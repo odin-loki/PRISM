@@ -22,7 +22,7 @@
 namespace {
 
 std::filesystem::path td() {
-    return std::filesystem::path(PRISM_SOURCE_DIR) / "testdata";
+    return std::filesystem::path(PRISM_SOURCE_DIR) / "testdata" / "planted";
 }
 
 std::vector<prism::Finding> with_cls(const std::vector<prism::Finding>& hits, const std::string& cls) {

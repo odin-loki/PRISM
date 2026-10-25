@@ -1,7 +1,7 @@
-// The planted-bug lint corpus: every testdata/ plant with the rule it must
-// raise, the functions it must name and the twins that must stay silent.
+// The planted-bug lint corpus: every testdata/planted/ plant with the rule it
+// must raise, the functions it must name and the twins that must stay silent.
 // The table (lint_corpus_rows.inc) holds one row per (file, rule set)
-// assertion; a row whose file holds '*' is a glob over testdata/ whose
+// assertion; a row whose file holds '*' is a glob over testdata/planted/ whose
 // matches must all stay silent, minus names containing a `skip` substring.
 
 #include <doctest/doctest.h>
@@ -31,9 +31,8 @@
 namespace {
 namespace fs = std::filesystem;
 
-// The repository's testdata/, from the source dir CMake passes in
-// (PRISM_SOURCE_DIR): any cwd works, as CI runs ./build/prism_tests.
-fs::path corpus_root() { return fs::path(PRISM_SOURCE_DIR) / "testdata"; }
+// testdata/planted/, from the source dir CMake passes in (PRISM_SOURCE_DIR).
+fs::path corpus_root() { return fs::path(PRISM_SOURCE_DIR) / "testdata" / "planted"; }
 
 enum class Expect { Hits, None, Any };
 
@@ -218,7 +217,7 @@ prism::FunctionInfo corpus_fn(const char* name) {
         for (auto& f : prism::extract_functions(e.path(), e.path().filename().string()))
             if (f.name == name) return f;
     }
-    FAIL("no function " << name << " in testdata/*.c");
+    FAIL("no function " << name << " in testdata/planted/*.c");
     return {};
 }
 }  // namespace

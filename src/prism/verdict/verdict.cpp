@@ -1,5 +1,5 @@
 // The verdict lattice. Pure: no I/O. Image of proofs/Prism/Verdict.lean,
-// checked entry by entry against tests/data/verdict_tables.json.
+// checked entry by entry against testdata/fixtures/verdict_tables.json.
 #include "prism/verdict.hpp"
 
 namespace prism::verdict {

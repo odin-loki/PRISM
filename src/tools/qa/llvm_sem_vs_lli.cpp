@@ -175,7 +175,7 @@ int llvm_sem_vs_lli_main(const Args& args) {
             std::cout << "prism-qa llvm-sem-vs-lli [FILE.c...] [--bin PRISM] [--vectors N] [--seed S]\n"
                          "                         [--pairs DIR]\n"
                          "The formal LLVM semantics (llvm_eval, proofs/refinement) against lli on the\n"
-                         "pir stage's IR. Default files: tests/pir/*.c. --pairs: existing .pirl files\n"
+                         "pir stage's IR. Default files: testdata/pir/*.c. --pairs: existing .pirl files\n"
                          "(<dir>/*<file name>*.pirl) instead of running PRISM. Exit 1 on a\n"
                          "disagreement, 2 NOTRUN. Runs the programs: trusted test programs only.\n";
             return 0;
@@ -208,7 +208,7 @@ int llvm_sem_vs_lli_main(const Args& args) {
         return 2;
     }
     if (files.empty()) {
-        for (auto& e : fs::directory_iterator(repo / "tests" / "pir", ec))
+        for (auto& e : fs::directory_iterator(repo / "testdata" / "pir", ec))
             if (e.is_regular_file() && e.path().extension() == ".c") files.push_back(e.path());
         std::sort(files.begin(), files.end());
     }

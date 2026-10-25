@@ -443,7 +443,7 @@ TEST_CASE("a real run through the window (prism beside the test binary)") {
     const char* prism_name = "prism";
 #endif
     const auto prism = fs::path(QCoreApplication::applicationDirPath().toStdString()) / prism_name;
-    const auto src = repo_root() / "testdata" / "div_param.c";
+    const auto src = repo_root() / "testdata" / "planted" / "div_param.c";
     if (!fs::exists(prism) || !fs::exists(src)) {
         MESSAGE("NOTRUN: prism binary or testdata not found");
         return;

@@ -60,19 +60,19 @@ bool has_line(const std::string& text, const std::string& line) {
 }  // namespace
 
 TEST_CASE("triage-selfscan buckets the self-scan fixture") {
-    auto sarif = prism::qa::load_json(repo() / "tests" / "data" / "selfscan_min" / "report.sarif");
+    auto sarif = prism::qa::load_json(repo() / "testdata" / "fixtures" / "selfscan_min" / "report.sarif");
     REQUIRE(sarif);
     const auto text = prism::qa::triage_text(prism::qa::triage_selfscan(*sarif));
     CHECK(has_line(text, "total FAILED: 4"));
     CHECK(has_line(text, "third_party (out of scope): 1"));
-    CHECK(has_line(text, "testdata/tests (false alarm corpus): 1"));
+    CHECK(has_line(text, "testdata (false alarm corpus): 1"));
     CHECK(has_line(text, "src/prism|gui (manual review): 1"));
     CHECK(has_line(text, ".github (false alarm LANG-LINT): 1"));
     CHECK(has_line(text, "summary: 1 / 3 / 1"));
 
     CHECK(prism::qa::triage_classify("third_party/z3/a.c", "FAILED", "lints") == "out_of_scope");
     CHECK(prism::qa::triage_classify("x/third_party/a.c", "FAILED", "lints") == "out_of_scope");
-    CHECK(prism::qa::triage_classify("testdata_tp/a.c", "FAILED", "lints") == "false_alarm");
+    CHECK(prism::qa::triage_classify("testdata/tp/a.c", "FAILED", "lints") == "false_alarm");
     CHECK(prism::qa::triage_classify("tests/a.py", "FAILED", "polyglot") == "false_alarm");
     CHECK(prism::qa::triage_classify("src/gui/a.cpp", "FAILED", "lints") == "false_alarm");
     CHECK(prism::qa::triage_classify("src/prism/a.cpp", "CRASH", "sanitize") == "real");

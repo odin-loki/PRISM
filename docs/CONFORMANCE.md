@@ -2,7 +2,7 @@
 
 Roadmap Part 2.7 (conformance suite), 5.5 / 6.2 (random-program testing) and
 6.1 (release gate). The suite and its sources are described in
-[`tests/conformance/SOURCES.md`](../tests/conformance/SOURCES.md); verdicts
+[`testdata/conformance/SOURCES.md`](../testdata/conformance/SOURCES.md); verdicts
 are defined in [VERDICTS.md](VERDICTS.md).
 
 ## Metrics
@@ -86,7 +86,7 @@ machine, never a different sat/unsat answer).
 Label self-check: all in-house tasks ok (the 34 new `regress/` tasks
 included), pointer-parameter tasks skipped.
 
-### In-house suite + SV-COMP (`tests/conformance`)
+### In-house suite + SV-COMP (`testdata/conformance`)
 
 The original 263 tasks, `bmc` stage, before → after:
 
@@ -305,9 +305,9 @@ After merging the AI layer and the `pir` stage the C++ campaign was re-run
 with both verdict stages: 464 proofs executed under UBSan, **0 wrong**; 431
 `FAILED`, 430 replay; 0 suspected false alarms.
 
-### ESBMC C++ regression tests (roadmap 2.7; `tests/conformance/esbmc-cpp`, fetched set)
+### ESBMC C++ regression tests (roadmap 2.7; `testdata/conformance/esbmc-cpp`, fetched set)
 
-Source, licence and conversion rules: `tests/conformance/SOURCES.md`
+Source, licence and conversion rules: `testdata/conformance/SOURCES.md`
 ("`esbmc-cpp/`"). Labels are ESBMC's `VERIFICATION SUCCESSFUL/FAILED` for
 `main`, property-scoped to ESBMC's default checks (assertions, bounds,
 pointers, division by zero). No counterexample is replayed (whole programs):
@@ -395,7 +395,7 @@ Three subset tasks (`github_5868_find_last_not_of`, `string/compare_ordering`,
 machine and are listed as "never reported" with `TIMEOUT` (they are proved
 or refuted within it when the machine is idle).
 
-### libc model contracts (roadmap 8.2; `tests/conformance/libc-models`)
+### libc model contracts (roadmap 8.2; `testdata/conformance/libc-models`)
 
 125 functions (53 contract harnesses, 72 false twins); see docs/PIR.md
 "Library models verified by PRISM". C models: 41 harnesses (every function
@@ -499,7 +499,7 @@ encoding design, so the differential oracle cannot catch them.
 
 Label self-check: 212 functions ok, 6 skipped (pointer parameters), 0 failed.
 
-#### In-house suite + SV-COMP (`tests/conformance`, 263 tasks)
+#### In-house suite + SV-COMP (`testdata/conformance`, 263 tasks)
 
 | stage | origin | true | false | **wrong proofs** | completeness | detection (replayed cex) | refuted, not replayed | false alarms | BOUNDED | no answer | Law 6 |
 |---|---|---|---|---|---|---|---|---|---|---|---|
@@ -540,7 +540,7 @@ out on a 59k-step multiplier proof under load (checker budget is now
 `max(60 s, 4 × timeout)`). pir also lowers C23 units that do not compile as
 C17 as C23 (c23 tasks: 8/11 proved and refuted, from 0).
 
-### Concurrency (`tests/conformance/concurrency`, 22 labels, roadmap 2.6)
+### Concurrency (`testdata/conformance/concurrency`, 22 labels, roadmap 2.6)
 
 This suite is scored by the `conc` stage only (docs/CONCURRENCY.md), and
 `conc` is scored on it only. The labels are `norace`, `noassert` and
@@ -644,7 +644,7 @@ with `./build/prism FILE --no-llm --stage inventory,classify,bmc`.
 **Status: S1–S7, R1, R2, F1–F6 are fixed in both engines** (typed encoder:
 `src/prism/bmc_encoder.inc`; inliner `src/prism/inline.cpp`). Every reproducer below is a regression test
 (doctest `bmc soundness: ...` in `tests/cpp/test_main.cpp`, conformance tasks under
-`tests/conformance/prism/regress/`). F7 (a false alarm, not a soundness
+`testdata/conformance/prism/regress/`). F7 (a false alarm, not a soundness
 issue) is fixed too. The fix, in one paragraph: every value carries its C type
 (width, signedness; LP64), integer promotions and the usual arithmetic
 conversions are applied before every operator, every signed operation is
@@ -812,7 +812,7 @@ globals (the constructors' stores are not carried into `main`); otherwise
 `src/prism/bmc.cpp`) turns a proof or BOUNDED of `main` into `NEEDS-HARNESS` when
 the file defines a constructor. Tasks: ESBMC
 `try_catch/lower-exceptions_static_init_fail`, `cpp11/constructors/Constructor9-1`;
-`tests/pir/static_init_{throw,value,ok}.cpp`, doctest "bmc soundness:
+`testdata/pir/static_init_{throw,value,ok}.cpp`, doctest "bmc soundness:
 dynamic initialisation before main (S8)" in `tests/cpp/test_main.cpp`.
 
 ### Robustness (no verdict where one was possible)
@@ -962,7 +962,7 @@ by pointer, the thrown pointer's value, and `__cxa_begin_catch` returns it;
 Itanium runtime's handler count (negative while rethrown; a rethrown
 exception caught again is not pushed twice and is destroyed only when its
 last handler ends). Regression pairs:
-`tests/conformance/prism/regress/{eh_catch_base_offset,eh_catch_pointer,eh_nested_rethrow,typeid_fundamental,eh_catch_virtual_base}_{true,false}.cpp`
+`testdata/conformance/prism/regress/{eh_catch_base_offset,eh_catch_pointer,eh_nested_rethrow,typeid_fundamental,eh_catch_virtual_base}_{true,false}.cpp`
 (pir 4/4 proved, 4/4 refuted and replayed; the virtual-base pair is
 NEEDS-HARNESS by design).
 

@@ -2,7 +2,7 @@
 // src/prism/checkers_core.cpp, and the CTRL-FALLTHROUGH switch rule of the
 // Clang-AST layer): the "assigned then used unchecked" API branches, the
 // C-only dispatch of STR-STRNCPY-NUL / STR-SNPRINTF, the real-code false
-// alarms fixed in testdata_fp/ with their testdata_tp/ twins, and the CVE
+// alarms fixed in testdata/fp/ with their testdata/tp/ twins, and the CVE
 // shapes of STR-NULL-MEMBER, PTR-CHAIN-NULL and MEM-COPY-LEN.
 
 #include <doctest/doctest.h>
@@ -65,17 +65,17 @@ std::set<int> lines_of(const std::vector<prism::Finding>& fs_, const std::string
 }
 
 std::vector<prism::Finding> lint_tp(const char* name) {
-    auto root = repo("testdata_tp");
+    auto root = repo("testdata/tp");
     return prism::run_lints({root / name}, root);
 }
 
 std::vector<prism::Finding> lint_fp(const char* name) {
-    auto root = repo("testdata_fp");
+    auto root = repo("testdata/fp");
     return prism::run_lints({root / name}, root);
 }
 
 std::vector<prism::Finding> lint_td(const char* name) {
-    auto root = repo("testdata");
+    auto root = repo("testdata/planted");
     return prism::run_lints({root / name}, root);
 }
 
@@ -507,6 +507,6 @@ TEST_CASE("CTRL-FALLTHROUGH (Clang AST): SwitchStmt terminates only with a defau
         }
         return out;
     };
-    CHECK(ast_rows("testdata_fp", "nested_switch.c").empty());
-    CHECK(ast_rows("testdata_tp", "nested_switch.c") == std::set<int>{8, 25, 40});
+    CHECK(ast_rows("testdata/fp", "nested_switch.c").empty());
+    CHECK(ast_rows("testdata/tp", "nested_switch.c") == std::set<int>{8, 25, 40});
 }

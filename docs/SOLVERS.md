@@ -124,7 +124,7 @@ and the note says `DISAGREEMENT`.
 - Bitwuzla (and any SMT-LIB2 extra solver) gets a portable copy of the
   formula (`detail::portable_smt2`): Z3 prints 1-argument `(or x)` and its own
   `bvsmul_noovfl` / `bvsmul_noudfl` / `bvumul_noovfl`, which Bitwuzla
-  rejects. Before this, Bitwuzla failed on 119 of the first 120 `tests/pir` VCs (it
+  rejects. Before this, Bitwuzla failed on 119 of the first 120 `testdata/pir` VCs (it
   answered "unknown" in milliseconds, so it never won). The rewrite is an
   equivalence (1-argument `and`/`or` dropped; the overflow predicates stated
   on the double-width product); the doctest checks it with Z3.
@@ -248,7 +248,7 @@ The exit criterion is "the portfolio beats Z3 alone on total time over the
 conformance suite's VCs". `prism-qa solver-bench` (`src/tools/qa/solver_bench.cpp`)
 measures exactly that:
 `prism --pir-vcs` writes every VC of every encodable function of the 263
-conformance tasks (`tests/conformance/prism` and `sv-comp`, unwind 8), and
+conformance tasks (`testdata/conformance/prism` and `sv-comp`, unwind 8), and
 `prism --solve-smt2` answers each VC three times back to back: Z3 alone
 (`--z3-only`), the portfolio with no history (a fresh history per VC), and
 the portfolio scheduling from the history it built on the VCs before
@@ -290,7 +290,7 @@ average 7–9 during the run):
 ## Learned scheduler (roadmap 3.1 "learned scheduler", 9.3), measured 2026-09-23
 
 **Data.** `PRISM_PREDICT_COLLECT=DIR prism_tests -tc="ai-assist predict collect*"`
-with `DIR/roots.txt` = `tests/pir`, `tests/conformance` (prism, sv-comp,
+with `DIR/roots.txt` = `testdata/pir`, `testdata/conformance` (prism, sv-comp,
 esbmc-cpp, libc-models, concurrency) and `testdata`: 2,247 source files, in a
 hash-shuffled order. Every encodable function goes through pir; for up to 6
 VCs per function (unwind 8) **every member runs alone**: Z3, Bitwuzla,
@@ -416,7 +416,7 @@ the part of a query PRISM controls and records the rest.
 installed member: Z3, Bitwuzla, CaDiCaL, Kissat, ProbSAT; learned
 scheduler on; a fresh solver cache per call, so nothing is a cache hit) on
 640 recorded pir VCs of the end-to-end run (600 sampled, plus the VC of the
-end-to-end stall, `tests/pir/div0.c` `mod_min_bad`, 40 times per pass):
+end-to-end stall, `testdata/pir/div0.c` `mod_min_bad`, 40 times per pass):
 6 passes with 4 calls in parallel (3,840 calls, worst 0.86 s), then 8 passes
 with 16 in parallel while a `dd ... conv=fdatasync` loop kept 300 MB of
 writes going and the doctest suite and five other agents ran (5,120 calls,

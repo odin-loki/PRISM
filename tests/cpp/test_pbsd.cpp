@@ -22,7 +22,7 @@ namespace {
 namespace fs = std::filesystem;
 namespace laws = prism::laws;
 
-fs::path td() { return fs::path(PRISM_SOURCE_DIR) / "testdata"; }
+fs::path td() { return fs::path(PRISM_SOURCE_DIR) / "testdata" / "planted"; }
 
 fs::path missing_root() { return fs::current_path().root_path() / "prism-no-such-paranoidbsd"; }
 

@@ -363,7 +363,7 @@ int score_main(int argc, char** argv) {
             std::cout << "prism svcomp score [--property no-overflow|unreach-call] [--jobs N] [--out DIR]\n"
                          "                   [--timeout S] [--only SUBSTRING] [--suite DIR] [--prism BIN]\n"
                          "Runs `prism svcomp` on every task of the pinned SV-COMP subset\n"
-                         "(tests/conformance/sv-comp) with a verdict for the property, one task per\n"
+                         "(testdata/conformance/sv-comp) with a verdict for the property, one task per\n"
                          "process session (a timeout kills the whole tree), and scores it with SV-COMP\n"
                          "points: correct true +2, correct false +1, incorrect true -32, incorrect false\n"
                          "-16, unknown/error/timeout 0. No validator runs, so the score is an unvalidated\n"
@@ -384,10 +384,10 @@ int score_main(int argc, char** argv) {
         auto repo = find_repo(fs::current_path());
         if (!repo) repo = find_repo(self_exe(nullptr).parent_path());
         if (!repo) {
-            std::cerr << "prism svcomp score: no tests/conformance/sv-comp here; pass --suite DIR\n";
+            std::cerr << "prism svcomp score: no testdata/conformance/sv-comp here; pass --suite DIR\n";
             return 2;
         }
-        suite = *repo / "tests" / "conformance" / "sv-comp";
+        suite = *repo / "testdata" / "conformance" / "sv-comp";
     }
     std::error_code ec;
     const fs::path work = fs::weakly_canonical(fs::absolute(out), ec);
@@ -696,7 +696,7 @@ int svcomp_main(int argc, char** argv) {
                          "PROVED-ASSUMING or BOUNDED); false only from a refutation whose counterexample\n"
                          "replays. Replay compiles and runs the task: --allow-exec (Law 9); without it\n"
                          "every refutation is unknown. docs/SVCOMP.md has the rules.\n"
-                         "  prism svcomp score --help   score the pinned subset (tests/conformance/sv-comp)\n"
+                         "  prism svcomp score --help   score the pinned subset (testdata/conformance/sv-comp)\n"
                          "  prism svcomp pack --help    build the SV-COMP tool archive\n";
             return 0;
         } else if (!a.starts_with("-") && !task) {

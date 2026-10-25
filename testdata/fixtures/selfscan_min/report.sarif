@@ -5,7 +5,7 @@
     {
       "results": [
         {
-          "locations": [{"physicalLocation": {"artifactLocation": {"uri": "testdata/foo.c"}}}],
+          "locations": [{"physicalLocation": {"artifactLocation": {"uri": "testdata/planted/foo.c"}}}],
           "properties": {"status": "FAILED", "stage": "lints"}
         },
         {

@@ -3,7 +3,7 @@ import Prism.Verdict
 /-!
 Truth tables of every function in `Prism.Verdict` over its whole finite
 domain, as JSON. `lake exe verdict_tables` prints this; the output is
-committed as `tests/data/verdict_tables.json` and the C++ doctest and the
+committed as `testdata/fixtures/verdict_tables.json` and the C++ doctest and the
 Python test compare the running code with it entry by entry.
 
 Confidence ranges over the naturals, so its table is a sample grid (every

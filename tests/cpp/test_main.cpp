@@ -121,11 +121,9 @@ static std::filesystem::path win_cmd_tool(const std::filesystem::path& dir, cons
 }
 #endif
 
-// testdata lives at <repo>/testdata. Walk from this file so a space in
-// "Code Analysis" is never split the way an env var / argv path would be.
+// Planted-bug sources live at <repo>/testdata/planted (see testdata/README.md).
 static std::filesystem::path testdata_root() {
-    return std::filesystem::path(PRISM_SOURCE_DIR)
-           / "testdata";
+    return std::filesystem::path(PRISM_SOURCE_DIR) / "testdata" / "planted";
 }
 
 static std::string extra_get(const prism::Finding& f, const char* key) {
@@ -260,8 +258,8 @@ TEST_CASE("one-line return is not missing-return") {
     CHECK_FALSE(oneline_ok);
 }
 
-// testdata_fp/ (correct code in the idioms the lints used to misread) and
-// testdata_tp/ (the buggy twins) sit beside testdata/. Same corpus and
+// testdata/fp/ (correct code in the idioms the lints used to misread) and
+// testdata/tp/ (the buggy twins) sit under testdata/. Same corpus and
 // expectations as the former tests/test_false_positives.py (rest: test_cparse.cpp).
 static std::filesystem::path repo_dir(const char* name) {
     return std::filesystem::path(PRISM_SOURCE_DIR) / name;
@@ -280,7 +278,7 @@ static bool has_hit(const std::vector<prism::Finding>& fs, int line, const char*
 }
 
 TEST_CASE("false-positive corpus: zero FAILED lint findings") {
-    auto root = repo_dir("testdata_fp");
+    auto root = repo_dir("testdata/fp");
     auto srcs = prism::iter_sources(root);
     CHECK(srcs.size() >= 20);
     for (auto& f : prism::run_lints(srcs, root)) {
@@ -295,7 +293,7 @@ TEST_CASE("false-positive corpus: zero FAILED lint findings") {
 }
 
 TEST_CASE("true-positive twins still fire") {
-    auto root = repo_dir("testdata_tp");
+    auto root = repo_dir("testdata/tp");
     auto lint = [&](const char* name) { return prism::run_lints({root / name}, root); };
     auto uaf = lint("uaf_paths.c");
     CHECK(has_hit(uaf, 13, "MEM-UAF"));
@@ -332,7 +330,7 @@ TEST_CASE("true-positive twins still fire") {
 }
 
 TEST_CASE("parser forms and PARSE-GAP") {
-    auto fp = repo_dir("testdata_fp");
+    auto fp = repo_dir("testdata/fp");
     CHECK(fn_names(fp / "methods.cpp") ==
           std::vector<std::string>{"Buffer::Buffer", "Buffer::~Buffer", "Buffer::ok", "Buffer::size",
                                    "Buffer::fill", "use_buffer"});
@@ -347,7 +345,7 @@ TEST_CASE("parser forms and PARSE-GAP") {
     CHECK(kinds["attr_first"] == "SCALAR");
     for (auto& f : prism::extract_functions(fp / "knr_style.c")) CHECK(f.kind == "OTHER");
 
-    auto gap = repo_dir("testdata_tp") / "parse_gap.c";
+    auto gap = repo_dir("testdata/tp") / "parse_gap.c";
     auto gaps = prism::parse_gaps(gap);
     REQUIRE(gaps.size() == 1);
     CHECK(gaps[0].first == 8);
@@ -411,7 +409,7 @@ static std::vector<prism::FunctionInfo> fns_of_text(const std::string& src, cons
 }
 
 TEST_CASE("real-world forms: export macros and TEST() bodies are parsed") {
-    auto fp = repo_dir("testdata_fp");
+    auto fp = repo_dir("testdata/fp");
     CHECK(fn_names(fp / "realworld_forms.c") ==
           std::vector<std::string>{"jsmn_count", "version_string", "is_empty", "fixed_buffers",
                                    "decimal_point", "same_type", "set_value"});
@@ -419,7 +417,7 @@ TEST_CASE("real-world forms: export macros and TEST() bodies are parsed") {
     for (auto& f : prism::extract_functions(fp / "realworld_forms.c")) kinds[f.name] = f.kind;
     CHECK(kinds["is_empty"] == "POINTER");
     CHECK(kinds["version_string"] == "VOID");
-    auto tp = repo_dir("testdata_tp");
+    auto tp = repo_dir("testdata/tp");
     std::map<std::string, std::string> tk;
     for (auto& f : prism::extract_functions(tp / "realworld_twins.c")) tk[f.name] = f.kind;
     CHECK(tk["TEST_alloc"] == "OTHER");
@@ -444,7 +442,7 @@ TEST_CASE("real-world forms: export macros and TEST() bodies are parsed") {
 }
 
 TEST_CASE("real-world: zlib K&R forms parse") {
-    auto fp = repo_dir("testdata_fp");
+    auto fp = repo_dir("testdata/fp");
     CHECK(fn_names(fp / "realworld_knr.c") ==
           std::vector<std::string>{"fill_window", "deflate_stored", "once", "flush_block", "after_ifdef"});
     // An unreadable K&R head stays a gap: test_cparse.cpp "C++ shapes".
@@ -6125,14 +6123,14 @@ TEST_CASE("pir: VCs are solver-neutral SMT-LIB2 per property") {
     CHECK(prop);
 }
 
-TEST_CASE("pir: clang round trip on tests/pir (skips without clang/opt)") {
+TEST_CASE("pir: clang round trip on testdata/pir (skips without clang/opt)") {
     auto cfg = prism::default_config();
     std::string why;
     if (!prism::pir::frontend_usable(cfg, &why)) {
         MESSAGE(why);
         return;
     }
-    auto dir = testdata_root().parent_path() / "tests" / "pir";
+    auto dir = testdata_root().parent_path() / "pir";
     cfg.root = dir;
     cfg.jobs = 1;
     auto out = prism::pir::run_pir({dir / "overflow.c", dir / "unencoded.c", dir / "uninit.c"}, cfg);
@@ -6900,7 +6898,7 @@ TEST_CASE("solver bench: portfolio vs Z3 alone" * doctest::skip()) {
 
 // ---------------------------------------------------------------------------
 // Verdict module equals the Lean model (docs/VERDICTS.md). The domain is
-// finite, so tests/data/verdict_tables.json (printed by `lake exe
+// finite, so testdata/fixtures/verdict_tables.json (printed by `lake exe
 // verdict_tables` from proofs/Prism/Verdict.lean, where the laws are proved)
 // is compared with src/prism/verdict/ entry by entry: every verdict, every
 // merge pair, every rewrite pair, every (origin, status, certificate) and
@@ -6913,7 +6911,7 @@ TEST_CASE("solver bench: portfolio vs Z3 alone" * doctest::skip()) {
 namespace {
 
 nlohmann::json verdict_tables() {
-    auto p = std::filesystem::path(PRISM_SOURCE_DIR) / "tests" / "data" / "verdict_tables.json";
+    auto p = std::filesystem::path(PRISM_SOURCE_DIR) / "testdata" / "fixtures" / "verdict_tables.json";
     std::ifstream in(p);
     REQUIRE(in.good());
     return nlohmann::json::parse(in);

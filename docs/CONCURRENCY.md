@@ -12,7 +12,7 @@ data race counts as a property violation.
 | Engine | C++ only: `src/prism/conc/`, `include/prism/conc.hpp`. The Python engine is frozen (roadmap D8) and records one `NOTRUN` row: "C++ engine only (Python engine frozen as oracle, roadmap D8)" |
 | Verdict audit | origin `solver` in `proofs/Prism/Verdict.lean`, `src/prism/verdict/verdict.cpp`. The stage **never** emits `PROVED*` |
 | Executes scanned code | no. It runs clang/opt to compile, then Z3 in-process (Law 9: not in `EXEC_STAGES`) |
-| Tests | `tests/conc/*.c`, `tests/cpp/test_conc.cpp` (doctest), `tests/conformance/concurrency/` (scored by `prism-qa conformance`) |
+| Tests | `tests/conc/*.c`, `tests/cpp/test_conc.cpp` (doctest), `testdata/conformance/concurrency/` (scored by `prism-qa conformance`) |
 
 ## What it reports
 
@@ -246,7 +246,7 @@ Where the implementation goes **beyond** what is proved:
 5. **The formula encoding.** That `reach`/`exec`/`pc'` over the unrolled DAG
    implements "`Exec` of the segment from `pc` to `cs`" is argued in this
    document and tested (`tests/cpp/test_conc.cpp`,
-   `tests/conformance/concurrency`), not proved.
+   `testdata/conformance/concurrency`), not proved.
 6. **Context-switch points only before visible operations** (partial-order
    reduction). Invisible thread-local code commutes with the other threads'
    steps. This is the standard argument, but it is not in Lean.
@@ -262,7 +262,7 @@ iterations", and Law 2 keeps it apart from `PROVED`.
 
 ## Conformance
 
-`tests/conformance/concurrency/` holds 18 thread programs as true/false
+`testdata/conformance/concurrency/` holds 18 thread programs as true/false
 pairs, with 22 property labels (`norace`, `noassert`, `nodeadlock`):
 
 - racy counter, and the same counter under a mutex;
@@ -285,7 +285,7 @@ Detection is measured as "refuted, not replayed", because a counterexample
 is a schedule, not an input vector.
 
 Result (`build/prism-qa conformance --suite
-tests/conformance/concurrency --no-replay`; see also docs/CONFORMANCE.md):
+testdata/conformance/concurrency --no-replay`; see also docs/CONFORMANCE.md):
 0 wrong proofs, 9/9 `false` labels refuted in their property class, 13/13
 `true` labels `BOUNDED`, and 0 false alarms. A non-vacuity probe appended
 `assert(0)` to the end of `main` in every true task, and every probe was

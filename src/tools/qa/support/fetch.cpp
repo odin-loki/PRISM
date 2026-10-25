@@ -267,7 +267,7 @@ const std::vector<std::pair<std::string, std::string>> ESBMC_DISPUTED = {
     {"esbmc-cpp/cpp/github_6588_multidim_fail",
      "new int[2][3]() value-initialises to zero ([expr.new], [dcl.init]); the assert holds"},
 };
-// Curated subset (tests/conformance/esbmc-cpp): categories and files whose
+// Curated subset (testdata/conformance/esbmc-cpp): categories and files whose
 // licence is not ESBMC's own Apache-2.0 are left out (CBMC's BSD-4-clause
 // tests, GCC testsuite files, Qt, textbook listings).
 const std::set<std::string> ESBMC_CURATE_SKIP_CATEGORIES = {"cpp03_cbmc", "cpp03_gcc_template_tests", "cpp03_qt",

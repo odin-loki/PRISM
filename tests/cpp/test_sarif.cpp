@@ -45,7 +45,7 @@ prism::Finding sample_f(std::string_view status, std::initializer_list<std::pair
 
 prism::RunReport report_with(std::initializer_list<prism::StageResult> stages) {
     prism::RunReport r;
-    r.root = (fs::path(PRISM_SOURCE_DIR) / "testdata").string();
+    r.root = (fs::path(PRISM_SOURCE_DIR) / "testdata" / "planted").string();
     for (auto& s : stages) r.stages.push_back(s);
     return r;
 }

@@ -1,7 +1,7 @@
 // prism-qa conformance: the conformance suite runner (roadmap 2.7) and the
 // release gate (roadmap 6.1).
 //
-// Runs PRISM on tests/conformance/ (in-house tasks, a pinned SV-COMP subset,
+// Runs PRISM on testdata/conformance/ (in-house tasks, a pinned SV-COMP subset,
 // concurrency programs, a curated ESBMC C++ subset, the libc model contract
 // harnesses and, optionally, the NIST Juliet C/C++ subsets fetched with
 // --fetch-juliet) and computes, per verdict stage:
@@ -21,7 +21,7 @@
 // also says how many loop-free `true` functions became PROVED-CERTIFIED (the
 // roadmap 3 exit criterion: all of them) and why the others did not.
 //
-// Task format (tests/conformance/prism/**.yml, one sidecar per source file):
+// Task format (testdata/conformance/prism/**.yml, one sidecar per source file):
 //
 //   format_version: 1
 //   input_files: add_false.c
@@ -41,7 +41,7 @@
 // SV-COMP task definitions (format 2.0 .yml with `properties:`) are read as-is;
 // the `no-overflow` / `valid-memsafety` verdict applies to `main`.
 //
-// Concurrency tasks (tests/conformance/concurrency, roadmap 2.6) are whole
+// Concurrency tasks (testdata/conformance/concurrency, roadmap 2.6) are whole
 // programs that create threads; `expected: {main: ...}` is scored by the conc
 // stage only. conc never proves (a context-switch bound is not a proof), so
 // its soundness line is zero wrong proofs by construction; what it measures is
@@ -234,7 +234,7 @@ int conformance_main(const std::vector<std::string>& argv) {
     const unsigned hw = std::max(1u, std::thread::hardware_concurrency());
     const std::vector<ArgSpec> specs = {
         {"--prism", "", true, false, "PRISM binary (default: $PRISM_BIN, else build/prism)"},
-        {"--suite", "", true, true, "task roots (default: tests/conformance/{prism,sv-comp,concurrency,esbmc-cpp,libc-models})"},
+        {"--suite", "", true, true, "task roots (default: testdata/conformance/{prism,sv-comp,concurrency,esbmc-cpp,libc-models})"},
         {"--juliet", "", true, false, "include Juliet tasks from DIR/juliet (see --fetch-juliet)"},
         {"--fetch-juliet", "", true, false,
          "download NIST Juliet 1.3, check sha256, extract CWE190/191/369/476/680 into DIR"},
@@ -244,7 +244,7 @@ int conformance_main(const std::vector<std::string>& argv) {
          "clone ESBMC's C++ regression tests at " + ESBMC_COMMIT.substr(0, 12) + " and convert them into DIR"},
         {"--esbmc-thorough", "", false, false, "also convert ESBMC's THOROUGH tests"},
         {"--curate-esbmc", "", true, false,
-         "write the committed subset (tests/conformance/esbmc-cpp) from fetched tasks in DIR"},
+         "write the committed subset (testdata/conformance/esbmc-cpp) from fetched tasks in DIR"},
         {"--stages", "", true, false, "override verdict stages (default: bmc,harness + pir,conc when listed)"},
         {"--out", "", true, false, "output directory (default: conformance-out)"},
         {"--jobs", "-j", true, false, "parallel PRISM runs (default: CPU count)"},

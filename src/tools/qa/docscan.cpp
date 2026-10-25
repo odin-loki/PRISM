@@ -259,7 +259,7 @@ fs::path repo_root(const std::string& explicit_root) {
     std::error_code ec;
     fs::path cur = fs::current_path(ec);
     for (fs::path p = cur; !p.empty(); p = p.parent_path()) {
-        if (fs::exists(p / "tests" / "conformance" / "SOURCES.md", ec))
+        if (fs::exists(p / "testdata" / "conformance" / "SOURCES.md", ec))
             return fs::weakly_canonical(p, ec);
         if (fs::exists(p / "include" / "prism" / "laws.hpp", ec) && fs::is_directory(p / "docs", ec))
             return fs::weakly_canonical(p, ec);

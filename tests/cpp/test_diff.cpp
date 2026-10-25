@@ -30,7 +30,7 @@ namespace {
 
 namespace fs = std::filesystem;
 
-fs::path td() { return fs::path(PRISM_SOURCE_DIR) / "testdata"; }
+fs::path td() { return fs::path(PRISM_SOURCE_DIR) / "testdata" / "planted"; }
 
 std::vector<prism::FunctionInfo> pair_ab() {
     std::vector<prism::FunctionInfo> out;

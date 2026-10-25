@@ -53,7 +53,7 @@ bool has(const std::vector<std::string>& v, const std::string& s) {
 
 prism::RunReport plan_done_run(const std::string& plant, const fs::path& out) {
     prism::Config cfg = prism::default_config();
-    cfg.root = repo_root() / "testdata" / plant;
+    cfg.root = repo_root() / "testdata" / "planted" / plant;
     cfg.out = out;
     cfg.llm = false;
     cfg.jobs = 4;
@@ -68,7 +68,7 @@ prism::RunReport plan_done_run(const std::string& plant, const fs::path& out) {
 // interpreter paths (concolic / fuzz), not from running compiled code.
 TEST_CASE("plan done: abs_ok PROVED-UNBOUNDED; oob_write CRASH; missing ESBMC is never a proof") {
     auto tmp = tools_tmp("plan-done");
-    REQUIRE(fs::is_regular_file(repo_root() / "testdata" / "abs_ok.c"));
+    REQUIRE(fs::is_regular_file(repo_root() / "testdata" / "planted" / "abs_ok.c"));
     auto abs = plan_done_run("abs_ok.c", tmp / "abs_ok");
 #ifdef PRISM_HAS_Z3
     CHECK(has(statuses(abs, "bmc"), std::string(prism::laws::PROVED_UNBOUNDED)));
@@ -185,20 +185,21 @@ TEST_CASE("fuzz corpus: seeds are small sources in path order; selector bytes; a
     CHECK(fz::seed_name("abc").size() == 16);
 
     auto repo = tools_tmp("fuzz-repo");
-    fs::create_directories(repo / "testdata" / "sub");
-    fs::create_directories(repo / "tests" / "conformance" / "prism");
-    std::ofstream(repo / "testdata" / "b.c") << "int b(void) { return 1; }\n";
-    std::ofstream(repo / "testdata" / "sub" / "a.cpp") << "int a() { return 0; }\n";
-    std::ofstream(repo / "testdata" / "notes.txt") << "not a seed\n";
-    std::ofstream(repo / "testdata" / "big.c") << std::string(70 * 1024, ' ');
-    std::ofstream(repo / "tests" / "conformance" / "prism" / "c.c") << "int c(void) { return 2; }\n";
-    auto s = fz::seeds({{repo / "testdata", {".c", ".cpp", ".h"}}, {repo / "tests" / "conformance" / "prism", {".c"}}},
+    fs::create_directories(repo / "testdata" / "planted" / "sub");
+    fs::create_directories(repo / "testdata" / "conformance" / "prism");
+    std::ofstream(repo / "testdata" / "planted" / "b.c") << "int b(void) { return 1; }\n";
+    std::ofstream(repo / "testdata" / "planted" / "sub" / "a.cpp") << "int a() { return 0; }\n";
+    std::ofstream(repo / "testdata" / "planted" / "notes.txt") << "not a seed\n";
+    std::ofstream(repo / "testdata" / "planted" / "big.c") << std::string(70 * 1024, ' ');
+    std::ofstream(repo / "testdata" / "conformance" / "prism" / "c.c") << "int c(void) { return 2; }\n";
+    auto s = fz::seeds({{repo / "testdata" / "planted", {".c", ".cpp", ".h"}},
+                        {repo / "testdata" / "conformance" / "prism", {".c"}}},
                        10);
     REQUIRE(s.size() == 3);
     CHECK(s[0].filename() == "b.c");
     CHECK(s[1].filename() == "a.cpp");
     CHECK(s[2].filename() == "c.c");
-    CHECK(fz::seeds({{repo / "testdata", {".c", ".cpp"}}}, 1).size() == 1);
+    CHECK(fz::seeds({{repo / "testdata" / "planted", {".c", ".cpp"}}}, 1).size() == 1);
 
     fz::Options o;
     o.repo = repo;

@@ -213,7 +213,7 @@ int solver_bench_main(const Args& args) {
                          "                      [--timeout 30] [-j 1] [--out solver-bench-out]\n"
                          "                      [--passes z3,portfolio,history] [--list-tasks]\n"
                          "Portfolio vs Z3 alone on the pir VCs of the conformance suite (default suites:\n"
-                         "tests/conformance/prism and tests/conformance/sv-comp). Writes\n"
+                         "testdata/conformance/prism and testdata/conformance/sv-comp). Writes\n"
                          "<out>/solver_bench.json and <out>/solver_bench.md; exit 1 on a disagreement.\n";
             return 0;
         } else {

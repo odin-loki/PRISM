@@ -21,7 +21,7 @@ has been run in BenchExec with the competition's resource limits (see
 | `tools/svcomp/prism-subset.xml` | BenchExec benchmark definition for the subset (SV-COMP limits: 15 min CPU, 15 GB, 4 cores) |
 | `prism svcomp score` | runs `prism svcomp` on every task of the pinned subset (one process session per task) and scores it |
 | `prism svcomp pack` | builds the submission archive |
-| `tests/conformance/sv-comp/properties/` | the upstream property files (`no-overflow.prp`, `unreach-call.prp`, `valid-memsafety.prp`) at the pinned sv-benchmarks commit |
+| `testdata/conformance/sv-comp/properties/` | the upstream property files (`no-overflow.prp`, `unreach-call.prp`, `valid-memsafety.prp`) at the pinned sv-benchmarks commit |
 | `tests/cpp/test_svcomp.cpp` | mapping, scoring, witness shape, replay, waypoints, invariants, task-definition reader, archive and end-to-end doctests |
 
 ## What PRISM runs
@@ -345,7 +345,7 @@ confirming validator. No witness was refuted with a counterexample or
 The pinned subset now holds every task of `c/bitvector`, `c/loop-simple`,
 `c/loop-invgen`, `c/loop-new`, `c/loop-acceleration` and
 `c/signedintegeroverflow-regression` at the pinned commit that has a
-verdict for no-overflow or unreach-call (tests/conformance/SOURCES.md; whole
+verdict for no-overflow or unreach-call (testdata/conformance/SOURCES.md; whole
 directories, not a selection by PRISM's results): 117 no-overflow tasks
 (75 `true`, 42 `false`) and 127 unreach-call tasks (98 / 29). `bmc` proofs
 now count for unreach-call ("bmc and unreach-call"), and `pir` passes

@@ -5,13 +5,13 @@
 //
 // Writes, from files already in the repository:
 //
-//   OUT_DIR/c/         C and C++ sources (testdata/, tests/conformance/prism/),
+//   OUT_DIR/c/         C and C++ sources (testdata/planted/, testdata/conformance/prism/),
 //                      at most 64 KB each, at most N (default 200)
 //   OUT_DIR/ll/        LLVM IR text: the C seeds compiled the way the pir stage
 //                      does (clang -S -emit-llvm -O0 -Xclang -disable-O0-optnone,
 //                      then opt -passes=mem2reg,...) when clang/opt are present
 //   OUT_DIR/report/    report.json / stages.jsonl / functions.json of a PRISM
-//                      run on testdata/ (--prism BIN, else `prism` next to this
+//                      run on testdata/planted/ (--prism BIN, else `prism` next to this
 //                      tool or on PATH), plus hand-written edge cases
 //   OUT_DIR/toml/      third_party/MANIFEST.toml and proofs/lakefile.toml
 //   OUT_DIR/libfuzzer/ the same seeds with the selector byte the libFuzzer
@@ -151,8 +151,8 @@ struct Options {
 
 PRISM_FUZZ_CORPUS_INLINE int make_corpus(const Options& o, const fs::path& self_dir, std::ostream& log) {
     const auto& repo = o.repo;
-    auto csrc = seeds({{repo / "testdata", {".c", ".cpp", ".h"}},
-                       {repo / "tests" / "conformance" / "prism", {".c", ".cpp"}}},
+    auto csrc = seeds({{repo / "testdata" / "planted", {".c", ".cpp", ".h"}},
+                       {repo / "testdata" / "conformance" / "prism", {".c", ".cpp"}}},
                       o.limit);
     if (csrc.empty()) {
         log << "prism_fuzz_corpus: no C/C++ seeds under " << repo.string() << " (wrong --repo?)\n";
@@ -198,7 +198,7 @@ PRISM_FUZZ_CORPUS_INLINE int make_corpus(const Options& o, const fs::path& self_
         const auto run_out = o.out / ".prism-run";
         std::error_code ec;
         fs::remove_all(run_out, ec);
-        run({prism->string(), (repo / "testdata").string(), "--no-llm", "--stage", "inventory,classify,lints,bmc",
+        run({prism->string(), (repo / "testdata" / "planted").string(), "--no-llm", "--stage", "inventory,classify,lints,bmc",
              "--out", run_out.string()});
         bool any = false;
         for (const char* name : {"report.json", "stages.jsonl", "functions.json"}) {

@@ -580,7 +580,7 @@ declare i64 @strdup_len()
 
 TEST_CASE("pir: parse_folded_clang_diagnostics") {
     namespace fs = std::filesystem;
-    const fs::path src = fs::path(PRISM_SOURCE_DIR) / "tests" / "pir" / "folded.c";
+    const fs::path src = fs::path(PRISM_SOURCE_DIR) / "testdata" / "pir" / "folded.c";
     std::string diag_path = src.lexically_normal().string();
 #ifdef _WIN32
     for (char& c : diag_path)
@@ -681,11 +681,11 @@ TEST_CASE("pir mem: stale model cache is removed and rebuilt (skips without clan
     fs::remove_all(dir);
 }
 
-TEST_CASE("pir mem: clang round trip on tests/pir/mem_*.c (skips without clang/opt)") {
+TEST_CASE("pir mem: clang round trip on testdata/pir/mem_*.c (skips without clang/opt)") {
     if (skip_without_frontend()) return;
     auto cfg = prism::default_config();
     auto fe = pp::find_frontend(cfg);
-    auto dir = std::filesystem::path(PRISM_SOURCE_DIR) / "tests" / "pir";
+    auto dir = std::filesystem::path(PRISM_SOURCE_DIR) / "testdata" / "pir";
     cfg.root = dir;
     cfg.jobs = 2;
     auto out = pp::run_pir({dir / "mem_array.c", dir / "mem_heap.c", dir / "mem_contract.c"}, cfg);

@@ -28,7 +28,7 @@
 //   `unknown`.
 // - Everything else is `unknown`.
 //
-// `prism svcomp score` runs the pinned subset (tests/conformance/sv-comp)
+// `prism svcomp score` runs the pinned subset (testdata/conformance/sv-comp)
 // with SV-COMP points; `prism svcomp pack` builds the tool archive. The
 // BenchExec tool-info module tools/svcomp/prism.py runs this subcommand.
 

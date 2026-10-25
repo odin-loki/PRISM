@@ -64,11 +64,11 @@ commits were measured on their own, not by a full rerun: `a0b962721` and
 
 ## Fixes (each with a regression test and a reduced reproducer)
 
-Reproducers are in `testdata_fp/realworld_*.c` (correct code that must give
+Reproducers are in `testdata/fp/realworld_*.c` (correct code that must give
 no `FAILED` lint and no parse gap, both engines) and
-`testdata_tp/realworld_twins.c`, `testdata_tp/knr_gap_unread.c` (the buggy
+`testdata/tp/realworld_twins.c`, `testdata/tp/knr_gap_unread.c` (the buggy
 twins, which must still fire; `knr_gap_unread.c` is a K&R head no pattern
-reads, which must stay a `PARSE-GAP`). `testdata_tp/knr_gap.c`, the ALL_CAPS
+reads, which must stay a `PARSE-GAP`). `testdata/tp/knr_gap.c`, the ALL_CAPS
 zlib shape, was a gap too; the C++ engine now parses it as a function (the
 Python engine still reports the gap). They are a few lines each, reduced from jsmn (MIT),
 tinyexpr (zlib licence), cJSON (MIT) and zlib (zlib licence); each file names
@@ -216,12 +216,12 @@ CI files are not classified.
 | CVE | where | fixed in | found? |
 |---|---|---|---|
 | CVE-2024-31755 | cJSON `cJSON_SetValuestring`: `strlen(valuestring)` with `valuestring == NULL` | 1.7.18 | **yes, after the parser fix only**: `STR-NULL-ARG strlen() called with unchecked pointer parameter valuestring` (`cJSON.c:408`) on 1.7.16; not reported on 1.7.18, where the fix added `valuestring == NULL` to a larger condition (that the lint did not see this test was itself a false alarm, fixed). Before, the function was a `PARSE-GAP` and nothing read it. It is a lint (FINDS), not a proof: the model checker gives `NEEDS-HARNESS` to every pointer-parameter function (Law 6) |
-| CVE-2023-50472 | cJSON `cJSON_SetValuestring`: `strlen(object->valuestring)` with a NULL member | 1.7.17 | **lint after 2026-09-26**: `STR-NULL-MEMBER` on `strlen(object->valuestring)` when `object->valuestring` is not null-checked (`testdata_tp/realworld_twins.c` twin); still not a pir proof (Law 6 on the pointer parameter) |
-| CVE-2023-50471 | cJSON `cJSON_InsertItemInArray`: `newitem->prev->next` with `after_inserted->prev == NULL` on a corrupted list | 1.7.17 | **lint after 2026-09-26**: `PTR-CHAIN-NULL` on `newitem->prev->next` without a null check on `newitem->prev` (`testdata_tp/realworld_twins.c` twin); not a pir proof |
-| CVE-2022-37434 | zlib `inflate()`: heap overflow copying the gzip header extra field when `len > extra_max` | 1.2.12.1 (`eff308af`) | **lint after 2026-09-26**: `MEM-COPY-LEN` on `memcpy(state->head->extra, state->input, len)` when `len` is not checked against `extra_max` (`testdata_tp/realworld_twins.c` twin); pir on full `inflate()` is still `NEEDS-HARNESS` (Law 6) |
+| CVE-2023-50472 | cJSON `cJSON_SetValuestring`: `strlen(object->valuestring)` with a NULL member | 1.7.17 | **lint after 2026-09-26**: `STR-NULL-MEMBER` on `strlen(object->valuestring)` when `object->valuestring` is not null-checked (`testdata/tp/realworld_twins.c` twin); still not a pir proof (Law 6 on the pointer parameter) |
+| CVE-2023-50471 | cJSON `cJSON_InsertItemInArray`: `newitem->prev->next` with `after_inserted->prev == NULL` on a corrupted list | 1.7.17 | **lint after 2026-09-26**: `PTR-CHAIN-NULL` on `newitem->prev->next` without a null check on `newitem->prev` (`testdata/tp/realworld_twins.c` twin); not a pir proof |
+| CVE-2022-37434 | zlib `inflate()`: heap overflow copying the gzip header extra field when `len > extra_max` | 1.2.12.1 (`eff308af`) | **lint after 2026-09-26**: `MEM-COPY-LEN` on `memcpy(state->head->extra, state->input, len)` when `len` is not checked against `extra_max` (`testdata/tp/realworld_twins.c` twin); pir on full `inflate()` is still `NEEDS-HARNESS` (Law 6) |
 
 So on this sample PRISM's lints now flag all four CVE shapes in
-`testdata_tp/realworld_twins.c` (CVE-2024-31755, CVE-2023-50472,
+`testdata/tp/realworld_twins.c` (CVE-2024-31755, CVE-2023-50472,
 CVE-2023-50471, CVE-2022-37434). The findings are FINDS
 lints, not pir proofs. The model-checking stages still cannot reach library
 APIs that take pointers without a harness; they say so on every such function

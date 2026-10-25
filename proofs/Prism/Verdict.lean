@@ -4,7 +4,7 @@ PRISM verdict lattice: the model of `src/prism/verdict/verdict.cpp` and
 
 Everything here is a total function over a finite domain. `Main.lean`
 prints every function over its whole domain as JSON
-(`tests/data/verdict_tables.json`), and the C++ and Python engines are
+(`testdata/fixtures/verdict_tables.json`), and the C++ and Python engines are
 tested entry by entry against that table, so the running code is shown
 equal to this model (see docs/VERDICTS.md, "Connecting the proof to the
 code").

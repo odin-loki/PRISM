@@ -42,7 +42,7 @@ The short version:
   (`agree-ext`), for every choice of the values LLVM leaves open.
 * Each run can check that the C++ translator's output **is** the proved
   translator's output: the pir stage exports (LLVM, PIR) pairs, and
-  `pir_lean_check` compares them. On `tests/pir` and `testdata` there are no
+  `pir_lean_check` compares them. On `testdata/pir` and `testdata` there are no
   disagreements (numbers below).
 * Every Lean project in `proofs/` is rechecked in CI by `leanchecker` (the
   toolchain's replay checker, formerly lean4checker) and by **nanoda**, an
@@ -377,43 +377,43 @@ intrinsics (`__prism_obj_size`, `__prism_memcpy`, `__prism_check`, …), the
 format family.
 
 By function, on the repository's own C/C++ corpus
-(`prism-qa pir-lean-check tests/pir testdata --bin <build>/prism`:
+(`prism-qa pir-lean-check testdata/pir testdata --bin <build>/prism`:
 the real pir stage with its uninitialised-local and folded-UB
 instrumentation and C signed-shift locations), before and after the
 extended fragment:
 
 | Input | Functions | `agree` | `agree-ext` | `agree-reject` | `outside` | Mismatch |
 |---|---|---|---|---|---|---|
-| `tests/pir`, before | 226 | 46 | — | 0 | 180 | **0** |
-| `tests/pir`, after | 226 | 46 | **8** | 1 | 171 | **0** |
-| `tests/pir`, after merging the latest mainline (2 more functions) | 228 | 46 | **9** | 1 | 172 | **0** |
+| `testdata/pir`, before | 226 | 46 | — | 0 | 180 | **0** |
+| `testdata/pir`, after | 226 | 46 | **8** | 1 | 171 | **0** |
+| `testdata/pir`, after merging the latest mainline (2 more functions) | 228 | 46 | **9** | 1 | 172 | **0** |
 | `testdata`, before | 2 506 | 915 | — | 2 | 1 589 | **0** |
 | `testdata`, after | 2 506 | 915 | **21** | 4 | 1 566 | **0** |
 | `testdata`, after the merge (one file not exported in that run) | 2 502 | 914 | **21** | 4 | 1 563 | **0** |
-| `tests/pir`, before the intrinsics and globals (this commit's base) | 228 | 46 | 9 | 1 | 172 | **0** |
-| `tests/pir`, with intrinsics, `memcpy`/`memset`, lifetime markers, globals | 228 | 46 | **29** | 1 | 152 | **0** |
+| `testdata/pir`, before the intrinsics and globals (this commit's base) | 228 | 46 | 9 | 1 | 172 | **0** |
+| `testdata/pir`, with intrinsics, `memcpy`/`memset`, lifetime markers, globals | 228 | 46 | **29** | 1 | 152 | **0** |
 | `testdata`, before the intrinsics and globals | 2 506 | 915 | 21 | 4 | 1 566 | **0** |
 | `testdata`, with intrinsics, `memcpy`/`memset`, lifetime markers, globals | 2 506 | 915 | **32** | 4 | 1 555 | **0** |
-| `tests/pir`, findings 2, 5–7 fixed (2 new functions; `mem_str.c` `memcpy_ok`, `memcpy_bad`, `overlap_bad` call C `memcpy`, now the library model: outside) | 231 | 47 | **26** | 1 | 157 | **0** |
+| `testdata/pir`, findings 2, 5–7 fixed (2 new functions; `mem_str.c` `memcpy_ok`, `memcpy_bad`, `overlap_bad` call C `memcpy`, now the library model: outside) | 231 | 47 | **26** | 1 | 157 | **0** |
 | `testdata`, findings 2, 5–7 fixed (mainline has 9 more functions) | 2 515 | 924 | **32** | 4 | 1 555 | **0** |
-| `tests/pir`, before pointers and the heap (2026-09-25, this branch's base) | 229 | 47 | 29 | 1 | 152 | **0** |
-| `tests/pir`, with pointer values, comparisons, returns, harness parameters | 229 | 47 | **46** | 16 | 120 | **0** |
-| `tests/pir`, … and the libc models' heap, nondet values, assumptions, library callees | 229 | 47 | **68** | 20 | 94 | **0** |
+| `testdata/pir`, before pointers and the heap (2026-09-25, this branch's base) | 229 | 47 | 29 | 1 | 152 | **0** |
+| `testdata/pir`, with pointer values, comparisons, returns, harness parameters | 229 | 47 | **46** | 16 | 120 | **0** |
+| `testdata/pir`, … and the libc models' heap, nondet values, assumptions, library callees | 229 | 47 | **68** | 20 | 94 | **0** |
 | `testdata`, before pointers and the heap | 2 515 | 924 | 32 | 4 | 1 555 | **0** |
 | `testdata`, with pointer values, comparisons, returns, harness parameters | 2 515 | 927 | **49** | 36 | 1 500 | **0** |
 | `testdata`, … and the libc models' heap, nondet values, assumptions, library callees | 2 515 | 927 | **78** | 52 | 1 458 | **0** |
-| `tests/pir`, D118 (`hobjsz`, memcpy `selfOk`) | 231 | 47 | **65** | 17 | 102 | **0** |
+| `testdata/pir`, D118 (`hobjsz`, memcpy `selfOk`) | 231 | 47 | **65** | 17 | 102 | **0** |
 | `testdata`, D118 (`hobjsz`, memcpy `selfOk`) | 2 532 | 937 | **74** | 54 | 1 467 | **0** |
 
 Pointers and the heap (2026-09-25): 85 more `agree-ext` functions over both
 trees (61 → 146), 0 mismatches. D118 (2026-10-25): **139** `agree-ext` total
 (65 + 74), 0 mismatches. Among them 24 of the pointer fixture
-`fixtures/pointers.pirl` (`tests/pir/mem_ptr.c`, `mem_contract.c`,
+`fixtures/pointers.pirl` (`testdata/pir/mem_ptr.c`, `mem_contract.c`,
 `testdata/stack_escape.c`: relational comparisons in and across objects,
 pointer phis and selects, null dereferences, all seven stack-escape
 variants, contract-bound parameters incl. a write to a read-only one) and 42
 functions with heap objects: `malloc`/`calloc`/`free` and `new`/`delete`
-(`tests/pir/mem_heap.c`, `mem_cxx.cpp`; `testdata` double free, use after
+(`testdata/pir/mem_heap.c`, `mem_cxx.cpp`; `testdata` double free, use after
 free, invalid and offset free, mismatched `new[]`/`delete`, unchecked
 `malloc` results, flexible array members, leaks). `fixtures/heap.pirl` checks
 as 15 `agree-ext` (+ 2 `realloc` functions outside: `__prism_obj_size` and
@@ -446,7 +446,7 @@ intrinsics, …") checks as 1 `agree` + 21 `agree-ext`; `dropped_intr_check`
 removes the overlap, INT-CLZ-ZERO, MEM-UAF and signed-overflow checks from
 four of them and must be (and is) 4 mismatches.
 
-`agree-ext` in `tests/pir`: two inlined calls, a C++ template call and a
+`agree-ext` in `testdata/pir`: two inlined calls, a C++ template call and a
 `constexpr` call, and four stack-memory functions (a struct on the stack,
 an uninitialised stack read and its fixed twin, a pointer to a local pair);
 in `testdata`: three inlined calls and 18 stack-memory functions (designated
@@ -498,7 +498,7 @@ runs it and the fixtures when the checker is built (`tests/cpp/test_qa.cpp`,
 NOTRUN otherwise), and `tests/cpp/test_pir_refinement.cpp` locks the check-name /
 operator-name parity between `translate.cpp` and the Lean files without
 Lean. `check.sh` runs the
-checker on `fixtures/` (real C++ output for `tests/pir`, plus a hand-made
+checker on `fixtures/` (real C++ output for `testdata/pir`, plus a hand-made
 dropped-check pair that must be reported as a mismatch; for the extended
 fragment `calls_freeze.pirl` and `memory.pirl`, and `dropped_call_check`,
 `dropped_mem_check` with an inlined callee's check, an uninitialised-memory
@@ -512,7 +512,7 @@ fragment function of the given C files on edge-case and random inputs with
 LangRef semantics says is defined with `lli` on the IR the pir stage
 verifies (`pir::lower_to_ir`; its instrumentation markers get stub
 definitions), and compares the printed result. It also checks
-the three Lean semantics agree as proved. On `tests/pir` through the `prism` binary: 417 runs, 378
+the three Lean semantics agree as proved. On `testdata/pir` through the `prism` binary: 417 runs, 378
 compared with `lli`, **0 disagreements** (39 inputs have UB or poison and
 are not executed). On `testdata/*.c` (6 inputs per function): 3 603
 compared, **0 disagreements**; 1 602 inputs belong to modules `lli` cannot
@@ -686,7 +686,7 @@ is claimed for them:
    The Lean side is unchanged (it still accepts `undef` only under
    `freeze`/`store`, whose C++ translation did not change), so functions
    with `undef` elsewhere stay `outside`; `pir-lean-check` after
-   the fix: `testdata` 915 `agree` + 21 `agree-ext`, `tests/pir` 46 + 9,
+   the fix: `testdata` 915 `agree` + 21 `agree-ext`, `testdata/pir` 46 + 9,
    0 mismatches.
 5. **`freeze poison` was reported (fixed).** `freeze` translated its operand
    with `Tr::operand`, which fails `UB-POISON` on a literal `poison`; in LLVM
@@ -709,7 +709,7 @@ is claimed for them:
    reaches its library model (`__prism_memcpy`, C's rule: any overlap,
    `d = s` included, is `MEM-OVERLAP`), while the intrinsic follows the
    LangRef: its overlap check also requires the offsets to differ
-   (`tests/pir/mem_str.c` `struct_self_assign_ok` PROVED, was a false
+   (`testdata/pir/mem_str.c` `struct_self_assign_ok` PROVED, was a false
    `MEM-OVERLAP`; `memcpy_self_bad` still FAILED). `__builtin_memcpy` in C is
    still the intrinsic, so `__builtin_memcpy(p, p, n)` is no longer reported.
    The Lean side changed with it: `cpyBad` (`XLlvm.lean`) excludes
@@ -803,7 +803,7 @@ check the C++ interpreter uses Z3's `bvudiv x 0 = ~0`, the Lean model Lean's
   numbered as they are pushed), not about the translation, and was not
   attempted here; measured instead: every function whose Lean and C++
   translations agree also passed `validB` (0 certificate failures on
-  `tests/pir` and `testdata`). `validB` was shrunk where the proof never
+  `testdata/pir` and `testdata`). `validB` was shrunk where the proof never
   used a check: the lengths of the per-block first-temporary and
   child-instance lists (`segOK` already fails when an entry it reads is
   missing).

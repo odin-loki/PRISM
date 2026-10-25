@@ -14,7 +14,7 @@ branch that added this package, with Lean `v4.34.0` (the version pinned in
 each project's `lean-toolchain`): `proofs/check.sh` passed all four steps
 (no `sorry`, clean `lake build`, axioms within `propext`,
 `Classical.choice`, `Quot.sound`, truth tables equal to
-`tests/data/verdict_tables.json`), `proofs/semantics/check.sh` passed, and
+`testdata/fixtures/verdict_tables.json`), `proofs/semantics/check.sh` passed, and
 `lake build` plus `lake env lean PrismTechniques/Audit.lean` in
 `proofs/techniques/` passed. CI re-runs the same checks (workflows below).
 
@@ -55,7 +55,7 @@ each project's `lean-toolchain`): `proofs/check.sh` passed all four steps
 
 ### E03 The shipped verdict code equals the Lean model
 
-- Artefacts: `tests/data/verdict_tables.json` (the model evaluated over its
+- Artefacts: `testdata/fixtures/verdict_tables.json` (the model evaluated over its
   whole finite domain by `proofs/Prism/Export.lean`),
   `tests/cpp/test_main.cpp::verdict module equals the Lean model`,
   explanation in `docs/VERDICTS.md#connecting-the-proof-to-the-code`.
@@ -168,8 +168,8 @@ each project's `lean-toolchain`): `proofs/check.sh` passed all four steps
 
 ### E09 Conformance suite and release gate
 
-- Artefacts: `src/tools/qa/conformance.cpp`, `tests/conformance/SOURCES.md`, the
-  tasks under `tests/conformance/prism/` and `tests/conformance/sv-comp/`,
+- Artefacts: `src/tools/qa/conformance.cpp`, `testdata/conformance/SOURCES.md`, the
+  tasks under `testdata/conformance/prism/` and `testdata/conformance/sv-comp/`,
   scorer tests `tests/cpp/test_qa_conformance.cpp` (the gate itself:
   `tests/cpp/test_qa_conformance.cpp::qa conformance: a wrong proof fails the release gate`), CI
   `.github/workflows/conformance.yml`, metrics and history in
@@ -249,11 +249,11 @@ each project's `lean-toolchain`): `proofs/check.sh` passed all four steps
   CI `windows-compile-smoke-z3` / `windows-compile-smoke-cl-z3` (LLVM 18 on
   PATH for `prism_tests`).
 - Shows: with `clang-18`, `opt`, and Z3, the 17-file Windows C subset of
-  `tests/pir/` matches the verdict table; missing front end or LP64 probe
+  `testdata/pir/` matches the verdict table; missing front end or LP64 probe
   yields `NOTRUN` (Law 1); glibc-only corpus files are skipped with an
   explicit message; stale LLP64 model caches are rejected without manual
   delete (`tests/cpp/test_pir_mem.cpp` stale-cache case).
-- Does not show: full `tests/pir` on Windows without a Linux sysroot, C++
+- Does not show: full `testdata/pir` on Windows without a Linux sysroot, C++
   PIR units, or that native `clang-cl` LP64 matches the Linux-triple models.
 
 ### E15 Fuzzing PRISM's own input handling

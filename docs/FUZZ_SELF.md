@@ -15,7 +15,7 @@ engine code was out of scope for the change that added the harnesses.
 | `tests/fuzz/fuzz_cparse.cpp` (libFuzzer, ASan + UBSan) | C++ | `prism::extract_functions` and `parse_gaps` (C/C++ sources), `prism::pir::ir::parse_module` (LLVM IR text), `prism::RunReport::load`, `journal_read_stages`, `journal_completed_ok`, `journal_read_functions` | no sanitizer report, no abort, no uncaught exception (`parse_module` may reject input by throwing `std::exception`), no input slower than the timeout |
 
 Seeds (`prism_fuzz_corpus`, `src/tools/fuzz_corpus.cpp`): the C/C++ files of
-`testdata/` and `tests/conformance/prism/`, their LLVM IR compiled the way the
+`testdata/` and `testdata/conformance/prism/`, their LLVM IR compiled the way the
 `pir` stage compiles it (`clang -S -emit-llvm -O0 -Xclang -disable-O0-optnone`,
 then `opt -passes=mem2reg,lowerswitch,loop-simplify,lcssa,instnamer`), the
 `report.json` / `stages.jsonl` / `functions.json` of a PRISM run on
@@ -99,7 +99,7 @@ also fuzzed on their own (`PRISM_FUZZ_TARGET`).
   `match_at_start` brought all four artifacts to 0.06 s or less and the
   32 KB synthetic file to 0.01 s, and `extract_functions` + `parse_gaps`
   returned identical results (function count, names and bodies hashed, gap
-  count) on all 2,223 C/C++/`.i` files of `testdata/`, `tests/conformance/`
+  count) on all 2,223 C/C++/`.i` files of `testdata/`, `testdata/conformance/`
   and the seed corpus (4,351 functions). `full_match` has the same
   unanchored-search shape and should get the same treatment.
 - **Impact:** anyone who can put a file into a tree PRISM checks (for

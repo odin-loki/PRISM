@@ -77,7 +77,7 @@ merged `main`.
 | SV-COMP enlarged subset: 203 of 417, 0 incorrect | `docs/SVCOMP.md` (measured on the sv3cm binary, loaded machine) | `PRISM_BIN=build/prism python tools/svcomp/run_subset.py --jobs 2` and again with `--property unreach-call` | 0 incorrect, score ≥ 203 |
 | real-world before/after table | `docs/EVALUATION.md` (four commits measured separately) | rerun zlib, cJSON, jsmn, tinyexpr, cxxopts at the pinned commits with `--no-llm` | the "after" outcomes hold |
 | Houdini cost controls are faster | `perf6` series | time `src/tools/qa/conformance.cpp` on `main` against `027e49e7c`, same machine, same `-j`, cold solver cache (`~/.cache/prism/solver` removed) | `main` is not slower |
-| refinement: `mismatch=0` | round-6 `falar`/`lnprf` series | `build/prism-qa pir-lean-check tests/pir testdata` | 0 mismatches (CI rechecks in `proofs*.yml`) |
+| refinement: `mismatch=0` | round-6 `falar`/`lnprf` series | `build/prism-qa pir-lean-check testdata/pir testdata` | 0 mismatches (CI rechecks in `proofs*.yml`) |
 
 If a number went up, update the document. If it went down, or there is any
 wrong proof or incorrect answer, stop and find the cause before changing
@@ -108,5 +108,5 @@ release, and GPU/LoRA work on the owner's hardware.
 | 2 headline table | `02d7da9be` | 2026-09-26 | **PASS** — CI `conformance-metrics` on `main`: 0 wrong proofs; pir 302/379 proved, 165/364 refuted (≥ table); bmc 107/379 proved, 93/364 refuted (≥ table); local cold-cache rerun: 0 wrong proofs in 2111 s |
 | 2 SV-COMP subset | `02d7da9be` | 2026-09-26 | **PASS** — `run_subset.py -j 2`: no-overflow score 88 (35+18 correct, 0 incorrect); unreach-call score 115 (53+9 correct, 0 incorrect); combined **203**/417 |
 | 2 real-world rerun | `02d7da9be` | 2026-09-26 | **PASS** — pinned commits, `--no-llm`: jsmn/tinyexpr/cJSON/cxxopts/zlib all PARSE-GAP 0, CRASH 0, ERROR 0; zlib wall 698 s (finishes; pir still heavy) |
-| 2 refinement | `02d7da9be` | 2026-09-26 | **PASS** — `pir_lean_check.py tests/pir testdata`: mismatch=0 (local `build/prism` and CI `build-ci/prism`) |
+| 2 refinement | `02d7da9be` | 2026-09-26 | **PASS** — `pir_lean_check.py testdata/pir testdata`: mismatch=0 (local `build/prism` and CI `build-ci/prism`) |
 | 2 Houdini timing | `02d7da9be` vs `027e49e7c` | 2026-09-26 | **PASS (noise)** — cold `prism-qa conformance -j 2 --mem-limit-mb 4096`: main 2111 s, pre-perf6 2040 s (+3.5%; single run on loaded WSL host) |

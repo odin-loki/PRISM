@@ -43,7 +43,7 @@ several goals are undeveloped.
         - **G2.2** The C++ and Python verdict code equals the model.
           - **J1** Finite domains: agreement on every input is equality
             (`docs/VERDICTS.md#connecting-the-proof-to-the-code`).
-          - **Sn2** E03: `tests/data/verdict_tables.json`,
+          - **Sn2** E03: `testdata/fixtures/verdict_tables.json`,
             `tests/cpp/test_main.cpp::verdict module equals the Lean model`.
         - **G2.3** Every report is audited before it is written.
           - **Sn3** E04: `src/prism/pipeline.cpp`,
@@ -95,7 +95,7 @@ several goals are undeveloped.
           precondition (Law 6), and model-drafted preconditions never give a
           proof.
           - **Sn11** `thm:Contracts.proved_assuming_not_proved`,
-            `tests/conformance/prism/ptrparam` tasks (`expect_status:
+            `testdata/conformance/prism/ptrparam` tasks (`expect_status:
             NEEDS-HARNESS`), E18 (`docs/AI.md#harness-drafting-42-92`).
     - **G4** (c) Everything that was not checked is reported.
       - **Sn12** E17: `tests/cpp/test_adapters.cpp` (optional adapter honesty),

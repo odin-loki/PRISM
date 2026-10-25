@@ -11,7 +11,7 @@ that proves it.
 | `include/prism/laws.hpp`, `src/prism/laws.cpp` | String constants and API, forwarding to the module; `audit_report` |
 | `proofs/Prism/Verdict.lean` | The Lean 4 model and the proved laws |
 | `proofs/Prism/Export.lean`, `proofs/Main.lean` | `lake exe verdict_tables`: every function over its whole domain as JSON |
-| `tests/data/verdict_tables.json` | That JSON, committed |
+| `testdata/fixtures/verdict_tables.json` | That JSON, committed |
 | `tests/cpp/test_main.cpp` ("verdict module equals the Lean model"), `tests/cpp/test_verdict_repo.cpp` | The C++ code checked against the table entry by entry; the repo checks (no `sorry`, pinned toolchain) |
 | `proofs/check.sh`, `.github/workflows/proofs.yml` | Build, no-`sorry`, axiom and table checks in CI |
 
@@ -188,7 +188,7 @@ into PRISM. PRISM does not do that. Instead:
    **whole** finite domain: 18 verdicts, 324 merge pairs, 324 rewrite pairs,
    252 `(origin, status, certificate)` admissions, 1,044
    `(stage, status, certificate)` audits. The output is committed as
-   `tests/data/verdict_tables.json`.
+   `testdata/fixtures/verdict_tables.json`.
 2. The C++ doctest compares `src/prism/verdict/` and the `laws.hpp` string
    API with that file entry by entry, and checks that the table's stage
    list is `STAGE_ORDER` plus `other`.

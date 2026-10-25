@@ -529,7 +529,7 @@ record.
 | `.dockerignore:7-10` | S | delete these lines after the Python removal (harmless if kept). Also remove the stray untracked __pycache__/ dirs in the working tree (prism/, tools/, tools/svcomp/, tools/prism_ai/, tests/). |
 | `docs/assurance/*.md (ASSURANCE_CASE.md 13, EVIDENCE.md 35, DO-330.md 3, DO-333.md 2, …` | M | doc rewrite: map each cited tests/test_*.py to its doctest TEST_CASE name in tests/cpp/*.cpp and each tools/*.py to its C++ subcommand. Do this in the same change as the assurance_check port (for example `prism assurance-check`), so the check verifies the … |
 | `Python-engine parity comments across src/, include/, tests/cpp/, proofs/, CMakeLists.txt` | M | doc sweep in the final commit: re-point each reference to the C++ owner (for example 'locked by TEST_CASE "..."' in place of 'tests/test_ai.py'). Generated-file headers (grammars*.inc, predict_default.inc, astlint_discard.inc) must name the C++ generator … |
-| `tests/data/selfscan_min, tests/data/ask_questions*.jsonl, tests/cxx_models/*.cpp (test …` | S | keep the data, re-home the readers: the doctest ports of test_triage_selfscan and test_cxx_models, and the C++ port of measure.py ('ask' mode), must load these paths. Add the held-out set to the ported measure command so the 12/12 claim in docs/AI.md stays … |
+| `testdata/fixtures/selfscan_min, testdata/fixtures/ask_questions*.jsonl, tests/cxx_models/*.cpp (test …` | S | keep the data, re-home the readers: the doctest ports of test_triage_selfscan and test_cxx_models, and the C++ port of measure.py ('ask' mode), must load these paths. Add the held-out set to the ported measure command so the 12/12 claim in docs/AI.md stays … |
 | `third_party/llama.cpp/ggml/src/ggml-opencl/CMakeLists.txt, ggml-webgpu/CMakeLists.txt …` | none | MUST STAY non-C++ (third_party is never edited). Add set(GGML_OPENCL OFF) and set(GGML_WEBGPU OFF CACHE BOOL "" FORCE) in CMakeLists.txt so a Python-free build cannot be broken by a cache flip. Document that users must obtain GGUF files pre-converted, since … |
 | `src/prism/scope.cpp:15, src/prism/ai/ask.cpp:120, src/prism/polyglot.cpp:44 (Python as a …` | none | MUST STAY (product feature: scanning user Python code). A 'no Python' grep gate in CI must allow-list these files, along with ai/regress.cpp's pytest emitter and polyglot's python-syntax, python-lint and python-types rows. Otherwise the gate forces removing … |
 
@@ -538,7 +538,7 @@ record.
 | test file | kind | size | destination |
 |---|---|---|---|
 | `tests/__init__.py` | python-engine-behaviour | none | delete (no Python tests remain) |
-| `tests/conformance/test_conformance_suite.py` | tool | L | port tools/conformance.py to a C++ executable (prism-conformance) with tests/cpp/test_conformance.cpp for convert/classify/parse_cex/gate/sample; corpus-shape checks -> C++ repo-lint; drop the … |
+| `testdata/conformance/test_conformance_suite.py` | tool | L | port tools/conformance.py to a C++ executable (prism-conformance) with tests/cpp/test_conformance.cpp for convert/classify/parse_cex/gate/sample; corpus-shape checks -> C++ repo-lint; drop the … |
 | `tests/test_adapters.py` | python-engine-behaviour | L | new tests/cpp/test_adapters.cpp: fake-exe shell scripts in a temp dir fed to prism::run_cbmc (adapters.cpp:915), run_spatch (1108), run_semgrep (1268), run_infer (1340), run_optional_tools (2142), … |
 | `tests/test_afl.py` | python-engine-behaviour | S | merge into tests/cpp/test_fuse.cpp with test_prism_afl.py cases (fake afl-fuzz script) |
 | `tests/test_afl_flag.py` | python-engine-behaviour | S | tests/cpp/test_fuse.cpp: setenv PRISM_AFL with empty PATH and assert NOTRUN/engine!=afl |
@@ -599,7 +599,7 @@ record.
 | `tests/test_optional_honesty.py` | python-engine-behaviour | S | tests/cpp/test_config.cpp (scoped PRISM_TOOLS_DIR temp tree; non-exe source file rejected; clang-tidy unpinned; precedence) |
 | `tests/test_pbsd.py` | mixed | M | tests/cpp/test_main.cpp pbsd section: add capacity.c lint, per-heavy-binary-missing NOTRUN with fake tree, uaf/lock/format plants; hardcoded-path check -> repo-lint; source-parity checks deleted |
 | `tests/test_pipeline.py` | python-engine-behaviour | M | tests/cpp/test_main.cpp pipeline section for LLM-stage READS, missing esbmc, unify confidence 0; planted-bug corpus -> ctest driver running build/prism on testdata |
-| `tests/test_pir.py` | mixed | M | ctest-registered C++ driver running build/prism --stage pir on tests/pir and checking report.json expectations (tests/cpp/e2e_pir.cpp); delete test_stage_after_bmc_in_both_engines and … |
+| `tests/test_pir.py` | mixed | M | ctest-registered C++ driver running build/prism --stage pir on testdata/pir and checking report.json expectations (tests/cpp/e2e_pir.cpp); delete test_stage_after_bmc_in_both_engines and … |
 | `tests/test_pir_refinement.py` | reads-cpp-source | M | C++ repo-lint doctest (tests/cpp/test_repolint.cpp) reading the .cpp and .lean texts with std::regex; fixture run as a ctest driver invoking build/prism + pir_lean_check (tools/pir_lean_check.py … |
 | `tests/test_polyglot.py` | mixed | M | tests/cpp/test_polyglot.cpp (feed canned tool output to the polyglot.cpp parsers); delete the 9 table-parity tests |
 | `tests/test_prism_adapters.py` | reads-cpp-source | M | tests/cpp/test_adapters.cpp as behaviour tests with fake tool scripts (replaces the source greps); delete Python-parity is_fake_adapter check |
@@ -632,7 +632,7 @@ record.
 | `tests/test_taxonomy.py` | python-engine-behaviour | M | tests/cpp/test_taxonomy.cpp (build Finding vectors, call taxonomy/confidence directly) |
 | `tests/test_thrd_unenc.py` | python-engine-behaviour | S | tests/cpp/test_main.cpp: add thrd_* table over the testdata thrd plant with bmc + thread stage (src/prism/stages/thread.cpp) |
 | `tests/test_thread.py` | python-engine-behaviour | S | tests/cpp/test_thread.cpp against src/prism/stages/thread.cpp on the same testdata files |
-| `tests/test_triage_selfscan.py` | tool | S | port tools/triage_selfscan.py to a C++ tool (e.g. prism selfscan-triage subcommand or tools/triage_selfscan.cpp) and register a ctest running it on tests/data/selfscan_min checking the same output … |
+| `tests/test_triage_selfscan.py` | tool | S | port tools/triage_selfscan.py to a C++ tool (e.g. prism selfscan-triage subcommand or tools/triage_selfscan.cpp) and register a ctest running it on testdata/fixtures/selfscan_min checking the same output … |
 | `tests/test_unencoded_contract.py` | python-engine-behaviour | S | add strcpy/strcat/sprintf-not-unencoded and strcat oracle crash doctests against `prism::unencoded_syntax_reason_cached`; rest delete |
 | `tests/test_verdict.py` | mixed | S | delete Python-side and parity cases; move lean-no-sorry and lean-toolchain-pinned into a C++ repo-lint ctest |
 | `tests/test_wp.py` | python-engine-behaviour | S | tests/cpp/test_main.cpp wp section: add rewrite + failed_ensures cases |
@@ -676,7 +676,7 @@ wrong proof first, then by size.
 | D30 | STR-NULL-MEMBER misses the real CVE-2023-50472 code: a member null test after the call suppresses it | S | docs/EVALUATION.md:209 (claims STR-NULL-MEMBER finds CVE-2023-50472); … |
 | D31 | The three new CVE lints drift between the engines (whitespace in `! acc` and `a -> b`, literal memcpy lengths) | S | CLAUDE.md engine parity; prism/checkers.py:13628-13663, 13740-13786 vs … |
 | D32 | PTR-CHAIN-NULL and MEM-COPY-LEN take time quadratic in function length (re-joined prefix text, C++ recompiles 8 regexes on each match) | S | docs/FUZZ_SELF.md F1 (a crafted input must not make a run take minutes); … |
-| D33 | The three new lints have only the one twin pair as tests: no testdata/ planted pair, no test_core unit test, no testdata_fp negatives | S | CLAUDE.md 'Adding a check' / testdata planted-bug corpus; `tests/cpp/test_main.cpp` lint corpus … |
+| D33 | The three new lints have only the one twin pair as tests: no testdata/ planted pair, no test_core unit test, no testdata/fp negatives | S | CLAUDE.md 'Adding a check' / testdata planted-bug corpus; `tests/cpp/test_main.cpp` lint corpus … |
 | D34 | SARIF rules carry only the class id: no taxonomy name or CWE (new lints included) | S | prism/sarif.py:69-70; src/prism/sarif.cpp:103-104 |
 | D35 | Open false alarm: MEM-CAPACITY-FIRST when the realloc failure arm frees the whole object (lints and pbsd, both engines) | S | docs/EVALUATION.md:201 (zlib examples/zran.c:110, FP open) |
 | D36 | Fuzz reports CLEAN for functions the concrete interpreter cannot parse (ExecResult.error ignored; Law 7) | S | docs/EVALUATION.md:236-240 (interpreter front-end gaps surface as ERROR, not silent); … |

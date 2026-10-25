@@ -774,7 +774,7 @@ TEST_CASE("astlint: testdata STR-MISSING-NUL, STR-STRNCPY-NUL, MEM-MEMSET-SWAP, 
         MESSAGE("clang not installed: testdata string/memory astlint skipped");
         return;
     }
-    const auto root = fs::path(PRISM_SOURCE_DIR) / "testdata";
+    const auto root = fs::path(PRISM_SOURCE_DIR) / "testdata" / "planted";
     prism::Config cfg;
     cfg.jobs = 1;
     cfg.root = root;

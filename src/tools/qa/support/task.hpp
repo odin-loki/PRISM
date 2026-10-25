@@ -1,6 +1,6 @@
 #pragma once
 
-// Conformance tasks (tests/conformance/**.yml, one sidecar per source file)
+// Conformance tasks (testdata/conformance/**.yml, one sidecar per source file)
 // and the scorer's fixed tables. See src/tools/qa/conformance.cpp for the
 // task format and the scoring rules.
 
@@ -29,7 +29,7 @@ extern const std::vector<std::string> VERDICT_STAGES; // bmc, harness, pir, conc
 // functions under `// requires:`). A function they do not mention is out of
 // scope, not silently skipped; bmc and pir must report every function.
 extern const std::set<std::string> SCOPED_STAGES;
-// conc is scored only on the thread programs of tests/conformance/concurrency,
+// conc is scored only on the thread programs of testdata/conformance/concurrency,
 // and those only by conc.
 extern const std::map<std::string, std::set<std::string>> STAGE_TASK_ORIGINS;
 extern const std::map<std::string, std::set<std::string>> ORIGIN_STAGES;
@@ -45,9 +45,9 @@ extern const std::vector<std::pair<std::string, std::string>> SV_PROPERTIES;
 extern const std::map<std::string, std::set<std::string>> PROPERTY_CLASSES;
 
 // ---- the repository (default suite, cwd of the PRISM runs)
-// repo_root() lives in docscan.hpp (walks up for tests/conformance/SOURCES.md
+// repo_root() lives in docscan.hpp (walks up for testdata/conformance/SOURCES.md
 // or include/prism/laws.hpp, else the built-from source tree).
-inline fs::path suite_root() { return repo_root() / "tests" / "conformance"; }
+inline fs::path suite_root() { return repo_root() / "testdata" / "conformance"; }
 
 struct Task {
     std::string ident;  // path of the sidecar relative to the suite root

@@ -15,7 +15,7 @@ floating point `src/prism/pir/{fp,translate_fp}.cpp`; exceptions, setjmp/longjmp
 indirect calls and inline assembly `src/prism/pir/translate_ctl.inc` (+ `lower_ctl.cpp`);
 memory model `src/prism/pir/{memory,translate_mem,stage_mem,contracts}.cpp`; library
 models `src/prism/pir/{libc_models,libc_format}.cpp` + `src/prism/pir/models/libc/*.cpp`.
-Tests: `tests/pir/*` (true and false variants; `mem_*.c` for the memory
+Tests: `testdata/pir/*` (true and false variants; `mem_*.c` for the memory
 model; `fp_*`, `eh_*`, `coro_*`, `sjlj_*`, `virt_*`, `asm_*` for roadmap 2.6),
 doctests in `tests/cpp/test_pir_e2e.cpp`, `test_main.cpp` (`pir: …`), `test_pir_mem.cpp`
 (`pir mem: …`) and `test_pir3.cpp` (`pir3 …`). Differential oracle: `prism-qa pir-vs-bmc`.
@@ -49,7 +49,7 @@ that does not compile is one `ERROR` row ("clang front end failed: …").
 memory encoding assume LP64 (`unsigned long size_t`). On `_WIN32`, every PIR (and SV-COMP debug
 IR) clang invocation uses `lp64_clang_driver_flags()`: `--target=x86_64-unknown-linux-gnu` and
 `-idirafter` `src/prism/pir/models/libc/shim/` (minimal `string.h` / `stdlib.h` / `assert.h` /
-`pthread.h` / `stdatomic.h` typedefs so scanned C compiles; no sysroot). The 17-file `tests/pir`
+`pthread.h` / `stdatomic.h` typedefs so scanned C compiles; no sysroot). The 17-file `testdata/pir`
 C subset runs in CI; glibc-heavy corpus files stay `NOTRUN` via
 `pir_test_c_file_supported(basename)`. The shim does not model C11 atomics for the `conc` stage
 (`test_conc.cpp` prints `NOTRUN` for those cases). `frontend_usable` verifies the LP64 triple with
@@ -106,7 +106,7 @@ from one, is refused (`UNENCODED`), since the callee would use it as one value.
 locations); nothing from that build is used otherwise. Each `shl` whose
 `!dbg` line:column matches gets the C17 6.5.7p4 check (negative base, or
 `a·2^b` not representable). C++20 and later define signed `<<`, so C++ units
-get no base check (`tests/pir/cxx.cpp:cxx_shl_ok` is PROVED).
+get no base check (`testdata/pir/cxx.cpp:cxx_shl_ok` is PROVED).
 
 ## IR parser
 
@@ -343,7 +343,7 @@ Measured (single `pir` runs, loaded shared machine, 2026-09-25):
 the destructor: did not finish in 900 s, now PROVED in 1.5 s; its MEM-UAF
 twin (an iterator to the erased element) and a wrong-sum twin are FAILED in
 seconds (doctest `pir: value sets: map erase at an input-dependent
-position`). `tests/conformance/libc-models/map_contracts.cpp`: 11/11 in
+position`). `testdata/conformance/libc-models/map_contracts.cpp`: 11/11 in
 13.5 s as one file (per harness 0.4–2.4 s of solving;
 before: `map_insert_true` alone did not finish in 600 s). Where an address
 depends on a symbolic index (`vector::insert` at a symbolic position), the
@@ -488,7 +488,7 @@ explicit exception edges of "Exceptions" below, so a `catch` of that
 class or one of its bases catches them. With this, `std::vector`
 (`operator[]`), `std::span`, `std::array`, `std::optional` (`operator*`),
 `std::unique_ptr` (`operator*`) and `std::string_view` work
-(`tests/pir/mem_stl.cpp`). The platform C++ library is
+(`testdata/pir/mem_stl.cpp`). The platform C++ library is
 libstdc++ (D7, Linux); libc++ would need the same treatment of
 `_LIBCPP_HARDENING_MODE`.
 
@@ -647,7 +647,7 @@ Encoder support added for the map/set models (and user code alike):
 
 ### Library models verified by PRISM (roadmap 8.2)
 
-The models are checked by PRISM itself: `tests/conformance/libc-models/`
+The models are checked by PRISM itself: `testdata/conformance/libc-models/`
 holds contract harnesses that `#include` the model sources
 (`string.cpp`, `stdlib.cpp`, `stdio.cpp`; the C++ allocation models through the
 linked copy of `stdlib.cpp`, since their names are mangled) and state each
@@ -759,7 +759,7 @@ only memory statement is a range check (`putc(c, NULL)`) crashed the encoder
 function as using memory.
 
 Every function defined in a model file is called by a harness
-(`tests/conformance/test_conformance_suite.py`
+(`testdata/conformance/test_conformance_suite.py`
 `test_every_model_function_is_called`). The `bmc` stage has no preprocessor
 and does not see the models (NEEDS-HARNESS apart from its own built-in
 `abs`/`rand` models).
@@ -767,9 +767,9 @@ and does not see the models (NEEDS-HARNESS apart from its own built-in
 The `printf`/`fprintf` family (`sprintf`, `snprintf`, …) is intentionally
 **outside** the libc-models contract harnesses above (roadmap 8.2 boundary):
 those calls are lowered in the PIR translator (`libc_format.cpp`), not as C
-sources under `tests/conformance/libc-models/`, so they are not proved via
+sources under `testdata/conformance/libc-models/`, so they are not proved via
 the `#include` harness loop that fills the table. Format-string and buffer
-contracts for that family are verified in `tests/pir/mem_libc.c` instead. The
+contracts for that family are verified in `testdata/pir/mem_libc.c` instead. The
 `__prism_*` intrinsics themselves are PIR statements whose encoding the
 harnesses exercise but do not verify in isolation.
 
@@ -813,7 +813,7 @@ objects hold at most 4 elements (size-bounded proofs).
 
 ## C features
 
-* `_Generic`: resolved by clang (`tests/pir/mem_libc.c:generic_ok` PROVED).
+* `_Generic`: resolved by clang (`testdata/pir/mem_libc.c:generic_ok` PROVED).
 * VLAs: `alloca T, iN n` with a symbolic size; the size must be positive
   (checked on the value before its `zext`/`sext`) and below 2^47; the
   object ends at `llvm.stackrestore`.
@@ -863,7 +863,7 @@ taint the value, so translation validation skips inputs that depend on them,
 and an FP return compares NaN with any NaN. Translation validation passes FP
 arguments as LLVM hex literals and draws ordinary values (0.5, -1000.25,
 3e9, 1e300, ±inf, NaN, 16777217, …) besides raw bit patterns.
-`tests/pir/fp_arith.c`.
+`testdata/pir/fp_arith.c`.
 
 ## Exceptions (roadmap 2.3, 2.6)
 
@@ -904,7 +904,7 @@ a type match PRISM cannot decide (pointer conversions, ambiguous bases,
 typeinfo not in the module), handlers nested deeper than 8, landing pad
 code that cannot be translated. Not modelled (`UNENCODED`): dynamic
 exception specifications (`filter`, `__cxa_call_unexpected`),
-`std::exception_ptr`, `std::uncaught_exceptions`. `tests/pir/eh_*.cpp`.
+`std::exception_ptr`, `std::uncaught_exceptions`. `testdata/pir/eh_*.cpp`.
 
 **Runtime typeinfo.** A typeinfo object the module only declares
 (`@_ZTIi = external constant ptr`: fundamental and pointer types, library
@@ -930,7 +930,7 @@ memory-model properties), and `llvm.lifetime.end` of a frame temporary
 ends its lifetime (`llvm.lifetime.start` makes its bytes indeterminate
 again and starts a new lifetime of a stack object; a heap object, such as
 the frame, already ended stays dead, so a later access is reported, never
-assumed valid). `tests/pir/coro_gen.cpp`.
+assumed valid). `testdata/pir/coro_gen.cpp`.
 
 ## setjmp/longjmp (roadmap 2.6)
 
@@ -947,7 +947,7 @@ their last stored value, as in the -O0 build; C11 7.13.2.1p3 calls a
 non-volatile local modified in between indeterminate, which PRISM does not
 report (a gap listed above). A `longjmp` from code the `setjmp` does not
 dominate makes the control flow irreducible (`UNENCODED`).
-`tests/pir/sjlj_basic.c`.
+`testdata/pir/sjlj_basic.c`.
 
 ## Indirect calls (roadmap 2.6)
 
@@ -968,7 +968,7 @@ A null pointer is PTR-NULL-DEREF; any other value — a function outside the
 candidate set — is the **havoc fallback**: a soft check reported as
 `NEEDS-HARNESS` ("indirect call to a target outside …") when reachable.
 Choosing candidates therefore only affects completeness, never soundness.
-More than 16 candidates is `UNENCODED`. `tests/pir/virt_dispatch.cpp`.
+More than 16 candidates is `UNENCODED`. `testdata/pir/virt_dispatch.cpp`.
 
 ## Inline assembly (roadmap 2.6)
 
@@ -985,7 +985,7 @@ integer constants joined by `&&`. PRISM then assumes the block writes only
 its (integer) output and that `cond` holds afterwards; the contract is
 listed in `extra.assumptions` and a proof is **PROVED-ASSUMING**, never
 PROVED. Asm with memory operands, several outputs or non-integer outputs
-stays `UNENCODED` even with a contract. `tests/pir/asm_contract.c`.
+stays `UNENCODED` even with a contract. `testdata/pir/asm_contract.c`.
 
 ## k-induction with memory (roadmap 2.6)
 
@@ -1057,7 +1057,7 @@ when the array was uninitialised before the loop, while one written by the
 last k iterations is seen by the step itself (`array/arr_loop_true` reads
 `a[9]`, written by the final iteration).
 
-Tasks: `tests/pir/kind_mem.c`; `tests/conformance/prism/kindmem/` (13
+Tasks: `testdata/pir/kind_mem.c`; `testdata/conformance/prism/kindmem/` (13
 true/false pairs: prefix writes then a read beyond the prefix, even-only
 writes, late out-of-bounds writes, writes through aliasing, selected and
 loaded pointers, `memcpy` of uninitialised bytes, pointer walks, struct
@@ -1072,7 +1072,7 @@ true ones stay BOUNDED: allocation or free in the loop, a `memcpy`, an
 object-granular overwrite, a havocked pointer walk). On the rest of the
 conformance suite two BOUNDED true tasks become PROVED-UNBOUNDED
 (`array/arr_loop_true`, `regress/uninit_elem_unbounded_true`), in
-`tests/pir` one (`kind_mem.c`); the strict gate has 0 wrong proofs and
+`testdata/pir` one (`kind_mem.c`); the strict gate has 0 wrong proofs and
 `prism-qa soundness` (`--generator inhouse-ptr -n 80`, `--generator
 inhouse -n 60`) finds 0 wrong proofs. Those generators produce few
 single-loop functions that write memory, so a targeted run was added (an
@@ -1225,11 +1225,11 @@ correctness witness (docs/SVCOMP.md). The wrapper maps IR names to C
 variables with full debug information and exports a conjunct only where C's
 meaning of the text is the proved bit-vector relation.
 
-Tasks: `tests/conformance/libc-models/unbounded_string_contracts.cpp` (below),
+Tasks: `testdata/conformance/libc-models/unbounded_string_contracts.cpp` (below),
 doctest `pir: Houdini loop invariants prove symbolic-size byte loops, twins
 refuted` (strlen and copy loops over heap objects of any size; reading one
 past the terminator, an off-by-one write, an unterminated string and a write
-through a pointer loaded from memory are refuted), `tests/pir/loops.c`
+through a pointer loaded from memory are refuted), `testdata/pir/loops.c`
 (`loop_long_inv` closes; `loop_long_bounded`, whose invariant is
 non-linear, stays BOUNDED).
 
@@ -1243,17 +1243,17 @@ pass; no `-fsanitize` check insertion (Law 8).
 
 | 2.6 row | how PIR handles it | status | evidence |
 |---|---|---|---|
-| Templates, concepts, overloading, `constexpr`/`consteval`, `if consteval`, deducing `this`, lambdas | resolved by Clang before IR | DONE (no encoder work) | `tests/pir/cxx.cpp`, `tests/conformance/prism/cxx` |
-| Classes, inheritance, virtual dispatch | vtable loads are memory reads; indirect calls dispatch over the module's vtable functions (class hierarchy analysis) or address-taken functions; any other target is the havoc fallback (NEEDS-HARNESS) | DONE | `tests/pir/virt_dispatch.cpp`, `conformance/prism/virt` |
-| Exceptions | explicit exception edges, catch matching (typeinfo hierarchy), cleanup, rethrow; escape from `noexcept` (CXX-THROW-NOEXCEPT) or `main` (CXX-UNCAUGHT) is a violation | DONE (dynamic exception specs, `exception_ptr`: UNENCODED) | `tests/pir/eh_*.cpp`, `conformance/prism/eh` |
-| Coroutines | LLVM coroutine passes, then normal encoding (frame = `new` object, resume/destroy = indirect calls) | DONE | `tests/pir/coro_gen.cpp`, `conformance/prism/coro` |
+| Templates, concepts, overloading, `constexpr`/`consteval`, `if consteval`, deducing `this`, lambdas | resolved by Clang before IR | DONE (no encoder work) | `testdata/pir/cxx.cpp`, `testdata/conformance/prism/cxx` |
+| Classes, inheritance, virtual dispatch | vtable loads are memory reads; indirect calls dispatch over the module's vtable functions (class hierarchy analysis) or address-taken functions; any other target is the havoc fallback (NEEDS-HARNESS) | DONE | `testdata/pir/virt_dispatch.cpp`, `conformance/prism/virt` |
+| Exceptions | explicit exception edges, catch matching (typeinfo hierarchy), cleanup, rethrow; escape from `noexcept` (CXX-THROW-NOEXCEPT) or `main` (CXX-UNCAUGHT) is a violation | DONE (dynamic exception specs, `exception_ptr`: UNENCODED) | `testdata/pir/eh_*.cpp`, `conformance/prism/eh` |
+| Coroutines | LLVM coroutine passes, then normal encoding (frame = `new` object, resume/destroy = indirect calls) | DONE | `testdata/pir/coro_gen.cpp`, `conformance/prism/coro` |
 | Standard library | libc operational models (contract-checked, "Library models verified by PRISM"); C++ model headers `vector`, `map`, `set`, `bits/basic_string.tcc` (`models/cxx/`, differential-tested against libstdc++); other libstdc++ code inlined with `_GLIBCXX_ASSERTIONS`; library throws are real exceptions; unmodelled calls NEEDS-HARNESS | PARTIAL (iostreams, unordered containers, `std::list`/`deque` NEEDS-HARNESS where they recurse or call into `libstdc++.so`; `vector::insert` at a symbolic position does not finish within 1800 s; libc++ not modelled) | "Library models", "C++ library models" |
-| Floating point | Z3 floating-point theory (RNE) for half/float/double; FLOAT-CAST-OVF; `--fp-checks` | DONE (x86_fp80/fp128/bfloat, fast-math: UNENCODED) | `tests/pir/fp_arith.c`, `conformance/prism/fp` |
+| Floating point | Z3 floating-point theory (RNE) for half/float/double; FLOAT-CAST-OVF; `--fp-checks` | DONE (x86_fp80/fp128/bfloat, fast-math: UNENCODED) | `testdata/pir/fp_arith.c`, `conformance/prism/fp` |
 | Threads and atomics | separate `conc` stage (docs/CONCURRENCY.md) | other work (not in this slice) | docs/CONCURRENCY.md |
 | Modules (`import std;`) | handled by Clang; PRISM consumes the IR | NOT TESTED (Clang 18 needs a prebuilt `std` module) | — |
-| Inline assembly | NEEDS-HARNESS unless `// prism: asm ensures <cond>`; then PROVED-ASSUMING listing the contract | DONE | `tests/pir/asm_contract.c`, `conformance/prism/asm` |
-| C (C11 to C23): `_Generic`, VLAs, `setjmp`/`longjmp` | `_Generic` by Clang; VLAs in the memory model; setjmp/longjmp as exception-like edges (CTRL-LONGJMP-INVALID) | DONE | `tests/pir/mem_libc.c`, `tests/pir/sjlj_basic.c`, `conformance/prism/sjlj` |
-| k-induction for functions using memory | step case havocs the loop's write footprint (provenance-resolved objects, else every pre-loop object; initialised flags `old \| arbitrary` or arbitrary) | DONE for loops that do not allocate or free (those stay BOUNDED, `not-attempted`); object-granular | `tests/pir/kind_mem.c`, `conformance/prism/kindmem`, `extra.k_induction_footprint` |
+| Inline assembly | NEEDS-HARNESS unless `// prism: asm ensures <cond>`; then PROVED-ASSUMING listing the contract | DONE | `testdata/pir/asm_contract.c`, `conformance/prism/asm` |
+| C (C11 to C23): `_Generic`, VLAs, `setjmp`/`longjmp` | `_Generic` by Clang; VLAs in the memory model; setjmp/longjmp as exception-like edges (CTRL-LONGJMP-INVALID) | DONE | `testdata/pir/mem_libc.c`, `testdata/pir/sjlj_basic.c`, `conformance/prism/sjlj` |
+| k-induction for functions using memory | step case havocs the loop's write footprint (provenance-resolved objects, else every pre-loop object; initialised flags `old \| arbitrary` or arbitrary) | DONE for loops that do not allocate or free (those stay BOUNDED, `not-attempted`); object-granular | `testdata/pir/kind_mem.c`, `conformance/prism/kindmem`, `extra.k_induction_footprint` |
 | Loop invariants | Houdini over templates on a loop-cut encoding (every loop, nested and sequential), base and step proved in Z3; universal memory templates checked pointwise; only the fixpoint is used | DONE for loops that do not allocate or free; templates, not synthesis (non-linear invariants stay BOUNDED) | "Loop invariants", `libc-models/unbounded_string_contracts.cpp`, `extra.pir_invariants` |
 
 ## Encoder and verdicts
