@@ -1054,6 +1054,11 @@ struct Checker {
                     name + "() of a " + std::to_string(lit->size()) + "-character literal (+ NUL) into " +
                         decl_name(*args[0]) + "[" + std::to_string(*sz) + "]: the copy overflows the array");
             }
+            if (sz && !in_macro(c)) {
+                auto bn = decl_name(*args[0]);
+                add(c, "STR-UNBOUNDED-COPY",
+                    name + "() into local " + (bn.empty() ? std::string("buffer") : bn) + "[…] with no bound");
+            }
         }
         if (name == "strncpy" && args.size() >= 3) {
             auto sz = local_array_size(*args[0]);

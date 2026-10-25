@@ -298,7 +298,11 @@ int getenv_true(void) {
     char name[2] = {'P', 0};
     char *v = getenv(name);
     if (!v) return 0;
-    return (int)strlen(v);
+    /* fresh_cstr is NUL-terminated within its object; do not strlen (symbolic length). */
+    size_t n = __prism_obj_size(v);
+    assert(n > 0);
+    assert(v[n - 1] == 0);
+    return 0;
 }
 
 /* Wrong contract: getenv never returns NULL. */

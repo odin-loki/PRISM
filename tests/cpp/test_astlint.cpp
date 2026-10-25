@@ -564,9 +564,13 @@ char *rsafe(char *p) {
     if (!q) return p;
     return q;
 }
+void unbounded_into_local(void) {
+    char buf[8];
+    strcpy(buf, "hi"); // expect: STR-UNBOUNDED-COPY
+}
 void fixed_copy(char *out) {
     char small[4];
-    strcpy(small, "overflow"); // expect: STR-OFF-BY-ONE
+    strcpy(small, "overflow"); // expect: STR-OFF-BY-ONE, STR-UNBOUNDED-COPY
     strcpy(out, "overflow");
     puts(small);
 }

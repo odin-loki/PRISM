@@ -2,9 +2,10 @@
 
 Status of every item in the PRISM roadmap (Odin Loch, 23 September 2026) as
 of this commit. Each row is **DONE**, **PARTIAL** (what exists and what is
-missing) or **NOT DONE** (why). Evidence points at files, tests or commands
-in this repository; nothing here is claimed that the repository does not
-contain. Proof claims are about Lean models unless a row says otherwise; see
+missing) or **NOT DONE** (why). Actionable **PARTIAL** follow-ups are tracked in
+[ENGINEERING_BACKLOG.md](ENGINEERING_BACKLOG.md). Evidence points at files, tests
+or commands in this repository; nothing here is claimed that the repository does
+not contain. Proof claims are about Lean models unless a row says otherwise; see
 [TRUSTED_BASE.md](TRUSTED_BASE.md) for what each verdict trusts.
 
 Headline numbers (C++ engine, strict `build/prism-qa conformance`; verified on
