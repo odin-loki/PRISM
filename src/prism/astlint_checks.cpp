@@ -786,7 +786,7 @@ bool regex_search_sv(std::string_view hay, const std::regex& re) {
 }
 
 void collect_max_fields(std::string_view text, std::unordered_set<std::string>& out) {
-    static const std::regex re(R"(\b(\w+_max)\b)");
+    static const std::regex re("\\b(\\w+_max)\\b");
     const std::string s(text);
     for (std::sregex_iterator it(s.begin(), s.end(), re), end; it != end; ++it) out.insert(it->str(1));
 }
@@ -1231,11 +1231,12 @@ struct Checker {
         collect_max_fields(prior, max_names);
         if (max_names.empty()) return;
         const bool plain = callee == "memcpy" || callee == "memmove";
-        static const std::regex max_minus(R"(\b(\w+_max)\s*-\s*([A-Za-z_]\w*)\b(?!\s*(?:->|\.|\[|\()))");
+        static const std::regex max_minus(
+            "\\b(\\w+_max)\\s*-\\s*([A-Za-z_]\\w*)\\b(?!\\s*(?:->|\\.|\\[|\\())");
         std::optional<std::string> msg;
         for (std::size_t a : {std::size_t{2}, std::size_t{0}}) {
             if (a >= args.size()) continue;
-            auto size = arg_text(*args[a]);
+            auto size = arg_text(*args.at(a));
             if (a == 2 && is_ident(size)) {
                 if (plain && !copy_len_guarded(size, prior, max_names))
                     msg = callee + "() length " + size + " not checked against a *_max bound in this function";

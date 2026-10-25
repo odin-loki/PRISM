@@ -6,6 +6,8 @@ Owner-only rows (history rewrite, GPU hardware, LoRA) are omitted. Supply-chain
 
 ## CI
 
+**Lint gate (local):** `./build-werror/prism src/prism --stage lints,warnings --no-llm` → `scripts/lint_failed_count.sh` **0** after astlint self-lint fixes (2026-10-25).
+
 **Do not bump** [ROADMAP_STATUS.md](ROADMAP_STATUS.md) D7 / [MSVC_PORT.md](MSVC_PORT.md) “latest green” until one of these finishes **success**:
 
 | Commit | PRISM CI run | Status (2026-10-25) |
