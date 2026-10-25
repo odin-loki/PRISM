@@ -25,7 +25,7 @@ jobs removed; doctest + `prism_tests` only.**
 - **CI:** no engine pytest job; lint fastpath + e2e smokes live in
   `prism_tests`. BenchExec smoke on the `cpp` job. `conformance.yml` /
   `self-check.yml` → `prism-qa`; supply-chain builds `prism-deps`. Gating
-  workflows green on `main` @ `6f019d4c8` (PRISM CI [`40146650874`](https://github.com/odin-loki/PRISM/actions/runs/40146650874)), including all four Windows smokes after LP64 libc shims.
+  workflows green on `main` @ `7b652bf9f` (PRISM CI [`40149651603`](https://github.com/odin-loki/PRISM/actions/runs/40149651603)), including all four Windows smokes after LP64 libc shims.
 - **Still open:** `port/ai-gen-tools`, owner-only items in `ROADMAP_STATUS.md`.
   **Phase 6 (Z3 without Python)** is **done** — see phase-6 section.
 - Appendix map is from audit `911b9f94f`; many rows are now **DONE** on C++
@@ -824,6 +824,6 @@ wrong proof first, then by size.
 
 ## Appendix: MSVC / `__int128` (native Windows `prism_core`)
 
-Phase-1 audit and phased coding plan: **[MSVC_PORT.md](MSVC_PORT.md)** (`main` @ `726941054`).
+Phase-1 audit and phased coding plan: **[MSVC_PORT.md](MSVC_PORT.md)** (`main` @ `7b652bf9f`).
 Blocker: `__int128` in interval, PIR, SV-COMP, solver `leanbb`, and AI `regress` (`prism_core`);
 QA `__int128` is Unix-only in CMake today.
