@@ -31,7 +31,7 @@ RUN sed -i \
       /etc/apt/sources.list.d/ubuntu.sources \
  && apt-get update \
  && apt-get install -y --no-install-recommends \
-      clang-18 lld-18 llvm-18 cmake ninja-build python3 git ca-certificates \
+      clang-18 lld-18 llvm-18 cmake ninja-build git ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
 # Pinned compiler: clang 18 from the snapshot above, by absolute path.

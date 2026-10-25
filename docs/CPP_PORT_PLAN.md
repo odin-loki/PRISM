@@ -501,7 +501,7 @@ record.
 | `.github/workflows/proofs-recheck.yml:77-80 (+ paths filter :26, :32)` | S | Build the std-only prism-deps first (clang/cmake step), then run `prism-deps tool lean4export nanoda`. Point the paths filter at src/tools/prism_deps/**. |
 | `.github/workflows/release.yml:27-30` | S | Build prism-deps and run `prism-deps licence-check` and `prism-deps linked`, or drop these two steps because the Dockerfile repeats both checks inside the reproducible build. |
 | `.github/workflows/self-check.yml:26-55` | none | **DONE** — no setup-python or pytest; `prism_tests` + `prism-qa conformance` under ASan+UBSan. |
-| `Dockerfile:34,48-49,70` | S | `cmake --build /build --target prism-deps && /build/prism-deps licence-check && /build/prism-deps linked`, then the full build, then `/build/prism-deps sbom --version ${PRISM_VERSION} -o /out/prism.cdx.json`. Remove python3 from apt once phase 5 deletes the Python engine (Z3 no longer needs it at configure/build time; see phase 6). |
+| `Dockerfile:34,48-49,70` | **DONE** | Reproducible image: no `python3` in apt (phase 5+6); `prism-deps` + full build + `prism_tests` + SBOM as before. |
 | `CMakeLists.txt:122-130 -> third_party/z3/CMakeLists.txt:162 (vendored Z3 build)` | none | **DONE** (phase 6): `cmake/z3.cmake` + std-only `z3gen` (`src/tools/z3gen.cpp`) shim `Python3_EXECUTABLE` at configure time; checked-in `cmake/z3-generated/` supplies pyg2hpp/API outputs so Ninja never runs upstream `scripts/*.py`. Still `add_subdirectory(third_party/z3)` with bindings/examples off; `third_party/` is never edited. Maintainer pin bump: phase-6 section. |
 | `src/prism/polyglot.cpp:79-116,149-154,569,644 (python-syntax check / SYNTAX_HELPER)` | M | Move JSON and TOML into C++ builtins in polyglot.cpp. JSON via nlohmann::json::parse, turning the error byte offset into line and column. TOML via a full TOML 1.0 reader: extend the prism-deps reader, or add toml++ as a seventh linked library through the … |
 | `src/prism/polyglot.cpp:155-170,227-230 (ruff / pyflakes / mypy / yamllint rows)` | none | MUST STAY as external tools. They are the linters of the language being scanned, like eslint or clippy; PRISM does not ship them and reports NOTRUN when they are missing. No port. Only CI stops installing them, and the doctest stubs keep the output parsers … |
@@ -824,6 +824,6 @@ wrong proof first, then by size.
 
 ## Appendix: MSVC / `__int128` (native Windows `prism_core`)
 
-Phase-1 audit and phased coding plan: **[MSVC_PORT.md](MSVC_PORT.md)** (`main` @ `7b652bf9f`).
+Phase-1 audit and phased coding plan: **[MSVC_PORT.md](MSVC_PORT.md)** (sync audit SHA with latest green `main` CI).
 Blocker: `__int128` in interval, PIR, SV-COMP, solver `leanbb`, and AI `regress` (`prism_core`);
 QA `__int128` is Unix-only in CMake today.

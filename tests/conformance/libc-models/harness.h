@@ -19,11 +19,19 @@
 
 #include "../../../src/prism/pir/models/libc/prism_model.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 void __assert_fail(const char *assertion, const char *file, unsigned int line, const char *function)
     __attribute__((__noreturn__));
 #define assert(e) ((e) ? (void)0 : __assert_fail(#e, __FILE__, __LINE__, __func__))
 
 void __VERIFIER_assume(int cond);
+
+#ifdef __cplusplus
+}  // extern "C"
+#endif
 
 /* Buffer size of the harnesses: loops in the models run at most N + 1 times
  * (2N + 1 for a strcat/strncat destination), so with N = 4 they close within

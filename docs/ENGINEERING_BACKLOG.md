@@ -8,7 +8,7 @@ Owner-only rows (history rewrite, GPU hardware, LoRA) are omitted. Supply-chain
 
 | Gap | Next action | Primary paths |
 |-----|-------------|---------------|
-| `getenv_true` BOUNDED (52/53 libc PROVED) | Harness: assert NUL within `__prism_obj_size` instead of `strlen` on `fresh_cstr` | `tests/conformance/libc-models/stdlib_contracts.cpp` |
+| `getenv_true` → PROVED | **Done:** `__prism_obj_size` + NUL; `harness.h` `extern "C"` for `assert` in `.cpp` harnesses | `stdlib_contracts.cpp`, `harness.h` |
 | `strcat`/`strncat` unbounded BOUNDED | New Houdini templates for four-loop concat | `src/prism/pir/houdini.inc`, `unbounded_string_contracts.cpp` |
 | `vector_insert_true` timeout | Value sets for `data()+i`, `i ∈ [0,3]` (map-insert pattern) | `src/prism/pir/memory.cpp`, `vector_insert.cpp` |
 | printf not in libc harnesses | Document translator-only scope **or** new models | `libc_format.cpp`, `docs/PIR.md` |
@@ -19,7 +19,9 @@ Owner-only rows (history rewrite, GPU hardware, LoRA) are omitted. Supply-chain
 | Gap | Next action | Primary paths |
 |-----|-------------|---------------|
 | ~287 regex-only classes | Port high-impact rules with `testdata/` plants | `checkers_core.cpp` → `astlint_checks.cpp`, `test_astlint.cpp` |
-| In progress | **`STR-UNBOUNDED-COPY`** (`strcpy`/`strcat` → local `char[]`) | `unbounded_copy.c`, `CLASSES[]` in `astlint.hpp` |
+| Done (2026-10-25) | **`STR-UNBOUNDED-COPY`**, **`API-GETS`** doctest in `kPortedC` | `astlint_checks.cpp`, `test_astlint.cpp` |
+| Done (2026-10-25) | **`MEM-BCOPY`**, **`INT-TAUTOLOGY`** in `kPortedC` | `test_astlint.cpp` |
+| Next | Pick from regex-only table (~280 left) | `checkers_core.cpp` → `astlint_checks.cpp` |
 | Template / flow limits | Document NOTRUN; defer dependent-template rules | `astlint.hpp` |
 
 ## 2.8 / D2 — Retire hand `bmc` encoder

@@ -432,6 +432,7 @@ void check_marks(const std::string& name, const std::string& text, const std::ve
 const char* kPortedC = R"(#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 struct node { int v; struct node *next; };
 int null_after_check(struct node *n) {
     if (n == NULL) { puts("none"); }
@@ -554,7 +555,10 @@ int shift(int x) { return x << 40; } // expect: INT-SHIFT-UB
 int shift_ok(unsigned long long x) { return (int)(x << 40); }
 void ignored(void) { malloc(10); } // expect: API-IGNORED-ERROR
 void kept(void) { void *m = malloc(10); free(m); }
+void gets_bad(char *buf) { gets(buf); } // expect: API-GETS
+void gets_ok(char *buf) { fgets(buf, 16, stdin); }
 void overlap(char *s) { strcpy(s, s); } // expect: MEM-OVERLAP
+void bcopy_self(char *p) { bcopy(p, p, 4); } // expect: MEM-BCOPY
 char *rself(char *p) {
     p = realloc(p, 10); // expect: MEM-REALLOC-SELF
     return p;
@@ -575,6 +579,14 @@ void fixed_copy(char *out) {
     puts(small);
 }
 int bool_bit(int a, int b) { return (a > 0) & (b > 0) ? 1 : !a & 4; } // expect: INT-BOOL-AS-BIT
+int taut_bounds(int idx) {
+    if (idx >= 0 || idx < 100) return 1; // expect: INT-TAUTOLOGY
+    return 0;
+}
+int taut_ok(int i, int n) {
+    if (i >= 0 && i < n) return 1;
+    return 0;
+}
 )";
 
 const char* kPortedCxx = R"(#include <string>
