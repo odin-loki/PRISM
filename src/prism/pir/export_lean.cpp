@@ -332,7 +332,8 @@ void intrinsic_line(std::ostream& b, const ir::Inst& in) {
 }
 
 // The model intrinsics of Tr::model_intrinsic the extended fragment covers
-// (the libc models' malloc/free/new/delete use only these).
+// (the libc models' malloc/free/new/delete use only these; D136 adds `hhavoc`
+// export ahead of the Lean fragment).
 void model_line(std::ostream& b, const ir::Module& m, const ir::Inst& in) {
     (void)m;
     const std::string& n = in.callee;
@@ -383,6 +384,14 @@ void model_line(std::ostream& b, const ir::Module& m, const ir::Inst& in) {
     if (n == "__prism_alloc_failed") {
         // Tr::st(oom, i8 1): a store of one byte, alignment 8, into the flag object
         b << "L store 8 #1 %" << kOom << " 8\n";
+        return;
+    }
+    if (n == "__prism_havoc_bytes") {
+        // MemTr::write_havoc (D136 stdio models): Lean `hhavoc` not in the fragment yet
+        if (in.ops.size() != 2 || in.ops[0].ty.kind != ir::Type::Ptr || in.ops[0].ty.text != "ptr")
+            throw Unsupported{"call @" + n + " arity"};
+        if (vw(in.ops[1].ty) != 64) throw Unsupported{"call @" + n + " type"};
+        b << "L hhavoc " << ptr_opnd(in.ops[0]) << " " << opnd(in.ops[1]) << "\n";
         return;
     }
     throw Unsupported{"call @" + n};

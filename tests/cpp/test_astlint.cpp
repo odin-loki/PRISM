@@ -436,7 +436,14 @@ const char* kPortedC = R"(#include <stdio.h>
 #include <sys/stat.h>
 #ifndef _WIN32
 int mkstemp(char *);
+int mkstemps(char *, int);
 #endif
+#ifndef _WIN32
+int setuid(int);
+int seteuid(int);
+int setgid(int);
+#endif
+int chmod(const char *path, unsigned mode);
 struct node { int v; struct node *next; };
 int null_after_check(struct node *n) {
     if (n == NULL) { puts("none"); }
@@ -580,6 +587,22 @@ void mktemp_ok(void) {
 }
 int umask_bad(void) { umask(0); return 0; } // expect: API-UMASK
 int umask_ok(void) { umask(077); return 0; }
+#ifndef _WIN32
+void mkstemp_bad(void) { mkstemp("/tmp/xXXXXXX"); } // expect: API-MKSTEMP
+void mkstemps_bad(void) { mkstemps("/tmp/xXXXXXX", 0); } // expect: API-MKSTEMP
+void mkstemp_ok(void) {
+    char t[] = "/tmp/xXXXXXX";
+    (void)mkstemp(t);
+}
+#endif
+void chmod_world_bad(void) { chmod("/tmp/x", 0777); } // expect: API-CHMOD-WORLD
+void chmod_world_ok(void) { chmod("/tmp/x", 0755); }
+#ifndef _WIN32
+void setuid_bad(void) { setuid(0); } // expect: API-SETUID
+void setuid_ok(void) {
+    if (setuid(0) != 0) return;
+}
+#endif
 void scanf_bad(int *p) { scanf("%d", p); } // expect: API-SCANF-UNCHECKED
 void scanf_ok(int *p) {
     if (scanf("%d", p) != 1) return;
@@ -711,7 +734,7 @@ TEST_CASE("astlint: ported regex classes on C (planted + guards, both front ends
     check_marks("ported.c", kPortedC);
 }
 
-TEST_CASE("astlint: testdata STR-MISSING-NUL and MEM-MEMSET-SWAP (both front ends)") {
+TEST_CASE("astlint: testdata STR-MISSING-NUL, STR-STRNCPY-NUL, and MEM-MEMSET-SWAP (both front ends)") {
     auto clang = find_clang();
     if (!clang) {
         MESSAGE("clang not installed: testdata string/memory astlint skipped");
@@ -737,6 +760,8 @@ TEST_CASE("astlint: testdata STR-MISSING-NUL and MEM-MEMSET-SWAP (both front end
         CHECK(ast_lines("missing_nul.c", "STR-MISSING-NUL", "missing_nul_bad", b) == std::set<int>{5});
         CHECK(ast_lines("missing_nul.c", "STR-MISSING-NUL", "missing_nul_ok", b).empty());
         CHECK(ast_lines("missing_nul.c", "STR-MISSING-NUL", "missing_nul_sizeof_ok", b).empty());
+        CHECK(ast_lines("strncpy_nul.c", "STR-STRNCPY-NUL", "strncpy_nul_bad", b) == std::set<int>{5});
+        CHECK(ast_lines("strncpy_nul.c", "STR-STRNCPY-NUL", "strncpy_nul_ok", b).empty());
         CHECK(ast_lines("memset_swap.c", "MEM-MEMSET-SWAP", "memset_swap_bad", b) == std::set<int>{5});
         CHECK(ast_lines("memset_swap.c", "MEM-MEMSET-SWAP", "memset_ok", b).empty());
     }

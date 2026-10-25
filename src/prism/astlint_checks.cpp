@@ -1149,6 +1149,13 @@ struct Checker {
             if (auto v = int_value(*args[0]); v && *v == 0)
                 add(c, "API-UMASK", "umask(0) leaves world-writable default");
         }
+        if (one_of(name, {"mkstemp", "mkstemps"}) && !args.empty() && string_lit(*args[0]))
+            add(c, "API-MKSTEMP", name + "() template is a string literal (not writable)");
+        if (one_of(name, {"chmod", "fchmod"}) && args.size() >= 2) {
+            constexpr int kWorld = 0777;
+            if (auto v = int_value(*args[1]); v && *v == kWorld)
+                add(c, "API-CHMOD-WORLD", name + "() mode is world-writable 0777");
+        }
         // Strings into local char arrays.
         if (one_of(name, {"strcpy", "strcat"}) && args.size() >= 2) {
             auto sz = local_array_size(*args[0]);

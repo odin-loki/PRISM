@@ -4,6 +4,17 @@ Actionable next work for **PARTIAL** items in [ROADMAP_STATUS.md](ROADMAP_STATUS
 Owner-only rows (history rewrite, GPU hardware, LoRA) are omitted. Supply-chain
 **1.1 tracked checkout size** is **retired** (not a goal); see [SUPPLY_CHAIN.md](SUPPLY_CHAIN.md).
 
+## CI
+
+**Do not bump** [ROADMAP_STATUS.md](ROADMAP_STATUS.md) D7 / [MSVC_PORT.md](MSVC_PORT.md) “latest green” until one of these finishes **success**:
+
+| Commit | PRISM CI run | Status (2026-10-25) |
+|--------|--------------|---------------------|
+| `22b44c3f2` | [`40168880989`](https://github.com/odin-loki/PRISM/actions/runs/40168880989) — Astlint STR-MISSING-NUL testdata; **MSVC `kPortedC` `mkstemp` fix** | `in_progress` |
+| `2a9ca90a4` | [`40168890215`](https://github.com/odin-loki/PRISM/actions/runs/40168890215) — backlog note for astlint doctest | `queued` |
+
+Earlier `main` pushes (Lean export / doc sweep) are still **failure** or long-running **`in_progress`**; documented green remains `7b652bf9f` ([`40149651603`](https://github.com/odin-loki/PRISM/actions/runs/40149651603)).
+
 ## 2.6 Standard library (libc + C++ models)
 
 | Gap | Next action | Primary paths |
@@ -21,7 +32,8 @@ Owner-only rows (history rewrite, GPU hardware, LoRA) are omitted. Supply-chain
 | ~287 regex-only classes | Port high-impact rules with `testdata/` plants | `checkers_core.cpp` → `astlint_checks.cpp`, `test_astlint.cpp` |
 | Done (2026-10-25) | **`STR-UNBOUNDED-COPY`**, **`API-GETS`** doctest in `kPortedC` | `astlint_checks.cpp`, `test_astlint.cpp` |
 | Done (2026-10-25) | **`API-STRTOK`**, **`API-TMPNAM`**, **`API-MKTEMP`**, **`API-UMASK`** AST ports (+ prior batch) | `astlint_checks.cpp`, `test_astlint.cpp` |
-| Done (2026-10-25) | **STR-MISSING-NUL** / **MEM-MEMSET-SWAP** kPortedC + testdata doctest | `test_astlint.cpp` |
+| Done (2026-10-25) | **STR-MISSING-NUL** / **MEM-MEMSET-SWAP** / **STR-STRNCPY-NUL** testdata doctests | `test_astlint.cpp` |
+| Done (2026-10-25) | **`API-MKSTEMP`**, **`API-CHMOD-WORLD`**, **`API-SETUID`** AST ports in `kPortedC` | `astlint_checks.cpp`, `test_astlint.cpp` |
 | Next | Pick from regex-only table (~270 left) | `checkers_core.cpp` → `astlint_checks.cpp` |
 | Template / flow limits | Document NOTRUN; defer dependent-template rules | `astlint.hpp` |
 
@@ -67,7 +79,10 @@ C++ surface: `prism svcomp`, `src/prism/svcomp/`. **Keep** `tools/svcomp/prism.p
 Grow **`agree-ext`** beyond 139 functions (`docs/PROOFS_REFINEMENT.md`; `pir-lean-check` on `tests/pir` + `testdata`):
 
 1. **D118** — **Done (checker):** Lean `hobjsz` + `memcpy selfOk` align C++; `pir-lean-check` **139** `agree-ext`, `heap` fixture **15** `agree-ext`, `mismatch=0`; `hobjsz` full sim in `XRefine` still `admit`
-2. **D136** — `PRISM_FILEK`, `__prism_read_range`, `__prism_havoc_bytes` (stdio models)
+2. **D136 (partial)** — stdio / FILE models: C++ Lean export emits `L hhavoc` for
+   `__prism_havoc_bytes` (`export_lean.cpp`; checker still `outside` until Lean
+   `hhavoc` + `MemTr::write_havoc`). Remaining: `PRISM_FILEK` in `hfree`, `L
+   hread`/`hhavoc` parity for `__prism_read_range`, `__prism_check` in stdio bodies.
 3. **`__prism_check` / `__prism_memset` / `__prism_fresh_cstr`** for inlined libc bodies
 
 Verify: `prism-qa pir-lean-check` on `tests/pir` + `testdata`.
