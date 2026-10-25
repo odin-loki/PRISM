@@ -98,7 +98,7 @@ that crashed is exit 2.
 
 Nothing is skipped quietly: vendor/build directories (`third_party/`,
 `node_modules/`, `build*/`, `.venv/`, `target/`, ...; one list in
-`prism/scope.py`) are skipped by every stage, and the inventory stage lists
+`src/prism/scope.cpp`) are skipped by every stage, and the inventory stage lists
 each one that holds source files as `UNKNOWN`. A tool whose output PRISM
 cannot parse is `ERROR "output not understood"`, never a quiet
 "no diagnostics".

@@ -1130,6 +1130,14 @@ struct Checker {
         if (name == "strtok")
             add(c, "API-STRTOK-REENTRANT",
                 "strtok() is not reentrant; strtok_r/strtok_s keep no static cursor");
+        if (one_of(name, {"tmpnam", "tempnam", "tmpnam_r"}))
+            add(c, "API-TMPNAM", "tmpnam/tempnam is predictable; use mkstemp/mkdtemp");
+        if (name == "mktemp")
+            add(c, "API-MKTEMP", "mktemp() is insecure; use mkstemp/mkdtemp");
+        if (name == "umask" && !args.empty()) {
+            if (auto v = int_value(*args[0]); v && *v == 0)
+                add(c, "API-UMASK", "umask(0) leaves world-writable default");
+        }
         // Strings into local char arrays.
         if (one_of(name, {"strcpy", "strcat"}) && args.size() >= 2) {
             auto sz = local_array_size(*args[0]);

@@ -104,22 +104,18 @@ namespace PrismRefine
 
 open PrismSem
 
-/-- The overlap test of `memcpy`: ranges `[fd, fd+n)` and `[fs, fs+n)` in one
-object, other than the same range (`fd = fs`). -/
-def ovlB (d s n : Nat) : Bool :=
-  ptrOff d != ptrOff s &&
-    (ptrObj d == ptrObj s && decide (ptrOff d < ptrOff s + n) && decide (ptrOff s < ptrOff d + n))
-
-theorem overlapChk_run (P : PFunc) (ω : Nat → Nat) (σ : Store) (t : World) (j g : Nat) (D S N : Arg)
-    (hD : D.below j) (hS : S.below j) (hN : N.below j) (hg : g < j) (hT : TempsOK P j overlapT)
-    {n : Nat} (hn : N.get σ % 2 ^ 64 = n) (hgv : σ g = (n != 0).toNat)
+theorem overlapChk_run (P : PFunc) (ω : Nat → Nat) (σ : Store) (t : World) (selfOk : Bool) (j g : Nat)
+    (D S N : Arg) (hD : D.below j) (hS : S.below j) (hN : N.below j) (hg : g < j)
+    (hT : TempsOK P j (overlapT selfOk)) {n : Nat} (hn : N.get σ % 2 ^ 64 = n) (hgv : σ g = (n != 0).toNat)
     (hd : n ≠ 0 → ptrOff (D.get σ % 2 ^ 64) + n < 2 ^ 64) (hs : n ≠ 0 → ptrOff (S.get σ % 2 ^ 64) + n < 2 ^ 64) :
-    ((n != 0 && ovlB (D.get σ % 2 ^ 64) (S.get σ % 2 ^ 64) n) = true →
-      xStmts P ω σ t (overlapChk j g D S N) = .fail) ∧
-    ((n != 0 && ovlB (D.get σ % 2 ^ 64) (S.get σ % 2 ^ 64) n) = false →
-      ∃ σ', xStmts P ω σ t (overlapChk j g D S N) = .ok σ' t ∧ ∀ i, i < j → σ' i = σ i) := by
-  have hw : ∀ i (h : i < overlapT.length), P.wd (j + i) = overlapT[i] := hT
-  have w0 : P.wd j = 64 := by simpa [overlapT] using hw 0 (by decide)
+    ((n != 0 && ovlB (D.get σ % 2 ^ 64) (S.get σ % 2 ^ 64) n selfOk) = true →
+      xStmts P ω σ t (overlapChk selfOk j g D S N) = .fail) ∧
+    ((n != 0 && ovlB (D.get σ % 2 ^ 64) (S.get σ % 2 ^ 64) n selfOk) = false →
+      ∃ σ', xStmts P ω σ t (overlapChk selfOk j g D S N) = .ok σ' t ∧ ∀ i, i < j → σ' i = σ i) := by
+  have hw : ∀ i (h : i < (overlapT selfOk).length), P.wd (j + i) = (overlapT selfOk)[i] := hT
+  have w0 : P.wd j = 64 := by
+    have := hw 0 (by cases selfOk <;> decide)
+    cases selfOk <;> simpa [overlapT] using this
   have hkk : ∀ a b : Nat, (j + a = j + b) = (a = b) := fun a b => by simp
   have hk0 : ∀ a : Nat, (j + a = j) = (a = 0) := fun a => by simp
   have hk1 : ∀ a : Nat, (j = j + a) = (a = 0) := fun a => by simp [eq_comm]
@@ -137,38 +133,67 @@ theorem overlapChk_run (P : PFunc) (ω : Nat → Nat) (σ : Store) (t : World) (
   have hos := ptrOff_lt sq
   have hdo : ptrObj dq % 2 ^ 64 = ptrObj dq := by rw [← hdq]; exact ptrObj_mod _
   have hso : ptrObj sq % 2 ^ 64 = ptrObj sq := by rw [← hsq]; exact ptrObj_mod _
-  simp (config := { decide := true }) only [overlapChk, overlapT, xStmts_assign, xStmts_check,
-    w0, hw 1 (by decide), hw 2 (by decide), hw 3 (by decide), hw 4 (by decide), hw 5 (by decide),
-    hw 6 (by decide), hw 7 (by decide), hw 8 (by decide), hw 9 (by decide), hw 10 (by decide),
-    hw 11 (by decide), hw 12 (by decide), hw 13 (by decide), List.getElem_cons_succ, List.getElem_cons_zero,
-    evalOpM, evalOp, Arg.get_v', Arg.get_c', c64_get, set_apply, hkk, hk0, hk1, hgk, hgk',
-    Arg.width_v', Arg.width_c', c64_width, hDs, hSs, hNs, Nat.le_add_right, Nat.le_refl,
-    lshr48, mask48, hdq, hsq, ptrOff_mod, icmpVal_eq', pred_eq, pred_ne, pred_ult,
-    boolToNat_mod1, ite_toNat, and1, add64, hadd, hn', hgv, Nat.mod_mod, hdo, hso,
-    truthN_boolToNat, xStmts_nil, ↓reduceIte, -Nat.reducePow]
-  by_cases h0 : n = 0
-  · subst h0
-    simp only [bne_self_eq_false, Bool.false_and, Bool.false_eq_true, ite_false, false_implies, true_implies,
-      true_and]
-    refine ⟨_, rfl, fun i hi => ?_⟩
-    have hne : ∀ c, i ≠ j + c := fun c => by omega
-    simp [set_apply, hne, show i ≠ j by omega]
-  · have e1 : (ptrOff dq + n) % 2 ^ 64 = ptrOff dq + n := Nat.mod_eq_of_lt (hd h0)
-    have e2 : (ptrOff sq + n) % 2 ^ 64 = ptrOff sq + n := Nat.mod_eq_of_lt (hs h0)
-    have e3 : ptrOff dq % 2 ^ 64 = ptrOff dq := Nat.mod_eq_of_lt (by omega)
-    have e4 : ptrOff sq % 2 ^ 64 = ptrOff sq := Nat.mod_eq_of_lt (by omega)
-    have h0' : (n != 0) = true := by simpa using h0
-    simp only [e1, e2, e3, e4, h0', Bool.true_and, ovlB]
-    refine ⟨fun hb => ?_, fun hb => ?_⟩
-    · simp only [Bool.and_eq_true, beq_iff_eq, bne_iff_ne, ne_eq, decide_eq_true_eq] at hb
-      simp [hb]
-    · have hb' : (!decide (ptrOff dq = ptrOff sq) && (decide (ptrObj dq = ptrObj sq) &&
-          (decide (ptrOff dq < ptrOff sq + n) && decide (ptrOff sq < ptrOff dq + n)))) = false := by
-        by_cases a : ptrOff dq = ptrOff sq <;> by_cases b : ptrObj dq = ptrObj sq <;> simp_all
-      simp only [hb', Bool.false_eq_true, ite_false]
+  cases selfOk
+  · simp (config := { decide := true }) only [overlapChk, overlapT, overlapChkPrism, xStmts_assign, xStmts_check,
+      w0, hw 1 (by decide), hw 2 (by decide), hw 3 (by decide), hw 4 (by decide), hw 5 (by decide), hw 6 (by decide),
+      hw 7 (by decide), hw 8 (by decide), hw 9 (by decide), hw 10 (by decide), hw 11 (by decide),
+      List.getElem_cons_succ, List.getElem_cons_zero, evalOpM, evalOp, Arg.get_v', Arg.get_c', c64_get, set_apply,
+      hkk, hk0, hk1, hgk, hgk', Arg.width_v', Arg.width_c', c64_width, hDs, hSs, hNs, Nat.le_add_right, Nat.le_refl,
+      lshr48, mask48, hdq, hsq, ptrOff_mod, icmpVal_eq', pred_eq, pred_ne, pred_ult, boolToNat_mod1, ite_toNat, and1,
+      add64, hadd, hn', hgv, Nat.mod_mod, hdo, hso, truthN_boolToNat, xStmts_nil, ↓reduceIte, -Nat.reducePow, ovlB,
+      ovlStrict]
+    by_cases h0 : n = 0
+    · subst h0
+      simp only [bne_self_eq_false, Bool.false_and, Bool.false_eq_true, ite_false, false_implies, true_implies,
+        true_and]
       refine ⟨_, rfl, fun i hi => ?_⟩
       have hne : ∀ c, i ≠ j + c := fun c => by omega
       simp [set_apply, hne, show i ≠ j by omega]
+    · have e1 : (ptrOff dq + n) % 2 ^ 64 = ptrOff dq + n := Nat.mod_eq_of_lt (hd h0)
+      have e2 : (ptrOff sq + n) % 2 ^ 64 = ptrOff sq + n := Nat.mod_eq_of_lt (hs h0)
+      have e3 : ptrOff dq % 2 ^ 64 = ptrOff dq := Nat.mod_eq_of_lt (by omega)
+      have e4 : ptrOff sq % 2 ^ 64 = ptrOff sq := Nat.mod_eq_of_lt (by omega)
+      have h0' : (n != 0) = true := by simpa using h0
+      simp only [e1, e2, e3, e4, h0', Bool.true_and, ovlB, ovlStrict]
+      refine ⟨fun hb => ?_, fun hb => ?_⟩
+      · simp only [Bool.and_eq_true, beq_iff_eq, decide_eq_true_eq] at hb; simp [hb]
+      · have hb' : (decide (ptrObj dq = ptrObj sq) &&
+            (decide (ptrOff dq < ptrOff sq + n) && decide (ptrOff sq < ptrOff dq + n))) = false := by
+          by_cases b : ptrObj dq = ptrObj sq <;> simp_all
+        simp only [hb', Bool.false_eq_true, ite_false]
+        refine ⟨_, rfl, fun i hi => ?_⟩
+        have hne : ∀ c, i ≠ j + c := fun c => by omega
+        simp [set_apply, hne, show i ≠ j by omega]
+  · simp (config := { decide := true }) only [overlapChk, overlapT, overlapChkSelfOk, xStmts_assign, xStmts_check,
+      w0, hw 1 (by decide), hw 2 (by decide), hw 3 (by decide), hw 4 (by decide), hw 5 (by decide), hw 6 (by decide),
+      hw 7 (by decide), hw 8 (by decide), hw 9 (by decide), hw 10 (by decide), hw 11 (by decide), hw 12 (by decide),
+      hw 13 (by decide), List.getElem_cons_succ, List.getElem_cons_zero, evalOpM, evalOp, Arg.get_v', Arg.get_c',
+      c64_get, set_apply, hkk, hk0, hk1, hgk, hgk', Arg.width_v', Arg.width_c', c64_width, hDs, hSs, hNs,
+      Nat.le_add_right, Nat.le_refl, lshr48, mask48, hdq, hsq, ptrOff_mod, icmpVal_eq', pred_eq, pred_ne, pred_ult,
+      boolToNat_mod1, ite_toNat, and1, add64, hadd, hn', hgv, Nat.mod_mod, hdo, hso, truthN_boolToNat, xStmts_nil,
+      ↓reduceIte, -Nat.reducePow, ovlB, ovlStrict]
+    by_cases h0 : n = 0
+    · subst h0
+      simp only [bne_self_eq_false, Bool.false_and, Bool.false_eq_true, ite_false, false_implies, true_implies,
+        true_and]
+      refine ⟨_, rfl, fun i hi => ?_⟩
+      have hne : ∀ c, i ≠ j + c := fun c => by omega
+      simp [set_apply, hne, show i ≠ j by omega]
+    · have e1 : (ptrOff dq + n) % 2 ^ 64 = ptrOff dq + n := Nat.mod_eq_of_lt (hd h0)
+      have e2 : (ptrOff sq + n) % 2 ^ 64 = ptrOff sq + n := Nat.mod_eq_of_lt (hs h0)
+      have e3 : ptrOff dq % 2 ^ 64 = ptrOff dq := Nat.mod_eq_of_lt (by omega)
+      have e4 : ptrOff sq % 2 ^ 64 = ptrOff sq := Nat.mod_eq_of_lt (by omega)
+      have h0' : (n != 0) = true := by simpa using h0
+      simp only [e1, e2, e3, e4, h0', Bool.true_and, ovlB, ovlStrict]
+      refine ⟨fun hb => ?_, fun hb => ?_⟩
+      · simp only [Bool.and_eq_true, beq_iff_eq, bne_iff_ne, ne_eq, decide_eq_true_eq] at hb; simp [hb]
+      · have hb' : (!decide (ptrOff dq = ptrOff sq) && (decide (ptrObj dq = ptrObj sq) &&
+            (decide (ptrOff dq < ptrOff sq + n) && decide (ptrOff sq < ptrOff dq + n)))) = false := by
+          by_cases a : ptrOff dq = ptrOff sq <;> by_cases b : ptrObj dq = ptrObj sq <;> simp_all
+        simp only [hb', Bool.false_eq_true, ite_false]
+        refine ⟨_, rfl, fun i hi => ?_⟩
+        have hne : ∀ c, i ≠ j + c := fun c => by omega
+        simp [set_apply, hne, show i ≠ j by omega]
 
 end PrismRefine
 
@@ -195,11 +220,11 @@ theorem nowrap_of_ok {m : Mem} {q n : Nat} {w : Bool} (h : accessBad m q n w 1 =
 theorem TempsOK.cast {P : PFunc} {a b : Nat} {l : List Nat} (h : TempsOK P a l) (e : a = b) : TempsOK P b l := by
   subst e; exact h
 
-theorem cpyBad_eq (m : Mem) (d s n : Nat) (mv : Bool) :
-    cpyBad m d s n mv = ((n != 0 && accessBad m d n true 1) || (n != 0 && accessBad m s n false 1) ||
-      (!mv && (n != 0 && ovlB d s n))) := by
+theorem cpyBad_eq (m : Mem) (d s n : Nat) (mv selfOk : Bool) :
+    cpyBad m d s n mv selfOk = ((n != 0 && accessBad m d n true 1) || (n != 0 && accessBad m s n false 1) ||
+      (!mv && (n != 0 && ovlB d s n selfOk))) := by
   unfold cpyBad ovlB
-  cases (n != 0) <;> cases mv <;> simp [Bool.and_assoc]
+  cases selfOk <;> cases (n != 0) <;> cases mv <;> simp [Bool.and_assoc, ovlStrict]
 
 theorem zext64_run (P : PFunc) (ω : Nat → Nat) (σ : Store) (t : World) (k : Nat) (L : Arg)
     (hL : L.below k) (hw : L.width ≤ 64) (hT : TempsOK P k (zext64 k L).2.1) :
@@ -226,17 +251,17 @@ theorem zext64_run (P : PFunc) (ω : Nat → Nat) (σ : Store) (t : World) (k : 
 the guard `n ≠ 0`, the checks of both accesses, the overlap check (not for
 `memmove`), the copy.  They fail exactly on `cpyBad`, and otherwise copy. -/
 theorem memcpy_run (P : PFunc) (ω : Nat → Nat) (σ : Store) (t : World) (k : Nat) (D S L : Arg)
-    (hD : D.below k) (hS : S.below k) (hL : L.below k) (hw : L.width ≤ 64) (mv : Bool)
-    (hT : TempsOK P k ((zext64 k L).2.1 ++ [1] ++ accTG true ++ accTG false ++ (if mv then [] else overlapT))) :
+    (hD : D.below k) (hS : S.below k) (hL : L.below k) (hw : L.width ≤ 64) (mv selfOk : Bool)
+    (hT : TempsOK P k ((zext64 k L).2.1 ++ [1] ++ accTG true ++ accTG false ++ (if mv then [] else overlapT selfOk))) :
     let g := k + (zext64 k L).2.1.length
     let N := (zext64 k L).2.2
     let n := L.get σ % 2 ^ L.width
     let body := (zext64 k L).1 ++ ([.assign g (.cmp .ne) [N, c64 0]] ++ (accChkG (g + 1) g D N true ++
       (accChkG (g + 1 + (accTG true).length) g S N false ++
-      ((if mv then [] else overlapChk (g + 1 + (accTG true).length + (accTG false).length) g D S N) ++
+      ((if mv then [] else overlapChk selfOk (g + 1 + (accTG true).length + (accTG false).length) g D S N) ++
       [.memcpy D S N]))))
-    (cpyBad t.mem (D.get σ % 2 ^ 64) (S.get σ % 2 ^ 64) n mv = true → xStmts P ω σ t body = .fail) ∧
-    (cpyBad t.mem (D.get σ % 2 ^ 64) (S.get σ % 2 ^ 64) n mv = false →
+    (cpyBad t.mem (D.get σ % 2 ^ 64) (S.get σ % 2 ^ 64) n mv selfOk = true → xStmts P ω σ t body = .fail) ∧
+    (cpyBad t.mem (D.get σ % 2 ^ 64) (S.get σ % 2 ^ 64) n mv selfOk = false →
       ∃ σ', xStmts P ω σ t body =
         .ok σ' { t with mem := t.mem.copy (D.get σ % 2 ^ 64) (S.get σ % 2 ^ 64) n } ∧
         ∀ i, i < k → σ' i = σ i) := by
@@ -250,7 +275,7 @@ theorem memcpy_run (P : PFunc) (ω : Nat → Nat) (σ : Store) (t : World) (k : 
     TempsOK.cast hT.left.left.right (by simp [g]; omega)
   have hT2 : TempsOK P (g + 1 + (accTG true).length) (accTG false) :=
     TempsOK.cast hT.left.right (by simp [g]; omega)
-  have hT3 : TempsOK P (g + 1 + (accTG true).length + (accTG false).length) (if mv then [] else overlapT) :=
+  have hT3 : TempsOK P (g + 1 + (accTG true).length + (accTG false).length) (if mv then [] else overlapT selfOk) :=
     TempsOK.cast hT.right (by simp [g]; omega)
   have hkg : k ≤ g := Nat.le_add_right _ _
   -- the guard
@@ -312,7 +337,7 @@ theorem memcpy_run (P : PFunc) (ω : Nat → Nat) (σ : Store) (t : World) (k : 
         have hS4 : S.get σ4 = S.get σ := by rw [Arg.get_agree ag4' (hb2 (Arg.below_mono hkg hS)), hSg]
         have hbo : ∀ {A : Arg}, A.below (g + 1) →
             A.below (g + 1 + (accTG true).length + (accTG false).length) := Arg.below_mono (by omega)
-        have c3 := overlapChk_run P ω σ4 t (g + 1 + (accTG true).length + (accTG false).length) g D S N
+        have c3 := overlapChk_run P ω σ4 t selfOk (g + 1 + (accTG true).length + (accTG false).length) g D S N
           (hbo (hb2 (Arg.below_mono hkg hD))) (hbo (hb2 (Arg.below_mono hkg hS))) (hbo (hb2 hNb)) (by omega)
           (by simpa using hT3) hNv4 hg4
           (fun h0 => by
@@ -325,7 +350,7 @@ theorem memcpy_run (P : PFunc) (ω : Nat → Nat) (σ : Store) (t : World) (k : 
             simpa [this] using hb2')
         rw [hD4, hS4] at c3
         simp only [ite_false, Bool.false_eq_true]
-        cases hb4 : (n != 0 && ovlB (D.get σ % 2 ^ 64) (S.get σ % 2 ^ 64) n)
+        cases hb4 : (n != 0 && ovlB (D.get σ % 2 ^ 64) (S.get σ % 2 ^ 64) n selfOk)
         · obtain ⟨σ5, e5, ag5⟩ := c3.2 hb4
           rw [e5]; simp only [XPRes.then]
           have ag5' : ∀ i, i < g + 1 → σ5 i = σ2 i := fun i hi => by rw [ag5 i (by omega), ag4' i hi]

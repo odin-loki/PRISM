@@ -457,11 +457,19 @@ def parseXLlvm (name : String) (ls : List (List String)) :
     | ["hfree", p, kd, kill] =>
       let (bn, ps, sg, is) ← inBlock
       f := { f with cur := some (bn, ps, sg, .hfree (← opnd? p) (← nat? kd) (kill == "1") :: is) }
+    | ["hobjsz", d, p] =>
+      let (bn, ps, sg, is) ← inBlock
+      let dst ← if d == "-" then pure none else do pure (some (← reg? d))
+      f := { f with cur := some (bn, ps, sg, .hobjsz dst (← opnd? p) :: is) }
     | ["retptr"] => f := { f with retPtr := true }
+    | ["memcpy", d, sp, n, lw, mv, so] =>
+      let (bn, ps, sg, is) ← inBlock
+      f := { f with cur := some (bn, ps, sg,
+        .memcpy (← opnd? d) (← opnd? sp) (← opnd? n) (← nat? lw) (mv == "1") (so == "1") :: is) }
     | ["memcpy", d, sp, n, lw, mv] =>
       let (bn, ps, sg, is) ← inBlock
       f := { f with cur := some (bn, ps, sg,
-        .memcpy (← opnd? d) (← opnd? sp) (← opnd? n) (← nat? lw) (mv == "1") :: is) }
+        .memcpy (← opnd? d) (← opnd? sp) (← opnd? n) (← nat? lw) (mv == "1") true :: is) }
     | ["memset", d, b, n, lw] =>
       let (bn, ps, sg, is) ← inBlock
       f := { f with cur := some (bn, ps, sg, .memset (← opnd? d) (← opnd? b) (← opnd? n) (← nat? lw) :: is) }

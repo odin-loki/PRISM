@@ -492,7 +492,7 @@ Several things are not modelled:
 This is the schedule the `conc` stage runs (`src/prism/conc/lazy.cpp`,
 [CONCURRENCY.md](CONCURRENCY.md)): `K` rounds in which threads `0, 1, …, N-1`
 each get one slot, then one final slot for the harness `T0`.
-`tests/test_proofs_float_conc.py` locks `prismSched` to the loops in
+`tests/cpp/test_repolint.cpp` locks `prismSched` to the loops in
 `lazy.cpp` and to its `context_switch_bound = rounds * N`.
 
 **Model (sequential consistency).**
@@ -609,7 +609,7 @@ that encoding. What is modelled, not proved of the C++:
   iteration) rests on the provenance analysis of `SymMem`, not proved here
   (the same gap as `kinduction_frame_sound`).
 - That each Z3 query is exactly the `GRun` condition for its point is the
-  encoder correspondence; `tests/test_proofs_loopcut.py` locks the three
+  encoder correspondence; `tests/cpp/test_repolint.cpp` locks the three
   encoder facts the model relies on (the running `assume` guard and
   `exit_reach`, the `noviol(props_before)` guard of the havoc assumptions,
   the `seq` order of the queries' assumed loops) to the C++ text.

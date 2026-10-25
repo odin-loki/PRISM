@@ -398,10 +398,10 @@ def accChkG (k g : Nat) (P N : Arg) (write : Bool) : List PStmt :=
 def accTG (write : Bool) : List Nat :=
   [64, 64, 8, 1, 64, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 64, 1, 1, 1, 1, 1] ++ (if write then [1, 1, 1] else [])
 
-/-- The overlap check of `llvm.memcpy` (not `memmove`): the ranges overlap and
-the offsets differ (an exact self-copy, `d = s`, is defined; refinement
+/-- Overlap check for `@llvm.memcpy` (`MemTr::memcpy_` `self_ok`): ranges overlap
+and the offsets differ (an exact self-copy, `d = s`, is defined; refinement
 finding 6). -/
-def overlapChk (j g : Nat) (D S N : Arg) : List PStmt :=
+def overlapChkSelfOk (j g : Nat) (D S N : Arg) : List PStmt :=
   [.assign j (.bin .and) [D, c64 (2 ^ 48 - 1)], .assign (j + 1) (.bin .and) [S, c64 (2 ^ 48 - 1)],
    .assign (j + 2) (.bin .add) [.v (j + 1) 64, N], .assign (j + 3) (.cmp .ult) [.v j 64, .v (j + 2) 64],
    .assign (j + 4) (.bin .add) [.v j 64, N], .assign (j + 5) (.cmp .ult) [.v (j + 1) 64, .v (j + 4) 64],
@@ -412,7 +412,22 @@ def overlapChk (j g : Nat) (D S N : Arg) : List PStmt :=
    .assign (j + 12) (.bin .and) [.v (j + 11) 1, .v (j + 10) 1],
    .assign (j + 13) (.bin .and) [.v g 1, .v (j + 12) 1], .check (.v (j + 13) 1) "overlap" "MEM-OVERLAP"]
 
-def overlapT : List Nat := [64, 64, 64, 1, 64, 1, 64, 64, 1, 1, 1, 1, 1, 1]
+/-- Overlap check for `__prism_memcpy` (no `self_ok`). -/
+def overlapChkPrism (j g : Nat) (D S N : Arg) : List PStmt :=
+  [.assign j (.bin .and) [D, c64 (2 ^ 48 - 1)], .assign (j + 1) (.bin .and) [S, c64 (2 ^ 48 - 1)],
+   .assign (j + 2) (.bin .add) [.v (j + 1) 64, N], .assign (j + 3) (.cmp .ult) [.v j 64, .v (j + 2) 64],
+   .assign (j + 4) (.bin .add) [.v j 64, N], .assign (j + 5) (.cmp .ult) [.v (j + 1) 64, .v (j + 4) 64],
+   .assign (j + 6) (.bin .lshr) [D, c64 48], .assign (j + 7) (.bin .lshr) [S, c64 48],
+   .assign (j + 8) (.cmp .eq) [.v (j + 6) 64, .v (j + 7) 64],
+   .assign (j + 9) (.bin .and) [.v (j + 3) 1, .v (j + 5) 1], .assign (j + 10) (.bin .and) [.v (j + 8) 1, .v (j + 9) 1],
+   .assign (j + 11) (.bin .and) [.v g 1, .v (j + 10) 1], .check (.v (j + 11) 1) "overlap" "MEM-OVERLAP"]
+
+def overlapChk (selfOk : Bool) (j g : Nat) (D S N : Arg) : List PStmt :=
+  if selfOk then overlapChkSelfOk j g D S N else overlapChkPrism j g D S N
+
+def overlapT (selfOk : Bool) : List Nat :=
+  if selfOk then [64, 64, 64, 1, 64, 1, 64, 64, 1, 1, 1, 1, 1, 1]
+  else [64, 64, 64, 1, 64, 1, 64, 64, 1, 1, 1, 1]
 
 /-- `MemTr::emit_entry_globals`: the initialiser's stores into the global
 (variable `i`), a pointer addition first for a non-zero offset. -/
@@ -471,6 +486,16 @@ assumed (a constant one is checked by the translator). -/
 def hallocSz (k1 : Nat) : Arg → List PStmt × List Nat
   | .c _ _ => ([], [])
   | N => ([.assign k1 (.cmp .ult) [N, c64 (2 ^ 47)], .assume (.v k1 1)], [1])
+
+/-- `MemTr::obj_size_remaining`: bytes from `p` to the end of its object. -/
+def hobjszCore (k : Nat) (P : Arg) : List PStmt :=
+  [.assign k .objSize [P],
+   .assign (k + 1) (.bin .and) [P, c64 (2 ^ 48 - 1)],
+   .assign (k + 2) (.bin .sub) [.v k 64, .v (k + 1) 64],
+   .assign (k + 3) (.cmp .ugt) [.v (k + 1) 64, .v k 64],
+   .assign (k + 4) (.select) [.v (k + 3) 1, .c 64 0, .v (k + 2) 64]]
+
+def hobjszT : List Nat := [64, 64, 64, 1, 64]
 
 /-- The operands a `getelementptr` reads. -/
 def gepUses (base : Opnd) (ix : List GIdx) : List Opnd := base :: ix.filterMap (fun g => g.opnd.map (·.1))
@@ -568,7 +593,7 @@ def trSInstX (c : Ctx) (k : Nat) : SInst → Except String (List PStmt × List N
     need (look c.sh d).isNone "outside fragment: result with a shadow"
     let (s1, t1) := globStores i k st
     pure (.alloc i (.c 64 size) kd ini al :: s1, t1)
-  | .memcpy d s len lw mv => do
+  | .memcpy d s len lw mv selfOk => do
     need (okW lw) "UNENCODED: width"
     let (sd, td, D) ← trOpndX c 64 true k d
     let (ss, ts, S) ← trOpndX c 64 true (k + td.length) s
@@ -581,8 +606,8 @@ def trSInstX (c : Ctx) (k : Nat) : SInst → Except String (List PStmt × List N
     let a2 := a1 + (accTG true).length
     let a3 := a2 + (accTG false).length
     pure (sd ++ ss ++ sn ++ sz ++ [.assign g (.cmp .ne) [N, c64 0]] ++ accChkG a1 g D N true ++
-            accChkG a2 g S N false ++ (if mv then [] else overlapChk a3 g D S N) ++ [.memcpy D S N],
-          td ++ ts ++ tn ++ tz ++ [1] ++ accTG true ++ accTG false ++ (if mv then [] else overlapT))
+            accChkG a2 g S N false ++ (if mv then [] else overlapChk selfOk a3 g D S N) ++ [.memcpy D S N],
+          td ++ ts ++ tn ++ tz ++ [1] ++ accTG true ++ accTG false ++ (if mv then [] else overlapT selfOk))
   | .pcmp d p a b => do
     need (p != .eq && p != .ne) "outside fragment: pointer equality is an icmp"
     let (sa, ta, A) ← trOpndX c 64 false k a
@@ -608,7 +633,7 @@ def trSInstX (c : Ctx) (k : Nat) : SInst → Except String (List PStmt × List N
     pure (sa ++ [.assign j (.cmp .ne) [A, .c w 0], .assume (.v j 1)], ta ++ [1])
   | .halloc d n kd ini => do
     need (decide (kd < 256) && decide (ini ≤ 2)) "outside fragment: allocation kind"
-    let (sn, tn, N) ← trOpndX c 64 true k n
+    let (sn, tn, N) ← trOpndX c 64 false k n
     need (N.width == 64 && (match N with | .c _ b => decide (b < 2 ^ 47) | .v _ _ => true))
       "UNENCODED: allocation larger than 2^47 bytes"
     let r := hallocSz (k + tn.length) N
@@ -622,6 +647,15 @@ def trSInstX (c : Ctx) (k : Nat) : SInst → Except String (List PStmt × List N
     need (kd != 8 && decide (kd < 256)) "outside fragment: release kind"
     let (sp, tp, P) ← trOpndX c 64 true k p
     pure (sp ++ freeChk (k + tp.length) P kd ++ (if kill then [.free P] else []), tp ++ freeT)
+  | .hobjsz d p => do
+    let (sp, tp, P) ← trOpndX c 64 false k p
+    let j := k + tp.length
+    match d with
+    | some d => do
+      let i ← dstX c d 64
+      need (look c.sh d).isNone "outside fragment: result with a shadow"
+      pure (sp ++ hobjszCore j P ++ [.assign i .copy [.v (j + 4) 64]], tp ++ hobjszT)
+    | none => pure (sp ++ hobjszCore j P, tp ++ hobjszT)
   | .memset d b len lw => do
     need (okW lw) "UNENCODED: width"
     let (sd, td, D) ← trOpndX c 64 true k d
@@ -818,7 +852,8 @@ where
     | .pcmp d _ _ _ => [(d, 1)]
     | .nondet d w => [(d, w)]
     | .halloc (some d) _ _ _ => [(d, 64)]
-    | .halloc none _ _ _ | .vassume .. | .hfree .. => []
+    | .hobjsz (some d) _ => [(d, 64)]
+    | .halloc none _ _ _ | .hobjsz none _ | .vassume .. | .hfree .. => []
     | .lstart .. | .lend .. | .memcpy .. | .memset .. => []
 
 def xPhisOf (G : XFunc) : List PhiI := G.blocks.flatMap (·.phis)

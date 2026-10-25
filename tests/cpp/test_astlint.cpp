@@ -433,6 +433,7 @@ const char* kPortedC = R"(#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <sys/stat.h>
 struct node { int v; struct node *next; };
 int null_after_check(struct node *n) {
     if (n == NULL) { puts("none"); }
@@ -559,6 +560,13 @@ void gets_bad(char *buf) { gets(buf); } // expect: API-GETS
 void gets_ok(char *buf) { fgets(buf, 16, stdin); }
 void strtok_bad(char *s) { (void)strtok(s, " "); } // expect: API-STRTOK-REENTRANT
 void strtok_ok(char *s) { if (s && *s) puts(s); }
+void tmpnam_bad(char *buf) { tmpnam(buf); } // expect: API-TMPNAM
+void tempnam_bad(void) { (void)tempnam("/tmp", "pfx"); } // expect: API-TMPNAM
+void tmpnam_ok(void) { char t[] = "/tmp/xXXXXXX"; mkstemp(t); }
+void mktemp_bad(void) { char t[] = "/tmp/xXXXXXX"; mktemp(t); } // expect: API-MKTEMP
+void mktemp_ok(void) { char t[] = "/tmp/xXXXXXX"; mkstemp(t); }
+int umask_bad(void) { umask(0); return 0; } // expect: API-UMASK
+int umask_ok(void) { umask(077); return 0; }
 void scanf_bad(int *p) { scanf("%d", p); } // expect: API-SCANF-UNCHECKED
 void scanf_ok(int *p) {
     if (scanf("%d", p) != 1) return;

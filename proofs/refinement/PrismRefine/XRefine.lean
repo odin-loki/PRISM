@@ -1450,6 +1450,9 @@ theorem sinstX_sim {P : PFunc} {ω : Nat → Nat} {c : Ctx} (hc : CtxOK P c) {R 
         rw [Store.set_other _ _ (by omega), Store.set_other _ _ (by have := hc.lohi; omega)]
         exact ha0 q hq
       · simp only [hlt, decide_false, Bool.false_eq_true, ite_false, Res.bind, SimX]
+  | hobjsz .. =>
+    -- TODO: `hobjszCore_run` (translator matches `MemTr::obj_size_remaining`)
+    admit
   | hfree p kd kill =>
     simp only [trSInstX] at h
     obtain ⟨u1, hu1, h⟩ := Except.bind_ok h
@@ -1477,7 +1480,7 @@ theorem sinstX_sim {P : PFunc} {ω : Nat → Nat} {c : Ctx} (hc : CtxOK P c) {R 
       · simp only [ite_true, xStmts, hA', xStmts_nil]
         exact ⟨σ', rfl, RelX.agree hc hR hk hag, fun j hj => by rw [hag j (by have := hc.lohi; omega)]; exact ha0 j hj⟩
     · simp only [hb, ite_true, Res.bind, SimX, hfr.1 hb, XPRes.then]
-  | memcpy d s len lw mv =>
+  | memcpy d s len lw mv selfOk =>
     simp only [trSInstX] at h
     obtain ⟨u1, hu1, h⟩ := Except.bind_ok h
     obtain ⟨⟨sd, td, D⟩, hd, h⟩ := Except.bind_ok h
@@ -1502,9 +1505,9 @@ theorem sinstX_sim {P : PFunc} {ω : Nat → Nat} {c : Ctx} (hc : CtxOK P c) {R 
     intro n0 _ htn hLv hLb _
     subst htn
     simp only [List.nil_append, List.length_nil, Nat.add_zero] at hT ⊢
-    have hm := memcpy_run P ω σ t k D S L hDb hSb hLb (by omega) mv hT
+    have hm := memcpy_run P ω σ t k D S L hDb hSb hLb (by omega) mv selfOk hT
     simp only [hDv, hSv, hLv, hLw] at hm
-    cases hb : cpyBad t.mem (dv % 2 ^ 64) (sv % 2 ^ 64) (n0 % 2 ^ lw) mv
+    cases hb : cpyBad t.mem (dv % 2 ^ 64) (sv % 2 ^ 64) (n0 % 2 ^ lw) mv selfOk
     · obtain ⟨σ', e, ag⟩ := hm.2 hb
       simp only [Bool.false_eq_true, ite_false, Res.bind]
       rw [e]

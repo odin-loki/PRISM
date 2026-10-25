@@ -184,7 +184,7 @@ single place where non-scalar shared data becomes `NEEDS-HARNESS` today.
 **`N` threads, `K` rounds.** `proofs/techniques/PrismTechniques/LazySeqN.lean`
 (docs/PROOFS_TECHNIQUES.md §5b) models the schedule this stage runs:
 `prismSched N K` = `K` rounds of `T0 … T(N−1)` plus `T0`'s final slot
-(`tests/test_proofs_float_conc.py` locks it to `lazy.cpp`). A thread there is
+(`tests/cpp/test_repolint.cpp` locks it to `lazy.cpp`). A thread there is
 any transition system on its local state (`pc`, locals) and the shared state,
 so the unrolled thread DAG with its node labels is an instance. Proved, under
 sequential consistency:

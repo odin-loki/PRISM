@@ -492,7 +492,7 @@ checks: the `_x` theorems hold of it), `agree-reject`, `outside`,
 `MISMATCH` (exit 1). `prism-qa pir-lean-check [TREE…] --bin build/prism`
 (`src/tools/qa/pir_lean_check.cpp`) drives it end to end; `prism_tests`
 runs it and the fixtures when the checker is built (`tests/cpp/test_qa.cpp`,
-NOTRUN otherwise), and `tests/test_pir_refinement.py` locks the check-name /
+NOTRUN otherwise), and `tests/cpp/test_pir_refinement.cpp` locks the check-name /
 operator-name parity between `translate.cpp` and the Lean files without
 Lean. `check.sh` runs the
 checker on `fixtures/` (real C++ output for `tests/pir`, plus a hand-made
@@ -548,7 +548,7 @@ operator, the conditions `FpTr::checks` (`src/prism/pir/translate_fp.cpp`,
 `--fp-checks`) builds for `fadd`/`fsub`/`fmul`/`fdiv`, and the FLOAT-CAST-OVF
 condition the encoder builds for `fptosi`/`fptoui` (`Op::FToSIOvf` /
 `Op::FToUIOvf` in `src/prism/pir/encode.cpp`; the interpreter in `fp.cpp`
-computes the same). `tests/test_proofs_float_conc.py` locks every C++
+computes the same). `tests/cpp/test_repolint.cpp` locks every C++
 expression to its Lean definition: changing either side fails the test. The
 IEEE side (`ieeeOverflow`, `ieeeInvalid`, `ieeeDivByZero`, `inRange`) is
 written from IEEE 754-2019 §7.2–7.4 and C11 6.3.1.4, not from the code.

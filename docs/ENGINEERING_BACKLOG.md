@@ -20,7 +20,7 @@ Owner-only rows (history rewrite, GPU hardware, LoRA) are omitted. Supply-chain
 |-----|-------------|---------------|
 | ~287 regex-only classes | Port high-impact rules with `testdata/` plants | `checkers_core.cpp` → `astlint_checks.cpp`, `test_astlint.cpp` |
 | Done (2026-10-25) | **`STR-UNBOUNDED-COPY`**, **`API-GETS`** doctest in `kPortedC` | `astlint_checks.cpp`, `test_astlint.cpp` |
-| Done (2026-10-25) | **`MEM-BCOPY`**, **`INT-TAUTOLOGY`**, **`MEM-COPY-LEN`**, **`API-SCANF-UNCHECKED`** plants, **`API-STRTOK-REENTRANT`** AST port | `astlint_checks.cpp`, `test_astlint.cpp` |
+| Done (2026-10-25) | **`API-STRTOK`**, **`API-TMPNAM`**, **`API-MKTEMP`**, **`API-UMASK`** AST ports (+ prior batch) | `astlint_checks.cpp`, `test_astlint.cpp` |
 | Next | Pick from regex-only table (~275 left) | `checkers_core.cpp` → `astlint_checks.cpp` |
 | Template / flow limits | Document NOTRUN; defer dependent-template rules | `astlint.hpp` |
 
@@ -65,7 +65,7 @@ C++ surface: `prism svcomp`, `src/prism/svcomp/`. **Keep** `tools/svcomp/prism.p
 
 Grow **`agree-ext`** beyond 146 functions (`docs/PROOFS_REFINEMENT.md`):
 
-1. **D118** — **export (2026-10-25):** `__prism_obj_size` → `L hobjsz`, `__prism_memcpy` → `L memcpy` in `export_lean.cpp`; Lean `hobjsz` + `memcpy` still open (`realloc` in `stdlib.cpp`)
+1. **D118** — **Done (checker):** Lean `hobjsz` + `memcpy selfOk` align C++ (`pir-lean-check` mismatch=0); `heap` fixture regen; `hobjsz` full sim in `XRefine` still `admit`
 2. **D136** — `PRISM_FILEK`, `__prism_read_range`, `__prism_havoc_bytes` (stdio models)
 3. **`__prism_check` / `__prism_memset` / `__prism_fresh_cstr`** for inlined libc bodies
 
@@ -77,8 +77,8 @@ Verify: `prism-qa pir-lean-check` on `tests/pir` + `testdata`.
 |----------|------|
 | 1 | **Done when**: Dockerfile without `python3` (CI BenchExec-only Python) |
 | 2 | **Done:** `port/ai-gen-tools` closed in `CPP_PORT_PLAN.md` |
-| 3 | **Done (2026-10-25):** `prism-qa docs-check` 0 problems on `main`; assurance prose sweep still open |
-| 4 | Appendix A partials: checkers, rapid, GUI, LTL |
+| 3 | **Done (2026-10-25):** `prism-qa docs-check` + assurance-check; active docs/`README` prose points at C++ paths and doctests (not deleted `tests/test_*.py`) |
+| 4 | Appendix A **code** partials remain: checkers, rapid, GUI, LTL (`docs/CPP_PORT_PLAN.md` appendix A) |
 | 5 | `tests/cpp/test_thread.cpp` (appendix C) |
 
 **Permanent:** `tools/svcomp/prism.py`; scanned-project Python linters; `third_party/` build scripts.

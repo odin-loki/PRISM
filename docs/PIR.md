@@ -1,7 +1,7 @@
 # PIR: the Clang/LLVM front end (roadmap Part 2, first slice)
 
-The `pir` stage runs right after `bmc` (C++ engine only; the Python engine is
-frozen as an oracle, roadmap D8, and records one `NOTRUN` row for the stage).
+The `pir` stage runs right after `bmc` on the C++ engine (roadmap D8: the
+deleted Python oracle is replaced by `prism-qa pir-vs-bmc` and doctests).
 
 ```
 C/C++ unit ──clang -O0──▶ LLVM IR ──PRISM instrumentation──▶ opt (fixed passes)
@@ -16,9 +16,9 @@ indirect calls and inline assembly `src/prism/pir/translate_ctl.inc` (+ `lower_c
 memory model `src/prism/pir/{memory,translate_mem,stage_mem,contracts}.cpp`; library
 models `src/prism/pir/{libc_models,libc_format}.cpp` + `src/prism/pir/models/libc/*.cpp`.
 Tests: `tests/pir/*` (true and false variants; `mem_*.c` for the memory
-model; `fp_*`, `eh_*`, `coro_*`, `sjlj_*`, `virt_*`, `asm_*` for roadmap 2.6), `tests/test_pir.py`,
-doctests `pir: …` in `tests/cpp/test_main.cpp`, `pir mem: …` in `tests/cpp/test_pir_mem.cpp`
-and `pir3 …` in `tests/cpp/test_pir3.cpp`. Differential oracle: `prism-qa pir-vs-bmc`.
+model; `fp_*`, `eh_*`, `coro_*`, `sjlj_*`, `virt_*`, `asm_*` for roadmap 2.6),
+doctests in `tests/cpp/test_pir_e2e.cpp`, `test_main.cpp` (`pir: …`), `test_pir_mem.cpp`
+(`pir mem: …`) and `test_pir3.cpp` (`pir3 …`). Differential oracle: `prism-qa pir-vs-bmc`.
 
 ## Front end
 
@@ -529,7 +529,7 @@ behaviour the real library can:
   `at` and `reserve` exceptions, a throwing-copy element type, strings,
   `unique_ptr` elements, deduction guides) prints an identical trace of
   sizes, capacities, contents and constructor/destructor calls with both
-  (`tests/cxx_models/vector_trace.cpp`, run by `tests/test_cxx_models.py`).
+  (`tests/cxx_models/vector_trace.cpp`, run by `tests/cpp/test_cxx_models.cpp`).
 * **`<map>`, `<set>`** (`std::map`, `std::multimap`, `std::set`,
   `std::multiset` with `std::allocator`; `prism_tree.h` is their shared
   core). libstdc++'s red-black tree erases and copies recursively, which the
@@ -1214,7 +1214,7 @@ its point; the premises are that the havoc covers every header state a
 violation-free iteration reaches (the footprint) and that assignments are
 total. The same file proves that the per-statement `assume` guard (S9) is
 the sequential semantics (`LoopCut.encViol_iff`). The encoder facts the
-model relies on are locked to the C++ text by `tests/test_proofs_loopcut.py`.
+model relies on are locked to the C++ text by `tests/cpp/test_repolint.cpp`.
 
 **Exported invariants.** `extra.invariant_loops` (the loop's source start
 line and column, from clang's `llvm.loop` metadata; the function's own

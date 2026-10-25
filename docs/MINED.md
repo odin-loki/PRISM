@@ -1,4 +1,4 @@
-# Datamined methods (what the Python engine actually implements)
+# Datamined methods (what the C++ engine implements)
 
 This is not a bibliography. Each section is an algorithm we run, named
 for the project it came from, with the honesty constraints ParanoidBSD
@@ -8,7 +8,7 @@ forced on the encoding.
 > file is the record of what was taken from each. Paths such as
 > `third_party/klee/...` below refer to the upstream projects, now pinned by
 > commit in `third_party/MANIFEST.toml` and fetched on demand with
-> `scripts/fetch_deps.py`. The CodeQL adapter described below was removed
+> `prism-deps tool NAME`. The CodeQL adapter described below was removed
 > (roadmap 1.2: the CodeQL engine's terms restrict commercial use).
 
 ## ESBMC — bounded model checking + k-induction
@@ -18,7 +18,7 @@ claims. CBMC turns checks *on* with `--bounds-check`. ESBMC turns them
 *off* with `--no-bounds-check`. Passing the CBMC-shaped flag to ESBMC
 disables the check and still prints VERIFICATION SUCCESSFUL.
 
-Python engine BMC:
+In-tree BMC (`src/prism/bmc.cpp`):
 
 1. Parse a SCALAR (or VOID) function into a statement list.
 2. Encode each `int` as a Z3 32-bit bitvector (64 for `long long`).
@@ -75,7 +75,7 @@ Python engine BMC:
 10. No Z3 → `NOTRUN`.
 
 When `resolve_adapter` finds `esbmc` (`--tool`, the pinned build under
-`~/.prism/tools/esbmc/<commit>/bin/` from `scripts/fetch_deps.py`, or PATH)
+`~/.prism/tools/esbmc/<commit>/bin/` from `prism-deps tool esbmc`, or PATH)
 the adapter runs it too.
 Disagreement is the point. The two verdicts are never merged. A
 missing binary is `NOTRUN`. Vendored *source* is not a proof; Python engine
@@ -143,7 +143,7 @@ Qwen proposes these as HYPOTHESIS. Python engine then:
 
 Mined from Frama-C WP (`calculus.ml` get_weakest_precondition, VC.ml,
 QED, `wp_error.ml` unsupported). This is the Python engine's in-tree engine
-(`prism/wp.py`). Do not wrap the `frama-c` binary here: that adapter
+(`src/prism/stages/wp.cpp`). Do not wrap the `frama-c` binary here: that adapter
 is EVA, and a missing binary is `NOTRUN`.
 
 A closed check is `PROVED-ASSUMING`, never `PROVED` / `PROVED-UNBOUNDED`:
@@ -329,15 +329,15 @@ the body, flip one operator, re-run.
 
 ## Optional adapters — present is not a proof
 
-Search order (`prism/config.py:resolve_adapter`):
+Search order (`src/prism/config.cpp`, `Config::which_adapter`):
 
 1. `Config.tools` / `--tool NAME=PATH` (stage name or binary name).
-2. The pinned build `~/.prism/tools/<component>/<commit>/bin/<exe>` made by
-   `scripts/fetch_deps.py` (commit from `third_party/MANIFEST.toml`).
+2. The pinned build `~/.prism/tools/<component>/<commit>/bin/<exe>` from
+   `prism-deps tool NAME` (commit from `third_party/MANIFEST.toml`).
    Never compile during resolve. Source trees are not proofs.
 3. PATH.
 
-Missing is `NOTRUN` with an install hint (`scripts/fetch_deps.py --tool NAME`).
+Missing is `NOTRUN` with an install hint (`prism-deps tool NAME`).
 ESBMC / CBMC / KLEE binaries, if found, are adapters — their
 silence is not in-tree BMC and not a vendored proof.
 
@@ -352,14 +352,14 @@ When present:
 - CBMC `VERIFICATION SUCCESSFUL` is `BOUNDED` (unwind limited),
   never `PROVED`.
 - KLEE binary: no error path is `UNKNOWN`. In-process concolic is
-  `prism/concolic.py`. Missing klee is `NOTRUN`.
+  `src/prism/stages/concolic.cpp`. Missing klee is `NOTRUN`.
 - Successful `--help` / version probe is `UNKNOWN`, never CLEAN or
   PROVED.
 
 ## Pipeline order
 
-`prism/pipeline.py:STAGE_ORDER` and `include/prism/pipeline.hpp`
-`STAGE_ORDER` must match:
+`include/prism/pipeline.hpp` `STAGE_ORDER` (also in `src/prism/pipeline.cpp`)
+must match:
 
 inventory, classify, lints, taint, thread, interval, warnings,
 cppcheck, pbsd, sanitize, optional, esbmc, dafny, contracts, wp,
@@ -367,11 +367,11 @@ bmc, harness, concolic, fuzz, diff, rapid, muttest, ltl, llm,
 execute, repair, unify
 
 `wp` is after `contracts` and before `bmc`. `--jobs`/`-j` (`0` =
-cpu/2) is the lint worker count on `Config.jobs`; `jobs>1` uses a
-ThreadPoolExecutor per file, else serial. It is not a proof flag.
+cpu/2) is the lint worker count on `Config.jobs` (`include/prism/threads.hpp`
+parallel_for). It is not a proof flag.
 `--resume` skips `ok`/`NOTRUN` from `stages.jsonl` (classify snapshot
 in `functions.json`); `report.json` is fallback. Classify is not
-skipped into an empty function list. Remaining ISO C11 `thrd_sleep`/`thrd_yield`/`thrd_current`/`thrd_equal`/`thrd_exit` plants are `NEEDS-HARNESS`; Python engine `--help` documents `--resume`.
+skipped into an empty function list. Remaining ISO C11 `thrd_sleep`/`thrd_yield`/`thrd_current`/`thrd_equal`/`thrd_exit` plants are `NEEDS-HARNESS`; `prism --help` documents `--resume`.
 
 ## Also in the pipeline
 
@@ -382,11 +382,11 @@ skipped into an empty function list. Remaining ISO C11 `thrd_sleep`/`thrd_yield`
 | Clang AST (lints) | C++ engine only (roadmap 2.8, `src/prism/astlint*.cpp`). Front end: libclang's C API, loaded at run time (`astlint_libclang.cpp`, cursors converted to the `-ast-dump=json` schema), else `clang -ast-dump=json` per unit. Checks the unit, the project headers it includes, nested enums/members and non-dependent template code (dependent code stays unchecked). 54 classes on the AST (`astlint::CLASSES`), 46 of them ported from regex lints: assignment-as-condition, `sizeof` of a pointer/array param, signed/unsigned compare, `u < 0` (`CTRL-DEAD-GUARD`), enum switch hole, self-assignment/self-move, dead store, `memset` swap, int division to floating, shift/division UB, truncation, format count/type/width, `%n`, non-literal format, `strncpy` without NUL, fixed-size copy overflow, overlapping copy, `realloc` self-assign, fallthrough, shadowing, stack address / `c_str()` of a local returned, straight-line use-after-free, double free, mismatched free/delete, NULL deref in and after the NULL branch, uninitialised read, use after move, `[[nodiscard]]`, virtual call in ctor/dtor, missing virtual dtor, move of const, dangling ref, catch by value, throw in dtor/`noexcept`, `throw new`, `delete this`. The regex "return is discarded" family (466 functions, 260 classes) is ported as one table generated from the regex rules at build time (`src/tools/gen_astlint_discard.cpp`). Supersedes the regex row on the same line/class; no libclang and no clang, or a parse error, is NOTRUN (`extra.layer`) and the regex lints still run |
 | ASan/UBSan/TSan | probe then compile; MinGW without libubsan/libtsan is NOTRUN; TSan unexpected memory mapping is NOTRUN not FAILED; CLEAN is not a proof |
 | AFL++/libFuzzer | PATH/clang -fsanitize=fuzzer probe; NOTRUN if absent |
-| KLEE | in-process concolic in prism/concolic.py; missing binary is NOTRUN; adapter with no error path is UNKNOWN, never a proof |
+| KLEE | in-process concolic in `src/prism/stages/concolic.cpp`; missing binary is NOTRUN; adapter with no error path is UNKNOWN, never a proof |
 | Semgrep | PATH adapter; real scan when present; UNKNOWN if empty |
 | Coccinelle | optional `spatch` for tree-local `*.cocci`; missing is NOTRUN |
 | Infer/CodeQL | adapters; in-process taint; CodeQL with no `codeql-db` is UNKNOWN; missing binary is NOTRUN |
-| Frama-C | EVA adapter: 0 alarms UNKNOWN; in-tree WP (`prism/wp.py`); ACSL in contracts.py. Missing `frama-c` binary is NOTRUN |
+| Frama-C | EVA adapter: 0 alarms UNKNOWN; in-tree WP (`src/prism/stages/wp.cpp`); ACSL in `src/prism/stages/contracts.cpp`. Missing `frama-c` binary is NOTRUN |
 | clang-tidy | adapter; no diagnostics UNKNOWN; missing is NOTRUN (not vendored) |
 | CBMC | adapter; SUCCESSFUL is BOUNDED; missing is NOTRUN |
 | Interval | path-sensitive integer ranges; FAILED ≠ proof |
@@ -396,7 +396,11 @@ skipped into an empty function list. Remaining ISO C11 `thrd_sleep`/`thrd_yield`
 
 ## Implemented in code
 
-File:function pointers for the methods above. Call these from `prism/pipeline.py`; do not merge CLEAN with a proof.
+C++ entry points for the methods above live under `src/prism/` and
+`include/prism/`; `src/prism/pipeline.cpp` runs the stages. Do not merge
+CLEAN with a proof. The `prism/*.py:` names below are the historical module
+paths from the deleted Python engine; see [CPP_PORT_PLAN.md](CPP_PORT_PLAN.md)
+appendix A for today's C++ owners.
 
 - `prism/bmc.py:bmc_function` — ESBMC-method BMC; statuses `PROVED` / `PROVED-UNBOUNDED` / `FAILED` / `BOUNDED`
 - `prism/bmc.py:k_induction` — base case = BMC; closed loops may be unbounded

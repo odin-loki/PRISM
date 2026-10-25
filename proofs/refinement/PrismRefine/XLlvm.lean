@@ -114,8 +114,9 @@ inductive SInst where
   | lstart (n : Nat) (p : Opnd)
   /-- `call void @llvm.lifetime.end(i64 n, ptr p)` -/
   | lend (p : Opnd)
-  /-- `call void @llvm.memcpy` / `memmove` (`move`) `(ptr d, ptr s, i<lw> len, i1 volatile)` -/
-  | memcpy (d s len : Opnd) (lw : Nat) (move : Bool)
+  /-- `call void @llvm.memcpy` / `memmove` (`move`) `(ptr d, ptr s, i<lw> len, i1 volatile)`;
+  `selfOk`: `@llvm.memcpy` and exact self-copies (`MemTr::memcpy_` `self_ok`). -/
+  | memcpy (d s len : Opnd) (lw : Nat) (move selfOk : Bool)
   /-- `call void @llvm.memset(ptr d, i8 b, i<lw> len, i1 volatile)` -/
   | memset (d b len : Opnd) (lw : Nat)
   /-- A read-only global the analysed function names (`%@g`): at the start of
@@ -154,6 +155,10 @@ inductive SInst where
   undefined unless `p` is null or points to the start of a live object of
   that kind (`freeBad`); `__prism_free` then ends the object's lifetime. -/
   | hfree (p : Opnd) (kind : Nat) (kill : Bool)
+  /-- `[%dst =] call i64 @__prism_obj_size(ptr p)`: bytes from `p` to the end
+  of its object (`MemTr::obj_size_remaining`; 0 when the offset is past the
+  size). -/
+  | hobjsz (dst : Option String) (p : Opnd)
   deriving DecidableEq, Repr, Inhabited
 
 /-- The register of field `i` of an overflow pair (a name no LLVM register
@@ -347,10 +352,14 @@ struct assignment `*p = *q` that may be a self-assignment.  (C's `memcpy`
 function forbids `d = s` too, C17 7.24.2.1; the pir stage compiles with
 `-fno-builtin-memcpy`, so a C `memcpy` call reaches its library model, not
 this intrinsic.) -/
-def cpyBad (m : Mem) (d s n : Nat) (move : Bool) : Bool :=
-  n != 0 && (accessBad m d n true 1 || accessBad m s n false 1 ||
-    (!move && ptrOff d != ptrOff s && ptrObj d == ptrObj s && decide (ptrOff d < ptrOff s + n) &&
-      decide (ptrOff s < ptrOff d + n)))
+def ovlStrict (d s n : Nat) : Bool :=
+  ptrObj d == ptrObj s && decide (ptrOff d < ptrOff s + n) && decide (ptrOff s < ptrOff d + n)
+
+def ovlB (d s n : Nat) (selfOk : Bool) : Bool :=
+  if selfOk then ptrOff d != ptrOff s && ovlStrict d s n else ovlStrict d s n
+
+def cpyBad (m : Mem) (d s n : Nat) (move selfOk : Bool) : Bool :=
+  n != 0 && (accessBad m d n true 1 || accessBad m s n false 1 || (!move && ovlB d s n selfOk))
 
 /-- The initialiser's stores into the global at `p`. -/
 def globW (p : Nat) : World → List (Nat × Nat × Nat) → World
@@ -407,6 +416,16 @@ def sFree (R : SRegs) (W : World) (p : Opnd) (kd : Nat) (kill : Bool) : Res Worl
     if freeBad W.mem (pv % 2 ^ 64) kd then .ub
     else .ok (if kill then { W with mem := W.mem.free (pv % 2 ^ 64) } else W)
 
+/-- Bytes from `p` to the end of its object (`MemTr::obj_size_remaining`). -/
+def hobjszVal (m : Mem) (q : Nat) : Nat :=
+  let q' := q % 2 ^ 64
+  let sz := m.size q'
+  let off := ptrOff q'
+  if off > sz then 0 else (sz - off) % 2 ^ 64
+
+def sHobjszV (R : SRegs) (W : World) (p : Opnd) : Res Nat :=
+  (sOpnd R 64 p).bind fun q => .ok (hobjszVal W.mem q)
+
 /-! ## Strict semantics -/
 
 /-- The values of the integer intrinsics. -/
@@ -445,10 +464,10 @@ def sStoreR (ω : Nat → Nat) (R : SRegs) (W : World) (w : Nat) (v : FOpnd) (p 
 def sLend (R : SRegs) (W : World) (p : Opnd) : Res World :=
   (sOpnd R 64 p).bind fun pv => .ok { W with mem := W.mem.free (pv % 2 ^ 64) }
 
-def sMemcpy (R : SRegs) (W : World) (d s len : Opnd) (lw : Nat) (move : Bool) : Res World :=
+def sMemcpy (R : SRegs) (W : World) (d s len : Opnd) (lw : Nat) (move selfOk : Bool) : Res World :=
   (sOpnd R 64 d).bind fun dv => (sOpnd R 64 s).bind fun sv => (sOpnd R lw len).bind fun n0 =>
     let n := n0 % 2 ^ lw
-    if cpyBad W.mem (dv % 2 ^ 64) (sv % 2 ^ 64) n move then .ub
+    if cpyBad W.mem (dv % 2 ^ 64) (sv % 2 ^ 64) n move selfOk then .ub
     else .ok { W with mem := W.mem.copy (dv % 2 ^ 64) (sv % 2 ^ 64) n }
 
 def sMemset (R : SRegs) (W : World) (d b len : Opnd) (lw : Nat) : Res World :=
@@ -485,7 +504,7 @@ def sSInst (ω : Nat → Nat) (R : SRegs) (W : World) : SInst → Res (SRegs × 
     .ok ((R.set (pairReg d 0) v).set (pairReg d 1) f, W)
   | .lstart n p => sStoreR ω R W (8 * n) .undef p 1
   | .lend p => (sLend R W p).bind fun W' => .ok (R, W')
-  | .memcpy d s len lw mv => (sMemcpy R W d s len lw mv).bind fun W' => .ok (R, W')
+  | .memcpy d s len lw mv so => (sMemcpy R W d s len lw mv so).bind fun W' => .ok (R, W')
   | .memset d b len lw => (sMemset R W d b len lw).bind fun W' => .ok (R, W')
   | .glob d size al kd ini st =>
     .ok (R.set d (globAlloc ω W size al kd ini st).1, (globAlloc ω W size al kd ini st).2)
@@ -494,6 +513,7 @@ def sSInst (ω : Nat → Nat) (R : SRegs) (W : World) : SInst → Res (SRegs × 
   | .vassume a w => (sVassume R w a).bind fun _ => .ok (R, W)
   | .halloc d n kd ini => (sHallocW ω R W n kd ini).bind fun (p, W') => .ok (R.setOpt d p, W')
   | .hfree p kd kill => (sFree R W p kd kill).bind fun W' => .ok (R, W')
+  | .hobjsz d p => (sHobjszV R W p).bind fun v => .ok (R.setOpt d v, W)
 
 def sSInsts (ω : Nat → Nat) : SRegs → World → List SInst → Res (SRegs × World)
   | R, W, [] => .ok (R, W)
@@ -684,7 +704,7 @@ def lSInst (ω : Nat → Nat) (S : LSt) (W : World) : SInst → Res (LSt × Worl
     | .stuck => .stuck
   | .lstart n p => lStoreR ω S W (8 * n) .undef p 1
   | .lend p => lMem S (sLend (lower S.R) W p)
-  | .memcpy d s len lw mv => lMem S (sMemcpy (lower S.R) W d s len lw mv)
+  | .memcpy d s len lw mv so => lMem S (sMemcpy (lower S.R) W d s len lw mv so)
   | .memset d b len lw => lMem S (sMemset (lower S.R) W d b len lw)
   | .glob d size al kd ini st =>
     .ok (⟨S.R.set d (.val (globAlloc ω W size al kd ini st).1), S.c⟩, (globAlloc ω W size al kd ini st).2)
@@ -703,6 +723,11 @@ def lSInst (ω : Nat → Nat) (S : LSt) (W : World) : SInst → Res (LSt × Worl
     | .ub => .ub
     | .stuck => .stuck
   | .hfree p kd kill => lMem S (sFree (lower S.R) W p kd kill)
+  | .hobjsz d p =>
+    match sHobjszV (lower S.R) W p with
+    | .ok v => .ok (⟨(match d with | some d => S.R.set d (.val v) | none => S.R), S.c⟩, W)
+    | .ub => .ub
+    | .stuck => .stuck
 
 def lSInsts (ω : Nat → Nat) : LSt → World → List SInst → Res (LSt × World)
   | S, W, [] => .ok (S, W)
