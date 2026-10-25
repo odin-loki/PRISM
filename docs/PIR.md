@@ -413,8 +413,9 @@ functions (`tv = PARTIAL`).
 
 ## Library models (roadmap 2.6)
 
-Operational models are C files in `src/prism/pir/models/libc/`
-(`string.cpp`, `stdlib.cpp`, `stdio.cpp`, `prism_model.h`), embedded in the binary
+Operational models are C++ sources (`extern "C"` libc API) in
+`src/prism/pir/models/libc/` (`string.cpp`, `stdlib.cpp`, `stdio.cpp`,
+`prism_model.h`), embedded in the binary
 at build time (CMake), lowered once per run with the same clang/opt pipeline
 (`-fno-builtin -ffreestanding`), and linked into every unit that declares a
 modelled symbol and does not define it (`link_models`, on the parsed
@@ -464,10 +465,9 @@ answer is the stage's, not the function's.
 
 On `_WIN32` the lowered models live under
 `%LOCALAPPDATA%\prism\pir-models\<key>\` when `LOCALAPPDATA` is set (no
-disk cache otherwise). The key hashes `prism-pir-models-v3`, the embedded
-model sources, the front end's version, the `clang` and `opt` paths, and
-`x86_64-unknown-linux-gnu` (the LP64 triple PIR lowers with on Windows;
-Linux uses `prism-pir-models-v1` without that line). Before reuse,
+disk cache otherwise). The key hashes `prism-pir-models-v5`, the embedded
+model sources, the front end's version, and the `clang` and `opt` paths
+(Windows also hashes the LP64 triple `x86_64-unknown-linux-gnu`). Before reuse,
 `try_load_model_cache` loads every embedded libc `.cpp` model's `.ll` and insists
 the IR matches that triple (`cached_model_ir_ok` rejects native LLP64
 caches: a Windows `target triple`, or `e-m:w-` in the datalayout). A bad or

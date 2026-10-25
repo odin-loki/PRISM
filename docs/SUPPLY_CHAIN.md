@@ -21,10 +21,11 @@ The fifteen mined source trees (AFLplusplus, Frama-C, FuSeBMC, Fuzz4All,
 cbmc, coccinelle, codeql, cppcheck, dafny, esbmc, infer, klee, rapidcheck,
 semgrep, strix; about 170,000 files) were deleted. They were never built;
 `docs/MINED.md` records what PRISM re-implemented from each, and
-`[[mined]]` rows in the manifest keep their URLs and licences. The tracked
-tree is now about 140 MB of source on disk (llama.cpp ~90 MB, Z3 ~33 MB,
-PCRE2 ~16 MB); the `.git` directory only shrinks after the history rewrite
-below.
+`[[mined]]` rows in the manifest keep their URLs and licences. On disk the
+six linked trees are about 140 MB of source (llama.cpp ~90 MB, Z3 ~33 MB,
+PCRE2 ~16 MB); that size is not a roadmap target — only pins, hashes and
+licences are. The `.git` directory only shrinks after the optional history
+rewrite below.
 
 ## MANIFEST.toml
 

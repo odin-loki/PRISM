@@ -406,7 +406,7 @@ libstdc++'s `std::array`, `std::span`, `std::optional`, `std::unique_ptr`,
 72/72 false twins refuted for the planted class, 0 wrong proofs, 0 false
 alarms. The C proofs are size-bounded (objects up to N bytes; every
 size-parametric harness is PROVED at N = 16 by `prism-qa libc-bounds`)
-except `unbounded_contracts.c` (memcpy/memmove/memset/realloc on objects of
+except `unbounded_contracts.cpp` (memcpy/memmove/memset/realloc on objects of
 any size below 2^40). `bmc`: 0 proofs, 2 refutations (`abs(INT_MIN)`,
 `rand() < 100`), NEEDS-HARNESS elsewhere (no preprocessor: the included
 model code is invisible to it). In the full release-gate run (all stages,

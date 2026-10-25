@@ -305,7 +305,7 @@ the shared `prism_tests` source list (`447e6bca2`), the WIN32 label self-check w
   Clang diagnostics on merged stderr use CRLF too: `stage.cpp` `split_lines` strips trailing `\r`
   before `parse_folded` (warning lines must end with `]`).
   `parse_folded` uses `fs::equivalent` (and filename fallback) so clang diagnostic paths match the source file.
-  `%LOCALAPPDATA%\prism\pir-models` (cache key **v3** includes the LP64 triple): stale or LLP64
+  `%LOCALAPPDATA%\prism\pir-models` (cache key **v5** includes the LP64 triple): stale or LLP64
   entries are rejected (`try_load_model_cache`), the cache directory is removed, and models are lowered
   again automatically; other invalid sibling directories under `pir-models` are pruned on load.
 - **`i128_and` on MSVC fallback (`acc88121b`):** the non-`PRISM_HAS_INT128` path in
@@ -420,7 +420,7 @@ Concrete steps (reference):
 1. **Triple + driver flags.** **Done.** `pir::lp64_target_flags()` / `lp64_clang_driver_flags()`
    in `src/prism/pir/frontend.cpp`; wired from `base_flags` (`stage.cpp`), `lower_model`
    (`libc_models.cpp`), and `svcomp/debug_ir.cpp`.
-2. **Cache key.** **Done.** WIN32 disk key `prism-pir-models-v3` includes the LP64
+2. **Cache key.** **Done.** WIN32 disk key `prism-pir-models-v5` includes the LP64
    triple (`docs/PIR.md` "Windows disk cache (LP64)").
 3. **Gate on the front end.** **Done.** `frontend_usable` in `include/prism/pir/frontend.hpp`
    (clang + opt + LP64 probe via temp `probe.c`/`probe.ll`; Windows clang with stdin `-` writes
