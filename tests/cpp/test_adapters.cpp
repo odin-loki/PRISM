@@ -1522,6 +1522,16 @@ TEST_CASE("spatch: a match is FAILED; silence is UNKNOWN; held script rules stay
     CHECK(ad::cocci_has_script(scripted.dir / "scripted.cocci"));
     scripted.put("plain.cocci", "@match@\nidentifier x;\n@@\nx\n");
     CHECK_FALSE(ad::cocci_has_script(scripted.dir / "plain.cocci"));
+    auto mixed = ad::run_spatch(norules.string(), {src}, nt.cfg);
+    REQUIRE(mixed.size() == 2);
+    bool saw_held = false;
+    bool saw_unknown = false;
+    for (const auto& f : mixed) {
+        if (f.status == laws::NOTRUN && xget(f, "rule") == "scripted.cocci") saw_held = true;
+        if (f.status == laws::UNKNOWN && has(f.message, "no matches")) saw_unknown = true;
+    }
+    CHECK(saw_held);
+    CHECK(saw_unknown);
     auto trusted = nt.cfg;
     trusted.allow_exec = true;
     auto ran = ad::run_spatch(norules.string(), {src}, trusted);
