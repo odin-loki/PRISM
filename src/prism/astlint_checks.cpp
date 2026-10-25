@@ -1064,8 +1064,19 @@ struct Checker {
         if (user) return;  // the project's own function of that name: not the libc one
         if (name == "memset" && args.size() >= 3 && !in_macro(c) && is_zero_literal(*args[2]) &&
             !begin_of(strip_all(*args[2])).macro && !is_zero_literal(*args[1])) {
-            add(c, "MEM-MEMSET-SWAP",
-                "memset() length is 0 and the fill byte is not: size and fill-byte arguments are swapped");
+            const auto& fill = strip_all(*args[1]);
+            bool swapped = sizeof_operand(fill) != nullptr;
+            if (!swapped && kind(fill) == "DeclRefExpr")
+                swapped = true;
+            else if (!swapped) {
+                auto txt = strip_ws(std::string(cx.text_of(fill)));
+                if (is_ident(txt)) {
+                    if (auto v = int_value(fill); !v || (*v != 0 && *v != 1)) swapped = true;
+                }
+            }
+            if (swapped)
+                add(c, "MEM-MEMSET-SWAP",
+                    "memset() length is 0 and the fill byte is not: size and fill-byte arguments are swapped");
         }
         static const std::map<std::string, SizeUse, std::less<>> kSized{
             {"memset", {{0}, 2}},    {"memcpy", {{0, 1}, 2}}, {"memmove", {{0, 1}, 2}},

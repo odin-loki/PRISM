@@ -402,9 +402,12 @@ extended fragment:
 | `testdata`, before pointers and the heap | 2 515 | 924 | 32 | 4 | 1 555 | **0** |
 | `testdata`, with pointer values, comparisons, returns, harness parameters | 2 515 | 927 | **49** | 36 | 1 500 | **0** |
 | `testdata`, … and the libc models' heap, nondet values, assumptions, library callees | 2 515 | 927 | **78** | 52 | 1 458 | **0** |
+| `tests/pir`, D118 (`hobjsz`, memcpy `selfOk`) | 231 | 47 | **65** | 17 | 102 | **0** |
+| `testdata`, D118 (`hobjsz`, memcpy `selfOk`) | 2 532 | 937 | **74** | 54 | 1 467 | **0** |
 
 Pointers and the heap (2026-09-25): 85 more `agree-ext` functions over both
-trees (61 → 146), 0 mismatches. Among them 24 of the pointer fixture
+trees (61 → 146), 0 mismatches. D118 (2026-10-25): **139** `agree-ext` total
+(65 + 74), 0 mismatches. Among them 24 of the pointer fixture
 `fixtures/pointers.pirl` (`tests/pir/mem_ptr.c`, `mem_contract.c`,
 `testdata/stack_escape.c`: relational comparisons in and across objects,
 pointer phis and selects, null dereferences, all seven stack-escape

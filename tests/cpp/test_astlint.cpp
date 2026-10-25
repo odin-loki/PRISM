@@ -97,7 +97,7 @@ int take(int *p, unsigned n, enum color c, char *buf) {
     int x = 0;
     if (x = *p) return 1;
     memset(buf, 0, sizeof(buf));
-    memset(p, 7, 0);
+    memset(p, sizeof *p, 0);
     for (int i = 0; i < n; i++) p[i] = 0;
     switch (c) { case RED: return 1; case GREEN: return 2; }
     x = x;
@@ -434,6 +434,9 @@ const char* kPortedC = R"(#include <stdio.h>
 #include <string.h>
 #include <strings.h>
 #include <sys/stat.h>
+#ifndef _WIN32
+int mkstemp(char *);
+#endif
 struct node { int v; struct node *next; };
 int null_after_check(struct node *n) {
     if (n == NULL) { puts("none"); }
@@ -562,9 +565,19 @@ void strtok_bad(char *s) { (void)strtok(s, " "); } // expect: API-STRTOK-REENTRA
 void strtok_ok(char *s) { if (s && *s) puts(s); }
 void tmpnam_bad(char *buf) { tmpnam(buf); } // expect: API-TMPNAM
 void tempnam_bad(void) { (void)tempnam("/tmp", "pfx"); } // expect: API-TMPNAM
-void tmpnam_ok(void) { char t[] = "/tmp/xXXXXXX"; mkstemp(t); }
+void tmpnam_ok(void) {
+#ifndef _WIN32
+    char t[] = "/tmp/xXXXXXX";
+    (void)mkstemp(t);
+#endif
+}
 void mktemp_bad(void) { char t[] = "/tmp/xXXXXXX"; mktemp(t); } // expect: API-MKTEMP
-void mktemp_ok(void) { char t[] = "/tmp/xXXXXXX"; mkstemp(t); }
+void mktemp_ok(void) {
+#ifndef _WIN32
+    char t[] = "/tmp/xXXXXXX";
+    (void)mkstemp(t);
+#endif
+}
 int umask_bad(void) { umask(0); return 0; } // expect: API-UMASK
 int umask_ok(void) { umask(077); return 0; }
 void scanf_bad(int *p) { scanf("%d", p); } // expect: API-SCANF-UNCHECKED
@@ -608,6 +621,18 @@ void copy_len_bad(struct copy_buf *b, const char *src, unsigned len) {
 void copy_len_ok(struct copy_buf *b, const char *src, unsigned len) {
     if (len > b->data_max) return;
     memcpy(b->data, src, len);
+}
+void missing_nul_plant(void) {
+    char buf[8];
+    memcpy(buf, "hello", 5); // expect: STR-MISSING-NUL
+    char ok[8];
+    memcpy(ok, "hello", 6);
+    char ok2[8];
+    memcpy(ok2, "hello", sizeof("hello"));
+}
+void memset_swap_plant(char *p) {
+    memset(p, sizeof *p, 0); // expect: MEM-MEMSET-SWAP
+    memset(p, 0, 4);
 }
 )";
 
@@ -684,6 +709,37 @@ void tnew() {
 
 TEST_CASE("astlint: ported regex classes on C (planted + guards, both front ends)") {
     check_marks("ported.c", kPortedC);
+}
+
+TEST_CASE("astlint: testdata STR-MISSING-NUL and MEM-MEMSET-SWAP (both front ends)") {
+    auto clang = find_clang();
+    if (!clang) {
+        MESSAGE("clang not installed: testdata string/memory astlint skipped");
+        return;
+    }
+    const auto root = fs::path(PRISM_SOURCE_DIR) / "testdata";
+    prism::Config cfg;
+    cfg.jobs = 1;
+    cfg.root = root;
+    auto ast_lines = [&](const char* file, const char* cls, const char* func, Backend b) {
+        std::set<int> lines;
+        for (auto& f : prism::astlint::run_lints_ast({root / file}, root, cfg, clang, b)) {
+            auto it = f.extra.find("engine");
+            if (it == f.extra.end() || it->second != "clang-ast") continue;
+            if (f.status != prism::laws::FAILED || f.cls != cls) continue;
+            if (f.function.value_or("") != func) continue;
+            lines.insert(f.line.value_or(0));
+        }
+        return lines;
+    };
+    for (auto& [fe, b] : front_ends(clang)) {
+        INFO("front end: " << fe);
+        CHECK(ast_lines("missing_nul.c", "STR-MISSING-NUL", "missing_nul_bad", b) == std::set<int>{5});
+        CHECK(ast_lines("missing_nul.c", "STR-MISSING-NUL", "missing_nul_ok", b).empty());
+        CHECK(ast_lines("missing_nul.c", "STR-MISSING-NUL", "missing_nul_sizeof_ok", b).empty());
+        CHECK(ast_lines("memset_swap.c", "MEM-MEMSET-SWAP", "memset_swap_bad", b) == std::set<int>{5});
+        CHECK(ast_lines("memset_swap.c", "MEM-MEMSET-SWAP", "memset_ok", b).empty());
+    }
 }
 
 TEST_CASE("astlint: ported regex classes on C++ (planted + guards, both front ends)") {
