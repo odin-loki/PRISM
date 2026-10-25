@@ -257,20 +257,24 @@ Finding concolic_function(const FunctionInfo& fn, int budget) {
     std::set<ArgsKey> seen;
     std::set<ArgsKey> z3_keys;
     int tried = 0, generated = 0, z3_seeds = 0, skipped_unsat = 0, max_new = std::max(0, budget);
-    auto fill_extra = [&](Finding& f, const Args* crash_args = nullptr, bool this_from_z3 = false) {
+    auto args_str = [](const Args& a) {
+        std::string argstr;
+        for (auto& [k, v] : a) {
+            if (!argstr.empty()) argstr += ", ";
+            argstr += k + "=" + std::to_string(v);
+        }
+        return argstr;
+    };
+    auto with_run_extra = [&](Finding& f, const Args& a) {
+        f.extra["tried"] = std::to_string(tried);
+        f.extra["args"] = args_str(a);
+    };
+    auto fill_stats = [&](Finding& f, bool this_from_z3 = false) {
         f.extra["tried"] = std::to_string(tried);
         f.extra["generated"] = std::to_string(generated);
         f.extra["oracle"] = oracle_tag(this_from_z3, z3_seeds);
         f.extra["z3_seeds"] = std::to_string(z3_seeds);
         f.extra["skipped_unsat"] = std::to_string(skipped_unsat);
-        if (crash_args) {
-            std::string argstr;
-            for (auto& [k, v] : *crash_args) {
-                if (!argstr.empty()) argstr += ", ";
-                argstr += k + "=" + std::to_string(v);
-            }
-            f.extra["args"] = argstr;
-        }
     };
     while (!queue.empty()) {
         auto args = queue.front();
@@ -281,27 +285,27 @@ Finding concolic_function(const FunctionInfo& fn, int budget) {
         ++tried;
         auto rec = execute(fn, args);
         if (!rec.error.empty()) {
-            if (rec.error == "skip-pointer")
-                return base_nh("pointer parameter: concolic engine does not invent buffers");
+            if (rec.error == "skip-pointer") {
+                auto f = base_nh("pointer parameter: concolic engine does not invent buffers");
+                with_run_extra(f, args);
+                return f;
+            }
             if (auto harness = harness_for_parsefail(rec.error, "concolic engine")) {
                 auto f = base_nh(*harness);
-                f.extra["tried"] = std::to_string(tried);
+                with_run_extra(f, args);
                 return f;
             }
             auto f = make_find("concolic", laws::ERROR, fn, "", rec.error, laws::STRENGTH_FINDS);
-            f.extra["tried"] = std::to_string(tried);
+            with_run_extra(f, args);
             return f;
         }
         if (!rec.ub.empty()) {
-            std::string argstr;
-            for (auto& [k, v] : args) {
-                if (!argstr.empty()) argstr += ", ";
-                argstr += k + "=" + std::to_string(v);
-            }
+            auto argstr = args_str(args);
             auto f = make_find("concolic", laws::CRASH, fn, rec.ub, rec.ub + " on " + argstr,
                                laws::STRENGTH_FINDS);
             f.counterexample = argstr;
-            fill_extra(f, &args, z3_keys.contains(key));
+            fill_stats(f, z3_keys.contains(key));
+            with_run_extra(f, args);
             return f;
         }
         if (generated >= max_new) continue;
@@ -326,7 +330,7 @@ Finding concolic_function(const FunctionInfo& fn, int budget) {
     auto f = make_find("concolic", laws::CLEAN, fn, "",
                        "no UB in " + std::to_string(tried) + " concolic inputs (not a proof)",
                        laws::STRENGTH_FINDS);
-    fill_extra(f);
+    fill_stats(f);
     return f;
 }
 

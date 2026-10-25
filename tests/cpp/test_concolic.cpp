@@ -756,3 +756,10 @@ TEST_CASE("concolic: run_concolic returns one row per function") {
     CHECK(rs[0].stage == "concolic");
     CHECK(prism::run_concolic({}, 8).empty());
 }
+
+TEST_CASE("concolic: ERROR rows carry args and tried") {
+    auto r = concolic_one(load_fn("with_goto"), 8);
+    REQUIRE(r.status == std::string(laws::ERROR));
+    CHECK(r.extra.at("tried") == "1");
+    CHECK_FALSE(r.extra.at("args").empty());
+}

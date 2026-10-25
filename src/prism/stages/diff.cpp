@@ -220,7 +220,8 @@ Finding diff_pair(const FunctionInfo& a, const FunctionInfo& b, const fs::path&)
                 hex += buf;
             }
             base.message = "diff harness crashed on " + hex;
-            base.evidence = rr.err.substr(0, 800);
+            base.evidence = tail(rr.err, 800);
+            base.extra["sandbox"] = sandbox::kind();
             std::string full;
             for (auto b : data) {
                 char buf[8];
