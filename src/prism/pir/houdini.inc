@@ -54,7 +54,8 @@ struct InvTerm {
 };
 
 struct InvCand {
-    enum Kind { Cmp, Mask, Lin, PtrIn, PtrAt, MemNZ, MemEq, MemNeC, MemInit, MemConst, MemFrame, MemLast } kind = Cmp;
+    enum Kind { Cmp, Mask, Lin, PtrIn, PtrAt, MemNZ, MemEq, MemNeC, MemInit, MemConst, MemFrame, MemScopeAt, MemLast } kind =
+        Cmp;
     int loop = -1;
     Op rel = Op::Eq;       // Cmp
     InvTerm a, b;          // Cmp: a rel b; Mask: (a & mask) == (b & mask); Lin: a -/+ b == ea -/+ eb
@@ -65,7 +66,7 @@ struct InvCand {
     bool sext = false;
     bool lo_entry = false; // lo = entry value of the index phi (else 0)
     int p = -1, q = -1;    // pointers (scope variables)
-    int off = -1;          // MemEq/MemInit: p + off + x*eb (scope variable, i64)
+    int off = -1;          // MemEq/MemInit/MemScopeAt: scope offset into p (i64)
     int rp = -1;           // PtrIn/PtrAt/MemLast: a pointer phi r (the last match so far)
     unsigned eb = 1;       // element bytes
     InvTerm v;             // MemNeC: element != trunc(v); MemConst: element == v (const)
@@ -373,6 +374,8 @@ std::string Houdini::text(const InvCand& c) const {
             return "forall x < " + (c.off >= 0 ? var(c.off) + " + " : std::string()) + (c.sext ? "sext" : "zext") +
                    "(entry(" + phi(c.ip) + ")): " + at(c.p, -1) +
                    " == " + at(c.p, -1) + " at loop entry";
+        case InvCand::MemScopeAt:
+            return "forall " + range + ": " + var(c.off) + " + x < size(" + var(c.p) + ")";
     }
     return "?";
 }
@@ -643,6 +646,14 @@ void Houdini::generate(std::vector<InvCand>& out) {
                                     c.off = o;
                                     add(c);
                                 }
+                            // strcat/strncat append loops: every byte written so far stays in p's object
+                            if (wp)
+                                for (int o : offs) {
+                                    auto c = t;
+                                    c.kind = InvCand::MemScopeAt;
+                                    c.off = o;
+                                    add(c);
+                                }
                         }
                     }
         }
@@ -856,6 +867,12 @@ HoudiniOut Houdini::run() {
             case InvCand::MemEq: body = ld(k.p, k.off).val == ld(k.q, -1).val; break;
             case InvCand::MemInit: body = ld(k.p, k.off).uninit == e.bv(0, 1); break;
             case InvCand::MemConst: body = ld(k.p, -1).val == e.bv(k.v.c, 8 * k.eb); break;
+            case InvCand::MemScopeAt: {
+                auto off = e.lookup(Arg::v(k.off, 64), node);
+                auto sz = e.M().size(e.lookup(Arg::v(k.p, 64), node));
+                body = z3::ult(off + scale, sz);
+                break;
+            }
             case InvCand::MemFrame: {
                 auto now = ld(k.p, -1);
                 auto was = e.M().load_exact(CL.entry_mem, ptr(k.p, -1), 8 * k.eb);

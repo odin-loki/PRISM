@@ -428,17 +428,24 @@ struct Encoding {
 
     // Provenance for pointer arithmetic (memory.hpp SymMem::note).
     void note_prov(const Stmt& s, const z3::expr& v, int node) {
-        if (!mem || !s.ptr_arith || s.args.empty()) return;
+        if (!mem) return;
+        if (s.op == Op::Select && s.args.size() == 3) mem->materialize_vs(v);
+        if (!s.ptr_arith || s.args.empty()) return;
         std::optional<uint64_t> k;
         if (s.op == Op::Select && s.args.size() == 3) {
             auto k1 = mem->known(lookup(s.args.at(1), node));
             auto k2 = mem->known(lookup(s.args.at(2), node));
-            if (!(k1 && k2 && *k1 == *k2)) return;
-            k = k1;
+            if (k1 && k2 && *k1 == *k2) k = k1;
         } else {
             k = mem->known(lookup(s.args.at(0), node));
         }
         if (k) mem->note(v, *k);
+        if (s.op == Op::Add && s.args.size() == 2)
+            mem->seed_vs_bin(v, lookup(s.args.at(0), node), lookup(s.args.at(1), node), Z3_OP_BADD);
+        else if (s.op == Op::Sub && s.args.size() == 2)
+            mem->seed_vs_bin(v, lookup(s.args.at(0), node), lookup(s.args.at(1), node), Z3_OP_BSUB);
+        else if (s.op == Op::Mul && s.args.size() == 2)
+            mem->seed_vs_bin(v, lookup(s.args.at(0), node), lookup(s.args.at(1), node), Z3_OP_BMUL);
     }
 
     z3::expr bv(uint64_t v, unsigned w) { return c.bv_val(static_cast<uint64_t>(v & wmask(w)), w); }

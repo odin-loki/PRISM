@@ -102,13 +102,115 @@ std::optional<uint64_t> eval_const(const z3::expr& e, const std::vector<uint64_t
     }
     return r & mask_w(w);
 }
+// Left operand of (== t k) for PRISM_INDEX_LE3-style guards.
+std::optional<z3::expr> eq_index_expr(const z3::expr& guard) {
+    if (!guard.is_app() || guard.decl().decl_kind() != Z3_OP_EQ || guard.num_args() != 2) return std::nullopt;
+    const z3::expr k = guard.arg(1);
+    uint64_t n = 0;
+    if (!k.is_numeral() || !k.is_numeral_u64(n)) return std::nullopt;
+    return guard.arg(0);
+}
 }  // namespace
 
 // Raw value sets: the options are kept apart even when two have the same
 // value, so terms built the same way (the bytes of one read-over-write
 // chain) have the same guard list and combine position by position.
+void SymMem::seed_vs(const z3::expr& e, Vs vs) {
+    if (vs.size() > kVsMax) return;
+    vs_keep_.push_back(e);
+    for (auto& o : vs) vs_keep_.push_back(o.guard);
+    vs_seed_[e.id()] = std::move(vs);
+    vs_memo_.erase(e.id());
+    vs_merged_.erase(e.id());
+}
+
+std::optional<SymMem::Vs> SymMem::vs_bin(const z3::expr& e, const z3::expr& a, const z3::expr& b,
+                                           Z3_decl_kind op) const {
+    auto one = [&](const z3::expr& x) -> std::optional<Vs> {
+        if (const Vs* v = vs_raw(x)) return *v;
+        uint64_t n = 0;
+        if (x.is_numeral() && x.is_numeral_u64(n)) return Vs{VsOpt{c_.bool_val(true), n}};
+        return std::nullopt;
+    };
+    auto av = one(a);
+    auto bv = one(b);
+    if (!av || !bv) return std::nullopt;
+    const z3::expr tt = c_.bool_val(true);
+    bool zip = true;
+    const Vs* shape = nullptr;
+    std::size_t combos = 1;
+    if (av->size() > 1) {
+        shape = &*av;
+        combos *= av->size();
+    }
+    if (bv->size() > 1) {
+        combos *= bv->size();
+        if (!shape) shape = &*bv;
+        else if (bv->size() != shape->size()) zip = false;
+        else
+            for (std::size_t j = 0; j < bv->size() && zip; ++j)
+                if ((*bv)[j].guard.id() != (*shape)[j].guard.id()) zip = false;
+    }
+    if (!zip && combos > kVsCombos) return std::nullopt;
+    Vs r;
+    const std::size_t n = !shape ? 1 : zip ? shape->size() : combos;
+    std::vector<std::size_t> idx{0, 0};
+    for (std::size_t m = 0; m < n; ++m) {
+        const auto& ao = av->size() == 1 ? av->front() : zip ? av->at(m) : av->at(idx[0]);
+        const auto& bo = bv->size() == 1 ? bv->front() : zip ? bv->at(m) : bv->at(idx[1]);
+        z3::expr g = tt;
+        if (zip && shape)
+            g = shape->at(m).guard;
+        else {
+            if (av->size() > 1) g = and2(g, ao.guard);
+            if (bv->size() > 1) g = and2(g, bo.guard);
+        }
+        std::optional<uint64_t> kv;
+        if (op == Z3_OP_BADD)
+            kv = eval_const(e, {ao.val, bo.val});
+        else if (op == Z3_OP_BSUB)
+            kv = eval_const(e, {ao.val, bo.val});
+        else if (op == Z3_OP_BMUL)
+            kv = eval_const(e, {ao.val, bo.val});
+        if (!kv) return std::nullopt;
+        r.push_back(VsOpt{g, *kv});
+        if (!zip) {
+            if (av->size() > 1) {
+                if (++idx[0] < av->size()) continue;
+                idx[0] = 0;
+            }
+            if (bv->size() > 1) ++idx[1];
+            if (idx[1] >= bv->size()) idx[1] = 0;
+        }
+    }
+    if (r.size() > kVsMax) return std::nullopt;
+    return r;
+}
+
+void SymMem::seed_vs_bin(const z3::expr& sum, const z3::expr& a, const z3::expr& b, Z3_decl_kind op) {
+    if (auto vs = vs_bin(sum, a, b, op)) seed_vs(sum, std::move(*vs));
+}
+
+void SymMem::materialize_vs(const z3::expr& e) {
+    const Vs* raw = vs_raw(e);
+    if (!raw || raw->empty()) return;
+    auto dup = copy_vs(raw);
+    if (!dup) return;
+    seed_vs(e, std::move(*dup));
+    // Same guards as the ite index (PRISM_INDEX_LE3): seed the parameter {0..n-1}.
+    if (raw->size() >= 2 && raw->size() <= kVsMax) {
+        bool unit = true;
+        for (std::size_t j = 0; j < raw->size(); ++j)
+            if ((*raw)[j].val != j) unit = false;
+        if (unit) {
+            if (auto idx = eq_index_expr(raw->front().guard)) seed_vs(*idx, *raw);
+        }
+    }
+}
+
 const SymMem::Vs* SymMem::vs_raw(const z3::expr& e) const {
     if (!e.is_bv() || e.get_sort().bv_size() > 64) return nullptr;
+    if (auto it = vs_seed_.find(e.id()); it != vs_seed_.end()) return &it->second;
     if (auto it = vs_memo_.find(e.id()); it != vs_memo_.end()) return it->second ? &*it->second : nullptr;
     // a long read-over-write chain of a symbolic address nests one ite per
     // write: past this depth the term has no value set (the worker thread's

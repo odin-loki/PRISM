@@ -139,6 +139,11 @@ public:
     static constexpr std::size_t kVsCombos = 16;  // combinations evaluated for one operation
     const Vs* vs_of(const z3::expr& e) const;     // equal values merged
     const Vs* vs_raw(const z3::expr& e) const;    // options kept apart (see memory.cpp)
+    // Precomputed value set for a term (encode.cpp pointer arithmetic).
+    void seed_vs(const z3::expr& e, Vs vs);
+    void seed_vs_bin(const z3::expr& sum, const z3::expr& a, const z3::expr& b, Z3_decl_kind op);
+    // Store vs_raw(e) in vs_seed_ (ite index chains, e.g. PRISM_INDEX_LE3).
+    void materialize_vs(const z3::expr& e);
 
 private:
     struct Obj {
@@ -179,7 +184,9 @@ private:
     std::unordered_map<unsigned, uint64_t> prov_;
     std::vector<z3::expr> keep_;
     mutable std::unordered_map<unsigned, std::optional<Vs>> vs_memo_, vs_merged_;
+    std::unordered_map<unsigned, Vs> vs_seed_;
     std::optional<Vs> copy_vs(const Vs* v) const;
+    std::optional<Vs> vs_bin(const z3::expr& e, const z3::expr& a, const z3::expr& b, Z3_decl_kind op) const;
     static constexpr int kVsDepth = 400;
     mutable int vs_depth_ = 0;
     mutable std::vector<z3::expr> vs_keep_;

@@ -64,4 +64,9 @@ static inline char nd_char(void) { return (char)__VERIFIER_nondet_int(); }
         for (int i_ = 0; i_ < (cap); i_++) (b)[i_] = nd_char(); \
     } while (0)
 
+/* After the caller bounds i (e.g. 0 <= i <= 3), turn it into an ite chain so
+ * SymMem value sets see a small set of index constants (same idea as map
+ * insert/erase key compares giving value sets on node pointers). */
+#define PRISM_INDEX_LE3(i) ((i) == 0 ? 0 : (i) == 1 ? 1 : (i) == 2 ? 2 : 3)
+
 #endif

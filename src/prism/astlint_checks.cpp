@@ -837,6 +837,84 @@ bool mem_copy_callee(std::string_view name) {
     return name.find("memcpy") != std::string_view::npos || name.find("memmove") != std::string_view::npos;
 }
 
+bool libc_api_lint(std::string_view name) {
+    return one_of(name, {"malloc", "calloc", "realloc", "reallocarray", "aligned_alloc", "strdup", "strndup",
+                         "getenv", "secure_getenv", "system", "signal", "gets", "strtok", "tmpnam", "tempnam",
+                         "tmpnam_r", "mktemp", "umask", "mkstemp", "mkstemps", "chmod", "fchmod", "memset",
+                         "memcpy", "memmove", "memcmp", "bcopy", "strcpy", "strncpy", "strcat", "strncat"});
+}
+
+bool has_literal_zero_or_one(const json& n) {
+    if (!n.is_object()) return false;
+    if (kind(n) == "IntegerLiteral") {
+        if (auto v = int_value(n)) return *v == 0 || *v == 1;
+    }
+    for (auto& c : inner(n))
+        if (has_literal_zero_or_one(c)) return true;
+    return false;
+}
+
+bool sig_dfl_or_ign(const json& h0) {
+    const json* p = &h0;
+    for (int depth = 0; depth < 6 && p->is_object(); ++depth) {
+        const auto& h = strip_all(*p);
+        if (kind(h) == "DeclRefExpr") {
+            const auto n = str_field(ref_decl(h), "name");
+            return n == "SIG_DFL" || n == "SIG_IGN";
+        }
+        if (kind(h) == "IntegerLiteral") {
+            if (auto v = int_value(h)) return *v == 0 || *v == 1;
+        }
+        if (kind(h) == "ParenExpr" || kind(h) == "UnexposedExpr" || is_explicit_cast(kind(h)) ||
+            kind(h) == "CStyleCastExpr" || is_implicit_wrapper(kind(h))) {
+            if (n_children(h) >= 1) {
+                p = &child(h, 0);
+                continue;
+            }
+        }
+        break;
+    }
+    return false;
+}
+
+bool flow_terminates(const json& s) {
+    const auto& k = kind(s);
+    if (one_of(k, {"ReturnStmt", "GotoStmt", "BreakStmt", "ContinueStmt", "CXXThrowExpr"})) return true;
+    if (k == "CompoundStmt") {
+        if (!n_children(s)) return false;
+        return flow_terminates(last_child(s));
+    }
+    if (k == "IfStmt") {
+        std::size_t ci = (flag(s, "hasInit") ? 1 : 0) + (flag(s, "hasVar") ? 1 : 0);
+        if (n_children(s) < ci + 2) return false;
+        return flow_terminates(child(s, ci + 1)) &&
+               (n_children(s) < ci + 3 || flow_terminates(child(s, ci + 2)));
+    }
+    return false;
+}
+
+// When cond is `!p` / `p == NULL`, returns p's id and whether the then-branch is the NULL case.
+std::optional<std::string> null_test_var(const json& cond, bool& null_in_then) {
+    const auto& c = strip_all(cond);
+    null_in_then = true;
+    const json* var = nullptr;
+    if (kind(c) == "UnaryOperator" && str_field(c, "opcode") == "!") {
+        var = &strip_all(child(c, 0));
+    } else if (kind(c) == "BinaryOperator" && one_of(str_field(c, "opcode"), {"==", "!="})) {
+        null_in_then = str_field(c, "opcode") == "==";
+        const auto& lhs = strip_all(strip_parens(child(c, 0)));
+        if (is_null_ptr_expr(child(c, 1)))
+            var = &lhs;
+        else if (is_null_ptr_expr(child(c, 0)))
+            var = &strip_all(child(c, 1));
+        else if (kind(lhs) == "BinaryOperator" && str_field(lhs, "opcode") == "=")
+            var = &strip_all(child(lhs, 0));
+    }
+    if (!var || kind(*var) != "DeclRefExpr") return std::nullopt;
+    auto id = str_field(ref_decl(*var), "id");
+    return id.empty() ? std::nullopt : std::optional{id};
+}
+
 // ---------------------------------------------------------------- simple checks
 
 struct Checker {
@@ -1061,7 +1139,7 @@ struct Checker {
         const bool user = facts && facts->user;
         if (one_of(name, {"setjmp", "_setjmp", "sigsetjmp", "__sigsetjmp", "longjmp", "vfork"})) fn.opaque = true;
         auto args = call_args(c);
-        if (user) return;  // the project's own function of that name: not the libc one
+        if (user && !libc_api_lint(name)) return;  // a project definition shadowing a non-libc name
         if (name == "memset" && args.size() >= 3 && !in_macro(c) && is_zero_literal(*args[2]) &&
             !begin_of(strip_all(*args[2])).macro && !is_zero_literal(*args[1])) {
             const auto& fill = strip_all(*args[1]);
@@ -1155,6 +1233,18 @@ struct Checker {
             constexpr int kWorld = 0777;
             if (auto v = int_value(*args[1]); v && *v == kWorld)
                 add(c, "API-CHMOD-WORLD", name + "() mode is world-writable 0777");
+        }
+        if (name == "system" && !args.empty() && !string_lit(*args[0]) && !in_macro(c))
+            add(c, "API-SYSTEM", "system() command is not a string literal");
+        if (name == "signal" && args.size() >= 2) {
+            const auto& h = strip_all(*args[1]);
+            bool ok = sig_dfl_or_ign(h) || has_literal_zero_or_one(h);
+            if (!ok) {
+                auto t = strip_ws(std::string(cx.text_of(h)));
+                ok = t == "SIG_DFL" || t == "SIG_IGN" || t.find("SIG_DFL") != std::string::npos ||
+                     t.find("SIG_IGN") != std::string::npos;
+            }
+            if (!ok) add(c, "API-SIGNAL", "signal() installs a handler; prefer sigaction()");
         }
         // Strings into local char arrays.
         if (one_of(name, {"strcpy", "strcat"}) && args.size() >= 2) {
@@ -1669,6 +1759,7 @@ enum class St { None, Freed, Nulled, Moved, Uninit, Malloc, New, NewArr };
 struct VState {
     St st = St::None;
     int line = 0;
+    std::string api;  // libc allocator name when st == Malloc
 };
 
 struct Flow {
@@ -1710,9 +1801,10 @@ struct Flow {
         const auto& c = strip_casts(rhs);
         if (is_call_kind(kind(c))) {
             const auto* f = cx.facts(callee_id(c));
-            if (f && f->user) return St::None;
             auto nm = callee_name(c);
-            if (one_of(nm, {"malloc", "calloc", "realloc", "strdup", "strndup", "aligned_alloc", "reallocarray"}))
+            if (f && f->user && !libc_api_lint(nm)) return St::None;
+            if (one_of(nm, {"malloc", "calloc", "realloc", "strdup", "strndup", "aligned_alloc", "reallocarray",
+                            "getenv", "secure_getenv"}))
                 return St::Malloc;
         }
         if (kind(c) == "CXXNewExpr") {
@@ -1729,15 +1821,20 @@ struct Flow {
         const auto* v = var_of(id);
         if (v && is_pointer_type(type_of(*v)) && is_null_ptr_expr(*rhs) && !in_macro(strip_casts(*rhs)) &&
             kind(strip_casts(*rhs)) != "CXXNullPtrLiteralExpr") {
-            st[id] = {St::Nulled, cx.line_of(begin_of(*rhs))};
+            st[id] = {St::Nulled, cx.line_of(begin_of(*rhs)), {}};
             return;
         }
         if (v && is_pointer_type(type_of(*v)) && kind(strip_casts(*rhs)) == "CXXNullPtrLiteralExpr") {
-            st[id] = {St::Nulled, cx.line_of(begin_of(*rhs))};
+            st[id] = {St::Nulled, cx.line_of(begin_of(*rhs)), {}};
             return;
         }
         auto a = alloc_state(*rhs);
-        if (a != St::None) st[id] = {a, cx.line_of(begin_of(*rhs))};
+        if (a != St::None) {
+            VState vs{a, cx.line_of(begin_of(*rhs)), {}};
+            const auto& c = strip_casts(*rhs);
+            if (is_call_kind(kind(c))) vs.api = callee_name(c);
+            st[id] = std::move(vs);
+        }
     }
 
     enum class Ctx2 { Stmt, Return, Branch };
@@ -1813,6 +1910,19 @@ struct Flow {
                     }
                 }
                 return;
+            case St::Malloc:
+                if (deref) {
+                    st.erase(it);
+                    const std::string fn = s.api.empty() ? "malloc" : s.api;
+                    if (fn == "getenv" || fn == "secure_getenv")
+                        ck.add(ref, "API-GETENV-NULL", name + " from getenv() used without a NULL test");
+                    else if (fn == "strdup" || fn == "strndup")
+                        ck.add(ref, "API-STRDUP-NULL", name + " from strdup() used without a NULL test");
+                    else
+                        ck.add(ref, "PTR-UNCHECKED-ALLOC",
+                               name + " used without a NULL check after " + fn + "()");
+                }
+                return;
             case St::Moved:
                 st.erase(it);
                 ck.add(ref, "CXX-USE-AFTER-MOVE",
@@ -1844,7 +1954,7 @@ struct Flow {
                 ck.add(at, "MEM-NEW-DELETE",
                        name + " comes from new (line " + std::to_string(s.line) + ") but is released with delete[]");
         }
-        st[id] = {St::Freed, cx.line_of(begin_of(at))};
+        st[id] = {St::Freed, cx.line_of(begin_of(at)), {}};
     }
 
     bool noreturn_call(const json& c) const {
@@ -2021,7 +2131,7 @@ struct Flow {
                     const auto* v = var_of(id);
                     if (consumed && v && is_record_value(type_of(*v)) && tracked(id) &&
                         !qual_type(*v).starts_with("const "))
-                        st[id] = {St::Moved, cx.line_of(begin_of(n))};
+                        st[id] = {St::Moved, cx.line_of(begin_of(n)), {}};
                 }
             }
             if (noreturn_call(n)) stopped = true;
@@ -2047,7 +2157,17 @@ struct Flow {
                 if (pk == "MemberExpr" || pk == "CXXConstructExpr" || is_call_kind(pk)) read(id, n, parents, c);
                 return;
             }
-            if (pk == "MemberExpr" && flag(*p, "isArrow")) return;
+            if (pk == "MemberExpr" && flag(*p, "isArrow")) {
+                read(id, n, parents, c);
+                return;
+            }
+            if (pk == "ArraySubscriptExpr" && n_children(*p) >= 1) {
+                const auto& base = strip_all(child(*p, 0));
+                if (kind(base) == "DeclRefExpr" && str_field(ref_decl(base), "id") == id) {
+                    read(id, n, parents, c);
+                    return;
+                }
+            }
             // Bound to a reference / other use: forget it.
             st.erase(id);
             return;
@@ -2098,7 +2218,7 @@ struct Flow {
                     eval(*init, Ctx2::Stmt);
                     assign(id, init);
                 } else if (uninit_candidate(v)) {
-                    st[id] = {St::Uninit, cx.line_of(begin_of(v))};
+                    st[id] = {St::Uninit, cx.line_of(begin_of(v)), {}};
                 }
             }
             return;
@@ -2112,7 +2232,37 @@ struct Flow {
             std::size_t i = 0;
             if (flag(s, "hasInit")) stmt(child(s, i++));
             if (flag(s, "hasVar")) stmt(child(s, i++));
-            eval(child(s, i), Ctx2::Branch);
+            const auto& cond = strip_all(child(s, i));
+            std::optional<std::string> cond_assign;
+            if (kind(cond) == "BinaryOperator" && str_field(cond, "opcode") == "==") {
+                const auto& lhs = strip_all(strip_parens(child(cond, 0)));
+                if (kind(lhs) == "BinaryOperator" && str_field(lhs, "opcode") == "=") {
+                    const auto& l = strip_all(child(lhs, 0));
+                    if (kind(l) == "DeclRefExpr") {
+                        auto id = str_field(ref_decl(l), "id");
+                        cond_assign = id;
+                        eval(child(lhs, 1), Ctx2::Stmt);
+                        assign(id, &child(lhs, 1));
+                    }
+                }
+            }
+            bool null_then = true;
+            bool null_guarded = false;
+            if (auto vid = null_test_var(child(s, i), null_then)) {
+                const json* branch = null_then ? &child(s, i + 1) : nullptr;
+                if (!null_then && n_children(s) > i + 2) branch = &child(s, i + 2);
+                if (branch && branch->is_object() && !branch->empty() && flow_terminates(*branch)) {
+                    st.erase(*vid);
+                    null_guarded = true;
+                }
+            } else if (cond_assign && is_null_ptr_expr(child(cond, 1))) {
+                const json* branch = &child(s, i + 1);
+                if (branch->is_object() && !branch->empty() && flow_terminates(*branch)) {
+                    st.erase(*cond_assign);
+                    null_guarded = true;
+                }
+            }
+            if (!null_guarded) eval(child(s, i), Ctx2::Branch);
             for (std::size_t j = i + 1; j < n_children(s); ++j) havoc(child(s, j));
             return;
         }
@@ -2362,14 +2512,25 @@ struct Walker {
         return ck.automatic(v) ? v : nullptr;
     }
 
+    bool local_array(const json* v) const {
+        if (!v || !ck.automatic(v)) return false;
+        if (!one_of(kind(*v), {"VarDecl", "ParmVarDecl"})) return false;
+        return type_of(*v).find('[') != std::string::npos;
+    }
+
     const json* decayed_local_array(const json& e0) {
         const auto& e = strip_parens(e0);
         if (kind(e) == "ImplicitCastExpr" && str_field(e, "castKind") == "ArrayToPointerDecay") {
             const auto& d = strip_parens(child(e, 0));
             if (kind(d) == "DeclRefExpr") {
                 auto* v = ck.local_var(d);
-                if (ck.automatic(v) && kind(*v) == "VarDecl") return v;
+                if (local_array(v)) return v;
             }
+        }
+        // strip_casts (above) may have removed the decay cast; `return buf` is then just DeclRefExpr.
+        if (kind(e) == "DeclRefExpr") {
+            auto* v = ck.local_var(e);
+            if (local_array(v)) return v;
         }
         return nullptr;
     }
@@ -2791,7 +2952,7 @@ struct Walker {
         const json* branch = null_in_then ? &child(n, ci + 1) : &child(n, ci + 2);
         const bool has_branch = branch->is_object() && !branch->empty();
         Flow fl(ck);
-        fl.st[id] = {St::Nulled, cx.line_of(begin_of(n))};
+        fl.st[id] = {St::Nulled, cx.line_of(begin_of(n)), {}};
         fl.null_if = &n;
         if (has_branch) {
             fl.stmt(*branch);

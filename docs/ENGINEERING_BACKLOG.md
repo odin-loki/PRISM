@@ -22,8 +22,8 @@ Earlier `main` pushes (Lean export / doc sweep) are still **failure** or long-ru
 | Gap | Next action | Primary paths |
 |-----|-------------|---------------|
 | `getenv_true` → PROVED | **Done:** `__prism_obj_size` + NUL; `harness.h` `extern "C"` for `assert` in `.cpp` harnesses | `stdlib_contracts.cpp`, `harness.h` |
-| `strcat`/`strncat` unbounded BOUNDED | Likely needs new `MemScopeAt` (+ scope offsets) in Houdini; Z3 experiment first | `houdini.inc`, `unbounded_string_contracts.cpp` |
-| `vector_insert_true` timeout | Value sets for `data()+i`, `i ∈ [0,3]` (map-insert pattern) | `src/prism/pir/memory.cpp`, `vector_insert.cpp` |
+| `strcat`/`strncat` unbounded BOUNDED | **Started:** Houdini `MemScopeAt` (`∀x < i: off + x < size(p)`) generated from store scope offsets; still need `MemEq`/`MemFrame` fixpoint + Z3 timing on `strcat_any_true` / `strncat_any_true` | `houdini.inc`, `unbounded_string_contracts.cpp` |
+| ~~`vector_insert_true` timeout~~ | **Done (2026-10-25):** `PRISM_INDEX_LE3` ite chain + `SymMem::seed_vs_bin` on pointer `Add`/`Sub`/`Mul`; WSL `prism-qa conformance --filter vector_insert --stages pir`: `vector_insert_true` **PROVED** (~100 s), `vector_insert_uaf_false` **FAILED** MEM-UAF | `memory.cpp`, `encode.cpp`, `vector_insert.cpp`, `harness.h` |
 | printf not in libc harnesses | **Done (doc):** translator + `mem_libc.c` boundary in `docs/PIR.md` §8.2 | `libc_format.cpp` |
 | iostreams / unordered / libc++ | New `models/cxx/` headers + harnesses | `docs/PIR.md` "Not modelled" |
 
@@ -36,7 +36,9 @@ Earlier `main` pushes (Lean export / doc sweep) are still **failure** or long-ru
 | Done (2026-10-25) | **`API-STRTOK`**, **`API-TMPNAM`**, **`API-MKTEMP`**, **`API-UMASK`** AST ports (+ prior batch) | `astlint_checks.cpp`, `test_astlint.cpp` |
 | Done (2026-10-25) | **STR-MISSING-NUL** / **MEM-MEMSET-SWAP** / **STR-STRNCPY-NUL** / **MEM-REALLOC-SELF** testdata doctests | `test_astlint.cpp` |
 | Done (2026-10-25) | **`API-MKSTEMP`**, **`API-CHMOD-WORLD`**, **`API-SETUID`** AST ports in `kPortedC` | `astlint_checks.cpp`, `test_astlint.cpp` |
-| Next | Pick from regex-only table (~270 left) | `checkers_core.cpp` → `astlint_checks.cpp` |
+| Done (2026-10-25) | **`API-SYSTEM`**, **`API-SIGNAL`**, **`API-GETENV-NULL`**, **`API-STRDUP-NULL`**, **`PTR-UNCHECKED-ALLOC`** AST + testdata doctests | `astlint_checks.cpp`, `test_astlint.cpp` |
+| Done (2026-10-25) | **`INT-SHIFT-UB`**, **`PTR-NULL-DEREF`**, **`MEM-STACK-ESCAPE`** testdata doctests; **`return buf`** after `strip_casts` | `astlint_checks.cpp`, `test_astlint.cpp` |
+| Next | Pick from regex-only table (~265 left) | `checkers_core.cpp` → `astlint_checks.cpp` |
 | Template / flow limits | Document NOTRUN; defer dependent-template rules | `astlint.hpp` |
 
 ## 2.8 / D2 — Retire hand `bmc` encoder

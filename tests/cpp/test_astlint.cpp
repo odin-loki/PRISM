@@ -657,6 +657,38 @@ void memset_swap_plant(char *p) {
     memset(p, sizeof *p, 0); // expect: MEM-MEMSET-SWAP
     memset(p, 0, 4);
 }
+char *getenv(const char *);
+char *strdup(const char *);
+#ifndef SIGINT
+#define SIGINT 2
+#endif
+#ifndef SIG_DFL
+#define SIG_DFL ((void (*)(int))0)
+#endif
+#ifndef SIG_IGN
+#define SIG_IGN ((void (*)(int))1)
+#endif
+int signal(int, void (*)(int));
+void prism_sig_handler(int);
+void signal_bad(void) { signal(SIGINT, prism_sig_handler); } // expect: API-SIGNAL
+void signal_ok(void) { signal(SIGINT, SIG_IGN); }
+void system_bad_cmd(void) {
+    char *cmd = getenv("X");
+    system(cmd); // expect: API-SYSTEM
+}
+void system_ok_literal(void) { system("true"); }
+void getenv_null_plant(void) {
+    char *s = getenv("X");
+    (void)s[0]; // expect: API-GETENV-NULL
+}
+void strdup_null_plant(void) {
+    char *s = strdup("x");
+    (void)s[0]; // expect: API-STRDUP-NULL
+}
+void unchecked_malloc_plant(void) {
+    char *p = malloc(4);
+    p[0] = 1; // expect: PTR-UNCHECKED-ALLOC
+}
 )";
 
 const char* kPortedCxx = R"(#include <string>
@@ -734,7 +766,9 @@ TEST_CASE("astlint: ported regex classes on C (planted + guards, both front ends
     check_marks("ported.c", kPortedC);
 }
 
-TEST_CASE("astlint: testdata STR-MISSING-NUL, STR-STRNCPY-NUL, MEM-MEMSET-SWAP, MEM-REALLOC-SELF (both front ends)") {
+TEST_CASE("astlint: testdata STR-MISSING-NUL, STR-STRNCPY-NUL, MEM-MEMSET-SWAP, MEM-REALLOC-SELF, "
+          "API-SYSTEM, API-SIGNAL, API-GETENV-NULL, API-STRDUP-NULL, PTR-UNCHECKED-ALLOC, INT-SHIFT-UB, "
+          "PTR-NULL-DEREF, MEM-STACK-ESCAPE (both front ends)") {
     auto clang = find_clang();
     if (!clang) {
         MESSAGE("clang not installed: testdata string/memory astlint skipped");
@@ -765,6 +799,24 @@ TEST_CASE("astlint: testdata STR-MISSING-NUL, STR-STRNCPY-NUL, MEM-MEMSET-SWAP, 
         CHECK(ast_lines("memset_swap.c", "MEM-MEMSET-SWAP", "memset_swap_bad", b) == std::set<int>{5});
         CHECK(ast_lines("memset_swap.c", "MEM-MEMSET-SWAP", "memset_ok", b).empty());
         CHECK(ast_lines("realloc_self.c", "MEM-REALLOC-SELF", "grow", b) == std::set<int>{5});
+        CHECK(ast_lines("system_call.c", "API-SYSTEM", "system_bad", b) == std::set<int>{5});
+        CHECK(ast_lines("system_call.c", "API-SYSTEM", "system_ok", b).empty());
+        CHECK(ast_lines("signal_api.c", "API-SIGNAL", "signal_bad", b) == std::set<int>{14});
+        CHECK(ast_lines("signal_api.c", "API-SIGNAL", "signal_ok", b).empty());
+        CHECK(ast_lines("signal_api.c", "API-SIGNAL", "signal_dfl_ok", b).empty());
+        CHECK(ast_lines("getenv_null.c", "API-GETENV-NULL", "getenv_bad", b) == std::set<int>{5});
+        CHECK(ast_lines("getenv_null.c", "API-GETENV-NULL", "getenv_ok", b).empty());
+        CHECK(ast_lines("strdup_null.c", "API-STRDUP-NULL", "strdup_bad", b) == std::set<int>{5});
+        CHECK(ast_lines("strdup_null.c", "API-STRDUP-NULL", "strdup_ok", b).empty());
+        CHECK(ast_lines("unchecked_alloc.c", "PTR-UNCHECKED-ALLOC", "unchecked_alloc", b) == std::set<int>{10});
+        CHECK(ast_lines("unchecked_alloc.c", "PTR-UNCHECKED-ALLOC", "checked_alloc", b).empty());
+        CHECK(ast_lines("unchecked_alloc.c", "PTR-UNCHECKED-ALLOC", "alloc_in_condition", b).empty());
+        CHECK(ast_lines("shift_ub.c", "INT-SHIFT-UB", "shift_ub", b) == std::set<int>{3});
+        CHECK(ast_lines("null_branch.c", "PTR-NULL-DEREF", "null_branch", b) == std::set<int>{4});
+        CHECK(ast_lines("stack_escape.c", "MEM-STACK-ESCAPE", "esc_bad", b) == std::set<int>{4});
+        CHECK(ast_lines("stack_escape.c", "MEM-STACK-ESCAPE", "arr_esc_bad", b) == std::set<int>{8});
+        CHECK(ast_lines("stack_escape.c", "MEM-STACK-ESCAPE", "esc_paren_addr", b) == std::set<int>{29});
+        CHECK(ast_lines("stack_escape.c", "MEM-STACK-ESCAPE", "esc_ok", b).empty());
     }
 }
 
