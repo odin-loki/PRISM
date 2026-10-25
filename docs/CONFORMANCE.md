@@ -402,9 +402,10 @@ or refuted within it when the machine is idle).
 defined in `src/prism/pir/models/libc/*.cpp` is called by one), 58 false twins;
 C++ library: 12 harnesses, 14 false twins (`std::vector` model;
 libstdc++'s `std::array`, `std::span`, `std::optional`, `std::unique_ptr`,
-`std::string`). `pir` (2026-09-24): 52/53 PROVED, 1 BOUNDED (`getenv`),
-72/72 false twins refuted for the planted class, 0 wrong proofs, 0 false
-alarms. The C proofs are size-bounded (objects up to N bytes; every
+`std::string`). `pir` (2026-10-25): stdlib C harnesses 12/12 `_true` PROVED at
+N=4 (incl. `getenv_true`; harness `extern "C"` + NUL return size; was BOUNDED on
+`getenv` in the 2026-09-24 52/53 run), 72/72 false twins refuted for the planted
+class, 0 wrong proofs, 0 false alarms. The C proofs are size-bounded (objects up to N bytes; every
 size-parametric harness is PROVED at N = 16 by `prism-qa libc-bounds`)
 except `unbounded_contracts.cpp` (memcpy/memmove/memset/realloc on objects of
 any size below 2^40). `bmc`: 0 proofs, 2 refutations (`abs(INT_MIN)`,

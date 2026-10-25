@@ -557,6 +557,12 @@ void ignored(void) { malloc(10); } // expect: API-IGNORED-ERROR
 void kept(void) { void *m = malloc(10); free(m); }
 void gets_bad(char *buf) { gets(buf); } // expect: API-GETS
 void gets_ok(char *buf) { fgets(buf, 16, stdin); }
+void strtok_bad(char *s) { (void)strtok(s, " "); } // expect: API-STRTOK-REENTRANT
+void strtok_ok(char *s) { if (s && *s) puts(s); }
+void scanf_bad(int *p) { scanf("%d", p); } // expect: API-SCANF-UNCHECKED
+void scanf_ok(int *p) {
+    if (scanf("%d", p) != 1) return;
+}
 void overlap(char *s) { strcpy(s, s); } // expect: MEM-OVERLAP
 void bcopy_self(char *p) { bcopy(p, p, 4); } // expect: MEM-BCOPY
 char *rself(char *p) {

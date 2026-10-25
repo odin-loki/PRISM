@@ -362,6 +362,15 @@ void model_line(std::ostream& b, const ir::Module& m, const ir::Inst& in) {
         b << "L vassume " << opnd(in.ops[0]) << " " << vw(in.ops[0].ty) << "\n";
         return;
     }
+    if (n == "__prism_obj_size") {
+        // MemTr::obj_size_remaining: bytes from p to the end of its object
+        if (in.ops.size() != 1) throw Unsupported{"call @" + n + " arity"};
+        if (in.ops[0].ty.kind != ir::Type::Ptr || in.ops[0].ty.text != "ptr") throw Unsupported{"call @" + n + " type"};
+        if (!in.result.empty() && vw(in.ty) != 64) throw Unsupported{"call @" + n + " type"};
+        b << "L hobjsz " << (in.result.empty() ? std::string("-") : "%" + name(in.result)) << " "
+          << opnd(in.ops[0]) << "\n";
+        return;
+    }
     if (n == "__prism_alloc_failed") {
         // Tr::st(oom, i8 1): a store of one byte, alignment 8, into the flag object
         b << "L store 8 #1 %" << kOom << " 8\n";

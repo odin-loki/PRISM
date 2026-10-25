@@ -1127,6 +1127,9 @@ struct Checker {
             add(c, "MEM-BCOPY", "bcopy() with the same source and destination: the call does nothing useful");
         }
         if (name == "gets") add(c, "API-GETS", "gets() cannot bound its write: any input line can overflow the buffer (use fgets)");
+        if (name == "strtok")
+            add(c, "API-STRTOK-REENTRANT",
+                "strtok() is not reentrant; strtok_r/strtok_s keep no static cursor");
         // Strings into local char arrays.
         if (one_of(name, {"strcpy", "strcat"}) && args.size() >= 2) {
             auto sz = local_array_size(*args[0]);
