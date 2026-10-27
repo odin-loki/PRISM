@@ -1,0 +1,148 @@
+// PRISM operational model of <valarray> (roadmap 2.6, docs/PIR.md "C++ library
+// models"). The pir stage puts this directory first on the C++ include path,
+// so `#include <valarray>` reaches this file instead of libstdc++'s. It is a
+// file, not a directory: a directory of this name would make the include fail
+// with EISDIR and every such unit would fall back to libstdc++.
+//
+// Partial on purpose. One valarray owns one heap buffer of T. That block is
+// allocated with ::operator new and released with ::operator delete. size()
+// is the number of live elements in that buffer (0 when there is none).
+//
+// operator[] with an index >= size() is a precondition failure
+// (__prism_check, MEM-OOB-READ). That includes [0] on an empty valarray.
+// The check runs before the element is returned. The failing path does not
+// return a value-initialized T.
+//
+// resize to a different length destroys and frees the previous buffer, then
+// keeps only the new one. A shrink and a grow take that same path. The old
+// pointer is not stored in the new buffer and is not left in the object.
+//
+// Omitted math operators (+ - * / % ^ & | << >> , the compound forms, the
+// comparisons, and unary + - ~ !), and sum, min, max, shift, cshift, and
+// apply, are not declared. A unit that names one fails to compile against
+// this header, so pir falls back to libstdc++. They are not stubbed. slice,
+// gslice, mask, and indirect subscript are omitted the same way. So is
+// construction from a pointer or an initializer_list. This file does not
+// include the vector, memory, or initializer_list headers, or any other
+// container header.
+#ifndef _GLIBCXX_VALARRAY
+#define _GLIBCXX_VALARRAY 1
+
+#pragma GCC system_header
+
+#include <cstddef>
+#include <new>
+
+// PIR intrinsic (translate.cpp). A literal class and message, as in the libc
+// models. Not defined here: the analysed program does not link a body.
+extern "C" void __prism_check(int ok, const char* cls, const char* msg);
+
+namespace std {
+
+template <typename _Tp>
+class valarray {
+public:
+    using value_type = _Tp;
+    using size_type = std::size_t;
+
+    valarray() noexcept = default;
+
+    explicit valarray(size_type __n) { resize(__n); }
+
+    valarray(const value_type& __v, size_type __n) {
+        if (__n != 0) resize(__n, __v);
+    }
+
+    valarray(const valarray& __o) : _M_data(nullptr), _M_size(0) {
+        if (__o._M_size == 0) return;
+        _M_data = _S_alloc(__o._M_size);
+        for (size_type __i = 0; __i < __o._M_size; ++__i)
+            ::new (static_cast<void*>(_M_data + __i)) _Tp(__o._M_data[__i]);
+        _M_size = __o._M_size;
+    }
+
+    valarray(valarray&& __o) noexcept : _M_data(__o._M_data), _M_size(__o._M_size) {
+        __o._M_data = nullptr;
+        __o._M_size = 0;
+    }
+
+    ~valarray() { _M_release(); }
+
+    valarray& operator=(const valarray& __o) {
+        if (this == &__o) return *this;
+        valarray __tmp(__o);
+        _M_release();
+        _M_data = __tmp._M_data;
+        _M_size = __tmp._M_size;
+        __tmp._M_data = nullptr;
+        __tmp._M_size = 0;
+        return *this;
+    }
+
+    valarray& operator=(valarray&& __o) noexcept {
+        if (this == &__o) return *this;
+        _M_release();
+        _M_data = __o._M_data;
+        _M_size = __o._M_size;
+        __o._M_data = nullptr;
+        __o._M_size = 0;
+        return *this;
+    }
+
+    // The live count. A default valarray is 0. resize updates this to the
+    // length of the buffer it kept.
+    size_type size() const noexcept { return _M_size; }
+
+    // Index >= size() fails the check, then this would use the buffer.
+    // An empty valarray's [0] is that same check. No value-initialized T.
+    value_type& operator[](size_type __n) {
+        __prism_check(__n < this->size(), "MEM-OOB-READ", "valarray::operator[] index out of range");
+        return _M_data[__n];
+    }
+    const value_type& operator[](size_type __n) const {
+        __prism_check(__n < this->size(), "MEM-OOB-READ", "valarray::operator[] index out of range");
+        return _M_data[__n];
+    }
+
+    // A different length drops the previous block (shrink and grow). The
+    // same length does not allocate. New elements are copies of __c, not
+    // the old pointer. _M_release clears the old pointer out of this object
+    // and frees it before the new pointer is stored.
+    void resize(size_type __n, const value_type& __c = value_type()) {
+        if (__n == _M_size) return;
+        value_type* __fresh = nullptr;
+        if (__n != 0) {
+            __fresh = _S_alloc(__n);
+            for (size_type __i = 0; __i < __n; ++__i)
+                ::new (static_cast<void*>(__fresh + __i)) _Tp(__c);
+        }
+        _M_release();
+        _M_data = __fresh;
+        _M_size = __n;
+    }
+
+private:
+    value_type* _M_data = nullptr;
+    size_type _M_size = 0;
+
+    // ::operator new of n elements. n == 0 is not a call.
+    static value_type* _S_alloc(size_type __n) {
+        return static_cast<value_type*>(::operator new(__n * sizeof(value_type)));
+    }
+
+    // Destroy the live elements and ::operator delete the block. The pointer
+    // is taken out of _M_data first, so it is not a live element afterwards.
+    void _M_release() noexcept {
+        value_type* __old = _M_data;
+        const size_type __n = _M_size;
+        _M_data = nullptr;
+        _M_size = 0;
+        if (__old == nullptr) return;
+        for (size_type __i = 0; __i < __n; ++__i) __old[__i].~_Tp();
+        ::operator delete(__old);
+    }
+};
+
+}  // namespace std
+
+#endif  // _GLIBCXX_VALARRAY

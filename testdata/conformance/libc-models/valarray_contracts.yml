@@ -1,0 +1,12 @@
+format_version: 1
+input_files: valarray_contracts.cpp
+language: C++
+property: libc-contract
+expected:
+  valarray_size_true: true
+  valarray_read_true: true
+  valarray_empty_index_false: false
+expect_class:
+  valarray_empty_index_false: "MEM-OOB-READ"
+witness:
+  valarray_empty_index_false: [0]
