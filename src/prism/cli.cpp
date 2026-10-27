@@ -201,16 +201,17 @@ CliResult<CliOptions> parse_cli(std::span<const char* const> args) {
                 if (auto bad = unknown_stage(names))
                     return CliError("argument " + a + ": unknown stage '" + *bad +
                                            "' (stages: " + stage_list() + ")");
-                // An empty --stage means every stage (the selection stays unset;
-                // an empty list would run none). Repeating --stage appends
-                // names and keeps every name already chosen.
+                // An empty --stage leaves the selection unset (every stage; an
+                // empty list would run none). An empty --skip does not clear
+                // names already skipped. Repeating either flag appends names
+                // and keeps every name already chosen.
                 if (a == "--stage") {
                     if (!names.empty()) {
                         if (!cfg.stages) cfg.stages.emplace();
                         cfg.stages->insert(cfg.stages->end(), names.begin(), names.end());
                     }
-                } else {
-                    cfg.skip = names;
+                } else if (!names.empty()) {
+                    cfg.skip.insert(cfg.skip.end(), names.begin(), names.end());
                 }
             }
         } else if (a == "--unwind") {
@@ -316,7 +317,8 @@ std::string cli_usage() {
         "  --repair-rounds 3, --timeout 30, --fail-on never.\n"
         "--stage a,b runs only those stages, --skip a,b leaves them out (--list-stages\n"
         "  prints the names; an empty --stage runs every stage; repeating --stage\n"
-        "  adds names and keeps earlier ones).\n"
+        "  adds names and keeps earlier ones; repeating --skip adds names and\n"
+        "  keeps earlier ones).\n"
         "Adapter search: --tool, then ~/.prism/tools/<name>/<commit>/bin (prism-deps tool), then PATH.\n"
         "--resume reuses ok/NOTRUN stages from --out/stages.jsonl (report.json fallback).\n"
         "--fail-on: exit 1 on defect (FAILED/CRASH/SANFAIL, except findings with\n"

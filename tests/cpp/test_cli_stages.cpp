@@ -73,13 +73,47 @@ TEST_CASE("cli stages: repeating --stage accumulates") {
     REQUIRE(csv->cfg.stages);
     CHECK(*csv->cfg.stages == std::vector<std::string>{"bmc", "pir", "harness"});
 
-    // A later empty --stage keeps the names already chosen.
+    // A later empty --stage keeps the names already chosen. `--stage=` is
+    // the same empty value: only bmc, not every stage.
     auto kept = parse({"--stage", "bmc", "--stage", ""});
     REQUIRE(kept);
     REQUIRE(kept->cfg.stages);
     CHECK(*kept->cfg.stages == std::vector<std::string>{"bmc"});
     CHECK(kept->cfg.want("bmc"));
     CHECK_FALSE(kept->cfg.want("pir"));
+
+    auto joined = parse({"--stage", "bmc", "--stage="});
+    REQUIRE(joined);
+    REQUIRE(joined->cfg.stages);
+    CHECK(*joined->cfg.stages == std::vector<std::string>{"bmc"});
+    CHECK(joined->cfg.want("bmc"));
+    CHECK_FALSE(joined->cfg.want("pir"));
+    CHECK_FALSE(joined->cfg.want("inventory"));
+}
+
+TEST_CASE("cli skip: repeating --skip accumulates and an empty --skip keeps names") {
+    auto both = parse({"--skip", "bmc", "--skip", "pir"});
+    REQUIRE(both);
+    CHECK(both->cfg.skip == std::vector<std::string>{"bmc", "pir"});
+    CHECK_FALSE(both->cfg.stages);
+    CHECK_FALSE(both->cfg.want("bmc"));
+    CHECK_FALSE(both->cfg.want("pir"));
+    CHECK(both->cfg.want("inventory"));
+
+    // A later empty --skip= does not wipe names already skipped.
+    auto kept = parse({"--skip", "bmc", "--skip="});
+    REQUIRE(kept);
+    CHECK(kept->cfg.skip == std::vector<std::string>{"bmc"});
+    CHECK_FALSE(kept->cfg.want("bmc"));
+    CHECK(kept->cfg.want("pir"));
+}
+
+TEST_CASE("cli skip: an unknown skip name is CliError") {
+    CHECK(error_of({"--skip", "not-a-stage"})
+              .starts_with("argument --skip: unknown stage 'not-a-stage' (stages: "));
+    CHECK(error_of({"--skip", "bmc", "--skip", "nope"})
+              .starts_with("argument --skip: unknown stage 'nope' (stages: "));
+    CHECK(error_of({"--skip=bmc,,nope"}).starts_with("argument --skip: unknown stage 'nope' (stages: "));
 }
 
 TEST_CASE("cli stages: --no-bmc, --skip-stage and --disable are CliError") {
