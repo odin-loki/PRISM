@@ -259,6 +259,221 @@ std::pair<Args, int> shrink_counterexample(const FunctionInfo& fn, Args env,
     return {env, shrinks};
 }
 
+// Python keeps mutated.strip()[:400] / fn.body.strip()[:400]. Strip first,
+// then keep at most 400 characters. An unstripped substr keeps leading blank.
+std::string evidence_prefix(const std::string& text) {
+    auto s = strip(text);
+    if (s.size() > 400) s.resize(400);
+    return s;
+}
+
+// Interpreter failures used to be the raw ParseFail text. The prefix matches
+// rapid.py _execute_many: "cannot evaluate {fn}: " plus at most 400 chars.
+std::string cannot_evaluate(const FunctionInfo& fn, std::string_view detail) {
+    std::string msg = "cannot evaluate " + fn.name + ": ";
+    if (detail.size() > 400) detail = detail.substr(0, 400);
+    msg.append(detail);
+    return msg;
+}
+
+std::string proc_tail(const ProcRun& r) {
+    std::string err = r.err.empty() ? r.out : r.err;
+    if (err.size() > 800) err = err.substr(err.size() - 800);
+    return err;
+}
+
+// scanf/printf main around the function, one call per sample. Integer
+// literals stand in for scanf so the harness does not depend on a format
+// string built from the parameter list. The body is the scanned code.
+std::string rapid_harness_source(const FunctionInfo& fn, const std::vector<Args>& samples) {
+    std::string args;
+    std::vector<std::string> names;
+    for (auto& [typ, name] : fn.params) {
+        if (name.empty()) continue;
+        auto t = strip(typ);
+        if (t.empty()) t = "int";
+        if (!args.empty()) args += ", ";
+        args += t + " " + name;
+        names.push_back(name);
+    }
+    if (args.empty()) args = "void";
+    std::string ret;
+    for (char c : fn.return_type)
+        if (c != '*') ret.push_back(c);
+    ret = strip(ret);
+    if (ret.empty()) ret = "int";
+    std::ostringstream calls;
+    for (auto& env : samples) {
+        std::string cargs;
+        for (auto& name : names) {
+            if (!cargs.empty()) cargs += ", ";
+            auto it = env.find(name);
+            cargs += std::to_string(it == env.end() ? int64_t{0} : it->second);
+        }
+        calls << "    printf(\"%d\\n\", (int)" << fn.name << "(" << cargs << "));\n";
+    }
+    std::ostringstream src;
+    src << "#include <stdio.h>\n#include <stdint.h>\n"
+        << ret << " " << fn.name << "(" << args << ") {\n"
+        << fn.body << "\n}\nint main(void) {\n"
+        << calls.str() << "    return 0;\n}\n";
+    return src.str();
+}
+
+struct GccScore {
+    bool ok = false;
+    std::string error;
+    std::vector<std::optional<int>> results;
+};
+
+// Compile outside the jail (same as the other harnesses); run the binary
+// through sandbox::wrap_argv and rlimits. Never called unless --allow-exec
+// is on. A compile or run failure is an error string, not a passing score.
+GccScore execute_gcc(const FunctionInfo& fn, const std::vector<Args>& samples) {
+    GccScore g;
+    if (!sandbox::allowed()) {
+        g.error = sandbox::exec_message("rapid (gcc fallback harness)");
+        return g;
+    }
+    auto cc = which_cc();
+    if (!cc) {
+        g.error = "no gcc/clang on PATH";
+        return g;
+    }
+    auto td = fs::temp_directory_path() / ("prism_rapid_" + std::to_string(std::random_device{}()));
+    std::error_code ec;
+    fs::create_directories(td, ec);
+    if (ec) {
+        g.error = "cannot create scratch dir";
+        return g;
+    }
+    struct Guard {
+        fs::path p;
+        ~Guard() {
+            std::error_code e;
+            fs::remove_all(p, e);
+        }
+    } guard{td};
+    auto cfile = td / "fn.c";
+#ifdef _WIN32
+    auto exe = td / "fn.exe";
+#else
+    auto exe = td / "fn";
+#endif
+    {
+        std::ofstream out(cfile);
+        if (!out) {
+            g.error = "cannot write harness";
+            return g;
+        }
+        out << rapid_harness_source(fn, samples);
+    }
+    auto cr = run_argv({cc->string(), "-O0", "-std=c11", cfile.string(), "-o", exe.string()}, "", 30.0);
+    if (cr.timeout) {
+        g.error = "compile timeout";
+        return g;
+    }
+    if (cr.rc != 0) {
+        auto err = proc_tail(cr);
+        g.error = err.empty() ? "compile failed" : err;
+        return g;
+    }
+    suppress_crash_dialogs();
+    auto rr = run_argv(sandbox::wrap_argv({exe.string()}, td), "", 10.0, sandbox::limits_for(10.0));
+    if (rr.timeout) {
+        g.error = "run timeout";
+        return g;
+    }
+    if (rr.crashed || rr.rc != 0) {
+        auto err = proc_tail(rr);
+        g.error = err.empty() ? ("exit " + std::to_string(rr.rc)) : err;
+        return g;
+    }
+    std::istringstream ss(rr.out);
+    std::string ln;
+    while (std::getline(ss, ln)) {
+        auto s = strip(ln);
+        if (s.empty()) continue;
+        try {
+            std::size_t idx = 0;
+            long long v = std::stoll(s, &idx, 10);
+            if (idx != s.size() || v > 2147483647LL || v < (-2147483647LL - 1)) {
+                g.error = "bad result line";
+                return g;
+            }
+            g.results.push_back(static_cast<int>(v));
+        } catch (...) {
+            g.error = "bad result line";
+            return g;
+        }
+    }
+    if (g.results.size() != samples.size()) {
+        g.error = "expected " + std::to_string(samples.size()) + " results, got " +
+                  std::to_string(g.results.size());
+        return g;
+    }
+    g.ok = true;
+    return g;
+}
+
+struct SampleRun {
+    std::string error;
+    std::string engine;
+    std::vector<std::optional<int>> results;
+};
+
+// Concrete interpreter first (no exec). If it cannot score the body, the
+// gcc harness would run the scanned function: without --allow-exec that
+// row is NOTRUN, not dropped and not "install gcc".
+SampleRun execute_samples(const FunctionInfo& fn, const std::vector<Args>& samples) {
+    if (samples.empty()) return {"", "concrete", {}};
+    bool interp_ok = true;
+    std::string interp_err;
+    std::vector<std::optional<int>> results;
+    try {
+        for (auto& env : samples) {
+            auto rec = execute(fn, env);
+            if (!rec.error.empty()) {
+                interp_err = rec.error;
+                interp_ok = false;
+                break;
+            }
+            if (!rec.ub.empty()) results.emplace_back(std::nullopt);
+            else results.push_back(rec.value ? static_cast<int>(*rec.value) : 0);
+        }
+    } catch (const std::exception& ex) {
+        interp_ok = false;
+        if (interp_err.empty()) interp_err = ex.what();
+    } catch (...) {
+        interp_ok = false;
+        if (interp_err.empty()) interp_err = "interpreter failed";
+    }
+    if (interp_ok && results.size() == samples.size())
+        return {"", "concrete", std::move(results)};
+    if (!sandbox::allowed()) {
+        // Put the Law 9 sentence first so a 400-char cut still contains
+        // --allow-exec. The interpreter text stays in the same message.
+        std::string detail = sandbox::exec_message("rapid (gcc fallback harness)");
+        if (!interp_err.empty()) detail += " (" + interp_err + ")";
+        return {cannot_evaluate(fn, detail), "interp", {}};
+    }
+    auto gcc = execute_gcc(fn, samples);
+    if (gcc.ok) return {"", "gcc", std::move(gcc.results)};
+    // A missing compiler must stay at the front of the 400-char cut. A
+    // compile failure keeps the interpreter text first: that is the reason
+    // the harness ran, and the compiler text is the reason it did not score.
+    std::string detail = gcc.error;
+    const bool compiler_absent = detail.find("no gcc") != std::string::npos ||
+                                 detail.find("gcc/clang") != std::string::npos;
+    if (!interp_err.empty()) {
+        if (detail.empty()) detail = interp_err;
+        else if (compiler_absent) detail += " (" + interp_err + ")";
+        else detail = interp_err + " (" + detail + ")";
+    }
+    if (detail.empty()) detail = "interpreter failed";
+    return {cannot_evaluate(fn, detail), "gcc", {}};
+}
+
 struct PlanRun {
     bool ok = false;
     std::string error;
@@ -273,63 +488,51 @@ struct PlanRun {
 
 PlanRun run_plan(const FunctionInfo& fn, const RapidPlan& plan) {
     if (!plan.error.empty()) return {false, plan.error, "", "", "", std::nullopt, {}, 0};
-    std::vector<std::optional<int>> results;
-    std::string ub_err;
+    auto ran = execute_samples(fn, plan.samples);
+    if (!ran.error.empty())
+        return {false, ran.error, "", ran.engine, "", std::nullopt, {}, 0};
     try {
-        for (auto& env : plan.samples) {
-            auto rec = execute(fn, env);
-            if (!rec.error.empty()) {
-                ub_err = rec.error;
-                break;
-            }
-            if (!rec.ub.empty()) {
-                results.emplace_back(std::nullopt);
-                continue;
-            }
-            results.push_back(rec.value ? static_cast<int>(*rec.value) : 0);
-        }
-        if (ub_err.empty() && results.size() == plan.samples.size()) {
-            for (std::size_t i = 0; i < plan.samples.size(); ++i) {
-                if (!results[i]) {
-                    auto [env, nsh] = shrink_counterexample(fn, plan.samples[i], plan.ensures, plan.bounds, true);
-                    std::string cex;
-                    for (auto& [k, v] : env) {
-                        if (!cex.empty()) cex += ", ";
-                        cex += k + "=" + std::to_string(v);
-                    }
-                    return {false, "", cex + " -> undefined-behavior", "concrete", "undefined-behavior",
-                            std::nullopt, env, 0, nsh};
+        for (std::size_t i = 0; i < plan.samples.size(); ++i) {
+            if (!ran.results[i]) {
+                auto [env, nsh] = shrink_counterexample(fn, plan.samples[i], plan.ensures, plan.bounds, true);
+                std::string cex;
+                for (auto& [k, v] : env) {
+                    if (!cex.empty()) cex += ", ";
+                    cex += k + "=" + std::to_string(v);
                 }
-                auto failed = failing_ensures(plan.ensures, plan.samples[i], *results[i]);
-                if (failed) {
-                    auto [env, nsh] = shrink_counterexample(fn, plan.samples[i], plan.ensures, plan.bounds, false);
-                    auto rec2 = execute(fn, env);
-                    std::optional<int> result = results[i];
-                    if (rec2.error.empty() && rec2.ub.empty() && rec2.value)
-                        result = static_cast<int>(*rec2.value);
-                    if (result) {
-                        auto again = failing_ensures(plan.ensures, env, *result);
-                        if (again) failed = again;
-                    }
-                    std::string cex;
-                    for (auto& [k, v] : env) {
-                        if (!cex.empty()) cex += ", ";
-                        cex += k + "=" + std::to_string(v);
-                    }
-                    return {false, "", cex + " -> result=" + std::to_string(result.value_or(0)), "concrete", *failed,
-                            result, env, 0, nsh};
-                }
+                return {false, "", cex + " -> undefined-behavior", ran.engine, "undefined-behavior",
+                        std::nullopt, env, 0, nsh};
             }
-            return {true, "", "", "concrete", "", std::nullopt, {}, static_cast<int>(plan.samples.size())};
+            auto failed = failing_ensures(plan.ensures, plan.samples[i], *ran.results[i]);
+            if (failed) {
+                auto [env, nsh] = shrink_counterexample(fn, plan.samples[i], plan.ensures, plan.bounds, false);
+                auto rec2 = execute(fn, env);
+                std::optional<int> result = ran.results[i];
+                if (rec2.error.empty() && rec2.ub.empty() && rec2.value)
+                    result = static_cast<int>(*rec2.value);
+                if (result) {
+                    auto again = failing_ensures(plan.ensures, env, *result);
+                    if (again) failed = again;
+                }
+                std::string cex;
+                for (auto& [k, v] : env) {
+                    if (!cex.empty()) cex += ", ";
+                    cex += k + "=" + std::to_string(v);
+                }
+                return {false, "", cex + " -> result=" + std::to_string(result.value_or(0)), ran.engine, *failed,
+                        result, env, 0, nsh};
+            }
         }
+        return {true, "", "", ran.engine, "", std::nullopt, {}, static_cast<int>(plan.samples.size())};
+    } catch (const std::exception& ex) {
+        return {false, cannot_evaluate(fn, ex.what()), "", "interp", "", std::nullopt, {}, 0};
     } catch (...) {
-        return {false, ub_err.empty() ? "cannot evaluate " + fn.name : ub_err, "", "interp", "", std::nullopt, {},
-                0};
+        return {false, cannot_evaluate(fn, "interpreter failed"), "", "interp", "", std::nullopt, {}, 0};
     }
-    return {false, ub_err.empty() ? "cannot evaluate " + fn.name : ub_err, "", "interp", "", std::nullopt, {},
-            0};
 }
 
+// True only when the error text says a compiler was sought and was absent.
+// Do not probe PATH: an interpreter failure is not a missing gcc.
 bool rapid_compiler_missing(const std::string& err) {
     auto text = lower_copy(err);
     if (text.find("no gcc") != std::string::npos || text.find("gcc/clang") != std::string::npos)
@@ -338,8 +541,7 @@ bool rapid_compiler_missing(const std::string& err) {
         (text.find("gcc") != std::string::npos || text.find("clang") != std::string::npos ||
          text.find("compiler") != std::string::npos))
         return true;
-    Config cfg;
-    return !cfg.which({"gcc", "clang"}).has_value();
+    return false;
 }
 
 Finding finding_from_plan(const FunctionInfo& fn, const RapidPlan& plan, const std::string& stage) {
@@ -371,7 +573,7 @@ Finding finding_from_plan(const FunctionInfo& fn, const RapidPlan& plan, const s
         auto clause = info.clause.empty() ? join_sv(plan.ensures, " && ") : info.clause;
         Finding raw = make_find(stage, laws::FAILED, fn, "FUNC-CONTRACT",
                                 "ensures (" + clause + ") failed on " + info.counterexample, laws::STRENGTH_FINDS);
-        raw.evidence = fn.body.substr(0, 400);
+        raw.evidence = evidence_prefix(fn.body);
         raw.counterexample = info.counterexample;
         Finding f = fill(std::move(raw));
         f.extra["engine"] = info.engine;
@@ -468,8 +670,9 @@ std::vector<Finding> run_rapid(const std::vector<FunctionInfo>& functions, int t
 }
 
 std::vector<Finding> run_muttest(const std::vector<FunctionInfo>& functions, int trials) {
-    // Killing a mutant is CLEAN (not a proof). Missing gcc/clang is NOTRUN, never CLEAN.
-    // Eval errors without a cex are ERROR/NOTRUN, not a killed mutant.
+    // Killing a mutant is CLEAN (not a proof). A mutant that failed to compile,
+    // or that the interpreter cannot score, is not killed: ERROR, or NOTRUN
+    // when the gcc fallback is held by --allow-exec. Never PROVED.
     std::vector<Finding> out;
     for (auto& fn : functions) {
         if (auto syn = scrubbed_byte_reason(fn.body, "the compiled harness")) {
@@ -534,7 +737,7 @@ std::vector<Finding> run_muttest(const std::vector<FunctionInfo>& functions, int
                                    "mutant survived: " + src + " -> " + dst + " (all " +
                                        std::to_string(plan->samples.size()) + " trials still hold; not a proof)",
                                    laws::STRENGTH_FINDS);
-                f.evidence = mutated.substr(0, 400);
+                f.evidence = evidence_prefix(mutated);
                 f.extra = extra;
                 out.push_back(std::move(f));
             }

@@ -1665,32 +1665,132 @@ TEST_CASE("rapid plan error: Law 9 exec hint matches Python _eval_status") {
     CHECK(got.second.at("reason") == prism::sandbox::EXEC_REASON);
     CHECK(got.second.at("exec") == std::string(prism::laws::NOTRUN));
     CHECK(got.second.find("install gcc") == got.second.end());
+
+    // An interpreter failure is not a missing compiler, even when gcc is absent.
+    auto plain = prism::rapid_plan_error_status("unexpected character '@'");
+    CHECK(plain.first == std::string(prism::laws::ERROR));
+    CHECK(plain.second.find("install") == plain.second.end());
+    CHECK(plain.second.find("exec") == plain.second.end());
+
+    // That hint is only for an error that says the compiler was sought.
+    auto missing = prism::rapid_plan_error_status("no gcc/clang on PATH");
+    CHECK(missing.first == std::string(prism::laws::NOTRUN));
+    CHECK(missing.second.at("install") == "install gcc or clang");
+    CHECK(missing.second.find("exec") == missing.second.end());
 }
 
-TEST_CASE("muttest eval error probes gcc clang NOTRUN never CLEAN") {
+TEST_CASE("muttest eval error is Law 9 NOTRUN never install gcc or CLEAN") {
+    CHECK_FALSE(prism::sandbox::allowed());
     auto fn = load_fn("contract_add.c", "inc");
     fn.body = "return @@@ + 1;";
     auto recs = prism::run_muttest({fn}, 4);
     REQUIRE_FALSE(recs.empty());
     auto& r = recs[0];
     CHECK(r.stage == "muttest");
+    CHECK(r.status == std::string(prism::laws::NOTRUN));
     CHECK(r.status != std::string(prism::laws::CLEAN));
     CHECK(r.status != std::string(prism::laws::PROVED));
     CHECK(r.status != std::string(prism::laws::PROVED_UNBOUNDED));
     CHECK(r.status != std::string(prism::laws::FAILED));
     CHECK_FALSE(prism::laws::is_proof(r.status));
-    auto msg = r.message;
-    for (char& c : msg)
-        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
-    CHECK(msg.find("cannot score") != std::string::npos);
+    CHECK(extra_get(r, "install") == prism::sandbox::EXEC_INSTALL);
+    CHECK(extra_get(r, "reason") == prism::sandbox::EXEC_REASON);
+    CHECK(extra_get(r, "exec") == std::string(prism::laws::NOTRUN));
+    CHECK(r.message.find("cannot score") != std::string::npos);
+    CHECK(r.message.find("cannot evaluate " + fn.name + ": ") != std::string::npos);
+    CHECK(r.message.find("unexpected character '@'") != std::string::npos);
+    CHECK(r.message.find(prism::sandbox::EXEC_FLAG) != std::string::npos);
+    CHECK(r.message.find("install gcc or clang") == std::string::npos);
+    auto prefix = r.message.find("cannot evaluate " + fn.name + ": ");
+    auto raw = r.message.find("unexpected character '@'");
+    CHECK(prefix < raw);
+}
+
+TEST_CASE("rapid interpreter error is prefixed cannot evaluate") {
+    CHECK_FALSE(prism::sandbox::allowed());
+    auto fn = load_fn("contract_add.c", "inc");
+    fn.body = "return @@@;";
+    auto recs = prism::run_rapid({fn}, 4);
+    REQUIRE_FALSE(recs.empty());
+    auto& r = recs[0];
+    CHECK(r.stage == "rapid");
+    CHECK(r.status == std::string(prism::laws::NOTRUN));
+    CHECK(r.status != std::string(prism::laws::CLEAN));
+    CHECK(r.status != std::string(prism::laws::PROVED));
+    CHECK_FALSE(prism::laws::is_proof(r.status));
+    auto prefix = r.message.find("cannot evaluate " + fn.name + ": ");
+    auto raw = r.message.find("unexpected character '@'");
+    CHECK(prefix != std::string::npos);
+    CHECK(raw != std::string::npos);
+    CHECK(prefix < raw);
+    CHECK(extra_get(r, "exec") == std::string(prism::laws::NOTRUN));
+    CHECK(extra_get(r, "reason") == prism::sandbox::EXEC_REASON);
+    CHECK(r.message.find("install gcc or clang") == std::string::npos);
+}
+
+TEST_CASE("muttest compile failure under allow-exec is not CLEAN") {
+    prism::sandbox::Policy allow(true);
+    auto fn = load_fn("contract_add.c", "inc");
+    fn.body = "return @@@ + 1;";
+    auto recs = prism::run_muttest({fn}, 2);
+    REQUIRE_FALSE(recs.empty());
+    auto& r = recs[0];
+    CHECK(r.stage == "muttest");
+    CHECK(r.status != std::string(prism::laws::CLEAN));
+    CHECK(r.status != std::string(prism::laws::PROVED));
+    CHECK(r.status != std::string(prism::laws::PROVED_UNBOUNDED));
+    CHECK_FALSE(prism::laws::is_proof(r.status));
+    CHECK(r.message.find("cannot score") != std::string::npos);
+    CHECK(r.message.find("cannot evaluate " + fn.name + ": ") != std::string::npos);
+    CHECK(r.message.find("unexpected character '@'") != std::string::npos);
     prism::Config cfg = prism::default_config();
-    bool have_cc = cfg.which({"gcc", "clang"}).has_value();
-    if (have_cc) {
+    if (cfg.which({"gcc", "clang"})) {
         CHECK(r.status == std::string(prism::laws::ERROR));
+        CHECK(r.extra.find("install") == r.extra.end());
+        CHECK(r.extra.find("exec") == r.extra.end());
+        CHECK(r.message.find("install gcc or clang") == std::string::npos);
     } else {
         CHECK(r.status == std::string(prism::laws::NOTRUN));
         CHECK(extra_get(r, "install") == "install gcc or clang");
+        CHECK(r.extra.find("exec") == r.extra.end());
     }
+}
+
+TEST_CASE("muttest survived evidence is stripped then at most 400") {
+    auto dir = journal_tmpdir("mut_ev");
+    auto path = dir / "pad.c";
+    {
+        std::ofstream out(path);
+        out << "// ensures: result == x\n"
+               "int pad(int x) {\n"
+               "    // ensures: result == x\n"
+               "    return x + 0;\n"
+               "}\n";
+    }
+    auto fns = prism::extract_functions(path, path.string());
+    prism::FunctionInfo fn;
+    bool found = false;
+    for (auto& f : fns)
+        if (f.name == "pad") {
+            fn = f;
+            found = true;
+        }
+    REQUIRE(found);
+    fn.body = "\n    return x + 0; // " + std::string(500, 'z') + "\n";
+    auto recs = prism::run_muttest({fn}, 4);
+    const prism::Finding* survived = nullptr;
+    for (auto& r : recs) {
+        CHECK(r.stage == "muttest");
+        CHECK(r.status != std::string(prism::laws::PROVED));
+        CHECK_FALSE(prism::laws::is_proof(r.status));
+        if (r.status == std::string(prism::laws::FAILED)) survived = &r;
+    }
+    REQUIRE(survived != nullptr);
+    CHECK(survived->evidence.size() == 400);
+    CHECK(survived->evidence.find("return x - 0;") == 0);
+    CHECK(survived->evidence.find('\n') == std::string::npos);
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
 }
 
 TEST_CASE("compiler empty units is UNKNOWN never CLEAN") {
