@@ -728,6 +728,8 @@ if(PRISM_TESTS)
     tests/cpp/test_diff.cpp
     tests/cpp/test_diff_exec.cpp
     tests/cpp/test_journal_confidence.cpp
+    # stages.jsonl: a bad line is skipped; a later line keeps its status.
+    tests/cpp/test_journal_line.cpp
     tests/cpp/test_thread_taint.cpp
     tests/cpp/test_thread.cpp
     tests/cpp/test_wp_harness.cpp
