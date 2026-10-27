@@ -4651,6 +4651,22 @@ TEST_CASE("scope: skip_dir, skipped_path and skipped_dirs") {
     CHECK(text.find("skipped node_modules/ (2 source files)") != std::string::npos);
 }
 
+TEST_CASE("scope: a CMakeFiles path component is skipped, src is not") {
+    std::filesystem::path root = "/work/project";
+    CHECK(prism::scope::skipped_path(root / "CMakeFiles" / "a.cpp", root));
+    CHECK(prism::scope::skipped_path(root / "src" / "CMakeFiles" / "a.cpp", root));
+    CHECK_FALSE(prism::scope::skipped_path(root / "src" / "prism" / "scope.cpp", root));
+    for (auto* n : {"CMakeFiles", ".vs", ".idea", "bazel-bin", "bazel-out", "bazel-testlogs", "dist",
+                    "cmake-build-debug"})
+        CHECK_MESSAGE(prism::scope::skip_dir(n), n);
+    for (auto* n : {"testdata", "src", "include", "proofs", "tests", "docs", "rebuild", "mybuilddir",
+                    "cmake-build-release"})
+        CHECK_MESSAGE(!prism::scope::skip_dir(n), n);
+    // prism-out* already covers the GUI output directory; it is not a set entry.
+    CHECK(prism::scope::skip_dir("prism-out-gui"));
+    CHECK_FALSE(prism::scope::skip_dirs().contains("prism-out-gui"));
+}
+
 // ---- polyglot: every text file for secrets; unparsed output is ERROR -------
 
 TEST_CASE("polyglot: secrets in id_rsa / key.pem / .npmrc / Dockerfile, binary skipped") {

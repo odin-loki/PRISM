@@ -13,6 +13,10 @@ const std::set<std::string>& skip_dirs() {
     static const std::set<std::string> k = {
         ".git", "prism-out", "third_party", "build", "node_modules", "__pycache__",
         ".venv", "venv", "target", ".tox", ".mypy_cache", ".ruff_cache", ".pytest_cache",
+        // Generated and IDE trees. Exact names: a directory that only contains
+        // "build" in the middle stays in scope (the build* prefix is separate).
+        "CMakeFiles", ".vs", ".idea", "bazel-bin", "bazel-out", "bazel-testlogs", "dist",
+        "cmake-build-debug",
     };
     return k;
 }
