@@ -63,15 +63,15 @@ fs::path repo_root() {
     // try it, then walk up from the working directory.
     fs::path from_file = fs::path(__FILE__).parent_path().parent_path().parent_path();
     std::error_code ec;
-    if (fs::is_directory(from_file / "tests" / "conformance" / "sv-comp", ec)) return from_file;
+    if (fs::is_directory(from_file / "testdata" / "conformance" / "sv-comp", ec)) return from_file;
     for (fs::path d = fs::current_path(); !d.empty(); d = d.parent_path()) {
-        if (fs::is_directory(d / "tests" / "conformance" / "sv-comp", ec)) return d;
+        if (fs::is_directory(d / "testdata" / "conformance" / "sv-comp", ec)) return d;
         if (d == d.parent_path()) break;
     }
     return from_file;
 }
 
-fs::path props_dir() { return repo_root() / "tests" / "conformance" / "sv-comp" / "properties"; }
+fs::path props_dir() { return repo_root() / "testdata" / "conformance" / "sv-comp" / "properties"; }
 
 std::string slurp(const fs::path& p) {
     std::ifstream in(p, std::ios::binary);
@@ -199,7 +199,7 @@ TEST_CASE("svcomp: property files map to the supported properties") {
 }
 
 TEST_CASE("svcomp: the pinned subset's task files resolve (117 no-overflow, 127 unreach-call)") {
-    const fs::path suite = repo_root() / "tests" / "conformance" / "sv-comp";
+    const fs::path suite = repo_root() / "testdata" / "conformance" / "sv-comp";
     auto nov = subset_tasks(suite, "no-overflow.prp");
     auto reach = subset_tasks(suite, "unreach-call.prp");
     CHECK(nov.size() == 117);
@@ -1068,7 +1068,7 @@ TEST_CASE("svcomp solve: a pinned false task (violation witness) and a true task
                 "LP64 engines) is POSIX-only; the replay logic itself runs on WIN32 via fake_cc");
         return;
     }
-    const fs::path sv = repo_root() / "tests" / "conformance" / "sv-comp";
+    const fs::path sv = repo_root() / "testdata" / "conformance" / "sv-comp";
     TempDir d;
     SolveOptions opt;
     opt.allow_exec = true;

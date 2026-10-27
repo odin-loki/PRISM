@@ -189,7 +189,7 @@ std::vector<BenchTask> discover_tasks(const std::vector<fs::path>& roots, const 
 
 int solver_bench_main(const Args& args) {
     const auto repo = repo_root();
-    const auto suite = repo / "tests" / "conformance";
+    const auto suite = repo / "testdata" / "conformance";
     std::string bin, filter, passes_arg = "z3,portfolio,history";
     std::vector<fs::path> roots;
     int unwind = 8, jobs = 1;

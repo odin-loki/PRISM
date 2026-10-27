@@ -264,7 +264,7 @@ TEST_CASE("libc-bounds splits a contract harness file into prelude and harnesses
     CHECK(none.prelude == "int x;\n");
     CHECK(none.funcs.empty());
 
-    const auto suite = repo() / "tests" / "conformance" / "libc-models";
+    const auto suite = repo() / "testdata" / "conformance" / "libc-models";
     auto abs = prism::qa::absolutize_includes("#include \"harness.h\"\n#include <string.h>\n", suite);
     CHECK(abs == "#include \"" + fs::weakly_canonical(suite / "harness.h").string() + "\"\n#include <string.h>\n");
 
@@ -312,7 +312,7 @@ TEST_CASE("solver-bench discovers the conformance tasks it can score") {
     REQUIRE(outside.size() == 1);
     CHECK(outside[0].ident == "cat/a.yml");
 
-    const auto real = repo() / "tests" / "conformance";
+    const auto real = repo() / "testdata" / "conformance";
     auto all = prism::qa::discover_tasks({real / "prism", real / "sv-comp"}, real);
     CHECK(all.size() > 100);
     for (auto& task : all) CHECK(fs::exists(task.source));

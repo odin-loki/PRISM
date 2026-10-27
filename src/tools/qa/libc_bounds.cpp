@@ -162,7 +162,7 @@ std::string absolutize_includes(const std::string& prelude, const fs::path& suit
 
 int libc_bounds_main(const Args& args) {
     const auto repo = repo_root();
-    const auto suite = repo / "tests" / "conformance" / "libc-models";
+    const auto suite = repo / "testdata" / "conformance" / "libc-models";
     std::string bin, sizes_arg = "4,8,16,32,64", filter;
     double timeout = 180.0;
     int jobs = 2;

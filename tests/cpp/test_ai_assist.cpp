@@ -830,7 +830,7 @@ TEST_CASE("ai-assist predict collect conformance logs") {
     const auto repo = fs::path(PRISM_SOURCE_DIR);
     std::vector<fs::path> roots;
     for (const auto& l : lines_of(out / "roots.txt")) roots.push_back(repo / l);
-    if (roots.empty()) roots.push_back(repo / "tests" / "conformance");
+    if (roots.empty()) roots.push_back(repo / "testdata" / "conformance");
     auto cfg = prism::default_config();
     auto fe = prism::pir::find_frontend(cfg);
     REQUIRE(fe.clang);
