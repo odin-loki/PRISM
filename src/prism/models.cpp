@@ -271,13 +271,66 @@ json parse_object(const std::string& text) {
     return j;
 }
 
+// Ill-formed UTF-8 becomes U+FFFD, the same replacement dump_json uses.
+// Valid sequences stay byte for byte (same acceptance as the JSON string
+// scanner: no overlongs, no surrogates, nothing above U+10FFFF).
+std::string utf8_with_replacement(const std::string& text) {
+    std::string out;
+    out.reserve(text.size());
+    const auto n = text.size();
+    auto cont = [&](std::size_t k) {
+        return k < n && (static_cast<unsigned char>(text[k]) & 0xC0) == 0x80;
+    };
+    for (std::size_t i = 0; i < n;) {
+        auto c = static_cast<unsigned char>(text[i]);
+        std::size_t len = 0;
+        if (c < 0x80) {
+            len = 1;
+        } else if (c >= 0xC2 && c <= 0xDF) {
+            len = cont(i + 1) ? 2 : 0;
+        } else if (c >= 0xE0 && c <= 0xEF) {
+            auto c1 = i + 1 < n ? static_cast<unsigned char>(text[i + 1]) : 0;
+            bool ok = cont(i + 1) && cont(i + 2) && !(c == 0xE0 && c1 < 0xA0) &&
+                      !(c == 0xED && c1 >= 0xA0);
+            len = ok ? 3 : 0;
+        } else if (c >= 0xF0 && c <= 0xF4) {
+            auto c1 = i + 1 < n ? static_cast<unsigned char>(text[i + 1]) : 0;
+            bool ok = cont(i + 1) && cont(i + 2) && cont(i + 3) && !(c == 0xF0 && c1 < 0x90) &&
+                      !(c == 0xF4 && c1 >= 0x90);
+            len = ok ? 4 : 0;
+        }
+        if (len == 0) {
+            out.append("\xEF\xBF\xBD");
+            ++i;
+            continue;
+        }
+        out.append(text.data() + i, len);
+        i += len;
+    }
+    return out;
+}
+
 }  // namespace
 
 std::optional<RunReport> RunReport::load(const std::filesystem::path& path) {
     std::ifstream in(path, std::ios::binary);
     if (!in) return std::nullopt;
     try {
-        auto j = json::parse(in);
+        std::ostringstream ss;
+        ss << in.rdbuf();
+        const std::string text = ss.str();
+        json j;
+        try {
+            j = json::parse(text);
+        } catch (const json::exception&) {
+            // The parser rejects an ill-formed UTF-8 byte inside a string, and
+            // that used to become nullopt. A source byte in a message is still
+            // a report: replace it with U+FFFD and parse once more. A document
+            // that is already valid UTF-8 but not JSON stays nullopt.
+            const std::string fixed = utf8_with_replacement(text);
+            if (fixed == text) return std::nullopt;
+            j = json::parse(fixed);
+        }
         if (!report_shape_ok(j)) return std::nullopt;
         return j.get<RunReport>();
     } catch (...) {

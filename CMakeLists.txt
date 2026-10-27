@@ -690,6 +690,7 @@ if(PRISM_TESTS)
     tests/cpp/test_repolint.cpp
     tests/cpp/test_deps.cpp
     tests/cpp/test_cparse.cpp
+    tests/cpp/test_report_load.cpp
     tests/cpp/test_sarif.cpp
     tests/cpp/test_astlint.cpp
     tests/cpp/test_ltl.cpp
