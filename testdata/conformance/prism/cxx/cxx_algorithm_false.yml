@@ -1,0 +1,10 @@
+format_version: 1
+input_files: cxx_algorithm_false.cpp
+language: C++
+property: no-overflow
+expected:
+  cxx_algorithm_false: false
+witness:
+  cxx_algorithm_false: [1, 0]
+sanitizer_blind:
+  - cxx_algorithm_false

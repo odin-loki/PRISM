@@ -1,0 +1,63 @@
+// PRISM operational model of <algorithm>. Partial on purpose.
+// The pir stage puts this directory first on the C++ include path, so
+// `#include <algorithm>` reaches this file instead of libstdc++'s. It is a
+// file, not a directory: a directory of this name would make the include
+// fail with EISDIR and every such unit would fall back to libstdc++.
+//
+// std::min, std::max, and std::clamp, for a type comparable with operator<.
+// min(a, b) returns a when !(b < a), otherwise b. Equal arguments return
+// the first argument. max is the symmetric rule: a when !(a < b), otherwise
+// b. The result is one of those two arguments. It is not a third value, and
+// it is not a sum that wrapped to 0.
+//
+// clamp(v, lo, hi): when hi < lo, __prism_check with class FUNC-CONTRACT
+// and then __builtin_trap. That path does not return v. When the range is
+// valid, the result is lo if v < lo, hi if hi < v, otherwise v.
+//
+// sort, find, copy, fill, for_each, and every other algorithm are not
+// declared. A use of those names fails to compile and the pir stage falls
+// back to libstdc++ (extra.cxx_models). A partial header is intentional.
+//
+// This header is not a proof that a range is sorted.
+#ifndef _GLIBCXX_ALGORITHM
+#define _GLIBCXX_ALGORITHM 1
+
+#pragma GCC system_header
+
+// PIR intrinsic (translate.cpp). Literal class and message, as in the libc
+// models. Not defined here: the analysed program does not link a body.
+extern "C" void __prism_check(int ok, const char* cls, const char* msg);
+
+namespace std {
+
+template <typename _Tp>
+concept _Prism_less_than_comparable = requires(const _Tp& __x, const _Tp& __y) { __x < __y; };
+
+template <_Prism_less_than_comparable _Tp>
+constexpr const _Tp& min(const _Tp& __a, const _Tp& __b) {
+    // Equal arguments: !(b < a), so the first argument is returned.
+    if (!(__b < __a)) return __a;
+    return __b;
+}
+
+template <_Prism_less_than_comparable _Tp>
+constexpr const _Tp& max(const _Tp& __a, const _Tp& __b) {
+    if (!(__a < __b)) return __a;
+    return __b;
+}
+
+template <_Prism_less_than_comparable _Tp>
+constexpr const _Tp& clamp(const _Tp& __v, const _Tp& __lo, const _Tp& __hi) {
+    if (__hi < __lo) {
+        __prism_check(0, "FUNC-CONTRACT", "clamp: hi < lo");
+        // The range is not valid. __v is not a result of this path.
+        __builtin_trap();
+    }
+    if (__v < __lo) return __lo;
+    if (__hi < __v) return __hi;
+    return __v;
+}
+
+}  // namespace std
+
+#endif
