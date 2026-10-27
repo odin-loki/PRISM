@@ -1,4 +1,8 @@
 /* Minimal <pthread.h> for PIR LP64 lowering on Windows (tests/conc). */
+/*
+ * Declarations only, not a concurrency proof.
+ * A missing body stays unmodeled rather than success.
+ */
 #ifndef PRISM_PIR_SHIM_PTHREAD_H
 #define PRISM_PIR_SHIM_PTHREAD_H
 

@@ -752,6 +752,7 @@ if(PRISM_TESTS)
     # C11 header: the test reads the shim comment as text and does not compile it.
     tests/cpp/test_stdatomic_shim.cpp
     tests/cpp/test_string_shim.cpp
+    tests/cpp/test_pthread_shim.cpp
     tests/cpp/test_concolic_proof.cpp
     tests/cpp/test_lint_corpus.cpp
     tests/cpp/test_lint_status.cpp
