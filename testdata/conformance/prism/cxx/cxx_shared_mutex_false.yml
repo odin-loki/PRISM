@@ -1,0 +1,10 @@
+format_version: 1
+input_files: cxx_shared_mutex_false.cpp
+language: C++
+property: memsafety
+expected:
+  cxx_shared_mutex_false: false
+witness:
+  cxx_shared_mutex_false: [0]
+sanitizer_blind:
+  - cxx_shared_mutex_false

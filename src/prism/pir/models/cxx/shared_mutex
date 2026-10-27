@@ -1,0 +1,87 @@
+// PRISM operational model of <shared_mutex> (docs/PIR.md "C++ library models").
+// The pir stage puts this directory first on the C++ include path, so
+// `#include <shared_mutex>` reaches this file instead of libstdc++'s. It is
+// a file, not a directory: a directory of this name would make the include
+// fail with EISDIR and every such unit would fall back to libstdc++.
+//
+// Partial on purpose. The object stores an exclusive flag and a shared
+// count. Nothing is allocated. There is no thread and no owner. This header
+// is not a concurrency proof.
+//
+//  * try_lock() sets the exclusive flag only when that flag is clear and the
+//    shared count is 0. Otherwise it returns false and changes nothing.
+//  * try_lock_shared() increments the shared count only when the exclusive
+//    flag is clear. If exclusive is set it returns false and does not
+//    increment.
+//  * unlock() requires the exclusive flag. unlock_shared() requires a shared
+//    count greater than 0. Otherwise __prism_check. Neither call invents a
+//    holder.
+//
+// lock() and lock_shared() are omitted so the unit fails to compile and pir
+// falls back. A blocking call that returned immediately would be a fake
+// acquisition. shared_timed_mutex, shared_lock, and native_handle are not
+// declared either, so those uses fall back the same way.
+//
+// This header does not include mutex, thread, or memory.
+#ifndef _GLIBCXX_SHARED_MUTEX
+#define _GLIBCXX_SHARED_MUTEX 1
+
+#pragma GCC system_header
+
+#include <bits/c++config.h>
+
+// PIR intrinsic (src/prism/pir/models/libc/prism_model.h). Declared, not
+// defined: translate.cpp reports the call. A definition here would be inlined
+// away and the check would disappear.
+extern "C" void __prism_check(int __ok, const char* __cls, const char* __msg);
+
+namespace std _GLIBCXX_VISIBILITY(default) {
+_GLIBCXX_BEGIN_NAMESPACE_VERSION
+
+class shared_mutex {
+public:
+    shared_mutex() noexcept : _M_exclusive(false), _M_shared(0) {}
+
+    shared_mutex(const shared_mutex&) = delete;
+    shared_mutex& operator=(const shared_mutex&) = delete;
+
+    // lock() and lock_shared() are omitted so the unit fails to compile and
+    // pir falls back. A blocking call that returned immediately would be a
+    // fake acquisition.
+
+    bool try_lock() noexcept {
+        if (_M_exclusive || _M_shared != 0)
+            return false;
+        _M_exclusive = true;
+        return true;
+    }
+
+    bool try_lock_shared() noexcept {
+        if (_M_exclusive)
+            return false;
+        ++_M_shared;
+        return true;
+    }
+
+    void unlock() noexcept {
+        __prism_check(_M_exclusive ? 1 : 0, "FUNC-CONTRACT",
+                      "shared_mutex::unlock without an exclusive lock");
+        _M_exclusive = false;
+    }
+
+    void unlock_shared() noexcept {
+        __prism_check(_M_shared > 0 ? 1 : 0, "FUNC-CONTRACT",
+                      "shared_mutex::unlock_shared without a shared lock");
+        if (_M_shared > 0)
+            --_M_shared;
+    }
+
+private:
+    bool _M_exclusive;
+    unsigned _M_shared;
+};
+
+_GLIBCXX_END_NAMESPACE_VERSION
+}  // namespace std
+
+#endif  // _GLIBCXX_SHARED_MUTEX
