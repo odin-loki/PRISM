@@ -700,6 +700,7 @@ if(PRISM_TESTS)
     tests/cpp/test_report_load.cpp
     tests/cpp/test_report_md.cpp
     tests/cpp/test_shipdocs.cpp
+    tests/cpp/test_cli_stages.cpp
     tests/cpp/test_sarif.cpp
     tests/cpp/test_astlint.cpp
     tests/cpp/test_ltl.cpp
