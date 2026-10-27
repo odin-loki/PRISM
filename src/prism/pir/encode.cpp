@@ -37,6 +37,7 @@
 #include <fstream>
 #include <functional>
 #include <map>
+#include <new>
 #include <optional>
 #include <set>
 #include <sstream>
@@ -429,7 +430,27 @@ struct Encoding {
     // Provenance for pointer arithmetic (memory.hpp SymMem::note).
     void note_prov(const Stmt& s, const z3::expr& v, int node) {
         if (!mem) return;
-        if (s.op == Op::Select && s.args.size() == 3) mem->materialize_vs(v);
+        // Shallow value set for the index chain (select / phi ite, sext, *scale,
+        // pointer add). Not only ptr_arith: the multiply that scales an index
+        // is not marked ptr_arith, and a full vs_raw there walks every select.
+        switch (s.op) {
+            case Op::Select:
+                if (s.args.size() == 3) mem->materialize_vs(v);
+                break;
+            case Op::Add:
+            case Op::Sub:
+            case Op::Mul:
+            case Op::UDiv:
+            case Op::SDiv:
+            case Op::Shl:
+            case Op::LShr:
+            case Op::AShr:
+            case Op::And:
+            case Op::ZExt:
+            case Op::SExt:
+            case Op::Trunc: mem->materialize_vs(v); break;
+            default: break;
+        }
         if (!s.ptr_arith || s.args.empty()) return;
         std::optional<uint64_t> k;
         if (s.op == Op::Select && s.args.size() == 3) {
@@ -569,6 +590,7 @@ struct Encoding {
         }
         if (!acc.has_value()) throw EncodeFail{std::string(laws::ERROR), "internal: LCSSA merge with no incoming edge value"};
         m.insert_or_assign(a.var, acc.value());
+        if (mem && a.width <= 64) mem->materialize_vs(acc.value());
         return acc.value();
     }
 
@@ -925,6 +947,9 @@ struct Encoding {
                 else acc = v;
             }
             if (acc.has_value() && prov_ok && prov.has_value()) mem->note(acc.value(), prov.value());
+            // -O0 ternary joins are phis, not selects. Seed the ite here so the
+            // insert index is a value set before the first store.
+            if (acc.has_value() && mem && w <= 64) mem->materialize_vs(acc.value());
             phi_vals.emplace_back(p.dst, acc.has_value() ? *acc : fresh_const("phi_dead", w));
         }
         if (cut_L >= 0) {
@@ -1786,7 +1811,13 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
                         hit_r = r;
                         return 1;
                     }
-                    return r.kind == solver::SolveResult::Unsat ? 0 : -1;
+                    if (r.kind == solver::SolveResult::Unsat) {
+                        // Already proved. A sibling that times out must not make
+                        // this property a second query.
+                        answered.insert(hard.at(lo));
+                        return 0;
+                    }
+                    return -1;
                 }
                 std::vector<z3::expr> vs;
                 for (std::size_t i = lo; i < hi; ++i) vs.push_back(hard.at(i)->viol);
@@ -1857,9 +1888,15 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
             // validated violation (hit + hit_r). Do not treat g==1 without a
             // hit as "all answered": MSVC portfolio paths can return SAT from a
             // group query without pick_violated + per-property confirmation.
-            if (g == 1 && !(hit && hit_r.has_value())) g = -1;
+            // SAT from a group that was not pinned to one property: do not
+            // trust subgroup UNSAT marks (they are asked again). An unknown
+            // group keeps them, so a property already proved UNSAT is not
+            // solved a second time.
+            if (g == 1 && !(hit && hit_r.has_value())) {
+                g = -1;
+                answered.clear();
+            }
             all_unsat = g == 0;
-            if (g == -1) answered.clear();
         }
         for (auto& p : e.props) {
             if (soft(p) || all_unsat || answered.count(&p) || (hit && hit_r.has_value())) continue;
@@ -2175,6 +2212,12 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
     } catch (const z3::exception& ex) {
         v.status = std::string(laws::ERROR);
         v.message = std::string("z3: ") + ex.msg();
+        return v;
+    } catch (const std::bad_alloc&) {
+        // Law 7: running out of memory is not an empty report and not a proof.
+        // PRISM_CHECKER_MEM caps certificate tools only; this is the encoder.
+        v.status = std::string(laws::UNKNOWN);
+        v.message = "encoder ran out of memory; no proof";
         return v;
     }
 }

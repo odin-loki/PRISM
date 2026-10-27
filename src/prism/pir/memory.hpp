@@ -142,7 +142,8 @@ public:
     // Precomputed value set for a term (encode.cpp pointer arithmetic).
     void seed_vs(const z3::expr& e, Vs vs);
     void seed_vs_bin(const z3::expr& sum, const z3::expr& a, const z3::expr& b, Z3_decl_kind op);
-    // Store vs_raw(e) in vs_seed_ (ite index chains, e.g. PRISM_INDEX_LE3).
+    // Seed a shallow value set (nested ite of constants or already-seeded
+    // arithmetic, e.g. PRISM_INDEX_LE3). Does not walk an arbitrary term.
     void materialize_vs(const z3::expr& e);
 
 private:
@@ -187,7 +188,13 @@ private:
     std::unordered_map<unsigned, Vs> vs_seed_;
     std::optional<Vs> copy_vs(const Vs* v) const;
     std::optional<Vs> vs_bin(const z3::expr& e, const z3::expr& a, const z3::expr& b, Z3_decl_kind op) const;
+    // ite / numeral / already-seeded arithmetic only. Does not call vs_raw and
+    // does not cache a miss (a later full walk may still find a set).
+    std::optional<Vs> shallow_vs(const z3::expr& e, int depth) const;
+    // dst = base + delta (mod 2^64) when base is already seeded. No walk.
+    void seed_plus_const(const z3::expr& dst, const z3::expr& base, uint64_t delta);
     static constexpr int kVsDepth = 400;
+    static constexpr int kShallowDepth = 64;
     mutable int vs_depth_ = 0;
     mutable std::vector<z3::expr> vs_keep_;
     std::optional<z3::expr> word_at(uint64_t a, unsigned n, std::size_t upto);

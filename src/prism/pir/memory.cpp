@@ -102,21 +102,15 @@ std::optional<uint64_t> eval_const(const z3::expr& e, const std::vector<uint64_t
     }
     return r & mask_w(w);
 }
-// Left operand of (== t k) for PRISM_INDEX_LE3-style guards.
-std::optional<z3::expr> eq_index_expr(const z3::expr& guard) {
-    if (!guard.is_app() || guard.decl().decl_kind() != Z3_OP_EQ || guard.num_args() != 2) return std::nullopt;
-    const z3::expr k = guard.arg(1);
-    uint64_t n = 0;
-    if (!k.is_numeral() || !k.is_numeral_u64(n)) return std::nullopt;
-    return guard.arg(0);
-}
 }  // namespace
 
 // Raw value sets: the options are kept apart even when two have the same
 // value, so terms built the same way (the bytes of one read-over-write
 // chain) have the same guard list and combine position by position.
 void SymMem::seed_vs(const z3::expr& e, Vs vs) {
-    if (vs.size() > kVsMax) return;
+    // An empty set is not a value set (callers would treat the pointer as
+    // success and read front()/back()). Refuse it; do not cache it.
+    if (vs.empty() || vs.size() > kVsMax) return;
     vs_keep_.push_back(e);
     for (auto& o : vs) vs_keep_.push_back(o.guard);
     vs_seed_[e.id()] = std::move(vs);
@@ -127,10 +121,15 @@ void SymMem::seed_vs(const z3::expr& e, Vs vs) {
 std::optional<SymMem::Vs> SymMem::vs_bin(const z3::expr& e, const z3::expr& a, const z3::expr& b,
                                            Z3_decl_kind op) const {
     auto one = [&](const z3::expr& x) -> std::optional<Vs> {
-        if (const Vs* v = vs_raw(x)) return *v;
+        // Shallow only: vs_raw walks an arbitrary read-over-write term and
+        // retains every subexpression it touches.
+        if (auto it = vs_seed_.find(x.id()); it != vs_seed_.end()) {
+            if (it->second.empty()) return std::nullopt;
+            return it->second;
+        }
         uint64_t n = 0;
         if (x.is_numeral() && x.is_numeral_u64(n)) return Vs{VsOpt{c_.bool_val(true), n}};
-        return std::nullopt;
+        return shallow_vs(x, kShallowDepth);
     };
     auto av = one(a);
     auto bv = one(b);
@@ -191,21 +190,192 @@ void SymMem::seed_vs_bin(const z3::expr& sum, const z3::expr& a, const z3::expr&
     if (auto vs = vs_bin(sum, a, b, op)) seed_vs(sum, std::move(*vs));
 }
 
-void SymMem::materialize_vs(const z3::expr& e) {
-    const Vs* raw = vs_raw(e);
-    if (!raw || raw->empty()) return;
-    auto dup = copy_vs(raw);
-    if (!dup) return;
-    seed_vs(e, std::move(*dup));
-    // Same guards as the ite index (PRISM_INDEX_LE3): seed the parameter {0..n-1}.
-    if (raw->size() >= 2 && raw->size() <= kVsMax) {
-        bool unit = true;
-        for (std::size_t j = 0; j < raw->size(); ++j)
-            if ((*raw)[j].val != j) unit = false;
-        if (unit) {
-            if (auto idx = eq_index_expr(raw->front().guard)) seed_vs(*idx, *raw);
+// Bounded ite / arithmetic. A miss is not stored: vs_raw may still find a set
+// later, and an empty vector must not be cached as a successful set.
+// One walk memoises by expr id (the AST is a DAG). A miss from a short
+// remaining depth stays a miss if the same node is reached again; that only
+// skips a seed, and the byte model is still used.
+std::optional<SymMem::Vs> SymMem::shallow_vs(const z3::expr& e, int depth) const {
+    std::unordered_map<unsigned, std::optional<Vs>> seen;
+    auto rec = [&](auto& self, const z3::expr& cur, int depth) -> std::optional<Vs> {
+        if (auto it = seen.find(cur.id()); it != seen.end()) return it->second;
+        auto store = [&](std::optional<Vs> r) {
+            seen.emplace(cur.id(), r);
+            return r;
+        };
+        if (!cur.is_bv() || cur.get_sort().bv_size() == 0 || cur.get_sort().bv_size() > 64)
+            return store(std::nullopt);
+        if (auto it = vs_seed_.find(cur.id()); it != vs_seed_.end()) {
+            if (it->second.empty()) return store(std::nullopt);
+            return store(it->second);
         }
-    }
+        uint64_t nlit = 0;
+        if (cur.is_numeral() && cur.is_numeral_u64(nlit))
+            return store(Vs{VsOpt{c_.bool_val(true), nlit}});
+        // A previous full walk that succeeded can be reused. A cached miss is
+        // not success and is not trusted here (this walk is a different one).
+        if (auto it = vs_memo_.find(cur.id()); it != vs_memo_.end() && it->second && !it->second->empty())
+            return store(*it->second);
+        if (depth <= 0 || !cur.is_app() || cur.num_args() == 0) return store(std::nullopt);
+        const auto kind = cur.decl().decl_kind();
+        if (kind == Z3_OP_ITE) {
+            if (cur.num_args() != 3) return store(std::nullopt);
+            auto a = self(self, cur.arg(1), depth - 1);
+            if (!a || a->empty()) return store(std::nullopt);
+            auto b = self(self, cur.arg(2), depth - 1);
+            if (!b || b->empty()) return store(std::nullopt);
+            const z3::expr cnd = cur.arg(0);
+            if (cnd.is_true()) return store(std::move(a));
+            if (cnd.is_false()) return store(std::move(b));
+            if (a->size() + b->size() > kVsMax) return store(std::nullopt);
+            Vs r;
+            r.reserve(a->size() + b->size());
+            for (auto& o : *a) r.push_back(VsOpt{and2(cnd, o.guard), o.val});
+            for (auto& o : *b) r.push_back(VsOpt{and2(!cnd, o.guard), o.val});
+            return store(std::move(r));
+        }
+        if (cur.num_args() > 2) return store(std::nullopt);
+        switch (kind) {
+            case Z3_OP_BADD:
+            case Z3_OP_BSUB:
+            case Z3_OP_BMUL:
+            case Z3_OP_BAND:
+            case Z3_OP_BSDIV:
+            case Z3_OP_BUDIV:
+            case Z3_OP_BSHL:
+            case Z3_OP_BLSHR:
+            case Z3_OP_BASHR:
+            case Z3_OP_SIGN_EXT:
+            case Z3_OP_ZERO_EXT:
+            case Z3_OP_EXTRACT:
+            case Z3_OP_CONCAT:
+                break;
+            default: return store(std::nullopt);
+        }
+        // x & mask, x a leaf (a parameter, not a load). The result really is
+        // one of the 2^popcount(mask) residues; the guard is that equality.
+        // Do not do this once x itself has a value set: the product of that
+        // set is smaller and the full mask would add values x cannot take.
+        if (kind == Z3_OP_BAND && cur.num_args() == 2) {
+            const bool m0 = cur.arg(0).is_numeral();
+            const bool m1 = cur.arg(1).is_numeral();
+            if (m0 != m1) {
+                const z3::expr& other = cur.arg(m0 ? 1 : 0);
+                const bool leaf = other.is_app() && other.num_args() == 0 && !other.is_numeral();
+                const bool other_seeded = vs_seed_.find(other.id()) != vs_seed_.end();
+                uint64_t mask = 0;
+                if (leaf && !other_seeded && cur.arg(m0 ? 0 : 1).is_numeral_u64(mask)) {
+                    const unsigned width = cur.get_sort().bv_size();
+                    unsigned bits = 0;
+                    for (unsigned b = 0; b < width && b < 64; ++b)
+                        if (((mask >> b) & 1u) != 0u) ++bits;
+                    if (bits <= 5) {
+                        std::vector<unsigned> pos;
+                        pos.reserve(bits);
+                        for (unsigned b = 0; b < width && b < 64; ++b)
+                            if (((mask >> b) & 1u) != 0u) pos.push_back(b);
+                        Vs masked;
+                        const unsigned n = 1u << bits;
+                        masked.reserve(n);
+                        for (unsigned s = 0; s < n; ++s) {
+                            uint64_t val = 0;
+                            for (unsigned k = 0; k < pos.size(); ++k)
+                                if ((s & (1u << k)) != 0u) val |= uint64_t{1} << pos[k];
+                            z3::expr g = n == 1 ? c_.bool_val(true) : (cur == c_.bv_val(val, width));
+                            masked.push_back(VsOpt{std::move(g), val});
+                        }
+                        return store(std::move(masked));
+                    }
+                }
+            }
+        }
+        std::vector<Vs> ops;
+        ops.reserve(cur.num_args());
+        for (unsigned i = 0; i < cur.num_args(); ++i) {
+            auto s = self(self, cur.arg(i), depth - 1);
+            if (!s || s->empty()) return store(std::nullopt);
+            ops.push_back(std::move(*s));
+        }
+        int shape_i = -1;
+        bool zip = true;
+        std::size_t combos = 1;
+        for (std::size_t i = 0; i < ops.size(); ++i) {
+            if (ops[i].size() <= 1) continue;
+            combos *= ops[i].size();
+            if (shape_i < 0) shape_i = static_cast<int>(i);
+            else if (ops[i].size() != ops[static_cast<std::size_t>(shape_i)].size()) zip = false;
+            else
+                for (std::size_t j = 0; j < ops[i].size() && zip; ++j)
+                    if (ops[i][j].guard.id() != ops[static_cast<std::size_t>(shape_i)][j].guard.id()) zip = false;
+        }
+        if (!zip && combos > kVsCombos) return store(std::nullopt);
+        const std::size_t n = shape_i < 0 ? 1 : zip ? ops[static_cast<std::size_t>(shape_i)].size() : combos;
+        if (n == 0 || n > kVsMax) return store(std::nullopt);
+        const z3::expr tt = c_.bool_val(true);
+        Vs r;
+        r.reserve(n);
+        std::vector<std::size_t> idx(ops.size(), 0);
+        for (std::size_t m = 0; m < n; ++m) {
+            std::vector<uint64_t> vals;
+            vals.reserve(ops.size());
+            z3::expr g = tt;
+            for (std::size_t i = 0; i < ops.size(); ++i) {
+                const auto& a = ops[i];
+                const auto& o = a.size() <= 1 ? a[0] : zip ? a[m] : a[idx[i]];
+                vals.push_back(o.val);
+                // Same rule as vs_raw: a zipped multi-set uses the shape
+                // guard (size-1 guards are dropped, as there). A product
+                // conjoins every guard.
+                if (!zip || a.size() <= 1) g = and2(g, o.guard);
+            }
+            if (zip && shape_i >= 0) g = ops[static_cast<std::size_t>(shape_i)][m].guard;
+            std::optional<uint64_t> kv = eval_const(cur, vals);
+            if (!kv) {
+                z3::expr_vector args(c_);
+                for (std::size_t i = 0; i < vals.size(); ++i)
+                    args.push_back(c_.bv_val(vals[i], cur.arg(static_cast<unsigned>(i)).get_sort().bv_size()));
+                auto val = cur.decl()(args).simplify();
+                uint64_t x = 0;
+                if (val.is_numeral() && val.is_numeral_u64(x)) kv = x;
+            }
+            if (!kv) return store(std::nullopt);
+            r.push_back(VsOpt{std::move(g), *kv});
+            if (!zip) {
+                for (std::size_t i = 0; i < idx.size(); ++i) {
+                    if (ops[i].size() <= 1) continue;
+                    if (++idx[i] < ops[i].size()) break;
+                    idx[i] = 0;
+                }
+            }
+        }
+        if (r.empty() || r.size() > kVsMax) return store(std::nullopt);
+        return store(std::move(r));
+    };
+    return rec(rec, e, depth);
+}
+
+void SymMem::seed_plus_const(const z3::expr& dst, const z3::expr& base, uint64_t delta) {
+    if (delta == 0 || dst.id() == base.id()) return;
+    if (vs_seed_.find(dst.id()) != vs_seed_.end()) return;
+    auto it = vs_seed_.find(base.id());
+    if (it == vs_seed_.end() || it->second.empty() || it->second.size() > kVsMax) return;
+    Vs r;
+    r.reserve(it->second.size());
+    for (auto& o : it->second) r.push_back(VsOpt{o.guard, o.val + delta});
+    seed_vs(dst, std::move(r));
+}
+
+void SymMem::materialize_vs(const z3::expr& e) {
+    if (!e.is_bv() || e.get_sort().bv_size() == 0 || e.get_sort().bv_size() > 64) return;
+    if (auto it = vs_seed_.find(e.id()); it != vs_seed_.end() && !it->second.empty()) return;
+    // Copy into a local before seed_vs. Seeding used to keep a pointer into
+    // vs_memo_/vs_seed_ and then erase that slot (use after free), and it
+    // copied the ite's else-guard onto the index variable. The else of
+    // PRISM_INDEX_LE3 is "not 0, 1, or 2", which is not "index == 3", so that
+    // transfer is not an equality. Seed only the term itself.
+    auto vs = shallow_vs(e, kShallowDepth);
+    if (!vs || vs->empty() || vs->size() > kVsMax) return;
+    seed_vs(e, std::move(*vs));
 }
 
 const SymMem::Vs* SymMem::vs_raw(const z3::expr& e) const {
@@ -344,7 +514,9 @@ const SymMem::Vs* SymMem::vs_raw(const z3::expr& e) const {
             }
         }
     }
-    if (out.has_value() && out->size() > kVsMax) out.reset();
+    // Empty is a miss, not a value set. Caching it as a present optional makes
+    // vs_of/read_cell_log/per_obj take front()/back() or skip the byte model.
+    if (!out || out->empty() || out->size() > kVsMax) out.reset();
     auto& slot = vs_memo_[e.id()];
     slot = std::move(out);
     return slot ? &*slot : nullptr;
@@ -361,7 +533,7 @@ const SymMem::Vs* SymMem::vs_of(const z3::expr& e) const {
     if (auto it = vs_merged_.find(e.id()); it != vs_merged_.end()) return it->second ? &*it->second : nullptr;
     const Vs* raw = vs_raw(e);
     std::optional<Vs> out;
-    if (raw) {
+    if (raw && !raw->empty()) {
         Vs r;
         for (auto& o : *raw) {
             auto it = std::ranges::find_if(r, [&](const VsOpt& x) { return x.val == o.val; });
@@ -396,7 +568,7 @@ z3::expr SymMem::per_obj(const z3::expr& ptr, const z3::expr& dflt, F&& f) {
         if (*k >= 1 && *k <= objs_.size()) return f(objs_[static_cast<std::size_t>(*k - 1)]);
         return dflt;
     }
-    if (const Vs* vs = vs_of(ptr)) {
+    if (const Vs* vs = vs_of(ptr); vs && !vs->empty()) {
         // one term per possible object, under the guards of its values
         auto at = [&](uint64_t v) -> z3::expr {
             const uint64_t k = obj_of(v);
@@ -574,7 +746,7 @@ z3::expr SymMem::read_cell_log(const z3::expr& addr_in, std::size_t upto, bool u
     // here instead of by the solver.
     z3::expr addr = addr_in;
     std::optional<uint64_t> caddr;
-    if (const Vs* av = vs_of(addr_in)) {
+    if (const Vs* av = vs_of(addr_in); av && !av->empty()) {
         if (av->size() > 1) {
             z3::expr v = read_cell_log(bv(av->back().val, 64), upto, use_prov);
             for (std::size_t i = av->size() - 1; i-- > 0;)
@@ -774,11 +946,12 @@ std::optional<z3::expr> SymMem::word_split(uint64_t a, unsigned n, std::size_t u
 }
 
 SymMem::Loaded SymMem::load(const z3::expr& ptr, unsigned width, unsigned tag) {
+    materialize_vs(ptr);
     unsigned n = (width + 7) / 8;
     // word level (Bv, value sets): the value as an ite over whole stores
     std::optional<z3::expr> word;
     if (enc_ == MemEncoding::Bv && (n == 2 || n == 4 || n == 8))
-        if (const Vs* av = vs_of(ptr)) {
+        if (const Vs* av = vs_of(ptr); av && !av->empty()) {
             std::vector<z3::expr> ws;
             for (auto& o : *av) {
                 auto w = word_split(o.val, n, log_.size());
@@ -798,6 +971,7 @@ SymMem::Loaded SymMem::load(const z3::expr& ptr, unsigned width, unsigned tag) {
     z3::expr tagbad = c_.bool_val(false);
     for (unsigned k = 0; k < n; ++k) {
         auto a = k == 0 ? ptr : ptr + bv(k, 64);
+        if (k != 0) seed_plus_const(a, ptr, k);
         if (ko) note(a, *ko);
         auto cell = read_cell(a);
         auto byte = cell.extract(7, 0);
@@ -814,7 +988,12 @@ SymMem::Loaded SymMem::load(const z3::expr& ptr, unsigned width, unsigned tag) {
     }
     auto v = *val;
     if (8 * n > width) v = v.extract(width - 1, 0);
-    if (word) v = *word;
+    if (word) {
+        v = *word;
+        // A pointer stored and loaded as one word keeps that value set for the
+        // next address calculation, without walking the byte-level term.
+        materialize_vs(*word);
+    }
     return Loaded{v, z3::ite(uninit, bv(1, 1), bv(0, 1)), z3::ite(tagbad, bv(1, 1), bv(0, 1)), *mask};
 }
 
@@ -838,6 +1017,7 @@ SymMem::Loaded SymMem::load_exact(const Mark& m, const z3::expr& ptr, unsigned w
 
 void SymMem::store(const z3::expr& guard, const z3::expr& ptr, const z3::expr& val, unsigned width,
                    const z3::expr& init, unsigned tag) {
+    materialize_vs(ptr);
     unsigned n = (width + 7) / 8;
     auto ko = known(ptr);
     auto wide = 8 * n > width ? z3::zext(val, 8 * n - width) : val;
@@ -856,6 +1036,7 @@ void SymMem::store(const z3::expr& guard, const z3::expr& ptr, const z3::expr& v
     stores_.push_back(StoreRec{wide, n});
     for (unsigned k = 0; k < n; ++k) {
         auto a = k == 0 ? ptr : ptr + bv(k, 64);
+        if (k != 0) seed_plus_const(a, ptr, k);
         if (ko) note(a, *ko);
         Entry e{Entry::Byte, guard, a, bv(1, 64), a, cell_of(wide.extract(8 * k + 7, 8 * k), init_k(k), tag)};
         e.grp = grp;
