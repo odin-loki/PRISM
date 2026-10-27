@@ -1,0 +1,279 @@
+// PRISM operational model of <filesystem> (docs/PIR.md "C++ library models").
+// The pir stage puts this directory first on the C++ include path, so
+// `#include <filesystem>` reaches this file instead of libstdc++'s. It is a
+// file, not a directory: a directory of this name would make the include fail
+// and every such unit would fall back.
+//
+// Partial on purpose. std::filesystem::path owns a copy of the characters the
+// caller wrote. The destructor frees that copy once. An empty path stores no
+// characters and does not allocate: its size is 0.
+//
+// filename() of an empty path is an empty path. It is not a single dot.
+// filename() of "a/b" is "b". extension() of "a/b.txt" is ".txt".
+// parent_path() of "a/b" is "a". operator/ inserts one '/' between the two
+// sides and keeps every component. A component that is ".." stays "..".
+// lexically_normal is not implemented. Dropping ".." would invent a path the
+// caller did not write.
+//
+// exists, file_size, status, is_regular_file, is_directory, current_path, and
+// absolute are not declared. Those names ask the operating system whether a
+// file is there. A stub that returns true is a fake file. A use of an omitted
+// name fails to compile against this header, and the pir stage lowers that
+// translation unit again with libstdc++ (extra.cxx_models). They are not
+// stubbed. Iterators, string conversion, and directory walking are omitted
+// the same way.
+//
+// This header does not include <string>, <string_view>, <memory>, or <mutex>.
+// The characters live in storage this path allocates itself.
+#ifndef _GLIBCXX_FILESYSTEM
+#define _GLIBCXX_FILESYSTEM 1
+
+#pragma GCC system_header
+
+#include <cstddef>
+#include <new>
+
+// PIR intrinsics (src/prism/pir/models/libc/prism_model.h). Not defined here:
+// the encoder treats the calls as checks, and a host test supplies a stub.
+extern "C" {
+void __prism_check(int __ok, const char* __cls, const char* __msg);
+unsigned long __prism_obj_size(const void* __p);
+}
+
+namespace std::filesystem {
+
+class path {
+public:
+    path() noexcept : _M_str(nullptr), _M_len(0) {}
+
+    // Pointer to a C string. The length is a bounded read of the object that
+    // starts at __s. A null pointer is a precondition failure, not an empty
+    // path spelled as a dot, and this does not invent characters.
+    path(const char* __s) : _M_str(nullptr), _M_len(0) { _M_from_cstr(__s); }
+
+    // String literal (or any char array). The bound is the array, so the copy
+    // does not read past it. The owned length stops at the first NUL.
+    template <std::size_t _Nm>
+    path(const char (&__s)[_Nm]) : _M_str(nullptr), _M_len(0) {
+        std::size_t __n = 0;
+        while (__n < _Nm && __s[__n] != '\0') ++__n;
+        if (__n != 0) _M_own(__s, __n);
+    }
+
+    path(const path& __o) : _M_str(nullptr), _M_len(0) {
+        if (__o._M_len != 0) _M_own(__o._M_str, __o._M_len);
+    }
+
+    path(path&& __o) noexcept : _M_str(__o._M_str), _M_len(__o._M_len) {
+        __o._M_str = nullptr;
+        __o._M_len = 0;
+    }
+
+    path& operator=(const path& __o) {
+        if (this != &__o) {
+            path __tmp(__o);
+            _M_swap(__tmp);
+        }
+        return *this;
+    }
+
+    path& operator=(path&& __o) noexcept {
+        if (this != &__o) {
+            _M_free();
+            _M_str = __o._M_str;
+            _M_len = __o._M_len;
+            __o._M_str = nullptr;
+            __o._M_len = 0;
+        }
+        return *this;
+    }
+
+    // Frees the owned copy once, via _M_free. A moved-from path and an empty
+    // path hold no copy, so this does not free a second time.
+    ~path() { _M_free(); }
+
+    // Character count of the owned copy. An empty path is 0.
+    [[nodiscard]] std::size_t size() const noexcept { return _M_len; }
+    [[nodiscard]] bool empty() const noexcept { return _M_len == 0; }
+    [[nodiscard]] const char* c_str() const noexcept { return _M_str != nullptr ? _M_str : ""; }
+
+    [[nodiscard]] path filename() const;
+    [[nodiscard]] path extension() const;
+    [[nodiscard]] path parent_path() const;
+
+    path& operator/=(const path& __p);
+
+    friend bool operator==(const path& __a, const path& __b) noexcept {
+        if (__a._M_len != __b._M_len) return false;
+        for (std::size_t __i = 0; __i < __a._M_len; ++__i)
+            if (__a._M_str[__i] != __b._M_str[__i]) return false;
+        return true;
+    }
+
+private:
+    char* _M_str;
+    std::size_t _M_len;
+
+    void _M_free() noexcept;
+    void _M_own(const char* __s, std::size_t __n);
+    void _M_swap(path& __o) noexcept;
+    void _M_from_cstr(const char* __s);
+    void _M_last(std::size_t& __b, std::size_t& __e) const;
+    path _M_slice(std::size_t __b, std::size_t __e) const;
+};
+
+inline void path::_M_free() noexcept {
+    if (_M_str != nullptr) {
+        ::operator delete(_M_str);
+        _M_str = nullptr;
+    }
+    _M_len = 0;
+}
+
+inline void path::_M_own(const char* __s, std::size_t __n) {
+    char* __p = nullptr;
+    if (__n != 0) {
+        __p = static_cast<char*>(::operator new(__n + 1));
+        for (std::size_t __i = 0; __i < __n; ++__i) __p[__i] = __s[__i];
+        __p[__n] = '\0';
+    }
+    // Copy first. __s may alias the block _M_free releases.
+    _M_free();
+    _M_str = __p;
+    _M_len = __n;
+}
+
+inline void path::_M_swap(path& __o) noexcept {
+    char* __s = _M_str;
+    const std::size_t __n = _M_len;
+    _M_str = __o._M_str;
+    _M_len = __o._M_len;
+    __o._M_str = __s;
+    __o._M_len = __n;
+}
+
+inline void path::_M_from_cstr(const char* __s) {
+    __prism_check(__s != nullptr, "FUNC-CONTRACT", "std::filesystem::path constructed from a null pointer");
+    if (__s == nullptr) return;
+    const unsigned long __bytes = __prism_obj_size(__s);
+    unsigned long __n = 0;
+    while (__n < __bytes && __s[__n] != '\0') ++__n;
+    __prism_check(__n < __bytes, "MEM-OOB-READ",
+                  "std::filesystem::path C string is not terminated within its object");
+    if (__n < __bytes && __n != 0) _M_own(__s, static_cast<std::size_t>(__n));
+}
+
+// Last generic component, using '/' as the separator. A trailing slash is an
+// empty component. A path that is only slashes is that root, kept as written.
+inline void path::_M_last(std::size_t& __b, std::size_t& __e) const {
+    __b = 0;
+    __e = 0;
+    if (_M_len == 0 || _M_str == nullptr) return;
+    if (_M_str[_M_len - 1] == '/') {
+        bool __all = true;
+        for (std::size_t __i = 0; __i < _M_len; ++__i) {
+            if (_M_str[__i] != '/') {
+                __all = false;
+                break;
+            }
+        }
+        if (__all) {
+            __e = _M_len;
+            return;
+        }
+        __b = _M_len;
+        __e = _M_len;
+        return;
+    }
+    std::size_t __i = _M_len;
+    while (__i > 0 && _M_str[__i - 1] != '/') --__i;
+    __b = __i;
+    __e = _M_len;
+}
+
+inline path path::_M_slice(std::size_t __b, std::size_t __e) const {
+    path __r;
+    if (__e > __b && _M_str != nullptr) __r._M_own(_M_str + __b, __e - __b);
+    return __r;
+}
+
+inline path path::filename() const {
+    // Empty path: empty filename. Not a dot.
+    if (_M_len == 0) return path();
+    std::size_t __b = 0;
+    std::size_t __e = 0;
+    _M_last(__b, __e);
+    if (__b == __e) return path();
+    return _M_slice(__b, __e);
+}
+
+inline path path::extension() const {
+    std::size_t __b = 0;
+    std::size_t __e = 0;
+    _M_last(__b, __e);
+    if (__e <= __b) return path();
+    const std::size_t __n = __e - __b;
+    // A filename that is only one or two dots has no extension.
+    if (__n == 1 && _M_str[__b] == '.') return path();
+    if (__n == 2 && _M_str[__b] == '.' && _M_str[__b + 1] == '.') return path();
+    std::size_t __dot = __n;
+    for (std::size_t __i = 0; __i < __n; ++__i)
+        if (_M_str[__b + __i] == '.') __dot = __i;
+    // No dot, or the only dot is the first character (a leading-dot name).
+    if (__dot == __n || __dot == 0) return path();
+    return _M_slice(__b + __dot, __e);
+}
+
+inline path path::parent_path() const {
+    if (_M_len == 0) return path();
+    std::size_t __b = 0;
+    std::size_t __e = 0;
+    _M_last(__b, __e);
+    if (__b == 0) return path();
+    std::size_t __end = __b;
+    while (__end > 0 && _M_str[__end - 1] == '/') --__end;
+    if (__end == 0) return _M_slice(0, __b);
+    return _M_slice(0, __end);
+}
+
+inline path& path::operator/=(const path& __p) {
+    if (__p._M_len == 0 || __p._M_str == nullptr) return *this;
+    if (_M_len == 0 || _M_str == nullptr) {
+        _M_own(__p._M_str, __p._M_len);
+        return *this;
+    }
+    const bool __left_slash = _M_str[_M_len - 1] == '/';
+    const bool __right_slash = __p._M_str[0] == '/';
+    const char* __src = __p._M_str;
+    std::size_t __rn = __p._M_len;
+    std::size_t __extra = 0;
+    if (__left_slash && __right_slash) {
+        ++__src;
+        --__rn;
+    } else if (!__left_slash && !__right_slash) {
+        __extra = 1;
+    }
+    const std::size_t __n = _M_len + __extra + __rn;
+    path __joined;
+    char* __buf = static_cast<char*>(::operator new(__n + 1));
+    std::size_t __w = 0;
+    for (std::size_t __i = 0; __i < _M_len; ++__i) __buf[__w++] = _M_str[__i];
+    if (__extra != 0) __buf[__w++] = '/';
+    for (std::size_t __i = 0; __i < __rn; ++__i) __buf[__w++] = __src[__i];
+    __buf[__w] = '\0';
+    __joined._M_str = __buf;
+    __joined._M_len = __w;
+    // __joined's destructor frees the previous copy once.
+    _M_swap(__joined);
+    return *this;
+}
+
+inline path operator/(const path& __lhs, const path& __rhs) {
+    path __out(__lhs);
+    __out /= __rhs;
+    return __out;
+}
+
+}  // namespace std::filesystem
+
+#endif
