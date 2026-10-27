@@ -37,6 +37,50 @@ std::vector<int> sink_arg_indices(const std::string& name) {
     return {0};
 }
 
+bool taint_id_char(char c) {
+    return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
+}
+
+bool taint_plain_ident(const std::string& s) {
+    if (s.empty() || !(std::isalpha(static_cast<unsigned char>(s.front())) || s.front() == '_')) return false;
+    for (char c : s)
+        if (!taint_id_char(c)) return false;
+    return true;
+}
+
+std::string taint_compact(const std::string& s) {
+    std::string o;
+    o.reserve(s.size());
+    for (char c : s)
+        if (!std::isspace(static_cast<unsigned char>(c))) o.push_back(c);
+    return o;
+}
+
+// A non-identifier label (`*p`, `*&buf`) matches when that expression occurs
+// in the sink argument. Whitespace is ignored; an identifier character on
+// either side blocks a partial overlap (`*p` is not `*ptr` or `x*p`).
+bool taint_expr_in(const std::string& arg, const std::string& label) {
+    if (taint_plain_ident(label)) return false;
+    bool named = false;
+    for (char c : label)
+        if (std::isalpha(static_cast<unsigned char>(c)) || c == '_') named = true;
+    if (!named) return false;
+    auto hay = taint_compact(arg);
+    auto needle = taint_compact(label);
+    if (needle.empty() || hay.size() < needle.size()) return false;
+    std::size_t from = 0;
+    while (from + needle.size() <= hay.size()) {
+        auto pos = hay.find(needle, from);
+        if (pos == std::string::npos) return false;
+        bool left = pos == 0 || !taint_id_char(hay[pos - 1]);
+        auto end = pos + needle.size();
+        bool right = end == hay.size() || !(taint_id_char(needle.back()) && taint_id_char(hay[end]));
+        if (left && right) return true;
+        from = pos + 1;
+    }
+    return false;
+}
+
 bool arg_is_tainted(const std::string& arg, const std::set<std::string>& tainted) {
     static Regex str_re(R"("([^"\\]|\\.)*")");
     std::string stripped;
@@ -53,6 +97,8 @@ bool arg_is_tainted(const std::string& arg, const std::set<std::string>& tainted
     static Regex ident("\\b([A-Za-z_]\\w*)\\b");
     for (auto& m : ident.finditer(stripped))
         if (tainted.contains(m.group(1))) return true;
+    for (auto& name : tainted)
+        if (taint_expr_in(stripped, name)) return true;
     return false;
 }
 
@@ -98,20 +144,27 @@ void mark_source_taint(const std::string& stmt_s, std::set<std::string>& tainted
         for (auto& m : call.finditer(stmt_s)) {
             auto args = taint_split_args(m.named("args"));
             if (args.empty()) continue;
-            auto take = [](std::string a) {
+            // '&' is the address of the buffer on every source (`fread(&buf)`,
+            // `read(fd, &buf, n)`). '*' is stripped only for scanf
+            // (`scanf("%s", *p)` names p). On the other sources a leading '*'
+            // is the pointer expression and stays, so `fread(*p)` does not
+            // label the different name p. A '[' subscript is cut after that,
+            // then surrounding whitespace, so `& buf` and `buf[i]` still name buf.
+            auto take = [](std::string a, bool scanf_star) {
                 a = strip(a);
-                while (!a.empty() && (a.front() == '&' || a.front() == '*')) a.erase(a.begin());
+                while (!a.empty() && (a.front() == '&' || (scanf_star && a.front() == '*')))
+                    a.erase(a.begin());
                 auto br = a.find('[');
                 if (br != std::string::npos) a = a.substr(0, br);
                 return strip(a);
             };
-            if (src == "read" && args.size() >= 2) tainted.insert(take(args[1]));
-            else if (src == "recv" && args.size() >= 2) tainted.insert(take(args[1]));
-            else if (src == "recvfrom" && args.size() >= 2) tainted.insert(take(args[1]));
-            else if (src == "fread") tainted.insert(take(args[0]));
-            else if (src == "fgets" || src == "gets") tainted.insert(take(args[0]));
+            if (src == "read" && args.size() >= 2) tainted.insert(take(args[1], false));
+            else if (src == "recv" && args.size() >= 2) tainted.insert(take(args[1], false));
+            else if (src == "recvfrom" && args.size() >= 2) tainted.insert(take(args[1], false));
+            else if (src == "fread") tainted.insert(take(args[0], false));
+            else if (src == "fgets" || src == "gets") tainted.insert(take(args[0], false));
             else if (src == "scanf") {
-                for (std::size_t i = 1; i < args.size(); ++i) tainted.insert(take(args[i]));
+                for (std::size_t i = 1; i < args.size(); ++i) tainted.insert(take(args[i], true));
             }
         }
     }

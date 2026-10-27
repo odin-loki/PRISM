@@ -168,6 +168,45 @@ TEST_CASE("wp: a whitespace-only return is kept in the obligation, not dropped")
     CHECK(truthy(t[0], "wp_qed"));
 }
 
+TEST_CASE("wp: a parentheses-only return is kept in the obligation, not dropped") {
+    // Peeling `()` / `( )` down to nothing and skipping it would leave only
+    // `return x + 1`, a tautology, and a proof of a path that returned no value.
+    struct Sample {
+        const char* ret;
+        const char* expr;
+    };
+    Sample samples[] = {
+        {"return ();", "()"},
+        {"return ( );", "( )"},
+        {"return(( ));", "(( ))"},
+    };
+    for (auto& s : samples) {
+        INFO(std::string(s.ret));
+        auto f = fn_from("wp_paren_return.c",
+                         std::string("int er(int x) {\n    // requires: x < 100\n    // ensures: result == x+1\n"
+                                     "    if (x > 0) ") +
+                             s.ret + "\n    return x + 1;\n}\n",
+                         "er");
+        REQUIRE(f.kind == "SCALAR");
+        auto recs = prism::run_wp({f}, 8);
+        REQUIRE(recs.size() == 1);
+        auto& r = recs[0];
+        INFO(r.status << ": " << r.message);
+        CHECK_FALSE(truthy(r, "wp_qed"));
+        CHECK_FALSE(prism::laws::is_proof(r.status));
+        auto rets = nlohmann::json::parse(extra_or(r, "wp_returns"));
+        REQUIRE(rets.is_array());
+        REQUIRE(rets.size() == 2);
+        CHECK(rets[0] == s.expr);
+        CHECK(rets[1] == "x + 1");
+        // The substituted VC wraps the expression in parentheses. Dropping the
+        // return would leave only `(x + 1) == (x+1)`.
+        auto piece = std::string("(") + s.expr + ")";
+        INFO(extra_or(r, "wp_vc"));
+        CHECK(extra_or(r, "wp_vc").find(piece) != std::string::npos);
+    }
+}
+
 TEST_CASE("wp and contracts: `return(expr);` is checked, not skipped") {
     // return(x) with ensures result == x+1 is false; return(x + 1) is true.
     auto bad = fn_from("ret_paren_bad.c",

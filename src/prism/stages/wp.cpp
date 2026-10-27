@@ -304,9 +304,12 @@ std::vector<Finding> run_wp(const std::vector<FunctionInfo>& functions, int unwi
         std::vector<std::string> returns;
         nlohmann::json rets = nlohmann::json::array();
         for (auto& m : ret_re.finditer(fn.body)) {
-            // An empty return expression is kept: its VC "()" is never a
-            // tautology, so no return path is dropped from the obligation
-            // (and bmc_with_assume refuses it as ERROR).
+            // Keep every matched return. `return;` and `return   ;` strip to
+            // "" and stay in the obligation: skipping that empty string drops
+            // the path and lets a later return prove the ensures. `return ()`
+            // and `return ( )` are not empty after strip and stay as that
+            // text; peeling them away and then skipping would drop the same
+            // path. An empty `&&` conjunct is still omitted; that is not a return.
             auto g = strip(m.group(1));
             returns.push_back(g);
             rets.push_back(g);

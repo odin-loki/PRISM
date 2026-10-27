@@ -231,3 +231,53 @@ TEST_CASE("taint: never CLEAN or PROVED") {
         CHECK(f.status != prism::laws::PROVED);
     }
 }
+
+// Leading '*' is stripped only for scanf. On read/recv/fread/fgets it is the
+// pointer expression: that expression stays tainted, and the bare name is not.
+static bool taint_sink(const char* body) {
+    prism::FunctionInfo f;
+    f.file = "synthetic.c";
+    f.name = "fn";
+    f.line = 1;
+    f.body = body;
+    for (auto& r : prism::run_taint({f}))
+        if (r.cls == "TAINT-SINK") return true;
+    return false;
+}
+
+TEST_CASE("taint: leading * stays on non-scanf sources and is stripped for scanf") {
+    CHECK(taint_sink("fread(&buf, 1, 8, stdin); system(buf);"));
+    CHECK(taint_sink("fread(& buf, 1, 8, stdin); system(buf);"));
+    CHECK(taint_sink("fread(&buf[i], 1, 8, stdin); system(buf);"));
+    CHECK(taint_sink("read(0, &buf, 8); system(buf);"));
+    CHECK(taint_sink("fgets(&line, 8, stdin); system(line);"));
+    CHECK(taint_sink("recv(0, &buf, 8, 0); system(buf);"));
+    CHECK(taint_sink("recvfrom(0, &buf, 8, 0, 0, 0); system(buf);"));
+
+    CHECK(taint_sink("scanf(\"%s\", *p); system(p);"));
+    CHECK(taint_sink("scanf(\"%s\", * p); system(p);"));
+    CHECK(taint_sink("scanf(\"%d\", &n); system(n);"));
+    CHECK(taint_sink("scanf(\"%s\", *&buf); system(buf);"));
+
+    CHECK(taint_sink("fread(*p, 1, 8, stdin); system(*p);"));
+    CHECK(taint_sink("fread(* p, 1, 8, stdin); system(*p);"));
+    CHECK(taint_sink("fread(*p, 1, 8, stdin); system(* p);"));
+    CHECK(taint_sink("fread(*p[i], 1, 8, stdin); system(*p);"));
+    CHECK(taint_sink("fgets(*line, 8, stdin); system(*line);"));
+    CHECK(taint_sink("read(0, *p, 8); system(*p);"));
+    CHECK(taint_sink("fread(*&buf, 1, 8, stdin); system(*&buf);"));
+    CHECK(taint_sink("fread(&*buf, 1, 8, stdin); system(*buf);"));
+    CHECK(taint_sink("fread(*p, 1, 8, stdin); system(*p + 1);"));
+
+    CHECK_FALSE(taint_sink("fread(*p, 1, 8, stdin); system(p);"));
+    CHECK_FALSE(taint_sink("fread(* p, 1, 8, stdin); system(p);"));
+    CHECK_FALSE(taint_sink("fgets(*line, 8, stdin); system(line);"));
+    CHECK_FALSE(taint_sink("read(0, *p, 8); system(p);"));
+    CHECK_FALSE(taint_sink("recv(0, *p, 8, 0); system(p);"));
+    CHECK_FALSE(taint_sink("recvfrom(0, *p, 8, 0, 0, 0); system(p);"));
+    CHECK_FALSE(taint_sink("gets(*p); system(p);"));
+    CHECK_FALSE(taint_sink("fread(*&buf, 1, 8, stdin); system(buf);"));
+    CHECK_FALSE(taint_sink("fread(&*buf, 1, 8, stdin); system(buf);"));
+    CHECK_FALSE(taint_sink("fread(*p, 1, 8, stdin); system(x * p);"));
+    CHECK_FALSE(taint_sink("fread(*count, 1, 8, stdin); system(*counter);"));
+}
