@@ -452,3 +452,80 @@ TEST_CASE("confidence: the empty-scope report.md shows 0 and never n/a") {
     CHECK(text.find("**0**") != std::string::npos);
     CHECK(text.find("n/a") == std::string::npos);
 }
+
+// ---- functions.json: a partial list is not a successful read
+
+namespace {
+
+void check_roundtrip_fields(const prism::FunctionInfo& got, const prism::FunctionInfo& want) {
+    CHECK(got.file == want.file);
+    CHECK(got.name == want.name);
+    CHECK(got.kind == want.kind);
+    CHECK(got.line == want.line);
+    CHECK(got.signature == want.signature);
+    CHECK(got.params == want.params);
+    CHECK(got.return_type == want.return_type);
+    CHECK(got.is_static == want.is_static);
+    CHECK(got.body == want.body);
+    CHECK(got.span == want.span);
+    CHECK(got.body_line == want.body_line);
+    CHECK(got.body_col == want.body_col);
+}
+
+prism::FunctionInfo journal_fn(const std::string& name, int line, const std::string& body, bool is_static) {
+    auto f = cfn(name);
+    f.line = line;
+    f.signature = "int " + name + "(int x)";
+    f.params.emplace_back("int", "x");
+    f.return_type = "int";
+    f.is_static = is_static;
+    f.body = body;
+    f.span = {line, line + 30};
+    f.body_line = line;
+    f.body_col = 12;
+    return f;
+}
+
+}  // namespace
+
+TEST_CASE("journal: a file of only valid functions is returned") {
+    auto out = fresh_dir("fns_ok");
+    auto add = journal_fn("add", 4, "return x;", false);
+    auto sub = journal_fn("sub", 8, "return -x;", true);
+    prism::journal_write_functions(out, {add, sub});
+    std::size_t malformed = 7;
+    auto fns = prism::journal_read_functions(out, &malformed);
+    CHECK(malformed == 0);
+    REQUIRE(fns.size() == 2);
+    check_roundtrip_fields(fns[0], add);
+    check_roundtrip_fields(fns[1], sub);
+}
+
+TEST_CASE("journal: one valid function and one non-object is an empty read") {
+    auto out = fresh_dir("fns_nonobj");
+    auto add = journal_fn("add", 4, "return x;", false);
+    prism::journal_write_functions(out, {add});
+    std::size_t malformed = 7;
+    auto before = prism::journal_read_functions(out, &malformed);
+    CHECK(malformed == 0);
+    REQUIRE(before.size() == 1);
+    check_roundtrip_fields(before[0], add);
+
+    // Append one non-object beside that valid entry.
+    auto j = nlohmann::json::parse(slurp(out / prism::FUNCTIONS_JSON));
+    REQUIRE(j.is_array());
+    REQUIRE(j.size() == 1);
+    REQUIRE(j[0].is_object());
+    j.push_back(nlohmann::json("not an object"));
+    {
+        std::ofstream f(out / prism::FUNCTIONS_JSON, std::ios::binary);
+        REQUIRE(f);
+        f << j.dump();
+    }
+    malformed = 0;
+    auto fns = prism::journal_read_functions(out, &malformed);
+    // A partial list would let --resume skip classify and drop this function.
+    CHECK(fns.empty());
+    CHECK(malformed > 0);
+    CHECK(malformed == 1);
+}
