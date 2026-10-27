@@ -1,0 +1,161 @@
+// PRISM operational model of <future> (roadmap 2.6, docs/PIR.md "C++ library
+// models"). The pir stage puts this directory first on the C++ include path,
+// so `#include <future>` reaches this file instead of libstdc++'s. It is a
+// file, not a directory: a directory of this name would make the include fail
+// with EISDIR and every such unit would fall back to libstdc++.
+//
+// A default future has no shared state. valid() is false. get() on it is
+// __prism_check (CXX-FUTURE-GET) and does not return a value-initialised T.
+// promise::set_value stores one T. A second set_value is __prism_check
+// (FUNC-CONTRACT) and does not overwrite, so the first value is not replaced
+// and a second T is not kept beside it. get() on the associated future
+// returns that stored value. A second get() is the same check.
+//
+// The shared state is one heap object plus the T allocated when set_value
+// succeeds. The link is a reference count, not std::shared_ptr. There is no
+// thread and no blocking.
+//
+// wait, wait_for, wait_until, async, and packaged_task are not declared.
+// A blocking wait that returns immediately would be a fake synchronization
+// success. A use of an omitted name fails to compile against this header
+// and pir falls back to libstdc++. shared_future, future<void>, and
+// future<T&> are not declared either, so those uses fall back too.
+//
+// Does not include <memory>, <thread>, <functional>, or <mutex>.
+// This header is not a concurrency proof.
+#ifndef _GLIBCXX_FUTURE
+#define _GLIBCXX_FUTURE 1
+
+#pragma GCC system_header
+
+// PIR intrinsic (translate.cpp). A literal class and message, as in the libc
+// models. Not defined here: the analysed program does not link a body.
+extern "C" void __prism_check(int ok, const char* cls, const char* msg);
+
+namespace std {
+
+template <typename _Tp>
+struct _Prism_future_state {
+    int _M_refs = 1;
+    bool _M_ready = false;
+    bool _M_retrieved = false;
+    _Tp* _M_value = nullptr;
+
+    _Prism_future_state() = default;
+    _Prism_future_state(const _Prism_future_state&) = delete;
+    _Prism_future_state& operator=(const _Prism_future_state&) = delete;
+
+    ~_Prism_future_state() { delete _M_value; }
+
+    void _M_retain() noexcept { ++_M_refs; }
+    void _M_release() noexcept {
+        if (--_M_refs == 0) delete this;
+    }
+};
+
+template <typename _Tp>
+class promise;
+
+template <typename _Tp>
+class future {
+    friend class promise<_Tp>;
+
+    _Prism_future_state<_Tp>* _M_state;
+
+    explicit future(_Prism_future_state<_Tp>* __s) noexcept : _M_state(__s) {}
+
+public:
+    future() noexcept : _M_state(nullptr) {}
+
+    future(future&& __o) noexcept : _M_state(__o._M_state) { __o._M_state = nullptr; }
+    future(const future&) = delete;
+    future& operator=(const future&) = delete;
+    future& operator=(future&& __o) noexcept {
+        if (this != &__o) {
+            if (_M_state != nullptr) _M_state->_M_release();
+            _M_state = __o._M_state;
+            __o._M_state = nullptr;
+        }
+        return *this;
+    }
+
+    ~future() {
+        if (_M_state != nullptr) _M_state->_M_release();
+    }
+
+    // False for a default future: it has no shared state.
+    bool valid() const noexcept { return _M_state != nullptr && !_M_state->_M_retrieved; }
+
+    // No stored value (no shared state, not set, or already retrieved) is
+    // CXX-FUTURE-GET. The object returned on the success path is the T
+    // set_value stored. This is not a value-initialised T.
+    _Tp get() {
+        const int __ok =
+            (_M_state != nullptr && _M_state->_M_ready && !_M_state->_M_retrieved) ? 1 : 0;
+        __prism_check(__ok, "CXX-FUTURE-GET", "future::get() with no stored value");
+        _M_state->_M_retrieved = true;
+        _Tp __out(static_cast<_Tp&&>(*_M_state->_M_value));
+        delete _M_state->_M_value;
+        _M_state->_M_value = nullptr;
+        _M_state->_M_ready = false;
+        return __out;
+    }
+};
+
+template <typename _Tp>
+class promise {
+    _Prism_future_state<_Tp>* _M_state;
+    bool _M_got;
+
+public:
+    promise() : _M_state(new _Prism_future_state<_Tp>), _M_got(false) {}
+    promise(const promise&) = delete;
+    promise(promise&& __o) noexcept : _M_state(__o._M_state), _M_got(__o._M_got) {
+        __o._M_state = nullptr;
+        __o._M_got = false;
+    }
+    promise& operator=(const promise&) = delete;
+    promise& operator=(promise&& __o) noexcept {
+        if (this != &__o) {
+            if (_M_state != nullptr) _M_state->_M_release();
+            _M_state = __o._M_state;
+            _M_got = __o._M_got;
+            __o._M_state = nullptr;
+            __o._M_got = false;
+        }
+        return *this;
+    }
+    ~promise() {
+        if (_M_state != nullptr) _M_state->_M_release();
+    }
+
+    future<_Tp> get_future() {
+        const int __ok = (_M_state != nullptr && !_M_got) ? 1 : 0;
+        __prism_check(__ok, "FUNC-CONTRACT", "promise::get_future() already retrieved");
+        if (!__ok) return future<_Tp>();
+        _M_got = true;
+        _M_state->_M_retain();
+        return future<_Tp>(_M_state);
+    }
+
+    // Check first, then allocate. A failing check does not store, so a second
+    // call cannot overwrite and cannot leave the new T beside the old one.
+    void set_value(const _Tp& __v) {
+        const int __ok = (_M_state != nullptr && !_M_state->_M_ready) ? 1 : 0;
+        __prism_check(__ok, "FUNC-CONTRACT", "promise::set_value() called again");
+        if (!__ok) return;
+        _M_state->_M_value = new _Tp(__v);
+        _M_state->_M_ready = true;
+    }
+    void set_value(_Tp&& __v) {
+        const int __ok = (_M_state != nullptr && !_M_state->_M_ready) ? 1 : 0;
+        __prism_check(__ok, "FUNC-CONTRACT", "promise::set_value() called again");
+        if (!__ok) return;
+        _M_state->_M_value = new _Tp(static_cast<_Tp&&>(__v));
+        _M_state->_M_ready = true;
+    }
+};
+
+}  // namespace std
+
+#endif
