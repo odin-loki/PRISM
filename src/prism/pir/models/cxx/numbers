@@ -1,0 +1,57 @@
+// Partial model of the <numbers> header. The pir stage puts this directory
+// first on the C++ include path, so a translation unit that names <numbers>
+// reaches this file instead of libstdc++. No standard header is included.
+// Special functions are omitted.
+//
+// Each name is a variable template. The initializer is a long double
+// decimal literal (the usual expansion). These values are not exact.
+// a comparison against these literals is not a proof of a numeric identity.
+#ifndef _GLIBCXX_NUMBERS
+#define _GLIBCXX_NUMBERS 1
+
+#pragma GCC system_header
+
+namespace std::numbers {
+
+template <typename _Tp>
+inline constexpr _Tp e = 2.718281828459045235360287471352662498L;
+
+template <typename _Tp>
+inline constexpr _Tp log2e = 1.442695040888963407359924681001892137L;
+
+template <typename _Tp>
+inline constexpr _Tp log10e = 0.434294481903251827651128918916605082L;
+
+template <typename _Tp>
+inline constexpr _Tp pi = 3.141592653589793238462643383279502884L;
+
+template <typename _Tp>
+inline constexpr _Tp inv_pi = 0.318309886183790671537767526745028724L;
+
+template <typename _Tp>
+inline constexpr _Tp inv_sqrtpi = 0.564189583547756286948079451560772586L;
+
+template <typename _Tp>
+inline constexpr _Tp ln2 = 0.693147180559945309417232121458176568L;
+
+template <typename _Tp>
+inline constexpr _Tp ln10 = 2.302585092994045684017991454684364208L;
+
+template <typename _Tp>
+inline constexpr _Tp sqrt2 = 1.414213562373095048801688724209698079L;
+
+template <typename _Tp>
+inline constexpr _Tp sqrt3 = 1.732050807568877293527446341505872367L;
+
+template <typename _Tp>
+inline constexpr _Tp inv_sqrt3 = 0.577350269189625764509148780501957456L;
+
+template <typename _Tp>
+inline constexpr _Tp egamma = 0.577215664901532860606512090082402431L;
+
+template <typename _Tp>
+inline constexpr _Tp phi = 1.618033988749894848204586834365638118L;
+
+}  // namespace std::numbers
+
+#endif  // _GLIBCXX_NUMBERS
