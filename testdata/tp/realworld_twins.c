@@ -1,5 +1,5 @@
-/* True-positive twins of testdata_fp/realworld_switch.c and
- * realworld_forms.c (docs/EVALUATION.md): each must still fire. */
+/* True-positive twins of testdata/fp/realworld_switch.c and
+ * testdata/fp/realworld_forms.c (docs/EVALUATION.md): each must still fire. */
 #include <stdlib.h>
 #include <string.h>
 

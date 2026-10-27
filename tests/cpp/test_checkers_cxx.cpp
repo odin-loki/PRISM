@@ -83,7 +83,7 @@ void run_cases(const std::vector<Case>& cases) {
 }  // namespace
 
 TEST_CASE("checkers: STR-STRNCPY-NUL and STR-SNPRINTF run on C sources only") {
-    // The planted C sources (testdata/strncpy_nul.c, testdata/snprintf_buf.c):
+    // The planted C sources (testdata/planted/strncpy_nul.c, testdata/planted/snprintf_buf.c):
     // a local char array filled by strncpy with no NUL store, and snprintf
     // with a size larger than the local array. The regex rules fire on the
     // .c copy and stay silent on every C++ suffix. (This gate covers the

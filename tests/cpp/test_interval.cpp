@@ -30,7 +30,7 @@ FunctionInfo in_file(const fs::path& p, const std::string& name) {
     return {};
 }
 
-// A testdata/*.c function by name.
+// A testdata/planted/*.c function by name.
 FunctionInfo fn(const std::string& name) {
     static std::map<std::string, FunctionInfo> all = [] {
         std::map<std::string, FunctionInfo> m;

@@ -538,7 +538,7 @@ record.
 | test file | kind | size | destination |
 |---|---|---|---|
 | `tests/__init__.py` | python-engine-behaviour | none | delete (no Python tests remain) |
-| `testdata/conformance/test_conformance_suite.py` | tool | L | port tools/conformance.py to a C++ executable (prism-conformance) with tests/cpp/test_conformance.cpp for convert/classify/parse_cex/gate/sample; corpus-shape checks -> C++ repo-lint; drop the … |
+| `tests/cpp/test_qa_conformance.cpp` | tool | L | port tools/conformance.py to a C++ executable (prism-conformance) with tests/cpp/test_conformance.cpp for convert/classify/parse_cex/gate/sample; corpus-shape checks -> C++ repo-lint; drop the … |
 | `tests/test_adapters.py` | python-engine-behaviour | L | new tests/cpp/test_adapters.cpp: fake-exe shell scripts in a temp dir fed to prism::run_cbmc (adapters.cpp:915), run_spatch (1108), run_semgrep (1268), run_infer (1340), run_optional_tools (2142), … |
 | `tests/test_afl.py` | python-engine-behaviour | S | merge into tests/cpp/test_fuse.cpp with test_prism_afl.py cases (fake afl-fuzz script) |
 | `tests/test_afl_flag.py` | python-engine-behaviour | S | tests/cpp/test_fuse.cpp: setenv PRISM_AFL with empty PATH and assert NOTRUN/engine!=afl |
@@ -558,8 +558,8 @@ record.
 | `tests/test_codeql.py` | mixed | S | C++ repo-lint (no 'codeql' in src/prism, taxonomy, polyglot tables; MANIFEST reason) + doctest that run_optional_tools never spawns a PATH codeql |
 | `tests/test_compiler.py` | python-engine-behaviour | M | tests/cpp/test_main.cpp 'warnings:' cases with fake gcc/clang scripts against prism::run_compiler (adapters.cpp:1750): unmatched exit, timeout, c++ std, same-binary dedup, no -w/-Wno-* |
 | `tests/test_conc.py` | mixed | S | tests/cpp/test_conc.cpp: add table-driven run over tests/conc and stage-order/EXEC_STAGES/origin checks; delete Python NOTRUN-row test |
-| `tests/test_concolic.py` | python-engine-behaviour | XL | tests/cpp/test_concolic.cpp (new doctest file) calling prism::run_concolic from src/prism/stages/concolic.cpp over testdata/*.c\|*.cpp; use a table-driven TEST_CASE (plant file, function, expected … |
-| `tests/test_concrete.py` | python-engine-behaviour | L | new tests/cpp/test_concrete.cpp against src/prism/stages/interp.cpp + fuse.cpp using testdata/*.c planted functions |
+| `tests/test_concolic.py` | python-engine-behaviour | XL | tests/cpp/test_concolic.cpp (new doctest file) calling prism::run_concolic from src/prism/stages/concolic.cpp over testdata/planted/*.{c,cpp}; use a table-driven TEST_CASE (plant file, function, expected … |
+| `tests/test_concrete.py` | python-engine-behaviour | L | new tests/cpp/test_concrete.cpp against src/prism/stages/interp.cpp + fuse.cpp using testdata/planted/*.c planted functions |
 | `tests/test_confidence.py` | python-engine-behaviour | S | tests/cpp/test_main.cpp confidence section: add the 5 missing cases |
 | `tests/test_contracts.py` | python-engine-behaviour | S | tests/cpp/test_contracts.cpp for star/call decreases and void contracts; rest delete |
 | `tests/test_core.py::TestBMC` | python-engine-behaviour | S | tests/cpp/test_main.cpp, in the #ifdef PRISM_HAS_Z3 block near line 679. Add TEST_CASE 'bmc proves saturate' and TEST_CASE 'bmc POINTER null_branch is NEEDS-HARNESS'. Add … |
@@ -584,7 +584,7 @@ record.
 | `tests/test_gui.py` | mixed | L | new tests/cpp/test_gui.cpp (QT_QPA_PLATFORM=offscreen, built only when PRISM_QT=ON; factor finding-row/confidence-label helpers out of MainWindow into a Qt-free unit so they test headless); delete … |
 | `tests/test_harness.py` | mixed | S | tests/cpp/test_main.cpp harness section: add plusplus overflow, uninit read, requires-copy PROVED-ASSUMING cases via prism::run_harness_bmc |
 | `tests/test_infer.py` | python-engine-behaviour | S | tests/cpp/test_adapters.cpp: prism::run_infer (adapters.cpp:1340) with fake-exe stubs |
-| `tests/test_inline.py` | python-engine-behaviour | S | new 'inline:' doctests in tests/cpp/test_main.cpp against prism::inline_static (inline.cpp:460) on testdata/inline_add.c |
+| `tests/test_inline.py` | python-engine-behaviour | S | new 'inline:' doctests in tests/cpp/test_main.cpp against prism::inline_static (inline.cpp:460) on testdata/planted/inline_add.c |
 | `tests/test_interval.py` | python-engine-behaviour | M | tests/cpp/test_interval.cpp table-driven over testdata plants via prism::run_interval |
 | `tests/test_jobs.py` | python-engine-behaviour | S | tests/cpp/test_cli.cpp: factor main.cpp argv parsing into a testable parse_args (or drive build/prism --jobs 3 via a ctest driver that checks report.json config) and a doctest that … |
 | `tests/test_journal.py` | python-engine-behaviour | S | tests/cpp/test_main.cpp journal section: add pipeline-resume cases against run_pipeline |

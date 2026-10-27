@@ -1,4 +1,4 @@
-/* The 64-bit twins of testdata_fp/long_arith.c: each overflows at
+/* The 64-bit twins of testdata/fp/long_arith.c: each overflows at
    LONG_MAX / LLONG_MAX, never at INT_MAX. */
 
 long next_long(long a)

@@ -258,7 +258,7 @@ Two things to keep in mind:
 - Pointer-parameter functions are never model-checked unguarded (Law 6).
   Write preconditions (one `// requires:` per line, at the top of the body)
   to get a verdict; a proof under them is `PROVED-ASSUMING`, never `PROVED`
-  (see `testdata/ptr_copy.c`):
+  (see `testdata/planted/ptr_copy.c`):
 
   ```c
   void copy(char *dst, char *src, int n)

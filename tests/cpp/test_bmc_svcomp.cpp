@@ -158,7 +158,7 @@ int main(void) {
 }
 
 TEST_CASE("bmc: a loop after a block comment keeps its source column in invariant_loops") {
-    // testdata/ai_invariants.c ai_sum_to_n with a comment before `while`.
+    // testdata/planted/ai_invariants.c ai_sum_to_n with a comment before `while`.
     auto by = bmc_run("loop_comment.c", R"(int sum_to_n(int n) {
     int i;
     int s;

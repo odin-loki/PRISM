@@ -248,7 +248,7 @@ The exit criterion is "the portfolio beats Z3 alone on total time over the
 conformance suite's VCs". `prism-qa solver-bench` (`src/tools/qa/solver_bench.cpp`)
 measures exactly that:
 `prism --pir-vcs` writes every VC of every encodable function of the 263
-conformance tasks (`testdata/conformance/prism` and `sv-comp`, unwind 8), and
+conformance tasks (`testdata/conformance/prism` and `testdata/conformance/sv-comp`, unwind 8), and
 `prism --solve-smt2` answers each VC three times back to back: Z3 alone
 (`--z3-only`), the portfolio with no history (a fresh history per VC), and
 the portfolio scheduling from the history it built on the VCs before

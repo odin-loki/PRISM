@@ -1,6 +1,6 @@
 /* long and size_t are 64 bits (LP64): none of this overflows. The interval
    and fuzz stages used to read long as a 32-bit int and report
-   INT-SIGNED-OVF here. The 64-bit twins are in testdata_tp/long_arith.c. */
+   INT-SIGNED-OVF here. The 64-bit twins are in testdata/tp/long_arith.c. */
 
 long scale_long(int a)
 {

@@ -5054,7 +5054,7 @@ TEST_CASE("ai template invariants move BOUNDED to PROVED-UNBOUNDED without a mod
         CHECK(r.extra["k_induction"] == "closed-invariants");
         CHECK(r.extra["invariants"].find('[') == 0);
         CHECK(r.extra["invariant_loops"].find("\"kind\"") != std::string::npos);
-        if (std::string(name) == "ai_sum_to_n")  // the while keyword in testdata/ai_invariants.c
+        if (std::string(name) == "ai_sum_to_n")  // the while keyword in testdata/planted/ai_invariants.c
             CHECK(r.extra["invariant_loops"] == R"([{"column":5,"kind":"while","line":13}])");
         // Soundness oracle: no UB on 2000 random/boundary inputs.
         CHECK_MESSAGE(oracle_ub(fn, 2000, 7).empty(), name);

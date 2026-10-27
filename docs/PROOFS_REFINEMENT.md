@@ -409,7 +409,7 @@ Pointers and the heap (2026-09-25): 85 more `agree-ext` functions over both
 trees (61 → 146), 0 mismatches. D118 (2026-10-25): **139** `agree-ext` total
 (65 + 74), 0 mismatches. Among them 24 of the pointer fixture
 `fixtures/pointers.pirl` (`testdata/pir/mem_ptr.c`, `mem_contract.c`,
-`testdata/stack_escape.c`: relational comparisons in and across objects,
+`testdata/planted/stack_escape.c`: relational comparisons in and across objects,
 pointer phis and selects, null dereferences, all seven stack-escape
 variants, contract-bound parameters incl. a write to a read-only one) and 42
 functions with heap objects: `malloc`/`calloc`/`free` and `new`/`delete`
@@ -514,7 +514,7 @@ verifies (`pir::lower_to_ir`; its instrumentation markers get stub
 definitions), and compares the printed result. It also checks
 the three Lean semantics agree as proved. On `testdata/pir` through the `prism` binary: 417 runs, 378
 compared with `lli`, **0 disagreements** (39 inputs have UB or poison and
-are not executed). On `testdata/*.c` (6 inputs per function): 3 603
+are not executed). On `testdata/planted/*.c` (6 inputs per function): 3 603
 compared, **0 disagreements**; 1 602 inputs belong to modules `lli` cannot
 run (unresolved externals elsewhere in the module) and are counted, not
 compared.
@@ -738,7 +738,7 @@ is claimed for them:
    `llvm.assume(false)` undefined behaviour, and so is a false
    `__builtin_assume` in C. Clang emits `llvm.assume` for `__builtin_assume`
    even at `-O0`; only `[[assume(...)]]` is dropped there
-   (`testdata/cxx_assume.cpp` has no call). `Tr::call` used to turn it
+   (`testdata/planted/cxx_assume.cpp` has no call). `Tr::call` used to turn it
    straight into a PIR `assume`, which discards the path, so
    `f(int x) { __builtin_assume(x > 0); return 100 / x; }` was PROVED
    although `f(0)` is undefined. It is now a `FUNC-CONTRACT` check of the
