@@ -1,0 +1,13 @@
+format_version: 1
+input_files: any_contracts.cpp
+language: C++
+property: libc-contract
+timeout: 300
+expected:
+  any_roundtrip_true: true
+  any_move_true: true
+  any_empty_cast_false: false
+  any_wrong_type_false: false
+expect_class:
+  any_empty_cast_false: "FUNC-CONTRACT"
+  any_wrong_type_false: "FUNC-CONTRACT"

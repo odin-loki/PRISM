@@ -1,0 +1,7 @@
+format_version: 1
+input_files: cxx_any_true.cpp
+language: C++
+property: noassert
+timeout: 600  # std::any any_cast: same task shape as cxx_list
+expected:
+  cxx_any_true: true

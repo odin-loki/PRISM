@@ -1,0 +1,233 @@
+// PRISM operational model of <any> (roadmap 2.6, docs/PIR.md "C++ library
+// models"). The pir stage puts this directory first on the C++ include path,
+// so `#include <any>` reaches this file instead of libstdc++'s. It is a file:
+// a directory of this name would make the include fail with EISDIR and the
+// unit would fall back to libstdc++.
+//
+// An empty any holds no object. any_cast<T> on an empty any, or on an any
+// that holds a different type, is a failed precondition (__prism_check,
+// FUNC-CONTRACT). That path throws std::bad_any_cast. It does not return
+// T{} and it does not read another type's bytes as T. The cast that
+// matches the type that was stored returns that object.
+//
+// The contained object is always on the heap (one allocation). reset, copy
+// and move assignment, and the destructor end that object's lifetime and
+// free the allocation. A move steals the pointer and leaves the source
+// empty, so the moved-from destructor does not free the same object. A
+// self-move-assignment is a no-op, as in libstdc++: the object is not
+// freed twice. libstdc++ keeps a nothrow-movable type that fits in a
+// pointer inside the any object; this model does not. A move here does not
+// call T's move constructor. Types larger than a pointer take libstdc++'s
+// heap manager, and those construction counts match.
+//
+// Omitted APIs are not declared. A unit that names one fails to compile
+// against this header, so pir falls back to libstdc++ (extra.cxx_models).
+// They are not stubbed:
+//   * make_any
+//   * any_cast pointer overloads (a null result is not a contained object,
+//     and a pointer at a different type's bytes would be a reinterpret)
+//   * type()
+//   * comparison
+//   * the initializer_list emplace / in_place overloads
+#ifndef _PRISM_MODEL_ANY
+#define _PRISM_MODEL_ANY 1
+#define _GLIBCXX_ANY 1  // libstdc++'s <any> include guard: never both
+
+#pragma GCC system_header
+
+#include <bits/c++config.h>
+#include <new>
+#include <type_traits>
+#include <typeinfo>
+#include <utility>
+
+// PIR intrinsic (translate.cpp model_intrinsic). Declared, not defined:
+// a definition here would be ordinary C++ and the call would not be the check.
+extern "C" void __prism_check(int, const char*, const char*);
+
+namespace std _GLIBCXX_VISIBILITY(default) {
+_GLIBCXX_BEGIN_NAMESPACE_VERSION
+
+class bad_any_cast : public bad_cast {
+public:
+    const char* what() const noexcept override { return "bad any_cast"; }
+};
+
+#define __cpp_lib_any 201606L
+
+// One address per contained type. Not a byte pattern and not type_info
+// (those reads are a different object). Distinct types do not compare equal.
+template <typename _Tp>
+struct _Prism_any_tag {
+    static inline const char id = 0;
+};
+
+struct _Prism_any_holder {
+    const void* _M_tag;
+    explicit _Prism_any_holder(const void* __tag) noexcept : _M_tag(__tag) {}
+    virtual ~_Prism_any_holder() = default;
+    virtual _Prism_any_holder* _M_clone() const = 0;
+};
+
+template <typename _Tp>
+struct _Prism_any_holder_impl : _Prism_any_holder {
+    _Tp _M_value;
+
+    template <typename... _Args>
+    explicit _Prism_any_holder_impl(_Args&&... __args)
+        : _Prism_any_holder(&_Prism_any_tag<_Tp>::id), _M_value(std::forward<_Args>(__args)...) {}
+
+    _Prism_any_holder* _M_clone() const override { return new _Prism_any_holder_impl(_M_value); }
+};
+
+template <typename _Tp>
+struct _Prism_is_in_place_type : false_type {};
+
+template <typename _Tp>
+struct _Prism_is_in_place_type<in_place_type_t<_Tp>> : true_type {};
+
+class any {
+    _Prism_any_holder* _M_ptr = nullptr;
+
+    // Null is empty: do not load a tag through it. A different tag is not T.
+    // Both failures are the check, then bad_any_cast, and neither yields a T.
+    template <typename _Up>
+    const _Up* _M_target() const {
+        if (_M_ptr == nullptr) {
+            __prism_check(_M_ptr != nullptr, "FUNC-CONTRACT",
+                          "any_cast requires a contained object of this type");
+            throw bad_any_cast();
+        }
+        const int __same = _M_ptr->_M_tag == static_cast<const void*>(&_Prism_any_tag<_Up>::id);
+        __prism_check(__same, "FUNC-CONTRACT", "any_cast requires a contained object of this type");
+        if (!__same) throw bad_any_cast();
+        return &static_cast<const _Prism_any_holder_impl<_Up>*>(_M_ptr)->_M_value;
+    }
+
+    template <typename _Up>
+    _Up* _M_target() {
+        return const_cast<_Up*>(static_cast<const any*>(this)->template _M_target<_Up>());
+    }
+
+public:
+    constexpr any() noexcept = default;
+
+    any(const any& __other) : _M_ptr(__other._M_ptr ? __other._M_ptr->_M_clone() : nullptr) {}
+
+    // Steals the allocation. The source is empty and its destructor does not
+    // free the object now owned here.
+    any(any&& __other) noexcept : _M_ptr(__other._M_ptr) { __other._M_ptr = nullptr; }
+
+    template <typename _Tp, typename _VTp = decay_t<_Tp>,
+              enable_if_t<is_copy_constructible_v<_VTp> && !is_same_v<_VTp, any> &&
+                              !_Prism_is_in_place_type<_VTp>::value,
+                          int> = 0>
+    any(_Tp&& __value) : _M_ptr(new _Prism_any_holder_impl<_VTp>(std::forward<_Tp>(__value))) {}
+
+    template <typename _Tp, typename... _Args, typename _VTp = decay_t<_Tp>,
+              enable_if_t<is_copy_constructible_v<_VTp> && is_constructible_v<_VTp, _Args...>, int> = 0>
+    explicit any(in_place_type_t<_Tp>, _Args&&... __args)
+        : _M_ptr(new _Prism_any_holder_impl<_VTp>(std::forward<_Args>(__args)...)) {}
+
+    ~any() { reset(); }
+
+    any& operator=(const any& __rhs) {
+        *this = any(__rhs);
+        return *this;
+    }
+
+    // Frees the previous object once, then steals. Self-move does neither:
+    // libstdc++ leaves the same object in place, and freeing it here would
+    // be a second free when the source (this) is destroyed.
+    any& operator=(any&& __rhs) noexcept {
+        if (!__rhs.has_value())
+            reset();
+        else if (this != &__rhs) {
+            reset();
+            _M_ptr = __rhs._M_ptr;
+            __rhs._M_ptr = nullptr;
+        }
+        return *this;
+    }
+
+    template <typename _Tp>
+    enable_if_t<!is_same_v<decay_t<_Tp>, any> && is_copy_constructible_v<decay_t<_Tp>>, any&>
+    operator=(_Tp&& __rhs) {
+        *this = any(std::forward<_Tp>(__rhs));
+        return *this;
+    }
+
+    template <typename _Tp, typename... _Args>
+    enable_if_t<is_copy_constructible_v<decay_t<_Tp>> && is_constructible_v<decay_t<_Tp>, _Args...>, decay_t<_Tp>&>
+    emplace(_Args&&... __args) {
+        using _VTp = decay_t<_Tp>;
+        reset();
+        auto* __h = new _Prism_any_holder_impl<_VTp>(std::forward<_Args>(__args)...);
+        _M_ptr = __h;
+        return __h->_M_value;
+    }
+
+    // Ends the contained object's lifetime and frees the allocation.
+    void reset() noexcept {
+        delete _M_ptr;
+        _M_ptr = nullptr;
+    }
+
+    void swap(any& __rhs) noexcept {
+        _Prism_any_holder* __tmp = _M_ptr;
+        _M_ptr = __rhs._M_ptr;
+        __rhs._M_ptr = __tmp;
+    }
+
+    // False when this any is empty (including after reset and after a move).
+    bool has_value() const noexcept { return _M_ptr != nullptr; }
+
+    // Qualified std::any_cast must be declared in namespace std. The friend
+    // declarations are what let those overloads read _M_target.
+    template <typename _ValueType>
+    friend _ValueType any_cast(const any&);
+    template <typename _ValueType>
+    friend _ValueType any_cast(any&);
+    template <typename _ValueType>
+    friend _ValueType any_cast(any&&);
+};
+
+inline void swap(any& __x, any& __y) noexcept { __x.swap(__y); }
+
+template <typename _ValueType>
+_ValueType any_cast(const any& __any) {
+    using _Up = remove_cvref_t<_ValueType>;
+    static_assert(is_reference_v<_ValueType> || is_copy_constructible_v<_ValueType>,
+                  "any_cast value type must be a reference or copy constructible");
+    static_assert(is_constructible_v<_ValueType, const _Up&>,
+                  "any_cast result must be constructible from a const lvalue");
+    const _Up* __p = __any.template _M_target<_Up>();
+    return static_cast<_ValueType>(*__p);
+}
+
+template <typename _ValueType>
+_ValueType any_cast(any& __any) {
+    using _Up = remove_cvref_t<_ValueType>;
+    static_assert(is_reference_v<_ValueType> || is_copy_constructible_v<_ValueType>,
+                  "any_cast value type must be a reference or copy constructible");
+    static_assert(is_constructible_v<_ValueType, _Up&>,
+                  "any_cast result must be constructible from an lvalue");
+    _Up* __p = __any.template _M_target<_Up>();
+    return static_cast<_ValueType>(*__p);
+}
+
+template <typename _ValueType>
+_ValueType any_cast(any&& __any) {
+    using _Up = remove_cvref_t<_ValueType>;
+    static_assert(is_reference_v<_ValueType> || is_copy_constructible_v<_ValueType>,
+                  "any_cast value type must be a reference or copy constructible");
+    static_assert(is_constructible_v<_ValueType, _Up>,
+                  "any_cast result must be constructible from an rvalue");
+    _Up* __p = __any.template _M_target<_Up>();
+    return static_cast<_ValueType>(std::move(*__p));
+}
+
+_GLIBCXX_END_NAMESPACE_VERSION
+}  // namespace std
+
+#endif  // _PRISM_MODEL_ANY
