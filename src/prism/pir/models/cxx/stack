@@ -1,0 +1,280 @@
+// PRISM operational model of <stack> (roadmap 2.6, docs/PIR.md "C++ library
+// models"). The pir stage puts this directory first on the C++ include path,
+// so `#include <stack>` reaches this file instead of libstdc++'s. libstdc++
+// implements std::stack as an adaptor over std::deque. Including <deque>,
+// <list>, or <vector> from here would pull those models (or libstdc++), so
+// this header keeps its own nodes: one heap node per element, from
+// std::allocator (operator new / operator delete, the PIR models).
+//
+// push / emplace allocate a node and construct the element in it. pop
+// destroys that element and deallocates the node. top() returns a reference
+// into the node, so the pop that removes that element frees the storage and
+// a later use of the reference is MEM-UAF. push, and pop of a newer element,
+// leave an older reference in place: only that element's node is freed.
+//
+// pop and top require a non-empty stack. The check is
+// __glibcxx_requires_nonempty(), i.e. __glibcxx_assert(!this->empty()). The
+// condition text does not mention size(), so PIR classifies it FUNC-CONTRACT.
+// An empty pop does not invent a value (pop is void) and does not destroy or
+// free a node. An empty top does not return a stand-in zero.
+//
+// Element order matches libstdc++ 13's deque adaptor: construction and
+// destruction run bottom to top, copy-assign assigns the common prefix then
+// copy-constructs a longer tail or destroys a discarded tail from the cut
+// toward the top, move steals the nodes, and a self-move clears. Comparisons
+// are lexicographical from the bottom.
+//
+// Not declared (the unit fails to compile against this header and the pir
+// stage lowers it again with libstdc++): a second template argument
+// (std::stack<T, Container>, including deque / list / vector), container and
+// allocator constructors, container_type, the protected container `c`,
+// from_range / push_range, and the container deduction guides.
+#ifndef _PRISM_MODEL_STACK
+#define _PRISM_MODEL_STACK 1
+#define _GLIBCXX_STACK 1  // libstdc++'s <stack> include guard: never both
+
+#pragma GCC system_header
+
+#include <bits/c++config.h>
+#include <bits/allocator.h>
+#include <bits/alloc_traits.h>
+#include <ext/aligned_buffer.h>
+#include <debug/assertions.h>
+#include <bits/stl_algobase.h>
+#include <type_traits>
+#include <utility>
+#include <compare>
+#include <memory>
+#include <new>
+
+namespace std _GLIBCXX_VISIBILITY(default) {
+_GLIBCXX_BEGIN_NAMESPACE_VERSION
+
+template <typename _Tp>
+class stack {
+    static_assert(is_same_v<typename remove_cv<_Tp>::type, _Tp>,
+                  "std::stack must have a non-const, non-volatile value_type");
+
+    struct _Node {
+        _Node* _M_next = nullptr;  // newer (toward the top)
+        _Node* _M_prev = nullptr;  // older (toward the bottom)
+        __gnu_cxx::__aligned_membuf<_Tp> _M_storage;
+        _Tp* _M_valptr() noexcept { return _M_storage._M_ptr(); }
+        const _Tp* _M_valptr() const noexcept { return _M_storage._M_ptr(); }
+    };
+    using _Node_alloc = allocator<_Node>;
+    using _Node_traits = allocator_traits<_Node_alloc>;
+
+public:
+    using value_type = _Tp;
+    using reference = _Tp&;
+    using const_reference = const _Tp&;
+    using size_type = size_t;
+
+private:
+    _Node* _M_top = nullptr;
+    _Node* _M_bot = nullptr;
+    size_type _M_size = 0;
+
+    template <typename... _Args>
+    _Node* _M_create(_Args&&... __args) {
+        _Node_alloc __na;
+        _Node* __n = _Node_traits::allocate(__na, 1);
+        ::new (static_cast<void*>(__n)) _Node;
+        try {
+            std::construct_at(__n->_M_valptr(), std::forward<_Args>(__args)...);
+        } catch (...) {
+            std::destroy_at(__n);
+            _Node_traits::deallocate(__na, __n, 1);
+            throw;
+        }
+        return __n;
+    }
+    void _M_drop(_Node* __n) noexcept {
+        std::destroy_at(__n->_M_valptr());
+        std::destroy_at(__n);
+        _Node_alloc __na;
+        _Node_traits::deallocate(__na, __n, 1);
+    }
+    void _M_link_top(_Node* __n) noexcept {
+        __n->_M_prev = _M_top;
+        __n->_M_next = nullptr;
+        if (_M_top)
+            _M_top->_M_next = __n;
+        else
+            _M_bot = __n;
+        _M_top = __n;
+        ++_M_size;
+    }
+    // Drops the top node. Precondition: !empty().
+    void _M_pop() noexcept {
+        _Node* __n = _M_top;
+        _M_top = __n->_M_prev;
+        if (_M_top)
+            _M_top->_M_next = nullptr;
+        else
+            _M_bot = nullptr;
+        --_M_size;
+        _M_drop(__n);
+    }
+    // Drops [__first, top], oldest of that range first (deque erases a suffix
+    // from the cut toward the back).
+    void _M_erase_from(_Node* __first) noexcept {
+        if (!__first) return;
+        if (__first->_M_prev) {
+            __first->_M_prev->_M_next = nullptr;
+            _M_top = __first->_M_prev;
+        } else {
+            _M_top = nullptr;
+            _M_bot = nullptr;
+        }
+        while (__first) {
+            _Node* __nxt = __first->_M_next;
+            --_M_size;
+            _M_drop(__first);
+            __first = __nxt;
+        }
+    }
+    void _M_clear() noexcept {
+        _Node* __p = _M_bot;
+        while (__p) {
+            _Node* __nxt = __p->_M_next;
+            _M_drop(__p);
+            __p = __nxt;
+        }
+        _M_top = _M_bot = nullptr;
+        _M_size = 0;
+    }
+    void _M_steal(stack& __x) noexcept {
+        _M_top = __x._M_top;
+        _M_bot = __x._M_bot;
+        _M_size = __x._M_size;
+        __x._M_top = __x._M_bot = nullptr;
+        __x._M_size = 0;
+    }
+
+public:
+    stack() = default;
+    stack(const stack& __x) {
+        try {
+            for (const _Node* __p = __x._M_bot; __p; __p = __p->_M_next) push(*__p->_M_valptr());
+        } catch (...) {
+            // The destructor does not run if this constructor throws.
+            _M_clear();
+            throw;
+        }
+    }
+    // Not noexcept. libstdc++'s implicit move constructor moves a deque, and
+    // that defaulted move is not noexcept, so is_nothrow_move_constructible
+    // <stack<int>> is false. Declaring this noexcept would make vector
+    // reallocation move stacks instead of copying them.
+    stack(stack&& __x) { _M_steal(__x); }
+    ~stack() { _M_clear(); }
+
+    stack& operator=(const stack& __x) {
+        if (this == std::__addressof(__x)) return *this;
+        _Node* __a = _M_bot;
+        const _Node* __b = __x._M_bot;
+        while (__a && __b) {
+            *__a->_M_valptr() = *__b->_M_valptr();
+            __a = __a->_M_next;
+            __b = __b->_M_next;
+        }
+        if (__b) {
+            for (; __b; __b = __b->_M_next) push(*__b->_M_valptr());
+        } else if (__a) {
+            _M_erase_from(__a);
+        }
+        return *this;
+    }
+    // libstdc++ deque move-assign clears, then steals. A self-move therefore
+    // destroys every element (bottom to top) and leaves the stack empty.
+    stack& operator=(stack&& __x) noexcept {
+        _M_clear();
+        _M_steal(__x);
+        return *this;
+    }
+
+    [[nodiscard]] bool empty() const { return _M_top == nullptr; }
+    [[nodiscard]] size_type size() const { return _M_size; }
+
+    [[nodiscard]] reference top() {
+        __glibcxx_requires_nonempty();
+        return *_M_top->_M_valptr();
+    }
+    [[nodiscard]] const_reference top() const {
+        __glibcxx_requires_nonempty();
+        return *_M_top->_M_valptr();
+    }
+
+    void push(const value_type& __x) { emplace(__x); }
+    void push(value_type&& __x) { emplace(std::move(__x)); }
+    template <typename... _Args>
+    decltype(auto) emplace(_Args&&... __args) {
+        _Node* __n = _M_create(std::forward<_Args>(__args)...);
+        _M_link_top(__n);
+        return *__n->_M_valptr();
+    }
+    // Empty pop hits the precondition and does not reach _M_pop. pop is void:
+    // it does not yield a value, and it does not destroy or free a node.
+    void pop() {
+        __glibcxx_requires_nonempty();
+        _M_pop();
+    }
+
+    void swap(stack& __s) noexcept {
+        std::swap(_M_top, __s._M_top);
+        std::swap(_M_bot, __s._M_bot);
+        std::swap(_M_size, __s._M_size);
+    }
+
+    [[nodiscard]] friend bool operator==(const stack& __x, const stack& __y) {
+        if (__x._M_size != __y._M_size) return false;
+        const _Node* __a = __x._M_bot;
+        const _Node* __b = __y._M_bot;
+        while (__a) {
+            if (!(*__a->_M_valptr() == *__b->_M_valptr())) return false;
+            __a = __a->_M_next;
+            __b = __b->_M_next;
+        }
+        return true;
+    }
+    [[nodiscard]] friend bool operator<(const stack& __x, const stack& __y) {
+        const _Node* __a = __x._M_bot;
+        const _Node* __b = __y._M_bot;
+        while (__a && __b) {
+            if (*__a->_M_valptr() < *__b->_M_valptr()) return true;
+            if (*__b->_M_valptr() < *__a->_M_valptr()) return false;
+            __a = __a->_M_next;
+            __b = __b->_M_next;
+        }
+        return __a == nullptr && __b != nullptr;
+    }
+    [[nodiscard]] friend bool operator!=(const stack& __x, const stack& __y) { return !(__x == __y); }
+    [[nodiscard]] friend bool operator>(const stack& __x, const stack& __y) { return __y < __x; }
+    [[nodiscard]] friend bool operator<=(const stack& __x, const stack& __y) { return !(__y < __x); }
+    [[nodiscard]] friend bool operator>=(const stack& __x, const stack& __y) { return !(__x < __y); }
+    [[nodiscard]] friend auto operator<=>(const stack& __x, const stack& __y)
+        -> decltype(__detail::__synth3way(std::declval<const _Tp&>(), std::declval<const _Tp&>())) {
+        using _Cat = decltype(__detail::__synth3way(std::declval<const _Tp&>(), std::declval<const _Tp&>()));
+        const _Node* __a = __x._M_bot;
+        const _Node* __b = __y._M_bot;
+        while (__a && __b) {
+            if (auto __c = __detail::__synth3way(*__a->_M_valptr(), *__b->_M_valptr()); __c != 0) return __c;
+            __a = __a->_M_next;
+            __b = __b->_M_next;
+        }
+        if (!__a && !__b) return _Cat::equivalent;
+        return __a ? _Cat::greater : _Cat::less;
+    }
+};
+
+template <typename _Tp>
+inline void swap(stack<_Tp>& __x, stack<_Tp>& __y) noexcept(noexcept(__x.swap(__y))) {
+    __x.swap(__y);
+}
+
+_GLIBCXX_END_NAMESPACE_VERSION
+}  // namespace std
+
+#endif

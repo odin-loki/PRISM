@@ -1,0 +1,17 @@
+format_version: 1
+input_files: stack_contracts.cpp
+language: C++
+property: libc-contract
+timeout: 600  # several stack functions in one run
+expected:
+  stack_push_true: true
+  stack_under_true: true
+  stack_pop_uaf_false: false
+  stack_top_empty_false: false
+  stack_pop_empty_false: false
+  stack_order_false: false
+expect_class:  # the violation each false harness plants
+  stack_pop_uaf_false: "MEM-UAF"
+  stack_top_empty_false: "FUNC-CONTRACT"
+  stack_pop_empty_false: "FUNC-CONTRACT"
+  stack_order_false: "FUNC-CONTRACT"
