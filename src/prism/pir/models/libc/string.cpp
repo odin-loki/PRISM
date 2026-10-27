@@ -44,7 +44,7 @@ char *strncpy(char *d, const char *s, size_t n) {
 
 /* requires: d and s strings; d writable for strlen(d)+strlen(s)+1 bytes */
 char *strcat(char *d, const char *s) {
-    __prism_check(d != 0, "STR-NULL-ARG", "strlen() called with unchecked pointer parameter d");
+    __prism_check(d != 0, "STR-NULL-ARG", "strcat() called with unchecked pointer parameter d");
     size_t k = strlen(d);
     size_t i = 0;
     while ((d[k + i] = s[i]) != 0) i++;
@@ -52,7 +52,7 @@ char *strcat(char *d, const char *s) {
 }
 
 char *strncat(char *d, const char *s, size_t n) {
-    __prism_check(d != 0, "STR-NULL-ARG", "strlen() called with unchecked pointer parameter d");
+    __prism_check(d != 0, "STR-NULL-ARG", "strncat() called with unchecked pointer parameter d");
     size_t k = strlen(d);
     size_t i = 0;
     for (; i < n && s[i]; i++) d[k + i] = s[i];
@@ -142,7 +142,7 @@ void *memchr(const void *s, int c, size_t n) {
 void *malloc(size_t n);
 
 char *strdup(const char *s) {
-    __prism_check(s != 0, "STR-NULL-ARG", "strlen() called with unchecked pointer parameter s");
+    __prism_check(s != 0, "STR-NULL-ARG", "strdup() called with unchecked pointer parameter s");
     size_t n = strlen(s);
     char *p = (char *)malloc(n + 1);
     if (!p) return 0;

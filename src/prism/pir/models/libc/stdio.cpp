@@ -29,8 +29,8 @@ extern "C" {
 size_t strlen(const char *s);
 
 FILE *fopen(const char *path, const char *mode) {
-    __prism_check(path != 0, "STR-NULL-ARG", "strlen() called with unchecked pointer parameter path");
-    __prism_check(mode != 0, "STR-NULL-ARG", "strlen() called with unchecked pointer parameter mode");
+    __prism_check(path != 0, "STR-NULL-ARG", "fopen() called with unchecked pointer parameter path");
+    __prism_check(mode != 0, "STR-NULL-ARG", "fopen() called with unchecked pointer parameter mode");
     (void)strlen(path);
     (void)strlen(mode);
     /* A failed fopen returns a null FILE. The success path is the only
@@ -101,12 +101,12 @@ int putchar(int c) { return prism_eof_or(c & 255); }
 /* fputs/puts: a non-negative value, or EOF; s must be a string. */
 int fputs(const char *s, FILE *f) {
     prism_file_ok(f);
-    __prism_check(s != 0, "STR-NULL-ARG", "strlen() called with unchecked pointer parameter s");
+    __prism_check(s != 0, "STR-NULL-ARG", "fputs() called with unchecked pointer parameter s");
     (void)strlen(s);
     return prism_nonneg_or_eof();
 }
 int puts(const char *s) {
-    __prism_check(s != 0, "STR-NULL-ARG", "strlen() called with unchecked pointer parameter s");
+    __prism_check(s != 0, "STR-NULL-ARG", "puts() called with unchecked pointer parameter s");
     (void)strlen(s);
     return prism_nonneg_or_eof();
 }

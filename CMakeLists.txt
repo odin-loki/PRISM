@@ -723,6 +723,7 @@ if(PRISM_TESTS)
     tests/cpp/test_wp_harness.cpp
     tests/cpp/test_concrete.cpp
     tests/cpp/test_concolic.cpp
+    tests/cpp/test_libc_messages.cpp
     tests/cpp/test_lint_corpus.cpp
     tests/cpp/test_pir_mem.cpp
     tests/cpp/test_ai_assist.cpp
