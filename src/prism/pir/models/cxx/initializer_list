@@ -1,0 +1,72 @@
+// PRISM operational model of <initializer_list>. The pir stage puts this
+// directory first on the C++ include path, so `#include <initializer_list>`
+// reaches this file instead of libstdc++'s.
+//
+// A non-owning view of the array the compiler builds for a braced list:
+// one const T* and a size. This type does not allocate and does not free.
+// The destructor does not free that array; the compiler owns it. An empty
+// list has size 0 and begin() == end(). Nothing here yields a made-up T
+// for a past-the-end pointer.
+//
+// Subscript is not part of std::initializer_list and is not declared.
+// Anything else is omitted so an unmodeled use fails to compile and the
+// pir stage lowers that translation unit again with libstdc++.
+#ifndef _GLIBCXX_INITIALIZER_LIST
+#define _GLIBCXX_INITIALIZER_LIST 1
+// Older libstdc++ guarded this header with _INITIALIZER_LIST. Set that too
+// so the two headers are never both active.
+#define _INITIALIZER_LIST 1
+
+#pragma GCC system_header
+
+#include <cstddef>
+
+namespace std {
+
+template <typename _E>
+class initializer_list {
+public:
+    using value_type = _E;
+    using reference = const _E&;
+    using const_reference = const _E&;
+    using size_type = size_t;
+    using iterator = const _E*;
+    using const_iterator = const _E*;
+
+    constexpr initializer_list() noexcept : _M_array(nullptr), _M_len(0) {}
+
+    // Does not free the compiler-owned array.
+    constexpr ~initializer_list() noexcept = default;
+
+    constexpr size_type size() const noexcept { return _M_len; }
+
+    constexpr const_iterator begin() const noexcept { return _M_array; }
+
+    // One past the last element. Empty: the same pointer as begin(), with
+    // no arithmetic on a null pointer and no fabricated element.
+    constexpr const_iterator end() const noexcept {
+        return _M_len == 0 ? _M_array : _M_array + _M_len;
+    }
+
+private:
+    const_iterator _M_array;
+    size_type _M_len;
+
+    // The compiler calls this with the array it built. Stores the pointer
+    // and the length. Does not allocate.
+    constexpr initializer_list(const_iterator __a, size_type __l) noexcept : _M_array(__a), _M_len(__l) {}
+};
+
+template <typename _E>
+constexpr const _E* begin(initializer_list<_E> __ils) noexcept {
+    return __ils.begin();
+}
+
+template <typename _E>
+constexpr const _E* end(initializer_list<_E> __ils) noexcept {
+    return __ils.end();
+}
+
+}  // namespace std
+
+#endif
