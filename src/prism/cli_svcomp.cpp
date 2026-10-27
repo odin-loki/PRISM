@@ -96,7 +96,8 @@ fs::path make_temp_dir(const fs::path& parent, const std::string& prefix) {
 // Run the pipeline in this process with exactly the SV-COMP stages, no LLM
 // and no execution of task code (allow_exec stays off: replay is the only
 // step that runs the task, and it is gated separately).
-std::optional<json> run_prism(const fs::path& task_c, const fs::path& out, std::string& error) {
+std::optional<json> run_prism(const fs::path& task_c, const fs::path& out, const std::string& data_model,
+                              std::string& error) {
     Config cfg = default_config();
     cfg.llm = false;
     cfg.allow_exec = false;
@@ -106,6 +107,7 @@ std::optional<json> run_prism(const fs::path& task_c, const fs::path& out, std::
     cfg.stages = stages;
     cfg.root = fs::absolute(task_c);
     cfg.out = fs::absolute(out);
+    cfg.data_model = upper(data_model);
     try {
         Silence quiet;
         (void)run_pipeline(cfg);
@@ -146,13 +148,7 @@ Outcome solve(const fs::path& task, const fs::path& prop_file, const SolveOption
                                json::object()};
         return oc;
     }
-    const std::string src_text = read_text(task);
     const std::string dm = upper(opt.data_model);
-    if (dm == "ILP32" && width_dependent_code(src_text)) {
-        oc.decision = Decision{"unknown", "ILP32 task uses width-dependent types; PRISM's encoders are LP64",
-                               std::nullopt, json::object()};
-        return oc;
-    }
     std::error_code ec;
     fs::create_directories(opt.out, ec);
     // Preprocessed .i tasks are C; copy to .c so clang names the unit consistently.
@@ -163,7 +159,7 @@ Outcome solve(const fs::path& task, const fs::path& prop_file, const SolveOption
         return oc;
     }
     std::string error;
-    auto report = run_prism(task_c, opt.out / "prism-out", error);
+    auto report = run_prism(task_c, opt.out / "prism-out", dm, error);
     if (!report) {
         oc.decision = Decision{"error", error, std::nullopt, json::object()};
         return oc;
@@ -176,7 +172,7 @@ Outcome solve(const fs::path& task, const fs::path& prop_file, const SolveOption
             for (const auto& [_, v] : *trace) values->push_back(v);
         }
         fs::path d = make_temp_dir(opt.out, "prism-replay-");
-        json r = replay(task, prop, opt.allow_exec, values, d);
+        json r = replay(task, prop, opt.allow_exec, values, d, dm);
         std::error_code rm;
         fs::remove_all(d, rm);
         return r;

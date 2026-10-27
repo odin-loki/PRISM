@@ -2,7 +2,7 @@
 // (inside its anonymous namespace, under PRISM_HAS_Z3). The Python engine
 // mirrors this file in prism/bmc.py; both must give identical verdicts.
 //
-// Semantics (C11, LP64 x86-64; docs/CONFORMANCE.md S1-S7, F1):
+// Semantics (C11; LP64 or ILP32 from g_abi / Config::data_model; docs/CONFORMANCE.md S1-S7, F1):
 //  * every value carries its C type (width, signedness): TV;
 //  * integer promotions (6.3.1.1) and the usual arithmetic conversions
 //    (6.3.1.8) are applied before every arithmetic operator and comparison;
@@ -48,24 +48,32 @@ std::optional<CType> ctype_parse(std::string_view typ_in) {
         while (ss >> wd) words.push_back(wd);
     }
     if (words.empty()) return std::nullopt;
-    static const std::map<std::string, CType> NAMED = {
-        {"_bool", {1, true}}, {"bool", {1, true}},
-        {"int8_t", {8, false}}, {"uint8_t", {8, true}},
-        {"int16_t", {16, false}}, {"uint16_t", {16, true}},
-        {"int32_t", {32, false}}, {"uint32_t", {32, true}},
-        {"int64_t", {64, false}}, {"uint64_t", {64, true}},
-        {"size_t", {64, true}}, {"ssize_t", {64, false}},
-        {"ptrdiff_t", {64, false}}, {"intptr_t", {64, false}},
-        {"uintptr_t", {64, true}}, {"intmax_t", {64, false}},
-        {"uintmax_t", {64, true}},
-        {"u_char", {8, true}}, {"u_short", {16, true}},
-        {"u_int", {32, true}}, {"u_long", {64, true}},
-        {"wchar_t", {32, false}}, {"char8_t", {8, true}},
-        {"char16_t", {16, true}}, {"char32_t", {32, true}},
-    };
     if (words.size() == 1) {
-        auto it = NAMED.find(words[0]);
-        if (it != NAMED.end()) return it->second;
+        const auto& w = words[0];
+        if (w == "_bool" || w == "bool") return CType{1, true};
+        if (w == "int8_t") return CType{8, false};
+        if (w == "uint8_t") return CType{8, true};
+        if (w == "int16_t") return CType{16, false};
+        if (w == "uint16_t") return CType{16, true};
+        if (w == "int32_t") return CType{32, false};
+        if (w == "uint32_t") return CType{32, true};
+        if (w == "int64_t") return CType{64, false};
+        if (w == "uint64_t") return CType{64, true};
+        if (w == "size_t") return CType{g_abi.size_w, true};
+        if (w == "ssize_t") return CType{g_abi.size_w, false};
+        if (w == "ptrdiff_t") return CType{g_abi.ptr_w, false};
+        if (w == "intptr_t") return CType{g_abi.ptr_w, false};
+        if (w == "uintptr_t") return CType{g_abi.ptr_w, true};
+        if (w == "intmax_t") return CType{g_abi.long_long_w, false};
+        if (w == "uintmax_t") return CType{g_abi.long_long_w, true};
+        if (w == "u_char") return CType{8, true};
+        if (w == "u_short") return CType{16, true};
+        if (w == "u_int") return CType{32, true};
+        if (w == "u_long") return CType{g_abi.long_w, true};
+        if (w == "wchar_t") return CType{32, false};
+        if (w == "char8_t") return CType{8, true};
+        if (w == "char16_t") return CType{16, true};
+        if (w == "char32_t") return CType{32, true};
     }
     bool is_u = false, is_s = false;
     int n_long = 0, n_short = 0, n_char = 0, n_int = 0;
@@ -83,7 +91,8 @@ std::optional<CType> ctype_parse(std::string_view typ_in) {
     if (n_short && n_long) return std::nullopt;
     if (n_char) return CType{8, is_u};
     if (n_short) return CType{16, is_u};
-    if (n_long) return CType{64, is_u};
+    if (n_long >= 2) return CType{g_abi.long_long_w, is_u};
+    if (n_long == 1) return CType{g_abi.long_w, is_u};
     return CType{32, is_u};
 }
 
@@ -2303,7 +2312,10 @@ int char_lit_value(const std::string& tok) {
     return v > 127 ? v - 256 : v;
 }
 
-// Integer constant with its C type (C11 6.4.4.1p5, LP64).
+// Integer constant with its C type (C11 6.4.4.1p5). Rank order follows the
+// suffix; g_abi picks long vs long long (LP64: both 64; ILP32: long is 32,
+// so a suffixed value that does not fit is long long, not a truncated 32-bit
+// constant and not left unencoded).
 TV int_literal(Enc& e, const std::string& tok) {
     // C23 digit separators: 1'000 is 1000.
     std::string digits;
@@ -2340,19 +2352,32 @@ TV int_literal(Enc& e, const std::string& tok) {
         throw ParseFail("UNENCODED: integer literal " + tok);
     }
     std::vector<CType> cands;
-    if (has_u) {
-        if (nl == 0) cands.push_back({32, true});
-        cands.push_back({64, true});
-    } else if (decimal) {
-        if (nl == 0) cands.push_back({32, false});
-        cands.push_back({64, false});
-    } else {
+    auto add = [&](int w, bool u) {
+        for (const auto& c : cands)
+            if (c.w == w && c.u == u) return;
+        cands.push_back(CType{w, u});
+    };
+    const int lw = g_abi.long_w;
+    const int llw = g_abi.long_long_w;
+    if (!has_u && decimal) {
+        if (nl == 0) add(32, false);
+        if (nl <= 1) add(lw, false);
+        add(llw, false);
+    } else if (!has_u) {
         if (nl == 0) {
-            cands.push_back({32, false});
-            cands.push_back({32, true});
+            add(32, false);
+            add(32, true);
         }
-        cands.push_back({64, false});
-        cands.push_back({64, true});
+        if (nl <= 1) {
+            add(lw, false);
+            add(lw, true);
+        }
+        add(llw, false);
+        add(llw, true);
+    } else {
+        if (nl == 0) add(32, true);
+        if (nl <= 1) add(lw, true);
+        add(llw, true);
     }
     for (auto& c : cands) {
         uint64_t maxv = c.w == 64 ? (c.u ? ~uint64_t{0} : (uint64_t{1} << 63) - 1)
@@ -2371,32 +2396,50 @@ const std::unordered_set<std::string> CAST_TYPE_WORDS = {
 };
 
 // Object-like macros the encoder knows without a preprocessor: <limits.h>,
-// <stdint.h>, <stdlib.h>, <stdbool.h> (LP64 glibc values). A #define in the
-// file itself takes precedence (Parser::macros).
+// <stdint.h>, <stdlib.h>, <stdbool.h>. A #define in the file itself takes
+// precedence (Parser::macros).
 const std::map<std::string, std::string>& builtin_macros() {
-    static const std::map<std::string, std::string> M = {
+    static const std::map<std::string, std::string> kCommon = {
         {"CHAR_BIT", "8"},
         {"SCHAR_MIN", "(-128)"}, {"SCHAR_MAX", "127"}, {"UCHAR_MAX", "255"},
         {"CHAR_MIN", "(-128)"}, {"CHAR_MAX", "127"},
         {"SHRT_MIN", "(-32768)"}, {"SHRT_MAX", "32767"}, {"USHRT_MAX", "65535"},
         {"INT_MIN", "(-2147483647 - 1)"}, {"INT_MAX", "2147483647"},
         {"UINT_MAX", "4294967295U"},
-        {"LONG_MIN", "(-9223372036854775807L - 1L)"}, {"LONG_MAX", "9223372036854775807L"},
-        {"ULONG_MAX", "18446744073709551615UL"},
         {"LLONG_MIN", "(-9223372036854775807LL - 1LL)"}, {"LLONG_MAX", "9223372036854775807LL"},
         {"ULLONG_MAX", "18446744073709551615ULL"},
         {"INT8_MIN", "(-128)"}, {"INT8_MAX", "127"}, {"UINT8_MAX", "255"},
         {"INT16_MIN", "(-32768)"}, {"INT16_MAX", "32767"}, {"UINT16_MAX", "65535"},
         {"INT32_MIN", "(-2147483647 - 1)"}, {"INT32_MAX", "2147483647"},
         {"UINT32_MAX", "4294967295U"},
-        {"INT64_MIN", "(-9223372036854775807L - 1L)"}, {"INT64_MAX", "9223372036854775807L"},
-        {"UINT64_MAX", "18446744073709551615UL"},
-        {"SIZE_MAX", "18446744073709551615UL"},
+        {"INT64_MIN", "(-9223372036854775807LL - 1LL)"}, {"INT64_MAX", "9223372036854775807LL"},
+        {"UINT64_MAX", "18446744073709551615ULL"},
         {"RAND_MAX", "2147483647"},
         {"EXIT_SUCCESS", "0"}, {"EXIT_FAILURE", "1"},
         {"true", "1"}, {"false", "0"}, {"NULL", "0"},
     };
-    return M;
+    static const std::map<std::string, std::string> kLp64Long = {
+        {"LONG_MIN", "(-9223372036854775807L - 1L)"}, {"LONG_MAX", "9223372036854775807L"},
+        {"ULONG_MAX", "18446744073709551615UL"},
+        {"SIZE_MAX", "18446744073709551615UL"},
+    };
+    static const std::map<std::string, std::string> kIlp32Long = {
+        {"LONG_MIN", "(-2147483647L - 1L)"}, {"LONG_MAX", "2147483647L"},
+        {"ULONG_MAX", "4294967295UL"},
+        {"SIZE_MAX", "4294967295U"},
+    };
+    // Filled once each. Rebuilding a single map would invalidate a reference
+    // still held across an LP64/ILP32 switch. Any long width other than 32
+    // keeps the LP64 limits.
+    static std::map<std::string, std::string> lp64;
+    static std::map<std::string, std::string> ilp32;
+    auto& slot = g_abi.long_w == 32 ? ilp32 : lp64;
+    if (slot.empty()) {
+        slot = kCommon;
+        const auto& lw = g_abi.long_w == 32 ? kIlp32Long : kLp64Long;
+        for (const auto& [k, v] : lw) slot.emplace(k, v);
+    }
+    return slot;
 }
 
 // A number may carry C23 / C++14 digit separators (`1'000`, `0xFF'FF`); the
@@ -2693,7 +2736,9 @@ TV model_call(Enc& e, const std::string& tagged, std::vector<TV>& args) {
     };
     if (t == "abs" || t == "labs" || t == "llabs") {
         nargs(1);
-        CType ct = t == "abs" ? CType{32, false} : CType{64, false};
+        CType ct = t == "abs" ? CType{32, false}
+                              : t == "labs" ? CType{g_abi.long_w, false}
+                                            : CType{g_abi.long_long_w, false};
         auto a = e.conv(e.promote(args[0]), ct);
         // abs(INT_MIN) is undefined (C11 7.22.6.1p2).
         e.add_prop("abs", "INT-SIGNED-OVF", a.v == e.bv_min(ct.w), e.pc);
@@ -2701,21 +2746,26 @@ TV model_call(Enc& e, const std::string& tagged, std::vector<TV>& args) {
     }
     if (t == "__builtin_expect") {
         nargs(2);
-        return e.conv(args[0], CType{64, false});
+        return e.conv(args[0], CType{g_abi.long_w, false});
     }
-    static const std::map<std::string, CType> NONDET = {
-        {"__VERIFIER_nondet_int", {32, false}}, {"__VERIFIER_nondet_uint", {32, true}},
-        {"__VERIFIER_nondet_unsigned", {32, true}},
-        {"__VERIFIER_nondet_long", {64, false}}, {"__VERIFIER_nondet_ulong", {64, true}},
-        {"__VERIFIER_nondet_longlong", {64, false}}, {"__VERIFIER_nondet_ulonglong", {64, true}},
-        {"__VERIFIER_nondet_short", {16, false}}, {"__VERIFIER_nondet_ushort", {16, true}},
-        {"__VERIFIER_nondet_char", {8, false}}, {"__VERIFIER_nondet_uchar", {8, true}},
-        {"__VERIFIER_nondet_bool", {1, true}}, {"__VERIFIER_nondet__Bool", {1, true}},
-        {"__VERIFIER_nondet_size_t", {64, true}},
+    auto nondet_ct = [&](const std::string& name) -> std::optional<CType> {
+        if (name == "__VERIFIER_nondet_int") return CType{32, false};
+        if (name == "__VERIFIER_nondet_uint" || name == "__VERIFIER_nondet_unsigned") return CType{32, true};
+        if (name == "__VERIFIER_nondet_long") return CType{g_abi.long_w, false};
+        if (name == "__VERIFIER_nondet_ulong") return CType{g_abi.long_w, true};
+        if (name == "__VERIFIER_nondet_longlong") return CType{g_abi.long_long_w, false};
+        if (name == "__VERIFIER_nondet_ulonglong") return CType{g_abi.long_long_w, true};
+        if (name == "__VERIFIER_nondet_short") return CType{16, false};
+        if (name == "__VERIFIER_nondet_ushort") return CType{16, true};
+        if (name == "__VERIFIER_nondet_char") return CType{8, false};
+        if (name == "__VERIFIER_nondet_uchar") return CType{8, true};
+        if (name == "__VERIFIER_nondet_bool" || name == "__VERIFIER_nondet__Bool") return CType{1, true};
+        if (name == "__VERIFIER_nondet_size_t") return CType{g_abi.size_w, true};
+        return std::nullopt;
     };
-    if (auto it = NONDET.find(t); it != NONDET.end()) {
+    if (auto oct = nondet_ct(t)) {
         nargs(0);
-        auto ct = it->second;
+        CType ct = *oct;
         auto v = e.bv("nondet_" + std::to_string(e.fresh + 1), ct.w);
         e.nondets.push_back({t, v, e.path_true, static_cast<unsigned>(ct.w), ct.u, site_line, site_col});
         return TV{v, ct.w, ct.u};
@@ -2853,8 +2903,15 @@ std::optional<TV> model_output_call(Enc& e, const std::string& t, const std::vec
         if (conv == 'c' && !len.empty()) return std::nullopt;
         if (len.empty() || len == "h" || len == "hh") {
             if (args[k].w > 32) return std::nullopt;
-        } else if (len == "l" || len == "ll" || len == "j" || len == "z" || len == "t") {
-            if (args[k].w != 64) return std::nullopt;
+        } else if (len == "l") {
+            if (args[k].w != g_abi.long_w) return std::nullopt;
+        } else if (len == "ll" || len == "j") {
+            // ll is long long; j is intmax_t (long long on both models).
+            if (args[k].w != g_abi.long_long_w) return std::nullopt;
+        } else if (len == "z") {
+            if (args[k].w != g_abi.size_w) return std::nullopt;
+        } else if (len == "t") {
+            if (args[k].w != g_abi.ptr_w) return std::nullopt;
         } else {
             return std::nullopt;
         }
@@ -2877,7 +2934,7 @@ std::optional<TV> model_output_call(Enc& e, const std::string& t, const std::vec
 
 int sizeof_type(const std::vector<std::string>& inner, Enc& e) {
     for (auto& t : inner)
-        if (t == "*") return 8;
+        if (t == "*") return g_abi.ptr_bytes();
     std::string joined;
     for (size_t i = 0; i < inner.size(); ++i) {
         if (i) joined += " ";
@@ -2885,7 +2942,7 @@ int sizeof_type(const std::vector<std::string>& inner, Enc& e) {
     }
     if (inner.size() == 1 && is_ident(inner[0]) && e.declared(inner[0])) {
         auto name = inner[0];
-        if (e.alias.count(name)) return 8;
+        if (e.alias.count(name)) return g_abi.ptr_bytes();
         if (e.arrays.count(name)) {
             auto& a = e.arrays.at(name);
             return a.n * std::max(1, a.w / 8);
@@ -2961,7 +3018,8 @@ TV parse_expr(Enc& e, std::string src, Parser& parser) {
             } else {
                 inner.push_back(eat());
             }
-            return TV{e.ctx.bv_val(sizeof_type(inner, e), 64), 64, true};
+            return TV{e.ctx.bv_val(sizeof_type(inner, e), static_cast<unsigned>(g_abi.size_w)),
+                      g_abi.size_w, true};
         }
         if (t == "(") {
             if (peek() == "{") throw ParseFail("statement-expr unencoded");

@@ -1,3 +1,4 @@
+#include "prism/abi_model.hpp"
 #include "prism/stages.hpp"
 #include "prism/ai.hpp"
 #include "prism/astlint.hpp"
@@ -3055,6 +3056,17 @@ std::vector<std::string> split_comma(std::string_view s) {
 
 #ifdef PRISM_HAS_Z3
 
+AbiModel g_abi = abi_lp64();
+
+// Restores the previous model so a later LP64 encode cannot keep an ILP32 width.
+struct AbiGuard {
+    AbiModel prev;
+    explicit AbiGuard(std::string_view dm) : prev(g_abi) { g_abi = abi_from_data_model(dm); }
+    ~AbiGuard() { g_abi = prev; }
+    AbiGuard(const AbiGuard&) = delete;
+    AbiGuard& operator=(const AbiGuard&) = delete;
+};
+
 #include "bmc_encoder.inc"
 
 std::vector<int> unwind_schedule(int unwind) {
@@ -3728,8 +3740,10 @@ bool tree_calls_main(const std::vector<FunctionInfo>& functions) {
 }
 
 std::vector<Finding> run_bmc(const std::vector<FunctionInfo>& functions, int unwind,
-                             bool allow_local_pointers) {
+                             bool allow_local_pointers, std::string_view data_model) {
 #ifdef PRISM_HAS_Z3
+    AbiGuard abi_guard(data_model);
+    (void)abi_guard;
     std::vector<Finding> out;
     // Nondet call sites are tagged with their source positions before
     // inlining, so a callee's calls keep the callee's positions.
@@ -3771,6 +3785,8 @@ std::vector<Finding> run_bmc(const std::vector<FunctionInfo>& functions, int unw
 #else
     (void)functions;
     (void)unwind;
+    (void)allow_local_pointers;
+    (void)data_model;
     Finding notrun;
     notrun.stage = "bmc";
     notrun.status = std::string(laws::NOTRUN);

@@ -39,7 +39,9 @@ prism TASK.c --no-llm --stage inventory,classify,bmc,pir --out DIR
 would (no LLM, no execution of task code: `--allow-exec` only enables the
 replay below). A `.i` task is copied to `.c` first, because the `pir` stage only takes
 `.c`/`.cpp` units (see "Findings" below). The data model comes from the task
-(`--data-model`); PRISM's encoders are LP64.
+(`--data-model`). The default is LP64. `--data-model ILP32` is opt-in:
+`bmc` then uses 32-bit `long`, `size_t` and pointers, and replay adds
+`-m32`. `pir` stays LP64 (`NOTRUN` on ILP32).
 
 ## Mapping report.json to an SV-COMP answer
 
@@ -75,9 +77,10 @@ follows the verdict laws in [VERDICTS.md](VERDICTS.md).
   benchmark definition must pass it.
 - **`unknown`** otherwise: `NEEDS-HARNESS`, `BOUNDED`, `UNKNOWN`,
   `TIMEOUT`, `ERROR`, a stage that crashed, a refutation that does not
-  replay, an ILP32 task whose function bodies use width-dependent types
-  (`long`, `size_t`, `sizeof`, or a typedef or struct built from them), and
-  every other property.
+  replay, and every other property. Width-dependent ILP32 code is not
+  unknown by itself. `--data-model ILP32` (opt-in; the default is LP64)
+  makes `bmc` encode 32-bit `long`, `size_t` and pointers. `pir` is
+  `NOTRUN` on that model, so it cannot prove the task as LP64.
 
 A `false` answer comes with `witness.yml`: one `violation_sequence` entry,
 a `function_return` waypoint per nondet value (when the engine reports them)
@@ -396,9 +399,10 @@ Where the points are still lost:
 - **ILP32 tasks with width-dependent types: 64 of the 128 `unknown`
   answers** (41 no-overflow, 23 unreach-call: every `s3_*` and
   `soft_float_*` task of `bitvector`, plus `gcd_4`, `sum02-2`,
-  `interleave_bits`). PRISM's encoders are LP64 (`pir` hard-codes 64-bit
-  pointers), so the wrapper answers `unknown` for these (see "What is
-  missing" item 4). This is the largest single gap.
+  `interleave_bits`). This run predates `--data-model ILP32`. The wrapper
+  answered `unknown` for these because the encoders were LP64 only. That
+  early refusal is gone (see "What is missing" item 4). The tables above
+  were not remeasured after the change.
 - `BOUNDED` without a closing invariant: most of the rest (`gcd_2/3`,
   `jain_7-2`, `parity`, `sum02-1`, `half_2`, `nest-if3`, `seq-3`,
   `fragtest_simple`, `count_by_k`, `gauss_sum`, `half`, `nested-1`, and the
@@ -652,12 +656,23 @@ vendored code). Re-running needs Java 21 and the two archives above.
    `false(valid-free)` from a replayed refutation; `termination`,
    `no-data-race`, `valid-memcleanup` and the coverage properties are
    `unknown`.
-4. **ILP32.** The encoders are LP64. ILP32 tasks that use width-dependent
-   types are `unknown` instead of being analysed with 32-bit `long` and
-   pointers: 64 of the 128 `unknown` answers of the 174-task subset
-   (2026-09-25). `pir` would need a 32-bit target (`clang -m32` IR) and a
-   memory model with 4-byte pointers (it hard-codes 64-bit ones); the
-   replay would need a 32-bit C runtime, which this environment lacks.
+4. **ILP32.** **`bmc` + replay, not re-scored.** The default data model
+   stays LP64. `prism svcomp --data-model ILP32` (the score harness and
+   `tools/svcomp/prism.py` pass the task YAML's `data_model`) threads
+   `Config::data_model` into the hand encoder (`include/prism/abi_model.hpp`,
+   `src/prism/bmc_encoder.inc`: 32-bit `long`, `size_t`, `sizeof`, `intptr_t`,
+   literals under C11 6.4.4.1, limits macros, and `__VERIFIER_nondet_*`).
+   Anything other than `ILP32` stays LP64. Counterexample replay adds `-m32`
+   only for that opt-in. Without a 32-bit toolchain the build does not
+   confirm, so a refutation stays `unknown` rather than `false`. **`pir`
+   stays LP64** (`NOTRUN` on ILP32, so it cannot prove a width-dependent
+   task under the wrong model). A correctness witness still exports a loop
+   invariant only when the deciding finding is `PROVED`, `PROVED-UNBOUNDED`
+   or `PROVED-CERTIFIED` and `k_induction` is `closed-invariants`. Loop
+   locations plus invariant text on any other proof are not emitted. Full
+   `pir` ILP32 still needs `clang -m32` IR and a 32-bit pointer memory
+   model. The pinned-subset tables in this file are the measurement from
+   before this change. They have not been re-scored.
 5. **Archive and registration.** A competition entry needs, per the current
    rules: a self-contained archive of the tool runnable on the competition
    machines (PRISM binary, the clang/opt it calls for the `pir` stage, the

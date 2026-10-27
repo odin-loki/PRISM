@@ -179,9 +179,14 @@ std::vector<std::string> exportable_conjuncts(const std::vector<std::string>& co
 // other proof (pir PROVED within the unwind, k-induction without an
 // invariant) exports nothing, and the witness is the empty invariant_set:
 // trivially valid, the validator has to find the proof itself.
+// SVCOMP-ILP32: PROVED* plus invariant_loops is not enough. The conjuncts
+// are exported only when this finding is a proof and k_induction is
+// closed-invariants (the engine proved those conjuncts).
 std::pair<std::vector<Invariant>, std::string> correctness_invariants(const fs::path& task, const json& finding) {
     const json& extra = extra_of(finding);
-    if (get_str(extra, "k_induction", "None") != "closed-invariants" ||
+    const std::string st = get_str(finding, "status", "");
+    const bool proved = st == "PROVED-UNBOUNDED" || st == "PROVED" || st == "PROVED-CERTIFIED";
+    if (!proved || get_str(extra, "k_induction", "None") != "closed-invariants" ||
         !(has(extra, "invariants") || has(extra, "invariant_conjuncts")))
         return {{}, "no loop invariant exported by the proving stage (empty invariant set)"};
     const bool pir = !has(extra, "invariants");

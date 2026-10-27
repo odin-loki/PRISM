@@ -9,7 +9,8 @@ name: PRISM
 description: >
   Performance, Regression, Integration and Security Module — hybrid C/C++
   verifier with BMC, Clang/LLVM PIR front end, and SV-COMP witness export.
-  LP64 only today; ILP32 tasks with width-dependent types answer unknown.
+  Default data model is LP64. BMC supports opt-in ILP32 (--data-model ILP32;
+  32-bit long/size_t/pointers; replay -m32). pir stays LP64 (NOTRUN on ILP32).
   valid-memsafety refutations only; no true memsafety proofs yet.
   Submission archive: `prism svcomp pack` (dependencies.json lists host clang/opt).
   Runtime: clang/llvm 18, bubblewrap; verifier is the C++ prism binary.

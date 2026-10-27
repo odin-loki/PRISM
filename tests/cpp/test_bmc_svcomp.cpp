@@ -8,6 +8,7 @@
 #  undef ERROR
 #endif
 
+#include "prism/abi_model.hpp"
 #include "prism/cparse.hpp"
 #include "prism/laws.hpp"
 #include "prism/models.hpp"
@@ -18,6 +19,7 @@
 #include <fstream>
 #include <map>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -34,9 +36,9 @@ std::vector<prism::FunctionInfo> parse_source(const std::string& name, const std
 }
 
 [[maybe_unused]] std::map<std::string, prism::Finding> bmc_run(const std::string& name, const std::string& src,
-                                                               int unwind = 8) {
+                                                               int unwind = 8, std::string_view data_model = "LP64") {
     std::map<std::string, prism::Finding> by;
-    for (auto& f : prism::run_bmc(parse_source(name, src), unwind))
+    for (auto& f : prism::run_bmc(parse_source(name, src), unwind, false, data_model))
         if (f.function) by[*f.function] = f;
     return by;
 }
@@ -516,4 +518,84 @@ int g_3d(int i) {
     // string rows are not modelled (never a wrong element value)
     CHECK(by["g_str"].status == kHarness);
 }
+
+TEST_CASE("bmc: ILP32 encodes long and size_t at 32 bits") {
+    const char* src =
+        "long __VERIFIER_nondet_long(void);\n"
+        "void __VERIFIER_assume(int);\n"
+        "int main(void) {\n"
+        "  long a = __VERIFIER_nondet_long();\n"
+        "  __VERIFIER_assume(a == 2147483647L);\n"
+        "  long b = a + 1L;\n"
+        "  (void)b;\n"
+        "  return 0;\n"
+        "}\n";
+    auto lp = bmc_run("lp64.c", src, 8, "LP64");
+    auto ilp = bmc_run("ilp32.c", src, 8, "ILP32");
+    REQUIRE(lp.contains("main"));
+    REQUIRE(ilp.contains("main"));
+    CHECK(ilp["main"].status == kFailed);
+    CHECK(ilp["main"].cls == "INT-SIGNED-OVF");
+    CHECK(lp["main"].status == kProved);
+}
+
+TEST_CASE("bmc: ILP32 long literal that does not fit is long long, and labs uses long") {
+    const char* wide =
+        "int main(void) {\n"
+        "  long long a = 2147483648L;\n"
+        "  (void)a;\n"
+        "  return 0;\n"
+        "}\n";
+    auto lp_wide = bmc_run("lp64_ll.c", wide, 4, "LP64");
+    auto ilp_wide = bmc_run("ilp32_ll.c", wide, 4, "ILP32");
+    REQUIRE(lp_wide.contains("main"));
+    REQUIRE(ilp_wide.contains("main"));
+    CHECK(lp_wide["main"].status == kProved);
+    CHECK(ilp_wide["main"].status == kProved);
+
+    const char* absrc =
+        "extern long labs(long);\n"
+        "int main(void) {\n"
+        "  long a = -2147483647L - 1L;\n"
+        "  long b = labs(a);\n"
+        "  (void)b;\n"
+        "  return 0;\n"
+        "}\n";
+    auto lp_abs = bmc_run("lp64_labs.c", absrc, 4, "LP64");
+    auto ilp_abs = bmc_run("ilp32_labs.c", absrc, 4, "ILP32");
+    REQUIRE(lp_abs.contains("main"));
+    REQUIRE(ilp_abs.contains("main"));
+    CHECK(lp_abs["main"].status == kProved);
+    CHECK(ilp_abs["main"].status == kFailed);
+    CHECK(ilp_abs["main"].cls == "INT-SIGNED-OVF");
+}
+
+TEST_CASE("bmc: ILP32 printf %lld keeps long long distinct from int") {
+    auto bad = bmc_run("ilp32_lld_int.c",
+                       "extern int printf(const char *, ...);\n"
+                       "int main(void) { int x = 1; printf(\"%lld\\n\", x); return 0; }\n",
+                       4, "ILP32");
+    auto ok = bmc_run("ilp32_lld_ll.c",
+                      "extern int printf(const char *, ...);\n"
+                      "int main(void) { long long x = 1; printf(\"%lld\\n\", x); return 0; }\n",
+                      4, "ILP32");
+    REQUIRE(bad.contains("main"));
+    REQUIRE(ok.contains("main"));
+    CHECK(bad["main"].status != kProved);
+    CHECK(ok["main"].status == kProved);
+}
 #endif
+
+TEST_CASE("abi: LP64 stays the default; only ILP32 narrows") {
+    CHECK(prism::abi_from_data_model("LP64").long_w == 64);
+    CHECK(prism::abi_from_data_model("").long_w == 64);
+    CHECK(prism::abi_from_data_model("nope").long_w == 64);
+    CHECK(prism::abi_from_data_model("lp64").ptr_w == 64);
+    CHECK(prism::abi_from_data_model("ilp32").long_w == 32);
+    CHECK(prism::abi_from_data_model("ILP32").size_w == 32);
+    CHECK(prism::abi_from_data_model("ILP32").ptr_w == 32);
+    CHECK(prism::abi_from_data_model("ILP32").long_long_w == 64);
+    CHECK_FALSE(prism::is_ilp32("LP64"));
+    CHECK_FALSE(prism::is_ilp32(""));
+    CHECK(prism::is_ilp32("Ilp32"));
+}

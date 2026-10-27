@@ -94,7 +94,7 @@ PRISM_API std::string stub_source(const std::string& source, const std::vector<N
 // {"replay": "replayed"|"not-replayed"|"notrun"|"unsupported", ...}
 PRISM_API json replay(const std::filesystem::path& src, const std::string& prop, bool allow_exec,
                       const std::optional<std::vector<Num>>& nondet_values, const std::filesystem::path& work,
-                      double timeout_s = 10.0);
+                      std::string_view data_model = "LP64", double timeout_s = 10.0);
 
 // ---------------------------------------------------------------- waypoints
 using LineCol = std::pair<long, long>;

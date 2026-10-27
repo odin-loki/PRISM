@@ -596,6 +596,17 @@ TEST_CASE("svcomp: correctness invariants are only proved ones the C text can ca
     CHECK(invs[1].location.line == 4);
     CHECK(invs[1].value == "(i <= 5)");
     CHECK(note == "3 Houdini loop invariant conjunct(s) from bmc");
+    // A proof that did not close by invariants must not export them, even
+    // when the finding carries invariant text and loop locations.
+    json loose = base;
+    loose["extra"] = {{"k_induction", "closed"},
+                      {"invariant_loops", R"([{"kind":"while","line":3,"column":3}])"},
+                      {"invariants", R"([["i >= 0"]])"}};
+    CHECK(correctness_invariants(src, loose).first.empty());
+    json bounded = loose;
+    bounded["status"] = "BOUNDED";
+    bounded["extra"]["k_induction"] = "closed-invariants";
+    CHECK(correctness_invariants(src, bounded).first.empty());
     // plain k-induction or a bounded-unwind proof: no invariant (empty set)
     for (const json& extra : {json{{"k_induction", "closed"}}, json{{"k_induction", "not-needed"}, {"unwind_closed", "true"}}}) {
         json g = base;
@@ -611,6 +622,7 @@ TEST_CASE("svcomp: loop invariants sit on the loop keyword") {
     TempDir d;
     auto src = d.write("t.c", "int main() {\n  int i = 0;\n  while (i < 10) i++;\n}\n");
     json f = {{"function", "main"},
+              {"status", "PROVED-UNBOUNDED"},
               {"extra", {{"k_induction", "closed-invariants"},
                          {"invariants", R"([["i >= 0", "i <= 10", "i + 1 > i", "i <= 2 * n"]])"},
                          {"invariant_loops", R"([{"kind": "while", "line": 3, "column": 3}])"}}}};
@@ -1041,7 +1053,7 @@ TEST_CASE("taskdef: the YAML subset reader") {
 
 // ---------------------------------------------------------------- one task end to end
 
-TEST_CASE("svcomp solve: unsupported properties and ILP32 width answer unknown before any analysis") {
+TEST_CASE("svcomp solve: unsupported properties; ILP32 width-dependent tasks run the bmc stage") {
     TempDir d;
     auto task = d.write("t.c", "int main(void) { long x = 1; return (int)x; }\n");
     auto prp = d.write("p.prp", "CHECK( init(main()), LTL(F end) )\n");
@@ -1053,9 +1065,25 @@ TEST_CASE("svcomp solve: unsupported properties and ILP32 width answer unknown b
     CHECK(oc.decision.reason == "unsupported property file p.prp");
     opt.data_model = "ilp32";
     oc = solve(task, props_dir() / "no-overflow.prp", opt);
+    CHECK(fs::exists(d.path / "out" / "prism-out" / "report.json"));
+    // No overflow on either model. The proof has to come from bmc: pir is NOTRUN.
+    CHECK(oc.decision.answer == "true");
+    CHECK(oc.decision.reason.find("bmc:") == 0);
+    auto ovf = d.write("ovf.c",
+                       "long __VERIFIER_nondet_long(void);\n"
+                       "void __VERIFIER_assume(int);\n"
+                       "int main(void) {\n"
+                       "  long a = __VERIFIER_nondet_long();\n"
+                       "  __VERIFIER_assume(a == 2147483647L);\n"
+                       "  long b = a + 1L;\n"
+                       "  (void)b;\n"
+                       "  return 0;\n"
+                       "}\n");
+    opt.out = d.path / "out-ovf";
+    oc = solve(ovf, props_dir() / "no-overflow.prp", opt);
+    // Overflow on ILP32. Replay is off, so the answer is unknown, never true
+    // and never a false that was not replayed.
     CHECK(oc.decision.answer == "unknown");
-    CHECK(oc.decision.reason == "ILP32 task uses width-dependent types; PRISM's encoders are LP64");
-    CHECK_FALSE(fs::exists(d.path / "out"));
     CHECK(version_string() == prism::PRISM_VERSION);
 }
 
