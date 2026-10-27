@@ -1,0 +1,88 @@
+// PRISM operational model of <semaphore>. Partial stand-in for
+// std::counting_semaphore. The pir stage puts this directory first on the
+// C++ include path, so `#include <semaphore>` reaches this file instead of
+// libstdc++'s. It is a file, not a directory: a directory of this name would
+// make the include fail with EISDIR and every such unit would fall back.
+//
+// The counter starts at the constructor argument and never exceeds the max
+// template argument. release(n) that would exceed that max is a precondition
+// failure (__prism_check, CXX-SEMAPHORE-MAX). The counter is not wrapped.
+// try_acquire returns false when the counter is zero and does not decrement.
+// When the counter is positive it decrements by one and returns true. It
+// does not return true while the counter is zero.
+//
+// The blocking wait and the timed waits are not declared. A blocking wait
+// that returned immediately would be a fake success. Omitted names fail to
+// compile against this header and pir falls back to libstdc++.
+// binary_semaphore is counting_semaphore<1>. This header is not a
+// concurrency proof. It does not include <atomic>, <latch>, or <thread>.
+#ifndef _GLIBCXX_SEMAPHORE
+#define _GLIBCXX_SEMAPHORE 1
+
+#pragma GCC system_header
+
+#include <cstddef>
+
+// PIR intrinsic (translate.cpp). A literal class and message, as in the libc
+// models. Not defined here: the analysed program does not link a body.
+extern "C" void __prism_check(int ok, const char* cls, const char* msg);
+
+namespace std {
+
+template <ptrdiff_t _LeastMaxValue>
+class counting_semaphore {
+    static_assert(_LeastMaxValue >= 0, "counting_semaphore max is non-negative");
+
+    // In [0, _LeastMaxValue] after every successful constructor and release.
+    // A failing check does not store a counter outside that range, and does
+    // not wrap.
+    ptrdiff_t _M_counter;
+
+public:
+    static constexpr ptrdiff_t max() noexcept { return _LeastMaxValue; }
+
+    // Stores the argument when it is in range. Outside that range the check
+    // fails and the counter stays 0, which does not exceed max.
+    explicit counting_semaphore(ptrdiff_t __desired) : _M_counter(0) {
+        const int __ok = (__desired >= 0 && __desired <= _LeastMaxValue) ? 1 : 0;
+        __prism_check(__ok, "CXX-SEMAPHORE-MAX",
+                      "counting_semaphore constructed outside its max");
+        if (__ok) _M_counter = __desired;
+    }
+
+    counting_semaphore(const counting_semaphore&) = delete;
+    counting_semaphore& operator=(const counting_semaphore&) = delete;
+
+    // Destructor does not free: the counter is a member, not a heap object.
+    ~counting_semaphore() = default;
+
+    void release(ptrdiff_t __update = 1) {
+        // Subtraction only when the counter is already in range, so
+        // _LeastMaxValue - _M_counter does not wrap. A failing update is not
+        // added: the counter does not wrap and does not exceed max.
+        int __ok = 0;
+        if (__update >= 0 && _M_counter >= 0 && _M_counter <= _LeastMaxValue) {
+            const ptrdiff_t __room = _LeastMaxValue - _M_counter;
+            if (__update <= __room) __ok = 1;
+        }
+        __prism_check(__ok, "CXX-SEMAPHORE-MAX",
+                      "counting_semaphore::release exceeds max");
+        if (__ok) _M_counter += __update;
+    }
+
+    // Zero (and a negative counter, which a successful path does not store)
+    // returns false and does not decrement. Positive decrements by one and
+    // returns true. Never returns true while the counter is zero.
+    bool try_acquire() noexcept {
+        if (_M_counter <= 0) return false;
+        --_M_counter;
+        return true;
+    }
+};
+
+// Same counter, max 1. The blocking wait is still not declared on this alias.
+using binary_semaphore = counting_semaphore<1>;
+
+}  // namespace std
+
+#endif

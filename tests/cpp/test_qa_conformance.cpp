@@ -581,7 +581,7 @@ TEST_CASE("qa conformance: every C++ library model header is embedded and exerci
     // bits/basic_string.tcc replaces the libstdc++ file <string> includes
     for (const auto& f : files)
         if (f.find('/') == std::string::npos && f.rfind("prism_", 0) != 0) headers.push_back(f);
-    for (const char* h : {"vector", "map", "set", "unordered_map", "unordered_set", "sstream", "list", "array", "bitset", "stack", "queue", "span", "optional", "priority_queue", "forward_list", "initializer_list", "string_view", "expected", "memory", "complex", "tuple", "any", "latch", "numbers", "ratio", "mdspan", "barrier", "source_location", "cmath", "bit", "numeric"})
+    for (const char* h : {"vector", "map", "set", "unordered_map", "unordered_set", "sstream", "list", "array", "bitset", "stack", "queue", "span", "optional", "priority_queue", "forward_list", "initializer_list", "string_view", "expected", "memory", "complex", "tuple", "any", "latch", "numbers", "ratio", "mdspan", "barrier", "source_location", "cmath", "bit", "numeric", "semaphore"})
         CHECK(std::find(headers.begin(), headers.end(), h) != headers.end());
     CHECK(std::find(files.begin(), files.end(), "bits/basic_string.tcc") != files.end());
     // An explicit-include buffer, not a header the pir stage swaps in for
