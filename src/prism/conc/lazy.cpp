@@ -371,6 +371,30 @@ std::string tname(const Program& p, int t) {
     return "T" + std::to_string(t) + " " + p.threads[static_cast<std::size_t>(t)].name;
 }
 
+// An exception that leaves a non-main thread is stored on Function::throws and
+// the block ends as Stop, with no CXX-UNCAUGHT check. Stop is a quiet exit, so
+// the throw would become BOUNDED. It is not a sequentially consistent step.
+std::string escaping_throw(const Program& prog) {
+    for (const auto& th : prog.threads) {
+        if (th.fn.throws.empty()) continue;
+        bool reported = false;
+        for (const auto& b : th.fn.blocks) {
+            for (const auto& s : b.stmts) {
+                if (s.kind != Stmt::Check) continue;
+                if (s.prop == "uncaught" || s.prop == "throw-unmodelled" || s.cls == "CXX-UNCAUGHT" ||
+                    s.cls == "CXX-THROW-NOEXCEPT")
+                    reported = true;
+            }
+        }
+        if (reported) continue;
+        std::string types;
+        for (const auto& ty : th.fn.throws) types += (types.empty() ? "" : ", ") + ty;
+        const std::string who = th.name.empty() ? th.entry : th.name;
+        return "UNENCODED: throw leaves " + who + " (" + types + ")";
+    }
+    return {};
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -1057,6 +1081,11 @@ Result check(const Program& prog, const Options& opt) {
     res.extra["threads"] = std::to_string(N);
     res.extra["method"] = "lazy sequentialisation (Lazy-CSeq), sequentially consistent";
     res.extra["context_switch_bound"] = std::to_string(opt.rounds * N);  // K*N slots + main's final slot
+    if (auto why = escaping_throw(prog); !why.empty()) {
+        res.status = std::string(laws::NEEDS_HARNESS);
+        res.message = std::move(why);
+        return res;
+    }
 #ifndef PRISM_HAS_Z3
     res.status = std::string(laws::NOTRUN);
     res.message = "z3 not built";

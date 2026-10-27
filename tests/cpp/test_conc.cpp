@@ -118,15 +118,148 @@ TEST_CASE("conc: join then read is ordered (no race)") {
     CHECK(r.status == prism::laws::BOUNDED);
 }
 
+namespace {
+
+std::string atomic_module(const char* op) {
+    std::string ir;
+    ir += "@flag = dso_local global i32 0, align 4\n";
+    ir += "define void @worker(ptr %arg) {\nentry:\n  ";
+    ir += op;
+    ir += "\n  ret void\n}\n";
+    ir += "define i32 @main() {\nentry:\n";
+    ir += "  %h = alloca i64, align 8\n";
+    ir += "  %c = call i32 @pthread_create(ptr %h, ptr null, ptr @worker, ptr null)\n";
+    ir += "  ret i32 0\n}\n";
+    ir += "declare i32 @pthread_create(ptr, ptr, ptr, ptr)\n";
+    return ir;
+}
+
+prism::conc::Build build_atomic(const char* op) {
+    auto ir = atomic_module(op);
+    auto m = prism::pir::ir::parse_module(ir);
+    REQUIRE(m.find("main") != nullptr);
+    REQUIRE(m.find("worker") != nullptr);
+    return prism::conc::build_program(m, ir, "main");
+}
+
+prism::conc::Program one_thread(prism::pir::Function fn) {
+    prism::conc::Program p;
+    prism::conc::Thread th;
+    th.entry = fn.name.empty() ? "worker" : fn.name;
+    th.name = th.entry;
+    if (fn.name.empty()) fn.name = th.entry;
+    th.fn = std::move(fn);
+    p.harness = th.entry;
+    p.threads.push_back(std::move(th));
+    return p;
+}
+
+}  // namespace
+
 TEST_CASE("conc: relaxed atomics are NEEDS-HARNESS (SC only)") {
     if (!have_frontend()) return;
-    if (!conc_c11_atomics_on_host()) {
-        MESSAGE("NOTRUN: Windows LP64 libc shim does not model C11 atomics for the conc stage");
-        return;
-    }
     auto r = run_main("relaxed.c");
     CHECK(r.status == prism::laws::NEEDS_HARNESS);
     CHECK(r.message.find("UNENCODED: memory_order_relaxed") != std::string::npos);
+    CHECK(r.status != prism::laws::PROVED);
+    CHECK(r.status != prism::laws::BOUNDED);
+    prism::Config cfg;
+    cfg.root = conc_dir();
+    cfg.timeout = 60;
+    auto rows = prism::conc::run_conc({conc_dir() / "relaxed.c"}, cfg);
+    REQUIRE(!rows.empty());
+    bool saw = false;
+    for (auto& f : rows) {
+        CHECK(f.status != prism::laws::PROVED);
+        CHECK(f.status != prism::laws::BOUNDED);
+        CHECK(!f.status.empty());
+        if (f.message.find("UNENCODED: memory_order_relaxed") != std::string::npos) saw = true;
+    }
+    CHECK(saw);
+}
+
+TEST_CASE("conc: relaxed, acquire and release atomics are NEEDS-HARNESS") {
+    struct Case {
+        const char* ir;
+        const char* order;
+    };
+    const Case cases[] = {
+        {"store atomic i32 1, ptr @flag monotonic, align 4", "memory_order_relaxed"},
+        {"%v = load atomic i32, ptr @flag unordered, align 4", "memory_order_relaxed"},
+        {"%v = load atomic i32, ptr @flag acquire, align 4", "memory_order_acquire (or consume)"},
+        {"store atomic i32 1, ptr @flag release, align 4", "memory_order_release"},
+        {"%old = atomicrmw add ptr @flag, i32 1 acq_rel, align 4", "memory_order_acq_rel"},
+        {"fence release", "memory_order_release"},
+        {"%p = cmpxchg ptr @flag, i32 0, i32 1 seq_cst monotonic, align 4", "memory_order_relaxed"},
+    };
+    for (auto& c : cases) {
+        auto b = build_atomic(c.ir);
+        CHECK(b.status == prism::laws::NEEDS_HARNESS);
+        CHECK(b.reason.find(std::string("UNENCODED: ") + c.order) != std::string::npos);
+        CHECK(!b.prog);
+    }
+    auto sc = build_atomic("store atomic i32 1, ptr @flag seq_cst, align 4");
+    CHECK(sc.reason.find("not encoded yet") == std::string::npos);
+    CHECK(sc.status != prism::laws::PROVED);
+    CHECK(sc.status != prism::laws::BOUNDED);
+}
+
+TEST_CASE("conc: an escaping throw is not a clean or proved result") {
+    prism::pir::Function dropped;
+    dropped.name = "worker";
+    dropped.throws = {"E"};
+    prism::pir::Block body;
+    body.name = "entry";
+    body.term.kind = prism::pir::Term::Ret;
+    dropped.blocks.push_back(body);
+    auto quiet = prism::conc::check(one_thread(std::move(dropped)));
+    CHECK(quiet.status == prism::laws::NEEDS_HARNESS);
+    CHECK(quiet.message.find("UNENCODED: throw leaves worker") != std::string::npos);
+    CHECK(quiet.status != prism::laws::PROVED);
+    CHECK(quiet.status != prism::laws::BOUNDED);
+    CHECK(!quiet.status.empty());
+    CHECK(quiet.violations.empty());
+
+    if (!prism::pir::z3_available()) return;
+    prism::pir::Function reported;
+    reported.name = "worker";
+    prism::pir::Block blk;
+    blk.name = "entry";
+    prism::pir::Stmt chk;
+    chk.kind = prism::pir::Stmt::Check;
+    chk.args = {prism::pir::Arg::c(1, 1)};
+    chk.prop = "throw-unmodelled";
+    chk.cls = "UNENCODED";
+    chk.msg = "exception path reachable";
+    blk.stmts.push_back(chk);
+    blk.term.kind = prism::pir::Term::Ret;
+    reported.blocks.push_back(std::move(blk));
+    auto soft = prism::conc::check(one_thread(std::move(reported)));
+    CHECK(soft.status == prism::laws::NEEDS_HARNESS);
+    CHECK(soft.message.find("UNENCODED:") != std::string::npos);
+    CHECK(soft.message.find("exception") != std::string::npos);
+    CHECK(soft.status != prism::laws::PROVED);
+    CHECK(soft.status != prism::laws::BOUNDED);
+
+    prism::pir::Function caught_as_defect;
+    caught_as_defect.name = "worker";
+    caught_as_defect.throws = {"E"};
+    prism::pir::Block esc;
+    esc.name = "entry";
+    prism::pir::Stmt uncaught;
+    uncaught.kind = prism::pir::Stmt::Check;
+    uncaught.args = {prism::pir::Arg::c(1, 1)};
+    uncaught.prop = "uncaught";
+    uncaught.cls = "CXX-UNCAUGHT";
+    uncaught.msg = "exception of type E escapes worker";
+    esc.stmts.push_back(uncaught);
+    esc.term.kind = prism::pir::Term::Ret;
+    caught_as_defect.blocks.push_back(std::move(esc));
+    auto defect = prism::conc::check(one_thread(std::move(caught_as_defect)));
+    CHECK(defect.status == prism::laws::FAILED);
+    CHECK(defect.status != prism::laws::PROVED);
+    CHECK(defect.status != prism::laws::BOUNDED);
+    CHECK(defect.message.find("exception") != std::string::npos);
 }
 
 TEST_CASE("conc: one round cannot interleave; two rounds find the lost update") {

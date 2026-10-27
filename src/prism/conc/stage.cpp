@@ -12,6 +12,7 @@
 #include "prism/laws.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <fstream>
 #include <sstream>
 
@@ -41,6 +42,74 @@ bool mentions_threads(const std::string& text) {
     for (auto* k : {"pthread_create", "thrd_create", "std::thread", "std::jthread"})
         if (text.find(k) != std::string::npos) return true;
     return false;
+}
+
+bool ident_char(char c) {
+    return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
+}
+
+// The LP64 <stdatomic.h> shim used when the host has no C11 atomics drops the
+// memory order and lowers the operation to a plain load or store. That plain
+// access can come back BOUNDED (or a data race). The order is still in the
+// source, and it is not sequentially consistent.
+std::optional<std::string> weak_memory_order(const std::string& text) {
+    struct Row {
+        const char* token;
+        const char* shown;
+    };
+    static constexpr Row rows[] = {
+        {"memory_order_relaxed", "memory_order_relaxed"},
+        {"__ATOMIC_RELAXED", "memory_order_relaxed"},
+        {"memory_order_consume", "memory_order_acquire (or consume)"},
+        {"__ATOMIC_CONSUME", "memory_order_acquire (or consume)"},
+        {"memory_order_acquire", "memory_order_acquire (or consume)"},
+        {"__ATOMIC_ACQUIRE", "memory_order_acquire (or consume)"},
+        {"memory_order_release", "memory_order_release"},
+        {"__ATOMIC_RELEASE", "memory_order_release"},
+        {"memory_order_acq_rel", "memory_order_acq_rel"},
+        {"__ATOMIC_ACQ_REL", "memory_order_acq_rel"},
+    };
+    std::optional<std::string> shown;
+    std::size_t at = std::string::npos;
+    for (const auto& row : rows) {
+        const std::size_t n = std::char_traits<char>::length(row.token);
+        std::size_t p = 0;
+        while ((p = text.find(row.token, p)) != std::string::npos) {
+            const bool left = p > 0 && ident_char(text[p - 1]);
+            const auto end = p + n;
+            const bool right = end < text.size() && ident_char(text[end]);
+            if (!left && !right && (at == std::string::npos || p < at)) {
+                at = p;
+                shown = row.shown;
+                break;
+            }
+            p = end;
+        }
+    }
+    return shown;
+}
+
+std::string weak_order_message(const std::string& name) {
+    return "UNENCODED: " + name + " (SC only: relaxed/acquire/release atomics are not encoded yet)";
+}
+
+bool only_data_races(const Result& r) {
+    if (r.violations.empty()) return false;
+    for (const auto& v : r.violations)
+        if (v.cls != "CONC-DATA-RACE") return false;
+    return true;
+}
+
+// A clean result, or a data race found only after the order was erased, is not
+// a verdict on a weak atomic. A deadlock or a failed assertion is kept.
+void refuse_weak_order(Result& r, const std::string& name) {
+    if (r.status == laws::NEEDS_HARNESS && r.message.find("UNENCODED:") != std::string::npos) return;
+    const bool clean = r.status.empty() || r.status == laws::CLEAN || laws::is_formal(r.status);
+    const bool stripped_race = r.status == laws::FAILED && only_data_races(r);
+    if (!clean && !stripped_race) return;
+    r.status = std::string(laws::NEEDS_HARNESS);
+    r.violations.clear();
+    r.message = weak_order_message(name);
 }
 
 std::string rel_of(const fs::path& p, const fs::path& root) {
@@ -120,6 +189,7 @@ std::vector<Harnessed> analyse_ir(const std::string& ir, const Options& opt) {
 
 std::map<std::string, Result> check_file(const fs::path& src, const Config& cfg, const Options& opt) {
     std::map<std::string, Result> out;
+    const auto weak = weak_memory_order(read_text(src));
     auto fe = pir::find_frontend(cfg);
     std::string err;
     auto ir = pir::lower_to_ir(fe, src, std::max(10.0, cfg.timeout), err);
@@ -131,6 +201,16 @@ std::map<std::string, Result> check_file(const fs::path& src, const Config& cfg,
         return out;
     }
     for (auto& h : analyse_ir(*ir, opt)) out[h.name] = std::move(h.res);
+    if (weak) {
+        if (out.empty()) {
+            Result r;
+            r.status = std::string(laws::NEEDS_HARNESS);
+            r.message = weak_order_message(*weak);
+            out[""] = std::move(r);
+        } else {
+            for (auto& [_, r] : out) refuse_weak_order(r, *weak);
+        }
+    }
     return out;
 }
 
@@ -191,6 +271,18 @@ std::vector<Finding> run_conc(const std::vector<fs::path>& sources, const Config
             f.message = std::string("conc internal error: ") + ex.what();
             out.push_back(std::move(f));
             continue;
+        }
+        if (const auto weak = weak_memory_order(read_text(units.at(i)))) {
+            if (hs.empty()) {
+                auto f = base(rel);
+                f.status = std::string(laws::NEEDS_HARNESS);
+                f.strength = std::string(laws::STRENGTH_SOME);
+                f.message = weak_order_message(*weak);
+                f.extra["frontend"] = fe.version;
+                out.push_back(std::move(f));
+                continue;
+            }
+            for (auto& h : hs) refuse_weak_order(h.res, *weak);
         }
         for (auto& h : hs) {
             auto f = base(rel);
