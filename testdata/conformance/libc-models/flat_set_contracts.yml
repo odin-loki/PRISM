@@ -1,0 +1,15 @@
+format_version: 1
+input_files: flat_set_contracts.cpp
+language: C++
+property: libc-contract
+timeout: 600
+expected:
+  flat_set_contains_true: true
+  flat_set_duplicate_true: true
+  flat_set_missing_true: true
+  flat_set_erase_missing_true: true
+  flat_set_erase_uaf_false: false
+  flat_set_dup_size_false: false
+expect_class:
+  flat_set_erase_uaf_false: "MEM-UAF"
+  flat_set_dup_size_false: "FUNC-CONTRACT"

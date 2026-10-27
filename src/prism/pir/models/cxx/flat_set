@@ -1,0 +1,315 @@
+// PRISM operational model of <flat_set> (docs/PIR.md "C++ library models").
+// The pir stage puts this directory first on the C++ include path, so
+// `#include <flat_set>` reaches this file instead of libstdc++'s.
+//
+// Partial on purpose. Keys live in this header's own heap nodes, one node
+// per key, allocated with a new-expression (PIR models that allocation).
+// This file does not include set, vector, flat_map, memory, or
+// initializer_list, and it does not use those containers as storage.
+//
+//  * insert of a new key allocates one node and links it in compare order.
+//    insert of a key that is already present (equivalent under the
+//    comparator) returns the existing node: it does not allocate a second
+//    node and it does not write a different key over the one that is stored.
+//  * find of a missing key is the end iterator. It does not allocate a node
+//    and it does not return an iterator to a fabricated key. contains of a
+//    missing key is false.
+//  * erase of a present key unlinks that node, destroys it, and frees it
+//    with delete. erase of a missing key returns 0 and frees nothing.
+//    clear and the destructor free the remaining nodes by calling erase, so
+//    that free stays in erase.
+//  * size() is the number of nodes. An empty container has no node:
+//    _M_head is nullptr, so begin() equals end().
+//
+// A pointer or reference obtained from an iterator addresses that key's
+// node. erase of that key frees the node, so a later use of the pointer is
+// MEM-UAF. erase of a different key frees only that other node.
+//
+// ranges (insert_range and the from_range constructors), extract, and merge
+// are not declared. Those omitted names fail to compile against this header,
+// and the pir stage lowers that translation unit again with libstdc++.
+// A third template argument (the key container) is not declared either, so
+// flat_set<Key, Compare, Container> falls back the same way. They are not
+// stubbed.
+#ifndef _GLIBCXX_FLAT_SET
+#define _GLIBCXX_FLAT_SET 1
+
+#pragma GCC system_header
+
+#include <bits/c++config.h>
+#include <bits/move.h>
+#include <bits/stl_function.h>
+#include <bits/stl_pair.h>
+#include <cstddef>
+
+namespace std _GLIBCXX_VISIBILITY(default) {
+_GLIBCXX_BEGIN_NAMESPACE_VERSION
+
+template <typename _Key, typename _Compare = less<_Key>>
+class flat_set {
+public:
+    using key_type = _Key;
+    using value_type = _Key;
+    using key_compare = _Compare;
+    using value_compare = _Compare;
+    using size_type = size_t;
+    using difference_type = ptrdiff_t;
+    using reference = const value_type&;
+    using const_reference = const value_type&;
+    using pointer = const value_type*;
+    using const_pointer = const value_type*;
+
+private:
+    struct _Node {
+        _Node* _M_prev;
+        _Node* _M_next;
+        _Key _M_key;
+
+        explicit _Node(const _Key& __k) : _M_prev(nullptr), _M_next(nullptr), _M_key(__k) {}
+        explicit _Node(_Key&& __k) : _M_prev(nullptr), _M_next(nullptr), _M_key(std::move(__k)) {}
+    };
+
+    _Node* _M_head = nullptr;
+    _Node* _M_tail = nullptr;
+    size_type _M_size = 0;
+    _Compare _M_comp{};
+
+    // Missing key: nullptr. No node is allocated here.
+    _Node* _M_find_node(const key_type& __x) const {
+        for (_Node* __n = _M_head; __n != nullptr; __n = __n->_M_next) {
+            if (_M_comp(__n->_M_key, __x))
+                continue;
+            if (_M_comp(__x, __n->_M_key))
+                return nullptr;
+            return __n;
+        }
+        return nullptr;
+    }
+
+    // First node strictly greater than __x, or nullptr to append.
+    _Node* _M_upper_node(const key_type& __x) const {
+        for (_Node* __n = _M_head; __n != nullptr; __n = __n->_M_next)
+            if (_M_comp(__x, __n->_M_key))
+                return __n;
+        return nullptr;
+    }
+
+    void _M_link_before(_Node* __n, _Node* __succ) noexcept {
+        _Node* __pred = __succ != nullptr ? __succ->_M_prev : _M_tail;
+        __n->_M_prev = __pred;
+        __n->_M_next = __succ;
+        if (__pred != nullptr)
+            __pred->_M_next = __n;
+        else
+            _M_head = __n;
+        if (__succ != nullptr)
+            __succ->_M_prev = __n;
+        else
+            _M_tail = __n;
+    }
+
+    void _M_unlink(_Node* __n) noexcept {
+        if (__n->_M_prev != nullptr)
+            __n->_M_prev->_M_next = __n->_M_next;
+        else
+            _M_head = __n->_M_next;
+        if (__n->_M_next != nullptr)
+            __n->_M_next->_M_prev = __n->_M_prev;
+        else
+            _M_tail = __n->_M_prev;
+    }
+
+public:
+    class iterator {
+        friend class flat_set;
+        _Node* _M_node;
+        explicit iterator(_Node* __n) noexcept : _M_node(__n) {}
+
+    public:
+        using value_type = _Key;
+        using difference_type = ptrdiff_t;
+        using pointer = const _Key*;
+        using reference = const _Key&;
+
+        iterator() noexcept : _M_node(nullptr) {}
+
+        reference operator*() const noexcept { return _M_node->_M_key; }
+        pointer operator->() const noexcept { return &_M_node->_M_key; }
+
+        iterator& operator++() noexcept {
+            _M_node = _M_node->_M_next;
+            return *this;
+        }
+        iterator operator++(int) noexcept {
+            iterator __t = *this;
+            ++*this;
+            return __t;
+        }
+        iterator& operator--() noexcept {
+            _M_node = _M_node->_M_prev;
+            return *this;
+        }
+        iterator operator--(int) noexcept {
+            iterator __t = *this;
+            --*this;
+            return __t;
+        }
+
+        friend bool operator==(const iterator& __a, const iterator& __b) noexcept {
+            return __a._M_node == __b._M_node;
+        }
+    };
+    using const_iterator = iterator;
+
+    flat_set() = default;
+    explicit flat_set(const key_compare& __comp) : _M_comp(__comp) {}
+
+    flat_set(const flat_set& __o) : _M_comp(__o._M_comp) {
+        try {
+            for (_Node* __p = __o._M_head; __p != nullptr; __p = __p->_M_next)
+                insert(__p->_M_key);
+        } catch (...) {
+            clear();
+            throw;
+        }
+    }
+    flat_set(flat_set&& __o) noexcept
+        : _M_head(__o._M_head), _M_tail(__o._M_tail), _M_size(__o._M_size), _M_comp(std::move(__o._M_comp)) {
+        __o._M_head = nullptr;
+        __o._M_tail = nullptr;
+        __o._M_size = 0;
+    }
+    ~flat_set() { clear(); }
+
+    flat_set& operator=(const flat_set& __o) {
+        if (this != &__o) {
+            flat_set __tmp(__o);
+            swap(__tmp);
+        }
+        return *this;
+    }
+    flat_set& operator=(flat_set&& __o) noexcept {
+        if (this != &__o) {
+            clear();
+            _M_head = __o._M_head;
+            _M_tail = __o._M_tail;
+            _M_size = __o._M_size;
+            _M_comp = std::move(__o._M_comp);
+            __o._M_head = nullptr;
+            __o._M_tail = nullptr;
+            __o._M_size = 0;
+        }
+        return *this;
+    }
+
+    void swap(flat_set& __o) noexcept {
+        std::swap(_M_head, __o._M_head);
+        std::swap(_M_tail, __o._M_tail);
+        std::swap(_M_size, __o._M_size);
+        std::swap(_M_comp, __o._M_comp);
+    }
+
+    // Empty: no node, so both iterators are nullptr.
+    iterator begin() noexcept { return iterator(_M_head); }
+    iterator begin() const noexcept { return iterator(_M_head); }
+    iterator end() noexcept { return iterator(nullptr); }
+    iterator end() const noexcept { return iterator(nullptr); }
+    iterator cbegin() const noexcept { return begin(); }
+    iterator cend() const noexcept { return end(); }
+
+    [[nodiscard]] bool empty() const noexcept { return _M_head == nullptr; }
+    // One count per linked node. A duplicate insert does not change it.
+    [[nodiscard]] size_type size() const noexcept { return _M_size; }
+
+    key_compare key_comp() const { return _M_comp; }
+    value_compare value_comp() const { return _M_comp; }
+
+    iterator find(const key_type& __x) const { return iterator(_M_find_node(__x)); }
+    bool contains(const key_type& __x) const { return find(__x) != end(); }
+    size_type count(const key_type& __x) const { return contains(__x) ? 1 : 0; }
+
+    iterator lower_bound(const key_type& __x) const {
+        for (_Node* __n = _M_head; __n != nullptr; __n = __n->_M_next)
+            if (!_M_comp(__n->_M_key, __x))
+                return iterator(__n);
+        return end();
+    }
+    iterator upper_bound(const key_type& __x) const { return iterator(_M_upper_node(__x)); }
+    pair<iterator, iterator> equal_range(const key_type& __x) const {
+        iterator __lo = lower_bound(__x);
+        if (__lo == end() || _M_comp(__x, *__lo))
+            return {__lo, __lo};
+        iterator __hi = __lo;
+        ++__hi;
+        return {__lo, __hi};
+    }
+
+    // Already present: return that node. Do not allocate, and do not assign
+    // over the stored key (an equivalent key can differ in other fields).
+    pair<iterator, bool> insert(const value_type& __x) {
+        _Node* __have = _M_find_node(__x);
+        if (__have != nullptr)
+            return {iterator(__have), false};
+        _Node* __succ = _M_upper_node(__x);
+        _Node* __n = new _Node(__x);
+        _M_link_before(__n, __succ);
+        ++_M_size;
+        return {iterator(__n), true};
+    }
+    pair<iterator, bool> insert(value_type&& __x) {
+        _Node* __have = _M_find_node(__x);
+        if (__have != nullptr)
+            return {iterator(__have), false};
+        _Node* __succ = _M_upper_node(__x);
+        _Node* __n = new _Node(std::move(__x));
+        _M_link_before(__n, __succ);
+        ++_M_size;
+        return {iterator(__n), true};
+    }
+    iterator insert(iterator __hint, const value_type& __x) {
+        (void)__hint;
+        return insert(__x).first;
+    }
+    iterator insert(iterator __hint, value_type&& __x) {
+        (void)__hint;
+        return insert(std::move(__x)).first;
+    }
+    template <typename... _Args>
+    pair<iterator, bool> emplace(_Args&&... __args) {
+        return insert(value_type(std::forward<_Args>(__args)...));
+    }
+
+    // Present: destroy that node and free it. Missing: free nothing.
+    size_type erase(const key_type& __x) {
+        _Node* __n = _M_find_node(__x);
+        if (__n == nullptr)
+            return 0;
+        _M_unlink(__n);
+        --_M_size;
+        delete __n;
+        return 1;
+    }
+    iterator erase(iterator __pos) {
+        _Node* __n = __pos._M_node;
+        iterator __next(__n->_M_next);
+        _M_unlink(__n);
+        --_M_size;
+        delete __n;
+        return __next;
+    }
+
+    void clear() noexcept {
+        while (_M_head != nullptr)
+            erase(iterator(_M_head));
+    }
+};
+
+template <typename _Key, typename _Compare>
+inline void swap(flat_set<_Key, _Compare>& __x, flat_set<_Key, _Compare>& __y) noexcept(noexcept(__x.swap(__y))) {
+    __x.swap(__y);
+}
+
+_GLIBCXX_END_NAMESPACE_VERSION
+}  // namespace std
+
+#endif  // _GLIBCXX_FLAT_SET
