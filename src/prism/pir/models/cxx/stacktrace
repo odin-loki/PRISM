@@ -1,0 +1,111 @@
+// PRISM operational model of <stacktrace>. The pir stage puts this
+// directory first on the C++ include path, so `#include <stacktrace>`
+// reaches this file instead of libstdc++'s. It is a file, not a directory:
+// a directory of this name would make the include fail with EISDIR and
+// every such unit would fall back to libstdc++.
+//
+// Partial. basic_stacktrace is not a template. The allocator argument is
+// omitted, and stacktrace names that type. This file does not include the
+// memory, string, or functional headers.
+//
+// current() records at most one instruction pointer, and only through
+// __builtin_return_address(0) when that builtin exists. A null result is
+// not stored. When the builtin does not exist, current() is empty and
+// size() is 0. size() is 0 or 1.
+//
+// The entry does not carry a function name or a source line. Those
+// queries are not declared, so this file cannot invent them.
+//
+// operator[] with an index >= size() is a precondition failure
+// (__prism_check, MEM-OOB-READ). The failing path then traps and does
+// not return a frame. [0] on an empty trace is that same check.
+#ifndef _GLIBCXX_STACKTRACE
+#define _GLIBCXX_STACKTRACE 1
+
+#pragma GCC system_header
+
+#if defined(__has_builtin)
+#  if __has_builtin(__builtin_return_address)
+#    define _PRISM_STACKTRACE_HAS_RETURN_ADDRESS 1
+#  endif
+#elif defined(__GNUC__)
+#  define _PRISM_STACKTRACE_HAS_RETURN_ADDRESS 1
+#endif
+
+// PIR intrinsic (translate.cpp). A literal class and message, as in the libc
+// models. Not defined here: the analysed program does not link a body.
+extern "C" void __prism_check(int ok, const char* cls, const char* msg);
+
+namespace std {
+
+class basic_stacktrace;
+
+class stacktrace_entry {
+public:
+    using native_handle_type = const void*;
+
+    constexpr stacktrace_entry() noexcept : _M_addr(nullptr) {}
+
+    constexpr native_handle_type native_handle() const noexcept { return _M_addr; }
+
+    constexpr explicit operator bool() const noexcept { return _M_addr != nullptr; }
+
+private:
+    friend class basic_stacktrace;
+
+    constexpr explicit stacktrace_entry(native_handle_type __addr) noexcept : _M_addr(__addr) {}
+
+    native_handle_type _M_addr;
+};
+
+class basic_stacktrace {
+public:
+    using value_type = stacktrace_entry;
+    using size_type = decltype(sizeof(0));
+    using const_reference = const value_type&;
+
+    // No captured pointer. size() is 0.
+    basic_stacktrace() noexcept = default;
+
+    // One instruction pointer from __builtin_return_address(0), or empty
+    // when that builtin does not exist or returns null. No second frame.
+    static basic_stacktrace current() noexcept {
+#ifdef _PRISM_STACKTRACE_HAS_RETURN_ADDRESS
+        const void* __ip = __builtin_return_address(0);
+        if (__ip == nullptr) return basic_stacktrace();
+        return basic_stacktrace(__ip, 1);
+#else
+        // The compiler did not provide __builtin_return_address.
+        return basic_stacktrace();
+#endif
+    }
+
+    // 0 when current() stored nothing. 1 when it stored the return address.
+    size_type size() const noexcept { return _M_size; }
+
+    bool empty() const noexcept { return _M_size == 0; }
+
+    // Index >= size() fails the check, then traps. That path does not
+    // return a frame. An empty trace has no stored address to hand back.
+    const_reference operator[](size_type __n) const {
+        __prism_check(__n < this->size(), "MEM-OOB-READ", "stacktrace::operator[] index out of range");
+        if (__n >= this->size()) __builtin_trap();
+        return _M_frame;
+    }
+
+private:
+    basic_stacktrace(const void* __ip, size_type __n) noexcept : _M_frame(__ip), _M_size(__n) {}
+
+    value_type _M_frame{};
+    size_type _M_size = 0;
+};
+
+using stacktrace = basic_stacktrace;
+
+}  // namespace std
+
+#ifdef _PRISM_STACKTRACE_HAS_RETURN_ADDRESS
+#  undef _PRISM_STACKTRACE_HAS_RETURN_ADDRESS
+#endif
+
+#endif  // _GLIBCXX_STACKTRACE

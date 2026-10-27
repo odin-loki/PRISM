@@ -1,0 +1,12 @@
+format_version: 1
+input_files: stacktrace_contracts.cpp
+language: C++
+property: libc-contract
+expected:
+  stacktrace_empty_true: true
+  stacktrace_current_bound_true: true
+  stacktrace_empty_index_false: false
+expect_class:
+  stacktrace_empty_index_false: "MEM-OOB-READ"
+witness:
+  stacktrace_empty_index_false: [0]

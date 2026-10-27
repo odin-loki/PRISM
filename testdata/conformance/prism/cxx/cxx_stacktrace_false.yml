@@ -1,0 +1,8 @@
+format_version: 1
+input_files: cxx_stacktrace_false.cpp
+language: C++
+property: no-oob
+expected:
+  cxx_stacktrace_false: false
+witness:
+  cxx_stacktrace_false: [0]
