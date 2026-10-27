@@ -1,0 +1,83 @@
+// PRISM operational model of <source_location>. The pir stage puts this
+// directory first on the C++ include path, so `#include <source_location>`
+// reaches this file instead of libstdc++'s. A directory of that name would
+// make the include fail.
+//
+// Partial. current() records the call with __builtin_FILE, __builtin_LINE,
+// and __builtin_FUNCTION. file_name() and function_name() return those
+// pointers. line() returns that line. When the compiler provides
+// __builtin_COLUMN, column() returns it. Otherwise column() returns 0.
+// Nothing here substitutes a fixed line or column for the call, and this
+// file includes no other standard header.
+#ifndef _GLIBCXX_SOURCE_LOCATION
+#define _GLIBCXX_SOURCE_LOCATION 1
+
+#pragma GCC system_header
+
+#if defined(__has_builtin)
+#  if __has_builtin(__builtin_COLUMN)
+#    define _PRISM_SOURCE_LOCATION_HAS_COLUMN 1
+#  endif
+#elif defined(__GNUC__) && (__GNUC__ >= 7)
+#  define _PRISM_SOURCE_LOCATION_HAS_COLUMN 1
+#endif
+
+namespace std {
+
+struct source_location {
+    using uint_least32_t = __UINT_LEAST32_TYPE__;
+
+    // No captured call. line() and column() are 0.
+    constexpr source_location() noexcept : _M_file(""), _M_function(""), _M_line(0), _M_column(0) {}
+
+    // The builtins in the default arguments are evaluated at the call, so
+    // line() is that line rather than a constant written in this header.
+    static constexpr source_location current(const char* __file = __builtin_FILE(),
+                                             uint_least32_t __line = __builtin_LINE(),
+                                             const char* __function = __builtin_FUNCTION()
+#ifdef _PRISM_SOURCE_LOCATION_HAS_COLUMN
+                                             ,
+                                             uint_least32_t __column = __builtin_COLUMN()
+#endif
+                                             ) noexcept {
+#ifdef _PRISM_SOURCE_LOCATION_HAS_COLUMN
+        return source_location(__file, __line, __function, __column);
+#else
+        // The compiler did not provide a column.
+        return source_location(__file, __line, __function, 0);
+#endif
+    }
+
+    constexpr const char* file_name() const noexcept { return _M_file; }
+
+    constexpr const char* function_name() const noexcept { return _M_function; }
+
+    constexpr uint_least32_t line() const noexcept { return _M_line; }
+
+    constexpr uint_least32_t column() const noexcept {
+#ifdef _PRISM_SOURCE_LOCATION_HAS_COLUMN
+        return _M_column;
+#else
+        // The compiler did not provide a column.
+        return _M_column;
+#endif
+    }
+
+private:
+    constexpr source_location(const char* __file, uint_least32_t __line, const char* __function,
+                              uint_least32_t __column) noexcept
+        : _M_file(__file), _M_function(__function), _M_line(__line), _M_column(__column) {}
+
+    const char* _M_file;
+    const char* _M_function;
+    uint_least32_t _M_line;
+    uint_least32_t _M_column;
+};
+
+}  // namespace std
+
+#ifdef _PRISM_SOURCE_LOCATION_HAS_COLUMN
+#  undef _PRISM_SOURCE_LOCATION_HAS_COLUMN
+#endif
+
+#endif  // _GLIBCXX_SOURCE_LOCATION
