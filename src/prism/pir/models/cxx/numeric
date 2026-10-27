@@ -1,0 +1,76 @@
+// PRISM operational model of <numeric>. Partial on purpose.
+// The pir stage puts this directory first on the C++ include path, so
+// `#include <numeric>` reaches this file instead of libstdc++'s.
+//
+// std::midpoint for integers does not overflow. The distance is formed in
+// the corresponding unsigned type, and half of that distance is applied to
+// one argument. The result is one of the two arguments or strictly between
+// them. midpoint of two equal large values is that same value.
+//
+// std::gcd is the Euclidean algorithm on the absolute values. gcd(0, 0) is 0.
+//
+// lcm is not declared. A product that does not fit the return type is a
+// precondition of the standard algorithm. This header does not report a
+// wrapped product as a successful result.
+//
+// Not declared here, so naming accumulate, reduce, transform_reduce,
+// inner_product, adjacent_difference, partial_sum, iota, or exclusive_scan
+// fails to compile and the pir stage falls back to libstdc++
+// (extra.cxx_models). A partial header is intentional.
+#ifndef _GLIBCXX_NUMERIC
+#define _GLIBCXX_NUMERIC 1
+
+#pragma GCC system_header
+
+#include <type_traits>
+
+namespace std {
+
+// Magnitude as an unsigned value. A negative signed value, including the
+// minimum of that type, converts without a signed negation.
+template <typename _Up, typename _Tp>
+constexpr _Up _Prism_numeric_absu(_Tp __v) noexcept {
+    static_assert(is_unsigned_v<_Up>, "magnitude is an unsigned type");
+    if constexpr (is_signed_v<_Tp>) {
+        if (__v < 0) return static_cast<_Up>(0) - static_cast<_Up>(__v);
+    }
+    return static_cast<_Up>(__v);
+}
+
+// [numeric.ops.midpoint]. Both arguments have the same integer type, and
+// that type is not bool. Half the unsigned distance stays in range, then
+// the cast back is the midpoint.
+template <typename _Tp>
+constexpr enable_if_t<is_integral_v<_Tp> && !is_same_v<remove_cv_t<_Tp>, bool>, _Tp>
+midpoint(_Tp __a, _Tp __b) noexcept {
+    using _Up = make_unsigned_t<_Tp>;
+    if (__a > __b) {
+        const _Up __diff = static_cast<_Up>(__a) - static_cast<_Up>(__b);
+        return static_cast<_Tp>(static_cast<_Up>(__a) - (__diff / 2));
+    }
+    const _Up __diff = static_cast<_Up>(__b) - static_cast<_Up>(__a);
+    return static_cast<_Tp>(static_cast<_Up>(__a) + (__diff / 2));
+}
+
+// [numeric.ops.gcd]. Both magnitudes 0: the loop does not run, and the
+// value returned is 0.
+template <typename _Mn, typename _Nn>
+constexpr enable_if_t<is_integral_v<_Mn> && is_integral_v<_Nn> && !is_same_v<remove_cv_t<_Mn>, bool> &&
+                          !is_same_v<remove_cv_t<_Nn>, bool>,
+                      common_type_t<_Mn, _Nn>>
+gcd(_Mn __m, _Nn __n) noexcept {
+    using _Ct = common_type_t<_Mn, _Nn>;
+    using _Up = make_unsigned_t<_Ct>;
+    _Up __um = _Prism_numeric_absu<_Up>(static_cast<_Ct>(__m));
+    _Up __un = _Prism_numeric_absu<_Up>(static_cast<_Ct>(__n));
+    while (__un != 0) {
+        const _Up __r = __um % __un;
+        __um = __un;
+        __un = __r;
+    }
+    return static_cast<_Ct>(__um);
+}
+
+}  // namespace std
+
+#endif
