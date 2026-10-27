@@ -4657,11 +4657,17 @@ TEST_CASE("scope: a CMakeFiles path component is skipped, src is not") {
     CHECK(prism::scope::skipped_path(root / "src" / "CMakeFiles" / "a.cpp", root));
     CHECK_FALSE(prism::scope::skipped_path(root / "src" / "prism" / "scope.cpp", root));
     for (auto* n : {"CMakeFiles", ".vs", ".idea", "bazel-bin", "bazel-out", "bazel-testlogs", "dist",
-                    "cmake-build-debug"})
+                    "cmake-build-debug", "cmake-build-release", ".cache", "coverage", "htmlcov",
+                    ".gradle", ".cxx", "DerivedData"})
         CHECK_MESSAGE(prism::scope::skip_dir(n), n);
     for (auto* n : {"testdata", "src", "include", "proofs", "tests", "docs", "rebuild", "mybuilddir",
-                    "cmake-build-release"})
+                    "mytestdata", "mysrc", "includes", "myproofs", "mytests", "mydocs",
+                    "cache", "mycoverage", "htmlcoverage", "gradle", "cxx", "myDerivedData",
+                    "cmake-build-release-old"})
         CHECK_MESSAGE(!prism::scope::skip_dir(n), n);
+    CHECK(prism::scope::skipped_path(root / "src" / "coverage" / "a.cpp", root));
+    CHECK_FALSE(prism::scope::skipped_path(root / "src" / "mycoverage" / "a.cpp", root));
+    CHECK_FALSE(prism::scope::skipped_path(root / "docs" / "a.cpp", root));
     // prism-out* already covers the GUI output directory; it is not a set entry.
     CHECK(prism::scope::skip_dir("prism-out-gui"));
     CHECK_FALSE(prism::scope::skip_dirs().contains("prism-out-gui"));
