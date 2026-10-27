@@ -1,0 +1,219 @@
+// PRISM operational model of <memory> (docs/PIR.md "C++ library models").
+// The pir stage puts this directory first on the C++ include path, so
+// `#include <memory>` reaches this file instead of libstdc++'s.
+//
+// Partial on purpose. Only std::unique_ptr is modelled:
+//
+//  * unique_ptr<T> owns one T. That object was allocated with ::operator new.
+//    reset stores the new pointer, then destroys the previous object and
+//    frees it with ::operator delete. The destructor and move-assignment go
+//    through reset, so the previous object is freed exactly once. A
+//    moved-from unique_ptr is empty: release() stores nullptr and does not
+//    free, and the destructor's reset sees that nullptr and does not free.
+//    release() leaves the caller owning the pointer.
+//  * unique_ptr<T[]> is the same pair for array new and array delete. reset
+//    frees the previous array with one array-delete expression.
+//  * get() on an empty unique_ptr is nullptr. operator* and operator-> on an
+//    empty unique_ptr fail the precondition through __prism_check. They do
+//    not invent an object to return.
+//
+// shared_ptr, weak_ptr, allocator, pointer_traits, and uninitialized_* are
+// not declared. A use of those names fails to compile against this header
+// and the pir stage lowers that translation unit again with libstdc++.
+// A partial header is intentional. make_unique, custom deleters, and
+// unique_ptr for a bounded array are not declared or are a static_assert,
+// so those units fall back the same way.
+#ifndef _GLIBCXX_MEMORY
+#define _GLIBCXX_MEMORY 1  // libstdc++'s <memory> include guard: never both
+
+#pragma GCC system_header
+
+#include <bits/c++config.h>
+#include <cstddef>
+#include <new>
+#include <type_traits>
+
+// PIR intrinsic (src/prism/pir/models/libc/prism_model.h). Declared, not
+// defined: translate.cpp reports the call. A definition here would be inlined
+// away and the check would disappear.
+extern "C" void __prism_check(int __ok, const char* __cls, const char* __msg);
+
+namespace std _GLIBCXX_VISIBILITY(default) {
+_GLIBCXX_BEGIN_NAMESPACE_VERSION
+
+template <typename _Tp>
+struct default_delete {
+    constexpr default_delete() noexcept = default;
+    void operator()(_Tp* __p) const;
+};
+
+template <typename _Tp>
+struct default_delete<_Tp[]> {
+    constexpr default_delete() noexcept = default;
+    void operator()(_Tp* __p) const;
+};
+
+template <typename _Tp, typename _Dp = default_delete<_Tp>>
+class unique_ptr {
+    static_assert(!is_array_v<_Tp>,
+                  "PRISM memory model: bounded arrays are not modelled (the pir stage falls back to libstdc++)");
+    static_assert(!is_void_v<_Tp> && !is_reference_v<_Tp>,
+                  "PRISM memory model: unique_ptr<void> and unique_ptr of a reference are not modelled");
+    static_assert(is_same_v<remove_reference_t<_Dp>, default_delete<_Tp>>,
+                  "PRISM memory model: only default_delete is modelled (the pir stage falls back to libstdc++)");
+
+public:
+    using pointer = _Tp*;
+    using element_type = _Tp;
+    using deleter_type = _Dp;
+
+    unique_ptr() noexcept : _M_ptr(nullptr) {}
+    unique_ptr(nullptr_t) noexcept : _M_ptr(nullptr) {}
+    explicit unique_ptr(pointer __p) noexcept : _M_ptr(__p) {}
+    unique_ptr(unique_ptr&& __u) noexcept : _M_ptr(__u.release()) {}
+    ~unique_ptr() noexcept { reset(); }
+
+    unique_ptr& operator=(unique_ptr&& __u) noexcept {
+        // release() empties the source first. reset() then frees this
+        // object's previous pointer once and stores the transferred one.
+        // A self-move releases nullptr into reset, so it does not free.
+        reset(__u.release());
+        return *this;
+    }
+    unique_ptr& operator=(nullptr_t) noexcept {
+        reset();
+        return *this;
+    }
+
+    unique_ptr(const unique_ptr&) = delete;
+    unique_ptr& operator=(const unique_ptr&) = delete;
+
+    pointer release() noexcept {
+        pointer __p = _M_ptr;
+        _M_ptr = nullptr;
+        return __p;
+    }
+
+    void reset(pointer __p = nullptr) noexcept {
+        pointer __old = _M_ptr;
+        _M_ptr = __p;
+        if (__old != nullptr) {
+            using _Obj = remove_cv_t<element_type>;
+            _Obj* __obj = const_cast<_Obj*>(__old);
+            __obj->~_Obj();
+            ::operator delete(const_cast<void*>(static_cast<const void*>(__obj)));
+        }
+    }
+
+    void swap(unique_ptr& __u) noexcept {
+        pointer __t = _M_ptr;
+        _M_ptr = __u._M_ptr;
+        __u._M_ptr = __t;
+    }
+
+    pointer get() const noexcept { return _M_ptr; }
+    explicit operator bool() const noexcept { return _M_ptr != nullptr; }
+
+    element_type& operator*() const {
+        __prism_check(_M_ptr != nullptr, "PTR-NULL-DEREF",
+                      "unique_ptr::operator* on an empty unique_ptr");
+        return *_M_ptr;
+    }
+    pointer operator->() const {
+        __prism_check(_M_ptr != nullptr, "PTR-NULL-DEREF",
+                      "unique_ptr::operator-> on an empty unique_ptr");
+        return _M_ptr;
+    }
+
+private:
+    pointer _M_ptr;
+};
+
+template <typename _Tp, typename _Dp>
+class unique_ptr<_Tp[], _Dp> {
+    static_assert(!is_void_v<_Tp> && !is_reference_v<_Tp>,
+                  "PRISM memory model: unique_ptr of void or a reference is not modelled");
+    static_assert(is_same_v<remove_reference_t<_Dp>, default_delete<_Tp[]>>,
+                  "PRISM memory model: only default_delete is modelled (the pir stage falls back to libstdc++)");
+
+public:
+    using pointer = _Tp*;
+    using element_type = _Tp;
+    using deleter_type = _Dp;
+
+    unique_ptr() noexcept : _M_ptr(nullptr) {}
+    unique_ptr(nullptr_t) noexcept : _M_ptr(nullptr) {}
+    explicit unique_ptr(pointer __p) noexcept : _M_ptr(__p) {}
+    unique_ptr(unique_ptr&& __u) noexcept : _M_ptr(__u.release()) {}
+    ~unique_ptr() noexcept { reset(); }
+
+    unique_ptr& operator=(unique_ptr&& __u) noexcept {
+        reset(__u.release());
+        return *this;
+    }
+    unique_ptr& operator=(nullptr_t) noexcept {
+        reset();
+        return *this;
+    }
+
+    unique_ptr(const unique_ptr&) = delete;
+    unique_ptr& operator=(const unique_ptr&) = delete;
+
+    pointer release() noexcept {
+        pointer __p = _M_ptr;
+        _M_ptr = nullptr;
+        return __p;
+    }
+
+    void reset(pointer __p = nullptr) noexcept {
+        pointer __old = _M_ptr;
+        _M_ptr = __p;
+        if (__old != nullptr)
+            delete[] __old;
+    }
+
+    void swap(unique_ptr& __u) noexcept {
+        pointer __t = _M_ptr;
+        _M_ptr = __u._M_ptr;
+        __u._M_ptr = __t;
+    }
+
+    pointer get() const noexcept { return _M_ptr; }
+    explicit operator bool() const noexcept { return _M_ptr != nullptr; }
+
+    element_type& operator[](size_t __i) const {
+        __prism_check(_M_ptr != nullptr, "PTR-NULL-DEREF",
+                      "unique_ptr::operator[] on an empty unique_ptr");
+        return _M_ptr[__i];
+    }
+
+private:
+    pointer _M_ptr;
+};
+
+template <typename _Tp>
+void default_delete<_Tp>::operator()(_Tp* __p) const {
+    // Owns __p, then the destructor runs reset(). That is the one free.
+    unique_ptr<_Tp> __hold(__p);
+}
+
+template <typename _Tp>
+void default_delete<_Tp[]>::operator()(_Tp* __p) const {
+    unique_ptr<_Tp[]> __hold(__p);
+}
+
+template <typename _Tp, typename _Dp>
+void swap(unique_ptr<_Tp, _Dp>& __x, unique_ptr<_Tp, _Dp>& __y) noexcept {
+    __x.swap(__y);
+}
+
+// One direction: C++20 rewrites nullptr == p from p == nullptr.
+template <typename _Tp, typename _Dp>
+bool operator==(const unique_ptr<_Tp, _Dp>& __x, nullptr_t) noexcept {
+    return !__x;
+}
+
+_GLIBCXX_END_NAMESPACE_VERSION
+}  // namespace std
+
+#endif  // _GLIBCXX_MEMORY

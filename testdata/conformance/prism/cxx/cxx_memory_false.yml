@@ -1,0 +1,8 @@
+format_version: 1
+input_files: cxx_memory_false.cpp
+language: C++
+property: memsafety
+expected:
+  cxx_memory_false: false
+witness:
+  cxx_memory_false: [0]
