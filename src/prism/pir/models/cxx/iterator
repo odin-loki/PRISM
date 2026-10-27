@@ -1,0 +1,74 @@
+// PRISM operational model of <iterator>. The pir stage puts this directory
+// first on the C++ include path, so `#include <iterator>` reaches this file
+// instead of libstdc++'s. It is a file, not a directory: a directory of this
+// name would make the include fail with EISDIR and every such unit would
+// fall back to libstdc++.
+//
+// Partial on purpose. std::begin and std::end take a reference to an array
+// T (&)[N] and nothing else. begin returns a pointer to the first element
+// (array-to-pointer decay, not a load). end returns a pointer one past the
+// last.
+//
+// N == 0 is valid. A parameter written T (&)[N] is a substitution failure
+// for that bound (clang: zero-length arrays are not permitted in C++), so
+// the empty array is a second overload: a reference whose size is 0. begin
+// and end then return the same pointer. Neither overload dereferences it.
+//
+// A pointer argument is not an overload. It does not match T (&)[N], and
+// its size is not 0, so the call fails to compile against this header and
+// pir falls back to libstdc++. That argument is not stubbed.
+//
+// std::next, std::prev, std::advance, and reverse_iterator are not declared.
+// The rest of this header is omitted the same way (iterator traits, tags,
+// insert iterators, stream iterators, and the container overloads of begin
+// and end). A unit that names one fails to compile here and falls back.
+// They are not stubbed.
+//
+// This is not a proof that an iterator stays in range. There is no check
+// on a later increment or on a dereference of the returned pointer.
+//
+// This file includes <cstddef> and no other standard header.
+#ifndef _GLIBCXX_ITERATOR
+#define _GLIBCXX_ITERATOR 1
+
+#pragma GCC system_header
+
+#include <cstddef>
+
+namespace std {
+
+// Pointer to the first element. The bound is at least 1: N == 0 does not
+// match this parameter.
+template <typename _Tp, size_t _Nm>
+constexpr _Tp* begin(_Tp (&__arr)[_Nm]) noexcept {
+    return __arr;
+}
+
+// One past the last element. The addition is the bound. N == 0 does not
+// match this parameter.
+template <typename _Tp, size_t _Nm>
+constexpr _Tp* end(_Tp (&__arr)[_Nm]) noexcept {
+    return __arr + _Nm;
+}
+
+// N == 0. sizeof of a zero-length array is 0. The result is the decayed
+// pointer, not a load. A pointer argument has a non-zero size, so it does
+// not match.
+template <typename _Arr>
+constexpr auto begin(_Arr& __arr) noexcept -> decltype(__arr + 0)
+    requires(sizeof(_Arr) == 0)
+{
+    return __arr;
+}
+
+// Same pointer as begin. Adding zero does not dereference.
+template <typename _Arr>
+constexpr auto end(_Arr& __arr) noexcept -> decltype(__arr + 0)
+    requires(sizeof(_Arr) == 0)
+{
+    return __arr + 0;
+}
+
+}  // namespace std
+
+#endif  // _GLIBCXX_ITERATOR
