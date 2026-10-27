@@ -581,7 +581,7 @@ TEST_CASE("qa conformance: every C++ library model header is embedded and exerci
     // bits/basic_string.tcc replaces the libstdc++ file <string> includes
     for (const auto& f : files)
         if (f.find('/') == std::string::npos && f.rfind("prism_", 0) != 0) headers.push_back(f);
-    for (const char* h : {"vector", "map", "set", "unordered_map", "unordered_set", "sstream"})
+    for (const char* h : {"vector", "map", "set", "unordered_map", "unordered_set", "sstream", "list"})
         CHECK(std::find(headers.begin(), headers.end(), h) != headers.end());
     CHECK(std::find(files.begin(), files.end(), "bits/basic_string.tcc") != files.end());
     // An explicit-include buffer, not a header the pir stage swaps in for
@@ -605,6 +605,13 @@ TEST_CASE("qa conformance: every C++ library model header is embedded and exerci
             // and no public model header includes it. tests/cpp/test_cxx_iostream.cpp
             // includes it by path. A swap would be a file named iostream, which
             // the checks above reject, and would need stage.cpp's include path.
+            continue;
+        }
+        if (f == "deque/deque") {
+            // The model lives one directory down, so write_cxx_models would
+            // emit deque/deque, not the <deque> header. It is not embedded
+            // until the file is src/prism/pir/models/cxx/deque. tests/cpp/test_cxx_deque.cpp
+            // includes it by path.
             continue;
         }
         CHECK(cmake.find("src/prism/pir/models/cxx/" + f) != std::string::npos);
