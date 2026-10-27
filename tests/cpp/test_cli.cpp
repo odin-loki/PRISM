@@ -216,6 +216,31 @@ TEST_CASE("cli: a missing or malformed value is an error, never an empty or defa
     CHECK(t->cfg.timeout == 25.0);
 }
 
+// Laws 7 and 8: a joined value is the value asked for. An unknown flag or a
+// missing value is an error before any scan, so a typo cannot skip every stage.
+TEST_CASE("cli: --flag=value, unknown flags, and a missing value") {
+    auto eq = parse({"--fail-on=defect", "--stage=bmc", "--out=reports", "--skip=fuzz",
+                     "--unwind=3", "--jobs=4"});
+    REQUIRE(eq);
+    CHECK(eq->fail_on == "defect");
+    REQUIRE(eq->cfg.stages);
+    CHECK(*eq->cfg.stages == std::vector<std::string>{"bmc"});
+    CHECK(eq->cfg.out == fs::path("reports"));
+    CHECK(eq->cfg.skip == std::vector<std::string>{"fuzz"});
+    CHECK(eq->cfg.unwind == 3);
+    CHECK(eq->cfg.jobs == 4);
+
+    CHECK(error_of({"--bogus-flag"}) == "unrecognized arguments: --bogus-flag");
+    CHECK(error_of({"--fail-on=bogus"}) ==
+          "argument --fail-on: invalid choice: 'bogus' (choose from never, defect, gap)");
+    for (auto* bare : {"--fail-on", "--stage", "--out", "--skip", "--unwind", "--jobs"}) {
+        auto r = parse({bare});
+        CHECK_FALSE(r);
+        const std::string want = std::string("argument ") + bare + ": expected one argument";
+        CHECK(r.error() == want);
+    }
+}
+
 TEST_CASE("cli: --fail-on choices and --tool NAME=PATH") {
     CHECK(error_of({"--fail-on=bogus"}) ==
           "argument --fail-on: invalid choice: 'bogus' (choose from never, defect, gap)");
@@ -372,7 +397,8 @@ Run run_prism(const std::string& args) {
 
 TEST_CASE("prism binary: exit 2 with a message on bad arguments, never an abort or a scan") {
     REQUIRE_MESSAGE(fs::exists(prism_bin()), "prism is built next to prism_tests");
-    for (auto* bad : {"--bogus-flag", "--unwind x", "--unwind=x", "--jobs x", "--fuzz-iters x",
+    for (auto* bad : {"--bogus-flag", "--unwind x", "--unwind=x", "--unwind", "--jobs x", "--jobs",
+                      "--jobs=", "--fail-on", "--out", "--skip", "--fuzz-iters x",
                       "--repair-rounds x", "--timeout x", "--fuzz-budget x", "--tool foo",
                       "--stage bcm", "--stage", "--fail-on=bogus", "a b", "triage --threshold x"}) {
         auto r = run_prism(bad);
