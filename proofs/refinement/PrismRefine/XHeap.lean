@@ -79,4 +79,44 @@ theorem freeChk_run (P : PFunc) (ω : Nat → Nat) (σ : Store) (t : World) (k :
         | (refine ⟨_, rfl, fun i hi => ?_⟩; simp [set_apply, hne i hi, show i ≠ k by omega])
         | (intro i hi; simp [set_apply, hne i hi, show i ≠ k by omega])
 
+/-- `MemTr::obj_size_remaining` (`__prism_obj_size`): temporaries `k..k+4` hold the
+bytes from `p` to the end of its object; no memory is changed. -/
+theorem hobjszCore_run (P : PFunc) (ω : Nat → Nat) (σ : Store) (t : World) (k : Nat) (A : Arg)
+    (hA : A.below k) (hT : TempsOK P k hobjszT) :
+    ∃ σ', xStmts P ω σ t (hobjszCore k A) = .ok σ' t ∧
+      σ' (k + 4) % 2 ^ 64 = hobjszVal t.mem (A.get σ) ∧
+      ∀ i, i < k → σ' i = σ i := by
+  have hkk : ∀ a b : Nat, (k + a = k + b) = (a = b) := fun a b => by simp
+  have hk0 : ∀ a : Nat, (k + a = k) = (a = 0) := fun a => by simp
+  have hk1 : ∀ a : Nat, (k = k + a) = (a = 0) := fun a => by simp [eq_comm]
+  have hAs := fun τ j v (hj : k ≤ j) => Arg.get_set_ge hA τ (j := j) v hj
+  generalize hq : A.get σ % 2 ^ 64 = q
+  have hoff : ptrOff q % 2 ^ 64 = ptrOff q := ptrOff_mod q
+  have hsz : t.mem.size q % 2 ^ 64 = t.mem.size q := size_mod t.mem q
+  have w0 : P.wd k = 64 := by simpa [hobjszT] using wd_of hT 0 (by decide)
+  have w1 : P.wd (k + 1) = 64 := by simpa [hobjszT] using wd_of hT 1 (by decide)
+  have w2 : P.wd (k + 2) = 64 := by simpa [hobjszT] using wd_of hT 2 (by decide)
+  have w3 : P.wd (k + 3) = 1 := by simpa [hobjszT] using wd_of hT 3 (by decide)
+  have w4 : P.wd (k + 4) = 64 := by simpa [hobjszT] using wd_of hT 4 (by decide)
+  unfold hobjszCore hobjszVal
+  simp (config := { decide := true }) only [xStmts_assign, evalOpM, evalOp, w0, w1, w2, w3, w4,
+    hobjszT, List.getElem_cons_succ, List.getElem_cons_zero, Arg.get_v', Arg.get_c', c64_get,
+    set_apply, hkk, hk0, hk1, hAs, Nat.le_add_right, Nat.le_refl, mask48, hq, hoff, hsz, sub64_ge,
+    size_mod, ptrOff_mod, ptrOff_lt, icmpVal_eq', pred_ugt, boolToNat_mod1, selVal, truthN_boolToNat,
+    Nat.mod_mod, ite_toNat, xStmts_nil]
+  refine ⟨_, rfl, ?_, fun i hi => ?_⟩
+  · by_cases hgt : ptrOff q > t.mem.size q
+    · have ho : t.mem.size q < ptrOff q := hgt
+      have ht : truthN 1 = true := by decide
+      simp [hsz, hoff, ho, ite_eq_left ho, ht, selVal]
+    · have hle : ptrOff q ≤ t.mem.size q := Nat.le_of_not_gt hgt
+      have ho : ¬ t.mem.size q < ptrOff q := Nat.not_lt.mpr hle
+      have hsz64 : t.mem.size q < 2 ^ 64 := by have := size_mod t.mem q; omega
+      have hoff64 : ptrOff q < 2 ^ 64 := Nat.lt_trans (ptrOff_lt q) (by decide : 2 ^ 48 < 2 ^ 64)
+      have hsub : (t.mem.size q - ptrOff q) < 2 ^ 64 := by omega
+      have hf : truthN 0 = false := by decide
+      simp [hsz, hoff, ho, ite_eq_right ho, sub64_ge _ _ hsz64 hoff64 hle, hf, selVal, Nat.mod_eq_of_lt hsub]
+  · simp [set_apply, show i ≠ k by omega, show i ≠ k + 1 by omega, show i ≠ k + 2 by omega,
+      show i ≠ k + 3 by omega, show i ≠ k + 4 by omega]
+
 end PrismRefine

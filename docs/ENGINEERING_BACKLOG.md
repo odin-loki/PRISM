@@ -77,7 +77,7 @@ C++ surface: `prism svcomp`, `src/prism/svcomp/`. **Keep** `tools/svcomp/prism.p
 
 Grow **`agree-ext`** beyond 139 functions (`docs/PROOFS_REFINEMENT.md`; `pir-lean-check` on `testdata/pir` + `testdata`):
 
-1. **D118** — **Done (checker):** Lean `hobjsz` + `memcpy selfOk` align C++; `pir-lean-check` **139** `agree-ext`, `heap` fixture **15** `agree-ext`, `mismatch=0`; `hobjsz` full sim in `XRefine` still `admit`
+1. **D118** — **Done:** Lean `hobjsz` + `memcpy selfOk` align C++; `hobjszCore_run` + `sinstX_sim` for `L hobjsz` (`XHeap.lean`, `XRefine.lean`); `heap` fixture **12** `agree-ext`, `outside=0`, `mismatch=0`
 2. **D136 (partial)** — stdio / FILE models: C++ Lean export emits `L hhavoc` for
    `__prism_havoc_bytes` (`export_lean.cpp`; checker still `outside` until Lean
    `hhavoc` + `MemTr::write_havoc`). Remaining: `PRISM_FILEK` in `hfree`, `L
