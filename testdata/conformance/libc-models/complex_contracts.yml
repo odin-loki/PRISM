@@ -1,0 +1,13 @@
+format_version: 1
+input_files: complex_contracts.cpp
+language: C++
+property: libc-contract
+expected:
+  complex_add_true: true
+  complex_div0_false: false
+expect_class:
+  complex_div0_false: "FUNC-CONTRACT"
+witness:
+  complex_div0_false: [0]
+sanitizer_blind:
+  - complex_div0_false

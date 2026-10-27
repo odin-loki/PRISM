@@ -1,0 +1,165 @@
+// PRISM operational model of <complex> (roadmap 2.6, docs/PIR.md "C++ library
+// models"). The pir stage puts this directory first on the C++ include path,
+// so `#include <complex>` reaches this file instead of libstdc++'s. Real and
+// imag are members of the object. Nothing is allocated.
+//
+// Division by a zero complex (both parts zero, including a scalar that
+// converts to one) is a precondition failure. The check is __prism_check.
+// That path does not divide, so it does not produce an infinity and it does
+// not substitute a quotient. IEEE infinities are not modelled.
+//
+// exp, log, log10, pow, sqrt, sin, cos, tan, asin, acos, atan, sinh, cosh,
+// tanh, asinh, acosh, atanh, abs, arg, norm, polar, and proj are not declared. A
+// unit that names one fails to compile against this header, and the pir
+// stage lowers it again with libstdc++ (extra.cxx_models). Those uses are
+// not stubbed. The schoolbook product and quotient are not libstdc++'s
+// scaled algorithm, so a magnitude that would overflow here and not there
+// is outside this model.
+#ifndef _GLIBCXX_COMPLEX
+#define _GLIBCXX_COMPLEX 1
+
+#pragma GCC system_header
+
+extern "C" void __prism_check(int ok, const char* cls, const char* msg);
+
+namespace std {
+
+template <typename _Tp>
+class complex {
+public:
+    typedef _Tp value_type;
+
+    // Implicit, as in libstdc++: complex(re) is complex(re, 0).
+    constexpr complex(const _Tp& __re = _Tp(), const _Tp& __im = _Tp())
+        : _M_real(__re), _M_imag(__im) {}
+
+    template <typename _Up>
+    constexpr complex(const complex<_Up>& __z)
+        : _M_real(static_cast<_Tp>(__z.real())), _M_imag(static_cast<_Tp>(__z.imag())) {}
+
+    constexpr _Tp real() const { return _M_real; }
+    constexpr _Tp imag() const { return _M_imag; }
+    constexpr void real(_Tp __re) { _M_real = __re; }
+    constexpr void imag(_Tp __im) { _M_imag = __im; }
+
+    constexpr complex& operator+=(const complex& __z) {
+        _M_real += __z._M_real;
+        _M_imag += __z._M_imag;
+        return *this;
+    }
+    constexpr complex& operator-=(const complex& __z) {
+        _M_real -= __z._M_real;
+        _M_imag -= __z._M_imag;
+        return *this;
+    }
+    constexpr complex& operator*=(const complex& __z) {
+        const _Tp __r = _M_real * __z._M_real - _M_imag * __z._M_imag;
+        _M_imag = _M_real * __z._M_imag + _M_imag * __z._M_real;
+        _M_real = __r;
+        return *this;
+    }
+    complex& operator/=(const complex& __z) {
+        // Both parts zero. -0 compares equal to 0, so it is the same divisor.
+        const bool __zero = __z._M_real == _Tp() && __z._M_imag == _Tp();
+        __prism_check(!__zero, "FUNC-CONTRACT", "complex division by zero");
+        if (__zero) return *this;
+        const _Tp __den = __z._M_real * __z._M_real + __z._M_imag * __z._M_imag;
+        const _Tp __r = _M_real * __z._M_real + _M_imag * __z._M_imag;
+        _M_imag = (_M_imag * __z._M_real - _M_real * __z._M_imag) / __den;
+        _M_real = __r / __den;
+        return *this;
+    }
+
+private:
+    _Tp _M_real;
+    _Tp _M_imag;
+};
+
+template <typename _Tp>
+constexpr _Tp real(const complex<_Tp>& __z) {
+    return __z.real();
+}
+template <typename _Tp>
+constexpr _Tp imag(const complex<_Tp>& __z) {
+    return __z.imag();
+}
+
+template <typename _Tp>
+constexpr complex<_Tp> operator+(const complex<_Tp>& __x) {
+    return __x;
+}
+template <typename _Tp>
+constexpr complex<_Tp> operator-(const complex<_Tp>& __x) {
+    return complex<_Tp>(-__x.real(), -__x.imag());
+}
+
+template <typename _Tp>
+constexpr complex<_Tp> operator+(complex<_Tp> __x, const complex<_Tp>& __y) {
+    __x += __y;
+    return __x;
+}
+template <typename _Tp>
+constexpr complex<_Tp> operator-(complex<_Tp> __x, const complex<_Tp>& __y) {
+    __x -= __y;
+    return __x;
+}
+template <typename _Tp>
+constexpr complex<_Tp> operator*(complex<_Tp> __x, const complex<_Tp>& __y) {
+    __x *= __y;
+    return __x;
+}
+template <typename _Tp>
+complex<_Tp> operator/(complex<_Tp> __x, const complex<_Tp>& __y) {
+    __x /= __y;
+    return __x;
+}
+
+// Scalar overloads are separate templates. Deduction does not convert a
+// scalar to complex, so `z / 0.0` would not see operator/(complex, complex).
+// Building complex(scalar, 0) makes a zero scalar the same zero-complex check.
+template <typename _Tp>
+constexpr complex<_Tp> operator+(const complex<_Tp>& __x, const _Tp& __y) {
+    return __x + complex<_Tp>(__y);
+}
+template <typename _Tp>
+constexpr complex<_Tp> operator+(const _Tp& __x, const complex<_Tp>& __y) {
+    return complex<_Tp>(__x) + __y;
+}
+template <typename _Tp>
+constexpr complex<_Tp> operator-(const complex<_Tp>& __x, const _Tp& __y) {
+    return __x - complex<_Tp>(__y);
+}
+template <typename _Tp>
+constexpr complex<_Tp> operator-(const _Tp& __x, const complex<_Tp>& __y) {
+    return complex<_Tp>(__x) - __y;
+}
+template <typename _Tp>
+constexpr complex<_Tp> operator*(const complex<_Tp>& __x, const _Tp& __y) {
+    return __x * complex<_Tp>(__y);
+}
+template <typename _Tp>
+constexpr complex<_Tp> operator*(const _Tp& __x, const complex<_Tp>& __y) {
+    return complex<_Tp>(__x) * __y;
+}
+template <typename _Tp>
+complex<_Tp> operator/(const complex<_Tp>& __x, const _Tp& __y) {
+    return __x / complex<_Tp>(__y);
+}
+template <typename _Tp>
+complex<_Tp> operator/(const _Tp& __x, const complex<_Tp>& __y) {
+    return complex<_Tp>(__x) / __y;
+}
+
+template <typename _Tp>
+constexpr bool operator==(const complex<_Tp>& __x, const complex<_Tp>& __y) {
+    return __x.real() == __y.real() && __x.imag() == __y.imag();
+}
+
+template <typename _Tp>
+constexpr complex<_Tp> conj(const complex<_Tp>& __z) {
+    return complex<_Tp>(__z.real(), -__z.imag());
+}
+
+}  // namespace std
+
+#endif  // _GLIBCXX_COMPLEX
