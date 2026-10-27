@@ -86,10 +86,37 @@ namespace stages_detail {
 std::string sandbox_verdict(const nlohmann::json& result) {
     auto err = sandbox_err(result);
     if (err == "no compiler" || err == "exec-disabled") return std::string(laws::NOTRUN);
+    // Partial output from a timed-out run is kept on the result, but the
+    // verdict is FAILED. A timeout is never CLEAN. NOTRUN stays NOTRUN.
+    if (err == "timeout" || err == "compile-timeout") return std::string(laws::FAILED);
     if (result.value("ok", false)) return std::string(laws::CLEAN);
     if (err == "crash") return std::string(laws::CRASH);
     return std::string(laws::FAILED);
 }
+
+namespace {
+
+// Text of a JSON field, or empty when it is missing or null. A non-string
+// is its JSON spelling, so a string is not wrapped in quotes.
+std::string json_text(const nlohmann::json& j, const char* key) {
+    if (!j.contains(key) || j[key].is_null()) return {};
+    if (j[key].is_string()) return j[key].get<std::string>();
+    return j[key].dump();
+}
+
+// CLEAN keeps the last 400 bytes of stdout; CRASH keeps the last 400 of
+// stderr (the report is at the end; sandbox_run already kept the last 2000).
+// extra.sandbox, and extra.code on CRASH, are copied only when the run
+// result actually has them.
+void note_sandbox_output(Finding& f, const nlohmann::json& result, bool crash) {
+    const char* stream = crash ? "stderr" : "stdout";
+    f.extra[stream] = tail(json_text(result, stream), 400);
+    if (result.contains("sandbox") && result["sandbox"].is_string())
+        f.extra["sandbox"] = result["sandbox"].get<std::string>();
+    if (crash && result.contains("code")) f.extra["code"] = result["code"].dump();
+}
+
+}  // namespace
 
 std::vector<Finding> interpreter_loop(LlamaEngine& engine, const std::string& prompt, int rounds,
                                       bool allow_exec) {
@@ -141,9 +168,8 @@ std::vector<Finding> interpreter_loop(LlamaEngine& engine, const std::string& pr
             f.status = std::string(laws::CLEAN);
             f.message = "interpreter harness passed on round " + std::to_string(i + 1) + " (not a proof)";
             f.strength = std::string(laws::STRENGTH_FINDS);
-            f.extra["stdout"] = tail(result.value("stdout", std::string{}), 400);
             f.extra["rounds"] = std::to_string(i + 1);
-            f.extra["sandbox"] = result.value("sandbox", std::string{});
+            note_sandbox_output(f, result, false);
             return {f};
         }
         if (verdict == laws::CRASH) {
@@ -152,10 +178,8 @@ std::vector<Finding> interpreter_loop(LlamaEngine& engine, const std::string& pr
             f.status = std::string(laws::CRASH);
             f.message = "sandbox crash on round " + std::to_string(i + 1) + " (not a proof)";
             f.strength = std::string(laws::STRENGTH_FINDS);
-            f.extra["stderr"] = tail(result.value("stderr", std::string{}), 400);
             f.extra["rounds"] = std::to_string(i + 1);
-            f.extra["code"] = result.contains("code") ? result["code"].dump() : "null";
-            f.extra["sandbox"] = result.value("sandbox", std::string{});
+            note_sandbox_output(f, result, true);
             return {f};
         }
         messages.push_back({"assistant", r.text});

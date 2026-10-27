@@ -207,8 +207,97 @@ TEST_CASE("agent: the sandbox verdict never proves; a missing compiler is NOTRUN
     CHECK(sd::sandbox_verdict({{"ok", false}, {"error", "crash"}}) == prism::laws::CRASH);
     CHECK(sd::sandbox_verdict({{"ok", false}, {"error", "exit"}}) == prism::laws::FAILED);
     CHECK(sd::sandbox_verdict({{"ok", false}, {"error", "compile"}}) == prism::laws::FAILED);
+    // A timeout is never CLEAN, even when ok was set or partial output came back.
+    CHECK(sd::sandbox_verdict({{"ok", false}, {"error", "timeout"}, {"stdout", "partial"}}) ==
+          prism::laws::FAILED);
+    CHECK(sd::sandbox_verdict({{"ok", true}, {"error", "timeout"}, {"stdout", "partial"}}) ==
+          prism::laws::FAILED);
+    CHECK(sd::sandbox_verdict({{"ok", false}, {"error", "compile-timeout"}}) == prism::laws::FAILED);
     const auto off = sd::sandbox_run("int main(void){return 0;}", 2.0, /*allow_exec=*/false);
     CHECK(off["error"] == "exec-disabled");  // Law 9
+    CHECK(off["stdout"] == "");
+    CHECK(off["stderr"] == "");
+}
+
+TEST_CASE("agent: sandbox output keeps its tail, and a timeout keeps what was printed") {
+    auto ends = [](const std::string& s, const std::string& suf) {
+        return s.size() >= suf.size() && s.compare(s.size() - suf.size(), suf.size(), suf) == 0;
+    };
+    const std::string body(2500, 'A');
+    const std::string marked = body + "TAIL";
+    const auto t400 = sd::tail(marked, 400);
+    const auto t2000 = sd::tail(marked, 2000);
+    CHECK(t400.size() == 400);
+    CHECK(t2000.size() == 2000);
+    CHECK(ends(t400, "TAIL"));
+    CHECK(ends(t2000, "TAIL"));
+    // The same limits used to keep the prefix, which never reaches TAIL.
+    CHECK(marked.substr(0, 400).find("TAIL") == std::string::npos);
+    CHECK(marked.substr(0, 2000).find("TAIL") == std::string::npos);
+    const std::string utf = std::string(8, 'a') + "\xE2\x82\xAC" + "Z";
+    const auto cut = sd::tail(utf, 2);
+    CHECK(ends(cut, "Z"));
+    if (!cut.empty()) CHECK((static_cast<unsigned char>(cut.front()) & 0xC0u) != 0x80u);
+
+    if (!have_cc()) {
+        MESSAGE("no gcc/clang: sandbox_run tail and timeout not exercised");
+        return;
+    }
+    auto printed = sd::sandbox_run(
+        "#include <stdio.h>\n"
+        "int main(void) {\n"
+        "  int i;\n"
+        "  for (i = 0; i < 3000; ++i) putchar('B');\n"
+        "  fputs(\"USEFUL-TAIL\\n\", stdout);\n"
+        "  return 0;\n"
+        "}\n",
+        8.0, true);
+    CAPTURE(printed.dump());
+    REQUIRE(printed["ok"] == true);
+    const auto out = printed["stdout"].get<std::string>();
+    CHECK(out.size() == 2000);
+    CHECK(out.find("USEFUL-TAIL") != std::string::npos);
+
+    auto timed = sd::sandbox_run(
+        "#include <stdio.h>\n"
+        "int main(void) {\n"
+        "  volatile int spin = 1;\n"
+        "  fputs(\"PARTIAL-OUT\\n\", stdout);\n"
+        "  fflush(stdout);\n"
+        "  while (spin) continue;\n"
+        "  return 0;\n"
+        "}\n",
+        2.0, true);
+    CAPTURE(timed.dump());
+    CHECK(timed["ok"] == false);
+    CHECK(timed["error"] == "timeout");
+    CHECK(timed["code"].is_null());
+    CHECK(timed["stdout"].get<std::string>().find("PARTIAL-OUT") != std::string::npos);
+    CHECK(sd::sandbox_verdict(timed) == prism::laws::FAILED);
+    CHECK(sd::sandbox_verdict(timed) != prism::laws::CLEAN);
+
+    auto dir = agent_tmp("tail");
+    ChatDouble chat;
+    chat.replies.push_back(
+        {"```c\n#include <stdio.h>\n"
+         "int main(void) {\n"
+         "  int i;\n"
+         "  for (i = 0; i < 500; ++i) putchar('X');\n"
+         "  fputs(\"MARK\\n\", stdout);\n"
+         "  return 0;\n"
+         "}\n```",
+         "", ""});
+    sd::LlamaEngine engine(offline_cfg(dir));
+    auto clean = sd::interpreter_loop(engine, "show the tail", 1, true);
+    REQUIRE(clean.size() == 1);
+    CAPTURE(clean[0].message);
+    CHECK(clean[0].status == prism::laws::CLEAN);
+    CHECK(clean[0].message.find("not a proof") != std::string::npos);
+    CHECK(clean[0].extra.count("sandbox") == 1);
+    CHECK(clean[0].extra.count("code") == 0);
+    const auto so = clean[0].extra.at("stdout");
+    CHECK(so.size() == 400);
+    CHECK(so.find("MARK") != std::string::npos);
 }
 
 TEST_CASE("agent: the RLEF reward; only a BMC proof of the patch is terminal, BOUNDED is not") {
