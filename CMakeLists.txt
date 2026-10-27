@@ -695,6 +695,7 @@ if(PRISM_TESTS)
     tests/cpp/test_polyglot.cpp
     tests/cpp/test_polyglot_missing.cpp
     tests/cpp/test_taxonomy.cpp
+    tests/cpp/test_taxonomy_ids.cpp
     tests/cpp/test_repolint.cpp
     tests/cpp/test_deps.cpp
     tests/cpp/test_cparse.cpp
