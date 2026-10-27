@@ -764,7 +764,9 @@ if(PRISM_TESTS)
     # The model-driven stage pieces: chat engine, reply parsing, sandbox and repair loops.
     tests/cpp/test_agent.cpp
     # A sandboxed wall-clock timeout keeps the child's stdout and stderr tail.
-    tests/cpp/test_sandbox.cpp)
+    tests/cpp/test_sandbox.cpp
+    # Law 4: a model reply that says PROVED stays HYPOTHESIS / READS.
+    tests/cpp/test_llm_hypothesis.cpp)
   if(PRISM_HAS_Z3)
     list(APPEND _prism_test_sources tests/cpp/test_leanbb.cpp
       tests/cpp/test_pir_budget.cpp tests/cpp/test_certified.cpp)
