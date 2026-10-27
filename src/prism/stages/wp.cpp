@@ -247,20 +247,20 @@ std::vector<Finding> run_wp(const std::vector<FunctionInfo>& functions, int unwi
         if (fn.kind == "POINTER" || body_needs_pointer_harness(fn.body)) {
             auto f = make_find("wp", laws::NEEDS_HARNESS, fn, "FUNC-CONTRACT",
                                "POINTER: WP would invent a buffer; Frama-C WP binary is not a proof either",
-                               laws::STRENGTH_PROVES);
+                               laws::STRENGTH_READS);
             mark(f);
             out.push_back(std::move(f));
             continue;
         }
         if (fn.kind != "SCALAR") {
             auto f = make_find("wp", laws::NEEDS_HARNESS, fn, "FUNC-CONTRACT",
-                               fn.kind + ": WP scalar subset only; not a proof", laws::STRENGTH_PROVES);
+                               fn.kind + ": WP scalar subset only; not a proof", laws::STRENGTH_READS);
             mark(f);
             out.push_back(std::move(f));
             continue;
         }
         if (auto syn = scrubbed_byte_reason(fn.body, "WP")) {
-            auto f = make_find("wp", laws::NEEDS_HARNESS, fn, "FUNC-CONTRACT", *syn, laws::STRENGTH_PROVES);
+            auto f = make_find("wp", laws::NEEDS_HARNESS, fn, "FUNC-CONTRACT", *syn, laws::STRENGTH_READS);
             mark(f);
             out.push_back(std::move(f));
             continue;
@@ -289,7 +289,7 @@ std::vector<Finding> run_wp(const std::vector<FunctionInfo>& functions, int unwi
         }
         if (bad) {
             auto f = make_find("wp", laws::ERROR, fn, "FUNC-CONTRACT",
-                               "cannot encode WP predicate (" + *bad + ")", laws::STRENGTH_PROVES);
+                               "cannot encode WP predicate (" + *bad + ")", laws::STRENGTH_READS);
             mark(f);
             f.extra["wp_unencoded"] = "true";
             if (!spec.requires_.empty()) f.extra["requires"] = join_sv(spec.requires_, " && ");

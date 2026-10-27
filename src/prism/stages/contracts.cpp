@@ -219,7 +219,7 @@ Finding bmc_with_assume(const FunctionInfo& fn, int unwind, const std::optional<
     auto core = fn.body;
     std::map<std::string, std::string> inv_extra, dec_extra;
     auto fail = [&](std::string msg, std::map<std::string, std::string> extra) {
-        auto f = make_find("contracts", laws::ERROR, fn, "FUNC-CONTRACT", std::move(msg), laws::STRENGTH_PROVES);
+        auto f = make_find("contracts", laws::ERROR, fn, "FUNC-CONTRACT", std::move(msg), laws::STRENGTH_READS);
         f.extra = std::move(extra);
         if (requires_) f.extra["requires"] = *requires_;
         if (ensures) f.extra["ensures"] = *ensures;
@@ -289,7 +289,7 @@ Finding prove_with_contract(const FunctionInfo& fn, int unwind, const std::optio
     // contracts engine for a contract that is not written in fn's comments.
     if (fn.kind != "SCALAR" || body_needs_pointer_harness(fn.body)) {
         auto f = make_find("contracts", laws::NEEDS_HARNESS, fn, "FUNC-CONTRACT",
-                           fn.kind + ": contract scalar subset only; not a proof", laws::STRENGTH_PROVES);
+                           fn.kind + ": contract scalar subset only; not a proof", laws::STRENGTH_READS);
         if (requires_) f.extra["requires"] = *requires_;
         if (ensures) f.extra["ensures"] = *ensures;
         return f;

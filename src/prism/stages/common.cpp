@@ -307,7 +307,7 @@ std::vector<std::vector<uint8_t>> interesting_seeds(const FunctionInfo& fn) {
 Finding bmc_one(const FunctionInfo& fn, int unwind) {
     auto recs = run_bmc({fn}, unwind);
     if (recs.empty()) {
-        auto f = make_find("bmc", laws::ERROR, fn, "", "BMC produced no result", laws::STRENGTH_PROVES);
+        auto f = make_find("bmc", laws::ERROR, fn, "", "BMC produced no result", laws::STRENGTH_READS);
         return f;
     }
     auto r = recs[0];

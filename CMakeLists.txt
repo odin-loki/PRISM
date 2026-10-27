@@ -734,6 +734,7 @@ if(PRISM_TESTS)
     tests/cpp/test_ltl_notrun_strength.cpp
     tests/cpp/test_contracts.cpp
     tests/cpp/test_contracts_gap.cpp
+    tests/cpp/test_gap_strength.cpp
     tests/cpp/test_bmc.cpp
     tests/cpp/test_checkers_cxx.cpp
     tests/cpp/test_checkers_c.cpp
