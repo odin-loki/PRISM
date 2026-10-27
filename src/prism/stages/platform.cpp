@@ -89,7 +89,16 @@ ProcRun run_spec(const detail::RunSpec& spec) {
     out.err = std::move(r.err);
     out.timeout = r.timed_out;
     out.crashed = r.crashed;
+    out.failed = r.failed;
     return out;
+}
+
+std::optional<Finding> notrun_if_unstarted(std::string stage, const ProcRun& run) {
+    if (!run.failed) return std::nullopt;
+    std::string msg = run.err.empty() ? "tool failed to start" : run.err;
+    auto f = nr(std::move(stage), std::move(msg));
+    f.extra["install"] = "install the missing program, or pass the path of an executable";
+    return f;
 }
 
 std::optional<std::string> http_request(const std::string& method, const std::string& url, const std::string& body,

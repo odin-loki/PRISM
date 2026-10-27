@@ -731,6 +731,8 @@ if(PRISM_TESTS)
     tests/cpp/test_pir_refinement.cpp
     tests/cpp/test_cli.cpp
     tests/cpp/test_pipeline.cpp
+    # Process runner: a missing executable is NOTRUN (Law 1), not a clean exit.
+    tests/cpp/test_platform.cpp
     tests/cpp/test_ai9.cpp
     tests/cpp/test_conc.cpp
     tests/cpp/test_cxx_models.cpp

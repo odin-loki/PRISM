@@ -145,6 +145,11 @@ struct ProcRun {
     std::string err;
     bool timeout = false;
     bool crashed = false;
+    // detail::run sets this when the child did not start (missing executable,
+    // or exec / CreateProcess / chdir failed). rc is then 127. Without the
+    // flag a missing tool is only an exit code, which a caller can read as a
+    // finished process.
+    bool failed = false;
 };
 // limits: rlimits applied in the forked child (Law 9 sandbox for built
 // binaries; the caller wraps argv with sandbox::wrap_argv). Default: none.
@@ -152,6 +157,10 @@ ProcRun run_argv(const std::vector<std::string>& args, const std::string& input,
                  const sandbox::Limits& limits = sandbox::Limits());
 // The full spec: an environment overlay for the child only, a working directory.
 ProcRun run_spec(const detail::RunSpec& spec);
+// Law 1 / Law 7: the child did not start. One NOTRUN finding, with an install
+// hint. A child that started (failed == false) is nullopt — including an
+// exit of 127 — so this does not emit CLEAN or PROVED.
+std::optional<Finding> notrun_if_unstarted(std::string stage, const ProcRun& run);
 // Windows: children (and this process) get no crash / critical-error dialog
 // that would hang them; a no-op elsewhere.
 void suppress_crash_dialogs();
