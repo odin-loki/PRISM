@@ -1,0 +1,162 @@
+// PRISM operational model of <tuple>. The pir stage puts this directory first
+// on the C++ include path, so `#include <tuple>` reaches this file instead of
+// libstdc++'s.
+//
+// Arity 0, 1, and 2. Each element is a member of the object. std::get<I>
+// returns that member. An index that is not a valid compile-time index is
+// ill-formed. tuple<> has no get<0>. Nothing here returns a value-initialized
+// object in place of an element the tuple does not have.
+//
+// Not declared, so a use fails to compile and the pir stage lowers that
+// translation unit again with libstdc++ (extra.cxx_models): tuple_cat, apply,
+// forward_as_tuple, tie, comparison, and any arity above 2 (the primary
+// template is not defined).
+#ifndef _GLIBCXX_TUPLE
+#define _GLIBCXX_TUPLE 1
+
+#pragma GCC system_header
+
+#include <cstddef>
+#include <bits/utility.h>
+
+namespace std {
+
+template <typename... _Elements>
+class tuple;
+
+// Instantiated only for an index this header does not store. No get member.
+template <size_t _I, typename _Tup>
+struct _Prism_tuple_get {
+    static_assert(_I != _I, "std::get index is not a valid compile-time index");
+};
+
+template <>
+class tuple<> {
+public:
+    constexpr tuple() noexcept = default;
+    constexpr tuple(const tuple&) = default;
+    constexpr tuple(tuple&&) noexcept = default;
+    constexpr tuple& operator=(const tuple&) = default;
+    constexpr tuple& operator=(tuple&&) noexcept = default;
+};
+
+template <typename _T0>
+class tuple<_T0> {
+    _T0 _M_0;
+
+    template <size_t _I, typename _Tup>
+    friend struct _Prism_tuple_get;
+
+public:
+    constexpr tuple() : _M_0() {}
+    constexpr tuple(const _T0& __x) : _M_0(__x) {}
+    constexpr tuple(_T0&& __x) : _M_0(static_cast<_T0&&>(__x)) {}
+    constexpr tuple(const tuple&) = default;
+    constexpr tuple(tuple&&) = default;
+    constexpr tuple& operator=(const tuple&) = default;
+    constexpr tuple& operator=(tuple&&) = default;
+};
+
+template <typename _T0, typename _T1>
+class tuple<_T0, _T1> {
+    _T0 _M_0;
+    _T1 _M_1;
+
+    template <size_t _I, typename _Tup>
+    friend struct _Prism_tuple_get;
+
+public:
+    constexpr tuple() : _M_0(), _M_1() {}
+    constexpr tuple(const _T0& __a, const _T1& __b) : _M_0(__a), _M_1(__b) {}
+    constexpr tuple(_T0&& __a, _T1&& __b) : _M_0(static_cast<_T0&&>(__a)), _M_1(static_cast<_T1&&>(__b)) {}
+    constexpr tuple(const tuple&) = default;
+    constexpr tuple(tuple&&) = default;
+    constexpr tuple& operator=(const tuple&) = default;
+    constexpr tuple& operator=(tuple&&) = default;
+};
+
+template <typename _T0>
+struct _Prism_tuple_get<0, tuple<_T0>> {
+    static constexpr _T0& get(tuple<_T0>& __t) noexcept { return __t._M_0; }
+    static constexpr const _T0& get(const tuple<_T0>& __t) noexcept { return __t._M_0; }
+    static constexpr _T0&& get(tuple<_T0>&& __t) noexcept { return static_cast<_T0&&>(__t._M_0); }
+    static constexpr const _T0&& get(const tuple<_T0>&& __t) noexcept { return static_cast<const _T0&&>(__t._M_0); }
+};
+
+template <typename _T0, typename _T1>
+struct _Prism_tuple_get<0, tuple<_T0, _T1>> {
+    static constexpr _T0& get(tuple<_T0, _T1>& __t) noexcept { return __t._M_0; }
+    static constexpr const _T0& get(const tuple<_T0, _T1>& __t) noexcept { return __t._M_0; }
+    static constexpr _T0&& get(tuple<_T0, _T1>&& __t) noexcept { return static_cast<_T0&&>(__t._M_0); }
+    static constexpr const _T0&& get(const tuple<_T0, _T1>&& __t) noexcept { return static_cast<const _T0&&>(__t._M_0); }
+};
+
+template <typename _T0, typename _T1>
+struct _Prism_tuple_get<1, tuple<_T0, _T1>> {
+    static constexpr _T1& get(tuple<_T0, _T1>& __t) noexcept { return __t._M_1; }
+    static constexpr const _T1& get(const tuple<_T0, _T1>& __t) noexcept { return __t._M_1; }
+    static constexpr _T1&& get(tuple<_T0, _T1>&& __t) noexcept { return static_cast<_T1&&>(__t._M_1); }
+    static constexpr const _T1&& get(const tuple<_T0, _T1>&& __t) noexcept { return static_cast<const _T1&&>(__t._M_1); }
+};
+
+template <>
+struct tuple_size<tuple<>> : integral_constant<size_t, 0> {};
+
+template <typename _T0>
+struct tuple_size<tuple<_T0>> : integral_constant<size_t, 1> {};
+
+template <typename _T0, typename _T1>
+struct tuple_size<tuple<_T0, _T1>> : integral_constant<size_t, 2> {};
+
+template <typename _T0>
+struct tuple_element<0, tuple<_T0>> {
+    using type = _T0;
+};
+
+template <typename _T0, typename _T1>
+struct tuple_element<0, tuple<_T0, _T1>> {
+    using type = _T0;
+};
+
+template <typename _T0, typename _T1>
+struct tuple_element<1, tuple<_T0, _T1>> {
+    using type = _T1;
+};
+
+template <size_t _I, typename _T0>
+constexpr decltype(auto) get(tuple<_T0>& __t) noexcept {
+    return _Prism_tuple_get<_I, tuple<_T0>>::get(__t);
+}
+template <size_t _I, typename _T0>
+constexpr decltype(auto) get(const tuple<_T0>& __t) noexcept {
+    return _Prism_tuple_get<_I, tuple<_T0>>::get(__t);
+}
+template <size_t _I, typename _T0>
+constexpr decltype(auto) get(tuple<_T0>&& __t) noexcept {
+    return _Prism_tuple_get<_I, tuple<_T0>>::get(static_cast<tuple<_T0>&&>(__t));
+}
+template <size_t _I, typename _T0>
+constexpr decltype(auto) get(const tuple<_T0>&& __t) noexcept {
+    return _Prism_tuple_get<_I, tuple<_T0>>::get(static_cast<const tuple<_T0>&&>(__t));
+}
+
+template <size_t _I, typename _T0, typename _T1>
+constexpr decltype(auto) get(tuple<_T0, _T1>& __t) noexcept {
+    return _Prism_tuple_get<_I, tuple<_T0, _T1>>::get(__t);
+}
+template <size_t _I, typename _T0, typename _T1>
+constexpr decltype(auto) get(const tuple<_T0, _T1>& __t) noexcept {
+    return _Prism_tuple_get<_I, tuple<_T0, _T1>>::get(__t);
+}
+template <size_t _I, typename _T0, typename _T1>
+constexpr decltype(auto) get(tuple<_T0, _T1>&& __t) noexcept {
+    return _Prism_tuple_get<_I, tuple<_T0, _T1>>::get(static_cast<tuple<_T0, _T1>&&>(__t));
+}
+template <size_t _I, typename _T0, typename _T1>
+constexpr decltype(auto) get(const tuple<_T0, _T1>&& __t) noexcept {
+    return _Prism_tuple_get<_I, tuple<_T0, _T1>>::get(static_cast<const tuple<_T0, _T1>&&>(__t));
+}
+
+}  // namespace std
+
+#endif
