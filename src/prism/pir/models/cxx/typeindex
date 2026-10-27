@@ -1,0 +1,67 @@
+// PRISM operational model of <typeindex>. The pir stage puts this
+// directory first on the C++ include path, so `#include <typeindex>`
+// reaches this file instead of libstdc++'s. It is a file, not a
+// directory: a directory of this name would make the include fail
+// with EISDIR and every such unit would fall back to libstdc++.
+//
+// Partial on purpose. std::type_index stores the address of the
+// std::type_info object the constructor was given. operator== calls
+// type_info::operator== on those two objects. It does not compare
+// names, and it does not treat two different type_info objects as
+// equal. hash_code() returns type_info::hash_code(). name() returns
+// type_info::name(), the pointer that object already has.
+//
+// std::hash is not declared. A specialization that returned a
+// constant would hide type_info::hash_code(). <functional> is not
+// included, so a unit that names std::hash fails to compile and pir
+// falls back to libstdc++. operator<=> is omitted the same way:
+// <compare> is not included. <string> and <memory> are not included.
+//
+// Ordering calls type_info::before. Comparing two type_index values
+// is not a proof of a program's behavior.
+//
+// <typeinfo> below is libstdc++. This directory does not provide a
+// typeinfo stand-in.
+#ifndef _GLIBCXX_TYPEINDEX
+#define _GLIBCXX_TYPEINDEX 1  // libstdc++'s <typeindex> include guard: never both
+
+#pragma GCC system_header
+
+#include <cstddef>
+#include <typeinfo>
+
+namespace std {
+
+class type_index {
+public:
+    // Stores that object's address. Not a copy of its name.
+    type_index(const type_info& __rhs) noexcept : _M_target(&__rhs) {}
+
+    // type_info::operator== on the two objects. Not pointer identity of
+    // the type_info, and not a name invented here.
+    bool operator==(const type_index& __rhs) const noexcept { return *_M_target == *__rhs._M_target; }
+
+    bool operator!=(const type_index& __rhs) const noexcept { return !(*_M_target == *__rhs._M_target); }
+
+    // type_info::before, the same order libstdc++ uses.
+    bool operator<(const type_index& __rhs) const noexcept { return _M_target->before(*__rhs._M_target); }
+
+    bool operator<=(const type_index& __rhs) const noexcept { return !__rhs._M_target->before(*_M_target); }
+
+    bool operator>(const type_index& __rhs) const noexcept { return __rhs._M_target->before(*_M_target); }
+
+    bool operator>=(const type_index& __rhs) const noexcept { return !_M_target->before(*__rhs._M_target); }
+
+    // The type_info hash. Not a constant.
+    size_t hash_code() const noexcept { return _M_target->hash_code(); }
+
+    // The type_info name pointer. Not a stand-in string.
+    const char* name() const noexcept { return _M_target->name(); }
+
+private:
+    const type_info* _M_target;
+};
+
+}  // namespace std
+
+#endif  // _GLIBCXX_TYPEINDEX
