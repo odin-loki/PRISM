@@ -12,6 +12,8 @@
 //
 // JSON and TOML syntax are checked in process (Tool::native); Python syntax
 // by the scanned project's own python3 (compile() only), NOTRUN without it.
+// A non-null ExeWhich replaces that PATH lookup and is not followed by a
+// spawn when it returns nullopt (tests/cpp/test_polyglot_missing.cpp).
 //
 // Built-in scans read every text file in scope (id_rsa, key.pem, .npmrc,
 // Dockerfile, ...); language tools go by extension.
@@ -408,7 +410,7 @@ std::vector<Finding> builtin_scan(const std::vector<fs::path>& files, const fs::
     return out;
 }
 
-std::optional<fs::path> resolve(const PgTool& tool, const Config& cfg) {
+std::optional<fs::path> resolve(const PgTool& tool, const Config& cfg, ExeWhich which) {
     // --tool NAME=~/bin/x: the shell did not expand the ~ after '='.
     auto expand_user = [](const fs::path& p) -> fs::path {
         auto s = p.generic_string();
@@ -433,6 +435,13 @@ std::optional<fs::path> resolve(const PgTool& tool, const Config& cfg) {
     if (auto hit = lookup(tool.name)) return hit;
     for (auto& n : tool.exes)
         if (auto hit = lookup(n)) return hit;
+    // A test lookup replaces the pinned build and PATH. nullopt is final:
+    // do not fall through to which_adapter and spawn a python3 that is there.
+    if (which) {
+        for (auto& n : tool.exes)
+            if (auto hit = which(n)) return hit;
+        return std::nullopt;
+    }
     // The pinned ~/.prism/tools build (when the tool has a manifest row), then PATH.
     for (auto& n : tool.exes)
         if (auto hit = cfg.which_adapter(tool.name, {std::string_view(n)})) return hit;
@@ -664,14 +673,14 @@ std::vector<Finding> run_native(const PgCheck& check, const PgTool& tool,
 }
 
 std::vector<Finding> run_check(const PgCheck& check, std::vector<fs::path> files,
-                               const fs::path& root, const Config& cfg) {
+                               const fs::path& root, const Config& cfg, polyglot::ExeWhich which) {
     const PgTool* tool = nullptr;
     const PgTool* held = nullptr;  // present, but executes scanned code (Law 9)
     std::optional<fs::path> exe;
     for (auto& t : check.tools)
         if (t.native) return run_native(check, t, files, root);
     for (auto& t : check.tools) {
-        auto found = polyglot::resolve(t, cfg);
+        auto found = polyglot::resolve(t, cfg, which);
         if (!found) continue;
         if (t.executes && !cfg.allow_exec) {
             if (!held) held = &t;
@@ -782,7 +791,7 @@ std::vector<Finding> run_check(const PgCheck& check, std::vector<fs::path> files
 
 }  // namespace
 
-std::vector<Finding> run_polyglot(const fs::path& root, const Config& cfg) {
+std::vector<Finding> run_polyglot(const fs::path& root, const Config& cfg, polyglot::ExeWhich which) {
     auto all_files = walk_files(root);
     if (all_files.empty())
         return {pg_finding(laws::UNKNOWN, "", std::nullopt, "", "no source files in scope")};
@@ -806,7 +815,7 @@ std::vector<Finding> run_polyglot(const fs::path& root, const Config& cfg) {
                 for (auto& p : it->second)
                     if (check.kind != "type" || !broken.contains(rel(p, root))) mine.push_back(p);
         if (mine.empty()) continue;
-        auto part = run_check(check, mine, root, cfg);
+        auto part = run_check(check, mine, root, cfg, which);
         if (check.kind == "syntax")
             for (auto& f : part)
                 if (f.status == laws::FAILED && f.cls == "SYNTAX-ERROR" && !f.file.empty())
@@ -814,6 +823,10 @@ std::vector<Finding> run_polyglot(const fs::path& root, const Config& cfg) {
         out.insert(out.end(), part.begin(), part.end());
     }
     return out;
+}
+
+std::vector<Finding> run_polyglot(const fs::path& root, const Config& cfg) {
+    return run_polyglot(root, cfg, nullptr);
 }
 
 }  // namespace prism

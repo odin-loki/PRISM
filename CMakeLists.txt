@@ -693,6 +693,7 @@ if(PRISM_TESTS)
     tests/cpp/test_svcomp_decide.cpp
     tests/cpp/test_naming.cpp
     tests/cpp/test_polyglot.cpp
+    tests/cpp/test_polyglot_missing.cpp
     tests/cpp/test_taxonomy.cpp
     tests/cpp/test_repolint.cpp
     tests/cpp/test_deps.cpp

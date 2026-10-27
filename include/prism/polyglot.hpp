@@ -4,7 +4,8 @@
 // built-in scans, the output parsers and the native JSON/TOML syntax
 // checkers. The stage entry points are in prism/stages.hpp; this header
 // exists so tests/cpp/test_polyglot.cpp can pin the table and feed canned
-// tool output to the parsers.
+// tool output to the parsers. The three-argument run_polyglot is the
+// external-tool lookup seam (tests/cpp/test_polyglot_missing.cpp).
 
 #include "prism/config.hpp"
 #include "prism/export.hpp"
@@ -94,8 +95,18 @@ PRISM_API std::vector<Finding> parse_output(const Tool& tool, const std::string&
                                             const std::filesystem::path& cwd, const Check& check);
 // Output lines that are neither diagnostics nor the tool's benign chatter.
 PRISM_API std::string unexplained_output(const Tool& tool, const std::string& raw);
-// cfg.tools[name or exe] (~ expanded), the pinned ~/.prism/tools build, PATH.
-PRISM_API std::optional<std::filesystem::path> resolve(const Tool& tool, const Config& cfg);
+// One executable name -> a path, or nullopt when that name is absent.
+// Production passes nullptr: the pinned ~/.prism/tools build, then PATH
+// (Config::which_adapter). A non-null function replaces that step and is
+// not followed by PATH, so a present python3 can be treated as missing
+// without changing the process environment.
+using ExeWhich = std::optional<std::filesystem::path> (*)(std::string_view exe);
+
+// cfg.tools[name or exe] (~ expanded) wins when the file exists. Then
+// `which`, or when `which` is nullptr the pinned build and PATH.
+// Native checkers (no executable) return nullopt.
+PRISM_API std::optional<std::filesystem::path> resolve(const Tool& tool, const Config& cfg,
+                                                      ExeWhich which = nullptr);
 
 // RFC 8259 JSON (a leading UTF-8 byte order mark is allowed).
 PRISM_API std::optional<SyntaxIssue> json_syntax(std::string_view text);
@@ -104,3 +115,14 @@ PRISM_API std::optional<SyntaxIssue> json_syntax(std::string_view text);
 PRISM_API std::optional<SyntaxIssue> toml_syntax(std::string_view text);
 
 }  // namespace prism::polyglot
+
+namespace prism {
+
+// Same stage as run_polyglot(root, cfg). `which` is the external-tool
+// lookup (polyglot::resolve). nullptr keeps the pinned build and PATH.
+// Native JSON and TOML checkers do not call it. A nullopt from `which`
+// is NOTRUN with the check's install hint and does not spawn the tool.
+PRISM_API std::vector<Finding> run_polyglot(const std::filesystem::path& root, const Config& cfg,
+                                            polyglot::ExeWhich which);
+
+}  // namespace prism
