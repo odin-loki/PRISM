@@ -1,0 +1,77 @@
+// PRISM operational model of <barrier> (roadmap 2.6, docs/PIR.md "C++ library
+// models"). The pir stage puts this directory first on the C++ include path,
+// so `#include <barrier>` reaches this file instead of libstdc++'s. It is a
+// file, not a directory: a directory of this name would make the include fail
+// with EISDIR and every such unit would fall back to libstdc++.
+//
+// Partial model. The expected arrival count is a ptrdiff_t stored in the
+// object. Nothing here allocates, and nothing starts a thread. This header
+// is not a concurrency proof: the count is not atomic, and arrive does not
+// pretend that other threads arrived.
+//
+// arrive(n) subtracts n only when n is not greater than the remaining count.
+// An arrive that would pass below zero is __prism_check. The count is not
+// wrapped.
+//
+// wait() and arrive_and_wait() are omitted. A blocking wait that returns
+// immediately would be a fake synchronization success. Those names are
+// omitted so the unit fails to compile and pir falls back to libstdc++.
+//
+// arrive_and_drop() decreases the expected count by one and does not wait.
+// If the expected count is already zero, it is a check.
+//
+// This file does not include <atomic>, <latch>, <semaphore>, or <thread>.
+#ifndef _GLIBCXX_BARRIER
+#define _GLIBCXX_BARRIER 1
+
+#pragma GCC system_header
+
+#include <cstddef>
+
+// PIR intrinsic (translate.cpp). A literal class and message, as in the libc
+// models. Not defined here: the analysed program does not link a body.
+extern "C" void __prism_check(int ok, const char* cls, const char* msg);
+
+namespace std {
+
+class barrier {
+    // Expected arrival count, stored in the object. No heap control block.
+    ptrdiff_t _M_expected;
+
+public:
+    explicit barrier(ptrdiff_t __expected) noexcept : _M_expected(__expected) {
+        __prism_check(__expected >= 0 ? 1 : 0, "FUNC-CONTRACT",
+                      "barrier constructed with a negative count");
+    }
+
+    barrier(const barrier&) = delete;
+    barrier& operator=(const barrier&) = delete;
+
+    // No thread to join and no allocation to release.
+    ~barrier() = default;
+
+    // Subtract __n only when it is positive and not greater than the remaining
+    // count. A non-positive __n would raise the count or be a no-op the
+    // standard rejects. __n > _M_expected would pass below zero. The stored
+    // count is left unchanged on that path, so it does not wrap.
+    void arrive(ptrdiff_t __n = 1) {
+        const int __ok = (__n > 0 && __n <= _M_expected) ? 1 : 0;
+        __prism_check(__ok, "CXX-BARRIER-ARRIVE",
+                      "barrier::arrive past the expected count");
+        if (__ok)
+            _M_expected -= __n;
+    }
+
+    // One less expected arrival. Does not wait. Already zero is a check,
+    // and the count stays zero.
+    void arrive_and_drop() {
+        __prism_check(_M_expected == 0 ? 0 : 1, "CXX-BARRIER-DROP",
+                      "barrier::arrive_and_drop when the expected count is already zero");
+        if (_M_expected != 0)
+            --_M_expected;
+    }
+};
+
+}  // namespace std
+
+#endif
