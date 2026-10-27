@@ -1083,12 +1083,18 @@ Finding fuse_one(const FunctionInfo& fn, const std::vector<Finding>& bmc_finding
                     extra.erase("engine");
                     if (afl_last->extra.contains("install")) extra["install"] = afl_last->extra["install"];
                     if (afl_last->extra.contains("exec")) extra["exec"] = afl_last->extra["exec"];
-                } else if (afl_last->status == laws::CRASH || afl_last->status == laws::ERROR) {
-                    extra["engine"] = "afl";
-                    for (auto& [k, v] : extra) afl_last->extra[k] = v;
-                    return *afl_last;
                 } else {
+                    // CLEAN, CRASH and ERROR name the engine and the sandbox
+                    // the run had (sandbox::kind(), same as the binary-oracle
+                    // rows). A quiet AFL result is not returned on its own:
+                    // the published FuSeBMC row must still carry that sandbox.
                     extra["engine"] = "afl";
+                    if (auto sb = afl_last->extra.find("sandbox"); sb != afl_last->extra.end())
+                        extra["sandbox"] = sb->second;
+                    if (afl_last->status == laws::CRASH || afl_last->status == laws::ERROR) {
+                        for (auto& [k, v] : extra) afl_last->extra[k] = v;
+                        return *afl_last;
+                    }
                 }
             }
         }

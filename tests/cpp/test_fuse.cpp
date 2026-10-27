@@ -15,6 +15,8 @@
 #include "prism/sandbox.hpp"
 #include "prism/stages.hpp"
 
+#include "../../src/prism/stages/common.hpp"
+
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
@@ -26,6 +28,7 @@
 #include <map>
 #include <mutex>
 #include <optional>
+#include <random>
 #include <set>
 #include <string>
 #include <thread>
@@ -85,6 +88,77 @@ bool any_proof(const std::vector<prism::Finding>& recs) {
 }
 
 const char* kLlmSkipMsg = "llama.cpp/Ollama not reachable; stall mutants / autoprompt skipped";
+
+namespace sd = prism::stages_detail;
+
+// No solver: an unsigned counterexample above INT_MAX must not throw, and
+// the harness reads the low bytes of that value (little-endian, per width).
+TEST_CASE("bytes_from_cex keeps values above INT_MAX") {
+    prism::FunctionInfo u;
+    u.params = {{"unsigned", "x"}};
+    auto dec = sd::bytes_from_cex("x=4294967295", u);
+    REQUIRE(dec);
+    CHECK(*dec == std::vector<uint8_t>{0xFF, 0xFF, 0xFF, 0xFF});
+    auto hex = sd::bytes_from_cex("x=0xFFFFFFFF", u);
+    REQUIRE(hex);
+    CHECK(*hex == *dec);
+    CHECK(sd::bytes_from_cex("x=#xffffffff", u) == dec);
+
+    prism::FunctionInfo s;
+    s.params = {{"int", "x"}};
+    auto low = sd::bytes_from_cex("x=4294967295", s);
+    REQUIRE(low);
+    CHECK(*low == std::vector<uint8_t>{0xFF, 0xFF, 0xFF, 0xFF});
+    CHECK(sd::decode_args(s, *low)["x"] == -1);
+}
+
+// Compile fails before afl-fuzz is started. The ERROR row still names the
+// engine and the sandbox kind (not a proof).
+TEST_CASE("afl: compile failure is ERROR with engine and sandbox") {
+    if (!prism::Config{}.which({"gcc", "clang"})) {
+        MESSAGE("no C compiler: AFL compile ERROR is not exercised");
+        return;
+    }
+    prism::sandbox::Policy allow(true);
+    auto dir = fs::temp_directory_path() /
+               ("prism_fuse_afl_err_" + std::to_string(std::random_device{}()));
+    fs::create_directories(dir);
+    struct Guard {
+        fs::path p;
+        ~Guard() {
+            std::error_code ec;
+            fs::remove_all(p, ec);
+        }
+    } guard{dir};
+    auto src = dir / "bad.c";
+    {
+        std::ofstream out(src);
+        out << "int inc(int x) { return x + ; }\n";
+    }
+    auto afl = dir / "afl-fuzz";
+    {
+        std::ofstream out(afl);
+        out << "exit 0\n";
+    }
+    prism::Config cfg;
+    cfg.root = dir;
+    cfg.tools["afl-fuzz"] = afl;
+    prism::FunctionInfo fn;
+    fn.file = src.string();
+    fn.name = "inc";
+    fn.kind = "SCALAR";
+    fn.line = 1;
+    fn.signature = "int inc(int x)";
+    fn.params = {{"int", "x"}};
+    fn.body = "return x + ;";
+    auto rec = sd::run_afl_fuzz(fn, src, cfg, 1.0, dir / "work");
+    REQUIRE(rec);
+    CHECK(rec->status == prism::laws::ERROR);
+    CHECK(rec->extra.at("engine") == "afl");
+    CHECK(rec->extra.at("sandbox") == prism::sandbox::kind());
+    CHECK(rec->message.find("compile failed") != std::string::npos);
+    CHECK_FALSE(prism::laws::is_proof(rec->status));
+}
 
 #ifndef _WIN32
 // Environment variables set for one case and restored after it.
