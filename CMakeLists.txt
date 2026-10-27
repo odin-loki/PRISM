@@ -727,6 +727,8 @@ if(PRISM_TESTS)
     tests/cpp/test_ai9.cpp
     tests/cpp/test_conc.cpp
     tests/cpp/test_cxx_models.cpp
+    tests/cpp/test_cxx_iostream.cpp
+    tests/cpp/test_cxx_deque.cpp
     tests/cpp/test_fuse.cpp
     tests/cpp/test_gui_model.cpp
     tests/cpp/test_repair.cpp
