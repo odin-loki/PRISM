@@ -1,0 +1,181 @@
+// PRISM operational model of <span> (roadmap 2.6, docs/PIR.md "C++ library
+// models"). The pir stage puts this directory first on the C++ include path,
+// so `#include <span>` reaches this file instead of libstdc++'s. It is a
+// non-owning view: a pointer and a length. Nothing here allocates storage,
+// and the destructor does not release the viewed memory.
+//
+// Modelled, for a dynamic extent only:
+//  * default construction (an empty view);
+//  * construction from a pointer plus a length, and from a C array
+//    (the array is not copied);
+//  * construction from an lvalue that already has data() and size()
+//    (libstdc++ <format>, reached from <memory>, turns a basic_string
+//    lvalue into a span). A temporary does not bind, so it is not viewed;
+//  * copy and copy-assignment of the view (the elements stay where they are);
+//  * data(), size(), empty();
+//  * operator[] when the index is in range, returning that element;
+//  * front() and back() when the view is non-empty, returning that element;
+//  * subspan(offset, count) and subspan(offset) (the tail) when the slice
+//    sits inside size();
+//  * first(count) for the same reason, and begin()/end() iterators that
+//    point at the viewed elements (a class type, because <format> calls
+//    iterator::operator->). Stepping an iterator does not allocate.
+//
+// Preconditions use __glibcxx_assert, the same call <vector> and <list> use
+// (_GLIBCXX_ASSERTIONS, on for every C++ unit). The failing path does not
+// invent an element or a view:
+//  * operator[] with an index that is not in range (__n < this->size(),
+//    MEM-OOB-READ) does not return a stand-in _Tp;
+//  * front() and back() on an empty span (!this->empty(), FUNC-CONTRACT)
+//    do not return a fabricated _Tp;
+//  * subspan or first that would run past size() is the same kind of
+//    precondition failure, not a span of invented elements.
+//
+// What this header does not declare is not silently different. A use of an
+// omitted API fails to compile against this file, and the pir stage lowers
+// that translation unit again with libstdc++ (extra.cxx_models says so).
+// Omitted on purpose, including because a static extent cannot be modelled
+// here without pretending a second template argument is checked:
+//  * std::span<T, N> and std::dynamic_extent (this template takes one
+//    argument; static-extent span is not declared);
+//  * deduction guides (std::span s = ... does not deduce a static extent);
+//  * last, size_bytes, and the template first/subspan;
+//  * a constructor from an iterator pair, or from an rvalue range;
+//  * as_bytes / as_writable_bytes;
+//  * a converting constructor from span<U>.
+// This file does not include <vector>, <array>, <deque>, or any other
+// container. __cpp_lib_span is not defined: this is not the whole C++20 span.
+#ifndef _PRISM_MODEL_SPAN
+#define _PRISM_MODEL_SPAN 1
+#define _GLIBCXX_SPAN 1  // libstdc++'s <span> include guard: never both
+
+#pragma GCC system_header
+
+#include <cstddef>
+#include <bits/stl_iterator_base_types.h>
+#include <debug/assertions.h>
+
+namespace std _GLIBCXX_VISIBILITY(default) {
+_GLIBCXX_BEGIN_NAMESPACE_VERSION
+
+template <typename _Tp>
+class span {
+public:
+    using element_type = _Tp;
+    using value_type = _Tp;
+    using size_type = size_t;
+    using difference_type = ptrdiff_t;
+    using pointer = _Tp*;
+    using const_pointer = const _Tp*;
+    using reference = _Tp&;
+    using const_reference = const _Tp&;
+
+    constexpr span() noexcept : _M_ptr(nullptr), _M_len(0) {}
+    constexpr span(pointer __p, size_type __n) noexcept : _M_ptr(__p), _M_len(__n) {}
+    template <size_t _Nm>
+    constexpr span(_Tp (&__arr)[_Nm]) noexcept : _M_ptr(__arr), _M_len(_Nm) {}
+    // Lvalue only. data() and size() are the viewed sequence; nothing is copied.
+    template <typename _Range>
+    constexpr span(_Range& __r) noexcept(noexcept(__r.data()) && noexcept(__r.size()))
+        requires requires {
+            static_cast<pointer>(__r.data());
+            static_cast<size_type>(__r.size());
+        }
+        : _M_ptr(static_cast<pointer>(__r.data())), _M_len(static_cast<size_type>(__r.size())) {}
+
+    constexpr span(const span&) noexcept = default;
+    constexpr span& operator=(const span&) noexcept = default;
+    // Non-owning: the viewed memory stays allocated by its owner.
+    constexpr ~span() noexcept = default;
+
+    [[nodiscard]] constexpr size_type size() const noexcept { return _M_len; }
+    [[nodiscard]] constexpr bool empty() const noexcept { return size() == 0; }
+    [[nodiscard]] constexpr pointer data() const noexcept { return _M_ptr; }
+
+    [[nodiscard]] constexpr reference operator[](size_type __n) const noexcept {
+        __glibcxx_assert(__n < this->size());
+        return *(_M_ptr + __n);
+    }
+    [[nodiscard]] constexpr reference front() const noexcept {
+        __glibcxx_assert(!this->empty());
+        return *_M_ptr;
+    }
+    [[nodiscard]] constexpr reference back() const noexcept {
+        __glibcxx_assert(!this->empty());
+        return *(_M_ptr + (size() - 1));
+    }
+    // The tail. An offset past size() fails the precondition; the length is
+    // the elements that remain, not a made-up count.
+    [[nodiscard]] constexpr span subspan(size_type __offset) const noexcept {
+        __glibcxx_assert(__offset <= this->size());
+        return span(_M_ptr + __offset, _M_len - __offset);
+    }
+    // A count that would run past size() fails the precondition; this does
+    // not clamp the length or invent elements.
+    [[nodiscard]] constexpr span subspan(size_type __offset, size_type __count) const noexcept {
+        __glibcxx_assert(__offset <= this->size() && __count <= this->size() - __offset);
+        return span(_M_ptr + __offset, __count);
+    }
+    [[nodiscard]] constexpr span first(size_type __count) const noexcept {
+        __glibcxx_assert(__count <= this->size());
+        return span(_M_ptr, __count);
+    }
+
+    // Points at a viewed element. Not a raw pointer: <format> calls operator->.
+    struct iterator {
+        pointer _M_cur = nullptr;
+
+        using iterator_category = std::random_access_iterator_tag;
+        using value_type = span::value_type;
+        using difference_type = span::difference_type;
+        using pointer = span::pointer;
+        using reference = span::reference;
+
+        constexpr iterator() noexcept = default;
+        constexpr explicit iterator(pointer __p) noexcept : _M_cur(__p) {}
+
+        constexpr reference operator*() const noexcept { return *_M_cur; }
+        constexpr pointer operator->() const noexcept { return _M_cur; }
+        constexpr iterator& operator++() noexcept {
+            ++_M_cur;
+            return *this;
+        }
+        constexpr iterator operator++(int) noexcept {
+            iterator __tmp = *this;
+            ++_M_cur;
+            return __tmp;
+        }
+        constexpr iterator& operator+=(difference_type __n) noexcept {
+            _M_cur += __n;
+            return *this;
+        }
+        constexpr iterator& operator+=(size_type __n) noexcept {
+            _M_cur += static_cast<difference_type>(__n);
+            return *this;
+        }
+        friend constexpr iterator operator+(iterator __i, difference_type __n) noexcept {
+            __i += __n;
+            return __i;
+        }
+        friend constexpr iterator operator+(iterator __i, size_type __n) noexcept {
+            __i += __n;
+            return __i;
+        }
+        friend constexpr difference_type operator-(iterator __a, iterator __b) noexcept {
+            return static_cast<difference_type>(__a._M_cur - __b._M_cur);
+        }
+        friend constexpr bool operator==(iterator __a, iterator __b) noexcept { return __a._M_cur == __b._M_cur; }
+    };
+
+    [[nodiscard]] constexpr iterator begin() const noexcept { return iterator(_M_ptr); }
+    [[nodiscard]] constexpr iterator end() const noexcept { return iterator(_M_ptr + _M_len); }
+
+private:
+    pointer _M_ptr = nullptr;
+    size_type _M_len = 0;
+};
+
+_GLIBCXX_END_NAMESPACE_VERSION
+}  // namespace std
+
+#endif
