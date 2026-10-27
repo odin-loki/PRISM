@@ -18,6 +18,8 @@ const std::set<std::string>& skip_dirs() {
         "CMakeFiles", ".vs", ".idea", "bazel-bin", "bazel-out", "bazel-testlogs", "dist",
         "cmake-build-debug", "cmake-build-release", ".cache", "coverage", "htmlcov",
         ".gradle", ".cxx", "DerivedData",
+        // CocoaPods, Carthage, SwiftPM, and .bundle checkouts. Exact names.
+        "Pods", "Carthage", ".swiftpm", ".bundle",
     };
     return k;
 }
