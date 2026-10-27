@@ -1,0 +1,15 @@
+format_version: 1
+input_files: bitset_contracts.cpp
+language: C++
+property: libc-contract
+timeout: 300
+expected:
+  bitset_ops_true: true
+  bitset_empty_true: true
+  bitset_index_oob_false: false
+  bitset_test_oob_false: false
+  bitset_to_ulong_overflow_false: false
+expect_class:  # the violation each false harness plants; the solver was not run
+  bitset_index_oob_false: "MEM-OOB-READ"
+  bitset_test_oob_false: "CXX-THROW-NOEXCEPT"
+  bitset_to_ulong_overflow_false: "CXX-THROW-NOEXCEPT"

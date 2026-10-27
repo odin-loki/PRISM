@@ -1,0 +1,295 @@
+// PRISM operational model of <bitset> (roadmap 2.6, docs/PIR.md "C++ library
+// models"). The pir stage puts this directory first on the C++ include path,
+// so `#include <bitset>` reaches this file instead of libstdc++'s. It is a
+// plain implementation of std::bitset<N> the PIR encoder can inline:
+//
+//  * N bits live in the object (one unsigned long per word, the same width
+//    libstdc++ uses). There is no heap allocation. bitset<0> stores nothing;
+//  * set, reset, flip (the whole set and one position), test, operator[],
+//    count, size, all, any, none;
+//  * to_ulong() when the value fits in unsigned long. That is every value
+//    of a bitset whose N is at most the width of unsigned long (32 or 64,
+//    whichever the platform gives unsigned long). A bit at or above that
+//    width throws std::overflow_error, with libstdc++'s message;
+//  * test(pos) for pos >= N throws std::out_of_range (the same format
+//    string as libstdc++) and does not yield a bit. operator[] is the same
+//    _GLIBCXX_ASSERTIONS precondition as vector (`__position < this->size()`
+//    -> MEM-OOB-READ). An index that is not one of the N bits is not answered
+//    with a padding zero from the last word;
+//  * bitset<0> is empty: any() is false, all() and none() are true, count()
+//    and to_ulong() are 0, and test(0) is the out_of_range precondition.
+//
+// What it does not model is not declared, so a unit that names it fails to
+// compile against this header and the pir stage lowers it again with
+// libstdc++ (reported in the function's `extra.cxx_models`). String
+// constructors, to_string, shifts, bitwise operators, and std::hash are not
+// stubbed.
+#ifndef _PRISM_MODEL_BITSET
+#define _PRISM_MODEL_BITSET 1
+#define _GLIBCXX_BITSET 1  // libstdc++'s <bitset> include guard: never both
+
+#pragma GCC system_header
+
+#include <bits/c++config.h>
+#include <bits/functexcept.h>
+#include <debug/assertions.h>
+#include <cstddef>
+#include <cstdlib>
+#include <type_traits>
+
+#if __cplusplus > 202002L
+#define __cpp_lib_constexpr_bitset 202202L
+#endif
+
+namespace std _GLIBCXX_VISIBILITY(default) {
+_GLIBCXX_BEGIN_NAMESPACE_VERSION
+
+// Words of an N-bit set. N == 0 does not use this type (no bits to store).
+template <size_t _Nw>
+struct _Prism_bitset_words {
+    unsigned long _M_w[_Nw]{};
+};
+
+template <size_t _Nb>
+class bitset {
+    static constexpr size_t _S_bpw = __CHAR_BIT__ * sizeof(unsigned long);
+    // _GLIBCXX_BITSET_WORDS: a multiple of the word width needs no extra word,
+    // and zero bits need no word at all.
+    static constexpr size_t _S_nwords = _Nb == 0 ? 0 : (_Nb / _S_bpw + (_Nb % _S_bpw == 0 ? 0 : 1));
+
+    using _Store = conditional_t<_S_nwords == 0, char, _Prism_bitset_words<_S_nwords == 0 ? 1 : _S_nwords>>;
+    _Store _M_words{};
+
+    // An index that is not a stored bit has no value to return. The
+    // operator[] precondition (__glibcxx_assert) is the check PIR sees;
+    // this is the path that must not fall through to a padding zero when
+    // that assert is compiled out, and the path bitset<0> takes.
+    [[noreturn]] static void _S_no_bit() noexcept {
+#if defined(_GLIBCXX_ASSERTIONS)
+        __glibcxx_assert_fail(__FILE__, __LINE__, __PRETTY_FUNCTION__, "__position < this->size()");
+#else
+        std::abort();
+#endif
+    }
+
+    constexpr void _M_check(size_t __position, const char* __s) const {
+        if (__position >= _Nb)
+            __throw_out_of_range_fmt(__N("%s: __position (which is %zu) >= _Nb (which is %zu)"), __s, __position,
+                                     _Nb);
+    }
+
+    constexpr void _M_sanitize() noexcept {
+        if constexpr (_Nb == 0 || (_Nb % _S_bpw) == 0) {
+            return;
+        } else {
+            // High bits of the last word are not bits of the set.
+            const unsigned long __mask = ~(~static_cast<unsigned long>(0) << (_Nb % _S_bpw));
+            _M_words._M_w[_S_nwords - 1] &= __mask;
+        }
+    }
+
+    constexpr bool _M_unchecked_test(size_t __position) const noexcept {
+        if constexpr (_Nb == 0) {
+            _S_no_bit();
+        } else {
+            if (__position >= _Nb) _S_no_bit();
+            const unsigned long __w = _M_words._M_w[__position / _S_bpw];
+            return ((__w >> (__position % _S_bpw)) & 1UL) != 0;
+        }
+    }
+    constexpr void _M_unchecked_set(size_t __position, bool __val) noexcept {
+        if constexpr (_Nb == 0) {
+            _S_no_bit();
+        } else {
+            if (__position >= _Nb) _S_no_bit();
+            unsigned long& __w = _M_words._M_w[__position / _S_bpw];
+            const unsigned long __m = 1UL << (__position % _S_bpw);
+            if (__val)
+                __w |= __m;
+            else
+                __w &= ~__m;
+        }
+    }
+    constexpr void _M_unchecked_flip(size_t __position) noexcept {
+        _M_unchecked_set(__position, !_M_unchecked_test(__position));
+    }
+
+public:
+    class reference {
+        friend class bitset;
+        bitset* _M_b;
+        size_t _M_pos;
+        constexpr reference(bitset& __b, size_t __pos) noexcept : _M_b(&__b), _M_pos(__pos) {}
+
+    public:
+        constexpr reference& operator=(bool __x) noexcept {
+            _M_b->_M_unchecked_set(_M_pos, __x);
+            return *this;
+        }
+        constexpr reference& operator=(const reference& __j) noexcept { return operator=(static_cast<bool>(__j)); }
+        constexpr bool operator~() const noexcept { return !static_cast<bool>(*this); }
+        constexpr operator bool() const noexcept { return _M_b->_M_unchecked_test(_M_pos); }
+        constexpr reference& flip() noexcept {
+            _M_b->_M_unchecked_flip(_M_pos);
+            return *this;
+        }
+    };
+
+    constexpr bitset() noexcept = default;
+
+    // Low min(N, width of unsigned long long) bits come from __val. Bits of
+    // __val past N are dropped. The rest of the set is zero.
+    constexpr bitset(unsigned long long __val) noexcept {
+        if constexpr (_Nb == 0) {
+            return;
+        } else {
+            unsigned long long __v = __val;
+            if constexpr (_Nb < __CHAR_BIT__ * sizeof(unsigned long long)) __v &= ~(~0ULL << _Nb);
+            _M_words._M_w[0] = static_cast<unsigned long>(__v);
+            if constexpr (sizeof(unsigned long long) > sizeof(unsigned long) && _S_nwords > 1)
+                _M_words._M_w[1] = static_cast<unsigned long>(__v >> (__CHAR_BIT__ * sizeof(unsigned long)));
+        }
+    }
+
+    constexpr bitset& set() noexcept {
+        if constexpr (_Nb == 0) {
+            return *this;
+        } else {
+            for (size_t __i = 0; __i < _S_nwords; ++__i) _M_words._M_w[__i] = ~static_cast<unsigned long>(0);
+            _M_sanitize();
+            return *this;
+        }
+    }
+    constexpr bitset& set(size_t __position, bool __val = true) {
+        _M_check(__position, __N("bitset::set"));
+        _M_unchecked_set(__position, __val);
+        return *this;
+    }
+    constexpr bitset& reset() noexcept {
+        if constexpr (_Nb == 0) {
+            return *this;
+        } else {
+            for (size_t __i = 0; __i < _S_nwords; ++__i) _M_words._M_w[__i] = 0;
+            return *this;
+        }
+    }
+    constexpr bitset& reset(size_t __position) {
+        _M_check(__position, __N("bitset::reset"));
+        _M_unchecked_set(__position, false);
+        return *this;
+    }
+    constexpr bitset& flip() noexcept {
+        if constexpr (_Nb == 0) {
+            return *this;
+        } else {
+            for (size_t __i = 0; __i < _S_nwords; ++__i) _M_words._M_w[__i] = ~_M_words._M_w[__i];
+            _M_sanitize();
+            return *this;
+        }
+    }
+    constexpr bitset& flip(size_t __position) {
+        _M_check(__position, __N("bitset::flip"));
+        _M_unchecked_flip(__position);
+        return *this;
+    }
+
+    // Precondition: __position < size(). Same _GLIBCXX_ASSERTIONS shape as
+    // vector::operator[] (`__position < this->size()`). No bit is returned
+    // when the index is past N, including the padding of the last word and
+    // every index of bitset<0>.
+    constexpr reference operator[](size_t __position) noexcept {
+        __glibcxx_assert(__position < this->size());
+        if (__position >= _Nb) _S_no_bit();
+        return reference(*this, __position);
+    }
+    constexpr bool operator[](size_t __position) const noexcept {
+        __glibcxx_assert(__position < this->size());
+        if (__position >= _Nb) _S_no_bit();
+        return _M_unchecked_test(__position);
+    }
+
+    constexpr bool test(size_t __position) const {
+        _M_check(__position, __N("bitset::test"));
+        return _M_unchecked_test(__position);
+    }
+
+    constexpr size_t count() const noexcept {
+        if constexpr (_Nb == 0) {
+            return 0;
+        } else {
+            size_t __n = 0;
+            for (size_t __i = 0; __i < _S_nwords; ++__i)
+                __n += static_cast<size_t>(__builtin_popcountl(_M_words._M_w[__i]));
+            return __n;
+        }
+    }
+    constexpr size_t size() const noexcept { return _Nb; }
+
+    constexpr bool all() const noexcept {
+        if constexpr (_Nb == 0) {
+            return true;
+        } else {
+            const size_t __shift = _S_nwords * _S_bpw - _Nb;
+            for (size_t __i = 0; __i + 1 < _S_nwords; ++__i)
+                if (_M_words._M_w[__i] != ~static_cast<unsigned long>(0)) return false;
+            return _M_words._M_w[_S_nwords - 1] == (~static_cast<unsigned long>(0) >> __shift);
+        }
+    }
+    constexpr bool any() const noexcept {
+        if constexpr (_Nb == 0) {
+            return false;
+        } else {
+            for (size_t __i = 0; __i < _S_nwords; ++__i)
+                if (_M_words._M_w[__i] != 0) return true;
+            return false;
+        }
+    }
+    constexpr bool none() const noexcept { return !any(); }
+
+    // Throws std::overflow_error when a bit at position >= the width of
+    // unsigned long is set. N <= that width (32 or 64) always fits.
+    constexpr unsigned long to_ulong() const {
+        if constexpr (_S_nwords == 0) {
+            return 0;
+        } else if constexpr (_S_nwords == 1) {
+            return _M_words._M_w[0];
+        } else {
+            for (size_t __i = 1; __i < _S_nwords; ++__i)
+                if (_M_words._M_w[__i]) __throw_overflow_error(__N("_Base_bitset::_M_do_to_ulong"));
+            return _M_words._M_w[0];
+        }
+    }
+
+    // libstdc++ 14 returns to_ulong() when unsigned long long is the same
+    // width (the overflow message is then _M_do_to_ulong). A wider unsigned
+    // long long takes the low two words and throws if a higher word is set.
+    constexpr unsigned long long to_ullong() const {
+        if constexpr (sizeof(unsigned long long) == sizeof(unsigned long)) {
+            return to_ulong();
+        } else if constexpr (_S_nwords == 0) {
+            return 0;
+        } else if constexpr (_S_nwords == 1) {
+            return _M_words._M_w[0];
+        } else {
+            for (size_t __i = 2; __i < _S_nwords; ++__i)
+                if (_M_words._M_w[__i]) __throw_overflow_error(__N("_Base_bitset::_M_do_to_ullong"));
+            return static_cast<unsigned long long>(_M_words._M_w[0]) +
+                   (static_cast<unsigned long long>(_M_words._M_w[1]) << (__CHAR_BIT__ * sizeof(unsigned long)));
+        }
+    }
+
+    constexpr bool operator==(const bitset& __rhs) const noexcept {
+        if constexpr (_Nb == 0) {
+            return true;
+        } else {
+            for (size_t __i = 0; __i < _S_nwords; ++__i)
+                if (_M_words._M_w[__i] != __rhs._M_words._M_w[__i]) return false;
+            return true;
+        }
+    }
+};
+
+_GLIBCXX_END_NAMESPACE_VERSION
+}  // namespace std
+
+#endif
