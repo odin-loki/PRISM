@@ -33,6 +33,8 @@ FILE *fopen(const char *path, const char *mode) {
     __prism_check(mode != 0, "STR-NULL-ARG", "strlen() called with unchecked pointer parameter mode");
     (void)strlen(path);
     (void)strlen(mode);
+    /* A failed fopen returns a null FILE. The success path is the only
+     * allocation, so the failure path leaves no FILE object. */
     if (__VERIFIER_nondet_int()) return 0;
     return (FILE *)__prism_alloc(PRISM_FILE_SIZE, PRISM_FILEK, PRISM_HAVOC);
 }
