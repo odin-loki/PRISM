@@ -777,6 +777,7 @@ if(PRISM_TESTS)
     tests/cpp/test_cxx_initializer_list.cpp
     tests/cpp/test_fuse.cpp
     tests/cpp/test_afl_notrun.cpp
+    tests/cpp/test_libfuzzer_notrun.cpp
     tests/cpp/test_gui_model.cpp
     tests/cpp/test_repair.cpp
     tests/cpp/test_adapters.cpp

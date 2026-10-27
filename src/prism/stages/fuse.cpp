@@ -858,6 +858,49 @@ std::pair<std::string, std::string> compile_libfuzzer(const fs::path& clang, con
     return {"error", last_text};
 }
 
+}  // namespace
+
+namespace stages_detail {
+
+// One libFuzzer launch. The process result is kept: an unstarted binary is
+// NOTRUN (Law 1), a started run with no crash file and no sanitizer report
+// is CLEAN and not a proof, and a crash file or an ASan/UBSan report is CRASH.
+Finding libfuzzer_launch_status(const FunctionInfo& fn, const ProcRun& run, int vsec,
+                                const std::optional<LibfuzzerCrashFile>& crash) {
+    auto lf_base = [&](std::string_view st, std::string cls, std::string text) {
+        auto f = make_find("libfuzzer", st, fn, std::move(cls), std::move(text), laws::STRENGTH_FINDS);
+        if (st != laws::NOTRUN && st != laws::NEEDS_HARNESS) {
+            f.extra["engine"] = "libfuzzer";
+            f.extra["sandbox"] = sandbox::kind();
+        }
+        return f;
+    };
+    if (run.failed) {
+        auto f = lf_base(laws::NOTRUN, "", run.err.empty() ? "failed to start" : run.err);
+        f.extra["install"] = "clang libFuzzer did not start";
+        return f;
+    }
+    if (crash) {
+        const std::string& data = crash->bytes;
+        std::vector<uint8_t> raw(data.begin(), data.end());
+        if (raw.size() > 16) raw.resize(16);
+        auto f = lf_base(laws::CRASH, "LIBFUZZER-CRASH", "libFuzzer crash on " + bytes_to_hex(raw));
+        f.counterexample = bytes_to_hex(std::vector<uint8_t>(data.begin(), data.end()));
+        f.extra["libfuzzer_crashes"] = std::to_string(crash->count);
+        return f;
+    }
+    const std::string text = lower_copy(run.err + run.out);
+    if (text.find("addresssanitizer") != std::string::npos ||
+        text.find("undefinedbehaviorsanitizer") != std::string::npos) {
+        return lf_base(laws::CRASH, "LIBFUZZER-CRASH", "libFuzzer sanitizer crash");
+    }
+    return lf_base(laws::CLEAN, "", "no libFuzzer crash in " + std::to_string(vsec) + "s (not a proof)");
+}
+
+}  // namespace stages_detail
+
+namespace {
+
 Finding run_libfuzzer(const FunctionInfo& fn, const fs::path& src, double timeout = 2.0) {
     auto lf_base = [&](std::string_view st, std::string cls, std::string msg) {
         auto f = make_find("libfuzzer", st, fn, std::move(cls), std::move(msg), laws::STRENGTH_FINDS);
@@ -963,26 +1006,17 @@ Finding run_libfuzzer(const FunctionInfo& fn, const fs::path& src, double timeou
         auto name = it->path().filename().string();
         if (name.rfind("crash-", 0) == 0) crashes.push_back(it->path());
     }
+    std::optional<LibfuzzerCrashFile> crash;
     if (!crashes.empty()) {
-        std::string data = read_text_file(crashes.at(0));
-        std::vector<uint8_t> raw(data.begin(), data.end());
-        if (raw.size() > 16) raw.resize(16);
-        auto f = lf_base(laws::CRASH, "LIBFUZZER-CRASH", "libFuzzer crash on " + bytes_to_hex(raw));
-        f.counterexample = bytes_to_hex(std::vector<uint8_t>(data.begin(), data.end()));
-        run_extra(f);
-        f.extra["libfuzzer_crashes"] = std::to_string(crashes.size());
-        return f;
+        LibfuzzerCrashFile sample;
+        sample.bytes = read_text_file(crashes.at(0));
+        sample.count = static_cast<int>(crashes.size());
+        crash = std::move(sample);
     }
-    const std::string run_log = r.err + r.out;
-    const std::string text = lower_copy(run_log);
-    if (text.find("addresssanitizer") != std::string::npos ||
-        text.find("undefinedbehaviorsanitizer") != std::string::npos) {
-        auto f = lf_base(laws::CRASH, "LIBFUZZER-CRASH", "libFuzzer sanitizer crash");
-        run_extra(f);
-        return f;
-    }
-    auto f = lf_base(laws::CLEAN, "", "no libFuzzer crash in " + std::to_string(vsec) + "s (not a proof)");
-    run_extra(f);
+    auto f = libfuzzer_launch_status(fn, r, vsec, crash);
+    // A started run names the compiler and the sandbox. An unstarted binary
+    // is NOTRUN and keeps only the install hint from the helper.
+    if (f.status != laws::NOTRUN && f.status != laws::NEEDS_HARNESS) run_extra(f);
     return f;
 }
 

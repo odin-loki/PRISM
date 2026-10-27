@@ -194,6 +194,25 @@ struct AflCrashFile {
 // file is CRASH (AFL-CRASH). Only `failed` means unstarted.
 Finding afl_launch_status(const FunctionInfo& fn, const ProcRun& run, int vsec,
                           const std::optional<AflCrashFile>& crash);
+// One crash-* artifact from a libFuzzer run. `count` is how many crash
+// files the scratch directory held. An empty optional means the run left
+// no crash file. A sanitizer report is read from the ProcRun log, not from
+// this struct.
+struct LibfuzzerCrashFile {
+    std::string bytes;
+    int count = 1;
+};
+// Maps one libFuzzer ProcRun, plus whether a crash file was left, to a
+// finding on stage "libfuzzer". ProcRun::failed (the process never started)
+// is one NOTRUN row: the start error, or "failed to start" when err is
+// empty, and extra["install"] is "clang libFuzzer did not start". That is
+// never CLEAN or PROVED. A started child (failed == false), including a
+// timeout or an exit of 127, with no crash file and no ASan/UBSan report
+// is CLEAN and not a proof. A crash file, or an AddressSanitizer /
+// UndefinedBehaviorSanitizer report in the run log, is CRASH
+// (LIBFUZZER-CRASH). Only `failed` means unstarted.
+Finding libfuzzer_launch_status(const FunctionInfo& fn, const ProcRun& run, int vsec,
+                                const std::optional<LibfuzzerCrashFile>& crash);
 // nullopt on any failure; *error (when given) says why: "HTTP <code>: <first
 // 400 bytes of the body>" for a non-2xx answer, else "HTTP error: ...".
 std::optional<std::string> http_request(const std::string& method, const std::string& url, const std::string& body,
