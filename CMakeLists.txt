@@ -695,6 +695,7 @@ if(PRISM_TESTS)
     tests/cpp/test_svcomp_witness.cpp
     tests/cpp/test_svcomp_waypoints.cpp
     tests/cpp/test_svcomp_replay.cpp
+    tests/cpp/test_svcomp_property.cpp
     tests/cpp/test_naming.cpp
     tests/cpp/test_polyglot.cpp
     tests/cpp/test_polyglot_missing.cpp
