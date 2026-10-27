@@ -59,14 +59,14 @@ struct InvCand {
     int loop = -1;
     Op rel = Op::Eq;       // Cmp
     InvTerm a, b;          // Cmp: a rel b; Mask: (a & mask) == (b & mask); Lin: a -/+ b == ea -/+ eb
-    bool sum = false;      // Lin: a + b (else a - b)
+    bool sum = false;      // Lin: a + b (else a - b). MemScopeAt: x <= index (else x < index)
     uint64_t mask = 0;
     // memory: for every x with lo <= x < ext(phi idx): P(x)
     int ip = -1;           // index phi
     bool sext = false;
     bool lo_entry = false; // lo = entry value of the index phi (else 0)
     int p = -1, q = -1;    // pointers (scope variables)
-    int off = -1;          // MemEq/MemInit/MemScopeAt: scope offset into p (i64)
+    int off = -1;          // MemEq/MemInit/MemScopeAt: scope offset into p (i64); -1 = none
     int rp = -1;           // PtrIn/PtrAt/MemLast: a pointer phi r (the last match so far)
     unsigned eb = 1;       // element bytes
     InvTerm v;             // MemNeC: element != trunc(v); MemConst: element == v (const)
@@ -374,8 +374,13 @@ std::string Houdini::text(const InvCand& c) const {
             return "forall x < " + (c.off >= 0 ? var(c.off) + " + " : std::string()) + (c.sext ? "sext" : "zext") +
                    "(entry(" + phi(c.ip) + ")): " + at(c.p, -1) +
                    " == " + at(c.p, -1) + " at loop entry";
-        case InvCand::MemScopeAt:
+        case InvCand::MemScopeAt: {
+            // off < 0 is "no displacement" (x itself), not variable -1.
+            const std::string quant = c.sum ? "x <= " + idx : range;
+            if (c.off < 0) return "forall " + quant + ": x < size(" + var(c.p) + ")";
+            if (c.sum) return "forall x <= " + idx + ": " + var(c.off) + " + x < size(" + var(c.p) + ")";
             return "forall " + range + ": " + var(c.off) + " + x < size(" + var(c.p) + ")";
+        }
     }
     return "?";
 }
@@ -646,14 +651,29 @@ void Houdini::generate(std::vector<InvCand>& out) {
                                     c.off = o;
                                     add(c);
                                 }
-                            // strcat/strncat append loops: every byte written so far stays in p's object
+                            // strcat/strncat append loops: bytes written so far, and the index
+                            // about to be written (sum: x <= i), stay inside p's object.
                             if (wp)
                                 for (int o : offs) {
                                     auto c = t;
                                     c.kind = InvCand::MemScopeAt;
                                     c.off = o;
+                                    c.sum = false;
+                                    add(c);
+                                    c.sum = true;
                                     add(c);
                                 }
+                            // source reads s[i]. off < 0 means no scope displacement:
+                            // forall x < i (and x <= i) : x < size(p). Not a lookup of variable -1.
+                            if (!wp && bases_r.count(p) != 0) {
+                                auto c = t;
+                                c.kind = InvCand::MemScopeAt;
+                                c.off = -1;
+                                c.sum = false;
+                                add(c);
+                                c.sum = true;
+                                add(c);
+                            }
                         }
                     }
         }
@@ -786,6 +806,26 @@ HoudiniOut Houdini::run() {
         addT(ext64(pe, false));
         addT(ext64(pe, true));
     }
+    // MemEq is p[off + x] == q[x] and MemFrame frames bytes below off. An
+    // assertion that reads p[j] for a parameter j is the instance x = j - off
+    // (strcat/strncat: d[k + (j - k)]). One more index of a proved universal
+    // does not weaken it; the quantifier guard still drops x that are out of range.
+    for (auto& cand : cands) {
+        if ((cand.kind != InvCand::MemEq && cand.kind != InvCand::MemFrame) || cand.off < 0) continue;
+        auto& CL = e.cut_loops[static_cast<std::size_t>(cand.loop)];
+        if (CL.node < 0) continue;
+        try {
+            z3::expr off = e.lookup(Arg::v(cand.off, 64), CL.node);
+            if (!off.is_bv() || off.get_sort().bv_size() != 64) continue;
+            for (auto& pe : e.params) {
+                unsigned w = pe.get_sort().bv_size();
+                if (w < 8 || w > 64) continue;
+                addT((w == 64 ? pe : z3::zext(pe, 64 - w)) - off);
+            }
+        } catch (const EncodeFail&) {
+            continue;
+        }
+    }
 
     struct State {
         const std::vector<z3::expr>* phis;
@@ -848,6 +888,7 @@ HoudiniOut Houdini::run() {
         // memory templates
         auto idx = ext64((*st.phis)[static_cast<std::size_t>(k.ip)], k.sext);
         z3::expr in = z3::ult(x, idx);
+        if (k.kind == InvCand::MemScopeAt && k.sum) in = z3::ule(x, idx);
         if (k.kind == InvCand::MemFrame) {
             z3::expr hi = ext64(CL.entry[static_cast<std::size_t>(k.ip)], k.sext);
             if (k.off >= 0) hi = hi + e.lookup(Arg::v(k.off, 64), node);
@@ -868,9 +909,10 @@ HoudiniOut Houdini::run() {
             case InvCand::MemInit: body = ld(k.p, k.off).uninit == e.bv(0, 1); break;
             case InvCand::MemConst: body = ld(k.p, -1).val == e.bv(k.v.c, 8 * k.eb); break;
             case InvCand::MemScopeAt: {
-                auto off = e.lookup(Arg::v(k.off, 64), node);
                 auto sz = e.M().size(e.lookup(Arg::v(k.p, 64), node));
-                body = z3::ult(off + scale, sz);
+                z3::expr at = scale;
+                if (k.off >= 0) at = e.lookup(Arg::v(k.off, 64), node) + scale;
+                body = z3::ult(at, sz);
                 break;
             }
             case InvCand::MemFrame: {

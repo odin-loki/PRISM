@@ -1,0 +1,171 @@
+// PRISM operational model of <unordered_set> (roadmap 2.6): std::unordered_set and
+// std::unordered_multiset with std::allocator on prism_hash_table.h.
+// Node handles and allocators other than std::allocator (pmr::unordered_set)
+// are not declared: such a unit falls back to libstdc++.
+#ifndef _PRISM_MODEL_UNORDERED_SET
+#define _PRISM_MODEL_UNORDERED_SET 1
+#define _GLIBCXX_UNORDERED_SET 1  // libstdc++'s <unordered_set> include guard: never both
+
+#pragma GCC system_header
+
+#include <prism_hash_table.h>
+
+namespace std _GLIBCXX_VISIBILITY(default) {
+
+template <typename _Key, typename _Hash = hash<_Key>, typename _Pred = equal_to<_Key>,
+          typename _Alloc = allocator<_Key>>
+class unordered_multiset;
+
+template <typename _Key, typename _Hash, typename _Pred, typename _Alloc, bool _Unique>
+class _Prism_uset_base {
+public:
+    typedef _Key key_type;
+    typedef _Key value_type;
+    typedef _Hash hasher;
+    typedef _Pred key_equal;
+    typedef _Alloc allocator_type;
+
+protected:
+    typedef _Prism_hashtable<_Key, _Key, _Prism_identity<_Key>, _Hash, _Pred, _Alloc, _Unique> _Rep;
+    _Rep _M_h;
+
+public:
+    typedef value_type& reference;
+    typedef const value_type& const_reference;
+    typedef typename _Rep::const_iterator iterator;
+    typedef typename _Rep::const_iterator const_iterator;
+    typedef typename _Rep::size_type size_type;
+
+    _Prism_uset_base() = default;
+    explicit _Prism_uset_base(size_type __n, const hasher& __hf, const key_equal& __eq) : _M_h(__n, __hf, __eq) {}
+
+    iterator begin() const noexcept { return _M_h.begin(); }
+    iterator end() const noexcept { return _M_h.end(); }
+    [[__nodiscard__]] bool empty() const noexcept { return _M_h.empty(); }
+    size_type size() const noexcept { return _M_h.size(); }
+    size_type max_size() const noexcept { return _M_h.max_size(); }
+
+    pair<iterator, bool> insert(const value_type& __x) { return _M_h.insert(__x); }
+    pair<iterator, bool> insert(value_type&& __x) { return _M_h.insert(std::move(__x)); }
+    template <typename... _Args>
+    pair<iterator, bool> emplace(_Args&&... __args) {
+        return _M_h.emplace(std::forward<_Args>(__args)...);
+    }
+    template <typename _InputIterator>
+    void insert(_InputIterator __f, _InputIterator __l) {
+        _M_h.insert(__f, __l);
+    }
+    void insert(initializer_list<value_type> __l) { insert(__l.begin(), __l.end()); }
+    iterator erase(const_iterator __it) { return _M_h.erase(__it); }
+    size_type erase(const key_type& __x) { return _M_h.erase(__x); }
+    void clear() noexcept { _M_h.clear(); }
+    void swap(_Prism_uset_base& __x) noexcept { _M_h.swap(__x._M_h); }
+    hasher hash_function() const { return _M_h.hash_function(); }
+    key_equal key_eq() const { return _M_h.key_eq(); }
+    float load_factor() const noexcept { return _M_h.load_factor(); }
+    size_type bucket_count() const noexcept { return _M_h.bucket_count(); }
+    void reserve(size_type __n) { _M_h.reserve(__n); }
+    void rehash(size_type __n) { _M_h.rehash(__n); }
+    iterator find(const key_type& __x) const { return _M_h.find(__x); }
+    size_type count(const key_type& __x) const { return _M_h.count(__x); }
+    bool contains(const key_type& __x) const { return _M_h.contains(__x); }
+    pair<iterator, iterator> equal_range(const key_type& __x) const { return _M_h.equal_range(__x); }
+};
+
+template <typename _Key, typename _Hash = hash<_Key>, typename _Pred = equal_to<_Key>,
+          typename _Alloc = allocator<_Key>>
+class unordered_set : public _Prism_uset_base<_Key, _Hash, _Pred, _Alloc, true> {
+    typedef _Prism_uset_base<_Key, _Hash, _Pred, _Alloc, true> _Base;
+
+public:
+    using typename _Base::value_type;
+    using typename _Base::size_type;
+    using typename _Base::allocator_type;
+    using typename _Base::hasher;
+    using typename _Base::key_equal;
+
+    unordered_set() = default;
+    explicit unordered_set(size_type __n, const hasher& __hf = hasher(), const key_equal& __eq = key_equal(),
+                           const allocator_type& = allocator_type())
+        : _Base(__n, __hf, __eq) {}
+    template <typename _InputIterator>
+    unordered_set(_InputIterator __f, _InputIterator __l, size_type __n = 0, const hasher& __hf = hasher(),
+                  const key_equal& __eq = key_equal(), const allocator_type& = allocator_type())
+        : _Base(__n, __hf, __eq) {
+        this->insert(__f, __l);
+    }
+    unordered_set(initializer_list<value_type> __l, size_type __n = 0, const hasher& __hf = hasher(),
+                  const key_equal& __eq = key_equal(), const allocator_type& = allocator_type())
+        : _Base(__n, __hf, __eq) {
+        this->insert(__l);
+    }
+    void swap(unordered_set& __x) noexcept { _Base::swap(__x); }
+    friend bool operator==(const unordered_set& __x, const unordered_set& __y) {
+        return __x.size() == __y.size() && std::is_permutation(__x.begin(), __x.end(), __y.begin());
+    }
+};
+
+template <typename _Key, typename _Hash, typename _Pred, typename _Alloc>
+class unordered_multiset : public _Prism_uset_base<_Key, _Hash, _Pred, _Alloc, false> {
+    typedef _Prism_uset_base<_Key, _Hash, _Pred, _Alloc, false> _Base;
+
+public:
+    using typename _Base::value_type;
+    using typename _Base::size_type;
+    using typename _Base::hasher;
+    using typename _Base::key_equal;
+    using typename _Base::allocator_type;
+    using typename _Base::iterator;
+    // The standard returns an iterator, not pair<iterator, bool>. Range insert
+    // stays on the base; naming it here keeps it visible beside these overloads.
+    iterator insert(const value_type& __x) { return _Base::insert(__x).first; }
+    iterator insert(value_type&& __x) { return _Base::insert(std::move(__x)).first; }
+    template <typename _InputIterator>
+    void insert(_InputIterator __f, _InputIterator __l) {
+        _Base::insert(__f, __l);
+    }
+    void insert(std::initializer_list<value_type> __l) { _Base::insert(__l); }
+    template <typename... _Args>
+    iterator emplace(_Args&&... __args) {
+        return _Base::emplace(std::forward<_Args>(__args)...).first;
+    }
+    unordered_multiset() = default;
+    explicit unordered_multiset(size_type __n, const hasher& __hf = hasher(), const key_equal& __eq = key_equal(),
+                                const allocator_type& = allocator_type())
+        : _Base(__n, __hf, __eq) {}
+    template <typename _InputIterator>
+    unordered_multiset(_InputIterator __f, _InputIterator __l, size_type __n = 0, const hasher& __hf = hasher(),
+                       const key_equal& __eq = key_equal(), const allocator_type& = allocator_type())
+        : _Base(__n, __hf, __eq) {
+        this->insert(__f, __l);
+    }
+    unordered_multiset(initializer_list<value_type> __l, size_type __n = 0, const hasher& __hf = hasher(),
+                       const key_equal& __eq = key_equal(), const allocator_type& = allocator_type())
+        : _Base(__n, __hf, __eq) {
+        this->insert(__l);
+    }
+    void swap(unordered_multiset& __x) noexcept { _Base::swap(__x); }
+};
+
+template <typename _Key, typename _Hash, typename _Pred, typename _Alloc>
+inline void swap(unordered_set<_Key, _Hash, _Pred, _Alloc>& __x, unordered_set<_Key, _Hash, _Pred, _Alloc>& __y) noexcept {
+    __x.swap(__y);
+}
+
+template <typename _Key, typename _Hash, typename _Pred, typename _Alloc, typename _Predicate>
+inline typename unordered_set<_Key, _Hash, _Pred, _Alloc>::size_type erase_if(
+    unordered_set<_Key, _Hash, _Pred, _Alloc>& __cont, _Predicate __pred) {
+    typename unordered_set<_Key, _Hash, _Pred, _Alloc>::size_type __n = 0;
+    for (auto __it = __cont.begin(), __last = __cont.end(); __it != __last;) {
+        if (__pred(*__it)) {
+            __it = __cont.erase(__it);
+            ++__n;
+        } else
+            ++__it;
+    }
+    return __n;
+}
+
+}  // namespace std
+
+#endif  // _PRISM_MODEL_UNORDERED_SET

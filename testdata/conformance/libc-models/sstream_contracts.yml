@@ -1,0 +1,12 @@
+format_version: 1
+input_files: sstream_contracts.cpp
+language: C++
+property: libc-contract
+timeout: 300
+expected:
+  sstream_int_true: true
+  sstream_chain_true: true
+  sstream_strbuf_true: true
+  sstream_empty_false: false
+expect_class:
+  sstream_empty_false: "FUNC-CONTRACT"

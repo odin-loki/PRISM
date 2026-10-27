@@ -230,6 +230,11 @@ TEST_CASE("cxx models: string trace matches libstdc++") {
     same_trace("string_trace", {"bits/basic_string.tcc"});
 }
 
+TEST_CASE("cxx models: sstream trace matches libstdc++") {
+    if (!ctx().ok) return;
+    same_trace("sstream_trace", {"sstream"});
+}
+
 #ifndef _WIN32
 int run_capture(const fs::path& exe, const std::string& arg, std::string* combined) {
     std::string cmd = exe.string() + " " + arg + " 2>&1";
@@ -241,6 +246,21 @@ int run_capture(const fs::path& exe, const std::string& arg, std::string* combin
     return pclose(fp);
 }
 #endif
+
+TEST_CASE("cxx models: unordered_map/set trace matches libstdc++ and UAF on erase") {
+    if (!ctx().ok) return;
+    same_trace("unordered_map_set_trace", {"unordered_map", "unordered_set", "prism_hash_table.h"});
+#ifndef _WIN32
+    auto& c = ctx();
+    for (bool models : {false, true}) {
+        auto exe = c.tmp / ("unordered_map_set_trace" + std::string(models ? ".model" : ".lib"));
+        std::string out;
+        int rc = run_capture(exe, "uaf", &out);
+        CHECK(rc != 0);
+        CHECK(out.find("heap-use-after-free") != std::string::npos);
+    }
+#endif
+}
 
 TEST_CASE("cxx models: map/set trace matches libstdc++ and UAF on erase") {
     if (!ctx().ok) return;
