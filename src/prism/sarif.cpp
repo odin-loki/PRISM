@@ -5,6 +5,7 @@
 #include "prism/laws.hpp"
 #include "prism/models_json.hpp"
 #include "prism/shipdocs.hpp"
+#include "prism/taxonomy.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -91,6 +92,33 @@ std::string rstrip_colon_space(std::string s) {
     return s;
 }
 
+// Points at an element of taxonomy_classes()'s static table. Not a second taxonomy.
+const TaxonomyClass* find_class(const std::string& id) {
+    for (const auto& c : taxonomy_classes())
+        if (c.id == id) return &c;
+    return nullptr;
+}
+
+// id stays the class id. The taxonomy short name fills name and shortDescription
+// when the class has one. properties.cwe is the taxonomy CWE list; an empty
+// list (or an id that is not a class) omits the field.
+ojson rule_for(const std::string& rid) {
+    ojson rule{{"id", rid}};
+    const TaxonomyClass* cls = find_class(rid);
+    std::string text = rid;
+    if (cls && !cls->name.empty()) {
+        rule["name"] = cls->name;
+        text = cls->name;
+    }
+    rule["shortDescription"] = {{"text", std::move(text)}};
+    if (cls && !cls->cwe.empty()) {
+        ojson cwe = ojson::array();
+        for (int n : cls->cwe) cwe.push_back(n);
+        rule["properties"] = {{"cwe", std::move(cwe)}};
+    }
+    return rule;
+}
+
 }  // namespace
 
 std::string to_sarif(const RunReport& report) {
@@ -101,8 +129,7 @@ std::string to_sarif(const RunReport& report) {
             auto level = level_of(f);
             if (!level) continue;
             std::string rid = f.cls.empty() ? f.stage + "/" + f.status : f.cls;
-            if (!rules.contains(rid))
-                rules[rid] = ojson{{"id", rid}, {"shortDescription", {{"text", rid}}}};
+            if (!rules.contains(rid)) rules[rid] = rule_for(rid);
             std::string text = "[" + f.stage + " " + f.status + "] " + f.message;
             if (!f.counterexample.empty()) text += " (counterexample: " + f.counterexample + ")";
             ojson res = {

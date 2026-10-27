@@ -6,6 +6,7 @@
 
 #include "prism/laws.hpp"
 #include "prism/pipeline.hpp"
+#include "prism/taxonomy.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -110,6 +111,61 @@ TEST_CASE("sarif: defects are results; CLEAN/PROVED/BOUNDED are omitted") {
     for (auto& r : run["tool"]["driver"]["rules"]) rule_ids.push_back(r["id"].get<std::string>());
     std::sort(rule_ids.begin(), rule_ids.end());
     CHECK(rule_ids == std::vector<std::string>{"INTENT", "MEM-UAF", "fuzz/CRASH"});
+}
+
+TEST_CASE("sarif: rules carry taxonomy name and CWE when the class has them") {
+    const prism::TaxonomyClass* uaf = nullptr;
+    const prism::TaxonomyClass* fall = nullptr;
+    for (const auto& c : prism::taxonomy_classes()) {
+        if (c.id == "MEM-UAF") uaf = &c;
+        else if (c.id == "CTRL-FALLTHROUGH") fall = &c;
+    }
+    REQUIRE(uaf != nullptr);
+    REQUIRE(fall != nullptr);
+    REQUIRE(uaf->name == "use after free");
+    REQUIRE(uaf->cwe == std::vector<int>{416});
+    REQUIRE(fall->name == "switch case falls through without annotation");
+    REQUIRE(fall->cwe.empty());
+
+    prism::StageResult lints;
+    lints.name = "lints";
+    lints.status = "ok";
+    lints.findings = {
+        sample_f(prism::laws::FAILED),
+        sample_f(prism::laws::FAILED, {{"cls", "CTRL-FALLTHROUGH"}}),
+        sample_f(prism::laws::CRASH, {{"stage", "fuzz"}, {"cls", ""}}),
+    };
+    auto doc = parse_sarif(report_with({lints}));
+    auto& results = doc["runs"][0]["results"];
+    REQUIRE(results.size() == 3);
+    CHECK(results[0]["level"] == "error");
+    CHECK(results[1]["level"] == "error");
+    CHECK(results[2]["level"] == "error");
+    CHECK(results[2]["ruleId"] == "fuzz/CRASH");
+
+    nlohmann::json by_id = nlohmann::json::object();
+    for (auto& r : doc["runs"][0]["tool"]["driver"]["rules"]) by_id[r["id"].get<std::string>()] = r;
+    REQUIRE(by_id.contains("MEM-UAF"));
+    REQUIRE(by_id.contains("CTRL-FALLTHROUGH"));
+    REQUIRE(by_id.contains("fuzz/CRASH"));
+
+    auto& uaf_rule = by_id["MEM-UAF"];
+    CHECK(uaf_rule["name"] == uaf->name);
+    CHECK(uaf_rule["shortDescription"]["text"] == uaf->name);
+    CHECK(uaf_rule["properties"]["cwe"].get<std::vector<int>>() == uaf->cwe);
+
+    auto& fall_rule = by_id["CTRL-FALLTHROUGH"];
+    CHECK(fall_rule["name"] == fall->name);
+    CHECK(fall_rule["shortDescription"]["text"] == fall->name);
+    CHECK_FALSE(fall_rule.contains("cwe"));
+    const bool fall_cwe = fall_rule.contains("properties") && fall_rule["properties"].contains("cwe");
+    CHECK_FALSE(fall_cwe);
+
+    auto& crash_rule = by_id["fuzz/CRASH"];
+    CHECK_FALSE(crash_rule.contains("name"));
+    CHECK(crash_rule["shortDescription"]["text"] == "fuzz/CRASH");
+    const bool crash_cwe = crash_rule.contains("properties") && crash_rule["properties"].contains("cwe");
+    CHECK_FALSE(crash_cwe);
 }
 
 TEST_CASE("sarif: warning severity and STRENGTH_SOME map to warning level") {
