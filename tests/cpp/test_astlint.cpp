@@ -689,6 +689,357 @@ void unchecked_malloc_plant(void) {
     char *p = malloc(4);
     p[0] = 1; // expect: PTR-UNCHECKED-ALLOC
 }
+int missing_ret_bad(void) {
+    int x = 1;
+    x = 2; // expect: CTRL-MISSING-RETURN
+}
+int missing_ret_ok(void) { return 1; }
+void noreturn_bad(void) { exit(1); } // expect: FUNC-NORETURN
+_Noreturn void noreturn_ok(void) { exit(1); }
+void wrap_bad(unsigned n) {
+    (void)malloc(n * sizeof(int)); // expect: INT-WRAP-ALLOC
+}
+int atoi_idx_bad(const char *s) {
+    char a[4];
+    int i = atoi(s);
+    return a[i]; // expect: INT-ATOI, TRUST-UNVALIDATED-INPUT
+}
+int masked_bad(int f) {
+    int d;
+    switch (f & 3) {
+    case 0:
+        d = 0;
+        break;
+    case 1:
+        d = 1;
+        break;
+    }
+    return d; // expect: UNINIT-SWITCH
+}
+typedef struct { int _x; } pthread_mutex_t;
+typedef struct { int _x; } mtx_t;
+int pthread_mutex_lock(pthread_mutex_t *m);
+int pthread_mutex_unlock(pthread_mutex_t *m);
+int pthread_mutex_init(pthread_mutex_t *m, void *a);
+int mtx_lock(mtx_t *m);
+int mtx_unlock(mtx_t *m);
+int mtx_init(mtx_t *m, const char *n, void *t, int f);
+void prism_mtx_lock(int *m);
+void prism_mtx_unlock(int *m);
+void double_unlock_bad(int *m) {
+    prism_mtx_lock(m);
+    prism_mtx_unlock(m);
+    prism_mtx_unlock(m); // expect: LOCK-DOUBLE-UNLOCK
+}
+void double_unlock_ok(int *m) {
+    prism_mtx_lock(m);
+    prism_mtx_unlock(m);
+    prism_mtx_lock(m);
+    prism_mtx_unlock(m);
+}
+void double_lock_bad(int *m) {
+    prism_mtx_lock(m);
+    prism_mtx_lock(m); // expect: LOCK-DOUBLE-LOCK
+    prism_mtx_unlock(m);
+}
+int lock_imbalance_bad(int *m, int x) {
+    prism_mtx_lock(m);
+    if (x < 0) return -1; // expect: LOCK-IMBALANCE
+    prism_mtx_unlock(m);
+    return 0;
+}
+void lock_init_bad(void) {
+    pthread_mutex_t m;
+    pthread_mutex_lock(&m); // expect: LOCK-MISSING-INIT
+}
+void lock_init_ok(void) {
+    pthread_mutex_t m;
+    pthread_mutex_init(&m, 0);
+    pthread_mutex_lock(&m);
+}
+struct ast_item { char *name; };
+size_t str_null_member_plant(struct ast_item *it) {
+    return strlen(it->name); // expect: STR-NULL-MEMBER
+}
+struct ast_link { struct ast_link *next; int v; };
+void ptr_chain_null_plant(struct ast_link *a, int v) {
+    a->next->v = v; // expect: PTR-CHAIN-NULL
+}
+size_t str_null_arg_plant(char *s) {
+    return strlen(s); // expect: STR-NULL-ARG
+}
+#define M_NOWAIT 0x02
+void *malloc(size_t, int);
+void nowait_bad(unsigned n) {
+    char *p = malloc(n, M_NOWAIT);
+    p[0] = 1; // expect: MEM-NOWAIT
+}
+void nowait_ok(unsigned n) {
+    char *p = malloc(n, M_NOWAIT);
+    if (!p) return;
+    p[0] = 1;
+}
+void *alloca(unsigned long);
+void alloca_bad(int n) {
+    char *p = alloca(n); // expect: MEM-ALLOCA
+    (void)p;
+}
+void alloca_ok(void) {
+    char *p = alloca(16);
+    (void)p;
+}
+void sprintf_bad(const char *s) {
+    char b[8];
+    sprintf(b, "%s", s); // expect: STR-SPRINTF
+}
+void sprintf_ok(const char *s) {
+    char b[8];
+    snprintf(b, sizeof b, "%s", s);
+}
+int snprintf(char *s, unsigned n, const char *fmt, ...);
+void snprintf_bad(void) {
+    char b[4];
+    snprintf(b, 64, "%s", "x"); // expect: STR-SNPRINTF
+}
+void snprintf_ok(void) {
+    char b[4];
+    snprintf(b, sizeof b, "x");
+}
+typedef int wchar_t;
+wchar_t *wcscpy(wchar_t *dst, const wchar_t *src);
+void wcs_bad(void) {
+    wchar_t b[4];
+    wcscpy(b, L"abc"); // expect: STR-WCSCPY
+}
+int rand(void);
+void crypto_key_bad(char *key) {
+    int i;
+    for (i = 0; i < 8; i++)
+        key[i] = rand(); // expect: CRYPTO-MISUSE
+}
+void srand(unsigned);
+typedef long time_t;
+time_t time(time_t *);
+void srand_bad(void) {
+    srand((unsigned)time(0)); // expect: CRYPTO-SRAND
+}
+void srand_ok(int seed) {
+    srand((unsigned)seed);
+}
+int realloc_zero_bad(void) {
+    char *q;
+    char *p = malloc(4);
+    q = realloc(p, 0);
+    p[0] = 1; // expect: MEM-REALLOC-ZERO, PTR-UNCHECKED-ALLOC
+    (void)q;
+    return 0;
+}
+void realloc_zero_ok(void) {
+    char *p = malloc(4);
+    char *q = realloc(p, 8);
+    (void)p;
+    (void)q;
+}
+int arith_bad(int *p, int n) {
+    return *(p + n); // expect: MEM-PTR-ARITH
+}
+int arith_ok(int *p, int n) {
+    if (!p)
+        return 0;
+    if (n < 0)
+        return 0;
+    return p[n];
+}
+int arith_one(int *p, int n) {
+    if (!p)
+        return 0;
+    return *(p + n); // expect: MEM-PTR-ARITH
+}
+void vla_bad(int n) {
+    int a[n]; // expect: MEM-VLA-SIZE
+    (void)a;
+}
+void vla_ok(void) {
+    int a[4];
+    (void)a;
+}
+void vla_caps_ok(void) {
+    int a[BUFSIZ];
+    (void)a;
+}
+void vla_sizeof_ok(void) {
+    int b[sizeof(int)];
+    (void)b;
+}
+struct ast_flex {
+    int n;
+    char data[];
+};
+struct ast_plain {
+    int x;
+};
+void flex_bad(void) {
+    struct ast_flex *p = malloc(sizeof(struct ast_flex)); // expect: MEM-FLEX-ARRAY
+    (void)p;
+}
+void flex_star_bad(void) {
+    struct ast_flex *p;
+    p = malloc(sizeof(*p)); // expect: MEM-FLEX-ARRAY
+    (void)p;
+}
+void flex_ok(int n) {
+    struct ast_flex *p = malloc(sizeof(struct ast_flex) + (unsigned)n);
+    (void)p;
+}
+void flex_plain_ok(void) {
+    struct ast_plain *p = malloc(sizeof(struct ast_plain));
+    (void)p;
+}
+struct pad_s {
+    char a;
+    int b;
+};
+void pad_bad(struct pad_s *out) {
+    struct pad_s s;
+    s.a = 1;
+    memcpy(out, &s, sizeof(s)); // expect: INFOLEAK-PAD
+}
+void pad_ok(struct pad_s *out) {
+    struct pad_s s;
+    memset(&s, 0, sizeof(s));
+    s.a = 1;
+    memcpy(out, &s, sizeof(s));
+}
+int onesided_bad(int i, int n) {
+    int buf[8];
+    if (i > n) // expect: MEM-ONESIDED-INDEX
+        return 0;
+    return buf[i];
+}
+int onesided_floor_ok(int i, int n) {
+    int buf[8];
+    if (i < 0)
+        return 0;
+    if (i > n)
+        return 0;
+    return buf[i];
+}
+int onesided_unsigned_ok(unsigned i, unsigned n) {
+    int buf[8];
+    if (i > n)
+        return 0;
+    return buf[i];
+}
+int mem_leak_bad(int err) {
+    char *p = malloc(64);
+    if (err)
+        return -1; // expect: MEM-LEAK
+    free(p);
+    return 0;
+}
+int mem_leak_ok(int err) {
+    char *p = malloc(64);
+    if (err) {
+        free(p);
+        return -1;
+    }
+    free(p);
+    return 0;
+}
+int mem_guard_ok(void) {
+    char *p = malloc(64);
+    if (!p)
+        return -1;
+    free(p);
+    return 0;
+}
+int fd_leak_bad(const char *path, int err) {
+    FILE *fp = fopen(path, "r");
+    if (err)
+        return -1; // expect: RES-FD-LEAK
+    fclose(fp);
+    return 0;
+}
+int fd_leak_ok(const char *path, int err) {
+    FILE *fp = fopen(path, "r");
+    if (err) {
+        fclose(fp);
+        return -1;
+    }
+    fclose(fp);
+    return 0;
+}
+int fd_guard_ok(const char *path) {
+    FILE *fp = fopen(path, "r");
+    if (!fp)
+        return -1;
+    fclose(fp);
+    return 0;
+}
+void popen_bad(void) {
+    FILE *f = popen("true", "r");
+    (void)f;
+    return; // expect: API-POPEN
+}
+void popen_ok(void) {
+    FILE *f = popen("true", "r");
+    if (f)
+        pclose(f);
+}
+void chroot_bad(void) {
+    chroot("/jail"); // expect: API-CHROOT
+}
+void chroot_ok(void) {
+    chroot("/jail");
+    chdir("/");
+}
+int toctou_bad(const char *path) {
+    if (access(path, 0) != 0)
+        return -1;
+    return open(path, 0); // expect: CONC-TOCTOU
+}
+int toctou_ok(const char *path) {
+    return open(path, 0);
+}
+int unval_bad(const char *s) {
+    int a[4];
+    int i = atoi(s);
+    return a[i]; // expect: INT-ATOI, TRUST-UNVALIDATED-INPUT
+}
+int unval_ok(const char *s) {
+    int a[4];
+    int i = atoi(s);
+    if (i < 0)
+        return 0;
+    if (i >= 4)
+        return 0;
+    return a[i];
+}
+int unval_div_bad(const char *s) {
+    int x = 10;
+    int i = atoi(s);
+    return x / i; // expect: TRUST-UNVALIDATED-INPUT
+}
+int clz_zero_bad(void) {
+    return __builtin_clz(0); // expect: INT-CLZ-ZERO
+}
+int clz_zero_ok(unsigned n) {
+    if (!n)
+        return 0;
+    return __builtin_clz(n);
+}
+int clz_cast_ok(void) {
+    return __builtin_clz((unsigned)0);
+}
+int g_counter;
+void atom_bad(void) {
+    g_counter = g_counter + 1; // expect: CONC-ATOMICITY
+}
+void atom_ok(void) {
+    prism_mtx_lock(0);
+    g_counter = g_counter + 1;
+    prism_mtx_unlock(0);
+}
 )";
 
 const char* kPortedCxx = R"(#include <string>
@@ -817,6 +1168,72 @@ TEST_CASE("astlint: testdata STR-MISSING-NUL, STR-STRNCPY-NUL, MEM-MEMSET-SWAP, 
         CHECK(ast_lines("stack_escape.c", "MEM-STACK-ESCAPE", "arr_esc_bad", b) == std::set<int>{8});
         CHECK(ast_lines("stack_escape.c", "MEM-STACK-ESCAPE", "esc_paren_addr", b) == std::set<int>{29});
         CHECK(ast_lines("stack_escape.c", "MEM-STACK-ESCAPE", "esc_ok", b).empty());
+        CHECK(ast_lines("noreturn_fatal.c", "FUNC-NORETURN", "fatal", b) == std::set<int>{4});
+        CHECK(ast_lines("noreturn_fatal.c", "FUNC-NORETURN", "dead_noreturn", b).empty());
+        CHECK(ast_lines("noreturn_fatal.c", "FUNC-NORETURN", "dead_attr", b).empty());
+        CHECK(ast_lines("missing_return.c", "CTRL-MISSING-RETURN", "missing_return_bad", b) == std::set<int>{4});
+        CHECK(ast_lines("missing_return.c", "CTRL-MISSING-RETURN", "missing_return_oneline_bad", b) ==
+              std::set<int>{14});
+        CHECK(ast_lines("missing_return.c", "CTRL-MISSING-RETURN", "missing_return_ok", b).empty());
+        CHECK(ast_lines("missing_return.c", "CTRL-MISSING-RETURN", "missing_return_oneline_ok", b).empty());
+        CHECK(ast_lines("malloc_wrap.c", "INT-WRAP-ALLOC", "wrap_alloc_bad", b) == std::set<int>{9});
+        CHECK(ast_lines("malloc_wrap.c", "INT-WRAP-ALLOC", "calloc_ok", b).empty());
+        CHECK(ast_lines("atoi_index.c", "INT-ATOI", "atoi_bad", b) == std::set<int>{6});
+        CHECK(ast_lines("atoi_index.c", "INT-ATOI", "atoi_ok", b).empty());
+        CHECK(ast_lines("atoi_index.c", "INT-ATOI", "atoi_return_ok", b).empty());
+        CHECK(ast_lines("masked_switch.c", "UNINIT-SWITCH", "masked_switch", b) == std::set<int>{5});
+        CHECK(ast_lines("null_arg.c", "STR-NULL-ARG", "null_arg_bad", b) == std::set<int>{4});
+        CHECK(ast_lines("null_arg.c", "STR-NULL-ARG", "null_arg_ok", b).empty());
+        CHECK(ast_lines("null_member.c", "STR-NULL-MEMBER", "null_member_bad", b) == std::set<int>{9});
+        CHECK(ast_lines("null_member.c", "STR-NULL-MEMBER", "null_member_ok", b).empty());
+        CHECK(ast_lines("chain_null.c", "PTR-CHAIN-NULL", "chain_null_bad", b) == std::set<int>{9});
+        CHECK(ast_lines("chain_null.c", "PTR-CHAIN-NULL", "chain_null_ok", b).empty());
+        CHECK(ast_lines("nowait_use.c", "MEM-NOWAIT", "nowait_unchecked", b) == std::set<int>{10});
+        CHECK(ast_lines("nowait_use.c", "MEM-NOWAIT", "nowait_checked", b).empty());
+        CHECK(ast_lines("alloca_var.c", "MEM-ALLOCA", "alloca_bad", b) == std::set<int>{4});
+        CHECK(ast_lines("alloca_var.c", "MEM-ALLOCA", "alloca_ok", b).empty());
+        CHECK(ast_lines("sprintf_buf.c", "STR-SPRINTF", "sprintf_bad", b) == std::set<int>{5});
+        CHECK(ast_lines("sprintf_buf.c", "STR-SPRINTF", "sprintf_ok", b).empty());
+        CHECK(ast_lines("snprintf_buf.c", "STR-SNPRINTF", "snprintf_bad", b) == std::set<int>{5});
+        CHECK(ast_lines("snprintf_buf.c", "STR-SNPRINTF", "snprintf_ok", b).empty());
+        CHECK(ast_lines("wcs_unbounded.c", "STR-WCSCPY", "wcs_copy_bad", b) == std::set<int>{7});
+        CHECK(ast_lines("wcs_unbounded.c", "STR-WCSCPY", "wcs_copy_ok", b).empty());
+        CHECK(ast_lines("crypto_misuse.c", "CRYPTO-MISUSE", "crypto_key_bad", b) == std::set<int>{6});
+        CHECK(ast_lines("crypto_misuse.c", "CRYPTO-MISUSE", "crypto_key_ok", b).empty());
+        CHECK(ast_lines("srand_time.c", "CRYPTO-SRAND", "srand_bad", b) == std::set<int>{5});
+        CHECK(ast_lines("srand_time.c", "CRYPTO-SRAND", "srand_ok", b).empty());
+        CHECK(ast_lines("realloc_zero.c", "MEM-REALLOC-ZERO", "realloc_zero_bad", b) == std::set<int>{7});
+        CHECK(ast_lines("realloc_zero.c", "MEM-REALLOC-ZERO", "realloc_zero_ok", b).empty());
+        CHECK(ast_lines("ptr_arith.c", "MEM-PTR-ARITH", "arith_bad", b) == std::set<int>{2});
+        CHECK(ast_lines("ptr_arith.c", "MEM-PTR-ARITH", "arith_ok", b).empty());
+        CHECK(ast_lines("vla.c", "MEM-VLA-SIZE", "vla_bad", b) == std::set<int>{2});
+        CHECK(ast_lines("vla.c", "MEM-VLA-SIZE", "vla_ok", b).empty());
+        CHECK(ast_lines("flex_array.c", "MEM-FLEX-ARRAY", "flex_bad", b) == std::set<int>{14});
+        CHECK(ast_lines("flex_array.c", "MEM-FLEX-ARRAY", "flex_star_bad", b) == std::set<int>{19});
+        CHECK(ast_lines("flex_array.c", "MEM-FLEX-ARRAY", "flex_ok", b).empty());
+        CHECK(ast_lines("flex_array.c", "MEM-FLEX-ARRAY", "flex_plain_ok", b).empty());
+        CHECK(ast_lines("infoleak_pad.c", "INFOLEAK-PAD", "leak_bad", b) == std::set<int>{9});
+        CHECK(ast_lines("infoleak_pad.c", "INFOLEAK-PAD", "leak_ok", b).empty());
+        CHECK(ast_lines("onesided.c", "MEM-ONESIDED-INDEX", "onesided_index", b) == std::set<int>{5});
+        CHECK(ast_lines("onesided.c", "MEM-ONESIDED-INDEX", "two_sided_index", b).empty());
+        CHECK(ast_lines("onesided.c", "MEM-ONESIDED-INDEX", "unsigned_index", b).empty());
+        CHECK(ast_lines("mem_leak.c", "MEM-LEAK", "mem_leak_bad", b) == std::set<int>{6});
+        CHECK(ast_lines("mem_leak.c", "MEM-LEAK", "mem_leak_ok", b).empty());
+        CHECK(ast_lines("fd_leak.c", "RES-FD-LEAK", "fd_leak_bad", b) == std::set<int>{6});
+        CHECK(ast_lines("fd_leak.c", "RES-FD-LEAK", "fd_leak_ok", b).empty());
+        CHECK(ast_lines("popen.c", "API-POPEN", "popen_bad", b) == std::set<int>{8});
+        CHECK(ast_lines("popen.c", "API-POPEN", "popen_ok", b).empty());
+        CHECK(ast_lines("chroot.c", "API-CHROOT", "chroot_bad", b) == std::set<int>{6});
+        CHECK(ast_lines("chroot.c", "API-CHROOT", "chroot_ok", b).empty());
+        CHECK(ast_lines("toctou.c", "CONC-TOCTOU", "toctou_bad", b) == std::set<int>{7});
+        CHECK(ast_lines("toctou.c", "CONC-TOCTOU", "toctou_ok", b).empty());
+        CHECK(ast_lines("unvalidated.c", "TRUST-UNVALIDATED-INPUT", "unval_bad", b) == std::set<int>{7});
+        CHECK(ast_lines("unvalidated.c", "TRUST-UNVALIDATED-INPUT", "unval_div_bad", b) == std::set<int>{24});
+        CHECK(ast_lines("unvalidated.c", "TRUST-UNVALIDATED-INPUT", "unval_ok", b).empty());
+        CHECK(ast_lines("clz_zero.c", "INT-CLZ-ZERO", "clz_zero_bad", b) == std::set<int>{2});
+        CHECK(ast_lines("clz_zero.c", "INT-CLZ-ZERO", "clz_zero_ok", b).empty());
+        CHECK(ast_lines("atomicity.c", "CONC-ATOMICITY", "atom_bad", b) == std::set<int>{7});
+        CHECK(ast_lines("atomicity.c", "CONC-ATOMICITY", "atom_ok", b).empty());
     }
 }
 
