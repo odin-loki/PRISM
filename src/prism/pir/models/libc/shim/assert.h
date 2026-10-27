@@ -1,4 +1,5 @@
 /* Minimal <assert.h> for PIR on Windows (matches glibc's assert -> __assert_fail, not abort/oom). */
+/* A failed assert does not return and is not CLEAN. */
 #ifndef PRISM_PIR_SHIM_ASSERT_H
 #define PRISM_PIR_SHIM_ASSERT_H
 void __assert_fail(const char* assertion, const char* file, unsigned int line, const char* function);
