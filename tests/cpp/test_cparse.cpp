@@ -596,7 +596,7 @@ TEST_CASE("false positives: a C++ qualified name is unencoded, not ERROR") {
 // tests/test_inline.py: the deterministic static scalar inliner.
 
 TEST_CASE("inline: a static scalar callee is inlined into its caller") {
-    auto p = repo_dir("testdata") / "inline_add.c";
+    auto p = repo_dir("testdata/planted") / "inline_add.c";
     auto fns = prism::extract_functions(p, p.string());
     auto out = prism::inline_static(fns);
     auto* caller = find_fn(out, "caller");
@@ -608,14 +608,14 @@ TEST_CASE("inline: a static scalar callee is inlined into its caller") {
 }
 
 TEST_CASE("inline: pointer functions are unchanged and the input is not mutated") {
-    auto p = repo_dir("testdata") / "ptr_copy.c";
+    auto p = repo_dir("testdata/planted") / "ptr_copy.c";
     auto fns = prism::extract_functions(p, p.string());
     std::map<std::string, std::string> orig;
     for (auto& f : fns) orig[f.name] = f.body;
     for (auto& f : prism::inline_static(fns))
         if (f.kind == "POINTER") CHECK(f.body == orig[f.name]);
 
-    auto q = repo_dir("testdata") / "inline_add.c";
+    auto q = repo_dir("testdata/planted") / "inline_add.c";
     auto add = prism::extract_functions(q, q.string());
     std::vector<std::pair<std::string, std::string>> before, after;
     for (auto& f : add) before.emplace_back(f.name, f.body);
@@ -665,7 +665,7 @@ TEST_CASE("inline: assignment, declaration-initialiser and void-helper forms") {
 
 TEST_CASE("inline: an inlined caller is not an unconstrained proof") {
     SKIP_IF_NO_Z3();
-    auto p = repo_dir("testdata") / "inline_add.c";
+    auto p = repo_dir("testdata/planted") / "inline_add.c";
     auto fns = prism::extract_functions(p, p.string());
     std::map<std::string, prism::Finding> recs;
     for (auto& f : prism::run_bmc(fns, 8))

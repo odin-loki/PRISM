@@ -4448,7 +4448,7 @@ struct ToolsDirGuard {
 
 // commit = "..." of [[component]] name in third_party/MANIFEST.toml.
 std::string manifest_commit(const std::string& name) {
-    std::ifstream in(testdata_root().parent_path() / "third_party" / "MANIFEST.toml");
+    std::ifstream in(std::filesystem::path(PRISM_SOURCE_DIR) / "third_party" / "MANIFEST.toml");
     std::string line;
     bool inside = false;
     while (std::getline(in, line)) {

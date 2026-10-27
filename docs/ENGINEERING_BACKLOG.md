@@ -8,14 +8,9 @@ Owner-only rows (history rewrite, GPU hardware, LoRA) are omitted. Supply-chain
 
 **Lint gate (local):** `./build-werror/prism src/prism --stage lints,warnings --no-llm` → `scripts/lint_failed_count.sh` **0** after astlint self-lint fixes (2026-10-25).
 
-**Do not bump** [ROADMAP_STATUS.md](ROADMAP_STATUS.md) D7 / [MSVC_PORT.md](MSVC_PORT.md) “latest green” until one of these finishes **success**:
+**2026-10-27 (corpus consolidation follow-up):** `main` was red after `4effa335` moved corpora to `testdata/` without updating every doctest path. Fixed: `tests/conformance` → `testdata/conformance` in QA/SV-COMP tools; `manifest_commit()` reads `third_party/MANIFEST.toml` from `PRISM_SOURCE_DIR`; planted inline corpus under `testdata/planted/`; PIR Lean export `L memcpy` line matches `proofs/refinement/fixtures/intrinsics.pirl` (width + memmove flag only). Local `./build/prism_tests`: **1023 passed**, 1 skipped (solver bench).
 
-| Commit | PRISM CI run | Status (2026-10-25) |
-|--------|--------------|---------------------|
-| `22b44c3f2` | [`40168880989`](https://github.com/odin-loki/PRISM/actions/runs/40168880989) — Astlint STR-MISSING-NUL testdata; **MSVC `kPortedC` `mkstemp` fix** | `in_progress` |
-| `2a9ca90a4` | [`40168890215`](https://github.com/odin-loki/PRISM/actions/runs/40168890215) — backlog note for astlint doctest | `queued` |
-
-Earlier `main` pushes (Lean export / doc sweep) are still **failure** or long-running **`in_progress`**; documented green remains `7b652bf9f` ([`40149651603`](https://github.com/odin-loki/PRISM/actions/runs/40149651603)).
+**Do not bump** [ROADMAP_STATUS.md](ROADMAP_STATUS.md) D7 / [MSVC_PORT.md](MSVC_PORT.md) “latest green” until **PRISM CI** on the merge commit finishes **success** (Linux `prism_tests` + Windows smokes + conformance gate).
 
 ## 2.6 Standard library (libc + C++ models)
 

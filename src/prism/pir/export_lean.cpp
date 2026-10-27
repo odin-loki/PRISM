@@ -318,8 +318,7 @@ void intrinsic_line(std::ostream& b, const ir::Inst& in) {
     if (n.starts_with("llvm.memcpy.") || n.starts_with("llvm.memmove.")) {
         if (in.ops.size() < 3) throw Unsupported{"call @" + n + " arity"};
         b << "L memcpy " << ptr_opnd(in.ops[0]) << " " << ptr_opnd(in.ops[1]) << " " << opnd(in.ops[2]) << " "
-          << width(in.ops[2].ty) << " " << n.starts_with("llvm.memmove.") << " "
-          << (n.starts_with("llvm.memmove.") ? 0 : 1) << "\n";
+          << width(in.ops[2].ty) << " " << (n.starts_with("llvm.memmove.") ? 1 : 0) << "\n";
         return;
     }
     if (n.starts_with("llvm.memset.")) {

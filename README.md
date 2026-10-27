@@ -119,6 +119,25 @@ code is tested entry by entry against the proved model; see
 
 See [docs/PLAN.md](docs/PLAN.md) and [docs/MINED.md](docs/MINED.md).
 
+## Architecture
+
+PRISM is a **single C++23 pipeline** (`include/prism/pipeline.hpp` defines
+`STAGE_ORDER`: inventory → classify → lints → … → unify). Each stage writes
+findings with a fixed status vocabulary (`include/prism/laws.hpp`); nothing
+is skipped quietly. Reports are emitted at the end (`report.json`, `report.md`,
+`report.sarif`).
+
+| Layer | Location |
+|-------|----------|
+| CLI + orchestration | `src/prism/pipeline.cpp`, `src/prism/cli.cpp` |
+| Per-stage logic | `src/prism/stages/`, `src/prism/bmc.cpp`, `src/prism/pir/`, adapters in `adapters.cpp` |
+| External tools | `prism-deps` pins in `third_party/MANIFEST.toml`; binaries under `~/.prism/tools/` |
+| Formal proofs | Lean 4 in `proofs/` (verdict lattice, refinement checker for PIR export) |
+| Corpora & conformance | `testdata/` — see [testdata/README.md](testdata/README.md) |
+
+`prism-qa` (`src/tools/qa/`) runs conformance scoring, docs drift checks, and
+PIR-vs-BMC retirement gates described in [docs/ENGINEERING_BACKLOG.md](docs/ENGINEERING_BACKLOG.md).
+
 ## Stack
 
 GUI is Qt. Inference is llama.cpp (Ollama fallback). SIMD is vendored xsimd.
