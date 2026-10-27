@@ -969,10 +969,10 @@ bool param_null_tested(std::string_view name, std::string_view body) {
     return false;
 }
 
-const std::regex& member_test_re(std::string_view param, std::string_view member) {
-    thread_local std::unordered_map<std::string, std::regex> cache;
+const prism::Regex& member_test_re(std::string_view param, std::string_view member) {
+    thread_local std::unordered_map<std::string, std::unique_ptr<prism::Regex>> cache;
     std::string key = std::string(param) + "\x1f" + std::string(member);
-    if (auto it = cache.find(key); it != cache.end()) return it->second;
+    if (auto it = cache.find(key); it != cache.end()) return *it->second;
     if (cache.size() > 4096) cache.clear();
     auto v = re_escape(param), m = re_escape(member);
     auto acc = "(?<![\\w.])(?<!->)(?:" + v + "\\s*->\\s*" + m + "|" + v + "\\s*\\.\\s*" + m + ")\\b";
@@ -982,14 +982,14 @@ const std::regex& member_test_re(std::string_view param, std::string_view member
                       "|(?:\\b(?:if|while)\\s*\\(|&&)\\s*" + acc + "\\s*(?:\\)|&&|\\?)" + "|" + acc +
                       "\\s*(?:&&|\\?)" + "|\\b\\w*(?:assert|ASSERT)\\w*\\s*\\(\\s*" + acc + "\\s*\\)" +
                       "|\\b\\w*NOT_?NULL\\w*\\s*\\(\\s*" + acc + "\\s*(?:\\)|,|->))";
-    return cache.emplace(std::move(key), std::regex(pat)).first->second;
+    auto [it, _] = cache.emplace(std::move(key), std::make_unique<prism::Regex>(pat));
+    return *it->second;
 }
 
 std::size_t member_test_pos(std::string_view param, std::string_view member, std::string_view body) {
-    std::smatch m;
-    const std::string s(body);
-    if (std::regex_search(s, m, member_test_re(param, member))) return static_cast<std::size_t>(m.position(0));
-    return std::string_view::npos;
+    auto m = member_test_re(param, member).search_match(body);
+    if (!m || m->spans.empty() || m->spans[0].first < 0) return std::string_view::npos;
+    return static_cast<std::size_t>(m->spans[0].first);
 }
 
 const json* function_body(const json* decl) {
