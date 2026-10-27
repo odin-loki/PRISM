@@ -1,0 +1,10 @@
+format_version: 1
+input_files: cxx_ranges_false.cpp
+language: C++
+property: no-overflow
+expected:
+  cxx_ranges_false: false
+witness:
+  cxx_ranges_false: [1]
+sanitizer_blind:
+  - cxx_ranges_false

@@ -1,0 +1,82 @@
+// PRISM partial stand-in for <ranges>. The pir stage puts this directory
+// first on the C++ include path, so `#include <ranges>` reaches this file
+// instead of libstdc++'s. It is a file, not a directory: a directory of
+// that name would make the include fail with EISDIR and every such unit
+// would fall back to libstdc++.
+//
+// Only std::ranges::size and std::ranges::ssize. size of a T(&)[N] is N.
+// size of an lvalue with a const size() member is that size(). There is
+// no overload for a pointer. A pointer argument fails to compile, and pir
+// falls back to libstdc++. This stand-in does not give a pointer a length.
+//
+// ssize is that same value converted to ptrdiff_t. A value that does not
+// fit is __prism_check with class FUNC-CONTRACT, then __builtin_trap.
+// That path does not return a wrapped negative ptrdiff_t.
+//
+// begin, end, sort, find, and views are not declared. A use fails to
+// compile against this header and pir falls back. They are not stubbed.
+// vector, memory, string, iterator, algorithm, and span are not included.
+//
+// This header is not a proof that a range is sorted or that a pointer
+// has a length.
+#ifndef _GLIBCXX_RANGES
+#define _GLIBCXX_RANGES 1
+
+#pragma GCC system_header
+
+#include <cstddef>
+#include <cstdint>
+
+// PIR intrinsic (translate.cpp). Literal class and message. Declared, not
+// defined: the analysed program does not link a body.
+extern "C" void __prism_check(int, const char*, const char*);
+
+namespace std {
+
+// The failing path never returns. A cast of a too-wide unsigned size would
+// be a negative ptrdiff_t; this function does not produce that value.
+[[noreturn]] inline void _Prism_ssize_does_not_fit() noexcept {
+    __prism_check(0, "FUNC-CONTRACT", "ranges::ssize size does not fit in ptrdiff_t");
+    __builtin_trap();
+}
+
+// Convert an integral size to ptrdiff_t. Unsigned values of ptrdiff_t's
+// width (or wider) are checked against PTRDIFF_MAX. A signed type wider
+// than ptrdiff_t is checked against both ends. Narrower values fit, so
+// they are cast and not wrapped.
+template <typename _Sz>
+constexpr std::ptrdiff_t _Prism_as_ptrdiff(_Sz __n) noexcept {
+    if constexpr (static_cast<_Sz>(-1) > static_cast<_Sz>(0)) {
+        if constexpr (sizeof(_Sz) >= sizeof(std::ptrdiff_t)) {
+            if (__n > static_cast<_Sz>(PTRDIFF_MAX)) _Prism_ssize_does_not_fit();
+        }
+    } else if constexpr (sizeof(_Sz) > sizeof(std::ptrdiff_t)) {
+        if (__n > PTRDIFF_MAX || __n < PTRDIFF_MIN) _Prism_ssize_does_not_fit();
+    }
+    return static_cast<std::ptrdiff_t>(__n);
+}
+
+namespace ranges {
+
+template <typename _Tp, std::size_t _Nm>
+constexpr std::size_t size(_Tp (&)[_Nm]) noexcept {
+    return _Nm;
+}
+
+// Lvalue only. The const cast selects the const size() member. A type
+// whose size() is not const, and a pointer, fail here and pir falls back.
+template <typename _Tp>
+constexpr auto size(_Tp& __t) noexcept(noexcept(static_cast<const _Tp&>(__t).size()))
+    -> decltype(static_cast<const _Tp&>(__t).size()) {
+    return static_cast<const _Tp&>(__t).size();
+}
+
+template <typename _Tp>
+constexpr auto ssize(_Tp& __t) noexcept(noexcept(size(__t))) -> decltype(size(__t), std::ptrdiff_t()) {
+    return _Prism_as_ptrdiff(size(__t));
+}
+
+}  // namespace ranges
+}  // namespace std
+
+#endif  // _GLIBCXX_RANGES
