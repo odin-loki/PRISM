@@ -292,3 +292,62 @@ TEST_CASE("cxx tuple model: get<0> is the stored int and empty tuple_size is 0")
                             "}\n";
     CHECK_FALSE(syntax_ok(c.cxx, empty, true));
 }
+
+TEST_CASE("cxx tuple model: get<2> of a 3-tuple is the third stored value") {
+    const std::string text = slurp(model_header());
+    CHECK(text.find("struct _Prism_tuple_get<2, tuple<_T0, _T1, _T2>>") != std::string::npos);
+    CHECK(text.find("return __t._M_2;") != std::string::npos);
+    CHECK(text.find("integral_constant<size_t, 3>") != std::string::npos);
+    CHECK(text.find("struct tuple_element<2, tuple<_T0, _T1, _T2>>") != std::string::npos);
+    CHECK(text.find("using type = _T2;") != std::string::npos);
+    CHECK_FALSE(default_return_stand_in(text));
+    CHECK(text.find("return {}") == std::string::npos);
+    CHECK(text.find("return T{}") == std::string::npos);
+    CHECK(text.find("return T()") == std::string::npos);
+
+    auto& c = ctx();
+    if (!c.ok) return;
+
+    const fs::path src = c.tmp / "tuple3_get2.cpp";
+    std::ofstream(src) << "#include <cstdio>\n"
+                          "#include <tuple>\n"
+                          "int main() {\n"
+                          "  const int third = 17;\n"
+                          "  std::tuple<int, int, int> t(4, 5, third);\n"
+                          "  const int got = std::get<2>(t);\n"
+                          "  std::printf(\"%d\\n\", got);\n"
+                          "  return got == third ? 0 : 1;\n"
+                          "}\n";
+    const fs::path models = repo() / "src" / "prism" / "pir" / "models" / "cxx";
+    const std::vector<std::string> flags{"-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-fsanitize=address,undefined",
+                                         "-fno-sanitize-recover=all", "-g", "-O1", "-w"};
+    fs::path out = c.tmp / "tuple3_get2";
+#ifdef _WIN32
+    out = c.tmp / "tuple3_get2.exe";
+#endif
+    std::vector<std::string> argv{c.cxx};
+    argv.insert(argv.end(), flags.begin(), flags.end());
+    argv.push_back("-isystem");
+    argv.push_back(models.string());
+    argv.push_back(src.string());
+    argv.push_back("-o");
+    argv.push_back(out.string());
+    REQUIRE(run_cmd(argv));
+    CHECK(has_line(run_lines(out), "17"));
+
+    const fs::path bad = c.tmp / "tuple3_get3.cpp";
+    std::ofstream(bad) << "#include <tuple>\n"
+                          "int bad_index() {\n"
+                          "  std::tuple<int, int, int> t(1, 2, 3);\n"
+                          "  return std::get<3>(t);\n"
+                          "}\n";
+    CHECK_FALSE(syntax_ok(c.cxx, bad, true));
+
+    const fs::path four = c.tmp / "tuple4.cpp";
+    std::ofstream(four) << "#include <tuple>\n"
+                           "int four() {\n"
+                           "  std::tuple<int, int, int, int> t(1, 2, 3, 4);\n"
+                           "  return std::get<0>(t);\n"
+                           "}\n";
+    CHECK_FALSE(syntax_ok(c.cxx, four, true));
+}

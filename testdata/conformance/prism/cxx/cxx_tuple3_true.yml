@@ -1,0 +1,6 @@
+format_version: 1
+input_files: cxx_tuple3_true.cpp
+language: C++
+property: memsafety
+expected:
+  cxx_tuple3_true: true
