@@ -194,6 +194,33 @@ TEST_CASE("diff: files paired by *_a/*_b stem that disagree are FAILED") {
     CHECK(it->second == prism::sandbox::kind());
 }
 
+TEST_CASE("diff: a disagreement keeps the last 800 characters of stderr") {
+    PRISM_DIFF_NEED_CC();
+    prism::sandbox::Policy policy(true);
+    // The harness prints DIFF after both calls. A long prefix sits in front of
+    // that line; the finding keeps the tail, so the prefix marker is gone and
+    // the DIFF line remains.
+    auto a = scalar("pad_a",
+                    "    fprintf(stderr, \"PRISMDIFFHEAD\");\n"
+                    "    for (int i = 0; i < 900; ++i) fputc('A', stderr);\n"
+                    "    fprintf(stderr, \"PRISMDIFFTAIL\");\n"
+                    "    fflush(stderr);\n"
+                    "    return x;\n");
+    auto b = scalar("pad_b", "    return x ^ 1;\n");
+    auto recs = prism::run_diff({a, b}, td());
+    REQUIRE(recs.size() == 1);
+    auto& r = recs[0];
+    INFO(r.status << ": " << r.message);
+    CHECK(r.status == prism::laws::FAILED);
+    CHECK(r.evidence.size() == 800);
+    CHECK(r.evidence.find("PRISMDIFFHEAD") == std::string::npos);
+    CHECK(r.evidence.find("PRISMDIFFTAIL") != std::string::npos);
+    CHECK(r.evidence.find("DIFF 0 1") != std::string::npos);
+    auto it = r.extra.find("sandbox");
+    REQUIRE(it != r.extra.end());
+    CHECK(it->second == prism::sandbox::kind());
+}
+
 TEST_CASE("diff: name_a/name_b pairing that disagrees is FAILED") {
     PRISM_DIFF_NEED_CC();
     prism::sandbox::Policy policy(true);
@@ -271,11 +298,12 @@ TEST_CASE("diff: a crash is not agreement") {
 TEST_CASE("diff: parameter types with inner whitespace keep their C size") {
     PRISM_DIFF_NEED_CC();
     prism::sandbox::Policy policy(true);
-    // "unsigned   char" is one byte: each input is one byte, the harness reads
-    // it into x, so the byte 0x2a reaches both functions as 42.
+    // "unsigned \t  char" is one byte. Internal whitespace, including a tab,
+    // collapses to a single space before the size lookup, so the byte 0x2a
+    // reaches both functions as 42.
     auto a = scalar("uc_a", "    return x == 42 ? 1 : 0;");
     auto b = scalar("uc_b", "    return 0;");
-    a.params = b.params = {{"unsigned   char", "x"}};
+    a.params = b.params = {{"unsigned \t  char", "x"}};
     auto recs = prism::run_diff({a, b}, td());
     REQUIRE(recs.size() == 1);
     INFO(recs[0].status << ": " << recs[0].message);

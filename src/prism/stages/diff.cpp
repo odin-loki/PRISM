@@ -6,8 +6,11 @@ namespace fs = std::filesystem;
 using namespace stages_detail;
 
 namespace {
+// Collapse each whitespace run to one space before the kCTypeSize lookup.
+// "unsigned \t  char" and "unsigned char" are the same key.
 int c_type_nbytes_key(const std::string& key) {
-    auto it = kCTypeSize.find(key);
+    auto norm = collapse_ws(key);
+    auto it = kCTypeSize.find(norm);
     return it == kCTypeSize.end() ? 4 : it->second;
 }
 
