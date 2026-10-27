@@ -1,0 +1,61 @@
+// PRISM operational model of <system_error> (docs/PIR.md "C++ library models").
+// The pir stage puts this directory first on the C++ include path, so
+// `#include <system_error>` reaches this file instead of libstdc++'s.
+// It is a file, not a directory: a directory of this name would make the
+// include fail with EISDIR and every such unit would fall back to libstdc++.
+//
+// Partial on purpose. std::error_code stores the int it was constructed
+// with and an int category id. value() returns that stored int. A nonzero
+// constructor argument stays that int; it is not replaced with 0.
+// operator bool is true only when value() is not 0, so a default
+// error_code (value 0) is false.
+//
+// generic_category() returns an empty tag, not an error_category object.
+// A real category's text lookup needs the string header, which this file
+// does not include. error_code(n, generic_category()) still stores n.
+//
+// message() is not declared. A unit that calls it fails to compile against
+// this header and pir falls back to libstdc++. Do not stub it with a fixed
+// string: that would hide a nonzero value.
+//
+// error_condition and the system_error exception type are omitted. They
+// need std::runtime_error and the string / stdexcept headers, which this
+// file does not include. A use of either name fails to compile and falls
+// back the same way.
+#ifndef _GLIBCXX_SYSTEM_ERROR
+#define _GLIBCXX_SYSTEM_ERROR 1  // libstdc++'s <system_error> include guard: never both
+
+#pragma GCC system_header
+
+namespace std {
+
+// Empty tag. Not an error_category, and not a stand-in object with a
+// virtual string lookup.
+struct __generic_category_tag {};
+
+inline __generic_category_tag generic_category() noexcept { return {}; }
+
+class error_code {
+public:
+    // value 0, category id 0. operator bool is false.
+    error_code() noexcept : _M_value(0), _M_cat(0) {}
+
+    // Stores n in _M_value. The tag selects generic_category's id.
+    error_code(int __v, const __generic_category_tag&) noexcept : _M_value(__v), _M_cat(1) {}
+
+    // The int passed to the constructor. Not a constant 0.
+    int value() const noexcept { return _M_value; }
+
+    // True only when value() is not 0.
+    explicit operator bool() const noexcept { return value() != 0; }
+
+private:
+    int _M_value = 0;
+    // Category id stored beside the value. 0 is the default code; 1 is
+    // generic_category(). Not returned as an error_category object.
+    [[maybe_unused]] int _M_cat = 0;
+};
+
+}  // namespace std
+
+#endif
