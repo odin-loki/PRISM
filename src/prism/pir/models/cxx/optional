@@ -1,0 +1,102 @@
+// PRISM operational model of <optional> (roadmap 2.6, docs/PIR.md "C++ library
+// models"). The pir stage puts this directory first on the C++ include path,
+// so `#include <optional>` reaches this file instead of libstdc++'s. It is a
+// file, not a directory: a directory of this name would make the include fail
+// with EISDIR and every such unit would fall back to libstdc++.
+//
+// Only two states are modelled. An optional is empty, or it holds a T stored
+// by value inside the optional object (a union member, not a separate heap
+// allocation). reset() and the destructor end that T's lifetime with an
+// explicit destructor call. They do not call delete.
+//
+// has_value() and operator bool report the flag. value(), operator*, and
+// operator-> read the stored T only when the optional is engaged. A
+// disengaged call is a precondition failure (__prism_check, CXX-OPTIONAL-NULL).
+// It does not return a default T and it does not invent a value.
+//
+// value_or, emplace, transform, and_then, or_else (and, or), comparison, and
+// hash are not declared. A use of them fails to compile against this header
+// and pir falls back to libstdc++. nullopt, in_place, swap, make_optional,
+// and assignment from T are not declared either, so those uses fall back too.
+#ifndef _PRISM_MODEL_OPTIONAL
+#define _PRISM_MODEL_OPTIONAL 1
+#define _GLIBCXX_OPTIONAL 1  // libstdc++'s <optional> include guard: never both
+
+#pragma GCC system_header
+
+// PIR intrinsic (translate.cpp). A literal class and message, as in the libc
+// models. Not defined here: the analysed program does not link a body.
+extern "C" void __prism_check(int ok, const char* cls, const char* msg);
+
+namespace std {
+
+template <typename _Tp>
+class optional {
+    // char is the inactive member. T lives in this union, inside the optional
+    // object. ~_Storage does not destroy T and does not free anything; reset()
+    // ends T's lifetime when it was engaged.
+    union _Storage {
+        char _M_empty;
+        _Tp _M_value;
+        _Storage() noexcept : _M_empty() {}
+        _Storage(const _Tp& __v) : _M_value(__v) {}
+        _Storage(_Tp&& __v) : _M_value(static_cast<_Tp&&>(__v)) {}
+        ~_Storage() {}
+    };
+
+    bool _M_engaged = false;
+    _Storage _M_storage;
+
+public:
+    using value_type = _Tp;
+
+    optional() noexcept = default;
+    optional(const _Tp& __v) : _M_engaged(true), _M_storage(__v) {}
+    optional(_Tp&& __v) : _M_engaged(true), _M_storage(static_cast<_Tp&&>(__v)) {}
+    ~optional() { reset(); }
+
+    // Ends the contained T's lifetime. Inline storage: no delete.
+    void reset() noexcept {
+        if (!_M_engaged) return;
+        _M_storage._M_value.~value_type();
+        _M_engaged = false;
+    }
+
+    bool has_value() const noexcept { return _M_engaged; }
+    explicit operator bool() const noexcept { return _M_engaged; }
+
+    _Tp& operator*() & noexcept {
+        __prism_check(_M_engaged ? 1 : 0, "CXX-OPTIONAL-NULL",
+                      "optional::operator* on a disengaged optional");
+        return _M_storage._M_value;
+    }
+    const _Tp& operator*() const& noexcept {
+        __prism_check(_M_engaged ? 1 : 0, "CXX-OPTIONAL-NULL",
+                      "optional::operator* on a disengaged optional");
+        return _M_storage._M_value;
+    }
+    _Tp* operator->() noexcept {
+        __prism_check(_M_engaged ? 1 : 0, "CXX-OPTIONAL-NULL",
+                      "optional::operator-> on a disengaged optional");
+        return &_M_storage._M_value;
+    }
+    const _Tp* operator->() const noexcept {
+        __prism_check(_M_engaged ? 1 : 0, "CXX-OPTIONAL-NULL",
+                      "optional::operator-> on a disengaged optional");
+        return &_M_storage._M_value;
+    }
+    _Tp& value() & {
+        __prism_check(_M_engaged ? 1 : 0, "CXX-OPTIONAL-NULL",
+                      "optional::value() on a disengaged optional");
+        return _M_storage._M_value;
+    }
+    const _Tp& value() const& {
+        __prism_check(_M_engaged ? 1 : 0, "CXX-OPTIONAL-NULL",
+                      "optional::value() on a disengaged optional");
+        return _M_storage._M_value;
+    }
+};
+
+}  // namespace std
+
+#endif
