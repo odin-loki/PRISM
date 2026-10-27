@@ -1,0 +1,93 @@
+// PRISM operational model of <functional> (roadmap 2.6, docs/PIR.md "C++ library
+// models"). The pir stage puts this directory first on the C++ include path,
+// so `#include <functional>` reaches this file instead of libstdc++'s. It is a
+// file, not a directory: a directory of this name would make the include fail
+// with EISDIR and every such unit would fall back to libstdc++.
+//
+// Partial on purpose. Only std::function for a function-pointer target is
+// modelled. The pointer is stored in the object. A general callable is not
+// placed on the heap, so there is nothing to free in the destructor, in
+// move-assignment, or when the function is empty, and those operations do not
+// call the target.
+//
+// An empty std::function has no target. operator bool is false. operator()
+// on an empty function is a precondition failure (__prism_check,
+// bad_function_call). That path does not return a default result and does not
+// call a null function pointer. Assigning a function pointer makes operator()
+// call that pointer. A move copies the pointer, leaves the source empty, and
+// does not call the target.
+//
+// Not declared, so a unit that names one fails to compile against this header
+// and pir falls back to libstdc++ (extra.cxx_models). A partial header is
+// intentional:
+// bind, mem_fn, ref, cref, invoke, not_fn, bind_front, and reference_wrapper.
+#ifndef _PRISM_MODEL_FUNCTIONAL
+#define _PRISM_MODEL_FUNCTIONAL 1
+#define _GLIBCXX_FUNCTIONAL 1  // libstdc++'s <functional> include guard: never both
+
+#pragma GCC system_header
+
+// PIR intrinsic (translate.cpp). A literal class and message, as in the libc
+// models. Not defined here: the analysed program does not link a body.
+extern "C" void __prism_check(int ok, const char* cls, const char* msg);
+
+namespace std {
+
+template <typename _Signature>
+class function;
+
+template <typename _Res, typename... _ArgTypes>
+class function<_Res(_ArgTypes...)> {
+    using _Fn = _Res (*)(_ArgTypes...);
+    _Fn _M_fn = nullptr;
+
+public:
+    function() noexcept = default;
+    function(decltype(nullptr)) noexcept : _M_fn(nullptr) {}
+    function(_Fn __f) noexcept : _M_fn(__f) {}
+
+    function(const function& __o) noexcept : _M_fn(__o._M_fn) {}
+    // The source is empty afterwards. The target is not called.
+    function(function&& __o) noexcept : _M_fn(__o._M_fn) { __o._M_fn = nullptr; }
+
+    function& operator=(const function& __o) noexcept {
+        _M_fn = __o._M_fn;
+        return *this;
+    }
+    // Steals the pointer. Does not call either target. No allocation, so
+    // there is no block to free.
+    function& operator=(function&& __o) noexcept {
+        if (this != &__o) {
+            _M_fn = __o._M_fn;
+            __o._M_fn = nullptr;
+        }
+        return *this;
+    }
+    function& operator=(decltype(nullptr)) noexcept {
+        _M_fn = nullptr;
+        return *this;
+    }
+    function& operator=(_Fn __f) noexcept {
+        _M_fn = __f;
+        return *this;
+    }
+
+    // An empty function has no target. A function pointer is not invoked here.
+    ~function() noexcept {}
+
+    explicit operator bool() const noexcept { return _M_fn != nullptr; }
+
+    _Res operator()(_ArgTypes... __args) const {
+        if (_M_fn == nullptr) {
+            __prism_check(0, "CXX-STD-FUNCTION-NULL",
+                          "std::function::operator() on an empty target (bad_function_call)");
+            // Not a default _Res, and not a call through the null pointer.
+            __builtin_unreachable();
+        }
+        return _M_fn(__args...);
+    }
+};
+
+}  // namespace std
+
+#endif

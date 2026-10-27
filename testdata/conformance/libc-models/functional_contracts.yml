@@ -1,0 +1,9 @@
+format_version: 1
+input_files: functional_contracts.cpp
+language: C++
+property: libc-contract
+expected:
+  functional_call_true: true
+  functional_empty_false: false
+expect_class:
+  functional_empty_false: "CXX-STD-FUNCTION-NULL"
