@@ -1,0 +1,6 @@
+format_version: 1
+input_files: cxx_coroutine_true.cpp
+language: C++
+property: memsafety
+expected:
+  cxx_coroutine_true: true

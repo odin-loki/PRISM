@@ -1,0 +1,91 @@
+// PRISM operational model of <coroutine>. The pir stage puts this directory
+// first on the C++ include path, so `#include <coroutine>` reaches this file
+// instead of libstdc++'s. It is a file, not a directory: a directory of this
+// name would make the include fail with EISDIR and every such unit would
+// fall back to libstdc++.
+//
+// This header is not a proof that a coroutine runs.
+//
+// Partial std::coroutine_handle<void> only. A default handle stores nullptr.
+// address() of that handle is nullptr. from_address(nullptr) is a null
+// handle. resume(), destroy(), and done() on a null handle are
+// __prism_check (FUNC-CONTRACT) then __builtin_trap. They do not invent a
+// resumed frame and they do not return a value. done() does not return
+// true: true would look like a finished coroutine. A non-null address is
+// not a frame this header can run, so those three still trap after the
+// check instead of reporting success.
+//
+// An await expression, a promise member type, and a no-op handle are not
+// declared. A body for any of those that returned as if a coroutine had run
+// would be a pretence. A use of them fails to compile against this header,
+// so pir falls back to libstdc++. Other template arguments are only
+// declared, not defined, for the same reason. The always/never suspend
+// types, coroutine traits, and a handle built from a promise object are
+// omitted the same way.
+//
+// This file does not include the memory, thread, exception, or atomic
+// headers.
+#ifndef _GLIBCXX_COROUTINE
+#define _GLIBCXX_COROUTINE 1
+
+#pragma GCC system_header
+
+// PIR intrinsic (translate.cpp). A literal class and message, as in the libc
+// models. Not defined here: the analysed program does not link a body.
+extern "C" void __prism_check(int ok, const char* cls, const char* msg);
+
+namespace std {
+
+template <typename _Promise = void>
+struct coroutine_handle;
+
+template <>
+struct coroutine_handle<void> {
+    // Stores nullptr. This is not a coroutine frame.
+    constexpr coroutine_handle() noexcept : _M_fr_ptr(nullptr) {}
+
+    constexpr coroutine_handle(decltype(nullptr)) noexcept : _M_fr_ptr(nullptr) {}
+
+    // The stored address. A default handle yields nullptr.
+    constexpr void* address() const noexcept { return _M_fr_ptr; }
+
+    // from_address(nullptr) is a null handle. The pointer is stored and is
+    // not turned into a frame.
+    static constexpr coroutine_handle from_address(void* __a) noexcept {
+        coroutine_handle __h;
+        __h._M_fr_ptr = __a;
+        return __h;
+    }
+
+    // False when the stored address is nullptr. This is not done().
+    constexpr explicit operator bool() const noexcept { return _M_fr_ptr != nullptr; }
+
+    // Null: failed check, then trap. No frame is resumed. No value comes back.
+    [[noreturn]] void resume() const {
+        __prism_check(_M_fr_ptr != nullptr ? 1 : 0, "FUNC-CONTRACT",
+                      "coroutine_handle::resume() on a null handle");
+        __builtin_trap();
+    }
+
+    // The member destroy(), not the C++ destructor. Null: failed check,
+    // then trap. No frame is destroyed.
+    [[noreturn]] void destroy() const {
+        __prism_check(_M_fr_ptr != nullptr ? 1 : 0, "FUNC-CONTRACT",
+                      "coroutine_handle::destroy() on a null handle");
+        __builtin_trap();
+    }
+
+    // Same check, then trap. true would look like a finished coroutine.
+    [[noreturn]] bool done() const {
+        __prism_check(_M_fr_ptr != nullptr ? 1 : 0, "FUNC-CONTRACT",
+                      "coroutine_handle::done() on a null handle");
+        __builtin_trap();
+    }
+
+private:
+    void* _M_fr_ptr = nullptr;
+};
+
+}  // namespace std
+
+#endif  // _GLIBCXX_COROUTINE

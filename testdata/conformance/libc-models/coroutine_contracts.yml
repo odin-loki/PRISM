@@ -1,0 +1,18 @@
+format_version: 1
+input_files: coroutine_contracts.cpp
+language: C++
+property: libc-contract
+expected:
+  coroutine_null_address_true: true
+  coroutine_from_address_true: true
+  coroutine_resume_null_false: false
+  coroutine_destroy_null_false: false
+  coroutine_done_null_false: false
+expect_class:
+  coroutine_resume_null_false: "FUNC-CONTRACT"
+  coroutine_destroy_null_false: "FUNC-CONTRACT"
+  coroutine_done_null_false: "FUNC-CONTRACT"
+witness:
+  coroutine_resume_null_false: [0]
+  coroutine_destroy_null_false: [0]
+  coroutine_done_null_false: [0]
