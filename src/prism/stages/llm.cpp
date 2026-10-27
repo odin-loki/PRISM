@@ -72,9 +72,20 @@ void set_chat_backend_for_testing(ChatBackend backend) {
 
 namespace {
 #ifdef PRISM_HAS_LLAMA
-// Layers offloaded to the GPU: PRISM_N_GPU_LAYERS (default -1, all of them;
-// a CPU-only build ignores it). On Windows a CUDA build needs MSVC's cl, so
-// without it the model stays on the CPU instead of pretending CUDA works.
+// Smaller than 1 MiB: the file can exist and still not be a model. Those
+// paths stay on the missing-model path (backend "none", stage NOTRUN).
+constexpr std::uintmax_t kMinRealGguf = std::uintmax_t{1} << 20;
+
+bool gguf_is_model(const fs::path& path) {
+    std::error_code ec;
+    if (path.empty() || !fs::is_regular_file(path, ec) || ec) return false;
+    const auto n = fs::file_size(path, ec);
+    return !ec && n >= kMinRealGguf;
+}
+
+// PRISM_N_GPU_LAYERS is written to llama_model_params.n_gpu_layers.
+// Unset returns -1. Windows without MSVC's cl returns 0 so the load does
+// not require a GPU. llama_context_params has no n_gpu_layers field.
 int native_gpu_layers() {
 #ifdef _WIN32
     if (!Config{}.which({"cl"})) return 0;
@@ -136,8 +147,7 @@ static NativeLlama g_native_llama;
 
 static ChatResult native_llama_complete(const Config& cfg,
                                         const std::vector<std::pair<std::string, std::string>>& messages) {
-    std::error_code gec;
-    if (cfg.gguf.empty() || !fs::is_regular_file(cfg.gguf, gec) || fs::file_size(cfg.gguf, gec) <= 1'000'000) {
+    if (!gguf_is_model(cfg.gguf)) {
         return {"", "llama.cpp", "missing GGUF (set PRISM_GGUF)"};
     }
     std::string err;
@@ -148,6 +158,8 @@ static ChatResult native_llama_complete(const Config& cfg,
     llama_context_params ctx_params = llama_context_default_params();
     ctx_params.n_ctx = kNativeCtx;
     ctx_params.n_batch = kNativeCtx;
+    // No n_gpu_layers on llama_context_params (llama.h). PRISM_N_GPU_LAYERS
+    // is applied in NativeLlama::get. Unset keeps native_gpu_layers().
     llama_context* ctx = llama_init_from_model(model, ctx_params);
     if (!ctx) return {"", "llama.cpp", "failed to create llama_context"};
 
@@ -241,9 +253,7 @@ void LlamaEngine::bind() {
         return;
     }
 #ifdef PRISM_HAS_LLAMA
-    // A real GGUF, not a placeholder: more than 1 MB.
-    std::error_code ec;
-    if (!cfg.gguf.empty() && fs::is_regular_file(cfg.gguf, ec) && fs::file_size(cfg.gguf, ec) > 1'000'000 && !ec) {
+    if (gguf_is_model(cfg.gguf)) {
         backend = "llama.cpp";
         return;
     }
