@@ -708,6 +708,7 @@ if(PRISM_TESTS)
     tests/cpp/test_astlint.cpp
     tests/cpp/test_ltl.cpp
     tests/cpp/test_contracts.cpp
+    tests/cpp/test_contracts_gap.cpp
     tests/cpp/test_bmc.cpp
     tests/cpp/test_checkers_cxx.cpp
     tests/cpp/test_checkers_c.cpp
