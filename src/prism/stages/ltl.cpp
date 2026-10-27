@@ -1046,7 +1046,7 @@ std::vector<Finding> run_ltl(const std::vector<FunctionInfo>& functions, const s
         f.status = std::string(laws::NOTRUN);
         f.cls = "LTL-SAFETY";
         f.message = "no .ltl spec next to the sources";
-        f.strength = std::string(laws::STRENGTH_PROVES);
+        f.strength = std::string(laws::STRENGTH_READS);
         f.extra["install"] = "add a file with G (...)";
         return {f};
     }
@@ -1093,7 +1093,7 @@ std::vector<Finding> run_ltl(const std::vector<FunctionInfo>& functions, const s
             f.status = std::string(laws::NOTRUN);
             f.cls = "LTL-SAFETY";
             f.message = msg;
-            f.strength = std::string(laws::STRENGTH_PROVES);
+            f.strength = std::string(laws::STRENGTH_READS);
             f.extra["formula"] = formula;
             f.extra["install"] = "https://github.com/meyerphi/strix";
             f.extra["strix"] = strix ? strix->string() : "";

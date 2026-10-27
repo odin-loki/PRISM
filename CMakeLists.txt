@@ -725,6 +725,7 @@ if(PRISM_TESTS)
     tests/cpp/test_sarif_certified.cpp
     tests/cpp/test_astlint.cpp
     tests/cpp/test_ltl.cpp
+    tests/cpp/test_ltl_notrun_strength.cpp
     tests/cpp/test_contracts.cpp
     tests/cpp/test_contracts_gap.cpp
     tests/cpp/test_bmc.cpp
