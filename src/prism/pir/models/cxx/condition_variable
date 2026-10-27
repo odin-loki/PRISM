@@ -1,0 +1,61 @@
+// PRISM operational model of <condition_variable> (docs/PIR.md "C++ library models").
+// The pir stage puts this directory first on the C++ include path, so
+// `#include <condition_variable>` reaches this file instead of libstdc++'s.
+// It is a file, not a directory: a directory of this name would make the
+// include fail with EISDIR and every such unit would fall back to libstdc++.
+//
+// Partial on purpose. std::condition_variable stores one bool in the object.
+// There is no heap allocation and no thread. This header is not a
+// concurrency proof.
+//
+// notify_one() and notify_all() set that flag. They do not run a waiter.
+// A default condition_variable has the flag false.
+//
+// wait, wait_for, and wait_until are not declared. A blocking wait that
+// returned immediately would be a fake wakeup. condition_variable_any,
+// cv_status, and notify_all_at_thread_exit are not declared either, so a
+// use of those names fails to compile against this header and the pir stage
+// lowers that translation unit again with libstdc++.
+//
+// The include guard is _GLIBCXX_CONDITION_VARIABLE, the usual libstdc++
+// guard. This file does not include a libstdc++ header to learn that name.
+// It does not include mutex, thread, atomic, memory, chrono, or functional.
+#ifndef _GLIBCXX_CONDITION_VARIABLE
+#define _GLIBCXX_CONDITION_VARIABLE 1
+
+#pragma GCC system_header
+
+// PIR intrinsic (translate.cpp). A literal class and message, as in the libc
+// models. Not defined here: the analysed program does not link a body.
+// Nothing in this header calls it. notify has no failing operation, and a
+// woken thread is not invented.
+extern "C" void __prism_check(int __ok, const char* __cls, const char* __msg);
+
+namespace std {
+
+class condition_variable {
+    bool _M_flag;
+
+public:
+    // A default condition_variable has the flag false.
+    condition_variable() noexcept : _M_flag(false) {}
+
+    condition_variable(const condition_variable&) = delete;
+    condition_variable& operator=(const condition_variable&) = delete;
+
+    // The flag is a member, not a heap object. Nothing is freed.
+    ~condition_variable() = default;
+
+    // wait, wait_for, and wait_until are not declared. A blocking wait that
+    // returned immediately would be a fake wakeup.
+
+    // Sets the flag. Does not run a waiter and does not invent a woken thread.
+    void notify_one() noexcept { _M_flag = true; }
+
+    // Sets the same flag. Does not run a waiter and does not invent a woken thread.
+    void notify_all() noexcept { _M_flag = true; }
+};
+
+}  // namespace std
+
+#endif  // _GLIBCXX_CONDITION_VARIABLE
