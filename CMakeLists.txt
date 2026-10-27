@@ -707,6 +707,7 @@ if(PRISM_TESTS)
     tests/cpp/test_shipdocs.cpp
     tests/cpp/test_cli_stages.cpp
     tests/cpp/test_stage_order.cpp
+    tests/cpp/test_harness_assumed.cpp
     tests/cpp/test_sarif.cpp
     tests/cpp/test_sarif_certified.cpp
     tests/cpp/test_astlint.cpp
