@@ -4101,7 +4101,7 @@ TEST_CASE("polyglot missing tools are NOTRUN with install, never CLEAN") {
         auto it = f.extra.find("check");
         if (it == f.extra.end()) continue;
 #ifdef _WIN32
-        // Config::which on WIN32 (SearchPath) also looks in System32 before PATH,
+        // Config::which on WIN32 also looks in System32 before PATH,
         // where Windows ships the WSL launcher bash.exe: not a missing tool.
         if (it->second == "shell-syntax") continue;
 #endif

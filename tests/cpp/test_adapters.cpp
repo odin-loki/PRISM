@@ -631,6 +631,66 @@ TEST_CASE("config: which needs an executable file, like shutil.which") {
     REQUIRE(hit.has_value());
     CHECK(hit->filename() == "plain");
 }
+#else
+TEST_CASE("config: which on Windows accepts exe, bat, and cmd only") {
+    TmpDir t;
+    auto early = t.dir / "early";
+    auto late = t.dir / "late";
+    // A directory of the tool's name, and a directory posing as an .exe, are
+    // not the tool. Neither is a file with no executable extension.
+    fs::create_directories(early / "prismwhichprobe");
+    fs::create_directories(early / "prismwhichprobe.exe");
+    t.put("early/prismwhichplain", "not a program\n");
+    t.put("early/prismwhichplain.txt", "nope\n");
+    EnvVar path("PATH", early.string() + ";" + late.string());
+    prism::Config cfg;
+
+    CHECK_FALSE(cfg.which({"prismwhichprobe"}).has_value());
+    CHECK_FALSE(cfg.which({"prismwhichplain"}).has_value());
+    CHECK_FALSE(cfg.which({"prismwhichplain.txt"}).has_value());
+
+    t.put("early/prismwhichprobe.cmd", "@echo off\r\nexit /b 0\r\n");
+    auto cmd = cfg.which({"prismwhichprobe"});
+    REQUIRE(cmd.has_value());
+    CHECK(cmd->filename() == "prismwhichprobe.cmd");
+    CHECK(cmd->parent_path().filename() == "early");
+
+    // A later .bat does not hide an earlier .cmd. .exe anywhere still wins,
+    // which is the old SearchPath ".exe" pass ahead of .bat/.cmd.
+    t.put("late/prismwhichprobe.bat", "@echo off\r\nexit /b 0\r\n");
+    auto still_cmd = cfg.which({"prismwhichprobe"});
+    REQUIRE(still_cmd.has_value());
+    CHECK(still_cmd->filename() == "prismwhichprobe.cmd");
+
+    t.put("early/prismwhichprobe.bat", "@echo off\r\nexit /b 0\r\n");
+    auto bat = cfg.which({"prismwhichprobe"});
+    REQUIRE(bat.has_value());
+    CHECK(bat->filename() == "prismwhichprobe.bat");
+    CHECK(bat->parent_path().filename() == "early");
+
+    t.put("late/prismwhichprobe.exe", "MZ");
+    auto exe = cfg.which({"prismwhichprobe"});
+    REQUIRE(exe.has_value());
+    CHECK(exe->filename() == "prismwhichprobe.exe");
+    CHECK(exe->parent_path().filename() == "late");
+
+    auto named = cfg.which({"prismwhichplain.txt", "prismwhichprobe.cmd"});
+    REQUIRE(named.has_value());
+    CHECK(named->filename() == "prismwhichprobe.cmd");
+
+    // The plain file in the earlier directory does not hide a later .exe.
+    t.put("late/prismwhichplain.exe", "MZ");
+    auto plain_exe = cfg.which({"missing", "prismwhichplain"});
+    REQUIRE(plain_exe.has_value());
+    CHECK(plain_exe->filename() == "prismwhichplain.exe");
+    CHECK(plain_exe->parent_path().filename() == "late");
+
+    // A dotted name that is not an executable extension still finds name.exe.
+    t.put("late/prismwhich3.12.exe", "MZ");
+    auto dotted = cfg.which({"prismwhich3.12"});
+    REQUIRE(dotted.has_value());
+    CHECK(dotted->filename() == "prismwhich3.12.exe");
+}
 #endif
 
 TEST_CASE("config: --tool beats the pinned build, which beats PATH; PATH is last") {
@@ -654,6 +714,8 @@ TEST_CASE("config: --tool beats the pinned build, which beats PATH; PATH is last
 #ifdef _WIN32
     EnvVar home("USERPROFILE", (nt.t.dir / "mine").string());
     cfg.tools["klee"] = "~/klee";
+    CHECK(cfg.which_adapter("klee", {"klee"}) == nt.t.dir / "mine" / "klee.exe");
+    cfg.tools["klee"] = "~\\klee";
     CHECK(cfg.which_adapter("klee", {"klee"}) == nt.t.dir / "mine" / "klee.exe");
 #else
     EnvVar home("HOME", (nt.t.dir / "mine").string());

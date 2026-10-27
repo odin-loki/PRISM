@@ -112,27 +112,86 @@ static bool is_store_python_stub(const fs::path& p) {
     return stub;
 }
 
-// PATH walk (PATHEXT subset .exe) that passes over Store python stubs: what
-// SearchPath would have returned had the stub not shadowed a later real python.
-static std::optional<fs::path> search_path_skipping_stubs(const std::string& name) {
-    const char* env = std::getenv("PATH");
-    if (!env) return std::nullopt;
-    const std::string p(env);
-    const bool has_ext = fs::path(name).has_extension();
-    std::size_t i = 0;
-    while (i <= p.size()) {
-        auto j = p.find(';', i);
-        if (j == std::string::npos) j = p.size();
-        std::string dir = p.substr(i, j - i);
-        i = j + 1;
-        if (dir.empty()) continue;
-        for (const char* ext : {".exe", ""}) {
-            if (*ext && has_ext) continue;
-            fs::path cand = fs::path(dir) / (name + ext);
-            std::error_code ec;
-            if (!fs::is_regular_file(cand, ec) || ec) continue;
-            if (is_store_python_stub(cand)) continue;
-            return cand;
+// Extension including the dot, lowercased. A leading-dot name (".git") has none.
+static std::string win_ext_lower(std::string_view name) {
+    const auto dot = name.rfind('.');
+    if (dot == std::string_view::npos || dot == 0) return {};
+    return lower_ascii(std::string(name.substr(dot)));
+}
+
+static bool win_exec_ext(std::string_view ext) {
+    return ext == ".exe" || ext == ".bat" || ext == ".cmd";
+}
+
+// A directory, or a file that is not .exe/.bat/.cmd, is not a tool. The Store
+// python stub is not a tool either (Law 1); the caller keeps walking.
+static bool win_acceptable_tool(const fs::path& cand) {
+    if (!win_exec_ext(lower_ascii(cand.extension().string()))) return false;
+    std::error_code ec;
+    if (!fs::is_regular_file(cand, ec) || ec) return false;
+    return !is_store_python_stub(cand);
+}
+
+// SearchPath(NULL) directory order. System32 stays ahead of PATH, so the WSL
+// launcher bash.exe is still found when PATH has been replaced.
+static std::vector<fs::path> win_search_dirs() {
+    std::vector<fs::path> dirs;
+    // Win32 path cap. Heap: which() runs on worker threads, and a 32K wchar
+    // buffer is 64KB on the stack.
+    std::wstring buf(32768, L'\0');
+    const auto cap = static_cast<DWORD>(buf.size());
+    DWORD n = GetModuleFileNameW(nullptr, buf.data(), cap);
+    if (n > 0 && n < cap) {
+        auto app = fs::path(buf.c_str()).parent_path();
+        if (!app.empty()) dirs.push_back(std::move(app));
+    }
+    std::error_code ec;
+    auto cwd = fs::current_path(ec);
+    if (ec) cwd = ".";
+    dirs.push_back(cwd);
+    n = static_cast<DWORD>(GetSystemDirectoryW(buf.data(), cap));
+    if (n > 0 && n < cap) dirs.emplace_back(buf.c_str());
+    n = static_cast<DWORD>(GetWindowsDirectoryW(buf.data(), cap));
+    if (n > 0 && n < cap) {
+        fs::path windir(buf.c_str());
+        dirs.push_back(windir / "System");  // 16-bit system directory
+        dirs.push_back(std::move(windir));
+    }
+    if (const char* env = std::getenv("PATH")) {
+        const std::string p(env);
+        for (std::size_t i = 0; i <= p.size();) {
+            auto j = p.find(';', i);
+            if (j == std::string::npos) j = p.size();
+            std::string dir = p.substr(i, j - i);
+            i = j + 1;
+            // An empty PATH entry is the current directory, as in SearchPath.
+            dirs.push_back(dir.empty() ? cwd : fs::path(std::move(dir)));
+        }
+    }
+    return dirs;
+}
+
+static std::optional<fs::path> win_find_named(const std::vector<fs::path>& dirs, const std::string& file) {
+    for (const auto& dir : dirs) {
+        fs::path cand = dir / file;
+        if (win_acceptable_tool(cand)) return cand;
+    }
+    return std::nullopt;
+}
+
+// A bare name takes .exe from anywhere in the SearchPath list before .bat or
+// .cmd (the old SearchPath ".exe" pass). .bat then .cmd apply only when no
+// .exe exists, and an earlier directory wins between those two. A name that
+// already ends in .exe/.bat/.cmd is that file only. Any other dotted name
+// (tool.12) still gets .exe/.bat/.cmd appended, so tool.12.exe is found.
+static std::optional<fs::path> win_which_name(const std::vector<fs::path>& dirs, std::string_view name) {
+    if (win_exec_ext(win_ext_lower(name))) return win_find_named(dirs, std::string(name));
+    const std::string base(name);
+    if (auto hit = win_find_named(dirs, base + ".exe")) return hit;
+    for (const auto& dir : dirs) {
+        for (const char* suffix : {".bat", ".cmd"}) {
+            fs::path cand = dir / (base + suffix);
+            if (win_acceptable_tool(cand)) return cand;
         }
     }
     return std::nullopt;
@@ -141,18 +200,9 @@ static std::optional<fs::path> search_path_skipping_stubs(const std::string& nam
 
 std::optional<fs::path> Config::which(std::initializer_list<std::string_view> names) const {
 #ifdef _WIN32
-    char buf[MAX_PATH];
-    for (auto n : names) {
-        std::string name(n);
-        std::optional<fs::path> hit;
-        if (SearchPathA(nullptr, name.c_str(), ".exe", MAX_PATH, buf, nullptr))
-            hit = fs::path(buf);
-        else if (SearchPathA(nullptr, name.c_str(), nullptr, MAX_PATH, buf, nullptr))
-            hit = fs::path(buf);
-        if (!hit) continue;
-        if (!is_store_python_stub(*hit)) return hit;
-        if (auto real = search_path_skipping_stubs(name)) return real;
-    }
+    const auto dirs = win_search_dirs();
+    for (auto n : names)
+        if (auto hit = win_which_name(dirs, n)) return hit;
 #else
     auto path = std::getenv("PATH");
     if (!path) return std::nullopt;
@@ -165,8 +215,7 @@ std::optional<fs::path> Config::which(std::initializer_list<std::string_view> na
         dirs.push_back(p.substr(i, j - i));
         i = j + 1;
     }
-    // Like shutil.which: a directory or a file without execute permission of
-    // the right name is not the tool.
+    // A directory, or a file without execute permission, is not the tool.
     for (auto n : names) {
         for (auto& d : dirs) {
             fs::path cand = fs::path(d.empty() ? "." : d) / std::string(n);
