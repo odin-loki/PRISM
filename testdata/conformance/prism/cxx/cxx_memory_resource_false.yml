@@ -1,0 +1,13 @@
+format_version: 1
+input_files: cxx_memory_resource_false.cpp
+language: C++
+property: no-oob
+expected:
+  cxx_memory_resource_false: false
+witness:
+  cxx_memory_resource_false: [0]
+# libstdc++ satisfies an oversized allocate from the upstream resource.
+# That run is not a sanitizer trap. The model failure is __prism_check,
+# which this native replay does not link.
+sanitizer_blind:
+  - cxx_memory_resource_false

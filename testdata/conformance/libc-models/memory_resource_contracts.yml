@@ -1,0 +1,26 @@
+format_version: 1
+input_files: memory_resource_contracts.cpp
+language: C++
+property: libc-contract
+timeout: 300
+expected:
+  mbr_inside_true: true
+  mbr_dtor_keeps_true: true
+  mbr_oversize_false: false
+  mbr_null_size_false: false
+  mbr_dealloc_foreign_false: false
+expect_class:
+  mbr_oversize_false: "MEM-OOB-WRITE"
+  mbr_null_size_false: "PTR-NULL-DEREF"
+  mbr_dealloc_foreign_false: "MEM-INVALID-FREE"
+witness:
+  mbr_oversize_false: [0]
+  mbr_null_size_false: [0]
+  mbr_dealloc_foreign_false: [0]
+# libstdc++ does not trap these. An oversized allocate comes from the upstream
+# resource, a null initial buffer is skipped, and deallocate is a no-op.
+# The model failure is __prism_check, which this native replay does not link.
+sanitizer_blind:
+  - mbr_oversize_false
+  - mbr_null_size_false
+  - mbr_dealloc_foreign_false

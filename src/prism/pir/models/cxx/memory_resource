@@ -1,0 +1,132 @@
+// PRISM operational model of <memory_resource> (docs/PIR.md "C++ library models").
+// The pir stage puts this directory first on the C++ include path, so
+// `#include <memory_resource>` reaches this file instead of libstdc++'s.
+// A directory of this name would make that include fail with EISDIR.
+//
+// Partial on purpose. Only std::pmr::monotonic_buffer_resource over a caller
+// buffer is modelled: one pointer and one size. It does not allocate an
+// upstream buffer. The destructor does not free that buffer.
+//
+// allocate(n, align) returns a pointer inside the remaining buffer only when
+// n bytes fit, including the padding alignment needs. The caller buffer is
+// the alignment base (the byte offset, not an absolute address: ptrtoint and
+// inttoptr are not modelled). If n plus that padding does not fit,
+// __prism_check fires and the function returns nullptr. It does not return a
+// pointer past the end, and it does not return a non-null pointer from
+// outside the caller buffer.
+//
+// A null upstream buffer with a non-zero size is a check at construction.
+// deallocate of a pointer this resource did not hand out is a check.
+// deallocate does not free the caller buffer.
+//
+// src/prism/pir/models/cxx/memory is a unique_ptr model. It does not provide
+// allocator, and this header does not include it. polymorphic_allocator,
+// synchronized_pool_resource, and unsynchronized_pool_resource are not
+// declared. Omitted names fail to compile, and the pir stage falls back to
+// libstdc++. They are not stubbed. Constructors that would allocate from an
+// upstream memory_resource are omitted the same way.
+#ifndef _GLIBCXX_MEMORY_RESOURCE
+#define _GLIBCXX_MEMORY_RESOURCE 1  // libstdc++'s <memory_resource> include guard: never both
+
+#pragma GCC system_header
+
+#include <cstddef>
+
+// PIR intrinsic (src/prism/pir/models/libc/prism_model.h). Declared, not
+// defined: translate.cpp reports the call. A definition here would be inlined
+// away and the check would disappear.
+extern "C" void __prism_check(int __ok, const char* __cls, const char* __msg);
+
+namespace std {
+namespace pmr {
+
+class monotonic_buffer_resource {
+    // Handed-out pointers, so deallocate can tell a foreign pointer from one
+    // allocate returned. A further allocate that still fits is a check rather
+    // than an untracked pointer. This does not allocate storage for the list.
+    static constexpr size_t _S_max_hand = 32;
+
+    // Bytes from the current offset up to the next multiple of alignment.
+    static size_t _S_pad(size_t __used, size_t __alignment) {
+        if (__alignment <= 1) return 0;
+        const size_t __rem = __used % __alignment;
+        if (__rem == 0) return 0;
+        return __alignment - __rem;
+    }
+
+public:
+    // The caller buffer is the only storage. A null buffer with a non-zero
+    // size is a check; the stored size is then 0, so allocate does not form
+    // a pointer from that null base.
+    explicit monotonic_buffer_resource(void* __buffer, size_t __buffer_size)
+        : _M_buf(static_cast<char*>(__buffer)),
+          _M_size(__buffer != nullptr ? __buffer_size : 0),
+          _M_used(0),
+          _M_nhand(0) {
+        __prism_check(__buffer != nullptr || __buffer_size == 0, "PTR-NULL-DEREF",
+                      "monotonic_buffer_resource null upstream buffer with non-zero size");
+    }
+
+    // Does not free the caller buffer.
+    ~monotonic_buffer_resource() {}
+
+    monotonic_buffer_resource(const monotonic_buffer_resource&) = delete;
+    monotonic_buffer_resource& operator=(const monotonic_buffer_resource&) = delete;
+
+    void* allocate(size_t __bytes, size_t __alignment) {
+        const bool __pow2 = __alignment != 0 && (__alignment & (__alignment - 1)) == 0;
+        __prism_check(__pow2 ? 1 : 0, "FUNC-CONTRACT",
+                      "monotonic_buffer_resource::allocate alignment is not a power of two");
+        if (!__pow2) return nullptr;
+
+        const size_t __pad = _S_pad(_M_used, __alignment);
+        const bool __within = _M_used <= _M_size;
+        const size_t __left = __within ? _M_size - _M_used : 0;
+        // n bytes plus alignment padding, inside the bytes still left.
+        const bool __fits = __pad <= __left && __bytes <= __left - __pad;
+        __prism_check(__fits ? 1 : 0, "MEM-OOB-WRITE",
+                      "monotonic_buffer_resource::allocate exceeds the caller buffer");
+        if (!__fits) return nullptr;
+
+        __prism_check(_M_nhand < _S_max_hand ? 1 : 0, "FUNC-CONTRACT",
+                      "monotonic_buffer_resource::allocate cannot record another handed-out pointer");
+        if (_M_nhand >= _S_max_hand) return nullptr;
+
+        char* __p = _M_buf + (_M_used + __pad);
+        _M_used = _M_used + __pad + __bytes;
+        _M_hand[_M_nhand] = __p;
+        ++_M_nhand;
+        return __p;
+    }
+
+    // Not a pointer allocate returned: a check. Does not free the caller buffer
+    // and does not rewind the bump cursor.
+    void deallocate(void* __p, size_t __bytes, size_t __alignment) {
+        (void)__bytes;
+        (void)__alignment;
+        bool __handed = false;
+        for (size_t __i = 0; __i < _M_nhand; ++__i) {
+            if (_M_hand[__i] == __p) __handed = true;
+        }
+        __prism_check(__handed ? 1 : 0, "MEM-INVALID-FREE",
+                      "monotonic_buffer_resource::deallocate pointer was not handed out by this resource");
+    }
+
+    // Uses the caller buffer again from the start. Does not free it.
+    void release() {
+        _M_used = 0;
+        _M_nhand = 0;
+    }
+
+private:
+    char* _M_buf;
+    size_t _M_size;
+    size_t _M_used;
+    size_t _M_nhand;
+    void* _M_hand[_S_max_hand] = {};
+};
+
+}  // namespace pmr
+}  // namespace std
+
+#endif  // _GLIBCXX_MEMORY_RESOURCE
