@@ -15,6 +15,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
@@ -403,6 +404,40 @@ TEST_CASE("confidence: scores round to 4 decimals, ties to even on the exact val
     prism::apply_confidence(r);
     CHECK(r.answer == 0.3333);
     CHECK(r.confidence == 0.3333);
+}
+
+TEST_CASE("confidence: an exact 4th-decimal tie rounds half to even") {
+    // 1/32 is 0.03125 exactly, a tie at the 4th decimal. std::round(x*1e4)/1e4
+    // is half away from zero and publishes 0.0313. The published value follows
+    // Python round(x, 4): half to even on the exact decimal of the double, 0.0312.
+    // The literal 1.00005 is not that tie. It is stored slightly above 1.00005,
+    // so both rules publish 1.0001. 3.5/10000 is a double just under 0.00035
+    // whose scaled product lands on 3.5; std::round publishes 0.0004 and the
+    // exact decimal publishes 0.0003.
+    const double tie = 1.0 / 32.0;
+    CHECK(tie == 0.03125);
+    CHECK(std::round(tie * 10000.0) / 10000.0 == 0.0313);
+    CHECK(prism::round4(tie) == 0.0312);
+    CHECK(prism::round4(1.00005) == 1.0001);
+    const double under = 3.5 / 10000.0;
+    CHECK(under * 10000.0 == 3.5);
+    CHECK(std::round(under * 10000.0) / 10000.0 == 0.0004);
+    CHECK(prism::round4(under) == 0.0003);
+
+    std::vector<prism::FunctionInfo> fns;
+    fns.reserve(32);
+    for (int i = 0; i < 32; ++i) fns.push_back(cfn("f" + std::to_string(i)));
+    auto r = report_of(std::move(fns), std::vector{bmc_row(prism::laws::PROVED, "f0")});
+    auto raw = prism::confidence_score(r);
+    CHECK(raw.visibility == 1.0);
+    CHECK(raw.answer == doctest::Approx(1.0 / 32.0));
+    CHECK(raw.resolution == 1.0);
+    CHECK(raw.confidence == doctest::Approx(1.0 / 32.0));
+    prism::apply_confidence(r);
+    CHECK(r.visibility == 1.0);
+    CHECK(r.answer == 0.0312);
+    CHECK(r.resolution == 1.0);
+    CHECK(r.confidence == 0.0312);
 }
 
 TEST_CASE("confidence: the empty-scope report.md shows 0 and never n/a") {
