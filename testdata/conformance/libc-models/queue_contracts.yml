@@ -1,0 +1,19 @@
+format_version: 1
+input_files: queue_contracts.cpp
+language: C++
+property: libc-contract
+timeout: 900  # several container functions in one run
+expected:
+  queue_push_true: true
+  queue_pop_true: true
+  queue_pop_uaf_false: false
+  queue_front_empty_false: false
+  queue_back_empty_false: false
+  queue_pop_empty_false: false
+  queue_order_false: false
+expect_class:  # the violation each false harness plants
+  queue_pop_uaf_false: "MEM-UAF"
+  queue_front_empty_false: "FUNC-CONTRACT"
+  queue_back_empty_false: "FUNC-CONTRACT"
+  queue_pop_empty_false: "FUNC-CONTRACT"
+  queue_order_false: "FUNC-CONTRACT"

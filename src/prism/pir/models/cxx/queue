@@ -1,0 +1,264 @@
+// PRISM operational model of <queue> (roadmap 2.6, docs/PIR.md "C++ library
+// models"). The pir stage puts this directory first on the C++ include path,
+// so `#include <queue>` reaches this file instead of libstdc++'s. libstdc++
+// implements std::queue as an adapter over another sequence container. This
+// header does not include that container: it is its own singly linked list,
+// one heap node per element from std::allocator (operator new/delete, the PIR
+// models), which the encoder can inline.
+//
+//  * push and emplace construct the element in a new node at the back. They
+//    do not move or reallocate nodes already in the queue, so a reference
+//    from front() or back() to an existing element stays valid across push;
+//  * pop destroys the front element and deallocates that node. A reference
+//    from front() or back() to that element points into a freed object, and
+//    using it is MEM-UAF, as a use of a reference to a popped element is
+//    with libstdc++. There is no invalidation flag: the node is freed.
+//    A reference to a different element stays valid (that node is still
+//    allocated);
+//  * _GLIBCXX_ASSERTIONS preconditions (FUNC-CONTRACT, the condition text
+//    does not mention size()): !this->empty() on front, back, and pop. The
+//    failed check is std::__glibcxx_assert_fail, which does not return, so
+//    an empty queue does not yield a stand-in element.
+//
+// What it does not model is not declared, so a unit that names it fails to
+// compile against this header and the pir stage lowers it again with
+// libstdc++ (extra.cxx_models says so): std::priority_queue, any container
+// template argument other than the model's default, from_range, and
+// allocator-extended constructors. Those are not stubbed.
+#ifndef _PRISM_MODEL_QUEUE
+#define _PRISM_MODEL_QUEUE 1
+#define _GLIBCXX_QUEUE 1  // libstdc++'s <queue> include guard: never both
+
+#pragma GCC system_header
+
+#include <bits/c++config.h>
+#include <bits/allocator.h>
+#include <bits/alloc_traits.h>
+#include <debug/assertions.h>
+#include <ext/aligned_buffer.h>
+#include <memory>
+#include <new>
+#include <type_traits>
+#include <utility>
+
+namespace std _GLIBCXX_VISIBILITY(default) {
+_GLIBCXX_BEGIN_NAMESPACE_VERSION
+
+// Second template argument of the default std::queue<T>. Not a container.
+struct _Prism_queue_default {};
+
+template <typename _Tp, typename _Sequence = _Prism_queue_default>
+class queue {
+    static_assert(is_same_v<typename remove_cv<_Tp>::type, _Tp>,
+                  "std::queue must have a non-const, non-volatile value_type");
+    static_assert(is_same_v<_Sequence, _Prism_queue_default>,
+                  "PRISM queue model: only the default container is modelled (the pir stage falls back to libstdc++)");
+
+    struct _Node {
+        _Node* _M_next = nullptr;
+        __gnu_cxx::__aligned_membuf<_Tp> _M_storage;
+        _Tp* _M_valptr() noexcept { return _M_storage._M_ptr(); }
+        const _Tp* _M_valptr() const noexcept { return _M_storage._M_ptr(); }
+    };
+    using _Node_alloc = allocator<_Node>;
+    using _Node_traits = allocator_traits<_Node_alloc>;
+
+    // Pointers only: the node type is not in the class layout, so
+    // `struct Rec { std::queue<Rec> kids; };` instantiates the node once Rec
+    // is complete (inside the destructor), the way the list model does.
+    _Node* _M_head = nullptr;
+    _Node* _M_tail = nullptr;
+    size_t _M_size = 0;
+
+    template <typename... _Args>
+    _Node* _M_create(_Args&&... __args) {
+        _Node_alloc __na;
+        _Node* __n = _Node_traits::allocate(__na, 1);
+        ::new (static_cast<void*>(__n)) _Node;
+        try {
+            std::construct_at(__n->_M_valptr(), std::forward<_Args>(__args)...);
+        } catch (...) {
+            std::destroy_at(__n);
+            _Node_traits::deallocate(__na, __n, 1);
+            throw;
+        }
+        return __n;
+    }
+    void _M_drop(_Node* __n) noexcept {
+        std::destroy_at(__n->_M_valptr());
+        std::destroy_at(__n);
+        _Node_alloc __na;
+        _Node_traits::deallocate(__na, __n, 1);
+    }
+    void _M_clear() noexcept {
+        while (_M_head != nullptr) {
+            _Node* __n = _M_head;
+            _M_head = __n->_M_next;
+            _M_drop(__n);
+        }
+        _M_tail = nullptr;
+        _M_size = 0;
+    }
+    void _M_link(_Node* __n) noexcept {
+        __n->_M_next = nullptr;
+        if (_M_tail != nullptr)
+            _M_tail->_M_next = __n;
+        else
+            _M_head = __n;
+        _M_tail = __n;
+        ++_M_size;
+    }
+    template <typename... _Args>
+    void _M_push(_Args&&... __args) {
+        _M_link(_M_create(std::forward<_Args>(__args)...));
+    }
+    void _M_pop() noexcept {
+        __glibcxx_assert(!this->empty());
+        _Node* __n = _M_head;
+        _M_head = __n->_M_next;
+        if (_M_head == nullptr) _M_tail = nullptr;
+        --_M_size;
+        _M_drop(__n);
+    }
+
+public:
+    using value_type = _Tp;
+    using reference = _Tp&;
+    using const_reference = const _Tp&;
+    using size_type = size_t;
+
+    queue() = default;
+    queue(const queue& __x) {
+        try {
+            for (const _Node* __p = __x._M_head; __p != nullptr; __p = __p->_M_next)
+                _M_push(*__p->_M_valptr());
+        } catch (...) {
+            _M_clear();
+            throw;
+        }
+    }
+    queue(queue&& __x) noexcept : _M_head(__x._M_head), _M_tail(__x._M_tail), _M_size(__x._M_size) {
+        __x._M_head = nullptr;
+        __x._M_tail = nullptr;
+        __x._M_size = 0;
+    }
+    ~queue() { _M_clear(); }
+
+    queue& operator=(const queue& __x) {
+        if (this == std::addressof(__x)) return *this;
+        _Node* __a = _M_head;
+        const _Node* __b = __x._M_head;
+        _Node* __prev = nullptr;
+        while (__a != nullptr && __b != nullptr) {
+            *__a->_M_valptr() = *__b->_M_valptr();
+            __prev = __a;
+            __a = __a->_M_next;
+            __b = __b->_M_next;
+        }
+        if (__b != nullptr) {
+            // Build the extra tail aside, then link it. A throw drops the
+            // aside list; elements already assigned stay assigned.
+            _Node* __side = nullptr;
+            _Node* __side_tail = nullptr;
+            size_type __n = 0;
+            try {
+                for (; __b != nullptr; __b = __b->_M_next) {
+                    _Node* __node = _M_create(*__b->_M_valptr());
+                    __node->_M_next = nullptr;
+                    if (__side_tail != nullptr)
+                        __side_tail->_M_next = __node;
+                    else
+                        __side = __node;
+                    __side_tail = __node;
+                    ++__n;
+                }
+            } catch (...) {
+                while (__side != nullptr) {
+                    _Node* __nxt = __side->_M_next;
+                    _M_drop(__side);
+                    __side = __nxt;
+                }
+                throw;
+            }
+            if (__side != nullptr) {
+                if (_M_tail != nullptr)
+                    _M_tail->_M_next = __side;
+                else
+                    _M_head = __side;
+                _M_tail = __side_tail;
+                _M_size += __n;
+            }
+        } else if (__a != nullptr) {
+            if (__prev != nullptr)
+                __prev->_M_next = nullptr;
+            else
+                _M_head = nullptr;
+            _M_tail = __prev;
+            while (__a != nullptr) {
+                _Node* __nxt = __a->_M_next;
+                _M_drop(__a);
+                __a = __nxt;
+                --_M_size;
+            }
+        }
+        return *this;
+    }
+    queue& operator=(queue&& __x) noexcept {
+        if (this != std::addressof(__x)) {
+            _M_clear();
+            _M_head = __x._M_head;
+            _M_tail = __x._M_tail;
+            _M_size = __x._M_size;
+            __x._M_head = nullptr;
+            __x._M_tail = nullptr;
+            __x._M_size = 0;
+        }
+        return *this;
+    }
+
+    [[nodiscard]] bool empty() const noexcept { return _M_head == nullptr; }
+    size_type size() const noexcept { return _M_size; }
+
+    reference front() noexcept {
+        __glibcxx_assert(!this->empty());
+        return *_M_head->_M_valptr();
+    }
+    const_reference front() const noexcept {
+        __glibcxx_assert(!this->empty());
+        return *_M_head->_M_valptr();
+    }
+    reference back() noexcept {
+        __glibcxx_assert(!this->empty());
+        return *_M_tail->_M_valptr();
+    }
+    const_reference back() const noexcept {
+        __glibcxx_assert(!this->empty());
+        return *_M_tail->_M_valptr();
+    }
+
+    void push(const value_type& __x) { _M_push(__x); }
+    void push(value_type&& __x) { _M_push(std::move(__x)); }
+    template <typename... _Args>
+    reference emplace(_Args&&... __args) {
+        _M_push(std::forward<_Args>(__args)...);
+        return *_M_tail->_M_valptr();
+    }
+    // Frees the front node after destroying its element.
+    void pop() noexcept { _M_pop(); }
+
+    void swap(queue& __q) noexcept {
+        std::swap(_M_head, __q._M_head);
+        std::swap(_M_tail, __q._M_tail);
+        std::swap(_M_size, __q._M_size);
+    }
+};
+
+template <typename _Tp, typename _Sequence>
+inline void swap(queue<_Tp, _Sequence>& __x, queue<_Tp, _Sequence>& __y) noexcept {
+    __x.swap(__y);
+}
+
+_GLIBCXX_END_NAMESPACE_VERSION
+}  // namespace std
+
+#endif  // _PRISM_MODEL_QUEUE

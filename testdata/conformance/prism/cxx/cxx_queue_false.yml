@@ -1,0 +1,9 @@
+format_version: 1
+input_files: cxx_queue_false.cpp
+language: C++
+property: memsafety
+timeout: 600  # std::queue code: slow on a loaded machine
+expected:
+  cxx_queue_false: false
+witness:
+  cxx_queue_false: [1]
