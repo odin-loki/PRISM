@@ -423,6 +423,13 @@ def hobjszVal (m : Mem) (q : Nat) : Nat :=
   let off := ptrOff q'
   if off > sz then 0 else (sz - off) % 2 ^ 64
 
+theorem hobjszVal_lt (m : Mem) (q : Nat) : hobjszVal m q < 2 ^ 64 := by
+  unfold hobjszVal
+  dsimp only
+  split
+  · exact Nat.two_pow_pos 64
+  · exact Nat.mod_lt _ (Nat.two_pow_pos 64)
+
 def sHobjszV (R : SRegs) (W : World) (p : Opnd) : Res Nat :=
   (sOpnd R 64 p).bind fun q => .ok (hobjszVal W.mem q)
 

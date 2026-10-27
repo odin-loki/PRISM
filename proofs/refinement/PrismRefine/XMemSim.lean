@@ -96,6 +96,14 @@ theorem or1 (a b : Bool) : binVal .or 1 a.toNat b.toNat = (a || b).toNat := by
 theorem add64 (x y : Nat) : binVal .add 64 x y = (x + y) % 2 ^ 64 := by
   simp [binVal, evalBin, BitVec.toNat_add]
 
+theorem sub64_ge (x y : Nat) (hx : x < 2 ^ 64) (hy : y < 2 ^ 64) (h : y ≤ x) :
+    binVal .sub 64 x y = x - y := by
+  -- Lean 4.34: `(x - y).toNat = ((2^n - y.toNat) + x.toNat) % 2^n` (`BitVec.toNat_sub`).
+  simp only [binVal, evalBin, bv, BitVec.toNat_sub, BitVec.toNat_ofNat, Nat.mod_eq_of_lt hx,
+    Nat.mod_eq_of_lt hy]
+  rw [← Nat.sub_add_comm (by omega), Nat.add_sub_assoc h, Nat.add_mod_left,
+    Nat.mod_eq_of_lt (by omega)]
+
 theorem lshr48 (x : Nat) : binVal .lshr 64 x (48 % 2 ^ 64) = ptrObj (x % 2 ^ 64) := by
   simp [binVal, evalBin, ptrObj, Nat.shiftRight_eq_div_pow]
 

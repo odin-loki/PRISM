@@ -415,9 +415,13 @@ variants, contract-bound parameters incl. a write to a read-only one) and 42
 functions with heap objects: `malloc`/`calloc`/`free` and `new`/`delete`
 (`testdata/pir/mem_heap.c`, `mem_cxx.cpp`; `testdata` double free, use after
 free, invalid and offset free, mismatched `new[]`/`delete`, unchecked
-`malloc` results, flexible array members, leaks). `fixtures/heap.pirl` checks
-as 15 `agree-ext` (+ 2 `realloc` functions outside: `__prism_obj_size` and
-`__prism_memcpy` are not in the fragment); `dropped_ptr_check` and
+`malloc` results, flexible array members, leaks). `fixtures/heap.pirl` is 12
+functions after D118 (five `new`/`delete` records left the older 15 + 2
+summary). The summary kept with the `hobjsz` proof is `agree-ext=12`,
+`outside=0`, `mismatch=0`, because `L hobjsz` is `hobjszCore` and
+`__prism_memcpy` is the existing `memcpy` line (not re-measured in this
+slice; if `realloc_*` is still outside, the honest line is `agree-ext=10
+outside=2`, and `mismatch` stays 0); `dropped_ptr_check` and
 `dropped_heap_check` remove a PTR-COMPARE, a MEM-STACK-ESCAPE, a
 MEM-DOUBLE-FREE and a MEM-MISMATCHED-FREE check and are (as they must be)
 4 mismatches. The new `agree-reject`s (5 → 72) are pointer parameters no
@@ -778,9 +782,13 @@ check the C++ interpreter uses Z3's `bvudiv x 0 = ~0`, the Lean model Lean's
   `llvm.memcpy`/`memmove`/`memset`, `llvm.lifetime.*`, globals the analysed
   function names, pointer phis/selects/comparisons/returns, harness-bound
   pointer parameters (`byval`, `sret`, constant-size contracts), and the
-  heap of the libc models through `__prism_alloc`/`__prism_free`. Not yet:
-  `realloc` (`__prism_obj_size`, `__prism_memcpy`), `FILE` objects
-  (`fopen`/`fclose`), `abort()` (it reads the allocation-failed flag and
+  heap of the libc models through `__prism_alloc`/`__prism_free`, and
+  `__prism_obj_size` (`hobjszCore_run`; the `hobjsz` case of `sinstX_sim`).
+  `__prism_memcpy` is the existing `memcpy` statement. Not yet:
+  `FILE` objects (`fopen`/`fclose`: `__prism_havoc_bytes` is `L hhavoc` in
+  the C++ export and still outside the Lean checker; `MemTr::write_havoc`
+  needs `trSInstX`, the `XLazy` matches, and a `Check.lean` clause before it
+  can leave `outside`, and no `admit` stands in for that), `abort()` (it reads the allocation-failed flag and
   ends the block), `exit`, contracts whose size is another parameter (the
   harness assumes a range on it: a theorem conditional on that assumption),
   `ptrtoint`/`inttoptr`, globals whose initialiser holds pointers, globals

@@ -1450,9 +1450,52 @@ theorem sinstX_sim {P : PFunc} {ω : Nat → Nat} {c : Ctx} (hc : CtxOK P c) {R 
         rw [Store.set_other _ _ (by omega), Store.set_other _ _ (by have := hc.lohi; omega)]
         exact ha0 q hq
       · simp only [hlt, decide_false, Bool.false_eq_true, ite_false, Res.bind, SimX]
-  | hobjsz .. =>
-    -- TODO: `hobjszCore_run` (translator matches `MemTr::obj_size_remaining`)
-    admit
+  | hobjsz d p =>
+    cases d with
+    | none =>
+      simp only [trSInstX] at h
+      obtain ⟨⟨sn, tn, A⟩, hn, h⟩ := Except.bind_ok h
+      simp only [pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at h
+      obtain ⟨rfl, rfl⟩ := h
+      simp only [sSInst, sHobjszV, Res.bind_assoc]
+      refine opndX_sim hR hn hk _ (hobjszCore (k + tn.length) A) ?_
+      intro _ _ htn' _ hAb _
+      subst htn'
+      simp only [List.nil_append, List.length_nil, Nat.add_zero] at hT ⊢
+      have ⟨σ1, hrun, _, hkeep⟩ := hobjszCore_run P ω σ t k A hAb hT
+      have hklo : c.lo ≤ k := Nat.le_trans hc.lohi hk
+      rw [hrun]
+      simp only [SimX, Res.bind, SRegs.setOpt, xStmts_nil]
+      refine ⟨_, rfl, RelX.agree hc hR hk (fun j hj => hkeep j (by omega)), fun i hi => by
+        rw [hkeep i (Nat.lt_of_lt_of_le hi hklo), ha0 i hi]⟩
+    | some d =>
+      simp only [trSInstX] at h
+      obtain ⟨⟨sn, tn, A⟩, hn, h⟩ := Except.bind_ok h
+      obtain ⟨di, hdi, h⟩ := Except.bind_ok h
+      obtain ⟨u3, hu3, h⟩ := Except.bind_ok h
+      have hsh := isNone_eq (need_ok hu3)
+      simp only [pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at h
+      obtain ⟨rfl, rfl⟩ := h
+      have hwd := dstX_wd hc hdi
+      simp only [sSInst, sHobjszV, Res.bind_assoc]
+      rw [List.append_assoc]
+      refine opndX_sim hR hn hk _
+        (hobjszCore (k + tn.length) A ++ [PStmt.assign di POp.copy [Arg.v (k + tn.length + 4) 64]]) ?_
+      intro pv _ htn' hAp hAb _
+      subst htn'
+      simp only [List.nil_append, List.length_nil, Nat.add_zero] at hT ⊢
+      have ⟨σ1, hrun, hv, hkeep⟩ := hobjszCore_run P ω σ t k A hAb hT
+      have hw4 : P.wd (k + 4) = 64 := by simpa [hobjszT] using wd_of hT 4 (by decide)
+      rw [hAp] at hv
+      rw [xStmts_append, hrun, XPRes.then, xStmts_assign]
+      simp only [Res.bind, SimX, evalOpM, evalOp, hwd, Arg.width_v', Arg.get_v', hw4, hv, Store.set_same,
+        Nat.mod_mod]
+      have hR1 : RelX c R σ1 := RelX.agree hc hR hk (fun j hj => hkeep j (by omega))
+      have hrel := assignX hR1 hdi hsh (hobjszVal t.mem pv) (hobjszVal_lt t.mem pv)
+      refine ⟨_, rfl, by simpa [SRegs.setOpt, Nat.mod_eq_of_lt (hobjszVal_lt t.mem pv)] using hrel, fun i hi => ?_⟩
+      have hklo : c.lo ≤ k := Nat.le_trans hc.lohi hk
+      rw [Store.set_other _ _ (by have := dstX_lo hdi; omega), hkeep i (Nat.lt_of_lt_of_le hi hklo),
+        ha0 i hi]
   | hfree p kd kill =>
     simp only [trSInstX] at h
     obtain ⟨u1, hu1, h⟩ := Except.bind_ok h
