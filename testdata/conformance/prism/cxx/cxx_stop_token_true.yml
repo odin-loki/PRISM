@@ -1,0 +1,6 @@
+format_version: 1
+input_files: cxx_stop_token_true.cpp
+language: C++
+property: memsafety
+expected:
+  cxx_stop_token_true: true

@@ -1,0 +1,85 @@
+// PRISM operational model of <stop_token> (docs/PIR.md "C++ library models").
+// The pir stage puts this directory first on the C++ include path, so
+// `#include <stop_token>` reaches this file instead of libstdc++'s. It is a
+// file, not a directory: a directory of this name would make the include fail
+// with EISDIR and every such unit would fall back to libstdc++.
+//
+// Partial on purpose. stop_source owns one flag, stored as a member. A
+// stop_token observes that flag through a copied pointer. Nothing is
+// allocated, so there is no heap cell for a destructor to free. Copying a
+// token copies the pointer, so those tokens observe the same flag. Copying a
+// stop_source copies the flag value into the other object. Later
+// request_stop calls do not cross that copy.
+//
+// request_stop() on a source that is not yet stopped sets the flag and
+// returns true. A later request_stop returns false and leaves the flag set.
+// stop_requested() is true only after that successful request. A default
+// token is not associated with a source, so stop_requested() is false.
+// stop_possible() on a stop_source is true: the flag is a member, including
+// on a default-constructed source.
+//
+// Move is not declared. A move falls back to the copy, so the flag is not
+// left behind in a moved-from source that would still report
+// stop_possible(). Each object still holds its own flag.
+//
+// No callback type is declared. A callback that ran inline from
+// request_stop would pretend a concurrent waiter ran. This header is not a
+// concurrency proof.
+#ifndef _GLIBCXX_STOP_TOKEN
+#define _GLIBCXX_STOP_TOKEN 1
+
+#pragma GCC system_header
+
+namespace std {
+
+class stop_token {
+public:
+    stop_token() noexcept : _M_flag(nullptr) {}
+
+    // Move is not declared. It falls back to this copy, which copies the
+    // pointer. Both tokens observe the same flag.
+    stop_token(const stop_token&) noexcept = default;
+    stop_token& operator=(const stop_token&) noexcept = default;
+    ~stop_token() = default;
+
+    [[nodiscard]] bool stop_requested() const noexcept { return _M_flag != nullptr && *_M_flag; }
+
+    [[nodiscard]] bool stop_possible() const noexcept { return _M_flag != nullptr; }
+
+private:
+    friend class stop_source;
+    explicit stop_token(const bool* __flag) noexcept : _M_flag(__flag) {}
+    const bool* _M_flag;
+};
+
+class stop_source {
+public:
+    stop_source() noexcept = default;
+
+    // Move is not declared. It falls back to this copy. The flag is a
+    // member, not a pointer left behind. stop_possible() is true because
+    // this object still contains its flag. A default-constructed source
+    // contains that flag too.
+    stop_source(const stop_source&) noexcept = default;
+    stop_source& operator=(const stop_source&) noexcept = default;
+    ~stop_source() = default;
+
+    [[nodiscard]] stop_token get_token() const noexcept { return stop_token(&_M_stop); }
+
+    [[nodiscard]] bool stop_possible() const noexcept { return true; }
+
+    [[nodiscard]] bool stop_requested() const noexcept { return _M_stop; }
+
+    bool request_stop() noexcept {
+        if (_M_stop) return false;
+        _M_stop = true;
+        return true;
+    }
+
+private:
+    bool _M_stop = false;
+};
+
+}  // namespace std
+
+#endif
