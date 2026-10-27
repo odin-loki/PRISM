@@ -719,6 +719,7 @@ if(PRISM_TESTS)
     tests/cpp/test_lint_corpus.cpp
     tests/cpp/test_pir_mem.cpp
     tests/cpp/test_ai_assist.cpp
+    tests/cpp/test_triage_status.cpp
     tests/cpp/test_pbsd.cpp
     tests/cpp/test_pir3.cpp
     tests/cpp/test_pir_refinement.cpp
