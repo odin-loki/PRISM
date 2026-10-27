@@ -731,6 +731,7 @@ if(PRISM_TESTS)
     tests/cpp/test_thread.cpp
     tests/cpp/test_wp_harness.cpp
     tests/cpp/test_concrete.cpp
+    tests/cpp/test_interp_ub.cpp
     tests/cpp/test_concolic.cpp
     tests/cpp/test_libc_messages.cpp
     tests/cpp/test_lint_corpus.cpp
