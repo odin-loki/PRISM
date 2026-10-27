@@ -1,0 +1,10 @@
+format_version: 1
+input_files: variant_contracts.cpp
+language: C++
+property: libc-contract
+timeout: 600
+expected:
+  variant_active_true: true
+  variant_inactive_false: false
+expect_class:
+  variant_inactive_false: "CXX-VARIANT-GET"

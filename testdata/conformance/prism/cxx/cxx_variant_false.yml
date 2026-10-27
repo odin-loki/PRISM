@@ -1,0 +1,9 @@
+format_version: 1
+input_files: cxx_variant_false.cpp
+language: C++
+property: memsafety
+timeout: 600  # std::variant code: slow on a loaded machine
+expected:
+  cxx_variant_false: false
+witness:
+  cxx_variant_false: [1]

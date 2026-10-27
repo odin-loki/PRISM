@@ -1,0 +1,460 @@
+// PRISM operational model of <variant> (roadmap 2.6, docs/PIR.md "C++ library
+// models"). The pir stage puts this directory first on the C++ include path,
+// so `#include <variant>` reaches this file instead of libstdc++'s. It is a
+// file, not a directory: a directory of this name would make the include fail
+// with EISDIR and every such unit would fall back to libstdc++.
+//
+// One alternative is stored inline, in a union, inside the variant object.
+// There is no heap allocation. index() is that alternative. valueless_by_exception()
+// is always false: this model does not represent a valueless state.
+//
+// emplace and assignment of an alternative the overload set can select destroy
+// the previous alternative, then construct the new one in that same storage
+// (same-index assignment assigns through the live object). The previous
+// object is not leaked and the two alternatives are not both alive.
+//
+// std::get<I> and std::get<T> return the stored object when that alternative
+// is active. When it is not, __prism_check fires (CXX-VARIANT-GET) and the
+// function does not return a default T or a different alternative.
+// std::get_if returns nullptr when the alternative is inactive, and a pointer
+// to the live object when it is active. holds_alternative is the index test.
+//
+// visit, comparison (operator==, operator<=>, and the relational operators),
+// hash, monostate, swap, in_place constructors, and bad_variant_access are
+// not declared. A use of an omitted API fails to compile against this header,
+// so the pir stage falls back to libstdc++.
+#ifndef _PRISM_MODEL_VARIANT
+#define _PRISM_MODEL_VARIANT 1
+#define _GLIBCXX_VARIANT 1  // libstdc++'s <variant> include guard: never both
+
+#pragma GCC system_header
+
+// PIR intrinsic (translate.cpp). A literal class and message, as in the libc
+// models. Not defined here: the analysed program does not link a body.
+extern "C" void __prism_check(int ok, const char* cls, const char* msg);
+
+#include <cstddef>
+#include <new>
+
+namespace std {
+
+template <typename _A, typename _B>
+struct _Prism_var_same {
+    static constexpr bool value = false;
+};
+template <typename _A>
+struct _Prism_var_same<_A, _A> {
+    static constexpr bool value = true;
+};
+
+template <typename _T>
+struct _Prism_var_unref {
+    using type = _T;
+};
+template <typename _T>
+struct _Prism_var_unref<_T&> {
+    using type = _T;
+};
+template <typename _T>
+struct _Prism_var_unref<_T&&> {
+    using type = _T;
+};
+template <typename _T>
+struct _Prism_var_uncv {
+    using type = _T;
+};
+template <typename _T>
+struct _Prism_var_uncv<const _T> {
+    using type = _T;
+};
+template <typename _T>
+struct _Prism_var_uncv<volatile _T> {
+    using type = _T;
+};
+template <typename _T>
+struct _Prism_var_uncv<const volatile _T> {
+    using type = _T;
+};
+template <typename _T>
+using _Prism_var_decay = typename _Prism_var_uncv<typename _Prism_var_unref<_T>::type>::type;
+
+template <typename _T, typename... _Ts>
+constexpr std::size_t _Prism_var_count = (std::size_t(_Prism_var_same<_T, _Ts>::value) + ... + 0);
+
+template <typename _T, typename... _Ts>
+struct _Prism_var_index_of;
+template <typename _T, typename _First, typename... _Rest>
+struct _Prism_var_index_of<_T, _First, _Rest...> {
+    static constexpr std::size_t value =
+        _Prism_var_same<_T, _First>::value ? 0 : 1 + _Prism_var_index_of<_T, _Rest...>::value;
+};
+template <typename _T>
+struct _Prism_var_index_of<_T> {
+    static constexpr std::size_t value = static_cast<std::size_t>(-1);
+};
+
+template <typename _T>
+constexpr bool _Prism_var_copy_ok = requires(const _T& __x) { _T(__x); };
+template <typename _T>
+constexpr bool _Prism_var_move_ok = requires(_T&& __x) { _T(static_cast<_T&&>(__x)); };
+template <typename _A, typename _B>
+constexpr bool _Prism_var_can_assign = requires(_A& __a, _B&& __b) { __a = static_cast<_B&&>(__b); };
+
+template <std::size_t _N>
+struct _Prism_var_n {
+    static constexpr std::size_t value = _N;
+};
+
+template <std::size_t... _I>
+struct _Prism_var_is {};
+
+template <std::size_t _N, std::size_t... _I>
+struct _Prism_var_mk : _Prism_var_mk<_N - 1, _N - 1, _I...> {};
+template <std::size_t... _I>
+struct _Prism_var_mk<0, _I...> {
+    using type = _Prism_var_is<_I...>;
+};
+
+template <std::size_t _I, typename _T>
+struct _Prism_var_pick {
+    static _Prism_var_n<_I> fn(_T);
+};
+
+template <typename _Seq, typename... _Ts>
+struct _Prism_var_overload;
+template <std::size_t... _I, typename... _Ts>
+struct _Prism_var_overload<_Prism_var_is<_I...>, _Ts...> : _Prism_var_pick<_I, _Ts>... {
+    using _Prism_var_pick<_I, _Ts>::fn...;
+};
+
+template <typename... _Ts>
+using _Prism_var_over = _Prism_var_overload<typename _Prism_var_mk<sizeof...(_Ts)>::type, _Ts...>;
+
+template <typename... _Ts>
+union _Prism_var_storage;
+
+template <>
+union _Prism_var_storage<> {
+    char _M_none;
+    _Prism_var_storage() {}
+    ~_Prism_var_storage() {}
+};
+
+template <typename _First, typename... _Rest>
+union _Prism_var_storage<_First, _Rest...> {
+    _First _M_first;
+    _Prism_var_storage<_Rest...> _M_rest;
+    _Prism_var_storage() {}
+    ~_Prism_var_storage() {}
+};
+
+template <std::size_t _I, typename _Storage>
+struct _Prism_var_at;
+
+template <typename _First, typename... _Rest>
+struct _Prism_var_at<0, _Prism_var_storage<_First, _Rest...>> {
+    using type = _First;
+    static _First* ptr(_Prism_var_storage<_First, _Rest...>& __s) noexcept { return &__s._M_first; }
+    static const _First* ptr(const _Prism_var_storage<_First, _Rest...>& __s) noexcept { return &__s._M_first; }
+};
+
+template <std::size_t _I, typename _First, typename... _Rest>
+struct _Prism_var_at<_I, _Prism_var_storage<_First, _Rest...>> {
+    using _Tail = _Prism_var_storage<_Rest...>;
+    using type = typename _Prism_var_at<_I - 1, _Tail>::type;
+    static type* ptr(_Prism_var_storage<_First, _Rest...>& __s) noexcept {
+        return _Prism_var_at<_I - 1, _Tail>::ptr(__s._M_rest);
+    }
+    static const type* ptr(const _Prism_var_storage<_First, _Rest...>& __s) noexcept {
+        return _Prism_var_at<_I - 1, _Tail>::ptr(__s._M_rest);
+    }
+};
+
+template <typename _T>
+void _Prism_var_end(_T* __p) noexcept {
+    __p->~_T();
+}
+
+inline constexpr std::size_t variant_npos = static_cast<std::size_t>(-1);
+
+template <typename... _Types>
+class variant {
+    static_assert(sizeof...(_Types) > 0, "variant must have at least one alternative");
+
+    using _Storage = _Prism_var_storage<_Types...>;
+    template <std::size_t _I>
+    using _Alt = typename _Prism_var_at<_I, _Storage>::type;
+
+    std::size_t _M_index = 0;
+    _Storage _M_storage;
+
+    template <std::size_t _I>
+    _Alt<_I>* _M_ptr() noexcept {
+        return _Prism_var_at<_I, _Storage>::ptr(_M_storage);
+    }
+    template <std::size_t _I>
+    const _Alt<_I>* _M_ptr() const noexcept {
+        return _Prism_var_at<_I, _Storage>::ptr(_M_storage);
+    }
+
+    template <std::size_t _I>
+    void _M_destroy_at() noexcept {
+        if constexpr (_I < sizeof...(_Types)) {
+            if (_M_index == _I)
+                _Prism_var_end(_M_ptr<_I>());
+            else
+                _M_destroy_at<_I + 1>();
+        }
+    }
+    void _M_destroy() noexcept { _M_destroy_at<0>(); }
+
+    template <std::size_t _I, typename... _Args>
+    _Alt<_I>& _M_construct(_Args&&... __args) {
+        auto* __obj = ::new (static_cast<void*>(_M_ptr<_I>())) _Alt<_I>(static_cast<_Args&&>(__args)...);
+        _M_index = _I;
+        return *__obj;
+    }
+
+    template <std::size_t _I>
+    void _M_copy_from(const variant& __o) {
+        if constexpr (_I < sizeof...(_Types)) {
+            if (__o._M_index == _I)
+                _M_construct<_I>(*__o._M_ptr<_I>());
+            else
+                _M_copy_from<_I + 1>(__o);
+        }
+    }
+    template <std::size_t _I>
+    void _M_move_from(variant&& __o) {
+        if constexpr (_I < sizeof...(_Types)) {
+            if (__o._M_index == _I)
+                _M_construct<_I>(static_cast<_Alt<_I>&&>(*__o._M_ptr<_I>()));
+            else
+                _M_move_from<_I + 1>(static_cast<variant&&>(__o));
+        }
+    }
+    template <std::size_t _I>
+    void _M_assign_from(const variant& __o) {
+        if constexpr (_I < sizeof...(_Types)) {
+            if (__o._M_index == _I)
+                *_M_ptr<_I>() = *__o._M_ptr<_I>();
+            else
+                _M_assign_from<_I + 1>(__o);
+        }
+    }
+    template <std::size_t _I>
+    void _M_move_assign_from(variant&& __o) {
+        if constexpr (_I < sizeof...(_Types)) {
+            if (__o._M_index == _I)
+                *_M_ptr<_I>() = static_cast<_Alt<_I>&&>(*__o._M_ptr<_I>());
+            else
+                _M_move_assign_from<_I + 1>(static_cast<variant&&>(__o));
+        }
+    }
+
+public:
+    template <std::size_t _I>
+    _Alt<_I>& _M_get() & noexcept {
+        return *_M_ptr<_I>();
+    }
+    template <std::size_t _I>
+    const _Alt<_I>& _M_get() const& noexcept {
+        return *_M_ptr<_I>();
+    }
+
+    variant()
+        requires requires { _Alt<0>{}; }
+    {
+        _M_construct<0>();
+    }
+
+    variant(const variant& __o)
+        requires(_Prism_var_copy_ok<_Types> && ...)
+    {
+        _M_copy_from<0>(__o);
+    }
+    variant(variant&& __o)
+        requires(_Prism_var_move_ok<_Types> && ...)
+    {
+        _M_move_from<0>(static_cast<variant&&>(__o));
+    }
+
+    template <typename _T>
+        requires(!_Prism_var_same<_Prism_var_decay<_T>, variant>::value)
+    variant(_T&& __t) {
+        constexpr std::size_t _I = decltype(_Prism_var_over<_Types...>::fn(static_cast<_T&&>(__t)))::value;
+        _M_construct<_I>(static_cast<_T&&>(__t));
+    }
+
+    ~variant() { _M_destroy(); }
+
+    variant& operator=(const variant& __o)
+        requires(_Prism_var_copy_ok<_Types> && ...)
+    {
+        if (this != &__o) {
+            if (_M_index == __o._M_index)
+                _M_assign_from<0>(__o);
+            else {
+                _M_destroy();
+                _M_copy_from<0>(__o);
+            }
+        }
+        return *this;
+    }
+    variant& operator=(variant&& __o)
+        requires(_Prism_var_move_ok<_Types> && ...)
+    {
+        if (this != &__o) {
+            if (_M_index == __o._M_index)
+                _M_move_assign_from<0>(static_cast<variant&&>(__o));
+            else {
+                _M_destroy();
+                _M_move_from<0>(static_cast<variant&&>(__o));
+            }
+        }
+        return *this;
+    }
+
+    template <typename _T>
+        requires(!_Prism_var_same<_Prism_var_decay<_T>, variant>::value)
+    variant& operator=(_T&& __t) {
+        constexpr std::size_t _I = decltype(_Prism_var_over<_Types...>::fn(static_cast<_T&&>(__t)))::value;
+        if (_M_index == _I) {
+            if constexpr (_Prism_var_can_assign<_Alt<_I>, _T>)
+                *_M_ptr<_I>() = static_cast<_T&&>(__t);
+            else {
+                _M_destroy();
+                _M_construct<_I>(static_cast<_T&&>(__t));
+            }
+        } else {
+            _M_destroy();
+            _M_construct<_I>(static_cast<_T&&>(__t));
+        }
+        return *this;
+    }
+
+    template <std::size_t _I, typename... _Args>
+    _Alt<_I>& emplace(_Args&&... __args) {
+        static_assert(_I < sizeof...(_Types), "emplace index is not an alternative");
+        _M_destroy();
+        return _M_construct<_I>(static_cast<_Args&&>(__args)...);
+    }
+    template <typename _T, typename... _Args>
+    _T& emplace(_Args&&... __args) {
+        static_assert(_Prism_var_count<_T, _Types...> == 1, "emplace type must occur exactly once");
+        return emplace<_Prism_var_index_of<_T, _Types...>::value>(static_cast<_Args&&>(__args)...);
+    }
+
+    constexpr std::size_t index() const noexcept { return _M_index; }
+    constexpr bool valueless_by_exception() const noexcept { return false; }
+};
+
+template <std::size_t _I, typename... _Types>
+auto& get(variant<_Types...>& __v) {
+    __prism_check(__v.index() == _I ? 1 : 0, "CXX-VARIANT-GET", "std::get on an inactive variant alternative");
+    return __v.template _M_get<_I>();
+}
+template <std::size_t _I, typename... _Types>
+const auto& get(const variant<_Types...>& __v) {
+    __prism_check(__v.index() == _I ? 1 : 0, "CXX-VARIANT-GET", "std::get on an inactive variant alternative");
+    return __v.template _M_get<_I>();
+}
+template <std::size_t _I, typename... _Types>
+auto&& get(variant<_Types...>&& __v) {
+    return static_cast<decltype(get<_I>(static_cast<variant<_Types...>&>(__v)))&&>(
+        get<_I>(static_cast<variant<_Types...>&>(__v)));
+}
+template <std::size_t _I, typename... _Types>
+const auto&& get(const variant<_Types...>&& __v) {
+    return static_cast<decltype(get<_I>(static_cast<const variant<_Types...>&>(__v)))&&>(
+        get<_I>(static_cast<const variant<_Types...>&>(__v)));
+}
+
+template <typename _T, typename... _Types>
+_T& get(variant<_Types...>& __v) {
+    static_assert(_Prism_var_count<_T, _Types...> == 1, "std::get<T> requires T exactly once");
+    return get<_Prism_var_index_of<_T, _Types...>::value>(__v);
+}
+template <typename _T, typename... _Types>
+const _T& get(const variant<_Types...>& __v) {
+    static_assert(_Prism_var_count<_T, _Types...> == 1, "std::get<T> requires T exactly once");
+    return get<_Prism_var_index_of<_T, _Types...>::value>(__v);
+}
+template <typename _T, typename... _Types>
+_T&& get(variant<_Types...>&& __v) {
+    static_assert(_Prism_var_count<_T, _Types...> == 1, "std::get<T> requires T exactly once");
+    return static_cast<_T&&>(get<_Prism_var_index_of<_T, _Types...>::value>(static_cast<variant<_Types...>&>(__v)));
+}
+template <typename _T, typename... _Types>
+const _T&& get(const variant<_Types...>&& __v) {
+    static_assert(_Prism_var_count<_T, _Types...> == 1, "std::get<T> requires T exactly once");
+    return static_cast<const _T&&>(
+        get<_Prism_var_index_of<_T, _Types...>::value>(static_cast<const variant<_Types...>&>(__v)));
+}
+
+template <std::size_t _I, typename... _Types>
+auto* get_if(variant<_Types...>* __v) noexcept {
+    if (__v == nullptr || __v->index() != _I) return static_cast<decltype(&__v->template _M_get<_I>())>(nullptr);
+    return &__v->template _M_get<_I>();
+}
+template <std::size_t _I, typename... _Types>
+const auto* get_if(const variant<_Types...>* __v) noexcept {
+    if (__v == nullptr || __v->index() != _I) return static_cast<decltype(&__v->template _M_get<_I>())>(nullptr);
+    return &__v->template _M_get<_I>();
+}
+template <typename _T, typename... _Types>
+_T* get_if(variant<_Types...>* __v) noexcept {
+    static_assert(_Prism_var_count<_T, _Types...> == 1, "std::get_if<T> requires T exactly once");
+    return get_if<_Prism_var_index_of<_T, _Types...>::value>(__v);
+}
+template <typename _T, typename... _Types>
+const _T* get_if(const variant<_Types...>* __v) noexcept {
+    static_assert(_Prism_var_count<_T, _Types...> == 1, "std::get_if<T> requires T exactly once");
+    return get_if<_Prism_var_index_of<_T, _Types...>::value>(__v);
+}
+
+template <typename _T, typename... _Types>
+constexpr bool holds_alternative(const variant<_Types...>& __v) noexcept {
+    static_assert(_Prism_var_count<_T, _Types...> == 1, "holds_alternative requires T exactly once");
+    return __v.index() == _Prism_var_index_of<_T, _Types...>::value;
+}
+
+template <typename _T>
+struct variant_size;
+template <typename... _Types>
+struct variant_size<variant<_Types...>> {
+    static constexpr std::size_t value = sizeof...(_Types);
+};
+template <typename _T>
+struct variant_size<const _T> : variant_size<_T> {};
+template <typename _T>
+struct variant_size<volatile _T> : variant_size<_T> {};
+template <typename _T>
+struct variant_size<const volatile _T> : variant_size<_T> {};
+template <typename _T>
+inline constexpr std::size_t variant_size_v = variant_size<_T>::value;
+
+template <std::size_t _I, typename _T>
+struct variant_alternative;
+template <std::size_t _I, typename... _Types>
+struct variant_alternative<_I, variant<_Types...>> {
+    using type = typename _Prism_var_at<_I, _Prism_var_storage<_Types...>>::type;
+};
+template <std::size_t _I, typename _T>
+struct variant_alternative<_I, const _T> {
+    using type = const typename variant_alternative<_I, _T>::type;
+};
+template <std::size_t _I, typename _T>
+struct variant_alternative<_I, volatile _T> {
+    using type = volatile typename variant_alternative<_I, _T>::type;
+};
+template <std::size_t _I, typename _T>
+struct variant_alternative<_I, const volatile _T> {
+    using type = const volatile typename variant_alternative<_I, _T>::type;
+};
+template <std::size_t _I, typename _T>
+using variant_alternative_t = typename variant_alternative<_I, _T>::type;
+
+}  // namespace std
+
+#endif
