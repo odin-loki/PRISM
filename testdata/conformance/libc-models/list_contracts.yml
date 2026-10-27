@@ -1,0 +1,19 @@
+format_version: 1
+input_files: list_contracts.cpp
+language: C++
+property: libc-contract
+timeout: 900  # several container functions in one run
+expected:
+  list_push_true: true
+  list_erase_true: true
+  list_clear_uaf_false: false
+  list_erase_uaf_false: false
+  list_front_empty_false: false
+  list_pop_empty_false: false
+  list_order_false: false
+expect_class:  # the violation each false harness plants
+  list_clear_uaf_false: "MEM-UAF"
+  list_erase_uaf_false: "MEM-UAF"
+  list_front_empty_false: "FUNC-CONTRACT"
+  list_pop_empty_false: "FUNC-CONTRACT"
+  list_order_false: "FUNC-CONTRACT"
