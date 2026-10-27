@@ -1,0 +1,172 @@
+// PRISM operational model of <bit>. The pir stage puts this directory first
+// on the C++ include path, so `#include <bit>` reaches this file instead of
+// libstdc++'s. It is a file, not a directory: a directory of this name would
+// make the include fail with EISDIR and every such unit would fall back to
+// libstdc++.
+//
+// Partial stand-in. countl_zero(0) and countr_zero(0) return the number of
+// digits of the unsigned type. countl_one of an all-ones value is that same
+// width. popcount is the number of one bits. A zero argument takes that
+// width path directly, so the result is the digit count.
+//
+// rotl and rotr reduce the count modulo the width. A multiple of the width,
+// including a zero count, is returned unchanged: that path does not shift by
+// the width. Any other count moves every bit, and the bits that leave one
+// end come back at the other.
+//
+// bit_ceil of 0 and 1 is 1. bit_ceil of a value whose smallest power of two
+// does not fit in the type is a precondition (FUNC-CONTRACT). That path does
+// not return 0. has_single_bit is true only when exactly one bit is set.
+//
+// byteswap and bit_cast are not declared. An omitted API fails to compile,
+// and the pir stage lowers that translation unit again with libstdc++
+// (extra.cxx_models). endian is the three-enumerator enum.
+//
+// This header is not a proof that a program is free of shift undefined
+// behavior. No container header is included.
+#ifndef _GLIBCXX_BIT
+#define _GLIBCXX_BIT 1
+
+#pragma GCC system_header
+
+#include <limits>
+#include <type_traits>
+
+#define __cpp_lib_endian 201907L
+#define __cpp_lib_bitops 201907L
+#define __cpp_lib_int_pow2 202002L
+
+// PIR intrinsic (translate.cpp). Literal class and message, as in the libc
+// models. Not defined here: the analysed program does not link a body.
+extern "C" void __prism_check(int ok, const char* cls, const char* msg);
+
+namespace std {
+
+enum class endian {
+    little = __ORDER_LITTLE_ENDIAN__,
+    big = __ORDER_BIG_ENDIAN__,
+    native = __BYTE_ORDER__,
+};
+
+template <typename _Tp>
+constexpr int countl_zero(_Tp __x) noexcept {
+    static_assert(is_unsigned_v<_Tp>);
+    constexpr int _Nd = numeric_limits<_Tp>::digits;
+    // Zero has no one bit. The width is the count. A later shift is not used.
+    if (__x == 0) return _Nd;
+    int __n = 0;
+    for (int __i = _Nd - 1; __i >= 0; --__i) {
+        if (((__x >> __i) & _Tp(1)) != 0) return __n;
+        ++__n;
+    }
+    return _Nd;
+}
+
+template <typename _Tp>
+constexpr int countl_one(_Tp __x) noexcept {
+    static_assert(is_unsigned_v<_Tp>);
+    // Complement inside _Tp, so an all-ones value becomes zero and the count
+    // is the number of digits, not the width of a promoted int.
+    return countl_zero(static_cast<_Tp>(~__x));
+}
+
+template <typename _Tp>
+constexpr int countr_zero(_Tp __x) noexcept {
+    static_assert(is_unsigned_v<_Tp>);
+    constexpr int _Nd = numeric_limits<_Tp>::digits;
+    if (__x == 0) return _Nd;
+    int __n = 0;
+    while ((__x & _Tp(1)) == 0) {
+        __x >>= 1;
+        ++__n;
+    }
+    return __n;
+}
+
+template <typename _Tp>
+constexpr int countr_one(_Tp __x) noexcept {
+    static_assert(is_unsigned_v<_Tp>);
+    return countr_zero(static_cast<_Tp>(~__x));
+}
+
+template <typename _Tp>
+constexpr int popcount(_Tp __x) noexcept {
+    static_assert(is_unsigned_v<_Tp>);
+    int __n = 0;
+    while (__x != 0) {
+        __n += static_cast<int>(__x & _Tp(1));
+        __x >>= 1;
+    }
+    return __n;
+}
+
+template <typename _Tp>
+constexpr int bit_width(_Tp __x) noexcept {
+    static_assert(is_unsigned_v<_Tp>);
+    return numeric_limits<_Tp>::digits - countl_zero(__x);
+}
+
+template <typename _Tp>
+constexpr bool has_single_bit(_Tp __x) noexcept {
+    static_assert(is_unsigned_v<_Tp>);
+    return __x != 0 && (__x & static_cast<_Tp>(__x - _Tp(1))) == 0;
+}
+
+template <typename _Tp>
+constexpr _Tp bit_floor(_Tp __x) noexcept {
+    static_assert(is_unsigned_v<_Tp>);
+    if (__x == 0) return _Tp(0);
+    // Highest one bit. The shift count is in [0, digits).
+    const int __sh = numeric_limits<_Tp>::digits - 1 - countl_zero(__x);
+    return static_cast<_Tp>(_Tp(1) << __sh);
+}
+
+// Count in [0, digits). A negative count wraps to the other direction.
+// Zero means "no shift": the caller must not shift by the width.
+template <typename _Tp>
+constexpr int _S_bit_rot_count(int __s) noexcept {
+    constexpr int _Nd = numeric_limits<_Tp>::digits;
+    static_assert(_Nd > 0);
+    int __r = __s % _Nd;
+    if (__r < 0) __r += _Nd;
+    return __r;
+}
+
+template <typename _Tp>
+constexpr _Tp rotl(_Tp __x, int __s) noexcept {
+    static_assert(is_unsigned_v<_Tp>);
+    constexpr int _Nd = numeric_limits<_Tp>::digits;
+    const int __r = _S_bit_rot_count<_Tp>(__s);
+    if (__r == 0) return __x;
+    return static_cast<_Tp>((__x << __r) | (__x >> (_Nd - __r)));
+}
+
+template <typename _Tp>
+constexpr _Tp rotr(_Tp __x, int __s) noexcept {
+    static_assert(is_unsigned_v<_Tp>);
+    constexpr int _Nd = numeric_limits<_Tp>::digits;
+    const int __r = _S_bit_rot_count<_Tp>(__s);
+    if (__r == 0) return __x;
+    return static_cast<_Tp>((__x >> __r) | (__x << (_Nd - __r)));
+}
+
+template <typename _Tp>
+constexpr _Tp bit_ceil(_Tp __x) noexcept {
+    static_assert(is_unsigned_v<_Tp>);
+    if (__x <= _Tp(1)) return _Tp(1);
+    // Smallest power of two >= __x is 1 << bit_width(__x - 1), and that
+    // shift is a value of _Tp only when the width is strictly less than
+    // the number of digits.
+    const int __w = bit_width(static_cast<_Tp>(__x - _Tp(1)));
+    if (__w >= numeric_limits<_Tp>::digits) {
+        __prism_check(0, "FUNC-CONTRACT", "bit_ceil: smallest power of two is not representable");
+        // Precondition failed. There is no representable value, and this
+        // path does not return 0.
+        __builtin_trap();
+    }
+    return static_cast<_Tp>(_Tp(1) << __w);
+}
+
+}  // namespace std
+
+#endif
