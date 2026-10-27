@@ -1,0 +1,192 @@
+// PRISM partial stand-in for <ratio> (roadmap 2.6, docs/PIR.md "C++ library
+// models"). The pir stage puts this directory first on the C++ include path,
+// so `#include <ratio>` reaches this file instead of libstdc++'s. It is a
+// file, not a directory: a directory of that name would make the include
+// fail and every such unit would fall back to libstdc++.
+//
+// std::ratio<Num, Den> stores the reduced compile-time fraction. The sign
+// stays on the numerator and the denominator is positive. A zero denominator
+// is ill-formed (static_assert). It is not stored as 0/1 and it is not a
+// runtime zero. A product or sum that does not fit in intmax_t is ill-formed
+// the same way. The failing specialization has no value member, so the
+// result is not a wrapped product.
+//
+// This header is not a proof of a program that merely names a ratio.
+//
+// Not declared, so a unit that names one fails to compile against this
+// header and the pir stage lowers it again with libstdc++ (extra.cxx_models):
+// ratio comparisons (ratio_equal, ratio_less, and the other four), and the
+// SI prefixes whose literals this stand-in does not check (atto, femto,
+// pico, tera, peta, exa). <chrono> is not included.
+#ifndef _GLIBCXX_RATIO
+#define _GLIBCXX_RATIO 1
+
+#pragma GCC system_header
+
+#include <cstdint>
+
+namespace std {
+
+// Absolute value as uintmax_t, including INTMAX_MIN (its magnitude does not
+// fit in intmax_t). v + 1 is representable for every negative v.
+constexpr uintmax_t _Prism_uabs(intmax_t v) noexcept {
+    if (v >= 0) return static_cast<uintmax_t>(v);
+    return static_cast<uintmax_t>(-(v + 1)) + 1;
+}
+
+// True when a * b is representable as intmax_t. The product itself is not
+// computed here: an unsigned multiply happens only after the magnitude is
+// known to fit in uintmax_t, and that magnitude is then compared with the
+// signed limit. A failing check does not yield a wrapped intmax_t.
+constexpr bool _Prism_mul_fits(intmax_t a, intmax_t b) noexcept {
+    if (a == 0 || b == 0) return true;
+    const bool negative = (a < 0) != (b < 0);
+    const uintmax_t ua = _Prism_uabs(a);
+    const uintmax_t ub = _Prism_uabs(b);
+    if (ua > static_cast<uintmax_t>(-1) / ub) return false;
+    const uintmax_t product = ua * ub;
+    if (negative) return product <= static_cast<uintmax_t>(INTMAX_MAX) + 1;
+    return product <= static_cast<uintmax_t>(INTMAX_MAX);
+}
+
+// True when a + b is representable as intmax_t. INTMAX_MIN is separate
+// because INTMAX_MIN - INTMAX_MIN is not a representable intmax_t, so the
+// negative side is not written as that subtraction.
+constexpr bool _Prism_add_fits(intmax_t a, intmax_t b) noexcept {
+    if (b > 0) return a <= INTMAX_MAX - b;
+    if (b < 0) {
+        if (b == INTMAX_MIN) return a >= 0;
+        return a >= INTMAX_MIN - b;
+    }
+    return true;
+}
+
+constexpr intmax_t _Prism_gcd(intmax_t a, intmax_t b) noexcept {
+    while (b != 0) {
+        const intmax_t r = a % b;
+        a = b;
+        b = r;
+    }
+    return a;
+}
+
+template <intmax_t _A, intmax_t _B, bool _Fits>
+struct _Prism_mul_checked;
+
+template <intmax_t _A, intmax_t _B>
+struct _Prism_mul_checked<_A, _B, true> {
+    static constexpr intmax_t value = _A * _B;
+};
+
+// No value member. The product is not stored when it does not fit.
+template <intmax_t _A, intmax_t _B>
+struct _Prism_mul_checked<_A, _B, false> {
+    static_assert(_A != _A || _B != _B, "product does not fit in intmax_t");
+};
+
+template <intmax_t _A, intmax_t _B>
+struct _Prism_mul {
+    static constexpr intmax_t value = _Prism_mul_checked<_A, _B, _Prism_mul_fits(_A, _B)>::value;
+};
+
+template <intmax_t _A, intmax_t _B, bool _Fits>
+struct _Prism_add_checked;
+
+template <intmax_t _A, intmax_t _B>
+struct _Prism_add_checked<_A, _B, true> {
+    static constexpr intmax_t value = _A + _B;
+};
+
+template <intmax_t _A, intmax_t _B>
+struct _Prism_add_checked<_A, _B, false> {
+    static_assert(_A != _A || _B != _B, "sum does not fit in intmax_t");
+};
+
+template <intmax_t _A, intmax_t _B>
+struct _Prism_add {
+    static constexpr intmax_t value = _Prism_add_checked<_A, _B, _Prism_add_fits(_A, _B)>::value;
+};
+
+template <intmax_t _Num, intmax_t _Den, bool _Ok>
+struct _Prism_ratio_parts;
+
+template <intmax_t _Num, intmax_t _Den>
+struct _Prism_ratio_parts<_Num, _Den, true> {
+    static constexpr intmax_t _S_abs_num = _Num < 0 ? -_Num : _Num;
+    static constexpr intmax_t _S_abs_den = _Den < 0 ? -_Den : _Den;
+    static constexpr intmax_t _S_gcd = _Prism_gcd(_S_abs_num, _S_abs_den);
+    static constexpr intmax_t num = (_Den < 0 ? -_Num : _Num) / _S_gcd;
+    static constexpr intmax_t den = _S_abs_den / _S_gcd;
+};
+
+// A zero denominator, or an absolute value that does not fit in intmax_t,
+// is ill-formed. There is no num and no den, so this is not 0/1 and not a
+// runtime zero.
+template <intmax_t _Num, intmax_t _Den>
+struct _Prism_ratio_parts<_Num, _Den, false> {
+    static_assert(_Den != 0, "denominator cannot be zero");
+    static_assert(_Num >= -INTMAX_MAX && _Den >= -INTMAX_MAX,
+                  "absolute value is not representable by intmax_t");
+};
+
+template <intmax_t _Num, intmax_t _Den = 1>
+struct ratio {
+    // Instantiated with the class, so a complete ratio<N, 0> is ill-formed
+    // before num or den is read. The failing parts specialization has no
+    // num and no den, so that path is not stored as 0/1.
+    static_assert(_Den != 0, "denominator cannot be zero");
+    static_assert(_Num >= -INTMAX_MAX && _Den >= -INTMAX_MAX,
+                  "absolute value is not representable by intmax_t");
+
+    static constexpr bool _S_ok = _Den != 0 && _Num >= -INTMAX_MAX && _Den >= -INTMAX_MAX;
+    static constexpr intmax_t num = _Prism_ratio_parts<_Num, _Den, _S_ok>::num;
+    static constexpr intmax_t den = _Prism_ratio_parts<_Num, _Den, _S_ok>::den;
+    using type = ratio<num, den>;
+};
+
+template <class _R1, class _R2>
+struct _Prism_ratio_multiply {
+    static constexpr intmax_t _G1 = _Prism_gcd(_R1::num < 0 ? -_R1::num : _R1::num, _R2::den);
+    static constexpr intmax_t _G2 = _Prism_gcd(_R2::num < 0 ? -_R2::num : _R2::num, _R1::den);
+    static constexpr intmax_t _N = _Prism_mul<_R1::num / _G1, _R2::num / _G2>::value;
+    static constexpr intmax_t _D = _Prism_mul<_R1::den / _G2, _R2::den / _G1>::value;
+    using type = ratio<_N, _D>;
+};
+
+template <class _R1, class _R2>
+struct _Prism_ratio_add {
+    static constexpr intmax_t _G = _Prism_gcd(_R1::den, _R2::den);
+    static constexpr intmax_t _N =
+        _Prism_add<_Prism_mul<_R1::num, _R2::den / _G>::value, _Prism_mul<_R2::num, _R1::den / _G>::value>::value;
+    static constexpr intmax_t _D = _Prism_mul<_R1::den, _R2::den / _G>::value;
+    using type = ratio<_N, _D>;
+};
+
+template <class _R1, class _R2>
+using ratio_multiply = typename _Prism_ratio_multiply<_R1, _R2>::type;
+
+template <class _R1, class _R2>
+using ratio_divide = ratio_multiply<_R1, ratio<_R2::den, _R2::num>>;
+
+template <class _R1, class _R2>
+using ratio_add = typename _Prism_ratio_add<_R1, _R2>::type;
+
+template <class _R1, class _R2>
+using ratio_subtract = ratio_add<_R1, ratio<-_R2::num, _R2::den>>;
+
+// Aliases of ratio<...>. The prefixes whose magnitude this header does not
+// check are not declared.
+using nano = ratio<1, 1000000000>;
+using micro = ratio<1, 1000000>;
+using milli = ratio<1, 1000>;
+using centi = ratio<1, 100>;
+using deci = ratio<1, 10>;
+using deca = ratio<10, 1>;
+using hecto = ratio<100, 1>;
+using kilo = ratio<1000, 1>;
+using mega = ratio<1000000, 1>;
+using giga = ratio<1000000000, 1>;
+
+}  // namespace std
+
+#endif
