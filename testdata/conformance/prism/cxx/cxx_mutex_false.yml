@@ -1,0 +1,8 @@
+format_version: 1
+input_files: cxx_mutex_false.cpp
+language: C++
+property: memsafety
+expected:
+  cxx_mutex_false: false
+witness:
+  cxx_mutex_false: [0]

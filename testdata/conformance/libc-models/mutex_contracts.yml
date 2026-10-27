@@ -1,0 +1,12 @@
+format_version: 1
+input_files: mutex_contracts.cpp
+language: C++
+property: libc-contract
+expected:
+  mutex_trylock_true: true
+  mutex_relock_true: true
+  mutex_second_trylock_false: false
+  mutex_unlock_unlocked_false: false
+expect_class:
+  mutex_second_trylock_false: "FUNC-CONTRACT"
+  mutex_unlock_unlocked_false: "CXX-MUTEX-UNLOCK"

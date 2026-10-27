@@ -1,0 +1,62 @@
+// PRISM operational model of <mutex> (docs/PIR.md "C++ library models").
+// The pir stage puts this directory first on the C++ include path, so
+// `#include <mutex>` reaches this file instead of libstdc++'s. It is a
+// file, not a directory: a directory of this name would make the include fail
+// with EISDIR and every such unit would fall back to libstdc++.
+//
+// Partial on purpose. std::mutex stores a locked flag in the object. There
+// is no heap allocation and no thread. This header is not a concurrency proof.
+//
+// try_lock returns true and sets the flag only when the mutex was unlocked.
+// When it is already locked, try_lock returns false and leaves it locked.
+// It does not return true while locked.
+//
+// unlock on a locked mutex clears the flag. unlock on an unlocked mutex is
+// __prism_check. It does not pretend the mutex was locked.
+//
+// lock is omitted so the unit fails to compile and pir falls back. A blocking
+// lock that returns immediately would be a fake acquisition.
+//
+// timed_mutex, recursive_mutex, scoped_lock, lock_guard, and unique_lock are
+// not declared. A use of those names fails to compile against this header
+// and the pir stage lowers that translation unit again with libstdc++.
+#ifndef _GLIBCXX_MUTEX
+#define _GLIBCXX_MUTEX 1
+
+#pragma GCC system_header
+
+// PIR intrinsic (translate.cpp). A literal class and message, as in the libc
+// models. Not defined here: the analysed program does not link a body.
+extern "C" void __prism_check(int __ok, const char* __cls, const char* __msg);
+
+namespace std {
+
+class mutex {
+    bool _M_locked;
+
+public:
+    mutex() noexcept : _M_locked(false) {}
+
+    mutex(const mutex&) = delete;
+    mutex& operator=(const mutex&) = delete;
+
+    // lock is omitted so the unit fails to compile and pir falls back.
+    // A blocking lock that returns immediately would be a fake acquisition.
+
+    bool try_lock() noexcept {
+        if (_M_locked)
+            return false;
+        _M_locked = true;
+        return true;
+    }
+
+    void unlock() noexcept {
+        __prism_check(_M_locked ? 1 : 0, "CXX-MUTEX-UNLOCK",
+                      "mutex::unlock on an unlocked mutex");
+        _M_locked = false;
+    }
+};
+
+}  // namespace std
+
+#endif  // _GLIBCXX_MUTEX
