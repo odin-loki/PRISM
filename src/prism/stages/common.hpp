@@ -172,11 +172,28 @@ std::string afl_harness_source(const FunctionInfo& fn, std::string src_rel);
 std::pair<bool, std::string> compile_afl_harness(const std::filesystem::path& harness,
                                                  const std::filesystem::path& exe);
 // nullopt when afl-fuzz is missing or fn is not SCALAR; NOTRUN without
-// --allow-exec or a C compiler; else CRASH / ERROR / CLEAN (never a proof).
+// --allow-exec, without a C compiler, or when afl-fuzz never starts;
+// else CRASH / ERROR / CLEAN (never a proof).
 // work: scratch dir to use and keep (empty: a temp dir removed after).
 std::optional<Finding> run_afl_fuzz(const FunctionInfo& fn, const std::filesystem::path& src,
                                     const Config& cfg, double timeout = 2.0,
                                     const std::filesystem::path& work = {});
+// One crash file from an afl-fuzz output directory (README.txt already
+// skipped). `count` is how many crash files that directory held. An empty
+// optional means the campaign left no crash file.
+struct AflCrashFile {
+    std::string bytes;
+    int count = 1;
+};
+// Maps one afl-fuzz ProcRun, plus whether a crash file was left, to a finding.
+// ProcRun::failed (the process never started) is one NOTRUN row on stage
+// "fuse": the start error, or "failed to start" when err is empty, and
+// extra["install"] is "install afl-fuzz". That is never CLEAN or PROVED.
+// A started child (failed == false), including a timeout or an exit of 127,
+// with no crash file is CLEAN and not a proof. A started child with a crash
+// file is CRASH (AFL-CRASH). Only `failed` means unstarted.
+Finding afl_launch_status(const FunctionInfo& fn, const ProcRun& run, int vsec,
+                          const std::optional<AflCrashFile>& crash);
 // nullopt on any failure; *error (when given) says why: "HTTP <code>: <first
 // 400 bytes of the body>" for a non-2xx answer, else "HTTP error: ...".
 std::optional<std::string> http_request(const std::string& method, const std::string& url, const std::string& body,

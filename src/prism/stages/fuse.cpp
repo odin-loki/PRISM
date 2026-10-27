@@ -658,6 +658,36 @@ std::pair<bool, std::string> compile_afl_harness(const fs::path& harness, const 
     return {true, {}};
 }
 
+// One afl-fuzz launch. The process result is kept: an unstarted afl-fuzz is
+// NOTRUN (Law 1), a started run with no crash file is CLEAN and not a proof,
+// and a started run that left a crash file is CRASH.
+Finding afl_launch_status(const FunctionInfo& fn, const ProcRun& run, int vsec,
+                          const std::optional<AflCrashFile>& crash) {
+    auto afl_base = [&](std::string_view st, std::string cls, std::string text) {
+        auto f = make_find("fuse", st, fn, std::move(cls), std::move(text), laws::STRENGTH_FINDS);
+        if (st != laws::NOTRUN) {
+            f.extra["engine"] = "afl";
+            f.extra["sandbox"] = sandbox::kind();
+        }
+        return f;
+    };
+    if (run.failed) {
+        auto f = afl_base(laws::NOTRUN, "", run.err.empty() ? "failed to start" : run.err);
+        f.extra["install"] = "install afl-fuzz";
+        return f;
+    }
+    if (crash) {
+        const std::string& data = crash->bytes;
+        std::vector<uint8_t> raw(data.begin(), data.end());
+        if (raw.size() > 16) raw.resize(16);
+        auto f = afl_base(laws::CRASH, "AFL-CRASH", "AFL crash on " + bytes_to_hex(raw));
+        f.counterexample = bytes_to_hex(std::vector<uint8_t>(data.begin(), data.end()));
+        f.extra["afl_crashes"] = std::to_string(crash->count);
+        return f;
+    }
+    return afl_base(laws::CLEAN, "", "no AFL crash in " + std::to_string(vsec) + "s (not a proof)");
+}
+
 // Bounded AFL++ campaign on a SCALAR stdin harness. CLEAN is not a proof.
 std::optional<Finding> run_afl_fuzz(const FunctionInfo& fn, const fs::path& src, const Config& cfg,
                                     double timeout, const fs::path& work) {
@@ -742,7 +772,8 @@ std::optional<Finding> run_afl_fuzz(const FunctionInfo& fn, const fs::path& src,
     spec.cwd = td;
     spec.timeout_s = timeout + 10.0;
     spec.limits = sandbox::limits_for(timeout + 10.0, /*limit_as=*/false);
-    run_spec(spec);
+    ProcRun run = run_spec(spec);
+    std::optional<AflCrashFile> crash;
     std::vector<fs::path> crash_dirs{out_dir / "crashes", out_dir / "default" / "crashes"};
     for (auto& cdir : crash_dirs) {
         std::error_code ec;
@@ -755,15 +786,13 @@ std::optional<Finding> run_afl_fuzz(const FunctionInfo& fn, const fs::path& src,
             crashes.push_back(ent.path());
         }
         if (crashes.empty()) continue;
-        std::string data = read_text_file(crashes.at(0));
-        std::vector<uint8_t> raw(data.begin(), data.end());
-        if (raw.size() > 16) raw.resize(16);
-        auto f = afl_base(laws::CRASH, "AFL-CRASH", "AFL crash on " + bytes_to_hex(raw));
-        f.counterexample = bytes_to_hex(std::vector<uint8_t>(data.begin(), data.end()));
-        f.extra["afl_crashes"] = std::to_string(crashes.size());
-        return f;
+        AflCrashFile sample;
+        sample.bytes = read_text_file(crashes.at(0));
+        sample.count = static_cast<int>(crashes.size());
+        crash = std::move(sample);
+        break;
     }
-    return afl_base(laws::CLEAN, "", "no AFL crash in " + std::to_string(vsec) + "s (not a proof)");
+    return afl_launch_status(fn, run, vsec, crash);
 }
 
 }  // namespace stages_detail
