@@ -69,7 +69,17 @@ struct PvbResult {
     std::map<std::pair<std::string, std::string>, int> matrix;  // (bmc bucket, pir bucket) -> functions
     nlohmann::json conflicts = nlohmann::json::array();         // PROVED* vs FAILED
     std::size_t functions = 0, bmc = 0, pir = 0;
+    int agree_both = 0;   // same bucket where both stages report a verdict
+    int both_report = 0;  // neither bucket is absent
+    int superset_gaps = 0;  // bmc PROVED* while pir is absent or NEEDS-HARNESS
 };
+// Retirement gates (docs/ENGINEERING_BACKLOG.md § 2.8): hard conflicts 0, superset_gaps 0.
+struct PvbGate {
+    bool hard_conflicts_ok = false;
+    bool superset_ok = false;
+    bool pass = false;
+};
+PvbGate pir_vs_bmc_gate(const PvbResult& r);
 PvbResult pir_vs_bmc(const nlohmann::json& report);
 std::string pir_vs_bmc_text(const PvbResult& r);
 nlohmann::json pir_vs_bmc_json(const PvbResult& r);

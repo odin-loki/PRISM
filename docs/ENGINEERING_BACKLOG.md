@@ -46,7 +46,7 @@ Retirement **blocked** until PIR is a **superset** of bmc reach on `testdata/`.
 | Superset | `matrix[PROVED*, absent] + [PROVED*, NEEDS-HARNESS] → 0` (was **353**) |
 | Agreement | Raise `same bucket where both report` (was **2398/2462**) |
 
-Tool: `prism-qa pir-vs-bmc`. Doctest: synthetic only in `test_qa.cpp` — **no CI gate** yet.
+Tool: `prism-qa pir-vs-bmc [--gate]` (exit 1 on hard-conflict or superset failure; JSON `gate` object). Doctest: synthetic matrix in `test_qa.cpp`. **CI gate** not wired yet. **WIP:** pir `*_ok` slice recovery when the full unit fails clang (`src/prism/pir/stage.cpp`); full `testdata/` superset rerun pending.
 
 ## 3.1 Portfolio vs Z3 alone
 

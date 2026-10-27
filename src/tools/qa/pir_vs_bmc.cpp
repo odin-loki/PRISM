@@ -62,6 +62,14 @@ std::string pvb_bucket(const std::string* status) {
     return "UNKNOWN";  // UNKNOWN / TIMEOUT / NOFUNC / NOTRUN
 }
 
+PvbGate pir_vs_bmc_gate(const PvbResult& r) {
+    PvbGate g;
+    g.hard_conflicts_ok = r.conflicts.empty();
+    g.superset_ok = r.superset_gaps == 0;
+    g.pass = g.hard_conflicts_ok && g.superset_ok;
+    return g;
+}
+
 PvbResult pir_vs_bmc(const nlohmann::json& report) {
     PvbResult r;
     const auto bmc = per_function(report, "bmc");
@@ -81,6 +89,7 @@ PvbResult pir_vs_bmc(const nlohmann::json& report) {
         const auto rb = pvb_bucket(sb ? &*sb : nullptr);
         const auto rp = pvb_bucket(sp ? &*sp : nullptr);
         ++r.matrix[{rb, rp}];
+        if (rb == "PROVED*" && (rp == "absent" || rp == "NEEDS-HARNESS")) ++r.superset_gaps;
         if ((rb == "PROVED*" && rp == "FAILED") || (rb == "FAILED" && rp == "PROVED*")) {
             r.conflicts.push_back({{"file", k.first},
                                    {"function", k.second},
@@ -91,6 +100,10 @@ PvbResult pir_vs_bmc(const nlohmann::json& report) {
                                    {"pir_msg", text_of(p->second, "message")},
                                    {"pir_cex", text_of(p->second, "counterexample")}});
         }
+    }
+    for (auto& [rc, n] : r.matrix) {
+        if (rc.first == rc.second && rc.first != "absent") r.agree_both += n;
+        if (rc.first != "absent" && rc.second != "absent") r.both_report += n;
     }
     return r;
 }
@@ -114,12 +127,14 @@ std::string pir_vs_bmc_text(const PvbResult& r) {
         }
         o << "\n";
     }
-    int agree = 0, both = 0;
-    for (auto& [rc, n] : r.matrix) {
-        if (rc.first == rc.second && rc.first != "absent") agree += n;
-        if (rc.first != "absent" && rc.second != "absent") both += n;
-    }
-    o << "same bucket where both report: " << agree << "/" << both << "\n";
+    o << "same bucket where both report: " << r.agree_both << "/" << r.both_report << "\n";
+    o << "superset gaps (bmc PROVED*, pir absent or NEEDS-HARNESS): " << r.superset_gaps << "\n";
+    const auto gate = pir_vs_bmc_gate(r);
+    o << "retirement gate (hard conflicts): " << (gate.hard_conflicts_ok ? "PASS" : "FAIL") << " ("
+      << r.conflicts.size() << ")\n";
+    o << "retirement gate (pir superset): " << (gate.superset_ok ? "PASS" : "FAIL") << " (" << r.superset_gaps
+      << ")\n";
+    o << "retirement gate (overall): " << (gate.pass ? "PASS" : "FAIL") << "\n";
     o << "hard conflicts (PROVED* vs FAILED): " << r.conflicts.size() << "\n";
     for (const auto& c : r.conflicts)
         o << "  " << c["file"].get<std::string>() << "::" << c["function"].get<std::string>()
@@ -132,7 +147,15 @@ std::string pir_vs_bmc_text(const PvbResult& r) {
 nlohmann::json pir_vs_bmc_json(const PvbResult& r) {
     nlohmann::json m = nlohmann::json::object();
     for (auto& [rc, n] : r.matrix) m[rc.first + "|" + rc.second] = n;
-    return {{"matrix", m}, {"conflicts", r.conflicts}};
+    const auto gate = pir_vs_bmc_gate(r);
+    return {{"matrix", m},
+            {"conflicts", r.conflicts},
+            {"agree_both", r.agree_both},
+            {"both_report", r.both_report},
+            {"superset_gaps", r.superset_gaps},
+            {"gate", {{"hard_conflicts", gate.hard_conflicts_ok ? "PASS" : "FAIL"},
+                      {"superset", gate.superset_ok ? "PASS" : "FAIL"},
+                      {"overall", gate.pass ? "PASS" : "FAIL"}}}};
 }
 
 int pir_vs_bmc_main(const Args& args) {
@@ -140,6 +163,7 @@ int pir_vs_bmc_main(const Args& args) {
     std::string tree = (repo / "testdata").string(), bin, report_path, json_out;
     int jobs = 2;
     double timeout = 0;
+    bool gate = false;
     for (std::size_t i = 0; i < args.size(); ++i) {
         const auto& a = args[i];
         auto next = [&]() -> std::string { return i + 1 < args.size() ? args[++i] : std::string(); };
@@ -148,11 +172,13 @@ int pir_vs_bmc_main(const Args& args) {
         else if (a == "--jobs" || a == "-j") jobs = std::max(1, std::atoi(next().c_str()));
         else if (a == "--json") json_out = next();
         else if (a == "--timeout") timeout = std::atof(next().c_str());
+        else if (a == "--gate") gate = true;
         else if (a == "-h" || a == "--help") {
             std::cout << "prism-qa pir-vs-bmc [TREE] [--bin PRISM] [--report report.json] [--jobs N]\n"
-                         "                    [--json OUT.json] [--timeout S]\n"
+                         "                    [--json OUT.json] [--timeout S] [--gate]\n"
                          "bmc encoder vs pir stage: per-function agreement matrix and every hard\n"
-                         "conflict (PROVED* vs FAILED). Default TREE: testdata.\n";
+                         "conflict (PROVED* vs FAILED). With --gate, exit 1 when a retirement gate\n"
+                         "fails (docs/ENGINEERING_BACKLOG.md § 2.8). Default TREE: testdata.\n";
             return 0;
         } else if (!a.starts_with("-")) tree = a;
         else {
@@ -190,9 +216,20 @@ int pir_vs_bmc_main(const Args& args) {
             return 2;
         }
     }
-    const auto res = pir_vs_bmc(*report);
+    auto res = pir_vs_bmc(*report);
     std::cout << pir_vs_bmc_text(res);
     if (!json_out.empty()) std::ofstream(json_out, std::ios::binary) << pir_vs_bmc_json(res).dump(2);
+    if (gate) {
+        const auto g = pir_vs_bmc_gate(res);
+        if (!g.pass) {
+            if (!g.hard_conflicts_ok)
+                std::cerr << "PIR-vs-BMC GATE FAILED: " << res.conflicts.size() << " hard conflict(s)\n";
+            if (!g.superset_ok)
+                std::cerr << "PIR-vs-BMC GATE FAILED: " << res.superset_gaps
+                          << " bmc PROVED* function(s) not matched by pir PROVED*\n";
+            return 1;
+        }
+    }
     return 0;
 }
 

@@ -502,6 +502,8 @@ TEST_CASE("pir-vs-bmc buckets, matrix and hard conflicts") {
     CHECK(has_line(text, "functions: 5 (bmc 4, pir 4)"));
     CHECK(has_line(text, "rows = bmc, columns = pir"));
     CHECK(has_line(text, "same bucket where both report: 1/3"));
+    CHECK(r.superset_gaps == 0);
+    CHECK(prism::qa::pir_vs_bmc_gate(r).pass == false);  // hard conflict on g
     CHECK(has_line(text, "hard conflicts (PROVED* vs FAILED): 1"));
     CHECK(has_line(text, "  a.c::g: bmc=FAILED [m]  | pir=PROVED [m] "));
     // the matrix: right-aligned columns 15 wide, left-aligned row names
