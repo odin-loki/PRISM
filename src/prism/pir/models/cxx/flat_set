@@ -133,8 +133,16 @@ public:
 
         iterator() noexcept : _M_node(nullptr) {}
 
-        reference operator*() const noexcept { return _M_node->_M_key; }
-        pointer operator->() const noexcept { return &_M_node->_M_key; }
+        reference operator*() const noexcept {
+            __prism_check(_M_node != nullptr ? 1 : 0, "PTR-NULL-DEREF",
+                          "flat_set iterator dereference at end");
+            return _M_node->_M_key;
+        }
+        pointer operator->() const noexcept {
+            __prism_check(_M_node != nullptr ? 1 : 0, "PTR-NULL-DEREF",
+                          "flat_set iterator dereference at end");
+            return &_M_node->_M_key;
+        }
 
         iterator& operator++() noexcept {
             _M_node = _M_node->_M_next;
