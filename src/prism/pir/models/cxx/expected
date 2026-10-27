@@ -1,0 +1,139 @@
+// PRISM operational model of <expected> (roadmap 2.6, docs/PIR.md "C++ library
+// models"). The pir stage puts this directory first on the C++ include path,
+// so `#include <expected>` reaches this file instead of libstdc++'s. It is a
+// file, not a directory: a directory of this name would make the include fail
+// with EISDIR and every such unit would fall back to libstdc++.
+//
+// An expected<T, E> holds either a T or an E, stored inline in one union. It
+// is never both, and neither alternative is a separate heap allocation. The
+// destructor ends the active alternative's lifetime with an explicit
+// destructor call. It does not call delete.
+//
+// has_value() and operator bool report which alternative is stored. value()
+// and operator* / operator-> return that T only when it is the active
+// alternative. error() returns that E only when it is the active alternative.
+// The other call is a precondition failure (__prism_check). It does not
+// return a default T or a default E and it does not invent a value.
+//
+// and_then, or_else, transform, and value_or are not declared. A use of them
+// fails to compile against this header and pir falls back to libstdc++.
+// transform_error, emplace, swap, comparison, and expected<void, E> are not
+// declared either, so those uses fall back too.
+#ifndef _PRISM_MODEL_EXPECTED
+#define _PRISM_MODEL_EXPECTED 1
+#define _GLIBCXX_EXPECTED 1  // libstdc++'s <expected> include guard: never both
+
+#pragma GCC system_header
+
+// PIR intrinsic (translate.cpp). A literal class and message, as in the libc
+// models. Not defined here: the analysed program does not link a body.
+extern "C" void __prism_check(int ok, const char* cls, const char* msg);
+
+namespace std {
+
+template <typename _Ep>
+class unexpected {
+    _Ep _M_val;
+
+public:
+    explicit unexpected(const _Ep& __e) : _M_val(__e) {}
+    explicit unexpected(_Ep&& __e) : _M_val(static_cast<_Ep&&>(__e)) {}
+
+    _Ep& error() & noexcept { return _M_val; }
+    const _Ep& error() const& noexcept { return _M_val; }
+    _Ep&& error() && noexcept { return static_cast<_Ep&&>(_M_val); }
+    const _Ep&& error() const&& noexcept { return static_cast<const _Ep&&>(_M_val); }
+};
+
+template <typename _Ep>
+unexpected(_Ep) -> unexpected<_Ep>;
+
+template <typename _Tp, typename _Er>
+class expected {
+    // T and E share this union, inside the expected object. Exactly one is
+    // alive. ~_Storage does not destroy it and does not free anything; the
+    // expected destructor ends the active alternative's lifetime.
+    union _Storage {
+        _Tp _M_val;
+        _Er _M_unex;
+        _Storage() : _M_val() {}
+        _Storage(const _Tp& __v) : _M_val(__v) {}
+        _Storage(_Tp&& __v) : _M_val(static_cast<_Tp&&>(__v)) {}
+        _Storage(const unexpected<_Er>& __u) : _M_unex(__u.error()) {}
+        _Storage(unexpected<_Er>&& __u) : _M_unex(static_cast<_Er&&>(__u.error())) {}
+        ~_Storage() {}
+    };
+
+    bool _M_has = false;
+    _Storage _M_storage;
+
+public:
+    using value_type = _Tp;
+    using error_type = _Er;
+    using unexpected_type = unexpected<_Er>;
+
+    // Holds a value-initialized T. The error alternative is not alive.
+    expected() : _M_has(true), _M_storage() {}
+    expected(const _Tp& __v) : _M_has(true), _M_storage(__v) {}
+    expected(_Tp&& __v) : _M_has(true), _M_storage(static_cast<_Tp&&>(__v)) {}
+    expected(const unexpected<_Er>& __u) : _M_has(false), _M_storage(__u) {}
+    expected(unexpected<_Er>&& __u) : _M_has(false), _M_storage(static_cast<unexpected<_Er>&&>(__u)) {}
+
+    ~expected() {
+        if (_M_has)
+            _M_storage._M_val.~_Tp();
+        else
+            _M_storage._M_unex.~_Er();
+    }
+
+    bool has_value() const noexcept { return _M_has; }
+    explicit operator bool() const noexcept { return _M_has; }
+
+    // The stored T. Not a value-initialized T: the failure path is the check.
+    _Tp& operator*() & noexcept {
+        __prism_check(_M_has ? 1 : 0, "CXX-EXPECTED-NULL",
+                      "expected::operator* requires has_value()");
+        return _M_storage._M_val;
+    }
+    const _Tp& operator*() const& noexcept {
+        __prism_check(_M_has ? 1 : 0, "CXX-EXPECTED-NULL",
+                      "expected::operator* requires has_value()");
+        return _M_storage._M_val;
+    }
+    _Tp* operator->() noexcept {
+        __prism_check(_M_has ? 1 : 0, "CXX-EXPECTED-NULL",
+                      "expected::operator-> requires has_value()");
+        return &_M_storage._M_val;
+    }
+    const _Tp* operator->() const noexcept {
+        __prism_check(_M_has ? 1 : 0, "CXX-EXPECTED-NULL",
+                      "expected::operator-> requires has_value()");
+        return &_M_storage._M_val;
+    }
+    _Tp& value() & {
+        __prism_check(_M_has ? 1 : 0, "CXX-EXPECTED-NULL",
+                      "expected::value() requires has_value()");
+        return _M_storage._M_val;
+    }
+    const _Tp& value() const& {
+        __prism_check(_M_has ? 1 : 0, "CXX-EXPECTED-NULL",
+                      "expected::value() requires has_value()");
+        return _M_storage._M_val;
+    }
+
+    // The stored E. Not a value-initialized E: the failure path is the check.
+    _Er& error() & noexcept {
+        __prism_check(_M_has ? 0 : 1, "CXX-EXPECTED-ERROR",
+                      "expected::error() requires !has_value()");
+        return _M_storage._M_unex;
+    }
+    const _Er& error() const& noexcept {
+        __prism_check(_M_has ? 0 : 1, "CXX-EXPECTED-ERROR",
+                      "expected::error() requires !has_value()");
+        return _M_storage._M_unex;
+    }
+};
+
+}  // namespace std
+
+#endif

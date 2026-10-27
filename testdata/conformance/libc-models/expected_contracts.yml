@@ -1,0 +1,13 @@
+format_version: 1
+input_files: expected_contracts.cpp
+language: C++
+property: libc-contract
+timeout: 300
+expected:
+  expected_value_true: true
+  expected_error_true: true
+  expected_value_false: false
+  expected_error_false: false
+expect_class:
+  expected_value_false: "CXX-EXPECTED-NULL"
+  expected_error_false: "CXX-EXPECTED-ERROR"
