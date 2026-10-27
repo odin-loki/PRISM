@@ -1,0 +1,75 @@
+// PRISM operational model of <syncstream>. The pir stage puts this directory
+// first on the C++ include path, so `#include <syncstream>` reaches this file
+// instead of libstdc++'s. It is a file, not a directory: a directory of
+// this name would make the include fail with EISDIR and every such unit
+// would fall back to libstdc++.
+//
+// basic_syncbuf stores a caller char pointer, a size, and a write offset.
+// Nothing is allocated. The destructor does not free the caller buffer and
+// does not pretend the bytes were emitted to a stream.
+//
+// sputc writes one character only when the offset is less than the size,
+// then advances. When the offset is already the size, sputc is a
+// __prism_check: it does not write and does not wrap the offset. A null
+// pointer with a non-zero size is a __prism_check at construction.
+//
+// emit and the syncstream class are omitted so a unit that names one
+// fails to compile and pir falls back to libstdc++. A flush that returns
+// success without a stream would be a fake write. Move construction and
+// move assignment are not declared, for the same reason.
+//
+// This header is not a concurrency proof.
+#ifndef _GLIBCXX_SYNCSTREAM
+#define _GLIBCXX_SYNCSTREAM 1
+
+#pragma GCC system_header
+
+#include <cstddef>
+
+// Set only by this stand-in. Task sources use it so a libstdc++ <syncstream>
+// (no caller-buffer constructor) still compiles for the label self-check.
+#define _PRISM_SYNCSTREAM_MODEL 1
+
+// PIR intrinsic (translate.cpp). A literal class and message, as in the
+// libc models. Not defined here: the analysed program does not link a body.
+extern "C" void __prism_check(int ok, const char* cls, const char* msg);
+
+namespace std {
+
+class basic_syncbuf {
+public:
+    // Caller buffer. A null pointer with a non-zero size is a precondition
+    // failure. Nothing is allocated.
+    explicit basic_syncbuf(char* __buf, size_t __n) noexcept : _M_buf(__buf), _M_size(__n), _M_off(0) {
+        __prism_check((__buf != nullptr || __n == 0) ? 1 : 0, "FUNC-CONTRACT",
+                      "basic_syncbuf constructed with a null buffer and a non-zero size");
+    }
+
+    // Does not free the caller buffer. Does not pretend the bytes were
+    // emitted to a stream.
+    ~basic_syncbuf() = default;
+
+    basic_syncbuf(const basic_syncbuf&) = delete;
+    basic_syncbuf& operator=(const basic_syncbuf&) = delete;
+
+    // Writes one character only when the offset is less than the size, then
+    // advances. When the offset is already the size this is a precondition
+    // failure: the character is not stored and the offset is not wrapped.
+    void sputc(char __c) noexcept {
+        const int __ok = (_M_off < _M_size) ? 1 : 0;
+        __prism_check(__ok, "MEM-OOB-WRITE", "basic_syncbuf::sputc would write past the caller buffer");
+        if (__ok) {
+            _M_buf[_M_off] = __c;
+            ++_M_off;
+        }
+    }
+
+private:
+    char* _M_buf;
+    size_t _M_size;
+    size_t _M_off;
+};
+
+}  // namespace std
+
+#endif
