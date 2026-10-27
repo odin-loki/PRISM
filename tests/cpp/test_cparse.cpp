@@ -142,6 +142,55 @@ TEST_CASE("cparse: qualifiers are words to the classifier") {
     CHECK(kinds["d"] == "POINTER");
 }
 
+TEST_CASE("cparse: qualified parameters keep type and name") {
+    // Qualifier words are dropped. The name is the last word of that
+    // spelling, so `const int *out` is not cut down to `int *ou`.
+    auto fns = prism::extract_functions_from_text(
+        "int f(const int *p, int *const q, volatile unsigned long n,\n"
+        "      const int *out, int *restrict out2, register int r) {\n"
+        "    return *p + *q + (int)n + *out + *out2 + r;\n}\n",
+        "qp.c");
+    REQUIRE(fns.size() == 1);
+    CHECK(fns[0].params == Params{{"int *", "p"},
+                                  {"int *", "q"},
+                                  {"unsigned long", "n"},
+                                  {"int *", "out"},
+                                  {"int *", "out2"},
+                                  {"int", "r"}});
+    CHECK(fns[0].kind == "POINTER");
+}
+
+TEST_CASE("cparse: const and volatile scalars stay scalar") {
+    auto fns = prism::extract_functions_from_text(
+        "int a(volatile unsigned long n) { return (int)n; }\n"
+        "int b(const\tint x) { return x; }\n"
+        "int c(int *const p) { return *p; }\n"
+        "int d(const int *p) { return *p; }\n"
+        "int e(register int n) { return n; }\n"
+        "int f(int * restrict p) { return *p; }\n"
+        "int h(restrict int n) { return n; }\n",
+        "qk.c");
+    REQUIRE(fns.size() == 7);
+    std::map<std::string, std::string> kinds;
+    for (auto& f : fns) kinds[f.name] = f.kind;
+    CHECK(kinds["a"] == "SCALAR");
+    CHECK(kinds["b"] == "SCALAR");  // a tab is whitespace, not part of the word
+    CHECK(kinds["c"] == "POINTER");
+    CHECK(kinds["d"] == "POINTER");
+    CHECK(kinds["e"] == "SCALAR");
+    CHECK(kinds["f"] == "POINTER");
+    CHECK(kinds["h"] == "SCALAR");  // restrict is a qualifier word, not a type
+    const auto* cp = find_fn(fns, "c");
+    const auto* hp = find_fn(fns, "h");
+    const auto* ap = find_fn(fns, "a");
+    REQUIRE(cp != nullptr);
+    REQUIRE(hp != nullptr);
+    REQUIRE(ap != nullptr);
+    CHECK(cp->params == Params{{"int *", "p"}});
+    CHECK(hp->params == Params{{"int", "n"}});
+    CHECK(ap->params == Params{{"unsigned long", "n"}});
+}
+
 TEST_CASE("cparse: CXX-VECTOR-INDEX reads a const vector reference parameter") {
     auto dir = fs::temp_directory_path() / "prism_cparse_vec";
     fs::create_directories(dir);

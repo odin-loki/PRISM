@@ -176,6 +176,12 @@ std::string to_lower(std::string s) {
 
 bool is_word_char(char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; }
 
+// Whole words only. `constant_t` is a typedef, not the qualifier `const`.
+bool is_type_qualifier(std::string_view w) {
+    return w == "const" || w == "volatile" || w == "restrict" || w == "register" ||
+           w == "__restrict" || w == "__restrict__";
+}
+
 std::string trim(std::string_view s);
 
 // The one spelling of a parameter type every consumer reads: const,
@@ -201,9 +207,7 @@ std::string canonical_type(std::string_view raw) {
             while (j < n && is_word_char(raw[j])) ++j;
             std::string_view w = raw.substr(i, j - i);
             i = j;
-            if (w == "const" || w == "volatile" || w == "restrict" || w == "register" ||
-                w == "__restrict" || w == "__restrict__")
-                continue;
+            if (is_type_qualifier(w)) continue;
             if (prev == 'w') out.push_back(' ');
             out.append(w);
             prev = 'w';
@@ -281,10 +285,12 @@ std::vector<std::pair<std::string, std::string>> split_params(std::string_view p
             }
         }
         auto canon = canonical_type(raw);
-        // The name is the last word. Text that ends in a bracket or a paren
-        // (`int a[4]`, `void (*cb)(int)`) has none. A lone word keeps the
-        // old reading, name and type both the word: a K&R identifier list
-        // (`f(s, flush)`) names its parameters that way.
+        // The name is the last word of this spelling. Cutting with an index
+        // from a copy that inserted spaces around `*` turns `int *out` into
+        // `int *ou`. Text that ends in a bracket or a paren (`int a[4]`,
+        // `void (*cb)(int)`) has none. A lone word keeps the old reading,
+        // name and type both the word: a K&R identifier list (`f(s, flush)`)
+        // names its parameters that way.
         std::size_t b = canon.size();
         while (b > 0 && is_word_char(canon[b - 1])) --b;
         if (b == canon.size() || std::isdigit(static_cast<unsigned char>(canon[b]))) {
@@ -303,6 +309,8 @@ std::string kind_of(const std::string& ret, const std::string& stars,
     (void)stars;
     if (params.empty()) return "VOID";
     auto param_ok = [](std::string t) -> std::string {
+        // A pointer stays a pointer: qualifier words are not what makes
+        // `const int *` or `int *restrict` a scalar.
         if (is_pointer_type(t)) return "POINTER";
         std::vector<std::string> words;
         std::string w;
@@ -314,7 +322,9 @@ std::string kind_of(const std::string& ret, const std::string& stars,
             }
         }
         // Qualifiers are words, not substrings: `constant_t` stays a word.
-        std::erase_if(words, [](const std::string& word) { return word == "const" || word == "volatile"; });
+        // Tabs and other whitespace already split words, so `const\tint` is
+        // `const` plus `int`, and the scalar word remains.
+        std::erase_if(words, [](const std::string& word) { return is_type_qualifier(word); });
         if (words.empty()) return "OTHER";
         for (auto& word : words)
             if (!SCALAR_WORDS.contains(word)) return "OTHER";  // struct by value, unknown typedef
