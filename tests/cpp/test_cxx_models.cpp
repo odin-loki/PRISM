@@ -230,6 +230,11 @@ TEST_CASE("cxx models: string trace matches libstdc++") {
     same_trace("string_trace", {"bits/basic_string.tcc"});
 }
 
+TEST_CASE("cxx models: sstream trace matches libstdc++") {
+    if (!ctx().ok) return;
+    same_trace("sstream_trace", {"sstream"});
+}
+
 #ifndef _WIN32
 int run_capture(const fs::path& exe, const std::string& arg, std::string* combined) {
     std::string cmd = exe.string() + " " + arg + " 2>&1";
