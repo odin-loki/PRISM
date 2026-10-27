@@ -108,6 +108,12 @@ PRISM_API ojson build_violation_witness(const Counterexample& cex, const Witness
 PRISM_API ojson build_correctness_witness(const std::vector<Invariant>& invariants, const WitnessMeta& meta);
 
 // Block-style YAML of a witness document (maps keep their insertion order).
+// A scalar other than a plain identifier is double-quoted. That includes a
+// colon, a double quote, a newline, and a leading YAML indicator; a newline
+// inside the quotes is `\n`. Well-formed UTF-8 is written as UTF-8 in the
+// quotes, except the YAML line breaks U+0085, U+2028 and U+2029 (`\u`
+// escapes). Any other byte that is not printable ASCII is `\xHH`. The
+// witness is still emitted.
 PRISM_API std::string to_yaml(const ojson& doc);
 PRISM_API bool write_witness(const ojson& doc, const std::filesystem::path& path);
 

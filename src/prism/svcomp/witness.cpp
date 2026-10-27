@@ -177,6 +177,131 @@ ojson build_correctness_witness(const std::vector<Invariant>& invariants, const 
 
 namespace {
 
+// Bytes of a well-formed UTF-8 sequence at i, or 0. Overlongs and
+// surrogates are not well-formed. Same acceptance as sanitize_utf8.
+std::size_t utf8_seq_len(const std::string& s, std::size_t i) {
+    const std::size_t n = s.size();
+    if (i >= n) return 0;
+    const auto b = static_cast<unsigned char>(s[i]);
+    auto cont = [&](std::size_t k) {
+        return k < n && (static_cast<unsigned char>(s[k]) & 0xC0) == 0x80;
+    };
+    if (b < 0x80) return 1;
+    if (b >= 0xC2 && b <= 0xDF) return cont(i + 1) ? 2 : 0;
+    if (b >= 0xE0 && b <= 0xEF) {
+        if (!(cont(i + 1) && cont(i + 2))) return 0;
+        const auto b1 = static_cast<unsigned char>(s[i + 1]);
+        if (b == 0xE0 && b1 < 0xA0) return 0;
+        if (b == 0xED && b1 > 0x9F) return 0;
+        return 3;
+    }
+    if (b >= 0xF0 && b <= 0xF4) {
+        if (!(cont(i + 1) && cont(i + 2) && cont(i + 3))) return 0;
+        const auto b1 = static_cast<unsigned char>(s[i + 1]);
+        if (b == 0xF0 && b1 < 0x90) return 0;
+        if (b == 0xF4 && b1 > 0x8F) return 0;
+        return 4;
+    }
+    return 0;
+}
+
+char32_t utf8_cp(const std::string& s, std::size_t i, std::size_t len) {
+    auto b = [&](std::size_t k) { return static_cast<unsigned char>(s[i + k]); };
+    if (len == 1) return b(0);
+    if (len == 2) return (static_cast<char32_t>(b(0) & 0x1F) << 6) | (b(1) & 0x3F);
+    if (len == 3)
+        return (static_cast<char32_t>(b(0) & 0x0F) << 12) | (static_cast<char32_t>(b(1) & 0x3F) << 6) | (b(2) & 0x3F);
+    if (len == 4)
+        return (static_cast<char32_t>(b(0) & 0x07) << 18) | (static_cast<char32_t>(b(1) & 0x3F) << 12) |
+               (static_cast<char32_t>(b(2) & 0x3F) << 6) | (b(3) & 0x3F);
+    return 0;
+}
+
+void append_hex_byte(std::string& out, unsigned char c) {
+    static constexpr char hex[] = "0123456789abcdef";
+    out += "\\x";
+    out += hex[c >> 4];
+    out += hex[c & 0x0F];
+}
+
+// Plain identifiers only. A colon, quote, newline, backslash, leading
+// indicator (anything other than a letter or `_`), or a non-ASCII byte is
+// not safe to emit unquoted even if a regex would accept it.
+bool yaml_plain_safe(const std::string& s) {
+    if (s.empty()) return false;
+    const auto c0 = static_cast<unsigned char>(s[0]);
+    if (!((c0 >= 'A' && c0 <= 'Z') || (c0 >= 'a' && c0 <= 'z') || c0 == '_')) return false;
+    for (char ch : s) {
+        const auto c = static_cast<unsigned char>(ch);
+        if (c == ':' || c == '"' || c == '\\' || c == '\n' || c == '\r' || c < 0x20 || c > 0x7E) return false;
+    }
+    return true;
+}
+
+// Double-quoted YAML. Newlines stay `\n`. CR, tab and the Unicode line
+// breaks are escaped too: a raw break inside quotes is a folded line, so
+// the witness line would split. Well-formed UTF-8 otherwise passes through.
+// A byte that is not well-formed UTF-8 is `\xHH` (the task reader accepts
+// that escape). Nothing is dropped.
+std::string quoted_scalar(const std::string& s) {
+    std::string out = "\"";
+    for (std::size_t i = 0; i < s.size();) {
+        const auto c = static_cast<unsigned char>(s[i]);
+        if (c == '\\') {
+            out += "\\\\";
+            ++i;
+            continue;
+        }
+        if (c == '"') {
+            out += "\\\"";
+            ++i;
+            continue;
+        }
+        if (c == '\n') {
+            out += "\\n";
+            ++i;
+            continue;
+        }
+        if (c == '\r') {
+            out += "\\r";
+            ++i;
+            continue;
+        }
+        if (c == '\t') {
+            out += "\\t";
+            ++i;
+            continue;
+        }
+        if (c < 0x20 || c == 0x7F) {
+            append_hex_byte(out, c);
+            ++i;
+            continue;
+        }
+        if (c < 0x80) {
+            out += static_cast<char>(c);
+            ++i;
+            continue;
+        }
+        const std::size_t len = utf8_seq_len(s, i);
+        if (len == 0) {
+            append_hex_byte(out, c);
+            ++i;
+            continue;
+        }
+        const char32_t cp = utf8_cp(s, i, len);
+        if (cp == 0x85 || cp == 0x2028 || cp == 0x2029) {
+            char buf[16];
+            std::snprintf(buf, sizeof buf, "\\u%04x", static_cast<unsigned>(cp));
+            out += buf;
+        } else {
+            out.append(s.data() + i, len);
+        }
+        i += len;
+    }
+    out += '"';
+    return out;
+}
+
 std::string scalar(const ojson& v) {
     if (v.is_boolean()) return v.get<bool>() ? "true" : "false";
     if (v.is_number_integer()) return std::to_string(v.get<long long>());
@@ -188,18 +313,13 @@ std::string scalar(const ojson& v) {
     else if (v.is_object()) s = "{}";
     else if (v.is_array()) s = "[]";
     static const Regex plain(R"([A-Za-z_][A-Za-z0-9_.\-/]*\z)");
-    std::string low;
-    for (char c : s) low += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     static const std::vector<std::string> reserved = {"true", "false", "null", "yes", "no", "on", "off", "~", "y", "n"};
-    if (fullmatch(plain, s) && std::ranges::find(reserved, low) == reserved.end()) return s;
-    std::string out = "\"";
-    for (char c : s) {
-        if (c == '\\') out += "\\\\";
-        else if (c == '"') out += "\\\"";
-        else if (c == '\n') out += "\\n";
-        else out += c;
+    if (yaml_plain_safe(s) && fullmatch(plain, s)) {
+        std::string low;
+        for (char c : s) low += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (std::ranges::find(reserved, low) == reserved.end()) return s;
     }
-    return out + "\"";
+    return quoted_scalar(s);
 }
 
 bool nonempty_container(const ojson& v) { return (v.is_object() || v.is_array()) && !v.empty(); }
