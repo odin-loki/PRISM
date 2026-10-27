@@ -1,0 +1,204 @@
+// PRISM operational model of <charconv> (roadmap 2.6, docs/PIR.md "C++ library
+// models"). The pir stage puts this directory first on the C++ include path,
+// so `#include <charconv>` reaches this file instead of libstdc++'s. It is a
+// file, not a directory: a directory of this name would make the include fail
+// with EISDIR and every such unit would fall back to libstdc++.
+//
+// Integer from_chars / to_chars only. On success, ptr is the first unparsed
+// character (from_chars) or one past the last character written (to_chars),
+// the out-parameter or buffer receives the value, and errc{} is returned.
+// A value that does not fit returns errc::result_out_of_range and does not
+// write a wrapped or zero success value; the destination is left unchanged.
+// No digits returns errc::invalid_argument and does not write. A null first
+// pointer or a last pointer before first is a precondition failure
+// (__prism_check), not a successful zero. to_chars into a buffer that is too
+// small returns errc::value_too_large, does not claim success, and does not
+// write past last.
+//
+// std::chars_format and the floating-point overloads of from_chars and
+// to_chars are not declared. Omitted APIs fail to compile, so pir falls back
+// to libstdc++. They are omitted so this model does not invent a rounded value.
+#ifndef _PRISM_MODEL_CHARCONV
+#define _PRISM_MODEL_CHARCONV 1
+#define _GLIBCXX_CHARCONV 1  // libstdc++'s <charconv> include guard: never both
+
+#pragma GCC system_header
+
+#include <bits/c++config.h>
+#include <bits/error_constants.h>
+#include <cstddef>
+#include <limits>
+#include <type_traits>
+
+// PIR intrinsic (translate.cpp). A literal class and message, as in the libc
+// models. Not defined here: the analysed program does not link a body.
+extern "C" void __prism_check(int __ok, const char* __cls, const char* __msg);
+
+namespace std _GLIBCXX_VISIBILITY(default) {
+_GLIBCXX_BEGIN_NAMESPACE_VERSION
+
+namespace __prism_cc {
+
+template <typename _Tp>
+inline constexpr bool is_integer_v =
+    std::is_same_v<_Tp, char> || std::is_same_v<_Tp, signed char> || std::is_same_v<_Tp, unsigned char> ||
+    std::is_same_v<_Tp, short> || std::is_same_v<_Tp, unsigned short> || std::is_same_v<_Tp, int> ||
+    std::is_same_v<_Tp, unsigned int> || std::is_same_v<_Tp, long> || std::is_same_v<_Tp, unsigned long> ||
+    std::is_same_v<_Tp, long long> || std::is_same_v<_Tp, unsigned long long>;
+
+constexpr int digit(char __c) noexcept {
+    if (__c >= '0' && __c <= '9') return __c - '0';
+    if (__c >= 'a' && __c <= 'z') return __c - 'a' + 10;
+    if (__c >= 'A' && __c <= 'Z') return __c - 'A' + 10;
+    return -1;
+}
+
+// True when __acc * __base + __dig does not fit in _U. __acc is not updated.
+template <typename _U>
+constexpr bool mul_add_overflows(_U __acc, int __base, int __dig) noexcept {
+    const _U __ub = static_cast<_U>(__base);
+    const _U __ud = static_cast<_U>(__dig);
+    const _U __umax = static_cast<_U>(-1);
+    if (__acc > __umax / __ub) return true;
+    const _U __prod = static_cast<_U>(__acc * __ub);
+    if (__prod > static_cast<_U>(__umax - __ud)) return true;
+    return false;
+}
+
+template <typename _U>
+constexpr void mul_add(_U& __acc, int __base, int __dig) noexcept {
+    const _U __ub = static_cast<_U>(__base);
+    const _U __ud = static_cast<_U>(__dig);
+    __acc = static_cast<_U>(static_cast<_U>(__acc * __ub) + __ud);
+}
+
+}  // namespace __prism_cc
+
+struct from_chars_result {
+    const char* ptr;
+    errc ec;
+    friend constexpr bool operator==(const from_chars_result& __a, const from_chars_result& __b) noexcept {
+        return __a.ptr == __b.ptr && __a.ec == __b.ec;
+    }
+};
+
+struct to_chars_result {
+    char* ptr;
+    errc ec;
+    friend constexpr bool operator==(const to_chars_result& __a, const to_chars_result& __b) noexcept {
+        return __a.ptr == __b.ptr && __a.ec == __b.ec;
+    }
+};
+
+// bool is not an integer subject. A call is ill-formed, so the unit falls back.
+from_chars_result from_chars(const char*, const char*, bool&, int = 10) = delete;
+to_chars_result to_chars(char*, char*, bool, int = 10) = delete;
+
+template <typename _Tp>
+std::enable_if_t<__prism_cc::is_integer_v<_Tp>, from_chars_result>
+from_chars(const char* __first, const char* __last, _Tp& __value, int __base = 10) {
+    __prism_check(__first != nullptr, "PTR-NULL-DEREF", "from_chars() called with a null first pointer");
+    if (__first == nullptr) return {__first, errc::invalid_argument};
+    __prism_check(__last != nullptr, "PTR-NULL-DEREF", "from_chars() called with a null last pointer");
+    if (__last == nullptr) return {__first, errc::invalid_argument};
+    __prism_check(!(__last < __first), "FUNC-CONTRACT", "from_chars() called with last before first");
+    if (__last < __first) return {__first, errc::invalid_argument};
+    __prism_check(__base >= 2 && __base <= 36, "FUNC-CONTRACT", "from_chars() base is outside 2..36");
+    if (__base < 2 || __base > 36) return {__first, errc::invalid_argument};
+
+    const char* const __orig = __first;
+    const char* __p = __first;
+    [[maybe_unused]] bool __neg = false;
+    if constexpr (std::is_signed_v<_Tp>) {
+        if (__p != __last && *__p == '-') {
+            __neg = true;
+            ++__p;
+        }
+    }
+
+    using _U = std::make_unsigned_t<_Tp>;
+    _U __acc = 0;
+    bool __any = false;
+    bool __ovr = false;
+    for (; __p != __last; ++__p) {
+        const int __d = __prism_cc::digit(*__p);
+        if (__d < 0 || __d >= __base) break;
+        __any = true;
+        if (__ovr) continue;
+        if (__prism_cc::mul_add_overflows(__acc, __base, __d)) {
+            __ovr = true;
+            continue;
+        }
+        __prism_cc::mul_add(__acc, __base, __d);
+    }
+    // No subject digits: do not write. ptr stays at the start of the range.
+    if (!__any) return {__orig, errc::invalid_argument};
+    // The digits do not fit. Do not store a wrapped value or a success 0.
+    if (__ovr) return {__p, errc::result_out_of_range};
+
+    if constexpr (std::is_signed_v<_Tp>) {
+        const _U __max = static_cast<_U>(std::numeric_limits<_Tp>::max());
+        if (__neg) {
+            const _U __min_mag = static_cast<_U>(__max + static_cast<_U>(1));
+            if (__acc > __min_mag) return {__p, errc::result_out_of_range};
+            if (__acc == __min_mag)
+                __value = std::numeric_limits<_Tp>::min();
+            else
+                __value = static_cast<_Tp>(-static_cast<_Tp>(__acc));
+        } else if (__acc > __max) {
+            return {__p, errc::result_out_of_range};
+        } else {
+            __value = static_cast<_Tp>(__acc);
+        }
+    } else {
+        __value = __acc;
+    }
+    return {__p, errc{}};
+}
+
+template <typename _Tp>
+std::enable_if_t<__prism_cc::is_integer_v<_Tp>, to_chars_result>
+to_chars(char* __first, char* __last, _Tp __value, int __base = 10) {
+    __prism_check(__first != nullptr, "PTR-NULL-DEREF", "to_chars() called with a null first pointer");
+    if (__first == nullptr) return {__first, errc::value_too_large};
+    __prism_check(__last != nullptr, "PTR-NULL-DEREF", "to_chars() called with a null last pointer");
+    if (__last == nullptr) return {__first, errc::value_too_large};
+    __prism_check(!(__last < __first), "FUNC-CONTRACT", "to_chars() called with last before first");
+    if (__last < __first) return {__last, errc::value_too_large};
+    __prism_check(__base >= 2 && __base <= 36, "FUNC-CONTRACT", "to_chars() base is outside 2..36");
+    if (__base < 2 || __base > 36) return {__last, errc::value_too_large};
+
+    using _U = std::make_unsigned_t<_Tp>;
+    bool __neg = false;
+    _U __mag = 0;
+    if constexpr (std::is_signed_v<_Tp>) {
+        if (__value < 0) {
+            __neg = true;
+            __mag = static_cast<_U>(0) - static_cast<_U>(__value);
+        } else {
+            __mag = static_cast<_U>(__value);
+        }
+    } else {
+        __mag = static_cast<_U>(__value);
+    }
+
+    // Reversed digits, then an optional sign. Enough for base 2 plus the sign.
+    char __rev[sizeof(_Tp) * 8 + 2];
+    int __n = 0;
+    do {
+        const int __d = static_cast<int>(__mag % static_cast<_U>(__base));
+        __rev[__n++] = static_cast<char>(__d < 10 ? '0' + __d : 'a' + (__d - 10));
+        __mag = static_cast<_U>(__mag / static_cast<_U>(__base));
+    } while (__mag != 0);
+    if (__neg) __rev[__n++] = '-';
+
+    if (__last - __first < static_cast<std::ptrdiff_t>(__n))
+        return {__last, errc::value_too_large};
+    for (int __i = 0; __i < __n; ++__i) __first[__i] = __rev[__n - 1 - __i];
+    return {__first + __n, errc{}};
+}
+
+_GLIBCXX_END_NAMESPACE_VERSION
+}  // namespace std
+
+#endif
