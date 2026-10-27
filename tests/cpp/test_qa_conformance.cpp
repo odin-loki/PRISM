@@ -584,6 +584,12 @@ TEST_CASE("qa conformance: every C++ library model header is embedded and exerci
     for (const char* h : {"vector", "map", "set"})
         CHECK(std::find(headers.begin(), headers.end(), h) != headers.end());
     CHECK(std::find(files.begin(), files.end(), "bits/basic_string.tcc") != files.end());
+    // An explicit-include buffer, not a header the pir stage swaps in for
+    // <iostream> or <ostream>. Those names must stay absent so libstdc++ is
+    // not hidden. The file is not embedded (see the loop below).
+    CHECK(std::find(files.begin(), files.end(), "iostream/prism_ostream.hpp") != files.end());
+    CHECK(std::find(files.begin(), files.end(), "iostream") == files.end());
+    CHECK(std::find(files.begin(), files.end(), "ostream") == files.end());
     std::string harnesses, tasks;
     for (const auto& e : fs::recursive_directory_iterator(suite() / "libc-models"))
         if (e.path().extension() == ".cpp") harnesses += slurp(e.path()) + "\n";
@@ -594,6 +600,13 @@ TEST_CASE("qa conformance: every C++ library model header is embedded and exerci
     pub["bits/basic_string.tcc"] = "string";
     for (const auto& f : files) {
         CAPTURE(f);
+        if (f == "iostream/prism_ostream.hpp") {
+            // Not a libstdc++ stand-in, so it is not an embedded "cxx/<header>"
+            // and no public model header includes it. tests/cpp/test_cxx_iostream.cpp
+            // includes it by path. A swap would be a file named iostream, which
+            // the checks above reject, and would need stage.cpp's include path.
+            continue;
+        }
         CHECK(cmake.find("src/prism/pir/models/cxx/" + f) != std::string::npos);
         if (pub.count(f)) {
             CHECK(harnesses.find("#include <" + pub[f] + ">") != std::string::npos);
