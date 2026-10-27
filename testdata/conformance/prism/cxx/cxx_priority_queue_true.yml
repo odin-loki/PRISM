@@ -1,0 +1,7 @@
+format_version: 1
+input_files: cxx_priority_queue_true.cpp
+language: C++
+property: memsafety
+timeout: 600  # std::priority_queue model code: slow on a loaded machine
+expected:
+  cxx_priority_queue_true: true

@@ -1,0 +1,302 @@
+// PRISM operational model of <priority_queue> (roadmap 2.6, docs/PIR.md
+// "C++ library models"). The pir stage puts this directory first on the C++
+// include path, so `#include <priority_queue>` reaches this file. libstdc++
+// has no header of that name: `std::priority_queue` lives in `<queue>`
+// (`_GLIBCXX_QUEUE`). This file defines `_GLIBCXX_PRIORITY_QUEUE` only, so
+// including `<queue>` is unchanged. A translation unit that includes both
+// sees two definitions of `std::priority_queue` and the pir stage lowers it
+// again with libstdc++.
+//
+// Storage is this header's own binary heap of nodes, one element each, from
+// std::allocator (operator new/delete, PIR models). The index is a separate
+// array of those node pointers, also from ::operator new. `<vector>`,
+// `<queue>`, and `<deque>` are not included, and the container template
+// argument is not the representation. The default is
+// `_Prism_priority_queue_nodes<T>` (so this header does not name `vector`);
+// any other sequence whose value_type is T is accepted and ignored. push,
+// pop, top, empty, and size are the operations the standard makes observable
+// here.
+//
+//  * top is the greatest element under the comparator (std::less by default:
+//    comp(a, b) means a is ordered before b, so a max-heap). Equal elements
+//    are not stable: when neither child is ordered before the other, sift
+//    keeps the left one. Nothing here promises insertion order.
+//  * sift swaps node pointers, so an element stays in the node it was
+//    constructed in. push does not free element nodes. pop destroys the
+//    current top element and deallocates that node, so a reference returned
+//    by top() is left pointing at freed storage (MEM-UAF), the same as any
+//    use of the removed element after pop.
+//  * top and pop on an empty queue are preconditions, written
+//    `__glibcxx_assert(!this->empty())`. The condition text does not mention
+//    size(), so PIR classifies the failure FUNC-CONTRACT. Neither call
+//    invents an element: with the assertion disabled the load of the missing
+//    root is the next thing that happens.
+//
+// What it does not model is not declared, so a unit that names it fails to
+// compile against this header and the pir stage lowers it again with
+// libstdc++ (extra.cxx_models says so): emplace, swap, the range and
+// container constructors, container_type, and from_range / push_range.
+// Those are not stubbed.
+#ifndef _PRISM_MODEL_PRIORITY_QUEUE
+#define _PRISM_MODEL_PRIORITY_QUEUE 1
+#define _GLIBCXX_PRIORITY_QUEUE 1
+
+#pragma GCC system_header
+
+#include <bits/c++config.h>
+#include <bits/allocator.h>
+#include <bits/alloc_traits.h>
+#include <bits/stl_function.h>
+#include <cstddef>
+#include <debug/assertions.h>
+#include <ext/aligned_buffer.h>
+#include <memory>
+#include <new>
+#include <type_traits>
+#include <utility>
+
+namespace std _GLIBCXX_VISIBILITY(default) {
+_GLIBCXX_BEGIN_NAMESPACE_VERSION
+
+// Default container argument. Not a container: the elements live in the heap
+// below. Any other argument is accepted only when its value_type is T, and
+// is still not the storage.
+template <typename _T>
+struct _Prism_priority_queue_nodes {
+    using value_type = _T;
+};
+
+template <typename _S, typename _T, typename = void>
+struct _Prism_priority_queue_sequence : false_type {};
+
+template <typename _S, typename _T>
+struct _Prism_priority_queue_sequence<_S, _T, enable_if_t<is_same_v<typename _S::value_type, _T>>> : true_type {};
+
+template <typename _Tp, typename _Sequence = _Prism_priority_queue_nodes<_Tp>, typename _Compare = less<_Tp>>
+class priority_queue {
+    static_assert(is_same_v<remove_cv_t<_Tp>, _Tp>,
+                  "std::priority_queue must have a non-const, non-volatile value_type");
+    static_assert(alignof(_Tp) <= __STDCPP_DEFAULT_NEW_ALIGNMENT__,
+                  "PRISM priority_queue model: over-aligned T is not modelled (fallback to libstdc++)");
+    static_assert(_Prism_priority_queue_sequence<_Sequence, _Tp>::value,
+                  "PRISM priority_queue model: container argument is not a sequence of T (the pir stage falls back to libstdc++)");
+
+    struct _Node {
+        __gnu_cxx::__aligned_membuf<_Tp> _M_storage;
+        _Tp* _M_valptr() noexcept { return _M_storage._M_ptr(); }
+        const _Tp* _M_valptr() const noexcept { return _M_storage._M_ptr(); }
+    };
+
+    using _Node_alloc = allocator<_Node>;
+    using _Node_traits = allocator_traits<_Node_alloc>;
+
+public:
+    using value_type = _Tp;
+    using size_type = size_t;
+    using const_reference = const _Tp&;
+    using value_compare = _Compare;
+
+    priority_queue() = default;
+    explicit priority_queue(const _Compare& __x) : _M_comp(__x) {}
+
+    priority_queue(const priority_queue& __o) : _M_comp(__o._M_comp) {
+        try {
+            _M_reserve(__o._M_size);
+            for (size_type __i = 0; __i < __o._M_size; ++__i) {
+                _M_heap[__i] = _M_create(*__o._M_heap[__i]->_M_valptr());
+                _M_size = __i + 1;
+            }
+        } catch (...) {
+            _M_clear();
+            throw;
+        }
+    }
+
+    priority_queue(priority_queue&& __o) noexcept(is_nothrow_move_constructible_v<_Compare>)
+        : _M_heap(__o._M_heap), _M_size(__o._M_size), _M_cap(__o._M_cap), _M_comp(std::move(__o._M_comp)) {
+        __o._M_heap = nullptr;
+        __o._M_size = 0;
+        __o._M_cap = 0;
+    }
+
+    ~priority_queue() { _M_clear(); }
+
+    priority_queue& operator=(const priority_queue& __o) {
+        if (this != &__o) {
+            priority_queue __tmp(__o);
+            _M_swap(__tmp);
+        }
+        return *this;
+    }
+
+    priority_queue& operator=(priority_queue&& __o) {
+        if (this != &__o) {
+            _M_clear();
+            _M_heap = __o._M_heap;
+            _M_size = __o._M_size;
+            _M_cap = __o._M_cap;
+            _M_comp = std::move(__o._M_comp);
+            __o._M_heap = nullptr;
+            __o._M_size = 0;
+            __o._M_cap = 0;
+        }
+        return *this;
+    }
+
+    [[nodiscard]] bool empty() const noexcept { return _M_size == 0; }
+    [[nodiscard]] size_type size() const noexcept { return _M_size; }
+
+    // Precondition !this->empty(). Not a stand-in value: the assert's
+    // condition text is `!this->empty()` (FUNC-CONTRACT, it does not mention
+    // size()). Assertions off: this loads the missing root.
+    const_reference top() const {
+        __glibcxx_assert(!this->empty());
+        return *_M_heap[0]->_M_valptr();
+    }
+
+    void push(const value_type& __x) { _M_push_node(_M_create(__x)); }
+    void push(value_type&& __x) { _M_push_node(_M_create(std::move(__x))); }
+
+    // Precondition !this->empty(), same FUNC-CONTRACT as top(). Destroys the
+    // element top() referred to and frees that node. The last node is moved
+    // into the hole by pointer, then sifted; elements are not move-assigned.
+    void pop() {
+        __glibcxx_assert(!this->empty());
+        _Node* __dead = _M_heap[0];
+        --_M_size;
+        if (_M_size != 0) {
+            _M_heap[0] = _M_heap[_M_size];
+            _M_heap[_M_size] = nullptr;
+            try {
+                _M_sift_down(0);
+            } catch (...) {
+                _M_drop(__dead);
+                throw;
+            }
+        } else if (_M_heap != nullptr) {
+            _M_heap[0] = nullptr;
+        }
+        _M_drop(__dead);
+    }
+
+private:
+    _Node** _M_heap = nullptr;
+    size_type _M_size = 0;
+    size_type _M_cap = 0;
+    _Compare _M_comp{};
+
+    template <typename... _Args>
+    _Node* _M_create(_Args&&... __args) {
+        _Node_alloc __na;
+        _Node* __n = _Node_traits::allocate(__na, 1);
+        ::new (static_cast<void*>(__n)) _Node;
+        try {
+            std::construct_at(__n->_M_valptr(), std::forward<_Args>(__args)...);
+        } catch (...) {
+            std::destroy_at(__n);
+            _Node_traits::deallocate(__na, __n, 1);
+            throw;
+        }
+        return __n;
+    }
+
+    void _M_drop(_Node* __n) noexcept {
+        std::destroy_at(__n->_M_valptr());
+        std::destroy_at(__n);
+        _Node_alloc __na;
+        _Node_traits::deallocate(__na, __n, 1);
+    }
+
+    void _M_free_index() noexcept {
+        if (_M_heap == nullptr) return;
+        ::operator delete(_M_heap);
+        _M_heap = nullptr;
+        _M_cap = 0;
+    }
+
+    void _M_clear() noexcept {
+        for (size_type __i = 0; __i < _M_size; ++__i) _M_drop(_M_heap[__i]);
+        _M_size = 0;
+        _M_free_index();
+    }
+
+    void _M_reserve(size_type __n) {
+        if (__n <= _M_cap) return;
+        size_type __cap = _M_cap == 0 ? __n : _M_cap;
+        while (__cap < __n) {
+            if (__cap > static_cast<size_type>(-1) / 2) {
+                __cap = __n;
+                break;
+            }
+            __cap *= 2;
+        }
+        if (__cap > static_cast<size_type>(-1) / sizeof(_Node*)) throw std::bad_alloc();
+        _Node** __neu = static_cast<_Node**>(::operator new(__cap * sizeof(_Node*)));
+        for (size_type __i = 0; __i < _M_size; ++__i) __neu[__i] = _M_heap[__i];
+        if (_M_heap != nullptr) ::operator delete(_M_heap);
+        _M_heap = __neu;
+        _M_cap = __cap;
+    }
+
+    void _M_swap_at(size_type __a, size_type __b) noexcept {
+        _Node* __t = _M_heap[__a];
+        _M_heap[__a] = _M_heap[__b];
+        _M_heap[__b] = __t;
+    }
+
+    // comp(parent, child): parent is ordered before child, so child is greater.
+    bool _M_before(size_type __a, size_type __b) {
+        return _M_comp(*_M_heap[__a]->_M_valptr(), *_M_heap[__b]->_M_valptr());
+    }
+
+    void _M_sift_up(size_type __i) {
+        while (__i > 0) {
+            size_type __p = (__i - 1) / 2;
+            if (!_M_before(__p, __i)) break;
+            _M_swap_at(__p, __i);
+            __i = __p;
+        }
+    }
+
+    void _M_sift_down(size_type __i) {
+        while (_M_size > 0 && __i <= (_M_size - 1) / 2) {
+            size_type __l = __i * 2 + 1;
+            if (__l >= _M_size) break;
+            size_type __r = __l + 1;
+            // Neither child before the other: keep the left. Not a stability promise.
+            size_type __best = __l;
+            if (__r < _M_size && _M_before(__l, __r)) __best = __r;
+            if (!_M_before(__i, __best)) break;
+            _M_swap_at(__i, __best);
+            __i = __best;
+        }
+    }
+
+    void _M_push_node(_Node* __n) {
+        try {
+            _M_reserve(_M_size + 1);
+        } catch (...) {
+            _M_drop(__n);
+            throw;
+        }
+        _M_heap[_M_size] = __n;
+        ++_M_size;
+        // The node is already in the heap (as libstdc++'s push_back is before
+        // push_heap). A throwing comparator leaves the order partial.
+        _M_sift_up(_M_size - 1);
+    }
+
+    void _M_swap(priority_queue& __o) {
+        _Compare __c(std::move(_M_comp));
+        _M_comp = std::move(__o._M_comp);
+        __o._M_comp = std::move(__c);
+        std::swap(_M_heap, __o._M_heap);
+        std::swap(_M_size, __o._M_size);
+        std::swap(_M_cap, __o._M_cap);
+    }
+};
+
+_GLIBCXX_END_NAMESPACE_VERSION
+}  // namespace std
+
+#endif

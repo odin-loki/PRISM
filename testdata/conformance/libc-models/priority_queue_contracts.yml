@@ -1,0 +1,18 @@
+format_version: 1
+input_files: priority_queue_contracts.cpp
+language: C++
+property: libc-contract
+timeout: 900  # several container functions in one run
+expected:
+  priority_queue_push_true: true
+  priority_queue_pop_order_true: true
+  priority_queue_min_true: true
+  priority_queue_top_pop_uaf_false: false
+  priority_queue_top_empty_false: false
+  priority_queue_pop_empty_false: false
+  priority_queue_order_false: false
+expect_class:  # the violation each false harness plants
+  priority_queue_top_pop_uaf_false: "MEM-UAF"
+  priority_queue_top_empty_false: "FUNC-CONTRACT"
+  priority_queue_pop_empty_false: "FUNC-CONTRACT"
+  priority_queue_order_false: "FUNC-CONTRACT"
