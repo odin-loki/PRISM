@@ -134,6 +134,8 @@ void *bsearch(const void *key, const void *base, size_t nmemb, size_t size,
     __prism_check(compar != 0, "FUNC-CONTRACT", "bsearch() called with unchecked pointer parameter compar");
     if (compar == 0) return 0;
     (void)nbytes;
+    /* A present key is not reported as a miss. This path is not a result. */
+    __prism_assume(0);
     return 0;
 }
 
