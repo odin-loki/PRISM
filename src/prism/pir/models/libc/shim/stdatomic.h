@@ -1,4 +1,11 @@
 /* Minimal <stdatomic.h> for PIR LP64 lowering on Windows (tests/conc). */
+/*
+ * Windows PIR compile shim. It lowers C11 atomics to plain stores.
+ * memory_order is ignored. Relaxed, acquire, and release are not modeled.
+ * It is not a concurrency proof and it is not sequentially consistent.
+ * The conc stage is what refuses those orders as NEEDS-HARNESS. This
+ * header must not be read as PROVED or as CLEAN. It is not a proof.
+ */
 #ifndef PRISM_PIR_SHIM_STDATOMIC_H
 #define PRISM_PIR_SHIM_STDATOMIC_H
 

@@ -738,6 +738,8 @@ if(PRISM_TESTS)
     tests/cpp/test_interp_ub.cpp
     tests/cpp/test_concolic.cpp
     tests/cpp/test_libc_messages.cpp
+    # C11 header: the test reads the shim comment as text and does not compile it.
+    tests/cpp/test_stdatomic_shim.cpp
     tests/cpp/test_concolic_proof.cpp
     tests/cpp/test_lint_corpus.cpp
     tests/cpp/test_lint_status.cpp
